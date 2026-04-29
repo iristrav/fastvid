@@ -134,3 +134,8 @@
 - [x] Use concise, direct prompts to reduce token count and response time
 - [x] Pre-generate script outline first (fast ~5-8s), then fill sections + metadata in parallel
 - [x] Script generation now ~3-4x faster: outline (5s) + parallel sections (8-12s) vs single call (60-90s)
+
+## Bug Fix: FFmpeg not found on production
+- [x] Installed ffmpeg-static npm package (bundles static FFmpeg 7.0.2 binary, no system install needed)
+- [x] Updated videoPipeline.ts to use bundled binary path instead of system 'ffmpeg' command
+- [x] Works in Cloud Run production environment without any system dependencies

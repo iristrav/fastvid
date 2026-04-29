@@ -19,8 +19,12 @@ import { storagePut } from "./storage";
 import { invokeLLM } from "./_core/llm";
 // @ts-ignore — node-gtts has no type declarations
 import gTTS from "node-gtts";
-
-const exec = promisify(execCb);
+// @ts-ignore — ffmpeg-static bundles a static binary, no system install needed
+import ffmpegStatic from "ffmpeg-static";
+const FFMPEG_BIN: string = (ffmpegStatic as unknown as string) || "ffmpeg";
+const execRaw = promisify(execCb);
+// Use the bundled static ffmpeg binary — works in production without system install
+const exec = (cmd: string) => execRaw(cmd.replace(/^ffmpeg\b/, FFMPEG_BIN));
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
