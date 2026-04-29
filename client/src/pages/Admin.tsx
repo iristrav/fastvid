@@ -2,7 +2,7 @@
  * FASTVID — Admin Dashboard
  * Full control over users, subscriptions, video overview, and video generation
  */
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useLocation } from "wouter";
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/_core/hooks/useAuth";
@@ -354,6 +354,33 @@ function UsersTable() {
   );
 }
 
+function VideoStatusCell({ video }: { video: VideoRow }) {
+  const isInProgress = !['completed', 'failed', 'pending'].includes(video.status);
+  const { data: pollData } = trpc.video.pollStatus.useQuery(
+    { id: video.id },
+    { enabled: isInProgress, refetchInterval: isInProgress ? 3000 : false }
+  );
+  const status = pollData?.status ?? video.status;
+  const progressStep = (pollData as { progressStep?: string | null } | undefined)?.progressStep;
+  const progressPercent = (pollData as { progressPercent?: number } | undefined)?.progressPercent ?? 0;
+  const isLive = !!pollData && isInProgress;
+  return (
+    <div className="space-y-1">
+      <span className={`px-2 py-0.5 rounded-md text-xs font-medium ${VIDEO_STATUS_BADGE[status] ?? 'text-slate-400 bg-white/5'}`}>
+        {status}
+      </span>
+      {isLive && progressStep && (
+        <div className="space-y-0.5 min-w-[120px]">
+          <p className="text-xs text-slate-400 truncate max-w-[160px]">{progressStep}</p>
+          <div className="w-full bg-white/10 rounded-full h-1 overflow-hidden">
+            <div className="h-full bg-gradient-to-r from-purple-500 to-cyan-500 rounded-full transition-all duration-700" style={{ width: `${progressPercent}%` }} />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function VideosTable() {
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
@@ -445,9 +472,7 @@ function VideosTable() {
                   </td>
                   <td className="px-4 py-3 text-xs text-slate-400 font-mono whitespace-nowrap">{video.videoLength} min</td>
                   <td className="px-4 py-3">
-                    <span className={`px-2 py-0.5 rounded-md text-xs font-medium ${VIDEO_STATUS_BADGE[video.status] ?? "text-slate-400 bg-white/5"}`}>
-                      {video.status}
-                    </span>
+                    <VideoStatusCell video={video as VideoRow} />
                   </td>
                   <td className="px-4 py-3">
                     <p className="text-xs text-slate-300">{video.userName ?? "Unknown"}</p>
@@ -512,7 +537,18 @@ function AdminVideoGenerator() {
     }
   );
 
-  const statusData = videoStatus as { status?: string; videoUrl?: string; title?: string } | undefined;
+  const statusData = videoStatus as { status?: string; videoUrl?: string; title?: string; progressStep?: string | null; progressPercent?: number; generationStartedAt?: Date | null } | undefined;
+  const isGenerating = !!statusData?.status && !['completed', 'failed'].includes(statusData.status);
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    const startTime = statusData?.generationStartedAt;
+    if (!isGenerating || !startTime) { setElapsed(0); return; }
+    const update = () => setElapsed(Math.floor((Date.now() - new Date(startTime).getTime()) / 1000));
+    update();
+    const id = setInterval(update, 1000);
+    return () => clearInterval(id);
+  }, [isGenerating, statusData?.generationStartedAt]);
+  const elapsedStr = `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, '0')}`;
 
   const STEPS = [
     { key: "generating_script", label: "Writing script" },
@@ -583,6 +619,21 @@ function AdminVideoGenerator() {
             </h3>
             {statusLoading && <Loader2 className="w-4 h-4 text-purple-400 animate-spin" />}
           </div>
+          {isGenerating && statusData?.progressStep && (
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-slate-300 truncate max-w-[80%]">{statusData.progressStep}</span>
+                <span className="text-xs text-slate-500 font-mono ml-2 shrink-0">{elapsedStr}</span>
+              </div>
+              <div className="w-full bg-white/10 rounded-full h-1.5 overflow-hidden">
+                <div
+                  className="h-full bg-gradient-to-r from-purple-500 to-cyan-500 rounded-full transition-all duration-700"
+                  style={{ width: `${statusData.progressPercent ?? 0}%` }}
+                />
+              </div>
+              <p className="text-right text-xs text-slate-600">{statusData.progressPercent ?? 0}%</p>
+            </div>
+          )}
           <div className="space-y-2">
             {STEPS.map((step, i) => {
               const isDone = statusData?.status === "completed" || (currentStepIndex > i && currentStepIndex !== -1);
