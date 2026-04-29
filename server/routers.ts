@@ -375,6 +375,37 @@ export const appRouter = router({
       return { success: true };
     }),
 
+    /** Admin: reset / upsert all default voices with real Fish Audio reference IDs */
+    resetDefaults: adminProcedure.mutation(async () => {
+      const db = await import("./db").then(m => m.getDb());
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database not available" });
+      const { voices: voicesTable } = await import("../drizzle/schema");
+      const defaults = [
+        { name: "Energetic Male",  description: "American Male — energetic, YouTube-style narrator",  fishAudioReferenceId: "802e3bc2b27e49c2995d23ef70e6ac89", flag: "🇺🇸", sortOrder: 1, isActive: 1 },
+        { name: "Adrian",          description: "American Male — deep, authoritative documentary voice", fishAudioReferenceId: "bf322df2096a46f18c579d0baa36f41d", flag: "🇺🇸", sortOrder: 2, isActive: 1 },
+        { name: "Ethan",           description: "American Male — clear, conversational narrator",        fishAudioReferenceId: "536d3a5e000945adb7038665781a4aca", flag: "🇺🇸", sortOrder: 3, isActive: 1 },
+        { name: "Sarah",           description: "American Female — warm, professional narrator",         fishAudioReferenceId: "933563129e564b19a115bedd57b7406a", flag: "🇺🇸", sortOrder: 4, isActive: 1 },
+        { name: "JJK Narrator",    description: "Male — dramatic, cinematic storytelling voice",         fishAudioReferenceId: "179b5cc736974d96913c7849d0bb68c5", flag: "🎙️", sortOrder: 5, isActive: 1 },
+        { name: "Jasphina",        description: "Female — clear, expressive English narrator",           fishAudioReferenceId: "e9b134e4c0b547a3894793be502314f1", flag: "🎙️", sortOrder: 6, isActive: 1 },
+      ];
+      // Delete all voices with placeholder IDs, then upsert real defaults
+      const { eq, like } = await import("drizzle-orm");
+      await db.delete(voicesTable).where(like(voicesTable.fishAudioReferenceId, "PLACEHOLDER%"));
+      // Insert defaults that don't already exist (match by fishAudioReferenceId)
+      let upserted = 0;
+      for (const v of defaults) {
+        const existing = await db.select().from(voicesTable).where(eq(voicesTable.fishAudioReferenceId, v.fishAudioReferenceId)).limit(1);
+        if (existing.length === 0) {
+          await db.insert(voicesTable).values(v);
+          upserted++;
+        } else {
+          await db.update(voicesTable).set({ name: v.name, description: v.description, flag: v.flag, sortOrder: v.sortOrder, isActive: v.isActive }).where(eq(voicesTable.fishAudioReferenceId, v.fishAudioReferenceId));
+          upserted++;
+        }
+      }
+      return { success: true, upserted };
+    }),
+
     /** Admin: upload example audio for a voice — receives base64-encoded audio */
     uploadExampleAudio: adminProcedure.input(z.object({
       voiceId: z.number().int(),

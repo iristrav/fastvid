@@ -839,11 +839,27 @@ function VoiceLibraryAdmin() {
   const [editVoice, setEditVoice] = useState<null | typeof voices[0]>(null);
   const [playingId, setPlayingId] = useState<number | null>(null);
   const [audioEl, setAudioEl] = useState<HTMLAudioElement | null>(null);
+  const [previewingId, setPreviewingId] = useState<number | null>(null);
+  const [previewAudioEl, setPreviewAudioEl] = useState<HTMLAudioElement | null>(null);
 
   const createMut = trpc.voice.create.useMutation({ onSuccess: () => { utils.voice.listAll.invalidate(); setShowForm(false); toast.success("Voice added!"); } });
   const updateMut = trpc.voice.update.useMutation({ onSuccess: () => { utils.voice.listAll.invalidate(); setEditVoice(null); toast.success("Voice updated!"); } });
   const deleteMut = trpc.voice.delete.useMutation({ onSuccess: () => { utils.voice.listAll.invalidate(); toast.success("Voice deleted!"); } });
   const uploadAudioMut = trpc.voice.uploadExampleAudio.useMutation({ onSuccess: () => { utils.voice.listAll.invalidate(); toast.success("Example audio uploaded!"); } });
+  const previewMut = trpc.voice.preview.useMutation({
+    onSuccess: (data) => {
+      if (previewAudioEl) { previewAudioEl.pause(); previewAudioEl.src = ""; }
+      const a = new Audio(data.url);
+      a.onended = () => { setPreviewingId(null); setPreviewAudioEl(null); };
+      a.play();
+      setPreviewAudioEl(a);
+    },
+    onError: (err) => { setPreviewingId(null); toast.error(`Preview failed: ${err.message}`); },
+  });
+  const resetDefaultsMut = trpc.voice.resetDefaults.useMutation({
+    onSuccess: (data) => { utils.voice.listAll.invalidate(); toast.success(`Reset complete — ${data.upserted} voices updated`); },
+    onError: (err) => toast.error(`Reset failed: ${err.message}`),
+  });
 
   function playExample(voice: typeof voices[0]) {
     if (!voice.exampleAudioUrl) { toast.error("No example audio for this voice"); return; }
@@ -854,6 +870,17 @@ function VoiceLibraryAdmin() {
     a.play();
     setAudioEl(a);
     setPlayingId(voice.id);
+  }
+
+  function testPreview(voice: typeof voices[0]) {
+    if (voice.fishAudioReferenceId.startsWith("PLACEHOLDER")) {
+      toast.error("Cannot preview: this voice has a placeholder Fish Audio ID. Please edit and set a real ID.");
+      return;
+    }
+    if (previewAudioEl) { previewAudioEl.pause(); previewAudioEl.src = ""; }
+    if (previewingId === voice.id) { setPreviewingId(null); setPreviewAudioEl(null); return; }
+    setPreviewingId(voice.id);
+    previewMut.mutate({ fishAudioReferenceId: voice.fishAudioReferenceId });
   }
 
   async function handleAudioUpload(voiceId: number, file: File) {
@@ -868,14 +895,24 @@ function VoiceLibraryAdmin() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h2 className="text-xl font-black text-white" style={{ fontFamily: "Outfit, sans-serif" }}>Voice <span className="gradient-text">Library</span></h2>
           <p className="text-slate-400 text-sm mt-1">Manage Fish Audio S2 Pro voices available to users</p>
         </div>
-        <button onClick={() => { setEditVoice(null); setShowForm(true); }} className="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-sm font-medium transition-colors">
-          <Plus className="w-4 h-4" /> Add Voice
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => { if (confirm("Reset all voices to defaults? This will delete placeholder voices and upsert 6 real Fish Audio voices.")) resetDefaultsMut.mutate(); }}
+            disabled={resetDefaultsMut.isPending}
+            className="flex items-center gap-2 px-3 py-2 bg-white/10 hover:bg-white/15 text-slate-300 rounded-lg text-xs font-medium transition-colors disabled:opacity-50"
+          >
+            {resetDefaultsMut.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+            Reset to Defaults
+          </button>
+          <button onClick={() => { setEditVoice(null); setShowForm(true); }} className="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-sm font-medium transition-colors">
+            <Plus className="w-4 h-4" /> Add Voice
+          </button>
+        </div>
       </div>
 
       {/* Add / Edit Form */}
@@ -913,12 +950,37 @@ function VoiceLibraryAdmin() {
                 </span>
               </div>
 
-              <div className="text-xs text-slate-500 font-mono bg-white/5 rounded px-2 py-1 truncate">
-                ID: {v.fishAudioReferenceId}
-              </div>
+              {v.fishAudioReferenceId.startsWith("PLACEHOLDER") ? (
+                <div className="flex items-center gap-1.5 text-xs text-amber-400 bg-amber-400/10 border border-amber-400/20 rounded px-2 py-1">
+                  <AlertTriangle className="w-3 h-3 shrink-0" />
+                  <span className="font-mono truncate">Placeholder ID — set a real Fish Audio ID</span>
+                </div>
+              ) : (
+                <div className="text-xs text-slate-500 font-mono bg-white/5 rounded px-2 py-1 truncate">
+                  ID: {v.fishAudioReferenceId}
+                </div>
+              )}
 
-              {/* Example audio upload + play */}
-              <div className="flex items-center gap-2">
+              {/* Live preview + example audio upload + play */}
+              <div className="flex items-center gap-2 flex-wrap">
+                {/* Test Preview: calls Fish Audio live */}
+                <button
+                  onClick={() => testPreview(v)}
+                  disabled={previewMut.isPending && previewingId === v.id}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                    previewingId === v.id
+                      ? "bg-cyan-600 text-white"
+                      : "bg-cyan-500/20 text-cyan-300 hover:bg-cyan-500/30"
+                  }`}
+                >
+                  {previewMut.isPending && previewingId === v.id ? (
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                  ) : (
+                    <Mic className="w-3 h-3" />
+                  )}
+                  {previewingId === v.id && !previewMut.isPending ? "Stop" : "Test Preview"}
+                </button>
+                {/* Play uploaded sample */}
                 <button
                   onClick={() => playExample(v)}
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${

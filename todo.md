@@ -215,12 +215,20 @@
 - [x] B-roll visual variety: LLM generates 3 different queries per scene (wide/close-up/action angles)
 
 ## Video Management & Voice Preview
-- [ ] Add video.delete tRPC procedure (owner or admin only)
-- [ ] Add video.updateTitle tRPC procedure (owner or admin only)
-- [ ] Add video.deleteAllFailed tRPC procedure (owner: delete all own failed videos)
-- [ ] Add video.expireStuck tRPC procedure (admin: mark stuck in-progress videos as failed)
-- [ ] Add voice.preview tRPC procedure: generate a 5-second Fish Audio sample on demand and return audio URL
-- [ ] Add edit/delete buttons to each video card in Dashboard.tsx
-- [ ] Add "Delete All Failed" button in Dashboard.tsx
-- [ ] Add live "Preview" button in voice selector that calls voice.preview and plays the audio
-- [ ] Auto-expire stuck videos on server startup (videos in-progress > 70 min)
+- [x] Add video.delete tRPC procedure (owner or admin only)
+- [x] Add video.updateTitle tRPC procedure (owner or admin only)
+- [x] Add video.deleteAllFailed tRPC procedure (owner: delete all own failed videos)
+- [x] Add video.expireStuck tRPC procedure (admin: mark stuck in-progress videos as failed)
+- [x] Add voice.preview tRPC procedure: generate a 5-second Fish Audio sample on demand and return audio URL
+- [x] Add edit/delete buttons to each video card in Dashboard.tsx
+- [x] Add "Delete All Failed" button in Dashboard.tsx
+- [x] Add live "Preview" button in voice selector that calls voice.preview and plays the audio
+- [x] Auto-expire stuck videos on server startup (videos in-progress > 70 min)
+
+## Voice Library: Real Fish Audio IDs + Admin Improvements
+- [x] Update seedDefaultVoices() with real Fish Audio reference IDs (6 verified voices, all active)
+- [x] Add voice.resetDefaults admin procedure: deletes placeholder voices, upserts 6 real defaults
+- [x] Add "Reset to Defaults" button in Admin Voice Library header
+- [x] Add "Test Preview" button (cyan) in each voice card — calls Fish Audio live, plays audio
+- [x] Add amber warning badge on voice cards with PLACEHOLDER reference IDs
+- [x] All 10 tests passing, 0 TypeScript errors
