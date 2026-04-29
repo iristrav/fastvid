@@ -46,6 +46,11 @@ const STATUS_COLORS: Record<string, string> = {
   failed: "text-red-400 bg-red-400/10",
 };
 
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+function formatVideoId(id: number) {
+  return `#VID-${String(id).padStart(4, "0")}`;
+}
+
 // ─── Video Card ───────────────────────────────────────────────────────────────
 function VideoCard({ video, onView }: { video: {
   id: number; title: string | null; prompt: string; status: string;
@@ -89,21 +94,24 @@ function VideoCard({ video, onView }: { video: {
       </div>
       {/* Info */}
       <div className="p-4">
+        <div className="flex items-center gap-2 mb-1.5">
+          <span className="mono text-[10px] font-bold text-purple-400 bg-purple-500/10 border border-purple-500/20 px-1.5 py-0.5 rounded">
+            {formatVideoId(video.id)}
+          </span>
+        </div>
         <h3 className="font-semibold text-white text-sm line-clamp-1 mb-1">
           {video.title ?? video.prompt.slice(0, 60)}
         </h3>
         <p className="text-xs text-slate-500 line-clamp-2 mb-3">{video.prompt}</p>
         <div className="flex items-center justify-between">
           <span className="text-xs text-slate-600">{new Date(video.createdAt).toLocaleDateString()}</span>
-          {currentStatus === "completed" && (
-            <button
-              onClick={() => onView(video.id)}
-              className="flex items-center gap-1 text-xs text-purple-400 hover:text-purple-300 transition-colors"
-            >
-              <Eye className="w-3.5 h-3.5" />
-              View
-            </button>
-          )}
+          <button
+            onClick={() => onView(video.id)}
+            className="flex items-center gap-1 text-xs text-purple-400 hover:text-purple-300 transition-colors"
+          >
+            <Eye className="w-3.5 h-3.5" />
+            View
+          </button>
         </div>
       </div>
     </div>

@@ -79,10 +79,14 @@
 - [x] Redirect to Stripe checkout in new tab
 - [x] Payment success/cancelled URL handling
 
-## Future / Optional
-- [ ] Real voiceover generation API
-- [ ] Real voiceover generation API
-- [ ] Real video rendering/export
+## Future / Optional (out of scope for this build)
+- [ ] Real voiceover generation API (requires external TTS service e.g. ElevenLabs)
+- [ ] Real video rendering/export (requires external video rendering pipeline)
 - [ ] Voice cloning feature
 - [ ] Thumbnail AI generation
 - [ ] Email notifications on video completion
+
+## Admin Videos — Improvements
+- [x] Add video number (#VID-XXXX) displayed on every video card and in the admin table
+- [x] Add "View" button in admin videos table to open full video detail (script, metadata, chapters, error)
+- [x] Show video number in user dashboard video cards too
