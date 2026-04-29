@@ -1,3 +1,4 @@
+import Stripe from "stripe";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { COOKIE_NAME } from "@shared/const";
@@ -10,6 +11,9 @@ import {
   getUserStats, getVideoById, getVideosByUserId, getVideoStats,
   updateUserRole, updateUserSubscription, updateVideoStatus,
 } from "./db";
+import { FASTVID_PRO_PLAN } from "./products";
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY ?? "");
 
 const adminProcedure = protectedProcedure.use(({ ctx, next }) => {
   if (ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN", message: "Admin access required" });
@@ -151,6 +155,53 @@ export const appRouter = router({
     deactivate: adminProcedure.input(z.object({ userId: z.number() })).mutation(async ({ input }) => {
       await updateUserSubscription(input.userId, { subscriptionStatus: "inactive" });
       return { success: true };
+    }),
+  }),
+
+  billing: router({
+    createCheckout: protectedProcedure.input(z.object({ origin: z.string() })).mutation(async ({ ctx, input }) => {
+      if (!process.env.STRIPE_SECRET_KEY) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Stripe not configured" });
+      // Create or retrieve Stripe customer
+      let customerId = (ctx.user as { stripeCustomerId?: string }).stripeCustomerId;
+      if (!customerId) {
+        const customer = await stripe.customers.create({
+          email: ctx.user.email ?? undefined,
+          name: ctx.user.name ?? undefined,
+          metadata: { userId: ctx.user.id.toString() },
+        });
+        customerId = customer.id;
+        await updateUserSubscription(ctx.user.id, { stripeCustomerId: customerId });
+      }
+      // Create a recurring price on the fly (or use a pre-created one)
+      const price = await stripe.prices.create({
+        currency: FASTVID_PRO_PLAN.currency,
+        unit_amount: FASTVID_PRO_PLAN.priceEur,
+        recurring: { interval: FASTVID_PRO_PLAN.interval },
+        product_data: { name: FASTVID_PRO_PLAN.name },
+      });
+      const session = await stripe.checkout.sessions.create({
+        customer: customerId,
+        mode: "subscription",
+        line_items: [{ price: price.id, quantity: 1 }],
+        success_url: `${input.origin}/dashboard?payment=success`,
+        cancel_url: `${input.origin}/dashboard?payment=cancelled`,
+        client_reference_id: ctx.user.id.toString(),
+        allow_promotion_codes: true,
+        metadata: {
+          user_id: ctx.user.id.toString(),
+          customer_email: ctx.user.email ?? "",
+          customer_name: ctx.user.name ?? "",
+        },
+      });
+      return { url: session.url };
+    }),
+
+    status: protectedProcedure.query(async ({ ctx }) => {
+      const user = await getUserById(ctx.user.id);
+      return {
+        subscriptionStatus: (user as { subscriptionStatus?: string })?.subscriptionStatus ?? "inactive",
+        stripeCustomerId: (user as { stripeCustomerId?: string })?.stripeCustomerId ?? null,
+      };
     }),
   }),
 });

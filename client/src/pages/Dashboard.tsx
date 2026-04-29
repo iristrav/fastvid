@@ -12,7 +12,7 @@ import { Streamdown } from "streamdown";
 import {
   Play, Sparkles, Clock, CheckCircle2, XCircle, Loader2,
   FileText, Video, LogOut, User, ChevronRight, RefreshCw,
-  Copy, Download, Eye, LayoutDashboard, Settings,
+  Copy, Download, Eye, LayoutDashboard, Settings, CreditCard,
 } from "lucide-react";
 
 // ─── Asset URLs ───────────────────────────────────────────────────────────────
@@ -197,6 +197,17 @@ export default function Dashboard() {
   const [viewingVideoId, setViewingVideoId] = useState<number | null>(null);
 
   const { data: videos, isLoading: videosLoading, refetch } = trpc.video.list.useQuery(undefined, { enabled: isAuthenticated });
+  const checkoutMutation = trpc.billing.createCheckout.useMutation({
+    onSuccess: (data) => {
+      if (data.url) {
+        toast.info("Redirecting to checkout...", { description: "Opening Stripe payment page" });
+        window.open(data.url, "_blank");
+      }
+    },
+    onError: (err) => {
+      toast.error("Checkout failed", { description: err.message });
+    },
+  });
   const generateMutation = trpc.video.generate.useMutation({
     onSuccess: (data) => {
       toast.success("Video generation started!", { description: `Video ID: ${data.videoId}` });
@@ -318,16 +329,26 @@ export default function Dashboard() {
             <p className="text-slate-400 text-sm mt-1">Generate your next viral YouTube video</p>
           </div>
 
-          {/* Subscription warning */}
+          {/* Subscription warning + Stripe checkout */}
           {!hasActiveSubscription && (
-            <div className="glass-card border border-yellow-500/30 bg-yellow-500/5 rounded-xl p-4 flex items-start gap-3">
-              <div className="w-5 h-5 rounded-full bg-yellow-500/20 flex items-center justify-center shrink-0 mt-0.5">
-                <span className="text-yellow-400 text-xs font-bold">!</span>
+            <div className="glass-card border border-yellow-500/30 bg-yellow-500/5 rounded-xl p-4 flex flex-col sm:flex-row items-start sm:items-center gap-4">
+              <div className="flex items-start gap-3 flex-1">
+                <div className="w-5 h-5 rounded-full bg-yellow-500/20 flex items-center justify-center shrink-0 mt-0.5">
+                  <span className="text-yellow-400 text-xs font-bold">!</span>
+                </div>
+                <div>
+                  <p className="text-sm font-semibold text-yellow-300">No active subscription</p>
+                  <p className="text-xs text-yellow-400/70 mt-0.5">Subscribe to the Fastvid Pro plan for €500/month and start generating unlimited videos.</p>
+                </div>
               </div>
-              <div>
-                <p className="text-sm font-semibold text-yellow-300">No active subscription</p>
-                <p className="text-xs text-yellow-400/70 mt-0.5">Contact the admin to activate your €500/month subscription and start generating videos.</p>
-              </div>
+              <button
+                onClick={() => checkoutMutation.mutate({ origin: window.location.origin })}
+                disabled={checkoutMutation.isPending}
+                className="btn-gradient px-4 py-2.5 rounded-lg text-sm font-semibold text-white flex items-center gap-2 shrink-0 disabled:opacity-60"
+              >
+                {checkoutMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <CreditCard className="w-4 h-4" />}
+                Subscribe — €500/month
+              </button>
             </div>
           )}
 

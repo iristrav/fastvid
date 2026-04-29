@@ -68,8 +68,19 @@
 - [x] admin procedure tests (access control)
 - [x] All 10 tests passing
 
+## Stripe Payments
+- [x] Stripe package installed
+- [x] billing.createCheckout — creates €500/month Stripe subscription session
+- [x] billing.status — returns user subscription status
+- [x] Stripe customer creation on first checkout
+- [x] Stripe webhook handler (/api/stripe/webhook)
+- [x] Webhook events: checkout.session.completed, subscription.updated, subscription.deleted, invoice.payment_failed
+- [x] Subscribe button in dashboard for inactive users
+- [x] Redirect to Stripe checkout in new tab
+- [x] Payment success/cancelled URL handling
+
 ## Future / Optional
-- [ ] Stripe payment integration (€500/month checkout)
+- [ ] Real voiceover generation API
 - [ ] Real voiceover generation API
 - [ ] Real video rendering/export
 - [ ] Voice cloning feature
