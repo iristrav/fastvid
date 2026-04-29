@@ -173,3 +173,8 @@
 - [x] Add retry logic (up to 3 attempts with exponential backoff) for TTS
 - [x] Add silent audio fallback using FFmpeg if all TTS attempts fail (pipeline never stops)
 - [x] Increase overall voiceover stage timeout from 3 min to 8 min to accommodate retries
+
+## Bug Fix: FFmpeg drawtext special character crash
+- [x] Fix drawtext text escaping: use textfile= instead of text= to avoid all shell/FFmpeg quoting issues
+- [x] Fix fallback PNG generation command: use color= source filter (gradients not in ffmpeg-static 5.x)
+- [x] Add subtitle text length cap (100 chars) to prevent overly long subtitles

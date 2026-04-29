@@ -258,8 +258,9 @@ async function generateAIVisualForScene(
 }
 
 /**
- * Fallback: generate a gradient background image using FFmpeg if AI generation fails.
- * This ensures the pipeline never stops due to a single image generation failure.
+ * Fallback: generate a solid-color background image using FFmpeg if AI generation fails.
+ * Uses the reliable `color` source filter (available in all FFmpeg builds including ffmpeg-static).
+ * The `gradients` filter is NOT used as it is not available in ffmpeg-static 5.x.
  */
 async function generateGradientFallback(
   scene: Scene,
@@ -267,33 +268,58 @@ async function generateGradientFallback(
 ): Promise<string> {
   const outputPath = path.join(workDir, `scene_${scene.index}_fallback.png`);
   // Deep space color palette — matches Fastvid's brand
-  const gradients = [
-    ["0a0a1e", "1a0a3e"],
-    ["0a1a2e", "0a3a5e"],
-    ["1a0a2e", "3a0a5e"],
-    ["0a2a1e", "0a4a3e"],
-    ["1a1a0a", "3a3a1a"],
-    ["2a0a1e", "5a0a3e"],
-    ["0a1a1e", "0a3a3e"],
-    ["1a0a1e", "3a0a3e"],
-  ];
-  const [c1, c2] = gradients[scene.index % gradients.length];
-  await exec(
-    `${FFMPEG_BIN} -y -f lavfi -i "gradients=s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:c0=#${c1}:c1=#${c2}:duration=1:rate=1" -frames:v 1 "${outputPath}" 2>/dev/null`
-  ).catch(async () => {
-    // Ultra-simple fallback: solid color PNG
-    await exec(
-      `${FFMPEG_BIN} -y -f lavfi -i "color=c=#${c1}:size=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:rate=1" -frames:v 1 "${outputPath}" 2>/dev/null`
+  const colors = ["0a0a1e", "0a1a2e", "1a0a2e", "0a2a1e", "1a1a0a", "2a0a1e", "0a1a1e", "1a0a1e"];
+  const color = colors[scene.index % colors.length];
+  try {
+    // `color` source filter: available in all FFmpeg builds
+    await withTimeout(
+      exec(
+        `${FFMPEG_BIN} -y -f lavfi -i "color=c=#${color}:size=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:rate=1" -frames:v 1 "${outputPath}" 2>/dev/null`
+      ),
+      15_000,
+      `Fallback PNG for scene ${scene.index}`
     );
-  });
+  } catch (err) {
+    console.error(`[Pipeline] Fallback PNG generation failed for scene ${scene.index}:`, err);
+    // Last resort: write a 1x1 black PNG (valid image FFmpeg can scale up)
+    const blackPng = Buffer.from(
+      "89504e470d0a1a0a0000000d49484452000000010000000108020000009001" +
+      "2e00000000c4944415408d76360000000020001e221bc330000000049454e44ae426082",
+      "hex"
+    );
+    fs.writeFileSync(outputPath, blackPng);
+  }
   return outputPath;
 }
 
 // ─── 4. Compose Scene Video (AI image → animated video clip) ─────────────────
 /**
+ * Escapes text for use inside an FFmpeg drawtext filter value.
+ *
+ * FFmpeg drawtext escaping rules (applied in order):
+ *   1. Backslash must be doubled: \ → \\
+ *   2. Single-quote must be escaped: ' → \\'
+ *   3. Colon must be escaped: : → \\:
+ *   4. Any remaining non-printable or non-ASCII chars are stripped
+ *
+ * We also write the text to a .txt file and use textfile= instead of text=
+ * to completely avoid shell quoting issues with commas, brackets, etc.
+ */
+function escapeDrawtext(text: string): string {
+  return text
+    .slice(0, 100)                        // hard cap — long lines break layout
+    .replace(/[^\x20-\x7E]/g, "")         // strip non-printable / non-ASCII
+    .replace(/\\/g, "\\\\")               // 1. escape backslashes first
+    .replace(/'/g, "\\\\'")               // 2. escape single quotes
+    .replace(/:/g, "\\\\:")               // 3. escape colons
+    .replace(/[,\[\]{}|<>]/g, " ")        // 4. replace other FFmpeg-special chars with space
+    .trim();
+}
+
+/**
  * Converts an AI-generated image into a video clip with:
  * - Ken Burns zoom-pan animation (cinematic slow zoom)
- * - Subtitle text overlay (narration text)
+ * - Subtitle text overlay written via textfile= (avoids shell quoting issues)
  * - Fade in/out transitions
  * - Voiceover audio track
  */
@@ -306,13 +332,16 @@ async function composeSceneVideo(
 ): Promise<string> {
   const outputPath = path.join(workDir, `scene_${scene.index}_composed.mp4`);
 
-  const safeText = scene.text
-    .slice(0, 120)
-    .replace(/[\\':]/g, " ")
-    .replace(/[^\x20-\x7E]/g, "")
+  // Write subtitle text to a file — avoids ALL shell/FFmpeg quoting issues
+  const subtitleFile = path.join(workDir, `scene_${scene.index}_subtitle.txt`);
+  const subtitleText = scene.text
+    .replace(/[^\x20-\x7E]/g, "")  // strip non-ASCII
+    .slice(0, 100)
     .trim();
+  fs.writeFileSync(subtitleFile, subtitleText, "utf-8");
 
-  const drawTextFilter = `drawtext=text='${safeText}':fontcolor=white:fontsize=42:x=(w-text_w)/2:y=h-text_h-80:box=1:boxcolor=black@0.65:boxborderw=12:line_spacing=8`;
+  // Use textfile= instead of text= to avoid all quoting/escaping issues
+  const drawTextFilter = `drawtext=textfile='${subtitleFile}':fontcolor=white:fontsize=42:x=(w-text_w)/2:y=h-text_h-80:box=1:boxcolor=black@0.65:boxborderw=12:line_spacing=8`;
   const fadeFilter = `fade=t=in:st=0:d=0.5,fade=t=out:st=${Math.max(0, duration - 0.5)}:d=0.5`;
   const frames = Math.ceil(duration * 30);
 
@@ -320,8 +349,8 @@ async function composeSceneVideo(
   // Alternates direction per scene for visual variety
   const zoomDir = scene.index % 2 === 0 ? "+" : "-";
   const panX = scene.index % 4 < 2
-    ? `iw/2-(iw/zoom/2)`          // pan left-to-right
-    : `iw/2-(iw/zoom/2)+${scene.index * 5}`; // pan right-to-left
+    ? `iw/2-(iw/zoom/2)`
+    : `iw/2-(iw/zoom/2)+${scene.index * 5}`;
   const kenBurns = `scale=${VIDEO_WIDTH * 2}:${VIDEO_HEIGHT * 2},zoompan=z='min(zoom${zoomDir}0.0006,1.3)':x='${panX}':y='ih/2-(ih/zoom/2)':d=${frames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=30`;
 
   await withTimeout(
@@ -333,6 +362,9 @@ async function composeSceneVideo(
     180_000,
     `Compose scene ${scene.index}`
   );
+
+  // Cleanup subtitle file
+  try { fs.unlinkSync(subtitleFile); } catch { /* ignore */ }
 
   return outputPath;
 }
