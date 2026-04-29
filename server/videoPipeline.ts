@@ -1,14 +1,16 @@
 /**
  * Fastvid — AI Video Generation Pipeline
  *
- * Pipeline stages:
- * 1. Parse script into scenes with visual cues
- * 2. Generate TTS voiceover per scene (espeak-ng → WAV → MP3)
- * 3. Fetch visuals per scene: AI-generated image OR Pexels stock video (alternating)
- * 4. Compose final video with FFmpeg: visuals + voiceover + text overlays + background music
- * 5. Upload to S3 and return URL
+ * Pipeline stages (all parallel where possible):
+ * 1. Parse script into max 8 scenes with visual cues          (max 45 sec)
+ * 2. Generate ALL voiceovers in parallel                       (max 3 min)
+ * 3. Fetch ALL visuals in parallel (Pexels first, AI fallback) (max 5 min)
+ * 4. Compose each scene video in parallel                      (max 20 min)
+ * 5. Concatenate all scenes into final MP4                     (max 10 min)
+ * 6. Upload to S3                                              (max 5 min)
+ *
+ * Total hard cap: 1 hour (enforced via global timeout in routers.ts)
  */
-
 import { exec as execCb } from "child_process";
 import { promisify } from "util";
 import * as fs from "fs";
@@ -17,207 +19,238 @@ import * as os from "os";
 import { generateImage } from "./_core/imageGeneration";
 import { storagePut } from "./storage";
 import { invokeLLM } from "./_core/llm";
-// @ts-ignore — node-gtts has no type declarations
+// @ts-ignore
 import gTTS from "node-gtts";
-// @ts-ignore — ffmpeg-static bundles a static binary, no system install needed
+// @ts-ignore
 import ffmpegStatic from "ffmpeg-static";
+
 const FFMPEG_BIN: string = (ffmpegStatic as unknown as string) || "ffmpeg";
 const execRaw = promisify(execCb);
-// Use the bundled static ffmpeg binary — works in production without system install
 const exec = (cmd: string) => execRaw(cmd.replace(/^ffmpeg\b/, FFMPEG_BIN));
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-
-export type Scene = {
+interface Scene {
   index: number;
-  text: string;           // narration text for this scene
-  visualCue: string;      // keyword/description for visuals
-  useAI: boolean;         // true = AI-generated image, false = Pexels stock video
-  duration?: number;      // seconds (calculated from TTS)
-};
+  text: string;
+  visualCue: string;
+  useAI: boolean;
+  duration: number;
+}
 
-export type PipelineProgress = {
+export interface PipelineProgress {
   stage: string;
   percent: number;
-};
+}
 
-// ─── Constants ────────────────────────────────────────────────────────────────
-
-const PEXELS_API_KEY = process.env.PEXELS_API_KEY ?? "";
 const TMP_DIR = os.tmpdir();
 const VIDEO_WIDTH = 1920;
 const VIDEO_HEIGHT = 1080;
-const FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf";
+// 8 scenes for better quality — parallel processing keeps total time well under 1 hour
+const MAX_SCENES = 8;
 
-// ─── 1. Script Parser ─────────────────────────────────────────────────────────
+// ─── Timeout helper ───────────────────────────────────────────────────────────
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`Timeout: ${label} exceeded ${Math.round(ms / 1000)}s`)), ms)
+    ),
+  ]);
+}
 
-export async function parseScriptIntoScenes(script: string): Promise<Scene[]> {
-  // Use LLM to extract scenes with visual cues
-  const response = await invokeLLM({
-    messages: [
-      {
-        role: "system",
-        content: `You are a video production assistant. Parse the given YouTube video script into scenes.
+// ─── Stage labels with max-time estimates (shown in the UI) ──────────────────
+export const STAGE_LABELS = {
+  parsing:    `Parsing script into ${MAX_SCENES} scenes... (max 45 sec)`,
+  voiceovers: `Generating voiceovers for all ${MAX_SCENES} scenes... (max 3 min)`,
+  visuals:    `Fetching visuals for all ${MAX_SCENES} scenes... (max 5 min)`,
+  composing:  `Composing all ${MAX_SCENES} scenes in parallel... (max 20 min)`,
+  assembling: "Assembling final video... (max 10 min)",
+  uploading:  "Uploading video... (max 5 min)",
+  complete:   "Complete!",
+};
+
+// ─── 1. Parse Script into Scenes ─────────────────────────────────────────────
+async function parseScriptIntoScenes(script: string): Promise<Scene[]> {
+  const response = await withTimeout(
+    invokeLLM({
+      messages: [
+        {
+          role: "system",
+          content: `You are a video production assistant. Parse the given YouTube video script into exactly ${MAX_SCENES} scenes.
 For each scene, extract:
-- The narration text (what will be spoken)
-- A visual cue (a short 3-5 word description of what should be shown visually)
+- The narration text (what will be spoken — keep it concise, 2-3 sentences max per scene)
+- A visual cue (3-5 word description of what should be shown visually, good for stock video search)
 - Whether it should use AI-generated image (true) or stock video (false)
-  - Use AI images for: abstract concepts, futuristic topics, emotions, metaphors
-  - Use stock video for: real-world actions, nature, people, cities, technology in use
-
-Return JSON array of scenes. Keep scenes to 2-4 sentences max each. Aim for 8-15 scenes total.`,
-      },
-      {
-        role: "user",
-        content: `Parse this script into scenes:\n\n${script.slice(0, 6000)}`,
-      },
-    ],
-    response_format: {
-      type: "json_schema",
-      json_schema: {
-        name: "scenes",
-        strict: true,
-        schema: {
-          type: "object",
-          properties: {
-            scenes: {
-              type: "array",
-              items: {
-                type: "object",
-                properties: {
-                  text: { type: "string" },
-                  visualCue: { type: "string" },
-                  useAI: { type: "boolean" },
+  - Use AI images (true) for: abstract concepts, futuristic topics, emotions, metaphors
+  - Use stock video (false) for: real-world actions, nature, people, cities, technology in use
+IMPORTANT: Return exactly ${MAX_SCENES} scenes. Distribute the script evenly across all scenes.`,
+        },
+        {
+          role: "user",
+          content: `Parse this script into exactly ${MAX_SCENES} scenes:\n\n${script.slice(0, 8000)}`,
+        },
+      ],
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          name: "scenes",
+          strict: true,
+          schema: {
+            type: "object",
+            properties: {
+              scenes: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    text: { type: "string" },
+                    visualCue: { type: "string" },
+                    useAI: { type: "boolean" },
+                  },
+                  required: ["text", "visualCue", "useAI"],
+                  additionalProperties: false,
                 },
-                required: ["text", "visualCue", "useAI"],
-                additionalProperties: false,
               },
             },
+            required: ["scenes"],
+            additionalProperties: false,
           },
-          required: ["scenes"],
-          additionalProperties: false,
         },
       },
-    },
-  });
+    }),
+    45_000,
+    "Parse scenes"
+  );
 
   const content = response.choices[0]?.message?.content;
   if (!content) throw new Error("Failed to parse script into scenes");
-
   const parsed = JSON.parse(typeof content === "string" ? content : JSON.stringify(content));
-  return (parsed.scenes as Omit<Scene, "index">[]).map((s, i) => ({ ...s, index: i }));
+  const scenes = (parsed.scenes as Omit<Scene, "index">[]).slice(0, MAX_SCENES);
+  return scenes.map((s, i) => ({ ...s, index: i, duration: 0 }));
 }
 
 // ─── 2. TTS Voiceover ─────────────────────────────────────────────────────────
-
 export async function generateVoiceover(text: string, outputPath: string): Promise<number> {
-  // Use node-gtts (Google TTS via HTTP) — no system dependency required
-  // Clean text for TTS (remove markdown, special chars)
   const cleanText = text
-    .replace(/#{1,6}\s/g, "")
-    .replace(/\*\*/g, "")
-    .replace(/\*/g, "")
-    .replace(/`/g, "")
-    .replace(/\[.*?\]\(.*?\)/g, "")
-    .replace(/[<>]/g, "")
-    .replace(/[^\x00-\x7F]/g, "") // strip non-ASCII (emoji, special chars)
-    .trim();
+    .replace(/[#*_`~>]/g, "")
+    .replace(/\s+/g, " ")
+    .replace(/[^\x00-\x7F]/g, "")
+    .trim()
+    .slice(0, 500);
 
-  // node-gtts saves directly to mp3
-  await new Promise<void>((resolve, reject) => {
-    const tts = gTTS("en");
-    tts.save(outputPath, cleanText, (err: Error | null) => {
-      if (err) reject(err);
-      else resolve();
-    });
-  });
+  const tts = gTTS("en");
 
-  // Get duration via ffprobe
-  let duration = 5;
-  try {
-    const { stdout } = await exec(
-      `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${outputPath}"`
-    );
-    duration = parseFloat(stdout.trim()) || 5;
-  } catch { /* use default */ }
+  await withTimeout(
+    new Promise<void>((resolve, reject) => {
+      tts.save(outputPath, cleanText, (err: Error | null) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    }),
+    20_000,
+    "TTS for scene"
+  );
 
-  return duration;
+  const stats = fs.statSync(outputPath);
+  const estimatedDuration = Math.max(3, Math.ceil(stats.size / 2000));
+  return estimatedDuration;
 }
 
-// ─── 3a. AI Image Generation ──────────────────────────────────────────────────
+// ─── 3a. AI Visual Generation ────────────────────────────────────────────────
+async function generateAIVisual(visualCue: string, sceneIndex: number, workDir: string): Promise<string> {
+  const outputPath = path.join(workDir, `scene_${sceneIndex}_visual.jpg`);
+  const prompt = `${visualCue}, cinematic 4K YouTube video thumbnail, professional lighting, high quality`;
 
-export async function generateAIVisual(visualCue: string, sceneIndex: number, workDir: string): Promise<string> {
-  const outputPath = path.join(workDir, `scene_${sceneIndex}_ai.jpg`);
+  const { url: imageUrl } = await withTimeout(
+    generateImage({ prompt }),
+    25_000,
+    `AI image for scene ${sceneIndex}`
+  );
 
-  const prompt = `Cinematic YouTube video still, ${visualCue}, 16:9 aspect ratio, professional photography, high quality, vivid colors, dramatic lighting, 4K`;
-
-  const { url } = await generateImage({ prompt });
-
-  // Download the image
-  const response = await fetch(url as string);
+  const response = await fetch(imageUrl as string);
   const buffer = Buffer.from(await response.arrayBuffer());
   fs.writeFileSync(outputPath, buffer);
-
-  // Ensure it's the right size with ffmpeg
-  const resizedPath = path.join(workDir, `scene_${sceneIndex}_ai_resized.jpg`);
-  await exec(`ffmpeg -y -i "${outputPath}" -vf "scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}" "${resizedPath}" 2>/dev/null`);
-
-  try { fs.unlinkSync(outputPath); } catch { /* ignore */ }
-  return resizedPath;
+  return outputPath;
 }
 
 // ─── 3b. Pexels Stock Video ───────────────────────────────────────────────────
+export async function fetchPexelsVideo(
+  visualCue: string,
+  sceneIndex: number,
+  workDir: string,
+  _duration: number
+): Promise<string> {
+  const apiKey = process.env.PEXELS_API_KEY;
+  if (!apiKey) throw new Error("PEXELS_API_KEY not set");
 
-export async function fetchPexelsVideo(visualCue: string, sceneIndex: number, workDir: string, duration: number): Promise<string> {
-  const outputPath = path.join(workDir, `scene_${sceneIndex}_stock.mp4`);
-
-  // Search Pexels
   const query = encodeURIComponent(visualCue);
-  const searchRes = await fetch(
-    `https://api.pexels.com/videos/search?query=${query}&per_page=5&min_duration=3&max_duration=30&orientation=landscape`,
-    { headers: { Authorization: PEXELS_API_KEY } }
+  const res = await withTimeout(
+    fetch(`https://api.pexels.com/videos/search?query=${query}&per_page=5&orientation=landscape`, {
+      headers: { Authorization: apiKey },
+    }),
+    10_000,
+    `Pexels search for scene ${sceneIndex}`
   );
-  const searchData = await searchRes.json() as { videos?: Array<{ video_files: Array<{ link: string; width: number; quality: string }> }> };
 
-  let videoUrl: string | null = null;
+  if (!res.ok) throw new Error(`Pexels API error: ${res.status}`);
+  const data = await res.json() as {
+    videos?: Array<{ video_files?: Array<{ link?: string; width?: number; quality?: string }> }>
+  };
 
-  if (searchData.videos && searchData.videos.length > 0) {
-    // Pick a random video from results for variety
-    const randomVideo = searchData.videos[Math.floor(Math.random() * Math.min(searchData.videos.length, 3))];
-    // Prefer HD quality
-    const hdFile = randomVideo.video_files.find(f => f.width >= 1280 && f.quality !== "sd");
-    const anyFile = randomVideo.video_files[0];
-    videoUrl = (hdFile ?? anyFile)?.link ?? null;
-  }
+  if (!data.videos?.length) throw new Error("No Pexels videos found");
 
-  if (!videoUrl) {
-    // Fallback: generate a colored background video
-    return generateFallbackVisual(sceneIndex, workDir, duration);
-  }
+  const video = data.videos[Math.floor(Math.random() * Math.min(3, data.videos.length))];
+  const files = video.video_files ?? [];
+  const hdFile = files.find(f => f.quality === "hd" && f.width && f.width >= 1280);
+  const sdFile = files.find(f => f.quality === "sd");
+  const videoFile = hdFile ?? sdFile ?? files[0];
 
-  // Download video
-  const videoRes = await fetch(videoUrl as string);
+  const videoUrl = videoFile?.link;
+  if (!videoUrl) throw new Error("No suitable video file found");
+
+  const outputPath = path.join(workDir, `scene_${sceneIndex}_stock.mp4`);
+  const videoRes = await withTimeout(
+    fetch(videoUrl as string),
+    15_000,
+    `Pexels download for scene ${sceneIndex}`
+  );
   const buffer = Buffer.from(await videoRes.arrayBuffer());
   fs.writeFileSync(outputPath, buffer);
-
   return outputPath;
 }
 
-// ─── 3c. Fallback Visual ──────────────────────────────────────────────────────
-
+// ─── 3c. Fallback Visual (colored background) ────────────────────────────────
 async function generateFallbackVisual(sceneIndex: number, workDir: string, duration: number): Promise<string> {
   const outputPath = path.join(workDir, `scene_${sceneIndex}_fallback.mp4`);
-  const colors = ["#0a0a2e", "#1a0a3e", "#0a1a3e", "#0a2e1a", "#2e0a1a"];
-  const color = colors[sceneIndex % colors.length];
-  const hex = color.replace("#", "0x");
+  const colors = ["0a0a1e", "1a0a2e", "0a1a2e", "0a2a1e", "1a1a0a", "2a0a1e", "0a1a1e", "1a0a1e"];
+  const hex = colors[sceneIndex % colors.length];
   await exec(
-    `ffmpeg -y -f lavfi -i "color=c=${hex}:size=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:rate=30" -t ${duration} -c:v libx264 -pix_fmt yuv420p "${outputPath}" 2>/dev/null`
+    `ffmpeg -y -f lavfi -i "color=c=#${hex}:size=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:rate=30" -t ${duration} -c:v libx264 -pix_fmt yuv420p "${outputPath}" 2>/dev/null`
   );
   return outputPath;
 }
 
-// ─── 4. Scene Video Composer ──────────────────────────────────────────────────
+// ─── 3. Fetch Visual (Pexels first, AI fallback, then color fallback) ─────────
+async function fetchVisual(scene: Scene, workDir: string): Promise<{ path: string; isImage: boolean }> {
+  try {
+    const videoPath = await fetchPexelsVideo(scene.visualCue, scene.index, workDir, scene.duration);
+    return { path: videoPath, isImage: false };
+  } catch (pexelsErr) {
+    console.warn(`[Pipeline] Pexels failed for scene ${scene.index}, trying AI image:`, pexelsErr);
+  }
 
+  try {
+    const imagePath = await generateAIVisual(scene.visualCue, scene.index, workDir);
+    return { path: imagePath, isImage: true };
+  } catch (aiErr) {
+    console.warn(`[Pipeline] AI image failed for scene ${scene.index}, using color fallback:`, aiErr);
+  }
+
+  const fallbackPath = await generateFallbackVisual(scene.index, workDir, scene.duration);
+  return { path: fallbackPath, isImage: false };
+}
+
+// ─── 4. Compose Scene Video ───────────────────────────────────────────────────
 async function composeSceneVideo(
   scene: Scene,
   visualPath: string,
@@ -226,74 +259,58 @@ async function composeSceneVideo(
   workDir: string
 ): Promise<string> {
   const outputPath = path.join(workDir, `scene_${scene.index}_composed.mp4`);
-  const isImage = visualPath.endsWith(".jpg") || visualPath.endsWith(".png") || visualPath.endsWith(".jpeg");
+  const isImage = visualPath.endsWith(".jpg") || visualPath.endsWith(".png");
 
-  // Escape text for ffmpeg drawtext filter
   const safeText = scene.text
     .slice(0, 120)
-    .replace(/'/g, "\\'")
-    .replace(/:/g, "\\:")
-    .replace(/\[/g, "\\[")
-    .replace(/\]/g, "\\]")
-    .replace(/,/g, "\\,");
+    .replace(/[\\':]/g, " ")
+    .replace(/[^\x20-\x7E]/g, "")
+    .trim();
 
-  // Word-wrap: split into max 50-char lines
-  const words = safeText.split(" ");
-  const lines: string[] = [];
-  let current = "";
-  for (const word of words) {
-    if ((current + " " + word).trim().length > 55) {
-      if (current) lines.push(current.trim());
-      current = word;
-    } else {
-      current = (current + " " + word).trim();
-    }
-  }
-  if (current) lines.push(current.trim());
-  const displayText = lines.slice(0, 3).join("\n");
-
-  const drawTextFilter = `drawtext=fontfile='${FONT_PATH}':text='${displayText}':fontcolor=white:fontsize=42:x=(w-text_w)/2:y=h-text_h-80:box=1:boxcolor=black@0.65:boxborderw=12:line_spacing=8`;
-
-  // Fade in/out
+  const drawTextFilter = `drawtext=text='${safeText}':fontcolor=white:fontsize=42:x=(w-text_w)/2:y=h-text_h-80:box=1:boxcolor=black@0.65:boxborderw=12:line_spacing=8`;
   const fadeFilter = `fade=t=in:st=0:d=0.5,fade=t=out:st=${Math.max(0, duration - 0.5)}:d=0.5`;
 
   if (isImage) {
-    // Static image → video with zoom effect (Ken Burns)
-    await exec(
-      `ffmpeg -y -loop 1 -i "${visualPath}" -i "${audioPath}" ` +
-      `-filter_complex "[0:v]scale=${VIDEO_WIDTH * 2}:${VIDEO_HEIGHT * 2},zoompan=z='min(zoom+0.0008,1.3)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${Math.ceil(duration * 30)}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=30,${drawTextFilter},${fadeFilter}[v]" ` +
-      `-map "[v]" -map "1:a" -t ${duration} -c:v libx264 -preset fast -crf 23 -c:a aac -b:a 128k -pix_fmt yuv420p "${outputPath}" 2>/dev/null`
+    await withTimeout(
+      exec(
+        `ffmpeg -y -loop 1 -i "${visualPath}" -i "${audioPath}" ` +
+        `-filter_complex "[0:v]scale=${VIDEO_WIDTH * 2}:${VIDEO_HEIGHT * 2},zoompan=z='min(zoom+0.0008,1.3)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${Math.ceil(duration * 30)}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=30,${drawTextFilter},${fadeFilter}[v]" ` +
+        `-map "[v]" -map "1:a" -t ${duration} -c:v libx264 -preset fast -crf 23 -c:a aac -b:a 128k -pix_fmt yuv420p "${outputPath}" 2>/dev/null`
+      ),
+      180_000,
+      `Compose scene ${scene.index} (image)`
     );
   } else {
-    // Stock video → trim/loop to duration, add text overlay
-    await exec(
-      `ffmpeg -y -stream_loop -1 -i "${visualPath}" -i "${audioPath}" ` +
-      `-filter_complex "[0:v]scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT},${drawTextFilter},${fadeFilter}[v]" ` +
-      `-map "[v]" -map "1:a" -t ${duration} -c:v libx264 -preset fast -crf 23 -c:a aac -b:a 128k -pix_fmt yuv420p "${outputPath}" 2>/dev/null`
+    await withTimeout(
+      exec(
+        `ffmpeg -y -stream_loop -1 -i "${visualPath}" -i "${audioPath}" ` +
+        `-filter_complex "[0:v]scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT},${drawTextFilter},${fadeFilter}[v]" ` +
+        `-map "[v]" -map "1:a" -t ${duration} -c:v libx264 -preset fast -crf 23 -c:a aac -b:a 128k -pix_fmt yuv420p "${outputPath}" 2>/dev/null`
+      ),
+      180_000,
+      `Compose scene ${scene.index} (video)`
     );
   }
-
   return outputPath;
 }
 
 // ─── 5. Final Concatenation ───────────────────────────────────────────────────
-
 async function concatenateScenes(scenePaths: string[], workDir: string, videoId: number): Promise<string> {
   const listFile = path.join(workDir, "concat_list.txt");
   const outputPath = path.join(workDir, `fastvid_${videoId}_final.mp4`);
-
   const listContent = scenePaths.map(p => `file '${p}'`).join("\n");
   fs.writeFileSync(listFile, listContent, "utf-8");
-
-  await exec(
-    `ffmpeg -y -f concat -safe 0 -i "${listFile}" -c:v libx264 -preset fast -crf 22 -c:a aac -b:a 128k -movflags +faststart "${outputPath}" 2>/dev/null`
+  await withTimeout(
+    exec(
+      `ffmpeg -y -f concat -safe 0 -i "${listFile}" -c:v libx264 -preset fast -crf 22 -c:a aac -b:a 128k -movflags +faststart "${outputPath}" 2>/dev/null`
+    ),
+    600_000,
+    "Final concatenation"
   );
-
   return outputPath;
 }
 
-// ─── Main Pipeline ────────────────────────────────────────────────────────────
-
+// ─── Main Pipeline (Parallel Processing + Per-Stage Timeouts) ────────────────
 export async function runVideoPipeline(
   videoId: number,
   script: string,
@@ -303,70 +320,72 @@ export async function runVideoPipeline(
   fs.mkdirSync(workDir, { recursive: true });
 
   try {
-    // Stage 1: Parse script into scenes
-    onProgress?.({ stage: "Parsing script into scenes...", percent: 5 });
+    // Stage 1: Parse script into scenes (max 45s)
+    onProgress?.({ stage: STAGE_LABELS.parsing, percent: 5 });
     const scenes = await parseScriptIntoScenes(script);
     console.log(`[Pipeline] ${scenes.length} scenes parsed for video ${videoId}`);
 
-    const composedScenes: string[] = [];
+    // Stage 2: Generate ALL voiceovers in parallel (max 3 min total)
+    onProgress?.({ stage: STAGE_LABELS.voiceovers, percent: 15 });
+    const audioPaths = scenes.map((_, i) => path.join(workDir, `scene_${i}_audio.mp3`));
+    const durations = await withTimeout(
+      Promise.all(scenes.map((scene, i) => generateVoiceover(scene.text, audioPaths[i]))),
+      180_000,
+      "Voiceover generation stage"
+    );
+    scenes.forEach((scene, i) => { scene.duration = Math.max(durations[i], 3); });
+    console.log(`[Pipeline] All ${scenes.length} voiceovers generated in parallel`);
 
+    // Stage 3: Fetch ALL visuals in parallel (max 5 min total)
+    onProgress?.({ stage: STAGE_LABELS.visuals, percent: 35 });
+    const visuals = await withTimeout(
+      Promise.all(scenes.map(scene => fetchVisual(scene, workDir))),
+      300_000,
+      "Visual fetching stage"
+    );
+    console.log(`[Pipeline] All ${scenes.length} visuals fetched in parallel`);
+
+    // Stage 4: Compose all scenes in parallel (max 20 min total)
+    onProgress?.({ stage: STAGE_LABELS.composing, percent: 55 });
+    const composedScenes = await withTimeout(
+      Promise.all(
+        scenes.map((scene, i) =>
+          composeSceneVideo(scene, visuals[i].path, audioPaths[i], scene.duration, workDir)
+        )
+      ),
+      1_200_000,
+      "Scene composition stage"
+    );
+    console.log(`[Pipeline] All ${scenes.length} scenes composed in parallel`);
+
+    // Cleanup intermediate files
     for (let i = 0; i < scenes.length; i++) {
-      const scene = scenes[i];
-      const progressBase = 10 + Math.floor((i / scenes.length) * 75);
-
-      // Stage 2: Generate voiceover for this scene
-      onProgress?.({ stage: `Generating voiceover for scene ${i + 1}/${scenes.length}...`, percent: progressBase });
-      const audioPath = path.join(workDir, `scene_${i}_audio.mp3`);
-      const duration = await generateVoiceover(scene.text, audioPath);
-      scene.duration = Math.max(duration, 3); // minimum 3 seconds per scene
-
-      // Stage 3: Get visual for this scene
-      onProgress?.({ stage: `Generating visuals for scene ${i + 1}/${scenes.length}...`, percent: progressBase + 3 });
-      let visualPath: string;
       try {
-        if (scene.useAI) {
-          visualPath = await generateAIVisual(scene.visualCue, i, workDir);
-        } else {
-          visualPath = await fetchPexelsVideo(scene.visualCue, i, workDir, scene.duration);
-        }
-      } catch (err) {
-        console.warn(`[Pipeline] Visual fetch failed for scene ${i}, using fallback:`, err);
-        visualPath = await generateFallbackVisual(i, workDir, scene.duration);
-      }
-
-      // Stage 4: Compose scene video
-      onProgress?.({ stage: `Composing scene ${i + 1}/${scenes.length}...`, percent: progressBase + 6 });
-      const composedPath = await composeSceneVideo(scene, visualPath, audioPath, scene.duration, workDir);
-      composedScenes.push(composedPath);
-
-      // Cleanup intermediate files
-      try {
-        fs.unlinkSync(audioPath);
-        if (visualPath !== composedPath) fs.unlinkSync(visualPath);
+        fs.unlinkSync(audioPaths[i]);
+        if (visuals[i].path !== composedScenes[i]) fs.unlinkSync(visuals[i].path);
       } catch { /* ignore */ }
     }
 
-    // Stage 5: Concatenate all scenes
-    onProgress?.({ stage: "Assembling final video...", percent: 88 });
+    // Stage 5: Concatenate all scenes (max 10 min)
+    onProgress?.({ stage: STAGE_LABELS.assembling, percent: 82 });
     const finalVideoPath = await concatenateScenes(composedScenes, workDir, videoId);
 
-    // Stage 6: Upload to S3
-    onProgress?.({ stage: "Uploading video...", percent: 95 });
+    // Stage 6: Upload to S3 (max 5 min)
+    onProgress?.({ stage: STAGE_LABELS.uploading, percent: 95 });
     const videoBuffer = fs.readFileSync(finalVideoPath);
-    const { url } = await storagePut(
-      `videos/${videoId}/final.mp4`,
-      videoBuffer,
-      "video/mp4"
+    const { url } = await withTimeout(
+      storagePut(`videos/${videoId}/final.mp4`, videoBuffer, "video/mp4"),
+      300_000,
+      "S3 upload"
     );
 
-    onProgress?.({ stage: "Complete!", percent: 100 });
+    onProgress?.({ stage: STAGE_LABELS.complete, percent: 100 });
     console.log(`[Pipeline] Video ${videoId} complete: ${url}`);
-
     return url;
   } finally {
-    // Cleanup work directory
     try {
-      await exec(`rm -rf "${workDir}"`);
+      const { exec: execSync } = require("child_process");
+      execSync(`rm -rf "${workDir}"`);
     } catch { /* ignore */ }
   }
 }

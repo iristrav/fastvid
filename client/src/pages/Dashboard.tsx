@@ -75,7 +75,11 @@ function VideoCard({ video, onView }: { video: {
     const id = setInterval(update, 1000);
     return () => clearInterval(id);
   }, [isProcessing, pollData?.generationStartedAt]);
-  const elapsedStr = `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, "0")}`;
+  const elapsedMin = Math.floor(elapsed / 60);
+  const elapsedSec = String(elapsed % 60).padStart(2, "0");
+  const elapsedStr = `${elapsedMin}:${elapsedSec}`;
+  // Show a gentle warning when approaching the 1-hour cap
+  const nearingLimit = elapsed > 50 * 60; // warn after 50 minutes
 
   return (
     <div className="glass-card border border-white/8 rounded-xl overflow-hidden hover:border-white/15 transition-all duration-300 group">
@@ -90,8 +94,8 @@ function VideoCard({ video, onView }: { video: {
                 <Loader2 className="w-8 h-8 text-purple-400 animate-spin" />
                 <div className="w-full">
                   <div className="flex items-center justify-between mb-1">
-                    <span className="text-xs text-slate-300 truncate max-w-[80%]">{progressStep ?? statusLabel}</span>
-                    <span className="text-xs text-slate-500 font-mono ml-2 shrink-0">{elapsedStr}</span>
+                    <span className="text-xs text-slate-300 truncate max-w-[75%]">{progressStep ?? statusLabel}</span>
+                    <span className={`text-xs font-mono ml-2 shrink-0 ${nearingLimit ? "text-amber-400" : "text-slate-500"}`}>{elapsedStr} / max 1h</span>
                   </div>
                   <div className="w-full bg-white/10 rounded-full h-1.5 overflow-hidden">
                     <div
@@ -99,8 +103,11 @@ function VideoCard({ video, onView }: { video: {
                       style={{ width: `${Math.max(progressPercent, 3)}%` }}
                     />
                   </div>
-                  <div className="text-right mt-0.5">
+                  <div className="flex items-center justify-between mt-0.5">
                     <span className="text-[10px] text-slate-600">{progressPercent}%</span>
+                    {nearingLimit && (
+                      <span className="text-[10px] text-amber-500">Approaching time limit</span>
+                    )}
                   </div>
                 </div>
               </div>

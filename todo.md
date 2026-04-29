@@ -82,9 +82,9 @@
 ## Future / Optional (out of scope for this build — upgrade paths)
 - [x] Real voiceover generation API — espeak-ng TTS is integrated (upgrade to ElevenLabs when ready)
 - [x] Real video rendering/export — FFmpeg pipeline is integrated and produces real MP4 files
-- [ ] Voice cloning feature (requires ElevenLabs voice clone API) — future upgrade
-- [ ] Thumbnail AI generation — dedicated YouTube thumbnail per video (future upgrade)
-- [ ] Email/push notifications on video completion (future upgrade)
+- [ ] Voice cloning feature (requires ElevenLabs voice clone API) — deferred, requires paid external API
+- [ ] Thumbnail AI generation — dedicated YouTube thumbnail per video — deferred, not blocking
+- [ ] Email/push notifications on video completion — deferred, not blocking
 
 ## Admin Videos — Improvements
 - [x] Add video number (#VID-XXXX) displayed on every video card and in the admin table
@@ -139,3 +139,21 @@
 - [x] Installed ffmpeg-static npm package (bundles static FFmpeg 7.0.2 binary, no system install needed)
 - [x] Updated videoPipeline.ts to use bundled binary path instead of system 'ffmpeg' command
 - [x] Works in Cloud Run production environment without any system dependencies
+
+## Performance: Pipeline Speed (Visuals)
+- [ ] Reduce scene count from 16 to max 6-8 per video
+- [ ] Parallelize visual generation (all scenes at once instead of sequential)
+- [ ] Prioritize Pexels stock video (instant) over AI image generation (slow)
+- [ ] Add timeout per visual fetch so a slow scene doesn't block the whole pipeline
+
+## Pipeline: Parallel Processing + Timeouts (Quality & Reliability)
+- [x] Increase MAX_SCENES to 8 for better video quality (parallel processing keeps it fast)
+- [x] Parallelize ALL voiceovers at once (max 3 min stage timeout)
+- [x] Parallelize ALL visual fetches at once (max 5 min stage timeout)
+- [x] Parallelize ALL scene compositions at once (max 20 min stage timeout)
+- [x] Add per-stage withTimeout() wrapper to every pipeline stage
+- [x] Add global 1-hour hard cap in routers.ts (setTimeout marks video as failed if exceeded)
+- [x] Show max-time estimate per stage in progress UI: "Generating voiceovers... (max 3 min)"
+- [x] Show elapsed timer with "/ max 1h" suffix in Dashboard and Admin progress bars
+- [x] Show amber warning "Approaching time limit" after 50 minutes elapsed
+- [x] Export STAGE_LABELS constant from videoPipeline.ts for consistent UI labels

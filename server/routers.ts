@@ -29,7 +29,28 @@ const subscribedProcedure = protectedProcedure.use(({ ctx, next }) => {
   return next({ ctx });
 });
 
+// Global 1-hour hard cap — if anything hangs, mark as failed with a clear message
+const MAX_VIDEO_GENERATION_MS = 60 * 60 * 1000; // 1 hour
+
 async function generateVideoWithAI(videoId: number, prompt: string, videoLength: string) {
+  // Wrap the entire pipeline in a 1-hour timeout
+  const timeoutHandle = setTimeout(async () => {
+    console.error(`[Video Generation] Video ${videoId} exceeded 1-hour limit — marking as failed`);
+    await updateVideoStatus(videoId, "failed", {
+      errorMessage: "Video generation exceeded the maximum time limit of 1 hour. Please try again with a shorter prompt.",
+      progressStep: "Generation timed out (max 1 hour exceeded)",
+      progressPercent: 0,
+    }).catch(() => {});
+  }, MAX_VIDEO_GENERATION_MS);
+
+  try {
+    await _generateVideoWithAI(videoId, prompt, videoLength);
+  } finally {
+    clearTimeout(timeoutHandle);
+  }
+}
+
+async function _generateVideoWithAI(videoId: number, prompt: string, videoLength: string) {
   const lengthMap: Record<string, string> = {
     "5-8": "5 to 8 minutes", "8-12": "8 to 12 minutes", "12-15": "12 to 15 minutes",
     "15-20": "15 to 20 minutes", "20+": "20+ minutes",
