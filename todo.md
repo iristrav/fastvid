@@ -167,3 +167,9 @@
 - [x] Gradient fallback if AI image generation fails for a scene (pipeline never stops)
 - [x] Stage label updated: "Generating AI visuals for all 8 scenes... (max 8 min)"
 - [x] All 10 tests passing, 0 TypeScript errors
+
+## Bug Fix: TTS Timeout (node-gtts exceeded 20s)
+- [x] Increase per-scene TTS timeout from 20s to 60s
+- [x] Add retry logic (up to 3 attempts with exponential backoff) for TTS
+- [x] Add silent audio fallback using FFmpeg if all TTS attempts fail (pipeline never stops)
+- [x] Increase overall voiceover stage timeout from 3 min to 8 min to accommodate retries
