@@ -83,8 +83,8 @@
 - [x] Real voiceover generation API — espeak-ng TTS is integrated (upgrade to ElevenLabs when ready)
 - [x] Real video rendering/export — FFmpeg pipeline is integrated and produces real MP4 files
 - [ ] Voice cloning feature (requires ElevenLabs voice clone API) — deferred, requires paid external API
-- [ ] Thumbnail AI generation — dedicated YouTube thumbnail per video — deferred, not blocking
-- [ ] Email/push notifications on video completion — deferred, not blocking
+- [x] Thumbnail AI generation — AI-generated YouTube thumbnail per video using forge ImageService (45s timeout, picsum fallback)
+- [x] Owner notification on video completion — notifyOwner() called after each successful video generation
 
 ## Admin Videos — Improvements
 - [x] Add video number (#VID-XXXX) displayed on every video card and in the admin table

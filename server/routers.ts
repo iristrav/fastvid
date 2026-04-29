@@ -6,6 +6,7 @@ import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
 import { invokeLLM } from "./_core/llm";
+import { notifyOwner } from "./_core/notification";
 import {
   createVideo, getAllUsers, getAllVideos, getUserById,
   searchVideos, getUserStats, getVideoById, getVideosByUserId, getVideoStats,
@@ -170,15 +171,44 @@ async function _generateVideoWithAI(videoId: number, prompt: string, videoLength
       voiceId
     );
 
-    // ── Stage 4: Mark as Completed ───────────────────────────────────────────
+    // ── Stage 4: Generate AI Thumbnail + Mark as Completed ────────────────────────
+    await updateVideoProgress(videoId, "Generating thumbnail...", 97);
+    let thumbnailUrl: string | undefined;
+    try {
+      const videoTitle = (metadata as Record<string, string>).title ?? title;
+      const thumbPrompt = `YouTube thumbnail for: "${videoTitle.slice(0, 80)}". Bold text overlay, vibrant colors, high contrast, cinematic quality, 16:9 aspect ratio, professional YouTube thumbnail style`;
+      const { generateImage } = await import("./_core/imageGeneration");
+      const { storagePut } = await import("./storage");
+      const thumbResult = await Promise.race([
+        generateImage({ prompt: thumbPrompt }),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Thumbnail timeout")), 45_000)),
+      ]);
+      if (thumbResult?.url) {
+        // Download and re-upload to our own S3 so it persists
+        const thumbResp = await fetch(thumbResult.url);
+        if (thumbResp.ok) {
+          const thumbBuf = Buffer.from(await thumbResp.arrayBuffer());
+          const { url: s3Url } = await storagePut(`thumbnails/${videoId}.jpg`, thumbBuf, "image/jpeg");
+          thumbnailUrl = s3Url;
+        }
+      }
+    } catch (thumbErr) {
+      console.warn(`[Video ${videoId}] Thumbnail generation failed (non-fatal):`, thumbErr);
+    }
+    const finalTitle = (metadata as Record<string, string>).title ?? title;
     await updateVideoStatus(videoId, "completed", {
       metadata,
-      title: (metadata as Record<string, string>).title ?? title,
-      thumbnailUrl: `https://picsum.photos/seed/${videoId}/1280/720`,
+      title: finalTitle,
+      thumbnailUrl: thumbnailUrl ?? `https://picsum.photos/seed/${videoId}/1280/720`,
       videoUrl,
       progressStep: "Video complete!",
       progressPercent: 100,
     });
+    // Notify owner on completion (non-blocking)
+    notifyOwner({
+      title: `✅ Video #${videoId} completed`,
+      content: `**${finalTitle}**\n\nVideo generation completed successfully.\n- Prompt: ${prompt.slice(0, 120)}${prompt.length > 120 ? "..." : ""}\n- Length: ${videoLength} min\n- Video URL: ${videoUrl ?? "N/A"}`,
+    }).catch(() => {});
   } catch (error) {
     console.error("[Video Generation] Error:", error);
     await updateVideoStatus(videoId, "failed", {
