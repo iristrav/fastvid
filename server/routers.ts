@@ -8,7 +8,7 @@ import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
 import { invokeLLM } from "./_core/llm";
 import {
   createVideo, getAllUsers, getAllVideos, getUserById,
-  getUserStats, getVideoById, getVideosByUserId, getVideoStats,
+  searchVideos, getUserStats, getVideoById, getVideosByUserId, getVideoStats,
   updateUserRole, updateUserSubscription, updateVideoStatus,
 } from "./db";
 import { FASTVID_PRO_PLAN } from "./products";
@@ -159,6 +159,21 @@ export const appRouter = router({
       await updateUserSubscription(input.userId, { subscriptionStatus: input.subscriptionStatus, subscriptionStartDate: input.subscriptionStatus === "active" ? new Date() : undefined });
       return { success: true };
     }),
+    generateVideo: adminProcedure.input(z.object({
+      prompt: z.string().min(10).max(500),
+      videoLength: z.enum(["5-8", "8-12", "12-15", "15-20", "20+"]),
+    })).mutation(async ({ ctx, input }) => {
+      const videoId = await createVideo({ userId: ctx.user.id, prompt: input.prompt, videoLength: input.videoLength });
+      generateVideoWithAI(videoId, input.prompt, input.videoLength).catch(console.error);
+      return { videoId };
+    }),
+    searchVideos: adminProcedure.input(z.object({
+      query: z.string().optional(),
+      status: z.string().optional(),
+      userId: z.number().optional(),
+      limit: z.number().default(50),
+      offset: z.number().default(0),
+    })).query(async ({ input }) => searchVideos(input)),
     getUser: adminProcedure.input(z.object({ userId: z.number() })).query(async ({ input }) => {
       const user = await getUserById(input.userId);
       if (!user) throw new TRPCError({ code: "NOT_FOUND" });

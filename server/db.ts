@@ -1,4 +1,4 @@
-import { desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, like, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import { InsertUser, InsertVideo, users, videos } from "../drizzle/schema";
 import { ENV } from "./_core/env";
@@ -135,6 +135,66 @@ export async function getAllVideos(limit = 100, offset = 0) {
   return db.select().from(videos).orderBy(desc(videos.createdAt)).limit(limit).offset(offset);
 }
 
+
+export async function searchVideos(opts: {
+  query?: string;
+  status?: string;
+  userId?: number;
+  limit?: number;
+  offset?: number;
+}) {
+  const db = await getDb();
+  if (!db) return [];
+  const { query, status, userId, limit = 100, offset = 0 } = opts;
+  const conditions = [];
+  if (status && status !== "all") conditions.push(sql`${videos.status} = ${status}`);
+  if (userId) conditions.push(eq(videos.userId, userId));
+  if (query) {
+    // Support #VID-XXXX format
+    const vidMatch = query.match(/^#?VID-?(\d+)$/i);
+    if (vidMatch) {
+      conditions.push(eq(videos.id, parseInt(vidMatch[1], 10)));
+    } else {
+      // Support raw numeric ID (video ID or user ID)
+      const numMatch = query.match(/^#?(\d+)$/);
+      if (numMatch) {
+        const n = parseInt(numMatch[1], 10);
+        conditions.push(or(eq(videos.id, n), eq(videos.userId, n)));
+      } else {
+        const likePattern = `%${query}%`;
+        conditions.push(or(
+          like(videos.prompt, likePattern),
+          like(videos.title, likePattern),
+        ));
+      }
+    }
+  }
+  const where = conditions.length > 0 ? and(...conditions) : undefined;
+  // Join with users to include user name and email
+  return db
+    .select({
+      id: videos.id,
+      userId: videos.userId,
+      prompt: videos.prompt,
+      videoLength: videos.videoLength,
+      status: videos.status,
+      title: videos.title,
+      script: videos.script,
+      metadata: videos.metadata,
+      videoUrl: videos.videoUrl,
+      errorMessage: videos.errorMessage,
+      createdAt: videos.createdAt,
+      updatedAt: videos.updatedAt,
+      userName: users.name,
+      userEmail: users.email,
+    })
+    .from(videos)
+    .leftJoin(users, eq(videos.userId, users.id))
+    .where(where)
+    .orderBy(desc(videos.createdAt))
+    .limit(limit)
+    .offset(offset);
+}
 export async function getVideoStats() {
   const db = await getDb();
   if (!db) return { total: 0, completed: 0, failed: 0, pending: 0 };

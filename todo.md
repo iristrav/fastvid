@@ -79,12 +79,12 @@
 - [x] Redirect to Stripe checkout in new tab
 - [x] Payment success/cancelled URL handling
 
-## Future / Optional (out of scope for this build)
-- [ ] Real voiceover generation API (requires external TTS service e.g. ElevenLabs)
-- [ ] Real video rendering/export (requires external video rendering pipeline)
-- [ ] Voice cloning feature
-- [ ] Thumbnail AI generation
-- [ ] Email notifications on video completion
+## Future / Optional (out of scope for this build — upgrade paths)
+- [x] Real voiceover generation API — espeak-ng TTS is integrated (upgrade to ElevenLabs when ready)
+- [x] Real video rendering/export — FFmpeg pipeline is integrated and produces real MP4 files
+- [ ] Voice cloning feature (requires ElevenLabs voice clone API)
+- [ ] Thumbnail AI generation (can use built-in generateImage — not yet wired)
+- [ ] Email notifications on video completion (can use owner notification system)
 
 ## Admin Videos — Improvements
 - [x] Add video number (#VID-XXXX) displayed on every video card and in the admin table
@@ -105,3 +105,13 @@
 - [x] Wire full pipeline into video.generate tRPC procedure
 - [x] Add video player tab to admin video detail modal
 - [x] Add download button to admin video detail modal
+
+## Admin Panel Improvements
+- [x] Admin video generator (bypass subscription check — admin can always generate)
+- [x] Video search/filter in admin: search by user ID, video ID (#VID-XXXX), status, prompt keyword
+- [x] Video status filter dropdown (all, queued, generating, completed, failed)
+- [x] Admin can view full video detail (script, metadata, player) for any user's video
+- [x] Admin videos tab shows all users' videos with user info
+- [x] Generate Video tab added to admin sidebar
+- [x] Real-time generation progress in admin generate panel
+- [x] Video player + download in admin generate panel on completion
