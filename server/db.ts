@@ -137,6 +137,43 @@ export async function updateVideoProgress(id: number, progressStep: string, prog
   await db.update(videos).set({ progressStep, progressPercent }).where(eq(videos.id, id));
 }
 
+export async function deleteVideo(id: number) {
+  const db = await getDb();
+  if (!db) return;
+  await db.delete(videos).where(eq(videos.id, id));
+}
+
+export async function updateVideoTitle(id: number, title: string) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(videos).set({ title }).where(eq(videos.id, id));
+}
+
+export async function deleteAllFailedVideosForUser(userId: number) {
+  const db = await getDb();
+  if (!db) return 0;
+  const result = await db.delete(videos).where(
+    and(eq(videos.userId, userId), eq(videos.status, "failed"))
+  );
+  return (result as unknown as [{ affectedRows: number }])[0]?.affectedRows ?? 0;
+}
+
+/** Mark in-progress videos older than maxAgeMinutes as failed (stuck pipeline recovery) */
+export async function expireStuckVideos(maxAgeMinutes = 70) {
+  const db = await getDb();
+  if (!db) return 0;
+  const cutoff = new Date(Date.now() - maxAgeMinutes * 60 * 1000);
+  const stuckStatuses = ["pending", "generating_script", "generating_voiceover", "generating_visuals", "generating_effects"] as const;
+  let total = 0;
+  for (const s of stuckStatuses) {
+    const result = await db.update(videos)
+      .set({ status: "failed", errorMessage: `Pipeline timed out after ${maxAgeMinutes} minutes`, progressStep: "Timed out" })
+      .where(and(eq(videos.status, s), sql`${videos.generationStartedAt} < ${cutoff}`));
+    total += (result as unknown as [{ affectedRows: number }])[0]?.affectedRows ?? 0;
+  }
+  return total;
+}
+
 export async function getAllVideos(limit = 100, offset = 0) {
   const db = await getDb();
   if (!db) return [];

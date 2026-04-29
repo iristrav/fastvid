@@ -11,6 +11,7 @@ import {
   searchVideos, getUserStats, getVideoById, getVideosByUserId, getVideoStats,
   updateUserRole, updateUserSubscription, updateVideoStatus, updateVideoProgress,
   getAllVoices, getAllVoicesAdmin, getVoiceById, createVoice, updateVoice, deleteVoice, seedDefaultVoices,
+  deleteVideo, updateVideoTitle, deleteAllFailedVideosForUser, expireStuckVideos,
 } from "./db";
 import { storagePut } from "./storage";
 import { FASTVID_PRO_PLAN } from "./products";
@@ -387,6 +388,62 @@ export const appRouter = router({
       const { url } = await storagePut(`voices/${input.voiceId}/example.${ext}`, buffer, input.mimeType);
       await updateVoice(input.voiceId, { exampleAudioUrl: url });
       return { url };
+    }),
+
+    /** Public: generate a live 5-second Fish Audio preview for a given voice reference ID */
+    preview: protectedProcedure.input(z.object({
+      fishAudioReferenceId: z.string().min(1),
+    })).mutation(async ({ input }) => {
+      const apiKey = process.env.FISH_AUDIO_API_KEY;
+      if (!apiKey) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Fish Audio API key not configured" });
+      const previewText = "Hello! This is a preview of how this voice sounds. I hope you enjoy using it for your YouTube videos.";
+      const response = await fetch("https://api.fish.audio/v1/tts", {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ text: previewText, reference_id: input.fishAudioReferenceId, format: "mp3", mp3_bitrate: 128, latency: "normal" }),
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (!response.ok) {
+        const err = await response.text();
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `Fish Audio preview failed: ${err}` });
+      }
+      const audioBuffer = Buffer.from(await response.arrayBuffer());
+      const key = `voice-previews/${input.fishAudioReferenceId}-${Date.now()}.mp3`;
+      const { url } = await storagePut(key, audioBuffer, "audio/mpeg");
+      return { url };
+    }),
+  }),
+
+  // ── Video Management ──────────────────────────────────────────────────────
+  videoManage: router({
+    /** Delete a single video (owner or admin) */
+    delete: protectedProcedure.input(z.object({ id: z.number().int() })).mutation(async ({ ctx, input }) => {
+      const video = await getVideoById(input.id);
+      if (!video) throw new TRPCError({ code: "NOT_FOUND" });
+      if (video.userId !== ctx.user.id && ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN" });
+      await deleteVideo(input.id);
+      return { success: true };
+    }),
+
+    /** Update the title of a video (owner or admin) */
+    updateTitle: protectedProcedure.input(z.object({ id: z.number().int(), title: z.string().min(1).max(200) })).mutation(async ({ ctx, input }) => {
+      const video = await getVideoById(input.id);
+      if (!video) throw new TRPCError({ code: "NOT_FOUND" });
+      if (video.userId !== ctx.user.id && ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN" });
+      await updateVideoTitle(input.id, input.title);
+      return { success: true };
+    }),
+
+    /** Delete all failed videos for the current user */
+    deleteAllFailed: protectedProcedure.mutation(async ({ ctx }) => {
+      const count = await deleteAllFailedVideosForUser(ctx.user.id);
+      return { deleted: count };
+    }),
+
+    /** Admin: mark all stuck in-progress videos as failed */
+    expireStuck: adminProcedure.mutation(async () => {
+      const count = await expireStuckVideos(70);
+      return { expired: count };
     }),
   }),
 });

@@ -213,3 +213,14 @@
 - [x] Branded intro title card: canvas-rendered dark neon opening with video title + FASTVID brand (3s)
 - [x] Branded outro card: canvas-rendered Subscribe CTA + channel name (5s)
 - [x] B-roll visual variety: LLM generates 3 different queries per scene (wide/close-up/action angles)
+
+## Video Management & Voice Preview
+- [ ] Add video.delete tRPC procedure (owner or admin only)
+- [ ] Add video.updateTitle tRPC procedure (owner or admin only)
+- [ ] Add video.deleteAllFailed tRPC procedure (owner: delete all own failed videos)
+- [ ] Add video.expireStuck tRPC procedure (admin: mark stuck in-progress videos as failed)
+- [ ] Add voice.preview tRPC procedure: generate a 5-second Fish Audio sample on demand and return audio URL
+- [ ] Add edit/delete buttons to each video card in Dashboard.tsx
+- [ ] Add "Delete All Failed" button in Dashboard.tsx
+- [ ] Add live "Preview" button in voice selector that calls voice.preview and plays the audio
+- [ ] Auto-expire stuck videos on server startup (videos in-progress > 70 min)

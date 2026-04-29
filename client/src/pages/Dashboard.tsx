@@ -13,6 +13,7 @@ import {
   Play, Sparkles, Clock, CheckCircle2, XCircle, Loader2,
   FileText, Video, LogOut, User, ChevronRight, RefreshCw,
   Copy, Download, Eye, LayoutDashboard, Settings, CreditCard, Volume2,
+  Trash2, Pencil, Check, X as XIcon,
 } from "lucide-react";
 
 // ─── Asset URLs ───────────────────────────────────────────────────────────────
@@ -52,10 +53,12 @@ function formatVideoId(id: number) {
 }
 
 // ─── Video Card ───────────────────────────────────────────────────────────────
-function VideoCard({ video, onView }: { video: {
+function VideoCard({ video, onView, onDelete, onRename }: { video: {
   id: number; title: string | null; prompt: string; status: string;
   videoLength: string; createdAt: Date; thumbnailUrl: string | null;
-}; onView: (id: number) => void }) {
+}; onView: (id: number) => void; onDelete: (id: number) => void; onRename: (id: number, title: string) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [editTitle, setEditTitle] = useState(video.title ?? video.prompt.slice(0, 80));
   const isProcessing = !["completed", "failed"].includes(video.status);
   const { data: pollData } = trpc.video.pollStatus.useQuery(
     { id: video.id },
@@ -132,19 +135,49 @@ function VideoCard({ video, onView }: { video: {
             {formatVideoId(video.id)}
           </span>
         </div>
-        <h3 className="font-semibold text-white text-sm line-clamp-1 mb-1">
-          {video.title ?? video.prompt.slice(0, 60)}
-        </h3>
+        {editing ? (
+          <div className="flex items-center gap-1 mb-1">
+            <input
+              autoFocus
+              value={editTitle}
+              onChange={e => setEditTitle(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") { onRename(video.id, editTitle); setEditing(false); } if (e.key === "Escape") setEditing(false); }}
+              className="flex-1 bg-white/10 border border-purple-500/50 rounded px-2 py-1 text-xs text-white outline-none"
+            />
+            <button onClick={() => { onRename(video.id, editTitle); setEditing(false); }} className="p-1 text-green-400 hover:text-green-300"><Check className="w-3.5 h-3.5" /></button>
+            <button onClick={() => setEditing(false)} className="p-1 text-slate-400 hover:text-white"><XIcon className="w-3.5 h-3.5" /></button>
+          </div>
+        ) : (
+          <h3 className="font-semibold text-white text-sm line-clamp-1 mb-1">
+            {video.title ?? video.prompt.slice(0, 60)}
+          </h3>
+        )}
         <p className="text-xs text-slate-500 line-clamp-2 mb-3">{video.prompt}</p>
         <div className="flex items-center justify-between">
           <span className="text-xs text-slate-600">{new Date(video.createdAt).toLocaleDateString()}</span>
-          <button
-            onClick={() => onView(video.id)}
-            className="flex items-center gap-1 text-xs text-purple-400 hover:text-purple-300 transition-colors"
-          >
-            <Eye className="w-3.5 h-3.5" />
-            View
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => { setEditTitle(video.title ?? video.prompt.slice(0, 80)); setEditing(true); }}
+              className="flex items-center gap-1 text-xs text-slate-400 hover:text-white transition-colors"
+              title="Rename"
+            >
+              <Pencil className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={() => onDelete(video.id)}
+              className="flex items-center gap-1 text-xs text-red-400 hover:text-red-300 transition-colors"
+              title="Delete"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={() => onView(video.id)}
+              className="flex items-center gap-1 text-xs text-purple-400 hover:text-purple-300 transition-colors"
+            >
+              <Eye className="w-3.5 h-3.5" />
+              View
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -264,6 +297,20 @@ export default function Dashboard() {
   const [selectedLength, setSelectedLength] = useState<VideoLength>("15-20");
   const [selectedVoice, setSelectedVoice] = useState("am_michael");
   const [viewingVideoId, setViewingVideoId] = useState<number | null>(null);
+  const utils = trpc.useUtils();
+
+  const deleteMutation = trpc.videoManage.delete.useMutation({
+    onSuccess: () => { toast.success("Video deleted"); utils.video.list.invalidate(); },
+    onError: (err) => toast.error("Delete failed", { description: err.message }),
+  });
+  const renameMutation = trpc.videoManage.updateTitle.useMutation({
+    onSuccess: () => { toast.success("Title updated"); utils.video.list.invalidate(); },
+    onError: (err) => toast.error("Rename failed", { description: err.message }),
+  });
+  const deleteFailedMutation = trpc.videoManage.deleteAllFailed.useMutation({
+    onSuccess: (data) => { toast.success(`Deleted ${data.deleted} failed video${data.deleted !== 1 ? "s" : ""}`); utils.video.list.invalidate(); },
+    onError: (err) => toast.error("Failed", { description: err.message }),
+  });
 
   const { data: videos, isLoading: videosLoading, refetch } = trpc.video.list.useQuery(undefined, { enabled: isAuthenticated });
   const checkoutMutation = trpc.billing.createCheckout.useMutation({
@@ -501,10 +548,22 @@ export default function Dashboard() {
           <div>
             <div className="flex items-center justify-between mb-4">
               <h2 className="font-bold text-white text-lg">Your Videos</h2>
-              <button onClick={() => refetch()} className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-white transition-colors px-2 py-1 rounded-md hover:bg-white/5">
-                <RefreshCw className="w-3.5 h-3.5" />
-                Refresh
-              </button>
+              <div className="flex items-center gap-2">
+                {failedVideos.length > 0 && (
+                  <button
+                    onClick={() => deleteFailedMutation.mutate()}
+                    disabled={deleteFailedMutation.isPending}
+                    className="flex items-center gap-1.5 text-xs text-red-400 hover:text-red-300 transition-colors px-2 py-1 rounded-md hover:bg-red-500/10"
+                  >
+                    {deleteFailedMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                    Clear {failedVideos.length} failed
+                  </button>
+                )}
+                <button onClick={() => refetch()} className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-white transition-colors px-2 py-1 rounded-md hover:bg-white/5">
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  Refresh
+                </button>
+              </div>
             </div>
             {videosLoading ? (
               <div className="flex items-center justify-center py-12">
@@ -519,7 +578,15 @@ export default function Dashboard() {
             ) : (
               <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
                 {videos.map(video => (
-                  <VideoCard key={video.id} video={video} onView={setViewingVideoId} />
+                  <VideoCard
+                    key={video.id}
+                    video={video}
+                    onView={setViewingVideoId}
+                    onDelete={(id) => {
+                      if (confirm("Delete this video? This cannot be undone.")) deleteMutation.mutate({ id });
+                    }}
+                    onRename={(id, title) => renameMutation.mutate({ id, title })}
+                  />
                 ))}
               </div>
             )}
@@ -539,7 +606,9 @@ export default function Dashboard() {
 function VoiceSelector({ selectedVoice, onSelect }: { selectedVoice: string; onSelect: (id: string) => void }) {
   const { data: voices = [], isLoading } = trpc.voice.list.useQuery();
   const [playingId, setPlayingId] = useState<number | null>(null);
+  const [loadingPreviewId, setLoadingPreviewId] = useState<number | null>(null);
   const [audioEl, setAudioEl] = useState<HTMLAudioElement | null>(null);
+  const previewMutation = trpc.voice.preview.useMutation();
 
   // Set default voice to first active voice when list loads
   useEffect(() => {
@@ -548,16 +617,40 @@ function VoiceSelector({ selectedVoice, onSelect }: { selectedVoice: string; onS
     }
   }, [voices]);
 
-  function playExample(voice: typeof voices[0], e: React.MouseEvent) {
-    e.stopPropagation();
-    if (!voice.exampleAudioUrl) { return; }
+  function stopAudio() {
     if (audioEl) { audioEl.pause(); audioEl.src = ""; }
-    if (playingId === voice.id) { setPlayingId(null); setAudioEl(null); return; }
-    const a = new Audio(voice.exampleAudioUrl);
+    setAudioEl(null);
+    setPlayingId(null);
+  }
+
+  function playAudioUrl(url: string, voiceId: number) {
+    stopAudio();
+    const a = new Audio(url);
     a.onended = () => { setPlayingId(null); setAudioEl(null); };
     a.play();
     setAudioEl(a);
-    setPlayingId(voice.id);
+    setPlayingId(voiceId);
+  }
+
+  async function handlePreview(voice: typeof voices[0], e: React.MouseEvent) {
+    e.stopPropagation();
+    // If already playing this voice, stop it
+    if (playingId === voice.id) { stopAudio(); return; }
+    // If there's an uploaded example, play it directly
+    if (voice.exampleAudioUrl) {
+      playAudioUrl(voice.exampleAudioUrl, voice.id);
+      return;
+    }
+    // Otherwise generate a live Fish Audio preview
+    setLoadingPreviewId(voice.id);
+    try {
+      const result = await previewMutation.mutateAsync({ fishAudioReferenceId: voice.fishAudioReferenceId });
+      setLoadingPreviewId(null);
+      playAudioUrl(result.url, voice.id);
+    } catch {
+      setLoadingPreviewId(null);
+      toast.error("Preview failed", { description: "Could not generate voice preview" });
+    }
   }
 
   if (isLoading) {
@@ -593,19 +686,25 @@ function VoiceSelector({ selectedVoice, onSelect }: { selectedVoice: string; onS
                 selectedVoice === v.fishAudioReferenceId ? "text-cyan-300" : "text-slate-600"
               }`}>{v.description}</span>}
             </div>
-            {v.exampleAudioUrl && (
-              <button
-                onClick={(e) => playExample(v, e)}
-                className={`flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium transition-colors ${
-                  playingId === v.id
-                    ? "bg-purple-600 text-white"
-                    : "bg-white/10 text-slate-300 hover:bg-white/20"
-                }`}
-              >
-                <Volume2 className="w-3 h-3" />
-                {playingId === v.id ? "Stop" : "Sample"}
-              </button>
-            )}
+            <button
+              onClick={(e) => handlePreview(v, e)}
+              className={`flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium transition-colors ${
+                playingId === v.id
+                  ? "bg-purple-600 text-white"
+                  : loadingPreviewId === v.id
+                  ? "bg-white/10 text-slate-400 cursor-wait"
+                  : "bg-white/10 text-slate-300 hover:bg-white/20"
+              }`}
+              disabled={loadingPreviewId !== null && loadingPreviewId !== v.id}
+            >
+              {loadingPreviewId === v.id ? (
+                <><Loader2 className="w-3 h-3 animate-spin" /> Generating...</>
+              ) : playingId === v.id ? (
+                <><Volume2 className="w-3 h-3" /> Stop</>
+              ) : (
+                <><Volume2 className="w-3 h-3" /> Preview</>
+              )}
+            </button>
           </div>
         ))}
       </div>
