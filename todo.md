@@ -183,3 +183,11 @@
 - [x] Multiple AI images per scene: 3 unique AI images per scene, each shown for ~3s with xfade crossfade transitions
 - [x] Background music: layered ambient sine-wave music mixed at 15% volume under voiceovers (amix)
 - [x] Animated title overlays: canvas-rendered subtitle lower-third with scene badge (NotoSans, semi-transparent gradient bar)
+
+## Real Internet Visuals (Scene-Matched)
+- [x] Investigated yt-dlp: YouTube requires authentication (bot detection), not usable server-side
+- [x] Build scene-specific search query generator (LLM extracts precise Pexels query from narration)
+- [x] Pexels HD video search: LLM-generated query → HD clip download + trim to scene duration
+- [x] AI image generation as secondary fallback (forge ImageService)
+- [x] Color fallback as final safety net
+- [x] Priority order per scene: Pexels HD video → AI image → color fallback
