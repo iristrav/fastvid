@@ -17,6 +17,8 @@ import * as os from "os";
 import { generateImage } from "./_core/imageGeneration";
 import { storagePut } from "./storage";
 import { invokeLLM } from "./_core/llm";
+// @ts-ignore — node-gtts has no type declarations
+import gTTS from "node-gtts";
 
 const exec = promisify(execCb);
 
@@ -105,9 +107,7 @@ Return JSON array of scenes. Keep scenes to 2-4 sentences max each. Aim for 8-15
 // ─── 2. TTS Voiceover ─────────────────────────────────────────────────────────
 
 export async function generateVoiceover(text: string, outputPath: string): Promise<number> {
-  // Generate WAV with espeak-ng, then convert to MP3 with ffmpeg
-  const wavPath = outputPath.replace(/\.mp3$/, ".wav");
-
+  // Use node-gtts (Google TTS via HTTP) — no system dependency required
   // Clean text for TTS (remove markdown, special chars)
   const cleanText = text
     .replace(/#{1,6}\s/g, "")
@@ -116,26 +116,26 @@ export async function generateVoiceover(text: string, outputPath: string): Promi
     .replace(/`/g, "")
     .replace(/\[.*?\]\(.*?\)/g, "")
     .replace(/[<>]/g, "")
+    .replace(/[^\x00-\x7F]/g, "") // strip non-ASCII (emoji, special chars)
     .trim();
 
-  // Write text to temp file to avoid shell escaping issues
-  const textFile = `${wavPath}.txt`;
-  fs.writeFileSync(textFile, cleanText, "utf-8");
+  // node-gtts saves directly to mp3
+  await new Promise<void>((resolve, reject) => {
+    const tts = gTTS("en");
+    tts.save(outputPath, cleanText, (err: Error | null) => {
+      if (err) reject(err);
+      else resolve();
+    });
+  });
 
-  // Generate WAV
-  await exec(`espeak-ng -v en+m3 -s 150 -p 50 -a 180 -f "${textFile}" -w "${wavPath}"`);
-
-  // Convert WAV to MP3
-  await exec(`ffmpeg -y -i "${wavPath}" -codec:a libmp3lame -qscale:a 4 "${outputPath}" 2>/dev/null`);
-
-  // Get duration
-  const { stdout } = await exec(
-    `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${outputPath}"`
-  );
-  const duration = parseFloat(stdout.trim()) || 5;
-
-  // Cleanup
-  try { fs.unlinkSync(wavPath); fs.unlinkSync(textFile); } catch { /* ignore */ }
+  // Get duration via ffprobe
+  let duration = 5;
+  try {
+    const { stdout } = await exec(
+      `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${outputPath}"`
+    );
+    duration = parseFloat(stdout.trim()) || 5;
+  } catch { /* use default */ }
 
   return duration;
 }

@@ -115,3 +115,6 @@
 - [x] Generate Video tab added to admin sidebar
 - [x] Real-time generation progress in admin generate panel
 - [x] Video player + download in admin generate panel on completion
+
+## Bug Fixes
+- [x] Fix espeak-ng not found on production — replaced with node-gtts (Google TTS via HTTP, no system dependency)
