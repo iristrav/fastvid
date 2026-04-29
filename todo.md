@@ -206,3 +206,10 @@
 - [ ] Build admin Voice Library page with add/edit/delete and example audio upload
 - [ ] Update Dashboard voice selector to load voices from DB and play example audio inline
 - [ ] Seed default voices (Michael, Adam, Heart, Bella, George, Lewis) on first load
+
+## Pipeline Upgrades (All 4 Weak Spots)
+- [x] Background music: improved cinematic 6-layer harmonic soundtrack (Am pentatonic, echo, lowpass) at 12% volume
+- [x] Multiple cuts per scene: 3 Pexels HD clips per scene with xfade crossfade transitions
+- [x] Branded intro title card: canvas-rendered dark neon opening with video title + FASTVID brand (3s)
+- [x] Branded outro card: canvas-rendered Subscribe CTA + channel name (5s)
+- [x] B-roll visual variety: LLM generates 3 different queries per scene (wide/close-up/action angles)
