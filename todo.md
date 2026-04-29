@@ -91,15 +91,17 @@
 - [x] Add "View" button in admin videos table to open full video detail (script, metadata, chapters, error)
 - [x] Show video number in user dashboard video cards too
 
-## AI Video Generation Pipeline
-- [ ] Install FFmpeg and espeak-ng TTS on server
-- [ ] Set up Pexels API key for stock video fetching
-- [ ] Build script parser: split script into scenes with visual cues
-- [ ] Build TTS voiceover generator (espeak-ng → WAV → MP3)
-- [ ] Build AI image generator per scene (using built-in generateImage)
-- [ ] Build Pexels stock video fetcher per scene keyword
-- [ ] Build FFmpeg compositor: voiceover + visuals + text overlays + background music → MP4
-- [ ] Store final video in S3 and update video record with videoUrl
-- [ ] Add video player to user dashboard (HTML5 video element)
-- [ ] Add download button for completed videos
-- [ ] Wire full pipeline into video.generate tRPC procedure
+## AI Video Generation Pipeline (Self-Hosted)
+- [x] Install FFmpeg and espeak-ng TTS on server
+- [x] Set up Pexels API key for stock video fetching
+- [x] Build script parser: split script into scenes with visual cues
+- [x] Build TTS voiceover generator (espeak-ng → WAV → MP3)
+- [x] Build AI image generator per scene (using built-in generateImage)
+- [x] Build Pexels stock video fetcher per scene keyword
+- [x] Build FFmpeg compositor: voiceover + visuals + text overlays + background music → MP4
+- [x] Store final video in S3 and update video record with videoUrl
+- [x] Add video player to user dashboard (HTML5 video element)
+- [x] Add download button for completed videos
+- [x] Wire full pipeline into video.generate tRPC procedure
+- [x] Add video player tab to admin video detail modal
+- [x] Add download button to admin video detail modal
