@@ -12,6 +12,7 @@ import {
   updateUserRole, updateUserSubscription, updateVideoStatus,
 } from "./db";
 import { FASTVID_PRO_PLAN } from "./products";
+import { runVideoPipeline } from "./videoPipeline";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY ?? "");
 
@@ -35,6 +36,7 @@ async function generateVideoWithAI(videoId: number, prompt: string, videoLength:
   };
   const lengthDesc = lengthMap[videoLength] ?? "15 to 20 minutes";
   try {
+    // ── Stage 1: Generate Script ──────────────────────────────────────────────
     await updateVideoStatus(videoId, "generating_script");
     const scriptResponse = await invokeLLM({
       messages: [
@@ -48,7 +50,7 @@ async function generateVideoWithAI(videoId: number, prompt: string, videoLength:
     const title = titleMatch ? (titleMatch[1] || titleMatch[2]) : prompt.slice(0, 100);
     await updateVideoStatus(videoId, "generating_voiceover", { script: scriptContent, title });
 
-    await updateVideoStatus(videoId, "generating_visuals");
+    // ── Stage 2: Generate SEO Metadata ───────────────────────────────────────
     const metaResponse = await invokeLLM({
       messages: [
         { role: "system", content: "You are a YouTube SEO expert. Generate optimized metadata. Always respond with valid JSON." },
@@ -77,12 +79,29 @@ async function generateVideoWithAI(videoId: number, prompt: string, videoLength:
       metadata = JSON.parse(metaContent);
     } catch { metadata = { title, description: prompt, tags: [], chapters: [] }; }
 
-    await updateVideoStatus(videoId, "generating_effects");
-    await new Promise((resolve) => setTimeout(resolve, 800));
+    // ── Stage 3: Run Full Video Pipeline (TTS + Visuals + FFmpeg) ────────────
+    await updateVideoStatus(videoId, "generating_visuals", { metadata, title: (metadata as Record<string, string>).title ?? title });
+    const videoUrl = await runVideoPipeline(
+      videoId,
+      scriptContent,
+      async (progress) => {
+        // Map pipeline progress to status updates
+        if (progress.percent < 40) {
+          await updateVideoStatus(videoId, "generating_voiceover").catch(() => {});
+        } else if (progress.percent < 80) {
+          await updateVideoStatus(videoId, "generating_visuals").catch(() => {});
+        } else {
+          await updateVideoStatus(videoId, "generating_effects").catch(() => {});
+        }
+      }
+    );
+
+    // ── Stage 4: Mark as Completed ───────────────────────────────────────────
     await updateVideoStatus(videoId, "completed", {
       metadata,
       title: (metadata as Record<string, string>).title ?? title,
       thumbnailUrl: `https://picsum.photos/seed/${videoId}/1280/720`,
+      videoUrl,
     });
   } catch (error) {
     console.error("[Video Generation] Error:", error);

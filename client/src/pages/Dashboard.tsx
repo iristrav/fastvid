@@ -144,6 +144,33 @@ function VideoDetailModal({ videoId, onClose }: { videoId: number; onClose: () =
           </div>
         ) : video ? (
           <div className="flex-1 overflow-y-auto p-5 space-y-5">
+            {/* Video Player */}
+            {(video as { videoUrl?: string | null }).videoUrl && video.status === "completed" && (
+              <div className="glass-card border border-white/8 rounded-xl overflow-hidden">
+                <div className="flex items-center justify-between px-4 pt-4 pb-2">
+                  <h3 className="font-semibold text-white text-sm flex items-center gap-2">
+                    <Play className="w-4 h-4 text-green-400" /> Your Video
+                  </h3>
+                  <a
+                    href={(video as { videoUrl?: string | null }).videoUrl!}
+                    download={`fastvid-${formatVideoId(video.id)}.mp4`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-1.5 text-xs text-cyan-400 hover:text-cyan-300 transition-colors px-2.5 py-1.5 rounded-lg bg-cyan-500/10 border border-cyan-500/20 hover:bg-cyan-500/20"
+                  >
+                    <Download className="w-3.5 h-3.5" /> Download MP4
+                  </a>
+                </div>
+                <video
+                  controls
+                  className="w-full"
+                  src={(video as { videoUrl?: string | null }).videoUrl!}
+                  poster={video.thumbnailUrl ?? undefined}
+                >
+                  Your browser does not support the video tag.
+                </video>
+              </div>
+            )}
             {/* Metadata */}
             {metadata && (
               <div className="glass-card border border-white/8 rounded-xl p-4 space-y-3">

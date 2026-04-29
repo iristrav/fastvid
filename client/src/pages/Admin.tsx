@@ -63,13 +63,14 @@ type VideoRow = {
   script: string | null;
   metadata: string | null;
   thumbnailUrl: string | null;
+  videoUrl: string | null;
   errorMessage: string | null;
   createdAt: Date;
   updatedAt: Date;
 };
 
 function VideoDetailModal({ video, onClose }: { video: VideoRow; onClose: () => void }) {
-  const [tab, setTab] = useState<"script" | "metadata" | "info">("info");
+  const [tab, setTab] = useState<"video" | "script" | "metadata" | "info">(video.videoUrl && video.status === "completed" ? "video" : "info");
 
   type ParsedMeta = { title?: string; description?: string; tags?: string[]; chapters?: { timestamp: string; title: string }[] };
   let parsedMeta: ParsedMeta | null = null;
@@ -107,7 +108,7 @@ function VideoDetailModal({ video, onClose }: { video: VideoRow; onClose: () => 
 
         {/* Tabs */}
         <div className="flex border-b border-white/8 shrink-0">
-          {(["info", "script", "metadata"] as const).map(t => (
+          {([...(video.videoUrl && video.status === "completed" ? ["video" as const] : []), "info" as const, "script" as const, "metadata" as const]).map(t => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -122,6 +123,27 @@ function VideoDetailModal({ video, onClose }: { video: VideoRow; onClose: () => 
 
         {/* Body */}
         <div className="overflow-y-auto flex-1 p-5">
+          {tab === "video" && video.videoUrl && (
+            <div className="space-y-4">
+              <video
+                controls
+                className="w-full rounded-xl border border-white/10"
+                src={video.videoUrl}
+                poster={video.thumbnailUrl ?? undefined}
+              >
+                Your browser does not support the video tag.
+              </video>
+              <a
+                href={video.videoUrl}
+                download={`fastvid-${formatVideoId(video.id)}.mp4`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center justify-center gap-2 w-full py-2.5 rounded-xl bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 hover:bg-cyan-500/20 transition-colors text-sm font-medium"
+              >
+                Download MP4
+              </a>
+            </div>
+          )}
           {tab === "info" && (
             <div className="space-y-4">
               <div className="glass-card border border-white/8 rounded-xl p-4 space-y-3">
