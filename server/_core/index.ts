@@ -39,6 +39,66 @@ async function startServer() {
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
   registerStorageProxy(app);
   registerOAuthRoutes(app);
+
+  // ─── Health Check ─────────────────────────────────────────────────────────
+  app.get("/api/health", async (_req, res) => {
+    const checks: Record<string, { ok: boolean; message?: string }> = {};
+
+    // DB check
+    try {
+      const { getDb } = await import("../db");
+      const db = await getDb();
+      if (db) {
+        await db.execute("SELECT 1");
+        checks.db = { ok: true };
+      } else {
+        checks.db = { ok: false, message: "DB not initialized" };
+      }
+    } catch (e) {
+      checks.db = { ok: false, message: String(e) };
+    }
+
+    // Fish Audio check
+    const fishKey = process.env.FISH_AUDIO_API_KEY;
+    if (fishKey) {
+      try {
+        // Fish Audio: check if the API key is valid by listing models (GET /model)
+        const r = await fetch("https://api.fish.audio/model?page_size=1", {
+          headers: { Authorization: `Bearer ${fishKey}` },
+          signal: AbortSignal.timeout(5000),
+        });
+        checks.fishAudio = { ok: r.ok, message: r.ok ? undefined : `HTTP ${r.status}` };
+      } catch (e) {
+        checks.fishAudio = { ok: false, message: String(e) };
+      }
+    } else {
+      checks.fishAudio = { ok: false, message: "FISH_AUDIO_API_KEY not set" };
+    }
+
+    // Pexels check
+    const pexelsKey = process.env.PEXELS_API_KEY;
+    if (pexelsKey) {
+      try {
+        const r = await fetch("https://api.pexels.com/videos/search?query=nature&per_page=1", {
+          headers: { Authorization: pexelsKey },
+          signal: AbortSignal.timeout(5000),
+        });
+        checks.pexels = { ok: r.ok, message: r.ok ? undefined : `HTTP ${r.status}` };
+      } catch (e) {
+        checks.pexels = { ok: false, message: String(e) };
+      }
+    } else {
+      checks.pexels = { ok: false, message: "PEXELS_API_KEY not set" };
+    }
+
+    const allOk = Object.values(checks).every(c => c.ok);
+    res.status(allOk ? 200 : 503).json({
+      status: allOk ? "ok" : "degraded",
+      timestamp: new Date().toISOString(),
+      checks,
+    });
+  });
+
   // tRPC API
   app.use(
     "/api/trpc",
