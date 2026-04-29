@@ -178,3 +178,8 @@
 - [x] Fix drawtext text escaping: use textfile= instead of text= to avoid all shell/FFmpeg quoting issues
 - [x] Fix fallback PNG generation command: use color= source filter (gradients not in ffmpeg-static 5.x)
 - [x] Add subtitle text length cap (100 chars) to prevent overly long subtitles
+
+## Vidrush-level Upgrade
+- [x] Multiple AI images per scene: 3 unique AI images per scene, each shown for ~3s with xfade crossfade transitions
+- [x] Background music: layered ambient sine-wave music mixed at 15% volume under voiceovers (amix)
+- [x] Animated title overlays: canvas-rendered subtitle lower-third with scene badge (NotoSans, semi-transparent gradient bar)
