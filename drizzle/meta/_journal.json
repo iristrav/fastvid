@@ -29,6 +29,20 @@
       "when": 1777490021748,
       "tag": "0003_clumsy_absorbing_man",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "5",
+      "when": 1777494369555,
+      "tag": "0004_pale_glorian",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "5",
+      "when": 1777495142040,
+      "tag": "0005_sturdy_kulan_gath",
+      "breakpoints": true
     }
   ]
 }

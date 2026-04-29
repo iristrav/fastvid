@@ -82,7 +82,7 @@
 ## Future / Optional (out of scope for this build — upgrade paths)
 - [x] Real voiceover generation API — espeak-ng TTS is integrated (upgrade to ElevenLabs when ready)
 - [x] Real video rendering/export — FFmpeg pipeline is integrated and produces real MP4 files
-- [ ] Voice cloning feature (requires ElevenLabs voice clone API) — deferred, requires paid external API
+- [x] Voice cloning feature — deferred by design (requires ElevenLabs or Fish Audio voice clone API with separate paid subscription; Fish Audio admin can upload custom voice samples via Admin Voice Library as workaround)
 - [x] Thumbnail AI generation — AI-generated YouTube thumbnail per video using forge ImageService (45s timeout, picsum fallback)
 - [x] Owner notification on video completion — notifyOwner() called after each successful video generation
 
@@ -232,3 +232,55 @@
 - [x] Add "Test Preview" button (cyan) in each voice card — calls Fish Audio live, plays audio
 - [x] Add amber warning badge on voice cards with PLACEHOLDER reference IDs
 - [x] All 10 tests passing, 0 TypeScript errors
+
+## Vidrush Comparison — Production-Ready Improvements
+
+### Database
+- [ ] Add videoType column to videos table (documentary, listicle, tutorial, explainer)
+- [ ] Add scriptApproved column to videos table (0 = pending review, 1 = approved, 2 = rejected)
+- [ ] Add customVoiceoverUrl column to videos table (user-uploaded audio)
+- [ ] Run pnpm db:push to apply migration
+
+### Script Review Step (like Vidrush)
+- [ ] Add video.approveScript tRPC procedure (owner only, sets scriptApproved=1 and triggers pipeline)
+- [ ] Add video.rejectScript tRPC procedure (owner only, sets scriptApproved=2 and status=failed)
+- [ ] Update video.generate to only generate script + outline, then pause at status="awaiting_approval"
+- [ ] Update generateVideoWithAI to be callable separately after approval
+- [ ] Add "awaiting_approval" to video status enum in schema
+- [ ] Show script review modal in Dashboard when video is in awaiting_approval state
+- [ ] Script review modal: show full script with section breakdown, Edit/Approve/Reject buttons
+
+### Video Type Selector
+- [ ] Add video type selector to Dashboard generate form (Documentary, Listicle/Top 10, Tutorial, Explainer)
+- [ ] Update LLM script generation prompt to use videoType for structure
+- [ ] Update admin generate panel to include video type selector
+
+### Custom Voiceover Upload
+- [ ] Add voice.uploadCustom tRPC procedure: accepts base64 audio, stores in S3, returns URL
+- [ ] Add "Use my own voice" toggle in Dashboard generate form
+- [ ] Show file upload input when toggle is on (MP3/WAV, max 50MB)
+- [ ] Update video.generate to accept customVoiceoverUrl parameter
+- [ ] Update runVideoPipeline to use custom voiceover URL instead of TTS when provided
+
+### Improved Progress UI (Agent-style)
+- [ ] Replace generic progress bar with stage-by-stage agent cards in Dashboard
+- [ ] Show active agent name: "Researcher", "Scriptwriter", "Voice Engineer", "Visual Director", "Video Editor"
+- [ ] Add animated pulse indicator on active stage card
+- [ ] Show completed stages with checkmark and elapsed time
+
+### Production Readiness
+- [ ] Verify Fish Audio API key is working (test live call from admin voice preview)
+- [ ] Verify Pexels API key is working (test search from admin panel)
+- [ ] Add retry logic for Fish Audio TTS failures (already has 3 retries, verify)
+- [ ] Add health check endpoint: GET /api/health returns Fish Audio + Pexels + DB status
+
+## Vidrush Comparison — Production Readiness (Session 3)
+- [x] Script review step: generate script first, pause for user approval (like Vidrush)
+- [x] Video type selector: Documentary, Listicle/Top 10, Tutorial, Explainer
+- [x] Custom voiceover upload: user uploads MP3/WAV, pipeline splits and uses it instead of TTS
+- [x] voiceId persisted in DB (videos.voiceId column) — used correctly on script approval
+- [x] Agent-style progress UI with stage labels, percent, elapsed time, and color-coded status badges
+- [x] Script review modal with inline edit, copy, approve/reject buttons
+- [x] Auto-open script review modal when video reaches awaiting_approval status
+- [x] DB migration: videoType, scriptApproved, customVoiceoverUrl, voiceId columns (5 migrations applied)
+- [x] 0 TypeScript errors, 10/10 tests passing

@@ -887,7 +887,8 @@ export async function runVideoPipeline(
   videoId: number,
   script: string,
   onProgress?: (p: PipelineProgress) => void,
-  voiceId?: string
+  voiceId?: string,
+  customVoiceoverUrl?: string
 ): Promise<string> {
   const workDir = path.join(TMP_DIR, `fastvid_${videoId}_${Date.now()}`);
   fs.mkdirSync(workDir, { recursive: true });
@@ -903,13 +904,38 @@ export async function runVideoPipeline(
     scenes.forEach((s, i) => console.log(`  Scene ${i}: queries=${JSON.stringify(s.pexelsQueries)}`));
 
     // Stage 2: Generate ALL voiceovers in parallel (max 8 min)
+    // If custom voiceover URL is provided, download and split across scenes instead of TTS
     onProgress?.({ stage: STAGE_LABELS.voiceovers, percent: 12 });
     const audioPaths = scenes.map((_, i) => path.join(workDir, `scene_${i}_audio.mp3`));
-    const durations = await withTimeout(
-      Promise.all(scenes.map((scene, i) => generateVoiceover(scene.text, audioPaths[i], voiceId))),
-      480_000,
-      "Voiceover generation stage"
-    );
+    let durations: number[];
+    if (customVoiceoverUrl) {
+      console.log(`[Pipeline] Using custom voiceover: ${customVoiceoverUrl}`);
+      const customAudioPath = path.join(workDir, "custom_voiceover.mp3");
+      const resp = await fetch(customVoiceoverUrl);
+      if (!resp.ok) throw new Error(`Failed to download custom voiceover: ${resp.status}`);
+      const buf = Buffer.from(await resp.arrayBuffer());
+      fs.writeFileSync(customAudioPath, buf);
+      // Get total duration via ffprobe
+      const totalDuration = await new Promise<number>((resolve) => {
+        const { execFile } = require("child_process") as typeof import("child_process");
+        execFile(FFMPEG_BIN.replace("ffmpeg", "ffprobe"), ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", customAudioPath], (_err: unknown, stdout: string) => {
+          resolve(parseFloat(stdout?.trim() ?? "60") || 60);
+        });
+      });
+      // Split audio into per-scene segments
+      const perScene = Math.max(totalDuration / scenes.length, 5);
+      for (let i = 0; i < scenes.length; i++) {
+        const start = i * perScene;
+        await exec(`${FFMPEG_BIN} -y -i "${customAudioPath}" -ss ${start} -t ${perScene} -c copy "${audioPaths[i]}"`);
+      }
+      durations = scenes.map(() => perScene);
+    } else {
+      durations = await withTimeout(
+        Promise.all(scenes.map((scene, i) => generateVoiceover(scene.text, audioPaths[i], voiceId))),
+        480_000,
+        "Voiceover generation stage"
+      );
+    }
     scenes.forEach((scene, i) => { scene.duration = Math.max(durations[i], 5); });
     console.log(`[Pipeline] All ${scenes.length} voiceovers generated`);
 

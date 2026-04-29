@@ -124,6 +124,7 @@ export async function updateVideoStatus(id: number, status: InsertVideo["status"
   script?: string; voiceoverUrl?: string; videoUrl?: string;
   thumbnailUrl?: string; metadata?: unknown; errorMessage?: string; title?: string;
   progressStep?: string; progressPercent?: number; generationStartedAt?: Date;
+  scriptApproved?: number; customVoiceoverUrl?: string;
 }) {
   const db = await getDb();
   if (!db) return;

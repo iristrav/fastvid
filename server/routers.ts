@@ -36,7 +36,7 @@ const subscribedProcedure = protectedProcedure.use(({ ctx, next }) => {
 // Global 1-hour hard cap — if anything hangs, mark as failed with a clear message
 const MAX_VIDEO_GENERATION_MS = 60 * 60 * 1000; // 1 hour
 
-async function generateVideoWithAI(videoId: number, prompt: string, videoLength: string, voiceId?: string) {
+async function generateVideoWithAI(videoId: number, prompt: string, videoLength: string, voiceId?: string, customVoiceoverUrl?: string) {
   // Wrap the entire pipeline in a 1-hour timeout
   const timeoutHandle = setTimeout(async () => {
     console.error(`[Video Generation] Video ${videoId} exceeded 1-hour limit — marking as failed`);
@@ -48,27 +48,36 @@ async function generateVideoWithAI(videoId: number, prompt: string, videoLength:
   }, MAX_VIDEO_GENERATION_MS);
 
   try {
-    await _generateVideoWithAI(videoId, prompt, videoLength, voiceId);
+    await _generateVideoWithAI(videoId, prompt, videoLength, voiceId, customVoiceoverUrl);
   } finally {
     clearTimeout(timeoutHandle);
   }
 }
 
-async function _generateVideoWithAI(videoId: number, prompt: string, videoLength: string, voiceId?: string) {
+// ─── Phase A: Script-only generation (stops at awaiting_approval) ────────────
+async function generateScriptOnly(videoId: number, prompt: string, videoLength: string, videoType: string) {
   const lengthMap: Record<string, string> = {
     "5-8": "5 to 8 minutes", "8-12": "8 to 12 minutes", "12-15": "12 to 15 minutes",
     "15-20": "15 to 20 minutes", "20+": "20+ minutes",
   };
   const lengthDesc = lengthMap[videoLength] ?? "15 to 20 minutes";
+
+  const typeInstructions: Record<string, string> = {
+    documentary: "Structure as a documentary with research-backed narration, expert insights, and visual evidence.",
+    listicle: "Structure as a Top 10 / listicle with numbered items, each with a hook, explanation, and example.",
+    tutorial: "Structure as a step-by-step tutorial with clear numbered steps, tips, and a summary.",
+    explainer: "Structure as an explainer video with simple analogies, visual metaphors, and a clear conclusion.",
+  };
+  const typeInstruction = typeInstructions[videoType] ?? typeInstructions.documentary;
+
   try {
-    // ── Stage 1: Fast outline, then parallel section + metadata generation ────
-    await updateVideoStatus(videoId, "generating_script", { progressStep: "Creating video outline...", progressPercent: 5, generationStartedAt: new Date() });
+    await updateVideoStatus(videoId, "generating_script", { progressStep: "🔍 Researching topic...", progressPercent: 5, generationStartedAt: new Date() });
 
     // Step 1a: Short outline call (~5-8s)
     const outlineResp = await invokeLLM({
       messages: [
-        { role: "system", content: "You are a YouTube scriptwriter. Be concise." },
-        { role: "user", content: `Create a YouTube video outline for: "${prompt}"\nVideo length: ${lengthDesc}\nRespond with JSON: { title, hook (2 sentences), sections (max 5, each: {title, keyPoints: string[]}), cta }` },
+        { role: "system", content: `You are a YouTube scriptwriter. ${typeInstruction} Be concise.` },
+        { role: "user", content: `Create a YouTube video outline for: "${prompt}"\nVideo length: ${lengthDesc}\nFormat: ${videoType}\nRespond with JSON: { title, hook (2 sentences), sections (max 5, each: {title, keyPoints: string[]}), cta }` },
       ],
       response_format: {
         type: "json_schema",
@@ -96,13 +105,13 @@ async function _generateVideoWithAI(videoId: number, prompt: string, videoLength
     } catch { /* use default */ }
     const title = outline.title || prompt.slice(0, 100);
 
-    await updateVideoProgress(videoId, `Outline ready — writing ${outline.sections.length} sections in parallel...`, 12);
+    await updateVideoProgress(videoId, `✍️ Writing ${outline.sections.length} sections in parallel...`, 12);
 
-    // Step 1b: Generate each section AND metadata in parallel (all at once)
+    // Step 1b: Generate each section AND metadata in parallel
     const sectionPromises = outline.sections.map((sec, idx) =>
       invokeLLM({
         messages: [
-          { role: "system", content: "Write engaging YouTube script text. Include [VISUAL: description] tags every 2-3 sentences. Be conversational and natural." },
+          { role: "system", content: `Write engaging YouTube script text for a ${videoType}. ${typeInstruction} Include [VISUAL: description] tags every 2-3 sentences. Be conversational and natural.` },
           { role: "user", content: `Section ${idx + 1}: "${sec.title}"\nCover: ${sec.keyPoints.join(", ")}\nWrite 2-3 short paragraphs. Start directly with content.` },
         ],
       }).then(r => { const c = r?.choices?.[0]?.message?.content ?? ""; return typeof c === "string" ? c : ""; })
@@ -112,7 +121,7 @@ async function _generateVideoWithAI(videoId: number, prompt: string, videoLength
     const metaPromise = invokeLLM({
       messages: [
         { role: "system", content: "YouTube SEO expert. Respond with valid JSON only." },
-        { role: "user", content: `YouTube metadata for: ${prompt} (${lengthDesc})\nJSON: { title, description, tags: string[], chapters: [{time, title}] }` },
+        { role: "user", content: `YouTube metadata for: ${prompt} (${lengthDesc}, ${videoType} format)\nJSON: { title, description, tags: string[], chapters: [{time, title}] }` },
       ],
       response_format: {
         type: "json_schema",
@@ -132,7 +141,7 @@ async function _generateVideoWithAI(videoId: number, prompt: string, videoLength
     });
 
     const [sectionTexts, metaResponse] = await Promise.all([Promise.all(sectionPromises), metaPromise]);
-    await updateVideoProgress(videoId, "Assembling script...", 22);
+    await updateVideoProgress(videoId, "📋 Assembling script...", 22);
 
     // Assemble full script
     const scriptParts: string[] = [`# ${title}\n`, `## HOOK\n${outline.hook}\n[VISUAL: Opening shot for ${prompt}]\n`];
@@ -147,10 +156,36 @@ async function _generateVideoWithAI(videoId: number, prompt: string, videoLength
       metadata = JSON.parse(metaContent);
     } catch { metadata = { title, description: prompt, tags: [], chapters: [] }; }
 
-    await updateVideoStatus(videoId, "generating_voiceover", { script: scriptContent, title });
+    // Pause for user approval
+    await updateVideoStatus(videoId, "awaiting_approval", {
+      script: scriptContent,
+      title,
+      metadata,
+      progressStep: "✅ Script ready — awaiting your approval",
+      progressPercent: 28,
+    });
+  } catch (error) {
+    console.error("[Script Generation] Error:", error);
+    await updateVideoStatus(videoId, "failed", {
+      errorMessage: error instanceof Error ? error.message : "Unknown error",
+      progressStep: "Script generation failed",
+      progressPercent: 0,
+    });
+  }
+}
 
-    // ── Stage 3: Run Full Video Pipeline (TTS + Visuals + FFmpeg) ────────────
-    await updateVideoStatus(videoId, "generating_visuals", { metadata, title: (metadata as Record<string, string>).title ?? title, progressStep: "Metadata ready — generating voiceover...", progressPercent: 30 });
+// ─── Phase B: Full pipeline after script approval ─────────────────────────────
+async function _generateVideoWithAI(videoId: number, prompt: string, videoLength: string, voiceId?: string, customVoiceoverUrl?: string) {
+  try {
+    // Get the approved script from DB
+    const video = await getVideoById(videoId);
+    if (!video?.script) throw new Error("No approved script found");
+    const scriptContent = video.script;
+    const title = video.title ?? prompt.slice(0, 100);
+    const metadata = video.metadata ?? { title, description: prompt, tags: [], chapters: [] };
+
+    // ── Stage 3: Run Full Video Pipeline (TTS + Visuals + FFmpeg) ────
+    await updateVideoStatus(videoId, "generating_voiceover", { progressStep: "🎙️ Generating voiceover...", progressPercent: 30 });
     const videoUrl = await runVideoPipeline(
       videoId,
       scriptContent,
@@ -168,7 +203,8 @@ async function _generateVideoWithAI(videoId: number, prompt: string, videoLength
           await updateVideoStatus(videoId, "generating_effects").catch(() => {});
         }
       },
-      voiceId
+      voiceId,
+      customVoiceoverUrl
     );
 
     // ── Stage 4: Generate AI Thumbnail + Mark as Completed ────────────────────────
@@ -241,18 +277,63 @@ export const appRouter = router({
     generate: subscribedProcedure.input(z.object({
       prompt: z.string().min(10).max(1000),
       videoLength: z.enum(["5-8", "8-12", "12-15", "15-20", "20+"]),
+      videoType: z.enum(["documentary", "listicle", "tutorial", "explainer"]).default("documentary"),
       voiceId: z.string().optional(),
+      customVoiceoverUrl: z.string().optional(),
     })).mutation(async ({ ctx, input }) => {
-      const videoId = await createVideo({ userId: ctx.user.id, prompt: input.prompt, videoLength: input.videoLength, status: "pending" });
+      const videoId = await createVideo({
+        userId: ctx.user.id,
+        prompt: input.prompt,
+        videoLength: input.videoLength,
+        videoType: input.videoType,
+        customVoiceoverUrl: input.customVoiceoverUrl,
+        voiceId: input.voiceId,
+        status: "pending",
+      });
       if (!videoId) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Failed to create video" });
-      generateVideoWithAI(videoId, input.prompt, input.videoLength, input.voiceId).catch(console.error);
-      return { videoId, message: "Video generation started" };
+      // Phase A: generate script only, pause for approval
+      generateScriptOnly(videoId, input.prompt, input.videoLength, input.videoType).catch(console.error);
+      return { videoId, message: "Script generation started" };
+    }),
+    approveScript: protectedProcedure.input(z.object({
+      id: z.number(),
+      editedScript: z.string().optional(), // allow user to edit script before approving
+    })).mutation(async ({ ctx, input }) => {
+      const video = await getVideoById(input.id);
+      if (!video) throw new TRPCError({ code: "NOT_FOUND" });
+      if (video.userId !== ctx.user.id && ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN" });
+      if (video.status !== "awaiting_approval") throw new TRPCError({ code: "BAD_REQUEST", message: "Video is not awaiting approval" });
+      // Save edited script if provided
+      if (input.editedScript) {
+        await updateVideoStatus(video.id, "awaiting_approval", { script: input.editedScript });
+      }
+      await updateVideoStatus(video.id, "generating_voiceover", {
+        scriptApproved: 1,
+        progressStep: "✅ Script approved — starting video production...",
+        progressPercent: 29,
+      });
+      // Phase B: run full pipeline — use stored voiceId and customVoiceoverUrl
+      generateVideoWithAI(video.id, video.prompt, video.videoLength ?? "15-20", (video as { voiceId?: string | null }).voiceId ?? undefined, video.customVoiceoverUrl ?? undefined).catch(console.error);
+      return { success: true };
+    }),
+    rejectScript: protectedProcedure.input(z.object({ id: z.number() })).mutation(async ({ ctx, input }) => {
+      const video = await getVideoById(input.id);
+      if (!video) throw new TRPCError({ code: "NOT_FOUND" });
+      if (video.userId !== ctx.user.id && ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN" });
+      if (video.status !== "awaiting_approval") throw new TRPCError({ code: "BAD_REQUEST", message: "Video is not awaiting approval" });
+      await updateVideoStatus(video.id, "failed", {
+        scriptApproved: 2,
+        errorMessage: "Script rejected by user",
+        progressStep: "Script rejected",
+        progressPercent: 0,
+      });
+      return { success: true };
     }),
     pollStatus: protectedProcedure.input(z.object({ id: z.number() })).query(async ({ ctx, input }) => {
       const video = await getVideoById(input.id);
       if (!video) throw new TRPCError({ code: "NOT_FOUND" });
       if (video.userId !== ctx.user.id && ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN" });
-      return { status: video.status, title: video.title, script: video.script, metadata: video.metadata, thumbnailUrl: video.thumbnailUrl, progressStep: video.progressStep, progressPercent: video.progressPercent ?? 0, generationStartedAt: video.generationStartedAt };
+      return { status: video.status, title: video.title, script: video.script, metadata: video.metadata, thumbnailUrl: video.thumbnailUrl, progressStep: video.progressStep, progressPercent: video.progressPercent ?? 0, generationStartedAt: video.generationStartedAt, videoType: video.videoType };
     }),
   }),
 
@@ -448,6 +529,21 @@ export const appRouter = router({
       const ext = input.mimeType.includes("mp3") || input.mimeType.includes("mpeg") ? "mp3" : "wav";
       const { url } = await storagePut(`voices/${input.voiceId}/example.${ext}`, buffer, input.mimeType);
       await updateVoice(input.voiceId, { exampleAudioUrl: url });
+      return { url };
+    }),
+
+    /** Subscribed users: upload their own voiceover audio (base64) and get back a storage URL */
+    uploadCustom: subscribedProcedure.input(z.object({
+      base64: z.string(),
+      mimeType: z.string().default("audio/mpeg"),
+      filename: z.string().max(256).optional(),
+    })).mutation(async ({ ctx, input }) => {
+      const buffer = Buffer.from(input.base64, "base64");
+      const maxBytes = 50 * 1024 * 1024; // 50 MB
+      if (buffer.length > maxBytes) throw new TRPCError({ code: "BAD_REQUEST", message: "File too large (max 50MB)" });
+      const ext = input.mimeType.includes("wav") ? "wav" : input.mimeType.includes("ogg") ? "ogg" : "mp3";
+      const key = `custom-voiceovers/${ctx.user.id}-${Date.now()}.${ext}`;
+      const { url } = await storagePut(key, buffer, input.mimeType);
       return { url };
     }),
 
