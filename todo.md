@@ -1,0 +1,77 @@
+# Fastvid — Project TODO
+
+## Landing Page
+- [x] Dark neon gradient design (deep navy + violet-to-cyan)
+- [x] Hero section with prompt input and video length selector
+- [x] Stats section
+- [x] Video length detail section (5 options)
+- [x] How it works (5 steps)
+- [x] Features section (script, voiceover, visuals, effects)
+- [x] Pricing section (€500/month, no free trial)
+- [x] Testimonials
+- [x] FAQ section
+- [x] Final CTA section
+- [x] Footer
+- [x] All text in English
+- [x] CTA buttons link to login/dashboard
+
+## Authentication
+- [x] Manus OAuth integration
+- [x] Protected routes (dashboard, admin)
+- [x] Login redirect from landing page
+
+## Database
+- [x] Users table with subscription fields
+- [x] Videos table with status tracking
+- [x] DB migration applied
+
+## User Dashboard
+- [x] Sidebar navigation
+- [x] Video generator with prompt input
+- [x] Video length selector (5-8, 8-12, 12-15, 15-20, 20+ min)
+- [x] Video list with status cards
+- [x] Real-time status polling for in-progress videos
+- [x] Video detail modal (script, SEO metadata, chapters, tags)
+- [x] Subscription status warning for inactive users
+- [x] Stats row (total, completed, in progress)
+
+## Admin Dashboard
+- [x] Admin-only access guard
+- [x] Overview with stats (users, subscribers, revenue MRR/ARR)
+- [x] Users table with subscription management
+- [x] Activate/deactivate subscriptions
+- [x] Promote users to admin
+- [x] Videos table with status overview
+- [x] Sidebar navigation
+
+## AI Video Generation Pipeline
+- [x] Script generation via LLM (viral hooks, chapters, visual cues)
+- [x] SEO metadata generation (title, description, tags, chapters)
+- [x] Async generation with status updates
+- [x] Error handling with failed status
+
+## Backend API (tRPC)
+- [x] video.list — list user's videos
+- [x] video.get — get single video
+- [x] video.generate — start generation (subscription required)
+- [x] video.pollStatus — poll generation status
+- [x] admin.stats — platform statistics
+- [x] admin.listUsers — all users
+- [x] admin.listVideos — all videos
+- [x] admin.updateUserRole — promote/demote admin
+- [x] admin.updateUserSubscription — activate/deactivate
+- [x] subscription.activate / deactivate
+
+## Tests
+- [x] auth.logout test
+- [x] video.generate tests (forbidden, validation)
+- [x] admin procedure tests (access control)
+- [x] All 10 tests passing
+
+## Future / Optional
+- [ ] Stripe payment integration (€500/month checkout)
+- [ ] Real voiceover generation API
+- [ ] Real video rendering/export
+- [ ] Voice cloning feature
+- [ ] Thumbnail AI generation
+- [ ] Email notifications on video completion

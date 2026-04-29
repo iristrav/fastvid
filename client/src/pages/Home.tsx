@@ -6,6 +6,8 @@
  */
 
 import { useState, useEffect, useRef } from "react";
+import { useAuth } from "@/_core/hooks/useAuth";
+import { getLoginUrl } from "@/const";
 import {
   Play,
   Sparkles,
@@ -148,6 +150,11 @@ export default function Home() {
   const [scrolled, setScrolled] = useState(false);
   const [promptValue, setPromptValue] = useState("");
   const [selectedLength, setSelectedLength] = useState("15-20");
+  const { isAuthenticated } = useAuth();
+  const handleGetStarted = () => {
+    if (isAuthenticated) { window.location.href = "/dashboard"; }
+    else { window.location.href = getLoginUrl(); }
+  };
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 40);
@@ -287,10 +294,10 @@ export default function Home() {
           </div>
 
           <div className="hidden md:flex items-center gap-3">
-            <button onClick={() => scrollTo("pricing")} className="text-sm text-slate-400 hover:text-white transition-colors">
-              Log in
+            <button onClick={handleGetStarted} className="text-sm text-slate-400 hover:text-white transition-colors">
+              {isAuthenticated ? "Dashboard" : "Log in"}
             </button>
-            <button onClick={() => scrollTo("pricing")} className="btn-gradient px-4 py-2 rounded-lg text-sm font-semibold text-white">
+            <button onClick={handleGetStarted} className="btn-gradient px-4 py-2 rounded-lg text-sm font-semibold text-white">
               Get started
             </button>
           </div>
@@ -307,7 +314,7 @@ export default function Home() {
                 {label}
               </button>
             ))}
-            <button onClick={() => scrollTo("pricing")} className="btn-gradient px-4 py-2.5 rounded-lg text-sm font-semibold text-white mt-2">
+            <button onClick={handleGetStarted} className="btn-gradient px-4 py-2.5 rounded-lg text-sm font-semibold text-white mt-2">
                 Get started
               </button>
           </div>
@@ -377,7 +384,7 @@ export default function Home() {
                   className="flex-1 bg-transparent text-sm text-white placeholder:text-slate-500 outline-none"
                 />
                 <button
-                  onClick={() => scrollTo("pricing")}
+                  onClick={handleGetStarted}
                   className="btn-gradient px-4 py-2.5 rounded-lg text-sm font-semibold text-white flex items-center gap-2 shrink-0"
                 >
                   <Sparkles className="w-4 h-4" />
@@ -707,7 +714,7 @@ export default function Home() {
               </ul>
 
               <button
-                onClick={() => window.open("#", "_blank")}
+                onClick={handleGetStarted}
                 className="btn-gradient w-full py-4 rounded-xl font-bold text-white text-base flex items-center justify-center gap-2"
               >
                 <Sparkles className="w-5 h-5" />
@@ -776,7 +783,7 @@ export default function Home() {
           </p>
           <div className="flex flex-col sm:flex-row gap-4 justify-center">
             <button
-              onClick={() => scrollTo("pricing")}
+              onClick={handleGetStarted}
               className="btn-gradient px-8 py-4 rounded-xl font-bold text-white text-base flex items-center justify-center gap-2 shadow-2xl shadow-purple-500/30"
             >
               <Sparkles className="w-5 h-5" />
