@@ -32,7 +32,7 @@ const subscribedProcedure = protectedProcedure.use(({ ctx, next }) => {
 // Global 1-hour hard cap — if anything hangs, mark as failed with a clear message
 const MAX_VIDEO_GENERATION_MS = 60 * 60 * 1000; // 1 hour
 
-async function generateVideoWithAI(videoId: number, prompt: string, videoLength: string) {
+async function generateVideoWithAI(videoId: number, prompt: string, videoLength: string, voiceId?: string) {
   // Wrap the entire pipeline in a 1-hour timeout
   const timeoutHandle = setTimeout(async () => {
     console.error(`[Video Generation] Video ${videoId} exceeded 1-hour limit — marking as failed`);
@@ -44,13 +44,13 @@ async function generateVideoWithAI(videoId: number, prompt: string, videoLength:
   }, MAX_VIDEO_GENERATION_MS);
 
   try {
-    await _generateVideoWithAI(videoId, prompt, videoLength);
+    await _generateVideoWithAI(videoId, prompt, videoLength, voiceId);
   } finally {
     clearTimeout(timeoutHandle);
   }
 }
 
-async function _generateVideoWithAI(videoId: number, prompt: string, videoLength: string) {
+async function _generateVideoWithAI(videoId: number, prompt: string, videoLength: string, voiceId?: string) {
   const lengthMap: Record<string, string> = {
     "5-8": "5 to 8 minutes", "8-12": "8 to 12 minutes", "12-15": "12 to 15 minutes",
     "15-20": "15 to 20 minutes", "20+": "20+ minutes",
@@ -163,7 +163,8 @@ async function _generateVideoWithAI(videoId: number, prompt: string, videoLength
         } else {
           await updateVideoStatus(videoId, "generating_effects").catch(() => {});
         }
-      }
+      },
+      voiceId
     );
 
     // ── Stage 4: Mark as Completed ───────────────────────────────────────────
@@ -207,10 +208,11 @@ export const appRouter = router({
     generate: subscribedProcedure.input(z.object({
       prompt: z.string().min(10).max(1000),
       videoLength: z.enum(["5-8", "8-12", "12-15", "15-20", "20+"]),
+      voiceId: z.string().optional(),
     })).mutation(async ({ ctx, input }) => {
       const videoId = await createVideo({ userId: ctx.user.id, prompt: input.prompt, videoLength: input.videoLength, status: "pending" });
       if (!videoId) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Failed to create video" });
-      generateVideoWithAI(videoId, input.prompt, input.videoLength).catch(console.error);
+      generateVideoWithAI(videoId, input.prompt, input.videoLength, input.voiceId).catch(console.error);
       return { videoId, message: "Video generation started" };
     }),
     pollStatus: protectedProcedure.input(z.object({ id: z.number() })).query(async ({ ctx, input }) => {

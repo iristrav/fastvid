@@ -262,6 +262,7 @@ export default function Dashboard() {
   const [, navigate] = useLocation();
   const [prompt, setPrompt] = useState("");
   const [selectedLength, setSelectedLength] = useState<VideoLength>("15-20");
+  const [selectedVoice, setSelectedVoice] = useState("am_michael");
   const [viewingVideoId, setViewingVideoId] = useState<number | null>(null);
 
   const { data: videos, isLoading: videosLoading, refetch } = trpc.video.list.useQuery(undefined, { enabled: isAuthenticated });
@@ -314,7 +315,7 @@ export default function Dashboard() {
       toast.error("Please enter a prompt of at least 10 characters");
       return;
     }
-    generateMutation.mutate({ prompt: prompt.trim(), videoLength: selectedLength });
+    generateMutation.mutate({ prompt: prompt.trim(), videoLength: selectedLength, voiceId: selectedVoice });
   };
 
   const processingVideos = videos?.filter(v => !["completed", "failed"].includes(v.status)) ?? [];
@@ -450,6 +451,37 @@ export default function Dashboard() {
                 <Clock className="w-3 h-3 text-cyan-500" />
                 Generation time: <span className="text-cyan-400 font-medium">{activeLengthOption.genTime}</span>
               </p>
+            </div>
+
+            {/* Voice selector */}
+            <div>
+              <p className="text-xs text-slate-500 font-medium uppercase tracking-wide mb-2">Voice (Fish Audio S2 Pro)</p>
+              <div className="grid grid-cols-2 gap-2">
+                {[
+                  { id: "am_michael", label: "Michael", desc: "American Male", emoji: "🇺🇸" },
+                  { id: "am_adam", label: "Adam", desc: "American Male (Deep)", emoji: "🇺🇸" },
+                  { id: "af_heart", label: "Heart", desc: "American Female", emoji: "🇺🇸" },
+                  { id: "af_bella", label: "Bella", desc: "American Female", emoji: "🇺🇸" },
+                  { id: "bm_george", label: "George", desc: "British Male", emoji: "🇬🇧" },
+                  { id: "bm_lewis", label: "Lewis", desc: "British Male", emoji: "🇬🇧" },
+                ].map(v => (
+                  <button
+                    key={v.id}
+                    onClick={() => setSelectedVoice(v.id)}
+                    className={`px-3 py-2 rounded-lg text-xs font-semibold border transition-all duration-200 flex items-center gap-2 ${
+                      selectedVoice === v.id
+                        ? "bg-gradient-to-br from-purple-600/40 to-cyan-500/30 border-purple-400/60 text-white shadow-lg shadow-purple-500/20"
+                        : "border-white/10 text-slate-400 hover:border-white/20 hover:text-slate-200 bg-white/3"
+                    }`}
+                  >
+                    <span>{v.emoji}</span>
+                    <span className="font-bold">{v.label}</span>
+                    <span className={`text-[10px] font-normal truncate ${
+                      selectedVoice === v.id ? "text-cyan-300" : "text-slate-600"
+                    }`}>{v.desc}</span>
+                  </button>
+                ))}
+              </div>
             </div>
 
             {/* Prompt input */}

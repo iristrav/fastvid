@@ -29,8 +29,8 @@ import * as os from "os";
 import { generateImage } from "./_core/imageGeneration";
 import { storagePut } from "./storage";
 import { invokeLLM } from "./_core/llm";
-// @ts-ignore
-import gTTS from "node-gtts";
+// Fish Audio S2 Pro TTS
+const FISH_AUDIO_API_KEY = process.env.FISH_AUDIO_API_KEY || "";
 // @ts-ignore
 import ffmpegStatic from "ffmpeg-static";
 
@@ -162,17 +162,87 @@ IMPORTANT: Return exactly ${MAX_SCENES} scenes. The pexelsQuery must be in Engli
   return rawScenes.map((s, i) => ({ ...s, index: i, duration: 0 }));
 }
 
-// ─── 2. TTS Voiceover ─────────────────────────────────────────────────────────
-export async function generateVoiceover(text: string, outputPath: string): Promise<number> {
+// ─── 2. TTS Voiceover (Fish Audio S2 Pro) ────────────────────────────────────
+/**
+ * Generates a voiceover using Fish Audio S2 Pro.
+ * Falls back to Google TTS (node-gtts) if Fish Audio API key is not set or fails.
+ */
+export async function generateVoiceover(
+  text: string,
+  outputPath: string,
+  voiceId?: string
+): Promise<number> {
   const cleanText = text
     .replace(/[#*_`~>]/g, "")
     .replace(/\s+/g, " ")
     .replace(/[^\x00-\x7F]/g, "")
     .trim()
-    .slice(0, 500);
+    .slice(0, 1000); // Fish Audio supports longer text
 
   const MAX_ATTEMPTS = 3;
-  const TTS_TIMEOUT_MS = 60_000;
+  const TTS_TIMEOUT_MS = 90_000; // Fish Audio can take longer for longer texts
+
+  // ── Fish Audio S2 Pro ──
+  if (FISH_AUDIO_API_KEY) {
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      try {
+        const body: Record<string, unknown> = {
+          text: cleanText,
+          format: "mp3",
+          model: "s2-pro",
+          mp3_bitrate: 192,
+        };
+        // If a specific voice reference ID is provided, use it
+        if (voiceId) {
+          body.reference_id = voiceId;
+        }
+
+        const response = await withTimeout(
+          fetch("https://api.fish.audio/v1/tts", {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${FISH_AUDIO_API_KEY}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(body),
+          }),
+          TTS_TIMEOUT_MS,
+          `Fish Audio TTS attempt ${attempt}`
+        );
+
+        if (!response.ok) {
+          const errText = await response.text();
+          throw new Error(`Fish Audio HTTP ${response.status}: ${errText.slice(0, 200)}`);
+        }
+
+        const audioBuffer = Buffer.from(await response.arrayBuffer());
+        if (audioBuffer.length < 100) throw new Error("Fish Audio returned empty audio");
+
+        fs.writeFileSync(outputPath, audioBuffer);
+
+        // Estimate duration from file size (MP3 at 192kbps ≈ 24KB/s)
+        const durationSec = Math.max(3, Math.round(audioBuffer.length / 24000));
+        console.log(`[Pipeline] Fish Audio S2 Pro: scene audio ${durationSec}s (${audioBuffer.length} bytes)`);
+        return durationSec;
+      } catch (err) {
+        const isLastAttempt = attempt === MAX_ATTEMPTS;
+        if (isLastAttempt) {
+          console.warn(`[Pipeline] Fish Audio failed after ${MAX_ATTEMPTS} attempts, falling back to Google TTS:`, err);
+          break; // fall through to Google TTS fallback
+        }
+        const backoffMs = Math.pow(2, attempt) * 1000;
+        console.warn(`[Pipeline] Fish Audio attempt ${attempt} failed, retrying in ${backoffMs}ms:`, err);
+        await new Promise(r => setTimeout(r, backoffMs));
+      }
+    }
+  }
+
+  // ── Google TTS fallback ──
+  console.log("[Pipeline] Using Google TTS fallback");
+  // Dynamic import to avoid loading gTTS when Fish Audio is available
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const gTTS = require("node-gtts") as (lang: string) => { save: (path: string, text: string, cb: (err: Error | null) => void) => void };
+  const GTTS_TIMEOUT_MS = 60_000;
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
@@ -184,8 +254,8 @@ export async function generateVoiceover(text: string, outputPath: string): Promi
             else resolve();
           });
         }),
-        TTS_TIMEOUT_MS,
-        `TTS attempt ${attempt}`
+        GTTS_TIMEOUT_MS,
+        `Google TTS attempt ${attempt}`
       );
 
       if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0) {
@@ -196,7 +266,7 @@ export async function generateVoiceover(text: string, outputPath: string): Promi
     } catch (err) {
       const isLastAttempt = attempt === MAX_ATTEMPTS;
       if (isLastAttempt) {
-        console.warn(`[Pipeline] TTS failed after ${MAX_ATTEMPTS} attempts, using silent fallback:`, err);
+        console.warn(`[Pipeline] Google TTS also failed, using silent fallback:`, err);
         const estimatedDuration = Math.max(3, Math.ceil(cleanText.split(" ").length / 2.5));
         try {
           await withTimeout(
@@ -211,7 +281,7 @@ export async function generateVoiceover(text: string, outputPath: string): Promi
         return estimatedDuration;
       }
       const backoffMs = Math.pow(2, attempt) * 1000;
-      console.warn(`[Pipeline] TTS attempt ${attempt} failed, retrying in ${backoffMs}ms:`, err);
+      console.warn(`[Pipeline] Google TTS attempt ${attempt} failed, retrying in ${backoffMs}ms:`, err);
       await new Promise(r => setTimeout(r, backoffMs));
     }
   }
@@ -605,7 +675,8 @@ async function concatenateScenesWithMusic(
 export async function runVideoPipeline(
   videoId: number,
   script: string,
-  onProgress?: (p: PipelineProgress) => void
+  onProgress?: (p: PipelineProgress) => void,
+  voiceId?: string
 ): Promise<string> {
   const workDir = path.join(TMP_DIR, `fastvid_${videoId}_${Date.now()}`);
   fs.mkdirSync(workDir, { recursive: true });
@@ -621,7 +692,7 @@ export async function runVideoPipeline(
     onProgress?.({ stage: STAGE_LABELS.voiceovers, percent: 12 });
     const audioPaths = scenes.map((_, i) => path.join(workDir, `scene_${i}_audio.mp3`));
     const durations = await withTimeout(
-      Promise.all(scenes.map((scene, i) => generateVoiceover(scene.text, audioPaths[i]))),
+      Promise.all(scenes.map((scene, i) => generateVoiceover(scene.text, audioPaths[i], voiceId))),
       480_000,
       "Voiceover generation stage"
     );

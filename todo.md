@@ -191,3 +191,10 @@
 - [x] AI image generation as secondary fallback (forge ImageService)
 - [x] Color fallback as final safety net
 - [x] Priority order per scene: Pexels HD video → AI image → color fallback
+
+## Fish Audio S2 Pro TTS Integration
+- [x] Add FISH_AUDIO_API_KEY to environment secrets
+- [x] Test Fish Audio S2 Pro API with a sample text (200 OK, 116KB MP3)
+- [x] Replace Google TTS in videoPipeline.ts with Fish Audio S2 Pro (with Google TTS fallback)
+- [x] Add voiceId parameter to runVideoPipeline and video.generate tRPC procedure
+- [x] Add voice selector UI in Dashboard.tsx Generate Video form (6 voices: 4 American, 2 British)
