@@ -118,3 +118,9 @@
 
 ## Bug Fixes
 - [x] Fix espeak-ng not found on production — replaced with node-gtts (Google TTS via HTTP, no system dependency)
+
+## Live Progress Tracking
+- [ ] Add progressStep (text) and progressPercent (int) columns to videos table
+- [ ] Update pipeline to write granular step labels to DB at each stage
+- [ ] Update dashboard to show live step label + elapsed timer per in-progress video
+- [ ] Update admin panel to show same live progress for all videos

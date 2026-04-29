@@ -15,6 +15,13 @@
       "when": 1777464912165,
       "tag": "0001_living_gauntlet",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1777471896364,
+      "tag": "0002_cool_patriot",
+      "breakpoints": true
     }
   ]
 }

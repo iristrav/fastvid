@@ -52,6 +52,9 @@ export const videos = mysqlTable("videos", {
   thumbnailUrl: varchar("thumbnailUrl", { length: 1024 }),
   metadata: json("metadata"),
   errorMessage: text("errorMessage"),
+  progressStep: varchar("progressStep", { length: 256 }),   // e.g. "Writing script..."
+  progressPercent: int("progressPercent").default(0),       // 0-100
+  generationStartedAt: timestamp("generationStartedAt"),    // when pipeline started
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });

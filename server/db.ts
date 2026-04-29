@@ -123,10 +123,18 @@ export async function getVideosByUserId(userId: number) {
 export async function updateVideoStatus(id: number, status: InsertVideo["status"], extra?: {
   script?: string; voiceoverUrl?: string; videoUrl?: string;
   thumbnailUrl?: string; metadata?: unknown; errorMessage?: string; title?: string;
+  progressStep?: string; progressPercent?: number; generationStartedAt?: Date;
 }) {
   const db = await getDb();
   if (!db) return;
   await db.update(videos).set({ status, ...extra }).where(eq(videos.id, id));
+}
+
+/** Lightweight helper to update only the progress fields without changing status */
+export async function updateVideoProgress(id: number, progressStep: string, progressPercent: number) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(videos).set({ progressStep, progressPercent }).where(eq(videos.id, id));
 }
 
 export async function getAllVideos(limit = 100, offset = 0) {

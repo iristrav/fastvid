@@ -64,6 +64,18 @@ function VideoCard({ video, onView }: { video: {
   const currentStatus = pollData?.status ?? video.status;
   const statusLabel = STATUS_LABELS[currentStatus] ?? currentStatus;
   const statusColor = STATUS_COLORS[currentStatus] ?? "text-slate-400 bg-slate-400/10";
+  const progressStep = pollData?.progressStep ?? null;
+  const progressPercent = pollData?.progressPercent ?? 0;
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    const startTime = pollData?.generationStartedAt;
+    if (!isProcessing || !startTime) { setElapsed(0); return; }
+    const update = () => setElapsed(Math.floor((Date.now() - new Date(startTime).getTime()) / 1000));
+    update();
+    const id = setInterval(update, 1000);
+    return () => clearInterval(id);
+  }, [isProcessing, pollData?.generationStartedAt]);
+  const elapsedStr = `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, "0")}`;
 
   return (
     <div className="glass-card border border-white/8 rounded-xl overflow-hidden hover:border-white/15 transition-all duration-300 group">
@@ -74,9 +86,23 @@ function VideoCard({ video, onView }: { video: {
         ) : (
           <div className="w-full h-full flex items-center justify-center">
             {isProcessing || (pollData && !["completed","failed"].includes(pollData.status)) ? (
-              <div className="flex flex-col items-center gap-2">
+              <div className="flex flex-col items-center gap-3 w-full px-6">
                 <Loader2 className="w-8 h-8 text-purple-400 animate-spin" />
-                <span className="text-xs text-slate-400">{statusLabel}</span>
+                <div className="w-full">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-xs text-slate-300 truncate max-w-[80%]">{progressStep ?? statusLabel}</span>
+                    <span className="text-xs text-slate-500 font-mono ml-2 shrink-0">{elapsedStr}</span>
+                  </div>
+                  <div className="w-full bg-white/10 rounded-full h-1.5 overflow-hidden">
+                    <div
+                      className="h-full bg-gradient-to-r from-purple-500 to-cyan-500 rounded-full transition-all duration-700"
+                      style={{ width: `${Math.max(progressPercent, 3)}%` }}
+                    />
+                  </div>
+                  <div className="text-right mt-0.5">
+                    <span className="text-[10px] text-slate-600">{progressPercent}%</span>
+                  </div>
+                </div>
               </div>
             ) : currentStatus === "failed" ? (
               <XCircle className="w-10 h-10 text-red-400/60" />

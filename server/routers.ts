@@ -9,7 +9,7 @@ import { invokeLLM } from "./_core/llm";
 import {
   createVideo, getAllUsers, getAllVideos, getUserById,
   searchVideos, getUserStats, getVideoById, getVideosByUserId, getVideoStats,
-  updateUserRole, updateUserSubscription, updateVideoStatus,
+  updateUserRole, updateUserSubscription, updateVideoStatus, updateVideoProgress,
 } from "./db";
 import { FASTVID_PRO_PLAN } from "./products";
 import { runVideoPipeline } from "./videoPipeline";
@@ -37,7 +37,7 @@ async function generateVideoWithAI(videoId: number, prompt: string, videoLength:
   const lengthDesc = lengthMap[videoLength] ?? "15 to 20 minutes";
   try {
     // ── Stage 1: Generate Script ──────────────────────────────────────────────
-    await updateVideoStatus(videoId, "generating_script");
+    await updateVideoStatus(videoId, "generating_script", { progressStep: "Writing viral script...", progressPercent: 5, generationStartedAt: new Date() });
     const scriptResponse = await invokeLLM({
       messages: [
         { role: "system", content: `You are an expert YouTube scriptwriter who creates viral, engaging scripts optimized for maximum watch time and engagement. Structure scripts with: Hook (first 30 seconds), Introduction, Main Content (with chapters), and Call-to-Action. Include [VISUAL: description] tags for B-roll cues.` },
@@ -80,15 +80,19 @@ async function generateVideoWithAI(videoId: number, prompt: string, videoLength:
     } catch { metadata = { title, description: prompt, tags: [], chapters: [] }; }
 
     // ── Stage 3: Run Full Video Pipeline (TTS + Visuals + FFmpeg) ────────────
-    await updateVideoStatus(videoId, "generating_visuals", { metadata, title: (metadata as Record<string, string>).title ?? title });
+    await updateVideoStatus(videoId, "generating_visuals", { metadata, title: (metadata as Record<string, string>).title ?? title, progressStep: "Metadata ready — generating voiceover...", progressPercent: 30 });
     const videoUrl = await runVideoPipeline(
       videoId,
       scriptContent,
       async (progress) => {
-        // Map pipeline progress to status updates
-        if (progress.percent < 40) {
+        // Update granular progress step label + percent
+        const basePercent = 30;
+        const pipelinePercent = Math.round(basePercent + (progress.percent * 0.65));
+        await updateVideoProgress(videoId, progress.stage, Math.min(pipelinePercent, 95)).catch(() => {});
+        // Also update the status enum for coarse-grained tracking
+        if (progress.percent < 35) {
           await updateVideoStatus(videoId, "generating_voiceover").catch(() => {});
-        } else if (progress.percent < 80) {
+        } else if (progress.percent < 75) {
           await updateVideoStatus(videoId, "generating_visuals").catch(() => {});
         } else {
           await updateVideoStatus(videoId, "generating_effects").catch(() => {});
@@ -102,11 +106,15 @@ async function generateVideoWithAI(videoId: number, prompt: string, videoLength:
       title: (metadata as Record<string, string>).title ?? title,
       thumbnailUrl: `https://picsum.photos/seed/${videoId}/1280/720`,
       videoUrl,
+      progressStep: "Video complete!",
+      progressPercent: 100,
     });
   } catch (error) {
     console.error("[Video Generation] Error:", error);
     await updateVideoStatus(videoId, "failed", {
       errorMessage: error instanceof Error ? error.message : "Unknown error",
+      progressStep: "Generation failed",
+      progressPercent: 0,
     });
   }
 }
@@ -143,7 +151,7 @@ export const appRouter = router({
       const video = await getVideoById(input.id);
       if (!video) throw new TRPCError({ code: "NOT_FOUND" });
       if (video.userId !== ctx.user.id && ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN" });
-      return { status: video.status, title: video.title, script: video.script, metadata: video.metadata, thumbnailUrl: video.thumbnailUrl };
+      return { status: video.status, title: video.title, script: video.script, metadata: video.metadata, thumbnailUrl: video.thumbnailUrl, progressStep: video.progressStep, progressPercent: video.progressPercent ?? 0, generationStartedAt: video.generationStartedAt };
     }),
   }),
 
