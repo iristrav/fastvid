@@ -10,7 +10,9 @@ import {
   createVideo, getAllUsers, getAllVideos, getUserById,
   searchVideos, getUserStats, getVideoById, getVideosByUserId, getVideoStats,
   updateUserRole, updateUserSubscription, updateVideoStatus, updateVideoProgress,
+  getAllVoices, getAllVoicesAdmin, getVoiceById, createVoice, updateVoice, deleteVoice, seedDefaultVoices,
 } from "./db";
+import { storagePut } from "./storage";
 import { FASTVID_PRO_PLAN } from "./products";
 import { runVideoPipeline } from "./videoPipeline";
 
@@ -312,6 +314,79 @@ export const appRouter = router({
         subscriptionStatus: (user as { subscriptionStatus?: string })?.subscriptionStatus ?? "inactive",
         stripeCustomerId: (user as { stripeCustomerId?: string })?.stripeCustomerId ?? null,
       };
+    }),
+  }),
+
+  // ── Voice Library ────────────────────────────────────────────────────────────
+  voice: router({
+    /** Public: list all active voices (used in dashboard voice picker) */
+    list: publicProcedure.query(async () => {
+      await seedDefaultVoices();
+      return getAllVoices();
+    }),
+
+    /** Admin: list all voices including hidden ones */
+    listAll: adminProcedure.query(async () => {
+      await seedDefaultVoices();
+      return getAllVoicesAdmin();
+    }),
+
+    /** Admin: create a new voice */
+    create: adminProcedure.input(z.object({
+      name: z.string().min(1).max(128),
+      description: z.string().max(256).optional(),
+      fishAudioReferenceId: z.string().min(1).max(128),
+      exampleAudioUrl: z.string().max(1024).optional(),
+      flag: z.string().max(8).optional(),
+      sortOrder: z.number().int().optional(),
+    })).mutation(async ({ input }) => {
+      const id = await createVoice({
+        name: input.name,
+        description: input.description ?? null,
+        fishAudioReferenceId: input.fishAudioReferenceId,
+        exampleAudioUrl: input.exampleAudioUrl ?? null,
+        flag: input.flag ?? "🇺🇸",
+        sortOrder: input.sortOrder ?? 0,
+        isActive: 1,
+      });
+      return { id };
+    }),
+
+    /** Admin: update a voice */
+    update: adminProcedure.input(z.object({
+      id: z.number().int(),
+      name: z.string().min(1).max(128).optional(),
+      description: z.string().max(256).optional(),
+      fishAudioReferenceId: z.string().min(1).max(128).optional(),
+      exampleAudioUrl: z.string().max(1024).nullable().optional(),
+      flag: z.string().max(8).optional(),
+      isActive: z.number().int().min(0).max(1).optional(),
+      sortOrder: z.number().int().optional(),
+    })).mutation(async ({ input }) => {
+      const { id, ...data } = input;
+      await updateVoice(id, data);
+      return { success: true };
+    }),
+
+    /** Admin: delete a voice */
+    delete: adminProcedure.input(z.object({ id: z.number().int() })).mutation(async ({ input }) => {
+      await deleteVoice(input.id);
+      return { success: true };
+    }),
+
+    /** Admin: upload example audio for a voice — receives base64-encoded audio */
+    uploadExampleAudio: adminProcedure.input(z.object({
+      voiceId: z.number().int(),
+      audioBase64: z.string(),
+      mimeType: z.string().default("audio/mpeg"),
+    })).mutation(async ({ input }) => {
+      const voice = await getVoiceById(input.voiceId);
+      if (!voice) throw new TRPCError({ code: "NOT_FOUND", message: "Voice not found" });
+      const buffer = Buffer.from(input.audioBase64, "base64");
+      const ext = input.mimeType.includes("mp3") || input.mimeType.includes("mpeg") ? "mp3" : "wav";
+      const { url } = await storagePut(`voices/${input.voiceId}/example.${ext}`, buffer, input.mimeType);
+      await updateVoice(input.voiceId, { exampleAudioUrl: url });
+      return { url };
     }),
   }),
 });

@@ -12,7 +12,7 @@ import { Streamdown } from "streamdown";
 import {
   Play, Sparkles, Clock, CheckCircle2, XCircle, Loader2,
   FileText, Video, LogOut, User, ChevronRight, RefreshCw,
-  Copy, Download, Eye, LayoutDashboard, Settings, CreditCard,
+  Copy, Download, Eye, LayoutDashboard, Settings, CreditCard, Volume2,
 } from "lucide-react";
 
 // ─── Asset URLs ───────────────────────────────────────────────────────────────
@@ -453,36 +453,8 @@ export default function Dashboard() {
               </p>
             </div>
 
-            {/* Voice selector */}
-            <div>
-              <p className="text-xs text-slate-500 font-medium uppercase tracking-wide mb-2">Voice (Fish Audio S2 Pro)</p>
-              <div className="grid grid-cols-2 gap-2">
-                {[
-                  { id: "am_michael", label: "Michael", desc: "American Male", emoji: "🇺🇸" },
-                  { id: "am_adam", label: "Adam", desc: "American Male (Deep)", emoji: "🇺🇸" },
-                  { id: "af_heart", label: "Heart", desc: "American Female", emoji: "🇺🇸" },
-                  { id: "af_bella", label: "Bella", desc: "American Female", emoji: "🇺🇸" },
-                  { id: "bm_george", label: "George", desc: "British Male", emoji: "🇬🇧" },
-                  { id: "bm_lewis", label: "Lewis", desc: "British Male", emoji: "🇬🇧" },
-                ].map(v => (
-                  <button
-                    key={v.id}
-                    onClick={() => setSelectedVoice(v.id)}
-                    className={`px-3 py-2 rounded-lg text-xs font-semibold border transition-all duration-200 flex items-center gap-2 ${
-                      selectedVoice === v.id
-                        ? "bg-gradient-to-br from-purple-600/40 to-cyan-500/30 border-purple-400/60 text-white shadow-lg shadow-purple-500/20"
-                        : "border-white/10 text-slate-400 hover:border-white/20 hover:text-slate-200 bg-white/3"
-                    }`}
-                  >
-                    <span>{v.emoji}</span>
-                    <span className="font-bold">{v.label}</span>
-                    <span className={`text-[10px] font-normal truncate ${
-                      selectedVoice === v.id ? "text-cyan-300" : "text-slate-600"
-                    }`}>{v.desc}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
+            {/* Voice selector — loaded from DB */}
+            <VoiceSelector selectedVoice={selectedVoice} onSelect={setSelectedVoice} />
 
             {/* Prompt input */}
             <div>
@@ -559,6 +531,81 @@ export default function Dashboard() {
       {viewingVideoId !== null && (
         <VideoDetailModal videoId={viewingVideoId} onClose={() => setViewingVideoId(null)} />
       )}
+    </div>
+  );
+}
+
+// ─── Voice Selector Component ────────────────────────────────────────────────
+function VoiceSelector({ selectedVoice, onSelect }: { selectedVoice: string; onSelect: (id: string) => void }) {
+  const { data: voices = [], isLoading } = trpc.voice.list.useQuery();
+  const [playingId, setPlayingId] = useState<number | null>(null);
+  const [audioEl, setAudioEl] = useState<HTMLAudioElement | null>(null);
+
+  // Set default voice to first active voice when list loads
+  useEffect(() => {
+    if (voices.length > 0 && !voices.find(v => v.fishAudioReferenceId === selectedVoice)) {
+      onSelect(voices[0].fishAudioReferenceId);
+    }
+  }, [voices]);
+
+  function playExample(voice: typeof voices[0], e: React.MouseEvent) {
+    e.stopPropagation();
+    if (!voice.exampleAudioUrl) { return; }
+    if (audioEl) { audioEl.pause(); audioEl.src = ""; }
+    if (playingId === voice.id) { setPlayingId(null); setAudioEl(null); return; }
+    const a = new Audio(voice.exampleAudioUrl);
+    a.onended = () => { setPlayingId(null); setAudioEl(null); };
+    a.play();
+    setAudioEl(a);
+    setPlayingId(voice.id);
+  }
+
+  if (isLoading) {
+    return (
+      <div>
+        <p className="text-xs text-slate-500 font-medium uppercase tracking-wide mb-2">Voice</p>
+        <div className="flex items-center gap-2 text-slate-500 text-xs"><Loader2 className="w-3 h-3 animate-spin" /> Loading voices...</div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <p className="text-xs text-slate-500 font-medium uppercase tracking-wide mb-2">Voice (Fish Audio S2 Pro)</p>
+      <div className="grid grid-cols-1 gap-2">
+        {voices.map(v => (
+          <button
+            key={v.id}
+            onClick={() => onSelect(v.fishAudioReferenceId)}
+            className={`px-3 py-2.5 rounded-lg text-xs font-semibold border transition-all duration-200 flex items-center gap-2.5 w-full text-left ${
+              selectedVoice === v.fishAudioReferenceId
+                ? "bg-gradient-to-br from-purple-600/40 to-cyan-500/30 border-purple-400/60 text-white shadow-lg shadow-purple-500/20"
+                : "border-white/10 text-slate-400 hover:border-white/20 hover:text-slate-200 bg-white/3"
+            }`}
+          >
+            <span className="text-base">{v.flag ?? "🎙️"}</span>
+            <div className="flex-1 min-w-0">
+              <span className="font-bold block">{v.name}</span>
+              {v.description && <span className={`text-[10px] font-normal truncate block ${
+                selectedVoice === v.fishAudioReferenceId ? "text-cyan-300" : "text-slate-600"
+              }`}>{v.description}</span>}
+            </div>
+            {v.exampleAudioUrl && (
+              <button
+                onClick={(e) => playExample(v, e)}
+                className={`flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium transition-colors ${
+                  playingId === v.id
+                    ? "bg-purple-600 text-white"
+                    : "bg-white/10 text-slate-300 hover:bg-white/20"
+                }`}
+              >
+                <Volume2 className="w-3 h-3" />
+                {playingId === v.id ? "Stop" : "Sample"}
+              </button>
+            )}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }

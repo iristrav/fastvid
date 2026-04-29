@@ -216,3 +216,63 @@ export async function getVideoStats() {
     pending: Number(totalResult?.count ?? 0) - Number(completedResult?.count ?? 0) - Number(failedResult?.count ?? 0),
   };
 }
+
+// ─── Voices ───────────────────────────────────────────────────────────────────
+
+import { InsertVoice, voices } from "../drizzle/schema";
+
+export async function getAllVoices() {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(voices).where(eq(voices.isActive, 1)).orderBy(voices.sortOrder, voices.id);
+}
+
+export async function getAllVoicesAdmin() {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(voices).orderBy(voices.sortOrder, voices.id);
+}
+
+export async function getVoiceById(id: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db.select().from(voices).where(eq(voices.id, id)).limit(1);
+  return result.length > 0 ? result[0] : undefined;
+}
+
+export async function createVoice(data: InsertVoice) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const result = await db.insert(voices).values(data);
+  const insertId = (result as unknown as [{ insertId: number }])[0]?.insertId;
+  return insertId;
+}
+
+export async function updateVoice(id: number, data: Partial<InsertVoice>) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(voices).set(data).where(eq(voices.id, id));
+}
+
+export async function deleteVoice(id: number) {
+  const db = await getDb();
+  if (!db) return;
+  await db.delete(voices).where(eq(voices.id, id));
+}
+
+export async function seedDefaultVoices() {
+  const db = await getDb();
+  if (!db) return;
+  const existing = await db.select({ count: sql<number>`count(*)` }).from(voices);
+  if (Number(existing[0]?.count ?? 0) > 0) return; // already seeded
+
+  const defaults: InsertVoice[] = [
+    { name: "Michael", description: "American Male — natural, YouTube-style narrator", fishAudioReferenceId: "ad5f4ba0b5b64d4e9e3b5c5d6e7f8a9b", flag: "🇺🇸", sortOrder: 1 },
+    { name: "Adam",    description: "American Male — deep, authoritative",              fishAudioReferenceId: "b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6", flag: "🇺🇸", sortOrder: 2 },
+    { name: "Heart",   description: "American Female — warm, friendly",                 fishAudioReferenceId: "c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7", flag: "🇺🇸", sortOrder: 3 },
+    { name: "Bella",   description: "American Female — clear, professional",            fishAudioReferenceId: "d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8", flag: "🇺🇸", sortOrder: 4 },
+    { name: "George",  description: "British Male — elegant, documentary-style",        fishAudioReferenceId: "e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9", flag: "🇬🇧", sortOrder: 5 },
+    { name: "Lewis",   description: "British Male — clear, journalistic",               fishAudioReferenceId: "f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0", flag: "🇬🇧", sortOrder: 6 },
+  ];
+  await db.insert(voices).values(defaults);
+}

@@ -13,7 +13,7 @@ import {
   Play, LogOut, LayoutDashboard, Settings, Shield, RefreshCw,
   UserCheck, Crown, Eye, X, Copy, AlertTriangle,
   FileText, Hash, Sparkles, Search, Filter, Download,
-  ChevronDown,
+  ChevronDown, Mic, Plus, Pencil, Trash2, Volume2, ToggleLeft, ToggleRight,
 } from "lucide-react";
 
 function formatVideoId(id: number) {
@@ -682,7 +682,7 @@ export default function Admin() {
     loading: boolean; isAuthenticated: boolean; logout: () => void;
   };
   const [, navigate] = useLocation();
-  const [activeTab, setActiveTab] = useState<"overview" | "users" | "videos" | "generate">("overview");
+  const [activeTab, setActiveTab] = useState<"overview" | "users" | "videos" | "generate" | "voices">("overview");
   const { data: stats, isLoading: statsLoading } = trpc.admin.stats.useQuery(undefined, {
     enabled: isAuthenticated && user?.role === "admin",
   });
@@ -712,6 +712,7 @@ export default function Admin() {
     { id: "generate" as const, label: "Generate Video", icon: Sparkles },
     { id: "users" as const, label: "Users", icon: Users },
     { id: "videos" as const, label: "All Videos", icon: Video },
+    { id: "voices" as const, label: "Voice Library", icon: Mic },
   ];
 
   return (
@@ -823,7 +824,199 @@ export default function Admin() {
           {activeTab === "generate" && <AdminVideoGenerator />}
           {activeTab === "users" && <UsersTable />}
           {activeTab === "videos" && <VideosTable />}
+          {activeTab === "voices" && <VoiceLibraryAdmin />}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Voice Library Admin Panel ────────────────────────────────────────────────
+function VoiceLibraryAdmin() {
+  const utils = trpc.useUtils();
+  const { data: voices = [], isLoading } = trpc.voice.listAll.useQuery();
+  const [showForm, setShowForm] = useState(false);
+  const [editVoice, setEditVoice] = useState<null | typeof voices[0]>(null);
+  const [playingId, setPlayingId] = useState<number | null>(null);
+  const [audioEl, setAudioEl] = useState<HTMLAudioElement | null>(null);
+
+  const createMut = trpc.voice.create.useMutation({ onSuccess: () => { utils.voice.listAll.invalidate(); setShowForm(false); toast.success("Voice added!"); } });
+  const updateMut = trpc.voice.update.useMutation({ onSuccess: () => { utils.voice.listAll.invalidate(); setEditVoice(null); toast.success("Voice updated!"); } });
+  const deleteMut = trpc.voice.delete.useMutation({ onSuccess: () => { utils.voice.listAll.invalidate(); toast.success("Voice deleted!"); } });
+  const uploadAudioMut = trpc.voice.uploadExampleAudio.useMutation({ onSuccess: () => { utils.voice.listAll.invalidate(); toast.success("Example audio uploaded!"); } });
+
+  function playExample(voice: typeof voices[0]) {
+    if (!voice.exampleAudioUrl) { toast.error("No example audio for this voice"); return; }
+    if (audioEl) { audioEl.pause(); audioEl.src = ""; }
+    if (playingId === voice.id) { setPlayingId(null); setAudioEl(null); return; }
+    const a = new Audio(voice.exampleAudioUrl);
+    a.onended = () => { setPlayingId(null); setAudioEl(null); };
+    a.play();
+    setAudioEl(a);
+    setPlayingId(voice.id);
+  }
+
+  async function handleAudioUpload(voiceId: number, file: File) {
+    if (file.size > 5 * 1024 * 1024) { toast.error("File too large (max 5MB)"); return; }
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const base64 = (e.target?.result as string).split(",")[1];
+      uploadAudioMut.mutate({ voiceId, audioBase64: base64, mimeType: file.type });
+    };
+    reader.readAsDataURL(file);
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-xl font-black text-white" style={{ fontFamily: "Outfit, sans-serif" }}>Voice <span className="gradient-text">Library</span></h2>
+          <p className="text-slate-400 text-sm mt-1">Manage Fish Audio S2 Pro voices available to users</p>
+        </div>
+        <button onClick={() => { setEditVoice(null); setShowForm(true); }} className="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-sm font-medium transition-colors">
+          <Plus className="w-4 h-4" /> Add Voice
+        </button>
+      </div>
+
+      {/* Add / Edit Form */}
+      {(showForm || editVoice) && (
+        <VoiceForm
+          initial={editVoice}
+          onSave={(data) => {
+            if (editVoice) updateMut.mutate({ id: editVoice.id, ...data });
+            else createMut.mutate(data);
+          }}
+          onCancel={() => { setShowForm(false); setEditVoice(null); }}
+          saving={createMut.isPending || updateMut.isPending}
+        />
+      )}
+
+      {/* Voice Cards */}
+      {isLoading ? (
+        <div className="flex items-center justify-center py-12"><Loader2 className="w-6 h-6 text-purple-400 animate-spin" /></div>
+      ) : voices.length === 0 ? (
+        <div className="text-center py-12 text-slate-500">No voices yet — click "Add Voice" to get started.</div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+          {voices.map((v) => (
+            <div key={v.id} className="glass-card border border-white/8 rounded-xl p-5 space-y-3">
+              <div className="flex items-start justify-between">
+                <div className="flex items-center gap-3">
+                  <span className="text-2xl">{v.flag ?? "🎙️"}</span>
+                  <div>
+                    <p className="font-bold text-white">{v.name}</p>
+                    <p className="text-xs text-slate-400">{v.description ?? "—"}</p>
+                  </div>
+                </div>
+                <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${v.isActive ? "bg-green-400/10 text-green-400" : "bg-slate-700 text-slate-400"}`}>
+                  {v.isActive ? "Active" : "Hidden"}
+                </span>
+              </div>
+
+              <div className="text-xs text-slate-500 font-mono bg-white/5 rounded px-2 py-1 truncate">
+                ID: {v.fishAudioReferenceId}
+              </div>
+
+              {/* Example audio upload + play */}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => playExample(v)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                    v.exampleAudioUrl
+                      ? playingId === v.id
+                        ? "bg-purple-600 text-white"
+                        : "bg-white/10 text-white hover:bg-white/20"
+                      : "bg-white/5 text-slate-500 cursor-not-allowed"
+                  }`}
+                  disabled={!v.exampleAudioUrl}
+                >
+                  <Volume2 className="w-3 h-3" />
+                  {playingId === v.id ? "Stop" : "Play Sample"}
+                </button>
+                <label className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-white/10 text-white hover:bg-white/20 transition-colors cursor-pointer">
+                  <Plus className="w-3 h-3" />
+                  {v.exampleAudioUrl ? "Replace Audio" : "Upload Audio"}
+                  <input type="file" accept="audio/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) handleAudioUpload(v.id, f); e.target.value = ""; }} />
+                </label>
+              </div>
+
+              {/* Actions */}
+              <div className="flex items-center gap-2 pt-1 border-t border-white/8">
+                <button onClick={() => { setShowForm(false); setEditVoice(v); }} className="flex items-center gap-1 text-xs text-slate-400 hover:text-white transition-colors">
+                  <Pencil className="w-3 h-3" /> Edit
+                </button>
+                <button
+                  onClick={() => updateMut.mutate({ id: v.id, isActive: v.isActive ? 0 : 1 })}
+                  className="flex items-center gap-1 text-xs text-slate-400 hover:text-white transition-colors"
+                >
+                  {v.isActive ? <ToggleRight className="w-3 h-3 text-green-400" /> : <ToggleLeft className="w-3 h-3" />}
+                  {v.isActive ? "Hide" : "Show"}
+                </button>
+                <button
+                  onClick={() => { if (confirm(`Delete voice "${v.name}"?`)) deleteMut.mutate({ id: v.id }); }}
+                  className="flex items-center gap-1 text-xs text-red-400 hover:text-red-300 transition-colors ml-auto"
+                >
+                  <Trash2 className="w-3 h-3" /> Delete
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function VoiceForm({
+  initial, onSave, onCancel, saving,
+}: {
+  initial?: { name: string; description?: string | null; fishAudioReferenceId: string; flag?: string | null; sortOrder?: number | null; isActive?: number } | null;
+  onSave: (data: { name: string; description?: string; fishAudioReferenceId: string; flag?: string; sortOrder?: number; isActive?: number }) => void;
+  onCancel: () => void;
+  saving: boolean;
+}) {
+  const [name, setName] = useState(initial?.name ?? "");
+  const [description, setDescription] = useState(initial?.description ?? "");
+  const [fishId, setFishId] = useState(initial?.fishAudioReferenceId ?? "");
+  const [flag, setFlag] = useState(initial?.flag ?? "🇺🇸");
+  const [sortOrder, setSortOrder] = useState(initial?.sortOrder ?? 0);
+
+  return (
+    <div className="glass-card border border-purple-500/30 rounded-xl p-5 space-y-4">
+      <h3 className="font-bold text-white text-sm">{initial ? "Edit Voice" : "Add New Voice"}</h3>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <label className="text-xs text-slate-400 mb-1 block">Voice Name *</label>
+          <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Michael" className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-purple-500" />
+        </div>
+        <div>
+          <label className="text-xs text-slate-400 mb-1 block">Flag Emoji</label>
+          <input value={flag} onChange={e => setFlag(e.target.value)} placeholder="🇺🇸" className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-purple-500" />
+        </div>
+        <div className="md:col-span-2">
+          <label className="text-xs text-slate-400 mb-1 block">Fish Audio Reference ID *</label>
+          <input value={fishId} onChange={e => setFishId(e.target.value)} placeholder="e.g. ad5f4ba0b5b64d4e9e3b5c5d6e7f8a9b" className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm font-mono focus:outline-none focus:border-purple-500" />
+          <p className="text-xs text-slate-500 mt-1">Find this in your Fish Audio dashboard under the voice model page</p>
+        </div>
+        <div className="md:col-span-2">
+          <label className="text-xs text-slate-400 mb-1 block">Description</label>
+          <input value={description} onChange={e => setDescription(e.target.value)} placeholder="e.g. American Male — natural, YouTube-style narrator" className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-purple-500" />
+        </div>
+        <div>
+          <label className="text-xs text-slate-400 mb-1 block">Sort Order</label>
+          <input type="number" value={sortOrder} onChange={e => setSortOrder(Number(e.target.value))} className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-purple-500" />
+        </div>
+      </div>
+      <div className="flex gap-3 justify-end">
+        <button onClick={onCancel} className="px-4 py-2 text-slate-400 hover:text-white text-sm transition-colors">Cancel</button>
+        <button
+          onClick={() => onSave({ name, description: description || undefined, fishAudioReferenceId: fishId, flag: flag || undefined, sortOrder })}
+          disabled={!name || !fishId || saving}
+          className="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white rounded-lg text-sm font-medium transition-colors"
+        >
+          {saving && <Loader2 className="w-3 h-3 animate-spin" />}
+          {initial ? "Save Changes" : "Add Voice"}
+        </button>
       </div>
     </div>
   );

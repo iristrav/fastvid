@@ -61,3 +61,20 @@ export const videos = mysqlTable("videos", {
 
 export type Video = typeof videos.$inferSelect;
 export type InsertVideo = typeof videos.$inferInsert;
+
+// ─── Voices ───────────────────────────────────────────────────────────────────
+export const voices = mysqlTable("voices", {
+  id: int("id").autoincrement().primaryKey(),
+  name: varchar("name", { length: 128 }).notNull(),
+  description: varchar("description", { length: 256 }),
+  fishAudioReferenceId: varchar("fishAudioReferenceId", { length: 128 }).notNull(),
+  exampleAudioUrl: varchar("exampleAudioUrl", { length: 1024 }),
+  flag: varchar("flag", { length: 8 }).default("🇺🇸"),   // emoji flag
+  isActive: int("isActive").default(1).notNull(),          // 1 = active, 0 = hidden
+  sortOrder: int("sortOrder").default(0).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export type Voice = typeof voices.$inferSelect;
+export type InsertVoice = typeof voices.$inferInsert;

@@ -22,6 +22,13 @@
       "when": 1777471896364,
       "tag": "0002_cool_patriot",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "5",
+      "when": 1777490021748,
+      "tag": "0003_clumsy_absorbing_man",
+      "breakpoints": true
     }
   ]
 }
