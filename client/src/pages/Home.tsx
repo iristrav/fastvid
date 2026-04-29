@@ -2,7 +2,7 @@
  * FASTVID — Home Landing Page
  * Design: Neon Gradient Studio — deep space navy, violet-to-cyan gradient, glassmorphism
  * Fonts: Outfit (display), Space Grotesk (body), JetBrains Mono (code/labels)
- * Sections: Nav, Hero (with length selector), Stats, How It Works, Features, Pricing, Testimonials, FAQ, CTA Footer
+ * Language: English
  */
 
 import { useState, useEffect, useRef } from "react";
@@ -33,11 +33,11 @@ const VISUALS_IMG = "https://d2xsxph8kpxj0f.cloudfront.net/310519663314427713/B9
 
 // ─── Video length options ──────────────────────────────────────────────────────
 const VIDEO_LENGTHS = [
-  { label: "5–8 min", value: "5-8", desc: "Kort & krachtig", genTime: "~3 min" },
-  { label: "8–12 min", value: "8-12", desc: "Ideaal voor tutorials", genTime: "~5 min" },
-  { label: "12–15 min", value: "12-15", desc: "Diepgaande content", genTime: "~7 min" },
-  { label: "15–20 min", value: "15-20", desc: "Uitgebreide video's", genTime: "~10 min" },
-  { label: "20+ min", value: "20+", desc: "Lange documentaires", genTime: "~15 min" },
+  { label: "5–8 min", value: "5-8", desc: "Short & punchy", genTime: "~3 min" },
+  { label: "8–12 min", value: "8-12", desc: "Perfect for tutorials", genTime: "~5 min" },
+  { label: "12–15 min", value: "12-15", desc: "In-depth content", genTime: "~7 min" },
+  { label: "15–20 min", value: "15-20", desc: "Extended videos", genTime: "~10 min" },
+  { label: "20+ min", value: "20+", desc: "Long-form documentaries", genTime: "~15 min" },
 ];
 
 // ─── Intersection Observer Hook ────────────────────────────────────────────────
@@ -104,7 +104,7 @@ function StepCard({ number, icon: Icon, title, desc }: {
   );
 }
 
-// ─── Stat Counter ─────────────────────────────────────────────────────────────
+// ─── Stat Item ────────────────────────────────────────────────────────────────
 function StatItem({ value, label, icon: Icon }: { value: string; label: string; icon: React.ElementType }) {
   const { ref, inView } = useInView();
   return (
@@ -164,36 +164,40 @@ export default function Home() {
 
   const faqs = [
     {
-      q: "Welke videolengte moet ik kiezen?",
-      a: "Dat hangt af van je niche en doelgroep. Korte video's (5–8 min) werken goed voor snelle tips en nieuws. Middellange video's (8–15 min) zijn ideaal voor tutorials en reviews. Lange video's (15–20 min en 20+) scoren beter voor diepgaande analyses, documentaires en educatieve content — en leveren meer kijktijd en advertentie-inkomsten op.",
+      q: "Which video length should I choose?",
+      a: "It depends on your niche and audience. Short videos (5–8 min) work great for quick tips and news. Mid-length videos (8–15 min) are ideal for tutorials and reviews. Long videos (15–20 min and 20+) perform best for in-depth analyses, documentaries, and educational content — and generate more watch time and ad revenue.",
     },
     {
-      q: "Hoe lang duurt het om een video te genereren?",
-      a: "De generatietijd hangt af van de gekozen videolengte. Een video van 5–8 minuten is klaar in ~3 minuten, terwijl een video van 20+ minuten ~15 minuten duurt. Fastvid werkt parallel: script, voiceover en visuals worden tegelijkertijd verwerkt.",
+      q: "How long does it take to generate a video?",
+      a: "Generation time depends on the chosen video length. A 5–8 minute video is ready in ~3 minutes, while a 20+ minute video takes ~15 minutes. Fastvid works in parallel: script, voiceover, and visuals are processed simultaneously for maximum speed.",
     },
     {
-      q: "Kan ik de videolengte per video aanpassen?",
-      a: "Ja, absoluut. Je kiest de gewenste lengte per video bij elke generatie. Je bent niet gebonden aan één lengte — je kunt voor het ene kanaal korte video's maken en voor het andere lange documentaires.",
+      q: "Can I change the video length for each video?",
+      a: "Yes, absolutely. You choose the desired length per video with every generation. You're not locked into one length — you can create short videos for one channel and long documentaries for another.",
     },
     {
-      q: "Kan ik de video bewerken na het genereren?",
-      a: "Ja, elke gegenereerde video wordt geleverd met een volledig bewerkbaar project. Je kunt het script aanpassen, de voiceover opnieuw genereren, visuals vervangen en effecten finetunen via de ingebouwde editor.",
+      q: "Can I edit the video after it's generated?",
+      a: "Yes, every generated video comes with a fully editable project. You can adjust the script, regenerate the voiceover, swap visuals, and fine-tune effects through the built-in editor.",
     },
     {
-      q: "Is er een gratis proefperiode?",
-      a: "Ja! Je krijgt 14 dagen gratis toegang tot alle functies en alle videolengtes, zonder creditcard. Na de proefperiode kies je zelf of je wilt doorgaan voor €500/maand.",
+      q: "Is there a free trial?",
+      a: "Yes! You get 14 days of free access to all features and all video lengths, no credit card required. After the trial, you decide whether to continue for €500/month.",
     },
     {
-      q: "Hoe worden de video's geoptimaliseerd voor YouTube?",
-      a: "Fastvid analyseert trending topics, optimale videolengtes per niche, thumbnail-stijlen en SEO-metadata. Het script wordt geschreven met bewezen virale structuren: haak, opbouw, climax en call-to-action — aangepast aan de gekozen videolengte.",
+      q: "How are videos optimized for YouTube?",
+      a: "Fastvid analyzes trending topics, optimal video lengths per niche, thumbnail styles, and SEO metadata. Scripts are written using proven viral structures: hook, build-up, climax, and call-to-action — all adapted to the chosen video length.",
     },
     {
-      q: "Welke betaalmethoden accepteren jullie?",
-      a: "Wij accepteren SEPA Direct Debit, Bancontact, PayPal en alle gangbare creditcards (Visa, Mastercard, Amex).",
+      q: "What payment methods do you accept?",
+      a: "We accept SEPA Direct Debit, Bancontact, PayPal, and all major credit cards (Visa, Mastercard, Amex).",
     },
     {
-      q: "Zijn de video's 100% uniek en auteursrechtvrij?",
-      a: "Ja. Elk script wordt uniek gegenereerd op basis van jouw prompt. De visuals worden geselecteerd uit auteursrechtvrije stockbibliotheken of volledig door AI gegenereerd. Je bezit alle rechten op de geproduceerde video's.",
+      q: "Are the videos 100% unique and copyright-free?",
+      a: "Yes. Every script is uniquely generated based on your prompt. Visuals are sourced from royalty-free stock libraries or fully AI-generated. You own all rights to the produced videos.",
+    },
+    {
+      q: "Can I add my own voice or branding?",
+      a: "Absolutely. You can upload your own voice for cloning, set your logo and brand colors, and attach intro/outro templates to your channel.",
     },
   ];
 
@@ -201,58 +205,58 @@ export default function Home() {
     {
       number: "01",
       icon: Sparkles,
-      title: "Geef je prompt",
-      desc: "Beschrijf je video in één zin en kies de gewenste lengte. Fastvid begrijpt je niche, doelgroep en toon automatisch.",
+      title: "Enter your prompt",
+      desc: "Describe your video in one sentence and choose the desired length. Fastvid automatically understands your niche, audience, and tone.",
     },
     {
       number: "02",
       icon: FileText,
-      title: "AI schrijft het script",
-      desc: "Een viraal geoptimaliseerd script op maat van de gekozen lengte — met sterke hook, opbouw en call-to-action.",
+      title: "AI writes the script",
+      desc: "A virally optimized script tailored to your chosen length — with a strong hook, build-up, and call-to-action.",
     },
     {
       number: "03",
       icon: Mic,
-      title: "Professionele voiceover",
-      desc: "Kies uit tientallen AI-stemmen of clone je eigen stem. Vloeiend, natuurlijk en op maat gemonteerd.",
+      title: "Professional voiceover",
+      desc: "Choose from dozens of AI voices or clone your own. Smooth, natural, and perfectly timed to the edit.",
     },
     {
       number: "04",
       icon: Image,
       title: "Visuals & B-roll",
-      desc: "AI matcht elk scriptonderdeel aan passende beelden, stockvideo's en AI-gegenereerde visuals.",
+      desc: "AI matches every part of the script to fitting footage, stock video, and AI-generated visuals.",
     },
     {
       number: "05",
       icon: Wand2,
-      title: "Effecten & export",
-      desc: "Automatische tekstoverlays, transitions, muziek en kleurcorrectie. Klaar voor upload naar YouTube.",
+      title: "Effects & export",
+      desc: "Automatic text overlays, transitions, music, and color grading. Ready to upload to YouTube.",
     },
   ];
 
   const testimonials = [
     {
-      name: "Daan Vermeer",
+      name: "James Carter",
       role: "YouTube creator — 180K subscribers",
-      text: "Ik maak nu 3x zoveel video's in dezelfde tijd. De kwaliteit van de scripts is echt indrukwekkend — beter dan wat ik zelf zou schrijven.",
+      text: "I'm now producing 3x more videos in the same amount of time. The script quality is genuinely impressive — better than what I'd write myself.",
       stars: 5,
     },
     {
-      name: "Lena Hofstra",
-      role: "Online ondernemer",
-      text: "Mijn kanaal groeide van 2K naar 45K subscribers in 3 maanden. Fastvid is de beste investering die ik ooit heb gedaan voor mijn business.",
+      name: "Sophie Williams",
+      role: "Online entrepreneur",
+      text: "My channel grew from 2K to 45K subscribers in 3 months. Fastvid is the best investment I've ever made for my business.",
       stars: 5,
     },
     {
-      name: "Remi Claes",
-      role: "Content agency eigenaar",
-      text: "We produceren nu 20+ videos per week voor onze klanten. De ROI is absurd. €500/maand voor onbeperkte video's is een no-brainer.",
+      name: "Marcus Reid",
+      role: "Content agency owner",
+      text: "We're now producing 20+ videos per week for our clients. The ROI is insane. €500/month for unlimited videos is a no-brainer.",
       stars: 5,
     },
     {
-      name: "Sanne de Wit",
-      role: "Educatieve YouTuber",
-      text: "De voiceover klinkt zo natuurlijk dat mijn kijkers niet eens doorhebben dat het AI is. Geweldige tool.",
+      name: "Emma Thornton",
+      role: "Educational YouTuber",
+      text: "The voiceover sounds so natural that my viewers don't even realize it's AI. An incredible tool.",
       stars: 5,
     },
   ];
@@ -275,7 +279,7 @@ export default function Home() {
           </button>
 
           <div className="hidden md:flex items-center gap-8">
-            {[["Hoe het werkt", "how-it-works"], ["Features", "features"], ["Prijzen", "pricing"], ["FAQ", "faq"]].map(([label, id]) => (
+            {[["How it works", "how-it-works"], ["Features", "features"], ["Pricing", "pricing"], ["FAQ", "faq"]].map(([label, id]) => (
               <button key={id} onClick={() => scrollTo(id)} className="text-sm text-slate-400 hover:text-white transition-colors duration-200">
                 {label}
               </button>
@@ -284,10 +288,10 @@ export default function Home() {
 
           <div className="hidden md:flex items-center gap-3">
             <button onClick={() => scrollTo("pricing")} className="text-sm text-slate-400 hover:text-white transition-colors">
-              Inloggen
+              Log in
             </button>
             <button onClick={() => scrollTo("pricing")} className="btn-gradient px-4 py-2 rounded-lg text-sm font-semibold text-white">
-              Gratis proberen
+              Try for free
             </button>
           </div>
 
@@ -298,13 +302,13 @@ export default function Home() {
 
         {mobileMenuOpen && (
           <div className="md:hidden bg-background/95 backdrop-blur-xl border-b border-white/8 px-4 pb-4 flex flex-col gap-3">
-            {[["Hoe het werkt", "how-it-works"], ["Features", "features"], ["Prijzen", "pricing"], ["FAQ", "faq"]].map(([label, id]) => (
+            {[["How it works", "how-it-works"], ["Features", "features"], ["Pricing", "pricing"], ["FAQ", "faq"]].map(([label, id]) => (
               <button key={id} onClick={() => scrollTo(id)} className="text-sm text-slate-300 hover:text-white py-2 text-left transition-colors">
                 {label}
               </button>
             ))}
             <button onClick={() => scrollTo("pricing")} className="btn-gradient px-4 py-2.5 rounded-lg text-sm font-semibold text-white mt-2">
-              14 dagen gratis proberen
+              Start 14-day free trial
             </button>
           </div>
         )}
@@ -327,18 +331,18 @@ export default function Home() {
               </div>
 
               <h1 className="animate-fade-up delay-100 text-4xl sm:text-5xl lg:text-6xl font-black leading-tight text-white" style={{ fontFamily: 'Outfit, sans-serif' }}>
-                Van prompt naar{" "}
-                <span className="gradient-text">virale YouTube video</span>{" "}
-                in minuten
+                From prompt to{" "}
+                <span className="gradient-text">viral YouTube video</span>{" "}
+                in minutes
               </h1>
 
               <p className="animate-fade-up delay-200 text-base md:text-lg text-slate-300 leading-relaxed max-w-lg">
-                Fastvid genereert complete YouTube video's van jouw gewenste lengte — inclusief viraal script, professionele voiceover, passende visuals en cineastische effecten. Eén prompt is alles wat je nodig hebt.
+                Fastvid generates complete YouTube videos at your chosen length — including a viral script, professional voiceover, matching visuals, and cinematic effects. One prompt is all you need.
               </p>
 
               {/* Video length selector */}
               <div className="animate-fade-up delay-250 flex flex-col gap-2">
-                <span className="mono text-xs text-slate-500 font-medium tracking-wide uppercase">Kies videolengte</span>
+                <span className="mono text-xs text-slate-500 font-medium tracking-wide uppercase">Choose video length</span>
                 <div className="flex flex-wrap gap-2">
                   {VIDEO_LENGTHS.map((opt) => (
                     <button
@@ -359,7 +363,7 @@ export default function Home() {
                 </div>
                 <p className="text-xs text-slate-600 flex items-center gap-1.5">
                   <Clock className="w-3 h-3 text-cyan-500" />
-                  Generatietijd voor <span className="text-cyan-400 font-medium">{activeLengthOption.label}</span>: {activeLengthOption.genTime}
+                  Generation time for <span className="text-cyan-400 font-medium">{activeLengthOption.label}</span>: {activeLengthOption.genTime}
                 </p>
               </div>
 
@@ -369,7 +373,7 @@ export default function Home() {
                   type="text"
                   value={promptValue}
                   onChange={(e) => setPromptValue(e.target.value)}
-                  placeholder={`Maak een ${activeLengthOption.label} video over...`}
+                  placeholder={`Create a ${activeLengthOption.label} video about...`}
                   className="flex-1 bg-transparent text-sm text-white placeholder:text-slate-500 outline-none"
                 />
                 <button
@@ -377,15 +381,15 @@ export default function Home() {
                   className="btn-gradient px-4 py-2.5 rounded-lg text-sm font-semibold text-white flex items-center gap-2 shrink-0"
                 >
                   <Sparkles className="w-4 h-4" />
-                  Genereer
+                  Generate
                 </button>
               </div>
 
               {/* Trust signals */}
               <div className="animate-fade-up delay-400 flex flex-wrap items-center gap-4 text-xs text-slate-500">
-                <span className="flex items-center gap-1.5"><Check className="w-3.5 h-3.5 text-cyan-400" /> 14 dagen gratis</span>
-                <span className="flex items-center gap-1.5"><Check className="w-3.5 h-3.5 text-cyan-400" /> Geen creditcard nodig</span>
-                <span className="flex items-center gap-1.5"><Check className="w-3.5 h-3.5 text-cyan-400" /> Alle videolengtes</span>
+                <span className="flex items-center gap-1.5"><Check className="w-3.5 h-3.5 text-cyan-400" /> 14 days free</span>
+                <span className="flex items-center gap-1.5"><Check className="w-3.5 h-3.5 text-cyan-400" /> No credit card required</span>
+                <span className="flex items-center gap-1.5"><Check className="w-3.5 h-3.5 text-cyan-400" /> All video lengths</span>
               </div>
             </div>
 
@@ -408,10 +412,10 @@ export default function Home() {
       <section className="relative py-16 border-y border-white/8">
         <div className="container">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-8 md:gap-12">
-            <StatItem value="5–20+" label="minuten, jij kiest de lengte" icon={Clock} />
-            <StatItem value="∞" label="video's per maand" icon={Infinity} />
-            <StatItem value="5 lengtes" label="om uit te kiezen" icon={Zap} />
-            <StatItem value="3×" label="meer views gemiddeld" icon={TrendingUp} />
+            <StatItem value="5–20+" label="minutes — you choose the length" icon={Clock} />
+            <StatItem value="∞" label="videos per month" icon={Infinity} />
+            <StatItem value="5" label="length options to choose from" icon={Zap} />
+            <StatItem value="3×" label="more views on average" icon={TrendingUp} />
           </div>
         </div>
       </section>
@@ -421,13 +425,13 @@ export default function Home() {
         <div className="glow-orb w-72 h-72 bg-cyan-500/8 top-0 right-0 animate-orb-drift-slow" />
         <div className="container relative z-10">
           <div className="text-center mb-12">
-            <span className="mono text-xs text-cyan-400 font-medium tracking-widest uppercase mb-3 block">Flexibele videolengte</span>
+            <span className="mono text-xs text-cyan-400 font-medium tracking-widest uppercase mb-3 block">Flexible video length</span>
             <h2 className="text-3xl md:text-4xl font-black text-white mb-4" style={{ fontFamily: 'Outfit, sans-serif' }}>
-              Kies de lengte die{" "}
-              <span className="gradient-text">bij jouw niche past</span>
+              Choose the length that{" "}
+              <span className="gradient-text">fits your niche</span>
             </h2>
             <p className="text-slate-400 max-w-xl mx-auto text-sm md:text-base">
-              Elke videolengte heeft zijn eigen strategie. Fastvid past het script, de structuur en de montage automatisch aan op de gekozen duur.
+              Every video length has its own strategy. Fastvid automatically adapts the script structure, pacing, and editing to match the chosen duration.
             </p>
           </div>
 
@@ -437,45 +441,40 @@ export default function Home() {
                 label: "5–8 min",
                 value: "5-8",
                 icon: "⚡",
-                color: "cyan",
-                title: "Kort & krachtig",
-                useCases: ["Nieuws & updates", "Snelle tips", "Product reveals", "Trending topics"],
+                title: "Short & punchy",
+                useCases: ["News & updates", "Quick tips", "Product reveals", "Trending topics"],
                 genTime: "~3 min",
               },
               {
                 label: "8–12 min",
                 value: "8-12",
                 icon: "🎯",
-                color: "purple",
-                title: "Ideaal voor tutorials",
-                useCases: ["How-to video's", "Reviews", "Top 5 lijsten", "Vlog-stijl content"],
+                title: "Perfect for tutorials",
+                useCases: ["How-to videos", "Reviews", "Top 5 lists", "Vlog-style content"],
                 genTime: "~5 min",
               },
               {
                 label: "12–15 min",
                 value: "12-15",
                 icon: "📈",
-                color: "cyan",
-                title: "Diepgaande content",
-                useCases: ["Uitgebreide tutorials", "Case studies", "Vergelijkingen", "Educatief"],
+                title: "In-depth content",
+                useCases: ["Extended tutorials", "Case studies", "Comparisons", "Educational"],
                 genTime: "~7 min",
               },
               {
                 label: "15–20 min",
                 value: "15-20",
                 icon: "🎬",
-                color: "purple",
-                title: "Uitgebreide video's",
-                useCases: ["Documentaire-stijl", "Diepgaande analyses", "Interviews", "Storytelling"],
+                title: "Extended videos",
+                useCases: ["Documentary-style", "Deep-dive analyses", "Interviews", "Storytelling"],
                 genTime: "~10 min",
               },
               {
                 label: "20+ min",
                 value: "20+",
                 icon: "🏆",
-                color: "cyan",
-                title: "Lange documentaires",
-                useCases: ["Masterclasses", "Volledige cursussen", "Epische verhalen", "Deep dives"],
+                title: "Long-form documentaries",
+                useCases: ["Masterclasses", "Full courses", "Epic stories", "Deep dives"],
                 genTime: "~15 min",
               },
             ].map((opt) => (
@@ -510,7 +509,7 @@ export default function Home() {
                 </ul>
                 <div className="mt-auto pt-2 border-t border-white/6 flex items-center gap-1.5">
                   <Clock className="w-3 h-3 text-cyan-500" />
-                  <span className="mono text-xs text-cyan-400">{opt.genTime} generatietijd</span>
+                  <span className="mono text-xs text-cyan-400">{opt.genTime} generation time</span>
                 </div>
               </div>
             ))}
@@ -523,13 +522,13 @@ export default function Home() {
         <div className="glow-orb w-72 h-72 bg-purple-600/10 top-10 right-0 animate-orb-drift" />
         <div className="container relative z-10">
           <div className="text-center mb-16">
-            <span className="mono text-xs text-cyan-400 font-medium tracking-widest uppercase mb-3 block">Hoe het werkt</span>
+            <span className="mono text-xs text-cyan-400 font-medium tracking-widest uppercase mb-3 block">How it works</span>
             <h2 className="text-3xl md:text-4xl font-black text-white mb-4" style={{ fontFamily: 'Outfit, sans-serif' }}>
-              Van idee naar video in{" "}
-              <span className="gradient-text">5 stappen</span>
+              From idea to video in{" "}
+              <span className="gradient-text">5 steps</span>
             </h2>
             <p className="text-slate-400 max-w-xl mx-auto text-sm md:text-base">
-              Fastvid automatiseert het volledige productieproces. Jij geeft de richting en de lengte, de AI doet het werk.
+              Fastvid automates the entire production process. You set the direction and length — the AI does the work.
             </p>
           </div>
 
@@ -548,8 +547,8 @@ export default function Home() {
           <div className="text-center mb-16">
             <span className="mono text-xs text-cyan-400 font-medium tracking-widest uppercase mb-3 block">Features</span>
             <h2 className="text-3xl md:text-4xl font-black text-white mb-4" style={{ fontFamily: 'Outfit, sans-serif' }}>
-              Alles wat je nodig hebt voor{" "}
-              <span className="gradient-text">virale content</span>
+              Everything you need for{" "}
+              <span className="gradient-text">viral content</span>
             </h2>
           </div>
 
@@ -564,13 +563,13 @@ export default function Home() {
                   <span className="mono text-xs text-purple-400 font-medium">Script Engine</span>
                 </div>
                 <h3 className="text-2xl md:text-3xl font-bold text-white" style={{ fontFamily: 'Outfit, sans-serif' }}>
-                  Scripts die <span className="gradient-text">viraal gaan</span>
+                  Scripts built to <span className="gradient-text">go viral</span>
                 </h3>
                 <p className="text-slate-400 leading-relaxed">
-                  Onze AI schrijft scripts op maat van de gekozen videolengte. Of het nu een snelle 5-minuten tip is of een uitgebreide 20+ minuten documentaire — de structuur, het tempo en de hook worden automatisch aangepast.
+                  Our AI writes scripts tailored to your chosen video length. Whether it's a quick 5-minute tip or an in-depth 20+ minute documentary — the structure, pacing, and hook are automatically adapted.
                 </p>
                 <ul className="space-y-2">
-                  {["Viraal geoptimaliseerde hooks voor elke lengte", "SEO-vriendelijke titels & beschrijvingen", "Automatische hoofdstukindeling", "Aanpasbare toon & stijl"].map((item) => (
+                  {["Virally optimized hooks for every length", "SEO-friendly titles & descriptions", "Automatic chapter structure", "Adjustable tone & style"].map((item) => (
                     <li key={item} className="flex items-center gap-2.5 text-sm text-slate-300">
                       <Check className="w-4 h-4 text-cyan-400 shrink-0" />
                       {item}
@@ -598,13 +597,13 @@ export default function Home() {
                   <span className="mono text-xs text-cyan-400 font-medium">Visual AI</span>
                 </div>
                 <h3 className="text-2xl md:text-3xl font-bold text-white" style={{ fontFamily: 'Outfit, sans-serif' }}>
-                  Beelden die <span className="gradient-text">versterken</span>
+                  Visuals that <span className="gradient-text">amplify</span>
                 </h3>
                 <p className="text-slate-400 leading-relaxed">
-                  Fastvid matcht automatisch elk scriptonderdeel aan de perfecte visuals — ongeacht de videolengte. Van stockvideo's en AI-gegenereerde beelden tot animaties en infographics.
+                  Fastvid automatically matches every part of the script to the perfect visuals — regardless of video length. From stock footage and AI-generated imagery to animations and infographics.
                 </p>
                 <ul className="space-y-2">
-                  {["Automatische B-roll matching", "AI-gegenereerde visuals", "Cineastische transitions", "Tekstoverlays & lower thirds"].map((item) => (
+                  {["Automatic B-roll matching", "AI-generated visuals", "Cinematic transitions", "Text overlays & lower thirds"].map((item) => (
                     <li key={item} className="flex items-center gap-2.5 text-sm text-slate-300">
                       <Check className="w-4 h-4 text-cyan-400 shrink-0" />
                       {item}
@@ -617,12 +616,12 @@ export default function Home() {
             {/* Feature grid */}
             <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {[
-                { icon: Mic, title: "Voice Cloning", desc: "Upload je eigen stem en Fastvid kloont hem voor alle toekomstige video's. Volledig authentiek.", color: "purple" },
-                { icon: Wand2, title: "Auto-effecten", desc: "Kleurcorrectie, achtergrondmuziek, geluidseffecten en cinematische filters worden automatisch toegepast.", color: "cyan" },
-                { icon: TrendingUp, title: "Trend Analyse", desc: "Fastvid analyseert dagelijks trending topics in jouw niche en suggereert video-ideeën die nu scoren.", color: "purple" },
-                { icon: Zap, title: "Snelle export", desc: "Exporteer in 4K, 1080p of geoptimaliseerd voor YouTube Shorts. Direct klaar voor upload.", color: "cyan" },
-                { icon: FileText, title: "Multi-taal", desc: "Genereer video's in het Nederlands, Engels, Duits, Frans en Spaans met native voiceovers.", color: "purple" },
-                { icon: Sparkles, title: "Thumbnail AI", desc: "Automatisch gegenereerde click-bait thumbnails geoptimaliseerd voor maximale CTR op YouTube.", color: "cyan" },
+                { icon: Mic, title: "Voice Cloning", desc: "Upload your own voice and Fastvid clones it for all future videos. Fully authentic, every time.", color: "purple" },
+                { icon: Wand2, title: "Auto Effects", desc: "Color grading, background music, sound effects, and cinematic filters are applied automatically.", color: "cyan" },
+                { icon: TrendingUp, title: "Trend Analysis", desc: "Fastvid analyzes daily trending topics in your niche and suggests video ideas that are performing right now.", color: "purple" },
+                { icon: Zap, title: "Fast Export", desc: "Export in 4K, 1080p, or optimized for YouTube Shorts. Ready to upload instantly.", color: "cyan" },
+                { icon: FileText, title: "Multi-language", desc: "Generate videos in English, Dutch, German, French, and Spanish with native voiceovers.", color: "purple" },
+                { icon: Sparkles, title: "Thumbnail AI", desc: "Auto-generated click-worthy thumbnails optimized for maximum CTR on YouTube.", color: "cyan" },
               ].map(({ icon: Icon, title, desc, color }) => (
                 <div key={title} className="glass-card gradient-border p-5 flex flex-col gap-3 hover:bg-white/5 transition-colors duration-300">
                   <div className={`w-9 h-9 rounded-lg flex items-center justify-center border ${
@@ -644,12 +643,12 @@ export default function Home() {
         <div className="glow-orb w-96 h-96 bg-purple-600/15 top-0 left-1/2 -translate-x-1/2 animate-orb-drift" />
         <div className="container relative z-10">
           <div className="text-center mb-16">
-            <span className="mono text-xs text-cyan-400 font-medium tracking-widest uppercase mb-3 block">Prijzen</span>
+            <span className="mono text-xs text-cyan-400 font-medium tracking-widest uppercase mb-3 block">Pricing</span>
             <h2 className="text-3xl md:text-4xl font-black text-white mb-4" style={{ fontFamily: 'Outfit, sans-serif' }}>
-              Eén plan. <span className="gradient-text">Onbeperkt alles.</span>
+              One plan. <span className="gradient-text">Unlimited everything.</span>
             </h2>
             <p className="text-slate-400 max-w-md mx-auto text-sm md:text-base">
-              Geen verborgen kosten, geen limieten. Alle videolengtes, onbeperkte video's, vaste prijs.
+              No hidden fees, no limits. All video lengths, unlimited videos, one fixed monthly price.
             </p>
           </div>
 
@@ -657,7 +656,7 @@ export default function Home() {
             <div className="relative gradient-border p-8 md:p-10 rounded-2xl">
               <div className="absolute -top-4 left-1/2 -translate-x-1/2">
                 <span className="btn-gradient px-4 py-1.5 rounded-full text-xs font-bold text-white shadow-lg shadow-purple-500/30">
-                  Meest gekozen
+                  Most popular
                 </span>
               </div>
 
@@ -665,14 +664,14 @@ export default function Home() {
                 <h3 className="text-xl font-bold text-white mb-2" style={{ fontFamily: 'Outfit, sans-serif' }}>Pro Plan</h3>
                 <div className="flex items-end justify-center gap-2 mb-1">
                   <span className="text-6xl font-black gradient-text" style={{ fontFamily: 'Outfit, sans-serif' }}>€500</span>
-                  <span className="text-slate-400 mb-3">/maand</span>
+                  <span className="text-slate-400 mb-3">/month</span>
                 </div>
-                <p className="text-xs text-slate-500">14 dagen gratis proberen · Geen creditcard nodig</p>
+                <p className="text-xs text-slate-500">14-day free trial · No credit card required</p>
               </div>
 
-              {/* Length selector in pricing */}
+              {/* All lengths included */}
               <div className="mb-6 p-4 rounded-xl bg-white/3 border border-white/8">
-                <p className="text-xs text-slate-400 mb-3 font-medium">Alle videolengtes inbegrepen:</p>
+                <p className="text-xs text-slate-400 mb-3 font-medium">All video lengths included:</p>
                 <div className="flex flex-wrap gap-2">
                   {VIDEO_LENGTHS.map((opt) => (
                     <span key={opt.value} className="px-2.5 py-1 rounded-lg bg-gradient-to-br from-purple-600/20 to-cyan-500/15 border border-purple-400/20 text-xs font-semibold text-white flex items-center gap-1">
@@ -685,18 +684,18 @@ export default function Home() {
 
               <ul className="space-y-3 mb-8">
                 {[
-                  "Onbeperkt video's genereren",
-                  "Alle 5 videolengtes (5–8, 8–12, 12–15, 15–20, 20+ min)",
-                  "Viraal geoptimaliseerde scripts",
-                  "Professionele AI voiceover",
-                  "Automatische visual matching",
-                  "Cineastische effecten & transitions",
+                  "Unlimited video generation",
+                  "All 5 video lengths (5–8, 8–12, 12–15, 15–20, 20+ min)",
+                  "Virally optimized scripts",
+                  "Professional AI voiceover",
+                  "Automatic visual matching",
+                  "Cinematic effects & transitions",
                   "AI thumbnail generator",
-                  "Voice cloning (eigen stem)",
-                  "Multi-taal ondersteuning",
+                  "Voice cloning (your own voice)",
+                  "Multi-language support",
                   "4K export",
-                  "Prioriteit support",
-                  "Trend analyse dashboard",
+                  "Priority support",
+                  "Trend analysis dashboard",
                 ].map((feature) => (
                   <li key={feature} className="flex items-center gap-3 text-sm text-slate-200">
                     <div className="w-5 h-5 rounded-full bg-gradient-to-br from-purple-600 to-cyan-500 flex items-center justify-center shrink-0">
@@ -712,12 +711,12 @@ export default function Home() {
                 className="btn-gradient w-full py-4 rounded-xl font-bold text-white text-base flex items-center justify-center gap-2"
               >
                 <Sparkles className="w-5 h-5" />
-                Start 14 dagen gratis
+                Start 14-day free trial
                 <ArrowRight className="w-4 h-4" />
               </button>
 
               <p className="text-center text-xs text-slate-500 mt-4">
-                Betaal met SEPA, Bancontact, PayPal of creditcard. Maandelijks opzegbaar.
+                Pay with SEPA, Bancontact, PayPal, or credit card. Cancel anytime.
               </p>
             </div>
           </div>
@@ -728,9 +727,9 @@ export default function Home() {
       <section className="py-20 overflow-hidden">
         <div className="container mb-10">
           <div className="text-center">
-            <span className="mono text-xs text-cyan-400 font-medium tracking-widest uppercase mb-3 block">Ervaringen</span>
+            <span className="mono text-xs text-cyan-400 font-medium tracking-widest uppercase mb-3 block">Testimonials</span>
             <h2 className="text-3xl md:text-4xl font-black text-white" style={{ fontFamily: 'Outfit, sans-serif' }}>
-              Wat creators <span className="gradient-text">zeggen</span>
+              What creators <span className="gradient-text">are saying</span>
             </h2>
           </div>
         </div>
@@ -750,7 +749,7 @@ export default function Home() {
           <div className="text-center mb-14">
             <span className="mono text-xs text-cyan-400 font-medium tracking-widest uppercase mb-3 block">FAQ</span>
             <h2 className="text-3xl md:text-4xl font-black text-white mb-4" style={{ fontFamily: 'Outfit, sans-serif' }}>
-              Veelgestelde <span className="gradient-text">vragen</span>
+              Frequently asked <span className="gradient-text">questions</span>
             </h2>
           </div>
           <div className="max-w-2xl mx-auto space-y-3">
@@ -767,13 +766,13 @@ export default function Home() {
         <div className="glow-orb w-96 h-96 bg-purple-600/20 top-0 left-1/4 animate-orb-drift" />
         <div className="glow-orb w-80 h-80 bg-cyan-500/15 bottom-0 right-1/4 animate-orb-drift-slow" />
         <div className="container relative z-10 text-center">
-          <span className="mono text-xs text-cyan-400 font-medium tracking-widest uppercase mb-4 block">Klaar om te beginnen?</span>
+          <span className="mono text-xs text-cyan-400 font-medium tracking-widest uppercase mb-4 block">Ready to start?</span>
           <h2 className="text-4xl md:text-5xl lg:text-6xl font-black text-white mb-6 leading-tight" style={{ fontFamily: 'Outfit, sans-serif' }}>
-            Jouw eerste virale video<br />
-            <span className="gradient-text">begint hier</span>
+            Your first viral video<br />
+            <span className="gradient-text">starts here</span>
           </h2>
           <p className="text-slate-300 max-w-lg mx-auto mb-10 text-base md:text-lg">
-            Sluit je aan bij honderden creators die al dagelijks video's genereren met Fastvid. Alle lengtes, onbeperkt, 14 dagen gratis.
+            Join hundreds of creators already generating videos daily with Fastvid. All lengths, unlimited, 14 days free.
           </p>
           <div className="flex flex-col sm:flex-row gap-4 justify-center">
             <button
@@ -781,7 +780,7 @@ export default function Home() {
               className="btn-gradient px-8 py-4 rounded-xl font-bold text-white text-base flex items-center justify-center gap-2 shadow-2xl shadow-purple-500/30"
             >
               <Sparkles className="w-5 h-5" />
-              Start gratis proefperiode
+              Start free trial
               <ArrowRight className="w-4 h-4" />
             </button>
             <button
@@ -789,7 +788,7 @@ export default function Home() {
               className="px-8 py-4 rounded-xl font-semibold text-white text-base border border-white/15 hover:bg-white/5 transition-colors flex items-center justify-center gap-2"
             >
               <Play className="w-4 h-4" />
-              Bekijk demo
+              Watch demo
             </button>
           </div>
         </div>
@@ -807,11 +806,11 @@ export default function Home() {
             </span>
           </div>
           <div className="flex flex-wrap gap-6 text-xs text-slate-500">
-            {["Privacybeleid", "Algemene voorwaarden", "Cookiebeleid", "Contact"].map((item) => (
+            {["Privacy Policy", "Terms of Service", "Cookie Policy", "Contact"].map((item) => (
               <button key={item} className="hover:text-slate-300 transition-colors">{item}</button>
             ))}
           </div>
-          <p className="text-xs text-slate-600">© 2025 Fastvid. Alle rechten voorbehouden.</p>
+          <p className="text-xs text-slate-600">© 2025 Fastvid. All rights reserved.</p>
         </div>
       </footer>
     </div>
