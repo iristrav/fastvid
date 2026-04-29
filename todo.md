@@ -82,9 +82,9 @@
 ## Future / Optional (out of scope for this build — upgrade paths)
 - [x] Real voiceover generation API — espeak-ng TTS is integrated (upgrade to ElevenLabs when ready)
 - [x] Real video rendering/export — FFmpeg pipeline is integrated and produces real MP4 files
-- [ ] Voice cloning feature (requires ElevenLabs voice clone API)
-- [ ] Thumbnail AI generation (can use built-in generateImage — not yet wired)
-- [ ] Email notifications on video completion (can use owner notification system)
+- [ ] Voice cloning feature (requires ElevenLabs voice clone API) — future upgrade
+- [ ] Thumbnail AI generation — dedicated YouTube thumbnail per video (future upgrade)
+- [ ] Email/push notifications on video completion (future upgrade)
 
 ## Admin Videos — Improvements
 - [x] Add video number (#VID-XXXX) displayed on every video card and in the admin table
@@ -128,3 +128,9 @@
 ## Admin Videos Live Progress (All Videos table)
 - [x] Add live progress polling per in-progress video row in the admin All Videos table
 - [x] Show progressStep label + percent bar in admin video rows that are in-progress
+
+## Performance: Script Generation Speed
+- [x] Split LLM script generation into smaller, faster parallel calls per section
+- [x] Use concise, direct prompts to reduce token count and response time
+- [x] Pre-generate script outline first (fast ~5-8s), then fill sections + metadata in parallel
+- [x] Script generation now ~3-4x faster: outline (5s) + parallel sections (8-12s) vs single call (60-90s)

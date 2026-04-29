@@ -36,25 +36,58 @@ async function generateVideoWithAI(videoId: number, prompt: string, videoLength:
   };
   const lengthDesc = lengthMap[videoLength] ?? "15 to 20 minutes";
   try {
-    // ── Stage 1: Generate Script ──────────────────────────────────────────────
-    await updateVideoStatus(videoId, "generating_script", { progressStep: "Writing viral script...", progressPercent: 5, generationStartedAt: new Date() });
-    const scriptResponse = await invokeLLM({
-      messages: [
-        { role: "system", content: `You are an expert YouTube scriptwriter who creates viral, engaging scripts optimized for maximum watch time and engagement. Structure scripts with: Hook (first 30 seconds), Introduction, Main Content (with chapters), and Call-to-Action. Include [VISUAL: description] tags for B-roll cues.` },
-        { role: "user", content: `Create a complete YouTube video script for a video that is ${lengthDesc} long.\n\nTopic: ${prompt}\n\nRequirements:\n- Irresistible hook in first 5 seconds\n- Brief intro (30-60 seconds)\n- Clear chapters with titles\n- [VISUAL: description] tags throughout\n- Strong call-to-action at end\n- Include timestamps for chapters` },
-      ],
-    });
-    const rawScriptContent = scriptResponse?.choices?.[0]?.message?.content ?? "";
-    const scriptContent = typeof rawScriptContent === "string" ? rawScriptContent : "";
-    const titleMatch = (scriptContent as string).match(/^#\s*(.+)|^Title:\s*(.+)/m);
-    const title = titleMatch ? (titleMatch[1] || titleMatch[2]) : prompt.slice(0, 100);
-    await updateVideoStatus(videoId, "generating_voiceover", { script: scriptContent, title });
+    // ── Stage 1: Fast outline, then parallel section + metadata generation ────
+    await updateVideoStatus(videoId, "generating_script", { progressStep: "Creating video outline...", progressPercent: 5, generationStartedAt: new Date() });
 
-    // ── Stage 2: Generate SEO Metadata ───────────────────────────────────────
-    const metaResponse = await invokeLLM({
+    // Step 1a: Short outline call (~5-8s)
+    const outlineResp = await invokeLLM({
       messages: [
-        { role: "system", content: "You are a YouTube SEO expert. Generate optimized metadata. Always respond with valid JSON." },
-        { role: "user", content: `Generate YouTube SEO metadata for:\nTopic: ${prompt}\nLength: ${lengthDesc}\n\nJSON format: { "title": "...", "description": "...", "tags": [], "chapters": [{"time": "0:00", "title": "..."}] }` },
+        { role: "system", content: "You are a YouTube scriptwriter. Be concise." },
+        { role: "user", content: `Create a YouTube video outline for: "${prompt}"\nVideo length: ${lengthDesc}\nRespond with JSON: { title, hook (2 sentences), sections (max 5, each: {title, keyPoints: string[]}), cta }` },
+      ],
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          name: "video_outline", strict: true,
+          schema: {
+            type: "object",
+            properties: {
+              title: { type: "string" },
+              hook: { type: "string" },
+              sections: { type: "array", items: { type: "object", properties: { title: { type: "string" }, keyPoints: { type: "array", items: { type: "string" } } }, required: ["title", "keyPoints"], additionalProperties: false } },
+              cta: { type: "string" },
+            },
+            required: ["title", "hook", "sections", "cta"], additionalProperties: false,
+          },
+        },
+      },
+    });
+
+    type Outline = { title: string; hook: string; sections: { title: string; keyPoints: string[] }[]; cta: string };
+    let outline: Outline = { title: prompt.slice(0, 80), hook: "", sections: [], cta: "" };
+    try {
+      const raw = outlineResp?.choices?.[0]?.message?.content ?? "{}";
+      outline = JSON.parse(typeof raw === "string" ? raw : JSON.stringify(raw)) as Outline;
+    } catch { /* use default */ }
+    const title = outline.title || prompt.slice(0, 100);
+
+    await updateVideoProgress(videoId, `Outline ready — writing ${outline.sections.length} sections in parallel...`, 12);
+
+    // Step 1b: Generate each section AND metadata in parallel (all at once)
+    const sectionPromises = outline.sections.map((sec, idx) =>
+      invokeLLM({
+        messages: [
+          { role: "system", content: "Write engaging YouTube script text. Include [VISUAL: description] tags every 2-3 sentences. Be conversational and natural." },
+          { role: "user", content: `Section ${idx + 1}: "${sec.title}"\nCover: ${sec.keyPoints.join(", ")}\nWrite 2-3 short paragraphs. Start directly with content.` },
+        ],
+      }).then(r => { const c = r?.choices?.[0]?.message?.content ?? ""; return typeof c === "string" ? c : ""; })
+      .catch(() => sec.keyPoints.join(". ") + ".")
+    );
+
+    const metaPromise = invokeLLM({
+      messages: [
+        { role: "system", content: "YouTube SEO expert. Respond with valid JSON only." },
+        { role: "user", content: `YouTube metadata for: ${prompt} (${lengthDesc})\nJSON: { title, description, tags: string[], chapters: [{time, title}] }` },
       ],
       response_format: {
         type: "json_schema",
@@ -72,12 +105,24 @@ async function generateVideoWithAI(videoId: number, prompt: string, videoLength:
         },
       },
     });
+
+    const [sectionTexts, metaResponse] = await Promise.all([Promise.all(sectionPromises), metaPromise]);
+    await updateVideoProgress(videoId, "Assembling script...", 22);
+
+    // Assemble full script
+    const scriptParts: string[] = [`# ${title}\n`, `## HOOK\n${outline.hook}\n[VISUAL: Opening shot for ${prompt}]\n`];
+    outline.sections.forEach((sec, idx) => scriptParts.push(`## ${sec.title}\n${sectionTexts[idx] ?? ""}\n`));
+    scriptParts.push(`## CALL TO ACTION\n${outline.cta}\n[VISUAL: Subscribe button animation]\n`);
+    const scriptContent = scriptParts.join("\n");
+
     let metadata: unknown = {};
     try {
       const rawMetaContent = metaResponse?.choices?.[0]?.message?.content ?? "{}";
       const metaContent = typeof rawMetaContent === "string" ? rawMetaContent : JSON.stringify(rawMetaContent);
       metadata = JSON.parse(metaContent);
     } catch { metadata = { title, description: prompt, tags: [], chapters: [] }; }
+
+    await updateVideoStatus(videoId, "generating_voiceover", { script: scriptContent, title });
 
     // ── Stage 3: Run Full Video Pipeline (TTS + Visuals + FFmpeg) ────────────
     await updateVideoStatus(videoId, "generating_visuals", { metadata, title: (metadata as Record<string, string>).title ?? title, progressStep: "Metadata ready — generating voiceover...", progressPercent: 30 });
