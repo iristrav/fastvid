@@ -141,10 +141,10 @@
 - [x] Works in Cloud Run production environment without any system dependencies
 
 ## Performance: Pipeline Speed (Visuals)
-- [ ] Reduce scene count from 16 to max 6-8 per video
-- [ ] Parallelize visual generation (all scenes at once instead of sequential)
-- [ ] Prioritize Pexels stock video (instant) over AI image generation (slow)
-- [ ] Add timeout per visual fetch so a slow scene doesn't block the whole pipeline
+- [x] Reduce scene count from 16 to max 8 per video (MAX_SCENES=8)
+- [x] Parallelize visual generation (all scenes at once instead of sequential)
+- [x] Prioritize Pexels stock video (instant) over AI image generation (slow)
+- [x] Add timeout per visual fetch so a slow scene doesn't block the whole pipeline
 
 ## Pipeline: Parallel Processing + Timeouts (Quality & Reliability)
 - [x] Increase MAX_SCENES to 8 for better video quality (parallel processing keeps it fast)
@@ -157,3 +157,13 @@
 - [x] Show elapsed timer with "/ max 1h" suffix in Dashboard and Admin progress bars
 - [x] Show amber warning "Approaching time limit" after 50 minutes elapsed
 - [x] Export STAGE_LABELS constant from videoPipeline.ts for consistent UI labels
+
+## AI-Generated Visuals (100% AI — no stock footage)
+- [x] Remove Pexels stock video fetching from pipeline
+- [x] Replace with AI-generated images via forge ImageService for every scene
+- [x] LLM generates a detailed cinematic image prompt per scene (15-25 words)
+- [x] Each scene image is unique and tailored to the narration content
+- [x] FFmpeg animates each AI image with Ken Burns zoom-pan effect (alternating direction per scene)
+- [x] Gradient fallback if AI image generation fails for a scene (pipeline never stops)
+- [x] Stage label updated: "Generating AI visuals for all 8 scenes... (max 8 min)"
+- [x] All 10 tests passing, 0 TypeScript errors

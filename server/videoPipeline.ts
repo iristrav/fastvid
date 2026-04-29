@@ -2,14 +2,17 @@
  * Fastvid — AI Video Generation Pipeline
  *
  * Pipeline stages (all parallel where possible):
- * 1. Parse script into max 8 scenes with visual cues          (max 45 sec)
- * 2. Generate ALL voiceovers in parallel                       (max 3 min)
- * 3. Fetch ALL visuals in parallel (Pexels first, AI fallback) (max 5 min)
- * 4. Compose each scene video in parallel                      (max 20 min)
- * 5. Concatenate all scenes into final MP4                     (max 10 min)
- * 6. Upload to S3                                              (max 5 min)
+ * 1. Parse script into max 8 scenes with visual cues              (max 45 sec)
+ * 2. Generate ALL voiceovers in parallel                           (max 3 min)
+ * 3. Generate ALL AI visuals in parallel (forge ImageService)      (max 8 min)
+ *    → Each scene gets a unique AI-generated cinematic image
+ *    → FFmpeg animates each image with Ken Burns zoom-pan effect
+ * 4. Compose each scene video in parallel                          (max 20 min)
+ * 5. Concatenate all scenes into final MP4                         (max 10 min)
+ * 6. Upload to S3                                                  (max 5 min)
  *
  * Total hard cap: 1 hour (enforced via global timeout in routers.ts)
+ * All visuals are 100% AI-generated — no stock footage used.
  */
 import { exec as execCb } from "child_process";
 import { promisify } from "util";
@@ -33,7 +36,7 @@ interface Scene {
   index: number;
   text: string;
   visualCue: string;
-  useAI: boolean;
+  imagePrompt: string;
   duration: number;
 }
 
@@ -62,7 +65,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 export const STAGE_LABELS = {
   parsing:    `Parsing script into ${MAX_SCENES} scenes... (max 45 sec)`,
   voiceovers: `Generating voiceovers for all ${MAX_SCENES} scenes... (max 3 min)`,
-  visuals:    `Fetching visuals for all ${MAX_SCENES} scenes... (max 5 min)`,
+  visuals:    `Generating AI visuals for all ${MAX_SCENES} scenes... (max 8 min)`,
   composing:  `Composing all ${MAX_SCENES} scenes in parallel... (max 20 min)`,
   assembling: "Assembling final video... (max 10 min)",
   uploading:  "Uploading video... (max 5 min)",
@@ -79,10 +82,14 @@ async function parseScriptIntoScenes(script: string): Promise<Scene[]> {
           content: `You are a video production assistant. Parse the given YouTube video script into exactly ${MAX_SCENES} scenes.
 For each scene, extract:
 - The narration text (what will be spoken — keep it concise, 2-3 sentences max per scene)
-- A visual cue (3-5 word description of what should be shown visually, good for stock video search)
-- Whether it should use AI-generated image (true) or stock video (false)
-  - Use AI images (true) for: abstract concepts, futuristic topics, emotions, metaphors
-  - Use stock video (false) for: real-world actions, nature, people, cities, technology in use
+- A short visual cue (3-5 words describing what to show)
+- A detailed AI image generation prompt (15-25 words) that describes a cinematic, photorealistic scene.
+  The image prompt should be vivid, specific, and suitable for a YouTube video background.
+  Style: cinematic 4K, dramatic lighting, ultra-detailed, professional photography or digital art.
+  Examples:
+    "Futuristic city skyline at night with neon lights reflecting on wet streets, cinematic 4K"
+    "Close-up of a scientist examining glowing DNA strands in a dark laboratory, dramatic lighting"
+    "Aerial view of a dense tropical rainforest with morning mist, golden hour lighting, 4K"
 IMPORTANT: Return exactly ${MAX_SCENES} scenes. Distribute the script evenly across all scenes.`,
         },
         {
@@ -105,9 +112,9 @@ IMPORTANT: Return exactly ${MAX_SCENES} scenes. Distribute the script evenly acr
                   properties: {
                     text: { type: "string" },
                     visualCue: { type: "string" },
-                    useAI: { type: "boolean" },
+                    imagePrompt: { type: "string" },
                   },
-                  required: ["text", "visualCue", "useAI"],
+                  required: ["text", "visualCue", "imagePrompt"],
                   additionalProperties: false,
                 },
               },
@@ -125,7 +132,7 @@ IMPORTANT: Return exactly ${MAX_SCENES} scenes. Distribute the script evenly acr
   const content = response.choices[0]?.message?.content;
   if (!content) throw new Error("Failed to parse script into scenes");
   const parsed = JSON.parse(typeof content === "string" ? content : JSON.stringify(content));
-  const scenes = (parsed.scenes as Omit<Scene, "index">[]).slice(0, MAX_SCENES);
+  const scenes = (parsed.scenes as Omit<Scene, "index" | "duration">[]).slice(0, MAX_SCENES);
   return scenes.map((s, i) => ({ ...s, index: i, duration: 0 }));
 }
 
@@ -156,110 +163,96 @@ export async function generateVoiceover(text: string, outputPath: string): Promi
   return estimatedDuration;
 }
 
-// ─── 3a. AI Visual Generation ────────────────────────────────────────────────
-async function generateAIVisual(visualCue: string, sceneIndex: number, workDir: string): Promise<string> {
-  const outputPath = path.join(workDir, `scene_${sceneIndex}_visual.jpg`);
-  const prompt = `${visualCue}, cinematic 4K YouTube video thumbnail, professional lighting, high quality`;
+// ─── 3. AI Visual Generation (100% AI — no stock footage) ────────────────────
+/**
+ * Generates a unique AI image for each scene using the forge ImageService,
+ * then saves it locally for FFmpeg processing.
+ *
+ * The image is later animated with a Ken Burns zoom-pan effect in composeSceneVideo().
+ */
+async function generateAIVisualForScene(
+  scene: Scene,
+  workDir: string
+): Promise<string> {
+  const outputPath = path.join(workDir, `scene_${scene.index}_visual.png`);
+
+  // Use the LLM-crafted imagePrompt for best results; fall back to visualCue
+  const prompt = scene.imagePrompt ||
+    `${scene.visualCue}, cinematic 4K YouTube video background, professional lighting, ultra-detailed, photorealistic`;
+
+  console.log(`[Pipeline] Generating AI image for scene ${scene.index}: "${prompt.slice(0, 60)}..."`);
 
   const { url: imageUrl } = await withTimeout(
     generateImage({ prompt }),
-    25_000,
-    `AI image for scene ${sceneIndex}`
+    45_000,
+    `AI image for scene ${scene.index}`
   );
 
-  const response = await fetch(imageUrl as string);
+  if (!imageUrl) throw new Error(`No image URL returned for scene ${scene.index}`);
+
+  // Download the image from S3/storage URL
+  const response = await withTimeout(
+    fetch(imageUrl),
+    15_000,
+    `Download AI image for scene ${scene.index}`
+  );
+
+  if (!response.ok) throw new Error(`Failed to download AI image: ${response.status}`);
   const buffer = Buffer.from(await response.arrayBuffer());
   fs.writeFileSync(outputPath, buffer);
+
+  console.log(`[Pipeline] AI image saved for scene ${scene.index} (${buffer.length} bytes)`);
   return outputPath;
 }
 
-// ─── 3b. Pexels Stock Video ───────────────────────────────────────────────────
-export async function fetchPexelsVideo(
-  visualCue: string,
-  sceneIndex: number,
-  workDir: string,
-  _duration: number
+/**
+ * Fallback: generate a gradient background image using FFmpeg if AI generation fails.
+ * This ensures the pipeline never stops due to a single image generation failure.
+ */
+async function generateGradientFallback(
+  scene: Scene,
+  workDir: string
 ): Promise<string> {
-  const apiKey = process.env.PEXELS_API_KEY;
-  if (!apiKey) throw new Error("PEXELS_API_KEY not set");
-
-  const query = encodeURIComponent(visualCue);
-  const res = await withTimeout(
-    fetch(`https://api.pexels.com/videos/search?query=${query}&per_page=5&orientation=landscape`, {
-      headers: { Authorization: apiKey },
-    }),
-    10_000,
-    `Pexels search for scene ${sceneIndex}`
-  );
-
-  if (!res.ok) throw new Error(`Pexels API error: ${res.status}`);
-  const data = await res.json() as {
-    videos?: Array<{ video_files?: Array<{ link?: string; width?: number; quality?: string }> }>
-  };
-
-  if (!data.videos?.length) throw new Error("No Pexels videos found");
-
-  const video = data.videos[Math.floor(Math.random() * Math.min(3, data.videos.length))];
-  const files = video.video_files ?? [];
-  const hdFile = files.find(f => f.quality === "hd" && f.width && f.width >= 1280);
-  const sdFile = files.find(f => f.quality === "sd");
-  const videoFile = hdFile ?? sdFile ?? files[0];
-
-  const videoUrl = videoFile?.link;
-  if (!videoUrl) throw new Error("No suitable video file found");
-
-  const outputPath = path.join(workDir, `scene_${sceneIndex}_stock.mp4`);
-  const videoRes = await withTimeout(
-    fetch(videoUrl as string),
-    15_000,
-    `Pexels download for scene ${sceneIndex}`
-  );
-  const buffer = Buffer.from(await videoRes.arrayBuffer());
-  fs.writeFileSync(outputPath, buffer);
-  return outputPath;
-}
-
-// ─── 3c. Fallback Visual (colored background) ────────────────────────────────
-async function generateFallbackVisual(sceneIndex: number, workDir: string, duration: number): Promise<string> {
-  const outputPath = path.join(workDir, `scene_${sceneIndex}_fallback.mp4`);
-  const colors = ["0a0a1e", "1a0a2e", "0a1a2e", "0a2a1e", "1a1a0a", "2a0a1e", "0a1a1e", "1a0a1e"];
-  const hex = colors[sceneIndex % colors.length];
+  const outputPath = path.join(workDir, `scene_${scene.index}_fallback.png`);
+  // Deep space color palette — matches Fastvid's brand
+  const gradients = [
+    ["0a0a1e", "1a0a3e"],
+    ["0a1a2e", "0a3a5e"],
+    ["1a0a2e", "3a0a5e"],
+    ["0a2a1e", "0a4a3e"],
+    ["1a1a0a", "3a3a1a"],
+    ["2a0a1e", "5a0a3e"],
+    ["0a1a1e", "0a3a3e"],
+    ["1a0a1e", "3a0a3e"],
+  ];
+  const [c1, c2] = gradients[scene.index % gradients.length];
   await exec(
-    `ffmpeg -y -f lavfi -i "color=c=#${hex}:size=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:rate=30" -t ${duration} -c:v libx264 -pix_fmt yuv420p "${outputPath}" 2>/dev/null`
-  );
+    `${FFMPEG_BIN} -y -f lavfi -i "gradients=s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:c0=#${c1}:c1=#${c2}:duration=1:rate=1" -frames:v 1 "${outputPath}" 2>/dev/null`
+  ).catch(async () => {
+    // Ultra-simple fallback: solid color PNG
+    await exec(
+      `${FFMPEG_BIN} -y -f lavfi -i "color=c=#${c1}:size=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:rate=1" -frames:v 1 "${outputPath}" 2>/dev/null`
+    );
+  });
   return outputPath;
 }
 
-// ─── 3. Fetch Visual (Pexels first, AI fallback, then color fallback) ─────────
-async function fetchVisual(scene: Scene, workDir: string): Promise<{ path: string; isImage: boolean }> {
-  try {
-    const videoPath = await fetchPexelsVideo(scene.visualCue, scene.index, workDir, scene.duration);
-    return { path: videoPath, isImage: false };
-  } catch (pexelsErr) {
-    console.warn(`[Pipeline] Pexels failed for scene ${scene.index}, trying AI image:`, pexelsErr);
-  }
-
-  try {
-    const imagePath = await generateAIVisual(scene.visualCue, scene.index, workDir);
-    return { path: imagePath, isImage: true };
-  } catch (aiErr) {
-    console.warn(`[Pipeline] AI image failed for scene ${scene.index}, using color fallback:`, aiErr);
-  }
-
-  const fallbackPath = await generateFallbackVisual(scene.index, workDir, scene.duration);
-  return { path: fallbackPath, isImage: false };
-}
-
-// ─── 4. Compose Scene Video ───────────────────────────────────────────────────
+// ─── 4. Compose Scene Video (AI image → animated video clip) ─────────────────
+/**
+ * Converts an AI-generated image into a video clip with:
+ * - Ken Burns zoom-pan animation (cinematic slow zoom)
+ * - Subtitle text overlay (narration text)
+ * - Fade in/out transitions
+ * - Voiceover audio track
+ */
 async function composeSceneVideo(
   scene: Scene,
-  visualPath: string,
+  imagePath: string,
   audioPath: string,
   duration: number,
   workDir: string
 ): Promise<string> {
   const outputPath = path.join(workDir, `scene_${scene.index}_composed.mp4`);
-  const isImage = visualPath.endsWith(".jpg") || visualPath.endsWith(".png");
 
   const safeText = scene.text
     .slice(0, 120)
@@ -269,28 +262,26 @@ async function composeSceneVideo(
 
   const drawTextFilter = `drawtext=text='${safeText}':fontcolor=white:fontsize=42:x=(w-text_w)/2:y=h-text_h-80:box=1:boxcolor=black@0.65:boxborderw=12:line_spacing=8`;
   const fadeFilter = `fade=t=in:st=0:d=0.5,fade=t=out:st=${Math.max(0, duration - 0.5)}:d=0.5`;
+  const frames = Math.ceil(duration * 30);
 
-  if (isImage) {
-    await withTimeout(
-      exec(
-        `ffmpeg -y -loop 1 -i "${visualPath}" -i "${audioPath}" ` +
-        `-filter_complex "[0:v]scale=${VIDEO_WIDTH * 2}:${VIDEO_HEIGHT * 2},zoompan=z='min(zoom+0.0008,1.3)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${Math.ceil(duration * 30)}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=30,${drawTextFilter},${fadeFilter}[v]" ` +
-        `-map "[v]" -map "1:a" -t ${duration} -c:v libx264 -preset fast -crf 23 -c:a aac -b:a 128k -pix_fmt yuv420p "${outputPath}" 2>/dev/null`
-      ),
-      180_000,
-      `Compose scene ${scene.index} (image)`
-    );
-  } else {
-    await withTimeout(
-      exec(
-        `ffmpeg -y -stream_loop -1 -i "${visualPath}" -i "${audioPath}" ` +
-        `-filter_complex "[0:v]scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT},${drawTextFilter},${fadeFilter}[v]" ` +
-        `-map "[v]" -map "1:a" -t ${duration} -c:v libx264 -preset fast -crf 23 -c:a aac -b:a 128k -pix_fmt yuv420p "${outputPath}" 2>/dev/null`
-      ),
-      180_000,
-      `Compose scene ${scene.index} (video)`
-    );
-  }
+  // Ken Burns effect: slow zoom from 1.0x to 1.3x, panning slightly
+  // Alternates direction per scene for visual variety
+  const zoomDir = scene.index % 2 === 0 ? "+" : "-";
+  const panX = scene.index % 4 < 2
+    ? `iw/2-(iw/zoom/2)`          // pan left-to-right
+    : `iw/2-(iw/zoom/2)+${scene.index * 5}`; // pan right-to-left
+  const kenBurns = `scale=${VIDEO_WIDTH * 2}:${VIDEO_HEIGHT * 2},zoompan=z='min(zoom${zoomDir}0.0006,1.3)':x='${panX}':y='ih/2-(ih/zoom/2)':d=${frames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=30`;
+
+  await withTimeout(
+    exec(
+      `${FFMPEG_BIN} -y -loop 1 -i "${imagePath}" -i "${audioPath}" ` +
+      `-filter_complex "[0:v]${kenBurns},${drawTextFilter},${fadeFilter}[v]" ` +
+      `-map "[v]" -map "1:a" -t ${duration} -c:v libx264 -preset fast -crf 23 -c:a aac -b:a 128k -pix_fmt yuv420p "${outputPath}" 2>/dev/null`
+    ),
+    180_000,
+    `Compose scene ${scene.index}`
+  );
+
   return outputPath;
 }
 
@@ -302,7 +293,7 @@ async function concatenateScenes(scenePaths: string[], workDir: string, videoId:
   fs.writeFileSync(listFile, listContent, "utf-8");
   await withTimeout(
     exec(
-      `ffmpeg -y -f concat -safe 0 -i "${listFile}" -c:v libx264 -preset fast -crf 22 -c:a aac -b:a 128k -movflags +faststart "${outputPath}" 2>/dev/null`
+      `${FFMPEG_BIN} -y -f concat -safe 0 -i "${listFile}" -c:v libx264 -preset fast -crf 22 -c:a aac -b:a 128k -movflags +faststart "${outputPath}" 2>/dev/null`
     ),
     600_000,
     "Final concatenation"
@@ -336,21 +327,30 @@ export async function runVideoPipeline(
     scenes.forEach((scene, i) => { scene.duration = Math.max(durations[i], 3); });
     console.log(`[Pipeline] All ${scenes.length} voiceovers generated in parallel`);
 
-    // Stage 3: Fetch ALL visuals in parallel (max 5 min total)
-    onProgress?.({ stage: STAGE_LABELS.visuals, percent: 35 });
-    const visuals = await withTimeout(
-      Promise.all(scenes.map(scene => fetchVisual(scene, workDir))),
-      300_000,
-      "Visual fetching stage"
+    // Stage 3: Generate ALL AI visuals in parallel (max 8 min total)
+    // Each scene gets a unique AI-generated cinematic image via the forge ImageService
+    onProgress?.({ stage: STAGE_LABELS.visuals, percent: 30 });
+    const imagePaths = await withTimeout(
+      Promise.all(
+        scenes.map(scene =>
+          generateAIVisualForScene(scene, workDir).catch(async (err) => {
+            console.warn(`[Pipeline] AI image failed for scene ${scene.index}, using gradient fallback:`, err);
+            return generateGradientFallback(scene, workDir);
+          })
+        )
+      ),
+      480_000,
+      "AI visual generation stage"
     );
-    console.log(`[Pipeline] All ${scenes.length} visuals fetched in parallel`);
+    console.log(`[Pipeline] All ${scenes.length} AI visuals generated in parallel`);
 
     // Stage 4: Compose all scenes in parallel (max 20 min total)
+    // Each AI image is animated with Ken Burns effect + subtitle + voiceover
     onProgress?.({ stage: STAGE_LABELS.composing, percent: 55 });
     const composedScenes = await withTimeout(
       Promise.all(
         scenes.map((scene, i) =>
-          composeSceneVideo(scene, visuals[i].path, audioPaths[i], scene.duration, workDir)
+          composeSceneVideo(scene, imagePaths[i], audioPaths[i], scene.duration, workDir)
         )
       ),
       1_200_000,
@@ -362,7 +362,7 @@ export async function runVideoPipeline(
     for (let i = 0; i < scenes.length; i++) {
       try {
         fs.unlinkSync(audioPaths[i]);
-        if (visuals[i].path !== composedScenes[i]) fs.unlinkSync(visuals[i].path);
+        if (imagePaths[i] !== composedScenes[i]) fs.unlinkSync(imagePaths[i]);
       } catch { /* ignore */ }
     }
 
