@@ -574,10 +574,13 @@ function VoiceSelector({ selectedVoice, onSelect }: { selectedVoice: string; onS
       <p className="text-xs text-slate-500 font-medium uppercase tracking-wide mb-2">Voice (Fish Audio S2 Pro)</p>
       <div className="grid grid-cols-1 gap-2">
         {voices.map(v => (
-          <button
+          <div
             key={v.id}
+            role="button"
+            tabIndex={0}
             onClick={() => onSelect(v.fishAudioReferenceId)}
-            className={`px-3 py-2.5 rounded-lg text-xs font-semibold border transition-all duration-200 flex items-center gap-2.5 w-full text-left ${
+            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") onSelect(v.fishAudioReferenceId); }}
+            className={`px-3 py-2.5 rounded-lg text-xs font-semibold border transition-all duration-200 flex items-center gap-2.5 w-full text-left cursor-pointer ${
               selectedVoice === v.fishAudioReferenceId
                 ? "bg-gradient-to-br from-purple-600/40 to-cyan-500/30 border-purple-400/60 text-white shadow-lg shadow-purple-500/20"
                 : "border-white/10 text-slate-400 hover:border-white/20 hover:text-slate-200 bg-white/3"
@@ -603,7 +606,7 @@ function VoiceSelector({ selectedVoice, onSelect }: { selectedVoice: string; onS
                 {playingId === v.id ? "Stop" : "Sample"}
               </button>
             )}
-          </button>
+          </div>
         ))}
       </div>
     </div>

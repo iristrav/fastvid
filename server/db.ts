@@ -266,13 +266,16 @@ export async function seedDefaultVoices() {
   const existing = await db.select({ count: sql<number>`count(*)` }).from(voices);
   if (Number(existing[0]?.count ?? 0) > 0) return; // already seeded
 
+  // NOTE: These are placeholder entries. The admin MUST update fishAudioReferenceId
+  // with real voice IDs from fish.audio before these voices work in production.
+  // Go to Admin → Voice Library → Edit each voice to set the correct Fish Audio Reference ID.
   const defaults: InsertVoice[] = [
-    { name: "Michael", description: "American Male — natural, YouTube-style narrator", fishAudioReferenceId: "ad5f4ba0b5b64d4e9e3b5c5d6e7f8a9b", flag: "🇺🇸", sortOrder: 1 },
-    { name: "Adam",    description: "American Male — deep, authoritative",              fishAudioReferenceId: "b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6", flag: "🇺🇸", sortOrder: 2 },
-    { name: "Heart",   description: "American Female — warm, friendly",                 fishAudioReferenceId: "c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7", flag: "🇺🇸", sortOrder: 3 },
-    { name: "Bella",   description: "American Female — clear, professional",            fishAudioReferenceId: "d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8", flag: "🇺🇸", sortOrder: 4 },
-    { name: "George",  description: "British Male — elegant, documentary-style",        fishAudioReferenceId: "e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9", flag: "🇬🇧", sortOrder: 5 },
-    { name: "Lewis",   description: "British Male — clear, journalistic",               fishAudioReferenceId: "f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0", flag: "🇬🇧", sortOrder: 6 },
+    { name: "Michael", description: "American Male — natural, YouTube-style narrator (update Fish Audio ID in Admin)", fishAudioReferenceId: "PLACEHOLDER_update_in_admin", flag: "🇺🇸", sortOrder: 1, isActive: 0 },
+    { name: "Adam",    description: "American Male — deep, authoritative (update Fish Audio ID in Admin)",              fishAudioReferenceId: "PLACEHOLDER_update_in_admin", flag: "🇺🇸", sortOrder: 2, isActive: 0 },
+    { name: "Heart",   description: "American Female — warm, friendly (update Fish Audio ID in Admin)",                 fishAudioReferenceId: "PLACEHOLDER_update_in_admin", flag: "🇺🇸", sortOrder: 3, isActive: 0 },
+    { name: "Bella",   description: "American Female — clear, professional (update Fish Audio ID in Admin)",            fishAudioReferenceId: "PLACEHOLDER_update_in_admin", flag: "🇺🇸", sortOrder: 4, isActive: 0 },
+    { name: "George",  description: "British Male — elegant, documentary-style (update Fish Audio ID in Admin)",        fishAudioReferenceId: "PLACEHOLDER_update_in_admin", flag: "🇬🇧", sortOrder: 5, isActive: 0 },
+    { name: "Lewis",   description: "British Male — clear, journalistic (update Fish Audio ID in Admin)",               fishAudioReferenceId: "PLACEHOLDER_update_in_admin", flag: "🇬🇧", sortOrder: 6, isActive: 0 },
   ];
   await db.insert(voices).values(defaults);
 }

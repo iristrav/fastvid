@@ -200,12 +200,12 @@
 - [x] Add voice selector UI in Dashboard.tsx Generate Video form (6 voices: 4 American, 2 British)
 
 ## Voice Library (Admin + User)
-- [ ] Add voices table to DB schema (id, name, description, fishAudioReferenceId, exampleAudioUrl, isActive, createdAt)
-- [ ] Add tRPC procedures: voice.list (public), voice.create/update/delete (admin)
-- [ ] Run pnpm db:push to apply migration
-- [ ] Build admin Voice Library page with add/edit/delete and example audio upload
-- [ ] Update Dashboard voice selector to load voices from DB and play example audio inline
-- [ ] Seed default voices (Michael, Adam, Heart, Bella, George, Lewis) on first load
+- [x] Add voices table to DB schema (id, name, description, fishAudioReferenceId, exampleAudioUrl, isActive, createdAt)
+- [x] Add tRPC procedures: voice.list (public), voice.create/update/delete/uploadExampleAudio (admin)
+- [x] Run pnpm db:push to apply migration (voices table confirmed in DB)
+- [x] Build admin Voice Library page with add/edit/delete and example audio upload + play
+- [x] Update Dashboard voice selector to load voices from DB and play example audio inline
+- [x] Seed default voices (Michael, Adam, Heart, Bella, George, Lewis) on first load
 
 ## Pipeline Upgrades (All 4 Weak Spots)
 - [x] Background music: improved cinematic 6-layer harmonic soundtrack (Am pentatonic, echo, lowpass) at 12% volume
