@@ -253,55 +253,21 @@ export async function generateVoiceover(
     }
   }
 
-  // ── Google TTS fallback ──
-  console.log("[Pipeline] Using Google TTS fallback");
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const gTTS = require("node-gtts") as (lang: string) => { save: (path: string, text: string, cb: (err: Error | null) => void) => void };
-  const GTTS_TIMEOUT_MS = 60_000;
-
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    try {
-      const tts = gTTS("en");
-      await withTimeout(
-        new Promise<void>((resolve, reject) => {
-          tts.save(outputPath, cleanText, (err: Error | null) => {
-            if (err) reject(err);
-            else resolve();
-          });
-        }),
-        GTTS_TIMEOUT_MS,
-        `Google TTS attempt ${attempt}`
-      );
-
-      if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0) {
-        const stats = fs.statSync(outputPath);
-        const durationSec = Math.max(3, Math.ceil(stats.size / 16000));
-        return durationSec;
-      }
-      throw new Error("TTS output file is empty or missing");
-    } catch (err) {
-      const isLastAttempt = attempt === MAX_ATTEMPTS;
-      if (isLastAttempt) {
-        console.warn(`[Pipeline] Google TTS also failed, using silent fallback:`, err);
-        const estimatedDuration = Math.max(3, Math.ceil(cleanText.split(" ").length / 2.5));
-        try {
-          await withTimeout(
-            exec(`${FFMPEG_BIN} -y -f lavfi -i anullsrc=r=44100:cl=stereo -t ${estimatedDuration} -c:a libmp3lame -b:a 128k "${outputPath}" 2>/dev/null`),
-            15_000,
-            "Silent audio fallback"
-          );
-        } catch {
-          const silentMp3 = Buffer.from([0xff, 0xfb, 0x90, 0x00, ...Array(413).fill(0)]);
-          fs.writeFileSync(outputPath, silentMp3);
-        }
-        return estimatedDuration;
-      }
-      const backoffMs = Math.pow(2, attempt) * 1000;
-      console.warn(`[Pipeline] Google TTS attempt ${attempt} failed, retrying in ${backoffMs}ms:`, err);
-      await new Promise(r => setTimeout(r, backoffMs));
-    }
+  // ── Silent audio fallback (Fish Audio failed all retries) ──
+  console.warn("[Pipeline] Fish Audio failed all attempts — using silent audio fallback");
+  const estimatedDuration = Math.max(3, Math.ceil(cleanText.split(" ").length / 2.5));
+  try {
+    await withTimeout(
+      exec(`${FFMPEG_BIN} -y -f lavfi -i anullsrc=r=44100:cl=stereo -t ${estimatedDuration} -c:a libmp3lame -b:a 128k "${outputPath}" 2>/dev/null`),
+      15_000,
+      "Silent audio fallback"
+    );
+  } catch {
+    // Last resort: write a minimal valid MP3 header
+    const silentMp3 = Buffer.from([0xff, 0xfb, 0x90, 0x00, ...Array(413).fill(0)]);
+    fs.writeFileSync(outputPath, silentMp3);
   }
-  return 5;
+  return estimatedDuration;
 }
 
 // ─── 3a. Pexels Video Clip Fetching ──────────────────────────────────────────
