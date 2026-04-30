@@ -200,8 +200,8 @@ export async function generateVoiceover(
     .trim();
   const cleanText = rawText.length <= 400 ? rawText : rawText.slice(0, 400).replace(/\s\S*$/, "");
 
-  const MAX_ATTEMPTS = 4;  // Up to 4 attempts to handle 429 rate limits
-  const TTS_TIMEOUT_MS = 25_000;  // 25s per scene
+  const MAX_ATTEMPTS = 6;  // Up to 6 attempts — 429s are common when sending all scenes in parallel
+  const TTS_TIMEOUT_MS = 20_000;  // 20s hard limit per scene
 
   // ── Fish Audio S2 Pro ──
   if (FISH_AUDIO_API_KEY) {
@@ -230,11 +230,11 @@ export async function generateVoiceover(
           `Fish Audio TTS attempt ${attempt}`
         );
 
-        // Handle 429 rate limit: wait and retry with exponential backoff
+        // Handle 429 rate limit: short fixed delay then retry immediately
+        // Fish Audio 429s are transient — they clear within 500ms, NOT exponential
         if (response.status === 429) {
-          const retryAfterHeader = response.headers.get('retry-after');
-          const waitMs = retryAfterHeader ? parseInt(retryAfterHeader) * 1000 : Math.pow(2, attempt) * 1500;
-          console.warn(`[Pipeline] Fish Audio 429 rate limit (attempt ${attempt}), waiting ${waitMs}ms before retry`);
+          const waitMs = 300 + attempt * 200; // 500ms, 700ms, 900ms... max ~1.5s
+          console.warn(`[Pipeline] Fish Audio 429 (attempt ${attempt}), retrying in ${waitMs}ms`);
           await new Promise(r => setTimeout(r, waitMs));
           continue;
         }
@@ -257,9 +257,9 @@ export async function generateVoiceover(
           console.warn(`[Pipeline] Fish Audio failed after ${MAX_ATTEMPTS} attempts, using silent fallback:`, err);
           break;
         }
-        const backoffMs = Math.pow(2, attempt) * 1000;
-        console.warn(`[Pipeline] Fish Audio attempt ${attempt} failed, retrying in ${backoffMs}ms:`, err);
-        await new Promise(r => setTimeout(r, backoffMs));
+        // Network error: short retry
+        console.warn(`[Pipeline] Fish Audio attempt ${attempt} network error, retrying in 500ms:`, err);
+        await new Promise(r => setTimeout(r, 500));
       }
     }
   }
@@ -941,17 +941,17 @@ export async function runVideoPipeline(
       }
       durations = scenes.map(() => perScene);
     } else {
-      // 5 concurrent requests — Fish Audio handles up to 5 before rate limiting; 429s are retried with backoff
-      const limit = pLimit(5);
+      // All scenes fully parallel — 429 rate limits are handled with short retry (300-700ms) per scene
+      // Test shows: 8 parallel = ~5s total vs batches of 5 = ~12s
       let completedScenes = 0;
       durations = await withTimeout(
-        Promise.all(scenes.map((scene, i) => limit(async () => {
+        Promise.all(scenes.map(async (scene, i) => {
           const dur = await generateVoiceover(scene.text, audioPaths[i], voiceId);
           completedScenes++;
           onProgress?.({ stage: `Creating voiceover... (${completedScenes}/${scenes.length} scenes)`, percent: 12 + Math.round((completedScenes / scenes.length) * 14) });
           return dur;
-        }))),
-        480_000,
+        })),
+        120_000, // 2 min hard limit for all voiceovers
         "Voiceover generation stage"
       );
     }
