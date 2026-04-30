@@ -233,6 +233,18 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
   const elapsedStr = `${elapsedMin}:${elapsedSec}`;
   const nearingLimit = elapsed > 75 * 60; // warn after 75 min (90-min cap)
 
+  // ETA: estimate remaining time based on current percent and elapsed time
+  // Minimum 5% progress needed before showing ETA to avoid wild estimates
+  const etaStr = (() => {
+    if (!isProcessing || progressPercent < 5 || elapsed < 10) return null;
+    const totalEstSec = (elapsed / progressPercent) * 100;
+    const remSec = Math.max(0, Math.round(totalEstSec - elapsed));
+    if (remSec < 10) return "< 10 sec";
+    if (remSec < 60) return `~${remSec}s left`;
+    const remMin = Math.ceil(remSec / 60);
+    return `~${remMin} min left`;
+  })();
+
   return (
     <div className="glass-card border border-white/8 rounded-xl overflow-hidden hover:border-white/15 transition-all duration-300 group">
 
@@ -256,7 +268,12 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
                 <div className="w-full">
                   <div className="flex items-center justify-between mb-1">
                     <span className="text-[10px] text-slate-500">{progressPercent}%</span>
-                    <span className={`text-[10px] font-mono ml-2 shrink-0 ${nearingLimit ? "text-amber-400" : "text-slate-600"}`}>{elapsedStr}</span>
+                    <div className="flex items-center gap-1.5">
+                      {etaStr && (
+                        <span className="text-[10px] font-semibold text-cyan-400">{etaStr}</span>
+                      )}
+                      <span className={`text-[10px] font-mono shrink-0 ${nearingLimit ? "text-amber-400" : "text-slate-600"}`}>{elapsedStr}</span>
+                    </div>
                   </div>
                   <div className="w-full bg-white/10 rounded-full h-1.5 overflow-hidden">
                     <div

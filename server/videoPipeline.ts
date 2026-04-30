@@ -577,24 +577,79 @@ async function composeSceneVideo(
   workDir: string
 ): Promise<string> {
   const outputPath = path.join(workDir, `scene_${scene.index}_composed.mp4`);
-  const subtitlePath = await renderSubtitleOverlay(scene.text, scene.index, MAX_SCENES, workDir);
+
+  // Validate inputs — generate safe fallbacks if missing
+  const videoExists = fs.existsSync(videoPath) && fs.statSync(videoPath).size > 100;
+  const audioExists = fs.existsSync(audioPath) && fs.statSync(audioPath).size > 100;
+
+  const safeVideoPath = videoExists
+    ? videoPath
+    : await generateColorFallback(scene.index, duration + 1, workDir);
+
+  let safeAudioPath = audioPath;
+  if (!audioExists) {
+    console.warn(`[Pipeline] Scene ${scene.index}: audio missing, generating silent fallback`);
+    safeAudioPath = path.join(workDir, `scene_${scene.index}_silent.mp3`);
+    try {
+      await withTimeout(
+        exec(`${FFMPEG_BIN} -y -f lavfi -i anullsrc=r=44100:cl=stereo -t ${duration} -c:a libmp3lame -b:a 64k "${safeAudioPath}" 2>/dev/null`),
+        10_000, `Silent fallback scene ${scene.index}`
+      );
+    } catch {
+      fs.writeFileSync(safeAudioPath, Buffer.from([0xff, 0xfb, 0x90, 0x00, ...Array(413).fill(0)]));
+    }
+  }
+
+  let subtitlePath: string | null = null;
+  try {
+    subtitlePath = await renderSubtitleOverlay(scene.text, scene.index, MAX_SCENES, workDir);
+  } catch (err) {
+    console.warn(`[Pipeline] Scene ${scene.index}: subtitle render failed, composing without overlay:`, err);
+  }
 
   const OVERLAY_H = 160;
   const overlayY = VIDEO_HEIGHT - OVERLAY_H;
   const fadeFilter = `fade=t=in:st=0:d=0.25,fade=t=out:st=${Math.max(0, duration - 0.25)}:d=0.25`;
 
-  await withTimeout(
-    exec(
-      `${FFMPEG_BIN} -y -i "${videoPath}" -i "${audioPath}" -loop 1 -i "${subtitlePath}" ` +
-      `-filter_complex "[0:v]scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}[scaled];[scaled][2:v]overlay=x=0:y=${overlayY}:shortest=1,${fadeFilter}[vout]" ` +
-      `-map "[vout]" -map "1:a" ` +
-      `-t ${duration} -c:v libx264 -preset ultrafast -crf 28 -c:a aac -b:a 64k -pix_fmt yuv420p "${outputPath}" 2>/dev/null`
-    ),
-    60_000,  // 60s per scene (was 120s)
-    `Compose scene ${scene.index}`
-  );
+  try {
+    if (subtitlePath && fs.existsSync(subtitlePath)) {
+      await withTimeout(
+        exec(
+          `${FFMPEG_BIN} -y -i "${safeVideoPath}" -i "${safeAudioPath}" -loop 1 -i "${subtitlePath}" ` +
+          `-filter_complex "[0:v]scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}[scaled];[scaled][2:v]overlay=x=0:y=${overlayY}:shortest=1,${fadeFilter}[vout]" ` +
+          `-map "[vout]" -map "1:a" ` +
+          `-t ${duration} -c:v libx264 -preset ultrafast -crf 28 -c:a aac -b:a 64k -pix_fmt yuv420p "${outputPath}" 2>/dev/null`
+        ),
+        60_000,
+        `Compose scene ${scene.index}`
+      );
+    } else {
+      // No subtitle overlay
+      await withTimeout(
+        exec(
+          `${FFMPEG_BIN} -y -i "${safeVideoPath}" -i "${safeAudioPath}" ` +
+          `-filter_complex "[0:v]scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT},${fadeFilter}[vout]" ` +
+          `-map "[vout]" -map "1:a" ` +
+          `-t ${duration} -c:v libx264 -preset ultrafast -crf 28 -c:a aac -b:a 64k -pix_fmt yuv420p "${outputPath}" 2>/dev/null`
+        ),
+        60_000,
+        `Compose scene ${scene.index} (no subtitle)`
+      );
+    }
+  } catch (composeErr) {
+    // Last resort: simple mux without any filter
+    console.warn(`[Pipeline] Scene ${scene.index}: compose failed, trying simple mux:`, composeErr);
+    await withTimeout(
+      exec(
+        `${FFMPEG_BIN} -y -i "${safeVideoPath}" -i "${safeAudioPath}" ` +
+        `-t ${duration} -c:v libx264 -preset ultrafast -crf 28 -c:a aac -b:a 64k -pix_fmt yuv420p "${outputPath}" 2>/dev/null`
+      ),
+      45_000,
+      `Simple mux scene ${scene.index}`
+    );
+  }
 
-  try { fs.unlinkSync(subtitlePath); } catch { /* ignore */ }
+  if (subtitlePath) { try { fs.unlinkSync(subtitlePath); } catch { /* ignore */ } }
   return outputPath;
 }
 
@@ -647,7 +702,16 @@ async function concatenateScenesWithMusic(
     renderOutroCard(4, workDir),
   ]);
 
-  const allClips = [introPath, ...scenePaths, outroPath];
+  // Filter out any missing or empty scene files to prevent concat crash
+  const validScenePaths = scenePaths.filter(p => {
+    try { return fs.existsSync(p) && fs.statSync(p).size > 100; } catch { return false; }
+  });
+  if (validScenePaths.length === 0) throw new Error("No valid composed scene files to concatenate");
+  if (validScenePaths.length < scenePaths.length) {
+    console.warn(`[Pipeline] Concat: ${scenePaths.length - validScenePaths.length} scene(s) missing, using ${validScenePaths.length} valid scenes`);
+  }
+
+  const allClips = [introPath, ...validScenePaths, outroPath];
   const listContent = allClips.map(p => `file '${p}'`).join("\n");
   fs.writeFileSync(listFile, listContent, "utf-8");
 

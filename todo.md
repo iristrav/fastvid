@@ -330,3 +330,12 @@
 - [x] Frontend: Generate button renamed to "Generate Video", toast updated
 - [x] Frontend: stats row: "Awaiting" counter replaced with "Failed" counter
 - [x] Frontend: "How it works" text updated to reflect no manual step
+
+## Session 9 — Pipeline Reliability + Estimated Time
+- [x] Audited full videoPipeline.ts: found 3 crash points in composeSceneVideo and concat
+- [x] Fix: composeSceneVideo validates video+audio exist before FFmpeg; generates safe fallbacks if missing
+- [x] Fix: subtitle render failure is caught — compose continues without overlay instead of crashing
+- [x] Fix: added 3-level fallback in composeSceneVideo: with subtitle → without subtitle → simple mux
+- [x] Fix: concatenateScenesWithMusic filters missing/empty scene files before writing concat list
+- [x] Added ETA calculation to VideoCard: shows "~X min left" in cyan next to elapsed time
+- [x] ETA is based on actual elapsed/percent ratio (appears after 5% progress + 10s elapsed)
