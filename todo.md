@@ -341,13 +341,13 @@
 - [x] ETA is based on actual elapsed/percent ratio (appears after 5% progress + 10s elapsed)
 
 ## Session 10 — AI Beelden + 2 Clips per Scene (max 90 min)
-- [ ] Add AI image generation fallback when Pexels returns no results (generateImage from _core)
-- [ ] Increase to 2 Pexels clips per scene with smart selection (different clips)
-- [ ] Add xfade transition between clip 1 and clip 2 within each scene
-- [ ] AI image: convert PNG to video loop (5s) via FFmpeg when used as clip
-- [ ] Keep total pipeline under 90 min: AI image gen parallel with other stages, timeout 30s per image
-- [ ] Update STAGE_LABELS and global cap accordingly
-- [ ] Update compose to handle 2-clip scenes with transition
+- [x] Add AI image generation fallback when Pexels returns no results (generateImage from _core) — done in Session 11
+- [x] Increase to 2 clips per scene with smart selection — done in Session 11
+- [x] Add xfade transition between clip 1 and clip 2 within each scene — done in Session 11
+- [x] AI image: convert PNG to video loop via FFmpeg zoompan — done in Session 11
+- [x] Keep total pipeline under 90 min: AI image gen parallel, 8 min visuals timeout — done in Session 11
+- [x] Update STAGE_LABELS and global cap accordingly — done in Session 11
+- [x] Update compose to handle 2-clip scenes with transition — done in Session 11
 
 ## Session 11 — AI-First Visuals + 2 Clips per Scene (max 90 min)
 - [x] Added generateAIImageClip(): Forge generateImage → download PNG → FFmpeg zoompan loop (35s timeout)
@@ -359,4 +359,17 @@
 - [x] Updated STAGE_LABELS to reflect new visual pipeline stages
 - [x] AI gen runs with p-limit(2) to avoid Forge rate limits; visuals stage timeout 8 min
 - [x] Compose stage timeout raised to 12 min (2-clip xfade is heavier than single clip)
+- [x] 0 TypeScript errors, 10/10 tests pass
+
+## Session 12 — Stability AI + Dynamic Scenes voor 8-10+ min video's
+- [x] Added STABILITY_AI_API_KEY to secrets (25 credits = ~8300 images available)
+- [x] Rewrote generateAIImageClip() to use Stability AI SDXL v1.0 ($0.003/image, 30 steps, 1280x720)
+- [x] Dynamic MAX_SCENES based on video length: 5-8min=12, 8-12min=20, 12-15min=25, 15-20min=30, 20+min=35
+- [x] Per scene: 1 AI image (zoompan loop) + 2 Pexels clips = 3 visuals per scene
+- [x] Updated parseScriptIntoScenes to generate detailed aiImagePrompt per scene (20-35 words, cinematic)
+- [x] Global cap raised to 90 min (large videos with 30+ scenes need up to 60 min)
+- [x] Thumbnail now generated via Stability AI (no Manus credits)
+- [x] videoLength now passed through to runVideoPipeline for dynamic scene count
+- [x] Updated Home.tsx: both VIDEO_LENGTHS arrays show realistic genTime (15/25/35/50/75 min)
+- [x] Updated Home.tsx FAQ: generation time answer reflects new AI image pipeline
 - [x] 0 TypeScript errors, 10/10 tests pass

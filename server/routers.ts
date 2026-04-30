@@ -16,7 +16,7 @@ import {
 } from "./db";
 import { storagePut } from "./storage";
 import { FASTVID_PRO_PLAN } from "./products";
-import { runVideoPipeline } from "./videoPipeline";
+import { runVideoPipeline, generateStabilityAIThumbnail } from "./videoPipeline";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY ?? "");
 
@@ -33,16 +33,16 @@ const subscribedProcedure = protectedProcedure.use(({ ctx, next }) => {
   return next({ ctx });
 });
 
-// Global 30-min hard cap — optimised pipeline should finish in 5-15 min
-const MAX_VIDEO_GENERATION_MS = 30 * 60 * 1000; // 30 min
+// Global 90-min hard cap — large videos (30+ scenes) can take up to 60 min
+const MAX_VIDEO_GENERATION_MS = 90 * 60 * 1000; // 90 min
 
 async function generateVideoWithAI(videoId: number, prompt: string, videoLength: string, voiceId?: string, customVoiceoverUrl?: string) {
   // Wrap the entire pipeline in a 30-min timeout
   const timeoutHandle = setTimeout(async () => {
-    console.error(`[Video Generation] Video ${videoId} exceeded 30-min limit — marking as failed`);
+    console.error(`[Video Generation] Video ${videoId} exceeded 90-min limit — marking as failed`);
     await updateVideoStatus(videoId, "failed", {
-      errorMessage: "Video generation exceeded 30 minutes. Please retry.",
-      progressStep: "Generation timed out (max 30 min exceeded)",
+      errorMessage: "Video generation exceeded 90 minutes. Please retry.",
+      progressStep: "Generation timed out (max 90 min exceeded)",
       progressPercent: 0,
     }).catch(() => {});
   }, MAX_VIDEO_GENERATION_MS);
@@ -57,10 +57,10 @@ async function generateVideoWithAI(videoId: number, prompt: string, videoLength:
 // ─── Full pipeline: script generation + video production (no approval pause) ────
 async function generateFullVideo(videoId: number, prompt: string, videoLength: string, videoType: string, voiceId?: string, customVoiceoverUrl?: string) {
   const timeoutHandle = setTimeout(async () => {
-    console.error(`[Video Generation] Video ${videoId} exceeded 30-min limit — marking as failed`);
+    console.error(`[Video Generation] Video ${videoId} exceeded 90-min limit — marking as failed`);
     await updateVideoStatus(videoId, "failed", {
-      errorMessage: "Video generation exceeded 30 minutes. Please retry.",
-      progressStep: "Generation timed out (max 30 min exceeded)",
+      errorMessage: "Video generation exceeded 90 minutes. Please retry.",
+      progressStep: "Generation timed out (max 90 min exceeded)",
       progressPercent: 0,
     }).catch(() => {});
   }, MAX_VIDEO_GENERATION_MS);
@@ -238,29 +238,21 @@ async function _generateVideoWithAI(videoId: number, prompt: string, videoLength
         }
       },
       voiceId,
-      customVoiceoverUrl
+      customVoiceoverUrl,
+      videoLength
     );
 
-    // ── Stage 4: Generate AI Thumbnail + Mark as Completed ────────────────────────
+    // ── Stage 4: Generate Thumbnail via Stability AI (no Manus credits) ────────────
     await updateVideoProgress(videoId, "Generating thumbnail...", 97);
     let thumbnailUrl: string | undefined;
     try {
       const videoTitle = (approvedMetadata as Record<string, string>).title ?? approvedTitle;
-      const thumbPrompt = `YouTube thumbnail for: "${videoTitle.slice(0, 80)}". Bold text overlay, vibrant colors, high contrast, cinematic quality, 16:9 aspect ratio, professional YouTube thumbnail style`;
-      const { generateImage } = await import("./_core/imageGeneration");
-      const { storagePut } = await import("./storage");
-      const thumbResult = await Promise.race([
-        generateImage({ prompt: thumbPrompt }),
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Thumbnail timeout")), 45_000)),
-      ]);
-      if (thumbResult?.url) {
-        // Download and re-upload to our own S3 so it persists
-        const thumbResp = await fetch(thumbResult.url);
-        if (thumbResp.ok) {
-          const thumbBuf = Buffer.from(await thumbResp.arrayBuffer());
-          const { url: s3Url } = await storagePut(`thumbnails/${videoId}.jpg`, thumbBuf, "image/jpeg");
-          thumbnailUrl = s3Url;
-        }
+      const thumbPrompt = `YouTube thumbnail: "${videoTitle.slice(0, 80)}". Cinematic, vibrant colors, high contrast, dramatic lighting, photorealistic, 16:9 aspect ratio, professional quality`;
+      const thumbB64 = await generateStabilityAIThumbnail(thumbPrompt);
+      if (thumbB64) {
+        const thumbBuf = Buffer.from(thumbB64, "base64");
+        const { url: s3Url } = await storagePut(`thumbnails/${videoId}.jpg`, thumbBuf, "image/jpeg");
+        thumbnailUrl = s3Url;
       }
     } catch (thumbErr) {
       console.warn(`[Video ${videoId}] Thumbnail generation failed (non-fatal):`, thumbErr);

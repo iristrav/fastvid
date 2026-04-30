@@ -35,11 +35,11 @@ const VISUALS_IMG = "https://d2xsxph8kpxj0f.cloudfront.net/310519663314427713/B9
 
 // ─── Video length options ──────────────────────────────────────────────────────
 const VIDEO_LENGTHS = [
-  { label: "5–8 min", value: "5-8", desc: "Short & punchy", genTime: "~5 min" },
-  { label: "8–12 min", value: "8-12", desc: "Perfect for tutorials", genTime: "~8 min" },
-  { label: "12–15 min", value: "12-15", desc: "In-depth content", genTime: "~10 min" },
-  { label: "15–20 min", value: "15-20", desc: "Extended videos", genTime: "~12 min" },
-  { label: "20+ min", value: "20+", desc: "Long-form documentaries", genTime: "~15 min" },
+  { label: "5–8 min", value: "5-8", desc: "Short & punchy", genTime: "~15 min" },
+  { label: "8–12 min", value: "8-12", desc: "Perfect for tutorials", genTime: "~25 min" },
+  { label: "12–15 min", value: "12-15", desc: "In-depth content", genTime: "~35 min" },
+  { label: "15–20 min", value: "15-20", desc: "Extended videos", genTime: "~50 min" },
+  { label: "20+ min", value: "20+", desc: "Long-form documentaries", genTime: "~75 min" },
 ];
 
 // ─── Intersection Observer Hook ────────────────────────────────────────────────
@@ -176,7 +176,7 @@ export default function Home() {
     },
     {
       q: "How long does it take to generate a video?",
-      a: "Generation time depends on the chosen video length. A 5–8 minute video is ready in ~5 minutes, while a 20+ minute video takes ~15 minutes. Fastvid works in parallel: script, voiceover, and visuals are processed simultaneously for maximum speed.",
+      a: "Generation time depends on the chosen video length. A 5–8 minute video is ready in ~15 minutes (12 scenes with AI images), while a 20+ minute video takes ~75 minutes (35 scenes). Each scene gets a unique Stability AI-generated image plus stock video clips. All scenes are processed in parallel for maximum speed.",
     },
     {
       q: "Can I change the video length for each video?",
@@ -450,7 +450,7 @@ export default function Home() {
                 icon: "⚡",
                 title: "Short & punchy",
                 useCases: ["News & updates", "Quick tips", "Product reveals", "Trending topics"],
-                genTime: "~5 min",
+                genTime: "~15 min",
               },
               {
                 label: "8–12 min",
@@ -458,7 +458,7 @@ export default function Home() {
                 icon: "🎯",
                 title: "Perfect for tutorials",
                 useCases: ["How-to videos", "Reviews", "Top 5 lists", "Vlog-style content"],
-                genTime: "~8 min",
+                genTime: "~25 min",
               },
               {
                 label: "12–15 min",
@@ -466,7 +466,7 @@ export default function Home() {
                 icon: "📈",
                 title: "In-depth content",
                 useCases: ["Extended tutorials", "Case studies", "Comparisons", "Educational"],
-                genTime: "~10 min",
+                genTime: "~35 min",
               },
               {
                 label: "15–20 min",
@@ -474,7 +474,7 @@ export default function Home() {
                 icon: "🎬",
                 title: "Extended videos",
                 useCases: ["Documentary-style", "Deep-dive analyses", "Interviews", "Storytelling"],
-                genTime: "~12 min",
+                genTime: "~50 min",
               },
               {
                 label: "20+ min",
@@ -482,7 +482,7 @@ export default function Home() {
                 icon: "🏆",
                 title: "Long-form documentaries",
                 useCases: ["Masterclasses", "Full courses", "Epic stories", "Deep dives"],
-                genTime: "~15 min",
+                genTime: "~75 min",
               },
             ].map((opt) => (
               <div
