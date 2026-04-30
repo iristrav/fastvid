@@ -305,3 +305,17 @@
 - [x] Verified pipeline auto-continues: approveScript → generateVideoWithAI → _generateVideoWithAI runs all 6 stages sequentially in one wrapper
 - [x] Updated UI: Dashboard nearingLimit threshold 50min→75min; Admin labels "max 1h"→"max 1.5h"; STAGE_LABELS reflect new per-stage timings
 - [x] Updated expireStuckVideos default 70→95 min to align with new cap
+
+## Session 7 — Radical Speed Fix (target: <15 min end-to-end)
+- [x] Reduce MAX_SCENES from 6 to 4
+- [x] Reduce CLIPS_PER_SCENE from 2 to 1 (no multi-cut xfade, simpler compose)
+- [x] Remove AI image fallback entirely (color fallback is instant)
+- [x] Reduce Pexels download timeout from 30s to 15s
+- [x] Remove Ken Burns zoompan filter (use simple scale/crop instead)
+- [x] Simplify compose: single clip + subtitle + audio, no xfade chain
+- [x] Reduce TTS text limit from 400 to 250 chars (shorter = faster Fish Audio)
+- [x] Run all 4 TTS calls with p-limit(4) concurrency
+- [x] Update STAGE_LABELS to reflect new realistic timings
+- [x] Update Home.tsx generation time claims
+- [x] Global cap lowered from 90 min to 30 min
+- [x] expireStuckVideos threshold lowered from 95 to 35 min

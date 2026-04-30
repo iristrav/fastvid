@@ -33,16 +33,16 @@ const subscribedProcedure = protectedProcedure.use(({ ctx, next }) => {
   return next({ ctx });
 });
 
-// Global 90-min hard cap — if anything hangs, mark as failed with a clear message
-const MAX_VIDEO_GENERATION_MS = 90 * 60 * 1000; // 1.5 hours (90 min)
+// Global 30-min hard cap — optimised pipeline should finish in 5-15 min
+const MAX_VIDEO_GENERATION_MS = 30 * 60 * 1000; // 30 min
 
 async function generateVideoWithAI(videoId: number, prompt: string, videoLength: string, voiceId?: string, customVoiceoverUrl?: string) {
-  // Wrap the entire pipeline in a 90-min timeout
+  // Wrap the entire pipeline in a 30-min timeout
   const timeoutHandle = setTimeout(async () => {
-    console.error(`[Video Generation] Video ${videoId} exceeded 90-min limit — marking as failed`);
+    console.error(`[Video Generation] Video ${videoId} exceeded 30-min limit — marking as failed`);
     await updateVideoStatus(videoId, "failed", {
-      errorMessage: "Video generation exceeded the maximum time limit of 1.5 hours. Please retry or try a shorter prompt.",
-      progressStep: "Generation timed out (max 1.5h exceeded)",
+      errorMessage: "Video generation exceeded 30 minutes. Please retry.",
+      progressStep: "Generation timed out (max 30 min exceeded)",
       progressPercent: 0,
     }).catch(() => {});
   }, MAX_VIDEO_GENERATION_MS);
@@ -612,7 +612,7 @@ export const appRouter = router({
 
     /** Admin: mark all stuck in-progress videos as failed */
     expireStuck: adminProcedure.mutation(async () => {
-      const count = await expireStuckVideos(95);
+      const count = await expireStuckVideos(35);
       return { expired: count };
     }),
 
