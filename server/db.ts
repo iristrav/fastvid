@@ -306,12 +306,12 @@ export async function seedDefaultVoices() {
 
   // Real Fish Audio S2 Pro voices — verified working with the API
   const defaults: InsertVoice[] = [
-    { name: "Energetic Male",  description: "American Male — energetic, YouTube-style narrator",  fishAudioReferenceId: "802e3bc2b27e49c2995d23ef70e6ac89", flag: "🇺🇸", sortOrder: 1, isActive: 1 },
-    { name: "Adrian",          description: "American Male — deep, authoritative documentary voice", fishAudioReferenceId: "bf322df2096a46f18c579d0baa36f41d", flag: "🇺🇸", sortOrder: 2, isActive: 1 },
-    { name: "Ethan",           description: "American Male — clear, conversational narrator",        fishAudioReferenceId: "536d3a5e000945adb7038665781a4aca", flag: "🇺🇸", sortOrder: 3, isActive: 1 },
-    { name: "Sarah",           description: "American Female — warm, professional narrator",         fishAudioReferenceId: "933563129e564b19a115bedd57b7406a", flag: "🇺🇸", sortOrder: 4, isActive: 1 },
-    { name: "JJK Narrator",    description: "Male — dramatic, cinematic storytelling voice",         fishAudioReferenceId: "179b5cc736974d96913c7849d0bb68c5", flag: "🎙️", sortOrder: 5, isActive: 1 },
-    { name: "Jasphina",        description: "Female — clear, expressive English narrator",           fishAudioReferenceId: "e9b134e4c0b547a3894793be502314f1", flag: "🎙️", sortOrder: 6, isActive: 1 },
+    { name: "Michael",  description: "American Male — natural, YouTube-style narrator",          fishAudioReferenceId: "802e3bc2b27e49c2995d23ef70e6ac89", flag: "🇺🇸", sortOrder: 1, isActive: 1 },
+    { name: "Adam",     description: "American Male — deep, authoritative documentary voice",     fishAudioReferenceId: "bf322df2096a46f18c579d0baa36f41d", flag: "🇺🇸", sortOrder: 2, isActive: 1 },
+    { name: "Heart",    description: "American Female — warm, friendly narrator",                 fishAudioReferenceId: "536d3a5e000945adb7038665781a4aca", flag: "🇺🇸", sortOrder: 3, isActive: 1 },
+    { name: "Bella",    description: "American Female — clear, professional narrator",            fishAudioReferenceId: "933563129e564b19a115bedd57b7406a", flag: "🇺🇸", sortOrder: 4, isActive: 1 },
+    { name: "George",   description: "British Male — elegant, documentary-style narrator",       fishAudioReferenceId: "179b5cc736974d96913c7849d0bb68c5", flag: "🇬🇧", sortOrder: 5, isActive: 1 },
+    { name: "Lewis",    description: "British Male — calm, authoritative narrator",              fishAudioReferenceId: "e9b134e4c0b547a3894793be502314f1", flag: "🇬🇧", sortOrder: 6, isActive: 1 },
   ];
   await db.insert(voices).values(defaults);
 }

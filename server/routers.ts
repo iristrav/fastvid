@@ -180,15 +180,15 @@ async function _generateVideoWithAI(videoId: number, prompt: string, videoLength
     // Get the approved script from DB
     const video = await getVideoById(videoId);
     if (!video?.script) throw new Error("No approved script found");
-    const scriptContent = video.script;
-    const title = video.title ?? prompt.slice(0, 100);
-    const metadata = video.metadata ?? { title, description: prompt, tags: [], chapters: [] };
+    const approvedScript = video.script;
+    const approvedTitle = video.title ?? prompt.slice(0, 100);
+    const approvedMetadata = video.metadata ?? { title: approvedTitle, description: prompt, tags: [], chapters: [] };
 
     // ── Stage 3: Run Full Video Pipeline (TTS + Visuals + FFmpeg) ────
     await updateVideoStatus(videoId, "generating_voiceover", { progressStep: "🎙️ Generating voiceover...", progressPercent: 30 });
     const videoUrl = await runVideoPipeline(
       videoId,
-      scriptContent,
+      approvedScript,
       async (progress) => {
         // Update granular progress step label + percent
         const basePercent = 30;
@@ -211,7 +211,7 @@ async function _generateVideoWithAI(videoId: number, prompt: string, videoLength
     await updateVideoProgress(videoId, "Generating thumbnail...", 97);
     let thumbnailUrl: string | undefined;
     try {
-      const videoTitle = (metadata as Record<string, string>).title ?? title;
+      const videoTitle = (approvedMetadata as Record<string, string>).title ?? approvedTitle;
       const thumbPrompt = `YouTube thumbnail for: "${videoTitle.slice(0, 80)}". Bold text overlay, vibrant colors, high contrast, cinematic quality, 16:9 aspect ratio, professional YouTube thumbnail style`;
       const { generateImage } = await import("./_core/imageGeneration");
       const { storagePut } = await import("./storage");
@@ -231,9 +231,9 @@ async function _generateVideoWithAI(videoId: number, prompt: string, videoLength
     } catch (thumbErr) {
       console.warn(`[Video ${videoId}] Thumbnail generation failed (non-fatal):`, thumbErr);
     }
-    const finalTitle = (metadata as Record<string, string>).title ?? title;
+    const finalTitle = (approvedMetadata as Record<string, string>).title ?? approvedTitle;
     await updateVideoStatus(videoId, "completed", {
-      metadata,
+      metadata: approvedMetadata,
       title: finalTitle,
       thumbnailUrl: thumbnailUrl ?? `https://picsum.photos/seed/${videoId}/1280/720`,
       videoUrl,
