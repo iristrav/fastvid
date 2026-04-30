@@ -914,13 +914,15 @@ export async function runVideoPipeline(
   try {
     // Stage 1: Parse script into scenes (max 45s)
     onProgress?.({ stage: STAGE_LABELS.parsing, percent: 5 });
+    const t0 = Date.now();
     const scenes = await parseScriptIntoScenes(script);
-    console.log(`[Pipeline] ${scenes.length} scenes parsed for video ${videoId}`);
+    console.log(`[Pipeline] Stage 1 (parse): ${scenes.length} scenes in ${((Date.now()-t0)/1000).toFixed(1)}s`);
     scenes.forEach((s, i) => console.log(`  Scene ${i}: queries=${JSON.stringify(s.pexelsQueries)}`));
 
     // Stage 2: Generate ALL voiceovers in parallel (max 8 min)
     // If custom voiceover URL is provided, download and split across scenes instead of TTS
     onProgress?.({ stage: STAGE_LABELS.voiceovers, percent: 12 });
+    const t1 = Date.now();
     const audioPaths = scenes.map((_, i) => path.join(workDir, `scene_${i}_audio.mp3`));
     let durations: number[];
     if (customVoiceoverUrl) {
@@ -960,10 +962,11 @@ export async function runVideoPipeline(
       );
     }
     scenes.forEach((scene, i) => { scene.duration = Math.max(durations[i], 5); });
-    console.log(`[Pipeline] All ${scenes.length} voiceovers generated`);
+    console.log(`[Pipeline] Stage 2 (voiceovers): ${scenes.length} scenes in ${((Date.now()-t1)/1000).toFixed(1)}s`);
 
     // Stage 3: Fetch ALL visuals in parallel — 3 clips per scene (max 12 min)
     onProgress?.({ stage: STAGE_LABELS.visuals, percent: 28 });
+    const t2 = Date.now();
     const visuals = await withTimeout(
       Promise.all(
         scenes.map(scene => fetchVisualsForScene(scene, scene.duration, workDir))
@@ -978,10 +981,11 @@ export async function runVideoPipeline(
       acc[key] = (acc[key] || 0) + 1;
       return acc;
     }, {} as Record<string, number>);
-    console.log(`[Pipeline] Visual sources: ${JSON.stringify(summary)}`);
+    console.log(`[Pipeline] Stage 3 (visuals): ${((Date.now()-t2)/1000).toFixed(1)}s — sources: ${JSON.stringify(summary)}`);
 
     // Stage 4: Compose all scenes in parallel (max 20 min)
     onProgress?.({ stage: STAGE_LABELS.composing, percent: 52 });
+    const t3 = Date.now();
     const composedScenes = await withTimeout(
       Promise.all(
         scenes.map((scene, i) =>
@@ -991,7 +995,7 @@ export async function runVideoPipeline(
       900_000, // 15 min hard limit for compositing
       "Scene composition stage"
     );
-    console.log(`[Pipeline] All ${scenes.length} scenes composed`);
+    console.log(`[Pipeline] Stage 4 (compose): ${scenes.length} scenes in ${((Date.now()-t3)/1000).toFixed(1)}s`);
 
     // Cleanup intermediate files
     for (let i = 0; i < scenes.length; i++) {
@@ -1005,20 +1009,25 @@ export async function runVideoPipeline(
 
     // Stage 5: Concatenate + intro/outro + mix background music (max 10 min)
     onProgress?.({ stage: STAGE_LABELS.assembling, percent: 82 });
+    const t4 = Date.now();
     const totalDuration = scenes.reduce((sum, s) => sum + s.duration, 0);
     const finalVideoPath = await concatenateScenesWithMusic(composedScenes, workDir, videoId, totalDuration, videoTitle);
+    console.log(`[Pipeline] Stage 5 (assemble+music): ${((Date.now()-t4)/1000).toFixed(1)}s`);
 
     // Stage 6: Upload to S3 (max 5 min)
     onProgress?.({ stage: STAGE_LABELS.uploading, percent: 95 });
+    const t5 = Date.now();
     const videoBuffer = fs.readFileSync(finalVideoPath);
     const { url } = await withTimeout(
       storagePut(`videos/${videoId}/final.mp4`, videoBuffer, "video/mp4"),
       300_000,
       "S3 upload"
     );
+    console.log(`[Pipeline] Stage 6 (upload): ${((Date.now()-t5)/1000).toFixed(1)}s, file size: ${(videoBuffer.length/1024/1024).toFixed(1)}MB`);
 
     onProgress?.({ stage: STAGE_LABELS.complete, percent: 100 });
-    console.log(`[Pipeline] Video ${videoId} complete: ${url}`);
+    const totalMs = Date.now() - t0;
+    console.log(`[Pipeline] Video ${videoId} COMPLETE in ${(totalMs/60000).toFixed(1)} min (${(totalMs/1000).toFixed(0)}s total): ${url}`);
     return url;
   } finally {
     try {

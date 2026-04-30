@@ -316,6 +316,19 @@ export const appRouter = router({
       generateVideoWithAI(video.id, video.prompt, video.videoLength ?? "15-20", (video as { voiceId?: string | null }).voiceId ?? undefined, video.customVoiceoverUrl ?? undefined).catch(console.error);
       return { success: true };
     }),
+    regenScript: protectedProcedure.input(z.object({ id: z.number() })).mutation(async ({ ctx, input }) => {
+      const video = await getVideoById(input.id);
+      if (!video) throw new TRPCError({ code: "NOT_FOUND" });
+      if (video.userId !== ctx.user.id && ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN" });
+      if (video.status !== "failed") throw new TRPCError({ code: "BAD_REQUEST", message: "Only failed videos can be retried" });
+      // Reset to pending and re-run script generation
+      await updateVideoStatus(video.id, "pending", {
+        progressStep: "🔄 Retrying...",
+        progressPercent: 0,
+      });
+      generateScriptOnly(video.id, video.prompt, video.videoLength ?? "15-20", (video as { videoType?: string | null }).videoType ?? "documentary").catch(console.error);
+      return { success: true };
+    }),
     rejectScript: protectedProcedure.input(z.object({ id: z.number() })).mutation(async ({ ctx, input }) => {
       const video = await getVideoById(input.id);
       if (!video) throw new TRPCError({ code: "NOT_FOUND" });

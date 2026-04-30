@@ -290,3 +290,9 @@
 - [x] Reduce TTS timeout from 90s to 45s per scene (fail fast, use silent fallback)
 - [x] Reduce MAX_ATTEMPTS from 3 to 2 to fail faster on rate limit errors
 - [x] Add per-scene progress updates during voiceover stage (scene X/8 done)
+
+## Session 5 — UX & Pipeline Improvements
+- [x] Add video.regenScript tRPC procedure: reset failed video and re-run script generation
+- [x] Add "Retry" button on failed video cards in Dashboard (calls regenScript)
+- [x] Add pipeline stage timing logs to help diagnose bottlenecks on deployed server
+- [ ] Improve auto-open script review: handle multiple awaiting_approval videos correctly

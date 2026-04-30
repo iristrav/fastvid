@@ -194,7 +194,7 @@ function ScriptReviewModal({ videoId, onClose }: { videoId: number; onClose: () 
 }
 
 // ─── Video Card ───────────────────────────────────────────────────────────────
-function VideoCard({ video, onView, onDelete, onRename, onReviewScript }: {
+function VideoCard({ video, onView, onDelete, onRename, onReviewScript, onRetry }: {
   video: {
     id: number; title: string | null; prompt: string; status: string;
     videoLength: string; createdAt: Date; thumbnailUrl: string | null;
@@ -203,6 +203,7 @@ function VideoCard({ video, onView, onDelete, onRename, onReviewScript }: {
   onDelete: (id: number) => void;
   onRename: (id: number, title: string) => void;
   onReviewScript: (id: number) => void;
+  onRetry: (id: number) => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [editTitle, setEditTitle] = useState(video.title ?? video.prompt.slice(0, 80));
@@ -294,7 +295,15 @@ function VideoCard({ video, onView, onDelete, onRename, onReviewScript }: {
                 </button>
               </div>
             ) : currentStatus === "failed" ? (
-              <XCircle className="w-10 h-10 text-red-400/60" />
+              <div className="flex flex-col items-center gap-3 px-4">
+                <XCircle className="w-10 h-10 text-red-400/60" />
+                <button
+                  onClick={() => onRetry(video.id)}
+                  className="flex items-center gap-2 text-xs font-bold text-white bg-purple-600 hover:bg-purple-500 px-3 py-1.5 rounded-lg transition-colors shadow-lg shadow-purple-500/30"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" /> Retry
+                </button>
+              </div>
             ) : (
               <Video className="w-10 h-10 text-slate-600" />
             )}
@@ -681,6 +690,9 @@ export default function Dashboard() {
     onSuccess: (data) => { toast.success(`Deleted ${data.deleted} failed video${data.deleted !== 1 ? "s" : ""}`); utils.video.list.invalidate(); },
     onError: (err) => toast.error("Failed", { description: err.message }),
   });
+  const regenScriptMutation = trpc.video.regenScript.useMutation({
+    onError: (err) => toast.error("Retry failed", { description: err.message }),
+  });
 
   const { data: videos, isLoading: videosLoading, refetch } = trpc.video.list.useQuery(undefined, { enabled: isAuthenticated, refetchInterval: 5000 });
   const checkoutMutation = trpc.billing.createCheckout.useMutation({
@@ -1054,6 +1066,7 @@ export default function Dashboard() {
                     }}
                     onRename={(id, title) => renameMutation.mutate({ id, title })}
                     onReviewScript={setReviewingScriptId}
+                    onRetry={(id) => regenScriptMutation.mutate({ id })}
                   />
                 ))}
               </div>
