@@ -69,7 +69,7 @@ async function generateFullVideo(videoId: number, prompt: string, videoLength: s
     // Step 1: Generate script (same logic as before, but no pause)
     await generateScriptOnly(videoId, prompt, videoLength, videoType);
 
-    // Check if script generation failed
+    // Check if script generation failed — read from DB to get the saved script
     const videoAfterScript = await getVideoById(videoId);
     if (!videoAfterScript?.script || videoAfterScript.status === "failed") {
       console.error(`[Video Generation] Script generation failed for video ${videoId}`);
@@ -77,12 +77,18 @@ async function generateFullVideo(videoId: number, prompt: string, videoLength: s
     }
 
     // Step 2: Immediately continue to full video pipeline
+    // Pass script/title/metadata directly to avoid any DB re-read race condition
     await updateVideoStatus(videoId, "generating_voiceover", {
       scriptApproved: 1,
       progressStep: "🎥 Script ready — starting video production...",
       progressPercent: 29,
     });
-    await _generateVideoWithAI(videoId, prompt, videoLength, voiceId, customVoiceoverUrl);
+    await _generateVideoWithAI(
+      videoId, prompt, videoLength, voiceId, customVoiceoverUrl,
+      videoAfterScript.script,
+      videoAfterScript.title ?? undefined,
+      videoAfterScript.metadata ?? undefined
+    );
   } finally {
     clearTimeout(timeoutHandle);
   }
@@ -209,14 +215,33 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLength: 
 }
 
 // ─── Phase B: Full pipeline after script approval ─────────────────────────────
-async function _generateVideoWithAI(videoId: number, prompt: string, videoLength: string, voiceId?: string, customVoiceoverUrl?: string) {
+async function _generateVideoWithAI(
+  videoId: number,
+  prompt: string,
+  videoLength: string,
+  voiceId?: string,
+  customVoiceoverUrl?: string,
+  // Optional: pass script/title/metadata directly to avoid DB re-read race condition
+  preloadedScript?: string,
+  preloadedTitle?: string,
+  preloadedMetadata?: unknown
+) {
   try {
-    // Get the approved script from DB
-    const video = await getVideoById(videoId);
-    if (!video?.script) throw new Error("No approved script found");
-    const approvedScript = video.script;
-    const approvedTitle = video.title ?? prompt.slice(0, 100);
-    const approvedMetadata = video.metadata ?? { title: approvedTitle, description: prompt, tags: [], chapters: [] };
+    // Use preloaded script if available, otherwise read from DB (legacy path)
+    let approvedScript: string;
+    let approvedTitle: string;
+    let approvedMetadata: unknown;
+    if (preloadedScript) {
+      approvedScript = preloadedScript;
+      approvedTitle = preloadedTitle ?? prompt.slice(0, 100);
+      approvedMetadata = preloadedMetadata ?? { title: approvedTitle, description: prompt, tags: [], chapters: [] };
+    } else {
+      const video = await getVideoById(videoId);
+      if (!video?.script) throw new Error("No approved script found");
+      approvedScript = video.script;
+      approvedTitle = video.title ?? prompt.slice(0, 100);
+      approvedMetadata = video.metadata ?? { title: approvedTitle, description: prompt, tags: [], chapters: [] };
+    }
 
     // ── Stage 3: Run Full Video Pipeline (TTS + Visuals + FFmpeg) ────
     await updateVideoStatus(videoId, "generating_voiceover", { progressStep: "🎙️ Generating voiceover...", progressPercent: 30 });
@@ -329,7 +354,9 @@ export const appRouter = router({
       if (!video) throw new TRPCError({ code: "NOT_FOUND" });
       if (video.userId !== ctx.user.id && ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN" });
       if (video.status !== "awaiting_approval") throw new TRPCError({ code: "BAD_REQUEST", message: "Video is not awaiting approval" });
-      // Save edited script if provided
+      // Use edited script if provided, otherwise use the stored script
+      const finalScript = input.editedScript ?? video.script;
+      if (!finalScript) throw new TRPCError({ code: "BAD_REQUEST", message: "No script found" });
       if (input.editedScript) {
         await updateVideoStatus(video.id, "awaiting_approval", { script: input.editedScript });
       }
@@ -338,8 +365,18 @@ export const appRouter = router({
         progressStep: "✅ Script approved — starting video production...",
         progressPercent: 29,
       });
-      // Phase B: run full pipeline — use stored voiceId and customVoiceoverUrl
-      generateVideoWithAI(video.id, video.prompt, video.videoLength ?? "15-20", (video as { voiceId?: string | null }).voiceId ?? undefined, video.customVoiceoverUrl ?? undefined).catch(console.error);
+      // Phase B: pass script directly to avoid DB re-read race condition
+      const voiceIdForApprove = (video as { voiceId?: string | null }).voiceId ?? undefined;
+      const customVoiceoverForApprove = video.customVoiceoverUrl ?? undefined;
+      const titleForApprove = video.title ?? undefined;
+      const metadataForApprove = video.metadata ?? undefined;
+      setImmediate(() => {
+        _generateVideoWithAI(
+          video.id, video.prompt, video.videoLength ?? "15-20",
+          voiceIdForApprove, customVoiceoverForApprove,
+          finalScript, titleForApprove, metadataForApprove
+        ).catch(console.error);
+      });
       return { success: true };
     }),
     regenScript: protectedProcedure.input(z.object({ id: z.number() })).mutation(async ({ ctx, input }) => {

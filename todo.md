@@ -373,3 +373,9 @@
 - [x] Updated Home.tsx: both VIDEO_LENGTHS arrays show realistic genTime (15/25/35/50/75 min)
 - [x] Updated Home.tsx FAQ: generation time answer reflects new AI image pipeline
 - [x] 0 TypeScript errors, 10/10 tests pass
+
+## Session 13 — Critical Bug Fix: "No approved script found"
+- [x] Fixed generateFullVideo: reads script from DB after generateScriptOnly, passes it directly to _generateVideoWithAI
+- [x] Fixed _generateVideoWithAI: accepts preloadedScript/preloadedTitle/preloadedMetadata params — uses them if provided, falls back to DB read
+- [x] Fixed approveScript: uses finalScript = editedScript ?? video.script, passes directly to _generateVideoWithAI via setImmediate
+- [x] 0 TypeScript errors, 10/10 tests pass
