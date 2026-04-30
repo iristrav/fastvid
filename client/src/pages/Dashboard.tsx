@@ -283,9 +283,15 @@ function VideoCard({ video, onView, onDelete, onRename, onReviewScript }: {
                 </div>
               </div>
             ) : needsApproval ? (
-              <div className="flex flex-col items-center gap-2">
-                <span className="text-3xl">📋</span>
-                <p className="text-xs text-amber-300 font-medium">Script ready</p>
+              <div className="flex flex-col items-center gap-3 px-4">
+                <span className="text-4xl">📋</span>
+                <p className="text-sm text-amber-300 font-bold">Script ready for review</p>
+                <button
+                  onClick={() => onReviewScript(video.id)}
+                  className="flex items-center gap-2 text-sm font-bold text-black bg-amber-400 hover:bg-amber-300 px-4 py-2 rounded-lg transition-colors shadow-lg shadow-amber-500/30"
+                >
+                  <Eye className="w-4 h-4" /> Review &amp; Approve Script
+                </button>
               </div>
             ) : currentStatus === "failed" ? (
               <XCircle className="w-10 h-10 text-red-400/60" />
@@ -676,7 +682,7 @@ export default function Dashboard() {
     onError: (err) => toast.error("Failed", { description: err.message }),
   });
 
-  const { data: videos, isLoading: videosLoading, refetch } = trpc.video.list.useQuery(undefined, { enabled: isAuthenticated });
+  const { data: videos, isLoading: videosLoading, refetch } = trpc.video.list.useQuery(undefined, { enabled: isAuthenticated, refetchInterval: 5000 });
   const checkoutMutation = trpc.billing.createCheckout.useMutation({
     onSuccess: (data) => {
       if (data.url) {
