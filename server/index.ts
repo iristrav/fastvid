@@ -10,17 +10,16 @@ async function startServer() {
   const app = express();
   const server = createServer(app);
 
-  // Serve static files from dist
-  const staticPath = path.resolve(__dirname, "..", "dist");
+  // 👉 FIX: frontend zit in dist/public
+  const staticPath = path.resolve(__dirname, "public");
 
   app.use(express.static(staticPath));
 
-  // Handle client-side routing
   app.get("*", (_req, res) => {
     res.sendFile(path.join(staticPath, "index.html"));
   });
 
-  const port = process.env.PORT;
+  const port = process.env.PORT || 3000;
 
   server.listen(port, () => {
     console.log(`Server running on port ${port}`);
