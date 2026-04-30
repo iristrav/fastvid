@@ -55,7 +55,7 @@ async function generateVideoWithAI(videoId: number, prompt: string, videoLength:
 }
 
 // ─── Full pipeline: script generation + video production (no approval pause) ────
-async function generateFullVideo(videoId: number, prompt: string, videoLength: string, videoType: string, voiceId?: string, customVoiceoverUrl?: string) {
+async function generateFullVideo(videoId: number, prompt: string, videoLength: string, videoType: string, voiceId?: string, customVoiceoverUrl?: string, enableSubtitles = true) {
   const timeoutHandle = setTimeout(async () => {
     console.error(`[Video Generation] Video ${videoId} exceeded 90-min limit — marking as failed`);
     await updateVideoStatus(videoId, "failed", {
@@ -97,7 +97,8 @@ async function generateFullVideo(videoId: number, prompt: string, videoLength: s
       videoId, prompt, videoLength, voiceId, customVoiceoverUrl,
       videoAfterScript.script,
       videoAfterScript.title ?? undefined,
-      videoAfterScript.metadata ?? undefined
+      videoAfterScript.metadata ?? undefined,
+      enableSubtitles
     );
   } finally {
     clearTimeout(timeoutHandle);
@@ -241,7 +242,8 @@ async function _generateVideoWithAI(
   // Optional: pass script/title/metadata directly to avoid DB re-read race condition
   preloadedScript?: string,
   preloadedTitle?: string,
-  preloadedMetadata?: unknown
+  preloadedMetadata?: unknown,
+  enableSubtitles = true
 ) {
   try {
     // Use preloaded script if available, otherwise read from DB (legacy path)
@@ -281,7 +283,8 @@ async function _generateVideoWithAI(
       },
       voiceId,
       customVoiceoverUrl,
-      videoLength
+      videoLength,
+      enableSubtitles
     );
 
     // ── Stage 4: Generate Thumbnail via Stability AI (no Manus credits) ────────────
@@ -348,6 +351,7 @@ export const appRouter = router({
       videoType: z.enum(["documentary", "listicle", "tutorial", "explainer"]).default("documentary"),
       voiceId: z.string().optional(),
       customVoiceoverUrl: z.string().optional(),
+      enableSubtitles: z.boolean().default(true),
     })).mutation(async ({ ctx, input }) => {
       const videoId = await createVideo({
         userId: ctx.user.id,
@@ -356,11 +360,12 @@ export const appRouter = router({
         videoType: input.videoType,
         customVoiceoverUrl: input.customVoiceoverUrl,
         voiceId: input.voiceId,
+        enableSubtitles: input.enableSubtitles ? 1 : 0,
         status: "pending",
       });
       if (!videoId) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Failed to create video" });
       // Direct full pipeline — no script review step
-      generateFullVideo(videoId, input.prompt, input.videoLength, input.videoType, input.voiceId, input.customVoiceoverUrl).catch(console.error);
+      generateFullVideo(videoId, input.prompt, input.videoLength, input.videoType, input.voiceId, input.customVoiceoverUrl, input.enableSubtitles).catch(console.error);
       return { videoId, message: "Video generation started" };
     }),
     approveScript: protectedProcedure.input(z.object({

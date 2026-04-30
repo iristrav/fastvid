@@ -51,6 +51,7 @@ export const videos = mysqlTable("videos", {
   scriptApproved: int("scriptApproved").default(0).notNull(), // 0=pending, 1=approved, 2=rejected
   customVoiceoverUrl: varchar("customVoiceoverUrl", { length: 1024 }), // user-uploaded audio
   voiceId: varchar("voiceId", { length: 128 }), // Fish Audio reference ID selected by user
+  enableSubtitles: int("enableSubtitles").default(1).notNull(), // 1 = subtitles on, 0 = off
   script: longtext("script"),
   voiceoverUrl: varchar("voiceoverUrl", { length: 1024 }),
   videoUrl: varchar("videoUrl", { length: 1024 }),

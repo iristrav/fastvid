@@ -392,3 +392,12 @@
 - [x] Compose: cinematic color grading added (contrast=1.08, saturation=1.12, brightness=0.01)
 - [x] Compose: fade in/out extended 0.2s→0.3s for smoother transitions
 - [x] 0 TypeScript errors, 10/10 tests pass
+
+## Session 15 — Subtitle Toggle
+- [x] Add enableSubtitles column (boolean, default true) to videos table in schema.ts
+- [x] Run pnpm db:push to apply migration
+- [x] Add enableSubtitles param to video.generate tRPC procedure
+- [x] Pass enableSubtitles through generateFullVideo → runVideoPipeline → composeSceneVideo
+- [x] In composeSceneVideo: skip subtitle overlay when enableSubtitles is false
+- [x] Add subtitle toggle (switch) to Dashboard generate form
+- [x] 0 TypeScript errors, 10/10 tests pass

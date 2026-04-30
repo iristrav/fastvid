@@ -50,6 +50,13 @@
       "when": 1777565466388,
       "tag": "0006_fresh_sauron",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "5",
+      "when": 1777567100893,
+      "tag": "0007_ancient_bill_hollister",
+      "breakpoints": true
     }
   ]
 }

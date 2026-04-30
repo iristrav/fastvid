@@ -19,6 +19,7 @@ import {
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from "@/components/ui/dialog";
+import { Switch } from "@/components/ui/switch";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const VIDEO_LENGTHS = [
@@ -656,6 +657,7 @@ export default function Dashboard() {
   const [selectedVoice, setSelectedVoice] = useState("am_michael");
   const [useCustomVoice, setUseCustomVoice] = useState(false);
   const [customVoiceoverUrl, setCustomVoiceoverUrl] = useState<string | null>(null);
+  const [enableSubtitles, setEnableSubtitles] = useState(true);
   const [viewingVideoId, setViewingVideoId] = useState<number | null>(null);
 
   const utils = trpc.useUtils();
@@ -732,6 +734,7 @@ export default function Dashboard() {
       videoType: selectedType,
       voiceId: useCustomVoice ? undefined : selectedVoice,
       customVoiceoverUrl: useCustomVoice ? (customVoiceoverUrl ?? undefined) : undefined,
+      enableSubtitles,
     });
   };
 
@@ -951,6 +954,17 @@ export default function Dashboard() {
               </p>
             </div>
 
+            {/* Subtitle toggle */}
+            <div className="flex items-center justify-between px-3 py-2.5 rounded-lg bg-white/5 border border-white/10">
+              <div>
+                <p className="text-sm font-medium text-white">Subtitles</p>
+                <p className="text-xs text-slate-500">Show captions on the video</p>
+              </div>
+              <Switch
+                checked={enableSubtitles}
+                onCheckedChange={setEnableSubtitles}
+              />
+            </div>
             <button
               onClick={handleGenerate}
               disabled={!hasActiveSubscription || generateMutation.isPending || prompt.length < 10}

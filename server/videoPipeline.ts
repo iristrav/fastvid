@@ -721,7 +721,8 @@ async function composeSceneVideo(
   audioPath: string,
   duration: number,
   workDir: string,
-  totalScenes: number
+  totalScenes: number,
+  enableSubtitles = true
 ): Promise<string> {
   const outputPath = path.join(workDir, `scene_${scene.index}_composed.mp4`);
 
@@ -748,10 +749,12 @@ async function composeSceneVideo(
 
   // Subtitle overlay
   let subtitlePath: string | null = null;
-  try {
-    subtitlePath = await renderSubtitleOverlay(scene.text, scene.index, totalScenes, workDir);
-  } catch (err) {
-    console.warn(`[Pipeline] Scene ${scene.index}: subtitle render failed:`, err);
+  if (enableSubtitles) {
+    try {
+      subtitlePath = await renderSubtitleOverlay(scene.text, scene.index, totalScenes, workDir);
+    } catch (err) {
+      console.warn(`[Pipeline] Scene ${scene.index}: subtitle render failed:`, err);
+    }
   }
 
   const OVERLAY_H = 180;
@@ -939,7 +942,8 @@ export async function runVideoPipeline(
   onProgress?: (p: PipelineProgress) => void,
   voiceId?: string,
   customVoiceoverUrl?: string,
-  videoLength: string = "8-12"
+  videoLength: string = "8-12",
+  enableSubtitles = true
 ): Promise<string> {
   const maxScenes = getScenesForLength(videoLength);
   const workDir = path.join(TMP_DIR, `fastvid_${videoId}_${Date.now()}`);
@@ -1032,7 +1036,7 @@ export async function runVideoPipeline(
     const composedScenes = await withTimeout(
       Promise.all(
         scenes.map((scene, i) => composeLimit(async () => {
-          const result = await composeSceneVideo(scene, sceneVisuals[i], audioPaths[i], scene.duration, workDir, scenes.length);
+          const result = await composeSceneVideo(scene, sceneVisuals[i], audioPaths[i], scene.duration, workDir, scenes.length, enableSubtitles);
           completedCompose++;
           onProgress?.({
             stage: `Composing scenes... (${completedCompose}/${scenes.length} done)`,
