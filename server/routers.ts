@@ -54,6 +54,40 @@ async function generateVideoWithAI(videoId: number, prompt: string, videoLength:
   }
 }
 
+// ─── Full pipeline: script generation + video production (no approval pause) ────
+async function generateFullVideo(videoId: number, prompt: string, videoLength: string, videoType: string, voiceId?: string, customVoiceoverUrl?: string) {
+  const timeoutHandle = setTimeout(async () => {
+    console.error(`[Video Generation] Video ${videoId} exceeded 30-min limit — marking as failed`);
+    await updateVideoStatus(videoId, "failed", {
+      errorMessage: "Video generation exceeded 30 minutes. Please retry.",
+      progressStep: "Generation timed out (max 30 min exceeded)",
+      progressPercent: 0,
+    }).catch(() => {});
+  }, MAX_VIDEO_GENERATION_MS);
+
+  try {
+    // Step 1: Generate script (same logic as before, but no pause)
+    await generateScriptOnly(videoId, prompt, videoLength, videoType);
+
+    // Check if script generation failed
+    const videoAfterScript = await getVideoById(videoId);
+    if (!videoAfterScript?.script || videoAfterScript.status === "failed") {
+      console.error(`[Video Generation] Script generation failed for video ${videoId}`);
+      return;
+    }
+
+    // Step 2: Immediately continue to full video pipeline
+    await updateVideoStatus(videoId, "generating_voiceover", {
+      scriptApproved: 1,
+      progressStep: "🎥 Script ready — starting video production...",
+      progressPercent: 29,
+    });
+    await _generateVideoWithAI(videoId, prompt, videoLength, voiceId, customVoiceoverUrl);
+  } finally {
+    clearTimeout(timeoutHandle);
+  }
+}
+
 // ─── Phase A: Script-only generation (stops at awaiting_approval) ────────────
 async function generateScriptOnly(videoId: number, prompt: string, videoLength: string, videoType: string) {
   const lengthMap: Record<string, string> = {
@@ -156,12 +190,12 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLength: 
       metadata = JSON.parse(metaContent);
     } catch { metadata = { title, description: prompt, tags: [], chapters: [] }; }
 
-    // Pause for user approval
+    // Save script and return (no pause — caller decides next step)
     await updateVideoStatus(videoId, "awaiting_approval", {
       script: scriptContent,
       title,
       metadata,
-      progressStep: "✅ Script ready — awaiting your approval",
+      progressStep: "✅ Script ready — starting video production...",
       progressPercent: 28,
     });
   } catch (error) {
@@ -291,9 +325,9 @@ export const appRouter = router({
         status: "pending",
       });
       if (!videoId) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Failed to create video" });
-      // Phase A: generate script only, pause for approval
-      generateScriptOnly(videoId, input.prompt, input.videoLength, input.videoType).catch(console.error);
-      return { videoId, message: "Script generation started" };
+      // Direct full pipeline — no script review step
+      generateFullVideo(videoId, input.prompt, input.videoLength, input.videoType, input.voiceId, input.customVoiceoverUrl).catch(console.error);
+      return { videoId, message: "Video generation started" };
     }),
     approveScript: protectedProcedure.input(z.object({
       id: z.number(),
@@ -321,12 +355,12 @@ export const appRouter = router({
       if (!video) throw new TRPCError({ code: "NOT_FOUND" });
       if (video.userId !== ctx.user.id && ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN" });
       if (video.status !== "failed") throw new TRPCError({ code: "BAD_REQUEST", message: "Only failed videos can be retried" });
-      // Reset to pending and re-run script generation
+      // Reset to pending and re-run full pipeline (no script review)
       await updateVideoStatus(video.id, "pending", {
         progressStep: "🔄 Retrying...",
         progressPercent: 0,
       });
-      generateScriptOnly(video.id, video.prompt, video.videoLength ?? "15-20", (video as { videoType?: string | null }).videoType ?? "documentary").catch(console.error);
+      generateFullVideo(video.id, video.prompt, video.videoLength ?? "15-20", (video as { videoType?: string | null }).videoType ?? "documentary", (video as { voiceId?: string | null }).voiceId ?? undefined, video.customVoiceoverUrl ?? undefined).catch(console.error);
       return { success: true };
     }),
     rejectScript: protectedProcedure.input(z.object({ id: z.number() })).mutation(async ({ ctx, input }) => {

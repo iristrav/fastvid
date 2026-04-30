@@ -43,7 +43,7 @@ type VideoType = "documentary" | "listicle" | "tutorial" | "explainer";
 const AGENT_STAGES: Record<string, { label: string; agent: string; icon: string }> = {
   pending:              { label: "Queued",                   agent: "Queue",           icon: "⏳" },
   generating_script:    { label: "Writing script...",        agent: "Scriptwriter",    icon: "✍️" },
-  awaiting_approval:    { label: "Awaiting your approval",   agent: "You",             icon: "👁️" },
+  awaiting_approval:    { label: "Writing script...",        agent: "Scriptwriter",    icon: "✍️" },
   generating_voiceover: { label: "Creating voiceover...",    agent: "Voice Engineer",  icon: "🎙️" },
   generating_visuals:   { label: "Matching visuals...",      agent: "Visual Director", icon: "🎬" },
   generating_effects:   { label: "Adding effects...",        agent: "Video Editor",    icon: "✨" },
@@ -54,7 +54,7 @@ const AGENT_STAGES: Record<string, { label: string; agent: string; icon: string 
 const STATUS_COLORS: Record<string, string> = {
   pending:              "text-yellow-400 bg-yellow-400/10",
   generating_script:    "text-blue-400 bg-blue-400/10",
-  awaiting_approval:    "text-amber-400 bg-amber-400/10",
+  awaiting_approval:    "text-blue-400 bg-blue-400/10",
   generating_voiceover: "text-purple-400 bg-purple-400/10",
   generating_visuals:   "text-cyan-400 bg-cyan-400/10",
   generating_effects:   "text-orange-400 bg-orange-400/10",
@@ -194,7 +194,7 @@ function ScriptReviewModal({ videoId, onClose }: { videoId: number; onClose: () 
 }
 
 // ─── Video Card ───────────────────────────────────────────────────────────────
-function VideoCard({ video, onView, onDelete, onRename, onReviewScript, onRetry }: {
+function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
   video: {
     id: number; title: string | null; prompt: string; status: string;
     videoLength: string; createdAt: Date; thumbnailUrl: string | null;
@@ -202,7 +202,6 @@ function VideoCard({ video, onView, onDelete, onRename, onReviewScript, onRetry 
   onView: (id: number) => void;
   onDelete: (id: number) => void;
   onRename: (id: number, title: string) => void;
-  onReviewScript: (id: number) => void;
   onRetry: (id: number) => void;
 }) {
   const [editing, setEditing] = useState(false);
@@ -235,24 +234,8 @@ function VideoCard({ video, onView, onDelete, onRename, onReviewScript, onRetry 
   const nearingLimit = elapsed > 75 * 60; // warn after 75 min (90-min cap)
 
   return (
-    <div className={`glass-card border rounded-xl overflow-hidden hover:border-white/15 transition-all duration-300 group ${
-      needsApproval ? "border-amber-500/40 shadow-lg shadow-amber-500/10" : "border-white/8"
-    }`}>
-      {/* Awaiting approval banner */}
-      {needsApproval && (
-        <div className="bg-amber-500/15 border-b border-amber-500/30 px-4 py-2 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <span className="text-amber-400 text-sm">👁️</span>
-            <span className="text-xs font-semibold text-amber-300">Script ready — review required</span>
-          </div>
-          <button
-            onClick={() => onReviewScript(video.id)}
-            className="flex items-center gap-1.5 text-xs font-bold text-amber-300 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 px-2.5 py-1 rounded-lg transition-colors"
-          >
-            Review Script <ChevronRight className="w-3 h-3" />
-          </button>
-        </div>
-      )}
+    <div className="glass-card border border-white/8 rounded-xl overflow-hidden hover:border-white/15 transition-all duration-300 group">
+
 
       {/* Thumbnail */}
       <div className="relative aspect-video bg-gradient-to-br from-purple-900/40 to-cyan-900/30 overflow-hidden">
@@ -260,7 +243,7 @@ function VideoCard({ video, onView, onDelete, onRename, onReviewScript, onRetry 
           <img src={video.thumbnailUrl} alt={video.title ?? "Video"} className="w-full h-full object-cover opacity-80 group-hover:opacity-100 transition-opacity" />
         ) : (
           <div className="w-full h-full flex items-center justify-center">
-            {isProcessing && !needsApproval ? (
+            {isProcessing ? (
               <div className="flex flex-col items-center gap-3 w-full px-6">
                 {/* Agent label */}
                 <div className="flex items-center gap-2">
@@ -282,17 +265,6 @@ function VideoCard({ video, onView, onDelete, onRename, onReviewScript, onRetry 
                     />
                   </div>
                 </div>
-              </div>
-            ) : needsApproval ? (
-              <div className="flex flex-col items-center gap-3 px-4">
-                <span className="text-4xl">📋</span>
-                <p className="text-sm text-amber-300 font-bold">Script ready for review</p>
-                <button
-                  onClick={() => onReviewScript(video.id)}
-                  className="flex items-center gap-2 text-sm font-bold text-black bg-amber-400 hover:bg-amber-300 px-4 py-2 rounded-lg transition-colors shadow-lg shadow-amber-500/30"
-                >
-                  <Eye className="w-4 h-4" /> Review &amp; Approve Script
-                </button>
               </div>
             ) : currentStatus === "failed" ? (
               <div className="flex flex-col items-center gap-3 px-4">
@@ -345,14 +317,7 @@ function VideoCard({ video, onView, onDelete, onRename, onReviewScript, onRetry 
         <div className="flex items-center justify-between">
           <span className="text-xs text-slate-600">{new Date(video.createdAt).toLocaleDateString()}</span>
           <div className="flex items-center gap-2">
-            {needsApproval && (
-              <button
-                onClick={() => onReviewScript(video.id)}
-                className="flex items-center gap-1 text-xs text-amber-400 hover:text-amber-300 transition-colors font-semibold"
-              >
-                <Eye className="w-3.5 h-3.5" /> Review
-              </button>
-            )}
+
             <button
               onClick={() => { setEditTitle(video.title ?? video.prompt.slice(0, 80)); setEditing(true); }}
               className="flex items-center gap-1 text-xs text-slate-400 hover:text-white transition-colors"
@@ -675,7 +640,7 @@ export default function Dashboard() {
   const [useCustomVoice, setUseCustomVoice] = useState(false);
   const [customVoiceoverUrl, setCustomVoiceoverUrl] = useState<string | null>(null);
   const [viewingVideoId, setViewingVideoId] = useState<number | null>(null);
-  const [reviewingScriptId, setReviewingScriptId] = useState<number | null>(null);
+
   const utils = trpc.useUtils();
 
   const deleteMutation = trpc.videoManage.delete.useMutation({
@@ -706,7 +671,7 @@ export default function Dashboard() {
   });
   const generateMutation = trpc.video.generate.useMutation({
     onSuccess: (data) => {
-      toast.success("Script generation started!", { description: "Review and approve your script before production begins." });
+      toast.success("Video generation started!", { description: "Your video will be ready in a few minutes. No action needed." });
       setPrompt("");
       setTimeout(() => refetch(), 2000);
     },
@@ -725,16 +690,6 @@ export default function Dashboard() {
     }
   }, [loading, isAuthenticated]);
 
-  // Auto-open script review when a video reaches awaiting_approval
-  // Track dismissed IDs so we don't re-open a modal the user already closed
-  const [dismissedScriptIds, setDismissedScriptIds] = useState<Set<number>>(new Set());
-  useEffect(() => {
-    if (!videos || reviewingScriptId !== null) return;
-    const awaitingVideo = videos.find(v => v.status === "awaiting_approval" && !dismissedScriptIds.has(v.id));
-    if (awaitingVideo) {
-      setReviewingScriptId(awaitingVideo.id);
-    }
-  }, [videos, reviewingScriptId, dismissedScriptIds]);
 
   if (loading) {
     return (
@@ -766,7 +721,7 @@ export default function Dashboard() {
   const processingVideos = videos?.filter(v => !["completed", "failed"].includes(v.status)) ?? [];
   const completedVideos = videos?.filter(v => v.status === "completed") ?? [];
   const failedVideos = videos?.filter(v => v.status === "failed") ?? [];
-  const awaitingVideos = videos?.filter(v => v.status === "awaiting_approval") ?? [];
+
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -867,24 +822,7 @@ export default function Dashboard() {
             </div>
           )}
 
-          {/* Awaiting approval alert */}
-          {awaitingVideos.length > 0 && (
-            <div className="glass-card border border-amber-500/30 bg-amber-500/5 rounded-xl p-4 flex items-center gap-4">
-              <AlertCircle className="w-5 h-5 text-amber-400 shrink-0" />
-              <div className="flex-1">
-                <p className="text-sm font-semibold text-amber-300">
-                  {awaitingVideos.length} script{awaitingVideos.length > 1 ? "s" : ""} waiting for your approval
-                </p>
-                <p className="text-xs text-amber-400/70 mt-0.5">Review and approve to start video production</p>
-              </div>
-              <button
-                onClick={() => setReviewingScriptId(awaitingVideos[0].id)}
-                className="flex items-center gap-1.5 text-xs font-bold text-amber-300 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 px-3 py-1.5 rounded-lg transition-colors"
-              >
-                Review Now <ChevronRight className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          )}
+
 
           {/* ── Video Generator ── */}
           <div className="glass-card border border-white/10 rounded-2xl p-6 space-y-5">
@@ -992,7 +930,7 @@ export default function Dashboard() {
             <div className="flex items-start gap-2.5 px-3 py-2.5 rounded-lg bg-blue-500/5 border border-blue-500/15">
               <span className="text-sm mt-0.5">💡</span>
               <p className="text-xs text-slate-400 leading-relaxed">
-                <span className="text-blue-300 font-semibold">How it works:</span> First, the AI writes your script (~30s). You review and approve it, then full video production starts automatically.
+                <span className="text-blue-300 font-semibold">How it works:</span> AI writes your script, generates voiceover, matches visuals, and assembles your video automatically. No action needed.
               </p>
             </div>
 
@@ -1002,9 +940,9 @@ export default function Dashboard() {
               className="btn-gradient px-6 py-3 rounded-xl font-bold text-white flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
             >
               {generateMutation.isPending ? (
-                <><Loader2 className="w-4 h-4 animate-spin" /> Generating script...</>
+                <><Loader2 className="w-4 h-4 animate-spin" /> Starting generation...</>
               ) : (
-                <><Sparkles className="w-4 h-4" /> Generate Script & Review</>
+                <><Sparkles className="w-4 h-4" /> Generate Video</>
               )}
             </button>
           </div>
@@ -1015,7 +953,7 @@ export default function Dashboard() {
               { label: "Total", value: videos?.length ?? 0, icon: Video, color: "text-purple-400" },
               { label: "Completed", value: completedVideos.length, icon: CheckCircle2, color: "text-green-400" },
               { label: "In Progress", value: processingVideos.length, icon: Loader2, color: "text-cyan-400" },
-              { label: "Awaiting", value: awaitingVideos.length, icon: AlertCircle, color: "text-amber-400" },
+              { label: "Failed", value: failedVideos.length, icon: XCircle, color: "text-red-400" },
             ].map(({ label, value, icon: Icon, color }) => (
               <div key={label} className="glass-card border border-white/8 rounded-xl p-4 text-center">
                 <Icon className={`w-5 h-5 ${color} mx-auto mb-2`} />
@@ -1067,7 +1005,6 @@ export default function Dashboard() {
                       if (confirm("Delete this video? This cannot be undone.")) deleteMutation.mutate({ id });
                     }}
                     onRename={(id, title) => renameMutation.mutate({ id, title })}
-                    onReviewScript={setReviewingScriptId}
                     onRetry={(id) => regenScriptMutation.mutate({ id })}
                   />
                 ))}
@@ -1082,17 +1019,7 @@ export default function Dashboard() {
         <VideoDetailModal videoId={viewingVideoId} onClose={() => setViewingVideoId(null)} />
       )}
 
-      {/* ── Script Review Modal ── */}
-      {reviewingScriptId !== null && (
-        <ScriptReviewModal
-          videoId={reviewingScriptId}
-          onClose={() => {
-            setDismissedScriptIds(prev => new Set(Array.from(prev).concat(reviewingScriptId)));
-            setReviewingScriptId(null);
-            refetch();
-          }}
-        />
-      )}
+
     </div>
   );
 }

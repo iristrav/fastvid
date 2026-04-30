@@ -319,3 +319,14 @@
 - [x] Update Home.tsx generation time claims
 - [x] Global cap lowered from 90 min to 30 min
 - [x] expireStuckVideos threshold lowered from 95 to 35 min
+
+## Session 8 — Remove Script Review Step
+- [x] Backend: video.generate now calls generateFullVideo() which runs script+video in one shot
+- [x] Backend: generateFullVideo() wraps generateScriptOnly() + _generateVideoWithAI() with 30-min cap
+- [x] Backend: regenScript (retry) also uses generateFullVideo() — no script pause on retry either
+- [x] Frontend: ScriptReviewModal component removed from Dashboard
+- [x] Frontend: awaiting_approval banner, Review buttons, and auto-open useEffect all removed
+- [x] Frontend: awaiting_approval status now shows as "Writing script..." (blue, same as generating_script)
+- [x] Frontend: Generate button renamed to "Generate Video", toast updated
+- [x] Frontend: stats row: "Awaiting" counter replaced with "Failed" counter
+- [x] Frontend: "How it works" text updated to reflect no manual step
