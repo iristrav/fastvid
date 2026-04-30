@@ -339,3 +339,24 @@
 - [x] Fix: concatenateScenesWithMusic filters missing/empty scene files before writing concat list
 - [x] Added ETA calculation to VideoCard: shows "~X min left" in cyan next to elapsed time
 - [x] ETA is based on actual elapsed/percent ratio (appears after 5% progress + 10s elapsed)
+
+## Session 10 — AI Beelden + 2 Clips per Scene (max 90 min)
+- [ ] Add AI image generation fallback when Pexels returns no results (generateImage from _core)
+- [ ] Increase to 2 Pexels clips per scene with smart selection (different clips)
+- [ ] Add xfade transition between clip 1 and clip 2 within each scene
+- [ ] AI image: convert PNG to video loop (5s) via FFmpeg when used as clip
+- [ ] Keep total pipeline under 90 min: AI image gen parallel with other stages, timeout 30s per image
+- [ ] Update STAGE_LABELS and global cap accordingly
+- [ ] Update compose to handle 2-clip scenes with transition
+
+## Session 11 — AI-First Visuals + 2 Clips per Scene (max 90 min)
+- [x] Added generateAIImageClip(): Forge generateImage → download PNG → FFmpeg zoompan loop (35s timeout)
+- [x] Updated fetchSceneVisuals(): AI primary, Pexels secondary, color fallback last resort
+- [x] 2 visuals per scene: AI image (clip1) + Pexels clip (clip2); if Pexels fails → 2nd AI image variant
+- [x] Added xfade fade transition (0.5s) between clip1 and clip2 in composeSceneVideo
+- [x] Updated Scene type with aiImagePrompt field
+- [x] Updated parseScriptIntoScenes: LLM now generates aiImagePrompt (cinematic, 15-30 words) per scene
+- [x] Updated STAGE_LABELS to reflect new visual pipeline stages
+- [x] AI gen runs with p-limit(2) to avoid Forge rate limits; visuals stage timeout 8 min
+- [x] Compose stage timeout raised to 12 min (2-clip xfade is heavier than single clip)
+- [x] 0 TypeScript errors, 10/10 tests pass
