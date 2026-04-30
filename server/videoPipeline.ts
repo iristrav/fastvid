@@ -200,8 +200,8 @@ export async function generateVoiceover(
     .trim();
   const cleanText = rawText.length <= 400 ? rawText : rawText.slice(0, 400).replace(/\s\S*$/, "");
 
-  const MAX_ATTEMPTS = 2;  // Fail fast — 2 attempts max to avoid blocking pipeline
-  const TTS_TIMEOUT_MS = 25_000;  // 25s per scene (400 chars = ~5-8s normally, 25s gives headroom)
+  const MAX_ATTEMPTS = 4;  // Up to 4 attempts to handle 429 rate limits
+  const TTS_TIMEOUT_MS = 25_000;  // 25s per scene
 
   // ── Fish Audio S2 Pro ──
   if (FISH_AUDIO_API_KEY) {
@@ -211,7 +211,7 @@ export async function generateVoiceover(
           text: cleanText,
           format: "mp3",
           model: "s2-pro",
-          mp3_bitrate: 128,  // 128kbps is sufficient and transfers faster than 192kbps
+          mp3_bitrate: 128,
         };
         if (voiceId) {
           body.reference_id = voiceId;
@@ -230,6 +230,15 @@ export async function generateVoiceover(
           `Fish Audio TTS attempt ${attempt}`
         );
 
+        // Handle 429 rate limit: wait and retry with exponential backoff
+        if (response.status === 429) {
+          const retryAfterHeader = response.headers.get('retry-after');
+          const waitMs = retryAfterHeader ? parseInt(retryAfterHeader) * 1000 : Math.pow(2, attempt) * 1500;
+          console.warn(`[Pipeline] Fish Audio 429 rate limit (attempt ${attempt}), waiting ${waitMs}ms before retry`);
+          await new Promise(r => setTimeout(r, waitMs));
+          continue;
+        }
+
         if (!response.ok) {
           const errText = await response.text();
           throw new Error(`Fish Audio HTTP ${response.status}: ${errText.slice(0, 200)}`);
@@ -245,7 +254,7 @@ export async function generateVoiceover(
       } catch (err) {
         const isLastAttempt = attempt === MAX_ATTEMPTS;
         if (isLastAttempt) {
-          console.warn(`[Pipeline] Fish Audio failed after ${MAX_ATTEMPTS} attempts, falling back to Google TTS:`, err);
+          console.warn(`[Pipeline] Fish Audio failed after ${MAX_ATTEMPTS} attempts, using silent fallback:`, err);
           break;
         }
         const backoffMs = Math.pow(2, attempt) * 1000;
@@ -932,8 +941,8 @@ export async function runVideoPipeline(
       }
       durations = scenes.map(() => perScene);
     } else {
-      // Limit to 3 concurrent Fish Audio requests to avoid rate limiting
-      const limit = pLimit(3);
+      // 5 concurrent requests — Fish Audio handles up to 5 before rate limiting; 429s are retried with backoff
+      const limit = pLimit(5);
       let completedScenes = 0;
       durations = await withTimeout(
         Promise.all(scenes.map((scene, i) => limit(async () => {
