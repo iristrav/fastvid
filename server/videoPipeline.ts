@@ -192,15 +192,16 @@ export async function generateVoiceover(
   outputPath: string,
   voiceId?: string
 ): Promise<number> {
-  const cleanText = text
+  // Truncate to 400 chars at word boundary — faster Fish Audio response (~5-8s vs 15-20s for 1000 chars)
+  const rawText = text
     .replace(/[#*_`~>]/g, "")
     .replace(/\s+/g, " ")
     .replace(/[^\x00-\x7F]/g, "")
-    .trim()
-    .slice(0, 1000);
+    .trim();
+  const cleanText = rawText.length <= 400 ? rawText : rawText.slice(0, 400).replace(/\s\S*$/, "");
 
   const MAX_ATTEMPTS = 2;  // Fail fast — 2 attempts max to avoid blocking pipeline
-  const TTS_TIMEOUT_MS = 45_000;  // 45s per scene (was 90s)
+  const TTS_TIMEOUT_MS = 25_000;  // 25s per scene (400 chars = ~5-8s normally, 25s gives headroom)
 
   // ── Fish Audio S2 Pro ──
   if (FISH_AUDIO_API_KEY) {
@@ -210,7 +211,7 @@ export async function generateVoiceover(
           text: cleanText,
           format: "mp3",
           model: "s2-pro",
-          mp3_bitrate: 192,
+          mp3_bitrate: 128,  // 128kbps is sufficient and transfers faster than 192kbps
         };
         if (voiceId) {
           body.reference_id = voiceId;
