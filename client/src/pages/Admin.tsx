@@ -375,7 +375,7 @@ function VideoStatusCell({ video }: { video: VideoRow }) {
           <div className="w-full bg-white/10 rounded-full h-1 overflow-hidden">
             <div className="h-full bg-gradient-to-r from-purple-500 to-cyan-500 rounded-full transition-all duration-700" style={{ width: `${progressPercent}%` }} />
           </div>
-          <p className="text-[10px] text-slate-600">{progressPercent}% &middot; max 1h total</p>
+          <p className="text-[10px] text-slate-600">{progressPercent}% &middot; max 1.5h total</p>
         </div>
       )}
     </div>
@@ -550,7 +550,7 @@ function AdminVideoGenerator() {
     return () => clearInterval(id);
   }, [isGenerating, statusData?.generationStartedAt]);
   const elapsedStr = `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, '0')}`;
-  const nearingLimit = elapsed > 50 * 60; // warn after 50 minutes
+  const nearingLimit = elapsed > 75 * 60; // warn after 75 min (90-min cap)
 
   const STEPS = [
     { key: "generating_script", label: "Writing script" },
@@ -625,7 +625,7 @@ function AdminVideoGenerator() {
             <div className="space-y-1.5">
               <div className="flex items-center justify-between">
                 <span className="text-xs text-slate-300 truncate max-w-[75%]">{statusData.progressStep}</span>
-                <span className={`text-xs font-mono ml-2 shrink-0 ${nearingLimit ? 'text-amber-400' : 'text-slate-500'}`}>{elapsedStr} / max 1h</span>
+                <span className={`text-xs font-mono ml-2 shrink-0 ${nearingLimit ? 'text-amber-400' : 'text-slate-500'}`}>{elapsedStr} / max 1.5h</span>
               </div>
               <div className="w-full bg-white/10 rounded-full h-1.5 overflow-hidden">
                 <div

@@ -89,12 +89,12 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 // ─── Stage labels ─────────────────────────────────────────────────────────────
 export const STAGE_LABELS = {
   parsing:    `Parsing script into ${MAX_SCENES} scenes... (max 45 sec)`,
-  voiceovers: `Generating voiceovers for all ${MAX_SCENES} scenes... (max 8 min)`,
+  voiceovers: `Generating voiceovers for all ${MAX_SCENES} scenes... (max 6 min)`,
   visuals:    `Fetching ${CLIPS_PER_SCENE} scene-matched clips per scene (Pexels / AI)... (max 12 min)`,
   intro:      "Rendering branded intro title card... (max 30 sec)",
-  composing:  `Composing all ${MAX_SCENES} scenes with multi-cut transitions... (max 20 min)`,
+  composing:  `Composing all ${MAX_SCENES} scenes with multi-cut transitions... (max 25 min)`,
   assembling: "Assembling final video with music + outro... (max 10 min)",
-  uploading:  "Uploading video... (max 5 min)",
+  uploading:  "Uploading final video... (max 5 min)",
   complete:   "Complete!",
 };
 
@@ -200,8 +200,8 @@ export async function generateVoiceover(
     .trim();
   const cleanText = rawText.length <= 400 ? rawText : rawText.slice(0, 400).replace(/\s\S*$/, "");
 
-  const MAX_ATTEMPTS = 6;  // Up to 6 attempts — 429s are common when sending all scenes in parallel
-  const TTS_TIMEOUT_MS = 20_000;  // 20s hard limit per scene
+  const MAX_ATTEMPTS = 4;  // 4 attempts — fail fast, silent fallback keeps pipeline moving
+  const TTS_TIMEOUT_MS = 15_000;  // 15s hard limit per scene (was 20s) — fail fast
 
   // ── Fish Audio S2 Pro ──
   if (FISH_AUDIO_API_KEY) {
@@ -950,14 +950,14 @@ export async function runVideoPipeline(
       // All scenes fully parallel — 429 rate limits are handled with short retry (300-700ms) per scene
       // Test shows: 8 parallel = ~5s total vs batches of 5 = ~12s
       let completedScenes = 0;
-      durations = await withTimeout(
+        durations = await withTimeout(
         Promise.all(scenes.map(async (scene, i) => {
           const dur = await generateVoiceover(scene.text, audioPaths[i], voiceId);
           completedScenes++;
           onProgress?.({ stage: `Creating voiceover... (${completedScenes}/${scenes.length} scenes)`, percent: 12 + Math.round((completedScenes / scenes.length) * 14) });
           return dur;
         })),
-        120_000, // 2 min hard limit for all voiceovers
+        360_000, // 6 min hard limit for all voiceovers (covers worst-case retries + 429 backoff)
         "Voiceover generation stage"
       );
     }
@@ -971,7 +971,7 @@ export async function runVideoPipeline(
       Promise.all(
         scenes.map(scene => fetchVisualsForScene(scene, scene.duration, workDir))
       ),
-      300_000, // 5 min hard limit for visuals
+      480_000, // 8 min hard limit for visuals
       "Visual fetching stage"
     );
 
@@ -992,7 +992,7 @@ export async function runVideoPipeline(
           composeSceneVideo(scene, visuals[i], audioPaths[i], scene.duration, workDir)
         )
       ),
-      900_000, // 15 min hard limit for compositing
+      1_500_000, // 25 min hard limit for compositing (FFmpeg jobs in parallel)
       "Scene composition stage"
     );
     console.log(`[Pipeline] Stage 4 (compose): ${scenes.length} scenes in ${((Date.now()-t3)/1000).toFixed(1)}s`);

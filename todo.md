@@ -296,3 +296,12 @@
 - [x] Add "Retry" button on failed video cards in Dashboard (calls regenScript)
 - [x] Add pipeline stage timing logs to help diagnose bottlenecks on deployed server
 - [x] Improve auto-open script review: handle multiple awaiting_approval videos correctly (tracks dismissed IDs so closing one modal doesn't block others)
+
+## Session 6 — 90-min Hard Cap + Faster Voice-over
+- [x] Audited per-stage timeouts and global cap (was 60 min, voiceovers 2 min, visuals 5 min, compose 15 min)
+- [x] Sped up voice-over: TTS timeout 20s→15s, retries 6→4; voiceover stage cap 2min→6min for safety
+- [x] Visuals stage timeout 5→8 min; compose stage timeout 15→25 min (gives FFmpeg parallel jobs more room)
+- [x] Global pipeline cap raised to 90 min (5,400,000 ms) in routers.ts
+- [x] Verified pipeline auto-continues: approveScript → generateVideoWithAI → _generateVideoWithAI runs all 6 stages sequentially in one wrapper
+- [x] Updated UI: Dashboard nearingLimit threshold 50min→75min; Admin labels "max 1h"→"max 1.5h"; STAGE_LABELS reflect new per-stage timings
+- [x] Updated expireStuckVideos default 70→95 min to align with new cap

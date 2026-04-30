@@ -232,7 +232,7 @@ function VideoCard({ video, onView, onDelete, onRename, onReviewScript, onRetry 
   const elapsedMin = Math.floor(elapsed / 60);
   const elapsedSec = String(elapsed % 60).padStart(2, "0");
   const elapsedStr = `${elapsedMin}:${elapsedSec}`;
-  const nearingLimit = elapsed > 50 * 60;
+  const nearingLimit = elapsed > 75 * 60; // warn after 75 min (90-min cap)
 
   return (
     <div className={`glass-card border rounded-xl overflow-hidden hover:border-white/15 transition-all duration-300 group ${

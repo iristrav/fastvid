@@ -160,7 +160,7 @@ export async function deleteAllFailedVideosForUser(userId: number) {
 }
 
 /** Mark in-progress videos older than maxAgeMinutes as failed (stuck pipeline recovery) */
-export async function expireStuckVideos(maxAgeMinutes = 70) {
+export async function expireStuckVideos(maxAgeMinutes = 95) {
   const db = await getDb();
   if (!db) return 0;
   const cutoff = new Date(Date.now() - maxAgeMinutes * 60 * 1000);
