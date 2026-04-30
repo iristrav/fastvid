@@ -726,13 +726,15 @@ export default function Dashboard() {
   }, [loading, isAuthenticated]);
 
   // Auto-open script review when a video reaches awaiting_approval
+  // Track dismissed IDs so we don't re-open a modal the user already closed
+  const [dismissedScriptIds, setDismissedScriptIds] = useState<Set<number>>(new Set());
   useEffect(() => {
-    if (!videos) return;
-    const awaitingVideo = videos.find(v => v.status === "awaiting_approval");
-    if (awaitingVideo && reviewingScriptId === null) {
+    if (!videos || reviewingScriptId !== null) return;
+    const awaitingVideo = videos.find(v => v.status === "awaiting_approval" && !dismissedScriptIds.has(v.id));
+    if (awaitingVideo) {
       setReviewingScriptId(awaitingVideo.id);
     }
-  }, [videos]);
+  }, [videos, reviewingScriptId, dismissedScriptIds]);
 
   if (loading) {
     return (
@@ -1084,7 +1086,11 @@ export default function Dashboard() {
       {reviewingScriptId !== null && (
         <ScriptReviewModal
           videoId={reviewingScriptId}
-          onClose={() => { setReviewingScriptId(null); refetch(); }}
+          onClose={() => {
+            setDismissedScriptIds(prev => new Set(Array.from(prev).concat(reviewingScriptId)));
+            setReviewingScriptId(null);
+            refetch();
+          }}
         />
       )}
     </div>

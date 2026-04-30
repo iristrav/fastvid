@@ -295,4 +295,4 @@
 - [x] Add video.regenScript tRPC procedure: reset failed video and re-run script generation
 - [x] Add "Retry" button on failed video cards in Dashboard (calls regenScript)
 - [x] Add pipeline stage timing logs to help diagnose bottlenecks on deployed server
-- [ ] Improve auto-open script review: handle multiple awaiting_approval videos correctly
+- [x] Improve auto-open script review: handle multiple awaiting_approval videos correctly (tracks dismissed IDs so closing one modal doesn't block others)
