@@ -312,18 +312,14 @@ async function generateStabilityAIClip(
     fs.writeFileSync(pngPath, imgBuffer);
     console.log(`[Pipeline] Scene ${sceneIndex}: Stability AI image in ${((Date.now()-t)/1000).toFixed(1)}s (${(imgBuffer.length/1024).toFixed(0)}KB)`);
 
-    // Convert to video with gentle Ken Burns zoom
-    const zoomDuration = duration + 0.5;
+    // Convert to video — simple scale/crop (fast, no zoompan which is extremely slow)
     await withTimeout(
       exec(
         `${FFMPEG_BIN} -y -loop 1 -i "${pngPath}" ` +
-        `-vf "scale=${VIDEO_WIDTH * 2}:${VIDEO_HEIGHT * 2}:force_original_aspect_ratio=increase,` +
-        `crop=${VIDEO_WIDTH * 2}:${VIDEO_HEIGHT * 2},` +
-        `zoompan=z='min(zoom+0.0005,1.2)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${Math.round(zoomDuration * 25)}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=25,` +
-        `fade=t=in:st=0:d=0.3" ` +
-        `-t ${zoomDuration} -c:v libx264 -preset ultrafast -crf 26 -pix_fmt yuv420p "${outputPath}" 2>/dev/null`
+        `-vf "scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT},fade=t=in:st=0:d=0.3" ` +
+        `-t ${duration} -r 25 -c:v libx264 -preset ultrafast -crf 26 -pix_fmt yuv420p "${outputPath}" 2>/dev/null`
       ),
-      60_000,
+      20_000,
       `AI image to video scene ${sceneIndex}`
     );
 
