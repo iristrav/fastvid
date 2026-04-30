@@ -401,3 +401,15 @@
 - [x] In composeSceneVideo: skip subtitle overlay when enableSubtitles is false
 - [x] Add subtitle toggle (switch) to Dashboard generate form
 - [x] 0 TypeScript errors, 10/10 tests pass
+
+## Session 16 — Railway Deployment Ready
+- [x] Add nixpacks.toml with ffmpeg + Node 22 + pnpm install/build/start
+- [x] Simplify railway.json (health check path, restart policy)
+- [x] Add startup diagnostics logging to server/_core/index.ts
+- [x] Fix server listen to bind on 0.0.0.0 (required for Railway)
+- [x] Remove port-scanning logic (Railway provides PORT directly)
+- [x] Add .nvmrc with Node 22
+- [x] Add engines field to package.json (node >=22.0.0)
+- [ ] User adds environment variables on Railway (DATABASE_URL, JWT_SECRET, FISH_AUDIO_API_KEY, STABILITY_AI_API_KEY, PEXELS_API_KEY)
+- [ ] User adds MySQL database plugin on Railway
+- [ ] User runs pnpm db:push after database is connected

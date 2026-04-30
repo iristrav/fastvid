@@ -1,7 +1,6 @@
 import "dotenv/config";
 import express from "express";
 import { createServer } from "http";
-import net from "net";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { registerOAuthRoutes } from "./oauth";
 import { registerStorageProxy } from "./storageProxy";
@@ -10,28 +9,22 @@ import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 
-function isPortAvailable(port: number): Promise<boolean> {
-  return new Promise(resolve => {
-    const server = net.createServer();
-    server.listen(port, () => {
-      server.close(() => resolve(true));
-    });
-    server.on("error", () => resolve(false));
-  });
-}
-
-async function findAvailablePort(startPort: number = 3000): Promise<number> {
-  for (let port = startPort; port < startPort + 20; port++) {
-    if (await isPortAvailable(port)) {
-      return port;
-    }
-  }
-  throw new Error(`No available port found starting from ${startPort}`);
-}
-
 async function startServer() {
+  // ─── Startup diagnostics (visible in Railway logs) ─────────────────────────
+  console.log("[Fastvid] Starting server...");
+  console.log("[Fastvid] NODE_ENV:", process.env.NODE_ENV);
+  console.log("[Fastvid] PORT:", process.env.PORT || "3000 (default)");
+  console.log("[Fastvid] DATABASE_URL:", process.env.DATABASE_URL ? "✓ set" : "✗ NOT SET — database features disabled");
+  console.log("[Fastvid] JWT_SECRET:", process.env.JWT_SECRET ? "✓ set" : "✗ NOT SET — auth will not work");
+  console.log("[Fastvid] FISH_AUDIO_API_KEY:", process.env.FISH_AUDIO_API_KEY ? "✓ set" : "✗ NOT SET — voiceover disabled");
+  console.log("[Fastvid] STABILITY_AI_API_KEY:", process.env.STABILITY_AI_API_KEY ? "✓ set" : "✗ NOT SET — AI images disabled");
+  console.log("[Fastvid] PEXELS_API_KEY:", process.env.PEXELS_API_KEY ? "✓ set" : "✗ NOT SET — stock footage disabled");
+  console.log("[Fastvid] BUILT_IN_FORGE_API_KEY:", process.env.BUILT_IN_FORGE_API_KEY ? "✓ set" : "✗ NOT SET — file storage disabled");
+  // ───────────────────────────────────────────────────────────────────────────
+
   const app = express();
   const server = createServer(app);
+
   // Configure body parser with larger size limit for file uploads
   // Register Stripe webhook BEFORE express.json() for raw body access
   registerStripeWebhook(app);
@@ -62,7 +55,6 @@ async function startServer() {
     const fishKey = process.env.FISH_AUDIO_API_KEY;
     if (fishKey) {
       try {
-        // Fish Audio: check if the API key is valid by listing models (GET /model)
         const r = await fetch("https://api.fish.audio/model?page_size=1", {
           headers: { Authorization: `Bearer ${fishKey}` },
           signal: AbortSignal.timeout(5000),
@@ -107,6 +99,7 @@ async function startServer() {
       createContext,
     })
   );
+
   // development mode uses Vite, production mode uses static files
   if (process.env.NODE_ENV === "development") {
     await setupVite(app, server);
@@ -114,15 +107,11 @@ async function startServer() {
     serveStatic(app);
   }
 
-  const preferredPort = parseInt(process.env.PORT || "3000");
-  const port = await findAvailablePort(preferredPort);
+  // Railway injects PORT automatically — always use it directly
+  const port = parseInt(process.env.PORT || "3000", 10);
 
-  if (port !== preferredPort) {
-    console.log(`Port ${preferredPort} is busy, using port ${port} instead`);
-  }
-
-  server.listen(port, () => {
-    console.log(`Server running on http://localhost:${port}/`);
+  server.listen(port, "0.0.0.0", () => {
+    console.log(`[Fastvid] Server running on port ${port}`);
   });
 }
 
