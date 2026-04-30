@@ -1,17 +1,19 @@
 import express from "express";
 import { createServer } from "http";
 import path from "path";
-import { fileURLToPath } from "url";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import fs from "fs";
 
 async function startServer() {
   const app = express();
   const server = createServer(app);
 
-  // 👉 FIX: frontend zit in dist/public
-  const staticPath = path.resolve(__dirname, "public");
+  // 🔥 Auto detect juiste build map
+  const distPublic = path.resolve(process.cwd(), "dist/public");
+  const distRoot = path.resolve(process.cwd(), "dist");
+
+  const staticPath = fs.existsSync(distPublic) ? distPublic : distRoot;
+
+  console.log("Using static path:", staticPath);
 
   app.use(express.static(staticPath));
 
