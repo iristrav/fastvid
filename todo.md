@@ -284,3 +284,9 @@
 - [x] Auto-open script review modal when video reaches awaiting_approval status
 - [x] DB migration: videoType, scriptApproved, customVoiceoverUrl, voiceId columns (5 migrations applied)
 - [x] 0 TypeScript errors, 10/10 tests passing
+
+## Voiceover Speed Improvement
+- [x] Limit Fish Audio parallel requests to max 3 concurrent (p-limit) to avoid rate limiting
+- [x] Reduce TTS timeout from 90s to 45s per scene (fail fast, use silent fallback)
+- [x] Reduce MAX_ATTEMPTS from 3 to 2 to fail faster on rate limit errors
+- [x] Add per-scene progress updates during voiceover stage (scene X/8 done)

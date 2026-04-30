@@ -31,6 +31,7 @@ import * as os from "os";
 import { generateImage } from "./_core/imageGeneration";
 import { storagePut } from "./storage";
 import { invokeLLM } from "./_core/llm";
+import pLimit from "p-limit";
 // Fish Audio S2 Pro TTS
 const FISH_AUDIO_API_KEY = process.env.FISH_AUDIO_API_KEY || "";
 // @ts-ignore
@@ -198,8 +199,8 @@ export async function generateVoiceover(
     .trim()
     .slice(0, 1000);
 
-  const MAX_ATTEMPTS = 3;
-  const TTS_TIMEOUT_MS = 90_000;
+  const MAX_ATTEMPTS = 2;  // Fail fast — 2 attempts max to avoid blocking pipeline
+  const TTS_TIMEOUT_MS = 45_000;  // 45s per scene (was 90s)
 
   // ── Fish Audio S2 Pro ──
   if (FISH_AUDIO_API_KEY) {
@@ -930,8 +931,16 @@ export async function runVideoPipeline(
       }
       durations = scenes.map(() => perScene);
     } else {
+      // Limit to 3 concurrent Fish Audio requests to avoid rate limiting
+      const limit = pLimit(3);
+      let completedScenes = 0;
       durations = await withTimeout(
-        Promise.all(scenes.map((scene, i) => generateVoiceover(scene.text, audioPaths[i], voiceId))),
+        Promise.all(scenes.map((scene, i) => limit(async () => {
+          const dur = await generateVoiceover(scene.text, audioPaths[i], voiceId);
+          completedScenes++;
+          onProgress?.({ stage: `Creating voiceover... (${completedScenes}/${scenes.length} scenes)`, percent: 12 + Math.round((completedScenes / scenes.length) * 14) });
+          return dur;
+        }))),
         480_000,
         "Voiceover generation stage"
       );
