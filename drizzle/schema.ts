@@ -1,4 +1,4 @@
-import { int, json, mysqlEnum, mysqlTable, text, timestamp, varchar } from "drizzle-orm/mysql-core";
+import { int, json, longtext, mysqlEnum, mysqlTable, text, timestamp, varchar } from "drizzle-orm/mysql-core";
 
 /**
  * Core user table backing auth flow.
@@ -51,7 +51,7 @@ export const videos = mysqlTable("videos", {
   scriptApproved: int("scriptApproved").default(0).notNull(), // 0=pending, 1=approved, 2=rejected
   customVoiceoverUrl: varchar("customVoiceoverUrl", { length: 1024 }), // user-uploaded audio
   voiceId: varchar("voiceId", { length: 128 }), // Fish Audio reference ID selected by user
-  script: text("script"),
+  script: longtext("script"),
   voiceoverUrl: varchar("voiceoverUrl", { length: 1024 }),
   videoUrl: varchar("videoUrl", { length: 1024 }),
   thumbnailUrl: varchar("thumbnailUrl", { length: 1024 }),

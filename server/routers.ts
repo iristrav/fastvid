@@ -71,13 +71,23 @@ async function generateFullVideo(videoId: number, prompt: string, videoLength: s
 
     // Check if script generation failed — read from DB to get the saved script
     const videoAfterScript = await getVideoById(videoId);
+    console.log(`[Video Generation] After script gen: video ${videoId} status=${videoAfterScript?.status}, scriptLen=${videoAfterScript?.script?.length ?? 0}`);
     if (!videoAfterScript?.script || videoAfterScript.status === "failed") {
-      console.error(`[Video Generation] Script generation failed for video ${videoId}`);
+      console.error(`[Video Generation] Script generation failed for video ${videoId} — status: ${videoAfterScript?.status}, script: ${videoAfterScript?.script ? 'present' : 'MISSING'}`);
+      // Ensure video is marked as failed with a clear message
+      if (videoAfterScript?.status !== "failed") {
+        await updateVideoStatus(videoId, "failed", {
+          errorMessage: "Script generation failed — no script was saved. Please retry.",
+          progressStep: "Script generation failed",
+          progressPercent: 0,
+        });
+      }
       return;
     }
 
     // Step 2: Immediately continue to full video pipeline
     // Pass script/title/metadata directly to avoid any DB re-read race condition
+    console.log(`[Video Generation] Starting video pipeline for video ${videoId} with script (${videoAfterScript.script.length} chars)`);
     await updateVideoStatus(videoId, "generating_voiceover", {
       scriptApproved: 1,
       progressStep: "🎥 Script ready — starting video production...",
@@ -197,6 +207,7 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLength: 
     } catch { metadata = { title, description: prompt, tags: [], chapters: [] }; }
 
     // Save script and return (no pause — caller decides next step)
+    console.log(`[Script Generation] Saving script for video ${videoId}, length=${scriptContent.length} chars`);
     await updateVideoStatus(videoId, "awaiting_approval", {
       script: scriptContent,
       title,
@@ -204,10 +215,16 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLength: 
       progressStep: "✅ Script ready — starting video production...",
       progressPercent: 28,
     });
+    // Verify the script was actually saved
+    const savedVideo = await getVideoById(videoId);
+    if (!savedVideo?.script) {
+      throw new Error(`Script save verification failed for video ${videoId} — DB write did not persist`);
+    }
+    console.log(`[Script Generation] Script saved and verified for video ${videoId} (${savedVideo.script.length} chars)`);
   } catch (error) {
     console.error("[Script Generation] Error:", error);
     await updateVideoStatus(videoId, "failed", {
-      errorMessage: error instanceof Error ? error.message : "Unknown error",
+      errorMessage: error instanceof Error ? error.message : "Script generation failed — please retry",
       progressStep: "Script generation failed",
       progressPercent: 0,
     });

@@ -43,6 +43,13 @@
       "when": 1777495142040,
       "tag": "0005_sturdy_kulan_gath",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "5",
+      "when": 1777565466388,
+      "tag": "0006_fresh_sauron",
+      "breakpoints": true
     }
   ]
 }
