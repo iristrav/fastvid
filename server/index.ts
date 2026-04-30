@@ -5,8 +5,8 @@ import path from "path";
 const app = express();
 const server = createServer(app);
 
-// BELANGRIJK: dit pad moet naar /dist
-const staticPath = path.resolve(process.cwd(), "dist");
+// ✅ JUISTE PAD
+const staticPath = path.resolve(process.cwd(), "dist/public");
 
 console.log("Serving from:", staticPath);
 
