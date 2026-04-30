@@ -384,3 +384,11 @@
 - [x] Added clear error messages when script is missing or DB write fails
 - [x] DB migration applied: drizzle/0006_fresh_sauron.sql
 - [x] 0 TypeScript errors, 10/10 tests pass
+## Session 14 — Maximum Quality (within 90 min cap)
+- [x] Stability AI: steps 30→50, cfg_scale 7→8, resolution 1280x720→1344x768 (native SDXL aspect ratio)
+- [x] Re-added optimized Ken Burns: pre-scale to 1280x720 first, then gentle zoompan (1.0→1.06 zoom, 90s timeout)
+- [x] Ken Burns alternates direction per scene (even=left-pan, odd=right-pan) for visual variety
+- [x] Compose: subtitle overlay height 160→180px, font 40→44px bold, stronger shadow (blur=10, offset=1)
+- [x] Compose: cinematic color grading added (contrast=1.08, saturation=1.12, brightness=0.01)
+- [x] Compose: fade in/out extended 0.2s→0.3s for smoother transitions
+- [x] 0 TypeScript errors, 10/10 tests pass

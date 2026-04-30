@@ -275,11 +275,11 @@ async function generateStabilityAIClip(
     formData.append("text_prompts[0][weight]", "1");
     formData.append("text_prompts[1][text]", "blurry, low quality, watermark, text, logo, ugly, deformed");
     formData.append("text_prompts[1][weight]", "-1");
-    formData.append("cfg_scale", "7");
-    formData.append("height", "720");
-    formData.append("width", "1280");
+    formData.append("cfg_scale", "8");
+    formData.append("height", "768");
+    formData.append("width", "1344");
     formData.append("samples", "1");
-    formData.append("steps", "30");
+    formData.append("steps", "50");
 
     const response = await withTimeout(
       fetch("https://api.stability.ai/v1/generation/stable-diffusion-xl-1024-v1-0/text-to-image", {
@@ -312,14 +312,24 @@ async function generateStabilityAIClip(
     fs.writeFileSync(pngPath, imgBuffer);
     console.log(`[Pipeline] Scene ${sceneIndex}: Stability AI image in ${((Date.now()-t)/1000).toFixed(1)}s (${(imgBuffer.length/1024).toFixed(0)}KB)`);
 
-    // Convert to video — simple scale/crop (fast, no zoompan which is extremely slow)
+    // Convert to video — optimized Ken Burns: pre-scale to exact size first, then gentle zoompan
+    // Pre-scaling to exact size before zoompan avoids the 2x upscale that made it slow
+    const direction = sceneIndex % 2 === 0 ? 1 : -1; // alternate zoom direction per scene
+    const zoomStart = 1.0;
+    const zoomEnd = 1.06;
+    const fps = 25;
+    const totalFrames = Math.ceil(duration * fps);
+    const zoomStep = (zoomEnd - zoomStart) / totalFrames;
+    const panX = direction > 0 ? `iw/2-(iw/zoom/2)` : `iw/2-(iw/zoom/2)+${Math.floor(VIDEO_WIDTH * 0.02)}`;
     await withTimeout(
       exec(
         `${FFMPEG_BIN} -y -loop 1 -i "${pngPath}" ` +
-        `-vf "scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT},fade=t=in:st=0:d=0.3" ` +
-        `-t ${duration} -r 25 -c:v libx264 -preset ultrafast -crf 26 -pix_fmt yuv420p "${outputPath}" 2>/dev/null`
+        `-vf "scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT},` +
+        `zoompan=z='min(zoom+${zoomStep.toFixed(6)},${zoomEnd})':x='${panX}':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=${fps},` +
+        `fade=t=in:st=0:d=0.4,fade=t=out:st=${Math.max(0, duration - 0.4)}:d=0.4" ` +
+        `-t ${duration} -r ${fps} -c:v libx264 -preset fast -crf 23 -pix_fmt yuv420p "${outputPath}" 2>/dev/null`
       ),
-      20_000,
+      90_000,
       `AI image to video scene ${sceneIndex}`
     );
 
@@ -497,40 +507,45 @@ async function renderSubtitleOverlay(
     registerFont(FONT_REGULAR, { family: "NotoSans", weight: "normal" });
   } catch { /* already registered */ }
 
-  const OVERLAY_H = 160;
+  const OVERLAY_H = 180;
   const canvas = createCanvas(VIDEO_WIDTH, OVERLAY_H);
   const ctx = canvas.getContext("2d");
 
+  // Stronger gradient bar for better readability
   const grad = ctx.createLinearGradient(0, 0, 0, OVERLAY_H);
   grad.addColorStop(0, "rgba(0,0,0,0)");
-  grad.addColorStop(0.3, "rgba(0,0,0,0.82)");
-  grad.addColorStop(1, "rgba(0,0,0,0.92)");
+  grad.addColorStop(0.2, "rgba(0,0,0,0.88)");
+  grad.addColorStop(1, "rgba(0,0,0,0.97)");
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, VIDEO_WIDTH, OVERLAY_H);
 
+  // Scene badge
   const badgeText = `${sceneIndex + 1} / ${totalScenes}`;
-  ctx.fillStyle = "rgba(120,60,220,0.9)";
+  ctx.fillStyle = "rgba(130,60,240,0.95)";
   ctx.beginPath();
-  ctx.roundRect(30, 20, 110, 40, 20);
+  ctx.roundRect(28, 18, 120, 44, 22);
   ctx.fill();
-  ctx.font = "bold 22px NotoSans";
+  ctx.font = "bold 24px NotoSans";
   ctx.fillStyle = "white";
   ctx.textAlign = "center";
-  ctx.fillText(badgeText, 85, 47);
+  ctx.fillText(badgeText, 88, 47);
 
-  const cleanText = text.replace(/[^\x20-\x7E]/g, "").slice(0, 100).trim();
-  ctx.font = "bold 40px NotoSans";
-  ctx.fillStyle = "white";
+  // Subtitle text — larger, bolder, with stronger shadow
+  const cleanText = text.replace(/[^\x20-\x7E]/g, "").slice(0, 110).trim();
+  ctx.font = "bold 44px NotoSans";
+  ctx.fillStyle = "#ffffff";
   ctx.textAlign = "center";
-  ctx.shadowColor = "rgba(0,0,0,0.8)";
-  ctx.shadowBlur = 6;
+  ctx.shadowColor = "rgba(0,0,0,1)";
+  ctx.shadowBlur = 10;
+  ctx.shadowOffsetX = 1;
+  ctx.shadowOffsetY = 1;
 
   const words = cleanText.split(" ");
   const lines: string[] = [];
   let currentLine = "";
   for (const word of words) {
     const testLine = currentLine ? `${currentLine} ${word}` : word;
-    if (testLine.length > 55 && currentLine) {
+    if (testLine.length > 50 && currentLine) {
       lines.push(currentLine);
       currentLine = word;
     } else {
@@ -540,8 +555,8 @@ async function renderSubtitleOverlay(
   }
   if (currentLine && lines.length < 2) lines.push(currentLine);
 
-  const lineHeight = 48;
-  const startY = lines.length === 1 ? 105 : 80;
+  const lineHeight = 52;
+  const startY = lines.length === 1 ? 118 : 88;
   lines.forEach((line, i) => {
     ctx.fillText(line, VIDEO_WIDTH / 2, startY + i * lineHeight);
   });
@@ -739,9 +754,11 @@ async function composeSceneVideo(
     console.warn(`[Pipeline] Scene ${scene.index}: subtitle render failed:`, err);
   }
 
-  const OVERLAY_H = 160;
+  const OVERLAY_H = 180;
   const overlayY = VIDEO_HEIGHT - OVERLAY_H;
-  const fadeFilter = `fade=t=in:st=0:d=0.2,fade=t=out:st=${Math.max(0, duration - 0.2)}:d=0.2`;
+  // Cinematic color grading: slight contrast + saturation boost
+  const colorGrade = `eq=contrast=1.08:saturation=1.12:brightness=0.01`;
+  const fadeFilter = `${colorGrade},fade=t=in:st=0:d=0.3,fade=t=out:st=${Math.max(0, duration - 0.3)}:d=0.3`;
   const xfadeDur = 0.4;
 
   try {
