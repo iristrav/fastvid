@@ -799,6 +799,7 @@ export default function Admin() {
                     <StatCard label="Total Videos" value={stats?.videos.total ?? 0} icon={Video} color="text-cyan-400" />
                     <StatCard label="Completed Videos" value={stats?.videos.completed ?? 0} icon={CheckCircle2} color="text-green-400" sub={`${stats?.videos.failed ?? 0} failed`} />
                   </div>
+                  <AdminVideoActions />
                   <div className="glass-card border border-white/8 rounded-xl p-5">
                     <h3 className="font-bold text-white mb-4 flex items-center gap-2"><TrendingUp className="w-4 h-4 text-cyan-400" /> Revenue Overview</h3>
                     <div className="grid grid-cols-3 gap-4 text-center">
@@ -826,6 +827,51 @@ export default function Admin() {
           {activeTab === "videos" && <VideosTable />}
           {activeTab === "voices" && <VoiceLibraryAdmin />}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Admin Video Actions ────────────────────────────────────────────────────
+function AdminVideoActions() {
+  const utils = trpc.useUtils();
+  const retryMut = trpc.videoManage.retryStuck.useMutation({
+    onSuccess: (data) => {
+      utils.admin.stats.invalidate();
+      if (data.reset === 0) toast.info("No stuck videos found — all pipelines are running normally");
+      else toast.success(`\u2705 Reset ${data.reset} stuck video${data.reset === 1 ? "" : "s"} back to awaiting approval`);
+    },
+    onError: (err) => toast.error(`Failed: ${err.message}`),
+  });
+  const expireMut = trpc.videoManage.expireStuck.useMutation({
+    onSuccess: (data) => {
+      utils.admin.stats.invalidate();
+      if (data.expired === 0) toast.info("No stuck videos found");
+      else toast.success(`Marked ${data.expired} stuck video${data.expired === 1 ? "" : "s"} as failed`);
+    },
+    onError: (err) => toast.error(`Failed: ${err.message}`),
+  });
+  return (
+    <div className="glass-card border border-white/8 rounded-xl p-5">
+      <h3 className="font-bold text-white mb-1 flex items-center gap-2"><RefreshCw className="w-4 h-4 text-amber-400" /> Pipeline Actions</h3>
+      <p className="text-xs text-slate-500 mb-4">Use these when videos are stuck in voiceover/visuals generation after a deployment.</p>
+      <div className="flex flex-wrap gap-3">
+        <button
+          onClick={() => retryMut.mutate()}
+          disabled={retryMut.isPending}
+          className="flex items-center gap-2 px-4 py-2 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-300 text-sm font-medium hover:bg-amber-500/25 transition-colors disabled:opacity-50"
+        >
+          {retryMut.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+          Retry Stuck Videos
+        </button>
+        <button
+          onClick={() => expireMut.mutate()}
+          disabled={expireMut.isPending}
+          className="flex items-center gap-2 px-4 py-2 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-sm font-medium hover:bg-red-500/20 transition-colors disabled:opacity-50"
+        >
+          {expireMut.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <X className="w-4 h-4" />}
+          Expire Stuck Videos
+        </button>
       </div>
     </div>
   );

@@ -602,6 +602,31 @@ export const appRouter = router({
       const count = await expireStuckVideos(70);
       return { expired: count };
     }),
+
+    /** Admin: reset stuck generating_voiceover/visuals/effects videos back to awaiting_approval */
+    retryStuck: adminProcedure.mutation(async () => {
+      const { getDb } = await import("./db");
+      const { eq, or } = await import("drizzle-orm");
+      const { videos } = await import("../drizzle/schema");
+      const db = await getDb();
+      if (!db) return { reset: 0 };
+      const result = await db
+        .update(videos)
+        .set({
+          status: "awaiting_approval",
+          progressStep: "\u2705 Script ready \u2014 awaiting your approval",
+          progressPercent: 28,
+          errorMessage: null,
+        })
+        .where(
+          or(
+            eq(videos.status, "generating_voiceover"),
+            eq(videos.status, "generating_visuals"),
+            eq(videos.status, "generating_effects"),
+          )
+        );
+      return { reset: (result as { rowsAffected?: number }).rowsAffected ?? 0 };
+    }),
   }),
 });
 
