@@ -71,10 +71,10 @@ export interface PipelineProgress {
 }
 
 const TMP_DIR = os.tmpdir();
-const VIDEO_WIDTH = 1920;
-const VIDEO_HEIGHT = 1080;
-const MAX_SCENES = 8;
-const CLIPS_PER_SCENE = 3; // 3 different clips per scene for dynamic cuts
+const VIDEO_WIDTH = 1280;
+const VIDEO_HEIGHT = 720;
+const MAX_SCENES = 6; // Reduced from 8 for faster pipeline (still covers full video)
+const CLIPS_PER_SCENE = 2; // 2 clips per scene — faster download + compositing
 
 // ─── Timeout helper ───────────────────────────────────────────────────────────
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
@@ -292,7 +292,7 @@ async function fetchPexelsClip(
   if (!PEXELS_API_KEY) return null;
 
   try {
-    const searchUrl = `https://api.pexels.com/videos/search?query=${encodeURIComponent(query)}&per_page=5&size=medium&orientation=landscape`;
+    const searchUrl = `https://api.pexels.com/videos/search?query=${encodeURIComponent(query)}&per_page=3&size=small&orientation=landscape`;
     const searchResp = await withTimeout(
       fetch(searchUrl, { headers: { Authorization: PEXELS_API_KEY } }),
       10_000,
@@ -319,10 +319,11 @@ async function fetchPexelsClip(
     if (candidates.length === 0) return null;
     const video = candidates[Math.min(clipIndex, candidates.length - 1)];
 
+    // Prefer SD/medium quality (720p) for faster download — we scale to 1280x720 anyway
     const videoFile = video.video_files
-      .filter(f => f.width >= 1280 && f.height >= 720)
-      .sort((a, b) => b.width - a.width)[0]
-      || video.video_files.sort((a, b) => b.width - a.width)[0];
+      .filter(f => f.width >= 854 && f.width <= 1920)
+      .sort((a, b) => a.width - b.width)[0] // smallest that meets minimum
+      || video.video_files.sort((a, b) => a.width - b.width)[0];
 
     if (!videoFile?.link) return null;
 
@@ -346,9 +347,9 @@ async function fetchPexelsClip(
         `${FFMPEG_BIN} -y ${loopFlag} -i "${rawPath}" ` +
         `-t ${clipDuration} ` +
         `-vf "scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}" ` +
-        `-c:v libx264 -preset fast -crf 23 -an -pix_fmt yuv420p "${outputPath}" 2>/dev/null`
+        `-c:v libx264 -preset ultrafast -crf 26 -an -pix_fmt yuv420p "${outputPath}" 2>/dev/null`
       ),
-      90_000,
+      45_000,
       `Trim Pexels clip scene ${sceneIndex} clip ${clipIndex}`
     );
 
@@ -745,9 +746,9 @@ async function composeSceneVideo(
         `${FFMPEG_BIN} -y ${inputs} -i "${audioPath}" -loop 1 -i "${subtitlePath}" ` +
         `-filter_complex "${filterComplex}[vjoined][${clips.length + 1}:v]overlay=x=0:y=${overlayY}:shortest=1,${fadeFilter}[vout]" ` +
         `-map "[vout]" -map "${clips.length}:a" ` +
-        `-t ${duration} -c:v libx264 -preset fast -crf 23 -c:a aac -b:a 128k -pix_fmt yuv420p "${outputPath}" 2>/dev/null`
+        `-t ${duration} -c:v libx264 -preset ultrafast -crf 26 -c:a aac -b:a 128k -pix_fmt yuv420p "${outputPath}" 2>/dev/null`
       ),
-      240_000,
+      120_000,
       `Compose multi-cut scene ${scene.index}`
     );
   } else if (visual.isVideo && visual.filePaths.length === 1) {
@@ -757,9 +758,9 @@ async function composeSceneVideo(
         `${FFMPEG_BIN} -y -i "${visual.filePaths[0]}" -i "${audioPath}" -loop 1 -i "${subtitlePath}" ` +
         `-filter_complex "[0:v][2:v]overlay=x=0:y=${overlayY}:shortest=1,${fadeFilter}[vout]" ` +
         `-map "[vout]" -map "1:a" ` +
-        `-t ${duration} -c:v libx264 -preset fast -crf 23 -c:a aac -b:a 128k -pix_fmt yuv420p "${outputPath}" 2>/dev/null`
+        `-t ${duration} -c:v libx264 -preset ultrafast -crf 26 -c:a aac -b:a 128k -pix_fmt yuv420p "${outputPath}" 2>/dev/null`
       ),
-      180_000,
+      90_000,
       `Compose single-clip scene ${scene.index}`
     );
   } else {
@@ -769,16 +770,18 @@ async function composeSceneVideo(
     const panX = scene.index % 4 < 2
       ? `iw/2-(iw/zoom/2)`
       : `iw/2-(iw/zoom/2)+${scene.index * 5}`;
-    const kenBurns = `scale=${VIDEO_WIDTH * 2}:${VIDEO_HEIGHT * 2},zoompan=z='min(zoom${zoomDir}0.0006,1.3)':x='${panX}':y='ih/2-(ih/zoom/2)':d=${frames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=30`;
+    // Simplified Ken Burns: scale + gentle zoom (no zoompan — too slow for ultrafast preset)
+    const scaleZoom = zoomDir === '+' ? '1.05' : '1.0';
+    const kenBurns = `scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT},zoompan=z='${scaleZoom}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${Math.min(frames, 90)}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=25`;
 
     await withTimeout(
       exec(
         `${FFMPEG_BIN} -y -loop 1 -i "${visual.filePaths[0]}" -i "${audioPath}" -loop 1 -i "${subtitlePath}" ` +
         `-filter_complex "[0:v]${kenBurns}[kb];[kb][2:v]overlay=x=0:y=${overlayY}:shortest=1,${fadeFilter}[vout]" ` +
         `-map "[vout]" -map "1:a" ` +
-        `-t ${duration} -c:v libx264 -preset fast -crf 23 -c:a aac -b:a 128k -pix_fmt yuv420p "${outputPath}" 2>/dev/null`
+        `-t ${duration} -c:v libx264 -preset ultrafast -crf 26 -c:a aac -b:a 128k -pix_fmt yuv420p "${outputPath}" 2>/dev/null`
       ),
-      180_000,
+      90_000,
       `Compose AI scene ${scene.index}`
     );
   }
@@ -859,16 +862,17 @@ async function concatenateScenesWithMusic(
   const listContent = allClips.map(p => `file '${p}'`).join("\n");
   fs.writeFileSync(listFile, listContent, "utf-8");
 
-  // Step 1: Concatenate all clips
-  await withTimeout(
-    exec(`${FFMPEG_BIN} -y -f concat -safe 0 -i "${listFile}" -c:v libx264 -preset fast -crf 22 -c:a aac -b:a 128k -movflags +faststart "${concatPath}" 2>/dev/null`),
-    600_000,
-    "Scene concatenation"
-  );
-
-  // Step 2: Generate cinematic background music
   const totalWithCards = totalDuration + 3 + 5; // intro + scenes + outro
-  const musicPath = await generateCinematicMusic(totalWithCards + 5, workDir);
+
+  // Step 1 + 2: Concatenate clips AND generate music in parallel
+  const [, musicPath] = await Promise.all([
+    withTimeout(
+      exec(`${FFMPEG_BIN} -y -f concat -safe 0 -i "${listFile}" -c:v libx264 -preset ultrafast -crf 26 -c:a aac -b:a 128k -movflags +faststart "${concatPath}" 2>/dev/null`),
+      300_000,
+      "Scene concatenation"
+    ),
+    generateCinematicMusic(totalWithCards + 5, workDir),
+  ]);
 
   // Step 3: Mix background music at 12% volume under voiceovers
   await withTimeout(
@@ -876,9 +880,9 @@ async function concatenateScenesWithMusic(
       `${FFMPEG_BIN} -y -i "${concatPath}" -i "${musicPath}" ` +
       `-filter_complex "[0:a]volume=1.0[voice];[1:a]volume=0.12[music];[voice][music]amix=inputs=2:duration=first:dropout_transition=3[aout]" ` +
       `-map "0:v" -map "[aout]" ` +
-      `-c:v copy -c:a aac -b:a 192k -movflags +faststart "${outputPath}" 2>/dev/null`
+      `-c:v copy -c:a aac -b:a 128k -movflags +faststart "${outputPath}" 2>/dev/null`
     ),
-    300_000,
+    120_000,
     "Background music mixing"
   );
 
@@ -964,7 +968,7 @@ export async function runVideoPipeline(
       Promise.all(
         scenes.map(scene => fetchVisualsForScene(scene, scene.duration, workDir))
       ),
-      720_000, // 12 min
+      300_000, // 5 min hard limit for visuals
       "Visual fetching stage"
     );
 
@@ -984,7 +988,7 @@ export async function runVideoPipeline(
           composeSceneVideo(scene, visuals[i], audioPaths[i], scene.duration, workDir)
         )
       ),
-      1_200_000,
+      900_000, // 15 min hard limit for compositing
       "Scene composition stage"
     );
     console.log(`[Pipeline] All ${scenes.length} scenes composed`);
