@@ -8,8 +8,6 @@ import App from "./App";
 import { getLoginUrl } from "./const";
 import "./index.css";
 
-const baseUrl = import.meta.env.VITE_OAUTH_SERVER_URL;
-
 const queryClient = new QueryClient();
 
 const redirectToLoginIfUnauthorized = (error: unknown) => {
@@ -42,7 +40,9 @@ queryClient.getMutationCache().subscribe(event => {
 const trpcClient = trpc.createClient({
   links: [
     httpBatchLink({
-      url: `${baseUrl}/api/trpc`,
+      // Always use a relative URL so the frontend talks to the same server it was served from.
+      // Do NOT use an absolute base URL here — it will break on Railway and other deployments.
+      url: "/api/trpc",
       transformer: superjson,
       fetch(input, init) {
         return globalThis.fetch(input, {
