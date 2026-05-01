@@ -170,8 +170,6 @@ export default function Home() {
       window.location.href = getLoginUrl();
     }
   };
-  }
-};
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 40);
