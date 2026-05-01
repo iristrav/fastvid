@@ -151,8 +151,12 @@ export default function Home() {
   const [promptValue, setPromptValue] = useState("");
   const [selectedLength, setSelectedLength] = useState("15-20");
   const { isAuthenticated } = useAuth();
-  const handleGetStarted = () => {
-  window.location.href = "/dashboard";
+  const handleGenerate = () => {
+  if (isAuthenticated) {
+    window.location.href = `/dashboard?prompt=${encodeURIComponent(promptValue)}`;
+  } else {
+    window.location.href = getLoginUrl();
+  }
 };
 
   useEffect(() => {
@@ -383,7 +387,7 @@ export default function Home() {
                   className="flex-1 bg-transparent text-sm text-white placeholder:text-slate-500 outline-none"
                 />
                 <button
-                  onClick={handleGetStarted}
+                  onClick={handleGenerate}
                   className="btn-gradient px-4 py-2.5 rounded-lg text-sm font-semibold text-white flex items-center gap-2 shrink-0"
                 >
                   <Sparkles className="w-4 h-4" />
