@@ -1,3 +1,4 @@
+import Login from "./pages/Login";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/NotFound";
@@ -13,6 +14,7 @@ function Router() {
   return (
     <Switch>
       <Route path={"/"} component={Home} />
+      <Route path={"/login"} component={Login} />
       <Route path={"/dashboard"} component={Dashboard} />
       <Route path={"/admin"} component={Admin} />
       <Route path={"/404"} component={NotFound} />
