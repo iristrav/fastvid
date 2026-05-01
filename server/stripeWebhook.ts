@@ -7,7 +7,16 @@ import express from "express";
 import Stripe from "stripe";
 import { updateUserSubscription, getUserByStripeCustomerId } from "./db";
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY ?? "");
+// Lazy Stripe initialization — prevents crash on startup when STRIPE_SECRET_KEY is not yet set
+let _stripe: Stripe | null = null;
+function getStripe(): Stripe {
+  if (!_stripe) {
+    const key = process.env.STRIPE_SECRET_KEY;
+    if (!key) throw new Error("STRIPE_SECRET_KEY is not set");
+    _stripe = new Stripe(key);
+  }
+  return _stripe;
+}
 
 export function registerStripeWebhook(app: Express) {
   // MUST use raw body for signature verification — register BEFORE express.json()
@@ -26,7 +35,7 @@ export function registerStripeWebhook(app: Express) {
           const body = req.body instanceof Buffer ? req.body.toString() : req.body;
           event = JSON.parse(body) as Stripe.Event;
         } else {
-          event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
+          event = getStripe().webhooks.constructEvent(req.body, sig, webhookSecret);
         }
       } catch (err) {
         console.error("[Webhook] Signature verification failed:", err);

@@ -18,7 +18,16 @@ import { storagePut } from "./storage";
 import { FASTVID_PRO_PLAN } from "./products";
 import { runVideoPipeline, generateStabilityAIThumbnail } from "./videoPipeline";
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY ?? "");
+// Lazy Stripe initialization — prevents crash on startup when STRIPE_SECRET_KEY is not yet set
+let _stripe: Stripe | null = null;
+function getStripe(): Stripe {
+  if (!_stripe) {
+    const key = process.env.STRIPE_SECRET_KEY;
+    if (!key) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Stripe is not configured. Please add STRIPE_SECRET_KEY to your environment variables." });
+    _stripe = new Stripe(key);
+  }
+  return _stripe;
+}
 
 const adminProcedure = protectedProcedure.use(({ ctx, next }) => {
   if (ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN", message: "Admin access required" });
@@ -486,7 +495,7 @@ export const appRouter = router({
       // Create or retrieve Stripe customer
       let customerId = (ctx.user as { stripeCustomerId?: string }).stripeCustomerId;
       if (!customerId) {
-        const customer = await stripe.customers.create({
+        const customer = await getStripe().customers.create({
           email: ctx.user.email ?? undefined,
           name: ctx.user.name ?? undefined,
           metadata: { userId: ctx.user.id.toString() },
@@ -495,13 +504,13 @@ export const appRouter = router({
         await updateUserSubscription(ctx.user.id, { stripeCustomerId: customerId });
       }
       // Create a recurring price on the fly (or use a pre-created one)
-      const price = await stripe.prices.create({
+      const price = await getStripe().prices.create({
         currency: FASTVID_PRO_PLAN.currency,
         unit_amount: FASTVID_PRO_PLAN.priceEur,
         recurring: { interval: FASTVID_PRO_PLAN.interval },
         product_data: { name: FASTVID_PRO_PLAN.name },
       });
-      const session = await stripe.checkout.sessions.create({
+      const session = await getStripe().checkout.sessions.create({
         customer: customerId,
         mode: "subscription",
         line_items: [{ price: price.id, quantity: 1 }],
