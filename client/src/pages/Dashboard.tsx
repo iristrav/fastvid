@@ -517,16 +517,6 @@ function VoiceSelector({ selectedVoice, onSelect }: { selectedVoice: string; onS
       toast.error("Preview failed", { description: "Could not generate voice preview" });
     }
   }
-
-  if (isLoading) {
-    return (
-      <div>
-        <p className="text-xs text-slate-500 font-medium uppercase tracking-wide mb-2">Voice</p>
-        <div className="flex items-center gap-2 text-slate-500 text-xs"><Loader2 className="w-3 h-3 animate-spin" /> Loading voices...</div>
-      </div>
-    );
-  }
-
   return (
     <div>
       <p className="text-xs text-slate-500 font-medium uppercase tracking-wide mb-2">Voice (Fish Audio S2 Pro)</p>
