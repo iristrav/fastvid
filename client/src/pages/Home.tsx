@@ -387,7 +387,7 @@ export default function Home() {
                   className="flex-1 bg-transparent text-sm text-white placeholder:text-slate-500 outline-none"
                 />
                 <button
-                  onClick={handleGetStarted}
+                  onClick={handleGenerate}
                   className="btn-gradient px-4 py-2.5 rounded-lg text-sm font-semibold text-white flex items-center gap-2 shrink-0"
                 >
                   <Sparkles className="w-4 h-4" />
