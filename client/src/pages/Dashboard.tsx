@@ -641,6 +641,7 @@ function CustomVoiceoverUpload({ onUpload, onClear, uploadedUrl }: {
 export default function Dashboard() {
 const isAuthenticated = localStorage.getItem("loggedIn") === "true";
   const [, navigate] = useLocation();
+  const loading = false;
   const [prompt, setPrompt] = useState("");
   const [selectedLength, setSelectedLength] = useState<VideoLength>("15-20");
   const [selectedType, setSelectedType] = useState<VideoType>("documentary");
