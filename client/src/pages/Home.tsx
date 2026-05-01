@@ -6,6 +6,7 @@
  */
 
 import { useState, useEffect, useRef } from "react";
+import { useLocation } from "wouter";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { getLoginUrl } from "@/const";
 import {
@@ -146,6 +147,7 @@ function TestimonialCard({ name, role, text, stars }: { name: string; role: stri
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 export default function Home() {
+  const [, navigate] = useLocation();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
   const [promptValue, setPromptValue] = useState("");
@@ -155,22 +157,21 @@ export default function Home() {
 
   // 👉 Generate knop (met prompt + length)
   const handleGenerate = () => {
-    if (isAuthenticated) {
-      window.location.href = `/dashboard?prompt=${encodeURIComponent(promptValue)}&length=${selectedLength}`;
-    } else {
-      window.location.href = getLoginUrl();
-    }
-  };
+  if (isAuthenticated) {
+    navigate(`/dashboard?prompt=${encodeURIComponent(promptValue)}&length=${selectedLength}`);
+  } else {
+    navigate(`/login?prompt=${encodeURIComponent(promptValue)}&length=${selectedLength}`);
+  }
+};
 
   // 👉 Overige knoppen (zonder prompt)
-  const handleGetStarted = () => {
-    if (isAuthenticated) {
-      window.location.href = "/dashboard";
-    } else {
-      window.location.href = getLoginUrl();
-    }
-  };
-
+ const handleGetStarted = () => {
+  if (isAuthenticated) {
+    navigate("/dashboard");
+  } else {
+    navigate("/login");
+  }
+};
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 40);
     window.addEventListener("scroll", onScroll);
