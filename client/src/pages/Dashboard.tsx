@@ -649,7 +649,7 @@ function CustomVoiceoverUpload({ onUpload, onClear, uploadedUrl }: {
 
 // ─── Main Dashboard ───────────────────────────────────────────────────────────
 export default function Dashboard() {
-const isAuthenticated = localStorage.getItem("loggedIn") === "true"; as { user: { name?: string; role?: string; subscriptionStatus?: string } | null; loading: boolean; isAuthenticated: boolean; logout: () => void };
+const isAuthenticated = localStorage.getItem("loggedIn") === "true";
   const [, navigate] = useLocation();
   const [prompt, setPrompt] = useState("");
   const [selectedLength, setSelectedLength] = useState<VideoLength>("15-20");
