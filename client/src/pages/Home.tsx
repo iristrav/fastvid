@@ -150,12 +150,26 @@ export default function Home() {
   const [scrolled, setScrolled] = useState(false);
   const [promptValue, setPromptValue] = useState("");
   const [selectedLength, setSelectedLength] = useState("15-20");
+
   const { isAuthenticated } = useAuth();
+
+  // 👉 Generate knop (met prompt + length)
+  const handleGenerate = () => {
+    if (isAuthenticated) {
+      window.location.href = `/dashboard?prompt=${encodeURIComponent(promptValue)}&length=${selectedLength}`;
+    } else {
+      window.location.href = getLoginUrl();
+    }
+  };
+
+  // 👉 Overige knoppen (zonder prompt)
   const handleGetStarted = () => {
-  if (isAuthenticated) {
-    window.location.href = `/dashboard?prompt=${encodeURIComponent(promptValue)}`;
-  } else {
-    window.location.href = getLoginUrl();
+    if (isAuthenticated) {
+      window.location.href = "/dashboard";
+    } else {
+      window.location.href = getLoginUrl();
+    }
+  };
   }
 };
 
