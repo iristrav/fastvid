@@ -2,19 +2,17 @@ import { useEffect } from "react";
 import { useLocation } from "wouter";
 
 export default function Login() {
-  const [location] = useLocation();
+  const [, navigate] = useLocation();
 
   useEffect(() => {
-    // pak query params uit URL
-    const params = new URLSearchParams(location.split("?")[1]);
-    const prompt = params.get("prompt") || "";
-    const length = params.get("length") || "15-20";
-
-    // simuleer login
+    // Simuleer login
     setTimeout(() => {
-      window.location.href = `/dashboard?prompt=${encodeURIComponent(prompt)}&length=${length}`;
+      // zet fake login status (tijdelijk)
+      localStorage.setItem("loggedIn", "true");
+
+      navigate("/dashboard");
     }, 1000);
-  }, [location]);
+  }, []);
 
   return (
     <div className="min-h-screen flex items-center justify-center text-white">
