@@ -152,9 +152,8 @@ export default function Home() {
   const [selectedLength, setSelectedLength] = useState("15-20");
   const { isAuthenticated } = useAuth();
   const handleGetStarted = () => {
-    if (isAuthenticated) { window.location.href = "/dashboard"; }
-    else { window.location.href = getLoginUrl(); }
-  };
+  window.location.href = "/dashboard";
+};
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 40);
