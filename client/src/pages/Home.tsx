@@ -300,7 +300,7 @@ export default function Home() {
             <button onClick={handleGetStarted} className="text-sm text-slate-400 hover:text-white transition-colors">
               {isAuthenticated ? "Dashboard" : "Log in"}
             </button>
-            <button onClick={handleGetStarted} className="btn-gradient px-4 py-2 rounded-lg text-sm font-semibold text-white">
+            <button onClick={handleGenerate} className="btn-gradient px-4 py-2 rounded-lg text-sm font-semibold text-white">
               Get started
             </button>
           </div>
