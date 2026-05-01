@@ -83,8 +83,10 @@ async function startServer() {
       checks.pexels = { ok: false, message: "PEXELS_API_KEY not set" };
     }
 
+    // Always return HTTP 200 — the server is healthy if it's running.
+    // Missing API keys are informational only and do not mean the server is down.
     const allOk = Object.values(checks).every(c => c.ok);
-    res.status(allOk ? 200 : 503).json({
+    res.status(200).json({
       status: allOk ? "ok" : "degraded",
       timestamp: new Date().toISOString(),
       checks,
