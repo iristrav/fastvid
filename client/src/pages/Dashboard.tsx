@@ -1025,7 +1025,7 @@ const isAuthenticated = localStorage.getItem("loggedIn") === "true";
                     onView={setViewingVideoId}
                     onDelete={(id) => {
                       if (confirm("Delete this video? This cannot be undone.")) deleteMutation.mutate({ id });
-                    }}
+                    }} 
                     onRename={(id, title) => renameMutation.mutate({ id, title })}
                     onRetry={(id) => regenScriptMutation.mutate({ id })}
                   />
