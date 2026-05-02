@@ -8,9 +8,38 @@ import { registerStripeWebhook } from "../stripeWebhook";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
+import { migrate } from "drizzle-orm/mysql2/migrator";
+import path from "path";
+import { fileURLToPath } from "url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// ─── Auto-Migration ───────────────────────────────────────────────────────────
+// Runs all pending SQL migrations on startup so Railway DB is always up to date.
+async function runMigrations() {
+  if (!process.env.DATABASE_URL) {
+    console.log("[Migration] DATABASE_URL not set, skipping migrations");
+    return;
+  }
+  try {
+    const { getDb } = await import("../db");
+    const db = await getDb();
+    if (!db) { console.warn("[Migration] DB not available, skipping migrations"); return; }
+    // Migrations folder is relative to the compiled output location
+    const migrationsFolder = path.resolve(__dirname, "../../drizzle");
+    console.log("[Migration] Running migrations from:", migrationsFolder);
+    await migrate(db as Parameters<typeof migrate>[0], { migrationsFolder });
+    console.log("[Migration] All migrations applied successfully");
+  } catch (e) {
+    console.error("[Migration] Migration failed (server will still start):", e);
+  }
+}
 
 async function startServer() {
-  // ─── Startup diagnostics (visible in Railway logs) ─────────────────────────
+  // ─── Run DB migrations first ──────────────────────────────────────────────
+  await runMigrations();
+
+  // ─── Startup diagnostics (visible in Railway logs) ───────────────────────
   console.log("[Fastvid] Starting server...");
   console.log("[Fastvid] NODE_ENV:", process.env.NODE_ENV);
   console.log("[Fastvid] PORT:", process.env.PORT || "3000 (default)");
@@ -20,7 +49,7 @@ async function startServer() {
   console.log("[Fastvid] STABILITY_AI_API_KEY:", process.env.STABILITY_AI_API_KEY ? "✓ set" : "✗ NOT SET — AI images disabled");
   console.log("[Fastvid] PEXELS_API_KEY:", process.env.PEXELS_API_KEY ? "✓ set" : "✗ NOT SET — stock footage disabled");
   console.log("[Fastvid] BUILT_IN_FORGE_API_KEY:", process.env.BUILT_IN_FORGE_API_KEY ? "✓ set" : "✗ NOT SET — file storage disabled");
-  // ───────────────────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────
 
   const app = express();
   const server = createServer(app);
@@ -122,7 +151,7 @@ async function startServer() {
 
 startServer().catch(console.error);
 
-// ─── Admin Bootstrap ─────────────────────────────────────────────────────────
+// ─── Admin Bootstrap ──────────────────────────────────────────────────────────
 // If ADMIN_EMAIL and ADMIN_PASSWORD are set and no admin exists yet,
 // automatically create the first admin account on startup.
 async function bootstrapAdmin() {
