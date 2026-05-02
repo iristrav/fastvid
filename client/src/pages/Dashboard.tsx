@@ -698,22 +698,7 @@ const isAuthenticated = localStorage.getItem("loggedIn") === "true";
       }
     },
   });
-
-  useEffect(() => {
-    if (!loading && !isAuthenticated) {
-      window.location.href = getLoginUrl();
-    }
-  }, [loading, isAuthenticated]);
-
-
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
-        <Loader2 className="w-8 h-8 text-purple-400 animate-spin" />
-      </div>
-    );
-  }
-
+  
   const userSub = (user as { subscriptionStatus?: string } | null)?.subscriptionStatus;
   const hasActiveSubscription = userSub === "active" || user?.role === "admin";
   const activeLengthOption = VIDEO_LENGTHS.find(l => l.value === selectedLength)!;
