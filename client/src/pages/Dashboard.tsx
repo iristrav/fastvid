@@ -640,20 +640,8 @@ function CustomVoiceoverUpload({ onUpload, onClear, uploadedUrl }: {
 
 // ─── Main Dashboard ───────────────────────────────────────────────────────────
 export default function Dashboard() {
-const isAuthenticated = localStorage.getItem("loggedIn") === "true";
-const navigate = useNavigate();
-  
-useEffect(() => {
-  if (!isAuthenticated) {
-    navigate("/login");
-  }
-}, [isAuthenticated]);
-  const loading = false;
-  
-  const user = {
-  name: "User",
-  role: "user"
-};
+  const { user, loading, isAuthenticated, logout } = useAuth({ redirectOnUnauthenticated: true });
+  const navigate = useNavigate();
   const [prompt, setPrompt] = useState("");
   const [selectedLength, setSelectedLength] = useState<VideoLength>("15-20");
   const [selectedType, setSelectedType] = useState<VideoType>("documentary");

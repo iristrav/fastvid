@@ -25,6 +25,9 @@ async function startServer() {
   const app = express();
   const server = createServer(app);
 
+  // Trust Railway's proxy so req.protocol === 'https' and secure cookies work correctly
+  app.set('trust proxy', 1);
+
   // Configure body parser with larger size limit for file uploads
   // Register Stripe webhook BEFORE express.json() for raw body access
   registerStripeWebhook(app);
