@@ -1,6 +1,6 @@
 import { and, desc, eq, like, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
-import { InsertUser, InsertVideo, users, videos } from "../drizzle/schema";
+import { InsertInviteCode, InsertUser, InsertVideo, inviteCodes, users, videos } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 
 let _db: ReturnType<typeof drizzle> | null = null;
@@ -45,6 +45,73 @@ export async function getUserByOpenId(openId: string) {
   if (!db) return undefined;
   const result = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
   return result.length > 0 ? result[0] : undefined;
+}
+
+export async function getUserByEmail(email: string) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db.select().from(users).where(eq(users.email, email)).limit(1);
+  return result.length > 0 ? result[0] : undefined;
+}
+
+export async function createUser(data: InsertUser) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const result = await db.insert(users).values(data);
+  const insertId = (result as unknown as [{ insertId: number }])[0]?.insertId;
+  return insertId as number;
+}
+
+export async function updateUserPassword(userId: number, passwordHash: string) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(users).set({ passwordHash, updatedAt: new Date() }).where(eq(users.id, userId));
+}
+
+export async function updateUserLastSignedIn(userId: number) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(users).set({ lastSignedIn: new Date() }).where(eq(users.id, userId));
+}
+
+// ─── Invite Codes ─────────────────────────────────────────────────────────────
+
+export async function getInviteCodeByCode(code: string) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db.select().from(inviteCodes).where(eq(inviteCodes.code, code)).limit(1);
+  return result.length > 0 ? result[0] : undefined;
+}
+
+export async function createInviteCode(data: InsertInviteCode) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const result = await db.insert(inviteCodes).values(data);
+  return (result as unknown as [{ insertId: number }])[0]?.insertId as number;
+}
+
+export async function getAllInviteCodes() {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(inviteCodes).orderBy(desc(inviteCodes.createdAt));
+}
+
+export async function markInviteCodeUsed(code: string, userId: number) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(inviteCodes).set({ usedByUserId: userId, usedAt: new Date(), isActive: 0 }).where(eq(inviteCodes.code, code));
+}
+
+export async function deactivateInviteCode(id: number) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(inviteCodes).set({ isActive: 0 }).where(eq(inviteCodes.id, id));
+}
+
+export async function deleteInviteCode(id: number) {
+  const db = await getDb();
+  if (!db) return;
+  await db.delete(inviteCodes).where(eq(inviteCodes.id, id));
 }
 
 export async function getUserById(id: number) {

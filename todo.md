@@ -421,3 +421,22 @@
 - [x] Fix client/src/const.ts: getLoginUrl() now builds real OAuth URL
 - [ ] User deploys updated code to Railway (click Publish in Manus UI, then redeploy on Railway)
 - [ ] User runs pnpm db:push on Railway to create database tables
+
+## Session 18 — Standalone Auth (Invite Code + Email/Password)
+- [x] Add password_hash column to users table
+- [x] Add invite_codes table (code, createdBy, usedBy, usedAt, isActive)
+- [x] Add auth.register tRPC procedure (requires valid invite code + email + password)
+- [x] Add auth.login tRPC procedure (email + password → JWT session cookie)
+- [x] Add auth.me procedure (reads session cookie, returns user)
+- [x] Add auth.logout procedure (clears session cookie)
+- [x] Add admin.createInviteCode procedure (admin only)
+- [x] Add admin.listInviteCodes procedure (admin only)
+- [x] Add admin.deleteInviteCode procedure (admin only)
+- [x] Build Login/Register page (invite code step → email+password step)
+- [x] Add Invite Codes tab to Admin panel
+- [x] Remove Manus OAuth — context.ts now uses userId-based JWT
+- [x] Update getLoginUrl() to point to /login (standalone)
+- [x] Run pnpm db:push to apply migration (invite_codes + passwordHash added)
+- [ ] Admin creates first invite code via Admin panel → Invite Codes tab
+- [ ] Admin registers first account using the invite code
+- [ ] Admin promotes themselves to admin role via DB or admin panel

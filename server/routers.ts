@@ -7,13 +7,41 @@ import { systemRouter } from "./_core/systemRouter";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
 import { invokeLLM } from "./_core/llm";
 import { notifyOwner } from "./_core/notification";
+import bcrypt from "bcryptjs";
+import { SignJWT } from "jose";
 import {
-  createVideo, getAllUsers, getAllVideos, getUserById,
+  createVideo, getAllUsers, getAllVideos, getUserById, getUserByEmail,
   searchVideos, getUserStats, getVideoById, getVideosByUserId, getVideoStats,
   updateUserRole, updateUserSubscription, updateVideoStatus, updateVideoProgress,
   getAllVoices, getAllVoicesAdmin, getVoiceById, createVoice, updateVoice, deleteVoice, seedDefaultVoices,
   deleteVideo, updateVideoTitle, deleteAllFailedVideosForUser, expireStuckVideos,
+  createUser, updateUserLastSignedIn,
+  getInviteCodeByCode, createInviteCode, getAllInviteCodes, markInviteCodeUsed, deleteInviteCode, deactivateInviteCode,
 } from "./db";
+import { ONE_YEAR_MS } from "@shared/const";
+
+function getSessionSecret() {
+  const secret = process.env.JWT_SECRET ?? "fallback-secret-change-in-production";
+  return new TextEncoder().encode(secret);
+}
+
+async function signSessionToken(userId: number): Promise<string> {
+  const expiresAt = Math.floor((Date.now() + ONE_YEAR_MS) / 1000);
+  return new SignJWT({ userId })
+    .setProtectedHeader({ alg: "HS256", typ: "JWT" })
+    .setExpirationTime(expiresAt)
+    .sign(getSessionSecret());
+}
+
+function generateInviteCode(): string {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let code = "";
+  for (let i = 0; i < 12; i++) {
+    if (i > 0 && i % 4 === 0) code += "-";
+    code += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return code; // e.g. ABCD-EFGH-IJKL
+}
 import { storagePut } from "./storage";
 import { FASTVID_PRO_PLAN } from "./products";
 import { runVideoPipeline, generateStabilityAIThumbnail } from "./videoPipeline";
@@ -339,6 +367,77 @@ export const appRouter = router({
   system: systemRouter,
   auth: router({
     me: publicProcedure.query((opts) => opts.ctx.user),
+
+    /** Step 1: Validate invite code before registration */
+    validateInviteCode: publicProcedure
+      .input(z.object({ code: z.string().min(1) }))
+      .mutation(async ({ input }) => {
+        const invite = await getInviteCodeByCode(input.code.trim().toUpperCase());
+        if (!invite || invite.isActive === 0) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid or already used invite code" });
+        }
+        return { valid: true };
+      }),
+
+    /** Step 2: Register with invite code + email + password */
+    register: publicProcedure
+      .input(z.object({
+        inviteCode: z.string().min(1),
+        name: z.string().min(1).max(128),
+        email: z.string().email(),
+        password: z.string().min(8).max(128),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        const code = input.inviteCode.trim().toUpperCase();
+        const invite = await getInviteCodeByCode(code);
+        if (!invite || invite.isActive === 0) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid or already used invite code" });
+        }
+        // Check email not already taken
+        const existing = await getUserByEmail(input.email.toLowerCase());
+        if (existing) {
+          throw new TRPCError({ code: "CONFLICT", message: "An account with this email already exists" });
+        }
+        const passwordHash = await bcrypt.hash(input.password, 12);
+        const userId = await createUser({
+          name: input.name,
+          email: input.email.toLowerCase(),
+          passwordHash,
+          loginMethod: "email",
+          lastSignedIn: new Date(),
+        });
+        // Mark invite code as used
+        await markInviteCodeUsed(code, userId);
+        // Sign in immediately
+        const token = await signSessionToken(userId);
+        const cookieOptions = getSessionCookieOptions(ctx.req);
+        ctx.res.cookie(COOKIE_NAME, token, { ...cookieOptions, maxAge: ONE_YEAR_MS });
+        const user = await getUserById(userId);
+        return { success: true, user };
+      }),
+
+    /** Login with email + password */
+    login: publicProcedure
+      .input(z.object({
+        email: z.string().email(),
+        password: z.string().min(1),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        const user = await getUserByEmail(input.email.toLowerCase());
+        if (!user || !user.passwordHash) {
+          throw new TRPCError({ code: "UNAUTHORIZED", message: "Invalid email or password" });
+        }
+        const valid = await bcrypt.compare(input.password, user.passwordHash);
+        if (!valid) {
+          throw new TRPCError({ code: "UNAUTHORIZED", message: "Invalid email or password" });
+        }
+        await updateUserLastSignedIn(user.id);
+        const token = await signSessionToken(user.id);
+        const cookieOptions = getSessionCookieOptions(ctx.req);
+        ctx.res.cookie(COOKIE_NAME, token, { ...cookieOptions, maxAge: ONE_YEAR_MS });
+        return { success: true, user };
+      }),
+
     logout: publicProcedure.mutation(({ ctx }) => {
       const cookieOptions = getSessionCookieOptions(ctx.req);
       ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
@@ -476,6 +575,33 @@ export const appRouter = router({
       if (!user) throw new TRPCError({ code: "NOT_FOUND" });
       return user;
     }),
+
+    // ─── Invite Codes ────────────────────────────────────────────────────────
+    listInviteCodes: adminProcedure.query(async () => getAllInviteCodes()),
+    createInviteCode: adminProcedure
+      .input(z.object({ note: z.string().max(256).optional() }))
+      .mutation(async ({ ctx, input }) => {
+        const code = generateInviteCode();
+        const id = await createInviteCode({
+          code,
+          createdByUserId: ctx.user.id,
+          note: input.note ?? null,
+          isActive: 1,
+        });
+        return { id, code };
+      }),
+    deleteInviteCode: adminProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ input }) => {
+        await deleteInviteCode(input.id);
+        return { success: true };
+      }),
+    deactivateInviteCode: adminProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ input }) => {
+        await deactivateInviteCode(input.id);
+        return { success: true };
+      }),
   }),
 
   subscription: router({

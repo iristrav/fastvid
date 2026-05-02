@@ -11,10 +11,11 @@ export const users = mysqlTable("users", {
    * Use this for relations between tables.
    */
   id: int("id").autoincrement().primaryKey(),
-  /** Manus OAuth identifier (openId) returned from the OAuth callback. Unique per user. */
-  openId: varchar("openId", { length: 64 }).notNull().unique(),
+  /** Manus OAuth identifier (openId) — kept for backwards compatibility, nullable for standalone auth. */
+  openId: varchar("openId", { length: 64 }).unique(),
   name: text("name"),
-  email: varchar("email", { length: 320 }),
+  email: varchar("email", { length: 320 }).unique(),
+  passwordHash: varchar("passwordHash", { length: 256 }), // bcrypt hash for standalone auth
   loginMethod: varchar("loginMethod", { length: 64 }),
   role: mysqlEnum("role", ["user", "admin"]).default("user").notNull(),
   subscriptionStatus: mysqlEnum("subscriptionStatus", ["active", "inactive", "cancelled"]).default("inactive").notNull(),
@@ -29,6 +30,21 @@ export const users = mysqlTable("users", {
 
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
+
+// ─── Invite Codes ─────────────────────────────────────────────────────────────
+export const inviteCodes = mysqlTable("invite_codes", {
+  id: int("id").autoincrement().primaryKey(),
+  code: varchar("code", { length: 64 }).notNull().unique(),
+  createdByUserId: int("createdByUserId"), // admin who created it (null = seeded)
+  usedByUserId: int("usedByUserId"),       // user who redeemed it
+  usedAt: timestamp("usedAt"),
+  isActive: int("isActive").default(1).notNull(), // 1 = valid, 0 = revoked
+  note: varchar("note", { length: 256 }),          // optional label (e.g. "For John")
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type InviteCode = typeof inviteCodes.$inferSelect;
+export type InsertInviteCode = typeof inviteCodes.$inferInsert;
 
 // ─── Videos ───────────────────────────────────────────────────────────────────
 export const videos = mysqlTable("videos", {

@@ -682,7 +682,7 @@ export default function Admin() {
     loading: boolean; isAuthenticated: boolean; logout: () => void;
   };
   const [, navigate] = useLocation();
-  const [activeTab, setActiveTab] = useState<"overview" | "users" | "videos" | "generate" | "voices">("overview");
+  const [activeTab, setActiveTab] = useState<"overview" | "users" | "videos" | "generate" | "voices" | "invites">("overview");
   const { data: stats, isLoading: statsLoading } = trpc.admin.stats.useQuery(undefined, {
     enabled: isAuthenticated && user?.role === "admin",
   });
@@ -713,6 +713,7 @@ export default function Admin() {
     { id: "users" as const, label: "Users", icon: Users },
     { id: "videos" as const, label: "All Videos", icon: Video },
     { id: "voices" as const, label: "Voice Library", icon: Mic },
+    { id: "invites" as const, label: "Invite Codes", icon: Hash },
   ];
 
   return (
@@ -826,6 +827,7 @@ export default function Admin() {
           {activeTab === "users" && <UsersTable />}
           {activeTab === "videos" && <VideosTable />}
           {activeTab === "voices" && <VoiceLibraryAdmin />}
+          {activeTab === "invites" && <InviteCodesAdmin />}
         </div>
       </div>
     </div>
@@ -1125,6 +1127,141 @@ function VoiceForm({
           {saving && <Loader2 className="w-3 h-3 animate-spin" />}
           {initial ? "Save Changes" : "Add Voice"}
         </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Invite Codes Admin ─────────────────────────────────────────────────────
+function InviteCodesAdmin() {
+  const utils = trpc.useUtils();
+  const [note, setNote] = useState("");
+
+  const { data: codes, isLoading } = trpc.admin.listInviteCodes.useQuery();
+
+  const createCode = trpc.admin.createInviteCode.useMutation({
+    onSuccess: (data) => {
+      toast.success(`Code created: ${data.code}`, { description: "Share this code with the new user." });
+      utils.admin.listInviteCodes.invalidate();
+      setNote("");
+    },
+    onError: (e) => toast.error("Failed to create code", { description: e.message }),
+  });
+
+  const deleteCode = trpc.admin.deleteInviteCode.useMutation({
+    onSuccess: () => { toast.success("Code deleted"); utils.admin.listInviteCodes.invalidate(); },
+    onError: (e) => toast.error("Failed to delete", { description: e.message }),
+  });
+
+  const deactivateCode = trpc.admin.deactivateInviteCode.useMutation({
+    onSuccess: () => { toast.success("Code deactivated"); utils.admin.listInviteCodes.invalidate(); },
+    onError: (e) => toast.error("Failed to deactivate", { description: e.message }),
+  });
+
+  return (
+    <div className="space-y-6">
+      {/* Create new code */}
+      <div className="glass-card border border-white/8 rounded-xl p-5">
+        <h3 className="font-bold text-white mb-1 flex items-center gap-2">
+          <Hash className="w-4 h-4 text-cyan-400" /> Generate Invite Code
+        </h3>
+        <p className="text-xs text-slate-500 mb-4">Each code can only be used once. Share it with a new user to let them register.</p>
+        <div className="flex gap-3 items-end">
+          <div className="flex-1">
+            <label className="text-xs text-slate-400 mb-1 block">Note (optional)</label>
+            <input
+              type="text"
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder="e.g. For John Doe"
+              className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-purple-500/50"
+            />
+          </div>
+          <button
+            onClick={() => createCode.mutate({ note: note || undefined })}
+            disabled={createCode.isPending}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-purple-600/20 border border-purple-500/30 text-purple-300 text-sm font-medium hover:bg-purple-600/30 transition-colors disabled:opacity-50"
+          >
+            {createCode.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+            Generate Code
+          </button>
+        </div>
+      </div>
+
+      {/* Code list */}
+      <div className="glass-card border border-white/8 rounded-xl overflow-hidden">
+        <div className="p-4 border-b border-white/8">
+          <h3 className="font-bold text-white flex items-center gap-2">
+            <Hash className="w-4 h-4 text-slate-400" /> All Invite Codes
+          </h3>
+        </div>
+        {isLoading ? (
+          <div className="p-8 flex justify-center"><Loader2 className="w-6 h-6 animate-spin text-purple-400" /></div>
+        ) : !codes || codes.length === 0 ? (
+          <div className="p-8 text-center text-slate-500 text-sm">No invite codes yet. Generate one above.</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-white/8 text-slate-400 text-xs">
+                  <th className="text-left px-4 py-3 font-medium">Code</th>
+                  <th className="text-left px-4 py-3 font-medium">Note</th>
+                  <th className="text-left px-4 py-3 font-medium">Status</th>
+                  <th className="text-left px-4 py-3 font-medium">Used by</th>
+                  <th className="text-left px-4 py-3 font-medium">Created</th>
+                  <th className="text-right px-4 py-3 font-medium">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {codes.map((c) => (
+                  <tr key={c.id} className="border-b border-white/5 hover:bg-white/3 transition-colors">
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono text-cyan-300 tracking-wider">{c.code}</span>
+                        <button
+                          onClick={() => { navigator.clipboard.writeText(c.code); toast.success("Code copied!"); }}
+                          className="text-slate-500 hover:text-slate-300 transition-colors"
+                        >
+                          <Copy className="w-3 h-3" />
+                        </button>
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 text-slate-400">{c.note ?? "—"}</td>
+                    <td className="px-4 py-3">
+                      {c.isActive === 1 ? (
+                        <span className="px-2 py-0.5 rounded-full text-xs bg-emerald-500/15 text-emerald-400 border border-emerald-500/20">Active</span>
+                      ) : (
+                        <span className="px-2 py-0.5 rounded-full text-xs bg-slate-500/15 text-slate-400 border border-slate-500/20">Used / Inactive</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-slate-400">{c.usedByUserId ? `User #${c.usedByUserId}` : "—"}</td>
+                    <td className="px-4 py-3 text-slate-500 text-xs">{c.createdAt ? new Date(c.createdAt).toLocaleDateString() : "—"}</td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-2 justify-end">
+                        {c.isActive === 1 && (
+                          <button
+                            onClick={() => deactivateCode.mutate({ id: c.id })}
+                            disabled={deactivateCode.isPending}
+                            className="text-xs px-2 py-1 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20 hover:bg-amber-500/20 transition-colors"
+                          >
+                            Deactivate
+                          </button>
+                        )}
+                        <button
+                          onClick={() => { if (confirm("Delete this code?")) deleteCode.mutate({ id: c.id }); }}
+                          disabled={deleteCode.isPending}
+                          className="text-xs px-2 py-1 rounded bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 transition-colors"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   );
