@@ -643,15 +643,11 @@ export default function Dashboard() {
 const isAuthenticated = localStorage.getItem("loggedIn") === "true";
   const navigate = useNavigate();
 
-const isAuthenticated = localStorage.getItem("loggedIn") === "true";
-
 useEffect(() => {
   if (!isAuthenticated) {
     navigate("/login");
   }
 }, [isAuthenticated]);
-
-const navigate = useNavigate();
   const loading = false;
   
   const user = {
