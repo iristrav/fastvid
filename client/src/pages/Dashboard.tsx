@@ -641,8 +641,8 @@ function CustomVoiceoverUpload({ onUpload, onClear, uploadedUrl }: {
 // ─── Main Dashboard ───────────────────────────────────────────────────────────
 export default function Dashboard() {
 const isAuthenticated = localStorage.getItem("loggedIn") === "true";
-  const navigate = useNavigate();
-
+const navigate = useNavigate();
+  
 useEffect(() => {
   if (!isAuthenticated) {
     navigate("/login");
