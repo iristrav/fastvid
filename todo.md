@@ -410,6 +410,14 @@
 - [x] Remove port-scanning logic (Railway provides PORT directly)
 - [x] Add .nvmrc with Node 22
 - [x] Add engines field to package.json (node >=22.0.0)
-- [ ] User adds environment variables on Railway (DATABASE_URL, JWT_SECRET, FISH_AUDIO_API_KEY, STABILITY_AI_API_KEY, PEXELS_API_KEY)
-- [ ] User adds MySQL database plugin on Railway
+- [x] User adds environment variables on Railway (DATABASE_URL, JWT_SECRET, FISH_AUDIO_API_KEY, STABILITY_AI_API_KEY, PEXELS_API_KEY)
+- [x] User adds MySQL database plugin on Railway
 - [ ] User runs pnpm db:push after database is connected
+
+## Session 17 — Railway Login Fix
+- [x] Fix Login.tsx: replaced fake localStorage login with real Manus OAuth redirect
+- [x] Fix Dashboard.tsx: replaced localStorage.getItem("loggedIn") with real useAuth() hook
+- [x] Fix server/_core/index.ts: added app.set('trust proxy', 1) for Railway HTTPS cookie support
+- [x] Fix client/src/const.ts: getLoginUrl() now builds real OAuth URL
+- [ ] User deploys updated code to Railway (click Publish in Manus UI, then redeploy on Railway)
+- [ ] User runs pnpm db:push on Railway to create database tables
