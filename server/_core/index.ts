@@ -121,3 +121,47 @@ async function startServer() {
 }
 
 startServer().catch(console.error);
+
+// ─── Admin Bootstrap ─────────────────────────────────────────────────────────
+// If ADMIN_EMAIL and ADMIN_PASSWORD are set and no admin exists yet,
+// automatically create the first admin account on startup.
+async function bootstrapAdmin() {
+  const adminEmail = process.env.ADMIN_EMAIL;
+  const adminPassword = process.env.ADMIN_PASSWORD;
+  if (!adminEmail || !adminPassword) return;
+
+  try {
+    const { getUserByEmail, createUser } = await import("../db");
+    const existing = await getUserByEmail(adminEmail);
+    if (existing) {
+      // Already exists — ensure they are admin
+      const { getDb } = await import("../db");
+      const { users } = await import("../../drizzle/schema");
+      const { eq } = await import("drizzle-orm");
+      const db = await getDb();
+      if (db && existing.role !== "admin") {
+        await db.update(users).set({ role: "admin" }).where(eq(users.id, existing.id));
+        console.log("[Bootstrap] Promoted existing user to admin:", adminEmail);
+      } else {
+        console.log("[Bootstrap] Admin account already exists:", adminEmail);
+      }
+      return;
+    }
+
+    const bcrypt = await import("bcryptjs");
+    const passwordHash = await bcrypt.hash(adminPassword, 12);
+    await createUser({
+      email: adminEmail,
+      name: "Admin",
+      passwordHash,
+      loginMethod: "password",
+      role: "admin",
+      lastSignedIn: new Date(),
+    });
+    console.log("[Bootstrap] Admin account created:", adminEmail);
+  } catch (e) {
+    console.error("[Bootstrap] Failed to create admin account:", e);
+  }
+}
+
+bootstrapAdmin().catch(console.error);

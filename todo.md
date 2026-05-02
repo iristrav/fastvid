@@ -437,6 +437,7 @@
 - [x] Remove Manus OAuth — context.ts now uses userId-based JWT
 - [x] Update getLoginUrl() to point to /login (standalone)
 - [x] Run pnpm db:push to apply migration (invite_codes + passwordHash added)
-- [ ] Admin creates first invite code via Admin panel → Invite Codes tab
-- [ ] Admin registers first account using the invite code
-- [ ] Admin promotes themselves to admin role via DB or admin panel
+- [x] Admin bootstrap: ADMIN_EMAIL + ADMIN_PASSWORD env vars auto-create admin on startup
+- [ ] User sets ADMIN_EMAIL and ADMIN_PASSWORD on Railway and redeploys
+- [ ] User logs in at /login with admin credentials
+- [ ] User creates invite codes via Admin panel → Invite Codes tab for customers
