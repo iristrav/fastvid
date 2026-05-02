@@ -640,7 +640,13 @@ function CustomVoiceoverUpload({ onUpload, onClear, uploadedUrl }: {
 // ─── Main Dashboard ───────────────────────────────────────────────────────────
 export default function Dashboard() {
 const isAuthenticated = localStorage.getItem("loggedIn") === "true";
-  const [, navigate] = useLocation();
+  if (!isAuthenticated) {
+  navigate("/login");
+  return null;
+}
+  import { useNavigate } from "react-router-dom";
+
+const navigate = useNavigate();
   const loading = false;
   
   const user = {
