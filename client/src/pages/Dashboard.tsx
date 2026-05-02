@@ -699,6 +699,14 @@ export default function Dashboard() {
   const activeLengthOption = VIDEO_LENGTHS.find(l => l.value === selectedLength)!;
   const activeTypeOption = VIDEO_TYPES.find(t => t.value === selectedType)!;
 
+  // ─── Subscription gate ────────────────────────────────────────────────────
+  // Redirect non-admin users without an active subscription to /subscribe
+  useEffect(() => {
+    if (!loading && isAuthenticated && user && !hasActiveSubscription) {
+      navigate("/subscribe");
+    }
+  }, [loading, isAuthenticated, user, hasActiveSubscription, navigate]);
+
   const handleGenerate = () => {
     if (!prompt.trim() || prompt.length < 10) {
       toast.error("Please enter a prompt of at least 10 characters");

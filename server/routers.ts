@@ -641,7 +641,7 @@ export const appRouter = router({
         mode: "subscription",
         line_items: [{ price: price.id, quantity: 1 }],
         success_url: `${input.origin}/dashboard?payment=success`,
-        cancel_url: `${input.origin}/dashboard?payment=cancelled`,
+        cancel_url: `${input.origin}/subscribe?payment=cancelled`,
         client_reference_id: ctx.user.id.toString(),
         allow_promotion_codes: true,
         metadata: {

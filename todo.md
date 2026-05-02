@@ -441,3 +441,11 @@
 - [ ] User sets ADMIN_EMAIL and ADMIN_PASSWORD on Railway and redeploys
 - [ ] User logs in at /login with admin credentials
 - [ ] User creates invite codes via Admin panel → Invite Codes tab for customers
+
+## Session 19 — Subscription Gate (Invite → Register → Subscribe → Dashboard)
+- [x] Build /subscribe page: shows plan details + "Start subscription" button → Stripe checkout
+- [x] After registration: redirect to /subscribe instead of /dashboard
+- [x] In Dashboard: if subscriptionStatus !== 'active', redirect to /subscribe
+- [x] Add /subscribe route to App.tsx
+- [x] Stripe success_url redirects to /dashboard, cancel_url to /subscribe
+- [x] Admin is exempt from subscription check (role === 'admin' always has access)

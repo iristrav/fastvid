@@ -37,8 +37,8 @@ export default function Login() {
   const register = trpc.auth.register.useMutation({
     onSuccess: async () => {
       await utils.auth.me.invalidate();
-      toast.success("Account created!", { description: "Welcome to Fastvid." });
-      navigate("/dashboard");
+      toast.success("Account created!", { description: "One more step — choose a subscription to get started." });
+      navigate("/subscribe");
     },
     onError: (e) => toast.error("Registration failed", { description: e.message }),
   });
