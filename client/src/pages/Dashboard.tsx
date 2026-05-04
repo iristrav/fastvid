@@ -3,7 +3,6 @@
  * Authenticated users can generate videos and view their history
  */
 import { useState, useEffect, useRef } from "react";
-import { useNavigate } from "react-router-dom";
 import { useLocation } from "wouter";
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/_core/hooks/useAuth";
@@ -641,7 +640,7 @@ function CustomVoiceoverUpload({ onUpload, onClear, uploadedUrl }: {
 // ─── Main Dashboard ───────────────────────────────────────────────────────────
 export default function Dashboard() {
   const { user, loading, isAuthenticated, logout } = useAuth({ redirectOnUnauthenticated: true });
-  const navigate = useNavigate();
+  const [, navigate] = useLocation();
   const [prompt, setPrompt] = useState("");
   const [selectedLength, setSelectedLength] = useState<VideoLength>("15-20");
   const [selectedType, setSelectedType] = useState<VideoType>("documentary");
