@@ -403,15 +403,32 @@ async function fetchPexelsClips(
         fs.writeFileSync(rawPath, buffer);
 
         const loopFlag = video.duration < clipDuration ? `-stream_loop -1` : "";
+        // Ken Burns effect: alternate between zoom-in and zoom-out with slow pan
+        const totalFrames = Math.ceil(clipDuration * 25);
+        const kbDirection = (sceneIndex + idx) % 4;
+        let zoompanFilter: string;
+        if (kbDirection === 0) {
+          // Zoom in, pan right
+          zoompanFilter = `zoompan=z='min(zoom+0.0008,1.12)':x='iw/2-(iw/zoom/2)+((iw/zoom/2)*0.08*(on/${totalFrames}))':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=25`;
+        } else if (kbDirection === 1) {
+          // Zoom out, pan left
+          zoompanFilter = `zoompan=z='if(lte(zoom,1.0),1.12,max(1.0,zoom-0.0008))':x='iw/2-(iw/zoom/2)-((iw/zoom/2)*0.06*(on/${totalFrames}))':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=25`;
+        } else if (kbDirection === 2) {
+          // Slow zoom in, pan up
+          zoompanFilter = `zoompan=z='min(zoom+0.0006,1.10)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)+((ih/zoom/2)*0.05*(on/${totalFrames}))':d=${totalFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=25`;
+        } else {
+          // Slow zoom out, pan down
+          zoompanFilter = `zoompan=z='if(lte(zoom,1.0),1.10,max(1.0,zoom-0.0006))':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)-((ih/zoom/2)*0.04*(on/${totalFrames}))':d=${totalFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=25`;
+        }
         await withTimeout(
           exec(
             `${FFMPEG_BIN} -y ${loopFlag} -i "${rawPath}" ` +
             `-t ${clipDuration} ` +
-            `-vf "scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}" ` +
+            `-vf "scale=${VIDEO_WIDTH * 2}:${VIDEO_HEIGHT * 2}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH * 2}:${VIDEO_HEIGHT * 2},${zoompanFilter}" ` +
             `-c:v libx264 -preset ultrafast -crf 28 -an -pix_fmt yuv420p "${outPath}" 2>/dev/null`
           ),
-          30_000,
-          `Trim Pexels clip ${idx} scene ${sceneIndex}`
+          45_000,
+          `Trim+KenBurns Pexels clip ${idx} scene ${sceneIndex}`
         );
 
         try { fs.unlinkSync(rawPath); } catch { /* ignore */ }
@@ -507,45 +524,51 @@ async function renderSubtitleOverlay(
     registerFont(FONT_REGULAR, { family: "NotoSans", weight: "normal" });
   } catch { /* already registered */ }
 
-  const OVERLAY_H = 180;
+  // Documentary style: taller overlay, strong gradient, large bold text
+  const OVERLAY_H = 220;
   const canvas = createCanvas(VIDEO_WIDTH, OVERLAY_H);
   const ctx = canvas.getContext("2d");
 
-  // Stronger gradient bar for better readability
+  // Deep gradient bar — nearly opaque at bottom for maximum readability
   const grad = ctx.createLinearGradient(0, 0, 0, OVERLAY_H);
   grad.addColorStop(0, "rgba(0,0,0,0)");
-  grad.addColorStop(0.2, "rgba(0,0,0,0.88)");
+  grad.addColorStop(0.15, "rgba(0,0,0,0.82)");
   grad.addColorStop(1, "rgba(0,0,0,0.97)");
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, VIDEO_WIDTH, OVERLAY_H);
 
-  // Scene badge
-  const badgeText = `${sceneIndex + 1} / ${totalScenes}`;
-  ctx.fillStyle = "rgba(130,60,240,0.95)";
-  ctx.beginPath();
-  ctx.roundRect(28, 18, 120, 44, 22);
-  ctx.fill();
-  ctx.font = "bold 24px NotoSans";
-  ctx.fillStyle = "white";
-  ctx.textAlign = "center";
-  ctx.fillText(badgeText, 88, 47);
+  // Yellow accent line at top of overlay (documentary style)
+  ctx.fillStyle = "rgba(255,210,0,0.95)";
+  ctx.fillRect(0, 0, VIDEO_WIDTH, 4);
 
-  // Subtitle text — larger, bolder, with stronger shadow
-  const cleanText = text.replace(/[^\x20-\x7E]/g, "").slice(0, 110).trim();
-  ctx.font = "bold 44px NotoSans";
+  // Scene badge — compact, left-aligned
+  const badgeText = `${sceneIndex + 1} / ${totalScenes}`;
+  ctx.fillStyle = "rgba(255,210,0,0.95)";
+  ctx.beginPath();
+  ctx.roundRect(28, 14, 110, 38, 6);
+  ctx.fill();
+  ctx.font = "bold 22px NotoSans";
+  ctx.fillStyle = "#0a0a0a";
+  ctx.textAlign = "center";
+  ctx.fillText(badgeText, 83, 39);
+
+  // Main subtitle text — large, bold, white with strong shadow
+  const cleanText = text.replace(/[^\x20-\x7E]/g, "").slice(0, 120).trim();
+  ctx.font = "bold 50px NotoSans";
   ctx.fillStyle = "#ffffff";
   ctx.textAlign = "center";
   ctx.shadowColor = "rgba(0,0,0,1)";
-  ctx.shadowBlur = 10;
-  ctx.shadowOffsetX = 1;
-  ctx.shadowOffsetY = 1;
+  ctx.shadowBlur = 14;
+  ctx.shadowOffsetX = 2;
+  ctx.shadowOffsetY = 2;
 
   const words = cleanText.split(" ");
   const lines: string[] = [];
   let currentLine = "";
   for (const word of words) {
     const testLine = currentLine ? `${currentLine} ${word}` : word;
-    if (testLine.length > 50 && currentLine) {
+    // ~45 chars per line for 50px font at 1920px wide
+    if (testLine.length > 45 && currentLine) {
       lines.push(currentLine);
       currentLine = word;
     } else {
@@ -555,8 +578,8 @@ async function renderSubtitleOverlay(
   }
   if (currentLine && lines.length < 2) lines.push(currentLine);
 
-  const lineHeight = 52;
-  const startY = lines.length === 1 ? 118 : 88;
+  const lineHeight = 60;
+  const startY = lines.length === 1 ? 148 : 110;
   lines.forEach((line, i) => {
     ctx.fillText(line, VIDEO_WIDTH / 2, startY + i * lineHeight);
   });
@@ -757,10 +780,11 @@ async function composeSceneVideo(
     }
   }
 
-  const OVERLAY_H = 180;
+  const OVERLAY_H = 220; // Updated to match renderSubtitleOverlay height
   const overlayY = VIDEO_HEIGHT - OVERLAY_H;
-  // Cinematic color grading: slight contrast + saturation boost
-  const colorGrade = `eq=contrast=1.08:saturation=1.12:brightness=0.01`;
+  // Documentary-style color grading: warm, high-contrast, punchy
+  const colorGrade = `eq=contrast=1.15:saturation=1.28:brightness=0.02:gamma=0.95,colorbalance=rs=0.04:gs=-0.01:bs=-0.03:rm=0.03:gm=-0.01:bm=-0.02:rh=0.02:gh=0:bh=-0.01`;
+  // Note: colorbalance adds warm tones (slight red/orange push) for cinematic look
   const fadeFilter = `${colorGrade},fade=t=in:st=0:d=0.3,fade=t=out:st=${Math.max(0, duration - 0.3)}:d=0.3`;
   const xfadeDur = 0.4;
 

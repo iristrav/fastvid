@@ -449,3 +449,20 @@
 - [x] Add /subscribe route to App.tsx
 - [x] Stripe success_url redirects to /dashboard, cancel_url to /subscribe
 - [x] Admin is exempt from subscription check (role === 'admin' always has access)
+
+## Session 20 — Mixed Visuals Pipeline (Stock + AI Image + AI Image-to-Video)
+- [ ] Research Stability AI image-to-video API (Stable Video Diffusion endpoint)
+- [ ] Update video generation pipeline: per scene, use a smart mix of stock footage, AI images, and AI image-to-video clips
+- [ ] Implement Stability AI image-to-video (SVD) helper: generate image first, then animate it to a short video clip
+- [ ] Update fetchSceneVisuals(): rotate between stock (Pexels), AI image (zoompan), and AI image-to-video per scene
+- [ ] Ensure fallback chain: AI image-to-video → AI image → Pexels stock → color fallback
+- [ ] Update STAGE_LABELS and progress UI to reflect new visual types
+- [ ] 0 TypeScript errors, all tests passing
+
+## Session 21 — Documentary Style Upgrade (Johnny Harris / Wendover style)
+- [x] Bold text overlays: documentary style with yellow accent line, large 50px bold white text, strong shadow
+- [x] Scene badge: yellow background with dark text (documentary style)
+- [x] Ken Burns effect on Pexels stock footage clips (zoom-in/out + pan in 4 directions, alternating per scene)
+- [x] Warmer color grading: contrast=1.15, saturation=1.28, warm colorbalance (red/orange push)
+- [x] Subtitle overlay height increased to 220px for larger text
+- [x] 0 TypeScript errors, 10/10 tests passing
