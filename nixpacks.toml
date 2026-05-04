@@ -5,7 +5,7 @@ nixPkgs = ["ffmpeg", "nodejs_22"]
 cmds = ["pnpm install --no-frozen-lockfile"]
 
 [phases.build]
-cmds = ["pnpm run build"]
+cmds = ["pnpm run build", "cp -r drizzle dist/drizzle"]
 
 [start]
 cmd = "pnpm run start"

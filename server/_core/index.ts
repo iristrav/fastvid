@@ -26,7 +26,12 @@ async function runMigrations() {
     const db = await getDb();
     if (!db) { console.warn("[Migration] DB not available, skipping migrations"); return; }
     // Migrations folder is relative to the compiled output location
-    const migrationsFolder = path.resolve(__dirname, "../../drizzle");
+    // In production: __dirname = /app/dist, drizzle folder = /app/drizzle → go up 1 level
+    // In development: __dirname = /home/.../server/_core, drizzle folder = /home/.../drizzle → go up 2 levels
+    const isDist = __dirname.endsWith('/dist') || __dirname.endsWith('\\dist');
+    const migrationsFolder = isDist
+      ? path.resolve(__dirname, "../drizzle")
+      : path.resolve(__dirname, "../../drizzle");
     console.log("[Migration] Running migrations from:", migrationsFolder);
     await migrate(db as Parameters<typeof migrate>[0], { migrationsFolder });
     console.log("[Migration] All migrations applied successfully");
