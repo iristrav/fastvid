@@ -494,3 +494,8 @@
 - [x] Pre-generate example audio for all default voices at server startup (stored in S3) so preview never needs a live Fish Audio call
 - [x] Improve error message in client to show the actual server error (not just generic "Could not generate voice preview")
 - [x] 0 TypeScript errors, 10/10 tests passing
+
+## Session 25 — Fix Persistent OPENAI_API_KEY in Production
+- [x] Root cause found: dist/index.js was NOT rebuilt after the getter fix — old static ENV was still deployed
+- [x] Rebuilt dist with pnpm build — getter-based ENV is now in dist/index.js
+- [x] 0 TypeScript errors, 10/10 tests passing
