@@ -506,3 +506,8 @@
 - [x] Thinking budget only sent when on Manus Forge (not supported by OpenAI)
 - [x] Rebuilt dist — gpt-4o/OpenAI fallback confirmed in dist/index.js
 - [x] 0 TypeScript errors, 10/10 tests passing
+
+## Session 27 — Fix FFmpeg on Railway
+- [x] Use system FFmpeg binary (from PATH) instead of ffmpeg-static npm package on Railway
+- [x] Rebuilt dist — system FFmpeg detection confirmed in videoPipeline.ts
+- [x] 0 TypeScript errors, 10/10 tests passing

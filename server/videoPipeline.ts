@@ -37,7 +37,25 @@ const PEXELS_API_KEY = process.env.PEXELS_API_KEY || "";
 
 // @ts-ignore
 import ffmpegStatic from "ffmpeg-static";
-const FFMPEG_BIN: string = (ffmpegStatic as unknown as string) || "ffmpeg";
+import { execSync } from "child_process";
+
+// Prefer system FFmpeg (installed via nixpacks.toml on Railway) over ffmpeg-static.
+// ffmpeg-static can fail on some Linux environments due to missing glibc/libatomic.
+const resolveFFmpegBin = (): string => {
+  try {
+    const systemPath = execSync("which ffmpeg 2>/dev/null", { encoding: "utf8" }).trim();
+    if (systemPath) {
+      console.log(`[Fastvid] Using system FFmpeg: ${systemPath}`);
+      return systemPath;
+    }
+  } catch {
+    // system ffmpeg not found
+  }
+  const staticPath = (ffmpegStatic as unknown as string) || "ffmpeg";
+  console.log(`[Fastvid] Using ffmpeg-static: ${staticPath}`);
+  return staticPath;
+};
+const FFMPEG_BIN: string = resolveFFmpegBin();
 const execRaw = promisify(execCb);
 const exec = (cmd: string) => execRaw(cmd.replace(/^ffmpeg\b/, FFMPEG_BIN));
 
