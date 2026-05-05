@@ -1,5 +1,11 @@
 [phases.setup]
 nixPkgs = ["ffmpeg", "nodejs_22"]
+# Symlink ffmpeg to a standard path so Node.js can find it at runtime
+cmds = [
+  "mkdir -p /usr/local/bin",
+  "ln -sf $(which ffmpeg) /usr/local/bin/ffmpeg || true",
+  "ln -sf $(which ffprobe) /usr/local/bin/ffprobe || true"
+]
 
 [phases.install]
 cmds = ["pnpm install --no-frozen-lockfile"]

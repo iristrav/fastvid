@@ -42,22 +42,70 @@ import { execSync } from "child_process";
 // Prefer system FFmpeg (installed via nixpacks.toml on Railway) over ffmpeg-static.
 // ffmpeg-static can fail on some Linux environments due to missing glibc/libatomic.
 const resolveFFmpegBin = (): string => {
+  // Try known system paths first (Railway Nixpacks installs to /usr/bin or /nix/store)
+  const candidatePaths = [
+    "/usr/bin/ffmpeg",
+    "/usr/local/bin/ffmpeg",
+    "/nix/var/nix/profiles/default/bin/ffmpeg",
+  ];
+  for (const p of candidatePaths) {
+    if (fs.existsSync(p)) {
+      console.log(`[Fastvid] Using system FFmpeg: ${p}`);
+      return p;
+    }
+  }
+  // Try which command
   try {
     const systemPath = execSync("which ffmpeg 2>/dev/null", { encoding: "utf8" }).trim();
     if (systemPath) {
-      console.log(`[Fastvid] Using system FFmpeg: ${systemPath}`);
+      console.log(`[Fastvid] Using system FFmpeg (which): ${systemPath}`);
       return systemPath;
     }
   } catch {
-    // system ffmpeg not found
+    // system ffmpeg not found via which
+  }
+  // Try nix store glob
+  try {
+    const nixPath = execSync("ls /nix/store/*/bin/ffmpeg 2>/dev/null | head -1", { encoding: "utf8" }).trim();
+    if (nixPath) {
+      console.log(`[Fastvid] Using nix store FFmpeg: ${nixPath}`);
+      return nixPath;
+    }
+  } catch {
+    // nix store not available
   }
   const staticPath = (ffmpegStatic as unknown as string) || "ffmpeg";
   console.log(`[Fastvid] Using ffmpeg-static: ${staticPath}`);
   return staticPath;
 };
-const FFMPEG_BIN: string = resolveFFmpegBin();
+let FFMPEG_BIN: string = resolveFFmpegBin();
 const execRaw = promisify(execCb);
-const exec = (cmd: string) => execRaw(cmd.replace(/^ffmpeg\b/, FFMPEG_BIN));
+
+// Wrapper that retries with system ffmpeg if ffmpeg-static fails
+const exec = async (cmd: string): Promise<{ stdout: string; stderr: string }> => {
+  const resolvedCmd = cmd.replace(/^ffmpeg\b/, FFMPEG_BIN);
+  try {
+    return await execRaw(resolvedCmd);
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    // If ffmpeg-static failed, try to find system ffmpeg and retry once
+    if (FFMPEG_BIN.includes("ffmpeg-static") || FFMPEG_BIN.includes("node_modules")) {
+      console.warn(`[Fastvid] ffmpeg-static failed, searching for system ffmpeg...`);
+      // Try to find system ffmpeg via find
+      try {
+        const found = execSync("find /usr /nix /opt -name ffmpeg -type f 2>/dev/null | head -1", { encoding: "utf8" }).trim();
+        if (found) {
+          console.log(`[Fastvid] Found system ffmpeg at: ${found}, retrying...`);
+          FFMPEG_BIN = found;
+          return await execRaw(cmd.replace(/^ffmpeg\b/, FFMPEG_BIN));
+        }
+      } catch {
+        // Could not find system ffmpeg
+      }
+    }
+    throw err;
+  }
+};
 
 // Font paths
 const FONT_BOLD = "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf";

@@ -134,6 +134,9 @@ async function startServer() {
         PEXELS_API_KEY: !!process.env.PEXELS_API_KEY,
         STABILITY_AI_API_KEY: !!process.env.STABILITY_AI_API_KEY,
         NODE_ENV: process.env.NODE_ENV,
+        FFMPEG_PATH: (() => { try { return require("child_process").execSync("which ffmpeg 2>/dev/null || echo 'not found'", { encoding: "utf8" }).trim(); } catch { return "error"; } })(),
+        FFMPEG_USR_BIN: require("fs").existsSync("/usr/bin/ffmpeg"),
+        FFMPEG_USR_LOCAL_BIN: require("fs").existsSync("/usr/local/bin/ffmpeg"),
       },
     });
   });
