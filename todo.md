@@ -516,3 +516,9 @@
 - [x] Elapsed time now shown as "2m 14s" (human-readable) instead of "2:14" — with ⏱ icon
 - [x] Percentage shown in purple (more prominent) on the left, timer on the right
 - [x] 0 TypeScript errors, 10/10 tests passing
+
+## Session 29 — FFmpeg Pipeline Robustness
+- [x] Remove 2>/dev/null from all FFmpeg commands so real errors are visible in logs
+- [x] Add fs.existsSync checks before every FFmpeg call — throw clear error if file missing
+- [x] Ensure fallback video (black screen) is ALWAYS generated reliably before compose step
+- [x] Rebuild dist, save checkpoint

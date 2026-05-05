@@ -332,7 +332,7 @@ export async function generateVoiceover(
   const estimatedDuration = Math.max(3, Math.ceil(cleanText.split(" ").length / 2.5));
   try {
     await withTimeout(
-      exec(`${FFMPEG_BIN} -y -f lavfi -i anullsrc=r=44100:cl=stereo -t ${estimatedDuration} -c:a libmp3lame -b:a 64k "${outputPath}" 2>/dev/null`),
+      exec(`${FFMPEG_BIN} -y -f lavfi -i anullsrc=r=44100:cl=stereo -t ${estimatedDuration} -c:a libmp3lame -b:a 64k "${outputPath}"`),
       10_000, "Silent audio fallback"
     );
   } catch {
@@ -415,7 +415,7 @@ async function generateStabilityAIClip(
         `-vf "scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT},` +
         `zoompan=z='min(zoom+${zoomStep.toFixed(6)},${zoomEnd})':x='${panX}':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=${fps},` +
         `fade=t=in:st=0:d=0.4,fade=t=out:st=${Math.max(0, duration - 0.4)}:d=0.4" ` +
-        `-t ${duration} -r ${fps} -c:v libx264 -preset fast -crf 23 -pix_fmt yuv420p "${outputPath}" 2>/dev/null`
+        `-t ${duration} -r ${fps} -c:v libx264 -preset fast -crf 23 -pix_fmt yuv420p "${outputPath}"`
       ),
       90_000,
       `AI image to video scene ${sceneIndex}`
@@ -513,7 +513,7 @@ async function fetchPexelsClips(
             `${FFMPEG_BIN} -y ${loopFlag} -i "${rawPath}" ` +
             `-t ${clipDuration} ` +
             `-vf "scale=${VIDEO_WIDTH * 2}:${VIDEO_HEIGHT * 2}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH * 2}:${VIDEO_HEIGHT * 2},${zoompanFilter}" ` +
-            `-c:v libx264 -preset ultrafast -crf 28 -an -pix_fmt yuv420p "${outPath}" 2>/dev/null`
+            `-c:v libx264 -preset ultrafast -crf 28 -an -pix_fmt yuv420p "${outPath}"`
           ),
           45_000,
           `Trim+KenBurns Pexels clip ${idx} scene ${sceneIndex}`
@@ -541,19 +541,39 @@ async function generateColorFallback(sceneIndex: number, duration: number, workD
   const outputPath = path.join(workDir, `scene_${sceneIndex}_fallback.mp4`);
   const colors = ["0a0a1e", "0a1a2e", "1a0a2e", "0a2a1e", "1a1a0a", "2a0a1e", "0a1a1e", "1a0a1e"];
   const color = colors[sceneIndex % colors.length];
+
+  // Verify FFmpeg binary exists before attempting
+  if (!fs.existsSync(FFMPEG_BIN) && FFMPEG_BIN !== 'ffmpeg') {
+    console.error(`[Pipeline] CRITICAL: FFmpeg binary not found at: ${FFMPEG_BIN}`);
+  } else {
+    console.log(`[Pipeline] Scene ${sceneIndex}: generating fallback video with FFmpeg: ${FFMPEG_BIN}`);
+  }
+
   try {
     await withTimeout(
       exec(
         `${FFMPEG_BIN} -y -f lavfi -i "color=c=#${color}:size=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:rate=25" ` +
-        `-t ${duration} -c:v libx264 -preset ultrafast -crf 28 -pix_fmt yuv420p "${outputPath}" 2>/dev/null`
+        `-t ${duration} -c:v libx264 -preset ultrafast -crf 28 -pix_fmt yuv420p "${outputPath}"`
       ),
       15_000, `Fallback video scene ${sceneIndex}`
     );
-  } catch {
-    await exec(
-      `${FFMPEG_BIN} -y -f lavfi -i "color=c=black:size=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:rate=25" ` +
-      `-t ${duration} -c:v libx264 -preset ultrafast -crf 28 -pix_fmt yuv420p "${outputPath}" 2>/dev/null`
-    ).catch(() => { fs.writeFileSync(outputPath, Buffer.alloc(0)); });
+    console.log(`[Pipeline] Scene ${sceneIndex}: fallback video created (${(fs.statSync(outputPath).size / 1024).toFixed(0)}KB)`);
+  } catch (err1) {
+    console.error(`[Pipeline] Scene ${sceneIndex}: color fallback failed, trying black screen:`, err1);
+    try {
+      await withTimeout(
+        exec(
+          `${FFMPEG_BIN} -y -f lavfi -i "color=c=black:size=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:rate=25" ` +
+          `-t ${duration} -c:v libx264 -preset ultrafast -crf 28 -pix_fmt yuv420p "${outputPath}"`
+        ),
+        15_000, `Black screen fallback scene ${sceneIndex}`
+      );
+      console.log(`[Pipeline] Scene ${sceneIndex}: black screen fallback created`);
+    } catch (err2) {
+      console.error(`[Pipeline] CRITICAL: Black screen fallback also failed for scene ${sceneIndex}:`, err2);
+      // Write a minimal valid MP4 placeholder so the pipeline can continue
+      fs.writeFileSync(outputPath, Buffer.alloc(0));
+    }
   }
   return outputPath;
 }
@@ -896,7 +916,7 @@ async function renderIntroCard(videoTitle: string, duration: number, workDir: st
       `${FFMPEG_BIN} -y -loop 1 -i "${pngPath}" ` +
       `-t ${duration} ` +
       `-vf "fade=t=in:st=0:d=0.4,fade=t=out:st=${duration - 0.4}:d=0.4" ` +
-      `-c:v libx264 -preset ultrafast -crf 28 -pix_fmt yuv420p -r 25 "${outputPath}" 2>/dev/null`
+      `-c:v libx264 -preset ultrafast -crf 28 -pix_fmt yuv420p -r 25 "${outputPath}"`
     ),
     20_000, "Intro card render"
   );
@@ -958,7 +978,7 @@ async function renderOutroCard(duration: number, workDir: string): Promise<strin
       `${FFMPEG_BIN} -y -loop 1 -i "${pngPath}" ` +
       `-t ${duration} ` +
       `-vf "fade=t=in:st=0:d=0.4,fade=t=out:st=${duration - 0.4}:d=0.4" ` +
-      `-c:v libx264 -preset ultrafast -crf 28 -pix_fmt yuv420p -r 25 "${outputPath}" 2>/dev/null`
+      `-c:v libx264 -preset ultrafast -crf 28 -pix_fmt yuv420p -r 25 "${outputPath}"`
     ),
     20_000, "Outro card render"
   );
@@ -992,7 +1012,7 @@ async function composeSceneVideo(
     safeAudioPath = path.join(workDir, `scene_${scene.index}_silent.mp3`);
     try {
       await withTimeout(
-        exec(`${FFMPEG_BIN} -y -f lavfi -i anullsrc=r=44100:cl=stereo -t ${duration} -c:a libmp3lame -b:a 64k "${safeAudioPath}" 2>/dev/null`),
+        exec(`${FFMPEG_BIN} -y -f lavfi -i anullsrc=r=44100:cl=stereo -t ${duration} -c:a libmp3lame -b:a 64k "${safeAudioPath}"`),
         10_000, `Silent fallback scene ${scene.index}`
       );
     } catch {
@@ -1070,6 +1090,16 @@ async function composeSceneVideo(
     return { extraInputs, filterChain: chain, finalLabel: "kfinal" };
   }
 
+  // Final existence check before compose — log clearly if something is missing
+  for (const clip of safeClips) {
+    if (!fs.existsSync(clip)) {
+      console.error(`[Pipeline] Scene ${scene.index}: clip file MISSING before compose: ${clip}`);
+    }
+  }
+  if (!fs.existsSync(safeAudioPath)) {
+    console.error(`[Pipeline] Scene ${scene.index}: audio file MISSING before compose: ${safeAudioPath}`);
+  }
+
   try {
     if (safeClips.length >= 2) {
       // Multi-clip with xfade transitions
@@ -1109,7 +1139,7 @@ async function composeSceneVideo(
             `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}" ${subInput}${kineticInput} ` +
             `-filter_complex "${scaleFilters}${xfadeChain}${subOverlay}${kineticChainStr};[${finalVideoLabel}]${fadeFilter}[vout]" ` +
             `-map "[vout]" -map "${audioIdx}:a" ` +
-            `-t ${duration} -c:v libx264 -preset ultrafast -crf 26 -c:a aac -b:a 64k -pix_fmt yuv420p "${outputPath}" 2>/dev/null`
+            `-t ${duration} -c:v libx264 -preset ultrafast -crf 26 -c:a aac -b:a 64k -pix_fmt yuv420p "${outputPath}"`
           ),
           120_000, `Compose multi-clip scene ${scene.index}`
         );
@@ -1122,7 +1152,7 @@ async function composeSceneVideo(
             `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}"${kineticInput} ` +
             `-filter_complex "${scaleFilters}${xfadeChain}${kineticChainStr};[${finalVideoLabel}]${fadeFilter}[vout]" ` +
             `-map "[vout]" -map "${audioIdx}:a" ` +
-            `-t ${duration} -c:v libx264 -preset ultrafast -crf 26 -c:a aac -b:a 64k -pix_fmt yuv420p "${outputPath}" 2>/dev/null`
+            `-t ${duration} -c:v libx264 -preset ultrafast -crf 26 -c:a aac -b:a 64k -pix_fmt yuv420p "${outputPath}"`
           ),
           120_000, `Compose multi-clip scene ${scene.index} (no subtitle)`
         );
@@ -1145,7 +1175,7 @@ async function composeSceneVideo(
             `${FFMPEG_BIN} -y -i "${clip}" -i "${safeAudioPath}" -loop 1 -i "${subtitlePath}"${kineticInput} ` +
             `-filter_complex "[0:v]scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}[scaled];[scaled][${subIdx}:v]overlay=x=0:y=${overlayY}:shortest=1[withsub]${kineticChainStr};[${finalVideoLabel}]${fadeFilter}[vout]" ` +
             `-map "[vout]" -map "${audioIdx}:a" ` +
-            `-t ${duration} -c:v libx264 -preset ultrafast -crf 26 -c:a aac -b:a 64k -pix_fmt yuv420p "${outputPath}" 2>/dev/null`
+            `-t ${duration} -c:v libx264 -preset ultrafast -crf 26 -c:a aac -b:a 64k -pix_fmt yuv420p "${outputPath}"`
           ),
           75_000, `Compose 1-clip scene ${scene.index}`
         );
@@ -1158,7 +1188,7 @@ async function composeSceneVideo(
             `${FFMPEG_BIN} -y -i "${clip}" -i "${safeAudioPath}"${kineticInput} ` +
             `-filter_complex "[0:v]scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}[scaled]${kineticChainStr};[${finalVideoLabel}]${fadeFilter}[vout]" ` +
             `-map "[vout]" -map "${audioIdx}:a" ` +
-            `-t ${duration} -c:v libx264 -preset ultrafast -crf 26 -c:a aac -b:a 64k -pix_fmt yuv420p "${outputPath}" 2>/dev/null`
+            `-t ${duration} -c:v libx264 -preset ultrafast -crf 26 -c:a aac -b:a 64k -pix_fmt yuv420p "${outputPath}"`
           ),
           75_000, `Compose 1-clip scene ${scene.index} (no subtitle)`
         );
@@ -1170,7 +1200,7 @@ async function composeSceneVideo(
     await withTimeout(
       exec(
         `${FFMPEG_BIN} -y -i "${safeClips[0]}" -i "${safeAudioPath}" ` +
-        `-t ${duration} -c:v libx264 -preset ultrafast -crf 28 -c:a aac -b:a 64k -pix_fmt yuv420p "${outputPath}" 2>/dev/null`
+        `-t ${duration} -c:v libx264 -preset ultrafast -crf 28 -c:a aac -b:a 64k -pix_fmt yuv420p "${outputPath}"`
       ),
       45_000, `Simple mux scene ${scene.index}`
     );
@@ -1201,14 +1231,14 @@ async function generateBackgroundMusic(duration: number, workDir: string): Promi
           [bass][root][fifth]amix=inputs=3:duration=first,
           lowpass=f=1600,highpass=f=40,volume=0.4[music]
         " ` +
-        `-map "[music]" -c:a libmp3lame -b:a 64k "${outputPath}" 2>/dev/null`
+        `-map "[music]" -c:a libmp3lame -b:a 64k "${outputPath}"`
       ),
       30_000, "Background music generation"
     );
     return outputPath;
   } catch (err) {
     console.warn("[Pipeline] Music generation failed, using silence:", err);
-    await exec(`${FFMPEG_BIN} -y -f lavfi -i anullsrc=r=44100:cl=stereo -t ${duration} -c:a libmp3lame -b:a 64k "${outputPath}" 2>/dev/null`).catch(() => {});
+    await exec(`${FFMPEG_BIN} -y -f lavfi -i anullsrc=r=44100:cl=stereo -t ${duration} -c:a libmp3lame -b:a 64k "${outputPath}"`).catch((e) => { console.error('[Pipeline] Music silence fallback failed:', e); });
     return outputPath;
   }
 }
@@ -1231,7 +1261,13 @@ async function concatenateScenesWithMusic(
   ]);
 
   const validScenePaths = scenePaths.filter(p => {
-    try { return fs.existsSync(p) && fs.statSync(p).size > 100; } catch { return false; }
+    try {
+      const exists = fs.existsSync(p);
+      const size = exists ? fs.statSync(p).size : 0;
+      if (!exists) console.error(`[Pipeline] Concat: scene file MISSING: ${p}`);
+      else if (size <= 100) console.error(`[Pipeline] Concat: scene file too small (${size} bytes): ${p}`);
+      return exists && size > 100;
+    } catch { return false; }
   });
   if (validScenePaths.length === 0) throw new Error("No valid composed scene files to concatenate");
 
@@ -1243,19 +1279,25 @@ async function concatenateScenesWithMusic(
 
   const [, musicPath] = await Promise.all([
     withTimeout(
-      exec(`${FFMPEG_BIN} -y -f concat -safe 0 -i "${listFile}" -c:v libx264 -preset ultrafast -crf 26 -c:a aac -b:a 64k -movflags +faststart "${concatPath}" 2>/dev/null`),
+      exec(`${FFMPEG_BIN} -y -f concat -safe 0 -i "${listFile}" -c:v libx264 -preset ultrafast -crf 26 -c:a aac -b:a 64k -movflags +faststart "${concatPath}"`),
       600_000, // 10 min for large videos (30+ scenes)
       "Scene concatenation"
     ),
     generateBackgroundMusic(totalWithCards + 5, workDir),
   ]);
 
+  // Verify concat output exists before music mixing
+  if (!fs.existsSync(concatPath) || fs.statSync(concatPath).size < 1000) {
+    throw new Error(`Concat failed: output file missing or empty at ${concatPath}`);
+  }
+  console.log(`[Pipeline] Concat output: ${(fs.statSync(concatPath).size / 1024 / 1024).toFixed(1)}MB`);
+
   await withTimeout(
     exec(
       `${FFMPEG_BIN} -y -i "${concatPath}" -i "${musicPath}" ` +
       `-filter_complex "[0:a]volume=1.0[voice];[1:a]volume=0.10[music];[voice][music]amix=inputs=2:duration=first:dropout_transition=2[aout]" ` +
       `-map "0:v" -map "[aout]" ` +
-      `-c:v copy -c:a aac -b:a 64k -movflags +faststart "${outputPath}" 2>/dev/null`
+      `-c:v copy -c:a aac -b:a 64k -movflags +faststart "${outputPath}"`
     ),
     120_000, "Background music mixing"
   );
