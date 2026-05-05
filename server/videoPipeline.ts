@@ -42,6 +42,12 @@ import { execSync } from "child_process";
 // Prefer system FFmpeg (installed via nixpacks.toml on Railway) over ffmpeg-static.
 // ffmpeg-static can fail on some Linux environments due to missing glibc/libatomic.
 const resolveFFmpegBin = (): string => {
+  // Check FFMPEG_PATH env var set by start.sh
+  const envPath = process.env.FFMPEG_PATH;
+  if (envPath && fs.existsSync(envPath)) {
+    console.log(`[Fastvid] Using FFMPEG_PATH env: ${envPath}`);
+    return envPath;
+  }
   // Try known system paths first
   const candidatePaths = [
     "/usr/bin/ffmpeg",
