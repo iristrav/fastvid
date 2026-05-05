@@ -13,8 +13,9 @@ export const ENV = {
   get ownerOpenId() { return process.env.OWNER_OPEN_ID ?? ""; },
   get isProduction() { return process.env.NODE_ENV === "production"; },
   get forgeApiUrl() { return process.env.BUILT_IN_FORGE_API_URL ?? ""; },
-  // Prefer Manus Forge key; fall back to OPENAI_API_KEY for Railway deployments
-  get forgeApiKey() { return process.env.BUILT_IN_FORGE_API_KEY || process.env.OPENAI_API_KEY || ""; },
+  // Prefer Manus Forge key; fall back to LLM_API_KEY for Railway deployments.
+  // We use LLM_API_KEY (not OPENAI_API_KEY) to avoid Railway Railpack treating it as a build secret.
+  get forgeApiKey() { return process.env.BUILT_IN_FORGE_API_KEY || process.env.LLM_API_KEY || ""; },
   // True when running on Railway (no Manus Forge key available)
-  get useOpenAI() { return !process.env.BUILT_IN_FORGE_API_KEY && !!process.env.OPENAI_API_KEY; },
+  get useOpenAI() { return !process.env.BUILT_IN_FORGE_API_KEY && !!process.env.LLM_API_KEY; },
 };
