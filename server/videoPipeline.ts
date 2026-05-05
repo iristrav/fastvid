@@ -508,6 +508,146 @@ async function fetchSceneVisuals(
   return clips;
 }
 
+// ─── 3e. Extract Key Words for Kinetic Typography ───────────────────────────
+// Extracts 3-5 impactful keywords from narration text without an LLM call.
+// Strategy: remove stopwords, pick longest/most-impactful words.
+function extractKeywords(text: string, count: number = 4): string[] {
+  const STOP_WORDS = new Set([
+    "the","a","an","and","or","but","in","on","at","to","for","of","with",
+    "by","from","is","are","was","were","be","been","being","have","has",
+    "had","do","does","did","will","would","could","should","may","might",
+    "shall","can","this","that","these","those","it","its","we","they","he",
+    "she","you","i","my","our","their","his","her","your","as","so","if",
+    "not","no","up","out","about","into","than","then","when","where","who",
+    "which","what","how","all","each","more","most","also","just","very",
+    "over","after","before","through","during","between","while","because",
+    "since","even","only","still","now","here","there","some","any","every",
+  ]);
+
+  // Clean text: remove punctuation, lowercase, split into words
+  const words = text
+    .replace(/[^a-zA-Z\s]/g, " ")
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(w => w.length >= 4 && !STOP_WORDS.has(w));
+
+  // Deduplicate while preserving order
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const w of words) {
+    if (!seen.has(w)) {
+      seen.add(w);
+      unique.push(w);
+    }
+  }
+
+  // Score: prefer longer words (more impactful), pick first `count` unique ones
+  // Sort by length descending, then take top `count`, then re-sort by original order
+  const topByLength = [...unique].sort((a, b) => b.length - a.length).slice(0, count * 2);
+  // Restore original order among top candidates
+  const topSet = new Set(topByLength);
+  const ordered = unique.filter(w => topSet.has(w)).slice(0, count);
+
+  // Capitalize first letter of each word for display
+  return ordered.map(w => w.charAt(0).toUpperCase() + w.slice(1));
+}
+
+// ─── 3f. Render Kinetic Typography Frames ────────────────────────────────────
+// Renders each keyword as a PNG overlay image for FFmpeg overlay.
+// Returns array of { path, startTime, endTime } for each keyword.
+interface KineticFrame {
+  path: string;
+  startTime: number;
+  endTime: number;
+}
+
+async function renderKineticFrames(
+  keywords: string[],
+  sceneDuration: number,
+  sceneIndex: number,
+  workDir: string
+): Promise<KineticFrame[]> {
+  if (keywords.length === 0) return [];
+
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { createCanvas, registerFont } = require("canvas") as typeof import("canvas");
+  try {
+    registerFont(FONT_BOLD, { family: "NotoSans", weight: "bold" });
+  } catch { /* already registered */ }
+
+  const frames: KineticFrame[] = [];
+  // Distribute keywords evenly across the scene duration
+  // Each keyword is shown for ~(duration / keywords.length) seconds, with a 0.2s gap
+  const slotDuration = sceneDuration / keywords.length;
+  const showDuration = Math.max(1.5, slotDuration - 0.3);
+
+  for (let i = 0; i < keywords.length; i++) {
+    const keyword = keywords[i];
+    const startTime = i * slotDuration + 0.15; // small offset so it doesn't appear at exact frame 0
+    const endTime = Math.min(startTime + showDuration, sceneDuration - 0.2);
+
+    // Canvas: full video width, fixed height band for the text
+    const CANVAS_W = VIDEO_WIDTH;
+    const CANVAS_H = 120; // height of the kinetic text band
+    const canvas = createCanvas(CANVAS_W, CANVAS_H);
+    const ctx = canvas.getContext("2d");
+
+    // Transparent background
+    ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
+
+    // Measure text to draw pill background
+    ctx.font = `bold 72px NotoSans`;
+    const metrics = ctx.measureText(keyword);
+    const textW = metrics.width;
+    const textH = 72;
+    const pillPadX = 32;
+    const pillPadY = 16;
+    const pillW = textW + pillPadX * 2;
+    const pillH = textH + pillPadY * 2;
+    const pillX = (CANVAS_W - pillW) / 2;
+    const pillY = (CANVAS_H - pillH) / 2;
+
+    // First keyword gets yellow highlight, rest get dark semi-transparent pill
+    if (i === 0) {
+      // Yellow pill background
+      ctx.fillStyle = "rgba(255, 210, 0, 0.92)";
+      ctx.beginPath();
+      ctx.roundRect(pillX, pillY, pillW, pillH, 14);
+      ctx.fill();
+      // Dark text on yellow
+      ctx.font = `bold 72px NotoSans`;
+      ctx.fillStyle = "#0a0a0a";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.shadowColor = "transparent";
+      ctx.shadowBlur = 0;
+      ctx.fillText(keyword, CANVAS_W / 2, CANVAS_H / 2);
+    } else {
+      // Dark semi-transparent pill background
+      ctx.fillStyle = "rgba(0, 0, 0, 0.72)";
+      ctx.beginPath();
+      ctx.roundRect(pillX, pillY, pillW, pillH, 14);
+      ctx.fill();
+      // White text with shadow
+      ctx.font = `bold 72px NotoSans`;
+      ctx.fillStyle = "#ffffff";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.shadowColor = "rgba(0,0,0,0.9)";
+      ctx.shadowBlur = 8;
+      ctx.shadowOffsetX = 2;
+      ctx.shadowOffsetY = 2;
+      ctx.fillText(keyword, CANVAS_W / 2, CANVAS_H / 2);
+    }
+
+    const pngPath = path.join(workDir, `scene_${sceneIndex}_kword_${i}.png`);
+    fs.writeFileSync(pngPath, canvas.toBuffer("image/png"));
+    frames.push({ path: pngPath, startTime, endTime });
+  }
+
+  return frames;
+}
+
 // ─── 4a. Canvas Subtitle Overlay ─────────────────────────────────────────────
 async function renderSubtitleOverlay(
   text: string,
@@ -780,25 +920,62 @@ async function composeSceneVideo(
     }
   }
 
+  // Kinetic typography: extract keywords and render timed overlay frames
+  let kineticFrames: KineticFrame[] = [];
+  try {
+    const keywords = extractKeywords(scene.text, 4);
+    if (keywords.length > 0) {
+      kineticFrames = await renderKineticFrames(keywords, duration, scene.index, workDir);
+      console.log(`[Pipeline] Scene ${scene.index}: kinetic words: ${keywords.join(", ")}`);
+    }
+  } catch (err) {
+    console.warn(`[Pipeline] Scene ${scene.index}: kinetic typography failed (non-fatal):`, err);
+    kineticFrames = [];
+  }
+
   const OVERLAY_H = 220; // Updated to match renderSubtitleOverlay height
   const overlayY = VIDEO_HEIGHT - OVERLAY_H;
+  // Kinetic text position: upper-center area (y=80 so the 120px band sits at 80-200px from top)
+  const kineticY = 80;
   // Documentary-style color grading: warm, high-contrast, punchy
   const colorGrade = `eq=contrast=1.15:saturation=1.28:brightness=0.02:gamma=0.95,colorbalance=rs=0.04:gs=-0.01:bs=-0.03:rm=0.03:gm=-0.01:bm=-0.02:rh=0.02:gh=0:bh=-0.01`;
   // Note: colorbalance adds warm tones (slight red/orange push) for cinematic look
   const fadeFilter = `${colorGrade},fade=t=in:st=0:d=0.3,fade=t=out:st=${Math.max(0, duration - 0.3)}:d=0.3`;
   const xfadeDur = 0.4;
 
+  // Helper: build the kinetic overlay chain on top of a labelled video stream.
+  // Each kinetic frame is a full-width PNG (VIDEO_WIDTH x 120) overlaid at y=kineticY
+  // with enable='between(t,start,end)' for timed visibility.
+  // Returns the new output label and the extra -i inputs string.
+  function buildKineticChain(
+    baseLabel: string,
+    baseInputCount: number
+  ): { extraInputs: string; filterChain: string; finalLabel: string } {
+    if (kineticFrames.length === 0) {
+      return { extraInputs: "", filterChain: "", finalLabel: baseLabel };
+    }
+    const extraInputs = kineticFrames.map(f => `-loop 1 -i "${f.path}"`).join(" ");
+    let chain = "";
+    let prevLabel = baseLabel;
+    kineticFrames.forEach((frame, idx) => {
+      const inputIdx = baseInputCount + idx;
+      const outLabel = idx === kineticFrames.length - 1 ? "kfinal" : `kf${idx}`;
+      chain += `;[${prevLabel}][${inputIdx}:v]overlay=x=0:y=${kineticY}:enable='between(t,${frame.startTime.toFixed(2)},${frame.endTime.toFixed(2)})'[${outLabel}]`;
+      prevLabel = outLabel;
+    });
+    return { extraInputs, filterChain: chain, finalLabel: "kfinal" };
+  }
+
   try {
     if (safeClips.length >= 2) {
       // Multi-clip with xfade transitions
-      // Build filter_complex for N clips
       const clipDur = Math.max(2, Math.floor(duration / safeClips.length));
       const inputs = safeClips.map(c => `-i "${c}"`).join(" ");
       const scaleFilters = safeClips.map((_, i) =>
         `[${i}:v]scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}[v${i}]`
       ).join(";");
 
-      // Chain xfades: [v0][v1]xfade...[xf01]; [xf01][v2]xfade...[xf012]; etc.
+      // Chain xfades
       let xfadeChain = "";
       let lastLabel = "v0";
       for (let i = 1; i < safeClips.length; i++) {
@@ -808,24 +985,38 @@ async function composeSceneVideo(
         lastLabel = outLabel;
       }
 
+      // Build kinetic chain on top of xfaded
+      // Input indices: 0..N-1 = clips, N = audio, N+1 = subtitle (if any), N+1/N+2.. = kinetic frames
+      const audioIdx = safeClips.length;
+      const subIdx = audioIdx + 1;
+      const kineticBaseIdx = subtitlePath ? subIdx + 1 : subIdx;
+      const { extraInputs: kExtraInputs, filterChain: kChain, finalLabel: kFinalLabel } =
+        buildKineticChain(subtitlePath ? "withsub" : "xfaded", kineticBaseIdx);
+
       if (subtitlePath && fs.existsSync(subtitlePath)) {
         const subInput = `-loop 1 -i "${subtitlePath}"`;
-        const subIdx = safeClips.length;
+        // Apply subtitle first, then kinetic frames on top
+        const subOverlay = `;[xfaded][${subIdx}:v]overlay=x=0:y=${overlayY}:shortest=1[withsub]`;
+        const kineticInput = kExtraInputs ? ` ${kExtraInputs}` : "";
+        const kineticChainStr = kChain ? kChain : "";
+        const finalVideoLabel = kineticFrames.length > 0 ? kFinalLabel : "withsub";
         await withTimeout(
           exec(
-            `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}" ${subInput} ` +
-            `-filter_complex "${scaleFilters}${xfadeChain};[xfaded][${subIdx + 1}:v]overlay=x=0:y=${overlayY}:shortest=1,${fadeFilter}[vout]" ` +
-            `-map "[vout]" -map "${subIdx}:a" ` +
+            `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}" ${subInput}${kineticInput} ` +
+            `-filter_complex "${scaleFilters}${xfadeChain}${subOverlay}${kineticChainStr};[${finalVideoLabel}]${fadeFilter}[vout]" ` +
+            `-map "[vout]" -map "${audioIdx}:a" ` +
             `-t ${duration} -c:v libx264 -preset ultrafast -crf 26 -c:a aac -b:a 64k -pix_fmt yuv420p "${outputPath}" 2>/dev/null`
           ),
           120_000, `Compose multi-clip scene ${scene.index}`
         );
       } else {
-        const audioIdx = safeClips.length;
+        const kineticInput = kExtraInputs ? ` ${kExtraInputs}` : "";
+        const kineticChainStr = kChain ? kChain : "";
+        const finalVideoLabel = kineticFrames.length > 0 ? kFinalLabel : "xfaded";
         await withTimeout(
           exec(
-            `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}" ` +
-            `-filter_complex "${scaleFilters}${xfadeChain};[xfaded]${fadeFilter}[vout]" ` +
+            `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}"${kineticInput} ` +
+            `-filter_complex "${scaleFilters}${xfadeChain}${kineticChainStr};[${finalVideoLabel}]${fadeFilter}[vout]" ` +
             `-map "[vout]" -map "${audioIdx}:a" ` +
             `-t ${duration} -c:v libx264 -preset ultrafast -crf 26 -c:a aac -b:a 64k -pix_fmt yuv420p "${outputPath}" 2>/dev/null`
           ),
@@ -835,22 +1026,34 @@ async function composeSceneVideo(
     } else {
       // Single clip
       const clip = safeClips[0];
+      const audioIdx = 1;
+      const subIdx = 2;
+      const kineticBaseIdx = subtitlePath ? subIdx + 1 : subIdx;
+      const { extraInputs: kExtraInputs, filterChain: kChain, finalLabel: kFinalLabel } =
+        buildKineticChain(subtitlePath ? "withsub" : "scaled", kineticBaseIdx);
+
       if (subtitlePath && fs.existsSync(subtitlePath)) {
+        const kineticInput = kExtraInputs ? ` ${kExtraInputs}` : "";
+        const kineticChainStr = kChain ? kChain : "";
+        const finalVideoLabel = kineticFrames.length > 0 ? kFinalLabel : "withsub";
         await withTimeout(
           exec(
-            `${FFMPEG_BIN} -y -i "${clip}" -i "${safeAudioPath}" -loop 1 -i "${subtitlePath}" ` +
-            `-filter_complex "[0:v]scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}[scaled];[scaled][2:v]overlay=x=0:y=${overlayY}:shortest=1,${fadeFilter}[vout]" ` +
-            `-map "[vout]" -map "1:a" ` +
+            `${FFMPEG_BIN} -y -i "${clip}" -i "${safeAudioPath}" -loop 1 -i "${subtitlePath}"${kineticInput} ` +
+            `-filter_complex "[0:v]scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}[scaled];[scaled][${subIdx}:v]overlay=x=0:y=${overlayY}:shortest=1[withsub]${kineticChainStr};[${finalVideoLabel}]${fadeFilter}[vout]" ` +
+            `-map "[vout]" -map "${audioIdx}:a" ` +
             `-t ${duration} -c:v libx264 -preset ultrafast -crf 26 -c:a aac -b:a 64k -pix_fmt yuv420p "${outputPath}" 2>/dev/null`
           ),
           75_000, `Compose 1-clip scene ${scene.index}`
         );
       } else {
+        const kineticInput = kExtraInputs ? ` ${kExtraInputs}` : "";
+        const kineticChainStr = kChain ? kChain : "";
+        const finalVideoLabel = kineticFrames.length > 0 ? kFinalLabel : "scaled";
         await withTimeout(
           exec(
-            `${FFMPEG_BIN} -y -i "${clip}" -i "${safeAudioPath}" ` +
-            `-filter_complex "[0:v]scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT},${fadeFilter}[vout]" ` +
-            `-map "[vout]" -map "1:a" ` +
+            `${FFMPEG_BIN} -y -i "${clip}" -i "${safeAudioPath}"${kineticInput} ` +
+            `-filter_complex "[0:v]scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}[scaled]${kineticChainStr};[${finalVideoLabel}]${fadeFilter}[vout]" ` +
+            `-map "[vout]" -map "${audioIdx}:a" ` +
             `-t ${duration} -c:v libx264 -preset ultrafast -crf 26 -c:a aac -b:a 64k -pix_fmt yuv420p "${outputPath}" 2>/dev/null`
           ),
           75_000, `Compose 1-clip scene ${scene.index} (no subtitle)`
@@ -858,7 +1061,7 @@ async function composeSceneVideo(
       }
     }
   } catch (composeErr) {
-    // Last resort: simple mux
+    // Last resort: simple mux (no overlays)
     console.warn(`[Pipeline] Scene ${scene.index}: compose failed, trying simple mux:`, composeErr);
     await withTimeout(
       exec(
@@ -870,6 +1073,10 @@ async function composeSceneVideo(
   }
 
   if (subtitlePath) { try { fs.unlinkSync(subtitlePath); } catch { /* ignore */ } }
+  // Clean up kinetic frame PNGs
+  for (const frame of kineticFrames) {
+    try { fs.unlinkSync(frame.path); } catch { /* ignore */ }
+  }
   return outputPath;
 }
 

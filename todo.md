@@ -466,3 +466,10 @@
 - [x] Warmer color grading: contrast=1.15, saturation=1.28, warm colorbalance (red/orange push)
 - [x] Subtitle overlay height increased to 220px for larger text
 - [x] 0 TypeScript errors, 10/10 tests passing
+
+## Session 22 — Kinetic Typography
+- [x] Add extractKeywords() function: stopword-filtered keyword extraction (no LLM call needed, fast)
+- [x] Add renderKineticFrames() function: renders keyword images using canvas (72px bold text, yellow pill for first word, dark pill for rest)
+- [x] Integrate kinetic text into composeSceneVideo: overlay keyword images timed across scene duration (y=80, upper-center area, not overlapping subtitle)
+- [x] Style: 72px white bold text, yellow highlight pill for first keyword, dark semi-transparent pill for rest
+- [x] 0 TypeScript errors, 10/10 tests passing
