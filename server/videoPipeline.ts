@@ -41,10 +41,21 @@ import { execSync } from "child_process";
 
 // Prefer system FFmpeg (installed via nixpacks.toml on Railway) over ffmpeg-static.
 // ffmpeg-static can fail on some Linux environments due to missing glibc/libatomic.
+
+// Helper: test if a binary actually runs (not just exists on disk)
+const testBinary = (binPath: string): boolean => {
+  try {
+    execSync(`"${binPath}" -version`, { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000 });
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 const resolveFFmpegBin = (): string => {
   // Check FFMPEG_PATH env var set by start.sh
   const envPath = process.env.FFMPEG_PATH;
-  if (envPath && fs.existsSync(envPath)) {
+  if (envPath && fs.existsSync(envPath) && testBinary(envPath)) {
     console.log(`[Fastvid] Using FFMPEG_PATH env: ${envPath}`);
     return envPath;
   }
@@ -55,7 +66,7 @@ const resolveFFmpegBin = (): string => {
     "/nix/var/nix/profiles/default/bin/ffmpeg",
   ];
   for (const p of candidatePaths) {
-    if (fs.existsSync(p)) {
+    if (fs.existsSync(p) && testBinary(p)) {
       console.log(`[Fastvid] Using system FFmpeg: ${p}`);
       return p;
     }
@@ -63,7 +74,7 @@ const resolveFFmpegBin = (): string => {
   // Try which command
   try {
     const systemPath = execSync("which ffmpeg", { encoding: "utf8", stdio: ["pipe", "pipe", "ignore"] }).trim();
-    if (systemPath) {
+    if (systemPath && testBinary(systemPath)) {
       console.log(`[Fastvid] Using system FFmpeg (which): ${systemPath}`);
       return systemPath;
     }
@@ -73,7 +84,7 @@ const resolveFFmpegBin = (): string => {
   // Try nix store — Railway Nixpacks installs ffmpeg here (use shell:true for glob)
   try {
     const nixPath = execSync("ls /nix/store/*/bin/ffmpeg 2>/dev/null | head -1", { encoding: "utf8", shell: "/bin/sh" }).trim();
-    if (nixPath && fs.existsSync(nixPath)) {
+    if (nixPath && fs.existsSync(nixPath) && testBinary(nixPath)) {
       console.log(`[Fastvid] Using nix store FFmpeg: ${nixPath}`);
       return nixPath;
     }
@@ -83,46 +94,61 @@ const resolveFFmpegBin = (): string => {
   // Try find as last resort before ffmpeg-static
   try {
     const found = execSync("find /nix /usr /opt -name ffmpeg -type f 2>/dev/null | head -1", { encoding: "utf8", shell: "/bin/sh" }).trim();
-    if (found && fs.existsSync(found)) {
+    if (found && fs.existsSync(found) && testBinary(found)) {
       console.log(`[Fastvid] Using found FFmpeg: ${found}`);
       return found;
     }
   } catch {
     // find failed
   }
-  // Fall back to ffmpeg-static — try to make it executable first
+  // Fall back to ffmpeg-static — test if it actually works
   const staticPath = (ffmpegStatic as unknown as string) || "ffmpeg";
   if (staticPath && fs.existsSync(staticPath)) {
     try {
       execSync(`chmod +x "${staticPath}"`, { shell: "/bin/sh" });
-      console.log(`[Fastvid] Using ffmpeg-static (chmod +x applied): ${staticPath}`);
-    } catch {
-      console.log(`[Fastvid] Using ffmpeg-static (chmod failed): ${staticPath}`);
+    } catch { /* ignore */ }
+    if (testBinary(staticPath)) {
+      console.log(`[Fastvid] Using ffmpeg-static (validated): ${staticPath}`);
+      return staticPath;
+    } else {
+      console.warn(`[Fastvid] ffmpeg-static exists but CANNOT RUN (missing glibc?): ${staticPath}`);
     }
   }
-  return staticPath;
+  // Last resort: try 'ffmpeg' from PATH
+  if (testBinary('ffmpeg')) {
+    console.log(`[Fastvid] Using 'ffmpeg' from PATH`);
+    return 'ffmpeg';
+  }
+  console.error(`[Fastvid] CRITICAL: No working FFmpeg binary found! staticPath=${staticPath}`);
+  return staticPath; // return anyway so error messages show the path
 };
 let FFMPEG_BIN: string = resolveFFmpegBin();
 const execRaw = promisify(execCb);
 
-// Wrapper that retries with system ffmpeg if ffmpeg-static fails
+// Wrapper that retries with a different ffmpeg binary if the current one fails
 const exec = async (cmd: string): Promise<{ stdout: string; stderr: string }> => {
-  const resolvedCmd = cmd.replace(/^ffmpeg\b/, FFMPEG_BIN);
   try {
-    return await execRaw(resolvedCmd);
+    return await execRaw(cmd);
   } catch (err: unknown) {
-    // If ffmpeg-static failed, try to find system ffmpeg and retry once
-    if (FFMPEG_BIN.includes("ffmpeg-static") || FFMPEG_BIN.includes("node_modules")) {
-      console.warn(`[Fastvid] ffmpeg-static failed (${FFMPEG_BIN}), searching for system ffmpeg...`);
-      try {
-        const found = execSync("find /nix /usr /opt -name ffmpeg -type f 2>/dev/null | head -1", { encoding: "utf8" }).trim();
-        if (found) {
-          console.log(`[Fastvid] Found system ffmpeg at: ${found}, retrying...`);
-          FFMPEG_BIN = found;
-          return await execRaw(cmd.replace(/^ffmpeg\b/, FFMPEG_BIN));
+    // If current FFMPEG_BIN failed with a binary-not-found error, try alternatives
+    const errMsg = (err as Error)?.message || '';
+    const isBinaryNotFound = errMsg.includes('not found') || errMsg.includes('No such file') || errMsg.includes('ENOENT') || errMsg.includes('Permission denied');
+    if (isBinaryNotFound) {
+      console.warn(`[Fastvid] FFmpeg binary failed (${FFMPEG_BIN}), trying alternatives...`);
+      const alternatives = ['/usr/bin/ffmpeg', '/usr/local/bin/ffmpeg', 'ffmpeg'];
+      for (const alt of alternatives) {
+        if (alt === FFMPEG_BIN) continue;
+        if (testBinary(alt)) {
+          console.log(`[Fastvid] Switching to alternative FFmpeg: ${alt}`);
+          const oldBin = FFMPEG_BIN;
+          FFMPEG_BIN = alt;
+          // Replace the old binary path at the start of the command with the new one
+          // Commands are built as: `${FFMPEG_BIN} -y ...` so the first token is the binary
+          const retryCmd = cmd.startsWith(oldBin)
+            ? alt + cmd.slice(oldBin.length)
+            : cmd.replace(/^\S+/, alt);
+          return await execRaw(retryCmd);
         }
-      } catch {
-        // Could not find system ffmpeg
       }
     }
     throw err;
