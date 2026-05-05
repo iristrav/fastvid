@@ -199,3 +199,52 @@ async function bootstrapAdmin() {
 }
 
 bootstrapAdmin().catch(console.error);
+
+// ─── Voice Example Audio Bootstrap ───────────────────────────────────────────
+// Pre-generate example audio for all voices that don't have one yet.
+// Runs in the background after startup so it doesn't block the server.
+async function bootstrapVoiceExampleAudio() {
+  const fishKey = process.env.FISH_AUDIO_API_KEY;
+  const forgeKey = process.env.BUILT_IN_FORGE_API_KEY;
+  if (!fishKey || !forgeKey) {
+    console.log("[VoiceBootstrap] Skipping — FISH_AUDIO_API_KEY or BUILT_IN_FORGE_API_KEY not set");
+    return;
+  }
+  try {
+    const { getAllVoicesAdmin, updateVoice } = await import("../db");
+    const { storagePut } = await import("../storage");
+    const allVoices = await getAllVoicesAdmin();
+    const missing = allVoices.filter(v => !v.exampleAudioUrl && !v.fishAudioReferenceId.startsWith("PLACEHOLDER"));
+    if (missing.length === 0) {
+      console.log("[VoiceBootstrap] All voices already have example audio");
+      return;
+    }
+    console.log(`[VoiceBootstrap] Generating example audio for ${missing.length} voice(s)...`);
+    const previewText = "Hello! This is a preview of how this voice sounds. I hope you enjoy using it for your YouTube videos.";
+    for (const voice of missing) {
+      try {
+        const resp = await fetch("https://api.fish.audio/v1/tts", {
+          method: "POST",
+          headers: { "Authorization": `Bearer ${fishKey}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ text: previewText, reference_id: voice.fishAudioReferenceId, format: "mp3", mp3_bitrate: 128, latency: "normal" }),
+          signal: AbortSignal.timeout(45_000),
+        });
+        if (!resp.ok) {
+          console.warn(`[VoiceBootstrap] Fish Audio failed for voice ${voice.name} (${voice.fishAudioReferenceId}): HTTP ${resp.status}`);
+          continue;
+        }
+        const buf = Buffer.from(await resp.arrayBuffer());
+        const { url } = await storagePut(`voice-examples/${voice.fishAudioReferenceId}.mp3`, buf, "audio/mpeg");
+        await updateVoice(voice.id, { exampleAudioUrl: url });
+        console.log(`[VoiceBootstrap] ✓ Example audio generated for voice: ${voice.name}`);
+      } catch (e) {
+        console.warn(`[VoiceBootstrap] Failed for voice ${voice.name}:`, e);
+      }
+    }
+    console.log("[VoiceBootstrap] Done");
+  } catch (e) {
+    console.error("[VoiceBootstrap] Bootstrap failed:", e);
+  }
+}
+
+bootstrapVoiceExampleAudio().catch(console.error);

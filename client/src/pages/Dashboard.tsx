@@ -512,9 +512,10 @@ function VoiceSelector({ selectedVoice, onSelect }: { selectedVoice: string; onS
       const result = await previewMutation.mutateAsync({ fishAudioReferenceId: voice.fishAudioReferenceId });
       setLoadingPreviewId(null);
       playAudioUrl(result.url, voice.id);
-    } catch {
+    } catch (err: unknown) {
       setLoadingPreviewId(null);
-      toast.error("Preview failed", { description: "Could not generate voice preview" });
+      const msg = err instanceof Error ? err.message : "Could not generate voice preview";
+      toast.error("Preview failed", { description: msg });
     }
   }
   return (

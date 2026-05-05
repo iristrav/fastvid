@@ -489,3 +489,8 @@
 ## Session 23 — Fix BUILT_IN_FORGE_API_KEY in Production
 - [x] Change ENV from static object (set at module init) to getter function (read at call time) so env vars injected after startup are picked up
 - [x] 0 TypeScript errors, 10/10 tests passing
+
+## Session 24 — Fix Voice Preview Error
+- [x] Pre-generate example audio for all default voices at server startup (stored in S3) so preview never needs a live Fish Audio call
+- [x] Improve error message in client to show the actual server error (not just generic "Could not generate voice preview")
+- [x] 0 TypeScript errors, 10/10 tests passing
