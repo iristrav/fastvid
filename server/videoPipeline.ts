@@ -70,10 +70,10 @@ const resolveFFmpegBin = (): string => {
   } catch {
     // system ffmpeg not found via which
   }
-  // Try nix store — Railway Nixpacks installs ffmpeg here
+  // Try nix store — Railway Nixpacks installs ffmpeg here (use shell:true for glob)
   try {
-    const nixPath = execSync("ls /nix/store/*/bin/ffmpeg 2>/dev/null | head -1", { encoding: "utf8", stdio: ["pipe", "pipe", "ignore"] }).trim();
-    if (nixPath) {
+    const nixPath = execSync("ls /nix/store/*/bin/ffmpeg 2>/dev/null | head -1", { encoding: "utf8", shell: "/bin/sh" }).trim();
+    if (nixPath && fs.existsSync(nixPath)) {
       console.log(`[Fastvid] Using nix store FFmpeg: ${nixPath}`);
       return nixPath;
     }
@@ -82,16 +82,24 @@ const resolveFFmpegBin = (): string => {
   }
   // Try find as last resort before ffmpeg-static
   try {
-    const found = execSync("find /nix /usr /opt -name ffmpeg -type f 2>/dev/null | head -1", { encoding: "utf8", stdio: ["pipe", "pipe", "ignore"] }).trim();
-    if (found) {
+    const found = execSync("find /nix /usr /opt -name ffmpeg -type f 2>/dev/null | head -1", { encoding: "utf8", shell: "/bin/sh" }).trim();
+    if (found && fs.existsSync(found)) {
       console.log(`[Fastvid] Using found FFmpeg: ${found}`);
       return found;
     }
   } catch {
     // find failed
   }
+  // Fall back to ffmpeg-static — try to make it executable first
   const staticPath = (ffmpegStatic as unknown as string) || "ffmpeg";
-  console.log(`[Fastvid] Using ffmpeg-static: ${staticPath}`);
+  if (staticPath && fs.existsSync(staticPath)) {
+    try {
+      execSync(`chmod +x "${staticPath}"`, { shell: "/bin/sh" });
+      console.log(`[Fastvid] Using ffmpeg-static (chmod +x applied): ${staticPath}`);
+    } catch {
+      console.log(`[Fastvid] Using ffmpeg-static (chmod failed): ${staticPath}`);
+    }
+  }
   return staticPath;
 };
 let FFMPEG_BIN: string = resolveFFmpegBin();
