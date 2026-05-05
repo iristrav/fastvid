@@ -511,3 +511,8 @@
 - [x] Use system FFmpeg binary (from PATH) instead of ffmpeg-static npm package on Railway
 - [x] Rebuilt dist — system FFmpeg detection confirmed in videoPipeline.ts
 - [x] 0 TypeScript errors, 10/10 tests passing
+
+## Session 28 — Progress Display: Elapsed Time + Percentage
+- [x] Elapsed time now shown as "2m 14s" (human-readable) instead of "2:14" — with ⏱ icon
+- [x] Percentage shown in purple (more prominent) on the left, timer on the right
+- [x] 0 TypeScript errors, 10/10 tests passing

@@ -231,7 +231,7 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
 
   const elapsedMin = Math.floor(elapsed / 60);
   const elapsedSec = String(elapsed % 60).padStart(2, "0");
-  const elapsedStr = `${elapsedMin}:${elapsedSec}`;
+  const elapsedStr = elapsedMin > 0 ? `${elapsedMin}m ${elapsedSec}s` : `${elapsed}s`;
   const nearingLimit = elapsed > 75 * 60; // warn after 75 min (90-min cap)
 
   // ETA: estimate remaining time based on current percent and elapsed time
@@ -268,12 +268,12 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
                 </div>
                 <div className="w-full">
                   <div className="flex items-center justify-between mb-1">
-                    <span className="text-[10px] text-slate-500">{progressPercent}%</span>
+                    <span className="text-[10px] font-semibold text-purple-300">{progressPercent}%</span>
                     <div className="flex items-center gap-1.5">
                       {etaStr && (
                         <span className="text-[10px] font-semibold text-cyan-400">{etaStr}</span>
                       )}
-                      <span className={`text-[10px] font-mono shrink-0 ${nearingLimit ? "text-amber-400" : "text-slate-600"}`}>{elapsedStr}</span>
+                      <span className={`text-[10px] font-mono shrink-0 ${nearingLimit ? "text-amber-400" : "text-slate-400"}`}>⏱ {elapsedStr}</span>
                     </div>
                   </div>
                   <div className="w-full bg-white/10 rounded-full h-1.5 overflow-hidden">
