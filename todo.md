@@ -485,3 +485,7 @@
 - [x] Only 1 keyword per scene (the most impactful word), shown in the middle of the scene
 - [x] Word appears centered, briefly (2s), then disappears — clean and subtle
 - [x] 0 TypeScript errors, 10/10 tests passing
+
+## Session 23 — Fix BUILT_IN_FORGE_API_KEY in Production
+- [x] Change ENV from static object (set at module init) to getter function (read at call time) so env vars injected after startup are picked up
+- [x] 0 TypeScript errors, 10/10 tests passing
