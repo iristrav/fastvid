@@ -127,6 +127,14 @@ async function startServer() {
       status: allOk ? "ok" : "degraded",
       timestamp: new Date().toISOString(),
       checks,
+      env: {
+        BUILT_IN_FORGE_API_KEY: !!process.env.BUILT_IN_FORGE_API_KEY,
+        BUILT_IN_FORGE_API_URL: process.env.BUILT_IN_FORGE_API_URL || "(not set)",
+        FISH_AUDIO_API_KEY: !!process.env.FISH_AUDIO_API_KEY,
+        PEXELS_API_KEY: !!process.env.PEXELS_API_KEY,
+        STABILITY_AI_API_KEY: !!process.env.STABILITY_AI_API_KEY,
+        NODE_ENV: process.env.NODE_ENV,
+      },
     });
   });
 
