@@ -71,72 +71,19 @@ async function startServer() {
   registerOAuthRoutes(app);
 
   // ─── Health Check ─────────────────────────────────────────────────────────
-  app.get("/api/health", async (_req, res) => {
-    const checks: Record<string, { ok: boolean; message?: string }> = {};
-
-    // DB check
-    try {
-      const { getDb } = await import("../db");
-      const db = await getDb();
-      if (db) {
-        await db.execute("SELECT 1");
-        checks.db = { ok: true };
-      } else {
-        checks.db = { ok: false, message: "DB not initialized" };
-      }
-    } catch (e) {
-      checks.db = { ok: false, message: String(e) };
-    }
-
-    // Fish Audio check
-    const fishKey = process.env.FISH_AUDIO_API_KEY;
-    if (fishKey) {
-      try {
-        const r = await fetch("https://api.fish.audio/model?page_size=1", {
-          headers: { Authorization: `Bearer ${fishKey}` },
-          signal: AbortSignal.timeout(5000),
-        });
-        checks.fishAudio = { ok: r.ok, message: r.ok ? undefined : `HTTP ${r.status}` };
-      } catch (e) {
-        checks.fishAudio = { ok: false, message: String(e) };
-      }
-    } else {
-      checks.fishAudio = { ok: false, message: "FISH_AUDIO_API_KEY not set" };
-    }
-
-    // Pexels check
-    const pexelsKey = process.env.PEXELS_API_KEY;
-    if (pexelsKey) {
-      try {
-        const r = await fetch("https://api.pexels.com/videos/search?query=nature&per_page=1", {
-          headers: { Authorization: pexelsKey },
-          signal: AbortSignal.timeout(5000),
-        });
-        checks.pexels = { ok: r.ok, message: r.ok ? undefined : `HTTP ${r.status}` };
-      } catch (e) {
-        checks.pexels = { ok: false, message: String(e) };
-      }
-    } else {
-      checks.pexels = { ok: false, message: "PEXELS_API_KEY not set" };
-    }
-
-    // Always return HTTP 200 — the server is healthy if it's running.
-    // Missing API keys are informational only and do not mean the server is down.
-    const allOk = Object.values(checks).every(c => c.ok);
+  // IMPORTANT: This endpoint must respond immediately (no external API calls).
+  // Railway uses it as a liveness probe with a strict timeout.
+  app.get("/api/health", (_req, res) => {
     res.status(200).json({
-      status: allOk ? "ok" : "degraded",
+      status: "ok",
       timestamp: new Date().toISOString(),
-      checks,
       env: {
         BUILT_IN_FORGE_API_KEY: !!process.env.BUILT_IN_FORGE_API_KEY,
-        BUILT_IN_FORGE_API_URL: process.env.BUILT_IN_FORGE_API_URL || "(not set)",
+        LLM_API_KEY: !!process.env.LLM_API_KEY,
         FISH_AUDIO_API_KEY: !!process.env.FISH_AUDIO_API_KEY,
         PEXELS_API_KEY: !!process.env.PEXELS_API_KEY,
         STABILITY_AI_API_KEY: !!process.env.STABILITY_AI_API_KEY,
         NODE_ENV: process.env.NODE_ENV,
-        FFMPEG_PATH: (() => { try { return require("child_process").execSync("which ffmpeg 2>/dev/null || echo 'not found'", { encoding: "utf8" }).trim(); } catch { return "error"; } })(),
-        FFMPEG_USR_BIN: require("fs").existsSync("/usr/bin/ffmpeg"),
-        FFMPEG_USR_LOCAL_BIN: require("fs").existsSync("/usr/local/bin/ffmpeg"),
       },
     });
   });
