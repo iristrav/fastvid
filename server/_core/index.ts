@@ -70,6 +70,24 @@ async function startServer() {
   registerStorageProxy(app);
   registerOAuthRoutes(app);
 
+  // ─── FFmpeg Debug Endpoint ────────────────────────────────────────────────────
+  app.get("/api/debug/ffmpeg", (_req, res) => {
+    const { execSync: es } = require("child_process");
+    const { existsSync } = require("fs");
+    const tryCmd = (cmd: string) => { try { return es(cmd, { encoding: "utf8" }).trim(); } catch { return "(failed)"; } };
+    res.json({
+      which: tryCmd("which ffmpeg"),
+      usrBin: existsSync("/usr/bin/ffmpeg"),
+      usrLocalBin: existsSync("/usr/local/bin/ffmpeg"),
+      nixProfile: existsSync("/nix/var/nix/profiles/default/bin/ffmpeg"),
+      findNix: tryCmd("find /nix -name ffmpeg -type f 2>/dev/null | head -3"),
+      findUsr: tryCmd("find /usr -name ffmpeg -type f 2>/dev/null | head -3"),
+      lsNixStore: tryCmd("ls /nix/store/ 2>/dev/null | grep ffmpeg | head -3"),
+      path: process.env.PATH,
+      nixpacks: tryCmd("cat /etc/nix/nix.conf 2>/dev/null | head -5"),
+    });
+  });
+
   // ─── Health Check ─────────────────────────────────────────────────────────
   // IMPORTANT: This endpoint must respond immediately (no external API calls).
   // Railway uses it as a liveness probe with a strict timeout.

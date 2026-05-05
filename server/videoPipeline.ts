@@ -42,7 +42,7 @@ import { execSync } from "child_process";
 // Prefer system FFmpeg (installed via nixpacks.toml on Railway) over ffmpeg-static.
 // ffmpeg-static can fail on some Linux environments due to missing glibc/libatomic.
 const resolveFFmpegBin = (): string => {
-  // Try known system paths first (Railway Nixpacks installs to /usr/bin or /nix/store)
+  // Try known system paths first
   const candidatePaths = [
     "/usr/bin/ffmpeg",
     "/usr/local/bin/ffmpeg",
@@ -56,7 +56,7 @@ const resolveFFmpegBin = (): string => {
   }
   // Try which command
   try {
-    const systemPath = execSync("which ffmpeg 2>/dev/null", { encoding: "utf8" }).trim();
+    const systemPath = execSync("which ffmpeg", { encoding: "utf8", stdio: ["pipe", "pipe", "ignore"] }).trim();
     if (systemPath) {
       console.log(`[Fastvid] Using system FFmpeg (which): ${systemPath}`);
       return systemPath;
@@ -64,15 +64,25 @@ const resolveFFmpegBin = (): string => {
   } catch {
     // system ffmpeg not found via which
   }
-  // Try nix store glob
+  // Try nix store — Railway Nixpacks installs ffmpeg here
   try {
-    const nixPath = execSync("ls /nix/store/*/bin/ffmpeg 2>/dev/null | head -1", { encoding: "utf8" }).trim();
+    const nixPath = execSync("ls /nix/store/*/bin/ffmpeg 2>/dev/null | head -1", { encoding: "utf8", stdio: ["pipe", "pipe", "ignore"] }).trim();
     if (nixPath) {
       console.log(`[Fastvid] Using nix store FFmpeg: ${nixPath}`);
       return nixPath;
     }
   } catch {
     // nix store not available
+  }
+  // Try find as last resort before ffmpeg-static
+  try {
+    const found = execSync("find /nix /usr /opt -name ffmpeg -type f 2>/dev/null | head -1", { encoding: "utf8", stdio: ["pipe", "pipe", "ignore"] }).trim();
+    if (found) {
+      console.log(`[Fastvid] Using found FFmpeg: ${found}`);
+      return found;
+    }
+  } catch {
+    // find failed
   }
   const staticPath = (ffmpegStatic as unknown as string) || "ffmpeg";
   console.log(`[Fastvid] Using ffmpeg-static: ${staticPath}`);
@@ -87,13 +97,11 @@ const exec = async (cmd: string): Promise<{ stdout: string; stderr: string }> =>
   try {
     return await execRaw(resolvedCmd);
   } catch (err: unknown) {
-    const errMsg = err instanceof Error ? err.message : String(err);
     // If ffmpeg-static failed, try to find system ffmpeg and retry once
     if (FFMPEG_BIN.includes("ffmpeg-static") || FFMPEG_BIN.includes("node_modules")) {
-      console.warn(`[Fastvid] ffmpeg-static failed, searching for system ffmpeg...`);
-      // Try to find system ffmpeg via find
+      console.warn(`[Fastvid] ffmpeg-static failed (${FFMPEG_BIN}), searching for system ffmpeg...`);
       try {
-        const found = execSync("find /usr /nix /opt -name ffmpeg -type f 2>/dev/null | head -1", { encoding: "utf8" }).trim();
+        const found = execSync("find /nix /usr /opt -name ffmpeg -type f 2>/dev/null | head -1", { encoding: "utf8" }).trim();
         if (found) {
           console.log(`[Fastvid] Found system ffmpeg at: ${found}, retrying...`);
           FFMPEG_BIN = found;
