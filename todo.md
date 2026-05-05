@@ -499,3 +499,10 @@
 - [x] Root cause found: dist/index.js was NOT rebuilt after the getter fix — old static ENV was still deployed
 - [x] Rebuilt dist with pnpm build — getter-based ENV is now in dist/index.js
 - [x] 0 TypeScript errors, 10/10 tests passing
+
+## Session 26 — Fix OPENAI_API_KEY on Railway
+- [x] Update env.ts: OPENAI_API_KEY used as fallback when BUILT_IN_FORGE_API_KEY is not set
+- [x] Update llm.ts: uses api.openai.com + gpt-4o when on Railway, Forge + gemini-2.5-flash on Manus
+- [x] Thinking budget only sent when on Manus Forge (not supported by OpenAI)
+- [x] Rebuilt dist — gpt-4o/OpenAI fallback confirmed in dist/index.js
+- [x] 0 TypeScript errors, 10/10 tests passing

@@ -209,10 +209,14 @@ const normalizeToolChoice = (
   return toolChoice;
 };
 
-const resolveApiUrl = () =>
-  ENV.forgeApiUrl && ENV.forgeApiUrl.trim().length > 0
+const resolveApiUrl = () => {
+  // On Railway: no Forge key, use OpenAI directly
+  if (ENV.useOpenAI) return "https://api.openai.com/v1/chat/completions";
+  // On Manus platform: use Forge URL if set, otherwise default Forge endpoint
+  return ENV.forgeApiUrl && ENV.forgeApiUrl.trim().length > 0
     ? `${ENV.forgeApiUrl.replace(/\/$/, "")}/v1/chat/completions`
     : "https://forge.manus.im/v1/chat/completions";
+};
 
 const assertApiKey = () => {
   if (!ENV.forgeApiKey) {
@@ -280,7 +284,8 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
   } = params;
 
   const payload: Record<string, unknown> = {
-    model: "gemini-2.5-flash",
+    // Use gpt-4o on Railway (OpenAI), gemini-2.5-flash on Manus Forge
+    model: ENV.useOpenAI ? "gpt-4o" : "gemini-2.5-flash",
     messages: messages.map(normalizeMessage),
   };
 
@@ -296,9 +301,11 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
     payload.tool_choice = normalizedToolChoice;
   }
 
-  payload.max_tokens = 32768
-  payload.thinking = {
-    "budget_tokens": 128
+  payload.max_tokens = 4096;
+  // thinking budget is only supported on Manus Forge (Gemini), not on OpenAI
+  if (!ENV.useOpenAI) {
+    payload.thinking = { budget_tokens: 128 };
+    payload.max_tokens = 32768;
   }
 
   const normalizedResponseFormat = normalizeResponseFormat({
