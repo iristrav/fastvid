@@ -565,7 +565,9 @@ async function renderKineticFrames(
   keywords: string[],
   sceneDuration: number,
   sceneIndex: number,
-  workDir: string
+  workDir: string,
+  overrideStartTime?: number,
+  overrideEndTime?: number
 ): Promise<KineticFrame[]> {
   if (keywords.length === 0) return [];
 
@@ -576,15 +578,15 @@ async function renderKineticFrames(
   } catch { /* already registered */ }
 
   const frames: KineticFrame[] = [];
-  // Distribute keywords evenly across the scene duration
-  // Each keyword is shown for ~(duration / keywords.length) seconds, with a 0.2s gap
+  // Distribute keywords evenly across the scene duration (or use override timing)
   const slotDuration = sceneDuration / keywords.length;
   const showDuration = Math.max(1.5, slotDuration - 0.3);
 
   for (let i = 0; i < keywords.length; i++) {
     const keyword = keywords[i];
-    const startTime = i * slotDuration + 0.15; // small offset so it doesn't appear at exact frame 0
-    const endTime = Math.min(startTime + showDuration, sceneDuration - 0.2);
+    // Use override timing if provided (for sparse single-word mode), else distribute evenly
+    const startTime = overrideStartTime !== undefined ? overrideStartTime : i * slotDuration + 0.15;
+    const endTime = overrideEndTime !== undefined ? overrideEndTime : Math.min(startTime + showDuration, sceneDuration - 0.2);
 
     // Canvas: full video width, fixed height band for the text
     const CANVAS_W = VIDEO_WIDTH;
@@ -920,17 +922,31 @@ async function composeSceneVideo(
     }
   }
 
-  // Kinetic typography: extract keywords and render timed overlay frames
+  // Kinetic typography: sparse — only every 3rd scene, 1 impactful word, shown briefly in the middle
+  // Always-on (not gated behind enableSubtitles). Keeps it subtle and documentary-like.
   let kineticFrames: KineticFrame[] = [];
-  try {
-    const keywords = extractKeywords(scene.text, 4);
-    if (keywords.length > 0) {
-      kineticFrames = await renderKineticFrames(keywords, duration, scene.index, workDir);
-      console.log(`[Pipeline] Scene ${scene.index}: kinetic words: ${keywords.join(", ")}`);
+  if (scene.index % 3 === 0) {
+    try {
+      const keywords = extractKeywords(scene.text, 1); // just 1 most impactful word
+      if (keywords.length > 0) {
+        // Show the word for 2s, centered in the scene duration
+        const wordDuration = 2.0;
+        const startTime = Math.max(0.5, (duration - wordDuration) / 2);
+        const endTime = Math.min(startTime + wordDuration, duration - 0.3);
+        kineticFrames = await renderKineticFrames(
+          keywords,
+          duration,
+          scene.index,
+          workDir,
+          startTime,
+          endTime
+        );
+        console.log(`[Pipeline] Scene ${scene.index}: kinetic word: "${keywords[0]}" (${startTime.toFixed(1)}s–${endTime.toFixed(1)}s)`);
+      }
+    } catch (err) {
+      console.warn(`[Pipeline] Scene ${scene.index}: kinetic typography failed (non-fatal):`, err);
+      kineticFrames = [];
     }
-  } catch (err) {
-    console.warn(`[Pipeline] Scene ${scene.index}: kinetic typography failed (non-fatal):`, err);
-    kineticFrames = [];
   }
 
   const OVERLAY_H = 220; // Updated to match renderSubtitleOverlay height

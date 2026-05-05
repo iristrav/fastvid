@@ -473,3 +473,15 @@
 - [x] Integrate kinetic text into composeSceneVideo: overlay keyword images timed across scene duration (y=80, upper-center area, not overlapping subtitle)
 - [x] Style: 72px white bold text, yellow highlight pill for first keyword, dark semi-transparent pill for rest
 - [x] 0 TypeScript errors, 10/10 tests passing
+
+## Session 22b — Kinetic Typography Visual Improvements (superseded by 22c)
+- [x] Improve word selection: reduced to 1 word per scene (most impactful)
+- [x] Sparse display: only every 3rd scene, 2s centered in scene
+- [x] 0 TypeScript errors, all tests passing
+
+## Session 22c — Kinetic Typography: Sparse & Always-On
+- [x] Always show kinetic typography (not gated behind subtitles toggle)
+- [x] Only show on every 3rd scene (sceneIndex % 3 === 0) — sparse, not every scene
+- [x] Only 1 keyword per scene (the most impactful word), shown in the middle of the scene
+- [x] Word appears centered, briefly (2s), then disappears — clean and subtle
+- [x] 0 TypeScript errors, 10/10 tests passing
