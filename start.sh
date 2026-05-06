@@ -1,9 +1,7 @@
 #!/bin/sh
 # Ensure FFmpeg is available at a known path before starting the server.
 # Railway's Nixpacks installs ffmpeg in the Nix store, but the PATH may not
-# include it at runtime. This script finds and symlinks it first.
-
-set -e
+# include it at runtime. This script finds it and passes it via env var.
 
 echo "[start.sh] Setting up FFmpeg..."
 
@@ -16,7 +14,7 @@ if command -v ffmpeg >/dev/null 2>&1; then
   echo "[start.sh] Found ffmpeg in PATH: $FFMPEG_PATH"
 fi
 
-# Check Nix store (Railway Nixpacks)
+# Check Nix store (Railway Nixpacks installs ffmpeg here)
 if [ -z "$FFMPEG_PATH" ]; then
   FFMPEG_PATH=$(find /nix/store -name "ffmpeg" -type f 2>/dev/null | grep "/bin/ffmpeg$" | head -1)
   if [ -n "$FFMPEG_PATH" ]; then
@@ -26,7 +24,7 @@ fi
 
 # Check common paths
 if [ -z "$FFMPEG_PATH" ]; then
-  for p in /usr/bin/ffmpeg /usr/local/bin/ffmpeg /opt/homebrew/bin/ffmpeg; do
+  for p in /usr/local/bin/ffmpeg /usr/bin/ffmpeg /opt/homebrew/bin/ffmpeg; do
     if [ -f "$p" ]; then
       FFMPEG_PATH="$p"
       echo "[start.sh] Found ffmpeg at: $FFMPEG_PATH"
@@ -35,19 +33,16 @@ if [ -z "$FFMPEG_PATH" ]; then
   done
 fi
 
-# Create symlink at /usr/local/bin/ffmpeg if found and not already there
 if [ -n "$FFMPEG_PATH" ]; then
-  if [ "$FFMPEG_PATH" != "/usr/local/bin/ffmpeg" ]; then
-    mkdir -p /usr/local/bin
-    ln -sf "$FFMPEG_PATH" /usr/local/bin/ffmpeg 2>/dev/null || true
-    echo "[start.sh] Symlinked $FFMPEG_PATH -> /usr/local/bin/ffmpeg"
-  fi
-  # Export for child processes
-  export FFMPEG_PATH="$FFMPEG_PATH"
   echo "[start.sh] FFmpeg ready: $FFMPEG_PATH"
+  # Try to add to PATH so 'which ffmpeg' works in Node.js
+  FFMPEG_DIR=$(dirname "$FFMPEG_PATH")
+  export PATH="$FFMPEG_DIR:$PATH"
+  echo "[start.sh] Added $FFMPEG_DIR to PATH"
 else
-  echo "[start.sh] WARNING: ffmpeg not found in any location, will use ffmpeg-static"
+  echo "[start.sh] WARNING: ffmpeg not found, will use ffmpeg-static fallback"
 fi
 
 echo "[start.sh] Starting server..."
-exec node dist/index.js
+# Pass FFMPEG_PATH explicitly as env var to Node.js
+exec env FFMPEG_PATH="$FFMPEG_PATH" node dist/index.js
