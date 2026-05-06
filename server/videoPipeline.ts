@@ -705,8 +705,7 @@ async function renderKineticFrames(
 ): Promise<KineticFrame[]> {
   if (keywords.length === 0) return [];
 
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const { createCanvas, registerFont } = require("canvas") as typeof import("canvas");
+  const { createCanvas, registerFont } = await import("canvas");
   try {
     registerFont(FONT_BOLD, { family: "NotoSans", weight: "bold" });
   } catch { /* already registered */ }
@@ -792,8 +791,7 @@ async function renderSubtitleOverlay(
   workDir: string
 ): Promise<string> {
   const outputPath = path.join(workDir, `scene_${sceneIndex}_subtitle.png`);
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const { createCanvas, registerFont } = require("canvas") as typeof import("canvas");
+  const { createCanvas, registerFont } = await import("canvas");
 
   try {
     registerFont(FONT_BOLD, { family: "NotoSans", weight: "bold" });
@@ -867,8 +865,7 @@ async function renderSubtitleOverlay(
 // ─── 4b. Branded Intro Title Card ────────────────────────────────────────────
 async function renderIntroCard(videoTitle: string, duration: number, workDir: string): Promise<string> {
   const outputPath = path.join(workDir, "intro_card.mp4");
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const { createCanvas, registerFont } = require("canvas") as typeof import("canvas");
+  const { createCanvas, registerFont } = await import("canvas");
 
   try {
     registerFont(FONT_BOLD, { family: "NotoSans", weight: "bold" });
@@ -954,8 +951,7 @@ async function renderIntroCard(videoTitle: string, duration: number, workDir: st
 // ─── 4c. Branded Outro Card ───────────────────────────────────────────────────
 async function renderOutroCard(duration: number, workDir: string): Promise<string> {
   const outputPath = path.join(workDir, "outro_card.mp4");
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const { createCanvas, registerFont } = require("canvas") as typeof import("canvas");
+  const { createCanvas, registerFont } = await import("canvas");
 
   try { registerFont(FONT_BOLD, { family: "NotoSans", weight: "bold" }); } catch { /* already registered */ }
 
@@ -1374,8 +1370,8 @@ export async function runVideoPipeline(
       const resp = await fetch(customVoiceoverUrl);
       if (!resp.ok) throw new Error(`Failed to download custom voiceover: ${resp.status}`);
       fs.writeFileSync(customAudioPath, Buffer.from(await resp.arrayBuffer()));
+      const { execFile } = await import("child_process");
       const totalDuration = await new Promise<number>((resolve) => {
-        const { execFile } = require("child_process") as typeof import("child_process");
         execFile(FFMPEG_BIN.replace("ffmpeg", "ffprobe"), ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", customAudioPath], (_err: unknown, stdout: string) => {
           resolve(parseFloat(stdout?.trim() ?? "60") || 60);
         });
@@ -1485,8 +1481,8 @@ export async function runVideoPipeline(
     return url;
   } finally {
     try {
-      const { exec: execSync } = require("child_process");
-      execSync(`rm -rf "${workDir}"`);
+      const { exec: execCp } = await import("child_process");
+      execCp(`rm -rf "${workDir}"`);
     } catch { /* ignore */ }
   }
 }

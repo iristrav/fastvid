@@ -71,9 +71,9 @@ async function startServer() {
   registerOAuthRoutes(app);
 
   // ─── FFmpeg Debug Endpoint ────────────────────────────────────────────────────
-  app.get("/api/debug/ffmpeg", (_req, res) => {
-    const { execSync: es } = require("child_process");
-    const { existsSync } = require("fs");
+  app.get("/api/debug/ffmpeg", async (_req, res) => {
+    const { execSync: es } = await import("child_process");
+    const { existsSync } = await import("fs");
     const tryCmd = (cmd: string) => { try { return es(cmd, { encoding: "utf8" }).trim(); } catch { return "(failed)"; } };
     res.json({
       which: tryCmd("which ffmpeg"),
