@@ -936,10 +936,10 @@ async function renderIntroCard(videoTitle: string, duration: number, workDir: st
 
   await withTimeout(
     exec(
-      `${FFMPEG_BIN} -y -loop 1 -i "${pngPath}" ` +
+      `${FFMPEG_BIN} -y -loop 1 -i "${pngPath}" -f lavfi -i anullsrc=r=44100:cl=stereo ` +
       `-t ${duration} ` +
       `-vf "fade=t=in:st=0:d=0.4,fade=t=out:st=${duration - 0.4}:d=0.4" ` +
-      `-c:v libx264 -preset ultrafast -crf 28 -pix_fmt yuv420p -r 25 "${outputPath}"`
+      `-c:v libx264 -preset ultrafast -crf 28 -pix_fmt yuv420p -r 25 -c:a aac -b:a 64k -shortest "${outputPath}"`
     ),
     20_000, "Intro card render"
   );
@@ -997,10 +997,10 @@ async function renderOutroCard(duration: number, workDir: string): Promise<strin
 
   await withTimeout(
     exec(
-      `${FFMPEG_BIN} -y -loop 1 -i "${pngPath}" ` +
+      `${FFMPEG_BIN} -y -loop 1 -i "${pngPath}" -f lavfi -i anullsrc=r=44100:cl=stereo ` +
       `-t ${duration} ` +
       `-vf "fade=t=in:st=0:d=0.4,fade=t=out:st=${duration - 0.4}:d=0.4" ` +
-      `-c:v libx264 -preset ultrafast -crf 28 -pix_fmt yuv420p -r 25 "${outputPath}"`
+      `-c:v libx264 -preset ultrafast -crf 28 -pix_fmt yuv420p -r 25 -c:a aac -b:a 64k -shortest "${outputPath}"`
     ),
     20_000, "Outro card render"
   );
@@ -1314,15 +1314,39 @@ async function concatenateScenesWithMusic(
   }
   console.log(`[Pipeline] Concat output: ${(fs.statSync(concatPath).size / 1024 / 1024).toFixed(1)}MB`);
 
-  await withTimeout(
-    exec(
-      `${FFMPEG_BIN} -y -i "${concatPath}" -i "${musicPath}" ` +
-      `-filter_complex "[0:a]volume=1.0[voice];[1:a]volume=0.10[music];[voice][music]amix=inputs=2:duration=first:dropout_transition=2[aout]" ` +
-      `-map "0:v" -map "[aout]" ` +
-      `-c:v copy -c:a aac -b:a 64k -movflags +faststart "${outputPath}"`
-    ),
-    120_000, "Background music mixing"
-  );
+  // Check if concat video has an audio stream
+  let concatHasAudio = false;
+  try {
+    const { execSync: es } = await import("child_process");
+    const probeOut = es(`${FFMPEG_BIN.replace(/ffmpeg$/, 'ffprobe')} -v error -select_streams a -show_entries stream=codec_type -of csv=p=0 "${concatPath}"`, { encoding: 'utf8' });
+    concatHasAudio = probeOut.trim().includes('audio');
+  } catch { concatHasAudio = false; }
+  console.log(`[Pipeline] Concat has audio: ${concatHasAudio}`);
+
+  if (concatHasAudio) {
+    // Normal path: mix voiceover audio with background music
+    await withTimeout(
+      exec(
+        `${FFMPEG_BIN} -y -i "${concatPath}" -i "${musicPath}" ` +
+        `-filter_complex "[0:a]volume=1.0[voice];[1:a]volume=0.10[music];[voice][music]amix=inputs=2:duration=first:dropout_transition=2[aout]" ` +
+        `-map "0:v" -map "[aout]" ` +
+        `-c:v copy -c:a aac -b:a 64k -movflags +faststart "${outputPath}"`
+      ),
+      120_000, "Background music mixing"
+    );
+  } else {
+    // Fallback: concat has no audio — use only background music
+    console.warn("[Pipeline] Concat has no audio stream, using background music only");
+    await withTimeout(
+      exec(
+        `${FFMPEG_BIN} -y -i "${concatPath}" -i "${musicPath}" ` +
+        `-filter_complex "[1:a]volume=0.3[aout]" ` +
+        `-map "0:v" -map "[aout]" ` +
+        `-c:v copy -c:a aac -b:a 64k -movflags +faststart "${outputPath}"`
+      ),
+      120_000, "Background music mixing (no voiceover)"
+    );
+  }
 
   try {
     fs.unlinkSync(concatPath);
