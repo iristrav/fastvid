@@ -558,9 +558,11 @@ export const appRouter = router({
     generateVideo: adminProcedure.input(z.object({
       prompt: z.string().min(10).max(500),
       videoLength: z.enum(["5-8", "8-12", "12-15", "15-20", "20+"]),
+      videoType: z.enum(["documentary", "listicle", "tutorial", "explainer"]).default("documentary"),
     })).mutation(async ({ ctx, input }) => {
-      const videoId = await createVideo({ userId: ctx.user.id, prompt: input.prompt, videoLength: input.videoLength });
-      generateVideoWithAI(videoId, input.prompt, input.videoLength).catch(console.error);
+      const videoId = await createVideo({ userId: ctx.user.id, prompt: input.prompt, videoLength: input.videoLength, videoType: input.videoType });
+      // Use generateFullVideo (full pipeline: script → voiceover → visuals → assembly)
+      generateFullVideo(videoId, input.prompt, input.videoLength, input.videoType).catch(console.error);
       return { videoId };
     }),
     searchVideos: adminProcedure.input(z.object({
