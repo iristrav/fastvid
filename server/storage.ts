@@ -1,8 +1,14 @@
 // Preconfigured storage helpers for Manus WebDev templates
 // Uploads via Forge Server presigned URL to S3 (PUT direct).
 // Downloads return /manus-storage/{key} paths served via 307 redirect.
+// On Railway (no Forge key): falls back to local file storage served at /local-storage/*
 
 import { ENV } from "./_core/env";
+import { localStoragePut, localStorageGet } from "./storageLocal";
+
+function hasForgeConfig(): boolean {
+  return !!(ENV.forgeApiUrl && ENV.forgeApiKey && process.env.BUILT_IN_FORGE_API_KEY);
+}
 
 function getForgeConfig() {
   const forgeUrl = ENV.forgeApiUrl;
@@ -33,6 +39,10 @@ export async function storagePut(
   data: Buffer | Uint8Array | string,
   contentType = "application/octet-stream",
 ): Promise<{ key: string; url: string }> {
+  // On Railway (no Forge): use local file storage
+  if (!hasForgeConfig()) {
+    return localStoragePut(relKey, data, contentType);
+  }
   const { forgeUrl, forgeKey } = getForgeConfig();
   const key = appendHashSuffix(normalizeKey(relKey));
 
@@ -72,11 +82,20 @@ export async function storagePut(
 }
 
 export async function storageGet(relKey: string): Promise<{ key: string; url: string }> {
+  if (!hasForgeConfig()) {
+    return localStorageGet(relKey);
+  }
   const key = normalizeKey(relKey);
   return { key, url: `/manus-storage/${key}` };
 }
 
 export async function storageGetSignedUrl(relKey: string): Promise<string> {
+  // On Railway: return local storage URL directly
+  if (!hasForgeConfig()) {
+    const key = normalizeKey(relKey);
+    const safeFileName = key.replace(/\//g, "_");
+    return `/local-storage/${safeFileName}`;
+  }
   const { forgeUrl, forgeKey } = getForgeConfig();
   const key = normalizeKey(relKey);
 

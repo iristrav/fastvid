@@ -70,6 +70,21 @@ async function startServer() {
   registerStorageProxy(app);
   registerOAuthRoutes(app);
 
+  // ─── Local Storage Serving (Railway fallback) ─────────────────────────────
+  // When BUILT_IN_FORGE_API_KEY is not set, files are stored locally.
+  // Serve them at /local-storage/* so the frontend can access them.
+  if (!process.env.BUILT_IN_FORGE_API_KEY) {
+    const { LOCAL_UPLOADS_DIR } = await import("../storageLocal");
+    const expressStatic = (await import("express")).static;
+    app.use("/local-storage", expressStatic(LOCAL_UPLOADS_DIR, {
+      maxAge: "1d",
+      setHeaders: (res) => {
+        res.setHeader("Access-Control-Allow-Origin", "*");
+      },
+    }));
+    console.log(`[Fastvid] Local storage serving enabled at /local-storage → ${LOCAL_UPLOADS_DIR}`);
+  }
+
   // ─── FFmpeg Debug Endpoint ────────────────────────────────────────────────────
   app.get("/api/debug/ffmpeg", async (_req, res) => {
     const { execSync: es } = await import("child_process");
@@ -181,9 +196,8 @@ bootstrapAdmin().catch(console.error);
 // Runs in the background after startup so it doesn't block the server.
 async function bootstrapVoiceExampleAudio() {
   const fishKey = process.env.FISH_AUDIO_API_KEY;
-  const forgeKey = process.env.BUILT_IN_FORGE_API_KEY;
-  if (!fishKey || !forgeKey) {
-    console.log("[VoiceBootstrap] Skipping — FISH_AUDIO_API_KEY or BUILT_IN_FORGE_API_KEY not set");
+  if (!fishKey) {
+    console.log("[VoiceBootstrap] Skipping — FISH_AUDIO_API_KEY not set");
     return;
   }
   try {

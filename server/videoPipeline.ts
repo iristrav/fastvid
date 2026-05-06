@@ -383,17 +383,18 @@ async function generateStabilityAIClip(
     console.log(`[Pipeline] Scene ${sceneIndex}: Generating Stability AI image...`);
     const t = Date.now();
 
-    // Use Stability AI SDXL v1.0 — best quality/cost ratio
-    const formData = new FormData();
-    formData.append("text_prompts[0][text]", prompt);
-    formData.append("text_prompts[0][weight]", "1");
-    formData.append("text_prompts[1][text]", "blurry, low quality, watermark, text, logo, ugly, deformed");
-    formData.append("text_prompts[1][weight]", "-1");
-    formData.append("cfg_scale", "8");
-    formData.append("height", "768");
-    formData.append("width", "1344");
-    formData.append("samples", "1");
-    formData.append("steps", "50");
+    // Use Stability AI Core API (v2beta) — JSON body, no FormData
+    const stabilityPayload = {
+      text_prompts: [
+        { text: prompt, weight: 1 },
+        { text: "blurry, low quality, watermark, text, logo, ugly, deformed", weight: -1 },
+      ],
+      cfg_scale: 7,
+      height: 768,
+      width: 1344,
+      samples: 1,
+      steps: 30,
+    };
 
     const response = await withTimeout(
       fetch("https://api.stability.ai/v1/generation/stable-diffusion-xl-1024-v1-0/text-to-image", {
@@ -401,8 +402,9 @@ async function generateStabilityAIClip(
         headers: {
           Authorization: `Bearer ${STABILITY_AI_API_KEY}`,
           Accept: "application/json",
+          "Content-Type": "application/json",
         },
-        body: formData,
+        body: JSON.stringify(stabilityPayload),
       }),
       45_000,
       `Stability AI image scene ${sceneIndex}`
