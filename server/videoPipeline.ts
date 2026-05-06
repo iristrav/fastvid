@@ -156,8 +156,27 @@ const exec = async (cmd: string): Promise<{ stdout: string; stderr: string }> =>
 };
 
 // Font paths
-const FONT_BOLD = "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf";
-const FONT_REGULAR = "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf";
+// Resolve font paths dynamically — Ubuntu vs Debian have different Noto font locations
+const resolveFontPath = (name: string): string => {
+  const candidates = [
+    `/usr/share/fonts/truetype/noto/${name}`,           // Ubuntu
+    `/usr/share/fonts/noto/${name}`,                    // Debian (fonts-noto)
+    `/usr/share/fonts/truetype/noto-fonts/${name}`,     // some distros
+    `/usr/share/fonts/${name}`,                         // generic fallback
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  // Last resort: try fc-match to find any available font
+  try {
+    const result = execSync(`fc-match --format='%{file}' 'NotoSans:bold'`, { encoding: 'utf8', stdio: ['pipe','pipe','pipe'] }).trim();
+    if (result && fs.existsSync(result)) return result;
+  } catch { /* ignore */ }
+  console.warn(`[Fastvid] Font not found: ${name}, canvas will use default font`);
+  return '';
+};
+const FONT_BOLD = resolveFontPath('NotoSans-Bold.ttf');
+const FONT_REGULAR = resolveFontPath('NotoSans-Regular.ttf');
 
 const TMP_DIR = os.tmpdir();
 const VIDEO_WIDTH = 1280;
@@ -709,7 +728,7 @@ async function renderKineticFrames(
 
   const { createCanvas, registerFont } = await import("canvas");
   try {
-    registerFont(FONT_BOLD, { family: "NotoSans", weight: "bold" });
+    if (FONT_BOLD) registerFont(FONT_BOLD, { family: "NotoSans", weight: "bold" });
   } catch { /* already registered */ }
 
   const frames: KineticFrame[] = [];
@@ -796,8 +815,8 @@ async function renderSubtitleOverlay(
   const { createCanvas, registerFont } = await import("canvas");
 
   try {
-    registerFont(FONT_BOLD, { family: "NotoSans", weight: "bold" });
-    registerFont(FONT_REGULAR, { family: "NotoSans", weight: "normal" });
+    if (FONT_BOLD) registerFont(FONT_BOLD, { family: "NotoSans", weight: "bold" });
+    if (FONT_REGULAR) registerFont(FONT_REGULAR, { family: "NotoSans", weight: "normal" });
   } catch { /* already registered */ }
 
   // Documentary style: taller overlay, strong gradient, large bold text
@@ -870,8 +889,8 @@ async function renderIntroCard(videoTitle: string, duration: number, workDir: st
   const { createCanvas, registerFont } = await import("canvas");
 
   try {
-    registerFont(FONT_BOLD, { family: "NotoSans", weight: "bold" });
-    registerFont(FONT_REGULAR, { family: "NotoSans", weight: "normal" });
+    if (FONT_BOLD) registerFont(FONT_BOLD, { family: "NotoSans", weight: "bold" });
+    if (FONT_REGULAR) registerFont(FONT_REGULAR, { family: "NotoSans", weight: "normal" });
   } catch { /* already registered */ }
 
   const canvas = createCanvas(VIDEO_WIDTH, VIDEO_HEIGHT);
@@ -955,7 +974,7 @@ async function renderOutroCard(duration: number, workDir: string): Promise<strin
   const outputPath = path.join(workDir, "outro_card.mp4");
   const { createCanvas, registerFont } = await import("canvas");
 
-  try { registerFont(FONT_BOLD, { family: "NotoSans", weight: "bold" }); } catch { /* already registered */ }
+  try { if (FONT_BOLD) registerFont(FONT_BOLD, { family: "NotoSans", weight: "bold" }); } catch { /* already registered */ }
 
   const canvas = createCanvas(VIDEO_WIDTH, VIDEO_HEIGHT);
   const ctx = canvas.getContext("2d");
