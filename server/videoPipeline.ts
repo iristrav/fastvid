@@ -179,8 +179,11 @@ const FONT_BOLD = resolveFontPath('NotoSans-Bold.ttf');
 const FONT_REGULAR = resolveFontPath('NotoSans-Regular.ttf');
 
 const TMP_DIR = os.tmpdir();
-const VIDEO_WIDTH = 1280;
-const VIDEO_HEIGHT = 720;
+// Use lower resolution on Railway (no Forge key = Railway environment) to avoid OOM
+// Railway free tier has ~512MB RAM; 1280x720 FFmpeg compositing OOM-kills the process
+const IS_RAILWAY = !process.env.BUILT_IN_FORGE_API_KEY;
+const VIDEO_WIDTH = IS_RAILWAY ? 854 : 1280;
+const VIDEO_HEIGHT = IS_RAILWAY ? 480 : 720;
 
 // ─── Dynamic scene count based on video length ────────────────────────────────
 function getScenesForLength(videoLength: string): number {
@@ -1102,6 +1105,8 @@ async function composeSceneVideo(
 
   const OVERLAY_H = 220; // Updated to match renderSubtitleOverlay height
   const overlayY = VIDEO_HEIGHT - OVERLAY_H;
+  // On Railway, limit FFmpeg threads to reduce memory usage
+  const threadFlag = IS_RAILWAY ? "-threads 2" : "";
   // Kinetic text position: upper-center area (y=80 so the 120px band sits at 80-200px from top)
   const kineticY = 80;
   // Documentary-style color grading: warm, high-contrast, punchy
@@ -1182,7 +1187,7 @@ async function composeSceneVideo(
             `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}" ${subInput}${kineticInput} ` +
             `-filter_complex "${scaleFilters}${xfadeChain}${subOverlay}${kineticChainStr};[${finalVideoLabel}]${fadeFilter}[vout]" ` +
             `-map "[vout]" -map "${audioIdx}:a" ` +
-            `-t ${duration} -c:v libx264 -preset ultrafast -crf 26 -c:a aac -b:a 64k -pix_fmt yuv420p "${outputPath}"`
+            `-t ${duration} ${threadFlag} -c:v libx264 -preset ultrafast -crf 28 -c:a aac -b:a 64k -pix_fmt yuv420p "${outputPath}"`
           ),
           120_000, `Compose multi-clip scene ${scene.index}`
         );
@@ -1195,7 +1200,7 @@ async function composeSceneVideo(
             `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}"${kineticInput} ` +
             `-filter_complex "${scaleFilters}${xfadeChain}${kineticChainStr};[${finalVideoLabel}]${fadeFilter}[vout]" ` +
             `-map "[vout]" -map "${audioIdx}:a" ` +
-            `-t ${duration} -c:v libx264 -preset ultrafast -crf 26 -c:a aac -b:a 64k -pix_fmt yuv420p "${outputPath}"`
+            `-t ${duration} ${threadFlag} -c:v libx264 -preset ultrafast -crf 28 -c:a aac -b:a 64k -pix_fmt yuv420p "${outputPath}"`
           ),
           120_000, `Compose multi-clip scene ${scene.index} (no subtitle)`
         );
@@ -1218,7 +1223,7 @@ async function composeSceneVideo(
             `${FFMPEG_BIN} -y -i "${clip}" -i "${safeAudioPath}" -loop 1 -i "${subtitlePath}"${kineticInput} ` +
             `-filter_complex "[0:v]scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}[scaled];[scaled][${subIdx}:v]overlay=x=0:y=${overlayY}:shortest=1[withsub]${kineticChainStr};[${finalVideoLabel}]${fadeFilter}[vout]" ` +
             `-map "[vout]" -map "${audioIdx}:a" ` +
-            `-t ${duration} -c:v libx264 -preset ultrafast -crf 26 -c:a aac -b:a 64k -pix_fmt yuv420p "${outputPath}"`
+            `-t ${duration} ${threadFlag} -c:v libx264 -preset ultrafast -crf 28 -c:a aac -b:a 64k -pix_fmt yuv420p "${outputPath}"`
           ),
           75_000, `Compose 1-clip scene ${scene.index}`
         );
@@ -1231,7 +1236,7 @@ async function composeSceneVideo(
             `${FFMPEG_BIN} -y -i "${clip}" -i "${safeAudioPath}"${kineticInput} ` +
             `-filter_complex "[0:v]scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}[scaled]${kineticChainStr};[${finalVideoLabel}]${fadeFilter}[vout]" ` +
             `-map "[vout]" -map "${audioIdx}:a" ` +
-            `-t ${duration} -c:v libx264 -preset ultrafast -crf 26 -c:a aac -b:a 64k -pix_fmt yuv420p "${outputPath}"`
+            `-t ${duration} ${threadFlag} -c:v libx264 -preset ultrafast -crf 28 -c:a aac -b:a 64k -pix_fmt yuv420p "${outputPath}"`
           ),
           75_000, `Compose 1-clip scene ${scene.index} (no subtitle)`
         );
@@ -1243,7 +1248,7 @@ async function composeSceneVideo(
     await withTimeout(
       exec(
         `${FFMPEG_BIN} -y -i "${safeClips[0]}" -i "${safeAudioPath}" ` +
-        `-t ${duration} -c:v libx264 -preset ultrafast -crf 28 -c:a aac -b:a 64k -pix_fmt yuv420p "${outputPath}"`
+        `-t ${duration} ${threadFlag} -c:v libx264 -preset ultrafast -crf 28 -c:a aac -b:a 64k -pix_fmt yuv420p "${outputPath}"`
       ),
       45_000, `Simple mux scene ${scene.index}`
     );
@@ -1452,8 +1457,8 @@ export async function runVideoPipeline(
     onProgress?.({ stage: STAGE_LABELS.visuals, percent: 20 });
     const t2 = Date.now();
 
-    // Process visuals in batches of 4 to avoid Stability AI rate limits
-    const visualLimit = pLimit(4);
+    // Process visuals in batches — fewer on Railway to avoid OOM
+    const visualLimit = pLimit(IS_RAILWAY ? 2 : 4);
     let completedVisuals = 0;
     const sceneVisuals: string[][] = await withTimeout(
       Promise.all(scenes.map(scene => visualLimit(async () => {
@@ -1474,8 +1479,8 @@ export async function runVideoPipeline(
     onProgress?.({ stage: STAGE_LABELS.composing, percent: 47 });
     const t3 = Date.now();
 
-    // Process compose in batches of 4 to avoid CPU saturation
-    const composeLimit = pLimit(4);
+    // Process compose in batches — fewer on Railway to avoid OOM
+    const composeLimit = pLimit(IS_RAILWAY ? 1 : 4);
     let completedCompose = 0;
     const composedScenes = await withTimeout(
       Promise.all(
