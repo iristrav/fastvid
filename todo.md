@@ -524,11 +524,11 @@
 - [x] Rebuild dist, save checkpoint
 
 ## Session 30 — Video Quality Fixes
-- [ ] Fix video duration: 5-8 min must produce ~5-8 min video (currently only 1.4 min)
-- [ ] Fix cropped/halved images: images only show in thin strip, top half is black
-- [ ] Fix crackling audio: severe digital distortion in voiceover
-- [ ] Add Ken Burns effect: slow zoom/pan on static images
-- [ ] Add smooth transitions: cross-dissolves between scenes
-- [ ] Fix subtitle rendering: subtitle text cut in half at bottom
-- [ ] Restore 1280x720 resolution (currently 854x480 due to OOM fix)
-- [ ] Fix audio bitrate: increase from 65kbps to 192kbps
+- [x] Fix video duration: getScenesForLength increased (5-8min→15, 8-12min→22, 12-15min→28, 15-20min→35, 20+→42)
+- [x] Fix cropped/halved images: scale filter uses force_original_aspect_ratio=increase,crop (correct fill)
+- [x] Fix crackling audio: loudnorm+highpass normalization applied after TTS; 192kbps everywhere
+- [x] Ken Burns effect: already present (zoompan with alternating direction per scene)
+- [x] Smooth transitions: xfade fade transitions between clips already present
+- [x] Fix subtitle rendering: subtitle overlay uses correct VIDEO_WIDTH/HEIGHT at 1280x720
+- [x] Restore 1280x720 resolution: VIDEO_WIDTH=1280, VIDEO_HEIGHT=720 (removed Railway conditional)
+- [x] Fix audio bitrate: all encode commands now use 192kbps (was 64kbps)
