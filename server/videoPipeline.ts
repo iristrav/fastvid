@@ -178,6 +178,16 @@ const resolveFontPath = (name: string): string => {
 const FONT_BOLD = resolveFontPath('NotoSans-Bold.ttf');
 const FONT_REGULAR = resolveFontPath('NotoSans-Regular.ttf');
 
+// Check canvas availability at startup
+let CANVAS_AVAILABLE = false;
+try {
+  require('canvas');
+  CANVAS_AVAILABLE = true;
+  console.log('[Fastvid] Canvas: available');
+} catch {
+  console.warn('[Fastvid] Canvas: NOT available — using FFmpeg drawtext fallback for overlays');
+}
+
 const TMP_DIR = os.tmpdir();
 // Use lower resolution on Railway (no Forge key = Railway environment) to avoid OOM
 // Railway free tier has ~512MB RAM; 1280x720 FFmpeg compositing OOM-kills the process
@@ -808,12 +818,40 @@ async function renderKineticFrames(
 }
 
 // ─── 4a. Canvas Subtitle Overlay ─────────────────────────────────────────────
+// FFmpeg-only fallback: creates a transparent PNG with drawtext (no canvas needed)
+async function renderSubtitleOverlayFFmpeg(
+  text: string,
+  sceneIndex: number,
+  totalScenes: number,
+  workDir: string
+): Promise<string> {
+  const outputPath = path.join(workDir, `scene_${sceneIndex}_subtitle.png`);
+  const OVERLAY_H = 220;
+  // Create a semi-transparent black bar PNG using FFmpeg lavfi
+  const safeText = text.replace(/[^a-zA-Z0-9 .,!?-]/g, ' ').slice(0, 80).trim().replace(/'/g, '');
+  const badge = `${sceneIndex + 1}/${totalScenes}`;
+  // Use FFmpeg to create a PNG: black gradient bar with white text
+  await withTimeout(
+    exec(
+      `${FFMPEG_BIN} -y -f lavfi -i "color=c=black@0.85:size=${VIDEO_WIDTH}x${OVERLAY_H}:rate=1" ` +
+      `-vf "drawtext=text='${badge}':fontcolor=yellow:fontsize=22:x=28:y=14,` +
+      `drawtext=text='${safeText}':fontcolor=white:fontsize=36:x=(w-text_w)/2:y=100:line_spacing=10" ` +
+      `-frames:v 1 "${outputPath}"`
+    ),
+    10_000, `Subtitle overlay FFmpeg scene ${sceneIndex}`
+  );
+  return outputPath;
+}
+
 async function renderSubtitleOverlay(
   text: string,
   sceneIndex: number,
   totalScenes: number,
   workDir: string
 ): Promise<string> {
+  if (!CANVAS_AVAILABLE) {
+    return renderSubtitleOverlayFFmpeg(text, sceneIndex, totalScenes, workDir);
+  }
   const outputPath = path.join(workDir, `scene_${sceneIndex}_subtitle.png`);
   const { createCanvas, registerFont } = await import("canvas");
 
@@ -887,7 +925,29 @@ async function renderSubtitleOverlay(
 }
 
 // ─── 4b. Branded Intro Title Card ────────────────────────────────────────────
+async function renderIntroCardFFmpeg(videoTitle: string, duration: number, workDir: string): Promise<string> {
+  const outputPath = path.join(workDir, "intro_card.mp4");
+  const safeTitle = videoTitle.replace(/[^a-zA-Z0-9 .,!?:-]/g, ' ').slice(0, 60).trim().replace(/'/g, '');
+  await withTimeout(
+    exec(
+      `${FFMPEG_BIN} -y -f lavfi -i "color=c=#0a0a1e:size=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:rate=25" ` +
+      `-f lavfi -i anullsrc=r=44100:cl=stereo ` +
+      `-filter_complex "[0:v]drawtext=text='FASTVID':fontcolor=#a064ff:fontsize=36:x=(w-text_w)/2:y=h/2-160,` +
+      `drawtext=text='${safeTitle}':fontcolor=white:fontsize=52:x=(w-text_w)/2:y=h/2-40:line_spacing=10,` +
+      `drawtext=text='AI-Generated Video':fontcolor=#a0c8ff:fontsize=26:x=(w-text_w)/2:y=h/2+80,` +
+      `fade=t=in:st=0:d=0.4,fade=t=out:st=${duration - 0.4}:d=0.4[vout]" ` +
+      `-map "[vout]" -map "1:a" ` +
+      `-t ${duration} -c:v libx264 -preset ultrafast -crf 28 -pix_fmt yuv420p -r 25 -c:a aac -b:a 64k -shortest "${outputPath}"`
+    ),
+    20_000, "Intro card FFmpeg render"
+  );
+  return outputPath;
+}
+
 async function renderIntroCard(videoTitle: string, duration: number, workDir: string): Promise<string> {
+  if (!CANVAS_AVAILABLE) {
+    return renderIntroCardFFmpeg(videoTitle, duration, workDir);
+  }
   const outputPath = path.join(workDir, "intro_card.mp4");
   const { createCanvas, registerFont } = await import("canvas");
 
@@ -972,8 +1032,30 @@ async function renderIntroCard(videoTitle: string, duration: number, workDir: st
   return outputPath;
 }
 
-// ─── 4c. Branded Outro Card ───────────────────────────────────────────────────
+//// ─── 4c. Branded Outro Card ────────────────────────────────────────────
+async function renderOutroCardFFmpeg(duration: number, workDir: string): Promise<string> {
+  const outputPath = path.join(workDir, "outro_card.mp4");
+  await withTimeout(
+    exec(
+      `${FFMPEG_BIN} -y -f lavfi -i "color=c=#0a0a1e:size=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:rate=25" ` +
+      `-f lavfi -i anullsrc=r=44100:cl=stereo ` +
+      `-filter_complex "[0:v]drawtext=text='Thanks for watching!':fontcolor=white:fontsize=48:x=(w-text_w)/2:y=h/2-160,` +
+      `drawtext=text='SUBSCRIBE':fontcolor=white:fontsize=52:x=(w-text_w)/2:y=h/2-40:box=1:boxcolor=red@0.9:boxborderw=20,` +
+      `drawtext=text='Like and Subscribe for more AI-generated videos':fontcolor=#a0c8ff:fontsize=26:x=(w-text_w)/2:y=h/2+80,` +
+      `drawtext=text='FASTVID':fontcolor=#a064ff:fontsize=34:x=(w-text_w)/2:y=h/2+160,` +
+      `fade=t=in:st=0:d=0.4,fade=t=out:st=${duration - 0.4}:d=0.4[vout]" ` +
+      `-map "[vout]" -map "1:a" ` +
+      `-t ${duration} -c:v libx264 -preset ultrafast -crf 28 -pix_fmt yuv420p -r 25 -c:a aac -b:a 64k -shortest "${outputPath}"`
+    ),
+    20_000, "Outro card FFmpeg render"
+  );
+  return outputPath;
+}
+
 async function renderOutroCard(duration: number, workDir: string): Promise<string> {
+  if (!CANVAS_AVAILABLE) {
+    return renderOutroCardFFmpeg(duration, workDir);
+  }
   const outputPath = path.join(workDir, "outro_card.mp4");
   const { createCanvas, registerFont } = await import("canvas");
 

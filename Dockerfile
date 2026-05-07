@@ -37,6 +37,15 @@ COPY package.json pnpm-lock.yaml ./
 # Install all dependencies (including native canvas)
 RUN pnpm install --no-frozen-lockfile
 
+# Explicitly rebuild canvas native addon to ensure it compiles against system libs
+# This is needed because pnpm may use a cached pre-built binary that doesn't match the system
+RUN cd node_modules/.pnpm/canvas@*/node_modules/canvas && npm rebuild 2>&1 || \
+    (echo "Canvas rebuild via pnpm..." && pnpm rebuild canvas) || \
+    echo "WARNING: Canvas rebuild failed, will use fallback"
+
+# Verify canvas built correctly
+RUN node -e "require('canvas'); console.log('Canvas OK')" 2>&1 || echo "WARNING: Canvas not available"
+
 # Copy all source files
 COPY . .
 
