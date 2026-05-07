@@ -192,18 +192,25 @@ const TMP_DIR = os.tmpdir();
 // Use lower resolution on Railway (no Forge key = Railway environment) to avoid OOM
 // Railway free tier has ~512MB RAM; 1280x720 FFmpeg compositing OOM-kills the process
 const IS_RAILWAY = !process.env.BUILT_IN_FORGE_API_KEY;
-const VIDEO_WIDTH = IS_RAILWAY ? 854 : 1280;
-const VIDEO_HEIGHT = IS_RAILWAY ? 480 : 720;
+// Use 1280x720 everywhere — Railway now has enough RAM after sequential compose fix
+const VIDEO_WIDTH = 1280;
+const VIDEO_HEIGHT = 720;
 
 // ─── Dynamic scene count based on video length ────────────────────────────────
+// Each scene is ~25-35s of narration. To hit target duration:
+//   5-8 min  = 300-480s → 12-18 scenes @ ~30s each → use 15
+//   8-12 min = 480-720s → 18-24 scenes @ ~30s each → use 22
+//   12-15 min= 720-900s → 24-30 scenes @ ~30s each → use 28
+//   15-20 min= 900-1200s→ 30-40 scenes @ ~30s each → use 35
+//   20+ min  = 1200s+   → 40+ scenes @ ~30s each   → use 42
 function getScenesForLength(videoLength: string): number {
   switch (videoLength) {
-    case "5-8":   return 12;
-    case "8-12":  return 20;
-    case "12-15": return 25;
-    case "15-20": return 30;
-    case "20+":   return 35;
-    default:      return 20;
+    case "5-8":   return 15;
+    case "8-12":  return 22;
+    case "12-15": return 28;
+    case "15-20": return 35;
+    case "20+":   return 42;
+    default:      return 22;
   }
 }
 
@@ -340,7 +347,7 @@ export async function generateVoiceover(
           text: cleanText,
           format: "mp3",
           model: "s2-pro",
-          mp3_bitrate: 64,
+          mp3_bitrate: 192,  // High quality to prevent crackling
         };
         if (voiceId) body.reference_id = voiceId;
 
@@ -372,8 +379,24 @@ export async function generateVoiceover(
         const audioBuffer = Buffer.from(await response.arrayBuffer());
         if (audioBuffer.length < 100) throw new Error("Fish Audio returned empty audio");
 
-        fs.writeFileSync(outputPath, audioBuffer);
-        const durationSec = Math.max(3, Math.round(audioBuffer.length / 8000));
+        // Write raw TTS audio, then normalize to prevent crackling
+        const rawPath = outputPath + '.raw.mp3';
+        fs.writeFileSync(rawPath, audioBuffer);
+        try {
+          await withTimeout(
+            exec(
+              `${FFMPEG_BIN} -y -i "${rawPath}" ` +
+              `-af "highpass=f=80,lowpass=f=12000,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=44100" ` +
+              `-c:a libmp3lame -b:a 192k "${outputPath}"`
+            ),
+            15_000, `Audio normalize scene`
+          );
+          try { fs.unlinkSync(rawPath); } catch { /* ignore */ }
+        } catch {
+          // If normalization fails, use raw audio
+          fs.renameSync(rawPath, outputPath);
+        }
+        const durationSec = Math.max(3, Math.round(audioBuffer.length / 24000));
         console.log(`[Pipeline] TTS scene ${outputPath.match(/scene_(\d+)/)?.[1] ?? "?"}: ${durationSec}s`);
         return durationSec;
       } catch (err) {
@@ -573,7 +596,7 @@ async function fetchPexelsClips(
             `${FFMPEG_BIN} -y ${loopFlag} -i "${rawPath}" ` +
             `-t ${clipDuration} ` +
             `-vf "scale=${VIDEO_WIDTH * 2}:${VIDEO_HEIGHT * 2}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH * 2}:${VIDEO_HEIGHT * 2},${zoompanFilter}" ` +
-            `-c:v libx264 -preset ultrafast -crf 28 -an -pix_fmt yuv420p "${outPath}"`
+            `-c:v libx264 -preset fast -crf 22 -an -pix_fmt yuv420p "${outPath}"`
           ),
           45_000,
           `Trim+KenBurns Pexels clip ${idx} scene ${sceneIndex}`
@@ -613,7 +636,7 @@ async function generateColorFallback(sceneIndex: number, duration: number, workD
     await withTimeout(
       exec(
         `${FFMPEG_BIN} -y -f lavfi -i "color=c=#${color}:size=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:rate=25" ` +
-        `-t ${duration} -c:v libx264 -preset ultrafast -crf 28 -pix_fmt yuv420p "${outputPath}"`
+        `-t ${duration} -c:v libx264 -preset fast -crf 22 -pix_fmt yuv420p "${outputPath}"`
       ),
       15_000, `Fallback video scene ${sceneIndex}`
     );
@@ -624,7 +647,7 @@ async function generateColorFallback(sceneIndex: number, duration: number, workD
       await withTimeout(
         exec(
           `${FFMPEG_BIN} -y -f lavfi -i "color=c=black:size=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:rate=25" ` +
-          `-t ${duration} -c:v libx264 -preset ultrafast -crf 28 -pix_fmt yuv420p "${outputPath}"`
+          `-t ${duration} -c:v libx264 -preset fast -crf 22 -pix_fmt yuv420p "${outputPath}"`
         ),
         15_000, `Black screen fallback scene ${sceneIndex}`
       );
@@ -937,7 +960,7 @@ async function renderIntroCardFFmpeg(videoTitle: string, duration: number, workD
       `drawtext=text='AI-Generated Video':fontcolor=#a0c8ff:fontsize=26:x=(w-text_w)/2:y=h/2+80,` +
       `fade=t=in:st=0:d=0.4,fade=t=out:st=${duration - 0.4}:d=0.4[vout]" ` +
       `-map "[vout]" -map "1:a" ` +
-      `-t ${duration} -c:v libx264 -preset ultrafast -crf 28 -pix_fmt yuv420p -r 25 -c:a aac -b:a 64k -shortest "${outputPath}"`
+      `-t ${duration} -c:v libx264 -preset fast -crf 22 -pix_fmt yuv420p -r 25 -c:a aac -b:a 192k -shortest "${outputPath}"`
     ),
     20_000, "Intro card FFmpeg render"
   );
@@ -1023,7 +1046,7 @@ async function renderIntroCard(videoTitle: string, duration: number, workDir: st
       `${FFMPEG_BIN} -y -loop 1 -i "${pngPath}" -f lavfi -i anullsrc=r=44100:cl=stereo ` +
       `-t ${duration} ` +
       `-vf "fade=t=in:st=0:d=0.4,fade=t=out:st=${duration - 0.4}:d=0.4" ` +
-      `-c:v libx264 -preset ultrafast -crf 28 -pix_fmt yuv420p -r 25 -c:a aac -b:a 64k -shortest "${outputPath}"`
+      `-c:v libx264 -preset fast -crf 22 -pix_fmt yuv420p -r 25 -c:a aac -b:a 192k -shortest "${outputPath}"`
     ),
     20_000, "Intro card render"
   );
@@ -1045,7 +1068,7 @@ async function renderOutroCardFFmpeg(duration: number, workDir: string): Promise
       `drawtext=text='FASTVID':fontcolor=#a064ff:fontsize=34:x=(w-text_w)/2:y=h/2+160,` +
       `fade=t=in:st=0:d=0.4,fade=t=out:st=${duration - 0.4}:d=0.4[vout]" ` +
       `-map "[vout]" -map "1:a" ` +
-      `-t ${duration} -c:v libx264 -preset ultrafast -crf 28 -pix_fmt yuv420p -r 25 -c:a aac -b:a 64k -shortest "${outputPath}"`
+      `-t ${duration} -c:v libx264 -preset fast -crf 22 -pix_fmt yuv420p -r 25 -c:a aac -b:a 192k -shortest "${outputPath}"`
     ),
     20_000, "Outro card FFmpeg render"
   );
@@ -1106,7 +1129,7 @@ async function renderOutroCard(duration: number, workDir: string): Promise<strin
       `${FFMPEG_BIN} -y -loop 1 -i "${pngPath}" -f lavfi -i anullsrc=r=44100:cl=stereo ` +
       `-t ${duration} ` +
       `-vf "fade=t=in:st=0:d=0.4,fade=t=out:st=${duration - 0.4}:d=0.4" ` +
-      `-c:v libx264 -preset ultrafast -crf 28 -pix_fmt yuv420p -r 25 -c:a aac -b:a 64k -shortest "${outputPath}"`
+      `-c:v libx264 -preset fast -crf 22 -pix_fmt yuv420p -r 25 -c:a aac -b:a 192k -shortest "${outputPath}"`
     ),
     20_000, "Outro card render"
   );
@@ -1269,7 +1292,7 @@ async function composeSceneVideo(
             `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}" ${subInput}${kineticInput} ` +
             `-filter_complex "${scaleFilters}${xfadeChain}${subOverlay}${kineticChainStr};[${finalVideoLabel}]${fadeFilter}[vout]" ` +
             `-map "[vout]" -map "${audioIdx}:a" ` +
-            `-t ${duration} ${threadFlag} -c:v libx264 -preset ultrafast -crf 28 -c:a aac -b:a 64k -pix_fmt yuv420p "${outputPath}"`
+            `-t ${duration} ${threadFlag} -c:v libx264 -preset fast -crf 22 -c:a aac -b:a 192k -pix_fmt yuv420p "${outputPath}"`
           ),
           120_000, `Compose multi-clip scene ${scene.index}`
         );
@@ -1282,7 +1305,7 @@ async function composeSceneVideo(
             `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}"${kineticInput} ` +
             `-filter_complex "${scaleFilters}${xfadeChain}${kineticChainStr};[${finalVideoLabel}]${fadeFilter}[vout]" ` +
             `-map "[vout]" -map "${audioIdx}:a" ` +
-            `-t ${duration} ${threadFlag} -c:v libx264 -preset ultrafast -crf 28 -c:a aac -b:a 64k -pix_fmt yuv420p "${outputPath}"`
+            `-t ${duration} ${threadFlag} -c:v libx264 -preset fast -crf 22 -c:a aac -b:a 192k -pix_fmt yuv420p "${outputPath}"`
           ),
           120_000, `Compose multi-clip scene ${scene.index} (no subtitle)`
         );
@@ -1305,7 +1328,7 @@ async function composeSceneVideo(
             `${FFMPEG_BIN} -y -i "${clip}" -i "${safeAudioPath}" -loop 1 -i "${subtitlePath}"${kineticInput} ` +
             `-filter_complex "[0:v]scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}[scaled];[scaled][${subIdx}:v]overlay=x=0:y=${overlayY}:shortest=1[withsub]${kineticChainStr};[${finalVideoLabel}]${fadeFilter}[vout]" ` +
             `-map "[vout]" -map "${audioIdx}:a" ` +
-            `-t ${duration} ${threadFlag} -c:v libx264 -preset ultrafast -crf 28 -c:a aac -b:a 64k -pix_fmt yuv420p "${outputPath}"`
+            `-t ${duration} ${threadFlag} -c:v libx264 -preset fast -crf 22 -c:a aac -b:a 192k -pix_fmt yuv420p "${outputPath}"`
           ),
           75_000, `Compose 1-clip scene ${scene.index}`
         );
@@ -1318,7 +1341,7 @@ async function composeSceneVideo(
             `${FFMPEG_BIN} -y -i "${clip}" -i "${safeAudioPath}"${kineticInput} ` +
             `-filter_complex "[0:v]scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}[scaled]${kineticChainStr};[${finalVideoLabel}]${fadeFilter}[vout]" ` +
             `-map "[vout]" -map "${audioIdx}:a" ` +
-            `-t ${duration} ${threadFlag} -c:v libx264 -preset ultrafast -crf 28 -c:a aac -b:a 64k -pix_fmt yuv420p "${outputPath}"`
+            `-t ${duration} ${threadFlag} -c:v libx264 -preset fast -crf 22 -c:a aac -b:a 192k -pix_fmt yuv420p "${outputPath}"`
           ),
           75_000, `Compose 1-clip scene ${scene.index} (no subtitle)`
         );
@@ -1330,7 +1353,7 @@ async function composeSceneVideo(
     await withTimeout(
       exec(
         `${FFMPEG_BIN} -y -i "${safeClips[0]}" -i "${safeAudioPath}" ` +
-        `-t ${duration} ${threadFlag} -c:v libx264 -preset ultrafast -crf 28 -c:a aac -b:a 64k -pix_fmt yuv420p "${outputPath}"`
+        `-t ${duration} ${threadFlag} -c:v libx264 -preset fast -crf 22 -c:a aac -b:a 192k -pix_fmt yuv420p "${outputPath}"`
       ),
       45_000, `Simple mux scene ${scene.index}`
     );
@@ -1361,7 +1384,7 @@ async function generateBackgroundMusic(duration: number, workDir: string): Promi
           [bass][root][fifth]amix=inputs=3:duration=first,
           lowpass=f=1600,highpass=f=40,volume=0.4[music]
         " ` +
-        `-map "[music]" -c:a libmp3lame -b:a 64k "${outputPath}"`
+        `-map "[music]" -c:a libmp3lame -b:a 192k "${outputPath}"`
       ),
       30_000, "Background music generation"
     );
@@ -1409,7 +1432,7 @@ async function concatenateScenesWithMusic(
 
   const [, musicPath] = await Promise.all([
     withTimeout(
-      exec(`${FFMPEG_BIN} -y -f concat -safe 0 -i "${listFile}" -c:v libx264 -preset ultrafast -crf 26 -c:a aac -b:a 64k -movflags +faststart "${concatPath}"`),
+      exec(`${FFMPEG_BIN} -y -f concat -safe 0 -i "${listFile}" -c:v libx264 -preset fast -crf 22 -c:a aac -b:a 192k -movflags +faststart "${concatPath}"`),
       600_000, // 10 min for large videos (30+ scenes)
       "Scene concatenation"
     ),
@@ -1438,7 +1461,7 @@ async function concatenateScenesWithMusic(
         `${FFMPEG_BIN} -y -i "${concatPath}" -i "${musicPath}" ` +
         `-filter_complex "[0:a]volume=1.0[voice];[1:a]volume=0.10[music];[voice][music]amix=inputs=2:duration=first:dropout_transition=2[aout]" ` +
         `-map "0:v" -map "[aout]" ` +
-        `-c:v copy -c:a aac -b:a 64k -movflags +faststart "${outputPath}"`
+        `-c:v copy -c:a aac -b:a 192k -movflags +faststart "${outputPath}"`
       ),
       120_000, "Background music mixing"
     );
@@ -1450,7 +1473,7 @@ async function concatenateScenesWithMusic(
         `${FFMPEG_BIN} -y -i "${concatPath}" -i "${musicPath}" ` +
         `-filter_complex "[1:a]volume=0.3[aout]" ` +
         `-map "0:v" -map "[aout]" ` +
-        `-c:v copy -c:a aac -b:a 64k -movflags +faststart "${outputPath}"`
+        `-c:v copy -c:a aac -b:a 192k -movflags +faststart "${outputPath}"`
       ),
       120_000, "Background music mixing (no voiceover)"
     );

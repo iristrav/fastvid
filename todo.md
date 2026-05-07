@@ -522,3 +522,13 @@
 - [x] Add fs.existsSync checks before every FFmpeg call — throw clear error if file missing
 - [x] Ensure fallback video (black screen) is ALWAYS generated reliably before compose step
 - [x] Rebuild dist, save checkpoint
+
+## Session 30 — Video Quality Fixes
+- [ ] Fix video duration: 5-8 min must produce ~5-8 min video (currently only 1.4 min)
+- [ ] Fix cropped/halved images: images only show in thin strip, top half is black
+- [ ] Fix crackling audio: severe digital distortion in voiceover
+- [ ] Add Ken Burns effect: slow zoom/pan on static images
+- [ ] Add smooth transitions: cross-dissolves between scenes
+- [ ] Fix subtitle rendering: subtitle text cut in half at bottom
+- [ ] Restore 1280x720 resolution (currently 854x480 due to OOM fix)
+- [ ] Fix audio bitrate: increase from 65kbps to 192kbps
