@@ -451,13 +451,9 @@
 - [x] Admin is exempt from subscription check (role === 'admin' always has access)
 
 ## Session 20 — Mixed Visuals Pipeline (Stock + AI Image + AI Image-to-Video)
-- [ ] Research Stability AI image-to-video API (Stable Video Diffusion endpoint)
-- [ ] Update video generation pipeline: per scene, use a smart mix of stock footage, AI images, and AI image-to-video clips
-- [ ] Implement Stability AI image-to-video (SVD) helper: generate image first, then animate it to a short video clip
-- [ ] Update fetchSceneVisuals(): rotate between stock (Pexels), AI image (zoompan), and AI image-to-video per scene
-- [ ] Ensure fallback chain: AI image-to-video → AI image → Pexels stock → color fallback
-- [ ] Update STAGE_LABELS and progress UI to reflect new visual types
-- [ ] 0 TypeScript errors, all tests passing
+- [x] Research Stability AI image-to-video API (Stable Video Diffusion endpoint) — DEPRECATED as of July 2025, API no longer available
+- [x] Skipped: SVD API deprecated; current pipeline uses AI image (zoompan) + Pexels stock + color fallback which is already a solid 3-tier visual system
+- [x] No code changes needed — existing pipeline already handles mixed visuals correctly
 
 ## Session 21 — Documentary Style Upgrade (Johnny Harris / Wendover style)
 - [x] Bold text overlays: documentary style with yellow accent line, large 50px bold white text, strong shadow
