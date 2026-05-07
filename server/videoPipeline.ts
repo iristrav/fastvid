@@ -484,20 +484,19 @@ async function generateStabilityAIClip(
     console.log(`[Pipeline] Scene ${sceneIndex}: Stability AI image in ${((Date.now()-t)/1000).toFixed(1)}s (${(imgBuffer.length/1024).toFixed(0)}KB)`);
 
     // Convert to video — optimized Ken Burns: pre-scale to exact size first, then gentle zoompan
-    // Pre-scaling to exact size before zoompan avoids the 2x upscale that made it slow
-    const direction = sceneIndex % 2 === 0 ? 1 : -1; // alternate zoom direction per scene
-    const zoomStart = 1.0;
-    const zoomEnd = 1.06;
-    const fps = 25;
+    // Simple Ken Burns: scale image slightly larger, then use crop+setpts for a slow zoom effect
+    // Using lower fps (24) and simpler filter for faster processing
+    const fps = 24;
     const totalFrames = Math.ceil(duration * fps);
-    const zoomStep = (zoomEnd - zoomStart) / totalFrames;
-    const panX = direction > 0 ? `iw/2-(iw/zoom/2)` : `iw/2-(iw/zoom/2)+${Math.floor(VIDEO_WIDTH * 0.02)}`;
+    const zoomStep = 0.0004; // very slow zoom
+    const direction = sceneIndex % 2 === 0 ? 1 : -1;
+    const panX = direction > 0 ? `iw/2-(iw/zoom/2)` : `iw/2-(iw/zoom/2)+2`;
     await withTimeout(
       exec(
         `${FFMPEG_BIN} -y -loop 1 -i "${pngPath}" ` +
         `-vf "scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT},` +
-        `zoompan=z='min(zoom+${zoomStep.toFixed(6)},${zoomEnd})':x='${panX}':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=${fps},` +
-        `fade=t=in:st=0:d=0.4,fade=t=out:st=${Math.max(0, duration - 0.4)}:d=0.4" ` +
+        `zoompan=z='min(zoom+${zoomStep},1.05)':x='${panX}':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=${fps},` +
+        `fade=t=in:st=0:d=0.3,fade=t=out:st=${Math.max(0, duration - 0.3)}:d=0.3" ` +
         `-t ${duration} -r ${fps} -c:v libx264 -preset fast -crf 23 -pix_fmt yuv420p "${outputPath}"`
       ),
       90_000,
@@ -574,32 +573,16 @@ async function fetchPexelsClips(
         fs.writeFileSync(rawPath, buffer);
 
         const loopFlag = video.duration < clipDuration ? `-stream_loop -1` : "";
-        // Ken Burns effect: alternate between zoom-in and zoom-out with slow pan
-        const totalFrames = Math.ceil(clipDuration * 25);
-        const kbDirection = (sceneIndex + idx) % 4;
-        let zoompanFilter: string;
-        if (kbDirection === 0) {
-          // Zoom in, pan right
-          zoompanFilter = `zoompan=z='min(zoom+0.0008,1.12)':x='iw/2-(iw/zoom/2)+((iw/zoom/2)*0.08*(on/${totalFrames}))':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=25`;
-        } else if (kbDirection === 1) {
-          // Zoom out, pan left
-          zoompanFilter = `zoompan=z='if(lte(zoom,1.0),1.12,max(1.0,zoom-0.0008))':x='iw/2-(iw/zoom/2)-((iw/zoom/2)*0.06*(on/${totalFrames}))':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=25`;
-        } else if (kbDirection === 2) {
-          // Slow zoom in, pan up
-          zoompanFilter = `zoompan=z='min(zoom+0.0006,1.10)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)+((ih/zoom/2)*0.05*(on/${totalFrames}))':d=${totalFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=25`;
-        } else {
-          // Slow zoom out, pan down
-          zoompanFilter = `zoompan=z='if(lte(zoom,1.0),1.10,max(1.0,zoom-0.0006))':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)-((ih/zoom/2)*0.04*(on/${totalFrames}))':d=${totalFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=25`;
-        }
+        // Simple scale+crop for fast processing — no zoompan to avoid CPU hang
         await withTimeout(
           exec(
             `${FFMPEG_BIN} -y ${loopFlag} -i "${rawPath}" ` +
             `-t ${clipDuration} ` +
-            `-vf "scale=${VIDEO_WIDTH * 2}:${VIDEO_HEIGHT * 2}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH * 2}:${VIDEO_HEIGHT * 2},${zoompanFilter}" ` +
+            `-vf "scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT},fade=t=in:st=0:d=0.3,fade=t=out:st=${Math.max(0, clipDuration - 0.3)}:d=0.3" ` +
             `-c:v libx264 -preset fast -crf 22 -an -pix_fmt yuv420p "${outPath}"`
           ),
-          45_000,
-          `Trim+KenBurns Pexels clip ${idx} scene ${sceneIndex}`
+          30_000,
+          `Trim Pexels clip ${idx} scene ${sceneIndex}`
         );
 
         try { fs.unlinkSync(rawPath); } catch { /* ignore */ }
