@@ -573,12 +573,23 @@ async function fetchPexelsClips(
         fs.writeFileSync(rawPath, buffer);
 
         const loopFlag = video.duration < clipDuration ? `-stream_loop -1` : "";
-        // Simple scale+crop for fast processing — no zoompan to avoid CPU hang
+        // Subtle Ken Burns: slight zoom-in or zoom-out depending on scene index
+        // Use scale to 110% first, then slow crop pan for a gentle movement effect
+        const zoomDir = (sceneIndex + idx) % 2 === 0 ? 'in' : 'out';
+        const startScale = zoomDir === 'in' ? 1.05 : 1.10;
+        const endScale = zoomDir === 'in' ? 1.10 : 1.05;
+        const totalFrames = Math.ceil(clipDuration * 25);
+        // Simple approach: scale slightly larger, then use crop with slow pan
+        const panX = (sceneIndex + idx) % 3 === 0 ? `(iw-${VIDEO_WIDTH})/2*t/${clipDuration}` :
+                     (sceneIndex + idx) % 3 === 1 ? `(iw-${VIDEO_WIDTH})/2*(1-t/${clipDuration})` :
+                     `(iw-${VIDEO_WIDTH})/2`;
         await withTimeout(
           exec(
             `${FFMPEG_BIN} -y ${loopFlag} -i "${rawPath}" ` +
             `-t ${clipDuration} ` +
-            `-vf "scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT},fade=t=in:st=0:d=0.3,fade=t=out:st=${Math.max(0, clipDuration - 0.3)}:d=0.3" ` +
+            `-vf "scale=${Math.round(VIDEO_WIDTH * 1.12)}:${Math.round(VIDEO_HEIGHT * 1.12)}:force_original_aspect_ratio=increase,` +
+            `crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:${panX}:(ih-${VIDEO_HEIGHT})/2,` +
+            `fade=t=in:st=0:d=0.3,fade=t=out:st=${Math.max(0, clipDuration - 0.3)}:d=0.3" ` +
             `-c:v libx264 -preset fast -crf 22 -an -pix_fmt yuv420p "${outPath}"`
           ),
           30_000,
@@ -1154,15 +1165,31 @@ async function composeSceneVideo(
     }
   }
 
-  // Subtitle overlay
-  let subtitlePath: string | null = null;
-  if (enableSubtitles) {
-    try {
-      subtitlePath = await renderSubtitleOverlay(scene.text, scene.index, totalScenes, workDir);
-    } catch (err) {
-      console.warn(`[Pipeline] Scene ${scene.index}: subtitle render failed:`, err);
-    }
+  // Subtitle overlay — using drawtext filter (no PNG, more reliable)
+  // Build drawtext filter string for inline subtitle rendering
+  function buildSubtitleFilter(inputLabel: string): string {
+    if (!enableSubtitles) return '';
+    const badge = `${scene.index + 1}/${totalScenes}`;
+    // Sanitize text: keep only ASCII printable, escape special chars for drawtext
+    const safeText = scene.text
+      .replace(/[^\x20-\x7E]/g, ' ')
+      .slice(0, 80)
+      .trim()
+      .replace(/'/g, '')
+      .replace(/:/g, ' ')
+      .replace(/\\/g, ' ')
+      .replace(/"/g, ' ');
+    const overlayY = VIDEO_HEIGHT - 120;
+    // Semi-transparent black bar at bottom
+    const barFilter = `drawbox=x=0:y=${overlayY}:w=${VIDEO_WIDTH}:h=120:color=black@0.75:t=fill`;
+    // Yellow badge top-left of bar
+    const badgeFilter = `drawtext=text='${badge}':fontcolor=yellow:fontsize=22:x=28:y=${overlayY + 14}:shadowcolor=black:shadowx=1:shadowy=1`;
+    // White subtitle text centered
+    const textFilter = `drawtext=text='${safeText}':fontcolor=white:fontsize=36:x=(w-text_w)/2:y=${overlayY + 55}:shadowcolor=black:shadowx=2:shadowy=2`;
+    return `,${barFilter},${badgeFilter},${textFilter}`;
   }
+  // Keep subtitlePath null — we use inline drawtext instead
+  const subtitlePath: string | null = null;
 
   // Kinetic typography: sparse — only every 3rd scene, 1 impactful word, shown briefly in the middle
   // Always-on (not gated behind enableSubtitles). Keeps it subtle and documentary-like.
@@ -1191,16 +1218,16 @@ async function composeSceneVideo(
     }
   }
 
-  const OVERLAY_H = 220; // Updated to match renderSubtitleOverlay height
-  const overlayY = VIDEO_HEIGHT - OVERLAY_H;
   // On Railway, limit FFmpeg threads to reduce memory usage
   const threadFlag = IS_RAILWAY ? "-threads 2" : "";
   // Kinetic text position: upper-center area (y=80 so the 120px band sits at 80-200px from top)
   const kineticY = 80;
   // Documentary-style color grading: warm, high-contrast, punchy
   const colorGrade = `eq=contrast=1.15:saturation=1.28:brightness=0.02:gamma=0.95,colorbalance=rs=0.04:gs=-0.01:bs=-0.03:rm=0.03:gm=-0.01:bm=-0.02:rh=0.02:gh=0:bh=-0.01`;
+  // Subtitle drawtext filter (appended after color grade, before fade)
+  const subtitleDrawtext = buildSubtitleFilter('unused');
   // Note: colorbalance adds warm tones (slight red/orange push) for cinematic look
-  const fadeFilter = `${colorGrade},fade=t=in:st=0:d=0.3,fade=t=out:st=${Math.max(0, duration - 0.3)}:d=0.3`;
+  const fadeFilter = `${colorGrade}${subtitleDrawtext},fade=t=in:st=0:d=0.3,fade=t=out:st=${Math.max(0, duration - 0.3)}:d=0.3`;
   const xfadeDur = 0.4;
 
   // Helper: build the kinetic overlay chain on top of a labelled video stream.
@@ -1241,8 +1268,9 @@ async function composeSceneVideo(
       // Multi-clip with xfade transitions
       const clipDur = Math.max(2, Math.floor(duration / safeClips.length));
       const inputs = safeClips.map(c => `-i "${c}"`).join(" ");
+      // Add fps=25 to normalize timebase before xfade (prevents 'timebase mismatch' error)
       const scaleFilters = safeClips.map((_, i) =>
-        `[${i}:v]scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}[v${i}]`
+        `[${i}:v]scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT},fps=25[v${i}]`
       ).join(";");
 
       // Chain xfades
@@ -1256,79 +1284,44 @@ async function composeSceneVideo(
       }
 
       // Build kinetic chain on top of xfaded
-      // Input indices: 0..N-1 = clips, N = audio, N+1 = subtitle (if any), N+1/N+2.. = kinetic frames
+      // Input indices: 0..N-1 = clips, N = audio, N+1.. = kinetic frames
       const audioIdx = safeClips.length;
-      const subIdx = audioIdx + 1;
-      const kineticBaseIdx = subtitlePath ? subIdx + 1 : subIdx;
+      const kineticBaseIdx = audioIdx + 1;
       const { extraInputs: kExtraInputs, filterChain: kChain, finalLabel: kFinalLabel } =
-        buildKineticChain(subtitlePath ? "withsub" : "xfaded", kineticBaseIdx);
+        buildKineticChain("xfaded", kineticBaseIdx);
 
-      if (subtitlePath && fs.existsSync(subtitlePath)) {
-        const subInput = `-loop 1 -i "${subtitlePath}"`;
-        // Apply subtitle first, then kinetic frames on top
-        const subOverlay = `;[xfaded][${subIdx}:v]overlay=x=0:y=${overlayY}:shortest=1[withsub]`;
-        const kineticInput = kExtraInputs ? ` ${kExtraInputs}` : "";
-        const kineticChainStr = kChain ? kChain : "";
-        const finalVideoLabel = kineticFrames.length > 0 ? kFinalLabel : "withsub";
-        await withTimeout(
-          exec(
-            `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}" ${subInput}${kineticInput} ` +
-            `-filter_complex "${scaleFilters}${xfadeChain}${subOverlay}${kineticChainStr};[${finalVideoLabel}]${fadeFilter}[vout]" ` +
-            `-map "[vout]" -map "${audioIdx}:a" ` +
-            `-t ${duration} ${threadFlag} -c:v libx264 -preset fast -crf 22 -c:a aac -b:a 192k -pix_fmt yuv420p "${outputPath}"`
-          ),
-          120_000, `Compose multi-clip scene ${scene.index}`
-        );
-      } else {
-        const kineticInput = kExtraInputs ? ` ${kExtraInputs}` : "";
-        const kineticChainStr = kChain ? kChain : "";
-        const finalVideoLabel = kineticFrames.length > 0 ? kFinalLabel : "xfaded";
-        await withTimeout(
-          exec(
-            `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}"${kineticInput} ` +
-            `-filter_complex "${scaleFilters}${xfadeChain}${kineticChainStr};[${finalVideoLabel}]${fadeFilter}[vout]" ` +
-            `-map "[vout]" -map "${audioIdx}:a" ` +
-            `-t ${duration} ${threadFlag} -c:v libx264 -preset fast -crf 22 -c:a aac -b:a 192k -pix_fmt yuv420p "${outputPath}"`
-          ),
-          120_000, `Compose multi-clip scene ${scene.index} (no subtitle)`
-        );
-      }
+      const kineticInput = kExtraInputs ? ` ${kExtraInputs}` : "";
+      const kineticChainStr = kChain ? kChain : "";
+      const finalVideoLabel = kineticFrames.length > 0 ? kFinalLabel : "xfaded";
+      await withTimeout(
+        exec(
+          `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}"${kineticInput} ` +
+          `-filter_complex "${scaleFilters}${xfadeChain}${kineticChainStr};[${finalVideoLabel}]${fadeFilter}[vout]" ` +
+          `-map "[vout]" -map "${audioIdx}:a" ` +
+          `-t ${duration} ${threadFlag} -c:v libx264 -preset fast -crf 22 -c:a aac -b:a 192k -pix_fmt yuv420p "${outputPath}"`
+        ),
+        120_000, `Compose multi-clip scene ${scene.index}`
+      );
     } else {
-      // Single clip
+      // Single clip — drawtext subtitle is embedded in fadeFilter
       const clip = safeClips[0];
       const audioIdx = 1;
-      const subIdx = 2;
-      const kineticBaseIdx = subtitlePath ? subIdx + 1 : subIdx;
+      const kineticBaseIdx = audioIdx + 1;
       const { extraInputs: kExtraInputs, filterChain: kChain, finalLabel: kFinalLabel } =
-        buildKineticChain(subtitlePath ? "withsub" : "scaled", kineticBaseIdx);
+        buildKineticChain("scaled", kineticBaseIdx);
 
-      if (subtitlePath && fs.existsSync(subtitlePath)) {
-        const kineticInput = kExtraInputs ? ` ${kExtraInputs}` : "";
-        const kineticChainStr = kChain ? kChain : "";
-        const finalVideoLabel = kineticFrames.length > 0 ? kFinalLabel : "withsub";
-        await withTimeout(
-          exec(
-            `${FFMPEG_BIN} -y -i "${clip}" -i "${safeAudioPath}" -loop 1 -i "${subtitlePath}"${kineticInput} ` +
-            `-filter_complex "[0:v]scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}[scaled];[scaled][${subIdx}:v]overlay=x=0:y=${overlayY}:shortest=1[withsub]${kineticChainStr};[${finalVideoLabel}]${fadeFilter}[vout]" ` +
-            `-map "[vout]" -map "${audioIdx}:a" ` +
-            `-t ${duration} ${threadFlag} -c:v libx264 -preset fast -crf 22 -c:a aac -b:a 192k -pix_fmt yuv420p "${outputPath}"`
-          ),
-          75_000, `Compose 1-clip scene ${scene.index}`
-        );
-      } else {
-        const kineticInput = kExtraInputs ? ` ${kExtraInputs}` : "";
-        const kineticChainStr = kChain ? kChain : "";
-        const finalVideoLabel = kineticFrames.length > 0 ? kFinalLabel : "scaled";
-        await withTimeout(
-          exec(
-            `${FFMPEG_BIN} -y -i "${clip}" -i "${safeAudioPath}"${kineticInput} ` +
-            `-filter_complex "[0:v]scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}[scaled]${kineticChainStr};[${finalVideoLabel}]${fadeFilter}[vout]" ` +
-            `-map "[vout]" -map "${audioIdx}:a" ` +
-            `-t ${duration} ${threadFlag} -c:v libx264 -preset fast -crf 22 -c:a aac -b:a 192k -pix_fmt yuv420p "${outputPath}"`
-          ),
-          75_000, `Compose 1-clip scene ${scene.index} (no subtitle)`
-        );
-      }
+      const kineticInput = kExtraInputs ? ` ${kExtraInputs}` : "";
+      const kineticChainStr = kChain ? kChain : "";
+      const finalVideoLabel = kineticFrames.length > 0 ? kFinalLabel : "scaled";
+      await withTimeout(
+        exec(
+          `${FFMPEG_BIN} -y -i "${clip}" -i "${safeAudioPath}"${kineticInput} ` +
+          `-filter_complex "[0:v]scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}[scaled]${kineticChainStr};[${finalVideoLabel}]${fadeFilter}[vout]" ` +
+          `-map "[vout]" -map "${audioIdx}:a" ` +
+          `-t ${duration} ${threadFlag} -c:v libx264 -preset fast -crf 22 -c:a aac -b:a 192k -pix_fmt yuv420p "${outputPath}"`
+        ),
+        75_000, `Compose 1-clip scene ${scene.index}`
+      );
     }
   } catch (composeErr) {
     // Last resort: simple mux (no overlays)

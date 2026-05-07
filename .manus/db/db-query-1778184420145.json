@@ -1,0 +1,70 @@
+{
+  "query": "SELECT id, title, status, createdAt FROM videos ORDER BY createdAt DESC LIMIT 10;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute SELECT id, title, status, createdAt FROM videos ORDER BY createdAt DESC LIMIT 10;",
+  "rows": [
+    {
+      "id": "360001",
+      "title": "Top 5 Most Incredible Natural Phenomena on Earth",
+      "status": "failed",
+      "createdAt": "2026-05-07 19:32:04"
+    },
+    {
+      "id": "330003",
+      "title": "Top 5 Volcanoes That Could Erupt Soon",
+      "status": "completed",
+      "createdAt": "2026-05-06 18:56:59"
+    },
+    {
+      "id": "330002",
+      "title": "Top 5 Most Amazing Ocean Discoveries You Won't Believe!",
+      "status": "completed",
+      "createdAt": "2026-05-06 18:38:06"
+    },
+    {
+      "id": "330001",
+      "title": "Cosmic Revelations: The Top 5 Space Discoveries of 2024",
+      "status": "failed",
+      "createdAt": "2026-05-06 18:28:55"
+    },
+    {
+      "id": "270003",
+      "title": "Unleashing Giants: The Top 10 Most Powerful Engines Ever Built",
+      "status": "failed",
+      "createdAt": "2026-05-05 20:30:46"
+    },
+    {
+      "id": "270002",
+      "title": "Unveiling Opulence: The Top 10 Most Expensive Cars in the World",
+      "status": "failed",
+      "createdAt": "2026-05-05 20:24:47"
+    },
+    {
+      "id": "270001",
+      "title": "Unleashed Speed: The World's 10 Fastest Production Cars",
+      "status": "failed",
+      "createdAt": "2026-05-05 20:09:02"
+    },
+    {
+      "id": "240006",
+      "title": "Unleashed Speed: The Top 5 Fastest Cars in the World",
+      "status": "failed",
+      "createdAt": "2026-04-30 16:18:39"
+    },
+    {
+      "id": "240005",
+      "title": "NULL",
+      "status": "failed",
+      "createdAt": "2026-04-30 16:15:26"
+    },
+    {
+      "id": "240004",
+      "title": "NULL",
+      "status": "failed",
+      "createdAt": "2026-04-30 16:15:07"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\ttitle\tstatus\tcreatedAt\n360001\tTop 5 Most Incredible Natural Phenomena on Earth\tfailed\t2026-05-07 19:32:04\n330003\tTop 5 Volcanoes That Could Erupt Soon\tcompleted\t2026-05-06 18:56:59\n330002\tTop 5 Most Amazing Ocean Discoveries You Won't Believe!\tcompleted\t2026-05-06 18:38:06\n330001\tCosmic Revelations: The Top 5 Space Discoveries of 2024\tfailed\t2026-05-06 18:28:55\n270003\tUnleashing Giants: The Top 10 Most Powerful Engines Ever Built\tfailed\t2026-05-05 20:30:46\n270002\tUnveiling Opulence: The Top 10 Most Expensive Cars in the World\tfailed\t2026-05-05 20:24:47\n270001\tUnleashed Speed: The World's 10 Fastest Production Cars\tfailed\t2026-05-05 20:09:02\n240006\tUnleashed Speed: The Top 5 Fastest Cars in the World\tfailed\t2026-04-30 16:18:39\n240005\tNULL\tfailed\t2026-04-30 16:15:26\n240004\tNULL\tfailed\t2026-04-30 16:15:07\n",
+  "stderr": "",
+  "execution_time_ms": 258
+}

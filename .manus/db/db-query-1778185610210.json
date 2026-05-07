@@ -1,0 +1,18 @@
+{
+  "query": "SELECT id, status, videoUrl, progressStep, progressPercent, updatedAt FROM videos WHERE id = 360003;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute SELECT id, status, videoUrl, progressStep, progressPercent, updatedAt FROM videos WHERE id = 360003;",
+  "rows": [
+    {
+      "id": "360003",
+      "status": "generating_effects",
+      "videoUrl": "NULL",
+      "progressStep": "Assembling final video with intro, outro & music...",
+      "progressPercent": "80",
+      "updatedAt": "2026-05-07 20:21:35"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\tstatus\tvideoUrl\tprogressStep\tprogressPercent\tupdatedAt\n360003\tgenerating_effects\tNULL\tAssembling final video with intro, outro & music...\t80\t2026-05-07 20:21:35\n",
+  "stderr": "",
+  "execution_time_ms": 258
+}
