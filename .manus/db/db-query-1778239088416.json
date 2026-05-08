@@ -1,0 +1,16 @@
+{
+  "query": "SELECT id, videoUrl, status, progressPercent FROM videos WHERE id = 360002;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute SELECT id, videoUrl, status, progressPercent FROM videos WHERE id = 360002;",
+  "rows": [
+    {
+      "id": "360002",
+      "videoUrl": "/manus-storage/videos/360002/final_2d85ceee.mp4",
+      "status": "completed",
+      "progressPercent": "100"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\tvideoUrl\tstatus\tprogressPercent\n360002\t/manus-storage/videos/360002/final_2d85ceee.mp4\tcompleted\t100\n",
+  "stderr": "",
+  "execution_time_ms": 270
+}
