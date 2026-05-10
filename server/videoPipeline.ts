@@ -526,15 +526,22 @@ async function fetchPexelsClips(
   if (!PEXELS_API_KEY) return [];
 
   const results: string[] = [];
-  try {
-    const searchUrl = `https://api.pexels.com/videos/search?query=${encodeURIComponent(query)}&per_page=10&size=small&orientation=landscape`;
-    const searchResp = await withTimeout(
-      fetch(searchUrl, { headers: { Authorization: PEXELS_API_KEY } }),
-      8_000,
-      `Pexels search scene ${sceneIndex}`
-    );
+  
+  // Fallback queries if primary query fails
+  const queryFallbacks = [query, 'nature', 'landscape', 'water', 'sky', 'earth'];
+  
+  for (const currentQuery of queryFallbacks) {
+    if (results.length >= count) break; // Stop if we have enough clips
+    
+    try {
+      const searchUrl = `https://api.pexels.com/videos/search?query=${encodeURIComponent(currentQuery)}&per_page=10&size=small&orientation=landscape`;
+      const searchResp = await withTimeout(
+        fetch(searchUrl, { headers: { Authorization: PEXELS_API_KEY } }),
+        8_000,
+        `Pexels search scene ${sceneIndex}`
+      );
 
-    if (!searchResp.ok) return [];
+      if (!searchResp.ok) continue;
 
     const searchData = await searchResp.json() as {
       videos?: Array<{
@@ -606,8 +613,9 @@ async function fetchPexelsClips(
     for (const r of downloadResults) {
       if (r.status === "fulfilled" && r.value) results.push(r.value);
     }
-  } catch (err) {
-    console.warn(`[Pipeline] Pexels clips failed scene ${sceneIndex}:`, err);
+    } catch (err) {
+      console.warn(`[Pipeline] Pexels search failed for query "${currentQuery}" scene ${sceneIndex}:`, err);
+    }
   }
 
   return results;
@@ -1531,7 +1539,9 @@ export async function runVideoPipeline(
         "Voiceover generation stage"
       );
     }
-    scenes.forEach((scene, i) => { scene.duration = Math.max(durations[i], 4); });
+    // Scene duration must be at least 6 seconds longer than voiceover to allow for fade-in/out and clip transitions
+    // This prevents audio cutoff when FFmpeg truncates to scene.duration
+    scenes.forEach((scene, i) => { scene.duration = Math.max(durations[i] + 6, 10); });
     console.log(`[Pipeline] Stage 2 (voiceovers): ${scenes.length} in ${((Date.now()-t1)/1000).toFixed(1)}s`);
 
     // ── Stage 3: Fetch AI images + Pexels clips in parallel batches ───────────
