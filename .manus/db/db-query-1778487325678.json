@@ -1,0 +1,17 @@
+{
+  "query": "SELECT id, title, videoLength, status, videoUrl FROM videos WHERE status = 'completed' ORDER BY id DESC LIMIT 1;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute SELECT id, title, videoLength, status, videoUrl FROM videos WHERE status = 'completed' ORDER BY id DESC LIMIT 1;",
+  "rows": [
+    {
+      "id": "360002",
+      "title": "Top 5 Most AMAZING Deep Sea Creatures You Won't Believe Exist!",
+      "videoLength": "5-8",
+      "status": "completed",
+      "videoUrl": "/manus-storage/videos/360002/final_2d85ceee.mp4"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\ttitle\tvideoLength\tstatus\tvideoUrl\n360002\tTop 5 Most AMAZING Deep Sea Creatures You Won't Believe Exist!\t5-8\tcompleted\t/manus-storage/videos/360002/final_2d85ceee.mp4\n",
+  "stderr": "",
+  "execution_time_ms": 266
+}

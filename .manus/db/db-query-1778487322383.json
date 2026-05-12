@@ -1,0 +1,34 @@
+{
+  "query": "SELECT * FROM videos LIMIT 1;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute SELECT * FROM videos LIMIT 1;",
+  "rows": [
+    {
+      "id": "210001",
+      "userId": "1",
+      "title": "NULL",
+      "prompt": "Top 10 amazing airplanes",
+      "videoLength": "5-8",
+      "status": "failed",
+      "script": "NULL",
+      "voiceoverUrl": "NULL",
+      "videoUrl": "NULL",
+      "thumbnailUrl": "NULL",
+      "metadata": "NULL",
+      "errorMessage": "No approved script found",
+      "createdAt": "2026-04-30 14:26:04",
+      "updatedAt": "2026-04-30 14:26:04",
+      "progressStep": "Generation failed",
+      "progressPercent": "0",
+      "generationStartedAt": "NULL",
+      "videoType": "documentary",
+      "scriptApproved": "0",
+      "customVoiceoverUrl": "NULL",
+      "voiceId": "NULL",
+      "enableSubtitles": "1"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\tuserId\ttitle\tprompt\tvideoLength\tstatus\tscript\tvoiceoverUrl\tvideoUrl\tthumbnailUrl\tmetadata\terrorMessage\tcreatedAt\tupdatedAt\tprogressStep\tprogressPercent\tgenerationStartedAt\tvideoType\tscriptApproved\tcustomVoiceoverUrl\tvoiceId\tenableSubtitles\n210001\t1\tNULL\tTop 10 amazing airplanes\t5-8\tfailed\tNULL\tNULL\tNULL\tNULL\tNULL\tNo approved script found\t2026-04-30 14:26:04\t2026-04-30 14:26:04\tGeneration failed\t0\tNULL\tdocumentary\t0\tNULL\tNULL\t1\n",
+  "stderr": "",
+  "execution_time_ms": 270
+}
