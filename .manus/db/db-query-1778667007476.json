@@ -1,0 +1,9 @@
+{
+  "query": "SELECT id, status, videoUrl, createdAt FROM videos WHERE status = 'completed' AND createdAt > '2026-05-08' ORDER BY createdAt DESC LIMIT 5;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute SELECT id, status, videoUrl, createdAt FROM videos WHERE status = 'completed' AND createdAt > '2026-05-08' ORDER BY createdAt DESC LIMIT 5;",
+  "rows": [],
+  "messages": [],
+  "stdout": "",
+  "stderr": "",
+  "execution_time_ms": 266
+}

@@ -1,0 +1,16 @@
+{
+  "query": "SELECT id, status, videoUrl, createdAt FROM videos WHERE status = 'completed' ORDER BY createdAt DESC LIMIT 1;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute SELECT id, status, videoUrl, createdAt FROM videos WHERE status = 'completed' ORDER BY createdAt DESC LIMIT 1;",
+  "rows": [
+    {
+      "id": "360002",
+      "status": "completed",
+      "videoUrl": "/manus-storage/videos/360002/final_2d85ceee.mp4",
+      "createdAt": "2026-05-07 20:08:03"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\tstatus\tvideoUrl\tcreatedAt\n360002\tcompleted\t/manus-storage/videos/360002/final_2d85ceee.mp4\t2026-05-07 20:08:03\n",
+  "stderr": "",
+  "execution_time_ms": 261
+}

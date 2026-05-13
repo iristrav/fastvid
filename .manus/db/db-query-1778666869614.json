@@ -1,0 +1,15 @@
+{
+  "query": "SELECT id, status, videoUrl FROM videos WHERE id = '480001';",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute SELECT id, status, videoUrl FROM videos WHERE id = '480001';",
+  "rows": [
+    {
+      "id": "480001",
+      "status": "pending",
+      "videoUrl": "NULL"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\tstatus\tvideoUrl\n480001\tpending\tNULL\n",
+  "stderr": "",
+  "execution_time_ms": 275
+}

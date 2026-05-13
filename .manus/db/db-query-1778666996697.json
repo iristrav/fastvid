@@ -1,0 +1,16 @@
+{
+  "query": "SELECT id, status, videoUrl, createdAt FROM videos WHERE id = '390001';",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute SELECT id, status, videoUrl, createdAt FROM videos WHERE id = '390001';",
+  "rows": [
+    {
+      "id": "390001",
+      "status": "generating_voiceover",
+      "videoUrl": "NULL",
+      "createdAt": "2026-05-08 11:23:33"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\tstatus\tvideoUrl\tcreatedAt\n390001\tgenerating_voiceover\tNULL\t2026-05-08 11:23:33\n",
+  "stderr": "",
+  "execution_time_ms": 275
+}

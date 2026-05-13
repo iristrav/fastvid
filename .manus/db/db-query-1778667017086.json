@@ -1,0 +1,110 @@
+{
+  "query": "SELECT id, status, createdAt FROM videos ORDER BY id DESC LIMIT 20;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute SELECT id, status, createdAt FROM videos ORDER BY id DESC LIMIT 20;",
+  "rows": [
+    {
+      "id": "480001",
+      "status": "pending",
+      "createdAt": "2026-05-13 10:06:57"
+    },
+    {
+      "id": "450001",
+      "status": "pending",
+      "createdAt": "2026-05-12 07:42:23"
+    },
+    {
+      "id": "420001",
+      "status": "pending",
+      "createdAt": "2026-05-11 08:15:34"
+    },
+    {
+      "id": "390001",
+      "status": "generating_voiceover",
+      "createdAt": "2026-05-08 11:23:33"
+    },
+    {
+      "id": "360003",
+      "status": "generating_effects",
+      "createdAt": "2026-05-07 20:18:53"
+    },
+    {
+      "id": "360002",
+      "status": "completed",
+      "createdAt": "2026-05-07 20:08:03"
+    },
+    {
+      "id": "360001",
+      "status": "failed",
+      "createdAt": "2026-05-07 19:32:04"
+    },
+    {
+      "id": "330003",
+      "status": "completed",
+      "createdAt": "2026-05-06 18:56:59"
+    },
+    {
+      "id": "330002",
+      "status": "completed",
+      "createdAt": "2026-05-06 18:38:06"
+    },
+    {
+      "id": "330001",
+      "status": "failed",
+      "createdAt": "2026-05-06 18:28:55"
+    },
+    {
+      "id": "270003",
+      "status": "failed",
+      "createdAt": "2026-05-05 20:30:46"
+    },
+    {
+      "id": "270002",
+      "status": "failed",
+      "createdAt": "2026-05-05 20:24:47"
+    },
+    {
+      "id": "270001",
+      "status": "failed",
+      "createdAt": "2026-05-05 20:09:02"
+    },
+    {
+      "id": "240006",
+      "status": "failed",
+      "createdAt": "2026-04-30 16:18:39"
+    },
+    {
+      "id": "240005",
+      "status": "failed",
+      "createdAt": "2026-04-30 16:15:26"
+    },
+    {
+      "id": "240004",
+      "status": "failed",
+      "createdAt": "2026-04-30 16:15:07"
+    },
+    {
+      "id": "240003",
+      "status": "failed",
+      "createdAt": "2026-04-30 16:09:06"
+    },
+    {
+      "id": "240002",
+      "status": "failed",
+      "createdAt": "2026-04-30 16:08:38"
+    },
+    {
+      "id": "240001",
+      "status": "failed",
+      "createdAt": "2026-04-30 16:02:19"
+    },
+    {
+      "id": "210001",
+      "status": "failed",
+      "createdAt": "2026-04-30 14:26:04"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\tstatus\tcreatedAt\n480001\tpending\t2026-05-13 10:06:57\n450001\tpending\t2026-05-12 07:42:23\n420001\tpending\t2026-05-11 08:15:34\n390001\tgenerating_voiceover\t2026-05-08 11:23:33\n360003\tgenerating_effects\t2026-05-07 20:18:53\n360002\tcompleted\t2026-05-07 20:08:03\n360001\tfailed\t2026-05-07 19:32:04\n330003\tcompleted\t2026-05-06 18:56:59\n330002\tcompleted\t2026-05-06 18:38:06\n330001\tfailed\t2026-05-06 18:28:55\n270003\tfailed\t2026-05-05 20:30:46\n270002\tfailed\t2026-05-05 20:24:47\n270001\tfailed\t2026-05-05 20:09:02\n240006\tfailed\t2026-04-30 16:18:39\n240005\tfailed\t2026-04-30 16:15:26\n240004\tfailed\t2026-04-30 16:15:07\n240003\tfailed\t2026-04-30 16:09:06\n240002\tfailed\t2026-04-30 16:08:38\n240001\tfailed\t2026-04-30 16:02:19\n210001\tfailed\t2026-04-30 14:26:04\n",
+  "stderr": "",
+  "execution_time_ms": 267
+}

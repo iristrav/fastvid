@@ -2,7 +2,7 @@
  * Fastvid — AI Video Generation Pipeline (v5 — Stability AI + Dynamic Scenes)
  *
  * Visual strategy (per scene):
- *   1. PRIMARY:   Stability AI SDXL image → FFmpeg zoom-loop video (~5-10s)
+ *   1. PRIMARY:   Stability AI SDXL image → FFmpeg zoom-loop video (~5-10s) — HIGH QUALITY
  *   2. SECONDARY: Pexels stock video clips (multiple per scene)
  *   3. FALLBACK:  Solid colour video (instant)
  *
@@ -13,7 +13,7 @@
  *   15-20 min → 30 scenes (~30-35s each)
  *   20+ min   → 35 scenes (~35-40s each)
  *
- * Per scene: 1 AI image (zoompan) + 2-3 Pexels clips joined with xfade transitions.
+ * Per scene: 1 AI image (zoompan) + 3 Pexels clips joined with xfade transitions. All encoded at HIGH QUALITY (preset=slow, crf=18).
  * All scenes processed in parallel batches to stay within 60-min cap.
  *
  * Cost per video (Stability AI SDXL @ $0.003/image):
@@ -193,8 +193,8 @@ const TMP_DIR = os.tmpdir();
 // Railway free tier has ~512MB RAM; 1280x720 FFmpeg compositing OOM-kills the process
 const IS_RAILWAY = !process.env.BUILT_IN_FORGE_API_KEY;
 // Use 4K resolution (3840x2160) for professional quality
-const VIDEO_WIDTH = 3840;
-const VIDEO_HEIGHT = 2160;
+const VIDEO_WIDTH = 1280;
+const VIDEO_HEIGHT = 720;
 
 // ─── Dynamic scene count based on video length ────────────────────────────────
 // Each scene is ~25-35s of narration. To hit target duration:
@@ -597,7 +597,7 @@ async function fetchPexelsClips(
             `-vf "scale=${Math.round(VIDEO_WIDTH * 1.12)}:${Math.round(VIDEO_HEIGHT * 1.12)}:force_original_aspect_ratio=increase,` +
             `crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:${panX}:(ih-${VIDEO_HEIGHT})/2,` +
             `fade=t=in:st=0:d=0.3,fade=t=out:st=${Math.max(0, clipDuration - 0.3)}:d=0.3" ` +
-            `-c:v libx264 -preset fast -crf 22 -an -pix_fmt yuv420p "${outPath}"`
+            `-c:v libx264 -preset slow -crf 18 -an -pix_fmt yuv420p "${outPath}"`
           ),
           30_000,
           `Trim Pexels clip ${idx} scene ${sceneIndex}`
@@ -638,7 +638,7 @@ async function generateColorFallback(sceneIndex: number, duration: number, workD
     await withTimeout(
       exec(
         `${FFMPEG_BIN} -y -f lavfi -i "color=c=#${color}:size=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:rate=25" ` +
-        `-t ${duration} -c:v libx264 -preset fast -crf 22 -pix_fmt yuv420p "${outputPath}"`
+        `-t ${duration} -c:v libx264 -preset slow -crf 18 -pix_fmt yuv420p "${outputPath}"`
       ),
       15_000, `Fallback video scene ${sceneIndex}`
     );
@@ -649,7 +649,7 @@ async function generateColorFallback(sceneIndex: number, duration: number, workD
       await withTimeout(
         exec(
           `${FFMPEG_BIN} -y -f lavfi -i "color=c=black:size=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:rate=25" ` +
-          `-t ${duration} -c:v libx264 -preset fast -crf 22 -pix_fmt yuv420p "${outputPath}"`
+          `-t ${duration} -c:v libx264 -preset slow -crf 18 -pix_fmt yuv420p "${outputPath}"`
         ),
         15_000, `Black screen fallback scene ${sceneIndex}`
       );
@@ -962,7 +962,7 @@ async function renderIntroCardFFmpeg(videoTitle: string, duration: number, workD
       `drawtext=text='AI-Generated Video':fontcolor=#a0c8ff:fontsize=26:x=(w-text_w)/2:y=h/2+80,` +
       `fade=t=in:st=0:d=0.4,fade=t=out:st=${duration - 0.4}:d=0.4[vout]" ` +
       `-map "[vout]" -map "1:a" ` +
-      `-t ${duration} -c:v libx264 -preset fast -crf 22 -pix_fmt yuv420p -r 25 -c:a aac -b:a 320k -shortest "${outputPath}"`
+      `-t ${duration} -c:v libx264 -preset slow -crf 18 -pix_fmt yuv420p -r 25 -c:a aac -b:a 320k -shortest "${outputPath}"`
     ),
     20_000, "Intro card FFmpeg render"
   );
@@ -1048,7 +1048,7 @@ async function renderIntroCard(videoTitle: string, duration: number, workDir: st
       `${FFMPEG_BIN} -y -loop 1 -i "${pngPath}" -f lavfi -i anullsrc=r=44100:cl=stereo ` +
       `-t ${duration} ` +
       `-vf "fade=t=in:st=0:d=0.4,fade=t=out:st=${duration - 0.4}:d=0.4" ` +
-      `-c:v libx264 -preset fast -crf 22 -pix_fmt yuv420p -r 25 -c:a aac -b:a 320k -shortest "${outputPath}"`
+      `-c:v libx264 -preset slow -crf 18 -pix_fmt yuv420p -r 25 -c:a aac -b:a 320k -shortest "${outputPath}"`
     ),
     20_000, "Intro card render"
   );
@@ -1070,7 +1070,7 @@ async function renderOutroCardFFmpeg(duration: number, workDir: string): Promise
       `drawtext=text='FASTVID':fontcolor=#a064ff:fontsize=34:x=(w-text_w)/2:y=h/2+160,` +
       `fade=t=in:st=0:d=0.4,fade=t=out:st=${duration - 0.4}:d=0.4[vout]" ` +
       `-map "[vout]" -map "1:a" ` +
-      `-t ${duration} -c:v libx264 -preset fast -crf 22 -pix_fmt yuv420p -r 25 -c:a aac -b:a 320k -shortest "${outputPath}"`
+      `-t ${duration} -c:v libx264 -preset slow -crf 18 -pix_fmt yuv420p -r 25 -c:a aac -b:a 320k -shortest "${outputPath}"`
     ),
     20_000, "Outro card FFmpeg render"
   );
@@ -1131,7 +1131,7 @@ async function renderOutroCard(duration: number, workDir: string): Promise<strin
       `${FFMPEG_BIN} -y -loop 1 -i "${pngPath}" -f lavfi -i anullsrc=r=44100:cl=stereo ` +
       `-t ${duration} ` +
       `-vf "fade=t=in:st=0:d=0.4,fade=t=out:st=${duration - 0.4}:d=0.4" ` +
-      `-c:v libx264 -preset fast -crf 22 -pix_fmt yuv420p -r 25 -c:a aac -b:a 320k -shortest "${outputPath}"`
+      `-c:v libx264 -preset slow -crf 18 -pix_fmt yuv420p -r 25 -c:a aac -b:a 320k -shortest "${outputPath}"`
     ),
     20_000, "Outro card render"
   );
@@ -1306,7 +1306,7 @@ async function composeSceneVideo(
           `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}"${kineticInput} ` +
           `-filter_complex "${scaleFilters}${xfadeChain}${kineticChainStr};[${finalVideoLabel}]${fadeFilter}[vout]" ` +
           `-map "[vout]" -map "${audioIdx}:a" ` +
-          `-t ${duration} ${threadFlag} -c:v libx264 -preset fast -crf 22 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
+          `-t ${duration} ${threadFlag} -c:v libx264 -preset slow -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
         ),
         120_000, `Compose multi-clip scene ${scene.index}`
       );
@@ -1326,7 +1326,7 @@ async function composeSceneVideo(
           `${FFMPEG_BIN} -y -i "${clip}" -i "${safeAudioPath}"${kineticInput} ` +
           `-filter_complex "[0:v]scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}[scaled]${kineticChainStr};[${finalVideoLabel}]${fadeFilter}[vout]" ` +
           `-map "[vout]" -map "${audioIdx}:a" ` +
-          `-t ${duration} ${threadFlag} -c:v libx264 -preset fast -crf 22 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
+          `-t ${duration} ${threadFlag} -c:v libx264 -preset slow -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
         ),
         75_000, `Compose 1-clip scene ${scene.index}`
       );
@@ -1337,7 +1337,7 @@ async function composeSceneVideo(
     await withTimeout(
       exec(
         `${FFMPEG_BIN} -y -i "${safeClips[0]}" -i "${safeAudioPath}" ` +
-        `-t ${duration} ${threadFlag} -c:v libx264 -preset fast -crf 22 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
+        `-t ${duration} ${threadFlag} -c:v libx264 -preset slow -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
       ),
       45_000, `Simple mux scene ${scene.index}`
     );
@@ -1416,7 +1416,7 @@ async function concatenateScenesWithMusic(
 
   const [, musicPath] = await Promise.all([
     withTimeout(
-      exec(`${FFMPEG_BIN} -y -f concat -safe 0 -i "${listFile}" -c:v libx264 -preset fast -crf 22 -c:a aac -b:a 320k -movflags +faststart "${concatPath}"`),
+      exec(`${FFMPEG_BIN} -y -f concat -safe 0 -i "${listFile}" -c:v libx264 -preset slow -crf 18 -c:a aac -b:a 320k -movflags +faststart "${concatPath}"`),
       600_000, // 10 min for large videos (30+ scenes)
       "Scene concatenation"
     ),
