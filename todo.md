@@ -249,3 +249,14 @@
   - [x] File size: 4K videos larger but within acceptable range ✅
   - [x] Pipeline: completes within time limit ✅
 - [x] 0 TypeScript errors, 10/10 tests passing ✅
+
+## Session 32 — Multi-AI Video Generator Integration (Grok + Veo + Meta)
+- [x] Implement placeholder helpers in server/_core/ for each generator (Grok, Veo, Meta)
+- [x] Update fetchSceneVisuals to call all 4 AI video generators in parallel
+- [x] Add fallback chain: AI videos → Pexels → color fallback
+- [ ] Integrate Grok Imagine API via Replicate (text-to-video) - requires REPLICATE_API_KEY
+- [ ] Integrate Google Veo 3.1 API via Gemini API (text-to-video) - requires GOOGLE_GEMINI_API_KEY
+- [ ] Integrate Meta Movie Gen API via Meta AI (text-to-video) - requires META_MOVIE_GEN_API_KEY
+- [ ] Test video generation with all 5 sources active
+- [ ] Verify video quality and variety with new generators
+- [ ] 0 TypeScript errors, all tests passing

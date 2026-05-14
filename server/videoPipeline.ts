@@ -29,11 +29,18 @@ import * as os from "os";
 import { storagePut } from "./storage";
 import { invokeLLM } from "./_core/llm";
 import pLimit from "p-limit";
+import { generateGrokVideo } from "./_core/grokVideo";
+import { generateVeoVideo } from "./_core/veoVideo";
+import { generateMetaMovieGen } from "./_core/metaMovieGen";
+import fetch from "node-fetch";
 
 // API Keys
 const FISH_AUDIO_API_KEY = process.env.FISH_AUDIO_API_KEY || "";
 const STABILITY_AI_API_KEY = process.env.STABILITY_AI_API_KEY || "";
 const PEXELS_API_KEY = process.env.PEXELS_API_KEY || "";
+const REPLICATE_API_KEY = process.env.REPLICATE_API_KEY || "";
+const GOOGLE_GEMINI_API_KEY = process.env.GOOGLE_GEMINI_API_KEY || "";
+const META_MOVIE_GEN_API_KEY = process.env.META_MOVIE_GEN_API_KEY || "";
 
 // @ts-ignore
 import ffmpegStatic from "ffmpeg-static";
@@ -663,6 +670,105 @@ async function generateColorFallback(sceneIndex: number, duration: number, workD
   return outputPath;
 }
 
+// ─── 3c1. Generate Grok Video Clip ──────────────────────────────────────────
+async function generateGrokVideoClip(
+  prompt: string,
+  duration: number,
+  outputPath: string,
+  sceneIndex: number
+): Promise<string | null> {
+  if (!REPLICATE_API_KEY) {
+    return null; // Fallback to other sources
+  }
+
+  try {
+    const result = await generateGrokVideo(prompt, Math.min(duration, 8));
+    if (!result) return null;
+
+    // Download the video from the URL and save to local file
+    const grokOutputPath = outputPath.replace(/\.mp4$/, "_grok.mp4");
+    const response = await fetch(result.url);
+    if (!response.ok) {
+      console.warn(`[Pipeline] Scene ${sceneIndex}: Grok download failed (${response.status})`);
+      return null;
+    }
+
+    const buffer = await response.buffer();
+    fs.writeFileSync(grokOutputPath, buffer);
+    console.log(`[Pipeline] Scene ${sceneIndex}: Grok video saved (${buffer.length} bytes)`);
+    return grokOutputPath;
+  } catch (err) {
+    console.warn(`[Pipeline] Scene ${sceneIndex}: Grok generation error:`, err);
+    return null;
+  }
+}
+
+// ─── 3c2. Generate Veo Video Clip ───────────────────────────────────────────
+async function generateVeoVideoClip(
+  prompt: string,
+  duration: number,
+  outputPath: string,
+  sceneIndex: number
+): Promise<string | null> {
+  if (!GOOGLE_GEMINI_API_KEY) {
+    return null; // Fallback to other sources
+  }
+
+  try {
+    const result = await generateVeoVideo(prompt, Math.min(duration, 8));
+    if (!result) return null;
+
+    // Download the video from the URL and save to local file
+    const veoOutputPath = outputPath.replace(/\.mp4$/, "_veo.mp4");
+    const response = await fetch(result.url);
+    if (!response.ok) {
+      console.warn(`[Pipeline] Scene ${sceneIndex}: Veo download failed (${response.status})`);
+      return null;
+    }
+
+    const buffer = await response.buffer();
+    fs.writeFileSync(veoOutputPath, buffer);
+    console.log(`[Pipeline] Scene ${sceneIndex}: Veo video saved (${buffer.length} bytes)`);
+    return veoOutputPath;
+  } catch (err) {
+    console.warn(`[Pipeline] Scene ${sceneIndex}: Veo generation error:`, err);
+    return null;
+  }
+}
+
+// ─── 3c3. Generate Meta Movie Gen Clip ──────────────────────────────────────
+async function generateMetaMovieGenClip(
+  prompt: string,
+  duration: number,
+  outputPath: string,
+  sceneIndex: number
+): Promise<string | null> {
+  if (!META_MOVIE_GEN_API_KEY) {
+    return null; // Fallback to other sources
+  }
+
+  try {
+    const result = await generateMetaMovieGen(prompt, Math.min(duration, 8));
+    if (!result) return null;
+
+    // Download the video from the URL and save to local file
+    const metaOutputPath = outputPath.replace(/\.mp4$/, "_meta.mp4");
+    const response = await fetch(result.url);
+    if (!response.ok) {
+      console.warn(`[Pipeline] Scene ${sceneIndex}: Meta Movie Gen download failed (${response.status})`);
+      return null;
+    }
+
+    const buffer = await response.buffer();
+    fs.writeFileSync(metaOutputPath, buffer);
+    console.log(`[Pipeline] Scene ${sceneIndex}: Meta Movie Gen video saved (${buffer.length} bytes)`);
+    return metaOutputPath;
+  } catch (err) {
+    console.warn(`[Pipeline] Scene ${sceneIndex}: Meta Movie Gen generation error:`, err);
+    return null;
+  }
+}
+
 // ─── 3d. Fetch All Visuals for a Scene ───────────────────────────────────────
 // Returns array of valid clip paths (AI image first, then Pexels clips)
 async function fetchSceneVisuals(
@@ -672,21 +778,33 @@ async function fetchSceneVisuals(
   const halfDur = Math.max(3, Math.ceil(scene.duration / 3));
   const aiClipPath = path.join(workDir, `scene_${scene.index}_ai.mp4`);
 
-  // Run AI image gen and Pexels fetch in parallel
-  const [aiResult, pexelsResults] = await Promise.allSettled([
+  // Run all AI video generators and Pexels fetch in parallel
+  // Priority: Stability AI → Grok → Veo → Meta Movie Gen → Pexels → Color fallback
+  const [aiResult, grokResult, veoResult, metaResult, pexelsResults] = await Promise.allSettled([
     generateStabilityAIClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
+    generateGrokVideoClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
+    generateVeoVideoClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
+    generateMetaMovieGenClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
     fetchPexelsClips(scene.pexelsQuery, halfDur, workDir, scene.index, 3),
   ]);
 
-  const aiClip = aiResult.status === "fulfilled" ? aiResult.value : null;
-  const pexelsClips = pexelsResults.status === "fulfilled" ? pexelsResults.value : [];
-
   const clips: string[] = [];
 
-  // AI image goes first (primary visual)
+  // Add AI video clips in priority order
+  const aiClip = aiResult.status === "fulfilled" ? aiResult.value : null;
   if (aiClip) clips.push(aiClip);
 
+  const grokClip = grokResult.status === "fulfilled" ? grokResult.value : null;
+  if (grokClip) clips.push(grokClip);
+
+  const veoClip = veoResult.status === "fulfilled" ? veoResult.value : null;
+  if (veoClip) clips.push(veoClip);
+
+  const metaClip = metaResult.status === "fulfilled" ? metaResult.value : null;
+  if (metaClip) clips.push(metaClip);
+
   // Then Pexels clips
+  const pexelsClips = pexelsResults.status === "fulfilled" ? pexelsResults.value : [];
   for (const clip of pexelsClips) {
     clips.push(clip);
   }
@@ -697,7 +815,7 @@ async function fetchSceneVisuals(
     clips.push(await generateColorFallback(scene.index, scene.duration + 1, workDir));
   }
 
-  console.log(`[Pipeline] Scene ${scene.index}: ${clips.length} clip(s) ready (AI: ${aiClip ? "✓" : "✗"}, Pexels: ${pexelsClips.length})`);
+  console.log(`[Pipeline] Scene ${scene.index}: ${clips.length} clip(s) ready (Stability: ${aiClip ? "✓" : "✗"}, Grok: ${grokClip ? "✓" : "✗"}, Veo: ${veoClip ? "✓" : "✗"}, Meta: ${metaClip ? "✓" : "✗"}, Pexels: ${pexelsClips.length})`);
   return clips;
 }
 
