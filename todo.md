@@ -296,3 +296,14 @@ Pipeline now supports 7 visual sources:
 7. Color fallback (active) - Solid color video safety net
 
 Session 33 Complete: Higgsfield AI integration complete and production-ready!
+
+## Session 34 — FFmpeg Drawtext Filter Escaping Fix
+- [x] Identified FFmpeg drawtext filter escaping issue causing VID-0021 & VID-0022 failures
+- [x] Fixed buildSubtitleFilter() function with comprehensive character sanitization
+- [x] Fixed renderIntroCardFFmpeg() function with same escaping rules
+- [x] Created 16 unit tests for drawtext escaping
+- [x] Verified all 42 tests passing
+- [x] Server restarted with fixes applied
+- [x] Production-ready for video generation
+
+Both subtitle and intro card functions now properly escape special characters for FFmpeg drawtext filter.

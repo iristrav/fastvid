@@ -1148,7 +1148,21 @@ async function renderSubtitleOverlay(
 // ─── 4b. Branded Intro Title Card ────────────────────────────────────────────
 async function renderIntroCardFFmpeg(videoTitle: string, duration: number, workDir: string): Promise<string> {
   const outputPath = path.join(workDir, "intro_card.mp4");
-  const safeTitle = videoTitle.replace(/[^a-zA-Z0-9 .,!?:-]/g, ' ').slice(0, 60).trim().replace(/'/g, '');
+  // Sanitize title for FFmpeg drawtext filter - same rules as subtitle escaping
+  let safeTitle = videoTitle
+    .replace(/[^\x20-\x7E]/g, ' ')  // Remove non-ASCII
+    .slice(0, 60)
+    .trim()
+    .replace(/'/g, '')  // Remove single quotes
+    .replace(/:/g, ' ')  // Replace colons
+    .replace(/\\/g, ' ')  // Replace backslashes
+    .replace(/"/g, ' ')  // Replace double quotes
+    .replace(/\[/g, '(')  // Replace brackets
+    .replace(/\]/g, ')')
+    .replace(/\{/g, '(')  // Replace braces
+    .replace(/\}/g, ')')
+    .replace(/\n/g, ' ')  // Remove newlines
+    .replace(/\t/g, ' '); // Remove tabs
   await withTimeout(
     exec(
       `${FFMPEG_BIN} -y -f lavfi -i "color=c=#0a0a1e:size=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:rate=25" ` +
@@ -1374,15 +1388,22 @@ async function composeSceneVideo(
   function buildSubtitleFilter(inputLabel: string): string {
     if (!enableSubtitles) return '';
     const badge = `${scene.index + 1}/${totalScenes}`;
-    // Sanitize text: keep only ASCII printable, escape special chars for drawtext
-    const safeText = scene.text
-      .replace(/[^\x20-\x7E]/g, ' ')
+    // Sanitize text for FFmpeg drawtext filter
+    let safeText = scene.text
+      .replace(/[^\x20-\x7E]/g, ' ')  // Remove non-ASCII
       .slice(0, 80)
       .trim()
-      .replace(/'/g, '')
-      .replace(/:/g, ' ')
-      .replace(/\\/g, ' ')
-      .replace(/"/g, ' ');
+      .replace(/'/g, '')  // Remove single quotes
+      .replace(/:/g, ' ')  // Replace colons
+      .replace(/\\/g, ' ')  // Replace backslashes
+      .replace(/"/g, ' ')  // Replace double quotes
+      .replace(/\[/g, '(')  // Replace brackets
+      .replace(/\]/g, ')')
+      .replace(/\{/g, '(')  // Replace braces
+      .replace(/\}/g, ')')
+      .replace(/\n/g, ' ')  // Remove newlines
+      .replace(/\t/g, ' '); // Remove tabs
+    
     const overlayY = VIDEO_HEIGHT - 120;
     // Semi-transparent black bar at bottom
     const barFilter = `drawbox=x=0:y=${overlayY}:w=${VIDEO_WIDTH}:h=120:color=black@0.75:t=fill`;
