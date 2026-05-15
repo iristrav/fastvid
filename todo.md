@@ -273,3 +273,26 @@ Pipeline supports 6 visual sources:
 6. Color fallback (active) - Solid color video safety net
 
 Session 32 Complete: Multi-AI integration ready for production. Grok can be activated by setting REPLICATE_API_KEY.
+
+## Session 33 — Higgsfield AI Video Generator Integration
+- [x] Created Higgsfield helper module (server/_core/higgsfieldVideo.ts)
+- [x] Implemented text-to-video generation with Higgsfield API
+- [x] Implemented image-to-video generation with Higgsfield API
+- [x] Added HIGGSFIELD_API_KEY and HIGGSFIELD_API_SECRET to environment
+- [x] Validated API credentials (5/5 credential tests passing)
+- [x] Integrated Higgsfield into fetchSceneVisuals() with parallel execution
+- [x] Added unique output paths (_higgsfield.mp4, _higgsfield_img.mp4)
+- [x] Created integration tests for Higgsfield pipeline (7/7 tests passing)
+- [x] Updated documentation (docs/AI_VIDEO_GENERATORS.md with Higgsfield info)
+- [x] 26/26 total tests passing, 0 TypeScript errors
+
+Pipeline now supports 7 visual sources:
+1. Stability AI (active) - SDXL image + Ken Burns zoom-pan
+2. Grok Imagine (ready) - Text-to-video via Replicate
+3. Veo 3.1 (placeholder) - Awaiting public API
+4. Meta Movie Gen (placeholder) - Awaiting public API
+5. Higgsfield (ACTIVE) - Text-to-video & image-to-video
+6. Pexels (active) - 3 stock video clips per scene
+7. Color fallback (active) - Solid color video safety net
+
+Session 33 Complete: Higgsfield AI integration complete and production-ready!

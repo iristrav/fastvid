@@ -32,6 +32,7 @@ import pLimit from "p-limit";
 import { generateGrokVideo } from "./_core/grokVideo";
 import { generateVeoVideo } from "./_core/veoVideo";
 import { generateMetaMovieGen } from "./_core/metaMovieGen";
+import { generateHiggsfieldTextToVideo, generateHiggsfieldImageToVideo } from "./_core/higgsfieldVideo";
 import fetch from "node-fetch";
 
 // API Keys
@@ -41,6 +42,8 @@ const PEXELS_API_KEY = process.env.PEXELS_API_KEY || "";
 const REPLICATE_API_KEY = process.env.REPLICATE_API_KEY || "";
 const GOOGLE_GEMINI_API_KEY = process.env.GOOGLE_GEMINI_API_KEY || "";
 const META_MOVIE_GEN_API_KEY = process.env.META_MOVIE_GEN_API_KEY || "";
+const HIGGSFIELD_API_KEY = process.env.HIGGSFIELD_API_KEY || "";
+const HIGGSFIELD_API_SECRET = process.env.HIGGSFIELD_API_SECRET || "";
 
 // @ts-ignore
 import ffmpegStatic from "ffmpeg-static";
@@ -769,6 +772,73 @@ async function generateMetaMovieGenClip(
   }
 }
 
+// ─── 3c4. Generate Higgsfield Text-to-Video Clip ───────────────────────────────
+async function generateHiggsfieldTextToVideoClip(
+  prompt: string,
+  duration: number,
+  outputPath: string,
+  sceneIndex: number
+): Promise<string | null> {
+  if (!HIGGSFIELD_API_KEY || !HIGGSFIELD_API_SECRET) {
+    return null; // Fallback to other sources
+  }
+
+  try {
+    const result = await generateHiggsfieldTextToVideo(prompt, Math.min(duration, 8));
+    if (!result) return null;
+
+    // Download the video from the URL and save to local file
+    const higgsfieldOutputPath = outputPath.replace(/\.mp4$/, "_higgsfield.mp4");
+    const response = await fetch(result.url);
+    if (!response.ok) {
+      console.warn(`[Pipeline] Scene ${sceneIndex}: Higgsfield text-to-video download failed (${response.status})`);
+      return null;
+    }
+
+    const buffer = await response.buffer();
+    fs.writeFileSync(higgsfieldOutputPath, buffer);
+    console.log(`[Pipeline] Scene ${sceneIndex}: Higgsfield text-to-video saved (${buffer.length} bytes)`);
+    return higgsfieldOutputPath;
+  } catch (err) {
+    console.warn(`[Pipeline] Scene ${sceneIndex}: Higgsfield text-to-video error:`, err);
+    return null;
+  }
+}
+
+// ─── 3c5. Generate Higgsfield Image-to-Video Clip ───────────────────────────────
+async function generateHiggsfieldImageToVideoClip(
+  imageUrl: string,
+  prompt: string,
+  duration: number,
+  outputPath: string,
+  sceneIndex: number
+): Promise<string | null> {
+  if (!HIGGSFIELD_API_KEY || !HIGGSFIELD_API_SECRET) {
+    return null; // Fallback to other sources
+  }
+
+  try {
+    const result = await generateHiggsfieldImageToVideo(imageUrl, prompt, Math.min(duration, 8));
+    if (!result) return null;
+
+    // Download the video from the URL and save to local file
+    const higgsfieldOutputPath = outputPath.replace(/\.mp4$/, "_higgsfield_img.mp4");
+    const response = await fetch(result.url);
+    if (!response.ok) {
+      console.warn(`[Pipeline] Scene ${sceneIndex}: Higgsfield image-to-video download failed (${response.status})`);
+      return null;
+    }
+
+    const buffer = await response.buffer();
+    fs.writeFileSync(higgsfieldOutputPath, buffer);
+    console.log(`[Pipeline] Scene ${sceneIndex}: Higgsfield image-to-video saved (${buffer.length} bytes)`);
+    return higgsfieldOutputPath;
+  } catch (err) {
+    console.warn(`[Pipeline] Scene ${sceneIndex}: Higgsfield image-to-video error:`, err);
+    return null;
+  }
+}
+
 // ─── 3d. Fetch All Visuals for a Scene ───────────────────────────────────────
 // Returns array of valid clip paths (AI image first, then Pexels clips)
 async function fetchSceneVisuals(
@@ -779,12 +849,14 @@ async function fetchSceneVisuals(
   const aiClipPath = path.join(workDir, `scene_${scene.index}_ai.mp4`);
 
   // Run all AI video generators and Pexels fetch in parallel
-  // Priority: Stability AI → Grok → Veo → Meta Movie Gen → Pexels → Color fallback
-  const [aiResult, grokResult, veoResult, metaResult, pexelsResults] = await Promise.allSettled([
+  // Priority: Stability AI → Grok → Veo → Meta → Higgsfield (text+image) → Pexels → Color fallback
+  const [aiResult, grokResult, veoResult, metaResult, higgsfieldTextResult, higgsfieldImageResult, pexelsResults] = await Promise.allSettled([
     generateStabilityAIClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
     generateGrokVideoClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
     generateVeoVideoClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
     generateMetaMovieGenClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
+    generateHiggsfieldTextToVideoClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
+    generateHiggsfieldImageToVideoClip("", scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
     fetchPexelsClips(scene.pexelsQuery, halfDur, workDir, scene.index, 3),
   ]);
 
@@ -803,6 +875,12 @@ async function fetchSceneVisuals(
   const metaClip = metaResult.status === "fulfilled" ? metaResult.value : null;
   if (metaClip) clips.push(metaClip);
 
+  const higgsfieldTextClip = higgsfieldTextResult.status === "fulfilled" ? higgsfieldTextResult.value : null;
+  if (higgsfieldTextClip) clips.push(higgsfieldTextClip);
+
+  const higgsfieldImageClip = higgsfieldImageResult.status === "fulfilled" ? higgsfieldImageResult.value : null;
+  if (higgsfieldImageClip) clips.push(higgsfieldImageClip);
+
   // Then Pexels clips
   const pexelsClips = pexelsResults.status === "fulfilled" ? pexelsResults.value : [];
   for (const clip of pexelsClips) {
@@ -815,7 +893,7 @@ async function fetchSceneVisuals(
     clips.push(await generateColorFallback(scene.index, scene.duration + 1, workDir));
   }
 
-  console.log(`[Pipeline] Scene ${scene.index}: ${clips.length} clip(s) ready (Stability: ${aiClip ? "✓" : "✗"}, Grok: ${grokClip ? "✓" : "✗"}, Veo: ${veoClip ? "✓" : "✗"}, Meta: ${metaClip ? "✓" : "✗"}, Pexels: ${pexelsClips.length})`);
+  console.log(`[Pipeline] Scene ${scene.index}: ${clips.length} clip(s) ready (Stability: ${aiClip ? "✓" : "✗"}, Grok: ${grokClip ? "✓" : "✗"}, Veo: ${veoClip ? "✓" : "✗"}, Meta: ${metaClip ? "✓" : "✗"}, Higgsfield: ${higgsfieldTextClip || higgsfieldImageClip ? "✓" : "✗"}, Pexels: ${pexelsClips.length})`);
   return clips;
 }
 
