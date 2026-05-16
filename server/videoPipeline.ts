@@ -33,6 +33,7 @@ import { generateGrokVideo } from "./_core/grokVideo";
 import { generateVeoVideo } from "./_core/veoVideo";
 import { generateMetaMovieGen } from "./_core/metaMovieGen";
 import { generateHiggsfieldTextToVideo, generateHiggsfieldImageToVideo } from "./_core/higgsfieldVideo";
+import { sanitizeForDrawtext, sanitizeForDrawtextStrict } from "./ffmpegSanitize";
 import fetch from "node-fetch";
 
 // API Keys
@@ -1049,8 +1050,8 @@ async function renderSubtitleOverlayFFmpeg(
   const outputPath = path.join(workDir, `scene_${sceneIndex}_subtitle.png`);
   const OVERLAY_H = 220;
   // Create a semi-transparent black bar PNG using FFmpeg lavfi
-  const safeText = text.replace(/[^a-zA-Z0-9 .,!?-]/g, ' ').slice(0, 80).trim().replace(/'/g, '');
-  const badge = `${sceneIndex + 1}/${totalScenes}`;
+  const safeText = sanitizeForDrawtext(text, 80);
+  const badge = sanitizeForDrawtext(`${sceneIndex + 1}/${totalScenes}`, 20);
   // Use FFmpeg to create a PNG: black gradient bar with white text
   await withTimeout(
     exec(
@@ -1148,21 +1149,8 @@ async function renderSubtitleOverlay(
 // ─── 4b. Branded Intro Title Card ────────────────────────────────────────────
 async function renderIntroCardFFmpeg(videoTitle: string, duration: number, workDir: string): Promise<string> {
   const outputPath = path.join(workDir, "intro_card.mp4");
-  // Sanitize title for FFmpeg drawtext filter - same rules as subtitle escaping
-  let safeTitle = videoTitle
-    .replace(/[^\x20-\x7E]/g, ' ')  // Remove non-ASCII
-    .slice(0, 60)
-    .trim()
-    .replace(/'/g, '')  // Remove single quotes
-    .replace(/:/g, ' ')  // Replace colons
-    .replace(/\\/g, ' ')  // Replace backslashes
-    .replace(/"/g, ' ')  // Replace double quotes
-    .replace(/\[/g, '(')  // Replace brackets
-    .replace(/\]/g, ')')
-    .replace(/\{/g, '(')  // Replace braces
-    .replace(/\}/g, ')')
-    .replace(/\n/g, ' ')  // Remove newlines
-    .replace(/\t/g, ' '); // Remove tabs
+  // Sanitize title for FFmpeg drawtext filter
+  const safeTitle = sanitizeForDrawtext(videoTitle, 60);
   await withTimeout(
     exec(
       `${FFMPEG_BIN} -y -f lavfi -i "color=c=#0a0a1e:size=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:rate=25" ` +
@@ -1387,22 +1375,9 @@ async function composeSceneVideo(
   // Build drawtext filter string for inline subtitle rendering
   function buildSubtitleFilter(inputLabel: string): string {
     if (!enableSubtitles) return '';
-    const badge = `${scene.index + 1}/${totalScenes}`;
+    const badge = sanitizeForDrawtext(`${scene.index + 1}/${totalScenes}`, 20);
     // Sanitize text for FFmpeg drawtext filter
-    let safeText = scene.text
-      .replace(/[^\x20-\x7E]/g, ' ')  // Remove non-ASCII
-      .slice(0, 80)
-      .trim()
-      .replace(/'/g, '')  // Remove single quotes
-      .replace(/:/g, ' ')  // Replace colons
-      .replace(/\\/g, ' ')  // Replace backslashes
-      .replace(/"/g, ' ')  // Replace double quotes
-      .replace(/\[/g, '(')  // Replace brackets
-      .replace(/\]/g, ')')
-      .replace(/\{/g, '(')  // Replace braces
-      .replace(/\}/g, ')')
-      .replace(/\n/g, ' ')  // Remove newlines
-      .replace(/\t/g, ' '); // Remove tabs
+    const safeSubtitle = sanitizeForDrawtext(scene.text, 80);
     
     const overlayY = VIDEO_HEIGHT - 120;
     // Semi-transparent black bar at bottom
@@ -1410,7 +1385,7 @@ async function composeSceneVideo(
     // Yellow badge top-left of bar
     const badgeFilter = `drawtext=text='${badge}':fontcolor=yellow:fontsize=22:x=28:y=${overlayY + 14}:shadowcolor=black:shadowx=1:shadowy=1`;
     // White subtitle text centered
-    const textFilter = `drawtext=text='${safeText}':fontcolor=white:fontsize=36:x=(w-text_w)/2:y=${overlayY + 55}:shadowcolor=black:shadowx=2:shadowy=2`;
+    const textFilter = `drawtext=text='${safeSubtitle}':fontcolor=white:fontsize=36:x=(w-text_w)/2:y=${overlayY + 55}:shadowcolor=black:shadowx=2:shadowy=2`;
     return `,${barFilter},${badgeFilter},${textFilter}`;
   }
   // Keep subtitlePath null — we use inline drawtext instead
