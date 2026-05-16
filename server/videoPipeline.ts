@@ -580,15 +580,70 @@ async function fetchPexelsClips(
         const rawPath = path.join(workDir, `scene_${sceneIndex}_pexels_${idx}_raw.mp4`);
         const outPath = path.join(workDir, `scene_${sceneIndex}_pexels_${idx}.mp4`);
 
-        const downloadResp = await withTimeout(
-          fetch(videoFile.link),
-          15_000,
-          `Download Pexels clip ${idx} scene ${sceneIndex}`
-        );
-        if (!downloadResp.ok) return null;
+        // Download with retry logic
+        let downloadResp;
+        let buffer: Buffer | null = null;
+        let retries = 3;
+        
+        while (retries > 0 && !buffer) {
+          try {
+            downloadResp = await withTimeout(
+              fetch(videoFile.link),
+              20_000,
+              `Download Pexels clip ${idx} scene ${sceneIndex} (attempt ${4 - retries}/3)`
+            );
+            if (!downloadResp.ok) {
+              retries--;
+              if (retries > 0) await new Promise(r => setTimeout(r, 1000)); // Wait before retry
+              continue;
+            }
 
-        const buffer = Buffer.from(await downloadResp.arrayBuffer());
+            buffer = Buffer.from(await downloadResp.arrayBuffer());
+            
+            // Validate buffer size (minimum 50KB for valid video)
+            if (buffer.length < 50_000) {
+              console.warn(`[Pipeline] Pexels clip ${idx} too small (${buffer.length} bytes), retrying...`);
+              buffer = null;
+              retries--;
+              if (retries > 0) await new Promise(r => setTimeout(r, 1000));
+              continue;
+            }
+            
+            break; // Success
+          } catch (err) {
+            console.warn(`[Pipeline] Download attempt failed for Pexels clip ${idx}:`, err);
+            retries--;
+            if (retries > 0) await new Promise(r => setTimeout(r, 1000));
+          }
+        }
+        
+        if (!buffer) {
+          console.warn(`[Pipeline] Failed to download Pexels clip ${idx} after 3 attempts`);
+          return null;
+        }
+
         fs.writeFileSync(rawPath, buffer);
+
+        // Validate downloaded file with ffprobe before processing
+        try {
+          const probeCmd = `${FFMPEG_BIN} -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${rawPath}" 2>&1`;
+          const probeResult = await withTimeout(
+            exec(probeCmd),
+            10_000,
+            `Probe Pexels clip ${idx}`
+          );
+          const probeDuration = typeof probeResult === 'string' ? probeResult : (probeResult as any).stdout || '';
+          const duration = parseFloat(probeDuration);
+          if (isNaN(duration) || duration < 1) {
+            console.warn(`[Pipeline] Pexels clip ${idx} has invalid duration: ${duration}`);
+            try { fs.unlinkSync(rawPath); } catch { /* ignore */ }
+            return null;
+          }
+        } catch (err) {
+          console.warn(`[Pipeline] Failed to validate Pexels clip ${idx}:`, err);
+          try { fs.unlinkSync(rawPath); } catch { /* ignore */ }
+          return null;
+        }
 
         const loopFlag = video.duration < clipDuration ? `-stream_loop -1` : "";
         // Subtle Ken Burns: slight zoom-in or zoom-out depending on scene index
@@ -610,13 +665,13 @@ async function fetchPexelsClips(
             `fade=t=in:st=0:d=0.3,fade=t=out:st=${Math.max(0, clipDuration - 0.3)}:d=0.3" ` +
             `-c:v libx264 -preset slow -crf 18 -an -pix_fmt yuv420p "${outPath}"`
           ),
-          30_000,
+          45_000,
           `Trim Pexels clip ${idx} scene ${sceneIndex}`
         );
 
         try { fs.unlinkSync(rawPath); } catch { /* ignore */ }
 
-        if (fs.existsSync(outPath) && fs.statSync(outPath).size > 0) return outPath;
+        if (fs.existsSync(outPath) && fs.statSync(outPath).size > 1_000) return outPath;
         return null;
       }))
     );
@@ -1609,7 +1664,7 @@ async function concatenateScenesWithMusic(
   const [, musicPath] = await Promise.all([
     withTimeout(
       exec(`${FFMPEG_BIN} -y -f concat -safe 0 -i "${listFile}" -c:v libx264 -preset slow -crf 18 -c:a aac -b:a 320k -movflags +faststart "${concatPath}"`),
-      600_000, // 10 min for large videos (30+ scenes)
+      900_000, // 15 min for large videos (30+ scenes)
       "Scene concatenation"
     ),
     generateBackgroundMusic(totalWithCards + 5, workDir),
@@ -1632,15 +1687,30 @@ async function concatenateScenesWithMusic(
 
   if (concatHasAudio) {
     // Normal path: mix voiceover audio with background music
-    await withTimeout(
-      exec(
-        `${FFMPEG_BIN} -y -i "${concatPath}" -i "${musicPath}" ` +
-        `-filter_complex "[0:a]volume=1.0[voice];[1:a]volume=0.10[music];[voice][music]amix=inputs=2:duration=first:dropout_transition=2[aout]" ` +
-        `-map "0:v" -map "[aout]" ` +
-        `-c:v copy -c:a aac -b:a 320k -movflags +faststart "${outputPath}"`
-      ),
-      120_000, "Background music mixing"
-    );
+    try {
+      await withTimeout(
+        exec(
+          `${FFMPEG_BIN} -y -i "${concatPath}" -i "${musicPath}" ` +
+          `-filter_complex "[0:a]volume=1.0[voice];[1:a]volume=0.10[music];[voice][music]amix=inputs=2:duration=first:dropout_transition=2[aout]" ` +
+          `-map "0:v" -map "[aout]" ` +
+          `-c:v copy -c:a aac -b:a 320k -movflags +faststart "${outputPath}"`
+        ),
+        180_000,
+        "Background music mixing"
+      );
+    } catch (err) {
+      console.warn("[Pipeline] Audio mixing failed, using music only:", err);
+      await withTimeout(
+        exec(
+          `${FFMPEG_BIN} -y -i "${concatPath}" -i "${musicPath}" ` +
+          `-filter_complex "[1:a]volume=0.3[aout]" ` +
+          `-map "0:v" -map "[aout]" ` +
+          `-c:v copy -c:a aac -b:a 320k -movflags +faststart "${outputPath}"`
+        ),
+        180_000,
+        "Background music mixing (fallback)"
+      );
+    }
   } else {
     // Fallback: concat has no audio — use only background music
     console.warn("[Pipeline] Concat has no audio stream, using background music only");
@@ -1803,7 +1873,7 @@ export async function runVideoPipeline(
     const videoBuffer = fs.readFileSync(finalVideoPath);
     const { url } = await withTimeout(
       storagePut(`videos/${videoId}/final.mp4`, videoBuffer, "video/mp4"),
-      300_000, // 5 min upload timeout for large files
+      600_000, // 10 min upload timeout for large files
       "S3 upload"
     );
     console.log(`[Pipeline] Stage 6 (upload): ${((Date.now()-t5)/1000).toFixed(1)}s, size: ${(videoBuffer.length/1024/1024).toFixed(1)}MB`);

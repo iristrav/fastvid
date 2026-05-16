@@ -1,0 +1,170 @@
+{
+  "query": "SELECT id, title, prompt, status, progressPercent, progressStep FROM videos ORDER BY id DESC LIMIT 20;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute SELECT id, title, prompt, status, progressPercent, progressStep FROM videos ORDER BY id DESC LIMIT 20;",
+  "rows": [
+    {
+      "id": "510001",
+      "title": "The Wildest Kylie Jenner Rumor: Unpacking the Truth",
+      "prompt": "The craziest rumor about Kylie Jenner",
+      "status": "generating_visuals",
+      "progressPercent": "63",
+      "progressStep": "Composing scenes... (2/15 done)"
+    },
+    {
+      "id": "480001",
+      "title": "NULL",
+      "prompt": "Top 5 most beautiful waterfalls in the world",
+      "status": "pending",
+      "progressPercent": "0",
+      "progressStep": "NULL"
+    },
+    {
+      "id": "450001",
+      "title": "NULL",
+      "prompt": "Top 5 most incredible waterfalls in the world",
+      "status": "pending",
+      "progressPercent": "0",
+      "progressStep": "NULL"
+    },
+    {
+      "id": "420001",
+      "title": "NULL",
+      "prompt": "Top 5 most stunning underwater creatures",
+      "status": "pending",
+      "progressPercent": "0",
+      "progressStep": "NULL"
+    },
+    {
+      "id": "390001",
+      "title": "Top 10 Most Beautiful Waterfalls in the World",
+      "prompt": "Top 10 most beautiful waterfalls in the world",
+      "status": "awaiting_approval",
+      "progressPercent": "28",
+      "progressStep": "✅ Script ready — awaiting your approval"
+    },
+    {
+      "id": "360003",
+      "title": "Top 5 Most Incredible Ancient Civilizations That Disappeared",
+      "prompt": "Top 5 most incredible ancient civilizations that disappeared",
+      "status": "awaiting_approval",
+      "progressPercent": "28",
+      "progressStep": "✅ Script ready — awaiting your approval"
+    },
+    {
+      "id": "360002",
+      "title": "Top 5 Most AMAZING Deep Sea Creatures You Won't Believe Exist!",
+      "prompt": "Top 5 most amazing deep sea creatures",
+      "status": "completed",
+      "progressPercent": "100",
+      "progressStep": "Video complete!"
+    },
+    {
+      "id": "360001",
+      "title": "Top 5 Most Incredible Natural Phenomena on Earth",
+      "prompt": "Top 5 most incredible natural phenomena on Earth",
+      "status": "failed",
+      "progressPercent": "43",
+      "progressStep": "Generating AI visuals + fetching stock clips..."
+    },
+    {
+      "id": "330003",
+      "title": "Top 5 Volcanoes That Could Erupt Soon",
+      "prompt": "Top 5 volcanoes that could erupt soon",
+      "status": "completed",
+      "progressPercent": "100",
+      "progressStep": "Video complete!"
+    },
+    {
+      "id": "330002",
+      "title": "Top 5 Most Amazing Ocean Discoveries You Won't Believe!",
+      "prompt": "Top 5 most amazing ocean discoveries",
+      "status": "completed",
+      "progressPercent": "100",
+      "progressStep": "Video complete!"
+    },
+    {
+      "id": "330001",
+      "title": "Cosmic Revelations: The Top 5 Space Discoveries of 2024",
+      "prompt": "Top 5 space discoveries of 2024",
+      "status": "failed",
+      "progressPercent": "0",
+      "progressStep": "Generation failed"
+    },
+    {
+      "id": "270003",
+      "title": "Unleashing Giants: The Top 10 Most Powerful Engines Ever Built",
+      "prompt": "Top 10 most powerful engines ever built",
+      "status": "failed",
+      "progressPercent": "37",
+      "progressStep": "Timed out"
+    },
+    {
+      "id": "270002",
+      "title": "Unveiling Opulence: The Top 10 Most Expensive Cars in the World",
+      "prompt": "Top 10 most expensive cars in the world",
+      "status": "failed",
+      "progressPercent": "0",
+      "progressStep": "Generation failed"
+    },
+    {
+      "id": "270001",
+      "title": "Unleashed Speed: The World's 10 Fastest Production Cars",
+      "prompt": "Top 10 fastest cars in the world",
+      "status": "failed",
+      "progressPercent": "0",
+      "progressStep": "Generation failed"
+    },
+    {
+      "id": "240006",
+      "title": "Unleashed Speed: The Top 5 Fastest Cars in the World",
+      "prompt": "Top 5 fastest cars in the world",
+      "status": "failed",
+      "progressPercent": "43",
+      "progressStep": "Timed out"
+    },
+    {
+      "id": "240005",
+      "title": "NULL",
+      "prompt": "Top 10 airplanes owned by celebrities ",
+      "status": "failed",
+      "progressPercent": "0",
+      "progressStep": "Generation failed"
+    },
+    {
+      "id": "240004",
+      "title": "NULL",
+      "prompt": "Top 10 airplanes owned by celebrities ",
+      "status": "failed",
+      "progressPercent": "0",
+      "progressStep": "Generation failed"
+    },
+    {
+      "id": "240003",
+      "title": "NULL",
+      "prompt": "Top 10 airplanes owned by celebrities ",
+      "status": "failed",
+      "progressPercent": "0",
+      "progressStep": "Generation failed"
+    },
+    {
+      "id": "240002",
+      "title": "NULL",
+      "prompt": "Top 10 amazing airplanes owned by celebrities",
+      "status": "failed",
+      "progressPercent": "0",
+      "progressStep": "Generation failed"
+    },
+    {
+      "id": "240001",
+      "title": "NULL",
+      "prompt": "Top 10 amazing airplanes of celebrities",
+      "status": "failed",
+      "progressPercent": "0",
+      "progressStep": "Generation failed"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\ttitle\tprompt\tstatus\tprogressPercent\tprogressStep\n510001\tThe Wildest Kylie Jenner Rumor: Unpacking the Truth\tThe craziest rumor about Kylie Jenner\tgenerating_visuals\t63\tComposing scenes... (2/15 done)\n480001\tNULL\tTop 5 most beautiful waterfalls in the world\tpending\t0\tNULL\n450001\tNULL\tTop 5 most incredible waterfalls in the world\tpending\t0\tNULL\n420001\tNULL\tTop 5 most stunning underwater creatures\tpending\t0\tNULL\n390001\tTop 10 Most Beautiful Waterfalls in the World\tTop 10 most beautiful waterfalls in the world\tawaiting_approval\t28\t✅ Script ready — awaiting your approval\n360003\tTop 5 Most Incredible Ancient Civilizations That Disappeared\tTop 5 most incredible ancient civilizations that disappeared\tawaiting_approval\t28\t✅ Script ready — awaiting your approval\n360002\tTop 5 Most AMAZING Deep Sea Creatures You Won't Believe Exist!\tTop 5 most amazing deep sea creatures\tcompleted\t100\tVideo complete!\n360001\tTop 5 Most Incredible Natural Phenomena on Earth\tTop 5 most incredible natural phenomena on Earth\tfailed\t43\tGenerating AI visuals + fetching stock clips...\n330003\tTop 5 Volcanoes That Could Erupt Soon\tTop 5 volcanoes that could erupt soon\tcompleted\t100\tVideo complete!\n330002\tTop 5 Most Amazing Ocean Discoveries You Won't Believe!\tTop 5 most amazing ocean discoveries\tcompleted\t100\tVideo complete!\n330001\tCosmic Revelations: The Top 5 Space Discoveries of 2024\tTop 5 space discoveries of 2024\tfailed\t0\tGeneration failed\n270003\tUnleashing Giants: The Top 10 Most Powerful Engines Ever Built\tTop 10 most powerful engines ever built\tfailed\t37\tTimed out\n270002\tUnveiling Opulence: The Top 10 Most Expensive Cars in the World\tTop 10 most expensive cars in the world\tfailed\t0\tGeneration failed\n270001\tUnleashed Speed: The World's 10 Fastest Production Cars\tTop 10 fastest cars in the world\tfailed\t0\tGeneration failed\n240006\tUnleashed Speed: The Top 5 Fastest Cars in the World\tTop 5 fastest cars in the world\tfailed\t43\tTimed out\n240005\tNULL\tTop 10 airplanes owned by celebrities \tfailed\t0\tGeneration failed\n240004\tNULL\tTop 10 airplanes owned by celebrities \tfailed\t0\tGeneration failed\n240003\tNULL\tTop 10 airplanes owned by celebrities \tfailed\t0\tGeneration failed\n240002\tNULL\tTop 10 amazing airplanes owned by celebrities\tfailed\t0\tGeneration failed\n240001\tNULL\tTop 10 amazing airplanes of celebrities\tfailed\t0\tGeneration failed\n",
+  "stderr": "",
+  "execution_time_ms": 278
+}
