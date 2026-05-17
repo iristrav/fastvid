@@ -1,0 +1,19 @@
+{
+  "query": "SELECT id, title, status, progressStep, progressPercent, script, videoUrl FROM videos WHERE id = 540001;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute SELECT id, title, status, progressStep, progressPercent, script, videoUrl FROM videos WHERE id = 540001;",
+  "rows": [
+    {
+      "id": "540001",
+      "title": "AI Impact on Modern Society",
+      "status": "pending",
+      "progressStep": "NULL",
+      "progressPercent": "0",
+      "script": "NULL",
+      "videoUrl": "NULL"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\ttitle\tstatus\tprogressStep\tprogressPercent\tscript\tvideoUrl\n540001\tAI Impact on Modern Society\tpending\tNULL\t0\tNULL\tNULL\n",
+  "stderr": "",
+  "execution_time_ms": 1040
+}

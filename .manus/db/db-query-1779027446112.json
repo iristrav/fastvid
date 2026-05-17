@@ -1,0 +1,80 @@
+{
+  "query": "SELECT id, userId, title, status, progressPercent FROM videos WHERE userId = 810001 ORDER BY id DESC LIMIT 10;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute SELECT id, userId, title, status, progressPercent FROM videos WHERE userId = 810001 ORDER BY id DESC LIMIT 10;",
+  "rows": [
+    {
+      "id": "540001",
+      "userId": "810001",
+      "title": "AI Impact on Modern Society",
+      "status": "generating_script",
+      "progressPercent": "5"
+    },
+    {
+      "id": "510001",
+      "userId": "810001",
+      "title": "The Wildest Kylie Jenner Rumor: Unpacking the Truth",
+      "status": "generating_visuals",
+      "progressPercent": "63"
+    },
+    {
+      "id": "390001",
+      "userId": "810001",
+      "title": "Top 10 Most Beautiful Waterfalls in the World",
+      "status": "awaiting_approval",
+      "progressPercent": "28"
+    },
+    {
+      "id": "360003",
+      "userId": "810001",
+      "title": "Top 5 Most Incredible Ancient Civilizations That Disappeared",
+      "status": "awaiting_approval",
+      "progressPercent": "28"
+    },
+    {
+      "id": "360002",
+      "userId": "810001",
+      "title": "Top 5 Most AMAZING Deep Sea Creatures You Won't Believe Exist!",
+      "status": "completed",
+      "progressPercent": "100"
+    },
+    {
+      "id": "360001",
+      "userId": "810001",
+      "title": "Top 5 Most Incredible Natural Phenomena on Earth",
+      "status": "failed",
+      "progressPercent": "43"
+    },
+    {
+      "id": "330003",
+      "userId": "810001",
+      "title": "Top 5 Volcanoes That Could Erupt Soon",
+      "status": "completed",
+      "progressPercent": "100"
+    },
+    {
+      "id": "330002",
+      "userId": "810001",
+      "title": "Top 5 Most Amazing Ocean Discoveries You Won't Believe!",
+      "status": "completed",
+      "progressPercent": "100"
+    },
+    {
+      "id": "330001",
+      "userId": "810001",
+      "title": "Cosmic Revelations: The Top 5 Space Discoveries of 2024",
+      "status": "failed",
+      "progressPercent": "0"
+    },
+    {
+      "id": "270003",
+      "userId": "810001",
+      "title": "Unleashing Giants: The Top 10 Most Powerful Engines Ever Built",
+      "status": "failed",
+      "progressPercent": "37"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\tuserId\ttitle\tstatus\tprogressPercent\n540001\t810001\tAI Impact on Modern Society\tgenerating_script\t5\n510001\t810001\tThe Wildest Kylie Jenner Rumor: Unpacking the Truth\tgenerating_visuals\t63\n390001\t810001\tTop 10 Most Beautiful Waterfalls in the World\tawaiting_approval\t28\n360003\t810001\tTop 5 Most Incredible Ancient Civilizations That Disappeared\tawaiting_approval\t28\n360002\t810001\tTop 5 Most AMAZING Deep Sea Creatures You Won't Believe Exist!\tcompleted\t100\n360001\t810001\tTop 5 Most Incredible Natural Phenomena on Earth\tfailed\t43\n330003\t810001\tTop 5 Volcanoes That Could Erupt Soon\tcompleted\t100\n330002\t810001\tTop 5 Most Amazing Ocean Discoveries You Won't Believe!\tcompleted\t100\n330001\t810001\tCosmic Revelations: The Top 5 Space Discoveries of 2024\tfailed\t0\n270003\t810001\tUnleashing Giants: The Top 10 Most Powerful Engines Ever Built\tfailed\t37\n",
+  "stderr": "",
+  "execution_time_ms": 285
+}

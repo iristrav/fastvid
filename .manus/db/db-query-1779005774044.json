@@ -1,0 +1,18 @@
+{
+  "query": "SELECT id, title, prompt, status, videoLength, createdAt FROM videos WHERE title = 'AI Impact on Modern Society' ORDER BY id DESC LIMIT 1;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute SELECT id, title, prompt, status, videoLength, createdAt FROM videos WHERE title = 'AI Impact on Modern Society' ORDER BY id DESC LIMIT 1;",
+  "rows": [
+    {
+      "id": "540001",
+      "title": "AI Impact on Modern Society",
+      "prompt": "The Impact of Artificial Intelligence on Modern Society - From Healthcare to Finance, AI is Revolutionizing Every Industry",
+      "status": "pending",
+      "videoLength": "5-8",
+      "createdAt": "2026-05-17 08:16:09"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\ttitle\tprompt\tstatus\tvideoLength\tcreatedAt\n540001\tAI Impact on Modern Society\tThe Impact of Artificial Intelligence on Modern Society - From Healthcare to Finance, AI is Revolutionizing Every Industry\tpending\t5-8\t2026-05-17 08:16:09\n",
+  "stderr": "",
+  "execution_time_ms": 273
+}

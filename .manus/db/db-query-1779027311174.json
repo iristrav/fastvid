@@ -1,0 +1,45 @@
+{
+  "query": "SELECT id, title, status, progressPercent, progressStep FROM videos WHERE status LIKE 'generating%' OR status = 'pending' ORDER BY id DESC LIMIT 5;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute SELECT id, title, status, progressPercent, progressStep FROM videos WHERE status LIKE 'generating%' OR status = 'pending' ORDER BY id DESC LIMIT 5;",
+  "rows": [
+    {
+      "id": "540001",
+      "title": "AI Impact on Modern Society",
+      "status": "generating_script",
+      "progressPercent": "5",
+      "progressStep": "Starting script generation..."
+    },
+    {
+      "id": "510001",
+      "title": "The Wildest Kylie Jenner Rumor: Unpacking the Truth",
+      "status": "generating_visuals",
+      "progressPercent": "63",
+      "progressStep": "Composing scenes... (2/15 done)"
+    },
+    {
+      "id": "480001",
+      "title": "NULL",
+      "status": "pending",
+      "progressPercent": "0",
+      "progressStep": "NULL"
+    },
+    {
+      "id": "450001",
+      "title": "NULL",
+      "status": "pending",
+      "progressPercent": "0",
+      "progressStep": "NULL"
+    },
+    {
+      "id": "420001",
+      "title": "NULL",
+      "status": "pending",
+      "progressPercent": "0",
+      "progressStep": "NULL"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\ttitle\tstatus\tprogressPercent\tprogressStep\n540001\tAI Impact on Modern Society\tgenerating_script\t5\tStarting script generation...\n510001\tThe Wildest Kylie Jenner Rumor: Unpacking the Truth\tgenerating_visuals\t63\tComposing scenes... (2/15 done)\n480001\tNULL\tpending\t0\tNULL\n450001\tNULL\tpending\t0\tNULL\n420001\tNULL\tpending\t0\tNULL\n",
+  "stderr": "",
+  "execution_time_ms": 285
+}

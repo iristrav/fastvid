@@ -1,0 +1,18 @@
+{
+  "query": "SELECT id, title, status, progressStep, progressPercent, voiceoverUrl FROM videos WHERE id = 540001;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute SELECT id, title, status, progressStep, progressPercent, voiceoverUrl FROM videos WHERE id = 540001;",
+  "rows": [
+    {
+      "id": "540001",
+      "title": "AI Impact on Modern Society",
+      "status": "generating_script",
+      "progressStep": "Starting script generation...",
+      "progressPercent": "5",
+      "voiceoverUrl": "NULL"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\ttitle\tstatus\tprogressStep\tprogressPercent\tvoiceoverUrl\n540001\tAI Impact on Modern Society\tgenerating_script\tStarting script generation...\t5\tNULL\n",
+  "stderr": "",
+  "execution_time_ms": 1111
+}

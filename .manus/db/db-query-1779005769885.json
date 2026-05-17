@@ -1,0 +1,9 @@
+{
+  "query": "INSERT INTO videos (userId, prompt, videoLength, videoType, status, title, createdAt, updatedAt) VALUES (1, 'The Impact of Artificial Intelligence on Modern Society - From Healthcare to Finance, AI is Revolutionizing Every Industry', '5-8', 'documentary', 'pending', 'AI Impact on Modern Society', NOW(), NOW());",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute INSERT INTO videos (userId, prompt, videoLength, videoType, status, title, createdAt, updatedAt) VALUES (1, 'The Impact of Artificial Intelligence on Modern Society - From Healthcare to Finance, AI is Revolutionizing Every Industry', '5-8', 'documentary', 'pending', 'AI Impact on Modern Society', NOW(), NOW());",
+  "rows": [],
+  "messages": [],
+  "stdout": "",
+  "stderr": "",
+  "execution_time_ms": 282
+}

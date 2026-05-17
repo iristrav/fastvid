@@ -1,0 +1,90 @@
+{
+  "query": "SELECT id, title, prompt, status, videoLength, createdAt FROM videos ORDER BY id DESC LIMIT 10;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute SELECT id, title, prompt, status, videoLength, createdAt FROM videos ORDER BY id DESC LIMIT 10;",
+  "rows": [
+    {
+      "id": "510001",
+      "title": "The Wildest Kylie Jenner Rumor: Unpacking the Truth",
+      "prompt": "The craziest rumor about Kylie Jenner",
+      "status": "generating_visuals",
+      "videoLength": "5-8",
+      "createdAt": "2026-05-13 12:52:44"
+    },
+    {
+      "id": "480001",
+      "title": "NULL",
+      "prompt": "Top 5 most beautiful waterfalls in the world",
+      "status": "pending",
+      "videoLength": "5-8",
+      "createdAt": "2026-05-13 10:06:57"
+    },
+    {
+      "id": "450001",
+      "title": "NULL",
+      "prompt": "Top 5 most incredible waterfalls in the world",
+      "status": "pending",
+      "videoLength": "5-8",
+      "createdAt": "2026-05-12 07:42:23"
+    },
+    {
+      "id": "420001",
+      "title": "NULL",
+      "prompt": "Top 5 most stunning underwater creatures",
+      "status": "pending",
+      "videoLength": "5-8",
+      "createdAt": "2026-05-11 08:15:34"
+    },
+    {
+      "id": "390001",
+      "title": "Top 10 Most Beautiful Waterfalls in the World",
+      "prompt": "Top 10 most beautiful waterfalls in the world",
+      "status": "awaiting_approval",
+      "videoLength": "5-8",
+      "createdAt": "2026-05-08 11:23:33"
+    },
+    {
+      "id": "360003",
+      "title": "Top 5 Most Incredible Ancient Civilizations That Disappeared",
+      "prompt": "Top 5 most incredible ancient civilizations that disappeared",
+      "status": "awaiting_approval",
+      "videoLength": "5-8",
+      "createdAt": "2026-05-07 20:18:53"
+    },
+    {
+      "id": "360002",
+      "title": "Top 5 Most AMAZING Deep Sea Creatures You Won't Believe Exist!",
+      "prompt": "Top 5 most amazing deep sea creatures",
+      "status": "completed",
+      "videoLength": "5-8",
+      "createdAt": "2026-05-07 20:08:03"
+    },
+    {
+      "id": "360001",
+      "title": "Top 5 Most Incredible Natural Phenomena on Earth",
+      "prompt": "Top 5 most incredible natural phenomena on Earth",
+      "status": "failed",
+      "videoLength": "5-8",
+      "createdAt": "2026-05-07 19:32:04"
+    },
+    {
+      "id": "330003",
+      "title": "Top 5 Volcanoes That Could Erupt Soon",
+      "prompt": "Top 5 volcanoes that could erupt soon",
+      "status": "completed",
+      "videoLength": "5-8",
+      "createdAt": "2026-05-06 18:56:59"
+    },
+    {
+      "id": "330002",
+      "title": "Top 5 Most Amazing Ocean Discoveries You Won't Believe!",
+      "prompt": "Top 5 most amazing ocean discoveries",
+      "status": "completed",
+      "videoLength": "5-8",
+      "createdAt": "2026-05-06 18:38:06"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\ttitle\tprompt\tstatus\tvideoLength\tcreatedAt\n510001\tThe Wildest Kylie Jenner Rumor: Unpacking the Truth\tThe craziest rumor about Kylie Jenner\tgenerating_visuals\t5-8\t2026-05-13 12:52:44\n480001\tNULL\tTop 5 most beautiful waterfalls in the world\tpending\t5-8\t2026-05-13 10:06:57\n450001\tNULL\tTop 5 most incredible waterfalls in the world\tpending\t5-8\t2026-05-12 07:42:23\n420001\tNULL\tTop 5 most stunning underwater creatures\tpending\t5-8\t2026-05-11 08:15:34\n390001\tTop 10 Most Beautiful Waterfalls in the World\tTop 10 most beautiful waterfalls in the world\tawaiting_approval\t5-8\t2026-05-08 11:23:33\n360003\tTop 5 Most Incredible Ancient Civilizations That Disappeared\tTop 5 most incredible ancient civilizations that disappeared\tawaiting_approval\t5-8\t2026-05-07 20:18:53\n360002\tTop 5 Most AMAZING Deep Sea Creatures You Won't Believe Exist!\tTop 5 most amazing deep sea creatures\tcompleted\t5-8\t2026-05-07 20:08:03\n360001\tTop 5 Most Incredible Natural Phenomena on Earth\tTop 5 most incredible natural phenomena on Earth\tfailed\t5-8\t2026-05-07 19:32:04\n330003\tTop 5 Volcanoes That Could Erupt Soon\tTop 5 volcanoes that could erupt soon\tcompleted\t5-8\t2026-05-06 18:56:59\n330002\tTop 5 Most Amazing Ocean Discoveries You Won't Believe!\tTop 5 most amazing ocean discoveries\tcompleted\t5-8\t2026-05-06 18:38:06\n",
+  "stderr": "",
+  "execution_time_ms": 269
+}
