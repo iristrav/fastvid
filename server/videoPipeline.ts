@@ -64,55 +64,13 @@ const testBinary = (binPath: string): boolean => {
 };
 
 const resolveFFmpegBin = (): string => {
-  // Check FFMPEG_PATH env var set by start.sh
-  const envPath = process.env.FFMPEG_PATH;
-  if (envPath && fs.existsSync(envPath) && testBinary(envPath)) {
-    console.log(`[Fastvid] Using FFMPEG_PATH env: ${envPath}`);
+  // Check NODE_ENV for Railway
+  const envPath = process.env.FFMPEG_BIN || '';
+  if (envPath && fs.existsSync(envPath)) {
+    console.log(`[Fastvid] Using FFMPEG_BIN env: ${envPath}`);
     return envPath;
   }
-  // Try known system paths first
-  const candidatePaths = [
-    "/usr/bin/ffmpeg",
-    "/usr/local/bin/ffmpeg",
-    "/nix/var/nix/profiles/default/bin/ffmpeg",
-  ];
-  for (const p of candidatePaths) {
-    if (fs.existsSync(p) && testBinary(p)) {
-      console.log(`[Fastvid] Using system FFmpeg: ${p}`);
-      return p;
-    }
-  }
-  // Try which command
-  try {
-    const systemPath = execSync("which ffmpeg", { encoding: "utf8", stdio: ["pipe", "pipe", "ignore"] }).trim();
-    if (systemPath && testBinary(systemPath)) {
-      console.log(`[Fastvid] Using system FFmpeg (which): ${systemPath}`);
-      return systemPath;
-    }
-  } catch {
-    // system ffmpeg not found via which
-  }
-  // Try nix store — Railway Nixpacks installs ffmpeg here (use shell:true for glob)
-  try {
-    const nixPath = execSync("ls /nix/store/*/bin/ffmpeg 2>/dev/null | head -1", { encoding: "utf8", shell: "/bin/sh" }).trim();
-    if (nixPath && fs.existsSync(nixPath) && testBinary(nixPath)) {
-      console.log(`[Fastvid] Using nix store FFmpeg: ${nixPath}`);
-      return nixPath;
-    }
-  } catch {
-    // nix store not available
-  }
-  // Try find as last resort before ffmpeg-static
-  try {
-    const found = execSync("find /nix /usr /opt -name ffmpeg -type f 2>/dev/null | head -1", { encoding: "utf8", shell: "/bin/sh" }).trim();
-    if (found && fs.existsSync(found) && testBinary(found)) {
-      console.log(`[Fastvid] Using found FFmpeg: ${found}`);
-      return found;
-    }
-  } catch {
-    // find failed
-  }
-  // Fall back to ffmpeg-static — test if it actually works
+  // PRIORITY 1: Try ffmpeg-static FIRST (most compatible, supports -show_entries)
   const staticPath = (ffmpegStatic as unknown as string) || "ffmpeg";
   if (staticPath && fs.existsSync(staticPath)) {
     try {
@@ -125,7 +83,49 @@ const resolveFFmpegBin = (): string => {
       console.warn(`[Fastvid] ffmpeg-static exists but CANNOT RUN (missing glibc?): ${staticPath}`);
     }
   }
-  // Last resort: try 'ffmpeg' from PATH
+  // PRIORITY 2: Try known system paths
+  const candidatePaths = [
+    "/usr/bin/ffmpeg",
+    "/usr/local/bin/ffmpeg",
+    "/nix/var/nix/profiles/default/bin/ffmpeg",
+  ];
+  for (const p of candidatePaths) {
+    if (fs.existsSync(p) && testBinary(p)) {
+      console.log(`[Fastvid] Using system FFmpeg: ${p}`);
+      return p;
+    }
+  }
+  // PRIORITY 3: Try which command
+  try {
+    const systemPath = execSync("which ffmpeg", { encoding: "utf8", stdio: ["pipe", "pipe", "ignore"] }).trim();
+    if (systemPath && testBinary(systemPath)) {
+      console.log(`[Fastvid] Using system FFmpeg (which): ${systemPath}`);
+      return systemPath;
+    }
+  } catch {
+    // system ffmpeg not found via which
+  }
+  // PRIORITY 4: Try nix store — Railway Nixpacks installs ffmpeg here (use shell:true for glob)
+  try {
+    const nixPath = execSync("ls /nix/store/*/bin/ffmpeg 2>/dev/null | head -1", { encoding: "utf8", shell: "/bin/sh" }).trim();
+    if (nixPath && fs.existsSync(nixPath) && testBinary(nixPath)) {
+      console.log(`[Fastvid] Using nix store FFmpeg: ${nixPath}`);
+      return nixPath;
+    }
+  } catch {
+    // nix store not available
+  }
+  // PRIORITY 5: Try find as last resort
+  try {
+    const found = execSync("find /nix /usr /opt -name ffmpeg -type f 2>/dev/null | head -1", { encoding: "utf8", shell: "/bin/sh" }).trim();
+    if (found && fs.existsSync(found) && testBinary(found)) {
+      console.log(`[Fastvid] Using found FFmpeg: ${found}`);
+      return found;
+    }
+  } catch {
+    // find failed
+  }
+  // PRIORITY 6: Last resort: try 'ffmpeg' from PATH
   if (testBinary('ffmpeg')) {
     console.log(`[Fastvid] Using 'ffmpeg' from PATH`);
     return 'ffmpeg';

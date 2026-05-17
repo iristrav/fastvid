@@ -342,3 +342,17 @@ Session 34 Complete: FFmpeg drawtext filter now handles ALL special characters s
 - [x] Ready for deployment
 
 FINAL STATUS: ✅ PRODUCTION READY - All systems operational!
+
+
+## Session 35 — FFmpeg Binary Resolution & Railway Database Integration
+- [x] Fixed FFmpeg binary resolution: prioritize ffmpeg-static (bundled) over system FFmpeg
+- [x] ffmpeg-static supports -show_entries flag (system FFmpeg 4.4.2 doesn't)
+- [x] Removed Pexels validation errors ("Unrecognized option 'show_entries'")
+- [x] Railway database integration: switched from .internal to public switchyard.proxy.rlwy.net URL
+- [x] Admin dashboard now shows ALL videos (fixed user filtering)
+- [x] Video 540001 reset and ready for generation with all fixes
+- [x] 137 tests passing, 0 TypeScript errors
+- [x] Server running with ffmpeg-static (validated)
+- [x] Production-ready for deployment
+
+FINAL STATUS: ✅ PRODUCTION READY - All systems operational!

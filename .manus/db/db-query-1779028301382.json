@@ -1,0 +1,20 @@
+{
+  "query": "SELECT id, title, status, progressPercent, progressStep, errorMessage, createdAt, updatedAt FROM videos WHERE id = 540001;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute SELECT id, title, status, progressPercent, progressStep, errorMessage, createdAt, updatedAt FROM videos WHERE id = 540001;",
+  "rows": [
+    {
+      "id": "540001",
+      "title": "AI Impact on Modern Society",
+      "status": "pending",
+      "progressPercent": "0",
+      "progressStep": "NULL",
+      "errorMessage": "NULL",
+      "createdAt": "2026-05-17 08:16:09",
+      "updatedAt": "2026-05-17 14:18:41"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\ttitle\tstatus\tprogressPercent\tprogressStep\terrorMessage\tcreatedAt\tupdatedAt\n540001\tAI Impact on Modern Society\tpending\t0\tNULL\tNULL\t2026-05-17 08:16:09\t2026-05-17 14:18:41\n",
+  "stderr": "",
+  "execution_time_ms": 325
+}
