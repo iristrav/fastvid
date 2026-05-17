@@ -70,20 +70,8 @@ const resolveFFmpegBin = (): string => {
     console.log(`[Fastvid] Using FFMPEG_BIN env: ${envPath}`);
     return envPath;
   }
-  // PRIORITY 1: Try ffmpeg-static FIRST (most compatible, supports -show_entries)
-  const staticPath = (ffmpegStatic as unknown as string) || "ffmpeg";
-  if (staticPath && fs.existsSync(staticPath)) {
-    try {
-      execSync(`chmod +x "${staticPath}"`, { shell: "/bin/sh" });
-    } catch { /* ignore */ }
-    if (testBinary(staticPath)) {
-      console.log(`[Fastvid] Using ffmpeg-static (validated): ${staticPath}`);
-      return staticPath;
-    } else {
-      console.warn(`[Fastvid] ffmpeg-static exists but CANNOT RUN (missing glibc?): ${staticPath}`);
-    }
-  }
-  // PRIORITY 2: Try known system paths
+  // PRIORITY 1: Try system ffmpeg FIRST - it has drawtext/libfreetype support needed for text overlays
+  // ffmpeg-static does NOT have drawtext support (compiled without libfreetype)
   const candidatePaths = [
     "/usr/bin/ffmpeg",
     "/usr/local/bin/ffmpeg",
@@ -91,8 +79,21 @@ const resolveFFmpegBin = (): string => {
   ];
   for (const p of candidatePaths) {
     if (fs.existsSync(p) && testBinary(p)) {
-      console.log(`[Fastvid] Using system FFmpeg: ${p}`);
+      console.log(`[Fastvid] Using system FFmpeg (drawtext-capable): ${p}`);
       return p;
+    }
+  }
+  // PRIORITY 2: Try ffmpeg-static as fallback (no drawtext, but works for basic encoding)
+  const staticPath = (ffmpegStatic as unknown as string) || "ffmpeg";
+  if (staticPath && fs.existsSync(staticPath)) {
+    try {
+      execSync(`chmod +x "${staticPath}"`, { shell: "/bin/sh" });
+    } catch { /* ignore */ }
+    if (testBinary(staticPath)) {
+      console.warn(`[Fastvid] Using ffmpeg-static (NO drawtext support): ${staticPath}`);
+      return staticPath;
+    } else {
+      console.warn(`[Fastvid] ffmpeg-static exists but CANNOT RUN (missing glibc?): ${staticPath}`);
     }
   }
   // PRIORITY 3: Try which command
@@ -625,8 +626,10 @@ async function fetchPexelsClips(
         fs.writeFileSync(rawPath, buffer);
 
         // Validate downloaded file with ffprobe before processing
+        // Use system ffprobe which supports -show_entries (ffmpeg-static does not have drawtext/libfreetype)
+        const FFPROBE_BIN = '/usr/bin/ffprobe';
         try {
-          const probeCmd = `${FFMPEG_BIN} -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${rawPath}" 2>&1`;
+          const probeCmd = `${FFPROBE_BIN} -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${rawPath}" 2>&1`;
           const probeResult = await withTimeout(
             exec(probeCmd),
             10_000,
@@ -663,7 +666,7 @@ async function fetchPexelsClips(
             `-vf "scale=${Math.round(VIDEO_WIDTH * 1.12)}:${Math.round(VIDEO_HEIGHT * 1.12)}:force_original_aspect_ratio=increase,` +
             `crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:${panX}:(ih-${VIDEO_HEIGHT})/2,` +
             `fade=t=in:st=0:d=0.3,fade=t=out:st=${Math.max(0, clipDuration - 0.3)}:d=0.3" ` +
-            `-c:v libx264 -preset slow -crf 18 -an -pix_fmt yuv420p "${outPath}"`
+            `-c:v libx264 -preset veryfast -crf 18 -an -pix_fmt yuv420p "${outPath}"`
           ),
           45_000,
           `Trim Pexels clip ${idx} scene ${sceneIndex}`
@@ -704,7 +707,7 @@ async function generateColorFallback(sceneIndex: number, duration: number, workD
     await withTimeout(
       exec(
         `${FFMPEG_BIN} -y -f lavfi -i "color=c=#${color}:size=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:rate=25" ` +
-        `-t ${duration} -c:v libx264 -preset slow -crf 18 -pix_fmt yuv420p "${outputPath}"`
+        `-t ${duration} -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p "${outputPath}"`
       ),
       15_000, `Fallback video scene ${sceneIndex}`
     );
@@ -715,7 +718,7 @@ async function generateColorFallback(sceneIndex: number, duration: number, workD
       await withTimeout(
         exec(
           `${FFMPEG_BIN} -y -f lavfi -i "color=c=black:size=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:rate=25" ` +
-          `-t ${duration} -c:v libx264 -preset slow -crf 18 -pix_fmt yuv420p "${outputPath}"`
+          `-t ${duration} -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p "${outputPath}"`
         ),
         15_000, `Black screen fallback scene ${sceneIndex}`
       );
@@ -1215,9 +1218,9 @@ async function renderIntroCardFFmpeg(videoTitle: string, duration: number, workD
       `drawtext=text='AI-Generated Video':fontcolor=#a0c8ff:fontsize=26:x=(w-text_w)/2:y=h/2+80,` +
       `fade=t=in:st=0:d=0.4,fade=t=out:st=${duration - 0.4}:d=0.4[vout]" ` +
       `-map "[vout]" -map "1:a" ` +
-      `-t ${duration} -c:v libx264 -preset slow -crf 18 -pix_fmt yuv420p -r 25 -c:a aac -b:a 320k -shortest "${outputPath}"`
+      `-t ${duration} -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -r 25 -c:a aac -b:a 320k -shortest "${outputPath}"`
     ),
-    20_000, "Intro card FFmpeg render"
+    60_000, "Intro card FFmpeg render"
   );
   return outputPath;
 }
@@ -1301,9 +1304,9 @@ async function renderIntroCard(videoTitle: string, duration: number, workDir: st
       `${FFMPEG_BIN} -y -loop 1 -i "${pngPath}" -f lavfi -i anullsrc=r=44100:cl=stereo ` +
       `-t ${duration} ` +
       `-vf "fade=t=in:st=0:d=0.4,fade=t=out:st=${duration - 0.4}:d=0.4" ` +
-      `-c:v libx264 -preset slow -crf 18 -pix_fmt yuv420p -r 25 -c:a aac -b:a 320k -shortest "${outputPath}"`
+      `-c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -r 25 -c:a aac -b:a 320k -shortest "${outputPath}"`
     ),
-    20_000, "Intro card render"
+    90_000, "Intro card render"
   );
 
   try { fs.unlinkSync(pngPath); } catch { /* ignore */ }
@@ -1323,9 +1326,9 @@ async function renderOutroCardFFmpeg(duration: number, workDir: string): Promise
       `drawtext=text='FASTVID':fontcolor=#a064ff:fontsize=34:x=(w-text_w)/2:y=h/2+160,` +
       `fade=t=in:st=0:d=0.4,fade=t=out:st=${duration - 0.4}:d=0.4[vout]" ` +
       `-map "[vout]" -map "1:a" ` +
-      `-t ${duration} -c:v libx264 -preset slow -crf 18 -pix_fmt yuv420p -r 25 -c:a aac -b:a 320k -shortest "${outputPath}"`
+      `-t ${duration} -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -r 25 -c:a aac -b:a 320k -shortest "${outputPath}"`
     ),
-    20_000, "Outro card FFmpeg render"
+    90_000, "Outro card FFmpeg render"
   );
   return outputPath;
 }
@@ -1384,9 +1387,9 @@ async function renderOutroCard(duration: number, workDir: string): Promise<strin
       `${FFMPEG_BIN} -y -loop 1 -i "${pngPath}" -f lavfi -i anullsrc=r=44100:cl=stereo ` +
       `-t ${duration} ` +
       `-vf "fade=t=in:st=0:d=0.4,fade=t=out:st=${duration - 0.4}:d=0.4" ` +
-      `-c:v libx264 -preset slow -crf 18 -pix_fmt yuv420p -r 25 -c:a aac -b:a 320k -shortest "${outputPath}"`
+      `-c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -r 25 -c:a aac -b:a 320k -shortest "${outputPath}"`
     ),
-    20_000, "Outro card render"
+    90_000, "Outro card render"
   );
 
   try { fs.unlinkSync(pngPath); } catch { /* ignore */ }
@@ -1553,7 +1556,7 @@ async function composeSceneVideo(
           `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}"${kineticInput} ` +
           `-filter_complex "${scaleFilters}${xfadeChain}${kineticChainStr};[${finalVideoLabel}]${fadeFilter}[vout]" ` +
           `-map "[vout]" -map "${audioIdx}:a" ` +
-          `-t ${duration} ${threadFlag} -c:v libx264 -preset slow -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
+          `-t ${duration} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
         ),
         120_000, `Compose multi-clip scene ${scene.index}`
       );
@@ -1573,7 +1576,7 @@ async function composeSceneVideo(
           `${FFMPEG_BIN} -y -i "${clip}" -i "${safeAudioPath}"${kineticInput} ` +
           `-filter_complex "[0:v]scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}[scaled]${kineticChainStr};[${finalVideoLabel}]${fadeFilter}[vout]" ` +
           `-map "[vout]" -map "${audioIdx}:a" ` +
-          `-t ${duration} ${threadFlag} -c:v libx264 -preset slow -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
+          `-t ${duration} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
         ),
         75_000, `Compose 1-clip scene ${scene.index}`
       );
@@ -1584,7 +1587,7 @@ async function composeSceneVideo(
     await withTimeout(
       exec(
         `${FFMPEG_BIN} -y -i "${safeClips[0]}" -i "${safeAudioPath}" ` +
-        `-t ${duration} ${threadFlag} -c:v libx264 -preset slow -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
+        `-t ${duration} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
       ),
       45_000, `Simple mux scene ${scene.index}`
     );
@@ -1663,7 +1666,7 @@ async function concatenateScenesWithMusic(
 
   const [, musicPath] = await Promise.all([
     withTimeout(
-      exec(`${FFMPEG_BIN} -y -f concat -safe 0 -i "${listFile}" -c:v libx264 -preset slow -crf 18 -c:a aac -b:a 320k -movflags +faststart "${concatPath}"`),
+      exec(`${FFMPEG_BIN} -y -f concat -safe 0 -i "${listFile}" -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -movflags +faststart "${concatPath}"`),
       900_000, // 15 min for large videos (30+ scenes)
       "Scene concatenation"
     ),
@@ -1680,7 +1683,7 @@ async function concatenateScenesWithMusic(
   let concatHasAudio = false;
   try {
     const { execSync: es } = await import("child_process");
-    const probeOut = es(`${FFMPEG_BIN.replace(/ffmpeg$/, 'ffprobe')} -v error -select_streams a -show_entries stream=codec_type -of csv=p=0 "${concatPath}"`, { encoding: 'utf8' });
+    const probeOut = es(`/usr/bin/ffprobe -v error -select_streams a -show_entries stream=codec_type -of csv=p=0 "${concatPath}"`, { encoding: 'utf8' });
     concatHasAudio = probeOut.trim().includes('audio');
   } catch { concatHasAudio = false; }
   console.log(`[Pipeline] Concat has audio: ${concatHasAudio}`);
@@ -1773,7 +1776,7 @@ export async function runVideoPipeline(
       fs.writeFileSync(customAudioPath, Buffer.from(await resp.arrayBuffer()));
       const { execFile } = await import("child_process");
       const totalDuration = await new Promise<number>((resolve) => {
-        execFile(FFMPEG_BIN.replace("ffmpeg", "ffprobe"), ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", customAudioPath], (_err: unknown, stdout: string) => {
+        execFile('/usr/bin/ffprobe', ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", customAudioPath], (_err: unknown, stdout: string) => {
           resolve(parseFloat(stdout?.trim() ?? "60") || 60);
         });
       });
