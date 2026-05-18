@@ -1000,6 +1000,206 @@ async function generateHiggsfieldImageToVideoClip(
   }
 }
 
+// ─── 3c2. Fetch Internet Archive Video Clips ────────────────────────────────
+async function fetchInternetArchiveClips(
+  query: string,
+  duration: number,
+  workDir: string,
+  sceneIndex: number,
+  count: number = 2
+): Promise<string[]> {
+  const results: string[] = [];
+  try {
+    // Search Internet Archive for video content matching the query
+    const searchUrl = `https://archive.org/advancedsearch.php?q=${encodeURIComponent(query)}+mediatype:movies&fl[]=identifier,title&rows=10&output=json`;
+    const searchResp = await withTimeout(
+      fetch(searchUrl, { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }),
+      10_000,
+      `Internet Archive search scene ${sceneIndex}`
+    );
+    if (!searchResp.ok) return [];
+    const searchData = await searchResp.json() as { response?: { docs?: Array<{ identifier: string; title: string }> } };
+    const docs = searchData.response?.docs?.slice(0, count * 3) || [];
+    if (!docs.length) return [];
+
+    let fetched = 0;
+    for (const doc of docs) {
+      if (fetched >= count) break;
+      try {
+        // Get metadata for this item to find video files
+        const metaUrl = `https://archive.org/metadata/${doc.identifier}/files`;
+        const metaResp = await withTimeout(
+          fetch(metaUrl, { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }),
+          8_000,
+          `Internet Archive metadata scene ${sceneIndex}`
+        );
+        if (!metaResp.ok) continue;
+        const metaData = await metaResp.json() as { result?: Array<{ name: string; format: string; size?: string }> };
+        const videoFiles = (metaData.result || []).filter(f =>
+          ['h.264', 'MPEG4', 'MP4', 'Ogg Video', 'WebM'].includes(f.format)
+        );
+        if (!videoFiles.length) continue;
+
+        // Pick smallest video file to avoid large downloads
+        const videoFile = videoFiles.sort((a, b) =>
+          parseInt(a.size || '999999999') - parseInt(b.size || '999999999')
+        )[0];
+
+        const videoUrl = `https://archive.org/download/${doc.identifier}/${encodeURIComponent(videoFile.name)}`;
+        const outPath = path.join(workDir, `scene_${sceneIndex}_archive_${fetched}.mp4`);
+        const tmpPath = path.join(workDir, `scene_${sceneIndex}_archive_${fetched}_tmp.mp4`);
+
+        // Download with size limit (max 50MB)
+        const dlResp = await withTimeout(
+          fetch(videoUrl, { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }),
+          30_000,
+          `Internet Archive download scene ${sceneIndex}`
+        );
+        if (!dlResp.ok) continue;
+
+        // Use arrayBuffer with size check (max 50MB)
+        const MAX_ARCHIVE_SIZE = 50 * 1024 * 1024; // 50MB
+        const arrayBuf = await dlResp.arrayBuffer();
+        if (arrayBuf.byteLength > MAX_ARCHIVE_SIZE) {
+          console.warn(`[Pipeline] Scene ${sceneIndex}: Archive clip too large (${(arrayBuf.byteLength / 1024 / 1024).toFixed(1)}MB), skipping`);
+          continue;
+        }
+        fs.writeFileSync(tmpPath, Buffer.from(arrayBuf));
+
+        // Extract a clip from the middle of the video (skip first 10s to avoid intros)
+        const clipStart = 10;
+        await withTimeout(
+          exec(
+            `${FFMPEG_BIN} -y -ss ${clipStart} -i "${tmpPath}" -t ${duration} ` +
+            `-vf "scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}" ` +
+            `-c:v libx264 -preset veryfast -crf 22 -an -pix_fmt yuv420p "${outPath}"`
+          ),
+          45_000,
+          `Internet Archive clip extract scene ${sceneIndex}`
+        );
+        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+
+        if (fs.existsSync(outPath) && fs.statSync(outPath).size > 10_000) {
+          results.push(outPath);
+          fetched++;
+          console.log(`[Pipeline] Scene ${sceneIndex}: Internet Archive clip added: ${doc.title}`);
+        }
+      } catch (err) {
+        console.warn(`[Pipeline] Scene ${sceneIndex}: Archive item ${doc.identifier} failed:`, (err as Error).message);
+      }
+    }
+  } catch (err) {
+    console.warn(`[Pipeline] Scene ${sceneIndex}: Internet Archive search failed:`, (err as Error).message);
+  }
+  return results;
+}
+
+// ─── 3c3. Fetch YouTube CC Video Clips via Manus Data API ────────────────────
+async function fetchYouTubeCCClips(
+  query: string,
+  duration: number,
+  workDir: string,
+  sceneIndex: number,
+  count: number = 2
+): Promise<string[]> {
+  const results: string[] = [];
+  // Only available when Forge API is configured (Manus environment)
+  const forgeApiUrl = process.env.BUILT_IN_FORGE_API_URL;
+  const forgeApiKey = process.env.BUILT_IN_FORGE_API_KEY;
+  if (!forgeApiUrl || !forgeApiKey) return [];
+
+  try {
+    const baseUrl = forgeApiUrl.endsWith('/') ? forgeApiUrl : `${forgeApiUrl}/`;
+    const fullUrl = new URL('webdevtoken.v1.WebDevService/CallApi', baseUrl).toString();
+
+    // Search YouTube for CC-licensed videos matching the query
+    const searchResp = await withTimeout(
+      fetch(fullUrl, {
+        method: 'POST',
+        headers: {
+          'accept': 'application/json',
+          'content-type': 'application/json',
+          'connect-protocol-version': '1',
+          'authorization': `Bearer ${forgeApiKey}`,
+        },
+        body: JSON.stringify({
+          apiId: 'Youtube/search',
+          query: {
+            q: query,
+            type: 'video',
+            videoLicense: 'creativeCommon',
+            maxResults: count * 3,
+            part: 'snippet',
+          },
+        }),
+      }),
+      15_000,
+      `YouTube CC search scene ${sceneIndex}`
+    );
+
+    if (!searchResp.ok) return [];
+    const payload = await searchResp.json() as Record<string, unknown>;
+    let searchData: { items?: Array<{ id?: { videoId?: string }; snippet?: { title?: string } }> } = {};
+    if (payload && 'jsonData' in payload) {
+      try { searchData = JSON.parse(payload.jsonData as string); } catch { searchData = payload.jsonData as typeof searchData; }
+    } else {
+      searchData = payload as typeof searchData;
+    }
+
+    const items = searchData.items || [];
+    if (!items.length) return [];
+
+    let fetched = 0;
+    for (const item of items) {
+      if (fetched >= count) break;
+      const videoId = item.id?.videoId;
+      if (!videoId) continue;
+
+      try {
+        const outPath = path.join(workDir, `scene_${sceneIndex}_yt_${fetched}.mp4`);
+        const tmpPath = path.join(workDir, `scene_${sceneIndex}_yt_${fetched}_tmp.mp4`);
+
+        // Download via yt-dlp with CC filter and size limit
+        await withTimeout(
+          exec(
+            `yt-dlp -f "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480][ext=mp4]/best[height<=480]" ` +
+            `--match-filter "license='Creative Commons Attribution licence (reuse allowed)'" ` +
+            `--max-filesize 50m -o "${tmpPath}" ` +
+            `"https://www.youtube.com/watch?v=${videoId}" 2>&1 || true`
+          ),
+          60_000,
+          `YouTube CC download scene ${sceneIndex}`
+        );
+
+        if (!fs.existsSync(tmpPath) || fs.statSync(tmpPath).size < 10_000) continue;
+
+        // Extract a clip from the video
+        await withTimeout(
+          exec(
+            `${FFMPEG_BIN} -y -ss 5 -i "${tmpPath}" -t ${duration} ` +
+            `-vf "scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}" ` +
+            `-c:v libx264 -preset veryfast -crf 22 -an -pix_fmt yuv420p "${outPath}"`
+          ),
+          30_000,
+          `YouTube CC clip extract scene ${sceneIndex}`
+        );
+        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+
+        if (fs.existsSync(outPath) && fs.statSync(outPath).size > 10_000) {
+          results.push(outPath);
+          fetched++;
+          console.log(`[Pipeline] Scene ${sceneIndex}: YouTube CC clip added: ${item.snippet?.title}`);
+        }
+      } catch (err) {
+        console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube CC video ${videoId} failed:`, (err as Error).message);
+      }
+    }
+  } catch (err) {
+    console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube CC search failed:`, (err as Error).message);
+  }
+  return results;
+}
+
 // ─── 3d. Fetch All Visuals for a Scene ───────────────────────────────────────
 // Returns array of valid clip paths (AI image first, then Pexels clips)
 async function fetchSceneVisuals(
@@ -1009,9 +1209,9 @@ async function fetchSceneVisuals(
   const halfDur = Math.max(3, Math.ceil(scene.duration / 3));
   const aiClipPath = path.join(workDir, `scene_${scene.index}_ai.mp4`);
 
-  // Run all AI video generators, Pexels fetch, and Wikimedia in parallel
-  // Priority: Stability AI → Grok → Veo → Meta → Higgsfield (text+image) → Pexels → Wikimedia → Color fallback
-  const [aiResult, grokResult, veoResult, metaResult, higgsfieldTextResult, higgsfieldImageResult, pexelsResults, wikimediaResults] = await Promise.allSettled([
+  // Run all AI video generators, Pexels fetch, Wikimedia, Internet Archive, and YouTube CC in parallel
+  // Priority: Stability AI → Grok → Veo → Meta → Higgsfield (text+image) → Pexels → Wikimedia → Internet Archive → YouTube CC → Color fallback
+  const [aiResult, grokResult, veoResult, metaResult, higgsfieldTextResult, higgsfieldImageResult, pexelsResults, wikimediaResults, archiveResults, youtubeResults] = await Promise.allSettled([
     generateStabilityAIClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
     generateGrokVideoClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
     generateVeoVideoClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
@@ -1020,6 +1220,8 @@ async function fetchSceneVisuals(
     generateHiggsfieldImageToVideoClip("", scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
     fetchPexelsClips(scene.pexelsQuery, halfDur, workDir, scene.index, 3),
     fetchWikimediaImages(scene.visualCue, halfDur, workDir, scene.index, 2),
+    fetchInternetArchiveClips(scene.visualCue, halfDur, workDir, scene.index, 2),
+    fetchYouTubeCCClips(scene.visualCue, halfDur, workDir, scene.index, 2),
   ]);
 
   const clips: string[] = [];
@@ -1055,13 +1257,25 @@ async function fetchSceneVisuals(
     clips.push(clip);
   }
 
+  // Then Internet Archive clips
+  const archiveClips = archiveResults.status === "fulfilled" ? archiveResults.value : [];
+  for (const clip of archiveClips) {
+    clips.push(clip);
+  }
+
+  // Then YouTube CC clips
+  const youtubeClips = youtubeResults.status === "fulfilled" ? youtubeResults.value : [];
+  for (const clip of youtubeClips) {
+    clips.push(clip);
+  }
+
   // If nothing worked, use color fallback
   if (clips.length === 0) {
     console.warn(`[Pipeline] Scene ${scene.index}: All visuals failed, using color fallback`);
     clips.push(await generateColorFallback(scene.index, scene.duration + 1, workDir));
   }
 
-  console.log(`[Pipeline] Scene ${scene.index}: ${clips.length} clip(s) ready (Stability: ${aiClip ? "✓" : "✗"}, Grok: ${grokClip ? "✓" : "✗"}, Veo: ${veoClip ? "✓" : "✗"}, Meta: ${metaClip ? "✓" : "✗"}, Higgsfield: ${higgsfieldTextClip || higgsfieldImageClip ? "✓" : "✗"}, Pexels: ${pexelsClips.length}, Wikimedia: ${wikimediaClips.length})`);
+  console.log(`[Pipeline] Scene ${scene.index}: ${clips.length} clip(s) ready (Stability: ${aiClip ? "✓" : "✗"}, Grok: ${grokClip ? "✓" : "✗"}, Veo: ${veoClip ? "✓" : "✗"}, Meta: ${metaClip ? "✓" : "✗"}, Higgsfield: ${higgsfieldTextClip || higgsfieldImageClip ? "✓" : "✗"}, Pexels: ${pexelsClips.length}, Wikimedia: ${wikimediaClips.length}, Archive: ${archiveClips.length}, YouTube CC: ${youtubeClips.length})`);
   return clips;
 }
 
