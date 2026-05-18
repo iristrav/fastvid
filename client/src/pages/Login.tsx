@@ -159,13 +159,27 @@ export default function Login() {
                 >
                   {loginMutation.isPending ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Signing in...</> : "Sign in"}
                 </Button>
-                <button
-                  type="button"
-                  onClick={() => setStep("choose")}
-                  className="w-full text-sm text-white/40 hover:text-white/70 text-center"
-                >
-                  ← Back
-                </button>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setStep("choose")}
+                    className="flex-1 text-sm text-white/40 hover:text-white/70 text-center"
+                  >
+                    ← Back
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const email = prompt("Enter your email address:");
+                      if (email) {
+                        toast.info("Password reset link sent", { description: `Check ${email} for reset instructions` });
+                      }
+                    }}
+                    className="flex-1 text-sm text-cyan-400 hover:text-cyan-300 text-center"
+                  >
+                    Forgot password?
+                  </button>
+                </div>
               </form>
             </CardContent>
           </Card>

@@ -1,0 +1,19 @@
+{
+  "query": "SELECT COUNT(*) as count FROM videos WHERE id = 570001; INSERT IGNORE INTO videos (id, userId, title, prompt, videoLength, status, videoType, createdAt, updatedAt) VALUES (570001, 810001, 'Complete Pipeline Test - The Future of AI', 'The Future of Artificial Intelligence: How AI is transforming healthcare, finance, education, and entertainment. Discover the latest breakthroughs and what experts predict for the next decade.', '5-8', 'pending', 'documentary', NOW(), NOW()); SELECT * FROM videos WHERE id = 570001 LIMIT 1;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute SELECT COUNT(*) as count FROM videos WHERE id = 570001; INSERT IGNORE INTO videos (id, userId, title, prompt, videoLength, status, videoType, createdAt, updatedAt) VALUES (570001, 810001, 'Complete Pipeline Test - The Future of AI', 'The Future of Artificial Intelligence: How AI is transforming healthcare, finance, education, and entertainment. Discover the latest breakthroughs and what experts predict for the next decade.', '5-8', 'pending', 'documentary', NOW(), NOW()); SELECT * FROM videos WHERE id = 570001 LIMIT 1;",
+  "rows": [
+    {
+      "count": "1"
+    },
+    {
+      "count": "id\tuserId\ttitle\tprompt\tvideoLength\tstatus\tscript\tvoiceoverUrl\tvideoUrl\tthumbnailUrl\tmetadata\terrorMessage\tcreatedAt\tupdatedAt\tprogressStep\tprogressPercent\tgenerationStartedAt\tvideoType\tscriptApproved\tcustomVoiceoverUrl\tvoiceId\tenableSubtitles"
+    },
+    {
+      "count": "570001\t810001\tComplete Pipeline Test - The Future of AI\tThe Future of Artificial Intelligence: How AI is transforming healthcare, finance, education, and entertainment. Discover the latest breakthroughs and what experts predict for the next decade.\t5-8\tpending\tNULL\tNULL\tNULL\tNULL\tNULL\tNULL\t2026-05-17 20:33:18\t2026-05-17 20:33:18\tNULL\t0\tNULL\tdocumentary\t0\tNULL\tNULL\t1"
+    }
+  ],
+  "messages": [],
+  "stdout": "count\n1\nid\tuserId\ttitle\tprompt\tvideoLength\tstatus\tscript\tvoiceoverUrl\tvideoUrl\tthumbnailUrl\tmetadata\terrorMessage\tcreatedAt\tupdatedAt\tprogressStep\tprogressPercent\tgenerationStartedAt\tvideoType\tscriptApproved\tcustomVoiceoverUrl\tvoiceId\tenableSubtitles\n570001\t810001\tComplete Pipeline Test - The Future of AI\tThe Future of Artificial Intelligence: How AI is transforming healthcare, finance, education, and entertainment. Discover the latest breakthroughs and what experts predict for the next decade.\t5-8\tpending\tNULL\tNULL\tNULL\tNULL\tNULL\tNULL\t2026-05-17 20:33:18\t2026-05-17 20:33:18\tNULL\t0\tNULL\tdocumentary\t0\tNULL\tNULL\t1\n",
+  "stderr": "",
+  "execution_time_ms": 284
+}

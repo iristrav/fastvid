@@ -1,0 +1,19 @@
+{
+  "query": "SELECT COUNT(*) as count FROM videos WHERE id = 600001; SELECT id, userId, status FROM videos WHERE id IN (600001, 600002, 600003) OR id > 599999 ORDER BY id DESC LIMIT 5;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute SELECT COUNT(*) as count FROM videos WHERE id = 600001; SELECT id, userId, status FROM videos WHERE id IN (600001, 600002, 600003) OR id > 599999 ORDER BY id DESC LIMIT 5;",
+  "rows": [
+    {
+      "count": "1"
+    },
+    {
+      "count": "id\tuserId\tstatus"
+    },
+    {
+      "count": "600001\t810001\tpending"
+    }
+  ],
+  "messages": [],
+  "stdout": "count\n1\nid\tuserId\tstatus\n600001\t810001\tpending\n",
+  "stderr": "",
+  "execution_time_ms": 362
+}

@@ -1,0 +1,80 @@
+{
+  "query": "SELECT id, userId, status, progressPercent, createdAt FROM videos ORDER BY id DESC LIMIT 10;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute SELECT id, userId, status, progressPercent, createdAt FROM videos ORDER BY id DESC LIMIT 10;",
+  "rows": [
+    {
+      "id": "600001",
+      "userId": "810001",
+      "status": "pending",
+      "progressPercent": "0",
+      "createdAt": "2026-05-18 11:09:46"
+    },
+    {
+      "id": "570001",
+      "userId": "810001",
+      "status": "pending",
+      "progressPercent": "0",
+      "createdAt": "2026-05-17 20:33:18"
+    },
+    {
+      "id": "540001",
+      "userId": "810001",
+      "status": "failed",
+      "progressPercent": "0",
+      "createdAt": "2026-05-17 08:16:09"
+    },
+    {
+      "id": "510001",
+      "userId": "810001",
+      "status": "generating_visuals",
+      "progressPercent": "63",
+      "createdAt": "2026-05-13 12:52:44"
+    },
+    {
+      "id": "480001",
+      "userId": "1",
+      "status": "pending",
+      "progressPercent": "0",
+      "createdAt": "2026-05-13 10:06:57"
+    },
+    {
+      "id": "450001",
+      "userId": "1",
+      "status": "pending",
+      "progressPercent": "0",
+      "createdAt": "2026-05-12 07:42:23"
+    },
+    {
+      "id": "420001",
+      "userId": "1",
+      "status": "pending",
+      "progressPercent": "0",
+      "createdAt": "2026-05-11 08:15:34"
+    },
+    {
+      "id": "390001",
+      "userId": "810001",
+      "status": "awaiting_approval",
+      "progressPercent": "28",
+      "createdAt": "2026-05-08 11:23:33"
+    },
+    {
+      "id": "360003",
+      "userId": "810001",
+      "status": "awaiting_approval",
+      "progressPercent": "28",
+      "createdAt": "2026-05-07 20:18:53"
+    },
+    {
+      "id": "360002",
+      "userId": "810001",
+      "status": "completed",
+      "progressPercent": "100",
+      "createdAt": "2026-05-07 20:08:03"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\tuserId\tstatus\tprogressPercent\tcreatedAt\n600001\t810001\tpending\t0\t2026-05-18 11:09:46\n570001\t810001\tpending\t0\t2026-05-17 20:33:18\n540001\t810001\tfailed\t0\t2026-05-17 08:16:09\n510001\t810001\tgenerating_visuals\t63\t2026-05-13 12:52:44\n480001\t1\tpending\t0\t2026-05-13 10:06:57\n450001\t1\tpending\t0\t2026-05-12 07:42:23\n420001\t1\tpending\t0\t2026-05-11 08:15:34\n390001\t810001\tawaiting_approval\t28\t2026-05-08 11:23:33\n360003\t810001\tawaiting_approval\t28\t2026-05-07 20:18:53\n360002\t810001\tcompleted\t100\t2026-05-07 20:08:03\n",
+  "stderr": "",
+  "execution_time_ms": 1127
+}

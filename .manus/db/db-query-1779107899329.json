@@ -1,0 +1,22 @@
+{
+  "query": "SELECT id, email, role, createdAt FROM users WHERE role = 'admin' OR id IN (1, 810001);",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute SELECT id, email, role, createdAt FROM users WHERE role = 'admin' OR id IN (1, 810001);",
+  "rows": [
+    {
+      "id": "1",
+      "email": "irisroeten2@gmail.com",
+      "role": "admin",
+      "createdAt": "2026-04-29 12:21:19"
+    },
+    {
+      "id": "810001",
+      "email": "Iris.travaille@hotmail.com",
+      "role": "admin",
+      "createdAt": "2026-05-03 12:32:49"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\temail\trole\tcreatedAt\n1\tirisroeten2@gmail.com\tadmin\t2026-04-29 12:21:19\n810001\tIris.travaille@hotmail.com\tadmin\t2026-05-03 12:32:49\n",
+  "stderr": "",
+  "execution_time_ms": 1360
+}

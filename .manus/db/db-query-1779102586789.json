@@ -1,0 +1,13 @@
+{
+  "query": "INSERT INTO videos (userId, prompt, videoLength, videoType, status, createdAt) VALUES (810001, 'The Revolutionary Impact of Artificial Intelligence on Modern Society: From Healthcare Breakthroughs to Financial Innovation, AI is Reshaping Every Industry. Explore the Latest Developments, Expert Predictions, and Real-World Applications', '5-8', 'documentary', 'pending', NOW()); SELECT LAST_INSERT_ID() as videoId;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute INSERT INTO videos (userId, prompt, videoLength, videoType, status, createdAt) VALUES (810001, 'The Revolutionary Impact of Artificial Intelligence on Modern Society: From Healthcare Breakthroughs to Financial Innovation, AI is Reshaping Every Industry. Explore the Latest Developments, Expert Predictions, and Real-World Applications', '5-8', 'documentary', 'pending', NOW()); SELECT LAST_INSERT_ID() as videoId;",
+  "rows": [
+    {
+      "videoId": "600001"
+    }
+  ],
+  "messages": [],
+  "stdout": "videoId\n600001\n",
+  "stderr": "",
+  "execution_time_ms": 1131
+}
