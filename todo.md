@@ -387,3 +387,12 @@ FINAL STATUS: ✅ ALL CRITICAL FFMPEG ISSUES FIXED
 - [x] Upgrade background music: layered ambient electronic pads with subtle pulse (5 sine layers)
 - [x] Upgrade music loop: aloop=-1 so music loops for full video duration
 - [x] Add vignette effect to all scenes (darkened edges for cinematic look)
+
+## Chapter Cards (Vox/Wendover Style Section Title Cards)
+- [x] Add ChapterCard scene type to Scene interface (isChapterCard: boolean, chapterTitle: string)
+- [x] Add renderChapterCard() function: 1.5s black background, large ALL CAPS white title, thin accent line
+- [x] Update parseScriptIntoScenes to include sectionTitle per scene for chapter card detection
+- [x] Update script outline to pass section titles to scene parser
+- [x] Insert chapter card clips into final scene list before concatenation (Stage 4b)
+- [x] Chapter cards have no voiceover (silent 1.5s gap) — just visual title
+- [x] Chapter cards are NOT transformed for fair-use (they are original text renders)

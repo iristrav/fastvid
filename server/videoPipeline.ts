@@ -225,8 +225,7 @@ function getScenesForLength(videoLength: string): number {
     default:      return 22;
   }
 }
-
-// ─── Types ────────────────────────────────────────────────────────────────────
+// ─── Types ─────────────────────────────────────────────────────────────────────────────────
 interface Scene {
   index: number;
   text: string;
@@ -234,6 +233,9 @@ interface Scene {
   pexelsQuery: string;
   aiImagePrompt: string;
   duration: number;
+  // Chapter card fields (optional)
+  isChapterCard?: boolean;   // true = this scene is a chapter title card (no voiceover, 1.5s)
+  chapterTitle?: string;     // ALL CAPS title text for the chapter card
 }
 
 export interface PipelineProgress {
@@ -280,6 +282,8 @@ For each scene, extract:
 - aiImagePrompt: A detailed, vivid image generation prompt (25-40 words) for a cinematic, photorealistic scene matching the visual cue. Include: subject, setting, lighting, mood, camera angle, style. Examples:
   "Cinematic aerial drone view of Brussels historic city center at golden hour, warm light on medieval rooftops, slight haze, photorealistic, 8K, wide angle lens"
   "Black and white archival photograph of 1950s American highway construction, workers and bulldozers, dramatic shadows, documentary style"
+- sectionTitle: The ## section heading this scene belongs to (from the script). Use the EXACT heading text (without ## prefix). If this is the FIRST scene of a new section, set sectionTitle to the section name. For subsequent scenes in the same section, set sectionTitle to empty string "".
+  Example: script has "## ROOTS OF DIVERGENCE" → first scene of that section has sectionTitle="ROOTS OF DIVERGENCE", subsequent scenes have sectionTitle=""
 
 IMPORTANT:
 - Return exactly ${maxScenes} scenes covering the entire script evenly
@@ -287,7 +291,8 @@ IMPORTANT:
 - Keep text SHORT and natural (max 250 chars each) — this is spoken narration
 - Make pexelsQuery LITERAL and SPECIFIC — it will be used to search for real footage
 - Make aiImagePrompt vivid, cinematic and highly detailed
-- Scenes should flow naturally — each scene is ~3-6 seconds of footage`,
+- Scenes should flow naturally — each scene is ~3-6 seconds of footage
+- sectionTitle is ONLY non-empty for the FIRST scene of each new ## section`,
         },
         {
           role: "user",
@@ -311,8 +316,9 @@ IMPORTANT:
                     visualCue: { type: "string" },
                     pexelsQuery: { type: "string" },
                     aiImagePrompt: { type: "string" },
+                    sectionTitle: { type: "string" },
                   },
-                  required: ["text", "visualCue", "pexelsQuery", "aiImagePrompt"],
+                  required: ["text", "visualCue", "pexelsQuery", "aiImagePrompt", "sectionTitle"],
                   additionalProperties: false,
                 },
               },
@@ -330,13 +336,16 @@ IMPORTANT:
   const content = response.choices[0]?.message?.content;
   if (!content) throw new Error("Failed to parse script into scenes");
   const parsed = JSON.parse(typeof content === "string" ? content : JSON.stringify(content));
-  const rawScenes = (parsed.scenes as Omit<Scene, "index" | "duration">[]).slice(0, maxScenes);
+  const rawScenes = (parsed.scenes as (Omit<Scene, "index" | "duration"> & { sectionTitle?: string })[]).slice(0, maxScenes);
   return rawScenes.map((s, i) => ({
     ...s,
     index: i,
     duration: 0,
     pexelsQuery: s.pexelsQuery?.trim() || s.visualCue || "cinematic background",
     aiImagePrompt: s.aiImagePrompt?.trim() || `Cinematic ${s.visualCue || "landscape"}, dramatic lighting, photorealistic, 8K`,
+    // Store sectionTitle as chapterTitle if it's the first scene of a section
+    isChapterCard: false,
+    chapterTitle: (s as Record<string, unknown>).sectionTitle as string | undefined,
   }));
 }
 
@@ -1601,6 +1610,76 @@ async function renderSubtitleOverlay(
   return outputPath;
 }
 
+// ─── 4a2. Chapter Card Renderer (Vox/Wendover style) ──────────────────────────────────
+// Renders a 1.5s black-background title card with:
+//   - Thin horizontal accent line above the title
+//   - Large ALL CAPS white title text (bold, centered)
+//   - Thin horizontal accent line below the title
+//   - Hard cut in, hard cut out (no fade) — like reference video
+async function renderChapterCard(
+  chapterTitle: string,
+  chapterIndex: number,
+  workDir: string
+): Promise<string> {
+  const CARD_DURATION = 1.5; // seconds — short, punchy chapter break
+  const outputPath = path.join(workDir, `chapter_card_${chapterIndex}.mp4`);
+
+  // Sanitize and uppercase the title
+  const safeTitle = sanitizeForDrawtextStrict(chapterTitle.toUpperCase(), 50);
+  const fontArg = FONT_BOLD ? `:fontfile='${FONT_BOLD}'` : '';
+
+  // Accent line Y positions
+  const centerY = VIDEO_HEIGHT / 2;
+  const lineY1 = centerY - 80;  // above title
+  const lineY2 = centerY + 60;  // below title
+  const lineX1 = Math.round(VIDEO_WIDTH * 0.15);
+  const lineX2 = Math.round(VIDEO_WIDTH * 0.85);
+
+  try {
+    await withTimeout(
+      exec(
+        `${FFMPEG_BIN} -y ` +
+        `-f lavfi -i "color=c=#080808:size=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:rate=25" ` +
+        `-f lavfi -i anullsrc=r=44100:cl=stereo ` +
+        `-filter_complex "` +
+          `[0:v]` +
+          // Thin accent lines
+          `drawbox=x=${lineX1}:y=${lineY1}:w=${lineX2 - lineX1}:h=2:color=white@0.6:t=fill,` +
+          `drawbox=x=${lineX1}:y=${lineY2}:w=${lineX2 - lineX1}:h=2:color=white@0.6:t=fill,` +
+          // Large ALL CAPS title
+          `drawtext=text='${safeTitle}'${fontArg}:fontcolor=white:fontsize=72:` +
+          `shadowcolor=black@0.5:shadowx=3:shadowy=3:` +
+          `x=(w-text_w)/2:y=${centerY - 30}` +
+          `[vout]" ` +
+        `-map "[vout]" -map "1:a" ` +
+        `-t ${CARD_DURATION} -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -r 25 -c:a aac -b:a 320k -shortest "${outputPath}"`
+      ),
+      30_000,
+      `Chapter card ${chapterIndex}`
+    );
+    if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1_000) {
+      console.log(`[Pipeline] Chapter card ${chapterIndex}: "${chapterTitle}" rendered`);
+      return outputPath;
+    }
+  } catch (err) {
+    console.warn(`[Pipeline] Chapter card ${chapterIndex} failed:`, (err as Error).message);
+  }
+
+  // Fallback: simple black frame if drawtext fails
+  try {
+    await withTimeout(
+      exec(
+        `${FFMPEG_BIN} -y ` +
+        `-f lavfi -i "color=c=#080808:size=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:rate=25" ` +
+        `-f lavfi -i anullsrc=r=44100:cl=stereo ` +
+        `-t ${CARD_DURATION} -map 0:v -map 1:a -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -r 25 -c:a aac -b:a 320k -shortest "${outputPath}"`
+      ),
+      15_000, `Chapter card fallback ${chapterIndex}`
+    );
+  } catch { /* ignore */ }
+  return outputPath;
+}
+
 // ─── 4b. Branded Intro Title Card ────────────────────────────────────────────
 async function renderIntroCardFFmpeg(videoTitle: string, duration: number, workDir: string): Promise<string> {
   const outputPath = path.join(workDir, "intro_card.mp4");
@@ -2283,11 +2362,51 @@ export async function runVideoPipeline(
       }
     }
 
-    // ── Stage 5: Concatenate + intro/outro + music ────────────────────────────
+        // ── Stage 4b: Render chapter cards and interleave with composed scenes ────────────
+    // Chapter cards are 1.5s black-background title cards inserted before the first scene
+    // of each new ## section. They are rendered in parallel (fast, no AI needed).
+    const CHAPTER_CARD_DURATION = 1.5;
+    const chapterCardPromises: Promise<string | null>[] = [];
+    const chapterCardIndices: number[] = []; // indices in composedScenes before which to insert
+
+    for (let i = 0; i < scenes.length; i++) {
+      const title = scenes[i].chapterTitle?.trim();
+      // Skip HOOK and CALL TO ACTION sections (they're not real chapter breaks)
+      if (title && title.length > 0 && title !== 'HOOK' && title !== 'CALL TO ACTION') {
+        chapterCardIndices.push(i);
+        chapterCardPromises.push(
+          renderChapterCard(title, i, workDir).catch(err => {
+            console.warn(`[Pipeline] Chapter card for "${title}" failed (non-fatal):`, err);
+            return null;
+          })
+        );
+      }
+    }
+
+    const chapterCardPaths = await Promise.all(chapterCardPromises);
+    console.log(`[Pipeline] Chapter cards: ${chapterCardPaths.filter(Boolean).length}/${chapterCardIndices.length} rendered`);
+
+    // Build final ordered clip list: [chapter_card?, scene, chapter_card?, scene, ...]
+    const orderedClips: string[] = [];
+    let cardIdx = 0;
+    for (let i = 0; i < composedScenes.length; i++) {
+      // Check if there's a chapter card to insert before this scene
+      const cardInsertIdx = chapterCardIndices.indexOf(i);
+      if (cardInsertIdx !== -1 && chapterCardPaths[cardIdx]) {
+        orderedClips.push(chapterCardPaths[cardIdx]!);
+        cardIdx++;
+      } else if (cardInsertIdx !== -1) {
+        cardIdx++; // card failed, skip
+      }
+      orderedClips.push(composedScenes[i]);
+    }
+
+    // ── Stage 5: Concatenate + intro/outro + music ────────────────────────
     onProgress?.({ stage: STAGE_LABELS.assembling, percent: 77 });
     const t4 = Date.now();
-    const totalDuration = scenes.reduce((sum, s) => sum + s.duration, 0);
-    const finalVideoPath = await concatenateScenesWithMusic(composedScenes, workDir, videoId, totalDuration, videoTitle);
+    const chapterCardsTotalDuration = chapterCardPaths.filter(Boolean).length * CHAPTER_CARD_DURATION;
+    const totalDuration = scenes.reduce((sum, s) => sum + s.duration, 0) + chapterCardsTotalDuration;
+    const finalVideoPath = await concatenateScenesWithMusic(orderedClips, workDir, videoId, totalDuration, videoTitle);
     console.log(`[Pipeline] Stage 5 (assemble+music): ${((Date.now()-t4)/1000).toFixed(1)}s`);
 
     // ── Stage 6: Upload to S3 ─────────────────────────────────────────────────
