@@ -703,6 +703,95 @@ async function fetchPexelsClips(
   return results;
 }
 
+// ─── 3c2. Wikimedia Commons Image Search ────────────────────────────────────
+// Searches Wikimedia Commons for freely licensed images (good for celebrities, news, etc.)
+async function fetchWikimediaImages(
+  query: string,
+  duration: number,
+  workDir: string,
+  sceneIndex: number,
+  count: number = 2
+): Promise<string[]> {
+  const results: string[] = [];
+  try {
+    // Search Wikimedia Commons for images
+    const searchUrl = `https://commons.wikimedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&srnamespace=6&srlimit=10&format=json&origin=*`;
+    const searchResp = await withTimeout(
+      fetch(searchUrl, { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }),
+      8_000,
+      `Wikimedia search scene ${sceneIndex}`
+    );
+    if (!searchResp.ok) return [];
+    const searchData = await searchResp.json() as { query?: { search?: Array<{ title: string }> } };
+    const titles = searchData.query?.search?.map(r => r.title).slice(0, count * 2) || [];
+    if (!titles.length) return [];
+
+    // Get image info for each result
+    for (let i = 0; i < Math.min(titles.length, count); i++) {
+      try {
+        const title = titles[i];
+        const infoUrl = `https://commons.wikimedia.org/w/api.php?action=query&titles=${encodeURIComponent(title)}&prop=imageinfo&iiprop=url|mime|size&format=json&origin=*`;
+        const infoResp = await withTimeout(
+          fetch(infoUrl, { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }),
+          8_000,
+          `Wikimedia info scene ${sceneIndex}`
+        );
+        if (!infoResp.ok) continue;
+        const infoData = await infoResp.json() as { query?: { pages?: Record<string, { imageinfo?: Array<{ url: string; mime: string; size: number }> }> } };
+        const pages = infoData.query?.pages || {};
+        const page = Object.values(pages)[0];
+        const imageInfo = page?.imageinfo?.[0];
+        if (!imageInfo?.url) continue;
+        // Only use JPEG/PNG images, skip SVG/PDF/audio/video
+        if (!imageInfo.mime.startsWith('image/jpeg') && !imageInfo.mime.startsWith('image/png')) continue;
+        // Skip very small images
+        if (imageInfo.size < 10_000) continue;
+
+        // Download the image
+        const imgPath = path.join(workDir, `scene_${sceneIndex}_wiki_${i}.jpg`);
+        const outPath = path.join(workDir, `scene_${sceneIndex}_wiki_${i}.mp4`);
+        const imgResp = await withTimeout(
+          fetch(imageInfo.url, { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }),
+          15_000,
+          `Wikimedia download scene ${sceneIndex}`
+        );
+        if (!imgResp.ok) continue;
+        const imgBuffer = Buffer.from(await imgResp.arrayBuffer());
+        if (imgBuffer.length < 10_000) continue;
+        fs.writeFileSync(imgPath, imgBuffer);
+
+        // Convert image to video with Ken Burns effect
+        const zoomDir = (sceneIndex + i) % 2 === 0 ? 'in' : 'out';
+        const startScale = zoomDir === 'in' ? 1.0 : 1.08;
+        const endScale = zoomDir === 'in' ? 1.08 : 1.0;
+        await withTimeout(
+          exec(
+            `${FFMPEG_BIN} -y -loop 1 -i "${imgPath}" ` +
+            `-t ${duration} ` +
+            `-vf "scale=${Math.round(VIDEO_WIDTH * 1.12)}:${Math.round(VIDEO_HEIGHT * 1.12)}:force_original_aspect_ratio=increase,` +
+            `crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:(iw-${VIDEO_WIDTH})/2:(ih-${VIDEO_HEIGHT})/2,` +
+            `zoompan=z='if(lte(zoom,1.0),${startScale},min(zoom+${((endScale - startScale) / (duration * 25)).toFixed(5)},${endScale}))':d=${duration * 25}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=25,` +
+            `fade=t=in:st=0:d=0.4,fade=t=out:st=${Math.max(0, duration - 0.4)}:d=0.4" ` +
+            `-c:v libx264 -preset veryfast -crf 18 -an -pix_fmt yuv420p "${outPath}"`
+          ),
+          45_000,
+          `Wikimedia image to video scene ${sceneIndex}`
+        );
+        try { fs.unlinkSync(imgPath); } catch { /* ignore */ }
+        if (fs.existsSync(outPath) && fs.statSync(outPath).size > 1_000) {
+          results.push(outPath);
+          console.log(`[Pipeline] Scene ${sceneIndex}: Wikimedia image added: ${title}`);
+        }
+      } catch (err) {
+        console.warn(`[Pipeline] Wikimedia image ${i} failed for scene ${sceneIndex}:`, err);
+      }
+    }
+  } catch (err) {
+    console.warn(`[Pipeline] Wikimedia search failed for scene ${sceneIndex}:`, err);
+  }
+  return results;
+}
+
 // ─── 3c. Color Fallback (LAST RESORT) ────────────────────────────────────────
 async function generateColorFallback(sceneIndex: number, duration: number, workDir: string): Promise<string> {
   const outputPath = path.join(workDir, `scene_${sceneIndex}_fallback.mp4`);
@@ -920,9 +1009,9 @@ async function fetchSceneVisuals(
   const halfDur = Math.max(3, Math.ceil(scene.duration / 3));
   const aiClipPath = path.join(workDir, `scene_${scene.index}_ai.mp4`);
 
-  // Run all AI video generators and Pexels fetch in parallel
-  // Priority: Stability AI → Grok → Veo → Meta → Higgsfield (text+image) → Pexels → Color fallback
-  const [aiResult, grokResult, veoResult, metaResult, higgsfieldTextResult, higgsfieldImageResult, pexelsResults] = await Promise.allSettled([
+  // Run all AI video generators, Pexels fetch, and Wikimedia in parallel
+  // Priority: Stability AI → Grok → Veo → Meta → Higgsfield (text+image) → Pexels → Wikimedia → Color fallback
+  const [aiResult, grokResult, veoResult, metaResult, higgsfieldTextResult, higgsfieldImageResult, pexelsResults, wikimediaResults] = await Promise.allSettled([
     generateStabilityAIClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
     generateGrokVideoClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
     generateVeoVideoClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
@@ -930,6 +1019,7 @@ async function fetchSceneVisuals(
     generateHiggsfieldTextToVideoClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
     generateHiggsfieldImageToVideoClip("", scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
     fetchPexelsClips(scene.pexelsQuery, halfDur, workDir, scene.index, 3),
+    fetchWikimediaImages(scene.visualCue, halfDur, workDir, scene.index, 2),
   ]);
 
   const clips: string[] = [];
@@ -959,13 +1049,19 @@ async function fetchSceneVisuals(
     clips.push(clip);
   }
 
+  // Then Wikimedia images (converted to video clips)
+  const wikimediaClips = wikimediaResults.status === "fulfilled" ? wikimediaResults.value : [];
+  for (const clip of wikimediaClips) {
+    clips.push(clip);
+  }
+
   // If nothing worked, use color fallback
   if (clips.length === 0) {
     console.warn(`[Pipeline] Scene ${scene.index}: All visuals failed, using color fallback`);
     clips.push(await generateColorFallback(scene.index, scene.duration + 1, workDir));
   }
 
-  console.log(`[Pipeline] Scene ${scene.index}: ${clips.length} clip(s) ready (Stability: ${aiClip ? "✓" : "✗"}, Grok: ${grokClip ? "✓" : "✗"}, Veo: ${veoClip ? "✓" : "✗"}, Meta: ${metaClip ? "✓" : "✗"}, Higgsfield: ${higgsfieldTextClip || higgsfieldImageClip ? "✓" : "✗"}, Pexels: ${pexelsClips.length})`);
+  console.log(`[Pipeline] Scene ${scene.index}: ${clips.length} clip(s) ready (Stability: ${aiClip ? "✓" : "✗"}, Grok: ${grokClip ? "✓" : "✗"}, Veo: ${veoClip ? "✓" : "✗"}, Meta: ${metaClip ? "✓" : "✗"}, Higgsfield: ${higgsfieldTextClip || higgsfieldImageClip ? "✓" : "✗"}, Pexels: ${pexelsClips.length}, Wikimedia: ${wikimediaClips.length})`);
   return clips;
 }
 
@@ -1462,10 +1558,10 @@ async function composeSceneVideo(
   // Keep subtitlePath null — we use inline drawtext instead
   const subtitlePath: string | null = null;
 
-  // Kinetic typography: sparse — only every 3rd scene, 1 impactful word, shown briefly in the middle
+  // Kinetic typography: sparse — only every 6th scene, 1 impactful word, shown briefly in the middle
   // Always-on (not gated behind enableSubtitles). Keeps it subtle and documentary-like.
   let kineticFrames: KineticFrame[] = [];
-  if (scene.index % 3 === 0) {
+  if (scene.index % 6 === 0) {
     try {
       const keywords = extractKeywords(scene.text, 1); // just 1 most impactful word
       if (keywords.length > 0) {
@@ -1655,11 +1751,6 @@ async function concatenateScenesWithMusic(
   const concatPath = path.join(workDir, `fastvid_${videoId}_concat.mp4`);
   const outputPath = path.join(workDir, `fastvid_${videoId}_final.mp4`);
 
-  const [introPath, outroPath] = await Promise.all([
-    renderIntroCard(videoTitle, 3, workDir),
-    renderOutroCard(4, workDir),
-  ]);
-
   const validScenePaths = scenePaths.filter(p => {
     try {
       const exists = fs.existsSync(p);
@@ -1671,11 +1762,11 @@ async function concatenateScenesWithMusic(
   });
   if (validScenePaths.length === 0) throw new Error("No valid composed scene files to concatenate");
 
-  const allClips = [introPath, ...validScenePaths, outroPath];
+  const allClips = [...validScenePaths];
   const listContent = allClips.map(p => `file '${p}'`).join("\n");
   fs.writeFileSync(listFile, listContent, "utf-8");
 
-  const totalWithCards = totalDuration + 3 + 4;
+  const totalWithCards = totalDuration;
 
   const [, musicPath] = await Promise.all([
     withTimeout(
@@ -1744,8 +1835,6 @@ async function concatenateScenesWithMusic(
   try {
     fs.unlinkSync(concatPath);
     fs.unlinkSync(musicPath);
-    fs.unlinkSync(introPath);
-    fs.unlinkSync(outroPath);
   } catch { /* ignore */ }
 
   return outputPath;
