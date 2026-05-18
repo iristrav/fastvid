@@ -1621,58 +1621,119 @@ async function renderChapterCard(
   chapterIndex: number,
   workDir: string
 ): Promise<string> {
-  const CARD_DURATION = 1.5; // seconds — short, punchy chapter break
+  const CARD_DURATION = 1.5; // seconds
+  const FPS = 25;
+  const TOTAL_FRAMES = Math.round(CARD_DURATION * FPS); // 37 frames
+  const SLIDE_FRAMES = 10; // 0.4s slide-in animation
   const outputPath = path.join(workDir, `chapter_card_${chapterIndex}.mp4`);
 
-  // Sanitize and uppercase the title
-  const safeTitle = sanitizeForDrawtextStrict(chapterTitle.toUpperCase(), 50);
-  const fontArg = FONT_BOLD ? `:fontfile='${FONT_BOLD}'` : '';
+  // Use Canvas for high-quality text rendering with slide-up animation
+  if (CANVAS_AVAILABLE) {
+    try {
+      const { createCanvas, registerFont } = await import("canvas");
+      try {
+        if (FONT_BOLD) registerFont(FONT_BOLD, { family: "NotoSans", weight: "bold" });
+      } catch { /* already registered */ }
 
-  // Accent line Y positions
-  const centerY = VIDEO_HEIGHT / 2;
-  const lineY1 = centerY - 80;  // above title
-  const lineY2 = centerY + 60;  // below title
-  const lineX1 = Math.round(VIDEO_WIDTH * 0.15);
-  const lineX2 = Math.round(VIDEO_WIDTH * 0.85);
+      const title = chapterTitle.replace(/[^\x20-\x7E]/g, "").toUpperCase().slice(0, 50);
+      const centerX = VIDEO_WIDTH / 2;
+      const centerY = VIDEO_HEIGHT / 2;
+      const titleFinalY = centerY + 20; // final resting position (baseline)
+      const titleStartY = centerY + 110; // starts 90px below final
+      const lineY1 = centerY - 70;  // accent line above
+      const lineY2 = centerY + 60;  // accent line below
+      const lineX1 = Math.round(VIDEO_WIDTH * 0.15);
+      const lineX2 = Math.round(VIDEO_WIDTH * 0.85);
 
-  try {
-    await withTimeout(
-      exec(
-        `${FFMPEG_BIN} -y ` +
-        `-f lavfi -i "color=c=#080808:size=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:rate=25" ` +
-        `-f lavfi -i anullsrc=r=44100:cl=stereo ` +
-        `-filter_complex "` +
-          `[0:v]` +
-          // Thin accent lines
-          `drawbox=x=${lineX1}:y=${lineY1}:w=${lineX2 - lineX1}:h=2:color=white@0.6:t=fill,` +
-          `drawbox=x=${lineX1}:y=${lineY2}:w=${lineX2 - lineX1}:h=2:color=white@0.6:t=fill,` +
-          // Large ALL CAPS title
-          `drawtext=text='${safeTitle}'${fontArg}:fontcolor=white:fontsize=72:` +
-          `shadowcolor=black@0.5:shadowx=3:shadowy=3:` +
-          `x=(w-text_w)/2:y=${centerY - 30}` +
-          `[vout]" ` +
-        `-map "[vout]" -map "1:a" ` +
-        `-t ${CARD_DURATION} -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -r 25 -c:a aac -b:a 320k -shortest "${outputPath}"`
-      ),
-      30_000,
-      `Chapter card ${chapterIndex}`
-    );
-    if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1_000) {
-      console.log(`[Pipeline] Chapter card ${chapterIndex}: "${chapterTitle}" rendered`);
-      return outputPath;
+      // Generate each frame as a PNG and write to a temp dir
+      const framesDir = path.join(workDir, `chapter_frames_${chapterIndex}`);
+      fs.mkdirSync(framesDir, { recursive: true });
+
+      for (let f = 0; f < TOTAL_FRAMES; f++) {
+        const progress = Math.min(f / SLIDE_FRAMES, 1); // 0 → 1 over SLIDE_FRAMES
+        // Ease-out cubic: fast start, slow finish
+        const eased = 1 - Math.pow(1 - progress, 3);
+        const titleY = titleStartY + (titleFinalY - titleStartY) * eased;
+        const lineAlpha = eased * 0.65;
+        const textAlpha = eased;
+
+        const canvas = createCanvas(VIDEO_WIDTH, VIDEO_HEIGHT);
+        const ctx = canvas.getContext("2d");
+
+        // Deep black background
+        ctx.fillStyle = "#080808";
+        ctx.fillRect(0, 0, VIDEO_WIDTH, VIDEO_HEIGHT);
+
+        // Subtle vignette
+        const vignette = ctx.createRadialGradient(centerX, centerY, VIDEO_HEIGHT * 0.2, centerX, centerY, VIDEO_HEIGHT * 0.8);
+        vignette.addColorStop(0, "rgba(0,0,0,0)");
+        vignette.addColorStop(1, "rgba(0,0,0,0.6)");
+        ctx.fillStyle = vignette;
+        ctx.fillRect(0, 0, VIDEO_WIDTH, VIDEO_HEIGHT);
+
+        // Accent lines
+        ctx.globalAlpha = lineAlpha;
+        ctx.fillStyle = "white";
+        ctx.fillRect(lineX1, lineY1, lineX2 - lineX1, 2);
+        ctx.fillRect(lineX1, lineY2, lineX2 - lineX1, 2);
+        ctx.globalAlpha = 1;
+
+        // Chapter title text
+        ctx.globalAlpha = textAlpha;
+        ctx.font = FONT_BOLD ? `bold 72px NotoSans` : `bold 72px sans-serif`;
+        ctx.fillStyle = "white";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "alphabetic";
+        ctx.shadowColor = "rgba(0,0,0,0.8)";
+        ctx.shadowBlur = 12;
+        ctx.shadowOffsetX = 3;
+        ctx.shadowOffsetY = 3;
+        ctx.fillText(title, centerX, titleY);
+        ctx.globalAlpha = 1;
+
+        const framePath = path.join(framesDir, `frame_${String(f).padStart(4, '0')}.png`);
+        fs.writeFileSync(framePath, canvas.toBuffer("image/png"));
+      }
+
+      // Encode frames to video
+      await withTimeout(
+        exec(
+          `${FFMPEG_BIN} -y -framerate ${FPS} -i "${framesDir}/frame_%04d.png" ` +
+          `-f lavfi -i anullsrc=r=44100:cl=stereo ` +
+          `-c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -r ${FPS} ` +
+          `-c:a aac -b:a 320k -shortest "${outputPath}"`
+        ),
+        30_000,
+        `Chapter card encode ${chapterIndex}`
+      );
+
+      // Cleanup frames
+      try { fs.rmSync(framesDir, { recursive: true }); } catch { /* ignore */ }
+
+      if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1_000) {
+        console.log(`[Pipeline] Chapter card ${chapterIndex}: "${chapterTitle}" rendered with slide-up animation`);
+        return outputPath;
+      }
+    } catch (err) {
+      console.warn(`[Pipeline] Chapter card canvas render failed, trying FFmpeg fallback:`, (err as Error).message);
     }
-  } catch (err) {
-    console.warn(`[Pipeline] Chapter card ${chapterIndex} failed:`, (err as Error).message);
   }
 
-  // Fallback: simple black frame if drawtext fails
+  // Fallback: simple black frame with drawbox accent lines (no text — drawtext not available)
   try {
+    const centerY = VIDEO_HEIGHT / 2;
+    const lineY1 = centerY - 70;
+    const lineY2 = centerY + 60;
+    const lineX1 = Math.round(VIDEO_WIDTH * 0.15);
+    const lineX2 = Math.round(VIDEO_WIDTH * 0.85);
     await withTimeout(
       exec(
         `${FFMPEG_BIN} -y ` +
         `-f lavfi -i "color=c=#080808:size=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:rate=25" ` +
         `-f lavfi -i anullsrc=r=44100:cl=stereo ` +
-        `-t ${CARD_DURATION} -map 0:v -map 1:a -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -r 25 -c:a aac -b:a 320k -shortest "${outputPath}"`
+        `-filter_complex "[0:v]drawbox=x=${lineX1}:y=${lineY1}:w=${lineX2 - lineX1}:h=2:color=white@0.6:t=fill,drawbox=x=${lineX1}:y=${lineY2}:w=${lineX2 - lineX1}:h=2:color=white@0.6:t=fill[vout]" ` +
+        `-map "[vout]" -map "1:a" ` +
+        `-t ${CARD_DURATION} -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -r 25 -c:a aac -b:a 320k -shortest "${outputPath}"`
       ),
       15_000, `Chapter card fallback ${chapterIndex}`
     );
