@@ -372,3 +372,18 @@ Root cause of drawtext failures: ffmpeg-static has no libfreetype → drawtext f
 Root cause of show_entries errors: system ffmpeg 4.4.2 doesn't support -show_entries → use ffprobe instead
 
 FINAL STATUS: ✅ ALL CRITICAL FFMPEG ISSUES FIXED
+
+## Reference Video Quality Upgrade (Vox/Wendover Productions Style)
+- [x] Analyze reference video: "Why Belgium Is The Opposite Of Every U.S. City" — extracted all quality markers
+- [x] Upgrade script generation to Vox/Wendover style: analytical tone, narrative arc, literal [VISUAL:] cues every 2-3 sentences
+- [x] Upgrade outline prompt: compelling narrative arc (hook → context → mechanics → impact → takeaway)
+- [x] Upgrade parseScriptIntoScenes: extract [VISUAL:] tags as literal visualCue, specific pexelsQuery
+- [x] Upgrade to 1080p resolution (1920x1080) — was 1280x720
+- [x] Upgrade audio mixing: VO 100%, ambient music 18%, clip audio 0% (was 10%)
+- [x] Upgrade subtitle overlay: ALL CAPS bold font, hard drop shadow, no fade (hard pop-in)
+- [x] Upgrade color grading: desaturated cool tones + vignette (documentary look)
+- [x] Remove per-clip fade-in/out — hard cuts between scenes (like reference video)
+- [x] Upgrade Ken Burns: 5-10% zoom (was 12%) — more subtle like reference video
+- [x] Upgrade background music: layered ambient electronic pads with subtle pulse (5 sine layers)
+- [x] Upgrade music loop: aloop=-1 so music loops for full video duration
+- [x] Add vignette effect to all scenes (darkened edges for cinematic look)

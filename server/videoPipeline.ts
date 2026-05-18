@@ -204,9 +204,9 @@ const TMP_DIR = os.tmpdir();
 // Use lower resolution on Railway (no Forge key = Railway environment) to avoid OOM
 // Railway free tier has ~512MB RAM; 1280x720 FFmpeg compositing OOM-kills the process
 const IS_RAILWAY = !process.env.BUILT_IN_FORGE_API_KEY;
-// Use 4K resolution (3840x2160) for professional quality
-const VIDEO_WIDTH = 1280;
-const VIDEO_HEIGHT = 720;
+// 1080p resolution for professional YouTube quality
+const VIDEO_WIDTH = 1920;
+const VIDEO_HEIGHT = 1080;
 
 // ─── Dynamic scene count based on video length ────────────────────────────────
 // Each scene is ~25-35s of narration. To hit target duration:
@@ -269,21 +269,25 @@ async function parseScriptIntoScenes(script: string, maxScenes: number): Promise
       messages: [
         {
           role: "system",
-          content: `You are a video production assistant. Parse the given YouTube video script into exactly ${maxScenes} scenes.
+          content: `You are a video editor at a professional YouTube documentary channel (Vox/Wendover Productions style). Parse the given script into exactly ${maxScenes} scenes for video production.
+
 For each scene, extract:
-- text: The narration text (1-3 sentences, what will be spoken). Max 250 characters.
-- visualCue: A short 3-5 word description of what to show
-- pexelsQuery: ONE best Pexels video search query (3-6 words, English, specific, descriptive). Examples:
-  "aerial city skyline night", "scientist lab experiment", "stock market trading floor", "ocean waves sunset beach"
-- aiImagePrompt: A detailed, vivid image generation prompt (20-35 words) describing a cinematic, photorealistic scene. Include lighting, mood, style, camera angle. Examples:
-  "Cinematic aerial view of a futuristic city at night, neon lights reflecting on wet streets, dramatic fog, photorealistic, 8K, wide angle"
-  "Close-up of a scientist in a modern lab examining glowing blue liquid in a flask, dramatic side lighting, photorealistic, shallow depth of field"
+- text: The narration text for this scene (1-3 sentences, what will be spoken). Max 250 characters. Keep it natural and conversational.
+- visualCue: A VERY SPECIFIC, LITERAL 4-8 word description of exactly what footage to show. Extract this from [VISUAL: ...] tags in the script if present. Examples:
+  "aerial drone shot Brussels city center", "black white 1950s highway construction", "close-up tram narrow medieval street", "cyclist riding through Amsterdam intersection"
+- pexelsQuery: ONE highly specific Pexels/stock video search query (3-6 words, English). Must match the visual cue literally. Examples:
+  "aerial city drone footage", "1950s highway construction archival", "tram street city", "cyclist urban intersection"
+- aiImagePrompt: A detailed, vivid image generation prompt (25-40 words) for a cinematic, photorealistic scene matching the visual cue. Include: subject, setting, lighting, mood, camera angle, style. Examples:
+  "Cinematic aerial drone view of Brussels historic city center at golden hour, warm light on medieval rooftops, slight haze, photorealistic, 8K, wide angle lens"
+  "Black and white archival photograph of 1950s American highway construction, workers and bulldozers, dramatic shadows, documentary style"
 
 IMPORTANT:
 - Return exactly ${maxScenes} scenes covering the entire script evenly
-- Keep text SHORT (max 250 chars each)
+- Extract [VISUAL: ...] tags from the script to use as visualCue when available
+- Keep text SHORT and natural (max 250 chars each) — this is spoken narration
+- Make pexelsQuery LITERAL and SPECIFIC — it will be used to search for real footage
 - Make aiImagePrompt vivid, cinematic and highly detailed
-- Make pexelsQuery specific and descriptive for best stock video results`,
+- Scenes should flow naturally — each scene is ~3-6 seconds of footage`,
         },
         {
           role: "user",
@@ -495,21 +499,18 @@ async function generateStabilityAIClip(
     fs.writeFileSync(pngPath, imgBuffer);
     console.log(`[Pipeline] Scene ${sceneIndex}: Stability AI image in ${((Date.now()-t)/1000).toFixed(1)}s (${(imgBuffer.length/1024).toFixed(0)}KB)`);
 
-    // Convert to video — optimized Ken Burns: pre-scale to exact size first, then gentle zoompan
-    // Simple Ken Burns: scale image slightly larger, then use crop+setpts for a slow zoom effect
-    // Using lower fps (24) and simpler filter for faster processing
-    const fps = 24;
+    // Convert to video — Ken Burns 5-10% zoom (like reference video), NO fade-in/out
+    const fps = 25;
     const totalFrames = Math.ceil(duration * fps);
-    const zoomStep = 0.0004; // very slow zoom
+    const zoomStep = 0.0003; // slow 7% zoom over full duration
     const direction = sceneIndex % 2 === 0 ? 1 : -1;
     const panX = direction > 0 ? `iw/2-(iw/zoom/2)` : `iw/2-(iw/zoom/2)+2`;
     await withTimeout(
       exec(
         `${FFMPEG_BIN} -y -loop 1 -i "${pngPath}" ` +
         `-vf "scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT},` +
-        `zoompan=z='min(zoom+${zoomStep},1.05)':x='${panX}':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=${fps},` +
-        `fade=t=in:st=0:d=0.3,fade=t=out:st=${Math.max(0, duration - 0.3)}:d=0.3" ` +
-        `-t ${duration} -r ${fps} -c:v libx264 -preset fast -crf 23 -pix_fmt yuv420p "${outputPath}"`
+        `zoompan=z='min(zoom+${zoomStep},1.07)':x='${panX}':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=${fps}" ` +
+        `-t ${duration} -r ${fps} -c:v libx264 -preset fast -crf 18 -pix_fmt yuv420p "${outputPath}"`
       ),
       90_000,
       `AI image to video scene ${sceneIndex}`
@@ -662,13 +663,8 @@ async function fetchPexelsClips(
         }
 
         const loopFlag = video.duration < clipDuration ? `-stream_loop -1` : "";
-        // Subtle Ken Burns: slight zoom-in or zoom-out depending on scene index
-        // Use scale to 110% first, then slow crop pan for a gentle movement effect
-        const zoomDir = (sceneIndex + idx) % 2 === 0 ? 'in' : 'out';
-        const startScale = zoomDir === 'in' ? 1.05 : 1.10;
-        const endScale = zoomDir === 'in' ? 1.10 : 1.05;
-        const totalFrames = Math.ceil(clipDuration * 25);
-        // Simple approach: scale slightly larger, then use crop with slow pan
+        // Ken Burns effect: 5-10% zoom (like reference video) with slow pan
+        // NO fade-in/out on individual clips (hard cuts between scenes)
         const panX = (sceneIndex + idx) % 3 === 0 ? `(iw-${VIDEO_WIDTH})/2*t/${clipDuration}` :
                      (sceneIndex + idx) % 3 === 1 ? `(iw-${VIDEO_WIDTH})/2*(1-t/${clipDuration})` :
                      `(iw-${VIDEO_WIDTH})/2`;
@@ -676,9 +672,8 @@ async function fetchPexelsClips(
           exec(
             `${FFMPEG_BIN} -y ${loopFlag} -i "${rawPath}" ` +
             `-t ${clipDuration} ` +
-            `-vf "scale=${Math.round(VIDEO_WIDTH * 1.12)}:${Math.round(VIDEO_HEIGHT * 1.12)}:force_original_aspect_ratio=increase,` +
-            `crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:${panX}:(ih-${VIDEO_HEIGHT})/2,` +
-            `fade=t=in:st=0:d=0.3,fade=t=out:st=${Math.max(0, clipDuration - 0.3)}:d=0.3" ` +
+            `-vf "scale=${Math.round(VIDEO_WIDTH * 1.08)}:${Math.round(VIDEO_HEIGHT * 1.08)}:force_original_aspect_ratio=increase,` +
+            `crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:${panX}:(ih-${VIDEO_HEIGHT})/2" ` +
             `-c:v libx264 -preset veryfast -crf 18 -an -pix_fmt yuv420p "${outPath}"`
           ),
           45_000,
@@ -760,18 +755,18 @@ async function fetchWikimediaImages(
         if (imgBuffer.length < 10_000) continue;
         fs.writeFileSync(imgPath, imgBuffer);
 
-        // Convert image to video with Ken Burns effect
+        // Convert image to video with Ken Burns effect: 5-10% zoom (like reference video)
+        // NO fade-in/out on individual clips (hard cuts between scenes)
         const zoomDir = (sceneIndex + i) % 2 === 0 ? 'in' : 'out';
-        const startScale = zoomDir === 'in' ? 1.0 : 1.08;
-        const endScale = zoomDir === 'in' ? 1.08 : 1.0;
+        const startScale = zoomDir === 'in' ? 1.0 : 1.07;
+        const endScale = zoomDir === 'in' ? 1.07 : 1.0;
         await withTimeout(
           exec(
             `${FFMPEG_BIN} -y -loop 1 -i "${imgPath}" ` +
             `-t ${duration} ` +
-            `-vf "scale=${Math.round(VIDEO_WIDTH * 1.12)}:${Math.round(VIDEO_HEIGHT * 1.12)}:force_original_aspect_ratio=increase,` +
+            `-vf "scale=${Math.round(VIDEO_WIDTH * 1.10)}:${Math.round(VIDEO_HEIGHT * 1.10)}:force_original_aspect_ratio=increase,` +
             `crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:(iw-${VIDEO_WIDTH})/2:(ih-${VIDEO_HEIGHT})/2,` +
-            `zoompan=z='if(lte(zoom,1.0),${startScale},min(zoom+${((endScale - startScale) / (duration * 25)).toFixed(5)},${endScale}))':d=${duration * 25}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=25,` +
-            `fade=t=in:st=0:d=0.4,fade=t=out:st=${Math.max(0, duration - 0.4)}:d=0.4" ` +
+            `zoompan=z='if(lte(zoom,1.0),${startScale},min(zoom+${((endScale - startScale) / (duration * 25)).toFixed(5)},${endScale}))':d=${duration * 25}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=25" ` +
             `-c:v libx264 -preset veryfast -crf 18 -an -pix_fmt yuv420p "${outPath}"`
           ),
           45_000,
@@ -1831,22 +1826,25 @@ async function composeSceneVideo(
     }
   }
 
-  // Subtitle overlay — using drawtext filter (no PNG, more reliable)
-  // Build drawtext filter string for inline subtitle rendering
+  // Subtitle overlay — documentary style: ALL CAPS, bold, hard drop shadow (Vox/Wendover style)
+  // Hard pop-in (no fade), white text, dark drop shadow for readability on any background
   function buildSubtitleFilter(inputLabel: string): string {
     if (!enableSubtitles) return '';
-    const badge = sanitizeForDrawtext(`${scene.index + 1}/${totalScenes}`, 20);
-    // Sanitize text for FFmpeg drawtext filter
-    const safeSubtitle = sanitizeForDrawtext(scene.text, 80);
-    
-    const overlayY = VIDEO_HEIGHT - 120;
-    // Semi-transparent black bar at bottom
-    const barFilter = `drawbox=x=0:y=${overlayY}:w=${VIDEO_WIDTH}:h=120:color=black@0.75:t=fill`;
-    // Yellow badge top-left of bar
-    const badgeFilter = `drawtext=text='${badge}':fontcolor=yellow:fontsize=22:x=28:y=${overlayY + 14}:shadowcolor=black:shadowx=1:shadowy=1`;
-    // White subtitle text centered
-    const textFilter = `drawtext=text='${safeSubtitle}':fontcolor=white:fontsize=36:x=(w-text_w)/2:y=${overlayY + 55}:shadowcolor=black:shadowx=2:shadowy=2`;
-    return `,${barFilter},${badgeFilter},${textFilter}`;
+    // Convert to ALL CAPS and sanitize for FFmpeg drawtext
+    const rawText = scene.text.toUpperCase();
+    const safeSubtitle = sanitizeForDrawtextStrict(rawText, 80);
+    if (!safeSubtitle) return '';
+
+    const fontArg = FONT_BOLD ? `:fontfile='${FONT_BOLD}'` : '';
+    const overlayY = VIDEO_HEIGHT - 140;
+
+    // Semi-transparent black gradient bar at bottom (wider for 1080p)
+    const barFilter = `drawbox=x=0:y=${overlayY - 10}:w=${VIDEO_WIDTH}:h=150:color=black@0.65:t=fill`;
+    // White ALL CAPS text with hard black drop shadow (2px offset) — no fade, hard cut
+    const textFilter = `drawtext=text='${safeSubtitle}'${fontArg}:fontcolor=white:fontsize=42:` +
+      `shadowcolor=black@0.9:shadowx=2:shadowy=2:` +
+      `x=(w-text_w)/2:y=${overlayY + 30}`;
+    return `,${barFilter},${textFilter}`;
   }
   // Keep subtitlePath null — we use inline drawtext instead
   const subtitlePath: string | null = null;
@@ -1880,15 +1878,20 @@ async function composeSceneVideo(
 
   // On Railway, limit FFmpeg threads to reduce memory usage
   const threadFlag = IS_RAILWAY ? "-threads 2" : "";
-  // Kinetic text position: upper-center area (y=80 so the 120px band sits at 80-200px from top)
+  // Kinetic text position: upper-center area
   const kineticY = 80;
-  // Documentary-style color grading: warm, high-contrast, punchy
-  const colorGrade = `eq=contrast=1.15:saturation=1.28:brightness=0.02:gamma=0.95,colorbalance=rs=0.04:gs=-0.01:bs=-0.03:rm=0.03:gm=-0.01:bm=-0.02:rh=0.02:gh=0:bh=-0.01`;
-  // Subtitle drawtext filter (appended after color grade, before fade)
+  // Cinematic color grading: desaturated cool tones (like reference video — modern European documentary look)
+  // High contrast, slightly desaturated, cooler tones for professional look
+  const colorGrade = `eq=contrast=1.12:saturation=0.92:brightness=-0.02:gamma=1.02,colorbalance=rs=-0.02:gs=0:bs=0.03:rm=-0.01:gm=0:bm=0.02:rh=-0.01:gh=0:bh=0.02`;
+  // Subtitle drawtext filter (appended after color grade) — hard pop-in, no fade on text
   const subtitleDrawtext = buildSubtitleFilter('unused');
-  // Note: colorbalance adds warm tones (slight red/orange push) for cinematic look
-  const fadeFilter = `${colorGrade}${subtitleDrawtext},fade=t=in:st=0:d=0.3,fade=t=out:st=${Math.max(0, duration - 0.3)}:d=0.3`;
-  const xfadeDur = 0.4;
+  // Vignette for cinematic look
+  const vignetteFilter = `,vignette=angle=0.6:mode=forward`;
+  // Final filter: color grade + subtitle + vignette. NO fade-in/out on individual scenes
+  // (hard cuts between scenes, like the reference video)
+  const fadeFilter = `${colorGrade}${subtitleDrawtext}${vignetteFilter}`;
+  // Hard cut between clips (xfade duration very short = near-instant cut)
+  const xfadeDur = 0.08;
 
   // Helper: build the kinetic overlay chain on top of a labelled video stream.
   // Each kinetic frame is a full-width PNG (VIDEO_WIDTH x 120) overlaid at y=kineticY
@@ -2003,23 +2006,36 @@ async function composeSceneVideo(
   return outputPath;
 }
 
-// ─── 6. Fast Background Music ─────────────────────────────────────────────────
+// ─── 6. Ambient Documentary Background Music ─────────────────────────────────
+// Generates a low-fi ambient electronic track similar to Vox/Wendover style:
+// steady driving beat, serious analytical mood, strictly background (mixed at -20dB)
 async function generateBackgroundMusic(duration: number, workDir: string): Promise<string> {
   const outputPath = path.join(workDir, "bg_music.mp3");
   try {
+    // Ambient documentary music: layered pads with subtle pulse
+    // - Deep bass pad (55Hz) with long reverb
+    // - Mid harmonic (110Hz) with echo for depth
+    // - High shimmer (220Hz) very quiet for air
+    // - Subtle rhythmic pulse (4Hz tremolo on bass) for driving feel
     await withTimeout(
       exec(
         `${FFMPEG_BIN} -y ` +
+        `-f lavfi -i "sine=frequency=55:duration=${duration}" ` +
         `-f lavfi -i "sine=frequency=110:duration=${duration}" ` +
+        `-f lavfi -i "sine=frequency=165:duration=${duration}" ` +
         `-f lavfi -i "sine=frequency=220:duration=${duration}" ` +
-        `-f lavfi -i "sine=frequency=330:duration=${duration}" ` +
-        `-filter_complex "
-          [0]volume=0.3,aecho=0.9:0.9:80:0.5[bass];
-          [1]volume=0.2,aecho=0.85:0.85:60:0.4[root];
-          [2]volume=0.12,aecho=0.8:0.8:120:0.3[fifth];
-          [bass][root][fifth]amix=inputs=3:duration=first,
-          lowpass=f=1600,highpass=f=40,volume=0.4[music]
-        " ` +
+        `-f lavfi -i "sine=frequency=82:duration=${duration}" ` +
+        `-filter_complex "` +
+          `[0]volume=0.35,aecho=0.95:0.92:200:0.6,atremolo=f=0.5:d=0.3,lowpass=f=120[bass];` +
+          `[1]volume=0.22,aecho=0.9:0.88:150:0.5,lowpass=f=200[mid];` +
+          `[2]volume=0.15,aecho=0.88:0.85:100:0.4,lowpass=f=300[fifth];` +
+          `[3]volume=0.08,aecho=0.85:0.82:80:0.3,lowpass=f=400[shimmer];` +
+          `[4]volume=0.18,aecho=0.92:0.9:250:0.55,atremolo=f=0.25:d=0.4,lowpass=f=150[sub];` +
+          `[bass][mid][fifth][shimmer][sub]amix=inputs=5:duration=first,` +
+          `highpass=f=30,lowpass=f=800,` +
+          `aecho=0.7:0.7:300:0.25,` +
+          `volume=0.45[music]` +
+        `" ` +
         `-map "[music]" -c:a libmp3lame -b:a 320k "${outputPath}"`
       ),
       30_000, "Background music generation"
@@ -2087,11 +2103,12 @@ async function concatenateScenesWithMusic(
 
   if (concatHasAudio) {
     // Normal path: mix voiceover audio with background music
+    // VO at 100%, ambient music at 18% (like reference video: -20dB to -25dB relative)
     try {
       await withTimeout(
         exec(
           `${FFMPEG_BIN} -y -i "${concatPath}" -i "${musicPath}" ` +
-          `-filter_complex "[0:a]volume=1.0[voice];[1:a]volume=0.10[music];[voice][music]amix=inputs=2:duration=first:dropout_transition=2[aout]" ` +
+          `-filter_complex "[0:a]volume=1.0[voice];[1:a]volume=0.18,aloop=loop=-1:size=2e+09[music];[voice][music]amix=inputs=2:duration=first:dropout_transition=3[aout]" ` +
           `-map "0:v" -map "[aout]" ` +
           `-c:v copy -c:a aac -b:a 320k -movflags +faststart "${outputPath}"`
         ),
@@ -2099,25 +2116,33 @@ async function concatenateScenesWithMusic(
         "Background music mixing"
       );
     } catch (err) {
-      console.warn("[Pipeline] Audio mixing failed, using music only:", err);
-      await withTimeout(
-        exec(
-          `${FFMPEG_BIN} -y -i "${concatPath}" -i "${musicPath}" ` +
-          `-filter_complex "[1:a]volume=0.3[aout]" ` +
-          `-map "0:v" -map "[aout]" ` +
-          `-c:v copy -c:a aac -b:a 320k -movflags +faststart "${outputPath}"`
-        ),
-        180_000,
-        "Background music mixing (fallback)"
-      );
+      console.warn("[Pipeline] Audio mixing failed, trying without aloop:", err);
+      try {
+        await withTimeout(
+          exec(
+            `${FFMPEG_BIN} -y -i "${concatPath}" -i "${musicPath}" ` +
+            `-filter_complex "[0:a]volume=1.0[voice];[1:a]volume=0.18[music];[voice][music]amix=inputs=2:duration=first:dropout_transition=3[aout]" ` +
+            `-map "0:v" -map "[aout]" ` +
+            `-c:v copy -c:a aac -b:a 320k -movflags +faststart "${outputPath}"`
+          ),
+          180_000,
+          "Background music mixing (no loop)"
+        );
+      } catch (err2) {
+        console.warn("[Pipeline] Audio mixing failed completely, copying video:", err2);
+        await withTimeout(
+          exec(`${FFMPEG_BIN} -y -i "${concatPath}" -c copy -movflags +faststart "${outputPath}"`),
+          60_000, "Copy concat as output"
+        );
+      }
     }
   } else {
-    // Fallback: concat has no audio — use only background music
+    // Fallback: concat has no audio — use only background music at 25%
     console.warn("[Pipeline] Concat has no audio stream, using background music only");
     await withTimeout(
       exec(
         `${FFMPEG_BIN} -y -i "${concatPath}" -i "${musicPath}" ` +
-        `-filter_complex "[1:a]volume=0.3[aout]" ` +
+        `-filter_complex "[1:a]volume=0.25,aloop=loop=-1:size=2e+09[aout]" ` +
         `-map "0:v" -map "[aout]" ` +
         `-c:v copy -c:a aac -b:a 320k -movflags +faststart "${outputPath}"`
       ),

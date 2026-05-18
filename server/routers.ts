@@ -165,8 +165,8 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLength: 
     // Step 1a: Short outline call (~5-8s)
     const outlineResp = await invokeLLM({
       messages: [
-        { role: "system", content: `You are a YouTube scriptwriter. ${typeInstruction} Be concise.` },
-        { role: "user", content: `Create a YouTube video outline for: "${prompt}"\nVideo length: ${lengthDesc}\nFormat: ${videoType}\nRespond with JSON: { title, hook (2 sentences), sections (max 5, each: {title, keyPoints: string[]}), cta }` },
+        { role: "system", content: `You are a senior producer at a high-quality YouTube documentary channel (think Vox, Wendover Productions, or Johnny Harris). ${typeInstruction} Create compelling, well-researched video structures.` },
+        { role: "user", content: `Create a YouTube video outline for: "${prompt}"\nVideo length: ${lengthDesc}\nFormat: ${videoType}\n\nThe video should follow a strong narrative arc: hook the viewer immediately, build understanding through context and history, reveal the mechanics/details, show real-world impact, and end with a clear takeaway.\n\nRespond with JSON: { title (compelling, specific, not clickbait), hook (2 punchy sentences that immediately grab attention with a surprising fact or contrast), sections (4-6, each: {title, keyPoints: string[]}), cta }` },
       ],
       response_format: {
         type: "json_schema",
@@ -200,8 +200,20 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLength: 
     const sectionPromises = outline.sections.map((sec, idx) =>
       invokeLLM({
         messages: [
-          { role: "system", content: `Write engaging YouTube script text for a ${videoType}. ${typeInstruction} Include [VISUAL: description] tags every 2-3 sentences. Be conversational and natural.` },
-          { role: "user", content: `Section ${idx + 1}: "${sec.title}"\nCover: ${sec.keyPoints.join(", ")}\nWrite 2-3 short paragraphs. Start directly with content.` },
+          { role: "system", content: `You are a writer for a high-quality YouTube documentary channel in the style of Vox, Wendover Productions, or Johnny Harris. ${typeInstruction}
+
+RULES:
+- Write in a clear, analytical, authoritative tone — educational but engaging
+- Use short punchy sentences mixed with longer explanatory ones
+- Every 2-3 sentences, add a [VISUAL: ...] tag with a VERY SPECIFIC, LITERAL description of what to show on screen. Examples:
+  [VISUAL: Aerial drone shot of Brussels city center at golden hour]
+  [VISUAL: Black and white archival photo of 1950s American highway construction]
+  [VISUAL: Close-up of a tram moving through a narrow medieval street in Bruges]
+  [VISUAL: Animated bar chart comparing cycling rates in Belgium vs USA]
+- Visual cues must be LITERAL and SPECIFIC — not abstract. Describe exactly what the viewer should see.
+- Do NOT use filler phrases like "In this section we will..." — start directly with the content
+- Write as if you are narrating a documentary, not reading a blog post` },
+          { role: "user", content: `Section ${idx + 1}: "${sec.title}"\nCover these key points: ${sec.keyPoints.join(", ")}\n\nWrite 3-4 short paragraphs of documentary-style narration. Each paragraph should be 2-4 sentences. Include [VISUAL: ...] tags after every 2-3 sentences with very specific, literal descriptions of footage to show.` },
         ],
       }).then(r => { const c = r?.choices?.[0]?.message?.content ?? ""; return typeof c === "string" ? c : ""; })
       .catch(() => sec.keyPoints.join(". ") + ".")
