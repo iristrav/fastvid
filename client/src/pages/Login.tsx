@@ -8,7 +8,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { toast } from "sonner";
 import { Loader2, Play, Eye, EyeOff } from "lucide-react";
 
-type Step = "choose" | "login" | "invite" | "register";
+type Step = "choose" | "login" | "invite" | "register" | "forgot";
 
 export default function Login() {
   const [, navigate] = useLocation();
@@ -19,6 +19,10 @@ export default function Login() {
   // Login form
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
+
+  // Forgot password form
+  const [forgotEmail, setForgotEmail] = useState("");
+  const [forgotSent, setForgotSent] = useState(false);
 
   // Register form
   const [inviteCode, setInviteCode] = useState("");
@@ -159,23 +163,18 @@ export default function Login() {
                 >
                   {loginMutation.isPending ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Signing in...</> : "Sign in"}
                 </Button>
-                <div className="flex gap-2">
+                <div className="flex items-center justify-between text-sm">
                   <button
                     type="button"
                     onClick={() => setStep("choose")}
-                    className="flex-1 text-sm text-white/40 hover:text-white/70 text-center"
+                    className="text-white/40 hover:text-white/70"
                   >
                     ← Back
                   </button>
                   <button
                     type="button"
-                    onClick={() => {
-                      const email = prompt("Enter your email address:");
-                      if (email) {
-                        toast.info("Password reset link sent", { description: `Check ${email} for reset instructions` });
-                      }
-                    }}
-                    className="flex-1 text-sm text-cyan-400 hover:text-cyan-300 text-center"
+                    onClick={() => setStep("forgot")}
+                    className="text-cyan-400 hover:text-cyan-300"
                   >
                     Forgot password?
                   </button>
@@ -304,6 +303,75 @@ export default function Login() {
                   ← Back
                 </button>
               </form>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* ── Step: Forgot Password ── */}
+        {step === "forgot" && (
+          <Card className="bg-white/5 border-white/10 backdrop-blur-sm">
+            <CardHeader>
+              <CardTitle className="text-white">Reset password</CardTitle>
+              <CardDescription className="text-white/60">
+                {forgotSent ? "Check your email for reset instructions" : "Enter your email to receive a password reset link"}
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {!forgotSent ? (
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    setForgotSent(true);
+                    toast.success("Reset link sent", { description: `Check ${forgotEmail} for instructions` });
+                  }}
+                  className="space-y-4"
+                >
+                  <div className="space-y-1.5">
+                    <Label className="text-white/80">Email</Label>
+                    <Input
+                      type="email"
+                      placeholder="you@example.com"
+                      value={forgotEmail}
+                      onChange={(e) => setForgotEmail(e.target.value)}
+                      required
+                      className="bg-white/10 border-white/20 text-white placeholder:text-white/40"
+                    />
+                  </div>
+                  <Button
+                    type="submit"
+                    className="w-full bg-gradient-to-r from-violet-600 to-cyan-600 hover:from-violet-500 hover:to-cyan-500 text-white font-semibold"
+                  >
+                    Send reset link
+                  </Button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setStep("login");
+                      setForgotEmail("");
+                      setForgotSent(false);
+                    }}
+                    className="w-full text-sm text-white/40 hover:text-white/70 text-center"
+                  >
+                    ← Back to login
+                  </button>
+                </form>
+              ) : (
+                <div className="space-y-4">
+                  <p className="text-white/80 text-sm">We've sent a password reset link to <span className="text-cyan-400 font-semibold">{forgotEmail}</span></p>
+                  <p className="text-white/60 text-xs">If you don't see the email, check your spam folder.</p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setStep("login");
+                      setForgotEmail("");
+                      setForgotSent(false);
+                    }}
+                    className="w-full text-sm text-cyan-400 hover:text-cyan-300 text-center font-semibold"
+                  >
+                    Back to login
+                  </button>
+                </div>
+              )}
             </CardContent>
           </Card>
         )}
