@@ -1,6 +1,6 @@
 /**
  * Password reset procedures for tRPC auth router
- * Separated for clarity and maintainability
+ * Uses in-memory token store (no database changes required)
  */
 
 import { z } from "zod";
@@ -10,16 +10,9 @@ import { getSessionCookieOptions } from "./_core/cookies";
 import { COOKIE_NAME, ONE_YEAR_MS } from "@shared/const";
 import bcrypt from "bcryptjs";
 import { SignJWT } from "jose";
-import {
-  getUserByEmail,
-  createPasswordResetToken,
-  getPasswordResetTokenByToken,
-  markPasswordResetTokenAsUsed,
-  updateUserPassword,
-  getUserById,
-} from "./db";
-import { sendPasswordResetEmail } from "./_core/emailService";
-import { randomBytes } from "crypto";
+import { getUserByEmail, updateUserPassword, getUserById } from "./db";
+import { sendPasswordResetEmail } from "./_core/passwordResetEmail";
+import { createResetToken, validateResetToken as validateToken, consumeResetToken } from "./_core/passwordResetStore";
 
 function getSessionSecret() {
   const secret = process.env.JWT_SECRET ?? "fallback-secret-change-in-production";
@@ -39,33 +32,26 @@ async function signSessionToken(userId: number): Promise<string> {
  */
 export const forgotPassword = publicProcedure
   .input(z.object({ email: z.string().email() }))
-  .mutation(async ({ input }) => {
+  .mutation(async ({ input, ctx }) => {
     const user = await getUserByEmail(input.email.toLowerCase());
     if (!user) {
       // Don't reveal if email exists (security best practice)
       return { success: true, message: "If an account with this email exists, a reset link has been sent" };
     }
 
-    // Generate reset token (32 bytes = 64 hex chars)
-    const token = randomBytes(32).toString("hex");
-    const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
-
-    await createPasswordResetToken({
-      userId: user.id,
-      token,
-      expiresAt,
-    });
+    // Generate reset token
+    const resetToken = createResetToken(user.id, user.email || "");
 
     // Build reset link
-    const baseUrl = process.env.VITE_FRONTEND_FORGE_API_URL || "http://localhost:3000";
-    const resetLink = `${baseUrl}/reset-password?token=${token}`;
+    const resetLink = `${ctx.req.headers.origin}/reset-password?token=${resetToken}`;
 
     // Send email
     if (!user.email) {
       console.warn("[Auth] User has no email address");
       return { success: true, message: "If an account with this email exists, a reset link has been sent" };
     }
-    const emailSent = await sendPasswordResetEmail(user.email, resetLink);
+
+    const emailSent = await sendPasswordResetEmail(user.email, resetToken, resetLink);
     if (!emailSent) {
       console.warn("[Auth] Email failed to send for", user.email);
       // Still return success to avoid revealing email existence
@@ -79,22 +65,14 @@ export const forgotPassword = publicProcedure
  */
 export const validateResetToken = publicProcedure
   .input(z.object({ token: z.string().min(1) }))
-  .query(async ({ input }) => {
-    const resetToken = await getPasswordResetTokenByToken(input.token);
+  .query(({ input }) => {
+    const result = validateToken(input.token);
 
-    if (!resetToken) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid or expired reset token" });
+    if (!result) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid or expired reset link" });
     }
 
-    if (resetToken.usedAt) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "This reset link has already been used" });
-    }
-
-    if (new Date() > resetToken.expiresAt) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "This reset link has expired" });
-    }
-
-    return { valid: true, userId: resetToken.userId };
+    return { valid: true, email: result.email };
   });
 
 /**
@@ -106,35 +84,28 @@ export const resetPassword = publicProcedure
     newPassword: z.string().min(8).max(128),
   }))
   .mutation(async ({ input, ctx }) => {
-    const resetToken = await getPasswordResetTokenByToken(input.token);
+    const result = validateToken(input.token);
 
-    if (!resetToken) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid or expired reset token" });
+    if (!result) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid or expired reset link" });
     }
 
-    if (resetToken.usedAt) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "This reset link has already been used" });
-    }
-
-    if (new Date() > resetToken.expiresAt) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "This reset link has expired" });
+    // Get user
+    const user = await getUserById(result.userId);
+    if (!user) {
+      throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "User not found" });
     }
 
     // Hash new password
     const passwordHash = await bcrypt.hash(input.newPassword, 12);
 
     // Update user password
-    await updateUserPassword(resetToken.userId, passwordHash);
+    await updateUserPassword(result.userId, passwordHash);
 
-    // Mark token as used
-    await markPasswordResetTokenAsUsed(resetToken.id);
+    // Consume token so it can't be reused
+    consumeResetToken(input.token);
 
     // Sign in user immediately
-    const user = await getUserById(resetToken.userId);
-    if (!user) {
-      throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "User not found" });
-    }
-
     const token = await signSessionToken(user.id);
     const cookieOptions = getSessionCookieOptions(ctx.req);
     ctx.res.cookie(COOKIE_NAME, token, { ...cookieOptions, maxAge: ONE_YEAR_MS });
