@@ -642,6 +642,19 @@ async function fetchPexelsClips(
             try { fs.unlinkSync(rawPath); } catch { /* ignore */ }
             return null;
           }
+          // Second check: verify video stream is readable (catches 'moov atom not found' and other corrupt MP4 errors)
+          const streamCheckCmd = `${FFPROBE_BIN} -v error -select_streams v:0 -show_entries stream=codec_type -of default=noprint_wrappers=1:nokey=1 "${rawPath}" 2>&1`;
+          const streamResult = await withTimeout(
+            exec(streamCheckCmd),
+            10_000,
+            `Stream check Pexels clip ${idx}`
+          );
+          const streamOutput = typeof streamResult === 'string' ? streamResult : (streamResult as any).stdout || '';
+          if (!streamOutput.includes('video')) {
+            console.warn(`[Pipeline] Pexels clip ${idx} has no readable video stream (corrupt/incomplete MP4), skipping`);
+            try { fs.unlinkSync(rawPath); } catch { /* ignore */ }
+            return null;
+          }
         } catch (err) {
           console.warn(`[Pipeline] Failed to validate Pexels clip ${idx}:`, err);
           try { fs.unlinkSync(rawPath); } catch { /* ignore */ }
