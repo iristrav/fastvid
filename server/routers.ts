@@ -45,7 +45,7 @@ function generateInviteCode(): string {
 import { storagePut } from "./storage";
 import { FASTVID_PRO_PLAN } from "./products";
 import { runVideoPipeline, generateStabilityAIThumbnail } from "./videoPipeline";
-import { forgotPassword, validateResetToken, resetPassword } from "./authPasswordReset";
+import { forgotPassword, validateResetToken as validateResetTokenProcedure, resetPassword } from "./authPasswordReset";
 
 // Lazy Stripe initialization — prevents crash on startup when STRIPE_SECRET_KEY is not yet set
 let _stripe: Stripe | null = null;
@@ -446,7 +446,7 @@ export const appRouter = router({
     }),
 
     forgotPassword,
-    validateResetToken,
+    validateResetToken: validateResetTokenProcedure,
     resetPassword,
   }),
 
