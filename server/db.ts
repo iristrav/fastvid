@@ -1,6 +1,6 @@
 import { and, desc, eq, like, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
-import { InsertInviteCode, InsertUser, InsertVideo, inviteCodes, users, videos } from "../drizzle/schema";
+import { InsertInviteCode, InsertUser, InsertVideo, InsertPasswordResetToken, inviteCodes, users, videos, passwordResetTokens } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 
 let _db: ReturnType<typeof drizzle> | null = null;
@@ -381,4 +381,33 @@ export async function seedDefaultVoices() {
     { name: "Lewis",    description: "British Male — calm, authoritative narrator",              fishAudioReferenceId: "e9b134e4c0b547a3894793be502314f1", flag: "🇬🇧", sortOrder: 6, isActive: 1 },
   ];
   await db.insert(voices).values(defaults);
+}
+
+// ─── Password Reset Tokens ────────────────────────────────────────────────────
+
+export async function createPasswordResetToken(data: InsertPasswordResetToken) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const result = await db.insert(passwordResetTokens).values(data);
+  return (result as unknown as [{ insertId: number }])[0]?.insertId as number;
+}
+
+export async function getPasswordResetTokenByToken(token: string) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db.select().from(passwordResetTokens).where(eq(passwordResetTokens.token, token)).limit(1);
+  return result.length > 0 ? result[0] : undefined;
+}
+
+export async function markPasswordResetTokenAsUsed(tokenId: number) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(passwordResetTokens).set({ usedAt: new Date() }).where(eq(passwordResetTokens.id, tokenId));
+}
+
+export async function deleteExpiredPasswordResetTokens() {
+  const db = await getDb();
+  if (!db) return 0;
+  const result = await db.delete(passwordResetTokens).where(sql`${passwordResetTokens.expiresAt} < NOW()`);
+  return (result as unknown as [{ affectedRows: number }])[0]?.affectedRows ?? 0;
 }

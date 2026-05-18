@@ -55,6 +55,16 @@ export default function Login() {
     onError: (e) => toast.error("Login failed", { description: e.message }),
   });
 
+  const forgotPasswordMutation = trpc.auth.forgotPassword.useMutation({
+    onSuccess: () => {
+      setForgotSent(true);
+      toast.success("Reset link sent", { description: `Check ${forgotEmail} for instructions` });
+    },
+    onError: () => {
+      toast.error("Failed to send reset link", { description: "Please try again" });
+    },
+  });
+
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
     loginMutation.mutate({ email: loginEmail, password: loginPassword });
@@ -321,8 +331,7 @@ export default function Login() {
                 <form
                   onSubmit={(e) => {
                     e.preventDefault();
-                    setForgotSent(true);
-                    toast.success("Reset link sent", { description: `Check ${forgotEmail} for instructions` });
+                    forgotPasswordMutation.mutate({ email: forgotEmail });
                   }}
                   className="space-y-4"
                 >
@@ -339,9 +348,17 @@ export default function Login() {
                   </div>
                   <Button
                     type="submit"
+                    disabled={forgotPasswordMutation.isPending || !forgotEmail}
                     className="w-full bg-gradient-to-r from-violet-600 to-cyan-600 hover:from-violet-500 hover:to-cyan-500 text-white font-semibold"
                   >
-                    Send reset link
+                    {forgotPasswordMutation.isPending ? (
+                      <>
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        Sending...
+                      </>
+                    ) : (
+                      "Send reset link"
+                    )}
                   </Button>
                   <button
                     type="button"
