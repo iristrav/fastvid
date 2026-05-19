@@ -12,12 +12,13 @@ import { SignJWT } from "jose";
 import {
   createVideo, getAllUsers, getAllVideos, getUserById, getUserByEmail,
   searchVideos, getUserStats, getVideoById, getVideosByUserId, getVideoStats,
-  updateUserRole, updateUserSubscription, updateVideoStatus, updateVideoProgress,
+  updateUserRole, updateUserSubscription, updateVideoStatus, updateVideoProgress, updateVideoProgressLog,
   getAllVoices, getAllVoicesAdmin, getVoiceById, createVoice, updateVoice, deleteVoice, seedDefaultVoices,
   deleteVideo, updateVideoTitle, deleteAllFailedVideosForUser, expireStuckVideos,
   createUser, updateUserLastSignedIn,
   getInviteCodeByCode, createInviteCode, getAllInviteCodes, markInviteCodeUsed, deleteInviteCode, deactivateInviteCode,
 } from "./db";
+import type { ProgressLogEntry } from "./db";
 import { ONE_YEAR_MS } from "@shared/const";
 
 function getSessionSecret() {
@@ -71,16 +72,16 @@ const subscribedProcedure = protectedProcedure.use(({ ctx, next }) => {
   return next({ ctx });
 });
 
-// Global 90-min hard cap — large videos (30+ scenes) can take up to 60 min
-const MAX_VIDEO_GENERATION_MS = 90 * 60 * 1000; // 90 min
+// Global 1.5-hour (90-min) hard cap — pipeline is killed and marked failed after this
+const MAX_VIDEO_GENERATION_MS = 90 * 60 * 1000; // 1.5 hours = 90 minutes
 
 async function generateVideoWithAI(videoId: number, prompt: string, videoLength: string, voiceId?: string, customVoiceoverUrl?: string) {
-  // Wrap the entire pipeline in a 30-min timeout
+  // Wrap the entire pipeline in a 1.5-hour hard timeout
   const timeoutHandle = setTimeout(async () => {
-    console.error(`[Video Generation] Video ${videoId} exceeded 90-min limit — marking as failed`);
+    console.error(`[Video Generation] Video ${videoId} exceeded 1.5-hour limit — marking as failed`);
     await updateVideoStatus(videoId, "failed", {
-      errorMessage: "Video generation exceeded 90 minutes. Please retry.",
-      progressStep: "Generation timed out (max 90 min exceeded)",
+      errorMessage: "Video generation exceeded 1.5 hours (90 minutes). Please retry with a shorter video.",
+      progressStep: "⏰ Generation timed out (max 1.5 hours exceeded)",
       progressPercent: 0,
     }).catch(() => {});
   }, MAX_VIDEO_GENERATION_MS);
@@ -95,10 +96,10 @@ async function generateVideoWithAI(videoId: number, prompt: string, videoLength:
 // ─── Full pipeline: script generation + video production (no approval pause) ────
 async function generateFullVideo(videoId: number, prompt: string, videoLength: string, videoType: string, voiceId?: string, customVoiceoverUrl?: string, enableSubtitles = true) {
   const timeoutHandle = setTimeout(async () => {
-    console.error(`[Video Generation] Video ${videoId} exceeded 90-min limit — marking as failed`);
+    console.error(`[Video Generation] Video ${videoId} exceeded 1.5-hour limit — marking as failed`);
     await updateVideoStatus(videoId, "failed", {
-      errorMessage: "Video generation exceeded 90 minutes. Please retry.",
-      progressStep: "Generation timed out (max 90 min exceeded)",
+      errorMessage: "Video generation exceeded 1.5 hours (90 minutes). Please retry with a shorter video.",
+      progressStep: "⏰ Generation timed out (max 1.5 hours exceeded)",
       progressPercent: 0,
     }).catch(() => {});
   }, MAX_VIDEO_GENERATION_MS);
@@ -159,6 +160,12 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLength: 
   };
   const typeInstruction = typeInstructions[videoType] ?? typeInstructions.documentary;
 
+  // Initialize progressLog for script stage
+  const scriptLog: ProgressLogEntry[] = [
+    { step: "🔍 Researching topic & creating outline...", startedAt: Date.now(), status: "active" },
+  ];
+  await updateVideoProgressLog(videoId, scriptLog).catch(() => {});
+
   try {
     await updateVideoStatus(videoId, "generating_script", { progressStep: "🔍 Researching topic...", progressPercent: 5, generationStartedAt: new Date() });
 
@@ -194,6 +201,10 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLength: 
     } catch { /* use default */ }
     const title = outline.title || prompt.slice(0, 100);
 
+    // Mark research done, start writing
+    scriptLog[0].completedAt = Date.now(); scriptLog[0].status = "done";
+    scriptLog.push({ step: `✍️ Writing ${outline.sections.length} sections in parallel...`, startedAt: Date.now(), status: "active" });
+    await updateVideoProgressLog(videoId, scriptLog).catch(() => {});
     await updateVideoProgress(videoId, `✍️ Writing ${outline.sections.length} sections in parallel...`, 12);
 
     // Step 1b: Generate each section AND metadata in parallel
@@ -242,6 +253,11 @@ RULES:
     });
 
     const [sectionTexts, metaResponse] = await Promise.all([Promise.all(sectionPromises), metaPromise]);
+    // Mark writing done, start assembling
+    const writingStep = scriptLog.find(e => e.status === "active");
+    if (writingStep) { writingStep.completedAt = Date.now(); writingStep.status = "done"; }
+    scriptLog.push({ step: "📋 Assembling final script...", startedAt: Date.now(), status: "active" });
+    await updateVideoProgressLog(videoId, scriptLog).catch(() => {});
     await updateVideoProgress(videoId, "📋 Assembling script...", 22);
 
     // Assemble full script
@@ -256,6 +272,11 @@ RULES:
       const metaContent = typeof rawMetaContent === "string" ? rawMetaContent : JSON.stringify(rawMetaContent);
       metadata = JSON.parse(metaContent);
     } catch { metadata = { title, description: prompt, tags: [], chapters: [] }; }
+
+    // Mark assembling done
+    const assemblingStep = scriptLog.find(e => e.status === "active");
+    if (assemblingStep) { assemblingStep.completedAt = Date.now(); assemblingStep.status = "done"; }
+    await updateVideoProgressLog(videoId, scriptLog).catch(() => {});
 
     // Save script and return (no pause — caller decides next step)
     console.log(`[Script Generation] Saving script for video ${videoId}, length=${scriptContent.length} chars`);
@@ -314,22 +335,56 @@ async function _generateVideoWithAI(
 
     // ── Stage 3: Run Full Video Pipeline (TTS + Visuals + FFmpeg) ────
     await updateVideoStatus(videoId, "generating_voiceover", { progressStep: "🎙️ Generating voiceover...", progressPercent: 30 });
+
+    // ── Step-by-step progress log ────────────────────────────────────────────
+    // Each unique stage name becomes a row in the step list UI.
+    // We track: startedAt, completedAt, status per step.
+    const progressLog: ProgressLogEntry[] = [];
+    let currentStepName = "";
+
+    const pushStep = async (stepName: string, percent: number) => {
+      const now = Date.now();
+      // Mark previous step as done
+      if (currentStepName && currentStepName !== stepName) {
+        const prev = progressLog.find(e => e.step === currentStepName);
+        if (prev && prev.status === "active") {
+          prev.completedAt = now;
+          prev.status = "done";
+        }
+      }
+      // Add new step if not already in log
+      if (stepName !== currentStepName) {
+        currentStepName = stepName;
+        if (!progressLog.find(e => e.step === stepName)) {
+          progressLog.push({ step: stepName, startedAt: now, status: "active" });
+        } else {
+          // Re-activate (e.g. scene-by-scene updates)
+          const existing = progressLog.find(e => e.step === stepName)!;
+          existing.status = "active";
+        }
+      }
+      // Persist both the step label and the full log
+      await Promise.all([
+        updateVideoProgress(videoId, stepName, Math.min(percent, 95)).catch(() => {}),
+        updateVideoProgressLog(videoId, progressLog).catch(() => {}),
+      ]);
+      // Update coarse status enum
+      if (percent < 35) {
+        await updateVideoStatus(videoId, "generating_voiceover").catch(() => {});
+      } else if (percent < 75) {
+        await updateVideoStatus(videoId, "generating_visuals").catch(() => {});
+      } else {
+        await updateVideoStatus(videoId, "generating_effects").catch(() => {});
+      }
+    };
+
     const videoUrl = await runVideoPipeline(
       videoId,
       approvedScript,
       async (progress) => {
-        // Update granular progress step label + percent
         const basePercent = 30;
         const pipelinePercent = Math.round(basePercent + (progress.percent * 0.65));
-        await updateVideoProgress(videoId, progress.stage, Math.min(pipelinePercent, 95)).catch(() => {});
-        // Also update the status enum for coarse-grained tracking
-        if (progress.percent < 35) {
-          await updateVideoStatus(videoId, "generating_voiceover").catch(() => {});
-        } else if (progress.percent < 75) {
-          await updateVideoStatus(videoId, "generating_visuals").catch(() => {});
-        } else {
-          await updateVideoStatus(videoId, "generating_effects").catch(() => {});
-        }
+        await pushStep(progress.stage, pipelinePercent);
       },
       voiceId,
       customVoiceoverUrl,
@@ -337,7 +392,14 @@ async function _generateVideoWithAI(
       enableSubtitles
     );
 
+    // Mark last active step as done
+    const lastActive = progressLog.find(e => e.status === "active");
+    if (lastActive) { lastActive.completedAt = Date.now(); lastActive.status = "done"; }
+    await updateVideoProgressLog(videoId, progressLog).catch(() => {});
+
     // ── Stage 4: Generate Thumbnail via Stability AI (no Manus credits) ────────────
+    progressLog.push({ step: "🎨 Generating thumbnail...", startedAt: Date.now(), status: "active" });
+    await updateVideoProgressLog(videoId, progressLog).catch(() => {});
     await updateVideoProgress(videoId, "Generating thumbnail...", 97);
     let thumbnailUrl: string | undefined;
     try {
@@ -352,6 +414,12 @@ async function _generateVideoWithAI(
     } catch (thumbErr) {
       console.warn(`[Video ${videoId}] Thumbnail generation failed (non-fatal):`, thumbErr);
     }
+    // Mark thumbnail done
+    const thumbStep = progressLog.find(e => e.status === "active");
+    if (thumbStep) { thumbStep.completedAt = Date.now(); thumbStep.status = "done"; }
+    progressLog.push({ step: "✅ Video complete!", startedAt: Date.now(), completedAt: Date.now(), status: "done" });
+    await updateVideoProgressLog(videoId, progressLog).catch(() => {});
+
     const finalTitle = (approvedMetadata as Record<string, string>).title ?? approvedTitle;
     await updateVideoStatus(videoId, "completed", {
       metadata: approvedMetadata,
@@ -556,7 +624,18 @@ export const appRouter = router({
       const video = await getVideoById(input.id);
       if (!video) throw new TRPCError({ code: "NOT_FOUND" });
       if (video.userId !== ctx.user.id && ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN" });
-      return { status: video.status, title: video.title, script: video.script, metadata: video.metadata, thumbnailUrl: video.thumbnailUrl, progressStep: video.progressStep, progressPercent: video.progressPercent ?? 0, generationStartedAt: video.generationStartedAt, videoType: video.videoType };
+      return {
+        status: video.status,
+        title: video.title,
+        script: video.script,
+        metadata: video.metadata,
+        thumbnailUrl: video.thumbnailUrl,
+        progressStep: video.progressStep,
+        progressPercent: video.progressPercent ?? 0,
+        progressLog: ((video as unknown as Record<string, unknown>).progressLog ?? []) as import('./db').ProgressLogEntry[],
+        generationStartedAt: video.generationStartedAt,
+        videoType: video.videoType,
+      };
     }),
   }),
 

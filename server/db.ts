@@ -205,6 +205,23 @@ export async function updateVideoProgress(id: number, progressStep: string, prog
   await db.update(videos).set({ progressStep, progressPercent }).where(eq(videos.id, id));
 }
 
+export interface ProgressLogEntry {
+  step: string;          // human-readable step name
+  startedAt: number;    // Unix ms
+  completedAt?: number; // Unix ms, set when done
+  status: 'pending' | 'active' | 'done' | 'error';
+}
+
+/** Replace the full progressLog array in the DB (called after each step update) */
+export async function updateVideoProgressLog(id: number, log: ProgressLogEntry[]) {
+  const db = await getDb();
+  if (!db) return;
+  // Use raw SQL to avoid Drizzle type inference lag after schema migration
+  await db.execute(
+    sql`UPDATE videos SET progressLog = ${JSON.stringify(log)} WHERE id = ${id}`
+  );
+}
+
 export async function deleteVideo(id: number) {
   const db = await getDb();
   if (!db) return;

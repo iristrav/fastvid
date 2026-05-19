@@ -76,6 +76,7 @@ export const videos = mysqlTable("videos", {
   errorMessage: text("errorMessage"),
   progressStep: varchar("progressStep", { length: 256 }),   // e.g. "Writing script..."
   progressPercent: int("progressPercent").default(0),       // 0-100
+  progressLog: json("progressLog"),                         // array of {step, startedAt, completedAt?, status}
   generationStartedAt: timestamp("generationStartedAt"),    // when pipeline started
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),

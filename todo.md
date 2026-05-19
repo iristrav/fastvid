@@ -396,3 +396,26 @@ FINAL STATUS: ✅ ALL CRITICAL FFMPEG ISSUES FIXED
 - [x] Insert chapter card clips into final scene list before concatenation (Stage 4b)
 - [x] Chapter cards have no voiceover (silent 1.5s gap) — just visual title
 - [x] Chapter cards are NOT transformed for fair-use (they are original text renders)
+
+## Real-time Step-by-Step Progress Tracker (Vidrus Style)
+- [ ] Audit current PipelineProgress event system in pipeline and routers
+- [ ] Upgrade pipeline to emit granular per-step events: stepName, stepIndex, totalSteps, elapsedMs, status (pending/active/done/error)
+- [ ] Add per-scene progress events: "Generating scene 3/20 visuals...", "Recording voiceover 3/20..."
+- [ ] Build StepProgressList UI component: vertical list, checkmark when done, spinner when active, elapsed time per step
+- [ ] Show live timer next to active step (updates every second)
+- [ ] Show total elapsed time at the top
+- [ ] Add 1.5-hour hard timeout to pipeline (5400s) — cancel and return error
+- [ ] Surface timeout error in UI with clear message
+- [ ] Replace current progress bar with new step list in video generation modal/page
+
+## Real-time Step-by-Step Progress Tracker (Vidrus-style)
+- [x] Add progressLog JSON column to videos table in schema.ts
+- [x] Run pnpm db:push to apply migration
+- [x] Add updateVideoProgressLog() helper in db.ts (raw SQL to avoid Drizzle type lag)
+- [x] Update pollStatus procedure to return progressLog array
+- [x] Add step-by-step tracking in generateScriptOnly: Research → Write sections → Assemble
+- [x] Add step-by-step tracking in _generateVideoWithAI: pipeline stages + thumbnail + complete
+- [x] Replace VideoCard progress bar with Vidrus-style step list (checkmarks, live per-step timers, active spinner)
+- [x] 1.5-hour hard timeout enforced in both generateVideoWithAI and generateFullVideo
+- [x] Warning shown in UI when nearing 1.5h limit (after 75 min, amber color)
+- [x] Poll interval reduced to 2s for more responsive step updates

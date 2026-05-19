@@ -211,14 +211,15 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
   const needsApproval = video.status === "awaiting_approval";
   const { data: pollData } = trpc.video.pollStatus.useQuery(
     { id: video.id },
-    { enabled: isProcessing, refetchInterval: isProcessing ? 3000 : false }
+    { enabled: isProcessing, refetchInterval: isProcessing ? 2000 : false }
   );
   const currentStatus = pollData?.status ?? video.status;
   const stageInfo = AGENT_STAGES[currentStatus] ?? { label: currentStatus, agent: "AI", icon: "⚙️" };
   const statusColor = STATUS_COLORS[currentStatus] ?? "text-slate-400 bg-slate-400/10";
-  const progressStep = pollData?.progressStep ?? null;
   const progressPercent = pollData?.progressPercent ?? 0;
+  const progressLog = (pollData?.progressLog ?? []) as Array<{ step: string; startedAt: number; completedAt?: number; status: string }>;
   const [elapsed, setElapsed] = useState(0);
+  const [stepTimers, setStepTimers] = useState<Record<number, number>>({});
 
   useEffect(() => {
     const startTime = pollData?.generationStartedAt;
@@ -229,22 +230,28 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
     return () => clearInterval(id);
   }, [isProcessing, pollData?.generationStartedAt]);
 
+  // Live per-step elapsed timers
+  useEffect(() => {
+    if (!isProcessing || progressLog.length === 0) return;
+    const id = setInterval(() => {
+      const now = Date.now();
+      const timers: Record<number, number> = {};
+      progressLog.forEach((entry, idx) => {
+        if (entry.status === "active") {
+          timers[idx] = Math.floor((now - entry.startedAt) / 1000);
+        } else if (entry.completedAt) {
+          timers[idx] = Math.floor((entry.completedAt - entry.startedAt) / 1000);
+        }
+      });
+      setStepTimers(timers);
+    }, 1000);
+    return () => clearInterval(id);
+  }, [isProcessing, progressLog]);
+
   const elapsedMin = Math.floor(elapsed / 60);
   const elapsedSec = String(elapsed % 60).padStart(2, "0");
   const elapsedStr = elapsedMin > 0 ? `${elapsedMin}m ${elapsedSec}s` : `${elapsed}s`;
-  const nearingLimit = elapsed > 75 * 60; // warn after 75 min (90-min cap)
-
-  // ETA: estimate remaining time based on current percent and elapsed time
-  // Minimum 5% progress needed before showing ETA to avoid wild estimates
-  const etaStr = (() => {
-    if (!isProcessing || progressPercent < 5 || elapsed < 10) return null;
-    const totalEstSec = (elapsed / progressPercent) * 100;
-    const remSec = Math.max(0, Math.round(totalEstSec - elapsed));
-    if (remSec < 10) return "< 10 sec";
-    if (remSec < 60) return `~${remSec}s left`;
-    const remMin = Math.ceil(remSec / 60);
-    return `~${remMin} min left`;
-  })();
+  const nearingLimit = elapsed > 75 * 60; // warn after 75 min
 
   return (
     <div className="glass-card border border-white/8 rounded-xl overflow-hidden hover:border-white/15 transition-all duration-300 group">
@@ -257,32 +264,73 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
         ) : (
           <div className="w-full h-full flex items-center justify-center">
             {isProcessing ? (
-              <div className="flex flex-col items-center gap-3 w-full px-6">
-                {/* Agent label */}
-                <div className="flex items-center gap-2">
-                  <span className="text-lg">{stageInfo.icon}</span>
-                  <div className="text-center">
-                    <p className="text-xs font-bold text-white">{stageInfo.agent}</p>
-                    <p className="text-[10px] text-slate-400">{progressStep ?? stageInfo.label}</p>
+              <div className="flex flex-col w-full h-full overflow-y-auto">
+                {/* Header: total elapsed + percent */}
+                <div className="flex items-center justify-between px-3 pt-3 pb-2 border-b border-white/8">
+                  <div className="flex items-center gap-1.5">
+                    <Loader2 className="w-3 h-3 text-purple-400 animate-spin" />
+                    <span className="text-[10px] font-bold text-white">{stageInfo.agent}</span>
                   </div>
-                </div>
-                <div className="w-full">
-                  <div className="flex items-center justify-between mb-1">
+                  <div className="flex items-center gap-2">
                     <span className="text-[10px] font-semibold text-purple-300">{progressPercent}%</span>
-                    <div className="flex items-center gap-1.5">
-                      {etaStr && (
-                        <span className="text-[10px] font-semibold text-cyan-400">{etaStr}</span>
-                      )}
-                      <span className={`text-[10px] font-mono shrink-0 ${nearingLimit ? "text-amber-400" : "text-slate-400"}`}>⏱ {elapsedStr}</span>
-                    </div>
-                  </div>
-                  <div className="w-full bg-white/10 rounded-full h-1.5 overflow-hidden">
-                    <div
-                      className="h-full bg-gradient-to-r from-purple-500 to-cyan-500 rounded-full transition-all duration-700"
-                      style={{ width: `${Math.max(progressPercent, 3)}%` }}
-                    />
+                    <span className={`text-[10px] font-mono ${nearingLimit ? "text-amber-400" : "text-slate-500"}`}>⏱ {elapsedStr}</span>
                   </div>
                 </div>
+                {/* Progress bar */}
+                <div className="w-full bg-white/8 h-0.5">
+                  <div className="h-full bg-gradient-to-r from-purple-500 to-cyan-500 transition-all duration-700" style={{ width: `${Math.max(progressPercent, 2)}%` }} />
+                </div>
+                {/* Step list */}
+                <div className="flex-1 overflow-y-auto px-3 py-2 space-y-1.5">
+                  {progressLog.length === 0 ? (
+                    <div className="flex items-center gap-2 py-1">
+                      <Loader2 className="w-3 h-3 text-slate-500 animate-spin shrink-0" />
+                      <span className="text-[10px] text-slate-500">{stageInfo.label}...</span>
+                    </div>
+                  ) : (
+                    progressLog.map((entry, idx) => {
+                      const isDone = entry.status === "done";
+                      const isActive = entry.status === "active";
+                      const stepSec = stepTimers[idx];
+                      const stepMin = stepSec !== undefined ? Math.floor(stepSec / 60) : 0;
+                      const stepSecRem = stepSec !== undefined ? stepSec % 60 : 0;
+                      const stepTimeStr = stepSec !== undefined
+                        ? (stepMin > 0 ? `${stepMin}m ${String(stepSecRem).padStart(2,"0")}s` : `${stepSec}s`)
+                        : null;
+                      return (
+                        <div key={idx} className={`flex items-start gap-2 py-0.5 transition-opacity ${isDone ? "opacity-60" : "opacity-100"}`}>
+                          {/* Status icon */}
+                          <div className="shrink-0 mt-0.5">
+                            {isDone ? (
+                              <CheckCircle2 className="w-3 h-3 text-green-400" />
+                            ) : isActive ? (
+                              <Loader2 className="w-3 h-3 text-purple-400 animate-spin" />
+                            ) : (
+                              <div className="w-3 h-3 rounded-full border border-white/20" />
+                            )}
+                          </div>
+                          {/* Step name */}
+                          <div className="flex-1 min-w-0">
+                            <p className={`text-[10px] leading-tight ${isActive ? "text-white font-semibold" : isDone ? "text-slate-400" : "text-slate-600"}`}>
+                              {entry.step}
+                            </p>
+                          </div>
+                          {/* Step timer */}
+                          {stepTimeStr && (
+                            <span className={`text-[9px] font-mono shrink-0 ${isActive ? "text-cyan-400" : "text-slate-600"}`}>
+                              {stepTimeStr}
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+                {nearingLimit && (
+                  <div className="px-3 pb-2">
+                    <p className="text-[9px] text-amber-400 text-center">⚠️ Nearing 1.5h limit</p>
+                  </div>
+                )}
               </div>
             ) : currentStatus === "failed" ? (
               <div className="flex flex-col items-center gap-3 px-4">
