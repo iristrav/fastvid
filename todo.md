@@ -398,15 +398,15 @@ FINAL STATUS: ✅ ALL CRITICAL FFMPEG ISSUES FIXED
 - [x] Chapter cards are NOT transformed for fair-use (they are original text renders)
 
 ## Real-time Step-by-Step Progress Tracker (Vidrus Style)
-- [ ] Audit current PipelineProgress event system in pipeline and routers
-- [ ] Upgrade pipeline to emit granular per-step events: stepName, stepIndex, totalSteps, elapsedMs, status (pending/active/done/error)
-- [ ] Add per-scene progress events: "Generating scene 3/20 visuals...", "Recording voiceover 3/20..."
-- [ ] Build StepProgressList UI component: vertical list, checkmark when done, spinner when active, elapsed time per step
-- [ ] Show live timer next to active step (updates every second)
-- [ ] Show total elapsed time at the top
-- [ ] Add 1.5-hour hard timeout to pipeline (5400s) — cancel and return error
-- [ ] Surface timeout error in UI with clear message
-- [ ] Replace current progress bar with new step list in video generation modal/page
+- [x] Audit current PipelineProgress event system in pipeline and routers
+- [x] Upgrade pipeline to emit granular per-step events: stepName, stepIndex, totalSteps, elapsedMs, status (pending/active/done/error)
+- [x] Add per-scene progress events: "Generating scene 3/20 visuals...", "Recording voiceover 3/20..."
+- [x] Build StepProgressList UI component: vertical list, checkmark when done, spinner when active, elapsed time per step
+- [x] Show live timer next to active step (updates every second)
+- [x] Show total elapsed time at the top
+- [x] Add 1.5-hour hard timeout to pipeline (5400s) — cancel and return error
+- [x] Surface timeout error in UI with clear message
+- [x] Replace current progress bar with new step list in video generation modal/page
 
 ## Real-time Step-by-Step Progress Tracker (Vidrus-style)
 - [x] Add progressLog JSON column to videos table in schema.ts
@@ -437,3 +437,18 @@ FINAL STATUS: ✅ ALL CRITICAL FFMPEG ISSUES FIXED
 - [x] Increase Pexels candidate pool: 15 results per query (was 10), take top 3 by resolution
 - [x] Replace generic fallbacks (nature/water/sky) with cinematic documentary fallbacks
 - [x] Pass pexelsQueries from scene to fetchPexelsClips in fetchSceneVisuals
+
+## Bug Fixes (Audio + Celebrity Visuals)
+
+- [x] Fix silent voiceover: removed FFmpeg audio normalization step (highpass/lowpass/loudnorm filter chain was causing audio loss when it timed out or failed — raw TTS MP3 is now written directly)
+- [x] Fix celebrity/person visuals: videoTitle is now passed as subject prefix to Wikimedia, YouTube CC, and Internet Archive queries (e.g. "Kylie Jenner luxury lifestyle" instead of just "luxury lifestyle")
+- [x] Fix YouTube CC and Wikimedia search: subject-aware queries now find person-specific footage
+
+## Per-Scene Person Name Detection for Visual Search
+
+- [x] Add personNames array to Scene interface (names of all people mentioned in that scene's narration)
+- [x] Update parseScriptIntoScenes LLM prompt to extract personNames per scene
+- [x] Update fetchSceneVisuals to build subject prefix from scene.personNames (not global videoTitle)
+- [x] If scene has person names, use first name as primary search prefix for Wikimedia/YouTube/Archive
+- [x] If no person names in scene, fall back to videoTitle prefix (existing behavior)
+- [x] Add secondary person Wikimedia search for scenes with 2+ people mentioned

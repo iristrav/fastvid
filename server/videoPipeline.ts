@@ -232,6 +232,7 @@ interface Scene {
   visualCue: string;
   pexelsQuery: string;
   pexelsQueries?: string[]; // Multiple search queries for better visual matching
+  personNames?: string[];    // Names of all people mentioned in this scene's narration
   aiImagePrompt: string;
   duration: number;
   // Chapter card fields (optional)
@@ -289,7 +290,8 @@ For each scene, extract:
   "Black and white archival photograph of 1950s American highway construction, workers and bulldozers, dramatic shadows, documentary style"
 - sectionTitle: The ## section heading this scene belongs to (from the script). Use the EXACT heading text (without ## prefix). If this is the FIRST scene of a new section, set sectionTitle to the section name. For subsequent scenes in the same section, set sectionTitle to empty string "".
   Example: script has "## ROOTS OF DIVERGENCE" → first scene of that section has sectionTitle="ROOTS OF DIVERGENCE", subsequent scenes have sectionTitle=""
-
+- personNames: Array of FULL NAMES of all real people (celebrities, politicians, athletes, public figures, historical figures) explicitly mentioned by name in this scene's narration text. Include ONLY names that appear in the text field. If no person is mentioned, return an empty array [].
+  Examples: ["Kylie Jenner"], ["Elon Musk", "Jeff Bezos"], ["Napoleon Bonaparte"], []
 IMPORTANT:
 - Return exactly ${maxScenes} scenes covering the entire script evenly
 - Extract [VISUAL: ...] tags from the script to use as visualCue when available
@@ -297,7 +299,8 @@ IMPORTANT:
 - Make pexelsQuery LITERAL and SPECIFIC — it will be used to search for real footage
 - Make aiImagePrompt vivid, cinematic and highly detailed
 - Scenes should flow naturally — each scene is ~3-6 seconds of footage
-- sectionTitle is ONLY non-empty for the FIRST scene of each new ## section`,
+- sectionTitle is ONLY non-empty for the FIRST scene of each new ## section
+- personNames MUST be extracted from the text field only — do not invent names not present in the text`,
         },
         {
           role: "user",
@@ -321,10 +324,11 @@ IMPORTANT:
                     visualCue: { type: "string" },
                     pexelsQuery: { type: "string" },
                     pexelsQueries: { type: "array", items: { type: "string" } },
+                    personNames: { type: "array", items: { type: "string" } },
                     aiImagePrompt: { type: "string" },
                     sectionTitle: { type: "string" },
                   },
-                  required: ["text", "visualCue", "pexelsQuery", "pexelsQueries", "aiImagePrompt", "sectionTitle"],
+                  required: ["text", "visualCue", "pexelsQuery", "pexelsQueries", "personNames", "aiImagePrompt", "sectionTitle"],
                   additionalProperties: false,
                 },
               },
@@ -349,12 +353,17 @@ IMPORTANT:
     const extraQueries = (rawS.pexelsQueries as string[] | undefined) || [];
     // Build a deduped list: primary first, then LLM-generated variants
     const allQueries = [primaryQuery, ...extraQueries.filter(q => q && q !== primaryQuery)];
+    // Extract person names from the LLM response
+    const personNames = ((rawS.personNames as string[] | undefined) || [])
+      .filter(n => typeof n === 'string' && n.trim().length > 0)
+      .map(n => n.trim());
     return {
       ...s,
       index: i,
       duration: 0,
       pexelsQuery: primaryQuery,
       pexelsQueries: allQueries,
+      personNames,
       aiImagePrompt: s.aiImagePrompt?.trim() || `Cinematic ${s.visualCue || "landscape"}, dramatic lighting, photorealistic, 8K`,
       // Store sectionTitle as chapterTitle if it's the first scene of a section
       isChapterCard: false,
@@ -1306,16 +1315,27 @@ async function fetchSceneVisuals(
    const halfDur = Math.max(3, Math.ceil(scene.duration / 3));
   const aiClipPath = path.join(workDir, `scene_${scene.index}_ai.mp4`);
 
-  // Build subject-aware queries: prepend videoTitle (e.g. "Kylie Jenner") to Wikimedia/YouTube/Archive queries
-  // This ensures celebrity/person-specific footage is found instead of generic stock clips
-  const subjectPrefix = videoTitle ? videoTitle.replace(/[^a-zA-Z0-9 ]/g, '').trim().split(' ').slice(0, 3).join(' ') : '';
-  const wikimediaQuery = subjectPrefix ? `${subjectPrefix} ${scene.visualCue}`.slice(0, 100) : scene.visualCue;
-  const youtubeQuery = subjectPrefix ? `${subjectPrefix} ${scene.visualCue}`.slice(0, 100) : scene.visualCue;
-  const archiveQuery = subjectPrefix ? `${subjectPrefix} ${scene.visualCue}`.slice(0, 100) : scene.visualCue;
+  // Build subject-aware queries using per-scene person names (most specific) or global videoTitle (fallback)
+  // Priority: scene.personNames[0] > videoTitle > no prefix
+  // This ensures every person mentioned in the narration appears in the corresponding scene's footage
+  const scenePersons = (scene.personNames || []).filter(n => n.trim().length > 0);
+  const primarySubject = scenePersons.length > 0
+    ? scenePersons[0]  // Use first person name mentioned in this scene
+    : videoTitle ? videoTitle.replace(/[^a-zA-Z0-9 ]/g, '').trim().split(' ').slice(0, 3).join(' ') : '';
+  // For scenes with multiple people, also search for the second person
+  const secondarySubject = scenePersons.length > 1 ? scenePersons[1] : '';
+  // Build queries: "Kylie Jenner luxury lifestyle" or "Elon Musk Tesla factory"
+  const buildSubjectQuery = (subject: string, cue: string) =>
+    subject ? `${subject} ${cue}`.slice(0, 100) : cue;
+  const wikimediaQuery = buildSubjectQuery(primarySubject, scene.visualCue);
+  const youtubeQuery = buildSubjectQuery(primarySubject, scene.visualCue);
+  const archiveQuery = buildSubjectQuery(primarySubject, scene.visualCue);
+  // If there's a secondary person, also search for them in Wikimedia
+  const wikimediaQuery2 = secondarySubject ? buildSubjectQuery(secondarySubject, scene.visualCue) : null;
 
   // Run all AI video generators, Pexels fetch, Wikimedia, Internet Archive, and YouTube CC in parallel
   // Priority: Stability AI → Grok → Veo → Meta → Higgsfield (text+image) → Pexels → Wikimedia → Internet Archive → YouTube CC → Color fallback
-  const [aiResult, grokResult, veoResult, metaResult, higgsfieldTextResult, higgsfieldImageResult, pexelsResults, wikimediaResults, archiveResults, youtubeResults] = await Promise.allSettled([
+  const [aiResult, grokResult, veoResult, metaResult, higgsfieldTextResult, higgsfieldImageResult, pexelsResults, wikimediaResults, wikimedia2Results, archiveResults, youtubeResults] = await Promise.allSettled([
     generateStabilityAIClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
     generateGrokVideoClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
     generateVeoVideoClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
@@ -1324,6 +1344,8 @@ async function fetchSceneVisuals(
     generateHiggsfieldImageToVideoClip("", scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
     fetchPexelsClips(scene.pexelsQuery, halfDur, workDir, scene.index, 3, scene.pexelsQueries),
     fetchWikimediaImages(wikimediaQuery, halfDur, workDir, scene.index, 2),
+    // Search for secondary person if present (e.g. second celebrity mentioned in scene)
+    wikimediaQuery2 ? fetchWikimediaImages(wikimediaQuery2, halfDur, workDir, scene.index, 1) : Promise.resolve([]),
     fetchInternetArchiveClips(archiveQuery, halfDur, workDir, scene.index, 2),
     fetchYouTubeCCClips(youtubeQuery, halfDur, workDir, scene.index, 2),
   ]);
@@ -1362,28 +1384,31 @@ async function fetchSceneVisuals(
     const transformed = await transformClipForFairUse(wikimediaClips[i], scene.text, scene.index, pexelsClips.length + i, workDir);
     clips.push(transformed);
   }
-
+  // Then secondary person Wikimedia images (if any) — apply fair-use transformation
+  const wikimedia2Clips = wikimedia2Results.status === "fulfilled" ? wikimedia2Results.value : [];
+  for (let i = 0; i < wikimedia2Clips.length; i++) {
+    const transformed = await transformClipForFairUse(wikimedia2Clips[i], scene.text, scene.index, pexelsClips.length + wikimediaClips.length + i, workDir);
+    clips.push(transformed);
+  }
   // Then Internet Archive clips — apply fair-use transformation
   const archiveClips = archiveResults.status === "fulfilled" ? archiveResults.value : [];
   for (let i = 0; i < archiveClips.length; i++) {
-    const transformed = await transformClipForFairUse(archiveClips[i], scene.text, scene.index, pexelsClips.length + wikimediaClips.length + i, workDir);
+    const transformed = await transformClipForFairUse(archiveClips[i], scene.text, scene.index, pexelsClips.length + wikimediaClips.length + wikimedia2Clips.length + i, workDir);
     clips.push(transformed);
   }
-
   // Then YouTube CC clips — apply fair-use transformation
   const youtubeClips = youtubeResults.status === "fulfilled" ? youtubeResults.value : [];
   for (let i = 0; i < youtubeClips.length; i++) {
-    const transformed = await transformClipForFairUse(youtubeClips[i], scene.text, scene.index, pexelsClips.length + wikimediaClips.length + archiveClips.length + i, workDir);
+    const transformed = await transformClipForFairUse(youtubeClips[i], scene.text, scene.index, pexelsClips.length + wikimediaClips.length + wikimedia2Clips.length + archiveClips.length + i, workDir);
     clips.push(transformed);
   }
-
   // If nothing worked, use color fallback
   if (clips.length === 0) {
     console.warn(`[Pipeline] Scene ${scene.index}: All visuals failed, using color fallback`);
     clips.push(await generateColorFallback(scene.index, scene.duration + 1, workDir));
   }
-
-  console.log(`[Pipeline] Scene ${scene.index}: ${clips.length} clip(s) ready (Stability: ${aiClip ? "✓" : "✗"}, Grok: ${grokClip ? "✓" : "✗"}, Veo: ${veoClip ? "✓" : "✗"}, Meta: ${metaClip ? "✓" : "✗"}, Higgsfield: ${higgsfieldTextClip || higgsfieldImageClip ? "✓" : "✗"}, Pexels: ${pexelsClips.length}, Wikimedia: ${wikimediaClips.length}, Archive: ${archiveClips.length}, YouTube CC: ${youtubeClips.length})`);
+  const personLabel = scenePersons.length > 0 ? ` [persons: ${scenePersons.join(', ')}]` : '';
+  console.log(`[Pipeline] Scene ${scene.index}${personLabel}: ${clips.length} clip(s) ready (Stability: ${aiClip ? "✓" : "✗"}, Grok: ${grokClip ? "✓" : "✗"}, Veo: ${veoClip ? "✓" : "✗"}, Meta: ${metaClip ? "✓" : "✗"}, Higgsfield: ${higgsfieldTextClip || higgsfieldImageClip ? "✓" : "✗"}, Pexels: ${pexelsClips.length}, Wikimedia: ${wikimediaClips.length + wikimedia2Clips.length}, Archive: ${archiveClips.length}, YouTube CC: ${youtubeClips.length})`);
   return clips;
 }
 
