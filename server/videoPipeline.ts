@@ -1237,24 +1237,16 @@ async function transformClipForFairUse(
   ];
   const grade = grades[(sceneIndex + clipIndex) % grades.length];
 
-  // Font for subtitle overlay
-  const fontPath = FONT_BOLD || FONT_REGULAR;
-  const fontArg = fontPath ? `:fontfile='${fontPath}'` : '';
-
   // Build vignette angle for variety
   const vignetteAngle = (0.5 + ((sceneIndex * 3 + clipIndex) % 5) * 0.1).toFixed(2);
 
-  // Subtitle text box: semi-transparent black background at bottom
-  const drawtextFilter = safeText
-    ? `,drawtext=text='${safeText}'${fontArg}:fontsize=28:fontcolor=white:` +
-      `box=1:boxcolor=black@0.55:boxborderw=8:` +
-      `x=(w-text_w)/2:y=h-th-30:line_spacing=4`
-    : '';
-
+  // NOTE: Subtitle overlay is intentionally NOT added here.
+  // Subtitles are added once in composeSceneVideo (which has the full scene narration text).
+  // Adding them here would create duplicate overlays and use the wrong (truncated) text.
+  // The color grade + vignette alone are sufficient for fair-use transformation.
   const filterChain =
     `eq=contrast=${grade.contrast}:saturation=${grade.saturation}:brightness=${grade.brightness},` +
-    `vignette=angle=${vignetteAngle}:mode=forward` +
-    drawtextFilter;
+    `vignette=angle=${vignetteAngle}:mode=forward`;
 
   try {
     await withTimeout(
@@ -1750,9 +1742,7 @@ async function renderIntroCardFFmpeg(videoTitle: string, duration: number, workD
     exec(
       `${FFMPEG_BIN} -y -f lavfi -i "color=c=#0a0a1e:size=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:rate=25" ` +
       `-f lavfi -i anullsrc=r=44100:cl=stereo ` +
-      `-filter_complex "[0:v]drawtext=text='FASTVID':fontcolor=#a064ff:fontsize=36:x=(w-text_w)/2:y=h/2-160,` +
-      `drawtext=text='${safeTitle}':fontcolor=white:fontsize=52:x=(w-text_w)/2:y=h/2-40:line_spacing=10,` +
-      `drawtext=text='AI-Generated Video':fontcolor=#a0c8ff:fontsize=26:x=(w-text_w)/2:y=h/2+80,` +
+      `-filter_complex "[0:v]drawtext=text='${safeTitle}':fontcolor=white:fontsize=52:x=(w-text_w)/2:y=h/2-40:line_spacing=10,` +
       `fade=t=in:st=0:d=0.4,fade=t=out:st=${duration - 0.4}:d=0.4[vout]" ` +
       `-map "[vout]" -map "1:a" ` +
       `-t ${duration} -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -r 25 -c:a aac -b:a 320k -shortest "${outputPath}"`
@@ -1790,11 +1780,7 @@ async function renderIntroCard(videoTitle: string, duration: number, workDir: st
   ctx.fillStyle = glow;
   ctx.fillRect(0, 0, VIDEO_WIDTH, VIDEO_HEIGHT);
 
-  ctx.font = "bold 36px NotoSans";
-  ctx.fillStyle = "rgba(160,100,255,0.9)";
-  ctx.textAlign = "center";
-  ctx.fillText("FASTVID", VIDEO_WIDTH / 2, VIDEO_HEIGHT / 2 - 160);
-
+  // Draw thin accent line above title
   ctx.strokeStyle = "rgba(120,60,220,0.6)";
   ctx.lineWidth = 2;
   ctx.beginPath();
@@ -1802,9 +1788,11 @@ async function renderIntroCard(videoTitle: string, duration: number, workDir: st
   ctx.lineTo(VIDEO_WIDTH / 2 + 200, VIDEO_HEIGHT / 2 - 130);
   ctx.stroke();
 
+  // Draw video title in ALL CAPS
   const title = videoTitle.replace(/[^\x20-\x7E]/g, "").slice(0, 100).toUpperCase();
   ctx.font = "bold 68px NotoSans";
   ctx.fillStyle = "white";
+  ctx.textAlign = "center";
   ctx.shadowColor = "rgba(120,60,220,0.8)";
   ctx.shadowBlur = 20;
 
@@ -1828,10 +1816,14 @@ async function renderIntroCard(videoTitle: string, duration: number, workDir: st
   const startY = VIDEO_HEIGHT / 2 - totalH / 2 + 40;
   lines.forEach((line, i) => ctx.fillText(line, VIDEO_WIDTH / 2, startY + i * lineHeight));
 
-  ctx.font = "26px NotoSans";
-  ctx.fillStyle = "rgba(160,200,255,0.7)";
+  // Draw thin accent line below title
   ctx.shadowBlur = 0;
-  ctx.fillText("AI-Generated Video", VIDEO_WIDTH / 2, VIDEO_HEIGHT / 2 + 220);
+  ctx.strokeStyle = "rgba(120,60,220,0.6)";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(VIDEO_WIDTH / 2 - 200, VIDEO_HEIGHT / 2 + 180);
+  ctx.lineTo(VIDEO_WIDTH / 2 + 200, VIDEO_HEIGHT / 2 + 180);
+  ctx.stroke();
 
   const pngPath = path.join(workDir, "intro_card.png");
   fs.writeFileSync(pngPath, canvas.toBuffer("image/png"));
@@ -1857,10 +1849,7 @@ async function renderOutroCardFFmpeg(duration: number, workDir: string): Promise
     exec(
       `${FFMPEG_BIN} -y -f lavfi -i "color=c=#0a0a1e:size=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:rate=25" ` +
       `-f lavfi -i anullsrc=r=44100:cl=stereo ` +
-      `-filter_complex "[0:v]drawtext=text='Thanks for watching!':fontcolor=white:fontsize=48:x=(w-text_w)/2:y=h/2-160,` +
-      `drawtext=text='SUBSCRIBE':fontcolor=white:fontsize=52:x=(w-text_w)/2:y=h/2-40:box=1:boxcolor=red@0.9:boxborderw=20,` +
-      `drawtext=text='Like and Subscribe for more AI-generated videos':fontcolor=#a0c8ff:fontsize=26:x=(w-text_w)/2:y=h/2+80,` +
-      `drawtext=text='FASTVID':fontcolor=#a064ff:fontsize=34:x=(w-text_w)/2:y=h/2+160,` +
+      `-filter_complex "[0:v]drawtext=text='Thanks for watching!':fontcolor=white:fontsize=64:x=(w-text_w)/2:y=h/2-80,` +
       `fade=t=in:st=0:d=0.4,fade=t=out:st=${duration - 0.4}:d=0.4[vout]" ` +
       `-map "[vout]" -map "1:a" ` +
       `-t ${duration} -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -r 25 -c:a aac -b:a 320k -shortest "${outputPath}"`
@@ -1894,27 +1883,29 @@ async function renderOutroCard(duration: number, workDir: string): Promise<strin
   ctx.fillStyle = glow;
   ctx.fillRect(0, 0, VIDEO_WIDTH, VIDEO_HEIGHT);
 
-  const btnW = 500, btnH = 100, btnX = VIDEO_WIDTH / 2 - btnW / 2, btnY = VIDEO_HEIGHT / 2 - 80;
-  ctx.fillStyle = "#ff0000";
+  // Draw thin accent lines
+  ctx.strokeStyle = "rgba(120,60,220,0.6)";
+  ctx.lineWidth = 2;
   ctx.beginPath();
-  ctx.roundRect(btnX, btnY, btnW, btnH, 50);
-  ctx.fill();
-  ctx.font = "bold 52px NotoSans";
+  ctx.moveTo(VIDEO_WIDTH / 2 - 200, VIDEO_HEIGHT / 2 - 120);
+  ctx.lineTo(VIDEO_WIDTH / 2 + 200, VIDEO_HEIGHT / 2 - 120);
+  ctx.stroke();
+
+  // "Thanks for watching!" — clean, no branding
+  ctx.font = "bold 64px NotoSans";
   ctx.fillStyle = "white";
   ctx.textAlign = "center";
-  ctx.fillText("SUBSCRIBE", VIDEO_WIDTH / 2, btnY + 68);
+  ctx.shadowColor = "rgba(120,60,220,0.8)";
+  ctx.shadowBlur = 20;
+  ctx.fillText("Thanks for watching!", VIDEO_WIDTH / 2, VIDEO_HEIGHT / 2 + 20);
 
-  ctx.font = "bold 48px NotoSans";
-  ctx.fillStyle = "white";
-  ctx.fillText("Thanks for watching!", VIDEO_WIDTH / 2, VIDEO_HEIGHT / 2 - 160);
-
-  ctx.font = "30px NotoSans";
-  ctx.fillStyle = "rgba(160,200,255,0.8)";
-  ctx.fillText("Like & Subscribe for more AI-generated videos", VIDEO_WIDTH / 2, VIDEO_HEIGHT / 2 + 80);
-
-  ctx.font = "bold 34px NotoSans";
-  ctx.fillStyle = "rgba(160,100,255,0.9)";
-  ctx.fillText("FASTVID", VIDEO_WIDTH / 2, VIDEO_HEIGHT / 2 + 160);
+  ctx.shadowBlur = 0;
+  ctx.strokeStyle = "rgba(120,60,220,0.6)";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(VIDEO_WIDTH / 2 - 200, VIDEO_HEIGHT / 2 + 80);
+  ctx.lineTo(VIDEO_WIDTH / 2 + 200, VIDEO_HEIGHT / 2 + 80);
+  ctx.stroke();
 
   const pngPath = path.join(workDir, "outro_card.png");
   fs.writeFileSync(pngPath, canvas.toBuffer("image/png"));
@@ -2233,12 +2224,29 @@ async function concatenateScenesWithMusic(
   console.log(`[Pipeline] Concat output: ${(fs.statSync(concatPath).size / 1024 / 1024).toFixed(1)}MB`);
 
   // Check if concat video has an audio stream
-  let concatHasAudio = false;
+  // Try multiple probe methods; if all fail, assume audio IS present to avoid silent videos
+  let concatHasAudio = true; // default: assume audio present
   try {
     const { execSync: es } = await import("child_process");
-    const probeOut = es(`/usr/bin/ffprobe -v error -select_streams a -show_entries stream=codec_type -of csv=p=0 "${concatPath}"`, { encoding: 'utf8' });
-    concatHasAudio = probeOut.trim().includes('audio');
-  } catch { concatHasAudio = false; }
+    const ffprobePaths = ['/usr/bin/ffprobe', '/usr/local/bin/ffprobe', 'ffprobe'];
+    let probed = false;
+    for (const probePath of ffprobePaths) {
+      try {
+        const probeOut = es(`${probePath} -v error -select_streams a -show_entries stream=codec_type -of csv=p=0 "${concatPath}"`, { encoding: 'utf8', timeout: 10000 });
+        concatHasAudio = probeOut.trim().includes('audio');
+        probed = true;
+        console.log(`[Pipeline] Audio probe (${probePath}): hasAudio=${concatHasAudio}`);
+        break;
+      } catch { /* try next */ }
+    }
+    if (!probed) {
+      console.warn('[Pipeline] All ffprobe paths failed — assuming audio present to avoid silent video');
+      concatHasAudio = true;
+    }
+  } catch {
+    console.warn('[Pipeline] Audio probe completely failed — assuming audio present');
+    concatHasAudio = true;
+  }
   console.log(`[Pipeline] Concat has audio: ${concatHasAudio}`);
 
   if (concatHasAudio) {

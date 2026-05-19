@@ -419,3 +419,11 @@ FINAL STATUS: ✅ ALL CRITICAL FFMPEG ISSUES FIXED
 - [x] 1.5-hour hard timeout enforced in both generateVideoWithAI and generateFullVideo
 - [x] Warning shown in UI when nearing 1.5h limit (after 75 min, amber color)
 - [x] Poll interval reduced to 2s for more responsive step updates
+
+## Bug Fixes (VID-0029 — Voiceover, Subtitles, Branding)
+
+- [x] Fix voiceover audio: audio probe now tries multiple ffprobe paths (/usr/bin/ffprobe, /usr/local/bin/ffprobe, ffprobe) and defaults to assuming audio present to avoid silent videos
+- [x] Fix subtitles: removed duplicate subtitle overlay from transformClipForFairUse — subtitles are now only added once in composeSceneVideo with the full scene narration text
+- [x] Remove FASTVID branding text from intro card (both canvas and FFmpeg fallback versions)
+- [x] Remove SUBSCRIBE / FASTVID / AI-Generated Video text from outro card (both canvas and FFmpeg fallback)
+- [x] Outro card now shows only "Thanks for watching!" with clean accent lines (no branding)
