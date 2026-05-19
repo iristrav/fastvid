@@ -427,3 +427,13 @@ FINAL STATUS: ✅ ALL CRITICAL FFMPEG ISSUES FIXED
 - [x] Remove FASTVID branding text from intro card (both canvas and FFmpeg fallback versions)
 - [x] Remove SUBSCRIBE / FASTVID / AI-Generated Video text from outro card (both canvas and FFmpeg fallback)
 - [x] Outro card now shows only "Thanks for watching!" with clean accent lines (no branding)
+
+## Visual Search Quality Improvements
+
+- [x] Add pexelsQueries array to Scene interface (5 LLM-generated queries per scene)
+- [x] Update parseScriptIntoScenes to generate 5 queries in decreasing specificity order
+- [x] Update fetchPexelsClips to iterate through all 5 queries until enough clips found
+- [x] Upgrade Pexels quality filter: size=large (HD), min 1280px width, sort by resolution descending
+- [x] Increase Pexels candidate pool: 15 results per query (was 10), take top 3 by resolution
+- [x] Replace generic fallbacks (nature/water/sky) with cinematic documentary fallbacks
+- [x] Pass pexelsQueries from scene to fetchPexelsClips in fetchSceneVisuals

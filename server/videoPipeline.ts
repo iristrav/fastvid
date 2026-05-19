@@ -231,6 +231,7 @@ interface Scene {
   text: string;
   visualCue: string;
   pexelsQuery: string;
+  pexelsQueries?: string[]; // Multiple search queries for better visual matching
   aiImagePrompt: string;
   duration: number;
   // Chapter card fields (optional)
@@ -277,8 +278,12 @@ For each scene, extract:
 - text: The narration text for this scene (1-3 sentences, what will be spoken). Max 250 characters. Keep it natural and conversational.
 - visualCue: A VERY SPECIFIC, LITERAL 4-8 word description of exactly what footage to show. Extract this from [VISUAL: ...] tags in the script if present. Examples:
   "aerial drone shot Brussels city center", "black white 1950s highway construction", "close-up tram narrow medieval street", "cyclist riding through Amsterdam intersection"
-- pexelsQuery: ONE highly specific Pexels/stock video search query (3-6 words, English). Must match the visual cue literally. Examples:
-  "aerial city drone footage", "1950s highway construction archival", "tram street city", "cyclist urban intersection"
+- pexelsQuery: The PRIMARY Pexels/stock video search query (3-6 words, English). Must match the visual cue literally.
+- pexelsQueries: Array of 5 search queries in DECREASING specificity order. Start very specific, end more general. All in English.
+  Example for "aerial drone shot Brussels city center":
+  ["Brussels aerial drone city", "Belgium capital city aerial", "European city aerial drone", "historic city center aerial", "city skyline aerial drone"]
+  Example for "close-up tram narrow medieval street":
+  ["tram medieval street city", "historic tram cobblestone street", "European tram old city", "tram urban street", "city tram transportation"]
 - aiImagePrompt: A detailed, vivid image generation prompt (25-40 words) for a cinematic, photorealistic scene matching the visual cue. Include: subject, setting, lighting, mood, camera angle, style. Examples:
   "Cinematic aerial drone view of Brussels historic city center at golden hour, warm light on medieval rooftops, slight haze, photorealistic, 8K, wide angle lens"
   "Black and white archival photograph of 1950s American highway construction, workers and bulldozers, dramatic shadows, documentary style"
@@ -315,10 +320,11 @@ IMPORTANT:
                     text: { type: "string" },
                     visualCue: { type: "string" },
                     pexelsQuery: { type: "string" },
+                    pexelsQueries: { type: "array", items: { type: "string" } },
                     aiImagePrompt: { type: "string" },
                     sectionTitle: { type: "string" },
                   },
-                  required: ["text", "visualCue", "pexelsQuery", "aiImagePrompt", "sectionTitle"],
+                  required: ["text", "visualCue", "pexelsQuery", "pexelsQueries", "aiImagePrompt", "sectionTitle"],
                   additionalProperties: false,
                 },
               },
@@ -337,16 +343,24 @@ IMPORTANT:
   if (!content) throw new Error("Failed to parse script into scenes");
   const parsed = JSON.parse(typeof content === "string" ? content : JSON.stringify(content));
   const rawScenes = (parsed.scenes as (Omit<Scene, "index" | "duration"> & { sectionTitle?: string })[]).slice(0, maxScenes);
-  return rawScenes.map((s, i) => ({
-    ...s,
-    index: i,
-    duration: 0,
-    pexelsQuery: s.pexelsQuery?.trim() || s.visualCue || "cinematic background",
-    aiImagePrompt: s.aiImagePrompt?.trim() || `Cinematic ${s.visualCue || "landscape"}, dramatic lighting, photorealistic, 8K`,
-    // Store sectionTitle as chapterTitle if it's the first scene of a section
-    isChapterCard: false,
-    chapterTitle: (s as Record<string, unknown>).sectionTitle as string | undefined,
-  }));
+  return rawScenes.map((s, i) => {
+    const rawS = s as Record<string, unknown>;
+    const primaryQuery = (s.pexelsQuery?.trim() || s.visualCue || "cinematic background");
+    const extraQueries = (rawS.pexelsQueries as string[] | undefined) || [];
+    // Build a deduped list: primary first, then LLM-generated variants
+    const allQueries = [primaryQuery, ...extraQueries.filter(q => q && q !== primaryQuery)];
+    return {
+      ...s,
+      index: i,
+      duration: 0,
+      pexelsQuery: primaryQuery,
+      pexelsQueries: allQueries,
+      aiImagePrompt: s.aiImagePrompt?.trim() || `Cinematic ${s.visualCue || "landscape"}, dramatic lighting, photorealistic, 8K`,
+      // Store sectionTitle as chapterTitle if it's the first scene of a section
+      isChapterCard: false,
+      chapterTitle: rawS.sectionTitle as string | undefined,
+    };
+  });
 }
 
 // ─── 2. TTS Voiceover (Fish Audio S2 Pro) ────────────────────────────────────
@@ -544,24 +558,33 @@ async function fetchPexelsClips(
   clipDuration: number,
   workDir: string,
   sceneIndex: number,
-  count: number = 3
+  count: number = 3,
+  extraQueries?: string[]
 ): Promise<string[]> {
   if (!PEXELS_API_KEY) return [];
 
   const results: string[] = [];
-  
-  // Fallback queries if primary query fails
-  const queryFallbacks = [query, 'nature', 'landscape', 'water', 'sky', 'earth'];
-  
-  for (const currentQuery of queryFallbacks) {
+
+  // Build query list: LLM-generated queries first (most specific → least specific),
+  // then generic cinematic fallbacks as last resort
+  const queryList = [
+    ...(extraQueries && extraQueries.length > 0 ? extraQueries : [query]),
+    'cinematic nature landscape', 'aerial city drone', 'documentary footage',
+  ];
+  // Deduplicate
+  const seen = new Set<string>();
+  const uniqueQueries = queryList.filter(q => { if (seen.has(q)) return false; seen.add(q); return true; });
+
+  for (const currentQuery of uniqueQueries) {
     if (results.length >= count) break; // Stop if we have enough clips
-    
+
     try {
-      const searchUrl = `https://api.pexels.com/videos/search?query=${encodeURIComponent(currentQuery)}&per_page=10&size=small&orientation=landscape`;
+      // HD quality: large size (min 1280px), landscape orientation, fetch 15 candidates
+      const searchUrl = `https://api.pexels.com/videos/search?query=${encodeURIComponent(currentQuery)}&per_page=15&size=large&orientation=landscape`;
       const searchResp = await withTimeout(
         fetch(searchUrl, { headers: { Authorization: PEXELS_API_KEY } }),
-        8_000,
-        `Pexels search scene ${sceneIndex}`
+        10_000,
+        `Pexels search scene ${sceneIndex} query "${currentQuery}"`
       );
 
       if (!searchResp.ok) continue;
@@ -574,18 +597,32 @@ async function fetchPexelsClips(
       }>;
     };
 
-    if (!searchData.videos?.length) return [];
+    if (!searchData.videos?.length) continue;
 
-    const candidates = searchData.videos.filter(v => v.duration >= 2).slice(0, count * 2);
+    // Filter: min 3s duration, sort by resolution descending (best quality first)
+    const candidates = searchData.videos
+      .filter(v => v.duration >= 3)
+      .sort((a, b) => {
+        // Prefer videos with higher-resolution files
+        const aMax = Math.max(...a.video_files.map(f => f.width));
+        const bMax = Math.max(...b.video_files.map(f => f.width));
+        return bMax - aMax;
+      })
+      .slice(0, count * 3); // Take top candidates by quality
 
-    // Download up to `count` clips in parallel
-    const downloadLimit = pLimit(count);
+    const needed = count - results.length;
+    // Download up to `needed` clips in parallel
+    const downloadLimit = pLimit(needed);
     const downloadResults = await Promise.allSettled(
-      candidates.slice(0, count).map((video, idx) => downloadLimit(async () => {
+      candidates.slice(0, needed).map((video, idx) => downloadLimit(async () => {
+        // Prefer HD (1920px), fall back to 1280px, then anything
         const videoFile = video.video_files
-          .filter(f => f.width >= 640 && f.width <= 1280)
-          .sort((a, b) => a.width - b.width)[0]
-          || video.video_files.sort((a, b) => a.width - b.width)[0];
+          .filter(f => f.width >= 1280)
+          .sort((a, b) => b.width - a.width)[0]  // highest resolution first
+          || video.video_files
+          .filter(f => f.width >= 640)
+          .sort((a, b) => b.width - a.width)[0]
+          || video.video_files.sort((a, b) => b.width - a.width)[0];
 
         if (!videoFile?.link) return null;
 
@@ -1290,7 +1327,7 @@ async function fetchSceneVisuals(
     generateMetaMovieGenClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
     generateHiggsfieldTextToVideoClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
     generateHiggsfieldImageToVideoClip("", scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
-    fetchPexelsClips(scene.pexelsQuery, halfDur, workDir, scene.index, 3),
+    fetchPexelsClips(scene.pexelsQuery, halfDur, workDir, scene.index, 3, scene.pexelsQueries),
     fetchWikimediaImages(scene.visualCue, halfDur, workDir, scene.index, 2),
     fetchInternetArchiveClips(scene.visualCue, halfDur, workDir, scene.index, 2),
     fetchYouTubeCCClips(scene.visualCue, halfDur, workDir, scene.index, 2),
