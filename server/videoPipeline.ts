@@ -418,23 +418,10 @@ export async function generateVoiceover(
         const audioBuffer = Buffer.from(await response.arrayBuffer());
         if (audioBuffer.length < 100) throw new Error("Fish Audio returned empty audio");
 
-        // Write raw TTS audio, then normalize to prevent crackling
-        const rawPath = outputPath + '.raw.mp3';
-        fs.writeFileSync(rawPath, audioBuffer);
-        try {
-          await withTimeout(
-            exec(
-              `${FFMPEG_BIN} -y -i "${rawPath}" ` +
-              `-af "highpass=f=80,lowpass=f=12000,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=44100" ` +
-              `-c:a libmp3lame -b:a 320k "${outputPath}"`
-            ),
-            15_000, `Audio normalize scene`
-          );
-          try { fs.unlinkSync(rawPath); } catch { /* ignore */ }
-        } catch {
-          // If normalization fails, use raw audio
-          fs.renameSync(rawPath, outputPath);
-        }
+        // Write raw TTS audio directly to outputPath — skip normalization to avoid audio loss
+        // Normalization was causing silent audio when FFmpeg filter chain failed or timed out
+        fs.writeFileSync(outputPath, audioBuffer);
+        console.log(`[Pipeline] TTS audio written: ${audioBuffer.length} bytes to ${outputPath}`);
         // 320kbps MP3 = 40000 bytes/sec (320000 bits/sec / 8 bits per byte)
         const durationSec = Math.max(3, Math.round(audioBuffer.length / 40000));
         console.log(`[Pipeline] TTS scene ${outputPath.match(/scene_(\d+)/)?.[1] ?? "?"}: ${durationSec}s`);
@@ -1313,10 +1300,18 @@ async function transformClipForFairUse(
 // Returns array of valid clip paths (AI image first, then Pexels clips)
 async function fetchSceneVisuals(
   scene: Scene,
-  workDir: string
+  workDir: string,
+  videoTitle?: string
 ): Promise<string[]> {
-  const halfDur = Math.max(3, Math.ceil(scene.duration / 3));
+   const halfDur = Math.max(3, Math.ceil(scene.duration / 3));
   const aiClipPath = path.join(workDir, `scene_${scene.index}_ai.mp4`);
+
+  // Build subject-aware queries: prepend videoTitle (e.g. "Kylie Jenner") to Wikimedia/YouTube/Archive queries
+  // This ensures celebrity/person-specific footage is found instead of generic stock clips
+  const subjectPrefix = videoTitle ? videoTitle.replace(/[^a-zA-Z0-9 ]/g, '').trim().split(' ').slice(0, 3).join(' ') : '';
+  const wikimediaQuery = subjectPrefix ? `${subjectPrefix} ${scene.visualCue}`.slice(0, 100) : scene.visualCue;
+  const youtubeQuery = subjectPrefix ? `${subjectPrefix} ${scene.visualCue}`.slice(0, 100) : scene.visualCue;
+  const archiveQuery = subjectPrefix ? `${subjectPrefix} ${scene.visualCue}`.slice(0, 100) : scene.visualCue;
 
   // Run all AI video generators, Pexels fetch, Wikimedia, Internet Archive, and YouTube CC in parallel
   // Priority: Stability AI → Grok → Veo → Meta → Higgsfield (text+image) → Pexels → Wikimedia → Internet Archive → YouTube CC → Color fallback
@@ -1328,9 +1323,9 @@ async function fetchSceneVisuals(
     generateHiggsfieldTextToVideoClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
     generateHiggsfieldImageToVideoClip("", scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
     fetchPexelsClips(scene.pexelsQuery, halfDur, workDir, scene.index, 3, scene.pexelsQueries),
-    fetchWikimediaImages(scene.visualCue, halfDur, workDir, scene.index, 2),
-    fetchInternetArchiveClips(scene.visualCue, halfDur, workDir, scene.index, 2),
-    fetchYouTubeCCClips(scene.visualCue, halfDur, workDir, scene.index, 2),
+    fetchWikimediaImages(wikimediaQuery, halfDur, workDir, scene.index, 2),
+    fetchInternetArchiveClips(archiveQuery, halfDur, workDir, scene.index, 2),
+    fetchYouTubeCCClips(youtubeQuery, halfDur, workDir, scene.index, 2),
   ]);
 
   const clips: string[] = [];
@@ -2405,7 +2400,7 @@ export async function runVideoPipeline(
     let completedVisuals = 0;
     const sceneVisuals: string[][] = await withTimeout(
       Promise.all(scenes.map(scene => visualLimit(async () => {
-        const clips = await fetchSceneVisuals(scene, workDir);
+        const clips = await fetchSceneVisuals(scene, workDir, videoTitle);
         completedVisuals++;
         onProgress?.({
           stage: `Generating AI visuals... (${completedVisuals}/${scenes.length} done)`,
