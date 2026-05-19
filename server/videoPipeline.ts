@@ -1957,27 +1957,8 @@ async function composeSceneVideo(
     }
   }
 
-  // Subtitle overlay — documentary style: ALL CAPS, bold, hard drop shadow (Vox/Wendover style)
-  // Hard pop-in (no fade), white text, dark drop shadow for readability on any background
-  function buildSubtitleFilter(inputLabel: string): string {
-    if (!enableSubtitles) return '';
-    // Convert to ALL CAPS and sanitize for FFmpeg drawtext
-    const rawText = scene.text.toUpperCase();
-    const safeSubtitle = sanitizeForDrawtextStrict(rawText, 80);
-    if (!safeSubtitle) return '';
-
-    const fontArg = FONT_BOLD ? `:fontfile='${FONT_BOLD}'` : '';
-    const overlayY = VIDEO_HEIGHT - 140;
-
-    // Semi-transparent black gradient bar at bottom (wider for 1080p)
-    const barFilter = `drawbox=x=0:y=${overlayY - 10}:w=${VIDEO_WIDTH}:h=150:color=black@0.65:t=fill`;
-    // White ALL CAPS text with hard black drop shadow (2px offset) — no fade, hard cut
-    const textFilter = `drawtext=text='${safeSubtitle}'${fontArg}:fontcolor=white:fontsize=42:` +
-      `shadowcolor=black@0.9:shadowx=2:shadowy=2:` +
-      `x=(w-text_w)/2:y=${overlayY + 30}`;
-    return `,${barFilter},${textFilter}`;
-  }
-  // Keep subtitlePath null — we use inline drawtext instead
+  // Subtitles disabled — no text overlay on video frames
+  // (user requested clean video without subtitles)
   const subtitlePath: string | null = null;
 
   // Kinetic typography: sparse — only every 6th scene, 1 impactful word, shown briefly in the middle
@@ -2014,8 +1995,8 @@ async function composeSceneVideo(
   // Cinematic color grading: desaturated cool tones (like reference video — modern European documentary look)
   // High contrast, slightly desaturated, cooler tones for professional look
   const colorGrade = `eq=contrast=1.12:saturation=0.92:brightness=-0.02:gamma=1.02,colorbalance=rs=-0.02:gs=0:bs=0.03:rm=-0.01:gm=0:bm=0.02:rh=-0.01:gh=0:bh=0.02`;
-  // Subtitle drawtext filter (appended after color grade) — hard pop-in, no fade on text
-  const subtitleDrawtext = buildSubtitleFilter('unused');
+  // No subtitle overlay
+  const subtitleDrawtext = '';
   // Vignette for cinematic look
   const vignetteFilter = `,vignette=angle=0.6:mode=forward`;
   // Final filter: color grade + subtitle + vignette. NO fade-in/out on individual scenes
