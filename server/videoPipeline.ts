@@ -363,7 +363,7 @@ export async function generateVoiceover(
   const cleanText = rawText.length <= 250 ? rawText : rawText.slice(0, 250).replace(/\s\S*$/, "");
 
   const MAX_ATTEMPTS = 3;
-  const TTS_TIMEOUT_MS = 15_000;
+  const TTS_TIMEOUT_MS = 30_000; // 30s — Fish Audio can take 10-20s for longer texts
 
   if (FISH_AUDIO_API_KEY) {
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
@@ -421,7 +421,8 @@ export async function generateVoiceover(
           // If normalization fails, use raw audio
           fs.renameSync(rawPath, outputPath);
         }
-        const durationSec = Math.max(3, Math.round(audioBuffer.length / 24000));
+        // 320kbps MP3 = 40000 bytes/sec (320000 bits/sec / 8 bits per byte)
+        const durationSec = Math.max(3, Math.round(audioBuffer.length / 40000));
         console.log(`[Pipeline] TTS scene ${outputPath.match(/scene_(\d+)/)?.[1] ?? "?"}: ${durationSec}s`);
         return durationSec;
       } catch (err) {
