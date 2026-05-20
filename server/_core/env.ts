@@ -19,4 +19,6 @@ export const ENV = {
   // True when running on Railway (no Manus Forge key available)
   get useOpenAI() { return !process.env.BUILT_IN_FORGE_API_KEY && !!process.env.LLM_API_KEY; },
   get resendApiKey() { return process.env.RESEND_API_KEY ?? ""; },
+  get serpApiKey() { return process.env.SERPAPI_KEY ?? ""; },
+  get youtubeApiKey() { return process.env.YOUTUBE_API_KEY ?? ""; },
 };

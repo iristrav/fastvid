@@ -460,3 +460,16 @@ FINAL STATUS: ✅ ALL CRITICAL FFMPEG ISSUES FIXED
 - [x] Fix black screens: fallback color clip now includes silent audio stream (prevents FFmpeg audio map failure)
 - [x] Fix scene text truncation in parseScriptIntoScenes: increased from 250 to 700 chars per scene
 - [x] Fix visual cue mismatch: updated LLM prompt to include full sentences and not truncate narration
+
+## SerpAPI Google Images Integration
+- [x] Save SERPAPI_KEY as environment variable
+- [x] Add fetchSerpAPIImages() function to videoPipeline.ts (Google Images via SerpAPI)
+- [x] Add SERPAPI_KEY constant to videoPipeline.ts API keys section
+- [x] Add serpApiKey getter to server/_core/env.ts
+- [x] Integrate SerpAPI into fetchSceneVisuals() parallel fetch (after Wikimedia, before Internet Archive)
+- [x] Primary person search: scene.personNames[0] + visualCue
+- [x] Secondary person search: scene.personNames[1] + visualCue (if present)
+- [x] Apply fair-use transformation (color grade + vignette) to all SerpAPI images
+- [x] Update log line to include SerpAPI clip count
+- [x] vitest test: serpapi.api.test.ts — validates key and returns images_results (PASSED)
+- [x] TypeScript check: 0 errors

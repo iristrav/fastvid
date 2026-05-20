@@ -45,6 +45,7 @@ const GOOGLE_GEMINI_API_KEY = process.env.GOOGLE_GEMINI_API_KEY || "";
 const META_MOVIE_GEN_API_KEY = process.env.META_MOVIE_GEN_API_KEY || "";
 const HIGGSFIELD_API_KEY = process.env.HIGGSFIELD_API_KEY || "";
 const HIGGSFIELD_API_SECRET = process.env.HIGGSFIELD_API_SECRET || "";
+const SERPAPI_KEY = process.env.SERPAPI_KEY || "";
 
 // @ts-ignore
 import ffmpegStatic from "ffmpeg-static";
@@ -850,6 +851,112 @@ async function fetchWikimediaImages(
   return results;
 }
 
+// ─── 3c2b. SerpAPI Google Images Search ────────────────────────────────────
+// Searches Google Images via SerpAPI for celebrity/person-specific photos.
+// Ideal for finding real photos of people mentioned in the narration.
+async function fetchSerpAPIImages(
+  query: string,
+  duration: number,
+  workDir: string,
+  sceneIndex: number,
+  count: number = 2
+): Promise<string[]> {
+  if (!SERPAPI_KEY) return [];
+  const results: string[] = [];
+  try {
+    const searchUrl = new URL('https://serpapi.com/search.json');
+    searchUrl.searchParams.set('engine', 'google_images');
+    searchUrl.searchParams.set('q', query);
+    searchUrl.searchParams.set('safe', 'active');
+    searchUrl.searchParams.set('num', '10');
+    searchUrl.searchParams.set('ijn', '0');
+    searchUrl.searchParams.set('api_key', SERPAPI_KEY);
+
+    const searchResp = await withTimeout(
+      fetch(searchUrl.toString()),
+      15_000,
+      `SerpAPI search scene ${sceneIndex}`
+    );
+    if (!searchResp.ok) {
+      console.warn(`[Pipeline] Scene ${sceneIndex}: SerpAPI error ${searchResp.status}`);
+      return [];
+    }
+    const searchData = await searchResp.json() as {
+      images_results?: Array<{
+        original?: string;
+        thumbnail?: string;
+        title?: string;
+      }>;
+    };
+
+    const images = (searchData.images_results || []).slice(0, count * 3);
+    if (!images.length) return [];
+
+    let downloaded = 0;
+    for (let i = 0; i < images.length && downloaded < count; i++) {
+      const imgUrl = images[i].original || images[i].thumbnail;
+      if (!imgUrl) continue;
+      // Skip SVG, GIF, and non-image URLs
+      const lowerUrl = imgUrl.toLowerCase();
+      if (lowerUrl.endsWith('.svg') || lowerUrl.endsWith('.gif') || lowerUrl.endsWith('.webp')) continue;
+      if (!lowerUrl.includes('jpg') && !lowerUrl.includes('jpeg') && !lowerUrl.includes('png') &&
+          !lowerUrl.match(/\.(jpg|jpeg|png)(\?|$)/i) && !lowerUrl.match(/image\/(jpeg|png)/i)) {
+        // Allow if URL doesn't have a bad extension (many CDN URLs have no extension)
+        if (lowerUrl.endsWith('.svg') || lowerUrl.endsWith('.gif')) continue;
+      }
+
+      try {
+        const imgPath = path.join(workDir, `scene_${sceneIndex}_serp_${i}.jpg`);
+        const outPath = path.join(workDir, `scene_${sceneIndex}_serp_${i}.mp4`);
+
+        const imgResp = await withTimeout(
+          fetch(imgUrl, {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (compatible; Fastvid/1.0)',
+              'Accept': 'image/jpeg,image/png,image/*',
+            },
+          }),
+          12_000,
+          `SerpAPI image download scene ${sceneIndex}`
+        );
+        if (!imgResp.ok) continue;
+        const imgBuffer = Buffer.from(await imgResp.arrayBuffer());
+        // Skip tiny images (likely placeholders)
+        if (imgBuffer.length < 15_000) continue;
+        fs.writeFileSync(imgPath, imgBuffer);
+
+        // Convert image to video with Ken Burns effect (same as Wikimedia)
+        const zoomDir = (sceneIndex + i) % 2 === 0 ? 'in' : 'out';
+        const startScale = zoomDir === 'in' ? 1.0 : 1.07;
+        const endScale = zoomDir === 'in' ? 1.07 : 1.0;
+        await withTimeout(
+          exec(
+            `${FFMPEG_BIN} -y -loop 1 -i "${imgPath}" ` +
+            `-t ${duration} ` +
+            `-vf "scale=${Math.round(VIDEO_WIDTH * 1.10)}:${Math.round(VIDEO_HEIGHT * 1.10)}:force_original_aspect_ratio=increase,` +
+            `crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:(iw-${VIDEO_WIDTH})/2:(ih-${VIDEO_HEIGHT})/2,` +
+            `zoompan=z='if(lte(zoom,1.0),${startScale},min(zoom+${((endScale - startScale) / (duration * 25)).toFixed(5)},${endScale}))':d=${duration * 25}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=25" ` +
+            `-c:v libx264 -preset veryfast -crf 18 -an -pix_fmt yuv420p "${outPath}"`
+          ),
+          45_000,
+          `SerpAPI image to video scene ${sceneIndex}`
+        );
+        try { fs.unlinkSync(imgPath); } catch { /* ignore */ }
+        if (fs.existsSync(outPath) && fs.statSync(outPath).size > 1_000) {
+          results.push(outPath);
+          downloaded++;
+          console.log(`[Pipeline] Scene ${sceneIndex}: SerpAPI image added: ${images[i].title || imgUrl.slice(0, 60)}`);
+        }
+      } catch (err) {
+        console.warn(`[Pipeline] SerpAPI image ${i} failed for scene ${sceneIndex}:`, err);
+      }
+    }
+  } catch (err) {
+    console.warn(`[Pipeline] SerpAPI search failed for scene ${sceneIndex}:`, err);
+  }
+  return results;
+}
+
 // ─── 3c. Color Fallback (LAST RESORT) ────────────────────────────────────────
 async function generateColorFallback(sceneIndex: number, duration: number, workDir: string): Promise<string> {
   const outputPath = path.join(workDir, `scene_${sceneIndex}_fallback.mp4`);
@@ -1384,9 +1491,13 @@ async function fetchSceneVisuals(
   // If there's a secondary person, also search for them in Wikimedia
   const wikimediaQuery2 = secondarySubject ? buildSubjectQuery(secondarySubject, scene.visualCue) : null;
 
-  // Run all AI video generators, Pexels fetch, Wikimedia, Internet Archive, and YouTube CC in parallel
-  // Priority: Stability AI → Grok → Veo → Meta → Higgsfield (text+image) → Pexels → Wikimedia → Internet Archive → YouTube CC → Color fallback
-  const [aiResult, grokResult, veoResult, metaResult, higgsfieldTextResult, higgsfieldImageResult, pexelsResults, wikimediaResults, wikimedia2Results, archiveResults, youtubeResults] = await Promise.allSettled([
+  // Build SerpAPI query: person name + visual cue for best celebrity image results
+  const serpQuery = buildSubjectQuery(primarySubject, scene.visualCue);
+  const serpQuery2 = secondarySubject ? buildSubjectQuery(secondarySubject, scene.visualCue) : null;
+
+  // Run all AI video generators, Pexels fetch, Wikimedia, SerpAPI, Internet Archive, and YouTube CC in parallel
+  // Priority: Stability AI → Grok → Veo → Meta → Higgsfield (text+image) → Pexels → Wikimedia → SerpAPI → Internet Archive → YouTube CC → Color fallback
+  const [aiResult, grokResult, veoResult, metaResult, higgsfieldTextResult, higgsfieldImageResult, pexelsResults, wikimediaResults, wikimedia2Results, serpResults, serp2Results, archiveResults, youtubeResults] = await Promise.allSettled([
     generateStabilityAIClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
     generateGrokVideoClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
     generateVeoVideoClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
@@ -1397,6 +1508,9 @@ async function fetchSceneVisuals(
     fetchWikimediaImages(wikimediaQuery, halfDur, workDir, scene.index, 2),
     // Search for secondary person if present (e.g. second celebrity mentioned in scene)
     wikimediaQuery2 ? fetchWikimediaImages(wikimediaQuery2, halfDur, workDir, scene.index, 1) : Promise.resolve([]),
+    // SerpAPI Google Images: best for celebrity/person-specific photos
+    fetchSerpAPIImages(serpQuery, halfDur, workDir, scene.index, 2),
+    serpQuery2 ? fetchSerpAPIImages(serpQuery2, halfDur, workDir, scene.index, 1) : Promise.resolve([]),
     fetchInternetArchiveClips(archiveQuery, halfDur, workDir, scene.index, 2),
     fetchYouTubeCCClips(youtubeQuery, halfDur, workDir, scene.index, 2),
   ]);
@@ -1441,16 +1555,28 @@ async function fetchSceneVisuals(
     const transformed = await transformClipForFairUse(wikimedia2Clips[i], scene.text, scene.index, pexelsClips.length + wikimediaClips.length + i, workDir);
     clips.push(transformed);
   }
+  // Then SerpAPI Google Images (primary person) — apply fair-use transformation
+  const serpClips = serpResults.status === "fulfilled" ? serpResults.value : [];
+  for (let i = 0; i < serpClips.length; i++) {
+    const transformed = await transformClipForFairUse(serpClips[i], scene.text, scene.index, pexelsClips.length + wikimediaClips.length + wikimedia2Clips.length + i, workDir);
+    clips.push(transformed);
+  }
+  // Then SerpAPI Google Images (secondary person) — apply fair-use transformation
+  const serp2Clips = serp2Results.status === "fulfilled" ? serp2Results.value : [];
+  for (let i = 0; i < serp2Clips.length; i++) {
+    const transformed = await transformClipForFairUse(serp2Clips[i], scene.text, scene.index, pexelsClips.length + wikimediaClips.length + wikimedia2Clips.length + serpClips.length + i, workDir);
+    clips.push(transformed);
+  }
   // Then Internet Archive clips — apply fair-use transformation
   const archiveClips = archiveResults.status === "fulfilled" ? archiveResults.value : [];
   for (let i = 0; i < archiveClips.length; i++) {
-    const transformed = await transformClipForFairUse(archiveClips[i], scene.text, scene.index, pexelsClips.length + wikimediaClips.length + wikimedia2Clips.length + i, workDir);
+    const transformed = await transformClipForFairUse(archiveClips[i], scene.text, scene.index, pexelsClips.length + wikimediaClips.length + wikimedia2Clips.length + serpClips.length + serp2Clips.length + i, workDir);
     clips.push(transformed);
   }
   // Then YouTube CC clips — apply fair-use transformation
   const youtubeClips = youtubeResults.status === "fulfilled" ? youtubeResults.value : [];
   for (let i = 0; i < youtubeClips.length; i++) {
-    const transformed = await transformClipForFairUse(youtubeClips[i], scene.text, scene.index, pexelsClips.length + wikimediaClips.length + wikimedia2Clips.length + archiveClips.length + i, workDir);
+    const transformed = await transformClipForFairUse(youtubeClips[i], scene.text, scene.index, pexelsClips.length + wikimediaClips.length + wikimedia2Clips.length + serpClips.length + serp2Clips.length + archiveClips.length + i, workDir);
     clips.push(transformed);
   }
   // If nothing worked, use color fallback
@@ -1459,7 +1585,7 @@ async function fetchSceneVisuals(
     clips.push(await generateColorFallback(scene.index, scene.duration + 1, workDir));
   }
   const personLabel = scenePersons.length > 0 ? ` [persons: ${scenePersons.join(', ')}]` : '';
-  console.log(`[Pipeline] Scene ${scene.index}${personLabel}: ${clips.length} clip(s) ready (Stability: ${aiClip ? "✓" : "✗"}, Grok: ${grokClip ? "✓" : "✗"}, Veo: ${veoClip ? "✓" : "✗"}, Meta: ${metaClip ? "✓" : "✗"}, Higgsfield: ${higgsfieldTextClip || higgsfieldImageClip ? "✓" : "✗"}, Pexels: ${pexelsClips.length}, Wikimedia: ${wikimediaClips.length + wikimedia2Clips.length}, Archive: ${archiveClips.length}, YouTube CC: ${youtubeClips.length})`);
+  console.log(`[Pipeline] Scene ${scene.index}${personLabel}: ${clips.length} clip(s) ready (Stability: ${aiClip ? "✓" : "✗"}, Grok: ${grokClip ? "✓" : "✗"}, Veo: ${veoClip ? "✓" : "✗"}, Meta: ${metaClip ? "✓" : "✗"}, Higgsfield: ${higgsfieldTextClip || higgsfieldImageClip ? "✓" : "✗"}, Pexels: ${pexelsClips.length}, Wikimedia: ${wikimediaClips.length + wikimedia2Clips.length}, SerpAPI: ${serpClips.length + serp2Clips.length}, Archive: ${archiveClips.length}, YouTube CC: ${youtubeClips.length})`);
   return clips;
 }
 
