@@ -1166,47 +1166,73 @@ async function fetchYouTubeCCClips(
   count: number = 2
 ): Promise<string[]> {
   const results: string[] = [];
-  // Only available when Forge API is configured (Manus environment)
+
+  // Use direct YouTube Data API v3 key if available, fall back to Forge proxy
+  const youtubeApiKey = process.env.YOUTUBE_API_KEY;
   const forgeApiUrl = process.env.BUILT_IN_FORGE_API_URL;
   const forgeApiKey = process.env.BUILT_IN_FORGE_API_KEY;
-  if (!forgeApiUrl || !forgeApiKey) return [];
+
+  if (!youtubeApiKey && (!forgeApiUrl || !forgeApiKey)) return [];
 
   try {
-    const baseUrl = forgeApiUrl.endsWith('/') ? forgeApiUrl : `${forgeApiUrl}/`;
-    const fullUrl = new URL('webdevtoken.v1.WebDevService/CallApi', baseUrl).toString();
-
-    // Search YouTube for CC-licensed videos matching the query
-    const searchResp = await withTimeout(
-      fetch(fullUrl, {
-        method: 'POST',
-        headers: {
-          'accept': 'application/json',
-          'content-type': 'application/json',
-          'connect-protocol-version': '1',
-          'authorization': `Bearer ${forgeApiKey}`,
-        },
-        body: JSON.stringify({
-          apiId: 'Youtube/search',
-          query: {
-            q: query,
-            type: 'video',
-            videoLicense: 'creativeCommon',
-            maxResults: count * 3,
-            part: 'snippet',
-          },
-        }),
-      }),
-      15_000,
-      `YouTube CC search scene ${sceneIndex}`
-    );
-
-    if (!searchResp.ok) return [];
-    const payload = await searchResp.json() as Record<string, unknown>;
     let searchData: { items?: Array<{ id?: { videoId?: string }; snippet?: { title?: string } }> } = {};
-    if (payload && 'jsonData' in payload) {
-      try { searchData = JSON.parse(payload.jsonData as string); } catch { searchData = payload.jsonData as typeof searchData; }
+
+    if (youtubeApiKey) {
+      // Direct YouTube Data API v3 call
+      const searchUrl = new URL('https://www.googleapis.com/youtube/v3/search');
+      searchUrl.searchParams.set('key', youtubeApiKey);
+      searchUrl.searchParams.set('q', query);
+      searchUrl.searchParams.set('type', 'video');
+      searchUrl.searchParams.set('videoLicense', 'creativeCommon');
+      searchUrl.searchParams.set('maxResults', String(count * 4));
+      searchUrl.searchParams.set('part', 'snippet');
+      searchUrl.searchParams.set('videoDuration', 'medium'); // 4-20 min videos
+      searchUrl.searchParams.set('order', 'relevance');
+
+      const searchResp = await withTimeout(
+        fetch(searchUrl.toString()),
+        15_000,
+        `YouTube CC search scene ${sceneIndex}`
+      );
+      if (!searchResp.ok) {
+        console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube API error ${searchResp.status}`);
+        return [];
+      }
+      searchData = await searchResp.json() as typeof searchData;
     } else {
-      searchData = payload as typeof searchData;
+      // Fallback: Manus Forge proxy
+      const baseUrl = forgeApiUrl!.endsWith('/') ? forgeApiUrl! : `${forgeApiUrl!}/`;
+      const fullUrl = new URL('webdevtoken.v1.WebDevService/CallApi', baseUrl).toString();
+      const searchResp = await withTimeout(
+        fetch(fullUrl, {
+          method: 'POST',
+          headers: {
+            'accept': 'application/json',
+            'content-type': 'application/json',
+            'connect-protocol-version': '1',
+            'authorization': `Bearer ${forgeApiKey}`,
+          },
+          body: JSON.stringify({
+            apiId: 'Youtube/search',
+            query: {
+              q: query,
+              type: 'video',
+              videoLicense: 'creativeCommon',
+              maxResults: count * 4,
+              part: 'snippet',
+            },
+          }),
+        }),
+        15_000,
+        `YouTube CC search scene ${sceneIndex}`
+      );
+      if (!searchResp.ok) return [];
+      const payload = await searchResp.json() as Record<string, unknown>;
+      if (payload && 'jsonData' in payload) {
+        try { searchData = JSON.parse(payload.jsonData as string); } catch { searchData = payload.jsonData as typeof searchData; }
+      } else {
+        searchData = payload as typeof searchData;
+      }
     }
 
     const items = searchData.items || [];
