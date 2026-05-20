@@ -1,0 +1,31 @@
+{
+  "query": "SELECT id, title, status, videoUrl, createdAt FROM videos WHERE status = 'completed' AND videoUrl IS NOT NULL ORDER BY createdAt DESC LIMIT 3;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute SELECT id, title, status, videoUrl, createdAt FROM videos WHERE status = 'completed' AND videoUrl IS NOT NULL ORDER BY createdAt DESC LIMIT 3;",
+  "rows": [
+    {
+      "id": "360002",
+      "title": "Top 5 Most AMAZING Deep Sea Creatures You Won't Believe Exist!",
+      "status": "completed",
+      "videoUrl": "/manus-storage/videos/360002/final_2d85ceee.mp4",
+      "createdAt": "2026-05-07 20:08:03"
+    },
+    {
+      "id": "330003",
+      "title": "Top 5 Volcanoes That Could Erupt Soon",
+      "status": "completed",
+      "videoUrl": "/manus-storage/videos/330003/final_a1cb83f1.mp4",
+      "createdAt": "2026-05-06 18:56:59"
+    },
+    {
+      "id": "330002",
+      "title": "Top 5 Most Amazing Ocean Discoveries You Won't Believe!",
+      "status": "completed",
+      "videoUrl": "/manus-storage/videos/330002/final_9220aa16.mp4",
+      "createdAt": "2026-05-06 18:38:06"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\ttitle\tstatus\tvideoUrl\tcreatedAt\n360002\tTop 5 Most AMAZING Deep Sea Creatures You Won't Believe Exist!\tcompleted\t/manus-storage/videos/360002/final_2d85ceee.mp4\t2026-05-07 20:08:03\n330003\tTop 5 Volcanoes That Could Erupt Soon\tcompleted\t/manus-storage/videos/330003/final_a1cb83f1.mp4\t2026-05-06 18:56:59\n330002\tTop 5 Most Amazing Ocean Discoveries You Won't Believe!\tcompleted\t/manus-storage/videos/330002/final_9220aa16.mp4\t2026-05-06 18:38:06\n",
+  "stderr": "",
+  "execution_time_ms": 340
+}

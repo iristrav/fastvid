@@ -276,7 +276,7 @@ async function parseScriptIntoScenes(script: string, maxScenes: number): Promise
           content: `You are a video editor at a professional YouTube documentary channel (Vox/Wendover Productions style). Parse the given script into exactly ${maxScenes} scenes for video production.
 
 For each scene, extract:
-- text: The narration text for this scene (1-3 sentences, what will be spoken). Max 250 characters. Keep it natural and conversational.
+- text: The narration text for this scene (2-5 sentences, what will be spoken). Max 700 characters. Keep it natural and conversational. Do NOT truncate — include the full narration for this scene.
 - visualCue: A VERY SPECIFIC, LITERAL 4-8 word description of exactly what footage to show. Extract this from [VISUAL: ...] tags in the script if present. Examples:
   "aerial drone shot Brussels city center", "black white 1950s highway construction", "close-up tram narrow medieval street", "cyclist riding through Amsterdam intersection"
 - pexelsQuery: The PRIMARY Pexels/stock video search query (3-6 words, English). Must match the visual cue literally.
@@ -295,7 +295,7 @@ For each scene, extract:
 IMPORTANT:
 - Return exactly ${maxScenes} scenes covering the entire script evenly
 - Extract [VISUAL: ...] tags from the script to use as visualCue when available
-- Keep text SHORT and natural (max 250 chars each) — this is spoken narration
+- Keep text natural (max 700 chars each) — this is spoken narration. Include full sentences, do NOT truncate mid-sentence
 - Make pexelsQuery LITERAL and SPECIFIC — it will be used to search for real footage
 - Make aiImagePrompt vivid, cinematic and highly detailed
 - Scenes should flow naturally — each scene is ~3-6 seconds of footage
@@ -383,7 +383,8 @@ export async function generateVoiceover(
     .replace(/\s+/g, " ")
     .replace(/[^\x00-\x7F]/g, "")
     .trim();
-  const cleanText = rawText.length <= 250 ? rawText : rawText.slice(0, 250).replace(/\s\S*$/, "");
+  // Fish Audio S2 Pro supports up to ~1000 chars. Use 800 to stay safe and cover full scene narration.
+  const cleanText = rawText.length <= 800 ? rawText : rawText.slice(0, 800).replace(/\s\S*$/, "");
 
   const MAX_ATTEMPTS = 3;
   const TTS_TIMEOUT_MS = 30_000; // 30s — Fish Audio can take 10-20s for longer texts
@@ -431,9 +432,28 @@ export async function generateVoiceover(
         // Normalization was causing silent audio when FFmpeg filter chain failed or timed out
         fs.writeFileSync(outputPath, audioBuffer);
         console.log(`[Pipeline] TTS audio written: ${audioBuffer.length} bytes to ${outputPath}`);
-        // 320kbps MP3 = 40000 bytes/sec (320000 bits/sec / 8 bits per byte)
-        const durationSec = Math.max(3, Math.round(audioBuffer.length / 40000));
-        console.log(`[Pipeline] TTS scene ${outputPath.match(/scene_(\d+)/)?.[1] ?? "?"}: ${durationSec}s`);
+
+        // Use ffprobe to get the ACTUAL duration — Fish Audio uses VBR so file size is unreliable
+        let durationSec = 5; // safe default
+        try {
+          const { execSync: es } = await import('child_process');
+          const ffprobePaths = ['/usr/bin/ffprobe', '/usr/local/bin/ffprobe', 'ffprobe'];
+          for (const probePath of ffprobePaths) {
+            try {
+              const probeOut = es(`"${probePath}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${outputPath}"`, { encoding: 'utf8', timeout: 8000 });
+              const parsed = parseFloat(probeOut.trim());
+              if (!isNaN(parsed) && parsed > 0) {
+                durationSec = Math.ceil(parsed);
+                break;
+              }
+            } catch { /* try next */ }
+          }
+        } catch { /* use default */ }
+        // Fallback to file-size estimate if ffprobe fails
+        if (durationSec === 5 && audioBuffer.length > 1000) {
+          durationSec = Math.max(3, Math.round(audioBuffer.length / 40000));
+        }
+        console.log(`[Pipeline] TTS scene ${outputPath.match(/scene_(\d+)/)?.[1] ?? "?"}: ${durationSec}s (${audioBuffer.length} bytes)`);
         return durationSec;
       } catch (err) {
         if (attempt === MAX_ATTEMPTS) {
@@ -844,10 +864,13 @@ async function generateColorFallback(sceneIndex: number, duration: number, workD
   }
 
   try {
+    // Include silent audio stream so FFmpeg audio map works in composeSceneVideo
     await withTimeout(
       exec(
-        `${FFMPEG_BIN} -y -f lavfi -i "color=c=#${color}:size=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:rate=25" ` +
-        `-t ${duration} -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p "${outputPath}"`
+        `${FFMPEG_BIN} -y ` +
+        `-f lavfi -i "color=c=#${color}:size=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:rate=25" ` +
+        `-f lavfi -i anullsrc=r=44100:cl=stereo ` +
+        `-t ${duration} -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -c:a aac -b:a 128k -shortest "${outputPath}"`
       ),
       15_000, `Fallback video scene ${sceneIndex}`
     );
@@ -857,8 +880,10 @@ async function generateColorFallback(sceneIndex: number, duration: number, workD
     try {
       await withTimeout(
         exec(
-          `${FFMPEG_BIN} -y -f lavfi -i "color=c=black:size=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:rate=25" ` +
-          `-t ${duration} -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p "${outputPath}"`
+          `${FFMPEG_BIN} -y ` +
+          `-f lavfi -i "color=c=black:size=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:rate=25" ` +
+          `-f lavfi -i anullsrc=r=44100:cl=stereo ` +
+          `-t ${duration} -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -c:a aac -b:a 128k -shortest "${outputPath}"`
         ),
         15_000, `Black screen fallback scene ${sceneIndex}`
       );

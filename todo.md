@@ -452,3 +452,11 @@ FINAL STATUS: ✅ ALL CRITICAL FFMPEG ISSUES FIXED
 - [x] If scene has person names, use first name as primary search prefix for Wikimedia/YouTube/Archive
 - [x] If no person names in scene, fall back to videoTitle prefix (existing behavior)
 - [x] Add secondary person Wikimedia search for scenes with 2+ people mentioned
+
+## Critical Bug Fixes (Video Analysis May 20)
+
+- [x] Fix audio cutoff: TTS text was truncated at 250 chars — increased to 800 chars (full scene narration now spoken)
+- [x] Fix audio duration: use ffprobe to measure actual MP3 duration instead of file-size estimate (VBR-safe)
+- [x] Fix black screens: fallback color clip now includes silent audio stream (prevents FFmpeg audio map failure)
+- [x] Fix scene text truncation in parseScriptIntoScenes: increased from 250 to 700 chars per scene
+- [x] Fix visual cue mismatch: updated LLM prompt to include full sentences and not truncate narration
