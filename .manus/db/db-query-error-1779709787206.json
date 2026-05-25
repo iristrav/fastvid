@@ -1,0 +1,8 @@
+{
+  "query": "UPDATE videos SET status = 'failed', error = 'Pipeline deadlock: FFmpeg transform timeout (fixed in v5.1)' WHERE status = 'processing' AND title LIKE '%Elon Musk%';",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute UPDATE videos SET status = 'failed', error = 'Pipeline deadlock: FFmpeg transform timeout (fixed in v5.1)' WHERE status = 'processing' AND title LIKE '%Elon Musk%';",
+  "returncode": 1,
+  "logs": [
+    "ERROR 1054 (42S22) at line 1: Unknown column 'error' in 'field list'"
+  ]
+}

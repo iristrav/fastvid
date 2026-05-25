@@ -136,7 +136,13 @@ const resolveFFmpegBin = (): string => {
   return staticPath; // return anyway so error messages show the path
 };
 let FFMPEG_BIN: string = resolveFFmpegBin();
-const execRaw = promisify(execCb);
+// Use 256MB maxBuffer — FFmpeg concat of 15+ scenes can produce large stderr output
+const execRaw = (cmd: string) => new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+  execCb(cmd, { maxBuffer: 256 * 1024 * 1024 }, (err, stdout, stderr) => {
+    if (err) { (err as NodeJS.ErrnoException & { stdout?: string; stderr?: string }).stdout = stdout; (err as NodeJS.ErrnoException & { stdout?: string; stderr?: string }).stderr = stderr; reject(err); }
+    else resolve({ stdout, stderr });
+  });
+});
 
 // Wrapper that retries with a different ffmpeg binary if the current one fails
 const exec = async (cmd: string): Promise<{ stdout: string; stderr: string }> => {
@@ -201,7 +207,9 @@ try {
   console.warn('[Fastvid] Canvas: NOT available — using FFmpeg drawtext fallback for overlays');
 }
 
-const TMP_DIR = os.tmpdir();
+// Use /var/tmp instead of os.tmpdir() (/tmp) — /var/tmp is persistent and not cleaned
+// by systemd-tmpfiles or sandbox cleanup. /tmp can be wiped during long pipeline runs.
+const TMP_DIR = '/var/tmp';
 // Use lower resolution on Railway (no Forge key = Railway environment) to avoid OOM
 // Railway free tier has ~512MB RAM; 1280x720 FFmpeg compositing OOM-kills the process
 const IS_RAILWAY = !process.env.BUILT_IN_FORGE_API_KEY;
@@ -397,7 +405,7 @@ export async function generateVoiceover(
           text: cleanText,
           format: "mp3",
           model: "s2-pro",
-          mp3_bitrate: 320,  // Maximum quality for professional voiceover
+          mp3_bitrate: 192,  // Max supported by Fish Audio (64, 128, 192 kbps)
         };
         if (voiceId) body.reference_id = voiceId;
 
@@ -502,8 +510,8 @@ async function generateStabilityAIClip(
         { text: "blurry, low quality, watermark, text, logo, ugly, deformed", weight: -1 },
       ],
       cfg_scale: 8,
-      height: 1512,
-      width: 2688,
+      height: 768,   // SDXL valid resolution (multiple of 64, landscape)
+      width: 1344,   // SDXL valid resolution (multiple of 64, ~16:9 landscape)
       samples: 1,
       steps: 50,
     };
@@ -920,25 +928,34 @@ async function fetchSerpAPIImages(
           `SerpAPI image download scene ${sceneIndex}`
         );
         if (!imgResp.ok) continue;
+        // Validate content-type: must be an image, not HTML/text
+        const contentType = imgResp.headers.get('content-type') || '';
+        if (contentType.includes('text/') || contentType.includes('application/') || contentType.includes('html')) continue;
         const imgBuffer = Buffer.from(await imgResp.arrayBuffer());
         // Skip tiny images (likely placeholders)
         if (imgBuffer.length < 15_000) continue;
+        // Validate magic bytes: JPEG (FFD8FF) or PNG (89504E47)
+        const magic = imgBuffer.slice(0, 4);
+        const isJpeg = magic[0] === 0xFF && magic[1] === 0xD8 && magic[2] === 0xFF;
+        const isPng = magic[0] === 0x89 && magic[1] === 0x50 && magic[2] === 0x4E && magic[3] === 0x47;
+        if (!isJpeg && !isPng) continue;
         fs.writeFileSync(imgPath, imgBuffer);
 
-        // Convert image to video with Ken Burns effect (same as Wikimedia)
-        const zoomDir = (sceneIndex + i) % 2 === 0 ? 'in' : 'out';
-        const startScale = zoomDir === 'in' ? 1.0 : 1.07;
-        const endScale = zoomDir === 'in' ? 1.07 : 1.0;
+        // Convert image to video with fast Ken Burns effect (scale+crop, no zoompan)
+        // zoompan is O(n²) in frames and extremely slow at 1920×1080 — use scale trick instead
+        const scaledW = Math.round(VIDEO_WIDTH * 1.07);
+        const scaledH = Math.round(VIDEO_HEIGHT * 1.07);
+        const cropX = (sceneIndex + i) % 2 === 0 ? '0' : `${scaledW - VIDEO_WIDTH}`;
+        const cropY = (sceneIndex + i) % 4 < 2 ? '0' : `${scaledH - VIDEO_HEIGHT}`;
         await withTimeout(
           exec(
             `${FFMPEG_BIN} -y -loop 1 -i "${imgPath}" ` +
-            `-t ${duration} ` +
-            `-vf "scale=${Math.round(VIDEO_WIDTH * 1.10)}:${Math.round(VIDEO_HEIGHT * 1.10)}:force_original_aspect_ratio=increase,` +
-            `crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:(iw-${VIDEO_WIDTH})/2:(ih-${VIDEO_HEIGHT})/2,` +
-            `zoompan=z='if(lte(zoom,1.0),${startScale},min(zoom+${((endScale - startScale) / (duration * 25)).toFixed(5)},${endScale}))':d=${duration * 25}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=25" ` +
+            `-t ${duration} -r 25 ` +
+            `-vf "scale=${scaledW}:${scaledH}:force_original_aspect_ratio=increase,` +
+            `crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:${cropX}:${cropY}" ` +
             `-c:v libx264 -preset veryfast -crf 18 -an -pix_fmt yuv420p "${outPath}"`
           ),
-          45_000,
+          30_000,
           `SerpAPI image to video scene ${sceneIndex}`
         );
         try { fs.unlinkSync(imgPath); } catch { /* ignore */ }
@@ -1411,14 +1428,7 @@ async function transformClipForFairUse(
   workDir: string
 ): Promise<string> {
   const outputPath = inputPath.replace(/\.mp4$/, '_transformed.mp4');
-  // Sanitize scene text for drawtext — keep it short and safe
-  const safeText = sanitizeForDrawtextStrict(sceneText, 60);
 
-  // Build the FFmpeg filter chain:
-  //   1. eq: brightness/contrast/saturation for cinematic look
-  //   2. curves: slight warm tone (lift shadows slightly warm)
-  //   3. vignette: dark edges
-  //   4. drawtext: subtitle overlay at bottom
   // Use different color grade per scene for visual variety
   const grades = [
     { contrast: 1.08, saturation: 1.12, brightness: -0.02 }, // cinematic warm
@@ -1428,30 +1438,41 @@ async function transformClipForFairUse(
     { contrast: 1.06, saturation: 1.08, brightness: 0.01  }, // natural warm
   ];
   const grade = grades[(sceneIndex + clipIndex) % grades.length];
-
-  // Build vignette angle for variety
   const vignetteAngle = (0.5 + ((sceneIndex * 3 + clipIndex) % 5) * 0.1).toFixed(2);
-
-  // NOTE: Subtitle overlay is intentionally NOT added here.
-  // Subtitles are added once in composeSceneVideo (which has the full scene narration text).
-  // Adding them here would create duplicate overlays and use the wrong (truncated) text.
-  // The color grade + vignette alone are sufficient for fair-use transformation.
   const filterChain =
     `eq=contrast=${grade.contrast}:saturation=${grade.saturation}:brightness=${grade.brightness},` +
     `vignette=angle=${vignetteAngle}:mode=forward`;
 
+  // Use spawn() with explicit SIGKILL on timeout to prevent Node.js event loop deadlock.
+  // Promise.race() with exec() does NOT kill the child process, causing silent hangs.
+  const TRANSFORM_TIMEOUT_MS = 120_000; // 2 min — large Pexels clips can be 100MB+
+  console.log(`[Pipeline] Scene ${sceneIndex}: starting fair-use transform clip ${clipIndex} (${path.basename(inputPath)})`);
   try {
-    await withTimeout(
-      exec(
-        `${FFMPEG_BIN} -y -i "${inputPath}" ` +
-        `-vf "${filterChain}" ` +
-        `-c:v libx264 -preset veryfast -crf 20 -an -pix_fmt yuv420p "${outputPath}"`
-      ),
-      45_000,
-      `Fair-use transform scene ${sceneIndex} clip ${clipIndex}`
-    );
+    // Import spawn at the top of the async function scope (ES module — require() is not available)
+    const { spawn: spawnChild } = await import('child_process');
+    await new Promise<void>((resolve, reject) => {
+      const args = [
+        '-y', '-i', inputPath,
+        '-vf', filterChain,
+        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-an', '-pix_fmt', 'yuv420p',
+        outputPath
+      ];
+      const child = spawnChild(FFMPEG_BIN, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+      let stderr = '';
+      child.stderr.on('data', (d: Buffer) => { stderr += d.toString().slice(-500); }); // keep last 500 chars
+      const timer = setTimeout(() => {
+        console.warn(`[Pipeline] Scene ${sceneIndex}: transform clip ${clipIndex} TIMEOUT after ${TRANSFORM_TIMEOUT_MS/1000}s — killing FFmpeg`);
+        try { child.kill('SIGKILL'); } catch { /* ignore */ }
+        reject(new Error(`Transform timeout scene ${sceneIndex} clip ${clipIndex}`));
+      }, TRANSFORM_TIMEOUT_MS);
+      child.on('close', (code: number | null) => {
+        clearTimeout(timer);
+        if (code === 0) resolve();
+        else reject(new Error(`FFmpeg exit ${code}: ${stderr.slice(-200)}`));
+      });
+      child.on('error', (err: Error) => { clearTimeout(timer); reject(err); });
+    });
     if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 5_000) {
-      // Remove original to save disk space
       try { fs.unlinkSync(inputPath); } catch { /* ignore */ }
       console.log(`[Pipeline] Scene ${sceneIndex}: clip ${clipIndex} transformed for fair use`);
       return outputPath;
@@ -1459,7 +1480,7 @@ async function transformClipForFairUse(
   } catch (err) {
     console.warn(`[Pipeline] Scene ${sceneIndex}: fair-use transform failed for clip ${clipIndex}:`, (err as Error).message);
   }
-  // If transform failed, return original (still has Ken Burns / other processing)
+  // If transform failed or timed out, return original
   return inputPath;
 }
 
@@ -2597,8 +2618,8 @@ export async function runVideoPipeline(
     onProgress?.({ stage: STAGE_LABELS.visuals, percent: 20 });
     const t2 = Date.now();
 
-    // Process visuals in batches — fewer on Railway to avoid OOM
-    const visualLimit = pLimit(IS_RAILWAY ? 2 : 4);
+    // Process visuals in batches — limit to 2 to avoid OOM (sandbox has 3.8GB RAM)
+    const visualLimit = pLimit(2);
     let completedVisuals = 0;
     const sceneVisuals: string[][] = await withTimeout(
       Promise.all(scenes.map(scene => visualLimit(async () => {
@@ -2619,8 +2640,8 @@ export async function runVideoPipeline(
     onProgress?.({ stage: STAGE_LABELS.composing, percent: 47 });
     const t3 = Date.now();
 
-    // Process compose in batches — fewer on Railway to avoid OOM
-    const composeLimit = pLimit(IS_RAILWAY ? 1 : 4);
+    // Process compose in batches — limit to 2 to avoid OOM (sandbox has 3.8GB RAM)
+    const composeLimit = pLimit(2);
     let completedCompose = 0;
     const composedScenes = await withTimeout(
       Promise.all(

@@ -1,0 +1,9 @@
+{
+  "query": "UPDATE videos SET status = 'failed', errorMessage = 'Pipeline deadlock: FFmpeg transform timeout (fixed in v5.1)', progressStep = 'Failed — pipeline deadlock fixed, please retry' WHERE status IN ('generating_visuals', 'generating_effects', 'generating_voiceover') AND (title LIKE '%Elon Musk%' OR prompt LIKE '%Elon Musk%');",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute UPDATE videos SET status = 'failed', errorMessage = 'Pipeline deadlock: FFmpeg transform timeout (fixed in v5.1)', progressStep = 'Failed — pipeline deadlock fixed, please retry' WHERE status IN ('generating_visuals', 'generating_effects', 'generating_voiceover') AND (title LIKE '%Elon Musk%' OR prompt LIKE '%Elon Musk%');",
+  "rows": [],
+  "messages": [],
+  "stdout": "",
+  "stderr": "",
+  "execution_time_ms": 276
+}
