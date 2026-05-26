@@ -254,6 +254,9 @@ interface Scene {
   // Chapter card fields (optional)
   isChapterCard?: boolean;   // true = this scene is a chapter title card (no voiceover, 1.5s)
   chapterTitle?: string;     // ALL CAPS title text for the chapter card
+  // Vidrush-quality fields
+  highlightWords?: string[]; // 2-3 power words for kinetic typography overlay (LLM-generated)
+  brollQueries?: string[];   // 2 specific B-roll search queries for cutaway footage
 }
 
 export interface PipelineProgress {
@@ -308,6 +311,8 @@ For each scene, extract:
   Example: script has "## ROOTS OF DIVERGENCE" → first scene of that section has sectionTitle="ROOTS OF DIVERGENCE", subsequent scenes have sectionTitle=""
 - personNames: Array of FULL NAMES of all real people (celebrities, politicians, athletes, public figures, historical figures) explicitly mentioned by name in this scene's narration text. Include ONLY names that appear in the text field. If no person is mentioned, return an empty array [].
   Examples: ["Kylie Jenner"], ["Elon Musk", "Jeff Bezos"], ["Napoleon Bonaparte"], []
+- highlightWords: Array of 2-3 POWER WORDS from this scene's narration — the most impactful, emotionally resonant, or statistically significant words. These will be displayed as bold kinetic text overlays on screen. Choose words that create visual impact: numbers ("$47 BILLION"), strong verbs ("COLLAPSED"), key nouns ("MONOPOLY"), or dramatic adjectives ("UNPRECEDENTED"). Always UPPERCASE. Examples: ["$47 BILLION", "COLLAPSED"], ["MONOPOLY", "EXPOSED"], ["UNPRECEDENTED", "CRISIS"]
+- brollQueries: Array of exactly 2 specific B-roll search queries for cutaway footage that would visually complement this scene. These should be different from pexelsQuery — think of supporting footage that adds visual variety. Examples: ["stock market trading floor", "money bills close up"], ["factory workers assembly line", "industrial machinery"], ["city traffic aerial view", "commuters subway station"]
 IMPORTANT:
 - Return exactly ${maxScenes} scenes covering the entire script evenly
 - Extract [VISUAL: ...] tags from the script to use as visualCue when available
@@ -316,7 +321,9 @@ IMPORTANT:
 - Make aiImagePrompt vivid, cinematic and highly detailed
 - Scenes should flow naturally — each scene is ~3-6 seconds of footage
 - sectionTitle is ONLY non-empty for the FIRST scene of each new ## section
-- personNames MUST be extracted from the text field only — do not invent names not present in the text`,
+- personNames MUST be extracted from the text field only — do not invent names not present in the text
+- highlightWords MUST be 2-3 words max, always UPPERCASE, chosen for maximum visual impact
+- brollQueries MUST be exactly 2 queries, different from pexelsQuery, for visual variety`,
         },
         {
           role: "user",
@@ -343,8 +350,10 @@ IMPORTANT:
                     personNames: { type: "array", items: { type: "string" } },
                     aiImagePrompt: { type: "string" },
                     sectionTitle: { type: "string" },
+                    highlightWords: { type: "array", items: { type: "string" } },
+                    brollQueries: { type: "array", items: { type: "string" } },
                   },
-                  required: ["text", "visualCue", "pexelsQuery", "pexelsQueries", "personNames", "aiImagePrompt", "sectionTitle"],
+                  required: ["text", "visualCue", "pexelsQuery", "pexelsQueries", "personNames", "aiImagePrompt", "sectionTitle", "highlightWords", "brollQueries"],
                   additionalProperties: false,
                 },
               },
@@ -373,6 +382,15 @@ IMPORTANT:
     const personNames = ((rawS.personNames as string[] | undefined) || [])
       .filter(n => typeof n === 'string' && n.trim().length > 0)
       .map(n => n.trim());
+    // Extract highlight words (LLM-generated power words for kinetic typography)
+    const highlightWords = ((rawS.highlightWords as string[] | undefined) || [])
+      .filter(w => typeof w === 'string' && w.trim().length > 0)
+      .map(w => w.trim().toUpperCase())
+      .slice(0, 3); // max 3 words
+    // Extract B-roll queries (2 specific queries for cutaway footage)
+    const brollQueries = ((rawS.brollQueries as string[] | undefined) || [])
+      .filter(q => typeof q === 'string' && q.trim().length > 0)
+      .slice(0, 2); // max 2 queries
     return {
       ...s,
       index: i,
@@ -380,6 +398,8 @@ IMPORTANT:
       pexelsQuery: primaryQuery,
       pexelsQueries: allQueries,
       personNames,
+      highlightWords,
+      brollQueries,
       aiImagePrompt: s.aiImagePrompt?.trim() || `Cinematic ${s.visualCue || "landscape"}, dramatic lighting, photorealistic, 8K`,
       // Store sectionTitle as chapterTitle if it's the first scene of a section
       isChapterCard: false,
@@ -848,6 +868,80 @@ async function fetchPexelsClips(
     }
   }
 
+  return results;
+}
+
+// ─── 3b2. Fetch B-roll Clips from Pexels (cutaway footage for visual variety) ─────────────
+// Fetches 1-2 B-roll clips using scene.brollQueries (LLM-generated cutaway queries).
+// These are inserted between main clips to add visual variety (Vidrush style).
+async function fetchBrollClips(
+  brollQueries: string[],
+  clipDuration: number,
+  workDir: string,
+  sceneIndex: number
+): Promise<string[]> {
+  if (!PEXELS_API_KEY || !brollQueries || brollQueries.length === 0) return [];
+  const results: string[] = [];
+  for (let qi = 0; qi < brollQueries.length && results.length < 2; qi++) {
+    const query = brollQueries[qi];
+    if (!query || !query.trim()) continue;
+    try {
+      const searchUrl = `https://api.pexels.com/videos/search?query=${encodeURIComponent(query)}&per_page=5&size=large&orientation=landscape`;
+      const searchResp = await withTimeout(
+        fetch(searchUrl, { headers: { Authorization: PEXELS_API_KEY } }),
+        10_000,
+        `B-roll Pexels search scene ${sceneIndex} query "${query}"`
+      );
+      if (!searchResp.ok) continue;
+      const searchData = await searchResp.json() as {
+        videos?: Array<{ id: number; duration: number; video_files: Array<{ width: number; height: number; link: string }> }>;
+      };
+      if (!searchData.videos?.length) continue;
+      const candidates = searchData.videos.filter(v => v.duration >= 3).slice(0, 3);
+      for (const video of candidates) {
+        if (results.length >= 2) break;
+        const videoFile = video.video_files
+          .filter(f => f.width >= 1280 && f.width <= 1920)
+          .sort((a, b) => b.width - a.width)[0]
+          || video.video_files.filter(f => f.width <= 1920).sort((a, b) => b.width - a.width)[0];
+        if (!videoFile?.link) continue;
+        const rawPath = path.join(workDir, `scene_${sceneIndex}_broll_${qi}_raw.mp4`);
+        const outPath = path.join(workDir, `scene_${sceneIndex}_broll_${qi}.mp4`);
+        try {
+          const dlResp = await withTimeout(fetch(videoFile.link), 20_000, `B-roll download scene ${sceneIndex}`);
+          if (!dlResp.ok) continue;
+          const buffer = Buffer.from(await dlResp.arrayBuffer());
+          if (buffer.length < 50_000) continue;
+          fs.writeFileSync(rawPath, buffer);
+          // Apply Ken Burns + fair-use color grade to B-roll
+          const panX = qi % 2 === 0 ? `(iw-${VIDEO_WIDTH})/2*t/${clipDuration}` : `(iw-${VIDEO_WIDTH})/2*(1-t/${clipDuration})`;
+          await withTimeout(
+            exec(
+              `${FFMPEG_BIN} -y -i "${rawPath}" ` +
+              `-t ${clipDuration} ` +
+              `-vf "scale=${Math.round(VIDEO_WIDTH * 1.08)}:${Math.round(VIDEO_HEIGHT * 1.08)}:force_original_aspect_ratio=increase,` +
+              `crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:${panX}:(ih-${VIDEO_HEIGHT})/2,` +
+              `eq=contrast=1.08:saturation=0.95:brightness=-0.02,vignette=angle=0.5:mode=forward" ` +
+              `-c:v libx264 -preset veryfast -crf 20 -an -pix_fmt yuv420p "${outPath}"`
+            ),
+            45_000,
+            `B-roll trim scene ${sceneIndex}`
+          );
+          try { fs.unlinkSync(rawPath); } catch { /* ignore */ }
+          if (fs.existsSync(outPath) && fs.statSync(outPath).size > 1_000) {
+            results.push(outPath);
+            console.log(`[Pipeline] Scene ${sceneIndex}: B-roll clip added: "${query}"`);
+          }
+        } catch (err) {
+          console.warn(`[Pipeline] B-roll clip failed for scene ${sceneIndex} query "${query}":`, (err as Error).message);
+          try { fs.unlinkSync(rawPath); } catch { /* ignore */ }
+        }
+        break; // one clip per query
+      }
+    } catch (err) {
+      console.warn(`[Pipeline] B-roll search failed for scene ${sceneIndex} query "${query}":`, (err as Error).message);
+    }
+  }
   return results;
 }
 
@@ -2071,9 +2165,9 @@ async function fetchSceneVisuals(
   const serpQuery = buildSubjectQuery(primarySubject, scene.visualCue);
   const serpQuery2 = secondarySubject ? buildSubjectQuery(secondarySubject, scene.visualCue) : null;
 
-  // Run all AI video generators, Pexels fetch, Wikimedia, SerpAPI, Internet Archive, and YouTube CC in parallel
-  // Priority: Stability AI → Leonardo → Runway → Kling → Luma → Pika → Manus Forge → Grok → Veo → Meta → Higgsfield → Pexels → Wikimedia → SerpAPI → Internet Archive → YouTube CC → Color fallback
-  const [aiResult, leonardoResult, runwayResult, klingResult, lumaResult, pikaResult, forgeResult, grokResult, veoResult, metaResult, higgsfieldTextResult, higgsfieldImageResult, pexelsResults, wikimediaResults, wikimedia2Results, serpResults, serp2Results, archiveResults, youtubeResults] = await Promise.allSettled([
+  // Run all AI video generators, Pexels fetch, Wikimedia, SerpAPI, Internet Archive, YouTube CC, and B-roll in parallel
+  // Priority: Stability AI → Leonardo → Runway → Kling → Luma → Pika → Manus Forge → Grok → Veo → Meta → Higgsfield → Pexels → B-roll → Wikimedia → SerpAPI → Internet Archive → YouTube CC → Color fallback
+  const [aiResult, leonardoResult, runwayResult, klingResult, lumaResult, pikaResult, forgeResult, grokResult, veoResult, metaResult, higgsfieldTextResult, higgsfieldImageResult, pexelsResults, brollResults, wikimediaResults, wikimedia2Results, serpResults, serp2Results, archiveResults, youtubeResults] = await Promise.allSettled([
     generateStabilityAIClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
     generateLeonardoAIClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
     generateRunwayClip(scene.aiImagePrompt, null, halfDur, aiClipPath, scene.index),
@@ -2087,6 +2181,7 @@ async function fetchSceneVisuals(
     generateHiggsfieldTextToVideoClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
     generateHiggsfieldImageToVideoClip("", scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
     fetchPexelsClips(scene.pexelsQuery, halfDur, workDir, scene.index, 3, scene.pexelsQueries),
+    fetchBrollClips(scene.brollQueries || [], halfDur, workDir, scene.index),
     fetchWikimediaImages(wikimediaQuery, halfDur, workDir, scene.index, 2),
     // Search for secondary person if present (e.g. second celebrity mentioned in scene)
     wikimediaQuery2 ? fetchWikimediaImages(wikimediaQuery2, halfDur, workDir, scene.index, 1) : Promise.resolve([]),
@@ -2143,6 +2238,12 @@ async function fetchSceneVisuals(
     clips.push(transformed);
   }
 
+  // Then B-roll clips (already color-graded in fetchBrollClips) — insert after main Pexels clips for visual variety
+  const brollClips = brollResults.status === "fulfilled" ? brollResults.value : [];
+  for (const brollClip of brollClips) {
+    clips.push(brollClip);
+  }
+
   // Then Wikimedia images (converted to video clips) — apply fair-use transformation
   const wikimediaClips = wikimediaResults.status === "fulfilled" ? wikimediaResults.value : [];
   for (let i = 0; i < wikimediaClips.length; i++) {
@@ -2185,7 +2286,7 @@ async function fetchSceneVisuals(
     clips.push(await generateColorFallback(scene.index, scene.duration + 1, workDir));
   }
   const personLabel = scenePersons.length > 0 ? ` [persons: ${scenePersons.join(', ')}]` : '';
-  console.log(`[Pipeline] Scene ${scene.index}${personLabel}: ${clips.length} clip(s) ready (Stability: ${aiClip ? "✓" : "✗"}, Grok: ${grokClip ? "✓" : "✗"}, Veo: ${veoClip ? "✓" : "✗"}, Meta: ${metaClip ? "✓" : "✗"}, Higgsfield: ${higgsfieldTextClip || higgsfieldImageClip ? "✓" : "✗"}, Pexels: ${pexelsClips.length}, Wikimedia: ${wikimediaClips.length + wikimedia2Clips.length}, SerpAPI: ${serpClips.length + serp2Clips.length}, Archive: ${archiveClips.length}, YouTube CC: ${youtubeClips.length})`);
+  console.log(`[Pipeline] Scene ${scene.index}${personLabel}: ${clips.length} clip(s) ready (Stability: ${aiClip ? "✓" : "✗"}, Grok: ${grokClip ? "✓" : "✗"}, Veo: ${veoClip ? "✓" : "✗"}, Meta: ${metaClip ? "✓" : "✗"}, Higgsfield: ${higgsfieldTextClip || higgsfieldImageClip ? "✓" : "✗"}, Pexels: ${pexelsClips.length}, B-roll: ${brollClips.length}, Wikimedia: ${wikimediaClips.length + wikimedia2Clips.length}, SerpAPI: ${serpClips.length + serp2Clips.length}, Archive: ${archiveClips.length}, YouTube CC: ${youtubeClips.length})`);
   return clips;
 }
 
@@ -2268,62 +2369,123 @@ async function renderKineticFrames(
     const startTime = overrideStartTime !== undefined ? overrideStartTime : i * slotDuration + 0.15;
     const endTime = overrideEndTime !== undefined ? overrideEndTime : Math.min(startTime + showDuration, sceneDuration - 0.2);
 
-    // Canvas: full video width, fixed height band for the text
+    // Vidrush-style: larger canvas for bigger, bolder text
     const CANVAS_W = VIDEO_WIDTH;
-    const CANVAS_H = 120; // height of the kinetic text band
-    const canvas = createCanvas(CANVAS_W, CANVAS_H);
-    const ctx = canvas.getContext("2d");
+    const CANVAS_H = 160; // taller band for bigger font
+    const FONT_SIZE = 88;
 
-    // Transparent background
-    ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
+    // ── Slide-in animation: generate 8 animation frames + 1 hold frame ──────
+    // Frame 0: pill starts fully off-screen left (translateX = -pillW)
+    // Frame 7: pill is at final centered position (translateX = 0)
+    // Frame 8 (hold): same as frame 7 — used as the static overlay PNG
+    // We only need the FINAL hold frame as the overlay PNG since FFmpeg
+    // enable/disable handles timing. But we generate a short slide-in video
+    // clip that we overlay instead for the animated effect.
+    const ANIM_FRAMES = 8;
+    const ANIM_FPS = 25;
 
-    // Measure text to draw pill background
-    ctx.font = `bold 72px NotoSans`;
-    const metrics = ctx.measureText(keyword);
+    // Measure text to compute pill dimensions
+    const measureCanvas = createCanvas(CANVAS_W, CANVAS_H);
+    const measureCtx = measureCanvas.getContext("2d");
+    measureCtx.font = `bold ${FONT_SIZE}px NotoSans`;
+    const metrics = measureCtx.measureText(keyword.toUpperCase());
     const textW = metrics.width;
-    const textH = 72;
-    const pillPadX = 32;
-    const pillPadY = 16;
+    const textH = FONT_SIZE;
+    const pillPadX = 40;
+    const pillPadY = 20;
     const pillW = textW + pillPadX * 2;
     const pillH = textH + pillPadY * 2;
-    const pillX = (CANVAS_W - pillW) / 2;
+    const pillFinalX = (CANVAS_W - pillW) / 2; // centered
     const pillY = (CANVAS_H - pillH) / 2;
+    const pillR = 18;
 
-    // First keyword gets yellow highlight, rest get dark semi-transparent pill
-    if (i === 0) {
-      // Yellow pill background
-      ctx.fillStyle = "rgba(255, 210, 0, 0.92)";
+    // Helper: draw one kinetic frame at a given horizontal offset
+    const drawKineticFrame = (offsetX: number, alpha: number): Buffer => {
+      const canvas = createCanvas(CANVAS_W, CANVAS_H);
+      const ctx = canvas.getContext("2d");
+      ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
+      const pillX = pillFinalX + offsetX;
+      // Yellow pill with strong black shadow
+      ctx.globalAlpha = alpha;
+      ctx.shadowColor = "rgba(0,0,0,0.6)";
+      ctx.shadowBlur = 20;
+      ctx.shadowOffsetX = 0;
+      ctx.shadowOffsetY = 6;
+      ctx.fillStyle = "rgba(255, 210, 0, 0.97)";
       ctx.beginPath();
-      ctx.roundRect(pillX, pillY, pillW, pillH, 14);
+      ctx.roundRect(pillX, pillY, pillW, pillH, pillR);
       ctx.fill();
-      // Dark text on yellow
-      ctx.font = `bold 72px NotoSans`;
+      ctx.shadowColor = "transparent";
+      ctx.shadowBlur = 0;
+      ctx.shadowOffsetX = 0;
+      ctx.shadowOffsetY = 0;
+      // Thin dark border
+      ctx.strokeStyle = "rgba(0,0,0,0.25)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.roundRect(pillX, pillY, pillW, pillH, pillR);
+      ctx.stroke();
+      // Dark text on yellow — ALL CAPS, bold
+      ctx.font = `bold ${FONT_SIZE}px NotoSans`;
       ctx.fillStyle = "#0a0a0a";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      ctx.shadowColor = "transparent";
-      ctx.shadowBlur = 0;
-      ctx.fillText(keyword, CANVAS_W / 2, CANVAS_H / 2);
-    } else {
-      // Dark semi-transparent pill background
-      ctx.fillStyle = "rgba(0, 0, 0, 0.72)";
-      ctx.beginPath();
-      ctx.roundRect(pillX, pillY, pillW, pillH, 14);
-      ctx.fill();
-      // White text with shadow
-      ctx.font = `bold 72px NotoSans`;
-      ctx.fillStyle = "#ffffff";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.shadowColor = "rgba(0,0,0,0.9)";
-      ctx.shadowBlur = 8;
-      ctx.shadowOffsetX = 2;
-      ctx.shadowOffsetY = 2;
-      ctx.fillText(keyword, CANVAS_W / 2, CANVAS_H / 2);
+      ctx.fillText(keyword.toUpperCase(), pillX + pillW / 2, CANVAS_H / 2);
+      ctx.globalAlpha = 1;
+      return canvas.toBuffer("image/png");
     }
 
+    // Generate animation frames: slide in from left
+    const animDir = path.join(workDir, `scene_${sceneIndex}_kanim_${i}`);
+    fs.mkdirSync(animDir, { recursive: true });
+
+    // Slide-in: pill starts at -pillW (off-screen left), eases to 0 over ANIM_FRAMES
+    for (let f = 0; f < ANIM_FRAMES; f++) {
+      const progress = f / (ANIM_FRAMES - 1); // 0 → 1
+      // Ease-out cubic
+      const eased = 1 - Math.pow(1 - progress, 3);
+      const offsetX = -(pillW + 60) * (1 - eased); // starts off-screen left
+      const alpha = 0.3 + 0.7 * eased; // fade in from 30% to 100%
+      const frameBuf = drawKineticFrame(offsetX, alpha);
+      fs.writeFileSync(path.join(animDir, `frame_${String(f).padStart(3, '0')}.png`), frameBuf);
+    }
+    // Hold frame (final position)
+    const holdBuf = drawKineticFrame(0, 1.0);
+    const holdFrameCount = Math.max(1, Math.round((endTime - startTime - ANIM_FRAMES / ANIM_FPS) * ANIM_FPS));
+    for (let f = 0; f < holdFrameCount; f++) {
+      fs.writeFileSync(path.join(animDir, `frame_${String(ANIM_FRAMES + f).padStart(3, '0')}.png`), holdBuf);
+    }
+
+    // Encode animation frames to a short transparent-background video
+    const animVideoPath = path.join(workDir, `scene_${sceneIndex}_kword_${i}.mp4`);
+    try {
+      await withTimeout(
+        exec(
+          `${FFMPEG_BIN} -y -framerate ${ANIM_FPS} -i "${animDir}/frame_%03d.png" ` +
+          `-c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -r ${ANIM_FPS} "${animVideoPath}"`
+        ),
+        20_000, `Kinetic anim encode scene ${sceneIndex} word ${i}`
+      );
+    } catch (animErr) {
+      console.warn(`[Pipeline] Kinetic anim encode failed, using static PNG fallback:`, animErr);
+      // Fallback: write static hold frame as PNG
+      const pngPath = path.join(workDir, `scene_${sceneIndex}_kword_${i}.png`);
+      fs.writeFileSync(pngPath, holdBuf);
+      frames.push({ path: pngPath, startTime, endTime });
+      try { fs.rmSync(animDir, { recursive: true }); } catch { /* ignore */ }
+      continue;
+    }
+
+    // Cleanup animation frames dir
+    try { fs.rmSync(animDir, { recursive: true }); } catch { /* ignore */ }
+
+    // Use the static hold frame PNG for overlay (simpler FFmpeg overlay)
+    // The animated video approach requires more complex filter_complex; use PNG for reliability
     const pngPath = path.join(workDir, `scene_${sceneIndex}_kword_${i}.png`);
-    fs.writeFileSync(pngPath, canvas.toBuffer("image/png"));
+    fs.writeFileSync(pngPath, holdBuf);
+    // Clean up the animation video (we use PNG overlay for reliability)
+    try { fs.unlinkSync(animVideoPath); } catch { /* ignore */ }
+
     frames.push({ path: pngPath, startTime, endTime });
   }
 
@@ -2796,31 +2958,44 @@ async function composeSceneVideo(
   // (user requested clean video without subtitles)
   const subtitlePath: string | null = null;
 
-  // Kinetic typography: sparse — only every 6th scene, 1 impactful word, shown briefly in the middle
-  // Always-on (not gated behind enableSubtitles). Keeps it subtle and documentary-like.
+  // Kinetic typography: Vidrush-style — use LLM-generated highlightWords for every scene that has them.
+  // Fallback to stopword extraction for scenes without LLM words (every 4th scene).
+  // Shows 1 power word at a time, centered in the scene, for 2s each.
   let kineticFrames: KineticFrame[] = [];
-  if (scene.index % 6 === 0) {
-    try {
-      const keywords = extractKeywords(scene.text, 1); // just 1 most impactful word
+  try {
+    // Prefer LLM-generated highlight words; fall back to stopword extraction every 4th scene
+    const llmWords = (scene.highlightWords || []).filter(w => w && w.trim().length > 0);
+    const shouldShowKinetic = llmWords.length > 0 || scene.index % 4 === 0;
+    if (shouldShowKinetic) {
+      const keywords = llmWords.length > 0 ? llmWords.slice(0, 2) : extractKeywords(scene.text, 1);
       if (keywords.length > 0) {
-        // Show the word for 2s, centered in the scene duration
+        // Show each word for 2s, distributed across the scene
         const wordDuration = 2.0;
-        const startTime = Math.max(0.5, (duration - wordDuration) / 2);
-        const endTime = Math.min(startTime + wordDuration, duration - 0.3);
-        kineticFrames = await renderKineticFrames(
-          keywords,
-          duration,
-          scene.index,
-          workDir,
-          startTime,
-          endTime
-        );
-        console.log(`[Pipeline] Scene ${scene.index}: kinetic word: "${keywords[0]}" (${startTime.toFixed(1)}s–${endTime.toFixed(1)}s)`);
+        const gap = 0.4; // gap between words
+        const totalWordTime = keywords.length * (wordDuration + gap);
+        const startOffset = Math.max(0.5, (duration - totalWordTime) / 2);
+        const allFrames: KineticFrame[] = [];
+        for (let wi = 0; wi < keywords.length; wi++) {
+          const wordStart = startOffset + wi * (wordDuration + gap);
+          const wordEnd = Math.min(wordStart + wordDuration, duration - 0.3);
+          if (wordStart >= duration - 0.5) break;
+          const frames = await renderKineticFrames(
+            [keywords[wi]],
+            duration,
+            scene.index,
+            workDir,
+            wordStart,
+            wordEnd
+          );
+          allFrames.push(...frames);
+        }
+        kineticFrames = allFrames;
+        console.log(`[Pipeline] Scene ${scene.index}: kinetic words: [${keywords.join(', ')}] (${llmWords.length > 0 ? 'LLM' : 'fallback'})`);
       }
-    } catch (err) {
-      console.warn(`[Pipeline] Scene ${scene.index}: kinetic typography failed (non-fatal):`, err);
-      kineticFrames = [];
     }
+  } catch (err) {
+    console.warn(`[Pipeline] Scene ${scene.index}: kinetic typography failed (non-fatal):`, err);
+    kineticFrames = [];
   }
 
   // On Railway, limit FFmpeg threads to reduce memory usage
@@ -2834,11 +3009,17 @@ async function composeSceneVideo(
   const subtitleDrawtext = '';
   // Vignette for cinematic look
   const vignetteFilter = `,vignette=angle=0.6:mode=forward`;
-  // Final filter: color grade + subtitle + vignette. NO fade-in/out on individual scenes
+  // Film grain: subtle noise overlay for cinematic texture (Vidrush-style)
+  // noise=alls=12:allf=t adds temporal noise (changes each frame) for organic film grain look
+  const filmGrain = `,noise=alls=12:allf=t`;
+  // Final filter: color grade + film grain + vignette. NO fade-in/out on individual scenes
   // (hard cuts between scenes, like the reference video)
-  const fadeFilter = `${colorGrade}${subtitleDrawtext}${vignetteFilter}`;
-  // Hard cut between clips (xfade duration very short = near-instant cut)
-  const xfadeDur = 0.08;
+  const fadeFilter = `${colorGrade}${filmGrain}${subtitleDrawtext}${vignetteFilter}`;
+  // Vidrush-style transitions: alternate between slideleft and fade for visual variety
+  // slideleft: clips slide in from right (dynamic, modern feel)
+  // fade: classic dissolve (used for every other transition to avoid monotony)
+  const xfadeDur = 0.25; // slightly longer for visible transition effect
+  const xfadeTransitions = ['slideleft', 'fade', 'slideleft', 'fade', 'slideleft', 'fade'];
 
   // Helper: build the kinetic overlay chain on top of a labelled video stream.
   // Each kinetic frame is a full-width PNG (VIDEO_WIDTH x 120) overlaid at y=kineticY
@@ -2879,17 +3060,29 @@ async function composeSceneVideo(
       const clipDur = Math.max(2, Math.floor(duration / safeClips.length));
       const inputs = safeClips.map(c => `-i "${c}"`).join(" ");
       // Add fps=25 to normalize timebase before xfade (prevents 'timebase mismatch' error)
-      const scaleFilters = safeClips.map((_, i) =>
-        `[${i}:v]scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT},fps=25[v${i}]`
-      ).join(";");
+      // Vidrush-style zoom punch: first clip gets a subtle scale 1.0→1.05 zoom over 0.3s for energy
+      const ZOOM_PUNCH_FPS = 25;
+      const ZOOM_PUNCH_DUR = 0.3; // seconds
+      const ZOOM_PUNCH_FRAMES = Math.ceil(ZOOM_PUNCH_DUR * ZOOM_PUNCH_FPS);
+      const ZOOM_PUNCH_STEP = (1.05 - 1.0) / ZOOM_PUNCH_FRAMES;
+      const scaleFilters = safeClips.map((_, i) => {
+        if (i === 0) {
+          // First clip: zoom punch from 1.0 to 1.05 over first 0.3s, then hold at 1.05
+          return `[${i}:v]scale=${Math.round(VIDEO_WIDTH * 1.10)}:${Math.round(VIDEO_HEIGHT * 1.10)}:force_original_aspect_ratio=increase,` +
+            `crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT},fps=25,` +
+            `zoompan=z='if(lte(on,${ZOOM_PUNCH_FRAMES}),1.0+on*${ZOOM_PUNCH_STEP.toFixed(6)},1.05)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${ZOOM_PUNCH_FRAMES * 4}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=${ZOOM_PUNCH_FPS}[v${i}]`;
+        }
+        return `[${i}:v]scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT},fps=25[v${i}]`;
+      }).join(";");
 
-      // Chain xfades
+      // Chain xfades — alternate between slideleft and fade for Vidrush-style visual variety
       let xfadeChain = "";
       let lastLabel = "v0";
       for (let i = 1; i < safeClips.length; i++) {
         const offset = Math.max(0.5, clipDur * i - xfadeDur);
         const outLabel = i === safeClips.length - 1 ? "xfaded" : `xf${i}`;
-        xfadeChain += `;[${lastLabel}][v${i}]xfade=transition=fade:duration=${xfadeDur}:offset=${offset}[${outLabel}]`;
+        const transition = xfadeTransitions[(i - 1) % xfadeTransitions.length];
+        xfadeChain += `;[${lastLabel}][v${i}]xfade=transition=${transition}:duration=${xfadeDur}:offset=${offset}[${outLabel}]`;
         lastLabel = outLabel;
       }
 
@@ -2923,10 +3116,17 @@ async function composeSceneVideo(
       const kineticInput = kExtraInputs ? ` ${kExtraInputs}` : "";
       const kineticChainStr = kChain ? kChain : "";
       const finalVideoLabel = kineticFrames.length > 0 ? kFinalLabel : "scaled";
+      // Single clip: zoom punch from 1.0 to 1.05 over first 0.3s (Vidrush energy effect)
+      const SP_FPS = 25;
+      const SP_FRAMES = Math.ceil(0.3 * SP_FPS);
+      const SP_STEP = (1.05 - 1.0) / SP_FRAMES;
+      const singleZoomFilter = `scale=${Math.round(VIDEO_WIDTH * 1.10)}:${Math.round(VIDEO_HEIGHT * 1.10)}:force_original_aspect_ratio=increase,` +
+        `crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT},fps=25,` +
+        `zoompan=z='if(lte(on,${SP_FRAMES}),1.0+on*${SP_STEP.toFixed(6)},1.05)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${SP_FRAMES * 4}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=${SP_FPS}`;
       await withTimeout(
         exec(
           `${FFMPEG_BIN} -y -i "${clip}" -i "${safeAudioPath}"${kineticInput} ` +
-          `-filter_complex "[0:v]scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}[scaled]${kineticChainStr};[${finalVideoLabel}]${fadeFilter}[vout]" ` +
+          `-filter_complex "[0:v]${singleZoomFilter}[scaled]${kineticChainStr};[${finalVideoLabel}]${fadeFilter}[vout]" ` +
           `-map "[vout]" -map "${audioIdx}:a" ` +
           `-t ${duration} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
         ),
@@ -2991,6 +3191,48 @@ async function generateBackgroundMusic(duration: number, workDir: string): Promi
   } catch (err) {
     console.warn("[Pipeline] Music generation failed, using silence:", err);
     await exec(`${FFMPEG_BIN} -y -f lavfi -i anullsrc=r=44100:cl=stereo -t ${duration} -c:a libmp3lame -b:a 64k "${outputPath}"`).catch((e) => { console.error('[Pipeline] Music silence fallback failed:', e); });
+    return outputPath;
+  }
+}
+
+
+// ─── 6b. Sound Effects (SFX) Generation ──────────────────────────────────────
+// Generates camera shutter, whoosh, and impact sounds using FFmpeg lavfi synthesis.
+// These are mixed into the final audio at low volume for Vidrush-style energy.
+async function generateSFX(
+  type: 'shutter' | 'whoosh' | 'impact',
+  workDir: string
+): Promise<string> {
+  const outputPath = path.join(workDir, `sfx_${type}.mp3`);
+  try {
+    let cmd = '';
+    if (type === 'shutter') {
+      // Camera shutter: short high-freq click (2kHz, 0.05s) + mechanical thud (200Hz, 0.08s)
+      cmd = `${FFMPEG_BIN} -y ` +
+        `-f lavfi -i "sine=frequency=2000:duration=0.05" ` +
+        `-f lavfi -i "sine=frequency=200:duration=0.08" ` +
+        `-filter_complex "[0]volume=0.6,aecho=0.8:0.3:10:0.2[click];[1]volume=0.4,lowpass=f=400[thud];[click][thud]amix=inputs=2:duration=longest[sfx]" ` +
+        `-map "[sfx]" -c:a libmp3lame -b:a 128k "${outputPath}"`;
+    } else if (type === 'whoosh') {
+      // Whoosh: swept sine 200Hz→2000Hz over 0.2s for transition sound
+      cmd = `${FFMPEG_BIN} -y ` +
+        `-f lavfi -i "sine=frequency=200:duration=0.2" ` +
+        `-f lavfi -i "sine=frequency=2000:duration=0.2" ` +
+        `-filter_complex "[0]volume=0.5,aecho=0.7:0.5:20:0.3[low];[1]volume=0.3,aecho=0.7:0.5:15:0.2[high];[low][high]amix=inputs=2:duration=longest,atempo=1.5[sfx]" ` +
+        `-map "[sfx]" -c:a libmp3lame -b:a 128k "${outputPath}"`;
+    } else {
+      // Impact: low thud (80Hz, 0.15s) with decay
+      cmd = `${FFMPEG_BIN} -y ` +
+        `-f lavfi -i "sine=frequency=80:duration=0.15" ` +
+        `-filter_complex "[0]volume=0.7,aecho=0.9:0.6:30:0.4,lowpass=f=300[sfx]" ` +
+        `-map "[sfx]" -c:a libmp3lame -b:a 128k "${outputPath}"`;
+    }
+    await withTimeout(exec(cmd), 10_000, `SFX generation: ${type}`);
+    return outputPath;
+  } catch (err) {
+    console.warn(`[Pipeline] SFX generation failed for ${type}:`, err);
+    // Return empty audio as fallback
+    await exec(`${FFMPEG_BIN} -y -f lavfi -i anullsrc=r=44100:cl=stereo -t 0.1 -c:a libmp3lame -b:a 64k "${outputPath}"`).catch(() => {});
     return outputPath;
   }
 }
