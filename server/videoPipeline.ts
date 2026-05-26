@@ -419,7 +419,9 @@ IMPORTANT:
   });
 }
 
-// ─── 2. TTS Voiceover (Fish Audio S2 Pro) ────────────────────────────────────
+// ─── 2. TTS Voiceover (ElevenLabs — MANDATORY PRIMARY) ───────────────────────────────────────
+// Priority: ElevenLabs (always first, highest quality) → Fish Audio (emergency fallback) → silent
+// ElevenLabs eleven_multilingual_v2 is the ONLY intended production TTS.
 export async function generateVoiceover(
   text: string,
   outputPath: string,
@@ -2327,28 +2329,15 @@ async function fetchSceneVisuals(
   const serpQuery = buildSubjectQuery(primarySubject, scene.visualCue);
   const serpQuery2 = secondarySubject ? buildSubjectQuery(secondarySubject, scene.visualCue) : null;
 
-  // Run all AI video generators, Pexels fetch, Pixabay fetch, Wikimedia, SerpAPI, Internet Archive, YouTube CC, and B-roll in parallel
-  // Priority: Stability AI → Leonardo → Runway → Kling → Luma → Pika → Manus Forge → Grok → Veo → Meta → Higgsfield → Pexels → Pixabay → B-roll → Wikimedia → SerpAPI → Internet Archive → YouTube CC → Color fallback
-  const [aiResult, leonardoResult, runwayResult, klingResult, lumaResult, pikaResult, forgeResult, grokResult, veoResult, metaResult, higgsfieldTextResult, higgsfieldImageResult, pexelsResults, pixabayResults, brollResults, wikimediaResults, wikimedia2Results, serpResults, serp2Results, archiveResults, youtubeResults] = await Promise.allSettled([
-    generateStabilityAIClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
-    generateLeonardoAIClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
-    generateRunwayClip(scene.aiImagePrompt, null, halfDur, aiClipPath, scene.index),
-    generateKlingClip(scene.aiImagePrompt, null, halfDur, aiClipPath, scene.index),
-    generateLumaClip(scene.aiImagePrompt, null, halfDur, aiClipPath, scene.index),
-    generatePikaClip(scene.aiImagePrompt, null, halfDur, aiClipPath, scene.index),
-    generateManusForgeClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
-    generateGrokVideoClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
-    generateVeoVideoClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
-    generateMetaMovieGenClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
-    generateHiggsfieldTextToVideoClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
-    generateHiggsfieldImageToVideoClip("", scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
+  // ── PHASE 1: Free sources first (Pexels, Pixabay, B-roll, Wikimedia, SerpAPI, Archive, YouTube CC)
+  // Run all FREE sources in parallel. Only invoke paid AI generators (Runway etc.) if free sources
+  // return fewer than 2 clips — keeping costs minimal.
+  const [pexelsResults, pixabayResults, brollResults, wikimediaResults, wikimedia2Results, serpResults, serp2Results, archiveResults, youtubeResults] = await Promise.allSettled([
     fetchPexelsClips(scene.pexelsQuery, halfDur, workDir, scene.index, 3, scene.pexelsQueries),
     fetchPixabayClips(scene.pexelsQuery, halfDur, workDir, scene.index, 2),
     fetchBrollClips(scene.brollQueries || [], halfDur, workDir, scene.index),
     fetchWikimediaImages(wikimediaQuery, halfDur, workDir, scene.index, 2),
-    // Search for secondary person if present (e.g. second celebrity mentioned in scene)
     wikimediaQuery2 ? fetchWikimediaImages(wikimediaQuery2, halfDur, workDir, scene.index, 1) : Promise.resolve([]),
-    // SerpAPI Google Images: best for celebrity/person-specific photos
     fetchSerpAPIImages(serpQuery, halfDur, workDir, scene.index, 2),
     serpQuery2 ? fetchSerpAPIImages(serpQuery2, halfDur, workDir, scene.index, 1) : Promise.resolve([]),
     fetchInternetArchiveClips(archiveQuery, halfDur, workDir, scene.index, 2),
@@ -2357,41 +2346,75 @@ async function fetchSceneVisuals(
 
   const clips: string[] = [];
 
-  // Add AI video clips in priority order
-  const aiClip = aiResult.status === "fulfilled" ? aiResult.value : null;
-  if (aiClip) clips.push(aiClip);
+  // Collect free clips first (Pexels + Pixabay + B-roll = primary free sources)
+  const pexelsClipsRaw = pexelsResults.status === "fulfilled" ? pexelsResults.value : [];
+  const pixabayClipsRaw = pixabayResults.status === "fulfilled" ? pixabayResults.value : [];
+  const brollClipsRaw = brollResults.status === "fulfilled" ? brollResults.value : [];
+  const freeStockCount = pexelsClipsRaw.length + pixabayClipsRaw.length + brollClipsRaw.length;
 
-  const leonardoClip = leonardoResult.status === "fulfilled" ? leonardoResult.value : null;
-  if (leonardoClip) clips.push(leonardoClip);
+  // ── PHASE 2: Paid AI generators — ONLY if free sources are insufficient (< 2 clips)
+  // Runway is the preferred AI generator (highest quality). Other generators run only if key is set.
+  // This ensures Runway credits are spent only when stock footage is unavailable.
+  const RUNWAY_CLIP_THRESHOLD = 2; // trigger Runway if Pexels+Pixabay+B-roll return fewer than this
+  let runwayClip: string | null = null;
+  let aiClip: string | null = null;
+  let leonardoClip: string | null = null;
+  let klingClip: string | null = null;
+  let lumaClip: string | null = null;
+  let pikaClip: string | null = null;
+  let forgeClip: string | null = null;
+  let grokClip: string | null = null;
+  let veoClip: string | null = null;
+  let metaClip: string | null = null;
+  let higgsfieldTextClip: string | null = null;
+  let higgsfieldImageClip: string | null = null;
 
-  const runwayClip = runwayResult.status === "fulfilled" ? runwayResult.value : null;
+  if (freeStockCount < RUNWAY_CLIP_THRESHOLD) {
+    console.log(`[Pipeline] Scene ${scene.index}: only ${freeStockCount} free clip(s) found — activating AI generators (Runway + others)`);
+    // Run Runway first (highest quality, preferred paid generator)
+    // Then run other AI generators in parallel as additional fallbacks
+    const [runwayResult, aiResult, leonardoResult, klingResult, lumaResult, pikaResult, forgeResult, grokResult, veoResult, metaResult, higgsfieldTextResult, higgsfieldImageResult] = await Promise.allSettled([
+      generateRunwayClip(scene.aiImagePrompt, null, halfDur, aiClipPath, scene.index),
+      generateStabilityAIClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
+      generateLeonardoAIClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
+      generateKlingClip(scene.aiImagePrompt, null, halfDur, aiClipPath, scene.index),
+      generateLumaClip(scene.aiImagePrompt, null, halfDur, aiClipPath, scene.index),
+      generatePikaClip(scene.aiImagePrompt, null, halfDur, aiClipPath, scene.index),
+      generateManusForgeClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
+      generateGrokVideoClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
+      generateVeoVideoClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
+      generateMetaMovieGenClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
+      generateHiggsfieldTextToVideoClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
+      generateHiggsfieldImageToVideoClip("", scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
+    ]);
+    runwayClip = runwayResult.status === "fulfilled" ? runwayResult.value : null;
+    aiClip = aiResult.status === "fulfilled" ? aiResult.value : null;
+    leonardoClip = leonardoResult.status === "fulfilled" ? leonardoResult.value : null;
+    klingClip = klingResult.status === "fulfilled" ? klingResult.value : null;
+    lumaClip = lumaResult.status === "fulfilled" ? lumaResult.value : null;
+    pikaClip = pikaResult.status === "fulfilled" ? pikaResult.value : null;
+    forgeClip = forgeResult.status === "fulfilled" ? forgeResult.value : null;
+    grokClip = grokResult.status === "fulfilled" ? grokResult.value : null;
+    veoClip = veoResult.status === "fulfilled" ? veoResult.value : null;
+    metaClip = metaResult.status === "fulfilled" ? metaResult.value : null;
+    higgsfieldTextClip = higgsfieldTextResult.status === "fulfilled" ? higgsfieldTextResult.value : null;
+    higgsfieldImageClip = higgsfieldImageResult.status === "fulfilled" ? higgsfieldImageResult.value : null;
+  } else {
+    console.log(`[Pipeline] Scene ${scene.index}: ${freeStockCount} free clip(s) found — skipping paid AI generators (cost saving)`);
+  }
+
+  // Add AI clips in priority order (Runway first — highest quality)
   if (runwayClip) clips.push(runwayClip);
-
-  const klingClip = klingResult.status === "fulfilled" ? klingResult.value : null;
+  if (aiClip) clips.push(aiClip);
+  if (leonardoClip) clips.push(leonardoClip);
   if (klingClip) clips.push(klingClip);
-
-  const lumaClip = lumaResult.status === "fulfilled" ? lumaResult.value : null;
   if (lumaClip) clips.push(lumaClip);
-
-  const pikaClip = pikaResult.status === "fulfilled" ? pikaResult.value : null;
   if (pikaClip) clips.push(pikaClip);
-
-  const forgeClip = forgeResult.status === "fulfilled" ? forgeResult.value : null;
   if (forgeClip) clips.push(forgeClip);
-
-  const grokClip = grokResult.status === "fulfilled" ? grokResult.value : null;
   if (grokClip) clips.push(grokClip);
-
-  const veoClip = veoResult.status === "fulfilled" ? veoResult.value : null;
   if (veoClip) clips.push(veoClip);
-
-  const metaClip = metaResult.status === "fulfilled" ? metaResult.value : null;
   if (metaClip) clips.push(metaClip);
-
-  const higgsfieldTextClip = higgsfieldTextResult.status === "fulfilled" ? higgsfieldTextResult.value : null;
   if (higgsfieldTextClip) clips.push(higgsfieldTextClip);
-
-  const higgsfieldImageClip = higgsfieldImageResult.status === "fulfilled" ? higgsfieldImageResult.value : null;
   if (higgsfieldImageClip) clips.push(higgsfieldImageClip);
 
   // Then Pexels clips — apply fair-use transformation (color grade + subtitle overlay + vignette)
@@ -2456,7 +2479,9 @@ async function fetchSceneVisuals(
     clips.push(await generateColorFallback(scene.index, scene.duration + 1, workDir));
   }
   const personLabel = scenePersons.length > 0 ? ` [persons: ${scenePersons.join(', ')}]` : '';
-  console.log(`[Pipeline] Scene ${scene.index}${personLabel}: ${clips.length} clip(s) ready (Stability: ${aiClip ? "✓" : "✗"}, Grok: ${grokClip ? "✓" : "✗"}, Veo: ${veoClip ? "✓" : "✗"}, Meta: ${metaClip ? "✓" : "✗"}, Higgsfield: ${higgsfieldTextClip || higgsfieldImageClip ? "✓" : "✗"}, Pexels: ${pexelsClips.length}, Pixabay: ${pixabayClips.length}, B-roll: ${brollClips.length}, Wikimedia: ${wikimediaClips.length + wikimedia2Clips.length}, SerpAPI: ${serpClips.length + serp2Clips.length}, Archive: ${archiveClips.length}, YouTube CC: ${youtubeClips.length})`);
+  const runwayLabel = runwayClip ? " ⚡Runway" : "";
+  const aiLabel = freeStockCount < RUNWAY_CLIP_THRESHOLD ? " [AI fallback triggered]" : " [free stock sufficient]";
+  console.log(`[Pipeline] Scene ${scene.index}${personLabel}${runwayLabel}${aiLabel}: ${clips.length} clip(s) ready (Runway: ${runwayClip ? "✓" : "✗"}, Stability: ${aiClip ? "✓" : "✗"}, Pexels: ${pexelsClips.length}, Pixabay: ${pixabayClips.length}, B-roll: ${brollClips.length}, Wikimedia: ${wikimediaClips.length + wikimedia2Clips.length}, SerpAPI: ${serpClips.length + serp2Clips.length}, Archive: ${archiveClips.length}, YouTube CC: ${youtubeClips.length})`);
   return clips;
 }
 

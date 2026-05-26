@@ -554,3 +554,18 @@ FINAL STATUS: ✅ ALL CRITICAL FFMPEG ISSUES FIXED
 - [x] Add `literalVisualCue` field to Scene: LLM generates hyper-specific 3-5 word visual description
 - [x] Use literalVisualCue as primary Pexels/Pixabay search query (more specific than pexelsQuery)
 - [x] Example: "horse cart cobblestone bruges" instead of "belgium transportation history"
+
+## Cost-Optimized Pipeline (ElevenLabs + Smart Runway Fallback)
+
+### ElevenLabs TTS (Always Primary)
+- [x] ElevenLabs is always the first choice (section header updated, comment clarified)
+- [x] Keep Fish Audio only as emergency fallback (if ElevenLabs key missing or fails 3x)
+- [x] Keep silent audio as last-resort fallback
+- [x] Log clearly which TTS provider was used per scene
+
+### Runway AI Video (Smart Fallback Only)
+- [x] Only trigger Runway when Pexels+Pixabay+B-roll return fewer than 2 clips total for a scene
+- [x] Phase 1: all free sources run in parallel first
+- [x] Phase 2: Runway + other AI generators only if freeStockCount < RUNWAY_CLIP_THRESHOLD (2)
+- [x] Runway is first in AI generator priority order (highest quality)
+- [x] Log shows ⚡Runway and [AI fallback triggered] / [free stock sufficient] per scene
