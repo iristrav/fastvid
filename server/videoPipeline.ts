@@ -1198,6 +1198,88 @@ async function fetchWikimediaImages(
   return results;
 }
 
+// ─── 3c2b. Openverse API Image Search ─────────────────────────────────────
+// Searches Openverse (WordPress/Automattic) for CC-licensed photos of public figures.
+// No API key required. Returns CC-BY licensed images — safe for commercial use.
+// Great source for celebrities, politicians, athletes, and public events.
+async function fetchOpenverseImages(
+  query: string,
+  duration: number,
+  workDir: string,
+  sceneIndex: number,
+  maxResults: number = 2
+): Promise<string[]> {
+  const results: string[] = [];
+  try {
+    // Search Openverse for CC-licensed images (commercial use + modification allowed)
+    const searchUrl = `https://api.openverse.org/v1/images/?q=${encodeURIComponent(query)}&license_type=commercial,modification&page_size=${maxResults * 3}&format=json`;
+    const searchResp = await withTimeout(
+      fetch(searchUrl, { headers: { 'User-Agent': 'Fastvid/1.0 (video generation; contact@fastvid.ai)' } }),
+      8000,
+      `Openverse search scene ${sceneIndex}`
+    );
+    if (!searchResp.ok) {
+      console.warn(`[Pipeline] Scene ${sceneIndex}: Openverse error ${searchResp.status}`);
+      return [];
+    }
+    const payload = await searchResp.json() as { results?: Array<{ id: string; url: string; title?: string; license?: string; attribution?: string }> };
+    const images = payload.results || [];
+    if (images.length === 0) return [];
+
+    for (let i = 0; i < Math.min(images.length, maxResults * 2) && results.length < maxResults; i++) {
+      try {
+        const imgUrl = images[i].url;
+        if (!imgUrl || !/\.(jpg|jpeg|png|webp)/i.test(imgUrl)) continue;
+
+        const imgPath = path.join(workDir, `scene_${sceneIndex}_openverse_${i}.jpg`);
+        const outPath = path.join(workDir, `scene_${sceneIndex}_openverse_${i}.mp4`);
+
+        // Download image
+        const imgResp = await withTimeout(
+          fetch(imgUrl),
+          10000,
+          `Openverse image download scene ${sceneIndex}`
+        );
+        if (!imgResp.ok) continue;
+        const imgBuf = Buffer.from(await imgResp.arrayBuffer());
+        if (imgBuf.length < 5000) continue; // skip tiny/broken images
+        fs.writeFileSync(imgPath, imgBuf);
+
+        // Convert image to video clip with Ken Burns pan effect
+        await withTimeout(
+          new Promise<void>(async (resolve, reject) => {
+            const { spawn } = await import('child_process');
+            const args = [
+              '-y', '-loop', '1', '-i', imgPath,
+              '-vf', `scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,zoompan=z='min(zoom+0.0008,1.04)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${Math.round(duration * 25)}:s=1920x1080:fps=25,setsar=1`,
+              '-t', String(duration),
+              '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+              '-pix_fmt', 'yuv420p', '-an', outPath
+            ];
+            const child = spawn(FFMPEG_BIN, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+            const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /**/ } reject(new Error('timeout')); }, 20000);
+            child.on('close', (code: number | null) => { clearTimeout(timer); code === 0 ? resolve() : reject(new Error(`exit ${code}`)); });
+            child.on('error', (err: Error) => { clearTimeout(timer); reject(err); });
+          }),
+          25000,
+          `Openverse image to video scene ${sceneIndex}`
+        );
+        try { fs.unlinkSync(imgPath); } catch { /**/ }
+
+        if (fs.existsSync(outPath) && fs.statSync(outPath).size > 10_000) {
+          results.push(outPath);
+          console.log(`[Pipeline] Scene ${sceneIndex}: Openverse image added: ${images[i].title?.slice(0, 60) || imgUrl.slice(0, 60)}`);
+        }
+      } catch (err) {
+        console.warn(`[Pipeline] Openverse image ${i} failed for scene ${sceneIndex}:`, (err as Error).message);
+      }
+    }
+  } catch (err) {
+    console.warn(`[Pipeline] Openverse search failed for scene ${sceneIndex}:`, (err as Error).message);
+  }
+  return results;
+}
+
 // ─── 3c2b. SerpAPI Google Images Search ────────────────────────────────────
 // Searches Google Images via SerpAPI for celebrity/person-specific photos.
 // Ideal for finding real photos of people mentioned in the narration.
@@ -2325,19 +2407,24 @@ async function fetchSceneVisuals(
   // If there's a secondary person, also search for them in Wikimedia
   const wikimediaQuery2 = secondarySubject ? buildSubjectQuery(secondarySubject, scene.visualCue) : null;
 
-  // Build SerpAPI query: person name + visual cue for best celebrity image results
+  // Build SerpAPI + Openverse query: person name + visual cue for best celebrity image results
   const serpQuery = buildSubjectQuery(primarySubject, scene.visualCue);
   const serpQuery2 = secondarySubject ? buildSubjectQuery(secondarySubject, scene.visualCue) : null;
+  // Openverse: search by person name alone for best portrait results, fall back to full query
+  const openverseQuery = primarySubject || buildSubjectQuery(primarySubject, scene.visualCue);
+  const openverseQuery2 = secondarySubject || null;
 
-  // ── PHASE 1: Free sources first (Pexels, Pixabay, B-roll, Wikimedia, SerpAPI, Archive, YouTube CC)
+  // ── PHASE 1: Free sources first (Pexels, Pixabay, B-roll, Wikimedia, Openverse, SerpAPI, Archive, YouTube CC)
   // Run all FREE sources in parallel. Only invoke paid AI generators (Runway etc.) if free sources
   // return fewer than 2 clips — keeping costs minimal.
-  const [pexelsResults, pixabayResults, brollResults, wikimediaResults, wikimedia2Results, serpResults, serp2Results, archiveResults, youtubeResults] = await Promise.allSettled([
+  const [pexelsResults, pixabayResults, brollResults, wikimediaResults, wikimedia2Results, openverseResults, openverse2Results, serpResults, serp2Results, archiveResults, youtubeResults] = await Promise.allSettled([
     fetchPexelsClips(scene.pexelsQuery, halfDur, workDir, scene.index, 3, scene.pexelsQueries),
     fetchPixabayClips(scene.pexelsQuery, halfDur, workDir, scene.index, 2),
     fetchBrollClips(scene.brollQueries || [], halfDur, workDir, scene.index),
     fetchWikimediaImages(wikimediaQuery, halfDur, workDir, scene.index, 2),
     wikimediaQuery2 ? fetchWikimediaImages(wikimediaQuery2, halfDur, workDir, scene.index, 1) : Promise.resolve([]),
+    fetchOpenverseImages(openverseQuery, halfDur, workDir, scene.index, 2),
+    openverseQuery2 ? fetchOpenverseImages(openverseQuery2, halfDur, workDir, scene.index, 1) : Promise.resolve([]),
     fetchSerpAPIImages(serpQuery, halfDur, workDir, scene.index, 2),
     serpQuery2 ? fetchSerpAPIImages(serpQuery2, halfDur, workDir, scene.index, 1) : Promise.resolve([]),
     fetchInternetArchiveClips(archiveQuery, halfDur, workDir, scene.index, 2),
@@ -2449,10 +2536,21 @@ async function fetchSceneVisuals(
     const transformed = await transformClipForFairUse(wikimedia2Clips[i], scene.text, scene.index, pexelsClips.length + wikimediaClips.length + i, workDir);
     clips.push(transformed);
   }
+  // Then Openverse CC images (primary person) — CC-BY licensed, no transformation needed but apply for consistency
+  const openverseClips = openverseResults.status === "fulfilled" ? openverseResults.value : [];
+  for (let i = 0; i < openverseClips.length; i++) {
+    clips.push(openverseClips[i]); // already converted to video with Ken Burns in fetchOpenverseImages
+  }
+  // Then secondary person Openverse images (if any)
+  const openverse2Clips = openverse2Results.status === "fulfilled" ? openverse2Results.value : [];
+  for (const clip of openverse2Clips) {
+    clips.push(clip);
+  }
+
   // Then SerpAPI Google Images (primary person) — apply fair-use transformation
   const serpClips = serpResults.status === "fulfilled" ? serpResults.value : [];
   for (let i = 0; i < serpClips.length; i++) {
-    const transformed = await transformClipForFairUse(serpClips[i], scene.text, scene.index, pexelsClips.length + wikimediaClips.length + wikimedia2Clips.length + i, workDir);
+    const transformed = await transformClipForFairUse(serpClips[i], scene.text, scene.index, pexelsClips.length + wikimediaClips.length + wikimedia2Clips.length + openverseClips.length + i, workDir);
     clips.push(transformed);
   }
   // Then SerpAPI Google Images (secondary person) — apply fair-use transformation
@@ -2481,7 +2579,7 @@ async function fetchSceneVisuals(
   const personLabel = scenePersons.length > 0 ? ` [persons: ${scenePersons.join(', ')}]` : '';
   const runwayLabel = runwayClip ? " ⚡Runway" : "";
   const aiLabel = freeStockCount < RUNWAY_CLIP_THRESHOLD ? " [AI fallback triggered]" : " [free stock sufficient]";
-  console.log(`[Pipeline] Scene ${scene.index}${personLabel}${runwayLabel}${aiLabel}: ${clips.length} clip(s) ready (Runway: ${runwayClip ? "✓" : "✗"}, Stability: ${aiClip ? "✓" : "✗"}, Pexels: ${pexelsClips.length}, Pixabay: ${pixabayClips.length}, B-roll: ${brollClips.length}, Wikimedia: ${wikimediaClips.length + wikimedia2Clips.length}, SerpAPI: ${serpClips.length + serp2Clips.length}, Archive: ${archiveClips.length}, YouTube CC: ${youtubeClips.length})`);
+  console.log(`[Pipeline] Scene ${scene.index}${personLabel}${runwayLabel}${aiLabel}: ${clips.length} clip(s) ready (Runway: ${runwayClip ? "✓" : "✗"}, Stability: ${aiClip ? "✓" : "✗"}, Pexels: ${pexelsClips.length}, Pixabay: ${pixabayClips.length}, B-roll: ${brollClips.length}, Wikimedia: ${wikimediaClips.length + wikimedia2Clips.length}, Openverse: ${openverseClips.length + openverse2Clips.length}, SerpAPI: ${serpClips.length + serp2Clips.length}, Archive: ${archiveClips.length}, YouTube CC: ${youtubeClips.length})`);
   return clips;
 }
 

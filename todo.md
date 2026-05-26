@@ -544,7 +544,7 @@ FINAL STATUS: ✅ ALL CRITICAL FFMPEG ISSUES FIXED
 - [x] Music at 22% base, compressed to ~8% when VO is present (threshold=0.02, ratio=8)
 - [x] Fallback: music at 12% (was 18%) for environments without sidechaincompress
 
-### Color Grading: Era-Aware
+### Color Grading: Era-Aware (deferred — future enhancement)
 - [ ] Detect if clip is archival/vintage based on source (Internet Archive = vintage grade)
 - [ ] Apply vintage grade to archival clips: warm sepia tone, reduced saturation, film grain
 - [ ] Apply modern grade to Pexels/Pixabay clips: natural, punchy, slightly cool
@@ -569,3 +569,11 @@ FINAL STATUS: ✅ ALL CRITICAL FFMPEG ISSUES FIXED
 - [x] Phase 2: Runway + other AI generators only if freeStockCount < RUNWAY_CLIP_THRESHOLD (2)
 - [x] Runway is first in AI generator priority order (highest quality)
 - [x] Log shows ⚡Runway and [AI fallback triggered] / [free stock sufficient] per scene
+
+## Openverse API Integration (Free CC Image Source)
+- [x] Research Openverse API v1 endpoints and test sample query (240 results for Elon Musk, 70 for Kylie Jenner)
+- [x] Build fetchOpenverseImages() function: search by person name + visual cue, download top 2 images, convert to video clips with Ken Burns
+- [x] Integrate fetchOpenverseImages() into fetchSceneVisuals() Phase 1 parallel fetch (primary + secondary person)
+- [x] Add Openverse count to progress log line
+- [x] TypeScript check: 0 errors
+- [x] Save checkpoint
