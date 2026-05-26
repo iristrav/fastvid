@@ -46,6 +46,13 @@ const META_MOVIE_GEN_API_KEY = process.env.META_MOVIE_GEN_API_KEY || "";
 const HIGGSFIELD_API_KEY = process.env.HIGGSFIELD_API_KEY || "";
 const HIGGSFIELD_API_SECRET = process.env.HIGGSFIELD_API_SECRET || "";
 const SERPAPI_KEY = process.env.SERPAPI_KEY || "";
+const RUNWAY_API_KEY = process.env.RUNWAY_API_KEY || "";
+const KLING_API_KEY = process.env.KLING_API_KEY || "";
+const KLING_API_SECRET = process.env.KLING_API_SECRET || "";
+const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY || "";
+const LUMA_API_KEY = process.env.LUMA_API_KEY || "";
+const LEONARDO_API_KEY = process.env.LEONARDO_API_KEY || "";
+const PIKA_API_KEY = process.env.PIKA_API_KEY || "";
 
 // @ts-ignore
 import ffmpegStatic from "ffmpeg-static";
@@ -398,6 +405,76 @@ export async function generateVoiceover(
   const MAX_ATTEMPTS = 3;
   const TTS_TIMEOUT_MS = 30_000; // 30s — Fish Audio can take 10-20s for longer texts
 
+  // ── ElevenLabs TTS (HIGHEST QUALITY — try first if key available) ───────────
+  if (ELEVENLABS_API_KEY) {
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      try {
+        // Map voiceId to ElevenLabs voice ID, or use a high-quality default
+        // Default: "Adam" = pNInz6obpgDQGcFmaJgB (deep documentary voice)
+        const elevenVoiceId = voiceId || "pNInz6obpgDQGcFmaJgB";
+        const response = await withTimeout(
+          fetch(`https://api.elevenlabs.io/v1/text-to-speech/${elevenVoiceId}`, {
+            method: "POST",
+            headers: {
+              "xi-api-key": ELEVENLABS_API_KEY,
+              "Content-Type": "application/json",
+              Accept: "audio/mpeg",
+            },
+            body: JSON.stringify({
+              text: cleanText,
+              model_id: "eleven_multilingual_v2",
+              voice_settings: { stability: 0.5, similarity_boost: 0.75, style: 0.0, use_speaker_boost: true },
+            }),
+          }),
+          TTS_TIMEOUT_MS,
+          `ElevenLabs TTS attempt ${attempt}`
+        );
+
+        if (response.status === 429) {
+          const waitMs = 500 + attempt * 500;
+          console.warn(`[Pipeline] ElevenLabs 429 (attempt ${attempt}), retrying in ${waitMs}ms`);
+          await new Promise(r => setTimeout(r, waitMs));
+          continue;
+        }
+
+        if (!response.ok) {
+          const errText = await response.text();
+          throw new Error(`ElevenLabs HTTP ${response.status}: ${errText.slice(0, 200)}`);
+        }
+
+        const audioBuffer = Buffer.from(await response.arrayBuffer());
+        if (audioBuffer.length < 100) throw new Error("ElevenLabs returned empty audio");
+
+        fs.writeFileSync(outputPath, audioBuffer);
+        console.log(`[Pipeline] ElevenLabs TTS written: ${audioBuffer.length} bytes to ${outputPath}`);
+
+        let durationSec = 5;
+        try {
+          const { execSync: es } = await import('child_process');
+          const ffprobePaths = ['/usr/bin/ffprobe', '/usr/local/bin/ffprobe', 'ffprobe'];
+          for (const probePath of ffprobePaths) {
+            try {
+              const probeOut = es(`"${probePath}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${outputPath}"`, { encoding: 'utf8', timeout: 8000 });
+              const parsed = parseFloat(probeOut.trim());
+              if (!isNaN(parsed) && parsed > 0) { durationSec = Math.ceil(parsed); break; }
+            } catch { /* try next */ }
+          }
+        } catch { /* use default */ }
+        if (durationSec === 5 && audioBuffer.length > 1000) {
+          durationSec = Math.max(3, Math.round(audioBuffer.length / 40000));
+        }
+        console.log(`[Pipeline] ElevenLabs TTS scene ${outputPath.match(/scene_(\d+)/)?.[1] ?? "?"}: ${durationSec}s`);
+        return durationSec;
+      } catch (err) {
+        if (attempt === MAX_ATTEMPTS) {
+          console.warn(`[Pipeline] ElevenLabs failed after ${MAX_ATTEMPTS} attempts:`, err);
+          break;
+        }
+        await new Promise(r => setTimeout(r, 500));
+      }
+    }
+  }
+
   if (FISH_AUDIO_API_KEY) {
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       try {
@@ -640,14 +717,18 @@ async function fetchPexelsClips(
     const downloadLimit = pLimit(needed);
     const downloadResults = await Promise.allSettled(
       candidates.slice(0, needed).map((video, idx) => downloadLimit(async () => {
-        // Prefer HD (1920px), fall back to 1280px, then anything
+        // Prefer 1080p (1920px wide) — cap at 1920 to avoid 4K download timeouts
+        // 4K files (3840px+) are too large and cause FetchError: aborted
         const videoFile = video.video_files
-          .filter(f => f.width >= 1280)
-          .sort((a, b) => b.width - a.width)[0]  // highest resolution first
+          .filter(f => f.width >= 1280 && f.width <= 1920)
+          .sort((a, b) => b.width - a.width)[0]  // best 1080p first
           || video.video_files
-          .filter(f => f.width >= 640)
+          .filter(f => f.width >= 640 && f.width <= 1920)
           .sort((a, b) => b.width - a.width)[0]
-          || video.video_files.sort((a, b) => b.width - a.width)[0];
+          || video.video_files
+          .filter(f => f.width <= 1920)
+          .sort((a, b) => b.width - a.width)[0]
+          || video.video_files.sort((a, b) => a.width - b.width)[0]; // fallback: smallest available
 
         if (!videoFile?.link) return null;
 
@@ -976,6 +1057,8 @@ async function fetchSerpAPIImages(
 
 // ─── 3c. Color Fallback (LAST RESORT) ────────────────────────────────────────
 async function generateColorFallback(sceneIndex: number, duration: number, workDir: string): Promise<string> {
+  // Ensure workDir exists (may have been cleaned up between pipeline stages)
+  fs.mkdirSync(workDir, { recursive: true });
   const outputPath = path.join(workDir, `scene_${sceneIndex}_fallback.mp4`);
   const colors = ["0a0a1e", "0a1a2e", "1a0a2e", "0a2a1e", "1a1a0a", "2a0a1e", "0a1a1e", "1a0a1e"];
   const color = colors[sceneIndex % colors.length];
@@ -1183,6 +1266,478 @@ async function generateHiggsfieldImageToVideoClip(
     return higgsfieldOutputPath;
   } catch (err) {
     console.warn(`[Pipeline] Scene ${sceneIndex}: Higgsfield image-to-video error:`, err);
+    return null;
+  }
+}
+
+// ─── 3c6. Leonardo AI Image → Video (HIGH QUALITY image gen, replaces Stability AI) ─────
+async function generateLeonardoAIClip(
+  prompt: string,
+  duration: number,
+  outputPath: string,
+  sceneIndex: number
+): Promise<string | null> {
+  if (!LEONARDO_API_KEY) return null;
+  try {
+    console.log(`[Pipeline] Scene ${sceneIndex}: Generating Leonardo AI image...`);
+    const t = Date.now();
+    // Step 1: Create generation job
+    const genResp = await withTimeout(
+      fetch("https://cloud.leonardo.ai/api/rest/v1/generations", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${LEONARDO_API_KEY}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt: prompt + ", cinematic, 4K, high quality, professional photography",
+          negative_prompt: "blurry, low quality, watermark, text, logo, ugly, deformed",
+          modelId: "b24e16ff-06e3-43eb-8d33-4416c2d75876", // Leonardo Kino XL (cinematic)
+          width: 1344, height: 768, num_images: 1,
+          guidance_scale: 7, num_inference_steps: 30,
+          public: false, photoReal: false, alchemy: true,
+        }),
+      }),
+      30_000, `Leonardo AI generate scene ${sceneIndex}`
+    );
+    if (!genResp.ok) {
+      const errText = await genResp.text();
+      console.warn(`[Pipeline] Scene ${sceneIndex}: Leonardo AI error ${genResp.status}: ${errText.slice(0, 200)}`);
+      return null;
+    }
+    const genData = await genResp.json() as { sdGenerationJob?: { generationId: string } };
+    const generationId = genData.sdGenerationJob?.generationId;
+    if (!generationId) return null;
+
+    // Step 2: Poll for completion (max 60s)
+    let imageUrl: string | null = null;
+    for (let poll = 0; poll < 12; poll++) {
+      await new Promise(r => setTimeout(r, 5000));
+      const pollResp = await withTimeout(
+        fetch(`https://cloud.leonardo.ai/api/rest/v1/generations/${generationId}`, {
+          headers: { Authorization: `Bearer ${LEONARDO_API_KEY}` },
+        }),
+        10_000, `Leonardo AI poll scene ${sceneIndex}`
+      );
+      if (!pollResp.ok) continue;
+      const pollData = await pollResp.json() as { generations_by_pk?: { status: string; generated_images?: Array<{ url: string }> } };
+      const gen = pollData.generations_by_pk;
+      if (gen?.status === "COMPLETE" && gen.generated_images?.[0]?.url) {
+        imageUrl = gen.generated_images[0].url;
+        break;
+      }
+      if (gen?.status === "FAILED") break;
+    }
+    if (!imageUrl) return null;
+
+    // Step 3: Download image and convert to video
+    const imgResp = await withTimeout(fetch(imageUrl), 20_000, `Leonardo AI download scene ${sceneIndex}`);
+    if (!imgResp.ok) return null;
+    const imgBuffer = Buffer.from(await imgResp.arrayBuffer());
+    const pngPath = outputPath.replace(".mp4", "_leonardo.jpg");
+    fs.writeFileSync(pngPath, imgBuffer);
+    console.log(`[Pipeline] Scene ${sceneIndex}: Leonardo AI image in ${((Date.now()-t)/1000).toFixed(1)}s (${(imgBuffer.length/1024).toFixed(0)}KB)`);
+
+    // Convert to video with fast Ken Burns
+    const fps = 25; const totalFrames = Math.ceil(duration * fps);
+    const zoomEnd = 1.05; const zoomStart = 1.0;
+    const zoomStep = (zoomEnd - zoomStart) / totalFrames;
+    const leonardoOutputPath = outputPath.replace(".mp4", "_leonardo.mp4");
+    await withTimeout(
+      exec(
+        `${FFMPEG_BIN} -y -loop 1 -i "${pngPath}" ` +
+        `-vf "scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT},` +
+        `zoompan=z='min(zoom+${zoomStep.toFixed(6)},${zoomEnd})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=${fps}" ` +
+        `-t ${duration} -r ${fps} -c:v libx264 -preset fast -crf 18 -pix_fmt yuv420p "${leonardoOutputPath}"`
+      ),
+      90_000, `Leonardo AI image to video scene ${sceneIndex}`
+    );
+    try { fs.unlinkSync(pngPath); } catch { /* ignore */ }
+    if (fs.existsSync(leonardoOutputPath) && fs.statSync(leonardoOutputPath).size > 1000) {
+      return leonardoOutputPath;
+    }
+    return null;
+  } catch (err) {
+    console.warn(`[Pipeline] Scene ${sceneIndex}: Leonardo AI clip failed:`, err);
+    return null;
+  }
+}
+
+// ─── 3c7. Runway Gen-4 Image-to-Video ─────────────────────────────────────────
+async function generateRunwayClip(
+  prompt: string,
+  imageUrl: string | null,
+  duration: number,
+  outputPath: string,
+  sceneIndex: number
+): Promise<string | null> {
+  if (!RUNWAY_API_KEY) return null;
+  try {
+    console.log(`[Pipeline] Scene ${sceneIndex}: Generating Runway Gen-4 video...`);
+    const t = Date.now();
+    const durationSec = Math.min(duration, 10) as 5 | 10;
+    const body: Record<string, unknown> = {
+      model: "gen4_turbo",
+      promptText: prompt,
+      duration: durationSec <= 5 ? 5 : 10,
+      ratio: "1280:768",
+    };
+    if (imageUrl) body.promptImage = imageUrl;
+
+    const createResp = await withTimeout(
+      fetch("https://api.dev.runwayml.com/v1/image_to_video", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${RUNWAY_API_KEY}`,
+          "Content-Type": "application/json",
+          "X-Runway-Version": "2024-11-06",
+        },
+        body: JSON.stringify(body),
+      }),
+      30_000, `Runway create scene ${sceneIndex}`
+    );
+    if (!createResp.ok) {
+      const errText = await createResp.text();
+      console.warn(`[Pipeline] Scene ${sceneIndex}: Runway error ${createResp.status}: ${errText.slice(0, 200)}`);
+      return null;
+    }
+    const createData = await createResp.json() as { id: string };
+    const taskId = createData.id;
+    if (!taskId) return null;
+
+    // Poll for completion (max 3 minutes)
+    let videoUrl: string | null = null;
+    for (let poll = 0; poll < 36; poll++) {
+      await new Promise(r => setTimeout(r, 5000));
+      const pollResp = await withTimeout(
+        fetch(`https://api.dev.runwayml.com/v1/tasks/${taskId}`, {
+          headers: { Authorization: `Bearer ${RUNWAY_API_KEY}`, "X-Runway-Version": "2024-11-06" },
+        }),
+        10_000, `Runway poll scene ${sceneIndex}`
+      );
+      if (!pollResp.ok) continue;
+      const pollData = await pollResp.json() as { status: string; output?: string[] };
+      if (pollData.status === "SUCCEEDED" && pollData.output?.[0]) {
+        videoUrl = pollData.output[0];
+        break;
+      }
+      if (pollData.status === "FAILED") break;
+    }
+    if (!videoUrl) return null;
+
+    // Download video
+    const dlResp = await withTimeout(fetch(videoUrl), 60_000, `Runway download scene ${sceneIndex}`);
+    if (!dlResp.ok) return null;
+    const buffer = Buffer.from(await dlResp.arrayBuffer());
+    const runwayOutputPath = outputPath.replace(".mp4", "_runway.mp4");
+    fs.writeFileSync(runwayOutputPath, buffer);
+    console.log(`[Pipeline] Scene ${sceneIndex}: Runway video in ${((Date.now()-t)/1000).toFixed(1)}s (${(buffer.length/1024/1024).toFixed(1)}MB)`);
+    return runwayOutputPath;
+  } catch (err) {
+    console.warn(`[Pipeline] Scene ${sceneIndex}: Runway clip failed:`, err);
+    return null;
+  }
+}
+
+// ─── 3c8. Kling AI Image-to-Video ─────────────────────────────────────────────
+async function generateKlingClip(
+  prompt: string,
+  imageUrl: string | null,
+  duration: number,
+  outputPath: string,
+  sceneIndex: number
+): Promise<string | null> {
+  if (!KLING_API_KEY || !KLING_API_SECRET) return null;
+  try {
+    console.log(`[Pipeline] Scene ${sceneIndex}: Generating Kling AI video...`);
+    const t = Date.now();
+
+    // Generate JWT token for Kling
+    const { createHmac } = await import('crypto');
+    const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString('base64url');
+    const payload = Buffer.from(JSON.stringify({ iss: KLING_API_KEY, exp: Math.floor(Date.now()/1000) + 1800, nbf: Math.floor(Date.now()/1000) - 5 })).toString('base64url');
+    const sig = createHmac('sha256', KLING_API_SECRET).update(`${header}.${payload}`).digest('base64url');
+    const klingJWT = `${header}.${payload}.${sig}`;
+
+    const body: Record<string, unknown> = {
+      model_name: "kling-v1-5",
+      prompt: prompt,
+      duration: Math.min(duration, 10) <= 5 ? "5" : "10",
+      mode: "std",
+      cfg_scale: 0.5,
+    };
+    if (imageUrl) body.image_url = imageUrl;
+
+    const endpoint = imageUrl
+      ? "https://api.klingai.com/v1/videos/image2video"
+      : "https://api.klingai.com/v1/videos/text2video";
+
+    const createResp = await withTimeout(
+      fetch(endpoint, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${klingJWT}`, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+      30_000, `Kling create scene ${sceneIndex}`
+    );
+    if (!createResp.ok) {
+      const errText = await createResp.text();
+      console.warn(`[Pipeline] Scene ${sceneIndex}: Kling error ${createResp.status}: ${errText.slice(0, 200)}`);
+      return null;
+    }
+    const createData = await createResp.json() as { data?: { task_id: string } };
+    const taskId = createData.data?.task_id;
+    if (!taskId) return null;
+
+    // Poll for completion (max 3 minutes)
+    let videoUrl: string | null = null;
+    const pollEndpoint = imageUrl
+      ? `https://api.klingai.com/v1/videos/image2video/${taskId}`
+      : `https://api.klingai.com/v1/videos/text2video/${taskId}`;
+    for (let poll = 0; poll < 36; poll++) {
+      await new Promise(r => setTimeout(r, 5000));
+      const pollResp = await withTimeout(
+        fetch(pollEndpoint, { headers: { Authorization: `Bearer ${klingJWT}` } }),
+        10_000, `Kling poll scene ${sceneIndex}`
+      );
+      if (!pollResp.ok) continue;
+      const pollData = await pollResp.json() as { data?: { task_status: string; task_result?: { videos?: Array<{ url: string }> } } };
+      if (pollData.data?.task_status === "succeed" && pollData.data.task_result?.videos?.[0]?.url) {
+        videoUrl = pollData.data.task_result.videos[0].url;
+        break;
+      }
+      if (pollData.data?.task_status === "failed") break;
+    }
+    if (!videoUrl) return null;
+
+    const dlResp = await withTimeout(fetch(videoUrl), 60_000, `Kling download scene ${sceneIndex}`);
+    if (!dlResp.ok) return null;
+    const buffer = Buffer.from(await dlResp.arrayBuffer());
+    const klingOutputPath = outputPath.replace(".mp4", "_kling.mp4");
+    fs.writeFileSync(klingOutputPath, buffer);
+    console.log(`[Pipeline] Scene ${sceneIndex}: Kling video in ${((Date.now()-t)/1000).toFixed(1)}s (${(buffer.length/1024/1024).toFixed(1)}MB)`);
+    return klingOutputPath;
+  } catch (err) {
+    console.warn(`[Pipeline] Scene ${sceneIndex}: Kling clip failed:`, err);
+    return null;
+  }
+}
+
+// ─── 3c9. Luma Dream Machine Image-to-Video ────────────────────────────────────
+async function generateLumaClip(
+  prompt: string,
+  imageUrl: string | null,
+  duration: number,
+  outputPath: string,
+  sceneIndex: number
+): Promise<string | null> {
+  if (!LUMA_API_KEY) return null;
+  try {
+    console.log(`[Pipeline] Scene ${sceneIndex}: Generating Luma Dream Machine video...`);
+    const t = Date.now();
+    const body: Record<string, unknown> = {
+      prompt: prompt,
+      model: "ray-2",
+      resolution: "720p",
+      duration: "5s",
+      loop: false,
+    };
+    if (imageUrl) body.keyframes = { frame0: { type: "image", url: imageUrl } };
+
+    const createResp = await withTimeout(
+      fetch("https://api.lumalabs.ai/dream-machine/v1/generations", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${LUMA_API_KEY}`, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+      30_000, `Luma create scene ${sceneIndex}`
+    );
+    if (!createResp.ok) {
+      const errText = await createResp.text();
+      console.warn(`[Pipeline] Scene ${sceneIndex}: Luma error ${createResp.status}: ${errText.slice(0, 200)}`);
+      return null;
+    }
+    const createData = await createResp.json() as { id: string };
+    const genId = createData.id;
+    if (!genId) return null;
+
+    // Poll for completion (max 3 minutes)
+    let videoUrl: string | null = null;
+    for (let poll = 0; poll < 36; poll++) {
+      await new Promise(r => setTimeout(r, 5000));
+      const pollResp = await withTimeout(
+        fetch(`https://api.lumalabs.ai/dream-machine/v1/generations/${genId}`, {
+          headers: { Authorization: `Bearer ${LUMA_API_KEY}` },
+        }),
+        10_000, `Luma poll scene ${sceneIndex}`
+      );
+      if (!pollResp.ok) continue;
+      const pollData = await pollResp.json() as { state: string; assets?: { video?: string } };
+      if (pollData.state === "completed" && pollData.assets?.video) {
+        videoUrl = pollData.assets.video;
+        break;
+      }
+      if (pollData.state === "failed") break;
+    }
+    if (!videoUrl) return null;
+
+    const dlResp = await withTimeout(fetch(videoUrl), 60_000, `Luma download scene ${sceneIndex}`);
+    if (!dlResp.ok) return null;
+    const buffer = Buffer.from(await dlResp.arrayBuffer());
+    const lumaOutputPath = outputPath.replace(".mp4", "_luma.mp4");
+    fs.writeFileSync(lumaOutputPath, buffer);
+    console.log(`[Pipeline] Scene ${sceneIndex}: Luma video in ${((Date.now()-t)/1000).toFixed(1)}s (${(buffer.length/1024/1024).toFixed(1)}MB)`);
+    return lumaOutputPath;
+  } catch (err) {
+    console.warn(`[Pipeline] Scene ${sceneIndex}: Luma clip failed:`, err);
+    return null;
+  }
+}
+
+// ─── 3c10. Pika Labs Image-to-Video ────────────────────────────────────────────
+async function generatePikaClip(
+  prompt: string,
+  imageUrl: string | null,
+  duration: number,
+  outputPath: string,
+  sceneIndex: number
+): Promise<string | null> {
+  if (!PIKA_API_KEY) return null;
+  try {
+    console.log(`[Pipeline] Scene ${sceneIndex}: Generating Pika Labs video...`);
+    const t = Date.now();
+    const body: Record<string, unknown> = {
+      promptText: prompt,
+      model: "pike-2.2",
+      options: { frameRate: 24, resolution: "1080p", duration: Math.min(duration, 5) },
+    };
+    if (imageUrl) body.image = imageUrl;
+
+    const createResp = await withTimeout(
+      fetch("https://api.pika.art/v2/generate", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${PIKA_API_KEY}`, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+      30_000, `Pika create scene ${sceneIndex}`
+    );
+    if (!createResp.ok) {
+      const errText = await createResp.text();
+      console.warn(`[Pipeline] Scene ${sceneIndex}: Pika error ${createResp.status}: ${errText.slice(0, 200)}`);
+      return null;
+    }
+    const createData = await createResp.json() as { id?: string; requestId?: string };
+    const taskId = createData.id || createData.requestId;
+    if (!taskId) return null;
+
+    // Poll for completion (max 3 minutes)
+    let videoUrl: string | null = null;
+    for (let poll = 0; poll < 36; poll++) {
+      await new Promise(r => setTimeout(r, 5000));
+      const pollResp = await withTimeout(
+        fetch(`https://api.pika.art/v2/tasks/${taskId}`, {
+          headers: { Authorization: `Bearer ${PIKA_API_KEY}` },
+        }),
+        10_000, `Pika poll scene ${sceneIndex}`
+      );
+      if (!pollResp.ok) continue;
+      const pollData = await pollResp.json() as { status?: string; videos?: Array<{ url: string }>; resultUrl?: string };
+      if ((pollData.status === "finished" || pollData.status === "succeeded") && (pollData.videos?.[0]?.url || pollData.resultUrl)) {
+        videoUrl = pollData.videos?.[0]?.url || pollData.resultUrl || null;
+        break;
+      }
+      if (pollData.status === "failed") break;
+    }
+    if (!videoUrl) return null;
+
+    const dlResp = await withTimeout(fetch(videoUrl), 60_000, `Pika download scene ${sceneIndex}`);
+    if (!dlResp.ok) return null;
+    const buffer = Buffer.from(await dlResp.arrayBuffer());
+    const pikaOutputPath = outputPath.replace(".mp4", "_pika.mp4");
+    fs.writeFileSync(pikaOutputPath, buffer);
+    console.log(`[Pipeline] Scene ${sceneIndex}: Pika video in ${((Date.now()-t)/1000).toFixed(1)}s (${(buffer.length/1024/1024).toFixed(1)}MB)`);
+    return pikaOutputPath;
+  } catch (err) {
+    console.warn(`[Pipeline] Scene ${sceneIndex}: Pika clip failed:`, err);
+    return null;
+  }
+}
+
+// ─── 3c11. Manus Forge Built-in Video Generation ──────────────────────────────
+async function generateManusForgeClip(
+  prompt: string,
+  duration: number,
+  outputPath: string,
+  sceneIndex: number
+): Promise<string | null> {
+  const FORGE_API_URL = process.env.BUILT_IN_FORGE_API_URL || "";
+  const FORGE_API_KEY = process.env.BUILT_IN_FORGE_API_KEY || "";
+  if (!FORGE_API_URL || !FORGE_API_KEY) return null;
+  try {
+    console.log(`[Pipeline] Scene ${sceneIndex}: Generating Manus Forge video...`);
+    const t = Date.now();
+    const forgeBase = FORGE_API_URL.replace(/\/+$/, "");
+
+    // Try Manus Forge video generation endpoint
+    const createResp = await withTimeout(
+      fetch(`${forgeBase}/v1/video/generate`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${FORGE_API_KEY}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt: prompt,
+          duration: Math.min(duration, 8),
+          resolution: "1280x720",
+          fps: 24,
+        }),
+      }),
+      30_000, `Manus Forge create scene ${sceneIndex}`
+    );
+    if (!createResp.ok) {
+      const errText = await createResp.text();
+      console.warn(`[Pipeline] Scene ${sceneIndex}: Manus Forge error ${createResp.status}: ${errText.slice(0, 200)}`);
+      return null;
+    }
+    const createData = await createResp.json() as { task_id?: string; id?: string; url?: string };
+
+    // If direct URL returned, download immediately
+    if (createData.url) {
+      const dlResp = await withTimeout(fetch(createData.url), 60_000, `Manus Forge download scene ${sceneIndex}`);
+      if (!dlResp.ok) return null;
+      const buffer = Buffer.from(await dlResp.arrayBuffer());
+      const forgeOutputPath = outputPath.replace(".mp4", "_forge.mp4");
+      fs.writeFileSync(forgeOutputPath, buffer);
+      console.log(`[Pipeline] Scene ${sceneIndex}: Manus Forge video in ${((Date.now()-t)/1000).toFixed(1)}s`);
+      return forgeOutputPath;
+    }
+
+    // Otherwise poll for task completion
+    const taskId = createData.task_id || createData.id;
+    if (!taskId) return null;
+    let videoUrl: string | null = null;
+    for (let poll = 0; poll < 36; poll++) {
+      await new Promise(r => setTimeout(r, 5000));
+      const pollResp = await withTimeout(
+        fetch(`${forgeBase}/v1/video/tasks/${taskId}`, {
+          headers: { Authorization: `Bearer ${FORGE_API_KEY}` },
+        }),
+        10_000, `Manus Forge poll scene ${sceneIndex}`
+      );
+      if (!pollResp.ok) continue;
+      const pollData = await pollResp.json() as { status?: string; url?: string; output_url?: string };
+      if ((pollData.status === "completed" || pollData.status === "succeeded") && (pollData.url || pollData.output_url)) {
+        videoUrl = pollData.url || pollData.output_url || null;
+        break;
+      }
+      if (pollData.status === "failed") break;
+    }
+    if (!videoUrl) return null;
+
+    const dlResp = await withTimeout(fetch(videoUrl), 60_000, `Manus Forge download scene ${sceneIndex}`);
+    if (!dlResp.ok) return null;
+    const buffer = Buffer.from(await dlResp.arrayBuffer());
+    const forgeOutputPath = outputPath.replace(".mp4", "_forge.mp4");
+    fs.writeFileSync(forgeOutputPath, buffer);
+    console.log(`[Pipeline] Scene ${sceneIndex}: Manus Forge video in ${((Date.now()-t)/1000).toFixed(1)}s (${(buffer.length/1024/1024).toFixed(1)}MB)`);
+    return forgeOutputPath;
+  } catch (err) {
+    console.warn(`[Pipeline] Scene ${sceneIndex}: Manus Forge clip failed:`, err);
     return null;
   }
 }
@@ -1517,9 +2072,15 @@ async function fetchSceneVisuals(
   const serpQuery2 = secondarySubject ? buildSubjectQuery(secondarySubject, scene.visualCue) : null;
 
   // Run all AI video generators, Pexels fetch, Wikimedia, SerpAPI, Internet Archive, and YouTube CC in parallel
-  // Priority: Stability AI → Grok → Veo → Meta → Higgsfield (text+image) → Pexels → Wikimedia → SerpAPI → Internet Archive → YouTube CC → Color fallback
-  const [aiResult, grokResult, veoResult, metaResult, higgsfieldTextResult, higgsfieldImageResult, pexelsResults, wikimediaResults, wikimedia2Results, serpResults, serp2Results, archiveResults, youtubeResults] = await Promise.allSettled([
+  // Priority: Stability AI → Leonardo → Runway → Kling → Luma → Pika → Manus Forge → Grok → Veo → Meta → Higgsfield → Pexels → Wikimedia → SerpAPI → Internet Archive → YouTube CC → Color fallback
+  const [aiResult, leonardoResult, runwayResult, klingResult, lumaResult, pikaResult, forgeResult, grokResult, veoResult, metaResult, higgsfieldTextResult, higgsfieldImageResult, pexelsResults, wikimediaResults, wikimedia2Results, serpResults, serp2Results, archiveResults, youtubeResults] = await Promise.allSettled([
     generateStabilityAIClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
+    generateLeonardoAIClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
+    generateRunwayClip(scene.aiImagePrompt, null, halfDur, aiClipPath, scene.index),
+    generateKlingClip(scene.aiImagePrompt, null, halfDur, aiClipPath, scene.index),
+    generateLumaClip(scene.aiImagePrompt, null, halfDur, aiClipPath, scene.index),
+    generatePikaClip(scene.aiImagePrompt, null, halfDur, aiClipPath, scene.index),
+    generateManusForgeClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
     generateGrokVideoClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
     generateVeoVideoClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
     generateMetaMovieGenClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
@@ -1541,6 +2102,24 @@ async function fetchSceneVisuals(
   // Add AI video clips in priority order
   const aiClip = aiResult.status === "fulfilled" ? aiResult.value : null;
   if (aiClip) clips.push(aiClip);
+
+  const leonardoClip = leonardoResult.status === "fulfilled" ? leonardoResult.value : null;
+  if (leonardoClip) clips.push(leonardoClip);
+
+  const runwayClip = runwayResult.status === "fulfilled" ? runwayResult.value : null;
+  if (runwayClip) clips.push(runwayClip);
+
+  const klingClip = klingResult.status === "fulfilled" ? klingResult.value : null;
+  if (klingClip) clips.push(klingClip);
+
+  const lumaClip = lumaResult.status === "fulfilled" ? lumaResult.value : null;
+  if (lumaClip) clips.push(lumaClip);
+
+  const pikaClip = pikaResult.status === "fulfilled" ? pikaResult.value : null;
+  if (pikaClip) clips.push(pikaClip);
+
+  const forgeClip = forgeResult.status === "fulfilled" ? forgeResult.value : null;
+  if (forgeClip) clips.push(forgeClip);
 
   const grokClip = grokResult.status === "fulfilled" ? grokResult.value : null;
   if (grokClip) clips.push(grokClip);

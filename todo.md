@@ -473,3 +473,15 @@ FINAL STATUS: ✅ ALL CRITICAL FFMPEG ISSUES FIXED
 - [x] Update log line to include SerpAPI clip count
 - [x] vitest test: serpapi.api.test.ts — validates key and returns images_results (PASSED)
 - [x] TypeScript check: 0 errors
+
+## AI Provider Integrations (Phase 2 — High Quality Video)
+- [x] Integrate Leonardo AI for image generation (replaces Stability AI)
+- [x] Integrate ElevenLabs TTS for voiceovers (replaces Fish Audio)
+- [x] Integrate Manus built-in video generation (text-to-video via Forge API)
+- [x] Integrate Runway Gen-4 image-to-video
+- [x] Integrate Kling AI image-to-video
+- [x] Integrate Luma Dream Machine image-to-video
+- [x] Integrate Pika Labs image-to-video
+- [x] Wire all providers into fetchSceneVisuals priority chain
+- [x] TypeScript check: 0 errors
+- [x] Save checkpoint

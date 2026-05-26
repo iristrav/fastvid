@@ -21,4 +21,12 @@ export const ENV = {
   get resendApiKey() { return process.env.RESEND_API_KEY ?? ""; },
   get serpApiKey() { return process.env.SERPAPI_KEY ?? ""; },
   get youtubeApiKey() { return process.env.YOUTUBE_API_KEY ?? ""; },
+  // AI Provider keys (Phase 2 — High Quality Video)
+  get runwayApiKey() { return process.env.RUNWAY_API_KEY ?? ""; },
+  get klingApiKey() { return process.env.KLING_API_KEY ?? ""; },
+  get klingApiSecret() { return process.env.KLING_API_SECRET ?? ""; },
+  get elevenLabsApiKey() { return process.env.ELEVENLABS_API_KEY ?? ""; },
+  get lumaApiKey() { return process.env.LUMA_API_KEY ?? ""; },
+  get leonardoApiKey() { return process.env.LEONARDO_API_KEY ?? ""; },
+  get pikaApiKey() { return process.env.PIKA_API_KEY ?? ""; },
 };
