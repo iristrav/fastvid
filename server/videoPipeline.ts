@@ -258,6 +258,7 @@ interface Scene {
   // Vidrush-quality fields
   highlightWords?: string[]; // 2-3 power words for kinetic typography overlay (LLM-generated)
   brollQueries?: string[];   // 2 specific B-roll search queries for cutaway footage
+  statCallout?: string;      // 1 key statistic/number for yellow corner callout box (e.g. "45°C", "2%", "$4B")
 }
 
 export interface PipelineProgress {
@@ -314,13 +315,15 @@ For each scene, extract:
   Examples: ["Kylie Jenner"], ["Elon Musk", "Jeff Bezos"], ["Napoleon Bonaparte"], []
 - highlightWords: Array of 2-3 POWER WORDS from this scene's narration — the most impactful, emotionally resonant, or statistically significant words. These will be displayed as bold kinetic text overlays on screen. Choose words that create visual impact: numbers ("$47 BILLION"), strong verbs ("COLLAPSED"), key nouns ("MONOPOLY"), or dramatic adjectives ("UNPRECEDENTED"). Always UPPERCASE. Examples: ["$47 BILLION", "COLLAPSED"], ["MONOPOLY", "EXPOSED"], ["UNPRECEDENTED", "CRISIS"]
 - brollQueries: Array of exactly 2 specific B-roll search queries for cutaway footage that would visually complement this scene. These should be different from pexelsQuery — think of supporting footage that adds visual variety. Examples: ["stock market trading floor", "money bills close up"], ["factory workers assembly line", "industrial machinery"], ["city traffic aerial view", "commuters subway station"]
+- statCallout: ONE key statistic, number, percentage, year, or measurement from this scene that would make a powerful on-screen callout box. Format as a short string: "45°C", "2%", "$4B", "1950s", "97%". If no strong stat exists, return empty string "".
+- literalVisualCue: A hyper-specific 3-5 word description of the EXACT physical object or action being spoken at the most important moment in this scene. Used for ultra-precise B-roll search. Examples: "horse cart cobblestone bruges", "earthmover highway construction 1950s", "tram arriving pedestrian street", "aerial drone brussels rooftops". Must be more literal and specific than visualCue.
 IMPORTANT:
 - Return exactly ${maxScenes} scenes covering the entire script evenly
 - Extract [VISUAL: ...] tags from the script to use as visualCue when available
 - Keep text natural (max 700 chars each) — this is spoken narration. Include full sentences, do NOT truncate mid-sentence
 - Make pexelsQuery LITERAL and SPECIFIC — it will be used to search for real footage
 - Make aiImagePrompt vivid, cinematic and highly detailed
-- Scenes should flow naturally — each scene is ~3-6 seconds of footage
+- Scenes should flow naturally — each scene is ~2-4 seconds of footage (reference: 1-4s hard cuts)
 - sectionTitle is ONLY non-empty for the FIRST scene of each new ## section
 - personNames MUST be extracted from the text field only — do not invent names not present in the text
 - highlightWords MUST be 2-3 words max, always UPPERCASE, chosen for maximum visual impact
@@ -353,8 +356,10 @@ IMPORTANT:
                     sectionTitle: { type: "string" },
                     highlightWords: { type: "array", items: { type: "string" } },
                     brollQueries: { type: "array", items: { type: "string" } },
+                    statCallout: { type: "string" },
+                    literalVisualCue: { type: "string" },
                   },
-                  required: ["text", "visualCue", "pexelsQuery", "pexelsQueries", "personNames", "aiImagePrompt", "sectionTitle", "highlightWords", "brollQueries"],
+                  required: ["text", "visualCue", "pexelsQuery", "pexelsQueries", "personNames", "aiImagePrompt", "sectionTitle", "highlightWords", "brollQueries", "statCallout", "literalVisualCue"],
                   additionalProperties: false,
                 },
               },
@@ -392,15 +397,20 @@ IMPORTANT:
     const brollQueries = ((rawS.brollQueries as string[] | undefined) || [])
       .filter(q => typeof q === 'string' && q.trim().length > 0)
       .slice(0, 2); // max 2 queries
+    // Extract stat callout (1 key number/stat for yellow corner box overlay)
+    const statCallout = typeof rawS.statCallout === 'string' ? rawS.statCallout.trim().slice(0, 20) : '';
+    // Extract literal visual cue (hyper-specific B-roll search query)
+    const literalVisualCue = typeof rawS.literalVisualCue === 'string' ? rawS.literalVisualCue.trim() : '';
     return {
       ...s,
       index: i,
       duration: 0,
-      pexelsQuery: primaryQuery,
-      pexelsQueries: allQueries,
+      pexelsQuery: literalVisualCue || primaryQuery, // use literalVisualCue as primary if available
+      pexelsQueries: literalVisualCue ? [literalVisualCue, ...allQueries] : allQueries,
       personNames,
       highlightWords,
       brollQueries,
+      statCallout,
       aiImagePrompt: s.aiImagePrompt?.trim() || `Cinematic ${s.visualCue || "landscape"}, dramatic lighting, photorealistic, 8K`,
       // Store sectionTitle as chapterTitle if it's the first scene of a section
       isChapterCard: false,
@@ -2652,7 +2662,80 @@ async function renderKineticFrames(
   return frames;
 }
 
-// ─── 4a. Canvas Subtitle Overlay ─────────────────────────────────────────────
+// ─── 4a. Stat Callout Box Renderer ──────────────────────────────────────────
+// Renders a yellow corner callout box (bottom-right) with a key statistic in black bold text.
+// Appears via hard cut, stays 2.5s, then disappears via hard cut — reference video style.
+async function renderStatCallout(
+  stat: string,
+  sceneIndex: number,
+  workDir: string
+): Promise<{ path: string; startTime: number; endTime: number } | null> {
+  if (!stat || stat.trim().length === 0) return null;
+  if (!CANVAS_AVAILABLE) return null;
+
+  try {
+    const { createCanvas, registerFont } = await import("canvas");
+    try {
+      if (FONT_BOLD) registerFont(FONT_BOLD, { family: "NotoSans", weight: "bold" });
+    } catch { /* already registered */ }
+
+    const FONT_SIZE = 72;
+    const PAD_X = 36;
+    const PAD_Y = 24;
+    const CORNER_MARGIN = 40;
+    const BORDER_R = 14;
+
+    // Measure text
+    const measureCanvas = createCanvas(800, 200);
+    const measureCtx = measureCanvas.getContext("2d");
+    measureCtx.font = `bold ${FONT_SIZE}px NotoSans`;
+    const metrics = measureCtx.measureText(stat.trim().toUpperCase());
+    const textW = metrics.width;
+    const boxW = textW + PAD_X * 2;
+    const boxH = FONT_SIZE + PAD_Y * 2;
+
+    // Canvas size: full video frame (transparent background)
+    const canvas = createCanvas(VIDEO_WIDTH, VIDEO_HEIGHT);
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, VIDEO_WIDTH, VIDEO_HEIGHT);
+
+    // Position: bottom-right corner
+    const boxX = VIDEO_WIDTH - boxW - CORNER_MARGIN;
+    const boxY = VIDEO_HEIGHT - boxH - CORNER_MARGIN;
+
+    // Yellow box with black shadow
+    ctx.shadowColor = "rgba(0,0,0,0.5)";
+    ctx.shadowBlur = 18;
+    ctx.shadowOffsetX = 4;
+    ctx.shadowOffsetY = 4;
+    ctx.fillStyle = "#FFD700";
+    ctx.beginPath();
+    ctx.roundRect(boxX, boxY, boxW, boxH, BORDER_R);
+    ctx.fill();
+    ctx.shadowColor = "transparent";
+    ctx.shadowBlur = 0;
+    ctx.shadowOffsetX = 0;
+    ctx.shadowOffsetY = 0;
+
+    // Black text
+    ctx.font = `bold ${FONT_SIZE}px NotoSans`;
+    ctx.fillStyle = "#111111";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(stat.trim().toUpperCase(), boxX + boxW / 2, boxY + boxH / 2);
+
+    const pngPath = path.join(workDir, `scene_${sceneIndex}_stat_callout.png`);
+    fs.writeFileSync(pngPath, canvas.toBuffer("image/png"));
+
+    console.log(`[Pipeline] Scene ${sceneIndex}: stat callout rendered: "${stat}"`);
+    return { path: pngPath, startTime: 1.0, endTime: 3.5 };
+  } catch (err) {
+    console.warn(`[Pipeline] Scene ${sceneIndex}: stat callout render failed (non-fatal):`, err);
+    return null;
+  }
+}
+
+// ─── 4b. Canvas Subtitle Overlay ─────────────────────────────────────────────
 // FFmpeg-only fallback: creates a transparent PNG with drawtext (no canvas needed)
 async function renderSubtitleOverlayFFmpeg(
   text: string,
@@ -2809,34 +2892,20 @@ async function renderChapterCard(
         const canvas = createCanvas(VIDEO_WIDTH, VIDEO_HEIGHT);
         const ctx = canvas.getContext("2d");
 
-        // Deep black background
-        ctx.fillStyle = "#080808";
+        // SOLID YELLOW background (reference video style: black text on yellow)
+        ctx.fillStyle = "#FFD700";
         ctx.fillRect(0, 0, VIDEO_WIDTH, VIDEO_HEIGHT);
 
-        // Subtle vignette
-        const vignette = ctx.createRadialGradient(centerX, centerY, VIDEO_HEIGHT * 0.2, centerX, centerY, VIDEO_HEIGHT * 0.8);
-        vignette.addColorStop(0, "rgba(0,0,0,0)");
-        vignette.addColorStop(1, "rgba(0,0,0,0.6)");
-        ctx.fillStyle = vignette;
-        ctx.fillRect(0, 0, VIDEO_WIDTH, VIDEO_HEIGHT);
-
-        // Accent lines
-        ctx.globalAlpha = lineAlpha;
-        ctx.fillStyle = "white";
-        ctx.fillRect(lineX1, lineY1, lineX2 - lineX1, 2);
-        ctx.fillRect(lineX1, lineY2, lineX2 - lineX1, 2);
-        ctx.globalAlpha = 1;
-
-        // Chapter title text
+        // Chapter title text: black on yellow (high contrast, reference style)
         ctx.globalAlpha = textAlpha;
-        ctx.font = FONT_BOLD ? `bold 72px NotoSans` : `bold 72px sans-serif`;
-        ctx.fillStyle = "white";
+        ctx.font = FONT_BOLD ? `bold 80px NotoSans` : `bold 80px sans-serif`;
+        ctx.fillStyle = "#111111";
         ctx.textAlign = "center";
         ctx.textBaseline = "alphabetic";
-        ctx.shadowColor = "rgba(0,0,0,0.8)";
-        ctx.shadowBlur = 12;
-        ctx.shadowOffsetX = 3;
-        ctx.shadowOffsetY = 3;
+        ctx.shadowColor = "rgba(0,0,0,0)"; // no shadow needed on yellow bg
+        ctx.shadowBlur = 0;
+        ctx.shadowOffsetX = 0;
+        ctx.shadowOffsetY = 0;
         ctx.fillText(title, centerX, titleY);
         ctx.globalAlpha = 1;
 
@@ -3158,6 +3227,17 @@ async function composeSceneVideo(
     kineticFrames = [];
   }
 
+  // Stat callout box: yellow corner box with key statistic (reference video style)
+  let statCalloutFrame: { path: string; startTime: number; endTime: number } | null = null;
+  try {
+    if (scene.statCallout && scene.statCallout.trim().length > 0) {
+      statCalloutFrame = await renderStatCallout(scene.statCallout, scene.index, workDir);
+    }
+  } catch (err) {
+    console.warn(`[Pipeline] Scene ${scene.index}: stat callout failed (non-fatal):`, err);
+    statCalloutFrame = null;
+  }
+
   // On Railway, limit FFmpeg threads to reduce memory usage
   const threadFlag = IS_RAILWAY ? "-threads 2" : "";
   // Kinetic text position: upper-center area
@@ -3175,30 +3255,37 @@ async function composeSceneVideo(
   // Final filter: color grade + film grain + vignette. NO fade-in/out on individual scenes
   // (hard cuts between scenes, like the reference video)
   const fadeFilter = `${colorGrade}${filmGrain}${subtitleDrawtext}${vignetteFilter}`;
-  // Vidrush-style transitions: alternate between slideleft and fade for visual variety
-  // slideleft: clips slide in from right (dynamic, modern feel)
-  // fade: classic dissolve (used for every other transition to avoid monotony)
-  const xfadeDur = 0.25; // slightly longer for visible transition effect
-  const xfadeTransitions = ['slideleft', 'fade', 'slideleft', 'fade', 'slideleft', 'fade'];
+  // Reference video style: HARD CUTS only between clips (no xfade/crossfade/slide)
+  // Hard cuts are faster, more energetic, and match the reference video exactly.
+  // Each clip is trimmed to clipDur seconds, then concatenated with a hard cut.
 
-  // Helper: build the kinetic overlay chain on top of a labelled video stream.
-  // Each kinetic frame is a full-width PNG (VIDEO_WIDTH x 120) overlaid at y=kineticY
-  // with enable='between(t,start,end)' for timed visibility.
-  // Returns the new output label and the extra -i inputs string.
+  // Helper: build the full overlay chain — kinetic words (top-center) + stat callout (bottom-right).
+  // Kinetic frames: full-width PNG at y=kineticY, timed with enable='between(t,...)'.
+  // Stat callout: full-frame transparent PNG overlaid at x=0:y=0 (box is positioned inside the PNG).
   function buildKineticChain(
     baseLabel: string,
     baseInputCount: number
   ): { extraInputs: string; filterChain: string; finalLabel: string } {
-    if (kineticFrames.length === 0) {
+    const allOverlays: Array<{ path: string; startTime: number; endTime: number; isStatCallout?: boolean }> = [
+      ...kineticFrames,
+      ...(statCalloutFrame ? [{ ...statCalloutFrame, isStatCallout: true }] : []),
+    ];
+    if (allOverlays.length === 0) {
       return { extraInputs: "", filterChain: "", finalLabel: baseLabel };
     }
-    const extraInputs = kineticFrames.map(f => `-loop 1 -i "${f.path}"`).join(" ");
+    const extraInputs = allOverlays.map(f => `-loop 1 -i "${f.path}"`).join(" ");
     let chain = "";
     let prevLabel = baseLabel;
-    kineticFrames.forEach((frame, idx) => {
+    allOverlays.forEach((frame, idx) => {
       const inputIdx = baseInputCount + idx;
-      const outLabel = idx === kineticFrames.length - 1 ? "kfinal" : `kf${idx}`;
-      chain += `;[${prevLabel}][${inputIdx}:v]overlay=x=0:y=${kineticY}:enable='between(t,${frame.startTime.toFixed(2)},${frame.endTime.toFixed(2)})'[${outLabel}]`;
+      const outLabel = idx === allOverlays.length - 1 ? "kfinal" : `kf${idx}`;
+      if ((frame as { isStatCallout?: boolean }).isStatCallout) {
+        // Stat callout: full-frame overlay (box positioned inside PNG), bottom-right corner
+        chain += `;[${prevLabel}][${inputIdx}:v]overlay=x=0:y=0:enable='between(t,${frame.startTime.toFixed(2)},${frame.endTime.toFixed(2)})'[${outLabel}]`;
+      } else {
+        // Kinetic word: top-center overlay
+        chain += `;[${prevLabel}][${inputIdx}:v]overlay=x=0:y=${kineticY}:enable='between(t,${frame.startTime.toFixed(2)},${frame.endTime.toFixed(2)})'[${outLabel}]`;
+      }
       prevLabel = outLabel;
     });
     return { extraInputs, filterChain: chain, finalLabel: "kfinal" };
@@ -3217,49 +3304,34 @@ async function composeSceneVideo(
   try {
     if (safeClips.length >= 2) {
       // Multi-clip with xfade transitions
-      const clipDur = Math.max(2, Math.floor(duration / safeClips.length));
+      const clipDur = Math.min(3, Math.max(2, Math.floor(duration / safeClips.length))); // Reference: 1-4s clips
       const inputs = safeClips.map(c => `-i "${c}"`).join(" ");
-      // Add fps=25 to normalize timebase before xfade (prevents 'timebase mismatch' error)
-      // Vidrush-style zoom punch: first clip gets a subtle scale 1.0→1.05 zoom over 0.3s for energy
-      const ZOOM_PUNCH_FPS = 25;
-      const ZOOM_PUNCH_DUR = 0.3; // seconds
-      const ZOOM_PUNCH_FRAMES = Math.ceil(ZOOM_PUNCH_DUR * ZOOM_PUNCH_FPS);
-      const ZOOM_PUNCH_STEP = (1.05 - 1.0) / ZOOM_PUNCH_FRAMES;
+      // fps=25 normalizes timebase for concat filter
+      // Ken Burns: simple scale+crop+fps, no animated zoom punch (reference uses static Ken Burns)
       const scaleFilters = safeClips.map((_, i) => {
-        if (i === 0) {
-          // First clip: zoom punch from 1.0 to 1.05 over first 0.3s, then hold at 1.05
-          return `[${i}:v]scale=${Math.round(VIDEO_WIDTH * 1.10)}:${Math.round(VIDEO_HEIGHT * 1.10)}:force_original_aspect_ratio=increase,` +
-            `crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT},fps=25,` +
-            `zoompan=z='if(lte(on,${ZOOM_PUNCH_FRAMES}),1.0+on*${ZOOM_PUNCH_STEP.toFixed(6)},1.05)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${ZOOM_PUNCH_FRAMES * 4}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=${ZOOM_PUNCH_FPS}[v${i}]`;
-        }
         return `[${i}:v]scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT},fps=25[v${i}]`;
       }).join(";");
 
-      // Chain xfades — alternate between slideleft and fade for Vidrush-style visual variety
-      let xfadeChain = "";
-      let lastLabel = "v0";
-      for (let i = 1; i < safeClips.length; i++) {
-        const offset = Math.max(0.5, clipDur * i - xfadeDur);
-        const outLabel = i === safeClips.length - 1 ? "xfaded" : `xf${i}`;
-        const transition = xfadeTransitions[(i - 1) % xfadeTransitions.length];
-        xfadeChain += `;[${lastLabel}][v${i}]xfade=transition=${transition}:duration=${xfadeDur}:offset=${offset}[${outLabel}]`;
-        lastLabel = outLabel;
-      }
+      // Hard-cut concat: use filter_complex concat to join clips with zero-duration cuts
+      // This matches the reference video exactly — no crossfades, no slides, pure hard cuts
+      const concatInputLabels = safeClips.map((_, i) => `[v${i}]`).join("");
+      const hardCutConcat = `;${concatInputLabels}concat=n=${safeClips.length}:v=1:a=0[concatenated]`;
 
-      // Build kinetic chain on top of xfaded
-      // Input indices: 0..N-1 = clips, N = audio, N+1.. = kinetic frames
+      // Build overlay chain on top of concatenated (kinetic words + stat callout)
+      // Input indices: 0..N-1 = clips, N = audio, N+1.. = overlay PNGs
       const audioIdx = safeClips.length;
       const kineticBaseIdx = audioIdx + 1;
       const { extraInputs: kExtraInputs, filterChain: kChain, finalLabel: kFinalLabel } =
-        buildKineticChain("xfaded", kineticBaseIdx);
+        buildKineticChain("concatenated", kineticBaseIdx);
 
       const kineticInput = kExtraInputs ? ` ${kExtraInputs}` : "";
       const kineticChainStr = kChain ? kChain : "";
-      const finalVideoLabel = kineticFrames.length > 0 ? kFinalLabel : "xfaded";
+      const hasOverlays = kineticFrames.length > 0 || statCalloutFrame !== null;
+      const finalVideoLabel = hasOverlays ? kFinalLabel : "concatenated";
       await withTimeout(
         exec(
           `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}"${kineticInput} ` +
-          `-filter_complex "${scaleFilters}${xfadeChain}${kineticChainStr};[${finalVideoLabel}]${fadeFilter}[vout]" ` +
+          `-filter_complex "${scaleFilters}${hardCutConcat}${kineticChainStr};[${finalVideoLabel}]${fadeFilter}[vout]" ` +
           `-map "[vout]" -map "${audioIdx}:a" ` +
           `-t ${duration} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
         ),
@@ -3275,14 +3347,10 @@ async function composeSceneVideo(
 
       const kineticInput = kExtraInputs ? ` ${kExtraInputs}` : "";
       const kineticChainStr = kChain ? kChain : "";
-      const finalVideoLabel = kineticFrames.length > 0 ? kFinalLabel : "scaled";
-      // Single clip: zoom punch from 1.0 to 1.05 over first 0.3s (Vidrush energy effect)
-      const SP_FPS = 25;
-      const SP_FRAMES = Math.ceil(0.3 * SP_FPS);
-      const SP_STEP = (1.05 - 1.0) / SP_FRAMES;
-      const singleZoomFilter = `scale=${Math.round(VIDEO_WIDTH * 1.10)}:${Math.round(VIDEO_HEIGHT * 1.10)}:force_original_aspect_ratio=increase,` +
-        `crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT},fps=25,` +
-        `zoompan=z='if(lte(on,${SP_FRAMES}),1.0+on*${SP_STEP.toFixed(6)},1.05)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${SP_FRAMES * 4}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=${SP_FPS}`;
+      const hasOverlaysSingle = kineticFrames.length > 0 || statCalloutFrame !== null;
+      const finalVideoLabel = hasOverlaysSingle ? kFinalLabel : "scaled";
+      // Single clip: simple scale+crop (reference uses static Ken Burns, no animated zoom)
+      const singleZoomFilter = `scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT},fps=25`;
       await withTimeout(
         exec(
           `${FFMPEG_BIN} -y -i "${clip}" -i "${safeAudioPath}"${kineticInput} ` +
@@ -3474,7 +3542,10 @@ async function concatenateScenesWithMusic(
       await withTimeout(
         exec(
           `${FFMPEG_BIN} -y -i "${concatPath}" -i "${musicPath}" ` +
-          `-filter_complex "[0:a]volume=1.0[voice];[1:a]volume=0.18,aloop=loop=-1:size=2e+09[music];[voice][music]amix=inputs=2:duration=first:dropout_transition=3[aout]" ` +
+          // Dynamic ducking: music drops to 8% under voiceover, rises to 22% during pauses
+          // sidechaincompress: music is compressed when VO is present (attack=5ms, release=200ms)
+          // This matches the reference video: VO always dominant, music swells in pauses
+          `-filter_complex "[0:a]volume=1.0,asplit=2[voice][voicedet];[1:a]volume=0.22,aloop=loop=-1:size=2e+09[musicloop];[musicloop][voicedet]sidechaincompress=threshold=0.02:ratio=8:attack=5:release=200:makeup=1[music_ducked];[voice][music_ducked]amix=inputs=2:duration=first:dropout_transition=3[aout]" ` +
           `-map "0:v" -map "[aout]" ` +
           `-c:v copy -c:a aac -b:a 320k -movflags +faststart "${outputPath}"`
         ),
@@ -3487,7 +3558,7 @@ async function concatenateScenesWithMusic(
         await withTimeout(
           exec(
             `${FFMPEG_BIN} -y -i "${concatPath}" -i "${musicPath}" ` +
-            `-filter_complex "[0:a]volume=1.0[voice];[1:a]volume=0.18[music];[voice][music]amix=inputs=2:duration=first:dropout_transition=3[aout]" ` +
+            `-filter_complex "[0:a]volume=1.0[voice];[1:a]volume=0.12[music];[voice][music]amix=inputs=2:duration=first:dropout_transition=3[aout]" ` +
             `-map "0:v" -map "[aout]" ` +
             `-c:v copy -c:a aac -b:a 320k -movflags +faststart "${outputPath}"`
           ),

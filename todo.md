@@ -520,3 +520,37 @@ FINAL STATUS: ✅ ALL CRITICAL FFMPEG ISSUES FIXED
 - [x] Add Pixabay clip count to progress log line
 - [x] TypeScript check: 0 errors
 - [x] Save checkpoint
+
+## Reference Video Quality Upgrade (Gap Analysis vs Belgium video)
+
+### Transitions & Pacing
+- [x] Replace xfade (slideleft/fade) transitions with HARD CUTS between all clips — reference uses zero crossfades
+- [x] Reduce clip duration from ~5s to 2–4s per clip to match reference pacing (capped at 3s)
+- [x] Remove zoom-punch zoompan filter (reference uses static Ken Burns, not animated zoom-punch)
+
+### Chapter Card Style
+- [x] Change chapter card background from black to SOLID YELLOW (#FFD700)
+- [x] Change chapter card text from white to BLACK (high contrast on yellow)
+- [x] Keep ALL CAPS bold sans-serif font, centered, hard cut in/out
+
+### Stat Callout Boxes (NEW)
+- [x] LLM extracts 1 key statistic per scene (numbers, percentages, temperatures) via statCallout field
+- [x] Render yellow corner box overlay: stat text in black bold font, positioned bottom-right
+- [x] Box appears via hard cut at t=1.0s, stays until t=3.5s, then disappears via hard cut
+- [x] Canvas-rendered full-frame PNG overlay with yellow rounded box + black text
+
+### Dynamic Music Ducking (NEW)
+- [x] Implement sidechain-style ducking: sidechaincompress — music drops under VO, rises in pauses
+- [x] Music at 22% base, compressed to ~8% when VO is present (threshold=0.02, ratio=8)
+- [x] Fallback: music at 12% (was 18%) for environments without sidechaincompress
+
+### Color Grading: Era-Aware
+- [ ] Detect if clip is archival/vintage based on source (Internet Archive = vintage grade)
+- [ ] Apply vintage grade to archival clips: warm sepia tone, reduced saturation, film grain
+- [ ] Apply modern grade to Pexels/Pixabay clips: natural, punchy, slightly cool
+- [ ] B&W grade option for historical footage (pre-1960 topics)
+
+### Literal B-Roll Matching (NEW)
+- [x] Add `literalVisualCue` field to Scene: LLM generates hyper-specific 3-5 word visual description
+- [x] Use literalVisualCue as primary Pexels/Pixabay search query (more specific than pexelsQuery)
+- [x] Example: "horse cart cobblestone bruges" instead of "belgium transportation history"
