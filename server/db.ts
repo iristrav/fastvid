@@ -388,8 +388,8 @@ const ELEVENLABS_DEFAULT_VOICES = [
   { name: "Adam",     description: "American Male — deep, authoritative documentary voice",     fishAudioReferenceId: "ErXwobaYiN019PkySvjV", flag: "🇺🇸", sortOrder: 2, isActive: 1 },
   { name: "Heart",    description: "American Female — warm, friendly narrator",                 fishAudioReferenceId: "21m00Tcm4TlvDq8ikWAM", flag: "🇺🇸", sortOrder: 3, isActive: 1 },
   { name: "Bella",    description: "American Female — clear, professional narrator",            fishAudioReferenceId: "EXAVITQu4vr4xnSDxMaL", flag: "🇺🇸", sortOrder: 4, isActive: 1 },
-  { name: "George",   description: "British Male — elegant, documentary-style narrator",       fishAudioReferenceId: "VR6AewLTigWG4xSOukaG", flag: "🇬🇧", sortOrder: 5, isActive: 1 },
-  { name: "Lewis",    description: "British Male — calm, authoritative narrator",              fishAudioReferenceId: "TxGEqnHWrfWFTfGW9XjX", flag: "🇬🇧", sortOrder: 6, isActive: 1 },
+  { name: "George",   description: "British Male — elegant, documentary-style narrator",       fishAudioReferenceId: "JBFqnCBsd6RMkjVDRZzb", flag: "🇬🇧", sortOrder: 5, isActive: 1 },
+  { name: "Lewis",    description: "British Male — calm, authoritative narrator",              fishAudioReferenceId: "TX3LPaxmHKxFdv7VOQHJ", flag: "🇬🇧", sortOrder: 6, isActive: 1 },
 ] as const;
 
 export async function seedDefaultVoices() {

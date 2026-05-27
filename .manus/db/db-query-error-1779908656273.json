@@ -1,0 +1,19 @@
+{
+  "query": "SHOW COLUMNS FROM voices; SELECT id, name, voiceId, isActive FROM voices LIMIT 10;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute SHOW COLUMNS FROM voices; SELECT id, name, voiceId, isActive FROM voices LIMIT 10;",
+  "returncode": 1,
+  "logs": [
+    "Field\tType\tNull\tKey\tDefault\tExtra",
+    "id\tint\tNO\tPRI\tNULL\tauto_increment",
+    "name\tvarchar(128)\tNO\t\tNULL\t",
+    "description\tvarchar(256)\tYES\t\tNULL\t",
+    "fishAudioReferenceId\tvarchar(128)\tNO\t\tNULL\t",
+    "exampleAudioUrl\tvarchar(1024)\tYES\t\tNULL\t",
+    "flag\tvarchar(8)\tYES\t\t🇺🇸\t",
+    "isActive\tint\tNO\t\t1\t",
+    "sortOrder\tint\tNO\t\t0\t",
+    "createdAt\ttimestamp\tNO\t\tCURRENT_TIMESTAMP\t",
+    "updatedAt\ttimestamp\tNO\t\tCURRENT_TIMESTAMP\tDEFAULT_GENERATED on update CURRENT_TIMESTAMP",
+    "ERROR 1054 (42S22) at line 1: Unknown column 'voiceid' in 'field list'"
+  ]
+}

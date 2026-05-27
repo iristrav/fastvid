@@ -1,0 +1,203 @@
+{
+  "query": "SHOW COLUMNS FROM videos; SELECT id, title, status FROM videos ORDER BY id DESC LIMIT 15;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute SHOW COLUMNS FROM videos; SELECT id, title, status FROM videos ORDER BY id DESC LIMIT 15;",
+  "rows": [
+    {
+      "Field": "id",
+      "Type": "int",
+      "Null": "NO",
+      "Key": "PRI",
+      "Default": "NULL",
+      "Extra": "auto_increment"
+    },
+    {
+      "Field": "userId",
+      "Type": "int",
+      "Null": "NO",
+      "Key": "MUL",
+      "Default": "NULL",
+      "Extra": ""
+    },
+    {
+      "Field": "title",
+      "Type": "varchar(512)",
+      "Null": "YES",
+      "Key": "",
+      "Default": "NULL",
+      "Extra": ""
+    },
+    {
+      "Field": "prompt",
+      "Type": "text",
+      "Null": "NO",
+      "Key": "",
+      "Default": "NULL",
+      "Extra": ""
+    },
+    {
+      "Field": "videoLength",
+      "Type": "varchar(16)",
+      "Null": "NO",
+      "Key": "",
+      "Default": "NULL",
+      "Extra": ""
+    },
+    {
+      "Field": "status",
+      "Type": "enum('pending','generating_script','awaiting_approval','generating_voiceover','generating_visuals','generating_effects','completed','failed')",
+      "Null": "NO",
+      "Key": "",
+      "Default": "pending",
+      "Extra": ""
+    },
+    {
+      "Field": "script",
+      "Type": "longtext",
+      "Null": "YES",
+      "Key": "",
+      "Default": "NULL",
+      "Extra": ""
+    },
+    {
+      "Field": "voiceoverUrl",
+      "Type": "varchar(1024)",
+      "Null": "YES",
+      "Key": "",
+      "Default": "NULL",
+      "Extra": ""
+    },
+    {
+      "Field": "videoUrl",
+      "Type": "varchar(1024)",
+      "Null": "YES",
+      "Key": "",
+      "Default": "NULL",
+      "Extra": ""
+    },
+    {
+      "Field": "thumbnailUrl",
+      "Type": "varchar(1024)",
+      "Null": "YES",
+      "Key": "",
+      "Default": "NULL",
+      "Extra": ""
+    },
+    {
+      "Field": "metadata",
+      "Type": "json",
+      "Null": "YES",
+      "Key": "",
+      "Default": "NULL",
+      "Extra": ""
+    },
+    {
+      "Field": "errorMessage",
+      "Type": "text",
+      "Null": "YES",
+      "Key": "",
+      "Default": "NULL",
+      "Extra": ""
+    },
+    {
+      "Field": "createdAt",
+      "Type": "timestamp",
+      "Null": "NO",
+      "Key": "",
+      "Default": "CURRENT_TIMESTAMP",
+      "Extra": ""
+    },
+    {
+      "Field": "updatedAt",
+      "Type": "timestamp",
+      "Null": "NO",
+      "Key": "",
+      "Default": "CURRENT_TIMESTAMP",
+      "Extra": "DEFAULT_GENERATED on update CURRENT_TIMESTAMP"
+    },
+    {
+      "Field": "progressStep",
+      "Type": "varchar(256)",
+      "Null": "YES",
+      "Key": "",
+      "Default": "NULL",
+      "Extra": ""
+    },
+    {
+      "Field": "progressPercent",
+      "Type": "int",
+      "Null": "YES",
+      "Key": "",
+      "Default": "0",
+      "Extra": ""
+    },
+    {
+      "Field": "generationStartedAt",
+      "Type": "timestamp",
+      "Null": "YES",
+      "Key": "",
+      "Default": "NULL",
+      "Extra": ""
+    },
+    {
+      "Field": "videoType",
+      "Type": "enum('documentary','listicle','tutorial','explainer')",
+      "Null": "NO",
+      "Key": "",
+      "Default": "documentary",
+      "Extra": ""
+    },
+    {
+      "Field": "scriptApproved",
+      "Type": "int",
+      "Null": "NO",
+      "Key": "",
+      "Default": "0",
+      "Extra": ""
+    },
+    {
+      "Field": "customVoiceoverUrl",
+      "Type": "varchar(1024)",
+      "Null": "YES",
+      "Key": "",
+      "Default": "NULL",
+      "Extra": ""
+    },
+    {
+      "Field": "voiceId",
+      "Type": "varchar(128)",
+      "Null": "YES",
+      "Key": "",
+      "Default": "NULL",
+      "Extra": ""
+    },
+    {
+      "Field": "enableSubtitles",
+      "Type": "int",
+      "Null": "NO",
+      "Key": "",
+      "Default": "1",
+      "Extra": ""
+    }
+  ],
+  "messages": [
+    "id\ttitle\tstatus",
+    "600001\tNULL\tpending",
+    "570001\tComplete Pipeline Test - The Future of AI\tpending",
+    "540001\tAI Impact on Modern Society\tfailed",
+    "510001\tThe Wildest Kylie Jenner Rumor: Unpacking the Truth\tfailed",
+    "480001\tNULL\tpending",
+    "450001\tNULL\tpending",
+    "420001\tNULL\tpending",
+    "390001\tTop 10 Most Beautiful Waterfalls in the World\tawaiting_approval",
+    "360003\tTop 5 Most Incredible Ancient Civilizations That Disappeared\tawaiting_approval",
+    "360002\tTop 5 Most AMAZING Deep Sea Creatures You Won't Believe Exist!\tcompleted",
+    "360001\tTop 5 Most Incredible Natural Phenomena on Earth\tfailed",
+    "330003\tTop 5 Volcanoes That Could Erupt Soon\tcompleted",
+    "330002\tTop 5 Most Amazing Ocean Discoveries You Won't Believe!\tcompleted",
+    "330001\tCosmic Revelations: The Top 5 Space Discoveries of 2024\tfailed",
+    "270003\tUnleashing Giants: The Top 10 Most Powerful Engines Ever Built\tfailed"
+  ],
+  "stdout": "Field\tType\tNull\tKey\tDefault\tExtra\nid\tint\tNO\tPRI\tNULL\tauto_increment\nuserId\tint\tNO\tMUL\tNULL\t\ntitle\tvarchar(512)\tYES\t\tNULL\t\nprompt\ttext\tNO\t\tNULL\t\nvideoLength\tvarchar(16)\tNO\t\tNULL\t\nstatus\tenum('pending','generating_script','awaiting_approval','generating_voiceover','generating_visuals','generating_effects','completed','failed')\tNO\t\tpending\t\nscript\tlongtext\tYES\t\tNULL\t\nvoiceoverUrl\tvarchar(1024)\tYES\t\tNULL\t\nvideoUrl\tvarchar(1024)\tYES\t\tNULL\t\nthumbnailUrl\tvarchar(1024)\tYES\t\tNULL\t\nmetadata\tjson\tYES\t\tNULL\t\nerrorMessage\ttext\tYES\t\tNULL\t\ncreatedAt\ttimestamp\tNO\t\tCURRENT_TIMESTAMP\t\nupdatedAt\ttimestamp\tNO\t\tCURRENT_TIMESTAMP\tDEFAULT_GENERATED on update CURRENT_TIMESTAMP\nprogressStep\tvarchar(256)\tYES\t\tNULL\t\nprogressPercent\tint\tYES\t\t0\t\ngenerationStartedAt\ttimestamp\tYES\t\tNULL\t\nvideoType\tenum('documentary','listicle','tutorial','explainer')\tNO\t\tdocumentary\t\nscriptApproved\tint\tNO\t\t0\t\ncustomVoiceoverUrl\tvarchar(1024)\tYES\t\tNULL\t\nvoiceId\tvarchar(128)\tYES\t\tNULL\t\nenableSubtitles\tint\tNO\t\t1\t\nid\ttitle\tstatus\n600001\tNULL\tpending\n570001\tComplete Pipeline Test - The Future of AI\tpending\n540001\tAI Impact on Modern Society\tfailed\n510001\tThe Wildest Kylie Jenner Rumor: Unpacking the Truth\tfailed\n480001\tNULL\tpending\n450001\tNULL\tpending\n420001\tNULL\tpending\n390001\tTop 10 Most Beautiful Waterfalls in the World\tawaiting_approval\n360003\tTop 5 Most Incredible Ancient Civilizations That Disappeared\tawaiting_approval\n360002\tTop 5 Most AMAZING Deep Sea Creatures You Won't Believe Exist!\tcompleted\n360001\tTop 5 Most Incredible Natural Phenomena on Earth\tfailed\n330003\tTop 5 Volcanoes That Could Erupt Soon\tcompleted\n330002\tTop 5 Most Amazing Ocean Discoveries You Won't Believe!\tcompleted\n330001\tCosmic Revelations: The Top 5 Space Discoveries of 2024\tfailed\n270003\tUnleashing Giants: The Top 10 Most Powerful Engines Ever Built\tfailed\n",
+  "stderr": "",
+  "execution_time_ms": 278
+}

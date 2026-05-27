@@ -441,7 +441,7 @@ export async function generateVoiceover(
   const cleanText = rawText.length <= 800 ? rawText : rawText.slice(0, 800).replace(/\s\S*$/, "");
 
   const MAX_ATTEMPTS = 3;
-  const TTS_TIMEOUT_MS = 30_000; // 30s — ElevenLabs typically responds in 3-8s
+  const TTS_TIMEOUT_MS = 90_000; // 90s — ElevenLabs can take up to 60s on paid tier for long texts
 
   // ── ElevenLabs TTS (HIGHEST QUALITY — try first if key available) ───────────
   if (ELEVENLABS_API_KEY) {
@@ -3764,8 +3764,8 @@ export async function runVideoPipeline(
       }
       durations = scenes.map(() => perScene);
     } else {
-      // Process voiceovers in batches of 8 to respect ElevenLabs rate limits
-      const voiceLimit = pLimit(8);
+      // Process voiceovers sequentially (pLimit(1)) to prevent network socket disconnects from parallel TLS connections
+      const voiceLimit = pLimit(1);
       let completedVoices = 0;
       durations = await withTimeout(
         Promise.all(scenes.map((scene, i) => voiceLimit(async () => {
@@ -3790,8 +3790,8 @@ export async function runVideoPipeline(
     onProgress?.({ stage: STAGE_LABELS.visuals, percent: 20 });
     const t2 = Date.now();
 
-    // Process visuals in batches — limit to 2 to avoid OOM (sandbox has 3.8GB RAM)
-    const visualLimit = pLimit(2);
+    // Process visuals in batches — limit to 1 to avoid OOM (sandbox has 3.8GB RAM, FFmpeg is memory-intensive)
+    const visualLimit = pLimit(1);
     let completedVisuals = 0;
     const sceneVisuals: string[][] = await withTimeout(
       Promise.all(scenes.map(scene => visualLimit(async () => {
@@ -3812,8 +3812,8 @@ export async function runVideoPipeline(
     onProgress?.({ stage: STAGE_LABELS.composing, percent: 47 });
     const t3 = Date.now();
 
-    // Process compose in batches — limit to 2 to avoid OOM (sandbox has 3.8GB RAM)
-    const composeLimit = pLimit(2);
+    // Process compose in batches — limit to 1 to avoid OOM (sandbox has 3.8GB RAM, FFmpeg is memory-intensive)
+    const composeLimit = pLimit(1);
     let completedCompose = 0;
     const composedScenes = await withTimeout(
       Promise.all(

@@ -693,7 +693,7 @@ export default function Dashboard() {
   const [prompt, setPrompt] = useState("");
   const [selectedLength, setSelectedLength] = useState<VideoLength>("15-20");
   const [selectedType, setSelectedType] = useState<VideoType>("documentary");
-  const [selectedVoice, setSelectedVoice] = useState("am_michael");
+  const [selectedVoice, setSelectedVoice] = useState("pNInz6obpgDQGcFmaJgB"); // ElevenLabs Michael voice ID
   const [useCustomVoice, setUseCustomVoice] = useState(false);
   const [customVoiceoverUrl, setCustomVoiceoverUrl] = useState<string | null>(null);
   const [enableSubtitles, setEnableSubtitles] = useState(true);

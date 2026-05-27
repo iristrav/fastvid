@@ -922,7 +922,7 @@ function VoiceLibraryAdmin() {
 
   function testPreview(voice: typeof voices[0]) {
     if (voice.fishAudioReferenceId.startsWith("PLACEHOLDER")) {
-      toast.error("Cannot preview: this voice has a placeholder Fish Audio ID. Please edit and set a real ID.");
+      toast.error("Cannot preview: this voice has a placeholder ElevenLabs voice ID. Please edit and set a real ID.");
       return;
     }
     if (previewAudioEl) { previewAudioEl.pause(); previewAudioEl.src = ""; }
@@ -950,7 +950,7 @@ function VoiceLibraryAdmin() {
         </div>
         <div className="flex items-center gap-2">
           <button
-            onClick={() => { if (confirm("Reset all voices to defaults? This will delete placeholder voices and upsert 6 real Fish Audio voices.")) resetDefaultsMut.mutate(); }}
+            onClick={() => { if (confirm("Reset all voices to defaults? This will delete placeholder voices and upsert 6 real ElevenLabs voices.")) resetDefaultsMut.mutate(); }}
             disabled={resetDefaultsMut.isPending}
             className="flex items-center gap-2 px-3 py-2 bg-white/10 hover:bg-white/15 text-slate-300 rounded-lg text-xs font-medium transition-colors disabled:opacity-50"
           >
@@ -1001,17 +1001,17 @@ function VoiceLibraryAdmin() {
               {v.fishAudioReferenceId.startsWith("PLACEHOLDER") ? (
                 <div className="flex items-center gap-1.5 text-xs text-amber-400 bg-amber-400/10 border border-amber-400/20 rounded px-2 py-1">
                   <AlertTriangle className="w-3 h-3 shrink-0" />
-                  <span className="font-mono truncate">Placeholder ID — set a real Fish Audio ID</span>
+                  <span className="font-mono truncate">Placeholder ID — set a real ElevenLabs voice ID</span>
                 </div>
               ) : (
                 <div className="text-xs text-slate-500 font-mono bg-white/5 rounded px-2 py-1 truncate">
-                  ID: {v.fishAudioReferenceId}
+                  ElevenLabs ID: {v.fishAudioReferenceId}
                 </div>
               )}
 
               {/* Live preview + example audio upload + play */}
               <div className="flex items-center gap-2 flex-wrap">
-                {/* Test Preview: calls Fish Audio live */}
+                {/* Test Preview: calls ElevenLabs live */}
                 <button
                   onClick={() => testPreview(v)}
                   disabled={previewMut.isPending && previewingId === v.id}
@@ -1104,9 +1104,9 @@ function VoiceForm({
           <input value={flag} onChange={e => setFlag(e.target.value)} placeholder="🇺🇸" className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-purple-500" />
         </div>
         <div className="md:col-span-2">
-          <label className="text-xs text-slate-400 mb-1 block">Fish Audio Reference ID *</label>
-          <input value={fishId} onChange={e => setFishId(e.target.value)} placeholder="e.g. ad5f4ba0b5b64d4e9e3b5c5d6e7f8a9b" className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm font-mono focus:outline-none focus:border-purple-500" />
-          <p className="text-xs text-slate-500 mt-1">Find this in your Fish Audio dashboard under the voice model page</p>
+          <label className="text-xs text-slate-400 mb-1 block">ElevenLabs Voice ID *</label>
+          <input value={fishId} onChange={e => setFishId(e.target.value)} placeholder="e.g. pNInz6obpgDQGcFmaJgB" className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm font-mono focus:outline-none focus:border-purple-500" />
+          <p className="text-xs text-slate-500 mt-1">Find this in your ElevenLabs dashboard under Voices → Voice Library</p>
         </div>
         <div className="md:col-span-2">
           <label className="text-xs text-slate-400 mb-1 block">Description</label>

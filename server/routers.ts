@@ -879,25 +879,26 @@ export const appRouter = router({
       return { url };
     }),
 
-    /** Public: generate a live 5-second Fish Audio preview for a given voice reference ID */
+    /** Public: generate a live 5-second ElevenLabs preview for a given voice ID */
     preview: protectedProcedure.input(z.object({
       fishAudioReferenceId: z.string().min(1),
     })).mutation(async ({ input }) => {
-      const apiKey = process.env.FISH_AUDIO_API_KEY;
-      if (!apiKey) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Fish Audio API key not configured" });
+      const apiKey = process.env.ELEVENLABS_API_KEY;
+      if (!apiKey) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "ElevenLabs API key not configured" });
       const previewText = "Hello! This is a preview of how this voice sounds. I hope you enjoy using it for your YouTube videos.";
-      const response = await fetch("https://api.fish.audio/v1/tts", {
+      const voiceId = input.fishAudioReferenceId; // column still named fishAudioReferenceId but stores ElevenLabs voice ID
+      const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
         method: "POST",
-        headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ text: previewText, reference_id: input.fishAudioReferenceId, format: "mp3", mp3_bitrate: 128, latency: "normal" }),
+        headers: { "xi-api-key": apiKey, "Content-Type": "application/json", "Accept": "audio/mpeg" },
+        body: JSON.stringify({ text: previewText, model_id: "eleven_multilingual_v2", voice_settings: { stability: 0.5, similarity_boost: 0.75 } }),
         signal: AbortSignal.timeout(30_000),
       });
       if (!response.ok) {
         const err = await response.text();
-        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `Fish Audio preview failed: ${err}` });
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `ElevenLabs preview failed: ${err.slice(0, 200)}` });
       }
       const audioBuffer = Buffer.from(await response.arrayBuffer());
-      const key = `voice-previews/${input.fishAudioReferenceId}-${Date.now()}.mp3`;
+      const key = `voice-previews/${voiceId}-${Date.now()}.mp3`;
       const { url } = await storagePut(key, audioBuffer, "audio/mpeg");
       return { url };
     }),

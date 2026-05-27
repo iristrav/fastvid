@@ -1,0 +1,9 @@
+{
+  "query": "\nDELETE FROM voices;\nINSERT INTO voices (name, description, fishAudioReferenceId, flag, isActive, sortOrder) VALUES\n  ('Michael', 'American Male — natural, YouTube-style narrator',           'pNInz6obpgDQGcFmaJgB', '🇺🇸', 1, 1),\n  ('Adam',    'American Male — deep, authoritative documentary voice',     'ErXwobaYiN019PkySvjV', '🇺🇸', 1, 2),\n  ('Heart',   'American Female — warm, friendly narrator',                 '21m00Tcm4TlvDq8ikWAM', '🇺🇸', 1, 3),\n  ('Bella',   'American Female — clear, professional narrator',            'EXAVITQu4vr4xnSDxMaL', '🇺🇸', 1, 4),\n  ('George',  'British Male — elegant, documentary-style narrator',        'JBFqnCBsd6RMkjVDRZzb', '🇬🇧', 1, 5),\n  ('Lewis',   'British Male — calm, authoritative narrator',               'TX3LPaxmHKxFdv7VOQHJ', '🇬🇧', 1, 6);\n",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute \nDELETE FROM voices;\nINSERT INTO voices (name, description, fishAudioReferenceId, flag, isActive, sortOrder) VALUES\n  ('Michael', 'American Male — natural, YouTube-style narrator',           'pNInz6obpgDQGcFmaJgB', '🇺🇸', 1, 1),\n  ('Adam',    'American Male — deep, authoritative documentary voice',     'ErXwobaYiN019PkySvjV', '🇺🇸', 1, 2),\n  ('Heart',   'American Female — warm, friendly narrator',                 '21m00Tcm4TlvDq8ikWAM', '🇺🇸', 1, 3),\n  ('Bella',   'American Female — clear, professional narrator',            'EXAVITQu4vr4xnSDxMaL', '🇺🇸', 1, 4),\n  ('George',  'British Male — elegant, documentary-style narrator',        'JBFqnCBsd6RMkjVDRZzb', '🇬🇧', 1, 5),\n  ('Lewis',   'British Male — calm, authoritative narrator',               'TX3LPaxmHKxFdv7VOQHJ', '🇬🇧', 1, 6);\n",
+  "rows": [],
+  "messages": [],
+  "stdout": "",
+  "stderr": "",
+  "execution_time_ms": 3173
+}

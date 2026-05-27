@@ -1,0 +1,9 @@
+{
+  "query": "SELECT id, title, status, errorMessage, createdAt FROM videos WHERE title LIKE '%Internet%' OR prompt LIKE '%Internet%' OR prompt LIKE '%ARPANET%' ORDER BY createdAt DESC LIMIT 10;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute SELECT id, title, status, errorMessage, createdAt FROM videos WHERE title LIKE '%Internet%' OR prompt LIKE '%Internet%' OR prompt LIKE '%ARPANET%' ORDER BY createdAt DESC LIMIT 10;",
+  "rows": [],
+  "messages": [],
+  "stdout": "",
+  "stderr": "",
+  "execution_time_ms": 1286
+}

@@ -1,0 +1,50 @@
+{
+  "query": "SELECT id, title, status FROM videos ORDER BY id DESC LIMIT 8;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute SELECT id, title, status FROM videos ORDER BY id DESC LIMIT 8;",
+  "rows": [
+    {
+      "id": "600001",
+      "title": "NULL",
+      "status": "pending"
+    },
+    {
+      "id": "570001",
+      "title": "Complete Pipeline Test - The Future of AI",
+      "status": "pending"
+    },
+    {
+      "id": "540001",
+      "title": "AI Impact on Modern Society",
+      "status": "failed"
+    },
+    {
+      "id": "510001",
+      "title": "The Wildest Kylie Jenner Rumor: Unpacking the Truth",
+      "status": "failed"
+    },
+    {
+      "id": "480001",
+      "title": "NULL",
+      "status": "pending"
+    },
+    {
+      "id": "450001",
+      "title": "NULL",
+      "status": "pending"
+    },
+    {
+      "id": "420001",
+      "title": "NULL",
+      "status": "pending"
+    },
+    {
+      "id": "390001",
+      "title": "Top 10 Most Beautiful Waterfalls in the World",
+      "status": "awaiting_approval"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\ttitle\tstatus\n600001\tNULL\tpending\n570001\tComplete Pipeline Test - The Future of AI\tpending\n540001\tAI Impact on Modern Society\tfailed\n510001\tThe Wildest Kylie Jenner Rumor: Unpacking the Truth\tfailed\n480001\tNULL\tpending\n450001\tNULL\tpending\n420001\tNULL\tpending\n390001\tTop 10 Most Beautiful Waterfalls in the World\tawaiting_approval\n",
+  "stderr": "",
+  "execution_time_ms": 400
+}

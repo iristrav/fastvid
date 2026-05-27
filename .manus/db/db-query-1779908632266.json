@@ -1,0 +1,58 @@
+{
+  "query": "SELECT id, title, status, createdAt FROM videos ORDER BY createdAt DESC LIMIT 8;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute SELECT id, title, status, createdAt FROM videos ORDER BY createdAt DESC LIMIT 8;",
+  "rows": [
+    {
+      "id": "600001",
+      "title": "NULL",
+      "status": "pending",
+      "createdAt": "2026-05-18 11:09:46"
+    },
+    {
+      "id": "570001",
+      "title": "Complete Pipeline Test - The Future of AI",
+      "status": "pending",
+      "createdAt": "2026-05-17 20:33:18"
+    },
+    {
+      "id": "540001",
+      "title": "AI Impact on Modern Society",
+      "status": "failed",
+      "createdAt": "2026-05-17 08:16:09"
+    },
+    {
+      "id": "510001",
+      "title": "The Wildest Kylie Jenner Rumor: Unpacking the Truth",
+      "status": "failed",
+      "createdAt": "2026-05-13 12:52:44"
+    },
+    {
+      "id": "480001",
+      "title": "NULL",
+      "status": "pending",
+      "createdAt": "2026-05-13 10:06:57"
+    },
+    {
+      "id": "450001",
+      "title": "NULL",
+      "status": "pending",
+      "createdAt": "2026-05-12 07:42:23"
+    },
+    {
+      "id": "420001",
+      "title": "NULL",
+      "status": "pending",
+      "createdAt": "2026-05-11 08:15:34"
+    },
+    {
+      "id": "390001",
+      "title": "Top 10 Most Beautiful Waterfalls in the World",
+      "status": "awaiting_approval",
+      "createdAt": "2026-05-08 11:23:33"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\ttitle\tstatus\tcreatedAt\n600001\tNULL\tpending\t2026-05-18 11:09:46\n570001\tComplete Pipeline Test - The Future of AI\tpending\t2026-05-17 20:33:18\n540001\tAI Impact on Modern Society\tfailed\t2026-05-17 08:16:09\n510001\tThe Wildest Kylie Jenner Rumor: Unpacking the Truth\tfailed\t2026-05-13 12:52:44\n480001\tNULL\tpending\t2026-05-13 10:06:57\n450001\tNULL\tpending\t2026-05-12 07:42:23\n420001\tNULL\tpending\t2026-05-11 08:15:34\n390001\tTop 10 Most Beautiful Waterfalls in the World\tawaiting_approval\t2026-05-08 11:23:33\n",
+  "stderr": "",
+  "execution_time_ms": 266
+}

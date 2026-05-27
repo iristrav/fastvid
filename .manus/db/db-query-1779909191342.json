@@ -1,0 +1,66 @@
+{
+  "query": "SELECT id, title, status, LEFT(errorMessage, 200) as error, createdAt FROM videos WHERE status = 'failed' ORDER BY createdAt DESC LIMIT 8;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute SELECT id, title, status, LEFT(errorMessage, 200) as error, createdAt FROM videos WHERE status = 'failed' ORDER BY createdAt DESC LIMIT 8;",
+  "rows": [
+    {
+      "id": "540001",
+      "title": "AI Impact on Modern Society",
+      "status": "failed",
+      "error": "Retry with new fixes",
+      "createdAt": "2026-05-17 08:16:09"
+    },
+    {
+      "id": "510001",
+      "title": "The Wildest Kylie Jenner Rumor: Unpacking the Truth",
+      "status": "failed",
+      "error": "Command failed: ffmpeg -y -i \"/tmp/fastvid_510001_1778676784827/scene_0_pexels_2.mp4\" -i \"/tmp/fastvid_510001_1778676784827/scene_0_audio.mp3\" -t 20  -c:v libx264 -preset slow -crf 18 -c:a aac -b:a 32",
+      "createdAt": "2026-05-13 12:52:44"
+    },
+    {
+      "id": "360001",
+      "title": "Top 5 Most Incredible Natural Phenomena on Earth",
+      "status": "failed",
+      "error": "Pipeline stuck - expired by admin",
+      "createdAt": "2026-05-07 19:32:04"
+    },
+    {
+      "id": "330001",
+      "title": "Cosmic Revelations: The Top 5 Space Discoveries of 2024",
+      "status": "failed",
+      "error": "Command failed: /usr/bin/ffmpeg -y -i \"/tmp/fastvid_330001_1778092150466/fastvid_330001_concat.mp4\" -i \"/tmp/fastvid_330001_1778092150466/bg_music.mp3\" -filter_complex \"[0:a]volume=1.0[voice];[1:a]vol",
+      "createdAt": "2026-05-06 18:28:55"
+    },
+    {
+      "id": "270003",
+      "title": "Unleashing Giants: The Top 10 Most Powerful Engines Ever Built",
+      "status": "failed",
+      "error": "Pipeline timed out after 35 minutes",
+      "createdAt": "2026-05-05 20:30:46"
+    },
+    {
+      "id": "270002",
+      "title": "Unveiling Opulence: The Top 10 Most Expensive Cars in the World",
+      "status": "failed",
+      "error": "Command failed: /usr/src/app/node_modules/.pnpm/ffmpeg-static@5.3.0/node_modules/ffmpeg-static/ffmpeg -y -i \"/tmp/fastvid_270002_1778012711931/scene_1_fallback.mp4\" -i \"/tmp/fastvid_270002_17780127119",
+      "createdAt": "2026-05-05 20:24:47"
+    },
+    {
+      "id": "270001",
+      "title": "Unleashed Speed: The World's 10 Fastest Production Cars",
+      "status": "failed",
+      "error": "Command failed: /usr/src/app/node_modules/.pnpm/ffmpeg-static@5.3.0/node_modules/ffmpeg-static/ffmpeg -y -i \"/tmp/fastvid_270001_1778011768544/scene_1_fallback.mp4\" -i \"/tmp/fastvid_270001_17780117685",
+      "createdAt": "2026-05-05 20:09:02"
+    },
+    {
+      "id": "240006",
+      "title": "Unleashed Speed: The Top 5 Fastest Cars in the World",
+      "status": "failed",
+      "error": "Pipeline timed out after 35 minutes",
+      "createdAt": "2026-04-30 16:18:39"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\ttitle\tstatus\terror\tcreatedAt\n540001\tAI Impact on Modern Society\tfailed\tRetry with new fixes\t2026-05-17 08:16:09\n510001\tThe Wildest Kylie Jenner Rumor: Unpacking the Truth\tfailed\tCommand failed: ffmpeg -y -i \"/tmp/fastvid_510001_1778676784827/scene_0_pexels_2.mp4\" -i \"/tmp/fastvid_510001_1778676784827/scene_0_audio.mp3\" -t 20  -c:v libx264 -preset slow -crf 18 -c:a aac -b:a 32\t2026-05-13 12:52:44\n360001\tTop 5 Most Incredible Natural Phenomena on Earth\tfailed\tPipeline stuck - expired by admin\t2026-05-07 19:32:04\n330001\tCosmic Revelations: The Top 5 Space Discoveries of 2024\tfailed\tCommand failed: /usr/bin/ffmpeg -y -i \"/tmp/fastvid_330001_1778092150466/fastvid_330001_concat.mp4\" -i \"/tmp/fastvid_330001_1778092150466/bg_music.mp3\" -filter_complex \"[0:a]volume=1.0[voice];[1:a]vol\t2026-05-06 18:28:55\n270003\tUnleashing Giants: The Top 10 Most Powerful Engines Ever Built\tfailed\tPipeline timed out after 35 minutes\t2026-05-05 20:30:46\n270002\tUnveiling Opulence: The Top 10 Most Expensive Cars in the World\tfailed\tCommand failed: /usr/src/app/node_modules/.pnpm/ffmpeg-static@5.3.0/node_modules/ffmpeg-static/ffmpeg -y -i \"/tmp/fastvid_270002_1778012711931/scene_1_fallback.mp4\" -i \"/tmp/fastvid_270002_17780127119\t2026-05-05 20:24:47\n270001\tUnleashed Speed: The World's 10 Fastest Production Cars\tfailed\tCommand failed: /usr/src/app/node_modules/.pnpm/ffmpeg-static@5.3.0/node_modules/ffmpeg-static/ffmpeg -y -i \"/tmp/fastvid_270001_1778011768544/scene_1_fallback.mp4\" -i \"/tmp/fastvid_270001_17780117685\t2026-05-05 20:09:02\n240006\tUnleashed Speed: The Top 5 Fastest Cars in the World\tfailed\tPipeline timed out after 35 minutes\t2026-04-30 16:18:39\n",
+  "stderr": "",
+  "execution_time_ms": 273
+}

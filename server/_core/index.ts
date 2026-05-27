@@ -195,9 +195,9 @@ bootstrapAdmin().catch(console.error);
 // Pre-generate example audio for all voices that don't have one yet.
 // Runs in the background after startup so it doesn't block the server.
 async function bootstrapVoiceExampleAudio() {
-  const fishKey = process.env.FISH_AUDIO_API_KEY;
-  if (!fishKey) {
-    console.log("[VoiceBootstrap] Skipping — FISH_AUDIO_API_KEY not set");
+  const elevenKey = process.env.ELEVENLABS_API_KEY;
+  if (!elevenKey) {
+    console.log("[VoiceBootstrap] Skipping — ELEVENLABS_API_KEY not set");
     return;
   }
   try {
@@ -209,22 +209,24 @@ async function bootstrapVoiceExampleAudio() {
       console.log("[VoiceBootstrap] All voices already have example audio");
       return;
     }
-    console.log(`[VoiceBootstrap] Generating example audio for ${missing.length} voice(s)...`);
+    console.log(`[VoiceBootstrap] Generating example audio for ${missing.length} voice(s) via ElevenLabs...`);
     const previewText = "Hello! This is a preview of how this voice sounds. I hope you enjoy using it for your YouTube videos.";
     for (const voice of missing) {
       try {
-        const resp = await fetch("https://api.fish.audio/v1/tts", {
+        // fishAudioReferenceId column stores ElevenLabs voice ID
+        const elevenVoiceId = voice.fishAudioReferenceId;
+        const resp = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${elevenVoiceId}`, {
           method: "POST",
-          headers: { "Authorization": `Bearer ${fishKey}`, "Content-Type": "application/json" },
-          body: JSON.stringify({ text: previewText, reference_id: voice.fishAudioReferenceId, format: "mp3", mp3_bitrate: 128, latency: "normal" }),
+          headers: { "xi-api-key": elevenKey, "Content-Type": "application/json", "Accept": "audio/mpeg" },
+          body: JSON.stringify({ text: previewText, model_id: "eleven_multilingual_v2", voice_settings: { stability: 0.5, similarity_boost: 0.75 } }),
           signal: AbortSignal.timeout(45_000),
         });
         if (!resp.ok) {
-          console.warn(`[VoiceBootstrap] Fish Audio failed for voice ${voice.name} (${voice.fishAudioReferenceId}): HTTP ${resp.status}`);
+          console.warn(`[VoiceBootstrap] ElevenLabs failed for voice ${voice.name} (${elevenVoiceId}): HTTP ${resp.status}`);
           continue;
         }
         const buf = Buffer.from(await resp.arrayBuffer());
-        const { url } = await storagePut(`voice-examples/${voice.fishAudioReferenceId}.mp3`, buf, "audio/mpeg");
+        const { url } = await storagePut(`voice-examples/${elevenVoiceId}.mp3`, buf, "audio/mpeg");
         await updateVoice(voice.id, { exampleAudioUrl: url });
         console.log(`[VoiceBootstrap] ✓ Example audio generated for voice: ${voice.name}`);
       } catch (e) {

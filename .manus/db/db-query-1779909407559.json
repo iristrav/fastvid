@@ -1,0 +1,45 @@
+{
+  "query": "SELECT id, title, status, LEFT(prompt, 80) as prompt_preview, LEFT(errorMessage, 300) as error, createdAt FROM videos ORDER BY createdAt DESC LIMIT 5;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute SELECT id, title, status, LEFT(prompt, 80) as prompt_preview, LEFT(errorMessage, 300) as error, createdAt FROM videos ORDER BY createdAt DESC LIMIT 5;",
+  "rows": [
+    {
+      "id": "600001",
+      "title": "NULL",
+      "status": "pending",
+      "prompt_preview": "The Revolutionary Impact of Artificial Intelligence on Modern Society: From Heal",
+      "error": "NULL",
+      "createdAt": "2026-05-18 11:09:46"
+    },
+    {
+      "id": "570001",
+      "title": "Complete Pipeline Test - The Future of AI",
+      "status": "pending",
+      "prompt_preview": "The Future of Artificial Intelligence: How AI is transforming healthcare, financ",
+      "error": "NULL",
+      "createdAt": "2026-05-17 20:33:18"
+    },
+    {
+      "id": "540001",
+      "title": "AI Impact on Modern Society",
+      "status": "failed",
+      "prompt_preview": "The Impact of Artificial Intelligence on Modern Society - From Healthcare to Fin",
+      "error": "Retry with new fixes",
+      "createdAt": "2026-05-17 08:16:09"
+    },
+    {
+      "id": "480001",
+      "title": "NULL",
+      "status": "pending",
+      "prompt_preview": "Top 5 most beautiful waterfalls in the world",
+      "error": "NULL",
+      "createdAt": "2026-05-13 10:06:57"
+    }
+  ],
+  "messages": [
+    "510001\tThe Wildest Kylie Jenner Rumor: Unpacking the Truth\tfailed\tThe craziest rumor about Kylie Jenner\tCommand failed: ffmpeg -y -i \"/tmp/fastvid_510001_1778676784827/scene_0_pexels_2.mp4\" -i \"/tmp/fastvid_510001_1778676784827/scene_0_audio.mp3\" -t 20  -c:v libx264 -preset slow -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p \"/tmp/fastvid_510001_1778676784827/scene_0_composed.mp4\"",
+    "ffmpeg version 4.4.2-0u\t2026-05-13 12:52:44"
+  ],
+  "stdout": "id\ttitle\tstatus\tprompt_preview\terror\tcreatedAt\n600001\tNULL\tpending\tThe Revolutionary Impact of Artificial Intelligence on Modern Society: From Heal\tNULL\t2026-05-18 11:09:46\n570001\tComplete Pipeline Test - The Future of AI\tpending\tThe Future of Artificial Intelligence: How AI is transforming healthcare, financ\tNULL\t2026-05-17 20:33:18\n540001\tAI Impact on Modern Society\tfailed\tThe Impact of Artificial Intelligence on Modern Society - From Healthcare to Fin\tRetry with new fixes\t2026-05-17 08:16:09\n510001\tThe Wildest Kylie Jenner Rumor: Unpacking the Truth\tfailed\tThe craziest rumor about Kylie Jenner\tCommand failed: ffmpeg -y -i \"/tmp/fastvid_510001_1778676784827/scene_0_pexels_2.mp4\" -i \"/tmp/fastvid_510001_1778676784827/scene_0_audio.mp3\" -t 20  -c:v libx264 -preset slow -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p \"/tmp/fastvid_510001_1778676784827/scene_0_composed.mp4\"\nffmpeg version 4.4.2-0u\t2026-05-13 12:52:44\n480001\tNULL\tpending\tTop 5 most beautiful waterfalls in the world\tNULL\t2026-05-13 10:06:57\n",
+  "stderr": "",
+  "execution_time_ms": 3931
+}
