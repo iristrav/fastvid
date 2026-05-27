@@ -1,0 +1,46 @@
+{
+  "query": "SELECT id, name, fishAudioReferenceId, flag FROM voices ORDER BY id;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute SELECT id, name, fishAudioReferenceId, flag FROM voices ORDER BY id;",
+  "rows": [
+    {
+      "id": "30001",
+      "name": "Michael",
+      "fishAudioReferenceId": "802e3bc2b27e49c2995d23ef70e6ac89",
+      "flag": "🇺🇸"
+    },
+    {
+      "id": "30002",
+      "name": "Adam",
+      "fishAudioReferenceId": "bf322df2096a46f18c579d0baa36f41d",
+      "flag": "🇺🇸"
+    },
+    {
+      "id": "30003",
+      "name": "Heart",
+      "fishAudioReferenceId": "536d3a5e000945adb7038665781a4aca",
+      "flag": "🇺🇸"
+    },
+    {
+      "id": "30004",
+      "name": "Bella",
+      "fishAudioReferenceId": "933563129e564b19a115bedd57b7406a",
+      "flag": "🇺🇸"
+    },
+    {
+      "id": "30005",
+      "name": "George",
+      "fishAudioReferenceId": "179b5cc736974d96913c7849d0bb68c5",
+      "flag": "🇬🇧"
+    },
+    {
+      "id": "30006",
+      "name": "Lewis",
+      "fishAudioReferenceId": "e9b134e4c0b547a3894793be502314f1",
+      "flag": "🇬🇧"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\tname\tfishAudioReferenceId\tflag\n30001\tMichael\t802e3bc2b27e49c2995d23ef70e6ac89\t🇺🇸\n30002\tAdam\tbf322df2096a46f18c579d0baa36f41d\t🇺🇸\n30003\tHeart\t536d3a5e000945adb7038665781a4aca\t🇺🇸\n30004\tBella\t933563129e564b19a115bedd57b7406a\t🇺🇸\n30005\tGeorge\t179b5cc736974d96913c7849d0bb68c5\t🇬🇧\n30006\tLewis\te9b134e4c0b547a3894793be502314f1\t🇬🇧\n",
+  "stderr": "",
+  "execution_time_ms": 371
+}

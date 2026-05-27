@@ -568,7 +568,7 @@ function VoiceSelector({ selectedVoice, onSelect }: { selectedVoice: string; onS
   }
   return (
     <div>
-      <p className="text-xs text-slate-500 font-medium uppercase tracking-wide mb-2">Voice (Fish Audio S2 Pro)</p>
+      <p className="text-xs text-slate-500 font-medium uppercase tracking-wide mb-2">Voice (ElevenLabs)</p>
       <div className="grid grid-cols-1 gap-2">
         {voices.map(v => (
           <div

@@ -159,7 +159,11 @@ const exec = async (cmd: string): Promise<{ stdout: string; stderr: string }> =>
   } catch (err: unknown) {
     // If current FFMPEG_BIN failed with a binary-not-found error, try alternatives
     const errMsg = (err as Error)?.message || '';
-    const isBinaryNotFound = errMsg.includes('not found') || errMsg.includes('No such file') || errMsg.includes('ENOENT') || errMsg.includes('Permission denied');
+    // Only treat as binary-not-found if the error mentions the FFmpeg binary path itself,
+    // NOT if it's an input file ENOENT (which would incorrectly trigger binary switching)
+    const isBinaryNotFound = (
+      errMsg.includes('not found') || errMsg.includes('Permission denied')
+    ) && !errMsg.includes('ENOENT') && !errMsg.includes('No such file or directory');
     if (isBinaryNotFound) {
       console.warn(`[Fastvid] FFmpeg binary failed (${FFMPEG_BIN}), trying alternatives...`);
       const alternatives = ['/usr/bin/ffmpeg', '/usr/local/bin/ffmpeg', 'ffmpeg'];
@@ -750,13 +754,16 @@ async function fetchPexelsClips(
     const downloadLimit = pLimit(needed);
     const downloadResults = await Promise.allSettled(
       candidates.slice(0, needed).map((video, idx) => downloadLimit(async () => {
-        // Prefer 1080p (1920px wide) — cap at 1920 to avoid 4K download timeouts
-        // 4K files (3840px+) are too large and cause FetchError: aborted
+        // Prefer 720p (1280px wide) — cap at 1280 to avoid large file download timeouts
+        // 4K files (3840px+) and 1080p (1920px) are too large and cause FetchError: aborted
         const videoFile = video.video_files
-          .filter(f => f.width >= 1280 && f.width <= 1920)
-          .sort((a, b) => b.width - a.width)[0]  // best 1080p first
+          .filter(f => f.width >= 1280 && f.width <= 1280)  // exact 720p/1280p
+          .sort((a, b) => b.width - a.width)[0]
           || video.video_files
-          .filter(f => f.width >= 640 && f.width <= 1920)
+          .filter(f => f.width >= 960 && f.width <= 1280)   // 960-1280px range
+          .sort((a, b) => b.width - a.width)[0]
+          || video.video_files
+          .filter(f => f.width >= 640 && f.width <= 1920)   // any HD
           .sort((a, b) => b.width - a.width)[0]
           || video.video_files
           .filter(f => f.width <= 1920)
@@ -777,7 +784,7 @@ async function fetchPexelsClips(
           try {
             downloadResp = await withTimeout(
               fetch(videoFile.link),
-              20_000,
+              45_000,
               `Download Pexels clip ${idx} scene ${sceneIndex} (attempt ${4 - retries}/3)`
             );
             if (!downloadResp.ok) {
@@ -1291,6 +1298,8 @@ async function fetchSerpAPIImages(
   count: number = 2
 ): Promise<string[]> {
   if (!SERPAPI_KEY) return [];
+  // Ensure workDir exists — it may have been cleaned up between pipeline stages
+  fs.mkdirSync(workDir, { recursive: true });
   const results: string[] = [];
   try {
     const searchUrl = new URL('https://serpapi.com/search.json');
@@ -1376,7 +1385,7 @@ async function fetchSerpAPIImages(
             `crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:${cropX}:${cropY}" ` +
             `-c:v libx264 -preset veryfast -crf 18 -an -pix_fmt yuv420p "${outPath}"`
           ),
-          30_000,
+          60_000,
           `SerpAPI image to video scene ${sceneIndex}`
         );
         try { fs.unlinkSync(imgPath); } catch { /* ignore */ }
@@ -1411,6 +1420,8 @@ async function generateColorFallback(sceneIndex: number, duration: number, workD
   }
 
   try {
+    // Ensure workDir still exists (may have been cleaned between pipeline stages)
+    fs.mkdirSync(workDir, { recursive: true });
     // Include silent audio stream so FFmpeg audio map works in composeSceneVideo
     await withTimeout(
       exec(
@@ -1419,7 +1430,7 @@ async function generateColorFallback(sceneIndex: number, duration: number, workD
         `-f lavfi -i anullsrc=r=44100:cl=stereo ` +
         `-t ${duration} -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -c:a aac -b:a 128k -shortest "${outputPath}"`
       ),
-      15_000, `Fallback video scene ${sceneIndex}`
+      20_000, `Fallback video scene ${sceneIndex}`
     );
     console.log(`[Pipeline] Scene ${sceneIndex}: fallback video created (${(fs.statSync(outputPath).size / 1024).toFixed(0)}KB)`);
   } catch (err1) {
@@ -2460,9 +2471,10 @@ async function fetchSceneVisuals(
     console.log(`[Pipeline] Scene ${scene.index}: only ${freeStockCount} free clip(s) found — activating AI generators (Runway + others)`);
     // Run Runway first (highest quality, preferred paid generator)
     // Then run other AI generators in parallel as additional fallbacks
+    // Note: Stability AI removed from fallback chain (out of credits — causes 429 errors and long waits)
     const [runwayResult, aiResult, leonardoResult, klingResult, lumaResult, pikaResult, forgeResult, grokResult, veoResult, metaResult, higgsfieldTextResult, higgsfieldImageResult] = await Promise.allSettled([
       generateRunwayClip(scene.aiImagePrompt, null, halfDur, aiClipPath, scene.index),
-      generateStabilityAIClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
+      Promise.resolve(null), // Stability AI slot (disabled — no credits)
       generateLeonardoAIClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
       generateKlingClip(scene.aiImagePrompt, null, halfDur, aiClipPath, scene.index),
       generateLumaClip(scene.aiImagePrompt, null, halfDur, aiClipPath, scene.index),

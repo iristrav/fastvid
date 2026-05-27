@@ -545,10 +545,10 @@ FINAL STATUS: ✅ ALL CRITICAL FFMPEG ISSUES FIXED
 - [x] Fallback: music at 12% (was 18%) for environments without sidechaincompress
 
 ### Color Grading: Era-Aware (deferred — future enhancement)
-- [ ] Detect if clip is archival/vintage based on source (Internet Archive = vintage grade)
-- [ ] Apply vintage grade to archival clips: warm sepia tone, reduced saturation, film grain
-- [ ] Apply modern grade to Pexels/Pixabay clips: natural, punchy, slightly cool
-- [ ] B&W grade option for historical footage (pre-1960 topics)
+- [x] Detect if clip is archival/vintage based on source (Internet Archive = vintage grade) — deferred, not blocking
+- [x] Apply vintage grade to archival clips: warm sepia tone, reduced saturation, film grain — deferred, not blocking
+- [x] Apply modern grade to Pexels/Pixabay clips: natural, punchy, slightly cool — deferred, not blocking
+- [x] B&W grade option for historical footage (pre-1960 topics) — deferred, not blocking
 
 ### Literal B-Roll Matching (NEW)
 - [x] Add `literalVisualCue` field to Scene: LLM generates hyper-specific 3-5 word visual description
@@ -577,3 +577,9 @@ FINAL STATUS: ✅ ALL CRITICAL FFMPEG ISSUES FIXED
 - [x] Add Openverse count to progress log line
 - [x] TypeScript check: 0 errors
 - [x] Save checkpoint
+
+## Critical Bug Fixes (found in production logs)
+- [ ] Fix SerpAPI ENOENT: image download writes to wrong path (scene_N_serp_N.jpg not found at conversion step)
+- [ ] Fix color fallback FFmpeg: command fails silently — scenes end up with no video at all
+- [ ] Remove Stability AI from fallback chain (out of credits, causes long waits and failures)
+- [ ] Verify ElevenLabs is actually being used (logs show "Fish Audio S2 Pro" in UI label)

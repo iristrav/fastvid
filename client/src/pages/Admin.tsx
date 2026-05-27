@@ -946,7 +946,7 @@ function VoiceLibraryAdmin() {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h2 className="text-xl font-black text-white" style={{ fontFamily: "Outfit, sans-serif" }}>Voice <span className="gradient-text">Library</span></h2>
-          <p className="text-slate-400 text-sm mt-1">Manage Fish Audio S2 Pro voices available to users</p>
+          <p className="text-slate-400 text-sm mt-1">Manage ElevenLabs voices available to users</p>
         </div>
         <div className="flex items-center gap-2">
           <button
