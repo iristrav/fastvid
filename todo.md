@@ -579,7 +579,9 @@ FINAL STATUS: ✅ ALL CRITICAL FFMPEG ISSUES FIXED
 - [x] Save checkpoint
 
 ## Critical Bug Fixes (found in production logs)
-- [ ] Fix SerpAPI ENOENT: image download writes to wrong path (scene_N_serp_N.jpg not found at conversion step)
-- [ ] Fix color fallback FFmpeg: command fails silently — scenes end up with no video at all
-- [ ] Remove Stability AI from fallback chain (out of credits, causes long waits and failures)
-- [ ] Verify ElevenLabs is actually being used (logs show "Fish Audio S2 Pro" in UI label)
+- [x] Fix SerpAPI ENOENT: added fs.mkdirSync(workDir, {recursive:true}) at start of fetchSerpAPIImages
+- [x] Fix color fallback FFmpeg: added fs.mkdirSync(workDir, {recursive:true}) before color fallback command
+- [x] Remove Stability AI from fallback chain (removed from Phase 2 AI generator array)
+- [x] Fix ElevenLabs voice IDs in DB: updated all 6 voices to real ElevenLabs premade voice IDs
+- [x] Fix Pexels 4K download timeout: capped resolution at 1280px wide, increased timeout to 45s
+- [x] Fix SerpAPI image-to-video timeout: increased from 30s to 60s
