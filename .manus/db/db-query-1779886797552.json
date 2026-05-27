@@ -1,0 +1,9 @@
+{
+  "query": "\nUPDATE voices SET fishAudioReferenceId = 'pNInz6obpgDQGcFmaJgB' WHERE id = 1;\nUPDATE voices SET fishAudioReferenceId = 'ErXwobaYiN019PkySvjV' WHERE id = 2;\nUPDATE voices SET fishAudioReferenceId = '21m00Tcm4TlvDq8ikWAM' WHERE id = 3;\nUPDATE voices SET fishAudioReferenceId = 'EXAVITQu4vr4xnSDxMaL' WHERE id = 4;\nUPDATE voices SET fishAudioReferenceId = 'VR6AewLTigWG4xSOukaG' WHERE id = 5;\nUPDATE voices SET fishAudioReferenceId = 'TxGEqnHWrfWFTfGW9XjX' WHERE id = 6;\n",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute \nUPDATE voices SET fishAudioReferenceId = 'pNInz6obpgDQGcFmaJgB' WHERE id = 1;\nUPDATE voices SET fishAudioReferenceId = 'ErXwobaYiN019PkySvjV' WHERE id = 2;\nUPDATE voices SET fishAudioReferenceId = '21m00Tcm4TlvDq8ikWAM' WHERE id = 3;\nUPDATE voices SET fishAudioReferenceId = 'EXAVITQu4vr4xnSDxMaL' WHERE id = 4;\nUPDATE voices SET fishAudioReferenceId = 'VR6AewLTigWG4xSOukaG' WHERE id = 5;\nUPDATE voices SET fishAudioReferenceId = 'TxGEqnHWrfWFTfGW9XjX' WHERE id = 6;\n",
+  "rows": [],
+  "messages": [],
+  "stdout": "",
+  "stderr": "",
+  "execution_time_ms": 15123
+}

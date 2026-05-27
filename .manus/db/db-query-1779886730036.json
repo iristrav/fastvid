@@ -1,0 +1,46 @@
+{
+  "query": "SELECT id, name, fishAudioReferenceId, isActive FROM voices;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute SELECT id, name, fishAudioReferenceId, isActive FROM voices;",
+  "rows": [
+    {
+      "id": "30001",
+      "name": "Adam",
+      "fishAudioReferenceId": "pNInz6obpgDQGcFmaJgB",
+      "isActive": "1"
+    },
+    {
+      "id": "30002",
+      "name": "Rachel",
+      "fishAudioReferenceId": "21m00Tcm4TlvDq8ikWAM",
+      "isActive": "1"
+    },
+    {
+      "id": "30003",
+      "name": "Domi",
+      "fishAudioReferenceId": "AZnzlk1XvdvUeBnXmlld",
+      "isActive": "1"
+    },
+    {
+      "id": "30004",
+      "name": "Bella",
+      "fishAudioReferenceId": "EXAVITQu4vr4xnSDxMaL",
+      "isActive": "1"
+    },
+    {
+      "id": "30005",
+      "name": "Arnold",
+      "fishAudioReferenceId": "VR6AewLTigWG4xSOukaG",
+      "isActive": "1"
+    },
+    {
+      "id": "30006",
+      "name": "Josh",
+      "fishAudioReferenceId": "TxGEqnHWrfWFTfGW9XjX",
+      "isActive": "1"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\tname\tfishAudioReferenceId\tisActive\n30001\tAdam\tpNInz6obpgDQGcFmaJgB\t1\n30002\tRachel\t21m00Tcm4TlvDq8ikWAM\t1\n30003\tDomi\tAZnzlk1XvdvUeBnXmlld\t1\n30004\tBella\tEXAVITQu4vr4xnSDxMaL\t1\n30005\tArnold\tVR6AewLTigWG4xSOukaG\t1\n30006\tJosh\tTxGEqnHWrfWFTfGW9XjX\t1\n",
+  "stderr": "",
+  "execution_time_ms": 265
+}

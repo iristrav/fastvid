@@ -1,0 +1,40 @@
+{
+  "query": "\nDELETE FROM voices WHERE id IN (1, 2, 3, 4, 5, 6);\nSELECT id, name, fishAudioReferenceId FROM voices ORDER BY id;\n",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute \nDELETE FROM voices WHERE id IN (1, 2, 3, 4, 5, 6);\nSELECT id, name, fishAudioReferenceId FROM voices ORDER BY id;\n",
+  "rows": [
+    {
+      "id": "30001",
+      "name": "Adam",
+      "fishAudioReferenceId": "pNInz6obpgDQGcFmaJgB"
+    },
+    {
+      "id": "30002",
+      "name": "Rachel",
+      "fishAudioReferenceId": "21m00Tcm4TlvDq8ikWAM"
+    },
+    {
+      "id": "30003",
+      "name": "Domi",
+      "fishAudioReferenceId": "AZnzlk1XvdvUeBnXmlld"
+    },
+    {
+      "id": "30004",
+      "name": "Bella",
+      "fishAudioReferenceId": "EXAVITQu4vr4xnSDxMaL"
+    },
+    {
+      "id": "30005",
+      "name": "Arnold",
+      "fishAudioReferenceId": "VR6AewLTigWG4xSOukaG"
+    },
+    {
+      "id": "30006",
+      "name": "Josh",
+      "fishAudioReferenceId": "TxGEqnHWrfWFTfGW9XjX"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\tname\tfishAudioReferenceId\n30001\tAdam\tpNInz6obpgDQGcFmaJgB\n30002\tRachel\t21m00Tcm4TlvDq8ikWAM\n30003\tDomi\tAZnzlk1XvdvUeBnXmlld\n30004\tBella\tEXAVITQu4vr4xnSDxMaL\n30005\tArnold\tVR6AewLTigWG4xSOukaG\n30006\tJosh\tTxGEqnHWrfWFTfGW9XjX\n",
+  "stderr": "",
+  "execution_time_ms": 13084
+}

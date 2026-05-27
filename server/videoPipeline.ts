@@ -424,8 +424,9 @@ IMPORTANT:
 }
 
 // ─── 2. TTS Voiceover (ElevenLabs — MANDATORY PRIMARY) ───────────────────────────────────────
-// Priority: ElevenLabs (always first, highest quality) → Fish Audio (emergency fallback) → silent
+// Priority: ElevenLabs (always first, highest quality) → Google TTS (free fallback) → silent
 // ElevenLabs eleven_multilingual_v2 is the ONLY intended production TTS.
+// Google TTS is a free fallback that works without any API key.
 export async function generateVoiceover(
   text: string,
   outputPath: string,
@@ -436,11 +437,11 @@ export async function generateVoiceover(
     .replace(/\s+/g, " ")
     .replace(/[^\x00-\x7F]/g, "")
     .trim();
-  // Fish Audio S2 Pro supports up to ~1000 chars. Use 800 to stay safe and cover full scene narration.
+  // ElevenLabs supports up to ~5000 chars per request. Use 800 to stay safe and cover full scene narration.
   const cleanText = rawText.length <= 800 ? rawText : rawText.slice(0, 800).replace(/\s\S*$/, "");
 
   const MAX_ATTEMPTS = 3;
-  const TTS_TIMEOUT_MS = 30_000; // 30s — Fish Audio can take 10-20s for longer texts
+  const TTS_TIMEOUT_MS = 30_000; // 30s — ElevenLabs typically responds in 3-8s
 
   // ── ElevenLabs TTS (HIGHEST QUALITY — try first if key available) ───────────
   if (ELEVENLABS_API_KEY) {
@@ -512,80 +513,64 @@ export async function generateVoiceover(
     }
   }
 
-  if (FISH_AUDIO_API_KEY) {
-    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-      try {
-        const body: Record<string, unknown> = {
-          text: cleanText,
-          format: "mp3",
-          model: "s2-pro",
-          mp3_bitrate: 192,  // Max supported by Fish Audio (64, 128, 192 kbps)
-        };
-        if (voiceId) body.reference_id = voiceId;
-
-        const response = await withTimeout(
-          fetch("https://api.fish.audio/v1/tts", {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${FISH_AUDIO_API_KEY}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify(body),
-          }),
-          TTS_TIMEOUT_MS,
-          `Fish Audio TTS attempt ${attempt}`
-        );
-
-        if (response.status === 429) {
-          const waitMs = 300 + attempt * 200;
-          console.warn(`[Pipeline] Fish Audio 429 (attempt ${attempt}), retrying in ${waitMs}ms`);
-          await new Promise(r => setTimeout(r, waitMs));
-          continue;
-        }
-
-        if (!response.ok) {
-          const errText = await response.text();
-          throw new Error(`Fish Audio HTTP ${response.status}: ${errText.slice(0, 200)}`);
-        }
-
-        const audioBuffer = Buffer.from(await response.arrayBuffer());
-        if (audioBuffer.length < 100) throw new Error("Fish Audio returned empty audio");
-
-        // Write raw TTS audio directly to outputPath — skip normalization to avoid audio loss
-        // Normalization was causing silent audio when FFmpeg filter chain failed or timed out
-        fs.writeFileSync(outputPath, audioBuffer);
-        console.log(`[Pipeline] TTS audio written: ${audioBuffer.length} bytes to ${outputPath}`);
-
-        // Use ffprobe to get the ACTUAL duration — Fish Audio uses VBR so file size is unreliable
-        let durationSec = 5; // safe default
-        try {
-          const { execSync: es } = await import('child_process');
-          const ffprobePaths = ['/usr/bin/ffprobe', '/usr/local/bin/ffprobe', 'ffprobe'];
-          for (const probePath of ffprobePaths) {
-            try {
-              const probeOut = es(`"${probePath}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${outputPath}"`, { encoding: 'utf8', timeout: 8000 });
-              const parsed = parseFloat(probeOut.trim());
-              if (!isNaN(parsed) && parsed > 0) {
-                durationSec = Math.ceil(parsed);
-                break;
-              }
-            } catch { /* try next */ }
-          }
-        } catch { /* use default */ }
-        // Fallback to file-size estimate if ffprobe fails
-        if (durationSec === 5 && audioBuffer.length > 1000) {
-          durationSec = Math.max(3, Math.round(audioBuffer.length / 40000));
-        }
-        console.log(`[Pipeline] TTS scene ${outputPath.match(/scene_(\d+)/)?.[1] ?? "?"}: ${durationSec}s (${audioBuffer.length} bytes)`);
-        return durationSec;
-      } catch (err) {
-        if (attempt === MAX_ATTEMPTS) {
-          console.warn(`[Pipeline] Fish Audio failed after ${MAX_ATTEMPTS} attempts:`, err);
-          break;
-        }
-        await new Promise(r => setTimeout(r, 300));
+  // Fallback 2: Google TTS (free, no API key, works in any environment)
+  // Uses the unofficial Google Translate TTS endpoint — reliable for short texts
+  try {
+    const chunks: string[] = [];
+    const words = cleanText.split(' ');
+    let chunk = '';
+    for (const word of words) {
+      if ((chunk + ' ' + word).trim().length > 180) {
+        chunks.push(chunk.trim());
+        chunk = word;
+      } else {
+        chunk = (chunk + ' ' + word).trim();
       }
     }
+    if (chunk) chunks.push(chunk);
+
+    const chunkFiles: string[] = [];
+    for (let ci = 0; ci < chunks.length; ci++) {
+      const chunkPath = outputPath.replace('.mp3', `_gtts_chunk${ci}.mp3`);
+      const encoded = encodeURIComponent(chunks[ci]);
+      const gttsUrl = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encoded}&tl=en&client=tw-ob`;
+      const gResp = await withTimeout(
+        fetch(gttsUrl, { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' } }),
+        15_000, `gTTS chunk ${ci}`
+      );
+      if (!gResp.ok) throw new Error(`gTTS HTTP ${gResp.status}`);
+      const buf = Buffer.from(await gResp.arrayBuffer());
+      if (buf.length < 100) throw new Error('gTTS empty response');
+      fs.writeFileSync(chunkPath, buf);
+      chunkFiles.push(chunkPath);
+    }
+
+    if (chunkFiles.length === 1) {
+      fs.renameSync(chunkFiles[0], outputPath);
+    } else {
+      // Concatenate chunks with FFmpeg
+      const listFile = outputPath.replace('.mp3', '_gtts_list.txt');
+      fs.writeFileSync(listFile, chunkFiles.map(f => `file '${f}'`).join('\n'));
+      await withTimeout(
+        exec(`${FFMPEG_BIN} -y -f concat -safe 0 -i "${listFile}" -c copy "${outputPath}"`),
+        20_000, 'gTTS concat'
+      );
+      chunkFiles.forEach(f => { try { fs.unlinkSync(f); } catch {} });
+      try { fs.unlinkSync(listFile); } catch {}
+    }
+
+    const { execSync: es } = await import('child_process');
+    let durationSec = Math.max(3, Math.ceil(cleanText.split(' ').length / 2.5));
+    try {
+      const probeOut = es(`"/usr/bin/ffprobe" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${outputPath}"`, { encoding: 'utf8', timeout: 8000 });
+      const parsed = parseFloat(probeOut.trim());
+      if (!isNaN(parsed) && parsed > 0) durationSec = Math.ceil(parsed);
+    } catch { /* use estimate */ }
+
+    console.log(`[Pipeline] gTTS fallback scene ${outputPath.match(/scene_(\d+)/)?.[1] ?? '?'}: ${durationSec}s`);
+    return durationSec;
+  } catch (gErr) {
+    console.warn('[Pipeline] gTTS fallback failed:', gErr);
   }
 
   // Silent fallback
@@ -3779,7 +3764,7 @@ export async function runVideoPipeline(
       }
       durations = scenes.map(() => perScene);
     } else {
-      // Process voiceovers in batches of 8 to avoid Fish Audio rate limits
+      // Process voiceovers in batches of 8 to respect ElevenLabs rate limits
       const voiceLimit = pLimit(8);
       let completedVoices = 0;
       durations = await withTimeout(

@@ -585,3 +585,35 @@ FINAL STATUS: ✅ ALL CRITICAL FFMPEG ISSUES FIXED
 - [x] Fix ElevenLabs voice IDs in DB: updated all 6 voices to real ElevenLabs premade voice IDs
 - [x] Fix Pexels 4K download timeout: capped resolution at 1280px wide, increased timeout to 45s
 - [x] Fix SerpAPI image-to-video timeout: increased from 30s to 60s
+
+## Full Pipeline Audit (pre-ElevenLabs paid upgrade)
+
+### ElevenLabs TTS
+- [x] All 6 voice IDs in DB are real ElevenLabs premade IDs (Michael, Adam, Heart, Bella, George, Lewis)
+- [x] seedDefaultVoices() upserts by name — never reverts to Fish Audio IDs
+- [x] Fish Audio removed from fallback chain (replaced with gTTS)
+- [x] gTTS added as clean fallback (chunks at 180 chars, no API key needed)
+- [x] Pipeline never fails entire video on TTS error — silent fallback as last resort
+
+### Visual Sources
+- [x] Pexels: 200 OK, resolution capped at 1280px, timeout 45s
+- [x] Pixabay: 200 OK, 3 video hits returned
+- [x] Openverse: 200 OK, 3 CC images returned for celebrity names
+- [x] Wikimedia: 200 OK, thumbnail found for Elon Musk
+- [x] SerpAPI: 200 OK, 100 image results, workDir recreation fix in place
+- [x] B-roll: fetchBrollVisuals() integrated in Phase 1 parallel fetch
+
+### FFmpeg Composition
+- [x] Hard cuts between clips (concat filter, no xfade)
+- [x] Ken Burns zoom on still images (scale+crop+fps)
+- [x] Kinetic frames (highlight words) slide-in animation (8-frame ease-out)
+- [x] Stat callout box (yellow corner box, canvas-rendered)
+- [x] Film grain overlay (noise=alls=12:allf=t)
+- [x] Music ducking (sidechaincompress threshold=0.02 ratio=8)
+- [x] Chapter cards (yellow #FFD700 bg, black text, ALL CAPS)
+
+### General Pipeline
+- [x] TypeScript: 0 errors
+- [x] No Stability AI calls (removed from Phase 2)
+- [x] Runway only triggers when freeStockCount < 2
+- [x] workDir always exists before FFmpeg commands (mkdirSync recursive)

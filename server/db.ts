@@ -382,22 +382,29 @@ export async function deleteVoice(id: number) {
   await db.delete(voices).where(eq(voices.id, id));
 }
 
+// ElevenLabs premade voice IDs — always available on any ElevenLabs account
+const ELEVENLABS_DEFAULT_VOICES = [
+  { name: "Michael",  description: "American Male — natural, YouTube-style narrator",           fishAudioReferenceId: "pNInz6obpgDQGcFmaJgB", flag: "🇺🇸", sortOrder: 1, isActive: 1 },
+  { name: "Adam",     description: "American Male — deep, authoritative documentary voice",     fishAudioReferenceId: "ErXwobaYiN019PkySvjV", flag: "🇺🇸", sortOrder: 2, isActive: 1 },
+  { name: "Heart",    description: "American Female — warm, friendly narrator",                 fishAudioReferenceId: "21m00Tcm4TlvDq8ikWAM", flag: "🇺🇸", sortOrder: 3, isActive: 1 },
+  { name: "Bella",    description: "American Female — clear, professional narrator",            fishAudioReferenceId: "EXAVITQu4vr4xnSDxMaL", flag: "🇺🇸", sortOrder: 4, isActive: 1 },
+  { name: "George",   description: "British Male — elegant, documentary-style narrator",       fishAudioReferenceId: "VR6AewLTigWG4xSOukaG", flag: "🇬🇧", sortOrder: 5, isActive: 1 },
+  { name: "Lewis",    description: "British Male — calm, authoritative narrator",              fishAudioReferenceId: "TxGEqnHWrfWFTfGW9XjX", flag: "🇬🇧", sortOrder: 6, isActive: 1 },
+] as const;
+
 export async function seedDefaultVoices() {
   const db = await getDb();
   if (!db) return;
-  const existing = await db.select({ count: sql<number>`count(*)` }).from(voices);
-  if (Number(existing[0]?.count ?? 0) > 0) return; // already seeded
-
-  // ElevenLabs premade voice IDs — always available on any ElevenLabs account
-  const defaults: InsertVoice[] = [
-    { name: "Adam",     description: "American Male — deep, authoritative documentary voice",     fishAudioReferenceId: "pNInz6obpgDQGcFmaJgB", flag: "🇺🇸", sortOrder: 1, isActive: 1 },
-    { name: "Rachel",   description: "American Female — warm, calm narrator",                    fishAudioReferenceId: "21m00Tcm4TlvDq8ikWAM", flag: "🇺🇸", sortOrder: 2, isActive: 1 },
-    { name: "Domi",     description: "American Female — strong, confident narrator",             fishAudioReferenceId: "AZnzlk1XvdvUeBnXmlld", flag: "🇺🇸", sortOrder: 3, isActive: 1 },
-    { name: "Bella",    description: "American Female — clear, professional narrator",            fishAudioReferenceId: "EXAVITQu4vr4xnSDxMaL", flag: "🇺🇸", sortOrder: 4, isActive: 1 },
-    { name: "Arnold",   description: "American Male — crisp, authoritative narrator",            fishAudioReferenceId: "VR6AewLTigWG4xSOukaG", flag: "🇺🇸", sortOrder: 5, isActive: 1 },
-    { name: "Josh",     description: "American Male — natural, YouTube-style narrator",          fishAudioReferenceId: "TxGEqnHWrfWFTfGW9XjX", flag: "🇺🇸", sortOrder: 6, isActive: 1 },
-  ];
-  await db.insert(voices).values(defaults);
+  // Always upsert voices by name so ElevenLabs IDs are kept current even after Fish Audio migration
+  for (const v of ELEVENLABS_DEFAULT_VOICES) {
+    const existing = await db.select().from(voices).where(eq(voices.name, v.name)).limit(1);
+    if (existing.length === 0) {
+      await db.insert(voices).values(v as InsertVoice);
+    } else if (existing[0].fishAudioReferenceId !== v.fishAudioReferenceId) {
+      // Update stale Fish Audio ID to correct ElevenLabs ID
+      await db.update(voices).set({ fishAudioReferenceId: v.fishAudioReferenceId, flag: v.flag, sortOrder: v.sortOrder }).where(eq(voices.name, v.name));
+    }
+  }
 }
 
 // ─── Password Reset Tokens ────────────────────────────────────────────────────
