@@ -417,6 +417,12 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
 // ─── Video Detail Modal ───────────────────────────────────────────────────────
 function VideoDetailModal({ videoId, onClose }: { videoId: number; onClose: () => void }) {
   const { data: video, isLoading } = trpc.video.get.useQuery({ id: videoId });
+  // Fetch a direct presigned CloudFront URL for video playback (bypasses 307 redirect)
+  const { data: videoUrlData } = trpc.video.getVideoUrl.useQuery(
+    { id: videoId },
+    { enabled: !!(video?.videoUrl && video?.status === "completed"), staleTime: 1000 * 60 * 5 }
+  );
+  const directVideoUrl = videoUrlData?.url ?? (video as { videoUrl?: string | null })?.videoUrl ?? null;
   type VideoMetadata = { title?: string; description?: string; tags?: string[]; chapters?: { time: string; title: string }[] };
   const metadata = video?.metadata as VideoMetadata | null;
 
@@ -441,14 +447,14 @@ function VideoDetailModal({ videoId, onClose }: { videoId: number; onClose: () =
         ) : video ? (
           <div className="flex-1 overflow-y-auto p-5 space-y-5">
             {/* Video Player */}
-            {(video as { videoUrl?: string | null }).videoUrl && video.status === "completed" && (
+            {directVideoUrl && video.status === "completed" && (
               <div className="glass-card border border-white/8 rounded-xl overflow-hidden">
                 <div className="flex items-center justify-between px-4 pt-4 pb-2">
                   <h3 className="font-semibold text-white text-sm flex items-center gap-2">
                     <Play className="w-4 h-4 text-green-400" /> Your Video
                   </h3>
                   <a
-                    href={(video as { videoUrl?: string | null }).videoUrl!}
+                    href={directVideoUrl}
                     download={`fastvid-${formatVideoId(video.id)}.mp4`}
                     target="_blank"
                     rel="noopener noreferrer"
@@ -460,8 +466,9 @@ function VideoDetailModal({ videoId, onClose }: { videoId: number; onClose: () =
                 <video
                   controls
                   className="w-full"
-                  src={(video as { videoUrl?: string | null }).videoUrl!}
+                  src={directVideoUrl}
                   poster={video.thumbnailUrl ?? undefined}
+                  preload="metadata"
                 >
                   Your browser does not support the video tag.
                 </video>

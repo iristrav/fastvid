@@ -18,6 +18,7 @@ import {
   createUser, updateUserLastSignedIn,
   getInviteCodeByCode, createInviteCode, getAllInviteCodes, markInviteCodeUsed, deleteInviteCode, deactivateInviteCode,
 } from "./db";
+import { storageGetSignedUrl } from "./storage";
 import type { ProgressLogEntry } from "./db";
 import { ONE_YEAR_MS } from "@shared/const";
 
@@ -537,6 +538,23 @@ export const appRouter = router({
       if (!video) throw new TRPCError({ code: "NOT_FOUND" });
       if (video.userId !== ctx.user.id && ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN" });
       return video;
+    }),
+    /** Return a direct presigned CloudFront URL for video playback (bypasses 307 redirect) */
+    getVideoUrl: protectedProcedure.input(z.object({ id: z.number() })).query(async ({ ctx, input }) => {
+      const video = await getVideoById(input.id);
+      if (!video) throw new TRPCError({ code: "NOT_FOUND" });
+      if (video.userId !== ctx.user.id && ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN" });
+      if (!video.videoUrl) return { url: null };
+      // Extract the storage key from the /manus-storage/{key} URL
+      const key = video.videoUrl.replace(/^\/manus-storage\//, "");
+      try {
+        const directUrl = await storageGetSignedUrl(key);
+        return { url: directUrl };
+      } catch (err) {
+        console.error("[getVideoUrl] Failed to get signed URL:", err);
+        // Fallback to the /manus-storage/ URL (works via 307 redirect in some browsers)
+        return { url: video.videoUrl };
+      }
     }),
     generate: subscribedProcedure.input(z.object({
       prompt: z.string().min(10).max(1000),
