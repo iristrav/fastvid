@@ -3303,9 +3303,16 @@ async function composeSceneVideo(
     }
   }
 
-  // Subtitles disabled — no text overlay on video frames
-  // (user requested clean video without subtitles)
-  const subtitlePath: string | null = null;
+  // Subtitle overlay: render if user has enabled subtitles
+  let subtitlePath: string | null = null;
+  if (enableSubtitles) {
+    try {
+      subtitlePath = await renderSubtitleOverlay(scene.text, scene.index, totalScenes, workDir);
+    } catch (err) {
+      console.warn(`[Pipeline] Scene ${scene.index}: subtitle overlay failed (non-fatal):`, err);
+      subtitlePath = null;
+    }
+  }
 
   // Kinetic typography: Vidrush-style — use LLM-generated highlightWords for every scene that has them.
   // Fallback to stopword extraction for scenes without LLM words (every 4th scene).
@@ -3502,39 +3509,69 @@ async function composeSceneVideo(
 }
 
 // ─── 6. Ambient Documentary Background Music ─────────────────────────────────
-// Generates a low-fi ambient electronic track similar to Vox/Wendover style:
-// steady driving beat, serious analytical mood, strictly background (mixed at -20dB)
+// Generates a rich ambient documentary track inspired by Vox/Wendover/Kurzgesagt style:
+// - Layered harmonic pads (root, fifth, octave, minor seventh) for emotional depth
+// - Subtle rhythmic pulse via amplitude modulation for forward momentum
+// - Noise-based hi-hat texture for organic feel
+// - Deep sub-bass foundation
+// - Long reverb tails for spacious, cinematic atmosphere
+// Mixed at -20dB relative to voiceover (ducked further by sidechaincompress in final mix)
 async function generateBackgroundMusic(duration: number, workDir: string): Promise<string> {
   const outputPath = path.join(workDir, "bg_music.mp3");
   try {
-    // Ambient documentary music: layered pads with subtle pulse
-    // - Deep bass pad (55Hz) with long reverb
-    // - Mid harmonic (110Hz) with echo for depth
-    // - High shimmer (220Hz) very quiet for air
-    // - Subtle rhythmic pulse (4Hz tremolo on bass) for driving feel
+    // Root: A2 (110Hz) — warm, serious documentary tone
+    // Fifth: E3 (165Hz) — harmonic stability
+    // Octave: A3 (220Hz) — brightness
+    // Minor seventh: G3 (196Hz) — slight tension, modern feel
+    // Sub-bass: A1 (55Hz) — foundation
+    // Pulse: 2Hz AM on root for subtle rhythmic breathing
+    // Hi-hat texture: bandpass-filtered white noise at very low volume
     await withTimeout(
       exec(
         `${FFMPEG_BIN} -y ` +
-        `-f lavfi -i "sine=frequency=55:duration=${duration}" ` +
+        // Root pad — A2, warm and central
         `-f lavfi -i "sine=frequency=110:duration=${duration}" ` +
+        // Perfect fifth — E3
         `-f lavfi -i "sine=frequency=165:duration=${duration}" ` +
+        // Octave — A3
         `-f lavfi -i "sine=frequency=220:duration=${duration}" ` +
-        `-f lavfi -i "sine=frequency=82:duration=${duration}" ` +
+        // Minor seventh — G3 (adds modern tension)
+        `-f lavfi -i "sine=frequency=196:duration=${duration}" ` +
+        // Sub-bass — A1
+        `-f lavfi -i "sine=frequency=55:duration=${duration}" ` +
+        // Second harmonic of root — A4 (330Hz, very quiet shimmer)
+        `-f lavfi -i "sine=frequency=330:duration=${duration}" ` +
+        // White noise for hi-hat texture
+        `-f lavfi -i "anoisesrc=r=44100:color=white:duration=${duration}" ` +
         `-filter_complex "` +
-          `[0]volume=0.35,aecho=0.95:0.92:200:0.6,atremolo=f=0.5:d=0.3,lowpass=f=120[bass];` +
-          `[1]volume=0.22,aecho=0.9:0.88:150:0.5,lowpass=f=200[mid];` +
-          `[2]volume=0.15,aecho=0.88:0.85:100:0.4,lowpass=f=300[fifth];` +
-          `[3]volume=0.08,aecho=0.85:0.82:80:0.3,lowpass=f=400[shimmer];` +
-          `[4]volume=0.18,aecho=0.92:0.9:250:0.55,atremolo=f=0.25:d=0.4,lowpass=f=150[sub];` +
-          `[bass][mid][fifth][shimmer][sub]amix=inputs=5:duration=first,` +
-          `highpass=f=30,lowpass=f=800,` +
-          `aecho=0.7:0.7:300:0.25,` +
-          `volume=0.45[music]` +
+          // Root pad: volume + long echo reverb + gentle 2Hz AM pulse (aeval) + lowpass
+          `[0]volume=0.40,aecho=0.97:0.94:400:0.65,aeval='val(0)*(0.82+0.18*sin(2*PI*2*t))',lowpass=f=180[root];` +
+          // Fifth: volume + echo + lowpass for warmth
+          `[1]volume=0.28,aecho=0.95:0.92:300:0.55,lowpass=f=250[fifth];` +
+          // Octave: quieter, echo, lowpass
+          `[2]volume=0.18,aecho=0.92:0.88:200:0.45,lowpass=f=350[oct];` +
+          // Minor seventh: very quiet, adds modern color
+          `[3]volume=0.12,aecho=0.90:0.86:250:0.40,lowpass=f=300[seventh];` +
+          // Sub-bass: deep, slow 1Hz AM pulse for breathing feel
+          `[4]volume=0.30,aecho=0.98:0.96:600:0.70,aeval='val(0)*(0.75+0.25*sin(2*PI*1*t))',lowpass=f=100[sub];` +
+          // High shimmer: very quiet
+          `[5]volume=0.06,aecho=0.88:0.84:150:0.35,lowpass=f=500[shimmer];` +
+          // Hi-hat: bandpass 6kHz-12kHz, very quiet, adds organic texture
+          `[6]volume=0.04,highpass=f=6000,lowpass=f=12000[hihat];` +
+          // Mix all layers
+          `[root][fifth][oct][seventh][sub][shimmer][hihat]amix=inputs=7:duration=first:dropout_transition=3,` +
+          // Global EQ: remove rumble below 30Hz, gentle high shelf cut above 1kHz
+          `highpass=f=30,lowpass=f=1200,` +
+          // Subtle room reverb on the full mix
+          `aecho=0.75:0.72:500:0.20,` +
+          // Final volume
+          `volume=0.50[music]` +
         `" ` +
         `-map "[music]" -c:a libmp3lame -b:a 320k "${outputPath}"`
       ),
-      30_000, "Background music generation"
+      45_000, "Background music generation"
     );
+    console.log(`[Pipeline] Background music generated: ${(fs.statSync(outputPath).size / 1024).toFixed(0)}KB`);
     return outputPath;
   } catch (err) {
     console.warn("[Pipeline] Music generation failed, using silence:", err);
