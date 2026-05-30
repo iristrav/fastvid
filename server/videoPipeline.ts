@@ -3594,3 +3594,186 @@ export async function generateStabilityAIThumbnail(prompt: string): Promise<stri
     return null;
   }
 }
+
+// ─── Re-render from editor scene manifest ────────────────────────────────────
+/**
+ * Re-renders a video using the updated scene manifest from the editor.
+ * Downloads clips from their stored URLs, regenerates voiceovers, composes
+ * each scene, then assembles the final video and uploads to S3.
+ */
+export async function rerenderFromScenes(
+  videoId: number,
+  scenes: EditorScene[],
+  onProgress?: (step: string, pct: number) => void
+): Promise<string> {
+  const workDir = path.join(TMP_DIR, `fastvid_rerender_${videoId}_${Date.now()}`);
+  fs.mkdirSync(workDir, { recursive: true });
+
+  try {
+    onProgress?.("Preparing re-render...", 5);
+
+    // ── Step 1: Download all clips from their URLs ──────────────────────────
+    onProgress?.("Downloading clips...", 10);
+    const sceneClipPaths: string[][] = [];
+
+    for (let i = 0; i < scenes.length; i++) {
+      const scene = scenes[i];
+      const clipPaths: string[] = [];
+
+      for (let j = 0; j < scene.clips.length; j++) {
+        const clip = scene.clips[j];
+        const ext = clip.type === "video" ? "mp4" : "jpg";
+        const clipPath = path.join(workDir, `rerender_scene_${i}_clip_${j}.${ext}`);
+
+        try {
+          // If the URL is a local file path (from original pipeline), check if it exists
+          if (!clip.url.startsWith("http") && fs.existsSync(clip.url)) {
+            clipPaths.push(clip.url);
+            continue;
+          }
+
+          // Download from URL with 15s timeout
+          const resp = await fetchWithTimeout(clip.url, 15_000, `clip ${i}-${j}`);
+          if (resp.ok) {
+            const buf = Buffer.from(await resp.arrayBuffer());
+            fs.writeFileSync(clipPath, buf);
+            if (fs.statSync(clipPath).size > 100) {
+              clipPaths.push(clipPath);
+            }
+          }
+        } catch (err) {
+          console.warn(`[Rerender] Scene ${i} clip ${j} download failed (skipping):`, (err as Error).message);
+        }
+      }
+
+      sceneClipPaths.push(clipPaths);
+      onProgress?.(`Downloading clips... (${i + 1}/${scenes.length})`, 10 + Math.round((i + 1) / scenes.length * 20));
+    }
+
+    // ── Step 2: Generate voiceovers for all scenes ──────────────────────────
+    onProgress?.("Generating voiceovers...", 30);
+    const audioPaths: string[] = [];
+    const durations: number[] = [];
+
+    const voiceLimit = pLimit(1);
+    await Promise.all(scenes.map((scene, i) => voiceLimit(async () => {
+      const audioPath = path.join(workDir, `rerender_scene_${i}_audio.mp3`);
+      try {
+        const dur = await generateVoiceover(scene.narration, audioPath);
+        audioPaths[i] = audioPath;
+        durations[i] = dur;
+      } catch (err) {
+        console.warn(`[Rerender] Scene ${i} voiceover failed:`, (err as Error).message);
+        // Create silent audio as fallback
+        const silentDur = Math.round(scene.durationMs / 1000) || 20;
+        try {
+          await exec(`${FFMPEG_BIN} -y -f lavfi -i anullsrc=r=44100:cl=stereo -t ${silentDur} -c:a libmp3lame -b:a 64k "${audioPath}"`);
+          audioPaths[i] = audioPath;
+          durations[i] = silentDur;
+        } catch {
+          audioPaths[i] = audioPath;
+          durations[i] = silentDur;
+        }
+      }
+      onProgress?.(`Generating voiceovers... (${i + 1}/${scenes.length})`, 30 + Math.round((i + 1) / scenes.length * 15));
+    })));
+
+    // ── Step 3: Build Scene objects for composeSceneVideo ──────────────────
+    const internalScenes: Scene[] = scenes.map((edScene, i) => ({
+      index: edScene.sceneIndex,
+      text: edScene.narration,
+      visualCue: edScene.title ?? "scene",
+      pexelsQuery: edScene.title ?? "scene",
+      aiImagePrompt: edScene.title ?? "scene",
+      duration: Math.max((durations[i] || 20) + 6, 10),
+      chapterTitle: edScene.chapterTitle,
+    }));
+
+    // ── Step 4: Compose all scenes ──────────────────────────────────────────
+    onProgress?.("Composing scenes...", 45);
+    const composeLimit = pLimit(2);
+    let completedCompose = 0;
+
+    const composedScenes = await Promise.all(
+      internalScenes.map((scene, i) => composeLimit(async () => {
+        // If no clips downloaded, generate a color fallback
+        const clips = sceneClipPaths[i].length > 0
+          ? sceneClipPaths[i]
+          : [await generateColorFallback(i, scene.duration + 1, workDir)];
+
+        const result = await composeSceneVideo(
+          scene,
+          clips,
+          audioPaths[i],
+          scene.duration,
+          workDir,
+          internalScenes.length,
+          true // enable subtitles
+        );
+        completedCompose++;
+        onProgress?.(
+          `Composing scenes... (${completedCompose}/${internalScenes.length})`,
+          45 + Math.round((completedCompose / internalScenes.length) * 30)
+        );
+        return result;
+      }))
+    );
+
+    // ── Step 5: Chapter cards ───────────────────────────────────────────────
+    onProgress?.("Rendering chapter cards...", 75);
+    const CHAPTER_CARD_DURATION = 1.5;
+    const chapterCardPromises: Promise<string | null>[] = [];
+    const chapterCardIndices: number[] = [];
+
+    for (let i = 0; i < internalScenes.length; i++) {
+      const title = internalScenes[i].chapterTitle?.trim();
+      if (title && title.length > 0 && title !== "HOOK" && title !== "CALL TO ACTION") {
+        chapterCardIndices.push(i);
+        chapterCardPromises.push(
+          renderChapterCard(title, i, workDir).catch(() => null)
+        );
+      }
+    }
+
+    const chapterCardPaths = await Promise.all(chapterCardPromises);
+
+    // Build ordered clip list with chapter cards interleaved
+    const orderedClips: string[] = [];
+    let cardIdx = 0;
+    for (let i = 0; i < composedScenes.length; i++) {
+      const cardInsertIdx = chapterCardIndices.indexOf(i);
+      if (cardInsertIdx !== -1 && chapterCardPaths[cardIdx]) {
+        orderedClips.push(chapterCardPaths[cardIdx]!);
+        cardIdx++;
+      } else if (cardInsertIdx !== -1) {
+        cardIdx++;
+      }
+      orderedClips.push(composedScenes[i]);
+    }
+
+    // ── Step 6: Concatenate + music ─────────────────────────────────────────
+    onProgress?.("Assembling final video...", 78);
+    const chapterCardsTotalDuration = chapterCardPaths.filter(Boolean).length * CHAPTER_CARD_DURATION;
+    const totalDuration = internalScenes.reduce((sum, s) => sum + s.duration, 0) + chapterCardsTotalDuration;
+    const videoTitle = scenes[0]?.title ?? `Video ${videoId}`;
+    const finalVideoPath = await concatenateScenesWithMusic(orderedClips, workDir, videoId, totalDuration, videoTitle);
+
+    // ── Step 7: Upload to S3 ────────────────────────────────────────────────
+    onProgress?.("Uploading re-rendered video...", 93);
+    const videoBuffer = fs.readFileSync(finalVideoPath);
+    const { url } = await withTimeout(
+      storagePut(`videos/${videoId}/edited_final.mp4`, videoBuffer, "video/mp4"),
+      600_000,
+      "S3 upload (re-render)"
+    );
+
+    onProgress?.("Re-render complete!", 100);
+    console.log(`[Rerender] Video ${videoId} re-render COMPLETE: ${url}`);
+    return url;
+  } finally {
+    try {
+      const { exec: execCp } = await import("child_process");
+      execCp(`rm -rf "${workDir}"`);
+    } catch { /* ignore */ }
+  }
+}

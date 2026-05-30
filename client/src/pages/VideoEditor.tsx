@@ -569,6 +569,43 @@ export default function VideoEditor() {
     } catch { /* error handled by mutation */ }
   }, [selectedScene, videoId, updateSceneMutation, handleSceneUpdate]);
 
+  const rerenderMutation = trpc.editor.rerender.useMutation({
+    onError: (err) => {
+      toast.error("Re-render failed", { description: err.message });
+      setIsRerendering(false);
+      setRerenderProgress(null);
+    },
+  });
+
+  // Poll for progress after re-render is triggered
+  const [rerenderVideoId, setRerenderVideoId] = useState<number | null>(null);
+  const { data: pollData } = trpc.video.pollStatus.useQuery(
+    { id: rerenderVideoId ?? 0 },
+    {
+      enabled: !!rerenderVideoId && isRerendering,
+      refetchInterval: 3000,
+      staleTime: 0,
+    }
+  );
+
+  useEffect(() => {
+    if (!pollData || !isRerendering) return;
+    const step = pollData.progressStep ?? "Re-rendering...";
+    const pct = pollData.progressPercent ?? 0;
+    setRerenderProgress(`${step} (${pct}%)`);
+    if (pollData.status === "completed" || pollData.status === "failed") {
+      setIsRerendering(false);
+      setRerenderVideoId(null);
+      if (pollData.status === "completed") {
+        toast.success("Re-render complete!", { description: "Your edited video is ready. Redirecting to dashboard..." });
+        setTimeout(() => navigate("/dashboard"), 2500);
+      } else {
+        toast.error("Re-render failed", { description: "Check the dashboard for details." });
+        setRerenderProgress(null);
+      }
+    }
+  }, [pollData, isRerendering, navigate]);
+
   // Re-render: trigger a new video generation using the updated scene manifest
   const handleRerender = useCallback(async () => {
     if (modifiedScenes.size === 0) {
@@ -576,20 +613,18 @@ export default function VideoEditor() {
       return;
     }
     setIsRerendering(true);
-    setRerenderProgress("Preparing re-render...");
+    setRerenderProgress("Starting re-render...");
     try {
-      // For now, show a toast explaining that re-render requires a new generation
-      // In a future version, this will trigger a partial re-render of only modified scenes
+      await rerenderMutation.mutateAsync({ videoId });
+      setRerenderVideoId(videoId);
       toast.info("Re-render started!", {
-        description: `${modifiedScenes.size} scene(s) modified. A new video will be generated with your changes. Check the dashboard for progress.`,
-        duration: 6000,
+        description: `${modifiedScenes.size} scene(s) modified. Processing in background...`,
+        duration: 5000,
       });
-      setTimeout(() => navigate("/dashboard"), 3000);
-    } finally {
-      setIsRerendering(false);
-      setRerenderProgress(null);
+    } catch {
+      // error handled by onError
     }
-  }, [modifiedScenes, navigate]);
+  }, [modifiedScenes, videoId, rerenderMutation, navigate]);
 
   if (!videoId || isNaN(videoId)) {
     return (

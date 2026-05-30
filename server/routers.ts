@@ -1105,6 +1105,41 @@ export const appRouter = router({
       return { results };
     }),
 
+    /** Re-render the video using the updated scene manifest */
+    rerender: protectedProcedure.input(z.object({
+      videoId: z.number().int(),
+    })).mutation(async ({ ctx, input }) => {
+      const video = await getVideoById(input.videoId);
+      if (!video) throw new TRPCError({ code: "NOT_FOUND" });
+      if (video.userId !== ctx.user.id && ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN" });
+      const scenes = await getVideoScenes(input.videoId);
+      if (!scenes || scenes.length === 0) throw new TRPCError({ code: "BAD_REQUEST", message: "No scene data found. Cannot re-render." });
+
+      // Mark video as generating so the dashboard shows progress
+      await updateVideoStatus(input.videoId, "generating_visuals");
+      await updateVideoProgress(input.videoId, "Re-rendering video with your edits...", 10);
+
+      // Run re-render in background (non-blocking)
+      (async () => {
+        try {
+          const { rerenderFromScenes } = await import("./videoPipeline");
+          const newVideoUrl = await rerenderFromScenes(input.videoId, scenes, (step, pct) => {
+            updateVideoProgress(input.videoId, step, pct).catch(() => {});
+          });
+          await updateEditedVideoUrl(input.videoId, newVideoUrl);
+          await updateVideoStatus(input.videoId, "completed");
+          await updateVideoProgress(input.videoId, "Re-render complete!", 100);
+          await notifyOwner({ title: "Video re-render complete", content: `Video #${input.videoId} has been re-rendered with user edits.` });
+        } catch (err) {
+          console.error("[rerender] failed:", err);
+          await updateVideoStatus(input.videoId, "failed");
+          await updateVideoProgress(input.videoId, `Re-render failed: ${String(err).slice(0, 100)}`, 0);
+        }
+      })();
+
+      return { started: true, message: "Re-render started. Check the dashboard for progress." };
+    }),
+
     /** Upload a user's own image or video file to use in the editor */
     uploadMedia: protectedProcedure.input(z.object({
       videoId: z.number().int(),

@@ -657,5 +657,7 @@ FINAL STATUS: ✅ ALL CRITICAL FFMPEG ISSUES FIXED
 - [x] Add "Edit" button to completed video cards in dashboard (Dashboard.tsx)
 - [x] Register /editor/:videoId route in App.tsx
 - [x] Editor shows correct empty state for videos without scene data (pre-editor videos)
-- [ ] Re-render: partial re-render of changed scenes + reassemble final video (backend not yet wired)
-- [ ] Progress indicator during re-render
+- [x] Re-render: rerenderFromScenes() in videoPipeline.ts downloads clips, regenerates voiceovers, composes scenes, assembles final video, uploads to S3 as edited_final.mp4
+- [x] editor.rerender tRPC mutation triggers rerenderFromScenes in background (non-blocking)
+- [x] Progress indicator: polls trpc.video.pollStatus every 3s, shows step+percent in editor top bar
+- [x] On completion: success toast + auto-redirect to dashboard; on failure: error toast
