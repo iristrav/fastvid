@@ -80,6 +80,12 @@ function VideoDetailModal({ video, onClose }: { video: VideoRow; onClose: () => 
   const [tab, setTab] = useState<"video" | "info" | "script" | "metadata">(
     video.videoUrl ? "video" : "info"
   );
+  // Fetch presigned URL for video playback (needed for /manus-storage/ URLs on Manus sandbox)
+  const { data: videoUrlData } = trpc.video.getVideoUrl.useQuery(
+    { id: video.id },
+    { enabled: !!(video.videoUrl && video.status === "completed"), staleTime: 1000 * 60 * 5 }
+  );
+  const playbackUrl = videoUrlData?.url ?? video.videoUrl;
 
   function copyToClipboard(text: string) {
     navigator.clipboard.writeText(text);
@@ -135,8 +141,8 @@ function VideoDetailModal({ video, onClose }: { video: VideoRow; onClose: () => 
             <div className="space-y-4">
               {video.videoUrl ? (
                 <>
-                  <video src={video.videoUrl} controls className="w-full rounded-xl border border-white/10 bg-black" style={{ maxHeight: "360px" }} />
-                  <a href={video.videoUrl} download={`fastvid-${formatVideoId(video.id)}.mp4`} className="flex items-center justify-center gap-2 w-full py-2.5 rounded-xl bg-gradient-to-r from-purple-600 to-cyan-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity">
+                  {playbackUrl && <video src={playbackUrl} controls className="w-full rounded-xl border border-white/10 bg-black" style={{ maxHeight: "360px" }} />}
+                  <a href={`/api/download/video/${video.id}`} download={`fastvid-${formatVideoId(video.id)}.mp4`} className="flex items-center justify-center gap-2 w-full py-2.5 rounded-xl bg-gradient-to-r from-purple-600 to-cyan-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity">
                     <Download className="w-4 h-4" /> Download MP4
                   </a>
                 </>
@@ -540,6 +546,12 @@ function AdminVideoGenerator() {
 
   const statusData = videoStatus as { status?: string; videoUrl?: string; title?: string; progressStep?: string | null; progressPercent?: number; generationStartedAt?: Date | null } | undefined;
   const isGenerating = !!statusData?.status && !['completed', 'failed'].includes(statusData.status);
+  // Fetch presigned URL for video playback (needed for /manus-storage/ URLs on Manus sandbox)
+  const { data: genVideoUrlData } = trpc.video.getVideoUrl.useQuery(
+    { id: generatedId! },
+    { enabled: !!(generatedId && statusData?.status === 'completed' && statusData?.videoUrl), staleTime: 1000 * 60 * 5 }
+  );
+  const genPlaybackUrl = genVideoUrlData?.url ?? statusData?.videoUrl;
   const [elapsed, setElapsed] = useState(0);
   useEffect(() => {
     const startTime = statusData?.generationStartedAt;
@@ -658,8 +670,8 @@ function AdminVideoGenerator() {
               <p className="text-xs text-green-400 font-medium flex items-center gap-1.5">
                 <CheckCircle2 className="w-3.5 h-3.5" /> Video ready!
               </p>
-              <video src={statusData.videoUrl} controls className="w-full rounded-xl border border-white/10 bg-black" style={{ maxHeight: "300px" }} />
-              <a href={statusData.videoUrl} download={`fastvid-${formatVideoId(generatedId)}.mp4`} className="flex items-center justify-center gap-2 w-full py-2.5 rounded-xl bg-gradient-to-r from-purple-600 to-cyan-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity">
+              {genPlaybackUrl && <video src={genPlaybackUrl} controls className="w-full rounded-xl border border-white/10 bg-black" style={{ maxHeight: "300px" }} />}
+              <a href={`/api/download/video/${generatedId}`} download={`fastvid-${formatVideoId(generatedId)}.mp4`} className="flex items-center justify-center gap-2 w-full py-2.5 rounded-xl bg-gradient-to-r from-purple-600 to-cyan-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity">
                 <Download className="w-4 h-4" /> Download MP4
               </a>
             </div>

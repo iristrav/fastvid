@@ -546,7 +546,11 @@ export const appRouter = router({
       if (!video) throw new TRPCError({ code: "NOT_FOUND" });
       if (video.userId !== ctx.user.id && ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN" });
       if (!video.videoUrl) return { url: null };
-      // Extract the storage key from the /manus-storage/{key} URL
+      // /local-storage/ URLs are served directly by Express — return as-is (Railway mode)
+      if (video.videoUrl.startsWith("/local-storage/")) {
+        return { url: video.videoUrl };
+      }
+      // /manus-storage/ URLs need a presigned GET URL from Forge (Manus sandbox mode)
       const key = video.videoUrl.replace(/^\/manus-storage\//, "");
       try {
         const directUrl = await storageGetSignedUrl(key);

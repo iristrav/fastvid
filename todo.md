@@ -670,3 +670,16 @@ FINAL STATUS: ✅ ALL CRITICAL FFMPEG ISSUES FIXED
 - [x] Add Fish Audio S2 Pro as primary TTS (replaces ElevenLabs which had quota issues)
 - [x] ElevenLabs kept as fallback when Fish Audio fails
 - [x] VID-0058 completed successfully: script ✓, Fish Audio voiceover ✓, visuals ✓, download ✓ (282MB)
+
+## Session 37 — Railway Video Player + Download Fix
+
+- [x] Fix video player blank on Railway: /local-storage/ URLs are served by Express — use them directly in player (removed isLocalStorageUrl null check)
+- [x] Fix getVideoUrl procedure: return /local-storage/ URLs as-is (no presign needed on Railway)
+- [x] Fix Admin.tsx VideoDetailModal: use getVideoUrl for presigned playback URL + /api/download/video/:id for download
+- [x] Fix Admin.tsx Generate panel: use getVideoUrl for presigned playback URL + /api/download/video/:id for download
+- [x] Download endpoint (/api/download/video/:id) already supports both /manus-storage/ (S3 proxy) and /local-storage/ (disk stream)
+- [x] Fish Audio S2 Pro added as primary TTS (ElevenLabs quota was exhausted)
+- [x] VID-0058 completed successfully: script ✓, Fish Audio voiceover ✓, visuals ✓, 282MB, 26.5 min
+
+Root cause: Dashboard.tsx set directVideoUrl=null when rawVideoUrl started with /local-storage/, causing blank player.
+Fix: directVideoUrl = videoUrlData?.url ?? rawVideoUrl (always use the URL, whether local or presigned)

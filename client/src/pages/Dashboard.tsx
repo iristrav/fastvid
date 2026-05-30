@@ -434,9 +434,9 @@ function VideoDetailModal({ videoId, onClose }: { videoId: number; onClose: () =
     { enabled: !!(video?.videoUrl && video?.status === "completed"), staleTime: 1000 * 60 * 5 }
   );
   const rawVideoUrl = (video as { videoUrl?: string | null })?.videoUrl ?? null;
-  // Local-storage URLs only work in the sandbox dev environment, not in production
-  const isLocalStorageUrl = rawVideoUrl?.startsWith('/local-storage/') ?? false;
-  const directVideoUrl = isLocalStorageUrl ? null : (videoUrlData?.url ?? rawVideoUrl);
+  // /local-storage/ URLs are served by Express on Railway — use them directly in the player
+  // /manus-storage/ URLs need a presigned URL from getVideoUrl (Manus sandbox mode)
+  const directVideoUrl = videoUrlData?.url ?? rawVideoUrl;
   type VideoMetadata = { title?: string; description?: string; tags?: string[]; chapters?: { time: string; title: string }[] };
   const metadata = video?.metadata as VideoMetadata | null;
 
