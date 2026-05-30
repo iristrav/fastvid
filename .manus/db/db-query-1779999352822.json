@@ -1,0 +1,9 @@
+{
+  "query": "SELECT id, status, progressStep, progressPercent, prompt, createdAt FROM videos WHERE prompt LIKE '%ARPANET%' OR createdAt > '2026-05-28 20:00:00' ORDER BY createdAt DESC LIMIT 5;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute SELECT id, status, progressStep, progressPercent, prompt, createdAt FROM videos WHERE prompt LIKE '%ARPANET%' OR createdAt > '2026-05-28 20:00:00' ORDER BY createdAt DESC LIMIT 5;",
+  "rows": [],
+  "messages": [],
+  "stdout": "",
+  "stderr": "",
+  "execution_time_ms": 414
+}

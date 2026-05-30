@@ -1,0 +1,24 @@
+{
+  "query": "SELECT id, email, name, role, subscriptionStatus FROM users WHERE role = 'admin' OR email LIKE '%iris%' LIMIT 5;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute SELECT id, email, name, role, subscriptionStatus FROM users WHERE role = 'admin' OR email LIKE '%iris%' LIMIT 5;",
+  "rows": [
+    {
+      "id": "1",
+      "email": "irisroeten2@gmail.com",
+      "name": "Iris",
+      "role": "admin",
+      "subscriptionStatus": "inactive"
+    },
+    {
+      "id": "810001",
+      "email": "Iris.travaille@hotmail.com",
+      "name": "Iris",
+      "role": "admin",
+      "subscriptionStatus": "inactive"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\temail\tname\trole\tsubscriptionStatus\n1\tirisroeten2@gmail.com\tIris\tadmin\tinactive\n810001\tIris.travaille@hotmail.com\tIris\tadmin\tinactive\n",
+  "stderr": "",
+  "execution_time_ms": 375
+}

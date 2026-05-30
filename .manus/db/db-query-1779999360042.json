@@ -1,0 +1,40 @@
+{
+  "query": "SELECT id, status, prompt, createdAt FROM videos ORDER BY id DESC LIMIT 5;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute SELECT id, status, prompt, createdAt FROM videos ORDER BY id DESC LIMIT 5;",
+  "rows": [
+    {
+      "id": "600001",
+      "status": "pending",
+      "prompt": "The Revolutionary Impact of Artificial Intelligence on Modern Society: From Healthcare Breakthroughs to Financial Innovation, AI is Reshaping Every Industry. Explore the Latest Developments, Expert Predictions, and Real-World Applications",
+      "createdAt": "2026-05-18 11:09:46"
+    },
+    {
+      "id": "570001",
+      "status": "pending",
+      "prompt": "The Future of Artificial Intelligence: How AI is transforming healthcare, finance, education, and entertainment. Discover the latest breakthroughs and what experts predict for the next decade.",
+      "createdAt": "2026-05-17 20:33:18"
+    },
+    {
+      "id": "540001",
+      "status": "failed",
+      "prompt": "The Impact of Artificial Intelligence on Modern Society - From Healthcare to Finance, AI is Revolutionizing Every Industry",
+      "createdAt": "2026-05-17 08:16:09"
+    },
+    {
+      "id": "510001",
+      "status": "failed",
+      "prompt": "The craziest rumor about Kylie Jenner",
+      "createdAt": "2026-05-13 12:52:44"
+    },
+    {
+      "id": "480001",
+      "status": "pending",
+      "prompt": "Top 5 most beautiful waterfalls in the world",
+      "createdAt": "2026-05-13 10:06:57"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\tstatus\tprompt\tcreatedAt\n600001\tpending\tThe Revolutionary Impact of Artificial Intelligence on Modern Society: From Healthcare Breakthroughs to Financial Innovation, AI is Reshaping Every Industry. Explore the Latest Developments, Expert Predictions, and Real-World Applications\t2026-05-18 11:09:46\n570001\tpending\tThe Future of Artificial Intelligence: How AI is transforming healthcare, finance, education, and entertainment. Discover the latest breakthroughs and what experts predict for the next decade.\t2026-05-17 20:33:18\n540001\tfailed\tThe Impact of Artificial Intelligence on Modern Society - From Healthcare to Finance, AI is Revolutionizing Every Industry\t2026-05-17 08:16:09\n510001\tfailed\tThe craziest rumor about Kylie Jenner\t2026-05-13 12:52:44\n480001\tpending\tTop 5 most beautiful waterfalls in the world\t2026-05-13 10:06:57\n",
+  "stderr": "",
+  "execution_time_ms": 358
+}

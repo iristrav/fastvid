@@ -271,6 +271,21 @@ export interface PipelineProgress {
 }
 
 // ─── Timeout helper ───────────────────────────────────────────────────────────
+// fetchWithTimeout: truly cancels the download using AbortController (unlike withTimeout which only races)
+async function fetchWithTimeout(url: string, timeoutMs: number, label: string, options: Record<string, unknown> = {}): Promise<ReturnType<typeof fetch>> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const resp = await fetch(url, { ...options, signal: controller.signal });
+    return resp;
+  } catch (err: unknown) {
+    if ((err as Error).name === 'AbortError') throw new Error(`Timeout: ${label} exceeded ${Math.round(timeoutMs / 1000)}s`);
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return Promise.race([
     promise,
@@ -887,7 +902,7 @@ async function fetchBrollClips(
 ): Promise<string[]> {
   if ((!PEXELS_API_KEY && !PIXABAY_API_KEY) || !brollQueries || brollQueries.length === 0) return [];
   const results: string[] = [];
-  for (let qi = 0; qi < brollQueries.length && results.length < 2; qi++) {
+  for (let qi = 0; qi < brollQueries.length && results.length < 1; qi++) {
     const query = brollQueries[qi];
     if (!query || !query.trim()) continue;
     try {
@@ -913,7 +928,7 @@ async function fetchBrollClips(
         const rawPath = path.join(workDir, `scene_${sceneIndex}_broll_${qi}_raw.mp4`);
         const outPath = path.join(workDir, `scene_${sceneIndex}_broll_${qi}.mp4`);
         try {
-          const dlResp = await withTimeout(fetch(videoFile.link), 20_000, `B-roll download scene ${sceneIndex}`);
+          const dlResp = await fetchWithTimeout(videoFile.link, 8_000, `B-roll download scene ${sceneIndex}`);
           if (!dlResp.ok) continue;
           const buffer = Buffer.from(await dlResp.arrayBuffer());
           if (buffer.length < 50_000) continue;
@@ -2127,11 +2142,12 @@ async function fetchInternetArchiveClips(
         const outPath = path.join(workDir, `scene_${sceneIndex}_archive_${fetched}.mp4`);
         const tmpPath = path.join(workDir, `scene_${sceneIndex}_archive_${fetched}_tmp.mp4`);
 
-        // Download with size limit (max 50MB)
-        const dlResp = await withTimeout(
-          fetch(videoUrl, { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }),
-          30_000,
-          `Internet Archive download scene ${sceneIndex}`
+        // Download with size limit (max 20MB, 10s timeout to avoid blocking)
+        const dlResp = await fetchWithTimeout(
+          videoUrl,
+          10_000,
+          `Internet Archive download scene ${sceneIndex}`,
+          { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }
         );
         if (!dlResp.ok) continue;
 
@@ -2263,15 +2279,15 @@ async function fetchYouTubeCCClips(
         const outPath = path.join(workDir, `scene_${sceneIndex}_yt_${fetched}.mp4`);
         const tmpPath = path.join(workDir, `scene_${sceneIndex}_yt_${fetched}_tmp.mp4`);
 
-        // Download via yt-dlp with CC filter and size limit
+        // Download via yt-dlp with CC filter and size limit (15s timeout to avoid blocking)
         await withTimeout(
           exec(
             `yt-dlp -f "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480][ext=mp4]/best[height<=480]" ` +
             `--match-filter "license='Creative Commons Attribution licence (reuse allowed)'" ` +
-            `--max-filesize 50m -o "${tmpPath}" ` +
+            `--max-filesize 20m -o "${tmpPath}" ` +
             `"https://www.youtube.com/watch?v=${videoId}" 2>&1 || true`
           ),
-          60_000,
+          15_000,
           `YouTube CC download scene ${sceneIndex}`
         );
 
@@ -2414,17 +2430,17 @@ async function fetchSceneVisuals(
   // Run all FREE sources in parallel. Only invoke paid AI generators (Runway etc.) if free sources
   // return fewer than 2 clips — keeping costs minimal.
   const [pexelsResults, pixabayResults, brollResults, wikimediaResults, wikimedia2Results, openverseResults, openverse2Results, serpResults, serp2Results, archiveResults, youtubeResults] = await Promise.allSettled([
-    fetchPexelsClips(scene.pexelsQuery, halfDur, workDir, scene.index, 3, scene.pexelsQueries),
-    fetchPixabayClips(scene.pexelsQuery, halfDur, workDir, scene.index, 2),
-    fetchBrollClips(scene.brollQueries || [], halfDur, workDir, scene.index),
-    fetchWikimediaImages(wikimediaQuery, halfDur, workDir, scene.index, 2),
+    fetchPexelsClips(scene.pexelsQuery, halfDur, workDir, scene.index, 2, scene.pexelsQueries),
+    fetchPixabayClips(scene.pexelsQuery, halfDur, workDir, scene.index, 1),
+    Promise.resolve([]), // B-roll disabled — too slow (Pexels+Pixabay+SerpAPI sufficient)
+    fetchWikimediaImages(wikimediaQuery, halfDur, workDir, scene.index, 1),
     wikimediaQuery2 ? fetchWikimediaImages(wikimediaQuery2, halfDur, workDir, scene.index, 1) : Promise.resolve([]),
-    fetchOpenverseImages(openverseQuery, halfDur, workDir, scene.index, 2),
+    fetchOpenverseImages(openverseQuery, halfDur, workDir, scene.index, 1),
     openverseQuery2 ? fetchOpenverseImages(openverseQuery2, halfDur, workDir, scene.index, 1) : Promise.resolve([]),
     fetchSerpAPIImages(serpQuery, halfDur, workDir, scene.index, 2),
     serpQuery2 ? fetchSerpAPIImages(serpQuery2, halfDur, workDir, scene.index, 1) : Promise.resolve([]),
-    fetchInternetArchiveClips(archiveQuery, halfDur, workDir, scene.index, 2),
-    fetchYouTubeCCClips(youtubeQuery, halfDur, workDir, scene.index, 2),
+    Promise.resolve([]), // Internet Archive disabled — too slow (10s+ per download)
+    Promise.resolve([]), // YouTube CC disabled — yt-dlp too slow (15s+ per video)
   ]);
 
   const clips: string[] = [];
@@ -2501,73 +2517,44 @@ async function fetchSceneVisuals(
   if (higgsfieldTextClip) clips.push(higgsfieldTextClip);
   if (higgsfieldImageClip) clips.push(higgsfieldImageClip);
 
-  // Then Pexels clips — apply fair-use transformation (color grade + subtitle overlay + vignette)
+  // Collect all clips that need fair-use transformation
   const pexelsClips = pexelsResults.status === "fulfilled" ? pexelsResults.value : [];
-  for (let i = 0; i < pexelsClips.length; i++) {
-    const transformed = await transformClipForFairUse(pexelsClips[i], scene.text, scene.index, i, workDir);
-    clips.push(transformed);
-  }
-
-  // Then Pixabay clips — apply fair-use transformation (color grade + vignette)
   const pixabayClips = pixabayResults.status === "fulfilled" ? pixabayResults.value : [];
-  for (let i = 0; i < pixabayClips.length; i++) {
-    const transformed = await transformClipForFairUse(pixabayClips[i], scene.text, scene.index, pexelsClips.length + i, workDir);
-    clips.push(transformed);
-  }
-
-  // Then B-roll clips (already color-graded in fetchBrollClips) — insert after main clips for visual variety
   const brollClips = brollResults.status === "fulfilled" ? brollResults.value : [];
-  for (const brollClip of brollClips) {
-    clips.push(brollClip);
-  }
-
-  // Then Wikimedia images (converted to video clips) — apply fair-use transformation
   const wikimediaClips = wikimediaResults.status === "fulfilled" ? wikimediaResults.value : [];
-  for (let i = 0; i < wikimediaClips.length; i++) {
-    const transformed = await transformClipForFairUse(wikimediaClips[i], scene.text, scene.index, pexelsClips.length + i, workDir);
-    clips.push(transformed);
-  }
-  // Then secondary person Wikimedia images (if any) — apply fair-use transformation
   const wikimedia2Clips = wikimedia2Results.status === "fulfilled" ? wikimedia2Results.value : [];
-  for (let i = 0; i < wikimedia2Clips.length; i++) {
-    const transformed = await transformClipForFairUse(wikimedia2Clips[i], scene.text, scene.index, pexelsClips.length + wikimediaClips.length + i, workDir);
-    clips.push(transformed);
-  }
-  // Then Openverse CC images (primary person) — CC-BY licensed, no transformation needed but apply for consistency
   const openverseClips = openverseResults.status === "fulfilled" ? openverseResults.value : [];
-  for (let i = 0; i < openverseClips.length; i++) {
-    clips.push(openverseClips[i]); // already converted to video with Ken Burns in fetchOpenverseImages
-  }
-  // Then secondary person Openverse images (if any)
   const openverse2Clips = openverse2Results.status === "fulfilled" ? openverse2Results.value : [];
-  for (const clip of openverse2Clips) {
-    clips.push(clip);
-  }
-
-  // Then SerpAPI Google Images (primary person) — apply fair-use transformation
   const serpClips = serpResults.status === "fulfilled" ? serpResults.value : [];
-  for (let i = 0; i < serpClips.length; i++) {
-    const transformed = await transformClipForFairUse(serpClips[i], scene.text, scene.index, pexelsClips.length + wikimediaClips.length + wikimedia2Clips.length + openverseClips.length + i, workDir);
-    clips.push(transformed);
-  }
-  // Then SerpAPI Google Images (secondary person) — apply fair-use transformation
   const serp2Clips = serp2Results.status === "fulfilled" ? serp2Results.value : [];
-  for (let i = 0; i < serp2Clips.length; i++) {
-    const transformed = await transformClipForFairUse(serp2Clips[i], scene.text, scene.index, pexelsClips.length + wikimediaClips.length + wikimedia2Clips.length + serpClips.length + i, workDir);
-    clips.push(transformed);
-  }
-  // Then Internet Archive clips — apply fair-use transformation
   const archiveClips = archiveResults.status === "fulfilled" ? archiveResults.value : [];
-  for (let i = 0; i < archiveClips.length; i++) {
-    const transformed = await transformClipForFairUse(archiveClips[i], scene.text, scene.index, pexelsClips.length + wikimediaClips.length + wikimedia2Clips.length + serpClips.length + serp2Clips.length + i, workDir);
-    clips.push(transformed);
-  }
-  // Then YouTube CC clips — apply fair-use transformation
   const youtubeClips = youtubeResults.status === "fulfilled" ? youtubeResults.value : [];
-  for (let i = 0; i < youtubeClips.length; i++) {
-    const transformed = await transformClipForFairUse(youtubeClips[i], scene.text, scene.index, pexelsClips.length + wikimediaClips.length + wikimedia2Clips.length + serpClips.length + serp2Clips.length + archiveClips.length + i, workDir);
-    clips.push(transformed);
-  }
+
+  // Build list of clips needing transformation (with their clip index for color grade variety)
+  type TransformJob = { path: string; clipIndex: number; needsTransform: boolean };
+  const transformJobs: TransformJob[] = [
+    ...pexelsClips.map((p, i) => ({ path: p, clipIndex: i, needsTransform: true })),
+    ...pixabayClips.map((p, i) => ({ path: p, clipIndex: pexelsClips.length + i, needsTransform: true })),
+    ...brollClips.map((p, i) => ({ path: p, clipIndex: pexelsClips.length + pixabayClips.length + i, needsTransform: false })),
+    ...wikimediaClips.map((p, i) => ({ path: p, clipIndex: pexelsClips.length + pixabayClips.length + brollClips.length + i, needsTransform: true })),
+    ...wikimedia2Clips.map((p, i) => ({ path: p, clipIndex: pexelsClips.length + pixabayClips.length + brollClips.length + wikimediaClips.length + i, needsTransform: true })),
+    ...openverseClips.map((p, i) => ({ path: p, clipIndex: i, needsTransform: false })), // already processed
+    ...openverse2Clips.map((p, i) => ({ path: p, clipIndex: i, needsTransform: false })),
+    ...serpClips.map((p, i) => ({ path: p, clipIndex: pexelsClips.length + wikimediaClips.length + wikimedia2Clips.length + openverseClips.length + i, needsTransform: true })),
+    ...serp2Clips.map((p, i) => ({ path: p, clipIndex: pexelsClips.length + wikimediaClips.length + wikimedia2Clips.length + serpClips.length + i, needsTransform: true })),
+    ...archiveClips.map((p, i) => ({ path: p, clipIndex: pexelsClips.length + wikimediaClips.length + wikimedia2Clips.length + serpClips.length + serp2Clips.length + i, needsTransform: true })),
+    ...youtubeClips.map((p, i) => ({ path: p, clipIndex: pexelsClips.length + wikimediaClips.length + wikimedia2Clips.length + serpClips.length + serp2Clips.length + archiveClips.length + i, needsTransform: true })),
+  ];
+
+  // Run fair-use transforms in parallel (max 3 concurrent FFmpeg processes per scene)
+  const transformLimit = pLimit(3);
+  const transformedPaths = await Promise.all(
+    transformJobs.map(job => transformLimit(async () => {
+      if (!job.needsTransform) return job.path;
+      return transformClipForFairUse(job.path, scene.text, scene.index, job.clipIndex, workDir);
+    }))
+  );
+  clips.push(...transformedPaths);
   // If nothing worked, use color fallback
   if (clips.length === 0) {
     console.warn(`[Pipeline] Scene ${scene.index}: All visuals failed, using color fallback`);
@@ -3827,8 +3814,8 @@ export async function runVideoPipeline(
     onProgress?.({ stage: STAGE_LABELS.visuals, percent: 20 });
     const t2 = Date.now();
 
-    // Process visuals in batches — limit to 1 to avoid OOM (sandbox has 3.8GB RAM, FFmpeg is memory-intensive)
-    const visualLimit = pLimit(1);
+    // Process visuals in batches — limit to 2 to balance speed and OOM prevention
+    const visualLimit = pLimit(2);
     let completedVisuals = 0;
     const sceneVisuals: string[][] = await withTimeout(
       Promise.all(scenes.map(scene => visualLimit(async () => {
@@ -3840,7 +3827,7 @@ export async function runVideoPipeline(
         });
         return clips;
       }))),
-      1800_000, // 30 min hard limit for all visuals (large scene count)
+      3000_000, // 50 min hard limit for all visuals (large scene count)
       "Visual generation stage"
     );
     console.log(`[Pipeline] Stage 3 (visuals): ${((Date.now()-t2)/1000).toFixed(1)}s`);
@@ -3849,8 +3836,8 @@ export async function runVideoPipeline(
     onProgress?.({ stage: STAGE_LABELS.composing, percent: 47 });
     const t3 = Date.now();
 
-    // Process compose in batches — limit to 1 to avoid OOM (sandbox has 3.8GB RAM, FFmpeg is memory-intensive)
-    const composeLimit = pLimit(1);
+    // Process compose in batches — limit to 2 to balance speed and OOM prevention
+    const composeLimit = pLimit(2);
     let completedCompose = 0;
     const composedScenes = await withTimeout(
       Promise.all(

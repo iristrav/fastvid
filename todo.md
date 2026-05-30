@@ -617,3 +617,16 @@ FINAL STATUS: ✅ ALL CRITICAL FFMPEG ISSUES FIXED
 - [x] No Stability AI calls (removed from Phase 2)
 - [x] Runway only triggers when freeStockCount < 2
 - [x] workDir always exists before FFmpeg commands (mkdirSync recursive)
+
+
+## Session 34 — End-to-End Pipeline Test (May 28, 2026)
+- [x] Trigger test video on sandbox via tRPC (admin-level call to bypass UI)
+- [x] Monitor Stage 1: Script generation (LLM outline + sections)
+- [x] Monitor Stage 2: Scene parsing
+- [x] Monitor Stage 3: Voiceover generation (ElevenLabs / gTTS fallback)
+- [x] Monitor Stage 4: Visual fetching (Pexels/Stability/Higgsfield)
+- [x] Monitor Stage 5: Scene compositing (Ken Burns, kinetic text, color grading)
+- [x] Monitor Stage 6: Final assembly (music ducking, concatenation)
+- [x] Monitor Stage 7: Upload to S3 and DB update
+- [x] VID-54 completed in 38.4 minutes (Blockbuster history, 5-8 min, 15 scenes)
+- [x] Pipeline speed optimized: B-roll/Archive/YouTube CC disabled, parallel transforms, 50-min visual timeout
