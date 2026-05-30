@@ -28,6 +28,7 @@ import * as path from "path";
 import * as os from "os";
 import { storagePut } from "./storage";
 import { invokeLLM } from "./_core/llm";
+import { updateVideoScenes, type EditorScene, type EditorClip } from "./db";
 import pLimit from "p-limit";
 import { generateGrokVideo } from "./_core/grokVideo";
 import { generateVeoVideo } from "./_core/veoVideo";
@@ -3422,6 +3423,38 @@ export async function runVideoPipeline(
       "Visual generation stage"
     );
     console.log(`[Pipeline] Stage 3 (visuals): ${((Date.now()-t2)/1000).toFixed(1)}s`);
+
+    // ── Save scene manifest for editor ───────────────────────────────────────
+    try {
+      const editorScenes: EditorScene[] = scenes.map((scene, i) => {
+        const clipPaths = sceneVisuals[i] || [];
+        const editorClips: EditorClip[] = clipPaths.map(clipPath => {
+          const basename = path.basename(clipPath);
+          // Detect source from filename pattern
+          let source = "unknown";
+          if (basename.includes("pexels")) source = "pexels";
+          else if (basename.includes("pixabay")) source = "pixabay";
+          else if (basename.includes("wikimedia")) source = "wikimedia";
+          else if (basename.includes("openverse")) source = "openverse";
+          else if (basename.includes("serp")) source = "serpapi";
+          else if (basename.includes("_ai")) source = "ai";
+          const isVideo = clipPath.endsWith(".mp4") || clipPath.endsWith(".webm");
+          return { url: clipPath, type: isVideo ? "video" : "image", source };
+        });
+        return {
+          sceneIndex: scene.index,
+          title: scene.visualCue,
+          narration: scene.text,
+          durationMs: Math.round(scene.duration * 1000),
+          clips: editorClips,
+          chapterTitle: scene.chapterTitle,
+        };
+      });
+      await updateVideoScenes(videoId, editorScenes);
+      console.log(`[Pipeline] Scene manifest saved: ${editorScenes.length} scenes`);
+    } catch (err) {
+      console.warn(`[Pipeline] Failed to save scene manifest (non-fatal):`, (err as Error).message);
+    }
 
     // ── Stage 4: Compose all scenes in parallel batches ───────────────────────
     onProgress?.({ stage: STAGE_LABELS.composing, percent: 47 });

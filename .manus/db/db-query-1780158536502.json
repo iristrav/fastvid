@@ -1,0 +1,70 @@
+{
+  "query": "SELECT id, title, status, (videoScenes IS NOT NULL) as hasScenes FROM videos ORDER BY id DESC LIMIT 10;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute SELECT id, title, status, (videoScenes IS NOT NULL) as hasScenes FROM videos ORDER BY id DESC LIMIT 10;",
+  "rows": [
+    {
+      "id": "600001",
+      "title": "NULL",
+      "status": "pending",
+      "hasScenes": "0"
+    },
+    {
+      "id": "570001",
+      "title": "Complete Pipeline Test - The Future of AI",
+      "status": "pending",
+      "hasScenes": "0"
+    },
+    {
+      "id": "540001",
+      "title": "AI Impact on Modern Society",
+      "status": "failed",
+      "hasScenes": "0"
+    },
+    {
+      "id": "510001",
+      "title": "The Wildest Kylie Jenner Rumor: Unpacking the Truth",
+      "status": "failed",
+      "hasScenes": "0"
+    },
+    {
+      "id": "480001",
+      "title": "NULL",
+      "status": "pending",
+      "hasScenes": "0"
+    },
+    {
+      "id": "450001",
+      "title": "NULL",
+      "status": "pending",
+      "hasScenes": "0"
+    },
+    {
+      "id": "420001",
+      "title": "NULL",
+      "status": "pending",
+      "hasScenes": "0"
+    },
+    {
+      "id": "390001",
+      "title": "Top 10 Most Beautiful Waterfalls in the World",
+      "status": "awaiting_approval",
+      "hasScenes": "0"
+    },
+    {
+      "id": "360003",
+      "title": "Top 5 Most Incredible Ancient Civilizations That Disappeared",
+      "status": "awaiting_approval",
+      "hasScenes": "0"
+    },
+    {
+      "id": "360002",
+      "title": "Top 5 Most AMAZING Deep Sea Creatures You Won't Believe Exist!",
+      "status": "completed",
+      "hasScenes": "0"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\ttitle\tstatus\thasScenes\n600001\tNULL\tpending\t0\n570001\tComplete Pipeline Test - The Future of AI\tpending\t0\n540001\tAI Impact on Modern Society\tfailed\t0\n510001\tThe Wildest Kylie Jenner Rumor: Unpacking the Truth\tfailed\t0\n480001\tNULL\tpending\t0\n450001\tNULL\tpending\t0\n420001\tNULL\tpending\t0\n390001\tTop 10 Most Beautiful Waterfalls in the World\tawaiting_approval\t0\n360003\tTop 5 Most Incredible Ancient Civilizations That Disappeared\tawaiting_approval\t0\n360002\tTop 5 Most AMAZING Deep Sea Creatures You Won't Believe Exist!\tcompleted\t0\n",
+  "stderr": "",
+  "execution_time_ms": 264
+}

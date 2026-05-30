@@ -78,6 +78,8 @@ export const videos = mysqlTable("videos", {
   progressPercent: int("progressPercent").default(0),       // 0-100
   progressLog: json("progressLog"),                         // array of {step, startedAt, completedAt?, status}
   generationStartedAt: timestamp("generationStartedAt"),    // when pipeline started
+  videoScenes: json("videoScenes"),                          // scene manifest for editor: [{sceneIndex, narration, durationMs, clips:[{url,type,source}], thumbnailUrl}]
+  editedVideoUrl: varchar("editedVideoUrl", { length: 1024 }), // URL of re-rendered edited video (if user edited)
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });

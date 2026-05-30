@@ -435,3 +435,46 @@ export async function deleteExpiredPasswordResetTokens() {
   const result = await db.delete(passwordResetTokens).where(sql`${passwordResetTokens.expiresAt} < NOW()`);
   return (result as unknown as [{ affectedRows: number }])[0]?.affectedRows ?? 0;
 }
+
+// ─── Editor ───────────────────────────────────────────────────────────────────
+
+export interface EditorClip {
+  url: string;           // /manus-storage/... or external URL
+  type: "video" | "image";
+  source: string;        // "pexels" | "pixabay" | "wikimedia" | "openverse" | "serpapi" | "upload"
+  thumbnailUrl?: string; // preview thumbnail
+  width?: number;
+  height?: number;
+}
+
+export interface EditorScene {
+  sceneIndex: number;
+  title?: string;
+  narration: string;
+  durationMs: number;
+  clips: EditorClip[];
+  thumbnailUrl?: string; // first clip thumbnail
+  chapterTitle?: string; // if this scene is preceded by a chapter card
+}
+
+export async function updateVideoScenes(id: number, scenes: EditorScene[]) {
+  const db = await getDb();
+  if (!db) return;
+  await db.execute(
+    sql`UPDATE videos SET videoScenes = ${JSON.stringify(scenes)} WHERE id = ${id}`
+  );
+}
+
+export async function updateEditedVideoUrl(id: number, editedVideoUrl: string) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(videos).set({ editedVideoUrl }).where(eq(videos.id, id));
+}
+
+export async function getVideoScenes(id: number): Promise<EditorScene[] | null> {
+  const db = await getDb();
+  if (!db) return null;
+  const result = await db.select({ videoScenes: videos.videoScenes }).from(videos).where(eq(videos.id, id)).limit(1);
+  if (!result.length || !result[0].videoScenes) return null;
+  return result[0].videoScenes as EditorScene[];
+}

@@ -46,6 +46,7 @@ function generateInviteCode(): string {
 }
 import { storagePut } from "./storage";
 import { FASTVID_PRO_PLAN } from "./products";
+import { updateVideoScenes, updateEditedVideoUrl, getVideoScenes, type EditorScene, type EditorClip } from "./db";
 import { runVideoPipeline, generateStabilityAIThumbnail } from "./videoPipeline";
 import { forgotPassword, validateResetToken as validateResetTokenProcedure, resetPassword } from "./authPasswordReset";
 
@@ -977,6 +978,151 @@ export const appRouter = router({
           )
         );
       return { reset: (result as { rowsAffected?: number }).rowsAffected ?? 0 };
+    }),
+  }),
+
+  // ── Video Editor ─────────────────────────────────────────────────────────────
+  editor: router({
+    /** Get the scene manifest for a completed video */
+    getScenes: protectedProcedure.input(z.object({ videoId: z.number().int() })).query(async ({ ctx, input }) => {
+      const video = await getVideoById(input.videoId);
+      if (!video) throw new TRPCError({ code: "NOT_FOUND" });
+      if (video.userId !== ctx.user.id && ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN" });
+      const scenes = await getVideoScenes(input.videoId);
+      return {
+        scenes: scenes ?? [],
+        videoTitle: video.title ?? video.prompt,
+        videoUrl: video.editedVideoUrl ?? video.videoUrl,
+        originalVideoUrl: video.videoUrl,
+        editedVideoUrl: video.editedVideoUrl,
+      };
+    }),
+
+    /** Update a single scene's clips or narration */
+    updateScene: protectedProcedure.input(z.object({
+      videoId: z.number().int(),
+      sceneIndex: z.number().int(),
+      clips: z.array(z.object({
+        url: z.string(),
+        type: z.enum(["video", "image"]),
+        source: z.string(),
+        thumbnailUrl: z.string().optional(),
+      })).optional(),
+      narration: z.string().optional(),
+      durationMs: z.number().optional(),
+    })).mutation(async ({ ctx, input }) => {
+      const video = await getVideoById(input.videoId);
+      if (!video) throw new TRPCError({ code: "NOT_FOUND" });
+      if (video.userId !== ctx.user.id && ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN" });
+      const scenes = await getVideoScenes(input.videoId);
+      if (!scenes) throw new TRPCError({ code: "NOT_FOUND", message: "Scene manifest not found. Video may need to be regenerated." });
+      const sceneIdx = scenes.findIndex(s => s.sceneIndex === input.sceneIndex);
+      if (sceneIdx === -1) throw new TRPCError({ code: "NOT_FOUND", message: `Scene ${input.sceneIndex} not found` });
+      if (input.clips !== undefined) scenes[sceneIdx].clips = input.clips as EditorClip[];
+      if (input.narration !== undefined) scenes[sceneIdx].narration = input.narration;
+      if (input.durationMs !== undefined) scenes[sceneIdx].durationMs = input.durationMs;
+      await updateVideoScenes(input.videoId, scenes);
+      return { success: true, scene: scenes[sceneIdx] };
+    }),
+
+    /** Search for media clips from Pexels or Pixabay */
+    searchMedia: protectedProcedure.input(z.object({
+      query: z.string().min(1).max(200),
+      source: z.enum(["pexels", "pixabay"]).default("pexels"),
+      mediaType: z.enum(["video", "image", "both"]).default("both"),
+      page: z.number().int().min(1).default(1),
+    })).query(async ({ input }) => {
+      const results: Array<{ url: string; thumbnailUrl: string; type: "video" | "image"; source: string; width?: number; height?: number; duration?: number; author?: string }> = [];
+
+      if (input.source === "pexels") {
+        const pexelsKey = process.env.PEXELS_API_KEY;
+        if (!pexelsKey) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Pexels API key not configured" });
+
+        if (input.mediaType === "video" || input.mediaType === "both") {
+          try {
+            const resp = await fetch(`https://api.pexels.com/videos/search?query=${encodeURIComponent(input.query)}&per_page=12&page=${input.page}`, {
+              headers: { Authorization: pexelsKey },
+              signal: AbortSignal.timeout(10_000),
+            });
+            if (resp.ok) {
+              const data = await resp.json() as { videos?: Array<{ video_files: Array<{ link: string; width: number; height: number; quality: string }>; image: string; duration: number; user: { name: string } }> };
+              for (const v of (data.videos ?? []).slice(0, 8)) {
+                const hd = v.video_files.find(f => f.quality === "hd") ?? v.video_files[0];
+                if (hd) results.push({ url: hd.link, thumbnailUrl: v.image, type: "video", source: "pexels", width: hd.width, height: hd.height, duration: v.duration, author: v.user?.name });
+              }
+            }
+          } catch { /* ignore */ }
+        }
+
+        if (input.mediaType === "image" || input.mediaType === "both") {
+          try {
+            const resp = await fetch(`https://api.pexels.com/v1/search?query=${encodeURIComponent(input.query)}&per_page=12&page=${input.page}`, {
+              headers: { Authorization: pexelsKey },
+              signal: AbortSignal.timeout(10_000),
+            });
+            if (resp.ok) {
+              const data = await resp.json() as { photos?: Array<{ src: { original: string; large: string }; width: number; height: number; photographer: string }> };
+              for (const p of (data.photos ?? []).slice(0, 8)) {
+                results.push({ url: p.src.original, thumbnailUrl: p.src.large, type: "image", source: "pexels", width: p.width, height: p.height, author: p.photographer });
+              }
+            }
+          } catch { /* ignore */ }
+        }
+      } else if (input.source === "pixabay") {
+        const pixabayKey = process.env.PIXABAY_API_KEY;
+        if (!pixabayKey) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Pixabay API key not configured" });
+
+        if (input.mediaType === "video" || input.mediaType === "both") {
+          try {
+            const resp = await fetch(`https://pixabay.com/api/videos/?key=${pixabayKey}&q=${encodeURIComponent(input.query)}&per_page=12&page=${input.page}`, {
+              signal: AbortSignal.timeout(10_000),
+            });
+            if (resp.ok) {
+              const data = await resp.json() as { hits?: Array<{ videos: { medium: { url: string; width: number; height: number } }; userImageURL: string; duration: number; user: string }> };
+              for (const v of (data.hits ?? []).slice(0, 8)) {
+                const med = v.videos?.medium;
+                if (med) results.push({ url: med.url, thumbnailUrl: v.userImageURL, type: "video", source: "pixabay", width: med.width, height: med.height, duration: v.duration, author: v.user });
+              }
+            }
+          } catch { /* ignore */ }
+        }
+
+        if (input.mediaType === "image" || input.mediaType === "both") {
+          try {
+            const resp = await fetch(`https://pixabay.com/api/?key=${pixabayKey}&q=${encodeURIComponent(input.query)}&per_page=12&page=${input.page}&image_type=photo`, {
+              signal: AbortSignal.timeout(10_000),
+            });
+            if (resp.ok) {
+              const data = await resp.json() as { hits?: Array<{ largeImageURL: string; webformatURL: string; imageWidth: number; imageHeight: number; user: string }> };
+              for (const p of (data.hits ?? []).slice(0, 8)) {
+                results.push({ url: p.largeImageURL, thumbnailUrl: p.webformatURL, type: "image", source: "pixabay", width: p.imageWidth, height: p.imageHeight, author: p.user });
+              }
+            }
+          } catch { /* ignore */ }
+        }
+      }
+
+      return { results };
+    }),
+
+    /** Upload a user's own image or video file to use in the editor */
+    uploadMedia: protectedProcedure.input(z.object({
+      videoId: z.number().int(),
+      base64: z.string(),
+      mimeType: z.string(),
+      filename: z.string().max(256).optional(),
+    })).mutation(async ({ ctx, input }) => {
+      const video = await getVideoById(input.videoId);
+      if (!video) throw new TRPCError({ code: "NOT_FOUND" });
+      if (video.userId !== ctx.user.id && ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN" });
+      const buffer = Buffer.from(input.base64, "base64");
+      const maxBytes = 100 * 1024 * 1024; // 100 MB
+      if (buffer.length > maxBytes) throw new TRPCError({ code: "BAD_REQUEST", message: "File too large (max 100MB)" });
+      const isVideo = input.mimeType.startsWith("video/");
+      const ext = input.mimeType.includes("mp4") ? "mp4" : input.mimeType.includes("webm") ? "webm" : input.mimeType.includes("png") ? "png" : input.mimeType.includes("gif") ? "gif" : "jpg";
+      const key = `editor-uploads/${ctx.user.id}/${input.videoId}-${Date.now()}.${ext}`;
+      const { url } = await storagePut(key, buffer, input.mimeType);
+      return { url, type: isVideo ? "video" : "image", source: "upload" };
     }),
   }),
 });

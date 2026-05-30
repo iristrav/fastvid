@@ -1,0 +1,23 @@
+{
+  "query": "SHOW COLUMNS FROM videos LIKE '%scene%'; SELECT id, title, status, (videoScenes IS NOT NULL) as hasScenes FROM videos WHERE status = 'completed' ORDER BY id DESC LIMIT 5;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute SHOW COLUMNS FROM videos LIKE '%scene%'; SELECT id, title, status, (videoScenes IS NOT NULL) as hasScenes FROM videos WHERE status = 'completed' ORDER BY id DESC LIMIT 5;",
+  "rows": [
+    {
+      "Field": "videoScenes",
+      "Type": "json",
+      "Null": "YES",
+      "Key": "",
+      "Default": "NULL",
+      "Extra": ""
+    }
+  ],
+  "messages": [
+    "id\ttitle\tstatus\thasScenes",
+    "360002\tTop 5 Most AMAZING Deep Sea Creatures You Won't Believe Exist!\tcompleted\t0",
+    "330003\tTop 5 Volcanoes That Could Erupt Soon\tcompleted\t0",
+    "330002\tTop 5 Most Amazing Ocean Discoveries You Won't Believe!\tcompleted\t0"
+  ],
+  "stdout": "Field\tType\tNull\tKey\tDefault\tExtra\nvideoScenes\tjson\tYES\t\tNULL\t\nid\ttitle\tstatus\thasScenes\n360002\tTop 5 Most AMAZING Deep Sea Creatures You Won't Believe Exist!\tcompleted\t0\n330003\tTop 5 Volcanoes That Could Erupt Soon\tcompleted\t0\n330002\tTop 5 Most Amazing Ocean Discoveries You Won't Believe!\tcompleted\t0\n",
+  "stderr": "",
+  "execution_time_ms": 288
+}

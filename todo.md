@@ -641,3 +641,21 @@ FINAL STATUS: ✅ ALL CRITICAL FFMPEG ISSUES FIXED
 - [x] Increase voiceover stage timeout from 5 min to 15 min (supports 20+ scene videos)
 - [x] VID-56 completed: Roman Empire 8-12 min (22 scenes) in 37.6 minutes ✅
 - [x] Pipeline now handles 5-8 min AND 8-12 min videos within 40 minutes (well under 1h limit)
+
+## Session 36 — CapCut-style Video Editor (May 30, 2026)
+- [x] Add videoScenes JSON column + editedVideoUrl column to videos table (schema + manual SQL migration)
+- [x] Add EditorClip and EditorScene types to db.ts
+- [x] Add updateVideoScenes, updateEditedVideoUrl, getVideoScenes helpers to db.ts
+- [x] Update pipeline to save scene manifest to DB after visuals stage (videoPipeline.ts line 3453)
+- [x] Add editor tRPC procedures: editor.getScenes, editor.updateScene, editor.searchMedia, editor.uploadMedia
+- [x] Build /editor/:videoId page with CapCut-style timeline + scene panel layout (VideoEditor.tsx)
+- [x] Timeline component: horizontal scrollable scene blocks with thumbnails
+- [x] Scene detail panel: clip preview, narration text, duration display
+- [x] Media search panel: Pexels/Pixabay search with preview thumbnails
+- [x] Clip replacement: click to swap clip in a scene
+- [x] Upload own media: image/video upload to S3 for use in editor
+- [x] Add "Edit" button to completed video cards in dashboard (Dashboard.tsx)
+- [x] Register /editor/:videoId route in App.tsx
+- [x] Editor shows correct empty state for videos without scene data (pre-editor videos)
+- [ ] Re-render: partial re-render of changed scenes + reassemble final video (backend not yet wired)
+- [ ] Progress indicator during re-render

@@ -14,7 +14,7 @@ import {
   FileText, Video, LogOut, User, ChevronRight, RefreshCw,
   Copy, Download, Eye, LayoutDashboard, Settings, CreditCard, Volume2,
   Trash2, Pencil, Check, X as XIcon, Mic, Upload, BookOpen, List, GraduationCap, Lightbulb,
-  AlertCircle, ChevronDown,
+  AlertCircle, ChevronDown, Edit2,
 } from "lucide-react";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
@@ -195,7 +195,7 @@ function ScriptReviewModal({ videoId, onClose }: { videoId: number; onClose: () 
 }
 
 // ─── Video Card ───────────────────────────────────────────────────────────────
-function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
+function VideoCard({ video, onView, onDelete, onRename, onRetry, onEdit }: {
   video: {
     id: number; title: string | null; prompt: string; status: string;
     videoLength: string; createdAt: Date; thumbnailUrl: string | null;
@@ -204,6 +204,7 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
   onDelete: (id: number) => void;
   onRename: (id: number, title: string) => void;
   onRetry: (id: number) => void;
+  onEdit?: (id: number) => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [editTitle, setEditTitle] = useState(video.title ?? video.prompt.slice(0, 80));
@@ -399,13 +400,23 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
               <Trash2 className="w-3.5 h-3.5" />
             </button>
             {currentStatus === "completed" && (
-              <button
-                onClick={() => onView(video.id)}
-                className="flex items-center gap-1 text-xs text-purple-400 hover:text-purple-300 transition-colors"
-              >
-                <Eye className="w-3.5 h-3.5" />
-                View
-              </button>
+              <>
+                <button
+                  onClick={() => onEdit?.(video.id)}
+                  className="flex items-center gap-1 text-xs text-cyan-400 hover:text-cyan-300 transition-colors"
+                  title="Edit video"
+                >
+                  <Edit2 className="w-3.5 h-3.5" />
+                  Edit
+                </button>
+                <button
+                  onClick={() => onView(video.id)}
+                  className="flex items-center gap-1 text-xs text-purple-400 hover:text-purple-300 transition-colors"
+                >
+                  <Eye className="w-3.5 h-3.5" />
+                  View
+                </button>
+              </>
             )}
           </div>
         </div>
@@ -1076,6 +1087,7 @@ export default function Dashboard() {
                     }} 
                     onRename={(id, title) => renameMutation.mutate({ id, title })}
                     onRetry={(id) => regenScriptMutation.mutate({ id })}
+                    onEdit={(id) => navigate(`/editor/${id}`)}
                   />
                 ))}
               </div>

@@ -10,6 +10,7 @@ import Dashboard from "./pages/Dashboard";
 import Admin from "./pages/Admin";
 import Subscribe from "./pages/Subscribe";
 import ResetPassword from "./pages/ResetPassword";
+import VideoEditor from "./pages/VideoEditor";
 
 function Router() {
   // make sure to consider if you need authentication for certain routes
@@ -21,6 +22,7 @@ function Router() {
       <Route path={"/dashboard"} component={Dashboard} />
       <Route path={"/admin"} component={Admin} />
       <Route path={"/subscribe"} component={Subscribe} />
+      <Route path={`/editor/:videoId`} component={VideoEditor} />
       <Route path={"/404"} component={NotFound} />
       {/* Final fallback route */}
       <Route component={NotFound} />
