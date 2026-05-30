@@ -630,3 +630,14 @@ FINAL STATUS: ✅ ALL CRITICAL FFMPEG ISSUES FIXED
 - [x] Monitor Stage 7: Upload to S3 and DB update
 - [x] VID-54 completed in 38.4 minutes (Blockbuster history, 5-8 min, 15 scenes)
 - [x] Pipeline speed optimized: B-roll/Archive/YouTube CC disabled, parallel transforms, 50-min visual timeout
+
+## Session 35 — Canvas Removal & 8-12 min Test (May 30, 2026)
+- [x] Remove canvas package from package.json (deployment blocker: pixman-1 missing in production)
+- [x] Replace renderKineticFrames with FFmpeg-only version (drawbox + drawtext on yellow pill)
+- [x] Replace renderStatCallout with FFmpeg-only version (drawbox + drawtext corner box)
+- [x] Replace renderSubtitleOverlay with always-FFmpeg fallback
+- [x] Replace renderChapterCard with FFmpeg-only version (color=FFD700 + drawtext)
+- [x] Replace renderIntroCard and renderOutroCard with FFmpeg-only versions
+- [x] Increase voiceover stage timeout from 5 min to 15 min (supports 20+ scene videos)
+- [x] VID-56 completed: Roman Empire 8-12 min (22 scenes) in 37.6 minutes ✅
+- [x] Pipeline now handles 5-8 min AND 8-12 min videos within 40 minutes (well under 1h limit)

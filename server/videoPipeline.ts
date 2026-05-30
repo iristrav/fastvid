@@ -209,15 +209,8 @@ const resolveFontPath = (name: string): string => {
 const FONT_BOLD = resolveFontPath('NotoSans-Bold.ttf');
 const FONT_REGULAR = resolveFontPath('NotoSans-Regular.ttf');
 
-// Check canvas availability at startup
-let CANVAS_AVAILABLE = false;
-try {
-  require('canvas');
-  CANVAS_AVAILABLE = true;
-  console.log('[Fastvid] Canvas: available');
-} catch {
-  console.warn('[Fastvid] Canvas: NOT available — using FFmpeg drawtext fallback for overlays');
-}
+// Canvas is not used — all rendering is done via FFmpeg (no native dependencies required)
+const CANVAS_AVAILABLE = false; // kept for reference, all functions use FFmpeg-only paths
 
 // Use /var/tmp instead of os.tmpdir() (/tmp) — /var/tmp is persistent and not cleaned
 // by systemd-tmpfiles or sandbox cleanup. /tmp can be wiped during long pipeline runs.
@@ -2630,10 +2623,8 @@ async function renderKineticFrames(
 ): Promise<KineticFrame[]> {
   if (keywords.length === 0) return [];
 
-  const { createCanvas, registerFont } = await import("canvas");
-  try {
-    if (FONT_BOLD) registerFont(FONT_BOLD, { family: "NotoSans", weight: "bold" });
-  } catch { /* already registered */ }
+  // FFmpeg-only implementation: render yellow pill with black text as PNG
+  // No canvas dependency required — works in all environments
 
   const frames: KineticFrame[] = [];
   // Distribute keywords evenly across the scene duration (or use override timing)
@@ -2642,128 +2633,41 @@ async function renderKineticFrames(
 
   for (let i = 0; i < keywords.length; i++) {
     const keyword = keywords[i];
-    // Use override timing if provided (for sparse single-word mode), else distribute evenly
     const startTime = overrideStartTime !== undefined ? overrideStartTime : i * slotDuration + 0.15;
     const endTime = overrideEndTime !== undefined ? overrideEndTime : Math.min(startTime + showDuration, sceneDuration - 0.2);
 
-    // Vidrush-style: larger canvas for bigger, bolder text
-    const CANVAS_W = VIDEO_WIDTH;
-    const CANVAS_H = 160; // taller band for bigger font
-    const FONT_SIZE = 88;
+    const OVERLAY_H = 160;
+    const FONT_SIZE = 72;
+    const pngPath = path.join(workDir, `scene_${sceneIndex}_kword_${i}.png`);
+    const safeKw = sanitizeForDrawtext(keyword.toUpperCase(), 40);
 
-    // ── Slide-in animation: generate 8 animation frames + 1 hold frame ──────
-    // Frame 0: pill starts fully off-screen left (translateX = -pillW)
-    // Frame 7: pill is at final centered position (translateX = 0)
-    // Frame 8 (hold): same as frame 7 — used as the static overlay PNG
-    // We only need the FINAL hold frame as the overlay PNG since FFmpeg
-    // enable/disable handles timing. But we generate a short slide-in video
-    // clip that we overlay instead for the animated effect.
-    const ANIM_FRAMES = 8;
-    const ANIM_FPS = 25;
+    // Estimate pill width: ~0.6 * fontSize per char + padding
+    const estTextW = Math.min(safeKw.length * FONT_SIZE * 0.6, VIDEO_WIDTH - 200);
+    const pillW = Math.round(estTextW + 80);
+    const pillH = FONT_SIZE + 40;
+    const pillX = Math.round((VIDEO_WIDTH - pillW) / 2);
+    const pillY = Math.round((OVERLAY_H - pillH) / 2);
 
-    // Measure text to compute pill dimensions
-    const measureCanvas = createCanvas(CANVAS_W, CANVAS_H);
-    const measureCtx = measureCanvas.getContext("2d");
-    measureCtx.font = `bold ${FONT_SIZE}px NotoSans`;
-    const metrics = measureCtx.measureText(keyword.toUpperCase());
-    const textW = metrics.width;
-    const textH = FONT_SIZE;
-    const pillPadX = 40;
-    const pillPadY = 20;
-    const pillW = textW + pillPadX * 2;
-    const pillH = textH + pillPadY * 2;
-    const pillFinalX = (CANVAS_W - pillW) / 2; // centered
-    const pillY = (CANVAS_H - pillH) / 2;
-    const pillR = 18;
-
-    // Helper: draw one kinetic frame at a given horizontal offset
-    const drawKineticFrame = (offsetX: number, alpha: number): Buffer => {
-      const canvas = createCanvas(CANVAS_W, CANVAS_H);
-      const ctx = canvas.getContext("2d");
-      ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
-      const pillX = pillFinalX + offsetX;
-      // Yellow pill with strong black shadow
-      ctx.globalAlpha = alpha;
-      ctx.shadowColor = "rgba(0,0,0,0.6)";
-      ctx.shadowBlur = 20;
-      ctx.shadowOffsetX = 0;
-      ctx.shadowOffsetY = 6;
-      ctx.fillStyle = "rgba(255, 210, 0, 0.97)";
-      ctx.beginPath();
-      ctx.roundRect(pillX, pillY, pillW, pillH, pillR);
-      ctx.fill();
-      ctx.shadowColor = "transparent";
-      ctx.shadowBlur = 0;
-      ctx.shadowOffsetX = 0;
-      ctx.shadowOffsetY = 0;
-      // Thin dark border
-      ctx.strokeStyle = "rgba(0,0,0,0.25)";
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.roundRect(pillX, pillY, pillW, pillH, pillR);
-      ctx.stroke();
-      // Dark text on yellow — ALL CAPS, bold
-      ctx.font = `bold ${FONT_SIZE}px NotoSans`;
-      ctx.fillStyle = "#0a0a0a";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText(keyword.toUpperCase(), pillX + pillW / 2, CANVAS_H / 2);
-      ctx.globalAlpha = 1;
-      return canvas.toBuffer("image/png");
-    }
-
-    // Generate animation frames: slide in from left
-    const animDir = path.join(workDir, `scene_${sceneIndex}_kanim_${i}`);
-    fs.mkdirSync(animDir, { recursive: true });
-
-    // Slide-in: pill starts at -pillW (off-screen left), eases to 0 over ANIM_FRAMES
-    for (let f = 0; f < ANIM_FRAMES; f++) {
-      const progress = f / (ANIM_FRAMES - 1); // 0 → 1
-      // Ease-out cubic
-      const eased = 1 - Math.pow(1 - progress, 3);
-      const offsetX = -(pillW + 60) * (1 - eased); // starts off-screen left
-      const alpha = 0.3 + 0.7 * eased; // fade in from 30% to 100%
-      const frameBuf = drawKineticFrame(offsetX, alpha);
-      fs.writeFileSync(path.join(animDir, `frame_${String(f).padStart(3, '0')}.png`), frameBuf);
-    }
-    // Hold frame (final position)
-    const holdBuf = drawKineticFrame(0, 1.0);
-    const holdFrameCount = Math.max(1, Math.round((endTime - startTime - ANIM_FRAMES / ANIM_FPS) * ANIM_FPS));
-    for (let f = 0; f < holdFrameCount; f++) {
-      fs.writeFileSync(path.join(animDir, `frame_${String(ANIM_FRAMES + f).padStart(3, '0')}.png`), holdBuf);
-    }
-
-    // Encode animation frames to a short transparent-background video
-    const animVideoPath = path.join(workDir, `scene_${sceneIndex}_kword_${i}.mp4`);
     try {
+      // Generate yellow pill PNG using FFmpeg lavfi + drawbox + drawtext
       await withTimeout(
         exec(
-          `${FFMPEG_BIN} -y -framerate ${ANIM_FPS} -i "${animDir}/frame_%03d.png" ` +
-          `-c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -r ${ANIM_FPS} "${animVideoPath}"`
+          `${FFMPEG_BIN} -y ` +
+          `-f lavfi -i "color=c=black@0:size=${VIDEO_WIDTH}x${OVERLAY_H}:rate=1" ` +
+          `-vf "drawbox=x=${pillX}:y=${pillY}:w=${pillW}:h=${pillH}:color=FFD200@0.97:t=fill,` +
+          `drawtext=text='${safeKw}':fontcolor=black:fontsize=${FONT_SIZE}:x=(w-text_w)/2:y=(h-text_h)/2" ` +
+          `-frames:v 1 -pix_fmt rgba "${pngPath}"`
         ),
-        20_000, `Kinetic anim encode scene ${sceneIndex} word ${i}`
+        8_000, `Kinetic PNG scene ${sceneIndex} word ${i}`
       );
-    } catch (animErr) {
-      console.warn(`[Pipeline] Kinetic anim encode failed, using static PNG fallback:`, animErr);
-      // Fallback: write static hold frame as PNG
-      const pngPath = path.join(workDir, `scene_${sceneIndex}_kword_${i}.png`);
-      fs.writeFileSync(pngPath, holdBuf);
-      frames.push({ path: pngPath, startTime, endTime });
-      try { fs.rmSync(animDir, { recursive: true }); } catch { /* ignore */ }
+    } catch (err) {
+      console.warn(`[Pipeline] Kinetic PNG failed for scene ${sceneIndex} word ${i}:`, err);
       continue;
     }
 
-    // Cleanup animation frames dir
-    try { fs.rmSync(animDir, { recursive: true }); } catch { /* ignore */ }
-
-    // Use the static hold frame PNG for overlay (simpler FFmpeg overlay)
-    // The animated video approach requires more complex filter_complex; use PNG for reliability
-    const pngPath = path.join(workDir, `scene_${sceneIndex}_kword_${i}.png`);
-    fs.writeFileSync(pngPath, holdBuf);
-    // Clean up the animation video (we use PNG overlay for reliability)
-    try { fs.unlinkSync(animVideoPath); } catch { /* ignore */ }
-
-    frames.push({ path: pngPath, startTime, endTime });
+    if (fs.existsSync(pngPath) && fs.statSync(pngPath).size > 100) {
+      frames.push({ path: pngPath, startTime, endTime });
+    }
   }
 
   return frames;
@@ -2778,68 +2682,43 @@ async function renderStatCallout(
   workDir: string
 ): Promise<{ path: string; startTime: number; endTime: number } | null> {
   if (!stat || stat.trim().length === 0) return null;
-  if (!CANVAS_AVAILABLE) return null;
+
+  const FONT_SIZE = 64;
+  const PAD_X = 36;
+  const PAD_Y = 24;
+  const CORNER_MARGIN = 40;
+
+  const safeStat = sanitizeForDrawtext(stat.trim().toUpperCase(), 30);
+  // Estimate box dimensions: ~0.6 * fontSize per char + padding
+  const estTextW = Math.min(safeStat.length * FONT_SIZE * 0.6, VIDEO_WIDTH / 2);
+  const boxW = Math.round(estTextW + PAD_X * 2);
+  const boxH = FONT_SIZE + PAD_Y * 2;
+  const boxX = VIDEO_WIDTH - boxW - CORNER_MARGIN;
+  const boxY = VIDEO_HEIGHT - boxH - CORNER_MARGIN;
+
+  const pngPath = path.join(workDir, `scene_${sceneIndex}_stat_callout.png`);
 
   try {
-    const { createCanvas, registerFont } = await import("canvas");
-    try {
-      if (FONT_BOLD) registerFont(FONT_BOLD, { family: "NotoSans", weight: "bold" });
-    } catch { /* already registered */ }
+    // Generate stat callout PNG using FFmpeg lavfi + drawbox + drawtext
+    await withTimeout(
+      exec(
+        `${FFMPEG_BIN} -y ` +
+        `-f lavfi -i "color=c=black@0:size=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:rate=1" ` +
+        `-vf "drawbox=x=${boxX}:y=${boxY}:w=${boxW}:h=${boxH}:color=FFD200@0.97:t=fill,` +
+        `drawtext=text='${safeStat}':fontcolor=black:fontsize=${FONT_SIZE}:x=${boxX + PAD_X}:y=${boxY + PAD_Y}" ` +
+        `-frames:v 1 -pix_fmt rgba "${pngPath}"`
+      ),
+      8_000, `Stat callout PNG scene ${sceneIndex}`
+    );
 
-    const FONT_SIZE = 72;
-    const PAD_X = 36;
-    const PAD_Y = 24;
-    const CORNER_MARGIN = 40;
-    const BORDER_R = 14;
-
-    // Measure text
-    const measureCanvas = createCanvas(800, 200);
-    const measureCtx = measureCanvas.getContext("2d");
-    measureCtx.font = `bold ${FONT_SIZE}px NotoSans`;
-    const metrics = measureCtx.measureText(stat.trim().toUpperCase());
-    const textW = metrics.width;
-    const boxW = textW + PAD_X * 2;
-    const boxH = FONT_SIZE + PAD_Y * 2;
-
-    // Canvas size: full video frame (transparent background)
-    const canvas = createCanvas(VIDEO_WIDTH, VIDEO_HEIGHT);
-    const ctx = canvas.getContext("2d");
-    ctx.clearRect(0, 0, VIDEO_WIDTH, VIDEO_HEIGHT);
-
-    // Position: bottom-right corner
-    const boxX = VIDEO_WIDTH - boxW - CORNER_MARGIN;
-    const boxY = VIDEO_HEIGHT - boxH - CORNER_MARGIN;
-
-    // Yellow box with black shadow
-    ctx.shadowColor = "rgba(0,0,0,0.5)";
-    ctx.shadowBlur = 18;
-    ctx.shadowOffsetX = 4;
-    ctx.shadowOffsetY = 4;
-    ctx.fillStyle = "#FFD700";
-    ctx.beginPath();
-    ctx.roundRect(boxX, boxY, boxW, boxH, BORDER_R);
-    ctx.fill();
-    ctx.shadowColor = "transparent";
-    ctx.shadowBlur = 0;
-    ctx.shadowOffsetX = 0;
-    ctx.shadowOffsetY = 0;
-
-    // Black text
-    ctx.font = `bold ${FONT_SIZE}px NotoSans`;
-    ctx.fillStyle = "#111111";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText(stat.trim().toUpperCase(), boxX + boxW / 2, boxY + boxH / 2);
-
-    const pngPath = path.join(workDir, `scene_${sceneIndex}_stat_callout.png`);
-    fs.writeFileSync(pngPath, canvas.toBuffer("image/png"));
-
-    console.log(`[Pipeline] Scene ${sceneIndex}: stat callout rendered: "${stat}"`);
-    return { path: pngPath, startTime: 1.0, endTime: 3.5 };
+    if (fs.existsSync(pngPath) && fs.statSync(pngPath).size > 100) {
+      console.log(`[Pipeline] Scene ${sceneIndex}: stat callout rendered: "${stat}"`);
+      return { path: pngPath, startTime: 1.0, endTime: 3.5 };
+    }
   } catch (err) {
     console.warn(`[Pipeline] Scene ${sceneIndex}: stat callout render failed (non-fatal):`, err);
-    return null;
   }
+  return null;
 }
 
 // ─── 4b. Canvas Subtitle Overlay ─────────────────────────────────────────────
@@ -2874,79 +2753,8 @@ async function renderSubtitleOverlay(
   totalScenes: number,
   workDir: string
 ): Promise<string> {
-  if (!CANVAS_AVAILABLE) {
-    return renderSubtitleOverlayFFmpeg(text, sceneIndex, totalScenes, workDir);
-  }
-  const outputPath = path.join(workDir, `scene_${sceneIndex}_subtitle.png`);
-  const { createCanvas, registerFont } = await import("canvas");
-
-  try {
-    if (FONT_BOLD) registerFont(FONT_BOLD, { family: "NotoSans", weight: "bold" });
-    if (FONT_REGULAR) registerFont(FONT_REGULAR, { family: "NotoSans", weight: "normal" });
-  } catch { /* already registered */ }
-
-  // Documentary style: taller overlay, strong gradient, large bold text
-  const OVERLAY_H = 220;
-  const canvas = createCanvas(VIDEO_WIDTH, OVERLAY_H);
-  const ctx = canvas.getContext("2d");
-
-  // Deep gradient bar — nearly opaque at bottom for maximum readability
-  const grad = ctx.createLinearGradient(0, 0, 0, OVERLAY_H);
-  grad.addColorStop(0, "rgba(0,0,0,0)");
-  grad.addColorStop(0.15, "rgba(0,0,0,0.82)");
-  grad.addColorStop(1, "rgba(0,0,0,0.97)");
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, VIDEO_WIDTH, OVERLAY_H);
-
-  // Yellow accent line at top of overlay (documentary style)
-  ctx.fillStyle = "rgba(255,210,0,0.95)";
-  ctx.fillRect(0, 0, VIDEO_WIDTH, 4);
-
-  // Scene badge — compact, left-aligned
-  const badgeText = `${sceneIndex + 1} / ${totalScenes}`;
-  ctx.fillStyle = "rgba(255,210,0,0.95)";
-  ctx.beginPath();
-  ctx.roundRect(28, 14, 110, 38, 6);
-  ctx.fill();
-  ctx.font = "bold 22px NotoSans";
-  ctx.fillStyle = "#0a0a0a";
-  ctx.textAlign = "center";
-  ctx.fillText(badgeText, 83, 39);
-
-  // Main subtitle text — large, bold, white with strong shadow
-  const cleanText = text.replace(/[^\x20-\x7E]/g, "").slice(0, 120).trim();
-  ctx.font = "bold 50px NotoSans";
-  ctx.fillStyle = "#ffffff";
-  ctx.textAlign = "center";
-  ctx.shadowColor = "rgba(0,0,0,1)";
-  ctx.shadowBlur = 14;
-  ctx.shadowOffsetX = 2;
-  ctx.shadowOffsetY = 2;
-
-  const words = cleanText.split(" ");
-  const lines: string[] = [];
-  let currentLine = "";
-  for (const word of words) {
-    const testLine = currentLine ? `${currentLine} ${word}` : word;
-    // ~45 chars per line for 50px font at 1920px wide
-    if (testLine.length > 45 && currentLine) {
-      lines.push(currentLine);
-      currentLine = word;
-    } else {
-      currentLine = testLine;
-    }
-    if (lines.length >= 2) break;
-  }
-  if (currentLine && lines.length < 2) lines.push(currentLine);
-
-  const lineHeight = 60;
-  const startY = lines.length === 1 ? 148 : 110;
-  lines.forEach((line, i) => {
-    ctx.fillText(line, VIDEO_WIDTH / 2, startY + i * lineHeight);
-  });
-
-  fs.writeFileSync(outputPath, canvas.toBuffer("image/png"));
-  return outputPath;
+  // Always use FFmpeg-only implementation (no canvas dependency)
+  return renderSubtitleOverlayFFmpeg(text, sceneIndex, totalScenes, workDir);
 }
 
 // ─── 4a2. Chapter Card Renderer (Vox/Wendover style) ──────────────────────────────────
@@ -2961,108 +2769,36 @@ async function renderChapterCard(
   workDir: string
 ): Promise<string> {
   const CARD_DURATION = 1.5; // seconds
-  const FPS = 25;
-  const TOTAL_FRAMES = Math.round(CARD_DURATION * FPS); // 37 frames
-  const SLIDE_FRAMES = 10; // 0.4s slide-in animation
   const outputPath = path.join(workDir, `chapter_card_${chapterIndex}.mp4`);
 
-  // Use Canvas for high-quality text rendering with slide-up animation
-  if (CANVAS_AVAILABLE) {
-    try {
-      const { createCanvas, registerFont } = await import("canvas");
-      try {
-        if (FONT_BOLD) registerFont(FONT_BOLD, { family: "NotoSans", weight: "bold" });
-      } catch { /* already registered */ }
+  // FFmpeg-only: yellow background with black bold text (no canvas dependency)
+  const safeTitle = sanitizeForDrawtext(chapterTitle.toUpperCase(), 50);
+  const centerY = VIDEO_HEIGHT / 2;
+  const lineY1 = centerY - 80;
+  const lineY2 = centerY + 70;
+  const lineX1 = Math.round(VIDEO_WIDTH * 0.15);
+  const lineX2 = Math.round(VIDEO_WIDTH * 0.85);
 
-      const title = chapterTitle.replace(/[^\x20-\x7E]/g, "").toUpperCase().slice(0, 50);
-      const centerX = VIDEO_WIDTH / 2;
-      const centerY = VIDEO_HEIGHT / 2;
-      const titleFinalY = centerY + 20; // final resting position (baseline)
-      const titleStartY = centerY + 110; // starts 90px below final
-      const lineY1 = centerY - 70;  // accent line above
-      const lineY2 = centerY + 60;  // accent line below
-      const lineX1 = Math.round(VIDEO_WIDTH * 0.15);
-      const lineX2 = Math.round(VIDEO_WIDTH * 0.85);
-
-      // Generate each frame as a PNG and write to a temp dir
-      const framesDir = path.join(workDir, `chapter_frames_${chapterIndex}`);
-      fs.mkdirSync(framesDir, { recursive: true });
-
-      for (let f = 0; f < TOTAL_FRAMES; f++) {
-        const progress = Math.min(f / SLIDE_FRAMES, 1); // 0 → 1 over SLIDE_FRAMES
-        // Ease-out cubic: fast start, slow finish
-        const eased = 1 - Math.pow(1 - progress, 3);
-        const titleY = titleStartY + (titleFinalY - titleStartY) * eased;
-        const lineAlpha = eased * 0.65;
-        const textAlpha = eased;
-
-        const canvas = createCanvas(VIDEO_WIDTH, VIDEO_HEIGHT);
-        const ctx = canvas.getContext("2d");
-
-        // SOLID YELLOW background (reference video style: black text on yellow)
-        ctx.fillStyle = "#FFD700";
-        ctx.fillRect(0, 0, VIDEO_WIDTH, VIDEO_HEIGHT);
-
-        // Chapter title text: black on yellow (high contrast, reference style)
-        ctx.globalAlpha = textAlpha;
-        ctx.font = FONT_BOLD ? `bold 80px NotoSans` : `bold 80px sans-serif`;
-        ctx.fillStyle = "#111111";
-        ctx.textAlign = "center";
-        ctx.textBaseline = "alphabetic";
-        ctx.shadowColor = "rgba(0,0,0,0)"; // no shadow needed on yellow bg
-        ctx.shadowBlur = 0;
-        ctx.shadowOffsetX = 0;
-        ctx.shadowOffsetY = 0;
-        ctx.fillText(title, centerX, titleY);
-        ctx.globalAlpha = 1;
-
-        const framePath = path.join(framesDir, `frame_${String(f).padStart(4, '0')}.png`);
-        fs.writeFileSync(framePath, canvas.toBuffer("image/png"));
-      }
-
-      // Encode frames to video
-      await withTimeout(
-        exec(
-          `${FFMPEG_BIN} -y -framerate ${FPS} -i "${framesDir}/frame_%04d.png" ` +
-          `-f lavfi -i anullsrc=r=44100:cl=stereo ` +
-          `-c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -r ${FPS} ` +
-          `-c:a aac -b:a 320k -shortest "${outputPath}"`
-        ),
-        30_000,
-        `Chapter card encode ${chapterIndex}`
-      );
-
-      // Cleanup frames
-      try { fs.rmSync(framesDir, { recursive: true }); } catch { /* ignore */ }
-
-      if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1_000) {
-        console.log(`[Pipeline] Chapter card ${chapterIndex}: "${chapterTitle}" rendered with slide-up animation`);
-        return outputPath;
-      }
-    } catch (err) {
-      console.warn(`[Pipeline] Chapter card canvas render failed, trying FFmpeg fallback:`, (err as Error).message);
-    }
-  }
-
-  // Fallback: simple black frame with drawbox accent lines (no text — drawtext not available)
   try {
-    const centerY = VIDEO_HEIGHT / 2;
-    const lineY1 = centerY - 70;
-    const lineY2 = centerY + 60;
-    const lineX1 = Math.round(VIDEO_WIDTH * 0.15);
-    const lineX2 = Math.round(VIDEO_WIDTH * 0.85);
     await withTimeout(
       exec(
         `${FFMPEG_BIN} -y ` +
-        `-f lavfi -i "color=c=#080808:size=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:rate=25" ` +
+        `-f lavfi -i "color=c=FFD700:size=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:rate=25" ` +
         `-f lavfi -i anullsrc=r=44100:cl=stereo ` +
-        `-filter_complex "[0:v]drawbox=x=${lineX1}:y=${lineY1}:w=${lineX2 - lineX1}:h=2:color=white@0.6:t=fill,drawbox=x=${lineX1}:y=${lineY2}:w=${lineX2 - lineX1}:h=2:color=white@0.6:t=fill[vout]" ` +
+        `-filter_complex "[0:v]` +
+        `drawbox=x=${lineX1}:y=${lineY1}:w=${lineX2 - lineX1}:h=3:color=black@0.4:t=fill,` +
+        `drawbox=x=${lineX1}:y=${lineY2}:w=${lineX2 - lineX1}:h=3:color=black@0.4:t=fill,` +
+        `drawtext=text='${safeTitle}':fontcolor=black:fontsize=80:x=(w-text_w)/2:y=(h-text_h)/2:line_spacing=10` +
+        `[vout]" ` +
         `-map "[vout]" -map "1:a" ` +
         `-t ${CARD_DURATION} -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -r 25 -c:a aac -b:a 320k -shortest "${outputPath}"`
       ),
-      15_000, `Chapter card fallback ${chapterIndex}`
+      15_000, `Chapter card ${chapterIndex}`
     );
-  } catch { /* ignore */ }
+    console.log(`[Pipeline] Chapter card ${chapterIndex}: "${chapterTitle}" rendered (FFmpeg)`);
+  } catch (err) {
+    console.warn(`[Pipeline] Chapter card ${chapterIndex} failed (non-fatal):`, (err as Error).message);
+  }
   return outputPath;
 }
 
@@ -3086,93 +2822,8 @@ async function renderIntroCardFFmpeg(videoTitle: string, duration: number, workD
 }
 
 async function renderIntroCard(videoTitle: string, duration: number, workDir: string): Promise<string> {
-  if (!CANVAS_AVAILABLE) {
-    return renderIntroCardFFmpeg(videoTitle, duration, workDir);
-  }
-  const outputPath = path.join(workDir, "intro_card.mp4");
-  const { createCanvas, registerFont } = await import("canvas");
-
-  try {
-    if (FONT_BOLD) registerFont(FONT_BOLD, { family: "NotoSans", weight: "bold" });
-    if (FONT_REGULAR) registerFont(FONT_REGULAR, { family: "NotoSans", weight: "normal" });
-  } catch { /* already registered */ }
-
-  const canvas = createCanvas(VIDEO_WIDTH, VIDEO_HEIGHT);
-  const ctx = canvas.getContext("2d");
-
-  const bgGrad = ctx.createLinearGradient(0, 0, VIDEO_WIDTH, VIDEO_HEIGHT);
-  bgGrad.addColorStop(0, "#0a0a1e");
-  bgGrad.addColorStop(0.5, "#1a0a2e");
-  bgGrad.addColorStop(1, "#0a1a2e");
-  ctx.fillStyle = bgGrad;
-  ctx.fillRect(0, 0, VIDEO_WIDTH, VIDEO_HEIGHT);
-
-  const glow = ctx.createRadialGradient(VIDEO_WIDTH / 2, VIDEO_HEIGHT / 2, 0, VIDEO_WIDTH / 2, VIDEO_HEIGHT / 2, 400);
-  glow.addColorStop(0, "rgba(120,60,220,0.25)");
-  glow.addColorStop(1, "rgba(0,0,0,0)");
-  ctx.fillStyle = glow;
-  ctx.fillRect(0, 0, VIDEO_WIDTH, VIDEO_HEIGHT);
-
-  // Draw thin accent line above title
-  ctx.strokeStyle = "rgba(120,60,220,0.6)";
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(VIDEO_WIDTH / 2 - 200, VIDEO_HEIGHT / 2 - 130);
-  ctx.lineTo(VIDEO_WIDTH / 2 + 200, VIDEO_HEIGHT / 2 - 130);
-  ctx.stroke();
-
-  // Draw video title in ALL CAPS
-  const title = videoTitle.replace(/[^\x20-\x7E]/g, "").slice(0, 100).toUpperCase();
-  ctx.font = "bold 68px NotoSans";
-  ctx.fillStyle = "white";
-  ctx.textAlign = "center";
-  ctx.shadowColor = "rgba(120,60,220,0.8)";
-  ctx.shadowBlur = 20;
-
-  const words = title.split(" ");
-  const lines: string[] = [];
-  let currentLine = "";
-  for (const word of words) {
-    const testLine = currentLine ? `${currentLine} ${word}` : word;
-    if (testLine.length > 28 && currentLine) {
-      lines.push(currentLine);
-      currentLine = word;
-      if (lines.length >= 3) break;
-    } else {
-      currentLine = testLine;
-    }
-  }
-  if (currentLine && lines.length < 3) lines.push(currentLine);
-
-  const lineHeight = 80;
-  const totalH = lines.length * lineHeight;
-  const startY = VIDEO_HEIGHT / 2 - totalH / 2 + 40;
-  lines.forEach((line, i) => ctx.fillText(line, VIDEO_WIDTH / 2, startY + i * lineHeight));
-
-  // Draw thin accent line below title
-  ctx.shadowBlur = 0;
-  ctx.strokeStyle = "rgba(120,60,220,0.6)";
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(VIDEO_WIDTH / 2 - 200, VIDEO_HEIGHT / 2 + 180);
-  ctx.lineTo(VIDEO_WIDTH / 2 + 200, VIDEO_HEIGHT / 2 + 180);
-  ctx.stroke();
-
-  const pngPath = path.join(workDir, "intro_card.png");
-  fs.writeFileSync(pngPath, canvas.toBuffer("image/png"));
-
-  await withTimeout(
-    exec(
-      `${FFMPEG_BIN} -y -loop 1 -i "${pngPath}" -f lavfi -i anullsrc=r=44100:cl=stereo ` +
-      `-t ${duration} ` +
-      `-vf "fade=t=in:st=0:d=0.4,fade=t=out:st=${duration - 0.4}:d=0.4" ` +
-      `-c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -r 25 -c:a aac -b:a 320k -shortest "${outputPath}"`
-    ),
-    90_000, "Intro card render"
-  );
-
-  try { fs.unlinkSync(pngPath); } catch { /* ignore */ }
-  return outputPath;
+  // Always use FFmpeg-only implementation (no canvas dependency)
+  return renderIntroCardFFmpeg(videoTitle, duration, workDir);
 }
 
 //// ─── 4c. Branded Outro Card ────────────────────────────────────────────
@@ -3193,68 +2844,8 @@ async function renderOutroCardFFmpeg(duration: number, workDir: string): Promise
 }
 
 async function renderOutroCard(duration: number, workDir: string): Promise<string> {
-  if (!CANVAS_AVAILABLE) {
-    return renderOutroCardFFmpeg(duration, workDir);
-  }
-  const outputPath = path.join(workDir, "outro_card.mp4");
-  const { createCanvas, registerFont } = await import("canvas");
-
-  try { if (FONT_BOLD) registerFont(FONT_BOLD, { family: "NotoSans", weight: "bold" }); } catch { /* already registered */ }
-
-  const canvas = createCanvas(VIDEO_WIDTH, VIDEO_HEIGHT);
-  const ctx = canvas.getContext("2d");
-
-  const bgGrad = ctx.createLinearGradient(0, 0, VIDEO_WIDTH, VIDEO_HEIGHT);
-  bgGrad.addColorStop(0, "#0a0a1e");
-  bgGrad.addColorStop(1, "#1a0a2e");
-  ctx.fillStyle = bgGrad;
-  ctx.fillRect(0, 0, VIDEO_WIDTH, VIDEO_HEIGHT);
-
-  const glow = ctx.createRadialGradient(VIDEO_WIDTH / 2, VIDEO_HEIGHT / 2, 0, VIDEO_WIDTH / 2, VIDEO_HEIGHT / 2, 500);
-  glow.addColorStop(0, "rgba(0,200,180,0.2)");
-  glow.addColorStop(1, "rgba(0,0,0,0)");
-  ctx.fillStyle = glow;
-  ctx.fillRect(0, 0, VIDEO_WIDTH, VIDEO_HEIGHT);
-
-  // Draw thin accent lines
-  ctx.strokeStyle = "rgba(120,60,220,0.6)";
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(VIDEO_WIDTH / 2 - 200, VIDEO_HEIGHT / 2 - 120);
-  ctx.lineTo(VIDEO_WIDTH / 2 + 200, VIDEO_HEIGHT / 2 - 120);
-  ctx.stroke();
-
-  // "Thanks for watching!" — clean, no branding
-  ctx.font = "bold 64px NotoSans";
-  ctx.fillStyle = "white";
-  ctx.textAlign = "center";
-  ctx.shadowColor = "rgba(120,60,220,0.8)";
-  ctx.shadowBlur = 20;
-  ctx.fillText("Thanks for watching!", VIDEO_WIDTH / 2, VIDEO_HEIGHT / 2 + 20);
-
-  ctx.shadowBlur = 0;
-  ctx.strokeStyle = "rgba(120,60,220,0.6)";
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(VIDEO_WIDTH / 2 - 200, VIDEO_HEIGHT / 2 + 80);
-  ctx.lineTo(VIDEO_WIDTH / 2 + 200, VIDEO_HEIGHT / 2 + 80);
-  ctx.stroke();
-
-  const pngPath = path.join(workDir, "outro_card.png");
-  fs.writeFileSync(pngPath, canvas.toBuffer("image/png"));
-
-  await withTimeout(
-    exec(
-      `${FFMPEG_BIN} -y -loop 1 -i "${pngPath}" -f lavfi -i anullsrc=r=44100:cl=stereo ` +
-      `-t ${duration} ` +
-      `-vf "fade=t=in:st=0:d=0.4,fade=t=out:st=${duration - 0.4}:d=0.4" ` +
-      `-c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -r 25 -c:a aac -b:a 320k -shortest "${outputPath}"`
-    ),
-    90_000, "Outro card render"
-  );
-
-  try { fs.unlinkSync(pngPath); } catch { /* ignore */ }
-  return outputPath;
+  // Always use FFmpeg-only implementation (no canvas dependency)
+  return renderOutroCardFFmpeg(duration, workDir);
 }
 
 // ─── 5. Compose Scene Video (multi-clip with xfade transitions) ───────────────
@@ -3801,7 +3392,7 @@ export async function runVideoPipeline(
           });
           return dur;
         }))),
-        300_000, // 5 min for all voiceovers
+        900_000, // 15 min for all voiceovers (20+ scenes at ~15s each = 300s, plus buffer)
         "Voiceover generation stage"
       );
     }
