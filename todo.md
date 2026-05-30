@@ -683,3 +683,21 @@ FINAL STATUS: ✅ ALL CRITICAL FFMPEG ISSUES FIXED
 
 Root cause: Dashboard.tsx set directVideoUrl=null when rawVideoUrl started with /local-storage/, causing blank player.
 Fix: directVideoUrl = videoUrlData?.url ?? rawVideoUrl (always use the URL, whether local or presigned)
+
+## Session 38 — YouTube Visuals + Remove On-Screen Text
+
+- [ ] Add YouTube as primary visual source: search YouTube for relevant clips per scene using yt-dlp, download Creative Commons or fair-use clips
+- [ ] Fallback chain: YouTube → Pexels → Pixabay → Stability AI image → color fallback
+- [ ] Improve visual-script relevance: use scene visualCue + pexelsQuery for YouTube search
+- [ ] Remove all on-screen text: disable subtitles (drawtext), intro cards, kinetic typography, chapter cards
+- [ ] Keep fair-use video transformations (speed, crop, color) but remove all text overlays
+- [ ] Test pipeline end-to-end with YouTube visuals and no text
+
+## Session 38 — YouTube Visuals + No Text
+- [x] Add YouTube Data API thumbnails as primary visual source (fetchYouTubeThumbnails function)
+- [x] YouTube thumbnails searched first in parallel with Pexels/Pixabay/SerpAPI
+- [x] YouTube clips counted in freeStockCount to prevent unnecessary AI generator activation
+- [x] Remove subtitles from video (enableSubtitles = false by default)
+- [x] Remove kinetic typography / power words from video
+- [x] Remove stat callout boxes from video
+- [x] Remove chapter cards from video (both main pipeline and re-render pipeline)

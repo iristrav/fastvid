@@ -1355,6 +1355,95 @@ async function fetchOpenverseImages(
   return results;
 }
 
+// ─── 3c2b-yt. YouTube Data API Thumbnails ────────────────────────────────────
+// Uses YouTube Data API v3 to search for relevant videos and downloads their
+// high-quality thumbnails as image clips. This gives highly relevant visuals
+// that match the scene topic without requiring video downloads.
+async function fetchYouTubeThumbnails(
+  query: string,
+  duration: number,
+  workDir: string,
+  sceneIndex: number,
+  count: number = 3
+): Promise<string[]> {
+  const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY || '';
+  if (!YOUTUBE_API_KEY) return [];
+  fs.mkdirSync(workDir, { recursive: true });
+  const results: string[] = [];
+  try {
+    // Search YouTube for relevant videos (Creative Commons preferred, but also standard)
+    const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(query)}&type=video&maxResults=${count * 3}&key=${YOUTUBE_API_KEY}`;
+    const searchResp = await withTimeout(
+      fetch(searchUrl),
+      10000,
+      `YouTube search scene ${sceneIndex}`
+    );
+    if (!searchResp.ok) {
+      console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube API error ${searchResp.status}`);
+      return [];
+    }
+    const payload = await searchResp.json() as { items?: Array<{ id: { videoId: string }; snippet: { title: string; thumbnails: { maxres?: { url: string }; high?: { url: string }; medium?: { url: string } } } }> };
+    const items = payload.items || [];
+    if (items.length === 0) return [];
+
+    for (let i = 0; i < Math.min(items.length, count * 2) && results.length < count; i++) {
+      try {
+        const item = items[i];
+        // Use highest quality thumbnail available
+        const thumbUrl = item.snippet.thumbnails?.maxres?.url ||
+                         item.snippet.thumbnails?.high?.url ||
+                         item.snippet.thumbnails?.medium?.url;
+        if (!thumbUrl) continue;
+
+        const imgPath = path.join(workDir, `scene_${sceneIndex}_yt_${i}.jpg`);
+        const outPath = path.join(workDir, `scene_${sceneIndex}_yt_${i}.mp4`);
+
+        // Download thumbnail
+        const imgResp = await withTimeout(
+          fetch(thumbUrl),
+          10000,
+          `YouTube thumbnail download scene ${sceneIndex}`
+        );
+        if (!imgResp.ok) continue;
+        const imgBuf = Buffer.from(await imgResp.arrayBuffer());
+        if (imgBuf.length < 5000) continue; // skip tiny/broken thumbnails
+        fs.writeFileSync(imgPath, imgBuf);
+
+        // Convert thumbnail to video clip with slow Ken Burns zoom effect
+        await withTimeout(
+          new Promise<void>(async (resolve, reject) => {
+            const { spawn } = await import('child_process');
+            const args = [
+              '-y', '-loop', '1', '-i', imgPath,
+              '-vf', `scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,zoompan=z='min(zoom+0.0006,1.05)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${Math.round(duration * 25)}:s=1920x1080:fps=25,setsar=1`,
+              '-t', String(duration),
+              '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+              '-pix_fmt', 'yuv420p', '-an', outPath
+            ];
+            const child = spawn(FFMPEG_BIN, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+            const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /**/ } reject(new Error('timeout')); }, 25000);
+            child.on('close', (code: number | null) => { clearTimeout(timer); code === 0 ? resolve() : reject(new Error(`exit ${code}`)); });
+            child.on('error', (err: Error) => { clearTimeout(timer); reject(err); });
+          }),
+          30000,
+          `YouTube thumbnail to video scene ${sceneIndex}`
+        );
+        try { fs.unlinkSync(imgPath); } catch { /**/ }
+
+        if (fs.existsSync(outPath) && fs.statSync(outPath).size > 10_000) {
+          results.push(outPath);
+          console.log(`[Pipeline] Scene ${sceneIndex}: YouTube thumbnail added: "${item.snippet.title?.slice(0, 60)}"`);
+        }
+      } catch (err) {
+        console.warn(`[Pipeline] YouTube thumbnail ${i} failed for scene ${sceneIndex}:`, (err as Error).message);
+      }
+    }
+  } catch (err) {
+    console.warn(`[Pipeline] YouTube search failed for scene ${sceneIndex}:`, (err as Error).message);
+  }
+  return results;
+}
+
 // ─── 3c2b. SerpAPI Google Images Search ────────────────────────────────────
 // Searches Google Images via SerpAPI for celebrity/person-specific photos.
 // Ideal for finding real photos of people mentioned in the narration.
@@ -2482,8 +2571,6 @@ async function fetchSceneVisuals(
   const buildSubjectQuery = (subject: string, cue: string) =>
     subject ? `${subject} ${cue}`.slice(0, 100) : cue;
   const wikimediaQuery = buildSubjectQuery(primarySubject, scene.visualCue);
-  const youtubeQuery = buildSubjectQuery(primarySubject, scene.visualCue);
-  const archiveQuery = buildSubjectQuery(primarySubject, scene.visualCue);
   // If there's a secondary person, also search for them in Wikimedia
   const wikimediaQuery2 = secondarySubject ? buildSubjectQuery(secondarySubject, scene.visualCue) : null;
 
@@ -2494,10 +2581,17 @@ async function fetchSceneVisuals(
   const openverseQuery = primarySubject || buildSubjectQuery(primarySubject, scene.visualCue);
   const openverseQuery2 = secondarySubject || null;
 
-  // ── PHASE 1: Free sources first (Pexels, Pixabay, B-roll, Wikimedia, Openverse, SerpAPI, Archive, YouTube CC)
+  // Build YouTube-optimized query: use person name + visual cue for best results
+  const youtubeQuery = buildSubjectQuery(primarySubject, scene.visualCue || scene.pexelsQuery);
+  const youtubeQuery2 = secondarySubject ? buildSubjectQuery(secondarySubject, scene.visualCue || scene.pexelsQuery) : null;
+
+  // ── PHASE 1: Free sources first (YouTube thumbnails FIRST, then Pexels, Pixabay, Wikimedia, Openverse, SerpAPI)
+  // YouTube thumbnails are searched FIRST as they are the most visually relevant to the topic.
   // Run all FREE sources in parallel. Only invoke paid AI generators (Runway etc.) if free sources
   // return fewer than 2 clips — keeping costs minimal.
-  const [pexelsResults, pixabayResults, brollResults, wikimediaResults, wikimedia2Results, openverseResults, openverse2Results, serpResults, serp2Results, archiveResults, youtubeResults] = await Promise.allSettled([
+  const [youtubeResults, youtube2Results, pexelsResults, pixabayResults, brollResults, wikimediaResults, wikimedia2Results, openverseResults, openverse2Results, serpResults, serp2Results] = await Promise.allSettled([
+    fetchYouTubeThumbnails(youtubeQuery, halfDur, workDir, scene.index, 3),
+    youtubeQuery2 ? fetchYouTubeThumbnails(youtubeQuery2, halfDur, workDir, scene.index, 2) : Promise.resolve([]),
     fetchPexelsClips(scene.pexelsQuery, halfDur, workDir, scene.index, 2, scene.pexelsQueries),
     fetchPixabayClips(scene.pexelsQuery, halfDur, workDir, scene.index, 1),
     Promise.resolve([]), // B-roll disabled — too slow (Pexels+Pixabay+SerpAPI sufficient)
@@ -2507,8 +2601,6 @@ async function fetchSceneVisuals(
     openverseQuery2 ? fetchOpenverseImages(openverseQuery2, halfDur, workDir, scene.index, 1) : Promise.resolve([]),
     fetchSerpAPIImages(serpQuery, halfDur, workDir, scene.index, 2),
     serpQuery2 ? fetchSerpAPIImages(serpQuery2, halfDur, workDir, scene.index, 1) : Promise.resolve([]),
-    Promise.resolve([]), // Internet Archive disabled — too slow (10s+ per download)
-    Promise.resolve([]), // YouTube CC disabled — yt-dlp too slow (15s+ per video)
   ]);
 
   const clips: string[] = [];
@@ -2517,7 +2609,10 @@ async function fetchSceneVisuals(
   const pexelsClipsRaw = pexelsResults.status === "fulfilled" ? pexelsResults.value : [];
   const pixabayClipsRaw = pixabayResults.status === "fulfilled" ? pixabayResults.value : [];
   const brollClipsRaw = brollResults.status === "fulfilled" ? brollResults.value : [];
-  const freeStockCount = pexelsClipsRaw.length + pixabayClipsRaw.length + brollClipsRaw.length;
+  const ytClipsRaw = youtubeResults.status === "fulfilled" ? youtubeResults.value : [];
+  const yt2ClipsRaw = youtube2Results.status === "fulfilled" ? youtube2Results.value : [];
+  // Include YouTube thumbnails in free stock count — they are highly relevant and free
+  const freeStockCount = pexelsClipsRaw.length + pixabayClipsRaw.length + brollClipsRaw.length + ytClipsRaw.length + yt2ClipsRaw.length;
 
   // ── PHASE 2: Paid AI generators — ONLY if free sources are insufficient (< 2 clips)
   // Runway is the preferred AI generator (highest quality). Other generators run only if key is set.
@@ -2586,6 +2681,8 @@ async function fetchSceneVisuals(
   if (higgsfieldImageClip) clips.push(higgsfieldImageClip);
 
   // Collect all clips that need fair-use transformation
+  const ytClips = youtubeResults.status === "fulfilled" ? youtubeResults.value : [];
+  const yt2Clips = youtube2Results.status === "fulfilled" ? youtube2Results.value : [];
   const pexelsClips = pexelsResults.status === "fulfilled" ? pexelsResults.value : [];
   const pixabayClips = pixabayResults.status === "fulfilled" ? pixabayResults.value : [];
   const brollClips = brollResults.status === "fulfilled" ? brollResults.value : [];
@@ -2595,23 +2692,24 @@ async function fetchSceneVisuals(
   const openverse2Clips = openverse2Results.status === "fulfilled" ? openverse2Results.value : [];
   const serpClips = serpResults.status === "fulfilled" ? serpResults.value : [];
   const serp2Clips = serp2Results.status === "fulfilled" ? serp2Results.value : [];
-  const archiveClips = archiveResults.status === "fulfilled" ? archiveResults.value : [];
-  const youtubeClips = youtubeResults.status === "fulfilled" ? youtubeResults.value : [];
+  const archiveClips: string[] = []; // Internet Archive disabled
+  const youtubeClips = [...ytClips, ...yt2Clips]; // Combined YouTube results
 
   // Build list of clips needing transformation (with their clip index for color grade variety)
+  // YouTube thumbnails go FIRST for highest visual relevance
   type TransformJob = { path: string; clipIndex: number; needsTransform: boolean };
   const transformJobs: TransformJob[] = [
-    ...pexelsClips.map((p, i) => ({ path: p, clipIndex: i, needsTransform: true })),
-    ...pixabayClips.map((p, i) => ({ path: p, clipIndex: pexelsClips.length + i, needsTransform: true })),
-    ...brollClips.map((p, i) => ({ path: p, clipIndex: pexelsClips.length + pixabayClips.length + i, needsTransform: false })),
-    ...wikimediaClips.map((p, i) => ({ path: p, clipIndex: pexelsClips.length + pixabayClips.length + brollClips.length + i, needsTransform: true })),
-    ...wikimedia2Clips.map((p, i) => ({ path: p, clipIndex: pexelsClips.length + pixabayClips.length + brollClips.length + wikimediaClips.length + i, needsTransform: true })),
+    ...ytClips.map((p, i) => ({ path: p, clipIndex: i, needsTransform: false })), // already processed (zoompan)
+    ...yt2Clips.map((p, i) => ({ path: p, clipIndex: ytClips.length + i, needsTransform: false })),
+    ...pexelsClips.map((p, i) => ({ path: p, clipIndex: ytClips.length + yt2Clips.length + i, needsTransform: true })),
+    ...pixabayClips.map((p, i) => ({ path: p, clipIndex: ytClips.length + yt2Clips.length + pexelsClips.length + i, needsTransform: true })),
+    ...brollClips.map((p, i) => ({ path: p, clipIndex: ytClips.length + yt2Clips.length + pexelsClips.length + pixabayClips.length + i, needsTransform: false })),
+    ...wikimediaClips.map((p, i) => ({ path: p, clipIndex: ytClips.length + yt2Clips.length + pexelsClips.length + pixabayClips.length + brollClips.length + i, needsTransform: true })),
+    ...wikimedia2Clips.map((p, i) => ({ path: p, clipIndex: ytClips.length + yt2Clips.length + pexelsClips.length + pixabayClips.length + brollClips.length + wikimediaClips.length + i, needsTransform: true })),
     ...openverseClips.map((p, i) => ({ path: p, clipIndex: i, needsTransform: false })), // already processed
     ...openverse2Clips.map((p, i) => ({ path: p, clipIndex: i, needsTransform: false })),
-    ...serpClips.map((p, i) => ({ path: p, clipIndex: pexelsClips.length + wikimediaClips.length + wikimedia2Clips.length + openverseClips.length + i, needsTransform: true })),
-    ...serp2Clips.map((p, i) => ({ path: p, clipIndex: pexelsClips.length + wikimediaClips.length + wikimedia2Clips.length + serpClips.length + i, needsTransform: true })),
-    ...archiveClips.map((p, i) => ({ path: p, clipIndex: pexelsClips.length + wikimediaClips.length + wikimedia2Clips.length + serpClips.length + serp2Clips.length + i, needsTransform: true })),
-    ...youtubeClips.map((p, i) => ({ path: p, clipIndex: pexelsClips.length + wikimediaClips.length + wikimedia2Clips.length + serpClips.length + serp2Clips.length + archiveClips.length + i, needsTransform: true })),
+    ...serpClips.map((p, i) => ({ path: p, clipIndex: ytClips.length + yt2Clips.length + pexelsClips.length + wikimediaClips.length + wikimedia2Clips.length + openverseClips.length + i, needsTransform: true })),
+    ...serp2Clips.map((p, i) => ({ path: p, clipIndex: ytClips.length + yt2Clips.length + pexelsClips.length + wikimediaClips.length + wikimedia2Clips.length + serpClips.length + i, needsTransform: true })),
   ];
 
   // Run fair-use transforms in parallel (max 3 concurrent FFmpeg processes per scene)
@@ -2631,7 +2729,7 @@ async function fetchSceneVisuals(
   const personLabel = scenePersons.length > 0 ? ` [persons: ${scenePersons.join(', ')}]` : '';
   const runwayLabel = runwayClip ? " ⚡Runway" : "";
   const aiLabel = freeStockCount < RUNWAY_CLIP_THRESHOLD ? " [AI fallback triggered]" : " [free stock sufficient]";
-  console.log(`[Pipeline] Scene ${scene.index}${personLabel}${runwayLabel}${aiLabel}: ${clips.length} clip(s) ready (Runway: ${runwayClip ? "✓" : "✗"}, Stability: ${aiClip ? "✓" : "✗"}, Pexels: ${pexelsClips.length}, Pixabay: ${pixabayClips.length}, B-roll: ${brollClips.length}, Wikimedia: ${wikimediaClips.length + wikimedia2Clips.length}, Openverse: ${openverseClips.length + openverse2Clips.length}, SerpAPI: ${serpClips.length + serp2Clips.length}, Archive: ${archiveClips.length}, YouTube CC: ${youtubeClips.length})`);
+  console.log(`[Pipeline] Scene ${scene.index}${personLabel}${runwayLabel}${aiLabel}: ${clips.length} clip(s) ready (YouTube: ${youtubeClips.length}, Pexels: ${pexelsClips.length}, Pixabay: ${pixabayClips.length}, Wikimedia: ${wikimediaClips.length + wikimedia2Clips.length}, Openverse: ${openverseClips.length + openverse2Clips.length}, SerpAPI: ${serpClips.length + serp2Clips.length}, Runway: ${runwayClip ? "✓" : "✗"}, Stability: ${aiClip ? "✓" : "✗"})`);
   return clips;
 }
 
@@ -2931,7 +3029,7 @@ async function composeSceneVideo(
   duration: number,
   workDir: string,
   totalScenes: number,
-  enableSubtitles = true
+  enableSubtitles = false  // Subtitles disabled by default
 ): Promise<string> {
   const outputPath = path.join(workDir, `scene_${scene.index}_composed.mp4`);
 
@@ -2974,7 +3072,7 @@ async function composeSceneVideo(
   try {
     // Prefer LLM-generated highlight words; fall back to stopword extraction every 4th scene
     const llmWords = (scene.highlightWords || []).filter(w => w && w.trim().length > 0);
-    const shouldShowKinetic = llmWords.length > 0 || scene.index % 4 === 0;
+    const shouldShowKinetic = false; // Kinetic typography disabled — user requested no on-screen text
     if (shouldShowKinetic) {
       const keywords = llmWords.length > 0 ? llmWords.slice(0, 2) : extractKeywords(scene.text, 1);
       if (keywords.length > 0) {
@@ -3009,14 +3107,12 @@ async function composeSceneVideo(
 
   // Stat callout box: yellow corner box with key statistic (reference video style)
   let statCalloutFrame: { path: string; startTime: number; endTime: number } | null = null;
-  try {
-    if (scene.statCallout && scene.statCallout.trim().length > 0) {
-      statCalloutFrame = await renderStatCallout(scene.statCallout, scene.index, workDir);
-    }
-  } catch (err) {
-    console.warn(`[Pipeline] Scene ${scene.index}: stat callout failed (non-fatal):`, err);
-    statCalloutFrame = null;
-  }
+  // Stat callout disabled — user requested no on-screen text
+  // try {
+  //   if (scene.statCallout && scene.statCallout.trim().length > 0) {
+  //     statCalloutFrame = await renderStatCallout(scene.statCallout, scene.index, workDir);
+  //   }
+  // } catch (err) { statCalloutFrame = null; }
 
   // On Railway, limit FFmpeg threads to reduce memory usage
   const threadFlag = IS_RAILWAY ? "-threads 2" : "";
@@ -3413,7 +3509,7 @@ export async function runVideoPipeline(
   voiceId?: string,
   customVoiceoverUrl?: string,
   videoLength: string = "8-12",
-  enableSubtitles = true
+  enableSubtitles = false  // Subtitles disabled by default — user can enable via UI
 ): Promise<string> {
   const maxScenes = getScenesForLength(videoLength);
   const workDir = path.join(TMP_DIR, `fastvid_${videoId}_${Date.now()}`);
@@ -3562,50 +3658,15 @@ export async function runVideoPipeline(
       }
     }
 
-        // ── Stage 4b: Render chapter cards and interleave with composed scenes ────────────
-    // Chapter cards are 1.5s black-background title cards inserted before the first scene
-    // of each new ## section. They are rendered in parallel (fast, no AI needed).
-    const CHAPTER_CARD_DURATION = 1.5;
-    const chapterCardPromises: Promise<string | null>[] = [];
-    const chapterCardIndices: number[] = []; // indices in composedScenes before which to insert
-
-    for (let i = 0; i < scenes.length; i++) {
-      const title = scenes[i].chapterTitle?.trim();
-      // Skip HOOK and CALL TO ACTION sections (they're not real chapter breaks)
-      if (title && title.length > 0 && title !== 'HOOK' && title !== 'CALL TO ACTION') {
-        chapterCardIndices.push(i);
-        chapterCardPromises.push(
-          renderChapterCard(title, i, workDir).catch(err => {
-            console.warn(`[Pipeline] Chapter card for "${title}" failed (non-fatal):`, err);
-            return null;
-          })
-        );
-      }
-    }
-
-    const chapterCardPaths = await Promise.all(chapterCardPromises);
-    console.log(`[Pipeline] Chapter cards: ${chapterCardPaths.filter(Boolean).length}/${chapterCardIndices.length} rendered`);
-
-    // Build final ordered clip list: [chapter_card?, scene, chapter_card?, scene, ...]
-    const orderedClips: string[] = [];
-    let cardIdx = 0;
-    for (let i = 0; i < composedScenes.length; i++) {
-      // Check if there's a chapter card to insert before this scene
-      const cardInsertIdx = chapterCardIndices.indexOf(i);
-      if (cardInsertIdx !== -1 && chapterCardPaths[cardIdx]) {
-        orderedClips.push(chapterCardPaths[cardIdx]!);
-        cardIdx++;
-      } else if (cardInsertIdx !== -1) {
-        cardIdx++; // card failed, skip
-      }
-      orderedClips.push(composedScenes[i]);
-    }
+        // ── Stage 4b: Chapter cards DISABLED — user requested no on-screen text ────────────
+    // Chapter cards are disabled. All composed scenes are used directly.
+    const CHAPTER_CARD_DURATION = 0;
+    const orderedClips: string[] = [...composedScenes];
 
     // ── Stage 5: Concatenate + intro/outro + music ────────────────────────
     onProgress?.({ stage: STAGE_LABELS.assembling, percent: 77 });
     const t4 = Date.now();
-    const chapterCardsTotalDuration = chapterCardPaths.filter(Boolean).length * CHAPTER_CARD_DURATION;
-    const totalDuration = scenes.reduce((sum, s) => sum + s.duration, 0) + chapterCardsTotalDuration;
+    const totalDuration = scenes.reduce((sum, s) => sum + s.duration, 0); // No chapter cards
     const finalVideoPath = await concatenateScenesWithMusic(orderedClips, workDir, videoId, totalDuration, videoTitle);
     console.log(`[Pipeline] Stage 5 (assemble+music): ${((Date.now()-t4)/1000).toFixed(1)}s`);
 
@@ -3793,43 +3854,13 @@ export async function rerenderFromScenes(
       }))
     );
 
-    // ── Step 5: Chapter cards ───────────────────────────────────────────────
-    onProgress?.("Rendering chapter cards...", 75);
-    const CHAPTER_CARD_DURATION = 1.5;
-    const chapterCardPromises: Promise<string | null>[] = [];
-    const chapterCardIndices: number[] = [];
+    // ── Step 5: Chapter cards DISABLED — user requested no on-screen text ───────────────────────────────────────────────────────────────────────────
+    const orderedClips: string[] = [...composedScenes];
 
-    for (let i = 0; i < internalScenes.length; i++) {
-      const title = internalScenes[i].chapterTitle?.trim();
-      if (title && title.length > 0 && title !== "HOOK" && title !== "CALL TO ACTION") {
-        chapterCardIndices.push(i);
-        chapterCardPromises.push(
-          renderChapterCard(title, i, workDir).catch(() => null)
-        );
-      }
-    }
-
-    const chapterCardPaths = await Promise.all(chapterCardPromises);
-
-    // Build ordered clip list with chapter cards interleaved
-    const orderedClips: string[] = [];
-    let cardIdx = 0;
-    for (let i = 0; i < composedScenes.length; i++) {
-      const cardInsertIdx = chapterCardIndices.indexOf(i);
-      if (cardInsertIdx !== -1 && chapterCardPaths[cardIdx]) {
-        orderedClips.push(chapterCardPaths[cardIdx]!);
-        cardIdx++;
-      } else if (cardInsertIdx !== -1) {
-        cardIdx++;
-      }
-      orderedClips.push(composedScenes[i]);
-    }
-
-    // ── Step 6: Concatenate + music ─────────────────────────────────────────
+    // ── Step 6: Concatenate + music ───────────────────────────────────────────────────────────────────────────
     onProgress?.("Assembling final video...", 78);
-    const chapterCardsTotalDuration = chapterCardPaths.filter(Boolean).length * CHAPTER_CARD_DURATION;
-    const totalDuration = internalScenes.reduce((sum, s) => sum + s.duration, 0) + chapterCardsTotalDuration;
-    const videoTitle = scenes[0]?.title ?? `Video ${videoId}`;
+    const videoTitle = (internalScenes[0] as any)?.title ?? `Video ${videoId}`;
+    const totalDuration = internalScenes.reduce((sum, s) => sum + s.duration, 0); // No chapter cards
     const finalVideoPath = await concatenateScenesWithMusic(orderedClips, workDir, videoId, totalDuration, videoTitle);
 
     // ── Step 7: Upload to S3 ────────────────────────────────────────────────
