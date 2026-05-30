@@ -433,7 +433,10 @@ function VideoDetailModal({ videoId, onClose }: { videoId: number; onClose: () =
     { id: videoId },
     { enabled: !!(video?.videoUrl && video?.status === "completed"), staleTime: 1000 * 60 * 5 }
   );
-  const directVideoUrl = videoUrlData?.url ?? (video as { videoUrl?: string | null })?.videoUrl ?? null;
+  const rawVideoUrl = (video as { videoUrl?: string | null })?.videoUrl ?? null;
+  // Local-storage URLs only work in the sandbox dev environment, not in production
+  const isLocalStorageUrl = rawVideoUrl?.startsWith('/local-storage/') ?? false;
+  const directVideoUrl = isLocalStorageUrl ? null : (videoUrlData?.url ?? rawVideoUrl);
   type VideoMetadata = { title?: string; description?: string; tags?: string[]; chapters?: { time: string; title: string }[] };
   const metadata = video?.metadata as VideoMetadata | null;
 
@@ -458,6 +461,15 @@ function VideoDetailModal({ videoId, onClose }: { videoId: number; onClose: () =
         ) : video ? (
           <div className="flex-1 overflow-y-auto p-5 space-y-5">
             {/* Video Player */}
+            {video.status === "completed" && !directVideoUrl && (
+              <div className="glass-card border border-amber-500/20 rounded-xl p-5 flex items-start gap-3 bg-amber-500/5">
+                <AlertCircle className="w-5 h-5 text-amber-400 mt-0.5 shrink-0" />
+                <div>
+                  <p className="text-sm font-medium text-amber-300">Video not available for playback</p>
+                  <p className="text-xs text-slate-400 mt-1">This video was generated in a previous session and the file is no longer accessible. Generate a new video to get a playable result.</p>
+                </div>
+              </div>
+            )}
             {directVideoUrl && video.status === "completed" && (
               <div className="glass-card border border-white/8 rounded-xl overflow-hidden">
                 <div className="flex items-center justify-between px-4 pt-4 pb-2">

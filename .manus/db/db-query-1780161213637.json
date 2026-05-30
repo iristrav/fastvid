@@ -1,0 +1,28 @@
+{
+  "query": "SELECT id, status, videoUrl, title FROM videos WHERE status = 'completed' ORDER BY id DESC LIMIT 10;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute SELECT id, status, videoUrl, title FROM videos WHERE status = 'completed' ORDER BY id DESC LIMIT 10;",
+  "rows": [
+    {
+      "id": "360002",
+      "status": "completed",
+      "videoUrl": "/manus-storage/videos/360002/final_2d85ceee.mp4",
+      "title": "Top 5 Most AMAZING Deep Sea Creatures You Won't Believe Exist!"
+    },
+    {
+      "id": "330003",
+      "status": "completed",
+      "videoUrl": "/manus-storage/videos/330003/final_a1cb83f1.mp4",
+      "title": "Top 5 Volcanoes That Could Erupt Soon"
+    },
+    {
+      "id": "330002",
+      "status": "completed",
+      "videoUrl": "/manus-storage/videos/330002/final_9220aa16.mp4",
+      "title": "Top 5 Most Amazing Ocean Discoveries You Won't Believe!"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\tstatus\tvideoUrl\ttitle\n360002\tcompleted\t/manus-storage/videos/360002/final_2d85ceee.mp4\tTop 5 Most AMAZING Deep Sea Creatures You Won't Believe Exist!\n330003\tcompleted\t/manus-storage/videos/330003/final_a1cb83f1.mp4\tTop 5 Volcanoes That Could Erupt Soon\n330002\tcompleted\t/manus-storage/videos/330002/final_9220aa16.mp4\tTop 5 Most Amazing Ocean Discoveries You Won't Believe!\n",
+  "stderr": "",
+  "execution_time_ms": 257
+}

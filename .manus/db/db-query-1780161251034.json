@@ -1,0 +1,129 @@
+{
+  "query": "SELECT id, status, videoUrl, title, createdAt FROM videos WHERE status IN ('completed', 'failed') ORDER BY id DESC LIMIT 20;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute SELECT id, status, videoUrl, title, createdAt FROM videos WHERE status IN ('completed', 'failed') ORDER BY id DESC LIMIT 20;",
+  "rows": [
+    {
+      "id": "540001",
+      "status": "failed",
+      "videoUrl": "NULL",
+      "title": "AI Impact on Modern Society",
+      "createdAt": "2026-05-17 08:16:09"
+    },
+    {
+      "id": "510001",
+      "status": "failed",
+      "videoUrl": "NULL",
+      "title": "The Wildest Kylie Jenner Rumor: Unpacking the Truth",
+      "createdAt": "2026-05-13 12:52:44"
+    },
+    {
+      "id": "360002",
+      "status": "completed",
+      "videoUrl": "/manus-storage/videos/360002/final_2d85ceee.mp4",
+      "title": "Top 5 Most AMAZING Deep Sea Creatures You Won't Believe Exist!",
+      "createdAt": "2026-05-07 20:08:03"
+    },
+    {
+      "id": "360001",
+      "status": "failed",
+      "videoUrl": "NULL",
+      "title": "Top 5 Most Incredible Natural Phenomena on Earth",
+      "createdAt": "2026-05-07 19:32:04"
+    },
+    {
+      "id": "330003",
+      "status": "completed",
+      "videoUrl": "/manus-storage/videos/330003/final_a1cb83f1.mp4",
+      "title": "Top 5 Volcanoes That Could Erupt Soon",
+      "createdAt": "2026-05-06 18:56:59"
+    },
+    {
+      "id": "330002",
+      "status": "completed",
+      "videoUrl": "/manus-storage/videos/330002/final_9220aa16.mp4",
+      "title": "Top 5 Most Amazing Ocean Discoveries You Won't Believe!",
+      "createdAt": "2026-05-06 18:38:06"
+    },
+    {
+      "id": "330001",
+      "status": "failed",
+      "videoUrl": "NULL",
+      "title": "Cosmic Revelations: The Top 5 Space Discoveries of 2024",
+      "createdAt": "2026-05-06 18:28:55"
+    },
+    {
+      "id": "270003",
+      "status": "failed",
+      "videoUrl": "NULL",
+      "title": "Unleashing Giants: The Top 10 Most Powerful Engines Ever Built",
+      "createdAt": "2026-05-05 20:30:46"
+    },
+    {
+      "id": "270002",
+      "status": "failed",
+      "videoUrl": "NULL",
+      "title": "Unveiling Opulence: The Top 10 Most Expensive Cars in the World",
+      "createdAt": "2026-05-05 20:24:47"
+    },
+    {
+      "id": "270001",
+      "status": "failed",
+      "videoUrl": "NULL",
+      "title": "Unleashed Speed: The World's 10 Fastest Production Cars",
+      "createdAt": "2026-05-05 20:09:02"
+    },
+    {
+      "id": "240006",
+      "status": "failed",
+      "videoUrl": "NULL",
+      "title": "Unleashed Speed: The Top 5 Fastest Cars in the World",
+      "createdAt": "2026-04-30 16:18:39"
+    },
+    {
+      "id": "240005",
+      "status": "failed",
+      "videoUrl": "NULL",
+      "title": "NULL",
+      "createdAt": "2026-04-30 16:15:26"
+    },
+    {
+      "id": "240004",
+      "status": "failed",
+      "videoUrl": "NULL",
+      "title": "NULL",
+      "createdAt": "2026-04-30 16:15:07"
+    },
+    {
+      "id": "240003",
+      "status": "failed",
+      "videoUrl": "NULL",
+      "title": "NULL",
+      "createdAt": "2026-04-30 16:09:06"
+    },
+    {
+      "id": "240002",
+      "status": "failed",
+      "videoUrl": "NULL",
+      "title": "NULL",
+      "createdAt": "2026-04-30 16:08:38"
+    },
+    {
+      "id": "240001",
+      "status": "failed",
+      "videoUrl": "NULL",
+      "title": "NULL",
+      "createdAt": "2026-04-30 16:02:19"
+    },
+    {
+      "id": "210001",
+      "status": "failed",
+      "videoUrl": "NULL",
+      "title": "NULL",
+      "createdAt": "2026-04-30 14:26:04"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\tstatus\tvideoUrl\ttitle\tcreatedAt\n540001\tfailed\tNULL\tAI Impact on Modern Society\t2026-05-17 08:16:09\n510001\tfailed\tNULL\tThe Wildest Kylie Jenner Rumor: Unpacking the Truth\t2026-05-13 12:52:44\n360002\tcompleted\t/manus-storage/videos/360002/final_2d85ceee.mp4\tTop 5 Most AMAZING Deep Sea Creatures You Won't Believe Exist!\t2026-05-07 20:08:03\n360001\tfailed\tNULL\tTop 5 Most Incredible Natural Phenomena on Earth\t2026-05-07 19:32:04\n330003\tcompleted\t/manus-storage/videos/330003/final_a1cb83f1.mp4\tTop 5 Volcanoes That Could Erupt Soon\t2026-05-06 18:56:59\n330002\tcompleted\t/manus-storage/videos/330002/final_9220aa16.mp4\tTop 5 Most Amazing Ocean Discoveries You Won't Believe!\t2026-05-06 18:38:06\n330001\tfailed\tNULL\tCosmic Revelations: The Top 5 Space Discoveries of 2024\t2026-05-06 18:28:55\n270003\tfailed\tNULL\tUnleashing Giants: The Top 10 Most Powerful Engines Ever Built\t2026-05-05 20:30:46\n270002\tfailed\tNULL\tUnveiling Opulence: The Top 10 Most Expensive Cars in the World\t2026-05-05 20:24:47\n270001\tfailed\tNULL\tUnleashed Speed: The World's 10 Fastest Production Cars\t2026-05-05 20:09:02\n240006\tfailed\tNULL\tUnleashed Speed: The Top 5 Fastest Cars in the World\t2026-04-30 16:18:39\n240005\tfailed\tNULL\tNULL\t2026-04-30 16:15:26\n240004\tfailed\tNULL\tNULL\t2026-04-30 16:15:07\n240003\tfailed\tNULL\tNULL\t2026-04-30 16:09:06\n240002\tfailed\tNULL\tNULL\t2026-04-30 16:08:38\n240001\tfailed\tNULL\tNULL\t2026-04-30 16:02:19\n210001\tfailed\tNULL\tNULL\t2026-04-30 14:26:04\n",
+  "stderr": "",
+  "execution_time_ms": 278
+}
