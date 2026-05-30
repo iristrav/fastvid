@@ -2299,10 +2299,10 @@ async function fetchInternetArchiveClips(
         const outPath = path.join(workDir, `scene_${sceneIndex}_archive_${fetched}.mp4`);
         const tmpPath = path.join(workDir, `scene_${sceneIndex}_archive_${fetched}_tmp.mp4`);
 
-        // Download with size limit (max 20MB, 10s timeout to avoid blocking)
+        // Download with size limit (max 50MB, 30s timeout)
         const dlResp = await fetchWithTimeout(
           videoUrl,
-          10_000,
+          30_000,
           `Internet Archive download scene ${sceneIndex}`,
           { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }
         );
@@ -2585,11 +2585,16 @@ async function fetchSceneVisuals(
   const youtubeQuery = buildSubjectQuery(primarySubject, scene.visualCue || scene.pexelsQuery);
   const youtubeQuery2 = secondarySubject ? buildSubjectQuery(secondarySubject, scene.visualCue || scene.pexelsQuery) : null;
 
-  // ── PHASE 1: Free sources first (YouTube thumbnails FIRST, then Pexels, Pixabay, Wikimedia, Openverse, SerpAPI)
-  // YouTube thumbnails are searched FIRST as they are the most visually relevant to the topic.
+  // Build Internet Archive query: use literalVisualCue or pexelsQuery for best results
+  const archiveQuery = buildSubjectQuery(primarySubject, scene.pexelsQuery || scene.visualCue);
+
+  // ── PHASE 1: Free sources first (Internet Archive FIRST for real video clips, then YouTube thumbnails, Pexels, Pixabay, Wikimedia, Openverse, SerpAPI)
+  // Internet Archive is searched FIRST as it provides real downloadable video clips (Creative Commons).
+  // YouTube thumbnails are searched SECOND as they are the most visually relevant to the topic.
   // Run all FREE sources in parallel. Only invoke paid AI generators (Runway etc.) if free sources
   // return fewer than 2 clips — keeping costs minimal.
-  const [youtubeResults, youtube2Results, pexelsResults, pixabayResults, brollResults, wikimediaResults, wikimedia2Results, openverseResults, openverse2Results, serpResults, serp2Results] = await Promise.allSettled([
+  const [archiveResults, youtubeResults, youtube2Results, pexelsResults, pixabayResults, brollResults, wikimediaResults, wikimedia2Results, openverseResults, openverse2Results, serpResults, serp2Results] = await Promise.allSettled([
+    fetchInternetArchiveClips(archiveQuery, halfDur, workDir, scene.index, 2),
     fetchYouTubeThumbnails(youtubeQuery, halfDur, workDir, scene.index, 3),
     youtubeQuery2 ? fetchYouTubeThumbnails(youtubeQuery2, halfDur, workDir, scene.index, 2) : Promise.resolve([]),
     fetchPexelsClips(scene.pexelsQuery, halfDur, workDir, scene.index, 2, scene.pexelsQueries),
@@ -2605,14 +2610,15 @@ async function fetchSceneVisuals(
 
   const clips: string[] = [];
 
-  // Collect free clips first (Pexels + Pixabay + B-roll = primary free sources)
+  // Collect free clips first (Internet Archive FIRST, then Pexels + Pixabay + B-roll)
+  const archiveClipsRaw = archiveResults.status === "fulfilled" ? archiveResults.value : [];
   const pexelsClipsRaw = pexelsResults.status === "fulfilled" ? pexelsResults.value : [];
   const pixabayClipsRaw = pixabayResults.status === "fulfilled" ? pixabayResults.value : [];
   const brollClipsRaw = brollResults.status === "fulfilled" ? brollResults.value : [];
   const ytClipsRaw = youtubeResults.status === "fulfilled" ? youtubeResults.value : [];
   const yt2ClipsRaw = youtube2Results.status === "fulfilled" ? youtube2Results.value : [];
-  // Include YouTube thumbnails in free stock count — they are highly relevant and free
-  const freeStockCount = pexelsClipsRaw.length + pixabayClipsRaw.length + brollClipsRaw.length + ytClipsRaw.length + yt2ClipsRaw.length;
+  // Include Internet Archive + YouTube thumbnails in free stock count
+  const freeStockCount = archiveClipsRaw.length + pexelsClipsRaw.length + pixabayClipsRaw.length + brollClipsRaw.length + ytClipsRaw.length + yt2ClipsRaw.length;
 
   // ── PHASE 2: Paid AI generators — ONLY if free sources are insufficient (< 2 clips)
   // Runway is the preferred AI generator (highest quality). Other generators run only if key is set.
@@ -2681,6 +2687,7 @@ async function fetchSceneVisuals(
   if (higgsfieldImageClip) clips.push(higgsfieldImageClip);
 
   // Collect all clips that need fair-use transformation
+  const archiveClips = archiveResults.status === "fulfilled" ? archiveResults.value : [];
   const ytClips = youtubeResults.status === "fulfilled" ? youtubeResults.value : [];
   const yt2Clips = youtube2Results.status === "fulfilled" ? youtube2Results.value : [];
   const pexelsClips = pexelsResults.status === "fulfilled" ? pexelsResults.value : [];
@@ -2692,24 +2699,24 @@ async function fetchSceneVisuals(
   const openverse2Clips = openverse2Results.status === "fulfilled" ? openverse2Results.value : [];
   const serpClips = serpResults.status === "fulfilled" ? serpResults.value : [];
   const serp2Clips = serp2Results.status === "fulfilled" ? serp2Results.value : [];
-  const archiveClips: string[] = []; // Internet Archive disabled
   const youtubeClips = [...ytClips, ...yt2Clips]; // Combined YouTube results
 
   // Build list of clips needing transformation (with their clip index for color grade variety)
-  // YouTube thumbnails go FIRST for highest visual relevance
+  // Internet Archive clips go FIRST (real video clips, highest relevance), then YouTube thumbnails
   type TransformJob = { path: string; clipIndex: number; needsTransform: boolean };
   const transformJobs: TransformJob[] = [
-    ...ytClips.map((p, i) => ({ path: p, clipIndex: i, needsTransform: false })), // already processed (zoompan)
-    ...yt2Clips.map((p, i) => ({ path: p, clipIndex: ytClips.length + i, needsTransform: false })),
-    ...pexelsClips.map((p, i) => ({ path: p, clipIndex: ytClips.length + yt2Clips.length + i, needsTransform: true })),
-    ...pixabayClips.map((p, i) => ({ path: p, clipIndex: ytClips.length + yt2Clips.length + pexelsClips.length + i, needsTransform: true })),
-    ...brollClips.map((p, i) => ({ path: p, clipIndex: ytClips.length + yt2Clips.length + pexelsClips.length + pixabayClips.length + i, needsTransform: false })),
-    ...wikimediaClips.map((p, i) => ({ path: p, clipIndex: ytClips.length + yt2Clips.length + pexelsClips.length + pixabayClips.length + brollClips.length + i, needsTransform: true })),
-    ...wikimedia2Clips.map((p, i) => ({ path: p, clipIndex: ytClips.length + yt2Clips.length + pexelsClips.length + pixabayClips.length + brollClips.length + wikimediaClips.length + i, needsTransform: true })),
+    ...archiveClips.map((p, i) => ({ path: p, clipIndex: i, needsTransform: true })), // Internet Archive clips — real video, needs color grade
+    ...ytClips.map((p, i) => ({ path: p, clipIndex: archiveClips.length + i, needsTransform: false })), // YouTube thumbnails — already processed (zoompan)
+    ...yt2Clips.map((p, i) => ({ path: p, clipIndex: archiveClips.length + ytClips.length + i, needsTransform: false })),
+    ...pexelsClips.map((p, i) => ({ path: p, clipIndex: archiveClips.length + ytClips.length + yt2Clips.length + i, needsTransform: true })),
+    ...pixabayClips.map((p, i) => ({ path: p, clipIndex: archiveClips.length + ytClips.length + yt2Clips.length + pexelsClips.length + i, needsTransform: true })),
+    ...brollClips.map((p, i) => ({ path: p, clipIndex: archiveClips.length + ytClips.length + yt2Clips.length + pexelsClips.length + pixabayClips.length + i, needsTransform: false })),
+    ...wikimediaClips.map((p, i) => ({ path: p, clipIndex: archiveClips.length + ytClips.length + yt2Clips.length + pexelsClips.length + pixabayClips.length + brollClips.length + i, needsTransform: true })),
+    ...wikimedia2Clips.map((p, i) => ({ path: p, clipIndex: archiveClips.length + ytClips.length + yt2Clips.length + pexelsClips.length + pixabayClips.length + brollClips.length + wikimediaClips.length + i, needsTransform: true })),
     ...openverseClips.map((p, i) => ({ path: p, clipIndex: i, needsTransform: false })), // already processed
     ...openverse2Clips.map((p, i) => ({ path: p, clipIndex: i, needsTransform: false })),
-    ...serpClips.map((p, i) => ({ path: p, clipIndex: ytClips.length + yt2Clips.length + pexelsClips.length + wikimediaClips.length + wikimedia2Clips.length + openverseClips.length + i, needsTransform: true })),
-    ...serp2Clips.map((p, i) => ({ path: p, clipIndex: ytClips.length + yt2Clips.length + pexelsClips.length + wikimediaClips.length + wikimedia2Clips.length + serpClips.length + i, needsTransform: true })),
+    ...serpClips.map((p, i) => ({ path: p, clipIndex: archiveClips.length + ytClips.length + yt2Clips.length + pexelsClips.length + wikimediaClips.length + wikimedia2Clips.length + openverseClips.length + i, needsTransform: true })),
+    ...serp2Clips.map((p, i) => ({ path: p, clipIndex: archiveClips.length + ytClips.length + yt2Clips.length + pexelsClips.length + wikimediaClips.length + wikimedia2Clips.length + serpClips.length + i, needsTransform: true })),
   ];
 
   // Run fair-use transforms in parallel (max 3 concurrent FFmpeg processes per scene)
@@ -2729,7 +2736,7 @@ async function fetchSceneVisuals(
   const personLabel = scenePersons.length > 0 ? ` [persons: ${scenePersons.join(', ')}]` : '';
   const runwayLabel = runwayClip ? " ⚡Runway" : "";
   const aiLabel = freeStockCount < RUNWAY_CLIP_THRESHOLD ? " [AI fallback triggered]" : " [free stock sufficient]";
-  console.log(`[Pipeline] Scene ${scene.index}${personLabel}${runwayLabel}${aiLabel}: ${clips.length} clip(s) ready (YouTube: ${youtubeClips.length}, Pexels: ${pexelsClips.length}, Pixabay: ${pixabayClips.length}, Wikimedia: ${wikimediaClips.length + wikimedia2Clips.length}, Openverse: ${openverseClips.length + openverse2Clips.length}, SerpAPI: ${serpClips.length + serp2Clips.length}, Runway: ${runwayClip ? "✓" : "✗"}, Stability: ${aiClip ? "✓" : "✗"})`);
+  console.log(`[Pipeline] Scene ${scene.index}${personLabel}${runwayLabel}${aiLabel}: ${clips.length} clip(s) ready (Archive: ${archiveClips.length}, YouTube: ${youtubeClips.length}, Pexels: ${pexelsClips.length}, Pixabay: ${pixabayClips.length}, Wikimedia: ${wikimediaClips.length + wikimedia2Clips.length}, Openverse: ${openverseClips.length + openverse2Clips.length}, SerpAPI: ${serpClips.length + serp2Clips.length}, Runway: ${runwayClip ? "✓" : "✗"}, Stability: ${aiClip ? "✓" : "✗"})`);  
   return clips;
 }
 

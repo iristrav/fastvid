@@ -701,3 +701,13 @@ Fix: directVideoUrl = videoUrlData?.url ?? rawVideoUrl (always use the URL, whet
 - [x] Remove kinetic typography / power words from video
 - [x] Remove stat callout boxes from video
 - [x] Remove chapter cards from video (both main pipeline and re-render pipeline)
+
+## Session 39 — Internet Archive Video Downloads + Better Search Queries
+- [x] Investigated YouTube download: blocked by bot detection on all server environments (yt-dlp, Invidious, Piped all blocked)
+- [x] Implemented Internet Archive (archive.org) as PRIMARY video source — real downloadable Creative Commons video clips
+- [x] fetchInternetArchiveClips: searches archive.org, downloads smallest video file, extracts clip from middle (skip 10s intro)
+- [x] Internet Archive placed FIRST in fetchSceneVisuals parallel fetch (before YouTube thumbnails, Pexels, Pixabay)
+- [x] Internet Archive clips counted in freeStockCount (prevents unnecessary AI generator activation)
+- [x] Increased Internet Archive download timeout from 10s to 30s for larger files
+- [x] TypeScript compiles without errors
+- [ ] Test full pipeline with Internet Archive clips and verify visual relevance
