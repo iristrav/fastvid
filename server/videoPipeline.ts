@@ -432,10 +432,8 @@ IMPORTANT:
   });
 }
 
-// ─── 2. TTS Voiceover (ElevenLabs — MANDATORY PRIMARY) ───────────────────────────────────────
-// Priority: ElevenLabs (always first, highest quality) → Google TTS (free fallback) → silent
-// ElevenLabs eleven_multilingual_v2 is the ONLY intended production TTS.
-// Google TTS is a free fallback that works without any API key.
+// ─── 2. TTS Voiceover ───────────────────────────────────────────────────────────────────────────
+// Priority: Fish Audio S2 Pro (primary, high quality) → ElevenLabs (fallback if quota available) → Google TTS (free) → silent
 export async function generateVoiceover(
   text: string,
   outputPath: string,
@@ -446,13 +444,89 @@ export async function generateVoiceover(
     .replace(/\s+/g, " ")
     .replace(/[^\x00-\x7F]/g, "")
     .trim();
-  // ElevenLabs supports up to ~5000 chars per request. Use 800 to stay safe and cover full scene narration.
   const cleanText = rawText.length <= 800 ? rawText : rawText.slice(0, 800).replace(/\s\S*$/, "");
 
   const MAX_ATTEMPTS = 3;
-  const TTS_TIMEOUT_MS = 90_000; // 90s — ElevenLabs can take up to 60s on paid tier for long texts
+  const TTS_TIMEOUT_MS = 90_000;
 
-  // ── ElevenLabs TTS (HIGHEST QUALITY — try first if key available) ───────────
+  // ── Fish Audio S2 Pro TTS (PRIMARY — highest quality, no quota issues) ───────
+  // Maps ElevenLabs voice IDs (stored in DB) to Fish Audio reference IDs
+  const FISH_VOICE_MAP: Record<string, string> = {
+    "pNInz6obpgDQGcFmaJgB": "0327fdb5da9e4fd782899a8058c8ae2b", // Michael → Narrator
+    "ErXwobaYiN019PkySvjV": "0327fdb5da9e4fd782899a8058c8ae2b", // Adam → Narrator
+    "21m00Tcm4TlvDq8ikWAM": "0327fdb5da9e4fd782899a8058c8ae2b", // Heart → Narrator
+    "EXAVITQu4vr4xnSDxMaL": "0327fdb5da9e4fd782899a8058c8ae2b", // Bella → Narrator
+    "JBFqnCBsd6RMkjVDRZzb": "0327fdb5da9e4fd782899a8058c8ae2b", // George → Narrator
+    "TX3LPaxmHKxFdv7VOQHJ": "0327fdb5da9e4fd782899a8058c8ae2b", // Lewis → Narrator
+  };
+  const fishReferenceId = (voiceId && FISH_VOICE_MAP[voiceId]) || "0327fdb5da9e4fd782899a8058c8ae2b";
+
+  if (FISH_AUDIO_API_KEY) {
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      try {
+        const response = await withTimeout(
+          fetch("https://api.fish.audio/v1/tts", {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${FISH_AUDIO_API_KEY}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              text: cleanText,
+              reference_id: fishReferenceId,
+              format: "mp3",
+              mp3_bitrate: 192,
+              normalize: true,
+              latency: "normal",
+            }),
+          }),
+          TTS_TIMEOUT_MS,
+          `Fish Audio TTS attempt ${attempt}`
+        );
+
+        if (response.status === 429) {
+          const waitMs = 1000 + attempt * 1000;
+          console.warn(`[Pipeline] Fish Audio 429 (attempt ${attempt}), retrying in ${waitMs}ms`);
+          await new Promise(r => setTimeout(r, waitMs));
+          continue;
+        }
+
+        if (!response.ok) {
+          const errText = await response.text();
+          throw new Error(`Fish Audio HTTP ${response.status}: ${errText.slice(0, 200)}`);
+        }
+
+        const audioBuffer = Buffer.from(await response.arrayBuffer());
+        if (audioBuffer.length < 100) throw new Error("Fish Audio returned empty audio");
+
+        fs.writeFileSync(outputPath, audioBuffer);
+        console.log(`[Pipeline] Fish Audio TTS written: ${audioBuffer.length} bytes to ${outputPath}`);
+
+        let durationSec = Math.max(3, Math.round(audioBuffer.length / 40000));
+        try {
+          const { execSync: es } = await import('child_process');
+          const ffprobePaths = ['/usr/bin/ffprobe', '/usr/local/bin/ffprobe', 'ffprobe'];
+          for (const probePath of ffprobePaths) {
+            try {
+              const probeOut = es(`"${probePath}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${outputPath}"`, { encoding: 'utf8', timeout: 8000 });
+              const parsed = parseFloat(probeOut.trim());
+              if (!isNaN(parsed) && parsed > 0) { durationSec = Math.ceil(parsed); break; }
+            } catch { /* try next */ }
+          }
+        } catch { /* use estimate */ }
+        console.log(`[Pipeline] Fish Audio TTS scene ${outputPath.match(/scene_(\d+)/)?.[1] ?? '?'}: ${durationSec}s`);
+        return durationSec;
+      } catch (err) {
+        if (attempt === MAX_ATTEMPTS) {
+          console.warn(`[Pipeline] Fish Audio failed after ${MAX_ATTEMPTS} attempts:`, err);
+          break;
+        }
+        await new Promise(r => setTimeout(r, 500));
+      }
+    }
+  }
+
+  // ── ElevenLabs TTS (FALLBACK — try if Fish Audio fails and key available) ───────────
   if (ELEVENLABS_API_KEY) {
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       try {

@@ -1,0 +1,37 @@
+{
+  "query": "SELECT id, title, status, progressPercent, progressStep, generationStartedAt, updatedAt FROM videos ORDER BY id DESC LIMIT 3;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute SELECT id, title, status, progressPercent, progressStep, generationStartedAt, updatedAt FROM videos ORDER BY id DESC LIMIT 3;",
+  "rows": [
+    {
+      "id": "600001",
+      "title": "NULL",
+      "status": "pending",
+      "progressPercent": "0",
+      "progressStep": "NULL",
+      "generationStartedAt": "NULL",
+      "updatedAt": "2026-05-18 11:09:46"
+    },
+    {
+      "id": "570001",
+      "title": "Complete Pipeline Test - The Future of AI",
+      "status": "pending",
+      "progressPercent": "0",
+      "progressStep": "NULL",
+      "generationStartedAt": "NULL",
+      "updatedAt": "2026-05-17 20:33:18"
+    },
+    {
+      "id": "540001",
+      "title": "AI Impact on Modern Society",
+      "status": "failed",
+      "progressPercent": "0",
+      "progressStep": "Ready to retry",
+      "generationStartedAt": "NULL",
+      "updatedAt": "2026-05-17 20:28:38"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\ttitle\tstatus\tprogressPercent\tprogressStep\tgenerationStartedAt\tupdatedAt\n600001\tNULL\tpending\t0\tNULL\tNULL\t2026-05-18 11:09:46\n570001\tComplete Pipeline Test - The Future of AI\tpending\t0\tNULL\tNULL\t2026-05-17 20:33:18\n540001\tAI Impact on Modern Society\tfailed\t0\tReady to retry\tNULL\t2026-05-17 20:28:38\n",
+  "stderr": "",
+  "execution_time_ms": 273
+}

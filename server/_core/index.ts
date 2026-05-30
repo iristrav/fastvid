@@ -121,6 +121,88 @@ async function startServer() {
     });
   });
 
+  // ─── Video Download Endpoint ─────────────────────────────────────────────
+  // Streams the video file through the server so the browser can download it.
+  // This avoids CORS issues with presigned S3 URLs that block the download attribute.
+  app.get("/api/download/video/:id", async (req, res) => {
+    try {
+      // Verify auth via JWT cookie (same logic as createContext)
+      const { parse: parseCookies } = await import("cookie");
+      const { jwtVerify } = await import("jose");
+      const { COOKIE_NAME } = await import("@shared/const");
+      const { getVideoById, getUserById } = await import("../db");
+
+      const cookies = parseCookies(req.headers.cookie ?? "");
+      const token = cookies[COOKIE_NAME];
+      if (!token) { res.status(401).json({ error: "Unauthorized" }); return; }
+
+      const secret = new TextEncoder().encode(process.env.JWT_SECRET ?? "fallback-secret-change-in-production");
+      let userId: number;
+      try {
+        const { payload } = await jwtVerify(token, secret, { algorithms: ["HS256"] });
+        userId = payload.userId as number;
+        if (!userId) throw new Error("No userId in token");
+      } catch {
+        res.status(401).json({ error: "Invalid session" }); return;
+      }
+
+      const videoId = parseInt(req.params.id, 10);
+      if (isNaN(videoId)) { res.status(400).json({ error: "Invalid video ID" }); return; }
+
+      const video = await getVideoById(videoId);
+      if (!video) { res.status(404).json({ error: "Video not found" }); return; }
+
+      // Allow owner or admin
+      const user = await getUserById(userId);
+      if (video.userId !== userId && user?.role !== "admin") {
+        res.status(403).json({ error: "Forbidden" }); return;
+      }
+
+      if (!video.videoUrl) { res.status(404).json({ error: "Video file not available" }); return; }
+
+      const safeTitle = (video.title ?? `video-${videoId}`).replace(/[^a-zA-Z0-9\-_ ]/g, "").trim().replace(/\s+/g, "-").slice(0, 80);
+      const filename = `${safeTitle || `fastvid-VID-${String(videoId).padStart(4, "0")}`}.mp4`;
+
+      // If it's a /manus-storage/ URL, get a presigned URL and proxy the bytes
+      if (video.videoUrl.startsWith("/manus-storage/")) {
+        const { storageGetSignedUrl } = await import("../storage");
+        const key = video.videoUrl.replace(/^\/manus-storage\//, "");
+        const signedUrl = await storageGetSignedUrl(key);
+        const upstream = await fetch(signedUrl);
+        if (!upstream.ok || !upstream.body) {
+          res.status(502).json({ error: "Failed to fetch video from storage" }); return;
+        }
+        const contentLength = upstream.headers.get("content-length");
+        res.setHeader("Content-Type", "video/mp4");
+        res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+        if (contentLength) res.setHeader("Content-Length", contentLength);
+        // Stream the response body to the client
+        const { Readable } = await import("stream");
+        const nodeStream = Readable.fromWeb(upstream.body as import("stream/web").ReadableStream);
+        nodeStream.pipe(res);
+        return;
+      }
+
+      // If it's a /local-storage/ URL (sandbox dev), serve the local file
+      if (video.videoUrl.startsWith("/local-storage/")) {
+        const { LOCAL_UPLOADS_DIR } = await import("../storageLocal");
+        const { createReadStream, existsSync } = await import("fs");
+        const fileName = video.videoUrl.replace(/^\/local-storage\//, "");
+        const filePath = `${LOCAL_UPLOADS_DIR}/${fileName}`;
+        if (!existsSync(filePath)) { res.status(404).json({ error: "File not found on disk" }); return; }
+        res.setHeader("Content-Type", "video/mp4");
+        res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+        createReadStream(filePath).pipe(res);
+        return;
+      }
+
+      res.status(400).json({ error: "Unsupported video URL format" });
+    } catch (err) {
+      console.error("[Download] Error:", err);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
   // tRPC API
   app.use(
     "/api/trpc",

@@ -661,3 +661,12 @@ FINAL STATUS: ✅ ALL CRITICAL FFMPEG ISSUES FIXED
 - [x] editor.rerender tRPC mutation triggers rerenderFromScenes in background (non-blocking)
 - [x] Progress indicator: polls trpc.video.pollStatus every 3s, shows step+percent in editor top bar
 - [x] On completion: success toast + auto-redirect to dashboard; on failure: error toast
+
+## Bug Fix — Download
+- [x] Fix video download: download button shows nothing / doesn't work — diagnose and fix the download flow so users can download completed videos
+- [x] Add server-side /api/download/video/:id endpoint that streams video via server (bypasses CORS)
+- [x] Update download button to use /api/download/video/:id instead of direct presigned URL
+- [x] Fix "Video not available for playback" warning to only show when videoUrl is null (not just when presigned URL fails)
+- [x] Add Fish Audio S2 Pro as primary TTS (replaces ElevenLabs which had quota issues)
+- [x] ElevenLabs kept as fallback when Fish Audio fails
+- [x] VID-0058 completed successfully: script ✓, Fish Audio voiceover ✓, visuals ✓, download ✓ (282MB)

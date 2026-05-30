@@ -461,40 +461,45 @@ function VideoDetailModal({ videoId, onClose }: { videoId: number; onClose: () =
         ) : video ? (
           <div className="flex-1 overflow-y-auto p-5 space-y-5">
             {/* Video Player */}
-            {video.status === "completed" && !directVideoUrl && (
+            {video.status === "completed" && !video.videoUrl && (
               <div className="glass-card border border-amber-500/20 rounded-xl p-5 flex items-start gap-3 bg-amber-500/5">
                 <AlertCircle className="w-5 h-5 text-amber-400 mt-0.5 shrink-0" />
                 <div>
-                  <p className="text-sm font-medium text-amber-300">Video not available for playback</p>
-                  <p className="text-xs text-slate-400 mt-1">This video was generated in a previous session and the file is no longer accessible. Generate a new video to get a playable result.</p>
+                  <p className="text-sm font-medium text-amber-300">Video file not available</p>
+                  <p className="text-xs text-slate-400 mt-1">This video was generated in a previous session and the file is no longer accessible. Generate a new video to get a downloadable result.</p>
                 </div>
               </div>
             )}
-            {directVideoUrl && video.status === "completed" && (
+            {video.status === "completed" && video.videoUrl && (
               <div className="glass-card border border-white/8 rounded-xl overflow-hidden">
                 <div className="flex items-center justify-between px-4 pt-4 pb-2">
                   <h3 className="font-semibold text-white text-sm flex items-center gap-2">
                     <Play className="w-4 h-4 text-green-400" /> Your Video
                   </h3>
                   <a
-                    href={directVideoUrl}
-                    download={`fastvid-${formatVideoId(video.id)}.mp4`}
-                    target="_blank"
-                    rel="noopener noreferrer"
+                    href={`/api/download/video/${video.id}`}
+                    download={`${(video.title ?? `fastvid-${formatVideoId(video.id)}`).replace(/[^a-zA-Z0-9\-_ ]/g, '').trim().replace(/\s+/g, '-').slice(0, 80) || `fastvid-${formatVideoId(video.id)}`}.mp4`}
                     className="flex items-center gap-1.5 text-xs text-cyan-400 hover:text-cyan-300 transition-colors px-2.5 py-1.5 rounded-lg bg-cyan-500/10 border border-cyan-500/20 hover:bg-cyan-500/20"
                   >
                     <Download className="w-3.5 h-3.5" /> Download MP4
                   </a>
                 </div>
-                <video
-                  controls
-                  className="w-full"
-                  src={directVideoUrl}
-                  poster={video.thumbnailUrl ?? undefined}
-                  preload="metadata"
-                >
-                  Your browser does not support the video tag.
-                </video>
+                {directVideoUrl ? (
+                  <video
+                    controls
+                    className="w-full"
+                    src={directVideoUrl}
+                    poster={video.thumbnailUrl ?? undefined}
+                    preload="metadata"
+                  >
+                    Your browser does not support the video tag.
+                  </video>
+                ) : (
+                  <div className="flex items-center justify-center p-8 text-slate-400 text-sm gap-2">
+                    <Download className="w-4 h-4" />
+                    <span>Video ready — click Download MP4 to save it</span>
+                  </div>
+                )}
               </div>
             )}
             {/* Metadata */}
