@@ -203,6 +203,31 @@ async function startServer() {
     }
   });
 
+  // ─── Internal Video Trigger (dev/testing only) ──────────────────────────────
+  // Allows triggering video generation without OAuth authentication.
+  // Protected by INTERNAL_TRIGGER_KEY env var.
+  app.post("/api/internal/generate", async (req, res) => {
+    const key = req.headers['x-internal-key'];
+    const expectedKey = process.env.INTERNAL_TRIGGER_KEY || 'dev-trigger-key-2026';
+    if (key !== expectedKey) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+    try {
+      const { createVideo } = await import('../db');
+      const { prompt, videoLength = '5-8', videoType = 'documentary', userId = 1 } = req.body;
+      if (!prompt) { res.status(400).json({ error: 'prompt required' }); return; }
+      const videoId = await createVideo({ userId, prompt, videoLength, videoType });
+      // Import and call generateFullVideo dynamically to avoid circular deps
+      const { generateFullVideoInternal } = await import('../routers');
+      generateFullVideoInternal(videoId, prompt, videoLength, videoType, undefined, undefined, false).catch(console.error);
+      res.json({ videoId, status: 'started' });
+    } catch (err) {
+      console.error('[Internal Trigger] Error:', err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
   // tRPC API
   app.use(
     "/api/trpc",

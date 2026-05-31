@@ -96,6 +96,10 @@ async function generateVideoWithAI(videoId: number, prompt: string, videoLength:
 }
 
 // ─── Full pipeline: script generation + video production (no approval pause) ────
+export async function generateFullVideoInternal(videoId: number, prompt: string, videoLength: string, videoType: string, voiceId?: string, customVoiceoverUrl?: string, enableSubtitles = true) {
+  return generateFullVideo(videoId, prompt, videoLength, videoType, voiceId, customVoiceoverUrl, enableSubtitles);
+}
+
 async function generateFullVideo(videoId: number, prompt: string, videoLength: string, videoType: string, voiceId?: string, customVoiceoverUrl?: string, enableSubtitles = true) {
   const timeoutHandle = setTimeout(async () => {
     console.error(`[Video Generation] Video ${videoId} exceeded 1.5-hour limit — marking as failed`);

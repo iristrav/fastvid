@@ -1,0 +1,115 @@
+{
+  "query": "SELECT id, status, title, progressStep, progressPercent FROM videos ORDER BY id DESC LIMIT 15;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute SELECT id, status, title, progressStep, progressPercent FROM videos ORDER BY id DESC LIMIT 15;",
+  "rows": [
+    {
+      "id": "600001",
+      "status": "pending",
+      "title": "NULL",
+      "progressStep": "NULL",
+      "progressPercent": "0"
+    },
+    {
+      "id": "570001",
+      "status": "pending",
+      "title": "Complete Pipeline Test - The Future of AI",
+      "progressStep": "NULL",
+      "progressPercent": "0"
+    },
+    {
+      "id": "540001",
+      "status": "failed",
+      "title": "AI Impact on Modern Society",
+      "progressStep": "Ready to retry",
+      "progressPercent": "0"
+    },
+    {
+      "id": "510001",
+      "status": "failed",
+      "title": "The Wildest Kylie Jenner Rumor: Unpacking the Truth",
+      "progressStep": "Failed: corrupt Pexels clip (now fixed)",
+      "progressPercent": "0"
+    },
+    {
+      "id": "480001",
+      "status": "pending",
+      "title": "NULL",
+      "progressStep": "NULL",
+      "progressPercent": "0"
+    },
+    {
+      "id": "450001",
+      "status": "pending",
+      "title": "NULL",
+      "progressStep": "NULL",
+      "progressPercent": "0"
+    },
+    {
+      "id": "420001",
+      "status": "pending",
+      "title": "NULL",
+      "progressStep": "NULL",
+      "progressPercent": "0"
+    },
+    {
+      "id": "390001",
+      "status": "awaiting_approval",
+      "title": "Top 10 Most Beautiful Waterfalls in the World",
+      "progressStep": "✅ Script ready — awaiting your approval",
+      "progressPercent": "28"
+    },
+    {
+      "id": "360003",
+      "status": "awaiting_approval",
+      "title": "Top 5 Most Incredible Ancient Civilizations That Disappeared",
+      "progressStep": "✅ Script ready — awaiting your approval",
+      "progressPercent": "28"
+    },
+    {
+      "id": "360002",
+      "status": "completed",
+      "title": "Top 5 Most AMAZING Deep Sea Creatures You Won't Believe Exist!",
+      "progressStep": "Video complete!",
+      "progressPercent": "100"
+    },
+    {
+      "id": "360001",
+      "status": "failed",
+      "title": "Top 5 Most Incredible Natural Phenomena on Earth",
+      "progressStep": "Generating AI visuals + fetching stock clips...",
+      "progressPercent": "43"
+    },
+    {
+      "id": "330003",
+      "status": "completed",
+      "title": "Top 5 Volcanoes That Could Erupt Soon",
+      "progressStep": "Video complete!",
+      "progressPercent": "100"
+    },
+    {
+      "id": "330002",
+      "status": "completed",
+      "title": "Top 5 Most Amazing Ocean Discoveries You Won't Believe!",
+      "progressStep": "Video complete!",
+      "progressPercent": "100"
+    },
+    {
+      "id": "330001",
+      "status": "failed",
+      "title": "Cosmic Revelations: The Top 5 Space Discoveries of 2024",
+      "progressStep": "Generation failed",
+      "progressPercent": "0"
+    },
+    {
+      "id": "270003",
+      "status": "failed",
+      "title": "Unleashing Giants: The Top 10 Most Powerful Engines Ever Built",
+      "progressStep": "Timed out",
+      "progressPercent": "37"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\tstatus\ttitle\tprogressStep\tprogressPercent\n600001\tpending\tNULL\tNULL\t0\n570001\tpending\tComplete Pipeline Test - The Future of AI\tNULL\t0\n540001\tfailed\tAI Impact on Modern Society\tReady to retry\t0\n510001\tfailed\tThe Wildest Kylie Jenner Rumor: Unpacking the Truth\tFailed: corrupt Pexels clip (now fixed)\t0\n480001\tpending\tNULL\tNULL\t0\n450001\tpending\tNULL\tNULL\t0\n420001\tpending\tNULL\tNULL\t0\n390001\tawaiting_approval\tTop 10 Most Beautiful Waterfalls in the World\t✅ Script ready — awaiting your approval\t28\n360003\tawaiting_approval\tTop 5 Most Incredible Ancient Civilizations That Disappeared\t✅ Script ready — awaiting your approval\t28\n360002\tcompleted\tTop 5 Most AMAZING Deep Sea Creatures You Won't Believe Exist!\tVideo complete!\t100\n360001\tfailed\tTop 5 Most Incredible Natural Phenomena on Earth\tGenerating AI visuals + fetching stock clips...\t43\n330003\tcompleted\tTop 5 Volcanoes That Could Erupt Soon\tVideo complete!\t100\n330002\tcompleted\tTop 5 Most Amazing Ocean Discoveries You Won't Believe!\tVideo complete!\t100\n330001\tfailed\tCosmic Revelations: The Top 5 Space Discoveries of 2024\tGeneration failed\t0\n270003\tfailed\tUnleashing Giants: The Top 10 Most Powerful Engines Ever Built\tTimed out\t37\n",
+  "stderr": "",
+  "execution_time_ms": 266
+}

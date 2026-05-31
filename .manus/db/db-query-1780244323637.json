@@ -1,0 +1,45 @@
+{
+  "query": "SELECT id, status, title, progressStep, progressPercent FROM videos WHERE status IN ('pending', 'generating_script', 'generating_voiceover', 'generating_visuals', 'assembling') ORDER BY id DESC LIMIT 5;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute SELECT id, status, title, progressStep, progressPercent FROM videos WHERE status IN ('pending', 'generating_script', 'generating_voiceover', 'generating_visuals', 'assembling') ORDER BY id DESC LIMIT 5;",
+  "rows": [
+    {
+      "id": "600001",
+      "status": "pending",
+      "title": "NULL",
+      "progressStep": "NULL",
+      "progressPercent": "0"
+    },
+    {
+      "id": "570001",
+      "status": "pending",
+      "title": "Complete Pipeline Test - The Future of AI",
+      "progressStep": "NULL",
+      "progressPercent": "0"
+    },
+    {
+      "id": "480001",
+      "status": "pending",
+      "title": "NULL",
+      "progressStep": "NULL",
+      "progressPercent": "0"
+    },
+    {
+      "id": "450001",
+      "status": "pending",
+      "title": "NULL",
+      "progressStep": "NULL",
+      "progressPercent": "0"
+    },
+    {
+      "id": "420001",
+      "status": "pending",
+      "title": "NULL",
+      "progressStep": "NULL",
+      "progressPercent": "0"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\tstatus\ttitle\tprogressStep\tprogressPercent\n600001\tpending\tNULL\tNULL\t0\n570001\tpending\tComplete Pipeline Test - The Future of AI\tNULL\t0\n480001\tpending\tNULL\tNULL\t0\n450001\tpending\tNULL\tNULL\t0\n420001\tpending\tNULL\tNULL\t0\n",
+  "stderr": "",
+  "execution_time_ms": 399
+}

@@ -1,0 +1,52 @@
+{
+  "query": "SELECT id, status, title, progressStep, progressPercent FROM videos WHERE status IN ('generating_visuals', 'generating_script', 'generating_voiceover', 'awaiting_approval') OR (status = 'pending' AND title IS NULL) ORDER BY id DESC LIMIT 10;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute SELECT id, status, title, progressStep, progressPercent FROM videos WHERE status IN ('generating_visuals', 'generating_script', 'generating_voiceover', 'awaiting_approval') OR (status = 'pending' AND title IS NULL) ORDER BY id DESC LIMIT 10;",
+  "rows": [
+    {
+      "id": "600001",
+      "status": "pending",
+      "title": "NULL",
+      "progressStep": "NULL",
+      "progressPercent": "0"
+    },
+    {
+      "id": "480001",
+      "status": "pending",
+      "title": "NULL",
+      "progressStep": "NULL",
+      "progressPercent": "0"
+    },
+    {
+      "id": "450001",
+      "status": "pending",
+      "title": "NULL",
+      "progressStep": "NULL",
+      "progressPercent": "0"
+    },
+    {
+      "id": "420001",
+      "status": "pending",
+      "title": "NULL",
+      "progressStep": "NULL",
+      "progressPercent": "0"
+    },
+    {
+      "id": "390001",
+      "status": "awaiting_approval",
+      "title": "Top 10 Most Beautiful Waterfalls in the World",
+      "progressStep": "✅ Script ready — awaiting your approval",
+      "progressPercent": "28"
+    },
+    {
+      "id": "360003",
+      "status": "awaiting_approval",
+      "title": "Top 5 Most Incredible Ancient Civilizations That Disappeared",
+      "progressStep": "✅ Script ready — awaiting your approval",
+      "progressPercent": "28"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\tstatus\ttitle\tprogressStep\tprogressPercent\n600001\tpending\tNULL\tNULL\t0\n480001\tpending\tNULL\tNULL\t0\n450001\tpending\tNULL\tNULL\t0\n420001\tpending\tNULL\tNULL\t0\n390001\tawaiting_approval\tTop 10 Most Beautiful Waterfalls in the World\t✅ Script ready — awaiting your approval\t28\n360003\tawaiting_approval\tTop 5 Most Incredible Ancient Civilizations That Disappeared\t✅ Script ready — awaiting your approval\t28\n",
+  "stderr": "",
+  "execution_time_ms": 262
+}

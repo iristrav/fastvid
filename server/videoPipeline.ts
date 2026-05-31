@@ -2345,11 +2345,12 @@ async function fetchInternetArchiveClips(
   return results;
 }
 
-// ─── 3c3. Fetch YouTube CC Video Clips via RapidAPI YTStream ────────────────────
+// ─── 3c3. Fetch YouTube CC Video Clips via Cloud Computer Download Service ──────
 // Uses YouTube Data API v3 to search for Creative Commons videos, then downloads
-// them via RapidAPI YTStream (bypasses YouTube bot detection).
+// them via the cloud computer service (yt-dlp ANDROID_VR client — no cookies needed).
+// Accepts multiple query variants (specific→broad) and tries each until enough clips found.
 async function fetchYouTubeCCClips(
-  query: string,
+  queries: string | string[],
   duration: number,
   workDir: string,
   sceneIndex: number,
@@ -2358,131 +2359,100 @@ async function fetchYouTubeCCClips(
   const results: string[] = [];
 
   const youtubeApiKey = process.env.YOUTUBE_API_KEY;
-  const rapidApiKey = process.env.RAPIDAPI_KEY;
 
-  // Need both YouTube Data API (for search) and RapidAPI (for download)
-  if (!youtubeApiKey || !rapidApiKey) {
-    console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube CC skipped — missing YOUTUBE_API_KEY or RAPIDAPI_KEY`);
+  // Need YouTube Data API for search; download handled by cloud computer service
+  if (!youtubeApiKey) {
+    console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube CC skipped — missing YOUTUBE_API_KEY`);
     return [];
   }
 
-  try {
-    // Step 1: Search YouTube Data API v3 for Creative Commons videos
-    const searchUrl = new URL('https://www.googleapis.com/youtube/v3/search');
-    searchUrl.searchParams.set('key', youtubeApiKey);
-    searchUrl.searchParams.set('q', query);
-    searchUrl.searchParams.set('type', 'video');
-    searchUrl.searchParams.set('videoLicense', 'creativeCommon'); // CC only
-    searchUrl.searchParams.set('maxResults', String(count * 5));
-    searchUrl.searchParams.set('part', 'snippet');
-    searchUrl.searchParams.set('videoDuration', 'medium'); // 4-20 min videos
-    searchUrl.searchParams.set('order', 'relevance');
-    searchUrl.searchParams.set('videoEmbeddable', 'true');
+  // Normalise: accept single string or array of query variants (specific→broad)
+  const queryList = Array.isArray(queries) ? queries : [queries];
+  // Deduplicate and filter empty strings
+  const uniqueQueries = Array.from(new Set(queryList.filter(q => q && q.trim().length > 0)));
 
-    const searchResp = await withTimeout(
-      fetch(searchUrl.toString()),
-      15_000,
-      `YouTube CC search scene ${sceneIndex}`
-    );
-    if (!searchResp.ok) {
-      console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube API error ${searchResp.status}`);
-      return [];
-    }
-    const searchData = await searchResp.json() as { items?: Array<{ id?: { videoId?: string }; snippet?: { title?: string } }> };
-    const items = searchData.items || [];
-    if (!items.length) {
-      console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube CC search returned 0 results for query: ${query}`);
-      return [];
-    }
-    console.log(`[Pipeline] Scene ${sceneIndex}: YouTube CC found ${items.length} videos for "${query}"`);
+  // Track video IDs already downloaded to avoid duplicates across query variants
+  const downloadedIds = new Set<string>();
+  let fetched = 0;
 
-    let fetched = 0;
-    for (const item of items) {
-      if (fetched >= count) break;
-      const videoId = item.id?.videoId;
-      if (!videoId) continue;
+  for (const query of uniqueQueries) {
+    if (fetched >= count) break;
 
-      try {
-        // Step 2: Get direct download URL via RapidAPI YTStream
-        const ytStreamResp = await withTimeout(
-          fetch(`https://ytstream-download-youtube-videos.p.rapidapi.com/dl?id=${videoId}`, {
-            headers: {
-              'X-RapidAPI-Key': rapidApiKey,
-              'X-RapidAPI-Host': 'ytstream-download-youtube-videos.p.rapidapi.com',
-            },
-          }),
-          20_000,
-          `YTStream API scene ${sceneIndex}`
-        );
-        if (!ytStreamResp.ok) {
-          console.warn(`[Pipeline] Scene ${sceneIndex}: YTStream API error ${ytStreamResp.status} for ${videoId}`);
-          continue;
-        }
-        const ytData = await ytStreamResp.json() as {
-          formats?: Record<string, { url?: string; mimeType?: string; quality?: string; bitrate?: number }>;
-          adaptiveFormats?: Record<string, { url?: string; mimeType?: string; quality?: string; bitrate?: number }>;
-        };
+    try {
+      // Step 1: Search YouTube Data API v3 for Creative Commons videos
+      const searchUrl = new URL('https://www.googleapis.com/youtube/v3/search');
+      searchUrl.searchParams.set('key', youtubeApiKey);
+      searchUrl.searchParams.set('q', query);
+      searchUrl.searchParams.set('type', 'video');
+      searchUrl.searchParams.set('videoLicense', 'creativeCommon'); // CC only
+      searchUrl.searchParams.set('maxResults', String(Math.max(5, (count - fetched) * 4)));
+      searchUrl.searchParams.set('part', 'snippet');
+      searchUrl.searchParams.set('videoDuration', 'medium'); // 4-20 min videos
+      searchUrl.searchParams.set('order', 'relevance');
+      searchUrl.searchParams.set('videoEmbeddable', 'true');
 
-        // Pick best MP4 video format (360p or 480p preferred for speed)
-        const allFormats = { ...(ytData.formats || {}), ...(ytData.adaptiveFormats || {}) };
-        const mp4Formats = Object.values(allFormats).filter(f =>
-          f.url && (f.mimeType?.includes('video/mp4') || f.mimeType?.includes('video/webm'))
-        );
-        // Prefer 360p/480p for fast download, avoid 1080p+
-        const preferred = mp4Formats.find(f => f.quality?.includes('360') || f.quality?.includes('480'))
-          || mp4Formats.find(f => f.quality?.includes('240') || f.quality?.includes('720'))
-          || mp4Formats[0];
-        if (!preferred?.url) {
-          console.warn(`[Pipeline] Scene ${sceneIndex}: No MP4 format found for ${videoId}`);
-          continue;
-        }
-
-        const outPath = path.join(workDir, `scene_${sceneIndex}_ytcc_${fetched}.mp4`);
-        const tmpPath = path.join(workDir, `scene_${sceneIndex}_ytcc_${fetched}_tmp.mp4`);
-
-        // Step 3: Download the video clip (max 40MB, 45s timeout)
-        const dlResp = await fetchWithTimeout(
-          preferred.url,
-          45_000,
-          `YouTube CC download scene ${sceneIndex}`,
-          { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' } }
-        );
-        if (!dlResp.ok) {
-          console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube CC download failed ${dlResp.status}`);
-          continue;
-        }
-        const MAX_YT_SIZE = 40 * 1024 * 1024; // 40MB
-        const arrayBuf = await dlResp.arrayBuffer();
-        if (arrayBuf.byteLength > MAX_YT_SIZE) {
-          console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube CC clip too large (${(arrayBuf.byteLength / 1024 / 1024).toFixed(1)}MB), skipping`);
-          continue;
-        }
-        fs.writeFileSync(tmpPath, Buffer.from(arrayBuf));
-
-        // Step 4: Extract clip from middle of video (skip first 15s to avoid intros)
-        const clipStart = 15;
-        await withTimeout(
-          exec(
-            `${FFMPEG_BIN} -y -ss ${clipStart} -i "${tmpPath}" -t ${duration} ` +
-            `-vf "scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}" ` +
-            `-c:v libx264 -preset veryfast -crf 22 -an -pix_fmt yuv420p "${outPath}"`
-          ),
-          45_000,
-          `YouTube CC clip extract scene ${sceneIndex}`
-        );
-        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-
-        if (fs.existsSync(outPath) && fs.statSync(outPath).size > 10_000) {
-          results.push(outPath);
-          fetched++;
-          console.log(`[Pipeline] Scene ${sceneIndex}: ✅ YouTube CC clip downloaded: "${item.snippet?.title}" (${videoId})`);
-        }
-      } catch (err) {
-        console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube CC video ${item.id?.videoId} failed:`, (err as Error).message);
+      const searchResp = await withTimeout(
+        fetch(searchUrl.toString()),
+        15_000,
+        `YouTube CC search scene ${sceneIndex}`
+      );
+      if (!searchResp.ok) {
+        console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube API error ${searchResp.status} for query: "${query}"`);
+        continue;
       }
+      const searchData = await searchResp.json() as { items?: Array<{ id?: { videoId?: string }; snippet?: { title?: string } }> };
+      const items = searchData.items || [];
+      if (!items.length) {
+        console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube CC 0 results for: "${query}" — trying next variant`);
+        continue;
+      }
+      console.log(`[Pipeline] Scene ${sceneIndex}: YouTube CC found ${items.length} videos for "${query}"`);
+
+      for (const item of items) {
+        if (fetched >= count) break;
+        const videoId = item.id?.videoId;
+        if (!videoId || downloadedIds.has(videoId)) continue;
+
+        try {
+          // Use cloud computer download service (yt-dlp with ANDROID_VR client — no cookies needed)
+          // The cloud computer (34.24.188.157:8765) runs yt-dlp + ffmpeg and returns ready clip bytes
+          // This bypasses YouTube's IP-locked CDN URLs which only work from the requesting server's IP
+          const CLOUD_DL_SERVICE = 'http://34.24.188.157:8765';
+          const clipStart = 15; // Skip first 15s to avoid intros
+          const outPath = path.join(workDir, `scene_${sceneIndex}_ytcc_${fetched}.mp4`);
+
+          const dlUrl = `${CLOUD_DL_SERVICE}/download?id=${videoId}&duration=${duration}&start=${clipStart}`;
+          const dlResp = await fetchWithTimeout(
+            dlUrl,
+            90_000, // 90s timeout for download + ffmpeg
+            `YouTube CC cloud download scene ${sceneIndex}`
+          );
+          if (!dlResp.ok) {
+            const errText = await dlResp.text().catch(() => '');
+            console.warn(`[Pipeline] Scene ${sceneIndex}: Cloud DL service error ${dlResp.status} for ${videoId}: ${errText.slice(0, 100)}`);
+            continue;
+          }
+          const MAX_YT_SIZE = 80 * 1024 * 1024; // 80MB
+          const arrayBuf = await dlResp.arrayBuffer();
+          if (arrayBuf.byteLength > MAX_YT_SIZE) {
+            console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube CC clip too large (${(arrayBuf.byteLength / 1024 / 1024).toFixed(1)}MB), skipping`);
+            continue;
+          }
+          fs.writeFileSync(outPath, Buffer.from(arrayBuf));
+
+          if (fs.existsSync(outPath) && fs.statSync(outPath).size > 10_000) {
+            results.push(outPath);
+            downloadedIds.add(videoId);
+            fetched++;
+            console.log(`[Pipeline] Scene ${sceneIndex}: ✅ YouTube CC clip downloaded: "${item.snippet?.title}" (${videoId})`);
+          }
+        } catch (err) {
+          console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube CC video ${videoId} failed:`, (err as Error).message);
+        }
+      }
+    } catch (err) {
+      console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube CC search failed for "${query}":`, (err as Error).message);
     }
-  } catch (err) {
-    console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube CC search failed:`, (err as Error).message);
   }
   return results;
 }
@@ -2591,22 +2561,46 @@ async function fetchSceneVisuals(
   const openverseQuery = primarySubject || buildSubjectQuery(primarySubject, scene.visualCue);
   const openverseQuery2 = secondarySubject || null;
 
-  // Build YouTube-optimized query: use person name + visual cue for best results
-  const youtubeQuery = buildSubjectQuery(primarySubject, scene.visualCue || scene.pexelsQuery);
-  const youtubeQuery2 = secondarySubject ? buildSubjectQuery(secondarySubject, scene.visualCue || scene.pexelsQuery) : null;
+  // Build YouTube CC query variants: use pexelsQueries (specific→broad) prefixed with subject name.
+  // Strategy: try specific query first (e.g. "Elon Musk Pretoria"), then broader fallbacks
+  // (e.g. "Elon Musk South Africa", "Elon Musk childhood", "Elon Musk").
+  // This maximises CC video hits while keeping results relevant.
+  const buildYouTubeCCQueryVariants = (subject: string, pexelsQueries: string[]): string[] => {
+    const variants: string[] = [];
+    // 1. Subject + each pexelsQuery variant (take first 3 words of each)
+    for (const q of pexelsQueries.slice(0, 5)) {
+      const shortCue = q.split(' ').slice(0, 3).join(' ');
+      const combined = subject ? `${subject} ${shortCue}`.slice(0, 50) : shortCue.slice(0, 50);
+      if (combined.trim()) variants.push(combined);
+    }
+    // 2. Subject alone as broad fallback (e.g. "Elon Musk" → 290k+ results)
+    if (subject && !variants.includes(subject)) variants.push(subject);
+    // 3. First pexelsQuery without subject (topic-only fallback)
+    if (pexelsQueries[0]) {
+      const topicOnly = pexelsQueries[0].split(' ').slice(0, 3).join(' ');
+      if (!variants.includes(topicOnly)) variants.push(topicOnly);
+    }
+    return Array.from(new Set(variants)); // deduplicate
+  };
+  const allPexelsQueries = scene.pexelsQueries || [scene.pexelsQuery || scene.visualCue];
+  const youtubeQueryVariants = buildYouTubeCCQueryVariants(primarySubject, allPexelsQueries);
+  const youtubeQuery2Variants = secondarySubject ? buildYouTubeCCQueryVariants(secondarySubject, allPexelsQueries) : null;
+  // For thumbnail search: use first variant (most specific)
+  const youtubeQuery = youtubeQueryVariants[0] || primarySubject;
+  const youtubeQuery2 = youtubeQuery2Variants?.[0] || null;
 
   // Build Internet Archive query: use literalVisualCue or pexelsQuery for best results
   const archiveQuery = buildSubjectQuery(primarySubject, scene.pexelsQuery || scene.visualCue);
 
-  // ── PHASE 1: Free sources — YouTube CC FIRST (real video clips via RapidAPI YTStream)
+  // ── PHASE 1: Free sources — YouTube CC FIRST (real video clips via cloud computer service)
   // YouTube Creative Commons videos are the PRIMARY source — always searched first.
   // Internet Archive is the SECONDARY source for real video clips.
   // YouTube thumbnails, Pexels, Pixabay, Wikimedia, Openverse, SerpAPI are fallbacks.
   // Run all FREE sources in parallel. Only invoke paid AI generators (Runway etc.) if free sources
   // return fewer than 2 clips — keeping costs minimal.
   const [ytCCResults, ytCC2Results, archiveResults, youtubeResults, youtube2Results, pexelsResults, pixabayResults, brollResults, wikimediaResults, wikimedia2Results, openverseResults, openverse2Results, serpResults, serp2Results] = await Promise.allSettled([
-    fetchYouTubeCCClips(youtubeQuery, halfDur, workDir, scene.index, 3),  // YouTube CC FIRST (primary)
-    youtubeQuery2 ? fetchYouTubeCCClips(youtubeQuery2, halfDur, workDir, scene.index, 2) : Promise.resolve([]),  // YouTube CC secondary query
+    fetchYouTubeCCClips(youtubeQueryVariants, halfDur, workDir, scene.index, 3),  // YouTube CC FIRST (multi-query: specific→broad)
+    youtubeQuery2Variants ? fetchYouTubeCCClips(youtubeQuery2Variants, halfDur, workDir, scene.index, 2) : Promise.resolve([]),  // YouTube CC secondary person
     fetchInternetArchiveClips(archiveQuery, halfDur, workDir, scene.index, 2),  // Internet Archive SECOND
     fetchYouTubeThumbnails(youtubeQuery, halfDur, workDir, scene.index, 3),  // YouTube thumbnails as images
     youtubeQuery2 ? fetchYouTubeThumbnails(youtubeQuery2, halfDur, workDir, scene.index, 2) : Promise.resolve([]),

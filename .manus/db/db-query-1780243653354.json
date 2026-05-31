@@ -1,0 +1,18 @@
+{
+  "query": "SELECT id, status, title, progressStep, progressPercent, videoUrl FROM videos WHERE id = 630001 OR id = 600001;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute SELECT id, status, title, progressStep, progressPercent, videoUrl FROM videos WHERE id = 630001 OR id = 600001;",
+  "rows": [
+    {
+      "id": "600001",
+      "status": "pending",
+      "title": "NULL",
+      "progressStep": "NULL",
+      "progressPercent": "0",
+      "videoUrl": "NULL"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\tstatus\ttitle\tprogressStep\tprogressPercent\tvideoUrl\n600001\tpending\tNULL\tNULL\t0\tNULL\n",
+  "stderr": "",
+  "execution_time_ms": 269
+}

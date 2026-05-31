@@ -1,0 +1,40 @@
+{
+  "query": "SELECT id, name, fishAudioReferenceId FROM voices WHERE isActive = 1 LIMIT 10;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute SELECT id, name, fishAudioReferenceId FROM voices WHERE isActive = 1 LIMIT 10;",
+  "rows": [
+    {
+      "id": "60001",
+      "name": "Michael",
+      "fishAudioReferenceId": "pNInz6obpgDQGcFmaJgB"
+    },
+    {
+      "id": "60002",
+      "name": "Adam",
+      "fishAudioReferenceId": "ErXwobaYiN019PkySvjV"
+    },
+    {
+      "id": "60003",
+      "name": "Heart",
+      "fishAudioReferenceId": "21m00Tcm4TlvDq8ikWAM"
+    },
+    {
+      "id": "60004",
+      "name": "Bella",
+      "fishAudioReferenceId": "EXAVITQu4vr4xnSDxMaL"
+    },
+    {
+      "id": "60005",
+      "name": "George",
+      "fishAudioReferenceId": "JBFqnCBsd6RMkjVDRZzb"
+    },
+    {
+      "id": "60006",
+      "name": "Lewis",
+      "fishAudioReferenceId": "TX3LPaxmHKxFdv7VOQHJ"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\tname\tfishAudioReferenceId\n60001\tMichael\tpNInz6obpgDQGcFmaJgB\n60002\tAdam\tErXwobaYiN019PkySvjV\n60003\tHeart\t21m00Tcm4TlvDq8ikWAM\n60004\tBella\tEXAVITQu4vr4xnSDxMaL\n60005\tGeorge\tJBFqnCBsd6RMkjVDRZzb\n60006\tLewis\tTX3LPaxmHKxFdv7VOQHJ\n",
+  "stderr": "",
+  "execution_time_ms": 260
+}
