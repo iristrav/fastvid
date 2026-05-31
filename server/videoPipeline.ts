@@ -2345,7 +2345,9 @@ async function fetchInternetArchiveClips(
   return results;
 }
 
-// ─── 3c3. Fetch YouTube CC Video Clips via Manus Data API ────────────────────
+// ─── 3c3. Fetch YouTube CC Video Clips via RapidAPI YTStream ────────────────────
+// Uses YouTube Data API v3 to search for Creative Commons videos, then downloads
+// them via RapidAPI YTStream (bypasses YouTube bot detection).
 async function fetchYouTubeCCClips(
   query: string,
   duration: number,
@@ -2355,76 +2357,44 @@ async function fetchYouTubeCCClips(
 ): Promise<string[]> {
   const results: string[] = [];
 
-  // Use direct YouTube Data API v3 key if available, fall back to Forge proxy
   const youtubeApiKey = process.env.YOUTUBE_API_KEY;
-  const forgeApiUrl = process.env.BUILT_IN_FORGE_API_URL;
-  const forgeApiKey = process.env.BUILT_IN_FORGE_API_KEY;
+  const rapidApiKey = process.env.RAPIDAPI_KEY;
 
-  if (!youtubeApiKey && (!forgeApiUrl || !forgeApiKey)) return [];
+  // Need both YouTube Data API (for search) and RapidAPI (for download)
+  if (!youtubeApiKey || !rapidApiKey) {
+    console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube CC skipped — missing YOUTUBE_API_KEY or RAPIDAPI_KEY`);
+    return [];
+  }
 
   try {
-    let searchData: { items?: Array<{ id?: { videoId?: string }; snippet?: { title?: string } }> } = {};
+    // Step 1: Search YouTube Data API v3 for Creative Commons videos
+    const searchUrl = new URL('https://www.googleapis.com/youtube/v3/search');
+    searchUrl.searchParams.set('key', youtubeApiKey);
+    searchUrl.searchParams.set('q', query);
+    searchUrl.searchParams.set('type', 'video');
+    searchUrl.searchParams.set('videoLicense', 'creativeCommon'); // CC only
+    searchUrl.searchParams.set('maxResults', String(count * 5));
+    searchUrl.searchParams.set('part', 'snippet');
+    searchUrl.searchParams.set('videoDuration', 'medium'); // 4-20 min videos
+    searchUrl.searchParams.set('order', 'relevance');
+    searchUrl.searchParams.set('videoEmbeddable', 'true');
 
-    if (youtubeApiKey) {
-      // Direct YouTube Data API v3 call
-      const searchUrl = new URL('https://www.googleapis.com/youtube/v3/search');
-      searchUrl.searchParams.set('key', youtubeApiKey);
-      searchUrl.searchParams.set('q', query);
-      searchUrl.searchParams.set('type', 'video');
-      searchUrl.searchParams.set('videoLicense', 'creativeCommon');
-      searchUrl.searchParams.set('maxResults', String(count * 4));
-      searchUrl.searchParams.set('part', 'snippet');
-      searchUrl.searchParams.set('videoDuration', 'medium'); // 4-20 min videos
-      searchUrl.searchParams.set('order', 'relevance');
-
-      const searchResp = await withTimeout(
-        fetch(searchUrl.toString()),
-        15_000,
-        `YouTube CC search scene ${sceneIndex}`
-      );
-      if (!searchResp.ok) {
-        console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube API error ${searchResp.status}`);
-        return [];
-      }
-      searchData = await searchResp.json() as typeof searchData;
-    } else {
-      // Fallback: Manus Forge proxy
-      const baseUrl = forgeApiUrl!.endsWith('/') ? forgeApiUrl! : `${forgeApiUrl!}/`;
-      const fullUrl = new URL('webdevtoken.v1.WebDevService/CallApi', baseUrl).toString();
-      const searchResp = await withTimeout(
-        fetch(fullUrl, {
-          method: 'POST',
-          headers: {
-            'accept': 'application/json',
-            'content-type': 'application/json',
-            'connect-protocol-version': '1',
-            'authorization': `Bearer ${forgeApiKey}`,
-          },
-          body: JSON.stringify({
-            apiId: 'Youtube/search',
-            query: {
-              q: query,
-              type: 'video',
-              videoLicense: 'creativeCommon',
-              maxResults: count * 4,
-              part: 'snippet',
-            },
-          }),
-        }),
-        15_000,
-        `YouTube CC search scene ${sceneIndex}`
-      );
-      if (!searchResp.ok) return [];
-      const payload = await searchResp.json() as Record<string, unknown>;
-      if (payload && 'jsonData' in payload) {
-        try { searchData = JSON.parse(payload.jsonData as string); } catch { searchData = payload.jsonData as typeof searchData; }
-      } else {
-        searchData = payload as typeof searchData;
-      }
+    const searchResp = await withTimeout(
+      fetch(searchUrl.toString()),
+      15_000,
+      `YouTube CC search scene ${sceneIndex}`
+    );
+    if (!searchResp.ok) {
+      console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube API error ${searchResp.status}`);
+      return [];
     }
-
+    const searchData = await searchResp.json() as { items?: Array<{ id?: { videoId?: string }; snippet?: { title?: string } }> };
     const items = searchData.items || [];
-    if (!items.length) return [];
+    if (!items.length) {
+      console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube CC search returned 0 results for query: ${query}`);
+      return [];
+    }
+    console.log(`[Pipeline] Scene ${sceneIndex}: YouTube CC found ${items.length} videos for "${query}"`);
 
     let fetched = 0;
     for (const item of items) {
@@ -2433,31 +2403,71 @@ async function fetchYouTubeCCClips(
       if (!videoId) continue;
 
       try {
-        const outPath = path.join(workDir, `scene_${sceneIndex}_yt_${fetched}.mp4`);
-        const tmpPath = path.join(workDir, `scene_${sceneIndex}_yt_${fetched}_tmp.mp4`);
-
-        // Download via yt-dlp with CC filter and size limit (15s timeout to avoid blocking)
-        await withTimeout(
-          exec(
-            `yt-dlp -f "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480][ext=mp4]/best[height<=480]" ` +
-            `--match-filter "license='Creative Commons Attribution licence (reuse allowed)'" ` +
-            `--max-filesize 20m -o "${tmpPath}" ` +
-            `"https://www.youtube.com/watch?v=${videoId}" 2>&1 || true`
-          ),
-          15_000,
-          `YouTube CC download scene ${sceneIndex}`
+        // Step 2: Get direct download URL via RapidAPI YTStream
+        const ytStreamResp = await withTimeout(
+          fetch(`https://ytstream-download-youtube-videos.p.rapidapi.com/dl?id=${videoId}`, {
+            headers: {
+              'X-RapidAPI-Key': rapidApiKey,
+              'X-RapidAPI-Host': 'ytstream-download-youtube-videos.p.rapidapi.com',
+            },
+          }),
+          20_000,
+          `YTStream API scene ${sceneIndex}`
         );
+        if (!ytStreamResp.ok) {
+          console.warn(`[Pipeline] Scene ${sceneIndex}: YTStream API error ${ytStreamResp.status} for ${videoId}`);
+          continue;
+        }
+        const ytData = await ytStreamResp.json() as {
+          formats?: Record<string, { url?: string; mimeType?: string; quality?: string; bitrate?: number }>;
+          adaptiveFormats?: Record<string, { url?: string; mimeType?: string; quality?: string; bitrate?: number }>;
+        };
 
-        if (!fs.existsSync(tmpPath) || fs.statSync(tmpPath).size < 10_000) continue;
+        // Pick best MP4 video format (360p or 480p preferred for speed)
+        const allFormats = { ...(ytData.formats || {}), ...(ytData.adaptiveFormats || {}) };
+        const mp4Formats = Object.values(allFormats).filter(f =>
+          f.url && (f.mimeType?.includes('video/mp4') || f.mimeType?.includes('video/webm'))
+        );
+        // Prefer 360p/480p for fast download, avoid 1080p+
+        const preferred = mp4Formats.find(f => f.quality?.includes('360') || f.quality?.includes('480'))
+          || mp4Formats.find(f => f.quality?.includes('240') || f.quality?.includes('720'))
+          || mp4Formats[0];
+        if (!preferred?.url) {
+          console.warn(`[Pipeline] Scene ${sceneIndex}: No MP4 format found for ${videoId}`);
+          continue;
+        }
 
-        // Extract a clip from the video
+        const outPath = path.join(workDir, `scene_${sceneIndex}_ytcc_${fetched}.mp4`);
+        const tmpPath = path.join(workDir, `scene_${sceneIndex}_ytcc_${fetched}_tmp.mp4`);
+
+        // Step 3: Download the video clip (max 40MB, 45s timeout)
+        const dlResp = await fetchWithTimeout(
+          preferred.url,
+          45_000,
+          `YouTube CC download scene ${sceneIndex}`,
+          { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' } }
+        );
+        if (!dlResp.ok) {
+          console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube CC download failed ${dlResp.status}`);
+          continue;
+        }
+        const MAX_YT_SIZE = 40 * 1024 * 1024; // 40MB
+        const arrayBuf = await dlResp.arrayBuffer();
+        if (arrayBuf.byteLength > MAX_YT_SIZE) {
+          console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube CC clip too large (${(arrayBuf.byteLength / 1024 / 1024).toFixed(1)}MB), skipping`);
+          continue;
+        }
+        fs.writeFileSync(tmpPath, Buffer.from(arrayBuf));
+
+        // Step 4: Extract clip from middle of video (skip first 15s to avoid intros)
+        const clipStart = 15;
         await withTimeout(
           exec(
-            `${FFMPEG_BIN} -y -ss 5 -i "${tmpPath}" -t ${duration} ` +
+            `${FFMPEG_BIN} -y -ss ${clipStart} -i "${tmpPath}" -t ${duration} ` +
             `-vf "scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}" ` +
             `-c:v libx264 -preset veryfast -crf 22 -an -pix_fmt yuv420p "${outPath}"`
           ),
-          30_000,
+          45_000,
           `YouTube CC clip extract scene ${sceneIndex}`
         );
         try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
@@ -2465,10 +2475,10 @@ async function fetchYouTubeCCClips(
         if (fs.existsSync(outPath) && fs.statSync(outPath).size > 10_000) {
           results.push(outPath);
           fetched++;
-          console.log(`[Pipeline] Scene ${sceneIndex}: YouTube CC clip added: ${item.snippet?.title}`);
+          console.log(`[Pipeline] Scene ${sceneIndex}: ✅ YouTube CC clip downloaded: "${item.snippet?.title}" (${videoId})`);
         }
       } catch (err) {
-        console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube CC video ${videoId} failed:`, (err as Error).message);
+        console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube CC video ${item.id?.videoId} failed:`, (err as Error).message);
       }
     }
   } catch (err) {
@@ -2588,14 +2598,17 @@ async function fetchSceneVisuals(
   // Build Internet Archive query: use literalVisualCue or pexelsQuery for best results
   const archiveQuery = buildSubjectQuery(primarySubject, scene.pexelsQuery || scene.visualCue);
 
-  // ── PHASE 1: Free sources first (Internet Archive FIRST for real video clips, then YouTube thumbnails, Pexels, Pixabay, Wikimedia, Openverse, SerpAPI)
-  // Internet Archive is searched FIRST as it provides real downloadable video clips (Creative Commons).
-  // YouTube thumbnails are searched SECOND as they are the most visually relevant to the topic.
+  // ── PHASE 1: Free sources — YouTube CC FIRST (real video clips via RapidAPI YTStream)
+  // YouTube Creative Commons videos are the PRIMARY source — always searched first.
+  // Internet Archive is the SECONDARY source for real video clips.
+  // YouTube thumbnails, Pexels, Pixabay, Wikimedia, Openverse, SerpAPI are fallbacks.
   // Run all FREE sources in parallel. Only invoke paid AI generators (Runway etc.) if free sources
   // return fewer than 2 clips — keeping costs minimal.
-  const [archiveResults, youtubeResults, youtube2Results, pexelsResults, pixabayResults, brollResults, wikimediaResults, wikimedia2Results, openverseResults, openverse2Results, serpResults, serp2Results] = await Promise.allSettled([
-    fetchInternetArchiveClips(archiveQuery, halfDur, workDir, scene.index, 2),
-    fetchYouTubeThumbnails(youtubeQuery, halfDur, workDir, scene.index, 3),
+  const [ytCCResults, ytCC2Results, archiveResults, youtubeResults, youtube2Results, pexelsResults, pixabayResults, brollResults, wikimediaResults, wikimedia2Results, openverseResults, openverse2Results, serpResults, serp2Results] = await Promise.allSettled([
+    fetchYouTubeCCClips(youtubeQuery, halfDur, workDir, scene.index, 3),  // YouTube CC FIRST (primary)
+    youtubeQuery2 ? fetchYouTubeCCClips(youtubeQuery2, halfDur, workDir, scene.index, 2) : Promise.resolve([]),  // YouTube CC secondary query
+    fetchInternetArchiveClips(archiveQuery, halfDur, workDir, scene.index, 2),  // Internet Archive SECOND
+    fetchYouTubeThumbnails(youtubeQuery, halfDur, workDir, scene.index, 3),  // YouTube thumbnails as images
     youtubeQuery2 ? fetchYouTubeThumbnails(youtubeQuery2, halfDur, workDir, scene.index, 2) : Promise.resolve([]),
     fetchPexelsClips(scene.pexelsQuery, halfDur, workDir, scene.index, 2, scene.pexelsQueries),
     fetchPixabayClips(scene.pexelsQuery, halfDur, workDir, scene.index, 1),
@@ -2610,15 +2623,17 @@ async function fetchSceneVisuals(
 
   const clips: string[] = [];
 
-  // Collect free clips first (Internet Archive FIRST, then Pexels + Pixabay + B-roll)
+  // Collect free clips — YouTube CC FIRST, then Internet Archive, then Pexels + Pixabay + B-roll
+  const ytCCClipsRaw = ytCCResults.status === "fulfilled" ? ytCCResults.value : [];
+  const ytCC2ClipsRaw = ytCC2Results.status === "fulfilled" ? ytCC2Results.value : [];
   const archiveClipsRaw = archiveResults.status === "fulfilled" ? archiveResults.value : [];
   const pexelsClipsRaw = pexelsResults.status === "fulfilled" ? pexelsResults.value : [];
   const pixabayClipsRaw = pixabayResults.status === "fulfilled" ? pixabayResults.value : [];
   const brollClipsRaw = brollResults.status === "fulfilled" ? brollResults.value : [];
   const ytClipsRaw = youtubeResults.status === "fulfilled" ? youtubeResults.value : [];
   const yt2ClipsRaw = youtube2Results.status === "fulfilled" ? youtube2Results.value : [];
-  // Include Internet Archive + YouTube thumbnails in free stock count
-  const freeStockCount = archiveClipsRaw.length + pexelsClipsRaw.length + pixabayClipsRaw.length + brollClipsRaw.length + ytClipsRaw.length + yt2ClipsRaw.length;
+  // Include YouTube CC + Internet Archive + YouTube thumbnails in free stock count
+  const freeStockCount = ytCCClipsRaw.length + ytCC2ClipsRaw.length + archiveClipsRaw.length + pexelsClipsRaw.length + pixabayClipsRaw.length + brollClipsRaw.length + ytClipsRaw.length + yt2ClipsRaw.length;
 
   // ── PHASE 2: Paid AI generators — ONLY if free sources are insufficient (< 2 clips)
   // Runway is the preferred AI generator (highest quality). Other generators run only if key is set.
@@ -2687,6 +2702,8 @@ async function fetchSceneVisuals(
   if (higgsfieldImageClip) clips.push(higgsfieldImageClip);
 
   // Collect all clips that need fair-use transformation
+  // YouTube CC clips go FIRST (real video, highest relevance), then Internet Archive, then thumbnails/images
+  const ytCCClips = [...ytCCClipsRaw, ...ytCC2ClipsRaw]; // Combined YouTube CC results
   const archiveClips = archiveResults.status === "fulfilled" ? archiveResults.value : [];
   const ytClips = youtubeResults.status === "fulfilled" ? youtubeResults.value : [];
   const yt2Clips = youtube2Results.status === "fulfilled" ? youtube2Results.value : [];
@@ -2699,24 +2716,25 @@ async function fetchSceneVisuals(
   const openverse2Clips = openverse2Results.status === "fulfilled" ? openverse2Results.value : [];
   const serpClips = serpResults.status === "fulfilled" ? serpResults.value : [];
   const serp2Clips = serp2Results.status === "fulfilled" ? serp2Results.value : [];
-  const youtubeClips = [...ytClips, ...yt2Clips]; // Combined YouTube results
+  const youtubeThumbClips = [...ytClips, ...yt2Clips]; // Combined YouTube thumbnail results
 
   // Build list of clips needing transformation (with their clip index for color grade variety)
-  // Internet Archive clips go FIRST (real video clips, highest relevance), then YouTube thumbnails
+  // YouTube CC clips go FIRST (real CC video clips), then Internet Archive, then thumbnails/images
   type TransformJob = { path: string; clipIndex: number; needsTransform: boolean };
   const transformJobs: TransformJob[] = [
-    ...archiveClips.map((p, i) => ({ path: p, clipIndex: i, needsTransform: true })), // Internet Archive clips — real video, needs color grade
-    ...ytClips.map((p, i) => ({ path: p, clipIndex: archiveClips.length + i, needsTransform: false })), // YouTube thumbnails — already processed (zoompan)
-    ...yt2Clips.map((p, i) => ({ path: p, clipIndex: archiveClips.length + ytClips.length + i, needsTransform: false })),
-    ...pexelsClips.map((p, i) => ({ path: p, clipIndex: archiveClips.length + ytClips.length + yt2Clips.length + i, needsTransform: true })),
-    ...pixabayClips.map((p, i) => ({ path: p, clipIndex: archiveClips.length + ytClips.length + yt2Clips.length + pexelsClips.length + i, needsTransform: true })),
-    ...brollClips.map((p, i) => ({ path: p, clipIndex: archiveClips.length + ytClips.length + yt2Clips.length + pexelsClips.length + pixabayClips.length + i, needsTransform: false })),
-    ...wikimediaClips.map((p, i) => ({ path: p, clipIndex: archiveClips.length + ytClips.length + yt2Clips.length + pexelsClips.length + pixabayClips.length + brollClips.length + i, needsTransform: true })),
-    ...wikimedia2Clips.map((p, i) => ({ path: p, clipIndex: archiveClips.length + ytClips.length + yt2Clips.length + pexelsClips.length + pixabayClips.length + brollClips.length + wikimediaClips.length + i, needsTransform: true })),
+    ...ytCCClips.map((p, i) => ({ path: p, clipIndex: i, needsTransform: true })), // YouTube CC — real video, needs color grade
+    ...archiveClips.map((p, i) => ({ path: p, clipIndex: ytCCClips.length + i, needsTransform: true })), // Internet Archive — real video, needs color grade
+    ...ytClips.map((p, i) => ({ path: p, clipIndex: ytCCClips.length + archiveClips.length + i, needsTransform: false })), // YouTube thumbnails — already processed (zoompan)
+    ...yt2Clips.map((p, i) => ({ path: p, clipIndex: ytCCClips.length + archiveClips.length + ytClips.length + i, needsTransform: false })),
+    ...pexelsClips.map((p, i) => ({ path: p, clipIndex: ytCCClips.length + archiveClips.length + ytClips.length + yt2Clips.length + i, needsTransform: true })),
+    ...pixabayClips.map((p, i) => ({ path: p, clipIndex: ytCCClips.length + archiveClips.length + ytClips.length + yt2Clips.length + pexelsClips.length + i, needsTransform: true })),
+    ...brollClips.map((p, i) => ({ path: p, clipIndex: ytCCClips.length + archiveClips.length + ytClips.length + yt2Clips.length + pexelsClips.length + pixabayClips.length + i, needsTransform: false })),
+    ...wikimediaClips.map((p, i) => ({ path: p, clipIndex: ytCCClips.length + archiveClips.length + ytClips.length + yt2Clips.length + pexelsClips.length + pixabayClips.length + brollClips.length + i, needsTransform: true })),
+    ...wikimedia2Clips.map((p, i) => ({ path: p, clipIndex: ytCCClips.length + archiveClips.length + ytClips.length + yt2Clips.length + pexelsClips.length + pixabayClips.length + brollClips.length + wikimediaClips.length + i, needsTransform: true })),
     ...openverseClips.map((p, i) => ({ path: p, clipIndex: i, needsTransform: false })), // already processed
     ...openverse2Clips.map((p, i) => ({ path: p, clipIndex: i, needsTransform: false })),
-    ...serpClips.map((p, i) => ({ path: p, clipIndex: archiveClips.length + ytClips.length + yt2Clips.length + pexelsClips.length + wikimediaClips.length + wikimedia2Clips.length + openverseClips.length + i, needsTransform: true })),
-    ...serp2Clips.map((p, i) => ({ path: p, clipIndex: archiveClips.length + ytClips.length + yt2Clips.length + pexelsClips.length + wikimediaClips.length + wikimedia2Clips.length + serpClips.length + i, needsTransform: true })),
+    ...serpClips.map((p, i) => ({ path: p, clipIndex: ytCCClips.length + archiveClips.length + ytClips.length + yt2Clips.length + pexelsClips.length + wikimediaClips.length + wikimedia2Clips.length + openverseClips.length + i, needsTransform: true })),
+    ...serp2Clips.map((p, i) => ({ path: p, clipIndex: ytCCClips.length + archiveClips.length + ytClips.length + yt2Clips.length + pexelsClips.length + wikimediaClips.length + wikimedia2Clips.length + serpClips.length + i, needsTransform: true })),
   ];
 
   // Run fair-use transforms in parallel (max 3 concurrent FFmpeg processes per scene)
@@ -2736,7 +2754,7 @@ async function fetchSceneVisuals(
   const personLabel = scenePersons.length > 0 ? ` [persons: ${scenePersons.join(', ')}]` : '';
   const runwayLabel = runwayClip ? " ⚡Runway" : "";
   const aiLabel = freeStockCount < RUNWAY_CLIP_THRESHOLD ? " [AI fallback triggered]" : " [free stock sufficient]";
-  console.log(`[Pipeline] Scene ${scene.index}${personLabel}${runwayLabel}${aiLabel}: ${clips.length} clip(s) ready (Archive: ${archiveClips.length}, YouTube: ${youtubeClips.length}, Pexels: ${pexelsClips.length}, Pixabay: ${pixabayClips.length}, Wikimedia: ${wikimediaClips.length + wikimedia2Clips.length}, Openverse: ${openverseClips.length + openverse2Clips.length}, SerpAPI: ${serpClips.length + serp2Clips.length}, Runway: ${runwayClip ? "✓" : "✗"}, Stability: ${aiClip ? "✓" : "✗"})`);  
+  console.log(`[Pipeline] Scene ${scene.index}${personLabel}${runwayLabel}${aiLabel}: ${clips.length} clip(s) ready (YT-CC: ${ytCCClips.length}, Archive: ${archiveClips.length}, YT-Thumbs: ${youtubeThumbClips.length}, Pexels: ${pexelsClips.length}, Pixabay: ${pixabayClips.length}, Wikimedia: ${wikimediaClips.length + wikimedia2Clips.length}, Openverse: ${openverseClips.length + openverse2Clips.length}, SerpAPI: ${serpClips.length + serp2Clips.length}, Runway: ${runwayClip ? "✓" : "✗"}, Stability: ${aiClip ? "✓" : "✗"})`);
   return clips;
 }
 

@@ -711,3 +711,11 @@ Fix: directVideoUrl = videoUrlData?.url ?? rawVideoUrl (always use the URL, whet
 - [x] Increased Internet Archive download timeout from 10s to 30s for larger files
 - [x] TypeScript compiles without errors
 - [ ] Test full pipeline with Internet Archive clips and verify visual relevance
+
+## Session 40 — YouTube CC as Mandatory First Visual Source
+- [ ] Implement working YouTube CC video download (yt-dlp with cookies from Chromium browser session)
+- [ ] YouTube CC search via YouTube Data API v3 (videoLicense=creativeCommon)
+- [ ] YouTube CC placed as FIRST and PRIMARY source — always tried before any other source
+- [ ] Fallback chain: YouTube CC → Internet Archive → Pexels → Pixabay → YouTube thumbnails → AI image → color
+- [ ] Per-scene query: use LLM-generated literalVisualCue + pexelsQuery for YouTube CC search
+- [ ] Test pipeline end-to-end with YouTube CC clips as primary visuals
