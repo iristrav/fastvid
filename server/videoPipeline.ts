@@ -2567,15 +2567,29 @@ async function fetchSceneVisuals(
   // This maximises CC video hits while keeping results relevant.
   const buildYouTubeCCQueryVariants = (subject: string, pexelsQueries: string[]): string[] => {
     const variants: string[] = [];
-    // 1. Subject + each pexelsQuery variant (take first 3 words of each)
+    // 1. PERSON-SPECIFIC QUERIES FIRST (if subject looks like a person name)
+    // These prioritize videos showing the actual person (interviews, speeches, documentaries)
+    if (subject && subject.split(' ').length >= 1) {
+      const personSpecificQueries = [
+        `${subject} interview`,
+        `${subject} speech`,
+        `${subject} documentary`,
+        `${subject} presentation`,
+        `${subject} talk`,
+      ];
+      for (const q of personSpecificQueries) {
+        if (q.length <= 50 && !variants.includes(q)) variants.push(q);
+      }
+    }
+    // 2. Subject + each pexelsQuery variant (take first 3 words of each)
     for (const q of pexelsQueries.slice(0, 5)) {
       const shortCue = q.split(' ').slice(0, 3).join(' ');
       const combined = subject ? `${subject} ${shortCue}`.slice(0, 50) : shortCue.slice(0, 50);
-      if (combined.trim()) variants.push(combined);
+      if (combined.trim() && !variants.includes(combined)) variants.push(combined);
     }
-    // 2. Subject alone as broad fallback (e.g. "Elon Musk" → 290k+ results)
+    // 3. Subject alone as broad fallback (e.g. "Elon Musk" -> 290k+ results)
     if (subject && !variants.includes(subject)) variants.push(subject);
-    // 3. First pexelsQuery without subject (topic-only fallback)
+    // 4. First pexelsQuery without subject (topic-only fallback)
     if (pexelsQueries[0]) {
       const topicOnly = pexelsQueries[0].split(' ').slice(0, 3).join(' ');
       if (!variants.includes(topicOnly)) variants.push(topicOnly);
@@ -2599,8 +2613,8 @@ async function fetchSceneVisuals(
   // Run all FREE sources in parallel. Only invoke paid AI generators (Runway etc.) if free sources
   // return fewer than 2 clips — keeping costs minimal.
   const [ytCCResults, ytCC2Results, archiveResults, youtubeResults, youtube2Results, pexelsResults, pixabayResults, brollResults, wikimediaResults, wikimedia2Results, openverseResults, openverse2Results, serpResults, serp2Results] = await Promise.allSettled([
-    fetchYouTubeCCClips(youtubeQueryVariants, halfDur, workDir, scene.index, 3),  // YouTube CC FIRST (multi-query: specific→broad)
-    youtubeQuery2Variants ? fetchYouTubeCCClips(youtubeQuery2Variants, halfDur, workDir, scene.index, 2) : Promise.resolve([]),  // YouTube CC secondary person
+    fetchYouTubeCCClips(youtubeQueryVariants, halfDur, workDir, scene.index, 7),  // YouTube CC FIRST (multi-query: specific→broad) — PRIORITIZE PERSON FOOTAGE
+    youtubeQuery2Variants ? fetchYouTubeCCClips(youtubeQuery2Variants, halfDur, workDir, scene.index, 5) : Promise.resolve([]),  // YouTube CC secondary person
     fetchInternetArchiveClips(archiveQuery, halfDur, workDir, scene.index, 2),  // Internet Archive SECOND
     fetchYouTubeThumbnails(youtubeQuery, halfDur, workDir, scene.index, 3),  // YouTube thumbnails as images
     youtubeQuery2 ? fetchYouTubeThumbnails(youtubeQuery2, halfDur, workDir, scene.index, 2) : Promise.resolve([]),

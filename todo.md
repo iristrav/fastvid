@@ -726,3 +726,21 @@ Fix: directVideoUrl = videoUrlData?.url ?? rawVideoUrl (always use the URL, whet
   * Cloud computer service (yt-dlp ANDROID_VR client): concurrent downloads, 5-10s per clip
   * Pipeline timeout at 50min (scene 9/15) — not a failure, just time limit reached
   * Next: increase timeout or optimize pipeline speed for remaining scenes
+
+
+## Session 41 — Person-Specific YouTube CC Videos & Service Optimization
+- [x] Add person-specific YouTube CC queries ("NAME interview", "NAME speech", etc.) FIRST in search strategy
+  * "Elon Musk interview" returns 28+ results vs generic topic queries
+  * Queries prioritized: interview → speech → documentary → presentation → topic-based
+- [x] Increase clips per scene from 3 to 5-7 for more visual variety
+- [x] Optimize cloud service: chunk streaming (1MB chunks) to prevent BrokenPipeError
+- [x] Optimize cloud service: reduce FFmpeg output size (1920x1080 → 1280x720, CRF 26 → 32)
+- [x] Test video 67 (Elon Musk): confirmed 6+ YouTube CC clips with person-specific queries
+  * "How Elon Musk Would Study in Med School"
+  * "Elon Musk Weighs In On Pet Food"
+  * "Tech News 2Night 349: Elon Musk - From Pizza to Space"
+  * "Elon Musk vs. Cathie Wood: Tesla, Battery, Innovation"
+  * "Legacy media FUMES over 'misinformation', Elon Musk"
+  * "Elon Musk ALMOST hears the Gospel (Babylon Bee Interview)"
+- [ ] Monitor video 67 completion and verify all scenes get person-specific footage
+- [ ] Save checkpoint with all improvements
