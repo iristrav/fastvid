@@ -369,135 +369,158 @@ export const STAGE_LABELS = {
 };
 
 // ─── 1. Parse Script into Scenes ─────────────────────────────────────────────
-async function parseScriptIntoScenes(script: string, maxScenes: number): Promise<Scene[]> {
+
+const SCENE_PARSE_BATCH_SIZE = 16;
+
+function parseLLMJson<T>(content: unknown, label: string): T {
+  try {
+    if (content && typeof content === "object") return content as T;
+    const raw = typeof content === "string" ? content : JSON.stringify(content);
+    return JSON.parse(raw) as T;
+  } catch (err) {
+    throw pipelineError(
+      PIPELINE_ERROR.SCRIPT_PARSE,
+      `${label}: ${(err as Error).message}`
+    );
+  }
+}
+
+function splitScriptForSceneParsing(script: string, parts: number): string[] {
+  if (parts <= 1) return [script];
+  const sections = script.split(/(?=^## )/m).filter((s) => s.trim().length > 0);
+  if (sections.length >= parts) {
+    const chunks: string[] = Array.from({ length: parts }, () => "");
+    sections.forEach((sec, i) => {
+      chunks[i % parts] += (chunks[i % parts] ? "\n" : "") + sec;
+    });
+    return chunks.filter((c) => c.trim().length > 0);
+  }
+  const size = Math.ceil(script.length / parts);
+  return Array.from({ length: parts }, (_, i) => script.slice(i * size, (i + 1) * size)).filter(Boolean);
+}
+
+const SCENE_JSON_SCHEMA = {
+  type: "json_schema" as const,
+  json_schema: {
+    name: "scenes",
+    strict: true,
+    schema: {
+      type: "object",
+      properties: {
+        scenes: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              text: { type: "string" },
+              visualCue: { type: "string" },
+              pexelsQuery: { type: "string" },
+              pexelsQueries: { type: "array", items: { type: "string" } },
+              personNames: { type: "array", items: { type: "string" } },
+            },
+            required: ["text", "visualCue", "pexelsQuery", "pexelsQueries", "personNames"],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ["scenes"],
+      additionalProperties: false,
+    },
+  },
+};
+
+async function parseScriptIntoScenesBatch(
+  script: string,
+  sceneCount: number,
+  startIndex: number
+): Promise<Scene[]> {
   const response = await withTimeout(
     invokeLLM({
       messages: [
         {
           role: "system",
-          content: `You are a video editor at a professional YouTube documentary channel (Vox/Wendover Productions style). Parse the given script into exactly ${maxScenes} scenes for video production.
+          content: `Parse the script into exactly ${sceneCount} scenes for video production.
 
-For each scene, extract:
-- text: The narration text for this scene (2-5 sentences, what will be spoken). Max 700 characters. Keep it natural and conversational. Do NOT truncate — include the full narration for this scene.
-- visualCue: A VERY SPECIFIC, LITERAL 4-8 word description of exactly what footage to show. Extract this from [VISUAL: ...] tags in the script if present. Examples:
-  "aerial drone shot Brussels city center", "black white 1950s highway construction", "close-up tram narrow medieval street", "cyclist riding through Amsterdam intersection"
-- pexelsQuery: The PRIMARY Pexels/stock video search query (3-6 words, English). Must match the visual cue literally.
-- pexelsQueries: Array of 5 search queries in DECREASING specificity order. Start very specific, end more general. All in English.
-  Example for "aerial drone shot Brussels city center":
-  ["Brussels aerial drone city", "Belgium capital city aerial", "European city aerial drone", "historic city center aerial", "city skyline aerial drone"]
-  Example for "close-up tram narrow medieval street":
-  ["tram medieval street city", "historic tram cobblestone street", "European tram old city", "tram urban street", "city tram transportation"]
-- aiImagePrompt: A detailed, vivid image generation prompt (25-40 words) for a cinematic, photorealistic scene matching the visual cue. Include: subject, setting, lighting, mood, camera angle, style. Examples:
-  "Cinematic aerial drone view of Brussels historic city center at golden hour, warm light on medieval rooftops, slight haze, photorealistic, 8K, wide angle lens"
-  "Black and white archival photograph of 1950s American highway construction, workers and bulldozers, dramatic shadows, documentary style"
-- sectionTitle: The ## section heading this scene belongs to (from the script). Use the EXACT heading text (without ## prefix). If this is the FIRST scene of a new section, set sectionTitle to the section name. For subsequent scenes in the same section, set sectionTitle to empty string "".
-  Example: script has "## ROOTS OF DIVERGENCE" → first scene of that section has sectionTitle="ROOTS OF DIVERGENCE", subsequent scenes have sectionTitle=""
-- personNames: Array of FULL NAMES of all real people (celebrities, politicians, athletes, public figures, historical figures) explicitly mentioned by name in this scene's narration text. Include ONLY names that appear in the text field. If no person is mentioned, return an empty array [].
-  Examples: ["Kylie Jenner"], ["Elon Musk", "Jeff Bezos"], ["Napoleon Bonaparte"], []
-- highlightWords: Array of 2-3 POWER WORDS from this scene's narration — the most impactful, emotionally resonant, or statistically significant words. These will be displayed as bold kinetic text overlays on screen. Choose words that create visual impact: numbers ("$47 BILLION"), strong verbs ("COLLAPSED"), key nouns ("MONOPOLY"), or dramatic adjectives ("UNPRECEDENTED"). Always UPPERCASE. Examples: ["$47 BILLION", "COLLAPSED"], ["MONOPOLY", "EXPOSED"], ["UNPRECEDENTED", "CRISIS"]
-- brollQueries: Array of exactly 2 specific B-roll search queries for cutaway footage that would visually complement this scene. These should be different from pexelsQuery — think of supporting footage that adds visual variety. Examples: ["stock market trading floor", "money bills close up"], ["factory workers assembly line", "industrial machinery"], ["city traffic aerial view", "commuters subway station"]
-- statCallout: ONE key statistic, number, percentage, year, or measurement from this scene that would make a powerful on-screen callout box. Format as a short string: "45°C", "2%", "$4B", "1950s", "97%". If no strong stat exists, return empty string "".
-- literalVisualCue: A hyper-specific 3-5 word description of the EXACT physical object or action being spoken at the most important moment in this scene. Used for ultra-precise B-roll search. Examples: "horse cart cobblestone bruges", "earthmover highway construction 1950s", "tram arriving pedestrian street", "aerial drone brussels rooftops". Must be more literal and specific than visualCue.
-IMPORTANT:
-- Return exactly ${maxScenes} scenes covering the entire script evenly
-- Extract [VISUAL: ...] tags from the script to use as visualCue when available
-- Keep text natural (max 700 chars each) — this is spoken narration. Include full sentences, do NOT truncate mid-sentence
-- Make pexelsQuery LITERAL and SPECIFIC — it will be used to search for real footage
-- Make aiImagePrompt vivid, cinematic and highly detailed
-- Scenes should flow naturally — each scene is ~2-4 seconds of footage (reference: 1-4s hard cuts)
-- sectionTitle is ONLY non-empty for the FIRST scene of each new ## section
-- personNames MUST be extracted from the text field only — do not invent names not present in the text
-- highlightWords MUST be 2-3 words max, always UPPERCASE, chosen for maximum visual impact
-- brollQueries MUST be exactly 2 queries, different from pexelsQuery, for visual variety`,
+For each scene return:
+- text: narration (max 500 chars, full sentences)
+- visualCue: literal 4-8 word footage description
+- pexelsQuery: primary stock search (3-6 English words)
+- pexelsQueries: 3 search queries, specific to broad
+- personNames: full names of real people mentioned in text, or []
+
+Keep strings concise. Cover the script evenly.`,
         },
         {
           role: "user",
-          content: `Parse this script into exactly ${maxScenes} scenes:\n\n${script.slice(0, 12000)}`,
+          content: `Parse into exactly ${sceneCount} scenes:\n\n${script.slice(0, 14000)}`,
         },
       ],
-      response_format: {
-        type: "json_schema",
-        json_schema: {
-          name: "scenes",
-          strict: true,
-          schema: {
-            type: "object",
-            properties: {
-              scenes: {
-                type: "array",
-                items: {
-                  type: "object",
-                  properties: {
-                    text: { type: "string" },
-                    visualCue: { type: "string" },
-                    pexelsQuery: { type: "string" },
-                    pexelsQueries: { type: "array", items: { type: "string" } },
-                    personNames: { type: "array", items: { type: "string" } },
-                    aiImagePrompt: { type: "string" },
-                    sectionTitle: { type: "string" },
-                    highlightWords: { type: "array", items: { type: "string" } },
-                    brollQueries: { type: "array", items: { type: "string" } },
-                    statCallout: { type: "string" },
-                    literalVisualCue: { type: "string" },
-                  },
-                  required: ["text", "visualCue", "pexelsQuery", "pexelsQueries", "personNames", "aiImagePrompt", "sectionTitle", "highlightWords", "brollQueries", "statCallout", "literalVisualCue"],
-                  additionalProperties: false,
-                },
-              },
-            },
-            required: ["scenes"],
-            additionalProperties: false,
-          },
-        },
-      },
+      response_format: SCENE_JSON_SCHEMA,
+      maxTokens: 16384,
     }),
-    90_000,  // 90s for large scene count parsing
-    "Parse scenes"
+    120_000,
+    `Parse scenes batch from ${startIndex}`
   );
 
   const content = response.choices[0]?.message?.content;
   if (!content) throw pipelineError(PIPELINE_ERROR.SCRIPT_PARSE, "Failed to parse script into scenes");
-  const parsed = JSON.parse(typeof content === "string" ? content : JSON.stringify(content));
-  const rawScenes = (parsed.scenes as (Omit<Scene, "index" | "duration"> & { sectionTitle?: string })[]).slice(0, maxScenes);
-  return rawScenes.map((s, i) => {
-    const rawS = s as Record<string, unknown>;
-    const primaryQuery = (s.pexelsQuery?.trim() || s.visualCue || "cinematic background");
-    const extraQueries = (rawS.pexelsQueries as string[] | undefined) || [];
-    // Build a deduped list: primary first, then LLM-generated variants
-    const allQueries = [primaryQuery, ...extraQueries.filter(q => q && q !== primaryQuery)];
-    // Extract person names from the LLM response
-    const personNames = ((rawS.personNames as string[] | undefined) || [])
-      .filter(n => typeof n === 'string' && n.trim().length > 0)
-      .map(n => n.trim());
-    // Extract highlight words (LLM-generated power words for kinetic typography)
-    const highlightWords = ((rawS.highlightWords as string[] | undefined) || [])
-      .filter(w => typeof w === 'string' && w.trim().length > 0)
-      .map(w => w.trim().toUpperCase())
-      .slice(0, 3); // max 3 words
-    // Extract B-roll queries (2 specific queries for cutaway footage)
-    const brollQueries = ((rawS.brollQueries as string[] | undefined) || [])
-      .filter(q => typeof q === 'string' && q.trim().length > 0)
-      .slice(0, 2); // max 2 queries
-    // Extract stat callout (1 key number/stat for yellow corner box overlay)
-    const statCallout = typeof rawS.statCallout === 'string' ? rawS.statCallout.trim().slice(0, 20) : '';
-    // Extract literal visual cue (hyper-specific B-roll search query)
-    const literalVisualCue = typeof rawS.literalVisualCue === 'string' ? rawS.literalVisualCue.trim() : '';
-    return {
-      ...s,
-      index: i,
-      duration: 0,
-      pexelsQuery: literalVisualCue || primaryQuery, // use literalVisualCue as primary if available
-      pexelsQueries: literalVisualCue ? [literalVisualCue, ...allQueries] : allQueries,
-      personNames,
-      highlightWords,
-      brollQueries,
-      statCallout,
-      aiImagePrompt: s.aiImagePrompt?.trim() || `Cinematic ${s.visualCue || "landscape"}, dramatic lighting, photorealistic, 8K`,
-      // Store sectionTitle as chapterTitle if it's the first scene of a section
-      isChapterCard: false,
-      chapterTitle: rawS.sectionTitle as string | undefined,
-    };
-  });
+  const parsed = parseLLMJson<{ scenes: Array<Omit<Scene, "index" | "duration"> & { sectionTitle?: string }> }>(
+    content,
+    "Scene parse JSON"
+  );
+  const rawScenes = (parsed.scenes ?? []).slice(0, sceneCount);
+  return rawScenes.map((s, i) => mapRawScene(s, startIndex + i));
+}
+
+function mapRawScene(
+  s: Omit<Scene, "index" | "duration"> & { sectionTitle?: string },
+  index: number
+): Scene {
+  const rawS = s as Record<string, unknown>;
+  const primaryQuery = (s.pexelsQuery?.trim() || s.visualCue || "cinematic background");
+  const extraQueries = (rawS.pexelsQueries as string[] | undefined) || [];
+  const allQueries = [primaryQuery, ...extraQueries.filter((q) => q && q !== primaryQuery)].slice(0, 4);
+  const personNames = ((rawS.personNames as string[] | undefined) || [])
+    .filter((n) => typeof n === "string" && n.trim().length > 0)
+    .map((n) => n.trim());
+  return {
+    ...s,
+    index,
+    duration: 0,
+    pexelsQuery: primaryQuery,
+    pexelsQueries: allQueries,
+    personNames,
+    highlightWords: [],
+    brollQueries: [],
+    statCallout: "",
+    aiImagePrompt: `Cinematic ${s.visualCue || "documentary scene"}, dramatic lighting, photorealistic`,
+    isChapterCard: false,
+    chapterTitle: undefined,
+  };
+}
+
+async function parseScriptIntoScenes(script: string, maxScenes: number): Promise<Scene[]> {
+  if (maxScenes <= SCENE_PARSE_BATCH_SIZE) {
+    return parseScriptIntoScenesBatch(script, maxScenes, 0);
+  }
+
+  const batchCount = Math.ceil(maxScenes / SCENE_PARSE_BATCH_SIZE);
+  const chunks = splitScriptForSceneParsing(script, batchCount);
+  const scenesPerBatch = Math.ceil(maxScenes / chunks.length);
+  const allScenes: Scene[] = [];
+
+  for (let b = 0; b < chunks.length; b++) {
+    const remaining = maxScenes - allScenes.length;
+    if (remaining <= 0) break;
+    const count = Math.min(scenesPerBatch, remaining, SCENE_PARSE_BATCH_SIZE);
+    const batchScenes = await parseScriptIntoScenesBatch(chunks[b], count, allScenes.length);
+    allScenes.push(...batchScenes);
+  }
+
+  if (allScenes.length === 0) {
+    throw pipelineError(PIPELINE_ERROR.SCRIPT_PARSE, "No scenes parsed from script");
+  }
+  return allScenes.slice(0, maxScenes);
 }
 
 // ─── 2. TTS Voiceover ───────────────────────────────────────────────────────────────────────────

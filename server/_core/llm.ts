@@ -301,11 +301,12 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
     payload.tool_choice = normalizedToolChoice;
   }
 
-  payload.max_tokens = 4096;
-  // thinking budget is only supported on Manus Forge (Gemini), not on OpenAI
+  const maxTokens = params.maxTokens ?? params.max_tokens;
   if (!ENV.useOpenAI) {
     payload.thinking = { budget_tokens: 128 };
-    payload.max_tokens = 32768;
+    payload.max_tokens = maxTokens ?? 32768;
+  } else {
+    payload.max_tokens = maxTokens ?? 8192;
   }
 
   const normalizedResponseFormat = normalizeResponseFormat({
