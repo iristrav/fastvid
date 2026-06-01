@@ -1065,7 +1065,7 @@ async function fetchBrollClips(
 ): Promise<string[]> {
   if ((!PEXELS_API_KEY && !PIXABAY_API_KEY) || !brollQueries || brollQueries.length === 0) return [];
   const results: string[] = [];
-  for (let qi = 0; qi < brollQueries.length && results.length < 1; qi++) {
+  for (let qi = 0; qi < brollQueries.length && results.length < 3; qi++) {
     const query = brollQueries[qi];
     if (!query || !query.trim()) continue;
     try {
@@ -1082,7 +1082,7 @@ async function fetchBrollClips(
       if (!searchData.videos?.length) continue;
       const candidates = searchData.videos.filter(v => v.duration >= 3).slice(0, 3);
       for (const video of candidates) {
-        if (results.length >= 2) break;
+        if (results.length >= 3) break;
         const videoFile = video.video_files
           .filter(f => f.width >= 1280 && f.width <= 1920)
           .sort((a, b) => b.width - a.width)[0]
@@ -2759,11 +2759,12 @@ async function fetchSceneVisuals(
           : Promise.resolve([] as string[]),
       ];
 
-  const [youtubeResults, youtube2Results, wikimediaResults, wikimedia2Results, openverseResults, openverse2Results, serpResults, serp2Results, pexelsResults, pixabayResults] =
+  const [youtubeResults, youtube2Results, wikimediaResults, wikimedia2Results, openverseResults, openverse2Results, serpResults, serp2Results, pexelsResults, pixabayResults, brollResults] =
     await Promise.allSettled([
       ...genericFetches,
       fetchPexelsClips(pexelsPrimary, clipFetchDur, workDir, scene.index, clipsTarget, pexelsExtras),
       fetchPixabayClips(pixabayPrimary, clipFetchDur, workDir, scene.index, Math.min(5, clipsTarget)),
+      fetchBrollClips(scene.brollQueries ?? [scene.visualCue, scene.pexelsQuery].filter(Boolean) as string[], clipFetchDur, workDir, scene.index),
     ]);
 
   const clips: string[] = [];
@@ -2773,6 +2774,7 @@ async function fetchSceneVisuals(
   const archiveClipsRaw = archiveResults.value;
   const pexelsClipsRaw = pexelsResults.status === "fulfilled" ? pexelsResults.value : [];
   const pixabayClipsRaw = pixabayResults.status === "fulfilled" ? pixabayResults.value : [];
+  const brollClipsRaw = brollResults.status === "fulfilled" ? brollResults.value : [];
   const ytClipsRaw = hasPerson ? [] : (youtubeResults.status === "fulfilled" ? youtubeResults.value : []);
   const yt2ClipsRaw = hasPerson ? [] : (youtube2Results.status === "fulfilled" ? youtube2Results.value : []);
   const freeStockCount =
@@ -2782,6 +2784,7 @@ async function fetchSceneVisuals(
     archiveClipsRaw.length +
     pexelsClipsRaw.length +
     pixabayClipsRaw.length +
+    brollClipsRaw.length +
     ytClipsRaw.length +
     yt2ClipsRaw.length;
 
@@ -2856,6 +2859,7 @@ async function fetchSceneVisuals(
   const yt2Clips = hasPerson ? [] : (youtube2Results.status === "fulfilled" ? youtube2Results.value : []);
   const pexelsClips = pexelsResults.status === "fulfilled" ? pexelsResults.value : [];
   const pixabayClips = pixabayResults.status === "fulfilled" ? pixabayResults.value : [];
+  const brollClips = brollResults.status === "fulfilled" ? brollResults.value : [];
   const wikimediaClips = wikimediaResults.status === "fulfilled" ? wikimediaResults.value : [];
   const wikimedia2Clips = wikimedia2Results.status === "fulfilled" ? wikimedia2Results.value : [];
   const openverseClips = openverseResults.status === "fulfilled" ? openverseResults.value : [];
@@ -2870,7 +2874,7 @@ async function fetchSceneVisuals(
   const personPhotoClips = hasPerson
     ? personMediaClips
     : [...serpClips, ...serp2Clips, ...wikimediaClips, ...wikimedia2Clips, ...openverseClips, ...openverse2Clips, ...ytClips, ...yt2Clips];
-  const stockVideoClips = [...ytCCClips, ...archiveClips, ...pexelsClips, ...pixabayClips];
+  const stockVideoClips = [...ytCCClips, ...archiveClips, ...brollClips, ...pexelsClips, ...pixabayClips];
 
   const transformJobs: TransformJob[] = [
     ...personPhotoClips.map((p) => ({ path: p, clipIndex: nextIndex(), needsTransform: false })),
@@ -2901,6 +2905,47 @@ async function fetchSceneVisuals(
     console.warn(`[Pipeline] Scene ${scene.index}: All visuals failed, using color fallback`);
     clips.push(await generateColorFallback(scene.index, Math.max(scene.duration, 5), workDir));
   }
+
+  // Ensure enough distinct clips for 3–4s hard cuts (person scenes often return only 1 photo)
+  const MIN_CLIPS = clipsTarget;
+  if (clips.length < MIN_CLIPS) {
+    const needed = MIN_CLIPS - clips.length;
+    console.warn(`[Pipeline] Scene ${scene.index}: only ${clips.length}/${MIN_CLIPS} clips — fetching generic B-roll`);
+    const genericQueries = [
+      ...(scene.brollQueries ?? []),
+      scene.visualCue,
+      scene.pexelsQuery,
+      ...(scene.pexelsQueries ?? []),
+      hasPerson ? "rocket launch space technology" : "",
+      hasPerson ? "electric car factory" : "",
+      "documentary b roll cinematic",
+      "aerial city drone footage",
+    ].filter((q): q is string => typeof q === "string" && q.trim().length > 2);
+    const [extraPexels, extraPixabay] = await Promise.all([
+      fetchPexelsClips(
+        scene.visualCue || scene.pexelsQuery || "documentary footage",
+        clipFetchDur,
+        workDir,
+        scene.index,
+        needed,
+        genericQueries
+      ),
+      fetchPixabayClips(
+        scene.pexelsQuery || scene.visualCue || "documentary",
+        clipFetchDur,
+        workDir,
+        scene.index,
+        Math.min(4, needed)
+      ),
+    ]);
+    for (const clipPath of [...extraPexels, ...extraPixabay]) {
+      if (clips.length >= MIN_CLIPS) break;
+      if (!fs.existsSync(clipPath)) continue;
+      const transformed = await transformClipForFairUse(clipPath, scene.text, scene.index, clips.length, workDir);
+      if (await isValidVideoFile(transformed)) clips.push(transformed);
+    }
+  }
+
   const personLabel = scenePersons.length > 0 ? ` [persons: ${scenePersons.join(', ')}]` : '';
   const runwayLabel = runwayClip ? " ⚡Runway" : "";
   const aiLabel = freeStockCount < RUNWAY_CLIP_THRESHOLD ? " [AI fallback triggered]" : " [free stock sufficient]";
@@ -3219,31 +3264,31 @@ async function composeSceneVideo(
     }
   }
 
-  // ── Reorder clips for better pacing ──────────────────────────────────────
+  // ── Reorder clips: interleave person photos with stock video for pacing ──
   const hasPerson = (scene.personNames?.length ?? 0) > 0 || validClips.some((p) => /_p\d|_serp_|_wiki_|_openverse_|_yt_/i.test(path.basename(p)));
-  const isRealVideo = (p: string) => /_pexels_|_pixabay_|_ytcc_|_archive_/i.test(path.basename(p));
+  const isRealVideo = (p: string) => /_pexels_|_pixabay_|_ytcc_|_archive_|_broll_/i.test(path.basename(p));
   const isPersonClip = (p: string) => /_p\d|_serp_|_wiki_|_openverse_|_yt_/i.test(path.basename(p));
   const realVids = validClips.filter(isRealVideo);
   const personClips = validClips.filter(isPersonClip);
   const otherImgs = validClips.filter((p) => !isRealVideo(p) && !isPersonClip(p));
+  const photoClips = [...personClips, ...otherImgs];
 
-  let orderedClips: string[];
-  if (hasPerson && personClips.length > 0) {
-    const maxSupport = Math.max(2, Math.ceil(realVids.length * 0.5));
-    const supportVids = realVids.slice(0, maxSupport);
-    const supportImgs = otherImgs.slice(0, 1);
-    orderedClips = [...personClips, ...supportVids, ...supportImgs];
-  } else {
-    const maxImgs = Math.max(1, Math.ceil(realVids.length * 0.5));
-    const limitedImgs = [...personClips, ...otherImgs].slice(0, maxImgs);
+  const interleaveClips = (videos: string[], photos: string[]): string[] => {
     const interleaved: string[] = [];
-    let vi = 0, ii = 0;
-    while (vi < realVids.length || ii < limitedImgs.length) {
-      if (vi < realVids.length) interleaved.push(realVids[vi++]);
-      if (vi < realVids.length) interleaved.push(realVids[vi++]);
-      if (ii < limitedImgs.length) interleaved.push(limitedImgs[ii++]);
+    let vi = 0;
+    let pi = 0;
+    while (vi < videos.length || pi < photos.length) {
+      if (pi < photos.length) interleaved.push(photos[pi++]);
+      if (vi < videos.length) interleaved.push(videos[vi++]);
+      if (vi < videos.length) interleaved.push(videos[vi++]);
     }
-    orderedClips = interleaved.length > 0 ? interleaved : validClips;
+    return interleaved.length > 0 ? interleaved : [...photos, ...videos];
+  };
+
+  let orderedClips = interleaveClips(realVids, photoClips);
+  if (orderedClips.length === 0) orderedClips = validClips;
+  if (hasPerson && personClips.length > 0 && realVids.length === 0 && orderedClips.length < 3) {
+    console.warn(`[Pipeline] Scene ${scene.index}: person clips only (${orderedClips.length}) — compose will cycle available sources`);
   }
 
   let safeClips = orderedClips.length > 0
@@ -3392,99 +3437,67 @@ async function composeSceneVideo(
   }
 
   try {
-    if (safeClips.length >= 2) {
-      // Hard cuts every 3–4 seconds
-      const TARGET_SHOT_SEC = 3.5;
-      const maxShots = IS_RAILWAY ? 16 : 24;
-      const idealShotCount = Math.min(maxShots, Math.max(safeClips.length, Math.ceil(duration / TARGET_SHOT_SEC)));
-      const baseLen = safeClips.length;
-      let extraIdx = 0;
-      while (safeClips.length < idealShotCount) {
-        safeClips.push(safeClips[extraIdx % baseLen]);
-        extraIdx++;
-      }
-      const clipDur = Math.min(4.0, Math.max(3.0, duration / safeClips.length));
-      // Use input -ss/-t (not filter trim) — filter trim with large start offset on 4s clips caused 0-frame output
-      const inputs = safeClips.map((c, i) => {
-        const startSec = Math.min(((scene.index + i) * 0.7) % 0.8, 0.5);
-        return `-ss ${startSec.toFixed(2)} -t ${(clipDur + 0.15).toFixed(3)} -i "${c}"`;
-      }).join(" ");
-      const scaleFilters = safeClips.map((_, i) =>
-        `[${i}:v]${STANDARD_VF}[v${i}]`
-      ).join(";");
-
-      // Hard-cut concat: use filter_complex concat to join clips with zero-duration cuts
-      // This matches the reference video exactly — no crossfades, no slides, pure hard cuts
-      const concatInputLabels = safeClips.map((_, i) => `[v${i}]`).join("");
-      const hardCutConcat = `;${concatInputLabels}concat=n=${safeClips.length}:v=1:a=0[concatenated]`;
-
-      // Build overlay chain on top of concatenated (kinetic words + stat callout)
-      // Input indices: 0..N-1 = clips, N = audio, N+1.. = overlay PNGs
-      const audioIdx = safeClips.length;
-      const kineticBaseIdx = audioIdx + 1;
-      const { extraInputs: kExtraInputs, filterChain: kChain, finalLabel: kFinalLabel } =
-        buildKineticChain("concatenated", kineticBaseIdx);
-
-      const kineticInput = kExtraInputs ? ` ${kExtraInputs}` : "";
-      const kineticChainStr = kChain ? kChain : "";
-      const hasOverlays = kineticFrames.length > 0 || statCalloutFrame !== null;
-      const finalVideoLabel = hasOverlays ? kFinalLabel : "concatenated";
-      await withTimeout(
-        exec(
-          `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}"${kineticInput} ` +
-          `-filter_complex "${scaleFilters}${hardCutConcat}${kineticChainStr};[${finalVideoLabel}]${fadeFilter}[vout]" ` +
-          `-map "[vout]" -map "${audioIdx}:a" ` +
-          `-t ${duration} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
-        ),
-        120_000, `Compose multi-clip scene ${scene.index}`
-      );
-    } else {
-      // Single clip — drawtext subtitle is embedded in fadeFilter
-      const clip = safeClips[0];
-      const audioIdx = 1;
-      const kineticBaseIdx = audioIdx + 1;
-      const { extraInputs: kExtraInputs, filterChain: kChain, finalLabel: kFinalLabel } =
-        buildKineticChain("scaled", kineticBaseIdx);
-
-      const kineticInput = kExtraInputs ? ` ${kExtraInputs}` : "";
-      const kineticChainStr = kChain ? kChain : "";
-      const hasOverlaysSingle = kineticFrames.length > 0 || statCalloutFrame !== null;
-      const finalVideoLabel = hasOverlaysSingle ? kFinalLabel : "scaled";
-      // Single clip: simple scale+crop (reference uses static Ken Burns, no animated zoom)
-      const singleZoomFilter = STANDARD_VF;
-      await withTimeout(
-        exec(
-          `${FFMPEG_BIN} -y -i "${clip}" -i "${safeAudioPath}"${kineticInput} ` +
-          `-filter_complex "[0:v]${singleZoomFilter}[scaled]${kineticChainStr};[${finalVideoLabel}]${fadeFilter}[vout]" ` +
-          `-map "[vout]" -map "${audioIdx}:a" ` +
-          `-t ${duration} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
-        ),
-        75_000, `Compose 1-clip scene ${scene.index}`
-      );
+    // Hard cuts every 3–4 seconds — always montage, even with a single source clip
+    const TARGET_SHOT_SEC = 3.5;
+    const maxShots = IS_RAILWAY ? 16 : 24;
+    const idealShotCount = Math.min(maxShots, Math.max(2, Math.ceil(duration / TARGET_SHOT_SEC)));
+    const baseLen = safeClips.length;
+    let extraIdx = 0;
+    while (safeClips.length < idealShotCount) {
+      safeClips.push(safeClips[extraIdx % baseLen]);
+      extraIdx++;
     }
+    const clipDur = Math.min(4.0, Math.max(3.0, duration / safeClips.length));
+    // Use input -ss/-t (not filter trim) — filter trim with large start offset on 4s clips caused 0-frame output
+    const inputs = safeClips.map((c, i) => {
+      const startSec = Math.min(((scene.index + i) * 0.7) % 0.8, 0.5);
+      return `-ss ${startSec.toFixed(2)} -t ${(clipDur + 0.15).toFixed(3)} -i "${c}"`;
+    }).join(" ");
+    const scaleFilters = safeClips.map((_, i) =>
+      `[${i}:v]${STANDARD_VF}[v${i}]`
+    ).join(";");
+
+    // Hard-cut concat: use filter_complex concat to join clips with zero-duration cuts
+    const concatInputLabels = safeClips.map((_, i) => `[v${i}]`).join("");
+    const hardCutConcat = `;${concatInputLabels}concat=n=${safeClips.length}:v=1:a=0[concatenated]`;
+
+    const audioIdx = safeClips.length;
+    const kineticBaseIdx = audioIdx + 1;
+    const { extraInputs: kExtraInputs, filterChain: kChain, finalLabel: kFinalLabel } =
+      buildKineticChain("concatenated", kineticBaseIdx);
+
+    const kineticInput = kExtraInputs ? ` ${kExtraInputs}` : "";
+    const kineticChainStr = kChain ? kChain : "";
+    const hasOverlays = kineticFrames.length > 0 || statCalloutFrame !== null;
+    const finalVideoLabel = hasOverlays ? kFinalLabel : "concatenated";
+    await withTimeout(
+      exec(
+        `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}"${kineticInput} ` +
+        `-filter_complex "${scaleFilters}${hardCutConcat}${kineticChainStr};[${finalVideoLabel}]${fadeFilter}[vout]" ` +
+        `-map "[vout]" -map "${audioIdx}:a" ` +
+        `-t ${duration} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
+      ),
+      120_000, `Compose multi-clip scene ${scene.index}`
+    );
   } catch (composeErr) {
     console.warn(`[Pipeline] Scene ${scene.index}: compose failed, trying simplified compose:`, composeErr);
     try {
-      if (safeClips.length >= 2) {
-        const clipDur = Math.min(4.0, Math.max(3.0, duration / safeClips.length));
-        const n = Math.min(12, safeClips.length);
-        const subset = safeClips.slice(0, n);
-        const inputs = subset.map((c) => `-t ${clipDur.toFixed(3)} -i "${c}"`).join(" ");
-        const scaleFilters = subset.map((_, i) => `[${i}:v]${STANDARD_VF}[v${i}]`).join(";");
-        const concatLabels = subset.map((_, i) => `[v${i}]`).join("");
-        await withTimeout(
-          exec(
-            `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}" ` +
-            `-filter_complex "${scaleFilters};${concatLabels}concat=n=${subset.length}:v=1:a=0[vout]" ` +
-            `-map "[vout]" -map "${subset.length}:a" ` +
-            `-t ${duration} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
-          ),
-          90_000,
-          `Simplified multi-clip scene ${scene.index}`
-        );
-      } else {
-        throw composeErr;
-      }
+      const clipDur = Math.min(4.0, Math.max(3.0, duration / safeClips.length));
+      const n = Math.min(12, Math.max(2, safeClips.length));
+      const subset = safeClips.slice(0, n);
+      const inputs = subset.map((c) => `-t ${clipDur.toFixed(3)} -i "${c}"`).join(" ");
+      const scaleFilters = subset.map((_, i) => `[${i}:v]${STANDARD_VF}[v${i}]`).join(";");
+      const concatLabels = subset.map((_, i) => `[v${i}]`).join("");
+      await withTimeout(
+        exec(
+          `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}" ` +
+          `-filter_complex "${scaleFilters};${concatLabels}concat=n=${subset.length}:v=1:a=0[vout]" ` +
+          `-map "[vout]" -map "${subset.length}:a" ` +
+          `-t ${duration} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
+        ),
+        90_000,
+        `Simplified multi-clip scene ${scene.index}`
+      );
     } catch (simpleErr) {
       console.warn(`[Pipeline] Scene ${scene.index}: simplified compose failed, trying simple mux:`, simpleErr);
       try {
