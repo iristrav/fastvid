@@ -206,6 +206,105 @@ async function startServer() {
     }
   });
 
+  // ─── Video Stream Endpoint (inline playback with Range support) ───────────
+  app.get("/api/stream/video/:id", async (req, res) => {
+    try {
+      const { parse: parseCookies } = await import("cookie");
+      const { jwtVerify } = await import("jose");
+      const { COOKIE_NAME } = await import("@shared/const");
+      const { getVideoById, getUserById } = await import("../db");
+      const { createReadStream, statSync } = await import("fs");
+
+      const cookies = parseCookies(req.headers.cookie ?? "");
+      const token = cookies[COOKIE_NAME];
+      if (!token) { res.status(401).json({ error: "Unauthorized" }); return; }
+
+      const secret = new TextEncoder().encode(process.env.JWT_SECRET ?? "fallback-secret-change-in-production");
+      let userId: number;
+      try {
+        const { payload } = await jwtVerify(token, secret, { algorithms: ["HS256"] });
+        userId = payload.userId as number;
+        if (!userId) throw new Error("No userId in token");
+      } catch {
+        res.status(401).json({ error: "Invalid session" }); return;
+      }
+
+      const videoId = parseInt(req.params.id, 10);
+      if (isNaN(videoId)) { res.status(400).json({ error: "Invalid video ID" }); return; }
+
+      const video = await getVideoById(videoId);
+      if (!video) { res.status(404).json({ error: "Video not found" }); return; }
+
+      const user = await getUserById(userId);
+      if (video.userId !== userId && user?.role !== "admin") {
+        res.status(403).json({ error: "Forbidden" }); return;
+      }
+
+      if (!video.videoUrl) { res.status(404).json({ error: "Video file not available" }); return; }
+
+      const streamLocalFile = (filePath: string) => {
+        const stat = statSync(filePath);
+        const fileSize = stat.size;
+        const range = req.headers.range;
+        res.setHeader("Accept-Ranges", "bytes");
+        res.setHeader("Content-Type", "video/mp4");
+        res.setHeader("Cache-Control", "private, max-age=3600");
+
+        if (range) {
+          const parts = range.replace(/bytes=/, "").split("-");
+          const start = parseInt(parts[0], 10);
+          const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+          if (start >= fileSize || end >= fileSize) {
+            res.status(416).setHeader("Content-Range", `bytes */${fileSize}`).end();
+            return;
+          }
+          const chunkSize = end - start + 1;
+          res.status(206);
+          res.setHeader("Content-Range", `bytes ${start}-${end}/${fileSize}`);
+          res.setHeader("Content-Length", chunkSize);
+          createReadStream(filePath, { start, end }).pipe(res);
+        } else {
+          res.setHeader("Content-Length", fileSize);
+          createReadStream(filePath).pipe(res);
+        }
+      };
+
+      if (video.videoUrl.startsWith("/local-storage/")) {
+        const { resolveLocalVideoPath } = await import("../storageLocal");
+        const filePath = resolveLocalVideoPath(video.videoUrl);
+        if (!filePath) { res.status(404).json({ error: "File not found on disk" }); return; }
+        streamLocalFile(filePath);
+        return;
+      }
+
+      if (video.videoUrl.startsWith("/manus-storage/")) {
+        const { storageGetSignedUrl } = await import("../storage");
+        const key = video.videoUrl.replace(/^\/manus-storage\//, "");
+        const signedUrl = await storageGetSignedUrl(key);
+        const upstream = await fetch(signedUrl, {
+          headers: req.headers.range ? { Range: req.headers.range } : {},
+        });
+        if (!upstream.ok || !upstream.body) {
+          res.status(502).json({ error: "Failed to fetch video from storage" }); return;
+        }
+        res.status(upstream.status);
+        upstream.headers.forEach((value, key) => {
+          if (["content-type", "content-length", "content-range", "accept-ranges"].includes(key.toLowerCase())) {
+            res.setHeader(key, value);
+          }
+        });
+        const { Readable } = await import("stream");
+        Readable.fromWeb(upstream.body as import("stream/web").ReadableStream).pipe(res);
+        return;
+      }
+
+      res.status(400).json({ error: "Unsupported video URL format" });
+    } catch (err) {
+      console.error("[Stream] Error:", err);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
   // ─── Internal Video Trigger (dev/testing only) ──────────────────────────────
   // Allows triggering video generation without OAuth authentication.
   // Protected by INTERNAL_TRIGGER_KEY env var.

@@ -4,18 +4,21 @@
  * files are stored in UPLOADS_DIR (default: /app/uploads or ./uploads)
  * and served via Express at /local-storage/<key>.
  *
- * NOTE: Railway volumes are ephemeral across redeploys unless you attach a
- * persistent volume at UPLOADS_DIR. For production use, attach a Railway
- * Volume at /app/uploads to persist files across deploys.
+ * NOTE: Attach a Railway Volume and set UPLOADS_DIR=/data/uploads so files
+ * survive redeploys. Without a volume, completed videos disappear after deploy.
  */
 import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
 
-// Resolve uploads directory: prefer UPLOADS_DIR env, then /app/uploads (Railway), then ./uploads
-export const LOCAL_UPLOADS_DIR =
-  process.env.UPLOADS_DIR ||
-  (fs.existsSync("/app") ? "/app/uploads" : path.resolve(process.cwd(), "uploads"));
+function resolveUploadsDir(): string {
+  if (process.env.UPLOADS_DIR) return process.env.UPLOADS_DIR;
+  if (fs.existsSync("/data")) return "/data/uploads";
+  if (fs.existsSync("/app")) return "/app/uploads";
+  return path.resolve(process.cwd(), "uploads");
+}
+
+export const LOCAL_UPLOADS_DIR = resolveUploadsDir();
 
 // Ensure the directory exists
 try {
@@ -60,4 +63,16 @@ export async function localStorageGet(relKey: string): Promise<{ key: string; ur
   const key = normalizeKey(relKey);
   const safeFileName = key.replace(/\//g, "_");
   return { key, url: `/local-storage/${safeFileName}` };
+}
+
+/** Resolve a /local-storage/... URL to an on-disk path, or null if missing. */
+export function resolveLocalVideoPath(videoUrl: string): string | null {
+  if (!videoUrl.startsWith("/local-storage/")) return null;
+  const fileName = videoUrl.replace(/^\/local-storage\//, "");
+  const filePath = path.join(LOCAL_UPLOADS_DIR, fileName);
+  return fs.existsSync(filePath) ? filePath : null;
+}
+
+export function localVideoFileExists(videoUrl: string): boolean {
+  return resolveLocalVideoPath(videoUrl) !== null;
 }

@@ -586,7 +586,12 @@ export const appRouter = router({
       if (!video.videoUrl) return { url: null };
       // /local-storage/ URLs are served directly by Express — return as-is (Railway mode)
       if (video.videoUrl.startsWith("/local-storage/")) {
-        return { url: video.videoUrl };
+        const { localVideoFileExists } = await import("./storageLocal");
+        if (!localVideoFileExists(video.videoUrl)) {
+          return { url: null, fileMissing: true };
+        }
+        // Stream via authenticated endpoint (supports Range requests for HTML5 video)
+        return { url: `/api/stream/video/${video.id}`, fileMissing: false };
       }
       // /manus-storage/ URLs need a presigned GET URL from Forge (Manus sandbox mode)
       const key = video.videoUrl.replace(/^\/manus-storage\//, "");

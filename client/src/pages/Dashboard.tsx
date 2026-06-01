@@ -477,9 +477,9 @@ function VideoDetailModal({ videoId, onClose }: { videoId: number; onClose: () =
     { enabled: !!(video?.videoUrl && video?.status === "completed"), staleTime: 1000 * 60 * 5 }
   );
   const rawVideoUrl = (video as { videoUrl?: string | null })?.videoUrl ?? null;
-  // /local-storage/ URLs are served by Express on Railway — use them directly in the player
-  // /manus-storage/ URLs need a presigned URL from getVideoUrl (Manus sandbox mode)
-  const directVideoUrl = videoUrlData?.url ?? rawVideoUrl;
+  const fileMissing = videoUrlData?.fileMissing === true;
+  // Use authenticated stream URL (Range-aware) for Railway local storage
+  const directVideoUrl = fileMissing ? null : (videoUrlData?.url ?? rawVideoUrl);
   type VideoMetadata = { title?: string; description?: string; tags?: string[]; chapters?: { time: string; title: string }[] };
   const metadata = video?.metadata as VideoMetadata | null;
 
@@ -504,16 +504,20 @@ function VideoDetailModal({ videoId, onClose }: { videoId: number; onClose: () =
         ) : video ? (
           <div className="flex-1 overflow-y-auto p-5 space-y-5">
             {/* Video Player */}
-            {video.status === "completed" && !video.videoUrl && (
+            {video.status === "completed" && (!video.videoUrl || fileMissing) && (
               <div className="glass-card border border-amber-500/20 rounded-xl p-5 flex items-start gap-3 bg-amber-500/5">
                 <AlertCircle className="w-5 h-5 text-amber-400 mt-0.5 shrink-0" />
                 <div>
-                  <p className="text-sm font-medium text-amber-300">Video file not available</p>
-                  <p className="text-xs text-slate-400 mt-1">This video was generated in a previous session and the file is no longer accessible. Generate a new video to get a downloadable result.</p>
+                  <p className="text-sm font-medium text-amber-300">Videobestand niet beschikbaar</p>
+                  <p className="text-xs text-slate-400 mt-1">
+                    {fileMissing
+                      ? "Het MP4-bestand staat niet meer op de server (vaak na een Railway-deploy zonder persistent volume). Genereer deze video opnieuw. Koppel een Railway Volume op /data/uploads om dit te voorkomen."
+                      : "Deze video is afgerond maar het bestand ontbreekt. Genereer opnieuw."}
+                  </p>
                 </div>
               </div>
             )}
-            {video.status === "completed" && video.videoUrl && (
+            {video.status === "completed" && video.videoUrl && !fileMissing && (
               <div className="glass-card border border-white/8 rounded-xl overflow-hidden">
                 <div className="flex items-center justify-between px-4 pt-4 pb-2">
                   <h3 className="font-semibold text-white text-sm flex items-center gap-2">
