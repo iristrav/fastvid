@@ -1,0 +1,9 @@
+{
+  "query": "UPDATE videos SET status='failed', progressStep='Pipeline killed — switching to stock-image only mode' WHERE id=72;\nSELECT id, status, progressStep, progressPercent FROM videos WHERE status='generating' OR id=72 ORDER BY id DESC LIMIT 10;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute UPDATE videos SET status='failed', progressStep='Pipeline killed — switching to stock-image only mode' WHERE id=72;\nSELECT id, status, progressStep, progressPercent FROM videos WHERE status='generating' OR id=72 ORDER BY id DESC LIMIT 10;",
+  "rows": [],
+  "messages": [],
+  "stdout": "",
+  "stderr": "",
+  "execution_time_ms": 351
+}

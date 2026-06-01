@@ -744,3 +744,13 @@ Fix: directVideoUrl = videoUrlData?.url ?? rawVideoUrl (always use the URL, whet
   * "Elon Musk ALMOST hears the Gospel (Babylon Bee Interview)"
 - [ ] Monitor video 67 completion and verify all scenes get person-specific footage
 - [ ] Save checkpoint with all improvements
+
+
+## Session 43 — RapidAPI YouTube Downloader Integration (2026-06-01)
+- [ ] Find a working RapidAPI YouTube downloader endpoint and verify with curl
+- [ ] Replace the cloud DL service call in `fetchYouTubeCCClips` with the RapidAPI downloader (server-side, uses RAPIDAPI_KEY)
+- [ ] Keep the existing cloud service as a secondary fallback (try RapidAPI first)
+- [ ] Kill the current stuck video generation (video 72) and any orphan ffmpeg processes
+- [ ] Restart dev server with the new RapidAPI integration
+- [ ] Trigger a fresh video generation and watch logs until it completes
+- [ ] Verify final video file exists and is playable; deliver URL to the user

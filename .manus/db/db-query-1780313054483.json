@@ -1,0 +1,70 @@
+{
+  "query": "SELECT id, status, title, createdAt FROM videos ORDER BY id DESC LIMIT 10;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute SELECT id, status, title, createdAt FROM videos ORDER BY id DESC LIMIT 10;",
+  "rows": [
+    {
+      "id": "600001",
+      "status": "pending",
+      "title": "NULL",
+      "createdAt": "2026-05-18 11:09:46"
+    },
+    {
+      "id": "570001",
+      "status": "pending",
+      "title": "Complete Pipeline Test - The Future of AI",
+      "createdAt": "2026-05-17 20:33:18"
+    },
+    {
+      "id": "540001",
+      "status": "failed",
+      "title": "AI Impact on Modern Society",
+      "createdAt": "2026-05-17 08:16:09"
+    },
+    {
+      "id": "510001",
+      "status": "failed",
+      "title": "The Wildest Kylie Jenner Rumor: Unpacking the Truth",
+      "createdAt": "2026-05-13 12:52:44"
+    },
+    {
+      "id": "480001",
+      "status": "pending",
+      "title": "NULL",
+      "createdAt": "2026-05-13 10:06:57"
+    },
+    {
+      "id": "450001",
+      "status": "pending",
+      "title": "NULL",
+      "createdAt": "2026-05-12 07:42:23"
+    },
+    {
+      "id": "420001",
+      "status": "pending",
+      "title": "NULL",
+      "createdAt": "2026-05-11 08:15:34"
+    },
+    {
+      "id": "390001",
+      "status": "awaiting_approval",
+      "title": "Top 10 Most Beautiful Waterfalls in the World",
+      "createdAt": "2026-05-08 11:23:33"
+    },
+    {
+      "id": "360003",
+      "status": "awaiting_approval",
+      "title": "Top 5 Most Incredible Ancient Civilizations That Disappeared",
+      "createdAt": "2026-05-07 20:18:53"
+    },
+    {
+      "id": "360002",
+      "status": "completed",
+      "title": "Top 5 Most AMAZING Deep Sea Creatures You Won't Believe Exist!",
+      "createdAt": "2026-05-07 20:08:03"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\tstatus\ttitle\tcreatedAt\n600001\tpending\tNULL\t2026-05-18 11:09:46\n570001\tpending\tComplete Pipeline Test - The Future of AI\t2026-05-17 20:33:18\n540001\tfailed\tAI Impact on Modern Society\t2026-05-17 08:16:09\n510001\tfailed\tThe Wildest Kylie Jenner Rumor: Unpacking the Truth\t2026-05-13 12:52:44\n480001\tpending\tNULL\t2026-05-13 10:06:57\n450001\tpending\tNULL\t2026-05-12 07:42:23\n420001\tpending\tNULL\t2026-05-11 08:15:34\n390001\tawaiting_approval\tTop 10 Most Beautiful Waterfalls in the World\t2026-05-08 11:23:33\n360003\tawaiting_approval\tTop 5 Most Incredible Ancient Civilizations That Disappeared\t2026-05-07 20:18:53\n360002\tcompleted\tTop 5 Most AMAZING Deep Sea Creatures You Won't Believe Exist!\t2026-05-07 20:08:03\n",
+  "stderr": "",
+  "execution_time_ms": 364
+}

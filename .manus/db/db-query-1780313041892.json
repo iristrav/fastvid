@@ -1,0 +1,45 @@
+{
+  "query": "SELECT id, status, title, createdAt, updatedAt FROM videos ORDER BY id DESC LIMIT 5;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute SELECT id, status, title, createdAt, updatedAt FROM videos ORDER BY id DESC LIMIT 5;",
+  "rows": [
+    {
+      "id": "600001",
+      "status": "pending",
+      "title": "NULL",
+      "createdAt": "2026-05-18 11:09:46",
+      "updatedAt": "2026-05-18 11:09:46"
+    },
+    {
+      "id": "570001",
+      "status": "pending",
+      "title": "Complete Pipeline Test - The Future of AI",
+      "createdAt": "2026-05-17 20:33:18",
+      "updatedAt": "2026-05-17 20:33:18"
+    },
+    {
+      "id": "540001",
+      "status": "failed",
+      "title": "AI Impact on Modern Society",
+      "createdAt": "2026-05-17 08:16:09",
+      "updatedAt": "2026-05-17 20:28:38"
+    },
+    {
+      "id": "510001",
+      "status": "failed",
+      "title": "The Wildest Kylie Jenner Rumor: Unpacking the Truth",
+      "createdAt": "2026-05-13 12:52:44",
+      "updatedAt": "2026-05-18 19:03:07"
+    },
+    {
+      "id": "480001",
+      "status": "pending",
+      "title": "NULL",
+      "createdAt": "2026-05-13 10:06:57",
+      "updatedAt": "2026-05-13 10:06:57"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\tstatus\ttitle\tcreatedAt\tupdatedAt\n600001\tpending\tNULL\t2026-05-18 11:09:46\t2026-05-18 11:09:46\n570001\tpending\tComplete Pipeline Test - The Future of AI\t2026-05-17 20:33:18\t2026-05-17 20:33:18\n540001\tfailed\tAI Impact on Modern Society\t2026-05-17 08:16:09\t2026-05-17 20:28:38\n510001\tfailed\tThe Wildest Kylie Jenner Rumor: Unpacking the Truth\t2026-05-13 12:52:44\t2026-05-18 19:03:07\n480001\tpending\tNULL\t2026-05-13 10:06:57\t2026-05-13 10:06:57\n",
+  "stderr": "",
+  "execution_time_ms": 274
+}

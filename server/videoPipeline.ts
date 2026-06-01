@@ -232,6 +232,7 @@ const VIDEO_HEIGHT = 1080;
 //   20+ min  = 1200s+   → 40+ scenes @ ~30s each   → use 42
 function getScenesForLength(videoLength: string): number {
   switch (videoLength) {
+    case "1":     return 3;   // ~1 min preview / test
     case "5-8":   return 15;
     case "8-12":  return 22;
     case "12-15": return 28;
@@ -2567,34 +2568,21 @@ async function fetchSceneVisuals(
   // This maximises CC video hits while keeping results relevant.
   const buildYouTubeCCQueryVariants = (subject: string, pexelsQueries: string[]): string[] => {
     const variants: string[] = [];
-    // 1. PERSON-SPECIFIC QUERIES FIRST (if subject looks like a person name)
-    // These prioritize videos showing the actual person (interviews, speeches, documentaries)
+    // OPTIMIZED: Only 2 query variants to reduce YouTube API rate limiting
+    // 1. PERSON-SPECIFIC QUERY FIRST (if subject looks like a person name)
     if (subject && subject.split(' ').length >= 1) {
-      const personSpecificQueries = [
-        `${subject} interview`,
-        `${subject} speech`,
-        `${subject} documentary`,
-        `${subject} presentation`,
-        `${subject} talk`,
-      ];
-      for (const q of personSpecificQueries) {
-        if (q.length <= 50 && !variants.includes(q)) variants.push(q);
-      }
+      const personQuery = `${subject} interview`;
+      if (personQuery.length <= 50) variants.push(personQuery);
     }
-    // 2. Subject + each pexelsQuery variant (take first 3 words of each)
-    for (const q of pexelsQueries.slice(0, 5)) {
-      const shortCue = q.split(' ').slice(0, 3).join(' ');
-      const combined = subject ? `${subject} ${shortCue}`.slice(0, 50) : shortCue.slice(0, 50);
+    // 2. Subject + topic (combined query for better results)
+    if (subject && pexelsQueries[0]) {
+      const shortCue = pexelsQueries[0].split(' ').slice(0, 2).join(' ');
+      const combined = `${subject} ${shortCue}`.slice(0, 50);
       if (combined.trim() && !variants.includes(combined)) variants.push(combined);
     }
-    // 3. Subject alone as broad fallback (e.g. "Elon Musk" -> 290k+ results)
-    if (subject && !variants.includes(subject)) variants.push(subject);
-    // 4. First pexelsQuery without subject (topic-only fallback)
-    if (pexelsQueries[0]) {
-      const topicOnly = pexelsQueries[0].split(' ').slice(0, 3).join(' ');
-      if (!variants.includes(topicOnly)) variants.push(topicOnly);
-    }
-    return Array.from(new Set(variants)); // deduplicate
+    // Fallback: just subject if no variants
+    if (variants.length === 0 && subject) variants.push(subject);
+    return variants;
   };
   const allPexelsQueries = scene.pexelsQueries || [scene.pexelsQuery || scene.visualCue];
   const youtubeQueryVariants = buildYouTubeCCQueryVariants(primarySubject, allPexelsQueries);
@@ -2612,15 +2600,20 @@ async function fetchSceneVisuals(
   // YouTube thumbnails, Pexels, Pixabay, Wikimedia, Openverse, SerpAPI are fallbacks.
   // Run all FREE sources in parallel. Only invoke paid AI generators (Runway etc.) if free sources
   // return fewer than 2 clips — keeping costs minimal.
-  const [ytCCResults, ytCC2Results, archiveResults, youtubeResults, youtube2Results, pexelsResults, pixabayResults, brollResults, wikimediaResults, wikimedia2Results, openverseResults, openverse2Results, serpResults, serp2Results] = await Promise.allSettled([
-    fetchYouTubeCCClips(youtubeQueryVariants, halfDur, workDir, scene.index, 7),  // YouTube CC FIRST (multi-query: specific→broad) — PRIORITIZE PERSON FOOTAGE
-    youtubeQuery2Variants ? fetchYouTubeCCClips(youtubeQuery2Variants, halfDur, workDir, scene.index, 5) : Promise.resolve([]),  // YouTube CC secondary person
-    fetchInternetArchiveClips(archiveQuery, halfDur, workDir, scene.index, 2),  // Internet Archive SECOND
-    fetchYouTubeThumbnails(youtubeQuery, halfDur, workDir, scene.index, 3),  // YouTube thumbnails as images
-    youtubeQuery2 ? fetchYouTubeThumbnails(youtubeQuery2, halfDur, workDir, scene.index, 2) : Promise.resolve([]),
-    fetchPexelsClips(scene.pexelsQuery, halfDur, workDir, scene.index, 2, scene.pexelsQueries),
-    fetchPixabayClips(scene.pexelsQuery, halfDur, workDir, scene.index, 1),
-    Promise.resolve([]), // B-roll disabled — too slow (Pexels+Pixabay+SerpAPI sufficient)
+  // Session 44 (2026-06-01): YouTube CC + Internet Archive DISABLED.
+  // Reason: YouTube anti-bot detection now blocks all yt-dlp clients on the cloud DL service,
+  // and Internet Archive sometimes serves 400MB+ files that stall the pipeline.
+  // Free sources used: YouTube thumbnails (high-res jpg via Data API) + Pexels + Pixabay
+  // + Wikimedia + Openverse + SerpAPI images. Pexels/Pixabay return real HD video clips.
+  const ytCCResults = { status: "fulfilled" as const, value: [] as string[] };
+  const ytCC2Results = { status: "fulfilled" as const, value: [] as string[] };
+  const archiveResults = { status: "fulfilled" as const, value: [] as string[] };
+  const [youtubeResults, youtube2Results, pexelsResults, pixabayResults, brollResults, wikimediaResults, wikimedia2Results, openverseResults, openverse2Results, serpResults, serp2Results] = await Promise.allSettled([
+    fetchYouTubeThumbnails(youtubeQuery, halfDur, workDir, scene.index, 4),  // YouTube thumbnails (jpg from Data API — always works)
+    youtubeQuery2 ? fetchYouTubeThumbnails(youtubeQuery2, halfDur, workDir, scene.index, 3) : Promise.resolve([]),
+    fetchPexelsClips(scene.pexelsQuery, halfDur, workDir, scene.index, 3, scene.pexelsQueries),  // Pexels HD video — PRIMARY real-video source now
+    fetchPixabayClips(scene.pexelsQuery, halfDur, workDir, scene.index, 2),
+    Promise.resolve([]),
     fetchWikimediaImages(wikimediaQuery, halfDur, workDir, scene.index, 1),
     wikimediaQuery2 ? fetchWikimediaImages(wikimediaQuery2, halfDur, workDir, scene.index, 1) : Promise.resolve([]),
     fetchOpenverseImages(openverseQuery, halfDur, workDir, scene.index, 1),
@@ -2748,12 +2741,12 @@ async function fetchSceneVisuals(
   // Run fair-use transforms in parallel (max 3 concurrent FFmpeg processes per scene)
   const transformLimit = pLimit(3);
   const transformedPaths = await Promise.all(
-    transformJobs.map(job => transformLimit(async () => {
+    transformJobs.filter(job => fs.existsSync(job.path)).map(job => transformLimit(async () => {
       if (!job.needsTransform) return job.path;
       return transformClipForFairUse(job.path, scene.text, scene.index, job.clipIndex, workDir);
     }))
   );
-  clips.push(...transformedPaths);
+  clips.push(...transformedPaths.filter((p): p is string => p !== null));
   // If nothing worked, use color fallback
   if (clips.length === 0) {
     console.warn(`[Pipeline] Scene ${scene.index}: All visuals failed, using color fallback`);
@@ -3068,8 +3061,30 @@ async function composeSceneVideo(
 
   // Ensure we have at least one valid clip
   const validClips = clips.filter(p => fs.existsSync(p) && fs.statSync(p).size > 100);
-  const safeClips = validClips.length > 0
-    ? validClips
+
+  // ── Reorder clips for better pacing ──────────────────────────────────────
+  // 1) Real video footage (Pexels/Pixabay/YT-CC/Archive) FIRST — these are bewegende beelden
+  // 2) Then image-based clips (YT-thumb / Openverse / Wikimedia / SerpAPI) with Ken Burns
+  // 3) Cap image clips at ~30% of total to keep the video feeling like a video, not a slideshow
+  // 4) Interleave so we don't get a long block of stills at the end
+  const isRealVideo = (p: string) =>
+    /_pexels_|_pixabay_|_ytcc_|_archive_/i.test(path.basename(p));
+  const realVids = validClips.filter(isRealVideo);
+  const imgClips = validClips.filter(p => !isRealVideo(p));
+  const maxImgs = Math.max(1, Math.ceil(realVids.length * 0.5)); // ~30% of total once interleaved
+  const limitedImgs = imgClips.slice(0, maxImgs);
+  // Interleave: V V I V V I V V I ...
+  const interleaved: string[] = [];
+  let vi = 0, ii = 0;
+  while (vi < realVids.length || ii < limitedImgs.length) {
+    if (vi < realVids.length) interleaved.push(realVids[vi++]);
+    if (vi < realVids.length) interleaved.push(realVids[vi++]);
+    if (ii < limitedImgs.length) interleaved.push(limitedImgs[ii++]);
+  }
+  const orderedClips = interleaved.length > 0 ? interleaved : validClips;
+
+  const safeClips = orderedClips.length > 0
+    ? orderedClips
     : [await generateColorFallback(scene.index, duration + 1, workDir)];
 
   // Validate audio
@@ -3212,8 +3227,18 @@ async function composeSceneVideo(
 
   try {
     if (safeClips.length >= 2) {
-      // Multi-clip with xfade transitions
-      const clipDur = Math.min(3, Math.max(2, Math.floor(duration / safeClips.length))); // Reference: 1-4s clips
+      // Multi-clip with hard cuts — target 2.5-3.5s per shot for kinetic pacing
+      // If we have FEW clips for a long scene, we'll loop the clip list to keep cuts frequent
+      const TARGET_SHOT_SEC = 3.0;
+      const idealShotCount = Math.min(30, Math.max(safeClips.length, Math.ceil(duration / TARGET_SHOT_SEC)));
+      // If we need more shots than we have unique clips, loop the original clip list
+      const baseLen = safeClips.length;
+      let extraIdx = 0;
+      while (safeClips.length < idealShotCount) {
+        safeClips.push(safeClips[extraIdx % baseLen]);
+        extraIdx++;
+      }
+      const clipDur = Math.min(3.5, Math.max(2.0, duration / safeClips.length));
       const inputs = safeClips.map(c => `-i "${c}"`).join(" ");
       // fps=25 normalizes timebase for concat filter
       // Ken Burns: simple scale+crop+fps, no animated zoom punch (reference uses static Ken Burns)
@@ -3622,7 +3647,7 @@ export async function runVideoPipeline(
         });
         return clips;
       }))),
-      3000_000, // 50 min hard limit for all visuals (large scene count)
+      10_800_000, // 180 min hard limit for all visuals (large scene count)
       "Visual generation stage"
     );
     console.log(`[Pipeline] Stage 3 (visuals): ${((Date.now()-t2)/1000).toFixed(1)}s`);

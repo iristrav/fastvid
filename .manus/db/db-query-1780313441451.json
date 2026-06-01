@@ -1,0 +1,18 @@
+{
+  "query": "SELECT id, status, progressStep, progressPercent, errorMessage, updatedAt FROM videos WHERE id = 600001;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 357oVLGrrfEVroP.92f7c3f84fd5 --database B9GyrhcpQX4Q32cZzpFMG9 --execute SELECT id, status, progressStep, progressPercent, errorMessage, updatedAt FROM videos WHERE id = 600001;",
+  "rows": [
+    {
+      "id": "600001",
+      "status": "pending",
+      "progressStep": "NULL",
+      "progressPercent": "0",
+      "errorMessage": "NULL",
+      "updatedAt": "2026-05-18 11:09:46"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\tstatus\tprogressStep\tprogressPercent\terrorMessage\tupdatedAt\n600001\tpending\tNULL\t0\tNULL\t2026-05-18 11:09:46\n",
+  "stderr": "",
+  "execution_time_ms": 1741
+}
