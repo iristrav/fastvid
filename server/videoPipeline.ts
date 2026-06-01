@@ -282,6 +282,8 @@ const IS_RAILWAY = !process.env.BUILT_IN_FORGE_API_KEY;
 // 1080p resolution for professional YouTube quality
 const VIDEO_WIDTH = 1920;
 const VIDEO_HEIGHT = 1080;
+/** Standard scale chain — pad ensures exact even dimensions for libx264 */
+const STANDARD_VF = `scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=decrease,pad=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:(ow-iw)/2:(oh-ih)/2,fps=25,format=yuv420p`;
 
 // ─── Dynamic scene count based on video length ────────────────────────────────
 // Each scene is ~25-35s of narration. To hit target duration:
@@ -3290,12 +3292,8 @@ async function composeSceneVideo(
   const subtitleDrawtext = '';
   // Vignette for cinematic look
   const vignetteFilter = `,vignette=angle=0.6:mode=forward`;
-  // Film grain: subtle noise overlay for cinematic texture (Vidrush-style)
-  // noise=alls=12:allf=t adds temporal noise (changes each frame) for organic film grain look
-  const filmGrain = `,noise=alls=12:allf=t`;
-  // Final filter: color grade + film grain + vignette. NO fade-in/out on individual scenes
-  // (hard cuts between scenes, like the reference video)
-  const fadeFilter = `${colorGrade}${filmGrain}${subtitleDrawtext}${vignetteFilter}`;
+  // Film grain disabled — noise filter breaks some Railway FFmpeg builds (encoder init errors)
+  const fadeFilter = `${colorGrade}${subtitleDrawtext}${vignetteFilter}`;
   // Reference video style: HARD CUTS only between clips (no xfade/crossfade/slide)
   // Hard cuts are faster, more energetic, and match the reference video exactly.
   // Each clip is trimmed to clipDur seconds, then concatenated with a hard cut.
@@ -3344,9 +3342,10 @@ async function composeSceneVideo(
 
   try {
     if (safeClips.length >= 2) {
-      // Hard cuts every 3–4 seconds — trim each source clip so long Ken Burns shots don't dominate
+      // Hard cuts every 3–4 seconds
       const TARGET_SHOT_SEC = 3.5;
-      const idealShotCount = Math.min(40, Math.max(safeClips.length, Math.ceil(duration / TARGET_SHOT_SEC)));
+      const maxShots = IS_RAILWAY ? 16 : 24;
+      const idealShotCount = Math.min(maxShots, Math.max(safeClips.length, Math.ceil(duration / TARGET_SHOT_SEC)));
       const baseLen = safeClips.length;
       let extraIdx = 0;
       while (safeClips.length < idealShotCount) {
@@ -3354,11 +3353,14 @@ async function composeSceneVideo(
         extraIdx++;
       }
       const clipDur = Math.min(4.0, Math.max(3.0, duration / safeClips.length));
-      const inputs = safeClips.map(c => `-i "${c}"`).join(" ");
-      const scaleFilters = safeClips.map((clip, i) => {
-        const startSec = ((scene.index + i) * 1.7) % 4;
-        return `[${i}:v]trim=start=${startSec.toFixed(2)}:duration=${clipDur.toFixed(3)},setpts=PTS-STARTPTS,scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT},fps=25[v${i}]`;
-      }).join(";");
+      // Use input -ss/-t (not filter trim) — filter trim with large start offset on 4s clips caused 0-frame output
+      const inputs = safeClips.map((c, i) => {
+        const startSec = Math.min(((scene.index + i) * 0.7) % 0.8, 0.5);
+        return `-ss ${startSec.toFixed(2)} -t ${(clipDur + 0.15).toFixed(3)} -i "${c}"`;
+      }).join(" ");
+      const scaleFilters = safeClips.map((_, i) =>
+        `[${i}:v]${STANDARD_VF}[v${i}]`
+      ).join(";");
 
       // Hard-cut concat: use filter_complex concat to join clips with zero-duration cuts
       // This matches the reference video exactly — no crossfades, no slides, pure hard cuts
@@ -3398,7 +3400,7 @@ async function composeSceneVideo(
       const hasOverlaysSingle = kineticFrames.length > 0 || statCalloutFrame !== null;
       const finalVideoLabel = hasOverlaysSingle ? kFinalLabel : "scaled";
       // Single clip: simple scale+crop (reference uses static Ken Burns, no animated zoom)
-      const singleZoomFilter = `scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT},fps=25`;
+      const singleZoomFilter = STANDARD_VF;
       await withTimeout(
         exec(
           `${FFMPEG_BIN} -y -i "${clip}" -i "${safeAudioPath}"${kineticInput} ` +
@@ -3410,28 +3412,51 @@ async function composeSceneVideo(
       );
     }
   } catch (composeErr) {
-    // Last resort: simple mux (no overlays), then solid-color video if clip is corrupt
-    console.warn(`[Pipeline] Scene ${scene.index}: compose failed, trying simple mux:`, composeErr);
+    console.warn(`[Pipeline] Scene ${scene.index}: compose failed, trying simplified compose:`, composeErr);
     try {
-      await withTimeout(
-        exec(
-          `${FFMPEG_BIN} -y -i "${safeClips[0]}" -i "${safeAudioPath}" ` +
-          `-t ${duration} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
-        ),
-        45_000,
-        `Simple mux scene ${scene.index}`
-      );
-    } catch (muxErr) {
-      console.warn(`[Pipeline] Scene ${scene.index}: simple mux failed, using color fallback:`, muxErr);
-      const fallbackClip = await generateColorFallback(scene.index, duration + 2, workDir);
-      await withTimeout(
-        exec(
-          `${FFMPEG_BIN} -y -i "${fallbackClip}" -i "${safeAudioPath}" ` +
-          `-t ${duration} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
-        ),
-        60_000,
-        `Color fallback scene ${scene.index}`
-      );
+      if (safeClips.length >= 2) {
+        const clipDur = Math.min(4.0, Math.max(3.0, duration / safeClips.length));
+        const n = Math.min(12, safeClips.length);
+        const subset = safeClips.slice(0, n);
+        const inputs = subset.map((c) => `-t ${clipDur.toFixed(3)} -i "${c}"`).join(" ");
+        const scaleFilters = subset.map((_, i) => `[${i}:v]${STANDARD_VF}[v${i}]`).join(";");
+        const concatLabels = subset.map((_, i) => `[v${i}]`).join("");
+        await withTimeout(
+          exec(
+            `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}" ` +
+            `-filter_complex "${scaleFilters};${concatLabels}concat=n=${subset.length}:v=1:a=0[vout]" ` +
+            `-map "[vout]" -map "${subset.length}:a" ` +
+            `-t ${duration} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
+          ),
+          90_000,
+          `Simplified multi-clip scene ${scene.index}`
+        );
+      } else {
+        throw composeErr;
+      }
+    } catch (simpleErr) {
+      console.warn(`[Pipeline] Scene ${scene.index}: simplified compose failed, trying simple mux:`, simpleErr);
+      try {
+        await withTimeout(
+          exec(
+            `${FFMPEG_BIN} -y -i "${safeClips[0]}" -i "${safeAudioPath}" ` +
+            `-t ${duration} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
+          ),
+          45_000,
+          `Simple mux scene ${scene.index}`
+        );
+      } catch (muxErr) {
+        console.warn(`[Pipeline] Scene ${scene.index}: simple mux failed, using color fallback:`, muxErr);
+        const fallbackClip = await generateColorFallback(scene.index, duration + 2, workDir);
+        await withTimeout(
+          exec(
+            `${FFMPEG_BIN} -y -i "${fallbackClip}" -i "${safeAudioPath}" ` +
+            `-t ${duration} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
+          ),
+          60_000,
+          `Color fallback scene ${scene.index}`
+        );
+      }
     }
   }
 
