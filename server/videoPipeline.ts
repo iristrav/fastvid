@@ -453,12 +453,12 @@ async function parseScriptIntoScenesBatch(
 
 For each scene return:
 - text: narration (max 500 chars, full sentences)
-- visualCue: literal 4-8 word footage description
-- pexelsQuery: primary stock search (3-6 English words)
-- pexelsQueries: 3 search queries, specific to broad
+- visualCue: EXACT footage shown while narrating (e.g. "SpaceX Falcon 9 launch pad", "Tesla Gigafactory assembly line")
+- pexelsQuery: primary English stock video search — MUST match visualCue and narration topic
+- pexelsQueries: 3 queries from most specific to slightly broader — ALL must stay on the same topic (no generic "nature" or "city drone" unless the scene is about that)
 - personNames: full names of real people mentioned in text, or []
 
-Keep strings concise. Cover the script evenly.`,
+Every query must literally describe what the viewer should see during that narration. Cover the script evenly.`,
         },
         {
           role: "user",
@@ -865,18 +865,23 @@ async function fetchPexelsClips(
   workDir: string,
   sceneIndex: number,
   count: number = 3,
-  extraQueries?: string[]
+  extraQueries?: string[],
+  strictQueries = false,
+  fileTag = "pexels"
 ): Promise<string[]> {
   if (!PEXELS_API_KEY) return [];
 
   const results: string[] = [];
 
-  // Build query list: LLM-generated queries first (most specific → least specific),
-  // then generic cinematic fallbacks as last resort
-  const queryList = [
-    ...(extraQueries && extraQueries.length > 0 ? extraQueries : [query]),
-    'cinematic nature landscape', 'aerial city drone', 'documentary footage',
-  ];
+  // Strict mode: only topic-specific queries (beat-level matching). No generic fallbacks.
+  const queryList = strictQueries
+    ? Array.from(new Set([query, ...(extraQueries ?? [])].filter((q) => q && q.trim().length > 2)))
+    : [
+        ...(extraQueries && extraQueries.length > 0 ? extraQueries : [query]),
+        "cinematic nature landscape",
+        "aerial city drone",
+        "documentary footage",
+      ];
   // Deduplicate
   const seen = new Set<string>();
   const uniqueQueries = queryList.filter(q => { if (seen.has(q)) return false; seen.add(q); return true; });
@@ -939,8 +944,8 @@ async function fetchPexelsClips(
 
         if (!videoFile?.link) return null;
 
-        const rawPath = path.join(workDir, `scene_${sceneIndex}_pexels_${idx}_raw.mp4`);
-        const outPath = path.join(workDir, `scene_${sceneIndex}_pexels_${idx}.mp4`);
+        const rawPath = path.join(workDir, `scene_${sceneIndex}_${fileTag}_${idx}_raw.mp4`);
+        const outPath = path.join(workDir, `scene_${sceneIndex}_${fileTag}_${idx}.mp4`);
 
         // Download with retry logic
         let downloadResp;
@@ -1141,13 +1146,15 @@ async function fetchPixabayClips(
   workDir: string,
   sceneIndex: number,
   count: number = 2,
-  suffix: string = "pixabay"
+  suffix: string = "pixabay",
+  strictQueries = false
 ): Promise<string[]> {
   if (!PIXABAY_API_KEY) return [];
   const results: string[] = [];
 
-  // Build query list: primary query + cinematic fallbacks
-  const queryList = [query, 'cinematic nature landscape', 'aerial city drone'];
+  const queryList = strictQueries
+    ? [query].filter((q) => q && q.trim().length > 2)
+    : [query, "cinematic nature landscape", "aerial city drone"];
   const seen = new Set<string>();
   const uniqueQueries = queryList.filter(q => { if (seen.has(q)) return false; seen.add(q); return true; });
 
@@ -2765,7 +2772,9 @@ async function fetchYouTubeCCClips(
   duration: number,
   workDir: string,
   sceneIndex: number,
-  count: number = 2
+  count: number = 2,
+  relevanceKeywords: string[] = [],
+  minRelevanceScore = 2
 ): Promise<string[]> {
   const results: string[] = [];
 
@@ -2829,6 +2838,17 @@ async function fetchYouTubeCCClips(
         if (fetched >= count) break;
         const videoId = item.id?.videoId;
         if (!videoId || downloadedIds.has(videoId)) continue;
+
+        const title = item.snippet?.title ?? "";
+        if (relevanceKeywords.length > 0) {
+          const rel = scoreVisualRelevance(title, relevanceKeywords);
+          if (rel < minRelevanceScore) {
+            console.warn(
+              `[Pipeline] Scene ${sceneIndex}: YT CC skip irrelevant title "${title.slice(0, 60)}" (score ${rel}/${minRelevanceScore})`
+            );
+            continue;
+          }
+        }
 
         try {
           const clipStart = 15; // Skip first 15s to avoid intros
@@ -2972,7 +2992,9 @@ function isStillPhotoClip(filePath: string): boolean {
 }
 
 function isStockVideoClip(filePath: string): boolean {
-  return /_pexels_|_pixabay_|_broll_|_ytcc_|_archive_|_wikivid_|_nasa_|_esa_/i.test(path.basename(filePath));
+  return /_pexels_|_pex_|_pixabay_|_pix_|_broll_|_ytcc_|_archive_|_wikivid_|_nasa_|_esa_|_b\d+_(pex|pix)/i.test(
+    path.basename(filePath)
+  );
 }
 
 function maxStillPhotosForScene(sceneIndex: number, hasPerson: boolean): number {
@@ -2992,340 +3014,234 @@ function resolveScenePersons(scene: Scene, videoTitle?: string): string[] {
   return Array.from(persons);
 }
 
-// ─── 3e. Fetch All Visuals for a Scene ───────────────────────────────────────
-// Returns array of valid clip paths (AI image first, then Pexels clips)
-async function fetchSceneVisuals(
-  scene: Scene,
-  workDir: string,
-  videoTitle?: string
-): Promise<string[]> {
+// ─── Beat-level visual matching (narration ↔ footage alignment) ───────────────
+const RELEVANCE_STOP_WORDS = new Set([
+  "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with", "by", "from",
+  "is", "are", "was", "were", "be", "been", "being", "have", "has", "had", "will", "would", "could",
+  "should", "may", "might", "this", "that", "these", "those", "it", "its", "we", "they", "he", "she",
+  "you", "i", "my", "our", "their", "his", "her", "your", "as", "so", "if", "not", "no", "up", "out",
+  "about", "into", "than", "then", "when", "where", "who", "which", "what", "how", "all", "each", "more",
+  "most", "also", "just", "very", "over", "after", "before", "through", "during", "between", "while",
+  "because", "since", "even", "only", "still", "now", "here", "there", "some", "any", "every", "one",
+  "two", "three", "first", "second", "third", "new", "like", "said", "says", "fact", "facts", "minute",
+]);
+
+interface SceneBeat {
+  index: number;
+  text: string;
+  searchQuery: string;
+  keywords: string[];
+  wantsPersonPhoto: boolean;
+}
+
+function tokenizeForRelevance(text: string): string[] {
+  return text
+    .replace(/[^a-zA-Z0-9\s]/g, " ")
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((w) => w.length >= 3 && !RELEVANCE_STOP_WORDS.has(w));
+}
+
+function buildRelevanceKeywords(scene: Scene, beatText: string, videoTitle?: string): string[] {
+  const parts = [
+    ...tokenizeForRelevance(beatText),
+    ...tokenizeForRelevance(scene.visualCue),
+    ...tokenizeForRelevance(scene.pexelsQuery),
+    ...(scene.pexelsQueries ?? []).flatMap((q) => tokenizeForRelevance(q)),
+    ...(scene.personNames ?? []).flatMap((n) => tokenizeForRelevance(n)),
+    ...tokenizeForRelevance(videoTitle ?? ""),
+  ];
+  return Array.from(new Set(parts)).slice(0, 20);
+}
+
+function scoreVisualRelevance(text: string, keywords: string[]): number {
+  const t = text.toLowerCase();
+  let score = 0;
+  for (const kw of keywords) {
+    if (kw.length < 3) continue;
+    if (t.includes(kw)) score++;
+  }
+  return score;
+}
+
+function buildSceneBeats(scene: Scene, duration: number): SceneBeat[] {
   const CUT_SECONDS = 3.5;
-  const clipsTarget = Math.max(5, Math.ceil(scene.duration / CUT_SECONDS));
-  const clipFetchDur = 4;
-  const aiClipPath = path.join(workDir, `scene_${scene.index}_ai.mp4`);
-
-  const scenePersons = resolveScenePersons(scene, videoTitle);
-  const hasPerson = scenePersons.length > 0;
-  const maxPhotos = maxStillPhotosForScene(scene.index, hasPerson);
-  const primarySubject = scenePersons[0] ?? extractPrimaryPersonFromTitle(videoTitle) ?? "";
-  const secondarySubject = scenePersons.length > 1 ? scenePersons[1] : "";
-  const buildSubjectQuery = (subject: string, cue: string) =>
-    subject ? `${subject} ${cue}`.slice(0, 100) : cue;
-
-  // Stock VIDEO queries — never lead with a person name (Pexels has no celebrity footage)
-  const stockVideoQueries = [
+  const beatCount = Math.max(2, Math.ceil(duration / CUT_SECONDS));
+  const sentences =
+    scene.text.match(/[^.!?]+[.!?]+/g)?.map((s) => s.trim()).filter((s) => s.length > 5) ??
+    [scene.text.trim()];
+  const queryPool = [
     scene.pexelsQuery,
     scene.visualCue,
     ...(scene.pexelsQueries ?? []),
     ...(scene.brollQueries ?? []),
   ].filter((q): q is string => typeof q === "string" && q.trim().length > 2);
-  const pexelsPrimary = stockVideoQueries[0] || "documentary footage";
-  const pexelsExtras = [
-    ...stockVideoQueries.slice(1),
-    "cinematic b roll",
-    "aerial drone footage",
-    "technology innovation",
-  ];
-  const pixabayPrimary = pexelsPrimary;
 
-  const wikimediaQuery = primarySubject || buildSubjectQuery(primarySubject, scene.visualCue);
-  const serpQuery = primarySubject ? `${primarySubject} portrait` : buildSubjectQuery(primarySubject, scene.visualCue);
-  const openverseQuery = primarySubject || scene.visualCue;
-  const youtubeQuery = primarySubject ? `${primarySubject} interview` : (scene.pexelsQuery || scene.visualCue);
-
-  // Person scenes: at most 2 still photos (Wikimedia + SerpAPI), rest must be stock video
-  const personMediaResults = hasPerson && scenePersons[0]
-    ? await Promise.allSettled([
-        fetchWikimediaImages(scenePersons[0], clipFetchDur, workDir, scene.index, 1, "p0"),
-        fetchSerpAPIImages(`${scenePersons[0]} portrait`, clipFetchDur, workDir, scene.index, 1, "p0"),
-      ])
-    : [];
-  const personMediaClips = personMediaResults.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
-
-  const eventVideoQueries = buildEventVideoQueries(scene, primarySubject, hasPerson);
-  const spaceTopic = isSpaceRelatedTopic(scene.visualCue, scene.pexelsQuery, scene.text, videoTitle ?? "");
-  const archiveQueries = [
-    ...eventVideoQueries,
-    "collection:prelinger",
-    spaceTopic ? "creator:NASA" : "",
-    spaceTopic ? "European Space Agency" : "",
-  ].filter((q): q is string => typeof q === "string" && q.trim().length > 2);
-  const wikimediaVideoQuery = primarySubject || scene.visualCue || scene.pexelsQuery;
-  const nasaQuery = scene.visualCue || scene.pexelsQuery || (spaceTopic ? "space launch" : "technology");
-
-  const archivalFetches = [
-    fetchInternetArchiveClips(archiveQueries, clipFetchDur, workDir, scene.index, 3),
-    fetchYouTubeCCClips(eventVideoQueries, clipFetchDur, workDir, scene.index, 2),
-    fetchWikimediaVideos(wikimediaVideoQuery, clipFetchDur, workDir, scene.index, 2),
-    fetchNasaVideoClips(nasaQuery, clipFetchDur, workDir, scene.index, spaceTopic ? 2 : 1),
-    spaceTopic
-      ? fetchWikimediaVideos(`ESA ${nasaQuery}`, clipFetchDur, workDir, scene.index, 1, "esa")
-      : Promise.resolve([] as string[]),
-  ] as const;
-
-  const genericFetches = hasPerson
-    ? [
-        Promise.resolve([] as string[]),
-        Promise.resolve([] as string[]),
-        fetchWikimediaImages(wikimediaQuery, clipFetchDur, workDir, scene.index, 0),
-        Promise.resolve([] as string[]),
-        fetchOpenverseImages(openverseQuery, clipFetchDur, workDir, scene.index, 0),
-        Promise.resolve([] as string[]),
-        fetchSerpAPIImages(serpQuery, clipFetchDur, workDir, scene.index, 0),
-        Promise.resolve([] as string[]),
-      ]
-    : [
-        fetchYouTubeThumbnails(youtubeQuery, clipFetchDur, workDir, scene.index, 1),
-        secondarySubject
-          ? fetchYouTubeThumbnails(`${secondarySubject} interview`, clipFetchDur, workDir, scene.index, 1, "p2")
-          : Promise.resolve([] as string[]),
-        fetchWikimediaImages(wikimediaQuery, clipFetchDur, workDir, scene.index, 1),
-        secondarySubject
-          ? fetchWikimediaImages(secondarySubject, clipFetchDur, workDir, scene.index, 1, "p2")
-          : Promise.resolve([] as string[]),
-        fetchOpenverseImages(openverseQuery, clipFetchDur, workDir, scene.index, 1),
-        secondarySubject
-          ? fetchOpenverseImages(secondarySubject, clipFetchDur, workDir, scene.index, 1, "p2")
-          : Promise.resolve([] as string[]),
-        fetchSerpAPIImages(serpQuery, clipFetchDur, workDir, scene.index, 1),
-        secondarySubject
-          ? fetchSerpAPIImages(`${secondarySubject} portrait`, clipFetchDur, workDir, scene.index, 1, "p2")
-          : Promise.resolve([] as string[]),
-      ];
-
-  const [
-    archiveResults,
-    ytCCResults,
-    wikimediaVideoResults,
-    nasaVideoResults,
-    esaVideoResults,
-  ] = await Promise.allSettled(archivalFetches);
-
-  const [
-    youtubeResults,
-    youtube2Results,
-    wikimediaResults,
-    wikimedia2Results,
-    openverseResults,
-    openverse2Results,
-    serpResults,
-    serp2Results,
-    pexelsResults,
-    pixabayResults,
-    brollResults,
-  ] = await Promise.allSettled([
-    ...genericFetches,
-    fetchPexelsClips(pexelsPrimary, clipFetchDur, workDir, scene.index, clipsTarget, pexelsExtras),
-    fetchPixabayClips(pixabayPrimary, clipFetchDur, workDir, scene.index, Math.min(5, clipsTarget)),
-    fetchBrollClips(scene.brollQueries ?? [scene.visualCue, scene.pexelsQuery].filter(Boolean) as string[], clipFetchDur, workDir, scene.index),
-  ]);
-
-  const clips: string[] = [];
-
-  const archiveClipsRaw = archiveResults.status === "fulfilled" ? archiveResults.value : [];
-  const ytCCClipsRaw = ytCCResults.status === "fulfilled" ? ytCCResults.value : [];
-  const wikimediaVideoClipsRaw = wikimediaVideoResults.status === "fulfilled" ? wikimediaVideoResults.value : [];
-  const nasaClipsRaw = nasaVideoResults.status === "fulfilled" ? nasaVideoResults.value : [];
-  const esaClipsRaw = esaVideoResults.status === "fulfilled" ? esaVideoResults.value : [];
-  const pexelsClipsRaw = pexelsResults.status === "fulfilled" ? pexelsResults.value : [];
-  const pixabayClipsRaw = pixabayResults.status === "fulfilled" ? pixabayResults.value : [];
-  const brollClipsRaw = brollResults.status === "fulfilled" ? brollResults.value : [];
-  const ytClipsRaw = hasPerson ? [] : (youtubeResults.status === "fulfilled" ? youtubeResults.value : []);
-  const yt2ClipsRaw = hasPerson ? [] : (youtube2Results.status === "fulfilled" ? youtube2Results.value : []);
-  const realVideoStockCount =
-    pexelsClipsRaw.length +
-    pixabayClipsRaw.length +
-    brollClipsRaw.length +
-    ytCCClipsRaw.length +
-    archiveClipsRaw.length +
-    wikimediaVideoClipsRaw.length +
-    nasaClipsRaw.length +
-    esaClipsRaw.length;
-  const freeStockCount =
-    realVideoStockCount +
-    personMediaClips.length +
-    ytClipsRaw.length +
-    yt2ClipsRaw.length;
-
-  // ── PHASE 2: Paid AI generators — ONLY if free sources are insufficient (< 2 clips)
-  // Runway is the preferred AI generator (highest quality). Other generators run only if key is set.
-  // This ensures Runway credits are spent only when stock footage is unavailable.
-  const RUNWAY_CLIP_THRESHOLD = 2; // trigger Runway if Pexels+Pixabay+B-roll return fewer than this
-  let runwayClip: string | null = null;
-  let aiClip: string | null = null;
-  let leonardoClip: string | null = null;
-  let klingClip: string | null = null;
-  let lumaClip: string | null = null;
-  let pikaClip: string | null = null;
-  let forgeClip: string | null = null;
-  let grokClip: string | null = null;
-  let veoClip: string | null = null;
-  let metaClip: string | null = null;
-  let higgsfieldTextClip: string | null = null;
-  let higgsfieldImageClip: string | null = null;
-
-  if (realVideoStockCount < RUNWAY_CLIP_THRESHOLD && !hasPerson) {
-    console.log(`[Pipeline] Scene ${scene.index}: only ${realVideoStockCount} stock video clip(s) — activating AI generators (Runway + others)`);
-    const [runwayResult, aiResult, leonardoResult, klingResult, lumaResult, pikaResult, forgeResult, grokResult, veoResult, metaResult, higgsfieldTextResult, higgsfieldImageResult] = await Promise.allSettled([
-      generateRunwayClip(scene.aiImagePrompt, null, clipFetchDur, aiClipPath, scene.index),
-      Promise.resolve(null),
-      generateLeonardoAIClip(scene.aiImagePrompt, clipFetchDur, aiClipPath, scene.index),
-      generateKlingClip(scene.aiImagePrompt, null, clipFetchDur, aiClipPath, scene.index),
-      generateLumaClip(scene.aiImagePrompt, null, clipFetchDur, aiClipPath, scene.index),
-      generatePikaClip(scene.aiImagePrompt, null, clipFetchDur, aiClipPath, scene.index),
-      generateManusForgeClip(scene.aiImagePrompt, clipFetchDur, aiClipPath, scene.index),
-      generateGrokVideoClip(scene.aiImagePrompt, clipFetchDur, aiClipPath, scene.index),
-      generateVeoVideoClip(scene.aiImagePrompt, clipFetchDur, aiClipPath, scene.index),
-      generateMetaMovieGenClip(scene.aiImagePrompt, clipFetchDur, aiClipPath, scene.index),
-      generateHiggsfieldTextToVideoClip(scene.aiImagePrompt, clipFetchDur, aiClipPath, scene.index),
-      generateHiggsfieldImageToVideoClip("", scene.aiImagePrompt, clipFetchDur, aiClipPath, scene.index),
-    ]);
-    runwayClip = runwayResult.status === "fulfilled" ? runwayResult.value : null;
-    aiClip = aiResult.status === "fulfilled" ? aiResult.value : null;
-    leonardoClip = leonardoResult.status === "fulfilled" ? leonardoResult.value : null;
-    klingClip = klingResult.status === "fulfilled" ? klingResult.value : null;
-    lumaClip = lumaResult.status === "fulfilled" ? lumaResult.value : null;
-    pikaClip = pikaResult.status === "fulfilled" ? pikaResult.value : null;
-    forgeClip = forgeResult.status === "fulfilled" ? forgeResult.value : null;
-    grokClip = grokResult.status === "fulfilled" ? grokResult.value : null;
-    veoClip = veoResult.status === "fulfilled" ? veoResult.value : null;
-    metaClip = metaResult.status === "fulfilled" ? metaResult.value : null;
-    higgsfieldTextClip = higgsfieldTextResult.status === "fulfilled" ? higgsfieldTextResult.value : null;
-    higgsfieldImageClip = higgsfieldImageResult.status === "fulfilled" ? higgsfieldImageResult.value : null;
-  } else {
-    console.log(`[Pipeline] Scene ${scene.index}: ${realVideoStockCount} stock video + ${personMediaClips.length} photo clip(s) — skipping paid AI`);
+  const beats: SceneBeat[] = [];
+  for (let i = 0; i < beatCount; i++) {
+    const text = sentences[Math.min(i, sentences.length - 1)] ?? scene.text;
+    const searchQuery =
+      queryPool[i % Math.max(1, queryPool.length)] ??
+      scene.visualCue ??
+      scene.pexelsQuery ??
+      "documentary footage";
+    beats.push({
+      index: i,
+      text,
+      searchQuery,
+      keywords: buildRelevanceKeywords(scene, text),
+      wantsPersonPhoto: i === 0 && (scene.personNames?.length ?? 0) > 0,
+    });
   }
+  return beats;
+}
 
-  // Add AI clips in priority order (Runway first — highest quality)
-  if (runwayClip) clips.push(runwayClip);
-  if (aiClip) clips.push(aiClip);
-  if (leonardoClip) clips.push(leonardoClip);
-  if (klingClip) clips.push(klingClip);
-  if (lumaClip) clips.push(lumaClip);
-  if (pikaClip) clips.push(pikaClip);
-  if (forgeClip) clips.push(forgeClip);
-  if (grokClip) clips.push(grokClip);
-  if (veoClip) clips.push(veoClip);
-  if (metaClip) clips.push(metaClip);
-  if (higgsfieldTextClip) clips.push(higgsfieldTextClip);
-  if (higgsfieldImageClip) clips.push(higgsfieldImageClip);
+async function adoptClip(
+  paths: string[],
+  usedPaths: Set<string>,
+  sceneIndex: number,
+  beatIndex: number,
+  beatText: string,
+  workDir: string
+): Promise<string | null> {
+  for (const p of paths) {
+    if (!p || usedPaths.has(p) || !fs.existsSync(p)) continue;
+    if (!(await isValidVideoFile(p))) continue;
+    usedPaths.add(p);
+    const transformed = await transformClipForFairUse(p, beatText, sceneIndex, beatIndex, workDir);
+    if (await isValidVideoFile(transformed)) return transformed;
+  }
+  return null;
+}
 
-  // Collect archival + stock video (real footage first), then still photos
-  const ytCCClips = ytCCClipsRaw;
-  const archiveClips = archiveClipsRaw;
-  const wikimediaVideoClips = wikimediaVideoClipsRaw;
-  const nasaClips = nasaClipsRaw;
-  const esaClips = esaClipsRaw;
-  const ytClips = hasPerson ? [] : (youtubeResults.status === "fulfilled" ? youtubeResults.value : []);
-  const yt2Clips = hasPerson ? [] : (youtube2Results.status === "fulfilled" ? youtube2Results.value : []);
-  const pexelsClips = pexelsResults.status === "fulfilled" ? pexelsResults.value : [];
-  const pixabayClips = pixabayResults.status === "fulfilled" ? pixabayResults.value : [];
-  const brollClips = brollResults.status === "fulfilled" ? brollResults.value : [];
-  const wikimediaClips = wikimediaResults.status === "fulfilled" ? wikimediaResults.value : [];
-  const wikimedia2Clips = wikimedia2Results.status === "fulfilled" ? wikimedia2Results.value : [];
-  const openverseClips = openverseResults.status === "fulfilled" ? openverseResults.value : [];
-  const openverse2Clips = openverse2Results.status === "fulfilled" ? openverse2Results.value : [];
-  const serpClips = hasPerson ? [] : (serpResults.status === "fulfilled" ? serpResults.value : []);
-  const serp2Clips = hasPerson ? [] : (serp2Results.status === "fulfilled" ? serp2Results.value : []);
+async function fetchBeatClip(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  usedPaths: Set<string>,
+  spaceTopic: boolean,
+  personName: string
+): Promise<string | null> {
+  const tag = `b${beat.index}`;
+  const q = beat.searchQuery;
 
-  type TransformJob = { path: string; clipIndex: number; needsTransform: boolean };
-  let clipIndex = 0;
-  const nextIndex = () => clipIndex++;
-  const personPhotoClips = hasPerson
-    ? personMediaClips.slice(0, maxPhotos)
-    : [...serpClips, ...serp2Clips, ...wikimediaClips, ...wikimedia2Clips, ...openverseClips, ...openverse2Clips, ...ytClips, ...yt2Clips].slice(0, maxPhotos);
-  const stockVideoClips = [
-    ...ytCCClips,
-    ...archiveClips,
-    ...wikimediaVideoClips,
-    ...nasaClips,
-    ...esaClips,
-    ...brollClips,
-    ...pexelsClips,
-    ...pixabayClips,
-  ];
-
-  const transformJobs: TransformJob[] = [
-    ...stockVideoClips.map((p) => ({ path: p, clipIndex: nextIndex(), needsTransform: true })),
-    ...personPhotoClips.map((p) => ({ path: p, clipIndex: nextIndex(), needsTransform: false })),
-  ];
-
-  // Run fair-use transforms in parallel (max 3 concurrent FFmpeg processes per scene)
-  const transformLimit = pLimit(3);
-  const transformedPaths = await Promise.all(
-    transformJobs.filter(job => fs.existsSync(job.path)).map(job => transformLimit(async () => {
-      if (!job.needsTransform) return job.path;
-      return transformClipForFairUse(job.path, scene.text, scene.index, job.clipIndex, workDir);
-    }))
-  );
-  clips.push(...transformedPaths.filter((p): p is string => p !== null));
-  // Drop corrupt downloads — keep only clips ffprobe can read
-  const validatedClips: string[] = [];
-  for (const clipPath of clips) {
-    if (await isValidVideoFile(clipPath)) {
-      validatedClips.push(clipPath);
-    } else {
-      console.warn(`[Pipeline] Scene ${scene.index}: dropping invalid clip ${path.basename(clipPath)}`);
+  if (beat.wantsPersonPhoto && personName) {
+    const [wikiPhoto, serpPhoto] = await Promise.allSettled([
+      fetchWikimediaImages(personName, clipFetchDur, workDir, sceneIndex, 1, `${tag}_p0`),
+      SERPAPI_KEY
+        ? fetchSerpAPIImages(`${personName} portrait`, clipFetchDur, workDir, sceneIndex, 1, `${tag}_p0`)
+        : Promise.resolve([] as string[]),
+    ]);
+    const photoPaths = [
+      ...(wikiPhoto.status === "fulfilled" ? wikiPhoto.value : []),
+      ...(serpPhoto.status === "fulfilled" ? serpPhoto.value : []),
+    ];
+    const photo = await adoptClip(photoPaths, usedPaths, sceneIndex, beat.index, beat.text, workDir);
+    if (photo) {
+      console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: person photo for "${personName}"`);
+      return photo;
     }
   }
-  clips.length = 0;
-  clips.push(...validatedClips);
-  if (clips.length === 0) {
-    console.warn(`[Pipeline] Scene ${scene.index}: All visuals failed, using color fallback`);
-    clips.push(await generateColorFallback(scene.index, Math.max(scene.duration, 5), workDir));
+
+  const pex = await fetchPexelsClips(q, clipFetchDur, workDir, sceneIndex, 2, [q], true, `${tag}_pex`);
+  let clip = await adoptClip(pex, usedPaths, sceneIndex, beat.index, beat.text, workDir);
+  if (clip) {
+    console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: Pexels "${q}"`);
+    return clip;
   }
 
-  // Ensure enough STOCK VIDEO clips for 3–4s hard cuts (never pad with extra still photos)
-  const MIN_VIDEO_CLIPS = clipsTarget;
-  const videoClips = clips.filter((c) => isStockVideoClip(c) || !isStillPhotoClip(c));
-  const photoClipsKept = clips.filter((c) => isStillPhotoClip(c)).slice(0, maxPhotos);
-  clips.length = 0;
-  clips.push(...videoClips, ...photoClipsKept);
+  const pix = await fetchPixabayClips(q, clipFetchDur, workDir, sceneIndex, 2, `${tag}_pix`, true);
+  clip = await adoptClip(pix, usedPaths, sceneIndex, beat.index, beat.text, workDir);
+  if (clip) {
+    console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: Pixabay "${q}"`);
+    return clip;
+  }
 
-  if (videoClips.length < MIN_VIDEO_CLIPS) {
-    const needed = MIN_VIDEO_CLIPS - videoClips.length;
-    console.warn(`[Pipeline] Scene ${scene.index}: only ${videoClips.length}/${MIN_VIDEO_CLIPS} stock videos — fetching B-roll`);
-    const genericQueries = [
-      ...(scene.brollQueries ?? []),
-      scene.visualCue,
-      scene.pexelsQuery,
-      ...(scene.pexelsQueries ?? []),
-      hasPerson ? "rocket launch space technology" : "",
-      hasPerson ? "electric car factory" : "",
-      "documentary b roll cinematic",
-      "aerial city drone footage",
-    ].filter((q): q is string => typeof q === "string" && q.trim().length > 2);
-    const [extraPexels, extraPixabay] = await Promise.all([
-      fetchPexelsClips(
-        scene.visualCue || scene.pexelsQuery || "documentary footage",
-        clipFetchDur,
-        workDir,
-        scene.index,
-        needed,
-        genericQueries
-      ),
-      fetchPixabayClips(
-        scene.pexelsQuery || scene.visualCue || "documentary",
-        clipFetchDur,
-        workDir,
-        scene.index,
-        Math.min(4, needed)
-      ),
-    ]);
-    for (const clipPath of [...extraPexels, ...extraPixabay]) {
-      if (clips.filter((c) => !isStillPhotoClip(c)).length >= MIN_VIDEO_CLIPS) break;
-      if (!fs.existsSync(clipPath)) continue;
-      const transformed = await transformClipForFairUse(clipPath, scene.text, scene.index, clips.length, workDir);
-      if (await isValidVideoFile(transformed)) clips.push(transformed);
+  const broll = await fetchBrollClips([q], clipFetchDur, workDir, sceneIndex);
+  clip = await adoptClip(broll, usedPaths, sceneIndex, beat.index, beat.text, workDir);
+  if (clip) return clip;
+
+  if (spaceTopic) {
+    const nasa = await fetchNasaVideoClips(q, clipFetchDur, workDir, sceneIndex, 1);
+    clip = await adoptClip(nasa, usedPaths, sceneIndex, beat.index, beat.text, workDir);
+    if (clip) return clip;
+  }
+
+  const wikiVid = await fetchWikimediaVideos(q, clipFetchDur, workDir, sceneIndex, 1, tag);
+  clip = await adoptClip(wikiVid, usedPaths, sceneIndex, beat.index, beat.text, workDir);
+  if (clip) return clip;
+
+  const archive = await fetchInternetArchiveClips(q, clipFetchDur, workDir, sceneIndex, 1, tag);
+  clip = await adoptClip(archive, usedPaths, sceneIndex, beat.index, beat.text, workDir);
+  if (clip) return clip;
+
+  // YouTube CC last — only when title matches narration keywords
+  const ytcc = await fetchYouTubeCCClips(q, clipFetchDur, workDir, sceneIndex, 1, beat.keywords, 2);
+  clip = await adoptClip(ytcc, usedPaths, sceneIndex, beat.index, beat.text, workDir);
+  if (clip) return clip;
+
+  const fallbackQueries = [
+    scene.visualCue,
+    scene.pexelsQuery,
+    ...(scene.pexelsQueries ?? []),
+  ].filter((fq): fq is string => typeof fq === "string" && fq.trim().length > 2 && fq !== q);
+
+  for (const fq of fallbackQueries) {
+    const extra = await fetchPexelsClips(fq, clipFetchDur, workDir, sceneIndex, 1, [fq], true, `${tag}_fb`);
+    clip = await adoptClip(extra, usedPaths, sceneIndex, beat.index, beat.text, workDir);
+    if (clip) {
+      console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: fallback Pexels "${fq}"`);
+      return clip;
+    }
+  }
+
+  return null;
+}
+
+// ─── 3e. Fetch All Visuals for a Scene (beat-aligned) ───────────────────────
+// One stock clip per ~3.5s narration beat, in narrative order. No clip recycling.
+async function fetchSceneVisuals(
+  scene: Scene,
+  workDir: string,
+  videoTitle?: string
+): Promise<string[]> {
+  const clipFetchDur = 4;
+  const scenePersons = resolveScenePersons(scene, videoTitle);
+  const personName = scenePersons[0] ?? extractPrimaryPersonFromTitle(videoTitle) ?? "";
+  const spaceTopic = isSpaceRelatedTopic(scene.visualCue, scene.pexelsQuery, scene.text, videoTitle ?? "");
+  const beats = buildSceneBeats(scene, scene.duration);
+  const usedPaths = new Set<string>();
+  const clips: string[] = [];
+
+  console.log(`[Pipeline] Scene ${scene.index}: fetching ${beats.length} beat-aligned clip(s)`);
+
+  for (const beat of beats) {
+    const clip = await fetchBeatClip(
+      beat,
+      scene,
+      workDir,
+      scene.index,
+      clipFetchDur,
+      usedPaths,
+      spaceTopic,
+      personName
+    );
+    if (clip) {
+      clips.push(clip);
+    } else {
+      console.warn(`[Pipeline] Scene ${scene.index} beat ${beat.index}: no match for "${beat.searchQuery}" — color fallback`);
+      clips.push(await generateColorFallback(scene.index * 100 + beat.index, 4, workDir));
     }
   }
 
   const videoCount = clips.filter((c) => !isStillPhotoClip(c)).length;
   const photoCount = clips.filter((c) => isStillPhotoClip(c)).length;
-  const personLabel = scenePersons.length > 0 ? ` [persons: ${scenePersons.join(', ')}]` : '';
-  const runwayLabel = runwayClip ? " ⚡Runway" : "";
-  const aiLabel = realVideoStockCount < RUNWAY_CLIP_THRESHOLD ? " [AI fallback triggered]" : " [stock video sufficient]";
-  console.log(`[Pipeline] Scene ${scene.index}${personLabel}${runwayLabel}${aiLabel}: ${clips.length} clip(s) (${videoCount} video, ${photoCount} photo) — Archive: ${archiveClips.length}, Wikimedia▶: ${wikimediaVideoClips.length}, NASA: ${nasaClips.length}, ESA: ${esaClips.length}, YT-CC: ${ytCCClips.length}, Pexels: ${pexelsClips.length}, Pixabay: ${pixabayClips.length}`);
+  const personLabel = scenePersons.length > 0 ? ` [persons: ${scenePersons.join(", ")}]` : "";
+  console.log(
+    `[Pipeline] Scene ${scene.index}${personLabel}: ${clips.length} beat clip(s) (${videoCount} video, ${photoCount} photo)`
+  );
   return clips;
 }
 
@@ -3640,33 +3556,9 @@ async function composeSceneVideo(
     }
   }
 
-  // ── Reorder: stock video first, sprinkle ≤2 still photos (scene 0: person on screen) ──
-  const hasPerson = (scene.personNames?.length ?? 0) > 0 || validClips.some((p) => isStillPhotoClip(p));
-  const maxPhotosInScene = maxStillPhotosForScene(scene.index, hasPerson);
-  const realVids = validClips.filter((p) => isStockVideoClip(p) || !isStillPhotoClip(p));
-  const photoClips = validClips.filter((p) => isStillPhotoClip(p)).slice(0, maxPhotosInScene);
-
-  /** ~3 stock video shots, then 1 still photo — repeat */
-  const buildVideoHeavyTimeline = (videos: string[], photos: string[]): string[] => {
-    if (videos.length === 0) return photos;
-    const result: string[] = [];
-    let vi = 0;
-    let pi = 0;
-    while (vi < videos.length || pi < photos.length) {
-      for (let k = 0; k < 3 && vi < videos.length; k++) result.push(videos[vi++]);
-      if (pi < photos.length) result.push(photos[pi++]);
-    }
-    return result;
-  };
-
-  let orderedClips = buildVideoHeavyTimeline(realVids, photoClips);
-  if (orderedClips.length === 0) orderedClips = validClips;
-  if (realVids.length === 0) {
-    console.warn(`[Pipeline] Scene ${scene.index}: no stock video clips — only ${photoClips.length} photo(s)`);
-  }
-
-  let safeClips = orderedClips.length > 0
-    ? orderedClips
+  // Clips arrive in beat/narration order from fetchSceneVisuals — preserve timeline.
+  let safeClips = validClips.length > 0
+    ? validClips
     : [await generateColorFallback(scene.index, duration, workDir)];
 
   // Last-line check: never feed corrupt MP4s into filter_complex
@@ -3764,11 +3656,8 @@ async function composeSceneVideo(
   const vignetteFilter = `,vignette=angle=0.6:mode=forward`;
   // Film grain disabled — noise filter breaks some Railway FFmpeg builds (encoder init errors)
   const fadeFilter = `${colorGrade}${subtitleDrawtext}${vignetteFilter}`;
-  // Reference video style: HARD CUTS only between clips (no xfade/crossfade/slide)
-  // Hard cuts are faster, more energetic, and match the reference video exactly.
-  // Each clip is trimmed to clipDur seconds, then concatenated with a hard cut.
 
-  // Helper: build the full overlay chain — kinetic words (top-center) + stat callout (bottom-right).
+  // Helper: build the full overlay chain
   // Kinetic frames: full-width PNG at y=kineticY, timed with enable='between(t,...)'.
   // Stat callout: full-frame transparent PNG overlaid at x=0:y=0 (box is positioned inside the PNG).
   function buildKineticChain(
@@ -3811,31 +3700,32 @@ async function composeSceneVideo(
   }
 
   try {
-    // Hard cuts every 3–4 seconds — cycle stock video sources, not still photos
-    const TARGET_SHOT_SEC = 3.5;
-    const maxShots = IS_RAILWAY ? 16 : 24;
-    const idealShotCount = Math.min(maxShots, Math.max(2, Math.ceil(duration / TARGET_SHOT_SEC)));
-    const videoPool = safeClips.filter((c) => !isStillPhotoClip(c));
-    const expandPool = videoPool.length > 0 ? videoPool : safeClips;
-    const baseLen = expandPool.length;
-    let extraIdx = 0;
-    while (safeClips.length < idealShotCount) {
-      safeClips.push(expandPool[extraIdx % baseLen]);
-      extraIdx++;
-    }
+    // Beat-aligned montage: one clip per narration beat, no recycling duplicates
     const clipDur = Math.min(4.0, Math.max(3.0, duration / safeClips.length));
-    // Use input -ss/-t (not filter trim) — filter trim with large start offset on 4s clips caused 0-frame output
+    const XFADE = 0.3;
     const inputs = safeClips.map((c, i) => {
       const startSec = Math.min(((scene.index + i) * 0.7) % 0.8, 0.5);
-      return `-ss ${startSec.toFixed(2)} -t ${(clipDur + 0.15).toFixed(3)} -i "${c}"`;
+      return `-ss ${startSec.toFixed(2)} -t ${(clipDur + XFADE + 0.1).toFixed(3)} -i "${c}"`;
     }).join(" ");
     const scaleFilters = safeClips.map((_, i) =>
       `[${i}:v]${STANDARD_VF}[v${i}]`
     ).join(";");
 
-    // Hard-cut concat: use filter_complex concat to join clips with zero-duration cuts
-    const concatInputLabels = safeClips.map((_, i) => `[v${i}]`).join("");
-    const hardCutConcat = `;${concatInputLabels}concat=n=${safeClips.length}:v=1:a=0[concatenated]`;
+    let mergeFilter: string;
+    if (safeClips.length === 1) {
+      mergeFilter = `;[v0]copy[concatenated]`;
+    } else {
+      let chain = "";
+      let prevLabel = "v0";
+      let offset = clipDur - XFADE;
+      for (let i = 1; i < safeClips.length; i++) {
+        const outLabel = i === safeClips.length - 1 ? "concatenated" : `xf${i}`;
+        chain += `;[${prevLabel}][v${i}]xfade=transition=fade:duration=${XFADE}:offset=${offset.toFixed(3)}[${outLabel}]`;
+        prevLabel = outLabel;
+        offset += clipDur - XFADE;
+      }
+      mergeFilter = chain;
+    }
 
     const audioIdx = safeClips.length;
     const kineticBaseIdx = audioIdx + 1;
@@ -3849,7 +3739,7 @@ async function composeSceneVideo(
     await withTimeout(
       exec(
         `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}"${kineticInput} ` +
-        `-filter_complex "${scaleFilters}${hardCutConcat}${kineticChainStr};[${finalVideoLabel}]${fadeFilter}[vout]" ` +
+        `-filter_complex "${scaleFilters}${mergeFilter}${kineticChainStr};[${finalVideoLabel}]${fadeFilter}[vout]" ` +
         `-map "[vout]" -map "${audioIdx}:a" ` +
         `-t ${duration} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
       ),
