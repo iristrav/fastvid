@@ -294,6 +294,39 @@ const VIDEO_WIDTH = 1920;
 const VIDEO_HEIGHT = 1080;
 /** Standard scale chain — pad ensures exact even dimensions for libx264 */
 const STANDARD_VF = `scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=decrease,pad=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:(ow-iw)/2:(oh-ih)/2,fps=25,format=yuv420p`;
+/** Vidrush pacing: 2–3s hard-cut clips (reference documentary style) */
+const VIDRUSH_CLIP_MIN_SEC = 2.0;
+const VIDRUSH_CLIP_MAX_SEC = 3.0;
+const VIDRUSH_BEAT_SEC = 2.8;
+const CHAPTER_CARD_DURATION = 1.5;
+
+/** Stable stock trim — no animated Ken Burns pan (avoids jitter on real footage). */
+async function trimDownloadedStockClip(
+  rawPath: string,
+  outPath: string,
+  clipDuration: number,
+  sourceDuration: number,
+  label: string,
+  startOffsetSec = 0
+): Promise<boolean> {
+  const loopFlag = sourceDuration < clipDuration ? "-stream_loop -1" : "";
+  const ss = Math.max(0, startOffsetSec).toFixed(2);
+  try {
+    await withTimeout(
+      exec(
+        `${FFMPEG_BIN} -y ${loopFlag} -ss ${ss} -i "${rawPath}" ` +
+        `-t ${clipDuration} ` +
+        `-vf "${STANDARD_VF}" ` +
+        `-c:v libx264 -preset veryfast -crf 18 -an -pix_fmt yuv420p "${outPath}"`
+      ),
+      45_000,
+      label
+    );
+    return fs.existsSync(outPath) && fs.statSync(outPath).size > 1_000;
+  } catch {
+    return false;
+  }
+}
 
 // ─── Dynamic scene count based on video length ────────────────────────────────
 // Each scene is ~25-35s of narration. To hit target duration:
@@ -330,6 +363,8 @@ interface Scene {
   highlightWords?: string[]; // 2-3 power words for kinetic typography overlay (LLM-generated)
   brollQueries?: string[];   // 2 specific B-roll search queries for cutaway footage
   statCallout?: string;      // 1 key statistic/number for yellow corner callout box (e.g. "45°C", "2%", "$4B")
+  literalVisualCue?: string; // Hyper-specific 3-5 word B-roll search (Vidrush literal matching)
+  sectionTitle?: string;     // ALL CAPS chapter title → yellow card before this scene
 }
 
 export interface PipelineProgress {
@@ -427,8 +462,11 @@ const SCENE_JSON_SCHEMA = {
               pexelsQuery: { type: "string" },
               pexelsQueries: { type: "array", items: { type: "string" } },
               personNames: { type: "array", items: { type: "string" } },
+              brollQueries: { type: "array", items: { type: "string" } },
+              literalVisualCue: { type: "string" },
+              sectionTitle: { type: "string" },
             },
-            required: ["text", "visualCue", "pexelsQuery", "pexelsQueries", "personNames"],
+            required: ["text", "visualCue", "pexelsQuery", "pexelsQueries", "personNames", "brollQueries", "literalVisualCue", "sectionTitle"],
             additionalProperties: false,
           },
         },
@@ -449,16 +487,19 @@ async function parseScriptIntoScenesBatch(
       messages: [
         {
           role: "system",
-          content: `Parse the script into exactly ${sceneCount} scenes for video production.
+          content: `Parse the script into exactly ${sceneCount} scenes for Vidrush-quality documentary video.
 
 For each scene return:
 - text: narration (max 500 chars, full sentences)
 - visualCue: EXACT footage shown while narrating (e.g. "SpaceX Falcon 9 launch pad", "Tesla Gigafactory assembly line")
+- literalVisualCue: hyper-specific 3-5 word stock search for the key visual moment (e.g. "rocket launch pad night", "electric car assembly robot")
 - pexelsQuery: primary English stock video search — MUST match visualCue and narration topic
-- pexelsQueries: 3 queries from most specific to slightly broader — ALL must stay on the same topic (no generic "nature" or "city drone" unless the scene is about that)
+- pexelsQueries: 3 queries from most specific to slightly broader — ALL must stay on the same topic
+- brollQueries: exactly 2 cutaway B-roll queries (close-ups, hands, screens, crowds) different from pexelsQuery
 - personNames: full names of real people mentioned in text, or []
+- sectionTitle: ALL CAPS chapter heading shown on yellow card BEFORE this scene when starting a new topic; "" if not a chapter start
 
-Every query must literally describe what the viewer should see during that narration. Cover the script evenly.`,
+Every query must literally describe what the viewer should see. Scenes are ~2-4s of footage with hard cuts.`,
         },
         {
           role: "user",
@@ -487,12 +528,20 @@ function mapRawScene(
   index: number
 ): Scene {
   const rawS = s as Record<string, unknown>;
-  const primaryQuery = (s.pexelsQuery?.trim() || s.visualCue || "cinematic background");
+  const literalVisualCue =
+    typeof rawS.literalVisualCue === "string" ? rawS.literalVisualCue.trim() : "";
+  const primaryQuery =
+    literalVisualCue || (s.pexelsQuery?.trim() || s.visualCue || "cinematic background");
   const extraQueries = (rawS.pexelsQueries as string[] | undefined) || [];
   const allQueries = [primaryQuery, ...extraQueries.filter((q) => q && q !== primaryQuery)].slice(0, 4);
   const personNames = ((rawS.personNames as string[] | undefined) || [])
     .filter((n) => typeof n === "string" && n.trim().length > 0)
     .map((n) => n.trim());
+  const brollQueries = ((rawS.brollQueries as string[] | undefined) || [])
+    .filter((q) => typeof q === "string" && q.trim().length > 0)
+    .slice(0, 2);
+  const sectionTitle =
+    typeof rawS.sectionTitle === "string" ? rawS.sectionTitle.trim().slice(0, 60) : "";
   return {
     ...s,
     index,
@@ -500,12 +549,14 @@ function mapRawScene(
     pexelsQuery: primaryQuery,
     pexelsQueries: allQueries,
     personNames,
+    literalVisualCue: literalVisualCue || undefined,
     highlightWords: [],
-    brollQueries: [],
+    brollQueries,
     statCallout: "",
     aiImagePrompt: `Cinematic ${s.visualCue || "documentary scene"}, dramatic lighting, photorealistic`,
     isChapterCard: false,
-    chapterTitle: undefined,
+    chapterTitle: sectionTitle || undefined,
+    sectionTitle: sectionTitle || undefined,
   };
 }
 
@@ -867,7 +918,9 @@ async function fetchPexelsClips(
   count: number = 3,
   extraQueries?: string[],
   strictQueries = false,
-  fileTag = "pexels"
+  fileTag = "pexels",
+  excludeVideoIds?: Set<number>,
+  candidateOffset = 0
 ): Promise<string[]> {
   if (!PEXELS_API_KEY) return [];
 
@@ -910,16 +963,16 @@ async function fetchPexelsClips(
 
     if (!searchData.videos?.length) continue;
 
-    // Filter: min 3s duration, sort by resolution descending (best quality first)
-    const candidates = searchData.videos
-      .filter(v => v.duration >= 3)
+    // Filter: min 3s duration, skip already-used Pexels IDs, sort by resolution descending
+    const filtered = searchData.videos
+      .filter(v => v.duration >= 3 && !excludeVideoIds?.has(v.id))
       .sort((a, b) => {
-        // Prefer videos with higher-resolution files
         const aMax = Math.max(...a.video_files.map(f => f.width));
         const bMax = Math.max(...b.video_files.map(f => f.width));
         return bMax - aMax;
-      })
-      .slice(0, count * 3); // Take top candidates by quality
+      });
+    const offset = filtered.length > 0 ? candidateOffset % filtered.length : 0;
+    const candidates = [...filtered.slice(offset), ...filtered.slice(0, offset)].slice(0, count * 3);
 
     const needed = count - results.length;
     // Download up to `needed` clips in parallel
@@ -944,8 +997,8 @@ async function fetchPexelsClips(
 
         if (!videoFile?.link) return null;
 
-        const rawPath = path.join(workDir, `scene_${sceneIndex}_${fileTag}_${idx}_raw.mp4`);
-        const outPath = path.join(workDir, `scene_${sceneIndex}_${fileTag}_${idx}.mp4`);
+        const rawPath = path.join(workDir, `scene_${sceneIndex}_${fileTag}_vid${video.id}_raw.mp4`);
+        const outPath = path.join(workDir, `scene_${sceneIndex}_${fileTag}_vid${video.id}.mp4`);
 
         // Download with retry logic
         let downloadResp;
@@ -1026,27 +1079,22 @@ async function fetchPexelsClips(
           return null;
         }
 
-        const loopFlag = video.duration < clipDuration ? `-stream_loop -1` : "";
-        // Ken Burns effect: 5-10% zoom (like reference video) with slow pan
-        // NO fade-in/out on individual clips (hard cuts between scenes)
-        const panX = (sceneIndex + idx) % 3 === 0 ? `(iw-${VIDEO_WIDTH})/2*t/${clipDuration}` :
-                     (sceneIndex + idx) % 3 === 1 ? `(iw-${VIDEO_WIDTH})/2*(1-t/${clipDuration})` :
-                     `(iw-${VIDEO_WIDTH})/2`;
-        await withTimeout(
-          exec(
-            `${FFMPEG_BIN} -y ${loopFlag} -i "${rawPath}" ` +
-            `-t ${clipDuration} ` +
-            `-vf "scale=${Math.round(VIDEO_WIDTH * 1.08)}:${Math.round(VIDEO_HEIGHT * 1.08)}:force_original_aspect_ratio=increase,` +
-            `crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:${panX}:(ih-${VIDEO_HEIGHT})/2" ` +
-            `-c:v libx264 -preset veryfast -crf 18 -an -pix_fmt yuv420p "${outPath}"`
-          ),
-          45_000,
-          `Trim Pexels clip ${idx} scene ${sceneIndex}`
+        const startSec = ((sceneIndex + idx) * 0.37) % 1.2;
+        const trimmed = await trimDownloadedStockClip(
+          rawPath,
+          outPath,
+          clipDuration,
+          video.duration,
+          `Trim Pexels clip ${idx} scene ${sceneIndex}`,
+          startSec
         );
 
         try { fs.unlinkSync(rawPath); } catch { /* ignore */ }
 
-        if (fs.existsSync(outPath) && fs.statSync(outPath).size > 1_000) return outPath;
+        if (trimmed) {
+          excludeVideoIds?.add(video.id);
+          return outPath;
+        }
         return null;
       }))
     );
@@ -1104,22 +1152,17 @@ async function fetchBrollClips(
           const buffer = Buffer.from(await dlResp.arrayBuffer());
           if (buffer.length < 50_000) continue;
           fs.writeFileSync(rawPath, buffer);
-          // Apply Ken Burns + fair-use color grade to B-roll
-          const panX = qi % 2 === 0 ? `(iw-${VIDEO_WIDTH})/2*t/${clipDuration}` : `(iw-${VIDEO_WIDTH})/2*(1-t/${clipDuration})`;
-          await withTimeout(
-            exec(
-              `${FFMPEG_BIN} -y -i "${rawPath}" ` +
-              `-t ${clipDuration} ` +
-              `-vf "scale=${Math.round(VIDEO_WIDTH * 1.08)}:${Math.round(VIDEO_HEIGHT * 1.08)}:force_original_aspect_ratio=increase,` +
-              `crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:${panX}:(ih-${VIDEO_HEIGHT})/2,` +
-              `eq=contrast=1.08:saturation=0.95:brightness=-0.02,vignette=angle=0.5:mode=forward" ` +
-              `-c:v libx264 -preset veryfast -crf 20 -an -pix_fmt yuv420p "${outPath}"`
-            ),
-            45_000,
-            `B-roll trim scene ${sceneIndex}`
+          const startSec = (sceneIndex + qi) * 0.29 % 1.0;
+          const trimmed = await trimDownloadedStockClip(
+            rawPath,
+            outPath,
+            clipDuration,
+            video.duration,
+            `B-roll trim scene ${sceneIndex}`,
+            startSec
           );
           try { fs.unlinkSync(rawPath); } catch { /* ignore */ }
-          if (fs.existsSync(outPath) && fs.statSync(outPath).size > 1_000) {
+          if (trimmed) {
             results.push(outPath);
             console.log(`[Pipeline] Scene ${sceneIndex}: B-roll clip added: "${query}"`);
           }
@@ -1147,7 +1190,9 @@ async function fetchPixabayClips(
   sceneIndex: number,
   count: number = 2,
   suffix: string = "pixabay",
-  strictQueries = false
+  strictQueries = false,
+  excludeVideoIds?: Set<number>,
+  candidateOffset = 0
 ): Promise<string[]> {
   if (!PIXABAY_API_KEY) return [];
   const results: string[] = [];
@@ -1193,15 +1238,16 @@ async function fetchPixabayClips(
 
       if (!searchData.hits?.length) continue;
 
-      // Filter: min 3s duration, sort by resolution descending
-      const candidates = searchData.hits
-        .filter(v => v.duration >= 3)
+      // Filter: min 3s duration, skip used IDs, sort by resolution descending
+      const filtered = searchData.hits
+        .filter(v => v.duration >= 3 && !excludeVideoIds?.has(v.id))
         .sort((a, b) => {
           const aW = a.videos.large?.width ?? a.videos.medium?.width ?? 0;
           const bW = b.videos.large?.width ?? b.videos.medium?.width ?? 0;
           return bW - aW;
-        })
-        .slice(0, count * 2);
+        });
+      const offset = filtered.length > 0 ? candidateOffset % filtered.length : 0;
+      const candidates = [...filtered.slice(offset), ...filtered.slice(0, offset)].slice(0, count * 2);
 
       for (let idx = 0; idx < candidates.length && results.length < count; idx++) {
         const video = candidates[idx];
@@ -1213,8 +1259,8 @@ async function fetchPixabayClips(
 
         if (!videoFile?.url) continue;
 
-        const rawPath = path.join(workDir, `scene_${sceneIndex}_${suffix}_${idx}_raw.mp4`);
-        const outPath = path.join(workDir, `scene_${sceneIndex}_${suffix}_${idx}.mp4`);
+        const rawPath = path.join(workDir, `scene_${sceneIndex}_${suffix}_vid${video.id}_raw.mp4`);
+        const outPath = path.join(workDir, `scene_${sceneIndex}_${suffix}_vid${video.id}.mp4`);
 
         try {
           // Download with retry
@@ -1249,29 +1295,21 @@ async function fetchPixabayClips(
             if (isNaN(dur) || dur < 1) { try { fs.unlinkSync(rawPath); } catch { /**/ } continue; }
           } catch { try { fs.unlinkSync(rawPath); } catch { /**/ } continue; }
 
-          // Ken Burns + trim
-          const loopFlag = video.duration < clipDuration ? '-stream_loop -1' : '';
-          const panX = (sceneIndex + idx) % 3 === 0
-            ? `(iw-${VIDEO_WIDTH})/2*t/${clipDuration}`
-            : (sceneIndex + idx) % 3 === 1
-              ? `(iw-${VIDEO_WIDTH})/2*(1-t/${clipDuration})`
-              : `(iw-${VIDEO_WIDTH})/2`;
-
-          await withTimeout(
-            exec(
-              `${FFMPEG_BIN} -y ${loopFlag} -i "${rawPath}" ` +
-              `-t ${clipDuration} ` +
-              `-vf "scale=${Math.round(VIDEO_WIDTH * 1.08)}:${Math.round(VIDEO_HEIGHT * 1.08)}:force_original_aspect_ratio=increase,` +
-              `crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:${panX}:(ih-${VIDEO_HEIGHT})/2" ` +
-              `-c:v libx264 -preset veryfast -crf 18 -an -pix_fmt yuv420p "${outPath}"`
-            ),
-            45_000,
-            `Trim Pixabay clip ${idx} scene ${sceneIndex}`
+          // Stable trim — color grade applied later in composeSceneVideo
+          const startSec = (sceneIndex + idx) * 0.33 % 1.1;
+          const trimmed = await trimDownloadedStockClip(
+            rawPath,
+            outPath,
+            clipDuration,
+            video.duration,
+            `Trim Pixabay clip ${idx} scene ${sceneIndex}`,
+            startSec
           );
 
           try { fs.unlinkSync(rawPath); } catch { /**/ }
 
-          if (fs.existsSync(outPath) && fs.statSync(outPath).size > 1_000) {
+          if (trimmed) {
+            excludeVideoIds?.add(video.id);
             results.push(outPath);
             console.log(`[Pipeline] Scene ${sceneIndex}: Pixabay clip added: "${currentQuery}"`);
           }
@@ -1286,6 +1324,32 @@ async function fetchPixabayClips(
   }
 
   return results;
+}
+
+/** Gentle Ken Burns for portrait stills: ~3% center zoom, no pan — avoids jitter. */
+async function convertImageToVideoGentle(
+  imgPath: string,
+  outPath: string,
+  duration: number,
+  label: string
+): Promise<void> {
+  const fps = 25;
+  const totalFrames = Math.max(25, Math.round(duration * fps));
+  const zoomEnd = 1.03;
+  const zoomStep = (zoomEnd - 1.0) / totalFrames;
+  const padW = Math.round(VIDEO_WIDTH * 1.05);
+  const padH = Math.round(VIDEO_HEIGHT * 1.05);
+  await withTimeout(
+    exec(
+      `${FFMPEG_BIN} -y -loop 1 -i "${imgPath}" -t ${duration} ` +
+      `-vf "scale=${padW}:${padH}:force_original_aspect_ratio=increase,` +
+      `crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:(iw-${VIDEO_WIDTH})/2:(ih-${VIDEO_HEIGHT})/2,` +
+      `zoompan=z='min(zoom+${zoomStep.toFixed(7)},${zoomEnd})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=${fps}" ` +
+      `-c:v libx264 -preset veryfast -crf 18 -an -pix_fmt yuv420p "${outPath}"`
+    ),
+    45_000,
+    label
+  );
 }
 
 // ─── 3c2. Wikimedia Commons Image Search ────────────────────────────────────
@@ -1347,21 +1411,10 @@ async function fetchWikimediaImages(
         if (imgBuffer.length < 10_000) continue;
         fs.writeFileSync(imgPath, imgBuffer);
 
-        // Convert image to video with Ken Burns effect: 5-10% zoom (like reference video)
-        // NO fade-in/out on individual clips (hard cuts between scenes)
-        const zoomDir = (sceneIndex + i) % 2 === 0 ? 'in' : 'out';
-        const startScale = zoomDir === 'in' ? 1.0 : 1.07;
-        const endScale = zoomDir === 'in' ? 1.07 : 1.0;
-        await withTimeout(
-          exec(
-            `${FFMPEG_BIN} -y -loop 1 -i "${imgPath}" ` +
-            `-t ${duration} ` +
-            `-vf "scale=${Math.round(VIDEO_WIDTH * 1.10)}:${Math.round(VIDEO_HEIGHT * 1.10)}:force_original_aspect_ratio=increase,` +
-            `crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:(iw-${VIDEO_WIDTH})/2:(ih-${VIDEO_HEIGHT})/2,` +
-            `zoompan=z='if(lte(zoom,1.0),${startScale},min(zoom+${((endScale - startScale) / (duration * 25)).toFixed(5)},${endScale}))':d=${duration * 25}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=25" ` +
-            `-c:v libx264 -preset veryfast -crf 18 -an -pix_fmt yuv420p "${outPath}"`
-          ),
-          45_000,
+        await convertImageToVideoGentle(
+          imgPath,
+          outPath,
+          duration,
           `Wikimedia image to video scene ${sceneIndex}`
         );
         try { fs.unlinkSync(imgPath); } catch { /* ignore */ }
@@ -1640,21 +1693,10 @@ async function fetchSerpAPIImages(
         if (!isJpeg && !isPng) continue;
         fs.writeFileSync(imgPath, imgBuffer);
 
-        // Convert image to video with fast Ken Burns effect (scale+crop, no zoompan)
-        // zoompan is O(n²) in frames and extremely slow at 1920×1080 — use scale trick instead
-        const scaledW = Math.round(VIDEO_WIDTH * 1.07);
-        const scaledH = Math.round(VIDEO_HEIGHT * 1.07);
-        const cropX = (sceneIndex + i) % 2 === 0 ? '0' : `${scaledW - VIDEO_WIDTH}`;
-        const cropY = (sceneIndex + i) % 4 < 2 ? '0' : `${scaledH - VIDEO_HEIGHT}`;
-        await withTimeout(
-          exec(
-            `${FFMPEG_BIN} -y -loop 1 -i "${imgPath}" ` +
-            `-t ${duration} -r 25 ` +
-            `-vf "scale=${scaledW}:${scaledH}:force_original_aspect_ratio=increase,` +
-            `crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:${cropX}:${cropY}" ` +
-            `-c:v libx264 -preset veryfast -crf 18 -an -pix_fmt yuv420p "${outPath}"`
-          ),
-          60_000,
+        await convertImageToVideoGentle(
+          imgPath,
+          outPath,
+          duration,
           `SerpAPI image to video scene ${sceneIndex}`
         );
         try { fs.unlinkSync(imgPath); } catch { /* ignore */ }
@@ -3031,7 +3073,16 @@ interface SceneBeat {
   text: string;
   searchQuery: string;
   keywords: string[];
-  wantsPersonPhoto: boolean;
+}
+
+interface VisualDedupState {
+  usedPaths: Set<string>;
+  usedPexelsIds: Set<number>;
+  usedPixabayIds: Set<number>;
+}
+
+function createVisualDedupState(): VisualDedupState {
+  return { usedPaths: new Set(), usedPexelsIds: new Set(), usedPixabayIds: new Set() };
 }
 
 function tokenizeForRelevance(text: string): string[] {
@@ -3065,32 +3116,38 @@ function scoreVisualRelevance(text: string, keywords: string[]): number {
 }
 
 function buildSceneBeats(scene: Scene, duration: number): SceneBeat[] {
-  const CUT_SECONDS = 3.5;
-  const beatCount = Math.max(2, Math.ceil(duration / CUT_SECONDS));
+  const beatCount = Math.max(2, Math.ceil(duration / VIDRUSH_BEAT_SEC));
   const sentences =
     scene.text.match(/[^.!?]+[.!?]+/g)?.map((s) => s.trim()).filter((s) => s.length > 5) ??
     [scene.text.trim()];
+  const brollPool = (scene.brollQueries ?? []).filter((q) => q.trim().length > 2);
   const queryPool = [
+    scene.literalVisualCue,
     scene.pexelsQuery,
     scene.visualCue,
     ...(scene.pexelsQueries ?? []),
-    ...(scene.brollQueries ?? []),
+    ...brollPool,
   ].filter((q): q is string => typeof q === "string" && q.trim().length > 2);
 
   const beats: SceneBeat[] = [];
   for (let i = 0; i < beatCount; i++) {
     const text = sentences[Math.min(i, sentences.length - 1)] ?? scene.text;
-    const searchQuery =
-      queryPool[i % Math.max(1, queryPool.length)] ??
-      scene.visualCue ??
-      scene.pexelsQuery ??
-      "documentary footage";
+    const textKeywords = tokenizeForRelevance(text).slice(0, 2).join(" ");
+    const useBroll = i % 2 === 1 && brollPool.length > 0;
+    const baseQuery = useBroll
+      ? brollPool[i % brollPool.length]
+      : queryPool[(i * 2 + scene.index) % Math.max(1, queryPool.length)] ??
+        scene.visualCue ??
+        scene.pexelsQuery ??
+        "documentary footage";
+    const searchQuery = textKeywords
+      ? `${baseQuery} ${textKeywords}`.trim().slice(0, 100)
+      : baseQuery;
     beats.push({
       index: i,
       text,
       searchQuery,
       keywords: buildRelevanceKeywords(scene, text),
-      wantsPersonPhoto: i === 0 && (scene.personNames?.length ?? 0) > 0,
     });
   }
   return beats;
@@ -3098,19 +3155,75 @@ function buildSceneBeats(scene: Scene, duration: number): SceneBeat[] {
 
 async function adoptClip(
   paths: string[],
-  usedPaths: Set<string>,
+  dedup: VisualDedupState,
   sceneIndex: number,
   beatIndex: number,
   beatText: string,
   workDir: string
 ): Promise<string | null> {
   for (const p of paths) {
-    if (!p || usedPaths.has(p) || !fs.existsSync(p)) continue;
+    if (!p || dedup.usedPaths.has(p) || !fs.existsSync(p)) continue;
     if (!(await isValidVideoFile(p))) continue;
-    usedPaths.add(p);
+    if (isStillPhotoClip(p)) continue;
+    dedup.usedPaths.add(p);
     const transformed = await transformClipForFairUse(p, beatText, sceneIndex, beatIndex, workDir);
     if (await isValidVideoFile(transformed)) return transformed;
   }
+  return null;
+}
+
+/** Last-resort real stock video — broad queries, non-strict mode. No still photos. */
+async function fetchLastResortRealClip(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  personName: string
+): Promise<string | null> {
+  const tag = `b${beat.index}_lr`;
+  const candidateOffset = beat.index * 5 + sceneIndex + 11;
+  const queries = [
+    ...(personName
+      ? [`${personName} press conference`, `${personName} speech`, `${personName} interview`, `${personName} CEO`]
+      : []),
+    scene.visualCue,
+    scene.pexelsQuery,
+    ...(scene.pexelsQueries ?? []),
+    ...(scene.brollQueries ?? []),
+    beat.searchQuery,
+    "documentary b-roll footage",
+    "news broadcast footage",
+    "technology business innovation",
+    "corporate office meeting",
+    "cinematic aerial city",
+  ].filter((q): q is string => typeof q === "string" && q.trim().length > 2);
+
+  const uniqueQueries = [...new Set(queries)];
+
+  for (const q of uniqueQueries) {
+    const pex = await fetchPexelsClips(
+      q, clipFetchDur, workDir, sceneIndex, 2, undefined, false, `${tag}_pex`,
+      dedup.usedPexelsIds, candidateOffset
+    );
+    let clip = await adoptClip(pex, dedup, sceneIndex, beat.index, beat.text, workDir);
+    if (clip) {
+      console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: last-resort Pexels "${q}"`);
+      return clip;
+    }
+
+    const pix = await fetchPixabayClips(
+      q, clipFetchDur, workDir, sceneIndex, 2, `${tag}_pix`, false,
+      dedup.usedPixabayIds, candidateOffset
+    );
+    clip = await adoptClip(pix, dedup, sceneIndex, beat.index, beat.text, workDir);
+    if (clip) {
+      console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: last-resort Pixabay "${q}"`);
+      return clip;
+    }
+  }
+
   return null;
 }
 
@@ -3120,66 +3233,65 @@ async function fetchBeatClip(
   workDir: string,
   sceneIndex: number,
   clipFetchDur: number,
-  usedPaths: Set<string>,
+  dedup: VisualDedupState,
   spaceTopic: boolean,
   personName: string
 ): Promise<string | null> {
   const tag = `b${beat.index}`;
   const q = beat.searchQuery;
+  const candidateOffset = beat.index * 3 + sceneIndex;
 
-  if (beat.wantsPersonPhoto && personName) {
-    const [wikiPhoto, serpPhoto] = await Promise.allSettled([
-      fetchWikimediaImages(personName, clipFetchDur, workDir, sceneIndex, 1, `${tag}_p0`),
-      SERPAPI_KEY
-        ? fetchSerpAPIImages(`${personName} portrait`, clipFetchDur, workDir, sceneIndex, 1, `${tag}_p0`)
-        : Promise.resolve([] as string[]),
-    ]);
-    const photoPaths = [
-      ...(wikiPhoto.status === "fulfilled" ? wikiPhoto.value : []),
-      ...(serpPhoto.status === "fulfilled" ? serpPhoto.value : []),
-    ];
-    const photo = await adoptClip(photoPaths, usedPaths, sceneIndex, beat.index, beat.text, workDir);
-    if (photo) {
-      console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: person photo for "${personName}"`);
-      return photo;
+  // Odd beats: try dedicated B-roll cutaways first (Vidrush visual variety)
+  if (beat.index % 2 === 1 && (scene.brollQueries?.length ?? 0) > 0) {
+    const brollQ = scene.brollQueries![beat.index % scene.brollQueries!.length];
+    const brollFirst = await fetchBrollClips([brollQ], clipFetchDur, workDir, sceneIndex);
+    let clip = await adoptClip(brollFirst, dedup, sceneIndex, beat.index, beat.text, workDir);
+    if (clip) {
+      console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: B-roll "${brollQ}"`);
+      return clip;
     }
   }
 
-  const pex = await fetchPexelsClips(q, clipFetchDur, workDir, sceneIndex, 2, [q], true, `${tag}_pex`);
-  let clip = await adoptClip(pex, usedPaths, sceneIndex, beat.index, beat.text, workDir);
+  const pex = await fetchPexelsClips(
+    q, clipFetchDur, workDir, sceneIndex, 2, [q], true, `${tag}_pex`,
+    dedup.usedPexelsIds, candidateOffset
+  );
+  let clip = await adoptClip(pex, dedup, sceneIndex, beat.index, beat.text, workDir);
   if (clip) {
     console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: Pexels "${q}"`);
     return clip;
   }
 
-  const pix = await fetchPixabayClips(q, clipFetchDur, workDir, sceneIndex, 2, `${tag}_pix`, true);
-  clip = await adoptClip(pix, usedPaths, sceneIndex, beat.index, beat.text, workDir);
+  const pix = await fetchPixabayClips(
+    q, clipFetchDur, workDir, sceneIndex, 2, `${tag}_pix`, true,
+    dedup.usedPixabayIds, candidateOffset
+  );
+  clip = await adoptClip(pix, dedup, sceneIndex, beat.index, beat.text, workDir);
   if (clip) {
     console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: Pixabay "${q}"`);
     return clip;
   }
 
   const broll = await fetchBrollClips([q], clipFetchDur, workDir, sceneIndex);
-  clip = await adoptClip(broll, usedPaths, sceneIndex, beat.index, beat.text, workDir);
+  clip = await adoptClip(broll, dedup, sceneIndex, beat.index, beat.text, workDir);
   if (clip) return clip;
 
   if (spaceTopic) {
     const nasa = await fetchNasaVideoClips(q, clipFetchDur, workDir, sceneIndex, 1);
-    clip = await adoptClip(nasa, usedPaths, sceneIndex, beat.index, beat.text, workDir);
+    clip = await adoptClip(nasa, dedup, sceneIndex, beat.index, beat.text, workDir);
     if (clip) return clip;
   }
 
   const wikiVid = await fetchWikimediaVideos(q, clipFetchDur, workDir, sceneIndex, 1, tag);
-  clip = await adoptClip(wikiVid, usedPaths, sceneIndex, beat.index, beat.text, workDir);
+  clip = await adoptClip(wikiVid, dedup, sceneIndex, beat.index, beat.text, workDir);
   if (clip) return clip;
 
   const archive = await fetchInternetArchiveClips(q, clipFetchDur, workDir, sceneIndex, 1, tag);
-  clip = await adoptClip(archive, usedPaths, sceneIndex, beat.index, beat.text, workDir);
+  clip = await adoptClip(archive, dedup, sceneIndex, beat.index, beat.text, workDir);
   if (clip) return clip;
 
-  // YouTube CC last — only when title matches narration keywords
   const ytcc = await fetchYouTubeCCClips(q, clipFetchDur, workDir, sceneIndex, 1, beat.keywords, 2);
-  clip = await adoptClip(ytcc, usedPaths, sceneIndex, beat.index, beat.text, workDir);
+  clip = await adoptClip(ytcc, dedup, sceneIndex, beat.index, beat.text, workDir);
   if (clip) return clip;
 
   const fallbackQueries = [
@@ -3189,13 +3301,21 @@ async function fetchBeatClip(
   ].filter((fq): fq is string => typeof fq === "string" && fq.trim().length > 2 && fq !== q);
 
   for (const fq of fallbackQueries) {
-    const extra = await fetchPexelsClips(fq, clipFetchDur, workDir, sceneIndex, 1, [fq], true, `${tag}_fb`);
-    clip = await adoptClip(extra, usedPaths, sceneIndex, beat.index, beat.text, workDir);
+    const extra = await fetchPexelsClips(
+      fq, clipFetchDur, workDir, sceneIndex, 1, [fq], true, `${tag}_fb`,
+      dedup.usedPexelsIds, candidateOffset + 1
+    );
+    clip = await adoptClip(extra, dedup, sceneIndex, beat.index, beat.text, workDir);
     if (clip) {
       console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: fallback Pexels "${fq}"`);
       return clip;
     }
   }
+
+  const lastResort = await fetchLastResortRealClip(
+    beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName
+  );
+  if (lastResort) return lastResort;
 
   return null;
 }
@@ -3205,14 +3325,14 @@ async function fetchBeatClip(
 async function fetchSceneVisuals(
   scene: Scene,
   workDir: string,
-  videoTitle?: string
+  videoTitle?: string,
+  dedup: VisualDedupState = createVisualDedupState()
 ): Promise<string[]> {
   const clipFetchDur = 4;
   const scenePersons = resolveScenePersons(scene, videoTitle);
   const personName = scenePersons[0] ?? extractPrimaryPersonFromTitle(videoTitle) ?? "";
   const spaceTopic = isSpaceRelatedTopic(scene.visualCue, scene.pexelsQuery, scene.text, videoTitle ?? "");
   const beats = buildSceneBeats(scene, scene.duration);
-  const usedPaths = new Set<string>();
   const clips: string[] = [];
 
   console.log(`[Pipeline] Scene ${scene.index}: fetching ${beats.length} beat-aligned clip(s)`);
@@ -3224,15 +3344,37 @@ async function fetchSceneVisuals(
       workDir,
       scene.index,
       clipFetchDur,
-      usedPaths,
+      dedup,
       spaceTopic,
       personName
     );
     if (clip) {
       clips.push(clip);
     } else {
-      console.warn(`[Pipeline] Scene ${scene.index} beat ${beat.index}: no match for "${beat.searchQuery}" — color fallback`);
-      clips.push(await generateColorFallback(scene.index * 100 + beat.index, 4, workDir));
+      console.warn(
+        `[Pipeline] Scene ${scene.index} beat ${beat.index}: no real footage for "${beat.searchQuery}" — emergency stock`
+      );
+      const emergency = await fetchPexelsClips(
+        "documentary cinematic footage",
+        clipFetchDur,
+        workDir,
+        scene.index,
+        3,
+        undefined,
+        false,
+        `b${beat.index}_em`,
+        dedup.usedPexelsIds,
+        beat.index * 7 + scene.index
+      );
+      const emClip = await adoptClip(emergency, dedup, scene.index, beat.index, beat.text, workDir);
+      if (emClip) {
+        clips.push(emClip);
+      } else {
+        console.error(
+          `[Pipeline] Scene ${scene.index} beat ${beat.index}: no stock video available — color placeholder`
+        );
+        clips.push(await generateColorFallback(scene.index * 100 + beat.index, 4, workDir));
+      }
     }
   }
 
@@ -3533,7 +3675,7 @@ async function renderOutroCard(duration: number, workDir: string): Promise<strin
   return renderOutroCardFFmpeg(duration, workDir);
 }
 
-// ─── 5. Compose Scene Video (multi-clip with xfade transitions) ───────────────
+// ─── 5. Compose Scene Video (Vidrush-style hard-cut montage) ───────────────
 async function composeSceneVideo(
   scene: Scene,
   clips: string[],
@@ -3700,32 +3842,23 @@ async function composeSceneVideo(
   }
 
   try {
-    // Beat-aligned montage: one clip per narration beat, no recycling duplicates
-    const clipDur = Math.min(4.0, Math.max(3.0, duration / safeClips.length));
-    const XFADE = 0.3;
+    // Vidrush montage: 2–3s clips, hard cuts (no crossfade)
+    const clipDur = Math.min(
+      VIDRUSH_CLIP_MAX_SEC,
+      Math.max(VIDRUSH_CLIP_MIN_SEC, duration / safeClips.length)
+    );
     const inputs = safeClips.map((c, i) => {
-      const startSec = Math.min(((scene.index + i) * 0.7) % 0.8, 0.5);
-      return `-ss ${startSec.toFixed(2)} -t ${(clipDur + XFADE + 0.1).toFixed(3)} -i "${c}"`;
+      const startSec = Math.min(((scene.index + i) * 0.7) % 1.2, 0.8);
+      return `-ss ${startSec.toFixed(2)} -t ${clipDur.toFixed(3)} -i "${c}"`;
     }).join(" ");
     const scaleFilters = safeClips.map((_, i) =>
       `[${i}:v]${STANDARD_VF}[v${i}]`
     ).join(";");
-
-    let mergeFilter: string;
-    if (safeClips.length === 1) {
-      mergeFilter = `;[v0]copy[concatenated]`;
-    } else {
-      let chain = "";
-      let prevLabel = "v0";
-      let offset = clipDur - XFADE;
-      for (let i = 1; i < safeClips.length; i++) {
-        const outLabel = i === safeClips.length - 1 ? "concatenated" : `xf${i}`;
-        chain += `;[${prevLabel}][v${i}]xfade=transition=fade:duration=${XFADE}:offset=${offset.toFixed(3)}[${outLabel}]`;
-        prevLabel = outLabel;
-        offset += clipDur - XFADE;
-      }
-      mergeFilter = chain;
-    }
+    const concatLabels = safeClips.map((_, i) => `[v${i}]`).join("");
+    const mergeFilter =
+      safeClips.length === 1
+        ? `;[v0]copy[concatenated]`
+        : `;${concatLabels}concat=n=${safeClips.length}:v=1:a=0[concatenated]`;
 
     const audioIdx = safeClips.length;
     const kineticBaseIdx = audioIdx + 1;
@@ -3748,7 +3881,10 @@ async function composeSceneVideo(
   } catch (composeErr) {
     console.warn(`[Pipeline] Scene ${scene.index}: compose failed, trying simplified compose:`, composeErr);
     try {
-      const clipDur = Math.min(4.0, Math.max(3.0, duration / safeClips.length));
+      const clipDur = Math.min(
+        VIDRUSH_CLIP_MAX_SEC,
+        Math.max(VIDRUSH_CLIP_MIN_SEC, duration / safeClips.length)
+      );
       const n = Math.min(12, Math.max(2, safeClips.length));
       const subset = safeClips.slice(0, n);
       const inputs = subset.map((c) => `-t ${clipDur.toFixed(3)} -i "${c}"`).join(" ");
@@ -4131,8 +4267,9 @@ export async function runVideoPipeline(
       const finalTotal = scenes.reduce((sum, s) => sum + s.duration, 0);
       console.log(`[Pipeline] 1-min test: total duration ${finalTotal.toFixed(1)}s (${scenes.length} scenes)`);
     } else {
+      // Vidrush pacing: tight scene length — minimal padding beyond voiceover
       scenes.forEach((scene, i) => {
-        scene.duration = Math.max(durations[i] + 6, 10);
+        scene.duration = Math.max(durations[i] + 2, 8);
       });
     }
     console.log(`[Pipeline] Stage 2 (voiceovers): ${scenes.length} in ${((Date.now()-t1)/1000).toFixed(1)}s`);
@@ -4140,13 +4277,14 @@ export async function runVideoPipeline(
     // ── Stage 3: Fetch AI images + Pexels clips in parallel batches ───────────
     onProgress?.({ stage: STAGE_LABELS.visuals, percent: 20 });
     const t2 = Date.now();
+    const visualDedup = createVisualDedupState();
 
     // Process visuals in batches — limit to 2 to balance speed and OOM prevention
     const visualLimit = pLimit(2);
     let completedVisuals = 0;
     const sceneVisuals: string[][] = await withTimeout(
       Promise.all(scenes.map(scene => visualLimit(async () => {
-        const clips = await fetchSceneVisuals(scene, workDir, videoTitle);
+        const clips = await fetchSceneVisuals(scene, workDir, videoTitle, visualDedup);
         completedVisuals++;
         onProgress?.({
           stage: `Generating AI visuals... (${completedVisuals}/${scenes.length} done)`,
@@ -4223,15 +4361,31 @@ export async function runVideoPipeline(
       }
     }
 
-        // ── Stage 4b: Chapter cards DISABLED — user requested no on-screen text ────────────
-    // Chapter cards are disabled. All composed scenes are used directly.
-    const CHAPTER_CARD_DURATION = 0;
-    const orderedClips: string[] = [...composedScenes];
+        // ── Stage 4b: Vidrush chapter cards (yellow title cards between sections) ──
+    const orderedClips: string[] = [];
+    let chapterCardCount = 0;
+    for (let i = 0; i < composedScenes.length; i++) {
+      const scene = scenes[i];
+      const cardTitle = scene.chapterTitle || scene.sectionTitle;
+      if (cardTitle?.trim()) {
+        try {
+          const card = await renderChapterCard(cardTitle, i, workDir);
+          if (fs.existsSync(card) && fs.statSync(card).size > 1000) {
+            orderedClips.push(card);
+            chapterCardCount++;
+          }
+        } catch (err) {
+          console.warn(`[Pipeline] Chapter card ${i} failed (non-fatal):`, (err as Error).message);
+        }
+      }
+      orderedClips.push(composedScenes[i]);
+    }
 
     // ── Stage 5: Concatenate + intro/outro + music ────────────────────────
     onProgress?.({ stage: STAGE_LABELS.assembling, percent: 77 });
     const t4 = Date.now();
-    const totalDuration = scenes.reduce((sum, s) => sum + s.duration, 0); // No chapter cards
+    const totalDuration =
+      scenes.reduce((sum, s) => sum + s.duration, 0) + chapterCardCount * CHAPTER_CARD_DURATION;
     const finalVideoPath = await concatenateScenesWithMusic(orderedClips, workDir, videoId, totalDuration, videoTitle);
     console.log(`[Pipeline] Stage 5 (assemble+music): ${((Date.now()-t4)/1000).toFixed(1)}s`);
 
