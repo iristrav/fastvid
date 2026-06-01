@@ -11,6 +11,7 @@ import { serveStatic, setupVite } from "./vite";
 import { migrate } from "drizzle-orm/mysql2/migrator";
 import path from "path";
 import { fileURLToPath } from "url";
+import { LOCAL_UPLOADS_DIR } from "../storageLocal";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -110,6 +111,24 @@ async function startServer() {
   // IMPORTANT: This endpoint must respond immediately (no external API calls).
   // Railway uses it as a liveness probe with a strict timeout.
   app.get("/api/health", (_req, res) => {
+    const storage =
+      !process.env.BUILT_IN_FORGE_API_KEY
+        ? (() => {
+            const persistent =
+              LOCAL_UPLOADS_DIR.startsWith("/data/") ||
+              !!process.env.UPLOADS_DIR?.startsWith("/data");
+            return {
+              uploadsDir: LOCAL_UPLOADS_DIR,
+              persistent,
+              ...(!persistent
+                ? {
+                    warning:
+                      "Videos are stored on ephemeral disk and disappear after redeploy. Attach a Railway Volume at /data and set UPLOADS_DIR=/data/uploads.",
+                  }
+                : {}),
+            };
+          })()
+        : undefined;
     res.status(200).json({
       status: "ok",
       timestamp: new Date().toISOString(),
@@ -124,6 +143,7 @@ async function startServer() {
         YOUTUBE_CC_DL_SERVICE: !!process.env.YOUTUBE_CC_DL_SERVICE,
         NODE_ENV: process.env.NODE_ENV,
       },
+      storage,
     });
   });
 
