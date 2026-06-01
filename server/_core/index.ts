@@ -116,6 +116,8 @@ async function startServer() {
         FISH_AUDIO_API_KEY: !!process.env.FISH_AUDIO_API_KEY,
         PEXELS_API_KEY: !!process.env.PEXELS_API_KEY,
         STABILITY_AI_API_KEY: !!process.env.STABILITY_AI_API_KEY,
+        YOUTUBE_API_KEY: !!process.env.YOUTUBE_API_KEY,
+        YOUTUBE_CC_DL_SERVICE: !!process.env.YOUTUBE_CC_DL_SERVICE,
         NODE_ENV: process.env.NODE_ENV,
       },
     });

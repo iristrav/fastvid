@@ -2353,33 +2353,212 @@ async function generateManusForgeClip(
   }
 }
 
-// ─── 3c2. Fetch Internet Archive Video Clips ────────────────────────────────
-async function fetchInternetArchiveClips(
+/** Trim a downloaded file to a short scene clip (shared by Archive, NASA, Wikimedia video). */
+async function trimRemoteVideoToClip(
+  sourcePath: string,
+  outputPath: string,
+  duration: number,
+  clipStart = 5,
+  label = "clip"
+): Promise<boolean> {
+  try {
+    await withTimeout(
+      exec(
+        `${FFMPEG_BIN} -y -ss ${clipStart} -i "${sourcePath}" -t ${duration} ` +
+        `-vf "${STANDARD_VF}" ` +
+        `-c:v libx264 -preset veryfast -crf 22 -an -pix_fmt yuv420p "${outputPath}"`
+      ),
+      90_000,
+      `Trim ${label}`
+    );
+    return fs.existsSync(outputPath) && fs.statSync(outputPath).size > 10_000;
+  } catch (err) {
+    console.warn(`[Pipeline] trimRemoteVideoToClip failed (${label}):`, (err as Error).message);
+    return false;
+  }
+}
+
+// ─── 3c2v. Wikimedia Commons Video Search ───────────────────────────────────
+async function fetchWikimediaVideos(
+  query: string,
+  duration: number,
+  workDir: string,
+  sceneIndex: number,
+  count: number = 2,
+  fileTag = ""
+): Promise<string[]> {
+  if (!query?.trim()) return [];
+  const results: string[] = [];
+  const UA = { "User-Agent": "Fastvid/1.0 (video generation; CC-licensed clips only)" };
+  try {
+    const searchUrl =
+      `https://commons.wikimedia.org/w/api.php?action=query&list=search` +
+      `&srsearch=${encodeURIComponent(`${query} filetype:video`)}&srnamespace=6&srlimit=12&format=json&origin=*`;
+    const searchResp = await withTimeout(fetch(searchUrl, { headers: UA }), 10_000, `Wikimedia video search scene ${sceneIndex}`);
+    if (!searchResp.ok) return [];
+    const searchData = await searchResp.json() as { query?: { search?: Array<{ title: string }> } };
+    const titles = searchData.query?.search?.map((r) => r.title).slice(0, count * 3) || [];
+    if (!titles.length) return [];
+
+    let downloaded = 0;
+    for (let i = 0; i < titles.length && downloaded < count; i++) {
+      try {
+        const title = titles[i];
+        const infoUrl =
+          `https://commons.wikimedia.org/w/api.php?action=query&titles=${encodeURIComponent(title)}` +
+          `&prop=imageinfo&iiprop=url|size|mime&format=json&origin=*`;
+        const infoResp = await withTimeout(fetch(infoUrl, { headers: UA }), 10_000, `Wikimedia video info scene ${sceneIndex}`);
+        if (!infoResp.ok) continue;
+        const infoData = await infoResp.json() as {
+          query?: { pages?: Record<string, { imageinfo?: Array<{ url: string; size?: number; mime?: string }> }> };
+        };
+        const page = Object.values(infoData.query?.pages || {})[0];
+        const imageInfo = page?.imageinfo?.[0];
+        if (!imageInfo?.url || !imageInfo.mime?.startsWith("video/")) continue;
+        if ((imageInfo.size ?? 0) > 80 * 1024 * 1024) continue;
+
+        const tag = fileTag ? `${fileTag}_` : "";
+        const tmpPath = path.join(workDir, `scene_${sceneIndex}_${tag}wikivid_${i}_tmp`);
+        const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}wikivid_${i}.mp4`);
+        const dlResp = await fetchWithTimeout(imageInfo.url, 45_000, `Wikimedia video download scene ${sceneIndex}`, { headers: UA });
+        if (!dlResp.ok) continue;
+        const buf = await dlResp.arrayBuffer();
+        if (buf.byteLength < 50_000 || buf.byteLength > 80 * 1024 * 1024) continue;
+        fs.writeFileSync(tmpPath, Buffer.from(buf));
+
+        if (await trimRemoteVideoToClip(tmpPath, outPath, duration, 3, `Wikimedia video scene ${sceneIndex}`)) {
+          results.push(outPath);
+          downloaded++;
+          console.log(`[Pipeline] Scene ${sceneIndex}: Wikimedia video added: ${title}`);
+        }
+        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+      } catch (err) {
+        console.warn(`[Pipeline] Wikimedia video ${i} failed for scene ${sceneIndex}:`, (err as Error).message);
+      }
+    }
+  } catch (err) {
+    console.warn(`[Pipeline] Wikimedia video search failed for scene ${sceneIndex}:`, (err as Error).message);
+  }
+  return results;
+}
+
+// ─── 3c2n. NASA Images & Video Library (public domain US gov footage) ─────────
+async function fetchNasaVideoClips(
   query: string,
   duration: number,
   workDir: string,
   sceneIndex: number,
   count: number = 2
 ): Promise<string[]> {
+  if (!query?.trim()) return [];
   const results: string[] = [];
   try {
-    // Search Internet Archive for video content matching the query
-    const searchUrl = `https://archive.org/advancedsearch.php?q=${encodeURIComponent(query)}+mediatype:movies&fl[]=identifier,title&rows=10&output=json`;
+    const searchUrl = `https://images-api.nasa.gov/search?q=${encodeURIComponent(query)}&media_type=video`;
+    const searchResp = await withTimeout(
+      fetch(searchUrl, { headers: { "User-Agent": "Fastvid/1.0 (NASA public domain footage)" } }),
+      12_000,
+      `NASA video search scene ${sceneIndex}`
+    );
+    if (!searchResp.ok) return [];
+    const data = await searchResp.json() as {
+      collection?: { items?: Array<{ data?: Array<{ nasa_id?: string; title?: string }> }> };
+    };
+    const items = data.collection?.items ?? [];
+    let fetched = 0;
+    for (const item of items) {
+      if (fetched >= count) break;
+      const nasaId = item.data?.[0]?.nasa_id;
+      const title = item.data?.[0]?.title ?? nasaId;
+      if (!nasaId) continue;
+      try {
+        const assetResp = await withTimeout(
+          fetch(`https://images-api.nasa.gov/asset/${nasaId}`, { headers: { "User-Agent": "Fastvid/1.0" } }),
+          12_000,
+          `NASA asset ${nasaId}`
+        );
+        if (!assetResp.ok) continue;
+        const assets = await assetResp.json() as string[];
+        const mp4Path = assets.find((u) => /\.mp4$/i.test(u) && !/~mobile|~thumb|~preview|~small/i.test(u))
+          ?? assets.find((u) => /\.mp4$/i.test(u));
+        if (!mp4Path) continue;
+        const mp4Url = mp4Path.startsWith("http")
+          ? mp4Path
+          : `https://images-assets.nasa.gov${mp4Path.startsWith("/") ? mp4Path : `/${mp4Path}`}`;
+
+        const tmpPath = path.join(workDir, `scene_${sceneIndex}_nasa_${fetched}_tmp.mp4`);
+        const outPath = path.join(workDir, `scene_${sceneIndex}_nasa_${fetched}.mp4`);
+        const dlResp = await fetchWithTimeout(mp4Url, 60_000, `NASA download scene ${sceneIndex}`, {
+          headers: { "User-Agent": "Fastvid/1.0" },
+        });
+        if (!dlResp.ok) continue;
+        const buf = await dlResp.arrayBuffer();
+        if (buf.byteLength < 50_000 || buf.byteLength > 80 * 1024 * 1024) continue;
+        fs.writeFileSync(tmpPath, Buffer.from(buf));
+
+        if (await trimRemoteVideoToClip(tmpPath, outPath, duration, 8, `NASA scene ${sceneIndex}`)) {
+          results.push(outPath);
+          fetched++;
+          console.log(`[Pipeline] Scene ${sceneIndex}: NASA video added: ${title}`);
+        }
+        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+      } catch (err) {
+        console.warn(`[Pipeline] NASA video ${nasaId} failed for scene ${sceneIndex}:`, (err as Error).message);
+      }
+    }
+  } catch (err) {
+    console.warn(`[Pipeline] NASA video search failed for scene ${sceneIndex}:`, (err as Error).message);
+  }
+  return results;
+}
+
+function buildEventVideoQueries(scene: Scene, primarySubject: string, hasPerson: boolean): string[] {
+  const q = [
+    scene.visualCue,
+    scene.pexelsQuery,
+    ...(scene.pexelsQueries ?? []),
+    ...(scene.brollQueries ?? []),
+    hasPerson && primarySubject ? `${primarySubject} speech` : "",
+    hasPerson && primarySubject ? `${primarySubject} interview` : "",
+  ].filter((s): s is string => typeof s === "string" && s.trim().length > 2);
+  return Array.from(new Set(q));
+}
+
+function isSpaceRelatedTopic(...parts: string[]): boolean {
+  const text = parts.filter(Boolean).join(" ").toLowerCase();
+  return /space|rocket|nasa|esa|spacex|mars|moon|satellite|launch|orbit|astronaut|shuttle|station|tesla|electric vehicle|factory/i.test(text);
+}
+
+// ─── 3c2. Fetch Internet Archive Video Clips ────────────────────────────────
+async function fetchInternetArchiveClips(
+  queries: string | string[],
+  duration: number,
+  workDir: string,
+  sceneIndex: number,
+  count: number = 2,
+  fileTag = ""
+): Promise<string[]> {
+  const results: string[] = [];
+  const queryList = Array.isArray(queries) ? queries : [queries];
+  const uniqueQueries = Array.from(new Set(queryList.filter((q) => q && q.trim().length > 0)));
+  let fetched = 0;
+
+  for (const query of uniqueQueries) {
+    if (fetched >= count) break;
+    try {
+    const searchUrl = `https://archive.org/advancedsearch.php?q=${encodeURIComponent(query)}+AND+mediatype:movies&fl[]=identifier,title&rows=10&output=json`;
     const searchResp = await withTimeout(
       fetch(searchUrl, { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }),
       10_000,
       `Internet Archive search scene ${sceneIndex}`
     );
-    if (!searchResp.ok) return [];
+    if (!searchResp.ok) continue;
     const searchData = await searchResp.json() as { response?: { docs?: Array<{ identifier: string; title: string }> } };
-    const docs = searchData.response?.docs?.slice(0, count * 3) || [];
-    if (!docs.length) return [];
+    const docs = searchData.response?.docs?.slice(0, (count - fetched) * 3) || [];
+    if (!docs.length) continue;
 
-    let fetched = 0;
     for (const doc of docs) {
       if (fetched >= count) break;
       try {
-        // Get metadata for this item to find video files
         const metaUrl = `https://archive.org/metadata/${doc.identifier}/files`;
         const metaResp = await withTimeout(
           fetch(metaUrl, { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }),
@@ -2393,26 +2572,24 @@ async function fetchInternetArchiveClips(
         );
         if (!videoFiles.length) continue;
 
-        // Pick smallest video file to avoid large downloads
         const videoFile = videoFiles.sort((a, b) =>
           parseInt(a.size || '999999999') - parseInt(b.size || '999999999')
         )[0];
 
         const videoUrl = `https://archive.org/download/${doc.identifier}/${encodeURIComponent(videoFile.name)}`;
-        const outPath = path.join(workDir, `scene_${sceneIndex}_archive_${fetched}.mp4`);
-        const tmpPath = path.join(workDir, `scene_${sceneIndex}_archive_${fetched}_tmp.mp4`);
+        const tag = fileTag ? `${fileTag}_` : "";
+        const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}archive_${fetched}.mp4`);
+        const tmpPath = path.join(workDir, `scene_${sceneIndex}_${tag}archive_${fetched}_tmp`);
 
-        // Download with size limit (max 50MB, 30s timeout)
         const dlResp = await fetchWithTimeout(
           videoUrl,
-          30_000,
+          45_000,
           `Internet Archive download scene ${sceneIndex}`,
           { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }
         );
         if (!dlResp.ok) continue;
 
-        // Use arrayBuffer with size check (max 50MB)
-        const MAX_ARCHIVE_SIZE = 50 * 1024 * 1024; // 50MB
+        const MAX_ARCHIVE_SIZE = 50 * 1024 * 1024;
         const arrayBuf = await dlResp.arrayBuffer();
         if (arrayBuf.byteLength > MAX_ARCHIVE_SIZE) {
           console.warn(`[Pipeline] Scene ${sceneIndex}: Archive clip too large (${(arrayBuf.byteLength / 1024 / 1024).toFixed(1)}MB), skipping`);
@@ -2420,30 +2597,19 @@ async function fetchInternetArchiveClips(
         }
         fs.writeFileSync(tmpPath, Buffer.from(arrayBuf));
 
-        // Extract a clip from the middle of the video (skip first 10s to avoid intros)
-        const clipStart = 10;
-        await withTimeout(
-          exec(
-            `${FFMPEG_BIN} -y -ss ${clipStart} -i "${tmpPath}" -t ${duration} ` +
-            `-vf "scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}" ` +
-            `-c:v libx264 -preset veryfast -crf 22 -an -pix_fmt yuv420p "${outPath}"`
-          ),
-          45_000,
-          `Internet Archive clip extract scene ${sceneIndex}`
-        );
-        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-
-        if (fs.existsSync(outPath) && fs.statSync(outPath).size > 10_000) {
+        if (await trimRemoteVideoToClip(tmpPath, outPath, duration, 10, `Internet Archive scene ${sceneIndex}`)) {
           results.push(outPath);
           fetched++;
           console.log(`[Pipeline] Scene ${sceneIndex}: Internet Archive clip added: ${doc.title}`);
         }
+        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
       } catch (err) {
         console.warn(`[Pipeline] Scene ${sceneIndex}: Archive item ${doc.identifier} failed:`, (err as Error).message);
       }
     }
-  } catch (err) {
-    console.warn(`[Pipeline] Scene ${sceneIndex}: Internet Archive search failed:`, (err as Error).message);
+    } catch (err) {
+      console.warn(`[Pipeline] Scene ${sceneIndex}: Internet Archive search failed for "${query}":`, (err as Error).message);
+    }
   }
   return results;
 }
@@ -2462,10 +2628,14 @@ async function fetchYouTubeCCClips(
   const results: string[] = [];
 
   const youtubeApiKey = process.env.YOUTUBE_API_KEY;
+  const cloudDlService = process.env.YOUTUBE_CC_DL_SERVICE?.replace(/\/$/, "") || "";
 
-  // Need YouTube Data API for search; download handled by cloud computer service
   if (!youtubeApiKey) {
     console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube CC skipped — missing YOUTUBE_API_KEY`);
+    return [];
+  }
+  if (!cloudDlService) {
+    console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube CC skipped — set YOUTUBE_CC_DL_SERVICE env var`);
     return [];
   }
 
@@ -2517,14 +2687,10 @@ async function fetchYouTubeCCClips(
         if (!videoId || downloadedIds.has(videoId)) continue;
 
         try {
-          // Use cloud computer download service (yt-dlp with ANDROID_VR client — no cookies needed)
-          // The cloud computer (34.24.188.157:8765) runs yt-dlp + ffmpeg and returns ready clip bytes
-          // This bypasses YouTube's IP-locked CDN URLs which only work from the requesting server's IP
-          const CLOUD_DL_SERVICE = 'http://34.24.188.157:8765';
           const clipStart = 15; // Skip first 15s to avoid intros
           const outPath = path.join(workDir, `scene_${sceneIndex}_ytcc_${fetched}.mp4`);
 
-          const dlUrl = `${CLOUD_DL_SERVICE}/download?id=${videoId}&duration=${duration}&start=${clipStart}`;
+          const dlUrl = `${cloudDlService}/download?id=${videoId}&duration=${duration}&start=${clipStart}`;
           const dlResp = await fetchWithTimeout(
             dlUrl,
             90_000, // 90s timeout for download + ffmpeg
@@ -2674,7 +2840,7 @@ function isStillPhotoClip(filePath: string): boolean {
 }
 
 function isStockVideoClip(filePath: string): boolean {
-  return /_pexels_|_pixabay_|_broll_|_ytcc_|_archive_/i.test(path.basename(filePath));
+  return /_pexels_|_pixabay_|_broll_|_ytcc_|_archive_|_wikivid_|_nasa_|_esa_/i.test(path.basename(filePath));
 }
 
 function maxStillPhotosForScene(sceneIndex: number, hasPerson: boolean): number {
@@ -2744,9 +2910,27 @@ async function fetchSceneVisuals(
     : [];
   const personMediaClips = personMediaResults.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
 
-  const ytCCResults = { status: "fulfilled" as const, value: [] as string[] };
-  const ytCC2Results = { status: "fulfilled" as const, value: [] as string[] };
-  const archiveResults = { status: "fulfilled" as const, value: [] as string[] };
+  const eventVideoQueries = buildEventVideoQueries(scene, primarySubject, hasPerson);
+  const spaceTopic = isSpaceRelatedTopic(scene.visualCue, scene.pexelsQuery, scene.text, videoTitle ?? "");
+  const archiveQueries = [
+    ...eventVideoQueries,
+    "collection:prelinger",
+    spaceTopic ? "creator:NASA" : "",
+    spaceTopic ? "European Space Agency" : "",
+  ].filter((q): q is string => typeof q === "string" && q.trim().length > 2);
+  const wikimediaVideoQuery = primarySubject || scene.visualCue || scene.pexelsQuery;
+  const nasaQuery = scene.visualCue || scene.pexelsQuery || (spaceTopic ? "space launch" : "technology");
+
+  const archivalFetches = [
+    fetchInternetArchiveClips(archiveQueries, clipFetchDur, workDir, scene.index, 3),
+    fetchYouTubeCCClips(eventVideoQueries, clipFetchDur, workDir, scene.index, 2),
+    fetchWikimediaVideos(wikimediaVideoQuery, clipFetchDur, workDir, scene.index, 2),
+    fetchNasaVideoClips(nasaQuery, clipFetchDur, workDir, scene.index, spaceTopic ? 2 : 1),
+    spaceTopic
+      ? fetchWikimediaVideos(`ESA ${nasaQuery}`, clipFetchDur, workDir, scene.index, 1, "esa")
+      : Promise.resolve([] as string[]),
+  ] as const;
+
   const genericFetches = hasPerson
     ? [
         Promise.resolve([] as string[]),
@@ -2777,19 +2961,40 @@ async function fetchSceneVisuals(
           : Promise.resolve([] as string[]),
       ];
 
-  const [youtubeResults, youtube2Results, wikimediaResults, wikimedia2Results, openverseResults, openverse2Results, serpResults, serp2Results, pexelsResults, pixabayResults, brollResults] =
-    await Promise.allSettled([
-      ...genericFetches,
-      fetchPexelsClips(pexelsPrimary, clipFetchDur, workDir, scene.index, clipsTarget, pexelsExtras),
-      fetchPixabayClips(pixabayPrimary, clipFetchDur, workDir, scene.index, Math.min(5, clipsTarget)),
-      fetchBrollClips(scene.brollQueries ?? [scene.visualCue, scene.pexelsQuery].filter(Boolean) as string[], clipFetchDur, workDir, scene.index),
-    ]);
+  const [
+    archiveResults,
+    ytCCResults,
+    wikimediaVideoResults,
+    nasaVideoResults,
+    esaVideoResults,
+  ] = await Promise.allSettled(archivalFetches);
+
+  const [
+    youtubeResults,
+    youtube2Results,
+    wikimediaResults,
+    wikimedia2Results,
+    openverseResults,
+    openverse2Results,
+    serpResults,
+    serp2Results,
+    pexelsResults,
+    pixabayResults,
+    brollResults,
+  ] = await Promise.allSettled([
+    ...genericFetches,
+    fetchPexelsClips(pexelsPrimary, clipFetchDur, workDir, scene.index, clipsTarget, pexelsExtras),
+    fetchPixabayClips(pixabayPrimary, clipFetchDur, workDir, scene.index, Math.min(5, clipsTarget)),
+    fetchBrollClips(scene.brollQueries ?? [scene.visualCue, scene.pexelsQuery].filter(Boolean) as string[], clipFetchDur, workDir, scene.index),
+  ]);
 
   const clips: string[] = [];
 
-  const ytCCClipsRaw = ytCCResults.value;
-  const ytCC2ClipsRaw = ytCC2Results.value;
-  const archiveClipsRaw = archiveResults.value;
+  const archiveClipsRaw = archiveResults.status === "fulfilled" ? archiveResults.value : [];
+  const ytCCClipsRaw = ytCCResults.status === "fulfilled" ? ytCCResults.value : [];
+  const wikimediaVideoClipsRaw = wikimediaVideoResults.status === "fulfilled" ? wikimediaVideoResults.value : [];
+  const nasaClipsRaw = nasaVideoResults.status === "fulfilled" ? nasaVideoResults.value : [];
+  const esaClipsRaw = esaVideoResults.status === "fulfilled" ? esaVideoResults.value : [];
   const pexelsClipsRaw = pexelsResults.status === "fulfilled" ? pexelsResults.value : [];
   const pixabayClipsRaw = pixabayResults.status === "fulfilled" ? pixabayResults.value : [];
   const brollClipsRaw = brollResults.status === "fulfilled" ? brollResults.value : [];
@@ -2800,8 +3005,10 @@ async function fetchSceneVisuals(
     pixabayClipsRaw.length +
     brollClipsRaw.length +
     ytCCClipsRaw.length +
-    ytCC2ClipsRaw.length +
-    archiveClipsRaw.length;
+    archiveClipsRaw.length +
+    wikimediaVideoClipsRaw.length +
+    nasaClipsRaw.length +
+    esaClipsRaw.length;
   const freeStockCount =
     realVideoStockCount +
     personMediaClips.length +
@@ -2871,10 +3078,12 @@ async function fetchSceneVisuals(
   if (higgsfieldTextClip) clips.push(higgsfieldTextClip);
   if (higgsfieldImageClip) clips.push(higgsfieldImageClip);
 
-  // Collect all clips that need fair-use transformation
-  // YouTube CC clips go FIRST (real video, highest relevance), then Internet Archive, then thumbnails/images
-  const ytCCClips = [...ytCCClipsRaw, ...ytCC2ClipsRaw];
-  const archiveClips = archiveResults.value;
+  // Collect archival + stock video (real footage first), then still photos
+  const ytCCClips = ytCCClipsRaw;
+  const archiveClips = archiveClipsRaw;
+  const wikimediaVideoClips = wikimediaVideoClipsRaw;
+  const nasaClips = nasaClipsRaw;
+  const esaClips = esaClipsRaw;
   const ytClips = hasPerson ? [] : (youtubeResults.status === "fulfilled" ? youtubeResults.value : []);
   const yt2Clips = hasPerson ? [] : (youtube2Results.status === "fulfilled" ? youtube2Results.value : []);
   const pexelsClips = pexelsResults.status === "fulfilled" ? pexelsResults.value : [];
@@ -2893,7 +3102,16 @@ async function fetchSceneVisuals(
   const personPhotoClips = hasPerson
     ? personMediaClips.slice(0, maxPhotos)
     : [...serpClips, ...serp2Clips, ...wikimediaClips, ...wikimedia2Clips, ...openverseClips, ...openverse2Clips, ...ytClips, ...yt2Clips].slice(0, maxPhotos);
-  const stockVideoClips = [...ytCCClips, ...archiveClips, ...brollClips, ...pexelsClips, ...pixabayClips];
+  const stockVideoClips = [
+    ...ytCCClips,
+    ...archiveClips,
+    ...wikimediaVideoClips,
+    ...nasaClips,
+    ...esaClips,
+    ...brollClips,
+    ...pexelsClips,
+    ...pixabayClips,
+  ];
 
   const transformJobs: TransformJob[] = [
     ...stockVideoClips.map((p) => ({ path: p, clipIndex: nextIndex(), needsTransform: true })),
@@ -2975,7 +3193,7 @@ async function fetchSceneVisuals(
   const personLabel = scenePersons.length > 0 ? ` [persons: ${scenePersons.join(', ')}]` : '';
   const runwayLabel = runwayClip ? " ⚡Runway" : "";
   const aiLabel = realVideoStockCount < RUNWAY_CLIP_THRESHOLD ? " [AI fallback triggered]" : " [stock video sufficient]";
-  console.log(`[Pipeline] Scene ${scene.index}${personLabel}${runwayLabel}${aiLabel}: ${clips.length} clip(s) (${videoCount} video, ${photoCount} photo) — Pexels: ${pexelsClips.length}, Pixabay: ${pixabayClips.length}, B-roll: ${brollClips.length}`);
+  console.log(`[Pipeline] Scene ${scene.index}${personLabel}${runwayLabel}${aiLabel}: ${clips.length} clip(s) (${videoCount} video, ${photoCount} photo) — Archive: ${archiveClips.length}, Wikimedia▶: ${wikimediaVideoClips.length}, NASA: ${nasaClips.length}, ESA: ${esaClips.length}, YT-CC: ${ytCCClips.length}, Pexels: ${pexelsClips.length}, Pixabay: ${pixabayClips.length}`);
   return clips;
 }
 
