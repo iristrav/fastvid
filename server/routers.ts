@@ -192,11 +192,13 @@ async function generateFullVideo(videoId: number, prompt: string, videoLength: s
 // ─── Phase A: Script-only generation (stops at awaiting_approval) ────────────
 async function generateScriptOnly(videoId: number, prompt: string, videoLength: string, videoType: string) {
   const lengthMap: Record<string, string> = {
-    "1": "about 1 minute", "5-8": "5 to 8 minutes", "8-12": "8 to 12 minutes",
+    "1": "about 1 minute", "2": "about 2 minutes", "5-8": "5 to 8 minutes", "8-12": "8 to 12 minutes",
     "12-15": "12 to 15 minutes", "15-20": "15 to 20 minutes", "20+": "20+ minutes",
   };
   const lengthDesc = lengthMap[videoLength] ?? "15 to 20 minutes";
-  const isShortTest = videoLength === "1";
+  const isOneMin = videoLength === "1";
+  const isTwoMin = videoLength === "2";
+  const isShortTest = isOneMin || isTwoMin;
 
   const typeInstructions: Record<string, string> = {
     documentary: "Structure as a documentary with research-backed narration, expert insights, and visual evidence.",
@@ -219,8 +221,10 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLength: 
     const outlineResp = await invokeLLM({
       messages: [
         { role: "system", content: `You are a senior producer at a high-quality YouTube documentary channel (think Vox, Wendover Productions, or Johnny Harris). ${typeInstruction} Create compelling, well-researched video structures.` },
-        { role: "user", content: isShortTest
+        { role: "user", content: isOneMin
           ? `Create a SHORT YouTube video outline for: "${prompt}"\nVideo length: ${lengthDesc} (~60 seconds when narrated aloud)\nFormat: ${videoType}\n\nKeep it tight: hook immediately, two quick beats, one-line takeaway.\n\nRespond with JSON: { title, hook (1 punchy sentence), sections (EXACTLY 2, each: {title, keyPoints: string[] with max 2 items}), cta (1 sentence) }`
+          : isTwoMin
+            ? `Create a SHORT YouTube video outline for: "${prompt}"\nVideo length: ${lengthDesc} (~120 seconds when narrated aloud)\nFormat: ${videoType}\n\nHook fast, three clear beats, strong takeaway.\n\nRespond with JSON: { title, hook (1-2 punchy sentences), sections (EXACTLY 3, each: {title, keyPoints: string[] with max 2 items}), cta (1 sentence) }`
           : `Create a YouTube video outline for: "${prompt}"\nVideo length: ${lengthDesc}\nFormat: ${videoType}\n\nThe video should follow a strong narrative arc: hook the viewer immediately, build understanding through context and history, reveal the mechanics/details, show real-world impact, and end with a clear takeaway.\n\nRespond with JSON: { title (compelling, specific, not clickbait), hook (2 punchy sentences that immediately grab attention with a surprising fact or contrast), sections (4-6, each: {title, keyPoints: string[]}), cta }` },
       ],
       response_format: {
@@ -272,8 +276,10 @@ RULES:
 - Visual cues must be LITERAL and SPECIFIC — not abstract. Describe exactly what the viewer should see.
 - Do NOT use filler phrases like "In this section we will..." — start directly with the content
 - Write as if you are narrating a documentary, not reading a blog post` },
-          { role: "user", content: isShortTest
+          { role: "user", content: isOneMin
             ? `Section ${idx + 1}: "${sec.title}"\nCover: ${sec.keyPoints.join(", ")}\n\nWrite ONE short paragraph of 3-4 sentences (~45-55 words total). Include exactly 2 [VISUAL: ...] tags with specific real-world footage descriptions. This entire video is only 1 minute — be concise.`
+            : isTwoMin
+              ? `Section ${idx + 1}: "${sec.title}"\nCover: ${sec.keyPoints.join(", ")}\n\nWrite ONE paragraph of 4-5 sentences (~80-100 words total). Include exactly 2 [VISUAL: ...] tags with specific real-world footage descriptions. This entire video is only 2 minutes — stay concise and punchy.`
             : `Section ${idx + 1}: "${sec.title}"\nCover these key points: ${sec.keyPoints.join(", ")}\n\nWrite 3-4 short paragraphs of documentary-style narration. Each paragraph should be 2-4 sentences. Include [VISUAL: ...] tags after every 2-3 sentences with very specific, literal descriptions of footage to show.` },
         ],
       }).then(r => { const c = r?.choices?.[0]?.message?.content ?? ""; return typeof c === "string" ? c : ""; })
