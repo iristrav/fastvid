@@ -56,6 +56,9 @@ const LUMA_API_KEY = process.env.LUMA_API_KEY || "";
 const LEONARDO_API_KEY = process.env.LEONARDO_API_KEY || "";
 const PIKA_API_KEY = process.env.PIKA_API_KEY || "";
 const PIXABAY_API_KEY = process.env.PIXABAY_API_KEY || "";
+const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY || "";
+const RAPIDAPI_YT_HOST =
+  process.env.RAPIDAPI_YT_HOST || "ytstream-download-youtube-videos.p.rapidapi.com";
 
 // @ts-ignore
 import ffmpegStatic from "ffmpeg-static";
@@ -2614,9 +2617,148 @@ async function fetchInternetArchiveClips(
   return results;
 }
 
-// ─── 3c3. Fetch YouTube CC Video Clips via Cloud Computer Download Service ──────
+// ─── 3c3a. Download a YouTube CC clip (RapidAPI first, cloud service fallback) ─
+async function downloadYouTubeCCClip(
+  videoId: string,
+  duration: number,
+  clipStart: number,
+  outPath: string,
+  sceneIndex: number,
+  title?: string
+): Promise<boolean> {
+  const cloudDlService = process.env.YOUTUBE_CC_DL_SERVICE?.replace(/\/$/, "") || "";
+
+  if (RAPIDAPI_KEY) {
+    const tmpPath = outPath.replace(/\.mp4$/, "_rapid_tmp.mp4");
+    try {
+      const metaUrl = `https://${RAPIDAPI_YT_HOST}/dl?id=${videoId}`;
+      const metaResp = await withTimeout(
+        fetch(metaUrl, {
+          headers: {
+            "x-rapidapi-host": RAPIDAPI_YT_HOST,
+            "x-rapidapi-key": RAPIDAPI_KEY,
+          },
+        }),
+        20_000,
+        `RapidAPI YouTube meta scene ${sceneIndex}`
+      );
+      if (metaResp.ok) {
+        const data = await metaResp.json() as {
+          formats?: Array<{ url?: string; mimeType?: string; contentLength?: string; height?: number }>;
+          adaptiveFormats?: Array<{ url?: string; mimeType?: string; contentLength?: string; height?: number }>;
+        };
+        const pickFormat = (
+          formats: Array<{ url?: string; mimeType?: string; contentLength?: string; height?: number }> | undefined
+        ) => {
+          const mp4 = (formats ?? []).filter((f) => f.url && f.mimeType?.includes("mp4"));
+          if (!mp4.length) return undefined;
+          return mp4.sort((a, b) => {
+            const heightA = a.height ?? 720;
+            const heightB = b.height ?? 720;
+            const distA = Math.abs(heightA - 720);
+            const distB = Math.abs(heightB - 720);
+            if (distA !== distB) return distA - distB;
+            return parseInt(a.contentLength || "999999999", 10) - parseInt(b.contentLength || "999999999", 10);
+          })[0];
+        };
+
+        const format = pickFormat(data.formats) ?? pickFormat(data.adaptiveFormats);
+        if (format?.url) {
+          const dlResp = await fetchWithTimeout(
+            format.url,
+            90_000,
+            `RapidAPI YouTube download scene ${sceneIndex}`,
+            {
+              headers: {
+                "User-Agent":
+                  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                Referer: "https://www.youtube.com/",
+              },
+            }
+          );
+          if (dlResp.ok) {
+            const buf = await dlResp.arrayBuffer();
+            if (buf.byteLength >= 50_000 && buf.byteLength <= 80 * 1024 * 1024) {
+              fs.writeFileSync(tmpPath, Buffer.from(buf));
+              if (
+                await trimRemoteVideoToClip(
+                  tmpPath,
+                  outPath,
+                  duration,
+                  clipStart,
+                  `YouTube CC RapidAPI scene ${sceneIndex}`
+                )
+              ) {
+                console.log(
+                  `[Pipeline] Scene ${sceneIndex}: ✅ YouTube CC via RapidAPI: "${title?.slice(0, 60) ?? videoId}" (${videoId})`
+                );
+                return true;
+              }
+            }
+          }
+        }
+      } else {
+        console.warn(
+          `[Pipeline] Scene ${sceneIndex}: RapidAPI error ${metaResp.status} for ${videoId}`
+        );
+      }
+    } catch (err) {
+      console.warn(
+        `[Pipeline] Scene ${sceneIndex}: RapidAPI download failed for ${videoId}:`,
+        (err as Error).message
+      );
+    } finally {
+      try {
+        if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  if (cloudDlService) {
+    try {
+      const dlUrl = `${cloudDlService}/download?id=${videoId}&duration=${duration}&start=${clipStart}`;
+      const dlResp = await fetchWithTimeout(
+        dlUrl,
+        90_000,
+        `YouTube CC cloud download scene ${sceneIndex}`
+      );
+      if (!dlResp.ok) {
+        const errText = await dlResp.text().catch(() => "");
+        console.warn(
+          `[Pipeline] Scene ${sceneIndex}: Cloud DL service error ${dlResp.status} for ${videoId}: ${errText.slice(0, 100)}`
+        );
+        return false;
+      }
+      const arrayBuf = await dlResp.arrayBuffer();
+      if (arrayBuf.byteLength > 80 * 1024 * 1024) {
+        console.warn(
+          `[Pipeline] Scene ${sceneIndex}: YouTube CC clip too large (${(arrayBuf.byteLength / 1024 / 1024).toFixed(1)}MB), skipping`
+        );
+        return false;
+      }
+      fs.writeFileSync(outPath, Buffer.from(arrayBuf));
+      if (fs.existsSync(outPath) && fs.statSync(outPath).size > 10_000) {
+        console.log(
+          `[Pipeline] Scene ${sceneIndex}: ✅ YouTube CC via cloud service: "${title?.slice(0, 60) ?? videoId}" (${videoId})`
+        );
+        return true;
+      }
+    } catch (err) {
+      console.warn(
+        `[Pipeline] Scene ${sceneIndex}: Cloud DL failed for ${videoId}:`,
+        (err as Error).message
+      );
+    }
+  }
+
+  return false;
+}
+
+// ─── 3c3. Fetch YouTube CC Video Clips ───────────────────────────────────────
 // Uses YouTube Data API v3 to search for Creative Commons videos, then downloads
-// them via the cloud computer service (yt-dlp ANDROID_VR client — no cookies needed).
+// via RapidAPI (RAPIDAPI_KEY) or the legacy cloud download service URL.
 // Accepts multiple query variants (specific→broad) and tries each until enough clips found.
 async function fetchYouTubeCCClips(
   queries: string | string[],
@@ -2628,14 +2770,16 @@ async function fetchYouTubeCCClips(
   const results: string[] = [];
 
   const youtubeApiKey = process.env.YOUTUBE_API_KEY;
-  const cloudDlService = process.env.YOUTUBE_CC_DL_SERVICE?.replace(/\/$/, "") || "";
+  const hasDownloader = !!RAPIDAPI_KEY || !!process.env.YOUTUBE_CC_DL_SERVICE;
 
   if (!youtubeApiKey) {
     console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube CC skipped — missing YOUTUBE_API_KEY`);
     return [];
   }
-  if (!cloudDlService) {
-    console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube CC skipped — set YOUTUBE_CC_DL_SERVICE env var`);
+  if (!hasDownloader) {
+    console.warn(
+      `[Pipeline] Scene ${sceneIndex}: YouTube CC skipped — set RAPIDAPI_KEY or YOUTUBE_CC_DL_SERVICE in Railway`
+    );
     return [];
   }
 
@@ -2690,30 +2834,18 @@ async function fetchYouTubeCCClips(
           const clipStart = 15; // Skip first 15s to avoid intros
           const outPath = path.join(workDir, `scene_${sceneIndex}_ytcc_${fetched}.mp4`);
 
-          const dlUrl = `${cloudDlService}/download?id=${videoId}&duration=${duration}&start=${clipStart}`;
-          const dlResp = await fetchWithTimeout(
-            dlUrl,
-            90_000, // 90s timeout for download + ffmpeg
-            `YouTube CC cloud download scene ${sceneIndex}`
+          const ok = await downloadYouTubeCCClip(
+            videoId,
+            duration,
+            clipStart,
+            outPath,
+            sceneIndex,
+            item.snippet?.title
           );
-          if (!dlResp.ok) {
-            const errText = await dlResp.text().catch(() => '');
-            console.warn(`[Pipeline] Scene ${sceneIndex}: Cloud DL service error ${dlResp.status} for ${videoId}: ${errText.slice(0, 100)}`);
-            continue;
-          }
-          const MAX_YT_SIZE = 80 * 1024 * 1024; // 80MB
-          const arrayBuf = await dlResp.arrayBuffer();
-          if (arrayBuf.byteLength > MAX_YT_SIZE) {
-            console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube CC clip too large (${(arrayBuf.byteLength / 1024 / 1024).toFixed(1)}MB), skipping`);
-            continue;
-          }
-          fs.writeFileSync(outPath, Buffer.from(arrayBuf));
-
-          if (fs.existsSync(outPath) && fs.statSync(outPath).size > 10_000) {
+          if (ok) {
             results.push(outPath);
             downloadedIds.add(videoId);
             fetched++;
-            console.log(`[Pipeline] Scene ${sceneIndex}: ✅ YouTube CC clip downloaded: "${item.snippet?.title}" (${videoId})`);
           }
         } catch (err) {
           console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube CC video ${videoId} failed:`, (err as Error).message);
