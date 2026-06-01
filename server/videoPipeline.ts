@@ -3839,9 +3839,13 @@ export async function runVideoPipeline(
         "Voiceover generation stage"
       );
     }
-    // Scene duration must be at least 6 seconds longer than voiceover to allow for fade-in/out and clip transitions
-    // This prevents audio cutoff when FFmpeg truncates to scene.duration
-    scenes.forEach((scene, i) => { scene.duration = Math.max(durations[i] + 6, 10); });
+    // Scene duration must be longer than voiceover to allow for fade-in/out and clip transitions
+    const isShortTest = videoLength === "1";
+    scenes.forEach((scene, i) => {
+      scene.duration = isShortTest
+        ? Math.max(durations[i] + 4, 15)
+        : Math.max(durations[i] + 6, 10);
+    });
     console.log(`[Pipeline] Stage 2 (voiceovers): ${scenes.length} in ${((Date.now()-t1)/1000).toFixed(1)}s`);
 
     // ── Stage 3: Fetch AI images + Pexels clips in parallel batches ───────────

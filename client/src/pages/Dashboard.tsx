@@ -30,6 +30,7 @@ import { Switch } from "@/components/ui/switch";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const VIDEO_LENGTHS = [
+  { label: "1 min (test)", value: "1" as const, desc: "Pipeline smoke test", genTime: "~2 min" },
   { label: "5–8 min", value: "5-8" as const, desc: "Short & punchy", genTime: "~3 min" },
   { label: "8–12 min", value: "8-12" as const, desc: "Tutorials", genTime: "~5 min" },
   { label: "12–15 min", value: "12-15" as const, desc: "In-depth", genTime: "~7 min" },
@@ -44,7 +45,7 @@ const VIDEO_TYPES = [
   { value: "explainer" as const, label: "Explainer", desc: "Simple analogies & visuals", icon: Lightbulb, color: "from-purple-600/40 to-violet-500/30 border-purple-400/60" },
 ];
 
-type VideoLength = "5-8" | "8-12" | "12-15" | "15-20" | "20+";
+type VideoLength = "1" | "5-8" | "8-12" | "12-15" | "15-20" | "20+";
 type VideoType = "documentary" | "listicle" | "tutorial" | "explainer";
 
 // Agent-style stage labels for the progress UI

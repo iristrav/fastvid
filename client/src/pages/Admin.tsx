@@ -22,6 +22,7 @@ function formatVideoId(id: number) {
 }
 
 const VIDEO_LENGTHS = [
+  { label: "1 min (test)", value: "1" },
   { label: "5-8 min", value: "5-8" },
   { label: "8-12 min", value: "8-12" },
   { label: "12-15 min", value: "12-15" },

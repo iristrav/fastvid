@@ -192,10 +192,11 @@ async function generateFullVideo(videoId: number, prompt: string, videoLength: s
 // ─── Phase A: Script-only generation (stops at awaiting_approval) ────────────
 async function generateScriptOnly(videoId: number, prompt: string, videoLength: string, videoType: string) {
   const lengthMap: Record<string, string> = {
-    "5-8": "5 to 8 minutes", "8-12": "8 to 12 minutes", "12-15": "12 to 15 minutes",
-    "15-20": "15 to 20 minutes", "20+": "20+ minutes",
+    "1": "about 1 minute", "5-8": "5 to 8 minutes", "8-12": "8 to 12 minutes",
+    "12-15": "12 to 15 minutes", "15-20": "15 to 20 minutes", "20+": "20+ minutes",
   };
   const lengthDesc = lengthMap[videoLength] ?? "15 to 20 minutes";
+  const isShortTest = videoLength === "1";
 
   const typeInstructions: Record<string, string> = {
     documentary: "Structure as a documentary with research-backed narration, expert insights, and visual evidence.",
@@ -218,7 +219,9 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLength: 
     const outlineResp = await invokeLLM({
       messages: [
         { role: "system", content: `You are a senior producer at a high-quality YouTube documentary channel (think Vox, Wendover Productions, or Johnny Harris). ${typeInstruction} Create compelling, well-researched video structures.` },
-        { role: "user", content: `Create a YouTube video outline for: "${prompt}"\nVideo length: ${lengthDesc}\nFormat: ${videoType}\n\nThe video should follow a strong narrative arc: hook the viewer immediately, build understanding through context and history, reveal the mechanics/details, show real-world impact, and end with a clear takeaway.\n\nRespond with JSON: { title (compelling, specific, not clickbait), hook (2 punchy sentences that immediately grab attention with a surprising fact or contrast), sections (4-6, each: {title, keyPoints: string[]}), cta }` },
+        { role: "user", content: isShortTest
+          ? `Create a SHORT YouTube video outline for: "${prompt}"\nVideo length: ${lengthDesc} (~60 seconds when narrated aloud)\nFormat: ${videoType}\n\nKeep it tight: hook immediately, two quick beats, one-line takeaway.\n\nRespond with JSON: { title, hook (1 punchy sentence), sections (EXACTLY 2, each: {title, keyPoints: string[] with max 2 items}), cta (1 sentence) }`
+          : `Create a YouTube video outline for: "${prompt}"\nVideo length: ${lengthDesc}\nFormat: ${videoType}\n\nThe video should follow a strong narrative arc: hook the viewer immediately, build understanding through context and history, reveal the mechanics/details, show real-world impact, and end with a clear takeaway.\n\nRespond with JSON: { title (compelling, specific, not clickbait), hook (2 punchy sentences that immediately grab attention with a surprising fact or contrast), sections (4-6, each: {title, keyPoints: string[]}), cta }` },
       ],
       response_format: {
         type: "json_schema",
@@ -269,7 +272,9 @@ RULES:
 - Visual cues must be LITERAL and SPECIFIC — not abstract. Describe exactly what the viewer should see.
 - Do NOT use filler phrases like "In this section we will..." — start directly with the content
 - Write as if you are narrating a documentary, not reading a blog post` },
-          { role: "user", content: `Section ${idx + 1}: "${sec.title}"\nCover these key points: ${sec.keyPoints.join(", ")}\n\nWrite 3-4 short paragraphs of documentary-style narration. Each paragraph should be 2-4 sentences. Include [VISUAL: ...] tags after every 2-3 sentences with very specific, literal descriptions of footage to show.` },
+          { role: "user", content: isShortTest
+            ? `Section ${idx + 1}: "${sec.title}"\nCover: ${sec.keyPoints.join(", ")}\n\nWrite ONE short paragraph of 3-4 sentences (~45-55 words total). Include exactly 2 [VISUAL: ...] tags with specific real-world footage descriptions. This entire video is only 1 minute — be concise.`
+            : `Section ${idx + 1}: "${sec.title}"\nCover these key points: ${sec.keyPoints.join(", ")}\n\nWrite 3-4 short paragraphs of documentary-style narration. Each paragraph should be 2-4 sentences. Include [VISUAL: ...] tags after every 2-3 sentences with very specific, literal descriptions of footage to show.` },
         ],
       }).then(r => { const c = r?.choices?.[0]?.message?.content ?? ""; return typeof c === "string" ? c : ""; })
       .catch(() => sec.keyPoints.join(". ") + ".")
@@ -596,7 +601,7 @@ export const appRouter = router({
     }),
     generate: subscribedProcedure.input(z.object({
       prompt: z.string().min(10).max(1000),
-      videoLength: z.enum(["5-8", "8-12", "12-15", "15-20", "20+"]),
+      videoLength: z.enum(["1", "5-8", "8-12", "12-15", "15-20", "20+"]),
       videoType: z.enum(["documentary", "listicle", "tutorial", "explainer"]).default("documentary"),
       voiceId: z.string().optional(),
       customVoiceoverUrl: z.string().optional(),
@@ -727,7 +732,7 @@ export const appRouter = router({
     }),
     generateVideo: adminProcedure.input(z.object({
       prompt: z.string().min(10).max(500),
-      videoLength: z.enum(["5-8", "8-12", "12-15", "15-20", "20+"]),
+      videoLength: z.enum(["1", "5-8", "8-12", "12-15", "15-20", "20+"]),
       videoType: z.enum(["documentary", "listicle", "tutorial", "explainer"]).default("documentary"),
     })).mutation(async ({ ctx, input }) => {
       const videoId = await createVideo({ userId: ctx.user.id, prompt: input.prompt, videoLength: input.videoLength, videoType: input.videoType });
