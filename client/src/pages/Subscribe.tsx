@@ -6,6 +6,7 @@
 import { useEffect } from "react";
 import { useLocation, useSearch } from "wouter";
 import { trpc } from "@/lib/trpc";
+import { toastErrorMessage } from "@/const";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { toast } from "sonner";
 import {
@@ -62,7 +63,7 @@ export default function Subscribe() {
         window.open(data.url, "_blank");
       }
     },
-    onError: (err) => toast.error("Checkout failed", { description: err.message }),
+    onError: (err) => toast.error("Checkout failed", { description: toastErrorMessage(err) }),
   });
 
   const handleSubscribe = () => {

@@ -6,6 +6,7 @@ import { useState, useEffect } from "react";
 import { useLocation } from "wouter";
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/_core/hooks/useAuth";
+import { appErrorText, toastErrorMessage } from "@/const";
 import { toast } from "sonner";
 import { Streamdown } from "streamdown";
 import {
@@ -161,7 +162,7 @@ function VideoDetailModal({ video, onClose }: { video: VideoRow; onClose: () => 
                   <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
                   <div>
                     <p className="text-xs font-medium text-red-400 mb-1">Error</p>
-                    <p className="text-xs text-red-300">{video.errorMessage}</p>
+                    <p className="text-xs text-red-300">{appErrorText(video.errorMessage)}</p>
                   </div>
                 </div>
               )}
@@ -530,7 +531,8 @@ function AdminVideoGenerator() {
       setPrompt("");
       toast.success(`Video ${formatVideoId(data.videoId)} is being generated!`);
     },
-    onError: (err) => toast.error(`Failed to start generation: ${err.message}`),
+    onError: (err) =>
+      toast.error("Failed to start generation", { description: toastErrorMessage(err) }),
   });
 
   const { data: videoStatus, isLoading: statusLoading } = trpc.video.pollStatus.useQuery(
@@ -712,7 +714,7 @@ export default function Admin() {
         <div className="text-center">
           <Shield className="w-12 h-12 text-red-400 mx-auto mb-4" />
           <p className="text-white font-bold text-lg">Access Denied</p>
-          <p className="text-slate-400 text-sm mt-1">Admin access required</p>
+          <p className="text-slate-400 text-sm mt-1">You do not have required permission</p>
           <button onClick={() => navigate("/")} className="mt-4 text-purple-400 hover:text-purple-300 text-sm transition-colors">Go home</button>
         </div>
       </div>
@@ -855,7 +857,7 @@ function AdminVideoActions() {
       if (data.reset === 0) toast.info("No stuck videos found — all pipelines are running normally");
       else toast.success(`\u2705 Reset ${data.reset} stuck video${data.reset === 1 ? "" : "s"} back to awaiting approval`);
     },
-    onError: (err) => toast.error(`Failed: ${err.message}`),
+    onError: (err) => toast.error("Operation failed", { description: toastErrorMessage(err) }),
   });
   const expireMut = trpc.videoManage.expireStuck.useMutation({
     onSuccess: (data) => {
@@ -863,7 +865,7 @@ function AdminVideoActions() {
       if (data.expired === 0) toast.info("No stuck videos found");
       else toast.success(`Marked ${data.expired} stuck video${data.expired === 1 ? "" : "s"} as failed`);
     },
-    onError: (err) => toast.error(`Failed: ${err.message}`),
+    onError: (err) => toast.error("Operation failed", { description: toastErrorMessage(err) }),
   });
   return (
     <div className="glass-card border border-white/8 rounded-xl p-5">
@@ -914,11 +916,14 @@ function VoiceLibraryAdmin() {
       a.play();
       setPreviewAudioEl(a);
     },
-    onError: (err) => { setPreviewingId(null); toast.error(`Preview failed: ${err.message}`); },
+    onError: (err) => {
+      setPreviewingId(null);
+      toast.error("Preview failed", { description: toastErrorMessage(err) });
+    },
   });
   const resetDefaultsMut = trpc.voice.resetDefaults.useMutation({
     onSuccess: (data) => { utils.voice.listAll.invalidate(); toast.success(`Reset complete — ${data.upserted} voices updated`); },
-    onError: (err) => toast.error(`Reset failed: ${err.message}`),
+    onError: (err) => toast.error("Reset failed", { description: toastErrorMessage(err) }),
   });
 
   function playExample(voice: typeof voices[0]) {
@@ -1157,17 +1162,17 @@ function InviteCodesAdmin() {
       utils.admin.listInviteCodes.invalidate();
       setNote("");
     },
-    onError: (e) => toast.error("Failed to create code", { description: e.message }),
+    onError: (e) => toast.error("Failed to create code", { description: toastErrorMessage(e) }),
   });
 
   const deleteCode = trpc.admin.deleteInviteCode.useMutation({
     onSuccess: () => { toast.success("Code deleted"); utils.admin.listInviteCodes.invalidate(); },
-    onError: (e) => toast.error("Failed to delete", { description: e.message }),
+    onError: (e) => toast.error("Failed to delete", { description: toastErrorMessage(e) }),
   });
 
   const deactivateCode = trpc.admin.deactivateInviteCode.useMutation({
     onSuccess: () => { toast.success("Code deactivated"); utils.admin.listInviteCodes.invalidate(); },
-    onError: (e) => toast.error("Failed to deactivate", { description: e.message }),
+    onError: (e) => toast.error("Failed to deactivate", { description: toastErrorMessage(e) }),
   });
 
   return (

@@ -1,5 +1,5 @@
-import { NOT_ADMIN_ERR_MSG, UNAUTHED_ERR_MSG } from '@shared/const';
-import { initTRPC, TRPCError } from "@trpc/server";
+import { APP_ERROR, appTrpcError } from "@shared/appErrors";
+import { initTRPC } from "@trpc/server";
 import superjson from "superjson";
 import type { TrpcContext } from "./context";
 
@@ -14,7 +14,7 @@ const requireUser = t.middleware(async opts => {
   const { ctx, next } = opts;
 
   if (!ctx.user) {
-    throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
+    throw appTrpcError("UNAUTHORIZED", APP_ERROR.UNAUTHED, "Please login");
   }
 
   return next({
@@ -27,19 +27,17 @@ const requireUser = t.middleware(async opts => {
 
 export const protectedProcedure = t.procedure.use(requireUser);
 
-export const adminProcedure = t.procedure.use(
-  t.middleware(async opts => {
-    const { ctx, next } = opts;
+export const adminProcedure = protectedProcedure.use(({ ctx, next }) => {
+  if (ctx.user.role !== "admin") {
+    throw appTrpcError("FORBIDDEN", APP_ERROR.NOT_ADMIN, "You do not have required permission");
+  }
+  return next({ ctx });
+});
 
-    if (!ctx.user || ctx.user.role !== 'admin') {
-      throw new TRPCError({ code: "FORBIDDEN", message: NOT_ADMIN_ERR_MSG });
-    }
-
-    return next({
-      ctx: {
-        ...ctx,
-        user: ctx.user,
-      },
-    });
-  }),
-);
+export const subscribedProcedure = protectedProcedure.use(({ ctx, next }) => {
+  if (ctx.user.role === "admin") return next({ ctx });
+  if (ctx.user.subscriptionStatus !== "active") {
+    throw appTrpcError("FORBIDDEN", APP_ERROR.SUBSCRIPTION_REQUIRED, "Active subscription required");
+  }
+  return next({ ctx });
+});

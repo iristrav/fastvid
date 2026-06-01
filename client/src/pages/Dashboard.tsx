@@ -6,7 +6,14 @@ import { useState, useEffect, useRef } from "react";
 import { useLocation } from "wouter";
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { getLoginUrl } from "@/const";
+import {
+  APP_ERROR,
+  appErrorText,
+  getLoginUrl,
+  matchesAppError,
+  parseAppErrorCode,
+  toastErrorMessage,
+} from "@/const";
 import { toast } from "sonner";
 import { Streamdown } from "streamdown";
 import {
@@ -85,7 +92,7 @@ function ScriptReviewModal({ videoId, onClose }: { videoId: number; onClose: () 
       utils.video.list.invalidate();
       onClose();
     },
-    onError: (err) => toast.error("Approval failed", { description: err.message }),
+    onError: (err) => toast.error("Approval failed", { description: toastErrorMessage(err) }),
   });
 
   const rejectMutation = trpc.video.rejectScript.useMutation({
@@ -94,7 +101,7 @@ function ScriptReviewModal({ videoId, onClose }: { videoId: number; onClose: () 
       utils.video.list.invalidate();
       onClose();
     },
-    onError: (err) => toast.error("Rejection failed", { description: err.message }),
+    onError: (err) => toast.error("Rejection failed", { description: toastErrorMessage(err) }),
   });
 
   const handleApprove = () => {
@@ -199,6 +206,7 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry, onEdit }: {
   video: {
     id: number; title: string | null; prompt: string; status: string;
     videoLength: string; createdAt: Date; thumbnailUrl: string | null;
+    errorMessage?: string | null;
   };
   onView: (id: number) => void;
   onDelete: (id: number) => void;
@@ -206,17 +214,31 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry, onEdit }: {
   onRetry: (id: number) => void;
   onEdit?: (id: number) => void;
 }) {
+  const utils = trpc.useUtils();
   const [editing, setEditing] = useState(false);
   const [editTitle, setEditTitle] = useState(video.title ?? video.prompt.slice(0, 80));
-  const isProcessing = !["completed", "failed"].includes(video.status);
+  const listStillProcessing = !["completed", "failed"].includes(video.status);
   const needsApproval = video.status === "awaiting_approval";
   const { data: pollData } = trpc.video.pollStatus.useQuery(
     { id: video.id },
-    { enabled: isProcessing, refetchInterval: isProcessing ? 2000 : false }
+    { enabled: listStillProcessing, refetchInterval: listStillProcessing ? 2000 : false }
   );
   const currentStatus = pollData?.status ?? video.status;
+  const isProcessing = !["completed", "failed"].includes(currentStatus);
   const stageInfo = AGENT_STAGES[currentStatus] ?? { label: currentStatus, agent: "AI", icon: "⚙️" };
+  const statusBadgeLabel =
+    isProcessing && pollData?.progressStep
+      ? pollData.progressStep
+      : stageInfo.label;
   const statusColor = STATUS_COLORS[currentStatus] ?? "text-slate-400 bg-slate-400/10";
+  const displayThumbnail = pollData?.thumbnailUrl ?? video.thumbnailUrl;
+
+  useEffect(() => {
+    if (pollData?.status === "completed" && video.status !== "completed") {
+      void utils.video.list.invalidate();
+    }
+  }, [pollData?.status, video.status, utils.video.list]);
+
   const progressPercent = pollData?.progressPercent ?? 0;
   const progressLog = (pollData?.progressLog ?? []) as Array<{ step: string; startedAt: number; completedAt?: number; status: string }>;
   const [elapsed, setElapsed] = useState(0);
@@ -260,8 +282,8 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry, onEdit }: {
 
       {/* Thumbnail */}
       <div className="relative aspect-video bg-gradient-to-br from-purple-900/40 to-cyan-900/30 overflow-hidden">
-        {video.thumbnailUrl && currentStatus === "completed" ? (
-          <img src={video.thumbnailUrl} alt={video.title ?? "Video"} className="w-full h-full object-cover opacity-80 group-hover:opacity-100 transition-opacity" />
+        {displayThumbnail && currentStatus === "completed" ? (
+          <img src={displayThumbnail} alt={video.title ?? "Video"} className="w-full h-full object-cover opacity-80 group-hover:opacity-100 transition-opacity" />
         ) : (
           <div className="w-full h-full flex items-center justify-center">
             {isProcessing ? (
@@ -332,10 +354,30 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry, onEdit }: {
                     <p className="text-[9px] text-amber-400 text-center">⚠️ Nearing 1.5h limit</p>
                   </div>
                 )}
+                {elapsed > 10 * 60 && (
+                  <div className="px-3 pb-3">
+                    <button
+                      onClick={() => onRetry(video.id)}
+                      className="w-full flex items-center justify-center gap-2 text-[10px] font-bold text-white bg-purple-600/80 hover:bg-purple-500 px-3 py-1.5 rounded-lg transition-colors"
+                    >
+                      <RefreshCw className="w-3 h-3" /> Stuck? Retry
+                    </button>
+                  </div>
+                )}
               </div>
             ) : currentStatus === "failed" ? (
-              <div className="flex flex-col items-center gap-3 px-4">
-                <XCircle className="w-10 h-10 text-red-400/60" />
+              <div className="flex flex-col items-center gap-2 px-4 py-3 text-center w-full">
+                <XCircle className="w-10 h-10 text-red-400/60 shrink-0" />
+                {video.errorMessage && (
+                  <p className="text-[10px] text-red-300/90 leading-snug line-clamp-4 w-full">
+                    {appErrorText(video.errorMessage)}
+                  </p>
+                )}
+                {video.errorMessage && parseAppErrorCode(video.errorMessage) !== null && (
+                  <p className="text-[9px] font-mono text-slate-500">
+                    Code {parseAppErrorCode(video.errorMessage)}
+                  </p>
+                )}
                 <button
                   onClick={() => onRetry(video.id)}
                   className="flex items-center gap-2 text-xs font-bold text-white bg-purple-600 hover:bg-purple-500 px-3 py-1.5 rounded-lg transition-colors shadow-lg shadow-purple-500/30"
@@ -348,8 +390,8 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry, onEdit }: {
             )}
           </div>
         )}
-        <div className={`absolute top-2 right-2 px-2 py-0.5 rounded-full text-xs font-medium ${statusColor}`}>
-          {stageInfo.label}
+        <div className={`absolute top-2 right-2 px-2 py-0.5 rounded-full text-xs font-medium max-w-[55%] truncate ${statusColor}`}>
+          {statusBadgeLabel}
         </div>
         <div className="absolute bottom-2 left-2 px-2 py-0.5 rounded-md bg-black/60 text-xs text-white font-mono">
           {VIDEO_LENGTHS.find(l => l.value === video.videoLength)?.label ?? video.videoLength}
@@ -597,7 +639,7 @@ function VoiceSelector({ selectedVoice, onSelect }: { selectedVoice: string; onS
       playAudioUrl(result.url, voice.id);
     } catch (err: unknown) {
       setLoadingPreviewId(null);
-      const msg = err instanceof Error ? err.message : "Could not generate voice preview";
+      const msg = toastErrorMessage(err, "Could not generate voice preview");
       toast.error("Preview failed", { description: msg });
     }
   }
@@ -663,7 +705,7 @@ function CustomVoiceoverUpload({ onUpload, onClear, uploadedUrl }: {
       onUpload(data.url);
       toast.success("Voiceover uploaded!", { description: "Your audio will be used instead of TTS." });
     },
-    onError: (err) => toast.error("Upload failed", { description: err.message }),
+    onError: (err) => toast.error("Upload failed", { description: toastErrorMessage(err) }),
   });
 
   const handleFile = async (file: File) => {
@@ -738,18 +780,18 @@ export default function Dashboard() {
 
   const deleteMutation = trpc.videoManage.delete.useMutation({
     onSuccess: () => { toast.success("Video deleted"); utils.video.list.invalidate(); },
-    onError: (err) => toast.error("Delete failed", { description: err.message }),
+    onError: (err) => toast.error("Delete failed", { description: toastErrorMessage(err) }),
   });
   const renameMutation = trpc.videoManage.updateTitle.useMutation({
     onSuccess: () => { toast.success("Title updated"); utils.video.list.invalidate(); },
-    onError: (err) => toast.error("Rename failed", { description: err.message }),
+    onError: (err) => toast.error("Rename failed", { description: toastErrorMessage(err) }),
   });
   const deleteFailedMutation = trpc.videoManage.deleteAllFailed.useMutation({
     onSuccess: (data) => { toast.success(`Deleted ${data.deleted} failed video${data.deleted !== 1 ? "s" : ""}`); utils.video.list.invalidate(); },
-    onError: (err) => toast.error("Failed", { description: err.message }),
+    onError: (err) => toast.error("Failed", { description: toastErrorMessage(err) }),
   });
   const regenScriptMutation = trpc.video.regenScript.useMutation({
-    onError: (err) => toast.error("Retry failed", { description: err.message }),
+    onError: (err) => toast.error("Retry failed", { description: toastErrorMessage(err) }),
   });
 
   const { data: videos, isLoading: videosLoading, refetch } = trpc.video.list.useQuery(undefined, { enabled: isAuthenticated, refetchInterval: 5000 });
@@ -760,7 +802,7 @@ export default function Dashboard() {
         window.open(data.url, "_blank");
       }
     },
-    onError: (err) => toast.error("Checkout failed", { description: err.message }),
+    onError: (err) => toast.error("Checkout failed", { description: toastErrorMessage(err) }),
   });
   const generateMutation = trpc.video.generate.useMutation({
     onSuccess: (data) => {
@@ -769,10 +811,10 @@ export default function Dashboard() {
       setTimeout(() => refetch(), 2000);
     },
     onError: (err) => {
-      if (err.message.includes("subscription")) {
+      if (matchesAppError(err.message, APP_ERROR.SUBSCRIPTION_REQUIRED)) {
         toast.error("Active subscription required", { description: "Please contact the admin to activate your subscription." });
       } else {
-        toast.error("Failed to start generation", { description: err.message });
+        toast.error("Failed to start generation", { description: toastErrorMessage(err) });
       }
     },
   });

@@ -1,4 +1,5 @@
 import { AXIOS_TIMEOUT_MS, COOKIE_NAME, ONE_YEAR_MS } from "@shared/const";
+import { APP_ERROR } from "@shared/appErrors";
 import { ForbiddenError } from "@shared/_core/errors";
 import axios, { type AxiosInstance } from "axios";
 import { parse as parseCookieHeader } from "cookie";
@@ -263,7 +264,7 @@ class SDKServer {
     const session = await this.verifySession(sessionCookie);
 
     if (!session) {
-      throw ForbiddenError("Invalid session cookie");
+      throw ForbiddenError("Invalid session cookie", APP_ERROR.INVALID_SESSION);
     }
 
     const sessionUserId = session.openId;
@@ -284,12 +285,12 @@ class SDKServer {
         user = await db.getUserByOpenId(userInfo.openId);
       } catch (error) {
         console.error("[Auth] Failed to sync user from OAuth:", error);
-        throw ForbiddenError("Failed to sync user info");
+        throw ForbiddenError("Failed to sync user info", APP_ERROR.OAUTH_SYNC_FAILED);
       }
     }
 
     if (!user) {
-      throw ForbiddenError("User not found");
+      throw ForbiddenError("User not found", APP_ERROR.OAUTH_USER_NOT_FOUND);
     }
 
     await db.upsertUser({

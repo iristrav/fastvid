@@ -349,26 +349,12 @@ async function bootstrapVoiceExampleAudio() {
 bootstrapVoiceExampleAudio().catch(console.error);
 
 // ─── Pipeline Recovery ────────────────────────────────────────────────────────
-// On startup, mark any videos stuck in processing states as failed.
-// This handles the case where the server was restarted while a pipeline was running.
+// On startup: recover videos whose MP4 was uploaded but status never finalized,
+// then mark orphaned in-progress pipelines as failed (no worker survives a restart).
 async function recoverStuckPipelines() {
   try {
-    const { getDb } = await import("../db");
-    const { videos } = await import("../../drizzle/schema");
-    const { inArray } = await import("drizzle-orm"); // eslint-disable-line @typescript-eslint/no-unused-vars
-    const db = await getDb();
-    if (!db) return;
-    const result = await db.update(videos)
-      .set({
-        status: 'failed',
-        errorMessage: 'Server restarted during generation. Please try again.',
-        progressStep: 'Failed — server restarted, please retry',
-      })
-      .where(inArray(videos.status, ['generating_script', 'generating_voiceover', 'generating_visuals', 'generating_effects'] as ('generating_script' | 'generating_voiceover' | 'generating_visuals' | 'generating_effects')[]));
-    const count = (result as unknown as [{ affectedRows?: number }])?.[0]?.affectedRows ?? 0;
-    if (count > 0) {
-      console.log(`[PipelineRecovery] Marked ${count} stuck video(s) as failed`);
-    }
+    const { recoverAllStuckVideos } = await import("../db");
+    await recoverAllStuckVideos();
   } catch (e) {
     console.error("[PipelineRecovery] Recovery failed:", e);
   }

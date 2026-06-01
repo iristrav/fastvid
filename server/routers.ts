@@ -1,10 +1,25 @@
 import Stripe from "stripe";
-import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
-import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
+import {
+  adminProcedure,
+  protectedProcedure,
+  publicProcedure,
+  router,
+  subscribedProcedure,
+} from "./_core/trpc";
+import {
+  APP_ERROR,
+  PIPELINE_ERROR,
+  appErrorMessage,
+  appTrpcError,
+  normalizeStoredError,
+  pipelineError,
+} from "@shared/appErrors";
+import type { TrpcContext } from "./_core/context";
+import type { Video } from "../drizzle/schema";
 import { invokeLLM } from "./_core/llm";
 import { notifyOwner } from "./_core/notification";
 import bcrypt from "bcryptjs";
@@ -14,7 +29,7 @@ import {
   searchVideos, getUserStats, getVideoById, getVideosByUserId, getVideoStats,
   updateUserRole, updateUserSubscription, updateVideoStatus, updateVideoProgress, updateVideoProgressLog,
   getAllVoices, getAllVoicesAdmin, getVoiceById, createVoice, updateVoice, deleteVoice, seedDefaultVoices,
-  deleteVideo, updateVideoTitle, deleteAllFailedVideosForUser, expireStuckVideos,
+  deleteVideo, updateVideoTitle, deleteAllFailedVideosForUser, expireStuckVideos, recoverVideoCompletionState, recoverAllStuckVideos, ORPHANED_PIPELINE_STATUSES,
   createUser, updateUserLastSignedIn,
   getInviteCodeByCode, createInviteCode, getAllInviteCodes, markInviteCodeUsed, deleteInviteCode, deactivateInviteCode,
 } from "./db";
@@ -47,7 +62,7 @@ function generateInviteCode(): string {
 import { storagePut } from "./storage";
 import { FASTVID_PRO_PLAN } from "./products";
 import { updateVideoScenes, updateEditedVideoUrl, getVideoScenes, type EditorScene, type EditorClip } from "./db";
-import { runVideoPipeline, generateStabilityAIThumbnail } from "./videoPipeline";
+import { runVideoPipeline } from "./videoPipeline";
 import { forgotPassword, validateResetToken as validateResetTokenProcedure, resetPassword } from "./authPasswordReset";
 
 // Lazy Stripe initialization — prevents crash on startup when STRIPE_SECRET_KEY is not yet set
@@ -55,24 +70,32 @@ let _stripe: Stripe | null = null;
 function getStripe(): Stripe {
   if (!_stripe) {
     const key = process.env.STRIPE_SECRET_KEY;
-    if (!key) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Stripe is not configured. Please add STRIPE_SECRET_KEY to your environment variables." });
+    if (!key) {
+      throw appTrpcError(
+        "INTERNAL_SERVER_ERROR",
+        APP_ERROR.STRIPE_NOT_CONFIGURED,
+        "Stripe is not configured. Please add STRIPE_SECRET_KEY to your environment variables"
+      );
+    }
     _stripe = new Stripe(key);
   }
   return _stripe;
 }
 
-const adminProcedure = protectedProcedure.use(({ ctx, next }) => {
-  if (ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN", message: "Admin access required" });
-  return next({ ctx });
-});
+function readEnableSubtitles(video: { enableSubtitles?: number | null }): boolean {
+  return video.enableSubtitles !== 0;
+}
 
-const subscribedProcedure = protectedProcedure.use(({ ctx, next }) => {
-  if (ctx.user.role === "admin") return next({ ctx });
-  if ((ctx.user as { subscriptionStatus?: string }).subscriptionStatus !== "active") {
-    throw new TRPCError({ code: "FORBIDDEN", message: "Active subscription required" });
+function requireVideoAccess(
+  video: Video | null | undefined,
+  ctx: TrpcContext & { user: NonNullable<TrpcContext["user"]> }
+): Video {
+  if (!video) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Resource not found");
+  if (video.userId !== ctx.user.id && ctx.user.role !== "admin") {
+    throw appTrpcError("FORBIDDEN", APP_ERROR.FORBIDDEN_RESOURCE, "You do not have access to this resource");
   }
-  return next({ ctx });
-});
+  return video;
+}
 
 // Global 1.5-hour (90-min) hard cap — pipeline is killed and marked failed after this
 const MAX_VIDEO_GENERATION_MS = 90 * 60 * 1000; // 1.5 hours = 90 minutes
@@ -82,7 +105,10 @@ async function generateVideoWithAI(videoId: number, prompt: string, videoLength:
   const timeoutHandle = setTimeout(async () => {
     console.error(`[Video Generation] Video ${videoId} exceeded 1.5-hour limit — marking as failed`);
     await updateVideoStatus(videoId, "failed", {
-      errorMessage: "Video generation exceeded 1.5 hours (90 minutes). Please retry with a shorter video.",
+      errorMessage: appErrorMessage(
+        PIPELINE_ERROR.GENERATION_TIMEOUT,
+        "Video generation exceeded 1.5 hours (90 minutes). Please retry with a shorter video"
+      ),
       progressStep: "⏰ Generation timed out (max 1.5 hours exceeded)",
       progressPercent: 0,
     }).catch(() => {});
@@ -104,7 +130,10 @@ async function generateFullVideo(videoId: number, prompt: string, videoLength: s
   const timeoutHandle = setTimeout(async () => {
     console.error(`[Video Generation] Video ${videoId} exceeded 1.5-hour limit — marking as failed`);
     await updateVideoStatus(videoId, "failed", {
-      errorMessage: "Video generation exceeded 1.5 hours (90 minutes). Please retry with a shorter video.",
+      errorMessage: appErrorMessage(
+        PIPELINE_ERROR.GENERATION_TIMEOUT,
+        "Video generation exceeded 1.5 hours (90 minutes). Please retry with a shorter video"
+      ),
       progressStep: "⏰ Generation timed out (max 1.5 hours exceeded)",
       progressPercent: 0,
     }).catch(() => {});
@@ -122,7 +151,10 @@ async function generateFullVideo(videoId: number, prompt: string, videoLength: s
       // Ensure video is marked as failed with a clear message
       if (videoAfterScript?.status !== "failed") {
         await updateVideoStatus(videoId, "failed", {
-          errorMessage: "Script generation failed — no script was saved. Please retry.",
+          errorMessage: appErrorMessage(
+            PIPELINE_ERROR.SCRIPT_FAILED,
+            "Script generation failed — no script was saved. Please retry"
+          ),
           progressStep: "Script generation failed",
           progressPercent: 0,
         });
@@ -145,6 +177,13 @@ async function generateFullVideo(videoId: number, prompt: string, videoLength: s
       videoAfterScript.metadata ?? undefined,
       enableSubtitles
     );
+  } catch (error) {
+    console.error(`[Video Generation] Pipeline error for video ${videoId}:`, error);
+    await updateVideoStatus(videoId, "failed", {
+      errorMessage: normalizeStoredError(error),
+      progressStep: "Generation failed",
+      progressPercent: 0,
+    }).catch(() => {});
   } finally {
     clearTimeout(timeoutHandle);
   }
@@ -296,13 +335,16 @@ RULES:
     // Verify the script was actually saved
     const savedVideo = await getVideoById(videoId);
     if (!savedVideo?.script) {
-      throw new Error(`Script save verification failed for video ${videoId} — DB write did not persist`);
+      throw pipelineError(
+        PIPELINE_ERROR.SCRIPT_FAILED,
+        `Script save verification failed for video ${videoId} — DB write did not persist`
+      );
     }
     console.log(`[Script Generation] Script saved and verified for video ${videoId} (${savedVideo.script.length} chars)`);
   } catch (error) {
     console.error("[Script Generation] Error:", error);
     await updateVideoStatus(videoId, "failed", {
-      errorMessage: error instanceof Error ? error.message : "Script generation failed — please retry",
+      errorMessage: normalizeStoredError(error, PIPELINE_ERROR.SCRIPT_FAILED),
       progressStep: "Script generation failed",
       progressPercent: 0,
     });
@@ -333,7 +375,9 @@ async function _generateVideoWithAI(
       approvedMetadata = preloadedMetadata ?? { title: approvedTitle, description: prompt, tags: [], chapters: [] };
     } else {
       const video = await getVideoById(videoId);
-      if (!video?.script) throw new Error("No approved script found");
+      if (!video?.script) {
+        throw pipelineError(PIPELINE_ERROR.SCRIPT_FAILED, "No approved script found");
+      }
       approvedScript = video.script;
       approvedTitle = video.title ?? prompt.slice(0, 100);
       approvedMetadata = video.metadata ?? { title: approvedTitle, description: prompt, tags: [], chapters: [] };
@@ -403,34 +447,14 @@ async function _generateVideoWithAI(
     if (lastActive) { lastActive.completedAt = Date.now(); lastActive.status = "done"; }
     await updateVideoProgressLog(videoId, progressLog).catch(() => {});
 
-    // ── Stage 4: Generate Thumbnail via Stability AI (no Manus credits) ────────────
-    progressLog.push({ step: "🎨 Generating thumbnail...", startedAt: Date.now(), status: "active" });
-    await updateVideoProgressLog(videoId, progressLog).catch(() => {});
-    await updateVideoProgress(videoId, "Generating thumbnail...", 97);
-    let thumbnailUrl: string | undefined;
-    try {
-      const videoTitle = (approvedMetadata as Record<string, string>).title ?? approvedTitle;
-      const thumbPrompt = `YouTube thumbnail: "${videoTitle.slice(0, 80)}". Cinematic, vibrant colors, high contrast, dramatic lighting, photorealistic, 16:9 aspect ratio, professional quality`;
-      const thumbB64 = await generateStabilityAIThumbnail(thumbPrompt);
-      if (thumbB64) {
-        const thumbBuf = Buffer.from(thumbB64, "base64");
-        const { url: s3Url } = await storagePut(`thumbnails/${videoId}.jpg`, thumbBuf, "image/jpeg");
-        thumbnailUrl = s3Url;
-      }
-    } catch (thumbErr) {
-      console.warn(`[Video ${videoId}] Thumbnail generation failed (non-fatal):`, thumbErr);
-    }
-    // Mark thumbnail done
-    const thumbStep = progressLog.find(e => e.status === "active");
-    if (thumbStep) { thumbStep.completedAt = Date.now(); thumbStep.status = "done"; }
+    const finalTitle = (approvedMetadata as Record<string, string>).title ?? approvedTitle;
+
     progressLog.push({ step: "✅ Video complete!", startedAt: Date.now(), completedAt: Date.now(), status: "done" });
     await updateVideoProgressLog(videoId, progressLog).catch(() => {});
 
-    const finalTitle = (approvedMetadata as Record<string, string>).title ?? approvedTitle;
     await updateVideoStatus(videoId, "completed", {
       metadata: approvedMetadata,
       title: finalTitle,
-      thumbnailUrl: thumbnailUrl ?? `https://picsum.photos/seed/${videoId}/1280/720`,
       videoUrl,
       progressStep: "Video complete!",
       progressPercent: 100,
@@ -443,7 +467,7 @@ async function _generateVideoWithAI(
   } catch (error) {
     console.error("[Video Generation] Error:", error);
     await updateVideoStatus(videoId, "failed", {
-      errorMessage: error instanceof Error ? error.message : "Unknown error",
+      errorMessage: normalizeStoredError(error),
       progressStep: "Generation failed",
       progressPercent: 0,
     });
@@ -461,7 +485,7 @@ export const appRouter = router({
       .mutation(async ({ input }) => {
         const invite = await getInviteCodeByCode(input.code.trim().toUpperCase());
         if (!invite || invite.isActive === 0) {
-          throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid or already used invite code" });
+          throw appTrpcError("BAD_REQUEST", APP_ERROR.INVALID_INVITE, "Invalid or already used invite code");
         }
         return { valid: true };
       }),
@@ -478,12 +502,12 @@ export const appRouter = router({
         const code = input.inviteCode.trim().toUpperCase();
         const invite = await getInviteCodeByCode(code);
         if (!invite || invite.isActive === 0) {
-          throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid or already used invite code" });
+          throw appTrpcError("BAD_REQUEST", APP_ERROR.INVALID_INVITE, "Invalid or already used invite code");
         }
         // Check email not already taken
         const existing = await getUserByEmail(input.email.toLowerCase());
         if (existing) {
-          throw new TRPCError({ code: "CONFLICT", message: "An account with this email already exists" });
+          throw appTrpcError("CONFLICT", APP_ERROR.EMAIL_EXISTS, "An account with this email already exists");
         }
         const passwordHash = await bcrypt.hash(input.password, 12);
         const userId = await createUser({
@@ -512,11 +536,11 @@ export const appRouter = router({
       .mutation(async ({ input, ctx }) => {
         const user = await getUserByEmail(input.email.toLowerCase());
         if (!user || !user.passwordHash) {
-          throw new TRPCError({ code: "UNAUTHORIZED", message: "Invalid email or password" });
+          throw appTrpcError("UNAUTHORIZED", APP_ERROR.INVALID_CREDENTIALS, "Invalid email or password");
         }
         const valid = await bcrypt.compare(input.password, user.passwordHash);
         if (!valid) {
-          throw new TRPCError({ code: "UNAUTHORIZED", message: "Invalid email or password" });
+          throw appTrpcError("UNAUTHORIZED", APP_ERROR.INVALID_CREDENTIALS, "Invalid email or password");
         }
         await updateUserLastSignedIn(user.id);
         const token = await signSessionToken(user.id);
@@ -537,18 +561,23 @@ export const appRouter = router({
   }),
 
   video: router({
-    list: protectedProcedure.query(async ({ ctx }) => getVideosByUserId(ctx.user.id)),
+    list: protectedProcedure.query(async ({ ctx }) => {
+      const rows = await getVideosByUserId(ctx.user.id);
+      return Promise.all(
+        rows.map((v) =>
+          v.status === "completed" || v.status === "failed" || v.status === "awaiting_approval"
+            ? v
+            : recoverVideoCompletionState(v)
+        )
+      );
+    }),
     get: protectedProcedure.input(z.object({ id: z.number() })).query(async ({ ctx, input }) => {
-      const video = await getVideoById(input.id);
-      if (!video) throw new TRPCError({ code: "NOT_FOUND" });
-      if (video.userId !== ctx.user.id && ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN" });
-      return video;
+      const raw = requireVideoAccess(await getVideoById(input.id), ctx);
+      return recoverVideoCompletionState(raw);
     }),
     /** Return a direct presigned CloudFront URL for video playback (bypasses 307 redirect) */
     getVideoUrl: protectedProcedure.input(z.object({ id: z.number() })).query(async ({ ctx, input }) => {
-      const video = await getVideoById(input.id);
-      if (!video) throw new TRPCError({ code: "NOT_FOUND" });
-      if (video.userId !== ctx.user.id && ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN" });
+      const video = requireVideoAccess(await getVideoById(input.id), ctx);
       if (!video.videoUrl) return { url: null };
       // /local-storage/ URLs are served directly by Express — return as-is (Railway mode)
       if (video.videoUrl.startsWith("/local-storage/")) {
@@ -583,7 +612,12 @@ export const appRouter = router({
         enableSubtitles: input.enableSubtitles ? 1 : 0,
         status: "pending",
       });
-      if (!videoId) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Failed to create video" });
+      if (!videoId) throw appTrpcError("INTERNAL_SERVER_ERROR", APP_ERROR.FAILED_CREATE_VIDEO, "Failed to create video");
+      await updateVideoStatus(videoId, "generating_script", {
+        progressStep: "🔍 Starting generation...",
+        progressPercent: 1,
+        generationStartedAt: new Date(),
+      }).catch(() => {});
       // Direct full pipeline — no script review step
       generateFullVideo(videoId, input.prompt, input.videoLength, input.videoType, input.voiceId, input.customVoiceoverUrl, input.enableSubtitles).catch(console.error);
       return { videoId, message: "Video generation started" };
@@ -592,13 +626,13 @@ export const appRouter = router({
       id: z.number(),
       editedScript: z.string().optional(), // allow user to edit script before approving
     })).mutation(async ({ ctx, input }) => {
-      const video = await getVideoById(input.id);
-      if (!video) throw new TRPCError({ code: "NOT_FOUND" });
-      if (video.userId !== ctx.user.id && ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN" });
-      if (video.status !== "awaiting_approval") throw new TRPCError({ code: "BAD_REQUEST", message: "Video is not awaiting approval" });
+      const video = requireVideoAccess(await getVideoById(input.id), ctx);
+      if (video.status !== "awaiting_approval") {
+        throw appTrpcError("BAD_REQUEST", APP_ERROR.VIDEO_NOT_AWAITING_APPROVAL, "Video is not awaiting approval");
+      }
       // Use edited script if provided, otherwise use the stored script
       const finalScript = input.editedScript ?? video.script;
-      if (!finalScript) throw new TRPCError({ code: "BAD_REQUEST", message: "No script found" });
+      if (!finalScript) throw appTrpcError("BAD_REQUEST", APP_ERROR.NO_SCRIPT, "No script found");
       if (input.editedScript) {
         await updateVideoStatus(video.id, "awaiting_approval", { script: input.editedScript });
       }
@@ -616,47 +650,60 @@ export const appRouter = router({
         _generateVideoWithAI(
           video.id, video.prompt, video.videoLength ?? "15-20",
           voiceIdForApprove, customVoiceoverForApprove,
-          finalScript, titleForApprove, metadataForApprove
+          finalScript, titleForApprove, metadataForApprove,
+          readEnableSubtitles(video)
         ).catch(console.error);
       });
       return { success: true };
     }),
     regenScript: protectedProcedure.input(z.object({ id: z.number() })).mutation(async ({ ctx, input }) => {
-      const video = await getVideoById(input.id);
-      if (!video) throw new TRPCError({ code: "NOT_FOUND" });
-      if (video.userId !== ctx.user.id && ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN" });
-      if (video.status !== "failed") throw new TRPCError({ code: "BAD_REQUEST", message: "Only failed videos can be retried" });
-      // Reset to pending and re-run full pipeline (no script review)
+      const video = requireVideoAccess(await getVideoById(input.id), ctx);
+      const retryable = video.status === "failed" || ORPHANED_PIPELINE_STATUSES.includes(
+        video.status as (typeof ORPHANED_PIPELINE_STATUSES)[number]
+      );
+      if (!retryable) {
+        throw appTrpcError("BAD_REQUEST", APP_ERROR.VIDEO_RETRY_INVALID, "Only failed or stuck videos can be retried");
+      }
       await updateVideoStatus(video.id, "pending", {
+        errorMessage: null,
         progressStep: "🔄 Retrying...",
         progressPercent: 0,
+        generationStartedAt: new Date(),
       });
-      generateFullVideo(video.id, video.prompt, video.videoLength ?? "15-20", (video as { videoType?: string | null }).videoType ?? "documentary", (video as { voiceId?: string | null }).voiceId ?? undefined, video.customVoiceoverUrl ?? undefined).catch(console.error);
+      generateFullVideo(
+        video.id,
+        video.prompt,
+        video.videoLength ?? "15-20",
+        (video as { videoType?: string | null }).videoType ?? "documentary",
+        (video as { voiceId?: string | null }).voiceId ?? undefined,
+        video.customVoiceoverUrl ?? undefined,
+        readEnableSubtitles(video)
+      ).catch(console.error);
       return { success: true };
     }),
     rejectScript: protectedProcedure.input(z.object({ id: z.number() })).mutation(async ({ ctx, input }) => {
-      const video = await getVideoById(input.id);
-      if (!video) throw new TRPCError({ code: "NOT_FOUND" });
-      if (video.userId !== ctx.user.id && ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN" });
-      if (video.status !== "awaiting_approval") throw new TRPCError({ code: "BAD_REQUEST", message: "Video is not awaiting approval" });
+      const video = requireVideoAccess(await getVideoById(input.id), ctx);
+      if (video.status !== "awaiting_approval") {
+        throw appTrpcError("BAD_REQUEST", APP_ERROR.VIDEO_NOT_AWAITING_APPROVAL, "Video is not awaiting approval");
+      }
       await updateVideoStatus(video.id, "failed", {
         scriptApproved: 2,
-        errorMessage: "Script rejected by user",
+        errorMessage: appErrorMessage(PIPELINE_ERROR.SCRIPT_REJECTED, "Script rejected by user"),
         progressStep: "Script rejected",
         progressPercent: 0,
       });
       return { success: true };
     }),
     pollStatus: protectedProcedure.input(z.object({ id: z.number() })).query(async ({ ctx, input }) => {
-      const video = await getVideoById(input.id);
-      if (!video) throw new TRPCError({ code: "NOT_FOUND" });
-      if (video.userId !== ctx.user.id && ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN" });
+      const raw = requireVideoAccess(await getVideoById(input.id), ctx);
+      const video = await recoverVideoCompletionState(raw);
       return {
         status: video.status,
         title: video.title,
         script: video.script,
         metadata: video.metadata,
         thumbnailUrl: video.thumbnailUrl,
+        videoUrl: video.videoUrl,
         progressStep: video.progressStep,
         progressPercent: video.progressPercent ?? 0,
         progressLog: ((video as unknown as Record<string, unknown>).progressLog ?? []) as import('./db').ProgressLogEntry[],
@@ -684,7 +731,12 @@ export const appRouter = router({
       videoType: z.enum(["documentary", "listicle", "tutorial", "explainer"]).default("documentary"),
     })).mutation(async ({ ctx, input }) => {
       const videoId = await createVideo({ userId: ctx.user.id, prompt: input.prompt, videoLength: input.videoLength, videoType: input.videoType });
-      // Use generateFullVideo (full pipeline: script → voiceover → visuals → assembly)
+      if (!videoId) throw appTrpcError("INTERNAL_SERVER_ERROR", APP_ERROR.FAILED_CREATE_VIDEO, "Failed to create video");
+      await updateVideoStatus(videoId, "generating_script", {
+        progressStep: "🔍 Starting generation...",
+        progressPercent: 1,
+        generationStartedAt: new Date(),
+      }).catch(() => {});
       generateFullVideo(videoId, input.prompt, input.videoLength, input.videoType).catch(console.error);
       return { videoId };
     }),
@@ -697,7 +749,7 @@ export const appRouter = router({
     })).query(async ({ input }) => searchVideos(input)),
     getUser: adminProcedure.input(z.object({ userId: z.number() })).query(async ({ input }) => {
       const user = await getUserById(input.userId);
-      if (!user) throw new TRPCError({ code: "NOT_FOUND" });
+      if (!user) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Resource not found");
       return user;
     }),
 
@@ -742,7 +794,9 @@ export const appRouter = router({
 
   billing: router({
     createCheckout: protectedProcedure.input(z.object({ origin: z.string() })).mutation(async ({ ctx, input }) => {
-      if (!process.env.STRIPE_SECRET_KEY) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Stripe not configured" });
+      if (!process.env.STRIPE_SECRET_KEY) {
+        throw appTrpcError("INTERNAL_SERVER_ERROR", APP_ERROR.STRIPE_NOT_CONFIGURED, "Stripe not configured");
+      }
       // Create or retrieve Stripe customer
       let customerId = (ctx.user as { stripeCustomerId?: string }).stripeCustomerId;
       if (!customerId) {
@@ -847,7 +901,7 @@ export const appRouter = router({
     /** Admin: reset / upsert all default voices with real Fish Audio reference IDs */
     resetDefaults: adminProcedure.mutation(async () => {
       const db = await import("./db").then(m => m.getDb());
-      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database not available" });
+      if (!db) throw appTrpcError("INTERNAL_SERVER_ERROR", APP_ERROR.DATABASE_UNAVAILABLE, "Database not available");
       const { voices: voicesTable } = await import("../drizzle/schema");
       const defaults = [
         // ElevenLabs premade voice IDs — always available on any ElevenLabs account
@@ -883,7 +937,7 @@ export const appRouter = router({
       mimeType: z.string().default("audio/mpeg"),
     })).mutation(async ({ input }) => {
       const voice = await getVoiceById(input.voiceId);
-      if (!voice) throw new TRPCError({ code: "NOT_FOUND", message: "Voice not found" });
+      if (!voice) throw appTrpcError("NOT_FOUND", APP_ERROR.VOICE_NOT_FOUND, "Voice not found");
       const buffer = Buffer.from(input.audioBase64, "base64");
       const ext = input.mimeType.includes("mp3") || input.mimeType.includes("mpeg") ? "mp3" : "wav";
       const { url } = await storagePut(`voices/${input.voiceId}/example.${ext}`, buffer, input.mimeType);
@@ -899,7 +953,9 @@ export const appRouter = router({
     })).mutation(async ({ ctx, input }) => {
       const buffer = Buffer.from(input.base64, "base64");
       const maxBytes = 50 * 1024 * 1024; // 50 MB
-      if (buffer.length > maxBytes) throw new TRPCError({ code: "BAD_REQUEST", message: "File too large (max 50MB)" });
+      if (buffer.length > maxBytes) {
+        throw appTrpcError("BAD_REQUEST", APP_ERROR.FILE_TOO_LARGE, "File too large (max 50MB)");
+      }
       const ext = input.mimeType.includes("wav") ? "wav" : input.mimeType.includes("ogg") ? "ogg" : "mp3";
       const key = `custom-voiceovers/${ctx.user.id}-${Date.now()}.${ext}`;
       const { url } = await storagePut(key, buffer, input.mimeType);
@@ -911,7 +967,9 @@ export const appRouter = router({
       fishAudioReferenceId: z.string().min(1),
     })).mutation(async ({ input }) => {
       const apiKey = process.env.ELEVENLABS_API_KEY;
-      if (!apiKey) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "ElevenLabs API key not configured" });
+      if (!apiKey) {
+        throw appTrpcError("INTERNAL_SERVER_ERROR", APP_ERROR.ELEVENLABS_NOT_CONFIGURED, "ElevenLabs API key not configured");
+      }
       const previewText = "Hello! This is a preview of how this voice sounds. I hope you enjoy using it for your YouTube videos.";
       const voiceId = input.fishAudioReferenceId; // column still named fishAudioReferenceId but stores ElevenLabs voice ID
       const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
@@ -922,7 +980,11 @@ export const appRouter = router({
       });
       if (!response.ok) {
         const err = await response.text();
-        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `ElevenLabs preview failed: ${err.slice(0, 200)}` });
+        throw appTrpcError(
+          "INTERNAL_SERVER_ERROR",
+          APP_ERROR.SERVICE_ERROR,
+          `ElevenLabs preview failed: ${err.slice(0, 200)}`
+        );
       }
       const audioBuffer = Buffer.from(await response.arrayBuffer());
       const key = `voice-previews/${voiceId}-${Date.now()}.mp3`;
@@ -935,18 +997,14 @@ export const appRouter = router({
   videoManage: router({
     /** Delete a single video (owner or admin) */
     delete: protectedProcedure.input(z.object({ id: z.number().int() })).mutation(async ({ ctx, input }) => {
-      const video = await getVideoById(input.id);
-      if (!video) throw new TRPCError({ code: "NOT_FOUND" });
-      if (video.userId !== ctx.user.id && ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN" });
+      const video = requireVideoAccess(await getVideoById(input.id), ctx);
       await deleteVideo(input.id);
       return { success: true };
     }),
 
     /** Update the title of a video (owner or admin) */
     updateTitle: protectedProcedure.input(z.object({ id: z.number().int(), title: z.string().min(1).max(200) })).mutation(async ({ ctx, input }) => {
-      const video = await getVideoById(input.id);
-      if (!video) throw new TRPCError({ code: "NOT_FOUND" });
-      if (video.userId !== ctx.user.id && ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN" });
+      const video = requireVideoAccess(await getVideoById(input.id), ctx);
       await updateVideoTitle(input.id, input.title);
       return { success: true };
     }),
@@ -993,9 +1051,7 @@ export const appRouter = router({
   editor: router({
     /** Get the scene manifest for a completed video */
     getScenes: protectedProcedure.input(z.object({ videoId: z.number().int() })).query(async ({ ctx, input }) => {
-      const video = await getVideoById(input.videoId);
-      if (!video) throw new TRPCError({ code: "NOT_FOUND" });
-      if (video.userId !== ctx.user.id && ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN" });
+      const video = requireVideoAccess(await getVideoById(input.videoId), ctx);
       const scenes = await getVideoScenes(input.videoId);
       return {
         scenes: scenes ?? [],
@@ -1019,13 +1075,19 @@ export const appRouter = router({
       narration: z.string().optional(),
       durationMs: z.number().optional(),
     })).mutation(async ({ ctx, input }) => {
-      const video = await getVideoById(input.videoId);
-      if (!video) throw new TRPCError({ code: "NOT_FOUND" });
-      if (video.userId !== ctx.user.id && ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN" });
+      const video = requireVideoAccess(await getVideoById(input.videoId), ctx);
       const scenes = await getVideoScenes(input.videoId);
-      if (!scenes) throw new TRPCError({ code: "NOT_FOUND", message: "Scene manifest not found. Video may need to be regenerated." });
+      if (!scenes) {
+        throw appTrpcError(
+          "NOT_FOUND",
+          APP_ERROR.SCENE_MANIFEST_NOT_FOUND,
+          "Scene manifest not found. Video may need to be regenerated"
+        );
+      }
       const sceneIdx = scenes.findIndex(s => s.sceneIndex === input.sceneIndex);
-      if (sceneIdx === -1) throw new TRPCError({ code: "NOT_FOUND", message: `Scene ${input.sceneIndex} not found` });
+      if (sceneIdx === -1) {
+        throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, `Scene ${input.sceneIndex} not found`);
+      }
       if (input.clips !== undefined) scenes[sceneIdx].clips = input.clips as EditorClip[];
       if (input.narration !== undefined) scenes[sceneIdx].narration = input.narration;
       if (input.durationMs !== undefined) scenes[sceneIdx].durationMs = input.durationMs;
@@ -1044,7 +1106,9 @@ export const appRouter = router({
 
       if (input.source === "pexels") {
         const pexelsKey = process.env.PEXELS_API_KEY;
-        if (!pexelsKey) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Pexels API key not configured" });
+        if (!pexelsKey) {
+          throw appTrpcError("INTERNAL_SERVER_ERROR", APP_ERROR.PEXELS_NOT_CONFIGURED, "Pexels API key not configured");
+        }
 
         if (input.mediaType === "video" || input.mediaType === "both") {
           try {
@@ -1078,7 +1142,9 @@ export const appRouter = router({
         }
       } else if (input.source === "pixabay") {
         const pixabayKey = process.env.PIXABAY_API_KEY;
-        if (!pixabayKey) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Pixabay API key not configured" });
+        if (!pixabayKey) {
+          throw appTrpcError("INTERNAL_SERVER_ERROR", APP_ERROR.PIXABAY_NOT_CONFIGURED, "Pixabay API key not configured");
+        }
 
         if (input.mediaType === "video" || input.mediaType === "both") {
           try {
@@ -1117,11 +1183,11 @@ export const appRouter = router({
     rerender: protectedProcedure.input(z.object({
       videoId: z.number().int(),
     })).mutation(async ({ ctx, input }) => {
-      const video = await getVideoById(input.videoId);
-      if (!video) throw new TRPCError({ code: "NOT_FOUND" });
-      if (video.userId !== ctx.user.id && ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN" });
+      const video = requireVideoAccess(await getVideoById(input.videoId), ctx);
       const scenes = await getVideoScenes(input.videoId);
-      if (!scenes || scenes.length === 0) throw new TRPCError({ code: "BAD_REQUEST", message: "No scene data found. Cannot re-render." });
+      if (!scenes || scenes.length === 0) {
+        throw appTrpcError("BAD_REQUEST", APP_ERROR.NO_SCENE_DATA, "No scene data found. Cannot re-render");
+      }
 
       // Mark video as generating so the dashboard shows progress
       await updateVideoStatus(input.videoId, "generating_visuals");
@@ -1155,12 +1221,12 @@ export const appRouter = router({
       mimeType: z.string(),
       filename: z.string().max(256).optional(),
     })).mutation(async ({ ctx, input }) => {
-      const video = await getVideoById(input.videoId);
-      if (!video) throw new TRPCError({ code: "NOT_FOUND" });
-      if (video.userId !== ctx.user.id && ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN" });
+      const video = requireVideoAccess(await getVideoById(input.videoId), ctx);
       const buffer = Buffer.from(input.base64, "base64");
       const maxBytes = 100 * 1024 * 1024; // 100 MB
-      if (buffer.length > maxBytes) throw new TRPCError({ code: "BAD_REQUEST", message: "File too large (max 100MB)" });
+      if (buffer.length > maxBytes) {
+        throw appTrpcError("BAD_REQUEST", APP_ERROR.FILE_TOO_LARGE, "File too large (max 100MB)");
+      }
       const isVideo = input.mimeType.startsWith("video/");
       const ext = input.mimeType.includes("mp4") ? "mp4" : input.mimeType.includes("webm") ? "webm" : input.mimeType.includes("png") ? "png" : input.mimeType.includes("gif") ? "gif" : "jpg";
       const key = `editor-uploads/${ctx.user.id}/${input.videoId}-${Date.now()}.${ext}`;

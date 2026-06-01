@@ -6,6 +6,7 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { useParams, useLocation } from "wouter";
 import { trpc } from "@/lib/trpc";
+import { appErrorText, toastErrorMessage } from "@/const";
 import { toast } from "sonner";
 import {
   ArrowLeft, Search, Upload, RefreshCw, Play, Pause,
@@ -155,7 +156,7 @@ function MediaSearchPanel({
       onSelect({ url: data.url, type: data.type as "video" | "image", source: "upload" });
       toast.success("File uploaded and added to scene!");
     },
-    onError: (err) => toast.error("Upload failed", { description: err.message }),
+    onError: (err) => toast.error("Upload failed", { description: toastErrorMessage(err) }),
   });
 
   const handleFileUpload = useCallback((file: File) => {
@@ -361,7 +362,7 @@ function SceneDetailPanel({
 
   const updateSceneMutation = trpc.editor.updateScene.useMutation({
     onSuccess: () => toast.success("Scene updated"),
-    onError: (err) => toast.error("Update failed", { description: err.message }),
+    onError: (err) => toast.error("Update failed", { description: toastErrorMessage(err) }),
   });
 
   // Sync narration when scene changes
@@ -544,7 +545,7 @@ export default function VideoEditor() {
   }, [editorData]);
 
   const updateSceneMutation = trpc.editor.updateScene.useMutation({
-    onError: (err) => toast.error("Update failed", { description: err.message }),
+    onError: (err) => toast.error("Update failed", { description: toastErrorMessage(err) }),
   });
 
   const selectedScene = scenes[selectedSceneIndex];
@@ -571,7 +572,7 @@ export default function VideoEditor() {
 
   const rerenderMutation = trpc.editor.rerender.useMutation({
     onError: (err) => {
-      toast.error("Re-render failed", { description: err.message });
+      toast.error("Re-render failed", { description: toastErrorMessage(err) });
       setIsRerendering(false);
       setRerenderProgress(null);
     },
@@ -658,7 +659,9 @@ export default function VideoEditor() {
           <AlertCircle className="w-10 h-10 text-red-400 mx-auto mb-3" />
           <p className="text-white font-semibold mb-1">Could not load editor</p>
           <p className="text-slate-400 text-sm mb-4">
-            {error?.message ?? "Scene data not available. This video may have been generated before the editor feature was added."}
+            {error?.message
+              ? appErrorText(error.message)
+              : "Scene data not available. This video may have been generated before the editor feature was added."}
           </p>
           <button onClick={() => navigate("/dashboard")} className="text-cyan-400 hover:text-cyan-300 text-sm">
             ← Back to Dashboard

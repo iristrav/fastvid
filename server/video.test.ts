@@ -1,4 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
+import {
+  NOT_ADMIN_ERR_MSG,
+  SUBSCRIPTION_REQUIRED_ERR_MSG,
+  UNAUTHED_ERR_MSG,
+} from "@shared/appErrors";
 import { appRouter } from "./routers";
 import type { TrpcContext } from "./_core/context";
 
@@ -63,7 +68,7 @@ describe("video.generate", () => {
     const caller = appRouter.createCaller(ctx);
     await expect(
       caller.video.generate({ prompt: "A test video about technology", videoLength: "5-8" })
-    ).rejects.toThrow("Active subscription required");
+    ).rejects.toThrow(SUBSCRIPTION_REQUIRED_ERR_MSG);
   });
 
   it("throws UNAUTHORIZED when not logged in", async () => {
@@ -75,7 +80,7 @@ describe("video.generate", () => {
     const caller = appRouter.createCaller(ctx);
     await expect(
       caller.video.generate({ prompt: "A test video about technology", videoLength: "5-8" })
-    ).rejects.toThrow();
+    ).rejects.toThrow(UNAUTHED_ERR_MSG);
   });
 
   it("validates prompt minimum length", async () => {
@@ -91,19 +96,19 @@ describe("admin procedures", () => {
   it("throws FORBIDDEN for non-admin users on stats", async () => {
     const ctx = createUserContext();
     const caller = appRouter.createCaller(ctx);
-    await expect(caller.admin.stats()).rejects.toThrow("Admin access required");
+    await expect(caller.admin.stats()).rejects.toThrow(NOT_ADMIN_ERR_MSG);
   });
 
   it("throws FORBIDDEN for non-admin on listUsers", async () => {
     const ctx = createUserContext();
     const caller = appRouter.createCaller(ctx);
-    await expect(caller.admin.listUsers({ limit: 10, offset: 0 })).rejects.toThrow("Admin access required");
+    await expect(caller.admin.listUsers({ limit: 10, offset: 0 })).rejects.toThrow(NOT_ADMIN_ERR_MSG);
   });
 
   it("throws FORBIDDEN for non-admin on updateUserRole", async () => {
     const ctx = createUserContext();
     const caller = appRouter.createCaller(ctx);
-    await expect(caller.admin.updateUserRole({ userId: 1, role: "admin" })).rejects.toThrow("Admin access required");
+    await expect(caller.admin.updateUserRole({ userId: 1, role: "admin" })).rejects.toThrow(NOT_ADMIN_ERR_MSG);
   });
 });
 

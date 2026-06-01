@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useLocation } from "wouter";
 import { trpc } from "@/lib/trpc";
+import { toastErrorMessage } from "@/const";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -35,7 +36,7 @@ export default function Login() {
 
   const validateCode = trpc.auth.validateInviteCode.useMutation({
     onSuccess: () => setStep("register"),
-    onError: (e) => toast.error("Invalid code", { description: e.message }),
+    onError: (e) => toast.error("Invalid code", { description: toastErrorMessage(e) }),
   });
 
   const register = trpc.auth.register.useMutation({
@@ -44,7 +45,7 @@ export default function Login() {
       toast.success("Account created!", { description: "One more step — choose a subscription to get started." });
       navigate("/subscribe");
     },
-    onError: (e) => toast.error("Registration failed", { description: e.message }),
+    onError: (e) => toast.error("Registration failed", { description: toastErrorMessage(e) }),
   });
 
   const loginMutation = trpc.auth.login.useMutation({
@@ -52,7 +53,7 @@ export default function Login() {
       await utils.auth.me.invalidate();
       navigate("/dashboard");
     },
-    onError: (e) => toast.error("Login failed", { description: e.message }),
+    onError: (e) => toast.error("Login failed", { description: toastErrorMessage(e) }),
   });
 
   const forgotPasswordMutation = trpc.auth.forgotPassword.useMutation({

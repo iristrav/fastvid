@@ -28,13 +28,14 @@ import * as path from "path";
 import * as os from "os";
 import { storagePut } from "./storage";
 import { invokeLLM } from "./_core/llm";
-import { updateVideoScenes, type EditorScene, type EditorClip } from "./db";
+import { updateVideoScenes, updateVideoStatus, type EditorScene, type EditorClip } from "./db";
 import pLimit from "p-limit";
 import { generateGrokVideo } from "./_core/grokVideo";
 import { generateVeoVideo } from "./_core/veoVideo";
 import { generateMetaMovieGen } from "./_core/metaMovieGen";
 import { generateHiggsfieldTextToVideo, generateHiggsfieldImageToVideo } from "./_core/higgsfieldVideo";
 import { sanitizeForDrawtext, sanitizeForDrawtextStrict } from "./ffmpegSanitize";
+import { PIPELINE_ERROR, pipelineError } from "@shared/appErrors";
 import fetch from "node-fetch";
 
 // API Keys
@@ -145,6 +146,64 @@ const resolveFFmpegBin = (): string => {
   return staticPath; // return anyway so error messages show the path
 };
 let FFMPEG_BIN: string = resolveFFmpegBin();
+
+function resolveFFprobeBin(): string {
+  const envPath = process.env.FFPROBE_BIN || "";
+  if (envPath && fs.existsSync(envPath) && testBinary(envPath)) {
+    return envPath;
+  }
+  const derivedFromFfmpeg = FFMPEG_BIN.replace(/ffmpeg(\.exe)?$/i, "ffprobe$1");
+  const candidates = [
+    derivedFromFfmpeg,
+    "/usr/bin/ffprobe",
+    "/usr/local/bin/ffprobe",
+    "ffprobe",
+  ];
+  for (const p of candidates) {
+    if (p && testBinary(p)) {
+      console.log(`[Fastvid] Using ffprobe: ${p}`);
+      return p;
+    }
+  }
+  if (process.platform !== "win32") {
+    try {
+      const nixPath = execSync("ls /nix/store/*/bin/ffprobe 2>/dev/null | head -1", {
+        encoding: "utf8",
+        shell: "/bin/sh",
+      }).trim();
+      if (nixPath && testBinary(nixPath)) return nixPath;
+    } catch {
+      /* nix store not available */
+    }
+  }
+  console.warn("[Fastvid] No dedicated ffprobe found — using 'ffprobe' from PATH");
+  return "ffprobe";
+}
+
+let FFPROBE_BIN: string = resolveFFprobeBin();
+
+const FFPROBE_PATHS = (): string[] => [
+  FFPROBE_BIN,
+  "/usr/bin/ffprobe",
+  "/usr/local/bin/ffprobe",
+  "ffprobe",
+];
+
+async function isValidVideoFile(filePath: string): Promise<boolean> {
+  if (!fs.existsSync(filePath)) return false;
+  if (fs.statSync(filePath).size < 1000) return false;
+  for (const probePath of FFPROBE_PATHS()) {
+    try {
+      const { stdout } = await exec(
+        `"${probePath}" -v error -select_streams v:0 -show_entries stream=codec_type -of default=noprint_wrappers=1:nokey=1 "${filePath}"`
+      );
+      if (stdout.trim().includes("video")) return true;
+    } catch {
+      /* try next probe binary */
+    }
+  }
+  return false;
+}
 // Use 256MB maxBuffer — FFmpeg concat of 15+ scenes can produce large stderr output
 const execRaw = (cmd: string) => new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
   execCb(cmd, { maxBuffer: 256 * 1024 * 1024 }, (err, stdout, stderr) => {
@@ -213,9 +272,10 @@ const FONT_REGULAR = resolveFontPath('NotoSans-Regular.ttf');
 // Canvas is not used — all rendering is done via FFmpeg (no native dependencies required)
 const CANVAS_AVAILABLE = false; // kept for reference, all functions use FFmpeg-only paths
 
-// Use /var/tmp instead of os.tmpdir() (/tmp) — /var/tmp is persistent and not cleaned
-// by systemd-tmpfiles or sandbox cleanup. /tmp can be wiped during long pipeline runs.
-const TMP_DIR = '/var/tmp';
+// Linux/Railway: prefer /var/tmp (survives long runs). Windows/dev: use OS temp dir.
+const TMP_DIR =
+  process.env.FASTVID_TMP_DIR ??
+  (process.platform === "win32" ? path.join(os.tmpdir(), "fastvid") : "/var/tmp");
 // Use lower resolution on Railway (no Forge key = Railway environment) to avoid OOM
 // Railway free tier has ~512MB RAM; 1280x720 FFmpeg compositing OOM-kills the process
 const IS_RAILWAY = !process.env.BUILT_IN_FORGE_API_KEY;
@@ -274,7 +334,9 @@ async function fetchWithTimeout(url: string, timeoutMs: number, label: string, o
     const resp = await fetch(url, { ...options, signal: controller.signal });
     return resp;
   } catch (err: unknown) {
-    if ((err as Error).name === 'AbortError') throw new Error(`Timeout: ${label} exceeded ${Math.round(timeoutMs / 1000)}s`);
+    if ((err as Error).name === 'AbortError') {
+      throw pipelineError(PIPELINE_ERROR.TIMEOUT, `Timeout: ${label} exceeded ${Math.round(timeoutMs / 1000)}s`);
+    }
     throw err;
   } finally {
     clearTimeout(timer);
@@ -285,7 +347,10 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
   return Promise.race([
     promise,
     new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(`Timeout: ${label} exceeded ${Math.round(ms / 1000)}s`)), ms)
+      setTimeout(
+        () => reject(pipelineError(PIPELINE_ERROR.TIMEOUT, `Timeout: ${label} exceeded ${Math.round(ms / 1000)}s`)),
+        ms
+      )
     ),
   ]);
 }
@@ -389,7 +454,7 @@ IMPORTANT:
   );
 
   const content = response.choices[0]?.message?.content;
-  if (!content) throw new Error("Failed to parse script into scenes");
+  if (!content) throw pipelineError(PIPELINE_ERROR.SCRIPT_PARSE, "Failed to parse script into scenes");
   const parsed = JSON.parse(typeof content === "string" ? content : JSON.stringify(content));
   const rawScenes = (parsed.scenes as (Omit<Scene, "index" | "duration"> & { sectionTitle?: string })[]).slice(0, maxScenes);
   return rawScenes.map((s, i) => {
@@ -494,11 +559,11 @@ export async function generateVoiceover(
 
         if (!response.ok) {
           const errText = await response.text();
-          throw new Error(`Fish Audio HTTP ${response.status}: ${errText.slice(0, 200)}`);
+          throw pipelineError(PIPELINE_ERROR.VOICEOVER, `Fish Audio HTTP ${response.status}: ${errText.slice(0, 200)}`);
         }
 
         const audioBuffer = Buffer.from(await response.arrayBuffer());
-        if (audioBuffer.length < 100) throw new Error("Fish Audio returned empty audio");
+        if (audioBuffer.length < 100) throw pipelineError(PIPELINE_ERROR.VOICEOVER_EMPTY, "Fish Audio returned empty audio");
 
         fs.writeFileSync(outputPath, audioBuffer);
         console.log(`[Pipeline] Fish Audio TTS written: ${audioBuffer.length} bytes to ${outputPath}`);
@@ -506,8 +571,7 @@ export async function generateVoiceover(
         let durationSec = Math.max(3, Math.round(audioBuffer.length / 40000));
         try {
           const { execSync: es } = await import('child_process');
-          const ffprobePaths = ['/usr/bin/ffprobe', '/usr/local/bin/ffprobe', 'ffprobe'];
-          for (const probePath of ffprobePaths) {
+          for (const probePath of FFPROBE_PATHS()) {
             try {
               const probeOut = es(`"${probePath}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${outputPath}"`, { encoding: 'utf8', timeout: 8000 });
               const parsed = parseFloat(probeOut.trim());
@@ -561,11 +625,11 @@ export async function generateVoiceover(
 
         if (!response.ok) {
           const errText = await response.text();
-          throw new Error(`ElevenLabs HTTP ${response.status}: ${errText.slice(0, 200)}`);
+          throw pipelineError(PIPELINE_ERROR.VOICEOVER, `ElevenLabs HTTP ${response.status}: ${errText.slice(0, 200)}`);
         }
 
         const audioBuffer = Buffer.from(await response.arrayBuffer());
-        if (audioBuffer.length < 100) throw new Error("ElevenLabs returned empty audio");
+        if (audioBuffer.length < 100) throw pipelineError(PIPELINE_ERROR.VOICEOVER_EMPTY, "ElevenLabs returned empty audio");
 
         fs.writeFileSync(outputPath, audioBuffer);
         console.log(`[Pipeline] ElevenLabs TTS written: ${audioBuffer.length} bytes to ${outputPath}`);
@@ -573,8 +637,7 @@ export async function generateVoiceover(
         let durationSec = 5;
         try {
           const { execSync: es } = await import('child_process');
-          const ffprobePaths = ['/usr/bin/ffprobe', '/usr/local/bin/ffprobe', 'ffprobe'];
-          for (const probePath of ffprobePaths) {
+          for (const probePath of FFPROBE_PATHS()) {
             try {
               const probeOut = es(`"${probePath}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${outputPath}"`, { encoding: 'utf8', timeout: 8000 });
               const parsed = parseFloat(probeOut.trim());
@@ -622,9 +685,9 @@ export async function generateVoiceover(
         fetch(gttsUrl, { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' } }),
         15_000, `gTTS chunk ${ci}`
       );
-      if (!gResp.ok) throw new Error(`gTTS HTTP ${gResp.status}`);
+      if (!gResp.ok) throw pipelineError(PIPELINE_ERROR.VOICEOVER, `gTTS HTTP ${gResp.status}`);
       const buf = Buffer.from(await gResp.arrayBuffer());
-      if (buf.length < 100) throw new Error('gTTS empty response');
+      if (buf.length < 100) throw pipelineError(PIPELINE_ERROR.VOICEOVER_EMPTY, "gTTS empty response");
       fs.writeFileSync(chunkPath, buf);
       chunkFiles.push(chunkPath);
     }
@@ -646,7 +709,7 @@ export async function generateVoiceover(
     const { execSync: es } = await import('child_process');
     let durationSec = Math.max(3, Math.ceil(cleanText.split(' ').length / 2.5));
     try {
-      const probeOut = es(`"/usr/bin/ffprobe" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${outputPath}"`, { encoding: 'utf8', timeout: 8000 });
+      const probeOut = es(`"${FFPROBE_BIN}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${outputPath}"`, { encoding: 'utf8', timeout: 8000 });
       const parsed = parseFloat(probeOut.trim());
       if (!isNaN(parsed) && parsed > 0) durationSec = Math.ceil(parsed);
     } catch { /* use estimate */ }
@@ -890,9 +953,8 @@ async function fetchPexelsClips(
 
         // Validate downloaded file with ffprobe before processing
         // Use system ffprobe which supports -show_entries (ffmpeg-static does not have drawtext/libfreetype)
-        const FFPROBE_BIN = '/usr/bin/ffprobe';
         try {
-          const probeCmd = `${FFPROBE_BIN} -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${rawPath}" 2>&1`;
+          const probeCmd = `"${FFPROBE_BIN}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${rawPath}"`;
           const probeResult = await withTimeout(
             exec(probeCmd),
             10_000,
@@ -906,7 +968,7 @@ async function fetchPexelsClips(
             return null;
           }
           // Second check: verify video stream is readable (catches 'moov atom not found' and other corrupt MP4 errors)
-          const streamCheckCmd = `${FFPROBE_BIN} -v error -select_streams v:0 -show_entries stream=codec_type -of default=noprint_wrappers=1:nokey=1 "${rawPath}" 2>&1`;
+          const streamCheckCmd = `"${FFPROBE_BIN}" -v error -select_streams v:0 -show_entries stream=codec_type -of default=noprint_wrappers=1:nokey=1 "${rawPath}"`;
           const streamResult = await withTimeout(
             exec(streamCheckCmd),
             10_000,
@@ -1136,10 +1198,9 @@ async function fetchPixabayClips(
           fs.writeFileSync(rawPath, buffer);
 
           // Validate with ffprobe
-          const FFPROBE_BIN = '/usr/bin/ffprobe';
           try {
             const probeResult = await withTimeout(
-              exec(`${FFPROBE_BIN} -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${rawPath}" 2>&1`),
+              exec(`"${FFPROBE_BIN}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${rawPath}"`),
               10_000, `Probe Pixabay clip ${idx}`
             );
             const dur = parseFloat(typeof probeResult === 'string' ? probeResult : (probeResult as any).stdout || '');
@@ -2508,12 +2569,17 @@ async function transformClipForFairUse(
       const timer = setTimeout(() => {
         console.warn(`[Pipeline] Scene ${sceneIndex}: transform clip ${clipIndex} TIMEOUT after ${TRANSFORM_TIMEOUT_MS/1000}s — killing FFmpeg`);
         try { child.kill('SIGKILL'); } catch { /* ignore */ }
-        reject(new Error(`Transform timeout scene ${sceneIndex} clip ${clipIndex}`));
+        reject(
+          pipelineError(
+            PIPELINE_ERROR.TIMEOUT,
+            `Transform timeout scene ${sceneIndex} clip ${clipIndex}`
+          )
+        );
       }, TRANSFORM_TIMEOUT_MS);
       child.on('close', (code: number | null) => {
         clearTimeout(timer);
         if (code === 0) resolve();
-        else reject(new Error(`FFmpeg exit ${code}: ${stderr.slice(-200)}`));
+        else reject(pipelineError(PIPELINE_ERROR.FFMPEG, `FFmpeg exit ${code}: ${stderr.slice(-200)}`));
       });
       child.on('error', (err: Error) => { clearTimeout(timer); reject(err); });
     });
@@ -3059,8 +3125,16 @@ async function composeSceneVideo(
 ): Promise<string> {
   const outputPath = path.join(workDir, `scene_${scene.index}_composed.mp4`);
 
-  // Ensure we have at least one valid clip
-  const validClips = clips.filter(p => fs.existsSync(p) && fs.statSync(p).size > 100);
+  // Ensure we have at least one valid clip (existence, size, readable video stream)
+  const existingClips = clips.filter(p => fs.existsSync(p) && fs.statSync(p).size > 100);
+  const validClips: string[] = [];
+  for (const clipPath of existingClips) {
+    if (await isValidVideoFile(clipPath)) {
+      validClips.push(clipPath);
+    } else {
+      console.warn(`[Pipeline] Scene ${scene.index}: skipping unreadable clip ${path.basename(clipPath)}`);
+    }
+  }
 
   // ── Reorder clips for better pacing ──────────────────────────────────────
   // 1) Real video footage (Pexels/Pixabay/YT-CC/Archive) FIRST — these are bewegende beelden
@@ -3296,15 +3370,33 @@ async function composeSceneVideo(
       );
     }
   } catch (composeErr) {
-    // Last resort: simple mux (no overlays)
+    // Last resort: simple mux (no overlays), then solid-color video if clip is corrupt
     console.warn(`[Pipeline] Scene ${scene.index}: compose failed, trying simple mux:`, composeErr);
-    await withTimeout(
-      exec(
-        `${FFMPEG_BIN} -y -i "${safeClips[0]}" -i "${safeAudioPath}" ` +
-        `-t ${duration} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
-      ),
-      45_000, `Simple mux scene ${scene.index}`
-    );
+    try {
+      await withTimeout(
+        exec(
+          `${FFMPEG_BIN} -y -i "${safeClips[0]}" -i "${safeAudioPath}" ` +
+          `-t ${duration} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
+        ),
+        45_000,
+        `Simple mux scene ${scene.index}`
+      );
+    } catch (muxErr) {
+      console.warn(`[Pipeline] Scene ${scene.index}: simple mux failed, using color fallback:`, muxErr);
+      const fallbackClip = await generateColorFallback(scene.index, duration + 2, workDir);
+      await withTimeout(
+        exec(
+          `${FFMPEG_BIN} -y -i "${fallbackClip}" -i "${safeAudioPath}" ` +
+          `-t ${duration} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
+        ),
+        60_000,
+        `Color fallback scene ${scene.index}`
+      );
+    }
+  }
+
+  if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size < 1000) {
+    throw pipelineError(PIPELINE_ERROR.FFMPEG, `Scene ${scene.index} produced no output video`);
   }
 
   if (subtitlePath) { try { fs.unlinkSync(subtitlePath); } catch { /* ignore */ } }
@@ -3450,7 +3542,9 @@ async function concatenateScenesWithMusic(
       return exists && size > 100;
     } catch { return false; }
   });
-  if (validScenePaths.length === 0) throw new Error("No valid composed scene files to concatenate");
+  if (validScenePaths.length === 0) {
+    throw pipelineError(PIPELINE_ERROR.NO_SCENES, "No valid composed scene files to concatenate");
+  }
 
   const allClips = [...validScenePaths];
   const listContent = allClips.map(p => `file '${p}'`).join("\n");
@@ -3469,7 +3563,7 @@ async function concatenateScenesWithMusic(
 
   // Verify concat output exists before music mixing
   if (!fs.existsSync(concatPath) || fs.statSync(concatPath).size < 1000) {
-    throw new Error(`Concat failed: output file missing or empty at ${concatPath}`);
+    throw pipelineError(PIPELINE_ERROR.CONCAT, "Concat failed: output file missing or empty");
   }
   console.log(`[Pipeline] Concat output: ${(fs.statSync(concatPath).size / 1024 / 1024).toFixed(1)}MB`);
 
@@ -3478,9 +3572,8 @@ async function concatenateScenesWithMusic(
   let concatHasAudio = true; // default: assume audio present
   try {
     const { execSync: es } = await import("child_process");
-    const ffprobePaths = ['/usr/bin/ffprobe', '/usr/local/bin/ffprobe', 'ffprobe'];
     let probed = false;
-    for (const probePath of ffprobePaths) {
+    for (const probePath of FFPROBE_PATHS()) {
       try {
         const probeOut = es(`${probePath} -v error -select_streams a -show_entries stream=codec_type -of csv=p=0 "${concatPath}"`, { encoding: 'utf8', timeout: 10000 });
         concatHasAudio = probeOut.trim().includes('audio');
@@ -3570,6 +3663,9 @@ export async function runVideoPipeline(
   enableSubtitles = false  // Subtitles disabled by default — user can enable via UI
 ): Promise<string> {
   const maxScenes = getScenesForLength(videoLength);
+  if (!fs.existsSync(TMP_DIR)) {
+    fs.mkdirSync(TMP_DIR, { recursive: true });
+  }
   const workDir = path.join(TMP_DIR, `fastvid_${videoId}_${Date.now()}`);
   fs.mkdirSync(workDir, { recursive: true });
 
@@ -3593,11 +3689,13 @@ export async function runVideoPipeline(
     if (customVoiceoverUrl) {
       const customAudioPath = path.join(workDir, "custom_voiceover.mp3");
       const resp = await fetch(customVoiceoverUrl);
-      if (!resp.ok) throw new Error(`Failed to download custom voiceover: ${resp.status}`);
+      if (!resp.ok) {
+        throw pipelineError(PIPELINE_ERROR.CUSTOM_VOICEOVER, `Failed to download custom voiceover: ${resp.status}`);
+      }
       fs.writeFileSync(customAudioPath, Buffer.from(await resp.arrayBuffer()));
       const { execFile } = await import("child_process");
       const totalDuration = await new Promise<number>((resolve) => {
-        execFile('/usr/bin/ffprobe', ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", customAudioPath], (_err: unknown, stdout: string) => {
+        execFile(FFPROBE_BIN, ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", customAudioPath], (_err: unknown, stdout: string) => {
           resolve(parseFloat(stdout?.trim() ?? "60") || 60);
         });
       });
@@ -3739,6 +3837,13 @@ export async function runVideoPipeline(
     );
     console.log(`[Pipeline] Stage 6 (upload): ${((Date.now()-t5)/1000).toFixed(1)}s, size: ${(videoBuffer.length/1024/1024).toFixed(1)}MB`);
 
+    // Persist URL immediately so a crash during finalization cannot lose the finished video
+    await updateVideoStatus(videoId, "generating_effects", {
+      videoUrl: url,
+      progressStep: STAGE_LABELS.complete,
+      progressPercent: 95,
+    }).catch((err) => console.warn(`[Pipeline] Failed to persist videoUrl for ${videoId}:`, err));
+
     onProgress?.({ stage: STAGE_LABELS.complete, percent: 100 });
     const totalMs = Date.now() - t0;
     console.log(`[Pipeline] Video ${videoId} COMPLETE in ${(totalMs/60000).toFixed(1)} min: ${url}`);
@@ -3748,43 +3853,6 @@ export async function runVideoPipeline(
       const { exec: execCp } = await import("child_process");
       execCp(`rm -rf "${workDir}"`);
     } catch { /* ignore */ }
-  }
-}
-
-// ─── Stability AI image for thumbnail generation ─────────────────────────────
-export async function generateStabilityAIThumbnail(prompt: string): Promise<string | null> {
-  if (!STABILITY_AI_API_KEY) return null;
-  try {
-    const formData = new FormData();
-    formData.append("text_prompts[0][text]", prompt);
-    formData.append("text_prompts[0][weight]", "1");
-    formData.append("text_prompts[1][text]", "blurry, low quality, watermark, ugly");
-    formData.append("text_prompts[1][weight]", "-1");
-    formData.append("cfg_scale", "7");
-    formData.append("height", "720");
-    formData.append("width", "1280");
-    formData.append("samples", "1");
-    formData.append("steps", "25");
-
-    const response = await withTimeout(
-      fetch("https://api.stability.ai/v1/generation/stable-diffusion-xl-1024-v1-0/text-to-image", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${STABILITY_AI_API_KEY}`,
-          Accept: "application/json",
-        },
-        body: formData,
-      }),
-      40_000, "Stability AI thumbnail"
-    );
-
-    if (!response.ok) return null;
-    const result = await response.json() as { artifacts?: Array<{ base64: string }> };
-    const b64 = result.artifacts?.[0]?.base64;
-    if (!b64) return null;
-    return b64; // return base64 string
-  } catch {
-    return null;
   }
 }
 

@@ -4,9 +4,9 @@
  */
 
 import { z } from "zod";
-import { TRPCError } from "@trpc/server";
 import { publicProcedure } from "./_core/trpc";
 import { getSessionCookieOptions } from "./_core/cookies";
+import { APP_ERROR, appTrpcError } from "@shared/appErrors";
 import { COOKIE_NAME, ONE_YEAR_MS } from "@shared/const";
 import bcrypt from "bcryptjs";
 import { SignJWT } from "jose";
@@ -69,7 +69,7 @@ export const validateResetToken = publicProcedure
     const result = validateToken(input.token);
 
     if (!result) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid or expired reset link" });
+      throw appTrpcError("BAD_REQUEST", APP_ERROR.INVALID_RESET_LINK, "Invalid or expired reset link");
     }
 
     return { valid: true, email: result.email };
@@ -87,13 +87,13 @@ export const resetPassword = publicProcedure
     const result = validateToken(input.token);
 
     if (!result) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid or expired reset link" });
+      throw appTrpcError("BAD_REQUEST", APP_ERROR.INVALID_RESET_LINK, "Invalid or expired reset link");
     }
 
     // Get user
     const user = await getUserById(result.userId);
     if (!user) {
-      throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "User not found" });
+      throw appTrpcError("INTERNAL_SERVER_ERROR", APP_ERROR.USER_NOT_FOUND, "User not found");
     }
 
     // Hash new password

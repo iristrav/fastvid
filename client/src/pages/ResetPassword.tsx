@@ -12,6 +12,7 @@ import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { Loader2, Eye, EyeOff, AlertCircle, CheckCircle } from "lucide-react";
 import { trpc } from "@/lib/trpc";
+import { appErrorText, toastErrorMessage } from "@/const";
 import { useAuth } from "@/_core/hooks/useAuth";
 
 export default function ResetPassword() {
@@ -48,7 +49,9 @@ export default function ResetPassword() {
       setStep("reset");
     } else if (validateTokenQuery.isError) {
       setStep("error");
-      const message = validateTokenQuery.error?.message || "Invalid or expired reset link";
+      const message = appErrorText(
+        validateTokenQuery.error?.message || "Invalid or expired reset link"
+      );
       toast.error("Invalid reset link", { description: message });
     }
   }, [validateTokenQuery.isLoading, validateTokenQuery.isSuccess, validateTokenQuery.isError, token]);
@@ -61,7 +64,7 @@ export default function ResetPassword() {
       setTimeout(() => navigate("/dashboard"), 2000);
     },
     onError: (error) => {
-      toast.error("Reset failed", { description: error.message });
+      toast.error("Reset failed", { description: toastErrorMessage(error) });
     },
   });
 

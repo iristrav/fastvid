@@ -1,5 +1,8 @@
-import { and, desc, eq, like, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, like, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
+import * as fs from "fs";
+import { PIPELINE_ERROR, appErrorMessage } from "@shared/appErrors";
+import type { Video } from "../drizzle/schema";
 import { InsertInviteCode, InsertUser, InsertVideo, InsertPasswordResetToken, inviteCodes, users, videos, passwordResetTokens } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 
@@ -243,16 +246,144 @@ export async function deleteAllFailedVideosForUser(userId: number) {
   return (result as unknown as [{ affectedRows: number }])[0]?.affectedRows ?? 0;
 }
 
+const IN_PROGRESS_STATUSES = [
+  "pending",
+  "generating_script",
+  "awaiting_approval",
+  "generating_voiceover",
+  "generating_visuals",
+  "generating_effects",
+] as const;
+
+const ORPHANED_PIPELINE_STATUSES = IN_PROGRESS_STATUSES.filter(
+  (s) => s !== "awaiting_approval" && s !== "pending"
+) as readonly ("generating_script" | "generating_voiceover" | "generating_visuals" | "generating_effects")[];
+
+export { ORPHANED_PIPELINE_STATUSES };
+
+/** Locate a finished MP4 on disk when videoUrl was never persisted (Railway local storage). */
+export async function findStoredVideoUrl(videoId: number): Promise<string | null> {
+  try {
+    const { LOCAL_UPLOADS_DIR } = await import("./storageLocal");
+    if (!fs.existsSync(LOCAL_UPLOADS_DIR)) return null;
+    const prefix = `videos_${videoId}_final`;
+    const match = fs
+      .readdirSync(LOCAL_UPLOADS_DIR)
+      .find((f) => f.startsWith(prefix) && f.endsWith(".mp4"));
+    return match ? `/local-storage/${match}` : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Fix videos stuck in generating_* after the MP4 was saved but the final status write failed
+ * (common after Railway redeploy or OOM during upload/finalization).
+ */
+export async function recoverVideoCompletionState(video: Video): Promise<Video> {
+  if (video.status === "completed" || video.status === "failed") return video;
+
+  let videoUrl = video.videoUrl;
+  if (!videoUrl) {
+    videoUrl = await findStoredVideoUrl(video.id);
+  }
+
+  if (videoUrl) {
+    await updateVideoStatus(video.id, "completed", {
+      videoUrl,
+      progressStep: "Video complete!",
+      progressPercent: 100,
+    });
+    const refreshed = await getVideoById(video.id);
+    return refreshed ?? video;
+  }
+
+  const progressPercent = video.progressPercent ?? 0;
+  const log = (video.progressLog ?? []) as ProgressLogEntry[];
+  const logLooksFinalized = log.some(
+    (e) =>
+      e.step.includes("Video complete") ||
+      e.step.includes("Uploading final video") ||
+      e.step.includes("Complete!")
+  );
+  const staleFinalize =
+    video.status === "generating_effects" &&
+    (progressPercent >= 90 || logLooksFinalized);
+
+  if (staleFinalize && video.updatedAt) {
+    const staleMs = Date.now() - new Date(video.updatedAt).getTime();
+    if (staleMs > 12 * 60 * 1000) {
+      await updateVideoStatus(video.id, "failed", {
+        errorMessage: appErrorMessage(
+          PIPELINE_ERROR.SERVER_RESTART,
+          "Generation was interrupted during finalization. Please retry"
+        ),
+        progressStep: "Interrupted — please retry",
+        progressPercent: 0,
+      });
+      const refreshed = await getVideoById(video.id);
+      return refreshed ?? video;
+    }
+  }
+
+  return video;
+}
+
+/** On server startup: recover finished uploads, then fail orphaned in-progress pipelines. */
+export async function recoverAllStuckVideos(): Promise<{ completed: number; failed: number }> {
+  const db = await getDb();
+  if (!db) return { completed: 0, failed: 0 };
+
+  const stuck = await db
+    .select()
+    .from(videos)
+    .where(inArray(videos.status, [...ORPHANED_PIPELINE_STATUSES]));
+
+  let completed = 0;
+  for (const v of stuck) {
+    const before = v.status;
+    const after = await recoverVideoCompletionState(v);
+    if (before !== "completed" && after.status === "completed") completed++;
+  }
+
+  let failed = 0;
+  for (const v of stuck) {
+    const refreshed = await getVideoById(v.id);
+    if (!refreshed || refreshed.status === "completed" || refreshed.status === "failed") continue;
+    await updateVideoStatus(refreshed.id, "failed", {
+      errorMessage: appErrorMessage(
+        PIPELINE_ERROR.SERVER_RESTART,
+        "Server restarted during generation. Please try again"
+      ),
+      progressStep: "Failed — server restarted, please retry",
+      progressPercent: 0,
+    });
+    failed++;
+  }
+
+  if (completed > 0 || failed > 0) {
+    console.log(`[PipelineRecovery] Recovered ${completed} completed, marked ${failed} orphaned as failed`);
+  }
+  return { completed, failed };
+}
+
 /** Mark in-progress videos older than maxAgeMinutes as failed (stuck pipeline recovery) */
 export async function expireStuckVideos(maxAgeMinutes = 95) {
   const db = await getDb();
   if (!db) return 0;
   const cutoff = new Date(Date.now() - maxAgeMinutes * 60 * 1000);
-  const stuckStatuses = ["pending", "generating_script", "generating_voiceover", "generating_visuals", "generating_effects"] as const;
+  const stuckStatuses = IN_PROGRESS_STATUSES.filter((s) => s !== "awaiting_approval");
   let total = 0;
   for (const s of stuckStatuses) {
     const result = await db.update(videos)
-      .set({ status: "failed", errorMessage: `Pipeline timed out after ${maxAgeMinutes} minutes`, progressStep: "Timed out" })
+      .set({
+        status: "failed",
+        errorMessage: appErrorMessage(
+          PIPELINE_ERROR.STUCK_TIMEOUT,
+          `Pipeline timed out after ${maxAgeMinutes} minutes`
+        ),
+        progressStep: "Timed out",
+      })
       .where(and(eq(videos.status, s), sql`${videos.generationStartedAt} < ${cutoff}`));
     total += (result as unknown as [{ affectedRows: number }])[0]?.affectedRows ?? 0;
   }

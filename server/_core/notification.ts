@@ -1,4 +1,4 @@
-import { TRPCError } from "@trpc/server";
+import { APP_ERROR, appTrpcError } from "@shared/appErrors";
 import { ENV } from "./env";
 
 export type NotificationPayload = {
@@ -25,33 +25,29 @@ const buildEndpointUrl = (baseUrl: string): string => {
 
 const validatePayload = (input: NotificationPayload): NotificationPayload => {
   if (!isNonEmptyString(input.title)) {
-    throw new TRPCError({
-      code: "BAD_REQUEST",
-      message: "Notification title is required.",
-    });
+    throw appTrpcError("BAD_REQUEST", APP_ERROR.NOTIFICATION_INVALID, "Notification title is required");
   }
   if (!isNonEmptyString(input.content)) {
-    throw new TRPCError({
-      code: "BAD_REQUEST",
-      message: "Notification content is required.",
-    });
+    throw appTrpcError("BAD_REQUEST", APP_ERROR.NOTIFICATION_INVALID, "Notification content is required");
   }
 
   const title = trimValue(input.title);
   const content = trimValue(input.content);
 
   if (title.length > TITLE_MAX_LENGTH) {
-    throw new TRPCError({
-      code: "BAD_REQUEST",
-      message: `Notification title must be at most ${TITLE_MAX_LENGTH} characters.`,
-    });
+    throw appTrpcError(
+      "BAD_REQUEST",
+      APP_ERROR.NOTIFICATION_INVALID,
+      `Notification title must be at most ${TITLE_MAX_LENGTH} characters`
+    );
   }
 
   if (content.length > CONTENT_MAX_LENGTH) {
-    throw new TRPCError({
-      code: "BAD_REQUEST",
-      message: `Notification content must be at most ${CONTENT_MAX_LENGTH} characters.`,
-    });
+    throw appTrpcError(
+      "BAD_REQUEST",
+      APP_ERROR.NOTIFICATION_INVALID,
+      `Notification content must be at most ${CONTENT_MAX_LENGTH} characters`
+    );
   }
 
   return { title, content };
@@ -69,17 +65,19 @@ export async function notifyOwner(
   const { title, content } = validatePayload(payload);
 
   if (!ENV.forgeApiUrl) {
-    throw new TRPCError({
-      code: "INTERNAL_SERVER_ERROR",
-      message: "Notification service URL is not configured.",
-    });
+    throw appTrpcError(
+      "INTERNAL_SERVER_ERROR",
+      APP_ERROR.SERVICE_ERROR,
+      "Notification service URL is not configured"
+    );
   }
 
   if (!ENV.forgeApiKey) {
-    throw new TRPCError({
-      code: "INTERNAL_SERVER_ERROR",
-      message: "Notification service API key is not configured.",
-    });
+    throw appTrpcError(
+      "INTERNAL_SERVER_ERROR",
+      APP_ERROR.SERVICE_ERROR,
+      "Notification service API key is not configured"
+    );
   }
 
   const endpoint = buildEndpointUrl(ENV.forgeApiUrl);
