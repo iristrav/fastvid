@@ -116,7 +116,8 @@ async function startServer() {
         ? (() => {
             const persistent =
               LOCAL_UPLOADS_DIR.startsWith("/data/") ||
-              !!process.env.UPLOADS_DIR?.startsWith("/data");
+              !!process.env.UPLOADS_DIR?.startsWith("/data") ||
+              !!process.env.RAILWAY_VOLUME_MOUNT_PATH;
             return {
               uploadsDir: LOCAL_UPLOADS_DIR,
               persistent,

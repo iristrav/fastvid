@@ -13,6 +13,9 @@ import * as crypto from "crypto";
 
 function resolveUploadsDir(): string {
   if (process.env.UPLOADS_DIR) return process.env.UPLOADS_DIR;
+  // Railway injects this when a volume is attached to the service
+  const volumeMount = process.env.RAILWAY_VOLUME_MOUNT_PATH?.replace(/\/$/, "");
+  if (volumeMount) return path.join(volumeMount, "uploads");
   if (fs.existsSync("/data")) return "/data/uploads";
   if (fs.existsSync("/app")) return "/app/uploads";
   return path.resolve(process.cwd(), "uploads");
