@@ -4098,11 +4098,21 @@ export async function runVideoPipeline(
     }
     // Scene duration must be longer than voiceover to allow for fade-in/out and clip transitions
     const isShortTest = videoLength === "1";
-    scenes.forEach((scene, i) => {
-      scene.duration = isShortTest
-        ? Math.max(durations[i] + 4, 15)
-        : Math.max(durations[i] + 6, 10);
-    });
+    if (isShortTest) {
+      const TARGET_TOTAL = 58;
+      const padded = durations.map((d) => d + 2);
+      const rawTotal = padded.reduce((a, b) => a + b, 0);
+      scenes.forEach((scene, i) => {
+        const scaled = rawTotal > TARGET_TOTAL ? (padded[i] / rawTotal) * TARGET_TOTAL : padded[i];
+        scene.duration = Math.max(scaled, durations[i] + 1);
+      });
+      const finalTotal = scenes.reduce((sum, s) => sum + s.duration, 0);
+      console.log(`[Pipeline] 1-min test: total duration ${finalTotal.toFixed(1)}s (${scenes.length} scenes)`);
+    } else {
+      scenes.forEach((scene, i) => {
+        scene.duration = Math.max(durations[i] + 6, 10);
+      });
+    }
     console.log(`[Pipeline] Stage 2 (voiceovers): ${scenes.length} in ${((Date.now()-t1)/1000).toFixed(1)}s`);
 
     // ── Stage 3: Fetch AI images + Pexels clips in parallel batches ───────────

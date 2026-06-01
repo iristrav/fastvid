@@ -78,6 +78,7 @@ async function startServer() {
     const expressStatic = (await import("express")).static;
     app.use("/local-storage", expressStatic(LOCAL_UPLOADS_DIR, {
       maxAge: "1d",
+      fallthrough: false,
       setHeaders: (res) => {
         res.setHeader("Access-Control-Allow-Origin", "*");
       },
@@ -243,6 +244,38 @@ async function startServer() {
       if (isNaN(videoId)) { res.status(400).json({ error: 'Invalid video ID' }); return; }
       const video = await getVideoById(videoId);
       if (!video) { res.status(404).json({ error: 'Video not found' }); return; }
+
+      let fileProbe: { exists: boolean; sizeBytes?: number; durationSec?: number; path?: string } = { exists: false };
+      if (video.videoUrl?.startsWith("/local-storage/")) {
+        const { LOCAL_UPLOADS_DIR } = await import("../storageLocal");
+        const fs = await import("fs");
+        const fileName = video.videoUrl.replace(/^\/local-storage\//, "");
+        const filePath = `${LOCAL_UPLOADS_DIR}/${fileName}`;
+        if (fs.existsSync(filePath)) {
+          const sizeBytes = fs.statSync(filePath).size;
+          let durationSec: number | undefined;
+          try {
+            const { execFile } = await import("child_process");
+            const { promisify } = await import("util");
+            const execFileAsync = promisify(execFile);
+            const probes = ["ffprobe", "/usr/bin/ffprobe", "/usr/local/bin/ffprobe"];
+            for (const probe of probes) {
+              try {
+                const { stdout } = await execFileAsync(probe, [
+                  "-v", "error", "-show_entries", "format=duration",
+                  "-of", "default=noprint_wrappers=1:nokey=1", filePath,
+                ]);
+                const parsed = parseFloat(stdout.trim());
+                if (!isNaN(parsed) && parsed > 0) { durationSec = Math.round(parsed * 10) / 10; break; }
+              } catch { /* try next */ }
+            }
+          } catch { /* ignore */ }
+          fileProbe = { exists: true, sizeBytes, durationSec, path: fileName };
+        } else {
+          fileProbe = { exists: false, path: fileName };
+        }
+      }
+
       res.json({
         id: video.id,
         status: video.status,
@@ -252,6 +285,7 @@ async function startServer() {
         errorMessage: video.errorMessage,
         title: video.title,
         videoLength: video.videoLength,
+        fileProbe,
       });
     } catch (err) {
       console.error('[Internal Status] Error:', err);
