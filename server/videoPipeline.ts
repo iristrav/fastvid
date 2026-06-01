@@ -1253,7 +1253,8 @@ async function fetchWikimediaImages(
   duration: number,
   workDir: string,
   sceneIndex: number,
-  count: number = 2
+  count: number = 2,
+  fileTag = ""
 ): Promise<string[]> {
   const results: string[] = [];
   try {
@@ -1291,8 +1292,9 @@ async function fetchWikimediaImages(
         if (imageInfo.size < 10_000) continue;
 
         // Download the image
-        const imgPath = path.join(workDir, `scene_${sceneIndex}_wiki_${i}.jpg`);
-        const outPath = path.join(workDir, `scene_${sceneIndex}_wiki_${i}.mp4`);
+        const tag = fileTag ? `${fileTag}_` : "";
+        const imgPath = path.join(workDir, `scene_${sceneIndex}_${tag}wiki_${i}.jpg`);
+        const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}wiki_${i}.mp4`);
         const imgResp = await withTimeout(
           fetch(imageInfo.url, { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }),
           15_000,
@@ -1344,7 +1346,8 @@ async function fetchOpenverseImages(
   duration: number,
   workDir: string,
   sceneIndex: number,
-  maxResults: number = 2
+  maxResults: number = 2,
+  fileTag = ""
 ): Promise<string[]> {
   const results: string[] = [];
   try {
@@ -1368,8 +1371,9 @@ async function fetchOpenverseImages(
         const imgUrl = images[i].url;
         if (!imgUrl || !/\.(jpg|jpeg|png|webp)/i.test(imgUrl)) continue;
 
-        const imgPath = path.join(workDir, `scene_${sceneIndex}_openverse_${i}.jpg`);
-        const outPath = path.join(workDir, `scene_${sceneIndex}_openverse_${i}.mp4`);
+        const tag = fileTag ? `${fileTag}_` : "";
+        const imgPath = path.join(workDir, `scene_${sceneIndex}_${tag}openverse_${i}.jpg`);
+        const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}openverse_${i}.mp4`);
 
         // Download image
         const imgResp = await withTimeout(
@@ -1426,7 +1430,8 @@ async function fetchYouTubeThumbnails(
   duration: number,
   workDir: string,
   sceneIndex: number,
-  count: number = 3
+  count: number = 3,
+  fileTag = ""
 ): Promise<string[]> {
   const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY || '';
   if (!YOUTUBE_API_KEY) return [];
@@ -1457,8 +1462,9 @@ async function fetchYouTubeThumbnails(
                          item.snippet.thumbnails?.medium?.url;
         if (!thumbUrl) continue;
 
-        const imgPath = path.join(workDir, `scene_${sceneIndex}_yt_${i}.jpg`);
-        const outPath = path.join(workDir, `scene_${sceneIndex}_yt_${i}.mp4`);
+        const tag = fileTag ? `${fileTag}_` : "";
+        const imgPath = path.join(workDir, `scene_${sceneIndex}_${tag}yt_${i}.jpg`);
+        const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}yt_${i}.mp4`);
 
         // Download thumbnail
         const imgResp = await withTimeout(
@@ -1514,7 +1520,8 @@ async function fetchSerpAPIImages(
   duration: number,
   workDir: string,
   sceneIndex: number,
-  count: number = 2
+  count: number = 2,
+  fileTag = ""
 ): Promise<string[]> {
   if (!SERPAPI_KEY) return [];
   // Ensure workDir exists — it may have been cleaned up between pipeline stages
@@ -1563,8 +1570,9 @@ async function fetchSerpAPIImages(
       }
 
       try {
-        const imgPath = path.join(workDir, `scene_${sceneIndex}_serp_${i}.jpg`);
-        const outPath = path.join(workDir, `scene_${sceneIndex}_serp_${i}.mp4`);
+        const tag = fileTag ? `${fileTag}_` : "";
+        const imgPath = path.join(workDir, `scene_${sceneIndex}_${tag}serp_${i}.jpg`);
+        const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}serp_${i}.mp4`);
 
         const imgResp = await withTimeout(
           fetch(imgUrl, {
@@ -2595,6 +2603,43 @@ async function transformClipForFairUse(
   return inputPath;
 }
 
+/** Extract a person name from video titles like "Rumors about Elon Musk: A Deep Dive". */
+function extractPrimaryPersonFromTitle(title?: string): string {
+  if (!title?.trim()) return "";
+  const cleaned = title.replace(/[^\w\s:'-]/g, " ").replace(/\s+/g, " ").trim();
+  const aboutMatch = cleaned.match(/\babout\s+([A-Z][\w'-]+(?:\s+[A-Z][\w'-]+){0,2})/i);
+  if (aboutMatch?.[1]) return aboutMatch[1].trim();
+  const nameMatches = cleaned.match(/\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2})\b/g) ?? [];
+  const skip = new Set(["deep dive", "the story", "a deep", "full story"]);
+  for (const candidate of nameMatches) {
+    if (!skip.has(candidate.toLowerCase())) return candidate.trim();
+  }
+  return "";
+}
+
+function buildPersonMediaQueries(person: string, visualCue?: string): string[] {
+  const cue = visualCue?.split(/\s+/).slice(0, 3).join(" ") ?? "";
+  return [
+    person,
+    `${person} interview`,
+    `${person} speech`,
+    `${person} news conference`,
+    cue ? `${person} ${cue}` : `${person} documentary`,
+  ].filter((q, i, arr) => q.trim().length > 0 && arr.indexOf(q) === i);
+}
+
+function resolveScenePersons(scene: Scene, videoTitle?: string): string[] {
+  const persons = new Set((scene.personNames ?? []).map((n) => n.trim()).filter(Boolean));
+  const titlePerson = extractPrimaryPersonFromTitle(videoTitle);
+  if (titlePerson) {
+    const firstName = titlePerson.split(/\s+/)[0]?.toLowerCase() ?? "";
+    if (scene.index === 0 || (firstName && scene.text.toLowerCase().includes(firstName))) {
+      persons.add(titlePerson);
+    }
+  }
+  return Array.from(persons);
+}
+
 // ─── 3e. Fetch All Visuals for a Scene ───────────────────────────────────────
 // Returns array of valid clip paths (AI image first, then Pexels clips)
 async function fetchSceneVisuals(
@@ -2602,105 +2647,107 @@ async function fetchSceneVisuals(
   workDir: string,
   videoTitle?: string
 ): Promise<string[]> {
-   const halfDur = Math.max(3, Math.ceil(scene.duration / 3));
+  const CUT_SECONDS = 3.5;
+  const clipsTarget = Math.max(5, Math.ceil(scene.duration / CUT_SECONDS));
+  const clipFetchDur = 4;
   const aiClipPath = path.join(workDir, `scene_${scene.index}_ai.mp4`);
 
-  // Build subject-aware queries using per-scene person names (most specific) or global videoTitle (fallback)
-  // Priority: scene.personNames[0] > videoTitle > no prefix
-  // This ensures every person mentioned in the narration appears in the corresponding scene's footage
-  const scenePersons = (scene.personNames || []).filter(n => n.trim().length > 0);
-  const primarySubject = scenePersons.length > 0
-    ? scenePersons[0]  // Use first person name mentioned in this scene
-    : videoTitle ? videoTitle.replace(/[^a-zA-Z0-9 ]/g, '').trim().split(' ').slice(0, 3).join(' ') : '';
-  // For scenes with multiple people, also search for the second person
-  const secondarySubject = scenePersons.length > 1 ? scenePersons[1] : '';
-  // Build queries: "Kylie Jenner luxury lifestyle" or "Elon Musk Tesla factory"
+  const scenePersons = resolveScenePersons(scene, videoTitle);
+  const hasPerson = scenePersons.length > 0;
+  const primarySubject = scenePersons[0] ?? extractPrimaryPersonFromTitle(videoTitle) ?? "";
+  const secondarySubject = scenePersons.length > 1 ? scenePersons[1] : "";
   const buildSubjectQuery = (subject: string, cue: string) =>
     subject ? `${subject} ${cue}`.slice(0, 100) : cue;
-  const wikimediaQuery = buildSubjectQuery(primarySubject, scene.visualCue);
-  // If there's a secondary person, also search for them in Wikimedia
-  const wikimediaQuery2 = secondarySubject ? buildSubjectQuery(secondarySubject, scene.visualCue) : null;
 
-  // Build SerpAPI + Openverse query: person name + visual cue for best celebrity image results
-  const serpQuery = buildSubjectQuery(primarySubject, scene.visualCue);
-  const serpQuery2 = secondarySubject ? buildSubjectQuery(secondarySubject, scene.visualCue) : null;
-  // Openverse: search by person name alone for best portrait results, fall back to full query
-  const openverseQuery = primarySubject || buildSubjectQuery(primarySubject, scene.visualCue);
-  const openverseQuery2 = secondarySubject || null;
+  const personPexelsQueries = hasPerson
+    ? scenePersons.flatMap((p) => buildPersonMediaQueries(p, scene.visualCue))
+    : [];
+  const pexelsPrimary = hasPerson ? personPexelsQueries[0] : (scene.pexelsQuery || scene.visualCue);
+  const pexelsExtras = hasPerson
+    ? [...personPexelsQueries, ...(scene.pexelsQueries ?? []), scene.visualCue]
+    : (scene.pexelsQueries ?? [scene.pexelsQuery]);
+  const pixabayPrimary = hasPerson ? `${scenePersons[0]} interview` : scene.pexelsQuery;
 
-  // Build YouTube CC query variants: use pexelsQueries (specific→broad) prefixed with subject name.
-  // Strategy: try specific query first (e.g. "Elon Musk Pretoria"), then broader fallbacks
-  // (e.g. "Elon Musk South Africa", "Elon Musk childhood", "Elon Musk").
-  // This maximises CC video hits while keeping results relevant.
-  const buildYouTubeCCQueryVariants = (subject: string, pexelsQueries: string[]): string[] => {
-    const variants: string[] = [];
-    // OPTIMIZED: Only 2 query variants to reduce YouTube API rate limiting
-    // 1. PERSON-SPECIFIC QUERY FIRST (if subject looks like a person name)
-    if (subject && subject.split(' ').length >= 1) {
-      const personQuery = `${subject} interview`;
-      if (personQuery.length <= 50) variants.push(personQuery);
-    }
-    // 2. Subject + topic (combined query for better results)
-    if (subject && pexelsQueries[0]) {
-      const shortCue = pexelsQueries[0].split(' ').slice(0, 2).join(' ');
-      const combined = `${subject} ${shortCue}`.slice(0, 50);
-      if (combined.trim() && !variants.includes(combined)) variants.push(combined);
-    }
-    // Fallback: just subject if no variants
-    if (variants.length === 0 && subject) variants.push(subject);
-    return variants;
-  };
-  const allPexelsQueries = scene.pexelsQueries || [scene.pexelsQuery || scene.visualCue];
-  const youtubeQueryVariants = buildYouTubeCCQueryVariants(primarySubject, allPexelsQueries);
-  const youtubeQuery2Variants = secondarySubject ? buildYouTubeCCQueryVariants(secondarySubject, allPexelsQueries) : null;
-  // For thumbnail search: use first variant (most specific)
-  const youtubeQuery = youtubeQueryVariants[0] || primarySubject;
-  const youtubeQuery2 = youtubeQuery2Variants?.[0] || null;
+  const wikimediaQuery = primarySubject || buildSubjectQuery(primarySubject, scene.visualCue);
+  const serpQuery = primarySubject ? `${primarySubject} interview` : buildSubjectQuery(primarySubject, scene.visualCue);
+  const openverseQuery = primarySubject || scene.visualCue;
+  const youtubeQuery = primarySubject ? `${primarySubject} interview` : (scene.pexelsQuery || scene.visualCue);
 
-  // Build Internet Archive query: use literalVisualCue or pexelsQuery for best results
-  const archiveQuery = buildSubjectQuery(primarySubject, scene.pexelsQuery || scene.visualCue);
+  const personMediaResults = hasPerson
+    ? await Promise.allSettled(
+        scenePersons.flatMap((person, pi) => {
+          const tag = `p${pi}`;
+          return [
+            fetchSerpAPIImages(`${person} interview`, clipFetchDur, workDir, scene.index, 4, tag),
+            fetchSerpAPIImages(person, clipFetchDur, workDir, scene.index, 3, `${tag}s`),
+            fetchWikimediaImages(person, clipFetchDur, workDir, scene.index, 2, tag),
+            fetchOpenverseImages(person, clipFetchDur, workDir, scene.index, 2, tag),
+            fetchYouTubeThumbnails(`${person} interview`, clipFetchDur, workDir, scene.index, 5, tag),
+            fetchYouTubeThumbnails(person, clipFetchDur, workDir, scene.index, 3, `${tag}yt`),
+          ];
+        })
+      )
+    : [];
+  const personMediaClips = personMediaResults.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
 
-  // ── PHASE 1: Free sources — YouTube CC FIRST (real video clips via cloud computer service)
-  // YouTube Creative Commons videos are the PRIMARY source — always searched first.
-  // Internet Archive is the SECONDARY source for real video clips.
-  // YouTube thumbnails, Pexels, Pixabay, Wikimedia, Openverse, SerpAPI are fallbacks.
-  // Run all FREE sources in parallel. Only invoke paid AI generators (Runway etc.) if free sources
-  // return fewer than 2 clips — keeping costs minimal.
-  // Session 44 (2026-06-01): YouTube CC + Internet Archive DISABLED.
-  // Reason: YouTube anti-bot detection now blocks all yt-dlp clients on the cloud DL service,
-  // and Internet Archive sometimes serves 400MB+ files that stall the pipeline.
-  // Free sources used: YouTube thumbnails (high-res jpg via Data API) + Pexels + Pixabay
-  // + Wikimedia + Openverse + SerpAPI images. Pexels/Pixabay return real HD video clips.
   const ytCCResults = { status: "fulfilled" as const, value: [] as string[] };
   const ytCC2Results = { status: "fulfilled" as const, value: [] as string[] };
   const archiveResults = { status: "fulfilled" as const, value: [] as string[] };
-  const [youtubeResults, youtube2Results, pexelsResults, pixabayResults, brollResults, wikimediaResults, wikimedia2Results, openverseResults, openverse2Results, serpResults, serp2Results] = await Promise.allSettled([
-    fetchYouTubeThumbnails(youtubeQuery, halfDur, workDir, scene.index, 4),  // YouTube thumbnails (jpg from Data API — always works)
-    youtubeQuery2 ? fetchYouTubeThumbnails(youtubeQuery2, halfDur, workDir, scene.index, 3) : Promise.resolve([]),
-    fetchPexelsClips(scene.pexelsQuery, halfDur, workDir, scene.index, 3, scene.pexelsQueries),  // Pexels HD video — PRIMARY real-video source now
-    fetchPixabayClips(scene.pexelsQuery, halfDur, workDir, scene.index, 2),
-    Promise.resolve([]),
-    fetchWikimediaImages(wikimediaQuery, halfDur, workDir, scene.index, 1),
-    wikimediaQuery2 ? fetchWikimediaImages(wikimediaQuery2, halfDur, workDir, scene.index, 1) : Promise.resolve([]),
-    fetchOpenverseImages(openverseQuery, halfDur, workDir, scene.index, 1),
-    openverseQuery2 ? fetchOpenverseImages(openverseQuery2, halfDur, workDir, scene.index, 1) : Promise.resolve([]),
-    fetchSerpAPIImages(serpQuery, halfDur, workDir, scene.index, 2),
-    serpQuery2 ? fetchSerpAPIImages(serpQuery2, halfDur, workDir, scene.index, 1) : Promise.resolve([]),
-  ]);
+  const genericFetches = hasPerson
+    ? [
+        Promise.resolve([] as string[]),
+        Promise.resolve([] as string[]),
+        fetchWikimediaImages(wikimediaQuery, clipFetchDur, workDir, scene.index, 0),
+        Promise.resolve([] as string[]),
+        fetchOpenverseImages(openverseQuery, clipFetchDur, workDir, scene.index, 0),
+        Promise.resolve([] as string[]),
+        fetchSerpAPIImages(serpQuery, clipFetchDur, workDir, scene.index, 0),
+        Promise.resolve([] as string[]),
+      ]
+    : [
+        fetchYouTubeThumbnails(youtubeQuery, clipFetchDur, workDir, scene.index, 4),
+        secondarySubject
+          ? fetchYouTubeThumbnails(`${secondarySubject} interview`, clipFetchDur, workDir, scene.index, 3, "p2")
+          : Promise.resolve([] as string[]),
+        fetchWikimediaImages(wikimediaQuery, clipFetchDur, workDir, scene.index, 2),
+        secondarySubject
+          ? fetchWikimediaImages(secondarySubject, clipFetchDur, workDir, scene.index, 1, "p2")
+          : Promise.resolve([] as string[]),
+        fetchOpenverseImages(openverseQuery, clipFetchDur, workDir, scene.index, 2),
+        secondarySubject
+          ? fetchOpenverseImages(secondarySubject, clipFetchDur, workDir, scene.index, 1, "p2")
+          : Promise.resolve([] as string[]),
+        fetchSerpAPIImages(serpQuery, clipFetchDur, workDir, scene.index, 2),
+        secondarySubject
+          ? fetchSerpAPIImages(`${secondarySubject} interview`, clipFetchDur, workDir, scene.index, 2, "p2")
+          : Promise.resolve([] as string[]),
+      ];
+
+  const [youtubeResults, youtube2Results, wikimediaResults, wikimedia2Results, openverseResults, openverse2Results, serpResults, serp2Results, pexelsResults, pixabayResults] =
+    await Promise.allSettled([
+      ...genericFetches,
+      fetchPexelsClips(pexelsPrimary, clipFetchDur, workDir, scene.index, clipsTarget, pexelsExtras),
+      fetchPixabayClips(pixabayPrimary, clipFetchDur, workDir, scene.index, Math.min(5, clipsTarget)),
+    ]);
 
   const clips: string[] = [];
 
-  // Collect free clips — YouTube CC FIRST, then Internet Archive, then Pexels + Pixabay + B-roll
-  const ytCCClipsRaw = ytCCResults.status === "fulfilled" ? ytCCResults.value : [];
-  const ytCC2ClipsRaw = ytCC2Results.status === "fulfilled" ? ytCC2Results.value : [];
-  const archiveClipsRaw = archiveResults.status === "fulfilled" ? archiveResults.value : [];
+  const ytCCClipsRaw = ytCCResults.value;
+  const ytCC2ClipsRaw = ytCC2Results.value;
+  const archiveClipsRaw = archiveResults.value;
   const pexelsClipsRaw = pexelsResults.status === "fulfilled" ? pexelsResults.value : [];
   const pixabayClipsRaw = pixabayResults.status === "fulfilled" ? pixabayResults.value : [];
-  const brollClipsRaw = brollResults.status === "fulfilled" ? brollResults.value : [];
-  const ytClipsRaw = youtubeResults.status === "fulfilled" ? youtubeResults.value : [];
-  const yt2ClipsRaw = youtube2Results.status === "fulfilled" ? youtube2Results.value : [];
-  // Include YouTube CC + Internet Archive + YouTube thumbnails in free stock count
-  const freeStockCount = ytCCClipsRaw.length + ytCC2ClipsRaw.length + archiveClipsRaw.length + pexelsClipsRaw.length + pixabayClipsRaw.length + brollClipsRaw.length + ytClipsRaw.length + yt2ClipsRaw.length;
+  const ytClipsRaw = hasPerson ? [] : (youtubeResults.status === "fulfilled" ? youtubeResults.value : []);
+  const yt2ClipsRaw = hasPerson ? [] : (youtube2Results.status === "fulfilled" ? youtube2Results.value : []);
+  const freeStockCount =
+    personMediaClips.length +
+    ytCCClipsRaw.length +
+    ytCC2ClipsRaw.length +
+    archiveClipsRaw.length +
+    pexelsClipsRaw.length +
+    pixabayClipsRaw.length +
+    ytClipsRaw.length +
+    yt2ClipsRaw.length;
 
   // ── PHASE 2: Paid AI generators — ONLY if free sources are insufficient (< 2 clips)
   // Runway is the preferred AI generator (highest quality). Other generators run only if key is set.
@@ -2719,24 +2766,21 @@ async function fetchSceneVisuals(
   let higgsfieldTextClip: string | null = null;
   let higgsfieldImageClip: string | null = null;
 
-  if (freeStockCount < RUNWAY_CLIP_THRESHOLD) {
+  if (freeStockCount < RUNWAY_CLIP_THRESHOLD && !hasPerson) {
     console.log(`[Pipeline] Scene ${scene.index}: only ${freeStockCount} free clip(s) found — activating AI generators (Runway + others)`);
-    // Run Runway first (highest quality, preferred paid generator)
-    // Then run other AI generators in parallel as additional fallbacks
-    // Note: Stability AI removed from fallback chain (out of credits — causes 429 errors and long waits)
     const [runwayResult, aiResult, leonardoResult, klingResult, lumaResult, pikaResult, forgeResult, grokResult, veoResult, metaResult, higgsfieldTextResult, higgsfieldImageResult] = await Promise.allSettled([
-      generateRunwayClip(scene.aiImagePrompt, null, halfDur, aiClipPath, scene.index),
-      Promise.resolve(null), // Stability AI slot (disabled — no credits)
-      generateLeonardoAIClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
-      generateKlingClip(scene.aiImagePrompt, null, halfDur, aiClipPath, scene.index),
-      generateLumaClip(scene.aiImagePrompt, null, halfDur, aiClipPath, scene.index),
-      generatePikaClip(scene.aiImagePrompt, null, halfDur, aiClipPath, scene.index),
-      generateManusForgeClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
-      generateGrokVideoClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
-      generateVeoVideoClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
-      generateMetaMovieGenClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
-      generateHiggsfieldTextToVideoClip(scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
-      generateHiggsfieldImageToVideoClip("", scene.aiImagePrompt, halfDur, aiClipPath, scene.index),
+      generateRunwayClip(scene.aiImagePrompt, null, clipFetchDur, aiClipPath, scene.index),
+      Promise.resolve(null),
+      generateLeonardoAIClip(scene.aiImagePrompt, clipFetchDur, aiClipPath, scene.index),
+      generateKlingClip(scene.aiImagePrompt, null, clipFetchDur, aiClipPath, scene.index),
+      generateLumaClip(scene.aiImagePrompt, null, clipFetchDur, aiClipPath, scene.index),
+      generatePikaClip(scene.aiImagePrompt, null, clipFetchDur, aiClipPath, scene.index),
+      generateManusForgeClip(scene.aiImagePrompt, clipFetchDur, aiClipPath, scene.index),
+      generateGrokVideoClip(scene.aiImagePrompt, clipFetchDur, aiClipPath, scene.index),
+      generateVeoVideoClip(scene.aiImagePrompt, clipFetchDur, aiClipPath, scene.index),
+      generateMetaMovieGenClip(scene.aiImagePrompt, clipFetchDur, aiClipPath, scene.index),
+      generateHiggsfieldTextToVideoClip(scene.aiImagePrompt, clipFetchDur, aiClipPath, scene.index),
+      generateHiggsfieldImageToVideoClip("", scene.aiImagePrompt, clipFetchDur, aiClipPath, scene.index),
     ]);
     runwayClip = runwayResult.status === "fulfilled" ? runwayResult.value : null;
     aiClip = aiResult.status === "fulfilled" ? aiResult.value : null;
@@ -2770,38 +2814,31 @@ async function fetchSceneVisuals(
 
   // Collect all clips that need fair-use transformation
   // YouTube CC clips go FIRST (real video, highest relevance), then Internet Archive, then thumbnails/images
-  const ytCCClips = [...ytCCClipsRaw, ...ytCC2ClipsRaw]; // Combined YouTube CC results
-  const archiveClips = archiveResults.status === "fulfilled" ? archiveResults.value : [];
-  const ytClips = youtubeResults.status === "fulfilled" ? youtubeResults.value : [];
-  const yt2Clips = youtube2Results.status === "fulfilled" ? youtube2Results.value : [];
+  const ytCCClips = [...ytCCClipsRaw, ...ytCC2ClipsRaw];
+  const archiveClips = archiveResults.value;
+  const ytClips = hasPerson ? [] : (youtubeResults.status === "fulfilled" ? youtubeResults.value : []);
+  const yt2Clips = hasPerson ? [] : (youtube2Results.status === "fulfilled" ? youtube2Results.value : []);
   const pexelsClips = pexelsResults.status === "fulfilled" ? pexelsResults.value : [];
   const pixabayClips = pixabayResults.status === "fulfilled" ? pixabayResults.value : [];
-  const brollClips = brollResults.status === "fulfilled" ? brollResults.value : [];
   const wikimediaClips = wikimediaResults.status === "fulfilled" ? wikimediaResults.value : [];
   const wikimedia2Clips = wikimedia2Results.status === "fulfilled" ? wikimedia2Results.value : [];
   const openverseClips = openverseResults.status === "fulfilled" ? openverseResults.value : [];
   const openverse2Clips = openverse2Results.status === "fulfilled" ? openverse2Results.value : [];
-  const serpClips = serpResults.status === "fulfilled" ? serpResults.value : [];
-  const serp2Clips = serp2Results.status === "fulfilled" ? serp2Results.value : [];
-  const youtubeThumbClips = [...ytClips, ...yt2Clips]; // Combined YouTube thumbnail results
+  const serpClips = hasPerson ? [] : (serpResults.status === "fulfilled" ? serpResults.value : []);
+  const serp2Clips = hasPerson ? [] : (serp2Results.status === "fulfilled" ? serp2Results.value : []);
+  const youtubeThumbClips = [...personMediaClips, ...ytClips, ...yt2Clips];
 
-  // Build list of clips needing transformation (with their clip index for color grade variety)
-  // YouTube CC clips go FIRST (real CC video clips), then Internet Archive, then thumbnails/images
   type TransformJob = { path: string; clipIndex: number; needsTransform: boolean };
+  let clipIndex = 0;
+  const nextIndex = () => clipIndex++;
+  const personPhotoClips = hasPerson
+    ? personMediaClips
+    : [...serpClips, ...serp2Clips, ...wikimediaClips, ...wikimedia2Clips, ...openverseClips, ...openverse2Clips, ...ytClips, ...yt2Clips];
+  const stockVideoClips = [...ytCCClips, ...archiveClips, ...pexelsClips, ...pixabayClips];
+
   const transformJobs: TransformJob[] = [
-    ...ytCCClips.map((p, i) => ({ path: p, clipIndex: i, needsTransform: true })), // YouTube CC — real video, needs color grade
-    ...archiveClips.map((p, i) => ({ path: p, clipIndex: ytCCClips.length + i, needsTransform: true })), // Internet Archive — real video, needs color grade
-    ...ytClips.map((p, i) => ({ path: p, clipIndex: ytCCClips.length + archiveClips.length + i, needsTransform: false })), // YouTube thumbnails — already processed (zoompan)
-    ...yt2Clips.map((p, i) => ({ path: p, clipIndex: ytCCClips.length + archiveClips.length + ytClips.length + i, needsTransform: false })),
-    ...pexelsClips.map((p, i) => ({ path: p, clipIndex: ytCCClips.length + archiveClips.length + ytClips.length + yt2Clips.length + i, needsTransform: true })),
-    ...pixabayClips.map((p, i) => ({ path: p, clipIndex: ytCCClips.length + archiveClips.length + ytClips.length + yt2Clips.length + pexelsClips.length + i, needsTransform: true })),
-    ...brollClips.map((p, i) => ({ path: p, clipIndex: ytCCClips.length + archiveClips.length + ytClips.length + yt2Clips.length + pexelsClips.length + pixabayClips.length + i, needsTransform: false })),
-    ...wikimediaClips.map((p, i) => ({ path: p, clipIndex: ytCCClips.length + archiveClips.length + ytClips.length + yt2Clips.length + pexelsClips.length + pixabayClips.length + brollClips.length + i, needsTransform: true })),
-    ...wikimedia2Clips.map((p, i) => ({ path: p, clipIndex: ytCCClips.length + archiveClips.length + ytClips.length + yt2Clips.length + pexelsClips.length + pixabayClips.length + brollClips.length + wikimediaClips.length + i, needsTransform: true })),
-    ...openverseClips.map((p, i) => ({ path: p, clipIndex: i, needsTransform: false })), // already processed
-    ...openverse2Clips.map((p, i) => ({ path: p, clipIndex: i, needsTransform: false })),
-    ...serpClips.map((p, i) => ({ path: p, clipIndex: ytCCClips.length + archiveClips.length + ytClips.length + yt2Clips.length + pexelsClips.length + wikimediaClips.length + wikimedia2Clips.length + openverseClips.length + i, needsTransform: true })),
-    ...serp2Clips.map((p, i) => ({ path: p, clipIndex: ytCCClips.length + archiveClips.length + ytClips.length + yt2Clips.length + pexelsClips.length + wikimediaClips.length + wikimedia2Clips.length + serpClips.length + i, needsTransform: true })),
+    ...personPhotoClips.map((p) => ({ path: p, clipIndex: nextIndex(), needsTransform: false })),
+    ...stockVideoClips.map((p) => ({ path: p, clipIndex: nextIndex(), needsTransform: true })),
   ];
 
   // Run fair-use transforms in parallel (max 3 concurrent FFmpeg processes per scene)
@@ -2821,7 +2858,7 @@ async function fetchSceneVisuals(
   const personLabel = scenePersons.length > 0 ? ` [persons: ${scenePersons.join(', ')}]` : '';
   const runwayLabel = runwayClip ? " ⚡Runway" : "";
   const aiLabel = freeStockCount < RUNWAY_CLIP_THRESHOLD ? " [AI fallback triggered]" : " [free stock sufficient]";
-  console.log(`[Pipeline] Scene ${scene.index}${personLabel}${runwayLabel}${aiLabel}: ${clips.length} clip(s) ready (YT-CC: ${ytCCClips.length}, Archive: ${archiveClips.length}, YT-Thumbs: ${youtubeThumbClips.length}, Pexels: ${pexelsClips.length}, Pixabay: ${pixabayClips.length}, Wikimedia: ${wikimediaClips.length + wikimedia2Clips.length}, Openverse: ${openverseClips.length + openverse2Clips.length}, SerpAPI: ${serpClips.length + serp2Clips.length}, Runway: ${runwayClip ? "✓" : "✗"}, Stability: ${aiClip ? "✓" : "✗"})`);
+  console.log(`[Pipeline] Scene ${scene.index}${personLabel}${runwayLabel}${aiLabel}: ${clips.length} clip(s) ready (Person: ${personMediaClips.length}, YT-Thumbs: ${youtubeThumbClips.length}, Pexels: ${pexelsClips.length}, Pixabay: ${pixabayClips.length}, Runway: ${runwayClip ? "✓" : "✗"})`);
   return clips;
 }
 
@@ -3137,25 +3174,31 @@ async function composeSceneVideo(
   }
 
   // ── Reorder clips for better pacing ──────────────────────────────────────
-  // 1) Real video footage (Pexels/Pixabay/YT-CC/Archive) FIRST — these are bewegende beelden
-  // 2) Then image-based clips (YT-thumb / Openverse / Wikimedia / SerpAPI) with Ken Burns
-  // 3) Cap image clips at ~30% of total to keep the video feeling like a video, not a slideshow
-  // 4) Interleave so we don't get a long block of stills at the end
-  const isRealVideo = (p: string) =>
-    /_pexels_|_pixabay_|_ytcc_|_archive_/i.test(path.basename(p));
+  const hasPerson = (scene.personNames?.length ?? 0) > 0 || validClips.some((p) => /_p\d|_serp_|_wiki_|_openverse_|_yt_/i.test(path.basename(p)));
+  const isRealVideo = (p: string) => /_pexels_|_pixabay_|_ytcc_|_archive_/i.test(path.basename(p));
+  const isPersonClip = (p: string) => /_p\d|_serp_|_wiki_|_openverse_|_yt_/i.test(path.basename(p));
   const realVids = validClips.filter(isRealVideo);
-  const imgClips = validClips.filter(p => !isRealVideo(p));
-  const maxImgs = Math.max(1, Math.ceil(realVids.length * 0.5)); // ~30% of total once interleaved
-  const limitedImgs = imgClips.slice(0, maxImgs);
-  // Interleave: V V I V V I V V I ...
-  const interleaved: string[] = [];
-  let vi = 0, ii = 0;
-  while (vi < realVids.length || ii < limitedImgs.length) {
-    if (vi < realVids.length) interleaved.push(realVids[vi++]);
-    if (vi < realVids.length) interleaved.push(realVids[vi++]);
-    if (ii < limitedImgs.length) interleaved.push(limitedImgs[ii++]);
+  const personClips = validClips.filter(isPersonClip);
+  const otherImgs = validClips.filter((p) => !isRealVideo(p) && !isPersonClip(p));
+
+  let orderedClips: string[];
+  if (hasPerson && personClips.length > 0) {
+    const maxSupport = Math.max(2, Math.ceil(realVids.length * 0.5));
+    const supportVids = realVids.slice(0, maxSupport);
+    const supportImgs = otherImgs.slice(0, 1);
+    orderedClips = [...personClips, ...supportVids, ...supportImgs];
+  } else {
+    const maxImgs = Math.max(1, Math.ceil(realVids.length * 0.5));
+    const limitedImgs = [...personClips, ...otherImgs].slice(0, maxImgs);
+    const interleaved: string[] = [];
+    let vi = 0, ii = 0;
+    while (vi < realVids.length || ii < limitedImgs.length) {
+      if (vi < realVids.length) interleaved.push(realVids[vi++]);
+      if (vi < realVids.length) interleaved.push(realVids[vi++]);
+      if (ii < limitedImgs.length) interleaved.push(limitedImgs[ii++]);
+    }
+    orderedClips = interleaved.length > 0 ? interleaved : validClips;
   }
-  const orderedClips = interleaved.length > 0 ? interleaved : validClips;
 
   const safeClips = orderedClips.length > 0
     ? orderedClips
@@ -3301,23 +3344,20 @@ async function composeSceneVideo(
 
   try {
     if (safeClips.length >= 2) {
-      // Multi-clip with hard cuts — target 2.5-3.5s per shot for kinetic pacing
-      // If we have FEW clips for a long scene, we'll loop the clip list to keep cuts frequent
-      const TARGET_SHOT_SEC = 3.0;
-      const idealShotCount = Math.min(30, Math.max(safeClips.length, Math.ceil(duration / TARGET_SHOT_SEC)));
-      // If we need more shots than we have unique clips, loop the original clip list
+      // Hard cuts every 3–4 seconds — trim each source clip so long Ken Burns shots don't dominate
+      const TARGET_SHOT_SEC = 3.5;
+      const idealShotCount = Math.min(40, Math.max(safeClips.length, Math.ceil(duration / TARGET_SHOT_SEC)));
       const baseLen = safeClips.length;
       let extraIdx = 0;
       while (safeClips.length < idealShotCount) {
         safeClips.push(safeClips[extraIdx % baseLen]);
         extraIdx++;
       }
-      const clipDur = Math.min(3.5, Math.max(2.0, duration / safeClips.length));
+      const clipDur = Math.min(4.0, Math.max(3.0, duration / safeClips.length));
       const inputs = safeClips.map(c => `-i "${c}"`).join(" ");
-      // fps=25 normalizes timebase for concat filter
-      // Ken Burns: simple scale+crop+fps, no animated zoom punch (reference uses static Ken Burns)
-      const scaleFilters = safeClips.map((_, i) => {
-        return `[${i}:v]scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT},fps=25[v${i}]`;
+      const scaleFilters = safeClips.map((clip, i) => {
+        const startSec = ((scene.index + i) * 1.7) % 4;
+        return `[${i}:v]trim=start=${startSec.toFixed(2)}:duration=${clipDur.toFixed(3)},setpts=PTS-STARTPTS,scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT},fps=25[v${i}]`;
       }).join(";");
 
       // Hard-cut concat: use filter_complex concat to join clips with zero-duration cuts

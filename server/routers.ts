@@ -665,7 +665,7 @@ export const appRouter = router({
         throw appTrpcError("BAD_REQUEST", APP_ERROR.VIDEO_RETRY_INVALID, "Only failed or stuck videos can be retried");
       }
       await updateVideoStatus(video.id, "pending", {
-        errorMessage: null,
+        errorMessage: "",
         progressStep: "🔄 Retrying...",
         progressPercent: 0,
         generationStartedAt: new Date(),
