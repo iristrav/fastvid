@@ -191,7 +191,8 @@ const FFPROBE_PATHS = (): string[] => [
 
 async function isValidVideoFile(filePath: string): Promise<boolean> {
   if (!fs.existsSync(filePath)) return false;
-  if (fs.statSync(filePath).size < 1000) return false;
+  const size = fs.statSync(filePath).size;
+  if (size < 1000) return false;
   for (const probePath of FFPROBE_PATHS()) {
     try {
       const { stdout } = await exec(
@@ -202,7 +203,13 @@ async function isValidVideoFile(filePath: string): Promise<boolean> {
       /* try next probe binary */
     }
   }
-  return false;
+  // ffprobe missing or failed — accept files that look like MP4 and are non-trivial size
+  try {
+    const head = fs.readFileSync(filePath).subarray(0, 12);
+    return head.length >= 8 && head.subarray(4, 8).toString("ascii") === "ftyp" && size > 5000;
+  } catch {
+    return false;
+  }
 }
 // Use 256MB maxBuffer — FFmpeg concat of 15+ scenes can produce large stderr output
 const execRaw = (cmd: string) => new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
@@ -1658,53 +1665,54 @@ async function fetchSerpAPIImages(
 
 // ─── 3c. Color Fallback (LAST RESORT) ────────────────────────────────────────
 async function generateColorFallback(sceneIndex: number, duration: number, workDir: string): Promise<string> {
-  // Ensure workDir exists (may have been cleaned up between pipeline stages)
   fs.mkdirSync(workDir, { recursive: true });
   const outputPath = path.join(workDir, `scene_${sceneIndex}_fallback.mp4`);
-  const colors = ["0a0a1e", "0a1a2e", "1a0a2e", "0a2a1e", "1a1a0a", "2a0a1e", "0a1a1e", "1a0a1e"];
+  const colors = ["0a0a1e", "0a0a1e", "0a1a2e", "1a0a2e", "0a2a1e", "1a1a0a", "2a0a1e", "0a1a1e"];
   const color = colors[sceneIndex % colors.length];
+  const safeDuration = Math.min(Math.max(duration, 3), 90);
 
-  // Verify FFmpeg binary exists before attempting
-  if (!fs.existsSync(FFMPEG_BIN) && FFMPEG_BIN !== 'ffmpeg') {
-    console.error(`[Pipeline] CRITICAL: FFmpeg binary not found at: ${FFMPEG_BIN}`);
-  } else {
-    console.log(`[Pipeline] Scene ${sceneIndex}: generating fallback video with FFmpeg: ${FFMPEG_BIN}`);
+  if (fs.existsSync(outputPath)) {
+    try { fs.unlinkSync(outputPath); } catch { /* ignore */ }
   }
 
-  try {
-    // Ensure workDir still exists (may have been cleaned between pipeline stages)
-    fs.mkdirSync(workDir, { recursive: true });
-    // Include silent audio stream so FFmpeg audio map works in composeSceneVideo
-    await withTimeout(
-      exec(
-        `${FFMPEG_BIN} -y ` +
-        `-f lavfi -i "color=c=#${color}:size=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:rate=25" ` +
-        `-f lavfi -i anullsrc=r=44100:cl=stereo ` +
-        `-t ${duration} -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -c:a aac -b:a 128k -shortest "${outputPath}"`
-      ),
-      20_000, `Fallback video scene ${sceneIndex}`
-    );
-    console.log(`[Pipeline] Scene ${sceneIndex}: fallback video created (${(fs.statSync(outputPath).size / 1024).toFixed(0)}KB)`);
-  } catch (err1) {
-    console.error(`[Pipeline] Scene ${sceneIndex}: color fallback failed, trying black screen:`, err1);
+  const commands = [
+    `${FFMPEG_BIN} -y -f lavfi -i "color=c=#${color}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:r=25" -t ${safeDuration} -c:v libx264 -preset ultrafast -pix_fmt yuv420p -an "${outputPath}"`,
+    `${FFMPEG_BIN} -y -f lavfi -i "color=c=black:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:r=25" -t ${safeDuration} -c:v libx264 -preset ultrafast -pix_fmt yuv420p -an "${outputPath}"`,
+    `${FFMPEG_BIN} -y -f lavfi -i "color=c=black:s=1280x720:r=25" -t ${safeDuration} -c:v mpeg4 -q:v 5 -an "${outputPath}"`,
+  ];
+
+  for (let i = 0; i < commands.length; i++) {
     try {
-      await withTimeout(
-        exec(
-          `${FFMPEG_BIN} -y ` +
-          `-f lavfi -i "color=c=black:size=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:rate=25" ` +
-          `-f lavfi -i anullsrc=r=44100:cl=stereo ` +
-          `-t ${duration} -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -c:a aac -b:a 128k -shortest "${outputPath}"`
-        ),
-        15_000, `Black screen fallback scene ${sceneIndex}`
-      );
-      console.log(`[Pipeline] Scene ${sceneIndex}: black screen fallback created`);
-    } catch (err2) {
-      console.error(`[Pipeline] CRITICAL: Black screen fallback also failed for scene ${sceneIndex}:`, err2);
-      // Write a minimal valid MP4 placeholder so the pipeline can continue
-      fs.writeFileSync(outputPath, Buffer.alloc(0));
+      if (fs.existsSync(outputPath)) {
+        try { fs.unlinkSync(outputPath); } catch { /* ignore */ }
+      }
+      await withTimeout(exec(commands[i]), 30_000, `Fallback video scene ${sceneIndex} attempt ${i + 1}`);
+      if (await isValidVideoFile(outputPath)) {
+        console.log(`[Pipeline] Scene ${sceneIndex}: fallback video OK (${(fs.statSync(outputPath).size / 1024).toFixed(0)}KB, attempt ${i + 1})`);
+        return outputPath;
+      }
+      console.warn(`[Pipeline] Scene ${sceneIndex}: fallback attempt ${i + 1} produced unreadable file`);
+    } catch (err) {
+      console.warn(`[Pipeline] Scene ${sceneIndex}: fallback attempt ${i + 1} failed:`, (err as Error).message);
     }
   }
-  return outputPath;
+
+  throw pipelineError(
+    PIPELINE_ERROR.FFMPEG,
+    `Could not create valid fallback video for scene ${sceneIndex}`
+  );
+}
+
+/** Return clipPath if ffprobe confirms a video stream; otherwise throw or substitute fallback. */
+async function requireValidClip(
+  clipPath: string,
+  sceneIndex: number,
+  duration: number,
+  workDir: string
+): Promise<string> {
+  if (await isValidVideoFile(clipPath)) return clipPath;
+  console.warn(`[Pipeline] Scene ${sceneIndex}: invalid clip ${path.basename(clipPath)}, regenerating fallback`);
+  return generateColorFallback(sceneIndex, duration, workDir);
 }
 
 // ─── 3c1. Generate Grok Video Clip ──────────────────────────────────────────
@@ -2617,9 +2625,12 @@ async function transformClipForFairUse(
       child.on('error', (err: Error) => { clearTimeout(timer); reject(err); });
     });
     if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 5_000) {
-      try { fs.unlinkSync(inputPath); } catch { /* ignore */ }
-      console.log(`[Pipeline] Scene ${sceneIndex}: clip ${clipIndex} transformed for fair use`);
-      return outputPath;
+      if (await isValidVideoFile(outputPath)) {
+        try { fs.unlinkSync(inputPath); } catch { /* ignore */ }
+        console.log(`[Pipeline] Scene ${sceneIndex}: clip ${clipIndex} transformed for fair use`);
+        return outputPath;
+      }
+      console.warn(`[Pipeline] Scene ${sceneIndex}: transformed clip ${clipIndex} unreadable, keeping original`);
     }
   } catch (err) {
     console.warn(`[Pipeline] Scene ${sceneIndex}: fair-use transform failed for clip ${clipIndex}:`, (err as Error).message);
@@ -2875,10 +2886,20 @@ async function fetchSceneVisuals(
     }))
   );
   clips.push(...transformedPaths.filter((p): p is string => p !== null));
-  // If nothing worked, use color fallback
+  // Drop corrupt downloads — keep only clips ffprobe can read
+  const validatedClips: string[] = [];
+  for (const clipPath of clips) {
+    if (await isValidVideoFile(clipPath)) {
+      validatedClips.push(clipPath);
+    } else {
+      console.warn(`[Pipeline] Scene ${scene.index}: dropping invalid clip ${path.basename(clipPath)}`);
+    }
+  }
+  clips.length = 0;
+  clips.push(...validatedClips);
   if (clips.length === 0) {
     console.warn(`[Pipeline] Scene ${scene.index}: All visuals failed, using color fallback`);
-    clips.push(await generateColorFallback(scene.index, scene.duration + 1, workDir));
+    clips.push(await generateColorFallback(scene.index, Math.max(scene.duration, 5), workDir));
   }
   const personLabel = scenePersons.length > 0 ? ` [persons: ${scenePersons.join(', ')}]` : '';
   const runwayLabel = runwayClip ? " ⚡Runway" : "";
@@ -3225,9 +3246,16 @@ async function composeSceneVideo(
     orderedClips = interleaved.length > 0 ? interleaved : validClips;
   }
 
-  const safeClips = orderedClips.length > 0
+  let safeClips = orderedClips.length > 0
     ? orderedClips
-    : [await generateColorFallback(scene.index, duration + 1, workDir)];
+    : [await generateColorFallback(scene.index, duration, workDir)];
+
+  // Last-line check: never feed corrupt MP4s into filter_complex
+  const verifiedClips: string[] = [];
+  for (const clip of safeClips) {
+    verifiedClips.push(await requireValidClip(clip, scene.index, duration, workDir));
+  }
+  safeClips = verifiedClips;
 
   // Validate audio
   const audioValid = fs.existsSync(audioPath) && fs.statSync(audioPath).size > 100;
@@ -3470,7 +3498,7 @@ async function composeSceneVideo(
         );
       } catch (muxErr) {
         console.warn(`[Pipeline] Scene ${scene.index}: simple mux failed, using color fallback:`, muxErr);
-        const fallbackClip = await generateColorFallback(scene.index, duration + 2, workDir);
+        const fallbackClip = await generateColorFallback(scene.index, duration, workDir);
         await withTimeout(
           exec(
             `${FFMPEG_BIN} -y -i "${fallbackClip}" -i "${safeAudioPath}" ` +
