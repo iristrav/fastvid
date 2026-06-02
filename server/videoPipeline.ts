@@ -556,8 +556,8 @@ function mapRawScene(
     statCallout: "",
     aiImagePrompt: `Cinematic ${s.visualCue || "documentary scene"}, dramatic lighting, photorealistic`,
     isChapterCard: false,
-    chapterTitle: sectionTitle || undefined,
-    sectionTitle: sectionTitle || undefined,
+    chapterTitle: isPublishableChapterTitle(sectionTitle) ? sectionTitle : undefined,
+    sectionTitle: isPublishableChapterTitle(sectionTitle) ? sectionTitle : undefined,
   };
 }
 
@@ -3080,10 +3080,67 @@ interface VisualDedupState {
   usedPaths: Set<string>;
   usedPexelsIds: Set<number>;
   usedPixabayIds: Set<number>;
+  usedContentKeys: Set<string>;
 }
 
 function createVisualDedupState(): VisualDedupState {
-  return { usedPaths: new Set(), usedPexelsIds: new Set(), usedPixabayIds: new Set() };
+  return { usedPaths: new Set(), usedPexelsIds: new Set(), usedPixabayIds: new Set(), usedContentKeys: new Set() };
+}
+
+const BLOCKED_STOCK_QUERY_RE =
+  /\b(subscribe|like button|thumbs up|thumbs down|social media ui|notification bell|emoji|icon animation|button animation)\b/i;
+
+function isBlockedStockQuery(q: string): boolean {
+  return BLOCKED_STOCK_QUERY_RE.test(q);
+}
+
+function isPublishableChapterTitle(title: string | undefined): boolean {
+  if (!title?.trim()) return false;
+  const lower = title.trim().toLowerCase();
+  const blocked = new Set([
+    "hook", "call to action", "cta", "intro", "introduction", "outro", "conclusion", "opening", "closing",
+  ]);
+  if (blocked.has(lower)) return false;
+  if (/^(section|part|chapter|scene)\s*\d*$/i.test(lower)) return false;
+  return title.trim().length >= 4;
+}
+
+function clipContentKey(filePath: string): string {
+  const base = path.basename(filePath).replace(/_transformed(?=\.mp4)/, "");
+  const vidMatch = base.match(/_vid(\d+)/);
+  if (vidMatch) return `stock:vid:${vidMatch[1]}`;
+  try {
+    const stat = fs.statSync(filePath);
+    return `file:${stat.size}:${base}`;
+  } catch {
+    return base;
+  }
+}
+
+function enrichStockQuery(
+  query: string,
+  scene: Scene,
+  videoTitle?: string,
+  personName?: string
+): string {
+  if (isBlockedStockQuery(query)) return query;
+  const person = personName || scene.personNames?.[0] || extractPrimaryPersonFromTitle(videoTitle) || "";
+  const topicTokens = [
+    ...tokenizeForRelevance(person),
+    ...tokenizeForRelevance(videoTitle ?? ""),
+  ].filter((t) => t.length >= 3).slice(0, 2);
+  const qLower = query.toLowerCase();
+  if (topicTokens.some((t) => qLower.includes(t))) return query.slice(0, 100);
+  if (person) {
+    const first = person.split(/\s+/)[0]?.toLowerCase() ?? "";
+    if (first && !qLower.includes(first)) {
+      return `${person} ${query}`.trim().slice(0, 100);
+    }
+  }
+  if (topicTokens.length > 0) {
+    return `${topicTokens.join(" ")} ${query}`.trim().slice(0, 100);
+  }
+  return query.slice(0, 100);
 }
 
 function tokenizeForRelevance(text: string): string[] {
@@ -3166,7 +3223,10 @@ async function adoptClip(
     if (!p || dedup.usedPaths.has(p) || !fs.existsSync(p)) continue;
     if (!(await isValidVideoFile(p))) continue;
     if (isStillPhotoClip(p)) continue;
+    const contentKey = clipContentKey(p);
+    if (dedup.usedContentKeys.has(contentKey)) continue;
     dedup.usedPaths.add(p);
+    dedup.usedContentKeys.add(contentKey);
     const transformed = await transformClipForFairUse(p, beatText, sceneIndex, beatIndex, workDir);
     if (await isValidVideoFile(transformed)) return transformed;
   }
@@ -3181,25 +3241,26 @@ async function fetchLastResortRealClip(
   sceneIndex: number,
   clipFetchDur: number,
   dedup: VisualDedupState,
-  personName: string
+  personName: string,
+  videoTitle?: string
 ): Promise<string | null> {
   const tag = `b${beat.index}_lr`;
   const candidateOffset = beat.index * 5 + sceneIndex + 11;
   const queries = [
     ...(personName
-      ? [`${personName} press conference`, `${personName} speech`, `${personName} interview`, `${personName} CEO`]
+      ? [
+          `${personName} Tesla factory`,
+          `${personName} SpaceX rocket launch`,
+          `${personName} press conference`,
+          `${personName} interview`,
+        ]
       : []),
-    scene.visualCue,
-    scene.pexelsQuery,
-    ...(scene.pexelsQueries ?? []),
-    ...(scene.brollQueries ?? []),
-    beat.searchQuery,
-    "documentary b-roll footage",
-    "news broadcast footage",
-    "technology business innovation",
-    "corporate office meeting",
-    "cinematic aerial city",
-  ].filter((q): q is string => typeof q === "string" && q.trim().length > 2);
+    enrichStockQuery(scene.visualCue, scene, videoTitle, personName),
+    enrichStockQuery(scene.pexelsQuery, scene, videoTitle, personName),
+    ...(scene.pexelsQueries ?? []).map((q) => enrichStockQuery(q, scene, videoTitle, personName)),
+    ...(scene.brollQueries ?? []).map((q) => enrichStockQuery(q, scene, videoTitle, personName)),
+    enrichStockQuery(beat.searchQuery, scene, videoTitle, personName),
+  ].filter((q): q is string => typeof q === "string" && q.trim().length > 2 && !isBlockedStockQuery(q));
 
   const uniqueQueries = [...new Set(queries)];
 
@@ -3236,20 +3297,38 @@ async function fetchBeatClip(
   clipFetchDur: number,
   dedup: VisualDedupState,
   spaceTopic: boolean,
-  personName: string
+  personName: string,
+  videoTitle?: string
 ): Promise<string | null> {
   const tag = `b${beat.index}`;
-  const q = beat.searchQuery;
+  const rawQ = beat.index === 0
+    ? enrichStockQuery(
+        scene.literalVisualCue || scene.pexelsQuery || scene.visualCue || beat.searchQuery,
+        scene,
+        videoTitle,
+        personName
+      )
+    : enrichStockQuery(beat.searchQuery, scene, videoTitle, personName);
+  const q = isBlockedStockQuery(rawQ)
+    ? enrichStockQuery(scene.pexelsQuery || scene.visualCue, scene, videoTitle, personName)
+    : rawQ;
   const candidateOffset = beat.index * 3 + sceneIndex;
 
-  // Odd beats: try dedicated B-roll cutaways first (Vidrush visual variety)
-  if (beat.index % 2 === 1 && (scene.brollQueries?.length ?? 0) > 0) {
-    const brollQ = scene.brollQueries![beat.index % scene.brollQueries!.length];
-    const brollFirst = await fetchBrollClips([brollQ], clipFetchDur, workDir, sceneIndex);
-    let clip = await adoptClip(brollFirst, dedup, sceneIndex, beat.index, beat.text, workDir);
-    if (clip) {
-      console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: B-roll "${brollQ}"`);
-      return clip;
+  // Odd beats (not opening): try dedicated B-roll cutaways
+  if (beat.index % 2 === 1 && beat.index > 0 && (scene.brollQueries?.length ?? 0) > 0) {
+    const brollQ = enrichStockQuery(
+      scene.brollQueries![beat.index % scene.brollQueries!.length],
+      scene,
+      videoTitle,
+      personName
+    );
+    if (!isBlockedStockQuery(brollQ)) {
+      const brollFirst = await fetchBrollClips([brollQ], clipFetchDur, workDir, sceneIndex);
+      let clip = await adoptClip(brollFirst, dedup, sceneIndex, beat.index, beat.text, workDir);
+      if (clip) {
+        console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: B-roll "${brollQ}"`);
+        return clip;
+      }
     }
   }
 
@@ -3314,7 +3393,7 @@ async function fetchBeatClip(
   }
 
   const lastResort = await fetchLastResortRealClip(
-    beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName
+    beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName, videoTitle
   );
   if (lastResort) return lastResort;
 
@@ -3347,7 +3426,8 @@ async function fetchSceneVisuals(
       clipFetchDur,
       dedup,
       spaceTopic,
-      personName
+      personName,
+      videoTitle
     );
     if (clip) {
       clips.push(clip);
@@ -3355,8 +3435,14 @@ async function fetchSceneVisuals(
       console.warn(
         `[Pipeline] Scene ${scene.index} beat ${beat.index}: no real footage for "${beat.searchQuery}" — emergency stock`
       );
+      const emergencyQ = enrichStockQuery(
+        scene.pexelsQuery || scene.visualCue || "documentary footage",
+        scene,
+        videoTitle,
+        personName
+      );
       const emergency = await fetchPexelsClips(
-        "documentary cinematic footage",
+        emergencyQ,
         clipFetchDur,
         workDir,
         scene.index,
@@ -3709,7 +3795,17 @@ async function composeSceneVideo(
   for (const clip of safeClips) {
     verifiedClips.push(await requireValidClip(clip, scene.index, duration, workDir));
   }
-  safeClips = verifiedClips;
+  // Drop duplicate stock within the same scene montage
+  const seenKeys = new Set<string>();
+  safeClips = verifiedClips.filter((clip) => {
+    const key = clipContentKey(clip);
+    if (seenKeys.has(key)) return false;
+    seenKeys.add(key);
+    return true;
+  });
+  if (safeClips.length === 0) {
+    safeClips = [await generateColorFallback(scene.index, duration, workDir)];
+  }
 
   // Validate audio
   const audioValid = fs.existsSync(audioPath) && fs.statSync(audioPath).size > 100;
@@ -4261,9 +4357,9 @@ export async function runVideoPipeline(
     if (targetTotal) {
       const padded = durations.map((d) => d + 2);
       const rawTotal = padded.reduce((a, b) => a + b, 0);
+      const scale = targetTotal / Math.max(rawTotal, 1);
       scenes.forEach((scene, i) => {
-        const scaled = rawTotal > targetTotal ? (padded[i] / rawTotal) * targetTotal : padded[i];
-        scene.duration = Math.max(scaled, durations[i] + 1);
+        scene.duration = Math.max(padded[i] * scale, durations[i] + 1.5);
       });
       const finalTotal = scenes.reduce((sum, s) => sum + s.duration, 0);
       console.log(`[Pipeline] ${videoLength}-min test: total duration ${finalTotal.toFixed(1)}s (${scenes.length} scenes)`);
@@ -4368,7 +4464,8 @@ export async function runVideoPipeline(
     for (let i = 0; i < composedScenes.length; i++) {
       const scene = scenes[i];
       const cardTitle = scene.chapterTitle || scene.sectionTitle;
-      if (cardTitle?.trim()) {
+      // Never open on a card — real footage first; skip script meta labels (HOOK, CTA)
+      if (i > 0 && isPublishableChapterTitle(cardTitle)) {
         try {
           const card = await renderChapterCard(cardTitle, i, workDir);
           if (fs.existsSync(card) && fs.statSync(card).size > 1000) {

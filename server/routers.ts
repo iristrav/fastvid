@@ -319,7 +319,7 @@ RULES:
     // Assemble full script
     const scriptParts: string[] = [`# ${title}\n`, `## HOOK\n${outline.hook}\n[VISUAL: Opening shot for ${prompt}]\n`];
     outline.sections.forEach((sec, idx) => scriptParts.push(`## ${sec.title}\n${sectionTexts[idx] ?? ""}\n`));
-    scriptParts.push(`## CALL TO ACTION\n${outline.cta}\n[VISUAL: Subscribe button animation]\n`);
+    scriptParts.push(`## CALL TO ACTION\n${outline.cta}\n[VISUAL: Cinematic closing b-roll related to the video topic]\n`);
     const scriptContent = scriptParts.join("\n");
 
     let metadata: unknown = {};
