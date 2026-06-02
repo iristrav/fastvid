@@ -3184,20 +3184,16 @@ const STOCK_CATEGORY_LIMITS: Record<string, number> = {
 
 /** High-quality rotating queries for Musk/Tesla/SpaceX — modern real-world B-roll only. */
 const GOLDEN_MUSK_QUERIES = [
+  "Tesla Gigafactory production line workers",
+  "Tesla electric car assembly line robots",
+  "Tesla Model 3 automobile assembly plant",
+  "Tesla supercharger station electric cars",
+  "Tesla Fremont factory aerial drone",
+  "Tesla Cybertruck body welding factory",
+  "electric vehicle battery pack assembly line",
   "Falcon 9 booster landing on drone ship",
   "Starship launch pad Boca Chica Texas",
   "SpaceX rocket hangar horizontal transport",
-  "Tesla Gigafactory production line workers",
-  "Tesla electric car assembly line robots",
-  "Tesla Model 3 driving highway cinematic",
-  "Tesla supercharger station cars charging",
-  "electric vehicle battery manufacturing plant",
-  "lithium ion battery factory production",
-  "industrial robot arm welding automotive factory",
-  "electric car factory quality inspection",
-  "Tesla Fremont factory aerial view",
-  "Falcon 9 booster landing on drone ship",
-  "Tesla Cybertruck factory production line",
 ];
 
 type VisualAdoptOptions = {
@@ -3221,7 +3217,9 @@ async function withVisualDedupLock<T>(dedup: VisualDedupState, fn: () => Promise
 }
 
 const BLOCKED_STOCK_TAGS_RE =
-  /emoji|cartoon|animation|icon|illustration|graphic|pattern|sticker|clipart|motion graphics|3d render|abstract background|wallpaper|seamless loop|looping|campfire|bonfire|fireplace|bbq|barbecue|driving|dashcam|highway|bridge|miniature|scale model|toy|diorama|tabletop|model rocket|shuttle|saturn|apollo|lunar|moon landing|moon surface|science fiction|sci-fi|vhs|glitch|vintage space|archival|crime scene|forensic|police tape|news reporter|journalist|reporter microphone|hazmat suit|investigation|murder|courtroom/i;
+  /emoji|cartoon|animation|icon|illustration|graphic|pattern|sticker|clipart|motion graphics|3d render|abstract background|wallpaper|seamless loop|looping|campfire|bonfire|fireplace|bbq|barbecue|driving|dashcam|highway|bridge|miniature|scale model|toy|diorama|tabletop|model rocket|shuttle|saturn|apollo|lunar|moon landing|moon surface|science fiction|sci-fi|vhs|glitch|vintage space|archival|textile|weaving|loom|garment factory|fabric mill|crime scene|forensic|police tape|news reporter|journalist|reporter microphone|hazmat suit|investigation|murder|courtroom/i;
+
+const MUSK_TOPIC_TOKENS = ["tesla", "spacex", "musk", "electric", "ev", "battery", "gigafactory", "falcon", "starship", "cybertruck", "automotive", "rocket", "launch"];
 
 const BLOCKED_STOCK_QUERY_RE =
   /\b(subscribe|like button|thumbs up|thumbs down|social media ui|notification bell|emoji|icon animation|button animation|wallpaper|seamless loop|motion graphics|scale model|miniature|toy rocket|model rocket|space shuttle|shuttle model|saturn v|apollo|lunar|moon landing|moon surface|diorama|replica rocket|mission control|astronaut suit|vintage nasa|archival footage|science fiction|sci-fi|cgi rocket|crime scene|forensic|police tape|news reporter|press conference|interview|journalist|murder|courtroom)\b/i;
@@ -3602,7 +3600,10 @@ async function adoptClip(
           continue;
         }
         const rel = scoreVisualRelevance(`${sourceQuery} ${path.basename(p)}`, keywords);
+        const topicRel = scoreVisualRelevance(`${sourceQuery} ${path.basename(p)}`, MUSK_TOPIC_TOKENS);
+        if (topicRel < 1) continue;
         if (category === "generic" && queryCategory !== "generic" && rel < 1) continue;
+        if (rel + topicRel < 3) continue;
       }
       let fileSize = 0;
       try { fileSize = fs.statSync(p).size; } catch { continue; }
@@ -3939,7 +3940,7 @@ async function fetchSceneVisuals(
           clips.push(lastResort);
         } else if (muskTopic) {
           let rescued = false;
-          for (const gq of GOLDEN_MUSK_QUERIES.slice(0, 6)) {
+          for (const gq of GOLDEN_MUSK_QUERIES) {
             if (isBlockedStockQuery(gq)) continue;
             const golden = await fetchPexelsClips(
               gq, clipFetchDur, workDir, scene.index, 1, [gq], true,
@@ -3956,10 +3957,17 @@ async function fetchSceneVisuals(
             }
           }
           if (!rescued) {
-            console.error(
-              `[Pipeline] Scene ${scene.index} beat ${beat.index}: no stock video — color placeholder`
-            );
-            clips.push(await generateColorFallback(scene.index * 100 + beat.index, 4, workDir));
+            if (clips.length > 0) {
+              console.warn(
+                `[Pipeline] Scene ${scene.index} beat ${beat.index}: reusing previous clip (no black placeholder)`
+              );
+              clips.push(clips[clips.length - 1]);
+            } else {
+              console.error(
+                `[Pipeline] Scene ${scene.index} beat ${beat.index}: no stock video — color placeholder`
+              );
+              clips.push(await generateColorFallback(scene.index * 100 + beat.index, 4, workDir));
+            }
           }
         } else {
           console.error(
@@ -4285,6 +4293,10 @@ async function composeSceneVideo(
   const validClips: string[] = [];
   for (const clipPath of existingClips) {
     if (await isValidVideoFile(clipPath)) {
+      if (await isMostlyBlackClip(clipPath)) {
+        console.warn(`[Pipeline] Scene ${scene.index}: skipping black placeholder ${path.basename(clipPath)}`);
+        continue;
+      }
       validClips.push(clipPath);
     } else {
       console.warn(`[Pipeline] Scene ${scene.index}: skipping unreadable clip ${path.basename(clipPath)}`);
