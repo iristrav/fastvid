@@ -300,6 +300,72 @@ const VIDRUSH_CLIP_MAX_SEC = 3.0;
 const VIDRUSH_BEAT_SEC = 2.8;
 const CHAPTER_CARD_DURATION = 1.5;
 
+/** Wall-clock budgets: short ≤60 min, long ≤90 min (see getPipelinePerfProfile). */
+interface PipelinePerfProfile {
+  targetWallClockMin: number;
+  maxBeatsPerScene: number;
+  maxTopicQueries: number;
+  skipFairUseTransform: boolean;
+  transformTimeoutMs: number;
+  enableArchival: boolean;
+  enableNasa: boolean;
+  sceneParallelism: number;
+  pexelsDownloadRetries: number;
+}
+
+function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
+  if (videoLength === "1" || videoLength === "2") {
+    return {
+      targetWallClockMin: 60,
+      maxBeatsPerScene: 5,
+      maxTopicQueries: 3,
+      skipFairUseTransform: true,
+      transformTimeoutMs: 25_000,
+      enableArchival: false,
+      enableNasa: false,
+      sceneParallelism: 2,
+      pexelsDownloadRetries: 2,
+    };
+  }
+  if (videoLength === "5-8") {
+    return {
+      targetWallClockMin: 90,
+      maxBeatsPerScene: 6,
+      maxTopicQueries: 4,
+      skipFairUseTransform: true,
+      transformTimeoutMs: 35_000,
+      enableArchival: false,
+      enableNasa: true,
+      sceneParallelism: 2,
+      pexelsDownloadRetries: 2,
+    };
+  }
+  if (videoLength === "12-15" || videoLength === "15-20") {
+    return {
+      targetWallClockMin: 90,
+      maxBeatsPerScene: 5,
+      maxTopicQueries: 3,
+      skipFairUseTransform: true,
+      transformTimeoutMs: 40_000,
+      enableArchival: false,
+      enableNasa: true,
+      sceneParallelism: 2,
+      pexelsDownloadRetries: 2,
+    };
+  }
+  return {
+    targetWallClockMin: 90,
+    maxBeatsPerScene: 7,
+    maxTopicQueries: 4,
+    skipFairUseTransform: false,
+    transformTimeoutMs: 45_000,
+    enableArchival: true,
+    enableNasa: true,
+    sceneParallelism: 2,
+    pexelsDownloadRetries: 2,
+  };
+}
+
 /** Stable stock trim — no animated Ken Burns pan (avoids jitter on real footage). */
 async function trimDownloadedStockClip(
   rawPath: string,
@@ -921,7 +987,8 @@ async function fetchPexelsClips(
   strictQueries = false,
   fileTag = "pexels",
   excludeVideoIds?: Set<number>,
-  candidateOffset = 0
+  candidateOffset = 0,
+  downloadRetries = 3
 ): Promise<string[]> {
   if (!PEXELS_API_KEY) return [];
 
@@ -1000,7 +1067,7 @@ async function fetchPexelsClips(
         // Download with retry logic
         let downloadResp;
         let buffer: Buffer | null = null;
-        let retries = 3;
+        let retries = downloadRetries;
         
         while (retries > 0 && !buffer) {
           try {
@@ -2935,7 +3002,8 @@ async function transformClipForFairUse(
   sceneText: string,
   sceneIndex: number,
   clipIndex: number,
-  workDir: string
+  workDir: string,
+  timeoutMs = 120_000
 ): Promise<string> {
   const outputPath = inputPath.replace(/\.mp4$/, '_transformed.mp4');
 
@@ -2955,7 +3023,7 @@ async function transformClipForFairUse(
 
   // Use spawn() with explicit SIGKILL on timeout to prevent Node.js event loop deadlock.
   // Promise.race() with exec() does NOT kill the child process, causing silent hangs.
-  const TRANSFORM_TIMEOUT_MS = 120_000; // 2 min — large Pexels clips can be 100MB+
+  const TRANSFORM_TIMEOUT_MS = timeoutMs;
   console.log(`[Pipeline] Scene ${sceneIndex}: starting fair-use transform clip ${clipIndex} (${path.basename(inputPath)})`);
   try {
     // Import spawn at the top of the async function scope (ES module — require() is not available)
@@ -3086,6 +3154,20 @@ interface VisualDedupState {
   usedCategories: Map<string, number>;
   globalBeatIndex: number;
   lock: Promise<void>;
+  perf: PipelinePerfProfile;
+}
+
+function createVisualDedupState(perf: PipelinePerfProfile): VisualDedupState {
+  return {
+    usedPaths: new Set(),
+    usedPexelsIds: new Set(),
+    usedPixabayIds: new Set(),
+    usedContentKeys: new Set(),
+    usedCategories: new Map(),
+    globalBeatIndex: 0,
+    lock: Promise.resolve(),
+    perf,
+  };
 }
 
 const STOCK_CATEGORY_LIMITS: Record<string, number> = {
@@ -3116,18 +3198,6 @@ const GOLDEN_MUSK_QUERIES = [
   "lithium ion battery factory production",
   "electric car factory quality inspection",
 ];
-
-function createVisualDedupState(): VisualDedupState {
-  return {
-    usedPaths: new Set(),
-    usedPexelsIds: new Set(),
-    usedPixabayIds: new Set(),
-    usedContentKeys: new Set(),
-    usedCategories: new Map(),
-    globalBeatIndex: 0,
-    lock: Promise.resolve(),
-  };
-}
 
 async function withVisualDedupLock<T>(dedup: VisualDedupState, fn: () => Promise<T>): Promise<T> {
   let release!: () => void;
@@ -3333,9 +3403,12 @@ function scoreVisualRelevance(text: string, keywords: string[]): number {
   return score;
 }
 
-function buildSceneBeats(scene: Scene, duration: number): SceneBeat[] {
+function buildSceneBeats(scene: Scene, duration: number, maxBeatsCap = 12): SceneBeat[] {
   const minBeatsForDuration = Math.ceil(duration / VIDRUSH_CLIP_MAX_SEC);
-  const beatCount = Math.max(minBeatsForDuration, Math.ceil(duration / VIDRUSH_BEAT_SEC));
+  const beatCount = Math.min(
+    maxBeatsCap,
+    Math.max(minBeatsForDuration, Math.ceil(duration / VIDRUSH_BEAT_SEC))
+  );
   const sentences =
     scene.text.match(/[^.!?]+[.!?]+/g)?.map((s) => s.trim()).filter((s) => s.length > 5) ??
     [scene.text.trim()];
@@ -3400,7 +3473,14 @@ async function adoptClip(
       dedup.usedPaths.add(p);
       dedup.usedContentKeys.add(contentKey);
       dedup.usedCategories.set(category, (dedup.usedCategories.get(category) ?? 0) + 1);
-      const transformed = await transformClipForFairUse(p, beatText, sceneIndex, beatIndex, workDir);
+      if (dedup.perf.skipFairUseTransform) {
+        if (await isValidVideoFile(p)) return p;
+        dedup.usedCategories.set(category, Math.max(0, (dedup.usedCategories.get(category) ?? 1) - 1));
+        continue;
+      }
+      const transformed = await transformClipForFairUse(
+        p, beatText, sceneIndex, beatIndex, workDir, dedup.perf.transformTimeoutMs
+      );
       if (await isValidVideoFile(transformed)) return transformed;
       dedup.usedCategories.set(category, Math.max(0, (dedup.usedCategories.get(category) ?? 1) - 1));
     }
@@ -3499,6 +3579,7 @@ async function fetchBeatClip(
   const tag = `b${beat.index}`;
   const candidateOffset = beat.index * 3 + sceneIndex + dedup.globalBeatIndex;
   const muskTopic = isMuskTeslaTopic(videoTitle, scene.text);
+  const perf = dedup.perf;
 
   const rawQ = beat.index === 0
     ? enrichStockQuery(
@@ -3513,7 +3594,10 @@ async function fetchBeatClip(
     : rawQ;
 
   const pexFetch = (query: string, t: string, off: number, count = 2) =>
-    () => fetchPexelsClips(query, clipFetchDur, workDir, sceneIndex, count, [query], true, t, dedup.usedPexelsIds, off);
+    () => fetchPexelsClips(
+      query, clipFetchDur, workDir, sceneIndex, count, [query], true, t,
+      dedup.usedPexelsIds, off, perf.pexelsDownloadRetries
+    );
   const pixFetch = (query: string, t: string, off: number) =>
     () => fetchPixabayClips(query, clipFetchDur, workDir, sceneIndex, 2, t, true, dedup.usedPixabayIds, off);
   const brollFetch = (query: string) =>
@@ -3524,9 +3608,9 @@ async function fetchBeatClip(
   // 0) Opening beat: always start with on-topic rocket/factory footage
   if (beat.index === 0 && muskTopic) {
     clip = await tryStockSources(
-      OPENING_MUSK_QUERIES.map((oq, oi) => ({
+      OPENING_MUSK_QUERIES.slice(0, 2).map((oq, oi) => ({
         query: oq,
-        fetch: pexFetch(oq, `${tag}_open`, candidateOffset + oi, 3),
+        fetch: pexFetch(oq, `${tag}_open`, candidateOffset + oi, 2),
       })),
       dedup, sceneIndex, beat.index, beat.text, workDir, "opening"
     );
@@ -3547,7 +3631,7 @@ async function fetchBeatClip(
     const goldenFetchers: Array<{ query: string; fetch: () => Promise<string[]> }> = [];
 
     // NASA archival only for first two rocket beats (slow — don't repeat every beat)
-    if (spaceTopic && goldenCat === "rocket" && (dedup.usedCategories.get("rocket") ?? 0) === 0) {
+    if (perf.enableNasa && spaceTopic && goldenCat === "rocket" && (dedup.usedCategories.get("rocket") ?? 0) === 0) {
       goldenFetchers.push({
         query: golden,
         fetch: () => fetchNasaVideoClips(golden, clipFetchDur, workDir, sceneIndex, 1),
@@ -3563,7 +3647,7 @@ async function fetchBeatClip(
   // 3) Scene topic-anchored queries (max 6 to keep generation fast)
   const topicQueries = buildTopicAnchoredQueries(scene, videoTitle, personName, videoTitle);
   clip = await tryStockSources(
-    topicQueries.slice(0, 6).map((tq, ti) => ({
+    topicQueries.slice(0, perf.maxTopicQueries).map((tq, ti) => ({
       query: tq,
       fetch: pexFetch(tq, `${tag}_topic`, candidateOffset + ti, 2),
     })),
@@ -3591,7 +3675,7 @@ async function fetchBeatClip(
   );
   if (clip) { dedup.globalBeatIndex++; return clip; }
 
-  if (spaceTopic && stockVisualCategory(q) === "rocket") {
+  if (perf.enableNasa && spaceTopic && stockVisualCategory(q) === "rocket") {
     clip = await tryStockSources(
       [{ query: q, fetch: () => fetchNasaVideoClips(q, clipFetchDur, workDir, sceneIndex, 1) }],
       dedup, sceneIndex, beat.index, beat.text, workDir, "NASA"
@@ -3599,14 +3683,16 @@ async function fetchBeatClip(
     if (clip) { dedup.globalBeatIndex++; return clip; }
   }
 
-  clip = await tryStockSources(
-    [
-      { query: q, fetch: () => fetchInternetArchiveClips(q, clipFetchDur, workDir, sceneIndex, 1, tag) },
-      { query: q, fetch: () => fetchYouTubeCCClips(q, clipFetchDur, workDir, sceneIndex, 1, beat.keywords, 2) },
-    ],
-    dedup, sceneIndex, beat.index, beat.text, workDir, "archival"
-  );
-  if (clip) { dedup.globalBeatIndex++; return clip; }
+  if (perf.enableArchival) {
+    clip = await tryStockSources(
+      [
+        { query: q, fetch: () => fetchInternetArchiveClips(q, clipFetchDur, workDir, sceneIndex, 1, tag) },
+        { query: q, fetch: () => fetchYouTubeCCClips(q, clipFetchDur, workDir, sceneIndex, 1, beat.keywords, 2) },
+      ],
+      dedup, sceneIndex, beat.index, beat.text, workDir, "archival"
+    );
+    if (clip) { dedup.globalBeatIndex++; return clip; }
+  }
 
   // 6) Scene fallback queries
   const fallbackQueries = [
@@ -3633,14 +3719,14 @@ async function fetchBeatClip(
 async function fetchSceneVisuals(
   scene: Scene,
   workDir: string,
-  videoTitle?: string,
-  dedup: VisualDedupState = createVisualDedupState()
+  videoTitle: string | undefined,
+  dedup: VisualDedupState
 ): Promise<string[]> {
   const clipFetchDur = 4;
   const scenePersons = resolveScenePersons(scene, videoTitle);
   const personName = scenePersons[0] ?? extractPrimaryPersonFromTitle(videoTitle) ?? "";
   const spaceTopic = isSpaceRelatedTopic(scene.visualCue, scene.pexelsQuery, scene.text, videoTitle ?? "");
-  const beats = buildSceneBeats(scene, scene.duration);
+  const beats = buildSceneBeats(scene, scene.duration, dedup.perf.maxBeatsPerScene);
   const clips: string[] = [];
 
   console.log(`[Pipeline] Scene ${scene.index}: fetching ${beats.length} beat-aligned clip(s)`);
@@ -3676,12 +3762,13 @@ async function fetchSceneVisuals(
         clipFetchDur,
         workDir,
         scene.index,
-        3,
+        1,
         undefined,
         false,
         `b${beat.index}_em`,
         dedup.usedPexelsIds,
-        beat.index * 7 + scene.index
+        beat.index * 7 + scene.index,
+        dedup.perf.pexelsDownloadRetries
       );
       const emClip = await adoptClip(emergency, dedup, scene.index, beat.index, beat.text, workDir, emergencyQ);
       if (emClip) {
@@ -4610,10 +4697,15 @@ export async function runVideoPipeline(
     // ── Stage 3: Fetch AI images + Pexels clips in parallel batches ───────────
     onProgress?.({ stage: STAGE_LABELS.visuals, percent: 20 });
     const t2 = Date.now();
-    const visualDedup = createVisualDedupState();
+    const perf = getPipelinePerfProfile(videoLength);
+    console.log(
+      `[Pipeline] Perf budget: ≤${perf.targetWallClockMin}min wall-clock, ` +
+      `≤${perf.maxBeatsPerScene} beats/scene, ${perf.sceneParallelism} parallel scenes, ` +
+      `fair-use transform=${perf.skipFairUseTransform ? "skip" : "on"}`
+    );
+    const visualDedup = createVisualDedupState(perf);
 
-    // Sequential fetch for short tests prevents Pexels ID race duplicates; parallel for long videos
-    const visualLimit = pLimit(videoLength === "1" || videoLength === "2" ? 1 : 2);
+    const visualLimit = pLimit(perf.sceneParallelism);
     let completedVisuals = 0;
     const sceneVisuals: string[][] = await withTimeout(
       Promise.all(scenes.map(scene => visualLimit(async () => {
@@ -4625,8 +4717,8 @@ export async function runVideoPipeline(
         });
         return clips;
       }))),
-      10_800_000, // 180 min hard limit for all visuals (large scene count)
-      "Visual generation stage"
+      Math.round(perf.targetWallClockMin * 60_000 * 1.15),
+      `Visual generation stage (≤${perf.targetWallClockMin}min SLA)`
     );
     console.log(`[Pipeline] Stage 3 (visuals): ${((Date.now()-t2)/1000).toFixed(1)}s`);
 
