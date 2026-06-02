@@ -1118,7 +1118,8 @@ async function fetchBrollClips(
   brollQueries: string[],
   clipDuration: number,
   workDir: string,
-  sceneIndex: number
+  sceneIndex: number,
+  excludeVideoIds?: Set<number>
 ): Promise<string[]> {
   if ((!PEXELS_API_KEY && !PIXABAY_API_KEY) || !brollQueries || brollQueries.length === 0) return [];
   const results: string[] = [];
@@ -1137,7 +1138,9 @@ async function fetchBrollClips(
         videos?: Array<{ id: number; duration: number; video_files: Array<{ width: number; height: number; link: string }> }>;
       };
       if (!searchData.videos?.length) continue;
-      const candidates = searchData.videos.filter(v => v.duration >= 3).slice(0, 3);
+      const candidates = searchData.videos
+        .filter(v => v.duration >= 3 && !excludeVideoIds?.has(v.id))
+        .slice(0, 3);
       for (const video of candidates) {
         if (results.length >= 3) break;
         const videoFile = video.video_files
@@ -1145,8 +1148,8 @@ async function fetchBrollClips(
           .sort((a, b) => b.width - a.width)[0]
           || video.video_files.filter(f => f.width <= 1920).sort((a, b) => b.width - a.width)[0];
         if (!videoFile?.link) continue;
-        const rawPath = path.join(workDir, `scene_${sceneIndex}_broll_${qi}_raw.mp4`);
-        const outPath = path.join(workDir, `scene_${sceneIndex}_broll_${qi}.mp4`);
+        const rawPath = path.join(workDir, `scene_${sceneIndex}_broll_vid${video.id}_raw.mp4`);
+        const outPath = path.join(workDir, `scene_${sceneIndex}_broll_vid${video.id}.mp4`);
         try {
           const dlResp = await fetchWithTimeout(videoFile.link, 8_000, `B-roll download scene ${sceneIndex}`);
           if (!dlResp.ok) continue;
@@ -1164,6 +1167,7 @@ async function fetchBrollClips(
           );
           try { fs.unlinkSync(rawPath); } catch { /* ignore */ }
           if (trimmed) {
+            excludeVideoIds?.add(video.id);
             results.push(outPath);
             console.log(`[Pipeline] Scene ${sceneIndex}: B-roll clip added: "${query}"`);
           }
@@ -3117,6 +3121,51 @@ function clipContentKey(filePath: string): string {
   }
 }
 
+/** Beat clip length in compose — fill scene duration, cap per clip for pacing. */
+function computeMontageClipDuration(sceneDuration: number, clipCount: number): number {
+  if (clipCount <= 0) return VIDRUSH_CLIP_MAX_SEC;
+  const evenSplit = sceneDuration / clipCount;
+  let clipDur = Math.max(VIDRUSH_CLIP_MIN_SEC, Math.min(4.5, evenSplit));
+  if (clipDur * clipCount < sceneDuration * 0.92) {
+    clipDur = sceneDuration / clipCount;
+  }
+  return clipDur;
+}
+
+function buildTopicAnchoredQueries(scene: Scene, videoTitle?: string, personName?: string): string[] {
+  const person = personName || scene.personNames?.[0] || extractPrimaryPersonFromTitle(videoTitle) || "";
+  const titleLower = (videoTitle ?? "").toLowerCase();
+  const textLower = scene.text.toLowerCase();
+  const queries: string[] = [];
+
+  if (person) {
+    queries.push(...buildPersonMediaQueries(person, scene.visualCue));
+  }
+  if (person.toLowerCase().includes("musk") || titleLower.includes("musk")) {
+    queries.push(
+      "SpaceX rocket launch Falcon 9",
+      "SpaceX Starship launch pad",
+      "Tesla Gigafactory production line",
+      "Tesla electric car factory",
+      "Tesla Model 3 assembly",
+      "Elon Musk press conference speech",
+    );
+  }
+  if (titleLower.includes("tesla") || textLower.includes("tesla")) {
+    queries.push("Tesla factory workers assembly", "Tesla electric vehicle production", "Tesla car manufacturing plant");
+  }
+  if (titleLower.includes("spacex") || textLower.includes("spacex") || textLower.includes("rocket")) {
+    queries.push("SpaceX rocket launch", "rocket launch pad night", "Falcon 9 landing");
+  }
+  queries.push(
+    enrichStockQuery(scene.literalVisualCue ?? "", scene, videoTitle, person),
+    enrichStockQuery(scene.pexelsQuery, scene, videoTitle, person),
+    enrichStockQuery(scene.visualCue, scene, videoTitle, person),
+  );
+
+  return [...new Set(queries.filter((q) => q.trim().length > 2 && !isBlockedStockQuery(q)))];
+}
+
 function enrichStockQuery(
   query: string,
   scene: Scene,
@@ -3174,7 +3223,8 @@ function scoreVisualRelevance(text: string, keywords: string[]): number {
 }
 
 function buildSceneBeats(scene: Scene, duration: number): SceneBeat[] {
-  const beatCount = Math.max(2, Math.ceil(duration / VIDRUSH_BEAT_SEC));
+  const minBeatsForDuration = Math.ceil(duration / VIDRUSH_CLIP_MAX_SEC);
+  const beatCount = Math.max(minBeatsForDuration, Math.ceil(duration / VIDRUSH_BEAT_SEC));
   const sentences =
     scene.text.match(/[^.!?]+[.!?]+/g)?.map((s) => s.trim()).filter((s) => s.length > 5) ??
     [scene.text.trim()];
@@ -3314,6 +3364,19 @@ async function fetchBeatClip(
     : rawQ;
   const candidateOffset = beat.index * 3 + sceneIndex;
 
+  const topicQueries = buildTopicAnchoredQueries(scene, videoTitle, personName);
+  for (const tq of topicQueries.slice(0, 8)) {
+    const pexTopic = await fetchPexelsClips(
+      tq, clipFetchDur, workDir, sceneIndex, 2, undefined, false, `${tag}_topic`,
+      dedup.usedPexelsIds, candidateOffset
+    );
+    let topicClip = await adoptClip(pexTopic, dedup, sceneIndex, beat.index, beat.text, workDir);
+    if (topicClip) {
+      console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: topic Pexels "${tq}"`);
+      return topicClip;
+    }
+  }
+
   // Odd beats (not opening): try dedicated B-roll cutaways
   if (beat.index % 2 === 1 && beat.index > 0 && (scene.brollQueries?.length ?? 0) > 0) {
     const brollQ = enrichStockQuery(
@@ -3323,7 +3386,7 @@ async function fetchBeatClip(
       personName
     );
     if (!isBlockedStockQuery(brollQ)) {
-      const brollFirst = await fetchBrollClips([brollQ], clipFetchDur, workDir, sceneIndex);
+      const brollFirst = await fetchBrollClips([brollQ], clipFetchDur, workDir, sceneIndex, dedup.usedPexelsIds);
       let clip = await adoptClip(brollFirst, dedup, sceneIndex, beat.index, beat.text, workDir);
       if (clip) {
         console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: B-roll "${brollQ}"`);
@@ -3352,7 +3415,7 @@ async function fetchBeatClip(
     return clip;
   }
 
-  const broll = await fetchBrollClips([q], clipFetchDur, workDir, sceneIndex);
+  const broll = await fetchBrollClips([q], clipFetchDur, workDir, sceneIndex, dedup.usedPexelsIds);
   clip = await adoptClip(broll, dedup, sceneIndex, beat.index, beat.text, workDir);
   if (clip) return clip;
 
@@ -3940,10 +4003,7 @@ async function composeSceneVideo(
 
   try {
     // Vidrush montage: 2–3s clips, hard cuts (no crossfade)
-    const clipDur = Math.min(
-      VIDRUSH_CLIP_MAX_SEC,
-      Math.max(VIDRUSH_CLIP_MIN_SEC, duration / safeClips.length)
-    );
+    const clipDur = computeMontageClipDuration(duration, safeClips.length);
     const inputs = safeClips.map((c, i) => {
       const startSec = Math.min(((scene.index + i) * 0.7) % 1.2, 0.8);
       return `-ss ${startSec.toFixed(2)} -t ${clipDur.toFixed(3)} -i "${c}"`;
@@ -3969,8 +4029,8 @@ async function composeSceneVideo(
     await withTimeout(
       exec(
         `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}"${kineticInput} ` +
-        `-filter_complex "${scaleFilters}${mergeFilter}${kineticChainStr};[${finalVideoLabel}]${fadeFilter}[vout]" ` +
-        `-map "[vout]" -map "${audioIdx}:a" ` +
+        `-filter_complex "${scaleFilters}${mergeFilter}${kineticChainStr};[${finalVideoLabel}]${fadeFilter}[vout];[${audioIdx}:a]apad=whole_dur=${duration.toFixed(3)},atrim=0:${duration.toFixed(3)}[aout]" ` +
+        `-map "[vout]" -map "[aout]" ` +
         `-t ${duration} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
       ),
       120_000, `Compose multi-clip scene ${scene.index}`
@@ -3978,10 +4038,7 @@ async function composeSceneVideo(
   } catch (composeErr) {
     console.warn(`[Pipeline] Scene ${scene.index}: compose failed, trying simplified compose:`, composeErr);
     try {
-      const clipDur = Math.min(
-        VIDRUSH_CLIP_MAX_SEC,
-        Math.max(VIDRUSH_CLIP_MIN_SEC, duration / safeClips.length)
-      );
+      const clipDur = computeMontageClipDuration(duration, safeClips.length);
       const n = Math.min(12, Math.max(2, safeClips.length));
       const subset = safeClips.slice(0, n);
       const inputs = subset.map((c) => `-t ${clipDur.toFixed(3)} -i "${c}"`).join(" ");
@@ -3990,8 +4047,8 @@ async function composeSceneVideo(
       await withTimeout(
         exec(
           `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}" ` +
-          `-filter_complex "${scaleFilters};${concatLabels}concat=n=${subset.length}:v=1:a=0[vout]" ` +
-          `-map "[vout]" -map "${subset.length}:a" ` +
+          `-filter_complex "${scaleFilters};${concatLabels}concat=n=${subset.length}:v=1:a=0[vout];[${subset.length}:a]apad=whole_dur=${duration.toFixed(3)},atrim=0:${duration.toFixed(3)}[aout]" ` +
+          `-map "[vout]" -map "[aout]" ` +
           `-t ${duration} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
         ),
         90_000,
@@ -4459,13 +4516,14 @@ export async function runVideoPipeline(
     }
 
         // ── Stage 4b: Vidrush chapter cards (yellow title cards between sections) ──
+    const useChapterCards = videoLength !== "1" && videoLength !== "2";
     const orderedClips: string[] = [];
     let chapterCardCount = 0;
     for (let i = 0; i < composedScenes.length; i++) {
       const scene = scenes[i];
       const cardTitle = scene.chapterTitle || scene.sectionTitle;
       // Never open on a card — real footage first; skip script meta labels (HOOK, CTA)
-      if (i > 0 && isPublishableChapterTitle(cardTitle)) {
+      if (useChapterCards && i > 0 && isPublishableChapterTitle(cardTitle)) {
         try {
           const card = await renderChapterCard(cardTitle, i, workDir);
           if (fs.existsSync(card) && fs.statSync(card).size > 1000) {

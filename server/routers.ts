@@ -279,7 +279,7 @@ RULES:
           { role: "user", content: isOneMin
             ? `Section ${idx + 1}: "${sec.title}"\nCover: ${sec.keyPoints.join(", ")}\n\nWrite ONE short paragraph of 3-4 sentences (~45-55 words total). Include exactly 2 [VISUAL: ...] tags with specific real-world footage descriptions. This entire video is only 1 minute — be concise.`
             : isTwoMin
-              ? `Section ${idx + 1}: "${sec.title}"\nCover: ${sec.keyPoints.join(", ")}\n\nWrite ONE paragraph of 4-5 sentences (~80-100 words total). Include exactly 2 [VISUAL: ...] tags with specific real-world footage descriptions. This entire video is only 2 minutes — stay concise and punchy.`
+              ? `Section ${idx + 1}: "${sec.title}"\nCover: ${sec.keyPoints.join(", ")}\n\nWrite ONE paragraph of 5-6 sentences (~120-140 words total). Include exactly 2 [VISUAL: ...] tags with specific real-world footage descriptions (e.g. SpaceX launch, Tesla factory). This entire video is only 2 minutes — stay concise and punchy.`
             : `Section ${idx + 1}: "${sec.title}"\nCover these key points: ${sec.keyPoints.join(", ")}\n\nWrite 3-4 short paragraphs of documentary-style narration. Each paragraph should be 2-4 sentences. Include [VISUAL: ...] tags after every 2-3 sentences with very specific, literal descriptions of footage to show.` },
         ],
       }).then(r => { const c = r?.choices?.[0]?.message?.content ?? ""; return typeof c === "string" ? c : ""; })
@@ -317,7 +317,7 @@ RULES:
     await updateVideoProgress(videoId, "📋 Assembling script...", 22);
 
     // Assemble full script
-    const scriptParts: string[] = [`# ${title}\n`, `## HOOK\n${outline.hook}\n[VISUAL: Opening shot for ${prompt}]\n`];
+    const scriptParts: string[] = [`# ${title}\n`, `## Opening\n${outline.hook}\n[VISUAL: Opening shot for ${prompt}]\n`];
     outline.sections.forEach((sec, idx) => scriptParts.push(`## ${sec.title}\n${sectionTexts[idx] ?? ""}\n`));
     scriptParts.push(`## CALL TO ACTION\n${outline.cta}\n[VISUAL: Cinematic closing b-roll related to the video topic]\n`);
     const scriptContent = scriptParts.join("\n");
