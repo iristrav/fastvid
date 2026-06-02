@@ -1123,7 +1123,7 @@ async function fetchBrollClips(
     const query = brollQueries[qi];
     if (!query || !query.trim()) continue;
     try {
-      const searchUrl = `https://api.pexels.com/videos/search?query=${encodeURIComponent(query)}&per_page=5&size=large&orientation=landscape`;
+      const searchUrl = `https://api.pexels.com/videos/search?query=${encodeURIComponent(query)}&per_page=5&size=large&orientation=landscape&min_duration=4`;
       const searchResp = await withTimeout(
         fetch(searchUrl, { headers: { Authorization: PEXELS_API_KEY } }),
         10_000,
@@ -3083,8 +3083,39 @@ interface VisualDedupState {
   usedPexelsIds: Set<number>;
   usedPixabayIds: Set<number>;
   usedContentKeys: Set<string>;
+  usedCategories: Map<string, number>;
+  globalBeatIndex: number;
   lock: Promise<void>;
 }
+
+const STOCK_CATEGORY_LIMITS: Record<string, number> = {
+  solar: 1,
+  rocket: 3,
+  tesla: 3,
+  factory: 3,
+  robot: 2,
+  space: 2,
+  generic: 5,
+};
+
+/** High-quality rotating queries for Musk/Tesla/SpaceX videos — real-world B-roll only. */
+const GOLDEN_MUSK_QUERIES = [
+  "SpaceX Falcon 9 rocket launch pad",
+  "rocket launch exhaust flame night sky",
+  "Falcon 9 landing drone ship ocean",
+  "Starship launch pad Texas coastline",
+  "Tesla Gigafactory production line workers",
+  "Tesla electric car assembly line robots",
+  "Tesla Model 3 driving cinematic road",
+  "electric vehicle battery manufacturing plant",
+  "rocket engine ignition launch pad close up",
+  "mission control room NASA monitors",
+  "Tesla supercharger station cars charging",
+  "industrial robot arm welding automotive factory",
+  "SpaceX rocket hangar horizontal transport",
+  "lithium ion battery factory production",
+  "electric car factory quality inspection",
+];
 
 function createVisualDedupState(): VisualDedupState {
   return {
@@ -3092,6 +3123,8 @@ function createVisualDedupState(): VisualDedupState {
     usedPexelsIds: new Set(),
     usedPixabayIds: new Set(),
     usedContentKeys: new Set(),
+    usedCategories: new Map(),
+    globalBeatIndex: 0,
     lock: Promise.resolve(),
   };
 }
@@ -3115,7 +3148,28 @@ const BLOCKED_STOCK_TAGS_RE =
   /emoji|cartoon|animation|icon|illustration|graphic|pattern|sticker|clipart|motion graphics|3d render|abstract background|wallpaper|seamless loop|looping|campfire|bonfire|fireplace|bbq|barbecue|driving|dashcam|highway|bridge|miniature|scale model|toy|diorama|tabletop|model rocket/i;
 
 const BLOCKED_STOCK_QUERY_RE =
-  /\b(subscribe|like button|thumbs up|thumbs down|social media ui|notification bell|emoji|icon animation|button animation|wallpaper|seamless loop|motion graphics)\b/i;
+  /\b(subscribe|like button|thumbs up|thumbs down|social media ui|notification bell|emoji|icon animation|button animation|wallpaper|seamless loop|motion graphics|scale model|miniature|toy rocket|model rocket|space shuttle model|shuttle model|diorama|replica rocket)\b/i;
+
+function stockVisualCategory(query: string, filePath?: string): string {
+  const combined = `${query} ${path.basename(filePath ?? "")}`.toLowerCase();
+  if (/solar|photovoltaic|panel array|sun panel/.test(combined)) return "solar";
+  if (/tesla|supercharger|model [3syx]|cybertruck/.test(combined)) return "tesla";
+  if (/falcon|spacex|starship|rocket launch|launch pad|booster|ignition/.test(combined)) return "rocket";
+  if (/robot arm|humanoid|cybernetic|prosthetic arm/.test(combined)) return "robot";
+  if (/assembly line|manufacturing|factory|gigafactory|welding plant/.test(combined)) return "factory";
+  if (/astronaut|mission control|orbit|satellite deploy|space station/.test(combined)) return "space";
+  return "generic";
+}
+
+function categoryAtLimit(dedup: VisualDedupState, category: string): boolean {
+  const limit = STOCK_CATEGORY_LIMITS[category] ?? 2;
+  return (dedup.usedCategories.get(category) ?? 0) >= limit;
+}
+
+function isMuskTeslaTopic(videoTitle?: string, sceneText?: string): boolean {
+  const text = `${videoTitle ?? ""} ${sceneText ?? ""}`.toLowerCase();
+  return /musk|tesla|spacex|electric vehicle|falcon|starship/.test(text);
+}
 
 function hasBlockedStockTags(tags?: string): boolean {
   return BLOCKED_STOCK_TAGS_RE.test(tags ?? "");
@@ -3212,7 +3266,12 @@ function buildTopicAnchoredQueries(scene: Scene, videoTitle?: string, personName
     queries.push(...buildPersonMediaQueries(person, scene.visualCue));
   }
 
-  return [...new Set(queries.filter((q) => q.trim().length > 2 && !isBlockedStockQuery(q)))];
+  const allowSolar = /solar|photovoltaic|sun energy|panel/.test(textLower);
+  return [...new Set(queries.filter((q) => {
+    if (!q.trim() || q.trim().length <= 2 || isBlockedStockQuery(q)) return false;
+    if (!allowSolar && stockVisualCategory(q) === "solar") return false;
+    return true;
+  }))];
 }
 
 function enrichStockQuery(
@@ -3317,22 +3376,53 @@ async function adoptClip(
   sceneIndex: number,
   beatIndex: number,
   beatText: string,
-  workDir: string
+  workDir: string,
+  sourceQuery = ""
 ): Promise<string | null> {
   return withVisualDedupLock(dedup, async () => {
     for (const p of paths) {
       if (!p || dedup.usedPaths.has(p) || !fs.existsSync(p)) continue;
       if (!(await isValidVideoFile(p))) continue;
       if (isStillPhotoClip(p)) continue;
+      const category = stockVisualCategory(sourceQuery, p);
+      if (categoryAtLimit(dedup, category)) continue;
+      let fileSize = 0;
+      try { fileSize = fs.statSync(p).size; } catch { continue; }
+      if (fileSize < 180_000) continue;
       const contentKey = clipContentKey(p);
       if (dedup.usedContentKeys.has(contentKey)) continue;
       dedup.usedPaths.add(p);
       dedup.usedContentKeys.add(contentKey);
+      dedup.usedCategories.set(category, (dedup.usedCategories.get(category) ?? 0) + 1);
       const transformed = await transformClipForFairUse(p, beatText, sceneIndex, beatIndex, workDir);
       if (await isValidVideoFile(transformed)) return transformed;
+      dedup.usedCategories.set(category, Math.max(0, (dedup.usedCategories.get(category) ?? 1) - 1));
     }
     return null;
   });
+}
+
+async function tryStockSources(
+  fetchers: Array<{ query: string; fetch: () => Promise<string[]> }>,
+  dedup: VisualDedupState,
+  sceneIndex: number,
+  beatIndex: number,
+  beatText: string,
+  workDir: string,
+  logLabel: string
+): Promise<string | null> {
+  for (const { query, fetch } of fetchers) {
+    if (isBlockedStockQuery(query)) continue;
+    const category = stockVisualCategory(query);
+    if (categoryAtLimit(dedup, category)) continue;
+    const paths = await fetch();
+    const clip = await adoptClip(paths, dedup, sceneIndex, beatIndex, beatText, workDir, query);
+    if (clip) {
+      console.log(`[Pipeline] Scene ${sceneIndex} beat ${beatIndex}: ${logLabel} "${query}"`);
+      return clip;
+    }
+  }
+  return null;
 }
 
 /** Last-resort real stock video — broad queries, non-strict mode. No still photos. */
@@ -3371,7 +3461,7 @@ async function fetchLastResortRealClip(
       q, clipFetchDur, workDir, sceneIndex, 2, undefined, false, `${tag}_pex`,
       dedup.usedPexelsIds, candidateOffset
     );
-    let clip = await adoptClip(pex, dedup, sceneIndex, beat.index, beat.text, workDir);
+    let clip = await adoptClip(pex, dedup, sceneIndex, beat.index, beat.text, workDir, q);
     if (clip) {
       console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: last-resort Pexels "${q}"`);
       return clip;
@@ -3381,7 +3471,7 @@ async function fetchLastResortRealClip(
       q, clipFetchDur, workDir, sceneIndex, 2, `${tag}_pix`, false,
       dedup.usedPixabayIds, candidateOffset
     );
-    clip = await adoptClip(pix, dedup, sceneIndex, beat.index, beat.text, workDir);
+    clip = await adoptClip(pix, dedup, sceneIndex, beat.index, beat.text, workDir, q);
     if (clip) {
       console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: last-resort Pixabay "${q}"`);
       return clip;
@@ -3403,6 +3493,9 @@ async function fetchBeatClip(
   videoTitle?: string
 ): Promise<string | null> {
   const tag = `b${beat.index}`;
+  const candidateOffset = beat.index * 3 + sceneIndex + dedup.globalBeatIndex;
+  const muskTopic = isMuskTeslaTopic(videoTitle, scene.text);
+
   const rawQ = beat.index === 0
     ? enrichStockQuery(
         scene.literalVisualCue || scene.pexelsQuery || scene.visualCue || beat.searchQuery,
@@ -3414,106 +3507,102 @@ async function fetchBeatClip(
   const q = isBlockedStockQuery(rawQ)
     ? enrichStockQuery(scene.pexelsQuery || scene.visualCue, scene, videoTitle, personName)
     : rawQ;
-  const candidateOffset = beat.index * 3 + sceneIndex;
 
-  const topicQueries = buildTopicAnchoredQueries(scene, videoTitle, personName, videoTitle);
-  for (let ti = 0; ti < Math.min(12, topicQueries.length); ti++) {
-    const tq = topicQueries[ti];
-    const pexTopic = await fetchPexelsClips(
-      tq, clipFetchDur, workDir, sceneIndex, 2, [tq], true, `${tag}_topic`,
-      dedup.usedPexelsIds, candidateOffset + ti
-    );
-    let topicClip = await adoptClip(pexTopic, dedup, sceneIndex, beat.index, beat.text, workDir);
-    if (topicClip) {
-      console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: topic Pexels "${tq}"`);
-      return topicClip;
+  const pexFetch = (query: string, t: string, off: number, count = 2) =>
+    () => fetchPexelsClips(query, clipFetchDur, workDir, sceneIndex, count, [query], true, t, dedup.usedPexelsIds, off);
+  const pixFetch = (query: string, t: string, off: number) =>
+    () => fetchPixabayClips(query, clipFetchDur, workDir, sceneIndex, 2, t, true, dedup.usedPixabayIds, off);
+  const brollFetch = (query: string) =>
+    () => fetchBrollClips([query], clipFetchDur, workDir, sceneIndex, dedup.usedPexelsIds);
+
+  // 1) Beat-specific literal query (highest narrative match)
+  let clip = await tryStockSources(
+    [{ query: q, fetch: pexFetch(q, `${tag}_lit`, candidateOffset) }],
+    dedup, sceneIndex, beat.index, beat.text, workDir, "literal Pexels"
+  );
+  if (clip) { dedup.globalBeatIndex++; return clip; }
+
+  // 2) Golden rotating query for Musk/Tesla/SpaceX — guarantees visual variety
+  if (muskTopic) {
+    const golden = GOLDEN_MUSK_QUERIES[dedup.globalBeatIndex % GOLDEN_MUSK_QUERIES.length];
+    const goldenCat = stockVisualCategory(golden);
+    const goldenFetchers: Array<{ query: string; fetch: () => Promise<string[]> }> = [];
+
+    if (spaceTopic && (goldenCat === "rocket" || goldenCat === "space")) {
+      goldenFetchers.push({
+        query: golden,
+        fetch: () => fetchNasaVideoClips(golden, clipFetchDur, workDir, sceneIndex, 1),
+      });
+      goldenFetchers.push({
+        query: golden,
+        fetch: () => fetchInternetArchiveClips(golden, clipFetchDur, workDir, sceneIndex, 1, `${tag}_ga`),
+      });
     }
+    goldenFetchers.push({ query: golden, fetch: pexFetch(golden, `${tag}_golden`, candidateOffset + 1) });
+    goldenFetchers.push({ query: golden, fetch: pixFetch(golden, `${tag}_golden`, candidateOffset + 1) });
+
+    clip = await tryStockSources(goldenFetchers, dedup, sceneIndex, beat.index, beat.text, workDir, "golden");
+    if (clip) { dedup.globalBeatIndex++; return clip; }
   }
 
-  // Odd beats (not opening): try dedicated B-roll cutaways
+  // 3) Scene topic-anchored queries
+  const topicQueries = buildTopicAnchoredQueries(scene, videoTitle, personName, videoTitle);
+  clip = await tryStockSources(
+    topicQueries.slice(0, 10).map((tq, ti) => ({
+      query: tq,
+      fetch: pexFetch(tq, `${tag}_topic`, candidateOffset + ti, 2),
+    })),
+    dedup, sceneIndex, beat.index, beat.text, workDir, "topic Pexels"
+  );
+  if (clip) { dedup.globalBeatIndex++; return clip; }
+
+  // 4) Dedicated B-roll cutaways on odd beats
   if (beat.index % 2 === 1 && beat.index > 0 && (scene.brollQueries?.length ?? 0) > 0) {
     const brollQ = enrichStockQuery(
       scene.brollQueries![beat.index % scene.brollQueries!.length],
-      scene,
-      videoTitle,
-      personName
+      scene, videoTitle, personName
     );
-    if (!isBlockedStockQuery(brollQ)) {
-      const brollFirst = await fetchBrollClips([brollQ], clipFetchDur, workDir, sceneIndex, dedup.usedPexelsIds);
-      let clip = await adoptClip(brollFirst, dedup, sceneIndex, beat.index, beat.text, workDir);
-      if (clip) {
-        console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: B-roll "${brollQ}"`);
-        return clip;
-      }
-    }
+    clip = await tryStockSources(
+      [{ query: brollQ, fetch: brollFetch(brollQ) }],
+      dedup, sceneIndex, beat.index, beat.text, workDir, "B-roll"
+    );
+    if (clip) { dedup.globalBeatIndex++; return clip; }
   }
 
-  const pex = await fetchPexelsClips(
-    q, clipFetchDur, workDir, sceneIndex, 2, [q], true, `${tag}_pex`,
-    dedup.usedPexelsIds, candidateOffset
+  // 5) Pixabay + archival sources
+  clip = await tryStockSources(
+    [
+      { query: q, fetch: pixFetch(q, `${tag}_pix`, candidateOffset) },
+      ...(spaceTopic ? [{
+        query: q,
+        fetch: () => fetchNasaVideoClips(q, clipFetchDur, workDir, sceneIndex, 1),
+      }] : []),
+      { query: q, fetch: () => fetchWikimediaVideos(q, clipFetchDur, workDir, sceneIndex, 1, tag) },
+      { query: q, fetch: () => fetchInternetArchiveClips(q, clipFetchDur, workDir, sceneIndex, 1, tag) },
+      { query: q, fetch: () => fetchYouTubeCCClips(q, clipFetchDur, workDir, sceneIndex, 1, beat.keywords, 2) },
+    ],
+    dedup, sceneIndex, beat.index, beat.text, workDir, "archival"
   );
-  let clip = await adoptClip(pex, dedup, sceneIndex, beat.index, beat.text, workDir);
-  if (clip) {
-    console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: Pexels "${q}"`);
-    return clip;
-  }
+  if (clip) { dedup.globalBeatIndex++; return clip; }
 
-  const pix = await fetchPixabayClips(
-    q, clipFetchDur, workDir, sceneIndex, 2, `${tag}_pix`, true,
-    dedup.usedPixabayIds, candidateOffset
-  );
-  clip = await adoptClip(pix, dedup, sceneIndex, beat.index, beat.text, workDir);
-  if (clip) {
-    console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: Pixabay "${q}"`);
-    return clip;
-  }
-
-  const broll = await fetchBrollClips([q], clipFetchDur, workDir, sceneIndex, dedup.usedPexelsIds);
-  clip = await adoptClip(broll, dedup, sceneIndex, beat.index, beat.text, workDir);
-  if (clip) return clip;
-
-  if (spaceTopic) {
-    const nasa = await fetchNasaVideoClips(q, clipFetchDur, workDir, sceneIndex, 1);
-    clip = await adoptClip(nasa, dedup, sceneIndex, beat.index, beat.text, workDir);
-    if (clip) return clip;
-  }
-
-  const wikiVid = await fetchWikimediaVideos(q, clipFetchDur, workDir, sceneIndex, 1, tag);
-  clip = await adoptClip(wikiVid, dedup, sceneIndex, beat.index, beat.text, workDir);
-  if (clip) return clip;
-
-  const archive = await fetchInternetArchiveClips(q, clipFetchDur, workDir, sceneIndex, 1, tag);
-  clip = await adoptClip(archive, dedup, sceneIndex, beat.index, beat.text, workDir);
-  if (clip) return clip;
-
-  const ytcc = await fetchYouTubeCCClips(q, clipFetchDur, workDir, sceneIndex, 1, beat.keywords, 2);
-  clip = await adoptClip(ytcc, dedup, sceneIndex, beat.index, beat.text, workDir);
-  if (clip) return clip;
-
+  // 6) Scene fallback queries
   const fallbackQueries = [
     scene.visualCue,
     scene.pexelsQuery,
     ...(scene.pexelsQueries ?? []),
-  ].filter((fq): fq is string => typeof fq === "string" && fq.trim().length > 2 && fq !== q);
+  ].filter((fq): fq is string => typeof fq === "string" && fq.trim().length > 2 && fq !== q && !isBlockedStockQuery(fq));
 
-  for (const fq of fallbackQueries) {
-    const extra = await fetchPexelsClips(
-      fq, clipFetchDur, workDir, sceneIndex, 1, [fq], true, `${tag}_fb`,
-      dedup.usedPexelsIds, candidateOffset + 1
-    );
-    clip = await adoptClip(extra, dedup, sceneIndex, beat.index, beat.text, workDir);
-    if (clip) {
-      console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: fallback Pexels "${fq}"`);
-      return clip;
-    }
-  }
+  clip = await tryStockSources(
+    fallbackQueries.map((fq, fi) => ({ query: fq, fetch: pexFetch(fq, `${tag}_fb`, candidateOffset + fi, 1) })),
+    dedup, sceneIndex, beat.index, beat.text, workDir, "fallback Pexels"
+  );
+  if (clip) { dedup.globalBeatIndex++; return clip; }
 
   const lastResort = await fetchLastResortRealClip(
     beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName, videoTitle
   );
-  if (lastResort) return lastResort;
-
-  return null;
+  dedup.globalBeatIndex++;
+  return lastResort;
 }
 
 // ─── 3e. Fetch All Visuals for a Scene (beat-aligned) ───────────────────────
@@ -3571,7 +3660,7 @@ async function fetchSceneVisuals(
         dedup.usedPexelsIds,
         beat.index * 7 + scene.index
       );
-      const emClip = await adoptClip(emergency, dedup, scene.index, beat.index, beat.text, workDir);
+      const emClip = await adoptClip(emergency, dedup, scene.index, beat.index, beat.text, workDir, emergencyQ);
       if (emClip) {
         clips.push(emClip);
       } else {
