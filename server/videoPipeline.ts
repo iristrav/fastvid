@@ -3519,6 +3519,8 @@ async function fetchBeatClip(
   const brollFetch = (query: string) =>
     () => fetchBrollClips([query], clipFetchDur, workDir, sceneIndex, dedup.usedPexelsIds);
 
+  let clip: string | null = null;
+
   // 0) Opening beat: always start with on-topic rocket/factory footage
   if (beat.index === 0 && muskTopic) {
     clip = await tryStockSources(
