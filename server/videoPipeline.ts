@@ -3226,7 +3226,7 @@ const BLOCKED_STOCK_QUERY_RE =
 
 /** Reject model/CGI/archival-looking clips (Pexels slugs + local filenames). */
 const BLOCKED_STOCK_VISUAL_RE =
-  /shuttle|saturn|apollo|lunar|moon[- ]?landing|moon[- ]?surface|miniature|diorama|tabletop|model[- ]?rocket|scale[- ]?model|toy[- ]?rocket|replica|maquette|science[- ]?fiction|sci[- ]?fi|cgi|3d[- ]?animation|vhs|glitch|vintage[- ]?space|archival|old[- ]?nasa|space[- ]?shuttle|saturn[- ]?v|rocket[- ]?model|model[- ]?launch|volkswagen|vw\b|ford\b|bmw|mercedes|audi\b|toyota factory|honda factory|container ship|cargo ship|freight ship|bulk carrier|highway dash|motorway night/i;
+  /shuttle|saturn|apollo|lunar|moon[- ]?landing|moon[- ]?surface|miniature|diorama|tabletop|model[- ]?rocket|scale[- ]?model|toy[- ]?rocket|replica|maquette|science[- ]?fiction|sci[- ]?fi|cgi|3d[- ]?animation|vhs|glitch|vintage[- ]?space|archival|old[- ]?nasa|space[- ]?shuttle|saturn[- ]?v|rocket[- ]?model|model[- ]?launch|volkswagen|vw\b|ford\b|bmw|mercedes|audi\b|toyota factory|honda factory|container ship|cargo ship|freight ship|bulk carrier|ferry|passenger boat|catamaran|harbor cruise|shipping port|port crane|highway dash|motorway night|night driving dash/i;
 
 const BLOCKED_MUSK_COMPETITOR_RE =
   /\b(volkswagen|vw|ford|gm|general motors|bmw|mercedes|audi|toyota|honda|hyundai|kia|rivian|lucid)\b/i;
@@ -3626,7 +3626,7 @@ async function adoptClip(
         }
         const rel = scoreVisualRelevance(`${sourceQuery} ${path.basename(p)}`, keywords);
         const topicRel = scoreVisualRelevance(`${sourceQuery} ${path.basename(p)}`, MUSK_TOPIC_TOKENS);
-        if (topicRel < 1) continue;
+        if (topicRel < 2) continue;
         if (category === "generic" && queryCategory !== "generic" && rel < 1) continue;
         if (rel + topicRel < 3) continue;
         if (BLOCKED_MUSK_COMPETITOR_RE.test(`${sourceQuery} ${path.basename(p)}`)) continue;
