@@ -3184,7 +3184,6 @@ const STOCK_CATEGORY_LIMITS: Record<string, number> = {
 
 /** High-quality rotating queries for Musk/Tesla/SpaceX — modern real-world B-roll only. */
 const GOLDEN_MUSK_QUERIES = [
-  "SpaceX Falcon 9 rocket launch site",
   "Falcon 9 booster landing on drone ship",
   "Starship launch pad Boca Chica Texas",
   "SpaceX rocket hangar horizontal transport",
@@ -3197,7 +3196,7 @@ const GOLDEN_MUSK_QUERIES = [
   "industrial robot arm welding automotive factory",
   "electric car factory quality inspection",
   "Tesla Fremont factory aerial view",
-  "SpaceX launch pad night ignition flame",
+  "Falcon 9 booster landing on drone ship",
   "Tesla Cybertruck factory production line",
 ];
 
@@ -3231,12 +3230,17 @@ const BLOCKED_STOCK_QUERY_RE =
 const BLOCKED_STOCK_VISUAL_RE =
   /shuttle|saturn|apollo|lunar|moon[- ]?landing|moon[- ]?surface|miniature|diorama|tabletop|model[- ]?rocket|scale[- ]?model|toy[- ]?rocket|replica|maquette|science[- ]?fiction|sci[- ]?fi|cgi|3d[- ]?animation|vhs|glitch|vintage[- ]?space|archival|old[- ]?nasa|space[- ]?shuttle|saturn[- ]?v|rocket[- ]?model|model[- ]?launch/i;
 
+/** Opening = real factory/Tesla B-roll first (avoids CGI “rocket on moon” from generic launch queries). */
 const OPENING_MUSK_QUERIES = [
-  "SpaceX Falcon 9 rocket launch site",
-  "Starship launch pad Boca Chica Texas",
   "Tesla Gigafactory production line workers",
-  "Falcon 9 booster landing on drone ship",
+  "Tesla electric car assembly line robots",
+  "Tesla supercharger station cars charging",
+  "electric vehicle battery manufacturing plant",
 ];
+
+/** Only these rocket/space queries may yield rocket-category clips on Musk/Tesla topics. */
+const MUSK_APPROVED_ROCKET_QUERY_RE =
+  /falcon\s*9.*(land|boost|recover|drone\s*ship)|starship.*(pad|boca|texas|static)|spacex.*crew\s*dragon/i;
 
 function stockVisualCategory(query: string, filePath?: string): string {
   const combined = `${query} ${path.basename(filePath ?? "")}`.toLowerCase();
@@ -3250,9 +3254,57 @@ function stockVisualCategory(query: string, filePath?: string): string {
   return "generic";
 }
 
-function categoryAtLimit(dedup: VisualDedupState, category: string): boolean {
-  const limit = STOCK_CATEGORY_LIMITS[category] ?? 2;
+function categoryLimitFor(dedup: VisualDedupState, category: string, muskTopic = false): number {
+  if (muskTopic) {
+    if (category === "rocket") return 1;
+    if (category === "space") return 0;
+    if (category === "generic") return 2;
+  }
+  return STOCK_CATEGORY_LIMITS[category] ?? 2;
+}
+
+function categoryAtLimit(dedup: VisualDedupState, category: string, muskTopic = false): boolean {
+  const limit = categoryLimitFor(dedup, category, muskTopic);
   return (dedup.usedCategories.get(category) ?? 0) >= limit;
+}
+
+function isMuskApprovedRocketQuery(q: string): boolean {
+  return MUSK_APPROVED_ROCKET_QUERY_RE.test(q);
+}
+
+function isAmbiguousRocketQuery(q: string): boolean {
+  const lower = q.toLowerCase();
+  if (!/\brocket\b/.test(lower) && !/\bspace shuttle\b/.test(lower)) return false;
+  return !isMuskApprovedRocketQuery(q);
+}
+
+async function isMostlyBlackClip(filePath: string): Promise<boolean> {
+  try {
+    const cmd =
+      `"${FFMPEG_BIN}" -y -i "${filePath}" -vf "blackdetect=d=0.08:pix_th=0.12" -an -f null -`;
+    const { stderr } = await withTimeout(exec(cmd), 12_000, `blackdetect ${path.basename(filePath)}`);
+    const out = typeof stderr === "string" ? stderr : String(stderr ?? "");
+    const startMatch = out.match(/black_start:([\d.]+)/g);
+    const endMatch = out.match(/black_end:([\d.]+)/g);
+    if (!startMatch?.length || !endMatch?.length) return false;
+    let blackDur = 0;
+    for (let i = 0; i < Math.min(startMatch.length, endMatch.length); i++) {
+      const start = parseFloat(startMatch[i].replace("black_start:", ""));
+      const end = parseFloat(endMatch[i].replace("black_end:", ""));
+      if (!isNaN(start) && !isNaN(end) && end > start) blackDur += end - start;
+    }
+    const durMatch = out.match(/Duration:\s*(\d+):(\d+):([\d.]+)/);
+    let totalDur = 4;
+    if (durMatch) {
+      totalDur =
+        parseInt(durMatch[1], 10) * 3600 +
+        parseInt(durMatch[2], 10) * 60 +
+        parseFloat(durMatch[3]);
+    }
+    return totalDur > 0 && blackDur / totalDur > 0.55;
+  } catch {
+    return false;
+  }
 }
 
 function isMuskTeslaTopic(videoTitle?: string, sceneText?: string): boolean {
@@ -3265,7 +3317,9 @@ function hasBlockedStockTags(tags?: string): boolean {
 }
 
 function isBlockedStockQuery(q: string): boolean {
-  return BLOCKED_STOCK_QUERY_RE.test(q);
+  if (BLOCKED_STOCK_QUERY_RE.test(q)) return true;
+  if (isAmbiguousRocketQuery(q)) return true;
+  return false;
 }
 
 function isRejectedPexelsVideo(video: { url?: string }): boolean {
@@ -3318,7 +3372,6 @@ function extractTopicStockQueries(promptOrTitle: string): string[] {
   const queries: string[] = [];
   if (/musk|tesla|spacex|electric vehicle|ev\b/.test(text)) {
     queries.push(
-      "SpaceX Falcon 9 rocket launch site",
       "Falcon 9 booster landing on drone ship",
       "Starship launch pad Boca Chica Texas",
       "Tesla Gigafactory production line",
@@ -3331,7 +3384,7 @@ function extractTopicStockQueries(promptOrTitle: string): string[] {
     queries.push("Tesla car showroom", "Tesla supercharger station", "Tesla autopilot camera");
   }
   if (/spacex|rocket|space|mars|starship/.test(text)) {
-    queries.push("Starship launch pad Boca Chica", "SpaceX rocket hangar", "Falcon 9 launch pad night");
+    queries.push("Starship launch pad Boca Chica", "SpaceX rocket hangar", "Falcon 9 booster landing on drone ship");
   }
   if (/ai|artificial intelligence|neural/.test(text)) {
     queries.push("data center server room", "computer chip manufacturing", "robot arm factory");
@@ -3358,7 +3411,7 @@ function buildTopicAnchoredQueries(scene: Scene, videoTitle?: string, personName
     queries.push("Tesla factory workers assembly", "Tesla electric vehicle production");
   }
   if (titleLower.includes("spacex") || textLower.includes("spacex") || textLower.includes("rocket")) {
-    queries.push("SpaceX Falcon 9 rocket launch site", "Falcon 9 booster landing on drone ship", "Starship launch pad Texas");
+    queries.push("Falcon 9 booster landing on drone ship", "Starship launch pad Boca Chica Texas", "SpaceX rocket hangar");
   }
 
   const allowSolar = /solar|photovoltaic|sun energy|panel/.test(textLower);
@@ -3492,23 +3545,18 @@ async function adoptClip(
       if (!(await isValidVideoFile(p))) continue;
       if (isStillPhotoClip(p)) continue;
       if (isRejectedStockClip(p, sourceQuery)) continue;
+      if (await isMostlyBlackClip(p)) continue;
       const category = stockVisualCategory(sourceQuery, p);
-      if (categoryAtLimit(dedup, category)) continue;
+      if (categoryAtLimit(dedup, category, muskTopic)) continue;
       // Musk/Tesla topics: reject generic clips when query targets a specific category
       const queryCategory = stockVisualCategory(sourceQuery);
       if (queryCategory !== "generic" && category === "generic") continue;
       if (muskTopic) {
-        const rel = scoreVisualRelevance(`${sourceQuery} ${path.basename(p)}`, keywords);
-        if (category === "generic" && queryCategory !== "generic" && rel < 1) continue;
-        if (
-          (category === "rocket" || category === "space") &&
-          !/spacex|falcon|starship|tesla|launch pad|booster|gigafactory/.test(
-            `${sourceQuery} ${path.basename(p)}`.toLowerCase()
-          ) &&
-          rel < 2
-        ) {
+        if ((category === "rocket" || category === "space") && !isMuskApprovedRocketQuery(sourceQuery)) {
           continue;
         }
+        const rel = scoreVisualRelevance(`${sourceQuery} ${path.basename(p)}`, keywords);
+        if (category === "generic" && queryCategory !== "generic" && rel < 1) continue;
       }
       let fileSize = 0;
       try { fileSize = fs.statSync(p).size; } catch { continue; }
@@ -3546,7 +3594,10 @@ async function tryStockSources(
   for (const { query, fetch } of fetchers) {
     if (isBlockedStockQuery(query)) continue;
     const category = stockVisualCategory(query);
-    if (categoryAtLimit(dedup, category)) continue;
+    if (adoptOpts.muskTopic && (category === "rocket" || category === "space") && !isMuskApprovedRocketQuery(query)) {
+      continue;
+    }
+    if (categoryAtLimit(dedup, category, adoptOpts.muskTopic)) continue;
     const paths = await fetch();
     const clip = await adoptClip(paths, dedup, sceneIndex, beatIndex, beatText, workDir, query, adoptOpts);
     if (clip) {
@@ -3832,6 +3883,30 @@ async function fetchSceneVisuals(
         );
         if (lastResort) {
           clips.push(lastResort);
+        } else if (muskTopic) {
+          let rescued = false;
+          for (const gq of GOLDEN_MUSK_QUERIES.slice(0, 6)) {
+            if (isBlockedStockQuery(gq)) continue;
+            const golden = await fetchPexelsClips(
+              gq, clipFetchDur, workDir, scene.index, 1, [gq], true,
+              `b${beat.index}_golden_em`, dedup.usedPexelsIds, beat.index + scene.index,
+              dedup.perf.pexelsDownloadRetries
+            );
+            const gClip = await adoptClip(
+              golden, dedup, scene.index, beat.index, beat.text, workDir, gq, adoptOpts
+            );
+            if (gClip) {
+              clips.push(gClip);
+              rescued = true;
+              break;
+            }
+          }
+          if (!rescued) {
+            console.error(
+              `[Pipeline] Scene ${scene.index} beat ${beat.index}: no stock video — color placeholder`
+            );
+            clips.push(await generateColorFallback(scene.index * 100 + beat.index, 4, workDir));
+          }
         } else {
           console.error(
             `[Pipeline] Scene ${scene.index} beat ${beat.index}: no stock video available — color placeholder`
