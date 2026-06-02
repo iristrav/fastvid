@@ -498,7 +498,7 @@ For each scene return:
 - pexelsQueries: 3 queries from most specific to slightly broader — ALL must stay on the same topic
 - brollQueries: exactly 2 cutaway B-roll queries (close-ups, hands, screens, crowds) different from pexelsQuery
 - personNames: full names of real people mentioned in text, or []
-- sectionTitle: ALL CAPS chapter heading shown on yellow card BEFORE this scene when starting a new topic; "" if not a chapter start
+- sectionTitle: ALL CAPS chapter heading shown on yellow card BEFORE this scene when starting a new topic; "" if not a chapter start. NEVER use HOOK, OPENING, CTA, INTRO, or OUTRO as sectionTitle — always "" for those meta sections.
 
 Every query must literally describe what the viewer should see. Scenes are ~2-4s of footage with hard cuts.`,
         },
@@ -927,15 +927,11 @@ async function fetchPexelsClips(
 
   const results: string[] = [];
 
-  // Strict mode: only topic-specific queries (beat-level matching). No generic fallbacks.
-  const queryList = strictQueries
-    ? Array.from(new Set([query, ...(extraQueries ?? [])].filter((q) => q && q.trim().length > 2)))
-    : [
-        ...(extraQueries && extraQueries.length > 0 ? extraQueries : [query]),
-        "cinematic nature landscape",
-        "aerial city drone",
-        "documentary footage",
-      ];
+  // Never fall back to generic nature/city b-roll — that produces irrelevant footage (wind turbines, cyclists, etc.)
+  const queryList = Array.from(
+    new Set([query, ...(extraQueries ?? [])].filter((q) => q && q.trim().length > 2 && !isBlockedStockQuery(q)))
+  );
+  if (queryList.length === 0) return [];
   // Deduplicate
   const seen = new Set<string>();
   const uniqueQueries = queryList.filter(q => { if (seen.has(q)) return false; seen.add(q); return true; });
@@ -3126,42 +3122,64 @@ function computeMontageClipDuration(sceneDuration: number, clipCount: number): n
   if (clipCount <= 0) return VIDRUSH_CLIP_MAX_SEC;
   const evenSplit = sceneDuration / clipCount;
   let clipDur = Math.max(VIDRUSH_CLIP_MIN_SEC, Math.min(4.5, evenSplit));
-  if (clipDur * clipCount < sceneDuration * 0.92) {
+  if (clipDur * clipCount < sceneDuration - 0.05) {
     clipDur = sceneDuration / clipCount;
   }
   return clipDur;
 }
 
-function buildTopicAnchoredQueries(scene: Scene, videoTitle?: string, personName?: string): string[] {
+function extractTopicStockQueries(promptOrTitle: string): string[] {
+  const text = promptOrTitle.toLowerCase();
+  const queries: string[] = [];
+  if (/musk|tesla|spacex|electric vehicle|ev\b/.test(text)) {
+    queries.push(
+      "SpaceX Falcon 9 rocket launch",
+      "SpaceX rocket launch pad night",
+      "Falcon 9 landing drone ship",
+      "Tesla Gigafactory production line",
+      "Tesla electric car factory workers",
+      "Tesla Model 3 assembly line",
+      "electric vehicle manufacturing plant",
+      "rocket engine test fire",
+    );
+  }
+  if (/tesla/.test(text)) {
+    queries.push("Tesla car showroom", "Tesla charging station supercharger", "Tesla autopilot camera");
+  }
+  if (/spacex|rocket|space|mars|starship/.test(text)) {
+    queries.push("Starship launch pad", "astronaut space suit", "mission control room screens");
+  }
+  if (/ai|artificial intelligence|neural/.test(text)) {
+    queries.push("data center server room", "computer chip manufacturing", "robot arm factory");
+  }
+  return queries;
+}
+
+function buildTopicAnchoredQueries(scene: Scene, videoTitle?: string, personName?: string, prompt?: string): string[] {
   const person = personName || scene.personNames?.[0] || extractPrimaryPersonFromTitle(videoTitle) || "";
   const titleLower = (videoTitle ?? "").toLowerCase();
   const textLower = scene.text.toLowerCase();
   const queries: string[] = [];
 
-  if (person) {
-    queries.push(...buildPersonMediaQueries(person, scene.visualCue));
-  }
-  if (person.toLowerCase().includes("musk") || titleLower.includes("musk")) {
-    queries.push(
-      "SpaceX rocket launch Falcon 9",
-      "SpaceX Starship launch pad",
-      "Tesla Gigafactory production line",
-      "Tesla electric car factory",
-      "Tesla Model 3 assembly",
-      "Elon Musk press conference speech",
-    );
-  }
-  if (titleLower.includes("tesla") || textLower.includes("tesla")) {
-    queries.push("Tesla factory workers assembly", "Tesla electric vehicle production", "Tesla car manufacturing plant");
-  }
-  if (titleLower.includes("spacex") || textLower.includes("spacex") || textLower.includes("rocket")) {
-    queries.push("SpaceX rocket launch", "rocket launch pad night", "Falcon 9 landing");
-  }
   queries.push(
     enrichStockQuery(scene.literalVisualCue ?? "", scene, videoTitle, person),
     enrichStockQuery(scene.pexelsQuery, scene, videoTitle, person),
     enrichStockQuery(scene.visualCue, scene, videoTitle, person),
+    ...(scene.pexelsQueries ?? []).map((q) => enrichStockQuery(q, scene, videoTitle, person)),
+    ...(scene.brollQueries ?? []).map((q) => enrichStockQuery(q, scene, videoTitle, person)),
   );
+  queries.push(...extractTopicStockQueries(`${prompt ?? ""} ${videoTitle ?? ""} ${scene.text}`));
+
+  if (titleLower.includes("tesla") || textLower.includes("tesla")) {
+    queries.push("Tesla factory workers assembly", "Tesla electric vehicle production");
+  }
+  if (titleLower.includes("spacex") || textLower.includes("spacex") || textLower.includes("rocket")) {
+    queries.push("SpaceX rocket launch", "rocket launch exhaust flame", "Falcon 9 landing");
+  }
+  // Person-name queries last — Pexels rarely has celebrity footage; object queries work better
+  if (person) {
+    queries.push(...buildPersonMediaQueries(person, scene.visualCue));
+  }
 
   return [...new Set(queries.filter((q) => q.trim().length > 2 && !isBlockedStockQuery(q)))];
 }
@@ -3364,11 +3382,12 @@ async function fetchBeatClip(
     : rawQ;
   const candidateOffset = beat.index * 3 + sceneIndex;
 
-  const topicQueries = buildTopicAnchoredQueries(scene, videoTitle, personName);
-  for (const tq of topicQueries.slice(0, 8)) {
+  const topicQueries = buildTopicAnchoredQueries(scene, videoTitle, personName, videoTitle);
+  for (let ti = 0; ti < Math.min(12, topicQueries.length); ti++) {
+    const tq = topicQueries[ti];
     const pexTopic = await fetchPexelsClips(
-      tq, clipFetchDur, workDir, sceneIndex, 2, undefined, false, `${tag}_topic`,
-      dedup.usedPexelsIds, candidateOffset
+      tq, clipFetchDur, workDir, sceneIndex, 2, [tq], true, `${tag}_topic`,
+      dedup.usedPexelsIds, candidateOffset + ti
     );
     let topicClip = await adoptClip(pexTopic, dedup, sceneIndex, beat.index, beat.text, workDir);
     if (topicClip) {
@@ -3520,10 +3539,17 @@ async function fetchSceneVisuals(
       if (emClip) {
         clips.push(emClip);
       } else {
-        console.error(
-          `[Pipeline] Scene ${scene.index} beat ${beat.index}: no stock video available — color placeholder`
+        const lastResort = await fetchLastResortRealClip(
+          beat, scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle
         );
-        clips.push(await generateColorFallback(scene.index * 100 + beat.index, 4, workDir));
+        if (lastResort) {
+          clips.push(lastResort);
+        } else {
+          console.error(
+            `[Pipeline] Scene ${scene.index} beat ${beat.index}: no stock video available — color placeholder`
+          );
+          clips.push(await generateColorFallback(scene.index * 100 + beat.index, 4, workDir));
+        }
       }
     }
   }
@@ -4060,6 +4086,8 @@ async function composeSceneVideo(
         await withTimeout(
           exec(
             `${FFMPEG_BIN} -y -i "${safeClips[0]}" -i "${safeAudioPath}" ` +
+            `-filter_complex "[1:a]apad=whole_dur=${duration.toFixed(3)},atrim=0:${duration.toFixed(3)}[aout]" ` +
+            `-map "0:v" -map "[aout]" ` +
             `-t ${duration} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
           ),
           45_000,
@@ -4354,7 +4382,10 @@ export async function runVideoPipeline(
   const workDir = path.join(TMP_DIR, `fastvid_${videoId}_${Date.now()}`);
   fs.mkdirSync(workDir, { recursive: true });
 
-  const videoTitle = script.split("\n").find(l => l.trim().length > 5)?.trim().slice(0, 80) || "AI Generated Video";
+  const titleMatch = script.match(/^#\s+(.+)/m);
+  const videoTitle = titleMatch?.[1]?.trim().slice(0, 80)
+    || script.split("\n").find(l => l.trim().length > 5)?.trim().slice(0, 80)
+    || "AI Generated Video";
 
   console.log(`[Pipeline] Video ${videoId}: ${maxScenes} scenes for ${videoLength} min video`);
 

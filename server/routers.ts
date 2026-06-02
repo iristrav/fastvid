@@ -317,7 +317,7 @@ RULES:
     await updateVideoProgress(videoId, "📋 Assembling script...", 22);
 
     // Assemble full script
-    const scriptParts: string[] = [`# ${title}\n`, `## Opening\n${outline.hook}\n[VISUAL: Opening shot for ${prompt}]\n`];
+    const scriptParts: string[] = [`# ${title}\n`, `## Opening\n${outline.hook}\n[VISUAL: Opening b-roll directly related to ${prompt} — e.g. rocket launch, factory floor, or product close-up, never abstract graphics]\n`];
     outline.sections.forEach((sec, idx) => scriptParts.push(`## ${sec.title}\n${sectionTexts[idx] ?? ""}\n`));
     scriptParts.push(`## CALL TO ACTION\n${outline.cta}\n[VISUAL: Cinematic closing b-roll related to the video topic]\n`);
     const scriptContent = scriptParts.join("\n");
@@ -612,7 +612,7 @@ export const appRouter = router({
     }),
     generate: subscribedProcedure.input(z.object({
       prompt: z.string().min(10).max(1000),
-      videoLength: z.enum(["1", "5-8", "8-12", "12-15", "15-20", "20+"]),
+      videoLength: z.enum(["1", "2", "5-8", "8-12", "12-15", "15-20", "20+"]),
       videoType: z.enum(["documentary", "listicle", "tutorial", "explainer"]).default("documentary"),
       voiceId: z.string().optional(),
       customVoiceoverUrl: z.string().optional(),
@@ -743,7 +743,7 @@ export const appRouter = router({
     }),
     generateVideo: adminProcedure.input(z.object({
       prompt: z.string().min(10).max(500),
-      videoLength: z.enum(["1", "5-8", "8-12", "12-15", "15-20", "20+"]),
+      videoLength: z.enum(["1", "2", "5-8", "8-12", "12-15", "15-20", "20+"]),
       videoType: z.enum(["documentary", "listicle", "tutorial", "explainer"]).default("documentary"),
     })).mutation(async ({ ctx, input }) => {
       const videoId = await createVideo({ userId: ctx.user.id, prompt: input.prompt, videoLength: input.videoLength, videoType: input.videoType });
