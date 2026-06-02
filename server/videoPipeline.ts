@@ -3145,10 +3145,17 @@ async function withVisualDedupLock<T>(dedup: VisualDedupState, fn: () => Promise
 }
 
 const BLOCKED_STOCK_TAGS_RE =
-  /emoji|cartoon|animation|icon|illustration|graphic|pattern|sticker|clipart|motion graphics|3d render|abstract background|wallpaper|seamless loop|looping|campfire|bonfire|fireplace|bbq|barbecue|driving|dashcam|highway|bridge|miniature|scale model|toy|diorama|tabletop|model rocket/i;
+  /emoji|cartoon|animation|icon|illustration|graphic|pattern|sticker|clipart|motion graphics|3d render|abstract background|wallpaper|seamless loop|looping|campfire|bonfire|fireplace|bbq|barbecue|driving|dashcam|highway|bridge|miniature|scale model|toy|diorama|tabletop|model rocket|crime scene|forensic|police tape|news reporter|journalist|reporter microphone|hazmat suit|investigation|murder|courtroom/i;
 
 const BLOCKED_STOCK_QUERY_RE =
-  /\b(subscribe|like button|thumbs up|thumbs down|social media ui|notification bell|emoji|icon animation|button animation|wallpaper|seamless loop|motion graphics|scale model|miniature|toy rocket|model rocket|space shuttle model|shuttle model|diorama|replica rocket)\b/i;
+  /\b(subscribe|like button|thumbs up|thumbs down|social media ui|notification bell|emoji|icon animation|button animation|wallpaper|seamless loop|motion graphics|scale model|miniature|toy rocket|model rocket|space shuttle model|shuttle model|diorama|replica rocket|crime scene|forensic|police tape|news reporter|press conference|interview|journalist|murder|courtroom)\b/i;
+
+const OPENING_MUSK_QUERIES = [
+  "SpaceX Falcon 9 rocket launch pad",
+  "rocket launch exhaust flame night sky",
+  "Tesla Gigafactory production line workers",
+  "Starship launch pad Texas coastline",
+];
 
 function stockVisualCategory(query: string, filePath?: string): string {
   const combined = `${query} ${path.basename(filePath ?? "")}`.toLowerCase();
@@ -3260,10 +3267,6 @@ function buildTopicAnchoredQueries(scene: Scene, videoTitle?: string, personName
   }
   if (titleLower.includes("spacex") || textLower.includes("spacex") || textLower.includes("rocket")) {
     queries.push("SpaceX rocket launch", "rocket launch exhaust flame", "Falcon 9 landing");
-  }
-  // Person-name queries last — Pexels rarely has celebrity footage; object queries work better
-  if (person) {
-    queries.push(...buildPersonMediaQueries(person, scene.visualCue));
   }
 
   const allowSolar = /solar|photovoltaic|sun energy|panel/.test(textLower);
@@ -3386,6 +3389,9 @@ async function adoptClip(
       if (isStillPhotoClip(p)) continue;
       const category = stockVisualCategory(sourceQuery, p);
       if (categoryAtLimit(dedup, category)) continue;
+      // Musk/Tesla topics: reject generic clips when query targets a specific category
+      const queryCategory = stockVisualCategory(sourceQuery);
+      if (queryCategory !== "generic" && category === "generic") continue;
       let fileSize = 0;
       try { fileSize = fs.statSync(p).size; } catch { continue; }
       if (fileSize < 180_000) continue;
@@ -3443,8 +3449,6 @@ async function fetchLastResortRealClip(
       ? [
           `${personName} Tesla factory`,
           `${personName} SpaceX rocket launch`,
-          `${personName} press conference`,
-          `${personName} interview`,
         ]
       : []),
     enrichStockQuery(scene.visualCue, scene, videoTitle, personName),
@@ -3514,6 +3518,18 @@ async function fetchBeatClip(
     () => fetchPixabayClips(query, clipFetchDur, workDir, sceneIndex, 2, t, true, dedup.usedPixabayIds, off);
   const brollFetch = (query: string) =>
     () => fetchBrollClips([query], clipFetchDur, workDir, sceneIndex, dedup.usedPexelsIds);
+
+  // 0) Opening beat: always start with on-topic rocket/factory footage
+  if (beat.index === 0 && muskTopic) {
+    clip = await tryStockSources(
+      OPENING_MUSK_QUERIES.map((oq, oi) => ({
+        query: oq,
+        fetch: pexFetch(oq, `${tag}_open`, candidateOffset + oi, 3),
+      })),
+      dedup, sceneIndex, beat.index, beat.text, workDir, "opening"
+    );
+    if (clip) { dedup.globalBeatIndex++; return clip; }
+  }
 
   // 1) Beat-specific literal query (highest narrative match)
   let clip = await tryStockSources(
