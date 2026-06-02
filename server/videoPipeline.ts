@@ -1021,6 +1021,7 @@ async function fetchPexelsClips(
       videos?: Array<{
         id: number;
         duration: number;
+        url?: string;
         video_files: Array<{ width: number; height: number; link: string }>;
       }>;
     };
@@ -1029,7 +1030,7 @@ async function fetchPexelsClips(
 
     // Filter: min 3s duration, skip already-used Pexels IDs, sort by resolution descending
     const filtered = searchData.videos
-      .filter(v => v.duration >= 3 && !excludeVideoIds?.has(v.id))
+      .filter(v => v.duration >= 3 && !excludeVideoIds?.has(v.id) && !isRejectedPexelsVideo(v))
       .sort((a, b) => {
         const aMax = Math.max(...a.video_files.map(f => f.width));
         const bMax = Math.max(...b.video_files.map(f => f.width));
@@ -3171,33 +3172,39 @@ function createVisualDedupState(perf: PipelinePerfProfile): VisualDedupState {
 }
 
 const STOCK_CATEGORY_LIMITS: Record<string, number> = {
+  gigafactory: 1,
   solar: 1,
-  rocket: 3,
+  rocket: 2,
   tesla: 3,
-  factory: 3,
+  factory: 2,
   robot: 2,
-  space: 2,
-  generic: 5,
+  space: 1,
+  generic: 4,
 };
 
-/** High-quality rotating queries for Musk/Tesla/SpaceX videos — real-world B-roll only. */
+/** High-quality rotating queries for Musk/Tesla/SpaceX — modern real-world B-roll only. */
 const GOLDEN_MUSK_QUERIES = [
-  "SpaceX Falcon 9 rocket launch pad",
-  "rocket launch exhaust flame night sky",
-  "Falcon 9 landing drone ship ocean",
-  "Starship launch pad Texas coastline",
+  "SpaceX Falcon 9 rocket launch site",
+  "Falcon 9 booster landing on drone ship",
+  "Starship launch pad Boca Chica Texas",
+  "SpaceX rocket hangar horizontal transport",
   "Tesla Gigafactory production line workers",
   "Tesla electric car assembly line robots",
-  "Tesla Model 3 driving cinematic road",
-  "electric vehicle battery manufacturing plant",
-  "rocket engine ignition launch pad close up",
-  "mission control room NASA monitors",
+  "Tesla Model 3 driving highway cinematic",
   "Tesla supercharger station cars charging",
-  "industrial robot arm welding automotive factory",
-  "SpaceX rocket hangar horizontal transport",
+  "electric vehicle battery manufacturing plant",
   "lithium ion battery factory production",
+  "industrial robot arm welding automotive factory",
   "electric car factory quality inspection",
+  "Tesla Fremont factory aerial view",
+  "SpaceX launch pad night ignition flame",
+  "Tesla Cybertruck factory production line",
 ];
+
+type VisualAdoptOptions = {
+  muskTopic?: boolean;
+  keywords?: string[];
+};
 
 async function withVisualDedupLock<T>(dedup: VisualDedupState, fn: () => Promise<T>): Promise<T> {
   let release!: () => void;
@@ -3215,20 +3222,25 @@ async function withVisualDedupLock<T>(dedup: VisualDedupState, fn: () => Promise
 }
 
 const BLOCKED_STOCK_TAGS_RE =
-  /emoji|cartoon|animation|icon|illustration|graphic|pattern|sticker|clipart|motion graphics|3d render|abstract background|wallpaper|seamless loop|looping|campfire|bonfire|fireplace|bbq|barbecue|driving|dashcam|highway|bridge|miniature|scale model|toy|diorama|tabletop|model rocket|crime scene|forensic|police tape|news reporter|journalist|reporter microphone|hazmat suit|investigation|murder|courtroom/i;
+  /emoji|cartoon|animation|icon|illustration|graphic|pattern|sticker|clipart|motion graphics|3d render|abstract background|wallpaper|seamless loop|looping|campfire|bonfire|fireplace|bbq|barbecue|driving|dashcam|highway|bridge|miniature|scale model|toy|diorama|tabletop|model rocket|shuttle|saturn|apollo|lunar|moon landing|moon surface|science fiction|sci-fi|vhs|glitch|vintage space|archival|crime scene|forensic|police tape|news reporter|journalist|reporter microphone|hazmat suit|investigation|murder|courtroom/i;
 
 const BLOCKED_STOCK_QUERY_RE =
-  /\b(subscribe|like button|thumbs up|thumbs down|social media ui|notification bell|emoji|icon animation|button animation|wallpaper|seamless loop|motion graphics|scale model|miniature|toy rocket|model rocket|space shuttle model|shuttle model|diorama|replica rocket|crime scene|forensic|police tape|news reporter|press conference|interview|journalist|murder|courtroom)\b/i;
+  /\b(subscribe|like button|thumbs up|thumbs down|social media ui|notification bell|emoji|icon animation|button animation|wallpaper|seamless loop|motion graphics|scale model|miniature|toy rocket|model rocket|space shuttle|shuttle model|saturn v|apollo|lunar|moon landing|moon surface|diorama|replica rocket|mission control|astronaut suit|vintage nasa|archival footage|science fiction|sci-fi|cgi rocket|crime scene|forensic|police tape|news reporter|press conference|interview|journalist|murder|courtroom)\b/i;
+
+/** Reject model/CGI/archival-looking clips (Pexels slugs + local filenames). */
+const BLOCKED_STOCK_VISUAL_RE =
+  /shuttle|saturn|apollo|lunar|moon[- ]?landing|moon[- ]?surface|miniature|diorama|tabletop|model[- ]?rocket|scale[- ]?model|toy[- ]?rocket|replica|maquette|science[- ]?fiction|sci[- ]?fi|cgi|3d[- ]?animation|vhs|glitch|vintage[- ]?space|archival|old[- ]?nasa|space[- ]?shuttle|saturn[- ]?v|rocket[- ]?model|model[- ]?launch/i;
 
 const OPENING_MUSK_QUERIES = [
-  "SpaceX Falcon 9 rocket launch pad",
-  "rocket launch exhaust flame night sky",
+  "SpaceX Falcon 9 rocket launch site",
+  "Starship launch pad Boca Chica Texas",
   "Tesla Gigafactory production line workers",
-  "Starship launch pad Texas coastline",
+  "Falcon 9 booster landing on drone ship",
 ];
 
 function stockVisualCategory(query: string, filePath?: string): string {
   const combined = `${query} ${path.basename(filePath ?? "")}`.toLowerCase();
+  if (/gigafactory|solar.*(factory|plant|roof)|factory.*solar|solar panel.*roof/.test(combined)) return "gigafactory";
   if (/solar|photovoltaic|panel array|sun panel/.test(combined)) return "solar";
   if (/tesla|supercharger|model [3syx]|cybertruck/.test(combined)) return "tesla";
   if (/falcon|spacex|starship|rocket launch|launch pad|booster|ignition/.test(combined)) return "rocket";
@@ -3254,6 +3266,17 @@ function hasBlockedStockTags(tags?: string): boolean {
 
 function isBlockedStockQuery(q: string): boolean {
   return BLOCKED_STOCK_QUERY_RE.test(q);
+}
+
+function isRejectedPexelsVideo(video: { url?: string }): boolean {
+  return BLOCKED_STOCK_VISUAL_RE.test((video.url ?? "").toLowerCase());
+}
+
+function isRejectedStockClip(filePath: string, sourceQuery = ""): boolean {
+  const combined = `${sourceQuery} ${path.basename(filePath)}`.toLowerCase();
+  if (BLOCKED_STOCK_VISUAL_RE.test(combined)) return true;
+  if (hasBlockedStockTags(combined)) return true;
+  return false;
 }
 
 function isPublishableChapterTitle(title: string | undefined): boolean {
@@ -3295,21 +3318,20 @@ function extractTopicStockQueries(promptOrTitle: string): string[] {
   const queries: string[] = [];
   if (/musk|tesla|spacex|electric vehicle|ev\b/.test(text)) {
     queries.push(
-      "SpaceX Falcon 9 rocket launch",
-      "SpaceX rocket launch pad night",
-      "Falcon 9 landing drone ship",
+      "SpaceX Falcon 9 rocket launch site",
+      "Falcon 9 booster landing on drone ship",
+      "Starship launch pad Boca Chica Texas",
       "Tesla Gigafactory production line",
       "Tesla electric car factory workers",
       "Tesla Model 3 assembly line",
       "electric vehicle manufacturing plant",
-      "rocket engine ignition launch pad",
     );
   }
   if (/tesla/.test(text)) {
-    queries.push("Tesla car showroom", "Tesla charging station supercharger", "Tesla autopilot camera");
+    queries.push("Tesla car showroom", "Tesla supercharger station", "Tesla autopilot camera");
   }
   if (/spacex|rocket|space|mars|starship/.test(text)) {
-    queries.push("Starship launch pad", "astronaut space suit", "mission control room screens");
+    queries.push("Starship launch pad Boca Chica", "SpaceX rocket hangar", "Falcon 9 launch pad night");
   }
   if (/ai|artificial intelligence|neural/.test(text)) {
     queries.push("data center server room", "computer chip manufacturing", "robot arm factory");
@@ -3336,7 +3358,7 @@ function buildTopicAnchoredQueries(scene: Scene, videoTitle?: string, personName
     queries.push("Tesla factory workers assembly", "Tesla electric vehicle production");
   }
   if (titleLower.includes("spacex") || textLower.includes("spacex") || textLower.includes("rocket")) {
-    queries.push("SpaceX rocket launch", "rocket launch exhaust flame", "Falcon 9 landing");
+    queries.push("SpaceX Falcon 9 rocket launch site", "Falcon 9 booster landing on drone ship", "Starship launch pad Texas");
   }
 
   const allowSolar = /solar|photovoltaic|sun energy|panel/.test(textLower);
@@ -3453,18 +3475,41 @@ async function adoptClip(
   beatIndex: number,
   beatText: string,
   workDir: string,
-  sourceQuery = ""
+  sourceQuery = "",
+  opts: VisualAdoptOptions = {}
 ): Promise<string | null> {
+  const keywords = opts.keywords ?? [];
+  const muskTopic = opts.muskTopic ?? false;
+  const sortedPaths = [...paths].sort((a, b) => {
+    const scoreB = scoreVisualRelevance(`${sourceQuery} ${path.basename(b)}`, keywords);
+    const scoreA = scoreVisualRelevance(`${sourceQuery} ${path.basename(a)}`, keywords);
+    return scoreB - scoreA;
+  });
+
   return withVisualDedupLock(dedup, async () => {
-    for (const p of paths) {
+    for (const p of sortedPaths) {
       if (!p || dedup.usedPaths.has(p) || !fs.existsSync(p)) continue;
       if (!(await isValidVideoFile(p))) continue;
       if (isStillPhotoClip(p)) continue;
+      if (isRejectedStockClip(p, sourceQuery)) continue;
       const category = stockVisualCategory(sourceQuery, p);
       if (categoryAtLimit(dedup, category)) continue;
       // Musk/Tesla topics: reject generic clips when query targets a specific category
       const queryCategory = stockVisualCategory(sourceQuery);
       if (queryCategory !== "generic" && category === "generic") continue;
+      if (muskTopic) {
+        const rel = scoreVisualRelevance(`${sourceQuery} ${path.basename(p)}`, keywords);
+        if (category === "generic" && queryCategory !== "generic" && rel < 1) continue;
+        if (
+          (category === "rocket" || category === "space") &&
+          !/spacex|falcon|starship|tesla|launch pad|booster|gigafactory/.test(
+            `${sourceQuery} ${path.basename(p)}`.toLowerCase()
+          ) &&
+          rel < 2
+        ) {
+          continue;
+        }
+      }
       let fileSize = 0;
       try { fileSize = fs.statSync(p).size; } catch { continue; }
       if (fileSize < 180_000) continue;
@@ -3495,14 +3540,15 @@ async function tryStockSources(
   beatIndex: number,
   beatText: string,
   workDir: string,
-  logLabel: string
+  logLabel: string,
+  adoptOpts: VisualAdoptOptions = {}
 ): Promise<string | null> {
   for (const { query, fetch } of fetchers) {
     if (isBlockedStockQuery(query)) continue;
     const category = stockVisualCategory(query);
     if (categoryAtLimit(dedup, category)) continue;
     const paths = await fetch();
-    const clip = await adoptClip(paths, dedup, sceneIndex, beatIndex, beatText, workDir, query);
+    const clip = await adoptClip(paths, dedup, sceneIndex, beatIndex, beatText, workDir, query, adoptOpts);
     if (clip) {
       console.log(`[Pipeline] Scene ${sceneIndex} beat ${beatIndex}: ${logLabel} "${query}"`);
       return clip;
@@ -3520,7 +3566,8 @@ async function fetchLastResortRealClip(
   clipFetchDur: number,
   dedup: VisualDedupState,
   personName: string,
-  videoTitle?: string
+  videoTitle?: string,
+  adoptOpts: VisualAdoptOptions = {}
 ): Promise<string | null> {
   const tag = `b${beat.index}_lr`;
   const candidateOffset = beat.index * 5 + sceneIndex + 11;
@@ -3542,20 +3589,20 @@ async function fetchLastResortRealClip(
 
   for (const q of uniqueQueries) {
     const pex = await fetchPexelsClips(
-      q, clipFetchDur, workDir, sceneIndex, 2, undefined, false, `${tag}_pex`,
-      dedup.usedPexelsIds, candidateOffset
+      q, clipFetchDur, workDir, sceneIndex, 2, undefined, true, `${tag}_pex`,
+      dedup.usedPexelsIds, candidateOffset, dedup.perf.pexelsDownloadRetries
     );
-    let clip = await adoptClip(pex, dedup, sceneIndex, beat.index, beat.text, workDir, q);
+    let clip = await adoptClip(pex, dedup, sceneIndex, beat.index, beat.text, workDir, q, adoptOpts);
     if (clip) {
       console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: last-resort Pexels "${q}"`);
       return clip;
     }
 
     const pix = await fetchPixabayClips(
-      q, clipFetchDur, workDir, sceneIndex, 2, `${tag}_pix`, false,
+      q, clipFetchDur, workDir, sceneIndex, 2, `${tag}_pix`, true,
       dedup.usedPixabayIds, candidateOffset
     );
-    clip = await adoptClip(pix, dedup, sceneIndex, beat.index, beat.text, workDir, q);
+    clip = await adoptClip(pix, dedup, sceneIndex, beat.index, beat.text, workDir, q, adoptOpts);
     if (clip) {
       console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: last-resort Pixabay "${q}"`);
       return clip;
@@ -3580,6 +3627,7 @@ async function fetchBeatClip(
   const candidateOffset = beat.index * 3 + sceneIndex + dedup.globalBeatIndex;
   const muskTopic = isMuskTeslaTopic(videoTitle, scene.text);
   const perf = dedup.perf;
+  const adoptOpts: VisualAdoptOptions = { muskTopic, keywords: beat.keywords };
 
   const rawQ = beat.index === 0
     ? enrichStockQuery(
@@ -3612,7 +3660,7 @@ async function fetchBeatClip(
         query: oq,
         fetch: pexFetch(oq, `${tag}_open`, candidateOffset + oi, 2),
       })),
-      dedup, sceneIndex, beat.index, beat.text, workDir, "opening"
+      dedup, sceneIndex, beat.index, beat.text, workDir, "opening", adoptOpts
     );
     if (clip) { dedup.globalBeatIndex++; return clip; }
   }
@@ -3620,7 +3668,7 @@ async function fetchBeatClip(
   // 1) Beat-specific literal query (highest narrative match)
   clip = await tryStockSources(
     [{ query: q, fetch: pexFetch(q, `${tag}_lit`, candidateOffset) }],
-    dedup, sceneIndex, beat.index, beat.text, workDir, "literal Pexels"
+    dedup, sceneIndex, beat.index, beat.text, workDir, "literal Pexels", adoptOpts
   );
   if (clip) { dedup.globalBeatIndex++; return clip; }
 
@@ -3630,7 +3678,7 @@ async function fetchBeatClip(
     const goldenCat = stockVisualCategory(golden);
     const goldenFetchers: Array<{ query: string; fetch: () => Promise<string[]> }> = [];
 
-    // NASA archival only for first two rocket beats (slow — don't repeat every beat)
+    // NASA archival only for first rocket beat on long-form videos (often model/archival footage)
     if (perf.enableNasa && spaceTopic && goldenCat === "rocket" && (dedup.usedCategories.get("rocket") ?? 0) === 0) {
       goldenFetchers.push({
         query: golden,
@@ -3640,7 +3688,7 @@ async function fetchBeatClip(
     goldenFetchers.push({ query: golden, fetch: pexFetch(golden, `${tag}_golden`, candidateOffset + 1) });
     goldenFetchers.push({ query: golden, fetch: pixFetch(golden, `${tag}_golden`, candidateOffset + 1) });
 
-    clip = await tryStockSources(goldenFetchers, dedup, sceneIndex, beat.index, beat.text, workDir, "golden");
+    clip = await tryStockSources(goldenFetchers, dedup, sceneIndex, beat.index, beat.text, workDir, "golden", adoptOpts);
     if (clip) { dedup.globalBeatIndex++; return clip; }
   }
 
@@ -3651,7 +3699,7 @@ async function fetchBeatClip(
       query: tq,
       fetch: pexFetch(tq, `${tag}_topic`, candidateOffset + ti, 2),
     })),
-    dedup, sceneIndex, beat.index, beat.text, workDir, "topic Pexels"
+    dedup, sceneIndex, beat.index, beat.text, workDir, "topic Pexels", adoptOpts
   );
   if (clip) { dedup.globalBeatIndex++; return clip; }
 
@@ -3663,7 +3711,7 @@ async function fetchBeatClip(
     );
     clip = await tryStockSources(
       [{ query: brollQ, fetch: brollFetch(brollQ) }],
-      dedup, sceneIndex, beat.index, beat.text, workDir, "B-roll"
+      dedup, sceneIndex, beat.index, beat.text, workDir, "B-roll", adoptOpts
     );
     if (clip) { dedup.globalBeatIndex++; return clip; }
   }
@@ -3671,14 +3719,14 @@ async function fetchBeatClip(
   // 5) Pixabay + archival sources (archival only when Pexels/Pixabay exhausted)
   clip = await tryStockSources(
     [{ query: q, fetch: pixFetch(q, `${tag}_pix`, candidateOffset) }],
-    dedup, sceneIndex, beat.index, beat.text, workDir, "Pixabay"
+    dedup, sceneIndex, beat.index, beat.text, workDir, "Pixabay", adoptOpts
   );
   if (clip) { dedup.globalBeatIndex++; return clip; }
 
   if (perf.enableNasa && spaceTopic && stockVisualCategory(q) === "rocket") {
     clip = await tryStockSources(
       [{ query: q, fetch: () => fetchNasaVideoClips(q, clipFetchDur, workDir, sceneIndex, 1) }],
-      dedup, sceneIndex, beat.index, beat.text, workDir, "NASA"
+      dedup, sceneIndex, beat.index, beat.text, workDir, "NASA", adoptOpts
     );
     if (clip) { dedup.globalBeatIndex++; return clip; }
   }
@@ -3689,7 +3737,7 @@ async function fetchBeatClip(
         { query: q, fetch: () => fetchInternetArchiveClips(q, clipFetchDur, workDir, sceneIndex, 1, tag) },
         { query: q, fetch: () => fetchYouTubeCCClips(q, clipFetchDur, workDir, sceneIndex, 1, beat.keywords, 2) },
       ],
-      dedup, sceneIndex, beat.index, beat.text, workDir, "archival"
+      dedup, sceneIndex, beat.index, beat.text, workDir, "archival", adoptOpts
     );
     if (clip) { dedup.globalBeatIndex++; return clip; }
   }
@@ -3703,12 +3751,12 @@ async function fetchBeatClip(
 
   clip = await tryStockSources(
     fallbackQueries.map((fq, fi) => ({ query: fq, fetch: pexFetch(fq, `${tag}_fb`, candidateOffset + fi, 1) })),
-    dedup, sceneIndex, beat.index, beat.text, workDir, "fallback Pexels"
+    dedup, sceneIndex, beat.index, beat.text, workDir, "fallback Pexels", adoptOpts
   );
   if (clip) { dedup.globalBeatIndex++; return clip; }
 
   const lastResort = await fetchLastResortRealClip(
-    beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName, videoTitle
+    beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName, videoTitle, adoptOpts
   );
   dedup.globalBeatIndex++;
   return lastResort;
@@ -3731,7 +3779,10 @@ async function fetchSceneVisuals(
 
   console.log(`[Pipeline] Scene ${scene.index}: fetching ${beats.length} beat-aligned clip(s)`);
 
+  const muskTopic = isMuskTeslaTopic(videoTitle, scene.text);
+
   for (const beat of beats) {
+    const adoptOpts: VisualAdoptOptions = { muskTopic, keywords: beat.keywords };
     const clip = await fetchBeatClip(
       beat,
       scene,
@@ -3752,7 +3803,7 @@ async function fetchSceneVisuals(
       const emergencyQ = enrichStockQuery(
         scene.literalVisualCue || scene.pexelsQuery || scene.visualCue
           || extractTopicStockQueries(`${videoTitle ?? ""} ${scene.text}`)[0]
-          || "electric car factory assembly",
+          || "Tesla Gigafactory production line workers",
         scene,
         videoTitle,
         personName
@@ -3764,18 +3815,20 @@ async function fetchSceneVisuals(
         scene.index,
         1,
         undefined,
-        false,
+        true,
         `b${beat.index}_em`,
         dedup.usedPexelsIds,
         beat.index * 7 + scene.index,
         dedup.perf.pexelsDownloadRetries
       );
-      const emClip = await adoptClip(emergency, dedup, scene.index, beat.index, beat.text, workDir, emergencyQ);
+      const emClip = await adoptClip(
+        emergency, dedup, scene.index, beat.index, beat.text, workDir, emergencyQ, adoptOpts
+      );
       if (emClip) {
         clips.push(emClip);
       } else {
         const lastResort = await fetchLastResortRealClip(
-          beat, scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle
+          beat, scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle, adoptOpts
         );
         if (lastResort) {
           clips.push(lastResort);
