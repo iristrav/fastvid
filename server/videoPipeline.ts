@@ -941,7 +941,7 @@ async function fetchPexelsClips(
 
     try {
       // HD quality: large size (min 1280px), landscape orientation, fetch 15 candidates
-      const searchUrl = `https://api.pexels.com/videos/search?query=${encodeURIComponent(currentQuery)}&per_page=15&size=large&orientation=landscape`;
+      const searchUrl = `https://api.pexels.com/videos/search?query=${encodeURIComponent(currentQuery)}&per_page=15&size=large&orientation=landscape&min_duration=4`;
       const searchResp = await withTimeout(
         fetch(searchUrl, { headers: { Authorization: PEXELS_API_KEY } }),
         10_000,
@@ -1198,9 +1198,10 @@ async function fetchPixabayClips(
   if (!PIXABAY_API_KEY) return [];
   const results: string[] = [];
 
-  const queryList = strictQueries
-    ? [query].filter((q) => q && q.trim().length > 2)
-    : [query, "cinematic nature landscape", "aerial city drone"];
+  const queryList = Array.from(
+    new Set([query].filter((q) => q && q.trim().length > 2 && !isBlockedStockQuery(q)))
+  );
+  if (queryList.length === 0) return [];
   const seen = new Set<string>();
   const uniqueQueries = queryList.filter(q => { if (seen.has(q)) return false; seen.add(q); return true; });
 
@@ -1229,6 +1230,7 @@ async function fetchPixabayClips(
         hits?: Array<{
           id: number;
           duration: number;
+          tags?: string;
           videos: {
             large?: { url: string; width: number; height: number; size: number };
             medium?: { url: string; width: number; height: number; size: number };
@@ -1241,7 +1243,7 @@ async function fetchPixabayClips(
 
       // Filter: min 3s duration, skip used IDs, sort by resolution descending
       const filtered = searchData.hits
-        .filter(v => v.duration >= 3 && !excludeVideoIds?.has(v.id))
+        .filter(v => v.duration >= 3 && !excludeVideoIds?.has(v.id) && !hasBlockedStockTags(v.tags))
         .sort((a, b) => {
           const aW = a.videos.large?.width ?? a.videos.medium?.width ?? 0;
           const bW = b.videos.large?.width ?? b.videos.medium?.width ?? 0;
@@ -1275,7 +1277,7 @@ async function fetchPixabayClips(
               );
               if (!dlResp.ok) { await new Promise(r => setTimeout(r, 1000)); continue; }
               const buf = Buffer.from(await dlResp.arrayBuffer());
-              if (buf.length < 50_000) { await new Promise(r => setTimeout(r, 1000)); continue; }
+              if (buf.length < 200_000) { await new Promise(r => setTimeout(r, 1000)); continue; }
               buffer = buf;
             } catch (dlErr) {
               console.warn(`[Pipeline] Pixabay download attempt ${attempt + 1} failed:`, dlErr);
@@ -3087,8 +3089,15 @@ function createVisualDedupState(): VisualDedupState {
   return { usedPaths: new Set(), usedPexelsIds: new Set(), usedPixabayIds: new Set(), usedContentKeys: new Set() };
 }
 
+const BLOCKED_STOCK_TAGS_RE =
+  /emoji|cartoon|animation|icon|illustration|graphic|pattern|sticker|clipart|motion graphics|3d render|abstract background|wallpaper|seamless loop|looping/i;
+
 const BLOCKED_STOCK_QUERY_RE =
-  /\b(subscribe|like button|thumbs up|thumbs down|social media ui|notification bell|emoji|icon animation|button animation)\b/i;
+  /\b(subscribe|like button|thumbs up|thumbs down|social media ui|notification bell|emoji|icon animation|button animation|wallpaper|seamless loop|motion graphics)\b/i;
+
+function hasBlockedStockTags(tags?: string): boolean {
+  return BLOCKED_STOCK_TAGS_RE.test(tags ?? "");
+}
 
 function isBlockedStockQuery(q: string): boolean {
   return BLOCKED_STOCK_QUERY_RE.test(q);
@@ -3265,7 +3274,8 @@ function buildSceneBeats(scene: Scene, duration: number): SceneBeat[] {
       : queryPool[(i * 2 + scene.index) % Math.max(1, queryPool.length)] ??
         scene.visualCue ??
         scene.pexelsQuery ??
-        "documentary footage";
+        extractTopicStockQueries(scene.text)[0] ??
+        "factory production line";
     const searchQuery = textKeywords
       ? `${baseQuery} ${textKeywords}`.trim().slice(0, 100)
       : baseQuery;
@@ -3518,7 +3528,9 @@ async function fetchSceneVisuals(
         `[Pipeline] Scene ${scene.index} beat ${beat.index}: no real footage for "${beat.searchQuery}" — emergency stock`
       );
       const emergencyQ = enrichStockQuery(
-        scene.pexelsQuery || scene.visualCue || "documentary footage",
+        scene.literalVisualCue || scene.pexelsQuery || scene.visualCue
+          || extractTopicStockQueries(`${videoTitle ?? ""} ${scene.text}`)[0]
+          || "electric car factory assembly",
         scene,
         videoTitle,
         personName
