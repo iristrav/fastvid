@@ -3528,14 +3528,11 @@ async function fetchBeatClip(
     const goldenCat = stockVisualCategory(golden);
     const goldenFetchers: Array<{ query: string; fetch: () => Promise<string[]> }> = [];
 
-    if (spaceTopic && (goldenCat === "rocket" || goldenCat === "space")) {
+    // NASA archival only for first two rocket beats (slow — don't repeat every beat)
+    if (spaceTopic && goldenCat === "rocket" && (dedup.usedCategories.get("rocket") ?? 0) === 0) {
       goldenFetchers.push({
         query: golden,
         fetch: () => fetchNasaVideoClips(golden, clipFetchDur, workDir, sceneIndex, 1),
-      });
-      goldenFetchers.push({
-        query: golden,
-        fetch: () => fetchInternetArchiveClips(golden, clipFetchDur, workDir, sceneIndex, 1, `${tag}_ga`),
       });
     }
     goldenFetchers.push({ query: golden, fetch: pexFetch(golden, `${tag}_golden`, candidateOffset + 1) });
@@ -3545,10 +3542,10 @@ async function fetchBeatClip(
     if (clip) { dedup.globalBeatIndex++; return clip; }
   }
 
-  // 3) Scene topic-anchored queries
+  // 3) Scene topic-anchored queries (max 6 to keep generation fast)
   const topicQueries = buildTopicAnchoredQueries(scene, videoTitle, personName, videoTitle);
   clip = await tryStockSources(
-    topicQueries.slice(0, 10).map((tq, ti) => ({
+    topicQueries.slice(0, 6).map((tq, ti) => ({
       query: tq,
       fetch: pexFetch(tq, `${tag}_topic`, candidateOffset + ti, 2),
     })),
@@ -3569,15 +3566,23 @@ async function fetchBeatClip(
     if (clip) { dedup.globalBeatIndex++; return clip; }
   }
 
-  // 5) Pixabay + archival sources
+  // 5) Pixabay + archival sources (archival only when Pexels/Pixabay exhausted)
+  clip = await tryStockSources(
+    [{ query: q, fetch: pixFetch(q, `${tag}_pix`, candidateOffset) }],
+    dedup, sceneIndex, beat.index, beat.text, workDir, "Pixabay"
+  );
+  if (clip) { dedup.globalBeatIndex++; return clip; }
+
+  if (spaceTopic && stockVisualCategory(q) === "rocket") {
+    clip = await tryStockSources(
+      [{ query: q, fetch: () => fetchNasaVideoClips(q, clipFetchDur, workDir, sceneIndex, 1) }],
+      dedup, sceneIndex, beat.index, beat.text, workDir, "NASA"
+    );
+    if (clip) { dedup.globalBeatIndex++; return clip; }
+  }
+
   clip = await tryStockSources(
     [
-      { query: q, fetch: pixFetch(q, `${tag}_pix`, candidateOffset) },
-      ...(spaceTopic ? [{
-        query: q,
-        fetch: () => fetchNasaVideoClips(q, clipFetchDur, workDir, sceneIndex, 1),
-      }] : []),
-      { query: q, fetch: () => fetchWikimediaVideos(q, clipFetchDur, workDir, sceneIndex, 1, tag) },
       { query: q, fetch: () => fetchInternetArchiveClips(q, clipFetchDur, workDir, sceneIndex, 1, tag) },
       { query: q, fetch: () => fetchYouTubeCCClips(q, clipFetchDur, workDir, sceneIndex, 1, beat.keywords, 2) },
     ],
