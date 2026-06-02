@@ -3226,7 +3226,10 @@ const BLOCKED_STOCK_QUERY_RE =
 
 /** Reject model/CGI/archival-looking clips (Pexels slugs + local filenames). */
 const BLOCKED_STOCK_VISUAL_RE =
-  /shuttle|saturn|apollo|lunar|moon[- ]?landing|moon[- ]?surface|miniature|diorama|tabletop|model[- ]?rocket|scale[- ]?model|toy[- ]?rocket|replica|maquette|science[- ]?fiction|sci[- ]?fi|cgi|3d[- ]?animation|vhs|glitch|vintage[- ]?space|archival|old[- ]?nasa|space[- ]?shuttle|saturn[- ]?v|rocket[- ]?model|model[- ]?launch/i;
+  /shuttle|saturn|apollo|lunar|moon[- ]?landing|moon[- ]?surface|miniature|diorama|tabletop|model[- ]?rocket|scale[- ]?model|toy[- ]?rocket|replica|maquette|science[- ]?fiction|sci[- ]?fi|cgi|3d[- ]?animation|vhs|glitch|vintage[- ]?space|archival|old[- ]?nasa|space[- ]?shuttle|saturn[- ]?v|rocket[- ]?model|model[- ]?launch|volkswagen|vw\b|ford\b|bmw|mercedes|audi\b|toyota factory|honda factory|container ship|cargo ship|freight ship|bulk carrier|highway dash|motorway night/i;
+
+const BLOCKED_MUSK_COMPETITOR_RE =
+  /\b(volkswagen|vw|ford|gm|general motors|bmw|mercedes|audi|toyota|honda|hyundai|kia|rivian|lucid)\b/i;
 
 /** Opening = real factory/Tesla B-roll first (avoids CGI “rocket on moon” from generic launch queries). */
 const OPENING_MUSK_QUERIES = [
@@ -3378,7 +3381,8 @@ function isBlockedStockQuery(q: string): boolean {
 }
 
 function isRejectedPexelsVideo(video: { url?: string }): boolean {
-  return BLOCKED_STOCK_VISUAL_RE.test((video.url ?? "").toLowerCase());
+  const slug = (video.url ?? "").toLowerCase();
+  return BLOCKED_STOCK_VISUAL_RE.test(slug) || BLOCKED_MUSK_COMPETITOR_RE.test(slug);
 }
 
 function isRejectedStockClip(filePath: string, sourceQuery = ""): boolean {
@@ -3608,6 +3612,7 @@ async function adoptClip(
       if (!(await isValidVideoFile(p))) continue;
       if (isStillPhotoClip(p)) continue;
       if (isRejectedStockClip(p, sourceQuery)) continue;
+      if (isPipelineFallbackClip(p)) continue;
       if (await isMostlyBlackClip(p)) continue;
       const category = stockVisualCategory(sourceQuery, p);
       if (category === "blocked_model") continue;
@@ -3624,6 +3629,7 @@ async function adoptClip(
         if (topicRel < 1) continue;
         if (category === "generic" && queryCategory !== "generic" && rel < 1) continue;
         if (rel + topicRel < 3) continue;
+        if (BLOCKED_MUSK_COMPETITOR_RE.test(`${sourceQuery} ${path.basename(p)}`)) continue;
       }
       let fileSize = 0;
       try { fileSize = fs.statSync(p).size; } catch { continue; }
@@ -4342,7 +4348,12 @@ async function composeSceneVideo(
     return true;
   });
   if (safeClips.length === 0) {
-    safeClips = [await generateColorFallback(scene.index, duration, workDir)];
+    const anyUsable = verifiedClips.find((c) => !isPipelineFallbackClip(c));
+    if (anyUsable) {
+      safeClips = [anyUsable];
+    } else {
+      safeClips = [await generateColorFallback(scene.index, duration, workDir)];
+    }
   }
 
   // Validate audio
