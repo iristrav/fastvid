@@ -3534,7 +3534,7 @@ async function fetchBeatClip(
   }
 
   // 1) Beat-specific literal query (highest narrative match)
-  let clip = await tryStockSources(
+  clip = await tryStockSources(
     [{ query: q, fetch: pexFetch(q, `${tag}_lit`, candidateOffset) }],
     dedup, sceneIndex, beat.index, beat.text, workDir, "literal Pexels"
   );
