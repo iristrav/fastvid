@@ -309,6 +309,8 @@ interface PipelinePerfProfile {
   transformTimeoutMs: number;
   enableArchival: boolean;
   enableNasa: boolean;
+  /** One hero fetch (YouTube CC + NASA) for Musk 2-min opening — real SpaceX/Tesla footage. */
+  enableMuskHeroFetch: boolean;
   sceneParallelism: number;
   pexelsDownloadRetries: number;
 }
@@ -323,6 +325,7 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
       transformTimeoutMs: 25_000,
       enableArchival: false,
       enableNasa: false,
+      enableMuskHeroFetch: true,
       sceneParallelism: 2,
       pexelsDownloadRetries: 2,
     };
@@ -336,6 +339,7 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
       transformTimeoutMs: 35_000,
       enableArchival: false,
       enableNasa: true,
+      enableMuskHeroFetch: false,
       sceneParallelism: 2,
       pexelsDownloadRetries: 2,
     };
@@ -349,6 +353,7 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
       transformTimeoutMs: 40_000,
       enableArchival: false,
       enableNasa: true,
+      enableMuskHeroFetch: false,
       sceneParallelism: 2,
       pexelsDownloadRetries: 2,
     };
@@ -361,6 +366,7 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
     transformTimeoutMs: 45_000,
     enableArchival: true,
     enableNasa: true,
+    enableMuskHeroFetch: false,
     sceneParallelism: 2,
     pexelsDownloadRetries: 2,
   };
@@ -3154,6 +3160,7 @@ interface VisualDedupState {
   usedContentKeys: Set<string>;
   usedCategories: Map<string, number>;
   globalBeatIndex: number;
+  muskHeroFetchUsed: boolean;
   lock: Promise<void>;
   perf: PipelinePerfProfile;
 }
@@ -3166,6 +3173,7 @@ function createVisualDedupState(perf: PipelinePerfProfile): VisualDedupState {
     usedContentKeys: new Set(),
     usedCategories: new Map(),
     globalBeatIndex: 0,
+    muskHeroFetchUsed: false,
     lock: Promise.resolve(),
     perf,
   };
@@ -3183,16 +3191,30 @@ const STOCK_CATEGORY_LIMITS: Record<string, number> = {
 };
 
 /** High-quality rotating queries for Musk/Tesla/SpaceX — modern real-world B-roll only. */
+/** Brand-forward hero searches — recognizable Tesla/SpaceX (not generic factory). */
+const HERO_MUSK_QUERIES = [
+  "Tesla Model 3 red electric car driving highway",
+  "Tesla Cybertruck electric pickup truck road",
+  "Tesla supercharger station cars charging",
+  "SpaceX Starship rocket launch pad Texas",
+  "Falcon 9 booster landing on drone ship",
+  "SpaceX Falcon 9 rocket launch Kennedy",
+];
+
+const HERO_YOUTUBE_QUERIES = [
+  "SpaceX Falcon 9 rocket launch",
+  "SpaceX Starship launch test flight",
+  "Tesla Gigafactory tour",
+  "Falcon 9 landing booster drone ship",
+];
+
 const GOLDEN_MUSK_QUERIES = [
+  ...HERO_MUSK_QUERIES,
   "Tesla Gigafactory production line workers",
   "Tesla electric car assembly line robots",
   "Tesla Model 3 automobile assembly plant",
-  "Tesla supercharger station electric cars",
   "Tesla Fremont factory aerial drone",
-  "Tesla Cybertruck body welding factory",
   "electric vehicle battery pack assembly line",
-  "Falcon 9 booster landing on drone ship",
-  "Starship launch pad Boca Chica Texas",
   "SpaceX rocket hangar horizontal transport",
 ];
 
@@ -3226,18 +3248,13 @@ const BLOCKED_STOCK_QUERY_RE =
 
 /** Reject model/CGI/archival-looking clips (Pexels slugs + local filenames). */
 const BLOCKED_STOCK_VISUAL_RE =
-  /shuttle|saturn|apollo|lunar|moon[- ]?landing|moon[- ]?surface|miniature|diorama|tabletop|model[- ]?rocket|scale[- ]?model|toy[- ]?rocket|replica|maquette|science[- ]?fiction|sci[- ]?fi|cgi|3d[- ]?animation|vhs|glitch|vintage[- ]?space|archival|old[- ]?nasa|space[- ]?shuttle|saturn[- ]?v|rocket[- ]?model|model[- ]?launch|volkswagen|vw\b|ford\b|bmw|mercedes|audi\b|toyota factory|honda factory|container ship|cargo ship|freight ship|bulk carrier|ferry|passenger boat|catamaran|harbor cruise|shipping port|port crane|highway dash|motorway night|night driving dash/i;
+  /shuttle|saturn|apollo|lunar|moon[- ]?landing|moon[- ]?surface|miniature|diorama|tabletop|model[- ]?rocket|scale[- ]?model|toy[- ]?rocket|replica|maquette|science[- ]?fiction|sci[- ]?fi|cgi|3d[- ]?animation|vhs|glitch|vintage[- ]?space|archival|old[- ]?nasa|space[- ]?shuttle|saturn[- ]?v|rocket[- ]?model|model[- ]?launch|volkswagen|vw\b|ford\b|bmw|mercedes|audi\b|toyota factory|honda factory|container ship|cargo ship|freight ship|bulk carrier|ferry|passenger boat|catamaran|harbor cruise|shipping port|port crane|river boat|canal boat|textile mill|weaving factory|yarn factory|fabric mill|sewing factory|highway dash|motorway night|night driving dash|dashcam night/i;
 
 const BLOCKED_MUSK_COMPETITOR_RE =
   /\b(volkswagen|vw|ford|gm|general motors|bmw|mercedes|audi|toyota|honda|hyundai|kia|rivian|lucid)\b/i;
 
-/** Opening = real factory/Tesla B-roll first (avoids CGI “rocket on moon” from generic launch queries). */
-const OPENING_MUSK_QUERIES = [
-  "Tesla Gigafactory production line workers",
-  "Tesla electric car assembly line robots",
-  "Tesla supercharger station cars charging",
-  "electric vehicle battery manufacturing plant",
-];
+/** Opening = hero Tesla car / SpaceX pad first. */
+const OPENING_MUSK_QUERIES = HERO_MUSK_QUERIES;
 
 /** Only these rocket/space queries may yield rocket-category clips on Musk/Tesla topics. */
 const MUSK_APPROVED_ROCKET_QUERY_RE =
@@ -3247,6 +3264,9 @@ function stockVisualCategory(query: string, filePath?: string): string {
   const combined = `${query} ${path.basename(filePath ?? "")}`.toLowerCase();
   if (/miniature|diorama|tabletop|toy|model rocket|scale model|saturn|apollo|lunar|moon[- ]?landing|moon[- ]?surface|space shuttle|shuttle|vhs|glitch|sci[- ]?fi|cgi/.test(combined)) {
     return "blocked_model";
+  }
+  if (/textile|weaving|loom|yarn factory|fabric mill|sewing factory|ferry|catamaran|river boat|canal|harbor cruise|container ship|cargo ship|highway dash|motorway|dashcam|night driving/.test(combined)) {
+    return "blocked_offtopic";
   }
   if (/gigafactory|solar.*(factory|plant|roof)|factory.*solar|solar panel.*roof/.test(combined)) return "gigafactory";
   if (/solar|photovoltaic|panel array|sun panel/.test(combined)) return "solar";
@@ -3267,8 +3287,17 @@ function categoryLimitFor(dedup: VisualDedupState, category: string, muskTopic =
   return STOCK_CATEGORY_LIMITS[category] ?? 2;
 }
 
+function muskBrandScore(sourceQuery: string, filePath: string): number {
+  const t = `${sourceQuery} ${path.basename(filePath)}`.toLowerCase();
+  let s = 0;
+  if (/\btesla\b/.test(t)) s += 3;
+  if (/\bspacex\b/.test(t)) s += 3;
+  if (/\bfalcon\b|\bstarship\b|\bcybertruck\b/.test(t)) s += 2;
+  return s;
+}
+
 function categoryAtLimit(dedup: VisualDedupState, category: string, muskTopic = false): boolean {
-  if (category === "blocked_model") return true;
+  if (category === "blocked_model" || category === "blocked_offtopic") return true;
   const limit = categoryLimitFor(dedup, category, muskTopic);
   return (dedup.usedCategories.get(category) ?? 0) >= limit;
 }
@@ -3601,8 +3630,12 @@ async function adoptClip(
   const keywords = opts.keywords ?? [];
   const muskTopic = opts.muskTopic ?? false;
   const sortedPaths = [...paths].sort((a, b) => {
-    const scoreB = scoreVisualRelevance(`${sourceQuery} ${path.basename(b)}`, keywords);
-    const scoreA = scoreVisualRelevance(`${sourceQuery} ${path.basename(a)}`, keywords);
+    const scoreB =
+      scoreVisualRelevance(`${sourceQuery} ${path.basename(b)}`, keywords) +
+      (muskTopic ? muskBrandScore(sourceQuery, b) : 0);
+    const scoreA =
+      scoreVisualRelevance(`${sourceQuery} ${path.basename(a)}`, keywords) +
+      (muskTopic ? muskBrandScore(sourceQuery, a) : 0);
     return scoreB - scoreA;
   });
 
@@ -3615,7 +3648,7 @@ async function adoptClip(
       if (isPipelineFallbackClip(p)) continue;
       if (await isMostlyBlackClip(p)) continue;
       const category = stockVisualCategory(sourceQuery, p);
-      if (category === "blocked_model") continue;
+      if (category === "blocked_model" || category === "blocked_offtopic") continue;
       if (categoryAtLimit(dedup, category, muskTopic)) continue;
       // Musk/Tesla topics: reject generic clips when query targets a specific category
       const queryCategory = stockVisualCategory(sourceQuery);
@@ -3630,6 +3663,13 @@ async function adoptClip(
         if (category === "generic" && queryCategory !== "generic" && rel < 1) continue;
         if (rel + topicRel < 3) continue;
         if (BLOCKED_MUSK_COMPETITOR_RE.test(`${sourceQuery} ${path.basename(p)}`)) continue;
+        if (
+          (category === "factory" || category === "generic") &&
+          muskBrandScore(sourceQuery, p) === 0 &&
+          topicRel < 3
+        ) {
+          continue;
+        }
       }
       let fileSize = 0;
       try { fileSize = fs.statSync(p).size; } catch { continue; }
@@ -3782,6 +3822,41 @@ async function fetchBeatClip(
     () => fetchBrollClips([query], clipFetchDur, workDir, sceneIndex, dedup.usedPexelsIds);
 
   let clip: string | null = null;
+
+  // 0a) Hero beat: YouTube CC + NASA for recognizable SpaceX/Tesla (once per video)
+  if (
+    muskTopic &&
+    perf.enableMuskHeroFetch &&
+    !dedup.muskHeroFetchUsed &&
+    beat.index === 0 &&
+    sceneIndex === 0
+  ) {
+    const heroKw = [...MUSK_TOPIC_TOKENS, ...beat.keywords];
+    clip = await tryStockSources(
+      [
+        ...HERO_MUSK_QUERIES.slice(0, 3).map((hq, hi) => ({
+          query: hq,
+          fetch: pexFetch(hq, `${tag}_hero`, candidateOffset + hi, 4),
+        })),
+        {
+          query: "SpaceX Falcon 9 launch",
+          fetch: () =>
+            fetchYouTubeCCClips(HERO_YOUTUBE_QUERIES, clipFetchDur, workDir, sceneIndex, 1, heroKw, 2),
+        },
+        {
+          query: "SpaceX Starship",
+          fetch: () => fetchNasaVideoClips("SpaceX Starship launch", clipFetchDur, workDir, sceneIndex, 1),
+        },
+      ],
+      dedup, sceneIndex, beat.index, beat.text, workDir, "hero", adoptOpts
+    );
+    if (clip) {
+      dedup.muskHeroFetchUsed = true;
+      dedup.globalBeatIndex++;
+      return clip;
+    }
+    dedup.muskHeroFetchUsed = true;
+  }
 
   // 0) Opening beat: Tesla/factory B-roll first (no generic rocket CGI)
   if (beat.index === 0 && muskTopic) {
@@ -4503,19 +4578,27 @@ async function composeSceneVideo(
         ? `;[v0]copy[concatenated]`
         : `;${concatLabels}concat=n=${safeClips.length}:v=1:a=0[concatenated]`;
 
+    const montageDur = clipDur * safeClips.length;
+    const padSec = Math.max(0, duration - montageDur);
+    const padFilter =
+      padSec > 0.05
+        ? `;[concatenated]tpad=stop_mode=clone:stop_duration=${padSec.toFixed(3)}[concatPadded]`
+        : "";
+    const montageLabel = padSec > 0.05 ? "concatPadded" : "concatenated";
+
     const audioIdx = safeClips.length;
     const kineticBaseIdx = audioIdx + 1;
     const { extraInputs: kExtraInputs, filterChain: kChain, finalLabel: kFinalLabel } =
-      buildKineticChain("concatenated", kineticBaseIdx);
+      buildKineticChain(montageLabel, kineticBaseIdx);
 
     const kineticInput = kExtraInputs ? ` ${kExtraInputs}` : "";
     const kineticChainStr = kChain ? kChain : "";
     const hasOverlays = kineticFrames.length > 0 || statCalloutFrame !== null;
-    const finalVideoLabel = hasOverlays ? kFinalLabel : "concatenated";
+    const finalVideoLabel = hasOverlays ? kFinalLabel : montageLabel;
     await withTimeout(
       exec(
         `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}"${kineticInput} ` +
-        `-filter_complex "${scaleFilters}${mergeFilter}${kineticChainStr};[${finalVideoLabel}]${fadeFilter}[vout];[${audioIdx}:a]apad=whole_dur=${duration.toFixed(3)},atrim=0:${duration.toFixed(3)}[aout]" ` +
+        `-filter_complex "${scaleFilters}${mergeFilter}${padFilter}${kineticChainStr};[${finalVideoLabel}]${fadeFilter}[vout];[${audioIdx}:a]apad=whole_dur=${duration.toFixed(3)},atrim=0:${duration.toFixed(3)}[aout]" ` +
         `-map "[vout]" -map "[aout]" ` +
         `-t ${duration} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
       ),
@@ -4692,6 +4775,48 @@ async function generateSFX(
     await exec(`${FFMPEG_BIN} -y -f lavfi -i anullsrc=r=44100:cl=stereo -t 0.1 -c:a libmp3lame -b:a 64k "${outputPath}"`).catch(() => {});
     return outputPath;
   }
+}
+
+async function probeVideoDurationSec(filePath: string): Promise<number> {
+  const { execFile } = await import("child_process");
+  const { promisify } = await import("util");
+  const execFileAsync = promisify(execFile);
+  for (const probe of FFPROBE_PATHS()) {
+    try {
+      const { stdout } = await execFileAsync(probe, [
+        "-v", "error", "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1", filePath,
+      ]);
+      const d = parseFloat(String(stdout).trim());
+      if (!isNaN(d) && d > 0) return d;
+    } catch { /* try next */ }
+  }
+  return 0;
+}
+
+/** Pad with last-frame hold so 2-min tests reliably hit 118s (no black tail). */
+async function ensureFinalVideoDuration(
+  inputPath: string,
+  workDir: string,
+  videoId: number,
+  targetSec: number
+): Promise<string> {
+  const dur = await probeVideoDurationSec(inputPath);
+  if (dur >= targetSec - 0.3) return inputPath;
+  const pad = Math.max(0.5, targetSec - dur);
+  const out = path.join(workDir, `fastvid_${videoId}_padded.mp4`);
+  console.log(`[Pipeline] Final ${dur.toFixed(1)}s < ${targetSec}s — padding ${pad.toFixed(1)}s (clone last frame)`);
+  await withTimeout(
+    exec(
+      `${FFMPEG_BIN} -y -i "${inputPath}" ` +
+      `-vf "tpad=stop_mode=clone:stop_duration=${pad.toFixed(3)}" ` +
+      `-af "apad=pad_dur=${pad.toFixed(3)}" ` +
+      `-c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -movflags +faststart -shortest "${out}"`
+    ),
+    120_000,
+    `Pad final video to ${targetSec}s`
+  );
+  return out;
 }
 
 // ─── 7. Final Concatenation + Music Mix ───────────────────────────────────────
@@ -4910,7 +5035,14 @@ export async function runVideoPipeline(
       scenes.forEach((scene, i) => {
         scene.duration = Math.max(padded[i] * scale, durations[i] + 1.5);
       });
-      const finalTotal = scenes.reduce((sum, s) => sum + s.duration, 0);
+      let finalTotal = scenes.reduce((sum, s) => sum + s.duration, 0);
+      if (Math.abs(finalTotal - targetTotal) > 0.5) {
+        const fix = targetTotal / Math.max(finalTotal, 1);
+        scenes.forEach((scene) => {
+          scene.duration *= fix;
+        });
+        finalTotal = targetTotal;
+      }
       console.log(`[Pipeline] ${videoLength}-min test: total duration ${finalTotal.toFixed(1)}s (${scenes.length} scenes)`);
     } else {
       // Vidrush pacing: tight scene length — minimal padding beyond voiceover
@@ -5039,7 +5171,11 @@ export async function runVideoPipeline(
     const t4 = Date.now();
     const totalDuration =
       scenes.reduce((sum, s) => sum + s.duration, 0) + chapterCardCount * CHAPTER_CARD_DURATION;
-    const finalVideoPath = await concatenateScenesWithMusic(orderedClips, workDir, videoId, totalDuration, videoTitle);
+    let finalVideoPath = await concatenateScenesWithMusic(orderedClips, workDir, videoId, totalDuration, videoTitle);
+    if (videoLength === "1" || videoLength === "2") {
+      const targetSec = videoLength === "1" ? 58 : 118;
+      finalVideoPath = await ensureFinalVideoDuration(finalVideoPath, workDir, videoId, targetSec);
+    }
     console.log(`[Pipeline] Stage 5 (assemble+music): ${((Date.now()-t4)/1000).toFixed(1)}s`);
 
     // ── Stage 6: Upload to S3 ─────────────────────────────────────────────────
