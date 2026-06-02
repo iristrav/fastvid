@@ -317,7 +317,7 @@ RULES:
     await updateVideoProgress(videoId, "📋 Assembling script...", 22);
 
     // Assemble full script
-    const scriptParts: string[] = [`# ${title}\n`, `## Opening\n${outline.hook}\n[VISUAL: Opening b-roll directly related to ${prompt} — e.g. rocket launch, factory floor, or product close-up, never abstract graphics]\n`];
+    const scriptParts: string[] = [`# ${title}\n`, `## Opening\n${outline.hook}\n[VISUAL: Tesla Gigafactory or electric car assembly line — real factory B-roll only, never moon/CGI rocket models or solar farms unless topic is solar]\n`];
     outline.sections.forEach((sec, idx) => scriptParts.push(`## ${sec.title}\n${sectionTexts[idx] ?? ""}\n`));
     scriptParts.push(`## CALL TO ACTION\n${outline.cta}\n[VISUAL: Cinematic closing b-roll related to the video topic]\n`);
     const scriptContent = scriptParts.join("\n");

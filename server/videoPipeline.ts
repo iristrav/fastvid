@@ -559,10 +559,10 @@ async function parseScriptIntoScenesBatch(
 For each scene return:
 - text: narration (max 500 chars, full sentences)
 - visualCue: EXACT footage shown while narrating (e.g. "SpaceX Falcon 9 launch pad", "Tesla Gigafactory assembly line")
-- literalVisualCue: hyper-specific 3-5 word stock search for the key visual moment (e.g. "rocket launch pad night", "electric car assembly robot")
-- pexelsQuery: primary English stock video search — MUST match visualCue and narration topic
+- literalVisualCue: hyper-specific 3-5 word stock search for the key visual moment (e.g. "Tesla Gigafactory assembly robots", "Falcon 9 landing drone ship")
+- pexelsQuery: primary English stock video search — MUST match visualCue and narration topic. For Tesla/SpaceX/Musk topics use ONLY: Tesla factory, Model 3, supercharger, Falcon 9 landing, Starship pad, Cybertruck — NEVER generic "rocket launch", moon surface, Saturn, shuttle, or solar farm unless narration is specifically about solar
 - pexelsQueries: 3 queries from most specific to slightly broader — ALL must stay on the same topic
-- brollQueries: exactly 2 cutaway B-roll queries (close-ups, hands, screens, crowds) different from pexelsQuery
+- brollQueries: exactly 2 cutaway B-roll queries (factory hands, robots, charging, launch pad close-up) — no generic space CGI
 - personNames: full names of real people mentioned in text, or []
 - sectionTitle: ALL CAPS chapter heading shown on yellow card BEFORE this scene when starting a new topic; "" if not a chapter start. NEVER use HOOK, OPENING, CTA, INTRO, or OUTRO as sectionTitle — always "" for those meta sections.
 
@@ -3244,10 +3244,13 @@ const MUSK_APPROVED_ROCKET_QUERY_RE =
 
 function stockVisualCategory(query: string, filePath?: string): string {
   const combined = `${query} ${path.basename(filePath ?? "")}`.toLowerCase();
+  if (/miniature|diorama|tabletop|toy|model rocket|scale model|saturn|apollo|lunar|moon[- ]?landing|moon[- ]?surface|space shuttle|shuttle|vhs|glitch|sci[- ]?fi|cgi/.test(combined)) {
+    return "blocked_model";
+  }
   if (/gigafactory|solar.*(factory|plant|roof)|factory.*solar|solar panel.*roof/.test(combined)) return "gigafactory";
   if (/solar|photovoltaic|panel array|sun panel/.test(combined)) return "solar";
   if (/tesla|supercharger|model [3syx]|cybertruck/.test(combined)) return "tesla";
-  if (/falcon|spacex|starship|rocket launch|launch pad|booster|ignition/.test(combined)) return "rocket";
+  if (/falcon|spacex|starship|rocket|launch pad|booster|spacecraft|ignition/.test(combined)) return "rocket";
   if (/robot arm|humanoid|cybernetic|prosthetic arm/.test(combined)) return "robot";
   if (/assembly line|manufacturing|factory|gigafactory|welding plant/.test(combined)) return "factory";
   if (/astronaut|mission control|orbit|satellite deploy|space station/.test(combined)) return "space";
@@ -3264,8 +3267,42 @@ function categoryLimitFor(dedup: VisualDedupState, category: string, muskTopic =
 }
 
 function categoryAtLimit(dedup: VisualDedupState, category: string, muskTopic = false): boolean {
+  if (category === "blocked_model") return true;
   const limit = categoryLimitFor(dedup, category, muskTopic);
   return (dedup.usedCategories.get(category) ?? 0) >= limit;
+}
+
+function pickMuskGoldenQuery(globalBeat: number, beatIndex = 0): string {
+  const idx = (globalBeat * 3 + beatIndex) % GOLDEN_MUSK_QUERIES.length;
+  return GOLDEN_MUSK_QUERIES[idx];
+}
+
+/** Rewrite LLM scene queries that cause CGI/model rocket hits on Pexels. */
+function sanitizeSceneForMuskTopic(scene: Scene, sceneIndex: number, videoTitle?: string): void {
+  if (!isMuskTeslaTopic(videoTitle, scene.text)) return;
+  const fallback = pickMuskGoldenQuery(sceneIndex, 0);
+  const safe = (q: string): string => {
+    const trimmed = q.trim();
+    if (!trimmed) return fallback;
+    const cat = stockVisualCategory(trimmed);
+    if (cat === "blocked_model" || isBlockedStockQuery(trimmed)) return fallback;
+    if (cat === "solar" && !/solar|photovoltaic/.test(scene.text.toLowerCase())) return fallback;
+    if (cat === "space") return fallback;
+    if (cat === "rocket" && !isMuskApprovedRocketQuery(trimmed)) {
+      return "Falcon 9 booster landing on drone ship";
+    }
+    if (isAmbiguousRocketQuery(trimmed)) return fallback;
+    return trimmed.slice(0, 100);
+  };
+  if (scene.literalVisualCue) scene.literalVisualCue = safe(scene.literalVisualCue);
+  scene.pexelsQuery = safe(scene.pexelsQuery);
+  scene.visualCue = safe(scene.visualCue);
+  scene.pexelsQueries = (scene.pexelsQueries ?? []).map(safe).filter((q, i, arr) => q && arr.indexOf(q) === i);
+  scene.brollQueries = (scene.brollQueries ?? []).map((q) => {
+    const cat = stockVisualCategory(q);
+    if (cat === "tesla" || cat === "factory" || cat === "robot") return safe(q);
+    return "Tesla factory assembly line close up";
+  });
 }
 
 function isMuskApprovedRocketQuery(q: string): boolean {
@@ -3478,7 +3515,13 @@ function scoreVisualRelevance(text: string, keywords: string[]): number {
   return score;
 }
 
-function buildSceneBeats(scene: Scene, duration: number, maxBeatsCap = 12): SceneBeat[] {
+function buildSceneBeats(
+  scene: Scene,
+  duration: number,
+  maxBeatsCap = 12,
+  videoTitle?: string
+): SceneBeat[] {
+  const muskTopic = isMuskTeslaTopic(videoTitle, scene.text);
   const minBeatsForDuration = Math.ceil(duration / VIDRUSH_CLIP_MAX_SEC);
   const beatCount = Math.min(
     maxBeatsCap,
@@ -3501,13 +3544,15 @@ function buildSceneBeats(scene: Scene, duration: number, maxBeatsCap = 12): Scen
     const text = sentences[Math.min(i, sentences.length - 1)] ?? scene.text;
     const textKeywords = tokenizeForRelevance(text).slice(0, 2).join(" ");
     const useBroll = i % 2 === 1 && brollPool.length > 0;
-    const baseQuery = useBroll
-      ? brollPool[i % brollPool.length]
-      : queryPool[(i * 2 + scene.index) % Math.max(1, queryPool.length)] ??
-        scene.visualCue ??
-        scene.pexelsQuery ??
-        extractTopicStockQueries(scene.text)[0] ??
-        "factory production line";
+    const baseQuery = muskTopic
+      ? pickMuskGoldenQuery(scene.index * beatCount + i, i)
+      : useBroll
+        ? brollPool[i % brollPool.length]
+        : queryPool[(i * 2 + scene.index) % Math.max(1, queryPool.length)] ??
+          scene.visualCue ??
+          scene.pexelsQuery ??
+          extractTopicStockQueries(scene.text)[0] ??
+          "factory production line";
     const searchQuery = textKeywords
       ? `${baseQuery} ${textKeywords}`.trim().slice(0, 100)
       : baseQuery;
@@ -3547,6 +3592,7 @@ async function adoptClip(
       if (isRejectedStockClip(p, sourceQuery)) continue;
       if (await isMostlyBlackClip(p)) continue;
       const category = stockVisualCategory(sourceQuery, p);
+      if (category === "blocked_model") continue;
       if (categoryAtLimit(dedup, category, muskTopic)) continue;
       // Musk/Tesla topics: reject generic clips when query targets a specific category
       const queryCategory = stockVisualCategory(sourceQuery);
@@ -3626,7 +3672,7 @@ async function fetchLastResortRealClip(
     ...(personName
       ? [
           `${personName} Tesla factory`,
-          `${personName} SpaceX rocket launch`,
+          `${personName} Tesla Gigafactory production`,
         ]
       : []),
     enrichStockQuery(scene.visualCue, scene, videoTitle, personName),
@@ -3688,11 +3734,17 @@ async function fetchBeatClip(
         personName
       )
     : enrichStockQuery(beat.searchQuery, scene, videoTitle, personName);
-  const q = isBlockedStockQuery(rawQ)
+  let q = isBlockedStockQuery(rawQ)
     ? enrichStockQuery(scene.pexelsQuery || scene.visualCue, scene, videoTitle, personName)
     : rawQ;
+  if (muskTopic) {
+    q = isBlockedStockQuery(q) || stockVisualCategory(q) === "blocked_model"
+      ? pickMuskGoldenQuery(dedup.globalBeatIndex, beat.index)
+      : q;
+  }
 
-  const pexFetch = (query: string, t: string, off: number, count = 2) =>
+  const pexCount = muskTopic ? 4 : 2;
+  const pexFetch = (query: string, t: string, off: number, count = pexCount) =>
     () => fetchPexelsClips(
       query, clipFetchDur, workDir, sceneIndex, count, [query], true, t,
       dedup.usedPexelsIds, off, perf.pexelsDownloadRetries
@@ -3704,26 +3756,19 @@ async function fetchBeatClip(
 
   let clip: string | null = null;
 
-  // 0) Opening beat: always start with on-topic rocket/factory footage
+  // 0) Opening beat: Tesla/factory B-roll first (no generic rocket CGI)
   if (beat.index === 0 && muskTopic) {
     clip = await tryStockSources(
-      OPENING_MUSK_QUERIES.slice(0, 2).map((oq, oi) => ({
+      OPENING_MUSK_QUERIES.map((oq, oi) => ({
         query: oq,
-        fetch: pexFetch(oq, `${tag}_open`, candidateOffset + oi, 2),
+        fetch: pexFetch(oq, `${tag}_open`, candidateOffset + oi, 3),
       })),
       dedup, sceneIndex, beat.index, beat.text, workDir, "opening", adoptOpts
     );
     if (clip) { dedup.globalBeatIndex++; return clip; }
   }
 
-  // 1) Beat-specific literal query (highest narrative match)
-  clip = await tryStockSources(
-    [{ query: q, fetch: pexFetch(q, `${tag}_lit`, candidateOffset) }],
-    dedup, sceneIndex, beat.index, beat.text, workDir, "literal Pexels", adoptOpts
-  );
-  if (clip) { dedup.globalBeatIndex++; return clip; }
-
-  // 2) Golden rotating query for Musk/Tesla/SpaceX — guarantees visual variety
+  // 1) Golden pool first for Musk — beats generic LLM / Pexels CGI
   if (muskTopic) {
     const golden = GOLDEN_MUSK_QUERIES[dedup.globalBeatIndex % GOLDEN_MUSK_QUERIES.length];
     const goldenCat = stockVisualCategory(golden);
@@ -3740,6 +3785,15 @@ async function fetchBeatClip(
     goldenFetchers.push({ query: golden, fetch: pixFetch(golden, `${tag}_golden`, candidateOffset + 1) });
 
     clip = await tryStockSources(goldenFetchers, dedup, sceneIndex, beat.index, beat.text, workDir, "golden", adoptOpts);
+    if (clip) { dedup.globalBeatIndex++; return clip; }
+  }
+
+  // 2) Beat-specific literal query (sanitized; non-Musk only if golden missed)
+  if (!muskTopic || !isBlockedStockQuery(q)) {
+    clip = await tryStockSources(
+      [{ query: q, fetch: pexFetch(q, `${tag}_lit`, candidateOffset) }],
+      dedup, sceneIndex, beat.index, beat.text, workDir, "literal Pexels", adoptOpts
+    );
     if (clip) { dedup.globalBeatIndex++; return clip; }
   }
 
@@ -3825,7 +3879,7 @@ async function fetchSceneVisuals(
   const scenePersons = resolveScenePersons(scene, videoTitle);
   const personName = scenePersons[0] ?? extractPrimaryPersonFromTitle(videoTitle) ?? "";
   const spaceTopic = isSpaceRelatedTopic(scene.visualCue, scene.pexelsQuery, scene.text, videoTitle ?? "");
-  const beats = buildSceneBeats(scene, scene.duration, dedup.perf.maxBeatsPerScene);
+  const beats = buildSceneBeats(scene, scene.duration, dedup.perf.maxBeatsPerScene, videoTitle);
   const clips: string[] = [];
 
   console.log(`[Pipeline] Scene ${scene.index}: fetching ${beats.length} beat-aligned clip(s)`);
@@ -4757,6 +4811,7 @@ export async function runVideoPipeline(
     onProgress?.({ stage: STAGE_LABELS.parsing, percent: 3 });
     const t0 = Date.now();
     const scenes = await parseScriptIntoScenes(script, maxScenes);
+    scenes.forEach((scene) => sanitizeSceneForMuskTopic(scene, scene.index, videoTitle));
     console.log(`[Pipeline] Stage 1 (parse): ${scenes.length} scenes in ${((Date.now()-t0)/1000).toFixed(1)}s`);
 
     // ── Stage 2: Generate ALL voiceovers in parallel batches ──────────────────
