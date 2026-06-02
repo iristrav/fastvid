@@ -3313,7 +3313,12 @@ function isAmbiguousRocketQuery(q: string): boolean {
   return !isMuskApprovedRocketQuery(q);
 }
 
+function isPipelineFallbackClip(filePath: string): boolean {
+  return /_fallback\.mp4$/i.test(path.basename(filePath));
+}
+
 async function isMostlyBlackClip(filePath: string): Promise<boolean> {
+  if (isPipelineFallbackClip(filePath)) return true;
   try {
     const cmd =
       `"${FFMPEG_BIN}" -y -i "${filePath}" -vf "blackdetect=d=0.08:pix_th=0.12" -an -f null -`;
@@ -3336,10 +3341,25 @@ async function isMostlyBlackClip(filePath: string): Promise<boolean> {
         parseInt(durMatch[2], 10) * 60 +
         parseFloat(durMatch[3]);
     }
-    return totalDur > 0 && blackDur / totalDur > 0.55;
+    if (totalDur > 0 && blackDur / totalDur > 0.35) return true;
   } catch {
-    return false;
+    /* fall through */
   }
+  try {
+    const lumCmd =
+      `"${FFMPEG_BIN}" -y -ss 0.5 -i "${filePath}" -vframes 1 -vf "scale=64:36,format=gray" -f rawvideo -`;
+    const { stdout } = await withTimeout(exec(lumCmd), 10_000, `luma ${path.basename(filePath)}`);
+    const buf = Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout ?? "", "binary");
+    if (buf.length > 0) {
+      let sum = 0;
+      for (let i = 0; i < buf.length; i++) sum += buf[i];
+      const mean = sum / buf.length;
+      if (mean < 28) return true;
+    }
+  } catch {
+    /* ignore */
+  }
+  return false;
 }
 
 function isMuskTeslaTopic(videoTitle?: string, sceneText?: string): boolean {
