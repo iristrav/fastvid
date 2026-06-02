@@ -3083,14 +3083,36 @@ interface VisualDedupState {
   usedPexelsIds: Set<number>;
   usedPixabayIds: Set<number>;
   usedContentKeys: Set<string>;
+  lock: Promise<void>;
 }
 
 function createVisualDedupState(): VisualDedupState {
-  return { usedPaths: new Set(), usedPexelsIds: new Set(), usedPixabayIds: new Set(), usedContentKeys: new Set() };
+  return {
+    usedPaths: new Set(),
+    usedPexelsIds: new Set(),
+    usedPixabayIds: new Set(),
+    usedContentKeys: new Set(),
+    lock: Promise.resolve(),
+  };
+}
+
+async function withVisualDedupLock<T>(dedup: VisualDedupState, fn: () => Promise<T>): Promise<T> {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const prev = dedup.lock;
+  dedup.lock = prev.then(() => gate);
+  await prev;
+  try {
+    return await fn();
+  } finally {
+    release();
+  }
 }
 
 const BLOCKED_STOCK_TAGS_RE =
-  /emoji|cartoon|animation|icon|illustration|graphic|pattern|sticker|clipart|motion graphics|3d render|abstract background|wallpaper|seamless loop|looping/i;
+  /emoji|cartoon|animation|icon|illustration|graphic|pattern|sticker|clipart|motion graphics|3d render|abstract background|wallpaper|seamless loop|looping|campfire|bonfire|fireplace|bbq|barbecue|driving|dashcam|highway|bridge/i;
 
 const BLOCKED_STOCK_QUERY_RE =
   /\b(subscribe|like button|thumbs up|thumbs down|social media ui|notification bell|emoji|icon animation|button animation|wallpaper|seamless loop|motion graphics)\b/i;
@@ -3149,7 +3171,7 @@ function extractTopicStockQueries(promptOrTitle: string): string[] {
       "Tesla electric car factory workers",
       "Tesla Model 3 assembly line",
       "electric vehicle manufacturing plant",
-      "rocket engine test fire",
+      "rocket engine ignition launch pad",
     );
   }
   if (/tesla/.test(text)) {
@@ -3297,18 +3319,20 @@ async function adoptClip(
   beatText: string,
   workDir: string
 ): Promise<string | null> {
-  for (const p of paths) {
-    if (!p || dedup.usedPaths.has(p) || !fs.existsSync(p)) continue;
-    if (!(await isValidVideoFile(p))) continue;
-    if (isStillPhotoClip(p)) continue;
-    const contentKey = clipContentKey(p);
-    if (dedup.usedContentKeys.has(contentKey)) continue;
-    dedup.usedPaths.add(p);
-    dedup.usedContentKeys.add(contentKey);
-    const transformed = await transformClipForFairUse(p, beatText, sceneIndex, beatIndex, workDir);
-    if (await isValidVideoFile(transformed)) return transformed;
-  }
-  return null;
+  return withVisualDedupLock(dedup, async () => {
+    for (const p of paths) {
+      if (!p || dedup.usedPaths.has(p) || !fs.existsSync(p)) continue;
+      if (!(await isValidVideoFile(p))) continue;
+      if (isStillPhotoClip(p)) continue;
+      const contentKey = clipContentKey(p);
+      if (dedup.usedContentKeys.has(contentKey)) continue;
+      dedup.usedPaths.add(p);
+      dedup.usedContentKeys.add(contentKey);
+      const transformed = await transformClipForFairUse(p, beatText, sceneIndex, beatIndex, workDir);
+      if (await isValidVideoFile(transformed)) return transformed;
+    }
+    return null;
+  });
 }
 
 /** Last-resort real stock video — broad queries, non-strict mode. No still photos. */
@@ -4476,8 +4500,8 @@ export async function runVideoPipeline(
     const t2 = Date.now();
     const visualDedup = createVisualDedupState();
 
-    // Process visuals in batches — limit to 2 to balance speed and OOM prevention
-    const visualLimit = pLimit(2);
+    // Sequential fetch for short tests prevents Pexels ID race duplicates; parallel for long videos
+    const visualLimit = pLimit(videoLength === "1" || videoLength === "2" ? 1 : 2);
     let completedVisuals = 0;
     const sceneVisuals: string[][] = await withTimeout(
       Promise.all(scenes.map(scene => visualLimit(async () => {
