@@ -297,14 +297,17 @@ const IS_RAILWAY = !process.env.BUILT_IN_FORGE_API_KEY;
 // 1080p resolution for professional YouTube quality
 const VIDEO_WIDTH = 1920;
 const VIDEO_HEIGHT = 1080;
-/** Standard scale chain — pad ensures exact even dimensions for libx264 */
-const STANDARD_VF = `scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=decrease,pad=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:(ow-iw)/2:(oh-ih)/2,fps=25,format=yuv420p`;
-/** Vidrush pacing: 2–3s hard-cut clips (reference documentary style) */
+/** Scale/pad per clip; fps applied once after montage to reduce judder. */
+const SCALE_PAD_VF = `scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=decrease,pad=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:(ow-iw)/2:(oh-ih)/2`;
+const FPS_FORMAT_VF = `fps=25,format=yuv420p,setpts=PTS-STARTPTS`;
+const STANDARD_VF = `${SCALE_PAD_VF},${FPS_FORMAT_VF}`;
+/** New clip every ~3–4s; hold up to 7s when narration/visual clearly stay on one subject. */
 const VIDRUSH_CLIP_MIN_SEC = 3.0;
-const VIDRUSH_CLIP_MAX_SEC = 4.5;
-const VIDRUSH_BEAT_SEC = 3.2;
-/** Crossfade between montage clips — smoother than hard cuts (reduces perceived stutter). */
-const MONTAGE_XFADE_SEC = 0.4;
+const VIDRUSH_CLIP_MAX_SEC = 4.0;
+const VIDRUSH_CLIP_HOLD_SEC = 7.0;
+const VIDRUSH_BEAT_SEC = 3.5;
+/** Short crossfade — visible cut every 3–4s without ghosting/flicker. */
+const MONTAGE_XFADE_SEC = 0.22;
 const CHAPTER_CARD_DURATION = 1.5;
 
 /** Wall-clock budgets: short ≤60 min, long ≤90 min (see getPipelinePerfProfile). */
@@ -332,7 +335,7 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
   if (videoLength === "1" || videoLength === "2") {
     return {
       targetWallClockMin: 60,
-      maxBeatsPerScene: IS_RAILWAY ? 3 : 5,
+      maxBeatsPerScene: 14,
       maxTopicQueries: IS_RAILWAY ? 2 : 3,
       skipFairUseTransform: true,
       transformTimeoutMs: 25_000,
@@ -3561,6 +3564,8 @@ interface SceneBeat {
   text: string;
   searchQuery: string;
   keywords: string[];
+  /** Seconds this beat stays on screen (3–4 default, up to 7 when merged). */
+  holdSec: number;
 }
 
 interface VisualDedupState {
@@ -4006,49 +4011,94 @@ function clipContentKey(filePath: string): string {
   }
 }
 
-/** Beat clip length in compose — fill scene duration, cap per clip for pacing. */
-function computeMontageClipDuration(sceneDuration: number, clipCount: number): number {
-  if (clipCount <= 0) return VIDRUSH_CLIP_MAX_SEC;
-  const xfade = clipCount > 1 ? MONTAGE_XFADE_SEC : 0;
-  const evenSplit = (sceneDuration + (clipCount - 1) * xfade) / clipCount;
-  let clipDur = Math.max(VIDRUSH_CLIP_MIN_SEC, Math.min(VIDRUSH_CLIP_MAX_SEC, evenSplit));
-  if (clipDur * clipCount - (clipCount - 1) * xfade < sceneDuration - 0.05) {
-    clipDur = (sceneDuration + (clipCount - 1) * xfade) / clipCount;
-  }
-  return clipDur;
+function montageClipStartSec(sceneIndex: number, clipIndex: number): number {
+  return Math.min(((sceneIndex * 2.1 + clipIndex * 1.35) % 4.5) * 0.35, 1.4);
 }
 
-/** xfade montage filter — trim in-filter (no input -ss) to avoid keyframe stutter. */
+function estimateBeatHoldSec(text: string, mergedSentenceCount: number): number {
+  const words = text.replace(/\[visual:[^\]]+\]/gi, "").split(/\s+/).filter(Boolean).length;
+  const byWords = words / 2.4;
+  if (mergedSentenceCount >= 2 || byWords > 16) {
+    return Math.min(
+      VIDRUSH_CLIP_HOLD_SEC,
+      Math.max(VIDRUSH_CLIP_MAX_SEC + 0.5, Math.min(byWords, VIDRUSH_CLIP_HOLD_SEC))
+    );
+  }
+  return VIDRUSH_BEAT_SEC;
+}
+
+function beatsBelongTogether(prevText: string, nextText: string, prevVisual: string, nextVisual: string): boolean {
+  if (prevVisual && nextVisual && prevVisual.toLowerCase() === nextVisual.toLowerCase()) return true;
+  const prevEntities = extractBeatRealEntities(prevText).map((r) => r.id).join(",");
+  const nextEntities = extractBeatRealEntities(nextText).map((r) => r.id).join(",");
+  if (prevEntities && nextEntities && prevEntities === nextEntities) return true;
+  if (!extractInlineVisualCues(nextText).length && nextText.length < 90) return true;
+  return false;
+}
+
+function normalizeMontageDurations(durations: number[], outDur: number): number[] {
+  const n = durations.length;
+  if (n === 0) return durations;
+  const xfade = n > 1 ? MONTAGE_XFADE_SEC : 0;
+  const total = durations.reduce((s, d) => s + d, 0) - (n - 1) * xfade;
+  if (total <= 0.1) return durations;
+  const scale = outDur / total;
+  if (scale >= 0.88 && scale <= 1.12) {
+    return durations.map((d) => Math.max(VIDRUSH_CLIP_MIN_SEC * 0.9, d * scale));
+  }
+  return durations;
+}
+
+/** Default per-clip duration when beat metadata is missing. */
+function computeMontageClipDuration(sceneDuration: number, clipCount: number): number {
+  if (clipCount <= 0) return VIDRUSH_BEAT_SEC;
+  const ideal = Math.max(1, Math.ceil(sceneDuration / VIDRUSH_BEAT_SEC));
+  if (clipCount >= ideal - 1) return VIDRUSH_BEAT_SEC;
+  const xfade = clipCount > 1 ? MONTAGE_XFADE_SEC : 0;
+  const evenSplit = (sceneDuration + (clipCount - 1) * xfade) / clipCount;
+  return Math.max(VIDRUSH_CLIP_MIN_SEC, Math.min(VIDRUSH_CLIP_MAX_SEC, evenSplit));
+}
+
+/** xfade montage — trim in-filter; optional per-beat durations (3–4s, longer when merged). */
 function buildMontageXfadeFilter(
   clipCount: number,
   outDur: number,
-  sceneIndex: number
+  sceneIndex: number,
+  clipDurations?: number[]
 ): { scaleFilters: string; mergeFilter: string; montageLabel: string } {
   const n = Math.max(1, clipCount);
   const xfade = MONTAGE_XFADE_SEC;
-  const clipDur = computeMontageClipDuration(outDur, n);
-  const startAt = (i: number) => Math.min(((sceneIndex + i) * 0.9) % 2.0, 1.2);
+  let durs =
+    clipDurations?.length === n
+      ? clipDurations.map((d) =>
+          Math.max(VIDRUSH_CLIP_MIN_SEC, Math.min(VIDRUSH_CLIP_HOLD_SEC, d))
+        )
+      : Array.from({ length: n }, () => computeMontageClipDuration(outDur, n));
+  durs = normalizeMontageDurations(durs, outDur);
 
   if (n === 1) {
     return {
-      scaleFilters: `[0:v]trim=start=${startAt(0).toFixed(2)}:duration=${clipDur.toFixed(3)},${STANDARD_VF},setpts=PTS-STARTPTS[v0]`,
+      scaleFilters:
+        `[0:v]trim=start=${montageClipStartSec(sceneIndex, 0).toFixed(2)}:duration=${durs[0].toFixed(3)},` +
+        `${SCALE_PAD_VF},setpts=PTS-STARTPTS[v0]`,
       mergeFilter: "",
       montageLabel: "v0",
     };
   }
 
   const scaleFilters = Array.from({ length: n }, (_, i) =>
-    `[${i}:v]trim=start=${startAt(i).toFixed(2)}:duration=${clipDur.toFixed(3)},${STANDARD_VF},setpts=PTS-STARTPTS[v${i}]`
+    `[${i}:v]trim=start=${montageClipStartSec(sceneIndex, i).toFixed(2)}:duration=${durs[i].toFixed(3)},` +
+    `${SCALE_PAD_VF},setpts=PTS-STARTPTS[v${i}]`
   ).join(";");
 
   let mergeFilter = "";
   let prev = "v0";
-  let offset = clipDur - xfade;
+  let offset = durs[0] - xfade;
   for (let i = 1; i < n; i++) {
     const outLabel = i === n - 1 ? "montage" : `xf${i}`;
     mergeFilter += `;[${prev}][v${i}]xfade=transition=fade:duration=${xfade.toFixed(3)}:offset=${offset.toFixed(3)}[${outLabel}]`;
     prev = outLabel;
-    offset += clipDur - xfade;
+    offset += durs[i] - xfade;
   }
   return { scaleFilters, mergeFilter, montageLabel: "montage" };
 }
@@ -4262,29 +4312,82 @@ function deriveBeatStockQuery(
 function buildSceneBeats(
   scene: Scene,
   duration: number,
-  maxBeatsCap = 12,
+  maxBeatsCap = 16,
   videoTitle?: string
 ): SceneBeat[] {
   const muskTopic = isMuskTeslaTopic(videoTitle, scene.text);
-  const minBeatsForDuration = Math.ceil(duration / VIDRUSH_CLIP_MAX_SEC);
-  const beatCount = Math.min(
-    maxBeatsCap,
-    Math.max(minBeatsForDuration, Math.ceil(duration / VIDRUSH_BEAT_SEC))
-  );
+  const targetBeats = Math.max(2, Math.ceil(duration / VIDRUSH_BEAT_SEC));
+  const beatCap = Math.max(maxBeatsCap, targetBeats);
+
   const rawSentences =
     scene.text.match(/[^.!?]+[.!?]+/g)?.map((s) => s.trim()).filter((s) => s.length > 5) ??
     [scene.text.trim()];
-  const sentences: string[] = [];
-  if (rawSentences.length >= beatCount) {
-    for (let i = 0; i < beatCount; i++) sentences.push(rawSentences[i]);
-  } else {
-    const words = scene.text.replace(/\[visual:[^\]]+\]/gi, "").split(/\s+/).filter(Boolean);
-    const perBeat = Math.max(6, Math.ceil(words.length / beatCount));
-    for (let i = 0; i < beatCount; i++) {
-      const chunk = words.slice(i * perBeat, (i + 1) * perBeat).join(" ").trim();
-      sentences.push(chunk.length > 5 ? chunk : rawSentences[i % rawSentences.length] ?? scene.text.trim());
+
+  const groups: { text: string; sentenceCount: number }[] = [];
+  let buffer = "";
+  let bufferVisual = "";
+  let bufferSentences = 0;
+
+  for (const sent of rawSentences) {
+    const vis = extractInlineVisualCues(sent)[0] ?? "";
+    if (!buffer) {
+      buffer = sent;
+      bufferVisual = vis;
+      bufferSentences = 1;
+      continue;
+    }
+    const merged = `${buffer} ${sent}`;
+    const canMerge =
+      beatsBelongTogether(buffer, sent, bufferVisual, vis) &&
+      estimateBeatHoldSec(merged, bufferSentences + 1) <= VIDRUSH_CLIP_HOLD_SEC + 0.05;
+    if (canMerge) {
+      buffer = merged;
+      bufferVisual = vis || bufferVisual;
+      bufferSentences++;
+    } else {
+      groups.push({ text: buffer, sentenceCount: bufferSentences });
+      buffer = sent;
+      bufferVisual = vis;
+      bufferSentences = 1;
     }
   }
+  if (buffer) groups.push({ text: buffer, sentenceCount: bufferSentences });
+
+  while (groups.length < targetBeats && groups.length > 0) {
+    let splitIdx = 0;
+    let maxWords = 0;
+    for (let i = 0; i < groups.length; i++) {
+      const w = groups[i].text.split(/\s+/).filter(Boolean).length;
+      if (w > maxWords) {
+        maxWords = w;
+        splitIdx = i;
+      }
+    }
+    const words = groups[splitIdx].text.split(/\s+/).filter(Boolean);
+    if (words.length < 16) break;
+    const mid = Math.ceil(words.length / 2);
+    const a = words.slice(0, mid).join(" ");
+    const b = words.slice(mid).join(" ");
+    groups.splice(splitIdx, 1, { text: a, sentenceCount: 1 }, { text: b, sentenceCount: 1 });
+  }
+
+  while (groups.length > beatCap) {
+    let mergeIdx = 0;
+    let minWords = Infinity;
+    for (let i = 0; i < groups.length - 1; i++) {
+      const w = groups[i].text.split(/\s+/).filter(Boolean).length;
+      if (w < minWords) {
+        minWords = w;
+        mergeIdx = i;
+      }
+    }
+    const merged = `${groups[mergeIdx].text} ${groups[mergeIdx + 1].text}`;
+    groups.splice(mergeIdx, 2, {
+      text: merged,
+      sentenceCount: groups[mergeIdx].sentenceCount + groups[mergeIdx + 1].sentenceCount,
+    });
+  }
+
   const sceneInlineVisuals = extractInlineVisualCues(scene.text);
   const brollPool = (scene.brollQueries ?? []).filter((q) => q.trim().length > 2);
   const queryPool = [
@@ -4296,8 +4399,8 @@ function buildSceneBeats(
   ].filter((q): q is string => typeof q === "string" && q.trim().length > 2);
 
   const beats: SceneBeat[] = [];
-  for (let i = 0; i < beatCount; i++) {
-    const text = sentences[i] ?? scene.text;
+  for (let i = 0; i < groups.length; i++) {
+    const text = groups[i].text;
     const textKeywords = tokenizeForRelevance(text).slice(0, 4).join(" ");
     const inlineForBeat = extractInlineVisualCues(text)[0] || sceneInlineVisuals[i] || sceneInlineVisuals[0];
     let derived = deriveBeatStockQuery(text, scene, videoTitle, undefined, muskTopic);
@@ -4313,7 +4416,7 @@ function buildSceneBeats(
       scene.pexelsQuery ||
       scene.visualCue ||
       extractTopicStockQueries(scene.text)[0] ||
-      (muskTopic ? pickMuskGoldenQuery(scene.index * beatCount + i, i) : "factory production line");
+      (muskTopic ? pickMuskGoldenQuery(scene.index * groups.length + i, i) : "factory production line");
     const searchQuery = textKeywords
       ? `${baseQuery} ${textKeywords}`.trim().slice(0, 100)
       : baseQuery;
@@ -4322,6 +4425,7 @@ function buildSceneBeats(
       text,
       searchQuery,
       keywords: buildRelevanceKeywords(scene, text),
+      holdSec: estimateBeatHoldSec(text, groups[i].sentenceCount),
     });
   }
   return beats;
@@ -4749,24 +4853,38 @@ async function fetchBeatClip(
 
 // ─── 3e. Fetch All Visuals for a Scene (beat-aligned) ───────────────────────
 // One stock clip per ~3.5s narration beat, in narrative order. No clip recycling.
+type SceneVisualsResult = { clips: string[]; beatDurations: number[] };
+
 async function fetchSceneVisuals(
   scene: Scene,
   workDir: string,
   videoTitle: string | undefined,
   dedup: VisualDedupState
-): Promise<string[]> {
+): Promise<SceneVisualsResult> {
   const clipFetchDur = 4;
   const scenePersons = resolveScenePersons(scene, videoTitle);
   const personName = scenePersons[0] ?? extractPrimaryPersonFromTitle(videoTitle) ?? "";
   const spaceTopic = isSpaceRelatedTopic(scene.visualCue, scene.pexelsQuery, scene.text, videoTitle ?? "");
-  const beats = buildSceneBeats(scene, scene.duration, dedup.perf.maxBeatsPerScene, videoTitle);
+  const beatCap = Math.max(
+    dedup.perf.maxBeatsPerScene,
+    Math.ceil(scene.duration / VIDRUSH_BEAT_SEC)
+  );
+  const beats = buildSceneBeats(scene, scene.duration, beatCap, videoTitle);
   const clips: string[] = [];
+  const beatDurations: number[] = [];
 
-  console.log(`[Pipeline] Scene ${scene.index}: fetching ${beats.length} beat-aligned clip(s)`);
+  console.log(
+    `[Pipeline] Scene ${scene.index}: fetching ${beats.length} clip(s) ` +
+    `(~${VIDRUSH_BEAT_SEC}s cadence, ${scene.duration.toFixed(0)}s scene)`
+  );
 
   const muskTopic = isMuskTeslaTopic(videoTitle, scene.text);
 
   for (const beat of beats) {
+    const pushClip = (clipPath: string) => {
+      clips.push(clipPath);
+      beatDurations.push(beat.holdSec);
+    };
     const adoptOpts: VisualAdoptOptions = {
       muskTopic,
       keywords: beat.keywords,
@@ -4787,7 +4905,7 @@ async function fetchSceneVisuals(
       videoTitle
     );
     if (clip) {
-      clips.push(clip);
+      pushClip(clip);
     } else {
       console.warn(
         `[Pipeline] Scene ${scene.index} beat ${beat.index}: no real footage for "${beat.searchQuery}" — emergency stock`
@@ -4819,20 +4937,20 @@ async function fetchSceneVisuals(
         emergency, dedup, scene.index, beat.index, beat.text, workDir, emergencyQ, adoptOpts
       );
       if (emClip) {
-        clips.push(emClip);
+        pushClip(emClip);
       } else {
         const looseAdopt: VisualAdoptOptions = { ...adoptOpts, requireBeatMatch: false };
         const lastResort = await fetchLastResortRealClip(
           beat, scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle, looseAdopt
         );
         if (lastResort) {
-          clips.push(lastResort);
+          pushClip(lastResort);
         } else {
           const aiClip = await fetchBeatAIClip(
             beat, scene, workDir, scene.index, beat.index, clipFetchDur, dedup, videoTitle
           );
           if (aiClip) {
-            clips.push(aiClip);
+            pushClip(aiClip);
           } else if (muskTopic) {
             let rescued = false;
             for (const gq of GOLDEN_MUSK_QUERIES) {
@@ -4846,34 +4964,22 @@ async function fetchSceneVisuals(
                 golden, dedup, scene.index, beat.index, beat.text, workDir, gq, adoptOpts
               );
               if (gClip) {
-                clips.push(gClip);
+                pushClip(gClip);
                 rescued = true;
                 break;
               }
             }
             if (!rescued) {
-              if (clips.length > 0) {
-                console.warn(
-                  `[Pipeline] Scene ${scene.index} beat ${beat.index}: reusing previous clip (no black placeholder)`
-                );
-                clips.push(clips[clips.length - 1]);
-              } else {
-                console.error(
-                  `[Pipeline] Scene ${scene.index} beat ${beat.index}: no stock video — color placeholder`
-                );
-                clips.push(await muskRescueClip(dedup, scene.index, beat.index, workDir));
-              }
+              console.warn(
+                `[Pipeline] Scene ${scene.index} beat ${beat.index}: unique placeholder (no clip reuse)`
+              );
+              pushClip(await generateColorFallback(scene.index * 500 + beat.index, 4, workDir));
             }
-          } else if (clips.length > 0) {
-            console.warn(
-              `[Pipeline] Scene ${scene.index} beat ${beat.index}: reusing previous clip (no placeholder)`
-            );
-            clips.push(clips[clips.length - 1]);
           } else {
-            console.error(
-              `[Pipeline] Scene ${scene.index} beat ${beat.index}: no stock video available — rescue/placeholder`
+            console.warn(
+              `[Pipeline] Scene ${scene.index} beat ${beat.index}: unique placeholder`
             );
-            clips.push(await muskRescueClip(dedup, scene.index, beat.index, workDir));
+            pushClip(await generateColorFallback(scene.index * 500 + beat.index, 4, workDir));
           }
         }
       }
@@ -4886,7 +4992,7 @@ async function fetchSceneVisuals(
   console.log(
     `[Pipeline] Scene ${scene.index}${personLabel}: ${clips.length} beat clip(s) (${videoCount} video, ${photoCount} photo)`
   );
-  return clips;
+  return { clips, beatDurations };
 }
 
 // ─── 3e. Extract Key Words for Kinetic Typography ───────────────────────────
@@ -5186,7 +5292,8 @@ async function composeSceneVideo(
   workDir: string,
   totalScenes: number,
   enableSubtitles = false,  // Subtitles disabled by default
-  rescueStockClip?: string | null
+  rescueStockClip?: string | null,
+  beatDurations?: number[]
 ): Promise<string> {
   const outputPath = path.join(workDir, `scene_${scene.index}_composed.mp4`);
 
@@ -5230,9 +5337,12 @@ async function composeSceneVideo(
     validClips.push(clipPath);
     lastGoodInScene = clipPath;
   }
-  const minMontageClips = Math.max(2, Math.min(existingClips.length, Math.ceil(duration / VIDRUSH_BEAT_SEC)));
-  while (validClips.length < minMontageClips && lastGoodInScene) {
-    validClips.push(lastGoodInScene);
+  const minMontageClips = Math.max(2, Math.ceil(duration / VIDRUSH_BEAT_SEC));
+  let fallbackIdx = 0;
+  while (validClips.length < minMontageClips) {
+    validClips.push(
+      await generateColorFallback(scene.index * 800 + fallbackIdx++, VIDRUSH_BEAT_SEC, workDir)
+    );
   }
 
   // Clips arrive in beat/narration order from fetchSceneVisuals — preserve timeline.
@@ -5402,21 +5512,27 @@ async function composeSceneVideo(
     Math.max(0.5, duration - 0.35);
   const outDur = voiceDur + 0.12;
 
+  const montageDurations =
+    beatDurations?.length === safeClips.length
+      ? beatDurations
+      : undefined;
+
   try {
     const { scaleFilters, mergeFilter, montageLabel: xfadeLabel } =
-      buildMontageXfadeFilter(safeClips.length, outDur, scene.index);
+      buildMontageXfadeFilter(safeClips.length, outDur, scene.index, montageDurations);
     const inputs = safeClips.map((c) => `-i "${c}"`).join(" ");
+    const durs =
+      montageDurations ??
+      Array.from({ length: safeClips.length }, () => computeMontageClipDuration(outDur, safeClips.length));
     const montageDur =
-      safeClips.length <= 1
-        ? outDur
-        : computeMontageClipDuration(outDur, safeClips.length) * safeClips.length -
-          (safeClips.length - 1) * MONTAGE_XFADE_SEC;
+      durs.reduce((s, d) => s + d, 0) -
+      Math.max(0, safeClips.length - 1) * MONTAGE_XFADE_SEC;
     const padSec = Math.max(0, outDur - montageDur);
     const padFilter =
-      padSec > 0.05
-        ? `;[${xfadeLabel}]tpad=stop_mode=clone:stop_duration=${padSec.toFixed(3)}[montagePadded]`
+      padSec > 0.08
+        ? `;[${xfadeLabel}]tpad=stop_mode=clone:stop_duration=${Math.min(padSec, 0.35).toFixed(3)}[montagePadded]`
         : "";
-    const montageLabel = padSec > 0.05 ? "montagePadded" : xfadeLabel;
+    const montageLabel = padSec > 0.08 ? "montagePadded" : xfadeLabel;
 
     const audioIdx = safeClips.length;
     const kineticBaseIdx = audioIdx + 1;
@@ -5426,12 +5542,13 @@ async function composeSceneVideo(
     const kineticInput = kExtraInputs ? ` ${kExtraInputs}` : "";
     const kineticChainStr = kChain ? kChain : "";
     const hasOverlays = kineticFrames.length > 0 || statCalloutFrame !== null;
-    const finalVideoLabel = hasOverlays ? kFinalLabel : montageLabel;
+    const preGradeLabel = hasOverlays ? kFinalLabel : montageLabel;
     const audioFadeOutStart = Math.max(0, voiceDur - 0.15);
     await withTimeout(
       exec(
         `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}"${kineticInput} ` +
-        `-filter_complex "${scaleFilters}${mergeFilter}${padFilter}${kineticChainStr};[${finalVideoLabel}]${fadeFilter}[vout];` +
+        `-filter_complex "${scaleFilters}${mergeFilter}${padFilter}${kineticChainStr};` +
+        `[${preGradeLabel}]${FPS_FORMAT_VF}[vtimed];[vtimed]${fadeFilter}[vout];` +
         `[${audioIdx}:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${audioFadeOutStart.toFixed(3)}:d=0.12,` +
         `atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
         `-map "[vout]" -map "[aout]" -vsync cfr ` +
@@ -5992,15 +6109,15 @@ export async function runVideoPipeline(
 
     const visualLimit = pLimit(perf.sceneParallelism);
     let completedVisuals = 0;
-    const sceneVisuals: string[][] = await withTimeout(
+    const sceneVisualResults: SceneVisualsResult[] = await withTimeout(
       Promise.all(scenes.map(scene => visualLimit(async () => {
-        const clips = await fetchSceneVisuals(scene, workDir, videoTitle, visualDedup);
+        const result = await fetchSceneVisuals(scene, workDir, videoTitle, visualDedup);
         completedVisuals++;
         onProgress?.({
           stage: `Generating AI visuals... (${completedVisuals}/${scenes.length} done)`,
           percent: 20 + Math.round((completedVisuals / scenes.length) * 25)
         });
-        return clips;
+        return result;
       }))),
       visualStageTimeoutMs(videoLength, perf),
       `Visual generation stage (≤${videoLength === "1" || videoLength === "2" ? 20 : perf.targetWallClockMin}min cap)`
@@ -6010,7 +6127,7 @@ export async function runVideoPipeline(
     // ── Save scene manifest for editor ───────────────────────────────────────
     try {
       const editorScenes: EditorScene[] = scenes.map((scene, i) => {
-        const clipPaths = sceneVisuals[i] || [];
+        const clipPaths = sceneVisualResults[i]?.clips ?? [];
         const editorClips: EditorClip[] = clipPaths.map(clipPath => {
           const basename = path.basename(clipPath);
           // Detect source from filename pattern
@@ -6053,8 +6170,8 @@ export async function runVideoPipeline(
       Promise.all(
         scenes.map((scene, i) => composeLimit(async () => {
           const result = await composeSceneVideo(
-            scene, sceneVisuals[i], audioPaths[i], scene.duration, workDir, scenes.length,
-            enableSubtitles, visualDedup.lastMuskStockClip
+            scene, sceneVisualResults[i]?.clips ?? [], audioPaths[i], scene.duration, workDir, scenes.length,
+            enableSubtitles, visualDedup.lastMuskStockClip, sceneVisualResults[i]?.beatDurations
           );
           completedCompose++;
           onProgress?.({
@@ -6072,7 +6189,7 @@ export async function runVideoPipeline(
     // Cleanup intermediates
     for (let i = 0; i < scenes.length; i++) {
       try { fs.unlinkSync(audioPaths[i]); } catch { /* ignore */ }
-      for (const clip of sceneVisuals[i]) {
+      for (const clip of sceneVisualResults[i]?.clips ?? []) {
         try { if (clip !== composedScenes[i]) fs.unlinkSync(clip); } catch { /* ignore */ }
       }
     }
