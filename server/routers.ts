@@ -59,6 +59,23 @@ function generateInviteCode(): string {
   }
   return code; // e.g. ABCD-EFGH-IJKL
 }
+
+function isMuskTeslaPromptTopic(prompt: string, title: string): boolean {
+  const text = `${prompt} ${title}`.toLowerCase();
+  return /musk|tesla|spacex|starlink|gigafactory|cybertruck|falcon|starship/.test(text);
+}
+
+/** Opening [VISUAL] must match the video topic — never hardcode Tesla on unrelated prompts. */
+function buildOpeningVisualTag(prompt: string, title: string, isTwoMin: boolean): string {
+  if (isMuskTeslaPromptTopic(prompt, title)) {
+    return "[VISUAL: Tesla Gigafactory or electric car assembly line — real factory B-roll only, never moon/CGI rocket models or solar farms unless topic is solar]";
+  }
+  const topic = (title || prompt).trim().slice(0, 80);
+  if (isTwoMin) {
+    return `[VISUAL: Cinematic b-roll directly related to "${topic}" — real people, brands, or places named in the hook; never unrelated factories or space rockets unless the topic is about them]`;
+  }
+  return `[VISUAL: Hook-matching b-roll for "${topic}" — specific people, places, or objects from the narration; no unrelated stock]`;
+}
 import { storagePut } from "./storage";
 import { FASTVID_PRO_PLAN } from "./products";
 import { updateVideoScenes, updateEditedVideoUrl, getVideoScenes, type EditorScene, type EditorClip } from "./db";
@@ -317,7 +334,7 @@ RULES:
     await updateVideoProgress(videoId, "📋 Assembling script...", 22);
 
     // Assemble full script
-    const scriptParts: string[] = [`# ${title}\n`, `## Opening\n${outline.hook}\n[VISUAL: Tesla Gigafactory or electric car assembly line — real factory B-roll only, never moon/CGI rocket models or solar farms unless topic is solar]\n`];
+    const scriptParts: string[] = [`# ${title}\n`, `## Opening\n${outline.hook}\n${buildOpeningVisualTag(prompt, title, isTwoMin)}\n`];
     outline.sections.forEach((sec, idx) => scriptParts.push(`## ${sec.title}\n${sectionTexts[idx] ?? ""}\n`));
     scriptParts.push(`## CALL TO ACTION\n${outline.cta}\n[VISUAL: Cinematic closing b-roll related to the video topic]\n`);
     const scriptContent = scriptParts.join("\n");

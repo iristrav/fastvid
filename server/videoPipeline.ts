@@ -3278,7 +3278,7 @@ interface VisualDedupState {
   usedCategories: Map<string, number>;
   globalBeatIndex: number;
   muskHeroFetchUsed: boolean;
-  /** Last adopted on-topic Musk clip — reused instead of color/black placeholders. */
+  /** Last adopted real stock clip (any topic) — reused instead of color/black placeholders. */
   lastMuskStockClip: string | null;
   aiClipsUsed: number;
   entityYoutubeFetchesUsed: number;
@@ -3741,6 +3741,14 @@ function extractTopicStockQueries(promptOrTitle: string): string[] {
   if (/ai|artificial intelligence|neural/.test(text)) {
     queries.push("data center server room", "computer chip manufacturing", "robot arm factory");
   }
+  if (/kylie|jenner|kardashian|celebrity|rumor|gossip|tabloid|influencer/.test(text)) {
+    queries.push(
+      "celebrity paparazzi photographers flash",
+      "tabloid magazine covers stack",
+      "smartphone social media scrolling close up",
+      "red carpet celebrity event crowd",
+    );
+  }
   return queries;
 }
 
@@ -4062,7 +4070,7 @@ async function adoptClip(
       dedup.usedCategories.set(category, (dedup.usedCategories.get(category) ?? 0) + 1);
       if (dedup.perf.skipFairUseTransform) {
         if (await isValidVideoFile(p)) {
-          if (muskTopic) dedup.lastMuskStockClip = p;
+          if (!isPipelineFallbackClip(p) && !(await isMostlyBlackClip(p))) dedup.lastMuskStockClip = p;
           return p;
         }
         dedup.usedCategories.set(category, Math.max(0, (dedup.usedCategories.get(category) ?? 1) - 1));
@@ -4072,11 +4080,15 @@ async function adoptClip(
         p, beatText, sceneIndex, beatIndex, workDir, dedup.perf.transformTimeoutMs
       );
       if (await isValidVideoFile(transformed)) {
-        if (muskTopic) dedup.lastMuskStockClip = transformed;
+        if (!isPipelineFallbackClip(transformed) && !(await isMostlyBlackClip(transformed))) {
+          dedup.lastMuskStockClip = transformed;
+        }
         return transformed;
       }
       dedup.usedCategories.set(category, Math.max(0, (dedup.usedCategories.get(category) ?? 1) - 1));
-      if (muskTopic && await isValidVideoFile(p)) dedup.lastMuskStockClip = p;
+      if (await isValidVideoFile(p) && !isPipelineFallbackClip(p) && !(await isMostlyBlackClip(p))) {
+        dedup.lastMuskStockClip = p;
+      }
     }
     return null;
   });
@@ -4276,7 +4288,7 @@ async function fetchBeatClip(
   if (
     entityYt.length > 0 &&
     dedup.entityYoutubeFetchesUsed < dedup.perf.maxEntityYoutubePerVideo &&
-    (YOUTUBE_API_KEY || RAPIDAPI_KEY || process.env.YOUTUBE_CC_DL_SERVICE)
+    (process.env.YOUTUBE_API_KEY || RAPIDAPI_KEY || process.env.YOUTUBE_CC_DL_SERVICE)
   ) {
     dedup.entityYoutubeFetchesUsed++;
     clip = await tryStockSources(
@@ -4446,10 +4458,12 @@ async function fetchSceneVisuals(
       console.warn(
         `[Pipeline] Scene ${scene.index} beat ${beat.index}: no real footage for "${beat.searchQuery}" — emergency stock`
       );
+      const topicFallback =
+        extractTopicStockQueries(`${videoTitle ?? ""} ${scene.text} ${beat.text}`)[0]
+        || (personName ? `${personName} celebrity documentary b-roll` : null)
+        || (muskTopic ? "Tesla Gigafactory production line workers" : `${videoTitle ?? "documentary"} news b-roll`);
       const emergencyQ = enrichStockQuery(
-        scene.literalVisualCue || scene.pexelsQuery || scene.visualCue
-          || extractTopicStockQueries(`${videoTitle ?? ""} ${scene.text}`)[0]
-          || "Tesla Gigafactory production line workers",
+        scene.literalVisualCue || scene.pexelsQuery || scene.visualCue || topicFallback,
         scene,
         videoTitle,
         personName
@@ -4516,9 +4530,14 @@ async function fetchSceneVisuals(
                 clips.push(await muskRescueClip(dedup, scene.index, beat.index, workDir));
               }
             }
+          } else if (clips.length > 0) {
+            console.warn(
+              `[Pipeline] Scene ${scene.index} beat ${beat.index}: reusing previous clip (no placeholder)`
+            );
+            clips.push(clips[clips.length - 1]);
           } else {
             console.error(
-              `[Pipeline] Scene ${scene.index} beat ${beat.index}: no stock video available — color placeholder`
+              `[Pipeline] Scene ${scene.index} beat ${beat.index}: no stock video available — rescue/placeholder`
             );
             clips.push(await muskRescueClip(dedup, scene.index, beat.index, workDir));
           }
@@ -4837,19 +4856,49 @@ async function composeSceneVideo(
 ): Promise<string> {
   const outputPath = path.join(workDir, `scene_${scene.index}_composed.mp4`);
 
+  const pickComposeSubstitute = async (lastGood: string | null): Promise<string | null> => {
+    if (lastGood && fs.existsSync(lastGood) && (await isValidVideoFile(lastGood)) && !(await isMostlyBlackClip(lastGood))) {
+      return lastGood;
+    }
+    if (
+      rescueStockClip && fs.existsSync(rescueStockClip) &&
+      (await isValidVideoFile(rescueStockClip)) && !(await isMostlyBlackClip(rescueStockClip))
+    ) {
+      return rescueStockClip;
+    }
+    return null;
+  };
+
   // Ensure we have at least one valid clip (existence, size, readable video stream)
   const existingClips = clips.filter(p => fs.existsSync(p) && fs.statSync(p).size > 100);
   const validClips: string[] = [];
+  let lastGoodInScene: string | null =
+    rescueStockClip && fs.existsSync(rescueStockClip) ? rescueStockClip : null;
   for (const clipPath of existingClips) {
-    if (await isValidVideoFile(clipPath)) {
-      if (await isMostlyBlackClip(clipPath)) {
-        console.warn(`[Pipeline] Scene ${scene.index}: skipping black placeholder ${path.basename(clipPath)}`);
-        continue;
-      }
-      validClips.push(clipPath);
-    } else {
+    if (!(await isValidVideoFile(clipPath))) {
       console.warn(`[Pipeline] Scene ${scene.index}: skipping unreadable clip ${path.basename(clipPath)}`);
+      const sub = await pickComposeSubstitute(lastGoodInScene);
+      if (sub) {
+        validClips.push(sub);
+        lastGoodInScene = sub;
+      }
+      continue;
     }
+    if (isPipelineFallbackClip(clipPath) || (await isMostlyBlackClip(clipPath))) {
+      console.warn(`[Pipeline] Scene ${scene.index}: substituting placeholder ${path.basename(clipPath)}`);
+      const sub = await pickComposeSubstitute(lastGoodInScene);
+      if (sub) {
+        validClips.push(sub);
+        lastGoodInScene = sub;
+      }
+      continue;
+    }
+    validClips.push(clipPath);
+    lastGoodInScene = clipPath;
+  }
+  const minMontageClips = Math.max(2, Math.min(existingClips.length, Math.ceil(duration / VIDRUSH_BEAT_SEC)));
+  while (validClips.length < minMontageClips && lastGoodInScene) {
+    validClips.push(lastGoodInScene);
   }
 
   // Clips arrive in beat/narration order from fetchSceneVisuals — preserve timeline.
@@ -5323,7 +5372,14 @@ async function ensureFinalVideoDuration(
     if (starts.length > 0 && ends.length > 0) {
       const lastBlackStart = starts[starts.length - 1];
       const lastBlackEnd = ends[ends.length - 1];
-      if (lastBlackEnd >= trimTo - 0.25 && lastBlackStart < trimTo - 0.15) {
+      const probedBeforeTrim = await probeVideoDurationSec(working);
+      // Only trim trailing black in the last ~25% — avoid chopping mid-video on dark grading.
+      if (
+        probedBeforeTrim > 0 &&
+        lastBlackStart >= probedBeforeTrim * 0.72 &&
+        lastBlackEnd >= trimTo - 0.25 &&
+        lastBlackStart < trimTo - 0.15
+      ) {
         trimTo = Math.max(1, lastBlackStart - 0.02);
       }
     }
@@ -5344,23 +5400,44 @@ async function ensureFinalVideoDuration(
     console.warn("[Pipeline] Final black trim skipped (non-fatal):", (err as Error).message);
   }
 
-  const dur = await probeVideoDurationSec(working);
+  let dur = await probeVideoDurationSec(working);
   if (dur >= targetSec - 0.3) return working;
   const pad = Math.max(0.5, targetSec - dur);
   const out = path.join(workDir, `fastvid_${videoId}_padded.mp4`);
   const holdAt = Math.max(0, dur - 0.15);
   console.log(`[Pipeline] Final ${dur.toFixed(1)}s < ${targetSec}s — padding ${pad.toFixed(1)}s from t=${holdAt.toFixed(1)}s`);
-  await withTimeout(
-    exec(
-      `${FFMPEG_BIN} -y -ss ${holdAt.toFixed(3)} -i "${working}" ` +
-      `-vf "tpad=stop_mode=clone:stop_duration=${pad.toFixed(3)}" ` +
-      `-af "apad=pad_dur=${pad.toFixed(3)}" ` +
-      `-c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -movflags +faststart -shortest "${out}"`
-    ),
-    120_000,
-    `Pad final video to ${targetSec}s`
-  );
-  return out;
+  try {
+    await withTimeout(
+      exec(
+        `${FFMPEG_BIN} -y -ss ${holdAt.toFixed(3)} -i "${working}" ` +
+        `-vf "tpad=stop_mode=clone:stop_duration=${pad.toFixed(3)}" ` +
+        `-af "apad=pad_dur=${pad.toFixed(3)}" ` +
+        `-c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -movflags +faststart -shortest "${out}"`
+      ),
+      120_000,
+      `Pad final video to ${targetSec}s`
+    );
+    if (fs.existsSync(out) && fs.statSync(out).size > 1000) {
+      dur = await probeVideoDurationSec(out);
+      if (dur >= targetSec - 0.5) return out;
+    }
+  } catch (err) {
+    console.warn("[Pipeline] Final tpad pad failed, trying stream_loop:", (err as Error).message);
+  }
+  try {
+    await withTimeout(
+      exec(
+        `${FFMPEG_BIN} -y -stream_loop -1 -i "${working}" -t ${targetSec.toFixed(3)} ` +
+        `-c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -movflags +faststart "${out}"`
+      ),
+      120_000,
+      `Loop-pad final video to ${targetSec}s`
+    );
+    if (fs.existsSync(out) && fs.statSync(out).size > 1000) return out;
+  } catch (err) {
+    console.warn("[Pipeline] Final loop pad failed (non-fatal):", (err as Error).message);
+  }
+  return working;
 }
 
 // ─── 7. Final Concatenation + Music Mix ───────────────────────────────────────
@@ -5629,12 +5706,15 @@ export async function runVideoPipeline(
           const basename = path.basename(clipPath);
           // Detect source from filename pattern
           let source = "unknown";
-          if (basename.includes("pexels")) source = "pexels";
-          else if (basename.includes("pixabay")) source = "pixabay";
-          else if (basename.includes("wikimedia")) source = "wikimedia";
+          if (basename.includes("pexels") || basename.includes("_pex_") || basename.includes("lr_pex")) {
+            source = "pexels";
+          } else if (basename.includes("pixabay") || basename.includes("beat_vid") || basename.includes("fb_vid")) {
+            source = "pixabay";
+          } else if (basename.includes("wikimedia")) source = "wikimedia";
           else if (basename.includes("openverse")) source = "openverse";
           else if (basename.includes("serp")) source = "serpapi";
           else if (basename.includes("_ai")) source = "ai";
+          else if (basename.includes("_fallback")) source = "fallback";
           const isVideo = clipPath.endsWith(".mp4") || clipPath.endsWith(".webm");
           return { url: clipPath, type: isVideo ? "video" : "image", source };
         });
