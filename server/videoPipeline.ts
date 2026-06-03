@@ -565,7 +565,7 @@ async function parseScriptIntoScenesBatch(
 For each scene return:
 - text: narration (max 500 chars, full sentences)
 - visualCue: EXACT footage shown while narrating (e.g. "SpaceX Falcon 9 launch pad", "Tesla Gigafactory assembly line")
-- literalVisualCue: hyper-specific 3-5 word stock search for the key visual moment (e.g. "Tesla Gigafactory assembly robots", "Falcon 9 landing drone ship")
+- literalVisualCue: hyper-specific stock search for the key visual moment (e.g. "Tesla Gigafactory assembly robots", "Falcon 9 landing drone ship"). If the script has [VISUAL: ...] tags, copy the best matching tag into literalVisualCue for that scene.
 - pexelsQuery: primary English stock video search — MUST match visualCue and narration topic. For Tesla/SpaceX/Musk topics use ONLY: Tesla factory, Model 3, supercharger, Falcon 9 landing, Starship pad, Cybertruck — NEVER generic "rocket launch", moon surface, Saturn, shuttle, or solar farm unless narration is specifically about solar
 - pexelsQueries: 3 queries from most specific to slightly broader — ALL must stay on the same topic
 - brollQueries: exactly 2 cutaway B-roll queries (factory hands, robots, charging, launch pad close-up) — no generic space CGI
@@ -601,8 +601,11 @@ function mapRawScene(
   index: number
 ): Scene {
   const rawS = s as Record<string, unknown>;
+  const inlineFromText = extractInlineVisualCues(s.text ?? "");
   const literalVisualCue =
-    typeof rawS.literalVisualCue === "string" ? rawS.literalVisualCue.trim() : "";
+    (typeof rawS.literalVisualCue === "string" ? rawS.literalVisualCue.trim() : "") ||
+    inlineFromText[0] ||
+    "";
   const primaryQuery =
     literalVisualCue || (s.pexelsQuery?.trim() || s.visualCue || "cinematic background");
   const extraQueries = (rawS.pexelsQueries as string[] | undefined) || [];
@@ -3126,6 +3129,24 @@ function isStillPhotoClip(filePath: string): boolean {
   return /_serp_|_wiki_|_openverse_|_p0_|_p2_|_yt_\d/i.test(base);
 }
 
+/** Reject AI image loops / synthetic clips — documentary uses real stock video only. */
+function isAIGeneratedClip(filePath: string): boolean {
+  const base = path.basename(filePath).toLowerCase();
+  return /_stability_|_leonardo_|_grok_|_ai\.mp4|_runway_|_kling_|_luma_|_pika_|_veo_|_forge_|scene_\d+_ai|_zoom_loop/i.test(base);
+}
+
+function extractInlineVisualCues(text: string): string[] {
+  return [...text.matchAll(/\[visual:\s*([^\]]+)\]/gi)]
+    .map((m) => m[1].trim())
+    .filter((v) => v.length > 3 && !isBlockedStockQuery(v));
+}
+
+function scoreBeatNarrationMatch(beatText: string, sourceQuery: string, filePath: string): number {
+  const tokens = tokenizeForRelevance(beatText).filter((t) => t.length >= 4);
+  const hay = `${sourceQuery} ${path.basename(filePath)}`.toLowerCase();
+  return scoreVisualRelevance(hay, tokens);
+}
+
 function isStockVideoClip(filePath: string): boolean {
   return /_pexels_|_pex_|_pixabay_|_pix_|_broll_|_ytcc_|_archive_|_wikivid_|_nasa_|_esa_|_b\d+_(pex|pix)/i.test(
     path.basename(filePath)
@@ -3241,6 +3262,8 @@ type VisualAdoptOptions = {
   keywords?: string[];
   /** Hero/opening: require Tesla/SpaceX tokens in slug or query. */
   requireMuskBrand?: boolean;
+  /** Clip must match words in the beat narration (real footage on-topic). */
+  requireBeatMatch?: boolean;
 };
 
 async function withVisualDedupLock<T>(dedup: VisualDedupState, fn: () => Promise<T>): Promise<T> {
@@ -3634,6 +3657,20 @@ function deriveBeatStockQuery(
   if (/\b(mars|moon|space|astronaut|nasa)\b/.test(lower) && muskTopic) {
     topicQueries.push("SpaceX Crew Dragon spacecraft interior", "Falcon 9 booster landing on drone ship");
   }
+  if (/\b(starlink|satellite constellation)\b/.test(lower)) {
+    topicQueries.push("satellite deployment rocket upper stage", "SpaceX rocket launch night");
+  }
+  if (/\b(neuralink|brain|implant)\b/.test(lower)) {
+    topicQueries.push("medical brain scan MRI technology", "neuroscience laboratory research");
+  }
+  if (/\b(humanity|future|civilization|coloniz)\b/.test(lower) && muskTopic) {
+    topicQueries.push("SpaceX Starship launch pad Boca Chica", "Tesla electric car driving city");
+  }
+
+  const inlineCues = extractInlineVisualCues(beatText);
+  for (const cue of inlineCues) {
+    topicQueries.unshift(cue);
+  }
 
   const sceneQueries = [
     scene.literalVisualCue,
@@ -3677,9 +3714,21 @@ function buildSceneBeats(
     maxBeatsCap,
     Math.max(minBeatsForDuration, Math.ceil(duration / VIDRUSH_BEAT_SEC))
   );
-  const sentences =
+  const rawSentences =
     scene.text.match(/[^.!?]+[.!?]+/g)?.map((s) => s.trim()).filter((s) => s.length > 5) ??
     [scene.text.trim()];
+  const sentences: string[] = [];
+  if (rawSentences.length >= beatCount) {
+    for (let i = 0; i < beatCount; i++) sentences.push(rawSentences[i]);
+  } else {
+    const words = scene.text.replace(/\[visual:[^\]]+\]/gi, "").split(/\s+/).filter(Boolean);
+    const perBeat = Math.max(6, Math.ceil(words.length / beatCount));
+    for (let i = 0; i < beatCount; i++) {
+      const chunk = words.slice(i * perBeat, (i + 1) * perBeat).join(" ").trim();
+      sentences.push(chunk.length > 5 ? chunk : rawSentences[i % rawSentences.length] ?? scene.text.trim());
+    }
+  }
+  const sceneInlineVisuals = extractInlineVisualCues(scene.text);
   const brollPool = (scene.brollQueries ?? []).filter((q) => q.trim().length > 2);
   const queryPool = [
     scene.literalVisualCue,
@@ -3691,10 +3740,14 @@ function buildSceneBeats(
 
   const beats: SceneBeat[] = [];
   for (let i = 0; i < beatCount; i++) {
-    const text = sentences[Math.min(i, sentences.length - 1)] ?? scene.text;
+    const text = sentences[i] ?? scene.text;
     const textKeywords = tokenizeForRelevance(text).slice(0, 4).join(" ");
-    const derived = deriveBeatStockQuery(text, scene, videoTitle, undefined, muskTopic);
-    const useBroll = i % 2 === 1 && brollPool.length > 0;
+    const inlineForBeat = extractInlineVisualCues(text)[0] || sceneInlineVisuals[i] || sceneInlineVisuals[0];
+    let derived = deriveBeatStockQuery(text, scene, videoTitle, undefined, muskTopic);
+    if (inlineForBeat) {
+      derived = enrichStockQuery(inlineForBeat, scene, videoTitle, undefined).slice(0, 100);
+    }
+    const useBroll = i % 2 === 1 && brollPool.length > 0 && !inlineForBeat;
     const baseQuery =
       derived ||
       (useBroll ? brollPool[i % brollPool.length] : null) ||
@@ -3746,6 +3799,8 @@ async function adoptClip(
       if (!p || dedup.usedPaths.has(p) || !fs.existsSync(p)) continue;
       if (!(await isValidVideoFile(p))) continue;
       if (isStillPhotoClip(p)) continue;
+      if (isAIGeneratedClip(p)) continue;
+      if (!isStockVideoClip(p) && muskTopic) continue;
       if (isRejectedStockClip(p, sourceQuery)) continue;
       if (isPipelineFallbackClip(p)) continue;
       if (await isMostlyBlackClip(p)) continue;
@@ -3756,6 +3811,8 @@ async function adoptClip(
       const queryCategory = stockVisualCategory(sourceQuery);
       if (queryCategory !== "generic" && category === "generic") continue;
       if (opts.requireMuskBrand && !hasMuskBrandSignal(sourceQuery, p)) continue;
+      const beatMatch = scoreBeatNarrationMatch(beatText, sourceQuery, p);
+      if (opts.requireBeatMatch && beatMatch < 1) continue;
       if (muskTopic) {
         if (category === "solar" && !/solar|photovoltaic|sun panel/.test(beatText.toLowerCase())) continue;
         if ((category === "rocket" || category === "space") && !isMuskApprovedRocketQuery(sourceQuery)) {
@@ -3764,6 +3821,7 @@ async function adoptClip(
         const rel = scoreVisualRelevance(`${sourceQuery} ${path.basename(p)}`, keywords);
         const topicRel = scoreVisualRelevance(`${sourceQuery} ${path.basename(p)}`, MUSK_TOPIC_TOKENS);
         if (opts.requireMuskBrand && topicRel < 2) continue;
+        if (beatMatch < 1 && topicRel < 2) continue;
         if (topicRel < 2) continue;
         if (category === "generic" && queryCategory !== "generic" && rel < 1) continue;
         if (rel + topicRel < 3) continue;
@@ -4109,7 +4167,11 @@ async function fetchSceneVisuals(
   const muskTopic = isMuskTeslaTopic(videoTitle, scene.text);
 
   for (const beat of beats) {
-    const adoptOpts: VisualAdoptOptions = { muskTopic, keywords: beat.keywords };
+    const adoptOpts: VisualAdoptOptions = {
+      muskTopic,
+      keywords: beat.keywords,
+      requireBeatMatch: muskTopic,
+    };
     const clip = await fetchBeatClip(
       beat,
       scene,
