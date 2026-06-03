@@ -3193,12 +3193,12 @@ const STOCK_CATEGORY_LIMITS: Record<string, number> = {
 /** High-quality rotating queries for Musk/Tesla/SpaceX — modern real-world B-roll only. */
 /** Brand-forward hero searches — recognizable Tesla/SpaceX (not generic factory). */
 const HERO_MUSK_QUERIES = [
-  "Tesla Model 3 red electric car driving highway",
-  "Tesla Cybertruck electric pickup truck road",
+  "Tesla Model 3 electric car showroom",
+  "Tesla Cybertruck stainless steel body",
   "Tesla supercharger station cars charging",
-  "SpaceX Starship rocket launch pad Texas",
+  "Tesla Gigafactory Nevada aerial view",
+  "SpaceX Starship launch pad Boca Chica",
   "Falcon 9 booster landing on drone ship",
-  "SpaceX Falcon 9 rocket launch Kennedy",
 ];
 
 const HERO_YOUTUBE_QUERIES = [
@@ -3248,7 +3248,7 @@ const BLOCKED_STOCK_QUERY_RE =
 
 /** Reject model/CGI/archival-looking clips (Pexels slugs + local filenames). */
 const BLOCKED_STOCK_VISUAL_RE =
-  /shuttle|saturn|apollo|lunar|moon[- ]?landing|moon[- ]?surface|miniature|diorama|tabletop|model[- ]?rocket|scale[- ]?model|toy[- ]?rocket|replica|maquette|science[- ]?fiction|sci[- ]?fi|cgi|3d[- ]?animation|vhs|glitch|vintage[- ]?space|archival|old[- ]?nasa|space[- ]?shuttle|saturn[- ]?v|rocket[- ]?model|model[- ]?launch|volkswagen|vw\b|ford\b|bmw|mercedes|audi\b|toyota factory|honda factory|container ship|cargo ship|freight ship|bulk carrier|ferry|passenger boat|catamaran|harbor cruise|shipping port|port crane|river boat|canal boat|textile mill|weaving factory|yarn factory|fabric mill|sewing factory|highway dash|motorway night|night driving dash|dashcam night/i;
+  /shuttle|saturn|apollo|lunar|moon[- ]?landing|moon[- ]?surface|miniature|diorama|tabletop|model[- ]?rocket|scale[- ]?model|toy[- ]?rocket|replica|maquette|science[- ]?fiction|sci[- ]?fi|cgi|3d[- ]?animation|vhs|glitch|vintage[- ]?space|archival|old[- ]?nasa|space[- ]?shuttle|saturn[- ]?v|rocket[- ]?model|model[- ]?launch|volkswagen|vw\b|ford\b|bmw|mercedes|audi\b|toyota factory|honda factory|container ship|cargo ship|freight ship|bulk carrier|ferry|passenger boat|catamaran|harbor cruise|shipping port|port crane|river boat|canal boat|textile mill|weaving factory|yarn factory|fabric mill|sewing factory|highway|motorway|freeway|country road|rural road|pickup truck|desert road|coastal road|dashcam|night driving/i;
 
 const BLOCKED_MUSK_COMPETITOR_RE =
   /\b(volkswagen|vw|ford|gm|general motors|bmw|mercedes|audi|toyota|honda|hyundai|kia|rivian|lucid)\b/i;
@@ -3265,7 +3265,7 @@ function stockVisualCategory(query: string, filePath?: string): string {
   if (/miniature|diorama|tabletop|toy|model rocket|scale model|saturn|apollo|lunar|moon[- ]?landing|moon[- ]?surface|space shuttle|shuttle|vhs|glitch|sci[- ]?fi|cgi/.test(combined)) {
     return "blocked_model";
   }
-  if (/textile|weaving|loom|yarn factory|fabric mill|sewing factory|ferry|catamaran|river boat|canal|harbor cruise|container ship|cargo ship|highway dash|motorway|dashcam|night driving/.test(combined)) {
+  if (/textile|weaving|loom|yarn factory|fabric mill|sewing factory|ferry|catamaran|river boat|canal|harbor cruise|container ship|cargo ship|highway|motorway|freeway|country road|rural road|pickup truck|desert road|coastal road|dashcam/.test(combined)) {
     return "blocked_offtopic";
   }
   if (/gigafactory|solar.*(factory|plant|roof)|factory.*solar|solar panel.*roof/.test(combined)) return "gigafactory";
@@ -3406,6 +3406,9 @@ function hasBlockedStockTags(tags?: string): boolean {
 function isBlockedStockQuery(q: string): boolean {
   if (BLOCKED_STOCK_QUERY_RE.test(q)) return true;
   if (isAmbiguousRocketQuery(q)) return true;
+  if (/\b(highway|motorway|freeway|country road|rural road|pickup truck|off road truck|desert road|coastal road|ferry route)\b/i.test(q)) {
+    return true;
+  }
   return false;
 }
 
@@ -3858,12 +3861,12 @@ async function fetchBeatClip(
     dedup.muskHeroFetchUsed = true;
   }
 
-  // 0) Opening beat: Tesla/factory B-roll first (no generic rocket CGI)
-  if (beat.index === 0 && muskTopic) {
+  // 0) Opening beat: brand-forward hero (skip if hero fetch already succeeded on scene 0)
+  if (beat.index === 0 && muskTopic && !dedup.muskHeroFetchUsed) {
     clip = await tryStockSources(
       OPENING_MUSK_QUERIES.map((oq, oi) => ({
         query: oq,
-        fetch: pexFetch(oq, `${tag}_open`, candidateOffset + oi, 3),
+        fetch: pexFetch(oq, `${tag}_open`, candidateOffset + oi, 4),
       })),
       dedup, sceneIndex, beat.index, beat.text, workDir, "opening", adoptOpts
     );
@@ -4801,14 +4804,49 @@ async function ensureFinalVideoDuration(
   videoId: number,
   targetSec: number
 ): Promise<string> {
-  const dur = await probeVideoDurationSec(inputPath);
-  if (dur >= targetSec - 0.3) return inputPath;
+  let working = inputPath;
+  const trimmed = path.join(workDir, `fastvid_${videoId}_trimtail.mp4`);
+  try {
+    const detectCmd =
+      `"${FFMPEG_BIN}" -y -i "${working}" -vf "blackdetect=d=0.15:pix_th=0.08" -an -f null -`;
+    const { stderr } = await withTimeout(exec(detectCmd), 60_000, "Final blackdetect trim");
+    const out = typeof stderr === "string" ? stderr : String(stderr ?? "");
+    const starts = [...out.matchAll(/black_start:([\d.]+)/g)].map((m) => parseFloat(m[1]));
+    const ends = [...out.matchAll(/black_end:([\d.]+)/g)].map((m) => parseFloat(m[1]));
+    let trimTo = await probeVideoDurationSec(working);
+    if (starts.length > 0 && ends.length > 0) {
+      const lastBlackStart = starts[starts.length - 1];
+      const lastBlackEnd = ends[ends.length - 1];
+      if (lastBlackEnd >= trimTo - 0.5 && lastBlackStart < trimTo - 1) {
+        trimTo = Math.max(1, lastBlackStart - 0.05);
+      }
+    }
+    const probed = await probeVideoDurationSec(working);
+    if (trimTo < probed - 0.4) {
+      await withTimeout(
+        exec(
+          `${FFMPEG_BIN} -y -i "${working}" -t ${trimTo.toFixed(3)} -c:v libx264 -preset veryfast -crf 18 ` +
+          `-c:a aac -b:a 320k -movflags +faststart "${trimmed}"`
+        ),
+        90_000,
+        "Trim trailing black from final"
+      );
+      working = trimmed;
+      console.log(`[Pipeline] Trimmed trailing black: ${probed.toFixed(1)}s → ${trimTo.toFixed(1)}s`);
+    }
+  } catch (err) {
+    console.warn("[Pipeline] Final black trim skipped (non-fatal):", (err as Error).message);
+  }
+
+  const dur = await probeVideoDurationSec(working);
+  if (dur >= targetSec - 0.3) return working;
   const pad = Math.max(0.5, targetSec - dur);
   const out = path.join(workDir, `fastvid_${videoId}_padded.mp4`);
-  console.log(`[Pipeline] Final ${dur.toFixed(1)}s < ${targetSec}s — padding ${pad.toFixed(1)}s (clone last frame)`);
+  const holdAt = Math.max(0, dur - 0.15);
+  console.log(`[Pipeline] Final ${dur.toFixed(1)}s < ${targetSec}s — padding ${pad.toFixed(1)}s from t=${holdAt.toFixed(1)}s`);
   await withTimeout(
     exec(
-      `${FFMPEG_BIN} -y -i "${inputPath}" ` +
+      `${FFMPEG_BIN} -y -ss ${holdAt.toFixed(3)} -i "${working}" ` +
       `-vf "tpad=stop_mode=clone:stop_duration=${pad.toFixed(3)}" ` +
       `-af "apad=pad_dur=${pad.toFixed(3)}" ` +
       `-c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -movflags +faststart -shortest "${out}"`
