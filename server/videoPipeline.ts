@@ -1832,6 +1832,21 @@ async function generateColorFallback(sceneIndex: number, duration: number, workD
   );
 }
 
+/** Prefer last good Musk stock clip over color placeholders (avoids black/grey holes). */
+async function muskRescueClip(
+  dedup: VisualDedupState,
+  sceneIndex: number,
+  beatIndex: number,
+  workDir: string
+): Promise<string> {
+  const rescue = dedup.lastMuskStockClip;
+  if (rescue && fs.existsSync(rescue) && (await isValidVideoFile(rescue)) && !(await isMostlyBlackClip(rescue))) {
+    console.warn(`[Pipeline] Scene ${sceneIndex} beat ${beatIndex}: reusing last Musk stock clip`);
+    return rescue;
+  }
+  return generateColorFallback(sceneIndex * 100 + beatIndex, 4, workDir);
+}
+
 /** Return clipPath if ffprobe confirms a video stream; otherwise throw or substitute fallback. */
 async function requireValidClip(
   clipPath: string,
@@ -3161,6 +3176,8 @@ interface VisualDedupState {
   usedCategories: Map<string, number>;
   globalBeatIndex: number;
   muskHeroFetchUsed: boolean;
+  /** Last adopted on-topic Musk clip — reused instead of color/black placeholders. */
+  lastMuskStockClip: string | null;
   lock: Promise<void>;
   perf: PipelinePerfProfile;
 }
@@ -3174,6 +3191,7 @@ function createVisualDedupState(perf: PipelinePerfProfile): VisualDedupState {
     usedCategories: new Map(),
     globalBeatIndex: 0,
     muskHeroFetchUsed: false,
+    lastMuskStockClip: null,
     lock: Promise.resolve(),
     perf,
   };
@@ -3267,7 +3285,10 @@ function stockVisualCategory(query: string, filePath?: string): string {
   if (/miniature|diorama|tabletop|toy|model rocket|scale model|saturn|apollo|lunar|moon[- ]?landing|moon[- ]?surface|space shuttle|shuttle|vhs|glitch|sci[- ]?fi|cgi/.test(combined)) {
     return "blocked_model";
   }
-  if (/textile|weaving|loom|yarn factory|fabric mill|sewing factory|ferry|catamaran|river boat|canal|harbor cruise|container ship|cargo ship|shipping port|port crane|logistics hub|cargo terminal|container terminal|highway|motorway|freeway|country road|rural road|pickup truck|desert road|coastal road|dashcam/.test(combined)) {
+  if (/textile|weaving|loom|yarn factory|fabric mill|sewing factory|ferry|catamaran|river boat|canal|harbor cruise|container ship|cargo ship|shipping port|port crane|logistics hub|cargo terminal|container terminal|warehouse district|distribution center|highway|motorway|freeway|country road|rural road|pickup truck|pickup|semi truck|freight truck|delivery truck|desert road|coastal road|dashcam/.test(combined)) {
+    return "blocked_offtopic";
+  }
+  if (/\b(pickup|pick-up|off[- ]?road truck)\b/.test(combined) && !/\btesla\b/.test(combined)) {
     return "blocked_offtopic";
   }
   if (/gigafactory|solar.*(factory|plant|roof)|factory.*solar|solar panel.*roof/.test(combined)) return "gigafactory";
@@ -3356,11 +3377,35 @@ function isPipelineFallbackClip(filePath: string): boolean {
   return /_fallback\.mp4$/i.test(path.basename(filePath));
 }
 
+async function probeClipMeanLuma(filePath: string, atSec: number): Promise<number | null> {
+  try {
+    const lumCmd =
+      `"${FFMPEG_BIN}" -y -ss ${atSec.toFixed(2)} -i "${filePath}" -vframes 1 -vf "scale=64:36,format=gray" -f rawvideo -`;
+    const { stdout } = await withTimeout(exec(lumCmd), 10_000, `luma ${path.basename(filePath)}@${atSec}`);
+    const buf = Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout ?? "", "binary");
+    if (buf.length === 0) return null;
+    let sum = 0;
+    for (let i = 0; i < buf.length; i++) sum += buf[i];
+    return sum / buf.length;
+  } catch {
+    return null;
+  }
+}
+
 async function isMostlyBlackClip(filePath: string): Promise<boolean> {
   if (isPipelineFallbackClip(filePath)) return true;
+  const dur = await probeVideoDurationSec(filePath);
+  const sampleTimes = [0.2, 0.9, 2.0];
+  if (dur > 2.5) sampleTimes.push(Math.max(0.3, dur - 0.35));
+  let darkSamples = 0;
+  for (const t of sampleTimes) {
+    const mean = await probeClipMeanLuma(filePath, Math.min(t, Math.max(0, dur - 0.1)));
+    if (mean !== null && mean < 34) darkSamples++;
+  }
+  if (darkSamples >= 2) return true;
   try {
     const cmd =
-      `"${FFMPEG_BIN}" -y -i "${filePath}" -vf "blackdetect=d=0.08:pix_th=0.12" -an -f null -`;
+      `"${FFMPEG_BIN}" -y -i "${filePath}" -vf "blackdetect=d=0.06:pix_th=0.10" -an -f null -`;
     const { stderr } = await withTimeout(exec(cmd), 12_000, `blackdetect ${path.basename(filePath)}`);
     const out = typeof stderr === "string" ? stderr : String(stderr ?? "");
     const startMatch = out.match(/black_start:([\d.]+)/g);
@@ -3372,33 +3417,13 @@ async function isMostlyBlackClip(filePath: string): Promise<boolean> {
       const end = parseFloat(endMatch[i].replace("black_end:", ""));
       if (!isNaN(start) && !isNaN(end) && end > start) blackDur += end - start;
     }
-    const durMatch = out.match(/Duration:\s*(\d+):(\d+):([\d.]+)/);
-    let totalDur = 4;
-    if (durMatch) {
-      totalDur =
-        parseInt(durMatch[1], 10) * 3600 +
-        parseInt(durMatch[2], 10) * 60 +
-        parseFloat(durMatch[3]);
-    }
-    if (totalDur > 0 && blackDur / totalDur > 0.35) return true;
+    const totalDur = dur > 0 ? dur : 4;
+    if (totalDur > 0 && blackDur / totalDur > 0.12) return true;
   } catch {
     /* fall through */
   }
-  try {
-    const lumCmd =
-      `"${FFMPEG_BIN}" -y -ss 0.5 -i "${filePath}" -vframes 1 -vf "scale=64:36,format=gray" -f rawvideo -`;
-    const { stdout } = await withTimeout(exec(lumCmd), 10_000, `luma ${path.basename(filePath)}`);
-    const buf = Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout ?? "", "binary");
-    if (buf.length > 0) {
-      let sum = 0;
-      for (let i = 0; i < buf.length; i++) sum += buf[i];
-      const mean = sum / buf.length;
-      if (mean < 28) return true;
-    }
-  } catch {
-    /* ignore */
-  }
-  return false;
+  const mid = await probeClipMeanLuma(filePath, 0.5);
+  return mid !== null && mid < 28;
 }
 
 function isMuskTeslaTopic(videoTitle?: string, sceneText?: string): boolean {
@@ -3665,11 +3690,13 @@ async function adoptClip(
       if (queryCategory !== "generic" && category === "generic") continue;
       if (opts.requireMuskBrand && !hasMuskBrandSignal(sourceQuery, p)) continue;
       if (muskTopic) {
+        if (category === "solar" && !/solar|photovoltaic|sun panel/.test(beatText.toLowerCase())) continue;
         if ((category === "rocket" || category === "space") && !isMuskApprovedRocketQuery(sourceQuery)) {
           continue;
         }
         const rel = scoreVisualRelevance(`${sourceQuery} ${path.basename(p)}`, keywords);
         const topicRel = scoreVisualRelevance(`${sourceQuery} ${path.basename(p)}`, MUSK_TOPIC_TOKENS);
+        if (opts.requireMuskBrand && topicRel < 2) continue;
         if (topicRel < 2) continue;
         if (category === "generic" && queryCategory !== "generic" && rel < 1) continue;
         if (rel + topicRel < 3) continue;
@@ -3691,15 +3718,22 @@ async function adoptClip(
       dedup.usedContentKeys.add(contentKey);
       dedup.usedCategories.set(category, (dedup.usedCategories.get(category) ?? 0) + 1);
       if (dedup.perf.skipFairUseTransform) {
-        if (await isValidVideoFile(p)) return p;
+        if (await isValidVideoFile(p)) {
+          if (muskTopic) dedup.lastMuskStockClip = p;
+          return p;
+        }
         dedup.usedCategories.set(category, Math.max(0, (dedup.usedCategories.get(category) ?? 1) - 1));
         continue;
       }
       const transformed = await transformClipForFairUse(
         p, beatText, sceneIndex, beatIndex, workDir, dedup.perf.transformTimeoutMs
       );
-      if (await isValidVideoFile(transformed)) return transformed;
+      if (await isValidVideoFile(transformed)) {
+        if (muskTopic) dedup.lastMuskStockClip = transformed;
+        return transformed;
+      }
       dedup.usedCategories.set(category, Math.max(0, (dedup.usedCategories.get(category) ?? 1) - 1));
+      if (muskTopic && await isValidVideoFile(p)) dedup.lastMuskStockClip = p;
     }
     return null;
   });
@@ -3848,7 +3882,11 @@ async function fetchBeatClip(
       [
         ...HERO_MUSK_QUERIES.map((hq, hi) => ({
           query: hq,
-          fetch: pexFetch(hq, `${tag}_hero`, candidateOffset + hi, 4),
+          fetch: pexFetch(hq, `${tag}_hero`, candidateOffset + hi, 6),
+        })),
+        ...HERO_MUSK_QUERIES.slice(0, 3).map((hq, hi) => ({
+          query: hq,
+          fetch: pixFetch(hq, `${tag}_hero_px`, candidateOffset + hi + 20),
         })),
         {
           query: "SpaceX Falcon 9 launch",
@@ -4080,14 +4118,14 @@ async function fetchSceneVisuals(
               console.error(
                 `[Pipeline] Scene ${scene.index} beat ${beat.index}: no stock video — color placeholder`
               );
-              clips.push(await generateColorFallback(scene.index * 100 + beat.index, 4, workDir));
+              clips.push(muskRescueClip(dedup, scene.index, beat.index, workDir));
             }
           }
         } else {
           console.error(
             `[Pipeline] Scene ${scene.index} beat ${beat.index}: no stock video available — color placeholder`
           );
-          clips.push(await generateColorFallback(scene.index * 100 + beat.index, 4, workDir));
+          clips.push(muskRescueClip(dedup, scene.index, beat.index, workDir));
         }
       }
     }
@@ -4398,7 +4436,8 @@ async function composeSceneVideo(
   duration: number,
   workDir: string,
   totalScenes: number,
-  enableSubtitles = false  // Subtitles disabled by default
+  enableSubtitles = false,  // Subtitles disabled by default
+  rescueStockClip?: string | null
 ): Promise<string> {
   const outputPath = path.join(workDir, `scene_${scene.index}_composed.mp4`);
 
@@ -4418,9 +4457,13 @@ async function composeSceneVideo(
   }
 
   // Clips arrive in beat/narration order from fetchSceneVisuals — preserve timeline.
-  let safeClips = validClips.length > 0
-    ? validClips
-    : [await generateColorFallback(scene.index, duration, workDir)];
+  const rescueOrColor = async () => {
+    if (rescueStockClip && fs.existsSync(rescueStockClip) && !(await isMostlyBlackClip(rescueStockClip))) {
+      return rescueStockClip;
+    }
+    return generateColorFallback(scene.index, duration, workDir);
+  };
+  let safeClips = validClips.length > 0 ? validClips : [await rescueOrColor()];
 
   // Last-line check: never feed corrupt MP4s into filter_complex
   const verifiedClips: string[] = [];
@@ -4440,7 +4483,7 @@ async function composeSceneVideo(
     if (anyUsable) {
       safeClips = [anyUsable];
     } else {
-      safeClips = [await generateColorFallback(scene.index, duration, workDir)];
+      safeClips = [await rescueOrColor()];
     }
   }
 
@@ -4651,7 +4694,10 @@ async function composeSceneVideo(
         );
       } catch (muxErr) {
         console.warn(`[Pipeline] Scene ${scene.index}: simple mux failed, using color fallback:`, muxErr);
-        const fallbackClip = await generateColorFallback(scene.index, duration, workDir);
+        const fallbackClip =
+          rescueStockClip && fs.existsSync(rescueStockClip)
+            ? rescueStockClip
+            : await generateColorFallback(scene.index, duration, workDir);
         await withTimeout(
           exec(
             `${FFMPEG_BIN} -y -i "${fallbackClip}" -i "${safeAudioPath}" ` +
@@ -4666,6 +4712,24 @@ async function composeSceneVideo(
 
   if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size < 1000) {
     throw pipelineError(PIPELINE_ERROR.FFMPEG, `Scene ${scene.index} produced no output video`);
+  }
+
+  if (await isMostlyBlackClip(outputPath) && rescueStockClip && fs.existsSync(rescueStockClip)) {
+    console.warn(`[Pipeline] Scene ${scene.index}: composed output mostly black — retry with rescue clip`);
+    try {
+      await withTimeout(
+        exec(
+          `${FFMPEG_BIN} -y -ss 0.3 -i "${rescueStockClip}" -i "${safeAudioPath}" ` +
+          `-filter_complex "[1:a]apad=whole_dur=${duration.toFixed(3)},atrim=0:${duration.toFixed(3)}[aout]" ` +
+          `-map "0:v" -map "[aout]" -t ${duration} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 ` +
+          `-c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
+        ),
+        90_000,
+        `Rescue recompose scene ${scene.index}`
+      );
+    } catch (err) {
+      console.warn(`[Pipeline] Scene ${scene.index}: rescue recompose failed:`, (err as Error).message);
+    }
   }
 
   if (subtitlePath) { try { fs.unlinkSync(subtitlePath); } catch { /* ignore */ } }
@@ -5170,7 +5234,10 @@ export async function runVideoPipeline(
     const composedScenes = await withTimeout(
       Promise.all(
         scenes.map((scene, i) => composeLimit(async () => {
-          const result = await composeSceneVideo(scene, sceneVisuals[i], audioPaths[i], scene.duration, workDir, scenes.length, enableSubtitles);
+          const result = await composeSceneVideo(
+            scene, sceneVisuals[i], audioPaths[i], scene.duration, workDir, scenes.length,
+            enableSubtitles, dedup.lastMuskStockClip
+          );
           completedCompose++;
           onProgress?.({
             stage: `Composing scenes... (${completedCompose}/${scenes.length} done)`,
