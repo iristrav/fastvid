@@ -100,6 +100,77 @@ export function countNarrationWords(script: string): number {
   return text.split(/\s+/).filter((w) => w.length > 0).length;
 }
 
+/** Spoken narration only — one continuous read order (no duplicate hooks across scenes). */
+export function extractFullNarrationText(script: string): string {
+  const blocks = parseMarkdownNarrationBlocks(script);
+  if (blocks.length > 0) {
+    return blocks.map((b) => b.text).filter((t) => t.length > 0).join(" ");
+  }
+  return script
+    .replace(/\[visual:[^\]]*\]/gi, "")
+    .replace(/^#+\s+.+$/gm, "")
+    .replace(/[#*_`~>]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export type MarkdownNarrationBlock = {
+  heading: string;
+  text: string;
+  visualCue: string;
+  sectionTitle: string;
+};
+
+const META_SECTION_RE =
+  /^(opening|hook|intro|call to action|cta|outro|closing|title)\b/i;
+
+export function parseMarkdownNarrationBlocks(script: string): MarkdownNarrationBlock[] {
+  const raw = script.replace(/\r\n/g, "\n").trim();
+  if (!raw) return [];
+
+  const parts = raw.split(/(?=^##\s+)/m).map((p) => p.trim()).filter(Boolean);
+  const blocks: MarkdownNarrationBlock[] = [];
+
+  for (const part of parts) {
+    const headingMatch = part.match(/^##\s+(.+?)\s*$/m);
+    const heading = (headingMatch?.[1] ?? "Section").trim();
+    if (/^#\s+/.test(part) && !headingMatch) continue;
+
+    const body = part
+      .replace(/^##\s+.+$/m, "")
+      .replace(/^#\s+.+$/m, "")
+      .replace(/\[visual:[^\]]*\]/gi, "")
+      .replace(/[#*_`~>]/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    if (body.length < 12) continue;
+
+    const firstVisual = part.match(/\[visual:\s*([^\]]+)\]/i)?.[1]?.trim() ?? "";
+    const sectionTitle = META_SECTION_RE.test(heading) ? "" : heading.toUpperCase().slice(0, 60);
+
+    blocks.push({
+      heading,
+      text: body,
+      visualCue: firstVisual || body.slice(0, 80),
+      sectionTitle,
+    });
+  }
+
+  if (blocks.length === 0) {
+    const fallback = extractFullNarrationText(raw);
+    if (fallback.length > 20) {
+      blocks.push({
+        heading: "Document",
+        text: fallback,
+        visualCue: fallback.slice(0, 80),
+        sectionTitle: "",
+      });
+    }
+  }
+  return blocks;
+}
+
 function wordsPerSection(budget: ScriptLengthBudget, sectionIndex: number, sectionTotal: number): number {
   const bodyWords = budget.targetWords - budget.hookWords - budget.ctaWords;
   const base = Math.floor(bodyWords / sectionTotal);

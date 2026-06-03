@@ -37,6 +37,11 @@ import { generateHiggsfieldTextToVideo, generateHiggsfieldImageToVideo } from ".
 import { sanitizeForDrawtext, sanitizeForDrawtextStrict } from "./ffmpegSanitize";
 import { PIPELINE_ERROR, pipelineError } from "@shared/appErrors";
 import fetch from "node-fetch";
+import {
+  extractFullNarrationText,
+  parseMarkdownNarrationBlocks,
+  type MarkdownNarrationBlock,
+} from "./scriptWriter";
 
 // API Keys
 const FISH_AUDIO_API_KEY = process.env.FISH_AUDIO_API_KEY || "";
@@ -295,9 +300,11 @@ const VIDEO_HEIGHT = 1080;
 /** Standard scale chain — pad ensures exact even dimensions for libx264 */
 const STANDARD_VF = `scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=decrease,pad=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:(ow-iw)/2:(oh-ih)/2,fps=25,format=yuv420p`;
 /** Vidrush pacing: 2–3s hard-cut clips (reference documentary style) */
-const VIDRUSH_CLIP_MIN_SEC = 2.0;
-const VIDRUSH_CLIP_MAX_SEC = 3.0;
-const VIDRUSH_BEAT_SEC = 2.8;
+const VIDRUSH_CLIP_MIN_SEC = 3.0;
+const VIDRUSH_CLIP_MAX_SEC = 4.5;
+const VIDRUSH_BEAT_SEC = 3.2;
+/** Crossfade between montage clips — smoother than hard cuts (reduces perceived stutter). */
+const MONTAGE_XFADE_SEC = 0.4;
 const CHAPTER_CARD_DURATION = 1.5;
 
 /** Wall-clock budgets: short ≤60 min, long ≤90 min (see getPipelinePerfProfile). */
@@ -517,6 +524,105 @@ export const STAGE_LABELS = {
 
 const SCENE_PARSE_BATCH_SIZE = 16;
 
+function narrationWordCount(text: string): number {
+  return text.split(/\s+/).filter((w) => w.length > 0).length;
+}
+
+/** Split or merge markdown blocks to exactly maxScenes without repeating narration. */
+function partitionNarrationBlocks(blocks: MarkdownNarrationBlock[], maxScenes: number): string[] {
+  if (blocks.length === 0) return [];
+  if (blocks.length === maxScenes) return blocks.map((b) => b.text);
+  if (blocks.length > maxScenes) {
+    const texts = blocks.map((b) => b.text);
+    const merged: string[] = [];
+    let cursor = 0;
+    for (let i = 0; i < maxScenes; i++) {
+      const take = i === maxScenes - 1
+        ? texts.length - cursor
+        : Math.max(1, Math.round((texts.length - cursor) / (maxScenes - i)));
+      merged.push(texts.slice(cursor, cursor + take).join(" "));
+      cursor += take;
+    }
+    return merged;
+  }
+  const texts = [...blocks.map((b) => b.text)];
+  while (texts.length < maxScenes) {
+    let splitIdx = 0;
+    let maxWords = 0;
+    for (let i = 0; i < texts.length; i++) {
+      const w = narrationWordCount(texts[i]);
+      if (w > maxWords) {
+        maxWords = w;
+        splitIdx = i;
+      }
+    }
+    const words = texts[splitIdx].split(/\s+/).filter(Boolean);
+    if (words.length < 24) break;
+    const mid = Math.ceil(words.length / 2);
+    const a = words.slice(0, mid).join(" ");
+    const b = words.slice(mid).join(" ");
+    texts.splice(splitIdx, 1, a, b);
+  }
+  return texts.slice(0, maxScenes);
+}
+
+function scenesFromMarkdownScript(script: string, maxScenes: number): Scene[] | null {
+  const blocks = parseMarkdownNarrationBlocks(script);
+  if (blocks.length < 2) return null;
+
+  const texts = partitionNarrationBlocks(blocks, maxScenes);
+  if (texts.length < 2) return null;
+
+  return texts.map((text, index) => {
+    const block = blocks[Math.min(index, blocks.length - 1)];
+    const visualCue = block.visualCue || text.slice(0, 80);
+    return {
+      index,
+      text,
+      visualCue,
+      pexelsQuery: visualCue,
+      pexelsQueries: [visualCue],
+      personNames: [],
+      literalVisualCue: visualCue,
+      highlightWords: [],
+      brollQueries: [],
+      statCallout: "",
+      aiImagePrompt: `Cinematic ${visualCue}, documentary lighting, photorealistic`,
+      duration: 0,
+      isChapterCard: false,
+      chapterTitle: isPublishableChapterTitle(block.sectionTitle) ? block.sectionTitle : undefined,
+      sectionTitle: isPublishableChapterTitle(block.sectionTitle) ? block.sectionTitle : undefined,
+    };
+  });
+}
+
+/** Remove LLM-parse overlap so scene 2+ does not replay the opening hook. */
+function dedupeSceneNarration(scenes: Scene[]): Scene[] {
+  if (scenes.length < 2) return scenes;
+  const hookPrefix = scenes[0].text.trim().slice(0, 100);
+  for (let i = 1; i < scenes.length; i++) {
+    let text = scenes[i].text.trim();
+    if (hookPrefix.length > 30) {
+      for (const len of [100, 80, 60, 40]) {
+        const prefix = hookPrefix.slice(0, len).trim();
+        if (prefix.length > 20 && text.startsWith(prefix)) {
+          text = text.slice(prefix.length).trim();
+          break;
+        }
+      }
+    }
+    const prev = scenes[i - 1].text.trim();
+    if (prev.length > 40) {
+      const tail = prev.slice(-80);
+      if (text.startsWith(tail.slice(0, 50))) {
+        text = text.slice(tail.slice(0, 50).length).trim();
+      }
+    }
+    scenes[i].text = text.length > 0 ? text : scenes[i].text;
+  }
+  return scenes;
+}
+
 function parseLLMJson<T>(content: unknown, label: string): T {
   try {
     if (content && typeof content === "object") return content as T;
@@ -599,7 +705,7 @@ For each scene return:
 - personNames: full names of real people mentioned in text, or []
 - sectionTitle: ALL CAPS chapter heading shown on yellow card BEFORE this scene when starting a new topic; "" if not a chapter start. NEVER use HOOK, OPENING, CTA, INTRO, or OUTRO as sectionTitle — always "" for those meta sections.
 
-Every query must literally describe what the viewer should see while that exact narration plays. Scenes are ~2-4s of footage with hard cuts. Narration must read as one continuous documentary — no filler pauses between sentences.`,
+Every query must literally describe what the viewer should see while that exact narration plays. Scenes are ~2-4s of footage with hard cuts. Narration must read as one continuous documentary — no filler pauses between sentences. NEVER repeat the opening hook or earlier sentences in later scenes — each scene text is ONLY its own contiguous slice of the script.`,
         },
         {
           role: "user",
@@ -664,27 +770,35 @@ function mapRawScene(
 }
 
 async function parseScriptIntoScenes(script: string, maxScenes: number): Promise<Scene[]> {
+  const fromMarkdown = scenesFromMarkdownScript(script, maxScenes);
+  if (fromMarkdown && fromMarkdown.length >= Math.min(2, maxScenes)) {
+    console.log(`[Pipeline] Parsed ${fromMarkdown.length} scenes from markdown (no LLM re-parse)`);
+    return dedupeSceneNarration(fromMarkdown);
+  }
+
+  let scenes: Scene[];
   if (maxScenes <= SCENE_PARSE_BATCH_SIZE) {
-    return parseScriptIntoScenesBatch(script, maxScenes, 0);
+    scenes = await parseScriptIntoScenesBatch(script, maxScenes, 0);
+  } else {
+    const batchCount = Math.ceil(maxScenes / SCENE_PARSE_BATCH_SIZE);
+    const chunks = splitScriptForSceneParsing(script, batchCount);
+    const scenesPerBatch = Math.ceil(maxScenes / chunks.length);
+    const allScenes: Scene[] = [];
+
+    for (let b = 0; b < chunks.length; b++) {
+      const remaining = maxScenes - allScenes.length;
+      if (remaining <= 0) break;
+      const count = Math.min(scenesPerBatch, remaining, SCENE_PARSE_BATCH_SIZE);
+      const batchScenes = await parseScriptIntoScenesBatch(chunks[b], count, allScenes.length);
+      allScenes.push(...batchScenes);
+    }
+    scenes = allScenes;
   }
 
-  const batchCount = Math.ceil(maxScenes / SCENE_PARSE_BATCH_SIZE);
-  const chunks = splitScriptForSceneParsing(script, batchCount);
-  const scenesPerBatch = Math.ceil(maxScenes / chunks.length);
-  const allScenes: Scene[] = [];
-
-  for (let b = 0; b < chunks.length; b++) {
-    const remaining = maxScenes - allScenes.length;
-    if (remaining <= 0) break;
-    const count = Math.min(scenesPerBatch, remaining, SCENE_PARSE_BATCH_SIZE);
-    const batchScenes = await parseScriptIntoScenesBatch(chunks[b], count, allScenes.length);
-    allScenes.push(...batchScenes);
-  }
-
-  if (allScenes.length === 0) {
+  if (scenes.length === 0) {
     throw pipelineError(PIPELINE_ERROR.SCRIPT_PARSE, "No scenes parsed from script");
   }
-  return allScenes.slice(0, maxScenes);
+  return dedupeSceneNarration(scenes.slice(0, maxScenes));
 }
 
 // ─── 2. TTS Voiceover ───────────────────────────────────────────────────────────────────────────
@@ -730,38 +844,27 @@ async function synthesizeFullNarrationMp3(
   scenes: Scene[],
   workDir: string,
   voiceId?: string,
-  onTtsPart?: (part: number, totalParts: number) => void
+  onTtsPart?: (part: number, totalParts: number) => void,
+  sourceScript?: string
 ): Promise<string> {
-  const sceneTexts = scenes
-    .map((s) => sanitizeVoiceoverText(s.text, 200_000))
-    .filter((t) => t.length > 0);
-  if (sceneTexts.length === 0) {
+  const fullNarration = sanitizeVoiceoverText(
+    sourceScript ? extractFullNarrationText(sourceScript) : scenes.map((s) => s.text.trim()).join(" "),
+    200_000
+  );
+  if (fullNarration.length === 0) {
     throw pipelineError(PIPELINE_ERROR.VOICEOVER_EMPTY, "No narration text for bulk voiceover");
   }
 
   const chunks: string[] = [];
-  let current = "";
-  for (const part of sceneTexts) {
-    const candidate = current ? `${current}\n\n${part}` : part;
-    if (candidate.length > BULK_VO_CHUNK_CHARS && current) {
-      chunks.push(current);
-      current = part;
-    } else if (candidate.length > BULK_VO_CHUNK_CHARS) {
-      // Single scene exceeds limit — hard-split on sentence boundaries
-      let rest = part;
-      while (rest.length > BULK_VO_CHUNK_CHARS) {
-        const slice = rest.slice(0, BULK_VO_CHUNK_CHARS);
-        const breakAt = Math.max(slice.lastIndexOf(". "), slice.lastIndexOf("! "), slice.lastIndexOf("? "));
-        const cut = breakAt > 200 ? breakAt + 1 : BULK_VO_CHUNK_CHARS;
-        chunks.push(rest.slice(0, cut).trim());
-        rest = rest.slice(cut).trim();
-      }
-      current = rest;
-    } else {
-      current = candidate;
-    }
+  let rest = fullNarration;
+  while (rest.length > BULK_VO_CHUNK_CHARS) {
+    const slice = rest.slice(0, BULK_VO_CHUNK_CHARS);
+    const breakAt = Math.max(slice.lastIndexOf(". "), slice.lastIndexOf("! "), slice.lastIndexOf("? "));
+    const cut = breakAt > 200 ? breakAt + 1 : BULK_VO_CHUNK_CHARS;
+    chunks.push(rest.slice(0, cut).trim());
+    rest = rest.slice(cut).trim();
   }
-  if (current) chunks.push(current);
+  if (rest.length > 0) chunks.push(rest);
 
   const partPaths: string[] = [];
   for (let i = 0; i < chunks.length; i++) {
@@ -785,12 +888,13 @@ async function generateBulkSceneVoiceovers(
   audioPaths: string[],
   workDir: string,
   voiceId?: string,
-  onProgress?: (done: number, total: number) => void
+  onProgress?: (done: number, total: number) => void,
+  sourceScript?: string
 ): Promise<number[]> {
   onProgress?.(0, scenes.length);
   const fullPath = await synthesizeFullNarrationMp3(scenes, workDir, voiceId, (part, total) => {
     console.log(`[Pipeline] Bulk voiceover TTS part ${part}/${total}`);
-  });
+  }, sourceScript);
   await trimVoiceoverSilence(fullPath);
 
   const durations = await splitFullVoiceoverByScenes(fullPath, scenes, audioPaths);
@@ -837,12 +941,37 @@ async function splitFullVoiceoverByScenes(
       45_000,
       `Split bulk VO scene ${i}`
     );
+    if (i > 0) await trimVoiceoverLeadingSilence(out);
     let dur = await probeVideoDurationSec(out);
     if (dur <= 0) dur = segDur;
     durations.push(dur);
     cursor += segDur;
   }
   return durations;
+}
+
+/** Trim only leading silence on per-scene splits (keeps scene boundaries tight). */
+async function trimVoiceoverLeadingSilence(audioPath: string): Promise<void> {
+  const tmpPath = audioPath.replace(/\.mp3$/i, "_leadtrim.mp3");
+  try {
+    await withTimeout(
+      exec(
+        `${FFMPEG_BIN} -y -i "${audioPath}" -af ` +
+        `"silenceremove=start_periods=1:start_duration=0.04:start_threshold=-40dB:detection=peak" ` +
+        `-c:a libmp3lame -b:a 192k "${tmpPath}"`
+      ),
+      30_000,
+      "Trim leading silence on scene VO"
+    );
+    if (fs.existsSync(tmpPath) && fs.statSync(tmpPath).size > 200) {
+      fs.unlinkSync(audioPath);
+      fs.renameSync(tmpPath, audioPath);
+    } else if (fs.existsSync(tmpPath)) {
+      fs.unlinkSync(tmpPath);
+    }
+  } catch {
+    try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+  }
 }
 
 // Per-scene fallback only when bulk path is not used. Default pipeline: full-script ElevenLabs + split.
@@ -3880,12 +4009,48 @@ function clipContentKey(filePath: string): string {
 /** Beat clip length in compose — fill scene duration, cap per clip for pacing. */
 function computeMontageClipDuration(sceneDuration: number, clipCount: number): number {
   if (clipCount <= 0) return VIDRUSH_CLIP_MAX_SEC;
-  const evenSplit = sceneDuration / clipCount;
-  let clipDur = Math.max(VIDRUSH_CLIP_MIN_SEC, Math.min(4.5, evenSplit));
-  if (clipDur * clipCount < sceneDuration - 0.05) {
-    clipDur = sceneDuration / clipCount;
+  const xfade = clipCount > 1 ? MONTAGE_XFADE_SEC : 0;
+  const evenSplit = (sceneDuration + (clipCount - 1) * xfade) / clipCount;
+  let clipDur = Math.max(VIDRUSH_CLIP_MIN_SEC, Math.min(VIDRUSH_CLIP_MAX_SEC, evenSplit));
+  if (clipDur * clipCount - (clipCount - 1) * xfade < sceneDuration - 0.05) {
+    clipDur = (sceneDuration + (clipCount - 1) * xfade) / clipCount;
   }
   return clipDur;
+}
+
+/** xfade montage filter — trim in-filter (no input -ss) to avoid keyframe stutter. */
+function buildMontageXfadeFilter(
+  clipCount: number,
+  outDur: number,
+  sceneIndex: number
+): { scaleFilters: string; mergeFilter: string; montageLabel: string } {
+  const n = Math.max(1, clipCount);
+  const xfade = MONTAGE_XFADE_SEC;
+  const clipDur = computeMontageClipDuration(outDur, n);
+  const startAt = (i: number) => Math.min(((sceneIndex + i) * 0.9) % 2.0, 1.2);
+
+  if (n === 1) {
+    return {
+      scaleFilters: `[0:v]trim=start=${startAt(0).toFixed(2)}:duration=${clipDur.toFixed(3)},${STANDARD_VF},setpts=PTS-STARTPTS[v0]`,
+      mergeFilter: "",
+      montageLabel: "v0",
+    };
+  }
+
+  const scaleFilters = Array.from({ length: n }, (_, i) =>
+    `[${i}:v]trim=start=${startAt(i).toFixed(2)}:duration=${clipDur.toFixed(3)},${STANDARD_VF},setpts=PTS-STARTPTS[v${i}]`
+  ).join(";");
+
+  let mergeFilter = "";
+  let prev = "v0";
+  let offset = clipDur - xfade;
+  for (let i = 1; i < n; i++) {
+    const outLabel = i === n - 1 ? "montage" : `xf${i}`;
+    mergeFilter += `;[${prev}][v${i}]xfade=transition=fade:duration=${xfade.toFixed(3)}:offset=${offset.toFixed(3)}[${outLabel}]`;
+    prev = outLabel;
+    offset += clipDur - xfade;
+  }
+  return { scaleFilters, mergeFilter, montageLabel: "montage" };
 }
 
 function extractTopicStockQueries(promptOrTitle: string): string[] {
@@ -5238,28 +5403,20 @@ async function composeSceneVideo(
   const outDur = voiceDur + 0.12;
 
   try {
-    // Vidrush montage: 2–3s clips, hard cuts (no crossfade)
-    const clipDur = computeMontageClipDuration(outDur, safeClips.length);
-    const inputs = safeClips.map((c, i) => {
-      const startSec = Math.min(((scene.index + i) * 0.7) % 1.2, 0.8);
-      return `-ss ${startSec.toFixed(2)} -t ${clipDur.toFixed(3)} -i "${c}"`;
-    }).join(" ");
-    const scaleFilters = safeClips.map((_, i) =>
-      `[${i}:v]${STANDARD_VF}[v${i}]`
-    ).join(";");
-    const concatLabels = safeClips.map((_, i) => `[v${i}]`).join("");
-    const mergeFilter =
-      safeClips.length === 1
-        ? `;[v0]copy[concatenated]`
-        : `;${concatLabels}concat=n=${safeClips.length}:v=1:a=0[concatenated]`;
-
-    const montageDur = clipDur * safeClips.length;
+    const { scaleFilters, mergeFilter, montageLabel: xfadeLabel } =
+      buildMontageXfadeFilter(safeClips.length, outDur, scene.index);
+    const inputs = safeClips.map((c) => `-i "${c}"`).join(" ");
+    const montageDur =
+      safeClips.length <= 1
+        ? outDur
+        : computeMontageClipDuration(outDur, safeClips.length) * safeClips.length -
+          (safeClips.length - 1) * MONTAGE_XFADE_SEC;
     const padSec = Math.max(0, outDur - montageDur);
     const padFilter =
       padSec > 0.05
-        ? `;[concatenated]tpad=stop_mode=clone:stop_duration=${padSec.toFixed(3)}[concatPadded]`
+        ? `;[${xfadeLabel}]tpad=stop_mode=clone:stop_duration=${padSec.toFixed(3)}[montagePadded]`
         : "";
-    const montageLabel = padSec > 0.05 ? "concatPadded" : "concatenated";
+    const montageLabel = padSec > 0.05 ? "montagePadded" : xfadeLabel;
 
     const audioIdx = safeClips.length;
     const kineticBaseIdx = audioIdx + 1;
@@ -5270,11 +5427,14 @@ async function composeSceneVideo(
     const kineticChainStr = kChain ? kChain : "";
     const hasOverlays = kineticFrames.length > 0 || statCalloutFrame !== null;
     const finalVideoLabel = hasOverlays ? kFinalLabel : montageLabel;
+    const audioFadeOutStart = Math.max(0, voiceDur - 0.15);
     await withTimeout(
       exec(
         `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}"${kineticInput} ` +
-        `-filter_complex "${scaleFilters}${mergeFilter}${padFilter}${kineticChainStr};[${finalVideoLabel}]${fadeFilter}[vout];[${audioIdx}:a]atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
-        `-map "[vout]" -map "[aout]" ` +
+        `-filter_complex "${scaleFilters}${mergeFilter}${padFilter}${kineticChainStr};[${finalVideoLabel}]${fadeFilter}[vout];` +
+        `[${audioIdx}:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${audioFadeOutStart.toFixed(3)}:d=0.12,` +
+        `atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
+        `-map "[vout]" -map "[aout]" -vsync cfr ` +
         `-t ${outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
       ),
       120_000, `Compose multi-clip scene ${scene.index}`
@@ -5285,14 +5445,13 @@ async function composeSceneVideo(
       const clipDur = computeMontageClipDuration(outDur, safeClips.length);
       const n = Math.min(12, Math.max(2, safeClips.length));
       const subset = safeClips.slice(0, n);
-      const inputs = subset.map((c) => `-t ${clipDur.toFixed(3)} -i "${c}"`).join(" ");
-      const scaleFilters = subset.map((_, i) => `[${i}:v]${STANDARD_VF}[v${i}]`).join(";");
-      const concatLabels = subset.map((_, i) => `[v${i}]`).join("");
+      const inputs = subset.map((c) => `-i "${c}"`).join(" ");
+      const { scaleFilters, mergeFilter, montageLabel } = buildMontageXfadeFilter(n, outDur, scene.index);
       await withTimeout(
         exec(
           `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}" ` +
-          `-filter_complex "${scaleFilters};${concatLabels}concat=n=${subset.length}:v=1:a=0[vout];[${subset.length}:a]atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
-          `-map "[vout]" -map "[aout]" ` +
+          `-filter_complex "${scaleFilters}${mergeFilter};[${montageLabel}]copy[vout];[${n}:a]atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
+          `-map "[vout]" -map "[aout]" -vsync cfr ` +
           `-t ${outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
         ),
         90_000,
@@ -5591,20 +5750,7 @@ async function ensureFinalVideoDuration(
       if (dur >= targetSec - 0.5) return out;
     }
   } catch (err) {
-    console.warn("[Pipeline] Final tpad pad failed, trying stream_loop:", (err as Error).message);
-  }
-  try {
-    await withTimeout(
-      exec(
-        `${FFMPEG_BIN} -y -stream_loop -1 -i "${working}" -t ${targetSec.toFixed(3)} ` +
-        `-c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -movflags +faststart "${out}"`
-      ),
-      120_000,
-      `Loop-pad final video to ${targetSec}s`
-    );
-    if (fs.existsSync(out) && fs.statSync(out).size > 1000) return out;
-  } catch (err) {
-    console.warn("[Pipeline] Final loop pad failed (non-fatal):", (err as Error).message);
+    console.warn("[Pipeline] Final tpad pad failed (non-fatal):", (err as Error).message);
   }
   return working;
 }
@@ -5642,7 +5788,7 @@ async function concatenateScenesWithMusic(
 
   const [, musicPath] = await Promise.all([
     withTimeout(
-      exec(`${FFMPEG_BIN} -y -f concat -safe 0 -i "${listFile}" -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -movflags +faststart "${concatPath}"`),
+      exec(`${FFMPEG_BIN} -y -f concat -safe 0 -i "${listFile}" -vsync cfr -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -movflags +faststart "${concatPath}"`),
       900_000, // 15 min for large videos (30+ scenes)
       "Scene concatenation"
     ),
@@ -5807,7 +5953,7 @@ export async function runVideoPipeline(
                 : `Creating voiceovers... (${done}/${total} done)`,
             percent: 8 + Math.round((done / total) * 10),
           });
-        }),
+        }, script),
         bulkVoiceoverTimeoutMs(scenes.length),
         "Bulk voiceover generation"
       );
