@@ -5665,7 +5665,7 @@ export async function runVideoPipeline(
         scenes.map((scene, i) => composeLimit(async () => {
           const result = await composeSceneVideo(
             scene, sceneVisuals[i], audioPaths[i], scene.duration, workDir, scenes.length,
-            enableSubtitles, dedup.lastMuskStockClip
+            enableSubtitles, visualDedup.lastMuskStockClip
           );
           completedCompose++;
           onProgress?.({
