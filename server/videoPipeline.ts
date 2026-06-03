@@ -4118,14 +4118,14 @@ async function fetchSceneVisuals(
               console.error(
                 `[Pipeline] Scene ${scene.index} beat ${beat.index}: no stock video — color placeholder`
               );
-              clips.push(muskRescueClip(dedup, scene.index, beat.index, workDir));
+              clips.push(await muskRescueClip(dedup, scene.index, beat.index, workDir));
             }
           }
         } else {
           console.error(
             `[Pipeline] Scene ${scene.index} beat ${beat.index}: no stock video available — color placeholder`
           );
-          clips.push(muskRescueClip(dedup, scene.index, beat.index, workDir));
+          clips.push(await muskRescueClip(dedup, scene.index, beat.index, workDir));
         }
       }
     }
