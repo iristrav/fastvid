@@ -706,11 +706,80 @@ function sanitizeVoiceoverText(text: string, maxChars = 800): string {
   return rawText.slice(0, maxChars).replace(/\s\S*$/, "");
 }
 
-function useBulkVoiceover(videoLength: string): boolean {
-  return videoLength === "1" || videoLength === "2";
+/** ElevenLabs safe max per request; long scripts are chunked at scene boundaries then concatenated. */
+const BULK_VO_CHUNK_CHARS = 9_500;
+
+async function concatVoiceoverParts(partPaths: string[], outputPath: string, workDir: string): Promise<void> {
+  if (partPaths.length === 1) {
+    fs.copyFileSync(partPaths[0], outputPath);
+    return;
+  }
+  const listFile = path.join(workDir, "voiceover_concat_list.txt");
+  fs.writeFileSync(listFile, partPaths.map((p) => `file '${p.replace(/'/g, "'\\''")}'`).join("\n"));
+  await withTimeout(
+    exec(
+      `${FFMPEG_BIN} -y -f concat -safe 0 -i "${listFile}" -c:a libmp3lame -b:a 192k "${outputPath}"`
+    ),
+    120_000,
+    "Concat bulk voiceover parts"
+  );
 }
 
-/** 1–2 min: single TTS request (ElevenLabs) then split MP3 by scene word counts. */
+/** Build one MP3 for the full narration (1+ ElevenLabs calls if script is very long). */
+async function synthesizeFullNarrationMp3(
+  scenes: Scene[],
+  workDir: string,
+  voiceId?: string,
+  onTtsPart?: (part: number, totalParts: number) => void
+): Promise<string> {
+  const sceneTexts = scenes
+    .map((s) => sanitizeVoiceoverText(s.text, 200_000))
+    .filter((t) => t.length > 0);
+  if (sceneTexts.length === 0) {
+    throw pipelineError(PIPELINE_ERROR.VOICEOVER_EMPTY, "No narration text for bulk voiceover");
+  }
+
+  const chunks: string[] = [];
+  let current = "";
+  for (const part of sceneTexts) {
+    const candidate = current ? `${current}\n\n${part}` : part;
+    if (candidate.length > BULK_VO_CHUNK_CHARS && current) {
+      chunks.push(current);
+      current = part;
+    } else if (candidate.length > BULK_VO_CHUNK_CHARS) {
+      // Single scene exceeds limit — hard-split on sentence boundaries
+      let rest = part;
+      while (rest.length > BULK_VO_CHUNK_CHARS) {
+        const slice = rest.slice(0, BULK_VO_CHUNK_CHARS);
+        const breakAt = Math.max(slice.lastIndexOf(". "), slice.lastIndexOf("! "), slice.lastIndexOf("? "));
+        const cut = breakAt > 200 ? breakAt + 1 : BULK_VO_CHUNK_CHARS;
+        chunks.push(rest.slice(0, cut).trim());
+        rest = rest.slice(cut).trim();
+      }
+      current = rest;
+    } else {
+      current = candidate;
+    }
+  }
+  if (current) chunks.push(current);
+
+  const partPaths: string[] = [];
+  for (let i = 0; i < chunks.length; i++) {
+    onTtsPart?.(i + 1, chunks.length);
+    const partPath = path.join(workDir, `full_voiceover_part_${i}.mp3`);
+    await generateVoiceover(chunks[i], partPath, voiceId, {
+      maxChars: BULK_VO_CHUNK_CHARS,
+      preferElevenLabs: true,
+    });
+    partPaths.push(partPath);
+  }
+
+  const fullPath = path.join(workDir, "full_voiceover.mp3");
+  await concatVoiceoverParts(partPaths, fullPath, workDir);
+  return fullPath;
+}
+
+/** Full-script TTS (ElevenLabs) then split MP3 per scene by word counts — all video lengths. */
 async function generateBulkSceneVoiceovers(
   scenes: Scene[],
   audioPaths: string[],
@@ -718,33 +787,22 @@ async function generateBulkSceneVoiceovers(
   voiceId?: string,
   onProgress?: (done: number, total: number) => void
 ): Promise<number[]> {
-  const BULK_MAX_CHARS = 10_000;
-  const parts = scenes
-    .map((s) => sanitizeVoiceoverText(s.text, BULK_MAX_CHARS))
-    .filter((t) => t.length > 0);
-  if (parts.length === 0) {
-    throw pipelineError(PIPELINE_ERROR.VOICEOVER_EMPTY, "No narration text for bulk voiceover");
-  }
-  const fullNarration = parts.join("\n\n");
-  const fullPath = path.join(workDir, "full_voiceover.mp3");
-
-  console.log(
-    `[Pipeline] Bulk voiceover: ${fullNarration.length} chars, ${scenes.length} scenes → one TTS call`
-  );
   onProgress?.(0, scenes.length);
-
-  await generateVoiceover(fullNarration, fullPath, voiceId, {
-    maxChars: BULK_MAX_CHARS,
-    preferElevenLabs: true,
+  const fullPath = await synthesizeFullNarrationMp3(scenes, workDir, voiceId, (part, total) => {
+    console.log(`[Pipeline] Bulk voiceover TTS part ${part}/${total}`);
   });
   await trimVoiceoverSilence(fullPath);
 
   const durations = await splitFullVoiceoverByScenes(fullPath, scenes, audioPaths);
   onProgress?.(scenes.length, scenes.length);
   console.log(
-    `[Pipeline] Bulk voiceover split: ${durations.map((d) => d.toFixed(1)).join("s, ")}s`
+    `[Pipeline] Bulk voiceover: ${scenes.length} scenes, split durations ${durations.map((d) => d.toFixed(1)).join("s, ")}s`
   );
   return durations;
+}
+
+function bulkVoiceoverTimeoutMs(sceneCount: number): number {
+  return Math.min(900_000, 120_000 + sceneCount * 20_000);
 }
 
 async function splitFullVoiceoverByScenes(
@@ -787,8 +845,7 @@ async function splitFullVoiceoverByScenes(
   return durations;
 }
 
-// Priority: Fish Audio (per-scene) → ElevenLabs → Google TTS → silent
-// Bulk 1–2 min: ElevenLabs once for full script, then FFmpeg split per scene.
+// Per-scene fallback only when bulk path is not used. Default pipeline: full-script ElevenLabs + split.
 export async function generateVoiceover(
   text: string,
   outputPath: string,
@@ -5735,7 +5792,7 @@ export async function runVideoPipeline(
         await exec(`${FFMPEG_BIN} -y -i "${customAudioPath}" -ss ${start} -t ${perScene} -c copy "${audioPaths[i]}"`);
       }
       durations = scenes.map(() => perScene);
-    } else if (useBulkVoiceover(videoLength)) {
+    } else {
       durations = await withTimeout(
         generateBulkSceneVoiceovers(scenes, audioPaths, workDir, voiceId, (done, total) => {
           onProgress?.({
@@ -5746,28 +5803,8 @@ export async function runVideoPipeline(
             percent: 8 + Math.round((done / total) * 10),
           });
         }),
-        240_000,
+        bulkVoiceoverTimeoutMs(scenes.length),
         "Bulk voiceover generation"
-      );
-    } else {
-      // Long videos: per-scene TTS (Fish → ElevenLabs) — avoids 10k char limits
-      const voiceLimit = pLimit(1);
-      let completedVoices = 0;
-      durations = await withTimeout(
-        Promise.all(scenes.map((scene, i) => voiceLimit(async () => {
-          await generateVoiceover(scene.text, audioPaths[i], voiceId);
-          let dur = await trimVoiceoverSilence(audioPaths[i]);
-          if (dur <= 0) dur = await probeVideoDurationSec(audioPaths[i]);
-          if (dur <= 0) dur = Math.max(3, Math.ceil(scene.text.split(/\s+/).length / 2.5));
-          completedVoices++;
-          onProgress?.({
-            stage: `Creating voiceovers... (${completedVoices}/${scenes.length} done)`,
-            percent: 8 + Math.round((completedVoices / scenes.length) * 10),
-          });
-          return dur;
-        }))),
-        900_000,
-        "Voiceover generation stage"
       );
     }
     // Tight VO sync: scene length tracks narration; target length padded only on final export
@@ -6008,33 +6045,45 @@ export async function rerenderFromScenes(
       onProgress?.(`Downloading clips... (${i + 1}/${scenes.length})`, 10 + Math.round((i + 1) / scenes.length * 20));
     }
 
-    // ── Step 2: Generate voiceovers for all scenes ──────────────────────────
+    // ── Step 2: Full-script voiceover (same as main pipeline) ───────────────
     onProgress?.("Generating voiceovers...", 30);
-    const audioPaths: string[] = [];
+    const audioPaths: string[] = scenes.map((_, i) => path.join(workDir, `rerender_scene_${i}_audio.mp3`));
     const durations: number[] = [];
-
-    const voiceLimit = pLimit(1);
-    await Promise.all(scenes.map((scene, i) => voiceLimit(async () => {
-      const audioPath = path.join(workDir, `rerender_scene_${i}_audio.mp3`);
-      try {
-        const dur = await generateVoiceover(scene.narration, audioPath);
-        audioPaths[i] = audioPath;
-        durations[i] = dur;
-      } catch (err) {
-        console.warn(`[Rerender] Scene ${i} voiceover failed:`, (err as Error).message);
-        // Create silent audio as fallback
-        const silentDur = Math.round(scene.durationMs / 1000) || 20;
+    const voScenes: Scene[] = scenes.map((edScene, i) => ({
+      index: edScene.sceneIndex ?? i,
+      text: edScene.narration,
+      visualCue: edScene.title ?? "scene",
+      pexelsQuery: edScene.title ?? "scene",
+      aiImagePrompt: edScene.title ?? "scene",
+      duration: Math.max(edScene.durationMs / 1000, 5),
+    }));
+    try {
+      const bulkDurations = await withTimeout(
+        generateBulkSceneVoiceovers(voScenes, audioPaths, workDir, undefined, (done, total) => {
+          onProgress?.(
+            done === 0 ? "Creating full voiceover (one take)..." : `Generating voiceovers... (${done}/${total})`,
+            30 + Math.round((done / total) * 15)
+          );
+        }),
+        bulkVoiceoverTimeoutMs(scenes.length),
+        "Rerender bulk voiceover"
+      );
+      bulkDurations.forEach((d, i) => { durations[i] = d; });
+    } catch (err) {
+      console.warn(`[Rerender] Bulk voiceover failed:`, (err as Error).message);
+      for (let i = 0; i < scenes.length; i++) {
+        const silentDur = Math.round(scenes[i].durationMs / 1000) || 20;
+        const audioPath = audioPaths[i];
         try {
-          await exec(`${FFMPEG_BIN} -y -f lavfi -i anullsrc=r=44100:cl=stereo -t ${silentDur} -c:a libmp3lame -b:a 64k "${audioPath}"`);
-          audioPaths[i] = audioPath;
+          await exec(
+            `${FFMPEG_BIN} -y -f lavfi -i anullsrc=r=44100:cl=stereo -t ${silentDur} -c:a libmp3lame -b:a 64k "${audioPath}"`
+          );
           durations[i] = silentDur;
         } catch {
-          audioPaths[i] = audioPath;
           durations[i] = silentDur;
         }
       }
-      onProgress?.(`Generating voiceovers... (${i + 1}/${scenes.length})`, 30 + Math.round((i + 1) / scenes.length * 15));
-    })));
+    }
 
     // ── Step 3: Build Scene objects for composeSceneVideo ──────────────────
     const internalScenes: Scene[] = scenes.map((edScene, i) => ({
