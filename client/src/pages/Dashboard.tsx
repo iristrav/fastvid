@@ -355,16 +355,6 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry, onEdit }: {
                     <p className="text-[9px] text-amber-400 text-center">⚠️ Nearing 1.5h limit</p>
                   </div>
                 )}
-                {elapsed > 10 * 60 && (
-                  <div className="px-3 pb-3">
-                    <button
-                      onClick={() => onRetry(video.id)}
-                      className="w-full flex items-center justify-center gap-2 text-[10px] font-bold text-white bg-purple-600/80 hover:bg-purple-500 px-3 py-1.5 rounded-lg transition-colors"
-                    >
-                      <RefreshCw className="w-3 h-3" /> Stuck? Retry
-                    </button>
-                  </div>
-                )}
               </div>
             ) : currentStatus === "failed" ? (
               <div className="flex flex-col items-center gap-2 px-4 py-3 text-center w-full">

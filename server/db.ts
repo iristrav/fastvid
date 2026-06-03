@@ -261,6 +261,58 @@ const ORPHANED_PIPELINE_STATUSES = IN_PROGRESS_STATUSES.filter(
 
 export { ORPHANED_PIPELINE_STATUSES };
 
+/** No DB progress update for this long → treat as failed (not "stuck — retry"). */
+function pipelineStallThresholdMs(videoLength: string | null | undefined): number {
+  if (videoLength === "1" || videoLength === "2") return 8 * 60 * 1000;
+  if (videoLength === "5-8") return 12 * 60 * 1000;
+  return 18 * 60 * 1000;
+}
+
+/**
+ * Mark in-progress videos as failed when progress has not advanced (updatedAt stale).
+ */
+export async function failPipelineIfStalled(video: Video): Promise<Video> {
+  if (video.status === "completed" || video.status === "failed") return video;
+  if (video.status === "awaiting_approval" || video.status === "pending") return video;
+  if (!IN_PROGRESS_STATUSES.includes(video.status as (typeof IN_PROGRESS_STATUSES)[number])) {
+    return video;
+  }
+
+  const updatedAt = video.updatedAt ? new Date(video.updatedAt).getTime() : Date.now();
+  const threshold = pipelineStallThresholdMs(video.videoLength);
+  if (Date.now() - updatedAt < threshold) return video;
+
+  const step = video.progressStep ?? "unknown step";
+  await updateVideoStatus(video.id, "failed", {
+    errorMessage: appErrorMessage(
+      PIPELINE_ERROR.STUCK_TIMEOUT,
+      `Generation stalled at "${step}" for over ${Math.round(threshold / 60000)} minutes`
+    ),
+    progressStep: "Failed — generation stalled",
+    progressPercent: 0,
+  });
+  console.warn(`[Pipeline] Video ${video.id} failed: stalled at "${step}"`);
+  const refreshed = await getVideoById(video.id);
+  return refreshed ?? video;
+}
+
+/** Scan all in-flight pipelines and fail any that have stalled. */
+export async function failAllStalledPipelines(): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+  const activeStatuses = IN_PROGRESS_STATUSES.filter(
+    (s) => s !== "awaiting_approval" && s !== "pending"
+  );
+  const rows = await db.select().from(videos).where(inArray(videos.status, [...activeStatuses]));
+  let failed = 0;
+  for (const v of rows) {
+    const before = v.status;
+    const after = await failPipelineIfStalled(v);
+    if (before !== "failed" && after.status === "failed") failed++;
+  }
+  return failed;
+}
+
 /** Locate a finished MP4 on disk when videoUrl was never persisted (Railway local storage). */
 export async function findStoredVideoUrl(videoId: number): Promise<string | null> {
   try {

@@ -29,7 +29,7 @@ import {
   searchVideos, getUserStats, getVideoById, getVideosByUserId, getVideoStats,
   updateUserRole, updateUserSubscription, updateVideoStatus, updateVideoProgress, updateVideoProgressLog,
   getAllVoices, getAllVoicesAdmin, getVoiceById, createVoice, updateVoice, deleteVoice, seedDefaultVoices,
-  deleteVideo, updateVideoTitle, deleteAllFailedVideosForUser, expireStuckVideos, recoverVideoCompletionState, recoverAllStuckVideos, ORPHANED_PIPELINE_STATUSES,
+  deleteVideo, updateVideoTitle, deleteAllFailedVideosForUser, expireStuckVideos, recoverVideoCompletionState, recoverAllStuckVideos, failPipelineIfStalled, ORPHANED_PIPELINE_STATUSES,
   createUser, updateUserLastSignedIn,
   getInviteCodeByCode, createInviteCode, getAllInviteCodes, markInviteCodeUsed, deleteInviteCode, deactivateInviteCode,
 } from "./db";
@@ -729,7 +729,8 @@ export const appRouter = router({
     }),
     pollStatus: protectedProcedure.input(z.object({ id: z.number() })).query(async ({ ctx, input }) => {
       const raw = requireVideoAccess(await getVideoById(input.id), ctx);
-      const video = await recoverVideoCompletionState(raw);
+      let video = await recoverVideoCompletionState(raw);
+      video = await failPipelineIfStalled(video);
       return {
         status: video.status,
         title: video.title,

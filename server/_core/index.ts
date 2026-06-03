@@ -549,3 +549,13 @@ async function recoverStuckPipelines() {
 }
 
 recoverStuckPipelines().catch(console.error);
+
+// Fail pipelines with no progress heartbeat (updatedAt stale) — every 90s
+setInterval(() => {
+  import("../db")
+    .then(({ failAllStalledPipelines }) => failAllStalledPipelines())
+    .then((n) => {
+      if (n > 0) console.log(`[PipelineRecovery] Marked ${n} stalled video(s) as failed`);
+    })
+    .catch((e) => console.error("[PipelineRecovery] Stall check failed:", e));
+}, 90_000);

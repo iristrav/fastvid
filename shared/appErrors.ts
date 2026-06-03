@@ -47,6 +47,7 @@ export const PIPELINE_ERROR = {
   SERVER_RESTART: 10111,
   SCRIPT_REJECTED: 10112,
   STUCK_TIMEOUT: 10113,
+  FFMPEG_OVERLOAD: 10114,
   GENERIC: 10199,
 } as const;
 
@@ -119,6 +120,9 @@ function extractExecDetail(error: Error): string {
   }
 
   let detail = error.message;
+  if (/resource temporarily unavailable/i.test(detail)) {
+    return "Server overloaded: FFmpeg could not open a video decoder (too many parallel encodes or low RAM on the host). Retry after deploy finishes; we limit parallel FFmpeg on Railway.";
+  }
   if (detail.startsWith("Command failed:")) {
     const lines = detail.split("\n").map((l) => l.trim()).filter(Boolean);
     const ffmpegLine = lines.find(
@@ -144,7 +148,11 @@ export function normalizeStoredError(
     if (CODE_SUFFIX.test(error.message)) {
       return truncateStoredMessage(error.message);
     }
-    return appErrorMessage(defaultCode, extractExecDetail(error));
+    const detail = extractExecDetail(error);
+    const code = /resource temporarily unavailable/i.test(detail)
+      ? PIPELINE_ERROR.FFMPEG_OVERLOAD
+      : defaultCode;
+    return appErrorMessage(code, detail);
   }
   if (typeof error === "string") {
     if (CODE_SUFFIX.test(error)) return truncateStoredMessage(error);

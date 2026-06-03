@@ -321,6 +321,7 @@ interface PipelinePerfProfile {
 }
 
 function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
+  const railwayParallel = IS_RAILWAY ? 1 : 2;
   if (videoLength === "1" || videoLength === "2") {
     return {
       targetWallClockMin: 60,
@@ -334,7 +335,7 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
       maxEntityYoutubePerVideo: 2,
       enableAiFallback: true,
       maxAiClipsPerVideo: 3,
-      sceneParallelism: 2,
+      sceneParallelism: railwayParallel,
       pexelsDownloadRetries: 2,
     };
   }
@@ -351,7 +352,7 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
       maxEntityYoutubePerVideo: 3,
       enableAiFallback: true,
       maxAiClipsPerVideo: 5,
-      sceneParallelism: 2,
+      sceneParallelism: railwayParallel,
       pexelsDownloadRetries: 2,
     };
   }
@@ -368,7 +369,7 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
       maxEntityYoutubePerVideo: 3,
       enableAiFallback: true,
       maxAiClipsPerVideo: 5,
-      sceneParallelism: 2,
+      sceneParallelism: railwayParallel,
       pexelsDownloadRetries: 2,
     };
   }
@@ -384,9 +385,18 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
     maxEntityYoutubePerVideo: 4,
     enableAiFallback: true,
     maxAiClipsPerVideo: 6,
-    sceneParallelism: 2,
+    sceneParallelism: railwayParallel,
     pexelsDownloadRetries: 2,
   };
+}
+
+function visualStageTimeoutMs(videoLength: string, perf: PipelinePerfProfile): number {
+  if (videoLength === "1" || videoLength === "2") return 20 * 60_000;
+  return Math.round(perf.targetWallClockMin * 60_000 * 1.15);
+}
+
+function composeParallelism(): number {
+  return IS_RAILWAY ? 1 : 2;
 }
 
 /** Stable stock trim — no animated Ken Burns pan (avoids jitter on real footage). */
@@ -5693,8 +5703,8 @@ export async function runVideoPipeline(
         });
         return clips;
       }))),
-      Math.round(perf.targetWallClockMin * 60_000 * 1.15),
-      `Visual generation stage (≤${perf.targetWallClockMin}min SLA)`
+      visualStageTimeoutMs(videoLength, perf),
+      `Visual generation stage (≤${videoLength === "1" || videoLength === "2" ? 20 : perf.targetWallClockMin}min cap)`
     );
     console.log(`[Pipeline] Stage 3 (visuals): ${((Date.now()-t2)/1000).toFixed(1)}s`);
 
@@ -5737,8 +5747,8 @@ export async function runVideoPipeline(
     onProgress?.({ stage: STAGE_LABELS.composing, percent: 47 });
     const t3 = Date.now();
 
-    // Process compose in batches — limit to 2 to balance speed and OOM prevention
-    const composeLimit = pLimit(2);
+    // Railway: one FFmpeg compose at a time (avoids "Resource temporarily unavailable" decoder errors)
+    const composeLimit = pLimit(composeParallelism());
     let completedCompose = 0;
     const composedScenes = await withTimeout(
       Promise.all(
@@ -5928,7 +5938,7 @@ export async function rerenderFromScenes(
 
     // ── Step 4: Compose all scenes ──────────────────────────────────────────
     onProgress?.("Composing scenes...", 45);
-    const composeLimit = pLimit(2);
+    const composeLimit = pLimit(composeParallelism());
     let completedCompose = 0;
 
     const composedScenes = await Promise.all(
