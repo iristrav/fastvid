@@ -3298,6 +3298,11 @@ function muskBrandScore(sourceQuery: string, filePath: string): number {
   return s;
 }
 
+function hasMuskBrandSignal(sourceQuery: string, filePath: string): boolean {
+  if (muskBrandScore(sourceQuery, filePath) >= 1) return true;
+  return /\b(tesla|spacex|falcon|starship|cybertruck|gigafactory|supercharger|model 3)\b/i.test(sourceQuery);
+}
+
 function categoryAtLimit(dedup: VisualDedupState, category: string, muskTopic = false): boolean {
   if (category === "blocked_model" || category === "blocked_offtopic") return true;
   const limit = categoryLimitFor(dedup, category, muskTopic);
@@ -3658,7 +3663,7 @@ async function adoptClip(
       // Musk/Tesla topics: reject generic clips when query targets a specific category
       const queryCategory = stockVisualCategory(sourceQuery);
       if (queryCategory !== "generic" && category === "generic") continue;
-      if (opts.requireMuskBrand && muskBrandScore(sourceQuery, p) < 1) continue;
+      if (opts.requireMuskBrand && !hasMuskBrandSignal(sourceQuery, p)) continue;
       if (muskTopic) {
         if ((category === "rocket" || category === "space") && !isMuskApprovedRocketQuery(sourceQuery)) {
           continue;
