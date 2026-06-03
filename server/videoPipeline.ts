@@ -311,6 +311,9 @@ interface PipelinePerfProfile {
   enableNasa: boolean;
   /** One hero fetch (YouTube CC + NASA) for Musk 2-min opening — real SpaceX/Tesla footage. */
   enableMuskHeroFetch: boolean;
+  /** Generate AI b-roll only when no matching stock clip was found for that beat. */
+  enableAiFallback: boolean;
+  maxAiClipsPerVideo: number;
   sceneParallelism: number;
   pexelsDownloadRetries: number;
 }
@@ -326,6 +329,8 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
       enableArchival: false,
       enableNasa: false,
       enableMuskHeroFetch: true,
+      enableAiFallback: true,
+      maxAiClipsPerVideo: 3,
       sceneParallelism: 2,
       pexelsDownloadRetries: 2,
     };
@@ -340,6 +345,8 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
       enableArchival: false,
       enableNasa: true,
       enableMuskHeroFetch: false,
+      enableAiFallback: true,
+      maxAiClipsPerVideo: 5,
       sceneParallelism: 2,
       pexelsDownloadRetries: 2,
     };
@@ -354,6 +361,8 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
       enableArchival: false,
       enableNasa: true,
       enableMuskHeroFetch: false,
+      enableAiFallback: true,
+      maxAiClipsPerVideo: 5,
       sceneParallelism: 2,
       pexelsDownloadRetries: 2,
     };
@@ -367,6 +376,8 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
     enableArchival: true,
     enableNasa: true,
     enableMuskHeroFetch: false,
+    enableAiFallback: true,
+    maxAiClipsPerVideo: 6,
     sceneParallelism: 2,
     pexelsDownloadRetries: 2,
   };
@@ -3129,10 +3140,71 @@ function isStillPhotoClip(filePath: string): boolean {
   return /_serp_|_wiki_|_openverse_|_p0_|_p2_|_yt_\d/i.test(base);
 }
 
-/** Reject AI image loops / synthetic clips — documentary uses real stock video only. */
+/** AI-generated clip path (used only as last-resort after stock search). */
 function isAIGeneratedClip(filePath: string): boolean {
   const base = path.basename(filePath).toLowerCase();
-  return /_stability_|_leonardo_|_grok_|_ai\.mp4|_runway_|_kling_|_luma_|_pika_|_veo_|_forge_|scene_\d+_ai|_zoom_loop/i.test(base);
+  return /_ai_fallback\.mp4$|_stability_|_leonardo_|_grok_|_ai\.mp4|_runway_|_kling_|_luma_|_pika_|_veo_|_forge_|scene_\d+_b\d+_ai/i.test(base);
+}
+
+function buildBeatAIPrompt(beat: SceneBeat, scene: Scene, videoTitle?: string): string {
+  const muskTopic = isMuskTeslaTopic(videoTitle, beat.text);
+  const visual =
+    extractInlineVisualCues(beat.text)[0] ||
+    deriveBeatStockQuery(beat.text, scene, videoTitle, undefined, muskTopic) ||
+    scene.literalVisualCue ||
+    scene.visualCue ||
+    scene.pexelsQuery;
+  const narration = beat.text.replace(/\[visual:[^\]]+\]/gi, "").trim().slice(0, 220);
+  return (
+    `Photorealistic documentary b-roll, 16:9 landscape, no text overlays or watermarks: ${visual}. ` +
+    `Must illustrate this narration: ${narration}. Realistic lighting, sharp focus, news documentary style.`
+  ).slice(0, 500);
+}
+
+/** AI clip only when stock could not match this beat (prompt = narration + visual cue). */
+async function fetchBeatAIClip(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  beatIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  videoTitle?: string
+): Promise<string | null> {
+  const { perf } = dedup;
+  if (!perf.enableAiFallback || dedup.aiClipsUsed >= perf.maxAiClipsPerVideo) return null;
+  if (!STABILITY_AI_API_KEY && !LEONARDO_API_KEY && !REPLICATE_API_KEY) return null;
+
+  const prompt = buildBeatAIPrompt(beat, scene, videoTitle);
+  const outPath = path.join(workDir, `scene_${sceneIndex}_b${beatIndex}_ai_fallback.mp4`);
+  const dur = Math.min(Math.max(clipFetchDur, 3), 6);
+
+  let generated: string | null = null;
+  if (STABILITY_AI_API_KEY) {
+    generated = await generateStabilityAIClip(prompt, dur, outPath, sceneIndex);
+  }
+  if (!generated && LEONARDO_API_KEY) {
+    generated = await generateLeonardoAIClip(prompt, dur, outPath, sceneIndex);
+  }
+  if (!generated && REPLICATE_API_KEY) {
+    generated = await generateGrokVideoClip(prompt, dur, outPath, sceneIndex);
+  }
+  if (!generated || !(await isValidVideoFile(generated)) || (await isMostlyBlackClip(generated))) {
+    return null;
+  }
+
+  return withVisualDedupLock(dedup, async () => {
+    const contentKey = clipContentKey(generated!);
+    if (dedup.usedContentKeys.has(contentKey)) return null;
+    dedup.usedPaths.add(generated!);
+    dedup.usedContentKeys.add(contentKey);
+    dedup.aiClipsUsed++;
+    console.log(
+      `[Pipeline] Scene ${sceneIndex} beat ${beatIndex}: AI fallback ${dedup.aiClipsUsed}/${perf.maxAiClipsPerVideo} — "${prompt.slice(0, 90)}..."`
+    );
+    return generated;
+  });
 }
 
 function extractInlineVisualCues(text: string): string[] {
@@ -3199,6 +3271,7 @@ interface VisualDedupState {
   muskHeroFetchUsed: boolean;
   /** Last adopted on-topic Musk clip — reused instead of color/black placeholders. */
   lastMuskStockClip: string | null;
+  aiClipsUsed: number;
   lock: Promise<void>;
   perf: PipelinePerfProfile;
 }
@@ -3213,6 +3286,7 @@ function createVisualDedupState(perf: PipelinePerfProfile): VisualDedupState {
     globalBeatIndex: 0,
     muskHeroFetchUsed: false,
     lastMuskStockClip: null,
+    aiClipsUsed: 0,
     lock: Promise.resolve(),
     perf,
   };
@@ -3800,7 +3874,6 @@ async function adoptClip(
       if (!(await isValidVideoFile(p))) continue;
       if (isStillPhotoClip(p)) continue;
       if (isAIGeneratedClip(p)) continue;
-      if (!isStockVideoClip(p) && muskTopic) continue;
       if (isRejectedStockClip(p, sourceQuery)) continue;
       if (isPipelineFallbackClip(p)) continue;
       if (await isMostlyBlackClip(p)) continue;
@@ -4134,17 +4207,26 @@ async function fetchBeatClip(
     ...(scene.pexelsQueries ?? []),
   ].filter((fq): fq is string => typeof fq === "string" && fq.trim().length > 2 && fq !== q && !isBlockedStockQuery(fq));
 
+  const looseAdopt: VisualAdoptOptions = { ...adoptOpts, requireBeatMatch: false };
   clip = await tryStockSources(
     fallbackQueries.map((fq, fi) => ({ query: fq, fetch: pexFetch(fq, `${tag}_fb`, candidateOffset + fi, 1) })),
-    dedup, sceneIndex, beat.index, beat.text, workDir, "fallback Pexels", adoptOpts
+    dedup, sceneIndex, beat.index, beat.text, workDir, "fallback Pexels", looseAdopt
   );
   if (clip) { dedup.globalBeatIndex++; return clip; }
 
   const lastResort = await fetchLastResortRealClip(
-    beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName, videoTitle, adoptOpts
+    beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName, videoTitle, looseAdopt
+  );
+  if (lastResort) {
+    dedup.globalBeatIndex++;
+    return lastResort;
+  }
+
+  clip = await fetchBeatAIClip(
+    beat, scene, workDir, sceneIndex, beat.index, clipFetchDur, dedup, videoTitle
   );
   dedup.globalBeatIndex++;
-  return lastResort;
+  return clip;
 }
 
 // ─── 3e. Fetch All Visuals for a Scene (beat-aligned) ───────────────────────
@@ -4216,47 +4298,55 @@ async function fetchSceneVisuals(
       if (emClip) {
         clips.push(emClip);
       } else {
+        const looseAdopt: VisualAdoptOptions = { ...adoptOpts, requireBeatMatch: false };
         const lastResort = await fetchLastResortRealClip(
-          beat, scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle, adoptOpts
+          beat, scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle, looseAdopt
         );
         if (lastResort) {
           clips.push(lastResort);
-        } else if (muskTopic) {
-          let rescued = false;
-          for (const gq of GOLDEN_MUSK_QUERIES) {
-            if (isBlockedStockQuery(gq)) continue;
-            const golden = await fetchPexelsClips(
-              gq, clipFetchDur, workDir, scene.index, 1, [gq], true,
-              `b${beat.index}_golden_em`, dedup.usedPexelsIds, beat.index + scene.index,
-              dedup.perf.pexelsDownloadRetries
-            );
-            const gClip = await adoptClip(
-              golden, dedup, scene.index, beat.index, beat.text, workDir, gq, adoptOpts
-            );
-            if (gClip) {
-              clips.push(gClip);
-              rescued = true;
-              break;
-            }
-          }
-          if (!rescued) {
-            if (clips.length > 0) {
-              console.warn(
-                `[Pipeline] Scene ${scene.index} beat ${beat.index}: reusing previous clip (no black placeholder)`
-              );
-              clips.push(clips[clips.length - 1]);
-            } else {
-              console.error(
-                `[Pipeline] Scene ${scene.index} beat ${beat.index}: no stock video — color placeholder`
-              );
-              clips.push(await muskRescueClip(dedup, scene.index, beat.index, workDir));
-            }
-          }
         } else {
-          console.error(
-            `[Pipeline] Scene ${scene.index} beat ${beat.index}: no stock video available — color placeholder`
+          const aiClip = await fetchBeatAIClip(
+            beat, scene, workDir, scene.index, beat.index, clipFetchDur, dedup, videoTitle
           );
-          clips.push(await muskRescueClip(dedup, scene.index, beat.index, workDir));
+          if (aiClip) {
+            clips.push(aiClip);
+          } else if (muskTopic) {
+            let rescued = false;
+            for (const gq of GOLDEN_MUSK_QUERIES) {
+              if (isBlockedStockQuery(gq)) continue;
+              const golden = await fetchPexelsClips(
+                gq, clipFetchDur, workDir, scene.index, 1, [gq], true,
+                `b${beat.index}_golden_em`, dedup.usedPexelsIds, beat.index + scene.index,
+                dedup.perf.pexelsDownloadRetries
+              );
+              const gClip = await adoptClip(
+                golden, dedup, scene.index, beat.index, beat.text, workDir, gq, adoptOpts
+              );
+              if (gClip) {
+                clips.push(gClip);
+                rescued = true;
+                break;
+              }
+            }
+            if (!rescued) {
+              if (clips.length > 0) {
+                console.warn(
+                  `[Pipeline] Scene ${scene.index} beat ${beat.index}: reusing previous clip (no black placeholder)`
+                );
+                clips.push(clips[clips.length - 1]);
+              } else {
+                console.error(
+                  `[Pipeline] Scene ${scene.index} beat ${beat.index}: no stock video — color placeholder`
+                );
+                clips.push(await muskRescueClip(dedup, scene.index, beat.index, workDir));
+              }
+            }
+          } else {
+            console.error(
+              `[Pipeline] Scene ${scene.index} beat ${beat.index}: no stock video available — color placeholder`
+            );
+            clips.push(await muskRescueClip(dedup, scene.index, beat.index, workDir));
+          }
         }
       }
     }
