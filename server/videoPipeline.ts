@@ -28,7 +28,7 @@ import * as path from "path";
 import * as os from "os";
 import { storagePut } from "./storage";
 import { invokeLLM } from "./_core/llm";
-import { updateVideoScenes, updateVideoStatus, type EditorScene, type EditorClip } from "./db";
+import { getVideoById, updateVideoScenes, updateVideoStatus, type EditorScene, type EditorClip } from "./db";
 import pLimit from "p-limit";
 import { generateGrokVideo } from "./_core/grokVideo";
 import { generateVeoVideo } from "./_core/veoVideo";
@@ -977,6 +977,67 @@ async function trimVoiceoverLeadingSilence(audioPath: string): Promise<void> {
   }
 }
 
+/** UI voices are ElevenLabs IDs (stored in voices.fishAudioReferenceId). Never remap to Fish. */
+async function synthesizeElevenLabsVoice(
+  text: string,
+  outputPath: string,
+  elevenVoiceId: string,
+  timeoutMs: number,
+  label: string
+): Promise<number> {
+  if (!ELEVENLABS_API_KEY) {
+    throw pipelineError(
+      PIPELINE_ERROR.VOICEOVER,
+      "ElevenLabs API key is not configured. Add ELEVENLABS_API_KEY in Railway to use your selected voice."
+    );
+  }
+  const MAX_ATTEMPTS = 3;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const response = await withTimeout(
+        fetch(`https://api.elevenlabs.io/v1/text-to-speech/${elevenVoiceId}`, {
+          method: "POST",
+          headers: {
+            "xi-api-key": ELEVENLABS_API_KEY,
+            "Content-Type": "application/json",
+            Accept: "audio/mpeg",
+          },
+          body: JSON.stringify({
+            text,
+            model_id: "eleven_multilingual_v2",
+            voice_settings: { stability: 0.58, similarity_boost: 0.88, style: 0.05, use_speaker_boost: true },
+          }),
+        }),
+        timeoutMs,
+        `${label} attempt ${attempt}`
+      );
+      if (response.status === 429) {
+        await new Promise((r) => setTimeout(r, 600 + attempt * 600));
+        continue;
+      }
+      if (!response.ok) {
+        const errText = await response.text();
+        throw pipelineError(
+          PIPELINE_ERROR.VOICEOVER,
+          `ElevenLabs voice ${elevenVoiceId.slice(0, 8)}… HTTP ${response.status}: ${errText.slice(0, 200)}`
+        );
+      }
+      const audioBuffer = Buffer.from(await response.arrayBuffer());
+      if (audioBuffer.length < 100) {
+        throw pipelineError(PIPELINE_ERROR.VOICEOVER_EMPTY, "ElevenLabs returned empty audio");
+      }
+      fs.writeFileSync(outputPath, audioBuffer);
+      const dur = await probeVideoDurationSec(outputPath);
+      console.log(`[Pipeline] ElevenLabs ${label}: voice=${elevenVoiceId.slice(0, 10)}… ${dur.toFixed(1)}s`);
+      return dur > 0 ? dur : Math.max(3, Math.round(audioBuffer.length / 40000));
+    } catch (err) {
+      if (attempt === MAX_ATTEMPTS) throw err;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+  }
+  throw pipelineError(PIPELINE_ERROR.VOICEOVER, "ElevenLabs TTS failed after retries");
+}
+
 // Per-scene fallback only when bulk path is not used. Default pipeline: full-script ElevenLabs + split.
 export async function generateVoiceover(
   text: string,
@@ -990,59 +1051,29 @@ export async function generateVoiceover(
   const MAX_ATTEMPTS = 3;
   const TTS_TIMEOUT_MS = maxChars > 2000 ? 180_000 : 90_000;
 
-  // ── Fish Audio S2 Pro TTS (PRIMARY — highest quality, no quota issues) ───────
-  // Maps ElevenLabs voice IDs (stored in DB) to Fish Audio reference IDs
-  const FISH_VOICE_MAP: Record<string, string> = {
-    "pNInz6obpgDQGcFmaJgB": "0327fdb5da9e4fd782899a8058c8ae2b", // Michael → Narrator
-    "ErXwobaYiN019PkySvjV": "0327fdb5da9e4fd782899a8058c8ae2b", // Adam → Narrator
-    "21m00Tcm4TlvDq8ikWAM": "0327fdb5da9e4fd782899a8058c8ae2b", // Heart → Narrator
-    "EXAVITQu4vr4xnSDxMaL": "0327fdb5da9e4fd782899a8058c8ae2b", // Bella → Narrator
-    "JBFqnCBsd6RMkjVDRZzb": "0327fdb5da9e4fd782899a8058c8ae2b", // George → Narrator
-    "TX3LPaxmHKxFdv7VOQHJ": "0327fdb5da9e4fd782899a8058c8ae2b", // Lewis → Narrator
-  };
-  const fishReferenceId = (voiceId && FISH_VOICE_MAP[voiceId]) || "0327fdb5da9e4fd782899a8058c8ae2b";
-
-  // Bulk documentary VO: ElevenLabs first (clearer, more consistent than Fish mapping).
-  if (ELEVENLABS_API_KEY && options?.preferElevenLabs) {
-    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-      try {
-        const elevenVoiceId = voiceId || "pNInz6obpgDQGcFmaJgB";
-        const response = await withTimeout(
-          fetch(`https://api.elevenlabs.io/v1/text-to-speech/${elevenVoiceId}`, {
-            method: "POST",
-            headers: {
-              "xi-api-key": ELEVENLABS_API_KEY,
-              "Content-Type": "application/json",
-              Accept: "audio/mpeg",
-            },
-            body: JSON.stringify({
-              text: cleanText,
-              model_id: "eleven_multilingual_v2",
-              voice_settings: { stability: 0.62, similarity_boost: 0.82, style: 0.08, use_speaker_boost: true },
-            }),
-          }),
-          TTS_TIMEOUT_MS,
-          `ElevenLabs TTS (preferred) attempt ${attempt}`
-        );
-        if (response.status === 429) {
-          await new Promise((r) => setTimeout(r, 500 + attempt * 500));
-          continue;
-        }
-        if (!response.ok) {
-          const errText = await response.text();
-          throw pipelineError(PIPELINE_ERROR.VOICEOVER, `ElevenLabs HTTP ${response.status}: ${errText.slice(0, 200)}`);
-        }
-        const audioBuffer = Buffer.from(await response.arrayBuffer());
-        if (audioBuffer.length < 100) throw pipelineError(PIPELINE_ERROR.VOICEOVER_EMPTY, "ElevenLabs returned empty audio");
-        fs.writeFileSync(outputPath, audioBuffer);
-        return await probeVideoDurationSec(outputPath) || Math.max(3, Math.round(audioBuffer.length / 40000));
-      } catch (err) {
-        if (attempt === MAX_ATTEMPTS) console.warn("[Pipeline] ElevenLabs preferred path failed:", err);
-        else await new Promise((r) => setTimeout(r, 400));
-      }
-    }
+  const selectedElevenVoice = voiceId?.trim();
+  // User picked a voice in the dashboard → always that exact ElevenLabs voice (never Fish remap).
+  if (selectedElevenVoice) {
+    return synthesizeElevenLabsVoice(
+      cleanText,
+      outputPath,
+      selectedElevenVoice,
+      TTS_TIMEOUT_MS,
+      "selected voice"
+    );
   }
 
+  if (ELEVENLABS_API_KEY && options?.preferElevenLabs) {
+    return synthesizeElevenLabsVoice(
+      cleanText,
+      outputPath,
+      "pNInz6obpgDQGcFmaJgB",
+      TTS_TIMEOUT_MS,
+      "default documentary"
+    );
+  }
+
+  const fishReferenceId = "0327fdb5da9e4fd782899a8058c8ae2b";
   if (FISH_AUDIO_API_KEY && !options?.preferElevenLabs) {
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       try {
@@ -4568,21 +4599,13 @@ async function adoptClip(
         if ((category === "rocket" || category === "space") && !isMuskApprovedRocketQuery(sourceQuery)) {
           continue;
         }
+        if (BLOCKED_MUSK_COMPETITOR_RE.test(`${sourceQuery} ${path.basename(p)}`)) continue;
         const rel = scoreVisualRelevance(`${sourceQuery} ${path.basename(p)}`, keywords);
         const topicRel = scoreVisualRelevance(`${sourceQuery} ${path.basename(p)}`, MUSK_TOPIC_TOKENS);
-        if (opts.requireMuskBrand && topicRel < 2) continue;
-        if (beatMatch < 1 && topicRel < 2) continue;
-        if (topicRel < 2) continue;
-        if (category === "generic" && queryCategory !== "generic" && rel < 1) continue;
-        if (rel + topicRel < 3) continue;
-        if (BLOCKED_MUSK_COMPETITOR_RE.test(`${sourceQuery} ${path.basename(p)}`)) continue;
-        if (
-          (category === "factory" || category === "generic") &&
-          muskBrandScore(sourceQuery, p) === 0 &&
-          topicRel < 3
-        ) {
-          continue;
-        }
+        const brand = muskBrandScore(sourceQuery, p);
+        // Pexels filenames rarely include "Tesla" — reject only when clearly unrelated.
+        if (rel < 1 && topicRel < 1 && brand === 0 && category === "generic") continue;
+        if (category === "generic" && queryCategory !== "generic" && rel < 1 && brand === 0) continue;
       }
       let fileSize = 0;
       try { fileSize = fs.statSync(p).size; } catch { continue; }
@@ -4720,8 +4743,8 @@ async function fetchBeatClip(
     keywords: beat.keywords,
     sceneText: scene.text,
     videoTitle,
-    requireBeatMatch: !muskTopic,
-    requireMuskBrand: muskTopic,
+    requireBeatMatch: false,
+    requireMuskBrand: false,
   };
 
   const rawQ = beat.index === 0
@@ -4982,8 +5005,8 @@ async function fetchSceneVisuals(
       keywords: beat.keywords,
       sceneText: scene.text,
       videoTitle,
-      requireBeatMatch: !muskTopic,
-      requireMuskBrand: muskTopic,
+      requireBeatMatch: false,
+      requireMuskBrand: false,
     };
     const clip = await fetchBeatClip(
       beat,
@@ -5432,11 +5455,20 @@ async function composeSceneVideo(
     lastGoodInScene = clipPath;
   }
   const minMontageClips = Math.max(2, Math.ceil(duration / VIDRUSH_BEAT_SEC));
-  let fallbackIdx = 0;
   while (validClips.length < minMontageClips) {
-    validClips.push(
-      await generateColorFallback(scene.index * 800 + fallbackIdx++, VIDRUSH_BEAT_SEC, workDir)
-    );
+    if (lastGoodInScene && fs.existsSync(lastGoodInScene)) {
+      validClips.push(lastGoodInScene);
+      continue;
+    }
+    if (existingClips.length > 0) {
+      validClips.push(existingClips[validClips.length % existingClips.length]);
+      continue;
+    }
+    if (rescueStockClip && fs.existsSync(rescueStockClip)) {
+      validClips.push(rescueStockClip);
+      continue;
+    }
+    validClips.push(await generateColorFallback(scene.index * 800 + validClips.length, VIDRUSH_BEAT_SEC, workDir));
   }
 
   // Clips arrive in beat/narration order from fetchSceneVisuals — preserve timeline.
@@ -6115,11 +6147,19 @@ export async function runVideoPipeline(
   const workDir = path.join(TMP_DIR, `fastvid_${videoId}_${Date.now()}`);
   fs.mkdirSync(workDir, { recursive: true });
 
+  const videoRow = await getVideoById(videoId);
+  const effectiveVoiceId = voiceId?.trim() || videoRow?.voiceId?.trim() || undefined;
+  if (effectiveVoiceId) {
+    console.log(`[Pipeline] Video ${videoId}: using selected ElevenLabs voice ${effectiveVoiceId.slice(0, 12)}…`);
+  } else if (!customVoiceoverUrl) {
+    console.warn(`[Pipeline] Video ${videoId}: no voiceId on record — using default narrator`);
+  }
+
   const titleMatch = script.match(/^#\s+(.+)/m);
   const videoTitle = titleMatch?.[1]?.trim().slice(0, 80)
     || script.split("\n").find(l => l.trim().length > 5)?.trim().slice(0, 80)
     || "AI Generated Video";
-  const topicContext = buildTopicContext(userPrompt, videoTitle);
+  const topicContext = buildTopicContext(userPrompt ?? videoRow?.prompt, videoTitle);
   const muskLocked = isMuskTeslaTopic(topicContext, script);
 
   console.log(
@@ -6165,7 +6205,7 @@ export async function runVideoPipeline(
       durations = scenes.map(() => perScene);
     } else {
       durations = await withTimeout(
-        generateBulkSceneVoiceovers(scenes, audioPaths, workDir, voiceId, (done, total) => {
+        generateBulkSceneVoiceovers(scenes, audioPaths, workDir, effectiveVoiceId, (done, total) => {
           onProgress?.({
             stage:
               done === 0
@@ -6202,6 +6242,15 @@ export async function runVideoPipeline(
     // ── Stage 3: Fetch AI images + Pexels clips in parallel batches ───────────
     onProgress?.({ stage: STAGE_LABELS.visuals, percent: 20 });
     const t2 = Date.now();
+    if (!PEXELS_API_KEY && !PIXABAY_API_KEY) {
+      throw pipelineError(
+        PIPELINE_ERROR.NO_SCENES,
+        "Stock footage unavailable: set PEXELS_API_KEY (or PIXABAY_API_KEY) in Railway — without it videos show grey placeholders"
+      );
+    }
+    if (!PEXELS_API_KEY) {
+      console.warn("[Pipeline] PEXELS_API_KEY missing — using Pixabay only; clip variety may be lower");
+    }
     const perf = getPipelinePerfProfile(videoLength);
     console.log(
       `[Pipeline] Perf budget: ≤${perf.targetWallClockMin}min wall-clock, ` +

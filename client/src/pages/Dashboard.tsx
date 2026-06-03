@@ -821,6 +821,10 @@ export default function Dashboard() {
       toast.error("Please enter a prompt of at least 10 characters");
       return;
     }
+    if (!useCustomVoice && !selectedVoice) {
+      toast.error("Select a voice", { description: "Choose an ElevenLabs voice before generating." });
+      return;
+    }
     generateMutation.mutate({
       prompt: prompt.trim(),
       videoLength: selectedLength,
