@@ -341,7 +341,7 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
       transformTimeoutMs: 25_000,
       enableArchival: false,
       enableNasa: false,
-      enableMuskHeroFetch: !IS_RAILWAY,
+      enableMuskHeroFetch: true,
       maxEntityYoutubePerVideo: IS_RAILWAY ? 0 : 2,
       enableAiFallback: !IS_RAILWAY,
       maxAiClipsPerVideo: IS_RAILWAY ? 0 : 3,
@@ -1001,6 +1001,47 @@ export async function generateVoiceover(
     "TX3LPaxmHKxFdv7VOQHJ": "0327fdb5da9e4fd782899a8058c8ae2b", // Lewis → Narrator
   };
   const fishReferenceId = (voiceId && FISH_VOICE_MAP[voiceId]) || "0327fdb5da9e4fd782899a8058c8ae2b";
+
+  // Bulk documentary VO: ElevenLabs first (clearer, more consistent than Fish mapping).
+  if (ELEVENLABS_API_KEY && options?.preferElevenLabs) {
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      try {
+        const elevenVoiceId = voiceId || "pNInz6obpgDQGcFmaJgB";
+        const response = await withTimeout(
+          fetch(`https://api.elevenlabs.io/v1/text-to-speech/${elevenVoiceId}`, {
+            method: "POST",
+            headers: {
+              "xi-api-key": ELEVENLABS_API_KEY,
+              "Content-Type": "application/json",
+              Accept: "audio/mpeg",
+            },
+            body: JSON.stringify({
+              text: cleanText,
+              model_id: "eleven_multilingual_v2",
+              voice_settings: { stability: 0.62, similarity_boost: 0.82, style: 0.08, use_speaker_boost: true },
+            }),
+          }),
+          TTS_TIMEOUT_MS,
+          `ElevenLabs TTS (preferred) attempt ${attempt}`
+        );
+        if (response.status === 429) {
+          await new Promise((r) => setTimeout(r, 500 + attempt * 500));
+          continue;
+        }
+        if (!response.ok) {
+          const errText = await response.text();
+          throw pipelineError(PIPELINE_ERROR.VOICEOVER, `ElevenLabs HTTP ${response.status}: ${errText.slice(0, 200)}`);
+        }
+        const audioBuffer = Buffer.from(await response.arrayBuffer());
+        if (audioBuffer.length < 100) throw pipelineError(PIPELINE_ERROR.VOICEOVER_EMPTY, "ElevenLabs returned empty audio");
+        fs.writeFileSync(outputPath, audioBuffer);
+        return await probeVideoDurationSec(outputPath) || Math.max(3, Math.round(audioBuffer.length / 40000));
+      } catch (err) {
+        if (attempt === MAX_ATTEMPTS) console.warn("[Pipeline] ElevenLabs preferred path failed:", err);
+        else await new Promise((r) => setTimeout(r, 400));
+      }
+    }
+  }
 
   if (FISH_AUDIO_API_KEY && !options?.preferElevenLabs) {
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
@@ -2146,6 +2187,33 @@ async function generateColorFallback(sceneIndex: number, duration: number, workD
     PIPELINE_ERROR.FFMPEG,
     `Could not create valid fallback video for scene ${sceneIndex}`
   );
+}
+
+/** Last resort: rotate golden Musk queries before grey placeholder. */
+async function fetchMuskGoldenStockBeat(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  dedup: VisualDedupState,
+  adoptOpts: VisualAdoptOptions
+): Promise<string> {
+  const clipFetchDur = 4;
+  const start = (sceneIndex * 5 + beat.index) % GOLDEN_MUSK_QUERIES.length;
+  for (let i = 0; i < GOLDEN_MUSK_QUERIES.length; i++) {
+    const gq = GOLDEN_MUSK_QUERIES[(start + i) % GOLDEN_MUSK_QUERIES.length];
+    if (isBlockedStockQuery(gq)) continue;
+    const golden = await fetchPexelsClips(
+      gq, clipFetchDur, workDir, sceneIndex, 2, [gq], true,
+      `b${beat.index}_golden`, dedup.usedPexelsIds, beat.index + sceneIndex + i,
+      dedup.perf.pexelsDownloadRetries
+    );
+    const gClip = await adoptClip(
+      golden, dedup, sceneIndex, beat.index, beat.text, workDir, gq, adoptOpts
+    );
+    if (gClip) return gClip;
+  }
+  return muskRescueClip(dedup, sceneIndex, beat.index, workDir);
 }
 
 /** Prefer last good Musk stock clip over color placeholders (avoids black/grey holes). */
@@ -3800,6 +3868,10 @@ const BLOCKED_STOCK_VISUAL_RE =
 const BLOCKED_MUSK_COMPETITOR_RE =
   /\b(volkswagen|vw|ford|gm|general motors|bmw|mercedes|audi|toyota|honda|hyundai|kia|rivian|lucid)\b/i;
 
+/** Wildlife/nature stock that must never appear on Musk/Tesla/SpaceX videos. */
+const MUSK_OFFTOPIC_VISUAL_RE =
+  /\b(dolphin|dolphins|whale|whales|shark|sharks|sea turtle|ocean wildlife|underwater mammal|reef|jellyfish|penguin|polar bear|safari|zoo animal|aquarium|swimming with|marine life|tropical fish)\b/i;
+
 /** Opening = hero Tesla car / SpaceX pad first. */
 const OPENING_MUSK_QUERIES = HERO_MUSK_QUERIES;
 
@@ -3960,7 +4032,20 @@ async function isMostlyBlackClip(filePath: string): Promise<boolean> {
 
 function isMuskTeslaTopic(videoTitle?: string, sceneText?: string): boolean {
   const text = `${videoTitle ?? ""} ${sceneText ?? ""}`.toLowerCase();
-  return /musk|tesla|spacex|electric vehicle|falcon|starship/.test(text);
+  return /musk|tesla|spacex|starlink|gigafactory|cybertruck|falcon|starship|elon/.test(text);
+}
+
+function buildTopicContext(userPrompt: string | undefined, videoTitle: string): string {
+  return [userPrompt?.trim(), videoTitle.trim()].filter(Boolean).join(" — ").slice(0, 240);
+}
+
+function isOffTopicVisualForMusk(sourceQuery: string, filePath: string): boolean {
+  const hay = `${sourceQuery} ${path.basename(filePath)}`.toLowerCase();
+  if (MUSK_OFFTOPIC_VISUAL_RE.test(hay)) return true;
+  if (/\b(ocean wave|beach sunset|tropical beach|underwater|snorkel|diving)\b/.test(hay) && !hasMuskBrandSignal(sourceQuery, filePath)) {
+    return true;
+  }
+  return false;
 }
 
 function hasBlockedStockTags(tags?: string): boolean {
@@ -4467,6 +4552,7 @@ async function adoptClip(
       if (isRejectedStockClip(p, sourceQuery)) continue;
       if (isPipelineFallbackClip(p)) continue;
       if (await isMostlyBlackClip(p)) continue;
+      if (muskTopic && isOffTopicVisualForMusk(sourceQuery, p)) continue;
       const category = stockVisualCategory(sourceQuery, p);
       if (category === "blocked_model" || category === "blocked_offtopic") continue;
       if (categoryAtLimit(dedup, category, muskTopic)) continue;
@@ -4634,8 +4720,8 @@ async function fetchBeatClip(
     keywords: beat.keywords,
     sceneText: scene.text,
     videoTitle,
-    requireBeatMatch: true,
-    requireMuskBrand: extractBeatRealEntities(beat.text, scene.text, videoTitle).length > 0,
+    requireBeatMatch: !muskTopic,
+    requireMuskBrand: muskTopic,
   };
 
   const rawQ = beat.index === 0
@@ -4650,9 +4736,15 @@ async function fetchBeatClip(
     ? enrichStockQuery(scene.pexelsQuery || scene.visualCue, scene, videoTitle, personName)
     : rawQ;
   if (muskTopic) {
-    q = isBlockedStockQuery(q) || stockVisualCategory(q) === "blocked_model"
-      ? pickMuskGoldenQuery(dedup.globalBeatIndex, beat.index)
-      : q;
+    q =
+      beat.index === 0
+        ? OPENING_MUSK_QUERIES[dedup.globalBeatIndex % OPENING_MUSK_QUERIES.length]
+        : isBlockedStockQuery(q) ||
+            stockVisualCategory(q) === "blocked_model" ||
+            stockVisualCategory(q) === "blocked_offtopic" ||
+            isOffTopicVisualForMusk(q, q)
+          ? pickMuskGoldenQuery(dedup.globalBeatIndex, beat.index)
+          : q;
   }
 
   const pexCount = muskTopic ? 4 : 2;
@@ -4890,8 +4982,8 @@ async function fetchSceneVisuals(
       keywords: beat.keywords,
       sceneText: scene.text,
       videoTitle,
-      requireBeatMatch: true,
-      requireMuskBrand: extractBeatRealEntities(beat.text, scene.text, videoTitle).length > 0,
+      requireBeatMatch: !muskTopic,
+      requireMuskBrand: muskTopic,
     };
     const clip = await fetchBeatClip(
       beat,
@@ -4971,13 +5063,15 @@ async function fetchSceneVisuals(
             }
             if (!rescued) {
               console.warn(
-                `[Pipeline] Scene ${scene.index} beat ${beat.index}: unique placeholder (no clip reuse)`
+                `[Pipeline] Scene ${scene.index} beat ${beat.index}: golden Musk stock rescue`
               );
-              pushClip(await generateColorFallback(scene.index * 500 + beat.index, 4, workDir));
+              pushClip(await fetchMuskGoldenStockBeat(beat, scene, workDir, scene.index, dedup, adoptOpts));
             }
+          } else if (muskTopic) {
+            pushClip(await fetchMuskGoldenStockBeat(beat, scene, workDir, scene.index, dedup, adoptOpts));
           } else {
             console.warn(
-              `[Pipeline] Scene ${scene.index} beat ${beat.index}: unique placeholder`
+              `[Pipeline] Scene ${scene.index} beat ${beat.index}: color placeholder`
             );
             pushClip(await generateColorFallback(scene.index * 500 + beat.index, 4, workDir));
           }
@@ -6011,7 +6105,8 @@ export async function runVideoPipeline(
   voiceId?: string,
   customVoiceoverUrl?: string,
   videoLength: string = "8-12",
-  enableSubtitles = false  // Subtitles disabled by default — user can enable via UI
+  enableSubtitles = false,  // Subtitles disabled by default — user can enable via UI
+  userPrompt?: string
 ): Promise<string> {
   const maxScenes = getScenesForLength(videoLength);
   if (!fs.existsSync(TMP_DIR)) {
@@ -6024,14 +6119,22 @@ export async function runVideoPipeline(
   const videoTitle = titleMatch?.[1]?.trim().slice(0, 80)
     || script.split("\n").find(l => l.trim().length > 5)?.trim().slice(0, 80)
     || "AI Generated Video";
+  const topicContext = buildTopicContext(userPrompt, videoTitle);
+  const muskLocked = isMuskTeslaTopic(topicContext, script);
 
-  console.log(`[Pipeline] Video ${videoId}: ${maxScenes} scenes for ${videoLength} min video`);
+  console.log(
+    `[Pipeline] Video ${videoId}: ${maxScenes} scenes for ${videoLength} min` +
+    (muskLocked ? " [Musk/Tesla topic lock]" : "")
+  );
 
   try {
     // ── Stage 1: Parse script into scenes ────────────────────────────────────
     onProgress?.({ stage: STAGE_LABELS.parsing, percent: 3 });
     const t0 = Date.now();
     const scenes = await parseScriptIntoScenes(script, maxScenes);
+    if (muskLocked) {
+      for (const scene of scenes) sanitizeSceneForMuskTopic(scene, scene.index, topicContext);
+    }
     scenes.forEach((scene) => sanitizeSceneForMuskTopic(scene, scene.index, videoTitle));
     console.log(`[Pipeline] Stage 1 (parse): ${scenes.length} scenes in ${((Date.now()-t0)/1000).toFixed(1)}s`);
 
@@ -6111,7 +6214,7 @@ export async function runVideoPipeline(
     let completedVisuals = 0;
     const sceneVisualResults: SceneVisualsResult[] = await withTimeout(
       Promise.all(scenes.map(scene => visualLimit(async () => {
-        const result = await fetchSceneVisuals(scene, workDir, videoTitle, visualDedup);
+        const result = await fetchSceneVisuals(scene, workDir, topicContext, visualDedup);
         completedVisuals++;
         onProgress?.({
           stage: `Generating AI visuals... (${completedVisuals}/${scenes.length} done)`,

@@ -545,7 +545,8 @@ async function _generateVideoWithAI(
       voiceId,
       customVoiceoverUrl,
       videoLength,
-      enableSubtitles
+      enableSubtitles,
+      prompt
     );
 
     // Mark last active step as done
