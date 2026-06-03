@@ -575,9 +575,9 @@ async function parseScriptIntoScenesBatch(
 
 For each scene return:
 - text: narration (max 500 chars, full sentences)
-- visualCue: EXACT footage shown while narrating (e.g. "SpaceX Falcon 9 launch pad", "Tesla Gigafactory assembly line")
-- literalVisualCue: hyper-specific stock search for the key visual moment (e.g. "Tesla Gigafactory assembly robots", "Falcon 9 landing drone ship"). If the script has [VISUAL: ...] tags, copy the best matching tag into literalVisualCue for that scene.
-- pexelsQuery: primary English stock video search — MUST match visualCue and narration topic. For Tesla/SpaceX/Musk topics use ONLY: Tesla factory, Model 3, supercharger, Falcon 9 landing, Starship pad, Cybertruck — NEVER generic "rocket launch", moon surface, Saturn, shuttle, or solar farm unless narration is specifically about solar
+- visualCue: EXACT real-world footage shown while narrating — name the real company/event (e.g. "SpaceX Falcon 9 landing on drone ship", "Tesla Gigafactory assembly line")
+- literalVisualCue: hyper-specific stock search using the REAL brand name from the narration (e.g. "Tesla Gigafactory assembly robots", "SpaceX Falcon 9 landing"). If script has [VISUAL: ...] tags, copy the matching tag here.
+- pexelsQuery: primary search — MUST include the real company name when narration mentions Tesla, SpaceX, Falcon 9, Starship, Cybertruck, etc. NEVER generic "electric car" or "rocket launch" without the brand. NEVER moon/Saturn/shuttle CGI unless explicitly about Apollo history
 - pexelsQueries: 3 queries from most specific to slightly broader — ALL must stay on the same topic
 - brollQueries: exactly 2 cutaway B-roll queries (factory hands, robots, charging, launch pad close-up) — no generic space CGI
 - personNames: full names of real people mentioned in text, or []
@@ -3148,16 +3148,19 @@ function isAIGeneratedClip(filePath: string): boolean {
 
 function buildBeatAIPrompt(beat: SceneBeat, scene: Scene, videoTitle?: string): string {
   const muskTopic = isMuskTeslaTopic(videoTitle, beat.text);
+  const entities = extractBeatRealEntities(beat.text, scene.text, videoTitle);
+  const entityLabel = entities.map((r) => r.id).join(", ");
   const visual =
     extractInlineVisualCues(beat.text)[0] ||
+    realEntityStockQueriesForBeat(beat.text, scene.text, videoTitle)[0] ||
     deriveBeatStockQuery(beat.text, scene, videoTitle, undefined, muskTopic) ||
     scene.literalVisualCue ||
     scene.visualCue ||
     scene.pexelsQuery;
   const narration = beat.text.replace(/\[visual:[^\]]+\]/gi, "").trim().slice(0, 220);
   return (
-    `Photorealistic documentary b-roll, 16:9 landscape, no text overlays or watermarks: ${visual}. ` +
-    `Must illustrate this narration: ${narration}. Realistic lighting, sharp focus, news documentary style.`
+    `Photorealistic documentary photo of a REAL ${entityLabel || "news"} event, 16:9: ${visual}. ` +
+    `Must match this spoken line exactly: ${narration}. No CGI, no generic stock, recognizable real-world subject.`
   ).slice(0, 500);
 }
 
@@ -3334,6 +3337,8 @@ const GOLDEN_MUSK_QUERIES = [
 type VisualAdoptOptions = {
   muskTopic?: boolean;
   keywords?: string[];
+  sceneText?: string;
+  videoTitle?: string;
   /** Hero/opening: require Tesla/SpaceX tokens in slug or query. */
   requireMuskBrand?: boolean;
   /** Clip must match words in the beat narration (real footage on-topic). */
@@ -3359,6 +3364,125 @@ const BLOCKED_STOCK_TAGS_RE =
   /emoji|cartoon|animation|icon|illustration|graphic|pattern|sticker|clipart|motion graphics|3d render|abstract background|wallpaper|seamless loop|looping|campfire|bonfire|fireplace|bbq|barbecue|driving|dashcam|highway|bridge|miniature|scale model|toy|diorama|tabletop|model rocket|shuttle|saturn|apollo|lunar|moon landing|moon surface|science fiction|sci-fi|vhs|glitch|vintage space|archival|textile|weaving|loom|garment factory|fabric mill|crime scene|forensic|police tape|news reporter|journalist|reporter microphone|hazmat suit|investigation|murder|courtroom/i;
 
 const MUSK_TOPIC_TOKENS = ["tesla", "spacex", "musk", "electric", "ev", "battery", "gigafactory", "falcon", "starship", "cybertruck", "automotive", "rocket", "launch"];
+
+/** When narration names a real company/product, clip slug/query must show that same entity (real-world footage). */
+type RealEntityRule = {
+  id: string;
+  mentionRe: RegExp;
+  clipMustMatchRe: RegExp;
+  stockQueries: string[];
+  youtubeQueries: string[];
+};
+
+const REAL_ENTITY_RULES: RealEntityRule[] = [
+  {
+    id: "tesla",
+    mentionRe: /\btesla\b/i,
+    clipMustMatchRe: /\btesla\b/i,
+    stockQueries: [
+      "Tesla Model 3 electric car showroom",
+      "Tesla Gigafactory production line workers",
+      "Tesla supercharger station cars charging",
+    ],
+    youtubeQueries: ["Tesla Gigafactory tour", "Tesla Model 3 production line", "Tesla Cybertruck unveiling"],
+  },
+  {
+    id: "spacex",
+    mentionRe: /\bspacex\b/i,
+    clipMustMatchRe: /\b(spacex|falcon|starship)\b/i,
+    stockQueries: [
+      "SpaceX Falcon 9 rocket launch",
+      "SpaceX Starship launch pad Boca Chica",
+      "Falcon 9 booster landing on drone ship",
+    ],
+    youtubeQueries: ["SpaceX Falcon 9 rocket launch", "SpaceX Starship launch test flight", "Falcon 9 landing booster"],
+  },
+  {
+    id: "falcon9",
+    mentionRe: /\bfalcon\s*9\b/i,
+    clipMustMatchRe: /\b(falcon|spacex)\b/i,
+    stockQueries: ["Falcon 9 booster landing on drone ship", "SpaceX Falcon 9 rocket launch"],
+    youtubeQueries: ["SpaceX Falcon 9 rocket launch", "Falcon 9 landing booster drone ship"],
+  },
+  {
+    id: "starship",
+    mentionRe: /\bstarship\b/i,
+    clipMustMatchRe: /\b(starship|spacex)\b/i,
+    stockQueries: ["SpaceX Starship launch pad Boca Chica", "Starship prototype static fire test"],
+    youtubeQueries: ["SpaceX Starship launch test flight", "Starship hop test Boca Chica"],
+  },
+  {
+    id: "cybertruck",
+    mentionRe: /\bcybertruck\b/i,
+    clipMustMatchRe: /\b(tesla|cybertruck)\b/i,
+    stockQueries: ["Tesla Cybertruck stainless steel body", "Tesla Cybertruck electric pickup"],
+    youtubeQueries: ["Tesla Cybertruck unveiling", "Tesla Cybertruck driving"],
+  },
+  {
+    id: "gigafactory",
+    mentionRe: /\bgigafactory\b/i,
+    clipMustMatchRe: /\b(tesla|gigafactory)\b/i,
+    stockQueries: ["Tesla Gigafactory Nevada aerial view", "Tesla Gigafactory production line"],
+    youtubeQueries: ["Tesla Gigafactory tour", "Tesla factory Berlin Gigafactory"],
+  },
+  {
+    id: "model3",
+    mentionRe: /\bmodel\s*[3y]\b/i,
+    clipMustMatchRe: /\b(tesla|model)\b/i,
+    stockQueries: ["Tesla Model 3 electric car", "Tesla Model 3 assembly line"],
+    youtubeQueries: ["Tesla Model 3 production", "Tesla Model Y factory"],
+  },
+  {
+    id: "starlink",
+    mentionRe: /\bstarlink\b/i,
+    clipMustMatchRe: /\b(starlink|spacex|satellite)\b/i,
+    stockQueries: ["SpaceX Starlink satellite launch", "satellite deployment SpaceX rocket"],
+    youtubeQueries: ["SpaceX Starlink launch", "Falcon 9 Starlink mission"],
+  },
+  {
+    id: "neuralink",
+    mentionRe: /\bneuralink\b/i,
+    clipMustMatchRe: /\b(neuralink|brain|neuroscience)\b/i,
+    stockQueries: ["brain computer interface research lab", "neuroscience laboratory microscope"],
+    youtubeQueries: ["Neuralink presentation", "brain implant research laboratory"],
+  },
+];
+
+function extractBeatRealEntities(beatText: string, sceneText = "", videoTitle = ""): RealEntityRule[] {
+  const hay = `${beatText} ${sceneText}`.trim();
+  const fromBeat = REAL_ENTITY_RULES.filter((r) => r.mentionRe.test(beatText));
+  if (fromBeat.length > 0) return fromBeat;
+  if (isMuskTeslaTopic(videoTitle, sceneText) && /\b(rocket|launch|car|factory|vehicle|company)\b/i.test(beatText)) {
+    return REAL_ENTITY_RULES.filter((r) => r.mentionRe.test(`${videoTitle} ${sceneText}`));
+  }
+  return REAL_ENTITY_RULES.filter((r) => r.mentionRe.test(hay));
+}
+
+function clipSatisfiesRealEntities(
+  rules: RealEntityRule[],
+  sourceQuery: string,
+  filePath: string
+): boolean {
+  if (rules.length === 0) return true;
+  const hay = `${sourceQuery} ${path.basename(filePath)}`.toLowerCase();
+  return rules.every((r) => r.clipMustMatchRe.test(hay));
+}
+
+function realEntityStockQueriesForBeat(beatText: string, sceneText: string, videoTitle?: string): string[] {
+  const rules = extractBeatRealEntities(beatText, sceneText, videoTitle ?? "");
+  return [...new Set(rules.flatMap((r) => r.stockQueries))];
+}
+
+function realEntityYoutubeQueriesForBeat(beatText: string, sceneText: string, videoTitle?: string): string[] {
+  const rules = extractBeatRealEntities(beatText, sceneText, videoTitle ?? "");
+  return [...new Set(rules.flatMap((r) => r.youtubeQueries))];
+}
+
+function realEntityScore(rules: RealEntityRule[], sourceQuery: string, filePath: string): number {
+  if (rules.length === 0) return 0;
+  const hay = `${sourceQuery} ${path.basename(filePath)}`.toLowerCase();
+  return rules.filter((r) => r.clipMustMatchRe.test(hay)).length * 4;
+}
 
 const BLOCKED_STOCK_QUERY_RE =
   /\b(subscribe|like button|thumbs up|thumbs down|social media ui|notification bell|emoji|icon animation|button animation|wallpaper|seamless loop|motion graphics|scale model|miniature|toy rocket|model rocket|space shuttle|shuttle model|saturn v|apollo|lunar|moon landing|moon surface|diorama|replica rocket|mission control|astronaut suit|vintage nasa|archival footage|science fiction|sci-fi|cgi rocket|crime scene|forensic|police tape|news reporter|press conference|interview|journalist|murder|courtroom)\b/i;
@@ -3723,8 +3847,17 @@ function deriveBeatStockQuery(
     );
   }
   if (/\b(factory|assembly|manufacturing|production line|robot)\b/.test(lower)) {
-    topicQueries.push("Tesla electric car assembly line robots", "automotive factory assembly line");
+    if (/\btesla\b/.test(lower)) {
+      topicQueries.push("Tesla electric car assembly line robots", "Tesla Gigafactory welding robots");
+    } else if (/\bspacex\b/.test(lower)) {
+      topicQueries.push("SpaceX rocket factory hangar", "SpaceX booster assembly facility");
+    } else if (muskTopic) {
+      topicQueries.push("Tesla Gigafactory production line workers");
+    } else {
+      topicQueries.push("automotive factory assembly line");
+    }
   }
+  topicQueries.push(...realEntityStockQueriesForBeat(beatText, scene.text, videoTitle));
   if (/\b(ai|artificial intelligence|neural|chip|semiconductor)\b/.test(lower)) {
     topicQueries.push("computer chip manufacturing clean room", "data center server room");
   }
@@ -3856,14 +3989,17 @@ async function adoptClip(
 ): Promise<string | null> {
   const keywords = opts.keywords ?? [];
   const muskTopic = opts.muskTopic ?? false;
+  const entityRules = extractBeatRealEntities(beatText, opts.sceneText ?? "", opts.videoTitle ?? "");
   const sortedPaths = [...paths].sort((a, b) => {
     const scoreB =
       scoreVisualRelevance(`${sourceQuery} ${path.basename(b)} ${beatText}`, keywords) +
       scoreVisualRelevance(beatText, tokenizeForRelevance(sourceQuery)) +
+      realEntityScore(entityRules, sourceQuery, b) +
       (muskTopic ? muskBrandScore(sourceQuery, b) : 0);
     const scoreA =
       scoreVisualRelevance(`${sourceQuery} ${path.basename(a)} ${beatText}`, keywords) +
       scoreVisualRelevance(beatText, tokenizeForRelevance(sourceQuery)) +
+      realEntityScore(entityRules, sourceQuery, a) +
       (muskTopic ? muskBrandScore(sourceQuery, a) : 0);
     return scoreB - scoreA;
   });
@@ -3886,6 +4022,7 @@ async function adoptClip(
       if (opts.requireMuskBrand && !hasMuskBrandSignal(sourceQuery, p)) continue;
       const beatMatch = scoreBeatNarrationMatch(beatText, sourceQuery, p);
       if (opts.requireBeatMatch && beatMatch < 1) continue;
+      if (entityRules.length > 0 && !clipSatisfiesRealEntities(entityRules, sourceQuery, p)) continue;
       if (muskTopic) {
         if (category === "solar" && !/solar|photovoltaic|sun panel/.test(beatText.toLowerCase())) continue;
         if ((category === "rocket" || category === "space") && !isMuskApprovedRocketQuery(sourceQuery)) {
@@ -4034,7 +4171,14 @@ async function fetchBeatClip(
   const candidateOffset = beat.index * 3 + sceneIndex + dedup.globalBeatIndex;
   const muskTopic = isMuskTeslaTopic(videoTitle, scene.text);
   const perf = dedup.perf;
-  const adoptOpts: VisualAdoptOptions = { muskTopic, keywords: beat.keywords };
+  const adoptOpts: VisualAdoptOptions = {
+    muskTopic,
+    keywords: beat.keywords,
+    sceneText: scene.text,
+    videoTitle,
+    requireBeatMatch: true,
+    requireMuskBrand: extractBeatRealEntities(beat.text, scene.text, videoTitle).length > 0,
+  };
 
   const rawQ = beat.index === 0
     ? enrichStockQuery(
@@ -4119,15 +4263,30 @@ async function fetchBeatClip(
     if (clip) { dedup.globalBeatIndex++; return clip; }
   }
 
-  // 1) Beat narration query first — footage must match what is being said
+  // 1a) Real-world event footage (YouTube CC) when narration names Tesla/SpaceX etc.
+  const entityYt = realEntityYoutubeQueriesForBeat(beat.text, scene.text, videoTitle);
+  if (entityYt.length > 0 && (YOUTUBE_API_KEY || RAPIDAPI_KEY || process.env.YOUTUBE_CC_DL_SERVICE)) {
+    clip = await tryStockSources(
+      [{
+        query: entityYt[0],
+        fetch: () =>
+          fetchYouTubeCCClips(entityYt, clipFetchDur, workDir, sceneIndex, 1, beat.keywords, 2),
+      }],
+      dedup, sceneIndex, beat.index, beat.text, workDir, "real-event YouTube", adoptOpts
+    );
+    if (clip) { dedup.globalBeatIndex++; return clip; }
+  }
+
+  // 1b) Beat narration + named entities — stock must match what is being said
   const beatDerived = deriveBeatStockQuery(beat.text, scene, videoTitle, personName, muskTopic);
-  const beatQueries = [...new Set([q, beatDerived, beat.searchQuery].filter(
+  const entityStock = realEntityStockQueriesForBeat(beat.text, scene.text, videoTitle);
+  const beatQueries = [...new Set([...entityStock, q, beatDerived, beat.searchQuery].filter(
     (bq) => typeof bq === "string" && bq.trim().length > 2 && !isBlockedStockQuery(bq)
   ))];
   clip = await tryStockSources(
     beatQueries.map((bq, bi) => ({
       query: bq,
-      fetch: pexFetch(bq, `${tag}_beat`, candidateOffset + bi, muskTopic ? 4 : 2),
+      fetch: pexFetch(bq, `${tag}_beat`, candidateOffset + bi, muskTopic ? 5 : 3),
     })),
     dedup, sceneIndex, beat.index, beat.text, workDir, "beat narration", adoptOpts
   );
@@ -4249,11 +4408,6 @@ async function fetchSceneVisuals(
   const muskTopic = isMuskTeslaTopic(videoTitle, scene.text);
 
   for (const beat of beats) {
-    const adoptOpts: VisualAdoptOptions = {
-      muskTopic,
-      keywords: beat.keywords,
-      requireBeatMatch: muskTopic,
-    };
     const clip = await fetchBeatClip(
       beat,
       scene,

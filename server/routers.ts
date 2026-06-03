@@ -279,7 +279,7 @@ RULES:
           { role: "user", content: isOneMin
             ? `Section ${idx + 1}: "${sec.title}"\nCover: ${sec.keyPoints.join(", ")}\n\nWrite ONE short paragraph of 3-4 sentences (~45-55 words total). Include exactly 2 [VISUAL: ...] tags with specific real-world footage descriptions. This entire video is only 1 minute — be concise.`
             : isTwoMin
-              ? `Section ${idx + 1}: "${sec.title}"\nCover: ${sec.keyPoints.join(", ")}\n\nWrite ONE paragraph of 5-6 sentences (~120-140 words total). After each sentence (or every 2 sentences) add a [VISUAL: ...] tag describing ONLY real-world stock footage that matches what you just said (e.g. if you mention Starship, tag Starship pad; if Tesla factory, tag Tesla assembly line). Never solar/wind/generic highway unless that sentence is about it. 2 minutes total — concise, continuous narration.`
+              ? `Section ${idx + 1}: "${sec.title}"\nCover: ${sec.keyPoints.join(", ")}\n\nWrite ONE paragraph of 5-6 sentences (~120-140 words total). After each sentence add [VISUAL: ...] with REAL identifiable footage — use exact names (Tesla Model 3, SpaceX Falcon 9 launch, Gigafactory) matching what you just said. Never generic "car" or "rocket" without the brand. 2 minutes — continuous narration, no filler.`
             : `Section ${idx + 1}: "${sec.title}"\nCover these key points: ${sec.keyPoints.join(", ")}\n\nWrite 3-4 short paragraphs of documentary-style narration. Each paragraph should be 2-4 sentences. Include [VISUAL: ...] tags after every 2-3 sentences with very specific, literal descriptions of footage to show.` },
         ],
       }).then(r => { const c = r?.choices?.[0]?.message?.content ?? ""; return typeof c === "string" ? c : ""; })
