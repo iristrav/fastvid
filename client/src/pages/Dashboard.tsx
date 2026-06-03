@@ -17,7 +17,7 @@ import {
 import { toast } from "sonner";
 import { Streamdown } from "streamdown";
 import {
-  Play, Sparkles, Clock, CheckCircle2, XCircle, Loader2,
+  Play, Sparkles, CheckCircle2, XCircle, Loader2,
   FileText, Video, LogOut, User, ChevronRight, RefreshCw,
   Copy, Download, Eye, LayoutDashboard, Settings, CreditCard, Volume2,
   Trash2, Pencil, Check, X as XIcon, Mic, Upload, BookOpen, List, GraduationCap, Lightbulb,
@@ -30,12 +30,12 @@ import { Switch } from "@/components/ui/switch";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const VIDEO_LENGTHS = [
-  { label: "1 min (test)", value: "1" as const, desc: "Pipeline smoke test", genTime: "~2 min" },
-  { label: "5–8 min", value: "5-8" as const, desc: "Short & punchy", genTime: "~3 min" },
-  { label: "8–12 min", value: "8-12" as const, desc: "Tutorials", genTime: "~5 min" },
-  { label: "12–15 min", value: "12-15" as const, desc: "In-depth", genTime: "~7 min" },
-  { label: "15–20 min", value: "15-20" as const, desc: "Extended", genTime: "~10 min" },
-  { label: "20+ min", value: "20+" as const, desc: "Long-form", genTime: "~15 min" },
+  { label: "1 min (test)", value: "1" as const, desc: "Pipeline smoke test" },
+  { label: "5–8 min", value: "5-8" as const, desc: "Short & punchy" },
+  { label: "8–12 min", value: "8-12" as const, desc: "Tutorials" },
+  { label: "12–15 min", value: "12-15" as const, desc: "In-depth" },
+  { label: "15–20 min", value: "15-20" as const, desc: "Extended" },
+  { label: "20+ min", value: "20+" as const, desc: "Long-form" },
 ];
 
 const VIDEO_TYPES = [
@@ -826,7 +826,6 @@ export default function Dashboard() {
   
   const userSub = (user as { subscriptionStatus?: string } | null)?.subscriptionStatus;
   const hasActiveSubscription = userSub === "active" || user?.role === "admin";
-  const activeLengthOption = VIDEO_LENGTHS.find(l => l.value === selectedLength)!;
   const activeTypeOption = VIDEO_TYPES.find(t => t.value === selectedType)!;
 
   // ─── Subscription gate ────────────────────────────────────────────────────
@@ -1009,10 +1008,6 @@ export default function Dashboard() {
                   </button>
                 ))}
               </div>
-              <p className="text-xs text-slate-600 mt-2 flex items-center gap-1.5">
-                <Clock className="w-3 h-3 text-cyan-500" />
-                Generation time: <span className="text-cyan-400 font-medium">{activeLengthOption.genTime}</span>
-              </p>
             </div>
 
             {/* Voice / Custom voiceover */}

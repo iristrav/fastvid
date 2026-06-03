@@ -35,11 +35,11 @@ const VISUALS_IMG = "https://d2xsxph8kpxj0f.cloudfront.net/310519663314427713/B9
 
 // ─── Video length options ──────────────────────────────────────────────────────
 const VIDEO_LENGTHS = [
-  { label: "5–8 min", value: "5-8", desc: "Short & punchy", genTime: "~15 min" },
-  { label: "8–12 min", value: "8-12", desc: "Perfect for tutorials", genTime: "~25 min" },
-  { label: "12–15 min", value: "12-15", desc: "In-depth content", genTime: "~35 min" },
-  { label: "15–20 min", value: "15-20", desc: "Extended videos", genTime: "~50 min" },
-  { label: "20+ min", value: "20+", desc: "Long-form documentaries", genTime: "~75 min" },
+  { label: "5–8 min", value: "5-8", desc: "Short & punchy" },
+  { label: "8–12 min", value: "8-12", desc: "Perfect for tutorials" },
+  { label: "12–15 min", value: "12-15", desc: "In-depth content" },
+  { label: "15–20 min", value: "15-20", desc: "Extended videos" },
+  { label: "20+ min", value: "20+", desc: "Long-form documentaries" },
 ];
 
 // ─── Intersection Observer Hook ────────────────────────────────────────────────
@@ -383,10 +383,6 @@ export default function Home() {
                     </button>
                   ))}
                 </div>
-                <p className="text-xs text-slate-600 flex items-center gap-1.5">
-                  <Clock className="w-3 h-3 text-cyan-500" />
-                  Generation time for <span className="text-cyan-400 font-medium">{activeLengthOption.label}</span>: {activeLengthOption.genTime}
-                </p>
               </div>
 
               {/* Prompt input */}
@@ -465,7 +461,6 @@ export default function Home() {
                 icon: "⚡",
                 title: "Short & punchy",
                 useCases: ["News & updates", "Quick tips", "Product reveals", "Trending topics"],
-                genTime: "~15 min",
               },
               {
                 label: "8–12 min",
@@ -473,7 +468,6 @@ export default function Home() {
                 icon: "🎯",
                 title: "Perfect for tutorials",
                 useCases: ["How-to videos", "Reviews", "Top 5 lists", "Vlog-style content"],
-                genTime: "~25 min",
               },
               {
                 label: "12–15 min",
@@ -481,7 +475,6 @@ export default function Home() {
                 icon: "📈",
                 title: "In-depth content",
                 useCases: ["Extended tutorials", "Case studies", "Comparisons", "Educational"],
-                genTime: "~35 min",
               },
               {
                 label: "15–20 min",
@@ -489,7 +482,6 @@ export default function Home() {
                 icon: "🎬",
                 title: "Extended videos",
                 useCases: ["Documentary-style", "Deep-dive analyses", "Interviews", "Storytelling"],
-                genTime: "~50 min",
               },
               {
                 label: "20+ min",
@@ -497,7 +489,6 @@ export default function Home() {
                 icon: "🏆",
                 title: "Long-form documentaries",
                 useCases: ["Masterclasses", "Full courses", "Epic stories", "Deep dives"],
-                genTime: "~75 min",
               },
             ].map((opt) => (
               <div
@@ -529,10 +520,6 @@ export default function Home() {
                     </li>
                   ))}
                 </ul>
-                <div className="mt-auto pt-2 border-t border-white/6 flex items-center gap-1.5">
-                  <Clock className="w-3 h-3 text-cyan-500" />
-                  <span className="mono text-xs text-cyan-400">{opt.genTime} generation time</span>
-                </div>
               </div>
             ))}
           </div>
