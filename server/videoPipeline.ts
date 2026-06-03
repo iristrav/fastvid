@@ -742,15 +742,20 @@ function mapRawScene(
     (typeof rawS.literalVisualCue === "string" ? rawS.literalVisualCue.trim() : "") ||
     inlineFromText[0] ||
     "";
-  const primaryQuery =
-    literalVisualCue || (s.pexelsQuery?.trim() || s.visualCue || "cinematic background");
+  const hint = `${s.text ?? ""}`;
+  const simp = (q: string) => simplifyStockSearchWord(q, hint);
+  const primaryQuery = simp(
+    literalVisualCue || (s.pexelsQuery?.trim() || s.visualCue || "documentary")
+  );
   const extraQueries = (rawS.pexelsQueries as string[] | undefined) || [];
-  const allQueries = [primaryQuery, ...extraQueries.filter((q) => q && q !== primaryQuery)].slice(0, 4);
+  const allQueries = [primaryQuery, ...extraQueries.map(simp).filter((q) => q && q !== primaryQuery)].slice(0, 4);
   const personNames = ((rawS.personNames as string[] | undefined) || [])
     .filter((n) => typeof n === "string" && n.trim().length > 0)
     .map((n) => n.trim());
   const brollQueries = ((rawS.brollQueries as string[] | undefined) || [])
     .filter((q) => typeof q === "string" && q.trim().length > 0)
+    .map(simp)
+    .filter((q) => q.length >= 3)
     .slice(0, 2);
   const sectionTitle =
     typeof rawS.sectionTitle === "string" ? rawS.sectionTitle.trim().slice(0, 60) : "";
@@ -1390,7 +1395,11 @@ async function fetchPexelsClips(
 
   // Never fall back to generic nature/city b-roll — that produces irrelevant footage (wind turbines, cyclists, etc.)
   const queryList = Array.from(
-    new Set([query, ...(extraQueries ?? [])].filter((q) => q && q.trim().length > 2 && !isBlockedStockQuery(q)))
+    new Set(
+      [query, ...(extraQueries ?? [])]
+        .filter((q) => q && q.trim().length > 2 && !isBlockedStockQuery(q))
+        .map((q) => simplifyStockSearchWord(q))
+    )
   );
   if (queryList.length === 0) return [];
   // Deduplicate
@@ -1582,8 +1591,8 @@ async function fetchBrollClips(
   if ((!PEXELS_API_KEY && !PIXABAY_API_KEY) || !brollQueries || brollQueries.length === 0) return [];
   const results: string[] = [];
   for (let qi = 0; qi < brollQueries.length && results.length < 3; qi++) {
-    const query = brollQueries[qi];
-    if (!query || !query.trim()) continue;
+    const query = simplifyStockSearchWord(brollQueries[qi] ?? "");
+    if (!query || query.length < 3 || isBlockedStockQuery(query)) continue;
     try {
       const searchUrl = `https://api.pexels.com/videos/search?query=${encodeURIComponent(query)}&per_page=5&size=large&orientation=landscape&min_duration=4`;
       const searchResp = await withTimeout(
@@ -1661,7 +1670,11 @@ async function fetchPixabayClips(
   const results: string[] = [];
 
   const queryList = Array.from(
-    new Set([query].filter((q) => q && q.trim().length > 2 && !isBlockedStockQuery(q)))
+    new Set(
+      [query]
+        .filter((q) => q && q.trim().length > 2 && !isBlockedStockQuery(q))
+        .map((q) => simplifyStockSearchWord(q))
+    )
   );
   if (queryList.length === 0) return [];
   const seen = new Set<string>();
@@ -3071,15 +3084,17 @@ async function fetchNasaVideoClips(
 }
 
 function buildEventVideoQueries(scene: Scene, primarySubject: string, hasPerson: boolean): string[] {
+  const hint = `${scene.text} ${primarySubject}`;
   const q = [
     scene.visualCue,
     scene.pexelsQuery,
     ...(scene.pexelsQueries ?? []),
     ...(scene.brollQueries ?? []),
-    hasPerson && primarySubject ? `${primarySubject} speech` : "",
-    hasPerson && primarySubject ? `${primarySubject} interview` : "",
-  ].filter((s): s is string => typeof s === "string" && s.trim().length > 2);
-  return Array.from(new Set(q));
+    hasPerson && primarySubject ? primarySubject : "",
+  ]
+    .filter((s): s is string => typeof s === "string" && s.trim().length > 0)
+    .map((s) => simplifyStockSearchWord(s, hint));
+  return Array.from(new Set(q.filter((w) => w.length >= 3)));
 }
 
 function isSpaceRelatedTopic(...parts: string[]): boolean {
@@ -3713,14 +3728,7 @@ const STOCK_CATEGORY_LIMITS: Record<string, number> = {
 
 /** High-quality rotating queries for Musk/Tesla/SpaceX — modern real-world B-roll only. */
 /** Brand-forward hero searches — recognizable Tesla/SpaceX (not generic factory). */
-const HERO_MUSK_QUERIES = [
-  "Tesla Model 3 electric car showroom",
-  "Tesla Cybertruck stainless steel body",
-  "Tesla supercharger station cars charging",
-  "Tesla Gigafactory Nevada aerial view",
-  "SpaceX Starship launch pad Boca Chica",
-  "Falcon 9 booster landing on drone ship",
-];
+const HERO_MUSK_QUERIES = ["tesla", "spacex", "rocket", "factory", "car", "cybertruck"];
 
 const HERO_YOUTUBE_QUERIES = [
   "SpaceX Falcon 9 rocket launch",
@@ -3729,15 +3737,7 @@ const HERO_YOUTUBE_QUERIES = [
   "Falcon 9 landing booster drone ship",
 ];
 
-const GOLDEN_MUSK_QUERIES = [
-  ...HERO_MUSK_QUERIES,
-  "Tesla Gigafactory production line workers",
-  "Tesla electric car assembly line robots",
-  "Tesla Model 3 automobile assembly plant",
-  "Tesla Fremont factory aerial drone",
-  "electric vehicle battery pack assembly line",
-  "SpaceX rocket hangar horizontal transport",
-];
+const GOLDEN_MUSK_QUERIES = [...HERO_MUSK_QUERIES, "solar", "battery", "satellite", "moon"];
 
 type VisualAdoptOptions = {
   muskTopic?: boolean;
@@ -3784,71 +3784,63 @@ const REAL_ENTITY_RULES: RealEntityRule[] = [
     id: "tesla",
     mentionRe: /\btesla\b/i,
     clipMustMatchRe: /\btesla\b/i,
-    stockQueries: [
-      "Tesla Model 3 electric car showroom",
-      "Tesla Gigafactory production line workers",
-      "Tesla supercharger station cars charging",
-    ],
+    stockQueries: ["tesla"],
     youtubeQueries: ["Tesla Gigafactory tour", "Tesla Model 3 production line", "Tesla Cybertruck unveiling"],
   },
   {
     id: "spacex",
     mentionRe: /\bspacex\b/i,
     clipMustMatchRe: /\b(spacex|falcon|starship)\b/i,
-    stockQueries: [
-      "SpaceX Falcon 9 rocket launch",
-      "SpaceX Starship launch pad Boca Chica",
-      "Falcon 9 booster landing on drone ship",
-    ],
+    stockQueries: ["spacex", "rocket"],
     youtubeQueries: ["SpaceX Falcon 9 rocket launch", "SpaceX Starship launch test flight", "Falcon 9 landing booster"],
   },
   {
     id: "falcon9",
     mentionRe: /\bfalcon\s*9\b/i,
     clipMustMatchRe: /\b(falcon|spacex)\b/i,
-    stockQueries: ["Falcon 9 booster landing on drone ship", "SpaceX Falcon 9 rocket launch"],
+    stockQueries: ["rocket", "spacex"],
     youtubeQueries: ["SpaceX Falcon 9 rocket launch", "Falcon 9 landing booster drone ship"],
   },
   {
     id: "starship",
     mentionRe: /\bstarship\b/i,
     clipMustMatchRe: /\b(starship|spacex)\b/i,
-    stockQueries: ["SpaceX Starship launch pad Boca Chica", "Starship prototype static fire test"],
+    stockQueries: ["spacex", "rocket"],
     youtubeQueries: ["SpaceX Starship launch test flight", "Starship hop test Boca Chica"],
   },
   {
     id: "cybertruck",
     mentionRe: /\bcybertruck\b/i,
     clipMustMatchRe: /\b(tesla|cybertruck)\b/i,
-    stockQueries: ["Tesla Cybertruck stainless steel body", "Tesla Cybertruck electric pickup"],
+    stockQueries: ["tesla", "car"],
     youtubeQueries: ["Tesla Cybertruck unveiling", "Tesla Cybertruck driving"],
   },
   {
     id: "gigafactory",
     mentionRe: /\bgigafactory\b/i,
     clipMustMatchRe: /\b(tesla|gigafactory)\b/i,
-    stockQueries: ["Tesla Gigafactory Nevada aerial view", "Tesla Gigafactory production line"],
+    stockQueries: ["factory", "tesla"],
     youtubeQueries: ["Tesla Gigafactory tour", "Tesla factory Berlin Gigafactory"],
   },
   {
     id: "model3",
     mentionRe: /\bmodel\s*[3y]\b/i,
     clipMustMatchRe: /\b(tesla|model)\b/i,
-    stockQueries: ["Tesla Model 3 electric car", "Tesla Model 3 assembly line"],
+    stockQueries: ["tesla", "car"],
     youtubeQueries: ["Tesla Model 3 production", "Tesla Model Y factory"],
   },
   {
     id: "starlink",
     mentionRe: /\bstarlink\b/i,
     clipMustMatchRe: /\b(starlink|spacex|satellite)\b/i,
-    stockQueries: ["SpaceX Starlink satellite launch", "satellite deployment SpaceX rocket"],
+    stockQueries: ["satellite", "rocket"],
     youtubeQueries: ["SpaceX Starlink launch", "Falcon 9 Starlink mission"],
   },
   {
     id: "neuralink",
     mentionRe: /\bneuralink\b/i,
     clipMustMatchRe: /\b(neuralink|brain|neuroscience)\b/i,
-    stockQueries: ["brain computer interface research lab", "neuroscience laboratory microscope"],
+    stockQueries: ["brain", "technology"],
     youtubeQueries: ["Neuralink presentation", "brain implant research laboratory"],
   },
 ];
@@ -3875,7 +3867,10 @@ function clipSatisfiesRealEntities(
 
 function realEntityStockQueriesForBeat(beatText: string, sceneText: string, videoTitle?: string): string[] {
   const rules = extractBeatRealEntities(beatText, sceneText, videoTitle ?? "");
-  return [...new Set(rules.flatMap((r) => r.stockQueries))];
+  const hint = `${beatText} ${sceneText} ${videoTitle ?? ""}`;
+  return [...new Set(
+    rules.flatMap((r) => r.stockQueries.map((q) => simplifyStockSearchWord(q, hint)))
+  )];
 }
 
 function realEntityYoutubeQueriesForBeat(beatText: string, sceneText: string, videoTitle?: string): string[] {
@@ -3908,7 +3903,7 @@ const OPENING_MUSK_QUERIES = HERO_MUSK_QUERIES;
 
 /** Only these rocket/space queries may yield rocket-category clips on Musk/Tesla topics. */
 const MUSK_APPROVED_ROCKET_QUERY_RE =
-  /falcon\s*9.*(land|boost|recover|drone\s*ship)|starship.*(pad|boca|texas|static)|spacex.*crew\s*dragon/i;
+  /\b(rocket|spacex|falcon|starship)\b|falcon\s*9.*(land|boost|recover|drone\s*ship)|starship.*(pad|boca|texas|static)|spacex.*crew\s*dragon/i;
 
 function stockVisualCategory(query: string, filePath?: string): string {
   const combined = `${query} ${path.basename(filePath ?? "")}`.toLowerCase();
@@ -3965,6 +3960,22 @@ function pickMuskGoldenQuery(globalBeat: number, beatIndex = 0): string {
   return GOLDEN_MUSK_QUERIES[idx];
 }
 
+/** Force all scene stock fields to one-word Pexels queries (every topic). */
+function sanitizeSceneStockQueries(scene: Scene, videoTitle?: string): void {
+  const hint = `${scene.text} ${videoTitle ?? ""}`;
+  const simp = (q: string): string => {
+    const t = q.trim();
+    if (!t) return "";
+    if (isBlockedStockQuery(t)) return simplifyStockSearchWord("documentary", hint);
+    return simplifyStockSearchWord(t, hint);
+  };
+  if (scene.literalVisualCue) scene.literalVisualCue = simp(scene.literalVisualCue);
+  scene.pexelsQuery = simp(scene.pexelsQuery) || simplifyStockSearchWord(scene.text, hint);
+  scene.visualCue = simp(scene.visualCue) || scene.pexelsQuery;
+  scene.pexelsQueries = [...new Set((scene.pexelsQueries ?? []).map(simp).filter((q) => q.length >= 3))];
+  scene.brollQueries = [...new Set((scene.brollQueries ?? []).map(simp).filter((q) => q.length >= 3))];
+}
+
 /** Rewrite LLM scene queries that cause CGI/model rocket hits on Pexels. */
 function sanitizeSceneForMuskTopic(scene: Scene, sceneIndex: number, videoTitle?: string): void {
   if (!isMuskTeslaTopic(videoTitle, scene.text)) return;
@@ -3974,13 +3985,13 @@ function sanitizeSceneForMuskTopic(scene: Scene, sceneIndex: number, videoTitle?
     if (!trimmed) return fallback;
     const cat = stockVisualCategory(trimmed);
     if (cat === "blocked_model" || isBlockedStockQuery(trimmed)) return fallback;
-    if (cat === "solar" && !/solar|photovoltaic/.test(scene.text.toLowerCase())) return fallback;
+    if (cat === "solar" && !/solar|photovoltaic|zon\b|sun\b/.test(scene.text.toLowerCase())) return fallback;
     if (cat === "space") return fallback;
     if (cat === "rocket" && !isMuskApprovedRocketQuery(trimmed)) {
-      return "Falcon 9 booster landing on drone ship";
+      return "rocket";
     }
     if (isAmbiguousRocketQuery(trimmed)) return fallback;
-    return trimmed.slice(0, 100);
+    return simplifyStockSearchWord(trimmed, scene.text);
   };
   if (scene.literalVisualCue) scene.literalVisualCue = safe(scene.literalVisualCue);
   scene.pexelsQuery = safe(scene.pexelsQuery);
@@ -3989,7 +4000,7 @@ function sanitizeSceneForMuskTopic(scene: Scene, sceneIndex: number, videoTitle?
   scene.brollQueries = (scene.brollQueries ?? []).map((q) => {
     const cat = stockVisualCategory(q);
     if (cat === "tesla" || cat === "factory" || cat === "robot") return safe(q);
-    return "Tesla factory assembly line close up";
+    return "factory";
   });
 }
 
@@ -4220,36 +4231,15 @@ function buildMontageXfadeFilter(
 }
 
 function extractTopicStockQueries(promptOrTitle: string): string[] {
-  const text = promptOrTitle.toLowerCase();
-  const queries: string[] = [];
-  if (/musk|tesla|spacex|electric vehicle|ev\b/.test(text)) {
-    queries.push(
-      "Falcon 9 booster landing on drone ship",
-      "Starship launch pad Boca Chica Texas",
-      "Tesla Gigafactory production line",
-      "Tesla electric car factory workers",
-      "Tesla Model 3 assembly line",
-      "electric vehicle manufacturing plant",
-    );
+  const text = promptOrTitle.trim();
+  if (!text) return ["documentary"];
+  const out = new Set<string>();
+  out.add(simplifyStockSearchWord(text, text));
+  for (const token of tokenizeForRelevance(text)) {
+    const w = simplifyStockSearchWord(token, text);
+    if (w.length >= 3 && !isBlockedStockQuery(w)) out.add(w);
   }
-  if (/tesla/.test(text)) {
-    queries.push("Tesla car showroom", "Tesla supercharger station", "Tesla autopilot camera");
-  }
-  if (/spacex|rocket|space|mars|starship/.test(text)) {
-    queries.push("Starship launch pad Boca Chica", "SpaceX rocket hangar", "Falcon 9 booster landing on drone ship");
-  }
-  if (/ai|artificial intelligence|neural/.test(text)) {
-    queries.push("data center server room", "computer chip manufacturing", "robot arm factory");
-  }
-  if (/kylie|jenner|kardashian|celebrity|rumor|gossip|tabloid|influencer/.test(text)) {
-    queries.push(
-      "celebrity paparazzi photographers flash",
-      "tabloid magazine covers stack",
-      "smartphone social media scrolling close up",
-      "red carpet celebrity event crowd",
-    );
-  }
-  return queries;
+  return [...out].slice(0, 10);
 }
 
 function buildTopicAnchoredQueries(scene: Scene, videoTitle?: string, personName?: string, prompt?: string): string[] {
@@ -4268,18 +4258,154 @@ function buildTopicAnchoredQueries(scene: Scene, videoTitle?: string, personName
   queries.push(...extractTopicStockQueries(`${prompt ?? ""} ${videoTitle ?? ""} ${scene.text}`));
 
   if (titleLower.includes("tesla") || textLower.includes("tesla")) {
-    queries.push("Tesla factory workers assembly", "Tesla electric vehicle production");
+    queries.push("tesla", "factory", "car");
   }
   if (titleLower.includes("spacex") || textLower.includes("spacex") || textLower.includes("rocket")) {
-    queries.push("Falcon 9 booster landing on drone ship", "Starship launch pad Boca Chica Texas", "SpaceX rocket hangar");
+    queries.push("spacex", "rocket");
   }
 
-  const allowSolar = /solar|photovoltaic|sun energy|panel/.test(textLower);
+  const allowSolar = /solar|photovoltaic|sun energy|panel|zon\b|sun\b/.test(textLower);
   return [...new Set(queries.filter((q) => {
     if (!q.trim() || q.trim().length <= 2 || isBlockedStockQuery(q)) return false;
     if (!allowSolar && stockVisualCategory(q) === "solar") return false;
     return true;
   }))];
+}
+
+/** Dutch (and common non-English) → single English Pexels keyword. */
+const DUTCH_STOCK_WORD_MAP: Record<string, string> = {
+  zon: "sun", strand: "beach", zee: "ocean", berg: "mountain", bos: "forest", stad: "city",
+  regen: "rain", sneeuw: "snow", vuur: "fire", wind: "wind", wolk: "cloud", hemel: "sky",
+  hond: "dog", kat: "cat", paard: "horse", vogel: "bird", vis: "fish", olifant: "elephant",
+  politie: "police", ziekenhuis: "hospital", school: "school", universiteit: "university",
+  fiets: "bicycle", vliegtuig: "airplane", trein: "train", auto: "car", bus: "bus", boot: "boat",
+  fabriek: "factory", kantoor: "office", restaurant: "restaurant", keuken: "kitchen", koffie: "coffee",
+  voetbal: "football", wielrennen: "cycling", zwemmen: "swimming", hardlopen: "running",
+  oorlog: "war", soldaat: "soldier", demonstratie: "protest", regering: "government", verkiezing: "election",
+  klimaat: "climate", overstroming: "flood", storm: "storm", rook: "smoke", aarde: "earth",
+  kunst: "art", muziek: "music", concert: "concert", kerk: "church", bruiloft: "wedding",
+  kind: "child", gezin: "family", vrouw: "woman", man: "man", mensen: "people", menigte: "crowd",
+  geld: "money", bank: "bank", winkel: "shop", markt: "market", boerderij: "farm", oogst: "harvest",
+  ruimte: "space", planeet: "planet", sterren: "stars", maan: "moon",
+};
+
+/** Topic patterns → one English stock keyword (all documentary subjects). */
+const STOCK_TOPIC_WORD_RULES: [RegExp, string][] = [
+  [/\b(cybertruck|gigafactory|supercharger|model\s*[3y])\b|\btesla\b|\bmusk\b|\belon\b/, "tesla"],
+  [/\bspacex\b|\bfalcon\b|\bstarship\b/, "spacex"],
+  [/\brocket\b|\blaunch\b|\bbooster\b|\borbit\b|\bmissile\b/, "rocket"],
+  [/\bsolar\b|\bphotovoltaic\b/, "solar"],
+  [/\bsun\b|\bsunshine\b|\bzon\b/, "sun"],
+  [/\bwind\s*turbine\b|\bwindmill\b|\bwindenergy\b/, "wind"],
+  [/\bclimate\b|\bglobal warming\b|\bcarbon\b|\bgreenhouse\b/, "climate"],
+  [/\bflood\b|\btsunami\b|\bhurricane\b|\btyphoon\b|\bearthquake\b/, "storm"],
+  [/\bfire\b|\bwildfire\b|\bflame\b|\bbrand\b/, "fire"],
+  [/\bocean\b|\bsea\b|\bwave\b|\bcoast\b|\bbeach\b|\bdolphin\b|\bwhale\b|\bzee\b|\bstrand\b/, "ocean"],
+  [/\bforest\b|\bjungle\b|\btree\b|\bwood\b|\bbos\b/, "forest"],
+  [/\bmountain\b|\bhill\b|\bvalley\b|\bberg\b/, "mountain"],
+  [/\briver\b|\blake\b|\bwaterfall\b/, "river"],
+  [/\bsnow\b|\bice\b|\barctic\b|\bantarctic\b|\bsneeuw\b/, "snow"],
+  [/\brain\b|\bstorm\b|\bthunder\b|\bregen\b/, "rain"],
+  [/\bcity\b|\burban\b|\bskyline\b|\bdowntown\b|\bmetropolis\b|\bstad\b/, "city"],
+  [/\bstreet\b|\btraffic\b|\bhighway\b|\broad\b|\bbridge\b/, "street"],
+  [/\bbuilding\b|\bskyscraper\b|\barchitecture\b|\bconstruction\b/, "building"],
+  [/\bairport\b|\bairplane\b|\baircraft\b|\bflight\b|\bvliegtuig\b/, "airplane"],
+  [/\btrain\b|\brailway\b|\bmetro\b|\bstation\b|\btrein\b/, "train"],
+  [/\bship\b|\bharbor\b|\bport\b|\bcargo\b|\bboot\b/, "ship"],
+  [/\bcar\b|\bautomobile\b|\bvehicle\b|\bdriving\b|\bauto\b/, "car"],
+  [/\btruck\b|\blorry\b|\bfreight\b/, "truck"],
+  [/\bmotorcycle\b|\bbike\b|\bcycling\b|\bfiets\b/, "bicycle"],
+  [/\bfactory\b|\bassembly\b|\bmanufacturing\b|\bplant\b|\bfabriek\b/, "factory"],
+  [/\brobot\b|\bautomation\b|\bdrone\b/, "robot"],
+  [/\bcomputer\b|\blaptop\b|\bcoding\b|\bsoftware\b|\bserver\b|\bdatacenter\b/, "computer"],
+  [/\bphone\b|\bsmartphone\b|\bmobile\b|\bapp\b/, "phone"],
+  [/\bai\b|artificial intelligence|\bmachine learning\b|\bchatgpt\b/, "technology"],
+  [/\bchip\b|\bsemiconductor\b|\bprocessor\b/, "computer"],
+  [/\bhospital\b|\bdoctor\b|\bnurse\b|\bmedical\b|\bsurgery\b|\bziekenhuis\b/, "hospital"],
+  [/\bhealth\b|\bfitness\b|\bgym\b|\byoga\b|\bworkout\b/, "fitness"],
+  [/\bfood\b|\bcooking\b|\bchef\b|\bkitchen\b|\brestaurant\b|\bmeal\b|\bkeuken\b/, "food"],
+  [/\bcoffee\b|\bcafe\b|\bkoffie\b/, "coffee"],
+  [/\bwine\b|\bbeer\b|\bbar\b/, "bar"],
+  [/\bfarm\b|\btractor\b|\bwheat\b|\bcorn\b|\bharvest\b|\bagriculture\b|\bboerderij\b/, "farm"],
+  [/\banimal\b|\bwildlife\b|\bzoo\b/, "wildlife"],
+  [/\bdog\b|\bpuppy\b|\bhond\b/, "dog"],
+  [/\bcat\b|\bkitten\b|\bkat\b/, "cat"],
+  [/\bhorse\b|\bequestrian\b|\bpaard\b/, "horse"],
+  [/\bbird\b|\beagle\b|\bvogel\b/, "bird"],
+  [/\blion\b|\btiger\b|\belephant\b|\bbear\b|\bgiraffe\b/, "wildlife"],
+  [/\bfish\b|\baquarium\b|\bcoral\b|\bvis\b/, "fish"],
+  [/\bfootball\b|\bsoccer\b|\bbasketball\b|\btennis\b|\bolympic\b|\bvoetbal\b/, "sport"],
+  [/\brunning\b|\bmarathon\b|\bathlete\b|\bhardlopen\b/, "running"],
+  [/\bswimming\b|\bpool\b|\bzwemmen\b/, "swimming"],
+  [/\bwar\b|\bmilitary\b|\bsoldier\b|\barmy\b|\btank\b|\bcombat\b|\boorlog\b/, "military"],
+  [/\bprotest\b|\bdemonstration\b|\briot\b|\bdemonstratie\b/, "protest"],
+  [/\belection\b|\bvote\b|\bparliament\b|\bgovernment\b|\bpolitics\b|\bverkiezing\b/, "government"],
+  [/\bpolice\b|\bcrime\b|\bcourt\b|\bprison\b|\blaw\b|\bpolitie\b/, "police"],
+  [/\bmoney\b|\bfinance\b|\bstock market\b|\btrading\b|\bcrypto\b|\bbitcoin\b|\bgeld\b/, "finance"],
+  [/\boffice\b|\bmeeting\b|\bbusiness\b|\bcorporate\b|\bceo\b|\bkantoor\b/, "office"],
+  [/\bshopping\b|\bstore\b|\bretail\b|\bmall\b|\bwinkel\b/, "shop"],
+  [/\bschool\b|\bclassroom\b|\bstudent\b|\beducation\b|\buniversity\b/, "school"],
+  [/\blibrary\b|\bbook\b|\breading\b|\bstudy\b/, "library"],
+  [/\bchurch\b|\btemple\b|\bmosque\b|\breligion\b|\bprayer\b|\bkerk\b/, "church"],
+  [/\bwedding\b|\bmarriage\b|\bbride\b|\bbruiloft\b/, "wedding"],
+  [/\bfamily\b|\bchild\b|\bbaby\b|\bkinderen\b|\bkind\b|\bgezin\b/, "family"],
+  [/\bwoman\b|\bwomen\b|\bfemale\b|\bvrouw\b/, "woman"],
+  [/\bman\b|\bmen\b|\bmale\b|\bman\b/, "man"],
+  [/\bpeople\b|\bcrowd\b|\baudience\b|\bconcert goers\b|\bmensen\b|\bmenigte\b/, "crowd"],
+  [/\bcelebrity\b|\bpaparazzi\b|\bfamous\b|\bstar\b|\binfluencer\b|\bkardashian\b/, "celebrity"],
+  [/\bcamera\b|\bphotography\b|\bfilming\b|\bmedia\b/, "camera"],
+  [/\bnews\b|\bpress\b|\bjournalist\b|\breporter\b|\banchor\b/, "news"],
+  [/\bmovie\b|\bfilm\b|\bhollywood\b|\bcinema\b|\bactor\b/, "cinema"],
+  [/\bmusic\b|\bconcert\b|\bguitar\b|\bpiano\b|\borchestra\b|\bmuziek\b/, "music"],
+  [/\bart\b|\bmuseum\b|\bgallery\b|\bpainting\b|\bsculpture\b|\bkunst\b/, "museum"],
+  [/\bhistory\b|\bancient\b|\bruins\b|\bcastle\b|\bmonument\b/, "history"],
+  [/\bspace\b|\bnasa\b|\bastronaut\b|\bplanet\b|\bgalaxy\b|\bruimte\b/, "space"],
+  [/\bmoon\b|\blunar\b|\bmaan\b/, "moon"],
+  [/\bmars\b/, "mars"],
+  [/\bsatellite\b|\bstarlink\b|\borbit\b/, "satellite"],
+  [/\bneuralink\b|\bbrain\b|\bneuroscience\b/, "brain"],
+  [/\btravel\b|\bvacation\b|\btourism\b|\bhotel\b|\bresort\b/, "travel"],
+  [/\bnight\b|\bevening\b|\bsunset\b|\bdawn\b/, "sunset"],
+  [/\bdesert\b|\bsahara\b/, "desert"],
+  [/\bisland\b|\btropical\b|\bpalm\b/, "island"],
+  [/\benergy\b|\boil\b|\bgas\b|\bpipeline\b|\brefinery\b/, "energy"],
+  [/\bmining\b|\bcoal\b|\bquarry\b/, "mining"],
+  [/\btextile\b|\bfashion\b|\bclothing\b|\bmodel runway\b/, "fashion"],
+  [/\bbeauty\b|\bmakeup\b|\bsalon\b/, "beauty"],
+  [/\bscience\b|\blaboratory\b|\bexperiment\b|\bresearch\b/, "science"],
+  [/\bvolcano\b|\beruption\b/, "volcano"],
+  [/\bglacier\b|\bmelting\b/, "glacier"],
+];
+
+/** Pexels/Pixabay: always one simple English word, any documentary topic. */
+function simplifyStockSearchWord(input: string, hintText = ""): string {
+  const combined = `${input} ${hintText}`.toLowerCase().replace(/\[visual:[^\]]*\]/gi, " ");
+  for (const [nl, en] of Object.entries(DUTCH_STOCK_WORD_MAP)) {
+    if (new RegExp(`\\b${nl}\\b`).test(combined)) return en;
+  }
+  for (const [re, word] of STOCK_TOPIC_WORD_RULES) {
+    if (re.test(combined)) return word;
+  }
+  const tokens = [
+    ...tokenizeForRelevance(input.replace(/\[visual:[^\]]*\]/gi, "")),
+    ...tokenizeForRelevance(hintText),
+  ];
+  const seen = new Set<string>();
+  const unique = tokens.filter((t) => {
+    if (seen.has(t)) return false;
+    seen.add(t);
+    return true;
+  });
+  unique.sort((a, b) => b.length - a.length);
+  for (const t of unique) {
+    if (DUTCH_STOCK_WORD_MAP[t]) return DUTCH_STOCK_WORD_MAP[t];
+    if (t.length >= 4 && !RELEVANCE_STOP_WORDS.has(t)) return t.slice(0, 24);
+  }
+  for (const t of unique) {
+    if (t.length >= 3 && !RELEVANCE_STOP_WORDS.has(t)) return t.slice(0, 24);
+  }
+  if (/\bmodel\s*3\b/.test(combined)) return "tesla";
+  return "documentary";
 }
 
 function enrichStockQuery(
@@ -4288,24 +4414,9 @@ function enrichStockQuery(
   videoTitle?: string,
   personName?: string
 ): string {
-  if (isBlockedStockQuery(query)) return query;
-  const person = personName || scene.personNames?.[0] || extractPrimaryPersonFromTitle(videoTitle) || "";
-  const topicTokens = [
-    ...tokenizeForRelevance(person),
-    ...tokenizeForRelevance(videoTitle ?? ""),
-  ].filter((t) => t.length >= 3).slice(0, 2);
-  const qLower = query.toLowerCase();
-  if (topicTokens.some((t) => qLower.includes(t))) return query.slice(0, 100);
-  if (person) {
-    const first = person.split(/\s+/)[0]?.toLowerCase() ?? "";
-    if (first && !qLower.includes(first)) {
-      return `${person} ${query}`.trim().slice(0, 100);
-    }
-  }
-  if (topicTokens.length > 0) {
-    return `${topicTokens.join(" ")} ${query}`.trim().slice(0, 100);
-  }
-  return query.slice(0, 100);
+  const hint = `${scene.text} ${videoTitle ?? ""} ${personName ?? ""}`;
+  if (isBlockedStockQuery(query)) return simplifyStockSearchWord("documentary", hint);
+  return simplifyStockSearchWord(query, hint);
 }
 
 function tokenizeForRelevance(text: string): string[] {
@@ -4338,7 +4449,7 @@ function scoreVisualRelevance(text: string, keywords: string[]): number {
   return score;
 }
 
-/** Map narration sentence → concrete stock search (beats must match what is said). */
+/** Map narration sentence → one-word Pexels search. */
 function deriveBeatStockQuery(
   beatText: string,
   scene: Scene,
@@ -4346,83 +4457,21 @@ function deriveBeatStockQuery(
   personName?: string,
   muskTopic = false
 ): string {
-  const lower = beatText.toLowerCase();
-  const topicQueries: string[] = [];
-  if (/\b(spacex|starship|falcon|dragon|booster|launch pad|launchpad|rocket|orbit|mars)\b/.test(lower)) {
-    topicQueries.push(
-      "Falcon 9 booster landing on drone ship",
-      "SpaceX Starship launch pad Boca Chica",
-      "SpaceX rocket hangar horizontal transport"
-    );
-  }
-  if (/\b(tesla|cybertruck|model 3|model y|supercharger|gigafactory|electric vehicle|ev\b|battery)\b/.test(lower)) {
-    topicQueries.push(
-      "Tesla Gigafactory production line workers",
-      "Tesla Model 3 electric car showroom",
-      "Tesla supercharger station cars charging"
-    );
-  }
-  if (/\b(factory|assembly|manufacturing|production line|robot)\b/.test(lower)) {
-    if (/\btesla\b/.test(lower)) {
-      topicQueries.push("Tesla electric car assembly line robots", "Tesla Gigafactory welding robots");
-    } else if (/\bspacex\b/.test(lower)) {
-      topicQueries.push("SpaceX rocket factory hangar", "SpaceX booster assembly facility");
-    } else if (muskTopic) {
-      topicQueries.push("Tesla Gigafactory production line workers");
-    } else {
-      topicQueries.push("automotive factory assembly line");
-    }
-  }
-  topicQueries.push(...realEntityStockQueriesForBeat(beatText, scene.text, videoTitle));
-  if (/\b(ai|artificial intelligence|neural|chip|semiconductor)\b/.test(lower)) {
-    topicQueries.push("computer chip manufacturing clean room", "data center server room");
-  }
-  if (/\b(mars|moon|space|astronaut|nasa)\b/.test(lower) && muskTopic) {
-    topicQueries.push("SpaceX Crew Dragon spacecraft interior", "Falcon 9 booster landing on drone ship");
-  }
-  if (/\b(starlink|satellite constellation)\b/.test(lower)) {
-    topicQueries.push("satellite deployment rocket upper stage", "SpaceX rocket launch night");
-  }
-  if (/\b(neuralink|brain|implant)\b/.test(lower)) {
-    topicQueries.push("medical brain scan MRI technology", "neuroscience laboratory research");
-  }
-  if (/\b(humanity|future|civilization|coloniz)\b/.test(lower) && muskTopic) {
-    topicQueries.push("SpaceX Starship launch pad Boca Chica", "Tesla electric car driving city");
-  }
-
-  const inlineCues = extractInlineVisualCues(beatText);
-  for (const cue of inlineCues) {
-    topicQueries.unshift(cue);
-  }
-
-  const sceneQueries = [
+  const source = [
+    beatText,
+    ...extractInlineVisualCues(beatText),
     scene.literalVisualCue,
     scene.pexelsQuery,
     scene.visualCue,
     ...(scene.pexelsQueries ?? []),
-  ].filter((q): q is string => typeof q === "string" && q.trim().length > 2);
-
-  const beatTokens = tokenizeForRelevance(beatText);
-  let best = "";
-  let bestScore = 0;
-  for (const candidate of [...topicQueries, ...sceneQueries]) {
-    if (isBlockedStockQuery(candidate)) continue;
-    const s = scoreVisualRelevance(candidate.toLowerCase(), beatTokens);
-    if (s > bestScore) {
-      bestScore = s;
-      best = candidate;
-    }
-  }
-  if (best) {
-    return enrichStockQuery(best, scene, videoTitle, personName).slice(0, 100);
-  }
-  if (topicQueries[0]) {
-    return enrichStockQuery(topicQueries[0], scene, videoTitle, personName).slice(0, 100);
-  }
-  const fallback = scene.literalVisualCue || scene.pexelsQuery || scene.visualCue;
-  return fallback
-    ? enrichStockQuery(fallback, scene, videoTitle, personName).slice(0, 100)
-    : "";
+    ...realEntityStockQueriesForBeat(beatText, scene.text, videoTitle),
+    videoTitle,
+    personName,
+    muskTopic ? "tesla spacex" : "",
+  ]
+    .filter((x): x is string => typeof x === "string" && x.trim().length > 0)
+    .join(" ");
+  return enrichStockQuery(source, scene, videoTitle, personName);
 }
 
 function buildSceneBeats(
@@ -4517,11 +4566,10 @@ function buildSceneBeats(
   const beats: SceneBeat[] = [];
   for (let i = 0; i < groups.length; i++) {
     const text = groups[i].text;
-    const textKeywords = tokenizeForRelevance(text).slice(0, 4).join(" ");
     const inlineForBeat = extractInlineVisualCues(text)[0] || sceneInlineVisuals[i] || sceneInlineVisuals[0];
     let derived = deriveBeatStockQuery(text, scene, videoTitle, undefined, muskTopic);
     if (inlineForBeat) {
-      derived = enrichStockQuery(inlineForBeat, scene, videoTitle, undefined).slice(0, 100);
+      derived = enrichStockQuery(inlineForBeat, scene, videoTitle, undefined);
     }
     const useBroll = i % 2 === 1 && brollPool.length > 0 && !inlineForBeat;
     const baseQuery =
@@ -4532,10 +4580,8 @@ function buildSceneBeats(
       scene.pexelsQuery ||
       scene.visualCue ||
       extractTopicStockQueries(scene.text)[0] ||
-      (muskTopic ? pickMuskGoldenQuery(scene.index * groups.length + i, i) : "factory production line");
-    const searchQuery = textKeywords
-      ? `${baseQuery} ${textKeywords}`.trim().slice(0, 100)
-      : baseQuery;
+      (muskTopic ? pickMuskGoldenQuery(scene.index * groups.length + i, i) : "factory");
+    const searchQuery = simplifyStockSearchWord(baseQuery, text);
     beats.push({
       index: i,
       text,
@@ -4683,12 +4729,7 @@ async function fetchLastResortRealClip(
   const tag = `b${beat.index}_lr`;
   const candidateOffset = beat.index * 5 + sceneIndex + 11;
   const queries = [
-    ...(personName
-      ? [
-          `${personName} Tesla factory`,
-          `${personName} Tesla Gigafactory production`,
-        ]
-      : []),
+    ...(personName ? ["tesla", "factory"] : []),
     enrichStockQuery(scene.visualCue, scene, videoTitle, personName),
     enrichStockQuery(scene.pexelsQuery, scene, videoTitle, personName),
     ...(scene.pexelsQueries ?? []).map((q) => enrichStockQuery(q, scene, videoTitle, personName)),
@@ -5028,7 +5069,7 @@ async function fetchSceneVisuals(
       const topicFallback =
         extractTopicStockQueries(`${videoTitle ?? ""} ${scene.text} ${beat.text}`)[0]
         || (personName ? `${personName} celebrity documentary b-roll` : null)
-        || (muskTopic ? "Tesla Gigafactory production line workers" : `${videoTitle ?? "documentary"} news b-roll`);
+        || (muskTopic ? "tesla" : "technology");
       const emergencyQ = enrichStockQuery(
         scene.literalVisualCue || scene.pexelsQuery || scene.visualCue || topicFallback,
         scene,
@@ -6172,10 +6213,10 @@ export async function runVideoPipeline(
     onProgress?.({ stage: STAGE_LABELS.parsing, percent: 3 });
     const t0 = Date.now();
     const scenes = await parseScriptIntoScenes(script, maxScenes);
-    if (muskLocked) {
-      for (const scene of scenes) sanitizeSceneForMuskTopic(scene, scene.index, topicContext);
+    for (const scene of scenes) {
+      sanitizeSceneStockQueries(scene, topicContext ?? videoTitle);
+      if (muskLocked) sanitizeSceneForMuskTopic(scene, scene.index, topicContext ?? videoTitle);
     }
-    scenes.forEach((scene) => sanitizeSceneForMuskTopic(scene, scene.index, videoTitle));
     console.log(`[Pipeline] Stage 1 (parse): ${scenes.length} scenes in ${((Date.now()-t0)/1000).toFixed(1)}s`);
 
     // ── Stage 2: Generate ALL voiceovers in parallel batches ──────────────────
