@@ -311,6 +311,8 @@ interface PipelinePerfProfile {
   enableNasa: boolean;
   /** One hero fetch (YouTube CC + NASA) for Musk 2-min opening — real SpaceX/Tesla footage. */
   enableMuskHeroFetch: boolean;
+  /** Max per-video YouTube CC searches on entity beats (each search is slow). */
+  maxEntityYoutubePerVideo: number;
   /** Generate AI b-roll only when no matching stock clip was found for that beat. */
   enableAiFallback: boolean;
   maxAiClipsPerVideo: number;
@@ -329,6 +331,7 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
       enableArchival: false,
       enableNasa: false,
       enableMuskHeroFetch: true,
+      maxEntityYoutubePerVideo: 2,
       enableAiFallback: true,
       maxAiClipsPerVideo: 3,
       sceneParallelism: 2,
@@ -345,6 +348,7 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
       enableArchival: false,
       enableNasa: true,
       enableMuskHeroFetch: false,
+      maxEntityYoutubePerVideo: 3,
       enableAiFallback: true,
       maxAiClipsPerVideo: 5,
       sceneParallelism: 2,
@@ -361,6 +365,7 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
       enableArchival: false,
       enableNasa: true,
       enableMuskHeroFetch: false,
+      maxEntityYoutubePerVideo: 3,
       enableAiFallback: true,
       maxAiClipsPerVideo: 5,
       sceneParallelism: 2,
@@ -376,6 +381,7 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
     enableArchival: true,
     enableNasa: true,
     enableMuskHeroFetch: false,
+    maxEntityYoutubePerVideo: 4,
     enableAiFallback: true,
     maxAiClipsPerVideo: 6,
     sceneParallelism: 2,
@@ -3275,6 +3281,7 @@ interface VisualDedupState {
   /** Last adopted on-topic Musk clip — reused instead of color/black placeholders. */
   lastMuskStockClip: string | null;
   aiClipsUsed: number;
+  entityYoutubeFetchesUsed: number;
   lock: Promise<void>;
   perf: PipelinePerfProfile;
 }
@@ -3290,6 +3297,7 @@ function createVisualDedupState(perf: PipelinePerfProfile): VisualDedupState {
     muskHeroFetchUsed: false,
     lastMuskStockClip: null,
     aiClipsUsed: 0,
+    entityYoutubeFetchesUsed: 0,
     lock: Promise.resolve(),
     perf,
   };
@@ -3448,14 +3456,14 @@ const REAL_ENTITY_RULES: RealEntityRule[] = [
   },
 ];
 
-function extractBeatRealEntities(beatText: string, sceneText = "", videoTitle = ""): RealEntityRule[] {
-  const hay = `${beatText} ${sceneText}`.trim();
+function extractBeatRealEntities(beatText: string, _sceneText = "", _videoTitle = ""): RealEntityRule[] {
   const fromBeat = REAL_ENTITY_RULES.filter((r) => r.mentionRe.test(beatText));
   if (fromBeat.length > 0) return fromBeat;
-  if (isMuskTeslaTopic(videoTitle, sceneText) && /\b(rocket|launch|car|factory|vehicle|company)\b/i.test(beatText)) {
-    return REAL_ENTITY_RULES.filter((r) => r.mentionRe.test(`${videoTitle} ${sceneText}`));
+  for (const cue of extractInlineVisualCues(beatText)) {
+    const fromCue = REAL_ENTITY_RULES.filter((r) => r.mentionRe.test(cue));
+    if (fromCue.length > 0) return fromCue;
   }
-  return REAL_ENTITY_RULES.filter((r) => r.mentionRe.test(hay));
+  return [];
 }
 
 function clipSatisfiesRealEntities(
@@ -4263,14 +4271,19 @@ async function fetchBeatClip(
     if (clip) { dedup.globalBeatIndex++; return clip; }
   }
 
-  // 1a) Real-world event footage (YouTube CC) when narration names Tesla/SpaceX etc.
+  // 1a) Real-world YouTube CC — only when this beat names the entity (capped per video; slow)
   const entityYt = realEntityYoutubeQueriesForBeat(beat.text, scene.text, videoTitle);
-  if (entityYt.length > 0 && (YOUTUBE_API_KEY || RAPIDAPI_KEY || process.env.YOUTUBE_CC_DL_SERVICE)) {
+  if (
+    entityYt.length > 0 &&
+    dedup.entityYoutubeFetchesUsed < dedup.perf.maxEntityYoutubePerVideo &&
+    (YOUTUBE_API_KEY || RAPIDAPI_KEY || process.env.YOUTUBE_CC_DL_SERVICE)
+  ) {
+    dedup.entityYoutubeFetchesUsed++;
     clip = await tryStockSources(
       [{
         query: entityYt[0],
         fetch: () =>
-          fetchYouTubeCCClips(entityYt, clipFetchDur, workDir, sceneIndex, 1, beat.keywords, 2),
+          fetchYouTubeCCClips(entityYt.slice(0, 2), clipFetchDur, workDir, sceneIndex, 1, beat.keywords, 1),
       }],
       dedup, sceneIndex, beat.index, beat.text, workDir, "real-event YouTube", adoptOpts
     );
