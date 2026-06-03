@@ -572,7 +572,7 @@ For each scene return:
 - personNames: full names of real people mentioned in text, or []
 - sectionTitle: ALL CAPS chapter heading shown on yellow card BEFORE this scene when starting a new topic; "" if not a chapter start. NEVER use HOOK, OPENING, CTA, INTRO, or OUTRO as sectionTitle — always "" for those meta sections.
 
-Every query must literally describe what the viewer should see. Scenes are ~2-4s of footage with hard cuts.`,
+Every query must literally describe what the viewer should see while that exact narration plays. Scenes are ~2-4s of footage with hard cuts. Narration must read as one continuous documentary — no filler pauses between sentences.`,
         },
         {
           role: "user",
@@ -3601,6 +3601,70 @@ function scoreVisualRelevance(text: string, keywords: string[]): number {
   return score;
 }
 
+/** Map narration sentence → concrete stock search (beats must match what is said). */
+function deriveBeatStockQuery(
+  beatText: string,
+  scene: Scene,
+  videoTitle?: string,
+  personName?: string,
+  muskTopic = false
+): string {
+  const lower = beatText.toLowerCase();
+  const topicQueries: string[] = [];
+  if (/\b(spacex|starship|falcon|dragon|booster|launch pad|launchpad|rocket|orbit|mars)\b/.test(lower)) {
+    topicQueries.push(
+      "Falcon 9 booster landing on drone ship",
+      "SpaceX Starship launch pad Boca Chica",
+      "SpaceX rocket hangar horizontal transport"
+    );
+  }
+  if (/\b(tesla|cybertruck|model 3|model y|supercharger|gigafactory|electric vehicle|ev\b|battery)\b/.test(lower)) {
+    topicQueries.push(
+      "Tesla Gigafactory production line workers",
+      "Tesla Model 3 electric car showroom",
+      "Tesla supercharger station cars charging"
+    );
+  }
+  if (/\b(factory|assembly|manufacturing|production line|robot)\b/.test(lower)) {
+    topicQueries.push("Tesla electric car assembly line robots", "automotive factory assembly line");
+  }
+  if (/\b(ai|artificial intelligence|neural|chip|semiconductor)\b/.test(lower)) {
+    topicQueries.push("computer chip manufacturing clean room", "data center server room");
+  }
+  if (/\b(mars|moon|space|astronaut|nasa)\b/.test(lower) && muskTopic) {
+    topicQueries.push("SpaceX Crew Dragon spacecraft interior", "Falcon 9 booster landing on drone ship");
+  }
+
+  const sceneQueries = [
+    scene.literalVisualCue,
+    scene.pexelsQuery,
+    scene.visualCue,
+    ...(scene.pexelsQueries ?? []),
+  ].filter((q): q is string => typeof q === "string" && q.trim().length > 2);
+
+  const beatTokens = tokenizeForRelevance(beatText);
+  let best = "";
+  let bestScore = 0;
+  for (const candidate of [...topicQueries, ...sceneQueries]) {
+    if (isBlockedStockQuery(candidate)) continue;
+    const s = scoreVisualRelevance(candidate.toLowerCase(), beatTokens);
+    if (s > bestScore) {
+      bestScore = s;
+      best = candidate;
+    }
+  }
+  if (best) {
+    return enrichStockQuery(best, scene, videoTitle, personName).slice(0, 100);
+  }
+  if (topicQueries[0]) {
+    return enrichStockQuery(topicQueries[0], scene, videoTitle, personName).slice(0, 100);
+  }
+  const fallback = scene.literalVisualCue || scene.pexelsQuery || scene.visualCue;
+  return fallback
+    ? enrichStockQuery(fallback, scene, videoTitle, personName).slice(0, 100)
+    : "";
+}
+
 function buildSceneBeats(
   scene: Scene,
   duration: number,
@@ -3628,17 +3692,18 @@ function buildSceneBeats(
   const beats: SceneBeat[] = [];
   for (let i = 0; i < beatCount; i++) {
     const text = sentences[Math.min(i, sentences.length - 1)] ?? scene.text;
-    const textKeywords = tokenizeForRelevance(text).slice(0, 2).join(" ");
+    const textKeywords = tokenizeForRelevance(text).slice(0, 4).join(" ");
+    const derived = deriveBeatStockQuery(text, scene, videoTitle, undefined, muskTopic);
     const useBroll = i % 2 === 1 && brollPool.length > 0;
-    const baseQuery = muskTopic
-      ? pickMuskGoldenQuery(scene.index * beatCount + i, i)
-      : useBroll
-        ? brollPool[i % brollPool.length]
-        : queryPool[(i * 2 + scene.index) % Math.max(1, queryPool.length)] ??
-          scene.visualCue ??
-          scene.pexelsQuery ??
-          extractTopicStockQueries(scene.text)[0] ??
-          "factory production line";
+    const baseQuery =
+      derived ||
+      (useBroll ? brollPool[i % brollPool.length] : null) ||
+      queryPool[(i * 2 + scene.index) % Math.max(1, queryPool.length)] ||
+      scene.literalVisualCue ||
+      scene.pexelsQuery ||
+      scene.visualCue ||
+      extractTopicStockQueries(scene.text)[0] ||
+      (muskTopic ? pickMuskGoldenQuery(scene.index * beatCount + i, i) : "factory production line");
     const searchQuery = textKeywords
       ? `${baseQuery} ${textKeywords}`.trim().slice(0, 100)
       : baseQuery;
@@ -3666,10 +3731,12 @@ async function adoptClip(
   const muskTopic = opts.muskTopic ?? false;
   const sortedPaths = [...paths].sort((a, b) => {
     const scoreB =
-      scoreVisualRelevance(`${sourceQuery} ${path.basename(b)}`, keywords) +
+      scoreVisualRelevance(`${sourceQuery} ${path.basename(b)} ${beatText}`, keywords) +
+      scoreVisualRelevance(beatText, tokenizeForRelevance(sourceQuery)) +
       (muskTopic ? muskBrandScore(sourceQuery, b) : 0);
     const scoreA =
-      scoreVisualRelevance(`${sourceQuery} ${path.basename(a)}`, keywords) +
+      scoreVisualRelevance(`${sourceQuery} ${path.basename(a)} ${beatText}`, keywords) +
+      scoreVisualRelevance(beatText, tokenizeForRelevance(sourceQuery)) +
       (muskTopic ? muskBrandScore(sourceQuery, a) : 0);
     return scoreB - scoreA;
   });
@@ -3921,36 +3988,21 @@ async function fetchBeatClip(
     if (clip) { dedup.globalBeatIndex++; return clip; }
   }
 
-  // 1) Golden pool first for Musk — beats generic LLM / Pexels CGI
-  if (muskTopic) {
-    const golden = GOLDEN_MUSK_QUERIES[dedup.globalBeatIndex % GOLDEN_MUSK_QUERIES.length];
-    const goldenCat = stockVisualCategory(golden);
-    const goldenFetchers: Array<{ query: string; fetch: () => Promise<string[]> }> = [];
+  // 1) Beat narration query first — footage must match what is being said
+  const beatDerived = deriveBeatStockQuery(beat.text, scene, videoTitle, personName, muskTopic);
+  const beatQueries = [...new Set([q, beatDerived, beat.searchQuery].filter(
+    (bq) => typeof bq === "string" && bq.trim().length > 2 && !isBlockedStockQuery(bq)
+  ))];
+  clip = await tryStockSources(
+    beatQueries.map((bq, bi) => ({
+      query: bq,
+      fetch: pexFetch(bq, `${tag}_beat`, candidateOffset + bi, muskTopic ? 4 : 2),
+    })),
+    dedup, sceneIndex, beat.index, beat.text, workDir, "beat narration", adoptOpts
+  );
+  if (clip) { dedup.globalBeatIndex++; return clip; }
 
-    // NASA archival only for first rocket beat on long-form videos (often model/archival footage)
-    if (perf.enableNasa && spaceTopic && goldenCat === "rocket" && (dedup.usedCategories.get("rocket") ?? 0) === 0) {
-      goldenFetchers.push({
-        query: golden,
-        fetch: () => fetchNasaVideoClips(golden, clipFetchDur, workDir, sceneIndex, 1),
-      });
-    }
-    goldenFetchers.push({ query: golden, fetch: pexFetch(golden, `${tag}_golden`, candidateOffset + 1) });
-    goldenFetchers.push({ query: golden, fetch: pixFetch(golden, `${tag}_golden`, candidateOffset + 1) });
-
-    clip = await tryStockSources(goldenFetchers, dedup, sceneIndex, beat.index, beat.text, workDir, "golden", adoptOpts);
-    if (clip) { dedup.globalBeatIndex++; return clip; }
-  }
-
-  // 2) Beat-specific literal query (sanitized; non-Musk only if golden missed)
-  if (!muskTopic || !isBlockedStockQuery(q)) {
-    clip = await tryStockSources(
-      [{ query: q, fetch: pexFetch(q, `${tag}_lit`, candidateOffset) }],
-      dedup, sceneIndex, beat.index, beat.text, workDir, "literal Pexels", adoptOpts
-    );
-    if (clip) { dedup.globalBeatIndex++; return clip; }
-  }
-
-  // 3) Scene topic-anchored queries (max 6 to keep generation fast)
+  // 2) Scene topic-anchored queries (max 6 to keep generation fast)
   const topicQueries = buildTopicAnchoredQueries(scene, videoTitle, personName, videoTitle);
   clip = await tryStockSources(
     topicQueries.slice(0, perf.maxTopicQueries).map((tq, ti) => ({
@@ -3960,6 +4012,23 @@ async function fetchBeatClip(
     dedup, sceneIndex, beat.index, beat.text, workDir, "topic Pexels", adoptOpts
   );
   if (clip) { dedup.globalBeatIndex++; return clip; }
+
+  // 3) Golden pool fallback for Musk when beat-specific search missed
+  if (muskTopic) {
+    const golden = GOLDEN_MUSK_QUERIES[dedup.globalBeatIndex % GOLDEN_MUSK_QUERIES.length];
+    const goldenCat = stockVisualCategory(golden);
+    const goldenFetchers: Array<{ query: string; fetch: () => Promise<string[]> }> = [];
+    if (perf.enableNasa && spaceTopic && goldenCat === "rocket" && (dedup.usedCategories.get("rocket") ?? 0) === 0) {
+      goldenFetchers.push({
+        query: golden,
+        fetch: () => fetchNasaVideoClips(golden, clipFetchDur, workDir, sceneIndex, 1),
+      });
+    }
+    goldenFetchers.push({ query: golden, fetch: pexFetch(golden, `${tag}_golden`, candidateOffset + 1) });
+    goldenFetchers.push({ query: golden, fetch: pixFetch(golden, `${tag}_golden`, candidateOffset + 1) });
+    clip = await tryStockSources(goldenFetchers, dedup, sceneIndex, beat.index, beat.text, workDir, "golden", adoptOpts);
+    if (clip) { dedup.globalBeatIndex++; return clip; }
+  }
 
   // 4) Dedicated B-roll cutaways on odd beats
   if (beat.index % 2 === 1 && beat.index > 0 && (scene.brollQueries?.length ?? 0) > 0) {
@@ -4618,9 +4687,14 @@ async function composeSceneVideo(
     console.error(`[Pipeline] Scene ${scene.index}: audio file MISSING before compose: ${safeAudioPath}`);
   }
 
+  const voiceDur =
+    (audioValid ? (await probeVideoDurationSec(safeAudioPath)) : 0) ||
+    Math.max(0.5, duration - 0.35);
+  const outDur = voiceDur + 0.12;
+
   try {
     // Vidrush montage: 2–3s clips, hard cuts (no crossfade)
-    const clipDur = computeMontageClipDuration(duration, safeClips.length);
+    const clipDur = computeMontageClipDuration(outDur, safeClips.length);
     const inputs = safeClips.map((c, i) => {
       const startSec = Math.min(((scene.index + i) * 0.7) % 1.2, 0.8);
       return `-ss ${startSec.toFixed(2)} -t ${clipDur.toFixed(3)} -i "${c}"`;
@@ -4635,7 +4709,7 @@ async function composeSceneVideo(
         : `;${concatLabels}concat=n=${safeClips.length}:v=1:a=0[concatenated]`;
 
     const montageDur = clipDur * safeClips.length;
-    const padSec = Math.max(0, duration - montageDur);
+    const padSec = Math.max(0, outDur - montageDur);
     const padFilter =
       padSec > 0.05
         ? `;[concatenated]tpad=stop_mode=clone:stop_duration=${padSec.toFixed(3)}[concatPadded]`
@@ -4654,16 +4728,16 @@ async function composeSceneVideo(
     await withTimeout(
       exec(
         `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}"${kineticInput} ` +
-        `-filter_complex "${scaleFilters}${mergeFilter}${padFilter}${kineticChainStr};[${finalVideoLabel}]${fadeFilter}[vout];[${audioIdx}:a]apad=whole_dur=${duration.toFixed(3)},atrim=0:${duration.toFixed(3)}[aout]" ` +
+        `-filter_complex "${scaleFilters}${mergeFilter}${padFilter}${kineticChainStr};[${finalVideoLabel}]${fadeFilter}[vout];[${audioIdx}:a]atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
         `-map "[vout]" -map "[aout]" ` +
-        `-t ${duration} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
+        `-t ${outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
       ),
       120_000, `Compose multi-clip scene ${scene.index}`
     );
   } catch (composeErr) {
     console.warn(`[Pipeline] Scene ${scene.index}: compose failed, trying simplified compose:`, composeErr);
     try {
-      const clipDur = computeMontageClipDuration(duration, safeClips.length);
+      const clipDur = computeMontageClipDuration(outDur, safeClips.length);
       const n = Math.min(12, Math.max(2, safeClips.length));
       const subset = safeClips.slice(0, n);
       const inputs = subset.map((c) => `-t ${clipDur.toFixed(3)} -i "${c}"`).join(" ");
@@ -4672,9 +4746,9 @@ async function composeSceneVideo(
       await withTimeout(
         exec(
           `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}" ` +
-          `-filter_complex "${scaleFilters};${concatLabels}concat=n=${subset.length}:v=1:a=0[vout];[${subset.length}:a]apad=whole_dur=${duration.toFixed(3)},atrim=0:${duration.toFixed(3)}[aout]" ` +
+          `-filter_complex "${scaleFilters};${concatLabels}concat=n=${subset.length}:v=1:a=0[vout];[${subset.length}:a]atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
           `-map "[vout]" -map "[aout]" ` +
-          `-t ${duration} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
+          `-t ${outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
         ),
         90_000,
         `Simplified multi-clip scene ${scene.index}`
@@ -4685,9 +4759,9 @@ async function composeSceneVideo(
         await withTimeout(
           exec(
             `${FFMPEG_BIN} -y -i "${safeClips[0]}" -i "${safeAudioPath}" ` +
-            `-filter_complex "[1:a]apad=whole_dur=${duration.toFixed(3)},atrim=0:${duration.toFixed(3)}[aout]" ` +
+            `-filter_complex "[1:a]atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
             `-map "0:v" -map "[aout]" ` +
-            `-t ${duration} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
+            `-t ${outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
           ),
           45_000,
           `Simple mux scene ${scene.index}`
@@ -4701,7 +4775,9 @@ async function composeSceneVideo(
         await withTimeout(
           exec(
             `${FFMPEG_BIN} -y -i "${fallbackClip}" -i "${safeAudioPath}" ` +
-            `-t ${duration} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
+            `-filter_complex "[1:a]atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
+            `-map "0:v" -map "[aout]" ` +
+            `-t ${outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
           ),
           60_000,
           `Color fallback scene ${scene.index}`
@@ -4720,8 +4796,8 @@ async function composeSceneVideo(
       await withTimeout(
         exec(
           `${FFMPEG_BIN} -y -ss 0.3 -i "${rescueStockClip}" -i "${safeAudioPath}" ` +
-          `-filter_complex "[1:a]apad=whole_dur=${duration.toFixed(3)},atrim=0:${duration.toFixed(3)}[aout]" ` +
-          `-map "0:v" -map "[aout]" -t ${duration} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 ` +
+          `-filter_complex "[1:a]atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
+          `-map "0:v" -map "[aout]" -t ${outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 ` +
           `-c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
         ),
         90_000,
@@ -4869,6 +4945,35 @@ async function probeVideoDurationSec(filePath: string): Promise<number> {
     } catch { /* try next */ }
   }
   return 0;
+}
+
+/** Trim leading/trailing silence so scenes concatenate without dead air. */
+async function trimVoiceoverSilence(audioPath: string): Promise<number> {
+  if (!fs.existsSync(audioPath)) return 0;
+  const tmpPath = audioPath.replace(/\.mp3$/i, "_trim.mp3");
+  try {
+    await withTimeout(
+      exec(
+        `${FFMPEG_BIN} -y -i "${audioPath}" -af ` +
+        `"silenceremove=start_periods=1:start_duration=0.06:start_threshold=-42dB:detection=peak,` +
+        `areverse,silenceremove=start_periods=1:start_duration=0.1:start_threshold=-42dB:detection=peak,areverse" ` +
+        `-c:a libmp3lame -b:a 192k "${tmpPath}"`
+      ),
+      45_000,
+      "Trim voiceover silence"
+    );
+    if (fs.existsSync(tmpPath) && fs.statSync(tmpPath).size > 400) {
+      fs.unlinkSync(audioPath);
+      fs.renameSync(tmpPath, audioPath);
+    } else if (fs.existsSync(tmpPath)) {
+      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+    }
+  } catch (err) {
+    console.warn(`[Pipeline] Voice trim skipped for ${path.basename(audioPath)}:`, (err as Error).message);
+    try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+  }
+  const probed = await probeVideoDurationSec(audioPath);
+  return probed > 0 ? probed : 0;
 }
 
 /** Pad with last-frame hold so 2-min tests reliably hit 118s (no black tail). */
@@ -5124,8 +5229,11 @@ export async function runVideoPipeline(
       const voiceLimit = pLimit(1);
       let completedVoices = 0;
       durations = await withTimeout(
-        Promise.all(scenes.map((scene, i) => voiceLimit(async () => {
-          const dur = await generateVoiceover(scene.text, audioPaths[i], voiceId);
+        Promise.all(        scenes.map((scene, i) => voiceLimit(async () => {
+          await generateVoiceover(scene.text, audioPaths[i], voiceId);
+          let dur = await trimVoiceoverSilence(audioPaths[i]);
+          if (dur <= 0) dur = await probeVideoDurationSec(audioPaths[i]);
+          if (dur <= 0) dur = Math.max(3, Math.ceil(scene.text.split(/\s+/).length / 2.5));
           completedVoices++;
           onProgress?.({
             stage: `Creating voiceovers... (${completedVoices}/${scenes.length} done)`,
@@ -5137,30 +5245,24 @@ export async function runVideoPipeline(
         "Voiceover generation stage"
       );
     }
-    // Scene duration must be longer than voiceover to allow for fade-in/out and clip transitions
+    // Tight VO sync: scene length tracks narration; target length padded only on final export
     const shortTargetSec: Record<string, number> = { "1": 58, "2": 118 };
     const targetTotal = shortTargetSec[videoLength];
+    const VO_SCENE_TAIL_SEC = 0.35;
+    for (let i = 0; i < scenes.length; i++) {
+      const probed = await probeVideoDurationSec(audioPaths[i]);
+      const audioSec = Math.max(durations[i] || 3, probed || durations[i] || 3);
+      durations[i] = audioSec;
+      scenes[i].duration = audioSec + VO_SCENE_TAIL_SEC;
+    }
+    const voTotal = scenes.reduce((sum, s) => sum + s.duration, 0);
     if (targetTotal) {
-      const padded = durations.map((d) => d + 2);
-      const rawTotal = padded.reduce((a, b) => a + b, 0);
-      const scale = targetTotal / Math.max(rawTotal, 1);
-      scenes.forEach((scene, i) => {
-        scene.duration = Math.max(padded[i] * scale, durations[i] + 1.5);
-      });
-      let finalTotal = scenes.reduce((sum, s) => sum + s.duration, 0);
-      if (Math.abs(finalTotal - targetTotal) > 0.5) {
-        const fix = targetTotal / Math.max(finalTotal, 1);
-        scenes.forEach((scene) => {
-          scene.duration *= fix;
-        });
-        finalTotal = targetTotal;
-      }
-      console.log(`[Pipeline] ${videoLength}-min test: total duration ${finalTotal.toFixed(1)}s (${scenes.length} scenes)`);
+      console.log(
+        `[Pipeline] ${videoLength}-min: VO-synced ${voTotal.toFixed(1)}s (${scenes.length} scenes); ` +
+        `final pad to ~${targetTotal}s at export if needed`
+      );
     } else {
-      // Vidrush pacing: tight scene length — minimal padding beyond voiceover
-      scenes.forEach((scene, i) => {
-        scene.duration = Math.max(durations[i] + 2, 8);
-      });
+      console.log(`[Pipeline] VO-synced total ${voTotal.toFixed(1)}s (${scenes.length} scenes)`);
     }
     console.log(`[Pipeline] Stage 2 (voiceovers): ${scenes.length} in ${((Date.now()-t1)/1000).toFixed(1)}s`);
 
@@ -5413,7 +5515,7 @@ export async function rerenderFromScenes(
       visualCue: edScene.title ?? "scene",
       pexelsQuery: edScene.title ?? "scene",
       aiImagePrompt: edScene.title ?? "scene",
-      duration: Math.max((durations[i] || 20) + 6, 10),
+      duration: Math.max((durations[i] || 20) + 0.35, 5),
       chapterTitle: edScene.chapterTitle,
     }));
 
