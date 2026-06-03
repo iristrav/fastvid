@@ -81,6 +81,16 @@ import { FASTVID_PRO_PLAN } from "./products";
 import { updateVideoScenes, updateEditedVideoUrl, getVideoScenes, type EditorScene, type EditorClip } from "./db";
 import { runVideoPipeline } from "./videoPipeline";
 import { forgotPassword, validateResetToken as validateResetTokenProcedure, resetPassword } from "./authPasswordReset";
+import {
+  buildOutlineUserPrompt,
+  buildScriptLengthRefinePrompt,
+  buildScriptWriterSystemPrompt,
+  buildSectionUserPrompt,
+  countNarrationWords,
+  getScriptLengthBudget,
+  OUTLINE_JSON_SCHEMA,
+  type ScriptOutline,
+} from "./scriptWriter";
 
 // Lazy Stripe initialization — prevents crash on startup when STRIPE_SECRET_KEY is not yet set
 let _stripe: Stripe | null = null;
@@ -208,22 +218,10 @@ async function generateFullVideo(videoId: number, prompt: string, videoLength: s
 
 // ─── Phase A: Script-only generation (stops at awaiting_approval) ────────────
 async function generateScriptOnly(videoId: number, prompt: string, videoLength: string, videoType: string) {
-  const lengthMap: Record<string, string> = {
-    "1": "about 1 minute", "2": "about 2 minutes", "5-8": "5 to 8 minutes", "8-12": "8 to 12 minutes",
-    "12-15": "12 to 15 minutes", "15-20": "15 to 20 minutes", "20+": "20+ minutes",
-  };
-  const lengthDesc = lengthMap[videoLength] ?? "15 to 20 minutes";
-  const isOneMin = videoLength === "1";
+  const budget = getScriptLengthBudget(videoLength);
   const isTwoMin = videoLength === "2";
-  const isShortTest = isOneMin || isTwoMin;
-
-  const typeInstructions: Record<string, string> = {
-    documentary: "Structure as a documentary with research-backed narration, expert insights, and visual evidence.",
-    listicle: "Structure as a Top 10 / listicle with numbered items, each with a hook, explanation, and example.",
-    tutorial: "Structure as a step-by-step tutorial with clear numbered steps, tips, and a summary.",
-    explainer: "Structure as an explainer video with simple analogies, visual metaphors, and a clear conclusion.",
-  };
-  const typeInstruction = typeInstructions[videoType] ?? typeInstructions.documentary;
+  const muskTopic = isMuskTeslaPromptTopic(prompt, prompt);
+  const writerSystem = buildScriptWriterSystemPrompt(videoType);
 
   // Initialize progressLog for script stage
   const scriptLog: ProgressLogEntry[] = [
@@ -234,40 +232,25 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLength: 
   try {
     await updateVideoStatus(videoId, "generating_script", { progressStep: "🔍 Researching topic...", progressPercent: 5, generationStartedAt: new Date() });
 
-    // Step 1a: Short outline call (~5-8s)
+    // Step 1a: Retention-first outline with exact section count + word budget
     const outlineResp = await invokeLLM({
       messages: [
-        { role: "system", content: `You are a senior producer at a high-quality YouTube documentary channel (think Vox, Wendover Productions, or Johnny Harris). ${typeInstruction} Create compelling, well-researched video structures.` },
-        { role: "user", content: isOneMin
-          ? `Create a SHORT YouTube video outline for: "${prompt}"\nVideo length: ${lengthDesc} (~60 seconds when narrated aloud)\nFormat: ${videoType}\n\nKeep it tight: hook immediately, two quick beats, one-line takeaway.\n\nRespond with JSON: { title, hook (1 punchy sentence), sections (EXACTLY 2, each: {title, keyPoints: string[] with max 2 items}), cta (1 sentence) }`
-          : isTwoMin
-            ? `Create a SHORT YouTube video outline for: "${prompt}"\nVideo length: ${lengthDesc} (~120 seconds when narrated aloud)\nFormat: ${videoType}\n\nHook fast, three clear beats, strong takeaway.\n\nRespond with JSON: { title, hook (1-2 punchy sentences), sections (EXACTLY 3, each: {title, keyPoints: string[] with max 2 items}), cta (1 sentence) }`
-          : `Create a YouTube video outline for: "${prompt}"\nVideo length: ${lengthDesc}\nFormat: ${videoType}\n\nThe video should follow a strong narrative arc: hook the viewer immediately, build understanding through context and history, reveal the mechanics/details, show real-world impact, and end with a clear takeaway.\n\nRespond with JSON: { title (compelling, specific, not clickbait), hook (2 punchy sentences that immediately grab attention with a surprising fact or contrast), sections (4-6, each: {title, keyPoints: string[]}), cta }` },
+        { role: "system", content: writerSystem },
+        { role: "user", content: buildOutlineUserPrompt(prompt, videoType, budget) },
       ],
-      response_format: {
-        type: "json_schema",
-        json_schema: {
-          name: "video_outline", strict: true,
-          schema: {
-            type: "object",
-            properties: {
-              title: { type: "string" },
-              hook: { type: "string" },
-              sections: { type: "array", items: { type: "object", properties: { title: { type: "string" }, keyPoints: { type: "array", items: { type: "string" } } }, required: ["title", "keyPoints"], additionalProperties: false } },
-              cta: { type: "string" },
-            },
-            required: ["title", "hook", "sections", "cta"], additionalProperties: false,
-          },
-        },
-      },
+      response_format: OUTLINE_JSON_SCHEMA,
     });
 
-    type Outline = { title: string; hook: string; sections: { title: string; keyPoints: string[] }[]; cta: string };
-    let outline: Outline = { title: prompt.slice(0, 80), hook: "", sections: [], cta: "" };
+    let outline: ScriptOutline = { title: prompt.slice(0, 80), hook: "", sections: [], cta: "" };
     try {
       const raw = outlineResp?.choices?.[0]?.message?.content ?? "{}";
-      outline = JSON.parse(typeof raw === "string" ? raw : JSON.stringify(raw)) as Outline;
+      outline = JSON.parse(typeof raw === "string" ? raw : JSON.stringify(raw)) as ScriptOutline;
     } catch { /* use default */ }
+    if (outline.sections.length !== budget.sectionCount) {
+      console.warn(
+        `[Script] Outline returned ${outline.sections.length} sections, expected ${budget.sectionCount}`
+      );
+    }
     const title = outline.title || prompt.slice(0, 100);
 
     // Mark research done, start writing
@@ -277,27 +260,15 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLength: 
     await updateVideoProgress(videoId, `✍️ Writing ${outline.sections.length} sections in parallel...`, 12);
 
     // Step 1b: Generate each section AND metadata in parallel
+    const sectionTotal = outline.sections.length || budget.sectionCount;
     const sectionPromises = outline.sections.map((sec, idx) =>
       invokeLLM({
         messages: [
-          { role: "system", content: `You are a writer for a high-quality YouTube documentary channel in the style of Vox, Wendover Productions, or Johnny Harris. ${typeInstruction}
-
-RULES:
-- Write in a clear, analytical, authoritative tone — educational but engaging
-- Use short punchy sentences mixed with longer explanatory ones
-- Every 2-3 sentences, add a [VISUAL: ...] tag with a VERY SPECIFIC, LITERAL description of what to show on screen. Examples:
-  [VISUAL: Aerial drone shot of Brussels city center at golden hour]
-  [VISUAL: Black and white archival photo of 1950s American highway construction]
-  [VISUAL: Close-up of a tram moving through a narrow medieval street in Bruges]
-  [VISUAL: Animated bar chart comparing cycling rates in Belgium vs USA]
-- Visual cues must be LITERAL and SPECIFIC — not abstract. Describe exactly what the viewer should see.
-- Do NOT use filler phrases like "In this section we will..." — start directly with the content
-- Write as if you are narrating a documentary, not reading a blog post` },
-          { role: "user", content: isOneMin
-            ? `Section ${idx + 1}: "${sec.title}"\nCover: ${sec.keyPoints.join(", ")}\n\nWrite ONE short paragraph of 3-4 sentences (~45-55 words total). Include exactly 2 [VISUAL: ...] tags with specific real-world footage descriptions. This entire video is only 1 minute — be concise.`
-            : isTwoMin
-              ? `Section ${idx + 1}: "${sec.title}"\nCover: ${sec.keyPoints.join(", ")}\n\nWrite ONE paragraph of 5-6 sentences (~120-140 words total). After each sentence add [VISUAL: ...] with REAL identifiable footage — use exact names (Tesla Model 3, SpaceX Falcon 9 launch, Gigafactory) matching what you just said. Never generic "car" or "rocket" without the brand. 2 minutes — continuous narration, no filler.`
-            : `Section ${idx + 1}: "${sec.title}"\nCover these key points: ${sec.keyPoints.join(", ")}\n\nWrite 3-4 short paragraphs of documentary-style narration. Each paragraph should be 2-4 sentences. Include [VISUAL: ...] tags after every 2-3 sentences with very specific, literal descriptions of footage to show.` },
+          { role: "system", content: writerSystem },
+          {
+            role: "user",
+            content: buildSectionUserPrompt(sec, idx, sectionTotal, prompt, title, budget, muskTopic),
+          },
         ],
       }).then(r => { const c = r?.choices?.[0]?.message?.content ?? ""; return typeof c === "string" ? c : ""; })
       .catch(() => sec.keyPoints.join(". ") + ".")
@@ -306,7 +277,7 @@ RULES:
     const metaPromise = invokeLLM({
       messages: [
         { role: "system", content: "YouTube SEO expert. Respond with valid JSON only." },
-        { role: "user", content: `YouTube metadata for: ${prompt} (${lengthDesc}, ${videoType} format)\nJSON: { title, description, tags: string[], chapters: [{time, title}] }` },
+        { role: "user", content: `YouTube metadata for: ${prompt} (${budget.label}, ${videoType} format)\nJSON: { title, description, tags: string[], chapters: [{time, title}] }` },
       ],
       response_format: {
         type: "json_schema",
@@ -337,7 +308,37 @@ RULES:
     const scriptParts: string[] = [`# ${title}\n`, `## Opening\n${outline.hook}\n${buildOpeningVisualTag(prompt, title, isTwoMin)}\n`];
     outline.sections.forEach((sec, idx) => scriptParts.push(`## ${sec.title}\n${sectionTexts[idx] ?? ""}\n`));
     scriptParts.push(`## CALL TO ACTION\n${outline.cta}\n[VISUAL: Cinematic closing b-roll related to the video topic]\n`);
-    const scriptContent = scriptParts.join("\n");
+    let scriptContent = scriptParts.join("\n");
+
+    let narrationWords = countNarrationWords(scriptContent);
+    if (narrationWords < budget.minWords || narrationWords > budget.maxWords) {
+      scriptLog.push({ step: "✂️ Adjusting script to target length...", startedAt: Date.now(), status: "active" });
+      await updateVideoProgress(videoId, "✂️ Matching script length to video...", 24);
+      try {
+        const refineResp = await invokeLLM({
+          messages: [
+            { role: "system", content: writerSystem },
+            { role: "user", content: buildScriptLengthRefinePrompt(scriptContent, budget, narrationWords) },
+          ],
+        });
+        const refined = refineResp?.choices?.[0]?.message?.content ?? "";
+        if (typeof refined === "string" && refined.trim().length > 200) {
+          scriptContent = refined.trim();
+          narrationWords = countNarrationWords(scriptContent);
+        }
+      } catch (err) {
+        console.warn("[Script] Length refine pass failed (non-fatal):", err);
+      }
+      const refineStep = scriptLog.find((e) => e.status === "active");
+      if (refineStep) {
+        refineStep.completedAt = Date.now();
+        refineStep.status = "done";
+      }
+    }
+    console.log(
+      `[Script] Video ${videoId}: ${narrationWords} words (target ${budget.targetWords}, ` +
+      `${budget.minWords}–${budget.maxWords}) · ~${budget.targetSpokenSec}s VO`
+    );
 
     let metadata: unknown = {};
     try {
