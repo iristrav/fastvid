@@ -1796,7 +1796,7 @@ async function fetchSerpAPIImages(
 async function generateColorFallback(sceneIndex: number, duration: number, workDir: string): Promise<string> {
   fs.mkdirSync(workDir, { recursive: true });
   const outputPath = path.join(workDir, `scene_${sceneIndex}_fallback.mp4`);
-  const colors = ["0a0a1e", "0a0a1e", "0a1a2e", "1a0a2e", "0a2a1e", "1a1a0a", "2a0a1e", "0a1a1e"];
+  const colors = ["3a4a5e", "4a5a6e", "3a5a6e", "4a4a5e", "3a5a5e", "4a5a5e", "3a4a6e", "4a4a6e"];
   const color = colors[sceneIndex % colors.length];
   const safeDuration = Math.min(Math.max(duration, 3), 90);
 
@@ -3221,6 +3221,8 @@ const GOLDEN_MUSK_QUERIES = [
 type VisualAdoptOptions = {
   muskTopic?: boolean;
   keywords?: string[];
+  /** Hero/opening: require Tesla/SpaceX tokens in slug or query. */
+  requireMuskBrand?: boolean;
 };
 
 async function withVisualDedupLock<T>(dedup: VisualDedupState, fn: () => Promise<T>): Promise<T> {
@@ -3248,7 +3250,7 @@ const BLOCKED_STOCK_QUERY_RE =
 
 /** Reject model/CGI/archival-looking clips (Pexels slugs + local filenames). */
 const BLOCKED_STOCK_VISUAL_RE =
-  /shuttle|saturn|apollo|lunar|moon[- ]?landing|moon[- ]?surface|miniature|diorama|tabletop|model[- ]?rocket|scale[- ]?model|toy[- ]?rocket|replica|maquette|science[- ]?fiction|sci[- ]?fi|cgi|3d[- ]?animation|vhs|glitch|vintage[- ]?space|archival|old[- ]?nasa|space[- ]?shuttle|saturn[- ]?v|rocket[- ]?model|model[- ]?launch|volkswagen|vw\b|ford\b|bmw|mercedes|audi\b|toyota factory|honda factory|container ship|cargo ship|freight ship|bulk carrier|ferry|passenger boat|catamaran|harbor cruise|shipping port|port crane|river boat|canal boat|textile mill|weaving factory|yarn factory|fabric mill|sewing factory|highway|motorway|freeway|country road|rural road|pickup truck|desert road|coastal road|dashcam|night driving/i;
+  /shuttle|saturn|apollo|lunar|moon[- ]?landing|moon[- ]?surface|miniature|diorama|tabletop|model[- ]?rocket|scale[- ]?model|toy[- ]?rocket|replica|maquette|science[- ]?fiction|sci[- ]?fi|cgi|3d[- ]?animation|vhs|glitch|vintage[- ]?space|archival|old[- ]?nasa|space[- ]?shuttle|saturn[- ]?v|rocket[- ]?model|model[- ]?launch|volkswagen|vw\b|ford\b|bmw|mercedes|audi\b|toyota factory|honda factory|container ship|cargo ship|freight ship|bulk carrier|ferry|passenger boat|catamaran|harbor cruise|shipping port|port crane|logistics hub|cargo terminal|container terminal|river boat|canal boat|textile mill|weaving factory|yarn factory|fabric mill|sewing factory|highway|motorway|freeway|country road|rural road|pickup truck|desert road|coastal road|dashcam|night driving/i;
 
 const BLOCKED_MUSK_COMPETITOR_RE =
   /\b(volkswagen|vw|ford|gm|general motors|bmw|mercedes|audi|toyota|honda|hyundai|kia|rivian|lucid)\b/i;
@@ -3265,7 +3267,7 @@ function stockVisualCategory(query: string, filePath?: string): string {
   if (/miniature|diorama|tabletop|toy|model rocket|scale model|saturn|apollo|lunar|moon[- ]?landing|moon[- ]?surface|space shuttle|shuttle|vhs|glitch|sci[- ]?fi|cgi/.test(combined)) {
     return "blocked_model";
   }
-  if (/textile|weaving|loom|yarn factory|fabric mill|sewing factory|ferry|catamaran|river boat|canal|harbor cruise|container ship|cargo ship|highway|motorway|freeway|country road|rural road|pickup truck|desert road|coastal road|dashcam/.test(combined)) {
+  if (/textile|weaving|loom|yarn factory|fabric mill|sewing factory|ferry|catamaran|river boat|canal|harbor cruise|container ship|cargo ship|shipping port|port crane|logistics hub|cargo terminal|container terminal|highway|motorway|freeway|country road|rural road|pickup truck|desert road|coastal road|dashcam/.test(combined)) {
     return "blocked_offtopic";
   }
   if (/gigafactory|solar.*(factory|plant|roof)|factory.*solar|solar panel.*roof/.test(combined)) return "gigafactory";
@@ -3656,6 +3658,7 @@ async function adoptClip(
       // Musk/Tesla topics: reject generic clips when query targets a specific category
       const queryCategory = stockVisualCategory(sourceQuery);
       if (queryCategory !== "generic" && category === "generic") continue;
+      if (opts.requireMuskBrand && muskBrandScore(sourceQuery, p) < 1) continue;
       if (muskTopic) {
         if ((category === "rocket" || category === "space") && !isMuskApprovedRocketQuery(sourceQuery)) {
           continue;
@@ -3835,9 +3838,10 @@ async function fetchBeatClip(
     sceneIndex === 0
   ) {
     const heroKw = [...MUSK_TOPIC_TOKENS, ...beat.keywords];
+    const heroOpts = { ...adoptOpts, requireMuskBrand: true };
     clip = await tryStockSources(
       [
-        ...HERO_MUSK_QUERIES.slice(0, 3).map((hq, hi) => ({
+        ...HERO_MUSK_QUERIES.map((hq, hi) => ({
           query: hq,
           fetch: pexFetch(hq, `${tag}_hero`, candidateOffset + hi, 4),
         })),
@@ -3851,7 +3855,7 @@ async function fetchBeatClip(
           fetch: () => fetchNasaVideoClips("SpaceX Starship launch", clipFetchDur, workDir, sceneIndex, 1),
         },
       ],
-      dedup, sceneIndex, beat.index, beat.text, workDir, "hero", adoptOpts
+      dedup, sceneIndex, beat.index, beat.text, workDir, "hero", heroOpts
     );
     if (clip) {
       dedup.muskHeroFetchUsed = true;
@@ -3861,14 +3865,15 @@ async function fetchBeatClip(
     dedup.muskHeroFetchUsed = true;
   }
 
-  // 0) Opening beat: brand-forward hero (skip if hero fetch already succeeded on scene 0)
-  if (beat.index === 0 && muskTopic && !dedup.muskHeroFetchUsed) {
+  // 0) Opening beat when hero waterfall missed (scene 0 only; hero returns early on success)
+  if (!clip && beat.index === 0 && sceneIndex === 0 && muskTopic) {
+    const heroOpts = { ...adoptOpts, requireMuskBrand: true };
     clip = await tryStockSources(
       OPENING_MUSK_QUERIES.map((oq, oi) => ({
         query: oq,
         fetch: pexFetch(oq, `${tag}_open`, candidateOffset + oi, 4),
       })),
-      dedup, sceneIndex, beat.index, beat.text, workDir, "opening", adoptOpts
+      dedup, sceneIndex, beat.index, beat.text, workDir, "opening", heroOpts
     );
     if (clip) { dedup.globalBeatIndex++; return clip; }
   }
@@ -4808,7 +4813,7 @@ async function ensureFinalVideoDuration(
   const trimmed = path.join(workDir, `fastvid_${videoId}_trimtail.mp4`);
   try {
     const detectCmd =
-      `"${FFMPEG_BIN}" -y -i "${working}" -vf "blackdetect=d=0.15:pix_th=0.08" -an -f null -`;
+      `"${FFMPEG_BIN}" -y -i "${working}" -vf "blackdetect=d=0.04:pix_th=0.12" -an -f null -`;
     const { stderr } = await withTimeout(exec(detectCmd), 60_000, "Final blackdetect trim");
     const out = typeof stderr === "string" ? stderr : String(stderr ?? "");
     const starts = [...out.matchAll(/black_start:([\d.]+)/g)].map((m) => parseFloat(m[1]));
@@ -4817,8 +4822,8 @@ async function ensureFinalVideoDuration(
     if (starts.length > 0 && ends.length > 0) {
       const lastBlackStart = starts[starts.length - 1];
       const lastBlackEnd = ends[ends.length - 1];
-      if (lastBlackEnd >= trimTo - 0.5 && lastBlackStart < trimTo - 1) {
-        trimTo = Math.max(1, lastBlackStart - 0.05);
+      if (lastBlackEnd >= trimTo - 0.25 && lastBlackStart < trimTo - 0.15) {
+        trimTo = Math.max(1, lastBlackStart - 0.02);
       }
     }
     const probed = await probeVideoDurationSec(working);
