@@ -82,6 +82,7 @@ import { updateVideoScenes, updateEditedVideoUrl, getVideoScenes, type EditorSce
 import { runVideoPipeline } from "./videoPipeline";
 import { forgotPassword, validateResetToken as validateResetTokenProcedure, resetPassword } from "./authPasswordReset";
 import {
+  buildOneShotScriptUserPrompt,
   buildOutlineUserPrompt,
   buildScriptLengthRefinePrompt,
   buildScriptWriterSystemPrompt,
@@ -231,6 +232,82 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLength: 
 
   try {
     await updateVideoStatus(videoId, "generating_script", { progressStep: "🔍 Researching topic...", progressPercent: 5, generationStartedAt: new Date() });
+
+    // 1–2 min: one LLM call (saves ~2–4 min vs outline + parallel sections + metadata)
+    if (isTwoMin || videoLength === "1") {
+      scriptLog[0].step = "✍️ Writing documentary script...";
+      await updateVideoProgressLog(videoId, scriptLog).catch(() => {});
+      await updateVideoProgress(videoId, "✍️ Writing script...", 12);
+
+      const shotResp = await invokeLLM({
+        messages: [
+          { role: "system", content: writerSystem },
+          { role: "user", content: buildOneShotScriptUserPrompt(prompt, videoType, budget, muskTopic) },
+        ],
+      });
+      let scriptContent = shotResp?.choices?.[0]?.message?.content ?? "";
+      if (typeof scriptContent !== "string") scriptContent = "";
+      scriptContent = scriptContent.trim();
+      if (scriptContent.length < 200) {
+        throw pipelineError(PIPELINE_ERROR.SCRIPT_FAILED, "Script generation returned empty content");
+      }
+
+      const titleMatch = scriptContent.match(/^#\s+(.+)$/m);
+      let title = titleMatch?.[1]?.trim() || prompt.slice(0, 100);
+      if (!/\[VISUAL:/i.test(scriptContent.split("\n").slice(0, 12).join("\n"))) {
+        const openingTag = buildOpeningVisualTag(prompt, title, isTwoMin);
+        scriptContent = scriptContent.replace(
+          /(## Opening\s*\n)/i,
+          `$1${openingTag}\n`
+        );
+      }
+
+      let narrationWords = countNarrationWords(scriptContent);
+      if (narrationWords < budget.minWords || narrationWords > budget.maxWords) {
+        scriptLog.push({ step: "✂️ Matching script length...", startedAt: Date.now(), status: "active" });
+        await updateVideoProgress(videoId, "✂️ Matching script length...", 22);
+        try {
+          const refineResp = await invokeLLM({
+            messages: [
+              { role: "system", content: writerSystem },
+              { role: "user", content: buildScriptLengthRefinePrompt(scriptContent, budget, narrationWords) },
+            ],
+          });
+          const refined = refineResp?.choices?.[0]?.message?.content ?? "";
+          if (typeof refined === "string" && refined.trim().length > 200) {
+            scriptContent = refined.trim();
+            narrationWords = countNarrationWords(scriptContent);
+          }
+        } catch (err) {
+          console.warn("[Script] Fast-path length refine failed (non-fatal):", err);
+        }
+      }
+      console.log(
+        `[Script] Video ${videoId} (fast): ${narrationWords} words (target ${budget.targetWords})`
+      );
+
+      scriptLog[0].completedAt = Date.now();
+      scriptLog[0].status = "done";
+      await updateVideoProgressLog(videoId, scriptLog).catch(() => {});
+
+      const metadata = { title, description: prompt, tags: [] as string[], chapters: [] as { time: string; title: string }[] };
+      await updateVideoStatus(videoId, "awaiting_approval", {
+        script: scriptContent,
+        title,
+        metadata,
+        progressStep: "✅ Script ready — starting video production...",
+        progressPercent: 28,
+      });
+      const savedVideo = await getVideoById(videoId);
+      if (!savedVideo?.script) {
+        throw pipelineError(
+          PIPELINE_ERROR.SCRIPT_FAILED,
+          `Script save verification failed for video ${videoId} — DB write did not persist`
+        );
+      }
+      console.log(`[Script Generation] Fast script saved for video ${videoId} (${savedVideo.script.length} chars)`);
+      return;
+    }
 
     // Step 1a: Retention-first outline with exact section count + word budget
     const outlineResp = await invokeLLM({

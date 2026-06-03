@@ -20,7 +20,7 @@ import {
   Play, Sparkles, CheckCircle2, XCircle, Loader2,
   FileText, Video, LogOut, User, ChevronRight, RefreshCw,
   Copy, Download, Eye, LayoutDashboard, Settings, CreditCard, Volume2,
-  Trash2, Pencil, Check, X as XIcon, Mic, Upload, BookOpen, List, GraduationCap, Lightbulb,
+  Trash2, Pencil, Check, X as XIcon, Mic, Upload,
   AlertCircle, ChevronDown, Edit2,
 } from "lucide-react";
 import {
@@ -30,7 +30,8 @@ import { Switch } from "@/components/ui/switch";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const VIDEO_LENGTHS = [
-  { label: "1 min (test)", value: "1" as const, desc: "Pipeline smoke test" },
+  { label: "1 min (test)", value: "1" as const, desc: "Quick test" },
+  { label: "2 min", value: "2" as const, desc: "Fast preview" },
   { label: "5–8 min", value: "5-8" as const, desc: "Short & punchy" },
   { label: "8–12 min", value: "8-12" as const, desc: "Tutorials" },
   { label: "12–15 min", value: "12-15" as const, desc: "In-depth" },
@@ -38,15 +39,7 @@ const VIDEO_LENGTHS = [
   { label: "20+ min", value: "20+" as const, desc: "Long-form" },
 ];
 
-const VIDEO_TYPES = [
-  { value: "documentary" as const, label: "Documentary", desc: "Research-backed narration", icon: BookOpen, color: "from-blue-600/40 to-indigo-500/30 border-blue-400/60" },
-  { value: "listicle" as const, label: "Top 10 / Listicle", desc: "Numbered items format", icon: List, color: "from-orange-600/40 to-amber-500/30 border-orange-400/60" },
-  { value: "tutorial" as const, label: "Tutorial", desc: "Step-by-step guide", icon: GraduationCap, color: "from-green-600/40 to-emerald-500/30 border-green-400/60" },
-  { value: "explainer" as const, label: "Explainer", desc: "Simple analogies & visuals", icon: Lightbulb, color: "from-purple-600/40 to-violet-500/30 border-purple-400/60" },
-];
-
-type VideoLength = "1" | "5-8" | "8-12" | "12-15" | "15-20" | "20+";
-type VideoType = "documentary" | "listicle" | "tutorial" | "explainer";
+type VideoLength = "1" | "2" | "5-8" | "8-12" | "12-15" | "15-20" | "20+";
 
 // Agent-style stage labels for the progress UI
 const AGENT_STAGES: Record<string, { label: string; agent: string; icon: string }> = {
@@ -763,8 +756,7 @@ export default function Dashboard() {
   const { user, loading, isAuthenticated, logout } = useAuth({ redirectOnUnauthenticated: true });
   const [, navigate] = useLocation();
   const [prompt, setPrompt] = useState("");
-  const [selectedLength, setSelectedLength] = useState<VideoLength>("15-20");
-  const [selectedType, setSelectedType] = useState<VideoType>("documentary");
+  const [selectedLength, setSelectedLength] = useState<VideoLength>("2");
   const [selectedVoice, setSelectedVoice] = useState("pNInz6obpgDQGcFmaJgB"); // ElevenLabs Michael voice ID
   const [useCustomVoice, setUseCustomVoice] = useState(false);
   const [customVoiceoverUrl, setCustomVoiceoverUrl] = useState<string | null>(null);
@@ -816,8 +808,6 @@ export default function Dashboard() {
   
   const userSub = (user as { subscriptionStatus?: string } | null)?.subscriptionStatus;
   const hasActiveSubscription = userSub === "active" || user?.role === "admin";
-  const activeTypeOption = VIDEO_TYPES.find(t => t.value === selectedType)!;
-
   // ─── Subscription gate ────────────────────────────────────────────────────
   // Redirect non-admin users without an active subscription to /subscribe
   useEffect(() => {
@@ -834,7 +824,7 @@ export default function Dashboard() {
     generateMutation.mutate({
       prompt: prompt.trim(),
       videoLength: selectedLength,
-      videoType: selectedType,
+      videoType: "documentary",
       voiceId: useCustomVoice ? undefined : selectedVoice,
       customVoiceoverUrl: useCustomVoice ? (customVoiceoverUrl ?? undefined) : undefined,
       enableSubtitles,
@@ -954,31 +944,6 @@ export default function Dashboard() {
               Generate New Video
             </h2>
 
-            {/* Video Type selector */}
-            <div>
-              <p className="text-xs text-slate-500 font-medium uppercase tracking-wide mb-2">Video format</p>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                {VIDEO_TYPES.map(opt => {
-                  const Icon = opt.icon;
-                  return (
-                    <button
-                      key={opt.value}
-                      onClick={() => setSelectedType(opt.value)}
-                      className={`px-3 py-2.5 rounded-lg text-xs font-semibold border transition-all duration-200 flex flex-col items-center gap-1 ${
-                        selectedType === opt.value
-                          ? `bg-gradient-to-br ${opt.color} text-white shadow-lg`
-                          : "border-white/10 text-slate-400 hover:border-white/20 hover:text-slate-200 bg-white/3"
-                      }`}
-                    >
-                      <Icon className="w-4 h-4" />
-                      <span className="font-bold text-center leading-tight">{opt.label}</span>
-                      <span className={`text-[10px] font-normal text-center ${selectedType === opt.value ? "text-white/70" : "text-slate-600"}`}>{opt.desc}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
             {/* Length selector */}
             <div>
               <p className="text-xs text-slate-500 font-medium uppercase tracking-wide mb-2">Video length</p>
@@ -1033,12 +998,7 @@ export default function Dashboard() {
               <textarea
                 value={prompt}
                 onChange={e => setPrompt(e.target.value)}
-                placeholder={`Describe your ${activeTypeOption.label} video... e.g. "${
-                  selectedType === "listicle" ? "Top 10 productivity hacks for entrepreneurs in 2025" :
-                  selectedType === "tutorial" ? "How to set up a professional home studio on a budget" :
-                  selectedType === "explainer" ? "How does blockchain technology actually work?" :
-                  "The rise and fall of Blockbuster — what really happened"
-                }"`}
+                placeholder='Describe your documentary topic… e.g. "How Elon Musk built SpaceX against impossible odds" or "The rise and fall of Blockbuster — what really happened"'
                 rows={3}
                 className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder:text-slate-600 outline-none focus:border-purple-500/50 focus:bg-white/8 transition-all resize-none"
               />

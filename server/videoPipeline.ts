@@ -325,18 +325,18 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
   if (videoLength === "1" || videoLength === "2") {
     return {
       targetWallClockMin: 60,
-      maxBeatsPerScene: 5,
-      maxTopicQueries: 3,
+      maxBeatsPerScene: IS_RAILWAY ? 3 : 5,
+      maxTopicQueries: IS_RAILWAY ? 2 : 3,
       skipFairUseTransform: true,
       transformTimeoutMs: 25_000,
       enableArchival: false,
       enableNasa: false,
-      enableMuskHeroFetch: true,
-      maxEntityYoutubePerVideo: 2,
-      enableAiFallback: true,
-      maxAiClipsPerVideo: 3,
+      enableMuskHeroFetch: !IS_RAILWAY,
+      maxEntityYoutubePerVideo: IS_RAILWAY ? 0 : 2,
+      enableAiFallback: !IS_RAILWAY,
+      maxAiClipsPerVideo: IS_RAILWAY ? 0 : 3,
       sceneParallelism: railwayParallel,
-      pexelsDownloadRetries: 2,
+      pexelsDownloadRetries: IS_RAILWAY ? 1 : 2,
     };
   }
   if (videoLength === "5-8") {
@@ -3787,6 +3787,11 @@ async function probeClipMeanLuma(filePath: string, atSec: number): Promise<numbe
 
 async function isMostlyBlackClip(filePath: string): Promise<boolean> {
   if (isPipelineFallbackClip(filePath)) return true;
+  // Railway: one luma sample — full blackdetect runs 3+ FFmpeg probes per clip
+  if (IS_RAILWAY) {
+    const mid = await probeClipMeanLuma(filePath, 0.5);
+    return mid !== null && mid < 24;
+  }
   const dur = await probeVideoDurationSec(filePath);
   const sampleTimes = [0.2, 0.9, 2.0];
   if (dur > 2.5) sampleTimes.push(Math.max(0.3, dur - 0.35));

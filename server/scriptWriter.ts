@@ -257,6 +257,45 @@ ${brandRule}
 Do not repeat the hook. Start in medias res for this beat.`;
 }
 
+/** Single LLM call for 1–2 min videos (faster than outline + N sections). */
+export function buildOneShotScriptUserPrompt(
+  prompt: string,
+  videoType: string,
+  budget: ScriptLengthBudget,
+  isMuskTopic: boolean
+): string {
+  const sections =
+    budget.sectionCount === 2
+      ? "## Act 1 — Setup\n…\n\n## Act 2 — Payoff\n…"
+      : "## Act 1 — Setup\n…\n\n## Act 2 — Escalation\n…\n\n## Act 3 — Payoff\n…";
+  const brandRule = isMuskTopic
+    ? "Use exact names (Tesla Model 3, SpaceX Falcon 9, Gigafactory) — never generic car/rocket."
+    : "Use exact real names (people, companies, places) from the topic — never generic stock where a brand is named.";
+
+  return `Topic: "${prompt}"
+Video length: ${budget.label} (~${budget.targetSpokenSec}s spoken VO)
+Format: ${videoType}
+
+Write the COMPLETE narration script in one pass (markdown).
+
+STRUCTURE (required headings):
+# Compelling title
+## Opening
+Hook narration (${budget.hookWords} words) — pattern interrupt, no "welcome" or "in this video"
+[VISUAL: literal opening footage for this topic]
+${sections}
+## CALL TO ACTION
+${budget.ctaWords} words max — forward-looking single beat
+[VISUAL: cinematic closing b-roll for the topic]
+
+WORD BUDGET (spoken words only, excluding [VISUAL] tags):
+${budget.minWords}–${budget.maxWords} words (target ${budget.targetWords})
+Include ${budget.videoLength === "1" ? "6–8" : "12–18"} [VISUAL: ...] tags — specific real-world footage per beat.
+${brandRule}
+
+Return ONLY the markdown script.`;
+}
+
 export function buildScriptLengthRefinePrompt(
   script: string,
   budget: ScriptLengthBudget,
