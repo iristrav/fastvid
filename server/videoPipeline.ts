@@ -4421,6 +4421,14 @@ async function fetchSceneVisuals(
   const muskTopic = isMuskTeslaTopic(videoTitle, scene.text);
 
   for (const beat of beats) {
+    const adoptOpts: VisualAdoptOptions = {
+      muskTopic,
+      keywords: beat.keywords,
+      sceneText: scene.text,
+      videoTitle,
+      requireBeatMatch: true,
+      requireMuskBrand: extractBeatRealEntities(beat.text, scene.text, videoTitle).length > 0,
+    };
     const clip = await fetchBeatClip(
       beat,
       scene,
