@@ -306,8 +306,8 @@ const VIDRUSH_CLIP_MIN_SEC = 3.0;
 const VIDRUSH_CLIP_MAX_SEC = 4.0;
 const VIDRUSH_CLIP_HOLD_SEC = 7.0;
 const VIDRUSH_BEAT_SEC = 3.5;
-/** Hard cuts between beats — xfade caused visible judder/stutter on Railway. */
-const MONTAGE_XFADE_SEC = 0;
+/** Short crossfade between beats — smooth flow without long dissolves. */
+const MONTAGE_XFADE_SEC = IS_RAILWAY ? 0.28 : 0.35;
 const CHAPTER_CARD_DURATION = 2.5;
 
 /** Wall-clock budgets: short ≤60 min, long ≤90 min (see getPipelinePerfProfile). */
@@ -367,8 +367,8 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
       sceneParallelism: railwayParallel,
       pexelsDownloadRetries: IS_RAILWAY ? 1 : 2,
       maxStockQueriesPerBeat: 4,
-      beatClipTimeoutMs: IS_RAILWAY ? 48_000 : 90_000,
-      sceneVisualTimeoutMs: IS_RAILWAY ? 4 * 60_000 : 6 * 60_000,
+      beatClipTimeoutMs: IS_RAILWAY ? 55_000 : 90_000,
+      sceneVisualTimeoutMs: IS_RAILWAY ? 5 * 60_000 : 6 * 60_000,
       fastStockMode: IS_RAILWAY,
       scriptOnlyVisuals: true,
     };
@@ -475,7 +475,7 @@ async function runBeatClipFetch(
   }
 }
 
-/** Quick script-ordered stock attempts; reuse last good clip before grey placeholder. */
+/** Quick script-ordered stock attempts; never grey placeholders or duplicate clips. */
 async function resolveBeatClipFast(
   beat: SceneBeat,
   scene: Scene,
@@ -484,8 +484,9 @@ async function resolveBeatClipFast(
   clipFetchDur: number,
   dedup: VisualDedupState,
   scenePersons: string[],
-  videoTitle?: string
-): Promise<string> {
+  videoTitle?: string,
+  adoptOpts: VisualAdoptOptions = {}
+): Promise<string | null> {
   const queries = buildBeatVisualQueryList(
     beat.text, scene, videoTitle, scenePersons, 4
   );
@@ -514,6 +515,8 @@ async function resolveBeatClipFast(
         try { size = fs.statSync(p).size; } catch { continue; }
         if (size < 180_000) continue;
         if (isRejectedStockClip(p, q) || isPipelineFallbackClip(p)) continue;
+        const contentKey = clipContentKey(p);
+        if (dedup.usedContentKeys.has(contentKey)) continue;
         if (dedup.personTopicLock && dedup.primaryPerson &&
           isOffTopicVisualForPersonTopic(q, p, dedup.primaryPerson)) continue;
         try {
@@ -523,7 +526,7 @@ async function resolveBeatClipFast(
           continue;
         }
         dedup.usedPaths.add(p);
-        dedup.usedContentKeys.add(clipContentKey(p));
+        dedup.usedContentKeys.add(contentKey);
         dedup.lastMuskStockClip = p;
         console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: fast Pexels "${q}"`);
         return p;
@@ -583,34 +586,9 @@ async function resolveBeatClipFast(
     }
   }
 
-  const muskTopic = isMuskTeslaTopic(videoTitle, beat.text);
-  if (muskTopic) {
-    try {
-      const golden = await fetchMuskGoldenStockBeat(
-        beat,
-        scene,
-        workDir,
-        sceneIndex,
-        dedup,
-        {
-          muskTopic: true,
-          keywords: beat.keywords,
-          scriptAnchored: true,
-          sceneText: scene.text,
-          videoTitle,
-        }
-      );
-      if (golden && !isPipelineFallbackClip(golden)) return golden;
-    } catch (err) {
-      console.warn(
-        `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: fast golden stock failed:`,
-        (err as Error).message
-      );
-    }
-  }
-  const reused = await reuseLastGoodStockClip(dedup, sceneIndex, beat.index);
-  if (reused) return reused;
-  return generateColorFallback(sceneIndex * 500 + beat.index, Math.min(4, beat.holdSec), workDir);
+  return fetchUniqueStockForBeat(
+    beat, scene, workDir, sceneIndex, clipFetchDur, dedup, scenePersons[0] ?? "", videoTitle, adoptOpts
+  );
 }
 
 function composeParallelism(): number {
@@ -2449,7 +2427,7 @@ async function generateColorFallback(sceneIndex: number, duration: number, workD
   );
 }
 
-/** Last resort: rotate golden Musk queries before grey placeholder. */
+/** Rotate golden Musk queries; never grey or duplicate clips. */
 async function fetchMuskGoldenStockBeat(
   beat: SceneBeat,
   scene: Scene,
@@ -2457,7 +2435,7 @@ async function fetchMuskGoldenStockBeat(
   sceneIndex: number,
   dedup: VisualDedupState,
   adoptOpts: VisualAdoptOptions
-): Promise<string> {
+): Promise<string | null> {
   const clipFetchDur = 4;
   const start = (sceneIndex * 5 + beat.index) % GOLDEN_MUSK_QUERIES.length;
   for (let i = 0; i < GOLDEN_MUSK_QUERIES.length; i++) {
@@ -2473,51 +2451,35 @@ async function fetchMuskGoldenStockBeat(
     );
     if (gClip) return gClip;
   }
-  return muskRescueClip(dedup, sceneIndex, beat.index, workDir);
+  return fetchUniqueStockForBeat(
+    beat,
+    scene,
+    workDir,
+    sceneIndex,
+    clipFetchDur,
+    dedup,
+    adoptOpts.primaryPerson ?? "",
+    adoptOpts.videoTitle,
+    adoptOpts
+  );
 }
 
-/** Reuse last adopted real stock (montage may repeat the same file across beats). */
-async function reuseLastGoodStockClip(
-  dedup: VisualDedupState,
-  sceneIndex: number,
-  beatIndex: number
-): Promise<string | null> {
-  const rescue = dedup.lastMuskStockClip;
-  if (
-    !rescue ||
-    !fs.existsSync(rescue) ||
-    isPipelineFallbackClip(rescue) ||
-    !(await isValidVideoFile(rescue)) ||
-    (await isMostlyBlackClip(rescue))
-  ) {
-    return null;
-  }
-  console.warn(`[Pipeline] Scene ${sceneIndex} beat ${beatIndex}: reusing last good stock clip`);
-  return rescue;
-}
-
-/** Prefer last good Musk stock clip over color placeholders (avoids black/grey holes). */
-async function muskRescueClip(
-  dedup: VisualDedupState,
-  sceneIndex: number,
-  beatIndex: number,
-  workDir: string
-): Promise<string> {
-  const reused = await reuseLastGoodStockClip(dedup, sceneIndex, beatIndex);
-  if (reused) return reused;
-  return generateColorFallback(sceneIndex * 100 + beatIndex, 4, workDir);
-}
-
-/** Return clipPath if ffprobe confirms a video stream; otherwise throw or substitute fallback. */
+/** Return clipPath if ffprobe confirms a video stream; never substitute grey placeholders. */
 async function requireValidClip(
   clipPath: string,
   sceneIndex: number,
-  duration: number,
-  workDir: string
-): Promise<string> {
-  if (await isValidVideoFile(clipPath)) return clipPath;
-  console.warn(`[Pipeline] Scene ${sceneIndex}: invalid clip ${path.basename(clipPath)}, regenerating fallback`);
-  return generateColorFallback(sceneIndex, duration, workDir);
+  _duration: number,
+  _workDir: string
+): Promise<string | null> {
+  if (
+    await isValidVideoFile(clipPath) &&
+    !isPipelineFallbackClip(clipPath) &&
+    !(await isMostlyBlackClip(clipPath))
+  ) {
+    return clipPath;
+  }
+  console.warn(`[Pipeline] Scene ${sceneIndex}: dropping invalid clip ${path.basename(clipPath)}`);
+  return null;
 }
 
 // ─── 3c1. Generate Grok Video Clip ──────────────────────────────────────────
@@ -4667,7 +4629,7 @@ function clipContentKey(filePath: string): string {
 }
 
 function montageClipStartSec(_sceneIndex: number, clipIndex: number): number {
-  return clipIndex === 0 ? 0 : 0.15 * (clipIndex % 3);
+  return clipIndex === 0 ? 0 : 0.35 * (clipIndex % 5);
 }
 
 function estimateBeatHoldSec(text: string, mergedSentenceCount: number): number {
@@ -5265,6 +5227,93 @@ async function tryStockSources(
   return null;
 }
 
+/** Guaranteed-unique stock for one beat — Pexels/Pixabay/YouTube with global dedup (no grey, no repeats). */
+async function fetchUniqueStockForBeat(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  personName: string,
+  videoTitle?: string,
+  adoptOpts: VisualAdoptOptions = {}
+): Promise<string | null> {
+  if (!PEXELS_API_KEY && !PIXABAY_API_KEY) return null;
+  const perf = dedup.perf;
+  const muskTopic = isMuskTeslaTopic(videoTitle, beat.text);
+  const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
+  const offset = dedup.globalBeatIndex * 11 + sceneIndex * 5 + beat.index * 3;
+  const tag = `b${beat.index}_uniq`;
+  const looseOpts: VisualAdoptOptions = {
+    ...adoptOpts,
+    muskTopic,
+    requireBeatMatch: false,
+    scriptAnchored: false,
+    personTopic: dedup.personTopicLock,
+    primaryPerson: dedup.primaryPerson || personName,
+    keywords: beat.keywords,
+    sceneText: scene.text,
+    videoTitle,
+  };
+
+  const queries = [
+    ...buildBeatVisualQueryList(beat.text, scene, videoTitle, scenePersons, 8),
+    ...(muskTopic ? [...GOLDEN_MUSK_QUERIES, ...OPENING_MUSK_QUERIES] : []),
+    enrichStockQuery(scene.pexelsQuery, scene, videoTitle, personName, beat.text),
+    ...(scene.pexelsQueries ?? [])
+      .slice(0, 4)
+      .map((q) => enrichStockQuery(q, scene, videoTitle, personName, beat.text)),
+    ...(scene.brollQueries ?? []).slice(0, 2),
+    stockQueryFromBeatScript(beat.text, scenePersons, scene.text, videoTitle),
+  ].filter(
+    (q): q is string => typeof q === "string" && q.trim().length > 2 && !isBlockedStockQuery(q)
+  );
+  const uniqueQueries = [...new Set(queries)];
+
+  const pexFetch = (query: string, t: string, off: number) => () =>
+    fetchPexelsClips(
+      query, clipFetchDur, workDir, sceneIndex, 3, [query], true, t,
+      dedup.usedPexelsIds, off, perf.pexelsDownloadRetries
+    );
+  const pixFetch = (query: string, t: string, off: number) => () =>
+    fetchPixabayClips(query, clipFetchDur, workDir, sceneIndex, 3, t, true, dedup.usedPixabayIds, off);
+
+  for (let qi = 0; qi < uniqueQueries.length; qi++) {
+    const q = uniqueQueries[qi];
+    const off = offset + qi * 2;
+    let clip = await tryStockSources(
+      [{ query: q, fetch: pexFetch(q, `${tag}_pex`, off) }],
+      dedup, sceneIndex, beat.index, beat.text, workDir, "unique Pexels", looseOpts
+    );
+    if (clip) return clip;
+    clip = await tryStockSources(
+      [{ query: q, fetch: pixFetch(q, `${tag}_pix`, off + 40) }],
+      dedup, sceneIndex, beat.index, beat.text, workDir, "unique Pixabay", looseOpts
+    );
+    if (clip) return clip;
+  }
+
+  const entityYt = realEntityYoutubeQueriesForBeat(beat.text, scene.text, videoTitle);
+  if (
+    entityYt.length > 0 &&
+    dedup.entityYoutubeFetchesUsed < perf.maxEntityYoutubePerVideo &&
+    (process.env.YOUTUBE_API_KEY || RAPIDAPI_KEY || process.env.YOUTUBE_CC_DL_SERVICE)
+  ) {
+    dedup.entityYoutubeFetchesUsed++;
+    const clip = await tryStockSources(
+      [{
+        query: entityYt[0],
+        fetch: () =>
+          fetchYouTubeCCClips(entityYt.slice(0, 3), clipFetchDur, workDir, sceneIndex, 1, beat.keywords, 1),
+      }],
+      dedup, sceneIndex, beat.index, beat.text, workDir, "unique YouTube", looseOpts
+    );
+    if (clip) return clip;
+  }
+  return null;
+}
+
 /** Last-resort real stock video — broad queries, non-strict mode. No still photos. */
 async function fetchLastResortRealClip(
   beat: SceneBeat,
@@ -5622,29 +5671,12 @@ async function fetchBeatClip(
     return clip;
   }
   if (perf.scriptOnlyVisuals) {
-    if (muskTopic) {
-      try {
-        const golden = await fetchMuskGoldenStockBeat(
-          beat, scene, workDir, sceneIndex, dedup, adoptOpts
-        );
-        if (golden && !isPipelineFallbackClip(golden)) {
-          dedup.globalBeatIndex++;
-          return golden;
-        }
-      } catch {
-        /* fall through */
-      }
-      const reused = await reuseLastGoodStockClip(dedup, sceneIndex, beat.index);
-      if (reused) {
-        dedup.globalBeatIndex++;
-        return reused;
-      }
-    } else {
-      const reused = await reuseLastGoodStockClip(dedup, sceneIndex, beat.index);
-      if (reused) {
-        dedup.globalBeatIndex++;
-        return reused;
-      }
+    const extra = await fetchUniqueStockForBeat(
+      beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName, videoTitle, adoptOpts
+    );
+    if (extra) {
+      dedup.globalBeatIndex++;
+      return extra;
     }
     dedup.globalBeatIndex++;
     return null;
@@ -5854,9 +5886,20 @@ async function fetchSceneVisuals(
   );
 
   const muskTopic = isMuskTeslaTopic(videoTitle, scene.text);
+  const beatAdoptOpts: VisualAdoptOptions = {
+    muskTopic,
+    personTopic: dedup.personTopicLock,
+    primaryPerson: dedup.primaryPerson || personName,
+    keywords: [],
+    sceneText: scene.text,
+    videoTitle,
+    requireBeatMatch: false,
+    scriptAnchored: dedup.perf.scriptOnlyVisuals,
+  };
 
   for (let bi = 0; bi < beats.length; bi++) {
     const beat = beats[bi];
+    beatAdoptOpts.keywords = beat.keywords;
     onBeatProgress?.(bi, beats.length);
     const pushClip = (clipPath: string) => {
       clips.push(clipPath);
@@ -5879,12 +5922,41 @@ async function fetchSceneVisuals(
       personName,
       videoTitle
     );
-    if (!clip) {
+    if (!clip || isPipelineFallbackClip(clip)) {
       clip = await resolveBeatClipFast(
-        beat, scene, workDir, scene.index, clipFetchDur, dedup, scenePersons, videoTitle
+        beat, scene, workDir, scene.index, clipFetchDur, dedup, scenePersons, videoTitle, beatAdoptOpts
       );
     }
-    pushClip(clip);
+    for (let attempt = 0; attempt < 4 && (!clip || isPipelineFallbackClip(clip)); attempt++) {
+      clip = await fetchUniqueStockForBeat(
+        beat, scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts
+      );
+    }
+    if (clip && !isPipelineFallbackClip(clip)) {
+      pushClip(clip);
+    } else {
+      console.warn(
+        `[Pipeline] Scene ${scene.index} beat ${beat.index}: no unique stock clip (beat skipped, no grey)`
+      );
+    }
+  }
+
+  const minBeats = Math.max(2, Math.ceil(scene.duration / VIDRUSH_BEAT_SEC));
+  let backfillAttempts = 0;
+  while (
+    clips.filter((c) => c && !isPipelineFallbackClip(c)).length < minBeats &&
+    backfillAttempts < 8
+  ) {
+    const stub = beats[beats.length - 1] ?? beats[0];
+    if (!stub) break;
+    const extra = await fetchUniqueStockForBeat(
+      stub, scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts
+    );
+    if (!extra || isPipelineFallbackClip(extra)) break;
+    if (clips.some((c) => clipContentKey(c) === clipContentKey(extra))) break;
+    clips.push(extra);
+    beatDurations.push(stub.holdSec);
+    backfillAttempts++;
   }
 
   const videoCount = clips.filter((c) => !isStillPhotoClip(c)).length;
@@ -6198,97 +6270,59 @@ async function composeSceneVideo(
 ): Promise<string> {
   const outputPath = path.join(workDir, `scene_${scene.index}_composed.mp4`);
 
-  const pickComposeSubstitute = async (lastGood: string | null): Promise<string | null> => {
-    if (lastGood && fs.existsSync(lastGood) && (await isValidVideoFile(lastGood)) && !(await isMostlyBlackClip(lastGood))) {
-      return lastGood;
-    }
-    if (
-      rescueStockClip && fs.existsSync(rescueStockClip) &&
-      (await isValidVideoFile(rescueStockClip)) && !(await isMostlyBlackClip(rescueStockClip))
-    ) {
-      return rescueStockClip;
-    }
-    return null;
-  };
-
-  // Ensure we have at least one valid clip (existence, size, readable video stream)
-  const existingClips = clips.filter(p => fs.existsSync(p) && fs.statSync(p).size > 100);
+  // Real stock only — no grey placeholders, no duplicate clips in this scene.
+  const existingClips = clips.filter(
+    (p) => p && fs.existsSync(p) && fs.statSync(p).size > 100 && !isPipelineFallbackClip(p)
+  );
   const validClips: string[] = [];
-  let lastGoodInScene: string | null =
-    rescueStockClip && fs.existsSync(rescueStockClip) ? rescueStockClip : null;
+  const seenKeys = new Set<string>();
   for (const clipPath of existingClips) {
-    if (!(await isValidVideoFile(clipPath))) {
-      console.warn(`[Pipeline] Scene ${scene.index}: skipping unreadable clip ${path.basename(clipPath)}`);
-      const sub = await pickComposeSubstitute(lastGoodInScene);
-      if (sub) {
-        validClips.push(sub);
-        lastGoodInScene = sub;
-      }
+    if (!(await isValidVideoFile(clipPath)) || (await isMostlyBlackClip(clipPath))) {
+      console.warn(`[Pipeline] Scene ${scene.index}: skipping bad clip ${path.basename(clipPath)}`);
       continue;
     }
-    if (isPipelineFallbackClip(clipPath) || (await isMostlyBlackClip(clipPath))) {
-      console.warn(`[Pipeline] Scene ${scene.index}: substituting placeholder ${path.basename(clipPath)}`);
-      const sub = await pickComposeSubstitute(lastGoodInScene);
-      if (sub) {
-        validClips.push(sub);
-        lastGoodInScene = sub;
-      }
+    const key = clipContentKey(clipPath);
+    if (seenKeys.has(key)) {
+      console.warn(`[Pipeline] Scene ${scene.index}: skipping duplicate clip ${path.basename(clipPath)}`);
       continue;
     }
+    seenKeys.add(key);
     validClips.push(clipPath);
-    lastGoodInScene = clipPath;
-  }
-  const minMontageClips = Math.max(2, Math.ceil(duration / VIDRUSH_BEAT_SEC));
-  while (validClips.length < minMontageClips) {
-    const last = validClips[validClips.length - 1];
-    if (last && fs.existsSync(last) && validClips.filter((c) => c === last).length < 2) {
-      validClips.push(last);
-      continue;
-    }
-    if (lastGoodInScene && fs.existsSync(lastGoodInScene) && !validClips.includes(lastGoodInScene)) {
-      validClips.push(lastGoodInScene);
-      continue;
-    }
-    if (existingClips.length > 0) {
-      validClips.push(existingClips[validClips.length % existingClips.length]);
-      continue;
-    }
-    if (rescueStockClip && fs.existsSync(rescueStockClip)) {
-      validClips.push(rescueStockClip);
-      continue;
-    }
-    validClips.push(await generateColorFallback(scene.index * 800 + validClips.length, VIDRUSH_BEAT_SEC, workDir));
   }
 
-  // Clips arrive in beat/narration order from fetchSceneVisuals — preserve timeline.
-  const rescueOrColor = async () => {
-    if (rescueStockClip && fs.existsSync(rescueStockClip) && !(await isMostlyBlackClip(rescueStockClip))) {
-      return rescueStockClip;
-    }
-    return generateColorFallback(scene.index, duration, workDir);
-  };
-  let safeClips = validClips.length > 0 ? validClips : [await rescueOrColor()];
+  if (
+    validClips.length === 0 &&
+    rescueStockClip &&
+    fs.existsSync(rescueStockClip) &&
+    !isPipelineFallbackClip(rescueStockClip) &&
+    (await isValidVideoFile(rescueStockClip))
+  ) {
+    validClips.push(rescueStockClip);
+  }
 
-  // Last-line check: never feed corrupt MP4s into filter_complex
+  if (validClips.length === 0) {
+    throw pipelineError(
+      PIPELINE_ERROR.NO_SCENES,
+      `Scene ${scene.index}: no usable stock clips (grey placeholders disabled)`
+    );
+  }
+
+  let safeClips = validClips;
+
   const verifiedClips: string[] = [];
   for (const clip of safeClips) {
-    verifiedClips.push(await requireValidClip(clip, scene.index, duration, workDir));
+    const ok = await requireValidClip(clip, scene.index, duration, workDir);
+    if (ok) verifiedClips.push(ok);
   }
-  // Drop duplicate stock within the same scene montage
-  const seenKeys = new Set<string>();
-  safeClips = verifiedClips.filter((clip) => {
+  safeClips = verifiedClips.filter((clip, i, arr) => {
     const key = clipContentKey(clip);
-    if (seenKeys.has(key)) return false;
-    seenKeys.add(key);
-    return true;
+    return arr.findIndex((c) => clipContentKey(c) === key) === i;
   });
   if (safeClips.length === 0) {
-    const anyUsable = verifiedClips.find((c) => !isPipelineFallbackClip(c));
-    if (anyUsable) {
-      safeClips = [anyUsable];
-    } else {
-      safeClips = [await rescueOrColor()];
-    }
+    throw pipelineError(
+      PIPELINE_ERROR.NO_SCENES,
+      `Scene ${scene.index}: all clips failed validation`
+    );
   }
 
   // Validate audio
@@ -6497,14 +6531,13 @@ async function composeSceneVideo(
           `Simple mux scene ${scene.index}`
         );
       } catch (muxErr) {
-        console.warn(`[Pipeline] Scene ${scene.index}: simple mux failed, using color fallback:`, muxErr);
-        const fallbackClip =
-          rescueStockClip && fs.existsSync(rescueStockClip)
-            ? rescueStockClip
-            : await generateColorFallback(scene.index, duration, workDir);
+        console.warn(`[Pipeline] Scene ${scene.index}: simple mux failed:`, muxErr);
+        if (!safeClips[0] || isPipelineFallbackClip(safeClips[0])) {
+          throw pipelineError(PIPELINE_ERROR.FFMPEG, `Scene ${scene.index}: compose failed (no grey fallback)`);
+        }
         await withTimeout(
           exec(
-            `${FFMPEG_BIN} -y -i "${fallbackClip}" -i "${safeAudioPath}" ` +
+            `${FFMPEG_BIN} -y -i "${safeClips[0]}" -i "${safeAudioPath}" ` +
             `-filter_complex "[1:a]atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
             `-map "0:v" -map "[aout]" ` +
             `-t ${outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
@@ -7085,18 +7118,47 @@ export async function runVideoPipeline(
           );
         } catch (sceneErr) {
           console.warn(
-            `[Pipeline] Scene ${scene.index} visuals timed out after ${Math.round(perf.sceneVisualTimeoutMs / 1000)}s — filling placeholders:`,
+            `[Pipeline] Scene ${scene.index} visuals timed out after ${Math.round(perf.sceneVisualTimeoutMs / 1000)}s — fetching unique stock (no grey):`,
             (sceneErr as Error).message
           );
           visualDedup.lock = Promise.resolve();
+          const scenePersons = resolveScenePersons(scene, topicContext, visualDedup.primaryPerson || undefined);
+          const personName =
+            scenePersons[0] ?? visualDedup.primaryPerson ?? extractPrimaryPersonFromTitle(topicContext) ?? "";
+          const recoverAdopt: VisualAdoptOptions = {
+            muskTopic: isMuskTeslaTopic(topicContext, scene.text),
+            personTopic: visualDedup.personTopicLock,
+            primaryPerson: visualDedup.primaryPerson || personName,
+            keywords: buildRelevanceKeywords(scene, scene.text),
+            sceneText: scene.text,
+            videoTitle: topicContext,
+            requireBeatMatch: false,
+            scriptAnchored: false,
+          };
           const n = Math.max(2, Math.ceil(scene.duration / VIDRUSH_BEAT_SEC));
-          const fallbackClips: string[] = [];
-          const fallbackDurs: number[] = [];
-          for (let fi = 0; fi < n; fi++) {
-            fallbackClips.push(await generateColorFallback(scene.index * 100 + fi, VIDRUSH_BEAT_SEC, workDir));
-            fallbackDurs.push(VIDRUSH_BEAT_SEC);
+          const recoveredClips: string[] = [];
+          const recoveredDurs: number[] = [];
+          const stubBeat: SceneBeat = {
+            index: 0,
+            text: scene.text.slice(0, 220),
+            searchQuery: scene.pexelsQuery,
+            keywords: recoverAdopt.keywords ?? [],
+            holdSec: VIDRUSH_BEAT_SEC,
+          };
+          for (let fi = 0; fi < n + 3; fi++) {
+            stubBeat.index = fi;
+            const clip = await fetchUniqueStockForBeat(
+              stubBeat, scene, workDir, scene.index, 4, visualDedup, personName, topicContext, recoverAdopt
+            );
+            if (!clip || isPipelineFallbackClip(clip)) continue;
+            const key = clipContentKey(clip);
+            if (recoveredClips.some((c) => clipContentKey(c) === key)) continue;
+            recoveredClips.push(clip);
+            recoveredDurs.push(VIDRUSH_BEAT_SEC);
+            if (recoveredClips.length >= n) break;
           }
-          result = { clips: fallbackClips, beatDurations: fallbackDurs };
+          if (recoveredClips.length === 0) throw sceneErr;
+          result = { clips: recoveredClips, beatDurations: recoveredDurs };
         }
         completedVisuals++;
         onProgress?.({
