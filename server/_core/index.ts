@@ -56,13 +56,17 @@ async function startServer() {
   console.log("[Fastvid] LEONARDO_API_KEY:", process.env.LEONARDO_API_KEY ? "✓ set" : "✗ NOT SET");
   console.log("[Fastvid] REPLICATE_API_KEY:", process.env.REPLICATE_API_KEY ? "✓ set" : "✗ NOT SET — Grok video");
   console.log("[Fastvid] RUNWAY_API_KEY:", process.env.RUNWAY_API_KEY ? "✓ set" : "✗ NOT SET");
-  const aiFallback =
+  const cheapAi =
     process.env.ENABLE_AI_FALLBACK !== "false" &&
-    !!(process.env.STABILITY_AI_API_KEY || process.env.LEONARDO_API_KEY ||
-      process.env.REPLICATE_API_KEY || process.env.RUNWAY_API_KEY || process.env.GOOGLE_GEMINI_API_KEY);
+    !!(process.env.STABILITY_AI_API_KEY || process.env.LEONARDO_API_KEY);
+  const premiumVideo = process.env.ENABLE_AI_VIDEO_FALLBACK === "true";
   console.log(
-    "[Fastvid] AI fallback (replaces grey when stock misses):",
-    aiFallback ? "✓ enabled" : "✗ off (no keys or ENABLE_AI_FALLBACK=false)"
+    "[Fastvid] AI fallback (cheap image, ~$0.03/beat):",
+    cheapAi ? "✓ Stability/Leonardo" : "✗ set STABILITY_AI_API_KEY (recommended)"
+  );
+  console.log(
+    "[Fastvid] AI video fallback (Runway/Grok, expensive):",
+    premiumVideo ? "✓ enabled" : "✗ off (default — saves cost)"
   );
   console.log("[Fastvid] PEXELS_API_KEY:", process.env.PEXELS_API_KEY ? "✓ set" : "✗ NOT SET — stock footage disabled");
   console.log("[Fastvid] BUILT_IN_FORGE_API_KEY:", process.env.BUILT_IN_FORGE_API_KEY ? "✓ set" : "✗ NOT SET — file storage disabled");

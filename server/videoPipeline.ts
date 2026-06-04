@@ -410,18 +410,25 @@ async function tryBeatRealYouTubeFootage(
   }
 }
 
-/** True when at least one AI image/video provider key is configured. */
+/** Cheap tier: still image → Ken Burns (~$0.03/beat). Best $/quality for documentaries. */
+function cheapAiImageProvidersReady(): boolean {
+  return Boolean(STABILITY_AI_API_KEY || LEONARDO_API_KEY);
+}
+
+/** Expensive tier: Grok/Veo/Runway video — off unless ENABLE_AI_VIDEO_FALLBACK=true. */
+function premiumAiVideoFallbackEnabled(): boolean {
+  return process.env.ENABLE_AI_VIDEO_FALLBACK === "true";
+}
+
 function aiProvidersReady(): boolean {
-  return Boolean(
-    STABILITY_AI_API_KEY ||
-    LEONARDO_API_KEY ||
-    REPLICATE_API_KEY ||
-    RUNWAY_API_KEY ||
-    GOOGLE_GEMINI_API_KEY
+  if (cheapAiImageProvidersReady()) return true;
+  return (
+    premiumAiVideoFallbackEnabled() &&
+    Boolean(REPLICATE_API_KEY || RUNWAY_API_KEY || GOOGLE_GEMINI_API_KEY)
   );
 }
 
-/** AI clip when stock/YouTube miss — never grey color slabs. Set ENABLE_AI_FALLBACK=false to disable. */
+/** AI clip when stock/YouTube miss — never grey. ENABLE_AI_FALLBACK=false to disable. */
 function resolveAiFallbackConfig(videoLength: string): { enable: boolean; maxClips: number } {
   if (process.env.ENABLE_AI_FALLBACK === "false" || !aiProvidersReady()) {
     return { enable: false, maxClips: 0 };
@@ -429,7 +436,7 @@ function resolveAiFallbackConfig(videoLength: string): { enable: boolean; maxCli
   const short = videoLength === "1" || videoLength === "2";
   return {
     enable: true,
-    maxClips: short ? (IS_RAILWAY ? 6 : 10) : IS_RAILWAY ? 10 : 16,
+    maxClips: short ? (IS_RAILWAY ? 3 : 5) : IS_RAILWAY ? 6 : 10,
   };
 }
 
@@ -1583,50 +1590,83 @@ async function generateStabilityAIClip(
   }
 
   try {
-    console.log(`[Pipeline] Scene ${sceneIndex}: Generating Stability AI image...`);
+    const useUltra = process.env.STABILITY_AI_TIER === "ultra";
+    const endpoint = useUltra
+      ? "https://api.stability.ai/v2beta/stable-image/generate/ultra"
+      : "https://api.stability.ai/v2beta/stable-image/generate/core";
+    console.log(
+      `[Pipeline] Scene ${sceneIndex}: Stability ${useUltra ? "Ultra" : "Core"} (~$0.03–0.08/img)...`
+    );
     const t = Date.now();
 
-    // Use Stability AI Core API (v2beta) — JSON body, no FormData
-    const stabilityPayload = {
-      text_prompts: [
-        { text: prompt, weight: 1 },
-        { text: "blurry, low quality, watermark, text, logo, ugly, deformed", weight: -1 },
-      ],
-      cfg_scale: 8,
-      height: 768,   // SDXL valid resolution (multiple of 64, landscape)
-      width: 1344,   // SDXL valid resolution (multiple of 64, ~16:9 landscape)
-      samples: 1,
-      steps: 50,
-    };
+    const negative =
+      "blurry, low quality, watermark, text, logo, ugly, deformed, cartoon, anime, illustration";
+    const form = new FormData();
+    form.append("prompt", prompt.slice(0, 1000));
+    form.append("aspect_ratio", "16:9");
+    form.append("output_format", "png");
+    form.append("negative_prompt", negative);
+    form.append("style_preset", "photographic");
 
-    const response = await withTimeout(
-      fetch("https://api.stability.ai/v1/generation/stable-diffusion-xl-1024-v1-0/text-to-image", {
+    let imgBuffer: Buffer | null = null;
+    const coreResp = await withTimeout(
+      fetch(endpoint, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${STABILITY_AI_API_KEY}`,
-          Accept: "application/json",
-          "Content-Type": "application/json",
+          Accept: "image/*",
         },
-        body: JSON.stringify(stabilityPayload),
+        body: form,
       }),
       45_000,
-      `Stability AI image scene ${sceneIndex}`
+      `Stability Core scene ${sceneIndex}`
     );
 
-    if (!response.ok) {
-      const errText = await response.text();
-      console.warn(`[Pipeline] Scene ${sceneIndex}: Stability AI error ${response.status}: ${errText.slice(0, 200)}`);
-      return null;
+    if (coreResp.ok) {
+      const raw = Buffer.from(await coreResp.arrayBuffer());
+      if (raw.length > 50_000) imgBuffer = raw;
+    } else {
+      const errText = await coreResp.text();
+      console.warn(
+        `[Pipeline] Scene ${sceneIndex}: Stability v2beta ${coreResp.status}: ${errText.slice(0, 180)} — legacy SDXL`
+      );
+      const stabilityPayload = {
+        text_prompts: [
+          { text: prompt, weight: 1 },
+          { text: negative, weight: -1 },
+        ],
+        cfg_scale: 7,
+        height: 768,
+        width: 1344,
+        samples: 1,
+        steps: 35,
+      };
+      const legacyResp = await withTimeout(
+        fetch("https://api.stability.ai/v1/generation/stable-diffusion-xl-1024-v1-0/text-to-image", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${STABILITY_AI_API_KEY}`,
+            Accept: "application/json",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(stabilityPayload),
+        }),
+        45_000,
+        `Stability SDXL scene ${sceneIndex}`
+      );
+      if (legacyResp.ok) {
+        const result = await legacyResp.json() as {
+          artifacts?: Array<{ base64: string; finishReason: string }>;
+        };
+        const artifact = result.artifacts?.[0];
+        if (artifact?.base64) imgBuffer = Buffer.from(artifact.base64, "base64");
+      }
     }
 
-    const result = await response.json() as { artifacts?: Array<{ base64: string; finishReason: string }> };
-    const artifact = result.artifacts?.[0];
-    if (!artifact?.base64) {
+    if (!imgBuffer) {
       console.warn(`[Pipeline] Scene ${sceneIndex}: Stability AI returned no image`);
       return null;
     }
-
-    const imgBuffer = Buffer.from(artifact.base64, "base64");
     const pngPath = outputPath.replace(".mp4", "_ai.png");
     fs.writeFileSync(pngPath, imgBuffer);
     console.log(`[Pipeline] Scene ${sceneIndex}: Stability AI image in ${((Date.now()-t)/1000).toFixed(1)}s (${(imgBuffer.length/1024).toFixed(0)}KB)`);
@@ -2776,7 +2816,7 @@ async function generateLeonardoAIClip(
           modelId: "b24e16ff-06e3-43eb-8d33-4416c2d75876", // Leonardo Kino XL (cinematic)
           width: 1344, height: 768, num_images: 1,
           guidance_scale: 7, num_inference_steps: 30,
-          public: false, photoReal: false, alchemy: true,
+          public: false, photoReal: false, alchemy: false,
         }),
       }),
       30_000, `Leonardo AI generate scene ${sceneIndex}`
@@ -4057,22 +4097,24 @@ async function fetchBeatAIClip(
   const dur = Math.min(Math.max(clipFetchDur, 3), perf.fastStockMode ? 5 : 8);
 
   let generated: string | null = null;
-  // 1) Image → Ken Burns clip (fast, default)
+  // Cheap tier: photoreal still → Ken Burns (~$0.03/beat, broadcast look)
   if (STABILITY_AI_API_KEY) {
     generated = await generateStabilityAIClip(prompt, dur, outPath, sceneIndex);
   }
   if (!generated && LEONARDO_API_KEY) {
     generated = await generateLeonardoAIClip(prompt, dur, outPath, sceneIndex);
   }
-  // 2) True AI video when image path failed
-  if (!generated && REPLICATE_API_KEY) {
-    generated = await generateGrokVideoClip(prompt, dur, outPath, sceneIndex);
-  }
-  if (!generated && GOOGLE_GEMINI_API_KEY) {
-    generated = await generateVeoVideoClip(prompt, dur, outPath, sceneIndex);
-  }
-  if (!generated && RUNWAY_API_KEY) {
-    generated = await generateRunwayClip(prompt, null, dur, outPath, sceneIndex);
+  // Premium tier only (Runway/Grok ~$0.25+ per clip) — ENABLE_AI_VIDEO_FALLBACK=true
+  if (!generated && premiumAiVideoFallbackEnabled()) {
+    if (REPLICATE_API_KEY) {
+      generated = await generateGrokVideoClip(prompt, dur, outPath, sceneIndex);
+    }
+    if (!generated && GOOGLE_GEMINI_API_KEY) {
+      generated = await generateVeoVideoClip(prompt, dur, outPath, sceneIndex);
+    }
+    if (!generated && RUNWAY_API_KEY) {
+      generated = await generateRunwayClip(prompt, null, dur, outPath, sceneIndex);
+    }
   }
   if (!generated || !(await isValidVideoFile(generated)) || (await isMostlyBlackClip(generated))) {
     return null;
@@ -7611,9 +7653,14 @@ export async function runVideoPipeline(
       `fair-use transform=${perf.skipFairUseTransform ? "skip" : "on"}, ` +
       `AI fallback=${perf.enableAiFallback ? `on (max ${perf.maxAiClipsPerVideo} clips)` : "off"}`
     );
-    if (!perf.enableAiFallback && !aiProvidersReady()) {
+    if (!perf.enableAiFallback && !cheapAiImageProvidersReady()) {
       console.warn(
-        "[Pipeline] No AI provider keys — empty beats stay empty (set STABILITY_AI_API_KEY or LEONARDO_API_KEY)"
+        "[Pipeline] No cheap AI keys — empty beats stay empty (set STABILITY_AI_API_KEY, ~$0.03/img)"
+      );
+    } else if (perf.enableAiFallback) {
+      console.log(
+        `[Pipeline] AI fallback: cheap image tier (Stability Core → Leonardo); ` +
+        `video APIs ${premiumAiVideoFallbackEnabled() ? "on" : "off (set ENABLE_AI_VIDEO_FALLBACK=true to enable)"}`
       );
     }
     const visualDedup = createVisualDedupState(perf, { primaryPerson, personTopicLock: personLocked });
