@@ -55,8 +55,16 @@ async function startServer() {
   console.log("[Fastvid] STABILITY_AI_API_KEY:", process.env.STABILITY_AI_API_KEY ? "✓ set" : "✗ NOT SET — AI images disabled");
   console.log("[Fastvid] PEXELS_API_KEY:", process.env.PEXELS_API_KEY ? "✓ set" : "✗ NOT SET — stock footage disabled");
   console.log("[Fastvid] BUILT_IN_FORGE_API_KEY:", process.env.BUILT_IN_FORGE_API_KEY ? "✓ set" : "✗ NOT SET — file storage disabled");
-  console.log("[Fastvid] RAPIDAPI_KEY:", process.env.RAPIDAPI_KEY ? "✓ set" : "✗ NOT SET — YouTube CC download disabled");
-  console.log("[Fastvid] YOUTUBE_API_KEY:", process.env.YOUTUBE_API_KEY ? "✓ set" : "✗ NOT SET — YouTube CC search disabled");
+  const ytSearch = !!process.env.YOUTUBE_API_KEY?.trim();
+  const ytDownload = !!(process.env.RAPIDAPI_KEY?.trim() || process.env.YOUTUBE_CC_DL_SERVICE?.trim());
+  console.log("[Fastvid] RAPIDAPI_KEY:", ytDownload ? "✓ set" : "✗ NOT SET — YouTube CC download disabled");
+  console.log("[Fastvid] YOUTUBE_API_KEY:", ytSearch ? "✓ set" : "✗ NOT SET — YouTube CC search disabled");
+  if (ytSearch && ytDownload) {
+    console.log("[Fastvid] YouTube CC: ✓ search + download enabled");
+  } else if (ytSearch || ytDownload) {
+    console.log("[Fastvid] YouTube CC: ✗ incomplete — need BOTH YOUTUBE_API_KEY and RAPIDAPI_KEY");
+  }
+  console.log("[Fastvid] SERPAPI_KEY:", process.env.SERPAPI_KEY ? "✓ set" : "✗ NOT SET — celebrity image search disabled");
   // ─────────────────────────────────────────────────────────────────────────
 
   const app = express();
@@ -142,6 +150,10 @@ async function startServer() {
         YOUTUBE_API_KEY: !!process.env.YOUTUBE_API_KEY,
         RAPIDAPI_KEY: !!process.env.RAPIDAPI_KEY,
         YOUTUBE_CC_DL_SERVICE: !!process.env.YOUTUBE_CC_DL_SERVICE,
+        SERPAPI_KEY: !!process.env.SERPAPI_KEY,
+        youtubeCcReady:
+          !!process.env.YOUTUBE_API_KEY?.trim() &&
+          !!(process.env.RAPIDAPI_KEY?.trim() || process.env.YOUTUBE_CC_DL_SERVICE?.trim()),
         NODE_ENV: process.env.NODE_ENV,
       },
       storage,

@@ -336,8 +336,17 @@ interface PipelinePerfProfile {
   sceneVisualTimeoutMs: number;
 }
 
+/** YouTube CC needs YOUTUBE_API_KEY (search) + RAPIDAPI_KEY or YOUTUBE_CC_DL_SERVICE (download). */
+function maxEntityYoutubeFetchesPerVideo(): number {
+  const canSearch = Boolean(process.env.YOUTUBE_API_KEY?.trim());
+  const canDownload = Boolean(RAPIDAPI_KEY || process.env.YOUTUBE_CC_DL_SERVICE?.trim());
+  if (!canSearch || !canDownload) return 0;
+  return IS_RAILWAY ? 3 : 4;
+}
+
 function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
   const railwayParallel = IS_RAILWAY ? 1 : 2;
+  const maxEntityYoutube = maxEntityYoutubeFetchesPerVideo();
   if (videoLength === "1" || videoLength === "2") {
     return {
       targetWallClockMin: 60,
@@ -348,7 +357,7 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
       enableArchival: false,
       enableNasa: false,
       enableMuskHeroFetch: true,
-      maxEntityYoutubePerVideo: IS_RAILWAY ? 0 : 2,
+      maxEntityYoutubePerVideo: maxEntityYoutube,
       enableAiFallback: !IS_RAILWAY,
       maxAiClipsPerVideo: IS_RAILWAY ? 0 : 3,
       sceneParallelism: railwayParallel,
@@ -368,7 +377,7 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
       enableArchival: false,
       enableNasa: true,
       enableMuskHeroFetch: false,
-      maxEntityYoutubePerVideo: 3,
+      maxEntityYoutubePerVideo: maxEntityYoutube,
       enableAiFallback: true,
       maxAiClipsPerVideo: 5,
       sceneParallelism: railwayParallel,
@@ -388,7 +397,7 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
       enableArchival: false,
       enableNasa: true,
       enableMuskHeroFetch: false,
-      maxEntityYoutubePerVideo: 3,
+      maxEntityYoutubePerVideo: maxEntityYoutube,
       enableAiFallback: true,
       maxAiClipsPerVideo: 5,
       sceneParallelism: railwayParallel,
@@ -407,7 +416,7 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
     enableArchival: true,
     enableNasa: true,
     enableMuskHeroFetch: false,
-    maxEntityYoutubePerVideo: 4,
+    maxEntityYoutubePerVideo: maxEntityYoutube,
     enableAiFallback: true,
     maxAiClipsPerVideo: 6,
     sceneParallelism: railwayParallel,
