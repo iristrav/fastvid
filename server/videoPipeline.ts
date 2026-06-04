@@ -3983,6 +3983,17 @@ type RealEntityRule = {
 
 const REAL_ENTITY_RULES: RealEntityRule[] = [
   {
+    id: "musk",
+    mentionRe: /\b(elon\s+musk|musk)\b/i,
+    clipMustMatchRe: /\b(musk|elon|tesla|spacex)\b/i,
+    stockQueries: ["tesla", "spacex"],
+    youtubeQueries: [
+      "Elon Musk interview",
+      "Elon Musk Tesla keynote",
+      "Elon Musk SpaceX presentation",
+    ],
+  },
+  {
     id: "tesla",
     mentionRe: /\btesla\b/i,
     clipMustMatchRe: /\btesla\b/i,
@@ -5141,6 +5152,49 @@ async function fetchBeatClip(
       dedup, sceneIndex, beat.index, beat.text, workDir, "fast script", adoptOpts
     );
     if (clip) { dedup.globalBeatIndex++; return clip; }
+
+    if (
+      muskTopic &&
+      perf.enableMuskHeroFetch &&
+      !dedup.muskHeroFetchUsed &&
+      beat.index === 0 &&
+      sceneIndex === 0 &&
+      (process.env.YOUTUBE_API_KEY || RAPIDAPI_KEY || process.env.YOUTUBE_CC_DL_SERVICE)
+    ) {
+      dedup.muskHeroFetchUsed = true;
+      dedup.entityYoutubeFetchesUsed++;
+      try {
+        clip = await withTimeout(
+          tryStockSources(
+            [{
+              query: HERO_YOUTUBE_QUERIES[0],
+              fetch: () =>
+                fetchYouTubeCCClips(
+                  HERO_YOUTUBE_QUERIES.slice(0, 2),
+                  clipFetchDur,
+                  workDir,
+                  sceneIndex,
+                  1,
+                  beat.keywords,
+                  1
+                ),
+            }],
+            dedup,
+            sceneIndex,
+            beat.index,
+            beat.text,
+            workDir,
+            "fast hero YouTube",
+            { ...adoptOpts, requireMuskBrand: false }
+          ),
+          22_000,
+          `fast hero YouTube s${sceneIndex}`
+        );
+      } catch (err) {
+        console.warn(`[Pipeline] Scene ${sceneIndex}: fast hero YouTube skipped:`, (err as Error).message);
+      }
+      if (clip) { dedup.globalBeatIndex++; return clip; }
+    }
 
     const entityYt = realEntityYoutubeQueriesForBeat(beat.text, scene.text, videoTitle);
     if (
