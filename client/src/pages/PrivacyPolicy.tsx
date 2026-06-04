@@ -1,14 +1,4 @@
-import type { ReactNode } from "react";
-import { LegalPageShell } from "@/components/LegalPageShell";
-
-function Section({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <section>
-      <h2 className="text-lg font-semibold text-white mb-3">{title}</h2>
-      {children}
-    </section>
-  );
-}
+import { LegalPageShell, LegalSection } from "@/components/LegalPageShell";
 
 export default function PrivacyPolicy() {
   return (
@@ -19,15 +9,15 @@ export default function PrivacyPolicy() {
         &quot;Service&quot;), available at our production application and related pages.
       </p>
 
-      <Section title="1. Who we are">
+      <LegalSection title="1. Who we are">
         <p>
           Fastvid is an AI-assisted documentary video generator. Users provide a topic or prompt;
           we generate scripts, voiceovers, and visual montages for personal or commercial use
           according to their subscription plan.
         </p>
-      </Section>
+      </LegalSection>
 
-      <Section title="2. Information we collect">
+      <LegalSection title="2. Information we collect">
         <ul className="list-disc pl-5 space-y-2">
           <li>
             <strong className="text-slate-200">Account data:</strong> email address, name (if
@@ -48,9 +38,9 @@ export default function PrivacyPolicy() {
             provider (e.g. Stripe). We do not store full card numbers on our servers.
           </li>
         </ul>
-      </Section>
+      </LegalSection>
 
-      <Section title="3. How we use your information">
+      <LegalSection title="3. How we use your information">
         <ul className="list-disc pl-5 space-y-2">
           <li>Provide, maintain, and improve the Service.</li>
           <li>Authenticate users and manage subscriptions.</li>
@@ -58,9 +48,9 @@ export default function PrivacyPolicy() {
           <li>Respond to support requests and comply with legal obligations.</li>
           <li>Prevent abuse, fraud, and unauthorized access.</li>
         </ul>
-      </Section>
+      </LegalSection>
 
-      <Section title="4. Third-party services and YouTube API">
+      <LegalSection title="4. Third-party services and YouTube API">
         <p className="mb-3">
           To produce videos we may send limited data to trusted processors. These providers process
           data under their own terms and privacy policies:
@@ -109,57 +99,57 @@ export default function PrivacyPolicy() {
           We do not sell your personal information. We share data with processors only as needed to
           operate the Service.
         </p>
-      </Section>
+      </LegalSection>
 
-      <Section title="5. Retention and storage">
+      <LegalSection title="5. Retention and storage">
         <p>
           Generated videos and project data are stored for your account until you delete them or
           close your account, subject to backup and legal retention requirements. Temporary
           processing files may be removed automatically after a video is completed.
         </p>
-      </Section>
+      </LegalSection>
 
-      <Section title="6. Cookies and authentication">
+      <LegalSection title="6. Cookies and authentication">
         <p>
           We use essential cookies or similar technologies for login sessions and security. Optional
           analytics cookies, if enabled in the future, will be described in an updated policy or
           cookie notice.
         </p>
-      </Section>
+      </LegalSection>
 
-      <Section title="7. Your rights">
+      <LegalSection title="7. Your rights">
         <p>
           Depending on your location (including the EEA/UK), you may have rights to access, correct,
           delete, or restrict processing of your personal data, and to data portability or objection.
           To exercise these rights, contact us using the details below. You may also lodge a complaint
           with your local data protection authority.
         </p>
-      </Section>
+      </LegalSection>
 
-      <Section title="8. Security">
+      <LegalSection title="8. Security">
         <p>
           We use industry-standard measures such as HTTPS, access controls, and secure credential
           storage for API keys on our servers. No method of transmission over the Internet is 100%
           secure; we cannot guarantee absolute security.
         </p>
-      </Section>
+      </LegalSection>
 
-      <Section title="9. Children">
+      <LegalSection title="9. Children">
         <p>
           The Service is not directed at children under 16. We do not knowingly collect personal
           information from children. Contact us if you believe a child has provided data to us.
         </p>
-      </Section>
+      </LegalSection>
 
-      <Section title="10. Changes">
+      <LegalSection title="10. Changes">
         <p>
           We may update this Privacy Policy from time to time. We will post the new version on this
           page with an updated &quot;Last updated&quot; date. Continued use of the Service after changes
           constitutes acceptance of the revised policy.
         </p>
-      </Section>
+      </LegalSection>
 
-      <Section title="11. Contact">
+      <LegalSection title="11. Contact">
         <p>
           For privacy questions or requests, contact us at:{" "}
           <a href="mailto:privacy@fastvid.app" className="text-cyan-400 hover:underline">
@@ -167,7 +157,7 @@ export default function PrivacyPolicy() {
           </a>
           . You may also reach us through the contact options on our homepage.
         </p>
-      </Section>
+      </LegalSection>
     </LegalPageShell>
   );
 }

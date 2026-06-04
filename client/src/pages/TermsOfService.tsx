@@ -1,14 +1,4 @@
-import type { ReactNode } from "react";
-import { LegalPageShell } from "@/components/LegalPageShell";
-
-function Section({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <section>
-      <h2 className="text-lg font-semibold text-white mb-3">{title}</h2>
-      {children}
-    </section>
-  );
-}
+import { LegalPageShell, LegalSection } from "@/components/LegalPageShell";
 
 export default function TermsOfService() {
   return (
@@ -19,32 +9,32 @@ export default function TermsOfService() {
         you agree to these Terms. If you do not agree, do not use the Service.
       </p>
 
-      <Section title="1. The Service">
+      <LegalSection title="1. The Service">
         <p>
           Fastvid provides AI-assisted tools to generate documentary-style videos, including scripts,
           voiceovers, and visual montages from user prompts. Output quality and availability depend on
           third-party APIs, your subscription plan, and technical limits described in the product.
         </p>
-      </Section>
+      </LegalSection>
 
-      <Section title="2. Eligibility and accounts">
+      <LegalSection title="2. Eligibility and accounts">
         <ul className="list-disc pl-5 space-y-2">
           <li>You must be at least 16 years old (or the age required in your country) to use the Service.</li>
           <li>You are responsible for keeping your login credentials secure and for activity under your account.</li>
           <li>You must provide accurate registration information and notify us of unauthorized access.</li>
         </ul>
-      </Section>
+      </LegalSection>
 
-      <Section title="3. Subscriptions and payments">
+      <LegalSection title="3. Subscriptions and payments">
         <p>
           Paid features require an active subscription or credits as shown at checkout. Prices, billing
           intervals, and renewal terms are displayed before purchase. Payments are processed by our
           payment provider; refunds are handled according to the plan shown at purchase and applicable law.
           We may change pricing with reasonable notice for future billing periods.
         </p>
-      </Section>
+      </LegalSection>
 
-      <Section title="4. Your content and responsibilities">
+      <LegalSection title="4. Your content and responsibilities">
         <ul className="list-disc pl-5 space-y-2">
           <li>
             You retain rights to prompts and original material you submit. You grant us a license to
@@ -59,9 +49,9 @@ export default function TermsOfService() {
             infringing content, or content that violates others&apos; privacy or intellectual property rights.
           </li>
         </ul>
-      </Section>
+      </LegalSection>
 
-      <Section title="5. Third-party media and YouTube API">
+      <LegalSection title="5. Third-party media and YouTube API">
         <p className="mb-3">
           The Service may incorporate stock footage, images, licensed media, and Creative Commons YouTube
           clips discovered via the YouTube Data API. Such materials remain subject to their respective
@@ -88,27 +78,27 @@ export default function TermsOfService() {
             We do not guarantee that any specific clip, person, or event will be available for a given prompt.
           </li>
         </ul>
-      </Section>
+      </LegalSection>
 
-      <Section title="6. Intellectual property">
+      <LegalSection title="6. Intellectual property">
         <p>
           The Service, including software, branding, and documentation, is owned by Fastvid or its
           licensors. Except for rights expressly granted here, no rights are transferred to you. Generated
           outputs are provided for your use according to your plan; underlying third-party media may
           impose additional attribution or usage requirements.
         </p>
-      </Section>
+      </LegalSection>
 
-      <Section title="7. Disclaimers">
+      <LegalSection title="7. Disclaimers">
         <p>
           The Service and generated content are provided &quot;as is&quot; and &quot;as available&quot; without warranties of
           any kind, whether express or implied, including merchantability, fitness for a particular purpose,
           and non-infringement. We do not warrant that outputs will be error-free, unique, factually accurate,
           or suitable for any particular commercial purpose without your own review.
         </p>
-      </Section>
+      </LegalSection>
 
-      <Section title="8. Limitation of liability">
+      <LegalSection title="8. Limitation of liability">
         <p>
           To the maximum extent permitted by law, Fastvid and its affiliates will not be liable for any
           indirect, incidental, special, consequential, or punitive damages, or for loss of profits, data,
@@ -116,33 +106,33 @@ export default function TermsOfService() {
           Service in any twelve-month period is limited to the amount you paid us for the Service in that
           period, or one hundred euros (€100), whichever is greater, unless mandatory law requires otherwise.
         </p>
-      </Section>
+      </LegalSection>
 
-      <Section title="9. Suspension and termination">
+      <LegalSection title="9. Suspension and termination">
         <p>
           We may suspend or terminate access if you breach these Terms, abuse the Service, or if required
           by law. You may stop using the Service at any time. Provisions that by nature should survive
           termination (including intellectual property, disclaimers, and liability limits) will survive.
         </p>
-      </Section>
+      </LegalSection>
 
-      <Section title="10. Changes">
+      <LegalSection title="10. Changes">
         <p>
           We may update these Terms from time to time. The &quot;Last updated&quot; date at the top of this page
           will change when we do. Continued use after changes constitutes acceptance of the revised Terms.
         </p>
-      </Section>
+      </LegalSection>
 
-      <Section title="11. Governing law">
+      <LegalSection title="11. Governing law">
         <p>
           These Terms are governed by the laws of the Netherlands, without regard to conflict-of-law rules,
           unless mandatory consumer protection laws in your country require otherwise. Disputes shall be
           submitted to the competent courts in the Netherlands, unless applicable law grants you the right
           to bring claims in your country of residence.
         </p>
-      </Section>
+      </LegalSection>
 
-      <Section title="12. Contact">
+      <LegalSection title="12. Contact">
         <p>
           Questions about these Terms:{" "}
           <a href="mailto:legal@fastvid.app" className="text-cyan-400 hover:underline">
@@ -154,7 +144,7 @@ export default function TermsOfService() {
           </a>{" "}
           for how we handle personal data.
         </p>
-      </Section>
+      </LegalSection>
     </LegalPageShell>
   );
 }

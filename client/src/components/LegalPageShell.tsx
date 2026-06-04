@@ -2,6 +2,22 @@ import type { ReactNode } from "react";
 import { useLocation } from "wouter";
 import { ArrowLeft, Play } from "lucide-react";
 
+export const LEGAL_FOOTER_LINKS = [
+  { href: "/privacy", label: "Privacy Policy" },
+  { href: "/terms", label: "Terms of Service" },
+  { href: "/cookie-policy", label: "Cookie Policy" },
+  { href: "/contact", label: "Contact" },
+] as const;
+
+export function LegalSection({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section>
+      <h2 className="text-lg font-semibold text-white mb-3">{title}</h2>
+      {children}
+    </section>
+  );
+}
+
 type LegalPageShellProps = {
   title: string;
   lastUpdated: string;
@@ -52,8 +68,15 @@ export function LegalPageShell({ title, lastUpdated, children }: LegalPageShellP
       </main>
 
       <footer className="border-t border-white/8 py-8 mt-8">
-        <div className="container max-w-3xl px-4 text-center text-xs text-slate-600">
-          © {new Date().getFullYear()} Fastvid. All rights reserved.
+        <div className="container max-w-3xl px-4 flex flex-col items-center gap-4">
+          <nav className="flex flex-wrap justify-center gap-x-6 gap-y-2 text-xs text-slate-500">
+            {LEGAL_FOOTER_LINKS.map(({ href, label }) => (
+              <a key={href} href={href} className="hover:text-slate-300 transition-colors">
+                {label}
+              </a>
+            ))}
+          </nav>
+          <p className="text-xs text-slate-600">© {new Date().getFullYear()} Fastvid. All rights reserved.</p>
         </div>
       </footer>
     </div>

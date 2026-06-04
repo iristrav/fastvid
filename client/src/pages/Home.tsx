@@ -8,6 +8,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useLocation } from "wouter";
 import { useAuth } from "@/_core/hooks/useAuth";
+import { LEGAL_FOOTER_LINKS } from "@/components/LegalPageShell";
 import {
   Play,
   Sparkles,
@@ -814,18 +815,14 @@ export default function Home() {
               Fast<span className="gradient-text">vid</span>
             </span>
           </div>
-          <div className="flex flex-wrap gap-6 text-xs text-slate-500">
-            <a href="/privacy" className="hover:text-slate-300 transition-colors">
-              Privacy Policy
-            </a>
-            <a href="/terms" className="hover:text-slate-300 transition-colors">
-              Terms of Service
-            </a>
-            {["Cookie Policy", "Contact"].map((item) => (
-              <span key={item} className="text-slate-600 cursor-default">{item}</span>
+          <nav className="flex flex-wrap justify-center gap-6 text-xs text-slate-500">
+            {LEGAL_FOOTER_LINKS.map(({ href, label }) => (
+              <a key={href} href={href} className="hover:text-slate-300 transition-colors">
+                {label}
+              </a>
             ))}
-          </div>
-          <p className="text-xs text-slate-600">© 2025 Fastvid. All rights reserved.</p>
+          </nav>
+          <p className="text-xs text-slate-600">© {new Date().getFullYear()} Fastvid. All rights reserved.</p>
         </div>
       </footer>
     </div>
