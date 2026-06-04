@@ -291,32 +291,50 @@ export default function Home() {
     {
       number: "01",
       icon: Sparkles,
-      title: "Research-backed script",
-      desc: "Hook, context, and payoff structured for retention — tuned to your length and documentary tone.",
+      title: "Read your prompt",
+      desc: "Topic, length, and tone are taken from your idea — the starting point for everything.",
     },
     {
       number: "02",
-      icon: Mic,
-      title: "Professional narration",
-      desc: "Natural AI voiceover (ElevenLabs and more) timed to each scene and beat.",
+      icon: FileText,
+      title: "Professional script",
+      desc: "Documentary narration with scenes, hooks, and [VISUAL:] cues that drive the edit.",
     },
     {
       number: "03",
-      icon: Search,
-      title: "Script-matched visuals",
-      desc: "Beats mapped to real events, people, and topics — stock plus Creative Commons footage when available.",
+      icon: Mic,
+      title: "Full script in ElevenLabs",
+      desc: "One continuous voiceover for the entire script, then split per scene for perfect sync.",
     },
     {
       number: "04",
-      icon: Image,
-      title: "Montage & pacing",
-      desc: "Automatic cuts, holds, and transitions so the story flows like a broadcast documentary.",
+      icon: Edit3,
+      title: "Voiceover in the editor",
+      desc: "Scenes and timing land in the edit system before visuals are fetched.",
     },
     {
       number: "05",
+      icon: Search,
+      title: "One image per sentence",
+      desc: "For each line we pick the most important word and search stock, B-roll, or real footage.",
+    },
+    {
+      number: "06",
+      icon: Film,
+      title: "Whole video covered",
+      desc: "Every scene and beat gets a clip — no grey placeholders, no duplicate shots.",
+    },
+    {
+      number: "07",
+      icon: ListOrdered,
+      title: "Stitch it together",
+      desc: "Scenes are concatenated with documentary music and chapter-ready structure.",
+    },
+    {
+      number: "08",
       icon: Wand2,
-      title: "Export & metadata",
-      desc: "YouTube-ready MP4 plus titles, descriptions, and chapter-friendly structure.",
+      title: "Effects & transitions",
+      desc: "Montage, color grade, audio fades, and smooth cuts for a broadcast finish.",
     },
   ];
 
@@ -655,7 +673,7 @@ export default function Home() {
             </p>
           </div>
 
-          <div className="grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
+          <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
             {productionSteps.map((step) => (
               <StepCard key={step.number} {...step} />
             ))}

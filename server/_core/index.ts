@@ -52,7 +52,18 @@ async function startServer() {
   console.log("[Fastvid] DATABASE_URL:", process.env.DATABASE_URL ? "✓ set" : "✗ NOT SET — database features disabled");
   console.log("[Fastvid] JWT_SECRET:", process.env.JWT_SECRET ? "✓ set" : "✗ NOT SET — auth will not work");
   console.log("[Fastvid] FISH_AUDIO_API_KEY:", process.env.FISH_AUDIO_API_KEY ? "✓ set" : "✗ NOT SET — voiceover disabled");
-  console.log("[Fastvid] STABILITY_AI_API_KEY:", process.env.STABILITY_AI_API_KEY ? "✓ set" : "✗ NOT SET — AI images disabled");
+  console.log("[Fastvid] STABILITY_AI_API_KEY:", process.env.STABILITY_AI_API_KEY ? "✓ set" : "✗ NOT SET");
+  console.log("[Fastvid] LEONARDO_API_KEY:", process.env.LEONARDO_API_KEY ? "✓ set" : "✗ NOT SET");
+  console.log("[Fastvid] REPLICATE_API_KEY:", process.env.REPLICATE_API_KEY ? "✓ set" : "✗ NOT SET — Grok video");
+  console.log("[Fastvid] RUNWAY_API_KEY:", process.env.RUNWAY_API_KEY ? "✓ set" : "✗ NOT SET");
+  const aiFallback =
+    process.env.ENABLE_AI_FALLBACK !== "false" &&
+    !!(process.env.STABILITY_AI_API_KEY || process.env.LEONARDO_API_KEY ||
+      process.env.REPLICATE_API_KEY || process.env.RUNWAY_API_KEY || process.env.GOOGLE_GEMINI_API_KEY);
+  console.log(
+    "[Fastvid] AI fallback (replaces grey when stock misses):",
+    aiFallback ? "✓ enabled" : "✗ off (no keys or ENABLE_AI_FALLBACK=false)"
+  );
   console.log("[Fastvid] PEXELS_API_KEY:", process.env.PEXELS_API_KEY ? "✓ set" : "✗ NOT SET — stock footage disabled");
   console.log("[Fastvid] BUILT_IN_FORGE_API_KEY:", process.env.BUILT_IN_FORGE_API_KEY ? "✓ set" : "✗ NOT SET — file storage disabled");
   const ytSearch = !!process.env.YOUTUBE_API_KEY?.trim();

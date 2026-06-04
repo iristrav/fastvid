@@ -227,7 +227,7 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLength: 
 
   // Initialize progressLog for script stage
   const scriptLog: ProgressLogEntry[] = [
-    { step: "🔍 Researching topic & creating outline...", startedAt: Date.now(), status: "active" },
+    { step: "📋 Prompt bekijken & professioneel script schrijven...", startedAt: Date.now(), status: "active" },
   ];
   await updateVideoProgressLog(videoId, scriptLog).catch(() => {});
 
@@ -519,7 +519,10 @@ async function _generateVideoWithAI(
     }
 
     // ── Stage 3: Run Full Video Pipeline (TTS + Visuals + FFmpeg) ────
-    await updateVideoStatus(videoId, "generating_voiceover", { progressStep: "🎙️ Generating voiceover...", progressPercent: 30 });
+    await updateVideoStatus(videoId, "generating_voiceover", {
+      progressStep: "🎙️ Volledige voiceover in ElevenLabs...",
+      progressPercent: 30,
+    });
 
     // ── Step-by-step progress log ────────────────────────────────────────────
     // Each unique stage name becomes a row in the step list UI.
