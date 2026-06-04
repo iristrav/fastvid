@@ -343,7 +343,7 @@ function maxEntityYoutubeFetchesPerVideo(): number {
   const canSearch = Boolean(process.env.YOUTUBE_API_KEY?.trim());
   const canDownload = Boolean(RAPIDAPI_KEY || process.env.YOUTUBE_CC_DL_SERVICE?.trim());
   if (!canSearch || !canDownload) return 0;
-  return IS_RAILWAY ? 3 : 4;
+  return IS_RAILWAY ? 5 : 4;
 }
 
 function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
@@ -365,8 +365,8 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
       sceneParallelism: railwayParallel,
       pexelsDownloadRetries: IS_RAILWAY ? 1 : 2,
       maxStockQueriesPerBeat: 3,
-      beatClipTimeoutMs: IS_RAILWAY ? 35_000 : 90_000,
-      sceneVisualTimeoutMs: IS_RAILWAY ? 3 * 60_000 : 6 * 60_000,
+      beatClipTimeoutMs: IS_RAILWAY ? 48_000 : 90_000,
+      sceneVisualTimeoutMs: IS_RAILWAY ? 4 * 60_000 : 6 * 60_000,
       fastStockMode: IS_RAILWAY,
     };
   }
@@ -4086,7 +4086,7 @@ function realEntityScore(rules: RealEntityRule[], sourceQuery: string, filePath:
 }
 
 const BLOCKED_STOCK_QUERY_RE =
-  /\b(subscribe|like button|thumbs up|thumbs down|social media ui|notification bell|emoji|icon animation|button animation|wallpaper|seamless loop|motion graphics|scale model|miniature|toy rocket|model rocket|space shuttle|shuttle model|saturn v|apollo|lunar|moon landing|moon surface|diorama|replica rocket|mission control|astronaut suit|vintage nasa|archival footage|science fiction|sci-fi|cgi rocket|crime scene|forensic|police tape|news reporter|press conference|interview|journalist|murder|courtroom)\b/i;
+  /\b(subscribe|like button|thumbs up|thumbs down|social media ui|notification bell|emoji|icon animation|button animation|wallpaper|seamless loop|motion graphics|scale model|miniature|toy rocket|model rocket|space shuttle|shuttle model|saturn v|apollo|lunar|moon landing|moon surface|diorama|replica rocket|mission control|astronaut suit|vintage nasa|archival footage|science fiction|sci-fi|cgi rocket|crime scene|forensic|police tape|murder|courtroom)\b/i;
 
 /** Reject model/CGI/archival-looking clips (Pexels slugs + local filenames). */
 const BLOCKED_STOCK_VISUAL_RE =
@@ -4996,11 +4996,12 @@ async function fetchPersonBeatClip(
   );
   const loosePerson: VisualAdoptOptions = { ...adoptOpts, requireBeatMatch: false };
 
-  const personPexels = personQueries.slice(0, 2);
+  const fast = dedup.perf.fastStockMode;
+  const personPexels = personQueries.slice(0, fast ? 1 : 2);
   let clip = await tryStockSources(
     personPexels.map((pq, pi) => ({
       query: pq,
-      fetch: pexFetch(pq, `${tag}_person`, candidateOffset + pi, 2),
+      fetch: pexFetch(pq, `${tag}_person`, candidateOffset + pi, fast ? 1 : 2),
     })),
     dedup, sceneIndex, beat.index, beat.text, workDir, `person Pexels (${personName})`, loosePerson
   );
@@ -5018,12 +5019,18 @@ async function fetchPersonBeatClip(
             query: personName,
             fetch: () =>
               fetchYouTubeCCClips(
-                personQueries.slice(0, 2), clipFetchDur, workDir, sceneIndex, 1, beat.keywords, 1
+                personQueries.slice(0, fast ? 2 : 3),
+                clipFetchDur,
+                workDir,
+                sceneIndex,
+                1,
+                beat.keywords,
+                1
               ),
           }],
           dedup, sceneIndex, beat.index, beat.text, workDir, `person YouTube (${personName})`, loosePerson
         ),
-        55_000,
+        fast ? 22_000 : 55_000,
         `person YouTube scene ${sceneIndex} beat ${beat.index}`
       );
     } catch (err) {
@@ -5033,7 +5040,7 @@ async function fetchPersonBeatClip(
     if (clip) return clip;
   }
 
-  if (SERPAPI_KEY && dedup.stillPhotosThisScene < dedup.stillPhotosMaxThisScene) {
+  if (!fast && SERPAPI_KEY && dedup.stillPhotosThisScene < dedup.stillPhotosMaxThisScene) {
     const serpPaths = await fetchSerpAPIImages(
       `${personName} red carpet`,
       clipFetchDur,
@@ -5051,7 +5058,7 @@ async function fetchPersonBeatClip(
     }
   }
 
-  if (dedup.stillPhotosThisScene < dedup.stillPhotosMaxThisScene) {
+  if (!fast && dedup.stillPhotosThisScene < dedup.stillPhotosMaxThisScene) {
     const ovPaths = await fetchOpenverseImages(
       `${personName} portrait`,
       clipFetchDur,
@@ -5114,7 +5121,7 @@ async function fetchBeatClip(
 
   let clip: string | null = null;
 
-  // Railway 1–2 min: script Pexels only — avoids person/YouTube/hero paths that exceed beat timeout.
+  // Railway 1–2 min: script stock → real-event YouTube → person interview footage (no hero/golden loops).
   if (perf.fastStockMode) {
     const beatDerived = deriveBeatStockQuery(beat.text, scene, videoTitle, personName, muskTopic);
     const entityStock = realEntityStockQueriesForBeat(beat.text, scene.text, videoTitle);
@@ -5133,8 +5140,44 @@ async function fetchBeatClip(
       })),
       dedup, sceneIndex, beat.index, beat.text, workDir, "fast script", adoptOpts
     );
+    if (clip) { dedup.globalBeatIndex++; return clip; }
+
+    const entityYt = realEntityYoutubeQueriesForBeat(beat.text, scene.text, videoTitle);
+    if (
+      entityYt.length > 0 &&
+      dedup.entityYoutubeFetchesUsed < dedup.perf.maxEntityYoutubePerVideo &&
+      (process.env.YOUTUBE_API_KEY || RAPIDAPI_KEY || process.env.YOUTUBE_CC_DL_SERVICE)
+    ) {
+      dedup.entityYoutubeFetchesUsed++;
+      try {
+        clip = await withTimeout(
+          tryStockSources(
+            [{
+              query: entityYt[0],
+              fetch: () =>
+                fetchYouTubeCCClips(entityYt.slice(0, 2), clipFetchDur, workDir, sceneIndex, 1, beat.keywords, 1),
+            }],
+            dedup, sceneIndex, beat.index, beat.text, workDir, "fast event YouTube", adoptOpts
+          ),
+          22_000,
+          `fast entity YouTube s${sceneIndex} b${beat.index}`
+        );
+      } catch (err) {
+        console.warn(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: fast YouTube skipped:`, (err as Error).message);
+      }
+      if (clip) { dedup.globalBeatIndex++; return clip; }
+    }
+
+    if (personName) {
+      clip = await fetchPersonBeatClip(
+        beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName, videoTitle,
+        adoptOpts, pexFetch, candidateOffset, tag
+      );
+      if (clip) { dedup.globalBeatIndex++; return clip; }
+    }
+
     dedup.globalBeatIndex++;
-    return clip;
+    return null;
   }
 
   if (personName) {
@@ -5375,8 +5418,12 @@ async function fetchSceneVisuals(
       beatDurations.push(beat.holdSec);
     };
     if (dedup.perf.fastStockMode) {
+      const bounded = await runBeatClipFetch(
+        beat, scene, workDir, scene.index, clipFetchDur, dedup, spaceTopic, personName, videoTitle
+      );
       pushClip(
-        await resolveBeatClipFast(beat, scene, workDir, scene.index, clipFetchDur, dedup, scenePersons)
+        bounded ??
+          (await resolveBeatClipFast(beat, scene, workDir, scene.index, clipFetchDur, dedup, scenePersons))
       );
       continue;
     }
