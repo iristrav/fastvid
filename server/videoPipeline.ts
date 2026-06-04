@@ -336,6 +336,8 @@ interface PipelinePerfProfile {
   sceneVisualTimeoutMs: number;
   /** Skip slow stock waterfalls (hero/archival/multi-fallback) on short Railway jobs. */
   fastStockMode: boolean;
+  /** Only script-derived queries + person/event YouTube — no generic topic/golden pools. */
+  scriptOnlyVisuals: boolean;
 }
 
 /** YouTube CC needs YOUTUBE_API_KEY (search) + RAPIDAPI_KEY or YOUTUBE_CC_DL_SERVICE (download). */
@@ -368,6 +370,7 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
       beatClipTimeoutMs: IS_RAILWAY ? 48_000 : 90_000,
       sceneVisualTimeoutMs: IS_RAILWAY ? 4 * 60_000 : 6 * 60_000,
       fastStockMode: IS_RAILWAY,
+      scriptOnlyVisuals: true,
     };
   }
   if (videoLength === "5-8") {
@@ -389,6 +392,7 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
       beatClipTimeoutMs: 120_000,
       sceneVisualTimeoutMs: 8 * 60_000,
       fastStockMode: false,
+      scriptOnlyVisuals: true,
     };
   }
   if (videoLength === "12-15" || videoLength === "15-20") {
@@ -410,6 +414,7 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
       beatClipTimeoutMs: 120_000,
       sceneVisualTimeoutMs: 10 * 60_000,
       fastStockMode: false,
+      scriptOnlyVisuals: true,
     };
   }
   return {
@@ -430,6 +435,7 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
     beatClipTimeoutMs: 150_000,
     sceneVisualTimeoutMs: 12 * 60_000,
     fastStockMode: false,
+    scriptOnlyVisuals: true,
   };
 }
 
@@ -481,7 +487,7 @@ async function resolveBeatClipFast(
 ): Promise<string> {
   const q = dedup.primaryPerson
     ? `${dedup.primaryPerson} interview`
-    : stockQueryFromBeatScript(beat.text, scenePersons);
+    : stockQueryFromBeatScript(beat.text, scenePersons, scene.text);
   try {
     const paths = await withTimeout(
       fetchPexelsClips(
@@ -864,20 +870,24 @@ function mapRawScene(
     inlineFromText[0] ||
     "";
   const hint = `${s.text ?? ""}`;
-  const simp = (q: string) => simplifyStockSearchWord(q, hint, true);
-  const primaryQuery = simp(
-    literalVisualCue || (s.pexelsQuery?.trim() || s.visualCue || stockQueryFromBeatScript(hint))
-  );
-  const extraQueries = (rawS.pexelsQueries as string[] | undefined) || [];
-  const allQueries = [primaryQuery, ...extraQueries.map(simp).filter((q) => q && q !== primaryQuery)].slice(0, 4);
-  const personNames = ((rawS.personNames as string[] | undefined) || [])
-    .filter((n) => typeof n === "string" && n.trim().length > 0)
-    .map((n) => n.trim());
-  const brollQueries = ((rawS.brollQueries as string[] | undefined) || [])
-    .filter((q) => typeof q === "string" && q.trim().length > 0)
-    .map(simp)
-    .filter((q) => q.length >= 3)
-    .slice(0, 2);
+  const personNames = [
+    ...new Set(
+      [
+        ...((rawS.personNames as string[] | undefined) || [])
+          .filter((n) => typeof n === "string" && n.trim().length > 0)
+          .map((n) => n.trim()),
+        ...extractPersonNamesFromText(hint),
+      ]
+    ),
+  ];
+  const primaryQuery = stockQueryFromBeatScript(hint, personNames, hint);
+  const scriptQueries = scriptStockSearchQueries(hint, personNames, hint);
+  const allQueries = [...new Set([primaryQuery, ...scriptQueries])].slice(0, 4);
+  const brollQueries = personNames.length > 0
+    ? [`${personNames[0].split(/\s+/)[0]} interview`, `${personNames[0]} red carpet`]
+        .filter((q) => q.length >= 3 && !isBlockedStockQuery(q))
+        .slice(0, 2)
+    : [];
   const sectionTitle =
     typeof rawS.sectionTitle === "string" ? rawS.sectionTitle.trim().slice(0, 60) : "";
   return {
@@ -3787,68 +3797,72 @@ function translateTokenForPexels(token: string): string | null {
 }
 
 /**
- * Stock search terms derived ONLY from this beat's narration (+ [VISUAL:] tags).
- * Never uses video title or full scene text (avoids wrong generic B-roll).
+ * Stock search terms from beat narration: persons → events → [VISUAL:] → entities.
+ * Skips generic wildlife/animal tokens when a named person is in scope.
  */
-function scriptStockSearchQueries(beatText: string, persons: string[] = []): string[] {
+function scriptStockSearchQueries(
+  beatText: string,
+  persons: string[] = [],
+  sceneText = "",
+  videoTitle?: string
+): string[] {
   const narration = beatText.replace(/\[visual:[^\]]*\]/gi, " ").trim();
   const out: string[] = [];
+  const hasPerson = persons.length > 0;
+  const anchorPerson = hasPerson;
 
-  if (persons.length > 0) {
-    const primary = persons[0];
-    out.push(primary);
-    const first = primary.split(/\s+/)[0]?.trim().toLowerCase();
-    if (first && first.length >= 3) out.push(first);
-    out.push(`${primary} interview`, `${primary} celebrity`, `${primary} red carpet`);
-  }
-  for (const person of persons.slice(1)) {
-    if (!beatMentionsPerson(beatText, person)) continue;
+  for (const person of persons) {
     out.push(person);
     const first = person.split(/\s+/)[0]?.trim().toLowerCase();
-    if (first && first.length >= 3 && !out.includes(first)) out.push(first);
-    out.push(`${person} celebrity`, `${person} interview`);
-  }
-
-  for (const cue of extractInlineVisualCues(beatText)) {
-    if (persons.length > 0 && PERSON_OFFTOPIC_VISUAL_RE.test(cue)) continue;
-    const sq = simplifyStockSearchWord(cue, cue, true);
-    if (persons.length > 0 && PERSON_OFFTOPIC_VISUAL_RE.test(sq)) continue;
-    out.push(sq);
-    for (const tok of tokenizeForRelevance(cue)) {
-      const w = translateTokenForPexels(tok);
-      if (w && !(persons.length > 0 && PERSON_OFFTOPIC_VISUAL_RE.test(w))) out.push(w);
+    if (first && first.length >= 3) out.push(first);
+    out.push(`${person} interview`, `${person} celebrity`);
+    if (beatMentionsPerson(beatText, person) || beatMentionsPerson(sceneText, person)) {
+      out.push(`${person} red carpet`, `${person} news`);
     }
   }
 
-  for (const q of realEntityStockQueriesForBeat(beatText, "", "")) {
+  for (const ev of scriptEventSearchQueries(beatText, persons)) out.push(ev);
+
+  for (const cue of extractInlineVisualCues(beatText)) {
+    if (anchorPerson && PERSON_OFFTOPIC_VISUAL_RE.test(cue)) continue;
+    const sq = simplifyStockSearchWord(cue, cue, true);
+    if (anchorPerson && (PERSON_OFFTOPIC_VISUAL_RE.test(sq) || isGenericNatureStockWord(sq))) continue;
+    out.push(sq);
+  }
+
+  for (const q of realEntityStockQueriesForBeat(beatText, sceneText, videoTitle)) {
     if (q) out.push(q);
   }
 
-  const beatTokens = tokenizeForRelevance(narration);
-  const ranked = [...beatTokens].sort((a, b) => b.length - a.length);
-  for (const tok of ranked) {
-    const w = translateTokenForPexels(tok);
-    if (!w || isBlockedStockQuery(w)) continue;
-    if (persons.length > 0 && PERSON_OFFTOPIC_VISUAL_RE.test(w)) continue;
-    out.push(w);
-  }
-
-  if (ranked.length >= 2) {
-    const a = translateTokenForPexels(ranked[0]) ?? ranked[0];
-    const b = translateTokenForPexels(ranked[1]) ?? ranked[1];
-    const pair = `${a} ${b}`.trim();
-    if (pair.length >= 5 && pair.length <= 48 && !isBlockedStockQuery(pair)) out.push(pair);
-  }
-
-  if (out.length === 0 && narration.length > 0) {
-    out.push(simplifyStockSearchWord(narration, narration, true));
+  if (!anchorPerson) {
+    const beatTokens = tokenizeForRelevance(narration);
+    const ranked = [...beatTokens].sort((a, b) => b.length - a.length);
+    for (const tok of ranked) {
+      const w = translateTokenForPexels(tok);
+      if (!w || isBlockedStockQuery(w) || isGenericNatureStockWord(w)) continue;
+      out.push(w);
+    }
+    if (out.length === 0 && narration.length > 0) {
+      const fallback = simplifyStockSearchWord(narration, narration, true);
+      if (!isGenericNatureStockWord(fallback)) out.push(fallback);
+    }
   }
 
   return [...new Set(out.filter((q) => q && q.length >= 3 && !isBlockedStockQuery(q)))].slice(0, 8);
 }
 
-function stockQueryFromBeatScript(beatText: string, persons: string[] = []): string {
-  return scriptStockSearchQueries(beatText, persons)[0] ?? "documentary";
+function isGenericNatureStockWord(word: string): boolean {
+  return PERSON_OFFTOPIC_VISUAL_RE.test(word) ||
+    /^(wildlife|ocean|bird|forest|zoo|animal|fish|beach|sunset|nature|flower|garden)$/i.test(word.trim());
+}
+
+function stockQueryFromBeatScript(
+  beatText: string,
+  persons: string[] = [],
+  sceneText = "",
+  videoTitle?: string
+): string {
+  return scriptStockSearchQueries(beatText, persons, sceneText, videoTitle)[0] ?? "documentary";
 }
 
 function isStockVideoClip(filePath: string): boolean {
@@ -3872,13 +3886,92 @@ function beatMentionsPerson(beatText: string, personName: string): boolean {
   return parts.length === 1 && lower.includes(parts[0]);
 }
 
+const PERSON_NAME_SKIP_PHRASES = new Set([
+  "deep dive", "breaking news", "the truth", "red carpet", "social media", "united states",
+  "new york", "los angeles", "full story", "no comment", "under the", "life under",
+  "decoding the", "rumors about", "facts fiction", "exclusive interview",
+]);
+
+/** Capitalized names from narration (Kylie Jenner, Elon Musk, …). */
+function extractPersonNamesFromText(text: string): string[] {
+  if (!text?.trim()) return [];
+  const found = new Set<string>();
+  const fullNames = text.match(/\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b/g) ?? [];
+  for (const name of fullNames) {
+    const n = name.trim();
+    if (n.length < 5 || PERSON_NAME_SKIP_PHRASES.has(n.toLowerCase())) continue;
+    found.add(n);
+  }
+  const kylie = text.match(/\b(kylie\s+jenner)\b/i);
+  if (kylie?.[1]) found.add("Kylie Jenner");
+  const musk = text.match(/\b(elon\s+musk)\b/i);
+  if (musk?.[1]) found.add("Elon Musk");
+  return Array.from(found);
+}
+
+/** Real-world events spoken on this beat → stock/YouTube search phrases. */
+function scriptEventSearchQueries(beatText: string, persons: string[]): string[] {
+  const t = beatText.toLowerCase();
+  const primary = persons[0] ?? "";
+  const p = (suffix: string) => (primary ? `${primary} ${suffix}`.trim() : suffix);
+  const out: string[] = [];
+
+  if (/\b(interview|interviews|spoke with|talked to)\b/.test(t)) out.push(p("interview"));
+  if (/\b(keynote|speech|presentation|address)\b/.test(t)) out.push(p("keynote speech"));
+  if (/\b(red carpet|premiere|gala|awards?)\b/.test(t)) out.push(p("red carpet"));
+  if (/\b(launch|unveil|unveiled|announcement|revealed|debut)\b/.test(t)) out.push(p("product launch"));
+  if (/\b(trial|court|lawsuit|verdict|sentencing)\b/.test(t)) out.push(p("court trial"));
+  if (/\b(wedding|married|engagement|divorce)\b/.test(t)) out.push(p("wedding"));
+  if (/\b(protest|demonstration|rally)\b/.test(t)) out.push(p("protest"));
+  if (/\b(concert|performance|tour)\b/.test(t)) out.push(p("concert"));
+  if (/\b(scandal|controversy|backlash)\b/.test(t)) out.push(p("news conference"));
+  if (/\b(billion|million|\$\d|deal|acquisition|ipo)\b/.test(t)) out.push(p("business news"));
+  if (/\b(rocket launch|falcon|starship|spacex)\b/.test(t)) {
+    out.push("SpaceX rocket launch");
+  }
+  if (/\b(tesla|cybertruck|gigafactory)\b/.test(t)) {
+    out.push(/\btesla\b/.test(t) ? "Tesla event" : "Tesla factory");
+  }
+
+  return [...new Set(out.filter((q) => q.length >= 3 && !isBlockedStockQuery(q)))];
+}
+
 function resolveScenePersons(scene: Scene, videoTitle?: string, globalPrimaryPerson?: string): string[] {
   const persons = new Set((scene.personNames ?? []).map((n) => n.trim()).filter(Boolean));
+  for (const n of extractPersonNamesFromText(scene.text)) persons.add(n);
   const titlePerson = globalPrimaryPerson?.trim() || extractPrimaryPersonFromTitle(videoTitle);
-  if (titlePerson) {
-    persons.add(titlePerson);
-  }
+  if (titlePerson) persons.add(titlePerson);
   return Array.from(persons);
+}
+
+/** Ordered Pexels/stock queries for one beat — persons & events first, then [VISUAL:] cues. */
+function buildBeatVisualQueryList(
+  beatText: string,
+  scene: Scene,
+  videoTitle: string | undefined,
+  scenePersons: string[],
+  maxQueries: number
+): string[] {
+  const beatPersons = [
+    ...new Set([
+      ...scenePersons,
+      ...extractPersonNamesFromText(beatText),
+      ...extractPersonNamesFromText(scene.text),
+    ]),
+  ];
+  const scriptQueries = scriptStockSearchQueries(
+    beatText, beatPersons, scene.text, videoTitle
+  );
+  const eventQueries = scriptEventSearchQueries(beatText, beatPersons);
+  const entityStock = realEntityStockQueriesForBeat(beatText, scene.text, videoTitle);
+
+  const ordered = [
+    ...scriptQueries,
+    ...eventQueries,
+    ...entityStock,
+  ].filter((q) => typeof q === "string" && q.trim().length > 2 && !isBlockedStockQuery(q));
+
+  return [...new Set(ordered)].slice(0, maxQueries);
 }
 
 // ─── Beat-level visual matching (narration ↔ footage alignment) ───────────────
@@ -4222,20 +4315,21 @@ function pickMuskGoldenQuery(globalBeat: number, beatIndex = 0): string {
 }
 
 /** Normalize scene stock fields from scene narration (not video title). */
-function sanitizeSceneStockQueries(scene: Scene, _videoTitle?: string): void {
+function sanitizeSceneStockQueries(scene: Scene, videoTitle?: string): void {
   const sceneScript = scene.text.trim();
-  const simp = (q: string): string => {
-    const t = q.trim();
-    if (!t) return "";
-    if (isBlockedStockQuery(t)) return stockQueryFromBeatScript(sceneScript);
-    return simplifyStockSearchWord(t, sceneScript, true);
-  };
-  const fromScene = stockQueryFromBeatScript(sceneScript);
-  if (scene.literalVisualCue) scene.literalVisualCue = simp(scene.literalVisualCue);
+  const persons = resolveScenePersons(scene, videoTitle);
+  const fromScene = stockQueryFromBeatScript(sceneScript, persons, sceneScript, videoTitle);
+  const queries = buildBeatVisualQueryList(sceneScript, scene, videoTitle, persons, 4);
+  if (scene.literalVisualCue && PERSON_OFFTOPIC_VISUAL_RE.test(scene.literalVisualCue)) {
+    scene.literalVisualCue = fromScene;
+  }
   scene.pexelsQuery = fromScene;
-  scene.visualCue = simp(scene.visualCue) || fromScene;
-  scene.pexelsQueries = [...new Set([fromScene, ...(scene.pexelsQueries ?? []).map(simp)].filter((q) => q.length >= 3))];
-  scene.brollQueries = [...new Set((scene.brollQueries ?? []).map(simp).filter((q) => q.length >= 3))];
+  scene.visualCue = fromScene;
+  scene.pexelsQueries = queries.length > 0 ? queries : [fromScene];
+  scene.brollQueries = persons.length > 0
+    ? [`${persons[0]} interview`].filter((q) => q.length >= 3)
+    : [];
+  if (persons.length > 0) scene.personNames = persons;
 }
 
 /** Rewrite LLM scene queries that cause CGI/model rocket hits on Pexels. */
@@ -4733,7 +4827,7 @@ function enrichStockQuery(
 ): string {
   if (beatText?.trim()) {
     const persons = personName ? [personName, ...(scene.personNames ?? [])] : (scene.personNames ?? []);
-    const fromScript = scriptStockSearchQueries(beatText, persons);
+    const fromScript = scriptStockSearchQueries(beatText, persons, scene.text, videoTitle);
     if (fromScript.length > 0) return fromScript[0];
   }
   const hint = beatText?.trim() || scene.text;
@@ -4774,12 +4868,13 @@ function scoreVisualRelevance(text: string, keywords: string[]): number {
 /** Map narration sentence → Pexels search from script text only. */
 function deriveBeatStockQuery(
   beatText: string,
-  _scene: Scene,
-  _videoTitle?: string,
-  _personName?: string,
+  scene: Scene,
+  videoTitle?: string,
+  personName?: string,
   _muskTopic = false
 ): string {
-  return stockQueryFromBeatScript(beatText);
+  const persons = resolveScenePersons(scene, videoTitle, personName);
+  return stockQueryFromBeatScript(beatText, persons, scene.text, videoTitle);
 }
 
 function buildSceneBeats(
@@ -4864,7 +4959,7 @@ function buildSceneBeats(
   const beats: SceneBeat[] = [];
   for (let i = 0; i < groups.length; i++) {
     const text = groups[i].text;
-    const searchQuery = stockQueryFromBeatScript(text, scenePersons);
+    const searchQuery = stockQueryFromBeatScript(text, scenePersons, scene.text, videoTitle);
     beats.push({
       index: i,
       text,
@@ -5185,6 +5280,143 @@ async function fetchPersonBeatClip(
   return null;
 }
 
+/** Script-anchored clip fetch: persons → events → [VISUAL:] → YouTube CC → person interview. */
+async function fetchBeatClipFromScript(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  personName: string,
+  videoTitle: string | undefined,
+  adoptOpts: VisualAdoptOptions,
+  pexFetch: (query: string, t: string, off: number, count?: number) => () => Promise<string[]>,
+  candidateOffset: number,
+  tag: string,
+  muskTopic: boolean
+): Promise<string | null> {
+  const perf = dedup.perf;
+  const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
+  const primary = scenePersons[0] ?? personName ?? dedup.primaryPerson;
+  const maxQ = perf.fastStockMode ? Math.min(3, perf.maxStockQueriesPerBeat) : perf.maxStockQueriesPerBeat;
+  const beatQueries = buildBeatVisualQueryList(beat.text, scene, videoTitle, scenePersons, maxQ);
+
+  let clip = await tryStockSources(
+    beatQueries.map((bq, bi) => ({
+      query: bq,
+      fetch: pexFetch(bq, `${tag}_script`, candidateOffset + bi, muskTopic ? 3 : 2),
+    })),
+    dedup,
+    sceneIndex,
+    beat.index,
+    beat.text,
+    workDir,
+    "script person/event",
+    adoptOpts
+  );
+  if (clip) return clip;
+
+  const entityYt = realEntityYoutubeQueriesForBeat(beat.text, scene.text, videoTitle);
+  if (
+    entityYt.length > 0 &&
+    dedup.entityYoutubeFetchesUsed < perf.maxEntityYoutubePerVideo &&
+    (process.env.YOUTUBE_API_KEY || RAPIDAPI_KEY || process.env.YOUTUBE_CC_DL_SERVICE)
+  ) {
+    dedup.entityYoutubeFetchesUsed++;
+    const ytMs = perf.fastStockMode ? 22_000 : 45_000;
+    try {
+      clip = await withTimeout(
+        tryStockSources(
+          [{
+            query: entityYt[0],
+            fetch: () =>
+              fetchYouTubeCCClips(entityYt.slice(0, 2), clipFetchDur, workDir, sceneIndex, 1, beat.keywords, 1),
+          }],
+          dedup,
+          sceneIndex,
+          beat.index,
+          beat.text,
+          workDir,
+          "event YouTube",
+          adoptOpts
+        ),
+        ytMs,
+        `event YouTube s${sceneIndex} b${beat.index}`
+      );
+    } catch (err) {
+      console.warn(
+        `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: event YouTube skipped:`,
+        (err as Error).message
+      );
+    }
+    if (clip) return clip;
+  }
+
+  if (
+    muskTopic &&
+    perf.enableMuskHeroFetch &&
+    !dedup.muskHeroFetchUsed &&
+    beat.index === 0 &&
+    sceneIndex === 0 &&
+    (process.env.YOUTUBE_API_KEY || RAPIDAPI_KEY || process.env.YOUTUBE_CC_DL_SERVICE)
+  ) {
+    dedup.muskHeroFetchUsed = true;
+    dedup.entityYoutubeFetchesUsed++;
+    try {
+      clip = await withTimeout(
+        tryStockSources(
+          [{
+            query: HERO_YOUTUBE_QUERIES[0],
+            fetch: () =>
+              fetchYouTubeCCClips(
+                HERO_YOUTUBE_QUERIES.slice(0, 2),
+                clipFetchDur,
+                workDir,
+                sceneIndex,
+                1,
+                beat.keywords,
+                1
+              ),
+          }],
+          dedup,
+          sceneIndex,
+          beat.index,
+          beat.text,
+          workDir,
+          "hero YouTube",
+          { ...adoptOpts, requireMuskBrand: false }
+        ),
+        22_000,
+        `hero YouTube s${sceneIndex}`
+      );
+    } catch {
+      /* skip */
+    }
+    if (clip) return clip;
+  }
+
+  if (primary) {
+    clip = await fetchPersonBeatClip(
+      beat,
+      scene,
+      workDir,
+      sceneIndex,
+      clipFetchDur,
+      dedup,
+      primary,
+      videoTitle,
+      adoptOpts,
+      pexFetch,
+      candidateOffset,
+      tag
+    );
+    if (clip) return clip;
+  }
+
+  return null;
+}
+
 async function fetchBeatClip(
   beat: SceneBeat,
   scene: Scene,
@@ -5212,11 +5444,10 @@ async function fetchBeatClip(
   };
 
   const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
-  const scriptQueries = scriptStockSearchQueries(beat.text, scenePersons);
   const maxQ = perf.maxStockQueriesPerBeat;
-  let q = scriptQueries[0] ?? beat.searchQuery;
+  let q = stockQueryFromBeatScript(beat.text, scenePersons, scene.text, videoTitle);
   if (isBlockedStockQuery(q)) {
-    q = stockQueryFromBeatScript(beat.text, scenePersons);
+    q = stockQueryFromBeatScript(beat.text, scenePersons, scene.text, videoTitle);
   }
 
   const pexCount = muskTopic ? 4 : 2;
@@ -5230,137 +5461,29 @@ async function fetchBeatClip(
   const brollFetch = (query: string) =>
     () => fetchBrollClips([query], clipFetchDur, workDir, sceneIndex, dedup.usedPexelsIds);
 
-  let clip: string | null = null;
-
-  // Railway 1–2 min: script stock → real-event YouTube → person interview footage (no hero/golden loops).
-  if (perf.fastStockMode) {
-    const beatDerived = deriveBeatStockQuery(beat.text, scene, videoTitle, personName, muskTopic);
-    const entityStock = realEntityStockQueriesForBeat(beat.text, scene.text, videoTitle);
-    const beatQueries = [...new Set([
-      ...scriptStockSearchQueries(beat.text, scenePersons),
-      ...scriptQueries,
-      beatDerived,
-      ...entityStock,
-      beat.searchQuery,
-      q,
-    ].filter((bq) => typeof bq === "string" && bq.trim().length > 2 && !isBlockedStockQuery(bq)))].slice(0, Math.min(2, maxQ));
-    clip = await tryStockSources(
-      beatQueries.map((bq, bi) => ({
-        query: bq,
-        fetch: pexFetch(bq, `${tag}_fast`, candidateOffset + bi, 2),
-      })),
-      dedup, sceneIndex, beat.index, beat.text, workDir, "fast script", adoptOpts
-    );
-    if (clip) { dedup.globalBeatIndex++; return clip; }
-
-    if (
-      muskTopic &&
-      perf.enableMuskHeroFetch &&
-      !dedup.muskHeroFetchUsed &&
-      beat.index === 0 &&
-      sceneIndex === 0 &&
-      (process.env.YOUTUBE_API_KEY || RAPIDAPI_KEY || process.env.YOUTUBE_CC_DL_SERVICE)
-    ) {
-      dedup.muskHeroFetchUsed = true;
-      dedup.entityYoutubeFetchesUsed++;
-      try {
-        clip = await withTimeout(
-          tryStockSources(
-            [{
-              query: HERO_YOUTUBE_QUERIES[0],
-              fetch: () =>
-                fetchYouTubeCCClips(
-                  HERO_YOUTUBE_QUERIES.slice(0, 2),
-                  clipFetchDur,
-                  workDir,
-                  sceneIndex,
-                  1,
-                  beat.keywords,
-                  1
-                ),
-            }],
-            dedup,
-            sceneIndex,
-            beat.index,
-            beat.text,
-            workDir,
-            "fast hero YouTube",
-            { ...adoptOpts, requireMuskBrand: false }
-          ),
-          22_000,
-          `fast hero YouTube s${sceneIndex}`
-        );
-      } catch (err) {
-        console.warn(`[Pipeline] Scene ${sceneIndex}: fast hero YouTube skipped:`, (err as Error).message);
-      }
-      if (clip) { dedup.globalBeatIndex++; return clip; }
-    }
-
-    const entityYt = realEntityYoutubeQueriesForBeat(beat.text, scene.text, videoTitle);
-    if (
-      entityYt.length > 0 &&
-      dedup.entityYoutubeFetchesUsed < dedup.perf.maxEntityYoutubePerVideo &&
-      (process.env.YOUTUBE_API_KEY || RAPIDAPI_KEY || process.env.YOUTUBE_CC_DL_SERVICE)
-    ) {
-      dedup.entityYoutubeFetchesUsed++;
-      try {
-        clip = await withTimeout(
-          tryStockSources(
-            [{
-              query: entityYt[0],
-              fetch: () =>
-                fetchYouTubeCCClips(entityYt.slice(0, 2), clipFetchDur, workDir, sceneIndex, 1, beat.keywords, 1),
-            }],
-            dedup, sceneIndex, beat.index, beat.text, workDir, "fast event YouTube", adoptOpts
-          ),
-          22_000,
-          `fast entity YouTube s${sceneIndex} b${beat.index}`
-        );
-      } catch (err) {
-        console.warn(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: fast YouTube skipped:`, (err as Error).message);
-      }
-      if (clip) { dedup.globalBeatIndex++; return clip; }
-    }
-
-    if (personName) {
-      clip = await fetchPersonBeatClip(
-        beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName, videoTitle,
-        adoptOpts, pexFetch, candidateOffset, tag
-      );
-      if (clip) { dedup.globalBeatIndex++; return clip; }
-    }
-
+  let clip: string | null = await fetchBeatClipFromScript(
+    beat,
+    scene,
+    workDir,
+    sceneIndex,
+    clipFetchDur,
+    dedup,
+    personName,
+    videoTitle,
+    adoptOpts,
+    pexFetch,
+    candidateOffset,
+    tag,
+    muskTopic
+  );
+  if (clip) {
+    dedup.globalBeatIndex++;
+    return clip;
+  }
+  if (perf.scriptOnlyVisuals) {
     dedup.globalBeatIndex++;
     return null;
   }
-
-  if (personName) {
-    clip = await fetchPersonBeatClip(
-      beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName, videoTitle,
-      adoptOpts, pexFetch, candidateOffset, tag
-    );
-    if (clip) { dedup.globalBeatIndex++; return clip; }
-  }
-
-  // 1) Script narration first — search terms come from what is spoken on this beat
-  const beatDerived = deriveBeatStockQuery(beat.text, scene, videoTitle, personName, muskTopic);
-  const entityStock = realEntityStockQueriesForBeat(beat.text, scene.text, videoTitle);
-  const beatQueries = [...new Set([
-    ...scriptStockSearchQueries(beat.text, scenePersons),
-    ...scriptQueries,
-    beatDerived,
-    ...entityStock,
-    beat.searchQuery,
-    q,
-  ].filter((bq) => typeof bq === "string" && bq.trim().length > 2 && !isBlockedStockQuery(bq)))].slice(0, maxQ);
-  clip = await tryStockSources(
-    beatQueries.map((bq, bi) => ({
-      query: bq,
-      fetch: pexFetch(bq, `${tag}_script`, candidateOffset + bi, muskTopic ? 4 : 2),
-    })),
-    dedup, sceneIndex, beat.index, beat.text, workDir, "script beat", adoptOpts
-  );
-  if (clip) { dedup.globalBeatIndex++; return clip; }
 
   // 0a) Hero beat: YouTube CC + NASA for recognizable SpaceX/Tesla (once per video)
   if (
@@ -6663,8 +6786,10 @@ export async function runVideoPipeline(
   const primaryPerson =
     extractPrimaryPersonFromText(userPrompt ?? videoRow?.prompt ?? "") ||
     extractPrimaryPersonFromText(videoTitle) ||
-    extractPrimaryPersonFromText(topicContext);
-  const personLocked = isPersonCelebrityTopic(topicContext) && Boolean(primaryPerson);
+    extractPrimaryPersonFromText(topicContext) ||
+    extractPersonNamesFromText(script)[0] ||
+    "";
+  const personLocked = Boolean(primaryPerson) || isPersonCelebrityTopic(topicContext);
 
   console.log(
     `[Pipeline] Video ${videoId}: ${maxScenes} scenes for ${videoLength} min` +
