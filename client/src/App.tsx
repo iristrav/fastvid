@@ -12,6 +12,7 @@ import Subscribe from "./pages/Subscribe";
 import ResetPassword from "./pages/ResetPassword";
 import VideoEditor from "./pages/VideoEditor";
 import PrivacyPolicy from "./pages/PrivacyPolicy";
+import TermsOfService from "./pages/TermsOfService";
 
 function Router() {
   // make sure to consider if you need authentication for certain routes
@@ -19,6 +20,7 @@ function Router() {
     <Switch>
       <Route path={"/"} component={Home} />
       <Route path={"/privacy"} component={PrivacyPolicy} />
+      <Route path={"/terms"} component={TermsOfService} />
       <Route path={"/login"} component={Login} />
       <Route path={"/reset-password"} component={ResetPassword} />
       <Route path={"/dashboard"} component={Dashboard} />

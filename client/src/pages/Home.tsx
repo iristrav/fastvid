@@ -818,7 +818,10 @@ export default function Home() {
             <a href="/privacy" className="hover:text-slate-300 transition-colors">
               Privacy Policy
             </a>
-            {["Terms of Service", "Cookie Policy", "Contact"].map((item) => (
+            <a href="/terms" className="hover:text-slate-300 transition-colors">
+              Terms of Service
+            </a>
+            {["Cookie Policy", "Contact"].map((item) => (
               <span key={item} className="text-slate-600 cursor-default">{item}</span>
             ))}
           </div>
