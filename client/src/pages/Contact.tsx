@@ -50,6 +50,31 @@ export default function Contact() {
         ))}
       </div>
 
+      <LegalSection title="Discord community">
+        <p>
+          Join the Fastvid Discord for a <strong className="text-slate-200">curated YouTube niche every week</strong>,
+          plus tips, support, and updates from other documentary creators.{" "}
+          {(import.meta.env.VITE_DISCORD_INVITE_URL as string | undefined)?.trim() ? (
+            <a
+              href={(import.meta.env.VITE_DISCORD_INVITE_URL as string).trim()}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-cyan-400 hover:underline"
+            >
+              Join the Discord server
+            </a>
+          ) : (
+            <>
+              Ask us at{" "}
+              <a href="mailto:support@fastvid.app" className="text-cyan-400 hover:underline">
+                support@fastvid.app
+              </a>{" "}
+              for the invite link.
+            </>
+          )}
+        </p>
+      </LegalSection>
+
       <LegalSection title="Invite codes">
         <p>
           New accounts may require an invite code. If you need access, email{" "}

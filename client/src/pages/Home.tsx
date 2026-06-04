@@ -29,7 +29,12 @@ import {
   Search,
   Menu,
   X,
+  MessageCircle,
+  CalendarDays,
 } from "lucide-react";
+
+/** Set VITE_DISCORD_INVITE_URL in Railway / .env (e.g. https://discord.gg/your-invite) */
+const DISCORD_INVITE_URL = (import.meta.env.VITE_DISCORD_INVITE_URL as string | undefined)?.trim() ?? "";
 
 // ─── Asset URLs ────────────────────────────────────────────────────────────────
 const HERO_BG = "https://d2xsxph8kpxj0f.cloudfront.net/310519663314427713/B9GyrhcpQX4Q32cZzpFMG9/fastvid-hero-bg-mWVG39EKHRHQLbpq3Vhb3L.webp";
@@ -276,6 +281,10 @@ export default function Home() {
       q: "Can I add my own voice or branding?",
       a: "Absolutely. You can upload your own voice for cloning, set your logo and brand colors, and attach intro/outro templates to your channel.",
     },
+    {
+      q: "What do I get in the Fastvid Discord?",
+      a: "Members receive a curated, high-potential YouTube niche pick every week — plus updates, tips, and support from other documentary creators. Join via the Community section on this page.",
+    },
   ];
 
   const productionSteps = [
@@ -356,7 +365,7 @@ export default function Home() {
           </button>
 
           <div className="hidden md:flex items-center gap-8">
-            {[["How it works", "how-it-works"], ["Formats", "formats"], ["Features", "features"], ["Pricing", "pricing"], ["FAQ", "faq"]].map(([label, id]) => (
+            {[["How it works", "how-it-works"], ["Formats", "formats"], ["Community", "community"], ["Features", "features"], ["Pricing", "pricing"], ["FAQ", "faq"]].map(([label, id]) => (
               <button key={id} onClick={() => scrollTo(id)} className="text-sm text-slate-400 hover:text-white transition-colors duration-200">
                 {label}
               </button>
@@ -379,7 +388,7 @@ export default function Home() {
 
         {mobileMenuOpen && (
           <div className="md:hidden bg-background/95 backdrop-blur-xl border-b border-white/8 px-4 pb-4 flex flex-col gap-3">
-            {[["How it works", "how-it-works"], ["Formats", "formats"], ["Features", "features"], ["Pricing", "pricing"], ["FAQ", "faq"]].map(([label, id]) => (
+            {[["How it works", "how-it-works"], ["Formats", "formats"], ["Community", "community"], ["Features", "features"], ["Pricing", "pricing"], ["FAQ", "faq"]].map(([label, id]) => (
               <button key={id} onClick={() => scrollTo(id)} className="text-sm text-slate-300 hover:text-white py-2 text-left transition-colors">
                 {label}
               </button>
@@ -855,6 +864,73 @@ export default function Home() {
         </div>
       </section>
 
+      {/* ── Discord community ── */}
+      <section id="community" className="relative py-24 overflow-hidden">
+        <div className="glow-orb w-96 h-96 bg-[#5865F2]/15 top-0 left-1/2 -translate-x-1/2 animate-orb-drift" />
+        <div className="container relative z-10">
+          <div className="max-w-3xl mx-auto glass-card gradient-border rounded-2xl p-8 md:p-10 border border-[#5865F2]/25 bg-[#5865F2]/5">
+            <div className="flex flex-col md:flex-row md:items-start gap-8">
+              <div className="shrink-0 w-14 h-14 rounded-2xl bg-[#5865F2]/20 border border-[#5865F2]/40 flex items-center justify-center">
+                <MessageCircle className="w-7 h-7 text-[#5865F2]" />
+              </div>
+              <div className="flex-1 flex flex-col gap-5">
+                <div>
+                  <span className="mono text-xs text-[#5865F2] font-medium tracking-widest uppercase mb-2 block">
+                    Free for members
+                  </span>
+                  <h2 className="text-2xl md:text-3xl font-black text-white mb-3" style={{ fontFamily: "Outfit, sans-serif" }}>
+                    Join our Discord — get a winning{" "}
+                    <span className="gradient-text">niche every week</span>
+                  </h2>
+                  <p className="text-slate-300 text-sm md:text-base leading-relaxed">
+                    Become a member of the Fastvid community. Each week we share one strong YouTube niche
+                    idea (documentary or explainer) with angle, audience, and why it works now — so you always
+                    know what to produce next.
+                  </p>
+                </div>
+                <ul className="space-y-2.5">
+                  {[
+                    "Weekly curated niche drop (high CPM / search-friendly where possible)",
+                    "Tips on prompts, length, and documentary structure",
+                    "Ask questions and share results with other creators",
+                    "Early access to features and pipeline updates",
+                  ].map((item) => (
+                    <li key={item} className="flex items-start gap-2.5 text-sm text-slate-300">
+                      <Check className="w-4 h-4 text-[#5865F2] shrink-0 mt-0.5" />
+                      {item}
+                    </li>
+                  ))}
+                </ul>
+                <div className="flex items-center gap-2 text-xs text-slate-500">
+                  <CalendarDays className="w-4 h-4 text-cyan-400" />
+                  New niche posted every week in the group
+                </div>
+                {DISCORD_INVITE_URL ? (
+                  <a
+                    href={DISCORD_INVITE_URL}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center justify-center gap-2 w-full sm:w-auto px-6 py-3.5 rounded-xl font-bold text-white bg-[#5865F2] hover:bg-[#4752c4] transition-colors shadow-lg shadow-[#5865F2]/25"
+                  >
+                    <MessageCircle className="w-5 h-5" />
+                    Join the Discord
+                    <ArrowRight className="w-4 h-4" />
+                  </a>
+                ) : (
+                  <p className="text-sm text-slate-500">
+                    Discord invite link is being configured. Check back soon or email{" "}
+                    <a href="mailto:support@fastvid.app" className="text-cyan-400 hover:underline">
+                      support@fastvid.app
+                    </a>
+                    .
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
       {/* ── FAQ ── */}
       <section id="faq" className="relative py-24 overflow-hidden">
         <div className="glow-orb w-80 h-80 bg-cyan-500/8 bottom-10 right-0 animate-orb-drift-slow" />
@@ -924,6 +1000,16 @@ export default function Home() {
                 {label}
               </a>
             ))}
+            {DISCORD_INVITE_URL ? (
+              <a
+                href={DISCORD_INVITE_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="hover:text-slate-300 transition-colors"
+              >
+                Discord
+              </a>
+            ) : null}
           </nav>
           <p className="text-xs text-slate-600">© {new Date().getFullYear()} Fastvid. All rights reserved.</p>
         </div>
