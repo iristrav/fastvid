@@ -3563,6 +3563,114 @@ async function downloadYouTubeCCClip(
   return false;
 }
 
+/** Live probe: YouTube CC search + RapidAPI metadata (for /api/health/youtube-probe). */
+export async function probeYouTubeCcPipeline(): Promise<{
+  ready: boolean;
+  searchStatus: number | null;
+  ccResultCount: number;
+  rapidApiStatus: number | null;
+  rapidApiHasFormat: boolean;
+  sampleVideoId: string | null;
+  message: string;
+}> {
+  const ready = youtubeCcReady();
+  if (!ready) {
+    return {
+      ready: false,
+      searchStatus: null,
+      ccResultCount: 0,
+      rapidApiStatus: null,
+      rapidApiHasFormat: false,
+      sampleVideoId: null,
+      message: "Set YOUTUBE_API_KEY and RAPIDAPI_KEY (or YOUTUBE_CC_DL_SERVICE)",
+    };
+  }
+  const probeQuery = "SpaceX Falcon 9 rocket launch";
+  let searchStatus: number | null = null;
+  let ccResultCount = 0;
+  let sampleVideoId: string | null = null;
+  try {
+    const searchUrl = new URL("https://www.googleapis.com/youtube/v3/search");
+    searchUrl.searchParams.set("key", process.env.YOUTUBE_API_KEY!.trim());
+    searchUrl.searchParams.set("q", probeQuery);
+    searchUrl.searchParams.set("type", "video");
+    searchUrl.searchParams.set("videoLicense", "creativeCommon");
+    searchUrl.searchParams.set("maxResults", "5");
+    searchUrl.searchParams.set("part", "snippet");
+    const searchResp = await fetch(searchUrl.toString());
+    searchStatus = searchResp.status;
+    if (searchResp.ok) {
+      const data = (await searchResp.json()) as {
+        items?: Array<{ id?: { videoId?: string } }>;
+      };
+      ccResultCount = data.items?.length ?? 0;
+      sampleVideoId = data.items?.[0]?.id?.videoId ?? null;
+    }
+  } catch (err) {
+    return {
+      ready: true,
+      searchStatus,
+      ccResultCount: 0,
+      rapidApiStatus: null,
+      rapidApiHasFormat: false,
+      sampleVideoId: null,
+      message: `YouTube search failed: ${(err as Error).message}`,
+    };
+  }
+
+  let rapidApiStatus: number | null = null;
+  let rapidApiHasFormat = false;
+  if (sampleVideoId && RAPIDAPI_KEY) {
+    const host = process.env.RAPIDAPI_YT_HOST || "ytstream-download-youtube-videos.p.rapidapi.com";
+    try {
+      const metaResp = await fetch(`https://${host}/dl?id=${sampleVideoId}`, {
+        headers: {
+          "x-rapidapi-host": host,
+          "x-rapidapi-key": RAPIDAPI_KEY,
+        },
+      });
+      rapidApiStatus = metaResp.status;
+      if (metaResp.ok) {
+        const data = (await metaResp.json()) as {
+          formats?: Array<{ url?: string; mimeType?: string }>;
+          adaptiveFormats?: Array<{ url?: string; mimeType?: string }>;
+        };
+        const mp4 = [...(data.formats ?? []), ...(data.adaptiveFormats ?? [])].some(
+          (f) => f.url && f.mimeType?.includes("mp4")
+        );
+        rapidApiHasFormat = mp4;
+      }
+    } catch {
+      rapidApiStatus = null;
+    }
+  }
+
+  const searchOk = searchStatus === 200 && ccResultCount > 0;
+  const rapidOk = rapidApiStatus === 200 && rapidApiHasFormat;
+  let message = "YouTube CC pipeline OK";
+  if (!searchOk) {
+    message =
+      searchStatus === 403
+        ? "YouTube API key invalid or quota exceeded"
+        : `YouTube CC search returned ${ccResultCount} results (HTTP ${searchStatus})`;
+  } else if (!rapidOk) {
+    message =
+      rapidApiStatus === 403 || rapidApiStatus === 401
+        ? "RapidAPI key invalid or not subscribed to ytstream-download-youtube-videos"
+        : `RapidAPI metadata HTTP ${rapidApiStatus ?? "error"} — no MP4 format`;
+  }
+
+  return {
+    ready: true,
+    searchStatus,
+    ccResultCount,
+    rapidApiStatus,
+    rapidApiHasFormat,
+    sampleVideoId,
+    message,
+  };
+}
+
 // ─── 3c3. Fetch YouTube CC Video Clips ───────────────────────────────────────
 // Uses YouTube Data API v3 to search for Creative Commons videos, then downloads
 // via RapidAPI (RAPIDAPI_KEY) or the legacy cloud download service URL.
@@ -3574,7 +3682,7 @@ async function fetchYouTubeCCClips(
   sceneIndex: number,
   count: number = 2,
   relevanceKeywords: string[] = [],
-  minRelevanceScore = 2
+  minRelevanceScore = 1
 ): Promise<string[]> {
   const results: string[] = [];
 
@@ -4348,7 +4456,8 @@ function clipSatisfiesRealEntities(
 ): boolean {
   if (rules.length === 0) return true;
   const hay = `${sourceQuery} ${path.basename(filePath)}`.toLowerCase();
-  return rules.every((r) => r.clipMustMatchRe.test(hay));
+  // Match the search query (e.g. "Elon Musk interview"), not every entity word in the beat.
+  return rules.some((r) => r.clipMustMatchRe.test(hay));
 }
 
 function realEntityStockQueriesForBeat(beatText: string, sceneText: string, videoTitle?: string): string[] {

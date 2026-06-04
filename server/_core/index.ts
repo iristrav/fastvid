@@ -168,6 +168,22 @@ async function startServer() {
     });
   });
 
+  app.get("/api/health/youtube-probe", async (_req, res) => {
+    try {
+      const { probeYouTubeCcPipeline } = await import("../videoPipeline");
+      const probe = await probeYouTubeCcPipeline();
+      const ok =
+        probe.ready &&
+        probe.searchStatus === 200 &&
+        probe.ccResultCount > 0 &&
+        probe.rapidApiStatus === 200 &&
+        probe.rapidApiHasFormat;
+      res.status(ok ? 200 : 503).json({ ok, ...probe });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: String(err) });
+    }
+  });
+
   // ─── Video Download Endpoint ─────────────────────────────────────────────
   // Streams the video file through the server so the browser can download it.
   // This avoids CORS issues with presigned S3 URLs that block the download attribute.
