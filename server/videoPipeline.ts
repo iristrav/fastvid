@@ -743,9 +743,9 @@ function mapRawScene(
     inlineFromText[0] ||
     "";
   const hint = `${s.text ?? ""}`;
-  const simp = (q: string) => simplifyStockSearchWord(q, hint);
+  const simp = (q: string) => simplifyStockSearchWord(q, hint, true);
   const primaryQuery = simp(
-    literalVisualCue || (s.pexelsQuery?.trim() || s.visualCue || "documentary")
+    literalVisualCue || (s.pexelsQuery?.trim() || s.visualCue || stockQueryFromBeatScript(hint))
   );
   const extraQueries = (rawS.pexelsQueries as string[] | undefined) || [];
   const allQueries = [primaryQuery, ...extraQueries.map(simp).filter((q) => q && q !== primaryQuery)].slice(0, 4);
@@ -1398,7 +1398,7 @@ async function fetchPexelsClips(
     new Set(
       [query, ...(extraQueries ?? [])]
         .filter((q) => q && q.trim().length > 2 && !isBlockedStockQuery(q))
-        .map((q) => simplifyStockSearchWord(q))
+        .map((q) => simplifyStockSearchWord(q, q, true))
     )
   );
   if (queryList.length === 0) return [];
@@ -1591,7 +1591,7 @@ async function fetchBrollClips(
   if ((!PEXELS_API_KEY && !PIXABAY_API_KEY) || !brollQueries || brollQueries.length === 0) return [];
   const results: string[] = [];
   for (let qi = 0; qi < brollQueries.length && results.length < 3; qi++) {
-    const query = simplifyStockSearchWord(brollQueries[qi] ?? "");
+    const query = simplifyStockSearchWord(brollQueries[qi] ?? "", brollQueries[qi] ?? "", true);
     if (!query || query.length < 3 || isBlockedStockQuery(query)) continue;
     try {
       const searchUrl = `https://api.pexels.com/videos/search?query=${encodeURIComponent(query)}&per_page=5&size=large&orientation=landscape&min_duration=4`;
@@ -1673,7 +1673,7 @@ async function fetchPixabayClips(
     new Set(
       [query]
         .filter((q) => q && q.trim().length > 2 && !isBlockedStockQuery(q))
-        .map((q) => simplifyStockSearchWord(q))
+        .map((q) => simplifyStockSearchWord(q, q, true))
     )
   );
   if (queryList.length === 0) return [];
@@ -3633,9 +3633,65 @@ function extractInlineVisualCues(text: string): string[] {
 }
 
 function scoreBeatNarrationMatch(beatText: string, sourceQuery: string, filePath: string): number {
-  const tokens = tokenizeForRelevance(beatText).filter((t) => t.length >= 4);
+  const tokens = tokenizeForRelevance(beatText).filter((t) => t.length >= 3);
   const hay = `${sourceQuery} ${path.basename(filePath)}`.toLowerCase();
   return scoreVisualRelevance(hay, tokens);
+}
+
+/** Map one script token → English Pexels keyword (no scene/title context). */
+function translateTokenForPexels(token: string): string | null {
+  const t = token.toLowerCase();
+  if (RELEVANCE_STOP_WORDS.has(t) || t.length < 3) return null;
+  if (DUTCH_STOCK_WORD_MAP[t]) return DUTCH_STOCK_WORD_MAP[t];
+  for (const [re, word] of STOCK_TOPIC_WORD_RULES) {
+    if (re.test(`\\b${t}\\b`) || re.test(t)) return word;
+  }
+  return t;
+}
+
+/**
+ * Stock search terms derived ONLY from this beat's narration (+ [VISUAL:] tags).
+ * Never uses video title or full scene text (avoids wrong generic B-roll).
+ */
+function scriptStockSearchQueries(beatText: string): string[] {
+  const narration = beatText.replace(/\[visual:[^\]]*\]/gi, " ").trim();
+  const out: string[] = [];
+
+  for (const cue of extractInlineVisualCues(beatText)) {
+    out.push(simplifyStockSearchWord(cue, cue, true));
+    for (const tok of tokenizeForRelevance(cue)) {
+      const w = translateTokenForPexels(tok);
+      if (w) out.push(w);
+    }
+  }
+
+  for (const q of realEntityStockQueriesForBeat(beatText, "", "")) {
+    if (q) out.push(q);
+  }
+
+  const beatTokens = tokenizeForRelevance(narration);
+  const ranked = [...beatTokens].sort((a, b) => b.length - a.length);
+  for (const tok of ranked) {
+    const w = translateTokenForPexels(tok);
+    if (w && !isBlockedStockQuery(w)) out.push(w);
+  }
+
+  if (ranked.length >= 2) {
+    const a = translateTokenForPexels(ranked[0]) ?? ranked[0];
+    const b = translateTokenForPexels(ranked[1]) ?? ranked[1];
+    const pair = `${a} ${b}`.trim();
+    if (pair.length >= 5 && pair.length <= 48 && !isBlockedStockQuery(pair)) out.push(pair);
+  }
+
+  if (out.length === 0 && narration.length > 0) {
+    out.push(simplifyStockSearchWord(narration, narration, true));
+  }
+
+  return [...new Set(out.filter((q) => q && q.length >= 3 && !isBlockedStockQuery(q)))].slice(0, 8);
+}
+
+function stockQueryFromBeatScript(beatText: string): string {
+  return scriptStockSearchQueries(beatText)[0] ?? "documentary";
 }
 
 function isStockVideoClip(filePath: string): boolean {
@@ -3867,9 +3923,8 @@ function clipSatisfiesRealEntities(
 
 function realEntityStockQueriesForBeat(beatText: string, sceneText: string, videoTitle?: string): string[] {
   const rules = extractBeatRealEntities(beatText, sceneText, videoTitle ?? "");
-  const hint = `${beatText} ${sceneText} ${videoTitle ?? ""}`;
   return [...new Set(
-    rules.flatMap((r) => r.stockQueries.map((q) => simplifyStockSearchWord(q, hint)))
+    rules.flatMap((r) => r.stockQueries.map((q) => simplifyStockSearchWord(q, beatText, true)))
   )];
 }
 
@@ -3960,19 +4015,20 @@ function pickMuskGoldenQuery(globalBeat: number, beatIndex = 0): string {
   return GOLDEN_MUSK_QUERIES[idx];
 }
 
-/** Force all scene stock fields to one-word Pexels queries (every topic). */
-function sanitizeSceneStockQueries(scene: Scene, videoTitle?: string): void {
-  const hint = `${scene.text} ${videoTitle ?? ""}`;
+/** Normalize scene stock fields from scene narration (not video title). */
+function sanitizeSceneStockQueries(scene: Scene, _videoTitle?: string): void {
+  const sceneScript = scene.text.trim();
   const simp = (q: string): string => {
     const t = q.trim();
     if (!t) return "";
-    if (isBlockedStockQuery(t)) return simplifyStockSearchWord("documentary", hint);
-    return simplifyStockSearchWord(t, hint);
+    if (isBlockedStockQuery(t)) return stockQueryFromBeatScript(sceneScript);
+    return simplifyStockSearchWord(t, sceneScript, true);
   };
+  const fromScene = stockQueryFromBeatScript(sceneScript);
   if (scene.literalVisualCue) scene.literalVisualCue = simp(scene.literalVisualCue);
-  scene.pexelsQuery = simp(scene.pexelsQuery) || simplifyStockSearchWord(scene.text, hint);
-  scene.visualCue = simp(scene.visualCue) || scene.pexelsQuery;
-  scene.pexelsQueries = [...new Set((scene.pexelsQueries ?? []).map(simp).filter((q) => q.length >= 3))];
+  scene.pexelsQuery = fromScene;
+  scene.visualCue = simp(scene.visualCue) || fromScene;
+  scene.pexelsQueries = [...new Set([fromScene, ...(scene.pexelsQueries ?? []).map(simp)].filter((q) => q.length >= 3))];
   scene.brollQueries = [...new Set((scene.brollQueries ?? []).map(simp).filter((q) => q.length >= 3))];
 }
 
@@ -4230,32 +4286,32 @@ function buildMontageXfadeFilter(
   return { scaleFilters, mergeFilter, montageLabel: "montage" };
 }
 
-function extractTopicStockQueries(promptOrTitle: string): string[] {
-  const text = promptOrTitle.trim();
-  if (!text) return ["documentary"];
-  const out = new Set<string>();
-  out.add(simplifyStockSearchWord(text, text));
-  for (const token of tokenizeForRelevance(text)) {
-    const w = simplifyStockSearchWord(token, text);
-    if (w.length >= 3 && !isBlockedStockQuery(w)) out.add(w);
-  }
-  return [...out].slice(0, 10);
+function extractTopicStockQueries(scriptText: string): string[] {
+  const queries = scriptStockSearchQueries(scriptText);
+  return queries.length > 0 ? queries : ["documentary"];
 }
 
-function buildTopicAnchoredQueries(scene: Scene, videoTitle?: string, personName?: string, prompt?: string): string[] {
+function buildTopicAnchoredQueries(
+  scene: Scene,
+  videoTitle?: string,
+  personName?: string,
+  _prompt?: string,
+  beatText?: string
+): string[] {
   const person = personName || scene.personNames?.[0] || extractPrimaryPersonFromTitle(videoTitle) || "";
   const titleLower = (videoTitle ?? "").toLowerCase();
-  const textLower = scene.text.toLowerCase();
+  const textLower = (beatText ?? scene.text).toLowerCase();
+  const script = beatText?.trim() || scene.text;
   const queries: string[] = [];
 
+  queries.push(...scriptStockSearchQueries(script));
   queries.push(
-    enrichStockQuery(scene.literalVisualCue ?? "", scene, videoTitle, person),
-    enrichStockQuery(scene.pexelsQuery, scene, videoTitle, person),
-    enrichStockQuery(scene.visualCue, scene, videoTitle, person),
-    ...(scene.pexelsQueries ?? []).map((q) => enrichStockQuery(q, scene, videoTitle, person)),
-    ...(scene.brollQueries ?? []).map((q) => enrichStockQuery(q, scene, videoTitle, person)),
+    enrichStockQuery(scene.literalVisualCue ?? "", scene, videoTitle, person, script),
+    enrichStockQuery(scene.pexelsQuery, scene, videoTitle, person, script),
+    enrichStockQuery(scene.visualCue, scene, videoTitle, person, script),
+    ...(scene.pexelsQueries ?? []).map((q) => enrichStockQuery(q, scene, videoTitle, person, script)),
+    ...(scene.brollQueries ?? []).map((q) => enrichStockQuery(q, scene, videoTitle, person, script)),
   );
-  queries.push(...extractTopicStockQueries(`${prompt ?? ""} ${videoTitle ?? ""} ${scene.text}`));
 
   if (titleLower.includes("tesla") || textLower.includes("tesla")) {
     queries.push("tesla", "factory", "car");
@@ -4377,19 +4433,24 @@ const STOCK_TOPIC_WORD_RULES: [RegExp, string][] = [
   [/\bglacier\b|\bmelting\b/, "glacier"],
 ];
 
-/** Pexels/Pixabay: always one simple English word, any documentary topic. */
-function simplifyStockSearchWord(input: string, hintText = ""): string {
-  const combined = `${input} ${hintText}`.toLowerCase().replace(/\[visual:[^\]]*\]/gi, " ");
+/** Pexels/Pixabay: one simple English word. scriptOnly = ignore scene/title hint context. */
+function simplifyStockSearchWord(input: string, hintText = "", scriptOnly = false): string {
+  const cleanedInput = input.replace(/\[visual:[^\]]*\]/gi, " ").trim();
+  const combined = (scriptOnly ? cleanedInput : `${cleanedInput} ${hintText}`)
+    .toLowerCase()
+    .replace(/\[visual:[^\]]*\]/gi, " ");
   for (const [nl, en] of Object.entries(DUTCH_STOCK_WORD_MAP)) {
     if (new RegExp(`\\b${nl}\\b`).test(combined)) return en;
   }
   for (const [re, word] of STOCK_TOPIC_WORD_RULES) {
     if (re.test(combined)) return word;
   }
-  const tokens = [
-    ...tokenizeForRelevance(input.replace(/\[visual:[^\]]*\]/gi, "")),
-    ...tokenizeForRelevance(hintText),
-  ];
+  const tokens = scriptOnly
+    ? tokenizeForRelevance(cleanedInput)
+    : [
+        ...tokenizeForRelevance(cleanedInput),
+        ...tokenizeForRelevance(hintText),
+      ];
   const seen = new Set<string>();
   const unique = tokens.filter((t) => {
     if (seen.has(t)) return false;
@@ -4412,11 +4473,16 @@ function enrichStockQuery(
   query: string,
   scene: Scene,
   videoTitle?: string,
-  personName?: string
+  personName?: string,
+  beatText?: string
 ): string {
-  const hint = `${scene.text} ${videoTitle ?? ""} ${personName ?? ""}`;
-  if (isBlockedStockQuery(query)) return simplifyStockSearchWord("documentary", hint);
-  return simplifyStockSearchWord(query, hint);
+  if (beatText?.trim()) {
+    const fromScript = scriptStockSearchQueries(beatText);
+    if (fromScript.length > 0) return fromScript[0];
+  }
+  const hint = beatText?.trim() || scene.text;
+  if (isBlockedStockQuery(query)) return simplifyStockSearchWord(hint, hint, true);
+  return simplifyStockSearchWord(query, hint, Boolean(beatText?.trim()));
 }
 
 function tokenizeForRelevance(text: string): string[] {
@@ -4449,29 +4515,15 @@ function scoreVisualRelevance(text: string, keywords: string[]): number {
   return score;
 }
 
-/** Map narration sentence → one-word Pexels search. */
+/** Map narration sentence → Pexels search from script text only. */
 function deriveBeatStockQuery(
   beatText: string,
-  scene: Scene,
-  videoTitle?: string,
-  personName?: string,
-  muskTopic = false
+  _scene: Scene,
+  _videoTitle?: string,
+  _personName?: string,
+  _muskTopic = false
 ): string {
-  const source = [
-    beatText,
-    ...extractInlineVisualCues(beatText),
-    scene.literalVisualCue,
-    scene.pexelsQuery,
-    scene.visualCue,
-    ...(scene.pexelsQueries ?? []),
-    ...realEntityStockQueriesForBeat(beatText, scene.text, videoTitle),
-    videoTitle,
-    personName,
-    muskTopic ? "tesla spacex" : "",
-  ]
-    .filter((x): x is string => typeof x === "string" && x.trim().length > 0)
-    .join(" ");
-  return enrichStockQuery(source, scene, videoTitle, personName);
+  return stockQueryFromBeatScript(beatText);
 }
 
 function buildSceneBeats(
@@ -4480,7 +4532,6 @@ function buildSceneBeats(
   maxBeatsCap = 16,
   videoTitle?: string
 ): SceneBeat[] {
-  const muskTopic = isMuskTeslaTopic(videoTitle, scene.text);
   const targetBeats = Math.max(2, Math.ceil(duration / VIDRUSH_BEAT_SEC));
   const beatCap = Math.max(maxBeatsCap, targetBeats);
 
@@ -4553,35 +4604,10 @@ function buildSceneBeats(
     });
   }
 
-  const sceneInlineVisuals = extractInlineVisualCues(scene.text);
-  const brollPool = (scene.brollQueries ?? []).filter((q) => q.trim().length > 2);
-  const queryPool = [
-    scene.literalVisualCue,
-    scene.pexelsQuery,
-    scene.visualCue,
-    ...(scene.pexelsQueries ?? []),
-    ...brollPool,
-  ].filter((q): q is string => typeof q === "string" && q.trim().length > 2);
-
   const beats: SceneBeat[] = [];
   for (let i = 0; i < groups.length; i++) {
     const text = groups[i].text;
-    const inlineForBeat = extractInlineVisualCues(text)[0] || sceneInlineVisuals[i] || sceneInlineVisuals[0];
-    let derived = deriveBeatStockQuery(text, scene, videoTitle, undefined, muskTopic);
-    if (inlineForBeat) {
-      derived = enrichStockQuery(inlineForBeat, scene, videoTitle, undefined);
-    }
-    const useBroll = i % 2 === 1 && brollPool.length > 0 && !inlineForBeat;
-    const baseQuery =
-      derived ||
-      (useBroll ? brollPool[i % brollPool.length] : null) ||
-      queryPool[(i * 2 + scene.index) % Math.max(1, queryPool.length)] ||
-      scene.literalVisualCue ||
-      scene.pexelsQuery ||
-      scene.visualCue ||
-      extractTopicStockQueries(scene.text)[0] ||
-      (muskTopic ? pickMuskGoldenQuery(scene.index * groups.length + i, i) : "factory");
-    const searchQuery = simplifyStockSearchWord(baseQuery, text);
+    const searchQuery = stockQueryFromBeatScript(text);
     beats.push({
       index: i,
       text,
@@ -4610,11 +4636,13 @@ async function adoptClip(
     const scoreB =
       scoreVisualRelevance(`${sourceQuery} ${path.basename(b)} ${beatText}`, keywords) +
       scoreVisualRelevance(beatText, tokenizeForRelevance(sourceQuery)) +
+      scoreBeatNarrationMatch(beatText, sourceQuery, b) * 4 +
       realEntityScore(entityRules, sourceQuery, b) +
       (muskTopic ? muskBrandScore(sourceQuery, b) : 0);
     const scoreA =
       scoreVisualRelevance(`${sourceQuery} ${path.basename(a)} ${beatText}`, keywords) +
       scoreVisualRelevance(beatText, tokenizeForRelevance(sourceQuery)) +
+      scoreBeatNarrationMatch(beatText, sourceQuery, a) * 4 +
       realEntityScore(entityRules, sourceQuery, a) +
       (muskTopic ? muskBrandScore(sourceQuery, a) : 0);
     return scoreB - scoreA;
@@ -4638,7 +4666,9 @@ async function adoptClip(
       if (queryCategory !== "generic" && category === "generic") continue;
       if (opts.requireMuskBrand && !hasMuskBrandSignal(sourceQuery, p)) continue;
       const beatMatch = scoreBeatNarrationMatch(beatText, sourceQuery, p);
-      if (opts.requireBeatMatch && beatMatch < 1) continue;
+      const queryWords = sourceQuery.split(/\s+/).filter((w) => w.length >= 3);
+      const queryInBeat = scoreVisualRelevance(beatText, queryWords) >= 1;
+      if (opts.requireBeatMatch && beatMatch < 1 && !queryInBeat) continue;
       if (entityRules.length > 0 && !clipSatisfiesRealEntities(entityRules, sourceQuery, p)) continue;
       if (muskTopic) {
         if (category === "solar" && !/solar|photovoltaic|sun panel/.test(beatText.toLowerCase())) continue;
@@ -4729,12 +4759,12 @@ async function fetchLastResortRealClip(
   const tag = `b${beat.index}_lr`;
   const candidateOffset = beat.index * 5 + sceneIndex + 11;
   const queries = [
-    ...(personName ? ["tesla", "factory"] : []),
-    enrichStockQuery(scene.visualCue, scene, videoTitle, personName),
-    enrichStockQuery(scene.pexelsQuery, scene, videoTitle, personName),
-    ...(scene.pexelsQueries ?? []).map((q) => enrichStockQuery(q, scene, videoTitle, personName)),
-    ...(scene.brollQueries ?? []).map((q) => enrichStockQuery(q, scene, videoTitle, personName)),
-    enrichStockQuery(beat.searchQuery, scene, videoTitle, personName),
+    ...scriptStockSearchQueries(beat.text),
+    enrichStockQuery(beat.searchQuery, scene, videoTitle, personName, beat.text),
+    enrichStockQuery(scene.visualCue, scene, videoTitle, personName, beat.text),
+    enrichStockQuery(scene.pexelsQuery, scene, videoTitle, personName, beat.text),
+    ...(scene.pexelsQueries ?? []).map((q) => enrichStockQuery(q, scene, videoTitle, personName, beat.text)),
+    ...(scene.brollQueries ?? []).map((q) => enrichStockQuery(q, scene, videoTitle, personName, beat.text)),
   ].filter((q): q is string => typeof q === "string" && q.trim().length > 2 && !isBlockedStockQuery(q));
 
   const uniqueQueries = [...new Set(queries)];
@@ -4784,31 +4814,14 @@ async function fetchBeatClip(
     keywords: beat.keywords,
     sceneText: scene.text,
     videoTitle,
-    requireBeatMatch: false,
+    requireBeatMatch: true,
     requireMuskBrand: false,
   };
 
-  const rawQ = beat.index === 0
-    ? enrichStockQuery(
-        scene.literalVisualCue || scene.pexelsQuery || scene.visualCue || beat.searchQuery,
-        scene,
-        videoTitle,
-        personName
-      )
-    : enrichStockQuery(beat.searchQuery, scene, videoTitle, personName);
-  let q = isBlockedStockQuery(rawQ)
-    ? enrichStockQuery(scene.pexelsQuery || scene.visualCue, scene, videoTitle, personName)
-    : rawQ;
-  if (muskTopic) {
-    q =
-      beat.index === 0
-        ? OPENING_MUSK_QUERIES[dedup.globalBeatIndex % OPENING_MUSK_QUERIES.length]
-        : isBlockedStockQuery(q) ||
-            stockVisualCategory(q) === "blocked_model" ||
-            stockVisualCategory(q) === "blocked_offtopic" ||
-            isOffTopicVisualForMusk(q, q)
-          ? pickMuskGoldenQuery(dedup.globalBeatIndex, beat.index)
-          : q;
+  const scriptQueries = scriptStockSearchQueries(beat.text);
+  let q = scriptQueries[0] ?? beat.searchQuery;
+  if (isBlockedStockQuery(q)) {
+    q = stockQueryFromBeatScript(beat.text);
   }
 
   const pexCount = muskTopic ? 4 : 2;
@@ -4823,6 +4836,25 @@ async function fetchBeatClip(
     () => fetchBrollClips([query], clipFetchDur, workDir, sceneIndex, dedup.usedPexelsIds);
 
   let clip: string | null = null;
+
+  // 1) Script narration first — search terms come from what is spoken on this beat
+  const beatDerived = deriveBeatStockQuery(beat.text, scene, videoTitle, personName, muskTopic);
+  const entityStock = realEntityStockQueriesForBeat(beat.text, scene.text, videoTitle);
+  const beatQueries = [...new Set([
+    ...scriptQueries,
+    beatDerived,
+    ...entityStock,
+    beat.searchQuery,
+    q,
+  ].filter((bq) => typeof bq === "string" && bq.trim().length > 2 && !isBlockedStockQuery(bq)))];
+  clip = await tryStockSources(
+    beatQueries.map((bq, bi) => ({
+      query: bq,
+      fetch: pexFetch(bq, `${tag}_script`, candidateOffset + bi, muskTopic ? 5 : 3),
+    })),
+    dedup, sceneIndex, beat.index, beat.text, workDir, "script beat", adoptOpts
+  );
+  if (clip) { dedup.globalBeatIndex++; return clip; }
 
   // 0a) Hero beat: YouTube CC + NASA for recognizable SpaceX/Tesla (once per video)
   if (
@@ -4896,23 +4928,8 @@ async function fetchBeatClip(
     if (clip) { dedup.globalBeatIndex++; return clip; }
   }
 
-  // 1b) Beat narration + named entities — stock must match what is being said
-  const beatDerived = deriveBeatStockQuery(beat.text, scene, videoTitle, personName, muskTopic);
-  const entityStock = realEntityStockQueriesForBeat(beat.text, scene.text, videoTitle);
-  const beatQueries = [...new Set([...entityStock, q, beatDerived, beat.searchQuery].filter(
-    (bq) => typeof bq === "string" && bq.trim().length > 2 && !isBlockedStockQuery(bq)
-  ))];
-  clip = await tryStockSources(
-    beatQueries.map((bq, bi) => ({
-      query: bq,
-      fetch: pexFetch(bq, `${tag}_beat`, candidateOffset + bi, muskTopic ? 5 : 3),
-    })),
-    dedup, sceneIndex, beat.index, beat.text, workDir, "beat narration", adoptOpts
-  );
-  if (clip) { dedup.globalBeatIndex++; return clip; }
-
   // 2) Scene topic-anchored queries (max 6 to keep generation fast)
-  const topicQueries = buildTopicAnchoredQueries(scene, videoTitle, personName, videoTitle);
+  const topicQueries = buildTopicAnchoredQueries(scene, videoTitle, personName, videoTitle, beat.text);
   clip = await tryStockSources(
     topicQueries.slice(0, perf.maxTopicQueries).map((tq, ti) => ({
       query: tq,
@@ -5066,16 +5083,8 @@ async function fetchSceneVisuals(
       console.warn(
         `[Pipeline] Scene ${scene.index} beat ${beat.index}: no real footage for "${beat.searchQuery}" — emergency stock`
       );
-      const topicFallback =
-        extractTopicStockQueries(`${videoTitle ?? ""} ${scene.text} ${beat.text}`)[0]
-        || (personName ? `${personName} celebrity documentary b-roll` : null)
-        || (muskTopic ? "tesla" : "technology");
-      const emergencyQ = enrichStockQuery(
-        scene.literalVisualCue || scene.pexelsQuery || scene.visualCue || topicFallback,
-        scene,
-        videoTitle,
-        personName
-      );
+      const emergencyQ = stockQueryFromBeatScript(beat.text);
+      const emergencyAdopt: VisualAdoptOptions = { ...adoptOpts, requireBeatMatch: false };
       const emergency = await fetchPexelsClips(
         emergencyQ,
         clipFetchDur,
@@ -5090,7 +5099,7 @@ async function fetchSceneVisuals(
         dedup.perf.pexelsDownloadRetries
       );
       const emClip = await adoptClip(
-        emergency, dedup, scene.index, beat.index, beat.text, workDir, emergencyQ, adoptOpts
+        emergency, dedup, scene.index, beat.index, beat.text, workDir, emergencyQ, emergencyAdopt
       );
       if (emClip) {
         pushClip(emClip);
