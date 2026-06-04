@@ -302,12 +302,12 @@ const SCALE_PAD_VF = `scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect
 const FPS_FORMAT_VF = `fps=25,format=yuv420p,setpts=PTS-STARTPTS`;
 const STANDARD_VF = `${SCALE_PAD_VF},${FPS_FORMAT_VF}`;
 /** New clip every ~3–4s; hold up to 7s when narration/visual clearly stay on one subject. */
-const VIDRUSH_CLIP_MIN_SEC = 3.0;
+const VIDRUSH_CLIP_MIN_SEC = 2.5;
 const VIDRUSH_CLIP_MAX_SEC = 4.0;
 const VIDRUSH_CLIP_HOLD_SEC = 7.0;
 const VIDRUSH_BEAT_SEC = 3.5;
-/** Short crossfade between beats — smooth flow without long dissolves. */
-const MONTAGE_XFADE_SEC = IS_RAILWAY ? 0.28 : 0.35;
+/** Hard cuts between beats (Vidrush-style); tiny overlap only on Railway to reduce judder. */
+const MONTAGE_XFADE_SEC = IS_RAILWAY ? 0.12 : 0;
 const CHAPTER_CARD_DURATION = 2.5;
 
 /** Wall-clock budgets: short ≤60 min, long ≤90 min (see getPipelinePerfProfile). */
@@ -753,23 +753,35 @@ function partitionNarrationBlocks(blocks: MarkdownNarrationBlock[], maxScenes: n
   return texts.slice(0, maxScenes);
 }
 
-function scenesFromMarkdownScript(script: string, maxScenes: number): Scene[] | null {
+function scenesFromMarkdownScript(script: string, maxScenes: number, topicContext?: string): Scene[] | null {
   const blocks = parseMarkdownNarrationBlocks(script);
   if (blocks.length < 2) return null;
 
   const texts = partitionNarrationBlocks(blocks, maxScenes);
   if (texts.length < 2) return null;
 
+  const scriptPersons = extractPersonNamesFromText(topicContext ?? script);
+
   return texts.map((text, index) => {
-    const block = blocks[Math.min(index, blocks.length - 1)];
+    const block =
+      blocks.find((b) => text.includes(b.text.slice(0, Math.min(60, b.text.length)))) ??
+      blocks[Math.min(index, blocks.length - 1)];
     const visualCue = block.visualCue || text.slice(0, 80);
+    const beatPersons = [
+      ...new Set([...extractPersonNamesFromText(text), ...scriptPersons]),
+    ].filter(Boolean);
+    const primary = beatPersons[0] ?? "";
+    const pexelsQ =
+      primary && !visualCue.toLowerCase().includes(primary.split(/\s+/)[0]!.toLowerCase())
+        ? `${primary} ${visualCue}`
+        : visualCue;
     return {
       index,
       text,
-      visualCue,
-      pexelsQuery: visualCue,
-      pexelsQueries: [visualCue],
-      personNames: [],
+      visualCue: pexelsQ,
+      pexelsQuery: pexelsQ,
+      pexelsQueries: [pexelsQ, ...(primary ? [`${primary} interview`, `${primary} news`] : [])],
+      personNames: beatPersons,
       literalVisualCue: visualCue,
       highlightWords: [],
       brollQueries: [],
@@ -969,8 +981,8 @@ function mapRawScene(
   };
 }
 
-async function parseScriptIntoScenes(script: string, maxScenes: number): Promise<Scene[]> {
-  const fromMarkdown = scenesFromMarkdownScript(script, maxScenes);
+async function parseScriptIntoScenes(script: string, maxScenes: number, topicContext?: string): Promise<Scene[]> {
+  const fromMarkdown = scenesFromMarkdownScript(script, maxScenes, topicContext);
   if (fromMarkdown && fromMarkdown.length >= Math.min(2, maxScenes)) {
     console.log(`[Pipeline] Parsed ${fromMarkdown.length} scenes from markdown (no LLM re-parse)`);
     return dedupeSceneNarration(fromMarkdown);
@@ -5329,6 +5341,52 @@ async function fetchUniqueStockForBeatInner(
   return null;
 }
 
+/** Fill a scene that has zero usable clips (never grey placeholders). */
+async function recoverSceneClipsIfEmpty(
+  scene: Scene,
+  workDir: string,
+  topicContext: string | undefined,
+  dedup: VisualDedupState
+): Promise<SceneVisualsResult> {
+  const clipFetchDur = 4;
+  const scenePersons = resolveScenePersons(scene, topicContext, dedup.primaryPerson || undefined);
+  const personName =
+    scenePersons[0] ?? dedup.primaryPerson ?? extractPrimaryPersonFromTitle(topicContext) ?? "";
+  const recoverAdopt: VisualAdoptOptions = {
+    muskTopic: isMuskTeslaTopic(topicContext, scene.text),
+    personTopic: dedup.personTopicLock,
+    primaryPerson: dedup.primaryPerson || personName,
+    keywords: buildRelevanceKeywords(scene, scene.text),
+    sceneText: scene.text,
+    videoTitle: topicContext,
+    requireBeatMatch: false,
+    scriptAnchored: false,
+  };
+  const n = Math.max(1, Math.min(4, Math.ceil(scene.duration / VIDRUSH_BEAT_SEC)));
+  const clips: string[] = [];
+  const beatDurations: number[] = [];
+  const stubBeat: SceneBeat = {
+    index: 0,
+    text: scene.text.slice(0, 220),
+    searchQuery: scene.pexelsQuery,
+    keywords: recoverAdopt.keywords ?? [],
+    holdSec: VIDRUSH_BEAT_SEC,
+  };
+  for (let fi = 0; fi < n + 2; fi++) {
+    stubBeat.index = fi;
+    const clip = await fetchUniqueStockForBeat(
+      stubBeat, scene, workDir, scene.index, clipFetchDur, dedup, personName, topicContext, recoverAdopt
+    );
+    if (!clip || isPipelineFallbackClip(clip)) continue;
+    const key = clipContentKey(clip);
+    if (clips.some((c) => clipContentKey(c) === key)) continue;
+    clips.push(clip);
+    beatDurations.push(VIDRUSH_BEAT_SEC);
+    if (clips.length >= n) break;
+  }
+  return { clips, beatDurations };
+}
+
 /** Last-resort real stock video — broad queries, non-strict mode. No still photos. */
 async function fetchLastResortRealClip(
   beat: SceneBeat,
@@ -6009,10 +6067,18 @@ async function fetchSceneVisuals(
   const videoCount = clips.filter((c) => !isStillPhotoClip(c)).length;
   const photoCount = clips.filter((c) => isStillPhotoClip(c)).length;
   const personLabel = scenePersons.length > 0 ? ` [persons: ${scenePersons.join(", ")}]` : "";
+  const usable = clips.filter((c) => c && !isPipelineFallbackClip(c));
+  if (usable.length === 0) {
+    throw pipelineError(
+      PIPELINE_ERROR.NO_SCENES,
+      `Scene ${scene.index}: no unique stock clips (grey placeholders disabled)`
+    );
+  }
+
   console.log(
-    `[Pipeline] Scene ${scene.index}${personLabel}: ${clips.length} beat clip(s) (${videoCount} video, ${photoCount} photo)`
+    `[Pipeline] Scene ${scene.index}${personLabel}: ${usable.length} beat clip(s) (${videoCount} video, ${photoCount} photo)`
   );
-  return { clips, beatDurations };
+  return { clips: usable, beatDurations: beatDurations.slice(0, usable.length) };
 }
 
 // ─── 3e. Extract Key Words for Kinetic Typography ───────────────────────────
@@ -6441,7 +6507,11 @@ async function composeSceneVideo(
   // Stat callout box: yellow corner box with key statistic (reference video style)
   let statCalloutFrame: { path: string; startTime: number; endTime: number } | null = null;
   try {
-    if (scene.statCallout && scene.statCallout.trim().length > 0) {
+    if (
+      process.env.ENABLE_STAT_CALLOUTS === "true" &&
+      scene.statCallout &&
+      scene.statCallout.trim().length > 0
+    ) {
       statCalloutFrame = await renderStatCallout(scene.statCallout, scene.index, workDir);
     }
   } catch {
@@ -7042,7 +7112,7 @@ export async function runVideoPipeline(
     // ── Stage 1: Parse script into scenes ────────────────────────────────────
     onProgress?.({ stage: STAGE_LABELS.parsing, percent: 3 });
     const t0 = Date.now();
-    const scenes = await parseScriptIntoScenes(script, maxScenes);
+    const scenes = await parseScriptIntoScenes(script, maxScenes, topicContext);
     for (const scene of scenes) {
       sanitizeSceneStockQueries(scene, topicContext ?? videoTitle);
       if (muskLocked) sanitizeSceneForMuskTopic(scene, scene.index, topicContext ?? videoTitle);
@@ -7117,7 +7187,7 @@ export async function runVideoPipeline(
     if (!PEXELS_API_KEY && !PIXABAY_API_KEY) {
       throw pipelineError(
         PIPELINE_ERROR.NO_SCENES,
-        "Stock footage unavailable: set PEXELS_API_KEY (or PIXABAY_API_KEY) in Railway — without it videos show grey placeholders"
+        "Stock footage unavailable: set PEXELS_API_KEY and/or PIXABAY_API_KEY in Railway"
       );
     }
     if (!PEXELS_API_KEY) {
@@ -7165,46 +7235,12 @@ export async function runVideoPipeline(
           );
         } catch (sceneErr) {
           console.warn(
-            `[Pipeline] Scene ${scene.index} visuals timed out after ${Math.round(perf.sceneVisualTimeoutMs / 1000)}s — fetching unique stock (no grey):`,
+            `[Pipeline] Scene ${scene.index} visuals timed out after ${Math.round(perf.sceneVisualTimeoutMs / 1000)}s — recovering unique stock:`,
             (sceneErr as Error).message
           );
           visualDedup.lock = Promise.resolve();
-          const scenePersons = resolveScenePersons(scene, topicContext, visualDedup.primaryPerson || undefined);
-          const personName =
-            scenePersons[0] ?? visualDedup.primaryPerson ?? extractPrimaryPersonFromTitle(topicContext) ?? "";
-          const recoverAdopt: VisualAdoptOptions = {
-            muskTopic: isMuskTeslaTopic(topicContext, scene.text),
-            personTopic: visualDedup.personTopicLock,
-            primaryPerson: visualDedup.primaryPerson || personName,
-            keywords: buildRelevanceKeywords(scene, scene.text),
-            sceneText: scene.text,
-            videoTitle: topicContext,
-            requireBeatMatch: false,
-            scriptAnchored: false,
-          };
-          const n = Math.max(2, Math.ceil(scene.duration / VIDRUSH_BEAT_SEC));
-          const recoveredClips: string[] = [];
-          const recoveredDurs: number[] = [];
-          const stubBeat: SceneBeat = {
-            index: 0,
-            text: scene.text.slice(0, 220),
-            searchQuery: scene.pexelsQuery,
-            keywords: recoverAdopt.keywords ?? [],
-            holdSec: VIDRUSH_BEAT_SEC,
-          };
-          for (let fi = 0; fi < n && fi < 4; fi++) {
-            stubBeat.index = fi;
-            const clip = await fetchUniqueStockForBeat(
-              stubBeat, scene, workDir, scene.index, 4, visualDedup, personName, topicContext, recoverAdopt
-            );
-            if (!clip || isPipelineFallbackClip(clip)) continue;
-            const key = clipContentKey(clip);
-            if (recoveredClips.some((c) => clipContentKey(c) === key)) continue;
-            recoveredClips.push(clip);
-            recoveredDurs.push(VIDRUSH_BEAT_SEC);
-          }
-          if (recoveredClips.length === 0) throw sceneErr;
-          result = { clips: recoveredClips, beatDurations: recoveredDurs };
+          result = await recoverSceneClipsIfEmpty(scene, workDir, topicContext, visualDedup);
+          if (result.clips.length === 0) throw sceneErr;
         }
         completedVisuals++;
         onProgress?.({
@@ -7220,6 +7256,23 @@ export async function runVideoPipeline(
       clearInterval(visualHeartbeat);
     }
     console.log(`[Pipeline] Stage 3 (visuals): ${((Date.now()-t2)/1000).toFixed(1)}s`);
+
+    for (let si = 0; si < scenes.length; si++) {
+      const usable = (sceneVisualResults[si]?.clips ?? []).filter(
+        (c) => c && !isPipelineFallbackClip(c)
+      );
+      if (usable.length > 0) continue;
+      console.warn(`[Pipeline] Scene ${scenes[si].index}: empty after fetch — recovery sweep`);
+      sceneVisualResults[si] = await recoverSceneClipsIfEmpty(
+        scenes[si], workDir, topicContext, visualDedup
+      );
+      if (sceneVisualResults[si].clips.length === 0) {
+        throw pipelineError(
+          PIPELINE_ERROR.NO_SCENES,
+          `Scene ${scenes[si].index} has no stock footage after recovery`
+        );
+      }
+    }
 
     // ── Save scene manifest for editor ───────────────────────────────────────
     try {
@@ -7281,7 +7334,8 @@ export async function runVideoPipeline(
     }
 
         // ── Stage 4b: Vidrush chapter cards (yellow title cards between sections) ──
-    const useChapterCards = videoLength !== "1" && videoLength !== "2";
+    const useChapterCards =
+      process.env.ENABLE_CHAPTER_CARDS === "true" && videoLength !== "1" && videoLength !== "2";
     const orderedClips: string[] = [];
     let chapterCardCount = 0;
     for (let i = 0; i < composedScenes.length; i++) {
@@ -7457,10 +7511,13 @@ export async function rerenderFromScenes(
 
     const composedScenes = await Promise.all(
       internalScenes.map((scene, i) => composeLimit(async () => {
-        // If no clips downloaded, generate a color fallback
-        const clips = sceneClipPaths[i].length > 0
-          ? sceneClipPaths[i]
-          : [await generateColorFallback(i, scene.duration + 1, workDir)];
+        const clips = sceneClipPaths[i].filter((c) => c && !isPipelineFallbackClip(c));
+        if (clips.length === 0) {
+          throw pipelineError(
+            PIPELINE_ERROR.NO_SCENES,
+            `Re-render scene ${i}: no downloaded clips (grey placeholders disabled)`
+          );
+        }
 
         const result = await composeSceneVideo(
           scene,
@@ -7469,7 +7526,7 @@ export async function rerenderFromScenes(
           scene.duration,
           workDir,
           internalScenes.length,
-          true // enable subtitles
+          false
         );
         completedCompose++;
         onProgress?.(

@@ -760,7 +760,7 @@ export default function Dashboard() {
   const [selectedVoice, setSelectedVoice] = useState("pNInz6obpgDQGcFmaJgB"); // ElevenLabs Michael voice ID
   const [useCustomVoice, setUseCustomVoice] = useState(false);
   const [customVoiceoverUrl, setCustomVoiceoverUrl] = useState<string | null>(null);
-  const [enableSubtitles, setEnableSubtitles] = useState(true);
+  const [enableSubtitles, setEnableSubtitles] = useState(false);
   const [viewingVideoId, setViewingVideoId] = useState<number | null>(null);
 
   const utils = trpc.useUtils();

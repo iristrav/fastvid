@@ -146,15 +146,22 @@ async function startServer() {
         LLM_API_KEY: !!process.env.LLM_API_KEY,
         FISH_AUDIO_API_KEY: !!process.env.FISH_AUDIO_API_KEY,
         PEXELS_API_KEY: !!process.env.PEXELS_API_KEY,
+        PIXABAY_API_KEY: !!process.env.PIXABAY_API_KEY,
+        ELEVENLABS_API_KEY: !!process.env.ELEVENLABS_API_KEY,
         STABILITY_AI_API_KEY: !!process.env.STABILITY_AI_API_KEY,
         YOUTUBE_API_KEY: !!process.env.YOUTUBE_API_KEY,
         RAPIDAPI_KEY: !!process.env.RAPIDAPI_KEY,
         YOUTUBE_CC_DL_SERVICE: !!process.env.YOUTUBE_CC_DL_SERVICE,
         SERPAPI_KEY: !!process.env.SERPAPI_KEY,
+        stockFootageReady: !!(process.env.PEXELS_API_KEY?.trim() || process.env.PIXABAY_API_KEY?.trim()),
         youtubeCcReady:
           !!process.env.YOUTUBE_API_KEY?.trim() &&
           !!(process.env.RAPIDAPI_KEY?.trim() || process.env.YOUTUBE_CC_DL_SERVICE?.trim()),
         serpApiReady: !!process.env.SERPAPI_KEY?.trim(),
+        voiceReady: !!(
+          process.env.ELEVENLABS_API_KEY?.trim() ||
+          process.env.FISH_AUDIO_API_KEY?.trim()
+        ),
         NODE_ENV: process.env.NODE_ENV,
       },
       storage,
