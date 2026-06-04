@@ -5977,7 +5977,7 @@ async function fetchSceneVisuals(
   let backfillAttempts = 0;
   while (
     clips.filter((c) => c && !isPipelineFallbackClip(c)).length < minBeats &&
-    backfillAttempts < 2
+    backfillAttempts < 4
   ) {
     const stub = beats[beats.length - 1] ?? beats[0];
     if (!stub) break;
@@ -5989,6 +5989,21 @@ async function fetchSceneVisuals(
     clips.push(extra);
     beatDurations.push(stub.holdSec);
     backfillAttempts++;
+  }
+
+  if (clips.filter((c) => c && !isPipelineFallbackClip(c)).length === 0 && beats[0]) {
+    console.warn(`[Pipeline] Scene ${scene.index}: no beat clips — scene-level unique stock sweep`);
+    for (let si = 0; si < 5; si++) {
+      const stub = { ...beats[0], index: si };
+      const extra = await fetchUniqueStockForBeat(
+        stub, scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts
+      );
+      if (extra && !isPipelineFallbackClip(extra) && !clips.some((c) => clipContentKey(c) === clipContentKey(extra))) {
+        clips.push(extra);
+        beatDurations.push(VIDRUSH_BEAT_SEC);
+      }
+      if (clips.length >= minBeats) break;
+    }
   }
 
   const videoCount = clips.filter((c) => !isStillPhotoClip(c)).length;
