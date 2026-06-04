@@ -21,6 +21,7 @@
  *   20 scenes → ~$0.060
  *   30 scenes → ~$0.090
  */
+import { createHash } from "crypto";
 import { exec as execCb } from "child_process";
 import { promisify } from "util";
 import * as fs from "fs";
@@ -576,24 +577,29 @@ async function tryBeatTopicRealFootage(
     return clip;
   }
 
-  const wikiImg = await fetchWikimediaImages(wikiQuery, clipFetchDur, workDir, sceneIndex, 1, `${tag}_wiki`);
-  clip = await adoptClip(
-    wikiImg,
-    dedup,
-    sceneIndex,
-    beat.index,
-    beat.text,
-    workDir,
-    wikiQuery,
-    loose
-  );
-  if (clip) {
-    console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: Wikimedia image`);
-    return clip;
+  if (!dedup.personTopicLock) {
+    const wikiImg = await fetchWikimediaImages(wikiQuery, clipFetchDur, workDir, sceneIndex, 1, `${tag}_wiki`);
+    clip = await adoptClip(
+      wikiImg,
+      dedup,
+      sceneIndex,
+      beat.index,
+      beat.text,
+      workDir,
+      wikiQuery,
+      loose
+    );
+    if (clip) {
+      console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: Wikimedia image`);
+      return clip;
+    }
   }
 
-  const allowStill = dedup.stillPhotosThisScene < dedup.stillPhotosMaxThisScene;
-  const ovQuery = primary ? `${primary} ${topicLabel || wikiQuery}` : wikiQuery;
+  const allowStill =
+    dedup.stillPhotosMaxThisScene === 0
+      ? canUseGlobalStillPhoto(dedup)
+      : dedup.stillPhotosThisScene < dedup.stillPhotosMaxThisScene;
+  const ovQuery = primary ? `${primary} portrait ${topicLabel || wikiQuery}` : wikiQuery;
   if (allowStill && (!perf.fastStockMode || perf.minimizeStockFootage)) {
     const ovPaths = await fetchOpenverseImages(
       ovQuery,
@@ -601,7 +607,8 @@ async function tryBeatTopicRealFootage(
       workDir,
       sceneIndex,
       1,
-      `${tag}_ov`
+      `${tag}_ov`,
+      { dedup, personPortrait: Boolean(primary) || dedup.personTopicLock }
     );
     clip = await adoptClip(
       ovPaths,
@@ -614,21 +621,28 @@ async function tryBeatTopicRealFootage(
       loose
     );
     if (clip) {
-      dedup.stillPhotosThisScene++;
       console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: Openverse topic`);
       return clip;
     }
   }
 
-  if (SERPAPI_KEY && allowStill) {
-    const serpQ = primary || topicLabel || wikiQuery;
+  if (SERPAPI_KEY && allowStill && canUseGlobalStillPhoto(dedup)) {
+    const serpQ = primary
+      ? buildPersonSerpQuery(primary, sceneIndex, beat.index)
+      : (topicLabel || wikiQuery);
+    const portrait = Boolean(primary) || dedup.personTopicLock;
     const serpPaths = await fetchSerpAPIImages(
       serpQ,
       clipFetchDur,
       workDir,
       sceneIndex,
       1,
-      `${tag}_serp`
+      `${tag}_serp`,
+      {
+        dedup,
+        personPortrait: portrait,
+        resultOffset: sceneIndex * 2 + beat.index,
+      }
     );
     clip = await adoptClip(
       serpPaths,
@@ -641,13 +655,12 @@ async function tryBeatTopicRealFootage(
       loose
     );
     if (clip) {
-      dedup.stillPhotosThisScene++;
       console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: SerpAPI topic`);
       return clip;
     }
   }
 
-  if (process.env.YOUTUBE_API_KEY && allowStill) {
+  if (process.env.YOUTUBE_API_KEY && allowStill && canUseGlobalStillPhoto(dedup)) {
     const thumbQ = buildTopicDocumentaryYoutubeQueries(beat, scene, videoTitle)[0] || wikiQuery;
     const ytThumb = await fetchYouTubeThumbnails(
       thumbQ,
@@ -2511,7 +2524,7 @@ async function fetchPixabayClips(
   return results;
 }
 
-/** Gentle Ken Burns for portrait stills: ~3% center zoom, no pan — avoids jitter. */
+/** Gentle Ken Burns for stills: ~3% center zoom. */
 async function convertImageToVideoGentle(
   imgPath: string,
   outPath: string,
@@ -2535,6 +2548,54 @@ async function convertImageToVideoGentle(
     45_000,
     label
   );
+}
+
+/** Person stills: top-aligned 16:9 crop so faces stay visible on red-carpet / full-body photos. */
+async function convertImageToVideoPersonPortrait(
+  imgPath: string,
+  outPath: string,
+  duration: number,
+  label: string
+): Promise<void> {
+  const fps = 25;
+  const totalFrames = Math.max(25, Math.round(duration * fps));
+  const zoomEnd = 1.02;
+  const zoomStep = (zoomEnd - 1.0) / totalFrames;
+  await withTimeout(
+    exec(
+      `${FFMPEG_BIN} -y -loop 1 -i "${imgPath}" -t ${duration} ` +
+      `-vf "scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,` +
+      `crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:(iw-${VIDEO_WIDTH})/2:0,` +
+      `zoompan=z='min(zoom+${zoomStep.toFixed(7)},${zoomEnd})':x='iw/2-(iw/zoom/2)':y='ih/4-(ih/zoom/4)':d=${totalFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=${fps}" ` +
+      `-c:v libx264 -preset veryfast -crf 18 -an -pix_fmt yuv420p "${outPath}"`
+    ),
+    45_000,
+    label
+  );
+}
+
+async function stillImageToVideo(
+  imgPath: string,
+  outPath: string,
+  duration: number,
+  label: string,
+  personPortrait: boolean
+): Promise<void> {
+  if (personPortrait) {
+    await convertImageToVideoPersonPortrait(imgPath, outPath, duration, label);
+  } else {
+    await convertImageToVideoGentle(imgPath, outPath, duration, label);
+  }
+}
+
+function normalizeImageSourceUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    u.hash = "";
+    return u.toString();
+  } catch {
+    return url.split("?")[0] ?? url;
+  }
 }
 
 // ─── 3c2. Wikimedia Commons Image Search ────────────────────────────────────
@@ -2596,11 +2657,12 @@ async function fetchWikimediaImages(
         if (imgBuffer.length < 10_000) continue;
         fs.writeFileSync(imgPath, imgBuffer);
 
-        await convertImageToVideoGentle(
+        await stillImageToVideo(
           imgPath,
           outPath,
           duration,
-          `Wikimedia image to video scene ${sceneIndex}`
+          `Wikimedia image to video scene ${sceneIndex}`,
+          /portrait|face|headshot|person|celebrity/i.test(query)
         );
         try { fs.unlinkSync(imgPath); } catch { /* ignore */ }
         if (fs.existsSync(outPath) && fs.statSync(outPath).size > 1_000) {
@@ -2627,7 +2689,8 @@ async function fetchOpenverseImages(
   workDir: string,
   sceneIndex: number,
   maxResults: number = 2,
-  fileTag = ""
+  fileTag = "",
+  opts: { personPortrait?: boolean; dedup?: VisualDedupState } = {}
 ): Promise<string[]> {
   const results: string[] = [];
   try {
@@ -2666,28 +2729,19 @@ async function fetchOpenverseImages(
         if (imgBuf.length < 5000) continue; // skip tiny/broken images
         fs.writeFileSync(imgPath, imgBuf);
 
-        // Convert image to video clip with Ken Burns pan effect
-        await withTimeout(
-          new Promise<void>(async (resolve, reject) => {
-            const { spawn } = await import('child_process');
-            const args = [
-              '-y', '-loop', '1', '-i', imgPath,
-              '-vf', `scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,zoompan=z='min(zoom+0.0008,1.04)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${Math.round(duration * 25)}:s=1920x1080:fps=25,setsar=1`,
-              '-t', String(duration),
-              '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
-              '-pix_fmt', 'yuv420p', '-an', outPath
-            ];
-            const child = spawn(FFMPEG_BIN, args, { stdio: ['ignore', 'ignore', 'pipe'] });
-            const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /**/ } reject(new Error('timeout')); }, 20000);
-            child.on('close', (code: number | null) => { clearTimeout(timer); code === 0 ? resolve() : reject(new Error(`exit ${code}`)); });
-            child.on('error', (err: Error) => { clearTimeout(timer); reject(err); });
-          }),
-          25000,
-          `Openverse image to video scene ${sceneIndex}`
+        await stillImageToVideo(
+          imgPath,
+          outPath,
+          duration,
+          `Openverse image to video scene ${sceneIndex}`,
+          Boolean(opts.personPortrait) || /portrait|face|headshot/i.test(query)
         );
         try { fs.unlinkSync(imgPath); } catch { /**/ }
 
         if (fs.existsSync(outPath) && fs.statSync(outPath).size > 10_000) {
+          const urlKey = normalizeImageSourceUrl(imgUrl);
+          if (opts.dedup?.usedImageUrls.has(urlKey)) continue;
+          opts.dedup?.usedImageUrls.add(urlKey);
           results.push(outPath);
           console.log(`[Pipeline] Scene ${sceneIndex}: Openverse image added: ${images[i].title?.slice(0, 60) || imgUrl.slice(0, 60)}`);
         }
@@ -2801,7 +2855,12 @@ async function fetchSerpAPIImages(
   workDir: string,
   sceneIndex: number,
   count: number = 2,
-  fileTag = ""
+  fileTag = "",
+  opts: {
+    dedup?: VisualDedupState;
+    personPortrait?: boolean;
+    resultOffset?: number;
+  } = {}
 ): Promise<string[]> {
   if (!SERPAPI_KEY) return [];
   // Ensure workDir exists — it may have been cleaned up between pipeline stages
@@ -2833,13 +2892,16 @@ async function fetchSerpAPIImages(
       }>;
     };
 
-    const images = (searchData.images_results || []).slice(0, count * 3);
+    const offset = opts.resultOffset ?? 0;
+    const images = (searchData.images_results || []).slice(offset, offset + count * 4);
     if (!images.length) return [];
 
     let downloaded = 0;
     for (let i = 0; i < images.length && downloaded < count; i++) {
       const imgUrl = images[i].original || images[i].thumbnail;
       if (!imgUrl) continue;
+      const urlKey = normalizeImageSourceUrl(imgUrl);
+      if (opts.dedup?.usedImageUrls.has(urlKey)) continue;
       // Skip SVG, GIF, and non-image URLs
       const lowerUrl = imgUrl.toLowerCase();
       if (lowerUrl.endsWith('.svg') || lowerUrl.endsWith('.gif') || lowerUrl.endsWith('.webp')) continue;
@@ -2878,14 +2940,16 @@ async function fetchSerpAPIImages(
         if (!isJpeg && !isPng) continue;
         fs.writeFileSync(imgPath, imgBuffer);
 
-        await convertImageToVideoGentle(
+        await stillImageToVideo(
           imgPath,
           outPath,
           duration,
-          `SerpAPI image to video scene ${sceneIndex}`
+          `SerpAPI image to video scene ${sceneIndex}`,
+          Boolean(opts.personPortrait)
         );
         try { fs.unlinkSync(imgPath); } catch { /* ignore */ }
         if (fs.existsSync(outPath) && fs.statSync(outPath).size > 1_000) {
+          opts.dedup?.usedImageUrls.add(urlKey);
           results.push(outPath);
           downloaded++;
           console.log(`[Pipeline] Scene ${sceneIndex}: SerpAPI image added: ${images[i].title || imgUrl.slice(0, 60)}`);
@@ -4442,8 +4506,22 @@ function buildPersonMediaQueries(person: string, visualCue?: string): string[] {
     `${person} interview`,
     `${person} speech`,
     `${person} news conference`,
+    `${person} red carpet`,
     cue ? `${person} ${cue}` : `${person} documentary`,
   ].filter((q, i, arr) => q.trim().length > 0 && arr.indexOf(q) === i);
+}
+
+/** Rotate Serp queries so each beat/scene gets a different photo (avoids duplicate red-carpet still). */
+function buildPersonSerpQuery(person: string, sceneIndex: number, beatIndex: number): string {
+  const variants = [
+    `${person} face portrait close up`,
+    `${person} interview talking head`,
+    `${person} red carpet full body`,
+    `${person} met gala dress`,
+    `${person} makeup brand launch`,
+    `${person} paparazzi event`,
+  ];
+  return variants[(sceneIndex * 5 + beatIndex) % variants.length];
 }
 
 /** Still-photo clips (Ken Burns from images) — cap these per scene; prefer real stock video. */
@@ -4665,8 +4743,23 @@ function isStockVideoClip(filePath: string): boolean {
   );
 }
 
-function maxStillPhotosForScene(_sceneIndex: number, hasPerson: boolean): number {
-  if (minimizeStockFootageEnabled()) return hasPerson ? 2 : 2;
+function maxStillPhotosGlobal(dedup: VisualDedupState): number {
+  if (dedup.personTopicLock && minimizeStockFootageEnabled()) return 1;
+  if (minimizeStockFootageEnabled()) return 2;
+  return dedup.personTopicLock ? 2 : 1;
+}
+
+function canUseGlobalStillPhoto(dedup: VisualDedupState): boolean {
+  return dedup.stillPhotosUsedGlobal < maxStillPhotosGlobal(dedup);
+}
+
+function markGlobalStillPhotoUsed(dedup: VisualDedupState): void {
+  dedup.stillPhotosUsedGlobal++;
+}
+
+function maxStillPhotosForScene(_sceneIndex: number, hasPerson: boolean, personTopicLock = false): number {
+  if (personTopicLock && minimizeStockFootageEnabled()) return 0;
+  if (minimizeStockFootageEnabled()) return hasPerson ? 1 : 1;
   return hasPerson ? 1 : 0;
 }
 
@@ -4857,6 +4950,10 @@ interface VisualDedupState {
   /** Ken Burns / Serp stills allowed this scene (0 = video only). */
   stillPhotosThisScene: number;
   stillPhotosMaxThisScene: number;
+  /** Whole-video cap on still-image clips (Serp/Openverse/Wikimedia stills). */
+  stillPhotosUsedGlobal: number;
+  /** Source image URLs already used (prevents same Google Image twice). */
+  usedImageUrls: Set<string>;
   lock: Promise<void>;
   perf: PipelinePerfProfile;
   /** Named celebrity from user prompt (e.g. Kylie Jenner) — anchor every beat's stock search. */
@@ -4892,6 +4989,8 @@ function createVisualDedupState(
     stockBeatsUsed: 0,
     stillPhotosThisScene: 0,
     stillPhotosMaxThisScene: 0,
+    stillPhotosUsedGlobal: 0,
+    usedImageUrls: new Set(),
     lock: Promise.resolve(),
     perf,
     primaryPerson: topic?.primaryPerson?.trim() ?? "",
@@ -5386,6 +5485,16 @@ function clipContentKey(filePath: string): string {
   const base = path.basename(filePath).replace(/_transformed(?=\.mp4)/, "");
   const vidMatch = base.match(/_vid(\d+)/);
   if (vidMatch) return `stock:vid:${vidMatch[1]}`;
+  if (isStillPhotoClip(filePath)) {
+    try {
+      const buf = fs.readFileSync(filePath);
+      const sample = buf.subarray(0, Math.min(buf.length, 48_000));
+      const hash = createHash("sha256").update(sample).digest("hex").slice(0, 20);
+      return `still:${hash}`;
+    } catch {
+      /* fall through */
+    }
+  }
   try {
     const stat = fs.statSync(filePath);
     return `file:${stat.size}:${base}`;
@@ -5840,6 +5949,9 @@ async function adoptClip(
   const muskTopic = opts.muskTopic ?? false;
   const entityRules = extractBeatRealEntities(beatText, opts.sceneText ?? "", opts.videoTitle ?? "");
   const sortedPaths = [...paths].sort((a, b) => {
+    const stillA = isStillPhotoClip(a) ? 1 : 0;
+    const stillB = isStillPhotoClip(b) ? 1 : 0;
+    if (stillA !== stillB) return stillA - stillB;
     const scoreB =
       scoreVisualRelevance(`${sourceQuery} ${path.basename(b)} ${beatText}`, keywords) +
       scoreVisualRelevance(beatText, tokenizeForRelevance(sourceQuery)) +
@@ -5860,8 +5972,11 @@ async function adoptClip(
       if (!p || dedup.usedPaths.has(p) || !fs.existsSync(p)) continue;
       if (!(await isValidVideoFile(p))) continue;
       if (isStillPhotoClip(p)) {
-        if (dedup.stillPhotosThisScene >= dedup.stillPhotosMaxThisScene) continue;
+        if (!canUseGlobalStillPhoto(dedup)) continue;
+        const sceneStillCap = dedup.stillPhotosMaxThisScene;
+        if (sceneStillCap > 0 && dedup.stillPhotosThisScene >= sceneStillCap) continue;
         dedup.stillPhotosThisScene++;
+        markGlobalStillPhotoUsed(dedup);
       }
       if (isAIGeneratedClip(p) && dedup.stillPhotosMaxThisScene === 0) continue;
       if (isAIGeneratedClip(p)) continue;
@@ -6368,35 +6483,82 @@ async function fetchPersonBeatClip(
   );
   if (clip) return clip;
 
-  if (SERPAPI_KEY && dedup.stillPhotosThisScene < dedup.stillPhotosMaxThisScene) {
-    const serpPaths = await fetchSerpAPIImages(
-      `${personName} red carpet`,
-      clipFetchDur,
-      workDir,
+  const wikiVid = await fetchWikimediaVideos(
+    `${personName} interview`,
+    clipFetchDur,
+    workDir,
+    sceneIndex,
+    1,
+    `${tag}_person`
+  );
+  clip = await adoptClip(
+    wikiVid,
+    dedup,
+    sceneIndex,
+    beat.index,
+    beat.text,
+    workDir,
+    personName,
+    loosePerson
+  );
+  if (clip && !isStillPhotoClip(clip)) {
+    console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: Wikimedia video (${personName})`);
+    return clip;
+  }
+
+  if (canUseLicensedStockBeat(dedup)) {
+    clip = await tryStockSources(
+      [{
+        query: `${personName} interview`,
+        fetch: pexFetch(`${personName} interview`, `${tag}_person_vid`, candidateOffset, 2),
+      }],
+      dedup,
       sceneIndex,
-      1,
-      `${tag}_person`
+      beat.index,
+      beat.text,
+      workDir,
+      `person Pexels video (${personName})`,
+      loosePerson
     );
-    clip = await adoptClip(
-      serpPaths, dedup, sceneIndex, beat.index, beat.text, workDir, personName, loosePerson
-    );
-    if (clip) {
-      console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: SerpAPI still of ${personName}`);
+    if (clip && !isStillPhotoClip(clip)) {
+      markLicensedStockBeatUsed(dedup);
       return clip;
     }
   }
 
-  if (
-    (!fast || dedup.perf.minimizeStockFootage) &&
-    dedup.stillPhotosThisScene < dedup.stillPhotosMaxThisScene
-  ) {
-    const ovPaths = await fetchOpenverseImages(
-      `${personName} portrait`,
+  if (SERPAPI_KEY && canUseGlobalStillPhoto(dedup)) {
+    const serpQ = buildPersonSerpQuery(personName, sceneIndex, beat.index);
+    const serpPaths = await fetchSerpAPIImages(
+      serpQ,
       clipFetchDur,
       workDir,
       sceneIndex,
       1,
-      `${tag}_person`
+      `${tag}_person`,
+      {
+        dedup,
+        personPortrait: true,
+        resultOffset: sceneIndex * 2 + beat.index,
+      }
+    );
+    clip = await adoptClip(
+      serpPaths, dedup, sceneIndex, beat.index, beat.text, workDir, serpQ, loosePerson
+    );
+    if (clip) {
+      console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: SerpAPI portrait (${serpQ})`);
+      return clip;
+    }
+  }
+
+  if (canUseGlobalStillPhoto(dedup) && (!fast || dedup.perf.minimizeStockFootage)) {
+    const ovPaths = await fetchOpenverseImages(
+      `${personName} portrait face`,
+      clipFetchDur,
+      workDir,
+      sceneIndex,
+      1,
+      `${tag}_person`,
+      { dedup, personPortrait: true }
     );
     clip = await adoptClip(
       ovPaths, dedup, sceneIndex, beat.index, beat.text, workDir, personName, loosePerson
@@ -6919,7 +7081,11 @@ async function fetchSceneVisuals(
     Math.max(2, Math.ceil(scene.duration / VIDRUSH_BEAT_SEC))
   );
   dedup.stillPhotosThisScene = 0;
-  dedup.stillPhotosMaxThisScene = maxStillPhotosForScene(scene.index, scenePersons.length > 0);
+  dedup.stillPhotosMaxThisScene = maxStillPhotosForScene(
+    scene.index,
+    scenePersons.length > 0,
+    dedup.personTopicLock
+  );
   const beats = buildSceneBeats(scene, scene.duration, beatCap, videoTitle, scenePersons);
   const clips: string[] = [];
   const beatDurations: number[] = [];
