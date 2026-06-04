@@ -336,16 +336,72 @@ interface PipelinePerfProfile {
   sceneVisualTimeoutMs: number;
   /** Skip slow stock waterfalls (hero/archival/multi-fallback) on short Railway jobs. */
   fastStockMode: boolean;
-  /** Only script-derived queries + person/event YouTube — no generic topic/golden pools. */
+  /** Script beats: real YouTube CC first; Pexels/Pixabay only as capped fallback. */
   scriptOnlyVisuals: boolean;
 }
 
 /** YouTube CC needs YOUTUBE_API_KEY (search) + RAPIDAPI_KEY or YOUTUBE_CC_DL_SERVICE (download). */
-function maxEntityYoutubeFetchesPerVideo(): number {
+function youtubeCcReady(): boolean {
   const canSearch = Boolean(process.env.YOUTUBE_API_KEY?.trim());
   const canDownload = Boolean(RAPIDAPI_KEY || process.env.YOUTUBE_CC_DL_SERVICE?.trim());
-  if (!canSearch || !canDownload) return 0;
-  return IS_RAILWAY ? 5 : 4;
+  return canSearch && canDownload;
+}
+
+function maxEntityYoutubeFetchesPerVideo(): number {
+  if (!youtubeCcReady()) return 0;
+  return IS_RAILWAY ? 12 : 8;
+}
+
+/** YouTube CC clip for one beat (interviews, news, entity-named footage). */
+async function tryBeatRealYouTubeFootage(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  adoptOpts: VisualAdoptOptions,
+  youtubeQueries: string[],
+  label: string,
+  timeoutMs: number
+): Promise<string | null> {
+  if (!youtubeCcReady() || youtubeQueries.length === 0) return null;
+  if (dedup.entityYoutubeFetchesUsed >= dedup.perf.maxEntityYoutubePerVideo) return null;
+  dedup.entityYoutubeFetchesUsed++;
+  try {
+    return await withTimeout(
+      tryStockSources(
+        [{
+          query: youtubeQueries[0],
+          fetch: () =>
+            fetchYouTubeCCClips(
+              youtubeQueries.slice(0, 3),
+              clipFetchDur,
+              workDir,
+              sceneIndex,
+              1,
+              beat.keywords,
+              1
+            ),
+        }],
+        dedup,
+        sceneIndex,
+        beat.index,
+        beat.text,
+        workDir,
+        label,
+        adoptOpts
+      ),
+      timeoutMs,
+      `${label} s${sceneIndex} b${beat.index}`
+    );
+  } catch (err) {
+    console.warn(
+      `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: ${label} skipped:`,
+      (err as Error).message
+    );
+    return null;
+  }
 }
 
 function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
@@ -475,7 +531,7 @@ async function runBeatClipFetch(
   }
 }
 
-/** Quick script-ordered stock attempts; never grey placeholders or duplicate clips. */
+/** Quick script-ordered rescue: YouTube CC first, then capped Pexels. */
 async function resolveBeatClipFast(
   beat: SceneBeat,
   scene: Scene,
@@ -487,10 +543,44 @@ async function resolveBeatClipFast(
   videoTitle?: string,
   adoptOpts: VisualAdoptOptions = {}
 ): Promise<string | null> {
+  const ytMs = dedup.perf.fastStockMode ? 22_000 : 40_000;
+  if (youtubeCcReady()) {
+    const entityYt = realEntityYoutubeQueriesForBeat(beat.text, scene.text, videoTitle);
+    let clip = await tryBeatRealYouTubeFootage(
+      beat, scene, workDir, sceneIndex, clipFetchDur, dedup, adoptOpts, entityYt, "fast event YouTube", ytMs
+    );
+    if (clip) {
+      dedup.lastMuskStockClip = clip;
+      return clip;
+    }
+    const person = scenePersons[0] ?? dedup.primaryPerson;
+    if (person) {
+      const personYt = buildPersonMediaQueries(person, beat.text.slice(0, 80));
+      clip = await tryBeatRealYouTubeFootage(
+        beat,
+        scene,
+        workDir,
+        sceneIndex,
+        clipFetchDur,
+        dedup,
+        { ...adoptOpts, personTopic: true, primaryPerson: person, requireBeatMatch: false },
+        personYt,
+        `fast person YouTube (${person})`,
+        ytMs
+      );
+      if (clip) {
+        dedup.lastMuskStockClip = clip;
+        console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: fast person YouTube (${person})`);
+        return clip;
+      }
+    }
+  }
+
   const queries = buildBeatVisualQueryList(
     beat.text, scene, videoTitle, scenePersons, 4
   );
-  for (const q of queries) {
+  const pexCap = dedup.perf.fastStockMode ? 2 : 3;
+  for (const q of queries.slice(0, pexCap)) {
     try {
       const paths = await withTimeout(
         fetchPexelsClips(
@@ -533,56 +623,6 @@ async function resolveBeatClipFast(
       }
     } catch {
       /* try next script query */
-    }
-  }
-  if (
-    dedup.personTopicLock &&
-    dedup.primaryPerson &&
-    dedup.entityYoutubeFetchesUsed < dedup.perf.maxEntityYoutubePerVideo &&
-    (process.env.YOUTUBE_API_KEY || RAPIDAPI_KEY || process.env.YOUTUBE_CC_DL_SERVICE)
-  ) {
-    const personYt = buildPersonMediaQueries(dedup.primaryPerson, beat.text.slice(0, 80));
-    dedup.entityYoutubeFetchesUsed++;
-    try {
-      const ytPaths = await withTimeout(
-        fetchYouTubeCCClips(
-          personYt.slice(0, 2),
-          clipFetchDur,
-          workDir,
-          sceneIndex,
-          1,
-          beat.keywords,
-          1
-        ),
-        20_000,
-        `fast person YouTube s${sceneIndex} b${beat.index}`
-      );
-      const personAdopt: VisualAdoptOptions = {
-        personTopic: true,
-        primaryPerson: dedup.primaryPerson,
-        keywords: beat.keywords,
-        requireBeatMatch: false,
-        scriptAnchored: true,
-      };
-      const ytClip = await adoptClip(
-        ytPaths,
-        dedup,
-        sceneIndex,
-        beat.index,
-        beat.text,
-        workDir,
-        dedup.primaryPerson,
-        personAdopt
-      );
-      if (ytClip) {
-        dedup.lastMuskStockClip = ytClip;
-        console.log(
-          `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: fast person YouTube (${dedup.primaryPerson})`
-        );
-        return ytClip;
-      }
-    } catch {
-      /* fall through to rescue / grey */
     }
   }
 
@@ -5240,7 +5280,7 @@ async function fetchUniqueStockForBeat(
   videoTitle?: string,
   adoptOpts: VisualAdoptOptions = {}
 ): Promise<string | null> {
-  const wallMs = dedup.perf.fastStockMode ? 18_000 : 28_000;
+  const wallMs = dedup.perf.fastStockMode ? 24_000 : 32_000;
   try {
     return await withTimeout(
       fetchUniqueStockForBeatInner(
@@ -5265,7 +5305,7 @@ async function fetchUniqueStockForBeatInner(
   videoTitle?: string,
   adoptOpts: VisualAdoptOptions = {}
 ): Promise<string | null> {
-  if (!PEXELS_API_KEY && !PIXABAY_API_KEY) return null;
+  if (!youtubeCcReady() && !PEXELS_API_KEY && !PIXABAY_API_KEY) return null;
   const perf = dedup.perf;
   const muskTopic = isMuskTeslaTopic(videoTitle, beat.text);
   const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
@@ -5282,61 +5322,69 @@ async function fetchUniqueStockForBeatInner(
     sceneText: scene.text,
     videoTitle,
   };
+  const ytMs = perf.fastStockMode ? 22_000 : 38_000;
 
-  const queryCap = perf.fastStockMode ? 5 : 8;
-  const queries = [
-    ...buildBeatVisualQueryList(beat.text, scene, videoTitle, scenePersons, queryCap),
-    ...(muskTopic ? GOLDEN_MUSK_QUERIES.slice(0, perf.fastStockMode ? 4 : 8) : []),
-    enrichStockQuery(scene.pexelsQuery, scene, videoTitle, personName, beat.text),
-    ...(scene.pexelsQueries ?? [])
-      .slice(0, 4)
-      .map((q) => enrichStockQuery(q, scene, videoTitle, personName, beat.text)),
-    ...(scene.brollQueries ?? []).slice(0, 2),
-    stockQueryFromBeatScript(beat.text, scenePersons, scene.text, videoTitle),
-  ].filter(
-    (q): q is string => typeof q === "string" && q.trim().length > 2 && !isBlockedStockQuery(q)
+  const entityYt = realEntityYoutubeQueriesForBeat(beat.text, scene.text, videoTitle);
+  let clip = await tryBeatRealYouTubeFootage(
+    beat, scene, workDir, sceneIndex, clipFetchDur, dedup, looseOpts, entityYt, "unique event YouTube", ytMs
   );
-  const uniqueQueries = [...new Set(queries)].slice(0, perf.fastStockMode ? 5 : 10);
+  if (clip) return clip;
 
-  const pexFetch = (query: string, t: string, off: number) => () =>
-    fetchPexelsClips(
-      query, clipFetchDur, workDir, sceneIndex, perf.fastStockMode ? 2 : 3, [query], true, t,
-      dedup.usedPexelsIds, off, perf.pexelsDownloadRetries
-    );
-  const pixFetch = (query: string, t: string, off: number) => () =>
-    fetchPixabayClips(query, clipFetchDur, workDir, sceneIndex, 2, t, true, dedup.usedPixabayIds, off);
-
-  for (let qi = 0; qi < uniqueQueries.length; qi++) {
-    const q = uniqueQueries[qi];
-    const off = offset + qi * 2;
-    let clip = await tryStockSources(
-      [{ query: q, fetch: pexFetch(q, `${tag}_pex`, off) }],
-      dedup, sceneIndex, beat.index, beat.text, workDir, "unique Pexels", looseOpts
-    );
-    if (clip) return clip;
-    clip = await tryStockSources(
-      [{ query: q, fetch: pixFetch(q, `${tag}_pix`, off + 40) }],
-      dedup, sceneIndex, beat.index, beat.text, workDir, "unique Pixabay", looseOpts
+  const primary = scenePersons[0] ?? personName ?? dedup.primaryPerson;
+  if (primary) {
+    clip = await tryBeatRealYouTubeFootage(
+      beat,
+      scene,
+      workDir,
+      sceneIndex,
+      clipFetchDur,
+      dedup,
+      looseOpts,
+      buildPersonMediaQueries(primary, beat.text.slice(0, 80)),
+      `unique person YouTube (${primary})`,
+      ytMs
     );
     if (clip) return clip;
   }
 
-  const entityYt = realEntityYoutubeQueriesForBeat(beat.text, scene.text, videoTitle);
-  if (
-    entityYt.length > 0 &&
-    dedup.entityYoutubeFetchesUsed < perf.maxEntityYoutubePerVideo &&
-    (process.env.YOUTUBE_API_KEY || RAPIDAPI_KEY || process.env.YOUTUBE_CC_DL_SERVICE)
-  ) {
-    dedup.entityYoutubeFetchesUsed++;
-    const clip = await tryStockSources(
-      [{
-        query: entityYt[0],
-        fetch: () =>
-          fetchYouTubeCCClips(entityYt.slice(0, 3), clipFetchDur, workDir, sceneIndex, 1, beat.keywords, 1),
-      }],
-      dedup, sceneIndex, beat.index, beat.text, workDir, "unique YouTube", looseOpts
+  if (!PEXELS_API_KEY && !PIXABAY_API_KEY) return null;
+
+  const queryCap = perf.fastStockMode ? 4 : 6;
+  const queries = [
+    ...buildBeatVisualQueryList(beat.text, scene, videoTitle, scenePersons, queryCap),
+    ...(muskTopic ? GOLDEN_MUSK_QUERIES.slice(0, perf.fastStockMode ? 2 : 4) : []),
+    enrichStockQuery(scene.pexelsQuery, scene, videoTitle, personName, beat.text),
+    stockQueryFromBeatScript(beat.text, scenePersons, scene.text, videoTitle),
+  ].filter(
+    (q): q is string => typeof q === "string" && q.trim().length > 2 && !isBlockedStockQuery(q)
+  );
+  const stockQueries = [...new Set(queries)].slice(0, perf.fastStockMode ? 3 : 5);
+
+  const pexFetch = (query: string, t: string, off: number) => () =>
+    fetchPexelsClips(
+      query, clipFetchDur, workDir, sceneIndex, perf.fastStockMode ? 2 : 3, [query], true, t,
+      dedup.usedPexelsIds, off, dedup.perf.pexelsDownloadRetries
     );
-    if (clip) return clip;
+  const pixFetch = (query: string, t: string, off: number) => () =>
+    fetchPixabayClips(query, clipFetchDur, workDir, sceneIndex, 2, t, true, dedup.usedPixabayIds, off);
+
+  for (let qi = 0; qi < stockQueries.length; qi++) {
+    const q = stockQueries[qi];
+    const off = offset + qi * 2;
+    if (PEXELS_API_KEY) {
+      clip = await tryStockSources(
+        [{ query: q, fetch: pexFetch(q, `${tag}_pex`, off) }],
+        dedup, sceneIndex, beat.index, beat.text, workDir, "unique Pexels fallback", looseOpts
+      );
+      if (clip) return clip;
+    }
+    if (PIXABAY_API_KEY) {
+      clip = await tryStockSources(
+        [{ query: q, fetch: pixFetch(q, `${tag}_pix`, off + 40) }],
+        dedup, sceneIndex, beat.index, beat.text, workDir, "unique Pixabay fallback", looseOpts
+      );
+      if (clip) return clip;
+    }
   }
   return null;
 }
@@ -5412,7 +5460,27 @@ async function fetchLastResortRealClip(
 
   const uniqueQueries = [...new Set(queries)];
 
-  for (const q of uniqueQueries) {
+  const ytQueries = [
+    ...realEntityYoutubeQueriesForBeat(beat.text, scene.text, videoTitle),
+    ...(personName.trim()
+      ? buildPersonMediaQueries(personName, beat.text.slice(0, 80))
+      : []),
+  ];
+  const ytClip = await tryBeatRealYouTubeFootage(
+    beat,
+    scene,
+    workDir,
+    sceneIndex,
+    clipFetchDur,
+    dedup,
+    adoptOpts,
+    ytQueries,
+    "last-resort YouTube",
+    dedup.perf.fastStockMode ? 22_000 : 40_000
+  );
+  if (ytClip) return ytClip;
+
+  for (const q of uniqueQueries.slice(0, dedup.perf.fastStockMode ? 4 : 6)) {
     const pex = await fetchPexelsClips(
       q, clipFetchDur, workDir, sceneIndex, 2, undefined, true, `${tag}_pex`,
       dedup.usedPexelsIds, candidateOffset, dedup.perf.pexelsDownloadRetries
@@ -5463,50 +5531,21 @@ async function fetchPersonBeatClip(
   const loosePerson: VisualAdoptOptions = { ...adoptOpts, requireBeatMatch: false };
 
   const fast = dedup.perf.fastStockMode;
-  const personPexels = personQueries.slice(0, fast ? 1 : 2);
-  let clip = await tryStockSources(
-    personPexels.map((pq, pi) => ({
-      query: pq,
-      fetch: pexFetch(pq, `${tag}_person`, candidateOffset + pi, fast ? 1 : 2),
-    })),
-    dedup, sceneIndex, beat.index, beat.text, workDir, `person Pexels (${personName})`, loosePerson
+  let clip = await tryBeatRealYouTubeFootage(
+    beat,
+    scene,
+    workDir,
+    sceneIndex,
+    clipFetchDur,
+    dedup,
+    loosePerson,
+    personQueries,
+    `person YouTube (${personName})`,
+    fast ? 24_000 : 55_000
   );
-  if (clip && !isStillPhotoClip(clip)) return clip;
+  if (clip) return clip;
 
-  if (
-    dedup.entityYoutubeFetchesUsed < dedup.perf.maxEntityYoutubePerVideo &&
-    (process.env.YOUTUBE_API_KEY || RAPIDAPI_KEY || process.env.YOUTUBE_CC_DL_SERVICE)
-  ) {
-    dedup.entityYoutubeFetchesUsed++;
-    try {
-      clip = await withTimeout(
-        tryStockSources(
-          [{
-            query: personName,
-            fetch: () =>
-              fetchYouTubeCCClips(
-                personQueries.slice(0, fast ? 2 : 3),
-                clipFetchDur,
-                workDir,
-                sceneIndex,
-                1,
-                beat.keywords,
-                1
-              ),
-          }],
-          dedup, sceneIndex, beat.index, beat.text, workDir, `person YouTube (${personName})`, loosePerson
-        ),
-        fast ? 22_000 : 55_000,
-        `person YouTube scene ${sceneIndex} beat ${beat.index}`
-      );
-    } catch (err) {
-      console.warn(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: person YouTube skipped:`, (err as Error).message);
-      clip = null;
-    }
-    if (clip) return clip;
-  }
-
-  if (SERPAPI_KEY && (personLocked || !fast) && dedup.stillPhotosThisScene < dedup.stillPhotosMaxThisScene) {
+  if (SERPAPI_KEY && dedup.stillPhotosThisScene < dedup.stillPhotosMaxThisScene) {
     const serpPaths = await fetchSerpAPIImages(
       `${personName} red carpet`,
       clipFetchDur,
@@ -5539,10 +5578,20 @@ async function fetchPersonBeatClip(
     if (clip) return clip;
   }
 
+  const personPexels = personQueries.slice(0, fast ? 1 : 2);
+  clip = await tryStockSources(
+    personPexels.map((pq, pi) => ({
+      query: pq,
+      fetch: pexFetch(pq, `${tag}_person`, candidateOffset + pi, fast ? 1 : 2),
+    })),
+    dedup, sceneIndex, beat.index, beat.text, workDir, `person Pexels fallback (${personName})`, loosePerson
+  );
+  if (clip && !isStillPhotoClip(clip)) return clip;
+
   return null;
 }
 
-/** Script-anchored clip fetch: persons → events → [VISUAL:] → YouTube CC → person interview. */
+/** Script-anchored clip fetch: YouTube CC (events/person) first; capped Pexels fallback. */
 async function fetchBeatClipFromScript(
   beat: SceneBeat,
   scene: Scene,
@@ -5563,98 +5612,34 @@ async function fetchBeatClipFromScript(
   const primary = scenePersons[0] ?? personName ?? dedup.primaryPerson;
   const maxQ = perf.fastStockMode ? Math.min(3, perf.maxStockQueriesPerBeat) : perf.maxStockQueriesPerBeat;
   const beatQueries = buildBeatVisualQueryList(beat.text, scene, videoTitle, scenePersons, maxQ);
-
-  let clip = await tryStockSources(
-    beatQueries.map((bq, bi) => ({
-      query: bq,
-      fetch: pexFetch(bq, `${tag}_script`, candidateOffset + bi, muskTopic ? 3 : 2),
-    })),
-    dedup,
-    sceneIndex,
-    beat.index,
-    beat.text,
-    workDir,
-    "script person/event",
-    adoptOpts
-  );
-  if (clip) return clip;
+  const ytMs = perf.fastStockMode ? 24_000 : 45_000;
 
   const entityYt = realEntityYoutubeQueriesForBeat(beat.text, scene.text, videoTitle);
-  if (
-    entityYt.length > 0 &&
-    dedup.entityYoutubeFetchesUsed < perf.maxEntityYoutubePerVideo &&
-    (process.env.YOUTUBE_API_KEY || RAPIDAPI_KEY || process.env.YOUTUBE_CC_DL_SERVICE)
-  ) {
-    dedup.entityYoutubeFetchesUsed++;
-    const ytMs = perf.fastStockMode ? 22_000 : 45_000;
-    try {
-      clip = await withTimeout(
-        tryStockSources(
-          [{
-            query: entityYt[0],
-            fetch: () =>
-              fetchYouTubeCCClips(entityYt.slice(0, 2), clipFetchDur, workDir, sceneIndex, 1, beat.keywords, 1),
-          }],
-          dedup,
-          sceneIndex,
-          beat.index,
-          beat.text,
-          workDir,
-          "event YouTube",
-          adoptOpts
-        ),
-        ytMs,
-        `event YouTube s${sceneIndex} b${beat.index}`
-      );
-    } catch (err) {
-      console.warn(
-        `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: event YouTube skipped:`,
-        (err as Error).message
-      );
-    }
-    if (clip) return clip;
-  }
+  let clip = await tryBeatRealYouTubeFootage(
+    beat, scene, workDir, sceneIndex, clipFetchDur, dedup, adoptOpts, entityYt, "event YouTube", ytMs
+  );
+  if (clip) return clip;
 
   if (
     muskTopic &&
     perf.enableMuskHeroFetch &&
     !dedup.muskHeroFetchUsed &&
     beat.index === 0 &&
-    sceneIndex === 0 &&
-    (process.env.YOUTUBE_API_KEY || RAPIDAPI_KEY || process.env.YOUTUBE_CC_DL_SERVICE)
+    sceneIndex === 0
   ) {
     dedup.muskHeroFetchUsed = true;
-    dedup.entityYoutubeFetchesUsed++;
-    try {
-      clip = await withTimeout(
-        tryStockSources(
-          [{
-            query: HERO_YOUTUBE_QUERIES[0],
-            fetch: () =>
-              fetchYouTubeCCClips(
-                HERO_YOUTUBE_QUERIES.slice(0, 2),
-                clipFetchDur,
-                workDir,
-                sceneIndex,
-                1,
-                beat.keywords,
-                1
-              ),
-          }],
-          dedup,
-          sceneIndex,
-          beat.index,
-          beat.text,
-          workDir,
-          "hero YouTube",
-          { ...adoptOpts, requireMuskBrand: false }
-        ),
-        22_000,
-        `hero YouTube s${sceneIndex}`
-      );
-    } catch {
-      /* skip */
-    }
+    clip = await tryBeatRealYouTubeFootage(
+      beat,
+      scene,
+      workDir,
+      sceneIndex,
+      clipFetchDur,
+      dedup,
+      { ...adoptOpts, requireMuskBrand: false },
+      HERO_YOUTUBE_QUERIES,
+      "hero YouTube",
+      ytMs
+    );
     if (clip) return clip;
   }
 
@@ -5672,6 +5657,25 @@ async function fetchBeatClipFromScript(
       pexFetch,
       candidateOffset,
       tag
+    );
+    if (clip) return clip;
+  }
+
+  const pexCap = perf.fastStockMode ? 2 : Math.min(3, maxQ);
+  const stockFallback = beatQueries.slice(0, pexCap);
+  if (stockFallback.length > 0 && (PEXELS_API_KEY || PIXABAY_API_KEY)) {
+    clip = await tryStockSources(
+      stockFallback.map((bq, bi) => ({
+        query: bq,
+        fetch: pexFetch(bq, `${tag}_script`, candidateOffset + bi, muskTopic ? 2 : 1),
+      })),
+      dedup,
+      sceneIndex,
+      beat.index,
+      beat.text,
+      workDir,
+      "script Pexels fallback",
+      adoptOpts
     );
     if (clip) return clip;
   }
