@@ -583,15 +583,33 @@ async function resolveBeatClipFast(
     }
   }
 
-  const rescue = dedup.lastMuskStockClip;
-  if (
-    rescue && fs.existsSync(rescue) && !dedup.usedPaths.has(rescue) &&
-    !isPipelineFallbackClip(rescue) && (await isValidVideoFile(rescue))
-  ) {
-    dedup.usedPaths.add(rescue);
-    console.warn(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: reusing last good stock clip`);
-    return rescue;
+  const muskTopic = isMuskTeslaTopic(videoTitle, beat.text);
+  if (muskTopic) {
+    try {
+      const golden = await fetchMuskGoldenStockBeat(
+        beat,
+        scene,
+        workDir,
+        sceneIndex,
+        dedup,
+        {
+          muskTopic: true,
+          keywords: beat.keywords,
+          scriptAnchored: true,
+          sceneText: scene.text,
+          videoTitle,
+        }
+      );
+      if (golden && !isPipelineFallbackClip(golden)) return golden;
+    } catch (err) {
+      console.warn(
+        `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: fast golden stock failed:`,
+        (err as Error).message
+      );
+    }
   }
+  const reused = await reuseLastGoodStockClip(dedup, sceneIndex, beat.index);
+  if (reused) return reused;
   return generateColorFallback(sceneIndex * 500 + beat.index, Math.min(4, beat.holdSec), workDir);
 }
 
@@ -2458,6 +2476,26 @@ async function fetchMuskGoldenStockBeat(
   return muskRescueClip(dedup, sceneIndex, beat.index, workDir);
 }
 
+/** Reuse last adopted real stock (montage may repeat the same file across beats). */
+async function reuseLastGoodStockClip(
+  dedup: VisualDedupState,
+  sceneIndex: number,
+  beatIndex: number
+): Promise<string | null> {
+  const rescue = dedup.lastMuskStockClip;
+  if (
+    !rescue ||
+    !fs.existsSync(rescue) ||
+    isPipelineFallbackClip(rescue) ||
+    !(await isValidVideoFile(rescue)) ||
+    (await isMostlyBlackClip(rescue))
+  ) {
+    return null;
+  }
+  console.warn(`[Pipeline] Scene ${sceneIndex} beat ${beatIndex}: reusing last good stock clip`);
+  return rescue;
+}
+
 /** Prefer last good Musk stock clip over color placeholders (avoids black/grey holes). */
 async function muskRescueClip(
   dedup: VisualDedupState,
@@ -2465,11 +2503,8 @@ async function muskRescueClip(
   beatIndex: number,
   workDir: string
 ): Promise<string> {
-  const rescue = dedup.lastMuskStockClip;
-  if (rescue && fs.existsSync(rescue) && (await isValidVideoFile(rescue)) && !(await isMostlyBlackClip(rescue))) {
-    console.warn(`[Pipeline] Scene ${sceneIndex} beat ${beatIndex}: reusing last Musk stock clip`);
-    return rescue;
-  }
+  const reused = await reuseLastGoodStockClip(dedup, sceneIndex, beatIndex);
+  if (reused) return reused;
   return generateColorFallback(sceneIndex * 100 + beatIndex, 4, workDir);
 }
 
@@ -5587,6 +5622,30 @@ async function fetchBeatClip(
     return clip;
   }
   if (perf.scriptOnlyVisuals) {
+    if (muskTopic) {
+      try {
+        const golden = await fetchMuskGoldenStockBeat(
+          beat, scene, workDir, sceneIndex, dedup, adoptOpts
+        );
+        if (golden && !isPipelineFallbackClip(golden)) {
+          dedup.globalBeatIndex++;
+          return golden;
+        }
+      } catch {
+        /* fall through */
+      }
+      const reused = await reuseLastGoodStockClip(dedup, sceneIndex, beat.index);
+      if (reused) {
+        dedup.globalBeatIndex++;
+        return reused;
+      }
+    } else {
+      const reused = await reuseLastGoodStockClip(dedup, sceneIndex, beat.index);
+      if (reused) {
+        dedup.globalBeatIndex++;
+        return reused;
+      }
+    }
     dedup.globalBeatIndex++;
     return null;
   }
