@@ -519,7 +519,7 @@ async function _generateVideoWithAI(
           existing.status = "active";
         }
       }
-      // Persist both the step label and the full log
+      // Persist label + percent on every callback (beat/scene updates reuse similar labels)
       await Promise.all([
         updateVideoProgress(videoId, stepName, Math.min(percent, 95)).catch(() => {}),
         updateVideoProgressLog(videoId, progressLog).catch(() => {}),

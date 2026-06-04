@@ -352,7 +352,7 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
   if (videoLength === "1" || videoLength === "2") {
     return {
       targetWallClockMin: 60,
-      maxBeatsPerScene: 8,
+      maxBeatsPerScene: IS_RAILWAY ? 5 : 8,
       maxTopicQueries: IS_RAILWAY ? 2 : 3,
       skipFairUseTransform: true,
       transformTimeoutMs: 25_000,
@@ -469,7 +469,7 @@ async function runBeatClipFetch(
   }
 }
 
-/** One quick Pexels attempt then grey placeholder — no slow emergency/YouTube/golden loops. */
+/** One quick Pexels attempt then grey placeholder — no lock/adopt/YouTube waterfalls. */
 async function resolveBeatClipFast(
   beat: SceneBeat,
   scene: Scene,
@@ -495,24 +495,26 @@ async function resolveBeatClipFast(
         beat.index + sceneIndex,
         1
       ),
-      18_000,
+      10_000,
       `fast Pexels scene ${sceneIndex} beat ${beat.index}`
     );
-    const clip = await withTimeout(
-      adoptClip(
-        paths,
-        dedup,
-        sceneIndex,
-        beat.index,
-        beat.text,
-        workDir,
-        q,
-        { requireBeatMatch: false }
-      ),
-      12_000,
-      `fast adopt scene ${sceneIndex} beat ${beat.index}`
-    );
-    if (clip) return clip;
+    for (const p of paths) {
+      if (!p || dedup.usedPaths.has(p) || !fs.existsSync(p)) continue;
+      let size = 0;
+      try { size = fs.statSync(p).size; } catch { continue; }
+      if (size < 180_000) continue;
+      if (isRejectedStockClip(p, q) || isPipelineFallbackClip(p)) continue;
+      try {
+        const ok = await withTimeout(isValidVideoFile(p), 5_000, `fast validate s${sceneIndex} b${beat.index}`);
+        if (!ok) continue;
+      } catch {
+        continue;
+      }
+      dedup.usedPaths.add(p);
+      dedup.usedContentKeys.add(clipContentKey(p));
+      console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: fast Pexels "${q}"`);
+      return p;
+    }
   } catch (err) {
     console.warn(
       `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: fast stock failed:`,
@@ -4902,7 +4904,17 @@ async function tryStockSources(
       continue;
     }
     if (!paths.length) continue;
-    const clip = await adoptClip(paths, dedup, sceneIndex, beatIndex, beatText, workDir, query, adoptOpts);
+    const adoptMs = dedup.perf.fastStockMode ? 8_000 : 60_000;
+    let clip: string | null = null;
+    try {
+      clip = await withTimeout(
+        adoptClip(paths, dedup, sceneIndex, beatIndex, beatText, workDir, query, adoptOpts),
+        adoptMs,
+        `${logLabel} adopt s${sceneIndex} b${beatIndex}`
+      );
+    } catch {
+      continue;
+    }
     if (clip) {
       console.log(`[Pipeline] Scene ${sceneIndex} beat ${beatIndex}: ${logLabel} "${query}"`);
       return clip;
@@ -5362,14 +5374,12 @@ async function fetchSceneVisuals(
       clips.push(clipPath);
       beatDurations.push(beat.holdSec);
     };
-    const adoptOpts: VisualAdoptOptions = {
-      muskTopic,
-      keywords: beat.keywords,
-      sceneText: scene.text,
-      videoTitle,
-      requireBeatMatch: false,
-      requireMuskBrand: false,
-    };
+    if (dedup.perf.fastStockMode) {
+      pushClip(
+        await resolveBeatClipFast(beat, scene, workDir, scene.index, clipFetchDur, dedup, scenePersons)
+      );
+      continue;
+    }
     const clip = await runBeatClipFetch(
       beat,
       scene,
@@ -5383,10 +5393,6 @@ async function fetchSceneVisuals(
     );
     if (clip) {
       pushClip(clip);
-    } else if (dedup.perf.fastStockMode) {
-      pushClip(
-        await resolveBeatClipFast(beat, scene, workDir, scene.index, clipFetchDur, dedup, scenePersons)
-      );
     } else {
       console.warn(
         `[Pipeline] Scene ${scene.index} beat ${beat.index}: no footage for "${beat.searchQuery}" — quick fallback`
@@ -6558,8 +6564,19 @@ export async function runVideoPipeline(
 
     const visualLimit = pLimit(perf.sceneParallelism);
     let completedVisuals = 0;
-    const sceneVisualResults: SceneVisualsResult[] = await withTimeout(
+    let activeSceneIdx = 0;
+    const visualHeartbeat = setInterval(() => {
+      const sceneNum = Math.min(activeSceneIdx + 1, scenes.length);
+      onProgress?.({
+        stage: `Fetching stock clips (scene ${sceneNum}/${scenes.length}, ${completedVisuals} done)...`,
+        percent: 20 + Math.round(((completedVisuals + 0.15) / scenes.length) * 25),
+      });
+    }, 20_000);
+    let sceneVisualResults: SceneVisualsResult[];
+    try {
+    sceneVisualResults = await withTimeout(
       Promise.all(scenes.map((scene, sceneIdx) => visualLimit(async () => {
+        activeSceneIdx = sceneIdx;
         let result: SceneVisualsResult;
         try {
           result = await withTimeout(
@@ -6597,6 +6614,9 @@ export async function runVideoPipeline(
       visualStageTimeoutMs(videoLength, perf),
       `Visual generation stage (≤${videoLength === "1" || videoLength === "2" ? 12 : perf.targetWallClockMin}min cap)`
     );
+    } finally {
+      clearInterval(visualHeartbeat);
+    }
     console.log(`[Pipeline] Stage 3 (visuals): ${((Date.now()-t2)/1000).toFixed(1)}s`);
 
     // ── Save scene manifest for editor ───────────────────────────────────────
