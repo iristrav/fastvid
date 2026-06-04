@@ -352,6 +352,12 @@ function maxEntityYoutubeFetchesPerVideo(): number {
   return IS_RAILWAY ? 12 : 8;
 }
 
+/** RapidAPI download + trim often exceeds 24s; outer beat timeout must allow that. */
+function youtubeBeatFetchTimeoutMs(fastStockMode: boolean): number {
+  if (fastStockMode) return IS_RAILWAY ? 95_000 : 60_000;
+  return 80_000;
+}
+
 /** YouTube CC clip for one beat (interviews, news, entity-named footage). */
 async function tryBeatRealYouTubeFootage(
   beat: SceneBeat,
@@ -543,7 +549,7 @@ async function resolveBeatClipFast(
   videoTitle?: string,
   adoptOpts: VisualAdoptOptions = {}
 ): Promise<string | null> {
-  const ytMs = dedup.perf.fastStockMode ? 22_000 : 40_000;
+  const ytMs = youtubeBeatFetchTimeoutMs(dedup.perf.fastStockMode);
   if (youtubeCcReady()) {
     const entityYt = realEntityYoutubeQueriesForBeat(beat.text, scene.text, videoTitle);
     let clip = await tryBeatRealYouTubeFootage(
@@ -3709,7 +3715,7 @@ async function fetchYouTubeCCClips(
   const downloadedIds = new Set<string>();
   let fetched = 0;
 
-  const ytDeadline = Date.now() + 55_000;
+  const ytDeadline = Date.now() + (IS_RAILWAY ? 88_000 : 55_000);
 
   for (const query of uniqueQueries.slice(0, 2)) {
     if (fetched >= count) break;
@@ -5389,7 +5395,11 @@ async function fetchUniqueStockForBeat(
   videoTitle?: string,
   adoptOpts: VisualAdoptOptions = {}
 ): Promise<string | null> {
-  const wallMs = dedup.perf.fastStockMode ? 24_000 : 32_000;
+  const wallMs = youtubeCcReady()
+    ? youtubeBeatFetchTimeoutMs(dedup.perf.fastStockMode) + 8_000
+    : dedup.perf.fastStockMode
+      ? 24_000
+      : 32_000;
   try {
     return await withTimeout(
       fetchUniqueStockForBeatInner(
@@ -5431,7 +5441,7 @@ async function fetchUniqueStockForBeatInner(
     sceneText: scene.text,
     videoTitle,
   };
-  const ytMs = perf.fastStockMode ? 22_000 : 38_000;
+  const ytMs = youtubeBeatFetchTimeoutMs(perf.fastStockMode);
 
   const entityYt = realEntityYoutubeQueriesForBeat(beat.text, scene.text, videoTitle);
   let clip = await tryBeatRealYouTubeFootage(
@@ -5585,7 +5595,7 @@ async function fetchLastResortRealClip(
     adoptOpts,
     ytQueries,
     "last-resort YouTube",
-    dedup.perf.fastStockMode ? 22_000 : 40_000
+    youtubeBeatFetchTimeoutMs(dedup.perf.fastStockMode)
   );
   if (ytClip) return ytClip;
 
@@ -5650,7 +5660,7 @@ async function fetchPersonBeatClip(
     loosePerson,
     personQueries,
     `person YouTube (${personName})`,
-    fast ? 24_000 : 55_000
+    youtubeBeatFetchTimeoutMs(fast)
   );
   if (clip) return clip;
 
@@ -5721,7 +5731,7 @@ async function fetchBeatClipFromScript(
   const primary = scenePersons[0] ?? personName ?? dedup.primaryPerson;
   const maxQ = perf.fastStockMode ? Math.min(3, perf.maxStockQueriesPerBeat) : perf.maxStockQueriesPerBeat;
   const beatQueries = buildBeatVisualQueryList(beat.text, scene, videoTitle, scenePersons, maxQ);
-  const ytMs = perf.fastStockMode ? 24_000 : 45_000;
+  const ytMs = youtubeBeatFetchTimeoutMs(perf.fastStockMode);
 
   const entityYt = realEntityYoutubeQueriesForBeat(beat.text, scene.text, videoTitle);
   let clip = await tryBeatRealYouTubeFootage(
@@ -6097,7 +6107,11 @@ async function fetchSceneVisuals(
         dedup.lastMuskStockClip = clipPath;
       }
     };
-    const beatWallMs = dedup.perf.fastStockMode ? 45_000 : 65_000;
+    const beatWallMs = youtubeCcReady()
+      ? youtubeBeatFetchTimeoutMs(dedup.perf.fastStockMode) + 12_000
+      : dedup.perf.fastStockMode
+        ? 45_000
+        : 65_000;
     let clip: string | null = null;
     try {
       clip = await withTimeout(
