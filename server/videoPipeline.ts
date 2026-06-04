@@ -396,6 +396,25 @@ function youtubeBeatFetchTimeoutMs(fastStockMode: boolean): number {
   return 80_000;
 }
 
+/** Wall-clock cap for one beat's full visual waterfall (must exceed beatClipTimeoutMs). */
+function beatVisualWallMs(perf: PipelinePerfProfile): number {
+  const ytExtra = youtubeCcReady() ? youtubeBeatFetchTimeoutMs(perf.fastStockMode) + 20_000 : 0;
+  return Math.min(
+    perf.fastStockMode ? 120_000 : 240_000,
+    Math.max(perf.beatClipTimeoutMs + 25_000, ytExtra || perf.beatClipTimeoutMs + 15_000)
+  );
+}
+
+function backfillClipWallMs(perf: PipelinePerfProfile): number {
+  return perf.fastStockMode ? 70_000 : 90_000;
+}
+
+/** Min clips for scene duration without forcing 3+ fetches when the script only has one beat (e.g. CTA). */
+function minClipsForScene(duration: number, beatCount: number): number {
+  const byDuration = Math.max(2, Math.ceil(duration / VIDRUSH_BEAT_SEC));
+  return Math.max(1, Math.min(beatCount, byDuration));
+}
+
 /** YouTube CC clip for one beat (interviews, news, entity-named footage). */
 async function tryBeatRealYouTubeFootage(
   beat: SceneBeat,
@@ -6856,10 +6875,21 @@ async function resolveBeatClipForBeat(
     c = await tryAi();
   }
   if ((!c || isPipelineFallbackClip(c)) && canUseLicensedStockBeat(dedup)) {
-    c = await fetchUniqueStockForBeat(
-      beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts
-    );
-    if (c && !isPipelineFallbackClip(c)) markLicensedStockBeatUsed(dedup);
+    try {
+      c = await withTimeout(
+        fetchUniqueStockForBeat(
+          beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts
+        ),
+        backfillClipWallMs(dedup.perf),
+        `unique stock s${sceneIndex} b${beat.index}`
+      );
+      if (c && !isPipelineFallbackClip(c)) markLicensedStockBeatUsed(dedup);
+    } catch (err) {
+      console.warn(
+        `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: unique stock skipped:`,
+        (err as Error).message
+      );
+    }
   }
   if ((!c || isPipelineFallbackClip(c)) && !minimize) {
     c = await tryAi();
@@ -6925,11 +6955,7 @@ async function fetchSceneVisuals(
         dedup.lastMuskStockClip = clipPath;
       }
     };
-    const beatWallMs = youtubeCcReady()
-      ? youtubeBeatFetchTimeoutMs(dedup.perf.fastStockMode) + 12_000
-      : dedup.perf.fastStockMode
-        ? 45_000
-        : 65_000;
+    const beatWallMs = beatVisualWallMs(dedup.perf);
     let clip: string | null = null;
     try {
       clip = await withTimeout(
@@ -6958,9 +6984,18 @@ async function fetchSceneVisuals(
     if (clip && !isPipelineFallbackClip(clip)) {
       pushClip(clip);
     } else if (dedup.perf.enableAiFallback && dedup.aiClipsUsed < dedup.perf.maxAiClipsPerVideo) {
-      const aiOnly = await fetchBeatAIClip(
-        beat, scene, workDir, scene.index, beat.index, clipFetchDur, dedup, videoTitle
-      );
+      let aiOnly: string | null = null;
+      try {
+        aiOnly = await withTimeout(
+          fetchBeatAIClip(
+            beat, scene, workDir, scene.index, beat.index, clipFetchDur, dedup, videoTitle
+          ),
+          dedup.perf.fastStockMode ? 95_000 : 120_000,
+          `post-beat AI s${scene.index} b${beat.index}`
+        );
+      } catch {
+        dedup.lock = Promise.resolve();
+      }
       if (aiOnly && !isPipelineFallbackClip(aiOnly)) {
         pushClip(aiOnly);
         console.log(
@@ -6978,26 +7013,50 @@ async function fetchSceneVisuals(
     }
   }
 
-  const minBeats = Math.max(2, Math.ceil(scene.duration / VIDRUSH_BEAT_SEC));
+  const minClips = minClipsForScene(scene.duration, beats.length);
   let backfillAttempts = 0;
-  const maxBackfill = dedup.perf.fastStockMode ? 6 : 4;
+  const maxBackfill = dedup.perf.fastStockMode ? 3 : 2;
+  const backfillMs = backfillClipWallMs(dedup.perf);
   while (
-    clips.filter((c) => c && !isPipelineFallbackClip(c)).length < minBeats &&
+    clips.filter((c) => c && !isPipelineFallbackClip(c)).length < minClips &&
     backfillAttempts < maxBackfill
   ) {
     const stub = beats[beats.length - 1] ?? beats[0];
     if (!stub) break;
+    onBeatProgress?.(
+      beats.length + backfillAttempts,
+      beats.length + maxBackfill
+    );
     let extra: string | null = null;
-    if (dedup.perf.enableAiFallback && dedup.aiClipsUsed < dedup.perf.maxAiClipsPerVideo) {
-      extra = await fetchBeatAIClip(
-        stub, scene, workDir, scene.index, stub.index, clipFetchDur, dedup, videoTitle
+    try {
+      extra = await withTimeout(
+        (async () => {
+          if (dedup.perf.enableAiFallback && dedup.aiClipsUsed < dedup.perf.maxAiClipsPerVideo) {
+            const ai = await fetchBeatAIClip(
+              stub, scene, workDir, scene.index, stub.index, clipFetchDur, dedup, videoTitle
+            );
+            if (ai && !isPipelineFallbackClip(ai)) return ai;
+          }
+          if (canUseLicensedStockBeat(dedup)) {
+            const stock = await fetchUniqueStockForBeat(
+              stub, scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts
+            );
+            if (stock && !isPipelineFallbackClip(stock)) {
+              markLicensedStockBeatUsed(dedup);
+              return stock;
+            }
+          }
+          return null;
+        })(),
+        backfillMs,
+        `scene ${scene.index} backfill ${backfillAttempts + 1}`
       );
-    }
-    if ((!extra || isPipelineFallbackClip(extra)) && canUseLicensedStockBeat(dedup)) {
-      extra = await fetchUniqueStockForBeat(
-        stub, scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts
+    } catch (err) {
+      console.warn(
+        `[Pipeline] Scene ${scene.index}: backfill ${backfillAttempts + 1} timed out:`,
+        (err as Error).message
       );
-      if (extra && !isPipelineFallbackClip(extra)) markLicensedStockBeatUsed(dedup);
+      dedup.lock = Promise.resolve();
     }
     if (!extra || isPipelineFallbackClip(extra)) break;
     if (clips.some((c) => clipContentKey(c) === clipContentKey(extra))) break;
@@ -7008,28 +7067,41 @@ async function fetchSceneVisuals(
 
   if (clips.filter((c) => c && !isPipelineFallbackClip(c)).length === 0 && beats[0]) {
     console.warn(`[Pipeline] Scene ${scene.index}: no beat clips — AI then capped stock`);
-    for (let si = 0; si < 5; si++) {
+    for (let si = 0; si < 3; si++) {
       const stub = { ...beats[0], index: si };
+      onBeatProgress?.(si + 1, 3);
       let extra: string | null = null;
-      if (dedup.perf.enableAiFallback && dedup.aiClipsUsed < dedup.perf.maxAiClipsPerVideo) {
-        extra = await fetchBeatAIClip(
-          stub, scene, workDir, scene.index, stub.index, clipFetchDur, dedup, videoTitle
+      try {
+        extra = await withTimeout(
+          (async () => {
+            if (dedup.perf.enableAiFallback && dedup.aiClipsUsed < dedup.perf.maxAiClipsPerVideo) {
+              const ai = await fetchBeatAIClip(
+                stub, scene, workDir, scene.index, stub.index, clipFetchDur, dedup, videoTitle
+              );
+              if (ai && !isPipelineFallbackClip(ai)) return ai;
+            }
+            if (canUseLicensedStockBeat(dedup)) {
+              const stock = await fetchUniqueStockForBeat(
+                stub, scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts
+              );
+              if (stock && !isPipelineFallbackClip(stock)) {
+                markLicensedStockBeatUsed(dedup);
+                return stock;
+              }
+            }
+            return null;
+          })(),
+          backfillMs,
+          `scene ${scene.index} rescue ${si + 1}`
         );
-      }
-      if (
-        (!extra || isPipelineFallbackClip(extra)) &&
-        canUseLicensedStockBeat(dedup)
-      ) {
-        extra = await fetchUniqueStockForBeat(
-          stub, scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts
-        );
-        if (extra && !isPipelineFallbackClip(extra)) markLicensedStockBeatUsed(dedup);
+      } catch {
+        dedup.lock = Promise.resolve();
       }
       if (extra && !isPipelineFallbackClip(extra) && !clips.some((c) => clipContentKey(c) === clipContentKey(extra))) {
         clips.push(extra);
         beatDurations.push(VIDRUSH_BEAT_SEC);
       }
-      if (clips.length >= minBeats) break;
+      if (clips.length >= minClips) break;
     }
   }
 
