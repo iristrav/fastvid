@@ -298,7 +298,7 @@ export default function Home() {
       number: "02",
       icon: FileText,
       title: "Professional script",
-      desc: "Documentary narration with scenes, hooks, and [VISUAL:] cues that drive the edit.",
+      desc: "Documentary narration — visuals are matched automatically from your spoken words.",
     },
     {
       number: "03",

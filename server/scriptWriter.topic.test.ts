@@ -2,13 +2,14 @@ import { describe, it, expect } from "vitest";
 import {
   buildScriptLengthRefinePrompt,
   scriptStillOnTopic,
+  stripVisualTagsFromScript,
   getScriptLengthBudget,
 } from "./scriptWriter";
 
 describe("scriptStillOnTopic", () => {
   it("accepts narration that mentions the prompt subject", () => {
     const prompt = "Elon Musk: Tesla, SpaceX and the future of humanity";
-    const script = `# Musk\n## Opening\nElon Musk built Tesla and SpaceX.\n[VISUAL: SpaceX launch]`;
+    const script = `# Musk\n## Opening\nElon Musk built Tesla and SpaceX.`;
     expect(scriptStillOnTopic(prompt, script)).toBe(true);
   });
 
@@ -16,6 +17,15 @@ describe("scriptStillOnTopic", () => {
     const prompt = "Elon Musk: Tesla, SpaceX and the future of humanity";
     const script = `# Art\n## Opening\nSalvator Mundi sold for $450 million. Leonardo da Vinci experts disagree.`;
     expect(scriptStillOnTopic(prompt, script)).toBe(false);
+  });
+});
+
+describe("stripVisualTagsFromScript", () => {
+  it("removes inline and standalone visual tags", () => {
+    const raw = "## Opening\nLine one.\n[VISUAL: rocket launch]\nLine two.";
+    expect(stripVisualTagsFromScript(raw)).not.toMatch(/\[visual:/i);
+    expect(stripVisualTagsFromScript(raw)).toContain("Line one");
+    expect(stripVisualTagsFromScript(raw)).toContain("Line two");
   });
 });
 

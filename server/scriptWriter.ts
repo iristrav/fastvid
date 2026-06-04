@@ -82,6 +82,15 @@ export function getScriptLengthBudget(videoLength: string): ScriptLengthBudget {
   };
 }
 
+/** Remove [VISUAL: ...] lines/tags — narration-only scripts for VO and editor. */
+export function stripVisualTagsFromScript(script: string): string {
+  return script
+    .replace(/^\s*\[visual:[^\]]*\]\s*$/gim, "")
+    .replace(/\[visual:[^\]]*\]/gi, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 export function countNarrationChars(script: string): number {
   return script
     .replace(/\[visual:[^\]]*\]/gi, "")
@@ -146,13 +155,12 @@ export function parseMarkdownNarrationBlocks(script: string): MarkdownNarrationB
 
     if (body.length < 12) continue;
 
-    const firstVisual = part.match(/\[visual:\s*([^\]]+)\]/i)?.[1]?.trim() ?? "";
     const sectionTitle = META_SECTION_RE.test(heading) ? "" : heading.toUpperCase().slice(0, 60);
 
     blocks.push({
       heading,
       text: body,
-      visualCue: firstVisual || body.slice(0, 80),
+      visualCue: body.slice(0, 80),
       sectionTitle,
     });
   }
@@ -210,18 +218,16 @@ export function buildScriptWriterSystemPrompt(videoType: string): string {
   return `You are an elite YouTube scriptwriter and retention editor. ${typeInstruction}
 
 NON-NEGOTIABLE CRAFT RULES:
-- Write ONLY spoken narration (plus [VISUAL: ...] tags). No stage directions, no bullet lists in the body.
+- Write ONLY spoken narration. No [VISUAL: ...] tags, no stage directions, no bullet lists in the body.
+- Name real people, companies, places, and events in the spoken lines — the video system finds matching footage from your words automatically.
 - Structure every video as: HOOK → BEGINNING → MIDDLE (with rising tension) → END → CTA.
 - HOOK (first seconds): pattern interrupt — surprising fact, bold contrast, or high-stakes question. Never "Today we're going to talk about..."
 - MIDDLE: open loops early, close them later; use micro-hooks (rhetorical questions, "But here's the catch", specific numbers, named entities).
 - END: one crisp insight the viewer remembers tomorrow.
 - Tone: authoritative, vivid, conversational — short punchy sentences mixed with longer explanatory ones.
-- Every 2–3 sentences add [VISUAL: ...] with LITERAL, SPECIFIC real-world footage (real brands, places, people when relevant).
-- If the video is about a named celebrity, every [VISUAL: ...] must show THAT person or their real events (interview, red carpet, brand launch) — never animal metaphors (no flamingos, wildlife, zoo, etc.).
-- Stock footage is matched to your spoken words: name the real person and the real event in each [VISUAL: ...] (e.g. "Kylie Jenner interview", "Kylie Jenner product launch") — not abstract symbols or unrelated animals.
+- If the video is about a named celebrity, name them clearly in narration (full name on first mention) — never vague "she" without context in the hook.
 - Never use filler: "In this section", "Let's dive in", "Without further ado".
 - Write for the ear — the script will be read aloud in one continuous voice-over.
-- Vidrush pacing: one new visual idea every 2–4 seconds of narration; never drift to unrelated B-roll (wrong celebrity, animals, random nature).
 - When citing a number ($, %, year, count), make it specific — it may appear as an on-screen stat callout.`;
 }
 
@@ -234,7 +240,7 @@ export function buildOutlineUserPrompt(
 Video length: ${budget.label} (${budget.targetSpokenSec}s spoken narration target)
 Format: ${videoType}
 
-SCRIPT BUDGET (entire video narration, excluding [VISUAL] tags):
+SCRIPT BUDGET (spoken narration only):
 - Target: ${budget.targetWords} words (${budget.minWords}–${budget.maxWords} acceptable)
 - ~${budget.targetChars} characters of narration (${budget.minChars}–${budget.maxChars})
 
@@ -314,20 +320,15 @@ export function buildSectionUserPrompt(
     ? "When mentioning vehicles or space, use exact names (Tesla Model 3, SpaceX Falcon 9, Gigafactory) — never generic 'car' or 'rocket'."
     : "Use exact real names (people, companies, places) whenever the topic includes them — never generic stock where a brand is named.";
 
-  const visualCount =
-    budget.videoLength === "1" ? 2
-      : budget.videoLength === "2" ? 5
-        : Math.max(4, Math.ceil(wordTarget / 45));
-
   return `Video: "${title}" (topic: ${prompt})
 Section ${sectionIndex + 1} of ${sectionTotal}: "${sec.title}"
 ${narrative}
 Cover these beats: ${sec.keyPoints.join("; ")}
 
-WORD COUNT (spoken narration only, excluding [VISUAL] tags):
+WORD COUNT (spoken narration only):
 Write EXACTLY ${minW}–${maxW} words (target ${wordTarget}). This section is part of a ${budget.targetWords}-word video — do NOT go short.
 
-Include exactly ${visualCount} [VISUAL: ...] tags — literal footage descriptions matching the sentence before each tag.
+Do NOT add [VISUAL: ...] tags — footage is matched automatically from your spoken words.
 ${brandRule}
 Do not repeat the hook. Start in medias res for this beat.`;
 }
@@ -357,18 +358,16 @@ STRUCTURE (required headings):
 # Compelling title
 ## Opening
 Hook narration (${budget.hookWords} words) — pattern interrupt, no "welcome" or "in this video"
-[VISUAL: literal opening footage for this topic]
 ${sections}
 ## CALL TO ACTION
 ${budget.ctaWords} words max — forward-looking single beat
-[VISUAL: cinematic closing b-roll for the topic]
 
-WORD BUDGET (spoken words only, excluding [VISUAL] tags):
+WORD BUDGET (spoken narration only):
 ${budget.minWords}–${budget.maxWords} words (target ${budget.targetWords})
-Include ${budget.videoLength === "1" ? "6–8" : "12–18"} [VISUAL: ...] tags — specific real-world footage per beat.
+No [VISUAL: ...] tags — the editor finds footage from narration automatically.
 ${brandRule}
 
-Return ONLY the markdown script.`;
+Return ONLY the markdown script (narration + headings).`;
 }
 
 /** True if spoken narration still reflects the user's topic (guards broken length-refine). */
@@ -416,7 +415,7 @@ Rules:
 - Revise ONLY the script in SCRIPT TO REVISE — same facts, people, companies, and story as that draft.
 - Never replace the topic with a different story (no unrelated art, celebrities, or viral tangents).
 - Keep HOOK → sections → CTA structure and all ## headings.
-- Keep every [VISUAL: ...] tag; add more if expanding.
+- Remove any [VISUAL: ...] tags — narration only.
 - ${direction === "EXPAND" ? "Add substance: another fact, contrast, or micro-hook — not padding." : "Cut redundancy only — keep retention beats and the narrative arc."}
 - Return the FULL revised script only (markdown).
 

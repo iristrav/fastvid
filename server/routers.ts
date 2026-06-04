@@ -65,17 +65,6 @@ function isMuskTeslaPromptTopic(prompt: string, title: string): boolean {
   return /musk|tesla|spacex|starlink|gigafactory|cybertruck|falcon|starship/.test(text);
 }
 
-/** Opening [VISUAL] must match the video topic — never hardcode Tesla on unrelated prompts. */
-function buildOpeningVisualTag(prompt: string, title: string, isTwoMin: boolean): string {
-  if (isMuskTeslaPromptTopic(prompt, title)) {
-    return "[VISUAL: Tesla Gigafactory or electric car assembly line — real factory B-roll only, never moon/CGI rocket models or solar farms unless topic is solar]";
-  }
-  const topic = (title || prompt).trim().slice(0, 80);
-  if (isTwoMin) {
-    return `[VISUAL: Cinematic b-roll directly related to "${topic}" — real people, brands, or places named in the hook; never unrelated factories or space rockets unless the topic is about them]`;
-  }
-  return `[VISUAL: Hook-matching b-roll for "${topic}" — specific people, places, or objects from the narration; no unrelated stock]`;
-}
 import { storagePut } from "./storage";
 import { FASTVID_PRO_PLAN } from "./products";
 import { updateVideoScenes, updateEditedVideoUrl, getVideoScenes, type EditorScene, type EditorClip } from "./db";
@@ -90,6 +79,7 @@ import {
   countNarrationWords,
   getScriptLengthBudget,
   scriptStillOnTopic,
+  stripVisualTagsFromScript,
   OUTLINE_JSON_SCHEMA,
   type ScriptOutline,
 } from "./scriptWriter";
@@ -255,13 +245,7 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLength: 
 
       const titleMatch = scriptContent.match(/^#\s+(.+)$/m);
       let title = titleMatch?.[1]?.trim() || prompt.slice(0, 100);
-      if (!/\[VISUAL:/i.test(scriptContent.split("\n").slice(0, 12).join("\n"))) {
-        const openingTag = buildOpeningVisualTag(prompt, title, isTwoMin);
-        scriptContent = scriptContent.replace(
-          /(## Opening\s*\n)/i,
-          `$1${openingTag}\n`
-        );
-      }
+      scriptContent = stripVisualTagsFromScript(scriptContent);
 
       let narrationWords = countNarrationWords(scriptContent);
       if (narrationWords < budget.minWords || narrationWords > budget.maxWords) {
@@ -282,7 +266,7 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLength: 
           if (typeof refined === "string" && refined.trim().length > 200) {
             const candidate = refined.trim();
             if (scriptStillOnTopic(prompt, candidate)) {
-              scriptContent = candidate;
+              scriptContent = stripVisualTagsFromScript(candidate);
               narrationWords = countNarrationWords(scriptContent);
               const refinedTitle = scriptContent.match(/^#\s+(.+)$/m)?.[1]?.trim();
               if (refinedTitle) title = refinedTitle;
@@ -305,6 +289,7 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLength: 
       scriptLog[0].status = "done";
       await updateVideoProgressLog(videoId, scriptLog).catch(() => {});
 
+      scriptContent = stripVisualTagsFromScript(scriptContent);
       const metadata = { title, description: prompt, tags: [] as string[], chapters: [] as { time: string; title: string }[] };
       await updateVideoStatus(videoId, "awaiting_approval", {
         script: scriptContent,
@@ -397,10 +382,10 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLength: 
     await updateVideoProgress(videoId, "📋 Assembling script...", 22);
 
     // Assemble full script
-    const scriptParts: string[] = [`# ${title}\n`, `## Opening\n${outline.hook}\n${buildOpeningVisualTag(prompt, title, isTwoMin)}\n`];
+    const scriptParts: string[] = [`# ${title}\n`, `## Opening\n${outline.hook}\n`];
     outline.sections.forEach((sec, idx) => scriptParts.push(`## ${sec.title}\n${sectionTexts[idx] ?? ""}\n`));
-    scriptParts.push(`## CALL TO ACTION\n${outline.cta}\n[VISUAL: Cinematic closing b-roll related to the video topic]\n`);
-    let scriptContent = scriptParts.join("\n");
+    scriptParts.push(`## CALL TO ACTION\n${outline.cta}\n`);
+    let scriptContent = stripVisualTagsFromScript(scriptParts.join("\n"));
 
     let narrationWords = countNarrationWords(scriptContent);
     if (narrationWords < budget.minWords || narrationWords > budget.maxWords) {
@@ -421,7 +406,7 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLength: 
         if (typeof refined === "string" && refined.trim().length > 200) {
           const candidate = refined.trim();
           if (scriptStillOnTopic(prompt, candidate)) {
-            scriptContent = candidate;
+            scriptContent = stripVisualTagsFromScript(candidate);
             narrationWords = countNarrationWords(scriptContent);
             const refinedTitle = scriptContent.match(/^#\s+(.+)$/m)?.[1]?.trim();
             if (refinedTitle) title = refinedTitle;
@@ -459,6 +444,7 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLength: 
     await updateVideoProgressLog(videoId, scriptLog).catch(() => {});
 
     // Save script and return (no pause — caller decides next step)
+    scriptContent = stripVisualTagsFromScript(scriptContent);
     console.log(`[Script Generation] Saving script for video ${videoId}, length=${scriptContent.length} chars`);
     await updateVideoStatus(videoId, "awaiting_approval", {
       script: scriptContent,
@@ -775,10 +761,10 @@ export const appRouter = router({
         throw appTrpcError("BAD_REQUEST", APP_ERROR.VIDEO_NOT_AWAITING_APPROVAL, "Video is not awaiting approval");
       }
       // Use edited script if provided, otherwise use the stored script
-      const finalScript = input.editedScript ?? video.script;
+      const finalScript = stripVisualTagsFromScript(input.editedScript ?? video.script ?? "");
       if (!finalScript) throw appTrpcError("BAD_REQUEST", APP_ERROR.NO_SCRIPT, "No script found");
       if (input.editedScript) {
-        await updateVideoStatus(video.id, "awaiting_approval", { script: input.editedScript });
+        await updateVideoStatus(video.id, "awaiting_approval", { script: finalScript });
       }
       await updateVideoStatus(video.id, "generating_voiceover", {
         scriptApproved: 1,

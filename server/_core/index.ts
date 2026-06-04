@@ -68,6 +68,13 @@ async function startServer() {
     "[Fastvid] AI video fallback (Runway/Grok, expensive):",
     premiumVideo ? "✓ enabled" : "✗ off (default — saves cost)"
   );
+  const maxStock = process.env.MAX_STOCK_BEATS_PER_VIDEO?.trim();
+  console.log(
+    "[Fastvid] Minimize licensed stock:",
+    process.env.MINIMIZE_STOCK_FOOTAGE !== "false"
+      ? `✓ on (real footage → AI; ≤${maxStock || "1 short / 2 long"} Pexels/Pixabay per video)`
+      : "✗ off (MINIMIZE_STOCK_FOOTAGE=false)"
+  );
   console.log("[Fastvid] PEXELS_API_KEY:", process.env.PEXELS_API_KEY ? "✓ set" : "✗ NOT SET — stock footage disabled");
   console.log("[Fastvid] BUILT_IN_FORGE_API_KEY:", process.env.BUILT_IN_FORGE_API_KEY ? "✓ set" : "✗ NOT SET — file storage disabled");
   const ytSearch = !!process.env.YOUTUBE_API_KEY?.trim();
@@ -193,6 +200,20 @@ async function startServer() {
         probe.ccResultCount > 0 &&
         probe.rapidApiStatus === 200 &&
         probe.rapidApiHasFormat;
+      res.status(ok ? 200 : 503).json({ ok, ...probe });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: String(err) });
+    }
+  });
+
+  app.get("/api/health/stability-probe", async (_req, res) => {
+    try {
+      const { probeStabilityAI } = await import("../videoPipeline");
+      const probe = await probeStabilityAI();
+      const ok =
+        probe.ready &&
+        probe.httpStatus === 200 &&
+        probe.imageBytes > 50_000;
       res.status(ok ? 200 : 503).json({ ok, ...probe });
     } catch (err) {
       res.status(500).json({ ok: false, message: String(err) });
