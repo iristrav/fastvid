@@ -306,8 +306,8 @@ const VIDRUSH_CLIP_MIN_SEC = 3.0;
 const VIDRUSH_CLIP_MAX_SEC = 4.0;
 const VIDRUSH_CLIP_HOLD_SEC = 7.0;
 const VIDRUSH_BEAT_SEC = 3.5;
-/** Short crossfade — visible cut every 3–4s without ghosting/flicker. */
-const MONTAGE_XFADE_SEC = 0.22;
+/** Hard cuts between beats — xfade caused visible judder/stutter on Railway. */
+const MONTAGE_XFADE_SEC = 0;
 const CHAPTER_CARD_DURATION = 1.5;
 
 /** Wall-clock budgets: short ≤60 min, long ≤90 min (see getPipelinePerfProfile). */
@@ -418,13 +418,13 @@ async function trimDownloadedStockClip(
   label: string,
   startOffsetSec = 0
 ): Promise<boolean> {
-  const loopFlag = sourceDuration < clipDuration ? "-stream_loop -1" : "";
-  const ss = Math.max(0, startOffsetSec).toFixed(2);
+  const trimDur = Math.min(clipDuration, Math.max(2.5, sourceDuration - 0.05));
+  const ss = Math.max(0, Math.min(startOffsetSec, Math.max(0, sourceDuration - trimDur - 0.1))).toFixed(2);
   try {
     await withTimeout(
       exec(
-        `${FFMPEG_BIN} -y ${loopFlag} -ss ${ss} -i "${rawPath}" ` +
-        `-t ${clipDuration} ` +
+        `${FFMPEG_BIN} -y -ss ${ss} -i "${rawPath}" ` +
+        `-t ${trimDur.toFixed(3)} ` +
         `-vf "${STANDARD_VF}" ` +
         `-c:v libx264 -preset veryfast -crf 18 -an -pix_fmt yuv420p "${outPath}"`
       ),
@@ -3653,9 +3653,17 @@ function translateTokenForPexels(token: string): string | null {
  * Stock search terms derived ONLY from this beat's narration (+ [VISUAL:] tags).
  * Never uses video title or full scene text (avoids wrong generic B-roll).
  */
-function scriptStockSearchQueries(beatText: string): string[] {
+function scriptStockSearchQueries(beatText: string, persons: string[] = []): string[] {
   const narration = beatText.replace(/\[visual:[^\]]*\]/gi, " ").trim();
   const out: string[] = [];
+
+  for (const person of persons) {
+    if (!beatMentionsPerson(beatText, person)) continue;
+    out.push(person);
+    const first = person.split(/\s+/)[0]?.trim().toLowerCase();
+    if (first && first.length >= 3 && !out.includes(first)) out.push(first);
+    out.push(`${person} celebrity`, `${person} interview`);
+  }
 
   for (const cue of extractInlineVisualCues(beatText)) {
     out.push(simplifyStockSearchWord(cue, cue, true));
@@ -3690,8 +3698,8 @@ function scriptStockSearchQueries(beatText: string): string[] {
   return [...new Set(out.filter((q) => q && q.length >= 3 && !isBlockedStockQuery(q)))].slice(0, 8);
 }
 
-function stockQueryFromBeatScript(beatText: string): string {
-  return scriptStockSearchQueries(beatText)[0] ?? "documentary";
+function stockQueryFromBeatScript(beatText: string, persons: string[] = []): string {
+  return scriptStockSearchQueries(beatText, persons)[0] ?? "documentary";
 }
 
 function isStockVideoClip(filePath: string): boolean {
@@ -3700,9 +3708,19 @@ function isStockVideoClip(filePath: string): boolean {
   );
 }
 
-function maxStillPhotosForScene(sceneIndex: number, hasPerson: boolean): number {
-  if (hasPerson && sceneIndex === 0) return 2; // named person on screen at open
-  return 1;
+function maxStillPhotosForScene(_sceneIndex: number, hasPerson: boolean): number {
+  return hasPerson ? 1 : 0;
+}
+
+function beatMentionsPerson(beatText: string, personName: string): boolean {
+  if (!personName.trim()) return false;
+  const lower = beatText.toLowerCase();
+  const parts = personName.toLowerCase().split(/\s+/).filter((p) => p.length >= 2);
+  if (parts.length >= 2) {
+    if (parts.every((p) => lower.includes(p))) return true;
+    return lower.includes(parts[0]);
+  }
+  return parts.length === 1 && lower.includes(parts[0]);
 }
 
 function resolveScenePersons(scene: Scene, videoTitle?: string): string[] {
@@ -3750,6 +3768,9 @@ interface VisualDedupState {
   lastMuskStockClip: string | null;
   aiClipsUsed: number;
   entityYoutubeFetchesUsed: number;
+  /** Ken Burns / Serp stills allowed this scene (0 = video only). */
+  stillPhotosThisScene: number;
+  stillPhotosMaxThisScene: number;
   lock: Promise<void>;
   perf: PipelinePerfProfile;
 }
@@ -3766,6 +3787,8 @@ function createVisualDedupState(perf: PipelinePerfProfile): VisualDedupState {
     lastMuskStockClip: null,
     aiClipsUsed: 0,
     entityYoutubeFetchesUsed: 0,
+    stillPhotosThisScene: 0,
+    stillPhotosMaxThisScene: 0,
     lock: Promise.resolve(),
     perf,
   };
@@ -4194,8 +4217,8 @@ function clipContentKey(filePath: string): string {
   }
 }
 
-function montageClipStartSec(sceneIndex: number, clipIndex: number): number {
-  return Math.min(((sceneIndex * 2.1 + clipIndex * 1.35) % 4.5) * 0.35, 1.4);
+function montageClipStartSec(_sceneIndex: number, clipIndex: number): number {
+  return clipIndex === 0 ? 0 : 0.15 * (clipIndex % 3);
 }
 
 function estimateBeatHoldSec(text: string, mergedSentenceCount: number): number {
@@ -4273,6 +4296,15 @@ function buildMontageXfadeFilter(
     `[${i}:v]trim=start=${montageClipStartSec(sceneIndex, i).toFixed(2)}:duration=${durs[i].toFixed(3)},` +
     `${SCALE_PAD_VF},setpts=PTS-STARTPTS[v${i}]`
   ).join(";");
+
+  if (xfade <= 0.001) {
+    const concatInputs = Array.from({ length: n }, (_, i) => `[v${i}]`).join("");
+    return {
+      scaleFilters,
+      mergeFilter: `;${concatInputs}concat=n=${n}:v=1:a=0[montage]`,
+      montageLabel: "montage",
+    };
+  }
 
   let mergeFilter = "";
   let prev = "v0";
@@ -4477,7 +4509,8 @@ function enrichStockQuery(
   beatText?: string
 ): string {
   if (beatText?.trim()) {
-    const fromScript = scriptStockSearchQueries(beatText);
+    const persons = personName ? [personName, ...(scene.personNames ?? [])] : (scene.personNames ?? []);
+    const fromScript = scriptStockSearchQueries(beatText, persons);
     if (fromScript.length > 0) return fromScript[0];
   }
   const hint = beatText?.trim() || scene.text;
@@ -4530,7 +4563,8 @@ function buildSceneBeats(
   scene: Scene,
   duration: number,
   maxBeatsCap = 16,
-  videoTitle?: string
+  videoTitle?: string,
+  scenePersons: string[] = []
 ): SceneBeat[] {
   const targetBeats = Math.max(2, Math.ceil(duration / VIDRUSH_BEAT_SEC));
   const beatCap = Math.max(maxBeatsCap, targetBeats);
@@ -4607,7 +4641,7 @@ function buildSceneBeats(
   const beats: SceneBeat[] = [];
   for (let i = 0; i < groups.length; i++) {
     const text = groups[i].text;
-    const searchQuery = stockQueryFromBeatScript(text);
+    const searchQuery = stockQueryFromBeatScript(text, scenePersons);
     beats.push({
       index: i,
       text,
@@ -4652,7 +4686,11 @@ async function adoptClip(
     for (const p of sortedPaths) {
       if (!p || dedup.usedPaths.has(p) || !fs.existsSync(p)) continue;
       if (!(await isValidVideoFile(p))) continue;
-      if (isStillPhotoClip(p)) continue;
+      if (isStillPhotoClip(p)) {
+        if (dedup.stillPhotosThisScene >= dedup.stillPhotosMaxThisScene) continue;
+        dedup.stillPhotosThisScene++;
+      }
+      if (isAIGeneratedClip(p) && dedup.stillPhotosMaxThisScene === 0) continue;
       if (isAIGeneratedClip(p)) continue;
       if (isRejectedStockClip(p, sourceQuery)) continue;
       if (isPipelineFallbackClip(p)) continue;
@@ -4794,6 +4832,90 @@ async function fetchLastResortRealClip(
   return null;
 }
 
+/** Real footage of a named person (Pexels video → YouTube → max 1 still). */
+async function fetchPersonBeatClip(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  personName: string,
+  videoTitle: string | undefined,
+  adoptOpts: VisualAdoptOptions,
+  pexFetch: (query: string, t: string, off: number, count?: number) => () => Promise<string[]>,
+  candidateOffset: number,
+  tag: string
+): Promise<string | null> {
+  if (!personName.trim() || !beatMentionsPerson(beat.text, personName)) return null;
+
+  const personQueries = buildPersonMediaQueries(
+    personName,
+    extractInlineVisualCues(beat.text)[0] || beat.searchQuery
+  );
+  const loosePerson: VisualAdoptOptions = { ...adoptOpts, requireBeatMatch: false };
+
+  let clip = await tryStockSources(
+    personQueries.map((pq, pi) => ({
+      query: pq,
+      fetch: pexFetch(pq, `${tag}_person`, candidateOffset + pi, 4),
+    })),
+    dedup, sceneIndex, beat.index, beat.text, workDir, `person Pexels (${personName})`, loosePerson
+  );
+  if (clip && !isStillPhotoClip(clip)) return clip;
+
+  if (
+    dedup.entityYoutubeFetchesUsed < dedup.perf.maxEntityYoutubePerVideo &&
+    (process.env.YOUTUBE_API_KEY || RAPIDAPI_KEY || process.env.YOUTUBE_CC_DL_SERVICE)
+  ) {
+    dedup.entityYoutubeFetchesUsed++;
+    clip = await tryStockSources(
+      [{
+        query: personName,
+        fetch: () =>
+          fetchYouTubeCCClips(personQueries, clipFetchDur, workDir, sceneIndex, 1, beat.keywords, 2),
+      }],
+      dedup, sceneIndex, beat.index, beat.text, workDir, `person YouTube (${personName})`, loosePerson
+    );
+    if (clip) return clip;
+  }
+
+  if (SERPAPI_KEY && dedup.stillPhotosThisScene < dedup.stillPhotosMaxThisScene) {
+    const serpPaths = await fetchSerpAPIImages(
+      `${personName} red carpet`,
+      clipFetchDur,
+      workDir,
+      sceneIndex,
+      1,
+      `${tag}_person`
+    );
+    clip = await adoptClip(
+      serpPaths, dedup, sceneIndex, beat.index, beat.text, workDir, personName, loosePerson
+    );
+    if (clip) {
+      console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: SerpAPI still of ${personName}`);
+      return clip;
+    }
+  }
+
+  if (dedup.stillPhotosThisScene < dedup.stillPhotosMaxThisScene) {
+    const ovPaths = await fetchOpenverseImages(
+      `${personName} portrait`,
+      clipFetchDur,
+      workDir,
+      sceneIndex,
+      1,
+      `${tag}_person`
+    );
+    clip = await adoptClip(
+      ovPaths, dedup, sceneIndex, beat.index, beat.text, workDir, personName, loosePerson
+    );
+    if (clip) return clip;
+  }
+
+  return null;
+}
+
 async function fetchBeatClip(
   beat: SceneBeat,
   scene: Scene,
@@ -4818,10 +4940,11 @@ async function fetchBeatClip(
     requireMuskBrand: false,
   };
 
-  const scriptQueries = scriptStockSearchQueries(beat.text);
+  const scenePersons = resolveScenePersons(scene, videoTitle);
+  const scriptQueries = scriptStockSearchQueries(beat.text, scenePersons);
   let q = scriptQueries[0] ?? beat.searchQuery;
   if (isBlockedStockQuery(q)) {
-    q = stockQueryFromBeatScript(beat.text);
+    q = stockQueryFromBeatScript(beat.text, scenePersons);
   }
 
   const pexCount = muskTopic ? 4 : 2;
@@ -4837,10 +4960,19 @@ async function fetchBeatClip(
 
   let clip: string | null = null;
 
+  if (personName) {
+    clip = await fetchPersonBeatClip(
+      beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName, videoTitle,
+      adoptOpts, pexFetch, candidateOffset, tag
+    );
+    if (clip) { dedup.globalBeatIndex++; return clip; }
+  }
+
   // 1) Script narration first — search terms come from what is spoken on this beat
   const beatDerived = deriveBeatStockQuery(beat.text, scene, videoTitle, personName, muskTopic);
   const entityStock = realEntityStockQueriesForBeat(beat.text, scene.text, videoTitle);
   const beatQueries = [...new Set([
+    ...scriptStockSearchQueries(beat.text, scenePersons),
     ...scriptQueries,
     beatDerived,
     ...entityStock,
@@ -5017,9 +5149,11 @@ async function fetchBeatClip(
     return lastResort;
   }
 
-  clip = await fetchBeatAIClip(
-    beat, scene, workDir, sceneIndex, beat.index, clipFetchDur, dedup, videoTitle
-  );
+  if (!personName || !beatMentionsPerson(beat.text, personName)) {
+    clip = await fetchBeatAIClip(
+      beat, scene, workDir, sceneIndex, beat.index, clipFetchDur, dedup, videoTitle
+    );
+  }
   dedup.globalBeatIndex++;
   return clip;
 }
@@ -5042,7 +5176,9 @@ async function fetchSceneVisuals(
     dedup.perf.maxBeatsPerScene,
     Math.ceil(scene.duration / VIDRUSH_BEAT_SEC)
   );
-  const beats = buildSceneBeats(scene, scene.duration, beatCap, videoTitle);
+  dedup.stillPhotosThisScene = 0;
+  dedup.stillPhotosMaxThisScene = maxStillPhotosForScene(scene.index, scenePersons.length > 0);
+  const beats = buildSceneBeats(scene, scene.duration, beatCap, videoTitle, scenePersons);
   const clips: string[] = [];
   const beatDurations: number[] = [];
 
@@ -5111,11 +5247,23 @@ async function fetchSceneVisuals(
         if (lastResort) {
           pushClip(lastResort);
         } else {
-          const aiClip = await fetchBeatAIClip(
-            beat, scene, workDir, scene.index, beat.index, clipFetchDur, dedup, videoTitle
-          );
-          if (aiClip) {
-            pushClip(aiClip);
+          if (personName && beatMentionsPerson(beat.text, personName)) {
+            const personClip = await fetchPersonBeatClip(
+              beat, scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle,
+              adoptOpts,
+              (query, t, off, count = 3) => () =>
+                fetchPexelsClips(
+                  query, clipFetchDur, workDir, scene.index, count, [query], true, t,
+                  dedup.usedPexelsIds, off, dedup.perf.pexelsDownloadRetries
+                ),
+              beat.index * 3 + scene.index,
+              `b${beat.index}`
+            );
+            if (personClip) {
+              pushClip(personClip);
+            } else {
+              pushClip(await generateColorFallback(scene.index * 500 + beat.index, 4, workDir));
+            }
           } else if (muskTopic) {
             let rescued = false;
             for (const gq of GOLDEN_MUSK_QUERIES) {
@@ -5506,7 +5654,12 @@ async function composeSceneVideo(
   }
   const minMontageClips = Math.max(2, Math.ceil(duration / VIDRUSH_BEAT_SEC));
   while (validClips.length < minMontageClips) {
-    if (lastGoodInScene && fs.existsSync(lastGoodInScene)) {
+    const last = validClips[validClips.length - 1];
+    if (last && fs.existsSync(last) && validClips.filter((c) => c === last).length < 2) {
+      validClips.push(last);
+      continue;
+    }
+    if (lastGoodInScene && fs.existsSync(lastGoodInScene) && !validClips.includes(lastGoodInScene)) {
       validClips.push(lastGoodInScene);
       continue;
     }
@@ -5700,15 +5853,8 @@ async function composeSceneVideo(
     const durs =
       montageDurations ??
       Array.from({ length: safeClips.length }, () => computeMontageClipDuration(outDur, safeClips.length));
-    const montageDur =
-      durs.reduce((s, d) => s + d, 0) -
-      Math.max(0, safeClips.length - 1) * MONTAGE_XFADE_SEC;
-    const padSec = Math.max(0, outDur - montageDur);
-    const padFilter =
-      padSec > 0.08
-        ? `;[${xfadeLabel}]tpad=stop_mode=clone:stop_duration=${Math.min(padSec, 0.35).toFixed(3)}[montagePadded]`
-        : "";
-    const montageLabel = padSec > 0.08 ? "montagePadded" : xfadeLabel;
+    const montageLabel = xfadeLabel;
+    const padFilter = "";
 
     const audioIdx = safeClips.length;
     const kineticBaseIdx = audioIdx + 1;
