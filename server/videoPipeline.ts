@@ -4701,7 +4701,7 @@ function buildSceneBeats(
   scenePersons: string[] = []
 ): SceneBeat[] {
   const targetBeats = Math.max(2, Math.ceil(duration / VIDRUSH_BEAT_SEC));
-  const beatCap = Math.max(maxBeatsCap, targetBeats);
+  const beatCap = Math.min(maxBeatsCap, targetBeats);
 
   const rawSentences =
     scene.text.match(/[^.!?]+[.!?]+/g)?.map((s) => s.trim()).filter((s) => s.length > 5) ??

@@ -412,6 +412,7 @@ async function startServer() {
         }
       }
 
+      const videoScenes = (video as { videoScenes?: unknown }).videoScenes;
       res.json({
         id: video.id,
         status: video.status,
@@ -422,6 +423,7 @@ async function startServer() {
         title: video.title,
         videoLength: video.videoLength,
         fileProbe,
+        videoScenes: videoScenes ?? null,
       });
     } catch (err) {
       console.error('[Internal Status] Error:', err);
