@@ -175,6 +175,8 @@ async function startServer() {
         RAPIDAPI_KEY: !!process.env.RAPIDAPI_KEY,
         YOUTUBE_CC_DL_SERVICE: !!process.env.YOUTUBE_CC_DL_SERVICE,
         SERPAPI_KEY: !!process.env.SERPAPI_KEY,
+        FLICKR_API_KEY: !!process.env.FLICKR_API_KEY?.trim(),
+        celebrityVideoExtrasReady: true,
         stockFootageReady: !!(process.env.PEXELS_API_KEY?.trim() || process.env.PIXABAY_API_KEY?.trim()),
         youtubeCcReady:
           !!process.env.YOUTUBE_API_KEY?.trim() &&

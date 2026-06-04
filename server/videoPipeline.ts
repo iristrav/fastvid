@@ -54,6 +54,8 @@ const META_MOVIE_GEN_API_KEY = process.env.META_MOVIE_GEN_API_KEY || "";
 const HIGGSFIELD_API_KEY = process.env.HIGGSFIELD_API_KEY || "";
 const HIGGSFIELD_API_SECRET = process.env.HIGGSFIELD_API_SECRET || "";
 const SERPAPI_KEY = process.env.SERPAPI_KEY || "";
+/** Optional: CC-licensed event/interview videos (https://www.flickr.com/services/api/) */
+const FLICKR_API_KEY = process.env.FLICKR_API_KEY || "";
 const RUNWAY_API_KEY = process.env.RUNWAY_API_KEY || "";
 const KLING_API_KEY = process.env.KLING_API_KEY || "";
 const KLING_API_SECRET = process.env.KLING_API_SECRET || "";
@@ -561,20 +563,48 @@ async function tryBeatTopicRealFootage(
     }
   }
 
-  const wikiVid = await fetchWikimediaVideos(wikiQuery, clipFetchDur, workDir, sceneIndex, 1, `${tag}_wiki`);
-  let clip = await adoptClip(
-    wikiVid,
-    dedup,
-    sceneIndex,
-    beat.index,
-    beat.text,
-    workDir,
-    wikiQuery,
-    loose
-  );
-  if (clip && !isStillPhotoClip(clip)) {
-    console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: Wikimedia video`);
-    return clip;
+  let clip: string | null = null;
+  if (primary) {
+    const celebVids = await fetchPersonCelebrityVideoClips(
+      primary,
+      clipFetchDur,
+      workDir,
+      sceneIndex,
+      1,
+      `${tag}_celeb`,
+      beat.index,
+      beat.text
+    );
+    clip = await adoptClip(
+      celebVids,
+      dedup,
+      sceneIndex,
+      beat.index,
+      beat.text,
+      workDir,
+      primary,
+      loose
+    );
+    if (clip && !isStillPhotoClip(clip)) {
+      console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: person video (Wiki/Sepia/Archive/CCC)`);
+      return clip;
+    }
+  } else {
+    const wikiVid = await fetchWikimediaVideos(wikiQuery, clipFetchDur, workDir, sceneIndex, 1, `${tag}_wiki`);
+    clip = await adoptClip(
+      wikiVid,
+      dedup,
+      sceneIndex,
+      beat.index,
+      beat.text,
+      workDir,
+      wikiQuery,
+      loose
+    );
+    if (clip && !isStillPhotoClip(clip)) {
+      console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: Wikimedia video`);
+      return clip;
+    }
   }
 
   if (!dedup.personTopicLock) {
@@ -3777,6 +3807,404 @@ async function fetchWikimediaVideos(
   return results;
 }
 
+/** Archive.org queries for real person footage (news, TV, documentaries) — no API key. */
+function buildPersonArchiveVideoQueries(person: string, beatIndex: number): string[] {
+  const first = person.split(/\s+/)[0] ?? person;
+  const variants = [
+    `title:(${person}) AND mediatype:movies`,
+    `collection:tvnews AND ${first}`,
+    `${person} interview`,
+    `${person} television`,
+    `${first} celebrity news`,
+    `subject:"${person}"`,
+  ];
+  const offset = beatIndex % variants.length;
+  return [...variants.slice(offset), ...variants.slice(0, offset)].slice(0, 3);
+}
+
+/** Flickr CC video (4,5,6,9,10) — events, interviews uploaded with CC license. */
+async function fetchFlickrCCVideos(
+  query: string,
+  duration: number,
+  workDir: string,
+  sceneIndex: number,
+  count: number = 1,
+  fileTag = ""
+): Promise<string[]> {
+  if (!FLICKR_API_KEY?.trim() || !query?.trim()) return [];
+  const results: string[] = [];
+  try {
+    const searchParams = new URLSearchParams({
+      method: "flickr.photos.search",
+      api_key: FLICKR_API_KEY,
+      text: query,
+      media: "videos",
+      license: "4,5,6,9,10",
+      content_type: "7",
+      per_page: String(Math.min(12, count * 4)),
+      format: "json",
+      nojsoncallback: "1",
+    });
+    const searchResp = await withTimeout(
+      fetch(`https://api.flickr.com/services/rest/?${searchParams}`),
+      12_000,
+      `Flickr video search scene ${sceneIndex}`
+    );
+    if (!searchResp.ok) return [];
+    const searchData = await searchResp.json() as {
+      stat?: string;
+      photos?: { photo?: Array<{ id: string; secret: string; server: string; title?: string }> };
+    };
+    if (searchData.stat !== "ok") return [];
+    const photos = searchData.photos?.photo ?? [];
+    if (!photos.length) return [];
+
+    let downloaded = 0;
+    for (let i = 0; i < photos.length && downloaded < count; i++) {
+      const photo = photos[i];
+      try {
+        const sizeParams = new URLSearchParams({
+          method: "flickr.photos.getSizes",
+          api_key: FLICKR_API_KEY,
+          photo_id: photo.id,
+          format: "json",
+          nojsoncallback: "1",
+        });
+        const sizeResp = await withTimeout(
+          fetch(`https://api.flickr.com/services/rest/?${sizeParams}`),
+          10_000,
+          `Flickr sizes scene ${sceneIndex}`
+        );
+        if (!sizeResp.ok) continue;
+        const sizeData = await sizeResp.json() as {
+          stat?: string;
+          sizes?: { size?: Array<{ label?: string; source?: string; media?: string }> };
+        };
+        if (sizeData.stat !== "ok") continue;
+        const sizes = sizeData.sizes?.size ?? [];
+        const videoSize =
+          sizes.find((s) => s.media === "video" && s.source) ??
+          sizes.find((s) => s.source && /\.mp4/i.test(s.source)) ??
+          sizes.find((s) => /video|mp4|hd/i.test(s.label ?? "") && s.source);
+        const videoUrl = videoSize?.source;
+        if (!videoUrl) continue;
+
+        const tag = fileTag ? `${fileTag}_` : "";
+        const tmpPath = path.join(workDir, `scene_${sceneIndex}_${tag}flickr_${i}_tmp`);
+        const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}flickr_${i}.mp4`);
+        const dlResp = await fetchWithTimeout(
+          videoUrl,
+          45_000,
+          `Flickr video download scene ${sceneIndex}`,
+          { headers: { "User-Agent": "Fastvid/1.0 (CC-licensed clips only)" } }
+        );
+        if (!dlResp.ok) continue;
+        const buf = await dlResp.arrayBuffer();
+        if (buf.byteLength < 50_000 || buf.byteLength > 80 * 1024 * 1024) continue;
+        fs.writeFileSync(tmpPath, Buffer.from(buf));
+        if (await trimRemoteVideoToClip(tmpPath, outPath, duration, 2, `Flickr video scene ${sceneIndex}`)) {
+          results.push(outPath);
+          downloaded++;
+          console.log(
+            `[Pipeline] Scene ${sceneIndex}: Flickr CC video: ${photo.title?.slice(0, 60) ?? query}`
+          );
+        }
+        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+      } catch (err) {
+        console.warn(`[Pipeline] Flickr video ${i} failed scene ${sceneIndex}:`, (err as Error).message);
+      }
+    }
+  } catch (err) {
+    console.warn(`[Pipeline] Flickr search failed scene ${sceneIndex}:`, (err as Error).message);
+  }
+  return results;
+}
+
+/** Federated PeerTube search (SepiaSearch) — CC news/interviews, no API key. */
+const SEPIA_SEARCH_API = "https://sepiasearch.org/api/v1";
+
+async function fetchSepiaSearchVideos(
+  query: string,
+  duration: number,
+  workDir: string,
+  sceneIndex: number,
+  count: number = 1,
+  fileTag = "",
+  relevanceKeywords: string[] = []
+): Promise<string[]> {
+  if (!query?.trim()) return [];
+  const results: string[] = [];
+  try {
+    const searchUrl = new URL(`${SEPIA_SEARCH_API}/search/videos`);
+    searchUrl.searchParams.set("search", query);
+    searchUrl.searchParams.set("count", String(Math.min(15, count * 5)));
+    searchUrl.searchParams.append("licenceOneOf", "1");
+    searchUrl.searchParams.append("licenceOneOf", "2");
+    searchUrl.searchParams.append("licenceOneOf", "7");
+
+    const searchResp = await withTimeout(
+      fetch(searchUrl.toString(), { headers: { "User-Agent": "Fastvid/1.0 (CC PeerTube clips)" } }),
+      14_000,
+      `SepiaSearch scene ${sceneIndex}`
+    );
+    if (!searchResp.ok) return [];
+    const data = await searchResp.json() as {
+      data?: Array<{
+        uuid: string;
+        name?: string;
+        duration?: number;
+        isLive?: boolean;
+        channel?: { host?: string };
+        licence?: { id?: number; label?: string };
+      }>;
+    };
+    const items = data.data ?? [];
+
+    let downloaded = 0;
+    for (const item of items) {
+      if (downloaded >= count) break;
+      const host = item.channel?.host;
+      const uuid = item.uuid;
+      if (!host || !uuid || item.isLive) continue;
+      if ((item.duration ?? 0) < 8 || (item.duration ?? 0) > 900) continue;
+      const title = item.name ?? "";
+      if (relevanceKeywords.length > 0 && scoreVisualRelevance(title, relevanceKeywords) < 1) {
+        continue;
+      }
+      try {
+        const metaUrl = `https://${host}/api/v1/videos/${uuid}`;
+        const metaResp = await withTimeout(
+          fetch(metaUrl, { headers: { "User-Agent": "Fastvid/1.0" } }),
+          12_000,
+          `PeerTube meta scene ${sceneIndex}`
+        );
+        if (!metaResp.ok) continue;
+        const meta = await metaResp.json() as {
+          streamingPlaylists?: Array<{
+            files?: Array<{
+              fileDownloadUrl?: string;
+              fileUrl?: string;
+              size?: number;
+              resolution?: { id?: number };
+            }>;
+          }>;
+        };
+        const files = meta.streamingPlaylists?.[0]?.files ?? [];
+        const mp4 = files
+          .filter((f) => (f.fileDownloadUrl || f.fileUrl) && (f.size ?? 0) > 50_000)
+          .sort((a, b) => {
+            const resA = a.resolution?.id ?? 720;
+            const resB = b.resolution?.id ?? 720;
+            const distA = Math.abs(resA - 720);
+            const distB = Math.abs(resB - 720);
+            if (distA !== distB) return distA - distB;
+            return (a.size ?? 0) - (b.size ?? 0);
+          })[0];
+        const downloadUrl = mp4?.fileDownloadUrl || mp4?.fileUrl;
+        if (!downloadUrl || (mp4?.size ?? 0) > 80 * 1024 * 1024) continue;
+
+        const tag = fileTag ? `${fileTag}_` : "";
+        const tmpPath = path.join(workDir, `scene_${sceneIndex}_${tag}septube_${downloaded}_tmp`);
+        const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}septube_${downloaded}.mp4`);
+        const dlResp = await fetchWithTimeout(
+          downloadUrl,
+          55_000,
+          `SepiaSearch download scene ${sceneIndex}`,
+          { headers: { "User-Agent": "Fastvid/1.0" } }
+        );
+        if (!dlResp.ok) continue;
+        const buf = await dlResp.arrayBuffer();
+        if (buf.byteLength < 50_000 || buf.byteLength > 80 * 1024 * 1024) continue;
+        fs.writeFileSync(tmpPath, Buffer.from(buf));
+        if (await trimRemoteVideoToClip(tmpPath, outPath, duration, 5, `SepiaSearch scene ${sceneIndex}`)) {
+          results.push(outPath);
+          downloaded++;
+          console.log(`[Pipeline] Scene ${sceneIndex}: SepiaSearch CC video: ${title.slice(0, 60)}`);
+        }
+        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+      } catch (err) {
+        console.warn(`[Pipeline] SepiaSearch item failed scene ${sceneIndex}:`, (err as Error).message);
+      }
+    }
+  } catch (err) {
+    console.warn(`[Pipeline] SepiaSearch failed scene ${sceneIndex}:`, (err as Error).message);
+  }
+  return results;
+}
+
+/** media.ccc.de — CC-BY conference talks (strong for Musk/Tesla/tech figures). */
+async function fetchMediaCccVideos(
+  query: string,
+  duration: number,
+  workDir: string,
+  sceneIndex: number,
+  count: number = 1,
+  fileTag = ""
+): Promise<string[]> {
+  if (!query?.trim()) return [];
+  const results: string[] = [];
+  try {
+    const searchUrl = `https://api.media.ccc.de/public/events/search?q=${encodeURIComponent(query)}`;
+    const searchResp = await withTimeout(
+      fetch(searchUrl, { headers: { "User-Agent": "Fastvid/1.0 (media.ccc.de CC)" } }),
+      12_000,
+      `media.ccc search scene ${sceneIndex}`
+    );
+    if (!searchResp.ok) return [];
+    const data = await searchResp.json() as {
+      events?: Array<{
+        title?: string;
+        recordings?: Array<{
+          mime_type?: string;
+          folder?: string;
+          filename?: string;
+          recording_url?: string;
+          length?: number;
+          high_quality?: boolean;
+        }>;
+      }>;
+    };
+    const events = data.events ?? [];
+
+    let downloaded = 0;
+    for (const event of events) {
+      if (downloaded >= count) break;
+      const recs = event.recordings ?? [];
+      const videoRec =
+        recs.find((r) => r.mime_type === "video/mp4" && r.recording_url) ??
+        recs.find(
+          (r) =>
+            r.recording_url &&
+            /video\/mp4|\.mp4/i.test(`${r.mime_type ?? ""} ${r.filename ?? ""}`) &&
+            /h264|mp4/i.test(`${r.folder ?? ""} ${r.filename ?? ""}`)
+        );
+      if (!videoRec?.recording_url) continue;
+      if ((videoRec.length ?? 0) > 0 && (videoRec.length ?? 0) < 8) continue;
+
+      try {
+        const tag = fileTag ? `${fileTag}_` : "";
+        const tmpPath = path.join(workDir, `scene_${sceneIndex}_${tag}ccc_${downloaded}_tmp`);
+        const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}ccc_${downloaded}.mp4`);
+        const dlResp = await fetchWithTimeout(
+          videoRec.recording_url,
+          90_000,
+          `media.ccc download scene ${sceneIndex}`,
+          { headers: { "User-Agent": "Fastvid/1.0" } }
+        );
+        if (!dlResp.ok) continue;
+        const buf = await dlResp.arrayBuffer();
+        if (buf.byteLength < 80_000 || buf.byteLength > 120 * 1024 * 1024) continue;
+        fs.writeFileSync(tmpPath, Buffer.from(buf));
+        if (await trimRemoteVideoToClip(tmpPath, outPath, duration, 10, `media.ccc scene ${sceneIndex}`)) {
+          results.push(outPath);
+          downloaded++;
+          console.log(`[Pipeline] Scene ${sceneIndex}: media.ccc video: ${event.title?.slice(0, 60)}`);
+        }
+        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+      } catch (err) {
+        console.warn(`[Pipeline] media.ccc download failed scene ${sceneIndex}:`, (err as Error).message);
+      }
+    }
+  } catch (err) {
+    console.warn(`[Pipeline] media.ccc search failed scene ${sceneIndex}:`, (err as Error).message);
+  }
+  return results;
+}
+
+function personMatchesTechCccTopic(personName: string, beatText = ""): boolean {
+  const hay = `${personName} ${beatText}`.toLowerCase();
+  return /\b(musk|tesla|spacex|bezos|zuckerberg|jobs|gates|cybertruck|starlink|jenner|kardashian|celebrity|billionaire)\b/.test(
+    hay
+  );
+}
+
+/**
+ * Real celebrity/person video without YouTube quota:
+ * Wikimedia → SepiaSearch (PeerTube) → Archive → media.ccc (tech) → Flickr CC.
+ */
+async function fetchPersonCelebrityVideoClips(
+  personName: string,
+  duration: number,
+  workDir: string,
+  sceneIndex: number,
+  count: number,
+  fileTag: string,
+  beatIndex: number,
+  beatText = ""
+): Promise<string[]> {
+  const results: string[] = [];
+  const personKw = personName.split(/\s+/).filter((p) => p.length >= 3);
+  const wikiQueries = buildPersonMediaQueries(personName).slice(0, 4);
+  const wikiStart = beatIndex % Math.max(1, wikiQueries.length);
+  const rotatedWiki = [...wikiQueries.slice(wikiStart), ...wikiQueries.slice(0, wikiStart)];
+
+  for (const q of rotatedWiki) {
+    if (results.length >= count) break;
+    const paths = await fetchWikimediaVideos(
+      q,
+      duration,
+      workDir,
+      sceneIndex,
+      count - results.length,
+      fileTag
+    );
+    results.push(...paths);
+  }
+
+  if (results.length < count) {
+    const septubeQ = beatIndex % 2 === 0 ? `${personName} interview` : personName;
+    const septubePaths = await fetchSepiaSearchVideos(
+      septubeQ,
+      duration,
+      workDir,
+      sceneIndex,
+      count - results.length,
+      fileTag,
+      personKw
+    );
+    results.push(...septubePaths);
+  }
+
+  if (results.length < count) {
+    const archivePaths = await fetchInternetArchiveClips(
+      buildPersonArchiveVideoQueries(personName, beatIndex),
+      duration,
+      workDir,
+      sceneIndex,
+      count - results.length,
+      fileTag
+    );
+    results.push(...archivePaths);
+  }
+
+  if (results.length < count && personMatchesTechCccTopic(personName, beatText)) {
+    const cccPaths = await fetchMediaCccVideos(
+      personName,
+      duration,
+      workDir,
+      sceneIndex,
+      count - results.length,
+      fileTag
+    );
+    results.push(...cccPaths);
+  }
+
+  if (results.length < count && FLICKR_API_KEY) {
+    const flickrQ = beatIndex % 2 === 0 ? `${personName} interview` : personName;
+    const flickrPaths = await fetchFlickrCCVideos(
+      flickrQ,
+      duration,
+      workDir,
+      sceneIndex,
+      count - results.length,
+      fileTag
+    );
+    results.push(...flickrPaths);
+  }
+
+  return results.slice(0, count);
+}
+
 // ─── 3c2n. NASA Images & Video Library (public domain US gov footage) ─────────
 async function fetchNasaVideoClips(
   query: string,
@@ -6483,16 +6911,18 @@ async function fetchPersonBeatClip(
   );
   if (clip) return clip;
 
-  const wikiVid = await fetchWikimediaVideos(
-    `${personName} interview`,
+  const celebVids = await fetchPersonCelebrityVideoClips(
+    personName,
     clipFetchDur,
     workDir,
     sceneIndex,
     1,
-    `${tag}_person`
+    `${tag}_person`,
+    beat.index,
+    beat.text
   );
   clip = await adoptClip(
-    wikiVid,
+    celebVids,
     dedup,
     sceneIndex,
     beat.index,
@@ -6502,7 +6932,9 @@ async function fetchPersonBeatClip(
     loosePerson
   );
   if (clip && !isStillPhotoClip(clip)) {
-    console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: Wikimedia video (${personName})`);
+    console.log(
+      `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: person video Wiki/Sepia/Archive (${personName})`
+    );
     return clip;
   }
 
