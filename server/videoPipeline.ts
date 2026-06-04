@@ -479,7 +479,9 @@ async function resolveBeatClipFast(
   dedup: VisualDedupState,
   scenePersons: string[]
 ): Promise<string> {
-  const q = stockQueryFromBeatScript(beat.text, scenePersons);
+  const q = dedup.primaryPerson
+    ? `${dedup.primaryPerson} interview`
+    : stockQueryFromBeatScript(beat.text, scenePersons);
   try {
     const paths = await withTimeout(
       fetchPexelsClips(
@@ -824,7 +826,7 @@ For each scene return:
 - pexelsQuery: primary search — MUST include the real company name when narration mentions Tesla, SpaceX, Falcon 9, Starship, Cybertruck, etc. NEVER generic "electric car" or "rocket launch" without the brand. NEVER moon/Saturn/shuttle CGI unless explicitly about Apollo history
 - pexelsQueries: 3 queries from most specific to slightly broader — ALL must stay on the same topic
 - brollQueries: exactly 2 cutaway B-roll queries (factory hands, robots, charging, launch pad close-up) — no generic space CGI
-- personNames: full names of real people mentioned in text, or []
+- personNames: full names of real people mentioned in text, or []. If the video is about one celebrity (e.g. Kylie Jenner), include their full name on EVERY scene even when narration says "she" or "her".
 - sectionTitle: ALL CAPS chapter heading shown on yellow card BEFORE this scene when starting a new topic; "" if not a chapter start. NEVER use HOOK, OPENING, CTA, INTRO, or OUTRO as sectionTitle — always "" for those meta sections.
 
 Every query must literally describe what the viewer should see while that exact narration plays. Scenes are ~2-4s of footage with hard cuts. Narration must read as one continuous documentary — no filler pauses between sentences. NEVER repeat the opening hook or earlier sentences in later scenes — each scene text is ONLY its own contiguous slice of the script.`,
@@ -3645,18 +3647,30 @@ async function transformClipForFairUse(
   return inputPath;
 }
 
-/** Extract a person name from video titles like "Rumors about Elon Musk: A Deep Dive". */
-function extractPrimaryPersonFromTitle(title?: string): string {
-  if (!title?.trim()) return "";
-  const cleaned = title.replace(/[^\w\s:'-]/g, " ").replace(/\s+/g, " ").trim();
-  const aboutMatch = cleaned.match(/\babout\s+([A-Z][\w'-]+(?:\s+[A-Z][\w'-]+){0,2})/i);
+/** Extract a person name from prompts/titles like "Rumors about Kylie Jenner". */
+function extractPrimaryPersonFromText(text?: string): string {
+  if (!text?.trim()) return "";
+  const cleaned = text.replace(/[^\w\s:'-]/g, " ").replace(/\s+/g, " ").trim();
+  const aboutMatch = cleaned.match(/\babout\s+([A-Za-z][\w'-]+(?:\s+[A-Za-z][\w'-]+){0,2})/i);
   if (aboutMatch?.[1]) return aboutMatch[1].trim();
+  const kylieMatch = cleaned.match(/\b(kylie\s+jenner)\b/i);
+  if (kylieMatch?.[1]) return "Kylie Jenner";
   const nameMatches = cleaned.match(/\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2})\b/g) ?? [];
-  const skip = new Set(["deep dive", "the story", "a deep", "full story"]);
+  const skip = new Set(["deep dive", "the story", "a deep", "full story", "rumors about"]);
   for (const candidate of nameMatches) {
     if (!skip.has(candidate.toLowerCase())) return candidate.trim();
   }
   return "";
+}
+
+function extractPrimaryPersonFromTitle(title?: string): string {
+  return extractPrimaryPersonFromText(title);
+}
+
+function isPersonCelebrityTopic(topicContext?: string): boolean {
+  const t = (topicContext ?? "").toLowerCase();
+  if (/\bkylie\b|\bjenner\b|\bkardashian\b/.test(t)) return true;
+  return Boolean(extractPrimaryPersonFromText(topicContext));
 }
 
 function buildPersonMediaQueries(person: string, visualCue?: string): string[] {
@@ -3780,7 +3794,14 @@ function scriptStockSearchQueries(beatText: string, persons: string[] = []): str
   const narration = beatText.replace(/\[visual:[^\]]*\]/gi, " ").trim();
   const out: string[] = [];
 
-  for (const person of persons) {
+  if (persons.length > 0) {
+    const primary = persons[0];
+    out.push(primary);
+    const first = primary.split(/\s+/)[0]?.trim().toLowerCase();
+    if (first && first.length >= 3) out.push(first);
+    out.push(`${primary} interview`, `${primary} celebrity`, `${primary} red carpet`);
+  }
+  for (const person of persons.slice(1)) {
     if (!beatMentionsPerson(beatText, person)) continue;
     out.push(person);
     const first = person.split(/\s+/)[0]?.trim().toLowerCase();
@@ -3789,10 +3810,13 @@ function scriptStockSearchQueries(beatText: string, persons: string[] = []): str
   }
 
   for (const cue of extractInlineVisualCues(beatText)) {
-    out.push(simplifyStockSearchWord(cue, cue, true));
+    if (persons.length > 0 && PERSON_OFFTOPIC_VISUAL_RE.test(cue)) continue;
+    const sq = simplifyStockSearchWord(cue, cue, true);
+    if (persons.length > 0 && PERSON_OFFTOPIC_VISUAL_RE.test(sq)) continue;
+    out.push(sq);
     for (const tok of tokenizeForRelevance(cue)) {
       const w = translateTokenForPexels(tok);
-      if (w) out.push(w);
+      if (w && !(persons.length > 0 && PERSON_OFFTOPIC_VISUAL_RE.test(w))) out.push(w);
     }
   }
 
@@ -3804,7 +3828,9 @@ function scriptStockSearchQueries(beatText: string, persons: string[] = []): str
   const ranked = [...beatTokens].sort((a, b) => b.length - a.length);
   for (const tok of ranked) {
     const w = translateTokenForPexels(tok);
-    if (w && !isBlockedStockQuery(w)) out.push(w);
+    if (!w || isBlockedStockQuery(w)) continue;
+    if (persons.length > 0 && PERSON_OFFTOPIC_VISUAL_RE.test(w)) continue;
+    out.push(w);
   }
 
   if (ranked.length >= 2) {
@@ -3846,14 +3872,11 @@ function beatMentionsPerson(beatText: string, personName: string): boolean {
   return parts.length === 1 && lower.includes(parts[0]);
 }
 
-function resolveScenePersons(scene: Scene, videoTitle?: string): string[] {
+function resolveScenePersons(scene: Scene, videoTitle?: string, globalPrimaryPerson?: string): string[] {
   const persons = new Set((scene.personNames ?? []).map((n) => n.trim()).filter(Boolean));
-  const titlePerson = extractPrimaryPersonFromTitle(videoTitle);
+  const titlePerson = globalPrimaryPerson?.trim() || extractPrimaryPersonFromTitle(videoTitle);
   if (titlePerson) {
-    const firstName = titlePerson.split(/\s+/)[0]?.toLowerCase() ?? "";
-    if (scene.index === 0 || (firstName && scene.text.toLowerCase().includes(firstName))) {
-      persons.add(titlePerson);
-    }
+    persons.add(titlePerson);
   }
   return Array.from(persons);
 }
@@ -3868,6 +3891,7 @@ const RELEVANCE_STOP_WORDS = new Set([
   "most", "also", "just", "very", "over", "after", "before", "through", "during", "between", "while",
   "because", "since", "even", "only", "still", "now", "here", "there", "some", "any", "every", "one",
   "two", "three", "first", "second", "third", "new", "like", "said", "says", "fact", "facts", "minute",
+  "rumor", "rumors", "gossip", "exclusive", "breaking", "truth", "story", "decode", "decoding",
 ]);
 
 interface SceneBeat {
@@ -3896,9 +3920,15 @@ interface VisualDedupState {
   stillPhotosMaxThisScene: number;
   lock: Promise<void>;
   perf: PipelinePerfProfile;
+  /** Named celebrity from user prompt (e.g. Kylie Jenner) — anchor every beat's stock search. */
+  primaryPerson: string;
+  personTopicLock: boolean;
 }
 
-function createVisualDedupState(perf: PipelinePerfProfile): VisualDedupState {
+function createVisualDedupState(
+  perf: PipelinePerfProfile,
+  topic?: { primaryPerson?: string; personTopicLock?: boolean }
+): VisualDedupState {
   return {
     usedPaths: new Set(),
     usedPexelsIds: new Set(),
@@ -3914,6 +3944,8 @@ function createVisualDedupState(perf: PipelinePerfProfile): VisualDedupState {
     stillPhotosMaxThisScene: 0,
     lock: Promise.resolve(),
     perf,
+    primaryPerson: topic?.primaryPerson?.trim() ?? "",
+    personTopicLock: Boolean(topic?.personTopicLock && topic?.primaryPerson?.trim()),
   };
 }
 
@@ -3943,6 +3975,8 @@ const GOLDEN_MUSK_QUERIES = [...HERO_MUSK_QUERIES, "solar", "battery", "satellit
 
 type VisualAdoptOptions = {
   muskTopic?: boolean;
+  personTopic?: boolean;
+  primaryPerson?: string;
   keywords?: string[];
   sceneText?: string;
   videoTitle?: string;
@@ -3982,6 +4016,17 @@ type RealEntityRule = {
 };
 
 const REAL_ENTITY_RULES: RealEntityRule[] = [
+  {
+    id: "kylie",
+    mentionRe: /\b(kylie\s+jenner|kylie\b|jenner\b)/i,
+    clipMustMatchRe: /\b(kylie|jenner|kardashian|celebrity|influencer|makeup|fashion)\b/i,
+    stockQueries: ["kylie", "celebrity", "fashion"],
+    youtubeQueries: [
+      "Kylie Jenner interview",
+      "Kylie Jenner red carpet",
+      "Kylie Jenner makeup launch",
+    ],
+  },
   {
     id: "musk",
     mentionRe: /\b(elon\s+musk|musk)\b/i,
@@ -4110,6 +4155,10 @@ const BLOCKED_MUSK_COMPETITOR_RE =
 const MUSK_OFFTOPIC_VISUAL_RE =
   /\b(dolphin|dolphins|whale|whales|shark|sharks|sea turtle|ocean wildlife|underwater mammal|reef|jellyfish|penguin|polar bear|safari|zoo animal|aquarium|swimming with|marine life|tropical fish)\b/i;
 
+/** Animals / random nature B-roll that must not appear on named-celebrity videos (e.g. Kylie → flamingos). */
+const PERSON_OFFTOPIC_VISUAL_RE =
+  /\b(flamingo|flamingos|peacock|parrot|zoo|safari|wildlife|aquarium|dolphin|whale|penguin|giraffe|elephant|lion|tiger|bear|crocodile|snake|monkey|gorilla|zebra|hippo|bird flock|flock of birds|exotic bird|pink birds)\b/i;
+
 /** Opening = hero Tesla car / SpaceX pad first. */
 const OPENING_MUSK_QUERIES = HERO_MUSK_QUERIES;
 
@@ -4217,6 +4266,35 @@ function sanitizeSceneForMuskTopic(scene: Scene, sceneIndex: number, videoTitle?
   });
 }
 
+/** Celebrity/person videos: never search wildlife metaphors (flamingo etc.) — anchor on the named person. */
+function sanitizeSceneForPersonTopic(scene: Scene, primaryPerson: string): void {
+  const anchor = primaryPerson.trim();
+  if (!anchor) return;
+  const first = anchor.split(/\s+/)[0] ?? anchor;
+  const safe = (q: string): string => {
+    const trimmed = q.trim();
+    if (!trimmed || PERSON_OFFTOPIC_VISUAL_RE.test(trimmed)) {
+      return `${first} interview`;
+    }
+    if (/\b(wildlife|bird|zoo|animal|flamingo|ocean|dolphin)\b/i.test(trimmed)) {
+      return `${first} interview`;
+    }
+    const lower = trimmed.toLowerCase();
+    if (!lower.includes(first.toLowerCase()) && !/\b(celebrity|interview|fashion|makeup|red carpet)\b/i.test(lower)) {
+      return anchor;
+    }
+    return simplifyStockSearchWord(trimmed, `${anchor} ${scene.text}`, true);
+  };
+  if (scene.literalVisualCue) scene.literalVisualCue = safe(scene.literalVisualCue);
+  scene.pexelsQuery = anchor;
+  scene.visualCue = safe(scene.visualCue) || `${anchor} interview`;
+  scene.pexelsQueries = [...new Set([anchor, `${anchor} interview`, `${first} celebrity`, ...(scene.pexelsQueries ?? []).map(safe)])]
+    .filter((q) => q.length >= 3 && !PERSON_OFFTOPIC_VISUAL_RE.test(q))
+    .slice(0, 4);
+  scene.brollQueries = [`${first} fashion`, `${first} interview`].filter((q) => !isBlockedStockQuery(q));
+  if (!scene.personNames?.length) scene.personNames = [anchor];
+}
+
 function isMuskApprovedRocketQuery(q: string): boolean {
   return MUSK_APPROVED_ROCKET_QUERY_RE.test(q);
 }
@@ -4300,6 +4378,17 @@ function isOffTopicVisualForMusk(sourceQuery: string, filePath: string): boolean
   if (/\b(ocean wave|beach sunset|tropical beach|underwater|snorkel|diving)\b/.test(hay) && !hasMuskBrandSignal(sourceQuery, filePath)) {
     return true;
   }
+  return false;
+}
+
+function isOffTopicVisualForPersonTopic(sourceQuery: string, filePath: string, primaryPerson: string): boolean {
+  const hay = `${sourceQuery} ${path.basename(filePath)}`.toLowerCase();
+  if (PERSON_OFFTOPIC_VISUAL_RE.test(hay)) return true;
+  const parts = primaryPerson.toLowerCase().split(/\s+/).filter((p) => p.length >= 3);
+  if (parts.length >= 2 && parts.every((p) => hay.includes(p))) return false;
+  if (parts.length === 1 && hay.includes(parts[0])) return false;
+  if (/\b(celebrity|interview|red carpet|paparazzi|influencer|makeup|fashion)\b/.test(hay)) return false;
+  if (MUSK_OFFTOPIC_VISUAL_RE.test(hay)) return true;
   return false;
 }
 
@@ -4830,6 +4919,13 @@ async function adoptClip(
       if (isPipelineFallbackClip(p)) continue;
       if (await isMostlyBlackClip(p)) continue;
       if (muskTopic && isOffTopicVisualForMusk(sourceQuery, p)) continue;
+      if (
+        opts.personTopic &&
+        opts.primaryPerson &&
+        isOffTopicVisualForPersonTopic(sourceQuery, p, opts.primaryPerson)
+      ) {
+        continue;
+      }
       const category = stockVisualCategory(sourceQuery, p);
       if (category === "blocked_model" || category === "blocked_offtopic") continue;
       if (categoryAtLimit(dedup, category, muskTopic)) continue;
@@ -4999,7 +5095,9 @@ async function fetchPersonBeatClip(
   candidateOffset: number,
   tag: string
 ): Promise<string | null> {
-  if (!personName.trim() || !beatMentionsPerson(beat.text, personName)) return null;
+  const personLocked = dedup.personTopicLock && Boolean(dedup.primaryPerson);
+  if (!personName.trim()) return null;
+  if (!personLocked && !beatMentionsPerson(beat.text, personName)) return null;
 
   const personQueries = buildPersonMediaQueries(
     personName,
@@ -5051,7 +5149,7 @@ async function fetchPersonBeatClip(
     if (clip) return clip;
   }
 
-  if (!fast && SERPAPI_KEY && dedup.stillPhotosThisScene < dedup.stillPhotosMaxThisScene) {
+  if (SERPAPI_KEY && (personLocked || !fast) && dedup.stillPhotosThisScene < dedup.stillPhotosMaxThisScene) {
     const serpPaths = await fetchSerpAPIImages(
       `${personName} red carpet`,
       clipFetchDur,
@@ -5104,6 +5202,8 @@ async function fetchBeatClip(
   const perf = dedup.perf;
   const adoptOpts: VisualAdoptOptions = {
     muskTopic,
+    personTopic: dedup.personTopicLock,
+    primaryPerson: dedup.primaryPerson || personName,
     keywords: beat.keywords,
     sceneText: scene.text,
     videoTitle,
@@ -5111,7 +5211,7 @@ async function fetchBeatClip(
     requireMuskBrand: false,
   };
 
-  const scenePersons = resolveScenePersons(scene, videoTitle);
+  const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
   const scriptQueries = scriptStockSearchQueries(beat.text, scenePersons);
   const maxQ = perf.maxStockQueriesPerBeat;
   let q = scriptQueries[0] ?? beat.searchQuery;
@@ -5444,8 +5544,8 @@ async function fetchSceneVisuals(
   onBeatProgress?: (beatIndex: number, beatTotal: number) => void
 ): Promise<SceneVisualsResult> {
   const clipFetchDur = 4;
-  const scenePersons = resolveScenePersons(scene, videoTitle);
-  const personName = scenePersons[0] ?? extractPrimaryPersonFromTitle(videoTitle) ?? "";
+  const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
+  const personName = scenePersons[0] ?? dedup.primaryPerson ?? extractPrimaryPersonFromTitle(videoTitle) ?? "";
   const spaceTopic = isSpaceRelatedTopic(scene.visualCue, scene.pexelsQuery, scene.text, videoTitle ?? "");
   const beatCap = Math.min(
     dedup.perf.maxBeatsPerScene,
@@ -6560,10 +6660,16 @@ export async function runVideoPipeline(
     || "AI Generated Video";
   const topicContext = buildTopicContext(userPrompt ?? videoRow?.prompt, videoTitle);
   const muskLocked = isMuskTeslaTopic(topicContext, script);
+  const primaryPerson =
+    extractPrimaryPersonFromText(userPrompt ?? videoRow?.prompt ?? "") ||
+    extractPrimaryPersonFromText(videoTitle) ||
+    extractPrimaryPersonFromText(topicContext);
+  const personLocked = isPersonCelebrityTopic(topicContext) && Boolean(primaryPerson);
 
   console.log(
     `[Pipeline] Video ${videoId}: ${maxScenes} scenes for ${videoLength} min` +
-    (muskLocked ? " [Musk/Tesla topic lock]" : "")
+    (muskLocked ? " [Musk/Tesla topic lock]" : "") +
+    (personLocked ? ` [person lock: ${primaryPerson}]` : "")
   );
 
   try {
@@ -6574,6 +6680,7 @@ export async function runVideoPipeline(
     for (const scene of scenes) {
       sanitizeSceneStockQueries(scene, topicContext ?? videoTitle);
       if (muskLocked) sanitizeSceneForMuskTopic(scene, scene.index, topicContext ?? videoTitle);
+      if (personLocked && primaryPerson) sanitizeSceneForPersonTopic(scene, primaryPerson);
     }
     console.log(`[Pipeline] Stage 1 (parse): ${scenes.length} scenes in ${((Date.now()-t0)/1000).toFixed(1)}s`);
 
@@ -6661,7 +6768,7 @@ export async function runVideoPipeline(
       `≤${perf.maxBeatsPerScene} beats/scene, ${perf.sceneParallelism} parallel scenes, ` +
       `fair-use transform=${perf.skipFairUseTransform ? "skip" : "on"}`
     );
-    const visualDedup = createVisualDedupState(perf);
+    const visualDedup = createVisualDedupState(perf, { primaryPerson, personTopicLock: personLocked });
 
     const visualLimit = pLimit(perf.sceneParallelism);
     let completedVisuals = 0;

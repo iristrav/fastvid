@@ -217,6 +217,7 @@ NON-NEGOTIABLE CRAFT RULES:
 - END: one crisp insight the viewer remembers tomorrow.
 - Tone: authoritative, vivid, conversational — short punchy sentences mixed with longer explanatory ones.
 - Every 2–3 sentences add [VISUAL: ...] with LITERAL, SPECIFIC real-world footage (real brands, places, people when relevant).
+- If the video is about a named celebrity, every [VISUAL: ...] must show THAT person or their real events (interview, red carpet, brand launch) — never animal metaphors (no flamingos, wildlife, zoo, etc.).
 - Never use filler: "In this section", "Let's dive in", "Without further ado".
 - Write for the ear — the script will be read aloud in one continuous voice-over.`;
 }
