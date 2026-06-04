@@ -308,7 +308,7 @@ const VIDRUSH_CLIP_HOLD_SEC = 7.0;
 const VIDRUSH_BEAT_SEC = 3.5;
 /** Hard cuts between beats — xfade caused visible judder/stutter on Railway. */
 const MONTAGE_XFADE_SEC = 0;
-const CHAPTER_CARD_DURATION = 1.5;
+const CHAPTER_CARD_DURATION = 2.5;
 
 /** Wall-clock budgets: short ≤60 min, long ≤90 min (see getPipelinePerfProfile). */
 interface PipelinePerfProfile {
@@ -362,8 +362,8 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
       enableNasa: false,
       enableMuskHeroFetch: true,
       maxEntityYoutubePerVideo: maxEntityYoutube,
-      enableAiFallback: !IS_RAILWAY,
-      maxAiClipsPerVideo: IS_RAILWAY ? 0 : 3,
+      enableAiFallback: false,
+      maxAiClipsPerVideo: 0,
       sceneParallelism: railwayParallel,
       pexelsDownloadRetries: IS_RAILWAY ? 1 : 2,
       maxStockQueriesPerBeat: 3,
@@ -384,8 +384,8 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
       enableNasa: true,
       enableMuskHeroFetch: false,
       maxEntityYoutubePerVideo: maxEntityYoutube,
-      enableAiFallback: true,
-      maxAiClipsPerVideo: 5,
+      enableAiFallback: false,
+      maxAiClipsPerVideo: 0,
       sceneParallelism: railwayParallel,
       pexelsDownloadRetries: 2,
       maxStockQueriesPerBeat: 5,
@@ -406,8 +406,8 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
       enableNasa: true,
       enableMuskHeroFetch: false,
       maxEntityYoutubePerVideo: maxEntityYoutube,
-      enableAiFallback: true,
-      maxAiClipsPerVideo: 5,
+      enableAiFallback: false,
+      maxAiClipsPerVideo: 0,
       sceneParallelism: railwayParallel,
       pexelsDownloadRetries: 2,
       maxStockQueriesPerBeat: 5,
@@ -427,8 +427,8 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
     enableNasa: true,
     enableMuskHeroFetch: false,
     maxEntityYoutubePerVideo: maxEntityYoutube,
-    enableAiFallback: true,
-    maxAiClipsPerVideo: 6,
+    enableAiFallback: false,
+    maxAiClipsPerVideo: 0,
     sceneParallelism: railwayParallel,
     pexelsDownloadRetries: 2,
     maxStockQueriesPerBeat: 6,
@@ -475,7 +475,7 @@ async function runBeatClipFetch(
   }
 }
 
-/** One quick Pexels attempt then grey placeholder — no lock/adopt/YouTube waterfalls. */
+/** Quick script-ordered stock attempts; reuse last good clip before grey placeholder. */
 async function resolveBeatClipFast(
   beat: SceneBeat,
   scene: Scene,
@@ -483,51 +483,63 @@ async function resolveBeatClipFast(
   sceneIndex: number,
   clipFetchDur: number,
   dedup: VisualDedupState,
-  scenePersons: string[]
+  scenePersons: string[],
+  videoTitle?: string
 ): Promise<string> {
-  const q = dedup.primaryPerson
-    ? `${dedup.primaryPerson} interview`
-    : stockQueryFromBeatScript(beat.text, scenePersons, scene.text);
-  try {
-    const paths = await withTimeout(
-      fetchPexelsClips(
-        q,
-        clipFetchDur,
-        workDir,
-        sceneIndex,
-        1,
-        undefined,
-        true,
-        `b${beat.index}_fast`,
-        dedup.usedPexelsIds,
-        beat.index + sceneIndex,
-        1
-      ),
-      10_000,
-      `fast Pexels scene ${sceneIndex} beat ${beat.index}`
-    );
-    for (const p of paths) {
-      if (!p || dedup.usedPaths.has(p) || !fs.existsSync(p)) continue;
-      let size = 0;
-      try { size = fs.statSync(p).size; } catch { continue; }
-      if (size < 180_000) continue;
-      if (isRejectedStockClip(p, q) || isPipelineFallbackClip(p)) continue;
-      try {
-        const ok = await withTimeout(isValidVideoFile(p), 5_000, `fast validate s${sceneIndex} b${beat.index}`);
-        if (!ok) continue;
-      } catch {
-        continue;
+  const queries = buildBeatVisualQueryList(
+    beat.text, scene, videoTitle, scenePersons, 4
+  );
+  for (const q of queries) {
+    try {
+      const paths = await withTimeout(
+        fetchPexelsClips(
+          q,
+          clipFetchDur,
+          workDir,
+          sceneIndex,
+          1,
+          undefined,
+          true,
+          `b${beat.index}_fast`,
+          dedup.usedPexelsIds,
+          beat.index + sceneIndex + queries.indexOf(q),
+          1
+        ),
+        10_000,
+        `fast Pexels scene ${sceneIndex} beat ${beat.index}`
+      );
+      for (const p of paths) {
+        if (!p || dedup.usedPaths.has(p) || !fs.existsSync(p)) continue;
+        let size = 0;
+        try { size = fs.statSync(p).size; } catch { continue; }
+        if (size < 180_000) continue;
+        if (isRejectedStockClip(p, q) || isPipelineFallbackClip(p)) continue;
+        if (dedup.personTopicLock && dedup.primaryPerson &&
+          isOffTopicVisualForPersonTopic(q, p, dedup.primaryPerson)) continue;
+        try {
+          const ok = await withTimeout(isValidVideoFile(p), 5_000, `fast validate s${sceneIndex} b${beat.index}`);
+          if (!ok) continue;
+        } catch {
+          continue;
+        }
+        dedup.usedPaths.add(p);
+        dedup.usedContentKeys.add(clipContentKey(p));
+        dedup.lastMuskStockClip = p;
+        console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: fast Pexels "${q}"`);
+        return p;
       }
-      dedup.usedPaths.add(p);
-      dedup.usedContentKeys.add(clipContentKey(p));
-      console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: fast Pexels "${q}"`);
-      return p;
+    } catch {
+      /* try next script query */
     }
-  } catch (err) {
-    console.warn(
-      `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: fast stock failed:`,
-      (err as Error).message
-    );
+  }
+  const rescue = dedup.lastMuskStockClip;
+  if (
+    rescue && fs.existsSync(rescue) && !dedup.usedPaths.has(rescue) &&
+    !isPipelineFallbackClip(rescue) && (await isValidVideoFile(rescue))
+  ) {
+    dedup.usedPaths.add(rescue);
+    console.warn(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: reusing last good stock clip`);
+    return rescue;
   }
   return generateColorFallback(sceneIndex * 500 + beat.index, Math.min(4, beat.holdSec), workDir);
 }
@@ -801,8 +813,9 @@ const SCENE_JSON_SCHEMA = {
               brollQueries: { type: "array", items: { type: "string" } },
               literalVisualCue: { type: "string" },
               sectionTitle: { type: "string" },
+              statCallout: { type: "string" },
             },
-            required: ["text", "visualCue", "pexelsQuery", "pexelsQueries", "personNames", "brollQueries", "literalVisualCue", "sectionTitle"],
+            required: ["text", "visualCue", "pexelsQuery", "pexelsQueries", "personNames", "brollQueries", "literalVisualCue", "sectionTitle", "statCallout"],
             additionalProperties: false,
           },
         },
@@ -834,8 +847,9 @@ For each scene return:
 - brollQueries: exactly 2 cutaway B-roll queries (factory hands, robots, charging, launch pad close-up) — no generic space CGI
 - personNames: full names of real people mentioned in text, or []. If the video is about one celebrity (e.g. Kylie Jenner), include their full name on EVERY scene even when narration says "she" or "her".
 - sectionTitle: ALL CAPS chapter heading shown on yellow card BEFORE this scene when starting a new topic; "" if not a chapter start. NEVER use HOOK, OPENING, CTA, INTRO, or OUTRO as sectionTitle — always "" for those meta sections.
+- statCallout: ONE key number or stat from this scene for a yellow corner box (e.g. "$1B", "45%", "2024") or "" if none.
 
-Every query must literally describe what the viewer should see while that exact narration plays. Scenes are ~2-4s of footage with hard cuts. Narration must read as one continuous documentary — no filler pauses between sentences. NEVER repeat the opening hook or earlier sentences in later scenes — each scene text is ONLY its own contiguous slice of the script.`,
+Every query must literally describe what the viewer should see while that exact narration plays. Vidrush rule: each clip must match the exact words spoken — real person names and real events (interview, launch, trial), never abstract animals or unrelated metaphors. Scenes are ~2-4s of footage with hard cuts. Narration must read as one continuous documentary — no filler pauses between sentences. NEVER repeat the opening hook or earlier sentences in later scenes — each scene text is ONLY its own contiguous slice of the script.`,
         },
         {
           role: "user",
@@ -890,6 +904,8 @@ function mapRawScene(
     : [];
   const sectionTitle =
     typeof rawS.sectionTitle === "string" ? rawS.sectionTitle.trim().slice(0, 60) : "";
+  const statCallout =
+    typeof rawS.statCallout === "string" ? rawS.statCallout.trim().slice(0, 24) : "";
   return {
     ...s,
     index,
@@ -900,7 +916,7 @@ function mapRawScene(
     literalVisualCue: literalVisualCue || undefined,
     highlightWords: [],
     brollQueries,
-    statCallout: "",
+    statCallout,
     aiImagePrompt: `Cinematic ${s.visualCue || "documentary scene"}, dramatic lighting, photorealistic`,
     isChapterCard: false,
     chapterTitle: isPublishableChapterTitle(sectionTitle) ? sectionTitle : undefined,
@@ -4077,6 +4093,8 @@ type VisualAdoptOptions = {
   requireMuskBrand?: boolean;
   /** Clip must match words in the beat narration (real footage on-topic). */
   requireBeatMatch?: boolean;
+  /** Vidrush literal matching: reject clips with zero narration overlap. */
+  scriptAnchored?: boolean;
 };
 
 async function withVisualDedupLock<T>(dedup: VisualDedupState, fn: () => Promise<T>): Promise<T> {
@@ -5032,6 +5050,14 @@ async function adoptClip(
       const queryWords = sourceQuery.split(/\s+/).filter((w) => w.length >= 3);
       const queryInBeat = scoreVisualRelevance(beatText, queryWords) >= 1;
       if (opts.requireBeatMatch && beatMatch < 1 && !queryInBeat) continue;
+      if (opts.scriptAnchored && beatMatch < 1 && !queryInBeat && entityRules.length === 0) continue;
+      if (opts.personTopic && opts.primaryPerson) {
+        const parts = opts.primaryPerson.toLowerCase().split(/\s+/).filter((x) => x.length >= 3);
+        const hay = `${sourceQuery} ${path.basename(p)}`.toLowerCase();
+        const personHit = parts.some((pt) => hay.includes(pt));
+        const eventHit = /\b(interview|celebrity|red carpet|keynote|conference|launch)\b/.test(hay);
+        if (!personHit && !eventHit && beatMatch < 1) continue;
+      }
       if (entityRules.length > 0 && !clipSatisfiesRealEntities(entityRules, sourceQuery, p)) continue;
       if (muskTopic) {
         if (category === "solar" && !/solar|photovoltaic|sun panel/.test(beatText.toLowerCase())) continue;
@@ -5441,6 +5467,7 @@ async function fetchBeatClip(
     videoTitle,
     requireBeatMatch: false,
     requireMuskBrand: false,
+    scriptAnchored: perf.scriptOnlyVisuals,
   };
 
   const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
@@ -5646,7 +5673,10 @@ async function fetchBeatClip(
     return lastResort;
   }
 
-  if (!personName || !beatMentionsPerson(beat.text, personName)) {
+  if (
+    !perf.scriptOnlyVisuals &&
+    (!personName || !beatMentionsPerson(beat.text, personName))
+  ) {
     clip = await fetchBeatAIClip(
       beat, scene, workDir, sceneIndex, beat.index, clipFetchDur, dedup, videoTitle
     );
@@ -5693,18 +5723,14 @@ async function fetchSceneVisuals(
     const pushClip = (clipPath: string) => {
       clips.push(clipPath);
       beatDurations.push(beat.holdSec);
+      if (
+        clipPath && !isPipelineFallbackClip(clipPath) && !isStillPhotoClip(clipPath) &&
+        fs.existsSync(clipPath)
+      ) {
+        dedup.lastMuskStockClip = clipPath;
+      }
     };
-    if (dedup.perf.fastStockMode) {
-      const bounded = await runBeatClipFetch(
-        beat, scene, workDir, scene.index, clipFetchDur, dedup, spaceTopic, personName, videoTitle
-      );
-      pushClip(
-        bounded ??
-          (await resolveBeatClipFast(beat, scene, workDir, scene.index, clipFetchDur, dedup, scenePersons))
-      );
-      continue;
-    }
-    const clip = await runBeatClipFetch(
+    let clip = await runBeatClipFetch(
       beat,
       scene,
       workDir,
@@ -5715,16 +5741,12 @@ async function fetchSceneVisuals(
       personName,
       videoTitle
     );
-    if (clip) {
-      pushClip(clip);
-    } else {
-      console.warn(
-        `[Pipeline] Scene ${scene.index} beat ${beat.index}: no footage for "${beat.searchQuery}" — quick fallback`
-      );
-      pushClip(
-        await resolveBeatClipFast(beat, scene, workDir, scene.index, clipFetchDur, dedup, scenePersons)
+    if (!clip) {
+      clip = await resolveBeatClipFast(
+        beat, scene, workDir, scene.index, clipFetchDur, dedup, scenePersons, videoTitle
       );
     }
+    pushClip(clip);
   }
 
   const videoCount = clips.filter((c) => !isStillPhotoClip(c)).length;
@@ -6199,12 +6221,13 @@ async function composeSceneVideo(
 
   // Stat callout box: yellow corner box with key statistic (reference video style)
   let statCalloutFrame: { path: string; startTime: number; endTime: number } | null = null;
-  // Stat callout disabled — user requested no on-screen text
-  // try {
-  //   if (scene.statCallout && scene.statCallout.trim().length > 0) {
-  //     statCalloutFrame = await renderStatCallout(scene.statCallout, scene.index, workDir);
-  //   }
-  // } catch (err) { statCalloutFrame = null; }
+  try {
+    if (scene.statCallout && scene.statCallout.trim().length > 0) {
+      statCalloutFrame = await renderStatCallout(scene.statCallout, scene.index, workDir);
+    }
+  } catch {
+    statCalloutFrame = null;
+  }
 
   // On Railway, limit FFmpeg threads to reduce memory usage
   const threadFlag = IS_RAILWAY ? "-threads 2" : "";

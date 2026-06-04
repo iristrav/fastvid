@@ -220,7 +220,9 @@ NON-NEGOTIABLE CRAFT RULES:
 - If the video is about a named celebrity, every [VISUAL: ...] must show THAT person or their real events (interview, red carpet, brand launch) — never animal metaphors (no flamingos, wildlife, zoo, etc.).
 - Stock footage is matched to your spoken words: name the real person and the real event in each [VISUAL: ...] (e.g. "Kylie Jenner interview", "Kylie Jenner product launch") — not abstract symbols or unrelated animals.
 - Never use filler: "In this section", "Let's dive in", "Without further ado".
-- Write for the ear — the script will be read aloud in one continuous voice-over.`;
+- Write for the ear — the script will be read aloud in one continuous voice-over.
+- Vidrush pacing: one new visual idea every 2–4 seconds of narration; never drift to unrelated B-roll (wrong celebrity, animals, random nature).
+- When citing a number ($, %, year, count), make it specific — it may appear as an on-screen stat callout.`;
 }
 
 export function buildOutlineUserPrompt(
