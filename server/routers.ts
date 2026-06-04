@@ -89,6 +89,7 @@ import {
   buildSectionUserPrompt,
   countNarrationWords,
   getScriptLengthBudget,
+  scriptStillOnTopic,
   OUTLINE_JSON_SCHEMA,
   type ScriptOutline,
 } from "./scriptWriter";
@@ -266,17 +267,31 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLength: 
       if (narrationWords < budget.minWords || narrationWords > budget.maxWords) {
         scriptLog.push({ step: "✂️ Matching script length...", startedAt: Date.now(), status: "active" });
         await updateVideoProgress(videoId, "✂️ Matching script length...", 22);
+        const scriptBeforeRefine = scriptContent;
         try {
           const refineResp = await invokeLLM({
             messages: [
               { role: "system", content: writerSystem },
-              { role: "user", content: buildScriptLengthRefinePrompt(scriptContent, budget, narrationWords) },
+              {
+                role: "user",
+                content: buildScriptLengthRefinePrompt(scriptContent, budget, narrationWords, prompt),
+              },
             ],
           });
           const refined = refineResp?.choices?.[0]?.message?.content ?? "";
           if (typeof refined === "string" && refined.trim().length > 200) {
-            scriptContent = refined.trim();
-            narrationWords = countNarrationWords(scriptContent);
+            const candidate = refined.trim();
+            if (scriptStillOnTopic(prompt, candidate)) {
+              scriptContent = candidate;
+              narrationWords = countNarrationWords(scriptContent);
+              const refinedTitle = scriptContent.match(/^#\s+(.+)$/m)?.[1]?.trim();
+              if (refinedTitle) title = refinedTitle;
+            } else {
+              console.warn(
+                `[Script] Video ${videoId}: length refine ignored — off-topic (${narrationWords} words kept)`
+              );
+              scriptContent = scriptBeforeRefine;
+            }
           }
         } catch (err) {
           console.warn("[Script] Fast-path length refine failed (non-fatal):", err);
@@ -328,7 +343,7 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLength: 
         `[Script] Outline returned ${outline.sections.length} sections, expected ${budget.sectionCount}`
       );
     }
-    const title = outline.title || prompt.slice(0, 100);
+    let title = outline.title || prompt.slice(0, 100);
 
     // Mark research done, start writing
     scriptLog[0].completedAt = Date.now(); scriptLog[0].status = "done";
@@ -391,17 +406,31 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLength: 
     if (narrationWords < budget.minWords || narrationWords > budget.maxWords) {
       scriptLog.push({ step: "✂️ Adjusting script to target length...", startedAt: Date.now(), status: "active" });
       await updateVideoProgress(videoId, "✂️ Matching script length to video...", 24);
+      const scriptBeforeRefine = scriptContent;
       try {
         const refineResp = await invokeLLM({
           messages: [
             { role: "system", content: writerSystem },
-            { role: "user", content: buildScriptLengthRefinePrompt(scriptContent, budget, narrationWords) },
+            {
+              role: "user",
+              content: buildScriptLengthRefinePrompt(scriptContent, budget, narrationWords, prompt),
+            },
           ],
         });
         const refined = refineResp?.choices?.[0]?.message?.content ?? "";
         if (typeof refined === "string" && refined.trim().length > 200) {
-          scriptContent = refined.trim();
-          narrationWords = countNarrationWords(scriptContent);
+          const candidate = refined.trim();
+          if (scriptStillOnTopic(prompt, candidate)) {
+            scriptContent = candidate;
+            narrationWords = countNarrationWords(scriptContent);
+            const refinedTitle = scriptContent.match(/^#\s+(.+)$/m)?.[1]?.trim();
+            if (refinedTitle) title = refinedTitle;
+          } else {
+            console.warn(
+              `[Script] Video ${videoId}: length refine ignored — off-topic (${narrationWords} words kept)`
+            );
+            scriptContent = scriptBeforeRefine;
+          }
         }
       } catch (err) {
         console.warn("[Script] Length refine pass failed (non-fatal):", err);

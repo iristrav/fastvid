@@ -371,20 +371,57 @@ ${brandRule}
 Return ONLY the markdown script.`;
 }
 
+/** True if spoken narration still reflects the user's topic (guards broken length-refine). */
+export function scriptStillOnTopic(topicPrompt: string, script: string): boolean {
+  const narration = extractFullNarrationText(script).toLowerCase();
+  const topic = topicPrompt.toLowerCase().trim();
+  if (!topic || !narration) return false;
+
+  const tokens = topic
+    .split(/[^a-z0-9]+/i)
+    .map((w) => w.trim())
+    .filter((w) => w.length >= 4);
+  const hits = tokens.filter((t) => narration.includes(t));
+  if (hits.length >= 1) return true;
+
+  const shortAnchors = [
+    "musk",
+    "tesla",
+    "spacex",
+    "kylie",
+    "jenner",
+    "trump",
+    "bezos",
+    "zuckerberg",
+  ];
+  return shortAnchors.some((a) => topic.includes(a) && narration.includes(a));
+}
+
 export function buildScriptLengthRefinePrompt(
   script: string,
   budget: ScriptLengthBudget,
-  currentWords: number
+  currentWords: number,
+  topicPrompt: string
 ): string {
   const direction = currentWords < budget.minWords ? "EXPAND" : "TRIM";
-  return `${direction} this documentary narration to hit the length budget.
+  return `${direction} the documentary script below to hit the length budget.
+
+TOPIC (mandatory — do NOT change subject; every sentence must stay about this):
+"${topicPrompt}"
 
 Current: ~${currentWords} spoken words. Required: ${budget.minWords}–${budget.maxWords} words (target ${budget.targetWords}).
 Spoken duration target: ${budget.targetSpokenSec} seconds at ${NARRATION_WPM} WPM.
 
 Rules:
+- Revise ONLY the script in SCRIPT TO REVISE — same facts, people, companies, and story as that draft.
+- Never replace the topic with a different story (no unrelated art, celebrities, or viral tangents).
 - Keep HOOK → sections → CTA structure and all ## headings.
 - Keep every [VISUAL: ...] tag; add more if expanding.
 - ${direction === "EXPAND" ? "Add substance: another fact, contrast, or micro-hook — not padding." : "Cut redundancy only — keep retention beats and the narrative arc."}
-- Return the FULL revised script only (markdown).`;
+- Return the FULL revised script only (markdown).
+
+SCRIPT TO REVISE:
+---
+${script}
+---`;
 }

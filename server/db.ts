@@ -624,7 +624,7 @@ export async function deleteExpiredPasswordResetTokens() {
 export interface EditorClip {
   url: string;           // /manus-storage/... or external URL
   type: "video" | "image";
-  source: string;        // "pexels" | "pixabay" | "wikimedia" | "openverse" | "serpapi" | "upload"
+  source: string;        // "pexels" | "youtube" | "pixabay" | "wikimedia" | "openverse" | "serpapi" | "upload"
   thumbnailUrl?: string; // preview thumbnail
   width?: number;
   height?: number;

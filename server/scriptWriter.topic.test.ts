@@ -1,0 +1,31 @@
+import { describe, it, expect } from "vitest";
+import {
+  buildScriptLengthRefinePrompt,
+  scriptStillOnTopic,
+  getScriptLengthBudget,
+} from "./scriptWriter";
+
+describe("scriptStillOnTopic", () => {
+  it("accepts narration that mentions the prompt subject", () => {
+    const prompt = "Elon Musk: Tesla, SpaceX and the future of humanity";
+    const script = `# Musk\n## Opening\nElon Musk built Tesla and SpaceX.\n[VISUAL: SpaceX launch]`;
+    expect(scriptStillOnTopic(prompt, script)).toBe(true);
+  });
+
+  it("rejects unrelated Salvator Mundi draft for a Musk prompt", () => {
+    const prompt = "Elon Musk: Tesla, SpaceX and the future of humanity";
+    const script = `# Art\n## Opening\nSalvator Mundi sold for $450 million. Leonardo da Vinci experts disagree.`;
+    expect(scriptStillOnTopic(prompt, script)).toBe(false);
+  });
+});
+
+describe("buildScriptLengthRefinePrompt", () => {
+  it("includes topic and the script body to revise", () => {
+    const budget = getScriptLengthBudget("1");
+    const script = "# Test\n## Opening\nHello world about Tesla.";
+    const prompt = buildScriptLengthRefinePrompt(script, budget, 50, "Elon Musk Tesla");
+    expect(prompt).toContain("Elon Musk Tesla");
+    expect(prompt).toContain("SCRIPT TO REVISE");
+    expect(prompt).toContain("Hello world about Tesla");
+  });
+});

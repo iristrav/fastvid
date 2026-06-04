@@ -3776,6 +3776,34 @@ function isAIGeneratedClip(filePath: string): boolean {
   return /_ai_fallback\.mp4$|_stability_|_leonardo_|_grok_|_ai\.mp4|_runway_|_kling_|_luma_|_pika_|_veo_|_forge_|scene_\d+_b\d+_ai/i.test(base);
 }
 
+/** Map temp clip filename → editor manifest source (pexels, youtube, serpapi, …). */
+function inferClipSourceFromPath(filePath: string): string {
+  const base = path.basename(filePath).replace(/_transformed(?=\.mp4)$/i, "").toLowerCase();
+  if (/_ytcc_|_b\d+_yt_|_yt_\d/i.test(base)) return "youtube";
+  if (/serp/i.test(base)) return "serpapi";
+  if (/wikivid|_wiki_/i.test(base)) return "wikimedia";
+  if (/openverse/i.test(base)) return "openverse";
+  if (/nasa/i.test(base)) return "nasa";
+  if (/archive/i.test(base)) return "archive";
+  if (/pixabay|_pix_|beat_vid|fb_vid/i.test(base)) return "pixabay";
+  if (
+    /_ai_fallback|_stability_|_leonardo_|_grok_|_runway_|_kling_|_luma_|_pika_|_veo_|_forge_|scene_\d+_b\d+_ai/i.test(
+      base
+    )
+  ) {
+    return "ai";
+  }
+  if (/_fallback/i.test(base)) return "fallback";
+  if (
+    /pexels|_pex_|lr_pex|_b\d+_fast|_fast_vid|_b\d+_script|_script_vid|_golden|broll|_b\d+_lr_pex|scene_\d+_b\d+_vid\d+/i.test(
+      base
+    )
+  ) {
+    return "pexels";
+  }
+  return "unknown";
+}
+
 function buildBeatAIPrompt(beat: SceneBeat, scene: Scene, videoTitle?: string): string {
   const muskTopic = isMuskTeslaTopic(videoTitle, beat.text);
   const entities = extractBeatRealEntities(beat.text, scene.text, videoTitle);
@@ -7031,18 +7059,7 @@ export async function runVideoPipeline(
       const editorScenes: EditorScene[] = scenes.map((scene, i) => {
         const clipPaths = sceneVisualResults[i]?.clips ?? [];
         const editorClips: EditorClip[] = clipPaths.map(clipPath => {
-          const basename = path.basename(clipPath);
-          // Detect source from filename pattern
-          let source = "unknown";
-          if (basename.includes("pexels") || basename.includes("_pex_") || basename.includes("lr_pex")) {
-            source = "pexels";
-          } else if (basename.includes("pixabay") || basename.includes("beat_vid") || basename.includes("fb_vid")) {
-            source = "pixabay";
-          } else if (basename.includes("wikimedia")) source = "wikimedia";
-          else if (basename.includes("openverse")) source = "openverse";
-          else if (basename.includes("serp")) source = "serpapi";
-          else if (basename.includes("_ai")) source = "ai";
-          else if (basename.includes("_fallback")) source = "fallback";
+          const source = inferClipSourceFromPath(clipPath);
           const isVideo = clipPath.endsWith(".mp4") || clipPath.endsWith(".webm");
           return { url: clipPath, type: isVideo ? "video" : "image", source };
         });
