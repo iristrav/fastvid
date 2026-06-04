@@ -815,8 +815,11 @@ export default function Home() {
             </span>
           </div>
           <div className="flex flex-wrap gap-6 text-xs text-slate-500">
-            {["Privacy Policy", "Terms of Service", "Cookie Policy", "Contact"].map((item) => (
-              <button key={item} className="hover:text-slate-300 transition-colors">{item}</button>
+            <a href="/privacy" className="hover:text-slate-300 transition-colors">
+              Privacy Policy
+            </a>
+            {["Terms of Service", "Cookie Policy", "Contact"].map((item) => (
+              <span key={item} className="text-slate-600 cursor-default">{item}</span>
             ))}
           </div>
           <p className="text-xs text-slate-600">© 2025 Fastvid. All rights reserved.</p>

@@ -11,12 +11,14 @@ import Admin from "./pages/Admin";
 import Subscribe from "./pages/Subscribe";
 import ResetPassword from "./pages/ResetPassword";
 import VideoEditor from "./pages/VideoEditor";
+import PrivacyPolicy from "./pages/PrivacyPolicy";
 
 function Router() {
   // make sure to consider if you need authentication for certain routes
   return (
     <Switch>
       <Route path={"/"} component={Home} />
+      <Route path={"/privacy"} component={PrivacyPolicy} />
       <Route path={"/login"} component={Login} />
       <Route path={"/reset-password"} component={ResetPassword} />
       <Route path={"/dashboard"} component={Dashboard} />
