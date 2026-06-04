@@ -22,8 +22,11 @@ import {
   ArrowRight,
   Zap,
   Clock,
-  Infinity,
-  TrendingUp,
+  Cloud,
+  Film,
+  ListOrdered,
+  Edit3,
+  Search,
   Menu,
   X,
 } from "lucide-react";
@@ -34,13 +37,60 @@ const MOCKUP_IMG = "https://d2xsxph8kpxj0f.cloudfront.net/310519663314427713/B9G
 const SCRIPT_IMG = "https://d2xsxph8kpxj0f.cloudfront.net/310519663314427713/B9GyrhcpQX4Q32cZzpFMG9/fastvid-feature-script-JueTt4K7PbHkfqDhKoXwkv.webp";
 const VISUALS_IMG = "https://d2xsxph8kpxj0f.cloudfront.net/310519663314427713/B9GyrhcpQX4Q32cZzpFMG9/fastvid-feature-visuals-YGMDS8Lz6mqFNsCHUYEQDS.webp";
 
-// ─── Video length options ──────────────────────────────────────────────────────
+// ─── Video length options (aligned with dashboard + documentary workflow) ───────
 const VIDEO_LENGTHS = [
-  { label: "5–8 min", value: "5-8", desc: "Short & punchy" },
-  { label: "8–12 min", value: "8-12", desc: "Perfect for tutorials" },
-  { label: "12–15 min", value: "12-15", desc: "In-depth content" },
-  { label: "15–20 min", value: "15-20", desc: "Extended videos" },
-  { label: "20+ min", value: "20+", desc: "Long-form documentaries" },
+  { label: "1 min", value: "1", desc: "Quick test" },
+  { label: "2 min", value: "2", desc: "Fast preview" },
+  { label: "5–8 min", value: "5-8", desc: "Short explainers" },
+  { label: "8–12 min", value: "8-12", desc: "Standard documentary" },
+  { label: "12–15 min", value: "12-15", desc: "Deep-dive" },
+  { label: "15–20 min", value: "15-20", desc: "Extended narrative" },
+  { label: "20+ min", value: "20+", desc: "Long-form" },
+];
+
+const VIDEO_FORMATS = [
+  {
+    id: "documentary",
+    title: "Documentary",
+    desc: "One flowing story with narration and script-matched B-roll — history, true crime, biographies, news analysis, and explainers.",
+    available: true,
+  },
+  {
+    id: "listicle",
+    title: "Top 10 Listicle",
+    desc: "Countdown format with structured beats per item — comparisons, rankings, and list-style channels.",
+    available: false,
+  },
+] as const;
+
+const BEST_FOR_NICHES = [
+  "History & geopolitics",
+  "True crime & mysteries",
+  "Biographies & business",
+  "Science & nature",
+  "News & current events",
+  "Educational explainers",
+];
+
+const WORKFLOW_STEPS = [
+  {
+    number: "01",
+    icon: FileText,
+    title: "Write your brief",
+    desc: "Describe your topic in one prompt — or paste your own script. Pick documentary length and tone.",
+  },
+  {
+    number: "02",
+    icon: Cloud,
+    title: "Fastvid builds the video",
+    desc: "AI writes the script, records voiceover, finds real and stock visuals matched to each beat, and assembles everything in the cloud.",
+  },
+  {
+    number: "03",
+    icon: Edit3,
+    title: "Review & publish",
+    desc: "Open the built-in editor to swap clips, adjust pacing, then export a YouTube-ready MP4.",
+  },
 ];
 
 // ─── Intersection Observer Hook ────────────────────────────────────────────────
@@ -151,7 +201,7 @@ export default function Home() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
   const [promptValue, setPromptValue] = useState("");
-  const [selectedLength, setSelectedLength] = useState("15-20");
+  const [selectedLength, setSelectedLength] = useState("8-12");
 
   const { isAuthenticated } = useAuth();
 
@@ -187,12 +237,16 @@ export default function Home() {
 
   const faqs = [
     {
-      q: "Which video length should I choose?",
-      a: "It depends on your niche and audience. Short videos (5–8 min) work great for quick tips and news. Mid-length videos (8–15 min) are ideal for tutorials and reviews. Long videos (15–20 min and 20+) perform best for in-depth analyses, documentaries, and educational content — and generate more watch time and ad revenue.",
+      q: "How is Fastvid different from generic AI video tools?",
+      a: "Fastvid is built for factual, narrator-led YouTube content — documentaries, explainers, and analysis channels. Scripts drive every visual beat; we prioritize real footage (including Creative Commons sources) and licensed stock over random B-roll.",
     },
     {
-      q: "How long does it take to generate a video?",
-      a: "Generation time depends on the chosen video length. A 5–8 minute video is ready in ~15 minutes (12 scenes with AI images), while a 20+ minute video takes ~75 minutes (35 scenes). Each scene gets a unique Stability AI-generated image plus stock video clips. All scenes are processed in parallel for maximum speed.",
+      q: "Which video length should I choose?",
+      a: "Match length to how much story you have. Use 1–2 min to test a topic, 5–8 min for tight explainers, 8–12 min for standard documentaries, and 15–20+ min for deep dives. Fastvid adapts pacing and scene count automatically.",
+    },
+    {
+      q: "How long does generation take?",
+      a: "Short tests (1–2 min) often finish in a few minutes. A typical 8–12 minute documentary usually takes roughly 30–60 minutes in the cloud — you can leave the tab open or return when the project is ready, similar to other AI production platforms.",
     },
     {
       q: "Can I change the video length for each video?",
@@ -215,8 +269,8 @@ export default function Home() {
       a: "We accept SEPA Direct Debit, Bancontact, PayPal, and all major credit cards (Visa, Mastercard, Amex).",
     },
     {
-      q: "Are the videos 100% unique and copyright-free?",
-      a: "Yes. Every script is uniquely generated based on your prompt. Visuals are sourced from royalty-free stock libraries or fully AI-generated. You own all rights to the produced videos.",
+      q: "Are the videos unique and safe to upload?",
+      a: "Every script is generated for your prompt. Visuals come from licensed stock, Creative Commons YouTube clips (where available), and curated image sources — with transformative editing. You are responsible for final review before publishing.",
     },
     {
       q: "Can I add my own voice or branding?",
@@ -224,36 +278,36 @@ export default function Home() {
     },
   ];
 
-  const steps = [
+  const productionSteps = [
     {
       number: "01",
       icon: Sparkles,
-      title: "Enter your prompt",
-      desc: "Describe your video in one sentence and choose the desired length. Fastvid automatically understands your niche, audience, and tone.",
+      title: "Research-backed script",
+      desc: "Hook, context, and payoff structured for retention — tuned to your length and documentary tone.",
     },
     {
       number: "02",
-      icon: FileText,
-      title: "AI writes the script",
-      desc: "A virally optimized script tailored to your chosen length — with a strong hook, build-up, and call-to-action.",
+      icon: Mic,
+      title: "Professional narration",
+      desc: "Natural AI voiceover (ElevenLabs and more) timed to each scene and beat.",
     },
     {
       number: "03",
-      icon: Mic,
-      title: "Professional voiceover",
-      desc: "Choose from dozens of AI voices or clone your own. Smooth, natural, and perfectly timed to the edit.",
+      icon: Search,
+      title: "Script-matched visuals",
+      desc: "Beats mapped to real events, people, and topics — stock plus Creative Commons footage when available.",
     },
     {
       number: "04",
       icon: Image,
-      title: "Visuals & B-roll",
-      desc: "AI matches every part of the script to fitting footage, stock video, and AI-generated visuals.",
+      title: "Montage & pacing",
+      desc: "Automatic cuts, holds, and transitions so the story flows like a broadcast documentary.",
     },
     {
       number: "05",
       icon: Wand2,
-      title: "Effects & export",
-      desc: "Automatic text overlays, transitions, music, and color grading. Ready to upload to YouTube.",
+      title: "Export & metadata",
+      desc: "YouTube-ready MP4 plus titles, descriptions, and chapter-friendly structure.",
     },
   ];
 
@@ -302,7 +356,7 @@ export default function Home() {
           </button>
 
           <div className="hidden md:flex items-center gap-8">
-            {[["How it works", "how-it-works"], ["Features", "features"], ["Pricing", "pricing"], ["FAQ", "faq"]].map(([label, id]) => (
+            {[["How it works", "how-it-works"], ["Formats", "formats"], ["Features", "features"], ["Pricing", "pricing"], ["FAQ", "faq"]].map(([label, id]) => (
               <button key={id} onClick={() => scrollTo(id)} className="text-sm text-slate-400 hover:text-white transition-colors duration-200">
                 {label}
               </button>
@@ -325,7 +379,7 @@ export default function Home() {
 
         {mobileMenuOpen && (
           <div className="md:hidden bg-background/95 backdrop-blur-xl border-b border-white/8 px-4 pb-4 flex flex-col gap-3">
-            {[["How it works", "how-it-works"], ["Features", "features"], ["Pricing", "pricing"], ["FAQ", "faq"]].map(([label, id]) => (
+            {[["How it works", "how-it-works"], ["Formats", "formats"], ["Features", "features"], ["Pricing", "pricing"], ["FAQ", "faq"]].map(([label, id]) => (
               <button key={id} onClick={() => scrollTo(id)} className="text-sm text-slate-300 hover:text-white py-2 text-left transition-colors">
                 {label}
               </button>
@@ -349,18 +403,17 @@ export default function Home() {
             {/* Left: Text */}
             <div className="flex flex-col gap-6">
               <div className="animate-fade-up inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-purple-500/30 bg-purple-500/10 w-fit">
-                <Zap className="w-3.5 h-3.5 text-purple-400" />
-                <span className="mono text-xs text-purple-300 font-medium">AI-powered YouTube automation</span>
+                <Film className="w-3.5 h-3.5 text-purple-400" />
+                <span className="mono text-xs text-purple-300 font-medium">YouTube-ready documentaries</span>
               </div>
 
               <h1 className="animate-fade-up delay-100 text-4xl sm:text-5xl lg:text-6xl font-black leading-tight text-white" style={{ fontFamily: 'Outfit, sans-serif' }}>
-                From prompt to{" "}
-                <span className="gradient-text">viral YouTube video</span>{" "}
-                in minutes
+                Turn your topic into a{" "}
+                <span className="gradient-text">YouTube-ready documentary</span>
               </h1>
 
               <p className="animate-fade-up delay-200 text-base md:text-lg text-slate-300 leading-relaxed max-w-lg">
-                Fastvid generates complete YouTube videos at your chosen length — including a viral script, professional voiceover, matching visuals, and cinematic effects. One prompt is all you need.
+                Describe your story once. Fastvid writes the script, narrates it, finds visuals that match what is being said, and delivers a finished video — built for factual, narrator-led channels.
               </p>
 
               {/* Video length selector */}
@@ -406,9 +459,9 @@ export default function Home() {
 
               {/* Trust signals */}
               <div className="animate-fade-up delay-400 flex flex-wrap items-center gap-4 text-xs text-slate-500">
-                <span className="flex items-center gap-1.5"><Check className="w-3.5 h-3.5 text-cyan-400" /> Unlimited videos</span>
-                <span className="flex items-center gap-1.5"><Check className="w-3.5 h-3.5 text-cyan-400" /> All video lengths</span>
-                <span className="flex items-center gap-1.5"><Check className="w-3.5 h-3.5 text-cyan-400" /> Cancel anytime</span>
+                <span className="flex items-center gap-1.5"><Check className="w-3.5 h-3.5 text-cyan-400" /> Script-matched B-roll</span>
+                <span className="flex items-center gap-1.5"><Check className="w-3.5 h-3.5 text-cyan-400" /> Cloud generation</span>
+                <span className="flex items-center gap-1.5"><Check className="w-3.5 h-3.5 text-cyan-400" /> Built-in editor</span>
               </div>
             </div>
 
@@ -431,10 +484,89 @@ export default function Home() {
       <section className="relative py-16 border-y border-white/8">
         <div className="container">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-8 md:gap-12">
-            <StatItem value="5–20+" label="minutes — you choose the length" icon={Clock} />
-            <StatItem value="∞" label="videos per month" icon={Infinity} />
-            <StatItem value="5" label="length options to choose from" icon={Zap} />
-            <StatItem value="3×" label="more views on average" icon={TrendingUp} />
+            <StatItem value="1–20+" label="minute documentaries" icon={Clock} />
+            <StatItem value="~60" label="min avg. full production" icon={Cloud} />
+            <StatItem value="3" label="steps: brief → build → edit" icon={Film} />
+            <StatItem value="100+" label="AI voice options" icon={Mic} />
+          </div>
+        </div>
+      </section>
+
+      {/* ── Vidrush-style workflow ── */}
+      <section id="formats" className="relative py-20 overflow-hidden">
+        <div className="glow-orb w-80 h-80 bg-purple-600/10 -right-20 top-10 animate-orb-drift" />
+        <div className="container relative z-10">
+          <div className="text-center mb-12">
+            <span className="mono text-xs text-cyan-400 font-medium tracking-widest uppercase mb-3 block">
+              Production flow
+            </span>
+            <h2 className="text-3xl md:text-4xl font-black text-white mb-4" style={{ fontFamily: "Outfit, sans-serif" }}>
+              What used to take days,{" "}
+              <span className="gradient-text">now takes one session</span>
+            </h2>
+            <p className="text-slate-400 max-w-2xl mx-auto text-sm md:text-base">
+              The same end-to-end flow documentary creators expect: you set the story, Fastvid runs production in the cloud, you polish and publish.
+            </p>
+          </div>
+          <div className="grid md:grid-cols-3 gap-5 mb-16">
+            {WORKFLOW_STEPS.map((step) => (
+              <StepCard key={step.number} {...step} />
+            ))}
+          </div>
+
+          <div className="text-center mb-8">
+            <span className="mono text-xs text-purple-400 font-medium tracking-widest uppercase mb-3 block">
+              Formats
+            </span>
+            <h3 className="text-2xl md:text-3xl font-black text-white" style={{ fontFamily: "Outfit, sans-serif" }}>
+              Built for <span className="gradient-text">documentary</span> channels
+            </h3>
+          </div>
+          <div className="grid md:grid-cols-2 gap-5 max-w-4xl mx-auto mb-12">
+            {VIDEO_FORMATS.map((fmt) => (
+              <div
+                key={fmt.id}
+                className={`glass-card p-6 border flex flex-col gap-3 ${
+                  fmt.available ? "border-purple-400/40 bg-purple-600/5" : "border-white/8 opacity-80"
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    {fmt.id === "documentary" ? (
+                      <Film className="w-5 h-5 text-purple-400" />
+                    ) : (
+                      <ListOrdered className="w-5 h-5 text-slate-500" />
+                    )}
+                    <h4 className="font-bold text-white">{fmt.title}</h4>
+                  </div>
+                  {!fmt.available && (
+                    <span className="text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full border border-white/15 text-slate-500">
+                      Coming soon
+                    </span>
+                  )}
+                  {fmt.available && (
+                    <span className="text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">
+                      Available
+                    </span>
+                  )}
+                </div>
+                <p className="text-sm text-slate-400 leading-relaxed">{fmt.desc}</p>
+              </div>
+            ))}
+          </div>
+
+          <div className="glass-card border border-white/8 rounded-2xl p-6 md:p-8">
+            <p className="mono text-xs text-slate-500 uppercase tracking-wide mb-4 text-center">Strong fit for</p>
+            <div className="flex flex-wrap justify-center gap-2">
+              {BEST_FOR_NICHES.map((niche) => (
+                <span
+                  key={niche}
+                  className="px-3 py-1.5 rounded-lg text-xs text-slate-300 border border-white/10 bg-white/3"
+                >
+                  {niche}
+                </span>
+              ))}
+            </div>
           </div>
         </div>
       </section>
@@ -446,51 +578,23 @@ export default function Home() {
           <div className="text-center mb-12">
             <span className="mono text-xs text-cyan-400 font-medium tracking-widest uppercase mb-3 block">Flexible video length</span>
             <h2 className="text-3xl md:text-4xl font-black text-white mb-4" style={{ fontFamily: 'Outfit, sans-serif' }}>
-              Choose the length that{" "}
-              <span className="gradient-text">fits your niche</span>
+              Match length to{" "}
+              <span className="gradient-text">story depth</span>
             </h2>
             <p className="text-slate-400 max-w-xl mx-auto text-sm md:text-base">
-              Every video length has its own strategy. Fastvid automatically adapts the script structure, pacing, and editing to match the chosen duration.
+              Pick a runtime that fits how many beats your topic needs — from quick tests to full deep dives.
             </p>
           </div>
 
-          <div className="grid sm:grid-cols-2 lg:grid-cols-5 gap-4">
+          <div className="grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
             {[
-              {
-                label: "5–8 min",
-                value: "5-8",
-                icon: "⚡",
-                title: "Short & punchy",
-                useCases: ["News & updates", "Quick tips", "Product reveals", "Trending topics"],
-              },
-              {
-                label: "8–12 min",
-                value: "8-12",
-                icon: "🎯",
-                title: "Perfect for tutorials",
-                useCases: ["How-to videos", "Reviews", "Top 5 lists", "Vlog-style content"],
-              },
-              {
-                label: "12–15 min",
-                value: "12-15",
-                icon: "📈",
-                title: "In-depth content",
-                useCases: ["Extended tutorials", "Case studies", "Comparisons", "Educational"],
-              },
-              {
-                label: "15–20 min",
-                value: "15-20",
-                icon: "🎬",
-                title: "Extended videos",
-                useCases: ["Documentary-style", "Deep-dive analyses", "Interviews", "Storytelling"],
-              },
-              {
-                label: "20+ min",
-                value: "20+",
-                icon: "🏆",
-                title: "Long-form documentaries",
-                useCases: ["Masterclasses", "Full courses", "Epic stories", "Deep dives"],
-              },
+              { label: "1 min", value: "1", icon: "🧪", title: "Quick test", useCases: ["Pipeline check", "Topic test", "Visual QA"] },
+              { label: "2 min", value: "2", icon: "⚡", title: "Fast preview", useCases: ["Draft narrative", "Client preview", "A/B topic"] },
+              { label: "5–8 min", value: "5-8", icon: "📰", title: "Short explainer", useCases: ["News recap", "Single event", "Crisis brief"] },
+              { label: "8–12 min", value: "8-12", icon: "🎬", title: "Standard doc", useCases: ["Biography", "Company story", "Science explainer"] },
+              { label: "12–15 min", value: "12-15", icon: "📈", title: "Deep-dive", useCases: ["True crime", "Geopolitics", "Tech analysis"] },
+              { label: "15–20 min", value: "15-20", icon: "🔍", title: "Extended", useCases: ["Investigations", "Historical arcs", "Multi-act story"] },
+              { label: "20+ min", value: "20+", icon: "🏆", title: "Long-form", useCases: ["Epic narratives", "Mini-docs", "Course-style"] },
             ].map((opt) => (
               <div
                 key={opt.value}
@@ -534,16 +638,16 @@ export default function Home() {
           <div className="text-center mb-16">
             <span className="mono text-xs text-cyan-400 font-medium tracking-widest uppercase mb-3 block">How it works</span>
             <h2 className="text-3xl md:text-4xl font-black text-white mb-4" style={{ fontFamily: 'Outfit, sans-serif' }}>
-              From idea to video in{" "}
-              <span className="gradient-text">5 steps</span>
+              Inside each{" "}
+              <span className="gradient-text">generation</span>
             </h2>
             <p className="text-slate-400 max-w-xl mx-auto text-sm md:text-base">
-              Fastvid automates the entire production process. You set the direction and length — the AI does the work.
+              Under the hood, Fastvid runs a full documentary pipeline — not a single generic template.
             </p>
           </div>
 
           <div className="grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
-            {steps.map((step) => (
+            {productionSteps.map((step) => (
               <StepCard key={step.number} {...step} />
             ))}
           </div>
@@ -557,8 +661,8 @@ export default function Home() {
           <div className="text-center mb-16">
             <span className="mono text-xs text-cyan-400 font-medium tracking-widest uppercase mb-3 block">Features</span>
             <h2 className="text-3xl md:text-4xl font-black text-white mb-4" style={{ fontFamily: 'Outfit, sans-serif' }}>
-              Everything you need for{" "}
-              <span className="gradient-text">viral content</span>
+              Everything for{" "}
+              <span className="gradient-text">factual storytelling</span>
             </h2>
           </div>
 
@@ -573,13 +677,13 @@ export default function Home() {
                   <span className="mono text-xs text-purple-400 font-medium">Script Engine</span>
                 </div>
                 <h3 className="text-2xl md:text-3xl font-bold text-white" style={{ fontFamily: 'Outfit, sans-serif' }}>
-                  Scripts built to <span className="gradient-text">go viral</span>
+                  Scripts that <span className="gradient-text">drive the edit</span>
                 </h3>
                 <p className="text-slate-400 leading-relaxed">
-                  Our AI writes scripts tailored to your chosen video length. Whether it's a quick 5-minute tip or an in-depth 20+ minute documentary — the structure, pacing, and hook are automatically adapted.
+                  Structured prompts produce narration with clear beats — who, what, and when — so visuals can follow the story, not random keywords.
                 </p>
                 <ul className="space-y-2">
-                  {["Virally optimized hooks for every length", "SEO-friendly titles & descriptions", "Automatic chapter structure", "Adjustable tone & style"].map((item) => (
+                  {["Hook → context → payoff structure", "SEO titles & descriptions", "Scene beats for visual matching", "Documentary & explainer tone"].map((item) => (
                     <li key={item} className="flex items-center gap-2.5 text-sm text-slate-300">
                       <Check className="w-4 h-4 text-cyan-400 shrink-0" />
                       {item}
@@ -607,13 +711,13 @@ export default function Home() {
                   <span className="mono text-xs text-cyan-400 font-medium">Visual AI</span>
                 </div>
                 <h3 className="text-2xl md:text-3xl font-bold text-white" style={{ fontFamily: 'Outfit, sans-serif' }}>
-                  Visuals that <span className="gradient-text">amplify</span>
+                  Visuals matched to <span className="gradient-text">the narration</span>
                 </h3>
                 <p className="text-slate-400 leading-relaxed">
-                  Fastvid automatically matches every part of the script to the perfect visuals — regardless of video length. From stock footage and AI-generated imagery to animations and infographics.
+                  Each beat searches for footage that fits the line being spoken — real events, named people, and topic-specific B-roll before generic stock.
                 </p>
                 <ul className="space-y-2">
-                  {["Automatic B-roll matching", "AI-generated visuals", "Cinematic transitions", "Text overlays & lower thirds"].map((item) => (
+                  {["Creative Commons & licensed sources", "Person- and event-aware queries", "No duplicate clips per video", "Smooth documentary pacing"].map((item) => (
                     <li key={item} className="flex items-center gap-2.5 text-sm text-slate-300">
                       <Check className="w-4 h-4 text-cyan-400 shrink-0" />
                       {item}
@@ -626,12 +730,12 @@ export default function Home() {
             {/* Feature grid */}
             <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {[
-                { icon: Mic, title: "Voice Cloning", desc: "Upload your own voice and Fastvid clones it for all future videos. Fully authentic, every time.", color: "purple" },
-                { icon: Wand2, title: "Auto Effects", desc: "Color grading, background music, sound effects, and cinematic filters are applied automatically.", color: "cyan" },
-                { icon: TrendingUp, title: "Trend Analysis", desc: "Fastvid analyzes daily trending topics in your niche and suggests video ideas that are performing right now.", color: "purple" },
-                { icon: Zap, title: "Fast Export", desc: "Export in 4K, 1080p, or optimized for YouTube Shorts. Ready to upload instantly.", color: "cyan" },
-                { icon: FileText, title: "Multi-language", desc: "Generate videos in English, Dutch, German, French, and Spanish with native voiceovers.", color: "purple" },
-                { icon: Sparkles, title: "Thumbnail AI", desc: "Auto-generated click-worthy thumbnails optimized for maximum CTR on YouTube.", color: "cyan" },
+                { icon: Edit3, title: "Built-in editor", desc: "Swap clips, review scenes, and refine the cut before you export — like a lightweight post suite.", color: "purple" },
+                { icon: Mic, title: "Pro AI voices", desc: "Natural narration via ElevenLabs and more — authoritative tones suited to documentaries.", color: "cyan" },
+                { icon: Wand2, title: "Auto assembly", desc: "Music, grading, and transitions applied so the timeline feels broadcast-ready.", color: "purple" },
+                { icon: Cloud, title: "Cloud render", desc: "Heavy lifting runs on our servers; download when your project is done.", color: "cyan" },
+                { icon: FileText, title: "Custom scripts", desc: "Paste your own script when you already have the words — Fastvid builds visuals around it.", color: "purple" },
+                { icon: Sparkles, title: "SEO package", desc: "Titles, descriptions, and chapter-friendly structure generated with your video.", color: "cyan" },
               ].map(({ icon: Icon, title, desc, color }) => (
                 <div key={title} className="glass-card gradient-border p-5 flex flex-col gap-3 hover:bg-white/5 transition-colors duration-300">
                   <div className={`w-9 h-9 rounded-lg flex items-center justify-center border ${
@@ -695,17 +799,16 @@ export default function Home() {
               <ul className="space-y-3 mb-8">
                 {[
                   "Unlimited video generation",
-                  "All 5 video lengths (5–8, 8–12, 12–15, 15–20, 20+ min)",
-                  "Virally optimized scripts",
+                  "All lengths including 1–2 min tests through 20+ min",
+                  "Documentary & explainer scripts",
+                  "Script-matched B-roll (stock + real footage)",
                   "Professional AI voiceover",
-                  "Automatic visual matching",
+                  "Built-in video editor",
                   "Cinematic effects & transitions",
-                  "AI thumbnail generator",
-                  "Voice cloning (your own voice)",
-                  "Multi-language support",
+                  "YouTube SEO metadata",
+                  "Cloud production",
                   "4K export",
                   "Priority support",
-                  "Trend analysis dashboard",
                 ].map((feature) => (
                   <li key={feature} className="flex items-center gap-3 text-sm text-slate-200">
                     <div className="w-5 h-5 rounded-full bg-gradient-to-br from-purple-600 to-cyan-500 flex items-center justify-center shrink-0">
@@ -778,11 +881,11 @@ export default function Home() {
         <div className="container relative z-10 text-center">
           <span className="mono text-xs text-cyan-400 font-medium tracking-widest uppercase mb-4 block">Ready to start?</span>
           <h2 className="text-4xl md:text-5xl lg:text-6xl font-black text-white mb-6 leading-tight" style={{ fontFamily: 'Outfit, sans-serif' }}>
-            Your first viral video<br />
-            <span className="gradient-text">starts here</span>
+            Your next documentary<br />
+            <span className="gradient-text">starts with one prompt</span>
           </h2>
           <p className="text-slate-300 max-w-lg mx-auto mb-10 text-base md:text-lg">
-            Join hundreds of creators already generating videos daily with Fastvid. All lengths, unlimited, one flat price.
+            Join creators producing narrator-led YouTube videos without a full production crew. Brief, build, edit, publish.
           </p>
           <div className="flex flex-col sm:flex-row gap-4 justify-center">
             <button
