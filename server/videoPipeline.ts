@@ -334,6 +334,8 @@ interface PipelinePerfProfile {
   beatClipTimeoutMs: number;
   /** Wall-clock cap for one scene's visual fetch. */
   sceneVisualTimeoutMs: number;
+  /** Skip slow stock waterfalls (hero/archival/multi-fallback) on short Railway jobs. */
+  fastStockMode: boolean;
 }
 
 /** YouTube CC needs YOUTUBE_API_KEY (search) + RAPIDAPI_KEY or YOUTUBE_CC_DL_SERVICE (download). */
@@ -362,9 +364,10 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
       maxAiClipsPerVideo: IS_RAILWAY ? 0 : 3,
       sceneParallelism: railwayParallel,
       pexelsDownloadRetries: IS_RAILWAY ? 1 : 2,
-      maxStockQueriesPerBeat: 4,
-      beatClipTimeoutMs: IS_RAILWAY ? 50_000 : 90_000,
-      sceneVisualTimeoutMs: IS_RAILWAY ? 4 * 60_000 : 6 * 60_000,
+      maxStockQueriesPerBeat: 3,
+      beatClipTimeoutMs: IS_RAILWAY ? 35_000 : 90_000,
+      sceneVisualTimeoutMs: IS_RAILWAY ? 3 * 60_000 : 6 * 60_000,
+      fastStockMode: IS_RAILWAY,
     };
   }
   if (videoLength === "5-8") {
@@ -385,6 +388,7 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
       maxStockQueriesPerBeat: 5,
       beatClipTimeoutMs: 120_000,
       sceneVisualTimeoutMs: 8 * 60_000,
+      fastStockMode: false,
     };
   }
   if (videoLength === "12-15" || videoLength === "15-20") {
@@ -405,6 +409,7 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
       maxStockQueriesPerBeat: 5,
       beatClipTimeoutMs: 120_000,
       sceneVisualTimeoutMs: 10 * 60_000,
+      fastStockMode: false,
     };
   }
   return {
@@ -424,6 +429,7 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
     maxStockQueriesPerBeat: 6,
     beatClipTimeoutMs: 150_000,
     sceneVisualTimeoutMs: 12 * 60_000,
+    fastStockMode: false,
   };
 }
 
@@ -457,8 +463,63 @@ async function runBeatClipFetch(
       `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: stock timed out after ${Math.round(beatClipTimeoutMs / 1000)}s —`,
       (err as Error).message
     );
+    // Background fetchBeatClip may still be running; release lock so next beat cannot stall 8+ min.
+    dedup.lock = Promise.resolve();
     return null;
   }
+}
+
+/** One quick Pexels attempt then grey placeholder — no slow emergency/YouTube/golden loops. */
+async function resolveBeatClipFast(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  scenePersons: string[]
+): Promise<string> {
+  const q = stockQueryFromBeatScript(beat.text, scenePersons);
+  try {
+    const paths = await withTimeout(
+      fetchPexelsClips(
+        q,
+        clipFetchDur,
+        workDir,
+        sceneIndex,
+        1,
+        undefined,
+        true,
+        `b${beat.index}_fast`,
+        dedup.usedPexelsIds,
+        beat.index + sceneIndex,
+        1
+      ),
+      18_000,
+      `fast Pexels scene ${sceneIndex} beat ${beat.index}`
+    );
+    const clip = await withTimeout(
+      adoptClip(
+        paths,
+        dedup,
+        sceneIndex,
+        beat.index,
+        beat.text,
+        workDir,
+        q,
+        { requireBeatMatch: false }
+      ),
+      12_000,
+      `fast adopt scene ${sceneIndex} beat ${beat.index}`
+    );
+    if (clip) return clip;
+  } catch (err) {
+    console.warn(
+      `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: fast stock failed:`,
+      (err as Error).message
+    );
+  }
+  return generateColorFallback(sceneIndex * 500 + beat.index, Math.min(4, beat.holdSec), workDir);
 }
 
 function composeParallelism(): number {
@@ -4833,7 +4894,14 @@ async function tryStockSources(
       continue;
     }
     if (categoryAtLimit(dedup, category, adoptOpts.muskTopic)) continue;
-    const paths = await fetch();
+    const fetchMs = dedup.perf.fastStockMode ? 12_000 : 35_000;
+    let paths: string[] = [];
+    try {
+      paths = await withTimeout(fetch(), fetchMs, `${logLabel} fetch s${sceneIndex} b${beatIndex}`);
+    } catch {
+      continue;
+    }
+    if (!paths.length) continue;
     const clip = await adoptClip(paths, dedup, sceneIndex, beatIndex, beatText, workDir, query, adoptOpts);
     if (clip) {
       console.log(`[Pipeline] Scene ${sceneIndex} beat ${beatIndex}: ${logLabel} "${query}"`);
@@ -5033,6 +5101,29 @@ async function fetchBeatClip(
     () => fetchBrollClips([query], clipFetchDur, workDir, sceneIndex, dedup.usedPexelsIds);
 
   let clip: string | null = null;
+
+  // Railway 1–2 min: script Pexels only — avoids person/YouTube/hero paths that exceed beat timeout.
+  if (perf.fastStockMode) {
+    const beatDerived = deriveBeatStockQuery(beat.text, scene, videoTitle, personName, muskTopic);
+    const entityStock = realEntityStockQueriesForBeat(beat.text, scene.text, videoTitle);
+    const beatQueries = [...new Set([
+      ...scriptStockSearchQueries(beat.text, scenePersons),
+      ...scriptQueries,
+      beatDerived,
+      ...entityStock,
+      beat.searchQuery,
+      q,
+    ].filter((bq) => typeof bq === "string" && bq.trim().length > 2 && !isBlockedStockQuery(bq)))].slice(0, Math.min(2, maxQ));
+    clip = await tryStockSources(
+      beatQueries.map((bq, bi) => ({
+        query: bq,
+        fetch: pexFetch(bq, `${tag}_fast`, candidateOffset + bi, 2),
+      })),
+      dedup, sceneIndex, beat.index, beat.text, workDir, "fast script", adoptOpts
+    );
+    dedup.globalBeatIndex++;
+    return clip;
+  }
 
   if (personName) {
     clip = await fetchPersonBeatClip(
@@ -5247,9 +5338,9 @@ async function fetchSceneVisuals(
   const scenePersons = resolveScenePersons(scene, videoTitle);
   const personName = scenePersons[0] ?? extractPrimaryPersonFromTitle(videoTitle) ?? "";
   const spaceTopic = isSpaceRelatedTopic(scene.visualCue, scene.pexelsQuery, scene.text, videoTitle ?? "");
-  const beatCap = Math.max(
+  const beatCap = Math.min(
     dedup.perf.maxBeatsPerScene,
-    Math.ceil(scene.duration / VIDRUSH_BEAT_SEC)
+    Math.max(2, Math.ceil(scene.duration / VIDRUSH_BEAT_SEC))
   );
   dedup.stillPhotosThisScene = 0;
   dedup.stillPhotosMaxThisScene = maxStillPhotosForScene(scene.index, scenePersons.length > 0);
@@ -5292,89 +5383,17 @@ async function fetchSceneVisuals(
     );
     if (clip) {
       pushClip(clip);
+    } else if (dedup.perf.fastStockMode) {
+      pushClip(
+        await resolveBeatClipFast(beat, scene, workDir, scene.index, clipFetchDur, dedup, scenePersons)
+      );
     } else {
       console.warn(
-        `[Pipeline] Scene ${scene.index} beat ${beat.index}: no real footage for "${beat.searchQuery}" — emergency stock`
+        `[Pipeline] Scene ${scene.index} beat ${beat.index}: no footage for "${beat.searchQuery}" — quick fallback`
       );
-      const emergencyQ = stockQueryFromBeatScript(beat.text);
-      const emergencyAdopt: VisualAdoptOptions = { ...adoptOpts, requireBeatMatch: false };
-      const emergency = await fetchPexelsClips(
-        emergencyQ,
-        clipFetchDur,
-        workDir,
-        scene.index,
-        1,
-        undefined,
-        true,
-        `b${beat.index}_em`,
-        dedup.usedPexelsIds,
-        beat.index * 7 + scene.index,
-        dedup.perf.pexelsDownloadRetries
+      pushClip(
+        await resolveBeatClipFast(beat, scene, workDir, scene.index, clipFetchDur, dedup, scenePersons)
       );
-      const emClip = await adoptClip(
-        emergency, dedup, scene.index, beat.index, beat.text, workDir, emergencyQ, emergencyAdopt
-      );
-      if (emClip) {
-        pushClip(emClip);
-      } else {
-        const looseAdopt: VisualAdoptOptions = { ...adoptOpts, requireBeatMatch: false };
-        const lastResort = await fetchLastResortRealClip(
-          beat, scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle, looseAdopt
-        );
-        if (lastResort) {
-          pushClip(lastResort);
-        } else {
-          if (personName && beatMentionsPerson(beat.text, personName)) {
-            const personClip = await fetchPersonBeatClip(
-              beat, scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle,
-              adoptOpts,
-              (query, t, off, count = 3) => () =>
-                fetchPexelsClips(
-                  query, clipFetchDur, workDir, scene.index, count, [query], true, t,
-                  dedup.usedPexelsIds, off, dedup.perf.pexelsDownloadRetries
-                ),
-              beat.index * 3 + scene.index,
-              `b${beat.index}`
-            );
-            if (personClip) {
-              pushClip(personClip);
-            } else {
-              pushClip(await generateColorFallback(scene.index * 500 + beat.index, 4, workDir));
-            }
-          } else if (muskTopic) {
-            let rescued = false;
-            for (const gq of GOLDEN_MUSK_QUERIES) {
-              if (isBlockedStockQuery(gq)) continue;
-              const golden = await fetchPexelsClips(
-                gq, clipFetchDur, workDir, scene.index, 1, [gq], true,
-                `b${beat.index}_golden_em`, dedup.usedPexelsIds, beat.index + scene.index,
-                dedup.perf.pexelsDownloadRetries
-              );
-              const gClip = await adoptClip(
-                golden, dedup, scene.index, beat.index, beat.text, workDir, gq, adoptOpts
-              );
-              if (gClip) {
-                pushClip(gClip);
-                rescued = true;
-                break;
-              }
-            }
-            if (!rescued) {
-              console.warn(
-                `[Pipeline] Scene ${scene.index} beat ${beat.index}: golden Musk stock rescue`
-              );
-              pushClip(await fetchMuskGoldenStockBeat(beat, scene, workDir, scene.index, dedup, adoptOpts));
-            }
-          } else if (muskTopic) {
-            pushClip(await fetchMuskGoldenStockBeat(beat, scene, workDir, scene.index, dedup, adoptOpts));
-          } else {
-            console.warn(
-              `[Pipeline] Scene ${scene.index} beat ${beat.index}: color placeholder`
-            );
-            pushClip(await generateColorFallback(scene.index * 500 + beat.index, 4, workDir));
-          }
-        }
-      }
     }
   }
 
@@ -6558,6 +6577,7 @@ export async function runVideoPipeline(
             `[Pipeline] Scene ${scene.index} visuals timed out after ${Math.round(perf.sceneVisualTimeoutMs / 1000)}s — filling placeholders:`,
             (sceneErr as Error).message
           );
+          visualDedup.lock = Promise.resolve();
           const n = Math.max(2, Math.ceil(scene.duration / VIDRUSH_BEAT_SEC));
           const fallbackClips: string[] = [];
           const fallbackDurs: number[] = [];
@@ -6569,7 +6589,7 @@ export async function runVideoPipeline(
         }
         completedVisuals++;
         onProgress?.({
-          stage: `Generating AI visuals... (${completedVisuals}/${scenes.length} done)`,
+          stage: `Generating AI visuals... (${completedVisuals}/${scenes.length} scenes done)`,
           percent: 20 + Math.round((completedVisuals / scenes.length) * 25),
         });
         return result;
