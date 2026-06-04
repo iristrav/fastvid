@@ -5155,7 +5155,7 @@ async function fetchBeatClip(
     ...entityStock,
     beat.searchQuery,
     q,
-  ].filter((bq) => typeof bq === "string" && bq.trim().length > 2 && !isBlockedStockQuery(bq)))].slice(0, maxQ)];
+  ].filter((bq) => typeof bq === "string" && bq.trim().length > 2 && !isBlockedStockQuery(bq)))].slice(0, maxQ);
   clip = await tryStockSources(
     beatQueries.map((bq, bi) => ({
       query: bq,
