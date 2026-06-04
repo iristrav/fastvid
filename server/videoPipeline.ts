@@ -366,7 +366,7 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
       maxAiClipsPerVideo: 0,
       sceneParallelism: railwayParallel,
       pexelsDownloadRetries: IS_RAILWAY ? 1 : 2,
-      maxStockQueriesPerBeat: 3,
+      maxStockQueriesPerBeat: 4,
       beatClipTimeoutMs: IS_RAILWAY ? 48_000 : 90_000,
       sceneVisualTimeoutMs: IS_RAILWAY ? 4 * 60_000 : 6 * 60_000,
       fastStockMode: IS_RAILWAY,
@@ -532,6 +532,57 @@ async function resolveBeatClipFast(
       /* try next script query */
     }
   }
+  if (
+    dedup.personTopicLock &&
+    dedup.primaryPerson &&
+    dedup.entityYoutubeFetchesUsed < dedup.perf.maxEntityYoutubePerVideo &&
+    (process.env.YOUTUBE_API_KEY || RAPIDAPI_KEY || process.env.YOUTUBE_CC_DL_SERVICE)
+  ) {
+    const personYt = buildPersonMediaQueries(dedup.primaryPerson, beat.text.slice(0, 80));
+    dedup.entityYoutubeFetchesUsed++;
+    try {
+      const ytPaths = await withTimeout(
+        fetchYouTubeCCClips(
+          personYt.slice(0, 2),
+          clipFetchDur,
+          workDir,
+          sceneIndex,
+          1,
+          beat.keywords,
+          1
+        ),
+        20_000,
+        `fast person YouTube s${sceneIndex} b${beat.index}`
+      );
+      const personAdopt: VisualAdoptOptions = {
+        personTopic: true,
+        primaryPerson: dedup.primaryPerson,
+        keywords: beat.keywords,
+        requireBeatMatch: false,
+        scriptAnchored: true,
+      };
+      const ytClip = await adoptClip(
+        ytPaths,
+        dedup,
+        sceneIndex,
+        beat.index,
+        beat.text,
+        workDir,
+        dedup.primaryPerson,
+        personAdopt
+      );
+      if (ytClip) {
+        dedup.lastMuskStockClip = ytClip;
+        console.log(
+          `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: fast person YouTube (${dedup.primaryPerson})`
+        );
+        return ytClip;
+      }
+    } catch {
+      /* fall through to rescue / grey */
+    }
+  }
+
   const rescue = dedup.lastMuskStockClip;
   if (
     rescue && fs.existsSync(rescue) && !dedup.usedPaths.has(rescue) &&
