@@ -328,6 +328,12 @@ interface PipelinePerfProfile {
   maxAiClipsPerVideo: number;
   sceneParallelism: number;
   pexelsDownloadRetries: number;
+  /** Max Pexels query variants tried per beat (prevents 8+ min stalls). */
+  maxStockQueriesPerBeat: number;
+  /** Wall-clock cap for one beat's stock waterfall. */
+  beatClipTimeoutMs: number;
+  /** Wall-clock cap for one scene's visual fetch. */
+  sceneVisualTimeoutMs: number;
 }
 
 function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
@@ -335,7 +341,7 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
   if (videoLength === "1" || videoLength === "2") {
     return {
       targetWallClockMin: 60,
-      maxBeatsPerScene: 14,
+      maxBeatsPerScene: 8,
       maxTopicQueries: IS_RAILWAY ? 2 : 3,
       skipFairUseTransform: true,
       transformTimeoutMs: 25_000,
@@ -347,6 +353,9 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
       maxAiClipsPerVideo: IS_RAILWAY ? 0 : 3,
       sceneParallelism: railwayParallel,
       pexelsDownloadRetries: IS_RAILWAY ? 1 : 2,
+      maxStockQueriesPerBeat: 4,
+      beatClipTimeoutMs: IS_RAILWAY ? 50_000 : 90_000,
+      sceneVisualTimeoutMs: IS_RAILWAY ? 4 * 60_000 : 6 * 60_000,
     };
   }
   if (videoLength === "5-8") {
@@ -364,6 +373,9 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
       maxAiClipsPerVideo: 5,
       sceneParallelism: railwayParallel,
       pexelsDownloadRetries: 2,
+      maxStockQueriesPerBeat: 5,
+      beatClipTimeoutMs: 120_000,
+      sceneVisualTimeoutMs: 8 * 60_000,
     };
   }
   if (videoLength === "12-15" || videoLength === "15-20") {
@@ -381,6 +393,9 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
       maxAiClipsPerVideo: 5,
       sceneParallelism: railwayParallel,
       pexelsDownloadRetries: 2,
+      maxStockQueriesPerBeat: 5,
+      beatClipTimeoutMs: 120_000,
+      sceneVisualTimeoutMs: 10 * 60_000,
     };
   }
   return {
@@ -397,12 +412,44 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
     maxAiClipsPerVideo: 6,
     sceneParallelism: railwayParallel,
     pexelsDownloadRetries: 2,
+    maxStockQueriesPerBeat: 6,
+    beatClipTimeoutMs: 150_000,
+    sceneVisualTimeoutMs: 12 * 60_000,
   };
 }
 
 function visualStageTimeoutMs(videoLength: string, perf: PipelinePerfProfile): number {
-  if (videoLength === "1" || videoLength === "2") return 20 * 60_000;
+  if (videoLength === "1" || videoLength === "2") return 12 * 60_000;
   return Math.round(perf.targetWallClockMin * 60_000 * 1.15);
+}
+
+async function runBeatClipFetch(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  spaceTopic: boolean,
+  personName: string,
+  videoTitle: string | undefined
+): Promise<string | null> {
+  const { beatClipTimeoutMs } = dedup.perf;
+  try {
+    return await withTimeout(
+      fetchBeatClip(
+        beat, scene, workDir, sceneIndex, clipFetchDur, dedup, spaceTopic, personName, videoTitle
+      ),
+      beatClipTimeoutMs,
+      `Scene ${sceneIndex} beat ${beat.index} stock`
+    );
+  } catch (err) {
+    console.warn(
+      `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: stock timed out after ${Math.round(beatClipTimeoutMs / 1000)}s —`,
+      (err as Error).message
+    );
+    return null;
+  }
 }
 
 function composeParallelism(): number {
@@ -3365,8 +3412,11 @@ async function fetchYouTubeCCClips(
   const downloadedIds = new Set<string>();
   let fetched = 0;
 
-  for (const query of uniqueQueries) {
+  const ytDeadline = Date.now() + 55_000;
+
+  for (const query of uniqueQueries.slice(0, 2)) {
     if (fetched >= count) break;
+    if (Date.now() > ytDeadline) break;
 
     try {
       // Step 1: Search YouTube Data API v3 for Creative Commons videos
@@ -3398,8 +3448,9 @@ async function fetchYouTubeCCClips(
       }
       console.log(`[Pipeline] Scene ${sceneIndex}: YouTube CC found ${items.length} videos for "${query}"`);
 
-      for (const item of items) {
+      for (const item of items.slice(0, 3)) {
         if (fetched >= count) break;
+        if (Date.now() > ytDeadline) break;
         const videoId = item.id?.videoId;
         if (!videoId || downloadedIds.has(videoId)) continue;
 
@@ -4765,7 +4816,8 @@ async function tryStockSources(
   logLabel: string,
   adoptOpts: VisualAdoptOptions = {}
 ): Promise<string | null> {
-  for (const { query, fetch } of fetchers) {
+  const maxFetchers = Math.max(2, dedup.perf.maxStockQueriesPerBeat + 1);
+  for (const { query, fetch } of fetchers.slice(0, maxFetchers)) {
     if (isBlockedStockQuery(query)) continue;
     const category = stockVisualCategory(query);
     if (adoptOpts.muskTopic && (category === "rocket" || category === "space") && !isMuskApprovedRocketQuery(query)) {
@@ -4855,10 +4907,11 @@ async function fetchPersonBeatClip(
   );
   const loosePerson: VisualAdoptOptions = { ...adoptOpts, requireBeatMatch: false };
 
+  const personPexels = personQueries.slice(0, 2);
   let clip = await tryStockSources(
-    personQueries.map((pq, pi) => ({
+    personPexels.map((pq, pi) => ({
       query: pq,
-      fetch: pexFetch(pq, `${tag}_person`, candidateOffset + pi, 4),
+      fetch: pexFetch(pq, `${tag}_person`, candidateOffset + pi, 2),
     })),
     dedup, sceneIndex, beat.index, beat.text, workDir, `person Pexels (${personName})`, loosePerson
   );
@@ -4869,14 +4922,25 @@ async function fetchPersonBeatClip(
     (process.env.YOUTUBE_API_KEY || RAPIDAPI_KEY || process.env.YOUTUBE_CC_DL_SERVICE)
   ) {
     dedup.entityYoutubeFetchesUsed++;
-    clip = await tryStockSources(
-      [{
-        query: personName,
-        fetch: () =>
-          fetchYouTubeCCClips(personQueries, clipFetchDur, workDir, sceneIndex, 1, beat.keywords, 2),
-      }],
-      dedup, sceneIndex, beat.index, beat.text, workDir, `person YouTube (${personName})`, loosePerson
-    );
+    try {
+      clip = await withTimeout(
+        tryStockSources(
+          [{
+            query: personName,
+            fetch: () =>
+              fetchYouTubeCCClips(
+                personQueries.slice(0, 2), clipFetchDur, workDir, sceneIndex, 1, beat.keywords, 1
+              ),
+          }],
+          dedup, sceneIndex, beat.index, beat.text, workDir, `person YouTube (${personName})`, loosePerson
+        ),
+        55_000,
+        `person YouTube scene ${sceneIndex} beat ${beat.index}`
+      );
+    } catch (err) {
+      console.warn(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: person YouTube skipped:`, (err as Error).message);
+      clip = null;
+    }
     if (clip) return clip;
   }
 
@@ -4936,12 +5000,13 @@ async function fetchBeatClip(
     keywords: beat.keywords,
     sceneText: scene.text,
     videoTitle,
-    requireBeatMatch: true,
+    requireBeatMatch: false,
     requireMuskBrand: false,
   };
 
   const scenePersons = resolveScenePersons(scene, videoTitle);
   const scriptQueries = scriptStockSearchQueries(beat.text, scenePersons);
+  const maxQ = perf.maxStockQueriesPerBeat;
   let q = scriptQueries[0] ?? beat.searchQuery;
   if (isBlockedStockQuery(q)) {
     q = stockQueryFromBeatScript(beat.text, scenePersons);
@@ -4978,11 +5043,11 @@ async function fetchBeatClip(
     ...entityStock,
     beat.searchQuery,
     q,
-  ].filter((bq) => typeof bq === "string" && bq.trim().length > 2 && !isBlockedStockQuery(bq)))];
+  ].filter((bq) => typeof bq === "string" && bq.trim().length > 2 && !isBlockedStockQuery(bq)))].slice(0, maxQ)];
   clip = await tryStockSources(
     beatQueries.map((bq, bi) => ({
       query: bq,
-      fetch: pexFetch(bq, `${tag}_script`, candidateOffset + bi, muskTopic ? 5 : 3),
+      fetch: pexFetch(bq, `${tag}_script`, candidateOffset + bi, muskTopic ? 4 : 2),
     })),
     dedup, sceneIndex, beat.index, beat.text, workDir, "script beat", adoptOpts
   );
@@ -5166,7 +5231,8 @@ async function fetchSceneVisuals(
   scene: Scene,
   workDir: string,
   videoTitle: string | undefined,
-  dedup: VisualDedupState
+  dedup: VisualDedupState,
+  onBeatProgress?: (beatIndex: number, beatTotal: number) => void
 ): Promise<SceneVisualsResult> {
   const clipFetchDur = 4;
   const scenePersons = resolveScenePersons(scene, videoTitle);
@@ -5189,7 +5255,9 @@ async function fetchSceneVisuals(
 
   const muskTopic = isMuskTeslaTopic(videoTitle, scene.text);
 
-  for (const beat of beats) {
+  for (let bi = 0; bi < beats.length; bi++) {
+    const beat = beats[bi];
+    onBeatProgress?.(bi, beats.length);
     const pushClip = (clipPath: string) => {
       clips.push(clipPath);
       beatDurations.push(beat.holdSec);
@@ -5202,7 +5270,7 @@ async function fetchSceneVisuals(
       requireBeatMatch: false,
       requireMuskBrand: false,
     };
-    const clip = await fetchBeatClip(
+    const clip = await runBeatClipFetch(
       beat,
       scene,
       workDir,
@@ -6458,17 +6526,42 @@ export async function runVideoPipeline(
     const visualLimit = pLimit(perf.sceneParallelism);
     let completedVisuals = 0;
     const sceneVisualResults: SceneVisualsResult[] = await withTimeout(
-      Promise.all(scenes.map(scene => visualLimit(async () => {
-        const result = await fetchSceneVisuals(scene, workDir, topicContext, visualDedup);
+      Promise.all(scenes.map((scene, sceneIdx) => visualLimit(async () => {
+        let result: SceneVisualsResult;
+        try {
+          result = await withTimeout(
+            fetchSceneVisuals(scene, workDir, topicContext, visualDedup, (beatIdx, beatTotal) => {
+              onProgress?.({
+                stage: `Scene ${sceneIdx + 1}/${scenes.length}: clip ${beatIdx + 1}/${beatTotal}...`,
+                percent: 20 + Math.round(((sceneIdx + (beatIdx + 1) / Math.max(1, beatTotal)) / scenes.length) * 25),
+              });
+            }),
+            perf.sceneVisualTimeoutMs,
+            `Scene ${scene.index} visuals`
+          );
+        } catch (sceneErr) {
+          console.warn(
+            `[Pipeline] Scene ${scene.index} visuals timed out after ${Math.round(perf.sceneVisualTimeoutMs / 1000)}s — filling placeholders:`,
+            (sceneErr as Error).message
+          );
+          const n = Math.max(2, Math.ceil(scene.duration / VIDRUSH_BEAT_SEC));
+          const fallbackClips: string[] = [];
+          const fallbackDurs: number[] = [];
+          for (let fi = 0; fi < n; fi++) {
+            fallbackClips.push(await generateColorFallback(scene.index * 100 + fi, VIDRUSH_BEAT_SEC, workDir));
+            fallbackDurs.push(VIDRUSH_BEAT_SEC);
+          }
+          result = { clips: fallbackClips, beatDurations: fallbackDurs };
+        }
         completedVisuals++;
         onProgress?.({
           stage: `Generating AI visuals... (${completedVisuals}/${scenes.length} done)`,
-          percent: 20 + Math.round((completedVisuals / scenes.length) * 25)
+          percent: 20 + Math.round((completedVisuals / scenes.length) * 25),
         });
         return result;
       }))),
       visualStageTimeoutMs(videoLength, perf),
-      `Visual generation stage (≤${videoLength === "1" || videoLength === "2" ? 20 : perf.targetWallClockMin}min cap)`
+      `Visual generation stage (≤${videoLength === "1" || videoLength === "2" ? 12 : perf.targetWallClockMin}min cap)`
     );
     console.log(`[Pipeline] Stage 3 (visuals): ${((Date.now()-t2)/1000).toFixed(1)}s`);
 
