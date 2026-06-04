@@ -354,7 +354,7 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
   if (videoLength === "1" || videoLength === "2") {
     return {
       targetWallClockMin: 60,
-      maxBeatsPerScene: IS_RAILWAY ? 5 : 8,
+      maxBeatsPerScene: IS_RAILWAY ? 4 : 8,
       maxTopicQueries: IS_RAILWAY ? 2 : 3,
       skipFairUseTransform: true,
       transformTimeoutMs: 25_000,
@@ -367,8 +367,8 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
       sceneParallelism: railwayParallel,
       pexelsDownloadRetries: IS_RAILWAY ? 1 : 2,
       maxStockQueriesPerBeat: 4,
-      beatClipTimeoutMs: IS_RAILWAY ? 55_000 : 90_000,
-      sceneVisualTimeoutMs: IS_RAILWAY ? 5 * 60_000 : 6 * 60_000,
+      beatClipTimeoutMs: IS_RAILWAY ? 38_000 : 90_000,
+      sceneVisualTimeoutMs: IS_RAILWAY ? 3 * 60_000 : 6 * 60_000,
       fastStockMode: IS_RAILWAY,
       scriptOnlyVisuals: true,
     };
@@ -586,9 +586,7 @@ async function resolveBeatClipFast(
     }
   }
 
-  return fetchUniqueStockForBeat(
-    beat, scene, workDir, sceneIndex, clipFetchDur, dedup, scenePersons[0] ?? "", videoTitle, adoptOpts
-  );
+  return null;
 }
 
 function composeParallelism(): number {
@@ -2438,7 +2436,8 @@ async function fetchMuskGoldenStockBeat(
 ): Promise<string | null> {
   const clipFetchDur = 4;
   const start = (sceneIndex * 5 + beat.index) % GOLDEN_MUSK_QUERIES.length;
-  for (let i = 0; i < GOLDEN_MUSK_QUERIES.length; i++) {
+  const maxTries = dedup.perf.fastStockMode ? 3 : GOLDEN_MUSK_QUERIES.length;
+  for (let i = 0; i < maxTries; i++) {
     const gq = GOLDEN_MUSK_QUERIES[(start + i) % GOLDEN_MUSK_QUERIES.length];
     if (isBlockedStockQuery(gq)) continue;
     const golden = await fetchPexelsClips(
@@ -2451,17 +2450,7 @@ async function fetchMuskGoldenStockBeat(
     );
     if (gClip) return gClip;
   }
-  return fetchUniqueStockForBeat(
-    beat,
-    scene,
-    workDir,
-    sceneIndex,
-    clipFetchDur,
-    dedup,
-    adoptOpts.primaryPerson ?? "",
-    adoptOpts.videoTitle,
-    adoptOpts
-  );
+  return null;
 }
 
 /** Return clipPath if ffprobe confirms a video stream; never substitute grey placeholders. */
@@ -5239,6 +5228,31 @@ async function fetchUniqueStockForBeat(
   videoTitle?: string,
   adoptOpts: VisualAdoptOptions = {}
 ): Promise<string | null> {
+  const wallMs = dedup.perf.fastStockMode ? 18_000 : 28_000;
+  try {
+    return await withTimeout(
+      fetchUniqueStockForBeatInner(
+        beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName, videoTitle, adoptOpts
+      ),
+      wallMs,
+      `unique stock s${sceneIndex} b${beat.index}`
+    );
+  } catch {
+    return null;
+  }
+}
+
+async function fetchUniqueStockForBeatInner(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  personName: string,
+  videoTitle?: string,
+  adoptOpts: VisualAdoptOptions = {}
+): Promise<string | null> {
   if (!PEXELS_API_KEY && !PIXABAY_API_KEY) return null;
   const perf = dedup.perf;
   const muskTopic = isMuskTeslaTopic(videoTitle, beat.text);
@@ -5257,9 +5271,10 @@ async function fetchUniqueStockForBeat(
     videoTitle,
   };
 
+  const queryCap = perf.fastStockMode ? 5 : 8;
   const queries = [
-    ...buildBeatVisualQueryList(beat.text, scene, videoTitle, scenePersons, 8),
-    ...(muskTopic ? [...GOLDEN_MUSK_QUERIES, ...OPENING_MUSK_QUERIES] : []),
+    ...buildBeatVisualQueryList(beat.text, scene, videoTitle, scenePersons, queryCap),
+    ...(muskTopic ? GOLDEN_MUSK_QUERIES.slice(0, perf.fastStockMode ? 4 : 8) : []),
     enrichStockQuery(scene.pexelsQuery, scene, videoTitle, personName, beat.text),
     ...(scene.pexelsQueries ?? [])
       .slice(0, 4)
@@ -5269,15 +5284,15 @@ async function fetchUniqueStockForBeat(
   ].filter(
     (q): q is string => typeof q === "string" && q.trim().length > 2 && !isBlockedStockQuery(q)
   );
-  const uniqueQueries = [...new Set(queries)];
+  const uniqueQueries = [...new Set(queries)].slice(0, perf.fastStockMode ? 5 : 10);
 
   const pexFetch = (query: string, t: string, off: number) => () =>
     fetchPexelsClips(
-      query, clipFetchDur, workDir, sceneIndex, 3, [query], true, t,
+      query, clipFetchDur, workDir, sceneIndex, perf.fastStockMode ? 2 : 3, [query], true, t,
       dedup.usedPexelsIds, off, perf.pexelsDownloadRetries
     );
   const pixFetch = (query: string, t: string, off: number) => () =>
-    fetchPixabayClips(query, clipFetchDur, workDir, sceneIndex, 3, t, true, dedup.usedPixabayIds, off);
+    fetchPixabayClips(query, clipFetchDur, workDir, sceneIndex, 2, t, true, dedup.usedPixabayIds, off);
 
   for (let qi = 0; qi < uniqueQueries.length; qi++) {
     const q = uniqueQueries[qi];
@@ -5911,26 +5926,43 @@ async function fetchSceneVisuals(
         dedup.lastMuskStockClip = clipPath;
       }
     };
-    let clip = await runBeatClipFetch(
-      beat,
-      scene,
-      workDir,
-      scene.index,
-      clipFetchDur,
-      dedup,
-      spaceTopic,
-      personName,
-      videoTitle
-    );
-    if (!clip || isPipelineFallbackClip(clip)) {
-      clip = await resolveBeatClipFast(
-        beat, scene, workDir, scene.index, clipFetchDur, dedup, scenePersons, videoTitle, beatAdoptOpts
+    const beatWallMs = dedup.perf.fastStockMode ? 45_000 : 65_000;
+    let clip: string | null = null;
+    try {
+      clip = await withTimeout(
+        (async () => {
+          let c = await runBeatClipFetch(
+            beat,
+            scene,
+            workDir,
+            scene.index,
+            clipFetchDur,
+            dedup,
+            spaceTopic,
+            personName,
+            videoTitle
+          );
+          if (!c || isPipelineFallbackClip(c)) {
+            c = await resolveBeatClipFast(
+              beat, scene, workDir, scene.index, clipFetchDur, dedup, scenePersons, videoTitle, beatAdoptOpts
+            );
+          }
+          if (!c || isPipelineFallbackClip(c)) {
+            c = await fetchUniqueStockForBeat(
+              beat, scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts
+            );
+          }
+          return c && !isPipelineFallbackClip(c) ? c : null;
+        })(),
+        beatWallMs,
+        `scene ${scene.index} beat ${bi} visuals`
       );
-    }
-    for (let attempt = 0; attempt < 4 && (!clip || isPipelineFallbackClip(clip)); attempt++) {
-      clip = await fetchUniqueStockForBeat(
-        beat, scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts
+    } catch (err) {
+      console.warn(
+        `[Pipeline] Scene ${scene.index} beat ${beat.index}: capped at ${Math.round(beatWallMs / 1000)}s:`,
+        (err as Error).message
       );
+      dedup.lock = Promise.resolve();
     }
     if (clip && !isPipelineFallbackClip(clip)) {
       pushClip(clip);
@@ -5945,7 +5977,7 @@ async function fetchSceneVisuals(
   let backfillAttempts = 0;
   while (
     clips.filter((c) => c && !isPipelineFallbackClip(c)).length < minBeats &&
-    backfillAttempts < 8
+    backfillAttempts < 2
   ) {
     const stub = beats[beats.length - 1] ?? beats[0];
     if (!stub) break;
@@ -7098,7 +7130,7 @@ export async function runVideoPipeline(
         stage: `Fetching stock clips (scene ${sceneNum}/${scenes.length}, ${completedVisuals} done)...`,
         percent: 20 + Math.round(((completedVisuals + 0.15) / scenes.length) * 25),
       });
-    }, 20_000);
+    }, 12_000);
     let sceneVisualResults: SceneVisualsResult[];
     try {
     sceneVisualResults = await withTimeout(
@@ -7145,7 +7177,7 @@ export async function runVideoPipeline(
             keywords: recoverAdopt.keywords ?? [],
             holdSec: VIDRUSH_BEAT_SEC,
           };
-          for (let fi = 0; fi < n + 3; fi++) {
+          for (let fi = 0; fi < n && fi < 4; fi++) {
             stubBeat.index = fi;
             const clip = await fetchUniqueStockForBeat(
               stubBeat, scene, workDir, scene.index, 4, visualDedup, personName, topicContext, recoverAdopt
@@ -7155,7 +7187,6 @@ export async function runVideoPipeline(
             if (recoveredClips.some((c) => clipContentKey(c) === key)) continue;
             recoveredClips.push(clip);
             recoveredDurs.push(VIDRUSH_BEAT_SEC);
-            if (recoveredClips.length >= n) break;
           }
           if (recoveredClips.length === 0) throw sceneErr;
           result = { clips: recoveredClips, beatDurations: recoveredDurs };

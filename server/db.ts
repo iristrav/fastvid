@@ -205,7 +205,10 @@ export async function updateVideoStatus(id: number, status: InsertVideo["status"
 export async function updateVideoProgress(id: number, progressStep: string, progressPercent: number) {
   const db = await getDb();
   if (!db) return;
-  await db.update(videos).set({ progressStep, progressPercent }).where(eq(videos.id, id));
+  await db
+    .update(videos)
+    .set({ progressStep, progressPercent, updatedAt: new Date() })
+    .where(eq(videos.id, id));
 }
 
 export interface ProgressLogEntry {
@@ -263,7 +266,7 @@ export { ORPHANED_PIPELINE_STATUSES };
 
 /** No DB progress update for this long → treat as failed (not "stuck — retry"). */
 function pipelineStallThresholdMs(videoLength: string | null | undefined): number {
-  if (videoLength === "1" || videoLength === "2") return 8 * 60 * 1000;
+  if (videoLength === "1" || videoLength === "2") return 10 * 60 * 1000;
   if (videoLength === "5-8") return 12 * 60 * 1000;
   return 18 * 60 * 1000;
 }
