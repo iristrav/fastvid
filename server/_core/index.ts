@@ -154,6 +154,7 @@ async function startServer() {
         youtubeCcReady:
           !!process.env.YOUTUBE_API_KEY?.trim() &&
           !!(process.env.RAPIDAPI_KEY?.trim() || process.env.YOUTUBE_CC_DL_SERVICE?.trim()),
+        serpApiReady: !!process.env.SERPAPI_KEY?.trim(),
         NODE_ENV: process.env.NODE_ENV,
       },
       storage,

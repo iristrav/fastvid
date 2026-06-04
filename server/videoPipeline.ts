@@ -6524,6 +6524,11 @@ export async function runVideoPipeline(
     if (!PEXELS_API_KEY) {
       console.warn("[Pipeline] PEXELS_API_KEY missing — using Pixabay only; clip variety may be lower");
     }
+    if (SERPAPI_KEY) {
+      console.log("[Pipeline] SERPAPI_KEY set — celebrity/person image fallback enabled");
+    } else if (/kylie|jenner|celebrity|musk|tesla/i.test(topicContext ?? userPrompt ?? "")) {
+      console.warn("[Pipeline] SERPAPI_KEY not set — named-person videos may lack real photos of the subject");
+    }
     const perf = getPipelinePerfProfile(videoLength);
     console.log(
       `[Pipeline] Perf budget: ≤${perf.targetWallClockMin}min wall-clock, ` +
