@@ -176,6 +176,9 @@ async function startServer() {
         YOUTUBE_CC_DL_SERVICE: !!process.env.YOUTUBE_CC_DL_SERVICE,
         SERPAPI_KEY: !!process.env.SERPAPI_KEY,
         FLICKR_API_KEY: !!process.env.FLICKR_API_KEY?.trim(),
+        EUROPEANA_API_KEY: !!process.env.EUROPEANA_API_KEY?.trim(),
+        VIMEO_ACCESS_TOKEN: !!process.env.VIMEO_ACCESS_TOKEN?.trim(),
+        gdeltTvNewsReady: true,
         celebrityVideoExtrasReady: true,
         stockFootageReady: !!(process.env.PEXELS_API_KEY?.trim() || process.env.PIXABAY_API_KEY?.trim()),
         youtubeCcReady:

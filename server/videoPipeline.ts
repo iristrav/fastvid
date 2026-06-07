@@ -56,6 +56,13 @@ const HIGGSFIELD_API_SECRET = process.env.HIGGSFIELD_API_SECRET || "";
 const SERPAPI_KEY = process.env.SERPAPI_KEY || "";
 /** Optional: CC-licensed event/interview videos (https://www.flickr.com/services/api/) */
 const FLICKR_API_KEY = process.env.FLICKR_API_KEY || "";
+/** Optional: EU broadcast heritage video (https://www.europeana.eu/en/apis) */
+const EUROPEANA_API_KEY = process.env.EUROPEANA_API_KEY || "";
+/** Optional: Vimeo Creative Commons video search (https://developer.vimeo.com/) */
+const VIMEO_ACCESS_TOKEN = process.env.VIMEO_ACCESS_TOKEN || "";
+/** GDELT TV News → Internet Archive television captions (free, no key) */
+const GDELT_TV_API = "https://api.gdeltproject.org/api/v2/tv/tv";
+const GDELT_TV_STATIONS = ["CNN", "FOXNEWS", "MSNBC", "BBCNEWS"] as const;
 const RUNWAY_API_KEY = process.env.RUNWAY_API_KEY || "";
 const KLING_API_KEY = process.env.KLING_API_KEY || "";
 const KLING_API_SECRET = process.env.KLING_API_SECRET || "";
@@ -434,6 +441,9 @@ async function tryBeatRealYouTubeFootage(
   if (!youtubeCcReady() || youtubeQueries.length === 0) return null;
   if (dedup.entityYoutubeFetchesUsed >= dedup.perf.maxEntityYoutubePerVideo) return null;
   dedup.entityYoutubeFetchesUsed++;
+  const ytKeywords = [
+    ...new Set([...(adoptOpts.keywords ?? []), ...beat.keywords]),
+  ].slice(0, 22);
   try {
     return await withTimeout(
       tryStockSources(
@@ -446,8 +456,9 @@ async function tryBeatRealYouTubeFootage(
               workDir,
               sceneIndex,
               1,
-              beat.keywords,
-              1
+              ytKeywords,
+              1,
+              adoptOpts.personTopic ? adoptOpts.primaryPerson ?? "" : ""
             ),
         }],
         dedup,
@@ -570,12 +581,12 @@ async function tryBeatTopicRealFootage(
       clipFetchDur,
       workDir,
       sceneIndex,
-      1,
+      3,
       `${tag}_celeb`,
       beat.index,
       beat.text
     );
-    clip = await adoptClip(
+    clip = await adoptBestCelebrityClip(
       celebVids,
       dedup,
       sceneIndex,
@@ -592,7 +603,7 @@ async function tryBeatTopicRealFootage(
   } else {
     const wikiVid = await fetchWikimediaVideos(wikiQuery, clipFetchDur, workDir, sceneIndex, 1, `${tag}_wiki`);
     clip = await adoptClip(
-      wikiVid,
+      wikiVid.map((c) => c.path),
       dedup,
       sceneIndex,
       beat.index,
@@ -658,7 +669,7 @@ async function tryBeatTopicRealFootage(
 
   if (SERPAPI_KEY && allowStill && canUseGlobalStillPhoto(dedup)) {
     const serpQ = primary
-      ? buildPersonSerpQuery(primary, sceneIndex, beat.index)
+      ? buildPersonSerpQuery(primary, sceneIndex, beat.index, beat.text)
       : (topicLabel || wikiQuery);
     const portrait = Boolean(primary) || dedup.personTopicLock;
     const serpPaths = await fetchSerpAPIImages(
@@ -751,7 +762,7 @@ async function tryBeatTopicRealFootage(
       `${tag}_ia`
     );
     clip = await adoptClip(
-      archivePaths,
+      archivePaths.map((c) => c.path),
       dedup,
       sceneIndex,
       beat.index,
@@ -968,7 +979,7 @@ async function resolveBeatClipFast(
     }
     const person = scenePersons[0] ?? dedup.primaryPerson;
     if (person) {
-      const personYt = buildPersonMediaQueries(person, beat.text.slice(0, 80));
+      const personYt = buildPersonCelebrityVideoQueries(person, beat.text, beat.index);
       clip = await tryBeatRealYouTubeFootage(
         beat,
         scene,
@@ -3750,25 +3761,41 @@ async function fetchWikimediaVideos(
   workDir: string,
   sceneIndex: number,
   count: number = 2,
-  fileTag = ""
-): Promise<string[]> {
+  fileTag = "",
+  personName = "",
+  beatKeywords: string[] = []
+): Promise<CelebrityClipCandidate[]> {
   if (!query?.trim()) return [];
-  const results: string[] = [];
+  const results: CelebrityClipCandidate[] = [];
   const UA = { "User-Agent": "Fastvid/1.0 (video generation; CC-licensed clips only)" };
   try {
     const searchUrl =
       `https://commons.wikimedia.org/w/api.php?action=query&list=search` +
-      `&srsearch=${encodeURIComponent(`${query} filetype:video`)}&srnamespace=6&srlimit=12&format=json&origin=*`;
+      `&srsearch=${encodeURIComponent(`${query} filetype:video`)}&srnamespace=6&srlimit=15&format=json&origin=*`;
     const searchResp = await withTimeout(fetch(searchUrl, { headers: UA }), 10_000, `Wikimedia video search scene ${sceneIndex}`);
     if (!searchResp.ok) return [];
     const searchData = await searchResp.json() as { query?: { search?: Array<{ title: string }> } };
-    const titles = searchData.query?.search?.map((r) => r.title).slice(0, count * 3) || [];
-    if (!titles.length) return [];
+    const hits = (searchData.query?.search ?? [])
+      .filter((r) => {
+        const hay = `${r.title} ${query}`.toLowerCase();
+        if (personName && !textMentionsPersonName(hay, personName)) return false;
+        if (beatKeywords.length > 0 && scoreVisualRelevance(hay, beatKeywords) < 1 && personName) {
+          return textMentionsPersonName(hay, personName);
+        }
+        return true;
+      })
+      .sort(
+        (a, b) =>
+          scoreVisualRelevance(`${b.title} ${query}`, beatKeywords) -
+          scoreVisualRelevance(`${a.title} ${query}`, beatKeywords)
+      )
+      .slice(0, count * 3);
+    if (!hits.length) return [];
 
     let downloaded = 0;
-    for (let i = 0; i < titles.length && downloaded < count; i++) {
+    for (let i = 0; i < hits.length && downloaded < count; i++) {
       try {
-        const title = titles[i];
+        const title = hits[i].title;
         const infoUrl =
           `https://commons.wikimedia.org/w/api.php?action=query&titles=${encodeURIComponent(title)}` +
           `&prop=imageinfo&iiprop=url|size|mime&format=json&origin=*`;
@@ -3792,7 +3819,7 @@ async function fetchWikimediaVideos(
         fs.writeFileSync(tmpPath, Buffer.from(buf));
 
         if (await trimRemoteVideoToClip(tmpPath, outPath, duration, 3, `Wikimedia video scene ${sceneIndex}`)) {
-          results.push(outPath);
+          results.push({ path: outPath, query });
           downloaded++;
           console.log(`[Pipeline] Scene ${sceneIndex}: Wikimedia video added: ${title}`);
         }
@@ -3808,18 +3835,24 @@ async function fetchWikimediaVideos(
 }
 
 /** Archive.org queries for real person footage (news, TV, documentaries) — no API key. */
-function buildPersonArchiveVideoQueries(person: string, beatIndex: number): string[] {
+function buildPersonArchiveVideoQueries(person: string, beatIndex: number, beatText = ""): string[] {
   const first = person.split(/\s+/)[0] ?? person;
+  const scriptQs = beatText
+    ? scriptEventSearchQueries(beatText, [person]).map((q) =>
+        textMentionsPersonName(q, person) ? q : `${person} ${q}`.trim()
+      )
+    : [];
   const variants = [
+    ...scriptQs,
     `title:(${person}) AND mediatype:movies`,
-    `collection:tvnews AND ${first}`,
+    `collection:tvnews AND ${person}`,
     `${person} interview`,
     `${person} television`,
     `${first} celebrity news`,
     `subject:"${person}"`,
-  ];
-  const offset = beatIndex % variants.length;
-  return [...variants.slice(offset), ...variants.slice(0, offset)].slice(0, 3);
+  ].filter((q, i, arr) => q.trim().length > 3 && arr.indexOf(q) === i);
+  const offset = beatIndex % Math.max(1, variants.length);
+  return [...variants.slice(offset), ...variants.slice(0, offset)].slice(0, 5);
 }
 
 /** Flickr CC video (4,5,6,9,10) — events, interviews uploaded with CC license. */
@@ -3829,7 +3862,9 @@ async function fetchFlickrCCVideos(
   workDir: string,
   sceneIndex: number,
   count: number = 1,
-  fileTag = ""
+  fileTag = "",
+  personName = "",
+  beatKeywords: string[] = []
 ): Promise<string[]> {
   if (!FLICKR_API_KEY?.trim() || !query?.trim()) return [];
   const results: string[] = [];
@@ -3856,7 +3891,17 @@ async function fetchFlickrCCVideos(
       photos?: { photo?: Array<{ id: string; secret: string; server: string; title?: string }> };
     };
     if (searchData.stat !== "ok") return [];
-    const photos = searchData.photos?.photo ?? [];
+    const photos = (searchData.photos?.photo ?? [])
+      .filter((photo) => {
+        const hay = `${photo.title ?? ""} ${query}`.toLowerCase();
+        if (personName && !textMentionsPersonName(hay, personName)) return false;
+        return true;
+      })
+      .sort(
+        (a, b) =>
+          scoreVisualRelevance(`${b.title ?? ""} ${query}`, beatKeywords) -
+          scoreVisualRelevance(`${a.title ?? ""} ${query}`, beatKeywords)
+      );
     if (!photos.length) return [];
 
     let downloaded = 0;
@@ -3923,56 +3968,93 @@ async function fetchFlickrCCVideos(
 /** Federated PeerTube search (SepiaSearch) — CC news/interviews, no API key. */
 const SEPIA_SEARCH_API = "https://sepiasearch.org/api/v1";
 
-async function fetchSepiaSearchVideos(
+function scoreSepiaSearchHit(
+  title: string,
   query: string,
+  personName: string,
+  beatKeywords: string[]
+): number {
+  const hay = `${title} ${query}`.toLowerCase();
+  if (personName && !textMentionsPersonName(hay, personName)) return -1;
+  let score = 3;
+  score += scoreVisualRelevance(hay, beatKeywords);
+  if (/\b(interview|news|documentary|conference|speech|red carpet|celebrity|talk show)\b/.test(hay)) {
+    score += 2;
+  }
+  return score;
+}
+
+async function fetchSepiaSearchVideos(
+  queries: string | string[],
   duration: number,
   workDir: string,
   sceneIndex: number,
   count: number = 1,
   fileTag = "",
-  relevanceKeywords: string[] = []
-): Promise<string[]> {
-  if (!query?.trim()) return [];
-  const results: string[] = [];
-  try {
-    const searchUrl = new URL(`${SEPIA_SEARCH_API}/search/videos`);
-    searchUrl.searchParams.set("search", query);
-    searchUrl.searchParams.set("count", String(Math.min(15, count * 5)));
-    searchUrl.searchParams.append("licenceOneOf", "1");
-    searchUrl.searchParams.append("licenceOneOf", "2");
-    searchUrl.searchParams.append("licenceOneOf", "7");
+  personName = "",
+  beatKeywords: string[] = []
+): Promise<CelebrityClipCandidate[]> {
+  const queryList = [...new Set((Array.isArray(queries) ? queries : [queries]).filter((q) => q?.trim()))];
+  if (!queryList.length) return [];
 
-    const searchResp = await withTimeout(
-      fetch(searchUrl.toString(), { headers: { "User-Agent": "Fastvid/1.0 (CC PeerTube clips)" } }),
-      14_000,
-      `SepiaSearch scene ${sceneIndex}`
-    );
-    if (!searchResp.ok) return [];
-    const data = await searchResp.json() as {
-      data?: Array<{
-        uuid: string;
-        name?: string;
-        duration?: number;
-        isLive?: boolean;
-        channel?: { host?: string };
-        licence?: { id?: number; label?: string };
-      }>;
-    };
-    const items = data.data ?? [];
+  type RankedHit = {
+    uuid: string;
+    host: string;
+    title: string;
+    query: string;
+    score: number;
+  };
+
+  const results: CelebrityClipCandidate[] = [];
+  const seenUuids = new Set<string>();
+  const ranked: RankedHit[] = [];
+
+  try {
+    for (const query of queryList.slice(0, 4)) {
+      if (ranked.length >= count * 4) break;
+      const searchUrl = new URL(`${SEPIA_SEARCH_API}/search/videos`);
+      searchUrl.searchParams.set("search", query);
+      searchUrl.searchParams.set("count", "15");
+      searchUrl.searchParams.append("licenceOneOf", "1");
+      searchUrl.searchParams.append("licenceOneOf", "2");
+      searchUrl.searchParams.append("licenceOneOf", "7");
+
+      const searchResp = await withTimeout(
+        fetch(searchUrl.toString(), { headers: { "User-Agent": "Fastvid/1.0 (CC PeerTube clips)" } }),
+        14_000,
+        `SepiaSearch scene ${sceneIndex}`
+      );
+      if (!searchResp.ok) continue;
+      const data = await searchResp.json() as {
+        data?: Array<{
+          uuid: string;
+          name?: string;
+          duration?: number;
+          isLive?: boolean;
+          channel?: { host?: string };
+        }>;
+      };
+
+      for (const item of data.data ?? []) {
+        const host = item.channel?.host;
+        const uuid = item.uuid;
+        if (!host || !uuid || item.isLive || seenUuids.has(uuid)) continue;
+        if ((item.duration ?? 0) < 8 || (item.duration ?? 0) > 900) continue;
+        const title = item.name ?? "";
+        const score = scoreSepiaSearchHit(title, query, personName, beatKeywords);
+        if (score < 0) continue;
+        seenUuids.add(uuid);
+        ranked.push({ uuid, host, title, query, score });
+      }
+    }
+
+    ranked.sort((a, b) => b.score - a.score);
 
     let downloaded = 0;
-    for (const item of items) {
+    for (const hit of ranked) {
       if (downloaded >= count) break;
-      const host = item.channel?.host;
-      const uuid = item.uuid;
-      if (!host || !uuid || item.isLive) continue;
-      if ((item.duration ?? 0) < 8 || (item.duration ?? 0) > 900) continue;
-      const title = item.name ?? "";
-      if (relevanceKeywords.length > 0 && scoreVisualRelevance(title, relevanceKeywords) < 1) {
-        continue;
-      }
       try {
-        const metaUrl = `https://${host}/api/v1/videos/${uuid}`;
+        const metaUrl = `https://${hit.host}/api/v1/videos/${hit.uuid}`;
         const metaResp = await withTimeout(
           fetch(metaUrl, { headers: { "User-Agent": "Fastvid/1.0" } }),
           12_000,
@@ -3980,6 +4062,9 @@ async function fetchSepiaSearchVideos(
         );
         if (!metaResp.ok) continue;
         const meta = await metaResp.json() as {
+          name?: string;
+          description?: string;
+          tags?: Array<{ name?: string } | string>;
           streamingPlaylists?: Array<{
             files?: Array<{
               fileDownloadUrl?: string;
@@ -3989,6 +4074,18 @@ async function fetchSepiaSearchVideos(
             }>;
           }>;
         };
+        const metaTitle = meta.name ?? hit.title;
+        const tagNames = (meta.tags ?? [])
+          .map((t) => (typeof t === "string" ? t : t.name ?? ""))
+          .filter(Boolean)
+          .join(" ");
+        const metaHay = `${metaTitle} ${meta.description ?? ""} ${tagNames} ${hit.query}`;
+        if (personName && !textMentionsPersonName(metaHay, personName)) continue;
+        const metaScore =
+          scoreVisualRelevance(metaHay.toLowerCase(), beatKeywords) +
+          (textMentionsPersonName(metaHay, personName) ? 3 : 0);
+        if (beatKeywords.length > 0 && metaScore < 2 && personName) continue;
+
         const files = meta.streamingPlaylists?.[0]?.files ?? [];
         const mp4 = files
           .filter((f) => (f.fileDownloadUrl || f.fileUrl) && (f.size ?? 0) > 50_000)
@@ -4017,9 +4114,11 @@ async function fetchSepiaSearchVideos(
         if (buf.byteLength < 50_000 || buf.byteLength > 80 * 1024 * 1024) continue;
         fs.writeFileSync(tmpPath, Buffer.from(buf));
         if (await trimRemoteVideoToClip(tmpPath, outPath, duration, 5, `SepiaSearch scene ${sceneIndex}`)) {
-          results.push(outPath);
+          results.push({ path: outPath, query: hit.query });
           downloaded++;
-          console.log(`[Pipeline] Scene ${sceneIndex}: SepiaSearch CC video: ${title.slice(0, 60)}`);
+          console.log(
+            `[Pipeline] Scene ${sceneIndex}: SepiaSearch CC video (score ${hit.score}): ${metaTitle.slice(0, 60)}`
+          );
         }
         try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
       } catch (err) {
@@ -4028,6 +4127,404 @@ async function fetchSepiaSearchVideos(
     }
   } catch (err) {
     console.warn(`[Pipeline] SepiaSearch failed scene ${sceneIndex}:`, (err as Error).message);
+  }
+  return results;
+}
+
+/** GDELT TV News queries — real US/UK broadcast mentions (Internet Archive TV). */
+function buildGdeltTvQueries(personName: string, beatText: string, beatIndex: number): string[] {
+  const quoted = `"${personName}"`;
+  const clean = beatText.replace(/\[visual:[^\]]*\]/gi, " ").trim();
+  const eventQs = scriptEventSearchQueries(clean, [personName]);
+  const out: string[] = [];
+  for (let i = 0; i < GDELT_TV_STATIONS.length; i++) {
+    const station = GDELT_TV_STATIONS[(beatIndex + i) % GDELT_TV_STATIONS.length];
+    out.push(`${quoted} station:${station}`);
+  }
+  for (let i = 0; i < Math.min(2, eventQs.length); i++) {
+    const station = GDELT_TV_STATIONS[(beatIndex + i + 1) % GDELT_TV_STATIONS.length];
+    out.push(`"${eventQs[i]}" station:${station}`);
+  }
+  return [...new Set(out)].slice(0, 5);
+}
+
+function parseGdeltArchivePreviewUrl(
+  previewUrl: string
+): { identifier: string; startSec: number; endSec: number } | null {
+  const m = previewUrl.match(/archive\.org\/details\/([^#?]+)#start\/(\d+)\/end\/(\d+)/i);
+  if (!m) return null;
+  const startSec = parseInt(m[2], 10);
+  const endSec = parseInt(m[3], 10);
+  if (!Number.isFinite(startSec) || !Number.isFinite(endSec) || endSec <= startSec) return null;
+  return { identifier: decodeURIComponent(m[1]), startSec, endSec };
+}
+
+async function resolveArchiveVideoFileUrl(
+  identifier: string,
+  sceneIndex: number
+): Promise<string | null> {
+  const metaUrl = `https://archive.org/metadata/${identifier}/files`;
+  const metaResp = await withTimeout(
+    fetch(metaUrl, { headers: { "User-Agent": "Fastvid/1.0 (TV news clips)" } }),
+    12_000,
+    `Archive TV metadata scene ${sceneIndex}`
+  );
+  if (!metaResp.ok) return null;
+  const metaData = await metaResp.json() as {
+    result?: Array<{ name: string; format: string; size?: string }>;
+  };
+  const videoFiles = (metaData.result ?? []).filter((f) =>
+    ["h.264", "MPEG4", "MP4", "Ogg Video", "WebM"].includes(f.format)
+  );
+  if (!videoFiles.length) return null;
+  const videoFile = videoFiles.sort(
+    (a, b) => parseInt(a.size || "999999999", 10) - parseInt(b.size || "999999999", 10)
+  )[0];
+  return `https://archive.org/download/${identifier}/${encodeURIComponent(videoFile.name)}`;
+}
+
+async function trimArchiveStreamToClip(
+  videoUrl: string,
+  outputPath: string,
+  startSec: number,
+  clipDur: number,
+  label: string
+): Promise<boolean> {
+  try {
+    await withTimeout(
+      exec(
+        `${FFMPEG_BIN} -y -ss ${startSec} -i "${videoUrl}" -t ${clipDur} ` +
+          `-vf "${STANDARD_VF}" ` +
+          `-c:v libx264 -preset veryfast -crf 22 -an -pix_fmt yuv420p "${outputPath}"`
+      ),
+      120_000,
+      `Archive stream trim ${label}`
+    );
+    return fs.existsSync(outputPath) && fs.statSync(outputPath).size > 10_000;
+  } catch (err) {
+    console.warn(`[Pipeline] trimArchiveStreamToClip failed (${label}):`, (err as Error).message);
+    return false;
+  }
+}
+
+/**
+ * GDELT TV News API — real celebrity mentions on CNN/FOX/MSNBC/BBC (Internet Archive TV).
+ * Free, no API key; searches closed captions and returns precise broadcast clips.
+ */
+async function fetchGdeltTvNewsClips(
+  queries: string | string[],
+  duration: number,
+  workDir: string,
+  sceneIndex: number,
+  count: number = 1,
+  fileTag = "",
+  personName = "",
+  beatKeywords: string[] = []
+): Promise<CelebrityClipCandidate[]> {
+  const queryList = [...new Set((Array.isArray(queries) ? queries : [queries]).filter((q) => q?.trim()))];
+  if (!queryList.length) return [];
+
+  const results: CelebrityClipCandidate[] = [];
+  const seenPreviews = new Set<string>();
+  let downloaded = 0;
+
+  type GdeltClip = {
+    preview_url: string;
+    snippet?: string;
+    show?: string;
+    station?: string;
+    query: string;
+    score: number;
+  };
+  const ranked: GdeltClip[] = [];
+
+  try {
+    for (const query of queryList) {
+      if (ranked.length >= count * 4) break;
+      const apiUrl =
+        `${GDELT_TV_API}?query=${encodeURIComponent(query)}&mode=ClipGallery&format=json` +
+        `&maxrecords=8&timespan=5y`;
+      const resp = await withTimeout(
+        fetch(apiUrl, { headers: { "User-Agent": "Fastvid/1.0 (GDELT TV news)" } }),
+        22_000,
+        `GDELT TV search scene ${sceneIndex}`
+      );
+      if (!resp.ok) continue;
+      const text = await resp.text();
+      if (text.includes("must contain at least one station")) continue;
+      let data: {
+        clips?: Array<{
+          preview_url?: string;
+          snippet?: string;
+          show?: string;
+          station?: string;
+        }>;
+      };
+      try {
+        data = JSON.parse(text) as typeof data;
+      } catch {
+        continue;
+      }
+      for (const clip of data.clips ?? []) {
+        if (!clip.preview_url || seenPreviews.has(clip.preview_url)) continue;
+        const hay = `${clip.snippet ?? ""} ${clip.show ?? ""} ${query}`.toLowerCase();
+        if (personName && !textMentionsPersonName(hay, personName)) continue;
+        const score =
+          scoreVisualRelevance(hay, beatKeywords) + (textMentionsPersonName(hay, personName) ? 4 : 0);
+        seenPreviews.add(clip.preview_url);
+        ranked.push({
+          preview_url: clip.preview_url,
+          snippet: clip.snippet,
+          show: clip.show,
+          station: clip.station,
+          query,
+          score,
+        });
+      }
+    }
+
+    ranked.sort((a, b) => b.score - a.score);
+
+    for (const hit of ranked) {
+      if (downloaded >= count) break;
+      const parsed = parseGdeltArchivePreviewUrl(hit.preview_url);
+      if (!parsed) continue;
+      try {
+        const videoUrl = await resolveArchiveVideoFileUrl(parsed.identifier, sceneIndex);
+        if (!videoUrl) continue;
+        const segmentDur = Math.min(duration, parsed.endSec - parsed.startSec, 60);
+        if (segmentDur < 5) continue;
+
+        const tag = fileTag ? `${fileTag}_` : "";
+        const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}gdelt_${downloaded}.mp4`);
+        const ok = await trimArchiveStreamToClip(
+          videoUrl,
+          outPath,
+          parsed.startSec,
+          segmentDur,
+          `GDELT TV scene ${sceneIndex}`
+        );
+        if (ok) {
+          results.push({ path: outPath, query: hit.query });
+          downloaded++;
+          console.log(
+            `[Pipeline] Scene ${sceneIndex}: GDELT TV news (${hit.station ?? "TV"}): ` +
+              `${hit.show?.slice(0, 50) ?? hit.snippet?.slice(0, 50)}`
+          );
+        }
+      } catch (err) {
+        console.warn(`[Pipeline] GDELT clip failed scene ${sceneIndex}:`, (err as Error).message);
+      }
+    }
+  } catch (err) {
+    console.warn(`[Pipeline] GDELT TV search failed scene ${sceneIndex}:`, (err as Error).message);
+  }
+  return results;
+}
+
+/** Europeana — EU broadcast/documentary video (CC/PD), requires free API key. */
+async function fetchEuropeanaVideos(
+  queries: string | string[],
+  duration: number,
+  workDir: string,
+  sceneIndex: number,
+  count: number = 1,
+  fileTag = "",
+  personName = "",
+  beatKeywords: string[] = []
+): Promise<CelebrityClipCandidate[]> {
+  if (!EUROPEANA_API_KEY?.trim()) return [];
+  const queryList = [...new Set((Array.isArray(queries) ? queries : [queries]).filter((q) => q?.trim()))];
+  if (!queryList.length) return [];
+
+  const results: CelebrityClipCandidate[] = [];
+  const seenIds = new Set<string>();
+  let downloaded = 0;
+  const authHeader = { Authorization: `ApiKey ${EUROPEANA_API_KEY.trim()}` };
+
+  for (const query of queryList.slice(0, 3)) {
+    if (downloaded >= count) break;
+    try {
+      const searchUrl = new URL("https://api.europeana.eu/record/v2/search.json");
+      searchUrl.searchParams.set("query", query);
+      searchUrl.searchParams.set("qf", "TYPE:VIDEO");
+      searchUrl.searchParams.set("reusability", "open");
+      searchUrl.searchParams.set("rows", "12");
+
+      const searchResp = await withTimeout(
+        fetch(searchUrl.toString(), { headers: { ...authHeader, "User-Agent": "Fastvid/1.0" } }),
+        14_000,
+        `Europeana search scene ${sceneIndex}`
+      );
+      if (!searchResp.ok) continue;
+      const searchData = await searchResp.json() as {
+        items?: Array<{ id?: string; title?: string[]; edmPreview?: string }>;
+      };
+      const items = (searchData.items ?? [])
+        .filter((item) => {
+          const title = (item.title ?? []).join(" ");
+          const hay = `${title} ${query}`.toLowerCase();
+          if (personName && !textMentionsPersonName(hay, personName)) return false;
+          return true;
+        })
+        .sort(
+          (a, b) =>
+            scoreVisualRelevance(`${(b.title ?? []).join(" ")} ${query}`, beatKeywords) -
+            scoreVisualRelevance(`${(a.title ?? []).join(" ")} ${query}`, beatKeywords)
+        );
+
+      for (const item of items) {
+        if (downloaded >= count) break;
+        const recordId = item.id;
+        if (!recordId || seenIds.has(recordId)) continue;
+        seenIds.add(recordId);
+        try {
+          const recordUrl = `https://api.europeana.eu/record/v2${recordId}.json?profile=rich`;
+          const recordResp = await withTimeout(
+            fetch(recordUrl, { headers: { ...authHeader, "User-Agent": "Fastvid/1.0" } }),
+            12_000,
+            `Europeana record scene ${sceneIndex}`
+          );
+          if (!recordResp.ok) continue;
+          const recordData = await recordResp.json() as {
+            object?: {
+              aggregations?: Array<{ edmIsShownBy?: string; edmIsShownAt?: string }>;
+            };
+          };
+          const mediaUrl =
+            recordData.object?.aggregations?.find((a) => a.edmIsShownBy)?.edmIsShownBy ??
+            recordData.object?.aggregations?.find((a) => a.edmIsShownAt)?.edmIsShownAt;
+          if (!mediaUrl || !/\.(mp4|webm|mov|m4v)/i.test(mediaUrl)) continue;
+
+          const tag = fileTag ? `${fileTag}_` : "";
+          const tmpPath = path.join(workDir, `scene_${sceneIndex}_${tag}euro_${downloaded}_tmp`);
+          const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}euro_${downloaded}.mp4`);
+          const dlResp = await fetchWithTimeout(
+            mediaUrl,
+            55_000,
+            `Europeana download scene ${sceneIndex}`,
+            { headers: { "User-Agent": "Fastvid/1.0" } }
+          );
+          if (!dlResp.ok) continue;
+          const buf = await dlResp.arrayBuffer();
+          if (buf.byteLength < 50_000 || buf.byteLength > 80 * 1024 * 1024) continue;
+          fs.writeFileSync(tmpPath, Buffer.from(buf));
+          if (await trimRemoteVideoToClip(tmpPath, outPath, duration, 3, `Europeana scene ${sceneIndex}`)) {
+            results.push({ path: outPath, query });
+            downloaded++;
+            console.log(
+              `[Pipeline] Scene ${sceneIndex}: Europeana video: ${(item.title ?? []).join(" ").slice(0, 60)}`
+            );
+          }
+          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+        } catch (err) {
+          console.warn(`[Pipeline] Europeana item failed scene ${sceneIndex}:`, (err as Error).message);
+        }
+      }
+    } catch (err) {
+      console.warn(`[Pipeline] Europeana search failed scene ${sceneIndex}:`, (err as Error).message);
+    }
+  }
+  return results;
+}
+
+/** Vimeo Creative Commons — interviews/documentaries (requires free access token). */
+async function fetchVimeoCCVideos(
+  queries: string | string[],
+  duration: number,
+  workDir: string,
+  sceneIndex: number,
+  count: number = 1,
+  fileTag = "",
+  personName = "",
+  beatKeywords: string[] = []
+): Promise<CelebrityClipCandidate[]> {
+  if (!VIMEO_ACCESS_TOKEN?.trim()) return [];
+  const queryList = [...new Set((Array.isArray(queries) ? queries : [queries]).filter((q) => q?.trim()))];
+  if (!queryList.length) return [];
+
+  const results: CelebrityClipCandidate[] = [];
+  const vimeoHeaders = {
+    Authorization: `Bearer ${VIMEO_ACCESS_TOKEN.trim()}`,
+    Accept: "application/vnd.vimeo.*+json;version=3.4",
+    "User-Agent": "Fastvid/1.0",
+  };
+  const seenUris = new Set<string>();
+  let downloaded = 0;
+
+  for (const query of queryList.slice(0, 3)) {
+    if (downloaded >= count) break;
+    try {
+      const searchUrl =
+        `https://api.vimeo.com/videos?query=${encodeURIComponent(query)}&filter=CC` +
+        `&per_page=10&sort=relevant&fields=uri,name,description,link`;
+      const searchResp = await withTimeout(
+        fetch(searchUrl, { headers: vimeoHeaders }),
+        14_000,
+        `Vimeo CC search scene ${sceneIndex}`
+      );
+      if (!searchResp.ok) continue;
+      const searchData = await searchResp.json() as {
+        data?: Array<{ uri?: string; name?: string; description?: string }>;
+      };
+
+      for (const video of searchData.data ?? []) {
+        if (downloaded >= count) break;
+        const uri = video.uri;
+        if (!uri || seenUris.has(uri)) continue;
+        const hay = `${video.name ?? ""} ${video.description ?? ""} ${query}`.toLowerCase();
+        if (personName && !textMentionsPersonName(hay, personName)) continue;
+        if (beatKeywords.length > 0 && scoreVisualRelevance(hay, beatKeywords) < 1) continue;
+        seenUris.add(uri);
+
+        try {
+          const detailUrl = `https://api.vimeo.com${uri}?fields=download,name`;
+          const detailResp = await withTimeout(
+            fetch(detailUrl, { headers: vimeoHeaders }),
+            12_000,
+            `Vimeo detail scene ${sceneIndex}`
+          );
+          if (!detailResp.ok) continue;
+          const detail = await detailResp.json() as {
+            download?: Array<{ link?: string; quality?: string; size?: number }>;
+          };
+          const dl =
+            detail.download
+              ?.filter((d) => d.link && (d.size ?? 0) < 80 * 1024 * 1024)
+              .sort((a, b) => {
+                const qa = parseInt((a.quality ?? "720").replace(/\D/g, ""), 10) || 720;
+                const qb = parseInt((b.quality ?? "720").replace(/\D/g, ""), 10) || 720;
+                return Math.abs(qa - 720) - Math.abs(qb - 720);
+              })[0] ?? detail.download?.find((d) => d.link);
+          const downloadUrl = dl?.link;
+          if (!downloadUrl) continue;
+
+          const tag = fileTag ? `${fileTag}_` : "";
+          const tmpPath = path.join(workDir, `scene_${sceneIndex}_${tag}vimeo_${downloaded}_tmp`);
+          const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}vimeo_${downloaded}.mp4`);
+          const dlResp = await fetchWithTimeout(
+            downloadUrl,
+            55_000,
+            `Vimeo download scene ${sceneIndex}`,
+            { headers: { "User-Agent": "Fastvid/1.0" } }
+          );
+          if (!dlResp.ok) continue;
+          const buf = await dlResp.arrayBuffer();
+          if (buf.byteLength < 50_000 || buf.byteLength > 80 * 1024 * 1024) continue;
+          fs.writeFileSync(tmpPath, Buffer.from(buf));
+          if (await trimRemoteVideoToClip(tmpPath, outPath, duration, 5, `Vimeo CC scene ${sceneIndex}`)) {
+            results.push({ path: outPath, query });
+            downloaded++;
+            console.log(`[Pipeline] Scene ${sceneIndex}: Vimeo CC video: ${video.name?.slice(0, 60)}`);
+          }
+          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+        } catch (err) {
+          console.warn(`[Pipeline] Vimeo item failed scene ${sceneIndex}:`, (err as Error).message);
+        }
+      }
+    } catch (err) {
+      console.warn(`[Pipeline] Vimeo CC search failed scene ${sceneIndex}:`, (err as Error).message);
+    }
   }
   return results;
 }
@@ -4119,8 +4616,8 @@ function personMatchesTechCccTopic(personName: string, beatText = ""): boolean {
 }
 
 /**
- * Real celebrity/person video without YouTube quota:
- * Wikimedia → SepiaSearch (PeerTube) → Archive → media.ccc (tech) → Flickr CC.
+ * Real celebrity/person video without YouTube quota (all persons, script-aware queries):
+ * Wikimedia → GDELT TV News → SepiaSearch → Archive → Europeana → Vimeo CC → CCC → Flickr.
  */
 async function fetchPersonCelebrityVideoClips(
   personName: string,
@@ -4131,78 +4628,144 @@ async function fetchPersonCelebrityVideoClips(
   fileTag: string,
   beatIndex: number,
   beatText = ""
-): Promise<string[]> {
-  const results: string[] = [];
-  const personKw = personName.split(/\s+/).filter((p) => p.length >= 3);
-  const wikiQueries = buildPersonMediaQueries(personName).slice(0, 4);
-  const wikiStart = beatIndex % Math.max(1, wikiQueries.length);
-  const rotatedWiki = [...wikiQueries.slice(wikiStart), ...wikiQueries.slice(0, wikiStart)];
+): Promise<CelebrityClipCandidate[]> {
+  const results: CelebrityClipCandidate[] = [];
+  const beatKeywords = buildPersonBeatRelevanceKeywords(personName, beatText);
+  const scriptQueries = buildPersonCelebrityVideoQueries(personName, beatText, beatIndex);
+  const gdeltQueries = buildGdeltTvQueries(personName, beatText, beatIndex);
+  const candidateTarget = Math.max(count * 2, 4);
 
-  for (const q of rotatedWiki) {
-    if (results.length >= count) break;
-    const paths = await fetchWikimediaVideos(
+  for (const q of scriptQueries) {
+    if (results.length >= candidateTarget) break;
+    const wikiHits = await fetchWikimediaVideos(
       q,
       duration,
       workDir,
       sceneIndex,
-      count - results.length,
-      fileTag
-    );
-    results.push(...paths);
-  }
-
-  if (results.length < count) {
-    const septubeQ = beatIndex % 2 === 0 ? `${personName} interview` : personName;
-    const septubePaths = await fetchSepiaSearchVideos(
-      septubeQ,
-      duration,
-      workDir,
-      sceneIndex,
-      count - results.length,
+      candidateTarget - results.length,
       fileTag,
-      personKw
+      personName,
+      beatKeywords
     );
-    results.push(...septubePaths);
+    results.push(...wikiHits);
   }
 
-  if (results.length < count) {
-    const archivePaths = await fetchInternetArchiveClips(
-      buildPersonArchiveVideoQueries(personName, beatIndex),
+  if (results.length < candidateTarget) {
+    const gdeltHits = await fetchGdeltTvNewsClips(
+      gdeltQueries,
       duration,
       workDir,
       sceneIndex,
-      count - results.length,
-      fileTag
+      candidateTarget - results.length,
+      fileTag,
+      personName,
+      beatKeywords
     );
-    results.push(...archivePaths);
+    results.push(...gdeltHits);
   }
 
-  if (results.length < count && personMatchesTechCccTopic(personName, beatText)) {
+  if (results.length < candidateTarget) {
+    const septubeHits = await fetchSepiaSearchVideos(
+      scriptQueries,
+      duration,
+      workDir,
+      sceneIndex,
+      candidateTarget - results.length,
+      fileTag,
+      personName,
+      beatKeywords
+    );
+    results.push(...septubeHits);
+  }
+
+  if (results.length < candidateTarget) {
+    const archiveHits = await fetchInternetArchiveClips(
+      buildPersonArchiveVideoQueries(personName, beatIndex, beatText),
+      duration,
+      workDir,
+      sceneIndex,
+      candidateTarget - results.length,
+      fileTag,
+      personName,
+      beatKeywords
+    );
+    results.push(...archiveHits);
+  }
+
+  if (results.length < candidateTarget && EUROPEANA_API_KEY) {
+    const euroHits = await fetchEuropeanaVideos(
+      scriptQueries,
+      duration,
+      workDir,
+      sceneIndex,
+      candidateTarget - results.length,
+      fileTag,
+      personName,
+      beatKeywords
+    );
+    results.push(...euroHits);
+  }
+
+  if (results.length < candidateTarget && VIMEO_ACCESS_TOKEN) {
+    const vimeoHits = await fetchVimeoCCVideos(
+      scriptQueries,
+      duration,
+      workDir,
+      sceneIndex,
+      candidateTarget - results.length,
+      fileTag,
+      personName,
+      beatKeywords
+    );
+    results.push(...vimeoHits);
+  }
+
+  if (results.length < candidateTarget && personMatchesTechCccTopic(personName, beatText)) {
     const cccPaths = await fetchMediaCccVideos(
       personName,
       duration,
       workDir,
       sceneIndex,
-      count - results.length,
+      candidateTarget - results.length,
       fileTag
     );
-    results.push(...cccPaths);
+    for (const p of cccPaths) {
+      results.push({ path: p, query: `${personName} conference` });
+    }
   }
 
-  if (results.length < count && FLICKR_API_KEY) {
-    const flickrQ = beatIndex % 2 === 0 ? `${personName} interview` : personName;
-    const flickrPaths = await fetchFlickrCCVideos(
-      flickrQ,
-      duration,
-      workDir,
-      sceneIndex,
-      count - results.length,
-      fileTag
-    );
-    results.push(...flickrPaths);
+  if (results.length < candidateTarget && FLICKR_API_KEY) {
+    for (const q of scriptQueries.slice(0, 3)) {
+      if (results.length >= candidateTarget) break;
+      const flickrPaths = await fetchFlickrCCVideos(
+        q,
+        duration,
+        workDir,
+        sceneIndex,
+        candidateTarget - results.length,
+        fileTag,
+        personName,
+        beatKeywords
+      );
+      for (const p of flickrPaths) {
+        results.push({ path: p, query: q });
+      }
+    }
   }
 
-  return results.slice(0, count);
+  const seen = new Set<string>();
+  return results
+    .filter((c) => {
+      if (seen.has(c.path)) return false;
+      seen.add(c.path);
+      return true;
+    })
+    .sort(
+      (a, b) =>
+        scoreCelebrityCandidate(b, beatText, personName, beatKeywords) -
+        scoreCelebrityCandidate(a, beatText, personName, beatKeywords)
+    )
+    .slice(0, candidateTarget);
 }
 
 // ─── 3c2n. NASA Images & Video Library (public domain US gov footage) ─────────
@@ -4300,9 +4863,11 @@ async function fetchInternetArchiveClips(
   workDir: string,
   sceneIndex: number,
   count: number = 2,
-  fileTag = ""
-): Promise<string[]> {
-  const results: string[] = [];
+  fileTag = "",
+  personName = "",
+  beatKeywords: string[] = []
+): Promise<CelebrityClipCandidate[]> {
+  const results: CelebrityClipCandidate[] = [];
   const queryList = Array.isArray(queries) ? queries : [queries];
   const uniqueQueries = Array.from(new Set(queryList.filter((q) => q && q.trim().length > 0)));
   let fetched = 0;
@@ -4310,7 +4875,7 @@ async function fetchInternetArchiveClips(
   for (const query of uniqueQueries) {
     if (fetched >= count) break;
     try {
-    const searchUrl = `https://archive.org/advancedsearch.php?q=${encodeURIComponent(query)}+AND+mediatype:movies&fl[]=identifier,title&rows=10&output=json`;
+    const searchUrl = `https://archive.org/advancedsearch.php?q=${encodeURIComponent(query)}+AND+mediatype:movies&fl[]=identifier,title&rows=12&output=json`;
     const searchResp = await withTimeout(
       fetch(searchUrl, { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }),
       10_000,
@@ -4318,7 +4883,18 @@ async function fetchInternetArchiveClips(
     );
     if (!searchResp.ok) continue;
     const searchData = await searchResp.json() as { response?: { docs?: Array<{ identifier: string; title: string }> } };
-    const docs = searchData.response?.docs?.slice(0, (count - fetched) * 3) || [];
+    const docs = (searchData.response?.docs ?? [])
+      .filter((doc) => {
+        const hay = `${doc.title} ${query}`.toLowerCase();
+        if (personName && !textMentionsPersonName(hay, personName)) return false;
+        return true;
+      })
+      .sort(
+        (a, b) =>
+          scoreVisualRelevance(`${b.title} ${query}`, beatKeywords) -
+          scoreVisualRelevance(`${a.title} ${query}`, beatKeywords)
+      )
+      .slice(0, (count - fetched) * 3);
     if (!docs.length) continue;
 
     for (const doc of docs) {
@@ -4363,7 +4939,7 @@ async function fetchInternetArchiveClips(
         fs.writeFileSync(tmpPath, Buffer.from(arrayBuf));
 
         if (await trimRemoteVideoToClip(tmpPath, outPath, duration, 10, `Internet Archive scene ${sceneIndex}`)) {
-          results.push(outPath);
+          results.push({ path: outPath, query });
           fetched++;
           console.log(`[Pipeline] Scene ${sceneIndex}: Internet Archive clip added: ${doc.title}`);
         }
@@ -4713,7 +5289,8 @@ async function fetchYouTubeCCClips(
   sceneIndex: number,
   count: number = 2,
   relevanceKeywords: string[] = [],
-  minRelevanceScore = 1
+  minRelevanceScore = 1,
+  requiredPersonName = ""
 ): Promise<string[]> {
   const results: string[] = [];
 
@@ -4768,29 +5345,44 @@ async function fetchYouTubeCCClips(
         console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube API error ${searchResp.status} for query: "${query}"`);
         continue;
       }
-      const searchData = await searchResp.json() as { items?: Array<{ id?: { videoId?: string }; snippet?: { title?: string } }> };
-      const items = searchData.items || [];
+      const searchData = await searchResp.json() as {
+        items?: Array<{
+          id?: { videoId?: string };
+          snippet?: { title?: string; description?: string };
+        }>;
+      };
+      const items = (searchData.items || [])
+        .map((item) => {
+          const title = item.snippet?.title ?? "";
+          const desc = item.snippet?.description ?? "";
+          const hay = `${title} ${desc} ${query}`;
+          if (requiredPersonName && !textMentionsPersonName(hay, requiredPersonName)) {
+            return { item, title, rel: -1, hay };
+          }
+          const rel = relevanceKeywords.length > 0 ? scoreVisualRelevance(hay, relevanceKeywords) : 1;
+          return { item, title, rel, hay };
+        })
+        .filter((row) => row.rel >= minRelevanceScore)
+        .sort((a, b) => b.rel - a.rel);
       if (!items.length) {
-        console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube CC 0 results for: "${query}" — trying next variant`);
+        console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube CC 0 relevant results for: "${query}" — trying next variant`);
         continue;
       }
-      console.log(`[Pipeline] Scene ${sceneIndex}: YouTube CC found ${items.length} videos for "${query}"`);
+      console.log(`[Pipeline] Scene ${sceneIndex}: YouTube CC found ${items.length} relevant videos for "${query}"`);
 
-      for (const item of items.slice(0, 3)) {
+      for (const row of items.slice(0, 5)) {
         if (fetched >= count) break;
         if (Date.now() > ytDeadline) break;
+        const item = row.item;
         const videoId = item.id?.videoId;
         if (!videoId || downloadedIds.has(videoId)) continue;
 
-        const title = item.snippet?.title ?? "";
-        if (relevanceKeywords.length > 0) {
-          const rel = scoreVisualRelevance(title, relevanceKeywords);
-          if (rel < minRelevanceScore) {
-            console.warn(
-              `[Pipeline] Scene ${sceneIndex}: YT CC skip irrelevant title "${title.slice(0, 60)}" (score ${rel}/${minRelevanceScore})`
-            );
-            continue;
-          }
+        const title = row.title;
+        if (relevanceKeywords.length > 0 && row.rel < minRelevanceScore) {
+          console.warn(
+            `[Pipeline] Scene ${sceneIndex}: YT CC skip irrelevant title "${title.slice(0, 60)}" (score ${row.rel}/${minRelevanceScore})`
+          );
+          continue;
         }
 
         try {
@@ -4939,8 +5531,122 @@ function buildPersonMediaQueries(person: string, visualCue?: string): string[] {
   ].filter((q, i, arr) => q.trim().length > 0 && arr.indexOf(q) === i);
 }
 
-/** Rotate Serp queries so each beat/scene gets a different photo (avoids duplicate red-carpet still). */
-function buildPersonSerpQuery(person: string, sceneIndex: number, beatIndex: number): string {
+interface CelebrityClipCandidate {
+  path: string;
+  query: string;
+}
+
+/** True when haystack contains the celebrity name (last name or full name). */
+function textMentionsPersonName(haystack: string, personName: string): boolean {
+  const hay = haystack.toLowerCase();
+  const parts = personName.toLowerCase().split(/\s+/).filter((p) => p.length >= 2);
+  if (!parts.length) return false;
+  if (parts.length === 1) return hay.includes(parts[0]);
+  const last = parts[parts.length - 1];
+  if (hay.includes(last)) return true;
+  return parts.every((p) => hay.includes(p));
+}
+
+/** Beat + person tokens for filtering celebrity search hits. */
+function buildPersonBeatRelevanceKeywords(personName: string, beatText: string): string[] {
+  const clean = beatText.replace(/\[visual:[^\]]*\]/gi, " ").trim();
+  return [
+    ...personName.split(/\s+/).filter((p) => p.length >= 3),
+    ...tokenizeForRelevance(clean),
+    ...extractInlineVisualCues(clean).flatMap((c) => tokenizeForRelevance(c)),
+  ].filter((k, i, arr) => arr.indexOf(k) === i).slice(0, 18);
+}
+
+/**
+ * Script-aware celebrity video queries: events + visual cues + person variants.
+ * Rotated per beat so each narration line gets a different search angle.
+ */
+function buildPersonCelebrityVideoQueries(
+  personName: string,
+  beatText: string,
+  beatIndex: number
+): string[] {
+  const clean = beatText.replace(/\[visual:[^\]]*\]/gi, " ").trim();
+  const persons = [personName];
+  const eventQs = scriptEventSearchQueries(clean, persons);
+  const visualCues = extractInlineVisualCues(clean);
+  const beatTokens = tokenizeForRelevance(clean).filter((t) => t.length >= 4).slice(0, 3);
+  const mediaQs = buildPersonMediaQueries(personName, visualCues[0] || beatTokens.join(" "));
+
+  const combined = [
+    ...eventQs,
+    ...visualCues.map((c) => `${personName} ${c}`.trim()),
+    ...beatTokens.map((t) => `${personName} ${t}`),
+    ...mediaQs,
+  ].filter((q) => q.trim().length > 3 && !isBlockedStockQuery(q));
+
+  const unique = [...new Set(combined)];
+  const offset = beatIndex % Math.max(1, unique.length);
+  return [...unique.slice(offset), ...unique.slice(0, offset)].slice(0, 7);
+}
+
+function scoreCelebrityCandidate(
+  candidate: CelebrityClipCandidate,
+  beatText: string,
+  personName: string,
+  keywords: string[]
+): number {
+  const hay = `${candidate.query} ${path.basename(candidate.path)} ${beatText}`.toLowerCase();
+  return (
+    scoreBeatNarrationMatch(beatText, candidate.query, candidate.path) * 4 +
+    scoreVisualRelevance(hay, keywords) +
+    (textMentionsPersonName(hay, personName) ? 4 : 0)
+  );
+}
+
+async function adoptBestCelebrityClip(
+  candidates: CelebrityClipCandidate[],
+  dedup: VisualDedupState,
+  sceneIndex: number,
+  beatIndex: number,
+  beatText: string,
+  workDir: string,
+  personName: string,
+  opts: VisualAdoptOptions
+): Promise<string | null> {
+  if (!candidates.length) return null;
+  const keywords = opts.keywords ?? buildPersonBeatRelevanceKeywords(personName, beatText);
+  const sorted = [...candidates].sort(
+    (a, b) =>
+      scoreCelebrityCandidate(b, beatText, personName, keywords) -
+      scoreCelebrityCandidate(a, beatText, personName, keywords)
+  );
+  for (const c of sorted) {
+    const clip = await adoptClip(
+      [c.path],
+      dedup,
+      sceneIndex,
+      beatIndex,
+      beatText,
+      workDir,
+      c.query,
+      opts
+    );
+    if (clip) return clip;
+  }
+  return null;
+}
+
+/** Script-aware Serp queries — event from narration first, then rotated portrait variants. */
+function buildPersonSerpQuery(
+  person: string,
+  sceneIndex: number,
+  beatIndex: number,
+  beatText = ""
+): string {
+  const scriptQs = beatText
+    ? scriptEventSearchQueries(beatText, [person]).map((q) =>
+        /\b(face|portrait|interview|talking)\b/i.test(q) ? q : `${q} face interview`
+      )
+    : [];
+  if (scriptQs.length) {
+    return scriptQs[(sceneIndex + beatIndex) % scriptQs.length];
+  }
   const variants = [
     `${person} face portrait close up`,
     `${person} interview talking head`,
@@ -4973,6 +5679,10 @@ function inferClipSourceFromPath(filePath: string): string {
   if (/_ytcc_|_b\d+_yt_|_yt_\d/i.test(base)) return "youtube";
   if (/serp|_person/i.test(base)) return "serpapi";
   if (/wikivid|_wiki_/i.test(base)) return "wikimedia";
+  if (/septube/i.test(base)) return "peertube";
+  if (/gdelt/i.test(base)) return "gdelt";
+  if (/euro_/i.test(base)) return "europeana";
+  if (/vimeo/i.test(base)) return "vimeo";
   if (/openverse/i.test(base)) return "openverse";
   if (/nasa/i.test(base)) return "nasa";
   if (/archive/i.test(base)) return "archive";
@@ -6607,7 +7317,7 @@ async function fetchUniqueStockForBeatInner(
       clipFetchDur,
       dedup,
       looseOpts,
-      buildPersonMediaQueries(primary, beat.text.slice(0, 80)),
+      buildPersonCelebrityVideoQueries(primary, beat.text, beat.index),
       `unique person YouTube (${primary})`,
       ytMs
     );
@@ -6806,7 +7516,7 @@ async function fetchLastResortRealClip(
   const ytQueries = [
     ...realEntityYoutubeQueriesForBeat(beat.text, scene.text, videoTitle),
     ...(personName.trim()
-      ? buildPersonMediaQueries(personName, beat.text.slice(0, 80))
+      ? buildPersonCelebrityVideoQueries(personName, beat.text, beat.index)
       : []),
   ];
   const ytClip = await tryBeatRealYouTubeFootage(
@@ -6890,11 +7600,14 @@ async function fetchPersonBeatClip(
   if (!personName.trim()) return null;
   if (!personLocked && !beatMentionsPerson(beat.text, personName)) return null;
 
-  const personQueries = buildPersonMediaQueries(
-    personName,
-    extractInlineVisualCues(beat.text)[0] || beat.searchQuery
-  );
-  const loosePerson: VisualAdoptOptions = { ...adoptOpts, requireBeatMatch: false };
+  const personQueries = buildPersonCelebrityVideoQueries(personName, beat.text, beat.index);
+  const loosePerson: VisualAdoptOptions = {
+    ...adoptOpts,
+    requireBeatMatch: false,
+    personTopic: true,
+    primaryPerson: personName,
+    keywords: buildPersonBeatRelevanceKeywords(personName, beat.text),
+  };
 
   const fast = dedup.perf.fastStockMode;
   let clip = await tryBeatRealYouTubeFootage(
@@ -6916,12 +7629,12 @@ async function fetchPersonBeatClip(
     clipFetchDur,
     workDir,
     sceneIndex,
-    1,
+    3,
     `${tag}_person`,
     beat.index,
     beat.text
   );
-  clip = await adoptClip(
+  clip = await adoptBestCelebrityClip(
     celebVids,
     dedup,
     sceneIndex,
@@ -6959,7 +7672,7 @@ async function fetchPersonBeatClip(
   }
 
   if (SERPAPI_KEY && canUseGlobalStillPhoto(dedup)) {
-    const serpQ = buildPersonSerpQuery(personName, sceneIndex, beat.index);
+    const serpQ = buildPersonSerpQuery(personName, sceneIndex, beat.index, beat.text);
     const serpPaths = await fetchSerpAPIImages(
       serpQ,
       clipFetchDur,
@@ -7384,7 +8097,11 @@ async function fetchBeatClip(
   if (perf.enableArchival) {
     clip = await tryStockSources(
       [
-        { query: q, fetch: () => fetchInternetArchiveClips(q, clipFetchDur, workDir, sceneIndex, 1, tag) },
+        {
+          query: q,
+          fetch: async () =>
+            (await fetchInternetArchiveClips(q, clipFetchDur, workDir, sceneIndex, 1, tag)).map((c) => c.path),
+        },
         { query: q, fetch: () => fetchYouTubeCCClips(q, clipFetchDur, workDir, sceneIndex, 1, beat.keywords, 2) },
       ],
       dedup, sceneIndex, beat.index, beat.text, workDir, "archival", adoptOpts
