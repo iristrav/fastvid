@@ -6172,7 +6172,7 @@ function isStockVideoClip(filePath: string): boolean {
 }
 
 function maxStillPhotosGlobal(dedup: VisualDedupState): number {
-  if (dedup.perf.fastStockMode) return 24;
+  if (dedup.perf.fastStockMode) return 1;
   if (dedup.personTopicLock) return Math.max(10, dedup.perf.maxBeatsPerScene * 3);
   if (minimizeStockFootageEnabled()) return 6;
   return 4;
@@ -8541,8 +8541,13 @@ async function fetchBeatStockFallback(
   });
 }
 
+/** True video clip (not Ken-Burns still). */
+function isRealVideoClip(filePath: string): boolean {
+  return Boolean(filePath) && !isStillPhotoClip(filePath) && !isPipelineFallbackClip(filePath);
+}
+
 /**
- * Turbo path for 1–2 min videos: script image + YouTube (≤1min), then stock.
+ * Turbo path for 1–2 min videos: real video first (YouTube → stock, ≤1min), still only as last resort.
  */
 async function resolveBeatClipTurbo(
   beat: SceneBeat,
@@ -8560,7 +8565,6 @@ async function resolveBeatClipTurbo(
     ...beatAdoptOpts,
     requireBeatMatch: false,
     scriptAnchored: false,
-    scriptImageFallback: true,
     personTopic: dedup.personTopicLock || scenePersons.length > 0,
     primaryPerson: beatAdoptOpts.primaryPerson || scenePersons[0] || personName,
   };
@@ -8570,17 +8574,12 @@ async function resolveBeatClipTurbo(
   try {
     c = await withTimeout(
       (async () => {
-        let found = await fetchBeatScriptImageClip(
-          beat, scene, workDir, sceneIndex, clipFetchDur, dedup, scenePersons, videoTitle, turboAdopt, `b${beat.index}`
-        );
-        if (found && !isPipelineFallbackClip(found)) return found;
-
         if (youtubeCcReady()) {
           const person = scenePersons[0] ?? personName;
           const ytQueries = person
-            ? buildPersonCelebrityVideoQueries(person, beat.text, beat.index).slice(0, 1)
+            ? buildPersonCelebrityVideoQueries(person, beat.text, beat.index).slice(0, 2)
             : [beat.searchQuery, scene.visualCue].filter((q) => q?.trim());
-          found = await tryBeatRealYouTubeFootage(
+          const yt = await tryBeatRealYouTubeFootage(
             beat,
             scene,
             workDir,
@@ -8590,31 +8589,42 @@ async function resolveBeatClipTurbo(
             turboAdopt,
             ytQueries,
             "turbo YouTube",
-            BEAT_VISUAL_SEARCH_MAX_MS - 15_000
+            38_000
           );
-          if (found && !isPipelineFallbackClip(found) && !(await isMostlyBlackClip(found))) return found;
+          if (isRealVideoClip(yt) && !(await isMostlyBlackClip(yt!))) return yt;
         }
 
-        found = await fetchBeatScriptImageForced(
-          beat, scene, workDir, sceneIndex, clipFetchDur, dedup, scenePersons, videoTitle, `b${beat.index}`
+        const stock = await fetchBeatStockFallback(
+          beat,
+          scene,
+          workDir,
+          sceneIndex,
+          clipFetchDur,
+          dedup,
+          personName,
+          videoTitle,
+          beatAdoptOpts,
+          "turbo"
         );
-        return found && !isPipelineFallbackClip(found) ? found : null;
+        if (isRealVideoClip(stock)) return stock;
+
+        return null;
       })(),
       BEAT_VISUAL_SEARCH_MAX_MS,
-      `turbo search s${sceneIndex} b${beat.index}`
+      `turbo video search s${sceneIndex} b${beat.index}`
     );
   } catch (err) {
     searchTimedOut = true;
     console.warn(
-      `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: search >1min — stock fallback:`,
+      `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: video search >1min:`,
       (err as Error).message
     );
     dedup.lock = Promise.resolve();
   }
 
-  if (c && !isPipelineFallbackClip(c)) return c;
+  if (isRealVideoClip(c)) return c;
 
-  return fetchBeatStockFallback(
+  const stock = await fetchBeatStockFallback(
     beat,
     scene,
     workDir,
@@ -8624,8 +8634,22 @@ async function resolveBeatClipTurbo(
     personName,
     videoTitle,
     beatAdoptOpts,
-    searchTimedOut ? ">1min cap" : "no match"
+    searchTimedOut ? ">1min cap" : "no video"
   );
+  if (isRealVideoClip(stock)) return stock;
+
+  if (!canUseGlobalStillPhoto(dedup)) return null;
+
+  const imgAdopt: VisualAdoptOptions = { ...turboAdopt, scriptImageFallback: true };
+  let img = await fetchBeatScriptImageClip(
+    beat, scene, workDir, sceneIndex, clipFetchDur, dedup, scenePersons, videoTitle, imgAdopt, `b${beat.index}`
+  );
+  if (img && !isPipelineFallbackClip(img)) return img;
+
+  img = await fetchBeatScriptImageForced(
+    beat, scene, workDir, sceneIndex, clipFetchDur, dedup, scenePersons, videoTitle, `b${beat.index}`
+  );
+  return img && !isPipelineFallbackClip(img) ? img : null;
 }
 
 /** Real footage first (capped); script-matched still image; AI/stock last resort. */
@@ -8741,11 +8765,9 @@ async function fetchSceneVisuals(
         Math.max(2, Math.ceil(scene.duration / VIDRUSH_BEAT_SEC))
       );
   dedup.stillPhotosThisScene = 0;
-  dedup.stillPhotosMaxThisScene = maxStillPhotosForScene(
-    scene.index,
-    scenePersons.length > 0,
-    dedup.personTopicLock
-  );
+  dedup.stillPhotosMaxThisScene = dedup.perf.fastStockMode
+    ? 1
+    : maxStillPhotosForScene(scene.index, scenePersons.length > 0, dedup.personTopicLock);
   const beats = buildSceneBeats(scene, scene.duration, beatCap, videoTitle, scenePersons);
   const clips: string[] = [];
   const beatDurations: number[] = [];
@@ -8809,7 +8831,12 @@ async function fetchSceneVisuals(
         (err as Error).message
       );
       dedup.lock = Promise.resolve();
-      if (!clip || isPipelineFallbackClip(clip)) {
+      if (!clip || isPipelineFallbackClip(clip) || (dedup.perf.fastStockMode && clip && isStillPhotoClip(clip))) {
+        clip = await fetchBeatStockFallback(
+          beat, scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts, "beat cap"
+        );
+      }
+      if ((!clip || isPipelineFallbackClip(clip)) && canUseGlobalStillPhoto(dedup)) {
         clip = dedup.perf.fastStockMode
           ? await fetchBeatScriptImageForced(
               beat, scene, workDir, scene.index, clipFetchDur, dedup, scenePersons, videoTitle, `b${beat.index}_cap`
@@ -8826,11 +8853,6 @@ async function fetchSceneVisuals(
               { ...beatAdoptOpts, scriptImageFallback: true },
               `b${beat.index}_cap`
             );
-      }
-      if (!clip || isPipelineFallbackClip(clip)) {
-        clip = await fetchBeatStockFallback(
-          beat, scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts, "beat cap"
-        );
       }
     } finally {
       clearInterval(beatPulse);
@@ -8860,12 +8882,17 @@ async function fetchSceneVisuals(
           `[Pipeline] Scene ${scene.index} beat ${beat.index}: no stock or AI clip (beat skipped, no grey)`
         );
       }
-    } else if (!clip || isPipelineFallbackClip(clip)) {
-      const stock = await fetchBeatStockFallback(
+    } else if (!clip || isPipelineFallbackClip(clip) || (dedup.perf.fastStockMode && isStillPhotoClip(clip))) {
+      let rescue = await fetchBeatStockFallback(
         beat, scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts, "miss"
       );
-      if (stock && !isPipelineFallbackClip(stock)) {
-        pushClip(stock);
+      if ((!rescue || isStillPhotoClip(rescue)) && canUseGlobalStillPhoto(dedup)) {
+        rescue = await fetchBeatScriptImageForced(
+          beat, scene, workDir, scene.index, clipFetchDur, dedup, scenePersons, videoTitle, `b${beat.index}_miss`
+        );
+      }
+      if (rescue && !isPipelineFallbackClip(rescue)) {
+        pushClip(rescue);
       } else {
         console.warn(
           `[Pipeline] Scene ${scene.index} beat ${beat.index}: no clip (beat skipped, no grey)`
@@ -8891,25 +8918,26 @@ async function fetchSceneVisuals(
       onBeatProgress?.(backfillAttempts + 1, maxBackfill, "backfill");
     }, 10_000);
     try {
-      const backfillAdopt: VisualAdoptOptions = {
-        ...beatAdoptOpts,
-        requireBeatMatch: false,
-        scriptAnchored: false,
-        scriptImageFallback: true,
-      };
       extra = await withTimeout(
-        fetchBeatScriptImageClip(
-          stub,
-          scene,
-          workDir,
-          scene.index,
-          clipFetchDur,
-          dedup,
-          scenePersonsForBackfill,
-          videoTitle,
-          backfillAdopt,
-          `bf${backfillAttempts + 1}`
-        ),
+        (async () => {
+          const stock = await fetchBeatStockFallback(
+            stub, scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts, "backfill"
+          );
+          if (isRealVideoClip(stock)) return stock;
+          if (!canUseGlobalStillPhoto(dedup)) return null;
+          return fetchBeatScriptImageClip(
+            stub,
+            scene,
+            workDir,
+            scene.index,
+            clipFetchDur,
+            dedup,
+            scenePersonsForBackfill,
+            videoTitle,
+            { ...beatAdoptOpts, scriptImageFallback: true },
+            `bf${backfillAttempts + 1}`
+          );
+        })(),
         backfillMs,
         `scene ${scene.index} backfill ${backfillAttempts + 1}`
       );
@@ -8930,31 +8958,23 @@ async function fetchSceneVisuals(
   }
 
   if (clips.filter((c) => c && !isPipelineFallbackClip(c)).length === 0 && beats[0]) {
-    console.warn(`[Pipeline] Scene ${scene.index}: no beat clips — fast image rescue`);
-    const rescueAdopt: VisualAdoptOptions = {
-      ...beatAdoptOpts,
-      requireBeatMatch: false,
-      scriptAnchored: false,
-      scriptImageFallback: true,
-    };
+    console.warn(`[Pipeline] Scene ${scene.index}: no beat clips — stock then image rescue`);
     for (let si = 0; si < 3; si++) {
       const stub = { ...beats[0], index: si };
       onBeatProgress?.(si + 1, 3, "backfill");
       let extra: string | null = null;
       try {
         extra = await withTimeout(
-          fetchBeatScriptImageClip(
-            stub,
-            scene,
-            workDir,
-            scene.index,
-            clipFetchDur,
-            dedup,
-            scenePersonsForBackfill,
-            videoTitle,
-            rescueAdopt,
-            `res${si + 1}`
-          ),
+          (async () => {
+            const stock = await fetchBeatStockFallback(
+              stub, scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts, "rescue"
+            );
+            if (isRealVideoClip(stock)) return stock;
+            if (!canUseGlobalStillPhoto(dedup)) return null;
+            return fetchBeatScriptImageForced(
+              stub, scene, workDir, scene.index, clipFetchDur, dedup, scenePersonsForBackfill, videoTitle, `res${si + 1}`
+            );
+          })(),
           backfillMs,
           `scene ${scene.index} rescue ${si + 1}`
         );
@@ -8974,22 +8994,27 @@ async function fetchSceneVisuals(
   const personLabel = scenePersons.length > 0 ? ` [persons: ${scenePersons.join(", ")}]` : "";
   let usable = clips.filter((c) => c && !isPipelineFallbackClip(c));
   if (usable.length === 0 && beats[0]) {
-    const forced = dedup.perf.fastStockMode
-      ? await fetchBeatScriptImageForced(
-          beats[0], scene, workDir, scene.index, clipFetchDur, dedup, scenePersons, videoTitle, `force_s${scene.index}`
-        )
-      : await fetchBeatScriptImageClip(
-          beats[0],
-          scene,
-          workDir,
-          scene.index,
-          clipFetchDur,
-          dedup,
-          scenePersons,
-          videoTitle,
-          { ...beatAdoptOpts, scriptImageFallback: true, requireBeatMatch: false, scriptAnchored: false },
-          `force_s${scene.index}`
-        );
+    let forced = await fetchBeatStockFallback(
+      beats[0], scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts, "force"
+    );
+    if (!isRealVideoClip(forced) && canUseGlobalStillPhoto(dedup)) {
+      forced = dedup.perf.fastStockMode
+        ? await fetchBeatScriptImageForced(
+            beats[0], scene, workDir, scene.index, clipFetchDur, dedup, scenePersons, videoTitle, `force_s${scene.index}`
+          )
+        : await fetchBeatScriptImageClip(
+            beats[0],
+            scene,
+            workDir,
+            scene.index,
+            clipFetchDur,
+            dedup,
+            scenePersons,
+            videoTitle,
+            { ...beatAdoptOpts, scriptImageFallback: true, requireBeatMatch: false, scriptAnchored: false },
+            `force_s${scene.index}`
+          );
+    }
     if (forced && !isPipelineFallbackClip(forced)) {
       clips.push(forced);
       beatDurations.push(beats[0].holdSec);
