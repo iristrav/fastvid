@@ -408,22 +408,25 @@ function youtubeBeatFetchTimeoutMs(fastStockMode: boolean): number {
 
 /** Wall-clock cap for one beat's full visual waterfall (must exceed beatClipTimeoutMs). */
 function beatVisualWallMs(perf: PipelinePerfProfile): number {
-  const ytExtra = youtubeCcReady() ? youtubeBeatFetchTimeoutMs(perf.fastStockMode) + 20_000 : 0;
+  if (perf.fastStockMode) {
+    return beatVideoSearchWallMs(perf) + beatScriptImageWallMs(perf) + 12_000;
+  }
+  const ytExtra = youtubeCcReady() ? youtubeBeatFetchTimeoutMs(false) + 20_000 : 0;
   return Math.min(
-    perf.fastStockMode ? 240_000 : 240_000,
+    240_000,
     Math.max(perf.beatClipTimeoutMs + 25_000, ytExtra || perf.beatClipTimeoutMs + 15_000)
   );
 }
 
 function backfillClipWallMs(perf: PipelinePerfProfile, sceneDurationSec = 60): number {
-  if (perf.fastStockMode && sceneDurationSec <= 30) return 45_000;
-  if (perf.fastStockMode && sceneDurationSec <= 60) return 90_000;
-  return perf.fastStockMode ? 120_000 : 90_000;
+  if (perf.fastStockMode) return 22_000;
+  if (sceneDurationSec <= 30) return 45_000;
+  return 90_000;
 }
 
 /** Cap heavy video-source waterfalls; image fallback runs after this. */
 function beatVideoSearchWallMs(perf: PipelinePerfProfile): number {
-  return perf.fastStockMode ? 65_000 : 120_000;
+  return perf.fastStockMode ? 45_000 : 120_000;
 }
 
 function personCelebrityVideoWallMs(perf: PipelinePerfProfile, sceneDurationSec: number): number {
@@ -950,7 +953,9 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
 }
 
 function visualStageTimeoutMs(videoLength: string, perf: PipelinePerfProfile): number {
-  if (videoLength === "1" || videoLength === "2") return 12 * 60_000;
+  if (videoLength === "1" || videoLength === "2") {
+    return perf.fastStockMode ? 30 * 60_000 : 20 * 60_000;
+  }
   return Math.round(perf.targetWallClockMin * 60_000 * 1.15);
 }
 
@@ -8618,50 +8623,25 @@ async function fetchSceneVisuals(
       onBeatProgress?.(backfillAttempts + 1, maxBackfill, "backfill");
     }, 10_000);
     try {
+      const backfillAdopt: VisualAdoptOptions = {
+        ...beatAdoptOpts,
+        requireBeatMatch: false,
+        scriptAnchored: false,
+        scriptImageFallback: true,
+      };
       extra = await withTimeout(
-        (async () => {
-          const img = await fetchBeatScriptImageClip(
-            stub,
-            scene,
-            workDir,
-            scene.index,
-            clipFetchDur,
-            dedup,
-            scenePersonsForBackfill,
-            videoTitle,
-            beatAdoptOpts,
-            `bf${backfillAttempts + 1}`
-          );
-          if (img && !isPipelineFallbackClip(img)) return img;
-          if (dedup.perf.enableAiFallback && dedup.aiClipsUsed < dedup.perf.maxAiClipsPerVideo) {
-            const ai = await fetchBeatAIClip(
-              stub, scene, workDir, scene.index, stub.index, clipFetchDur, dedup, videoTitle
-            );
-            if (ai && !isPipelineFallbackClip(ai)) return ai;
-          }
-          const fastClip = await resolveBeatClipFast(
-            stub,
-            scene,
-            workDir,
-            scene.index,
-            clipFetchDur,
-            dedup,
-            scenePersonsForBackfill,
-            videoTitle,
-            beatAdoptOpts
-          );
-          if (fastClip && !isPipelineFallbackClip(fastClip)) return fastClip;
-          if (canUseLicensedStockBeat(dedup)) {
-            const stock = await fetchUniqueStockForBeat(
-              stub, scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts
-            );
-            if (stock && !isPipelineFallbackClip(stock)) {
-              markLicensedStockBeatUsed(dedup);
-              return stock;
-            }
-          }
-          return null;
-        })(),
+        fetchBeatScriptImageClip(
+          stub,
+          scene,
+          workDir,
+          scene.index,
+          clipFetchDur,
+          dedup,
+          scenePersonsForBackfill,
+          videoTitle,
+          backfillAdopt,
+          `bf${backfillAttempts + 1}`
+        ),
         backfillMs,
         `scene ${scene.index} backfill ${backfillAttempts + 1}`
       );
@@ -8682,44 +8662,31 @@ async function fetchSceneVisuals(
   }
 
   if (clips.filter((c) => c && !isPipelineFallbackClip(c)).length === 0 && beats[0]) {
-    console.warn(`[Pipeline] Scene ${scene.index}: no beat clips — image then AI/stock`);
+    console.warn(`[Pipeline] Scene ${scene.index}: no beat clips — fast image rescue`);
+    const rescueAdopt: VisualAdoptOptions = {
+      ...beatAdoptOpts,
+      requireBeatMatch: false,
+      scriptAnchored: false,
+      scriptImageFallback: true,
+    };
     for (let si = 0; si < 3; si++) {
       const stub = { ...beats[0], index: si };
       onBeatProgress?.(si + 1, 3, "backfill");
       let extra: string | null = null;
       try {
         extra = await withTimeout(
-          (async () => {
-            const img = await fetchBeatScriptImageClip(
-              stub,
-              scene,
-              workDir,
-              scene.index,
-              clipFetchDur,
-              dedup,
-              scenePersonsForBackfill,
-              videoTitle,
-              beatAdoptOpts,
-              `res${si + 1}`
-            );
-            if (img && !isPipelineFallbackClip(img)) return img;
-            if (dedup.perf.enableAiFallback && dedup.aiClipsUsed < dedup.perf.maxAiClipsPerVideo) {
-              const ai = await fetchBeatAIClip(
-                stub, scene, workDir, scene.index, stub.index, clipFetchDur, dedup, videoTitle
-              );
-              if (ai && !isPipelineFallbackClip(ai)) return ai;
-            }
-            if (canUseLicensedStockBeat(dedup)) {
-              const stock = await fetchUniqueStockForBeat(
-                stub, scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts
-              );
-              if (stock && !isPipelineFallbackClip(stock)) {
-                markLicensedStockBeatUsed(dedup);
-                return stock;
-              }
-            }
-            return null;
-          })(),
+          fetchBeatScriptImageClip(
+            stub,
+            scene,
+            workDir,
+            scene.index,
+            clipFetchDur,
+            dedup,
+            scenePersonsForBackfill,
+            videoTitle,
+            rescueAdopt,
+            `res${si + 1}`
+          ),
           backfillMs,
           `scene ${scene.index} rescue ${si + 1}`
         );
@@ -9987,7 +9954,7 @@ export async function runVideoPipeline(
         return result;
       }))),
       visualStageTimeoutMs(videoLength, perf),
-      `Visual generation stage (≤${videoLength === "1" || videoLength === "2" ? 12 : perf.targetWallClockMin}min cap)`
+      `Visual generation stage (≤${Math.round(visualStageTimeoutMs(videoLength, perf) / 60_000)}min cap)`
     );
     } finally {
       clearInterval(visualHeartbeat);
