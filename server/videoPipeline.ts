@@ -7426,6 +7426,12 @@ async function adoptClip(
         ) {
           continue;
         }
+        if (opts.personTopic && opts.primaryPerson && isStockVideoClip(p)) {
+          const hay = `${sourceQuery} ${path.basename(p)}`.toLowerCase();
+          const personHit = textMentionsPersonName(hay, opts.primaryPerson);
+          const celebCue = /\b(interview|red carpet|talk show|celebrity|paparazzi|jenner|kardashian)\b/.test(hay);
+          if (!personHit && !celebCue) continue;
+        }
       }
       const category = stockVisualCategory(sourceQuery, p);
       if (category === "blocked_model" || category === "blocked_offtopic") continue;
@@ -8456,6 +8462,101 @@ async function fetchBeatClip(
   return clip;
 }
 
+/** Stock queries that always include the named person (VidRush person-docs). */
+function buildPersonStockVideoQueries(
+  personName: string,
+  beat: SceneBeat,
+  scene: Scene,
+  videoTitle?: string
+): string[] {
+  const persons = [personName];
+  const out = [
+    `${personName} interview`,
+    `${personName} red carpet`,
+    `${personName} talk show`,
+    `${personName} makeup brand`,
+    ...buildPersonCelebrityVideoQueries(personName, beat.text, beat.index).slice(0, 5),
+    ...scriptEventSearchQueries(beat.text, persons),
+  ].filter((q) => q.trim().length > 3 && !isBlockedStockQuery(q));
+  return [...new Set(out)].slice(0, 6);
+}
+
+/** Pexels/Pixabay with person name in every query — no generic b-roll for celebrity topics. */
+async function fetchBeatPersonStockVideo(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  personName: string,
+  videoTitle: string | undefined,
+  adoptOpts: VisualAdoptOptions,
+  reason: string
+): Promise<string | null> {
+  if (!personName.trim()) return null;
+  const personAdopt: VisualAdoptOptions = {
+    ...adoptOpts,
+    requireBeatMatch: false,
+    scriptAnchored: false,
+    personTopic: true,
+    primaryPerson: personName,
+  };
+  const queries = buildPersonStockVideoQueries(personName, beat, scene, videoTitle);
+  const tag = `b${beat.index}_person_stock`;
+  const off = beat.index + sceneIndex * 5;
+
+  return withTimeout(
+    (async () => {
+      for (const q of queries) {
+        const pex = await fetchPexelsClips(
+          q,
+          clipFetchDur,
+          workDir,
+          sceneIndex,
+          1,
+          undefined,
+          true,
+          tag,
+          dedup.usedPexelsIds,
+          off,
+          dedup.perf.pexelsDownloadRetries
+        );
+        let clip = await adoptClip(
+          pex, dedup, sceneIndex, beat.index, beat.text, workDir, q, personAdopt
+        );
+        if (isRealVideoClip(clip)) {
+          if (canUseLicensedStockBeat(dedup)) markLicensedStockBeatUsed(dedup);
+          console.log(
+            `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: person stock (${reason}) — Pexels "${q}"`
+          );
+          return clip;
+        }
+
+        const pix = await fetchPixabayClips(
+          q, clipFetchDur, workDir, sceneIndex, 1, tag, true, dedup.usedPixabayIds, off
+        );
+        clip = await adoptClip(
+          pix, dedup, sceneIndex, beat.index, beat.text, workDir, q, personAdopt
+        );
+        if (isRealVideoClip(clip)) {
+          if (canUseLicensedStockBeat(dedup)) markLicensedStockBeatUsed(dedup);
+          console.log(
+            `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: person stock (${reason}) — Pixabay "${q}"`
+          );
+          return clip;
+        }
+      }
+      return null;
+    })(),
+    beatStockFallbackWallMs(dedup.perf),
+    `person stock s${sceneIndex} b${beat.index}`
+  ).catch(() => {
+    dedup.lock = Promise.resolve();
+    return null;
+  });
+}
+
 /** Pexels/Pixabay when online search exceeds 1 minute or finds nothing. */
 async function fetchBeatStockFallback(
   beat: SceneBeat,
@@ -8470,6 +8571,29 @@ async function fetchBeatStockFallback(
   reason: string
 ): Promise<string | null> {
   const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
+  const primary =
+    personName?.trim() ||
+    adoptOpts.primaryPerson?.trim() ||
+    dedup.primaryPerson?.trim() ||
+    scenePersons[0]?.trim() ||
+    "";
+  if (primary || dedup.personTopicLock) {
+    const personClip = await fetchBeatPersonStockVideo(
+      beat,
+      scene,
+      workDir,
+      sceneIndex,
+      clipFetchDur,
+      dedup,
+      primary || dedup.primaryPerson || scenePersons[0] || "",
+      videoTitle,
+      adoptOpts,
+      reason
+    );
+    if (personClip) return personClip;
+    if (dedup.personTopicLock || primary) return null;
+  }
+
   const loose: VisualAdoptOptions = {
     ...adoptOpts,
     requireBeatMatch: false,
@@ -8569,16 +8693,14 @@ async function resolveBeatClipTurbo(
     primaryPerson: beatAdoptOpts.primaryPerson || scenePersons[0] || personName,
   };
 
+  const person = (scenePersons[0] ?? personName ?? dedup.primaryPerson ?? "").trim();
   let c: string | null = null;
   let searchTimedOut = false;
   try {
     c = await withTimeout(
       (async () => {
-        if (youtubeCcReady()) {
-          const person = scenePersons[0] ?? personName;
-          const ytQueries = person
-            ? buildPersonCelebrityVideoQueries(person, beat.text, beat.index).slice(0, 2)
-            : [beat.searchQuery, scene.visualCue].filter((q) => q?.trim());
+        if (person && youtubeCcReady()) {
+          const ytQueries = buildPersonCelebrityVideoQueries(person, beat.text, beat.index).slice(0, 3);
           const yt = await tryBeatRealYouTubeFootage(
             beat,
             scene,
@@ -8586,27 +8708,58 @@ async function resolveBeatClipTurbo(
             sceneIndex,
             clipFetchDur,
             dedup,
-            turboAdopt,
+            { ...turboAdopt, personTopic: true, primaryPerson: person },
             ytQueries,
-            "turbo YouTube",
-            38_000
+            "turbo person YouTube",
+            42_000
+          );
+          if (isRealVideoClip(yt) && !(await isMostlyBlackClip(yt!))) return yt;
+        } else if (youtubeCcReady()) {
+          const ytQueries = [beat.searchQuery, scene.visualCue].filter((q) => q?.trim());
+          const yt = await tryBeatRealYouTubeFootage(
+            beat, scene, workDir, sceneIndex, clipFetchDur, dedup, turboAdopt, ytQueries, "turbo YouTube", 35_000
           );
           if (isRealVideoClip(yt) && !(await isMostlyBlackClip(yt!))) return yt;
         }
 
-        const stock = await fetchBeatStockFallback(
-          beat,
-          scene,
-          workDir,
-          sceneIndex,
-          clipFetchDur,
-          dedup,
-          personName,
-          videoTitle,
-          beatAdoptOpts,
-          "turbo"
-        );
-        if (isRealVideoClip(stock)) return stock;
+        if (person) {
+          const celebVids = await withTimeout(
+            fetchPersonCelebrityVideoClips(
+              person,
+              clipFetchDur,
+              workDir,
+              sceneIndex,
+              2,
+              `b${beat.index}_turbo_celeb`,
+              beat.index,
+              beat.text,
+              true
+            ),
+            22_000,
+            `turbo celebrity s${sceneIndex} b${beat.index}`
+          ).catch(() => [] as CelebrityClipCandidate[]);
+          const celeb = await adoptBestCelebrityClip(
+            celebVids,
+            dedup,
+            sceneIndex,
+            beat.index,
+            beat.text,
+            workDir,
+            person,
+            { ...turboAdopt, personTopic: true, primaryPerson: person }
+          );
+          if (isRealVideoClip(celeb)) return celeb;
+
+          const personStock = await fetchBeatPersonStockVideo(
+            beat, scene, workDir, sceneIndex, clipFetchDur, dedup, person, videoTitle, beatAdoptOpts, "turbo"
+          );
+          if (isRealVideoClip(personStock)) return personStock;
+        } else {
+          const stock = await fetchBeatStockFallback(
+            beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts, "turbo"
+          );
+          if (isRealVideoClip(stock)) return stock;
+        }
 
         return null;
       })(),
