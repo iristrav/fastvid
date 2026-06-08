@@ -5753,6 +5753,8 @@ async function fetchBeatScriptImageClip(
   const looseOpts: VisualAdoptOptions = {
     ...adoptOpts,
     requireBeatMatch: false,
+    scriptAnchored: false,
+    scriptImageFallback: true,
     personTopic: portrait,
     primaryPerson: primary || adoptOpts.primaryPerson,
   };
@@ -6073,9 +6075,9 @@ function isStockVideoClip(filePath: string): boolean {
 }
 
 function maxStillPhotosGlobal(dedup: VisualDedupState): number {
-  if (dedup.personTopicLock && minimizeStockFootageEnabled()) return 1;
-  if (minimizeStockFootageEnabled()) return 2;
-  return dedup.personTopicLock ? 2 : 1;
+  if (dedup.personTopicLock) return Math.max(10, dedup.perf.maxBeatsPerScene * 3);
+  if (minimizeStockFootageEnabled()) return 6;
+  return 4;
 }
 
 function canUseGlobalStillPhoto(dedup: VisualDedupState): boolean {
@@ -6087,9 +6089,9 @@ function markGlobalStillPhotoUsed(dedup: VisualDedupState): void {
 }
 
 function maxStillPhotosForScene(_sceneIndex: number, hasPerson: boolean, personTopicLock = false): number {
-  if (personTopicLock && minimizeStockFootageEnabled()) return 0;
-  if (minimizeStockFootageEnabled()) return hasPerson ? 1 : 1;
-  return hasPerson ? 1 : 0;
+  if (personTopicLock) return 3;
+  if (minimizeStockFootageEnabled()) return hasPerson ? 2 : 1;
+  return hasPerson ? 2 : 1;
 }
 
 function beatMentionsPerson(beatText: string, personName: string): boolean {
@@ -6364,6 +6366,8 @@ type VisualAdoptOptions = {
   requireBeatMatch?: boolean;
   /** Vidrush literal matching: reject clips with zero narration overlap. */
   scriptAnchored?: boolean;
+  /** Script-matched still fallback — trust search query, skip strict entity/person gates. */
+  scriptImageFallback?: boolean;
 };
 
 async function withVisualDedupLock<T>(dedup: VisualDedupState, fn: () => Promise<T>): Promise<T> {
@@ -7301,24 +7305,29 @@ async function adoptClip(
       if (!p || dedup.usedPaths.has(p) || !fs.existsSync(p)) continue;
       if (!(await isValidVideoFile(p))) continue;
       if (isStillPhotoClip(p)) {
-        if (!canUseGlobalStillPhoto(dedup)) continue;
+        const scriptStill = Boolean(opts.scriptImageFallback);
+        if (!scriptStill && !canUseGlobalStillPhoto(dedup)) continue;
         const sceneStillCap = dedup.stillPhotosMaxThisScene;
-        if (sceneStillCap > 0 && dedup.stillPhotosThisScene >= sceneStillCap) continue;
-        dedup.stillPhotosThisScene++;
-        markGlobalStillPhotoUsed(dedup);
+        if (!scriptStill && sceneStillCap > 0 && dedup.stillPhotosThisScene >= sceneStillCap) continue;
+        if (scriptStill || canUseGlobalStillPhoto(dedup)) {
+          dedup.stillPhotosThisScene++;
+          if (canUseGlobalStillPhoto(dedup)) markGlobalStillPhotoUsed(dedup);
+        }
       }
       if (isAIGeneratedClip(p) && dedup.stillPhotosMaxThisScene === 0) continue;
       if (isAIGeneratedClip(p)) continue;
       if (isRejectedStockClip(p, sourceQuery)) continue;
       if (isPipelineFallbackClip(p)) continue;
       if (await isMostlyBlackClip(p)) continue;
-      if (muskTopic && isOffTopicVisualForMusk(sourceQuery, p)) continue;
-      if (
-        opts.personTopic &&
-        opts.primaryPerson &&
-        isOffTopicVisualForPersonTopic(sourceQuery, p, opts.primaryPerson)
-      ) {
-        continue;
+      if (!opts.scriptImageFallback) {
+        if (muskTopic && isOffTopicVisualForMusk(sourceQuery, p)) continue;
+        if (
+          opts.personTopic &&
+          opts.primaryPerson &&
+          isOffTopicVisualForPersonTopic(sourceQuery, p, opts.primaryPerson)
+        ) {
+          continue;
+        }
       }
       const category = stockVisualCategory(sourceQuery, p);
       if (category === "blocked_model" || category === "blocked_offtopic") continue;
@@ -7330,16 +7339,18 @@ async function adoptClip(
       const beatMatch = scoreBeatNarrationMatch(beatText, sourceQuery, p);
       const queryWords = sourceQuery.split(/\s+/).filter((w) => w.length >= 3);
       const queryInBeat = scoreVisualRelevance(beatText, queryWords) >= 1;
-      if (opts.requireBeatMatch && beatMatch < 1 && !queryInBeat) continue;
-      if (opts.scriptAnchored && beatMatch < 1 && !queryInBeat && entityRules.length === 0) continue;
-      if (opts.personTopic && opts.primaryPerson) {
-        const parts = opts.primaryPerson.toLowerCase().split(/\s+/).filter((x) => x.length >= 3);
-        const hay = `${sourceQuery} ${path.basename(p)}`.toLowerCase();
-        const personHit = parts.some((pt) => hay.includes(pt));
-        const eventHit = /\b(interview|celebrity|red carpet|keynote|conference|launch)\b/.test(hay);
-        if (!personHit && !eventHit && beatMatch < 1) continue;
+      if (!opts.scriptImageFallback) {
+        if (opts.requireBeatMatch && beatMatch < 1 && !queryInBeat) continue;
+        if (opts.scriptAnchored && beatMatch < 1 && !queryInBeat && entityRules.length === 0) continue;
+        if (opts.personTopic && opts.primaryPerson) {
+          const parts = opts.primaryPerson.toLowerCase().split(/\s+/).filter((x) => x.length >= 3);
+          const hay = `${sourceQuery} ${path.basename(p)}`.toLowerCase();
+          const personHit = parts.some((pt) => hay.includes(pt));
+          const eventHit = /\b(interview|celebrity|red carpet|keynote|conference|launch)\b/.test(hay);
+          if (!personHit && !eventHit && beatMatch < 1) continue;
+        }
+        if (entityRules.length > 0 && !clipSatisfiesRealEntities(entityRules, sourceQuery, p)) continue;
       }
-      if (entityRules.length > 0 && !clipSatisfiesRealEntities(entityRules, sourceQuery, p)) continue;
       if (muskTopic) {
         if (category === "solar" && !/solar|photovoltaic|sun panel/.test(beatText.toLowerCase())) continue;
         if ((category === "rocket" || category === "space") && !isMuskApprovedRocketQuery(sourceQuery)) {
@@ -8726,7 +8737,27 @@ async function fetchSceneVisuals(
   const videoCount = clips.filter((c) => !isStillPhotoClip(c)).length;
   const photoCount = clips.filter((c) => isStillPhotoClip(c)).length;
   const personLabel = scenePersons.length > 0 ? ` [persons: ${scenePersons.join(", ")}]` : "";
-  const usable = clips.filter((c) => c && !isPipelineFallbackClip(c));
+  let usable = clips.filter((c) => c && !isPipelineFallbackClip(c));
+  if (usable.length === 0 && beats[0]) {
+    const forced = await fetchBeatScriptImageClip(
+      beats[0],
+      scene,
+      workDir,
+      scene.index,
+      clipFetchDur,
+      dedup,
+      scenePersons,
+      videoTitle,
+      { ...beatAdoptOpts, scriptImageFallback: true, requireBeatMatch: false, scriptAnchored: false },
+      `force_s${scene.index}`
+    );
+    if (forced && !isPipelineFallbackClip(forced)) {
+      clips.push(forced);
+      beatDurations.push(beats[0].holdSec);
+      usable = [forced];
+      console.warn(`[Pipeline] Scene ${scene.index}: forced script image fallback`);
+    }
+  }
   if (usable.length === 0) {
     throw pipelineError(
       PIPELINE_ERROR.NO_SCENES,
