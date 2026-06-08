@@ -415,14 +415,22 @@ function beatVisualWallMs(perf: PipelinePerfProfile): number {
   );
 }
 
-function backfillClipWallMs(perf: PipelinePerfProfile): number {
-  return perf.fastStockMode ? 70_000 : 90_000;
+function backfillClipWallMs(perf: PipelinePerfProfile, sceneDurationSec = 60): number {
+  if (perf.fastStockMode && sceneDurationSec <= 30) return 45_000;
+  return perf.fastStockMode ? 60_000 : 90_000;
 }
 
-/** Min clips for scene duration without forcing 3+ fetches when the script only has one beat (e.g. CTA). */
+function maxBackfillAttempts(perf: PipelinePerfProfile, sceneDurationSec: number): number {
+  if (perf.fastStockMode && sceneDurationSec <= 30) return 1;
+  return perf.fastStockMode ? 2 : 2;
+}
+
+/** Min clips for scene duration without forcing extra fetches on short CTA/outro scenes. */
 function minClipsForScene(duration: number, beatCount: number): number {
-  const byDuration = Math.max(2, Math.ceil(duration / VIDRUSH_BEAT_SEC));
-  return Math.max(1, Math.min(beatCount, byDuration));
+  const byDuration = Math.max(1, Math.ceil(duration / VIDRUSH_BEAT_SEC));
+  if (duration <= 30) return Math.max(1, Math.min(beatCount, byDuration));
+  const floor = Math.max(2, byDuration);
+  return Math.max(1, Math.min(beatCount, floor));
 }
 
 /** YouTube CC clip for one beat (interviews, news, entity-named footage). */
@@ -581,10 +589,11 @@ async function tryBeatTopicRealFootage(
       clipFetchDur,
       workDir,
       sceneIndex,
-      3,
+      perf.fastStockMode ? 2 : 3,
       `${tag}_celeb`,
       beat.index,
-      beat.text
+      beat.text,
+      perf.fastStockMode
     );
     clip = await adoptBestCelebrityClip(
       celebVids,
@@ -4188,7 +4197,8 @@ async function trimArchiveStreamToClip(
   outputPath: string,
   startSec: number,
   clipDur: number,
-  label: string
+  label: string,
+  fastMode = false
 ): Promise<boolean> {
   try {
     await withTimeout(
@@ -4197,7 +4207,7 @@ async function trimArchiveStreamToClip(
           `-vf "${STANDARD_VF}" ` +
           `-c:v libx264 -preset veryfast -crf 22 -an -pix_fmt yuv420p "${outputPath}"`
       ),
-      120_000,
+      fastMode ? 50_000 : 120_000,
       `Archive stream trim ${label}`
     );
     return fs.existsSync(outputPath) && fs.statSync(outputPath).size > 10_000;
@@ -4219,7 +4229,8 @@ async function fetchGdeltTvNewsClips(
   count: number = 1,
   fileTag = "",
   personName = "",
-  beatKeywords: string[] = []
+  beatKeywords: string[] = [],
+  fastMode = false
 ): Promise<CelebrityClipCandidate[]> {
   const queryList = [...new Set((Array.isArray(queries) ? queries : [queries]).filter((q) => q?.trim()))];
   if (!queryList.length) return [];
@@ -4239,14 +4250,15 @@ async function fetchGdeltTvNewsClips(
   const ranked: GdeltClip[] = [];
 
   try {
-    for (const query of queryList) {
-      if (ranked.length >= count * 4) break;
+    const queryCap = fastMode ? 2 : queryList.length;
+    for (const query of queryList.slice(0, queryCap)) {
+      if (ranked.length >= (fastMode ? count * 2 : count * 4)) break;
       const apiUrl =
         `${GDELT_TV_API}?query=${encodeURIComponent(query)}&mode=ClipGallery&format=json` +
-        `&maxrecords=8&timespan=5y`;
+        `&maxrecords=${fastMode ? 4 : 8}&timespan=5y`;
       const resp = await withTimeout(
         fetch(apiUrl, { headers: { "User-Agent": "Fastvid/1.0 (GDELT TV news)" } }),
-        22_000,
+        fastMode ? 14_000 : 22_000,
         `GDELT TV search scene ${sceneIndex}`
       );
       if (!resp.ok) continue;
@@ -4302,7 +4314,8 @@ async function fetchGdeltTvNewsClips(
           outPath,
           parsed.startSec,
           segmentDur,
-          `GDELT TV scene ${sceneIndex}`
+          `GDELT TV scene ${sceneIndex}`,
+          fastMode
         );
         if (ok) {
           results.push({ path: outPath, query: hit.query });
@@ -4627,15 +4640,17 @@ async function fetchPersonCelebrityVideoClips(
   count: number,
   fileTag: string,
   beatIndex: number,
-  beatText = ""
+  beatText = "",
+  fastMode = false
 ): Promise<CelebrityClipCandidate[]> {
   const results: CelebrityClipCandidate[] = [];
   const beatKeywords = buildPersonBeatRelevanceKeywords(personName, beatText);
   const scriptQueries = buildPersonCelebrityVideoQueries(personName, beatText, beatIndex);
   const gdeltQueries = buildGdeltTvQueries(personName, beatText, beatIndex);
-  const candidateTarget = Math.max(count * 2, 4);
+  const candidateTarget = fastMode ? Math.max(count, 2) : Math.max(count * 2, 4);
+  const scriptQueryCap = fastMode ? 3 : scriptQueries.length;
 
-  for (const q of scriptQueries) {
+  for (const q of scriptQueries.slice(0, scriptQueryCap)) {
     if (results.length >= candidateTarget) break;
     const wikiHits = await fetchWikimediaVideos(
       q,
@@ -4656,17 +4671,18 @@ async function fetchPersonCelebrityVideoClips(
       duration,
       workDir,
       sceneIndex,
-      candidateTarget - results.length,
+      fastMode ? 1 : candidateTarget - results.length,
       fileTag,
       personName,
-      beatKeywords
+      beatKeywords,
+      fastMode
     );
     results.push(...gdeltHits);
   }
 
   if (results.length < candidateTarget) {
     const septubeHits = await fetchSepiaSearchVideos(
-      scriptQueries,
+      scriptQueries.slice(0, fastMode ? 3 : scriptQueries.length),
       duration,
       workDir,
       sceneIndex,
@@ -4692,7 +4708,7 @@ async function fetchPersonCelebrityVideoClips(
     results.push(...archiveHits);
   }
 
-  if (results.length < candidateTarget && EUROPEANA_API_KEY) {
+  if (!fastMode && results.length < candidateTarget && EUROPEANA_API_KEY) {
     const euroHits = await fetchEuropeanaVideos(
       scriptQueries,
       duration,
@@ -4706,7 +4722,7 @@ async function fetchPersonCelebrityVideoClips(
     results.push(...euroHits);
   }
 
-  if (results.length < candidateTarget && VIMEO_ACCESS_TOKEN) {
+  if (!fastMode && results.length < candidateTarget && VIMEO_ACCESS_TOKEN) {
     const vimeoHits = await fetchVimeoCCVideos(
       scriptQueries,
       duration,
@@ -7629,10 +7645,11 @@ async function fetchPersonBeatClip(
     clipFetchDur,
     workDir,
     sceneIndex,
-    3,
+    dedup.perf.fastStockMode ? 2 : 3,
     `${tag}_person`,
     beat.index,
-    beat.text
+    beat.text,
+    dedup.perf.fastStockMode
   );
   clip = await adoptBestCelebrityClip(
     celebVids,
@@ -8213,13 +8230,14 @@ async function resolveBeatClipForBeat(
 // ─── 3e. Fetch All Visuals for a Scene (beat-aligned) ───────────────────────
 // One stock clip per ~3.5s narration beat, in narrative order. No clip recycling.
 type SceneVisualsResult = { clips: string[]; beatDurations: number[] };
+type BeatProgressPhase = "beat" | "backfill";
 
 async function fetchSceneVisuals(
   scene: Scene,
   workDir: string,
   videoTitle: string | undefined,
   dedup: VisualDedupState,
-  onBeatProgress?: (beatIndex: number, beatTotal: number) => void
+  onBeatProgress?: (beatIndex: number, beatTotal: number, phase?: BeatProgressPhase) => void
 ): Promise<SceneVisualsResult> {
   const clipFetchDur = 4;
   const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
@@ -8259,7 +8277,7 @@ async function fetchSceneVisuals(
   for (let bi = 0; bi < beats.length; bi++) {
     const beat = beats[bi];
     beatAdoptOpts.keywords = beat.keywords;
-    onBeatProgress?.(bi, beats.length);
+    onBeatProgress?.(bi, beats.length, "beat");
     const pushClip = (clipPath: string) => {
       clips.push(clipPath);
       beatDurations.push(beat.holdSec);
@@ -8272,6 +8290,9 @@ async function fetchSceneVisuals(
     };
     const beatWallMs = beatVisualWallMs(dedup.perf);
     let clip: string | null = null;
+    const beatPulse = setInterval(() => {
+      onBeatProgress?.(bi, beats.length, "beat");
+    }, 10_000);
     try {
       clip = await withTimeout(
         resolveBeatClipForBeat(
@@ -8295,6 +8316,8 @@ async function fetchSceneVisuals(
         (err as Error).message
       );
       dedup.lock = Promise.resolve();
+    } finally {
+      clearInterval(beatPulse);
     }
     if (clip && !isPipelineFallbackClip(clip)) {
       pushClip(clip);
@@ -8330,19 +8353,20 @@ async function fetchSceneVisuals(
 
   const minClips = minClipsForScene(scene.duration, beats.length);
   let backfillAttempts = 0;
-  const maxBackfill = dedup.perf.fastStockMode ? 3 : 2;
-  const backfillMs = backfillClipWallMs(dedup.perf);
+  const maxBackfill = maxBackfillAttempts(dedup.perf, scene.duration);
+  const backfillMs = backfillClipWallMs(dedup.perf, scene.duration);
+  const scenePersonsForBackfill = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
   while (
     clips.filter((c) => c && !isPipelineFallbackClip(c)).length < minClips &&
     backfillAttempts < maxBackfill
   ) {
     const stub = beats[beats.length - 1] ?? beats[0];
     if (!stub) break;
-    onBeatProgress?.(
-      beats.length + backfillAttempts,
-      beats.length + maxBackfill
-    );
+    onBeatProgress?.(backfillAttempts + 1, maxBackfill, "backfill");
     let extra: string | null = null;
+    const backfillPulse = setInterval(() => {
+      onBeatProgress?.(backfillAttempts + 1, maxBackfill, "backfill");
+    }, 10_000);
     try {
       extra = await withTimeout(
         (async () => {
@@ -8352,7 +8376,19 @@ async function fetchSceneVisuals(
             );
             if (ai && !isPipelineFallbackClip(ai)) return ai;
           }
-          if (canUseLicensedStockBeat(dedup)) {
+          const fastClip = await resolveBeatClipFast(
+            stub,
+            scene,
+            workDir,
+            scene.index,
+            clipFetchDur,
+            dedup,
+            scenePersonsForBackfill,
+            videoTitle,
+            beatAdoptOpts
+          );
+          if (fastClip && !isPipelineFallbackClip(fastClip)) return fastClip;
+          if (!dedup.perf.fastStockMode && canUseLicensedStockBeat(dedup)) {
             const stock = await fetchUniqueStockForBeat(
               stub, scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts
             );
@@ -8372,6 +8408,8 @@ async function fetchSceneVisuals(
         (err as Error).message
       );
       dedup.lock = Promise.resolve();
+    } finally {
+      clearInterval(backfillPulse);
     }
     if (!extra || isPipelineFallbackClip(extra)) break;
     if (clips.some((c) => clipContentKey(c) === clipContentKey(extra))) break;
@@ -9606,13 +9644,15 @@ export async function runVideoPipeline(
     const visualLimit = pLimit(perf.sceneParallelism);
     let completedVisuals = 0;
     let activeSceneIdx = 0;
+    let heartbeatTick = 0;
     const visualHeartbeat = setInterval(() => {
+      heartbeatTick++;
       const sceneNum = Math.min(activeSceneIdx + 1, scenes.length);
       onProgress?.({
-        stage: `Fetching visuals (scene ${sceneNum}/${scenes.length}, ${completedVisuals} done)...`,
+        stage: `Fetching visuals (scene ${sceneNum}/${scenes.length}, ${completedVisuals} done, tick ${heartbeatTick})...`,
         percent: 20 + Math.round(((completedVisuals + 0.15) / scenes.length) * 25),
       });
-    }, 12_000);
+    }, 10_000);
     let sceneVisualResults: SceneVisualsResult[];
     try {
     sceneVisualResults = await withTimeout(
@@ -9621,9 +9661,13 @@ export async function runVideoPipeline(
         let result: SceneVisualsResult;
         try {
           result = await withTimeout(
-            fetchSceneVisuals(scene, workDir, topicContext, visualDedup, (beatIdx, beatTotal) => {
+            fetchSceneVisuals(scene, workDir, topicContext, visualDedup, (beatIdx, beatTotal, phase) => {
+              const stage =
+                phase === "backfill"
+                  ? `Scene ${sceneIdx + 1}/${scenes.length}: backfill ${beatIdx}/${beatTotal}...`
+                  : `Scene ${sceneIdx + 1}/${scenes.length}: clip ${beatIdx + 1}/${beatTotal}...`;
               onProgress?.({
-                stage: `Scene ${sceneIdx + 1}/${scenes.length}: clip ${beatIdx + 1}/${beatTotal}...`,
+                stage,
                 percent: 20 + Math.round(((sceneIdx + (beatIdx + 1) / Math.max(1, beatTotal)) / scenes.length) * 25),
               });
             }),
