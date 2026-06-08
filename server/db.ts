@@ -211,6 +211,13 @@ export async function updateVideoProgress(id: number, progressStep: string, prog
     .where(eq(videos.id, id));
 }
 
+/** Refresh updatedAt while a long clip search runs (prevents false stall kills). */
+export async function touchVideoProgress(id: number): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(videos).set({ updatedAt: new Date() }).where(eq(videos.id, id));
+}
+
 export interface ProgressLogEntry {
   step: string;          // human-readable step name
   startedAt: number;    // Unix ms
@@ -264,11 +271,22 @@ const ORPHANED_PIPELINE_STATUSES = IN_PROGRESS_STATUSES.filter(
 
 export { ORPHANED_PIPELINE_STATUSES };
 
-/** No DB progress update for this long → treat as failed (not "stuck — retry"). */
-function pipelineStallThresholdMs(videoLength: string | null | undefined): number {
-  if (videoLength === "1" || videoLength === "2") return 10 * 60 * 1000;
-  if (videoLength === "5-8") return 12 * 60 * 1000;
-  return 18 * 60 * 1000;
+/**
+ * No DB heartbeat for this long → treat as failed.
+ * Visual search may run many minutes per scene (celebrity/GDELT/YouTube); use a long window there.
+ */
+function pipelineStallThresholdMs(
+  videoLength: string | null | undefined,
+  status?: string | null
+): number {
+  const visualSearch = status === "generating_visuals";
+  if (videoLength === "1" || videoLength === "2") {
+    return visualSearch ? 45 * 60 * 1000 : 12 * 60 * 1000;
+  }
+  if (videoLength === "5-8") {
+    return visualSearch ? 60 * 60 * 1000 : 15 * 60 * 1000;
+  }
+  return visualSearch ? 75 * 60 * 1000 : 22 * 60 * 1000;
 }
 
 /**
@@ -282,7 +300,7 @@ export async function failPipelineIfStalled(video: Video): Promise<Video> {
   }
 
   const updatedAt = video.updatedAt ? new Date(video.updatedAt).getTime() : Date.now();
-  const threshold = pipelineStallThresholdMs(video.videoLength);
+  const threshold = pipelineStallThresholdMs(video.videoLength, video.status);
   if (Date.now() - updatedAt < threshold) return video;
 
   const step = video.progressStep ?? "unknown step";

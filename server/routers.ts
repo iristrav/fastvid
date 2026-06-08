@@ -28,6 +28,7 @@ import {
   createVideo, getAllUsers, getAllVideos, getUserById, getUserByEmail,
   searchVideos, getUserStats, getVideoById, getVideosByUserId, getVideoStats,
   updateUserRole, updateUserSubscription, updateVideoStatus, updateVideoProgress, updateVideoProgressLog,
+  touchVideoProgress,
   getAllVoices, getAllVoicesAdmin, getVoiceById, createVoice, updateVoice, deleteVoice, seedDefaultVoices,
   deleteVideo, updateVideoTitle, deleteAllFailedVideosForUser, expireStuckVideos, recoverVideoCompletionState, recoverAllStuckVideos, failPipelineIfStalled, ORPHANED_PIPELINE_STATUSES,
   createUser, updateUserLastSignedIn,
@@ -552,20 +553,28 @@ async function _generateVideoWithAI(
       }
     };
 
-    const videoUrl = await runVideoPipeline(
-      videoId,
-      approvedScript,
-      async (progress) => {
-        const basePercent = 30;
-        const pipelinePercent = Math.round(basePercent + (progress.percent * 0.65));
-        await pushStep(progress.stage, pipelinePercent);
-      },
-      voiceId,
-      customVoiceoverUrl,
-      videoLength,
-      enableSubtitles,
-      prompt
-    );
+    const pipelineHeartbeat = setInterval(() => {
+      touchVideoProgress(videoId).catch(() => {});
+    }, 20_000);
+    let videoUrl: string;
+    try {
+      videoUrl = await runVideoPipeline(
+        videoId,
+        approvedScript,
+        async (progress) => {
+          const basePercent = 30;
+          const pipelinePercent = Math.round(basePercent + (progress.percent * 0.65));
+          await pushStep(progress.stage, pipelinePercent);
+        },
+        voiceId,
+        customVoiceoverUrl,
+        videoLength,
+        enableSubtitles,
+        prompt
+      );
+    } finally {
+      clearInterval(pipelineHeartbeat);
+    }
 
     // Mark last active step as done
     const lastActive = progressLog.find(e => e.status === "active");

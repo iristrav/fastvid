@@ -410,19 +410,26 @@ function youtubeBeatFetchTimeoutMs(fastStockMode: boolean): number {
 function beatVisualWallMs(perf: PipelinePerfProfile): number {
   const ytExtra = youtubeCcReady() ? youtubeBeatFetchTimeoutMs(perf.fastStockMode) + 20_000 : 0;
   return Math.min(
-    perf.fastStockMode ? 120_000 : 240_000,
+    perf.fastStockMode ? 240_000 : 240_000,
     Math.max(perf.beatClipTimeoutMs + 25_000, ytExtra || perf.beatClipTimeoutMs + 15_000)
   );
 }
 
 function backfillClipWallMs(perf: PipelinePerfProfile, sceneDurationSec = 60): number {
   if (perf.fastStockMode && sceneDurationSec <= 30) return 45_000;
-  return perf.fastStockMode ? 60_000 : 90_000;
+  if (perf.fastStockMode && sceneDurationSec <= 60) return 180_000;
+  return perf.fastStockMode ? 120_000 : 90_000;
 }
 
 function maxBackfillAttempts(perf: PipelinePerfProfile, sceneDurationSec: number): number {
   if (perf.fastStockMode && sceneDurationSec <= 30) return 1;
+  if (perf.fastStockMode && sceneDurationSec <= 60) return 3;
   return perf.fastStockMode ? 2 : 2;
+}
+
+/** Ultra-fast celebrity caps only on very short CTA scenes; longer scenes may search minutes. */
+function celebrityFetchFastMode(perf: PipelinePerfProfile, sceneDurationSec: number): boolean {
+  return perf.fastStockMode && sceneDurationSec <= 15;
 }
 
 /** Min clips for scene duration without forcing extra fetches on short CTA/outro scenes. */
@@ -589,11 +596,11 @@ async function tryBeatTopicRealFootage(
       clipFetchDur,
       workDir,
       sceneIndex,
-      perf.fastStockMode ? 2 : 3,
+      celebrityFetchFastMode(perf, scene.duration) ? 2 : 3,
       `${tag}_celeb`,
       beat.index,
       beat.text,
-      perf.fastStockMode
+      celebrityFetchFastMode(perf, scene.duration)
     );
     clip = await adoptBestCelebrityClip(
       celebVids,
@@ -862,8 +869,8 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
       sceneParallelism: railwayParallel,
       pexelsDownloadRetries: IS_RAILWAY ? 1 : 2,
       maxStockQueriesPerBeat: 4,
-      beatClipTimeoutMs: IS_RAILWAY ? 38_000 : 90_000,
-      sceneVisualTimeoutMs: IS_RAILWAY ? 3 * 60_000 : 6 * 60_000,
+      beatClipTimeoutMs: IS_RAILWAY ? 120_000 : 90_000,
+      sceneVisualTimeoutMs: IS_RAILWAY ? 12 * 60_000 : 6 * 60_000,
       fastStockMode: IS_RAILWAY,
       scriptOnlyVisuals: true,
     }, videoLength);
@@ -4708,7 +4715,7 @@ async function fetchPersonCelebrityVideoClips(
     results.push(...archiveHits);
   }
 
-  if (!fastMode && results.length < candidateTarget && EUROPEANA_API_KEY) {
+  if (results.length < candidateTarget && EUROPEANA_API_KEY && !fastMode) {
     const euroHits = await fetchEuropeanaVideos(
       scriptQueries,
       duration,
@@ -7645,11 +7652,11 @@ async function fetchPersonBeatClip(
     clipFetchDur,
     workDir,
     sceneIndex,
-    dedup.perf.fastStockMode ? 2 : 3,
+    celebrityFetchFastMode(dedup.perf, scene.duration) ? 2 : 3,
     `${tag}_person`,
     beat.index,
     beat.text,
-    dedup.perf.fastStockMode
+    celebrityFetchFastMode(dedup.perf, scene.duration)
   );
   clip = await adoptBestCelebrityClip(
     celebVids,
@@ -8388,7 +8395,7 @@ async function fetchSceneVisuals(
             beatAdoptOpts
           );
           if (fastClip && !isPipelineFallbackClip(fastClip)) return fastClip;
-          if (!dedup.perf.fastStockMode && canUseLicensedStockBeat(dedup)) {
+          if (canUseLicensedStockBeat(dedup)) {
             const stock = await fetchUniqueStockForBeat(
               stub, scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts
             );
