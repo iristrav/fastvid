@@ -87,6 +87,7 @@ async function startServer() {
     console.log("[Fastvid] YouTube CC: ✗ incomplete — need BOTH YOUTUBE_API_KEY and RAPIDAPI_KEY");
   }
   console.log("[Fastvid] SERPAPI_KEY:", process.env.SERPAPI_KEY ? "✓ set" : "✗ NOT SET — celebrity image search disabled");
+  console.log("[Fastvid] UNSPLASH_ACCESS_KEY:", process.env.UNSPLASH_ACCESS_KEY?.trim() ? "✓ set" : "✗ NOT SET — Unsplash image search disabled");
   // ─────────────────────────────────────────────────────────────────────────
 
   const app = express();
@@ -175,6 +176,7 @@ async function startServer() {
         RAPIDAPI_KEY: !!process.env.RAPIDAPI_KEY,
         YOUTUBE_CC_DL_SERVICE: !!process.env.YOUTUBE_CC_DL_SERVICE,
         SERPAPI_KEY: !!process.env.SERPAPI_KEY,
+        UNSPLASH_ACCESS_KEY: !!process.env.UNSPLASH_ACCESS_KEY?.trim(),
         FLICKR_API_KEY: !!process.env.FLICKR_API_KEY?.trim(),
         EUROPEANA_API_KEY: !!process.env.EUROPEANA_API_KEY?.trim(),
         VIMEO_ACCESS_TOKEN: !!process.env.VIMEO_ACCESS_TOKEN?.trim(),
@@ -185,6 +187,7 @@ async function startServer() {
           !!process.env.YOUTUBE_API_KEY?.trim() &&
           !!(process.env.RAPIDAPI_KEY?.trim() || process.env.YOUTUBE_CC_DL_SERVICE?.trim()),
         serpApiReady: !!process.env.SERPAPI_KEY?.trim(),
+        unsplashReady: !!process.env.UNSPLASH_ACCESS_KEY?.trim(),
         voiceReady: !!(
           process.env.ELEVENLABS_API_KEY?.trim() ||
           process.env.FISH_AUDIO_API_KEY?.trim()
