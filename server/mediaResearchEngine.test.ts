@@ -4,6 +4,7 @@ import {
   buildMediaSearchIntent,
   inferTopicKind,
   isHistoricalDocumentary,
+  realFootageFirstEnabled,
   mergeAiRelevanceScores,
   partitionCandidatesForIntent,
   rankMediaCandidates,
@@ -186,8 +187,17 @@ describe("buildHistoricalArchivalQueries", () => {
   });
 });
 
+describe("realFootageFirstEnabled", () => {
+  it("is on by default", () => {
+    const prev = process.env.REAL_FOOTAGE_FIRST;
+    delete process.env.REAL_FOOTAGE_FIRST;
+    expect(realFootageFirstEnabled()).toBe(true);
+    process.env.REAL_FOOTAGE_FIRST = prev;
+  });
+});
+
 describe("partitionCandidatesForIntent", () => {
-  it("puts stock video in still fallback for historical topics", () => {
+  it("puts stock video in stock fallback for historical topics", () => {
     const intent = buildMediaSearchIntent({
       beatText: "The Titanic sank in 1912.",
       searchQueries: ["Titanic"],
@@ -203,9 +213,10 @@ describe("partitionCandidatesForIntent", () => {
       { path: "/a.mp4", query: "ocean", source: "pexels", isVideo: true, score: 200 },
       { path: "/b.mp4", query: "RMS Titanic archival", source: "internet_archive", isVideo: true, score: 150 },
     ];
-    const { videoFirst } = partitionCandidatesForIntent(ranked, intent);
+    const { videoFirst, stockFallback } = partitionCandidatesForIntent(ranked, intent);
     expect(videoFirst[0].source).toBe("internet_archive");
     expect(videoFirst.some((c) => c.source === "pexels")).toBe(false);
+    expect(stockFallback[0].source).toBe("pexels");
   });
 });
 

@@ -253,9 +253,19 @@ const STILL_ONLY_SOURCES: MediaSourceKind[] = [
   "wikimedia_image",
 ];
 
+/** Default on: authentic footage before stills/stock (set REAL_FOOTAGE_FIRST=false to disable). */
+export function realFootageFirstEnabled(): boolean {
+  return process.env.REAL_FOOTAGE_FIRST !== "false";
+}
+
 /** True when beats should prefer archival/real video over Ken Burns stills. */
 export function prefersArchivalVideo(intent: MediaSearchIntent): boolean {
   return intent.topicKind === "historical" || intent.topicKind === "news";
+}
+
+/** True when only authentic video should be adopted before stills and licensed stock. */
+export function prefersRealFootageOnly(intent: MediaSearchIntent): boolean {
+  return realFootageFirstEnabled() || prefersArchivalVideo(intent);
 }
 
 /** Archival YouTube/Wiki/Archive search phrases for historical beats. */
@@ -281,21 +291,29 @@ export function buildHistoricalArchivalQueries(
   return Array.from(new Set(out.map((q) => q.trim()).filter((q) => q.length >= 3))).slice(0, 8);
 }
 
-/** Split ranked pool: real video first; stills/stock only when no video exists. */
+/** Split ranked pool: authentic video → stills → licensed stock (last). */
 export function partitionCandidatesForIntent(
   ranked: MediaCandidate[],
   intent: MediaSearchIntent
-): { videoFirst: MediaCandidate[]; stillFallback: MediaCandidate[] } {
-  if (!prefersArchivalVideo(intent)) {
-    return { videoFirst: ranked, stillFallback: [] };
+): {
+  videoFirst: MediaCandidate[];
+  stillFallback: MediaCandidate[];
+  stockFallback: MediaCandidate[];
+} {
+  if (!prefersRealFootageOnly(intent)) {
+    return { videoFirst: ranked, stillFallback: [], stockFallback: [] };
   }
+  const stockFallback = ranked.filter((c) => STOCK_ONLY_SOURCES.includes(c.source));
   const videoFirst = ranked.filter(
-    (c) => c.isVideo && !STOCK_ONLY_SOURCES.includes(c.source)
+    (c) =>
+      c.isVideo &&
+      !STOCK_ONLY_SOURCES.includes(c.source) &&
+      !STILL_ONLY_SOURCES.includes(c.source)
   );
   const stillFallback = ranked.filter(
-    (c) => !videoFirst.includes(c) && !STOCK_ONLY_SOURCES.includes(c.source)
+    (c) => !videoFirst.includes(c) && !stockFallback.includes(c)
   );
-  return { videoFirst, stillFallback };
+  return { videoFirst, stillFallback, stockFallback };
 }
 
 /** Rank candidates best-first (Laag 3). */
