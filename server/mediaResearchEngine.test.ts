@@ -3,6 +3,7 @@ import {
   buildHistoricalArchivalQueries,
   buildMediaSearchIntent,
   inferTopicKind,
+  isHistoricalDocumentary,
   mergeAiRelevanceScores,
   partitionCandidatesForIntent,
   rankMediaCandidates,
@@ -14,6 +15,17 @@ describe("inferTopicKind", () => {
   it("detects person topics", () => {
     expect(inferTopicKind("Elon Musk spoke at the event.", "Elon Musk", false, false)).toBe("person");
     expect(inferTopicKind("Breaking news today.", "", false, true)).toBe("person");
+  });
+
+  it("detects historical topics even when a name is mentioned in passing", () => {
+    expect(
+      inferTopicKind(
+        "In 1912 the Titanic sank; James Cameron later made a film about it.",
+        "James Cameron",
+        false,
+        false
+      )
+    ).toBe("historical");
   });
 
   it("detects historical topics", () => {
@@ -127,6 +139,32 @@ describe("mergeAiRelevanceScores", () => {
     ]);
     const merged = mergeAiRelevanceScores(candidates, aiScores);
     expect(merged[0].score).toBeGreaterThan(merged[1].score!);
+  });
+});
+
+describe("isHistoricalDocumentary", () => {
+  it("detects Titanic from title and narration", () => {
+    expect(
+      isHistoricalDocumentary("The RMS Titanic in 1912", "The ship left Southampton in April 1912.")
+    ).toBe(true);
+  });
+});
+
+describe("buildMediaSearchIntent", () => {
+  it("uses video title for historical topic when beat only mentions a filmmaker", () => {
+    const intent = buildMediaSearchIntent({
+      beatText: "James Cameron later directed a blockbuster about the disaster.",
+      searchQueries: ["Titanic film"],
+      keywords: ["titanic"],
+      primaryPerson: "James Cameron",
+      persons: ["James Cameron"],
+      videoTitle: "The RMS Titanic in 1912",
+      powerWord: "Titanic",
+      personTopicLock: false,
+      spaceTopic: false,
+      muskTopic: false,
+    });
+    expect(intent.topicKind).toBe("historical");
   });
 });
 

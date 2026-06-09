@@ -117,11 +117,18 @@ export function inferTopicKind(
   spaceTopic: boolean,
   personTopicLock: boolean
 ): MediaTopicKind {
-  if (primaryPerson.trim() || personTopicLock) return "person";
   if (spaceTopic) return "space";
+  if (personTopicLock) return "person";
   if (HISTORICAL_TOPIC_RE.test(beatText)) return "historical";
   if (NEWS_TOPIC_RE.test(beatText)) return "news";
+  if (primaryPerson.trim()) return "person";
   return "general";
+}
+
+/** Historical documentary — Titanic, WWII, etc. (not celebrity person-docs). */
+export function isHistoricalDocumentary(...texts: (string | undefined)[]): boolean {
+  const hay = texts.filter(Boolean).join(" ");
+  return hay.length > 0 && HISTORICAL_TOPIC_RE.test(hay);
 }
 
 /** Build search intent for one beat (Laag 1). */
@@ -137,8 +144,9 @@ export function buildMediaSearchIntent(params: {
   spaceTopic: boolean;
   muskTopic: boolean;
 }): MediaSearchIntent {
+  const topicHay = [params.beatText, params.videoTitle].filter(Boolean).join(" ");
   const topicKind = inferTopicKind(
-    params.beatText,
+    topicHay,
     params.primaryPerson,
     params.spaceTopic,
     params.personTopicLock
