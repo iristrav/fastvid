@@ -63,6 +63,8 @@ import {
   scriptGuidedClipsEnabled,
 } from "./scriptGuidedClipFinder";
 import { clipPassesVisionGate, clipVisionGateEnabled } from "./visualQualityGate";
+import { curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, skipEffectsStage } from "./sourcingPolicy";
+import { fetchCuratedArchiveBeatClip } from "./curatedMediaSourcing";
 
 // API Keys
 const FISH_AUDIO_API_KEY = process.env.FISH_AUDIO_API_KEY || "";
@@ -1464,8 +1466,9 @@ function applyAiFallbackToProfile(
 function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
   const railwayParallel = IS_RAILWAY ? 2 : 2;
   const maxEntityYoutube = maxEntityYoutubeFetchesPerVideo(minimizeStockFootageEnabled());
+  let profile: PipelinePerfProfile;
   if (videoLength === "1" || videoLength === "2") {
-    return applyAiFallbackToProfile({
+    profile = applyAiFallbackToProfile({
       targetWallClockMin: 8,
       maxBeatsPerScene: IS_RAILWAY ? 4 : 6,
       maxTopicQueries: IS_RAILWAY ? 1 : 3,
@@ -1483,9 +1486,8 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
       fastStockMode: IS_RAILWAY,
       scriptOnlyVisuals: false,
     }, videoLength);
-  }
-  if (videoLength === "5-8") {
-    return applyAiFallbackToProfile({
+  } else if (videoLength === "5-8") {
+    profile = applyAiFallbackToProfile({
       targetWallClockMin: 90,
       maxBeatsPerScene: 6,
       maxTopicQueries: 4,
@@ -1503,9 +1505,8 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
       fastStockMode: false,
       scriptOnlyVisuals: true,
     }, videoLength);
-  }
-  if (videoLength === "12-15" || videoLength === "15-20") {
-    return applyAiFallbackToProfile({
+  } else if (videoLength === "12-15" || videoLength === "15-20") {
+    profile = applyAiFallbackToProfile({
       targetWallClockMin: 90,
       maxBeatsPerScene: 5,
       maxTopicQueries: 3,
@@ -1523,25 +1524,42 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
       fastStockMode: false,
       scriptOnlyVisuals: true,
     }, videoLength);
+  } else {
+    profile = applyAiFallbackToProfile({
+      targetWallClockMin: 90,
+      maxBeatsPerScene: 7,
+      maxTopicQueries: 4,
+      skipFairUseTransform: false,
+      transformTimeoutMs: 45_000,
+      enableArchival: true,
+      enableNasa: true,
+      enableMuskHeroFetch: false,
+      maxEntityYoutubePerVideo: maxEntityYoutube,
+      sceneParallelism: railwayParallel,
+      pexelsDownloadRetries: 2,
+      maxStockQueriesPerBeat: 6,
+      beatClipTimeoutMs: 150_000,
+      sceneVisualTimeoutMs: 12 * 60_000,
+      fastStockMode: false,
+      scriptOnlyVisuals: true,
+    }, videoLength);
   }
-  return applyAiFallbackToProfile({
-    targetWallClockMin: 90,
-    maxBeatsPerScene: 7,
-    maxTopicQueries: 4,
-    skipFairUseTransform: false,
-    transformTimeoutMs: 45_000,
-    enableArchival: true,
-    enableNasa: true,
-    enableMuskHeroFetch: false,
-    maxEntityYoutubePerVideo: maxEntityYoutube,
-    sceneParallelism: railwayParallel,
-    pexelsDownloadRetries: 2,
-    maxStockQueriesPerBeat: 6,
-    beatClipTimeoutMs: 150_000,
-    sceneVisualTimeoutMs: 12 * 60_000,
-    fastStockMode: false,
-    scriptOnlyVisuals: true,
-  }, videoLength);
+
+  if (curatedArchiveOnlyVisuals()) {
+    return {
+      ...profile,
+      enableArchival: false,
+      enableNasa: false,
+      enableMuskHeroFetch: false,
+      enableAiFallback: false,
+      maxAiClipsPerVideo: 0,
+      minimizeStockFootage: true,
+      maxStockBeatsPerVideo: 0,
+      maxStockQueriesPerBeat: 0,
+      maxEntityYoutubePerVideo: 0,
+    };
+  }
+  return profile;
 }
 
 function visualStageTimeoutMs(videoLength: string, perf: PipelinePerfProfile): number {
@@ -2440,6 +2458,16 @@ export async function generateVoiceover(
       selectedElevenVoice,
       TTS_TIMEOUT_MS,
       "selected voice"
+    );
+  }
+
+  if (elevenLabsOnlyVoice()) {
+    return synthesizeElevenLabsVoice(
+      cleanText,
+      outputPath,
+      "pNInz6obpgDQGcFmaJgB",
+      TTS_TIMEOUT_MS,
+      "default documentary"
     );
   }
 
@@ -6857,7 +6885,7 @@ function inferClipSourceFromPath(filePath: string): string {
   if (/vimeo/i.test(base)) return "vimeo";
   if (/openverse/i.test(base)) return "openverse";
   if (/nasa/i.test(base)) return "nasa";
-  if (/archive/i.test(base)) return "archive";
+  if (/archive|curated/i.test(base)) return "archive";
   if (/pixabay|_pix_|beat_vid|fb_vid/i.test(base)) return "pixabay";
   if (
     /_ai_fallback|_stability_|_leonardo_|_grok_|_runway_|_kling_|_luma_|_pika_|_veo_|_forge_|scene_\d+_b\d+_ai/i.test(
@@ -7271,6 +7299,8 @@ interface VisualDedupState {
   stillPhotosUsedGlobal: number;
   /** Source image URLs already used (prevents same Google Image twice). */
   usedImageUrls: Set<string>;
+  /** Curated admin archive asset IDs already used this video. */
+  usedCuratedAssetIds: Set<number>;
   lock: Promise<void>;
   perf: PipelinePerfProfile;
   /** Named celebrity from user prompt (e.g. Kylie Jenner) — anchor every beat's stock search. */
@@ -7308,6 +7338,7 @@ function createVisualDedupState(
     stillPhotosMaxThisScene: 0,
     stillPhotosUsedGlobal: 0,
     usedImageUrls: new Set(),
+    usedCuratedAssetIds: new Set(),
     lock: Promise.resolve(),
     perf,
     primaryPerson: topic?.primaryPerson?.trim() ?? "",
@@ -11057,6 +11088,18 @@ async function resolveBeatClipForBeat(
   videoTitle: string | undefined,
   beatAdoptOpts: VisualAdoptOptions
 ): Promise<string | null> {
+  if (curatedArchiveOnlyVisuals()) {
+    return fetchCuratedArchiveBeatClip(
+      beat,
+      scene,
+      workDir,
+      sceneIndex,
+      clipFetchDur,
+      dedup.usedCuratedAssetIds,
+      videoTitle
+    );
+  }
+
   if (dedup.perf.fastStockMode) {
     return resolveBeatClipTurbo(
       beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts
@@ -11204,10 +11247,12 @@ async function fetchSceneVisuals(
   const beats = buildSceneBeats(scene, scene.duration, beatCap, videoTitle, scenePersons);
   const clips: string[] = [];
   const beatDurations: number[] = [];
+  const archiveOnly = curatedArchiveOnlyVisuals();
 
   console.log(
     `[Pipeline] Scene ${scene.index}: ${beats.length} zin-beats (~${VIDRUSH_BEAT_SEC}s) — ` +
-    `power words: [${beats.map((b) => b.powerWord).join(", ")}]`
+    `power words: [${beats.map((b) => b.powerWord).join(", ")}]` +
+    (archiveOnly ? " [curated archive only]" : "")
   );
 
   const muskTopic = isMuskTeslaTopic(videoTitle, scene.text);
@@ -11264,7 +11309,11 @@ async function fetchSceneVisuals(
         (err as Error).message
       );
       dedup.lock = Promise.resolve();
-      if (
+      if (archiveOnly) {
+        clip = await fetchCuratedArchiveBeatClip(
+          beat, scene, workDir, scene.index, clipFetchDur, dedup.usedCuratedAssetIds, videoTitle
+        );
+      } else if (
         realOnly &&
         (!clip || isPipelineFallbackClip(clip) || isStillPhotoClip(clip ?? "") || isLicensedStockClip(clip ?? ""))
       ) {
@@ -11288,6 +11337,7 @@ async function fetchSceneVisuals(
             );
       }
       if (
+        !archiveOnly &&
         (!clip || isPipelineFallbackClip(clip)) &&
         dedup.perf.enableAiFallback &&
         dedup.aiClipsUsed < dedup.perf.maxAiClipsPerVideo
@@ -11305,6 +11355,7 @@ async function fetchSceneVisuals(
         }
       }
       if (
+        !archiveOnly &&
         !youtubeOnlySourcingEnabled() &&
         (!clip || isPipelineFallbackClip(clip)) &&
         canUseLicensedStockBeat(dedup)
@@ -11314,6 +11365,7 @@ async function fetchSceneVisuals(
         );
       }
       if (
+        !archiveOnly &&
         !youtubeOnlySourcingEnabled() &&
         (!clip || isPipelineFallbackClip(clip)) &&
         canUseGlobalStillPhoto(dedup)
@@ -11345,7 +11397,12 @@ async function fetchSceneVisuals(
         pushClip(clip);
       }
     }
-    if ((!clip || isPipelineFallbackClip(clip)) && dedup.perf.enableAiFallback && dedup.aiClipsUsed < dedup.perf.maxAiClipsPerVideo) {
+    if (
+      !archiveOnly &&
+      (!clip || isPipelineFallbackClip(clip)) &&
+      dedup.perf.enableAiFallback &&
+      dedup.aiClipsUsed < dedup.perf.maxAiClipsPerVideo
+    ) {
       let aiOnly: string | null = null;
       try {
         aiOnly = await withTimeout(
@@ -11370,7 +11427,11 @@ async function fetchSceneVisuals(
       }
     } else if (!clip || isPipelineFallbackClip(clip)) {
       let rescue: string | null = null;
-      if (realOnly) {
+      if (archiveOnly) {
+        rescue = await fetchCuratedArchiveBeatClip(
+          beat, scene, workDir, scene.index, clipFetchDur, dedup.usedCuratedAssetIds, videoTitle
+        );
+      } else if (realOnly) {
         rescue = await beatPrimaryFetch(
           beat,
           scene,
@@ -11387,6 +11448,7 @@ async function fetchSceneVisuals(
         );
       }
       if (
+        !archiveOnly &&
         (!rescue || isPipelineFallbackClip(rescue)) &&
         dedup.perf.enableAiFallback &&
         dedup.aiClipsUsed < dedup.perf.maxAiClipsPerVideo
@@ -11404,6 +11466,7 @@ async function fetchSceneVisuals(
         }
       }
       if (
+        !archiveOnly &&
         !youtubeOnlySourcingEnabled() &&
         (!rescue || isPipelineFallbackClip(rescue)) &&
         canUseLicensedStockBeat(dedup)
@@ -11412,7 +11475,7 @@ async function fetchSceneVisuals(
           beat, scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts, "miss"
         );
       }
-      if ((!rescue || isPipelineFallbackClip(rescue)) && canUseGlobalStillPhoto(dedup)) {
+      if (!archiveOnly && (!rescue || isPipelineFallbackClip(rescue)) && canUseGlobalStillPhoto(dedup)) {
         rescue = await fetchBeatScriptImageClip(
           beat,
           scene,
@@ -11426,7 +11489,7 @@ async function fetchSceneVisuals(
           `b${beat.index}_miss`
         );
       }
-      if ((!rescue || isPipelineFallbackClip(rescue)) && canUseGlobalStillPhoto(dedup)) {
+      if (!archiveOnly && (!rescue || isPipelineFallbackClip(rescue)) && canUseGlobalStillPhoto(dedup)) {
         rescue = await fetchBeatScriptImageForced(
           beat, scene, workDir, scene.index, clipFetchDur, dedup, scenePersons, videoTitle, `b${beat.index}_miss`
         );
@@ -11460,6 +11523,11 @@ async function fetchSceneVisuals(
     try {
         extra = await withTimeout(
           (async () => {
+            if (archiveOnly) {
+              return fetchCuratedArchiveBeatClip(
+                stub, scene, workDir, scene.index, clipFetchDur, dedup.usedCuratedAssetIds, videoTitle
+              );
+            }
             if (dedup.perf.fastStockMode) {
               if (
                 dedup.perf.enableAiFallback &&
@@ -12734,7 +12802,9 @@ export async function runVideoPipeline(
   console.log(
     `[Pipeline] Video ${videoId}: ${maxScenes} scenes for ${videoLength} min` +
     (muskLocked ? " [Musk/Tesla topic lock]" : "") +
-    (personLocked ? ` [person lock: ${primaryPerson}]` : "")
+    (personLocked ? ` [person lock: ${primaryPerson}]` : "") +
+    (curatedArchiveOnlyVisuals() ? " [curated archive visuals]" : "") +
+    (elevenLabsOnlyVoice() ? " [ElevenLabs voice]" : "")
   );
 
   try {
@@ -13075,10 +13145,13 @@ export async function runVideoPipeline(
     console.log(`[Pipeline] Stage 6 (upload): ${((Date.now()-t5)/1000).toFixed(1)}s, size: ${(videoBuffer.length/1024/1024).toFixed(1)}MB`);
 
     // Persist URL immediately so a crash during finalization cannot lose the finished video
-    await updateVideoStatus(videoId, "generating_effects", {
+    const finalStatus = skipEffectsStage() ? "completed" as const : "generating_effects" as const;
+    const finalStep = skipEffectsStage() ? "Video complete!" : STAGE_LABELS.complete;
+    const finalPercent = skipEffectsStage() ? 100 : 95;
+    await updateVideoStatus(videoId, finalStatus, {
       videoUrl: url,
-      progressStep: STAGE_LABELS.complete,
-      progressPercent: 95,
+      progressStep: finalStep,
+      progressPercent: finalPercent,
     }).catch((err) => console.warn(`[Pipeline] Failed to persist videoUrl for ${videoId}:`, err));
 
     onProgress?.({ stage: STAGE_LABELS.complete, percent: 100 });

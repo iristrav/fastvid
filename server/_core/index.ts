@@ -10,6 +10,7 @@ import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 import { migrate } from "drizzle-orm/mysql2/migrator";
 import path from "path";
+import fs from "fs";
 import { fileURLToPath } from "url";
 import { LOCAL_UPLOADS_DIR } from "../storageLocal";
 
@@ -26,13 +27,17 @@ async function runMigrations() {
     const { getDb } = await import("../db");
     const db = await getDb();
     if (!db) { console.warn("[Migration] DB not available, skipping migrations"); return; }
-    // Migrations folder is relative to the compiled output location
-    // In production: __dirname = /app/dist, drizzle folder = /app/drizzle → go up 1 level
-    // In development: __dirname = /home/.../server/_core, drizzle folder = /home/.../drizzle → go up 2 levels
-    const isDist = __dirname.endsWith('/dist') || __dirname.endsWith('\\dist');
-    const migrationsFolder = isDist
-      ? path.resolve(__dirname, "../drizzle")
-      : path.resolve(__dirname, "../../drizzle");
+    const isDist = __dirname.endsWith("/dist") || __dirname.endsWith("\\dist");
+    const candidates = [
+      path.join(process.cwd(), "drizzle"),
+      path.join(process.cwd(), "dist", "drizzle"),
+      isDist ? path.resolve(__dirname, "../drizzle") : path.resolve(__dirname, "../../drizzle"),
+    ];
+    const migrationsFolder = candidates.find((p) => fs.existsSync(path.join(p, "meta", "_journal.json")));
+    if (!migrationsFolder) {
+      console.warn("[Migration] drizzle folder not found, skipping migrations");
+      return;
+    }
     console.log("[Migration] Running migrations from:", migrationsFolder);
     await migrate(db as Parameters<typeof migrate>[0], { migrationsFolder });
     console.log("[Migration] All migrations applied successfully");
@@ -82,6 +87,23 @@ async function startServer() {
   console.log("[Fastvid] RAPIDAPI_KEY:", ytDownload ? "✓ set" : "✗ NOT SET — YouTube CC download disabled");
   console.log("[Fastvid] YOUTUBE_API_KEY:", ytSearch ? "✓ set" : "✗ NOT SET — YouTube CC search disabled");
   console.log("[Fastvid] YouTube clip sourcing: disabled (archive + Wikimedia + stills + Pexels)");
+  const { curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, skipEffectsStage } = await import("../sourcingPolicy");
+  console.log(
+    "[Fastvid] Visual sourcing:",
+    curatedArchiveOnlyVisuals()
+      ? "✓ curated media archive only (admin library)"
+      : "✗ external sources enabled (CURATED_ARCHIVE_ONLY=false)"
+  );
+  console.log(
+    "[Fastvid] Voiceover:",
+    elevenLabsOnlyVoice()
+      ? "✓ ElevenLabs only"
+      : "✗ Fish Audio fallback allowed (ELEVENLABS_ONLY=false)"
+  );
+  console.log(
+    "[Fastvid] Effects stage:",
+    skipEffectsStage() ? "✓ skipped — video completes after assembly" : "✗ generating_effects (SKIP_EFFECTS_STAGE=false)"
+  );
   console.log("[Fastvid] SERPAPI_KEY:", process.env.SERPAPI_KEY ? "✓ set" : "✗ NOT SET — celebrity image search disabled");
   console.log("[Fastvid] UNSPLASH_ACCESS_KEY:", process.env.UNSPLASH_ACCESS_KEY?.trim() ? "✓ set" : "✗ NOT SET — Unsplash image search disabled");
   // ─────────────────────────────────────────────────────────────────────────
