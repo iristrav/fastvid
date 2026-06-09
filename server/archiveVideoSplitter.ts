@@ -18,9 +18,11 @@ export type VideoClipSegment = {
   index: number;
 };
 
-const MIN_CLIP_SEC = 1.2;
-const MAX_CLIPS = 60;
-const DEFAULT_SCENE_THRESHOLD = 0.32;
+const MIN_CLIP_SEC = 0.45;
+const MAX_CLIPS = 120;
+const DEFAULT_SCENE_THRESHOLD = 0.22;
+const DEFAULT_CUT_MERGE_GAP_SEC = 0.35;
+const DEFAULT_DETECT_FPS = 6;
 const DEFAULT_SPLIT_BUDGET_MS = 540_000; // 9 min — fits in 10 min HTTP timeout
 const DEFAULT_MAX_SOURCE_SEC = 20 * 60;
 const DEFAULT_MAX_UPLOAD_MB = 600;
@@ -37,9 +39,27 @@ export function sceneThreshold(): number {
   const raw = process.env.ARCHIVE_SCENE_THRESHOLD?.trim();
   if (raw) {
     const n = parseFloat(raw);
-    if (!isNaN(n) && n >= 0.1 && n <= 0.9) return n;
+    if (!isNaN(n) && n >= 0.08 && n <= 0.9) return n;
   }
   return DEFAULT_SCENE_THRESHOLD;
+}
+
+export function minClipSec(): number {
+  const raw = process.env.ARCHIVE_MIN_CLIP_SEC?.trim();
+  if (raw) {
+    const n = parseFloat(raw);
+    if (!isNaN(n) && n >= 0.25 && n <= 5) return n;
+  }
+  return MIN_CLIP_SEC;
+}
+
+export function cutMergeGapSec(): number {
+  const raw = process.env.ARCHIVE_CUT_MERGE_GAP?.trim();
+  if (raw) {
+    const n = parseFloat(raw);
+    if (!isNaN(n) && n >= 0.15 && n <= 2) return n;
+  }
+  return DEFAULT_CUT_MERGE_GAP_SEC;
 }
 
 export function splitBudgetMs(): number {
@@ -105,11 +125,12 @@ export function mergeNearbyCuts(cuts: number[], minGapSec: number): number[] {
 export function buildClipRanges(
   cuts: number[],
   totalDuration: number,
-  minClipSec = MIN_CLIP_SEC,
-  maxClips = MAX_CLIPS
+  minClip = minClipSec(),
+  maxClips = MAX_CLIPS,
+  mergeGap = cutMergeGapSec()
 ): Array<{ start: number; end: number }> {
   if (totalDuration <= 0) return [];
-  const points = [0, ...mergeNearbyCuts(cuts, 0.75), totalDuration];
+  const points = [0, ...mergeNearbyCuts(cuts, mergeGap), totalDuration];
   let ranges: Array<{ start: number; end: number }> = [];
   for (let i = 0; i < points.length - 1; i++) {
     const start = points[i];
@@ -124,7 +145,7 @@ export function buildClipRanges(
       continue;
     }
     const dur = r.end - r.start;
-    if (dur < minClipSec) {
+    if (dur < minClip) {
       merged[merged.length - 1].end = r.end;
     } else {
       merged.push({ ...r });
@@ -150,7 +171,7 @@ export function buildClipRanges(
     }
   }
 
-  return merged.filter((r) => r.end - r.start >= minClipSec * 0.85);
+  return merged.filter((r) => r.end - r.start >= minClip * 0.85);
 }
 
 /** Run async tasks with bounded concurrency; preserves result order. */
@@ -179,15 +200,19 @@ export async function mapPool<T, R>(
   return out;
 }
 
-async function detectSceneCutTimes(inputPath: string, totalDur: number, deadlineMs: number): Promise<number[]> {
-  const threshold = sceneThreshold();
-  // Downscale + 3fps — fast enough for 20 min sources (~4 min detect budget)
+async function runSceneDetectPass(
+  inputPath: string,
+  totalDur: number,
+  threshold: number,
+  fps: number,
+  timeoutMs: number
+): Promise<number[]> {
   const cmd =
-    `${ffmpegBin()} -i "${inputPath}" -an -vf "fps=3,scale=426:-1,select='gt(scene,${threshold})',showinfo" -f null -`;
+    `${ffmpegBin()} -i "${inputPath}" -an ` +
+    `-vf "fps=${fps},scale=480:-1,select='gt(scene,${threshold})',showinfo" -f null -`;
   let stderr = "";
-  const detectTimeout = Math.min(240_000, Math.max(60_000, deadlineMs - Date.now()));
   try {
-    const result = await exec(cmd, { maxBuffer: 32 * 1024 * 1024, timeout: detectTimeout });
+    const result = await exec(cmd, { maxBuffer: 32 * 1024 * 1024, timeout: timeoutMs });
     stderr = String(result.stderr ?? "");
   } catch (err: unknown) {
     stderr = String((err as { stderr?: string }).stderr ?? "");
@@ -202,9 +227,35 @@ async function detectSceneCutTimes(inputPath: string, totalDur: number, deadline
   let m: RegExpExecArray | null;
   while ((m = re.exec(stderr)) !== null) {
     const t = parseFloat(m[1]);
-    if (t > 0.08 && t < totalDur - 0.08) times.push(t);
+    if (t > 0.05 && t < totalDur - 0.05) times.push(t);
   }
-  return mergeNearbyCuts(times, 0.75);
+  return mergeNearbyCuts(times, cutMergeGapSec());
+}
+
+async function detectSceneCutTimes(inputPath: string, totalDur: number, deadlineMs: number): Promise<number[]> {
+  const threshold = sceneThreshold();
+  const detectTimeout = Math.min(240_000, Math.max(60_000, deadlineMs - Date.now()));
+  const perPassTimeout = Math.floor(detectTimeout * 0.55);
+
+  let cuts = await runSceneDetectPass(inputPath, totalDur, threshold, DEFAULT_DETECT_FPS, perPassTimeout);
+
+  // Slideshow / per-image videos: retry with higher sensitivity when almost no cuts found.
+  if (cuts.length < 2 && totalDur > 20) {
+    const sensitive = Math.max(0.1, threshold * 0.55);
+    const retry = await runSceneDetectPass(
+      inputPath,
+      totalDur,
+      sensitive,
+      Math.min(10, DEFAULT_DETECT_FPS + 2),
+      Math.floor(detectTimeout * 0.45)
+    );
+    if (retry.length > cuts.length) {
+      console.log(`[ArchiveSplit] sensitive pass found ${retry.length} cuts (was ${cuts.length})`);
+      cuts = retry;
+    }
+  }
+
+  return cuts;
 }
 
 async function extractVideoSegment(
@@ -251,7 +302,7 @@ export async function splitVideoBySceneChanges(
       throw new Error(`Video too long (${Math.ceil(totalDur / 60)} min, max ${Math.floor(maxDur / 60)} min)`);
     }
 
-    if (totalDur < MIN_CLIP_SEC * 2) {
+    if (totalDur < minClipSec() * 2) {
       return [
         {
           buffer: inputBuffer,

@@ -13,8 +13,14 @@ describe("archiveVideoSplitter", () => {
     expect(mergeNearbyCuts([1.0, 1.2, 3.5, 3.7], 0.75)).toEqual([1.0, 3.5]);
   });
 
+  it("buildClipRanges keeps brief image slides as separate clips", () => {
+    const cuts = [1, 2, 3, 4, 5, 6, 7, 8];
+    const ranges = buildClipRanges(cuts, 9, 0.45, 50, 0.35);
+    expect(ranges.length).toBeGreaterThanOrEqual(6);
+  });
+
   it("buildClipRanges splits on cuts and merges tiny segments", () => {
-    const ranges = buildClipRanges([2, 2.4, 10], 15, 1.2, 50);
+    const ranges = buildClipRanges([2, 2.4, 10], 15, 1.2, 50, 0.75);
     expect(ranges.length).toBeGreaterThan(1);
     expect(ranges[0].start).toBe(0);
     expect(ranges[ranges.length - 1].end).toBe(15);

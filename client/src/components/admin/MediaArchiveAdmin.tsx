@@ -6,7 +6,7 @@ import { trpc } from "@/lib/trpc";
 import { toastErrorMessage } from "@/const";
 import { toast } from "sonner";
 import {
-  Archive, Plus, Loader2, Trash2, Pencil, Search, Upload, Tag, Film, Image as ImageIcon, X,
+  Archive, Plus, Loader2, Trash2, Pencil, Search, Upload, Tag, Film, Image as ImageIcon, X, Play, ExternalLink,
 } from "lucide-react";
 
 const MIX_KINDS = [
@@ -368,7 +368,7 @@ export function MediaArchiveAdmin() {
                     onChange={(e) => setAutoSplitScenes(e.target.checked)}
                     className="rounded border-white/20 bg-white/5 text-purple-600 focus:ring-purple-500"
                   />
-                  Video automatisch knippen bij elke beeldwisseling (scènedetectie)
+                  Video automatisch knippen bij elke beeldwisseling (per shot/afbeelding)
                 </label>
                 <label
                   className={`flex flex-col items-center justify-center gap-2 border-2 border-dashed rounded-xl p-8 cursor-pointer transition-colors ${
@@ -431,6 +431,80 @@ export function MediaArchiveAdmin() {
             </>
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+function formatDuration(sec?: number | null): string {
+  if (!sec || sec <= 0) return "";
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return m > 0 ? `${m}:${String(s).padStart(2, "0")}` : `${s}s`;
+}
+
+function AssetPreviewModal({
+  asset,
+  onClose,
+}: {
+  asset: {
+    title?: string | null;
+    mediaType: "video" | "image";
+    storageUrl: string;
+    sourceNote?: string | null;
+    durationSec?: number | null;
+  };
+  onClose: () => void;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="relative w-full max-w-4xl glass-card border border-white/15 rounded-xl overflow-hidden shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
+          <div className="min-w-0">
+            <h3 className="text-white font-semibold truncate">{asset.title || "Naamloos"}</h3>
+            {asset.sourceNote && (
+              <p className="text-xs text-slate-400 truncate mt-0.5">{asset.sourceNote}</p>
+            )}
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <a
+              href={asset.storageUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="p-2 rounded-lg bg-white/10 text-slate-300 hover:text-white hover:bg-white/15"
+              title="Open in nieuw tabblad"
+            >
+              <ExternalLink className="w-4 h-4" />
+            </a>
+            <button onClick={onClose} className="p-2 rounded-lg bg-white/10 text-slate-300 hover:text-white">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+        <div className="bg-black flex items-center justify-center max-h-[75vh]">
+          {asset.mediaType === "video" ? (
+            <video
+              src={asset.storageUrl}
+              controls
+              autoPlay
+              playsInline
+              className="w-full max-h-[75vh] object-contain"
+            />
+          ) : (
+            <img src={asset.storageUrl} alt={asset.title ?? ""} className="w-full max-h-[75vh] object-contain" />
+          )}
+        </div>
+        {asset.durationSec != null && asset.durationSec > 0 && (
+          <div className="px-4 py-2 text-xs text-slate-500 border-t border-white/10">
+            Duur: {formatDuration(asset.durationSec)}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -520,6 +594,7 @@ function AssetCard({
     storageUrl: string;
     tags?: string[] | null;
     sourceNote?: string | null;
+    durationSec?: number | null;
   };
   onDelete: () => void;
   onSave: (patch: { title?: string; tags?: string[]; mixKind?: MixKind; sourceNote?: string }) => void;
@@ -530,20 +605,44 @@ function AssetCard({
   const [tags, setTags] = useState(tagsToInput(asset.tags));
   const [mixKind, setMixKind] = useState<MixKind>(asset.mixKind);
   const [sourceNote, setSourceNote] = useState(asset.sourceNote ?? "");
+  const [previewOpen, setPreviewOpen] = useState(false);
 
   return (
-    <div className="glass-card border border-white/8 rounded-xl overflow-hidden">
-      <div className="aspect-video bg-black/40 relative flex items-center justify-center">
+    <>
+      {previewOpen && <AssetPreviewModal asset={asset} onClose={() => setPreviewOpen(false)} />}
+      <div className="glass-card border border-white/8 rounded-xl overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setPreviewOpen(true)}
+        className="aspect-video bg-black/40 relative flex items-center justify-center w-full group cursor-pointer"
+      >
         {asset.mediaType === "video" ? (
-          <video src={asset.storageUrl} className="w-full h-full object-cover" muted playsInline preload="metadata" />
+          <video
+            src={asset.storageUrl}
+            className="w-full h-full object-cover"
+            muted
+            playsInline
+            preload="metadata"
+          />
         ) : (
           <img src={asset.storageUrl} alt={asset.title ?? ""} className="w-full h-full object-cover" />
         )}
+        <span className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors flex items-center justify-center">
+          <span className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-2 px-3 py-1.5 rounded-full bg-black/70 text-white text-xs font-medium">
+            <Play className="w-4 h-4 fill-white" />
+            {asset.mediaType === "video" ? "Bekijken" : "Vergroten"}
+          </span>
+        </span>
         <span className="absolute top-2 left-2 flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-black/60 text-white">
           {asset.mediaType === "video" ? <Film className="w-3 h-3" /> : <ImageIcon className="w-3 h-3" />}
           {asset.mediaType}
         </span>
-      </div>
+        {asset.durationSec != null && asset.durationSec > 0 && (
+          <span className="absolute bottom-2 right-2 text-xs px-2 py-0.5 rounded bg-black/70 text-white">
+            {formatDuration(asset.durationSec)}
+          </span>
+        )}
+      </button>
       <div className="p-3 space-y-2">
         {editing ? (
           <>
@@ -603,6 +702,13 @@ function AssetCard({
               </div>
             )}
             <div className="flex gap-1 pt-1">
+              <button
+                onClick={() => setPreviewOpen(true)}
+                className="text-xs px-2 py-1 rounded bg-cyan-500/15 text-cyan-300 hover:bg-cyan-500/25"
+                title="Bekijken"
+              >
+                <Play className="w-3 h-3 inline" />
+              </button>
               <button onClick={() => setEditing(true)} className="text-xs px-2 py-1 rounded bg-white/10 text-slate-300 hover:bg-white/15">
                 <Pencil className="w-3 h-3 inline" />
               </button>
@@ -614,5 +720,6 @@ function AssetCard({
         )}
       </div>
     </div>
+    </>
   );
 }
