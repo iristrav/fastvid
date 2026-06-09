@@ -81,8 +81,11 @@ async function startServer() {
   const ytDownload = !!(process.env.RAPIDAPI_KEY?.trim() || process.env.YOUTUBE_CC_DL_SERVICE?.trim());
   console.log("[Fastvid] RAPIDAPI_KEY:", ytDownload ? "✓ set" : "✗ NOT SET — YouTube CC download disabled");
   console.log("[Fastvid] YOUTUBE_API_KEY:", ytSearch ? "✓ set" : "✗ NOT SET — YouTube CC search disabled");
+  const ytEnabled = process.env.ENABLE_YOUTUBE_SOURCING === "true";
   const ytFairUse = process.env.ENABLE_YOUTUBE_FAIR_USE !== "false";
-  if (ytSearch && ytDownload) {
+  if (!ytEnabled) {
+    console.log("[Fastvid] YouTube sourcing: off (archival + Pexels). Set ENABLE_YOUTUBE_SOURCING=true to enable");
+  } else if (ytSearch && ytDownload) {
     console.log(
       `[Fastvid] YouTube: ✓ search + download (CC first${ytFairUse ? ", fair-use transform on adopt" : ""})`
     );
@@ -189,6 +192,7 @@ async function startServer() {
         youtubeCcReady:
           !!process.env.YOUTUBE_API_KEY?.trim() &&
           !!(process.env.RAPIDAPI_KEY?.trim() || process.env.YOUTUBE_CC_DL_SERVICE?.trim()),
+        youtubeSourcingEnabled: process.env.ENABLE_YOUTUBE_SOURCING === "true",
         youtubeFairUseEnabled: process.env.ENABLE_YOUTUBE_FAIR_USE !== "false",
         serpApiReady: !!process.env.SERPAPI_KEY?.trim(),
         unsplashReady: !!process.env.UNSPLASH_ACCESS_KEY?.trim(),

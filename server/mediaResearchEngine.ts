@@ -49,10 +49,10 @@ export interface MediaCandidate {
 
 /** Base authenticity tier per source (higher = prefer real footage over stock). */
 export const SOURCE_BASE_SCORE: Record<MediaSourceKind, number> = {
-  youtube_cc: 98,
+  internet_archive: 98,
+  wikimedia_video: 96,
   person_celebrity: 95,
-  wikimedia_video: 92,
-  internet_archive: 88,
+  youtube_cc: 90,
   gdelt: 86,
   nasa: 85,
   wikimedia_image: 70,
@@ -178,9 +178,9 @@ export function buildMediaSearchIntent(params: {
 function topicSourceBoost(source: MediaSourceKind, intent: MediaSearchIntent): number {
   switch (intent.topicKind) {
     case "historical":
-      if (source === "youtube_cc") return 15;
+      if (source === "internet_archive" || source === "europeana") return 15;
       if (source === "wikimedia_video" || source === "wikimedia_image") return 12;
-      if (source === "internet_archive" || source === "europeana") return 10;
+      if (source === "youtube_cc") return 6;
       if (source === "pexels" || source === "pixabay") return -15;
       break;
     case "person":
@@ -255,7 +255,7 @@ const STILL_ONLY_SOURCES: MediaSourceKind[] = [
 ];
 
 /**
- * Canonical clip order: YouTube (≤60s/beat) → Pexels/Pixabay → still (when YOUTUBE_ONLY_SOURCING).
+ * Canonical clip order: Archive/Wikimedia → Pexels/Pixabay → still (YouTube off unless ENABLE_YOUTUBE_SOURCING=true).
  * Default on (REAL_FOOTAGE_FIRST=false disables for debugging only).
  */
 export function realFootageFirstEnabled(): boolean {
@@ -352,10 +352,10 @@ export function rankMediaCandidates(
 /** Ordered source list for parallel fetch — topic-aware priority. */
 export function prioritizedSourcesForIntent(intent: MediaSearchIntent): MediaSourceKind[] {
   const base: MediaSourceKind[] = [
-    "youtube_cc",
-    "person_celebrity",
-    "wikimedia_video",
     "internet_archive",
+    "wikimedia_video",
+    "person_celebrity",
+    "youtube_cc",
     "gdelt",
     "nasa",
     "wikimedia_image",
