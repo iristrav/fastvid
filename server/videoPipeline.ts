@@ -43,6 +43,13 @@ import {
   parseMarkdownNarrationBlocks,
   type MarkdownNarrationBlock,
 } from "./scriptWriter";
+import {
+  applyAiRelevanceRanking,
+  buildMediaSearchIntent,
+  rankMediaCandidates,
+  type MediaCandidate,
+  type MediaSourceKind,
+} from "./mediaResearchEngine";
 
 // API Keys
 const FISH_AUDIO_API_KEY = process.env.FISH_AUDIO_API_KEY || "";
@@ -71,6 +78,8 @@ const LUMA_API_KEY = process.env.LUMA_API_KEY || "";
 const LEONARDO_API_KEY = process.env.LEONARDO_API_KEY || "";
 const PIKA_API_KEY = process.env.PIKA_API_KEY || "";
 const PIXABAY_API_KEY = process.env.PIXABAY_API_KEY || "";
+/** Optional: high-quality CC photos (https://unsplash.com/developers) */
+const UNSPLASH_ACCESS_KEY = process.env.UNSPLASH_ACCESS_KEY || "";
 const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY || "";
 const RAPIDAPI_YT_HOST =
   process.env.RAPIDAPI_YT_HOST || "ytstream-download-youtube-videos.p.rapidapi.com";
@@ -2830,6 +2839,98 @@ async function fetchOpenverseImages(
     }
   } catch (err) {
     console.warn(`[Pipeline] Openverse search failed for scene ${sceneIndex}:`, (err as Error).message);
+  }
+  return results;
+}
+
+// ─── 3c2c. Unsplash API Image Search ─────────────────────────────────────────
+// High-quality freely usable photos (Unsplash License). Requires free access key.
+async function fetchUnsplashImages(
+  query: string,
+  duration: number,
+  workDir: string,
+  sceneIndex: number,
+  maxResults: number = 2,
+  fileTag = "",
+  opts: { personPortrait?: boolean; dedup?: VisualDedupState } = {}
+): Promise<string[]> {
+  if (!UNSPLASH_ACCESS_KEY?.trim()) return [];
+  const results: string[] = [];
+  try {
+    const searchUrl =
+      `https://api.unsplash.com/search/photos?query=${encodeURIComponent(query)}` +
+      `&per_page=${Math.min(maxResults * 3, 15)}&orientation=landscape`;
+    const searchResp = await withTimeout(
+      fetch(searchUrl, {
+        headers: {
+          Authorization: `Client-ID ${UNSPLASH_ACCESS_KEY.trim()}`,
+          "Accept-Version": "v1",
+        },
+      }),
+      8000,
+      `Unsplash search scene ${sceneIndex}`
+    );
+    if (!searchResp.ok) {
+      console.warn(`[Pipeline] Scene ${sceneIndex}: Unsplash error ${searchResp.status}`);
+      return [];
+    }
+    const payload = await searchResp.json() as {
+      results?: Array<{
+        id?: string;
+        urls?: { regular?: string; small?: string };
+        alt_description?: string;
+        description?: string;
+      }>;
+    };
+    const images = payload.results ?? [];
+    if (!images.length) return [];
+
+    for (let i = 0; i < images.length && results.length < maxResults; i++) {
+      try {
+        const imgUrl = images[i].urls?.regular || images[i].urls?.small;
+        if (!imgUrl) continue;
+        const urlKey = normalizeImageSourceUrl(imgUrl);
+        if (opts.dedup?.usedImageUrls.has(urlKey)) continue;
+
+        const tag = fileTag ? `${fileTag}_` : "";
+        const imgPath = path.join(workDir, `scene_${sceneIndex}_${tag}unsplash_${i}.jpg`);
+        const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}unsplash_${i}.mp4`);
+
+        const imgResp = await withTimeout(
+          fetch(imgUrl),
+          10000,
+          `Unsplash image download scene ${sceneIndex}`
+        );
+        if (!imgResp.ok) continue;
+        const imgBuf = Buffer.from(await imgResp.arrayBuffer());
+        if (imgBuf.length < 5000) continue;
+        fs.writeFileSync(imgPath, imgBuf);
+
+        const portrait =
+          Boolean(opts.personPortrait) ||
+          /portrait|face|headshot/i.test(query) ||
+          /portrait|face|headshot/i.test(images[i].alt_description ?? "");
+        await stillImageToVideo(
+          imgPath,
+          outPath,
+          duration,
+          `Unsplash image to video scene ${sceneIndex}`,
+          portrait
+        );
+        try { fs.unlinkSync(imgPath); } catch { /**/ }
+
+        if (fs.existsSync(outPath) && fs.statSync(outPath).size > 10_000) {
+          opts.dedup?.usedImageUrls.add(urlKey);
+          results.push(outPath);
+          const label = images[i].alt_description || images[i].description || query;
+          console.log(`[Pipeline] Scene ${sceneIndex}: Unsplash image added: ${label.slice(0, 60)}`);
+        }
+      } catch (err) {
+        console.warn(`[Pipeline] Unsplash image ${i} failed scene ${sceneIndex}:`, (err as Error).message);
+      }
+    }
+  } catch (err) {
+    console.warn(`[Pipeline] Unsplash search failed for scene ${sceneIndex}:`, (err as Error).message);
   }
   return results;
 }
@@ -8051,6 +8152,473 @@ async function fetchPersonBeatClip(
   return null;
 }
 
+/**
+ * Universal media research (Laag 2+3): parallel multi-source fetch, rank, adopt best clip.
+ * Falls through to the legacy waterfall when nothing passes adoption gates.
+ */
+async function researchBeatClipUnified(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  beatQueries: string[],
+  scenePersons: string[],
+  primary: string,
+  videoTitle: string | undefined,
+  adoptOpts: VisualAdoptOptions,
+  tag: string,
+  muskTopic: boolean,
+  pexFetch: (query: string, t: string, off: number, count?: number) => () => Promise<string[]>,
+  candidateOffset: number
+): Promise<string | null> {
+  if (process.env.ENABLE_MEDIA_RESEARCH === "false") return null;
+
+  const perf = dedup.perf;
+  const spaceTopic = isSpaceRelatedTopic(
+    scene.visualCue,
+    scene.pexelsQuery,
+    beat.text,
+    scene.text,
+    videoTitle ?? "",
+    beat.powerWord
+  );
+
+  const intent = buildMediaSearchIntent({
+    beatText: beat.text,
+    searchQueries: beatQueries,
+    keywords: adoptOpts.keywords ?? beat.keywords,
+    primaryPerson: primary ?? "",
+    persons: scenePersons,
+    videoTitle,
+    powerWord: beat.powerWord,
+    personTopicLock: dedup.personTopicLock || Boolean(primary?.trim()),
+    spaceTopic,
+    muskTopic,
+  });
+
+  const queries = intent.searchQueries.slice(0, perf.fastStockMode ? 2 : 4);
+  const primaryQ = queries[0] || beat.searchQuery || beat.powerWord;
+  const beatKeywords = adoptOpts.keywords ?? beat.keywords;
+  const entityRules = extractBeatRealEntities(beat.text, scene.text, videoTitle ?? "");
+  const fetchMs = perf.fastStockMode ? 18_000 : 35_000;
+  const maxTasks = perf.fastStockMode ? 10 : 18;
+
+  const toCandidates = (
+    paths: string[],
+    query: string,
+    source: MediaSourceKind,
+    isVideo: boolean
+  ): MediaCandidate[] =>
+    paths.filter(Boolean).map((p) => ({ path: p, query, source, isVideo }));
+
+  type ResearchTask = { run: () => Promise<MediaCandidate[]> };
+  const tasks: ResearchTask[] = [];
+
+  if (primary?.trim()) {
+    tasks.push({
+      run: async () => {
+        const fast = celebrityFetchFastMode(perf, scene.duration);
+        const hits = await fetchPersonCelebrityVideoClips(
+          primary,
+          clipFetchDur,
+          workDir,
+          sceneIndex,
+          fast ? 2 : 3,
+          `${tag}_research`,
+          beat.index,
+          beat.text,
+          fast
+        );
+        return hits.map((h) => ({
+          path: h.path,
+          query: h.query,
+          source: "person_celebrity" as const,
+          isVideo: true,
+        }));
+      },
+    });
+  }
+
+  for (const q of queries.slice(0, 2)) {
+    tasks.push({
+      run: async () => {
+        const hits = await fetchWikimediaVideos(
+          q,
+          clipFetchDur,
+          workDir,
+          sceneIndex,
+          2,
+          `${tag}_research`,
+          primary ?? "",
+          beatKeywords
+        );
+        return hits.map((h) => ({
+          path: h.path,
+          query: h.query,
+          source: "wikimedia_video" as const,
+          isVideo: true,
+        }));
+      },
+    });
+
+    if (perf.enableArchival) {
+      tasks.push({
+        run: async () => {
+          const hits = await fetchInternetArchiveClips(
+            q,
+            clipFetchDur,
+            workDir,
+            sceneIndex,
+            2,
+            `${tag}_research`,
+            primary ?? "",
+            beatKeywords
+          );
+          return hits.map((h) => ({
+            path: h.path,
+            query: h.query,
+            source: "internet_archive" as const,
+            isVideo: true,
+          }));
+        },
+      });
+    }
+  }
+
+  const ytAvailable =
+    process.env.YOUTUBE_API_KEY || RAPIDAPI_KEY || process.env.YOUTUBE_CC_DL_SERVICE;
+  if (ytAvailable) {
+    const entityYt = realEntityYoutubeQueriesForBeat(beat.text, scene.text, videoTitle);
+    if (
+      entityYt.length > 0 &&
+      dedup.entityYoutubeFetchesUsed < perf.maxEntityYoutubePerVideo
+    ) {
+      const eq = entityYt[0];
+      tasks.push({
+        run: async () => {
+          dedup.entityYoutubeFetchesUsed++;
+          const paths = await fetchYouTubeCCClips(
+            entityYt.slice(0, 2),
+            clipFetchDur,
+            workDir,
+            sceneIndex,
+            1,
+            beatKeywords,
+            1,
+            primary ?? ""
+          );
+          return toCandidates(paths, eq, "youtube_cc", true);
+        },
+      });
+    }
+
+    const ytQueries = primary?.trim()
+      ? buildPersonCelebrityVideoQueries(primary, beat.text, beat.index).slice(0, 2)
+      : queries.slice(0, 2);
+    for (const q of ytQueries) {
+      tasks.push({
+        run: async () => {
+          const paths = await fetchYouTubeCCClips(
+            q,
+            clipFetchDur,
+            workDir,
+            sceneIndex,
+            1,
+            beatKeywords,
+            1,
+            primary ?? ""
+          );
+          return toCandidates(paths, q, "youtube_cc", true);
+        },
+      });
+    }
+  }
+
+  if (
+    EUROPEANA_API_KEY?.trim() &&
+    (intent.topicKind === "historical" || intent.topicKind === "news")
+  ) {
+    tasks.push({
+      run: async () => {
+        const hits = await fetchEuropeanaVideos(
+          queries.slice(0, 2),
+          clipFetchDur,
+          workDir,
+          sceneIndex,
+          2,
+          `${tag}_research`,
+          primary ?? "",
+          beatKeywords
+        );
+        return hits.map((h) => ({
+          path: h.path,
+          query: h.query,
+          source: "europeana" as const,
+          isVideo: true,
+        }));
+      },
+    });
+  }
+
+  if (perf.enableNasa && spaceTopic && primaryQ) {
+    tasks.push({
+      run: async () => {
+        const paths = await fetchNasaVideoClips(primaryQ, clipFetchDur, workDir, sceneIndex, 1);
+        return toCandidates(paths, primaryQ, "nasa", true);
+      },
+    });
+  }
+
+  if (!dedup.personTopicLock) {
+    tasks.push({
+      run: async () => {
+        const imgs = await fetchWikimediaImages(
+          primaryQ,
+          clipFetchDur,
+          workDir,
+          sceneIndex,
+          1,
+          `${tag}_research`
+        );
+        return toCandidates(imgs, primaryQ, "wikimedia_image", false);
+      },
+    });
+    tasks.push({
+      run: async () => {
+        const ovQuery = primary?.trim() ? `${primary} ${primaryQ}` : primaryQ;
+        const paths = await fetchOpenverseImages(
+          ovQuery,
+          clipFetchDur,
+          workDir,
+          sceneIndex,
+          1,
+          `${tag}_research`,
+          { dedup, personPortrait: Boolean(primary?.trim()) }
+        );
+        return toCandidates(paths, ovQuery, "openverse", false);
+      },
+    });
+    if (UNSPLASH_ACCESS_KEY?.trim()) {
+      tasks.push({
+        run: async () => {
+          const unsplashQ = primary?.trim() ? `${primary} ${primaryQ}` : primaryQ;
+          const paths = await fetchUnsplashImages(
+            unsplashQ,
+            clipFetchDur,
+            workDir,
+            sceneIndex,
+            1,
+            `${tag}_research`,
+            { dedup, personPortrait: Boolean(primary?.trim()) }
+          );
+          return toCandidates(paths, unsplashQ, "unsplash", false);
+        },
+      });
+    }
+  }
+
+  const allowStill =
+    dedup.stillPhotosMaxThisScene === 0
+      ? canUseGlobalStillPhoto(dedup)
+      : dedup.stillPhotosThisScene < dedup.stillPhotosMaxThisScene;
+
+  if (SERPAPI_KEY && allowStill && canUseGlobalStillPhoto(dedup)) {
+    const serpQ = primary?.trim()
+      ? buildPersonSerpQuery(primary, sceneIndex, beat.index, beat.text)
+      : (primaryQ || beat.powerWord);
+    tasks.push({
+      run: async () => {
+        const paths = await fetchSerpAPIImages(
+          serpQ,
+          clipFetchDur,
+          workDir,
+          sceneIndex,
+          1,
+          `${tag}_research`,
+          {
+            dedup,
+            personPortrait: Boolean(primary?.trim()) || dedup.personTopicLock,
+            resultOffset: sceneIndex * 2 + beat.index,
+          }
+        );
+        return toCandidates(paths, serpQ, "serpapi", false);
+      },
+    });
+  }
+
+  if (process.env.YOUTUBE_API_KEY && allowStill && canUseGlobalStillPhoto(dedup)) {
+    const thumbQ =
+      buildTopicDocumentaryYoutubeQueries(beat, scene, videoTitle)[0] ||
+      queries[0] ||
+      primaryQ;
+    tasks.push({
+      run: async () => {
+        const paths = await fetchYouTubeThumbnails(
+          thumbQ,
+          clipFetchDur,
+          workDir,
+          sceneIndex,
+          1,
+          `${tag}_research`
+        );
+        return toCandidates(paths, thumbQ, "youtube_cc", false);
+      },
+    });
+  }
+
+  const allowStock =
+    (intent.personTopicLock && primary?.trim())
+      ? true
+      : !perf.minimizeStockFootage && canUseLicensedStockBeat(dedup);
+
+  if (allowStock) {
+    if (intent.personTopicLock && primary?.trim()) {
+      tasks.push({
+        run: async () => {
+          const personQueries = buildPersonStockVideoQueries(primary, beat, scene, videoTitle).slice(0, 3);
+          const out: MediaCandidate[] = [];
+          for (const q of personQueries) {
+            if (PEXELS_API_KEY) {
+              const pex = await fetchPexelsClips(
+                q,
+                clipFetchDur,
+                workDir,
+                sceneIndex,
+                1,
+                undefined,
+                true,
+                `${tag}_research`,
+                dedup.usedPexelsIds,
+                candidateOffset,
+                perf.pexelsDownloadRetries
+              );
+              out.push(...toCandidates(pex, q, "pexels", true));
+            }
+            if (PIXABAY_API_KEY) {
+              const pix = await fetchPixabayClips(
+                q,
+                clipFetchDur,
+                workDir,
+                sceneIndex,
+                1,
+                `${tag}_research`,
+                true,
+                dedup.usedPixabayIds,
+                candidateOffset
+              );
+              out.push(...toCandidates(pix, q, "pixabay", true));
+            }
+          }
+          return out;
+        },
+      });
+    } else {
+      for (const q of queries.slice(0, 2)) {
+        if (PEXELS_API_KEY) {
+          tasks.push({
+            run: async () => {
+              const paths = await pexFetch(q, `${tag}_research`, candidateOffset, muskTopic ? 2 : 1)();
+              return toCandidates(paths, q, "pexels", true);
+            },
+          });
+        }
+        if (PIXABAY_API_KEY) {
+          tasks.push({
+            run: async () => {
+              const paths = await fetchPixabayClips(
+                q,
+                clipFetchDur,
+                workDir,
+                sceneIndex,
+                1,
+                `${tag}_research`,
+                true,
+                dedup.usedPixabayIds,
+                candidateOffset
+              );
+              return toCandidates(paths, q, "pixabay", true);
+            },
+          });
+        }
+      }
+    }
+  }
+
+  const researchMs = perf.fastStockMode ? 50_000 : 100_000;
+  let allCandidates: MediaCandidate[] = [];
+
+  try {
+    const settled = await withTimeout(
+      Promise.allSettled(
+        tasks.slice(0, maxTasks).map((task) =>
+          withTimeout(task.run(), fetchMs, `media research s${sceneIndex} b${beat.index}`).catch(
+            () => [] as MediaCandidate[]
+          )
+        )
+      ),
+      researchMs,
+      `media research s${sceneIndex} b${beat.index}`
+    );
+    for (const result of settled) {
+      if (result.status === "fulfilled") allCandidates.push(...result.value);
+    }
+  } catch {
+    return null;
+  }
+
+  if (!allCandidates.length) return null;
+
+  const enrichScore = (c: MediaCandidate, base: number) =>
+    base +
+    scoreBeatNarrationMatch(beat.text, c.query, c.path) * 4 +
+    realEntityScore(entityRules, c.query, c.path) +
+    (primary && textMentionsPersonName(`${c.query} ${path.basename(c.path)}`, primary) ? 5 : 0) +
+    (muskTopic ? muskBrandScore(c.query, c.path) : 0);
+
+  let ranked = rankMediaCandidates(allCandidates, intent, enrichScore);
+  ranked = await applyAiRelevanceRanking(ranked, intent, {
+    fastMode: perf.fastStockMode,
+    timeoutMs: perf.fastStockMode ? 8_000 : 14_000,
+  });
+  const adoptMs = perf.fastStockMode ? 12_000 : 45_000;
+  const topN = perf.fastStockMode ? 12 : 20;
+
+  for (const candidate of ranked.slice(0, topN)) {
+    let clip: string | null = null;
+    try {
+      clip = await withTimeout(
+        adoptClip(
+          [candidate.path],
+          dedup,
+          sceneIndex,
+          beat.index,
+          beat.text,
+          workDir,
+          candidate.query,
+          adoptOpts
+        ),
+        adoptMs,
+        `media research adopt s${sceneIndex} b${beat.index}`
+      );
+    } catch {
+      continue;
+    }
+    if (clip) {
+      if (candidate.source === "pexels" || candidate.source === "pixabay") {
+        markLicensedStockBeatUsed(dedup);
+      }
+      console.log(
+        `[MediaResearch] Scene ${sceneIndex} beat ${beat.index}: ${candidate.source} "${candidate.query}" (score ${candidate.score})`
+      );
+      return clip;
+    }
+  }
+
+  return null;
+}
+
 /** Script-anchored clip fetch: real footage first; licensed stock only when minimize is off or cap allows later. */
 async function fetchBeatClipFromScript(
   beat: SceneBeat,
@@ -8074,8 +8642,95 @@ async function fetchBeatClipFromScript(
   const beatQueries = buildBeatVisualQueryList(beat.text, scene, videoTitle, scenePersons, maxQ);
   const ytMs = youtubeBeatFetchTimeoutMs(perf.fastStockMode);
 
+  let clip = await researchBeatClipUnified(
+    beat,
+    scene,
+    workDir,
+    sceneIndex,
+    clipFetchDur,
+    dedup,
+    beatQueries,
+    scenePersons,
+    primary ?? "",
+    videoTitle,
+    adoptOpts,
+    tag,
+    muskTopic,
+    pexFetch,
+    candidateOffset
+  );
+  if (clip) return clip;
+
+  const legacyEngine = process.env.ENABLE_MEDIA_RESEARCH === "false";
+
+  if (!legacyEngine) {
+    if (
+      muskTopic &&
+      perf.enableMuskHeroFetch &&
+      !dedup.muskHeroFetchUsed &&
+      beat.index === 0 &&
+      sceneIndex === 0
+    ) {
+      dedup.muskHeroFetchUsed = true;
+      clip = await tryBeatRealYouTubeFootage(
+        beat,
+        scene,
+        workDir,
+        sceneIndex,
+        clipFetchDur,
+        dedup,
+        { ...adoptOpts, requireMuskBrand: false },
+        HERO_YOUTUBE_QUERIES,
+        "hero YouTube",
+        ytMs
+      );
+      if (clip) return clip;
+    }
+
+    if (
+      !perf.minimizeStockFootage &&
+      beat.index % 2 === 1 &&
+      beat.index > 0 &&
+      (scene.brollQueries?.length ?? 0) > 0 &&
+      PEXELS_API_KEY &&
+      canUseLicensedStockBeat(dedup)
+    ) {
+      const brollQ = enrichStockQuery(
+        scene.brollQueries![beat.index % scene.brollQueries!.length],
+        scene,
+        videoTitle,
+        primary ?? personName,
+        beat.text
+      );
+      const brollPaths = await fetchBrollClips(
+        [brollQ],
+        clipFetchDur,
+        workDir,
+        sceneIndex,
+        dedup.usedPexelsIds
+      );
+      clip = await adoptClip(
+        brollPaths,
+        dedup,
+        sceneIndex,
+        beat.index,
+        beat.text,
+        workDir,
+        brollQ,
+        adoptOpts
+      );
+      if (clip) {
+        markLicensedStockBeatUsed(dedup);
+        return clip;
+      }
+    }
+
+    return null;
+  }
+
+  // Legacy waterfall — only when ENABLE_MEDIA_RESEARCH=false
   const entityYt = realEntityYoutubeQueriesForBeat(beat.text, scene.text, videoTitle);
-  let clip = await tryBeatRealYouTubeFootage(
+  clip = await tryBeatRealYouTubeFootage(
     beat, scene, workDir, sceneIndex, clipFetchDur, dedup, adoptOpts, entityYt, "event YouTube", ytMs
   );
   if (clip) return clip;
