@@ -7895,7 +7895,13 @@ async function recoverSceneClipsIfEmpty(
   };
   for (let fi = 0; fi < n + 2; fi++) {
     stubBeat.index = fi;
-    let clip: string | null = await fetchBeatScriptImageClip(
+    stubBeat.searchQuery = stockQueryFromBeatScript(
+      scene.text.slice(0, 220),
+      scenePersons,
+      scene.text,
+      topicContext
+    );
+    let clip: string | null = await fetchBeatScriptImageForced(
       stubBeat,
       scene,
       workDir,
@@ -7904,9 +7910,22 @@ async function recoverSceneClipsIfEmpty(
       dedup,
       scenePersons,
       topicContext,
-      recoverAdopt,
       `rcv${fi}`
     );
+    if (!clip || isPipelineFallbackClip(clip)) {
+      clip = await fetchBeatScriptImageClip(
+        stubBeat,
+        scene,
+        workDir,
+        scene.index,
+        clipFetchDur,
+        dedup,
+        scenePersons,
+        topicContext,
+        recoverAdopt,
+        `rcv${fi}`
+      );
+    }
     if ((!clip || isPipelineFallbackClip(clip)) && dedup.perf.enableAiFallback && dedup.aiClipsUsed < dedup.perf.maxAiClipsPerVideo) {
       clip = await fetchBeatAIClip(
         stubBeat, scene, workDir, scene.index, fi, clipFetchDur, dedup, topicContext
@@ -11137,6 +11156,40 @@ export async function runVideoPipeline(
       sceneVisualResults[si] = await recoverSceneClipsIfEmpty(
         scenes[si], workDir, topicContext, visualDedup
       );
+      if (
+        sceneVisualResults[si].clips.length === 0 &&
+        perf.enableAiFallback &&
+        visualDedup.aiClipsUsed < perf.maxAiClipsPerVideo
+      ) {
+        const scene = scenes[si];
+        const scenePersons = resolveScenePersons(scene, topicContext, visualDedup.primaryPerson || undefined);
+        const power = extractPowerWordFromSentence(scene.text.slice(0, 200), scenePersons);
+        const rescueBeat: SceneBeat = {
+          index: 0,
+          text: scene.text.slice(0, 200),
+          searchQuery: stockQueryFromBeatScript(scene.text, scenePersons, scene.text, topicContext),
+          powerWord: power,
+          keywords: buildRelevanceKeywords(scene, scene.text),
+          holdSec: VIDRUSH_BEAT_SEC,
+        };
+        const aiClip = await fetchBeatAIClip(
+          rescueBeat,
+          scene,
+          workDir,
+          scene.index,
+          0,
+          4,
+          visualDedup,
+          topicContext
+        );
+        if (aiClip && !isPipelineFallbackClip(aiClip)) {
+          sceneVisualResults[si] = {
+            clips: [aiClip],
+            beatDurations: [Math.max(VIDRUSH_BEAT_SEC, scene.duration / 2)],
+          };
+          console.warn(`[Pipeline] Scene ${scene.index}: last-resort AI clip`);
+        }
+      }
       if (sceneVisualResults[si].clips.length === 0) {
         throw pipelineError(
           PIPELINE_ERROR.NO_SCENES,
