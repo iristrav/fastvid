@@ -72,6 +72,7 @@ function isMuskTeslaPromptTopic(prompt: string, title: string): boolean {
 import { storagePut } from "./storage";
 import { FASTVID_PRO_PLAN } from "./products";
 import { formatTimecode, splitVideoBySceneChanges } from "./archiveVideoSplitter";
+import { enrichArchiveAssetFields } from "./archiveAssetTagging";
 import { updateVideoScenes, updateEditedVideoUrl, getVideoScenes, type EditorScene, type EditorClip } from "./db";
 import { runVideoPipeline } from "./videoPipeline";
 import { forgotPassword, validateResetToken as validateResetTokenProcedure, resetPassword } from "./authPasswordReset";
@@ -1209,6 +1210,8 @@ export const appRouter = router({
       filename: z.string().max(256).optional(),
       /** Video only: auto-detect scene changes and store multiple clips (default on). */
       autoSplitScenes: z.boolean().default(true),
+      /** Analyze image / video frame with AI for title + tags (default on, needs LLM_API_KEY). */
+      autoGenerateTags: z.boolean().default(true),
     })).mutation(async ({ input }) => {
       const archive = await getMediaArchiveById(input.archiveId);
       if (!archive) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Archive not found");
@@ -1228,8 +1231,10 @@ export const appRouter = router({
       const baseTitle = input.title?.trim()
         || input.filename?.replace(/\.[^.]+$/, "").trim()
         || `${isVideo ? "video" : "image"}-${Date.now()}`;
+      const userProvidedTitle = Boolean(input.title?.trim());
       const mixKind = input.mixKind ?? (isVideo ? "real_video" : "photo");
-      const tags = normalizeMediaTags(input.tags);
+      const userTags = normalizeMediaTags(input.tags);
+      const archiveNicheTags = normalizeMediaTags(archive.nicheTags ?? []);
       const parentSource = input.filename?.trim() || input.sourceNote?.trim() || null;
 
       if (isVideo && input.autoSplitScenes) {
@@ -1238,21 +1243,33 @@ export const appRouter = router({
           const createdAssets = [];
           for (const seg of segments) {
             const key = `media-archive/${input.archiveId}/${Date.now()}-clip${seg.index}-${Math.random().toString(36).slice(2, 6)}.mp4`;
-            const { url } = await storagePut(key, seg.buffer, "video/mp4");
-            const title = `${baseTitle} — clip ${seg.index + 1}`;
-            const sourceNote = parentSource
+            const fragmentNote = parentSource
               ? `Fragment uit ${parentSource} (${formatTimecode(seg.startSec)}–${formatTimecode(seg.endSec)})`
               : `Fragment ${formatTimecode(seg.startSec)}–${formatTimecode(seg.endSec)}`;
+            const draftTitle = `${baseTitle} — clip ${seg.index + 1}`;
+            const enriched = await enrichArchiveAssetFields({
+              buffer: seg.buffer,
+              mimeType: "video/mp4",
+              autoGenerateTags: input.autoGenerateTags,
+              baseTitle: draftTitle,
+              userTags,
+              sourceNote: fragmentNote,
+              archiveNicheTags,
+              parentFilename: input.filename ?? undefined,
+              clipIndex: seg.index,
+              userProvidedTitle,
+            });
+            const { url } = await storagePut(key, seg.buffer, "video/mp4");
             const assetId = await createMediaArchiveAsset({
               archiveId: input.archiveId,
-              title,
+              title: enriched.title,
               mediaType: "video",
               mixKind,
               mimeType: "video/mp4",
               storageUrl: url,
               storageKey: key,
-              tags,
-              sourceNote,
+              tags: enriched.tags,
+              sourceNote: enriched.sourceNote,
               durationSec: Math.round(seg.durationSec),
               isActive: 1,
             });
@@ -1264,7 +1281,7 @@ export const appRouter = router({
           if (createdAssets.length === 0) {
             throw appTrpcError("INTERNAL_SERVER_ERROR", APP_ERROR.SERVICE_ERROR, "Scene split produced no clips");
           }
-          return { assets: createdAssets, asset: createdAssets[0], clipCount: createdAssets.length, split: true };
+          return { assets: createdAssets, asset: createdAssets[0], clipCount: createdAssets.length, split: true, aiTagged: input.autoGenerateTags };
         }
       }
 
@@ -1272,25 +1289,36 @@ export const appRouter = router({
       const ext = isVideo
         ? (input.mimeType.includes("webm") ? "webm" : input.mimeType.includes("quicktime") || input.mimeType.includes("mov") ? "mov" : "mp4")
         : (input.mimeType.includes("png") ? "png" : input.mimeType.includes("gif") ? "gif" : input.mimeType.includes("webp") ? "webp" : "jpg");
-      const key = `media-archive/${input.archiveId}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+      const enriched = await enrichArchiveAssetFields({
+        buffer,
+        mimeType: input.mimeType,
+        autoGenerateTags: input.autoGenerateTags,
+        baseTitle,
+        userTags,
+        sourceNote: input.sourceNote?.trim() || null,
+        archiveNicheTags,
+        parentFilename: input.filename ?? undefined,
+        userProvidedTitle,
+      });
+      const key = `media-archive/${input.archiveId}/${Date.now()}-${Math.random().toString(36).slice(2, 6)}.${ext}`;
       const { url } = await storagePut(key, buffer, input.mimeType);
 
       const assetId = await createMediaArchiveAsset({
         archiveId: input.archiveId,
-        title: baseTitle,
+        title: enriched.title,
         mediaType,
         mixKind,
         mimeType: input.mimeType,
         storageUrl: url,
         storageKey: key,
-        tags,
-        sourceNote: input.sourceNote?.trim() || null,
+        tags: enriched.tags,
+        sourceNote: enriched.sourceNote,
         isActive: 1,
       });
       if (!assetId) throw appTrpcError("INTERNAL_SERVER_ERROR", APP_ERROR.SERVICE_ERROR, "Failed to save asset");
 
       const asset = await getMediaArchiveAssetById(assetId);
-      return { asset, assets: asset ? [asset] : [], clipCount: 1, split: false };
+      return { asset, assets: asset ? [asset] : [], clipCount: 1, split: false, aiTagged: input.autoGenerateTags };
     }),
 
     updateAsset: adminProcedure.input(z.object({

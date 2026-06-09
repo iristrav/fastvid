@@ -37,6 +37,7 @@ export function MediaArchiveAdmin() {
   const [uploadTags, setUploadTags] = useState("");
   const [uploadMixKind, setUploadMixKind] = useState<MixKind>("photo");
   const [autoSplitScenes, setAutoSplitScenes] = useState(true);
+  const [autoGenerateTags, setAutoGenerateTags] = useState(true);
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -121,6 +122,7 @@ export function MediaArchiveAdmin() {
           tags: parseTagsInput(uploadTags),
           mixKind,
           autoSplitScenes: file.type.startsWith("video/") ? autoSplitScenes : false,
+          autoGenerateTags,
         });
         utils.mediaArchive.listAssets.invalidate();
         utils.mediaArchive.listArchives.invalidate();
@@ -275,6 +277,15 @@ export function MediaArchiveAdmin() {
                     </select>
                   </div>
                 </div>
+                <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={autoGenerateTags}
+                    onChange={(e) => setAutoGenerateTags(e.target.checked)}
+                    className="rounded border-white/20 bg-white/5 text-purple-600 focus:ring-purple-500"
+                  />
+                  AI-tags en beschrijving uit beeld (LLM vision)
+                </label>
                 <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer select-none">
                   <input
                     type="checkbox"
@@ -506,6 +517,9 @@ function AssetCard({
         ) : (
           <>
             <p className="text-sm text-white font-medium truncate">{asset.title || "Naamloos"}</p>
+            {asset.sourceNote && !editing && (
+              <p className="text-xs text-slate-500 line-clamp-2">{asset.sourceNote}</p>
+            )}
             {asset.tags && asset.tags.length > 0 && (
               <div className="flex flex-wrap gap-1">
                 {asset.tags.map((t) => (
