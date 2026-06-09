@@ -785,7 +785,7 @@ async function fetchBeatAuthenticStills(
     scene.pexelsQuery,
     ...(videoTitle?.trim() ? [videoTitle.split(/\s+/).slice(0, 4).join(" ")] : []),
   ].filter((q): q is string => typeof q === "string" && q.trim().length > 3);
-  const unique = [...new Set(queries)].slice(0, 4);
+  const unique = [...new Set(queries)].slice(0, dedup.perf.fastStockMode ? 1 : 4);
   const personPortrait = Boolean(personName.trim()) && !historicalDoc;
 
   for (const q of unique) {
@@ -815,7 +815,7 @@ async function fetchBeatAuthenticStills(
     }
   }
 
-  if (SERPAPI_KEY && canUseGlobalStillPhoto(dedup)) {
+  if (!dedup.perf.fastStockMode && SERPAPI_KEY && canUseGlobalStillPhoto(dedup)) {
     const serpQ = personPortrait && personName.trim()
       ? buildPersonSerpQuery(personName, sceneIndex, beat.index, beat.text)
       : (unique[0] ?? beat.searchQuery);
@@ -847,7 +847,7 @@ async function fetchBeatAuthenticStills(
   }
 
   const ovQ = personPortrait && personName.trim() ? `${personName} ${unique[0] ?? ""}`.trim() : (unique[0] ?? beat.searchQuery);
-  if (ovQ.length > 3) {
+  if (!dedup.perf.fastStockMode && ovQ.length > 3) {
     const ovPaths = await fetchOpenverseImages(
       ovQ,
       clipFetchDur,
@@ -926,14 +926,16 @@ function youtubeBeatFetchTimeoutMs(fastStockMode: boolean): number {
 }
 
 /** Max time per beat for online/script image search before stock footage. */
-const BEAT_VISUAL_SEARCH_MAX_MS = 60_000;
+function beatVisualSearchMaxMs(perf: PipelinePerfProfile): number {
+  return perf.fastStockMode ? 18_000 : 60_000;
+}
 
 function beatStockFallbackWallMs(perf: PipelinePerfProfile): number {
   if (youtubeOnlySourcingEnabled()) return 45_000;
-  return perf.fastStockMode ? 22_000 : 30_000;
+  return perf.fastStockMode ? 12_000 : 30_000;
 }
 
-/** Wall-clock cap for one beat: search (≤1min) + stock fallback. */
+/** Wall-clock cap for one beat: search + stock fallback. */
 function beatVisualWallMs(perf: PipelinePerfProfile): number {
   if (youtubeOnlySourcingEnabled()) {
     return (
@@ -943,7 +945,7 @@ function beatVisualWallMs(perf: PipelinePerfProfile): number {
       8_000
     );
   }
-  return BEAT_VISUAL_SEARCH_MAX_MS + beatStockFallbackWallMs(perf) + 5_000;
+  return beatVisualSearchMaxMs(perf) + beatStockFallbackWallMs(perf) + 5_000;
 }
 
 function backfillClipWallMs(perf: PipelinePerfProfile, sceneDurationSec = 60): number {
@@ -956,8 +958,8 @@ function backfillClipWallMs(perf: PipelinePerfProfile, sceneDurationSec = 60): n
 }
 
 /** Cap online/script search per beat — then stock footage. */
-function beatVideoSearchWallMs(_perf: PipelinePerfProfile): number {
-  return BEAT_VISUAL_SEARCH_MAX_MS;
+function beatVideoSearchWallMs(perf: PipelinePerfProfile): number {
+  return beatVisualSearchMaxMs(perf);
 }
 
 function personCelebrityVideoWallMs(perf: PipelinePerfProfile, sceneDurationSec: number): number {
@@ -1415,7 +1417,7 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
   if (videoLength === "1" || videoLength === "2") {
     return applyAiFallbackToProfile({
       targetWallClockMin: 8,
-      maxBeatsPerScene: IS_RAILWAY ? 3 : 6,
+      maxBeatsPerScene: IS_RAILWAY ? 2 : 6,
       maxTopicQueries: IS_RAILWAY ? 1 : 3,
       skipFairUseTransform: true,
       transformTimeoutMs: 15_000,
@@ -1426,8 +1428,8 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
       sceneParallelism: railwayParallel,
       pexelsDownloadRetries: 1,
       maxStockQueriesPerBeat: 2,
-      beatClipTimeoutMs: IS_RAILWAY ? 45_000 : 60_000,
-      sceneVisualTimeoutMs: IS_RAILWAY ? 4 * 60_000 : 4 * 60_000,
+      beatClipTimeoutMs: IS_RAILWAY ? 22_000 : 60_000,
+      sceneVisualTimeoutMs: IS_RAILWAY ? 3 * 60_000 : 4 * 60_000,
       fastStockMode: IS_RAILWAY,
       scriptOnlyVisuals: false,
     }, videoLength);
@@ -5597,7 +5599,7 @@ async function fetchInternetArchiveClips(
     const searchUrl = `https://archive.org/advancedsearch.php?q=${encodeURIComponent(query)}+AND+mediatype:movies&fl[]=identifier,title&rows=12&output=json`;
     const searchResp = await withTimeout(
       fetch(searchUrl, { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }),
-      10_000,
+      IS_RAILWAY ? 6_000 : 10_000,
       `Internet Archive search scene ${sceneIndex}`
     );
     if (!searchResp.ok) continue;
@@ -5643,7 +5645,7 @@ async function fetchInternetArchiveClips(
 
         const dlResp = await fetchWithTimeout(
           videoUrl,
-          45_000,
+          IS_RAILWAY ? 18_000 : 45_000,
           `Internet Archive download scene ${sceneIndex}`,
           { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }
         );
@@ -8992,7 +8994,9 @@ async function fetchHistoricalBeatVideo(
   const loose: VisualAdoptOptions = { ...adoptOpts, requireBeatMatch: false, scriptAnchored: false };
   const queries = buildHistoricalArchivalQueries(intent, beat.text);
   const entityYt = realEntityYoutubeQueriesForBeat(beat.text, scene.text, adoptOpts.videoTitle);
-  const allQueries = [...entityYt, ...queries].slice(0, 6);
+  const queryCap = dedup.perf.fastStockMode ? 2 : 6;
+  const allQueries = [...entityYt, ...queries].slice(0, queryCap);
+  const archiveHitsPerQuery = dedup.perf.fastStockMode ? 1 : 2;
 
   if (!opts.skipYoutube && youtubeSourcingEnabled() && youtubeCcReady()) {
     for (const q of allQueries) {
@@ -9035,7 +9039,7 @@ async function fetchHistoricalBeatVideo(
         clipFetchDur,
         workDir,
         sceneIndex,
-        2,
+        archiveHitsPerQuery,
         `${tag}_hist`,
         "",
         beatKeywords
@@ -10607,6 +10611,71 @@ async function fetchBeatAuthenticVideo(
   return null;
 }
 
+/** Fast 1-min path: ≤20s archival/stills, then Pexels — no unified research or duplicate fetches. */
+async function resolveBeatClipFastTurbo(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  personName: string,
+  videoTitle: string | undefined,
+  beatAdoptOpts: VisualAdoptOptions
+): Promise<string | null> {
+  const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
+  const tag = `b${beat.index}`;
+  const primaryMs = 20_000;
+  let clip: string | null = null;
+  try {
+    clip = await withTimeout(
+      beatPrimaryFetch(
+        beat,
+        scene,
+        workDir,
+        sceneIndex,
+        clipFetchDur,
+        dedup,
+        personName,
+        videoTitle,
+        beatAdoptOpts,
+        scenePersons,
+        `${tag}_fast`,
+        "fast primary"
+      ),
+      primaryMs,
+      `fast primary s${sceneIndex} b${beat.index}`
+    );
+  } catch (err) {
+    console.warn(
+      `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: fast primary cap:`,
+      (err as Error).message
+    );
+    dedup.lock = Promise.resolve();
+  }
+  if (clip && isRealVideoClip(clip) && !isPipelineFallbackClip(clip)) return clip;
+
+  if (canUseLicensedStockBeat(dedup)) {
+    clip = await fetchBeatStockFallback(
+      beat,
+      scene,
+      workDir,
+      sceneIndex,
+      clipFetchDur,
+      dedup,
+      personName,
+      videoTitle,
+      beatAdoptOpts,
+      "fast turbo"
+    );
+    if (clip && isRealVideoClip(clip)) {
+      markLicensedStockBeatUsed(dedup);
+      return clip;
+    }
+  }
+  return null;
+}
+
 /**
  * Turbo path for 1–2 min videos: real video first (YouTube → stock, ≤1min), still only as last resort.
  */
@@ -10621,6 +10690,12 @@ async function resolveBeatClipTurbo(
   videoTitle: string | undefined,
   beatAdoptOpts: VisualAdoptOptions
 ): Promise<string | null> {
+  if (dedup.perf.fastStockMode) {
+    return resolveBeatClipFastTurbo(
+      beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts
+    );
+  }
+
   const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
   const historicalDoc =
     isHistoricalDocumentary(videoTitle, scene.text, beat.text) && !dedup.personTopicLock;
@@ -10827,7 +10902,7 @@ async function resolveBeatClipTurbo(
 
         return null;
       })(),
-      BEAT_VISUAL_SEARCH_MAX_MS,
+      beatVisualSearchMaxMs(dedup.perf),
       `turbo video search s${sceneIndex} b${beat.index}`
     );
   } catch (err) {

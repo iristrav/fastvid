@@ -156,7 +156,7 @@ export async function clipPassesVisionGate(
   beatIndex: number,
   fastMode: boolean
 ): Promise<boolean> {
-  if (!clipVisionGateEnabled() || !shouldVisionCheckClip(clipPath)) return true;
+  if (fastMode || !clipVisionGateEnabled() || !shouldVisionCheckClip(clipPath)) return true;
 
   const framePath = await extractPreviewFrame(clipPath, workDir, sceneIndex, beatIndex);
   if (!framePath) return true;
