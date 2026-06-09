@@ -33,10 +33,14 @@ async function getUserFromCookie(cookieHeader: string | undefined): Promise<User
   }
 }
 
+export async function getUserFromRequest(req: { headers: { cookie?: string } }): Promise<User | null> {
+  return getUserFromCookie(req.headers.cookie);
+}
+
 export async function createContext(
   opts: CreateExpressContextOptions
 ): Promise<TrpcContext> {
-  const user = await getUserFromCookie(opts.req.headers.cookie);
+  const user = await getUserFromRequest(opts.req);
   return {
     req: opts.req,
     res: opts.res,

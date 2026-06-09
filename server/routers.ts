@@ -14,6 +14,7 @@ import {
   APP_ERROR,
   PIPELINE_ERROR,
   appErrorMessage,
+  appErrorText,
   appTrpcError,
   normalizeStoredError,
   pipelineError,
@@ -71,8 +72,7 @@ function isMuskTeslaPromptTopic(prompt: string, title: string): boolean {
 
 import { storagePut } from "./storage";
 import { FASTVID_PRO_PLAN } from "./products";
-import { formatTimecode, splitVideoBySceneChanges } from "./archiveVideoSplitter";
-import { enrichArchiveAssetFields, generateArchiveAssetAiMetadata, applySharedAiToClipFields, inferArchiveMediaMime } from "./archiveAssetTagging";
+import { processArchiveAssetUpload, ArchiveUploadError } from "./archiveUpload";
 import { updateVideoScenes, updateEditedVideoUrl, getVideoScenes, type EditorScene, type EditorClip } from "./db";
 import { runVideoPipeline } from "./videoPipeline";
 import { forgotPassword, validateResetToken as validateResetTokenProcedure, resetPassword } from "./authPasswordReset";
@@ -1213,131 +1213,34 @@ export const appRouter = router({
       /** Analyze image / video frame with AI for title + tags (default on, needs LLM_API_KEY). */
       autoGenerateTags: z.boolean().default(true),
     })).mutation(async ({ input }) => {
-      const archive = await getMediaArchiveById(input.archiveId);
-      if (!archive) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Archive not found");
-
-      const buffer = Buffer.from(input.fileBase64, "base64");
-      const maxBytes = 100 * 1024 * 1024;
-      if (buffer.length > maxBytes) {
-        throw appTrpcError("BAD_REQUEST", APP_ERROR.FILE_TOO_LARGE, "File too large (max 100MB)");
-      }
-
-      const mimeType = inferArchiveMediaMime(input.mimeType, input.filename);
-      const isVideo = mimeType.startsWith("video/");
-      const isImage = mimeType.startsWith("image/");
-      if (!isVideo && !isImage) {
-        throw appTrpcError("BAD_REQUEST", APP_ERROR.FILE_TOO_LARGE, "Only video and image files are supported");
-      }
-
-      const baseTitle = input.title?.trim()
-        || input.filename?.replace(/\.[^.]+$/, "").trim()
-        || `${isVideo ? "video" : "image"}-${Date.now()}`;
-      const userProvidedTitle = Boolean(input.title?.trim());
-      const mixKind = input.mixKind ?? (isVideo ? "real_video" : "photo");
-      const userTags = normalizeMediaTags(input.tags);
-      const archiveNicheTags = normalizeMediaTags(archive.nicheTags ?? []);
-      const parentSource = input.filename?.trim() || input.sourceNote?.trim() || null;
-
-      if (isVideo && input.autoSplitScenes) {
-        const segments = await splitVideoBySceneChanges(buffer, mimeType);
-        if (segments.length > 1) {
-          const sharedAi = input.autoGenerateTags
-            ? await generateArchiveAssetAiMetadata(segments[0].buffer, "video/mp4", {
-                archiveNicheTags,
-                parentFilename: input.filename ?? undefined,
-                userTags,
-                clipLabel: "eerste fragment (tags gelden voor alle clips)",
-              })
-            : null;
-
-          const createdAssets = [];
-          for (const seg of segments) {
-            const key = `media-archive/${input.archiveId}/${Date.now()}-clip${seg.index}-${Math.random().toString(36).slice(2, 6)}.mp4`;
-            const fragmentNote = parentSource
-              ? `Fragment uit ${parentSource} (${formatTimecode(seg.startSec)}–${formatTimecode(seg.endSec)})`
-              : `Fragment ${formatTimecode(seg.startSec)}–${formatTimecode(seg.endSec)}`;
-            const draftTitle = `${baseTitle} — clip ${seg.index + 1}`;
-            const enriched = sharedAi
-              ? applySharedAiToClipFields({
-                  baseTitle: draftTitle,
-                  userTags,
-                  sourceNote: fragmentNote,
-                  ai: sharedAi,
-                  clipIndex: seg.index,
-                  userProvidedTitle,
-                })
-              : await enrichArchiveAssetFields({
-                  buffer: seg.buffer,
-                  mimeType: "video/mp4",
-                  autoGenerateTags: false,
-                  baseTitle: draftTitle,
-                  userTags,
-                  sourceNote: fragmentNote,
-                  archiveNicheTags,
-                  parentFilename: input.filename ?? undefined,
-                  clipIndex: seg.index,
-                  userProvidedTitle,
-                });
-            const { url } = await storagePut(key, seg.buffer, "video/mp4");
-            const assetId = await createMediaArchiveAsset({
-              archiveId: input.archiveId,
-              title: enriched.title,
-              mediaType: "video",
-              mixKind,
-              mimeType: "video/mp4",
-              storageUrl: url,
-              storageKey: key,
-              tags: enriched.tags,
-              sourceNote: enriched.sourceNote,
-              durationSec: Math.round(seg.durationSec),
-              isActive: 1,
-            });
-            if (assetId) {
-              const asset = await getMediaArchiveAssetById(assetId);
-              if (asset) createdAssets.push(asset);
-            }
-          }
-          if (createdAssets.length === 0) {
-            throw appTrpcError("INTERNAL_SERVER_ERROR", APP_ERROR.SERVICE_ERROR, "Scene split produced no clips");
-          }
-          return { assets: createdAssets, asset: createdAssets[0], clipCount: createdAssets.length, split: true, aiTagged: input.autoGenerateTags };
+      try {
+        const buffer = Buffer.from(input.fileBase64, "base64");
+        return await processArchiveAssetUpload({
+          archiveId: input.archiveId,
+          buffer,
+          mimeType: input.mimeType,
+          filename: input.filename,
+          title: input.title,
+          tags: input.tags,
+          mixKind: input.mixKind,
+          sourceNote: input.sourceNote,
+          autoSplitScenes: input.autoSplitScenes,
+          autoGenerateTags: input.autoGenerateTags,
+        });
+      } catch (err) {
+        if (err instanceof ArchiveUploadError) {
+          const trpcCode =
+            err.status === 404 ? "NOT_FOUND" as const
+            : err.status === 400 ? "BAD_REQUEST" as const
+            : "INTERNAL_SERVER_ERROR" as const;
+          const appCode =
+            err.status === 404 ? APP_ERROR.NOT_FOUND
+            : err.status === 400 ? APP_ERROR.FILE_TOO_LARGE
+            : APP_ERROR.SERVICE_ERROR;
+          throw appTrpcError(trpcCode, appCode, appErrorText(err.message));
         }
+        throw err;
       }
-
-      const mediaType = isVideo ? "video" as const : "image" as const;
-      const ext = isVideo
-        ? (mimeType.includes("webm") ? "webm" : mimeType.includes("quicktime") || mimeType.includes("mov") ? "mov" : "mp4")
-        : (mimeType.includes("png") ? "png" : mimeType.includes("gif") ? "gif" : mimeType.includes("webp") ? "webp" : "jpg");
-      const enriched = await enrichArchiveAssetFields({
-        buffer,
-        mimeType,
-        autoGenerateTags: input.autoGenerateTags,
-        baseTitle,
-        userTags,
-        sourceNote: input.sourceNote?.trim() || null,
-        archiveNicheTags,
-        parentFilename: input.filename ?? undefined,
-        userProvidedTitle,
-      });
-      const key = `media-archive/${input.archiveId}/${Date.now()}-${Math.random().toString(36).slice(2, 6)}.${ext}`;
-      const { url } = await storagePut(key, buffer, mimeType);
-
-      const assetId = await createMediaArchiveAsset({
-        archiveId: input.archiveId,
-        title: enriched.title,
-        mediaType,
-        mixKind,
-        mimeType,
-        storageUrl: url,
-        storageKey: key,
-        tags: enriched.tags,
-        sourceNote: enriched.sourceNote,
-        isActive: 1,
-      });
-      if (!assetId) throw appTrpcError("INTERNAL_SERVER_ERROR", APP_ERROR.SERVICE_ERROR, "Failed to save asset");
-
-      const asset = await getMediaArchiveAssetById(assetId);
-      return { asset, assets: asset ? [asset] : [], clipCount: 1, split: false, aiTagged: input.autoGenerateTags };
     }),
 
     updateAsset: adminProcedure.input(z.object({

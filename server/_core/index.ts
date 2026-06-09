@@ -12,7 +12,7 @@ import { migrate } from "drizzle-orm/mysql2/migrator";
 import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
-import { LOCAL_UPLOADS_DIR } from "../storageLocal";
+import { registerArchiveUploadRoute } from "../archiveUpload";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -117,6 +117,8 @@ async function startServer() {
   // Configure body parser with larger size limit for file uploads
   // Register Stripe webhook BEFORE express.json() for raw body access
   registerStripeWebhook(app);
+  // Binary archive upload (raw file bytes — avoids base64 JSON and HTML 413 errors)
+  registerArchiveUploadRoute(app);
   // Base64 uploads need ~33% headroom; archive videos up to 100MB raw.
   app.use(express.json({ limit: "150mb" }));
   app.use(express.urlencoded({ limit: "150mb", extended: true }));
@@ -527,6 +529,20 @@ async function startServer() {
       createContext,
     })
   );
+
+  // Always return JSON for payload-too-large (prevents "<!DOCTYPE" parse errors in the client)
+  app.use((err: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (
+      err &&
+      typeof err === "object" &&
+      "type" in err &&
+      (err as { type?: string }).type === "entity.too.large"
+    ) {
+      res.status(413).json({ error: "File too large (10013)" });
+      return;
+    }
+    next(err);
+  });
 
   // development mode uses Vite, production mode uses static files
   if (process.env.NODE_ENV === "development") {

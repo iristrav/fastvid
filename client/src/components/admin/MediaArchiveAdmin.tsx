@@ -45,6 +45,62 @@ function tagsToInput(tags: string[] | null | undefined): string {
   return (tags ?? []).join(", ");
 }
 
+type ArchiveUploadResponse = {
+  clipCount: number;
+  split: boolean;
+};
+
+async function uploadArchiveFile(
+  file: File,
+  opts: {
+    archiveId: number;
+    mimeType: string;
+    mixKind: MixKind;
+    tags: string[];
+    autoSplitScenes: boolean;
+    autoGenerateTags: boolean;
+  }
+): Promise<ArchiveUploadResponse> {
+  const params = new URLSearchParams({
+    archiveId: String(opts.archiveId),
+    filename: file.name,
+    mimeType: opts.mimeType,
+    mixKind: opts.mixKind,
+    tags: opts.tags.join(","),
+    autoSplitScenes: opts.autoSplitScenes ? "true" : "false",
+    autoGenerateTags: opts.autoGenerateTags ? "true" : "false",
+  });
+
+  const res = await fetch(`/api/admin/archive/upload?${params}`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": opts.mimeType || "application/octet-stream" },
+    body: file,
+  });
+
+  const text = await res.text();
+  let data: { error?: string; clipCount?: number; split?: boolean } | null = null;
+  try {
+    data = JSON.parse(text) as { error?: string; clipCount?: number; split?: boolean };
+  } catch {
+    if (text.trimStart().startsWith("<!DOCTYPE") || text.trimStart().startsWith("<html")) {
+      throw new Error(
+        "Server stuurde een HTML-foutpagina (bestand te groot of timeout). Probeer een kleiner bestand of zet AI-tags uit."
+      );
+    }
+    throw new Error(text.slice(0, 180) || "Upload mislukt");
+  }
+
+  if (!res.ok) {
+    throw new Error(data?.error || "Upload mislukt");
+  }
+
+  return {
+    clipCount: data?.clipCount ?? 1,
+    split: Boolean(data?.split),
+  };
+}
+
 export function MediaArchiveAdmin() {
   const utils = trpc.useUtils();
   const { data: archives = [], isLoading: archivesLoading } = trpc.mediaArchive.listArchives.useQuery();
@@ -94,10 +150,6 @@ export function MediaArchiveAdmin() {
     onError: (e) => toast.error("Verwijderen mislukt", { description: toastErrorMessage(e) }),
   });
 
-  const uploadAsset = trpc.mediaArchive.uploadAsset.useMutation({
-    onError: (e) => toast.error("Upload mislukt", { description: toastErrorMessage(e) }),
-  });
-
   const updateAsset = trpc.mediaArchive.updateAsset.useMutation({
     onSuccess: () => {
       utils.mediaArchive.listAssets.invalidate();
@@ -135,16 +187,13 @@ export function MediaArchiveAdmin() {
           toast.error(`${file.name}: alleen video of afbeelding (MP4, JPG, PNG, …)`);
           continue;
         }
-        const base64 = await readFileAsBase64(file);
         const isVideo = mimeType.startsWith("video/");
         const mixKind = isVideo ? "real_video" : uploadMixKind;
-        const result = await uploadAsset.mutateAsync({
+        const result = await uploadArchiveFile(file, {
           archiveId: activeArchiveId,
-          fileBase64: base64,
           mimeType,
-          filename: file.name,
-          tags: parseTagsInput(uploadTags),
           mixKind,
+          tags: parseTagsInput(uploadTags),
           autoSplitScenes: isVideo ? autoSplitScenes : false,
           autoGenerateTags,
         });
@@ -326,7 +375,7 @@ export function MediaArchiveAdmin() {
                     uploading ? "border-purple-500/30 bg-purple-500/5" : "border-white/15 hover:border-purple-500/40 hover:bg-white/3"
                   }`}
                 >
-                  {uploading || uploadAsset.isPending ? (
+                  {uploading ? (
                     <Loader2 className="w-8 h-8 text-purple-400 animate-spin" />
                   ) : (
                     <Upload className="w-8 h-8 text-slate-500" />
@@ -566,16 +615,4 @@ function AssetCard({
       </div>
     </div>
   );
-}
-
-function readFileAsBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const result = e.target?.result as string;
-      resolve(result.split(",")[1] ?? "");
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
 }

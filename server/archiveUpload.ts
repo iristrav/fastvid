@@ -1,0 +1,274 @@
+/**
+ * Media archive upload — shared logic for tRPC and direct binary HTTP upload.
+ */
+import type { Express, Request, Response } from "express";
+import express from "express";
+import { APP_ERROR, appErrorMessage } from "@shared/appErrors";
+import {
+  applySharedAiToClipFields,
+  enrichArchiveAssetFields,
+  generateArchiveAssetAiMetadata,
+  inferArchiveMediaMime,
+} from "./archiveAssetTagging";
+import { formatTimecode, splitVideoBySceneChanges } from "./archiveVideoSplitter";
+import { getUserFromRequest } from "./_core/context";
+import {
+  createMediaArchiveAsset,
+  getMediaArchiveAssetById,
+  getMediaArchiveById,
+  normalizeMediaTags,
+} from "./db";
+import { storagePut } from "./storage";
+
+export type ArchiveUploadInput = {
+  archiveId: number;
+  buffer: Buffer;
+  mimeType: string;
+  filename?: string;
+  title?: string;
+  tags?: string[];
+  mixKind?: "real_video" | "photo" | "stock" | "screenshot" | "motion_graphics";
+  sourceNote?: string;
+  autoSplitScenes?: boolean;
+  autoGenerateTags?: boolean;
+};
+
+export type ArchiveUploadResult = {
+  asset: Awaited<ReturnType<typeof getMediaArchiveAssetById>>;
+  assets: NonNullable<Awaited<ReturnType<typeof getMediaArchiveAssetById>>>[];
+  clipCount: number;
+  split: boolean;
+  aiTagged: boolean;
+};
+
+export class ArchiveUploadError extends Error {
+  constructor(
+    readonly status: number,
+    message: string
+  ) {
+    super(message);
+    this.name = "ArchiveUploadError";
+  }
+}
+
+export async function processArchiveAssetUpload(input: ArchiveUploadInput): Promise<ArchiveUploadResult> {
+  const archive = await getMediaArchiveById(input.archiveId);
+  if (!archive) {
+    throw new ArchiveUploadError(404, appErrorMessage(APP_ERROR.NOT_FOUND, "Archive not found"));
+  }
+
+  const maxBytes = 100 * 1024 * 1024;
+  if (input.buffer.length > maxBytes) {
+    throw new ArchiveUploadError(400, appErrorMessage(APP_ERROR.FILE_TOO_LARGE, "File too large (max 100MB)"));
+  }
+  if (input.buffer.length === 0) {
+    throw new ArchiveUploadError(400, appErrorMessage(APP_ERROR.SERVICE_ERROR, "Empty file"));
+  }
+
+  const mimeType = inferArchiveMediaMime(input.mimeType, input.filename);
+  const isVideo = mimeType.startsWith("video/");
+  const isImage = mimeType.startsWith("image/");
+  if (!isVideo && !isImage) {
+    throw new ArchiveUploadError(
+      400,
+      appErrorMessage(APP_ERROR.FILE_TOO_LARGE, "Only video and image files are supported")
+    );
+  }
+
+  const baseTitle = input.title?.trim()
+    || input.filename?.replace(/\.[^.]+$/, "").trim()
+    || `${isVideo ? "video" : "image"}-${Date.now()}`;
+  const userProvidedTitle = Boolean(input.title?.trim());
+  const mixKind = input.mixKind ?? (isVideo ? "real_video" : "photo");
+  const userTags = normalizeMediaTags(input.tags ?? []);
+  const archiveNicheTags = normalizeMediaTags(archive.nicheTags ?? []);
+  const parentSource = input.filename?.trim() || input.sourceNote?.trim() || null;
+  const autoSplitScenes = input.autoSplitScenes ?? true;
+  const autoGenerateTags = input.autoGenerateTags ?? true;
+
+  if (isVideo && autoSplitScenes) {
+    const segments = await splitVideoBySceneChanges(input.buffer, mimeType);
+    if (segments.length > 1) {
+      const sharedAi = autoGenerateTags
+        ? await generateArchiveAssetAiMetadata(segments[0].buffer, "video/mp4", {
+            archiveNicheTags,
+            parentFilename: input.filename,
+            userTags,
+            clipLabel: "eerste fragment (tags gelden voor alle clips)",
+          })
+        : null;
+
+      const createdAssets = [];
+      for (const seg of segments) {
+        const key = `media-archive/${input.archiveId}/${Date.now()}-clip${seg.index}-${Math.random().toString(36).slice(2, 6)}.mp4`;
+        const fragmentNote = parentSource
+          ? `Fragment uit ${parentSource} (${formatTimecode(seg.startSec)}–${formatTimecode(seg.endSec)})`
+          : `Fragment ${formatTimecode(seg.startSec)}–${formatTimecode(seg.endSec)}`;
+        const draftTitle = `${baseTitle} — clip ${seg.index + 1}`;
+        const enriched = sharedAi
+          ? applySharedAiToClipFields({
+              baseTitle: draftTitle,
+              userTags,
+              sourceNote: fragmentNote,
+              ai: sharedAi,
+              clipIndex: seg.index,
+              userProvidedTitle,
+            })
+          : await enrichArchiveAssetFields({
+              buffer: seg.buffer,
+              mimeType: "video/mp4",
+              autoGenerateTags: false,
+              baseTitle: draftTitle,
+              userTags,
+              sourceNote: fragmentNote,
+              archiveNicheTags,
+              parentFilename: input.filename,
+              clipIndex: seg.index,
+              userProvidedTitle,
+            });
+        const { url } = await storagePut(key, seg.buffer, "video/mp4");
+        const assetId = await createMediaArchiveAsset({
+          archiveId: input.archiveId,
+          title: enriched.title,
+          mediaType: "video",
+          mixKind,
+          mimeType: "video/mp4",
+          storageUrl: url,
+          storageKey: key,
+          tags: enriched.tags,
+          sourceNote: enriched.sourceNote,
+          durationSec: Math.round(seg.durationSec),
+          isActive: 1,
+        });
+        if (assetId) {
+          const asset = await getMediaArchiveAssetById(assetId);
+          if (asset) createdAssets.push(asset);
+        }
+      }
+      if (createdAssets.length === 0) {
+        throw new ArchiveUploadError(
+          500,
+          appErrorMessage(APP_ERROR.SERVICE_ERROR, "Scene split produced no clips")
+        );
+      }
+      return {
+        assets: createdAssets,
+        asset: createdAssets[0],
+        clipCount: createdAssets.length,
+        split: true,
+        aiTagged: autoGenerateTags,
+      };
+    }
+  }
+
+  const mediaType = isVideo ? "video" as const : "image" as const;
+  const ext = isVideo
+    ? (mimeType.includes("webm") ? "webm" : mimeType.includes("quicktime") || mimeType.includes("mov") ? "mov" : "mp4")
+    : (mimeType.includes("png") ? "png" : mimeType.includes("gif") ? "gif" : mimeType.includes("webp") ? "webp" : "jpg");
+  const enriched = await enrichArchiveAssetFields({
+    buffer: input.buffer,
+    mimeType,
+    autoGenerateTags,
+    baseTitle,
+    userTags,
+    sourceNote: input.sourceNote?.trim() || null,
+    archiveNicheTags,
+    parentFilename: input.filename,
+    userProvidedTitle,
+  });
+  const key = `media-archive/${input.archiveId}/${Date.now()}-${Math.random().toString(36).slice(2, 6)}.${ext}`;
+  const { url } = await storagePut(key, input.buffer, mimeType);
+
+  const assetId = await createMediaArchiveAsset({
+    archiveId: input.archiveId,
+    title: enriched.title,
+    mediaType,
+    mixKind,
+    mimeType,
+    storageUrl: url,
+    storageKey: key,
+    tags: enriched.tags,
+    sourceNote: enriched.sourceNote,
+    isActive: 1,
+  });
+  if (!assetId) {
+    throw new ArchiveUploadError(500, appErrorMessage(APP_ERROR.SERVICE_ERROR, "Failed to save asset"));
+  }
+
+  const asset = await getMediaArchiveAssetById(assetId);
+  return {
+    asset,
+    assets: asset ? [asset] : [],
+    clipCount: 1,
+    split: false,
+    aiTagged: autoGenerateTags,
+  };
+}
+
+function parseBoolQuery(value: unknown, defaultValue: boolean): boolean {
+  if (value == null || value === "") return defaultValue;
+  const s = String(value).toLowerCase();
+  if (s === "1" || s === "true" || s === "yes") return true;
+  if (s === "0" || s === "false" || s === "no") return false;
+  return defaultValue;
+}
+
+async function handleArchiveBinaryUpload(req: Request, res: Response) {
+  try {
+    const user = await getUserFromRequest(req);
+    if (!user) {
+      res.status(401).json({ error: appErrorMessage(APP_ERROR.UNAUTHED, "Please login") });
+      return;
+    }
+    if (user.role !== "admin") {
+      res.status(403).json({ error: appErrorMessage(APP_ERROR.NOT_ADMIN, "You do not have required permission") });
+      return;
+    }
+
+    const archiveId = parseInt(String(req.query.archiveId ?? ""), 10);
+    if (!archiveId || Number.isNaN(archiveId)) {
+      res.status(400).json({ error: appErrorMessage(APP_ERROR.SERVICE_ERROR, "archiveId is required") });
+      return;
+    }
+
+    const rawBody = req.body;
+    const buffer = Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(rawBody ?? []);
+    const filename = String(req.query.filename ?? "upload").slice(0, 256);
+    const mimeType = String(req.query.mimeType ?? req.headers["content-type"] ?? "").slice(0, 128);
+    const tagsRaw = String(req.query.tags ?? "");
+    const tags = tagsRaw ? normalizeMediaTags(tagsRaw.split(/[,;]+/)) : [];
+    const mixKindRaw = String(req.query.mixKind ?? "");
+    const mixKind = ["real_video", "photo", "stock", "screenshot", "motion_graphics"].includes(mixKindRaw)
+      ? (mixKindRaw as ArchiveUploadInput["mixKind"])
+      : undefined;
+
+    const result = await processArchiveAssetUpload({
+      archiveId,
+      buffer,
+      mimeType,
+      filename,
+      tags,
+      mixKind,
+      autoSplitScenes: parseBoolQuery(req.query.autoSplitScenes, true),
+      autoGenerateTags: parseBoolQuery(req.query.autoGenerateTags, true),
+    });
+
+    res.json(result);
+  } catch (err) {
+    if (err instanceof ArchiveUploadError) {
+      res.status(err.status).json({ error: err.message });
+      return;
+    }
+    console.error("[ArchiveUpload] HTTP upload failed:", err);
+    res.status(500).json({ error: appErrorMessage(APP_ERROR.SERVICE_ERROR, "Upload failed") });
+  }
+}
+
+/** Register before express.json() — raw binary body, no base64 JSON bloat. */
+export function registerArchiveUploadRoute(app: Express) {
+  app.post(
+    "/api/admin/archive/upload",
+    express.raw({ type: () => true, limit: "110mb" }),
+    handleArchiveBinaryUpload
+  );
+}
