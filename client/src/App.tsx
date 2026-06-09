@@ -28,6 +28,7 @@ function Router() {
       <Route path={"/login"} component={Login} />
       <Route path={"/reset-password"} component={ResetPassword} />
       <Route path={"/dashboard"} component={Dashboard} />
+      <Route path={"/admin/archive"} component={Admin} />
       <Route path={"/admin"} component={Admin} />
       <Route path={"/subscribe"} component={Subscribe} />
       <Route path={`/editor/:videoId`} component={VideoEditor} />

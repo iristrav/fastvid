@@ -15,7 +15,7 @@ import {
   UserCheck, Crown, Eye, X, Copy, AlertTriangle,
   FileText, Hash, Sparkles, Search, Filter, Download,
   ChevronDown, Mic, Plus, Pencil, Trash2, Volume2, ToggleLeft, ToggleRight,
-  Archive,
+  Archive, Upload,
 } from "lucide-react";
 import { MediaArchiveAdmin } from "@/components/admin/MediaArchiveAdmin";
 
@@ -698,8 +698,20 @@ export default function Admin() {
     user: { name?: string; role?: string } | null;
     loading: boolean; isAuthenticated: boolean; logout: () => void;
   };
-  const [, navigate] = useLocation();
-  const [activeTab, setActiveTab] = useState<"overview" | "users" | "videos" | "generate" | "voices" | "invites" | "archive">("overview");
+  const [location, navigate] = useLocation();
+  type AdminTab = "overview" | "users" | "videos" | "generate" | "voices" | "invites" | "archive";
+  const [activeTab, setActiveTab] = useState<AdminTab>("overview");
+
+  useEffect(() => {
+    if (location === "/admin/archive") setActiveTab("archive");
+  }, [location]);
+
+  function selectTab(id: AdminTab) {
+    setActiveTab(id);
+    if (id === "archive") navigate("/admin/archive");
+    else if (location === "/admin/archive") navigate("/admin");
+  }
+
   const { data: stats, isLoading: statsLoading } = trpc.admin.stats.useQuery(undefined, {
     enabled: isAuthenticated && user?.role === "admin",
   });
@@ -726,11 +738,11 @@ export default function Admin() {
 
   const navItems = [
     { id: "overview" as const, label: "Overview", icon: LayoutDashboard },
+    { id: "archive" as const, label: "Media Archief", icon: Archive },
     { id: "generate" as const, label: "Generate Video", icon: Sparkles },
     { id: "users" as const, label: "Users", icon: Users },
     { id: "videos" as const, label: "All Videos", icon: Video },
     { id: "voices" as const, label: "Voice Library", icon: Mic },
-    { id: "archive" as const, label: "Media Archief", icon: Archive },
     { id: "invites" as const, label: "Invite Codes", icon: Hash },
   ];
 
@@ -754,7 +766,7 @@ export default function Admin() {
           {navItems.map(({ id, label, icon: Icon }) => (
             <button
               key={id}
-              onClick={() => setActiveTab(id)}
+              onClick={() => selectTab(id)}
               className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
                 activeTab === id ? "bg-purple-600/20 text-white" : "text-slate-400 hover:text-white hover:bg-white/5"
               }`}
@@ -792,7 +804,7 @@ export default function Admin() {
         <span className="font-black text-lg text-white" style={{ fontFamily: "Outfit, sans-serif" }}>Fast<span className="gradient-text">vid</span> <span className="text-xs text-purple-400 font-normal">Admin</span></span>
         <div className="flex gap-1 overflow-x-auto">
           {navItems.map((tab) => (
-            <button key={tab.id} onClick={() => setActiveTab(tab.id)} className={`text-xs px-2 py-1 rounded-md transition-colors whitespace-nowrap ${activeTab === tab.id ? "bg-purple-600/30 text-purple-300" : "text-slate-400 hover:text-white"}`}>{tab.label}</button>
+            <button key={tab.id} onClick={() => selectTab(tab.id)} className={`text-xs px-2 py-1 rounded-md transition-colors whitespace-nowrap ${activeTab === tab.id ? "bg-purple-600/30 text-purple-300" : "text-slate-400 hover:text-white"}`}>{tab.label}</button>
           ))}
         </div>
       </div>
@@ -817,6 +829,22 @@ export default function Admin() {
                     <StatCard label="Active Subscribers" value={stats?.users.active ?? 0} icon={UserCheck} color="text-green-400" sub={`\u20ac${(stats?.users.active ?? 0) * 500}/mo revenue`} />
                     <StatCard label="Total Videos" value={stats?.videos.total ?? 0} icon={Video} color="text-cyan-400" />
                     <StatCard label="Completed Videos" value={stats?.videos.completed ?? 0} icon={CheckCircle2} color="text-green-400" sub={`${stats?.videos.failed ?? 0} failed`} />
+                  </div>
+                  <div className="glass-card border border-purple-500/25 rounded-xl p-5 flex flex-wrap items-center justify-between gap-4 bg-purple-600/5">
+                    <div>
+                      <h3 className="font-bold text-white flex items-center gap-2">
+                        <Archive className="w-4 h-4 text-purple-400" /> Media Archief
+                      </h3>
+                      <p className="text-xs text-slate-400 mt-1 max-w-xl">
+                        Upload hier video&apos;s en foto&apos;s met tags. De pipeline gebruikt alleen bestanden uit jouw archieven.
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => selectTab("archive")}
+                      className="flex items-center gap-2 px-4 py-2.5 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-sm font-medium transition-colors shrink-0"
+                    >
+                      <Upload className="w-4 h-4" /> Video&apos;s uploaden
+                    </button>
                   </div>
                   <AdminVideoActions />
                   <div className="glass-card border border-white/8 rounded-xl p-5">

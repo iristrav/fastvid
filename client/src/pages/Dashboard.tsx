@@ -20,7 +20,7 @@ import {
   Play, Sparkles, CheckCircle2, XCircle, Loader2,
   FileText, Video, LogOut, User, ChevronRight, RefreshCw,
   Copy, Download, Eye, LayoutDashboard, Settings, CreditCard, Volume2,
-  Trash2, Pencil, Check, X as XIcon, Mic, Upload,
+  Trash2, Pencil, Check, X as XIcon, Mic, Upload, Archive,
   AlertCircle, ChevronDown, Edit2,
 } from "lucide-react";
 import {
@@ -864,10 +864,16 @@ export default function Dashboard() {
             Landing Page
           </button>
           {user?.role === "admin" && (
-            <button onClick={() => navigate("/admin")} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/5 text-sm transition-colors">
-              <Settings className="w-4 h-4" />
-              Admin Panel
-            </button>
+            <>
+              <button onClick={() => navigate("/admin/archive")} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/5 text-sm transition-colors">
+                <Archive className="w-4 h-4 text-purple-400" />
+                Media Archief
+              </button>
+              <button onClick={() => navigate("/admin")} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/5 text-sm transition-colors">
+                <Settings className="w-4 h-4" />
+                Admin Panel
+              </button>
+            </>
           )}
         </nav>
         <div className="p-4 border-t border-white/8">
