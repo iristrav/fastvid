@@ -393,7 +393,7 @@ function resolveMaxStockBeatsPerVideo(videoLength: string): number {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 0) return n;
   }
-  if (realFootageFirstEnabled()) return 1;
+  if (realFootageFirstEnabled()) return 4;
   const short = videoLength === "1" || videoLength === "2";
   return short ? 3 : 2;
 }
@@ -408,7 +408,7 @@ function applyMinimizeStockProfile(
   profile: PipelinePerfProfile,
   videoLength: string
 ): PipelinePerfProfile {
-  if (!minimizeStockFootageEnabled()) {
+  if (!minimizeStockFootageEnabled() && !realFootageFirstEnabled()) {
     return { ...profile, minimizeStockFootage: false, maxStockBeatsPerVideo: 999 };
   }
   return {
@@ -8018,6 +8018,12 @@ async function recoverSceneClipsIfEmpty(
         `rcv${fi}`
       );
     }
+    if ((!clip || isPipelineFallbackClip(clip)) && canUseLicensedStockBeat(dedup)) {
+      clip = await fetchUniqueStockForBeat(
+        stubBeat, scene, workDir, scene.index, clipFetchDur, dedup, personName, topicContext, recoverAdopt
+      );
+      if (clip && !isPipelineFallbackClip(clip)) markLicensedStockBeatUsed(dedup);
+    }
     if (!clip && canUseGlobalStillPhoto(dedup)) {
       clip = await fetchBeatScriptImageClip(
         stubBeat,
@@ -8044,12 +8050,6 @@ async function recoverSceneClipsIfEmpty(
         topicContext,
         `rcv${fi}`
       );
-    }
-    if ((!clip || isPipelineFallbackClip(clip)) && canUseLicensedStockBeat(dedup)) {
-      clip = await fetchUniqueStockForBeat(
-        stubBeat, scene, workDir, scene.index, clipFetchDur, dedup, personName, topicContext, recoverAdopt
-      );
-      if (clip && !isPipelineFallbackClip(clip)) markLicensedStockBeatUsed(dedup);
     }
     if ((!clip || isPipelineFallbackClip(clip)) && dedup.perf.enableAiFallback && dedup.aiClipsUsed < dedup.perf.maxAiClipsPerVideo) {
       clip = await fetchBeatAIClip(
@@ -8934,7 +8934,9 @@ async function researchBeatClipUnified(
   const topN = perf.fastStockMode ? 12 : 20;
   const { videoFirst, stillFallback, stockFallback } = partitionCandidatesForIntent(ranked, intent);
   const adoptPools = archivalFirst
-    ? [videoFirst, stillFallback, stockFallback]
+    ? realOnly
+      ? [videoFirst]
+      : [videoFirst, stillFallback, stockFallback]
     : [ranked];
 
   for (const pool of adoptPools) {
@@ -9005,7 +9007,26 @@ async function fetchBeatClipFromScript(
   const beatQueries = buildBeatVisualQueryList(beat.text, scene, videoTitle, scenePersons, maxQ);
   const ytMs = youtubeBeatFetchTimeoutMs(perf.fastStockMode);
 
-  let clip = await researchBeatClipUnified(
+  let clip: string | null = null;
+
+  if (realFootageFirstEnabled()) {
+    clip = await fetchBeatAuthenticVideo(
+      beat,
+      scene,
+      workDir,
+      sceneIndex,
+      clipFetchDur,
+      dedup,
+      videoTitle,
+      adoptOpts,
+      scenePersons,
+      primary ?? personName,
+      `${tag}_auth`
+    );
+    if (clip) return clip;
+  }
+
+  clip = await researchBeatClipUnified(
     beat,
     scene,
     workDir,
@@ -9022,7 +9043,12 @@ async function fetchBeatClipFromScript(
     pexFetch,
     candidateOffset
   );
-  if (clip) return clip;
+  if (clip && realFootageFirstEnabled()) {
+    if (isLicensedStockClip(clip)) clip = null;
+    else if (isAuthenticVideoClip(clip) || !isPipelineFallbackClip(clip)) return clip;
+  } else if (clip) {
+    return clip;
+  }
 
   const legacyEngine = process.env.ENABLE_MEDIA_RESEARCH === "false";
 
@@ -9050,8 +9076,23 @@ async function fetchBeatClipFromScript(
       if (clip) return clip;
     }
 
+    if (canUseLicensedStockBeat(dedup)) {
+      clip = await fetchBeatStockFallback(
+        beat,
+        scene,
+        workDir,
+        sceneIndex,
+        clipFetchDur,
+        dedup,
+        personName,
+        videoTitle,
+        adoptOpts,
+        "post-authentic"
+      );
+      if (clip) return clip;
+    }
+
     if (
-      !perf.minimizeStockFootage &&
       beat.index % 2 === 1 &&
       beat.index > 0 &&
       (scene.brollQueries?.length ?? 0) > 0 &&
@@ -9191,28 +9232,20 @@ async function fetchBeatClipFromScript(
     }
   }
 
-  if (!perf.minimizeStockFootage && canUseLicensedStockBeat(dedup)) {
-    const pexCap = perf.fastStockMode ? 2 : Math.min(3, maxQ);
-    const stockFallback = beatQueries.slice(0, pexCap);
-    if (stockFallback.length > 0 && (PEXELS_API_KEY || PIXABAY_API_KEY)) {
-      clip = await tryStockSources(
-        stockFallback.map((bq, bi) => ({
-          query: bq,
-          fetch: pexFetch(bq, `${tag}_script`, candidateOffset + bi, muskTopic ? 2 : 1),
-        })),
-        dedup,
-        sceneIndex,
-        beat.index,
-        beat.text,
-        workDir,
-        "script Pexels fallback",
-        adoptOpts
-      );
-      if (clip) {
-        markLicensedStockBeatUsed(dedup);
-        return clip;
-      }
-    }
+  if (canUseLicensedStockBeat(dedup)) {
+    clip = await fetchBeatStockFallback(
+      beat,
+      scene,
+      workDir,
+      sceneIndex,
+      clipFetchDur,
+      dedup,
+      personName,
+      videoTitle,
+      adoptOpts,
+      "legacy stock"
+    );
+    if (clip) return clip;
   }
 
   return null;
@@ -9282,6 +9315,36 @@ async function fetchBeatClip(
     dedup.globalBeatIndex++;
     return clip;
   }
+
+  if (realFootageFirstEnabled()) {
+    const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
+    clip = await fetchBeatAuthenticVideo(
+      beat,
+      scene,
+      workDir,
+      sceneIndex,
+      clipFetchDur,
+      dedup,
+      videoTitle,
+      {
+        muskTopic: isMuskTeslaTopic(videoTitle, scene.text),
+        personTopic: dedup.personTopicLock,
+        primaryPerson: dedup.primaryPerson || personName,
+        keywords: beat.keywords,
+        sceneText: scene.text,
+        videoTitle,
+        requireBeatMatch: false,
+      },
+      scenePersons,
+      personName,
+      `${tag}_auth`
+    );
+    if (clip) {
+      dedup.globalBeatIndex++;
+      return clip;
+    }
+  }
+
   if (perf.scriptOnlyVisuals) {
     if (perf.enableAiFallback) {
       const ai = await fetchBeatAIClip(
@@ -9318,6 +9381,19 @@ async function fetchBeatClip(
     const heroOpts = { ...adoptOpts, requireMuskBrand: true };
     clip = await tryStockSources(
       [
+        {
+          query: "SpaceX Falcon 9 launch",
+          fetch: () =>
+            fetchYouTubeCCClips(HERO_YOUTUBE_QUERIES, clipFetchDur, workDir, sceneIndex, 1, heroKw, 2, "", {
+              beatText: beat.text,
+              videoTitle,
+              fastMode: perf.fastStockMode,
+            }),
+        },
+        {
+          query: "SpaceX Starship",
+          fetch: () => fetchNasaVideoClips("SpaceX Starship launch", clipFetchDur, workDir, sceneIndex, 1),
+        },
         ...HERO_MUSK_QUERIES.map((hq, hi) => ({
           query: hq,
           fetch: pexFetch(hq, `${tag}_hero`, candidateOffset + hi, 6),
@@ -9326,15 +9402,6 @@ async function fetchBeatClip(
           query: hq,
           fetch: pixFetch(hq, `${tag}_hero_px`, candidateOffset + hi + 20),
         })),
-        {
-          query: "SpaceX Falcon 9 launch",
-          fetch: () =>
-            fetchYouTubeCCClips(HERO_YOUTUBE_QUERIES, clipFetchDur, workDir, sceneIndex, 1, heroKw, 2),
-        },
-        {
-          query: "SpaceX Starship",
-          fetch: () => fetchNasaVideoClips("SpaceX Starship launch", clipFetchDur, workDir, sceneIndex, 1),
-        },
       ],
       dedup, sceneIndex, beat.index, beat.text, workDir, "hero", heroOpts
     );
@@ -9382,16 +9449,45 @@ async function fetchBeatClip(
     if (clip) { dedup.globalBeatIndex++; return clip; }
   }
 
-  // 2) Scene topic-anchored queries (max 6 to keep generation fast)
+  if (perf.enableArchival) {
+    clip = await tryStockSources(
+      [
+        {
+          query: q,
+          fetch: async () =>
+            (await fetchInternetArchiveClips(q, clipFetchDur, workDir, sceneIndex, 1, tag)).map((c) => c.path),
+        },
+        {
+          query: q,
+          fetch: () =>
+            fetchYouTubeCCClips(q, clipFetchDur, workDir, sceneIndex, 1, beat.keywords, 2, "", {
+              beatText: beat.text,
+              videoTitle,
+              fastMode: perf.fastStockMode,
+            }),
+        },
+      ],
+      dedup, sceneIndex, beat.index, beat.text, workDir, "archival early", adoptOpts
+    );
+    if (clip) { dedup.globalBeatIndex++; return clip; }
+  }
+
+  // 2) Licensed stock — only after authentic sources above
   const topicQueries = buildTopicAnchoredQueries(scene, videoTitle, personName, videoTitle, beat.text);
-  clip = await tryStockSources(
-    topicQueries.slice(0, perf.maxTopicQueries).map((tq, ti) => ({
-      query: tq,
-      fetch: pexFetch(tq, `${tag}_topic`, candidateOffset + ti, 2),
-    })),
-    dedup, sceneIndex, beat.index, beat.text, workDir, "topic Pexels", adoptOpts
-  );
-  if (clip) { dedup.globalBeatIndex++; return clip; }
+  if (canUseLicensedStockBeat(dedup)) {
+    clip = await tryStockSources(
+      topicQueries.slice(0, perf.maxTopicQueries).map((tq, ti) => ({
+        query: tq,
+        fetch: pexFetch(tq, `${tag}_topic`, candidateOffset + ti, 2),
+      })),
+      dedup, sceneIndex, beat.index, beat.text, workDir, "topic Pexels", adoptOpts
+    );
+    if (clip) {
+      markLicensedStockBeatUsed(dedup);
+      dedup.globalBeatIndex++;
+      return clip;
+    }
+  }
 
   // 3) Golden pool fallback for Musk when beat-specific search missed
   if (muskTopic) {
@@ -9833,6 +9929,23 @@ async function resolveBeatClipTurbo(
         dedup.perf.pexelsDownloadRetries
       );
 
+  if (realFootageFirstEnabled()) {
+    const authFirst = await fetchBeatAuthenticVideo(
+      beat,
+      scene,
+      workDir,
+      sceneIndex,
+      clipFetchDur,
+      dedup,
+      videoTitle,
+      turboAdopt,
+      scenePersons,
+      person,
+      `${tag}_auth0`
+    );
+    if (authFirst) return authFirst;
+  }
+
   const unified = await researchBeatClipUnified(
     beat,
     scene,
@@ -9868,23 +9981,6 @@ async function resolveBeatClipTurbo(
     } else if (!archivalBeat || isRealVideoClip(unified)) {
       return unified;
     }
-  }
-
-  if (realFootageFirstEnabled()) {
-    const auth = await fetchBeatAuthenticVideo(
-      beat,
-      scene,
-      workDir,
-      sceneIndex,
-      clipFetchDur,
-      dedup,
-      videoTitle,
-      turboAdopt,
-      scenePersons,
-      person,
-      `${tag}_auth`
-    );
-    if (auth) return auth;
   }
 
   if (archivalBeat || realFootageFirstEnabled()) {
@@ -9961,16 +10057,6 @@ async function resolveBeatClipTurbo(
             { ...turboAdopt, personTopic: true, primaryPerson: person }
           );
           if (isRealVideoClip(celeb)) return celeb;
-
-          const personStock = await fetchBeatPersonStockVideo(
-            beat, scene, workDir, sceneIndex, clipFetchDur, dedup, person, videoTitle, beatAdoptOpts, "turbo"
-          );
-          if (isRealVideoClip(personStock)) return personStock;
-        } else {
-          const stock = await fetchBeatStockFallback(
-            beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts, "turbo"
-          );
-          if (isRealVideoClip(stock)) return stock;
         }
 
         return null;
@@ -10088,18 +10174,6 @@ async function resolveBeatClipForBeat(
     if (auth) return auth;
   }
 
-  if (canUseGlobalStillPhoto(dedup)) {
-    const imgAdopt: VisualAdoptOptions = { ...beatAdoptOpts, scriptImageFallback: true };
-    let img = await fetchBeatScriptImageClip(
-      beat, scene, workDir, sceneIndex, clipFetchDur, dedup, scenePersons, videoTitle, imgAdopt, `b${beat.index}`
-    );
-    if (img && !isPipelineFallbackClip(img)) return img;
-    img = await fetchBeatScriptImageForced(
-      beat, scene, workDir, sceneIndex, clipFetchDur, dedup, scenePersons, videoTitle, `b${beat.index}`
-    );
-    if (img && !isPipelineFallbackClip(img)) return img;
-  }
-
   c = await fetchBeatStockFallback(
     beat,
     scene,
@@ -10113,6 +10187,18 @@ async function resolveBeatClipForBeat(
     "after search"
   );
   if (c && !isPipelineFallbackClip(c)) return c;
+
+  if (canUseGlobalStillPhoto(dedup)) {
+    const imgAdopt: VisualAdoptOptions = { ...beatAdoptOpts, scriptImageFallback: true };
+    let img = await fetchBeatScriptImageClip(
+      beat, scene, workDir, sceneIndex, clipFetchDur, dedup, scenePersons, videoTitle, imgAdopt, `b${beat.index}`
+    );
+    if (img && !isPipelineFallbackClip(img)) return img;
+    img = await fetchBeatScriptImageForced(
+      beat, scene, workDir, sceneIndex, clipFetchDur, dedup, scenePersons, videoTitle, `b${beat.index}`
+    );
+    if (img && !isPipelineFallbackClip(img)) return img;
+  }
 
   const tryAi = async (): Promise<string | null> => {
     if (!dedup.perf.enableAiFallback) return null;
@@ -10258,11 +10344,7 @@ async function fetchSceneVisuals(
           `b${beat.index}_auth`
         );
       }
-      if (
-        !realOnly &&
-        !historicalDoc &&
-        (!clip || isPipelineFallbackClip(clip) || (dedup.perf.fastStockMode && clip && isStillPhotoClip(clip)))
-      ) {
+      if ((!clip || isPipelineFallbackClip(clip)) && canUseLicensedStockBeat(dedup)) {
         clip = await fetchBeatStockFallback(
           beat, scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts, "beat cap"
         );
@@ -10335,6 +10417,11 @@ async function fetchSceneVisuals(
           `b${beat.index}_miss`
         );
       }
+      if ((!rescue || isPipelineFallbackClip(rescue)) && canUseLicensedStockBeat(dedup)) {
+        rescue = await fetchBeatStockFallback(
+          beat, scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts, "miss"
+        );
+      }
       if ((!rescue || isPipelineFallbackClip(rescue)) && canUseGlobalStillPhoto(dedup)) {
         rescue = await fetchBeatScriptImageClip(
           beat,
@@ -10352,11 +10439,6 @@ async function fetchSceneVisuals(
       if ((!rescue || isPipelineFallbackClip(rescue)) && canUseGlobalStillPhoto(dedup)) {
         rescue = await fetchBeatScriptImageForced(
           beat, scene, workDir, scene.index, clipFetchDur, dedup, scenePersons, videoTitle, `b${beat.index}_miss`
-        );
-      }
-      if ((!rescue || isPipelineFallbackClip(rescue)) && canUseLicensedStockBeat(dedup)) {
-        rescue = await fetchBeatStockFallback(
-          beat, scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts, "miss"
         );
       }
       if (rescue && !isPipelineFallbackClip(rescue)) {
@@ -10404,6 +10486,12 @@ async function fetchSceneVisuals(
               );
               if (isAuthenticVideoClip(auth ?? "")) return auth;
             }
+            if (canUseLicensedStockBeat(dedup)) {
+              const stock = await fetchBeatStockFallback(
+                stub, scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts, "backfill"
+              );
+              if (isRealVideoClip(stock)) return stock;
+            }
             if (canUseGlobalStillPhoto(dedup)) {
               const still = await fetchBeatScriptImageClip(
                 stub,
@@ -10418,12 +10506,6 @@ async function fetchSceneVisuals(
                 `bf${backfillAttempts + 1}`
               );
               if (still && !isPipelineFallbackClip(still)) return still;
-            }
-            if (canUseLicensedStockBeat(dedup)) {
-              const stock = await fetchBeatStockFallback(
-                stub, scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts, "backfill"
-              );
-              if (isRealVideoClip(stock)) return stock;
             }
             return null;
           })(),
@@ -10471,16 +10553,18 @@ async function fetchSceneVisuals(
               );
               if (isAuthenticVideoClip(auth ?? "")) return auth;
             }
+            if (canUseLicensedStockBeat(dedup)) {
+              const stock = await fetchBeatStockFallback(
+                stub, scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts, "rescue"
+              );
+              if (isRealVideoClip(stock)) return stock;
+            }
             if (canUseGlobalStillPhoto(dedup)) {
               const still = await fetchBeatScriptImageForced(
                 stub, scene, workDir, scene.index, clipFetchDur, dedup, scenePersonsForBackfill, videoTitle, `res${si + 1}`
               );
               if (still && !isPipelineFallbackClip(still)) return still;
             }
-            const stock = await fetchBeatStockFallback(
-              stub, scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts, "rescue"
-            );
-            if (isRealVideoClip(stock)) return stock;
             return null;
           })(),
           backfillMs,
@@ -10518,7 +10602,12 @@ async function fetchSceneVisuals(
         `force_s${scene.index}_auth`
       );
     }
-    if (!isAuthenticVideoClip(forced ?? "") && canUseGlobalStillPhoto(dedup)) {
+    if (!isAuthenticVideoClip(forced ?? "") && canUseLicensedStockBeat(dedup)) {
+      forced = await fetchBeatStockFallback(
+        beats[0], scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts, "force"
+      );
+    }
+    if ((!forced || isPipelineFallbackClip(forced)) && canUseGlobalStillPhoto(dedup)) {
       forced = dedup.perf.fastStockMode
         ? await fetchBeatScriptImageForced(
             beats[0], scene, workDir, scene.index, clipFetchDur, dedup, scenePersons, videoTitle, `force_s${scene.index}`
@@ -10535,11 +10624,6 @@ async function fetchSceneVisuals(
             { ...beatAdoptOpts, scriptImageFallback: true, requireBeatMatch: false, scriptAnchored: false },
             `force_s${scene.index}`
           );
-    }
-    if (!forced || isPipelineFallbackClip(forced)) {
-      forced = await fetchBeatStockFallback(
-        beats[0], scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts, "force"
-      );
     }
     if (forced && !isPipelineFallbackClip(forced)) {
       clips.push(forced);

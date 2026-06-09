@@ -253,9 +253,17 @@ const STILL_ONLY_SOURCES: MediaSourceKind[] = [
   "wikimedia_image",
 ];
 
-/** Default on: authentic footage before stills/stock (set REAL_FOOTAGE_FIRST=false to disable). */
+/**
+ * Canonical clip order: script-guided/authentic video → Pexels/Pixabay → still photo.
+ * Default on (REAL_FOOTAGE_FIRST=false disables for debugging only).
+ */
 export function realFootageFirstEnabled(): boolean {
   return process.env.REAL_FOOTAGE_FIRST !== "false";
+}
+
+/** Licensed stock (Pexels/Pixabay) only after authentic sources fail. */
+export function licensedStockFallbackEnabled(): boolean {
+  return realFootageFirstEnabled();
 }
 
 /** True when beats should prefer archival/real video over Ken Burns stills. */
