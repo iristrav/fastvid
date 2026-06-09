@@ -35,7 +35,7 @@ import {
   createUser, updateUserLastSignedIn,
   getInviteCodeByCode, createInviteCode, getAllInviteCodes, markInviteCodeUsed, deleteInviteCode, deactivateInviteCode,
   getAllMediaArchives, getMediaArchiveById, createMediaArchiveUnique, updateMediaArchive, deleteMediaArchive,
-  getMediaArchiveAssets, getMediaArchiveAssetById, createMediaArchiveAsset, updateMediaArchiveAsset, deleteMediaArchiveAsset,
+  getMediaArchiveAssets, getMediaArchiveAssetById, createMediaArchiveAsset, updateMediaArchiveAsset, deleteMediaArchiveAsset, deleteMediaArchiveAssets,
   countMediaArchiveAssets, filterMediaArchiveAssets, normalizeMediaTags,
 } from "./db";
 import { storageGetSignedUrl } from "./storage";
@@ -1266,6 +1266,18 @@ export const appRouter = router({
       if (!asset) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Asset not found");
       await deleteMediaArchiveAsset(input.id);
       return { success: true };
+    }),
+
+    deleteAssets: adminProcedure.input(z.object({
+      ids: z.array(z.number().int()).min(1).max(200),
+    })).mutation(async ({ input }) => {
+      const uniqueIds = [...new Set(input.ids)];
+      for (const id of uniqueIds) {
+        const asset = await getMediaArchiveAssetById(id);
+        if (!asset) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, `Asset ${id} not found`);
+      }
+      const deleted = await deleteMediaArchiveAssets(uniqueIds);
+      return { success: true, deleted: deleted ?? uniqueIds.length };
     }),
   }),
 

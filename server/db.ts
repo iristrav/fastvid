@@ -795,6 +795,13 @@ export async function deleteMediaArchiveAsset(id: number) {
   await db.delete(mediaArchiveAssets).where(eq(mediaArchiveAssets.id, id));
 }
 
+export async function deleteMediaArchiveAssets(ids: number[]) {
+  const db = await getDb();
+  if (!db || ids.length === 0) return 0;
+  await db.delete(mediaArchiveAssets).where(inArray(mediaArchiveAssets.id, ids));
+  return ids.length;
+}
+
 export async function countMediaArchiveAssets(archiveId: number) {
   const db = await getDb();
   if (!db) return 0;
