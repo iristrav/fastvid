@@ -12,6 +12,7 @@ import { migrate } from "drizzle-orm/mysql2/migrator";
 import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
+import { LOCAL_UPLOADS_DIR } from "../storageLocal";
 import { registerArchiveUploadRoute } from "../archiveUpload";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
