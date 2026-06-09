@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildHistoricalArchivalQueries,
   buildMediaSearchIntent,
   inferTopicKind,
   mergeAiRelevanceScores,
+  partitionCandidatesForIntent,
   rankMediaCandidates,
   scoreMediaCandidate,
   type MediaCandidate,
@@ -38,12 +40,12 @@ describe("scoreMediaCandidate", () => {
     muskTopic: false,
   });
 
-  it("prefers Unsplash over Pexels when query matches beat", () => {
-    const unsplash: MediaCandidate = {
-      path: "/tmp/s1_b0_unsplash_titanic.mp4",
-      query: "RMS Titanic ship",
-      source: "unsplash",
-      isVideo: false,
+  it("penalizes stock and stills below archival video for historical beats", () => {
+    const archive: MediaCandidate = {
+      path: "/tmp/s1_b0_archive_titanic.mp4",
+      query: "RMS Titanic archival footage 1912",
+      source: "internet_archive",
+      isVideo: true,
     };
     const pexels: MediaCandidate = {
       path: "/tmp/s1_b0_pexels_ocean.mp4",
@@ -51,8 +53,17 @@ describe("scoreMediaCandidate", () => {
       source: "pexels",
       isVideo: true,
     };
-    expect(scoreMediaCandidate(unsplash, titanicIntent)).toBeGreaterThan(
+    const unsplash: MediaCandidate = {
+      path: "/tmp/s1_b0_unsplash_titanic.mp4",
+      query: "RMS Titanic ship",
+      source: "unsplash",
+      isVideo: false,
+    };
+    expect(scoreMediaCandidate(archive, titanicIntent)).toBeGreaterThan(
       scoreMediaCandidate(pexels, titanicIntent)
+    );
+    expect(scoreMediaCandidate(archive, titanicIntent)).toBeGreaterThan(
+      scoreMediaCandidate(unsplash, titanicIntent)
     );
   });
 
@@ -116,6 +127,47 @@ describe("mergeAiRelevanceScores", () => {
     ]);
     const merged = mergeAiRelevanceScores(candidates, aiScores);
     expect(merged[0].score).toBeGreaterThan(merged[1].score!);
+  });
+});
+
+describe("buildHistoricalArchivalQueries", () => {
+  it("builds Titanic-specific archival queries", () => {
+    const intent = buildMediaSearchIntent({
+      beatText: "In 1912 vertrok de Titanic vanuit Southampton.",
+      searchQueries: ["Titanic", "Southampton"],
+      keywords: ["titanic"],
+      primaryPerson: "",
+      persons: [],
+      powerWord: "Titanic",
+      personTopicLock: false,
+      spaceTopic: false,
+      muskTopic: false,
+    });
+    const queries = buildHistoricalArchivalQueries(intent, intent.beatText);
+    expect(queries.some((q) => /titanic/i.test(q) && /archival|1912|rms/i.test(q))).toBe(true);
+  });
+});
+
+describe("partitionCandidatesForIntent", () => {
+  it("puts stock video in still fallback for historical topics", () => {
+    const intent = buildMediaSearchIntent({
+      beatText: "The Titanic sank in 1912.",
+      searchQueries: ["Titanic"],
+      keywords: ["titanic"],
+      primaryPerson: "",
+      persons: [],
+      powerWord: "Titanic",
+      personTopicLock: false,
+      spaceTopic: false,
+      muskTopic: false,
+    });
+    const ranked: MediaCandidate[] = [
+      { path: "/a.mp4", query: "ocean", source: "pexels", isVideo: true, score: 200 },
+      { path: "/b.mp4", query: "RMS Titanic archival", source: "internet_archive", isVideo: true, score: 150 },
+    ];
+    const { videoFirst } = partitionCandidatesForIntent(ranked, intent);
+    expect(videoFirst[0].source).toBe("internet_archive");
+    expect(videoFirst.some((c) => c.source === "pexels")).toBe(false);
   });
 });
 

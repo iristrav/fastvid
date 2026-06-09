@@ -211,6 +211,20 @@ export function scoreMediaCandidate(candidate: MediaCandidate, intent: MediaSear
   if (candidate.isVideo) score += 5;
   else if (NEWS_TOPIC_RE.test(intent.beatText) || intent.topicKind === "person") score -= 3;
 
+  if (intent.topicKind === "historical" || intent.topicKind === "news") {
+    if (candidate.isVideo) score += 25;
+    else score -= 35;
+    if (candidate.source === "pexels" || candidate.source === "pixabay") score -= 50;
+    if (
+      candidate.source === "serpapi" ||
+      candidate.source === "unsplash" ||
+      candidate.source === "openverse" ||
+      candidate.source === "wikimedia_image"
+    ) {
+      score -= 30;
+    }
+  }
+
   // Penalize generic stock when we have a specific topic anchor.
   if (
     (candidate.source === "pexels" || candidate.source === "pixabay") &&
@@ -221,6 +235,59 @@ export function scoreMediaCandidate(candidate: MediaCandidate, intent: MediaSear
   }
 
   return score;
+}
+
+const STOCK_ONLY_SOURCES: MediaSourceKind[] = ["pexels", "pixabay"];
+const STILL_ONLY_SOURCES: MediaSourceKind[] = [
+  "serpapi",
+  "unsplash",
+  "openverse",
+  "wikimedia_image",
+];
+
+/** True when beats should prefer archival/real video over Ken Burns stills. */
+export function prefersArchivalVideo(intent: MediaSearchIntent): boolean {
+  return intent.topicKind === "historical" || intent.topicKind === "news";
+}
+
+/** Archival YouTube/Wiki/Archive search phrases for historical beats. */
+export function buildHistoricalArchivalQueries(
+  intent: MediaSearchIntent,
+  beatText: string
+): string[] {
+  const yearMatch = beatText.match(/\b(18|19|20)\d{2}\b/);
+  const year = yearMatch?.[0] ?? "";
+  const anchor = intent.powerWord?.trim() || intent.searchQueries[0]?.trim() || "";
+  if (!anchor) return intent.searchQueries.slice(0, 6);
+
+  const out = [
+    `RMS ${anchor}`,
+    `${anchor} archival footage`,
+    `${anchor} historical documentary`,
+    `${anchor} original footage`,
+    `${anchor} ${year}`.trim(),
+    `${anchor} sinking`,
+    `${anchor} ship`,
+    ...intent.searchQueries,
+  ];
+  return Array.from(new Set(out.map((q) => q.trim()).filter((q) => q.length >= 3))).slice(0, 8);
+}
+
+/** Split ranked pool: real video first; stills/stock only when no video exists. */
+export function partitionCandidatesForIntent(
+  ranked: MediaCandidate[],
+  intent: MediaSearchIntent
+): { videoFirst: MediaCandidate[]; stillFallback: MediaCandidate[] } {
+  if (!prefersArchivalVideo(intent)) {
+    return { videoFirst: ranked, stillFallback: [] };
+  }
+  const videoFirst = ranked.filter(
+    (c) => c.isVideo && !STOCK_ONLY_SOURCES.includes(c.source)
+  );
+  const stillFallback = ranked.filter(
+    (c) => !videoFirst.includes(c) && !STOCK_ONLY_SOURCES.includes(c.source)
+  );
+  return { videoFirst, stillFallback };
 }
 
 /** Rank candidates best-first (Laag 3). */

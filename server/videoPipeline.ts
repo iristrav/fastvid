@@ -45,7 +45,11 @@ import {
 } from "./scriptWriter";
 import {
   applyAiRelevanceRanking,
+  buildHistoricalArchivalQueries,
   buildMediaSearchIntent,
+  inferTopicKind,
+  partitionCandidatesForIntent,
+  prefersArchivalVideo,
   rankMediaCandidates,
   type MediaCandidate,
   type MediaSourceKind,
@@ -6706,6 +6710,18 @@ const REAL_ENTITY_RULES: RealEntityRule[] = [
     stockQueries: ["brain", "technology"],
     youtubeQueries: ["Neuralink presentation", "brain implant research laboratory"],
   },
+  {
+    id: "titanic",
+    mentionRe: /\b(rms\s+titanic|titanic)\b/i,
+    clipMustMatchRe: /\b(titanic|rms|liner|iceberg|southampton|1912|shipwreck|white\s+star)\b/i,
+    stockQueries: ["RMS Titanic", "Titanic ship 1912"],
+    youtubeQueries: [
+      "RMS Titanic archival footage",
+      "Titanic sinking 1912 documentary",
+      "Titanic maiden voyage Southampton 1912",
+      "Titanic iceberg collision original",
+    ],
+  },
 ];
 
 function extractBeatRealEntities(beatText: string, _sceneText = "", _videoTitle = ""): RealEntityRule[] {
@@ -7893,6 +7909,9 @@ async function recoverSceneClipsIfEmpty(
     keywords: recoverAdopt.keywords ?? [],
     holdSec: VIDRUSH_BEAT_SEC,
   };
+  const archivalRecover =
+    inferTopicKind(scene.text, personName, false, dedup.personTopicLock) === "historical" ||
+    inferTopicKind(scene.text, personName, false, dedup.personTopicLock) === "news";
   for (let fi = 0; fi < n + 2; fi++) {
     stubBeat.index = fi;
     stubBeat.searchQuery = stockQueryFromBeatScript(
@@ -7901,6 +7920,40 @@ async function recoverSceneClipsIfEmpty(
       scene.text,
       topicContext
     );
+    if (archivalRecover) {
+      const recoverIntent = buildMediaSearchIntent({
+        beatText: stubBeat.text,
+        searchQueries: [stubBeat.searchQuery],
+        keywords: stubBeat.keywords,
+        primaryPerson: personName,
+        persons: scenePersons,
+        videoTitle: topicContext,
+        powerWord: stubPower,
+        personTopicLock: dedup.personTopicLock,
+        spaceTopic: false,
+        muskTopic: recoverAdopt.muskTopic ?? false,
+      });
+      let clip = await fetchHistoricalBeatVideo(
+        stubBeat,
+        scene,
+        workDir,
+        scene.index,
+        clipFetchDur,
+        dedup,
+        recoverIntent,
+        recoverAdopt,
+        `rcv${fi}`
+      );
+      if (clip && !isPipelineFallbackClip(clip)) {
+        const key = clipContentKey(clip);
+        if (!clips.some((c) => clipContentKey(c) === key)) {
+          clips.push(clip);
+          beatDurations.push(VIDRUSH_BEAT_SEC);
+          if (clips.length >= n) break;
+        }
+      }
+      continue;
+    }
     let clip: string | null = await fetchBeatScriptImageForced(
       stubBeat,
       scene,
@@ -8193,6 +8246,107 @@ async function fetchPersonBeatClip(
   return null;
 }
 
+/** Archival real video for historical beats — Wiki → Archive → YouTube CC (no stills/stock). */
+async function fetchHistoricalBeatVideo(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  intent: ReturnType<typeof buildMediaSearchIntent>,
+  adoptOpts: VisualAdoptOptions,
+  tag: string
+): Promise<string | null> {
+  const beatKeywords = adoptOpts.keywords ?? beat.keywords;
+  const loose: VisualAdoptOptions = { ...adoptOpts, requireBeatMatch: false, scriptAnchored: false };
+  const queries = buildHistoricalArchivalQueries(intent, beat.text);
+  const entityYt = realEntityYoutubeQueriesForBeat(beat.text, scene.text, adoptOpts.videoTitle);
+
+  for (const q of [...entityYt, ...queries].slice(0, 6)) {
+    if (dedup.perf.enableArchival) {
+      const archiveHits = await fetchInternetArchiveClips(
+        q,
+        clipFetchDur,
+        workDir,
+        sceneIndex,
+        2,
+        `${tag}_hist`,
+        "",
+        beatKeywords
+      );
+      const clip = await adoptClip(
+        archiveHits.map((h) => h.path),
+        dedup,
+        sceneIndex,
+        beat.index,
+        beat.text,
+        workDir,
+        q,
+        loose
+      );
+      if (isRealVideoClip(clip)) {
+        console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: historical Archive "${q}"`);
+        return clip;
+      }
+    }
+
+    const wikiHits = await fetchWikimediaVideos(
+      q,
+      clipFetchDur,
+      workDir,
+      sceneIndex,
+      2,
+      `${tag}_hist`,
+      "",
+      beatKeywords
+    );
+    let clip = await adoptClip(
+      wikiHits.map((h) => h.path),
+      dedup,
+      sceneIndex,
+      beat.index,
+      beat.text,
+      workDir,
+      q,
+      loose
+    );
+    if (isRealVideoClip(clip)) {
+      console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: historical Wikimedia video "${q}"`);
+      return clip;
+    }
+
+    if (youtubeCcReady()) {
+      const ytPaths = await fetchYouTubeCCClips(
+        q,
+        clipFetchDur,
+        workDir,
+        sceneIndex,
+        1,
+        beatKeywords,
+        1,
+        ""
+      );
+      clip = await adoptClip(
+        ytPaths,
+        dedup,
+        sceneIndex,
+        beat.index,
+        beat.text,
+        workDir,
+        q,
+        loose
+      );
+      if (isRealVideoClip(clip)) {
+        console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: historical YouTube CC "${q}"`);
+        return clip;
+      }
+    }
+  }
+
+  return null;
+}
+
 /**
  * Universal media research (Laag 2+3): parallel multi-source fetch, rank, adopt best clip.
  * Falls through to the legacy waterfall when nothing passes adoption gates.
@@ -8239,12 +8393,35 @@ async function researchBeatClipUnified(
     muskTopic,
   });
 
-  const queries = intent.searchQueries.slice(0, perf.fastStockMode ? 2 : 4);
+  const archivalFirst = prefersArchivalVideo(intent);
+
+  if (archivalFirst) {
+    const histClip = await fetchHistoricalBeatVideo(
+      beat,
+      scene,
+      workDir,
+      sceneIndex,
+      clipFetchDur,
+      dedup,
+      intent,
+      adoptOpts,
+      tag
+    );
+    if (histClip) return histClip;
+  }
+
+  const queries = archivalFirst
+    ? buildHistoricalArchivalQueries(intent, beat.text).slice(0, perf.fastStockMode ? 4 : 6)
+    : intent.searchQueries.slice(0, perf.fastStockMode ? 2 : 4);
   const primaryQ = queries[0] || beat.searchQuery || beat.powerWord;
   const beatKeywords = adoptOpts.keywords ?? beat.keywords;
   const entityRules = extractBeatRealEntities(beat.text, scene.text, videoTitle ?? "");
-  const fetchMs = perf.fastStockMode ? 18_000 : 35_000;
-  const maxTasks = perf.fastStockMode ? 10 : 18;
+  const fetchMs = archivalFirst
+    ? (perf.fastStockMode ? 40_000 : 45_000)
+    : (perf.fastStockMode ? 18_000 : 35_000);
+  const maxTasks = archivalFirst
+    ? (perf.fastStockMode ? 14 : 18)
+    : (perf.fastStockMode ? 10 : 18);
 
   const toCandidates = (
     paths: string[],
@@ -8282,7 +8459,8 @@ async function researchBeatClipUnified(
     });
   }
 
-  for (const q of queries.slice(0, 2)) {
+  const querySlice = archivalFirst ? queries.slice(0, 4) : queries.slice(0, 2);
+  for (const q of querySlice) {
     tasks.push({
       run: async () => {
         const hits = await fetchWikimediaVideos(
@@ -8290,7 +8468,7 @@ async function researchBeatClipUnified(
           clipFetchDur,
           workDir,
           sceneIndex,
-          2,
+          archivalFirst ? 3 : 2,
           `${tag}_research`,
           primary ?? "",
           beatKeywords
@@ -8412,7 +8590,7 @@ async function researchBeatClipUnified(
     });
   }
 
-  if (!dedup.personTopicLock) {
+  if (!archivalFirst && !dedup.personTopicLock) {
     tasks.push({
       run: async () => {
         const imgs = await fetchWikimediaImages(
@@ -8461,11 +8639,12 @@ async function researchBeatClipUnified(
   }
 
   const allowStill =
-    dedup.stillPhotosMaxThisScene === 0
+    !archivalFirst &&
+    (dedup.stillPhotosMaxThisScene === 0
       ? canUseGlobalStillPhoto(dedup)
-      : dedup.stillPhotosThisScene < dedup.stillPhotosMaxThisScene;
+      : dedup.stillPhotosThisScene < dedup.stillPhotosMaxThisScene);
 
-  if (SERPAPI_KEY && allowStill && canUseGlobalStillPhoto(dedup)) {
+  if (!archivalFirst && SERPAPI_KEY && allowStill && canUseGlobalStillPhoto(dedup)) {
     const serpQ = primary?.trim()
       ? buildPersonSerpQuery(primary, sceneIndex, beat.index, beat.text)
       : (primaryQ || beat.powerWord);
@@ -8489,7 +8668,7 @@ async function researchBeatClipUnified(
     });
   }
 
-  if (process.env.YOUTUBE_API_KEY && allowStill && canUseGlobalStillPhoto(dedup)) {
+  if (!archivalFirst && process.env.YOUTUBE_API_KEY && allowStill && canUseGlobalStillPhoto(dedup)) {
     const thumbQ =
       buildTopicDocumentaryYoutubeQueries(beat, scene, videoTitle)[0] ||
       queries[0] ||
@@ -8514,7 +8693,7 @@ async function researchBeatClipUnified(
       ? true
       : !perf.minimizeStockFootage && canUseLicensedStockBeat(dedup);
 
-  if (allowStock) {
+  if (!archivalFirst && allowStock) {
     if (intent.personTopicLock && primary?.trim()) {
       tasks.push({
         run: async () => {
@@ -8587,7 +8766,9 @@ async function researchBeatClipUnified(
     }
   }
 
-  const researchMs = perf.fastStockMode ? 50_000 : 100_000;
+  const researchMs = archivalFirst
+    ? (perf.fastStockMode ? 95_000 : 110_000)
+    : (perf.fastStockMode ? 50_000 : 100_000);
   let allCandidates: MediaCandidate[] = [];
 
   try {
@@ -8625,28 +8806,33 @@ async function researchBeatClipUnified(
   });
   const adoptMs = perf.fastStockMode ? 12_000 : 45_000;
   const topN = perf.fastStockMode ? 12 : 20;
+  const { videoFirst, stillFallback } = partitionCandidatesForIntent(ranked, intent);
+  const adoptPools = archivalFirst ? [videoFirst, stillFallback] : [ranked];
 
-  for (const candidate of ranked.slice(0, topN)) {
-    let clip: string | null = null;
-    try {
-      clip = await withTimeout(
-        adoptClip(
-          [candidate.path],
-          dedup,
-          sceneIndex,
-          beat.index,
-          beat.text,
-          workDir,
-          candidate.query,
-          adoptOpts
-        ),
-        adoptMs,
-        `media research adopt s${sceneIndex} b${beat.index}`
-      );
-    } catch {
-      continue;
-    }
-    if (clip) {
+  for (const pool of adoptPools) {
+    if (!pool.length) continue;
+    for (const candidate of pool.slice(0, topN)) {
+      let clip: string | null = null;
+      try {
+        clip = await withTimeout(
+          adoptClip(
+            [candidate.path],
+            dedup,
+            sceneIndex,
+            beat.index,
+            beat.text,
+            workDir,
+            candidate.query,
+            adoptOpts
+          ),
+          adoptMs,
+          `media research adopt s${sceneIndex} b${beat.index}`
+        );
+      } catch {
+        continue;
+      }
+      if (!clip) continue;
+      if (archivalFirst && !isRealVideoClip(clip)) continue;
       if (candidate.source === "pexels" || candidate.source === "pixabay") {
         markLicensedStockBeatUsed(dedup);
       }
@@ -9428,8 +9614,36 @@ async function resolveBeatClipTurbo(
     pexFetch,
     candidateOffset
   );
+  const archivalBeat =
+    inferTopicKind(
+      beat.text,
+      person,
+      isSpaceRelatedTopic(scene.visualCue, scene.pexelsQuery, beat.text, scene.text, videoTitle ?? "", beat.powerWord),
+      dedup.personTopicLock
+    ) === "historical" ||
+    inferTopicKind(beat.text, person, false, dedup.personTopicLock) === "news";
+
   if (unified && !isPipelineFallbackClip(unified) && !(await isMostlyBlackClip(unified))) {
-    return unified;
+    if (!archivalBeat || isRealVideoClip(unified)) return unified;
+  }
+
+  if (archivalBeat) {
+    const histIntent = buildMediaSearchIntent({
+      beatText: beat.text,
+      searchQueries: beatQueries,
+      keywords: adoptOpts.keywords ?? beat.keywords,
+      primaryPerson: person,
+      persons: scenePersons,
+      videoTitle,
+      powerWord: beat.powerWord,
+      personTopicLock: dedup.personTopicLock,
+      spaceTopic: false,
+      muskTopic,
+    });
+    const hist = await fetchHistoricalBeatVideo(
+      beat, scene, workDir, sceneIndex, clipFetchDur, dedup, histIntent, turboAdopt, tag
+    );
+    if (hist) return hist;
   }
 
   let c: string | null = null;
@@ -9514,6 +9728,8 @@ async function resolveBeatClipTurbo(
   }
 
   if (isRealVideoClip(c)) return c;
+
+  if (archivalBeat) return null;
 
   const stock = await fetchBeatStockFallback(
     beat,
