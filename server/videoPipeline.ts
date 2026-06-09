@@ -619,6 +619,7 @@ function youtubeBeatFetchTimeoutMs(fastStockMode: boolean): number {
 const BEAT_VISUAL_SEARCH_MAX_MS = 60_000;
 
 function beatStockFallbackWallMs(perf: PipelinePerfProfile): number {
+  if (youtubeOnlySourcingEnabled()) return 45_000;
   return perf.fastStockMode ? 22_000 : 30_000;
 }
 
