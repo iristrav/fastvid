@@ -36,6 +36,7 @@ export function MediaArchiveAdmin() {
   const [search, setSearch] = useState("");
   const [uploadTags, setUploadTags] = useState("");
   const [uploadMixKind, setUploadMixKind] = useState<MixKind>("photo");
+  const [autoSplitScenes, setAutoSplitScenes] = useState(true);
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -75,12 +76,6 @@ export function MediaArchiveAdmin() {
   });
 
   const uploadAsset = trpc.mediaArchive.uploadAsset.useMutation({
-    onSuccess: () => {
-      utils.mediaArchive.listAssets.invalidate();
-      utils.mediaArchive.listArchives.invalidate();
-      setUploadTags("");
-      toast.success("Bestand geüpload!");
-    },
     onError: (e) => toast.error("Upload mislukt", { description: toastErrorMessage(e) }),
   });
 
@@ -118,15 +113,24 @@ export function MediaArchiveAdmin() {
         }
         const base64 = await readFileAsBase64(file);
         const mixKind = file.type.startsWith("video/") ? "real_video" : uploadMixKind;
-        await uploadAsset.mutateAsync({
+        const result = await uploadAsset.mutateAsync({
           archiveId: activeArchiveId,
           fileBase64: base64,
           mimeType: file.type,
           filename: file.name,
           tags: parseTagsInput(uploadTags),
           mixKind,
+          autoSplitScenes: file.type.startsWith("video/") ? autoSplitScenes : false,
         });
+        utils.mediaArchive.listAssets.invalidate();
+        utils.mediaArchive.listArchives.invalidate();
+        if (result.split && result.clipCount > 1) {
+          toast.success(`${file.name}: ${result.clipCount} clips aangemaakt (scènewisselingen)`);
+        } else {
+          toast.success(`${file.name} geüpload`);
+        }
       }
+      setUploadTags("");
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
@@ -141,7 +145,7 @@ export function MediaArchiveAdmin() {
             Media <span className="gradient-text">Archief</span>
           </h2>
           <p className="text-slate-400 text-sm mt-1">
-            Maak niche-archieven met video&apos;s en foto&apos;s. Voeg tags toe zodat de pipeline ze later kan vinden.
+            Maak niche-archieven met video&apos;s en foto&apos;s. Lange video&apos;s worden automatisch geknipt bij elke beeldwisseling.
           </p>
         </div>
         <button
@@ -271,6 +275,15 @@ export function MediaArchiveAdmin() {
                     </select>
                   </div>
                 </div>
+                <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={autoSplitScenes}
+                    onChange={(e) => setAutoSplitScenes(e.target.checked)}
+                    className="rounded border-white/20 bg-white/5 text-purple-600 focus:ring-purple-500"
+                  />
+                  Video automatisch knippen bij elke beeldwisseling (scènedetectie)
+                </label>
                 <label
                   className={`flex flex-col items-center justify-center gap-2 border-2 border-dashed rounded-xl p-8 cursor-pointer transition-colors ${
                     uploading ? "border-purple-500/30 bg-purple-500/5" : "border-white/15 hover:border-purple-500/40 hover:bg-white/3"

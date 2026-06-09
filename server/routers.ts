@@ -71,6 +71,7 @@ function isMuskTeslaPromptTopic(prompt: string, title: string): boolean {
 
 import { storagePut } from "./storage";
 import { FASTVID_PRO_PLAN } from "./products";
+import { formatTimecode, splitVideoBySceneChanges } from "./archiveVideoSplitter";
 import { updateVideoScenes, updateEditedVideoUrl, getVideoScenes, type EditorScene, type EditorClip } from "./db";
 import { runVideoPipeline } from "./videoPipeline";
 import { forgotPassword, validateResetToken as validateResetTokenProcedure, resetPassword } from "./authPasswordReset";
@@ -1206,6 +1207,8 @@ export const appRouter = router({
       fileBase64: z.string().min(1),
       mimeType: z.string().min(1),
       filename: z.string().max(256).optional(),
+      /** Video only: auto-detect scene changes and store multiple clips (default on). */
+      autoSplitScenes: z.boolean().default(true),
     })).mutation(async ({ input }) => {
       const archive = await getMediaArchiveById(input.archiveId);
       if (!archive) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Archive not found");
@@ -1222,34 +1225,72 @@ export const appRouter = router({
         throw appTrpcError("BAD_REQUEST", APP_ERROR.FILE_TOO_LARGE, "Only video and image files are supported");
       }
 
-      const mediaType = isVideo ? "video" as const : "image" as const;
+      const baseTitle = input.title?.trim()
+        || input.filename?.replace(/\.[^.]+$/, "").trim()
+        || `${isVideo ? "video" : "image"}-${Date.now()}`;
       const mixKind = input.mixKind ?? (isVideo ? "real_video" : "photo");
+      const tags = normalizeMediaTags(input.tags);
+      const parentSource = input.filename?.trim() || input.sourceNote?.trim() || null;
+
+      if (isVideo && input.autoSplitScenes) {
+        const segments = await splitVideoBySceneChanges(buffer, input.mimeType);
+        if (segments.length > 1) {
+          const createdAssets = [];
+          for (const seg of segments) {
+            const key = `media-archive/${input.archiveId}/${Date.now()}-clip${seg.index}-${Math.random().toString(36).slice(2, 6)}.mp4`;
+            const { url } = await storagePut(key, seg.buffer, "video/mp4");
+            const title = `${baseTitle} — clip ${seg.index + 1}`;
+            const sourceNote = parentSource
+              ? `Fragment uit ${parentSource} (${formatTimecode(seg.startSec)}–${formatTimecode(seg.endSec)})`
+              : `Fragment ${formatTimecode(seg.startSec)}–${formatTimecode(seg.endSec)}`;
+            const assetId = await createMediaArchiveAsset({
+              archiveId: input.archiveId,
+              title,
+              mediaType: "video",
+              mixKind,
+              mimeType: "video/mp4",
+              storageUrl: url,
+              storageKey: key,
+              tags,
+              sourceNote,
+              durationSec: Math.round(seg.durationSec),
+              isActive: 1,
+            });
+            if (assetId) {
+              const asset = await getMediaArchiveAssetById(assetId);
+              if (asset) createdAssets.push(asset);
+            }
+          }
+          if (createdAssets.length === 0) {
+            throw appTrpcError("INTERNAL_SERVER_ERROR", APP_ERROR.SERVICE_ERROR, "Scene split produced no clips");
+          }
+          return { assets: createdAssets, asset: createdAssets[0], clipCount: createdAssets.length, split: true };
+        }
+      }
+
+      const mediaType = isVideo ? "video" as const : "image" as const;
       const ext = isVideo
         ? (input.mimeType.includes("webm") ? "webm" : input.mimeType.includes("quicktime") || input.mimeType.includes("mov") ? "mov" : "mp4")
         : (input.mimeType.includes("png") ? "png" : input.mimeType.includes("gif") ? "gif" : input.mimeType.includes("webp") ? "webp" : "jpg");
       const key = `media-archive/${input.archiveId}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
       const { url } = await storagePut(key, buffer, input.mimeType);
 
-      const title = input.title?.trim()
-        || input.filename?.replace(/\.[^.]+$/, "").trim()
-        || `${mediaType}-${Date.now()}`;
-
       const assetId = await createMediaArchiveAsset({
         archiveId: input.archiveId,
-        title,
+        title: baseTitle,
         mediaType,
         mixKind,
         mimeType: input.mimeType,
         storageUrl: url,
         storageKey: key,
-        tags: normalizeMediaTags(input.tags),
+        tags,
         sourceNote: input.sourceNote?.trim() || null,
         isActive: 1,
       });
       if (!assetId) throw appTrpcError("INTERNAL_SERVER_ERROR", APP_ERROR.SERVICE_ERROR, "Failed to save asset");
 
       const asset = await getMediaArchiveAssetById(assetId);
-      return { asset };
+      return { asset, assets: asset ? [asset] : [], clipCount: 1, split: false };
     }),
 
     updateAsset: adminProcedure.input(z.object({
