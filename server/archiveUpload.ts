@@ -10,7 +10,7 @@ import {
   generateArchiveAssetAiMetadata,
   inferArchiveMediaMime,
 } from "./archiveAssetTagging";
-import { formatTimecode, splitVideoBySceneChanges } from "./archiveVideoSplitter";
+import { formatTimecode, mapPool, maxArchiveUploadBytes, splitVideoBySceneChanges } from "./archiveVideoSplitter";
 import { getUserFromRequest } from "./_core/context";
 import {
   createMediaArchiveAsset,
@@ -57,9 +57,12 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
     throw new ArchiveUploadError(404, appErrorMessage(APP_ERROR.NOT_FOUND, "Archive not found"));
   }
 
-  const maxBytes = 100 * 1024 * 1024;
+  const maxBytes = maxArchiveUploadBytes();
   if (input.buffer.length > maxBytes) {
-    throw new ArchiveUploadError(400, appErrorMessage(APP_ERROR.FILE_TOO_LARGE, "File too large (max 100MB)"));
+    throw new ArchiveUploadError(
+      400,
+      appErrorMessage(APP_ERROR.FILE_TOO_LARGE, `File too large (max ${Math.round(maxBytes / (1024 * 1024))}MB)`)
+    );
   }
   if (input.buffer.length === 0) {
     throw new ArchiveUploadError(400, appErrorMessage(APP_ERROR.SERVICE_ERROR, "Empty file"));
@@ -87,7 +90,19 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
   const autoGenerateTags = input.autoGenerateTags ?? true;
 
   if (isVideo && autoSplitScenes) {
-    const segments = await splitVideoBySceneChanges(input.buffer, mimeType);
+    let segments: Awaited<ReturnType<typeof splitVideoBySceneChanges>>;
+    try {
+      segments = await splitVideoBySceneChanges(input.buffer, mimeType);
+    } catch (err) {
+      const msg = (err as Error).message ?? "Scene split failed";
+      if (msg.includes("too long")) {
+        throw new ArchiveUploadError(
+          400,
+          appErrorMessage(APP_ERROR.FILE_TOO_LARGE, msg)
+        );
+      }
+      throw err;
+    }
     if (segments.length > 1) {
       const sharedAi = autoGenerateTags
         ? await generateArchiveAssetAiMetadata(segments[0].buffer, "video/mp4", {
@@ -98,53 +113,52 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
           })
         : null;
 
-      const createdAssets = [];
-      for (const seg of segments) {
-        const key = `media-archive/${input.archiveId}/${Date.now()}-clip${seg.index}-${Math.random().toString(36).slice(2, 6)}.mp4`;
-        const fragmentNote = parentSource
-          ? `Fragment uit ${parentSource} (${formatTimecode(seg.startSec)}–${formatTimecode(seg.endSec)})`
-          : `Fragment ${formatTimecode(seg.startSec)}–${formatTimecode(seg.endSec)}`;
-        const draftTitle = `${baseTitle} — clip ${seg.index + 1}`;
-        const enriched = sharedAi
-          ? applySharedAiToClipFields({
-              baseTitle: draftTitle,
-              userTags,
-              sourceNote: fragmentNote,
-              ai: sharedAi,
-              clipIndex: seg.index,
-              userProvidedTitle,
-            })
-          : await enrichArchiveAssetFields({
-              buffer: seg.buffer,
-              mimeType: "video/mp4",
-              autoGenerateTags: false,
-              baseTitle: draftTitle,
-              userTags,
-              sourceNote: fragmentNote,
-              archiveNicheTags,
-              parentFilename: input.filename,
-              clipIndex: seg.index,
-              userProvidedTitle,
-            });
-        const { url } = await storagePut(key, seg.buffer, "video/mp4");
-        const assetId = await createMediaArchiveAsset({
-          archiveId: input.archiveId,
-          title: enriched.title,
-          mediaType: "video",
-          mixKind,
-          mimeType: "video/mp4",
-          storageUrl: url,
-          storageKey: key,
-          tags: enriched.tags,
-          sourceNote: enriched.sourceNote,
-          durationSec: Math.round(seg.durationSec),
-          isActive: 1,
-        });
-        if (assetId) {
-          const asset = await getMediaArchiveAssetById(assetId);
-          if (asset) createdAssets.push(asset);
-        }
-      }
+      const createdAssets = (
+        await mapPool(segments, 4, async (seg) => {
+          const key = `media-archive/${input.archiveId}/${Date.now()}-clip${seg.index}-${Math.random().toString(36).slice(2, 6)}.mp4`;
+          const fragmentNote = parentSource
+            ? `Fragment uit ${parentSource} (${formatTimecode(seg.startSec)}–${formatTimecode(seg.endSec)})`
+            : `Fragment ${formatTimecode(seg.startSec)}–${formatTimecode(seg.endSec)}`;
+          const draftTitle = `${baseTitle} — clip ${seg.index + 1}`;
+          const enriched = sharedAi
+            ? applySharedAiToClipFields({
+                baseTitle: draftTitle,
+                userTags,
+                sourceNote: fragmentNote,
+                ai: sharedAi,
+                clipIndex: seg.index,
+                userProvidedTitle,
+              })
+            : await enrichArchiveAssetFields({
+                buffer: seg.buffer,
+                mimeType: "video/mp4",
+                autoGenerateTags: false,
+                baseTitle: draftTitle,
+                userTags,
+                sourceNote: fragmentNote,
+                archiveNicheTags,
+                parentFilename: input.filename,
+                clipIndex: seg.index,
+                userProvidedTitle,
+              });
+          const { url } = await storagePut(key, seg.buffer, "video/mp4");
+          const assetId = await createMediaArchiveAsset({
+            archiveId: input.archiveId,
+            title: enriched.title,
+            mediaType: "video",
+            mixKind,
+            mimeType: "video/mp4",
+            storageUrl: url,
+            storageKey: key,
+            tags: enriched.tags,
+            sourceNote: enriched.sourceNote,
+            durationSec: Math.round(seg.durationSec),
+            isActive: 1,
+          });
+          if (!assetId) return null;
+          return getMediaArchiveAssetById(assetId);
+        })
+      ).filter((a): a is NonNullable<typeof a> => a != null);
       if (createdAssets.length === 0) {
         throw new ArchiveUploadError(
           500,
@@ -268,7 +282,7 @@ async function handleArchiveBinaryUpload(req: Request, res: Response) {
 export function registerArchiveUploadRoute(app: Express) {
   app.post(
     "/api/admin/archive/upload",
-    express.raw({ type: () => true, limit: "110mb" }),
+    express.raw({ type: () => true, limit: "620mb" }),
     handleArchiveBinaryUpload
   );
 }

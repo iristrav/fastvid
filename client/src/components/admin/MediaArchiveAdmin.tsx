@@ -178,8 +178,8 @@ export function MediaArchiveAdmin() {
     setUploading(true);
     try {
       for (const file of Array.from(files)) {
-        if (file.size > 100 * 1024 * 1024) {
-          toast.error(`${file.name}: te groot (max 100MB)`);
+        if (file.size > 600 * 1024 * 1024) {
+          toast.error(`${file.name}: te groot (max 600MB / ~20 min video)`);
           continue;
         }
         const mimeType = guessFileMime(file);
@@ -222,7 +222,7 @@ export function MediaArchiveAdmin() {
             Media <span className="gradient-text">Archief</span>
           </h2>
           <p className="text-slate-400 text-sm mt-1">
-            Maak niche-archieven met video&apos;s en foto&apos;s. Lange video&apos;s worden automatisch geknipt bij elke beeldwisseling.
+            Maak niche-archieven met video&apos;s en foto&apos;s. Video&apos;s tot 20 min worden binnen ~10 min automatisch geknipt bij elke beeldwisseling.
           </p>
         </div>
         <button
@@ -383,7 +383,7 @@ export function MediaArchiveAdmin() {
                   <span className="text-sm text-slate-400">
                     Sleep bestanden hierheen of klik om te kiezen
                   </span>
-                  <span className="text-xs text-slate-600">MP4, WebM, JPG, PNG, GIF, WebP — max 100MB</span>
+                  <span className="text-xs text-slate-600">MP4, WebM, JPG, PNG — max 600MB (video tot ~20 min)</span>
                   <input
                     ref={fileInputRef}
                     type="file"

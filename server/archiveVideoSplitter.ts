@@ -1,5 +1,6 @@
 /**
  * Split long archive videos into clips at scene/cut boundaries (FFmpeg scene detection).
+ * Tuned for up to 20-minute sources within a ~9-minute processing budget.
  */
 import { exec as execCb } from "child_process";
 import { promisify } from "util";
@@ -18,8 +19,11 @@ export type VideoClipSegment = {
 };
 
 const MIN_CLIP_SEC = 1.2;
-const MAX_CLIPS = 50;
+const MAX_CLIPS = 60;
 const DEFAULT_SCENE_THRESHOLD = 0.32;
+const DEFAULT_SPLIT_BUDGET_MS = 540_000; // 9 min — fits in 10 min HTTP timeout
+const DEFAULT_MAX_SOURCE_SEC = 20 * 60;
+const DEFAULT_MAX_UPLOAD_MB = 600;
 
 function ffmpegBin(): string {
   return process.env.FFMPEG_BIN || process.env.FFMPEG_PATH || "ffmpeg";
@@ -29,7 +33,7 @@ function ffprobeBin(): string {
   return process.env.FFPROBE_BIN || process.env.FFPROBE_PATH || "ffprobe";
 }
 
-function sceneThreshold(): number {
+export function sceneThreshold(): number {
   const raw = process.env.ARCHIVE_SCENE_THRESHOLD?.trim();
   if (raw) {
     const n = parseFloat(raw);
@@ -38,10 +42,47 @@ function sceneThreshold(): number {
   return DEFAULT_SCENE_THRESHOLD;
 }
 
+export function splitBudgetMs(): number {
+  const raw = process.env.ARCHIVE_SPLIT_BUDGET_MS?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 120_000 && n <= 600_000) return n;
+  }
+  return DEFAULT_SPLIT_BUDGET_MS;
+}
+
+export function maxArchiveVideoDurationSec(): number {
+  const raw = process.env.ARCHIVE_MAX_VIDEO_DURATION_SEC?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 60 && n <= 3600) return n;
+  }
+  return DEFAULT_MAX_SOURCE_SEC;
+}
+
+export function maxArchiveUploadBytes(): number {
+  const raw = process.env.ARCHIVE_MAX_UPLOAD_MB?.trim();
+  if (raw) {
+    const mb = parseInt(raw, 10);
+    if (!isNaN(mb) && mb >= 50 && mb <= 2048) return mb * 1024 * 1024;
+  }
+  return DEFAULT_MAX_UPLOAD_MB * 1024 * 1024;
+}
+
+function extractConcurrency(): number {
+  const raw = process.env.ARCHIVE_SPLIT_CONCURRENCY?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 1 && n <= 8) return n;
+  }
+  return Math.min(4, os.cpus().length || 2);
+}
+
 export async function probeVideoDurationSec(filePath: string): Promise<number> {
   try {
     const { stdout } = await exec(
-      `${ffprobeBin()} -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${filePath}"`
+      `${ffprobeBin()} -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${filePath}"`,
+      { timeout: 30_000 }
     );
     const dur = parseFloat(String(stdout).trim());
     return !isNaN(dur) && dur > 0 ? dur : 0;
@@ -76,7 +117,6 @@ export function buildClipRanges(
     if (end - start >= 0.15) ranges.push({ start, end });
   }
 
-  // Merge short segments into the previous clip.
   let merged: Array<{ start: number; end: number }> = [];
   for (const r of ranges) {
     if (merged.length === 0) {
@@ -91,7 +131,6 @@ export function buildClipRanges(
     }
   }
 
-  // If still too many clips, merge the shortest neighbor pairs until under cap.
   while (merged.length > maxClips) {
     let shortestIdx = 0;
     let shortest = merged[0].end - merged[0].start;
@@ -114,13 +153,41 @@ export function buildClipRanges(
   return merged.filter((r) => r.end - r.start >= minClipSec * 0.85);
 }
 
-async function detectSceneCutTimes(inputPath: string, totalDur: number): Promise<number[]> {
+/** Run async tasks with bounded concurrency; preserves result order. */
+export async function mapPool<T, R>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T, index: number) => Promise<R | null>,
+  shouldContinue?: () => boolean
+): Promise<(R | null)[]> {
+  if (items.length === 0) return [];
+  const out: (R | null)[] = new Array(items.length).fill(null);
+  let nextIdx = 0;
+
+  async function worker() {
+    while (true) {
+      if (shouldContinue && !shouldContinue()) return;
+      const i = nextIdx;
+      nextIdx += 1;
+      if (i >= items.length) return;
+      out[i] = await fn(items[i], i);
+    }
+  }
+
+  const workers = Math.min(Math.max(1, concurrency), items.length);
+  await Promise.all(Array.from({ length: workers }, () => worker()));
+  return out;
+}
+
+async function detectSceneCutTimes(inputPath: string, totalDur: number, deadlineMs: number): Promise<number[]> {
   const threshold = sceneThreshold();
+  // Downscale + 3fps — fast enough for 20 min sources (~4 min detect budget)
   const cmd =
-    `${ffmpegBin()} -i "${inputPath}" -filter:v "select='gt(scene,${threshold})',showinfo" -f null -`;
+    `${ffmpegBin()} -i "${inputPath}" -an -vf "fps=3,scale=426:-1,select='gt(scene,${threshold})',showinfo" -f null -`;
   let stderr = "";
+  const detectTimeout = Math.min(240_000, Math.max(60_000, deadlineMs - Date.now()));
   try {
-    const result = await exec(cmd, { maxBuffer: 16 * 1024 * 1024 });
+    const result = await exec(cmd, { maxBuffer: 32 * 1024 * 1024, timeout: detectTimeout });
     stderr = String(result.stderr ?? "");
   } catch (err: unknown) {
     stderr = String((err as { stderr?: string }).stderr ?? "");
@@ -146,10 +213,11 @@ async function extractVideoSegment(
   startSec: number,
   durationSec: number
 ): Promise<void> {
+  const perClipTimeout = Math.max(30_000, Math.min(120_000, durationSec * 4000));
   await exec(
     `${ffmpegBin()} -y -ss ${startSec.toFixed(3)} -i "${inputPath}" -t ${durationSec.toFixed(3)} ` +
-      `-c:v libx264 -preset veryfast -crf 20 -an -pix_fmt yuv420p -movflags +faststart "${outputPath}"`,
-    { maxBuffer: 8 * 1024 * 1024 }
+      `-c:v libx264 -preset ultrafast -crf 23 -an -pix_fmt yuv420p -movflags +faststart -threads 2 "${outputPath}"`,
+    { maxBuffer: 8 * 1024 * 1024, timeout: perClipTimeout }
   );
 }
 
@@ -167,6 +235,10 @@ export async function splitVideoBySceneChanges(
   inputBuffer: Buffer,
   mimeType: string
 ): Promise<VideoClipSegment[]> {
+  const startedAt = Date.now();
+  const deadline = startedAt + splitBudgetMs();
+  const hasBudget = () => Date.now() < deadline;
+
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "fastvid-archive-split-"));
   try {
     const ext = mimeType.includes("webm") ? "webm" : mimeType.includes("quicktime") || mimeType.includes("mov") ? "mov" : "mp4";
@@ -174,6 +246,11 @@ export async function splitVideoBySceneChanges(
     fs.writeFileSync(inputPath, inputBuffer);
 
     const totalDur = await probeVideoDurationSec(inputPath);
+    const maxDur = maxArchiveVideoDurationSec();
+    if (totalDur > maxDur) {
+      throw new Error(`Video too long (${Math.ceil(totalDur / 60)} min, max ${Math.floor(maxDur / 60)} min)`);
+    }
+
     if (totalDur < MIN_CLIP_SEC * 2) {
       return [
         {
@@ -186,10 +263,11 @@ export async function splitVideoBySceneChanges(
       ];
     }
 
-    const cuts = await detectSceneCutTimes(inputPath, totalDur);
+    const cuts = await detectSceneCutTimes(inputPath, totalDur, deadline);
     const ranges = buildClipRanges(cuts, totalDur);
     console.log(
-      `[ArchiveSplit] ${cuts.length} scene cuts → ${ranges.length} clip(s) (${totalDur.toFixed(1)}s source, threshold ${sceneThreshold()})`
+      `[ArchiveSplit] ${cuts.length} scene cuts → ${ranges.length} clip(s) (${totalDur.toFixed(1)}s source, ` +
+        `threshold ${sceneThreshold()}, budget ${splitBudgetMs() / 1000}s, concurrency ${extractConcurrency()})`
     );
 
     if (ranges.length <= 1) {
@@ -204,26 +282,52 @@ export async function splitVideoBySceneChanges(
       ];
     }
 
-    const segments: VideoClipSegment[] = [];
-    for (let i = 0; i < ranges.length; i++) {
-      const { start, end } = ranges[i];
-      const dur = end - start;
-      const outPath = path.join(workDir, `clip_${String(i).padStart(3, "0")}.mp4`);
-      try {
-        await extractVideoSegment(inputPath, outPath, start, dur);
-        const buf = fs.readFileSync(outPath);
-        if (buf.length < 8000) continue;
-        segments.push({
-          buffer: buf,
-          startSec: start,
-          endSec: end,
-          durationSec: dur,
-          index: i,
-        });
-      } catch (err) {
-        console.warn(`[ArchiveSplit] clip ${i} (${formatTimecode(start)}–${formatTimecode(end)}) failed:`, (err as Error).message);
-      }
+    if (!hasBudget()) {
+      console.warn("[ArchiveSplit] budget exhausted after scene detect — storing whole video");
+      return [
+        {
+          buffer: inputBuffer,
+          startSec: 0,
+          endSec: totalDur,
+          durationSec: totalDur,
+          index: 0,
+        },
+      ];
     }
+
+    const concurrency = extractConcurrency();
+    const extractResults = await mapPool(
+      ranges,
+      concurrency,
+      async (range, i) => {
+        const { start, end } = range;
+        const dur = end - start;
+        const outPath = path.join(workDir, `clip_${String(i).padStart(3, "0")}.mp4`);
+        try {
+          await extractVideoSegment(inputPath, outPath, start, dur);
+          const buf = fs.readFileSync(outPath);
+          if (buf.length < 8000) return null;
+          return {
+            buffer: buf,
+            startSec: start,
+            endSec: end,
+            durationSec: dur,
+            index: i,
+          } satisfies VideoClipSegment;
+        } catch (err) {
+          console.warn(
+            `[ArchiveSplit] clip ${i} (${formatTimecode(start)}–${formatTimecode(end)}) failed:`,
+            (err as Error).message
+          );
+          return null;
+        }
+      },
+      hasBudget
+    );
+
+    const segments = extractResults.filter((s): s is VideoClipSegment => s != null);
+    const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
+    console.log(`[ArchiveSplit] extracted ${segments.length}/${ranges.length} clips in ${elapsed}s`);
 
     if (segments.length === 0) {
       return [
