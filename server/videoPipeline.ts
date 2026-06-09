@@ -413,6 +413,120 @@ function ffmpegSupportsDrawtext(): boolean {
   return !bin.includes("ffmpeg-static") && !bin.includes("node_modules");
 }
 
+/** YouTube first (≤1 min/beat), then Pexels only — skip archive/Wikimedia/SerpAPI in beat fetch. */
+function youtubeOnlySourcingEnabled(): boolean {
+  return process.env.YOUTUBE_ONLY_SOURCING !== "false";
+}
+
+/** Wall-clock budget per beat for YouTube search+download before Pexels fallback. */
+function youtubeBeatSearchBudgetMs(): number {
+  const raw = process.env.YOUTUBE_BEAT_BUDGET_MS?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 15_000 && n <= 120_000) return n;
+  }
+  return 60_000;
+}
+
+function buildBeatYoutubeQueries(
+  beat: SceneBeat,
+  scene: Scene,
+  videoTitle: string | undefined,
+  personName: string
+): string[] {
+  return [
+    ...new Set(
+      [
+        ...realEntityYoutubeQueriesForBeat(beat.text, scene.text, videoTitle),
+        ...(personName.trim()
+          ? buildPersonCelebrityVideoQueries(personName, beat.text, beat.index)
+          : []),
+        ...buildTopicDocumentaryYoutubeQueries(beat, scene, videoTitle),
+        beat.searchQuery,
+        scene.visualCue,
+        scene.pexelsQuery,
+        ...(videoTitle?.trim() ? [`${videoTitle} documentary footage`] : []),
+      ].filter((q): q is string => typeof q === "string" && q.trim().length > 3)
+    ),
+  ].slice(0, 6);
+}
+
+async function fetchBeatYoutubeOnly(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  adoptOpts: VisualAdoptOptions,
+  personName: string,
+  videoTitle: string | undefined,
+  label: string
+): Promise<string | null> {
+  if (!youtubeCcReady()) return null;
+  const queries = buildBeatYoutubeQueries(beat, scene, videoTitle, personName);
+  if (!queries.length) return null;
+  const clip = await tryBeatRealYouTubeFootage(
+    beat,
+    scene,
+    workDir,
+    sceneIndex,
+    clipFetchDur,
+    dedup,
+    adoptOpts,
+    queries,
+    label,
+    youtubeBeatSearchBudgetMs()
+  );
+  return isAuthenticVideoClip(clip ?? "") ? clip : null;
+}
+
+async function fetchBeatYoutubeThenPexels(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  personName: string,
+  videoTitle: string | undefined,
+  adoptOpts: VisualAdoptOptions,
+  ytLabel: string,
+  stockReason: string
+): Promise<string | null> {
+  const yt = await fetchBeatYoutubeOnly(
+    beat,
+    scene,
+    workDir,
+    sceneIndex,
+    clipFetchDur,
+    dedup,
+    adoptOpts,
+    personName,
+    videoTitle,
+    ytLabel
+  );
+  if (yt) return yt;
+  if (!canUseLicensedStockBeat(dedup)) return null;
+  const stock = await fetchBeatStockFallback(
+    beat,
+    scene,
+    workDir,
+    sceneIndex,
+    clipFetchDur,
+    dedup,
+    personName,
+    videoTitle,
+    adoptOpts,
+    stockReason
+  );
+  if (stock && isRealVideoClip(stock)) {
+    markLicensedStockBeatUsed(dedup);
+    return stock;
+  }
+  return null;
+}
+
 function minimizeStockFootageEnabled(): boolean {
   return process.env.MINIMIZE_STOCK_FOOTAGE !== "false";
 }
@@ -455,6 +569,7 @@ function applyMinimizeStockProfile(
 
 /** RapidAPI download + trim often exceeds 24s; outer beat timeout must allow that. */
 function youtubeBeatFetchTimeoutMs(fastStockMode: boolean): number {
+  if (youtubeOnlySourcingEnabled()) return youtubeBeatSearchBudgetMs();
   if (realFootageFirstEnabled()) return IS_RAILWAY ? 55_000 : 70_000;
   if (fastStockMode) return IS_RAILWAY ? 22_000 : 35_000;
   return 80_000;
@@ -1095,6 +1210,28 @@ async function resolveBeatClipFast(
         return clip;
       }
     }
+  }
+
+  if (youtubeOnlySourcingEnabled()) {
+    if (!canUseLicensedStockBeat(dedup)) return null;
+    const stock = await fetchBeatStockFallback(
+      beat,
+      scene,
+      workDir,
+      sceneIndex,
+      clipFetchDur,
+      dedup,
+      scenePersons[0] ?? dedup.primaryPerson ?? "",
+      videoTitle,
+      adoptOpts,
+      "YouTube 1min cap"
+    );
+    if (stock && isRealVideoClip(stock)) {
+      markLicensedStockBeatUsed(dedup);
+      dedup.lastMuskStockClip = stock;
+      return stock;
+    }
+    return null;
   }
 
   if (dedup.perf.minimizeStockFootage) {
@@ -8119,27 +8256,45 @@ async function recoverSceneClipsIfEmpty(
     );
     let clip: string | null = null;
     if (realOnly) {
-      clip = await fetchBeatAuthenticVideo(
-        stubBeat,
-        scene,
-        workDir,
-        scene.index,
-        clipFetchDur,
-        dedup,
-        topicContext,
-        recoverAdopt,
-        scenePersons,
-        personName,
-        `rcv${fi}`
-      );
+      clip = youtubeOnlySourcingEnabled()
+        ? await fetchBeatYoutubeThenPexels(
+            stubBeat,
+            scene,
+            workDir,
+            scene.index,
+            clipFetchDur,
+            dedup,
+            personName,
+            topicContext,
+            recoverAdopt,
+            "recover YouTube",
+            "recover"
+          )
+        : await fetchBeatAuthenticVideo(
+            stubBeat,
+            scene,
+            workDir,
+            scene.index,
+            clipFetchDur,
+            dedup,
+            topicContext,
+            recoverAdopt,
+            scenePersons,
+            personName,
+            `rcv${fi}`
+          );
     }
-    if ((!clip || isPipelineFallbackClip(clip)) && canUseLicensedStockBeat(dedup)) {
+    if (
+      !youtubeOnlySourcingEnabled() &&
+      (!clip || isPipelineFallbackClip(clip)) &&
+      canUseLicensedStockBeat(dedup)
+    ) {
       clip = await fetchUniqueStockForBeat(
         stubBeat, scene, workDir, scene.index, clipFetchDur, dedup, personName, topicContext, recoverAdopt
       );
       if (clip && !isPipelineFallbackClip(clip)) markLicensedStockBeatUsed(dedup);
     }
-    if (!clip && canUseGlobalStillPhoto(dedup)) {
+    if (!youtubeOnlySourcingEnabled() && !clip && canUseGlobalStillPhoto(dedup)) {
       clip = await fetchBeatScriptImageClip(
         stubBeat,
         scene,
@@ -8153,7 +8308,11 @@ async function recoverSceneClipsIfEmpty(
         `rcv${fi}`
       );
     }
-    if ((!clip || isPipelineFallbackClip(clip)) && canUseGlobalStillPhoto(dedup)) {
+    if (
+      !youtubeOnlySourcingEnabled() &&
+      (!clip || isPipelineFallbackClip(clip)) &&
+      canUseGlobalStillPhoto(dedup)
+    ) {
       clip = await fetchBeatScriptImageForced(
         stubBeat,
         scene,
@@ -9156,6 +9315,22 @@ async function fetchBeatClipFromScript(
 
   let clip: string | null = null;
 
+  if (youtubeOnlySourcingEnabled()) {
+    return fetchBeatYoutubeThenPexels(
+      beat,
+      scene,
+      workDir,
+      sceneIndex,
+      clipFetchDur,
+      dedup,
+      primary ?? personName,
+      videoTitle,
+      adoptOpts,
+      "script YouTube",
+      "YouTube 1min cap"
+    );
+  }
+
   if (realFootageFirstEnabled()) {
     clip = await fetchBeatAuthenticVideo(
       beat,
@@ -9991,6 +10166,7 @@ async function fetchBeatAuthenticVideo(
     youtubeBeatFetchTimeoutMs(dedup.perf.fastStockMode)
   );
   if (isAuthenticVideoClip(yt ?? "")) return yt;
+  if (youtubeOnlySourcingEnabled()) return null;
 
   const hist = await fetchHistoricalBeatVideo(
     beat, scene, workDir, sceneIndex, clipFetchDur, dedup, intent, loose, tag, { skipYoutube: true }
@@ -10075,6 +10251,22 @@ async function resolveBeatClipTurbo(
         off,
         dedup.perf.pexelsDownloadRetries
       );
+
+  if (youtubeOnlySourcingEnabled()) {
+    return fetchBeatYoutubeThenPexels(
+      beat,
+      scene,
+      workDir,
+      sceneIndex,
+      clipFetchDur,
+      dedup,
+      personName,
+      videoTitle,
+      beatAdoptOpts,
+      "turbo YouTube",
+      "YouTube 1min cap"
+    );
+  }
 
   if (realFootageFirstEnabled()) {
     const authFirst = await fetchBeatAuthenticVideo(
@@ -10498,26 +10690,48 @@ async function fetchSceneVisuals(
         realOnly &&
         (!clip || isPipelineFallbackClip(clip) || isStillPhotoClip(clip ?? "") || isLicensedStockClip(clip ?? ""))
       ) {
-        clip = await fetchBeatAuthenticVideo(
-          beat,
-          scene,
-          workDir,
-          scene.index,
-          clipFetchDur,
-          dedup,
-          videoTitle,
-          beatAdoptOpts,
-          scenePersons,
-          personName,
-          `b${beat.index}_auth`
-        );
+        clip = youtubeOnlySourcingEnabled()
+          ? await fetchBeatYoutubeThenPexels(
+              beat,
+              scene,
+              workDir,
+              scene.index,
+              clipFetchDur,
+              dedup,
+              personName,
+              videoTitle,
+              beatAdoptOpts,
+              "beat cap YouTube",
+              "beat cap"
+            )
+          : await fetchBeatAuthenticVideo(
+              beat,
+              scene,
+              workDir,
+              scene.index,
+              clipFetchDur,
+              dedup,
+              videoTitle,
+              beatAdoptOpts,
+              scenePersons,
+              personName,
+              `b${beat.index}_auth`
+            );
       }
-      if ((!clip || isPipelineFallbackClip(clip)) && canUseLicensedStockBeat(dedup)) {
+      if (
+        !youtubeOnlySourcingEnabled() &&
+        (!clip || isPipelineFallbackClip(clip)) &&
+        canUseLicensedStockBeat(dedup)
+      ) {
         clip = await fetchBeatStockFallback(
           beat, scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts, "beat cap"
         );
       }
-      if ((!clip || isPipelineFallbackClip(clip)) && canUseGlobalStillPhoto(dedup)) {
+      if (
+        !youtubeOnlySourcingEnabled() &&
+        (!clip || isPipelineFallbackClip(clip)) &&
+        canUseGlobalStillPhoto(dedup)
+      ) {
         clip = dedup.perf.fastStockMode
           ? await fetchBeatScriptImageForced(
               beat, scene, workDir, scene.index, clipFetchDur, dedup, scenePersons, videoTitle, `b${beat.index}_cap`
@@ -10571,21 +10785,39 @@ async function fetchSceneVisuals(
     } else if (!clip || isPipelineFallbackClip(clip) || (dedup.perf.fastStockMode && isStillPhotoClip(clip))) {
       let rescue: string | null = null;
       if (realOnly) {
-        rescue = await fetchBeatAuthenticVideo(
-          beat,
-          scene,
-          workDir,
-          scene.index,
-          clipFetchDur,
-          dedup,
-          videoTitle,
-          beatAdoptOpts,
-          scenePersons,
-          personName,
-          `b${beat.index}_miss`
-        );
+        rescue = youtubeOnlySourcingEnabled()
+          ? await fetchBeatYoutubeThenPexels(
+              beat,
+              scene,
+              workDir,
+              scene.index,
+              clipFetchDur,
+              dedup,
+              personName,
+              videoTitle,
+              beatAdoptOpts,
+              "miss YouTube",
+              "miss beat"
+            )
+          : await fetchBeatAuthenticVideo(
+              beat,
+              scene,
+              workDir,
+              scene.index,
+              clipFetchDur,
+              dedup,
+              videoTitle,
+              beatAdoptOpts,
+              scenePersons,
+              personName,
+              `b${beat.index}_miss`
+            );
       }
-      if ((!rescue || isPipelineFallbackClip(rescue)) && canUseLicensedStockBeat(dedup)) {
+      if (
+        !youtubeOnlySourcingEnabled() &&
+        (!rescue || isPipelineFallbackClip(rescue)) &&
+        canUseLicensedStockBeat(dedup)
+      ) {
         rescue = await fetchBeatStockFallback(
           beat, scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts, "miss"
         );
@@ -11961,6 +12193,7 @@ export async function runVideoPipeline(
     console.log(
       `[Pipeline] Perf budget: ≤${perf.targetWallClockMin}min wall-clock, ` +
       `≤${perf.maxBeatsPerScene} beats/scene, ${perf.sceneParallelism} parallel scenes, ` +
+      `sourcing=${youtubeOnlySourcingEnabled() ? `YouTube-only ≤${youtubeBeatSearchBudgetMs() / 1000}s → Pexels` : "multi-source"}, ` +
       `fair-use transform=${perf.skipFairUseTransform ? "skip" : "on"}, ` +
       `AI fallback=${perf.enableAiFallback ? `on (max ${perf.maxAiClipsPerVideo} clips)` : "off"}, ` +
       `minimize stock=${perf.minimizeStockFootage ? `yes (≤${perf.maxStockBeatsPerVideo} Pexels/Pixabay)` : "no"}`

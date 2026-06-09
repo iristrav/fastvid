@@ -255,7 +255,7 @@ const STILL_ONLY_SOURCES: MediaSourceKind[] = [
 ];
 
 /**
- * Canonical clip order: YouTube (CC + fair-use) → archief/Wikimedia → Pexels/Pixabay → still.
+ * Canonical clip order: YouTube (≤60s/beat) → Pexels/Pixabay → still (when YOUTUBE_ONLY_SOURCING).
  * Default on (REAL_FOOTAGE_FIRST=false disables for debugging only).
  */
 export function realFootageFirstEnabled(): boolean {
