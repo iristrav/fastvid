@@ -15,7 +15,9 @@ import {
   UserCheck, Crown, Eye, X, Copy, AlertTriangle,
   FileText, Hash, Sparkles, Search, Filter, Download,
   ChevronDown, Mic, Plus, Pencil, Trash2, Volume2, ToggleLeft, ToggleRight,
+  Archive,
 } from "lucide-react";
+import { MediaArchiveAdmin } from "@/components/admin/MediaArchiveAdmin";
 
 function formatVideoId(id: number) {
   return `#VID-${String(id).padStart(4, "0")}`;
@@ -697,7 +699,7 @@ export default function Admin() {
     loading: boolean; isAuthenticated: boolean; logout: () => void;
   };
   const [, navigate] = useLocation();
-  const [activeTab, setActiveTab] = useState<"overview" | "users" | "videos" | "generate" | "voices" | "invites">("overview");
+  const [activeTab, setActiveTab] = useState<"overview" | "users" | "videos" | "generate" | "voices" | "invites" | "archive">("overview");
   const { data: stats, isLoading: statsLoading } = trpc.admin.stats.useQuery(undefined, {
     enabled: isAuthenticated && user?.role === "admin",
   });
@@ -728,6 +730,7 @@ export default function Admin() {
     { id: "users" as const, label: "Users", icon: Users },
     { id: "videos" as const, label: "All Videos", icon: Video },
     { id: "voices" as const, label: "Voice Library", icon: Mic },
+    { id: "archive" as const, label: "Media Archief", icon: Archive },
     { id: "invites" as const, label: "Invite Codes", icon: Hash },
   ];
 
@@ -842,6 +845,7 @@ export default function Admin() {
           {activeTab === "users" && <UsersTable />}
           {activeTab === "videos" && <VideosTable />}
           {activeTab === "voices" && <VoiceLibraryAdmin />}
+          {activeTab === "archive" && <MediaArchiveAdmin />}
           {activeTab === "invites" && <InviteCodesAdmin />}
         </div>
       </div>

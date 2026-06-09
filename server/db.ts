@@ -682,3 +682,145 @@ export async function getVideoScenes(id: number): Promise<EditorScene[] | null> 
   if (!result.length || !result[0].videoScenes) return null;
   return result[0].videoScenes as EditorScene[];
 }
+
+// ─── Media Archives ───────────────────────────────────────────────────────────
+
+import {
+  InsertMediaArchive,
+  InsertMediaArchiveAsset,
+  mediaArchiveAssets,
+  mediaArchives,
+} from "../drizzle/schema";
+
+export function normalizeMediaTags(tags: string[]): string[] {
+  return Array.from(new Set(tags.map((t) => t.trim().toLowerCase()).filter(Boolean)));
+}
+
+export function slugifyArchiveName(name: string): string {
+  const base = name
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 100);
+  return base || "archive";
+}
+
+export async function getAllMediaArchives() {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(mediaArchives).orderBy(desc(mediaArchives.updatedAt), desc(mediaArchives.id));
+}
+
+export async function getMediaArchiveById(id: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db.select().from(mediaArchives).where(eq(mediaArchives.id, id)).limit(1);
+  return result.length > 0 ? result[0] : undefined;
+}
+
+export async function getMediaArchiveBySlug(slug: string) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db.select().from(mediaArchives).where(eq(mediaArchives.slug, slug)).limit(1);
+  return result.length > 0 ? result[0] : undefined;
+}
+
+export async function createMediaArchiveUnique(data: Omit<InsertMediaArchive, "slug"> & { slugBase: string }) {
+  const db = await getDb();
+  if (!db) return undefined;
+  let slug = slugifyArchiveName(data.slugBase);
+  let attempt = 0;
+  while (attempt < 20) {
+    const candidate = attempt === 0 ? slug : `${slug}-${attempt + 1}`;
+    const existing = await getMediaArchiveBySlug(candidate);
+    if (!existing) {
+      slug = candidate;
+      break;
+    }
+    attempt++;
+  }
+  const { slugBase: _ignored, ...rest } = data;
+  const result = await db.insert(mediaArchives).values({ ...rest, slug });
+  return (result as unknown as [{ insertId: number }])[0]?.insertId as number;
+}
+
+export async function updateMediaArchive(id: number, data: Partial<InsertMediaArchive>) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(mediaArchives).set(data).where(eq(mediaArchives.id, id));
+}
+
+export async function deleteMediaArchive(id: number) {
+  const db = await getDb();
+  if (!db) return;
+  await db.delete(mediaArchiveAssets).where(eq(mediaArchiveAssets.archiveId, id));
+  await db.delete(mediaArchives).where(eq(mediaArchives.id, id));
+}
+
+export async function getMediaArchiveAssets(archiveId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select()
+    .from(mediaArchiveAssets)
+    .where(and(eq(mediaArchiveAssets.archiveId, archiveId), eq(mediaArchiveAssets.isActive, 1)))
+    .orderBy(desc(mediaArchiveAssets.sortOrder), desc(mediaArchiveAssets.id));
+}
+
+export async function getMediaArchiveAssetById(id: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db.select().from(mediaArchiveAssets).where(eq(mediaArchiveAssets.id, id)).limit(1);
+  return result.length > 0 ? result[0] : undefined;
+}
+
+export async function createMediaArchiveAsset(data: InsertMediaArchiveAsset) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db.insert(mediaArchiveAssets).values(data);
+  return (result as unknown as [{ insertId: number }])[0]?.insertId as number;
+}
+
+export async function updateMediaArchiveAsset(id: number, data: Partial<InsertMediaArchiveAsset>) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(mediaArchiveAssets).set(data).where(eq(mediaArchiveAssets.id, id));
+}
+
+export async function deleteMediaArchiveAsset(id: number) {
+  const db = await getDb();
+  if (!db) return;
+  await db.delete(mediaArchiveAssets).where(eq(mediaArchiveAssets.id, id));
+}
+
+export async function countMediaArchiveAssets(archiveId: number) {
+  const db = await getDb();
+  if (!db) return 0;
+  const rows = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(mediaArchiveAssets)
+    .where(and(eq(mediaArchiveAssets.archiveId, archiveId), eq(mediaArchiveAssets.isActive, 1)));
+  return Number(rows[0]?.count ?? 0);
+}
+
+/** Filter assets by tag/title search (used by admin UI and future pipeline). */
+export function filterMediaArchiveAssets<
+  T extends { title?: string | null; tags?: string[] | null }
+>(assets: T[], opts: { search?: string; tag?: string }): T[] {
+  const q = opts.search?.trim().toLowerCase();
+  const tag = opts.tag?.trim().toLowerCase();
+  return assets.filter((asset) => {
+    if (tag) {
+      const tags = (asset.tags ?? []).map((t) => t.toLowerCase());
+      if (!tags.some((t) => t.includes(tag))) return false;
+    }
+    if (q) {
+      const title = (asset.title ?? "").toLowerCase();
+      const tags = (asset.tags ?? []).join(" ").toLowerCase();
+      if (!title.includes(q) && !tags.includes(q)) return false;
+    }
+    return true;
+  });
+}

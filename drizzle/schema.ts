@@ -116,3 +116,45 @@ export const passwordResetTokens = mysqlTable("password_reset_tokens", {
 
 export type PasswordResetToken = typeof passwordResetTokens.$inferSelect;
 export type InsertPasswordResetToken = typeof passwordResetTokens.$inferInsert;
+
+// ─── Media Archives (curated niche libraries) ────────────────────────────────
+export const mediaArchives = mysqlTable("media_archives", {
+  id: int("id").autoincrement().primaryKey(),
+  name: varchar("name", { length: 256 }).notNull(),
+  slug: varchar("slug", { length: 128 }).notNull().unique(),
+  description: text("description"),
+  /** Topic tags for matching videos to this archive, e.g. ["titanic", "maritime"] */
+  nicheTags: json("nicheTags").$type<string[]>(),
+  createdByUserId: int("createdByUserId").references(() => users.id),
+  isActive: int("isActive").default(1).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export type MediaArchive = typeof mediaArchives.$inferSelect;
+export type InsertMediaArchive = typeof mediaArchives.$inferInsert;
+
+export const mediaArchiveAssets = mysqlTable("media_archive_assets", {
+  id: int("id").autoincrement().primaryKey(),
+  archiveId: int("archiveId").notNull().references(() => mediaArchives.id),
+  title: varchar("title", { length: 512 }),
+  mediaType: mysqlEnum("mediaType", ["video", "image"]).notNull(),
+  mixKind: mysqlEnum("mixKind", ["real_video", "photo", "stock", "screenshot", "motion_graphics"]).default("photo").notNull(),
+  mimeType: varchar("mimeType", { length: 128 }).notNull(),
+  storageUrl: varchar("storageUrl", { length: 1024 }).notNull(),
+  storageKey: varchar("storageKey", { length: 512 }),
+  /** Searchable tags, e.g. ["titanic", "deck", "1912"] */
+  tags: json("tags").$type<string[]>(),
+  sourceNote: varchar("sourceNote", { length: 512 }),
+  licenseNote: varchar("licenseNote", { length: 256 }),
+  width: int("width"),
+  height: int("height"),
+  durationSec: int("durationSec"),
+  sortOrder: int("sortOrder").default(0).notNull(),
+  isActive: int("isActive").default(1).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export type MediaArchiveAsset = typeof mediaArchiveAssets.$inferSelect;
+export type InsertMediaArchiveAsset = typeof mediaArchiveAssets.$inferInsert;

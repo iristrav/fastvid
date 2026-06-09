@@ -33,6 +33,9 @@ import {
   deleteVideo, updateVideoTitle, deleteAllFailedVideosForUser, expireStuckVideos, recoverVideoCompletionState, recoverAllStuckVideos, failPipelineIfStalled, ORPHANED_PIPELINE_STATUSES,
   createUser, updateUserLastSignedIn,
   getInviteCodeByCode, createInviteCode, getAllInviteCodes, markInviteCodeUsed, deleteInviteCode, deactivateInviteCode,
+  getAllMediaArchives, getMediaArchiveById, createMediaArchiveUnique, updateMediaArchive, deleteMediaArchive,
+  getMediaArchiveAssets, getMediaArchiveAssetById, createMediaArchiveAsset, updateMediaArchiveAsset, deleteMediaArchiveAsset,
+  countMediaArchiveAssets, filterMediaArchiveAssets, normalizeMediaTags,
 } from "./db";
 import { storageGetSignedUrl } from "./storage";
 import type { ProgressLogEntry } from "./db";
@@ -1130,6 +1133,148 @@ export const appRouter = router({
       const key = `voice-previews/${voiceId}-${Date.now()}.mp3`;
       const { url } = await storagePut(key, audioBuffer, "audio/mpeg");
       return { url };
+    }),
+  }),
+
+  mediaArchive: router({
+    listArchives: adminProcedure.query(async () => {
+      const archives = await getAllMediaArchives();
+      const counts = await Promise.all(archives.map((a) => countMediaArchiveAssets(a.id)));
+      return archives.map((a, i) => ({ ...a, assetCount: counts[i] ?? 0 }));
+    }),
+
+    createArchive: adminProcedure.input(z.object({
+      name: z.string().min(1).max(256),
+      description: z.string().max(2000).optional(),
+      nicheTags: z.array(z.string().min(1).max(64)).max(32).default([]),
+    })).mutation(async ({ ctx, input }) => {
+      const id = await createMediaArchiveUnique({
+        name: input.name.trim(),
+        slugBase: input.name,
+        description: input.description?.trim() || null,
+        nicheTags: normalizeMediaTags(input.nicheTags),
+        createdByUserId: ctx.user.id,
+        isActive: 1,
+      });
+      if (!id) throw appTrpcError("INTERNAL_SERVER_ERROR", APP_ERROR.SERVICE_ERROR, "Failed to create archive");
+      const archive = await getMediaArchiveById(id);
+      return { archive };
+    }),
+
+    updateArchive: adminProcedure.input(z.object({
+      id: z.number().int(),
+      name: z.string().min(1).max(256).optional(),
+      description: z.string().max(2000).optional(),
+      nicheTags: z.array(z.string().min(1).max(64)).max(32).optional(),
+      isActive: z.number().int().min(0).max(1).optional(),
+    })).mutation(async ({ input }) => {
+      const archive = await getMediaArchiveById(input.id);
+      if (!archive) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Archive not found");
+      const patch: Parameters<typeof updateMediaArchive>[1] = {};
+      if (input.name !== undefined) patch.name = input.name.trim();
+      if (input.description !== undefined) patch.description = input.description.trim() || null;
+      if (input.nicheTags !== undefined) patch.nicheTags = normalizeMediaTags(input.nicheTags);
+      if (input.isActive !== undefined) patch.isActive = input.isActive;
+      await updateMediaArchive(input.id, patch);
+      return { success: true };
+    }),
+
+    deleteArchive: adminProcedure.input(z.object({ id: z.number().int() })).mutation(async ({ input }) => {
+      const archive = await getMediaArchiveById(input.id);
+      if (!archive) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Archive not found");
+      await deleteMediaArchive(input.id);
+      return { success: true };
+    }),
+
+    listAssets: adminProcedure.input(z.object({
+      archiveId: z.number().int(),
+      search: z.string().max(128).optional(),
+      tag: z.string().max(64).optional(),
+    })).query(async ({ input }) => {
+      const archive = await getMediaArchiveById(input.archiveId);
+      if (!archive) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Archive not found");
+      const assets = await getMediaArchiveAssets(input.archiveId);
+      return filterMediaArchiveAssets(assets, { search: input.search, tag: input.tag });
+    }),
+
+    uploadAsset: adminProcedure.input(z.object({
+      archiveId: z.number().int(),
+      title: z.string().max(512).optional(),
+      tags: z.array(z.string().min(1).max(64)).max(32).default([]),
+      mixKind: z.enum(["real_video", "photo", "stock", "screenshot", "motion_graphics"]).optional(),
+      sourceNote: z.string().max(512).optional(),
+      fileBase64: z.string().min(1),
+      mimeType: z.string().min(1),
+      filename: z.string().max(256).optional(),
+    })).mutation(async ({ input }) => {
+      const archive = await getMediaArchiveById(input.archiveId);
+      if (!archive) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Archive not found");
+
+      const buffer = Buffer.from(input.fileBase64, "base64");
+      const maxBytes = 100 * 1024 * 1024;
+      if (buffer.length > maxBytes) {
+        throw appTrpcError("BAD_REQUEST", APP_ERROR.FILE_TOO_LARGE, "File too large (max 100MB)");
+      }
+
+      const isVideo = input.mimeType.startsWith("video/");
+      const isImage = input.mimeType.startsWith("image/");
+      if (!isVideo && !isImage) {
+        throw appTrpcError("BAD_REQUEST", APP_ERROR.FILE_TOO_LARGE, "Only video and image files are supported");
+      }
+
+      const mediaType = isVideo ? "video" as const : "image" as const;
+      const mixKind = input.mixKind ?? (isVideo ? "real_video" : "photo");
+      const ext = isVideo
+        ? (input.mimeType.includes("webm") ? "webm" : input.mimeType.includes("quicktime") || input.mimeType.includes("mov") ? "mov" : "mp4")
+        : (input.mimeType.includes("png") ? "png" : input.mimeType.includes("gif") ? "gif" : input.mimeType.includes("webp") ? "webp" : "jpg");
+      const key = `media-archive/${input.archiveId}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+      const { url } = await storagePut(key, buffer, input.mimeType);
+
+      const title = input.title?.trim()
+        || input.filename?.replace(/\.[^.]+$/, "").trim()
+        || `${mediaType}-${Date.now()}`;
+
+      const assetId = await createMediaArchiveAsset({
+        archiveId: input.archiveId,
+        title,
+        mediaType,
+        mixKind,
+        mimeType: input.mimeType,
+        storageUrl: url,
+        storageKey: key,
+        tags: normalizeMediaTags(input.tags),
+        sourceNote: input.sourceNote?.trim() || null,
+        isActive: 1,
+      });
+      if (!assetId) throw appTrpcError("INTERNAL_SERVER_ERROR", APP_ERROR.SERVICE_ERROR, "Failed to save asset");
+
+      const asset = await getMediaArchiveAssetById(assetId);
+      return { asset };
+    }),
+
+    updateAsset: adminProcedure.input(z.object({
+      id: z.number().int(),
+      title: z.string().max(512).optional(),
+      tags: z.array(z.string().min(1).max(64)).max(32).optional(),
+      mixKind: z.enum(["real_video", "photo", "stock", "screenshot", "motion_graphics"]).optional(),
+      sourceNote: z.string().max(512).optional(),
+    })).mutation(async ({ input }) => {
+      const asset = await getMediaArchiveAssetById(input.id);
+      if (!asset) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Asset not found");
+      const patch: Parameters<typeof updateMediaArchiveAsset>[1] = {};
+      if (input.title !== undefined) patch.title = input.title.trim() || null;
+      if (input.tags !== undefined) patch.tags = normalizeMediaTags(input.tags);
+      if (input.mixKind !== undefined) patch.mixKind = input.mixKind;
+      if (input.sourceNote !== undefined) patch.sourceNote = input.sourceNote.trim() || null;
+      await updateMediaArchiveAsset(input.id, patch);
+      return { success: true };
+    }),
+
+    deleteAsset: adminProcedure.input(z.object({ id: z.number().int() })).mutation(async ({ input }) => {
+      const asset = await getMediaArchiveAssetById(input.id);
+      if (!asset) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Asset not found");
+      await deleteMediaArchiveAsset(input.id);
+      return { success: true };
     }),
   }),
 
