@@ -1422,7 +1422,7 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
       pexelsDownloadRetries: 1,
       maxStockQueriesPerBeat: 2,
       beatClipTimeoutMs: IS_RAILWAY ? 22_000 : 60_000,
-      sceneVisualTimeoutMs: IS_RAILWAY ? 3 * 60_000 : 4 * 60_000,
+      sceneVisualTimeoutMs: IS_RAILWAY ? 5 * 60_000 : 4 * 60_000,
       fastStockMode: IS_RAILWAY,
       scriptOnlyVisuals: false,
     }, videoLength);
@@ -1489,7 +1489,7 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
 
 function visualStageTimeoutMs(videoLength: string, perf: PipelinePerfProfile): number {
   if (videoLength === "1" || videoLength === "2") {
-    return perf.fastStockMode ? 12 * 60_000 : 20 * 60_000;
+    return perf.fastStockMode ? 20 * 60_000 : 20 * 60_000;
   }
   return Math.round(perf.targetWallClockMin * 60_000 * 1.15);
 }
