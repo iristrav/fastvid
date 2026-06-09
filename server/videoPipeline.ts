@@ -382,7 +382,7 @@ function resolveMaxStockBeatsPerVideo(videoLength: string): number {
     if (!isNaN(n) && n >= 0) return n;
   }
   const short = videoLength === "1" || videoLength === "2";
-  return short ? 1 : 2;
+  return short ? 3 : 2;
 }
 
 function maxEntityYoutubeFetchesPerVideo(minimizeStock = minimizeStockFootageEnabled()): number {
@@ -891,14 +891,14 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
       maxTopicQueries: IS_RAILWAY ? 1 : 3,
       skipFairUseTransform: true,
       transformTimeoutMs: 15_000,
-      enableArchival: false,
+      enableArchival: true,
       enableNasa: false,
       enableMuskHeroFetch: false,
       maxEntityYoutubePerVideo: maxEntityYoutube,
       sceneParallelism: railwayParallel,
       pexelsDownloadRetries: 1,
       maxStockQueriesPerBeat: 2,
-      beatClipTimeoutMs: IS_RAILWAY ? 30_000 : 60_000,
+      beatClipTimeoutMs: IS_RAILWAY ? 45_000 : 60_000,
       sceneVisualTimeoutMs: IS_RAILWAY ? 4 * 60_000 : 4 * 60_000,
       fastStockMode: IS_RAILWAY,
       scriptOnlyVisuals: false,
@@ -6273,7 +6273,7 @@ function isStockVideoClip(filePath: string): boolean {
 }
 
 function maxStillPhotosGlobal(dedup: VisualDedupState): number {
-  if (dedup.perf.fastStockMode) return 1;
+  if (dedup.perf.fastStockMode) return 3;
   if (dedup.personTopicLock) return Math.max(10, dedup.perf.maxBeatsPerScene * 3);
   if (minimizeStockFootageEnabled()) return 6;
   return 4;
@@ -9349,6 +9349,48 @@ async function resolveBeatClipTurbo(
   };
 
   const person = (scenePersons[0] ?? personName ?? dedup.primaryPerson ?? "").trim();
+  const muskTopic = isMuskTeslaTopic(videoTitle, scene.text);
+  const maxQ = Math.min(3, dedup.perf.maxStockQueriesPerBeat);
+  const beatQueries = buildBeatVisualQueryList(beat.text, scene, videoTitle, scenePersons, maxQ);
+  const tag = `b${beat.index}`;
+  const candidateOffset = beat.index * 3 + sceneIndex + dedup.globalBeatIndex;
+  const pexFetch = (query: string, t: string, off: number, count = 1) =>
+    () =>
+      fetchPexelsClips(
+        query,
+        clipFetchDur,
+        workDir,
+        sceneIndex,
+        count,
+        [query],
+        true,
+        t,
+        dedup.usedPexelsIds,
+        off,
+        dedup.perf.pexelsDownloadRetries
+      );
+
+  const unified = await researchBeatClipUnified(
+    beat,
+    scene,
+    workDir,
+    sceneIndex,
+    clipFetchDur,
+    dedup,
+    beatQueries,
+    scenePersons,
+    person,
+    videoTitle,
+    turboAdopt,
+    tag,
+    muskTopic,
+    pexFetch,
+    candidateOffset
+  );
+  if (unified && !isPipelineFallbackClip(unified) && !(await isMostlyBlackClip(unified))) {
+    return unified;
+  }
+
   let c: string | null = null;
   let searchTimedOut = false;
   try {
