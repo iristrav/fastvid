@@ -57,6 +57,11 @@ import {
   type MediaCandidate,
   type MediaSourceKind,
 } from "./mediaResearchEngine";
+import {
+  planScriptGuidedClip,
+  scriptGuidedBudgetMs,
+  scriptGuidedClipsEnabled,
+} from "./scriptGuidedClipFinder";
 
 // API Keys
 const FISH_AUDIO_API_KEY = process.env.FISH_AUDIO_API_KEY || "";
@@ -510,7 +515,12 @@ async function tryBeatRealYouTubeFootage(
               1,
               ytKeywords,
               1,
-              adoptOpts.personTopic ? adoptOpts.primaryPerson ?? "" : ""
+              adoptOpts.personTopic ? adoptOpts.primaryPerson ?? "" : "",
+              {
+                beatText: beat.text,
+                videoTitle: adoptOpts.videoTitle,
+                fastMode: dedup.perf.fastStockMode,
+              }
             ),
         }],
         dedup,
@@ -5439,6 +5449,12 @@ export async function probeStabilityAI(): Promise<{
 // Uses YouTube Data API v3 to search for Creative Commons videos, then downloads
 // via RapidAPI (RAPIDAPI_KEY) or the legacy cloud download service URL.
 // Accepts multiple query variants (specific→broad) and tries each until enough clips found.
+type ScriptGuidedBeatContext = {
+  beatText: string;
+  videoTitle?: string;
+  fastMode?: boolean;
+};
+
 async function fetchYouTubeCCClips(
   queries: string | string[],
   duration: number,
@@ -5447,7 +5463,8 @@ async function fetchYouTubeCCClips(
   count: number = 2,
   relevanceKeywords: string[] = [],
   minRelevanceScore = 1,
-  requiredPersonName = ""
+  requiredPersonName = "",
+  scriptGuided?: ScriptGuidedBeatContext
 ): Promise<string[]> {
   const results: string[] = [];
 
@@ -5475,6 +5492,10 @@ async function fetchYouTubeCCClips(
   let fetched = 0;
 
   const ytDeadline = Date.now() + (IS_RAILWAY ? 88_000 : 55_000);
+  const guidedDeadline =
+    scriptGuidedClipsEnabled() && scriptGuided?.beatText?.trim()
+      ? Date.now() + scriptGuidedBudgetMs(scriptGuided.fastMode ?? IS_RAILWAY)
+      : ytDeadline;
 
   for (const query of uniqueQueries.slice(0, 2)) {
     if (fetched >= count) break;
@@ -5505,19 +5526,25 @@ async function fetchYouTubeCCClips(
       const searchData = await searchResp.json() as {
         items?: Array<{
           id?: { videoId?: string };
-          snippet?: { title?: string; description?: string };
+          snippet?: {
+            title?: string;
+            description?: string;
+            thumbnails?: { high?: { url?: string }; medium?: { url?: string } };
+          };
         }>;
       };
       const items = (searchData.items || [])
         .map((item) => {
           const title = item.snippet?.title ?? "";
           const desc = item.snippet?.description ?? "";
+          const thumb =
+            item.snippet?.thumbnails?.high?.url ?? item.snippet?.thumbnails?.medium?.url;
           const hay = `${title} ${desc} ${query}`;
           if (requiredPersonName && !textMentionsPersonName(hay, requiredPersonName)) {
-            return { item, title, rel: -1, hay };
+            return { item, title, desc, thumb, rel: -1, hay };
           }
           const rel = relevanceKeywords.length > 0 ? scoreVisualRelevance(hay, relevanceKeywords) : 1;
-          return { item, title, rel, hay };
+          return { item, title, desc, thumb, rel, hay };
         })
         .filter((row) => row.rel >= minRelevanceScore)
         .sort((a, b) => b.rel - a.rel);
@@ -5526,6 +5553,9 @@ async function fetchYouTubeCCClips(
         continue;
       }
       console.log(`[Pipeline] Scene ${sceneIndex}: YouTube CC found ${items.length} relevant videos for "${query}"`);
+
+      let guidedAttempts = 0;
+      const maxGuidedAttempts = scriptGuided?.fastMode ? 2 : 3;
 
       for (const row of items.slice(0, 5)) {
         if (fetched >= count) break;
@@ -5543,7 +5573,41 @@ async function fetchYouTubeCCClips(
         }
 
         try {
-          const clipStart = 15; // Skip first 15s to avoid intros
+          let clipStart = 15;
+          if (
+            scriptGuidedClipsEnabled() &&
+            scriptGuided?.beatText?.trim() &&
+            guidedAttempts < maxGuidedAttempts
+          ) {
+            guidedAttempts++;
+            const plan = await planScriptGuidedClip(
+              {
+                videoId,
+                title,
+                description: row.desc,
+                thumbnailUrl: row.thumb,
+                metadataScore: row.rel,
+              },
+              {
+                beatText: scriptGuided.beatText,
+                keywords: relevanceKeywords,
+                videoTitle: scriptGuided.videoTitle,
+                deadlineMs: Math.min(ytDeadline, guidedDeadline),
+                fastMode: scriptGuided.fastMode,
+              }
+            );
+            if (plan.skip) {
+              console.log(
+                `[ScriptGuided] Scene ${sceneIndex}: skip YT "${title.slice(0, 55)}" (vision/metadata)`
+              );
+              continue;
+            }
+            clipStart = Math.max(0, Math.round(plan.startSec * 10) / 10);
+            console.log(
+              `[ScriptGuided] Scene ${sceneIndex}: ${plan.method} @${clipStart}s "${title.slice(0, 55)}"`
+            );
+          }
+
           const outPath = path.join(workDir, `scene_${sceneIndex}_ytcc_${fetched}.mp4`);
 
           const ok = await downloadYouTubeCCClip(
@@ -8329,7 +8393,12 @@ async function fetchHistoricalBeatVideo(
         1,
         beatKeywords,
         1,
-        ""
+        "",
+        {
+          beatText: beat.text,
+          videoTitle: adoptOpts.videoTitle,
+          fastMode: dedup.perf.fastStockMode,
+        }
       );
       clip = await adoptClip(
         ytPaths,
@@ -8572,7 +8641,12 @@ async function researchBeatClipUnified(
             1,
             beatKeywords,
             1,
-            primary ?? ""
+            primary ?? "",
+            {
+              beatText: beat.text,
+              videoTitle,
+              fastMode: perf.fastStockMode,
+            }
           );
           return toCandidates(paths, eq, "youtube_cc", true);
         },
@@ -8593,7 +8667,12 @@ async function researchBeatClipUnified(
             1,
             beatKeywords,
             1,
-            primary ?? ""
+            primary ?? "",
+            {
+              beatText: beat.text,
+              videoTitle,
+              fastMode: perf.fastStockMode,
+            }
           );
           return toCandidates(paths, q, "youtube_cc", true);
         },
@@ -9292,7 +9371,11 @@ async function fetchBeatClip(
       [{
         query: entityYt[0],
         fetch: () =>
-          fetchYouTubeCCClips(entityYt.slice(0, 2), clipFetchDur, workDir, sceneIndex, 1, beat.keywords, 1),
+          fetchYouTubeCCClips(entityYt.slice(0, 2), clipFetchDur, workDir, sceneIndex, 1, beat.keywords, 1, "", {
+            beatText: beat.text,
+            videoTitle,
+            fastMode: perf.fastStockMode,
+          }),
       }],
       dedup, sceneIndex, beat.index, beat.text, workDir, "real-event YouTube", adoptOpts
     );
@@ -9363,7 +9446,15 @@ async function fetchBeatClip(
           fetch: async () =>
             (await fetchInternetArchiveClips(q, clipFetchDur, workDir, sceneIndex, 1, tag)).map((c) => c.path),
         },
-        { query: q, fetch: () => fetchYouTubeCCClips(q, clipFetchDur, workDir, sceneIndex, 1, beat.keywords, 2) },
+        {
+          query: q,
+          fetch: () =>
+            fetchYouTubeCCClips(q, clipFetchDur, workDir, sceneIndex, 1, beat.keywords, 2, "", {
+              beatText: beat.text,
+              videoTitle,
+              fastMode: perf.fastStockMode,
+            }),
+        },
       ],
       dedup, sceneIndex, beat.index, beat.text, workDir, "archival", adoptOpts
     );
