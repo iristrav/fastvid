@@ -614,6 +614,25 @@ async function fetchBeatArchivalThenPexels(
   });
   const loose: VisualAdoptOptions = { ...adoptOpts, requireBeatMatch: false, scriptAnchored: false };
 
+  if (historicalDoc) {
+    const internet = await fetchBeatInternetStillsFirst(
+      beat,
+      scene,
+      workDir,
+      sceneIndex,
+      clipFetchDur,
+      dedup,
+      scenePersons,
+      videoTitle,
+      adoptOpts,
+      `${tag}_inet`
+    );
+    if (internet && isRealVideoClip(internet)) {
+      console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: internet still (historical)`);
+      return internet;
+    }
+  }
+
   const hist = await fetchHistoricalBeatVideo(
     beat, scene, workDir, sceneIndex, clipFetchDur, dedup, intent, loose, tag, { skipYoutube: true }
   );
@@ -734,6 +753,38 @@ async function beatPrimaryFetch(
   );
 }
 
+/** Serp → Openverse → Wikimedia with relaxed adopt (bypasses still caps). */
+async function fetchBeatInternetStillsFirst(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  scenePersons: string[],
+  videoTitle: string | undefined,
+  adoptOpts: VisualAdoptOptions,
+  tag: string
+): Promise<string | null> {
+  return fetchBeatScriptImageClip(
+    beat,
+    scene,
+    workDir,
+    sceneIndex,
+    clipFetchDur,
+    dedup,
+    scenePersons,
+    videoTitle,
+    {
+      ...adoptOpts,
+      requireBeatMatch: false,
+      scriptAnchored: false,
+      scriptImageFallback: true,
+    },
+    tag
+  );
+}
+
 /** Real still photos (Wiki/SerpAPI/Openverse) before licensed stock. */
 async function fetchBeatAuthenticStills(
   beat: SceneBeat,
@@ -749,7 +800,7 @@ async function fetchBeatAuthenticStills(
   tag: string,
   historicalDoc: boolean
 ): Promise<string | null> {
-  if (!canUseGlobalStillPhoto(dedup) && dedup.stillPhotosMaxThisScene === 0) return null;
+  if (!historicalDoc && !canUseGlobalStillPhoto(dedup) && dedup.stillPhotosMaxThisScene === 0) return null;
 
   const loose: VisualAdoptOptions = {
     ...adoptOpts,
@@ -777,8 +828,43 @@ async function fetchBeatAuthenticStills(
     scene.pexelsQuery,
     ...(videoTitle?.trim() ? [videoTitle.split(/\s+/).slice(0, 4).join(" ")] : []),
   ].filter((q): q is string => typeof q === "string" && q.trim().length > 3);
-  const unique = [...new Set(queries)].slice(0, dedup.perf.fastStockMode ? 1 : 4);
+  const queryCap = historicalDoc ? 3 : dedup.perf.fastStockMode ? 2 : 4;
+  const unique = [...new Set(queries)].slice(0, queryCap);
   const personPortrait = Boolean(personName.trim()) && !historicalDoc;
+  const trySerp = SERPAPI_KEY && (historicalDoc || !dedup.perf.fastStockMode);
+
+  if (trySerp) {
+    for (let qi = 0; qi < Math.min(unique.length, historicalDoc ? 3 : 1); qi++) {
+      const serpQ = personPortrait && personName.trim()
+        ? buildPersonSerpQuery(personName, sceneIndex, beat.index, beat.text)
+        : (unique[qi] ?? beat.searchQuery);
+      const serpPaths = await fetchSerpAPIImages(
+        serpQ,
+        clipFetchDur,
+        workDir,
+        sceneIndex,
+        1,
+        `${tag}_still`,
+        { dedup, personPortrait, resultOffset: sceneIndex + beat.index + qi }
+      );
+      const serpClip = await adoptClip(
+        serpPaths,
+        dedup,
+        sceneIndex,
+        beat.index,
+        beat.text,
+        workDir,
+        serpQ,
+        loose
+      );
+      if (serpClip && !isPipelineFallbackClip(serpClip)) {
+        if (canUseGlobalStillPhoto(dedup)) markGlobalStillPhotoUsed(dedup);
+        dedup.stillPhotosThisScene++;
+        console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: SerpAPI still "${serpQ}"`);
+        return serpClip;
+      }
+    }
+  }
 
   for (const q of unique) {
     const wikiPaths = await fetchWikimediaImages(
@@ -807,39 +893,10 @@ async function fetchBeatAuthenticStills(
     }
   }
 
-  if (!dedup.perf.fastStockMode && SERPAPI_KEY && canUseGlobalStillPhoto(dedup)) {
-    const serpQ = personPortrait && personName.trim()
-      ? buildPersonSerpQuery(personName, sceneIndex, beat.index, beat.text)
-      : (unique[0] ?? beat.searchQuery);
-    const serpPaths = await fetchSerpAPIImages(
-      serpQ,
-      clipFetchDur,
-      workDir,
-      sceneIndex,
-      1,
-      `${tag}_still`,
-      { dedup, personPortrait, resultOffset: sceneIndex + beat.index }
-    );
-    const serpClip = await adoptClip(
-      serpPaths,
-      dedup,
-      sceneIndex,
-      beat.index,
-      beat.text,
-      workDir,
-      serpQ,
-      loose
-    );
-    if (serpClip && !isPipelineFallbackClip(serpClip)) {
-      markGlobalStillPhotoUsed(dedup);
-      dedup.stillPhotosThisScene++;
-      console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: SerpAPI still`);
-      return serpClip;
-    }
-  }
-
-  const ovQ = personPortrait && personName.trim() ? `${personName} ${unique[0] ?? ""}`.trim() : (unique[0] ?? beat.searchQuery);
-  if (!dedup.perf.fastStockMode && ovQ.length > 3) {
+  const ovQ = personPortrait && personName.trim()
+    ? `${personName} ${unique[0] ?? ""}`.trim()
+    : (unique[0] ?? beat.searchQuery);
+  if ((historicalDoc || !dedup.perf.fastStockMode) && ovQ.length > 3) {
     const ovPaths = await fetchOpenverseImages(
       ovQ,
       clipFetchDur,
@@ -7003,7 +7060,7 @@ function isAuthenticVideoClip(filePath: string): boolean {
 }
 
 function maxStillPhotosGlobal(dedup: VisualDedupState): number {
-  if (dedup.perf.fastStockMode) return 3;
+  if (dedup.perf.fastStockMode) return 16;
   if (dedup.personTopicLock) return Math.max(10, dedup.perf.maxBeatsPerScene * 3);
   if (minimizeStockFootageEnabled()) return 6;
   return 4;
@@ -10619,9 +10676,25 @@ async function resolveBeatClipFastTurbo(
   beatAdoptOpts: VisualAdoptOptions
 ): Promise<string | null> {
   const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
+  const historicalDoc =
+    isHistoricalDocumentary(videoTitle, scene.text, beat.text) && !dedup.personTopicLock;
   const tag = `b${beat.index}`;
-  const primaryMs = 20_000;
-  let clip: string | null = null;
+
+  let clip = await fetchBeatInternetStillsFirst(
+    beat,
+    scene,
+    workDir,
+    sceneIndex,
+    clipFetchDur,
+    dedup,
+    scenePersons,
+    videoTitle,
+    beatAdoptOpts,
+    `${tag}_inet`
+  );
+  if (clip && isRealVideoClip(clip) && !isPipelineFallbackClip(clip)) return clip;
+
+  const primaryMs = historicalDoc ? 15_000 : 20_000;
   try {
     clip = await withTimeout(
       beatPrimaryFetch(
@@ -10683,7 +10756,19 @@ async function resolveBeatClipFastTurbo(
       return clip;
     }
   }
-  return null;
+
+  clip = await fetchBeatScriptImageForced(
+    beat,
+    scene,
+    workDir,
+    sceneIndex,
+    clipFetchDur,
+    dedup,
+    scenePersons,
+    videoTitle,
+    `${tag}_must`
+  );
+  return clip && !isPipelineFallbackClip(clip) ? clip : null;
 }
 
 /**
@@ -11107,13 +11192,15 @@ async function fetchSceneVisuals(
       );
   dedup.stillPhotosThisScene = 0;
   const realOnly = realFootageFirstEnabled();
-  dedup.stillPhotosMaxThisScene = realOnly
-    ? (historicalDoc ? 2 : 1)
-    : historicalDoc
-      ? 1
-      : dedup.perf.fastStockMode
-        ? 1
-        : maxStillPhotosForScene(scene.index, scenePersons.length > 0, dedup.personTopicLock);
+  dedup.stillPhotosMaxThisScene = historicalDoc && dedup.perf.fastStockMode
+    ? beatCap
+    : realOnly
+      ? (historicalDoc ? beatCap : 1)
+      : historicalDoc
+        ? beatCap
+        : dedup.perf.fastStockMode
+          ? 2
+          : maxStillPhotosForScene(scene.index, scenePersons.length > 0, dedup.personTopicLock);
   const beats = buildSceneBeats(scene, scene.duration, beatCap, videoTitle, scenePersons);
   const clips: string[] = [];
   const beatDurations: number[] = [];
@@ -11281,7 +11368,7 @@ async function fetchSceneVisuals(
           `[Pipeline] Scene ${scene.index} beat ${beat.index}: no stock or AI clip (beat skipped, no grey)`
         );
       }
-    } else if (!clip || isPipelineFallbackClip(clip) || (dedup.perf.fastStockMode && isStillPhotoClip(clip))) {
+    } else if (!clip || isPipelineFallbackClip(clip)) {
       let rescue: string | null = null;
       if (realOnly) {
         rescue = await beatPrimaryFetch(
