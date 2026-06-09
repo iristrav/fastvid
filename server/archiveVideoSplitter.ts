@@ -20,10 +20,13 @@ export type VideoClipSegment = {
 
 /** Drop only sub-frame detection noise — never merge real shots for being "too short". */
 const MIN_SCENE_SEC = 0.12;
-const MAX_CLIPS = 120;
-const DEFAULT_SCENE_THRESHOLD = 0.28;
-const DEFAULT_SCDET_THRESHOLD = 8;
-const DEFAULT_CUT_MERGE_GAP_SEC = 0.22;
+const DEFAULT_MAX_CLIPS = 300;
+/** Only merge adjacent clips when capping count if one side is a sub-second flash/glitch. */
+const DEFAULT_FLASH_MERGE_MAX_SEC = 0.45;
+const INTERNAL_RESCAN_MIN_SEC = 1.4;
+const DEFAULT_SCENE_THRESHOLD = 0.22;
+const DEFAULT_SCDET_THRESHOLD = 6;
+const DEFAULT_CUT_MERGE_GAP_SEC = 0.18;
 const DEFAULT_SPLIT_BUDGET_MS = 540_000;
 const DEFAULT_MAX_SOURCE_SEC = 20 * 60;
 const DEFAULT_MAX_UPLOAD_MB = 600;
@@ -68,9 +71,27 @@ export function cutMergeGapSec(): number {
   const raw = process.env.ARCHIVE_CUT_MERGE_GAP?.trim();
   if (raw) {
     const n = parseFloat(raw);
-    if (!isNaN(n) && n >= 0.1 && n <= 1) return n;
+    if (!isNaN(n) && n >= 0.05 && n <= 1) return n;
   }
   return DEFAULT_CUT_MERGE_GAP_SEC;
+}
+
+export function maxArchiveClips(): number {
+  const raw = process.env.ARCHIVE_MAX_CLIPS?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 40 && n <= 600) return n;
+  }
+  return DEFAULT_MAX_CLIPS;
+}
+
+export function flashMergeMaxSec(): number {
+  const raw = process.env.ARCHIVE_FLASH_MERGE_MAX_SEC?.trim();
+  if (raw) {
+    const n = parseFloat(raw);
+    if (!isNaN(n) && n >= 0.1 && n <= 1.5) return n;
+  }
+  return DEFAULT_FLASH_MERGE_MAX_SEC;
 }
 
 export function splitBudgetMs(): number {
@@ -167,7 +188,7 @@ export function parseScdetTimesFromFfmpeg(stderr: string, totalDur: number): num
 export function buildClipRanges(
   cuts: number[],
   totalDuration: number,
-  maxClips = MAX_CLIPS,
+  maxClips = maxArchiveClips(),
   mergeGap = cutMergeGapSec()
 ): Array<{ start: number; end: number }> {
   if (totalDuration <= 0) return [];
@@ -181,27 +202,82 @@ export function buildClipRanges(
     if (end - start >= MIN_SCENE_SEC) ranges.push({ start, end });
   }
 
-  // Cap clip count by merging the shortest adjacent pair (least content lost).
-  while (ranges.length > maxClips) {
-    let mergeIdx = 0;
-    let shortest = ranges[0].end - ranges[0].start;
-    for (let i = 1; i < ranges.length; i++) {
-      const d = ranges[i].end - ranges[i].start;
-      if (d < shortest) {
-        shortest = d;
-        mergeIdx = i;
+  return capClipRanges(ranges, maxClips);
+}
+
+/** Cap clip count without merging two full shots into one clip. */
+export function capClipRanges(
+  ranges: Array<{ start: number; end: number }>,
+  maxClips: number,
+  flashMaxSec = flashMergeMaxSec()
+): Array<{ start: number; end: number }> {
+  let result = ranges.map((r) => ({ ...r }));
+  const flashOnly = () => {
+    let bestIdx = -1;
+    let bestScore = Infinity;
+    for (let i = 0; i < result.length - 1; i++) {
+      const d0 = result[i].end - result[i].start;
+      const d1 = result[i + 1].end - result[i + 1].start;
+      if (Math.min(d0, d1) > flashMaxSec) continue;
+      const score = d0 + d1;
+      if (score < bestScore) {
+        bestScore = score;
+        bestIdx = i;
       }
     }
-    if (mergeIdx === 0) {
-      ranges[0].end = ranges[1].end;
-      ranges.splice(1, 1);
-    } else {
-      ranges[mergeIdx - 1].end = ranges[mergeIdx].end;
-      ranges.splice(mergeIdx, 1);
+    return bestIdx;
+  };
+
+  while (result.length > maxClips) {
+    const mergeIdx = flashOnly();
+    if (mergeIdx === -1) {
+      console.warn(
+        `[ArchiveSplit] ${result.length} shots exceeds max ${maxClips} — keeping separate clips (no multi-shot merge)`
+      );
+      break;
     }
+    result[mergeIdx].end = result[mergeIdx + 1].end;
+    result.splice(mergeIdx + 1, 1);
   }
 
-  return ranges;
+  return result;
+}
+
+/** Split any range that still contains an undetected interior cut. */
+export function splitRangeAtInteriorCuts(
+  range: { start: number; end: number },
+  interiorCuts: number[]
+): Array<{ start: number; end: number }> {
+  const dur = range.end - range.start;
+  if (interiorCuts.length === 0 || dur < MIN_SCENE_SEC * 2) return [range];
+
+  const points = [
+    range.start,
+    ...mergeNearbyCuts(
+      interiorCuts.filter((t) => t > range.start + MIN_SCENE_SEC && t < range.end - MIN_SCENE_SEC),
+      cutMergeGapSec()
+    ),
+    range.end,
+  ];
+
+  const out: Array<{ start: number; end: number }> = [];
+  for (let i = 0; i < points.length - 1; i++) {
+    const start = points[i];
+    const end = points[i + 1];
+    if (end - start >= MIN_SCENE_SEC) out.push({ start, end });
+  }
+  return out.length > 0 ? out : [range];
+}
+
+export function refineClipRangesWithInteriorCuts(
+  ranges: Array<{ start: number; end: number }>,
+  interiorCutsByRange: number[][]
+): Array<{ start: number; end: number }> {
+  const refined: Array<{ start: number; end: number }> = [];
+  for (let i = 0; i < ranges.length; i++) {
+    refined.push(...splitRangeAtInteriorCuts(ranges[i], interiorCutsByRange[i] ?? []));
+  }
+  return capClipRanges(refined, maxArchiveClips());
 }
 
 export async function mapPool<T, R>(
@@ -236,6 +312,102 @@ async function runFfmpegDetect(cmd: string, timeoutMs: number): Promise<string> 
   } catch (err: unknown) {
     return String((err as { stderr?: string }).stderr ?? "");
   }
+}
+
+async function detectScdetCutTimesInWindow(
+  inputPath: string,
+  windowStart: number,
+  windowEnd: number,
+  threshold: number,
+  timeoutMs: number
+): Promise<number[]> {
+  const windowDur = windowEnd - windowStart;
+  if (windowDur < MIN_SCENE_SEC * 2) return [];
+
+  const cmd =
+    `${ffmpegBin()} -i "${inputPath}" -ss ${windowStart.toFixed(3)} -to ${windowEnd.toFixed(3)} -an ` +
+    `-vf "scale=480:-1,scdet=threshold=${threshold}:sc_pass=1,showinfo" -f null -`;
+  const stderr = await runFfmpegDetect(cmd, timeoutMs);
+  const fromMeta = parseScdetTimesFromFfmpeg(stderr, windowEnd);
+  const pts = fromMeta.length > 0 ? fromMeta : parsePtsTimesFromFfmpeg(stderr, windowEnd);
+  return mergeNearbyCuts(
+    pts.filter((t) => t > windowStart + MIN_SCENE_SEC && t < windowEnd - MIN_SCENE_SEC),
+    cutMergeGapSec()
+  );
+}
+
+async function detectSceneFilterCutTimesInWindow(
+  inputPath: string,
+  windowStart: number,
+  windowEnd: number,
+  threshold: number,
+  timeoutMs: number
+): Promise<number[]> {
+  const windowDur = windowEnd - windowStart;
+  if (windowDur < MIN_SCENE_SEC * 2) return [];
+
+  const cmd =
+    `${ffmpegBin()} -i "${inputPath}" -ss ${windowStart.toFixed(3)} -to ${windowEnd.toFixed(3)} -an ` +
+    `-vf "scale=480:-1,select='gt(scene,${threshold})',showinfo" -f null -`;
+  const stderr = await runFfmpegDetect(cmd, timeoutMs);
+  return mergeNearbyCuts(
+    parsePtsTimesFromFfmpeg(stderr, windowEnd).filter(
+      (t) => t > windowStart + MIN_SCENE_SEC && t < windowEnd - MIN_SCENE_SEC
+    ),
+    cutMergeGapSec()
+  );
+}
+
+/** Re-scan long segments for missed interior cuts (fixes clips with 2 shots in 1 file). */
+async function rescanRangesForInteriorCuts(
+  inputPath: string,
+  ranges: Array<{ start: number; end: number }>,
+  deadlineMs: number
+): Promise<Array<{ start: number; end: number }>> {
+  const interiorCutsByRange: number[][] = [];
+  const perRangeTimeout = Math.max(
+    8_000,
+    Math.min(45_000, Math.floor((deadlineMs - Date.now()) / Math.max(1, ranges.length)) || 8_000)
+  );
+
+  for (const range of ranges) {
+    const dur = range.end - range.start;
+    if (dur < INTERNAL_RESCAN_MIN_SEC || Date.now() >= deadlineMs) {
+      interiorCutsByRange.push([]);
+      continue;
+    }
+
+    const scdet = await detectScdetCutTimesInWindow(
+      inputPath,
+      range.start,
+      range.end,
+      Math.max(3, scdetThreshold() * 0.75),
+      perRangeTimeout
+    );
+    const scene = await detectSceneFilterCutTimesInWindow(
+      inputPath,
+      range.start,
+      range.end,
+      Math.max(0.12, sceneThreshold() * 0.75),
+      perRangeTimeout
+    );
+    const interior = combineShotCutTimes([scdet, scene]).filter(
+      (t) => t > range.start + MIN_SCENE_SEC && t < range.end - MIN_SCENE_SEC
+    );
+    if (interior.length > 0) {
+      console.log(
+        `[ArchiveSplit] interior rescan ${formatTimecode(range.start)}–${formatTimecode(range.end)}: ` +
+          `${interior.length} missed cut(s)`
+      );
+    }
+    interiorCutsByRange.push(interior);
+  }
+
+  const refined = refineClipRangesWithInteriorCuts(ranges, interiorCutsByRange);
+  if (refined.length !== ranges.length) {
+    console.log(`[ArchiveSplit] interior rescan: ${ranges.length} → ${refined.length} clip range(s)`);
+  }
+  return refined;
 }
 
 /** scdet — purpose-built shot/scene boundary detector (every frame, downscaled). */
@@ -309,11 +481,13 @@ async function extractVideoSegment(
   inputPath: string,
   outputPath: string,
   startSec: number,
-  durationSec: number
+  endSec: number
 ): Promise<void> {
+  const durationSec = endSec - startSec;
   const perClipTimeout = Math.max(30_000, Math.min(120_000, durationSec * 4000));
+  // -ss after -i for frame-accurate cuts (avoids bleeding the next/previous shot).
   await exec(
-    `${ffmpegBin()} -y -ss ${startSec.toFixed(3)} -i "${inputPath}" -t ${durationSec.toFixed(3)} ` +
+    `${ffmpegBin()} -y -i "${inputPath}" -ss ${startSec.toFixed(3)} -to ${endSec.toFixed(3)} ` +
       `-c:v libx264 -preset ultrafast -crf 23 -an -pix_fmt yuv420p -movflags +faststart -threads 2 "${outputPath}"`,
     { maxBuffer: 8 * 1024 * 1024, timeout: perClipTimeout }
   );
@@ -360,7 +534,10 @@ export async function splitVideoBySceneChanges(
     }
 
     const cuts = await detectSceneCutTimes(inputPath, totalDur, deadline);
-    const ranges = buildClipRanges(cuts, totalDur);
+    let ranges = buildClipRanges(cuts, totalDur);
+    if (ranges.length > 1 && hasBudget()) {
+      ranges = await rescanRangesForInteriorCuts(inputPath, ranges, deadline);
+    }
     console.log(
       `[ArchiveSplit] ${cuts.length} shot cuts → ${ranges.length} clip(s) (${totalDur.toFixed(1)}s, ` +
         `scdet=${scdetThreshold()} scene=${sceneThreshold()})`
@@ -396,7 +573,7 @@ export async function splitVideoBySceneChanges(
         const dur = end - start;
         const outPath = path.join(workDir, `clip_${String(i).padStart(3, "0")}.mp4`);
         try {
-          await extractVideoSegment(inputPath, outPath, start, dur);
+          await extractVideoSegment(inputPath, outPath, start, end);
           const buf = fs.readFileSync(outPath);
           if (buf.length < 8000) return null;
           return {

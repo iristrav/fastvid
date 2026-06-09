@@ -1,14 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
   buildClipRanges,
+  capClipRanges,
   combineShotCutTimes,
   mapPool,
+  maxArchiveClips,
   maxArchiveUploadBytes,
   maxArchiveVideoDurationSec,
   mergeNearbyCuts,
   parsePtsTimesFromFfmpeg,
   parseScdetTimesFromFfmpeg,
+  refineClipRangesWithInteriorCuts,
   splitBudgetMs,
+  splitRangeAtInteriorCuts,
 } from "./archiveVideoSplitter";
 
 describe("archiveVideoSplitter", () => {
@@ -51,6 +55,57 @@ describe("archiveVideoSplitter", () => {
   it("parsePtsTimesFromFfmpeg reads showinfo pts_time", () => {
     const stderr = "n:0 pts_time:2.5 ...\nn:1 pts_time:8.0 ...";
     expect(parsePtsTimesFromFfmpeg(stderr, 60)).toEqual([2.5, 8.0]);
+  });
+
+  it("capClipRanges merges only sub-second flash with neighbor", () => {
+    const ranges = [
+      { start: 0, end: 4 },
+      { start: 4, end: 4.3 },
+      { start: 4.3, end: 9 },
+    ];
+    const capped = capClipRanges(ranges, 2, 0.45);
+    expect(capped).toEqual([
+      { start: 0, end: 4.3 },
+      { start: 4.3, end: 9 },
+    ]);
+  });
+
+  it("capClipRanges refuses to merge two full shots when over max", () => {
+    const ranges = [
+      { start: 0, end: 3 },
+      { start: 3, end: 6 },
+      { start: 6, end: 9 },
+    ];
+    const capped = capClipRanges(ranges, 2, 0.45);
+    expect(capped.length).toBe(3);
+  });
+
+  it("splitRangeAtInteriorCuts subdivides a range with missed cuts", () => {
+    const parts = splitRangeAtInteriorCuts({ start: 10, end: 20 }, [14, 17]);
+    expect(parts).toEqual([
+      { start: 10, end: 14 },
+      { start: 14, end: 17 },
+      { start: 17, end: 20 },
+    ]);
+  });
+
+  it("refineClipRangesWithInteriorCuts splits only affected ranges", () => {
+    const refined = refineClipRangesWithInteriorCuts(
+      [
+        { start: 0, end: 5 },
+        { start: 5, end: 12 },
+      ],
+      [[], [8]]
+    );
+    expect(refined).toEqual([
+      { start: 0, end: 5 },
+      { start: 5, end: 8 },
+      { start: 8, end: 12 },
+    ]);
+  });
+
+  it("defaults allow more clips without multi-shot merge", () => {
+    expect(maxArchiveClips()).toBe(300);
   });
 
   it("defaults support 20 min video within 9 min split budget", () => {
