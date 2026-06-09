@@ -418,9 +418,9 @@ function ffmpegSupportsDrawtext(): boolean {
   return !bin.includes("ffmpeg-static") && !bin.includes("node_modules");
 }
 
-/** YouTube beat sourcing (off by default — API quota / fair-use). Set ENABLE_YOUTUBE_SOURCING=true to re-enable. */
+/** YouTube beat sourcing — disabled; pipeline uses archive, Wikimedia, stills, and Pexels only. */
 function youtubeSourcingEnabled(): boolean {
-  return process.env.ENABLE_YOUTUBE_SOURCING === "true";
+  return false;
 }
 
 /** YouTube only (≤1 min/beat) then Pexels — requires ENABLE_YOUTUBE_SOURCING=true. */
@@ -473,7 +473,7 @@ async function fetchBeatYoutubeOnly(
   videoTitle: string | undefined,
   label: string
 ): Promise<string | null> {
-  if (!youtubeCcReady()) return null;
+  if (!youtubeSourcingEnabled() || !youtubeCcReady()) return null;
   const queries = buildBeatYoutubeQueries(beat, scene, videoTitle, personName);
   if (!queries.length) return null;
   if (dedup.entityYoutubeFetchesUsed >= dedup.perf.maxEntityYoutubePerVideo) return null;
@@ -894,7 +894,7 @@ function resolveMaxStockBeatsPerVideo(videoLength: string): number {
 }
 
 function maxEntityYoutubeFetchesPerVideo(minimizeStock = minimizeStockFootageEnabled()): number {
-  if (!youtubeCcReady()) return 0;
+  if (!youtubeSourcingEnabled() || !youtubeCcReady()) return 0;
   if (minimizeStock) return IS_RAILWAY ? 32 : 24;
   return IS_RAILWAY ? 12 : 8;
 }
@@ -1003,6 +1003,7 @@ async function tryBeatRealYouTubeFootage(
   label: string,
   timeoutMs: number
 ): Promise<string | null> {
+  if (!youtubeSourcingEnabled()) return null;
   if (!youtubeCcReady() || youtubeQueries.length === 0) return null;
   if (dedup.entityYoutubeFetchesUsed >= dedup.perf.maxEntityYoutubePerVideo) return null;
   dedup.entityYoutubeFetchesUsed++;
@@ -1270,7 +1271,7 @@ async function tryBeatTopicRealFootage(
     }
   }
 
-  if (process.env.YOUTUBE_API_KEY && allowStill && canUseGlobalStillPhoto(dedup)) {
+  if (youtubeSourcingEnabled() && process.env.YOUTUBE_API_KEY && allowStill && canUseGlobalStillPhoto(dedup)) {
     const thumbQ = buildTopicDocumentaryYoutubeQueries(beat, scene, videoTitle)[0] || wikiQuery;
     const ytThumb = await fetchYouTubeThumbnails(
       thumbQ,
@@ -3518,6 +3519,7 @@ async function fetchYouTubeThumbnails(
   count: number = 3,
   fileTag = ""
 ): Promise<string[]> {
+  if (!youtubeSourcingEnabled()) return [];
   const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY || '';
   if (!YOUTUBE_API_KEY) return [];
   fs.mkdirSync(workDir, { recursive: true });
@@ -6085,6 +6087,7 @@ async function fetchYouTubeCCClips(
   requiredPersonName = "",
   scriptGuided?: ScriptGuidedBeatContext
 ): Promise<string[]> {
+  if (!youtubeSourcingEnabled()) return [];
   const results: string[] = [];
 
   const youtubeApiKey = process.env.YOUTUBE_API_KEY;
@@ -8429,7 +8432,7 @@ async function fetchUniqueStockForBeat(
   videoTitle?: string,
   adoptOpts: VisualAdoptOptions = {}
 ): Promise<string | null> {
-  const wallMs = youtubeCcReady()
+  const wallMs = youtubeSourcingEnabled() && youtubeCcReady()
     ? youtubeBeatFetchTimeoutMs(dedup.perf.fastStockMode) + 8_000
     : dedup.perf.fastStockMode
       ? 24_000
@@ -10770,7 +10773,7 @@ async function resolveBeatClipTurbo(
   try {
     c = await withTimeout(
       (async () => {
-        if (person && youtubeCcReady()) {
+        if (youtubeSourcingEnabled() && person && youtubeCcReady()) {
           const ytQueries = buildPersonCelebrityVideoQueries(person, beat.text, beat.index).slice(0, 3);
           const yt = await tryBeatRealYouTubeFootage(
             beat,
@@ -10785,7 +10788,7 @@ async function resolveBeatClipTurbo(
             42_000
           );
           if (isRealVideoClip(yt) && !(await isMostlyBlackClip(yt!))) return yt;
-        } else if (youtubeCcReady()) {
+        } else if (youtubeSourcingEnabled() && youtubeCcReady()) {
           const ytQueries = [beat.searchQuery, scene.visualCue].filter((q) => q?.trim());
           const yt = await tryBeatRealYouTubeFootage(
             beat, scene, workDir, sceneIndex, clipFetchDur, dedup, turboAdopt, ytQueries, "turbo YouTube", 35_000
