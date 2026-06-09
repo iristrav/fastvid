@@ -952,7 +952,7 @@ function backfillClipWallMs(perf: PipelinePerfProfile, sceneDurationSec = 60): n
   if (youtubeOnlySourcingEnabled()) {
     return youtubeBeatSearchBudgetMs() + beatStockFallbackWallMs(perf) + 30_000;
   }
-  if (perf.fastStockMode) return 22_000;
+  if (perf.fastStockMode) return 12_000;
   if (sceneDurationSec <= 30) return 45_000;
   return 90_000;
 }
@@ -972,9 +972,10 @@ function beatScriptImageWallMs(perf: PipelinePerfProfile): number {
 }
 
 function maxBackfillAttempts(perf: PipelinePerfProfile, sceneDurationSec: number): number {
-  if (perf.fastStockMode && sceneDurationSec <= 22) return 1;
-  if (perf.fastStockMode && sceneDurationSec <= 60) return 2;
-  return perf.fastStockMode ? 2 : 2;
+  if (perf.fastStockMode) return 1;
+  if (sceneDurationSec <= 22) return 1;
+  if (sceneDurationSec <= 60) return 2;
+  return 2;
 }
 
 /** Ultra-fast celebrity caps only on very short CTA scenes; longer scenes may search minutes. */
@@ -11171,20 +11172,24 @@ async function fetchSceneVisuals(
         realOnly &&
         (!clip || isPipelineFallbackClip(clip) || isStillPhotoClip(clip ?? "") || isLicensedStockClip(clip ?? ""))
       ) {
-        clip = await beatPrimaryFetch(
-          beat,
-          scene,
-          workDir,
-          scene.index,
-          clipFetchDur,
-          dedup,
-          personName,
-          videoTitle,
-          beatAdoptOpts,
-          scenePersons,
-          `b${beat.index}_cap`,
-          "beat cap"
-        );
+        clip = dedup.perf.fastStockMode
+          ? await resolveBeatClipFastTurbo(
+              beat, scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts
+            )
+          : await beatPrimaryFetch(
+              beat,
+              scene,
+              workDir,
+              scene.index,
+              clipFetchDur,
+              dedup,
+              personName,
+              videoTitle,
+              beatAdoptOpts,
+              scenePersons,
+              `b${beat.index}_cap`,
+              "beat cap"
+            );
       }
       if (
         !youtubeOnlySourcingEnabled() &&
@@ -11325,6 +11330,15 @@ async function fetchSceneVisuals(
     try {
         extra = await withTimeout(
           (async () => {
+            if (dedup.perf.fastStockMode) {
+              if (canUseLicensedStockBeat(dedup)) {
+                const stock = await fetchBeatStockFallback(
+                  stub, scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts, "backfill"
+                );
+                if (isRealVideoClip(stock)) return stock;
+              }
+              return null;
+            }
             if (realOnly) {
               const primary = await beatPrimaryFetch(
                 stub,
@@ -11386,13 +11400,23 @@ async function fetchSceneVisuals(
 
   if (clips.filter((c) => c && !isPipelineFallbackClip(c)).length === 0 && beats[0]) {
     console.warn(`[Pipeline] Scene ${scene.index}: no beat clips — stock then image rescue`);
-    for (let si = 0; si < 3; si++) {
+    const rescueTries = dedup.perf.fastStockMode ? 1 : 3;
+    for (let si = 0; si < rescueTries; si++) {
       const stub = { ...beats[0], index: si };
-      onBeatProgress?.(si + 1, 3, "backfill");
+      onBeatProgress?.(si + 1, rescueTries, "backfill");
       let extra: string | null = null;
       try {
         extra = await withTimeout(
           (async () => {
+            if (dedup.perf.fastStockMode) {
+              if (canUseLicensedStockBeat(dedup)) {
+                const stock = await fetchBeatStockFallback(
+                  stub, scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts, "rescue"
+                );
+                if (isRealVideoClip(stock)) return stock;
+              }
+              return null;
+            }
             if (realOnly) {
               const primary = await beatPrimaryFetch(
                 stub,
