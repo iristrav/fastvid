@@ -64,7 +64,7 @@ import {
 } from "./scriptGuidedClipFinder";
 import { clipPassesVisionGate, clipVisionGateEnabled } from "./visualQualityGate";
 import { curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, skipEffectsStage } from "./sourcingPolicy";
-import { fetchCuratedArchiveBeatClip } from "./curatedMediaSourcing";
+import { fetchCuratedArchiveBeatClip, curatedClipPathAssetId, curatedAssetContentKey } from "./curatedMediaSourcing";
 
 // API Keys
 const FISH_AUDIO_API_KEY = process.env.FISH_AUDIO_API_KEY || "";
@@ -7301,6 +7301,8 @@ interface VisualDedupState {
   usedImageUrls: Set<string>;
   /** Curated admin archive asset IDs already used this video. */
   usedCuratedAssetIds: Set<number>;
+  /** Storage URLs from curated archive — blocks same file twice even with different IDs. */
+  usedCuratedStorageUrls: Set<string>;
   lock: Promise<void>;
   perf: PipelinePerfProfile;
   /** Named celebrity from user prompt (e.g. Kylie Jenner) — anchor every beat's stock search. */
@@ -7339,6 +7341,7 @@ function createVisualDedupState(
     stillPhotosUsedGlobal: 0,
     usedImageUrls: new Set(),
     usedCuratedAssetIds: new Set(),
+    usedCuratedStorageUrls: new Set(),
     lock: Promise.resolve(),
     perf,
     primaryPerson: topic?.primaryPerson?.trim() ?? "",
@@ -7844,6 +7847,8 @@ function isPublishableChapterTitle(title: string | undefined): boolean {
 }
 
 function clipContentKey(filePath: string): string {
+  const curatedId = curatedClipPathAssetId(filePath);
+  if (curatedId != null) return curatedAssetContentKey(curatedId);
   const base = path.basename(filePath).replace(/_transformed(?=\.mp4)/, "");
   const vidMatch = base.match(/_vid(\d+)/);
   if (vidMatch) return `stock:vid:${vidMatch[1]}`;
@@ -11094,8 +11099,9 @@ async function resolveBeatClipForBeat(
       scene,
       workDir,
       sceneIndex,
-      clipFetchDur,
+      beat.holdSec,
       dedup.usedCuratedAssetIds,
+      dedup.usedCuratedStorageUrls,
       videoTitle
     );
   }
@@ -11272,6 +11278,14 @@ async function fetchSceneVisuals(
     beatAdoptOpts.keywords = beat.keywords;
     onBeatProgress?.(bi, beats.length, "beat");
     const pushClip = (clipPath: string) => {
+      const key = clipContentKey(clipPath);
+      if (dedup.usedContentKeys.has(key)) {
+        console.warn(
+          `[Pipeline] Scene ${scene.index} beat ${beat.index}: skipping duplicate clip ${path.basename(clipPath)}`
+        );
+        return;
+      }
+      dedup.usedContentKeys.add(key);
       clips.push(clipPath);
       beatDurations.push(beat.holdSec);
       if (
@@ -11311,7 +11325,7 @@ async function fetchSceneVisuals(
       dedup.lock = Promise.resolve();
       if (archiveOnly) {
         clip = await fetchCuratedArchiveBeatClip(
-          beat, scene, workDir, scene.index, clipFetchDur, dedup.usedCuratedAssetIds, videoTitle
+          beat, scene, workDir, scene.index, beat.holdSec, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls, videoTitle
         );
       } else if (
         realOnly &&
@@ -11429,7 +11443,7 @@ async function fetchSceneVisuals(
       let rescue: string | null = null;
       if (archiveOnly) {
         rescue = await fetchCuratedArchiveBeatClip(
-          beat, scene, workDir, scene.index, clipFetchDur, dedup.usedCuratedAssetIds, videoTitle
+          beat, scene, workDir, scene.index, beat.holdSec, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls, videoTitle
         );
       } else if (realOnly) {
         rescue = await beatPrimaryFetch(
@@ -11525,7 +11539,7 @@ async function fetchSceneVisuals(
           (async () => {
             if (archiveOnly) {
               return fetchCuratedArchiveBeatClip(
-                stub, scene, workDir, scene.index, clipFetchDur, dedup.usedCuratedAssetIds, videoTitle
+                stub, scene, workDir, scene.index, stub.holdSec, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls, videoTitle
               );
             }
             if (dedup.perf.fastStockMode) {
@@ -12259,7 +12273,22 @@ async function composeSceneVideo(
     Math.max(0.5, duration - 0.35);
   const outDur = voiceDur + 0.12;
 
-  const montageDurations = alignBeatDurationsWithClips(clips, safeClips, beatDurations);
+  const montageDurationsRaw = alignBeatDurationsWithClips(clips, safeClips, beatDurations);
+  let montageDurations = montageDurationsRaw;
+  if (montageDurations?.length === safeClips.length) {
+    montageDurations = await Promise.all(
+      montageDurations.map(async (d, i) => {
+        const probed = await probeVideoDurationSec(safeClips[i]);
+        if (probed > 0.2 && d > probed * 0.98) {
+          console.warn(
+            `[Pipeline] Scene ${scene.index}: capping beat ${i} montage ${d.toFixed(2)}s → ${probed.toFixed(2)}s (avoid frozen frame)`
+          );
+          return probed * 0.98;
+        }
+        return d;
+      })
+    );
+  }
 
   try {
     const { scaleFilters, mergeFilter, montageLabel: xfadeLabel } =
