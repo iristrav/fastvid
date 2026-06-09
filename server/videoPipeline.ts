@@ -466,17 +466,57 @@ async function fetchBeatYoutubeOnly(
   if (!youtubeCcReady()) return null;
   const queries = buildBeatYoutubeQueries(beat, scene, videoTitle, personName);
   if (!queries.length) return null;
-  const clip = await tryBeatRealYouTubeFootage(
-    beat,
-    scene,
-    workDir,
-    sceneIndex,
-    clipFetchDur,
+  if (dedup.entityYoutubeFetchesUsed >= dedup.perf.maxEntityYoutubePerVideo) return null;
+  dedup.entityYoutubeFetchesUsed++;
+
+  const loose: VisualAdoptOptions = {
+    ...adoptOpts,
+    requireBeatMatch: false,
+    scriptAnchored: false,
+  };
+  const ytKeywords = [
+    ...new Set([...(adoptOpts.keywords ?? []), ...beat.keywords]),
+  ].slice(0, 22);
+
+  let paths: string[] = [];
+  try {
+    paths = await withTimeout(
+      fetchYouTubeCCClips(
+        queries.slice(0, 5),
+        clipFetchDur,
+        workDir,
+        sceneIndex,
+        1,
+        ytKeywords,
+        1,
+        adoptOpts.personTopic ? adoptOpts.primaryPerson ?? "" : "",
+        {
+          beatText: beat.text,
+          videoTitle,
+          fastMode: dedup.perf.fastStockMode,
+        }
+      ),
+      youtubeBeatSearchBudgetMs(),
+      `${label} fetch s${sceneIndex} b${beat.index}`
+    );
+  } catch (err) {
+    console.warn(
+      `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: ${label} fetch timeout:`,
+      (err as Error).message
+    );
+    return null;
+  }
+  if (!paths.length) return null;
+
+  const clip = await adoptClip(
+    paths,
     dedup,
-    adoptOpts,
-    queries,
-    label,
-    youtubeBeatSearchBudgetMs()
+    sceneIndex,
+    beat.index,
+    beat.text,
+    workDir,
+    queries[0],
+    loose
   );
   return isAuthenticVideoClip(clip ?? "") ? clip : null;
 }
@@ -584,10 +624,21 @@ function beatStockFallbackWallMs(perf: PipelinePerfProfile): number {
 
 /** Wall-clock cap for one beat: search (≤1min) + stock fallback. */
 function beatVisualWallMs(perf: PipelinePerfProfile): number {
+  if (youtubeOnlySourcingEnabled()) {
+    return (
+      youtubeBeatSearchBudgetMs() +
+      Math.max(perf.transformTimeoutMs, 25_000) +
+      beatStockFallbackWallMs(perf) +
+      8_000
+    );
+  }
   return BEAT_VISUAL_SEARCH_MAX_MS + beatStockFallbackWallMs(perf) + 5_000;
 }
 
 function backfillClipWallMs(perf: PipelinePerfProfile, sceneDurationSec = 60): number {
+  if (youtubeOnlySourcingEnabled()) {
+    return youtubeBeatSearchBudgetMs() + beatStockFallbackWallMs(perf) + 30_000;
+  }
   if (perf.fastStockMode) return 22_000;
   if (sceneDurationSec <= 30) return 45_000;
   return 90_000;
@@ -10871,22 +10922,39 @@ async function fetchSceneVisuals(
         extra = await withTimeout(
           (async () => {
             if (realOnly) {
-              const auth = await fetchBeatAuthenticVideo(
-                stub,
-                scene,
-                workDir,
-                scene.index,
-                clipFetchDur,
-                dedup,
-                videoTitle,
-                beatAdoptOpts,
-                scenePersonsForBackfill,
-                personName,
-                `bf${backfillAttempts + 1}_auth`
-              );
-              if (isAuthenticVideoClip(auth ?? "")) return auth;
+              if (youtubeOnlySourcingEnabled()) {
+                const ytPex = await fetchBeatYoutubeThenPexels(
+                  stub,
+                  scene,
+                  workDir,
+                  scene.index,
+                  clipFetchDur,
+                  dedup,
+                  personName,
+                  videoTitle,
+                  beatAdoptOpts,
+                  `bf${backfillAttempts + 1} YouTube`,
+                  "backfill"
+                );
+                if (ytPex && isRealVideoClip(ytPex)) return ytPex;
+              } else {
+                const auth = await fetchBeatAuthenticVideo(
+                  stub,
+                  scene,
+                  workDir,
+                  scene.index,
+                  clipFetchDur,
+                  dedup,
+                  videoTitle,
+                  beatAdoptOpts,
+                  scenePersonsForBackfill,
+                  personName,
+                  `bf${backfillAttempts + 1}_auth`
+                );
+                if (isAuthenticVideoClip(auth ?? "")) return auth;
+              }
             }
-            if (canUseLicensedStockBeat(dedup)) {
+            if (!youtubeOnlySourcingEnabled() && canUseLicensedStockBeat(dedup)) {
               const stock = await fetchBeatStockFallback(
                 stub, scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts, "backfill"
               );
@@ -10938,22 +11006,39 @@ async function fetchSceneVisuals(
         extra = await withTimeout(
           (async () => {
             if (realOnly) {
-              const auth = await fetchBeatAuthenticVideo(
-                stub,
-                scene,
-                workDir,
-                scene.index,
-                clipFetchDur,
-                dedup,
-                videoTitle,
-                beatAdoptOpts,
-                scenePersonsForBackfill,
-                personName,
-                `res${si + 1}_auth`
-              );
-              if (isAuthenticVideoClip(auth ?? "")) return auth;
+              if (youtubeOnlySourcingEnabled()) {
+                const ytPex = await fetchBeatYoutubeThenPexels(
+                  stub,
+                  scene,
+                  workDir,
+                  scene.index,
+                  clipFetchDur,
+                  dedup,
+                  personName,
+                  videoTitle,
+                  beatAdoptOpts,
+                  `res${si + 1} YouTube`,
+                  "rescue"
+                );
+                if (ytPex && isRealVideoClip(ytPex)) return ytPex;
+              } else {
+                const auth = await fetchBeatAuthenticVideo(
+                  stub,
+                  scene,
+                  workDir,
+                  scene.index,
+                  clipFetchDur,
+                  dedup,
+                  videoTitle,
+                  beatAdoptOpts,
+                  scenePersonsForBackfill,
+                  personName,
+                  `res${si + 1}_auth`
+                );
+                if (isAuthenticVideoClip(auth ?? "")) return auth;
+              }
             }
-            if (canUseLicensedStockBeat(dedup)) {
+            if (!youtubeOnlySourcingEnabled() && canUseLicensedStockBeat(dedup)) {
               const stock = await fetchBeatStockFallback(
                 stub, scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts, "rescue"
               );
@@ -10988,21 +11073,39 @@ async function fetchSceneVisuals(
   if (usable.length === 0 && beats[0]) {
     let forced: string | null = null;
     if (realOnly) {
-      forced = await fetchBeatAuthenticVideo(
-        beats[0],
-        scene,
-        workDir,
-        scene.index,
-        clipFetchDur,
-        dedup,
-        videoTitle,
-        beatAdoptOpts,
-        scenePersons,
-        personName,
-        `force_s${scene.index}_auth`
-      );
+      forced = youtubeOnlySourcingEnabled()
+        ? await fetchBeatYoutubeThenPexels(
+            beats[0],
+            scene,
+            workDir,
+            scene.index,
+            clipFetchDur,
+            dedup,
+            personName,
+            videoTitle,
+            beatAdoptOpts,
+            `force_s${scene.index} YouTube`,
+            "force"
+          )
+        : await fetchBeatAuthenticVideo(
+            beats[0],
+            scene,
+            workDir,
+            scene.index,
+            clipFetchDur,
+            dedup,
+            videoTitle,
+            beatAdoptOpts,
+            scenePersons,
+            personName,
+            `force_s${scene.index}_auth`
+          );
     }
-    if (!isAuthenticVideoClip(forced ?? "") && canUseLicensedStockBeat(dedup)) {
+    if (
+      !youtubeOnlySourcingEnabled() &&
+      !isAuthenticVideoClip(forced ?? "") &&
+      canUseLicensedStockBeat(dedup)
+    ) {
       forced = await fetchBeatStockFallback(
         beats[0], scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts, "force"
       );
