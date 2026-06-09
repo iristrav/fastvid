@@ -49,9 +49,9 @@ export interface MediaCandidate {
 
 /** Base authenticity tier per source (higher = prefer real footage over stock). */
 export const SOURCE_BASE_SCORE: Record<MediaSourceKind, number> = {
+  youtube_cc: 98,
   person_celebrity: 95,
   wikimedia_video: 92,
-  youtube_cc: 90,
   internet_archive: 88,
   gdelt: 86,
   nasa: 85,
@@ -178,6 +178,7 @@ export function buildMediaSearchIntent(params: {
 function topicSourceBoost(source: MediaSourceKind, intent: MediaSearchIntent): number {
   switch (intent.topicKind) {
     case "historical":
+      if (source === "youtube_cc") return 15;
       if (source === "wikimedia_video" || source === "wikimedia_image") return 12;
       if (source === "internet_archive" || source === "europeana") return 10;
       if (source === "pexels" || source === "pixabay") return -15;
@@ -254,7 +255,7 @@ const STILL_ONLY_SOURCES: MediaSourceKind[] = [
 ];
 
 /**
- * Canonical clip order: script-guided/authentic video → Pexels/Pixabay → still photo.
+ * Canonical clip order: YouTube (CC + fair-use) → archief/Wikimedia → Pexels/Pixabay → still.
  * Default on (REAL_FOOTAGE_FIRST=false disables for debugging only).
  */
 export function realFootageFirstEnabled(): boolean {
@@ -351,9 +352,9 @@ export function rankMediaCandidates(
 /** Ordered source list for parallel fetch — topic-aware priority. */
 export function prioritizedSourcesForIntent(intent: MediaSearchIntent): MediaSourceKind[] {
   const base: MediaSourceKind[] = [
+    "youtube_cc",
     "person_celebrity",
     "wikimedia_video",
-    "youtube_cc",
     "internet_archive",
     "gdelt",
     "nasa",

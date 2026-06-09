@@ -98,6 +98,23 @@ describe("scoreMediaCandidate", () => {
     );
   });
 
+  it("prefers YouTube over archive for historical beats", () => {
+    const youtube: MediaCandidate = {
+      path: "/tmp/s1_b0_ytcc_titanic.mp4",
+      query: "RMS Titanic departure 1912 documentary",
+      source: "youtube_cc",
+      isVideo: true,
+    };
+    const archive: MediaCandidate = {
+      path: "/tmp/s1_b0_archive_titanic.mp4",
+      query: "Titanic departure 1912",
+      source: "internet_archive",
+      isVideo: true,
+    };
+    const ranked = rankMediaCandidates([archive, youtube], titanicIntent);
+    expect(ranked[0].source).toBe("youtube_cc");
+  });
+
   it("ranks authentic Titanic footage above ocean b-roll", () => {
     const candidates: MediaCandidate[] = [
       {

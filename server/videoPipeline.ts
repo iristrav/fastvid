@@ -375,11 +375,42 @@ interface PipelinePerfProfile {
   maxStockBeatsPerVideo: number;
 }
 
-/** YouTube CC needs YOUTUBE_API_KEY (search) + RAPIDAPI_KEY or YOUTUBE_CC_DL_SERVICE (download). */
+/** YouTube search + download (CC and fair-use standard videos). */
 function youtubeCcReady(): boolean {
   const canSearch = Boolean(process.env.YOUTUBE_API_KEY?.trim());
   const canDownload = Boolean(RAPIDAPI_KEY || process.env.YOUTUBE_CC_DL_SERVICE?.trim());
   return canSearch && canDownload;
+}
+
+/** Standard YouTube (non-CC) allowed when transformed for fair use (default on). */
+function youtubeFairUseEnabled(): boolean {
+  return process.env.ENABLE_YOUTUBE_FAIR_USE !== "false";
+}
+
+/** Max seconds per standard-YouTube (fair-use) clip — short transformative excerpt only. */
+function youtubeFairUseMaxClipSec(): number {
+  const raw = process.env.FAIR_USE_YT_MAX_SEC?.trim();
+  if (raw) {
+    const n = parseFloat(raw);
+    if (!isNaN(n) && n >= 2 && n <= 8) return n;
+  }
+  return 5;
+}
+
+function capYoutubeClipDuration(duration: number, fileTag: string): number {
+  if (fileTag === "ytfu") return Math.min(duration, youtubeFairUseMaxClipSec());
+  return duration;
+}
+
+/** Clips that must receive fair-use transform before adoption (never raw). */
+function clipRequiresFairUseTransform(filePath: string): boolean {
+  const base = path.basename(filePath).toLowerCase();
+  return /_ytfu_|_ytcc_|_archive_|_wikivid_|_septube_|_gdelt_/i.test(base);
+}
+
+function ffmpegSupportsDrawtext(): boolean {
+  const bin = FFMPEG_BIN.toLowerCase();
+  return !bin.includes("ffmpeg-static") && !bin.includes("node_modules");
 }
 
 function minimizeStockFootageEnabled(): boolean {
@@ -583,7 +614,7 @@ function buildTopicRealMediaQuery(
 }
 
 /**
- * Real topic footage: topic YouTube CC, Wikimedia video/stills, Openverse, SerpAPI, thumbs, NASA, Archive.
+ * Real topic footage: YouTube first, then Wikimedia/celebrity video, stills, SerpAPI.
  * Runs before licensed stock when minimize-stock is on.
  */
 async function tryBeatTopicRealFootage(
@@ -617,23 +648,21 @@ async function tryBeatTopicRealFootage(
     topicLabel
   );
 
-  if (opts.includeTopicYoutube) {
-    const topicYt = buildTopicDocumentaryYoutubeQueries(beat, scene, videoTitle);
-    if (topicYt.length) {
-      const clip = await tryBeatRealYouTubeFootage(
-        beat,
-        scene,
-        workDir,
-        sceneIndex,
-        clipFetchDur,
-        dedup,
-        loose,
-        topicYt,
-        "topic YouTube",
-        ytMs
-      );
-      if (clip) return clip;
-    }
+  const topicYt = buildTopicDocumentaryYoutubeQueries(beat, scene, videoTitle);
+  if (youtubeCcReady() && topicYt.length) {
+    const ytClip = await tryBeatRealYouTubeFootage(
+      beat,
+      scene,
+      workDir,
+      sceneIndex,
+      clipFetchDur,
+      dedup,
+      loose,
+      topicYt,
+      "topic YouTube",
+      ytMs
+    );
+    if (ytClip) return ytClip;
   }
 
   let clip: string | null = null;
@@ -5445,15 +5474,84 @@ export async function probeStabilityAI(): Promise<{
   }
 }
 
-// ─── 3c3. Fetch YouTube CC Video Clips ───────────────────────────────────────
-// Uses YouTube Data API v3 to search for Creative Commons videos, then downloads
-// via RapidAPI (RAPIDAPI_KEY) or the legacy cloud download service URL.
-// Accepts multiple query variants (specific→broad) and tries each until enough clips found.
+// ─── 3c3. Fetch YouTube Video Clips (CC + fair-use) ───────────────────────────
+// CC first; then standard YouTube when fair-use is enabled (transform required on adopt).
 type ScriptGuidedBeatContext = {
   beatText: string;
   videoTitle?: string;
   fastMode?: boolean;
 };
+
+type YoutubeSearchRow = {
+  item: {
+    id?: { videoId?: string };
+    snippet?: {
+      title?: string;
+      description?: string;
+      thumbnails?: { high?: { url?: string }; medium?: { url?: string } };
+    };
+  };
+  title: string;
+  desc: string;
+  thumb?: string;
+  rel: number;
+};
+
+async function searchYoutubeVideoCandidates(
+  query: string,
+  sceneIndex: number,
+  license: "creative_common" | "any",
+  relevanceKeywords: string[],
+  minRelevanceScore: number,
+  requiredPersonName: string,
+  maxResults: number
+): Promise<YoutubeSearchRow[]> {
+  const youtubeApiKey = process.env.YOUTUBE_API_KEY;
+  if (!youtubeApiKey) return [];
+
+  const searchUrl = new URL("https://www.googleapis.com/youtube/v3/search");
+  searchUrl.searchParams.set("key", youtubeApiKey);
+  searchUrl.searchParams.set("q", query);
+  searchUrl.searchParams.set("type", "video");
+  if (license === "creative_common") {
+    searchUrl.searchParams.set("videoLicense", "creativeCommon");
+  }
+  searchUrl.searchParams.set("maxResults", String(maxResults));
+  searchUrl.searchParams.set("part", "snippet");
+  searchUrl.searchParams.set("videoDuration", "medium");
+  searchUrl.searchParams.set("order", "relevance");
+  searchUrl.searchParams.set("videoEmbeddable", "true");
+
+  const label = license === "creative_common" ? "YouTube CC" : "YouTube fair-use";
+  const searchResp = await withTimeout(
+    fetch(searchUrl.toString()),
+    15_000,
+    `${label} search scene ${sceneIndex}`
+  );
+  if (!searchResp.ok) {
+    console.warn(`[Pipeline] Scene ${sceneIndex}: ${label} API error ${searchResp.status} for "${query}"`);
+    return [];
+  }
+
+  const searchData = (await searchResp.json()) as {
+    items?: YoutubeSearchRow["item"][];
+  };
+
+  return (searchData.items ?? [])
+    .map((item) => {
+      const title = item.snippet?.title ?? "";
+      const desc = item.snippet?.description ?? "";
+      const thumb = item.snippet?.thumbnails?.high?.url ?? item.snippet?.thumbnails?.medium?.url;
+      const hay = `${title} ${desc} ${query}`;
+      if (requiredPersonName && !textMentionsPersonName(hay, requiredPersonName)) {
+        return { item, title, desc, thumb, rel: -1 };
+      }
+      const rel = relevanceKeywords.length > 0 ? scoreVisualRelevance(hay, relevanceKeywords) : 1;
+      return { item, title, desc, thumb, rel };
+    })
+    .filter((row) => row.rel >= minRelevanceScore)
+    .sort((a, b) => b.rel - a.rel);
+}
 
 async function fetchYouTubeCCClips(
   queries: string | string[],
@@ -5497,138 +5595,130 @@ async function fetchYouTubeCCClips(
       ? Date.now() + scriptGuidedBudgetMs(scriptGuided.fastMode ?? IS_RAILWAY)
       : ytDeadline;
 
+  const licensePasses: Array<{ license: "creative_common" | "any"; tag: string; fileTag: string }> = [
+    { license: "creative_common", tag: "YouTube CC", fileTag: "ytcc" },
+  ];
+  if (youtubeFairUseEnabled()) {
+    licensePasses.push({ license: "any", tag: "YouTube fair-use", fileTag: "ytfu" });
+  }
+
   for (const query of uniqueQueries.slice(0, 2)) {
     if (fetched >= count) break;
     if (Date.now() > ytDeadline) break;
 
-    try {
-      // Step 1: Search YouTube Data API v3 for Creative Commons videos
-      const searchUrl = new URL('https://www.googleapis.com/youtube/v3/search');
-      searchUrl.searchParams.set('key', youtubeApiKey);
-      searchUrl.searchParams.set('q', query);
-      searchUrl.searchParams.set('type', 'video');
-      searchUrl.searchParams.set('videoLicense', 'creativeCommon'); // CC only
-      searchUrl.searchParams.set('maxResults', String(Math.max(5, (count - fetched) * 4)));
-      searchUrl.searchParams.set('part', 'snippet');
-      searchUrl.searchParams.set('videoDuration', 'medium'); // 4-20 min videos
-      searchUrl.searchParams.set('order', 'relevance');
-      searchUrl.searchParams.set('videoEmbeddable', 'true');
+    for (const pass of licensePasses) {
+      if (fetched >= count) break;
+      if (Date.now() > ytDeadline) break;
+      if (pass.license === "any" && fetched >= count) break;
 
-      const searchResp = await withTimeout(
-        fetch(searchUrl.toString()),
-        15_000,
-        `YouTube CC search scene ${sceneIndex}`
-      );
-      if (!searchResp.ok) {
-        console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube API error ${searchResp.status} for query: "${query}"`);
-        continue;
-      }
-      const searchData = await searchResp.json() as {
-        items?: Array<{
-          id?: { videoId?: string };
-          snippet?: {
-            title?: string;
-            description?: string;
-            thumbnails?: { high?: { url?: string }; medium?: { url?: string } };
-          };
-        }>;
-      };
-      const items = (searchData.items || [])
-        .map((item) => {
-          const title = item.snippet?.title ?? "";
-          const desc = item.snippet?.description ?? "";
-          const thumb =
-            item.snippet?.thumbnails?.high?.url ?? item.snippet?.thumbnails?.medium?.url;
-          const hay = `${title} ${desc} ${query}`;
-          if (requiredPersonName && !textMentionsPersonName(hay, requiredPersonName)) {
-            return { item, title, desc, thumb, rel: -1, hay };
-          }
-          const rel = relevanceKeywords.length > 0 ? scoreVisualRelevance(hay, relevanceKeywords) : 1;
-          return { item, title, desc, thumb, rel, hay };
-        })
-        .filter((row) => row.rel >= minRelevanceScore)
-        .sort((a, b) => b.rel - a.rel);
-      if (!items.length) {
-        console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube CC 0 relevant results for: "${query}" — trying next variant`);
-        continue;
-      }
-      console.log(`[Pipeline] Scene ${sceneIndex}: YouTube CC found ${items.length} relevant videos for "${query}"`);
-
-      let guidedAttempts = 0;
-      const maxGuidedAttempts = scriptGuided?.fastMode ? 2 : 3;
-
-      for (const row of items.slice(0, 5)) {
-        if (fetched >= count) break;
-        if (Date.now() > ytDeadline) break;
-        const item = row.item;
-        const videoId = item.id?.videoId;
-        if (!videoId || downloadedIds.has(videoId)) continue;
-
-        const title = row.title;
-        if (relevanceKeywords.length > 0 && row.rel < minRelevanceScore) {
+      try {
+        const items = await searchYoutubeVideoCandidates(
+          query,
+          sceneIndex,
+          pass.license,
+          relevanceKeywords,
+          minRelevanceScore,
+          requiredPersonName,
+          Math.max(5, (count - fetched) * 4)
+        );
+        if (!items.length) {
           console.warn(
-            `[Pipeline] Scene ${sceneIndex}: YT CC skip irrelevant title "${title.slice(0, 60)}" (score ${row.rel}/${minRelevanceScore})`
+            `[Pipeline] Scene ${sceneIndex}: ${pass.tag} 0 relevant results for "${query}"`
           );
           continue;
         }
+        console.log(
+          `[Pipeline] Scene ${sceneIndex}: ${pass.tag} found ${items.length} relevant videos for "${query}"`
+        );
 
-        try {
-          let clipStart = 15;
-          if (
-            scriptGuidedClipsEnabled() &&
-            scriptGuided?.beatText?.trim() &&
-            guidedAttempts < maxGuidedAttempts
-          ) {
-            guidedAttempts++;
-            const plan = await planScriptGuidedClip(
-              {
-                videoId,
-                title,
-                description: row.desc,
-                thumbnailUrl: row.thumb,
-                metadataScore: row.rel,
-              },
-              {
-                beatText: scriptGuided.beatText,
-                keywords: relevanceKeywords,
-                videoTitle: scriptGuided.videoTitle,
-                deadlineMs: Math.min(ytDeadline, guidedDeadline),
-                fastMode: scriptGuided.fastMode,
-              }
+        let guidedAttempts = 0;
+        const maxGuidedAttempts = scriptGuided?.fastMode ? 2 : 3;
+
+        for (const row of items.slice(0, 5)) {
+          if (fetched >= count) break;
+          if (Date.now() > ytDeadline) break;
+          const item = row.item;
+          const videoId = item.id?.videoId;
+          if (!videoId || downloadedIds.has(videoId)) continue;
+
+          const title = row.title;
+          if (relevanceKeywords.length > 0 && row.rel < minRelevanceScore) {
+            console.warn(
+              `[Pipeline] Scene ${sceneIndex}: ${pass.tag} skip irrelevant "${title.slice(0, 60)}" (score ${row.rel}/${minRelevanceScore})`
             );
-            if (plan.skip) {
-              console.log(
-                `[ScriptGuided] Scene ${sceneIndex}: skip YT "${title.slice(0, 55)}" (vision/metadata)`
+            continue;
+          }
+
+          try {
+            let clipStart = 15;
+            if (
+              scriptGuidedClipsEnabled() &&
+              scriptGuided?.beatText?.trim() &&
+              guidedAttempts < maxGuidedAttempts
+            ) {
+              guidedAttempts++;
+              const plan = await planScriptGuidedClip(
+                {
+                  videoId,
+                  title,
+                  description: row.desc,
+                  thumbnailUrl: row.thumb,
+                  metadataScore: row.rel,
+                },
+                {
+                  beatText: scriptGuided.beatText,
+                  keywords: relevanceKeywords,
+                  videoTitle: scriptGuided.videoTitle,
+                  deadlineMs: Math.min(ytDeadline, guidedDeadline),
+                  fastMode: scriptGuided.fastMode,
+                }
               );
-              continue;
+              if (plan.skip) {
+                console.log(
+                  `[ScriptGuided] Scene ${sceneIndex}: skip YT "${title.slice(0, 55)}" (vision/metadata)`
+                );
+                continue;
+              }
+              clipStart = Math.max(0, Math.round(plan.startSec * 10) / 10);
+              console.log(
+                `[ScriptGuided] Scene ${sceneIndex}: ${plan.method} @${clipStart}s "${title.slice(0, 55)}"`
+              );
             }
-            clipStart = Math.max(0, Math.round(plan.startSec * 10) / 10);
-            console.log(
-              `[ScriptGuided] Scene ${sceneIndex}: ${plan.method} @${clipStart}s "${title.slice(0, 55)}"`
+
+            const outPath = path.join(workDir, `scene_${sceneIndex}_${pass.fileTag}_${fetched}.mp4`);
+            const clipDur = capYoutubeClipDuration(duration, pass.fileTag);
+
+            const ok = await downloadYouTubeCCClip(
+              videoId,
+              clipDur,
+              clipStart,
+              outPath,
+              sceneIndex,
+              item.snippet?.title
+            );
+            if (ok) {
+              results.push(outPath);
+              downloadedIds.add(videoId);
+              fetched++;
+              if (pass.license === "any") {
+                console.log(
+                  `[Pipeline] Scene ${sceneIndex}: ✅ YouTube fair-use clip (transform on adopt): "${title.slice(0, 60)}"`
+                );
+              }
+            }
+          } catch (err) {
+            console.warn(
+              `[Pipeline] Scene ${sceneIndex}: ${pass.tag} video ${videoId} failed:`,
+              (err as Error).message
             );
           }
-
-          const outPath = path.join(workDir, `scene_${sceneIndex}_ytcc_${fetched}.mp4`);
-
-          const ok = await downloadYouTubeCCClip(
-            videoId,
-            duration,
-            clipStart,
-            outPath,
-            sceneIndex,
-            item.snippet?.title
-          );
-          if (ok) {
-            results.push(outPath);
-            downloadedIds.add(videoId);
-            fetched++;
-          }
-        } catch (err) {
-          console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube CC video ${videoId} failed:`, (err as Error).message);
         }
+      } catch (err) {
+        console.warn(
+          `[Pipeline] Scene ${sceneIndex}: ${pass.tag} search failed for "${query}":`,
+          (err as Error).message
+        );
       }
-    } catch (err) {
-      console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube CC search failed for "${query}":`, (err as Error).message);
     }
   }
   return results;
@@ -5650,27 +5740,40 @@ async function transformClipForFairUse(
   timeoutMs = 120_000
 ): Promise<string> {
   const outputPath = inputPath.replace(/\.mp4$/, '_transformed.mp4');
+  const strict = clipRequiresFairUseTransform(inputPath);
 
-  // Use different color grade per scene for visual variety
   const grades = [
-    { contrast: 1.08, saturation: 1.12, brightness: -0.02 }, // cinematic warm
-    { contrast: 1.10, saturation: 0.95, brightness: -0.03 }, // desaturated cool
-    { contrast: 1.05, saturation: 1.20, brightness: 0.00  }, // vivid
-    { contrast: 1.12, saturation: 0.90, brightness: -0.04 }, // moody dark
-    { contrast: 1.06, saturation: 1.08, brightness: 0.01  }, // natural warm
+    { contrast: 1.08, saturation: 1.12, brightness: -0.02 },
+    { contrast: 1.10, saturation: 0.95, brightness: -0.03 },
+    { contrast: 1.05, saturation: 1.20, brightness: 0.00 },
+    { contrast: 1.12, saturation: 0.90, brightness: -0.04 },
+    { contrast: 1.06, saturation: 1.08, brightness: 0.01 },
   ];
   const grade = grades[(sceneIndex + clipIndex) % grades.length];
   const vignetteAngle = (0.5 + ((sceneIndex * 3 + clipIndex) % 5) * 0.1).toFixed(2);
-  const filterChain =
+  const zoom = 1.06 + ((sceneIndex + clipIndex) % 3) * 0.01;
+  const zw = Math.round(VIDEO_WIDTH * zoom);
+  const zh = Math.round(VIDEO_HEIGHT * zoom);
+  const zoomCrop =
+    `scale=${zw}:${zh}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:(iw-${VIDEO_WIDTH})/2:(ih-${VIDEO_HEIGHT})/2`;
+  let filterChain =
+    `${zoomCrop},` +
     `eq=contrast=${grade.contrast}:saturation=${grade.saturation}:brightness=${grade.brightness},` +
     `vignette=angle=${vignetteAngle}:mode=forward`;
 
-  // Use spawn() with explicit SIGKILL on timeout to prevent Node.js event loop deadlock.
-  // Promise.race() with exec() does NOT kill the child process, causing silent hangs.
+  const subtitle = sanitizeForDrawtextStrict(sceneText, 72);
+  if (subtitle && ffmpegSupportsDrawtext()) {
+    filterChain +=
+      `,drawtext=text='${subtitle}':fontcolor=white:fontsize=30:x=(w-text_w)/2:y=h-72:` +
+      `box=1:boxcolor=black@0.55:boxborderw=10`;
+  }
+
   const TRANSFORM_TIMEOUT_MS = timeoutMs;
-  console.log(`[Pipeline] Scene ${sceneIndex}: starting fair-use transform clip ${clipIndex} (${path.basename(inputPath)})`);
+  console.log(
+    `[Pipeline] Scene ${sceneIndex}: fair-use transform clip ${clipIndex} (${path.basename(inputPath)})` +
+      (subtitle ? " + narration subtitle" : "")
+  );
   try {
-    // Import spawn at the top of the async function scope (ES module — require() is not available)
     const { spawn: spawnChild } = await import('child_process');
     await new Promise<void>((resolve, reject) => {
       const args = [
@@ -5681,7 +5784,7 @@ async function transformClipForFairUse(
       ];
       const child = spawnChild(FFMPEG_BIN, args, { stdio: ['ignore', 'ignore', 'pipe'] });
       let stderr = '';
-      child.stderr.on('data', (d: Buffer) => { stderr += d.toString().slice(-500); }); // keep last 500 chars
+      child.stderr.on('data', (d: Buffer) => { stderr += d.toString().slice(-500); });
       const timer = setTimeout(() => {
         console.warn(`[Pipeline] Scene ${sceneIndex}: transform clip ${clipIndex} TIMEOUT after ${TRANSFORM_TIMEOUT_MS/1000}s — killing FFmpeg`);
         try { child.kill('SIGKILL'); } catch { /* ignore */ }
@@ -5705,12 +5808,12 @@ async function transformClipForFairUse(
         console.log(`[Pipeline] Scene ${sceneIndex}: clip ${clipIndex} transformed for fair use`);
         return outputPath;
       }
-      console.warn(`[Pipeline] Scene ${sceneIndex}: transformed clip ${clipIndex} unreadable, keeping original`);
+      console.warn(`[Pipeline] Scene ${sceneIndex}: transformed clip ${clipIndex} unreadable`);
     }
   } catch (err) {
     console.warn(`[Pipeline] Scene ${sceneIndex}: fair-use transform failed for clip ${clipIndex}:`, (err as Error).message);
   }
-  // If transform failed or timed out, return original
+  if (strict) return "";
   return inputPath;
 }
 
@@ -6162,7 +6265,7 @@ function isAIGeneratedClip(filePath: string): boolean {
 /** Map temp clip filename → editor manifest source (pexels, youtube, serpapi, …). */
 function inferClipSourceFromPath(filePath: string): string {
   const base = path.basename(filePath).replace(/_transformed(?=\.mp4)$/i, "").toLowerCase();
-  if (/_ytcc_|_b\d+_yt_|_yt_\d/i.test(base)) return "youtube";
+  if (/_ytfu_|_ytcc_|_b\d+_yt_|_yt_\d/i.test(base)) return "youtube";
   if (/serp|_person/i.test(base)) return "serpapi";
   if (/wikivid|_wiki_/i.test(base)) return "wikimedia";
   if (/septube/i.test(base)) return "peertube";
@@ -7697,7 +7800,8 @@ async function adoptClip(
       dedup.usedPaths.add(p);
       dedup.usedContentKeys.add(contentKey);
       dedup.usedCategories.set(category, (dedup.usedCategories.get(category) ?? 0) + 1);
-      if (dedup.perf.skipFairUseTransform) {
+      const mustFairUse = clipRequiresFairUseTransform(p);
+      if (dedup.perf.skipFairUseTransform && !mustFairUse) {
         if (await isValidVideoFile(p)) {
           if (!isPipelineFallbackClip(p) && !(await isMostlyBlackClip(p))) dedup.lastMuskStockClip = p;
           return p;
@@ -7705,9 +7809,19 @@ async function adoptClip(
         dedup.usedCategories.set(category, Math.max(0, (dedup.usedCategories.get(category) ?? 1) - 1));
         continue;
       }
+      const transformMs = mustFairUse
+        ? Math.max(dedup.perf.transformTimeoutMs, 25_000)
+        : dedup.perf.transformTimeoutMs;
       const transformed = await transformClipForFairUse(
-        p, beatText, sceneIndex, beatIndex, workDir, dedup.perf.transformTimeoutMs
+        p, beatText, sceneIndex, beatIndex, workDir, transformMs
       );
+      if (
+        mustFairUse &&
+        (!transformed || !transformed.includes("_transformed") || !fs.existsSync(transformed))
+      ) {
+        dedup.usedCategories.set(category, Math.max(0, (dedup.usedCategories.get(category) ?? 1) - 1));
+        continue;
+      }
       if (await isValidVideoFile(transformed)) {
         if (!isPipelineFallbackClip(transformed) && !(await isMostlyBlackClip(transformed))) {
           dedup.lastMuskStockClip = transformed;
@@ -7715,6 +7829,7 @@ async function adoptClip(
         return transformed;
       }
       dedup.usedCategories.set(category, Math.max(0, (dedup.usedCategories.get(category) ?? 1) - 1));
+      if (mustFairUse) continue;
       if (await isValidVideoFile(p) && !isPipelineFallbackClip(p) && !(await isMostlyBlackClip(p))) {
         dedup.lastMuskStockClip = p;
       }
@@ -8324,14 +8439,50 @@ async function fetchHistoricalBeatVideo(
   dedup: VisualDedupState,
   intent: ReturnType<typeof buildMediaSearchIntent>,
   adoptOpts: VisualAdoptOptions,
-  tag: string
+  tag: string,
+  opts: { skipYoutube?: boolean } = {}
 ): Promise<string | null> {
   const beatKeywords = adoptOpts.keywords ?? beat.keywords;
   const loose: VisualAdoptOptions = { ...adoptOpts, requireBeatMatch: false, scriptAnchored: false };
   const queries = buildHistoricalArchivalQueries(intent, beat.text);
   const entityYt = realEntityYoutubeQueriesForBeat(beat.text, scene.text, adoptOpts.videoTitle);
+  const allQueries = [...entityYt, ...queries].slice(0, 6);
 
-  for (const q of [...entityYt, ...queries].slice(0, 6)) {
+  if (!opts.skipYoutube && youtubeCcReady()) {
+    for (const q of allQueries) {
+      const ytPaths = await fetchYouTubeCCClips(
+        q,
+        clipFetchDur,
+        workDir,
+        sceneIndex,
+        1,
+        beatKeywords,
+        1,
+        "",
+        {
+          beatText: beat.text,
+          videoTitle: adoptOpts.videoTitle,
+          fastMode: dedup.perf.fastStockMode,
+        }
+      );
+      const ytClip = await adoptClip(
+        ytPaths,
+        dedup,
+        sceneIndex,
+        beat.index,
+        beat.text,
+        workDir,
+        q,
+        loose
+      );
+      if (isRealVideoClip(ytClip)) {
+        console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: historical YouTube "${q}"`);
+        return ytClip;
+      }
+    }
+  }
+
+  for (const q of allQueries) {
     if (dedup.perf.enableArchival) {
       const archiveHits = await fetchInternetArchiveClips(
         q,
@@ -8382,38 +8533,6 @@ async function fetchHistoricalBeatVideo(
     if (isRealVideoClip(clip)) {
       console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: historical Wikimedia video "${q}"`);
       return clip;
-    }
-
-    if (youtubeCcReady()) {
-      const ytPaths = await fetchYouTubeCCClips(
-        q,
-        clipFetchDur,
-        workDir,
-        sceneIndex,
-        1,
-        beatKeywords,
-        1,
-        "",
-        {
-          beatText: beat.text,
-          videoTitle: adoptOpts.videoTitle,
-          fastMode: dedup.perf.fastStockMode,
-        }
-      );
-      clip = await adoptClip(
-        ytPaths,
-        dedup,
-        sceneIndex,
-        beat.index,
-        beat.text,
-        workDir,
-        q,
-        loose
-      );
-      if (isRealVideoClip(clip)) {
-        console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: historical YouTube CC "${q}"`);
-        return clip;
-      }
     }
   }
 
@@ -8510,6 +8629,30 @@ async function researchBeatClipUnified(
   const archivalFirst = prefersRealFootageOnly(intent);
   const realOnly = realFootageFirstEnabled();
 
+  if (archivalFirst || realOnly) {
+    const entityYt = realEntityYoutubeQueriesForBeat(beat.text, scene.text, videoTitle);
+    const ytFirstQueries = [
+      ...entityYt,
+      ...buildTopicDocumentaryYoutubeQueries(beat, scene, videoTitle),
+      ...(effectivePrimary.trim()
+        ? buildPersonCelebrityVideoQueries(effectivePrimary, beat.text, beat.index)
+        : []),
+    ];
+    const ytFirst = await tryBeatRealYouTubeFootage(
+      beat,
+      scene,
+      workDir,
+      sceneIndex,
+      clipFetchDur,
+      dedup,
+      { ...adoptOpts, requireBeatMatch: false, scriptAnchored: false },
+      [...new Set(ytFirstQueries.filter((q) => q.trim().length > 3))].slice(0, 6),
+      "research YouTube first",
+      youtubeBeatFetchTimeoutMs(perf.fastStockMode)
+    );
+    if (ytFirst && isAuthenticVideoClip(ytFirst)) return ytFirst;
+  }
+
   if (archivalFirst) {
     const histClip = await fetchHistoricalBeatVideo(
       beat,
@@ -8520,7 +8663,8 @@ async function researchBeatClipUnified(
       dedup,
       intent,
       adoptOpts,
-      tag
+      tag,
+      { skipYoutube: true }
     );
     if (histClip && isAuthenticVideoClip(histClip)) return histClip;
   }
@@ -8547,7 +8691,67 @@ async function researchBeatClipUnified(
     paths.filter(Boolean).map((p) => ({ path: p, query, source, isVideo }));
 
   type ResearchTask = { run: () => Promise<MediaCandidate[]> };
+  const ytTasks: ResearchTask[] = [];
   const tasks: ResearchTask[] = [];
+
+  const ytAvailable =
+    process.env.YOUTUBE_API_KEY || RAPIDAPI_KEY || process.env.YOUTUBE_CC_DL_SERVICE;
+  if (ytAvailable) {
+    const entityYt = realEntityYoutubeQueriesForBeat(beat.text, scene.text, videoTitle);
+    if (
+      entityYt.length > 0 &&
+      dedup.entityYoutubeFetchesUsed < perf.maxEntityYoutubePerVideo
+    ) {
+      const eq = entityYt[0];
+      ytTasks.push({
+        run: async () => {
+          dedup.entityYoutubeFetchesUsed++;
+          const paths = await fetchYouTubeCCClips(
+            entityYt.slice(0, 2),
+            clipFetchDur,
+            workDir,
+            sceneIndex,
+            1,
+            beatKeywords,
+            1,
+            primary ?? "",
+            {
+              beatText: beat.text,
+              videoTitle,
+              fastMode: perf.fastStockMode,
+            }
+          );
+          return toCandidates(paths, eq, "youtube_cc", true);
+        },
+      });
+    }
+
+    const ytQueries = primary?.trim()
+      ? buildPersonCelebrityVideoQueries(primary, beat.text, beat.index).slice(0, 2)
+      : queries.slice(0, 2);
+    for (const q of ytQueries) {
+      ytTasks.push({
+        run: async () => {
+          const paths = await fetchYouTubeCCClips(
+            q,
+            clipFetchDur,
+            workDir,
+            sceneIndex,
+            1,
+            beatKeywords,
+            1,
+            primary ?? "",
+            {
+              beatText: beat.text,
+              videoTitle,
+              fastMode: perf.fastStockMode,
+            }
+          );
+          return toCandidates(paths, q, "youtube_cc", true);
+        },
+      });
+    }
+  }
 
   if (effectivePrimary) {
     tasks.push({
@@ -8621,64 +8825,7 @@ async function researchBeatClipUnified(
     }
   }
 
-  const ytAvailable =
-    process.env.YOUTUBE_API_KEY || RAPIDAPI_KEY || process.env.YOUTUBE_CC_DL_SERVICE;
-  if (ytAvailable) {
-    const entityYt = realEntityYoutubeQueriesForBeat(beat.text, scene.text, videoTitle);
-    if (
-      entityYt.length > 0 &&
-      dedup.entityYoutubeFetchesUsed < perf.maxEntityYoutubePerVideo
-    ) {
-      const eq = entityYt[0];
-      tasks.push({
-        run: async () => {
-          dedup.entityYoutubeFetchesUsed++;
-          const paths = await fetchYouTubeCCClips(
-            entityYt.slice(0, 2),
-            clipFetchDur,
-            workDir,
-            sceneIndex,
-            1,
-            beatKeywords,
-            1,
-            primary ?? "",
-            {
-              beatText: beat.text,
-              videoTitle,
-              fastMode: perf.fastStockMode,
-            }
-          );
-          return toCandidates(paths, eq, "youtube_cc", true);
-        },
-      });
-    }
-
-    const ytQueries = primary?.trim()
-      ? buildPersonCelebrityVideoQueries(primary, beat.text, beat.index).slice(0, 2)
-      : queries.slice(0, 2);
-    for (const q of ytQueries) {
-      tasks.push({
-        run: async () => {
-          const paths = await fetchYouTubeCCClips(
-            q,
-            clipFetchDur,
-            workDir,
-            sceneIndex,
-            1,
-            beatKeywords,
-            1,
-            primary ?? "",
-            {
-              beatText: beat.text,
-              videoTitle,
-              fastMode: perf.fastStockMode,
-            }
-          );
-          return toCandidates(paths, q, "youtube_cc", true);
-        },
-      });
-    }
-  }
+  const allResearchTasks = [...ytTasks, ...tasks];
 
   if (
     EUROPEANA_API_KEY?.trim() &&
@@ -8900,7 +9047,7 @@ async function researchBeatClipUnified(
   try {
     const settled = await withTimeout(
       Promise.allSettled(
-        tasks.slice(0, maxTasks).map((task) =>
+        allResearchTasks.slice(0, maxTasks).map((task) =>
           withTimeout(task.run(), fetchMs, `media research s${sceneIndex} b${beat.index}`).catch(
             () => [] as MediaCandidate[]
           )
@@ -9826,11 +9973,6 @@ async function fetchBeatAuthenticVideo(
   });
   const loose: VisualAdoptOptions = { ...adoptOpts, requireBeatMatch: false, scriptAnchored: false };
 
-  const hist = await fetchHistoricalBeatVideo(
-    beat, scene, workDir, sceneIndex, clipFetchDur, dedup, intent, loose, tag
-  );
-  if (isAuthenticVideoClip(hist ?? "")) return hist;
-
   const ytQueries = [
     ...realEntityYoutubeQueriesForBeat(beat.text, scene.text, videoTitle),
     ...(personName.trim() ? buildPersonCelebrityVideoQueries(personName, beat.text, beat.index) : []),
@@ -9849,6 +9991,11 @@ async function fetchBeatAuthenticVideo(
     youtubeBeatFetchTimeoutMs(dedup.perf.fastStockMode)
   );
   if (isAuthenticVideoClip(yt ?? "")) return yt;
+
+  const hist = await fetchHistoricalBeatVideo(
+    beat, scene, workDir, sceneIndex, clipFetchDur, dedup, intent, loose, tag, { skipYoutube: true }
+  );
+  if (isAuthenticVideoClip(hist ?? "")) return hist;
 
   if (personName.trim()) {
     const celebVids = await fetchPersonCelebrityVideoClips(
@@ -9996,8 +10143,29 @@ async function resolveBeatClipTurbo(
       spaceTopic: false,
       muskTopic,
     });
+    const turboYtQueries = [
+      ...realEntityYoutubeQueriesForBeat(beat.text, scene.text, videoTitle),
+      ...(person.trim() ? buildPersonCelebrityVideoQueries(person, beat.text, beat.index) : []),
+      ...beatQueries.slice(0, 2),
+    ];
+    const turboYt = await tryBeatRealYouTubeFootage(
+      beat,
+      scene,
+      workDir,
+      sceneIndex,
+      clipFetchDur,
+      dedup,
+      turboAdopt,
+      [...new Set(turboYtQueries.filter((q) => q.trim().length > 3))].slice(0, 5),
+      "turbo archival YouTube",
+      youtubeBeatFetchTimeoutMs(dedup.perf.fastStockMode)
+    );
+    if (turboYt && isAuthenticVideoClip(turboYt)) return turboYt;
+
     const hist = await fetchHistoricalBeatVideo(
-      beat, scene, workDir, sceneIndex, clipFetchDur, dedup, histIntent, turboAdopt, tag
+      beat, scene, workDir, sceneIndex, clipFetchDur, dedup, histIntent, turboAdopt, tag, {
+        skipYoutube: true,
+      }
     );
     if (hist && isAuthenticVideoClip(hist)) return hist;
   }

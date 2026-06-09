@@ -81,10 +81,13 @@ async function startServer() {
   const ytDownload = !!(process.env.RAPIDAPI_KEY?.trim() || process.env.YOUTUBE_CC_DL_SERVICE?.trim());
   console.log("[Fastvid] RAPIDAPI_KEY:", ytDownload ? "✓ set" : "✗ NOT SET — YouTube CC download disabled");
   console.log("[Fastvid] YOUTUBE_API_KEY:", ytSearch ? "✓ set" : "✗ NOT SET — YouTube CC search disabled");
+  const ytFairUse = process.env.ENABLE_YOUTUBE_FAIR_USE !== "false";
   if (ytSearch && ytDownload) {
-    console.log("[Fastvid] YouTube CC: ✓ search + download enabled");
+    console.log(
+      `[Fastvid] YouTube: ✓ search + download (CC first${ytFairUse ? ", fair-use transform on adopt" : ""})`
+    );
   } else if (ytSearch || ytDownload) {
-    console.log("[Fastvid] YouTube CC: ✗ incomplete — need BOTH YOUTUBE_API_KEY and RAPIDAPI_KEY");
+    console.log("[Fastvid] YouTube: ✗ incomplete — need BOTH YOUTUBE_API_KEY and RAPIDAPI_KEY");
   }
   console.log("[Fastvid] SERPAPI_KEY:", process.env.SERPAPI_KEY ? "✓ set" : "✗ NOT SET — celebrity image search disabled");
   console.log("[Fastvid] UNSPLASH_ACCESS_KEY:", process.env.UNSPLASH_ACCESS_KEY?.trim() ? "✓ set" : "✗ NOT SET — Unsplash image search disabled");
@@ -186,6 +189,7 @@ async function startServer() {
         youtubeCcReady:
           !!process.env.YOUTUBE_API_KEY?.trim() &&
           !!(process.env.RAPIDAPI_KEY?.trim() || process.env.YOUTUBE_CC_DL_SERVICE?.trim()),
+        youtubeFairUseEnabled: process.env.ENABLE_YOUTUBE_FAIR_USE !== "false",
         serpApiReady: !!process.env.SERPAPI_KEY?.trim(),
         unsplashReady: !!process.env.UNSPLASH_ACCESS_KEY?.trim(),
         voiceReady: !!(
