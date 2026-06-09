@@ -564,6 +564,12 @@ async function fetchBeatYoutubeThenPexels(
     markLicensedStockBeatUsed(dedup);
     return stock;
   }
+  if (dedup.perf.enableAiFallback && dedup.aiClipsUsed < dedup.perf.maxAiClipsPerVideo) {
+    const ai = await fetchBeatAIClip(
+      beat, scene, workDir, sceneIndex, beat.index, clipFetchDur, dedup, videoTitle
+    );
+    if (ai && !isPipelineFallbackClip(ai)) return ai;
+  }
   return null;
 }
 
