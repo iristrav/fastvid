@@ -7,6 +7,7 @@ import fetch from "node-fetch";
 import * as fs from "fs";
 import * as path from "path";
 import { resolveLocalVideoPath } from "./storageLocal";
+import { archiveClipHasBakedEditText } from "./archiveClipFilter";
 import {
   getAllMediaArchives,
   getMediaArchiveAssets,
@@ -254,6 +255,12 @@ export async function prepareCuratedArchiveClip(
   const outPath = path.join(workDir, `scene_${sceneIndex}_b${beatIndex}_curated_a${asset.id}.mp4`);
 
   await materializeAssetUrl(asset.storageUrl, rawPath);
+
+  const rawBuffer = fs.readFileSync(rawPath);
+  if (await archiveClipHasBakedEditText(rawBuffer, asset.mimeType)) {
+    try { if (fs.existsSync(rawPath)) fs.unlinkSync(rawPath); } catch { /* ignore */ }
+    throw new Error(`curated asset ${asset.id} has baked edit text — skipped`);
+  }
 
   if (asset.mediaType === "image") {
     await convertImageToKenBurns(rawPath, outPath, duration);

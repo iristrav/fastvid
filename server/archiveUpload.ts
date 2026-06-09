@@ -10,6 +10,7 @@ import {
   generateArchiveAssetAiMetadata,
   inferArchiveMediaMime,
 } from "./archiveAssetTagging";
+import { archiveClipHasBakedEditText } from "./archiveClipFilter";
 import { formatTimecode, mapPool, maxArchiveUploadBytes, splitVideoBySceneChanges } from "./archiveVideoSplitter";
 import { getUserFromRequest } from "./_core/context";
 import {
@@ -115,6 +116,12 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
 
       const createdAssets = (
         await mapPool(segments, 4, async (seg) => {
+          if (await archiveClipHasBakedEditText(seg.buffer, "video/mp4")) {
+            console.log(
+              `[ArchiveUpload] skip clip ${seg.index + 1} (${formatTimecode(seg.startSec)}–${formatTimecode(seg.endSec)}): baked edit text`
+            );
+            return null;
+          }
           const key = `media-archive/${input.archiveId}/${Date.now()}-clip${seg.index}-${Math.random().toString(36).slice(2, 6)}.mp4`;
           const fragmentNote = parentSource
             ? `Fragment uit ${parentSource} (${formatTimecode(seg.startSec)}–${formatTimecode(seg.endSec)})`
@@ -162,7 +169,10 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
       if (createdAssets.length === 0) {
         throw new ArchiveUploadError(
           500,
-          appErrorMessage(APP_ERROR.SERVICE_ERROR, "Scene split produced no clips")
+          appErrorMessage(
+            APP_ERROR.SERVICE_ERROR,
+            "Geen clips opgeslagen — alle fragmenten bevatten editor-tekst of split mislukt"
+          )
         );
       }
       return {
@@ -173,6 +183,16 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
         aiTagged: autoGenerateTags,
       };
     }
+  }
+
+  if (await archiveClipHasBakedEditText(input.buffer, mimeType)) {
+    throw new ArchiveUploadError(
+      400,
+      appErrorMessage(
+        APP_ERROR.SERVICE_ERROR,
+        "Deze upload bevat editor-tekst (titel/ondertitel overlay). Alleen puur beeldmateriaal toegestaan — tekst hoort in het editprogramma."
+      )
+    );
   }
 
   const mediaType = isVideo ? "video" as const : "image" as const;
