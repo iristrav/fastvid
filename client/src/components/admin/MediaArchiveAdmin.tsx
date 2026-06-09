@@ -222,7 +222,7 @@ export function MediaArchiveAdmin() {
             Media <span className="gradient-text">Archief</span>
           </h2>
           <p className="text-slate-400 text-sm mt-1">
-            Maak niche-archieven met video&apos;s en foto&apos;s. Video&apos;s tot 20 min worden binnen ~10 min automatisch geknipt bij elke beeldwisseling.
+            Maak niche-archieven met video&apos;s en foto&apos;s. Lange video&apos;s worden geknipt op elke shot/scène-wisseling — geen vaste intervallen.
           </p>
         </div>
         <button
@@ -368,7 +368,7 @@ export function MediaArchiveAdmin() {
                     onChange={(e) => setAutoSplitScenes(e.target.checked)}
                     className="rounded border-white/20 bg-white/5 text-purple-600 focus:ring-purple-500"
                   />
-                  Video automatisch knippen bij elke beeldwisseling (per shot/afbeelding)
+                  Automatisch knippen op shot/scène-wisseling (scdet — detecteert echte beeldcuts)
                 </label>
                 <label
                   className={`flex flex-col items-center justify-center gap-2 border-2 border-dashed rounded-xl p-8 cursor-pointer transition-colors ${

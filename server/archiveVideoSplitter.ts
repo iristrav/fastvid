@@ -1,6 +1,6 @@
 /**
- * Split long archive videos into clips at scene/cut boundaries (FFmpeg scene detection).
- * Tuned for up to 20-minute sources within a ~9-minute processing budget.
+ * Split archive videos at real shot/scene boundaries — NOT on fixed time intervals.
+ * Uses FFmpeg scdet (shot-change) + scene filter (visual diff) on every downscaled frame.
  */
 import { exec as execCb } from "child_process";
 import { promisify } from "util";
@@ -18,12 +18,13 @@ export type VideoClipSegment = {
   index: number;
 };
 
-const MIN_CLIP_SEC = 0.45;
+/** Drop only sub-frame detection noise — never merge real shots for being "too short". */
+const MIN_SCENE_SEC = 0.12;
 const MAX_CLIPS = 120;
-const DEFAULT_SCENE_THRESHOLD = 0.22;
-const DEFAULT_CUT_MERGE_GAP_SEC = 0.35;
-const DEFAULT_DETECT_FPS = 6;
-const DEFAULT_SPLIT_BUDGET_MS = 540_000; // 9 min — fits in 10 min HTTP timeout
+const DEFAULT_SCENE_THRESHOLD = 0.28;
+const DEFAULT_SCDET_THRESHOLD = 8;
+const DEFAULT_CUT_MERGE_GAP_SEC = 0.22;
+const DEFAULT_SPLIT_BUDGET_MS = 540_000;
 const DEFAULT_MAX_SOURCE_SEC = 20 * 60;
 const DEFAULT_MAX_UPLOAD_MB = 600;
 
@@ -44,20 +45,30 @@ export function sceneThreshold(): number {
   return DEFAULT_SCENE_THRESHOLD;
 }
 
+export function scdetThreshold(): number {
+  const raw = process.env.ARCHIVE_SCDET_THRESHOLD?.trim();
+  if (raw) {
+    const n = parseFloat(raw);
+    if (!isNaN(n) && n >= 1 && n <= 50) return n;
+  }
+  return DEFAULT_SCDET_THRESHOLD;
+}
+
+/** @deprecated kept for env compat — no longer merges short shots together */
 export function minClipSec(): number {
   const raw = process.env.ARCHIVE_MIN_CLIP_SEC?.trim();
   if (raw) {
     const n = parseFloat(raw);
-    if (!isNaN(n) && n >= 0.25 && n <= 5) return n;
+    if (!isNaN(n) && n >= 0.1 && n <= 5) return n;
   }
-  return MIN_CLIP_SEC;
+  return MIN_SCENE_SEC;
 }
 
 export function cutMergeGapSec(): number {
   const raw = process.env.ARCHIVE_CUT_MERGE_GAP?.trim();
   if (raw) {
     const n = parseFloat(raw);
-    if (!isNaN(n) && n >= 0.15 && n <= 2) return n;
+    if (!isNaN(n) && n >= 0.1 && n <= 1) return n;
   }
   return DEFAULT_CUT_MERGE_GAP_SEC;
 }
@@ -111,7 +122,7 @@ export async function probeVideoDurationSec(filePath: string): Promise<number> {
   }
 }
 
-/** Merge cut points closer than minGapSec (same hard cut detected twice). */
+/** Merge duplicate detections of the same cut (not separate shots). */
 export function mergeNearbyCuts(cuts: number[], minGapSec: number): number[] {
   const sorted = [...cuts].sort((a, b) => a - b);
   const out: number[] = [];
@@ -121,60 +132,78 @@ export function mergeNearbyCuts(cuts: number[], minGapSec: number): number[] {
   return out;
 }
 
-/** Build [start,end) ranges from cut list; merge segments shorter than minClipSec. */
+/** Combine cut lists from scdet + scene detectors. */
+export function combineShotCutTimes(cutLists: number[][]): number[] {
+  return mergeNearbyCuts(cutLists.flat(), cutMergeGapSec());
+}
+
+/** Parse FFmpeg showinfo pts_time lines. */
+export function parsePtsTimesFromFfmpeg(stderr: string, totalDur: number): number[] {
+  const times: number[] = [];
+  const re = /pts_time:([0-9.]+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(stderr)) !== null) {
+    const t = parseFloat(m[1]);
+    if (t > MIN_SCENE_SEC && t < totalDur - MIN_SCENE_SEC) times.push(t);
+  }
+  return times;
+}
+
+/** Parse scdet metadata lines (lavfi.scd.time). */
+export function parseScdetTimesFromFfmpeg(stderr: string, totalDur: number): number[] {
+  const times: number[] = [];
+  const re = /lavfi\.scd\.time[=:\s"]+([0-9.]+)/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(stderr)) !== null) {
+    const t = parseFloat(m[1]);
+    if (t > MIN_SCENE_SEC && t < totalDur - MIN_SCENE_SEC) times.push(t);
+  }
+  return times;
+}
+
+/**
+ * Build clip ranges from detected cut times only — one clip per shot, no fixed intervals.
+ */
 export function buildClipRanges(
   cuts: number[],
   totalDuration: number,
-  minClip = minClipSec(),
   maxClips = MAX_CLIPS,
   mergeGap = cutMergeGapSec()
 ): Array<{ start: number; end: number }> {
   if (totalDuration <= 0) return [];
-  const points = [0, ...mergeNearbyCuts(cuts, mergeGap), totalDuration];
+  const cutPoints = mergeNearbyCuts(cuts, mergeGap);
+  const points = [0, ...cutPoints, totalDuration];
+
   let ranges: Array<{ start: number; end: number }> = [];
   for (let i = 0; i < points.length - 1; i++) {
     const start = points[i];
     const end = points[i + 1];
-    if (end - start >= 0.15) ranges.push({ start, end });
+    if (end - start >= MIN_SCENE_SEC) ranges.push({ start, end });
   }
 
-  let merged: Array<{ start: number; end: number }> = [];
-  for (const r of ranges) {
-    if (merged.length === 0) {
-      merged.push({ ...r });
-      continue;
-    }
-    const dur = r.end - r.start;
-    if (dur < minClip) {
-      merged[merged.length - 1].end = r.end;
-    } else {
-      merged.push({ ...r });
-    }
-  }
-
-  while (merged.length > maxClips) {
-    let shortestIdx = 0;
-    let shortest = merged[0].end - merged[0].start;
-    for (let i = 1; i < merged.length; i++) {
-      const d = merged[i].end - merged[i].start;
+  // Cap clip count by merging the shortest adjacent pair (least content lost).
+  while (ranges.length > maxClips) {
+    let mergeIdx = 0;
+    let shortest = ranges[0].end - ranges[0].start;
+    for (let i = 1; i < ranges.length; i++) {
+      const d = ranges[i].end - ranges[i].start;
       if (d < shortest) {
         shortest = d;
-        shortestIdx = i;
+        mergeIdx = i;
       }
     }
-    if (shortestIdx === 0) {
-      merged[0].end = merged[1].end;
-      merged.splice(1, 1);
+    if (mergeIdx === 0) {
+      ranges[0].end = ranges[1].end;
+      ranges.splice(1, 1);
     } else {
-      merged[shortestIdx - 1].end = merged[shortestIdx].end;
-      merged.splice(shortestIdx, 1);
+      ranges[mergeIdx - 1].end = ranges[mergeIdx].end;
+      ranges.splice(mergeIdx, 1);
     }
   }
 
-  return merged.filter((r) => r.end - r.start >= minClip * 0.85);
+  return ranges;
 }
 
-/** Run async tasks with bounded concurrency; preserves result order. */
 export async function mapPool<T, R>(
   items: T[],
   concurrency: number,
@@ -200,57 +229,75 @@ export async function mapPool<T, R>(
   return out;
 }
 
-async function runSceneDetectPass(
+async function runFfmpegDetect(cmd: string, timeoutMs: number): Promise<string> {
+  try {
+    const result = await exec(cmd, { maxBuffer: 64 * 1024 * 1024, timeout: timeoutMs });
+    return String(result.stderr ?? "");
+  } catch (err: unknown) {
+    return String((err as { stderr?: string }).stderr ?? "");
+  }
+}
+
+/** scdet — purpose-built shot/scene boundary detector (every frame, downscaled). */
+async function detectScdetCutTimes(
   inputPath: string,
   totalDur: number,
   threshold: number,
-  fps: number,
   timeoutMs: number
 ): Promise<number[]> {
   const cmd =
     `${ffmpegBin()} -i "${inputPath}" -an ` +
-    `-vf "fps=${fps},scale=480:-1,select='gt(scene,${threshold})',showinfo" -f null -`;
-  let stderr = "";
-  try {
-    const result = await exec(cmd, { maxBuffer: 32 * 1024 * 1024, timeout: timeoutMs });
-    stderr = String(result.stderr ?? "");
-  } catch (err: unknown) {
-    stderr = String((err as { stderr?: string }).stderr ?? "");
-    if (!stderr.includes("pts_time")) {
-      console.warn("[ArchiveSplit] scene detect failed:", (err as Error).message?.slice(0, 200));
-      return [];
-    }
-  }
+    `-vf "scale=480:-1,scdet=threshold=${threshold}:sc_pass=1,showinfo" -f null -`;
+  const stderr = await runFfmpegDetect(cmd, timeoutMs);
+  const fromMeta = parseScdetTimesFromFfmpeg(stderr, totalDur);
+  if (fromMeta.length > 0) return mergeNearbyCuts(fromMeta, cutMergeGapSec());
+  return mergeNearbyCuts(parsePtsTimesFromFfmpeg(stderr, totalDur), cutMergeGapSec());
+}
 
-  const times: number[] = [];
-  const re = /pts_time:([0-9.]+)/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(stderr)) !== null) {
-    const t = parseFloat(m[1]);
-    if (t > 0.05 && t < totalDur - 0.05) times.push(t);
-  }
-  return mergeNearbyCuts(times, cutMergeGapSec());
+/** scene filter — visual frame diff (every frame, downscaled; no fps= interval sampling). */
+async function detectSceneFilterCutTimes(
+  inputPath: string,
+  totalDur: number,
+  threshold: number,
+  timeoutMs: number
+): Promise<number[]> {
+  const cmd =
+    `${ffmpegBin()} -i "${inputPath}" -an ` +
+    `-vf "scale=480:-1,select='gt(scene,${threshold})',showinfo" -f null -`;
+  const stderr = await runFfmpegDetect(cmd, timeoutMs);
+  return mergeNearbyCuts(parsePtsTimesFromFfmpeg(stderr, totalDur), cutMergeGapSec());
 }
 
 async function detectSceneCutTimes(inputPath: string, totalDur: number, deadlineMs: number): Promise<number[]> {
-  const threshold = sceneThreshold();
-  const detectTimeout = Math.min(240_000, Math.max(60_000, deadlineMs - Date.now()));
-  const perPassTimeout = Math.floor(detectTimeout * 0.55);
+  const detectTimeout = Math.min(300_000, Math.max(60_000, deadlineMs - Date.now()));
+  const scdetBudget = Math.floor(detectTimeout * 0.5);
+  const sceneBudget = Math.floor(detectTimeout * 0.5);
 
-  let cuts = await runSceneDetectPass(inputPath, totalDur, threshold, DEFAULT_DETECT_FPS, perPassTimeout);
+  const scdetCuts = await detectScdetCutTimes(inputPath, totalDur, scdetThreshold(), scdetBudget);
+  const sceneCuts = await detectSceneFilterCutTimes(inputPath, totalDur, sceneThreshold(), sceneBudget);
+  let cuts = combineShotCutTimes([scdetCuts, sceneCuts]);
 
-  // Slideshow / per-image videos: retry with higher sensitivity when almost no cuts found.
-  if (cuts.length < 2 && totalDur > 20) {
-    const sensitive = Math.max(0.1, threshold * 0.55);
-    const retry = await runSceneDetectPass(
+  console.log(
+    `[ArchiveSplit] shot detect: scdet=${scdetCuts.length} scene=${sceneCuts.length} combined=${cuts.length}`
+  );
+
+  // If almost no shots found on a long video, retry both detectors more sensitively.
+  if (cuts.length < 2 && totalDur > 15) {
+    const scdet2 = await detectScdetCutTimes(
       inputPath,
       totalDur,
-      sensitive,
-      Math.min(10, DEFAULT_DETECT_FPS + 2),
-      Math.floor(detectTimeout * 0.45)
+      Math.max(3, scdetThreshold() * 0.6),
+      Math.floor(sceneBudget * 0.5)
     );
+    const scene2 = await detectSceneFilterCutTimes(
+      inputPath,
+      totalDur,
+      Math.max(0.1, sceneThreshold() * 0.55),
+      Math.floor(sceneBudget * 0.5)
+    );
+    const retry = combineShotCutTimes([scdet2, scene2]);
     if (retry.length > cuts.length) {
-      console.log(`[ArchiveSplit] sensitive pass found ${retry.length} cuts (was ${cuts.length})`);
+      console.log(`[ArchiveSplit] sensitive shot retry: ${retry.length} cuts (was ${cuts.length})`);
       cuts = retry;
     }
   }
@@ -279,8 +326,8 @@ function formatTimecode(sec: number): string {
 }
 
 /**
- * Detect visual scene changes and return one buffer per clip.
- * Falls back to a single segment when no cuts are found.
+ * Detect shot/scene changes and return one buffer per clip.
+ * Never splits on fixed time intervals — only on detected visual cuts.
  */
 export async function splitVideoBySceneChanges(
   inputBuffer: Buffer,
@@ -302,54 +349,48 @@ export async function splitVideoBySceneChanges(
       throw new Error(`Video too long (${Math.ceil(totalDur / 60)} min, max ${Math.floor(maxDur / 60)} min)`);
     }
 
-    if (totalDur < minClipSec() * 2) {
-      return [
-        {
-          buffer: inputBuffer,
-          startSec: 0,
-          endSec: totalDur || 0,
-          durationSec: totalDur || 0,
-          index: 0,
-        },
-      ];
+    if (totalDur < MIN_SCENE_SEC * 2) {
+      return [{
+        buffer: inputBuffer,
+        startSec: 0,
+        endSec: totalDur || 0,
+        durationSec: totalDur || 0,
+        index: 0,
+      }];
     }
 
     const cuts = await detectSceneCutTimes(inputPath, totalDur, deadline);
     const ranges = buildClipRanges(cuts, totalDur);
     console.log(
-      `[ArchiveSplit] ${cuts.length} scene cuts → ${ranges.length} clip(s) (${totalDur.toFixed(1)}s source, ` +
-        `threshold ${sceneThreshold()}, budget ${splitBudgetMs() / 1000}s, concurrency ${extractConcurrency()})`
+      `[ArchiveSplit] ${cuts.length} shot cuts → ${ranges.length} clip(s) (${totalDur.toFixed(1)}s, ` +
+        `scdet=${scdetThreshold()} scene=${sceneThreshold()})`
     );
 
     if (ranges.length <= 1) {
-      return [
-        {
-          buffer: inputBuffer,
-          startSec: 0,
-          endSec: totalDur,
-          durationSec: totalDur,
-          index: 0,
-        },
-      ];
+      console.log("[ArchiveSplit] no shot boundaries detected — keeping whole video as one clip");
+      return [{
+        buffer: inputBuffer,
+        startSec: 0,
+        endSec: totalDur,
+        durationSec: totalDur,
+        index: 0,
+      }];
     }
 
     if (!hasBudget()) {
-      console.warn("[ArchiveSplit] budget exhausted after scene detect — storing whole video");
-      return [
-        {
-          buffer: inputBuffer,
-          startSec: 0,
-          endSec: totalDur,
-          durationSec: totalDur,
-          index: 0,
-        },
-      ];
+      console.warn("[ArchiveSplit] budget exhausted after shot detect — storing whole video");
+      return [{
+        buffer: inputBuffer,
+        startSec: 0,
+        endSec: totalDur,
+        durationSec: totalDur,
+        index: 0,
+      }];
     }
 
-    const concurrency = extractConcurrency();
     const extractResults = await mapPool(
       ranges,
-      concurrency,
+      extractConcurrency(),
       async (range, i) => {
         const { start, end } = range;
         const dur = end - start;
@@ -377,19 +418,16 @@ export async function splitVideoBySceneChanges(
     );
 
     const segments = extractResults.filter((s): s is VideoClipSegment => s != null);
-    const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
-    console.log(`[ArchiveSplit] extracted ${segments.length}/${ranges.length} clips in ${elapsed}s`);
+    console.log(`[ArchiveSplit] extracted ${segments.length}/${ranges.length} shot clips in ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
 
     if (segments.length === 0) {
-      return [
-        {
-          buffer: inputBuffer,
-          startSec: 0,
-          endSec: totalDur,
-          durationSec: totalDur,
-          index: 0,
-        },
-      ];
+      return [{
+        buffer: inputBuffer,
+        startSec: 0,
+        endSec: totalDur,
+        durationSec: totalDur,
+        index: 0,
+      }];
     }
 
     return segments;
