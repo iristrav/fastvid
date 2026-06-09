@@ -117,8 +117,9 @@ async function startServer() {
   // Configure body parser with larger size limit for file uploads
   // Register Stripe webhook BEFORE express.json() for raw body access
   registerStripeWebhook(app);
-  app.use(express.json({ limit: "50mb" }));
-  app.use(express.urlencoded({ limit: "50mb", extended: true }));
+  // Base64 uploads need ~33% headroom; archive videos up to 100MB raw.
+  app.use(express.json({ limit: "150mb" }));
+  app.use(express.urlencoded({ limit: "150mb", extended: true }));
   registerStorageProxy(app);
   registerOAuthRoutes(app);
 
@@ -536,6 +537,11 @@ async function startServer() {
 
   // Railway injects PORT automatically — always use it directly
   const port = parseInt(process.env.PORT || "3000", 10);
+
+  // Long archive uploads (scene split + storage) can take several minutes.
+  server.timeout = 600_000;
+  server.keepAliveTimeout = 620_000;
+  server.headersTimeout = 625_000;
 
   server.listen(port, "0.0.0.0", () => {
     console.log(`[Fastvid] Server running on port ${port}`);

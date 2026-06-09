@@ -72,7 +72,7 @@ function isMuskTeslaPromptTopic(prompt: string, title: string): boolean {
 import { storagePut } from "./storage";
 import { FASTVID_PRO_PLAN } from "./products";
 import { formatTimecode, splitVideoBySceneChanges } from "./archiveVideoSplitter";
-import { enrichArchiveAssetFields } from "./archiveAssetTagging";
+import { enrichArchiveAssetFields, generateArchiveAssetAiMetadata, applySharedAiToClipFields, inferArchiveMediaMime } from "./archiveAssetTagging";
 import { updateVideoScenes, updateEditedVideoUrl, getVideoScenes, type EditorScene, type EditorClip } from "./db";
 import { runVideoPipeline } from "./videoPipeline";
 import { forgotPassword, validateResetToken as validateResetTokenProcedure, resetPassword } from "./authPasswordReset";
@@ -1222,8 +1222,9 @@ export const appRouter = router({
         throw appTrpcError("BAD_REQUEST", APP_ERROR.FILE_TOO_LARGE, "File too large (max 100MB)");
       }
 
-      const isVideo = input.mimeType.startsWith("video/");
-      const isImage = input.mimeType.startsWith("image/");
+      const mimeType = inferArchiveMediaMime(input.mimeType, input.filename);
+      const isVideo = mimeType.startsWith("video/");
+      const isImage = mimeType.startsWith("image/");
       if (!isVideo && !isImage) {
         throw appTrpcError("BAD_REQUEST", APP_ERROR.FILE_TOO_LARGE, "Only video and image files are supported");
       }
@@ -1238,8 +1239,17 @@ export const appRouter = router({
       const parentSource = input.filename?.trim() || input.sourceNote?.trim() || null;
 
       if (isVideo && input.autoSplitScenes) {
-        const segments = await splitVideoBySceneChanges(buffer, input.mimeType);
+        const segments = await splitVideoBySceneChanges(buffer, mimeType);
         if (segments.length > 1) {
+          const sharedAi = input.autoGenerateTags
+            ? await generateArchiveAssetAiMetadata(segments[0].buffer, "video/mp4", {
+                archiveNicheTags,
+                parentFilename: input.filename ?? undefined,
+                userTags,
+                clipLabel: "eerste fragment (tags gelden voor alle clips)",
+              })
+            : null;
+
           const createdAssets = [];
           for (const seg of segments) {
             const key = `media-archive/${input.archiveId}/${Date.now()}-clip${seg.index}-${Math.random().toString(36).slice(2, 6)}.mp4`;
@@ -1247,18 +1257,27 @@ export const appRouter = router({
               ? `Fragment uit ${parentSource} (${formatTimecode(seg.startSec)}–${formatTimecode(seg.endSec)})`
               : `Fragment ${formatTimecode(seg.startSec)}–${formatTimecode(seg.endSec)}`;
             const draftTitle = `${baseTitle} — clip ${seg.index + 1}`;
-            const enriched = await enrichArchiveAssetFields({
-              buffer: seg.buffer,
-              mimeType: "video/mp4",
-              autoGenerateTags: input.autoGenerateTags,
-              baseTitle: draftTitle,
-              userTags,
-              sourceNote: fragmentNote,
-              archiveNicheTags,
-              parentFilename: input.filename ?? undefined,
-              clipIndex: seg.index,
-              userProvidedTitle,
-            });
+            const enriched = sharedAi
+              ? applySharedAiToClipFields({
+                  baseTitle: draftTitle,
+                  userTags,
+                  sourceNote: fragmentNote,
+                  ai: sharedAi,
+                  clipIndex: seg.index,
+                  userProvidedTitle,
+                })
+              : await enrichArchiveAssetFields({
+                  buffer: seg.buffer,
+                  mimeType: "video/mp4",
+                  autoGenerateTags: false,
+                  baseTitle: draftTitle,
+                  userTags,
+                  sourceNote: fragmentNote,
+                  archiveNicheTags,
+                  parentFilename: input.filename ?? undefined,
+                  clipIndex: seg.index,
+                  userProvidedTitle,
+                });
             const { url } = await storagePut(key, seg.buffer, "video/mp4");
             const assetId = await createMediaArchiveAsset({
               archiveId: input.archiveId,
@@ -1287,11 +1306,11 @@ export const appRouter = router({
 
       const mediaType = isVideo ? "video" as const : "image" as const;
       const ext = isVideo
-        ? (input.mimeType.includes("webm") ? "webm" : input.mimeType.includes("quicktime") || input.mimeType.includes("mov") ? "mov" : "mp4")
-        : (input.mimeType.includes("png") ? "png" : input.mimeType.includes("gif") ? "gif" : input.mimeType.includes("webp") ? "webp" : "jpg");
+        ? (mimeType.includes("webm") ? "webm" : mimeType.includes("quicktime") || mimeType.includes("mov") ? "mov" : "mp4")
+        : (mimeType.includes("png") ? "png" : mimeType.includes("gif") ? "gif" : mimeType.includes("webp") ? "webp" : "jpg");
       const enriched = await enrichArchiveAssetFields({
         buffer,
-        mimeType: input.mimeType,
+        mimeType,
         autoGenerateTags: input.autoGenerateTags,
         baseTitle,
         userTags,
@@ -1301,14 +1320,14 @@ export const appRouter = router({
         userProvidedTitle,
       });
       const key = `media-archive/${input.archiveId}/${Date.now()}-${Math.random().toString(36).slice(2, 6)}.${ext}`;
-      const { url } = await storagePut(key, buffer, input.mimeType);
+      const { url } = await storagePut(key, buffer, mimeType);
 
       const assetId = await createMediaArchiveAsset({
         archiveId: input.archiveId,
         title: enriched.title,
         mediaType,
         mixKind,
-        mimeType: input.mimeType,
+        mimeType,
         storageUrl: url,
         storageKey: key,
         tags: enriched.tags,

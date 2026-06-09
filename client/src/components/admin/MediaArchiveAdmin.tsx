@@ -23,6 +23,24 @@ function parseTagsInput(raw: string): string[] {
   return raw.split(/[,;]+/).map((t) => t.trim()).filter(Boolean);
 }
 
+function guessFileMime(file: File): string {
+  if (file.type.startsWith("video/") || file.type.startsWith("image/")) return file.type;
+  const ext = file.name.split(".").pop()?.toLowerCase();
+  const map: Record<string, string> = {
+    mp4: "video/mp4",
+    webm: "video/webm",
+    mov: "video/quicktime",
+    mkv: "video/x-matroska",
+    avi: "video/x-msvideo",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    png: "image/png",
+    gif: "image/gif",
+    webp: "image/webp",
+  };
+  return ext ? (map[ext] ?? "") : "";
+}
+
 function tagsToInput(tags: string[] | null | undefined): string {
   return (tags ?? []).join(", ");
 }
@@ -100,7 +118,11 @@ export function MediaArchiveAdmin() {
   const selectedArchive = archives.find((a) => a.id === activeArchiveId);
 
   async function handleFiles(files: FileList | null) {
-    if (!activeArchiveId || !files?.length) return;
+    if (!files?.length) return;
+    if (!activeArchiveId) {
+      toast.error("Maak eerst een archief aan");
+      return;
+    }
     setUploading(true);
     try {
       for (const file of Array.from(files)) {
@@ -108,20 +130,22 @@ export function MediaArchiveAdmin() {
           toast.error(`${file.name}: te groot (max 100MB)`);
           continue;
         }
-        if (!file.type.startsWith("video/") && !file.type.startsWith("image/")) {
-          toast.error(`${file.name}: alleen video of afbeelding`);
+        const mimeType = guessFileMime(file);
+        if (!mimeType.startsWith("video/") && !mimeType.startsWith("image/")) {
+          toast.error(`${file.name}: alleen video of afbeelding (MP4, JPG, PNG, …)`);
           continue;
         }
         const base64 = await readFileAsBase64(file);
-        const mixKind = file.type.startsWith("video/") ? "real_video" : uploadMixKind;
+        const isVideo = mimeType.startsWith("video/");
+        const mixKind = isVideo ? "real_video" : uploadMixKind;
         const result = await uploadAsset.mutateAsync({
           archiveId: activeArchiveId,
           fileBase64: base64,
-          mimeType: file.type,
+          mimeType,
           filename: file.name,
           tags: parseTagsInput(uploadTags),
           mixKind,
-          autoSplitScenes: file.type.startsWith("video/") ? autoSplitScenes : false,
+          autoSplitScenes: isVideo ? autoSplitScenes : false,
           autoGenerateTags,
         });
         utils.mediaArchive.listAssets.invalidate();
@@ -133,6 +157,8 @@ export function MediaArchiveAdmin() {
         }
       }
       setUploadTags("");
+    } catch (e) {
+      toast.error("Upload mislukt", { description: toastErrorMessage(e) });
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
@@ -313,7 +339,7 @@ export function MediaArchiveAdmin() {
                     ref={fileInputRef}
                     type="file"
                     multiple
-                    accept="video/*,image/*"
+                    accept="video/*,image/*,.mp4,.webm,.mov,.mkv,.jpg,.jpeg,.png,.gif,.webp"
                     className="hidden"
                     onChange={(e) => handleFiles(e.target.files)}
                   />

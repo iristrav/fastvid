@@ -44,6 +44,59 @@ export function mergeArchiveTags(userTags: string[], aiTags: string[]): string[]
   return normalizeMediaTags([...userTags, ...aiTags]).slice(0, 32);
 }
 
+export function truncateArchiveSourceNote(note: string | null | undefined): string | null {
+  if (!note?.trim()) return null;
+  return note.trim().slice(0, 512);
+}
+
+const EXT_TO_MIME: Record<string, string> = {
+  mp4: "video/mp4",
+  webm: "video/webm",
+  mov: "video/quicktime",
+  mkv: "video/x-matroska",
+  avi: "video/x-msvideo",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  gif: "image/gif",
+  webp: "image/webp",
+};
+
+/** Infer mime when browser sends empty type (common on Windows). */
+export function inferArchiveMediaMime(mimeType: string, filename?: string): string {
+  if (mimeType.startsWith("video/") || mimeType.startsWith("image/")) return mimeType;
+  const ext = filename?.split(".").pop()?.toLowerCase();
+  if (ext && EXT_TO_MIME[ext]) return EXT_TO_MIME[ext];
+  return mimeType;
+}
+
+export function applySharedAiToClipFields(opts: {
+  baseTitle: string;
+  userTags: string[];
+  sourceNote: string | null;
+  ai: ArchiveAssetAiMetadata;
+  clipIndex?: number;
+  userProvidedTitle?: boolean;
+}): { title: string; tags: string[]; sourceNote: string | null } {
+  let title = opts.baseTitle;
+  let tags = mergeArchiveTags(opts.userTags, opts.ai.tags);
+  let sourceNote = opts.sourceNote;
+
+  if (opts.clipIndex != null) {
+    const root = opts.baseTitle.replace(/\s*—\s*clip\s*\d+$/i, "").trim();
+    title = `${root} — ${opts.ai.title}`.slice(0, 512);
+  } else if (!opts.userProvidedTitle) {
+    title = opts.ai.title.slice(0, 512);
+  }
+
+  const desc = opts.ai.description.trim();
+  if (desc) {
+    sourceNote = sourceNote ? `${sourceNote} — ${desc}` : desc;
+  }
+
+  return { title, tags, sourceNote: truncateArchiveSourceNote(sourceNote) };
+}
+
 function ffmpegBin(): string {
   return process.env.FFMPEG_BIN || process.env.FFMPEG_PATH || "ffmpeg";
 }
@@ -225,5 +278,5 @@ export async function enrichArchiveAssetFields(opts: {
     sourceNote = sourceNote ? `${sourceNote} — ${desc}` : desc;
   }
 
-  return { title, tags, sourceNote };
+  return { title, tags, sourceNote: truncateArchiveSourceNote(sourceNote) };
 }
