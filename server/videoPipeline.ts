@@ -848,7 +848,9 @@ function resolveAiFallbackConfig(videoLength: string): { enable: boolean; maxCli
     return { enable: false, maxClips: 0 };
   }
   const short = videoLength === "1" || videoLength === "2";
-  if (IS_RAILWAY && short) return { enable: false, maxClips: 0 };
+  if (IS_RAILWAY && short) {
+    return { enable: aiProvidersReady(), maxClips: aiProvidersReady() ? 4 : 0 };
+  }
   const minimize = minimizeStockFootageEnabled();
   return {
     enable: true,
@@ -6031,6 +6033,26 @@ async function fetchBeatScriptImageForced(
           return clip;
         }
       }
+      for (const q of queries.slice(0, 4)) {
+        const wikiPaths = await fetchWikimediaImages(
+          q, clipFetchDur, workDir, sceneIndex, 1, `${tag}_force_wiki`
+        );
+        const wikiClip = await takeFirstValid(wikiPaths);
+        if (wikiClip) {
+          console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: forced image Wikimedia (${q})`);
+          return wikiClip;
+        }
+        if (UNSPLASH_ACCESS_KEY?.trim()) {
+          const unsplashPaths = await fetchUnsplashImages(
+            q, clipFetchDur, workDir, sceneIndex, 1, `${tag}_force_unsplash`, { dedup }
+          );
+          const unsplashClip = await takeFirstValid(unsplashPaths);
+          if (unsplashClip) {
+            console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: forced image Unsplash (${q})`);
+            return unsplashClip;
+          }
+        }
+      }
       if (process.env.YOUTUBE_API_KEY) {
         const thumbQ = queries[0] ?? beat.searchQuery;
         const ytPaths = await fetchYouTubeThumbnails(
@@ -6055,7 +6077,7 @@ function isStillPhotoClip(filePath: string): boolean {
   const base = path.basename(filePath);
   // AI / generated motion clips count as video, not stills
   if (/_ai\.mp4$|_runway_|_kling_|_luma_|_pika_|_veo_|_grok_|_forge_/i.test(base)) return false;
-  return /_serp_|_wiki_|_openverse_|_p0_|_p2_|_yt_\d/i.test(base);
+  return /_serp_|_wiki_|_openverse_|_unsplash_|_p0_|_p2_|_yt_\d/i.test(base);
 }
 
 /** AI-generated clip path (used only as last-resort after stock search). */
@@ -9709,7 +9731,7 @@ async function fetchSceneVisuals(
     }
     if (clip && !isPipelineFallbackClip(clip)) {
       pushClip(clip);
-    } else if (!dedup.perf.fastStockMode && dedup.perf.enableAiFallback && dedup.aiClipsUsed < dedup.perf.maxAiClipsPerVideo) {
+    } else if (dedup.perf.enableAiFallback && dedup.aiClipsUsed < dedup.perf.maxAiClipsPerVideo) {
       let aiOnly: string | null = null;
       try {
         aiOnly = await withTimeout(
@@ -9873,10 +9895,8 @@ async function fetchSceneVisuals(
     }
   }
   if (usable.length === 0) {
-    throw pipelineError(
-      PIPELINE_ERROR.NO_SCENES,
-      `Scene ${scene.index}: no unique stock clips (grey placeholders disabled)`
-    );
+    console.warn(`[Pipeline] Scene ${scene.index}: no beat clips — inline recovery`);
+    return recoverSceneClipsIfEmpty(scene, workDir, videoTitle, dedup);
   }
 
   console.log(
@@ -11086,7 +11106,7 @@ export async function runVideoPipeline(
           );
         } catch (sceneErr) {
           console.warn(
-            `[Pipeline] Scene ${scene.index} visuals timed out after ${Math.round(perf.sceneVisualTimeoutMs / 1000)}s — recovering unique stock:`,
+            `[Pipeline] Scene ${scene.index} visuals failed after ${Math.round(perf.sceneVisualTimeoutMs / 1000)}s — recovering:`,
             (sceneErr as Error).message
           );
           visualDedup.lock = Promise.resolve();
