@@ -255,7 +255,7 @@ const STILL_ONLY_SOURCES: MediaSourceKind[] = [
 ];
 
 /**
- * Canonical clip order: Archive/Wikimedia → Pexels/Pixabay → still (YouTube off unless ENABLE_YOUTUBE_SOURCING=true).
+ * Canonical clip order: Archive/Wikimedia video → real stills (vision-gated) → Pexels → AI.
  * Default on (REAL_FOOTAGE_FIRST=false disables for debugging only).
  */
 export function realFootageFirstEnabled(): boolean {

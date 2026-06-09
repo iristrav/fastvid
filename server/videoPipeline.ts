@@ -62,6 +62,7 @@ import {
   scriptGuidedBudgetMs,
   scriptGuidedClipsEnabled,
 } from "./scriptGuidedClipFinder";
+import { clipPassesVisionGate, clipVisionGateEnabled } from "./visualQualityGate";
 
 // API Keys
 const FISH_AUDIO_API_KEY = process.env.FISH_AUDIO_API_KEY || "";
@@ -328,8 +329,12 @@ const IS_RAILWAY = !process.env.BUILT_IN_FORGE_API_KEY;
 // 1080p resolution for professional YouTube quality
 const VIDEO_WIDTH = 1920;
 const VIDEO_HEIGHT = 1080;
-/** Scale/pad per clip; fps applied once after montage to reduce judder. */
+/** Letterbox pad (legacy encode paths). */
 const SCALE_PAD_VF = `scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=decrease,pad=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:(ow-iw)/2:(oh-ih)/2`;
+/** Fill 16:9 — center crop, no black bars (documentary montage). */
+const CROP_FILL_VF =
+  `scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,` +
+  `crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:(iw-${VIDEO_WIDTH})/2:(ih-${VIDEO_HEIGHT})/2`;
 const FPS_FORMAT_VF = `fps=25,format=yuv420p,setpts=PTS-STARTPTS`;
 const STANDARD_VF = `${SCALE_PAD_VF},${FPS_FORMAT_VF}`;
 /** New clip every ~3–4s; hold up to 7s when narration/visual clearly stay on one subject. */
@@ -639,6 +644,22 @@ async function fetchBeatArchivalThenPexels(
     if (isAuthenticVideoClip(celeb ?? "")) return celeb;
   }
 
+  const still = await fetchBeatAuthenticStills(
+    beat,
+    scene,
+    workDir,
+    sceneIndex,
+    clipFetchDur,
+    dedup,
+    personName,
+    videoTitle,
+    adoptOpts,
+    scenePersons,
+    tag,
+    historicalDoc
+  );
+  if (still && isRealVideoClip(still)) return still;
+
   if (!canUseLicensedStockBeat(dedup)) {
     if (dedup.perf.enableAiFallback && dedup.aiClipsUsed < dedup.perf.maxAiClipsPerVideo) {
       const ai = await fetchBeatAIClip(
@@ -721,6 +742,141 @@ async function beatPrimaryFetch(
   );
 }
 
+/** Real still photos (Wiki/SerpAPI/Openverse) before licensed stock. */
+async function fetchBeatAuthenticStills(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  personName: string,
+  videoTitle: string | undefined,
+  adoptOpts: VisualAdoptOptions,
+  scenePersons: string[],
+  tag: string,
+  historicalDoc: boolean
+): Promise<string | null> {
+  if (!canUseGlobalStillPhoto(dedup) && dedup.stillPhotosMaxThisScene === 0) return null;
+
+  const loose: VisualAdoptOptions = {
+    ...adoptOpts,
+    requireBeatMatch: false,
+    scriptAnchored: false,
+    scriptImageFallback: true,
+  };
+  const intent = buildMediaSearchIntent({
+    beatText: beat.text,
+    searchQueries: [beat.searchQuery, videoTitle ?? ""].filter((q) => q.trim().length >= 3),
+    keywords: adoptOpts.keywords ?? beat.keywords,
+    primaryPerson: historicalDoc ? "" : personName,
+    persons: scenePersons,
+    videoTitle,
+    powerWord: beat.powerWord,
+    personTopicLock: adoptOpts.personTopic ?? false,
+    spaceTopic: false,
+    muskTopic: adoptOpts.muskTopic ?? false,
+  });
+  const queries = [
+    ...buildHistoricalArchivalQueries(intent, beat.text).slice(0, 3),
+    enrichStockQuery(beat.powerWord, scene, videoTitle, personName, beat.text),
+    beat.searchQuery,
+    scene.visualCue,
+    scene.pexelsQuery,
+    ...(videoTitle?.trim() ? [videoTitle.split(/\s+/).slice(0, 4).join(" ")] : []),
+  ].filter((q): q is string => typeof q === "string" && q.trim().length > 3);
+  const unique = [...new Set(queries)].slice(0, 4);
+  const personPortrait = Boolean(personName.trim()) && !historicalDoc;
+
+  for (const q of unique) {
+    const wikiPaths = await fetchWikimediaImages(
+      q,
+      clipFetchDur,
+      workDir,
+      sceneIndex,
+      1,
+      `${tag}_still`
+    );
+    const wikiClip = await adoptClip(
+      wikiPaths,
+      dedup,
+      sceneIndex,
+      beat.index,
+      beat.text,
+      workDir,
+      q,
+      loose
+    );
+    if (wikiClip && !isPipelineFallbackClip(wikiClip)) {
+      if (canUseGlobalStillPhoto(dedup)) markGlobalStillPhotoUsed(dedup);
+      dedup.stillPhotosThisScene++;
+      console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: Wikimedia still "${q}"`);
+      return wikiClip;
+    }
+  }
+
+  if (SERPAPI_KEY && canUseGlobalStillPhoto(dedup)) {
+    const serpQ = personPortrait && personName.trim()
+      ? buildPersonSerpQuery(personName, sceneIndex, beat.index, beat.text)
+      : (unique[0] ?? beat.searchQuery);
+    const serpPaths = await fetchSerpAPIImages(
+      serpQ,
+      clipFetchDur,
+      workDir,
+      sceneIndex,
+      1,
+      `${tag}_still`,
+      { dedup, personPortrait, resultOffset: sceneIndex + beat.index }
+    );
+    const serpClip = await adoptClip(
+      serpPaths,
+      dedup,
+      sceneIndex,
+      beat.index,
+      beat.text,
+      workDir,
+      serpQ,
+      loose
+    );
+    if (serpClip && !isPipelineFallbackClip(serpClip)) {
+      markGlobalStillPhotoUsed(dedup);
+      dedup.stillPhotosThisScene++;
+      console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: SerpAPI still`);
+      return serpClip;
+    }
+  }
+
+  const ovQ = personPortrait && personName.trim() ? `${personName} ${unique[0] ?? ""}`.trim() : (unique[0] ?? beat.searchQuery);
+  if (ovQ.length > 3) {
+    const ovPaths = await fetchOpenverseImages(
+      ovQ,
+      clipFetchDur,
+      workDir,
+      sceneIndex,
+      1,
+      `${tag}_still`,
+      { dedup, personPortrait }
+    );
+    const ovClip = await adoptClip(
+      ovPaths,
+      dedup,
+      sceneIndex,
+      beat.index,
+      beat.text,
+      workDir,
+      ovQ,
+      loose
+    );
+    if (ovClip && !isPipelineFallbackClip(ovClip)) {
+      if (canUseGlobalStillPhoto(dedup)) markGlobalStillPhotoUsed(dedup);
+      dedup.stillPhotosThisScene++;
+      return ovClip;
+    }
+  }
+
+  return null;
+}
+
 function minimizeStockFootageEnabled(): boolean {
   return process.env.MINIMIZE_STOCK_FOOTAGE !== "false";
 }
@@ -732,7 +888,7 @@ function resolveMaxStockBeatsPerVideo(videoLength: string): number {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 0) return n;
   }
-  if (realFootageFirstEnabled()) return 4;
+  if (realFootageFirstEnabled()) return 2;
   const short = videoLength === "1" || videoLength === "2";
   return short ? 3 : 2;
 }
@@ -7706,7 +7862,7 @@ function buildMontageXfadeFilter(
     return {
       scaleFilters:
         `[0:v]trim=start=${montageClipStartSec(sceneIndex, 0).toFixed(2)}:duration=${durs[0].toFixed(3)},` +
-        `${SCALE_PAD_VF},setpts=PTS-STARTPTS[v0]`,
+        `${CROP_FILL_VF},setpts=PTS-STARTPTS[v0]`,
       mergeFilter: "",
       montageLabel: "v0",
     };
@@ -7714,7 +7870,7 @@ function buildMontageXfadeFilter(
 
   const scaleFilters = Array.from({ length: n }, (_, i) =>
     `[${i}:v]trim=start=${montageClipStartSec(sceneIndex, i).toFixed(2)}:duration=${durs[i].toFixed(3)},` +
-    `${SCALE_PAD_VF},setpts=PTS-STARTPTS[v${i}]`
+    `${CROP_FILL_VF},setpts=PTS-STARTPTS[v${i}]`
   ).join(";");
 
   if (xfade <= 0.001) {
@@ -8160,6 +8316,19 @@ async function adoptClip(
       let fileSize = 0;
       try { fileSize = fs.statSync(p).size; } catch { continue; }
       if (fileSize < 180_000) continue;
+      if (
+        !(await clipPassesVisionGate(
+          p,
+          beatText,
+          opts.videoTitle,
+          workDir,
+          sceneIndex,
+          beatIndex,
+          dedup.perf.fastStockMode
+        ))
+      ) {
+        continue;
+      }
       const contentKey = clipContentKey(p);
       if (dedup.usedContentKeys.has(contentKey)) continue;
       dedup.usedPaths.add(p);
@@ -10851,9 +11020,9 @@ async function fetchSceneVisuals(
   dedup.stillPhotosThisScene = 0;
   const realOnly = realFootageFirstEnabled();
   dedup.stillPhotosMaxThisScene = realOnly
-    ? 0
+    ? (historicalDoc ? 2 : 1)
     : historicalDoc
-      ? 0
+      ? 1
       : dedup.perf.fastStockMode
         ? 1
         : maxStillPhotosForScene(scene.index, scenePersons.length > 0, dedup.personTopicLock);
@@ -12408,7 +12577,8 @@ export async function runVideoPipeline(
     console.log(
       `[Pipeline] Perf budget: ≤${perf.targetWallClockMin}min wall-clock, ` +
       `≤${perf.maxBeatsPerScene} beats/scene, ${perf.sceneParallelism} parallel scenes, ` +
-      `sourcing=${youtubeOnlySourcingEnabled() ? `YouTube-only ≤${youtubeBeatSearchBudgetMs() / 1000}s → Pexels` : youtubeSourcingEnabled() ? "YouTube+archival" : "archival → Pexels (YouTube off)"}, ` +
+      `sourcing=${youtubeOnlySourcingEnabled() ? `YouTube-only ≤${youtubeBeatSearchBudgetMs() / 1000}s → Pexels` : youtubeSourcingEnabled() ? "YouTube+archival" : "archival+stills → Pexels (YouTube off)"}, ` +
+      `clip-vision=${clipVisionGateEnabled() ? "on" : "off"}, ` +
       `fair-use transform=${perf.skipFairUseTransform ? "skip" : "on"}, ` +
       `AI fallback=${perf.enableAiFallback ? `on (max ${perf.maxAiClipsPerVideo} clips)` : "off"}, ` +
       `minimize stock=${perf.minimizeStockFootage ? `yes (≤${perf.maxStockBeatsPerVideo} Pexels/Pixabay)` : "no"}`
