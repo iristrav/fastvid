@@ -299,32 +299,39 @@ async function convertImageToKenBurns(
 async function trimVideoClip(
   inPath: string,
   outPath: string,
-  duration: number
+  duration: number,
+  clipIndex = 0
 ): Promise<void> {
   const sourceDur = await probeMediaDurationSec(inPath);
-  const needsLoop = sourceDur > 0 && sourceDur < duration * 0.95;
-  const loopFlag = needsLoop ? "-stream_loop -1 " : "";
-  const fps = 25;
-  const totalFrames = Math.max(50, Math.round(duration * fps));
-  const zoomEnd = needsLoop ? 1.0 : 1.06;
-  const zoomStep = needsLoop ? 0 : (zoomEnd - 1.0) / totalFrames;
+  const take = sourceDur > 0 ? Math.min(duration, sourceDur) : duration;
+  let startSec = 0;
+  if (sourceDur > take + 0.35) {
+    const slack = sourceDur - take;
+    startSec = (clipIndex * 0.41 + 0.15) % slack;
+  }
 
-  const vf = needsLoop
-    ? `scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}`
-    : `scale=${Math.round(VIDEO_WIDTH * 1.08)}:${Math.round(VIDEO_HEIGHT * 1.08)}:force_original_aspect_ratio=increase,` +
-      `crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:(iw-${VIDEO_WIDTH})/2:(ih-${VIDEO_HEIGHT})/2,` +
-      `zoompan=z='min(zoom+${zoomStep.toFixed(7)},${zoomEnd})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':` +
-      `d=${totalFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=${fps}`;
+  const fps = 25;
+  const totalFrames = Math.max(50, Math.round(take * fps));
+  const zoomEnd = take >= 2.8 ? 1.06 : 1.0;
+  const zoomStep = zoomEnd > 1 ? (zoomEnd - 1.0) / totalFrames : 0;
+
+  const vf =
+    zoomEnd > 1
+      ? `scale=${Math.round(VIDEO_WIDTH * 1.08)}:${Math.round(VIDEO_HEIGHT * 1.08)}:force_original_aspect_ratio=increase,` +
+        `crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:(iw-${VIDEO_WIDTH})/2:(ih-${VIDEO_HEIGHT})/2,` +
+        `zoompan=z='min(zoom+${zoomStep.toFixed(7)},${zoomEnd})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':` +
+        `d=${totalFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=${fps}`
+      : `scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}`;
 
   await exec(
-    `${ffmpegBin()} -y ${loopFlag}-i "${inPath}" -t ${duration.toFixed(3)} ` +
+    `${ffmpegBin()} -y -ss ${startSec.toFixed(3)} -i "${inPath}" -t ${take.toFixed(3)} ` +
       `-vf "${vf}" ` +
       `-c:v libx264 -preset veryfast -crf 18 -an -pix_fmt yuv420p "${outPath}"`
   );
 
   const outDur = await probeMediaDurationSec(outPath);
-  if (outDur < duration * 0.85) {
-    throw new Error(`trimmed clip too short (${outDur.toFixed(2)}s < ${duration.toFixed(2)}s)`);
+  if (outDur < take * 0.8) {
+    throw new Error(`trimmed clip too short (${outDur.toFixed(2)}s < ${take.toFixed(2)}s)`);
   }
 }
 
@@ -361,7 +368,7 @@ export async function prepareCuratedArchiveClip(
   if (asset.mediaType === "image") {
     await convertImageToKenBurns(rawPath, outPath, duration);
   } else {
-    await trimVideoClip(rawPath, outPath, duration);
+    await trimVideoClip(rawPath, outPath, duration, beatIndex);
   }
 
   try {
@@ -411,12 +418,12 @@ export async function fetchCuratedArchiveBeatClip(
         beat.index,
         holdSec
       );
-      usedAssetIds.add(picked.asset.id);
-      usedStorageUrls.add(picked.asset.storageUrl);
       console.log(
         `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: curated archive "${picked.asset.title ?? picked.asset.id}" ` +
           `from "${picked.archiveName}" (score ${picked.score}, ${clampHoldSec(holdSec).toFixed(1)}s)`
       );
+      usedAssetIds.add(picked.asset.id);
+      usedStorageUrls.add(picked.asset.storageUrl);
       return clipPath;
     } catch (err) {
       console.warn(
@@ -427,4 +434,16 @@ export async function fetchCuratedArchiveBeatClip(
   }
 
   return null;
+}
+
+/** Mark a curated asset as used after it is adopted into the montage. */
+export function markCuratedAssetUsed(
+  clipPath: string,
+  usedAssetIds: Set<number>,
+  usedStorageUrls: Set<string>,
+  storageUrl?: string
+): void {
+  const assetId = curatedClipPathAssetId(clipPath);
+  if (assetId != null) usedAssetIds.add(assetId);
+  if (storageUrl) usedStorageUrls.add(storageUrl);
 }

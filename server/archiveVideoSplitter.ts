@@ -625,7 +625,9 @@ async function extractVideoSegment(
   endSec: number
 ): Promise<void> {
   const durationSec = endSec - startSec;
-  const perClipTimeout = Math.max(30_000, Math.min(180_000, durationSec * 5000));
+  const perClipTimeout = Math.round(
+    Math.max(30_000, Math.min(180_000, durationSec * 5000))
+  );
   // -ss after -i for frame-accurate cuts (avoids bleeding the next/previous shot).
   await exec(
     `${ffmpegBin()} -y -i "${inputPath}" -ss ${startSec.toFixed(3)} -to ${endSec.toFixed(3)} ` +
@@ -649,7 +651,7 @@ async function normalizeSourceForAnalysis(
     percent: 15,
   });
 
-  const timeoutMs = Math.min(1_800_000, Math.max(60_000, totalDur * 800));
+  const timeoutMs = Math.round(Math.min(1_800_000, Math.max(60_000, totalDur * 800)));
   await exec(
     `${ffmpegBin()} -y -i "${inputPath}" -an -c:v libx264 -preset ultrafast -crf 23 ` +
       `-pix_fmt yuv420p -movflags +faststart -threads 0 "${outPath}"`,

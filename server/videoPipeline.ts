@@ -80,6 +80,7 @@ import {
   curatedClipPathAssetId,
   curatedAssetContentKey,
   archiveVisualSourcesReady,
+  markCuratedAssetUsed,
 } from "./curatedMediaSourcing";
 
 // API Keys
@@ -360,8 +361,11 @@ const VIDRUSH_CLIP_MIN_SEC = 2.5;
 const VIDRUSH_CLIP_MAX_SEC = 4.0;
 const VIDRUSH_CLIP_HOLD_SEC = 7.0;
 const VIDRUSH_BEAT_SEC = 3.5;
-/** Hard cuts between beats (Vidrush-style); tiny overlap only on Railway to reduce judder. */
-const MONTAGE_XFADE_SEC = IS_RAILWAY ? 0.12 : 0;
+/** Hard cuts on legacy stock mode; crossfade for archive/documentary montage. */
+function montageXfadeSec(): number {
+  if (curatedArchiveOnlyVisuals() || documentaryStyleEnabled()) return 0.45;
+  return IS_RAILWAY ? 0.12 : 0;
+}
 const CHAPTER_CARD_DURATION = 2.5;
 
 /** Wall-clock budgets: short ≤60 min, long ≤90 min (see getPipelinePerfProfile). */
@@ -1899,12 +1903,13 @@ async function fetchWithTimeout(url: string, timeoutMs: number, label: string, o
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  const delayMs = Math.max(1, Math.round(ms));
   return Promise.race([
     promise,
     new Promise<never>((_, reject) =>
       setTimeout(
-        () => reject(pipelineError(PIPELINE_ERROR.TIMEOUT, `Timeout: ${label} exceeded ${Math.round(ms / 1000)}s`)),
-        ms
+        () => reject(pipelineError(PIPELINE_ERROR.TIMEOUT, `Timeout: ${label} exceeded ${Math.round(delayMs / 1000)}s`)),
+        delayMs
       )
     ),
   ]);
@@ -7975,7 +7980,7 @@ function clipContentKey(filePath: string): string {
 }
 
 function montageClipStartSec(_sceneIndex: number, clipIndex: number): number {
-  return clipIndex === 0 ? 0 : 0.35 * (clipIndex % 5);
+  return 0.25 * (clipIndex % 7);
 }
 
 function estimateBeatHoldSec(text: string, mergedSentenceCount: number): number {
@@ -8002,7 +8007,7 @@ function beatsBelongTogether(prevText: string, nextText: string, prevVisual: str
 function normalizeMontageDurations(durations: number[], outDur: number): number[] {
   const n = durations.length;
   if (n === 0) return durations;
-  const xfade = n > 1 ? MONTAGE_XFADE_SEC : 0;
+  const xfade = n > 1 ? montageXfadeSec() : 0;
   const total = durations.reduce((s, d) => s + d, 0) - (n - 1) * xfade;
   if (total <= 0.1) return durations;
   const scale = outDur / total;
@@ -8031,7 +8036,7 @@ function computeMontageClipDuration(sceneDuration: number, clipCount: number): n
   if (clipCount <= 0) return VIDRUSH_BEAT_SEC;
   const ideal = Math.max(1, Math.ceil(sceneDuration / VIDRUSH_BEAT_SEC));
   if (clipCount >= ideal - 1) return VIDRUSH_BEAT_SEC;
-  const xfade = clipCount > 1 ? MONTAGE_XFADE_SEC : 0;
+  const xfade = clipCount > 1 ? montageXfadeSec() : 0;
   const evenSplit = (sceneDuration + (clipCount - 1) * xfade) / clipCount;
   return Math.max(VIDRUSH_CLIP_MIN_SEC, Math.min(VIDRUSH_CLIP_MAX_SEC, evenSplit));
 }
@@ -8044,7 +8049,7 @@ function buildMontageXfadeFilter(
   clipDurations?: number[]
 ): { scaleFilters: string; mergeFilter: string; montageLabel: string } {
   const n = Math.max(1, clipCount);
-  const xfade = MONTAGE_XFADE_SEC;
+  const xfade = montageXfadeSec();
   let durs =
     clipDurations?.length === n
       ? clipDurations.map((d) =>
@@ -11377,6 +11382,41 @@ async function resolveBeatClipForBeat(
 type SceneVisualsResult = { clips: string[]; beatDurations: number[] };
 type BeatProgressPhase = "beat" | "backfill";
 
+const ARCHIVE_BEAT_CLIP_RETRIES = 12;
+
+async function adoptArchiveBeatClip(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  videoTitle: string | undefined,
+  dedup: VisualDedupState,
+  pushClip: (clipPath: string, holdSec?: number) => boolean,
+  initialClip: string | null = null,
+  holdSec = beat.holdSec
+): Promise<boolean> {
+  const tryClip = (clipPath: string | null | undefined, sec = holdSec): boolean => {
+    if (!clipPath || isPipelineFallbackClip(clipPath)) return false;
+    return pushClip(clipPath, sec);
+  };
+
+  if (tryClip(initialClip, holdSec)) return true;
+
+  for (let attempt = 0; attempt < ARCHIVE_BEAT_CLIP_RETRIES; attempt++) {
+    const clip = await fetchCuratedArchiveBeatClip(
+      beat,
+      scene,
+      workDir,
+      scene.index,
+      holdSec,
+      dedup.usedCuratedAssetIds,
+      dedup.usedCuratedStorageUrls,
+      videoTitle
+    );
+    if (tryClip(clip, holdSec)) return true;
+  }
+  return false;
+}
+
 async function fetchSceneVisuals(
   scene: Scene,
   workDir: string,
@@ -11434,28 +11474,33 @@ async function fetchSceneVisuals(
     scriptAnchored: dedup.perf.fastStockMode ? false : dedup.perf.scriptOnlyVisuals,
   };
 
+  const pushSceneClip = (clipPath: string, holdSec: number, beatIndex: number): boolean => {
+    const key = clipContentKey(clipPath);
+    if (dedup.usedContentKeys.has(key)) {
+      console.warn(
+        `[Pipeline] Scene ${scene.index} beat ${beatIndex}: skipping duplicate clip ${path.basename(clipPath)}`
+      );
+      return false;
+    }
+    dedup.usedContentKeys.add(key);
+    clips.push(clipPath);
+    beatDurations.push(holdSec);
+    markCuratedAssetUsed(clipPath, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls);
+    if (
+      clipPath && !isPipelineFallbackClip(clipPath) && !isStillPhotoClip(clipPath) &&
+      fs.existsSync(clipPath)
+    ) {
+      dedup.lastMuskStockClip = clipPath;
+    }
+    return true;
+  };
+
   for (let bi = 0; bi < beats.length; bi++) {
     const beat = beats[bi];
     beatAdoptOpts.keywords = beat.keywords;
     onBeatProgress?.(bi, beats.length, "beat");
-    const pushClip = (clipPath: string) => {
-      const key = clipContentKey(clipPath);
-      if (dedup.usedContentKeys.has(key)) {
-        console.warn(
-          `[Pipeline] Scene ${scene.index} beat ${beat.index}: skipping duplicate clip ${path.basename(clipPath)}`
-        );
-        return;
-      }
-      dedup.usedContentKeys.add(key);
-      clips.push(clipPath);
-      beatDurations.push(beat.holdSec);
-      if (
-        clipPath && !isPipelineFallbackClip(clipPath) && !isStillPhotoClip(clipPath) &&
-        fs.existsSync(clipPath)
-      ) {
-        dedup.lastMuskStockClip = clipPath;
-      }
-    };
+    const pushClip = (clipPath: string, holdSec = beat.holdSec): boolean =>
+      pushSceneClip(clipPath, holdSec, beat.index);
     const beatWallMs = beatVisualWallMs(dedup.perf);
     let clip: string | null = null;
     const beatPulse = setInterval(() => {
@@ -11568,6 +11613,13 @@ async function fetchSceneVisuals(
     if (clip && !isPipelineFallbackClip(clip)) {
       if (realOnly && isLicensedStockClip(clip) && !canUseLicensedStockBeat(dedup)) {
         clip = null;
+      } else if (archiveOnly) {
+        if (!(await adoptArchiveBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, clip))) {
+          console.warn(
+            `[Pipeline] Scene ${scene.index} beat ${beat.index}: no unique archive clip after retries`
+          );
+        }
+        clip = null;
       } else {
         pushClip(clip);
       }
@@ -11603,9 +11655,11 @@ async function fetchSceneVisuals(
     } else if (!clip || isPipelineFallbackClip(clip)) {
       let rescue: string | null = null;
       if (archiveOnly) {
-        rescue = await fetchCuratedArchiveBeatClip(
-          beat, scene, workDir, scene.index, beat.holdSec, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls, videoTitle
-        );
+        if (!(await adoptArchiveBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, null))) {
+          console.warn(
+            `[Pipeline] Scene ${scene.index} beat ${beat.index}: no clip (beat skipped, no grey)`
+          );
+        }
       } else if (realOnly) {
         rescue = await beatPrimaryFetch(
           beat,
@@ -11671,9 +11725,22 @@ async function fetchSceneVisuals(
       }
       if (rescue && !isPipelineFallbackClip(rescue)) {
         pushClip(rescue);
-      } else {
+      } else if (!archiveOnly) {
         console.warn(
           `[Pipeline] Scene ${scene.index} beat ${beat.index}: no clip (beat skipped, no grey)`
+        );
+      }
+    }
+  }
+
+  if (archiveOnly) {
+    for (let bi = clips.length; bi < beats.length; bi++) {
+      const beat = beats[bi];
+      const pushBeat = (clipPath: string, holdSec = beat.holdSec) =>
+        pushSceneClip(clipPath, holdSec, beat.index);
+      if (!(await adoptArchiveBeatClip(beat, scene, workDir, videoTitle, dedup, pushBeat, null))) {
+        console.warn(
+          `[Pipeline] Scene ${scene.index}: could not fill beat ${beat.index} with a unique archive clip`
         );
       }
     }
@@ -11782,9 +11849,13 @@ async function fetchSceneVisuals(
       clearInterval(backfillPulse);
     }
     if (!extra || isPipelineFallbackClip(extra)) break;
-    if (clips.some((c) => clipContentKey(c) === clipContentKey(extra))) break;
-    clips.push(extra);
-    beatDurations.push(stub.holdSec);
+    if (archiveOnly) {
+      if (!pushSceneClip(extra, stub.holdSec, stub.index)) continue;
+    } else {
+      if (clips.some((c) => clipContentKey(c) === clipContentKey(extra))) break;
+      clips.push(extra);
+      beatDurations.push(stub.holdSec);
+    }
     backfillAttempts++;
   }
 
@@ -12586,16 +12657,20 @@ async function composeSceneVideo(
             `Looped montage scene ${scene.index}`
           );
         } else {
+          const singleDur = await probeVideoDurationSec(safeClips[0]);
+          const clipPlay = Math.min(outDur, singleDur > 0.2 ? singleDur : outDur);
+          const padTail = Math.max(0, outDur - clipPlay);
           await withTimeout(
             exec(
-              `${FFMPEG_BIN} -y -stream_loop -1 -i "${safeClips[0]}" -i "${safeAudioPath}" ` +
-                `-filter_complex "[0:v]${FPS_FORMAT_VF},trim=duration=${outDur.toFixed(3)},setpts=PTS-STARTPTS[vout];` +
+              `${FFMPEG_BIN} -y -i "${safeClips[0]}" -i "${safeAudioPath}" ` +
+                `-filter_complex "[0:v]trim=duration=${clipPlay.toFixed(3)},setpts=PTS-STARTPTS,` +
+                `tpad=stop_mode=clone:stop_duration=${padTail.toFixed(3)},${FPS_FORMAT_VF}[vout];` +
                 `[1:a]atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
                 `-map "[vout]" -map "[aout]" -vsync cfr ` +
                 `-t ${outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
             ),
             45_000,
-            `Stream-loop mux scene ${scene.index}`
+            `Hold-last-frame mux scene ${scene.index}`
           );
         }
       } catch (muxErr) {
