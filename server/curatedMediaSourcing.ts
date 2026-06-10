@@ -93,12 +93,41 @@ function clampHoldSec(holdSec: number): number {
   return Math.max(CLIP_MIN_SEC, Math.min(CLIP_MAX_SEC, holdSec));
 }
 
+const QUERY_STOP_WORDS = new Set([
+  "the", "and", "for", "with", "from", "that", "this", "were", "was", "are", "has", "had",
+  "his", "her", "its", "their", "about", "into", "over", "after", "before", "when", "where",
+  "what", "how", "why", "who", "which", "your", "you", "our", "not", "but", "all", "one",
+  "rise", "fall", "story", "world", "life", "video", "documentary", "history", "historical",
+]);
+
+function tagsOverlap(a: string[], b: string[]): boolean {
+  for (const x of a) {
+    for (const y of b) {
+      if (x === y || x.includes(y) || y.includes(x)) return true;
+    }
+  }
+  return false;
+}
+
+/** High-signal topic tokens from the video title/prompt (e.g. hitler, titanic). */
+export function extractTopicAnchorTags(videoTitle?: string, extraText?: string): string[] {
+  const raw = [videoTitle ?? "", extraText ?? ""]
+    .join(" ")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, " ")
+    .split(/\s+/)
+    .filter((w) => w.length >= 4 && !QUERY_STOP_WORDS.has(w));
+  return normalizeMediaTags(raw).slice(0, 8);
+}
+
 export function buildCuratedQueryTags(
   beat: CuratedBeatContext,
   scene: CuratedSceneContext,
   videoTitle?: string
 ): string[] {
+  const anchors = extractTopicAnchorTags(videoTitle, scene.text);
   const raw = [
+    ...anchors,
     ...beat.keywords,
     beat.searchQuery ?? "",
     beat.text,
@@ -112,18 +141,43 @@ export function buildCuratedQueryTags(
     .replace(/[^a-z0-9\s-]/g, " ")
     .split(/\s+/)
     .filter((w) => w.length > 2);
-  return normalizeMediaTags(raw).slice(0, 24);
+  return normalizeMediaTags([...anchors, ...raw]).slice(0, 24);
 }
 
-function scoreAsset(
+function archiveMatchesQuery(
+  archiveName: string,
+  archiveNicheTags: string[],
+  queryTags: string[],
+  anchorTags: string[]
+): boolean {
+  const name = archiveName.toLowerCase();
+  const combined = normalizeMediaTags([...anchorTags, ...queryTags]);
+  if (!combined.length) return true;
+  if (tagsOverlap(combined, archiveNicheTags)) return true;
+  return combined.some((q) => q.length >= 4 && name.includes(q));
+}
+
+export function scoreCuratedAsset(
   asset: MediaArchiveAsset,
   archiveNicheTags: string[],
-  queryTags: string[]
+  queryTags: string[],
+  anchorTags: string[] = []
 ): number {
   const assetTags = normalizeMediaTags(asset.tags ?? []);
   const title = (asset.title ?? "").toLowerCase();
   let score = 0;
+  for (const anchor of anchorTags) {
+    if (title.includes(anchor)) score += 18;
+    for (const t of assetTags) {
+      if (t === anchor) score += 36;
+      else if (t.includes(anchor) || anchor.includes(t)) score += 12;
+    }
+    for (const n of archiveNicheTags) {
+      if (n === anchor || tMatches(n, anchor)) score += 8;
+    }
+  }
   for (const q of queryTags) {
+    if (anchorTags.includes(q)) continue;
     if (title.includes(q)) score += 6;
     for (const t of assetTags) {
       if (t === q) score += 12;
@@ -148,21 +202,27 @@ function tMatches(a: string, b: string): boolean {
 export async function listCuratedArchiveCandidates(
   queryTags: string[],
   excludeIds: Set<number>,
-  excludeStorageUrls: Set<string>
+  excludeStorageUrls: Set<string>,
+  anchorTags: string[] = []
 ): Promise<Array<{ asset: MediaArchiveAsset; archiveName: string; score: number }>> {
   const archives = (await getAllMediaArchives()).filter((a) => a.isActive === 1);
   if (!archives.length) return [];
 
+  const matchingArchives = archives.filter((archive) =>
+    archiveMatchesQuery(archive.name, normalizeMediaTags(archive.nicheTags ?? []), queryTags, anchorTags)
+  );
+  const searchArchives = matchingArchives.length > 0 ? matchingArchives : archives;
+
   const scored: Array<{ asset: MediaArchiveAsset; archiveName: string; score: number }> = [];
   const fallback: typeof scored = [];
 
-  for (const archive of archives) {
+  for (const archive of searchArchives) {
     const nicheTags = normalizeMediaTags(archive.nicheTags ?? []);
     const assets = await getMediaArchiveAssets(archive.id);
     for (const asset of assets) {
       if (excludeIds.has(asset.id)) continue;
       if (excludeStorageUrls.has(asset.storageUrl)) continue;
-      const score = scoreAsset(asset, nicheTags, queryTags);
+      const score = scoreCuratedAsset(asset, nicheTags, queryTags, anchorTags);
       if (score > 0) scored.push({ asset, score, archiveName: archive.name });
       else fallback.push({ asset, score: 1, archiveName: archive.name });
     }
@@ -170,10 +230,9 @@ export async function listCuratedArchiveCandidates(
 
   const pool = scored.length > 0 ? scored : fallback;
   pool.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
     const videoBoost = (x: MediaArchiveAsset) => (x.mediaType === "video" ? 1 : 0);
-    const vb = videoBoost(b.asset) - videoBoost(a.asset);
-    if (vb !== 0) return vb;
-    return b.score - a.score;
+    return videoBoost(b.asset) - videoBoost(a.asset);
   });
   return pool;
 }
@@ -325,7 +384,13 @@ export async function fetchCuratedArchiveBeatClip(
   videoTitle?: string
 ): Promise<string | null> {
   const queryTags = buildCuratedQueryTags(beat, scene, videoTitle);
-  const candidates = await listCuratedArchiveCandidates(queryTags, usedAssetIds, usedStorageUrls);
+  const anchorTags = extractTopicAnchorTags(videoTitle, scene.text);
+  const candidates = await listCuratedArchiveCandidates(
+    queryTags,
+    usedAssetIds,
+    usedStorageUrls,
+    anchorTags
+  );
   if (!candidates.length) {
     console.warn(
       `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: no unused curated archive asset` +
