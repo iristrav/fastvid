@@ -220,10 +220,10 @@ export async function filterClipRangesByArchiveSubject(
     return ranges;
   }
 
-  const fastMode = ranges.length > 60;
+  const fastMode = ranges.length > 30;
   const flags = await mapRangesWithConcurrency(
     ranges,
-    3,
+    ranges.length > 80 ? 6 : 4,
     async (range) => {
       if (opts?.shouldContinue && !opts.shouldContinue()) return null;
       const ok = await archiveSegmentMatchesArchiveSubject(

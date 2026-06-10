@@ -473,7 +473,7 @@ async function handleArchiveBinaryUpload(req: Request, res: Response) {
       ? (mixKindRaw as ArchiveUploadInput["mixKind"])
       : undefined;
 
-    const result = await processArchiveAssetUpload({
+    const uploadInput: ArchiveUploadInput = {
       archiveId,
       buffer,
       mimeType,
@@ -483,9 +483,40 @@ async function handleArchiveBinaryUpload(req: Request, res: Response) {
       autoSplitScenes: parseBoolQuery(req.query.autoSplitScenes, true),
       autoGenerateTags: parseBoolQuery(req.query.autoGenerateTags, true),
       jobId,
+    };
+
+    // Respond immediately so Railway/proxy does not 502 while split + AI filters run.
+    res.status(202).json({
+      accepted: true,
+      jobId,
+      message: "Upload ontvangen — verwerking op de achtergrond",
     });
 
-    res.json(result);
+    void processArchiveAssetUpload(uploadInput)
+      .then((result) => {
+        finishArchiveUploadJob(jobId, true, `${result.clipCount} clip(s) opgeslagen`, {
+          clipsSaved: result.clipCount,
+          clipTotal: result.clipCount,
+          resultClipCount: result.clipCount,
+          resultSplit: result.split,
+        });
+      })
+      .catch((err) => {
+        if (err instanceof ArchiveUploadError) {
+          if (err.cancelled) {
+            finishArchiveUploadJobCancelled(jobId);
+          } else {
+            finishArchiveUploadJob(jobId, false, err.message);
+          }
+          return;
+        }
+        console.error("[ArchiveUpload] background processing failed:", err);
+        finishArchiveUploadJob(
+          jobId,
+          false,
+          (err as Error).message ?? appErrorMessage(APP_ERROR.SERVICE_ERROR, "Upload failed")
+        );
+      });
   } catch (err) {
     if (err instanceof ArchiveUploadError) {
       if (err.cancelled) {

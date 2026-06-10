@@ -60,6 +60,8 @@ type ArchiveUploadProgress = {
   clipIndex?: number;
   clipTotal?: number;
   clipsSaved?: number;
+  resultClipCount?: number;
+  resultSplit?: boolean;
   done: boolean;
   error?: string;
   cancelled?: boolean;
@@ -133,6 +135,21 @@ async function uploadArchiveFile(
     if (progress) opts.onProgress?.(progress);
   }, 700);
 
+  const waitForJobDone = async (): Promise<ArchiveUploadProgress> => {
+    for (let i = 0; i < 7200; i++) {
+      if (opts.signal?.aborted) throw new UploadCancelledError();
+      const progress = await pollArchiveUploadProgress(opts.jobId);
+      if (progress) opts.onProgress?.(progress);
+      if (progress?.done) {
+        if (progress.cancelled) throw new UploadCancelledError();
+        if (progress.error) throw new Error(progress.error);
+        return progress;
+      }
+      await new Promise((r) => window.setTimeout(r, 700));
+    }
+    throw new Error("Verwerking duurde te lang — controleer later het archief of probeer opnieuw.");
+  };
+
   try {
     const res = await fetch(`/api/admin/archive/upload?${params}`, {
       method: "POST",
@@ -143,20 +160,40 @@ async function uploadArchiveFile(
     });
 
     const text = await res.text();
-    let data: { error?: string; clipCount?: number; split?: boolean } | null = null;
+    let data: {
+      error?: string;
+      accepted?: boolean;
+      clipCount?: number;
+      split?: boolean;
+      cancelled?: boolean;
+    } | null = null;
     try {
-      data = JSON.parse(text) as { error?: string; clipCount?: number; split?: boolean };
+      data = JSON.parse(text) as typeof data;
     } catch {
       if (text.trimStart().startsWith("<!DOCTYPE") || text.trimStart().startsWith("<html")) {
+        const lower = text.toLowerCase();
+        if (lower.includes("upstream")) {
+          throw new Error(
+            "Server timeout tijdens upload (upstream error). Verwerking gaat mogelijk door — ververs de pagina over een minuut."
+          );
+        }
         throw new Error(
-          "Server stuurde een HTML-foutpagina (bestand te groot of timeout). Probeer een kleiner bestand of zet AI-tags uit."
+          "Server stuurde een HTML-foutpagina (bestand te groot of timeout). Probeer een kleiner bestand."
         );
       }
       throw new Error(text.slice(0, 180) || "Upload mislukt");
     }
 
+    if (res.status === 202 || data?.accepted) {
+      const finalProgress = await waitForJobDone();
+      return {
+        clipCount: finalProgress.resultClipCount ?? finalProgress.clipsSaved ?? 1,
+        split: Boolean(finalProgress.resultSplit ?? (finalProgress.clipsSaved ?? 0) > 1),
+      };
+    }
+
     if (!res.ok) {
-      const cancelled = Boolean((data as { cancelled?: boolean })?.cancelled)
+      const cancelled = Boolean(data?.cancelled)
         || (data?.error?.toLowerCase().includes("geannuleerd") ?? false);
       if (cancelled) throw new UploadCancelledError();
       throw new Error(data?.error || "Upload mislukt");
@@ -166,8 +203,8 @@ async function uploadArchiveFile(
     if (finalProgress) opts.onProgress?.(finalProgress);
 
     return {
-      clipCount: data?.clipCount ?? 1,
-      split: Boolean(data?.split),
+      clipCount: data?.clipCount ?? finalProgress?.clipsSaved ?? 1,
+      split: Boolean(data?.split ?? (finalProgress?.clipsSaved ?? 0) > 1),
     };
   } finally {
     window.clearInterval(pollTimer);

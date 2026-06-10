@@ -29,6 +29,8 @@ export type ArchiveUploadProgress = {
   clipIndex?: number;
   clipTotal?: number;
   clipsSaved?: number;
+  resultClipCount?: number;
+  resultSplit?: boolean;
   updatedAt: number;
   done: boolean;
   error?: string;
@@ -37,7 +39,7 @@ export type ArchiveUploadProgress = {
 
 const jobs = new Map<string, ArchiveUploadProgress>();
 const cancelRequested = new Set<string>();
-const TTL_MS = 15 * 60 * 1000;
+const TTL_MS = 2.5 * 60 * 60 * 1000;
 
 function pruneOldJobs() {
   const cutoff = Date.now() - TTL_MS;
