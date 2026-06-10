@@ -131,6 +131,31 @@ async function extractVideoPreviewJpeg(videoPath: string, outPath: string): Prom
   }
 }
 
+async function previewImageFromFilePath(
+  filePath: string,
+  mimeType: string
+): Promise<{ buffer: Buffer; mimeType: string } | null> {
+  if (mimeType.startsWith("image/")) {
+    if (!fs.existsSync(filePath)) return null;
+    const buffer = fs.readFileSync(filePath);
+    if (buffer.length < 500) return null;
+    return { buffer, mimeType };
+  }
+  if (!mimeType.startsWith("video/")) return null;
+
+  const framePath = path.join(
+    os.tmpdir(),
+    `archive-ai-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`
+  );
+  try {
+    const ok = await extractVideoPreviewJpeg(filePath, framePath);
+    if (!ok) return null;
+    return { buffer: fs.readFileSync(framePath), mimeType: "image/jpeg" };
+  } finally {
+    try { fs.unlinkSync(framePath); } catch { /* ignore */ }
+  }
+}
+
 async function previewImageFromMedia(
   mediaBuffer: Buffer,
   mimeType: string
@@ -154,44 +179,31 @@ async function previewImageFromMedia(
   }
 }
 
-function buildVisionPrompt(context: {
-  archiveNicheTags?: string[];
-  parentFilename?: string;
-  userTags?: string[];
-  clipLabel?: string;
-}): string {
-  const lines = [
-    "Beschrijf wat je ziet in dit beeld voor een documentaire-archief.",
-    "Geef een korte titel (max 8 woorden) die beschrijft WAT er in beeld is — geen bestandsnaam, geen 'clip 1'.",
-    "Geef één zin beschrijving, en 6–12 zoek-tags.",
-    "Tags: lowercase, geen hashtags, mix Nederlands/Engels waar logisch (personen, plaatsen, objecten, tijdperk).",
-  ];
-  if (context.clipLabel) lines.push(`Dit is ${context.clipLabel} uit een langere video.`);
-  if (context.parentFilename) lines.push(`Bronbestand: ${context.parentFilename}`);
-  if (context.archiveNicheTags?.length) {
-    lines.push(`Archief-onderwerp: ${context.archiveNicheTags.slice(0, 8).join(", ")}`);
+function finalizeArchiveAiMetadata(parsed: {
+  title?: string;
+  description?: string;
+  tags?: string[];
+}): ArchiveAssetAiMetadata | null {
+  const title = parsed.title?.trim().slice(0, 120);
+  if (!title) return null;
+  const description = parsed.description?.trim().slice(0, 500) || title;
+  let tags = normalizeMediaTags((parsed.tags ?? []).filter((t) => typeof t === "string"));
+  if (tags.length === 0) {
+    tags = normalizeMediaTags(title.split(/\s+/).filter((w) => w.length > 2));
   }
-  if (context.userTags?.length) {
-    lines.push(`Bestaande tags (aanvullen, niet herhalen tenzij relevant): ${context.userTags.join(", ")}`);
-  }
-  return lines.join("\n");
+  if (tags.length === 0) return null;
+  return { title, description, tags };
 }
 
-export async function generateArchiveAssetAiMetadata(
-  mediaBuffer: Buffer,
-  mimeType: string,
+async function invokeArchiveVisionTagging(
+  preview: { buffer: Buffer; mimeType: string },
   context: {
     archiveNicheTags?: string[];
     parentFilename?: string;
     userTags?: string[];
     clipLabel?: string;
-  } = {}
+  }
 ): Promise<ArchiveAssetAiMetadata | null> {
-  if (!archiveAiTaggingEnabled()) return null;
-
-  const preview = await previewImageFromMedia(mediaBuffer, mimeType);
-  if (!preview) return null;
-
   const dataUrl = imageMimeToDataUrl(preview.buffer, preview.mimeType);
   const timeoutMs = 18_000;
 
@@ -222,20 +234,68 @@ export async function generateArchiveAssetAiMetadata(
 
     const content = response.choices[0]?.message?.content;
     if (typeof content !== "string") return null;
-    const parsed = JSON.parse(content) as {
-      title?: string;
-      description?: string;
-      tags?: string[];
-    };
-    const title = parsed.title?.trim().slice(0, 120);
-    const description = parsed.description?.trim().slice(0, 500);
-    const tags = normalizeMediaTags((parsed.tags ?? []).filter((t) => typeof t === "string"));
-    if (!title || tags.length === 0) return null;
-    return { title, description: description || title, tags };
+    return finalizeArchiveAiMetadata(JSON.parse(content));
   } catch (err) {
     console.warn("[ArchiveAI] tagging failed:", (err as Error).message?.slice(0, 160));
     return null;
   }
+}
+
+function buildVisionPrompt(context: {
+  archiveNicheTags?: string[];
+  parentFilename?: string;
+  userTags?: string[];
+  clipLabel?: string;
+}): string {
+  const lines = [
+    "Beschrijf wat je ziet in dit beeld voor een documentaire-archief.",
+    "Geef een korte titel (max 8 woorden) die beschrijft WAT er in beeld is — geen bestandsnaam, geen 'clip 1'.",
+    "Geef één zin beschrijving, en 6–12 zoek-tags.",
+    "Tags: lowercase, geen hashtags, mix Nederlands/Engels waar logisch (personen, plaatsen, objecten, tijdperk).",
+  ];
+  if (context.clipLabel) lines.push(`Dit is ${context.clipLabel} uit een langere video.`);
+  if (context.parentFilename) lines.push(`Bronbestand: ${context.parentFilename}`);
+  if (context.archiveNicheTags?.length) {
+    lines.push(`Archief-onderwerp: ${context.archiveNicheTags.slice(0, 8).join(", ")}`);
+  }
+  if (context.userTags?.length) {
+    lines.push(`Bestaande tags (aanvullen, niet herhalen tenzij relevant): ${context.userTags.join(", ")}`);
+  }
+  return lines.join("\n");
+}
+
+/** Vision metadata from a file on disk (no full-video buffer read). */
+export async function generateArchiveAssetAiMetadataFromPath(
+  filePath: string,
+  mimeType: string,
+  context: {
+    archiveNicheTags?: string[];
+    parentFilename?: string;
+    userTags?: string[];
+    clipLabel?: string;
+  } = {}
+): Promise<ArchiveAssetAiMetadata | null> {
+  if (!archiveAiTaggingEnabled()) return null;
+  const preview = await previewImageFromFilePath(filePath, mimeType);
+  if (!preview) return null;
+  return invokeArchiveVisionTagging(preview, context);
+}
+
+export async function generateArchiveAssetAiMetadata(
+  mediaBuffer: Buffer,
+  mimeType: string,
+  context: {
+    archiveNicheTags?: string[];
+    parentFilename?: string;
+    userTags?: string[];
+    clipLabel?: string;
+  } = {}
+): Promise<ArchiveAssetAiMetadata | null> {
+  if (!archiveAiTaggingEnabled()) return null;
+
+  const preview = await previewImageFromMedia(mediaBuffer, mimeType);
+  if (!preview) return null;
+  return invokeArchiveVisionTagging(preview, context);
 }
 
 export async function enrichArchiveAssetFields(opts: {

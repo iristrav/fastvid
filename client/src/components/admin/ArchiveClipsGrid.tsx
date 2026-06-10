@@ -1,7 +1,7 @@
 /**
  * Browse, preview, multi-select and delete media archive clips.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { toastErrorMessage } from "@/const";
 import { toast } from "sonner";
@@ -324,15 +324,29 @@ export function ArchiveClipsGrid({
   const [autoTitleRunning, setAutoTitleRunning] = useState(false);
   const [autoTitleProgress, setAutoTitleProgress] = useState<{ done: number; total: number } | null>(null);
 
-  async function runAutoTitleAll() {
-    if (archiveId == null || assets.length === 0) return;
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [archiveId, search]);
+
+  const visibleIds = useMemo(() => new Set(assets.map((a) => a.id)), [assets]);
+  const selectedCount = [...selectedIds].filter((id) => visibleIds.has(id)).length;
+  const allSelected = assets.length > 0 && selectedCount === assets.length;
+
+  const runAutoTitleAll = useCallback(async () => {
+    if (archiveId == null || assets.length === 0) {
+      toast.error("Geen clips om te verwerken");
+      return;
+    }
 
     const targetIds =
       selectedCount > 0
         ? [...selectedIds].filter((id) => visibleIds.has(id))
         : assets.map((a) => a.id);
 
-    if (targetIds.length === 0) return;
+    if (targetIds.length === 0) {
+      toast.error("Geen clips geselecteerd");
+      return;
+    }
 
     const label =
       selectedCount > 0
@@ -349,9 +363,10 @@ export function ArchiveClipsGrid({
       return;
     }
 
-    const CHUNK = 20;
+    const CHUNK = 8;
     setAutoTitleRunning(true);
     setAutoTitleProgress({ done: 0, total: targetIds.length });
+    const loadingToast = toast.loading(`AI titels starten (${targetIds.length} clips)…`);
     let updated = 0;
     let skipped = 0;
     let failed = 0;
@@ -363,31 +378,46 @@ export function ArchiveClipsGrid({
         updated += result.updated;
         skipped += result.skipped;
         failed += result.failed;
-        setAutoTitleProgress({ done: Math.min(i + chunk.length, targetIds.length), total: targetIds.length });
+        const done = Math.min(i + chunk.length, targetIds.length);
+        setAutoTitleProgress({ done, total: targetIds.length });
+        toast.loading(`AI bezig: ${done}/${targetIds.length} clips…`, { id: loadingToast });
       }
       utils.mediaArchive.listAssets.invalidate();
       utils.mediaArchive.listArchives.invalidate();
-      toast.success(`${updated} clip(s) getiteld`, {
-        description:
-          skipped + failed > 0
-            ? `${skipped} overgeslagen, ${failed} mislukt`
-            : "Titels en tags bijgewerkt voor betere filtering",
-      });
+      toast.dismiss(loadingToast);
+      if (updated === 0) {
+        toast.warning("Geen clips bijgewerkt", {
+          description:
+            skipped + failed > 0
+              ? `${skipped} overgeslagen, ${failed} mislukt — controleer of bestanden nog bestaan en LLM_API_KEY staat aan`
+              : "AI kon geen titels genereren voor deze clips",
+        });
+      } else {
+        toast.success(`${updated} clip(s) getiteld`, {
+          description:
+            skipped + failed > 0
+              ? `${skipped} overgeslagen, ${failed} mislukt`
+              : "Titels en tags bijgewerkt voor betere filtering",
+        });
+      }
     } catch (e) {
+      toast.dismiss(loadingToast);
       toast.error("AI titels mislukt", { description: toastErrorMessage(e) });
     } finally {
       setAutoTitleRunning(false);
       setAutoTitleProgress(null);
     }
-  }
-
-  useEffect(() => {
-    setSelectedIds(new Set());
-  }, [archiveId, search]);
-
-  const visibleIds = useMemo(() => new Set(assets.map((a) => a.id)), [assets]);
-  const selectedCount = [...selectedIds].filter((id) => visibleIds.has(id)).length;
-  const allSelected = assets.length > 0 && selectedCount === assets.length;
+  }, [
+    archiveId,
+    assets,
+    autoTitleAssets,
+    search,
+    selectedCount,
+    selectedIds,
+    utils.mediaArchive.listArchives,
+    utils.mediaArchive.listAssets,
+    visibleIds,
+  ]);
 
   function toggleSelect(id: number) {
     setSelectedIds((prev) => {
