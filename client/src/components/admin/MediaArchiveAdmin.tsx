@@ -51,6 +51,47 @@ type ArchiveUploadResponse = {
   split: boolean;
 };
 
+type ArchiveUploadProgress = {
+  jobId: string;
+  filename?: string;
+  stage: string;
+  message: string;
+  percent: number;
+  clipIndex?: number;
+  clipTotal?: number;
+  clipsSaved?: number;
+  done: boolean;
+  error?: string;
+};
+
+const STAGE_LABELS: Record<string, string> = {
+  queued: "Wachtrij",
+  validating: "Controleren",
+  split_ffmpeg: "FFmpeg",
+  split_probe: "Duur meten",
+  split_detect: "Shots detecteren",
+  split_rescan: "Extra cuts",
+  split_extract: "Clips knippen",
+  filter_overlay: "Tekstfilter",
+  ai_tags: "AI-tags",
+  save_clips: "Opslaan",
+  done: "Klaar",
+  error: "Fout",
+};
+
+function newUploadJobId(): string {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
+  return `upload-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+async function pollArchiveUploadProgress(jobId: string): Promise<ArchiveUploadProgress | null> {
+  const res = await fetch(`/api/admin/archive/upload/progress?jobId=${encodeURIComponent(jobId)}`, {
+    credentials: "include",
+  });
+  if (!res.ok) return null;
+  return res.json() as Promise<ArchiveUploadProgress>;
+}
+
 async function uploadArchiveFile(
   file: File,
   opts: {
@@ -60,9 +101,12 @@ async function uploadArchiveFile(
     tags: string[];
     autoSplitScenes: boolean;
     autoGenerateTags: boolean;
+    jobId: string;
+    onProgress?: (progress: ArchiveUploadProgress) => void;
   }
 ): Promise<ArchiveUploadResponse> {
   const params = new URLSearchParams({
+    jobId: opts.jobId,
     archiveId: String(opts.archiveId),
     filename: file.name,
     mimeType: opts.mimeType,
@@ -72,34 +116,46 @@ async function uploadArchiveFile(
     autoGenerateTags: opts.autoGenerateTags ? "true" : "false",
   });
 
-  const res = await fetch(`/api/admin/archive/upload?${params}`, {
-    method: "POST",
-    credentials: "include",
-    headers: { "Content-Type": opts.mimeType || "application/octet-stream" },
-    body: file,
-  });
+  const pollTimer = window.setInterval(async () => {
+    const progress = await pollArchiveUploadProgress(opts.jobId);
+    if (progress) opts.onProgress?.(progress);
+  }, 700);
 
-  const text = await res.text();
-  let data: { error?: string; clipCount?: number; split?: boolean } | null = null;
   try {
-    data = JSON.parse(text) as { error?: string; clipCount?: number; split?: boolean };
-  } catch {
-    if (text.trimStart().startsWith("<!DOCTYPE") || text.trimStart().startsWith("<html")) {
-      throw new Error(
-        "Server stuurde een HTML-foutpagina (bestand te groot of timeout). Probeer een kleiner bestand of zet AI-tags uit."
-      );
+    const res = await fetch(`/api/admin/archive/upload?${params}`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": opts.mimeType || "application/octet-stream" },
+      body: file,
+    });
+
+    const text = await res.text();
+    let data: { error?: string; clipCount?: number; split?: boolean } | null = null;
+    try {
+      data = JSON.parse(text) as { error?: string; clipCount?: number; split?: boolean };
+    } catch {
+      if (text.trimStart().startsWith("<!DOCTYPE") || text.trimStart().startsWith("<html")) {
+        throw new Error(
+          "Server stuurde een HTML-foutpagina (bestand te groot of timeout). Probeer een kleiner bestand of zet AI-tags uit."
+        );
+      }
+      throw new Error(text.slice(0, 180) || "Upload mislukt");
     }
-    throw new Error(text.slice(0, 180) || "Upload mislukt");
-  }
 
-  if (!res.ok) {
-    throw new Error(data?.error || "Upload mislukt");
-  }
+    if (!res.ok) {
+      throw new Error(data?.error || "Upload mislukt");
+    }
 
-  return {
-    clipCount: data?.clipCount ?? 1,
-    split: Boolean(data?.split),
-  };
+    const finalProgress = await pollArchiveUploadProgress(opts.jobId);
+    if (finalProgress) opts.onProgress?.(finalProgress);
+
+    return {
+      clipCount: data?.clipCount ?? 1,
+      split: Boolean(data?.split),
+    };
+  } finally {
+    window.clearInterval(pollTimer);
+  }
 }
 
 export function MediaArchiveAdmin() {
@@ -113,6 +169,7 @@ export function MediaArchiveAdmin() {
   const [autoSplitScenes, setAutoSplitScenes] = useState(true);
   const [autoGenerateTags, setAutoGenerateTags] = useState(true);
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<ArchiveUploadProgress | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const activeArchiveId = selectedId ?? archives[0]?.id ?? null;
@@ -154,6 +211,7 @@ export function MediaArchiveAdmin() {
       return;
     }
     setUploading(true);
+    setUploadProgress(null);
     try {
       for (const file of Array.from(files)) {
         if (file.size > 600 * 1024 * 1024) {
@@ -167,6 +225,15 @@ export function MediaArchiveAdmin() {
         }
         const isVideo = mimeType.startsWith("video/");
         const mixKind = isVideo ? "real_video" : uploadMixKind;
+        const jobId = newUploadJobId();
+        setUploadProgress({
+          jobId,
+          filename: file.name,
+          stage: "queued",
+          message: `${file.name}: uploaden…`,
+          percent: 0,
+          done: false,
+        });
         const result = await uploadArchiveFile(file, {
           archiveId: activeArchiveId,
           mimeType,
@@ -174,6 +241,8 @@ export function MediaArchiveAdmin() {
           tags: parseTagsInput(uploadTags),
           autoSplitScenes: isVideo ? autoSplitScenes : false,
           autoGenerateTags,
+          jobId,
+          onProgress: setUploadProgress,
         });
         utils.mediaArchive.listAssets.invalidate();
         utils.mediaArchive.listArchives.invalidate();
@@ -190,6 +259,7 @@ export function MediaArchiveAdmin() {
       toast.error("Upload mislukt", { description: toastErrorMessage(e) });
     } finally {
       setUploading(false);
+      window.setTimeout(() => setUploadProgress(null), 8000);
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
   }
@@ -350,6 +420,35 @@ export function MediaArchiveAdmin() {
                   />
                   Automatisch knippen op shot/scène-wisseling (scdet — detecteert echte beeldcuts)
                 </label>
+
+                {uploadProgress && (
+                  <div className="rounded-xl border border-purple-500/25 bg-purple-500/5 p-4 space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="text-sm font-medium text-white truncate max-w-[70%]">
+                        {uploadProgress.filename ?? "Upload"}
+                      </p>
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-white/10 text-purple-200">
+                        {STAGE_LABELS[uploadProgress.stage] ?? uploadProgress.stage}
+                      </span>
+                    </div>
+                    <div className="h-2 rounded-full bg-white/10 overflow-hidden">
+                      <div
+                        className={`h-full transition-all duration-500 ${
+                          uploadProgress.stage === "error" ? "bg-red-500" : "bg-gradient-to-r from-purple-500 to-cyan-500"
+                        }`}
+                        style={{ width: `${Math.min(100, Math.max(0, uploadProgress.percent))}%` }}
+                      />
+                    </div>
+                    <p className="text-xs text-slate-300 leading-relaxed">{uploadProgress.message}</p>
+                    {uploadProgress.clipTotal != null && uploadProgress.clipTotal > 0 && (
+                      <p className="text-[11px] text-slate-500">
+                        Clip {uploadProgress.clipIndex ?? uploadProgress.clipsSaved ?? 0}/{uploadProgress.clipTotal}
+                        {uploadProgress.clipsSaved != null ? ` · ${uploadProgress.clipsSaved} opgeslagen` : ""}
+                      </p>
+                    )}
+                  </div>
+                )}
+
                 <label
                   className={`flex flex-col items-center justify-center gap-2 border-2 border-dashed rounded-xl p-8 cursor-pointer transition-colors ${
                     uploading ? "border-purple-500/30 bg-purple-500/5" : "border-white/15 hover:border-purple-500/40 hover:bg-white/3"

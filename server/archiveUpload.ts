@@ -16,9 +16,17 @@ import {
   formatTimecode,
   mapPool,
   maxArchiveUploadBytes,
+  MIN_SPLIT_VIDEO_SEC,
   splitVideoBySceneChanges,
+  type ArchiveSplitProgress,
   type VideoClipSegment,
 } from "./archiveVideoSplitter";
+import {
+  finishArchiveUploadJob,
+  getArchiveUploadJob,
+  initArchiveUploadJob,
+  patchArchiveUploadJob,
+} from "./archiveUploadProgress";
 import { getUserFromRequest } from "./_core/context";
 import {
   createMediaArchiveAsset,
@@ -39,6 +47,7 @@ export type ArchiveUploadInput = {
   sourceNote?: string;
   autoSplitScenes?: boolean;
   autoGenerateTags?: boolean;
+  jobId?: string;
 };
 
 export type ArchiveUploadResult = {
@@ -59,7 +68,31 @@ export class ArchiveUploadError extends Error {
   }
 }
 
+/** Block single long clip when auto-split expected multiple shots. */
+function assertSplitSegmentsValid(
+  segments: VideoClipSegment[],
+  autoSplitScenes: boolean
+): void {
+  if (!autoSplitScenes || segments.length !== 1) return;
+  if (segments[0].durationSec <= MIN_SPLIT_VIDEO_SEC) return;
+
+  throw new ArchiveUploadError(
+    400,
+    appErrorMessage(
+      APP_ERROR.SERVICE_ERROR,
+      "Automatisch knippen leverde maar 1 clip — geen betrouwbare shot-wisselingen. Probeer opnieuw of schakel automatisch knippen uit."
+    )
+  );
+}
+
 export async function processArchiveAssetUpload(input: ArchiveUploadInput): Promise<ArchiveUploadResult> {
+  const jobId = input.jobId;
+  const fileLabel = input.filename?.trim() || "upload";
+  const progress = (patch: Parameters<typeof patchArchiveUploadJob>[1]) =>
+    patchArchiveUploadJob(jobId, patch);
+
+  progress({ stage: "validating", message: `${fileLabel}: bestand valideren…`, percent: 3 });
+
   const archive = await getMediaArchiveById(input.archiveId);
   if (!archive) {
     throw new ArchiveUploadError(404, appErrorMessage(APP_ERROR.NOT_FOUND, "Archive not found"));
@@ -99,13 +132,24 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
 
   if (isVideo && autoSplitScenes) {
     let segments: VideoClipSegment[];
+    const onSplitProgress = (p: ArchiveSplitProgress) => {
+      progress({
+        stage: p.stage,
+        message: `${fileLabel}: ${p.message}`,
+        percent: Math.min(85, p.percent),
+        clipIndex: p.clipIndex,
+        clipTotal: p.clipTotal,
+      });
+    };
     try {
-      segments = await splitVideoBySceneChanges(input.buffer, mimeType);
+      segments = await splitVideoBySceneChanges(input.buffer, mimeType, onSplitProgress);
     } catch (err) {
       if (err instanceof ArchiveSplitError) {
+        finishArchiveUploadJob(jobId, false, err.message);
         throw new ArchiveUploadError(400, appErrorMessage(APP_ERROR.SERVICE_ERROR, err.message));
       }
       const msg = (err as Error).message ?? "Scene split failed";
+      finishArchiveUploadJob(jobId, false, msg);
       if (msg.includes("too long")) {
         throw new ArchiveUploadError(
           400,
@@ -116,6 +160,14 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
     }
 
     if (segments.length >= 1) {
+      assertSplitSegmentsValid(segments, autoSplitScenes);
+
+      progress({
+        stage: "ai_tags",
+        message: `${fileLabel}: AI-tags voor ${segments.length} clips…`,
+        percent: 86,
+        clipTotal: segments.length,
+      });
       const sharedAi = autoGenerateTags
         ? await generateArchiveAssetAiMetadata(segments[0].buffer, "video/mp4", {
             archiveNicheTags,
@@ -125,15 +177,32 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
           })
         : null;
 
+      let savedCount = 0;
+      progress({
+        stage: "save_clips",
+        message: `${fileLabel}: clips opslaan (0/${segments.length})…`,
+        percent: 90,
+        clipTotal: segments.length,
+        clipsSaved: 0,
+      });
+
       const createdAssets = (
-        await mapPool(segments, 4, async (seg) => {
+        await mapPool(segments, 2, async (seg) => {
           if (await archiveClipHasBakedEditText(seg.buffer, "video/mp4", { clipCount: segments.length })) {
             console.log(
               `[ArchiveUpload] skip clip ${seg.index + 1} (${formatTimecode(seg.startSec)}–${formatTimecode(seg.endSec)}): baked edit text`
             );
+            progress({
+              stage: "filter_overlay",
+              message: `${fileLabel}: clip ${seg.index + 1} overgeslagen (editor-tekst)`,
+              percent: 90 + Math.round((seg.index / segments.length) * 8),
+              clipIndex: seg.index + 1,
+              clipTotal: segments.length,
+              clipsSaved: savedCount,
+            });
             return null;
           }
-          const key = `media-archive/${input.archiveId}/${Date.now()}-clip${seg.index}-${Math.random().toString(36).slice(2, 6)}.mp4`;
+          const key = `media-archive/${input.archiveId}/${Date.now()}-clip${seg.index}-${Math.random().toString(36).slice(2, 10)}.mp4`;
           const fragmentNote = parentSource
             ? `Fragment uit ${parentSource} (${formatTimecode(seg.startSec)}–${formatTimecode(seg.endSec)})`
             : `Fragment ${formatTimecode(seg.startSec)}–${formatTimecode(seg.endSec)}`;
@@ -174,11 +243,21 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
             isActive: 1,
           });
           if (!assetId) return null;
+          savedCount += 1;
+          progress({
+            stage: "save_clips",
+            message: `${fileLabel}: clip ${savedCount}/${segments.length} opgeslagen`,
+            percent: 90 + Math.round((savedCount / segments.length) * 9),
+            clipIndex: seg.index + 1,
+            clipTotal: segments.length,
+            clipsSaved: savedCount,
+          });
           return getMediaArchiveAssetById(assetId);
         })
       ).filter((a): a is NonNullable<typeof a> => a != null);
 
       if (createdAssets.length === 0) {
+        finishArchiveUploadJob(jobId, false, "Geen clips opgeslagen");
         throw new ArchiveUploadError(
           500,
           appErrorMessage(
@@ -187,6 +266,11 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
           )
         );
       }
+
+      finishArchiveUploadJob(jobId, true, `${createdAssets.length} clip(s) opgeslagen`, {
+        clipsSaved: createdAssets.length,
+        clipTotal: segments.length,
+      });
 
       return {
         assets: createdAssets,
@@ -268,6 +352,13 @@ function parseBoolQuery(value: unknown, defaultValue: boolean): boolean {
 }
 
 async function handleArchiveBinaryUpload(req: Request, res: Response) {
+  const jobId = String(req.query.jobId ?? "").trim() || undefined;
+  const filename = String(req.query.filename ?? "upload").slice(0, 256);
+
+  if (jobId) {
+    initArchiveUploadJob(jobId, filename);
+  }
+
   try {
     const user = await getUserFromRequest(req);
     if (!user) {
@@ -287,7 +378,11 @@ async function handleArchiveBinaryUpload(req: Request, res: Response) {
 
     const rawBody = req.body;
     const buffer = Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(rawBody ?? []);
-    const filename = String(req.query.filename ?? "upload").slice(0, 256);
+    patchArchiveUploadJob(jobId, {
+      stage: "validating",
+      message: `${filename}: ${Math.round(buffer.length / (1024 * 1024))}MB ontvangen — verwerken…`,
+      percent: 2,
+    });
     const mimeType = String(req.query.mimeType ?? req.headers["content-type"] ?? "").slice(0, 128);
     const tagsRaw = String(req.query.tags ?? "");
     const tags = tagsRaw ? normalizeMediaTags(tagsRaw.split(/[,;]+/)) : [];
@@ -305,21 +400,56 @@ async function handleArchiveBinaryUpload(req: Request, res: Response) {
       mixKind,
       autoSplitScenes: parseBoolQuery(req.query.autoSplitScenes, true),
       autoGenerateTags: parseBoolQuery(req.query.autoGenerateTags, true),
+      jobId,
     });
 
     res.json(result);
   } catch (err) {
     if (err instanceof ArchiveUploadError) {
+      finishArchiveUploadJob(jobId, false, err.message);
       res.status(err.status).json({ error: err.message });
       return;
     }
     console.error("[ArchiveUpload] HTTP upload failed:", err);
+    finishArchiveUploadJob(jobId, false, "Upload failed");
     res.status(500).json({ error: appErrorMessage(APP_ERROR.SERVICE_ERROR, "Upload failed") });
+  }
+}
+
+async function handleArchiveUploadProgress(req: Request, res: Response) {
+  try {
+    const user = await getUserFromRequest(req);
+    if (!user) {
+      res.status(401).json({ error: appErrorMessage(APP_ERROR.UNAUTHED, "Please login") });
+      return;
+    }
+    if (user.role !== "admin") {
+      res.status(403).json({ error: appErrorMessage(APP_ERROR.NOT_ADMIN, "You do not have required permission") });
+      return;
+    }
+
+    const jobId = String(req.query.jobId ?? "").trim();
+    if (!jobId) {
+      res.status(400).json({ error: "jobId is required" });
+      return;
+    }
+
+    const job = getArchiveUploadJob(jobId);
+    if (!job) {
+      res.status(404).json({ error: "Geen actieve upload gevonden voor dit jobId" });
+      return;
+    }
+
+    res.json(job);
+  } catch (err) {
+    console.error("[ArchiveUpload] progress failed:", err);
+    res.status(500).json({ error: appErrorMessage(APP_ERROR.SERVICE_ERROR, "Progress failed") });
   }
 }
 
 /** Register before express.json() — raw binary body, no base64 JSON bloat. */
 export function registerArchiveUploadRoute(app: Express) {
+  app.get("/api/admin/archive/upload/progress", handleArchiveUploadProgress);
   app.post(
     "/api/admin/archive/upload",
     express.raw({ type: () => true, limit: "620mb" }),

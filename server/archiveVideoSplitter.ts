@@ -18,6 +18,16 @@ export type VideoClipSegment = {
   index: number;
 };
 
+export type ArchiveSplitProgress = {
+  stage: "split_ffmpeg" | "split_probe" | "split_detect" | "split_rescan" | "split_extract";
+  message: string;
+  percent: number;
+  clipIndex?: number;
+  clipTotal?: number;
+};
+
+export type ArchiveSplitProgressFn = (progress: ArchiveSplitProgress) => void;
+
 export class ArchiveSplitError extends Error {
   constructor(message: string) {
     super(message);
@@ -25,9 +35,7 @@ export class ArchiveSplitError extends Error {
   }
 }
 
-const MIN_SPLIT_VIDEO_SEC = 4;
-
-/** Drop only sub-frame detection noise — never merge real shots for being "too short". */
+export const MIN_SPLIT_VIDEO_SEC = 4;
 const MIN_SCENE_SEC = 0.12;
 const DEFAULT_MAX_CLIPS = 300;
 /** Only merge adjacent clips when capping count if one side is a sub-second flash/glitch. */
@@ -568,13 +576,73 @@ async function extractVideoSegment(
   endSec: number
 ): Promise<void> {
   const durationSec = endSec - startSec;
-  const perClipTimeout = Math.max(30_000, Math.min(120_000, durationSec * 4000));
+  const perClipTimeout = Math.max(30_000, Math.min(180_000, durationSec * 5000));
   // -ss after -i for frame-accurate cuts (avoids bleeding the next/previous shot).
   await exec(
     `${ffmpegBin()} -y -i "${inputPath}" -ss ${startSec.toFixed(3)} -to ${endSec.toFixed(3)} ` +
-      `-c:v libx264 -preset ultrafast -crf 23 -an -pix_fmt yuv420p -movflags +faststart -threads 2 "${outputPath}"`,
+      `-c:v libx264 -preset ultrafast -crf 23 -an -pix_fmt yuv420p -movflags +faststart ` +
+      `-avoid_negative_ts make_zero -reset_timestamps 1 -threads 2 "${outputPath}"`,
     { maxBuffer: 8 * 1024 * 1024, timeout: perClipTimeout }
   );
+}
+
+/** Re-encode to H.264 MP4 when codecs/containers confuse shot detectors. */
+async function normalizeSourceForAnalysis(
+  inputPath: string,
+  workDir: string,
+  totalDur: number,
+  onProgress?: ArchiveSplitProgressFn
+): Promise<string> {
+  const outPath = path.join(workDir, "analysis_normalized.mp4");
+  onProgress?.({
+    stage: "split_probe",
+    message: `Video normaliseren voor betrouwbare shot-detectie (${Math.round(totalDur)}s)…`,
+    percent: 15,
+  });
+
+  const timeoutMs = Math.min(480_000, Math.max(60_000, totalDur * 800));
+  await exec(
+    `${ffmpegBin()} -y -i "${inputPath}" -an -c:v libx264 -preset ultrafast -crf 23 ` +
+      `-pix_fmt yuv420p -movflags +faststart -threads 0 "${outPath}"`,
+    { maxBuffer: 8 * 1024 * 1024, timeout: timeoutMs }
+  );
+
+  if (!fs.existsSync(outPath) || fs.statSync(outPath).size < 8000) {
+    throw new ArchiveSplitError("Video normaliseren mislukt — controleer of het bestand afspeelbaar is.");
+  }
+  return outPath;
+}
+
+async function probeVideoCodec(inputPath: string): Promise<string | null> {
+  try {
+    const { stdout } = await exec(
+      `${ffprobeBin()} -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "${inputPath}"`,
+      { timeout: 20_000 }
+    );
+    const codec = String(stdout).trim().toLowerCase();
+    return codec || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Pick the file to scan — prefer H.264 MP4 sources, otherwise normalize once. */
+async function prepareAnalysisVideo(
+  inputPath: string,
+  workDir: string,
+  totalDur: number,
+  onProgress?: ArchiveSplitProgressFn
+): Promise<string> {
+  const ext = path.extname(inputPath).toLowerCase();
+  const codec = await probeVideoCodec(inputPath);
+  const isH264 = codec === "h264" || codec === "avc1";
+  if (ext === ".mp4" && isH264) {
+    return inputPath;
+  }
+  console.log(
+    `[ArchiveSplit] normalizing ${ext || "unknown"} (${codec ?? "unknown codec"}) → H.264 MP4 for shot detect`
+  );
+  return normalizeSourceForAnalysis(inputPath, workDir, totalDur, onProgress);
 }
 
 function formatTimecode(sec: number): string {
@@ -589,12 +657,16 @@ function formatTimecode(sec: number): string {
  */
 export async function splitVideoBySceneChanges(
   inputBuffer: Buffer,
-  mimeType: string
+  mimeType: string,
+  onProgress?: ArchiveSplitProgressFn
 ): Promise<VideoClipSegment[]> {
   const startedAt = Date.now();
   const deadline = startedAt + splitBudgetMs();
   const hasBudget = () => Date.now() < deadline;
 
+  const report = (progress: ArchiveSplitProgress) => onProgress?.(progress);
+
+  report({ stage: "split_ffmpeg", message: "FFmpeg beschikbaarheid controleren…", percent: 8 });
   await assertFfmpegAvailable();
 
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "fastvid-archive-split-"));
@@ -603,6 +675,7 @@ export async function splitVideoBySceneChanges(
     const inputPath = path.join(workDir, `source.${ext}`);
     fs.writeFileSync(inputPath, inputBuffer);
 
+    report({ stage: "split_probe", message: "Videoduur meten (ffprobe)…", percent: 12 });
     const totalDur = await probeVideoDurationSec(inputPath);
     if (totalDur <= 0) {
       throw new ArchiveSplitError("Kon videoduur niet bepalen (ffprobe). Bestand corrupt of formaat niet ondersteund.");
@@ -623,10 +696,30 @@ export async function splitVideoBySceneChanges(
       }];
     }
 
-    const cuts = await detectSceneCutTimes(inputPath, totalDur, deadline);
+    report({
+      stage: "split_detect",
+      message: `Shot-detectie starten (${Math.round(totalDur)}s video)…`,
+      percent: 18,
+    });
+
+    let analysisPath = await prepareAnalysisVideo(inputPath, workDir, totalDur, report);
+    let cuts = await detectSceneCutTimes(analysisPath, totalDur, deadline);
+
+    // Retry on normalized video when exotic codecs/containers hid cuts on the first pass.
+    if (cuts.length < 2 && totalDur > MIN_SPLIT_VIDEO_SEC && analysisPath === inputPath) {
+      analysisPath = await normalizeSourceForAnalysis(inputPath, workDir, totalDur, report);
+      cuts = await detectSceneCutTimes(analysisPath, totalDur, deadline);
+      console.log(`[ArchiveSplit] retry after normalize: ${cuts.length} cut(s)`);
+    }
+
     let ranges = buildClipRanges(cuts, totalDur);
     if (ranges.length > 1 && hasBudget()) {
-      ranges = await rescanRangesForInteriorCuts(inputPath, ranges, deadline);
+      report({
+        stage: "split_rescan",
+        message: `Lange shots opnieuw scannen (${ranges.length} segmenten)…`,
+        percent: 42,
+      });
+      ranges = await rescanRangesForInteriorCuts(analysisPath, ranges, deadline);
     }
     console.log(
       `[ArchiveSplit] ${cuts.length} shot cuts → ${ranges.length} clip(s) (${totalDur.toFixed(1)}s, ` +
@@ -657,6 +750,14 @@ export async function splitVideoBySceneChanges(
       );
     }
 
+    report({
+      stage: "split_extract",
+      message: `${ranges.length} clips knippen met FFmpeg…`,
+      percent: 52,
+      clipTotal: ranges.length,
+      clipIndex: 0,
+    });
+
     const extractResults = await mapPool(
       ranges,
       extractConcurrency(),
@@ -664,8 +765,15 @@ export async function splitVideoBySceneChanges(
         const { start, end } = range;
         const dur = end - start;
         const outPath = path.join(workDir, `clip_${String(i).padStart(3, "0")}.mp4`);
+        report({
+          stage: "split_extract",
+          message: `Clip ${i + 1}/${ranges.length}: ${formatTimecode(start)}–${formatTimecode(end)}`,
+          percent: 52 + Math.round(((i + 1) / ranges.length) * 33),
+          clipIndex: i + 1,
+          clipTotal: ranges.length,
+        });
         try {
-          await extractVideoSegment(inputPath, outPath, start, end);
+          await extractVideoSegment(analysisPath, outPath, start, end);
           const buf = fs.readFileSync(outPath);
           if (buf.length < 8000) return null;
           return {
@@ -686,7 +794,10 @@ export async function splitVideoBySceneChanges(
       hasBudget
     );
 
-    const segments = extractResults.filter((s): s is VideoClipSegment => s != null);
+    const segments = extractResults
+      .filter((s): s is VideoClipSegment => s != null)
+      .sort((a, b) => a.startSec - b.startSec)
+      .map((seg, index) => ({ ...seg, index }));
     console.log(`[ArchiveSplit] extracted ${segments.length}/${ranges.length} shot clips in ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
 
     if (segments.length === 0) {

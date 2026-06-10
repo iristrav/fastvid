@@ -41,6 +41,15 @@ if [ -n "$FFMPEG_PATH" ]; then
   if [ -x "$FFMPEG_DIR/ffprobe" ]; then
     export FFPROBE_BIN="$FFMPEG_DIR/ffprobe"
     echo "[start.sh] FFprobe ready: $FFPROBE_BIN"
+  elif command -v ffprobe >/dev/null 2>&1; then
+    export FFPROBE_BIN=$(command -v ffprobe)
+    echo "[start.sh] FFprobe ready: $FFPROBE_BIN"
+  else
+    FFPROBE_PATH=$(find /nix/store -name "ffprobe" -type f 2>/dev/null | grep "/bin/ffprobe$" | head -1)
+    if [ -n "$FFPROBE_PATH" ]; then
+      export FFPROBE_BIN="$FFPROBE_PATH"
+      echo "[start.sh] FFprobe ready (nix): $FFPROBE_BIN"
+    fi
   fi
   echo "[start.sh] Added $FFMPEG_DIR to PATH"
 else
