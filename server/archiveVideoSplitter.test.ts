@@ -8,6 +8,7 @@ import {
   maxArchiveUploadBytes,
   maxArchiveVideoDurationSec,
   mergeNearbyCuts,
+  normalizeWindowCutTimes,
   parsePtsTimesFromFfmpeg,
   parseScdetTimesFromFfmpeg,
   refineClipRangesWithInteriorCuts,
@@ -106,6 +107,10 @@ describe("archiveVideoSplitter", () => {
 
   it("defaults allow more clips without multi-shot merge", () => {
     expect(maxArchiveClips()).toBe(300);
+  });
+
+  it("normalizeWindowCutTimes offsets relative window timestamps", () => {
+    expect(normalizeWindowCutTimes([1.5, 4.2], 10, 20)).toEqual([11.5, 14.2]);
   });
 
   it("defaults support 20 min video within 9 min split budget", () => {

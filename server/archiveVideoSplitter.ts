@@ -18,6 +18,15 @@ export type VideoClipSegment = {
   index: number;
 };
 
+export class ArchiveSplitError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ArchiveSplitError";
+  }
+}
+
+const MIN_SPLIT_VIDEO_SEC = 4;
+
 /** Drop only sub-frame detection noise — never merge real shots for being "too short". */
 const MIN_SCENE_SEC = 0.12;
 const DEFAULT_MAX_CLIPS = 300;
@@ -141,6 +150,50 @@ export async function probeVideoDurationSec(filePath: string): Promise<number> {
     return !isNaN(dur) && dur > 0 ? dur : 0;
   } catch {
     return 0;
+  }
+}
+
+export async function assertFfmpegAvailable(): Promise<void> {
+  try {
+    await exec(`${ffmpegBin()} -version`, { timeout: 8_000, maxBuffer: 256 * 1024 });
+  } catch {
+    throw new ArchiveSplitError(
+      "FFmpeg is niet beschikbaar op de server — automatisch knippen kan niet. Controleer de Railway-deploy (nixpacks ffmpeg)."
+    );
+  }
+}
+
+/** Normalize cut times from a trimmed ffmpeg window (may be 0-based or absolute). */
+export function normalizeWindowCutTimes(
+  times: number[],
+  windowStart: number,
+  windowEnd: number
+): number[] {
+  const windowDur = windowEnd - windowStart;
+  const relative = times.length > 0 && times.every((t) => t <= windowDur + 0.5);
+  return mergeNearbyCuts(
+    times
+      .map((t) => (relative ? t + windowStart : t))
+      .filter((t) => t > windowStart + MIN_SCENE_SEC && t < windowEnd - MIN_SCENE_SEC),
+    cutMergeGapSec()
+  );
+}
+
+/** I-frame timestamps often align with hard cuts in edited/archive footage. */
+export async function detectKeyframeCutTimes(inputPath: string, totalDur: number): Promise<number[]> {
+  try {
+    const { stdout } = await exec(
+      `${ffprobeBin()} -v error -skip_frame nokey -show_frames -show_entries frame=best_effort_timestamp_time -of csv=p=0 "${inputPath}"`,
+      { maxBuffer: 32 * 1024 * 1024, timeout: 120_000 }
+    );
+    const times = String(stdout)
+      .split(/\r?\n/)
+      .map((s) => parseFloat(s.trim()))
+      .filter((t) => !isNaN(t) && t > MIN_SCENE_SEC && t < totalDur - MIN_SCENE_SEC);
+    return mergeNearbyCuts(times, cutMergeGapSec());
+  } catch (err) {
+    console.warn("[ArchiveSplit] keyframe detect failed:", (err as Error).message?.slice(0, 120));
+    return [];
   }
 }
 
@@ -331,10 +384,7 @@ async function detectScdetCutTimesInWindow(
   const stderr = await runFfmpegDetect(cmd, timeoutMs);
   const fromMeta = parseScdetTimesFromFfmpeg(stderr, windowEnd);
   const pts = fromMeta.length > 0 ? fromMeta : parsePtsTimesFromFfmpeg(stderr, windowEnd);
-  return mergeNearbyCuts(
-    pts.filter((t) => t > windowStart + MIN_SCENE_SEC && t < windowEnd - MIN_SCENE_SEC),
-    cutMergeGapSec()
-  );
+  return normalizeWindowCutTimes(pts, windowStart, windowEnd);
 }
 
 async function detectSceneFilterCutTimesInWindow(
@@ -351,12 +401,7 @@ async function detectSceneFilterCutTimesInWindow(
     `${ffmpegBin()} -i "${inputPath}" -ss ${windowStart.toFixed(3)} -to ${windowEnd.toFixed(3)} -an ` +
     `-vf "scale=480:-1,select='gt(scene,${threshold})',showinfo" -f null -`;
   const stderr = await runFfmpegDetect(cmd, timeoutMs);
-  return mergeNearbyCuts(
-    parsePtsTimesFromFfmpeg(stderr, windowEnd).filter(
-      (t) => t > windowStart + MIN_SCENE_SEC && t < windowEnd - MIN_SCENE_SEC
-    ),
-    cutMergeGapSec()
-  );
+  return normalizeWindowCutTimes(parsePtsTimesFromFfmpeg(stderr, windowEnd), windowStart, windowEnd);
 }
 
 /** Re-scan long segments for missed interior cuts (fixes clips with 2 shots in 1 file). */
@@ -455,39 +500,65 @@ async function detectSceneFilterCutTimes(
 
 async function detectSceneCutTimes(inputPath: string, totalDur: number, deadlineMs: number): Promise<number[]> {
   const detectTimeout = Math.min(300_000, Math.max(60_000, deadlineMs - Date.now()));
-  const scdetBudget = Math.floor(detectTimeout * 0.5);
-  const sceneBudget = Math.floor(detectTimeout * 0.5);
+  const scdetBudget = Math.floor(detectTimeout * 0.45);
+  const sceneBudget = Math.floor(detectTimeout * 0.45);
+  const keyframeBudget = Math.floor(detectTimeout * 0.1);
 
   const scdetCuts = await detectScdetCutTimes(inputPath, totalDur, scdetThreshold(), scdetBudget);
   const sceneCuts = await detectSceneFilterCutTimes(inputPath, totalDur, sceneThreshold(), sceneBudget);
-  let cuts = combineShotCutTimes([scdetCuts, sceneCuts]);
+  const keyframeCuts = await detectKeyframeCutTimes(inputPath, totalDur);
+  let cuts = combineShotCutTimes([scdetCuts, sceneCuts, keyframeCuts]);
 
   console.log(
-    `[ArchiveSplit] shot detect: scdet=${scdetCuts.length} scene=${sceneCuts.length} combined=${cuts.length}`
+    `[ArchiveSplit] shot detect: scdet=${scdetCuts.length} scene=${sceneCuts.length} keyframes=${keyframeCuts.length} combined=${cuts.length}`
   );
 
   // If almost no shots found on a long video, retry both detectors more sensitively.
-  if (cuts.length < 2 && totalDur > 15) {
+  if (cuts.length < 2 && totalDur > MIN_SPLIT_VIDEO_SEC) {
     const scdet2 = await detectScdetCutTimes(
       inputPath,
       totalDur,
-      Math.max(3, scdetThreshold() * 0.6),
-      Math.floor(sceneBudget * 0.5)
+      Math.max(2, scdetThreshold() * 0.5),
+      Math.floor(scdetBudget * 0.6)
     );
     const scene2 = await detectSceneFilterCutTimes(
       inputPath,
       totalDur,
-      Math.max(0.1, sceneThreshold() * 0.55),
-      Math.floor(sceneBudget * 0.5)
+      Math.max(0.08, sceneThreshold() * 0.45),
+      Math.floor(sceneBudget * 0.6)
     );
-    const retry = combineShotCutTimes([scdet2, scene2]);
+    const retry = combineShotCutTimes([scdet2, scene2, keyframeCuts]);
     if (retry.length > cuts.length) {
       console.log(`[ArchiveSplit] sensitive shot retry: ${retry.length} cuts (was ${cuts.length})`);
       cuts = retry;
     }
   }
 
+  // Last resort for archive/edited footage: lower-res pass picks up subtle hard cuts.
+  if (cuts.length < 2 && totalDur > MIN_SPLIT_VIDEO_SEC && Date.now() < deadlineMs - 15_000) {
+    const lowRes = await detectSceneFilterCutTimesLowRes(inputPath, totalDur, 0.1, keyframeBudget);
+    const merged = combineShotCutTimes([cuts, lowRes]);
+    if (merged.length > cuts.length) {
+      console.log(`[ArchiveSplit] low-res scene retry: ${merged.length} cuts (was ${cuts.length})`);
+      cuts = merged;
+    }
+  }
+
   return cuts;
+}
+
+/** Extra pass at 240px — faster and more sensitive on B&W / grainy archive video. */
+async function detectSceneFilterCutTimesLowRes(
+  inputPath: string,
+  totalDur: number,
+  threshold: number,
+  timeoutMs: number
+): Promise<number[]> {
+  const cmd =
+    `${ffmpegBin()} -i "${inputPath}" -an ` +
+    `-vf "scale=240:-1,select='gt(scene,${threshold})',showinfo" -f null -`;
+  const stderr = await runFfmpegDetect(cmd, timeoutMs);
+  return mergeNearbyCuts(parsePtsTimesFromFfmpeg(stderr, totalDur), cutMergeGapSec());
 }
 
 async function extractVideoSegment(
@@ -524,6 +595,8 @@ export async function splitVideoBySceneChanges(
   const deadline = startedAt + splitBudgetMs();
   const hasBudget = () => Date.now() < deadline;
 
+  await assertFfmpegAvailable();
+
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "fastvid-archive-split-"));
   try {
     const ext = mimeType.includes("webm") ? "webm" : mimeType.includes("quicktime") || mimeType.includes("mov") ? "mov" : "mp4";
@@ -531,17 +604,21 @@ export async function splitVideoBySceneChanges(
     fs.writeFileSync(inputPath, inputBuffer);
 
     const totalDur = await probeVideoDurationSec(inputPath);
+    if (totalDur <= 0) {
+      throw new ArchiveSplitError("Kon videoduur niet bepalen (ffprobe). Bestand corrupt of formaat niet ondersteund.");
+    }
+
     const maxDur = maxArchiveVideoDurationSec();
     if (totalDur > maxDur) {
-      throw new Error(`Video too long (${Math.ceil(totalDur / 60)} min, max ${Math.floor(maxDur / 60)} min)`);
+      throw new ArchiveSplitError(`Video too long (${Math.ceil(totalDur / 60)} min, max ${Math.floor(maxDur / 60)} min)`);
     }
 
     if (totalDur < MIN_SCENE_SEC * 2) {
       return [{
         buffer: inputBuffer,
         startSec: 0,
-        endSec: totalDur || 0,
-        durationSec: totalDur || 0,
+        endSec: totalDur,
+        durationSec: totalDur,
         index: 0,
       }];
     }
@@ -557,7 +634,14 @@ export async function splitVideoBySceneChanges(
     );
 
     if (ranges.length <= 1) {
-      console.log("[ArchiveSplit] no shot boundaries detected — keeping whole video as one clip");
+      const msg =
+        `[ArchiveSplit] no shot boundaries detected in ${totalDur.toFixed(1)}s video`;
+      console.warn(msg);
+      if (totalDur > MIN_SPLIT_VIDEO_SEC) {
+        throw new ArchiveSplitError(
+          "Geen shot/scène-wisselingen gedetecteerd. Zorg dat FFmpeg beschikbaar is en het bestand echte beeldcuts bevat."
+        );
+      }
       return [{
         buffer: inputBuffer,
         startSec: 0,
@@ -568,14 +652,9 @@ export async function splitVideoBySceneChanges(
     }
 
     if (!hasBudget()) {
-      console.warn("[ArchiveSplit] budget exhausted after shot detect — storing whole video");
-      return [{
-        buffer: inputBuffer,
-        startSec: 0,
-        endSec: totalDur,
-        durationSec: totalDur,
-        index: 0,
-      }];
+      throw new ArchiveSplitError(
+        "Knippen duurde te lang (timeout). Probeer een kortere video of zet AI-tags tijdelijk uit."
+      );
     }
 
     const extractResults = await mapPool(
@@ -611,13 +690,13 @@ export async function splitVideoBySceneChanges(
     console.log(`[ArchiveSplit] extracted ${segments.length}/${ranges.length} shot clips in ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
 
     if (segments.length === 0) {
-      return [{
-        buffer: inputBuffer,
-        startSec: 0,
-        endSec: totalDur,
-        durationSec: totalDur,
-        index: 0,
-      }];
+      throw new ArchiveSplitError("Shot-detectie vond cuts maar extractie van clips mislukt (FFmpeg).");
+    }
+
+    if (segments.length <= 1 && totalDur > MIN_SPLIT_VIDEO_SEC) {
+      throw new ArchiveSplitError(
+        "Slechts 1 clip geëxtraheerd terwijl er meerdere shots verwacht werden. Probeer opnieuw te uploaden."
+      );
     }
 
     return segments;

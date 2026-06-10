@@ -11,7 +11,14 @@ import {
   inferArchiveMediaMime,
 } from "./archiveAssetTagging";
 import { archiveClipHasBakedEditText } from "./archiveClipFilter";
-import { formatTimecode, mapPool, maxArchiveUploadBytes, splitVideoBySceneChanges } from "./archiveVideoSplitter";
+import {
+  ArchiveSplitError,
+  formatTimecode,
+  mapPool,
+  maxArchiveUploadBytes,
+  splitVideoBySceneChanges,
+  type VideoClipSegment,
+} from "./archiveVideoSplitter";
 import { getUserFromRequest } from "./_core/context";
 import {
   createMediaArchiveAsset,
@@ -91,10 +98,13 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
   const autoGenerateTags = input.autoGenerateTags ?? true;
 
   if (isVideo && autoSplitScenes) {
-    let segments: Awaited<ReturnType<typeof splitVideoBySceneChanges>>;
+    let segments: VideoClipSegment[];
     try {
       segments = await splitVideoBySceneChanges(input.buffer, mimeType);
     } catch (err) {
+      if (err instanceof ArchiveSplitError) {
+        throw new ArchiveUploadError(400, appErrorMessage(APP_ERROR.SERVICE_ERROR, err.message));
+      }
       const msg = (err as Error).message ?? "Scene split failed";
       if (msg.includes("too long")) {
         throw new ArchiveUploadError(
@@ -104,7 +114,8 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
       }
       throw err;
     }
-    if (segments.length > 1) {
+
+    if (segments.length >= 1) {
       const sharedAi = autoGenerateTags
         ? await generateArchiveAssetAiMetadata(segments[0].buffer, "video/mp4", {
             archiveNicheTags,
@@ -166,6 +177,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
           return getMediaArchiveAssetById(assetId);
         })
       ).filter((a): a is NonNullable<typeof a> => a != null);
+
       if (createdAssets.length === 0) {
         throw new ArchiveUploadError(
           500,
@@ -175,14 +187,22 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
           )
         );
       }
+
       return {
         assets: createdAssets,
         asset: createdAssets[0],
         clipCount: createdAssets.length,
-        split: true,
+        split: createdAssets.length > 1,
         aiTagged: autoGenerateTags,
       };
     }
+  }
+
+  if (isVideo && autoSplitScenes) {
+    throw new ArchiveUploadError(
+      400,
+      appErrorMessage(APP_ERROR.SERVICE_ERROR, "Automatisch knippen leverde geen clips op.")
+    );
   }
 
   if (await archiveClipHasBakedEditText(input.buffer, mimeType)) {

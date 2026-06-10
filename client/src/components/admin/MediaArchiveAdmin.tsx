@@ -177,8 +177,10 @@ export function MediaArchiveAdmin() {
         });
         utils.mediaArchive.listAssets.invalidate();
         utils.mediaArchive.listArchives.invalidate();
-        if (result.split && result.clipCount > 1) {
-          toast.success(`${file.name}: ${result.clipCount} clips aangemaakt (scènewisselingen)`);
+        if (isVideo && autoSplitScenes && result.clipCount > 1) {
+          toast.success(`${file.name}: ${result.clipCount} clips aangemaakt (shot/scène-wisselingen)`);
+        } else if (isVideo && autoSplitScenes) {
+          toast.success(`${file.name}: 1 clip opgeslagen`);
         } else {
           toast.success(`${file.name} geüpload`);
         }

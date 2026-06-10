@@ -35,14 +35,17 @@ fi
 
 if [ -n "$FFMPEG_PATH" ]; then
   echo "[start.sh] FFmpeg ready: $FFMPEG_PATH"
-  # Try to add to PATH so 'which ffmpeg' works in Node.js
   FFMPEG_DIR=$(dirname "$FFMPEG_PATH")
   export PATH="$FFMPEG_DIR:$PATH"
+  export FFMPEG_BIN="$FFMPEG_PATH"
+  if [ -x "$FFMPEG_DIR/ffprobe" ]; then
+    export FFPROBE_BIN="$FFMPEG_DIR/ffprobe"
+    echo "[start.sh] FFprobe ready: $FFPROBE_BIN"
+  fi
   echo "[start.sh] Added $FFMPEG_DIR to PATH"
 else
   echo "[start.sh] WARNING: ffmpeg not found, will use ffmpeg-static fallback"
 fi
 
 echo "[start.sh] Starting server..."
-# Pass FFMPEG_PATH explicitly as env var to Node.js
-exec env FFMPEG_PATH="$FFMPEG_PATH" node dist/index.js
+exec env FFMPEG_BIN="${FFMPEG_BIN:-$FFMPEG_PATH}" FFPROBE_BIN="${FFPROBE_BIN:-}" node dist/index.js
