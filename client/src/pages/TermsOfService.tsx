@@ -53,8 +53,10 @@ export default function TermsOfService() {
 
       <LegalSection title="5. Media archive and third-party content">
         <p className="mb-3">
-          Visuals are sourced from curated media archives and licensed or permitted stock where applicable.
-          All such materials remain subject to their respective licenses. You are responsible for verifying
+          Visuals are sourced exclusively from curated media archives that you or your administrator upload
+          and tag in the Service. We do not fetch stock footage, web images, or AI-generated clips for
+          beat visuals unless a different sourcing mode is explicitly enabled for your deployment. All
+          archive materials remain subject to their respective licenses. You are responsible for verifying
           that your use of exported videos complies with those licenses and with the rules of any platform
           where you publish (including YouTube, TikTok, and Instagram).
         </p>

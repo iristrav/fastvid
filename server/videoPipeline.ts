@@ -75,7 +75,12 @@ import {
 } from "./scriptGuidedClipFinder";
 import { clipPassesVisionGate, clipVisionGateEnabled } from "./visualQualityGate";
 import { curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, skipEffectsStage } from "./sourcingPolicy";
-import { fetchCuratedArchiveBeatClip, curatedClipPathAssetId, curatedAssetContentKey } from "./curatedMediaSourcing";
+import {
+  fetchCuratedArchiveBeatClip,
+  curatedClipPathAssetId,
+  curatedAssetContentKey,
+  archiveVisualSourcesReady,
+} from "./curatedMediaSourcing";
 
 // API Keys
 const FISH_AUDIO_API_KEY = process.env.FISH_AUDIO_API_KEY || "";
@@ -611,6 +616,18 @@ async function fetchBeatArchivalThenPexels(
   tag: string,
   stockReason: string
 ): Promise<string | null> {
+  if (curatedArchiveOnlyVisuals()) {
+    return fetchCuratedArchiveBeatClip(
+      beat,
+      scene,
+      workDir,
+      sceneIndex,
+      beat.holdSec,
+      dedup.usedCuratedAssetIds,
+      dedup.usedCuratedStorageUrls,
+      videoTitle
+    );
+  }
   const topicHay = [videoTitle, scene.text, beat.text].filter(Boolean).join(" ");
   const historicalDoc = isHistoricalDocumentary(topicHay) && !dedup.personTopicLock;
   const intent = buildMediaSearchIntent({
@@ -735,6 +752,18 @@ async function beatPrimaryFetch(
   tag: string,
   stockReason: string
 ): Promise<string | null> {
+  if (curatedArchiveOnlyVisuals()) {
+    return fetchCuratedArchiveBeatClip(
+      beat,
+      scene,
+      workDir,
+      sceneIndex,
+      beat.holdSec,
+      dedup.usedCuratedAssetIds,
+      dedup.usedCuratedStorageUrls,
+      videoTitle
+    );
+  }
   if (youtubeOnlySourcingEnabled()) {
     return fetchBeatYoutubeThenPexels(
       beat,
@@ -8799,6 +8828,39 @@ async function recoverSceneClipsIfEmpty(
   const n = Math.max(1, Math.min(4, Math.ceil(scene.duration / VIDRUSH_BEAT_SEC)));
   const clips: string[] = [];
   const beatDurations: number[] = [];
+
+  if (curatedArchiveOnlyVisuals()) {
+    const stubPower = extractPowerWordFromSentence(scene.text.slice(0, 220), scenePersons);
+    const stubBeat: SceneBeat = {
+      index: 0,
+      text: scene.text.slice(0, 220),
+      searchQuery: enrichStockQuery(stubPower, scene, topicContext, scenePersons[0], scene.text),
+      powerWord: stubPower,
+      keywords: recoverAdopt.keywords ?? [],
+      holdSec: VIDRUSH_BEAT_SEC,
+    };
+    for (let fi = 0; fi < n + 2; fi++) {
+      stubBeat.index = fi;
+      const clip = await fetchCuratedArchiveBeatClip(
+        stubBeat,
+        scene,
+        workDir,
+        scene.index,
+        stubBeat.holdSec,
+        dedup.usedCuratedAssetIds,
+        dedup.usedCuratedStorageUrls,
+        topicContext
+      );
+      if (!clip || isPipelineFallbackClip(clip)) continue;
+      const key = clipContentKey(clip);
+      if (clips.some((c) => clipContentKey(c) === key)) continue;
+      clips.push(clip);
+      beatDurations.push(VIDRUSH_BEAT_SEC);
+      if (clips.length >= n) break;
+    }
+    return { clips, beatDurations };
+  }
+
   const stubPower = extractPowerWordFromSentence(scene.text.slice(0, 220), scenePersons);
   const stubBeat: SceneBeat = {
     index: 0,
@@ -8902,6 +8964,18 @@ async function fetchLastResortRealClip(
   videoTitle?: string,
   adoptOpts: VisualAdoptOptions = {}
 ): Promise<string | null> {
+  if (curatedArchiveOnlyVisuals()) {
+    return fetchCuratedArchiveBeatClip(
+      beat,
+      scene,
+      workDir,
+      sceneIndex,
+      beat.holdSec,
+      dedup.usedCuratedAssetIds,
+      dedup.usedCuratedStorageUrls,
+      videoTitle
+    );
+  }
   const tag = `b${beat.index}_lr`;
   const candidateOffset = beat.index * 5 + sceneIndex + 11;
   const queries = [
@@ -10153,6 +10227,18 @@ async function fetchBeatClip(
   personName: string,
   videoTitle?: string
 ): Promise<string | null> {
+  if (curatedArchiveOnlyVisuals()) {
+    return fetchCuratedArchiveBeatClip(
+      beat,
+      scene,
+      workDir,
+      sceneIndex,
+      beat.holdSec,
+      dedup.usedCuratedAssetIds,
+      dedup.usedCuratedStorageUrls,
+      videoTitle
+    );
+  }
   const tag = `b${beat.index}`;
   const candidateOffset = beat.index * 3 + sceneIndex + dedup.globalBeatIndex;
   const muskTopic = isMuskTeslaTopic(videoTitle, scene.text);
@@ -11789,7 +11875,18 @@ async function fetchSceneVisuals(
   let usable = clips.filter((c) => c && !isPipelineFallbackClip(c));
   if (usable.length === 0 && beats[0]) {
     let forced: string | null = null;
-    if (realOnly) {
+    if (archiveOnly) {
+      forced = await fetchCuratedArchiveBeatClip(
+        beats[0],
+        scene,
+        workDir,
+        scene.index,
+        beats[0].holdSec,
+        dedup.usedCuratedAssetIds,
+        dedup.usedCuratedStorageUrls,
+        videoTitle
+      );
+    } else if (realOnly) {
       forced = await beatPrimaryFetch(
         beats[0],
         scene,
@@ -11806,6 +11903,7 @@ async function fetchSceneVisuals(
       );
     }
     if (
+      !archiveOnly &&
       !youtubeOnlySourcingEnabled() &&
       !isAuthenticVideoClip(forced ?? "") &&
       canUseLicensedStockBeat(dedup)
@@ -11814,7 +11912,7 @@ async function fetchSceneVisuals(
         beats[0], scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts, "force"
       );
     }
-    if ((!forced || isPipelineFallbackClip(forced)) && canUseGlobalStillPhoto(dedup)) {
+    if (!archiveOnly && (!forced || isPipelineFallbackClip(forced)) && canUseGlobalStillPhoto(dedup)) {
       forced = dedup.perf.fastStockMode
         ? await fetchBeatScriptImageForced(
             beats[0], scene, workDir, scene.index, clipFetchDur, dedup, scenePersons, videoTitle, `force_s${scene.index}`
@@ -13065,16 +13163,29 @@ export async function runVideoPipeline(
     // ── Stage 3: Per-zin visuals (power word → clip) ─────────────────────────
     onProgress?.({ stage: STAGE_LABELS.visuals, percent: 20 });
     const t2 = Date.now();
-    const hasRealOrAi =
-      youtubeCcReady() ||
-      Boolean(SERPAPI_KEY) ||
-      cheapAiImageProvidersReady() ||
-      Boolean(PEXELS_API_KEY || PIXABAY_API_KEY);
-    if (!hasRealOrAi) {
-      throw pipelineError(
-        PIPELINE_ERROR.NO_SCENES,
-        "No visual sources: set YOUTUBE_API_KEY+RAPIDAPI_KEY and/or STABILITY_AI_API_KEY (stock optional)"
+    if (curatedArchiveOnlyVisuals()) {
+      const archiveReady = await archiveVisualSourcesReady();
+      if (!archiveReady.ok) {
+        throw pipelineError(
+          PIPELINE_ERROR.NO_SCENES,
+          archiveReady.message ?? "No media archive assets available for visuals"
+        );
+      }
+      console.log(
+        `[Pipeline] Visual sourcing: media archive only (${archiveReady.activeArchives} active archive(s), ${archiveReady.totalAssets} asset(s))`
       );
+    } else {
+      const hasRealOrAi =
+        youtubeCcReady() ||
+        Boolean(SERPAPI_KEY) ||
+        cheapAiImageProvidersReady() ||
+        Boolean(PEXELS_API_KEY || PIXABAY_API_KEY);
+      if (!hasRealOrAi) {
+        throw pipelineError(
+          PIPELINE_ERROR.NO_SCENES,
+          "No visual sources: set YOUTUBE_API_KEY+RAPIDAPI_KEY and/or STABILITY_AI_API_KEY (stock optional)"
+        );
+      }
     }
     const perf = getPipelinePerfProfile(videoLength);
     if (!curatedArchiveOnlyVisuals()) {
@@ -13156,7 +13267,9 @@ export async function runVideoPipeline(
         }
         completedVisuals++;
         onProgress?.({
-          stage: `Generating AI visuals... (${completedVisuals}/${scenes.length} scenes done)`,
+          stage: curatedArchiveOnlyVisuals()
+            ? `Matching archive visuals... (${completedVisuals}/${scenes.length} scenes done)`
+            : `Generating AI visuals... (${completedVisuals}/${scenes.length} scenes done)`,
           percent: 20 + Math.round((completedVisuals / scenes.length) * 25),
         });
         return result;
@@ -13215,7 +13328,9 @@ export async function runVideoPipeline(
       if (sceneVisualResults[si].clips.length === 0) {
         throw pipelineError(
           PIPELINE_ERROR.NO_SCENES,
-          `Scene ${scenes[si].index} has no stock footage after recovery`
+          curatedArchiveOnlyVisuals()
+            ? `Scene ${scenes[si].index} has no matching clips in the media archive — add more tagged assets`
+            : `Scene ${scenes[si].index} has no stock footage after recovery`
         );
       }
     }

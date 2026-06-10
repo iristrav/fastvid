@@ -44,6 +44,43 @@ export function curatedClipPathAssetId(filePath: string): number | null {
   return m ? Number(m[1]) : null;
 }
 
+export type ArchiveVisualSourcesStatus = {
+  ok: boolean;
+  activeArchives: number;
+  totalAssets: number;
+  message?: string;
+};
+
+/** Pipeline startup check when visuals are archive-only. */
+export async function archiveVisualSourcesReady(): Promise<ArchiveVisualSourcesStatus> {
+  const archives = (await getAllMediaArchives()).filter((a) => a.isActive === 1);
+  if (!archives.length) {
+    return {
+      ok: false,
+      activeArchives: 0,
+      totalAssets: 0,
+      message:
+        "No active media archive — upload clips in Admin → Media Archief and mark the archive active",
+    };
+  }
+
+  let totalAssets = 0;
+  for (const archive of archives) {
+    totalAssets += (await getMediaArchiveAssets(archive.id)).length;
+  }
+  if (totalAssets === 0) {
+    return {
+      ok: false,
+      activeArchives: archives.length,
+      totalAssets: 0,
+      message:
+        "Media archive is empty — upload tagged clips or images in Admin → Media Archief",
+    };
+  }
+
+  return { ok: true, activeArchives: archives.length, totalAssets };
+}
+
 function ffmpegBin(): string {
   return process.env.FFMPEG_BIN || process.env.FFMPEG_PATH || "ffmpeg";
 }
