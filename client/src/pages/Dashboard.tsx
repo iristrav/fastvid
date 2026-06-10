@@ -1091,6 +1091,13 @@ export default function Dashboard() {
                 <><Sparkles className="w-4 h-4" /> Generate Video</>
               )}
             </button>
+            <p className="text-xs text-slate-500 leading-relaxed">
+              Jij bent zelf verantwoordelijk voor wat je publiceert. Fastvid is niet aansprakelijk voor
+              copyright claims, Content ID of platform strikes (o.a. YouTube).{" "}
+              <a href="/terms" className="text-cyan-400/80 hover:text-cyan-300 underline underline-offset-2">
+                Algemene voorwaarden
+              </a>
+            </p>
           </div>
 
           {/* ── Stats Row ── */}
