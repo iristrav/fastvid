@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildBeatMatchTags,
   buildCuratedQueryTags,
   curatedAssetContentKey,
   curatedClipPathAssetId,
@@ -56,16 +57,51 @@ describe("curatedMediaSourcing", () => {
       mimeType: "video/mp4",
     };
 
-    const anchors = ["hitler"];
-    const queryTags = buildCuratedQueryTags(
+    const { beatTags, topicAnchors } = buildBeatMatchTags(
       { keywords: ["germany", "turmoil"], text: "Germany was in turmoil", index: 0, searchQuery: "germany" },
       { text: "Germany was in turmoil" },
       "Hitler: Rise and Fall of the Third Reich"
     );
 
-    const hitlerScore = scoreCuratedAsset(asset, ["hitler", "wwii"], queryTags, anchors);
-    const titanicScore = scoreCuratedAsset(genericVideo, ["titanic"], queryTags, anchors);
+    const hitlerScore = scoreCuratedAsset(asset, ["hitler", "wwii"], beatTags, topicAnchors);
+    const titanicScore = scoreCuratedAsset(genericVideo, ["titanic"], beatTags, topicAnchors);
     expect(hitlerScore).toBeGreaterThan(titanicScore);
+  });
+
+  it("scoreCuratedAsset ranks beat-text title matches over unrelated archive clips", () => {
+    const berlinAsset: MediaArchiveAsset = {
+      id: 3,
+      archiveId: 9,
+      title: "Berlin wall checkpoint",
+      tags: ["berlin", "wall", "cold-war"],
+      mediaType: "image",
+      mimeType: "image/jpeg",
+      storageUrl: "/local-storage/b.jpg",
+      isActive: 1,
+      sortOrder: 0,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      fileSizeBytes: 1000,
+      width: 1920,
+      height: 1080,
+      durationSec: null,
+      sourceUrl: null,
+      sourceLabel: null,
+    };
+    const oceanAsset: MediaArchiveAsset = {
+      ...berlinAsset,
+      id: 4,
+      title: "Ocean liner deck",
+      tags: ["titanic", "ship"],
+    };
+    const { beatTags, topicAnchors } = buildBeatMatchTags(
+      { keywords: ["berlin", "wall"], text: "The Berlin wall divided the city", index: 2 },
+      { text: "The Berlin wall divided the city" },
+      "Cold War Documentary"
+    );
+    const berlinScore = scoreCuratedAsset(berlinAsset, ["cold-war"], beatTags, topicAnchors);
+    const oceanScore = scoreCuratedAsset(oceanAsset, ["titanic"], beatTags, topicAnchors);
+    expect(berlinScore).toBeGreaterThan(oceanScore);
   });
 
   it("curatedAssetContentKey is stable per asset id", () => {

@@ -74,7 +74,7 @@ import {
   scriptGuidedClipsEnabled,
 } from "./scriptGuidedClipFinder";
 import { clipPassesVisionGate, clipVisionGateEnabled } from "./visualQualityGate";
-import { curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, skipEffectsStage, archiveVisualBeatSec, archiveVisualMaxClipSec } from "./sourcingPolicy";
+import { curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, skipEffectsStage, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec } from "./sourcingPolicy";
 import {
   fetchCuratedArchiveBeatClip,
   curatedClipPathAssetId,
@@ -366,12 +366,18 @@ function effectiveBeatSec(): number {
   return curatedArchiveOnlyVisuals() ? archiveVisualBeatSec() : VIDRUSH_BEAT_SEC;
 }
 
+function effectiveMinClipSec(): number {
+  return curatedArchiveOnlyVisuals() ? archiveVisualMinClipSec() : VIDRUSH_CLIP_MIN_SEC;
+}
+
 function effectiveMaxClipSec(): number {
   return curatedArchiveOnlyVisuals() ? archiveVisualMaxClipSec() : VIDRUSH_CLIP_HOLD_SEC;
 }
-/** Hard cuts on legacy stock mode; crossfade for archive/documentary montage. */
-function montageXfadeSec(): number {
-  if (curatedArchiveOnlyVisuals() || documentaryStyleEnabled()) return 0.45;
+/** Hard cuts on legacy stock mode; long dissolve crossfade for archive/documentary montage. */
+function montageXfadeSec(avgClipDur = archiveVisualBeatSec()): number {
+  if (curatedArchiveOnlyVisuals() || documentaryStyleEnabled()) {
+    return Math.min(0.85, Math.max(0.55, avgClipDur * 0.13));
+  }
   return IS_RAILWAY ? 0.12 : 0;
 }
 const CHAPTER_CARD_DURATION = 2.5;
@@ -8001,7 +8007,12 @@ function montageClipStartSec(_sceneIndex: number, clipIndex: number): number {
 }
 
 function estimateBeatHoldSec(text: string, mergedSentenceCount: number): number {
-  if (curatedArchiveOnlyVisuals()) return archiveVisualBeatSec();
+  if (curatedArchiveOnlyVisuals()) {
+    const words = text.replace(/\[visual:[^\]]+\]/gi, "").split(/\s+/).filter(Boolean).length;
+    const byWords = words / 2.5;
+    const est = mergedSentenceCount >= 2 ? Math.max(byWords, archiveVisualBeatSec()) : byWords;
+    return Math.max(archiveVisualMinClipSec(), Math.min(archiveVisualMaxClipSec(), est));
+  }
   const words = text.replace(/\[visual:[^\]]+\]/gi, "").split(/\s+/).filter(Boolean).length;
   const byWords = words / 2.4;
   if (mergedSentenceCount >= 2 || byWords > 16) {
@@ -8029,9 +8040,8 @@ function normalizeMontageDurations(durations: number[], outDur: number): number[
   const xfade = n > 1 ? montageXfadeSec() : 0;
 
   if (curatedArchiveOnlyVisuals()) {
-    return durations.map((d) =>
-      Math.max(VIDRUSH_CLIP_MIN_SEC, Math.min(maxClip, d))
-    );
+    const minClip = effectiveMinClipSec();
+    return durations.map((d) => Math.max(minClip, Math.min(maxClip, d)));
   }
 
   const total = durations.reduce((s, d) => s + d, 0) - (n - 1) * xfade;
@@ -8065,7 +8075,26 @@ function computeMontageClipDuration(sceneDuration: number, clipCount: number): n
   if (clipCount >= ideal - 1) return beatSec;
   const xfade = clipCount > 1 ? montageXfadeSec() : 0;
   const evenSplit = (sceneDuration + (clipCount - 1) * xfade) / clipCount;
-  return Math.max(VIDRUSH_CLIP_MIN_SEC, Math.min(effectiveMaxClipSec(), evenSplit));
+  return Math.max(effectiveMinClipSec(), Math.min(effectiveMaxClipSec(), evenSplit));
+}
+
+function montageClipPrepFilter(
+  inputIndex: number,
+  dur: number,
+  sceneIndex: number,
+  smoothTransition: boolean,
+  xfade: number
+): string {
+  const start = montageClipStartSec(sceneIndex, inputIndex).toFixed(2);
+  const fadeIn = smoothTransition ? Math.min(0.28, dur * 0.07) : 0;
+  const fadeOut = smoothTransition ? Math.min(xfade * 0.95, dur * 0.2) : 0;
+  const fadeOutStart = Math.max(0, dur - fadeOut - 0.02);
+  let chain =
+    `[${inputIndex}:v]trim=start=${start}:duration=${dur.toFixed(3)},${CROP_FILL_VF}`;
+  if (fadeIn > 0.05) chain += `,fade=t=in:st=0:d=${fadeIn.toFixed(3)}`;
+  if (fadeOut > 0.05) chain += `,fade=t=out:st=${fadeOutStart.toFixed(3)}:d=${fadeOut.toFixed(3)}`;
+  chain += `,setpts=PTS-STARTPTS[v${inputIndex}]`;
+  return chain;
 }
 
 /** xfade montage — trim in-filter; optional per-beat durations (3–4s, longer when merged). */
@@ -8076,28 +8105,27 @@ function buildMontageXfadeFilter(
   clipDurations?: number[]
 ): { scaleFilters: string; mergeFilter: string; montageLabel: string } {
   const n = Math.max(1, clipCount);
-  const xfade = montageXfadeSec();
+  const minClip = effectiveMinClipSec();
+  const maxClip = effectiveMaxClipSec();
   let durs =
     clipDurations?.length === n
-      ? clipDurations.map((d) =>
-          Math.max(VIDRUSH_CLIP_MIN_SEC, Math.min(effectiveMaxClipSec(), d))
-        )
+      ? clipDurations.map((d) => Math.max(minClip, Math.min(maxClip, d)))
       : Array.from({ length: n }, () => computeMontageClipDuration(outDur, n));
   durs = normalizeMontageDurations(durs, outDur);
+  const avgDur = durs.reduce((s, d) => s + d, 0) / n;
+  const xfade = montageXfadeSec(avgDur);
+  const smooth = curatedArchiveOnlyVisuals() || documentaryStyleEnabled();
 
   if (n === 1) {
     return {
-      scaleFilters:
-        `[0:v]trim=start=${montageClipStartSec(sceneIndex, 0).toFixed(2)}:duration=${durs[0].toFixed(3)},` +
-        `${CROP_FILL_VF},setpts=PTS-STARTPTS[v0]`,
+      scaleFilters: montageClipPrepFilter(0, durs[0], sceneIndex, smooth, xfade),
       mergeFilter: "",
       montageLabel: "v0",
     };
   }
 
   const scaleFilters = Array.from({ length: n }, (_, i) =>
-    `[${i}:v]trim=start=${montageClipStartSec(sceneIndex, i).toFixed(2)}:duration=${durs[i].toFixed(3)},` +
-    `${CROP_FILL_VF},setpts=PTS-STARTPTS[v${i}]`
+    montageClipPrepFilter(i, durs[i], sceneIndex, smooth, xfade)
   ).join(";");
 
   if (xfade <= 0.001) {
@@ -8112,9 +8140,10 @@ function buildMontageXfadeFilter(
   let mergeFilter = "";
   let prev = "v0";
   let offset = durs[0] - xfade;
+  const xfadeTransition = smooth ? "dissolve" : "fade";
   for (let i = 1; i < n; i++) {
     const outLabel = i === n - 1 ? "montage" : `xf${i}`;
-    mergeFilter += `;[${prev}][v${i}]xfade=transition=fade:duration=${xfade.toFixed(3)}:offset=${offset.toFixed(3)}[${outLabel}]`;
+    mergeFilter += `;[${prev}][v${i}]xfade=transition=${xfadeTransition}:duration=${xfade.toFixed(3)}:offset=${offset.toFixed(3)}[${outLabel}]`;
     prev = outLabel;
     offset += durs[i] - xfade;
   }

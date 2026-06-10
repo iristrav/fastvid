@@ -8,7 +8,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { resolveLocalVideoPath } from "./storageLocal";
 import { archiveClipHasBakedEditText } from "./archiveClipFilter";
-import { curatedArchiveOnlyVisuals, archiveVisualMaxClipSec } from "./sourcingPolicy";
+import { curatedArchiveOnlyVisuals, archiveVisualMaxClipSec, archiveVisualMinClipSec } from "./sourcingPolicy";
 import {
   getAllMediaArchives,
   getMediaArchiveAssets,
@@ -27,6 +27,15 @@ export type CuratedBeatContext = {
   text: string;
   index: number;
   searchQuery?: string;
+  powerWord?: string;
+};
+
+export type BeatMatchTags = {
+  /** Words/phrases from this beat's narration — primary match keys. */
+  beatTags: string[];
+  /** Topic from video title/prompt — niche filter, lower weight per beat. */
+  topicAnchors: string[];
+  allTags: string[];
 };
 
 export type CuratedSceneContext = {
@@ -91,8 +100,10 @@ function ffprobeBin(): string {
 }
 
 function clampHoldSec(holdSec: number): number {
-  const maxSec = curatedArchiveOnlyVisuals() ? archiveVisualMaxClipSec() : CLIP_MAX_SEC;
-  return Math.max(CLIP_MIN_SEC, Math.min(maxSec, holdSec));
+  if (curatedArchiveOnlyVisuals()) {
+    return Math.max(archiveVisualMinClipSec(), Math.min(archiveVisualMaxClipSec(), holdSec));
+  }
+  return Math.max(CLIP_MIN_SEC, Math.min(CLIP_MAX_SEC, holdSec));
 }
 
 const QUERY_STOP_WORDS = new Set([
@@ -122,28 +133,46 @@ export function extractTopicAnchorTags(videoTitle?: string, extraText?: string):
   return normalizeMediaTags(raw).slice(0, 8);
 }
 
+/** Tokenize narration into searchable tags (beat text first). */
+function tokenizeBeatText(raw: string): string[] {
+  return normalizeMediaTags(
+    raw
+      .toLowerCase()
+      .replace(/[^a-z0-9\s-]/g, " ")
+      .split(/\s+/)
+      .filter((w) => w.length > 2 && !QUERY_STOP_WORDS.has(w))
+  );
+}
+
+/** Build beat-specific vs topic tags for archive title/tag matching. */
+export function buildBeatMatchTags(
+  beat: CuratedBeatContext,
+  scene: CuratedSceneContext,
+  videoTitle?: string
+): BeatMatchTags {
+  const topicAnchors = extractTopicAnchorTags(videoTitle);
+  const beatRaw = [
+    beat.text,
+    beat.powerWord ?? "",
+    beat.searchQuery ?? "",
+    ...beat.keywords,
+    scene.visualCue ?? "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const beatTags = tokenizeBeatText(beatRaw).filter((t) => !topicAnchors.includes(t) || beat.text.toLowerCase().includes(t));
+  const sceneTags = tokenizeBeatText([scene.text, scene.pexelsQuery ?? ""].join(" "));
+  const mergedBeat = normalizeMediaTags([...beatTags, ...sceneTags.filter((t) => beat.text.toLowerCase().includes(t))]).slice(0, 16);
+  const allTags = normalizeMediaTags([...mergedBeat, ...topicAnchors]).slice(0, 24);
+  return { beatTags: mergedBeat, topicAnchors, allTags };
+}
+
 export function buildCuratedQueryTags(
   beat: CuratedBeatContext,
   scene: CuratedSceneContext,
   videoTitle?: string
 ): string[] {
-  const anchors = extractTopicAnchorTags(videoTitle, scene.text);
-  const raw = [
-    ...anchors,
-    ...beat.keywords,
-    beat.searchQuery ?? "",
-    beat.text,
-    scene.visualCue ?? "",
-    scene.pexelsQuery ?? "",
-    scene.text,
-    videoTitle ?? "",
-  ]
-    .join(" ")
-    .toLowerCase()
-    .replace(/[^a-z0-9\s-]/g, " ")
-    .split(/\s+/)
-    .filter((w) => w.length > 2);
-  return normalizeMediaTags([...anchors, ...raw]).slice(0, 24);
+  return buildBeatMatchTags(beat, scene, videoTitle).allTags;
 }
 
 function archiveMatchesQuery(
@@ -162,38 +191,57 @@ function archiveMatchesQuery(
 export function scoreCuratedAsset(
   asset: MediaArchiveAsset,
   archiveNicheTags: string[],
-  queryTags: string[],
-  anchorTags: string[] = []
+  beatTags: string[],
+  topicAnchors: string[] = []
 ): number {
   const assetTags = normalizeMediaTags(asset.tags ?? []);
   const title = (asset.title ?? "").toLowerCase();
   let score = 0;
-  for (const anchor of anchorTags) {
-    if (title.includes(anchor)) score += 18;
-    for (const t of assetTags) {
-      if (t === anchor) score += 36;
-      else if (t.includes(anchor) || anchor.includes(t)) score += 12;
+  let beatHits = 0;
+
+  for (const q of beatTags) {
+    if (title === q) {
+      score += 40;
+      beatHits++;
+      continue;
     }
-    for (const n of archiveNicheTags) {
-      if (n === anchor || tMatches(n, anchor)) score += 8;
+    if (title.includes(q)) {
+      score += 24;
+      beatHits++;
+    }
+    for (const t of assetTags) {
+      if (t === q) {
+        score += 34;
+        beatHits++;
+      } else if (t.includes(q) || q.includes(t)) {
+        score += 12;
+        beatHits++;
+      }
     }
   }
-  for (const q of queryTags) {
-    if (anchorTags.includes(q)) continue;
-    if (title.includes(q)) score += 6;
+
+  if (beatHits >= 2) score += 18;
+  if (beatHits >= 3) score += 12;
+
+  for (const anchor of topicAnchors) {
+    if (title.includes(anchor)) score += 10;
     for (const t of assetTags) {
-      if (t === q) score += 12;
-      else if (t.includes(q) || q.includes(t)) score += 4;
+      if (t === anchor) score += 16;
+      else if (t.includes(anchor) || anchor.includes(t)) score += 6;
     }
     for (const n of archiveNicheTags) {
-      if (n === q || tMatches(n, q)) score += 2;
+      if (n === anchor || tMatches(n, anchor)) score += 4;
     }
   }
+
   for (const n of archiveNicheTags) {
     for (const t of assetTags) {
       if (t === n || t.includes(n) || n.includes(t)) score += 3;
     }
   }
+
+  if (beatTags.length >= 2 && beatHits === 0) score = Math.max(0, score - 25);
+
   return score;
 }
 
@@ -201,17 +249,30 @@ function tMatches(a: string, b: string): boolean {
   return a.includes(b) || b.includes(a);
 }
 
+function assetMatchesBeatTags(asset: MediaArchiveAsset, beatTags: string[]): boolean {
+  if (!beatTags.length) return true;
+  const title = (asset.title ?? "").toLowerCase();
+  const assetTags = normalizeMediaTags(asset.tags ?? []);
+  return beatTags.some(
+    (q) =>
+      title.includes(q) ||
+      assetTags.some((t) => t === q || t.includes(q) || q.includes(t))
+  );
+}
+
 export async function listCuratedArchiveCandidates(
-  queryTags: string[],
+  beatTags: string[],
   excludeIds: Set<number>,
   excludeStorageUrls: Set<string>,
-  anchorTags: string[] = []
+  topicAnchors: string[] = [],
+  filterTags?: string[]
 ): Promise<Array<{ asset: MediaArchiveAsset; archiveName: string; score: number }>> {
+  const queryTags = filterTags ?? normalizeMediaTags([...beatTags, ...topicAnchors]);
   const archives = (await getAllMediaArchives()).filter((a) => a.isActive === 1);
   if (!archives.length) return [];
 
   const matchingArchives = archives.filter((archive) =>
-    archiveMatchesQuery(archive.name, normalizeMediaTags(archive.nicheTags ?? []), queryTags, anchorTags)
+    archiveMatchesQuery(archive.name, normalizeMediaTags(archive.nicheTags ?? []), queryTags, topicAnchors)
   );
   const searchArchives = matchingArchives.length > 0 ? matchingArchives : archives;
 
@@ -224,9 +285,11 @@ export async function listCuratedArchiveCandidates(
     for (const asset of assets) {
       if (excludeIds.has(asset.id)) continue;
       if (excludeStorageUrls.has(asset.storageUrl)) continue;
-      const score = scoreCuratedAsset(asset, nicheTags, queryTags, anchorTags);
+      const score = scoreCuratedAsset(asset, nicheTags, beatTags, topicAnchors);
       if (score > 0) scored.push({ asset, score, archiveName: archive.name });
-      else fallback.push({ asset, score: 1, archiveName: archive.name });
+      else if (assetMatchesBeatTags(asset, beatTags)) {
+        fallback.push({ asset, score: 1, archiveName: archive.name });
+      }
     }
   }
 
@@ -392,18 +455,18 @@ export async function fetchCuratedArchiveBeatClip(
   usedStorageUrls: Set<string>,
   videoTitle?: string
 ): Promise<string | null> {
-  const queryTags = buildCuratedQueryTags(beat, scene, videoTitle);
-  const anchorTags = extractTopicAnchorTags(videoTitle, scene.text);
+  const { beatTags, topicAnchors, allTags } = buildBeatMatchTags(beat, scene, videoTitle);
   const candidates = await listCuratedArchiveCandidates(
-    queryTags,
+    beatTags,
     usedAssetIds,
     usedStorageUrls,
-    anchorTags
+    topicAnchors,
+    allTags
   );
   if (!candidates.length) {
     console.warn(
       `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: no unused curated archive asset` +
-        (queryTags.length ? ` (tags: ${queryTags.slice(0, 6).join(", ")})` : "")
+        (beatTags.length ? ` (beat tags: ${beatTags.slice(0, 6).join(", ")})` : "")
     );
     return null;
   }
@@ -420,9 +483,16 @@ export async function fetchCuratedArchiveBeatClip(
         beat.index,
         holdSec
       );
+      const matchedTags = beatTags.filter((t) => {
+        const title = (picked.asset.title ?? "").toLowerCase();
+        const tags = normalizeMediaTags(picked.asset.tags ?? []);
+        return title.includes(t) || tags.some((x) => x === t || x.includes(t));
+      });
       console.log(
         `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: curated archive "${picked.asset.title ?? picked.asset.id}" ` +
-          `from "${picked.archiveName}" (score ${picked.score}, ${clampHoldSec(holdSec).toFixed(1)}s)`
+          `from "${picked.archiveName}" (score ${picked.score}, ${clampHoldSec(holdSec).toFixed(1)}s` +
+          (matchedTags.length ? `, matched: ${matchedTags.slice(0, 4).join(", ")}` : "") +
+          `)`
       );
       usedAssetIds.add(picked.asset.id);
       usedStorageUrls.add(picked.asset.storageUrl);
