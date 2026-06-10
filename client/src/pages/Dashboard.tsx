@@ -21,11 +21,9 @@ import {
   FileText, Video, LogOut, User, ChevronRight, RefreshCw,
   Copy, Download, Eye, LayoutDashboard, Settings, CreditCard, Volume2,
   Trash2, Pencil, Check, X as XIcon, Mic, Upload,
-  AlertCircle, ChevronDown, Edit2, Archive,
+  AlertCircle, ChevronDown, Edit2,
 } from "lucide-react";
-import { DashboardArchiveClips } from "@/components/admin/DashboardArchiveClips";
 import { DashboardNicheRequests } from "@/components/niche/DashboardNicheRequests";
-import { ArchiveBuildingNotice } from "@/components/niche/NicheRequestForm";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from "@/components/ui/dialog";
@@ -788,11 +786,6 @@ export default function Dashboard() {
   const { data: nicheAccess, isLoading: nicheAccessLoading } = trpc.nicheRequest.accessStatus.useQuery(undefined, {
     enabled: isAuthenticated && user?.role !== "admin",
   });
-  const coveragePrompt = prompt.trim();
-  const { data: archiveCoverage } = trpc.nicheRequest.checkArchiveCoverage.useQuery(
-    { prompt: coveragePrompt },
-    { enabled: isAuthenticated && coveragePrompt.length >= 10, staleTime: 30_000 }
-  );
   const checkoutMutation = trpc.billing.createCheckout.useMutation({
     onSuccess: (data) => {
       if (data.url) {
@@ -874,8 +867,6 @@ export default function Dashboard() {
     return null;
   }
 
-  const showArchiveNotice = archiveCoverage && !archiveCoverage.hasCoverage;
-
   return (
     <div className="min-h-screen bg-background text-foreground">
       {/* ── Sidebar ── */}
@@ -900,16 +891,10 @@ export default function Dashboard() {
             Landing Page
           </button>
           {user?.role === "admin" && (
-            <>
-              <button onClick={() => navigate("/admin/archive")} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/5 text-sm transition-colors">
-                <Archive className="w-4 h-4" />
-                Media Archief
-              </button>
-              <button onClick={() => navigate("/admin")} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/5 text-sm transition-colors">
-                <Settings className="w-4 h-4" />
-                Admin Panel
-              </button>
-            </>
+            <button onClick={() => navigate("/admin")} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/5 text-sm transition-colors">
+              <Settings className="w-4 h-4" />
+              Admin Panel
+            </button>
           )}
         </nav>
         <div className="p-4 border-t border-white/8">
@@ -1051,10 +1036,6 @@ export default function Dashboard() {
               <p className="text-xs text-slate-600 mt-1">{prompt.length}/1000 characters</p>
             </div>
 
-            {showArchiveNotice && (
-              <ArchiveBuildingNotice nicheHint={archiveCoverage?.nicheHint} />
-            )}
-
             {/* How it works note */}
             <div className="flex items-start gap-2.5 px-3 py-2.5 rounded-lg bg-blue-500/5 border border-blue-500/15">
               <span className="text-sm mt-0.5">💡</span>
@@ -1104,8 +1085,6 @@ export default function Dashboard() {
               </div>
             ))}
           </div>
-
-          {user?.role === "admin" && <DashboardArchiveClips />}
 
           {/* ── Video List ── */}
           <div>
