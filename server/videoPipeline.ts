@@ -36,6 +36,14 @@ import { generateVeoVideo } from "./_core/veoVideo";
 import { generateMetaMovieGen } from "./_core/metaMovieGen";
 import { generateHiggsfieldTextToVideo, generateHiggsfieldImageToVideo } from "./_core/higgsfieldVideo";
 import { sanitizeForDrawtext, sanitizeForDrawtextStrict } from "./ffmpegSanitize";
+import {
+  buildPostGradeVF,
+  documentaryStyleEnabled,
+  renderHighlightCaptionOverlay,
+  renderNameBadgeOverlay,
+  resolveStillCompositionVF,
+  type TimedOverlay,
+} from "./documentaryStyle";
 import { PIPELINE_ERROR, pipelineError } from "@shared/appErrors";
 import fetch from "node-fetch";
 import {
@@ -2782,22 +2790,35 @@ async function generateStabilityAIClip(
     fs.writeFileSync(pngPath, imgBuffer);
     console.log(`[Pipeline] Scene ${sceneIndex}: Stability AI image in ${((Date.now()-t)/1000).toFixed(1)}s (${(imgBuffer.length/1024).toFixed(0)}KB)`);
 
-    // Convert to video — Ken Burns 5-10% zoom (like reference video), NO fade-in/out
+    // Convert to video — Ken Burns with blur-fill/polaroid when documentary style enabled
     const fps = 25;
-    const totalFrames = Math.ceil(duration * fps);
-    const zoomStep = 0.0003; // slow 7% zoom over full duration
-    const direction = sceneIndex % 2 === 0 ? 1 : -1;
-    const panX = direction > 0 ? `iw/2-(iw/zoom/2)` : `iw/2-(iw/zoom/2)+2`;
-    await withTimeout(
-      exec(
-        `${FFMPEG_BIN} -y -loop 1 -i "${pngPath}" ` +
-        `-vf "scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT},` +
-        `zoompan=z='min(zoom+${zoomStep},1.07)':x='${panX}':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=${fps}" ` +
-        `-t ${duration} -r ${fps} -c:v libx264 -preset fast -crf 18 -pix_fmt yuv420p "${outputPath}"`
-      ),
-      90_000,
-      `AI image to video scene ${sceneIndex}`
-    );
+    if (documentaryStyleEnabled()) {
+      const filterComplex = resolveStillCompositionVF(duration, sceneIndex, 0, false);
+      await withTimeout(
+        exec(
+          `${FFMPEG_BIN} -y -loop 1 -i "${pngPath}" -t ${duration} ` +
+            `-filter_complex "${filterComplex}" -map "[vout]" ` +
+            `-c:v libx264 -preset fast -crf 18 -pix_fmt yuv420p -r ${fps} "${outputPath}"`
+        ),
+        90_000,
+        `AI image to video scene ${sceneIndex}`
+      );
+    } else {
+      const totalFrames = Math.ceil(duration * fps);
+      const zoomStep = 0.0003; // slow 7% zoom over full duration
+      const direction = sceneIndex % 2 === 0 ? 1 : -1;
+      const panX = direction > 0 ? `iw/2-(iw/zoom/2)` : `iw/2-(iw/zoom/2)+2`;
+      await withTimeout(
+        exec(
+          `${FFMPEG_BIN} -y -loop 1 -i "${pngPath}" ` +
+          `-vf "scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT},` +
+          `zoompan=z='min(zoom+${zoomStep},1.07)':x='${panX}':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=${fps}" ` +
+          `-t ${duration} -r ${fps} -c:v libx264 -preset fast -crf 18 -pix_fmt yuv420p "${outputPath}"`
+        ),
+        90_000,
+        `AI image to video scene ${sceneIndex}`
+      );
+    }
 
     try { fs.unlinkSync(pngPath); } catch { /* ignore */ }
 
@@ -3269,9 +3290,24 @@ async function convertImageToVideoGentle(
   imgPath: string,
   outPath: string,
   duration: number,
-  label: string
+  label: string,
+  sceneIndex = 0,
+  beatIndex = 0
 ): Promise<void> {
   const fps = 25;
+  if (documentaryStyleEnabled()) {
+    const filterComplex = resolveStillCompositionVF(duration, sceneIndex, beatIndex, false);
+    await withTimeout(
+      exec(
+        `${FFMPEG_BIN} -y -loop 1 -i "${imgPath}" -t ${duration} ` +
+          `-filter_complex "${filterComplex}" -map "[vout]" ` +
+          `-c:v libx264 -preset veryfast -crf 18 -an -pix_fmt yuv420p -r ${fps} "${outPath}"`
+      ),
+      45_000,
+      label
+    );
+    return;
+  }
   const totalFrames = Math.max(25, Math.round(duration * fps));
   const zoomEnd = 1.03;
   const zoomStep = (zoomEnd - 1.0) / totalFrames;
@@ -3295,9 +3331,24 @@ async function convertImageToVideoPersonPortrait(
   imgPath: string,
   outPath: string,
   duration: number,
-  label: string
+  label: string,
+  sceneIndex = 0,
+  beatIndex = 0
 ): Promise<void> {
   const fps = 25;
+  if (documentaryStyleEnabled()) {
+    const filterComplex = resolveStillCompositionVF(duration, sceneIndex, beatIndex, true);
+    await withTimeout(
+      exec(
+        `${FFMPEG_BIN} -y -loop 1 -i "${imgPath}" -t ${duration} ` +
+          `-filter_complex "${filterComplex}" -map "[vout]" ` +
+          `-c:v libx264 -preset veryfast -crf 18 -an -pix_fmt yuv420p -r ${fps} "${outPath}"`
+      ),
+      45_000,
+      label
+    );
+    return;
+  }
   const totalFrames = Math.max(25, Math.round(duration * fps));
   const zoomEnd = 1.02;
   const zoomStep = (zoomEnd - 1.0) / totalFrames;
@@ -3319,12 +3370,14 @@ async function stillImageToVideo(
   outPath: string,
   duration: number,
   label: string,
-  personPortrait: boolean
+  personPortrait: boolean,
+  sceneIndex = 0,
+  beatIndex = 0
 ): Promise<void> {
   if (personPortrait) {
-    await convertImageToVideoPersonPortrait(imgPath, outPath, duration, label);
+    await convertImageToVideoPersonPortrait(imgPath, outPath, duration, label, sceneIndex, beatIndex);
   } else {
-    await convertImageToVideoGentle(imgPath, outPath, duration, label);
+    await convertImageToVideoGentle(imgPath, outPath, duration, label, sceneIndex, beatIndex);
   }
 }
 
@@ -3402,7 +3455,8 @@ async function fetchWikimediaImages(
           outPath,
           duration,
           `Wikimedia image to video scene ${sceneIndex}`,
-          /portrait|face|headshot|person|celebrity/i.test(query)
+          /portrait|face|headshot|person|celebrity/i.test(query),
+          sceneIndex
         );
         try { fs.unlinkSync(imgPath); } catch { /* ignore */ }
         if (fs.existsSync(outPath) && fs.statSync(outPath).size > 1_000) {
@@ -3474,7 +3528,8 @@ async function fetchOpenverseImages(
           outPath,
           duration,
           `Openverse image to video scene ${sceneIndex}`,
-          Boolean(opts.personPortrait) || /portrait|face|headshot/i.test(query)
+          Boolean(opts.personPortrait) || /portrait|face|headshot/i.test(query),
+          sceneIndex
         );
         try { fs.unlinkSync(imgPath); } catch { /**/ }
 
@@ -3567,7 +3622,8 @@ async function fetchUnsplashImages(
           outPath,
           duration,
           `Unsplash image to video scene ${sceneIndex}`,
-          portrait
+          portrait,
+          sceneIndex
         );
         try { fs.unlinkSync(imgPath); } catch { /**/ }
 
@@ -3778,7 +3834,8 @@ async function fetchSerpAPIImages(
           outPath,
           duration,
           `SerpAPI image to video scene ${sceneIndex}`,
-          Boolean(opts.personPortrait)
+          Boolean(opts.personPortrait),
+          sceneIndex
         );
         try { fs.unlinkSync(imgPath); } catch { /* ignore */ }
         if (fs.existsSync(outPath) && fs.statSync(outPath).size > 1_000) {
@@ -12158,16 +12215,42 @@ async function composeSceneVideo(
     }
   }
 
-  // Kinetic typography: Vidrush-style — use LLM-generated highlightWords for every scene that has them.
-  // Fallback to stopword extraction for scenes without LLM words (every 4th scene).
-  // Shows 1 power word at a time, centered in the scene, for 2s each.
+  // Documentary overlays: orange name badge + yellow highlight caption (reference video style)
   let kineticFrames: KineticFrame[] = [];
+  let docOverlays: TimedOverlay[] = [];
   try {
-    // Prefer LLM-generated highlight words; fall back to stopword extraction every 4th scene
-    const llmWords = (scene.highlightWords || []).filter(w => w && w.trim().length > 0);
-    const shouldShowKinetic = false; // Kinetic typography disabled — user requested no on-screen text
+    if (documentaryStyleEnabled()) {
+      const primaryPerson = (scene.personNames ?? []).find((n) => n?.trim());
+      if (primaryPerson) {
+        const badge = await renderNameBadgeOverlay(
+          primaryPerson,
+          scene.index,
+          workDir,
+          FFMPEG_BIN,
+          (cmd, ms, lbl) => withTimeout(exec(cmd), ms, lbl)
+        );
+        if (badge) docOverlays.push(badge);
+      }
+
+      const llmWords = (scene.highlightWords || []).filter((w) => w && w.trim().length > 0);
+      const highlightWord = llmWords[0] || extractKeywords(scene.text, 1)[0];
+      if (highlightWord) {
+        const caption = await renderHighlightCaptionOverlay(
+          highlightWord,
+          scene.index,
+          workDir,
+          FFMPEG_BIN,
+          (cmd, ms, lbl) => withTimeout(exec(cmd), ms, lbl),
+          duration
+        );
+        if (caption) docOverlays.push(caption);
+      }
+    }
+
+    const shouldShowKinetic = false; // legacy center pills disabled
     if (shouldShowKinetic) {
-      const keywords = llmWords.length > 0 ? llmWords.slice(0, 2) : extractKeywords(scene.text, 1);
+      const legacyWords = (scene.highlightWords || []).filter((w) => w && w.trim().length > 0);
+      const keywords = legacyWords.length > 0 ? legacyWords.slice(0, 2) : extractKeywords(scene.text, 1);
       if (keywords.length > 0) {
         // Show each word for 2s, distributed across the scene
         const wordDuration = 2.0;
@@ -12190,12 +12273,13 @@ async function composeSceneVideo(
           allFrames.push(...frames);
         }
         kineticFrames = allFrames;
-        console.log(`[Pipeline] Scene ${scene.index}: kinetic words: [${keywords.join(', ')}] (${llmWords.length > 0 ? 'LLM' : 'fallback'})`);
+        console.log(`[Pipeline] Scene ${scene.index}: kinetic words: [${keywords.join(', ')}] (${legacyWords.length > 0 ? 'LLM' : 'fallback'})`);
       }
     }
   } catch (err) {
-    console.warn(`[Pipeline] Scene ${scene.index}: kinetic typography failed (non-fatal):`, err);
+    console.warn(`[Pipeline] Scene ${scene.index}: documentary overlays failed (non-fatal):`, err);
     kineticFrames = [];
+    docOverlays = [];
   }
 
   // Stat callout box: yellow corner box with key statistic (reference video style)
@@ -12216,15 +12300,12 @@ async function composeSceneVideo(
   const threadFlag = IS_RAILWAY ? "-threads 2" : "";
   // Kinetic text position: upper-center area
   const kineticY = 80;
-  // Cinematic color grading: desaturated cool tones (like reference video — modern European documentary look)
-  // High contrast, slightly desaturated, cooler tones for professional look
-  const colorGrade = `eq=contrast=1.12:saturation=0.92:brightness=-0.02:gamma=1.02,colorbalance=rs=-0.02:gs=0:bs=0.03:rm=-0.01:gm=0:bm=0.02:rh=-0.01:gh=0:bh=0.02`;
-  // No subtitle overlay
+  // Cinematic color grading (documentaryStyle module when enabled)
+  const colorGrade = documentaryStyleEnabled()
+    ? buildPostGradeVF()
+    : `eq=contrast=1.12:saturation=0.92:brightness=-0.02:gamma=1.02,colorbalance=rs=-0.02:gs=0:bs=0.03:rm=-0.01:gm=0:bm=0.02:rh=-0.01:gh=0:bh=0.02,vignette=angle=0.6:mode=forward`;
   const subtitleDrawtext = '';
-  // Vignette for cinematic look
-  const vignetteFilter = `,vignette=angle=0.6:mode=forward`;
-  // Film grain disabled — noise filter breaks some Railway FFmpeg builds (encoder init errors)
-  const fadeFilter = `${colorGrade}${subtitleDrawtext}${vignetteFilter}`;
+  const fadeFilter = documentaryStyleEnabled() ? colorGrade : `${colorGrade}${subtitleDrawtext}`;
 
   // Helper: build the full overlay chain
   // Kinetic frames: full-width PNG at y=kineticY, timed with enable='between(t,...)'.
@@ -12235,6 +12316,7 @@ async function composeSceneVideo(
   ): { extraInputs: string; filterChain: string; finalLabel: string } {
     const allOverlays: Array<{ path: string; startTime: number; endTime: number; isStatCallout?: boolean }> = [
       ...kineticFrames,
+      ...docOverlays,
       ...(statCalloutFrame ? [{ ...statCalloutFrame, isStatCallout: true }] : []),
     ];
     if (allOverlays.length === 0) {
@@ -12307,7 +12389,7 @@ async function composeSceneVideo(
 
     const kineticInput = kExtraInputs ? ` ${kExtraInputs}` : "";
     const kineticChainStr = kChain ? kChain : "";
-    const hasOverlays = kineticFrames.length > 0 || statCalloutFrame !== null;
+    const hasOverlays = kineticFrames.length > 0 || docOverlays.length > 0 || statCalloutFrame !== null;
     const preGradeLabel = hasOverlays ? kFinalLabel : montageLabel;
     const audioFadeOutStart = Math.max(0, voiceDur - 0.15);
     await withTimeout(
@@ -12398,6 +12480,9 @@ async function composeSceneVideo(
   // Clean up kinetic frame PNGs
   for (const frame of kineticFrames) {
     try { fs.unlinkSync(frame.path); } catch { /* ignore */ }
+  }
+  for (const overlay of docOverlays) {
+    try { fs.unlinkSync(overlay.path); } catch { /* ignore */ }
   }
   return outputPath;
 }
