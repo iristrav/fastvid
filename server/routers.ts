@@ -73,6 +73,8 @@ function isMuskTeslaPromptTopic(prompt: string, title: string): boolean {
 import { storagePut } from "./storage";
 import { FASTVID_PRO_PLAN } from "./products";
 import { processArchiveAssetUpload, ArchiveUploadError } from "./archiveUpload";
+import { archiveAiTaggingEnabled } from "./archiveAssetTagging";
+import { autoTitleArchiveAssets } from "./archiveBulkVisionTagging";
 import { assessArchiveCoverageForPrompt } from "./archiveCoverage";
 import {
   createNicheRequest,
@@ -1384,6 +1386,34 @@ export const appRouter = router({
       if (input.sourceNote !== undefined) patch.sourceNote = input.sourceNote.trim() || null;
       await updateMediaArchiveAsset(input.id, patch);
       return { success: true };
+    }),
+
+    /** Vision AI: title + tags from clip content (batch max 50 ids per call). */
+    autoTitleAssets: adminProcedure.input(z.object({
+      archiveId: z.number().int(),
+      ids: z.array(z.number().int()).min(1).max(50),
+    })).mutation(async ({ input }) => {
+      if (!archiveAiTaggingEnabled()) {
+        throw appTrpcError(
+          "BAD_REQUEST",
+          APP_ERROR.SERVICE_ERROR,
+          "AI-tags uitgeschakeld — zet LLM_API_KEY op de server"
+        );
+      }
+      const archive = await getMediaArchiveById(input.archiveId);
+      if (!archive) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Archive not found");
+      try {
+        return await autoTitleArchiveAssets({
+          archiveId: input.archiveId,
+          ids: input.ids,
+        });
+      } catch (err) {
+        throw appTrpcError(
+          "INTERNAL_SERVER_ERROR",
+          APP_ERROR.SERVICE_ERROR,
+          (err as Error).message ?? "Auto-title failed"
+        );
+      }
     }),
 
     deleteAsset: adminProcedure.input(z.object({ id: z.number().int() })).mutation(async ({ input }) => {

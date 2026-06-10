@@ -162,7 +162,8 @@ function buildVisionPrompt(context: {
 }): string {
   const lines = [
     "Beschrijf wat je ziet in dit beeld voor een documentaire-archief.",
-    "Geef een korte titel (max 8 woorden), één zin beschrijving, en 6–12 zoek-tags.",
+    "Geef een korte titel (max 8 woorden) die beschrijft WAT er in beeld is — geen bestandsnaam, geen 'clip 1'.",
+    "Geef één zin beschrijving, en 6–12 zoek-tags.",
     "Tags: lowercase, geen hashtags, mix Nederlands/Engels waar logisch (personen, plaatsen, objecten, tijdperk).",
   ];
   if (context.clipLabel) lines.push(`Dit is ${context.clipLabel} uit een langere video.`);

@@ -6,7 +6,7 @@ import { trpc } from "@/lib/trpc";
 import { toastErrorMessage } from "@/const";
 import { toast } from "sonner";
 import {
-  Loader2, Trash2, Pencil, Search, Film, Image as ImageIcon, X, Play, ExternalLink, CheckSquare, Square,
+  Loader2, Trash2, Pencil, Search, Film, Image as ImageIcon, X, Play, ExternalLink, CheckSquare, Square, Sparkles,
 } from "lucide-react";
 
 const MIX_KINDS = [
@@ -320,6 +320,67 @@ export function ArchiveClipsGrid({
     onError: (e) => toast.error("Verwijderen mislukt", { description: toastErrorMessage(e) }),
   });
 
+  const autoTitleAssets = trpc.mediaArchive.autoTitleAssets.useMutation();
+  const [autoTitleRunning, setAutoTitleRunning] = useState(false);
+  const [autoTitleProgress, setAutoTitleProgress] = useState<{ done: number; total: number } | null>(null);
+
+  async function runAutoTitleAll() {
+    if (archiveId == null || assets.length === 0) return;
+
+    const targetIds =
+      selectedCount > 0
+        ? [...selectedIds].filter((id) => visibleIds.has(id))
+        : assets.map((a) => a.id);
+
+    if (targetIds.length === 0) return;
+
+    const label =
+      selectedCount > 0
+        ? `${targetIds.length} geselecteerde clip(s)`
+        : search.trim()
+          ? `${targetIds.length} zichtbare clip(s)`
+          : `alle ${targetIds.length} clip(s)`;
+
+    if (
+      !confirm(
+        `AI bekijkt ${label} en geeft elke clip een titel + zoek-tags op basis van wat er in beeld staat.\n\nBestaande tags worden aangevuld. Doorgaan?`
+      )
+    ) {
+      return;
+    }
+
+    const CHUNK = 20;
+    setAutoTitleRunning(true);
+    setAutoTitleProgress({ done: 0, total: targetIds.length });
+    let updated = 0;
+    let skipped = 0;
+    let failed = 0;
+
+    try {
+      for (let i = 0; i < targetIds.length; i += CHUNK) {
+        const chunk = targetIds.slice(i, i + CHUNK);
+        const result = await autoTitleAssets.mutateAsync({ archiveId, ids: chunk });
+        updated += result.updated;
+        skipped += result.skipped;
+        failed += result.failed;
+        setAutoTitleProgress({ done: Math.min(i + chunk.length, targetIds.length), total: targetIds.length });
+      }
+      utils.mediaArchive.listAssets.invalidate();
+      utils.mediaArchive.listArchives.invalidate();
+      toast.success(`${updated} clip(s) getiteld`, {
+        description:
+          skipped + failed > 0
+            ? `${skipped} overgeslagen, ${failed} mislukt`
+            : "Titels en tags bijgewerkt voor betere filtering",
+      });
+    } catch (e) {
+      toast.error("AI titels mislukt", { description: toastErrorMessage(e) });
+    } finally {
+      setAutoTitleRunning(false);
+      setAutoTitleProgress(null);
+    }
+  }
+
   useEffect(() => {
     setSelectedIds(new Set());
   }, [archiveId, search]);
@@ -380,6 +441,26 @@ export function ArchiveClipsGrid({
             className="w-full bg-white/5 border border-white/10 rounded-lg pl-9 pr-3 py-2 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-purple-500/50"
           />
         </div>
+        {assets.length > 0 && (
+          <button
+            type="button"
+            onClick={runAutoTitleAll}
+            disabled={autoTitleRunning}
+            title="AI bekijkt clips en geeft titels + tags op basis van beeldinhoud"
+            className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg bg-cyan-500/15 text-cyan-300 border border-cyan-500/25 hover:bg-cyan-500/25 disabled:opacity-50"
+          >
+            {autoTitleRunning ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Sparkles className="w-3.5 h-3.5" />
+            )}
+            {autoTitleRunning && autoTitleProgress
+              ? `AI ${autoTitleProgress.done}/${autoTitleProgress.total}`
+              : selectedCount > 0
+                ? `AI titels (${selectedCount})`
+                : "AI titels & tags"}
+          </button>
+        )}
         {assets.length > 0 && (
           <button
             type="button"
