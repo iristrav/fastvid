@@ -38,10 +38,13 @@ import { generateHiggsfieldTextToVideo, generateHiggsfieldImageToVideo } from ".
 import { sanitizeForDrawtext, sanitizeForDrawtextStrict } from "./ffmpegSanitize";
 import {
   buildPostGradeVF,
+  buildSimpleKenBurnsVF,
+  buildStillEncodeArgs,
   documentaryStyleEnabled,
   renderHighlightCaptionOverlay,
   renderNameBadgeOverlay,
   resolveStillCompositionVF,
+  stillOutputFrameCount,
   type TimedOverlay,
 } from "./documentaryStyle";
 import { PIPELINE_ERROR, pipelineError } from "@shared/appErrors";
@@ -2794,15 +2797,21 @@ async function generateStabilityAIClip(
     const fps = 25;
     if (documentaryStyleEnabled()) {
       const filterComplex = resolveStillCompositionVF(duration, sceneIndex, 0, false);
-      await withTimeout(
-        exec(
-          `${FFMPEG_BIN} -y -loop 1 -i "${pngPath}" -t ${duration} ` +
-            `-filter_complex "${filterComplex}" -map "[vout]" ` +
-            `-c:v libx264 -preset fast -crf 18 -pix_fmt yuv420p -r ${fps} "${outputPath}"`
-        ),
-        90_000,
-        `AI image to video scene ${sceneIndex}`
-      );
+      try {
+        await withTimeout(
+          exec(`${FFMPEG_BIN} ${buildStillEncodeArgs(pngPath, outputPath, duration, filterComplex)}`),
+          90_000,
+          `AI image to video scene ${sceneIndex}`
+        );
+      } catch (docErr) {
+        console.warn(`[Pipeline] Scene ${sceneIndex}: AI documentary still failed, using simple Ken Burns:`, (docErr as Error).message);
+        const fallbackFc = buildSimpleKenBurnsVF(duration, false);
+        await withTimeout(
+          exec(`${FFMPEG_BIN} ${buildStillEncodeArgs(pngPath, outputPath, duration, fallbackFc)}`),
+          90_000,
+          `AI image to video scene ${sceneIndex} (fallback)`
+        );
+      }
     } else {
       const totalFrames = Math.ceil(duration * fps);
       const zoomStep = 0.0003; // slow 7% zoom over full duration
@@ -3285,6 +3294,71 @@ async function fetchPixabayClips(
   return results;
 }
 
+/** Encode a still image to MP4 with Ken Burns; documentary blur-fill with simple fallback. */
+async function encodeStillImageMp4(
+  imgPath: string,
+  outPath: string,
+  duration: number,
+  label: string,
+  sceneIndex: number,
+  beatIndex: number,
+  personPortrait: boolean
+): Promise<void> {
+  const fps = 25;
+  const frames = stillOutputFrameCount(duration, fps);
+
+  if (documentaryStyleEnabled()) {
+    const filterComplex = resolveStillCompositionVF(duration, sceneIndex, beatIndex, personPortrait);
+    try {
+      await withTimeout(
+        exec(`${FFMPEG_BIN} ${buildStillEncodeArgs(imgPath, outPath, duration, filterComplex)}`),
+        45_000,
+        label
+      );
+      if (fs.existsSync(outPath) && fs.statSync(outPath).size > 1000) {
+        const probed = await probeVideoDurationSec(outPath);
+        if (probed >= duration * 0.5) return;
+        console.warn(`[Pipeline] ${label}: documentary still too short (${probed.toFixed(2)}s), retrying simple Ken Burns`);
+      }
+    } catch (err) {
+      console.warn(`[Pipeline] ${label}: documentary still encode failed, retrying simple Ken Burns:`, (err as Error).message);
+    }
+    try {
+      fs.unlinkSync(outPath);
+    } catch {
+      /* ignore */
+    }
+    const fallbackFc = buildSimpleKenBurnsVF(duration, personPortrait);
+    await withTimeout(
+      exec(`${FFMPEG_BIN} ${buildStillEncodeArgs(imgPath, outPath, duration, fallbackFc)}`),
+      45_000,
+      `${label} (fallback)`
+    );
+    return;
+  }
+
+  const totalFrames = frames;
+  const zoomEnd = personPortrait ? 1.02 : 1.03;
+  const zoomStep = (zoomEnd - 1.0) / totalFrames;
+  const padW = Math.round(VIDEO_WIDTH * 1.05);
+  const padH = Math.round(VIDEO_HEIGHT * 1.05);
+  const cropY = personPortrait ? "0" : `(ih-${VIDEO_HEIGHT})/2`;
+  const yExpr = personPortrait ? "ih/4-(ih/zoom/4)" : "ih/2-(ih/zoom/2)";
+  await withTimeout(
+    exec(
+      `${FFMPEG_BIN} -y -i "${imgPath}" ` +
+        `-vf "scale=${personPortrait ? VIDEO_WIDTH : padW}:${personPortrait ? VIDEO_HEIGHT : padH}:force_original_aspect_ratio=increase,` +
+        `crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:(iw-${VIDEO_WIDTH})/2:${cropY},` +
+        `select='eq(n\\,0)',` +
+        `zoompan=z='min(zoom+${zoomStep.toFixed(7)},${zoomEnd})':x='iw/2-(iw/zoom/2)':y='${yExpr}':` +
+        `d=${totalFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=${fps}" ` +
+        `-frames:v ${totalFrames} -c:v libx264 -preset veryfast -crf 18 -an -pix_fmt yuv420p -r ${fps} "${outPath}"`
+    ),
+    45_000,
+    label
+  );
+}
+
 /** Gentle Ken Burns for stills: ~3% center zoom. */
 async function convertImageToVideoGentle(
   imgPath: string,
@@ -3294,36 +3368,7 @@ async function convertImageToVideoGentle(
   sceneIndex = 0,
   beatIndex = 0
 ): Promise<void> {
-  const fps = 25;
-  if (documentaryStyleEnabled()) {
-    const filterComplex = resolveStillCompositionVF(duration, sceneIndex, beatIndex, false);
-    await withTimeout(
-      exec(
-        `${FFMPEG_BIN} -y -loop 1 -i "${imgPath}" -t ${duration} ` +
-          `-filter_complex "${filterComplex}" -map "[vout]" ` +
-          `-c:v libx264 -preset veryfast -crf 18 -an -pix_fmt yuv420p -r ${fps} "${outPath}"`
-      ),
-      45_000,
-      label
-    );
-    return;
-  }
-  const totalFrames = Math.max(25, Math.round(duration * fps));
-  const zoomEnd = 1.03;
-  const zoomStep = (zoomEnd - 1.0) / totalFrames;
-  const padW = Math.round(VIDEO_WIDTH * 1.05);
-  const padH = Math.round(VIDEO_HEIGHT * 1.05);
-  await withTimeout(
-    exec(
-      `${FFMPEG_BIN} -y -loop 1 -i "${imgPath}" -t ${duration} ` +
-      `-vf "scale=${padW}:${padH}:force_original_aspect_ratio=increase,` +
-      `crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:(iw-${VIDEO_WIDTH})/2:(ih-${VIDEO_HEIGHT})/2,` +
-      `zoompan=z='min(zoom+${zoomStep.toFixed(7)},${zoomEnd})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=${fps}" ` +
-      `-c:v libx264 -preset veryfast -crf 18 -an -pix_fmt yuv420p "${outPath}"`
-    ),
-    45_000,
-    label
-  );
+  await encodeStillImageMp4(imgPath, outPath, duration, label, sceneIndex, beatIndex, false);
 }
 
 /** Person stills: top-aligned 16:9 crop so faces stay visible on red-carpet / full-body photos. */
@@ -3335,34 +3380,7 @@ async function convertImageToVideoPersonPortrait(
   sceneIndex = 0,
   beatIndex = 0
 ): Promise<void> {
-  const fps = 25;
-  if (documentaryStyleEnabled()) {
-    const filterComplex = resolveStillCompositionVF(duration, sceneIndex, beatIndex, true);
-    await withTimeout(
-      exec(
-        `${FFMPEG_BIN} -y -loop 1 -i "${imgPath}" -t ${duration} ` +
-          `-filter_complex "${filterComplex}" -map "[vout]" ` +
-          `-c:v libx264 -preset veryfast -crf 18 -an -pix_fmt yuv420p -r ${fps} "${outPath}"`
-      ),
-      45_000,
-      label
-    );
-    return;
-  }
-  const totalFrames = Math.max(25, Math.round(duration * fps));
-  const zoomEnd = 1.02;
-  const zoomStep = (zoomEnd - 1.0) / totalFrames;
-  await withTimeout(
-    exec(
-      `${FFMPEG_BIN} -y -loop 1 -i "${imgPath}" -t ${duration} ` +
-      `-vf "scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,` +
-      `crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:(iw-${VIDEO_WIDTH})/2:0,` +
-      `zoompan=z='min(zoom+${zoomStep.toFixed(7)},${zoomEnd})':x='iw/2-(iw/zoom/2)':y='ih/4-(ih/zoom/4)':d=${totalFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=${fps}" ` +
-      `-c:v libx264 -preset veryfast -crf 18 -an -pix_fmt yuv420p "${outPath}"`
-    ),
-    45_000,
-    label
-  );
+  await encodeStillImageMp4(imgPath, outPath, duration, label, sceneIndex, beatIndex, true);
 }
 
 async function stillImageToVideo(
@@ -12406,6 +12424,35 @@ async function composeSceneVideo(
     );
   } catch (composeErr) {
     console.warn(`[Pipeline] Scene ${scene.index}: compose failed, trying simplified compose:`, composeErr);
+    if (docOverlays.length > 0 || statCalloutFrame) {
+      try {
+        const { scaleFilters, mergeFilter, montageLabel: xfadeLabel } =
+          buildMontageXfadeFilter(safeClips.length, outDur, scene.index, montageDurations);
+        const inputs = safeClips.map((c) => `-i "${c}"`).join(" ");
+        const montageLabel = xfadeLabel;
+        const audioIdx = safeClips.length;
+        await withTimeout(
+          exec(
+            `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}" ` +
+              `-filter_complex "${scaleFilters}${mergeFilter};[${montageLabel}]${FPS_FORMAT_VF}[vtimed];[vtimed]${fadeFilter}[vout];` +
+              `[${audioIdx}:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${Math.max(0, voiceDur - 0.15).toFixed(3)}:d=0.12,` +
+              `atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
+              `-map "[vout]" -map "[aout]" -vsync cfr ` +
+              `-t ${outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
+          ),
+          120_000,
+          `Compose without overlays scene ${scene.index}`
+        );
+        if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1000) {
+          if (subtitlePath) { try { fs.unlinkSync(subtitlePath); } catch { /* ignore */ } }
+          for (const frame of kineticFrames) { try { fs.unlinkSync(frame.path); } catch { /* ignore */ } }
+          for (const overlay of docOverlays) { try { fs.unlinkSync(overlay.path); } catch { /* ignore */ } }
+          return outputPath;
+        }
+      } catch (noOverlayErr) {
+        console.warn(`[Pipeline] Scene ${scene.index}: compose without overlays failed:`, noOverlayErr);
+      }
+    }
     try {
       const clipDur = computeMontageClipDuration(outDur, safeClips.length);
       const n = Math.min(12, Math.max(2, safeClips.length));
@@ -12423,18 +12470,36 @@ async function composeSceneVideo(
         `Simplified multi-clip scene ${scene.index}`
       );
     } catch (simpleErr) {
-      console.warn(`[Pipeline] Scene ${scene.index}: simplified compose failed, trying simple mux:`, simpleErr);
+      console.warn(`[Pipeline] Scene ${scene.index}: simplified compose failed, trying looped montage mux:`, simpleErr);
       try {
-        await withTimeout(
-          exec(
-            `${FFMPEG_BIN} -y -i "${safeClips[0]}" -i "${safeAudioPath}" ` +
-            `-filter_complex "[1:a]atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
-            `-map "0:v" -map "[aout]" ` +
-            `-t ${outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
-          ),
-          45_000,
-          `Simple mux scene ${scene.index}`
-        );
+        const loopVideo = safeClips;
+        const n = loopVideo.length;
+        if (n > 1) {
+          const inputs = loopVideo.map((c) => `-i "${c}"`).join(" ");
+          const { scaleFilters, mergeFilter, montageLabel } = buildMontageXfadeFilter(n, outDur, scene.index, montageDurations);
+          await withTimeout(
+            exec(
+              `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}" ` +
+                `-filter_complex "${scaleFilters}${mergeFilter};[${montageLabel}]${FPS_FORMAT_VF}[vout];[${n}:a]atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
+                `-map "[vout]" -map "[aout]" -vsync cfr ` +
+                `-t ${outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
+            ),
+            90_000,
+            `Looped montage scene ${scene.index}`
+          );
+        } else {
+          await withTimeout(
+            exec(
+              `${FFMPEG_BIN} -y -stream_loop -1 -i "${safeClips[0]}" -i "${safeAudioPath}" ` +
+                `-filter_complex "[0:v]${FPS_FORMAT_VF},trim=duration=${outDur.toFixed(3)},setpts=PTS-STARTPTS[vout];` +
+                `[1:a]atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
+                `-map "[vout]" -map "[aout]" -vsync cfr ` +
+                `-t ${outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
+            ),
+            45_000,
+            `Stream-loop mux scene ${scene.index}`
+          );
+        }
       } catch (muxErr) {
         console.warn(`[Pipeline] Scene ${scene.index}: simple mux failed:`, muxErr);
         if (!safeClips[0] || isPipelineFallbackClip(safeClips[0])) {

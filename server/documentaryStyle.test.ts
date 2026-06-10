@@ -35,7 +35,7 @@ describe("documentaryStyle", () => {
   it("builds polaroid filter", () => {
     const vf = buildPolaroidStillVF(3.5);
     expect(vf).toContain("pad=960:1040");
-    expect(vf).toContain("rotate=");
+    expect(vf).toContain("select='eq(n\\,0)'");
     expect(vf).toContain("[vout]");
   });
 

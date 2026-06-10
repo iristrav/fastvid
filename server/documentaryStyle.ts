@@ -20,8 +20,9 @@ export function filmGrainEnabled(): boolean {
   return process.env.ENABLE_FILM_GRAIN === "true";
 }
 
-/** Every 4th still uses polaroid-on-grid layout instead of blur-fill. */
+/** Every 4th still uses polaroid-on-grid layout instead of blur-fill (skip on Railway — rotate/gblur can fail). */
 export function usePolaroidLayout(sceneIndex: number, beatIndex = 0): boolean {
+  if (process.env.IS_RAILWAY === "true" || process.env.RAILWAY_ENVIRONMENT) return false;
   return (sceneIndex * 3 + beatIndex) % 4 === 0;
 }
 
@@ -45,20 +46,46 @@ export function buildPostGradeVF(): string {
   return `${buildDocumentaryColorGradeVF()},${buildDocumentaryVignetteVF()}${buildFilmGrainVF()}`;
 }
 
-/** Ken Burns zoompan tail — append after base composition filter chain. */
+export function stillOutputFrameCount(duration: number, fps = 25): number {
+  return Math.max(25, Math.round(duration * fps));
+}
+
+/** Ken Burns zoompan — always fed a single still frame (select) so output length is exact. */
 export function buildKenBurnsTail(
   duration: number,
   zoomEnd = 1.04,
   yAnchor: "center" | "top" = "center"
 ): string {
   const fps = 25;
-  const totalFrames = Math.max(25, Math.round(duration * fps));
+  const totalFrames = stillOutputFrameCount(duration, fps);
   const zoomStep = (zoomEnd - 1.0) / totalFrames;
   const yExpr = yAnchor === "top" ? "ih/4-(ih/zoom/4)" : "ih/2-(ih/zoom/2)";
   return (
+    `select='eq(n\\,0)',` +
     `zoompan=z='min(zoom+${zoomStep.toFixed(7)},${zoomEnd})':` +
     `x='iw/2-(iw/zoom/2)':y='${yExpr}':` +
     `d=${totalFrames}:s=${DOC_STYLE_VIDEO_WIDTH}x${DOC_STYLE_VIDEO_HEIGHT}:fps=${fps}`
+  );
+}
+
+/** Simple Ken Burns fallback when blur/polaroid filters fail on the host FFmpeg. */
+export function buildSimpleKenBurnsVF(
+  duration: number,
+  personPortrait: boolean
+): string {
+  const fps = 25;
+  const totalFrames = stillOutputFrameCount(duration, fps);
+  const zoomEnd = personPortrait ? 1.02 : 1.03;
+  const zoomStep = (zoomEnd - 1.0) / totalFrames;
+  const yExpr = personPortrait ? "ih/4-(ih/zoom/4)" : "ih/2-(ih/zoom/2)";
+  const cropY = personPortrait ? "0" : `(ih-${DOC_STYLE_VIDEO_HEIGHT})/2`;
+  return (
+    `[0:v]scale=${DOC_STYLE_VIDEO_WIDTH}:${DOC_STYLE_VIDEO_HEIGHT}:force_original_aspect_ratio=increase,` +
+    `crop=${DOC_STYLE_VIDEO_WIDTH}:${DOC_STYLE_VIDEO_HEIGHT}:(iw-${DOC_STYLE_VIDEO_WIDTH})/2:${cropY},` +
+    `select='eq(n\\,0)',` +
+    `zoompan=z='min(zoom+${zoomStep.toFixed(7)},${zoomEnd})':` +
+    `x='iw/2-(iw/zoom/2)':y='${yExpr}':` +
+    `d=${totalFrames}:s=${DOC_STYLE_VIDEO_WIDTH}x${DOC_STYLE_VIDEO_HEIGHT}:fps=${fps}[vout]`
   );
 }
 
@@ -81,7 +108,7 @@ export function buildBlurFillStillVF(
   );
 }
 
-/** Polaroid white frame on light gray canvas (single-input filter_complex). */
+/** Polaroid white frame on light gray canvas (no rotate — fragile on minimal FFmpeg builds). */
 export function buildPolaroidStillVF(duration: number): string {
   const w = DOC_STYLE_VIDEO_WIDTH;
   const h = DOC_STYLE_VIDEO_HEIGHT;
@@ -90,8 +117,20 @@ export function buildPolaroidStillVF(duration: number): string {
     `[0:v]scale=920:-1,` +
     `pad=960:1040:20:80:white,` +
     `pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2+30:color=0xD8D8D8,` +
-    `rotate=-2*PI/180:c=0xD8D8D8:ow=rotw(iw):oh=roth(ih),` +
     `${ken}[vout]`
+  );
+}
+
+export function buildStillEncodeArgs(
+  imgPath: string,
+  outPath: string,
+  duration: number,
+  filterComplex: string
+): string {
+  const frames = stillOutputFrameCount(duration);
+  return (
+    `-y -i "${imgPath}" -filter_complex "${filterComplex}" -map "[vout]" ` +
+    `-frames:v ${frames} -c:v libx264 -preset veryfast -crf 18 -an -pix_fmt yuv420p -r 25 "${outPath}"`
   );
 }
 
