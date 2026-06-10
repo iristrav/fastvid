@@ -827,7 +827,7 @@ export default function Dashboard() {
   // ─── Onboarding gate ──────────────────────────────────────────────────────
   useEffect(() => {
     if (!loading && !nicheAccessLoading && isAuthenticated && needsOnboarding) {
-      navigate("/onboarding");
+      navigate("/niche-aanvraag");
     }
   }, [loading, nicheAccessLoading, isAuthenticated, needsOnboarding, navigate]);
 

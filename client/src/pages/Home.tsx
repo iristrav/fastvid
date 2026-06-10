@@ -283,7 +283,7 @@ export default function Home() {
     },
     {
       q: "How do I get access after signing up?",
-      a: "After your invite code, you submit a niche and preferred video format. We review within 2 business days. Once approved, you can activate your subscription and start generating within 24 hours. Need a second channel? Request another niche from your dashboard — we build a dedicated media archive for it.",
+      a: "After your invite code, register and submit your niche, email, and content format (title structure and topics) on the application page. We review within 2 business days. Once approved, you can activate your subscription and start generating within 24 hours.",
     },
     {
       q: "What if there is no footage in the archive for my topic?",
@@ -501,9 +501,12 @@ export default function Home() {
 
               <div className="animate-fade-up delay-450 rounded-xl border border-purple-500/25 bg-purple-500/5 px-4 py-3 text-xs text-slate-300 leading-relaxed">
                 <span className="text-purple-300 font-semibold">Getting started:</span>{" "}
-                Enter your invite code, submit your niche and video format, and hear back within{" "}
-                <strong className="text-white">2 business days</strong>. After approval you can start your first video within{" "}
-                <strong className="text-white">24 hours</strong>.
+                Submit your niche, email, and content format on our{" "}
+                <button type="button" onClick={() => navigate("/niche-aanvraag")} className="text-purple-300 hover:text-white underline underline-offset-2">
+                  application page
+                </button>
+                . Approval within <strong className="text-white">2 business days</strong> — start within{" "}
+                <strong className="text-white">24 hours</strong> after that.
               </div>
             </div>
 

@@ -2,6 +2,7 @@
  * Dashboard — extra niche/kanaal aanvragen + status overzicht.
  */
 import { trpc } from "@/lib/trpc";
+import { useAuth } from "@/_core/hooks/useAuth";
 import { toastErrorMessage } from "@/const";
 import { toast } from "sonner";
 import { Loader2, Plus, Radio } from "lucide-react";
@@ -10,12 +11,13 @@ import { NicheRequestForm } from "@/components/niche/NicheRequestForm";
 import { NICHE_REQUEST_STATUS_LABELS } from "@shared/nicheRequest";
 
 export function DashboardNicheRequests() {
+  const { user } = useAuth();
   const utils = trpc.useUtils();
   const [showForm, setShowForm] = useState(false);
 
   const { data: requests = [], isLoading } = trpc.nicheRequest.listMine.useQuery();
 
-  const submit = trpc.nicheRequest.submit.useMutation({
+  const apply = trpc.nicheRequest.apply.useMutation({
     onSuccess: async () => {
       await utils.nicheRequest.listMine.invalidate();
       setShowForm(false);
@@ -61,15 +63,11 @@ export function DashboardNicheRequests() {
             </button>
           </div>
           <NicheRequestForm
-            requestType="new_channel"
-            submitting={submit.isPending}
+            initialEmail={user?.email ?? ""}
+            submitting={apply.isPending}
             submitLabel="Aanvraag indienen"
             onSubmit={(values) =>
-              submit.mutate({
-                ...values,
-                requestType: "new_channel",
-                channelName: values.channelName || undefined,
-              })
+              apply.mutate({ ...values, requestType: "new_channel" })
             }
           />
         </div>
@@ -86,10 +84,8 @@ export function DashboardNicheRequests() {
           {channelRequests.map((r) => (
             <li key={r.id} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5 rounded-lg bg-white/5 border border-white/8">
               <div className="min-w-0">
-                <p className="text-sm font-medium text-white truncate">
-                  {r.channelName ? `${r.channelName} — ` : ""}{r.nicheTitle}
-                </p>
-                <p className="text-xs text-slate-500">Formaat: {r.videoFormat} min</p>
+                <p className="text-sm font-medium text-white truncate">{r.nicheTitle}</p>
+                <p className="text-xs text-slate-500 line-clamp-1">{r.description ?? "—"}</p>
               </div>
               <StatusBadge status={r.status} />
             </li>

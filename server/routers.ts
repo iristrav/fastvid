@@ -77,13 +77,14 @@ import { assessArchiveCoverageForPrompt } from "./archiveCoverage";
 import {
   createNicheRequest,
   getLatestNicheRequest,
+  getLatestOnboardingRequest,
   getNicheRequestById,
+  linkNicheRequestsToUser,
   listAllNicheRequests,
   listNicheRequestsByUser,
   nicheRequestAllowsPlatformAccess,
   updateNicheRequest,
 } from "./nicheRequestsDb";
-import { NICHE_VIDEO_FORMATS } from "@shared/nicheRequest";
 import { updateVideoScenes, updateEditedVideoUrl, getVideoScenes, type EditorScene, type EditorClip } from "./db";
 import { runVideoPipeline } from "./videoPipeline";
 import { forgotPassword, validateResetToken as validateResetTokenProcedure, resetPassword } from "./authPasswordReset";
@@ -674,6 +675,7 @@ export const appRouter = router({
         const cookieOptions = getSessionCookieOptions(ctx.req);
         ctx.res.cookie(COOKIE_NAME, token, { ...cookieOptions, maxAge: ONE_YEAR_MS });
         const user = await getUserById(userId);
+        await linkNicheRequestsToUser(input.email.toLowerCase(), userId);
         return { success: true, user };
       }),
 
@@ -758,7 +760,7 @@ export const appRouter = router({
       enableSubtitles: z.boolean().default(true),
     })).mutation(async ({ ctx, input }) => {
       if (ctx.user.role !== "admin") {
-        const onboarding = await getLatestNicheRequest(ctx.user.id, "onboarding");
+        const onboarding = await getLatestOnboardingRequest(ctx.user.id, ctx.user.email);
         if (onboarding && !nicheRequestAllowsPlatformAccess(onboarding, ctx.user.role)) {
           throw appTrpcError(
             "FORBIDDEN",
@@ -1168,7 +1170,7 @@ export const appRouter = router({
 
   nicheRequest: router({
     accessStatus: protectedProcedure.query(async ({ ctx }) => {
-      const onboarding = await getLatestNicheRequest(ctx.user.id, "onboarding");
+      const onboarding = await getLatestOnboardingRequest(ctx.user.id, ctx.user.email);
       const canUsePlatform = nicheRequestAllowsPlatformAccess(onboarding, ctx.user.role);
       return {
         canUsePlatform,
@@ -1181,30 +1183,37 @@ export const appRouter = router({
       return listNicheRequestsByUser(ctx.user.id);
     }),
 
-    submit: protectedProcedure.input(z.object({
-      requestType: z.enum(["onboarding", "new_channel"]).default("onboarding"),
+    apply: publicProcedure.input(z.object({
+      contactEmail: z.string().email(),
       nicheTitle: z.string().min(2).max(256),
-      channelName: z.string().max(256).optional(),
-      videoFormat: z.enum(NICHE_VIDEO_FORMATS.map((f) => f.value) as [string, ...string[]]),
-      description: z.string().max(2000).optional(),
+      formatDetails: z.string().min(10).max(4000),
+      requestType: z.enum(["onboarding", "new_channel"]).default("onboarding"),
     })).mutation(async ({ ctx, input }) => {
+      if (input.requestType === "new_channel" && !ctx.user) {
+        throw appTrpcError("UNAUTHORIZED", APP_ERROR.SERVICE_ERROR, "Log in om een extra kanaal aan te vragen.");
+      }
+
+      const contactEmail = input.contactEmail.toLowerCase().trim();
+      const userId = ctx.user?.id ?? null;
+
       if (input.requestType === "onboarding") {
-        const existing = await getLatestNicheRequest(ctx.user.id, "onboarding");
+        const existing = await getLatestOnboardingRequest(userId ?? undefined, contactEmail);
         if (existing && existing.status === "pending") {
-          throw appTrpcError("BAD_REQUEST", APP_ERROR.SERVICE_ERROR, "Je onboarding-aanvraag is al ingediend.");
+          throw appTrpcError("BAD_REQUEST", APP_ERROR.SERVICE_ERROR, "Je aanvraag is al ingediend en wacht op goedkeuring.");
         }
         if (existing && ["approved", "in_progress", "ready"].includes(existing.status)) {
-          throw appTrpcError("BAD_REQUEST", APP_ERROR.SERVICE_ERROR, "Je onboarding is al goedgekeurd.");
+          throw appTrpcError("BAD_REQUEST", APP_ERROR.SERVICE_ERROR, "Je niche-aanvraag is al goedgekeurd.");
         }
       }
 
       const id = await createNicheRequest({
-        userId: ctx.user.id,
+        userId,
+        contactEmail,
         requestType: input.requestType,
         nicheTitle: input.nicheTitle.trim(),
-        channelName: input.channelName?.trim() || null,
-        videoFormat: input.videoFormat,
-        description: input.description?.trim() || null,
+        channelName: null,
+        videoFormat: null,
+        description: input.formatDetails.trim(),
         status: "pending",
       });
       if (!id) throw appTrpcError("INTERNAL_SERVER_ERROR", APP_ERROR.SERVICE_ERROR, "Aanvraag opslaan mislukt");
@@ -1223,8 +1232,12 @@ export const appRouter = router({
       const rows = await listAllNicheRequests();
       const enriched = await Promise.all(
         rows.map(async (r) => {
-          const user = await getUserById(r.userId);
-          return { ...r, userName: user?.name ?? null, userEmail: user?.email ?? null };
+          const user = r.userId ? await getUserById(r.userId) : undefined;
+          return {
+            ...r,
+            userName: user?.name ?? null,
+            userEmail: user?.email ?? r.contactEmail ?? null,
+          };
         })
       );
       return enriched;

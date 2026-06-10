@@ -12,6 +12,7 @@ import Subscribe from "./pages/Subscribe";
 import ResetPassword from "./pages/ResetPassword";
 import VideoEditor from "./pages/VideoEditor";
 import Onboarding from "./pages/Onboarding";
+import NicheAanvraag from "./pages/NicheAanvraag";
 import PrivacyPolicy from "./pages/PrivacyPolicy";
 import TermsOfService from "./pages/TermsOfService";
 import CookiePolicy from "./pages/CookiePolicy";
@@ -27,6 +28,7 @@ function Router() {
       <Route path={"/cookie-policy"} component={CookiePolicy} />
       <Route path={"/contact"} component={Contact} />
       <Route path={"/login"} component={Login} />
+      <Route path={"/niche-aanvraag"} component={NicheAanvraag} />
       <Route path={"/onboarding"} component={Onboarding} />
       <Route path={"/reset-password"} component={ResetPassword} />
       <Route path={"/dashboard"} component={Dashboard} />

@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, isNull } from "drizzle-orm";
 import {
   nicheRequests,
   type InsertNicheRequest,
@@ -35,6 +35,46 @@ export async function getLatestNicheRequest(
     .orderBy(desc(nicheRequests.createdAt))
     .limit(1);
   return rows[0];
+}
+
+export async function getLatestNicheRequestByEmail(
+  contactEmail: string,
+  requestType: NicheRequestType
+): Promise<NicheRequest | undefined> {
+  const db = await getDb();
+  if (!db) return undefined;
+  const email = contactEmail.toLowerCase().trim();
+  const rows = await db
+    .select()
+    .from(nicheRequests)
+    .where(and(eq(nicheRequests.contactEmail, email), eq(nicheRequests.requestType, requestType)))
+    .orderBy(desc(nicheRequests.createdAt))
+    .limit(1);
+  return rows[0];
+}
+
+export async function getLatestOnboardingRequest(
+  userId?: number | null,
+  contactEmail?: string | null
+): Promise<NicheRequest | undefined> {
+  if (userId) {
+    const byUser = await getLatestNicheRequest(userId, "onboarding");
+    if (byUser) return byUser;
+  }
+  if (contactEmail) {
+    return getLatestNicheRequestByEmail(contactEmail, "onboarding");
+  }
+  return undefined;
+}
+
+export async function linkNicheRequestsToUser(contactEmail: string, userId: number): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  const email = contactEmail.toLowerCase().trim();
+  await db
+    .update(nicheRequests)
+    .set({ userId })
+    .where(and(eq(nicheRequests.contactEmail, email), isNull(nicheRequests.userId)));
 }
 
 export async function listNicheRequestsByUser(userId: number): Promise<NicheRequest[]> {

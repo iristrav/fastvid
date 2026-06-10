@@ -58,10 +58,15 @@ export function NicheRequestsAdmin() {
                     {r.requestType === "onboarding" ? "Onboarding" : "Nieuw kanaal"} — {r.nicheTitle}
                   </p>
                   <p className="text-xs text-slate-400 mt-0.5">
-                    {r.userName ?? "User"} · {r.userEmail} · formaat {r.videoFormat}
+                    {r.contactEmail ?? r.userEmail ?? "—"}
+                    {r.userName ? ` · ${r.userName}` : ""}
                   </p>
-                  {r.channelName && <p className="text-xs text-slate-500">Kanaal: {r.channelName}</p>}
-                  {r.description && <p className="text-sm text-slate-400 mt-2">{r.description}</p>}
+                  {r.description && (
+                    <div className="mt-2">
+                      <p className="text-[10px] uppercase tracking-wide text-slate-500 mb-1">Format (titelstructuur & onderwerpen)</p>
+                      <p className="text-sm text-slate-400 whitespace-pre-wrap">{r.description}</p>
+                    </div>
+                  )}
                 </div>
                 <span className="text-xs px-2 py-1 rounded-full bg-white/10 text-slate-300">
                   {NICHE_REQUEST_STATUS_LABELS[r.status]}

@@ -162,11 +162,12 @@ export type InsertMediaArchiveAsset = typeof mediaArchiveAssets.$inferInsert;
 // ─── Niche / channel requests ─────────────────────────────────────────────────
 export const nicheRequests = mysqlTable("niche_requests", {
   id: int("id").autoincrement().primaryKey(),
-  userId: int("userId").notNull().references(() => users.id),
+  userId: int("userId").references(() => users.id),
+  contactEmail: varchar("contactEmail", { length: 320 }),
   requestType: mysqlEnum("requestType", ["onboarding", "new_channel"]).default("onboarding").notNull(),
   nicheTitle: varchar("nicheTitle", { length: 256 }).notNull(),
   channelName: varchar("channelName", { length: 256 }),
-  videoFormat: varchar("videoFormat", { length: 32 }).notNull(),
+  videoFormat: varchar("videoFormat", { length: 32 }),
   description: text("description"),
   status: mysqlEnum("status", ["pending", "approved", "in_progress", "ready", "rejected"]).default("pending").notNull(),
   adminNotes: text("adminNotes"),

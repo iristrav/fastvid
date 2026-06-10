@@ -1,101 +1,96 @@
 import { useState } from "react";
-import { NICHE_VIDEO_FORMATS, type NicheVideoFormat } from "@shared/nicheRequest";
 import { Loader2 } from "lucide-react";
 
 export type NicheRequestFormValues = {
+  contactEmail: string;
   nicheTitle: string;
-  channelName: string;
-  videoFormat: NicheVideoFormat;
-  description: string;
+  formatDetails: string;
 };
 
 type Props = {
-  requestType: "onboarding" | "new_channel";
-  initial?: Partial<NicheRequestFormValues>;
+  initialEmail?: string;
+  initialNiche?: string;
+  initialFormat?: string;
   submitting?: boolean;
   submitLabel?: string;
   onSubmit: (values: NicheRequestFormValues) => void;
 };
 
 export function NicheRequestForm({
-  requestType,
-  initial,
+  initialEmail = "",
+  initialNiche = "",
+  initialFormat = "",
   submitting = false,
   submitLabel = "Aanvraag indienen",
   onSubmit,
 }: Props) {
-  const [nicheTitle, setNicheTitle] = useState(initial?.nicheTitle ?? "");
-  const [channelName, setChannelName] = useState(initial?.channelName ?? "");
-  const [videoFormat, setVideoFormat] = useState<NicheVideoFormat>(initial?.videoFormat ?? "8-12");
-  const [description, setDescription] = useState(initial?.description ?? "");
+  const [contactEmail, setContactEmail] = useState(initialEmail);
+  const [nicheTitle, setNicheTitle] = useState(initialNiche);
+  const [formatDetails, setFormatDetails] = useState(initialFormat);
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!nicheTitle.trim()) return;
+    if (!contactEmail.trim() || !nicheTitle.trim() || formatDetails.trim().length < 10) return;
     onSubmit({
+      contactEmail: contactEmail.trim().toLowerCase(),
       nicheTitle: nicheTitle.trim(),
-      channelName: channelName.trim(),
-      videoFormat,
-      description: description.trim(),
+      formatDetails: formatDetails.trim(),
     });
   }
 
+  const canSubmit =
+    contactEmail.includes("@") &&
+    nicheTitle.trim().length >= 2 &&
+    formatDetails.trim().length >= 10;
+
   return (
-    <form onSubmit={handleSubmit} className="space-y-4">
-      {requestType === "new_channel" && (
-        <div className="space-y-1.5">
-          <label className="text-xs text-slate-400 font-medium uppercase tracking-wide">Kanaalnaam (optioneel)</label>
-          <input
-            value={channelName}
-            onChange={(e) => setChannelName(e.target.value)}
-            placeholder="bijv. Titanic Stories NL"
-            className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-purple-500/50"
-          />
-        </div>
-      )}
+    <form onSubmit={handleSubmit} className="space-y-5">
+      <div className="space-y-1.5">
+        <label className="text-xs text-slate-400 font-medium uppercase tracking-wide">E-mailadres *</label>
+        <input
+          type="email"
+          value={contactEmail}
+          onChange={(e) => setContactEmail(e.target.value)}
+          placeholder="jij@voorbeeld.nl"
+          required
+          autoComplete="email"
+          className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-purple-500/50"
+        />
+        <p className="text-[11px] text-slate-500">Hier sturen we je goedkeuringsbericht naartoe.</p>
+      </div>
 
       <div className="space-y-1.5">
-        <label className="text-xs text-slate-400 font-medium uppercase tracking-wide">Niche / onderwerp *</label>
+        <label className="text-xs text-slate-400 font-medium uppercase tracking-wide">Niche *</label>
         <input
           value={nicheTitle}
           onChange={(e) => setNicheTitle(e.target.value)}
-          placeholder="bijv. Titanic, WOII, SpaceX, true crime…"
+          placeholder="bijv. Titanic, WOII-documentaires, SpaceX, true crime…"
           required
           minLength={2}
-          className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-purple-500/50"
+          className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-purple-500/50"
         />
       </div>
 
       <div className="space-y-1.5">
-        <label className="text-xs text-slate-400 font-medium uppercase tracking-wide">Videoformaat *</label>
-        <select
-          value={videoFormat}
-          onChange={(e) => setVideoFormat(e.target.value as NicheVideoFormat)}
-          className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-purple-500/50"
-        >
-          {NICHE_VIDEO_FORMATS.map((f) => (
-            <option key={f.value} value={f.value} className="bg-slate-900">
-              {f.label}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      <div className="space-y-1.5">
-        <label className="text-xs text-slate-400 font-medium uppercase tracking-wide">Toelichting (optioneel)</label>
+        <label className="text-xs text-slate-400 font-medium uppercase tracking-wide">
+          Format — titelstructuur &amp; onderwerpen *
+        </label>
         <textarea
-          value={description}
-          onChange={(e) => setDescription(e.target.value)}
-          rows={3}
-          placeholder="Welk type content, doelgroep, voorbeeldvideo's…"
-          className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-purple-500/50 resize-none"
+          value={formatDetails}
+          onChange={(e) => setFormatDetails(e.target.value)}
+          rows={5}
+          required
+          minLength={10}
+          placeholder={`Beschrijf hoe je titels zijn opgebouwd en welke onderwerpen je behandelt, bijv.:\n\n• Titelstructuur: "The Untold Story of [X]" / "Why [X] Changed Everything"\n• Onderwerpen: scheepsrampen, vergeten helden, technische analyses\n• Voorbeeldvideo's of concurrenten (links)`}
+          className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-purple-500/50 resize-none leading-relaxed"
         />
+        <p className="text-[11px] text-slate-500">Minimaal 10 tekens — hoe concreter, hoe sneller we je archief kunnen opbouwen.</p>
       </div>
 
       <button
         type="submit"
-        disabled={submitting || nicheTitle.trim().length < 2}
-        className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-gradient-to-r from-purple-600 to-cyan-600 hover:from-purple-500 hover:to-cyan-500 text-white text-sm font-semibold disabled:opacity-50"
+        disabled={submitting || !canSubmit}
+        className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-gradient-to-r from-purple-600 to-cyan-600 hover:from-purple-500 hover:to-cyan-500 text-white text-sm font-semibold disabled:opacity-50 transition-opacity"
       >
         {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
         {submitLabel}
@@ -104,11 +99,14 @@ export function NicheRequestForm({
   );
 }
 
-export function NicheRequestPendingCard() {
+export function NicheRequestPendingCard({ email }: { email?: string }) {
   return (
     <div className="glass-card border border-yellow-500/30 bg-yellow-500/5 rounded-xl p-6 space-y-3">
       <h3 className="text-lg font-bold text-yellow-200">Aanvraag ontvangen</h3>
       <p className="text-sm text-yellow-100/90 leading-relaxed">
+        {email ? (
+          <>We hebben je aanvraag ontvangen op <strong>{email}</strong>. </>
+        ) : null}
         Binnen <strong>2 werkdagen</strong> ontvang je een goedkeuringsbericht per e-mail.
         Na goedkeuring kun je <strong>binnen 24 uur</strong> starten met je eerste video.
       </p>

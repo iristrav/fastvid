@@ -1,14 +1,4 @@
-/** Shared niche request labels and format options (client + server). */
-
-export const NICHE_VIDEO_FORMATS = [
-  { value: "5-8", label: "5–8 min — kort & punchy" },
-  { value: "8-12", label: "8–12 min — tutorial" },
-  { value: "12-15", label: "12–15 min — diepgaand" },
-  { value: "15-20", label: "15–20 min — extended" },
-  { value: "20+", label: "20+ min — long-form" },
-] as const;
-
-export type NicheVideoFormat = (typeof NICHE_VIDEO_FORMATS)[number]["value"];
+/** Shared niche request labels (client + server). */
 
 export const NICHE_REQUEST_STATUS_LABELS: Record<string, string> = {
   pending: "In behandeling",

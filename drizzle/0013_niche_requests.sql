@@ -1,10 +1,11 @@
 CREATE TABLE `niche_requests` (
 	`id` int AUTO_INCREMENT NOT NULL,
-	`userId` int NOT NULL,
+	`userId` int,
+	`contactEmail` varchar(320),
 	`requestType` enum('onboarding','new_channel') NOT NULL DEFAULT 'onboarding',
 	`nicheTitle` varchar(256) NOT NULL,
 	`channelName` varchar(256),
-	`videoFormat` varchar(32) NOT NULL,
+	`videoFormat` varchar(32),
 	`description` text,
 	`status` enum('pending','approved','in_progress','ready','rejected') NOT NULL DEFAULT 'pending',
 	`adminNotes` text,
