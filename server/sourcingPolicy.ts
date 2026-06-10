@@ -19,3 +19,17 @@ export function elevenLabsOnlyVoice(): boolean {
 export function skipEffectsStage(): boolean {
   return process.env.SKIP_EFFECTS_STAGE !== "false";
 }
+
+/** Max seconds per on-screen archive clip before switching to the next asset. */
+export function archiveVisualBeatSec(): number {
+  const raw = process.env.ARCHIVE_VISUAL_BEAT_SEC?.trim();
+  if (raw) {
+    const n = parseFloat(raw);
+    if (!isNaN(n) && n >= 3 && n <= 8) return n;
+  }
+  return 5;
+}
+
+export function archiveVisualMaxClipSec(): number {
+  return archiveVisualBeatSec();
+}

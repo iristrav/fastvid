@@ -8,6 +8,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { resolveLocalVideoPath } from "./storageLocal";
 import { archiveClipHasBakedEditText } from "./archiveClipFilter";
+import { curatedArchiveOnlyVisuals, archiveVisualMaxClipSec } from "./sourcingPolicy";
 import {
   getAllMediaArchives,
   getMediaArchiveAssets,
@@ -90,7 +91,8 @@ function ffprobeBin(): string {
 }
 
 function clampHoldSec(holdSec: number): number {
-  return Math.max(CLIP_MIN_SEC, Math.min(CLIP_MAX_SEC, holdSec));
+  const maxSec = curatedArchiveOnlyVisuals() ? archiveVisualMaxClipSec() : CLIP_MAX_SEC;
+  return Math.max(CLIP_MIN_SEC, Math.min(maxSec, holdSec));
 }
 
 const QUERY_STOP_WORDS = new Set([

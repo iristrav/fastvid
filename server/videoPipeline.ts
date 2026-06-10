@@ -74,7 +74,7 @@ import {
   scriptGuidedClipsEnabled,
 } from "./scriptGuidedClipFinder";
 import { clipPassesVisionGate, clipVisionGateEnabled } from "./visualQualityGate";
-import { curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, skipEffectsStage } from "./sourcingPolicy";
+import { curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, skipEffectsStage, archiveVisualBeatSec, archiveVisualMaxClipSec } from "./sourcingPolicy";
 import {
   fetchCuratedArchiveBeatClip,
   curatedClipPathAssetId,
@@ -361,6 +361,14 @@ const VIDRUSH_CLIP_MIN_SEC = 2.5;
 const VIDRUSH_CLIP_MAX_SEC = 4.0;
 const VIDRUSH_CLIP_HOLD_SEC = 7.0;
 const VIDRUSH_BEAT_SEC = 3.5;
+
+function effectiveBeatSec(): number {
+  return curatedArchiveOnlyVisuals() ? archiveVisualBeatSec() : VIDRUSH_BEAT_SEC;
+}
+
+function effectiveMaxClipSec(): number {
+  return curatedArchiveOnlyVisuals() ? archiveVisualMaxClipSec() : VIDRUSH_CLIP_HOLD_SEC;
+}
 /** Hard cuts on legacy stock mode; crossfade for archive/documentary montage. */
 function montageXfadeSec(): number {
   if (curatedArchiveOnlyVisuals() || documentaryStyleEnabled()) return 0.45;
@@ -1067,6 +1075,9 @@ function beatScriptImageWallMs(perf: PipelinePerfProfile): number {
 }
 
 function maxBackfillAttempts(perf: PipelinePerfProfile, sceneDurationSec: number): number {
+  if (curatedArchiveOnlyVisuals()) {
+    return Math.max(4, Math.ceil(sceneDurationSec / archiveVisualBeatSec()) + 3);
+  }
   if (perf.fastStockMode) return sceneDurationSec <= 10 ? 1 : 2;
   if (sceneDurationSec <= 22) return 1;
   if (sceneDurationSec <= 60) return 2;
@@ -1080,7 +1091,11 @@ function celebrityFetchFastMode(perf: PipelinePerfProfile, sceneDurationSec: num
 
 /** Min clips for scene duration without forcing extra fetches on short CTA/outro scenes. */
 function minClipsForScene(duration: number, beatCount: number, fast = false): number {
-  const byDuration = Math.max(1, Math.ceil(duration / VIDRUSH_BEAT_SEC));
+  const beatSec = effectiveBeatSec();
+  const byDuration = Math.max(1, Math.ceil(duration / beatSec));
+  if (curatedArchiveOnlyVisuals()) {
+    return Math.max(1, byDuration);
+  }
   if (fast && duration <= 10) return 1;
   if (fast) return Math.max(1, Math.min(beatCount, byDuration));
   if (duration <= 30) return Math.max(1, Math.min(beatCount, byDuration));
@@ -1592,6 +1607,7 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
   if (curatedArchiveOnlyVisuals()) {
     return {
       ...profile,
+      maxBeatsPerScene: 64,
       enableArchival: false,
       enableNasa: false,
       enableMuskHeroFetch: false,
@@ -1887,8 +1903,9 @@ export interface PipelineProgress {
 // ─── Timeout helper ───────────────────────────────────────────────────────────
 // fetchWithTimeout: truly cancels the download using AbortController (unlike withTimeout which only races)
 async function fetchWithTimeout(url: string, timeoutMs: number, label: string, options: Record<string, unknown> = {}): Promise<ReturnType<typeof fetch>> {
+  const delayMs = Math.max(1, Math.round(timeoutMs));
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const timer = setTimeout(() => controller.abort(), delayMs);
   try {
     const resp = await fetch(url, { ...options, signal: controller.signal });
     return resp;
@@ -7984,6 +8001,7 @@ function montageClipStartSec(_sceneIndex: number, clipIndex: number): number {
 }
 
 function estimateBeatHoldSec(text: string, mergedSentenceCount: number): number {
+  if (curatedArchiveOnlyVisuals()) return archiveVisualBeatSec();
   const words = text.replace(/\[visual:[^\]]+\]/gi, "").split(/\s+/).filter(Boolean).length;
   const byWords = words / 2.4;
   if (mergedSentenceCount >= 2 || byWords > 16) {
@@ -8007,12 +8025,20 @@ function beatsBelongTogether(prevText: string, nextText: string, prevVisual: str
 function normalizeMontageDurations(durations: number[], outDur: number): number[] {
   const n = durations.length;
   if (n === 0) return durations;
+  const maxClip = effectiveMaxClipSec();
   const xfade = n > 1 ? montageXfadeSec() : 0;
+
+  if (curatedArchiveOnlyVisuals()) {
+    return durations.map((d) =>
+      Math.max(VIDRUSH_CLIP_MIN_SEC, Math.min(maxClip, d))
+    );
+  }
+
   const total = durations.reduce((s, d) => s + d, 0) - (n - 1) * xfade;
   if (total <= 0.1) return durations;
   const scale = outDur / total;
   return durations.map((d) =>
-    Math.max(VIDRUSH_CLIP_MIN_SEC * 0.85, Math.min(VIDRUSH_CLIP_HOLD_SEC, d * scale))
+    Math.max(VIDRUSH_CLIP_MIN_SEC * 0.85, Math.min(maxClip, d * scale))
   );
 }
 
@@ -8033,12 +8059,13 @@ function alignBeatDurationsWithClips(
 
 /** Default per-clip duration when beat metadata is missing. */
 function computeMontageClipDuration(sceneDuration: number, clipCount: number): number {
-  if (clipCount <= 0) return VIDRUSH_BEAT_SEC;
-  const ideal = Math.max(1, Math.ceil(sceneDuration / VIDRUSH_BEAT_SEC));
-  if (clipCount >= ideal - 1) return VIDRUSH_BEAT_SEC;
+  if (clipCount <= 0) return effectiveBeatSec();
+  const beatSec = effectiveBeatSec();
+  const ideal = Math.max(1, Math.ceil(sceneDuration / beatSec));
+  if (clipCount >= ideal - 1) return beatSec;
   const xfade = clipCount > 1 ? montageXfadeSec() : 0;
   const evenSplit = (sceneDuration + (clipCount - 1) * xfade) / clipCount;
-  return Math.max(VIDRUSH_CLIP_MIN_SEC, Math.min(VIDRUSH_CLIP_MAX_SEC, evenSplit));
+  return Math.max(VIDRUSH_CLIP_MIN_SEC, Math.min(effectiveMaxClipSec(), evenSplit));
 }
 
 /** xfade montage — trim in-filter; optional per-beat durations (3–4s, longer when merged). */
@@ -8053,7 +8080,7 @@ function buildMontageXfadeFilter(
   let durs =
     clipDurations?.length === n
       ? clipDurations.map((d) =>
-          Math.max(VIDRUSH_CLIP_MIN_SEC, Math.min(VIDRUSH_CLIP_HOLD_SEC, d))
+          Math.max(VIDRUSH_CLIP_MIN_SEC, Math.min(effectiveMaxClipSec(), d))
         )
       : Array.from({ length: n }, () => computeMontageClipDuration(outDur, n));
   durs = normalizeMontageDurations(durs, outDur);
@@ -8343,7 +8370,7 @@ function buildSceneBeats(
   videoTitle?: string,
   scenePersons: string[] = []
 ): SceneBeat[] {
-  const targetBeats = Math.max(2, Math.ceil(duration / VIDRUSH_BEAT_SEC));
+  const targetBeats = Math.max(2, Math.ceil(duration / effectiveBeatSec()));
   const beatCap = Math.min(maxBeatsCap, targetBeats);
 
   const rawSentences =
@@ -11434,11 +11461,11 @@ async function fetchSceneVisuals(
   const beatCap = dedup.perf.fastStockMode
     ? Math.min(
         dedup.perf.maxBeatsPerScene,
-        Math.max(1, Math.ceil(scene.duration / VIDRUSH_BEAT_SEC))
+        Math.max(1, Math.ceil(scene.duration / effectiveBeatSec()))
       )
     : Math.min(
         dedup.perf.maxBeatsPerScene,
-        Math.max(2, Math.ceil(scene.duration / VIDRUSH_BEAT_SEC))
+        Math.max(2, Math.ceil(scene.duration / effectiveBeatSec()))
       );
   dedup.stillPhotosThisScene = 0;
   const realOnly = realFootageFirstEnabled();
@@ -11457,7 +11484,7 @@ async function fetchSceneVisuals(
   const archiveOnly = curatedArchiveOnlyVisuals();
 
   console.log(
-    `[Pipeline] Scene ${scene.index}: ${beats.length} zin-beats (~${VIDRUSH_BEAT_SEC}s) — ` +
+    `[Pipeline] Scene ${scene.index}: ${beats.length} zin-beats (~${effectiveBeatSec()}s) — ` +
     `power words: [${beats.map((b) => b.powerWord).join(", ")}]` +
     (archiveOnly ? " [curated archive only]" : "")
   );
@@ -12552,9 +12579,9 @@ async function composeSceneVideo(
           console.warn(
             `[Pipeline] Scene ${scene.index}: capping beat ${i} montage ${d.toFixed(2)}s → ${probed.toFixed(2)}s (avoid frozen frame)`
           );
-          return probed * 0.98;
+          return Math.min(effectiveMaxClipSec(), probed * 0.98);
         }
-        return d;
+        return Math.min(effectiveMaxClipSec(), d);
       })
     );
   }

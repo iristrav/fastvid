@@ -98,15 +98,10 @@ function assertSplitSegmentsValid(
 ): void {
   if (!autoSplitScenes || segments.length !== 1) return;
   if (segments[0].durationSec <= MIN_SPLIT_VIDEO_SEC) return;
-  // Partial fragment (e.g. only clean shot left after text filter) is valid.
   if (segments[0].startSec >= 0.5) return;
 
-  throw new ArchiveUploadError(
-    400,
-    appErrorMessage(
-      APP_ERROR.SERVICE_ERROR,
-      "Automatisch knippen leverde maar 1 clip — geen betrouwbare shot-wisselingen. Probeer opnieuw of schakel automatisch knippen uit."
-    )
+  console.warn(
+    "[ArchiveUpload] Auto-split produced only 1 clip (no reliable shot changes) — saving as single asset"
   );
 }
 
@@ -434,8 +429,9 @@ async function handleArchiveBinaryUpload(req: Request, res: Response) {
   const jobId = String(req.query.jobId ?? "").trim() || undefined;
   const filename = String(req.query.filename ?? "upload").slice(0, 256);
 
-  req.setTimeout(archiveUploadRequestTimeoutMs());
-  res.setTimeout(archiveUploadRequestTimeoutMs());
+  const uploadTimeoutMs = Math.round(archiveUploadRequestTimeoutMs());
+  req.setTimeout(uploadTimeoutMs);
+  res.setTimeout(uploadTimeoutMs);
 
   if (jobId) {
     initArchiveUploadJob(jobId, filename);
