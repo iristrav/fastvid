@@ -21,7 +21,7 @@ import {
   FileText, Video, LogOut, User, ChevronRight, RefreshCw,
   Copy, Download, Eye, LayoutDashboard, Settings, CreditCard, Volume2,
   Trash2, Pencil, Check, X as XIcon, Mic, Upload,
-  AlertCircle, ChevronDown, Edit2,
+  AlertCircle, ChevronDown, Edit2, Radio,
 } from "lucide-react";
 import { DashboardNicheRequests } from "@/components/niche/DashboardNicheRequests";
 import {
@@ -782,9 +782,21 @@ export default function Dashboard() {
     onError: (err) => toast.error("Retry failed", { description: toastErrorMessage(err) }),
   });
 
-  const { data: videos, isLoading: videosLoading, refetch } = trpc.video.list.useQuery(undefined, { enabled: isAuthenticated, refetchInterval: 5000 });
   const { data: nicheAccess, isLoading: nicheAccessLoading } = trpc.nicheRequest.accessStatus.useQuery(undefined, {
     enabled: isAuthenticated && user?.role !== "admin",
+  });
+  const userSub = (user as { subscriptionStatus?: string } | null)?.subscriptionStatus;
+  const hasActiveSubscription = userSub === "active" || user?.role === "admin";
+  const canUsePlatform = user?.role === "admin" || Boolean(nicheAccess?.canUsePlatform);
+  const needsOnboarding =
+    user?.role !== "admin" &&
+    nicheAccess &&
+    (!nicheAccess.canUsePlatform || !nicheAccess.hasOnboardingRequest);
+  const showVideoStudio = canUsePlatform && hasActiveSubscription;
+
+  const { data: videos, isLoading: videosLoading, refetch } = trpc.video.list.useQuery(undefined, {
+    enabled: isAuthenticated && showVideoStudio,
+    refetchInterval: showVideoStudio ? 5000 : false,
   });
   const checkoutMutation = trpc.billing.createCheckout.useMutation({
     onSuccess: (data) => {
@@ -810,27 +822,20 @@ export default function Dashboard() {
     },
   });
   
-  const userSub = (user as { subscriptionStatus?: string } | null)?.subscriptionStatus;
-  const hasActiveSubscription = userSub === "active" || user?.role === "admin";
-  const needsOnboarding =
-    user?.role !== "admin" &&
-    nicheAccess &&
-    (!nicheAccess.canUsePlatform || !nicheAccess.hasOnboardingRequest);
-
-  // ─── Onboarding gate ──────────────────────────────────────────────────────
-  useEffect(() => {
-    if (!loading && !nicheAccessLoading && isAuthenticated && needsOnboarding) {
-      navigate("/niche-aanvraag");
-    }
-  }, [loading, nicheAccessLoading, isAuthenticated, needsOnboarding, navigate]);
-
   // ─── Subscription gate ────────────────────────────────────────────────────
-  // Redirect non-admin users without an active subscription to /subscribe
   useEffect(() => {
     if (!loading && isAuthenticated && user && !hasActiveSubscription && !needsOnboarding) {
       navigate("/subscribe");
     }
   }, [loading, isAuthenticated, user, hasActiveSubscription, needsOnboarding, navigate]);
+
+  useEffect(() => {
+    if (window.location.hash === "#niche-requests") {
+      window.setTimeout(() => {
+        document.getElementById("niche-requests")?.scrollIntoView({ behavior: "smooth" });
+      }, 300);
+    }
+  }, [loading, nicheAccessLoading]);
 
   const handleGenerate = () => {
     if (!prompt.trim() || prompt.length < 10) {
@@ -863,10 +868,6 @@ export default function Dashboard() {
     );
   }
 
-  if (needsOnboarding) {
-    return null;
-  }
-
   return (
     <div className="min-h-screen bg-background text-foreground">
       {/* ── Sidebar ── */}
@@ -886,6 +887,16 @@ export default function Dashboard() {
             <LayoutDashboard className="w-4 h-4 text-purple-400" />
             Dashboard
           </button>
+          {user?.role !== "admin" && (
+            <button
+              type="button"
+              onClick={() => document.getElementById("niche-requests")?.scrollIntoView({ behavior: "smooth" })}
+              className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/5 text-sm transition-colors"
+            >
+              <Radio className="w-4 h-4" />
+              Niche-aanvraag
+            </button>
+          )}
           <button onClick={() => navigate("/")} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/5 text-sm transition-colors">
             <Video className="w-4 h-4" />
             Landing Page
@@ -940,9 +951,23 @@ export default function Dashboard() {
             <h1 className="text-2xl font-black text-white" style={{ fontFamily: 'Outfit, sans-serif' }}>
               Welcome back, <span className="gradient-text">{user?.name?.split(" ")[0] ?? "Creator"}</span>
             </h1>
-            <p className="text-slate-400 text-sm mt-1">Generate your next viral YouTube video</p>
+            <p className="text-slate-400 text-sm mt-1">
+              {needsOnboarding
+                ? "Dien je niche-aanvraag in om te starten"
+                : "Generate your next viral YouTube video"}
+            </p>
           </div>
 
+          <DashboardNicheRequests />
+
+          {!showVideoStudio && needsOnboarding && (
+            <p className="text-sm text-slate-500 text-center py-4">
+              Na goedkeuring van je niche kun je hier video&apos;s genereren.
+            </p>
+          )}
+
+          {showVideoStudio && (
+          <>
           {/* Subscription warning + Stripe checkout */}
           {!hasActiveSubscription && (
             <div className="glass-card border border-yellow-500/30 bg-yellow-500/5 rounded-xl p-4 flex flex-col sm:flex-row items-start sm:items-center gap-4">
@@ -1068,8 +1093,6 @@ export default function Dashboard() {
             </button>
           </div>
 
-          <DashboardNicheRequests />
-
           {/* ── Stats Row ── */}
           <div className="grid grid-cols-4 gap-4">
             {[
@@ -1135,6 +1158,8 @@ export default function Dashboard() {
               </div>
             )}
           </div>
+          </>
+          )}
         </div>
       </div>
 

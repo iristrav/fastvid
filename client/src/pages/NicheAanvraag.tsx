@@ -1,42 +1,35 @@
 /**
- * Publieke niche-aanvraag — contactformulier (e-mail, niche, titelstructuur, onderwerpen).
+ * Publieke niche-aanvraag — doorverwijst ingelogde gebruikers naar het dashboard.
  */
+import { useEffect } from "react";
 import { useLocation } from "wouter";
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { toastErrorMessage } from "@/const";
 import { toast } from "sonner";
 import { Loader2, Play, ArrowLeft } from "lucide-react";
-import {
-  NicheRequestApprovedCard,
-  NicheRequestForm,
-  NicheRequestPendingCard,
-} from "@/components/niche/NicheRequestForm";
+import { NicheRequestForm } from "@/components/niche/NicheRequestForm";
 import { ONBOARDING_PENDING_MESSAGE } from "@shared/nicheRequest";
 
 export default function NicheAanvraag() {
   const [, navigate] = useLocation();
   const { user, loading: authLoading } = useAuth();
-  const utils = trpc.useUtils();
 
-  const { data: access, isLoading: accessLoading } = trpc.nicheRequest.accessStatus.useQuery(undefined, {
-    enabled: Boolean(user),
-  });
+  useEffect(() => {
+    if (!authLoading && user) {
+      navigate("/dashboard#niche-requests");
+    }
+  }, [authLoading, user, navigate]);
 
   const submitRequest = trpc.nicheRequest.submitRequest.useMutation({
     onSuccess: async () => {
-      if (user) await utils.nicheRequest.accessStatus.invalidate();
       toast.success("Aanvraag verstuurd", { description: ONBOARDING_PENDING_MESSAGE });
+      navigate("/login");
     },
     onError: (e) => toast.error("Indienen mislukt", { description: toastErrorMessage(e) }),
   });
 
-  const isLoading = authLoading || (Boolean(user) && accessLoading);
-  const onboarding = access?.onboarding;
-  const status = onboarding?.status;
-  const justSubmitted = submitRequest.isSuccess;
-
-  if (isLoading) {
+  if (authLoading || user) {
     return (
       <PageShell>
         <div className="flex justify-center py-16">
@@ -46,71 +39,31 @@ export default function NicheAanvraag() {
     );
   }
 
-  if (user && status === "pending" && !justSubmitted) {
-    return (
-      <PageShell>
-        <NicheRequestPendingCard email={onboarding?.contactEmail ?? user.email ?? undefined} />
-      </PageShell>
-    );
-  }
-
-  if (user && (status === "approved" || status === "ready") && user.role !== "admin") {
-    return (
-      <PageShell>
-        <NicheRequestApprovedCard onContinue={() => navigate("/subscribe")} />
-      </PageShell>
-    );
-  }
-
-  if (user && status === "in_progress" && user.role !== "admin") {
-    return (
-      <PageShell>
-        <NicheRequestApprovedCard onContinue={() => navigate("/subscribe")} />
-      </PageShell>
-    );
-  }
-
   return (
     <PageShell>
-      {justSubmitted ? (
-        <NicheRequestPendingCard email={user?.email} />
-      ) : (
-        <div className="glass-card border border-white/10 rounded-2xl p-6 md:p-8 space-y-6">
-          <div className="space-y-2">
-            <h1 className="text-2xl font-black text-white" style={{ fontFamily: "Outfit, sans-serif" }}>
-              Niche-aanvraag
-            </h1>
-            <p className="text-sm text-slate-400 leading-relaxed">
-              Vul het formulier in. Binnen <strong className="text-white">2 werkdagen</strong> hoor je van ons.
-            </p>
-          </div>
-
-          {user && status === "rejected" && onboarding?.adminNotes && (
-            <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-200">
-              {onboarding.adminNotes}
-            </div>
-          )}
-
-          <NicheRequestForm
-            initialEmail={onboarding?.contactEmail ?? user?.email ?? ""}
-            initialNiche={onboarding?.nicheTitle ?? ""}
-            initialTitleStructure={onboarding?.titleStructure ?? ""}
-            initialTopics={onboarding?.topics ?? ""}
-            submitting={submitRequest.isPending}
-            submitLabel={status === "rejected" ? "Opnieuw versturen" : "Versturen"}
-            onSubmit={(values) => submitRequest.mutate({ ...values, requestType: "onboarding" })}
-          />
+      <div className="glass-card border border-white/10 rounded-2xl p-6 md:p-8 space-y-6">
+        <div className="space-y-2">
+          <h1 className="text-2xl font-black text-white" style={{ fontFamily: "Outfit, sans-serif" }}>
+            Niche-aanvraag
+          </h1>
+          <p className="text-sm text-slate-400 leading-relaxed">
+            Vul het formulier in. Na registratie dien je aanvragen in via je dashboard.
+          </p>
         </div>
-      )}
 
-      {!user && !justSubmitted && (
-        <p className="text-center text-xs text-slate-500">
-          Al een account?{" "}
-          <button type="button" onClick={() => navigate("/login")} className="text-purple-400 hover:text-purple-300">
-            Inloggen
-          </button>
-        </p>
-      )}
+        <NicheRequestForm
+          submitting={submitRequest.isPending}
+          submitLabel="Versturen"
+          onSubmit={(values) => submitRequest.mutate({ ...values, requestType: "onboarding" })}
+        />
+      </div>
+
+      <p className="text-center text-xs text-slate-500">
+        Al een account?{" "}
+        <button type="button" onClick={() => navigate("/login")} className="text-purple-400 hover:text-purple-300">
+          Inloggen
+        </button>
+      </p>
     </PageShell>
   );
 }
