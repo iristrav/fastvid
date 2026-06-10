@@ -40,6 +40,10 @@ export class ArchiveSplitError extends Error {
 export const MIN_SPLIT_VIDEO_SEC = 4;
 const MIN_SCENE_SEC = 0.12;
 const DEFAULT_MAX_CLIPS = 300;
+/** Minimum seconds between distinct shot cuts (filters grain/flicker false positives). */
+const DEFAULT_MIN_SHOT_CUT_GAP_SEC = 1.15;
+/** Minimum duration per output clip — shorter ranges merge with a neighbor. */
+const DEFAULT_MIN_OUTPUT_CLIP_SEC = 2.5;
 /** Only merge adjacent clips when capping count if one side is a sub-second flash/glitch. */
 const DEFAULT_FLASH_MERGE_MAX_SEC = 0.45;
 const INTERNAL_RESCAN_MIN_SEC = 1.4;
@@ -77,14 +81,23 @@ export function scdetThreshold(): number {
   return DEFAULT_SCDET_THRESHOLD;
 }
 
-/** @deprecated kept for env compat — no longer merges short shots together */
+/** Minimum duration per saved clip (merges shorter adjacent ranges). */
 export function minClipSec(): number {
   const raw = process.env.ARCHIVE_MIN_CLIP_SEC?.trim();
   if (raw) {
     const n = parseFloat(raw);
-    if (!isNaN(n) && n >= 0.1 && n <= 5) return n;
+    if (!isNaN(n) && n >= 0.5 && n <= 15) return n;
   }
-  return MIN_SCENE_SEC;
+  return DEFAULT_MIN_OUTPUT_CLIP_SEC;
+}
+
+export function minShotCutGapSec(): number {
+  const raw = process.env.ARCHIVE_MIN_SHOT_CUT_GAP?.trim();
+  if (raw) {
+    const n = parseFloat(raw);
+    if (!isNaN(n) && n >= 0.3 && n <= 5) return n;
+  }
+  return DEFAULT_MIN_SHOT_CUT_GAP_SEC;
 }
 
 export function cutMergeGapSec(): number {
@@ -219,7 +232,7 @@ export function mergeNearbyCuts(cuts: number[], minGapSec: number): number[] {
 
 /** Combine cut lists from scdet + scene detectors. */
 export function combineShotCutTimes(cutLists: number[][]): number[] {
-  return mergeNearbyCuts(cutLists.flat(), cutMergeGapSec());
+  return mergeNearbyCuts(cutLists.flat(), minShotCutGapSec());
 }
 
 /** Parse FFmpeg showinfo pts_time lines. */
@@ -267,6 +280,45 @@ export function buildClipRanges(
   }
 
   return capClipRanges(ranges, maxClips);
+}
+
+/** Merge clips shorter than minSec with an adjacent range (reduces 1s grain/flicker fragments). */
+export function enforceMinClipDuration(
+  ranges: Array<{ start: number; end: number }>,
+  minSec = minClipSec()
+): Array<{ start: number; end: number }> {
+  if (ranges.length <= 1 || minSec <= MIN_SCENE_SEC) return ranges;
+
+  let result = ranges.map((r) => ({ ...r }));
+  let changed = true;
+  while (changed && result.length > 1) {
+    changed = false;
+    for (let i = 0; i < result.length; i++) {
+      const dur = result[i].end - result[i].start;
+      if (dur >= minSec) continue;
+
+      if (i === 0) {
+        result[0].end = result[1].end;
+        result.splice(1, 1);
+      } else if (i === result.length - 1) {
+        result[i - 1].end = result[i].end;
+        result.splice(i, 1);
+      } else {
+        const prevDur = result[i - 1].end - result[i - 1].start;
+        const nextDur = result[i + 1].end - result[i + 1].start;
+        if (prevDur <= nextDur) {
+          result[i - 1].end = result[i].end;
+          result.splice(i, 1);
+        } else {
+          result[i].end = result[i + 1].end;
+          result.splice(i + 1, 1);
+        }
+      }
+      changed = true;
+      break;
+    }
+  }
+  return result;
 }
 
 /** Cap clip count without merging two full shots into one clip. */
@@ -703,6 +755,7 @@ export async function splitVideoBySceneChanges(
     }
 
     let ranges = buildClipRanges(cuts, totalDur);
+    ranges = enforceMinClipDuration(ranges);
     if (ranges.length > 1 && hasBudget()) {
       throwIfCancelled();
       report({
@@ -711,6 +764,7 @@ export async function splitVideoBySceneChanges(
         percent: 42,
       });
       ranges = await rescanRangesForInteriorCuts(analysisPath, ranges, deadline, shouldContinue);
+      ranges = enforceMinClipDuration(ranges);
     }
     console.log(
       `[ArchiveSplit] ${cuts.length} shot cuts → ${ranges.length} clip(s) (${totalDur.toFixed(1)}s, ` +

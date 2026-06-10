@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { dHashFromGray8x8, hammingDistance, isNearDuplicateHash } from "./archiveClipDedup";
+import {
+  dHashFromGray8x8,
+  hammingDistance,
+  isNearDuplicateFingerprint,
+  isNearDuplicateHash,
+  parseArchiveFragmentNote,
+} from "./archiveClipDedup";
 
 describe("archiveClipDedup", () => {
   it("dHash differs for contrasting horizontal gradient vs inverted", () => {
@@ -23,5 +29,20 @@ describe("archiveClipDedup", () => {
 
   it("isNearDuplicateHash rejects very different hashes", () => {
     expect(isNearDuplicateHash(0n, 0xffffffffffffffn, 6)).toBe(false);
+  });
+
+  it("isNearDuplicateFingerprint matches when most samples align", () => {
+    const a = [1n, 2n, 3n];
+    const b = [1n, 99n, 3n];
+    expect(isNearDuplicateFingerprint(a, b, 0)).toBe(true);
+  });
+
+  it("parseArchiveFragmentNote reads source and time range", () => {
+    const parsed = parseArchiveFragmentNote("Fragment uit videoplayback (1).mp4 (16:54–16:55)");
+    expect(parsed).toEqual({
+      sourceKey: "videoplayback (1).mp4",
+      startSec: 16 * 60 + 54,
+      endSec: 16 * 60 + 55,
+    });
   });
 });

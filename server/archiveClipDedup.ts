@@ -46,9 +46,9 @@ export function defaultMaxHamming(): number {
   const raw = process.env.ARCHIVE_DEDUP_HAMMING?.trim();
   if (raw) {
     const n = parseInt(raw, 10);
-    if (!isNaN(n) && n >= 0 && n <= 20) return n;
+    if (!isNaN(n) && n >= 0 && n <= 24) return n;
   }
-  return 6;
+  return 10;
 }
 
 async function extractGray8x8FromFile(
@@ -85,25 +85,65 @@ async function extractGray8x8FromFile(
   }
 }
 
+function seekPointsForDuration(durationSec?: number | null): number[] {
+  if (durationSec != null && durationSec > 0.8) {
+    if (durationSec <= 1.5) return [durationSec * 0.35, durationSec * 0.65];
+    return [durationSec * 0.25, durationSec * 0.5, durationSec * 0.75];
+  }
+  return [0.35];
+}
+
 export async function fingerprintMediaFile(
   filePath: string,
-  opts?: { seekSec?: number; mimeType?: string }
+  opts?: { seekSec?: number; mimeType?: string; durationSec?: number | null }
 ): Promise<bigint | null> {
+  const hashes = await fingerprintMediaFileMulti(filePath, opts);
+  return hashes?.[0] ?? null;
+}
+
+export async function fingerprintMediaFileMulti(
+  filePath: string,
+  opts?: { seekSec?: number; mimeType?: string; durationSec?: number | null }
+): Promise<bigint[] | null> {
   const mime = opts?.mimeType ?? "";
   if (mime.startsWith("image/") || /\.(jpe?g|png|webp|gif)$/i.test(filePath)) {
     const gray = await extractGray8x8FromFile(filePath);
-    return gray ? dHashFromGray8x8(gray) : null;
+    return gray ? [dHashFromGray8x8(gray)] : null;
   }
-  const seek = opts?.seekSec ?? 0.35;
-  const gray = await extractGray8x8FromFile(filePath, seek);
-  return gray ? dHashFromGray8x8(gray) : null;
+
+  const seeks =
+    opts?.seekSec != null
+      ? [opts.seekSec]
+      : seekPointsForDuration(opts?.durationSec);
+  const hashes: bigint[] = [];
+  for (const seek of seeks) {
+    const gray = await extractGray8x8FromFile(filePath, seek);
+    if (gray) hashes.push(dHashFromGray8x8(gray));
+  }
+  return hashes.length > 0 ? hashes : null;
+}
+
+export function isNearDuplicateFingerprint(
+  a: bigint[],
+  b: bigint[],
+  maxDistance = defaultMaxHamming()
+): boolean {
+  if (a.length === 0 || b.length === 0) return false;
+  if (a.length === 1 && b.length === 1) return isNearDuplicateHash(a[0], b[0], maxDistance);
+
+  let matches = 0;
+  for (const ha of a) {
+    if (b.some((hb) => isNearDuplicateHash(ha, hb, maxDistance))) matches += 1;
+  }
+  const needed = Math.max(1, Math.ceil((Math.min(a.length, b.length) * 2) / 3));
+  return matches >= needed;
 }
 
 export async function fingerprintVideoBuffer(
   buffer: Buffer,
   mimeType: string,
   durationSec?: number
-): Promise<bigint | null> {
+): Promise<bigint[] | null> {
   if (buffer.length < 800) return null;
   const ext = mimeType.includes("webm") ? "webm" : mimeType.includes("mov") ? "mov" : "mp4";
   const tempPath = path.join(
@@ -112,8 +152,7 @@ export async function fingerprintVideoBuffer(
   );
   try {
     fs.writeFileSync(tempPath, buffer);
-    const seek = durationSec && durationSec > 1 ? durationSec * 0.35 : 0.25;
-    return await fingerprintMediaFile(tempPath, { seekSec: seek, mimeType });
+    return await fingerprintMediaFileMulti(tempPath, { durationSec, mimeType });
   } finally {
     try { fs.unlinkSync(tempPath); } catch { /* ignore */ }
   }
@@ -123,13 +162,46 @@ export function exactBufferKey(buffer: Buffer): string {
   return createHash("sha256").update(buffer).digest("hex").slice(0, 24);
 }
 
+export type ParsedArchiveFragment = {
+  sourceKey: string;
+  startSec: number;
+  endSec: number;
+};
+
+/** Parse "Fragment uit file.mp4 (16:54–16:55)" from sourceNote. */
+export function parseArchiveFragmentNote(note: string | null | undefined): ParsedArchiveFragment | null {
+  if (!note?.trim()) return null;
+  const m = note.trim().match(
+    /^Fragment uit (.+?) \((\d+):(\d{2})[–-](\d+):(\d{2})\)$/
+  );
+  if (!m) return null;
+  const startSec = parseInt(m[2], 10) * 60 + parseInt(m[3], 10);
+  const endSec = parseInt(m[4], 10) * 60 + parseInt(m[5], 10);
+  if (endSec <= startSec) return null;
+  return { sourceKey: m[1].trim().toLowerCase(), startSec, endSec };
+}
+
+function isAdjacentSameSourceFragment(
+  kept: ParsedArchiveFragment,
+  candidate: ParsedArchiveFragment,
+  maxGapSec = 2.5
+): boolean {
+  if (kept.sourceKey !== candidate.sourceKey) return false;
+  const gap = Math.min(
+    Math.abs(candidate.startSec - kept.endSec),
+    Math.abs(kept.startSec - candidate.endSec),
+    Math.abs(candidate.startSec - kept.startSec)
+  );
+  return gap <= maxGapSec;
+}
+
 /** Drop visually near-duplicate segments from a split batch (keeps first occurrence). */
 export async function dedupeVideoSegmentsVisually(
   segments: VideoClipSegment[]
 ): Promise<{ kept: VideoClipSegment[]; skipped: number }> {
   const maxDist = defaultMaxHamming();
   const kept: VideoClipSegment[] = [];
-  const hashes: bigint[] = [];
+  const fingerprints: bigint[][] = [];
   const exactKeys = new Set<string>();
   let skipped = 0;
 
@@ -140,9 +212,9 @@ export async function dedupeVideoSegmentsVisually(
       continue;
     }
 
-    const hash = await fingerprintVideoBuffer(seg.buffer, "video/mp4", seg.durationSec);
-    if (hash != null) {
-      const dup = hashes.some((h) => isNearDuplicateHash(h, hash, maxDist));
+    const fp = await fingerprintVideoBuffer(seg.buffer, "video/mp4", seg.durationSec);
+    if (fp != null) {
+      const dup = fingerprints.some((existing) => isNearDuplicateFingerprint(existing, fp, maxDist));
       if (dup) {
         skipped += 1;
         console.log(
@@ -150,7 +222,7 @@ export async function dedupeVideoSegmentsVisually(
         );
         continue;
       }
-      hashes.push(hash);
+      fingerprints.push(fp);
     }
 
     exactKeys.add(exact);
@@ -191,6 +263,8 @@ function resolveArchiveAssetPath(asset: {
 export async function dedupeArchiveVisualDuplicates(
   assets: Array<{
     id: number;
+    title?: string | null;
+    sourceNote?: string | null;
     storageUrl: string;
     storageKey: string | null;
     mimeType: string | null;
@@ -200,7 +274,7 @@ export async function dedupeArchiveVisualDuplicates(
 ): Promise<{ deleteIds: number[]; scanned: number }> {
   const maxDist = defaultMaxHamming();
   const sorted = [...assets].sort((a, b) => a.id - b.id);
-  const keptHashes: bigint[] = [];
+  const keptEntries: Array<{ fp: bigint[]; fragment: ParsedArchiveFragment | null }> = [];
   const keptExact = new Set<string>();
   const deleteIds: number[] = [];
   let scanned = 0;
@@ -209,6 +283,8 @@ export async function dedupeArchiveVisualDuplicates(
     scanned += 1;
     const local = resolveArchiveAssetPath(asset);
     if (!local) continue;
+
+    const fragment = parseArchiveFragmentNote(asset.sourceNote);
 
     try {
       const stat = fs.statSync(local);
@@ -229,18 +305,32 @@ export async function dedupeArchiveVisualDuplicates(
       const mime =
         asset.mimeType ??
         (asset.mediaType === "image" ? "image/jpeg" : "video/mp4");
-      const seek =
-        asset.mediaType === "video" && asset.durationSec && asset.durationSec > 1
-          ? asset.durationSec * 0.35
-          : undefined;
-      const hash = await fingerprintMediaFile(local, { seekSec: seek, mimeType: mime });
-      if (hash != null && keptHashes.some((h) => isNearDuplicateHash(h, hash, maxDist))) {
+      const fp = await fingerprintMediaFileMulti(local, {
+        durationSec: asset.durationSec,
+        mimeType: mime,
+      });
+
+      const visualDup =
+        fp != null &&
+        keptEntries.some((entry) => isNearDuplicateFingerprint(entry.fp, fp, maxDist));
+
+      const adjacentDup =
+        fragment != null &&
+        fp != null &&
+        keptEntries.some(
+          (entry) =>
+            entry.fragment != null &&
+            isAdjacentSameSourceFragment(entry.fragment, fragment) &&
+            isNearDuplicateFingerprint(entry.fp, fp, maxDist + 2)
+        );
+
+      if (visualDup || adjacentDup) {
         deleteIds.push(asset.id);
         continue;
       }
 
       keptExact.add(exact);
-      if (hash != null) keptHashes.push(hash);
+      if (fp != null) keptEntries.push({ fp, fragment });
     } catch {
       /* skip unreadable */
     }

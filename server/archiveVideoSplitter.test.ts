@@ -3,6 +3,7 @@ import {
   buildClipRanges,
   capClipRanges,
   combineShotCutTimes,
+  enforceMinClipDuration,
   mapPool,
   maxArchiveClips,
   maxArchiveUploadBytes,
@@ -46,6 +47,22 @@ describe("archiveVideoSplitter", () => {
   it("combineShotCutTimes merges scdet + scene detector output", () => {
     const combined = combineShotCutTimes([[1.0, 5.0], [1.05, 5.1, 10.0]]);
     expect(combined).toEqual([1.0, 5.0, 10.0]);
+  });
+
+  it("combineShotCutTimes ignores cuts closer than min shot gap", () => {
+    expect(combineShotCutTimes([[1, 2, 3, 4, 5, 8]])).toEqual([1, 3, 5, 8]);
+  });
+
+  it("enforceMinClipDuration merges sub-min clips with neighbors", () => {
+    const merged = enforceMinClipDuration(
+      [
+        { start: 1014, end: 1015 },
+        { start: 1015, end: 1016 },
+        { start: 1016, end: 1020 },
+      ],
+      2.5
+    );
+    expect(merged).toEqual([{ start: 1014, end: 1020 }]);
   });
 
   it("parseScdetTimesFromFfmpeg reads lavfi.scd.time", () => {
