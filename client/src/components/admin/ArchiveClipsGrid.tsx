@@ -310,6 +310,16 @@ export function ArchiveClipsGrid({
     onError: (e) => toast.error("Verwijderen mislukt", { description: toastErrorMessage(e) }),
   });
 
+  const deleteAllAssets = trpc.mediaArchive.deleteAllAssets.useMutation({
+    onSuccess: (data) => {
+      utils.mediaArchive.listAssets.invalidate();
+      utils.mediaArchive.listArchives.invalidate();
+      setSelectedIds(new Set());
+      toast.success(`${data.deleted} clip(s) verwijderd`);
+    },
+    onError: (e) => toast.error("Verwijderen mislukt", { description: toastErrorMessage(e) }),
+  });
+
   useEffect(() => {
     setSelectedIds(new Set());
   }, [archiveId, search]);
@@ -337,10 +347,17 @@ export function ArchiveClipsGrid({
 
   function deleteSelected() {
     const ids = [...selectedIds].filter((id) => visibleIds.has(id));
-    if (ids.length === 0) return;
+    if (ids.length === 0 || archiveId == null) return;
     if (!confirm(`${ids.length} clip(s) definitief verwijderen?`)) return;
+
+    if (allSelected) {
+      deleteAllAssets.mutate({ archiveId, search: search.trim() || undefined });
+      return;
+    }
     deleteAssets.mutate({ ids });
   }
+
+  const deletePending = deleteAssets.isPending || deleteAllAssets.isPending;
 
   if (archiveId == null) {
     return (
@@ -377,10 +394,10 @@ export function ArchiveClipsGrid({
           <button
             type="button"
             onClick={deleteSelected}
-            disabled={deleteAssets.isPending}
+            disabled={deletePending}
             className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg bg-red-500/15 text-red-400 border border-red-500/25 hover:bg-red-500/25 disabled:opacity-50"
           >
-            {deleteAssets.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+            {deletePending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
             Verwijder ({selectedCount})
           </button>
         )}

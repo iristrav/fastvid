@@ -798,8 +798,26 @@ export async function deleteMediaArchiveAsset(id: number) {
 export async function deleteMediaArchiveAssets(ids: number[]) {
   const db = await getDb();
   if (!db || ids.length === 0) return 0;
-  await db.delete(mediaArchiveAssets).where(inArray(mediaArchiveAssets.id, ids));
-  return ids.length;
+  const uniqueIds = [...new Set(ids)];
+  const chunkSize = 500;
+  for (let i = 0; i < uniqueIds.length; i += chunkSize) {
+    const chunk = uniqueIds.slice(i, i + chunkSize);
+    await db.delete(mediaArchiveAssets).where(inArray(mediaArchiveAssets.id, chunk));
+  }
+  return uniqueIds.length;
+}
+
+/** Delete all assets in an archive (optionally filtered by the same search as listAssets). */
+export async function deleteAllMediaArchiveAssets(
+  archiveId: number,
+  opts?: { search?: string }
+): Promise<number> {
+  let assets = await getMediaArchiveAssets(archiveId);
+  if (opts?.search?.trim()) {
+    assets = filterMediaArchiveAssets(assets, { search: opts.search });
+  }
+  const ids = assets.map((a) => a.id);
+  return deleteMediaArchiveAssets(ids);
 }
 
 export async function countMediaArchiveAssets(archiveId: number) {

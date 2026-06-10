@@ -35,7 +35,7 @@ import {
   createUser, updateUserLastSignedIn,
   getInviteCodeByCode, createInviteCode, getAllInviteCodes, markInviteCodeUsed, deleteInviteCode, deactivateInviteCode,
   getAllMediaArchives, getMediaArchiveById, createMediaArchiveUnique, updateMediaArchive, deleteMediaArchive,
-  getMediaArchiveAssets, getMediaArchiveAssetById, createMediaArchiveAsset, updateMediaArchiveAsset, deleteMediaArchiveAsset, deleteMediaArchiveAssets,
+  getMediaArchiveAssets, getMediaArchiveAssetById, createMediaArchiveAsset, updateMediaArchiveAsset, deleteMediaArchiveAsset, deleteMediaArchiveAssets, deleteAllMediaArchiveAssets,
   countMediaArchiveAssets, filterMediaArchiveAssets, normalizeMediaTags,
 } from "./db";
 import { storageGetSignedUrl } from "./storage";
@@ -1394,7 +1394,7 @@ export const appRouter = router({
     }),
 
     deleteAssets: adminProcedure.input(z.object({
-      ids: z.array(z.number().int()).min(1).max(200),
+      ids: z.array(z.number().int()).min(1),
     })).mutation(async ({ input }) => {
       const uniqueIds = [...new Set(input.ids)];
       for (const id of uniqueIds) {
@@ -1403,6 +1403,18 @@ export const appRouter = router({
       }
       const deleted = await deleteMediaArchiveAssets(uniqueIds);
       return { success: true, deleted: deleted ?? uniqueIds.length };
+    }),
+
+    deleteAllAssets: adminProcedure.input(z.object({
+      archiveId: z.number().int(),
+      search: z.string().max(200).optional(),
+    })).mutation(async ({ input }) => {
+      const archive = await getMediaArchiveById(input.archiveId);
+      if (!archive) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Archive not found");
+      const deleted = await deleteAllMediaArchiveAssets(input.archiveId, {
+        search: input.search?.trim() || undefined,
+      });
+      return { success: true, deleted };
     }),
   }),
 
