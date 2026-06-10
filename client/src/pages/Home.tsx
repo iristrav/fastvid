@@ -282,6 +282,14 @@ export default function Home() {
       a: "Absolutely. You can upload your own voice for cloning, set your logo and brand colors, and attach intro/outro templates to your channel.",
     },
     {
+      q: "How do I get access after signing up?",
+      a: "After your invite code, you submit a niche and preferred video format. We review within 2 business days. Once approved, you can activate your subscription and start generating within 24 hours. Need a second channel? Request another niche from your dashboard — we build a dedicated media archive for it.",
+    },
+    {
+      q: "What if there is no footage in the archive for my topic?",
+      a: "If your niche archive is still being built, generation may take longer. Fastvid will tell you when footage for your topic is limited and continues expanding the archive in the background.",
+    },
+    {
       q: "What do I get in the Fastvid Discord?",
       a: "Members receive a curated, high-potential YouTube niche pick every week — plus updates, tips, and support from other documentary creators. Join via the Community section on this page.",
     },
@@ -489,6 +497,13 @@ export default function Home() {
                 <span className="flex items-center gap-1.5"><Check className="w-3.5 h-3.5 text-cyan-400" /> Script-matched B-roll</span>
                 <span className="flex items-center gap-1.5"><Check className="w-3.5 h-3.5 text-cyan-400" /> Cloud generation</span>
                 <span className="flex items-center gap-1.5"><Check className="w-3.5 h-3.5 text-cyan-400" /> Built-in editor</span>
+              </div>
+
+              <div className="animate-fade-up delay-450 rounded-xl border border-purple-500/25 bg-purple-500/5 px-4 py-3 text-xs text-slate-300 leading-relaxed">
+                <span className="text-purple-300 font-semibold">Getting started:</span>{" "}
+                Enter your invite code, submit your niche and video format, and hear back within{" "}
+                <strong className="text-white">2 business days</strong>. After approval you can start your first video within{" "}
+                <strong className="text-white">24 hours</strong>.
               </div>
             </div>
 

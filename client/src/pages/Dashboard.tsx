@@ -24,6 +24,8 @@ import {
   AlertCircle, ChevronDown, Edit2, Archive,
 } from "lucide-react";
 import { DashboardArchiveClips } from "@/components/admin/DashboardArchiveClips";
+import { DashboardNicheRequests } from "@/components/niche/DashboardNicheRequests";
+import { ArchiveBuildingNotice } from "@/components/niche/NicheRequestForm";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from "@/components/ui/dialog";
@@ -783,6 +785,14 @@ export default function Dashboard() {
   });
 
   const { data: videos, isLoading: videosLoading, refetch } = trpc.video.list.useQuery(undefined, { enabled: isAuthenticated, refetchInterval: 5000 });
+  const { data: nicheAccess, isLoading: nicheAccessLoading } = trpc.nicheRequest.accessStatus.useQuery(undefined, {
+    enabled: isAuthenticated && user?.role !== "admin",
+  });
+  const coveragePrompt = prompt.trim();
+  const { data: archiveCoverage } = trpc.nicheRequest.checkArchiveCoverage.useQuery(
+    { prompt: coveragePrompt },
+    { enabled: isAuthenticated && coveragePrompt.length >= 10, staleTime: 30_000 }
+  );
   const checkoutMutation = trpc.billing.createCheckout.useMutation({
     onSuccess: (data) => {
       if (data.url) {
@@ -809,13 +819,25 @@ export default function Dashboard() {
   
   const userSub = (user as { subscriptionStatus?: string } | null)?.subscriptionStatus;
   const hasActiveSubscription = userSub === "active" || user?.role === "admin";
+  const needsOnboarding =
+    user?.role !== "admin" &&
+    nicheAccess &&
+    (!nicheAccess.canUsePlatform || !nicheAccess.hasOnboardingRequest);
+
+  // ─── Onboarding gate ──────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!loading && !nicheAccessLoading && isAuthenticated && needsOnboarding) {
+      navigate("/onboarding");
+    }
+  }, [loading, nicheAccessLoading, isAuthenticated, needsOnboarding, navigate]);
+
   // ─── Subscription gate ────────────────────────────────────────────────────
   // Redirect non-admin users without an active subscription to /subscribe
   useEffect(() => {
-    if (!loading && isAuthenticated && user && !hasActiveSubscription) {
+    if (!loading && isAuthenticated && user && !hasActiveSubscription && !needsOnboarding) {
       navigate("/subscribe");
     }
-  }, [loading, isAuthenticated, user, hasActiveSubscription, navigate]);
+  }, [loading, isAuthenticated, user, hasActiveSubscription, needsOnboarding, navigate]);
 
   const handleGenerate = () => {
     if (!prompt.trim() || prompt.length < 10) {
@@ -840,6 +862,19 @@ export default function Dashboard() {
   const completedVideos = videos?.filter(v => v.status === "completed") ?? [];
   const failedVideos = videos?.filter(v => v.status === "failed") ?? [];
 
+  if (loading || (user?.role !== "admin" && nicheAccessLoading)) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <Loader2 className="w-8 h-8 animate-spin text-purple-400" />
+      </div>
+    );
+  }
+
+  if (needsOnboarding) {
+    return null;
+  }
+
+  const showArchiveNotice = archiveCoverage && !archiveCoverage.hasCoverage;
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -1016,6 +1051,10 @@ export default function Dashboard() {
               <p className="text-xs text-slate-600 mt-1">{prompt.length}/1000 characters</p>
             </div>
 
+            {showArchiveNotice && (
+              <ArchiveBuildingNotice nicheHint={archiveCoverage?.nicheHint} />
+            )}
+
             {/* How it works note */}
             <div className="flex items-start gap-2.5 px-3 py-2.5 rounded-lg bg-blue-500/5 border border-blue-500/15">
               <span className="text-sm mt-0.5">💡</span>
@@ -1047,6 +1086,8 @@ export default function Dashboard() {
               )}
             </button>
           </div>
+
+          <DashboardNicheRequests />
 
           {/* ── Stats Row ── */}
           <div className="grid grid-cols-4 gap-4">

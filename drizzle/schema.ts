@@ -158,3 +158,26 @@ export const mediaArchiveAssets = mysqlTable("media_archive_assets", {
 
 export type MediaArchiveAsset = typeof mediaArchiveAssets.$inferSelect;
 export type InsertMediaArchiveAsset = typeof mediaArchiveAssets.$inferInsert;
+
+// ─── Niche / channel requests ─────────────────────────────────────────────────
+export const nicheRequests = mysqlTable("niche_requests", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull().references(() => users.id),
+  requestType: mysqlEnum("requestType", ["onboarding", "new_channel"]).default("onboarding").notNull(),
+  nicheTitle: varchar("nicheTitle", { length: 256 }).notNull(),
+  channelName: varchar("channelName", { length: 256 }),
+  videoFormat: varchar("videoFormat", { length: 32 }).notNull(),
+  description: text("description"),
+  status: mysqlEnum("status", ["pending", "approved", "in_progress", "ready", "rejected"]).default("pending").notNull(),
+  adminNotes: text("adminNotes"),
+  linkedArchiveId: int("linkedArchiveId"),
+  reviewedByUserId: int("reviewedByUserId"),
+  reviewedAt: timestamp("reviewedAt"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export type NicheRequest = typeof nicheRequests.$inferSelect;
+export type InsertNicheRequest = typeof nicheRequests.$inferInsert;
+export type NicheRequestStatus = NicheRequest["status"];
+export type NicheRequestType = NicheRequest["requestType"];

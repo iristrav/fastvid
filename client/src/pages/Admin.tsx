@@ -15,9 +15,10 @@ import {
   UserCheck, Crown, Eye, X, Copy, AlertTriangle,
   FileText, Hash, Sparkles, Search, Filter, Download,
   ChevronDown, Mic, Plus, Pencil, Trash2, Volume2, ToggleLeft, ToggleRight,
-  Archive, Upload,
+  Archive, Upload, Radio,
 } from "lucide-react";
 import { MediaArchiveAdmin } from "@/components/admin/MediaArchiveAdmin";
+import { NicheRequestsAdmin } from "@/components/admin/NicheRequestsAdmin";
 
 function formatVideoId(id: number) {
   return `#VID-${String(id).padStart(4, "0")}`;
@@ -699,7 +700,7 @@ export default function Admin() {
     loading: boolean; isAuthenticated: boolean; logout: () => void;
   };
   const [location, navigate] = useLocation();
-  type AdminTab = "overview" | "users" | "videos" | "generate" | "voices" | "invites" | "archive";
+  type AdminTab = "overview" | "users" | "videos" | "generate" | "voices" | "invites" | "archive" | "niches";
   const [activeTab, setActiveTab] = useState<AdminTab>("overview");
 
   useEffect(() => {
@@ -739,6 +740,7 @@ export default function Admin() {
   const navItems = [
     { id: "overview" as const, label: "Overview", icon: LayoutDashboard },
     { id: "archive" as const, label: "Media Archief", icon: Archive },
+    { id: "niches" as const, label: "Niche-aanvragen", icon: Radio },
     { id: "generate" as const, label: "Generate Video", icon: Sparkles },
     { id: "users" as const, label: "Users", icon: Users },
     { id: "videos" as const, label: "All Videos", icon: Video },
@@ -874,6 +876,7 @@ export default function Admin() {
           {activeTab === "videos" && <VideosTable />}
           {activeTab === "voices" && <VoiceLibraryAdmin />}
           {activeTab === "archive" && <MediaArchiveAdmin />}
+          {activeTab === "niches" && <NicheRequestsAdmin />}
           {activeTab === "invites" && <InviteCodesAdmin />}
         </div>
       </div>

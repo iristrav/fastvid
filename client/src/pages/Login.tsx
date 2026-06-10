@@ -42,8 +42,8 @@ export default function Login() {
   const register = trpc.auth.register.useMutation({
     onSuccess: async () => {
       await utils.auth.me.invalidate();
-      toast.success("Account created!", { description: "One more step — choose a subscription to get started." });
-      navigate("/subscribe");
+      toast.success("Account aangemaakt!", { description: "Vul je niche-aanvraag in om verder te gaan." });
+      navigate("/onboarding");
     },
     onError: (e) => toast.error("Registration failed", { description: toastErrorMessage(e) }),
   });
@@ -51,6 +51,14 @@ export default function Login() {
   const loginMutation = trpc.auth.login.useMutation({
     onSuccess: async () => {
       await utils.auth.me.invalidate();
+      const me = await utils.auth.me.fetch();
+      if (me?.role !== "admin") {
+        const access = await utils.nicheRequest.accessStatus.fetch();
+        if (!access.canUsePlatform || !access.hasOnboardingRequest) {
+          navigate("/onboarding");
+          return;
+        }
+      }
       navigate("/dashboard");
     },
     onError: (e) => toast.error("Login failed", { description: toastErrorMessage(e) }),

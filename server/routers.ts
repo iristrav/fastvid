@@ -73,6 +73,17 @@ function isMuskTeslaPromptTopic(prompt: string, title: string): boolean {
 import { storagePut } from "./storage";
 import { FASTVID_PRO_PLAN } from "./products";
 import { processArchiveAssetUpload, ArchiveUploadError } from "./archiveUpload";
+import { assessArchiveCoverageForPrompt } from "./archiveCoverage";
+import {
+  createNicheRequest,
+  getLatestNicheRequest,
+  getNicheRequestById,
+  listAllNicheRequests,
+  listNicheRequestsByUser,
+  nicheRequestAllowsPlatformAccess,
+  updateNicheRequest,
+} from "./nicheRequestsDb";
+import { NICHE_VIDEO_FORMATS } from "@shared/nicheRequest";
 import { updateVideoScenes, updateEditedVideoUrl, getVideoScenes, type EditorScene, type EditorClip } from "./db";
 import { runVideoPipeline } from "./videoPipeline";
 import { forgotPassword, validateResetToken as validateResetTokenProcedure, resetPassword } from "./authPasswordReset";
@@ -746,6 +757,22 @@ export const appRouter = router({
       customVoiceoverUrl: z.string().optional(),
       enableSubtitles: z.boolean().default(true),
     })).mutation(async ({ ctx, input }) => {
+      if (ctx.user.role !== "admin") {
+        const onboarding = await getLatestNicheRequest(ctx.user.id, "onboarding");
+        if (onboarding && !nicheRequestAllowsPlatformAccess(onboarding, ctx.user.role)) {
+          throw appTrpcError(
+            "FORBIDDEN",
+            APP_ERROR.SERVICE_ERROR,
+            "Je niche-aanvraag wacht nog op goedkeuring. Binnen 2 werkdagen hoor je van ons."
+          );
+        }
+      }
+
+      const coverage = await assessArchiveCoverageForPrompt(input.prompt);
+      const coverageNote = coverage.hasCoverage
+        ? "🔍 Starting generation..."
+        : "📦 Nog weinig archiefbeelden voor dit onderwerp — we bouwen verder aan je archief. Generatie duurt langer.";
+
       const videoId = await createVideo({
         userId: ctx.user.id,
         prompt: input.prompt,
@@ -755,10 +782,11 @@ export const appRouter = router({
         voiceId: input.voiceId,
         enableSubtitles: input.enableSubtitles ? 1 : 0,
         status: "pending",
+        metadata: { archiveCoverage: coverage },
       });
       if (!videoId) throw appTrpcError("INTERNAL_SERVER_ERROR", APP_ERROR.FAILED_CREATE_VIDEO, "Failed to create video");
       await updateVideoStatus(videoId, "generating_script", {
-        progressStep: "🔍 Starting generation...",
+        progressStep: coverageNote,
         progressPercent: 1,
         generationStartedAt: new Date(),
       }).catch(() => {});
@@ -1135,6 +1163,90 @@ export const appRouter = router({
       const key = `voice-previews/${voiceId}-${Date.now()}.mp3`;
       const { url } = await storagePut(key, audioBuffer, "audio/mpeg");
       return { url };
+    }),
+  }),
+
+  nicheRequest: router({
+    accessStatus: protectedProcedure.query(async ({ ctx }) => {
+      const onboarding = await getLatestNicheRequest(ctx.user.id, "onboarding");
+      const canUsePlatform = nicheRequestAllowsPlatformAccess(onboarding, ctx.user.role);
+      return {
+        canUsePlatform,
+        onboarding: onboarding ?? null,
+        hasOnboardingRequest: Boolean(onboarding),
+      };
+    }),
+
+    listMine: protectedProcedure.query(async ({ ctx }) => {
+      return listNicheRequestsByUser(ctx.user.id);
+    }),
+
+    submit: protectedProcedure.input(z.object({
+      requestType: z.enum(["onboarding", "new_channel"]).default("onboarding"),
+      nicheTitle: z.string().min(2).max(256),
+      channelName: z.string().max(256).optional(),
+      videoFormat: z.enum(NICHE_VIDEO_FORMATS.map((f) => f.value) as [string, ...string[]]),
+      description: z.string().max(2000).optional(),
+    })).mutation(async ({ ctx, input }) => {
+      if (input.requestType === "onboarding") {
+        const existing = await getLatestNicheRequest(ctx.user.id, "onboarding");
+        if (existing && existing.status === "pending") {
+          throw appTrpcError("BAD_REQUEST", APP_ERROR.SERVICE_ERROR, "Je onboarding-aanvraag is al ingediend.");
+        }
+        if (existing && ["approved", "in_progress", "ready"].includes(existing.status)) {
+          throw appTrpcError("BAD_REQUEST", APP_ERROR.SERVICE_ERROR, "Je onboarding is al goedgekeurd.");
+        }
+      }
+
+      const id = await createNicheRequest({
+        userId: ctx.user.id,
+        requestType: input.requestType,
+        nicheTitle: input.nicheTitle.trim(),
+        channelName: input.channelName?.trim() || null,
+        videoFormat: input.videoFormat,
+        description: input.description?.trim() || null,
+        status: "pending",
+      });
+      if (!id) throw appTrpcError("INTERNAL_SERVER_ERROR", APP_ERROR.SERVICE_ERROR, "Aanvraag opslaan mislukt");
+
+      const request = await getNicheRequestById(id);
+      return { request };
+    }),
+
+    checkArchiveCoverage: protectedProcedure.input(z.object({
+      prompt: z.string().min(3).max(1000),
+    })).query(async ({ input }) => {
+      return assessArchiveCoverageForPrompt(input.prompt);
+    }),
+
+    listAll: adminProcedure.query(async () => {
+      const rows = await listAllNicheRequests();
+      const enriched = await Promise.all(
+        rows.map(async (r) => {
+          const user = await getUserById(r.userId);
+          return { ...r, userName: user?.name ?? null, userEmail: user?.email ?? null };
+        })
+      );
+      return enriched;
+    }),
+
+    updateStatus: adminProcedure.input(z.object({
+      id: z.number().int(),
+      status: z.enum(["pending", "approved", "in_progress", "ready", "rejected"]),
+      adminNotes: z.string().max(2000).optional(),
+      linkedArchiveId: z.number().int().optional(),
+    })).mutation(async ({ ctx, input }) => {
+      const req = await getNicheRequestById(input.id);
+      if (!req) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Aanvraag niet gevonden");
+
+      await updateNicheRequest(input.id, {
+        status: input.status,
+        adminNotes: input.adminNotes?.trim() || null,
+        linkedArchiveId: input.linkedArchiveId ?? null,
+        reviewedByUserId: ctx.user.id,
+        reviewedAt: new Date(),
+      });
+      return { success: true };
     }),
   }),
 
