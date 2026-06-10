@@ -14,6 +14,7 @@ import fs from "fs";
 import { fileURLToPath } from "url";
 import { LOCAL_UPLOADS_DIR } from "../storageLocal";
 import { registerArchiveUploadRoute } from "../archiveUpload";
+import { registerArchiveMediaRoute } from "../archiveMediaStream";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -120,6 +121,7 @@ async function startServer() {
   registerStripeWebhook(app);
   // Binary archive upload (raw file bytes — avoids base64 JSON and HTML 413 errors)
   registerArchiveUploadRoute(app);
+  registerArchiveMediaRoute(app);
   // Base64 uploads need ~33% headroom; archive videos up to 100MB raw.
   app.use(express.json({ limit: "150mb" }));
   app.use(express.urlencoded({ limit: "150mb", extended: true }));

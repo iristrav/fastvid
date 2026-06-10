@@ -1,9 +1,12 @@
 import type { Express } from "express";
+import { existsSync } from "fs";
+import path from "path";
 import { ENV } from "./env";
+import { LOCAL_UPLOADS_DIR } from "../storageLocal";
 
 /** Resolve a storage key to a presigned GET URL from Forge */
 async function getPresignedUrl(key: string): Promise<string | null> {
-  if (!ENV.forgeApiUrl || !ENV.forgeApiKey) return null;
+  if (!ENV.forgeApiUrl || !process.env.BUILT_IN_FORGE_API_KEY) return null;
   const forgeUrl = new URL(
     "v1/storage/presign/get",
     ENV.forgeApiUrl.replace(/\/+$/, "") + "/",
@@ -29,14 +32,26 @@ export function registerStorageProxy(app: Express) {
       return;
     }
 
-    if (!ENV.forgeApiUrl || !ENV.forgeApiKey) {
-      res.status(500).send("Storage proxy not configured");
+    if (!ENV.forgeApiUrl || !process.env.BUILT_IN_FORGE_API_KEY) {
+      const safeKey = key.replace(/\//g, "_");
+      const localPath = path.join(LOCAL_UPLOADS_DIR, safeKey);
+      if (existsSync(localPath)) {
+        res.redirect(307, `/local-storage/${safeKey}`);
+        return;
+      }
+      res.status(404).send("Storage file not found");
       return;
     }
 
     try {
       const signedUrl = await getPresignedUrl(key);
       if (!signedUrl) {
+        const safeKey = key.replace(/\//g, "_");
+        const localPath = path.join(LOCAL_UPLOADS_DIR, safeKey);
+        if (existsSync(localPath)) {
+          res.redirect(307, `/local-storage/${safeKey}`);
+          return;
+        }
         res.status(502).send("Storage backend error");
         return;
       }

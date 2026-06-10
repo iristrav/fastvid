@@ -31,6 +31,18 @@ export function archiveClipOverlayFilterEnabled(): boolean {
   return Boolean(ENV.forgeApiKey);
 }
 
+/** Skip per-clip LLM overlay checks on large splits (prevents upload timeout / upstream errors). */
+export function shouldRunArchiveOverlayFilter(clipCount: number): boolean {
+  if (!archiveClipOverlayFilterEnabled()) return false;
+  const raw = process.env.ARCHIVE_OVERLAY_MAX_CLIPS?.trim();
+  const max = raw ? parseInt(raw, 10) : 60;
+  if (!isNaN(max) && max > 0 && clipCount > max) {
+    console.warn(`[ArchiveFilter] skip overlay checks for ${clipCount} clips (max ${max})`);
+    return false;
+  }
+  return true;
+}
+
 function ffmpegBin(): string {
   return process.env.FFMPEG_BIN || process.env.FFMPEG_PATH || "ffmpeg";
 }
@@ -104,8 +116,10 @@ hasBakedEditText = false wanneer:
 /** Returns true when clip should be skipped (baked edit text detected). */
 export async function archiveClipHasBakedEditText(
   mediaBuffer: Buffer,
-  mimeType: string
+  mimeType: string,
+  opts?: { clipCount?: number }
 ): Promise<boolean> {
+  if (opts?.clipCount != null && !shouldRunArchiveOverlayFilter(opts.clipCount)) return false;
   if (!archiveClipOverlayFilterEnabled()) return false;
 
   const preview = await previewImageFromMedia(mediaBuffer, mimeType);

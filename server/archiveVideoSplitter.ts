@@ -24,6 +24,7 @@ const DEFAULT_MAX_CLIPS = 300;
 /** Only merge adjacent clips when capping count if one side is a sub-second flash/glitch. */
 const DEFAULT_FLASH_MERGE_MAX_SEC = 0.45;
 const INTERNAL_RESCAN_MIN_SEC = 1.4;
+const INTERNAL_RESCAN_MAX_RANGES = 48;
 const DEFAULT_SCENE_THRESHOLD = 0.22;
 const DEFAULT_SCDET_THRESHOLD = 6;
 const DEFAULT_CUT_MERGE_GAP_SEC = 0.18;
@@ -364,44 +365,56 @@ async function rescanRangesForInteriorCuts(
   ranges: Array<{ start: number; end: number }>,
   deadlineMs: number
 ): Promise<Array<{ start: number; end: number }>> {
-  const interiorCutsByRange: number[][] = [];
+  const interiorCutsByRange: number[][] = ranges.map(() => []);
+
+  const candidates = ranges
+    .map((range, idx) => ({ range, idx, dur: range.end - range.start }))
+    .filter(({ dur }) => dur >= INTERNAL_RESCAN_MIN_SEC)
+    .sort((a, b) => b.dur - a.dur)
+    .slice(0, INTERNAL_RESCAN_MAX_RANGES);
+
   const perRangeTimeout = Math.max(
-    8_000,
-    Math.min(45_000, Math.floor((deadlineMs - Date.now()) / Math.max(1, ranges.length)) || 8_000)
+    6_000,
+    Math.min(20_000, Math.floor((deadlineMs - Date.now()) / Math.max(1, candidates.length * 2)) || 6_000)
   );
 
-  for (const range of ranges) {
-    const dur = range.end - range.start;
-    if (dur < INTERNAL_RESCAN_MIN_SEC || Date.now() >= deadlineMs) {
-      interiorCutsByRange.push([]);
-      continue;
-    }
+  await mapPool(
+    candidates,
+    3,
+    async ({ range, idx }) => {
+      if (Date.now() >= deadlineMs) return null;
 
-    const scdet = await detectScdetCutTimesInWindow(
-      inputPath,
-      range.start,
-      range.end,
-      Math.max(3, scdetThreshold() * 0.75),
-      perRangeTimeout
-    );
-    const scene = await detectSceneFilterCutTimesInWindow(
-      inputPath,
-      range.start,
-      range.end,
-      Math.max(0.12, sceneThreshold() * 0.75),
-      perRangeTimeout
-    );
-    const interior = combineShotCutTimes([scdet, scene]).filter(
-      (t) => t > range.start + MIN_SCENE_SEC && t < range.end - MIN_SCENE_SEC
-    );
-    if (interior.length > 0) {
-      console.log(
-        `[ArchiveSplit] interior rescan ${formatTimecode(range.start)}–${formatTimecode(range.end)}: ` +
-          `${interior.length} missed cut(s)`
+      const [scdet, scene] = await Promise.all([
+        detectScdetCutTimesInWindow(
+          inputPath,
+          range.start,
+          range.end,
+          Math.max(3, scdetThreshold() * 0.75),
+          perRangeTimeout
+        ),
+        detectSceneFilterCutTimesInWindow(
+          inputPath,
+          range.start,
+          range.end,
+          Math.max(0.12, sceneThreshold() * 0.75),
+          perRangeTimeout
+        ),
+      ]);
+
+      const interior = combineShotCutTimes([scdet, scene]).filter(
+        (t) => t > range.start + MIN_SCENE_SEC && t < range.end - MIN_SCENE_SEC
       );
-    }
-    interiorCutsByRange.push(interior);
-  }
+      if (interior.length > 0) {
+        console.log(
+          `[ArchiveSplit] interior rescan ${formatTimecode(range.start)}–${formatTimecode(range.end)}: ` +
+            `${interior.length} missed cut(s)`
+        );
+      }
+      interiorCutsByRange[idx] = interior;
+      return null;
+    },
+    () => Date.now() < deadlineMs
+  );
 
   const refined = refineClipRangesWithInteriorCuts(ranges, interiorCutsByRange);
   if (refined.length !== ranges.length) {

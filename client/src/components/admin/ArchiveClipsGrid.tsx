@@ -45,6 +45,10 @@ function formatDuration(sec?: number | null): string {
   return m > 0 ? `${m}:${String(s).padStart(2, "0")}` : `${s}s`;
 }
 
+function archiveClipMediaUrl(assetId: number): string {
+  return `/api/admin/archive/media/${assetId}`;
+}
+
 function AssetPreviewModal({
   asset,
   onClose,
@@ -70,7 +74,7 @@ function AssetPreviewModal({
           </div>
           <div className="flex items-center gap-2 shrink-0">
             <a
-              href={asset.storageUrl}
+              href={archiveClipMediaUrl(asset.id)}
               target="_blank"
               rel="noopener noreferrer"
               className="p-2 rounded-lg bg-white/10 text-slate-300 hover:text-white hover:bg-white/15"
@@ -86,14 +90,14 @@ function AssetPreviewModal({
         <div className="bg-black flex items-center justify-center max-h-[75vh]">
           {asset.mediaType === "video" ? (
             <video
-              src={asset.storageUrl}
+              src={archiveClipMediaUrl(asset.id)}
               controls
               autoPlay
               playsInline
               className="w-full max-h-[75vh] object-contain"
             />
           ) : (
-            <img src={asset.storageUrl} alt={asset.title ?? ""} className="w-full max-h-[75vh] object-contain" />
+              <img src={archiveClipMediaUrl(asset.id)} alt={asset.title ?? ""} className="w-full max-h-[75vh] object-contain" />
           )}
         </div>
         {asset.durationSec != null && asset.durationSec > 0 && (
@@ -144,14 +148,14 @@ function AssetCard({
           >
             {asset.mediaType === "video" ? (
               <video
-                src={asset.storageUrl}
+                src={archiveClipMediaUrl(asset.id)}
                 className="w-full h-full object-cover"
                 muted
                 playsInline
                 preload="metadata"
               />
             ) : (
-              <img src={asset.storageUrl} alt={asset.title ?? ""} className="w-full h-full object-cover" />
+              <img src={archiveClipMediaUrl(asset.id)} alt={asset.title ?? ""} className="w-full h-full object-cover" />
             )}
             <span className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors flex items-center justify-center">
               <span className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-2 px-3 py-1.5 rounded-full bg-black/70 text-white text-xs font-medium">

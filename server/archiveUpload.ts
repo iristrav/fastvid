@@ -116,7 +116,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
 
       const createdAssets = (
         await mapPool(segments, 4, async (seg) => {
-          if (await archiveClipHasBakedEditText(seg.buffer, "video/mp4")) {
+          if (await archiveClipHasBakedEditText(seg.buffer, "video/mp4", { clipCount: segments.length })) {
             console.log(
               `[ArchiveUpload] skip clip ${seg.index + 1} (${formatTimecode(seg.startSec)}–${formatTimecode(seg.endSec)}): baked edit text`
             );
