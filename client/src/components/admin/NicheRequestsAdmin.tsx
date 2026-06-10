@@ -61,9 +61,21 @@ export function NicheRequestsAdmin() {
                     {r.contactEmail ?? r.userEmail ?? "—"}
                     {r.userName ? ` · ${r.userName}` : ""}
                   </p>
-                  {r.description && (
+                  {r.titleStructure && (
                     <div className="mt-2">
-                      <p className="text-[10px] uppercase tracking-wide text-slate-500 mb-1">Format (titelstructuur & onderwerpen)</p>
+                      <p className="text-[10px] uppercase tracking-wide text-slate-500 mb-1">Titelstructuur</p>
+                      <p className="text-sm text-slate-400 whitespace-pre-wrap">{r.titleStructure}</p>
+                    </div>
+                  )}
+                  {r.topics && (
+                    <div className="mt-2">
+                      <p className="text-[10px] uppercase tracking-wide text-slate-500 mb-1">Onderwerpen</p>
+                      <p className="text-sm text-slate-400 whitespace-pre-wrap">{r.topics}</p>
+                    </div>
+                  )}
+                  {!r.titleStructure && !r.topics && r.description && (
+                    <div className="mt-2">
+                      <p className="text-[10px] uppercase tracking-wide text-slate-500 mb-1">Notities</p>
                       <p className="text-sm text-slate-400 whitespace-pre-wrap">{r.description}</p>
                     </div>
                   )}

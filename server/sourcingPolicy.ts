@@ -1,8 +1,13 @@
-/** Production sourcing policy — curated archive visuals + ElevenLabs voice only. */
+/** Production sourcing policy — curated media archive for visuals; ElevenLabs for voice. */
 
-/** When true (default), beats use only admin media archive assets (no Serp/Pexels/AI). */
+/** Visual beats use only the admin media archive (no YouTube, stock, Serp, Wikimedia, or AI clips). */
 export function curatedArchiveOnlyVisuals(): boolean {
-  return process.env.CURATED_ARCHIVE_ONLY !== "false";
+  return true;
+}
+
+/** External clip/image/video APIs are disabled — archive library only. */
+export function externalVisualSourcingEnabled(): boolean {
+  return false;
 }
 
 /** When true (default), voiceover uses ElevenLabs only (no Fish Audio). */

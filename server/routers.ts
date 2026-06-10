@@ -1188,7 +1188,8 @@ export const appRouter = router({
     submitRequest: publicProcedure.input(z.object({
       contactEmail: z.string().email(),
       nicheTitle: z.string().min(2).max(256),
-      formatDetails: z.string().min(10).max(4000),
+      titleStructure: z.string().min(3).max(2000),
+      topics: z.string().min(3).max(2000),
       requestType: z.enum(["onboarding", "new_channel"]).default("onboarding"),
     })).mutation(async ({ ctx, input }) => {
       if (input.requestType === "new_channel" && !ctx.user) {
@@ -1215,7 +1216,9 @@ export const appRouter = router({
         nicheTitle: input.nicheTitle.trim(),
         channelName: null,
         videoFormat: null,
-        description: input.formatDetails.trim(),
+        titleStructure: input.titleStructure.trim(),
+        topics: input.topics.trim(),
+        description: null,
         status: "pending",
       });
       if (!id) throw appTrpcError("INTERNAL_SERVER_ERROR", APP_ERROR.SERVICE_ERROR, "Aanvraag opslaan mislukt");

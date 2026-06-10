@@ -168,6 +168,8 @@ export const nicheRequests = mysqlTable("niche_requests", {
   nicheTitle: varchar("nicheTitle", { length: 256 }).notNull(),
   channelName: varchar("channelName", { length: 256 }),
   videoFormat: varchar("videoFormat", { length: 32 }),
+  titleStructure: text("titleStructure"),
+  topics: text("topics"),
   description: text("description"),
   status: mysqlEnum("status", ["pending", "approved", "in_progress", "ready", "rejected"]).default("pending").notNull(),
   adminNotes: text("adminNotes"),

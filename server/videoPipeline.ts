@@ -12927,22 +12927,24 @@ export async function runVideoPipeline(
       );
     }
     const perf = getPipelinePerfProfile(videoLength);
-    if (minimizeStockFootageEnabled()) {
-      console.log(
-        `[Pipeline] Minimize stock: real footage → AI; ≤${perf.maxStockBeatsPerVideo} licensed stock clip(s) per video`
-      );
-    } else if (!PEXELS_API_KEY && !PIXABAY_API_KEY) {
-      console.warn("[Pipeline] No Pexels/Pixabay — relying on YouTube CC and AI only");
-    }
-    if (SERPAPI_KEY) {
-      console.log("[Pipeline] SERPAPI_KEY set — celebrity/person image fallback enabled");
-    } else if (/kylie|jenner|celebrity|musk|tesla/i.test(topicContext ?? userPrompt ?? "")) {
-      console.warn("[Pipeline] SERPAPI_KEY not set — named-person videos may lack real photos of the subject");
+    if (!curatedArchiveOnlyVisuals()) {
+      if (minimizeStockFootageEnabled()) {
+        console.log(
+          `[Pipeline] Minimize stock: real footage → AI; ≤${perf.maxStockBeatsPerVideo} licensed stock clip(s) per video`
+        );
+      } else if (!PEXELS_API_KEY && !PIXABAY_API_KEY) {
+        console.warn("[Pipeline] No Pexels/Pixabay — relying on YouTube CC and AI only");
+      }
+      if (SERPAPI_KEY) {
+        console.log("[Pipeline] SERPAPI_KEY set — celebrity/person image fallback enabled");
+      } else if (/kylie|jenner|celebrity|musk|tesla/i.test(topicContext ?? userPrompt ?? "")) {
+        console.warn("[Pipeline] SERPAPI_KEY not set — named-person videos may lack real photos of the subject");
+      }
     }
     console.log(
       `[Pipeline] Perf budget: ≤${perf.targetWallClockMin}min wall-clock, ` +
       `≤${perf.maxBeatsPerScene} beats/scene, ${perf.sceneParallelism} parallel scenes, ` +
-      `sourcing=${youtubeOnlySourcingEnabled() ? `YouTube-only ≤${youtubeBeatSearchBudgetMs() / 1000}s → Pexels` : youtubeSourcingEnabled() ? "YouTube+archival" : "archival+stills → Pexels (YouTube off)"}, ` +
+      `sourcing=${curatedArchiveOnlyVisuals() ? "media archive only" : youtubeOnlySourcingEnabled() ? `YouTube-only ≤${youtubeBeatSearchBudgetMs() / 1000}s → Pexels` : youtubeSourcingEnabled() ? "YouTube+archival" : "archival+stills → Pexels (YouTube off)"}, ` +
       `clip-vision=${clipVisionGateEnabled() ? "on" : "off"}, ` +
       `fair-use transform=${perf.skipFairUseTransform ? "skip" : "on"}, ` +
       `AI fallback=${perf.enableAiFallback ? `on (max ${perf.maxAiClipsPerVideo} clips)` : "off"}, ` +

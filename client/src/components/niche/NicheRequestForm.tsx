@@ -4,13 +4,15 @@ import { Loader2 } from "lucide-react";
 export type NicheRequestFormValues = {
   contactEmail: string;
   nicheTitle: string;
-  formatDetails: string;
+  titleStructure: string;
+  topics: string;
 };
 
 type Props = {
   initialEmail?: string;
   initialNiche?: string;
-  initialFormat?: string;
+  initialTitleStructure?: string;
+  initialTopics?: string;
   submitting?: boolean;
   submitLabel?: string;
   onSubmit: (values: NicheRequestFormValues) => void;
@@ -19,35 +21,49 @@ type Props = {
 export function NicheRequestForm({
   initialEmail = "",
   initialNiche = "",
-  initialFormat = "",
+  initialTitleStructure = "",
+  initialTopics = "",
   submitting = false,
-  submitLabel = "Aanvraag indienen",
+  submitLabel = "Versturen",
   onSubmit,
 }: Props) {
   const [contactEmail, setContactEmail] = useState(initialEmail);
   const [nicheTitle, setNicheTitle] = useState(initialNiche);
-  const [formatDetails, setFormatDetails] = useState(initialFormat);
+  const [titleStructure, setTitleStructure] = useState(initialTitleStructure);
+  const [topics, setTopics] = useState(initialTopics);
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!contactEmail.trim() || !nicheTitle.trim() || formatDetails.trim().length < 10) return;
+    if (
+      !contactEmail.trim() ||
+      !nicheTitle.trim() ||
+      titleStructure.trim().length < 3 ||
+      topics.trim().length < 3
+    ) {
+      return;
+    }
     onSubmit({
       contactEmail: contactEmail.trim().toLowerCase(),
       nicheTitle: nicheTitle.trim(),
-      formatDetails: formatDetails.trim(),
+      titleStructure: titleStructure.trim(),
+      topics: topics.trim(),
     });
   }
 
   const canSubmit =
     contactEmail.includes("@") &&
     nicheTitle.trim().length >= 2 &&
-    formatDetails.trim().length >= 10;
+    titleStructure.trim().length >= 3 &&
+    topics.trim().length >= 3;
 
   return (
     <form onSubmit={handleSubmit} className="space-y-5">
       <div className="space-y-1.5">
-        <label className="text-xs text-slate-400 font-medium uppercase tracking-wide">E-mailadres *</label>
+        <label htmlFor="niche-email" className="text-xs text-slate-400 font-medium uppercase tracking-wide">
+          E-mailadres *
+        </label>
         <input
+          id="niche-email"
           type="email"
           value={contactEmail}
           onChange={(e) => setContactEmail(e.target.value)}
@@ -56,12 +72,14 @@ export function NicheRequestForm({
           autoComplete="email"
           className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-purple-500/50"
         />
-        <p className="text-[11px] text-slate-500">Hier sturen we je goedkeuringsbericht naartoe.</p>
       </div>
 
       <div className="space-y-1.5">
-        <label className="text-xs text-slate-400 font-medium uppercase tracking-wide">Niche *</label>
+        <label htmlFor="niche-title" className="text-xs text-slate-400 font-medium uppercase tracking-wide">
+          Niche *
+        </label>
         <input
+          id="niche-title"
           value={nicheTitle}
           onChange={(e) => setNicheTitle(e.target.value)}
           placeholder="bijv. Titanic, WOII-documentaires, SpaceX, true crime…"
@@ -72,19 +90,35 @@ export function NicheRequestForm({
       </div>
 
       <div className="space-y-1.5">
-        <label className="text-xs text-slate-400 font-medium uppercase tracking-wide">
-          Format — titelstructuur &amp; onderwerpen *
+        <label htmlFor="niche-title-structure" className="text-xs text-slate-400 font-medium uppercase tracking-wide">
+          Titelstructuur *
         </label>
         <textarea
-          value={formatDetails}
-          onChange={(e) => setFormatDetails(e.target.value)}
-          rows={5}
+          id="niche-title-structure"
+          value={titleStructure}
+          onChange={(e) => setTitleStructure(e.target.value)}
+          rows={3}
           required
-          minLength={10}
-          placeholder={`Beschrijf hoe je titels zijn opgebouwd en welke onderwerpen je behandelt, bijv.:\n\n• Titelstructuur: "The Untold Story of [X]" / "Why [X] Changed Everything"\n• Onderwerpen: scheepsrampen, vergeten helden, technische analyses\n• Voorbeeldvideo's of concurrenten (links)`}
+          minLength={3}
+          placeholder={'Hoe zijn je titels opgebouwd?\nbijv. "The Untold Story of [X]" / "Why [X] Changed Everything"'}
           className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-purple-500/50 resize-none leading-relaxed"
         />
-        <p className="text-[11px] text-slate-500">Minimaal 10 tekens — hoe concreter, hoe sneller we je archief kunnen opbouwen.</p>
+      </div>
+
+      <div className="space-y-1.5">
+        <label htmlFor="niche-topics" className="text-xs text-slate-400 font-medium uppercase tracking-wide">
+          Onderwerpen *
+        </label>
+        <textarea
+          id="niche-topics"
+          value={topics}
+          onChange={(e) => setTopics(e.target.value)}
+          rows={4}
+          required
+          minLength={3}
+          placeholder={"Welke onderwerpen behandel je?\nbijv. scheepsrampen, vergeten helden, technische analyses, bekende gebeurtenissen…"}
+          className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-purple-500/50 resize-none leading-relaxed"
+        />
       </div>
 
       <button
@@ -109,9 +143,6 @@ export function NicheRequestPendingCard({ email }: { email?: string }) {
         ) : null}
         Binnen <strong>2 werkdagen</strong> ontvang je een goedkeuringsbericht per e-mail.
         Na goedkeuring kun je <strong>binnen 24 uur</strong> starten met je eerste video.
-      </p>
-      <p className="text-xs text-yellow-200/70">
-        We bereiden ondertussen je niche-archief voor met beeldmateriaal op maat.
       </p>
     </div>
   );

@@ -1,5 +1,5 @@
 /**
- * Publieke niche-aanvraagpagina — e-mail, niche, format (titelstructuur + onderwerpen).
+ * Publieke niche-aanvraag — contactformulier (e-mail, niche, titelstructuur, onderwerpen).
  */
 import { useLocation } from "wouter";
 import { trpc } from "@/lib/trpc";
@@ -32,6 +32,9 @@ export default function NicheAanvraag() {
   });
 
   const isLoading = authLoading || (Boolean(user) && accessLoading);
+  const onboarding = access?.onboarding;
+  const status = onboarding?.status;
+  const justSubmitted = submitRequest.isSuccess;
 
   if (isLoading) {
     return (
@@ -43,15 +46,7 @@ export default function NicheAanvraag() {
     );
   }
 
-  if (user?.role === "admin") {
-    navigate("/dashboard");
-    return null;
-  }
-
-  const onboarding = access?.onboarding;
-  const status = onboarding?.status;
-
-  if (user && status === "pending") {
+  if (user && status === "pending" && !justSubmitted) {
     return (
       <PageShell>
         <NicheRequestPendingCard email={onboarding?.contactEmail ?? user.email ?? undefined} />
@@ -59,7 +54,7 @@ export default function NicheAanvraag() {
     );
   }
 
-  if (user && (status === "approved" || status === "ready")) {
+  if (user && (status === "approved" || status === "ready") && user.role !== "admin") {
     return (
       <PageShell>
         <NicheRequestApprovedCard onContinue={() => navigate("/subscribe")} />
@@ -67,88 +62,48 @@ export default function NicheAanvraag() {
     );
   }
 
-  if (user && status === "in_progress") {
+  if (user && status === "in_progress" && user.role !== "admin") {
     return (
       <PageShell>
-        <div className="glass-card border border-cyan-500/30 bg-cyan-500/5 rounded-xl p-6 space-y-3">
-          <h3 className="text-lg font-bold text-cyan-200">Archief in opbouw</h3>
-          <p className="text-sm text-cyan-100/90">
-            Je aanvraag voor <strong>{onboarding?.nicheTitle}</strong> is goedgekeurd. We bouwen je beeldarchief.
-            Je kunt al starten — generatie kan langer duren tot het archief compleet is.
-          </p>
-          <button
-            type="button"
-            onClick={() => navigate("/subscribe")}
-            className="mt-2 px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-sm font-semibold"
-          >
-            Verder naar abonnement
-          </button>
-        </div>
-      </PageShell>
-    );
-  }
-
-  if (user && status === "rejected") {
-    return (
-      <PageShell>
-        <div className="glass-card border border-red-500/30 bg-red-500/5 rounded-xl p-6 space-y-4">
-          <h3 className="text-lg font-bold text-red-200">Aanvraag afgewezen</h3>
-          {onboarding?.adminNotes && (
-            <p className="text-sm text-red-100/80">{onboarding.adminNotes}</p>
-          )}
-          <NicheRequestForm
-            initialEmail={onboarding?.contactEmail ?? user.email ?? ""}
-            initialNiche={onboarding?.nicheTitle}
-            initialFormat={onboarding?.description ?? undefined}
-            submitting={submitRequest.isPending}
-            submitLabel="Opnieuw indienen"
-            onSubmit={(values) =>
-              submitRequest.mutate({ ...values, requestType: "onboarding" })
-            }
-          />
-        </div>
-      </PageShell>
-    );
-  }
-
-  const justSubmitted = submitRequest.isSuccess && !user;
-
-  if (justSubmitted) {
-    return (
-      <PageShell>
-        <NicheRequestPendingCard />
-        <p className="text-center text-xs text-slate-500">
-          Nog geen account?{" "}
-          <button type="button" onClick={() => navigate("/login")} className="text-purple-400 hover:text-purple-300">
-            Maak er een aan met je invite code
-          </button>
-        </p>
+        <NicheRequestApprovedCard onContinue={() => navigate("/subscribe")} />
       </PageShell>
     );
   }
 
   return (
     <PageShell>
-      <div className="glass-card border border-white/10 rounded-2xl p-6 md:p-8 space-y-6">
-        <div className="space-y-2">
-          <h1 className="text-2xl font-black text-white" style={{ fontFamily: "Outfit, sans-serif" }}>
-            Niche-aanvraag
-          </h1>
-          <p className="text-sm text-slate-400 leading-relaxed">
-            Vul je niche in, je e-mailadres en hoe je kanaal werkt (titelstructuur en onderwerpen).
-            Binnen <strong className="text-white">2 werkdagen</strong> hoor je van ons — na goedkeuring start je binnen{" "}
-            <strong className="text-white">24 uur</strong>.
-          </p>
+      {justSubmitted ? (
+        <NicheRequestPendingCard email={user?.email} />
+      ) : (
+        <div className="glass-card border border-white/10 rounded-2xl p-6 md:p-8 space-y-6">
+          <div className="space-y-2">
+            <h1 className="text-2xl font-black text-white" style={{ fontFamily: "Outfit, sans-serif" }}>
+              Niche-aanvraag
+            </h1>
+            <p className="text-sm text-slate-400 leading-relaxed">
+              Vul het formulier in. Binnen <strong className="text-white">2 werkdagen</strong> hoor je van ons.
+            </p>
+          </div>
+
+          {user && status === "rejected" && onboarding?.adminNotes && (
+            <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-200">
+              {onboarding.adminNotes}
+            </div>
+          )}
+
+          <NicheRequestForm
+            initialEmail={onboarding?.contactEmail ?? user?.email ?? ""}
+            initialNiche={onboarding?.nicheTitle ?? ""}
+            initialTitleStructure={onboarding?.titleStructure ?? ""}
+            initialTopics={onboarding?.topics ?? ""}
+            submitting={submitRequest.isPending}
+            submitLabel={status === "rejected" ? "Opnieuw versturen" : "Versturen"}
+            onSubmit={(values) => submitRequest.mutate({ ...values, requestType: "onboarding" })}
+          />
         </div>
+      )}
 
-        <NicheRequestForm
-          initialEmail={user?.email ?? ""}
-          submitting={submitRequest.isPending}
-          onSubmit={(values) => submitRequest.mutate({ ...values, requestType: "onboarding" })}
-        />
-      </div>
-
-      {!user && (
+      {!user && !justSubmitted && (
         <p className="text-center text-xs text-slate-500">
           Al een account?{" "}
           <button type="button" onClick={() => navigate("/login")} className="text-purple-400 hover:text-purple-300">

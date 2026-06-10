@@ -88,14 +88,18 @@ async function startServer() {
   const ytDownload = !!(process.env.RAPIDAPI_KEY?.trim() || process.env.YOUTUBE_CC_DL_SERVICE?.trim());
   console.log("[Fastvid] RAPIDAPI_KEY:", ytDownload ? "✓ set" : "✗ NOT SET — YouTube CC download disabled");
   console.log("[Fastvid] YOUTUBE_API_KEY:", ytSearch ? "✓ set" : "✗ NOT SET — YouTube CC search disabled");
-  console.log("[Fastvid] YouTube clip sourcing: disabled (archive + Wikimedia + stills + Pexels)");
-  const { curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, skipEffectsStage } = await import("../sourcingPolicy");
+  console.log("[Fastvid] YouTube clip sourcing: disabled");
+  const { curatedArchiveOnlyVisuals, externalVisualSourcingEnabled, elevenLabsOnlyVoice, skipEffectsStage } =
+    await import("../sourcingPolicy");
   console.log(
     "[Fastvid] Visual sourcing:",
     curatedArchiveOnlyVisuals()
-      ? "✓ curated media archive only (admin library)"
-      : "✗ external sources enabled (CURATED_ARCHIVE_ONLY=false)"
+      ? "✓ media archive only (no external clip APIs)"
+      : "✗ external sources enabled"
   );
+  if (externalVisualSourcingEnabled()) {
+    console.warn("[Fastvid] External visual sourcing should be off — check sourcingPolicy");
+  }
   console.log(
     "[Fastvid] Voiceover:",
     elevenLabsOnlyVoice()
@@ -185,6 +189,7 @@ async function startServer() {
             };
           })()
         : undefined;
+    const { curatedArchiveOnlyVisuals, externalVisualSourcingEnabled } = await import("../sourcingPolicy");
     res.status(200).json({
       status: "ok",
       timestamp: new Date().toISOString(),
@@ -192,32 +197,24 @@ async function startServer() {
         BUILT_IN_FORGE_API_KEY: !!process.env.BUILT_IN_FORGE_API_KEY,
         LLM_API_KEY: !!process.env.LLM_API_KEY,
         FISH_AUDIO_API_KEY: !!process.env.FISH_AUDIO_API_KEY,
-        PEXELS_API_KEY: !!process.env.PEXELS_API_KEY,
-        PIXABAY_API_KEY: !!process.env.PIXABAY_API_KEY,
         ELEVENLABS_API_KEY: !!process.env.ELEVENLABS_API_KEY,
-        STABILITY_AI_API_KEY: !!process.env.STABILITY_AI_API_KEY,
-        YOUTUBE_API_KEY: !!process.env.YOUTUBE_API_KEY,
-        RAPIDAPI_KEY: !!process.env.RAPIDAPI_KEY,
-        YOUTUBE_CC_DL_SERVICE: !!process.env.YOUTUBE_CC_DL_SERVICE,
-        SERPAPI_KEY: !!process.env.SERPAPI_KEY,
-        UNSPLASH_ACCESS_KEY: !!process.env.UNSPLASH_ACCESS_KEY?.trim(),
-        FLICKR_API_KEY: !!process.env.FLICKR_API_KEY?.trim(),
-        EUROPEANA_API_KEY: !!process.env.EUROPEANA_API_KEY?.trim(),
-        VIMEO_ACCESS_TOKEN: !!process.env.VIMEO_ACCESS_TOKEN?.trim(),
-        gdeltTvNewsReady: true,
-        celebrityVideoExtrasReady: true,
-        stockFootageReady: !!(process.env.PEXELS_API_KEY?.trim() || process.env.PIXABAY_API_KEY?.trim()),
-        youtubeCcReady:
-          !!process.env.YOUTUBE_API_KEY?.trim() &&
-          !!(process.env.RAPIDAPI_KEY?.trim() || process.env.YOUTUBE_CC_DL_SERVICE?.trim()),
-        youtubeSourcingEnabled: false,
-        youtubeFairUseEnabled: process.env.ENABLE_YOUTUBE_FAIR_USE !== "false",
-        serpApiReady: !!process.env.SERPAPI_KEY?.trim(),
-        unsplashReady: !!process.env.UNSPLASH_ACCESS_KEY?.trim(),
         voiceReady: !!(
           process.env.ELEVENLABS_API_KEY?.trim() ||
           process.env.FISH_AUDIO_API_KEY?.trim()
         ),
+        curatedArchiveOnly: curatedArchiveOnlyVisuals(),
+        externalVisualSourcingEnabled: externalVisualSourcingEnabled(),
+        // Legacy keys below — configured but unused while archive-only visuals are enforced
+        PEXELS_API_KEY: !!process.env.PEXELS_API_KEY,
+        PIXABAY_API_KEY: !!process.env.PIXABAY_API_KEY,
+        YOUTUBE_API_KEY: !!process.env.YOUTUBE_API_KEY,
+        RAPIDAPI_KEY: !!process.env.RAPIDAPI_KEY,
+        SERPAPI_KEY: !!process.env.SERPAPI_KEY,
+        UNSPLASH_ACCESS_KEY: !!process.env.UNSPLASH_ACCESS_KEY?.trim(),
+        youtubeSourcingEnabled: false,
+        stockFootageReady: false,
+        serpApiReady: false,
+        unsplashReady: false,
         NODE_ENV: process.env.NODE_ENV,
       },
       storage,

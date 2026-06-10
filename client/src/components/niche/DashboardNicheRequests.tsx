@@ -85,7 +85,9 @@ export function DashboardNicheRequests() {
             <li key={r.id} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5 rounded-lg bg-white/5 border border-white/8">
               <div className="min-w-0">
                 <p className="text-sm font-medium text-white truncate">{r.nicheTitle}</p>
-                <p className="text-xs text-slate-500 line-clamp-1">{r.description ?? "—"}</p>
+                <p className="text-xs text-slate-500 line-clamp-2">
+                  {r.titleStructure ?? r.topics ?? r.description ?? "—"}
+                </p>
               </div>
               <StatusBadge status={r.status} />
             </li>
