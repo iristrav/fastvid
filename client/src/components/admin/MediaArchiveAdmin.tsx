@@ -6,7 +6,7 @@ import { trpc } from "@/lib/trpc";
 import { toastErrorMessage } from "@/const";
 import { toast } from "sonner";
 import {
-  Archive, Plus, Loader2, Trash2, Pencil, Upload, Tag,
+  Archive, Plus, Loader2, Trash2, Pencil, Upload, Tag, X,
 } from "lucide-react";
 import { ArchiveClipsGrid } from "@/components/admin/ArchiveClipsGrid";
 
@@ -62,6 +62,7 @@ type ArchiveUploadProgress = {
   clipsSaved?: number;
   done: boolean;
   error?: string;
+  cancelled?: boolean;
 };
 
 const STAGE_LABELS: Record<string, string> = {
@@ -76,6 +77,7 @@ const STAGE_LABELS: Record<string, string> = {
   ai_tags: "AI-tags",
   save_clips: "Opslaan",
   done: "Klaar",
+  cancelled: "Geannuleerd",
   error: "Fout",
 };
 
@@ -92,6 +94,13 @@ async function pollArchiveUploadProgress(jobId: string): Promise<ArchiveUploadPr
   return res.json() as Promise<ArchiveUploadProgress>;
 }
 
+async function requestArchiveUploadCancel(jobId: string): Promise<void> {
+  await fetch(`/api/admin/archive/upload/cancel?jobId=${encodeURIComponent(jobId)}`, {
+    method: "POST",
+    credentials: "include",
+  });
+}
+
 async function uploadArchiveFile(
   file: File,
   opts: {
@@ -102,6 +111,7 @@ async function uploadArchiveFile(
     autoSplitScenes: boolean;
     autoGenerateTags: boolean;
     jobId: string;
+    signal?: AbortSignal;
     onProgress?: (progress: ArchiveUploadProgress) => void;
   }
 ): Promise<ArchiveUploadResponse> {
@@ -127,6 +137,7 @@ async function uploadArchiveFile(
       credentials: "include",
       headers: { "Content-Type": opts.mimeType || "application/octet-stream" },
       body: file,
+      signal: opts.signal,
     });
 
     const text = await res.text();
@@ -143,6 +154,9 @@ async function uploadArchiveFile(
     }
 
     if (!res.ok) {
+      const cancelled = Boolean((data as { cancelled?: boolean })?.cancelled)
+        || (data?.error?.toLowerCase().includes("geannuleerd") ?? false);
+      if (cancelled) throw new UploadCancelledError();
       throw new Error(data?.error || "Upload mislukt");
     }
 
@@ -155,6 +169,13 @@ async function uploadArchiveFile(
     };
   } finally {
     window.clearInterval(pollTimer);
+  }
+}
+
+class UploadCancelledError extends Error {
+  constructor() {
+    super("Upload geannuleerd");
+    this.name = "UploadCancelledError";
   }
 }
 
@@ -171,6 +192,9 @@ export function MediaArchiveAdmin() {
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<ArchiveUploadProgress | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const uploadAbortRef = useRef<AbortController | null>(null);
+  const activeJobIdRef = useRef<string | null>(null);
+  const cancelRequestedRef = useRef(false);
 
   const activeArchiveId = selectedId ?? archives[0]?.id ?? null;
 
@@ -204,6 +228,24 @@ export function MediaArchiveAdmin() {
 
   const selectedArchive = archives.find((a) => a.id === activeArchiveId);
 
+  async function handleCancelUpload() {
+    const jobId = activeJobIdRef.current;
+    if (!jobId || cancelRequestedRef.current) return;
+    cancelRequestedRef.current = true;
+    try {
+      await requestArchiveUploadCancel(jobId);
+    } catch {
+      /* server may already be done */
+    }
+    uploadAbortRef.current?.abort();
+    setUploadProgress((prev) =>
+      prev
+        ? { ...prev, stage: "cancelled", message: "Upload geannuleerd", done: true, cancelled: true }
+        : prev
+    );
+    toast.info("Upload gestopt");
+  }
+
   async function handleFiles(files: FileList | null) {
     if (!files?.length) return;
     if (!activeArchiveId) {
@@ -226,6 +268,9 @@ export function MediaArchiveAdmin() {
         const isVideo = mimeType.startsWith("video/");
         const mixKind = isVideo ? "real_video" : uploadMixKind;
         const jobId = newUploadJobId();
+        activeJobIdRef.current = jobId;
+        cancelRequestedRef.current = false;
+        uploadAbortRef.current = new AbortController();
         setUploadProgress({
           jobId,
           filename: file.name,
@@ -242,6 +287,7 @@ export function MediaArchiveAdmin() {
           autoSplitScenes: isVideo ? autoSplitScenes : false,
           autoGenerateTags,
           jobId,
+          signal: uploadAbortRef.current.signal,
           onProgress: setUploadProgress,
         });
         utils.mediaArchive.listAssets.invalidate();
@@ -256,9 +302,16 @@ export function MediaArchiveAdmin() {
       }
       setUploadTags("");
     } catch (e) {
-      toast.error("Upload mislukt", { description: toastErrorMessage(e) });
+      if (e instanceof UploadCancelledError || (e instanceof DOMException && e.name === "AbortError")) {
+        toast.info("Upload geannuleerd");
+      } else {
+        toast.error("Upload mislukt", { description: toastErrorMessage(e) });
+      }
     } finally {
       setUploading(false);
+      activeJobIdRef.current = null;
+      cancelRequestedRef.current = false;
+      uploadAbortRef.current = null;
       window.setTimeout(() => setUploadProgress(null), 8000);
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
@@ -427,14 +480,30 @@ export function MediaArchiveAdmin() {
                       <p className="text-sm font-medium text-white truncate max-w-[70%]">
                         {uploadProgress.filename ?? "Upload"}
                       </p>
-                      <span className="text-xs px-2 py-0.5 rounded-full bg-white/10 text-purple-200">
-                        {STAGE_LABELS[uploadProgress.stage] ?? uploadProgress.stage}
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-white/10 text-purple-200">
+                          {STAGE_LABELS[uploadProgress.stage] ?? uploadProgress.stage}
+                        </span>
+                        {uploading && !uploadProgress.done && (
+                          <button
+                            type="button"
+                            onClick={handleCancelUpload}
+                            className="flex items-center gap-1 px-2 py-0.5 text-xs rounded-md bg-red-500/15 text-red-300 border border-red-500/30 hover:bg-red-500/25 transition-colors"
+                          >
+                            <X className="w-3 h-3" />
+                            Stoppen
+                          </button>
+                        )}
+                      </div>
                     </div>
                     <div className="h-2 rounded-full bg-white/10 overflow-hidden">
                       <div
                         className={`h-full transition-all duration-500 ${
-                          uploadProgress.stage === "error" ? "bg-red-500" : "bg-gradient-to-r from-purple-500 to-cyan-500"
+                          uploadProgress.stage === "error"
+                            ? "bg-red-500"
+                            : uploadProgress.stage === "cancelled"
+                              ? "bg-slate-500"
+                              : "bg-gradient-to-r from-purple-500 to-cyan-500"
                         }`}
                         style={{ width: `${Math.min(100, Math.max(0, uploadProgress.percent))}%` }}
                       />

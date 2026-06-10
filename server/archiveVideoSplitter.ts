@@ -416,7 +416,8 @@ async function detectSceneFilterCutTimesInWindow(
 async function rescanRangesForInteriorCuts(
   inputPath: string,
   ranges: Array<{ start: number; end: number }>,
-  deadlineMs: number
+  deadlineMs: number,
+  shouldContinue?: () => boolean
 ): Promise<Array<{ start: number; end: number }>> {
   const interiorCutsByRange: number[][] = ranges.map(() => []);
 
@@ -435,7 +436,7 @@ async function rescanRangesForInteriorCuts(
     candidates,
     3,
     async ({ range, idx }) => {
-      if (Date.now() >= deadlineMs) return null;
+      if (Date.now() >= deadlineMs || (shouldContinue && !shouldContinue())) return null;
 
       const [scdet, scene] = await Promise.all([
         detectScdetCutTimesInWindow(
@@ -466,7 +467,7 @@ async function rescanRangesForInteriorCuts(
       interiorCutsByRange[idx] = interior;
       return null;
     },
-    () => Date.now() < deadlineMs
+    () => Date.now() < deadlineMs && (shouldContinue?.() ?? true)
   );
 
   const refined = refineClipRangesWithInteriorCuts(ranges, interiorCutsByRange);
@@ -636,13 +637,22 @@ function formatTimecode(sec: number): string {
 export async function splitVideoBySceneChanges(
   inputBuffer: Buffer,
   mimeType: string,
-  onProgress?: ArchiveSplitProgressFn
+  onProgress?: ArchiveSplitProgressFn,
+  shouldContinue?: () => boolean
 ): Promise<VideoClipSegment[]> {
   const startedAt = Date.now();
   const deadline = startedAt + splitBudgetMs();
   const hasBudget = () => Date.now() < deadline;
+  const canContinue = () => hasBudget() && (shouldContinue?.() ?? true);
+  const throwIfCancelled = () => {
+    if (shouldContinue && !shouldContinue()) {
+      throw new ArchiveSplitError("Upload geannuleerd");
+    }
+  };
 
   const report = (progress: ArchiveSplitProgress) => onProgress?.(progress);
+
+  throwIfCancelled();
 
   report({ stage: "split_ffmpeg", message: "FFmpeg beschikbaarheid controleren…", percent: 8 });
   await assertFfmpegAvailable();
@@ -692,12 +702,13 @@ export async function splitVideoBySceneChanges(
 
     let ranges = buildClipRanges(cuts, totalDur);
     if (ranges.length > 1 && hasBudget()) {
+      throwIfCancelled();
       report({
         stage: "split_rescan",
         message: `Lange shots opnieuw scannen (${ranges.length} segmenten)…`,
         percent: 42,
       });
-      ranges = await rescanRangesForInteriorCuts(analysisPath, ranges, deadline);
+      ranges = await rescanRangesForInteriorCuts(analysisPath, ranges, deadline, shouldContinue);
     }
     console.log(
       `[ArchiveSplit] ${cuts.length} shot cuts → ${ranges.length} clip(s) (${totalDur.toFixed(1)}s, ` +
@@ -722,6 +733,7 @@ export async function splitVideoBySceneChanges(
       }];
     }
 
+    throwIfCancelled();
     if (!hasBudget()) {
       throw new ArchiveSplitError(
         "Knippen duurde te lang (timeout). Probeer een kortere video of zet AI-tags tijdelijk uit."
@@ -769,7 +781,7 @@ export async function splitVideoBySceneChanges(
           return null;
         }
       },
-      hasBudget
+      canContinue
     );
 
     const segments = extractResults
@@ -777,6 +789,8 @@ export async function splitVideoBySceneChanges(
       .sort((a, b) => a.startSec - b.startSec)
       .map((seg, index) => ({ ...seg, index }));
     console.log(`[ArchiveSplit] extracted ${segments.length}/${ranges.length} shot clips in ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
+
+    throwIfCancelled();
 
     if (segments.length === 0) {
       throw new ArchiveSplitError("Shot-detectie vond cuts maar extractie van clips mislukt (FFmpeg).");

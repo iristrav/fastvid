@@ -23,9 +23,12 @@ import {
 } from "./archiveVideoSplitter";
 import {
   finishArchiveUploadJob,
+  finishArchiveUploadJobCancelled,
   getArchiveUploadJob,
   initArchiveUploadJob,
+  isArchiveUploadCancelRequested,
   patchArchiveUploadJob,
+  requestArchiveUploadCancel,
 } from "./archiveUploadProgress";
 import { getUserFromRequest } from "./_core/context";
 import {
@@ -61,11 +64,28 @@ export type ArchiveUploadResult = {
 export class ArchiveUploadError extends Error {
   constructor(
     readonly status: number,
-    message: string
+    message: string,
+    readonly cancelled = false
   ) {
     super(message);
     this.name = "ArchiveUploadError";
   }
+}
+
+export const ARCHIVE_UPLOAD_CANCELLED_MESSAGE = "Upload geannuleerd";
+
+function throwIfUploadCancelled(jobId: string | undefined): void {
+  if (jobId && isArchiveUploadCancelRequested(jobId)) {
+    throw new ArchiveUploadError(
+      400,
+      appErrorMessage(APP_ERROR.SERVICE_ERROR, ARCHIVE_UPLOAD_CANCELLED_MESSAGE),
+      true
+    );
+  }
+}
+
+function uploadShouldContinue(jobId: string | undefined): () => boolean {
+  return () => !jobId || !isArchiveUploadCancelRequested(jobId);
 }
 
 /** Block single long clip when auto-split expected multiple shots but got the whole video. */
@@ -93,6 +113,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
   const progress = (patch: Parameters<typeof patchArchiveUploadJob>[1]) =>
     patchArchiveUploadJob(jobId, patch);
 
+  throwIfUploadCancelled(jobId);
   progress({ stage: "validating", message: `${fileLabel}: bestand valideren…`, percent: 3 });
 
   const archive = await getMediaArchiveById(input.archiveId);
@@ -144,8 +165,21 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
       });
     };
     try {
-      segments = await splitVideoBySceneChanges(input.buffer, mimeType, onSplitProgress);
+      segments = await splitVideoBySceneChanges(
+        input.buffer,
+        mimeType,
+        onSplitProgress,
+        uploadShouldContinue(jobId)
+      );
     } catch (err) {
+      if (err instanceof ArchiveSplitError && isArchiveUploadCancelRequested(jobId)) {
+        finishArchiveUploadJobCancelled(jobId);
+        throw new ArchiveUploadError(
+          400,
+          appErrorMessage(APP_ERROR.SERVICE_ERROR, ARCHIVE_UPLOAD_CANCELLED_MESSAGE),
+          true
+        );
+      }
       if (err instanceof ArchiveSplitError) {
         finishArchiveUploadJob(jobId, false, err.message);
         throw new ArchiveUploadError(400, appErrorMessage(APP_ERROR.SERVICE_ERROR, err.message));
@@ -162,6 +196,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
     }
 
     if (segments.length >= 1) {
+      throwIfUploadCancelled(jobId);
       assertSplitSegmentsValid(segments, autoSplitScenes);
 
       progress({
@@ -178,6 +213,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
             clipLabel: "eerste fragment (tags gelden voor alle clips)",
           })
         : null;
+      throwIfUploadCancelled(jobId);
 
       let savedCount = 0;
       progress({
@@ -189,8 +225,12 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
       });
 
       const createdAssets = (
-        await mapPool(segments, 3, async (seg) => {
-          if (await archiveClipHasBakedEditText(seg.buffer, "video/mp4", { clipCount: segments.length })) {
+        await mapPool(
+          segments,
+          3,
+          async (seg) => {
+            throwIfUploadCancelled(jobId);
+            if (await archiveClipHasBakedEditText(seg.buffer, "video/mp4", { clipCount: segments.length })) {
             console.log(
               `[ArchiveUpload] skip clip ${seg.index + 1} (${formatTimecode(seg.startSec)}–${formatTimecode(seg.endSec)}): baked edit text`
             );
@@ -255,8 +295,12 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
             clipsSaved: savedCount,
           });
           return getMediaArchiveAssetById(assetId);
-        })
+          },
+          uploadShouldContinue(jobId)
+        )
       ).filter((a): a is NonNullable<typeof a> => a != null);
+
+      throwIfUploadCancelled(jobId);
 
       if (createdAssets.length === 0) {
         finishArchiveUploadJob(jobId, false, "Geen clips opgeslagen");
@@ -300,6 +344,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
       )
     );
   }
+  throwIfUploadCancelled(jobId);
 
   progress({
     stage: "save_clips",
@@ -418,13 +463,48 @@ async function handleArchiveBinaryUpload(req: Request, res: Response) {
     res.json(result);
   } catch (err) {
     if (err instanceof ArchiveUploadError) {
-      finishArchiveUploadJob(jobId, false, err.message);
-      res.status(err.status).json({ error: err.message });
+      if (err.cancelled) {
+        finishArchiveUploadJobCancelled(jobId);
+      } else {
+        finishArchiveUploadJob(jobId, false, err.message);
+      }
+      res.status(err.status).json({ error: err.message, cancelled: err.cancelled });
       return;
     }
     console.error("[ArchiveUpload] HTTP upload failed:", err);
     finishArchiveUploadJob(jobId, false, "Upload failed");
     res.status(500).json({ error: appErrorMessage(APP_ERROR.SERVICE_ERROR, "Upload failed") });
+  }
+}
+
+async function handleArchiveUploadCancel(req: Request, res: Response) {
+  try {
+    const user = await getUserFromRequest(req);
+    if (!user) {
+      res.status(401).json({ error: appErrorMessage(APP_ERROR.UNAUTHED, "Please login") });
+      return;
+    }
+    if (user.role !== "admin") {
+      res.status(403).json({ error: appErrorMessage(APP_ERROR.NOT_ADMIN, "You do not have required permission") });
+      return;
+    }
+
+    const jobId = String(req.query.jobId ?? "").trim();
+    if (!jobId) {
+      res.status(400).json({ error: "jobId is required" });
+      return;
+    }
+
+    const ok = requestArchiveUploadCancel(jobId);
+    if (!ok) {
+      res.status(404).json({ error: "Geen actieve upload gevonden voor dit jobId" });
+      return;
+    }
+
+    res.json({ success: true, jobId });
+  } catch (err) {
+    console.error("[ArchiveUpload] cancel failed:", err);
+    res.status(500).json({ error: appErrorMessage(APP_ERROR.SERVICE_ERROR, "Cancel failed") });
   }
 }
 
@@ -462,6 +542,7 @@ async function handleArchiveUploadProgress(req: Request, res: Response) {
 /** Register before express.json() — raw binary body, no base64 JSON bloat. */
 export function registerArchiveUploadRoute(app: Express) {
   app.get("/api/admin/archive/upload/progress", handleArchiveUploadProgress);
+  app.post("/api/admin/archive/upload/cancel", handleArchiveUploadCancel);
   app.post(
     "/api/admin/archive/upload",
     express.raw({ type: () => true, limit: "620mb" }),

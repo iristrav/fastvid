@@ -15,6 +15,7 @@ export type ArchiveUploadProgressStage =
   | "ai_tags"
   | "save_clips"
   | "done"
+  | "cancelled"
   | "error";
 
 export type ArchiveUploadProgress = {
@@ -29,9 +30,11 @@ export type ArchiveUploadProgress = {
   updatedAt: number;
   done: boolean;
   error?: string;
+  cancelled?: boolean;
 };
 
 const jobs = new Map<string, ArchiveUploadProgress>();
+const cancelRequested = new Set<string>();
 const TTL_MS = 15 * 60 * 1000;
 
 function pruneOldJobs() {
@@ -43,6 +46,7 @@ function pruneOldJobs() {
 
 export function initArchiveUploadJob(jobId: string, filename?: string): void {
   pruneOldJobs();
+  cancelRequested.delete(jobId);
   jobs.set(jobId, {
     jobId,
     filename,
@@ -91,6 +95,7 @@ export function finishArchiveUploadJob(
   extra?: Partial<ArchiveUploadProgress>
 ): void {
   if (!jobId) return;
+  cancelRequested.delete(jobId);
   patchArchiveUploadJob(jobId, {
     stage: ok ? "done" : "error",
     message,
@@ -109,6 +114,33 @@ export function getArchiveUploadJob(jobId: string): ArchiveUploadProgress | null
   return jobs.get(jobId) ?? null;
 }
 
+export function isArchiveUploadCancelRequested(jobId: string | undefined): boolean {
+  return jobId != null && cancelRequested.has(jobId);
+}
+
+/** Request cooperative cancel — processing stops at next checkpoint. */
+export function requestArchiveUploadCancel(jobId: string): boolean {
+  const job = jobs.get(jobId);
+  if (!job || job.done) return false;
+  cancelRequested.add(jobId);
+  patchArchiveUploadJob(jobId, {
+    message: "Annuleren…",
+  });
+  return true;
+}
+
+export function finishArchiveUploadJobCancelled(jobId: string | undefined): void {
+  if (!jobId) return;
+  cancelRequested.delete(jobId);
+  patchArchiveUploadJob(jobId, {
+    stage: "cancelled",
+    message: "Upload geannuleerd",
+    done: true,
+    cancelled: true,
+    error: undefined,
+  });
+}
+
 export const ARCHIVE_UPLOAD_STAGE_LABELS: Record<ArchiveUploadProgressStage, string> = {
   queued: "Wachtrij",
   validating: "Bestand controleren",
@@ -121,5 +153,6 @@ export const ARCHIVE_UPLOAD_STAGE_LABELS: Record<ArchiveUploadProgressStage, str
   ai_tags: "AI-tags genereren",
   save_clips: "Clips opslaan",
   done: "Klaar",
+  cancelled: "Geannuleerd",
   error: "Fout",
 };
