@@ -75,6 +75,7 @@ import { FASTVID_PRO_PLAN } from "./products";
 import { processArchiveAssetUpload, ArchiveUploadError } from "./archiveUpload";
 import { archiveAiTaggingEnabled } from "./archiveAssetTagging";
 import { autoTitleArchiveAssets } from "./archiveBulkVisionTagging";
+import { dedupeArchiveVisualDuplicates } from "./archiveClipDedup";
 import { assessArchiveCoverageForPrompt } from "./archiveCoverage";
 import {
   createNicheRequest,
@@ -1417,6 +1418,34 @@ export const appRouter = router({
           (err as Error).message ?? "Auto-title failed"
         );
       }
+    }),
+
+    /** Remove visually duplicate clips (keeps oldest per duplicate group). */
+    dedupeDuplicateAssets: adminProcedure.input(z.object({
+      archiveId: z.number().int(),
+      ids: z.array(z.number().int()).optional(),
+    })).mutation(async ({ input }) => {
+      const archive = await getMediaArchiveById(input.archiveId);
+      if (!archive) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Archive not found");
+
+      let assets = await getMediaArchiveAssets(input.archiveId);
+      if (input.ids?.length) {
+        const idSet = new Set(input.ids);
+        assets = assets.filter((a) => idSet.has(a.id));
+      }
+      if (assets.length < 2) {
+        return { scanned: assets.length, deleted: 0, kept: assets.length };
+      }
+
+      const { deleteIds, scanned } = await dedupeArchiveVisualDuplicates(assets);
+      if (deleteIds.length > 0) {
+        await deleteMediaArchiveAssets(deleteIds);
+      }
+      return {
+        scanned,
+        deleted: deleteIds.length,
+        kept: assets.length - deleteIds.length,
+      };
     }),
 
     deleteAsset: adminProcedure.input(z.object({ id: z.number().int() })).mutation(async ({ input }) => {

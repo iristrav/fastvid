@@ -8,6 +8,8 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 
+import { dedupeVideoSegmentsVisually } from "./archiveClipDedup";
+
 const exec = promisify(execCb);
 
 export type VideoClipSegment = {
@@ -796,7 +798,15 @@ export async function splitVideoBySceneChanges(
       throw new ArchiveSplitError("Shot-detectie vond cuts maar extractie van clips mislukt (FFmpeg).");
     }
 
-    return segments;
+    const { kept, skipped } = await dedupeVideoSegmentsVisually(segments);
+    if (kept.length === 0) {
+      throw new ArchiveSplitError("Alle clips waren visuele duplicaten — probeer een video met duidelijkere shot-wisselingen.");
+    }
+    if (skipped > 0) {
+      console.log(`[ArchiveSplit] visual dedup: ${skipped} duplicate(s) removed, ${kept.length} unique clip(s)`);
+    }
+
+    return kept;
   } finally {
     try {
       fs.rmSync(workDir, { recursive: true, force: true });

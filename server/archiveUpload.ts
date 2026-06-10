@@ -5,9 +5,7 @@ import type { Express, Request, Response } from "express";
 import express from "express";
 import { APP_ERROR, appErrorMessage } from "@shared/appErrors";
 import {
-  applySharedAiToClipFields,
   enrichArchiveAssetFields,
-  generateArchiveAssetAiMetadata,
   inferArchiveMediaMime,
 } from "./archiveAssetTagging";
 import { archiveClipHasBakedEditText } from "./archiveClipFilter";
@@ -205,14 +203,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
         percent: 86,
         clipTotal: segments.length,
       });
-      const sharedAi = autoGenerateTags
-        ? await generateArchiveAssetAiMetadata(segments[0].buffer, "video/mp4", {
-            archiveNicheTags,
-            parentFilename: input.filename,
-            userTags,
-            clipLabel: "eerste fragment (tags gelden voor alle clips)",
-          })
-        : null;
+      const perClipAiTags = autoGenerateTags && segments.length <= 15;
       throwIfUploadCancelled(jobId);
 
       let savedCount = 0;
@@ -249,19 +240,11 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
             ? `Fragment uit ${parentSource} (${formatTimecode(seg.startSec)}–${formatTimecode(seg.endSec)})`
             : `Fragment ${formatTimecode(seg.startSec)}–${formatTimecode(seg.endSec)}`;
           const draftTitle = `${baseTitle} — clip ${seg.index + 1}`;
-          const enriched = sharedAi
-            ? applySharedAiToClipFields({
-                baseTitle: draftTitle,
-                userTags,
-                sourceNote: fragmentNote,
-                ai: sharedAi,
-                clipIndex: seg.index,
-                userProvidedTitle,
-              })
-            : await enrichArchiveAssetFields({
+          const enriched = perClipAiTags
+            ? await enrichArchiveAssetFields({
                 buffer: seg.buffer,
                 mimeType: "video/mp4",
-                autoGenerateTags: false,
+                autoGenerateTags: true,
                 baseTitle: draftTitle,
                 userTags,
                 sourceNote: fragmentNote,
@@ -269,7 +252,12 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
                 parentFilename: input.filename,
                 clipIndex: seg.index,
                 userProvidedTitle,
-              });
+              })
+            : {
+                title: draftTitle,
+                tags: userTags,
+                sourceNote: fragmentNote,
+              };
           const { url } = await storagePut(key, seg.buffer, "video/mp4");
           const assetId = await createMediaArchiveAsset({
             archiveId: input.archiveId,

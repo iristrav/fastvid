@@ -6,7 +6,7 @@ import { trpc } from "@/lib/trpc";
 import { toastErrorMessage } from "@/const";
 import { toast } from "sonner";
 import {
-  Loader2, Trash2, Pencil, Search, Film, Image as ImageIcon, X, Play, ExternalLink, CheckSquare, Square, Sparkles,
+  Loader2, Trash2, Pencil, Search, Film, Image as ImageIcon, X, Play, ExternalLink, CheckSquare, Square, Sparkles, Copy,
 } from "lucide-react";
 
 const MIX_KINDS = [
@@ -321,6 +321,20 @@ export function ArchiveClipsGrid({
   });
 
   const autoTitleAssets = trpc.mediaArchive.autoTitleAssets.useMutation();
+  const dedupeDuplicates = trpc.mediaArchive.dedupeDuplicateAssets.useMutation({
+    onSuccess: (data) => {
+      utils.mediaArchive.listAssets.invalidate();
+      utils.mediaArchive.listArchives.invalidate();
+      if (data.deleted === 0) {
+        toast.info("Geen duplicaten gevonden", { description: `${data.scanned} clip(s) gecontroleerd` });
+      } else {
+        toast.success(`${data.deleted} duplicaat/duplicaten verwijderd`, {
+          description: `${data.kept} unieke clip(s) over`,
+        });
+      }
+    },
+    onError: (e) => toast.error("Duplicaten opruimen mislukt", { description: toastErrorMessage(e) }),
+  });
   const [autoTitleRunning, setAutoTitleRunning] = useState(false);
   const [autoTitleProgress, setAutoTitleProgress] = useState<{ done: number; total: number } | null>(null);
 
@@ -450,6 +464,27 @@ export function ArchiveClipsGrid({
 
   const deletePending = deleteAssets.isPending || deleteAllAssets.isPending;
 
+  function dedupeVisualDuplicates() {
+    if (archiveId == null || assets.length < 2) return;
+    const targetIds =
+      selectedCount > 0
+        ? [...selectedIds].filter((id) => visibleIds.has(id))
+        : assets.map((a) => a.id);
+    const label =
+      selectedCount > 0 ? `${targetIds.length} geselecteerde clip(s)` : `alle ${targetIds.length} clip(s)`;
+    if (
+      !confirm(
+        `Visuele duplicaten verwijderen uit ${label}?\n\nClips met (bijna) hetzelfde beeld worden gewist — de oudste clip blijft staan.`
+      )
+    ) {
+      return;
+    }
+    dedupeDuplicates.mutate({
+      archiveId,
+      ids: selectedCount > 0 ? targetIds : undefined,
+    });
+  }
+
   if (archiveId == null) {
     return (
       <div className="text-center py-8 text-slate-500 text-sm">
@@ -489,6 +524,22 @@ export function ArchiveClipsGrid({
               : selectedCount > 0
                 ? `AI titels (${selectedCount})`
                 : "AI titels & tags"}
+          </button>
+        )}
+        {assets.length > 1 && (
+          <button
+            type="button"
+            onClick={dedupeVisualDuplicates}
+            disabled={dedupeDuplicates.isPending || autoTitleRunning}
+            title="Verwijder clips met (bijna) identiek beeld"
+            className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg bg-amber-500/15 text-amber-300 border border-amber-500/25 hover:bg-amber-500/25 disabled:opacity-50"
+          >
+            {dedupeDuplicates.isPending ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Copy className="w-3.5 h-3.5" />
+            )}
+            {dedupeDuplicates.isPending ? "Duplicaten…" : "Duplicaten opruimen"}
           </button>
         )}
         {assets.length > 0 && (
