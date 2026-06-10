@@ -10,6 +10,11 @@ import * as path from "path";
 
 import { dedupeVideoSegmentsVisually } from "./archiveClipDedup";
 import {
+  filterClipRangesByArchiveSubject,
+  hasArchiveSubjectContext,
+  type ArchiveSubjectContext,
+} from "./archiveClipRelevance";
+import {
   ARCHIVE_MAX_UPLOAD_BYTES,
   ARCHIVE_MAX_VIDEO_DURATION_SEC,
 } from "@shared/const";
@@ -25,7 +30,7 @@ export type VideoClipSegment = {
 };
 
 export type ArchiveSplitProgress = {
-  stage: "split_ffmpeg" | "split_probe" | "split_detect" | "split_rescan" | "split_extract";
+  stage: "split_ffmpeg" | "split_probe" | "split_detect" | "split_rescan" | "split_filter" | "split_extract";
   message: string;
   percent: number;
   clipIndex?: number;
@@ -695,6 +700,10 @@ function formatTimecode(sec: number): string {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
+export type ArchiveSplitOptions = {
+  subjectContext?: ArchiveSubjectContext;
+};
+
 /**
  * Detect shot/scene changes and return one buffer per clip.
  * Never splits on fixed time intervals — only on detected visual cuts.
@@ -703,7 +712,8 @@ export async function splitVideoBySceneChanges(
   inputBuffer: Buffer,
   mimeType: string,
   onProgress?: ArchiveSplitProgressFn,
-  shouldContinue?: () => boolean
+  shouldContinue?: () => boolean,
+  options?: ArchiveSplitOptions
 ): Promise<VideoClipSegment[]> {
   const startedAt = Date.now();
   const deadline = startedAt + splitBudgetMs();
@@ -811,6 +821,37 @@ export async function splitVideoBySceneChanges(
       throw new ArchiveSplitError(
         "Knippen duurde te lang (timeout). Probeer een kortere video of zet AI-tags tijdelijk uit."
       );
+    }
+
+    const subjectContext = options?.subjectContext;
+    if (subjectContext && hasArchiveSubjectContext(subjectContext)) {
+      report({
+        stage: "split_filter",
+        message: `Fragmenten controleren op archief-onderwerp (${ranges.length})…`,
+        percent: 48,
+        clipTotal: ranges.length,
+      });
+      const before = ranges.length;
+      ranges = await filterClipRangesByArchiveSubject(analysisPath, ranges, subjectContext, {
+        onProgress: (kept, total, skipped) => {
+          report({
+            stage: "split_filter",
+            message: `Onderwerp-filter: ${kept} van ${total} fragmenten behouden (${skipped} overgeslagen)`,
+            percent: 48 + Math.round((kept / Math.max(1, total)) * 4),
+            clipTotal: total,
+          });
+        },
+        shouldContinue: canContinue,
+      });
+      console.log(
+        `[ArchiveSplit] subject filter: ${before} → ${ranges.length} range(s) for "${subjectContext.archiveName}"`
+      );
+      if (ranges.length === 0) {
+        throw new ArchiveSplitError(
+          `Geen fragmenten passen bij het archief-onderwerp "${subjectContext.archiveName}". ` +
+            "Controleer niche-tags of upload materiaal dat bij dit archief hoort."
+        );
+      }
     }
 
     report({

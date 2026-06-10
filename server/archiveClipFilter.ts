@@ -49,7 +49,7 @@ function ffmpegBin(): string {
   return process.env.FFMPEG_BIN || process.env.FFMPEG_PATH || "ffmpeg";
 }
 
-function imageMimeToDataUrl(buffer: Buffer, mimeType: string): string {
+export function imageMimeToDataUrl(buffer: Buffer, mimeType: string): string {
   const mime = mimeType.startsWith("image/") ? mimeType : "image/jpeg";
   return `data:${mime};base64,${buffer.toString("base64")}`;
 }
@@ -155,6 +155,26 @@ async function extractVideoPreviewJpegs(
     }
   }
   return frames;
+}
+
+/** Preview frames from a source segment (for relevance / overlay checks). */
+export async function extractArchiveSegmentPreviewJpegs(
+  videoPath: string,
+  startSec: number,
+  endSec: number,
+  fastMode = false
+): Promise<Buffer[]> {
+  if (!fs.existsSync(videoPath)) return [];
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "archive-seg-preview-"));
+  try {
+    return await extractVideoPreviewJpegs(
+      videoPath,
+      workDir,
+      sampleTimesInRange(startSec, endSec, fastMode)
+    );
+  } finally {
+    try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
 }
 
 function sampleTimesInRange(startSec: number, endSec: number, fastMode = false): number[] {

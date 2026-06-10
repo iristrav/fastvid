@@ -10,6 +10,10 @@ import {
 } from "./archiveAssetTagging";
 import { archiveClipHasBakedEditText } from "./archiveClipFilter";
 import {
+  archiveClipMatchesArchiveSubject,
+  type ArchiveSubjectContext,
+} from "./archiveClipRelevance";
+import {
   ArchiveSplitError,
   formatTimecode,
   mapPool,
@@ -148,6 +152,11 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
   const mixKind = input.mixKind ?? (isVideo ? "real_video" : "photo");
   const userTags = normalizeMediaTags(input.tags ?? []);
   const archiveNicheTags = normalizeMediaTags(archive.nicheTags ?? []);
+  const subjectContext: ArchiveSubjectContext = {
+    archiveName: archive.name,
+    archiveDescription: archive.description ?? null,
+    nicheTags: archiveNicheTags,
+  };
   const parentSource = input.filename?.trim() || input.sourceNote?.trim() || null;
   const autoSplitScenes = input.autoSplitScenes ?? true;
   const autoGenerateTags = input.autoGenerateTags ?? true;
@@ -168,7 +177,8 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
         input.buffer,
         mimeType,
         onSplitProgress,
-        uploadShouldContinue(jobId)
+        uploadShouldContinue(jobId),
+        { subjectContext }
       );
     } catch (err) {
       if (err instanceof ArchiveSplitError && isArchiveUploadCancelRequested(jobId)) {
@@ -229,6 +239,20 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
             progress({
               stage: "filter_overlay",
               message: `${fileLabel}: clip ${seg.index + 1} overgeslagen (editor-tekst)`,
+              percent: 90 + Math.round((seg.index / segments.length) * 8),
+              clipIndex: seg.index + 1,
+              clipTotal: segments.length,
+              clipsSaved: savedCount,
+            });
+            return null;
+          }
+            if (!(await archiveClipMatchesArchiveSubject(seg.buffer, "video/mp4", subjectContext, { clipCount: segments.length }))) {
+            console.log(
+              `[ArchiveUpload] skip clip ${seg.index + 1} (${formatTimecode(seg.startSec)}–${formatTimecode(seg.endSec)}): off-topic for "${subjectContext.archiveName}"`
+            );
+            progress({
+              stage: "filter_subject",
+              message: `${fileLabel}: clip ${seg.index + 1} overgeslagen (past niet bij archief)`,
               percent: 90 + Math.round((seg.index / segments.length) * 8),
               clipIndex: seg.index + 1,
               clipTotal: segments.length,
@@ -297,7 +321,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
           500,
           appErrorMessage(
             APP_ERROR.SERVICE_ERROR,
-            "Geen clips opgeslagen — alle fragmenten bevatten editor-tekst of split mislukt"
+            "Geen clips opgeslagen — alle fragmenten bevatten editor-tekst, passen niet bij het archief, of split mislukt"
           )
         );
       }
@@ -330,6 +354,15 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
       appErrorMessage(
         APP_ERROR.SERVICE_ERROR,
         "Deze upload bevat editor-tekst (titel/ondertitel overlay). Alleen puur beeldmateriaal toegestaan — tekst hoort in het editprogramma."
+      )
+    );
+  }
+  if (!(await archiveClipMatchesArchiveSubject(input.buffer, mimeType, subjectContext))) {
+    throw new ArchiveUploadError(
+      400,
+      appErrorMessage(
+        APP_ERROR.SERVICE_ERROR,
+        `Deze upload past niet bij het archief-onderwerp "${subjectContext.archiveName}". Controleer niche-tags of kies ander materiaal.`
       )
     );
   }

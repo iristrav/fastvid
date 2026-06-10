@@ -72,8 +72,10 @@ const STAGE_LABELS: Record<string, string> = {
   split_probe: "Duur meten",
   split_detect: "Shots detecteren",
   split_rescan: "Extra cuts",
+  split_filter: "Onderwerp filter",
   split_extract: "Clips knippen",
   filter_overlay: "Tekstfilter",
+  filter_subject: "Onderwerp filter",
   ai_tags: "AI-tags",
   save_clips: "Opslaan",
   done: "Klaar",
@@ -599,6 +601,9 @@ function ArchiveForm({
           placeholder="titanic, scheepsramp, maritiem"
           className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-purple-500/50"
         />
+        <p className="text-[11px] text-slate-500 mt-1">
+          Bij upload filtert AI fragmenten die niet bij dit onderwerp horen (naam + tags + beschrijving).
+        </p>
       </div>
       <div className="flex gap-2 justify-end">
         <button onClick={onCancel} className="px-4 py-2 text-sm text-slate-400 hover:text-white">Annuleren</button>

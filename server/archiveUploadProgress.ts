@@ -10,8 +10,10 @@ export type ArchiveUploadProgressStage =
   | "split_probe"
   | "split_detect"
   | "split_rescan"
+  | "split_filter"
   | "split_extract"
   | "filter_overlay"
+  | "filter_subject"
   | "ai_tags"
   | "save_clips"
   | "done"
@@ -148,8 +150,10 @@ export const ARCHIVE_UPLOAD_STAGE_LABELS: Record<ArchiveUploadProgressStage, str
   split_probe: "Duur meten",
   split_detect: "Shots detecteren",
   split_rescan: "Extra cuts scannen",
+  split_filter: "Onderwerp filteren",
   split_extract: "Clips knippen",
   filter_overlay: "Editor-tekst filteren",
+  filter_subject: "Archief-onderwerp filteren",
   ai_tags: "AI-tags genereren",
   save_clips: "Clips opslaan",
   done: "Klaar",
