@@ -13,6 +13,7 @@ import {
   ArchiveSplitError,
   formatTimecode,
   mapPool,
+  archiveUploadRequestTimeoutMs,
   maxArchiveUploadBytes,
   MIN_SPLIT_VIDEO_SEC,
   splitVideoBySceneChanges,
@@ -400,6 +401,9 @@ async function handleArchiveBinaryUpload(req: Request, res: Response) {
   const jobId = String(req.query.jobId ?? "").trim() || undefined;
   const filename = String(req.query.filename ?? "upload").slice(0, 256);
 
+  req.setTimeout(archiveUploadRequestTimeoutMs());
+  res.setTimeout(archiveUploadRequestTimeoutMs());
+
   if (jobId) {
     initArchiveUploadJob(jobId, filename);
   }
@@ -529,11 +533,12 @@ async function handleArchiveUploadProgress(req: Request, res: Response) {
 
 /** Register before express.json() — raw binary body, no base64 JSON bloat. */
 export function registerArchiveUploadRoute(app: Express) {
+  const bodyLimitMb = Math.ceil(maxArchiveUploadBytes() / (1024 * 1024)) + 32;
   app.get("/api/admin/archive/upload/progress", handleArchiveUploadProgress);
   app.post("/api/admin/archive/upload/cancel", handleArchiveUploadCancel);
   app.post(
     "/api/admin/archive/upload",
-    express.raw({ type: () => true, limit: "620mb" }),
+    express.raw({ type: () => true, limit: `${bodyLimitMb}mb` }),
     handleArchiveBinaryUpload
   );
 }

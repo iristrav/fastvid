@@ -3,7 +3,7 @@
  */
 import { useState, useRef } from "react";
 import { trpc } from "@/lib/trpc";
-import { toastErrorMessage } from "@/const";
+import { toastErrorMessage, ARCHIVE_MAX_UPLOAD_BYTES, ARCHIVE_MAX_UPLOAD_MB } from "@/const";
 import { toast } from "sonner";
 import {
   Archive, Plus, Loader2, Trash2, Pencil, Upload, Tag, X,
@@ -256,8 +256,8 @@ export function MediaArchiveAdmin() {
     setUploadProgress(null);
     try {
       for (const file of Array.from(files)) {
-        if (file.size > 600 * 1024 * 1024) {
-          toast.error(`${file.name}: te groot (max 600MB / ~20 min video)`);
+        if (file.size > ARCHIVE_MAX_UPLOAD_BYTES) {
+          toast.error(`${file.name}: te groot (max ${ARCHIVE_MAX_UPLOAD_MB}MB / video tot 2 uur)`);
           continue;
         }
         const mimeType = guessFileMime(file);
@@ -531,7 +531,7 @@ export function MediaArchiveAdmin() {
                   <span className="text-sm text-slate-400">
                     Sleep bestanden hierheen of klik om te kiezen
                   </span>
-                  <span className="text-xs text-slate-600">MP4, WebM, JPG, PNG — max 600MB (video tot ~20 min)</span>
+                  <span className="text-xs text-slate-600">MP4, WebM, JPG, PNG — max {ARCHIVE_MAX_UPLOAD_MB}MB (video tot 2 uur)</span>
                   <input
                     ref={fileInputRef}
                     type="file"

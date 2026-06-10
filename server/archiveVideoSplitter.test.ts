@@ -3,6 +3,7 @@ import {
   buildClipRanges,
   capClipRanges,
   combineShotCutTimes,
+  archiveUploadRequestTimeoutMs,
   enforceMinClipDuration,
   mapPool,
   maxArchiveClips,
@@ -130,10 +131,11 @@ describe("archiveVideoSplitter", () => {
     expect(normalizeWindowCutTimes([1.5, 4.2], 10, 20)).toEqual([11.5, 14.2]);
   });
 
-  it("defaults support 20 min video within 9 min split budget", () => {
-    expect(maxArchiveVideoDurationSec()).toBe(1200);
-    expect(splitBudgetMs()).toBe(540_000);
-    expect(maxArchiveUploadBytes()).toBe(600 * 1024 * 1024);
+  it("defaults support 2 hour video within 60 min split budget", () => {
+    expect(maxArchiveVideoDurationSec()).toBe(7200);
+    expect(splitBudgetMs()).toBe(3_600_000);
+    expect(maxArchiveUploadBytes()).toBe(2048 * 1024 * 1024);
+    expect(archiveUploadRequestTimeoutMs()).toBeGreaterThan(splitBudgetMs());
   });
 
   it("mapPool runs with bounded concurrency and preserves order", async () => {

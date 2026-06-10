@@ -9,6 +9,10 @@ import * as os from "os";
 import * as path from "path";
 
 import { dedupeVideoSegmentsVisually } from "./archiveClipDedup";
+import {
+  ARCHIVE_MAX_UPLOAD_BYTES,
+  ARCHIVE_MAX_VIDEO_DURATION_SEC,
+} from "@shared/const";
 
 const exec = promisify(execCb);
 
@@ -51,9 +55,9 @@ const INTERNAL_RESCAN_MAX_RANGES = 48;
 const DEFAULT_SCENE_THRESHOLD = 0.22;
 const DEFAULT_SCDET_THRESHOLD = 6;
 const DEFAULT_CUT_MERGE_GAP_SEC = 0.18;
-const DEFAULT_SPLIT_BUDGET_MS = 540_000;
-const DEFAULT_MAX_SOURCE_SEC = 20 * 60;
-const DEFAULT_MAX_UPLOAD_MB = 600;
+const DEFAULT_SPLIT_BUDGET_MS = 3_600_000;
+const DEFAULT_MAX_SOURCE_SEC = ARCHIVE_MAX_VIDEO_DURATION_SEC;
+const DEFAULT_MAX_UPLOAD_MB = ARCHIVE_MAX_UPLOAD_BYTES / (1024 * 1024);
 
 function ffmpegBin(): string {
   return process.env.FFMPEG_BIN || process.env.FFMPEG_PATH || "ffmpeg";
@@ -131,7 +135,7 @@ export function splitBudgetMs(): number {
   const raw = process.env.ARCHIVE_SPLIT_BUDGET_MS?.trim();
   if (raw) {
     const n = parseInt(raw, 10);
-    if (!isNaN(n) && n >= 120_000 && n <= 600_000) return n;
+    if (!isNaN(n) && n >= 120_000 && n <= 7_200_000) return n;
   }
   return DEFAULT_SPLIT_BUDGET_MS;
 }
@@ -140,7 +144,7 @@ export function maxArchiveVideoDurationSec(): number {
   const raw = process.env.ARCHIVE_MAX_VIDEO_DURATION_SEC?.trim();
   if (raw) {
     const n = parseInt(raw, 10);
-    if (!isNaN(n) && n >= 60 && n <= 3600) return n;
+    if (!isNaN(n) && n >= 60 && n <= 7_200) return n;
   }
   return DEFAULT_MAX_SOURCE_SEC;
 }
@@ -149,9 +153,14 @@ export function maxArchiveUploadBytes(): number {
   const raw = process.env.ARCHIVE_MAX_UPLOAD_MB?.trim();
   if (raw) {
     const mb = parseInt(raw, 10);
-    if (!isNaN(mb) && mb >= 50 && mb <= 2048) return mb * 1024 * 1024;
+    if (!isNaN(mb) && mb >= 50 && mb <= 4096) return mb * 1024 * 1024;
   }
   return DEFAULT_MAX_UPLOAD_MB * 1024 * 1024;
+}
+
+/** HTTP socket timeout for archive upload + scene split (must exceed split budget). */
+export function archiveUploadRequestTimeoutMs(): number {
+  return splitBudgetMs() + 900_000;
 }
 
 function extractConcurrency(): number {
@@ -562,7 +571,9 @@ async function detectSceneFilterCutTimes(
 }
 
 async function detectSceneCutTimes(inputPath: string, totalDur: number, deadlineMs: number): Promise<number[]> {
-  const detectTimeout = Math.min(300_000, Math.max(60_000, deadlineMs - Date.now()));
+  const remaining = Math.max(60_000, deadlineMs - Date.now());
+  const scaled = Math.max(120_000, Math.min(Math.floor(totalDur * 400), 3_600_000));
+  const detectTimeout = Math.min(remaining, scaled);
   const scdetBudget = Math.floor(detectTimeout * 0.5);
   const sceneBudget = Math.floor(detectTimeout * 0.5);
 
@@ -633,7 +644,7 @@ async function normalizeSourceForAnalysis(
     percent: 15,
   });
 
-  const timeoutMs = Math.min(480_000, Math.max(60_000, totalDur * 800));
+  const timeoutMs = Math.min(1_800_000, Math.max(60_000, totalDur * 800));
   await exec(
     `${ffmpegBin()} -y -i "${inputPath}" -an -c:v libx264 -preset ultrafast -crf 23 ` +
       `-pix_fmt yuv420p -movflags +faststart -threads 0 "${outPath}"`,
@@ -725,7 +736,13 @@ export async function splitVideoBySceneChanges(
 
     const maxDur = maxArchiveVideoDurationSec();
     if (totalDur > maxDur) {
-      throw new ArchiveSplitError(`Video too long (${Math.ceil(totalDur / 60)} min, max ${Math.floor(maxDur / 60)} min)`);
+      const maxLabel =
+        maxDur >= 3600
+          ? `${Math.floor(maxDur / 3600)} uur`
+          : `${Math.floor(maxDur / 60)} min`;
+      throw new ArchiveSplitError(
+        `Video too long (${Math.ceil(totalDur / 60)} min, max ${maxLabel})`
+      );
     }
 
     if (totalDur < MIN_SCENE_SEC * 2) {

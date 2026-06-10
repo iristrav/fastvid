@@ -15,6 +15,7 @@ import { fileURLToPath } from "url";
 import { LOCAL_UPLOADS_DIR } from "../storageLocal";
 import { registerArchiveUploadRoute } from "../archiveUpload";
 import { registerArchiveMediaRoute } from "../archiveMediaStream";
+import { archiveUploadRequestTimeoutMs } from "../archiveVideoSplitter";
 import {
   curatedArchiveOnlyVisuals,
   externalVisualSourcingEnabled,
@@ -557,10 +558,11 @@ async function startServer() {
   // Railway injects PORT automatically — always use it directly
   const port = parseInt(process.env.PORT || "3000", 10);
 
-  // Long archive uploads (scene split + storage) can take several minutes.
-  server.timeout = 600_000;
-  server.keepAliveTimeout = 620_000;
-  server.headersTimeout = 625_000;
+  // Long archive uploads (scene split + storage) can take up to ~75 minutes for 2h sources.
+  const archiveUploadTimeoutMs = archiveUploadRequestTimeoutMs() + 120_000;
+  server.timeout = Math.max(600_000, archiveUploadTimeoutMs);
+  server.keepAliveTimeout = server.timeout + 20_000;
+  server.headersTimeout = server.timeout + 25_000;
 
   server.listen(port, "0.0.0.0", () => {
     console.log(`[Fastvid] Server running on port ${port}`);
