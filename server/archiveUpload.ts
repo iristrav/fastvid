@@ -301,6 +301,12 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
     );
   }
 
+  progress({
+    stage: "save_clips",
+    message: `${fileLabel}: ${isVideo ? "video" : "afbeelding"} opslaan…`,
+    percent: 92,
+  });
+
   const mediaType = isVideo ? "video" as const : "image" as const;
   const ext = isVideo
     ? (mimeType.includes("webm") ? "webm" : mimeType.includes("quicktime") || mimeType.includes("mov") ? "mov" : "mp4")
@@ -336,6 +342,10 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
   }
 
   const asset = await getMediaArchiveAssetById(assetId);
+  finishArchiveUploadJob(jobId, true, `${isVideo ? "Video" : "Afbeelding"} opgeslagen`, {
+    clipsSaved: 1,
+    clipTotal: 1,
+  });
   return {
     asset,
     assets: asset ? [asset] : [],
