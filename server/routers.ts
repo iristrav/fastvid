@@ -1183,7 +1183,7 @@ export const appRouter = router({
       return listNicheRequestsByUser(ctx.user.id);
     }),
 
-    apply: publicProcedure.input(z.object({
+    submitRequest: publicProcedure.input(z.object({
       contactEmail: z.string().email(),
       nicheTitle: z.string().min(2).max(256),
       formatDetails: z.string().min(10).max(4000),

@@ -17,7 +17,7 @@ export function DashboardNicheRequests() {
 
   const { data: requests = [], isLoading } = trpc.nicheRequest.listMine.useQuery();
 
-  const apply = trpc.nicheRequest.apply.useMutation({
+  const submitRequest = trpc.nicheRequest.submitRequest.useMutation({
     onSuccess: async () => {
       await utils.nicheRequest.listMine.invalidate();
       setShowForm(false);
@@ -64,10 +64,10 @@ export function DashboardNicheRequests() {
           </div>
           <NicheRequestForm
             initialEmail={user?.email ?? ""}
-            submitting={apply.isPending}
+            submitting={submitRequest.isPending}
             submitLabel="Aanvraag indienen"
             onSubmit={(values) =>
-              apply.mutate({ ...values, requestType: "new_channel" })
+              submitRequest.mutate({ ...values, requestType: "new_channel" })
             }
           />
         </div>

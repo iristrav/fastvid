@@ -23,7 +23,7 @@ export default function NicheAanvraag() {
     enabled: Boolean(user),
   });
 
-  const apply = trpc.nicheRequest.apply.useMutation({
+  const submitRequest = trpc.nicheRequest.submitRequest.useMutation({
     onSuccess: async () => {
       if (user) await utils.nicheRequest.accessStatus.invalidate();
       toast.success("Aanvraag verstuurd", { description: ONBOARDING_PENDING_MESSAGE });
@@ -100,10 +100,10 @@ export default function NicheAanvraag() {
             initialEmail={onboarding?.contactEmail ?? user.email ?? ""}
             initialNiche={onboarding?.nicheTitle}
             initialFormat={onboarding?.description ?? undefined}
-            submitting={apply.isPending}
+            submitting={submitRequest.isPending}
             submitLabel="Opnieuw indienen"
             onSubmit={(values) =>
-              apply.mutate({ ...values, requestType: "onboarding" })
+              submitRequest.mutate({ ...values, requestType: "onboarding" })
             }
           />
         </div>
@@ -111,7 +111,7 @@ export default function NicheAanvraag() {
     );
   }
 
-  const justSubmitted = apply.isSuccess && !user;
+  const justSubmitted = submitRequest.isSuccess && !user;
 
   if (justSubmitted) {
     return (
@@ -143,8 +143,8 @@ export default function NicheAanvraag() {
 
         <NicheRequestForm
           initialEmail={user?.email ?? ""}
-          submitting={apply.isPending}
-          onSubmit={(values) => apply.mutate({ ...values, requestType: "onboarding" })}
+          submitting={submitRequest.isPending}
+          onSubmit={(values) => submitRequest.mutate({ ...values, requestType: "onboarding" })}
         />
       </div>
 
