@@ -5,9 +5,13 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { spawn } from "child_process";
+import { exec } from "child_process";
+import { promisify } from "util";
 import { invokeLLM } from "./_core/llm";
 import { ENV } from "./_core/env";
 import { normalizeMediaTags } from "./db";
+
+const execAsync = promisify(exec);
 
 export type ArchiveAssetAiMetadata = {
   title: string;
@@ -101,16 +105,37 @@ function ffmpegBin(): string {
   return process.env.FFMPEG_BIN || process.env.FFMPEG_PATH || "ffmpeg";
 }
 
-function imageMimeToDataUrl(buffer: Buffer, mimeType: string): string {
-  const mime = mimeType.startsWith("image/") ? mimeType : "image/jpeg";
-  return `data:${mime};base64,${buffer.toString("base64")}`;
+function ffprobeBin(): string {
+  return process.env.FFPROBE_BIN || process.env.FFPROBE_PATH || "ffprobe";
 }
 
-async function extractVideoPreviewJpeg(videoPath: string, outPath: string): Promise<boolean> {
+async function probeVideoDurationSec(filePath: string): Promise<number> {
+  try {
+    const { stdout } = await execAsync(
+      `"${ffprobeBin()}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${filePath}"`,
+      { timeout: 15_000 }
+    );
+    const dur = parseFloat(String(stdout).trim());
+    return !isNaN(dur) && dur > 0 ? dur : 0;
+  } catch {
+    return 0;
+  }
+}
+
+async function extractVideoPreviewJpeg(
+  videoPath: string,
+  outPath: string,
+  seekSec?: number
+): Promise<boolean> {
   if (!fs.existsSync(videoPath)) return false;
+  let seek = seekSec;
+  if (seek == null || seek < 0) {
+    const dur = await probeVideoDurationSec(videoPath);
+    seek = dur > 0.5 ? dur * 0.35 : 0.25;
+  }
   try {
     await new Promise<void>((resolve, reject) => {
-      const args = ["-y", "-ss", "35%", "-i", videoPath, "-frames:v", "1", "-q:v", "3", outPath];
+      const args = ["-y", "-ss", seek.toFixed(3), "-i", videoPath, "-frames:v", "1", "-q:v", "3", outPath];
       const child = spawn(ffmpegBin(), args, { stdio: ["ignore", "ignore", "pipe"] });
       let stderr = "";
       child.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });
@@ -131,6 +156,11 @@ async function extractVideoPreviewJpeg(videoPath: string, outPath: string): Prom
   }
 }
 
+function imageMimeToDataUrl(buffer: Buffer, mimeType: string): string {
+  const mime = mimeType.startsWith("image/") ? mimeType : "image/jpeg";
+  return `data:${mime};base64,${buffer.toString("base64")}`;
+}
+
 async function previewImageFromFilePath(
   filePath: string,
   mimeType: string
@@ -138,7 +168,7 @@ async function previewImageFromFilePath(
   if (mimeType.startsWith("image/")) {
     if (!fs.existsSync(filePath)) return null;
     const buffer = fs.readFileSync(filePath);
-    if (buffer.length < 500) return null;
+    if (buffer.length < 64) return null;
     return { buffer, mimeType };
   }
   if (!mimeType.startsWith("video/")) return null;

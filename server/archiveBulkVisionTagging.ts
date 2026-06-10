@@ -66,7 +66,7 @@ async function downloadToTempFile(url: string, ext: string): Promise<string | nu
     const resp = await fetch(url, { signal: AbortSignal.timeout(90_000) });
     if (!resp.ok) return null;
     const buffer = Buffer.from(await resp.arrayBuffer());
-    if (buffer.length < 500) return null;
+    if (buffer.length < 64) return null;
     fs.writeFileSync(tempPath, buffer);
     return tempPath;
   } catch {
