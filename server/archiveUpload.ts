@@ -68,13 +68,15 @@ export class ArchiveUploadError extends Error {
   }
 }
 
-/** Block single long clip when auto-split expected multiple shots. */
+/** Block single long clip when auto-split expected multiple shots but got the whole video. */
 function assertSplitSegmentsValid(
   segments: VideoClipSegment[],
   autoSplitScenes: boolean
 ): void {
   if (!autoSplitScenes || segments.length !== 1) return;
   if (segments[0].durationSec <= MIN_SPLIT_VIDEO_SEC) return;
+  // Partial fragment (e.g. only clean shot left after text filter) is valid.
+  if (segments[0].startSec >= 0.5) return;
 
   throw new ArchiveUploadError(
     400,
