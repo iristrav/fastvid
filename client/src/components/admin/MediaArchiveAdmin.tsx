@@ -71,7 +71,6 @@ const STAGE_LABELS: Record<string, string> = {
   split_probe: "Duur meten",
   split_detect: "Shots detecteren",
   split_rescan: "Extra cuts",
-  split_filter_text: "Tekst filteren",
   split_extract: "Clips knippen",
   filter_overlay: "Tekstfilter",
   ai_tags: "AI-tags",

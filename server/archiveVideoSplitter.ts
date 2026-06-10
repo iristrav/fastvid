@@ -1,17 +1,12 @@
 /**
  * Split archive videos at real shot/scene boundaries — NOT on fixed time intervals.
- * Uses FFmpeg scdet (shot-change) as primary detector; scene filter only when scdet is sparse.
+ * Uses FFmpeg scdet + scene filter (keyframes excluded — they follow GOP intervals, not shots).
  */
 import { exec as execCb } from "child_process";
 import { promisify } from "util";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import {
-  archiveClipOverlayFilterEnabled,
-  archiveSegmentHasOnScreenText,
-  shouldRunArchiveOverlayFilter,
-} from "./archiveClipFilter";
 
 const exec = promisify(execCb);
 
@@ -24,7 +19,7 @@ export type VideoClipSegment = {
 };
 
 export type ArchiveSplitProgress = {
-  stage: "split_ffmpeg" | "split_probe" | "split_detect" | "split_rescan" | "split_filter_text" | "split_extract";
+  stage: "split_ffmpeg" | "split_probe" | "split_detect" | "split_rescan" | "split_extract";
   message: string;
   percent: number;
   clipIndex?: number;
@@ -442,17 +437,25 @@ async function rescanRangesForInteriorCuts(
     async ({ range, idx }) => {
       if (Date.now() >= deadlineMs) return null;
 
-      const scdet = await detectScdetCutTimesInWindow(
-        inputPath,
-        range.start,
-        range.end,
-        Math.max(3, scdetThreshold() * 0.75),
-        perRangeTimeout
-      );
+      const [scdet, scene] = await Promise.all([
+        detectScdetCutTimesInWindow(
+          inputPath,
+          range.start,
+          range.end,
+          Math.max(3, scdetThreshold() * 0.75),
+          perRangeTimeout
+        ),
+        detectSceneFilterCutTimesInWindow(
+          inputPath,
+          range.start,
+          range.end,
+          Math.max(0.14, sceneThreshold() * 0.85),
+          perRangeTimeout
+        ),
+      ]);
 
-      const interior = mergeNearbyCuts(
-        scdet.filter((t) => t > range.start + MIN_SCENE_SEC && t < range.end - MIN_SCENE_SEC),
-        cutMergeGapSec()
+      const interior = combineShotCutTimes([scdet, scene]).filter(
+        (t) => t > range.start + MIN_SCENE_SEC && t < range.end - MIN_SCENE_SEC
       );
       if (interior.length > 0) {
         console.log(
@@ -505,90 +508,43 @@ async function detectSceneFilterCutTimes(
 
 async function detectSceneCutTimes(inputPath: string, totalDur: number, deadlineMs: number): Promise<number[]> {
   const detectTimeout = Math.min(300_000, Math.max(60_000, deadlineMs - Date.now()));
-  const scdetBudget = Math.floor(detectTimeout * 0.75);
-  const sceneBudget = Math.floor(detectTimeout * 0.25);
+  const scdetBudget = Math.floor(detectTimeout * 0.5);
+  const sceneBudget = Math.floor(detectTimeout * 0.5);
 
-  const scdetCuts = await detectScdetCutTimes(inputPath, totalDur, scdetThreshold(), scdetBudget);
-  let cuts = mergeNearbyCuts(scdetCuts, cutMergeGapSec());
+  const [scdetCuts, sceneCuts] = await Promise.all([
+    detectScdetCutTimes(inputPath, totalDur, scdetThreshold(), scdetBudget),
+    detectSceneFilterCutTimes(inputPath, totalDur, sceneThreshold(), sceneBudget),
+  ]);
+  let cuts = combineShotCutTimes([scdetCuts, sceneCuts]);
 
-  console.log(`[ArchiveSplit] shot detect: scdet=${scdetCuts.length} combined=${cuts.length}`);
+  console.log(
+    `[ArchiveSplit] shot detect: scdet=${scdetCuts.length} scene=${sceneCuts.length} combined=${cuts.length}`
+  );
 
-  // Scene filter only when scdet finds almost no real shot boundaries (not keyframes / motion).
-  if (cuts.length < 2 && totalDur > MIN_SPLIT_VIDEO_SEC) {
-    const sceneCuts = await detectSceneFilterCutTimes(inputPath, totalDur, sceneThreshold(), sceneBudget);
-    const supplemented = combineShotCutTimes([scdetCuts, sceneCuts]);
-    console.log(
-      `[ArchiveSplit] scdet sparse — scene supplement: scene=${sceneCuts.length} combined=${supplemented.length}`
-    );
-    if (supplemented.length > cuts.length) cuts = supplemented;
-  }
-
-  // Sensitive scdet retry — still shot-based, not interval/keyframe sampling.
-  if (cuts.length < 2 && totalDur > MIN_SPLIT_VIDEO_SEC && Date.now() < deadlineMs - 10_000) {
-    const scdet2 = await detectScdetCutTimes(
-      inputPath,
-      totalDur,
-      Math.max(2, scdetThreshold() * 0.55),
-      Math.floor(scdetBudget * 0.5)
-    );
-    const retry = mergeNearbyCuts(scdet2, cutMergeGapSec());
+  // Retry both detectors more sensitively when almost no boundaries found.
+  if (cuts.length < 2 && totalDur > MIN_SPLIT_VIDEO_SEC && Date.now() < deadlineMs - 15_000) {
+    const [scdet2, scene2] = await Promise.all([
+      detectScdetCutTimes(
+        inputPath,
+        totalDur,
+        Math.max(2, scdetThreshold() * 0.55),
+        Math.floor(scdetBudget * 0.5)
+      ),
+      detectSceneFilterCutTimes(
+        inputPath,
+        totalDur,
+        Math.max(0.1, sceneThreshold() * 0.55),
+        Math.floor(sceneBudget * 0.5)
+      ),
+    ]);
+    const retry = combineShotCutTimes([scdet2, scene2]);
     if (retry.length > cuts.length) {
-      console.log(`[ArchiveSplit] sensitive scdet retry: ${retry.length} cuts (was ${cuts.length})`);
+      console.log(`[ArchiveSplit] sensitive shot retry: ${retry.length} cuts (was ${cuts.length})`);
       cuts = retry;
     }
   }
 
   return cuts;
-}
-
-/** Drop shot ranges that contain readable on-screen text (titles, captions, overlays). */
-async function filterRangesWithoutOnScreenText(
-  inputPath: string,
-  ranges: Array<{ start: number; end: number }>,
-  onProgress?: ArchiveSplitProgressFn,
-  shouldContinue?: () => boolean
-): Promise<Array<{ start: number; end: number }>> {
-  if (!archiveClipOverlayFilterEnabled() || !shouldRunArchiveOverlayFilter(ranges.length)) {
-    return ranges;
-  }
-
-  onProgress?.({
-    stage: "split_filter_text",
-    message: `Tekst in beeld controleren (${ranges.length} shots)…`,
-    percent: 46,
-    clipTotal: ranges.length,
-  });
-
-  const keepFlags = await mapPool(
-    ranges,
-    3,
-    async (range, i) => {
-      if (shouldContinue && !shouldContinue()) return true;
-      const hasText = await archiveSegmentHasOnScreenText(inputPath, range.start, range.end, {
-        clipCount: ranges.length,
-      });
-      if (hasText) {
-        console.log(
-          `[ArchiveSplit] skip shot ${formatTimecode(range.start)}–${formatTimecode(range.end)}: text on screen`
-        );
-      }
-      onProgress?.({
-        stage: "split_filter_text",
-        message: `Shot ${i + 1}/${ranges.length} gecontroleerd${hasText ? " — overgeslagen (tekst)" : ""}`,
-        percent: 46 + Math.round(((i + 1) / ranges.length) * 5),
-        clipIndex: i + 1,
-        clipTotal: ranges.length,
-      });
-      return !hasText;
-    },
-    shouldContinue
-  );
-
-  const filtered = ranges.filter((_, i) => keepFlags[i] !== false);
-  if (filtered.length < ranges.length) {
-    console.log(`[ArchiveSplit] text filter: ${ranges.length} → ${filtered.length} shot(s)`);
-  }
-  return filtered;
 }
 
 async function extractVideoSegment(
@@ -772,14 +728,6 @@ export async function splitVideoBySceneChanges(
       );
     }
 
-    ranges = await filterRangesWithoutOnScreenText(analysisPath, ranges, report, hasBudget);
-
-    if (ranges.length === 0) {
-      throw new ArchiveSplitError(
-        "Alle gedetecteerde shots bevatten tekst in beeld. Upload beeldmateriaal zonder titels, ondertitels of overlays."
-      );
-    }
-
     report({
       stage: "split_extract",
       message: `${ranges.length} clips knippen met FFmpeg…`,
@@ -832,12 +780,6 @@ export async function splitVideoBySceneChanges(
 
     if (segments.length === 0) {
       throw new ArchiveSplitError("Shot-detectie vond cuts maar extractie van clips mislukt (FFmpeg).");
-    }
-
-    if (segments.length <= 1 && totalDur > MIN_SPLIT_VIDEO_SEC) {
-      throw new ArchiveSplitError(
-        "Slechts 1 clip geëxtraheerd terwijl er meerdere shots verwacht werden. Probeer opnieuw te uploaden."
-      );
     }
 
     return segments;

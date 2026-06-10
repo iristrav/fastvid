@@ -84,16 +84,15 @@ async function extractVideoPreviewJpeg(
   }
 }
 
-const OVERLAY_PROMPT = `Beoordeel deze videostill(s) voor een documentaire-archief. Puur beeldmateriaal zonder leesbare tekst is gewenst.
+const OVERLAY_PROMPT = `Beoordeel deze videostill(s) voor een documentaire-archief.
 
-hasBakedEditText = true wanneer ÉÉN of meer stills duidelijk leesbare tekst in beeld hebben, zoals:
+hasBakedEditText = true wanneer ÉÉN of meer stills duidelijk editor-tekst in beeld hebben:
 - titelkaarten, chapter cards, intro/outro-tekst
 - ondertitels, captions of quote-tekst over het beeld
-- lower thirds, namen, datums, locaties, koppen
-- grote tekst-overlays, animatie-tekst of montage-tekst
-- watermerken of logo's met duidelijk leesbare woorden/letters
+- lower thirds, namen, datums, locaties als overlay
+- grote tekst-overlays of montage-tekst
 
-hasBakedEditText = false ALLEEN wanneer alle stills puur beeldmateriaal zijn zonder leesbare tekst (geen titels, geen captions, geen overlays).`;
+hasBakedEditText = false wanneer het puur beeldmateriaal is, ook als er kleine natuurlijke tekst in de scène staat (borden, etiketten, krantenkoppen) of alleen een klein logo/watermerk zonder titel.`;
 
 async function detectOnScreenTextInImages(dataUrls: string[]): Promise<boolean> {
   if (dataUrls.length === 0) return false;
@@ -158,10 +157,11 @@ async function extractVideoPreviewJpegs(
   return frames;
 }
 
-function sampleTimesInRange(startSec: number, endSec: number): number[] {
+function sampleTimesInRange(startSec: number, endSec: number, fastMode = false): number[] {
   const dur = endSec - startSec;
   if (dur <= 0.25) return [startSec + dur * 0.5];
-  return [startSec + dur * 0.2, startSec + dur * 0.5, startSec + dur * 0.8];
+  if (fastMode) return [startSec + dur * 0.5];
+  return [startSec + dur * 0.35, startSec + dur * 0.65];
 }
 
 /** Check a source-video segment before extract (start/end in seconds). */
@@ -169,15 +169,20 @@ export async function archiveSegmentHasOnScreenText(
   videoPath: string,
   startSec: number,
   endSec: number,
-  opts?: { clipCount?: number }
+  opts?: { clipCount?: number; fastMode?: boolean }
 ): Promise<boolean> {
   if (opts?.clipCount != null && !shouldRunArchiveOverlayFilter(opts.clipCount)) return false;
   if (!archiveClipOverlayFilterEnabled()) return false;
   if (!fs.existsSync(videoPath)) return false;
 
+  const fastMode = opts?.fastMode ?? (opts?.clipCount != null && opts.clipCount > 40);
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "archive-overlay-seg-"));
   try {
-    const frames = await extractVideoPreviewJpegs(videoPath, workDir, sampleTimesInRange(startSec, endSec));
+    const frames = await extractVideoPreviewJpegs(
+      videoPath,
+      workDir,
+      sampleTimesInRange(startSec, endSec, fastMode)
+    );
     if (frames.length === 0) return false;
     const dataUrls = frames.map((buf) => imageMimeToDataUrl(buf, "image/jpeg"));
     return detectOnScreenTextInImages(dataUrls);
@@ -202,6 +207,7 @@ export async function archiveClipHasBakedEditText(
 
   if (!mimeType.startsWith("video/")) return false;
 
+  const fastMode = opts?.clipCount != null && opts.clipCount > 40;
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "archive-overlay-"));
   const ext = mimeType.includes("webm") ? "webm" : mimeType.includes("mov") ? "mov" : "mp4";
   const videoPath = path.join(workDir, `preview.${ext}`);
@@ -209,9 +215,11 @@ export async function archiveClipHasBakedEditText(
     fs.writeFileSync(videoPath, mediaBuffer);
     const dur = await probeVideoDurationSec(videoPath);
     const sampleSec =
-      dur > 0.4
-        ? [dur * 0.25, dur * 0.5, dur * 0.75]
-        : [dur > 0 ? dur * 0.5 : 0];
+      dur <= 0.4
+        ? [dur > 0 ? dur * 0.5 : 0]
+        : fastMode
+          ? [dur * 0.5]
+          : [dur * 0.35, dur * 0.65];
     const frames = await extractVideoPreviewJpegs(videoPath, workDir, sampleSec);
     if (frames.length === 0) return false;
     const dataUrls = frames.map((buf) => imageMimeToDataUrl(buf, "image/jpeg"));
