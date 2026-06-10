@@ -15,6 +15,12 @@ import { fileURLToPath } from "url";
 import { LOCAL_UPLOADS_DIR } from "../storageLocal";
 import { registerArchiveUploadRoute } from "../archiveUpload";
 import { registerArchiveMediaRoute } from "../archiveMediaStream";
+import {
+  curatedArchiveOnlyVisuals,
+  externalVisualSourcingEnabled,
+  elevenLabsOnlyVoice,
+  skipEffectsStage,
+} from "../sourcingPolicy";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -89,8 +95,6 @@ async function startServer() {
   console.log("[Fastvid] RAPIDAPI_KEY:", ytDownload ? "✓ set" : "✗ NOT SET — YouTube CC download disabled");
   console.log("[Fastvid] YOUTUBE_API_KEY:", ytSearch ? "✓ set" : "✗ NOT SET — YouTube CC search disabled");
   console.log("[Fastvid] YouTube clip sourcing: disabled");
-  const { curatedArchiveOnlyVisuals, externalVisualSourcingEnabled, elevenLabsOnlyVoice, skipEffectsStage } =
-    await import("../sourcingPolicy");
   console.log(
     "[Fastvid] Visual sourcing:",
     curatedArchiveOnlyVisuals()
@@ -189,7 +193,6 @@ async function startServer() {
             };
           })()
         : undefined;
-    const { curatedArchiveOnlyVisuals, externalVisualSourcingEnabled } = await import("../sourcingPolicy");
     res.status(200).json({
       status: "ok",
       timestamp: new Date().toISOString(),
