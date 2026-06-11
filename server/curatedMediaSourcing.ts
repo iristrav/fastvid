@@ -11,11 +11,12 @@ import { storageGetSignedUrl } from "./storage";
 import { archiveClipHasBakedEditText } from "./archiveClipFilter";
 import { buildMatFramedStillVF, buildStillEncodeArgs } from "./documentaryStyle";
 import {
-  buildImageMotionGraphicFilter,
   buildNewsCardVideoVF,
   canUseMotionGraphicStyle,
   planMotionGraphicBeat,
+  resolveStillImageFilterComplex,
   type MotionGraphicsBudget,
+  type StillStyleContext,
 } from "./motionGraphicsEngine";
 import {
   curatedArchiveOnlyVisuals,
@@ -689,11 +690,7 @@ async function materializeArchiveAsset(asset: MediaArchiveAsset, destPath: strin
   fs.writeFileSync(destPath, buf);
 }
 
-export type CuratedClipStyleContext = {
-  beatText?: string;
-  videoTitle?: string;
-  motionGraphicsBudget?: MotionGraphicsBudget;
-};
+export type CuratedClipStyleContext = StillStyleContext;
 
 /** Ken Burns motion — visible pan/zoom for full beat duration (avoids frozen stills). */
 async function convertImageToKenBurns(
@@ -704,31 +701,19 @@ async function convertImageToKenBurns(
   beatIndex: number,
   styleContext?: CuratedClipStyleContext
 ): Promise<void> {
-  const plan =
-    styleContext?.beatText != null
-      ? planMotionGraphicBeat(
-          styleContext.beatText,
-          sceneIndex,
-          beatIndex,
-          styleContext.videoTitle
-        )
-      : null;
-
-  if (canUseMotionGraphicStyle(plan, styleContext?.motionGraphicsBudget)) {
-    const styled = buildImageMotionGraphicFilter(duration, plan);
-    if (styled) {
-      await exec(
-        `${ffmpegBin()} ${buildStillEncodeArgs(imgPath, outPath, duration, styled)}`
-      );
-      if (styleContext?.motionGraphicsBudget) {
-        styleContext.motionGraphicsBudget.used++;
-      }
-      const outDur = await probeMediaDurationSec(outPath);
-      if (outDur < duration * 0.85) {
-        throw new Error(`Styled still clip too short (${outDur.toFixed(2)}s < ${duration.toFixed(2)}s)`);
-      }
-      return;
+  const styled = resolveStillImageFilterComplex(duration, sceneIndex, beatIndex, styleContext);
+  if (styled) {
+    await exec(
+      `${ffmpegBin()} ${buildStillEncodeArgs(imgPath, outPath, duration, styled.filterComplex)}`
+    );
+    if (styled.consumedBudget && styleContext?.motionGraphicsBudget) {
+      styleContext.motionGraphicsBudget.used++;
     }
+    const outDur = await probeMediaDurationSec(outPath);
+    if (outDur < duration * 0.85) {
+      throw new Error(`Styled still clip too short (${outDur.toFixed(2)}s < ${duration.toFixed(2)}s)`);
+    }
+    return;
   }
 
   if (framedArchiveStillsEnabled()) {

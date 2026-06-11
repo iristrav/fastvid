@@ -31,23 +31,19 @@ const NEWS_SOURCES =
 const MONTHS =
   "Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|jan|feb|mrt|apr|mei|jun|jul|aug|sep|okt|nov|dec";
 
-/** Beat rhythm — topic-agnostic; budget caps how many render per video. */
-export function motionGraphicSlotKind(sceneIndex: number, beatIndex: number): MotionGraphicKind | null {
+const ROTATION: MotionGraphicKind[] = [
+  "text_card",
+  "news_card",
+  "portrait_cutout",
+  "map_card",
+  "news_card",
+];
+
+/** Every beat gets a rotating style — topic-agnostic; budget caps renders per video. */
+export function motionGraphicSlotKind(sceneIndex: number, beatIndex: number): MotionGraphicKind {
   if (sceneIndex === 0 && beatIndex === 0) return "text_card";
-
   const slot = sceneIndex * 5 + beatIndex;
-  if (slot % 3 !== 1) return null;
-
-  switch (Math.floor(slot / 3) % 4) {
-    case 0:
-      return "news_card";
-    case 1:
-      return "portrait_cutout";
-    case 2:
-      return "map_card";
-    default:
-      return "text_card";
-  }
+  return ROTATION[slot % ROTATION.length];
 }
 
 export function motionGraphicsEnabled(): boolean {
@@ -179,14 +175,39 @@ export function planMotionGraphicBeat(
   beatIndex: number,
   videoTitle?: string
 ): MotionGraphicPlan | null {
+  if (!motionGraphicsEnabled()) return null;
   const text = beatText.replace(/\[visual:[^\]]+\]/gi, "").trim();
   if (text.length < 10) return null;
 
-  const slotKind = motionGraphicSlotKind(sceneIndex, beatIndex);
-  if (slotKind) return buildPlanForKind(slotKind, text, videoTitle);
+  return buildPlanForKind(motionGraphicSlotKind(sceneIndex, beatIndex), text, videoTitle);
+}
 
-  if (/\?/.test(text.slice(0, 140)) && text.length >= 20) {
-    return buildPlanForKind("text_card", text, videoTitle);
+export type StillStyleContext = {
+  beatText?: string;
+  videoTitle?: string;
+  motionGraphicsBudget?: MotionGraphicsBudget;
+};
+
+/** Pick FFmpeg filter for still/image beats — motion graphic or gray mat fallback. */
+export function resolveStillImageFilterComplex(
+  duration: number,
+  sceneIndex: number,
+  beatIndex: number,
+  styleContext?: StillStyleContext
+): { filterComplex: string; consumedBudget: boolean } | null {
+  if (styleContext?.beatText) {
+    const plan = planMotionGraphicBeat(
+      styleContext.beatText,
+      sceneIndex,
+      beatIndex,
+      styleContext.videoTitle
+    );
+    if (canUseMotionGraphicStyle(plan, styleContext.motionGraphicsBudget)) {
+      const styled = buildImageMotionGraphicFilter(duration, plan!);
+      if (styled) {
+        return { filterComplex: styled, consumedBudget: true };
+      }
+    }
   }
 
   return null;

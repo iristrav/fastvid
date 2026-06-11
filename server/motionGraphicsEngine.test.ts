@@ -24,11 +24,13 @@ describe("motionGraphicsEngine", () => {
     expect(lines.every((l) => l.length <= 38)).toBe(true);
   });
 
-  it("uses beat rhythm independent of topic keywords", () => {
+  it("assigns a rotating style to every beat slot", () => {
     expect(motionGraphicSlotKind(0, 0)).toBe("text_card");
     expect(motionGraphicSlotKind(0, 1)).toBe("news_card");
-    expect(motionGraphicSlotKind(0, 4)).toBe("portrait_cutout");
-    expect(motionGraphicSlotKind(1, 2)).toBe("map_card");
+    expect(motionGraphicSlotKind(0, 2)).toBe("portrait_cutout");
+    expect(motionGraphicSlotKind(0, 3)).toBe("map_card");
+    expect(motionGraphicSlotKind(0, 4)).toBe("news_card");
+    expect(motionGraphicSlotKind(2, 7)).toBeTruthy();
   });
 
   it("plans text card for opening beat on any topic", () => {
@@ -45,8 +47,8 @@ describe("motionGraphicsEngine", () => {
   it("plans map card from video title without geo keywords", () => {
     const plan = planMotionGraphicBeat(
       "He built rockets and electric cars while critics laughed at the idea.",
-      1,
-      2,
+      0,
+      3,
       "Elon Musk: Tesla and SpaceX"
     );
     expect(plan?.kind).toBe("map_card");
@@ -70,11 +72,18 @@ describe("motionGraphicsEngine", () => {
     const plan = planMotionGraphicBeat(
       "Hitler rose to power in a fractured Germany after the First World War ended.",
       0,
-      4,
+      2,
       "The Rise of Hitler"
     );
     expect(plan?.kind).toBe("portrait_cutout");
     expect(motionGraphicNeedsSourceImage("portrait_cutout")).toBe(true);
+  });
+
+  it("plans every beat with enough narration text", () => {
+    const text = "The factory expanded production across three continents in one decade.";
+    for (let beatIndex = 0; beatIndex < 5; beatIndex++) {
+      expect(planMotionGraphicBeat(text, 1, beatIndex, "Industrial Growth")?.kind).toBeTruthy();
+    }
   });
 
   it("extractNewsCardContent uses explicit outlet when present", () => {

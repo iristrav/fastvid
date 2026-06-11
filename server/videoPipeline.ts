@@ -40,6 +40,7 @@ import { sanitizeForDrawtext, sanitizeForDrawtextStrict } from "./ffmpegSanitize
 import {
   buildPostGradeVF,
   buildSimpleKenBurnsVF,
+  buildMatFramedStillVF,
   buildStillEncodeArgs,
   documentaryStyleEnabled,
   renderHighlightCaptionOverlay,
@@ -83,7 +84,7 @@ import {
   scriptGuidedClipsEnabled,
 } from "./scriptGuidedClipFinder";
 import { clipPassesVisionGate, clipVisionGateEnabled } from "./visualQualityGate";
-import { curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, skipEffectsStage, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, maxMotionGraphicsPerVideo } from "./sourcingPolicy";
+import { curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, skipEffectsStage, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled } from "./sourcingPolicy";
 import {
   fetchCuratedArchiveBeatClip,
   curatedClipPathAssetId,
@@ -94,7 +95,14 @@ import {
   isCuratedPreparedStillClip,
   isCuratedPreparedVideoClip,
 } from "./curatedMediaSourcing";
-import { tryRenderMotionGraphicBeatClip } from "./motionGraphicsEngine";
+import {
+  buildNewsCardVideoVF,
+  motionGraphicsEnabled,
+  planMotionGraphicBeat,
+  resolveStillImageFilterComplex,
+  tryRenderMotionGraphicBeatClip,
+  type StillStyleContext,
+} from "./motionGraphicsEngine";
 import {
   logPipelineReview,
   reviewPipelineBeforeEffects,
@@ -3381,7 +3389,7 @@ async function fetchPixabayClips(
   return results;
 }
 
-/** Encode a still image to MP4 with Ken Burns; documentary blur-fill with simple fallback. */
+/** Encode a still image to MP4 with Ken Burns; motion graphics, gray mat, or documentary blur-fill. */
 async function encodeStillImageMp4(
   imgPath: string,
   outPath: string,
@@ -3389,8 +3397,56 @@ async function encodeStillImageMp4(
   label: string,
   sceneIndex: number,
   beatIndex: number,
-  personPortrait: boolean
+  personPortrait: boolean,
+  styleContext?: StillStyleContext
 ): Promise<void> {
+  const styled = resolveStillImageFilterComplex(duration, sceneIndex, beatIndex, styleContext);
+  if (styled) {
+    try {
+      await withTimeout(
+        exec(`${FFMPEG_BIN} ${buildStillEncodeArgs(imgPath, outPath, duration, styled.filterComplex)}`),
+        45_000,
+        label
+      );
+      if (styled.consumedBudget && styleContext?.motionGraphicsBudget) {
+        styleContext.motionGraphicsBudget.used++;
+      }
+      if (fs.existsSync(outPath) && fs.statSync(outPath).size > 1000) {
+        const probed = await probeVideoDurationSec(outPath);
+        if (probed >= duration * 0.5) return;
+      }
+    } catch (err) {
+      console.warn(`[Pipeline] ${label}: motion graphic still failed:`, (err as Error).message);
+    }
+    try {
+      if (fs.existsSync(outPath)) fs.unlinkSync(outPath);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  if (framedArchiveStillsEnabled()) {
+    try {
+      const filterComplex = buildMatFramedStillVF(duration);
+      await withTimeout(
+        exec(`${FFMPEG_BIN} ${buildStillEncodeArgs(imgPath, outPath, duration, filterComplex)}`),
+        45_000,
+        `${label} (mat frame)`
+      );
+      if (fs.existsSync(outPath) && fs.statSync(outPath).size > 1000) {
+        const probed = await probeVideoDurationSec(outPath);
+        if (probed >= duration * 0.5) return;
+      }
+    } catch (err) {
+      console.warn(`[Pipeline] ${label}: mat frame still failed:`, (err as Error).message);
+    }
+    try {
+      if (fs.existsSync(outPath)) fs.unlinkSync(outPath);
+    } catch {
+      /* ignore */
+    }
+  }
+
   const fps = 25;
   const frames = stillOutputFrameCount(duration, fps);
 
@@ -3453,9 +3509,10 @@ async function convertImageToVideoGentle(
   duration: number,
   label: string,
   sceneIndex = 0,
-  beatIndex = 0
+  beatIndex = 0,
+  styleContext?: StillStyleContext
 ): Promise<void> {
-  await encodeStillImageMp4(imgPath, outPath, duration, label, sceneIndex, beatIndex, false);
+  await encodeStillImageMp4(imgPath, outPath, duration, label, sceneIndex, beatIndex, false, styleContext);
 }
 
 /** Person stills: top-aligned 16:9 crop so faces stay visible on red-carpet / full-body photos. */
@@ -3465,9 +3522,10 @@ async function convertImageToVideoPersonPortrait(
   duration: number,
   label: string,
   sceneIndex = 0,
-  beatIndex = 0
+  beatIndex = 0,
+  styleContext?: StillStyleContext
 ): Promise<void> {
-  await encodeStillImageMp4(imgPath, outPath, duration, label, sceneIndex, beatIndex, true);
+  await encodeStillImageMp4(imgPath, outPath, duration, label, sceneIndex, beatIndex, true, styleContext);
 }
 
 async function stillImageToVideo(
@@ -3477,12 +3535,13 @@ async function stillImageToVideo(
   label: string,
   personPortrait: boolean,
   sceneIndex = 0,
-  beatIndex = 0
+  beatIndex = 0,
+  styleContext?: StillStyleContext
 ): Promise<void> {
   if (personPortrait) {
-    await convertImageToVideoPersonPortrait(imgPath, outPath, duration, label, sceneIndex, beatIndex);
+    await convertImageToVideoPersonPortrait(imgPath, outPath, duration, label, sceneIndex, beatIndex, styleContext);
   } else {
-    await convertImageToVideoGentle(imgPath, outPath, duration, label, sceneIndex, beatIndex);
+    await convertImageToVideoGentle(imgPath, outPath, duration, label, sceneIndex, beatIndex, styleContext);
   }
 }
 
@@ -3504,7 +3563,8 @@ async function fetchWikimediaImages(
   workDir: string,
   sceneIndex: number,
   count: number = 2,
-  fileTag = ""
+  fileTag = "",
+  opts: { beatIndex?: number; stillStyleContext?: StillStyleContext } = {}
 ): Promise<string[]> {
   const results: string[] = [];
   try {
@@ -3561,7 +3621,9 @@ async function fetchWikimediaImages(
           duration,
           `Wikimedia image to video scene ${sceneIndex}`,
           /portrait|face|headshot|person|celebrity/i.test(query),
-          sceneIndex
+          sceneIndex,
+          opts.beatIndex ?? 0,
+          opts.stillStyleContext
         );
         try { fs.unlinkSync(imgPath); } catch { /* ignore */ }
         if (fs.existsSync(outPath) && fs.statSync(outPath).size > 1_000) {
@@ -3589,7 +3651,12 @@ async function fetchOpenverseImages(
   sceneIndex: number,
   maxResults: number = 2,
   fileTag = "",
-  opts: { personPortrait?: boolean; dedup?: VisualDedupState } = {}
+  opts: {
+    personPortrait?: boolean;
+    dedup?: VisualDedupState;
+    beatIndex?: number;
+    stillStyleContext?: StillStyleContext;
+  } = {}
 ): Promise<string[]> {
   const results: string[] = [];
   try {
@@ -3634,7 +3701,9 @@ async function fetchOpenverseImages(
           duration,
           `Openverse image to video scene ${sceneIndex}`,
           Boolean(opts.personPortrait) || /portrait|face|headshot/i.test(query),
-          sceneIndex
+          sceneIndex,
+          opts.beatIndex ?? 0,
+          opts.stillStyleContext
         );
         try { fs.unlinkSync(imgPath); } catch { /**/ }
 
@@ -3854,6 +3923,8 @@ async function fetchSerpAPIImages(
     dedup?: VisualDedupState;
     personPortrait?: boolean;
     resultOffset?: number;
+    beatIndex?: number;
+    stillStyleContext?: StillStyleContext;
   } = {}
 ): Promise<string[]> {
   if (!SERPAPI_KEY) return [];
@@ -3940,7 +4011,9 @@ async function fetchSerpAPIImages(
           duration,
           `SerpAPI image to video scene ${sceneIndex}`,
           Boolean(opts.personPortrait),
-          sceneIndex
+          sceneIndex,
+          opts.beatIndex ?? 0,
+          opts.stillStyleContext
         );
         try { fs.unlinkSync(imgPath); } catch { /* ignore */ }
         if (fs.existsSync(outPath) && fs.statSync(outPath).size > 1_000) {
@@ -6815,6 +6888,20 @@ async function fetchBeatScriptImageClip(
     primaryPerson: primary || adoptOpts.primaryPerson,
   };
   const queries = buildBeatImageSearchQueries(beat, scene, videoTitle, scenePersons);
+  const stillStyleContext: StillStyleContext = {
+    beatText: beat.text,
+    videoTitle,
+    motionGraphicsBudget: {
+      used: dedup.motionGraphicsUsed,
+      max: maxMotionGraphicsPerVideo(),
+    },
+  };
+  const imageOpts = {
+    dedup,
+    personPortrait: portrait,
+    beatIndex: beat.index,
+    stillStyleContext,
+  };
 
   return withTimeout(
     (async () => {
@@ -6829,8 +6916,7 @@ async function fetchBeatScriptImageClip(
             1,
             `${tag}_img_serp`,
             {
-              dedup,
-              personPortrait: portrait,
+              ...imageOpts,
               resultOffset: sceneIndex * 3 + beat.index + qi,
             }
           );
@@ -6853,7 +6939,7 @@ async function fetchBeatScriptImageClip(
           sceneIndex,
           1,
           `${tag}_img_ov`,
-          { dedup, personPortrait: portrait }
+          imageOpts
         );
         const clip = await adoptClip(
           ovPaths, dedup, sceneIndex, beat.index, beat.text, workDir, q, looseOpts
@@ -6867,7 +6953,7 @@ async function fetchBeatScriptImageClip(
       }
       if (primary) {
         const wikiPaths = await fetchWikimediaImages(
-          primary, clipFetchDur, workDir, sceneIndex, 1, `${tag}_img_wiki`
+          primary, clipFetchDur, workDir, sceneIndex, 1, `${tag}_img_wiki`, imageOpts
         );
         const clip = await adoptClip(
           wikiPaths, dedup, sceneIndex, beat.index, beat.text, workDir, primary, looseOpts
@@ -6904,6 +6990,8 @@ async function fetchBeatScriptImageClip(
       (err as Error).message
     );
     return null;
+  }).finally(() => {
+    dedup.motionGraphicsUsed = stillStyleContext.motionGraphicsBudget!.used;
   });
 }
 
@@ -6922,6 +7010,20 @@ async function fetchBeatScriptImageForced(
   const primary = scenePersons[0] ?? dedup.primaryPerson ?? "";
   const portrait = Boolean(primary) || dedup.personTopicLock;
   const queries = buildBeatImageSearchQueries(beat, scene, videoTitle, scenePersons);
+  const stillStyleContext: StillStyleContext = {
+    beatText: beat.text,
+    videoTitle,
+    motionGraphicsBudget: {
+      used: dedup.motionGraphicsUsed,
+      max: maxMotionGraphicsPerVideo(),
+    },
+  };
+  const imageOpts = {
+    dedup,
+    personPortrait: portrait,
+    beatIndex: beat.index,
+    stillStyleContext,
+  };
 
   const takeFirstValid = async (paths: string[]): Promise<string | null> =>
     withVisualDedupLock(dedup, async () => {
@@ -6953,8 +7055,7 @@ async function fetchBeatScriptImageForced(
             1,
             `${tag}_force_serp`,
             {
-              dedup,
-              personPortrait: portrait,
+              ...imageOpts,
               resultOffset: sceneIndex * 5 + beat.index + qi,
             }
           );
@@ -6967,7 +7068,7 @@ async function fetchBeatScriptImageForced(
       }
       if (primary) {
         const wikiPaths = await fetchWikimediaImages(
-          primary, clipFetchDur, workDir, sceneIndex, 1, `${tag}_force_wiki`
+          primary, clipFetchDur, workDir, sceneIndex, 1, `${tag}_force_wiki`, imageOpts
         );
         const clip = await takeFirstValid(wikiPaths);
         if (clip) {
@@ -6977,7 +7078,7 @@ async function fetchBeatScriptImageForced(
       }
       for (const q of queries.slice(0, 4)) {
         const wikiPaths = await fetchWikimediaImages(
-          q, clipFetchDur, workDir, sceneIndex, 1, `${tag}_force_wiki`
+          q, clipFetchDur, workDir, sceneIndex, 1, `${tag}_force_wiki`, imageOpts
         );
         const wikiClip = await takeFirstValid(wikiPaths);
         if (wikiClip) {
@@ -7010,7 +7111,9 @@ async function fetchBeatScriptImageForced(
     })(),
     beatScriptImageWallMs(dedup.perf) + 5_000,
     `forced image s${sceneIndex} b${beat.index}`
-  ).catch(() => null);
+  ).catch(() => null).finally(() => {
+    dedup.motionGraphicsUsed = stillStyleContext.motionGraphicsBudget!.used;
+  });
 }
 
 /** Still-photo clips (Ken Burns from images) — cap these per scene; prefer real stock video. */
@@ -11720,6 +11823,72 @@ type BeatProgressPhase = "beat" | "backfill";
 
 const ARCHIVE_BEAT_CLIP_RETRIES = 12;
 
+async function pushMotionGraphicBeatClipIfAny(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  videoTitle: string | undefined,
+  dedup: VisualDedupState,
+  pushClip: (clipPath: string, holdSec?: number) => boolean,
+  holdSec = beat.holdSec
+): Promise<boolean> {
+  if (!motionGraphicsEnabled()) return false;
+  if (dedup.motionGraphicsUsed >= maxMotionGraphicsPerVideo()) return false;
+
+  const mgfxClip = await tryRenderMotionGraphicBeatClip(
+    beat.text,
+    scene.index,
+    beat.index,
+    workDir,
+    holdSec,
+    dedup.motionGraphicsUsed,
+    videoTitle,
+    FFMPEG_BIN,
+    (cmd, ms, label) => withTimeout(exec(cmd), ms, label)
+  );
+  if (!mgfxClip) return false;
+  dedup.motionGraphicsUsed++;
+  return pushClip(mgfxClip, holdSec);
+}
+
+async function applyBeatNewsCardToVideoClip(
+  clipPath: string,
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  videoTitle: string | undefined,
+  dedup: VisualDedupState,
+  holdSec: number
+): Promise<string> {
+  if (!motionGraphicsEnabled() || isStillPhotoClip(clipPath)) return clipPath;
+  if (dedup.motionGraphicsUsed >= maxMotionGraphicsPerVideo()) return clipPath;
+
+  const plan = planMotionGraphicBeat(beat.text, scene.index, beat.index, videoTitle);
+  if (!plan || plan.kind !== "news_card") return clipPath;
+
+  const outPath = path.join(workDir, `scene_${scene.index}_b${beat.index}_news_overlay.mp4`);
+  try {
+    await withTimeout(
+      exec(
+        `${FFMPEG_BIN} -y -i "${clipPath}" -t ${holdSec.toFixed(3)} ` +
+          `-vf "${buildNewsCardVideoVF(plan)}" -an -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p "${outPath}"`
+      ),
+      45_000,
+      `news overlay s${scene.index} b${beat.index}`
+    );
+    if (fs.existsSync(outPath) && fs.statSync(outPath).size > 800) {
+      dedup.motionGraphicsUsed++;
+      return outPath;
+    }
+  } catch (err) {
+    console.warn(
+      `[Pipeline] Scene ${scene.index} beat ${beat.index}: news overlay failed:`,
+      (err as Error).message
+    );
+  }
+  return clipPath;
+}
+
 async function adoptArchiveBeatClip(
   beat: SceneBeat,
   scene: Scene,
@@ -11737,20 +11906,8 @@ async function adoptArchiveBeatClip(
 
   if (tryClip(initialClip, holdSec)) return true;
 
-  const mgfxClip = await tryRenderMotionGraphicBeatClip(
-    beat.text,
-    scene.index,
-    beat.index,
-    workDir,
-    holdSec,
-    dedup.motionGraphicsUsed,
-    videoTitle,
-    FFMPEG_BIN,
-    (cmd, ms, label) => withTimeout(exec(cmd), ms, label)
-  );
-  if (mgfxClip) {
-    dedup.motionGraphicsUsed++;
-    if (tryClip(mgfxClip, holdSec)) return true;
+  if (await pushMotionGraphicBeatClipIfAny(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec)) {
+    return true;
   }
 
   const mgfxBudget = {
@@ -11870,6 +12027,9 @@ async function fetchSceneVisuals(
       onBeatProgress?.(bi, beats.length, "beat");
     }, 10_000);
     try {
+      if (await pushMotionGraphicBeatClipIfAny(beat, scene, workDir, videoTitle, dedup, pushClip, beat.holdSec)) {
+        continue;
+      }
       if (archiveOnly) {
         const filled = await withTimeout(
           adoptArchiveBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, null),
@@ -11995,6 +12155,15 @@ async function fetchSceneVisuals(
       if (realOnly && isLicensedStockClip(clip) && !canUseLicensedStockBeat(dedup)) {
         clip = null;
       } else {
+        clip = await applyBeatNewsCardToVideoClip(
+          clip,
+          beat,
+          scene,
+          workDir,
+          videoTitle,
+          dedup,
+          beat.holdSec
+        );
         pushClip(clip);
       }
     }
