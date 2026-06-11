@@ -384,7 +384,7 @@ const SCALE_PAD_VF = `scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect
 const CROP_FILL_VF =
   `scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,` +
   `crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:(iw-${VIDEO_WIDTH})/2:(ih-${VIDEO_HEIGHT})/2`;
-const FPS_FORMAT_VF = `fps=25,format=yuv420p,setpts=PTS-STARTPTS`;
+const FPS_FORMAT_VF = `fps=25,format=yuv420p,setsar=1,setpts=PTS-STARTPTS`;
 const STANDARD_VF = `${SCALE_PAD_VF},${FPS_FORMAT_VF}`;
 /** New clip every ~3–4s; hold up to 7s when narration/visual clearly stay on one subject. */
 const VIDRUSH_CLIP_MIN_SEC = 2.5;
@@ -12891,12 +12891,16 @@ function buildOverlayFilterChain(
     const outLabel = idx === allOverlays.length - 1 ? "kfinal" : `kf${idx}`;
     const timed = frame as TimedOverlay;
     const enable = `enable='between(t,${frame.startTime.toFixed(2)},${frame.endTime.toFixed(2)})'`;
+    const ovlLabel = `ov${idx}`;
     if (timed.overlayX != null && timed.overlayY != null) {
-      chain += `;[${prevLabel}][${inputIdx}:v]overlay=x=${timed.overlayX}:y=${timed.overlayY}:format=auto:${enable}[${outLabel}]`;
+      chain += `;[${inputIdx}:v]scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}[${ovlLabel}];` +
+        `[${prevLabel}][${ovlLabel}]overlay=x=${timed.overlayX}:y=${timed.overlayY}:${enable}[${outLabel}]`;
     } else if (overlayUsesFullFrame(timed) || (frame as { isStatCallout?: boolean }).isStatCallout) {
-      chain += `;[${prevLabel}][${inputIdx}:v]overlay=x=0:y=0:format=auto:${enable}[${outLabel}]`;
+      chain += `;[${inputIdx}:v]scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}[${ovlLabel}];` +
+        `[${prevLabel}][${ovlLabel}]overlay=x=0:y=0:${enable}[${outLabel}]`;
     } else {
-      chain += `;[${prevLabel}][${inputIdx}:v]overlay=x=0:y=${kineticY}:format=auto:${enable}[${outLabel}]`;
+      chain += `;[${inputIdx}:v]scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}[${ovlLabel}];` +
+        `[${prevLabel}][${ovlLabel}]overlay=x=0:y=${kineticY}:${enable}[${outLabel}]`;
     }
     prevLabel = outLabel;
   });

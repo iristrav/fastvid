@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildCinematicSfxAudioFilter,
+  buildFacelessDrawtextVF,
   buildStatCountSteps,
   cinematicEffectsEnabled,
   extractStatFromText,
@@ -87,5 +88,13 @@ describe("cinematicEffectsEngine", () => {
     const steps = buildStatCountSteps("$1 Billion");
     expect(steps[0]).toBe("$0");
     expect(steps.length).toBeGreaterThan(2);
+  });
+
+  it("builds faceless drawtext vf bottom-left", () => {
+    const lines = parseFacelessSubtitleLines("Hitler rose to power in 1933");
+    const vf = buildFacelessDrawtextVF(lines, 4.0, "bottom-left");
+    expect(vf).toContain("drawtext=");
+    expect(vf).toContain("x=56");
+    expect(vf).toContain("enable=");
   });
 });

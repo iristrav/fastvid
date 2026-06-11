@@ -122,6 +122,38 @@ export function parseFacelessSubtitleLines(text: string, maxLines = 4): Faceless
 
 export type FacelessSubtitlePlacement = "bottom-left" | "bottom-center";
 
+const FACELESS_VIDEO_PREP_VF =
+  `scale=${DOC_STYLE_VIDEO_WIDTH}:${DOC_STYLE_VIDEO_HEIGHT}:force_original_aspect_ratio=increase,` +
+  `crop=${DOC_STYLE_VIDEO_WIDTH}:${DOC_STYLE_VIDEO_HEIGHT}:(iw-${DOC_STYLE_VIDEO_WIDTH})/2:(ih-${DOC_STYLE_VIDEO_HEIGHT})/2,` +
+  `fps=25,format=yuv420p,setsar=1`;
+
+/** Drawtext filters for faceless kinetic subtitles (no PNG overlay — avoids FFmpeg auto_scale failures). */
+export function buildFacelessDrawtextVF(
+  lines: FacelessLine[],
+  sceneDuration: number,
+  placement: FacelessSubtitlePlacement = "bottom-left"
+): string {
+  if (!lines.length) return "";
+  const startTime = 0.35;
+  const endTime = Math.min(sceneDuration - 0.2, startTime + Math.min(4.5, sceneDuration * 0.55));
+  const enable = `between(t\\,${startTime.toFixed(2)}\\,${endTime.toFixed(2)})`;
+  const marginL = 56;
+  const marginB = 72;
+  const lineHeights = lines.map((line) => (line.emphasis ? 68 : 48));
+  const totalH = lineHeights.reduce((s, h) => s + h, 0);
+  const baseY = DOC_STYLE_VIDEO_HEIGHT - marginB - totalH;
+  return lines
+    .map((line, i) => {
+      const safe = sanitizeForDrawtext(line.text, 36);
+      const fs = line.emphasis ? 58 : 38;
+      const y = baseY + lineHeights.slice(0, i).reduce((s, h) => s + h, 0);
+      const x = placement === "bottom-center" ? "(w-text_w)/2" : String(marginL);
+      const color = line.emphasis ? "white" : "0xDDDDDD";
+      return `drawtext=text='${safe}':fontcolor=${color}:fontsize=${fs}:x=${x}:y=${y}:enable='${enable}'`;
+    })
+    .join(",");
+}
+
 export async function renderFacelessSubtitleOverlay(
   lines: FacelessLine[],
   sceneIndex: number,
@@ -179,33 +211,20 @@ export async function burnFacelessTextOnVideoClip(
 ): Promise<string> {
   const lines = parseFacelessSubtitleLines(text);
   if (!lines.length) return clipPath;
-  const overlay = await renderFacelessSubtitleOverlay(
-    lines,
-    sceneIndex,
-    workDir,
-    ffmpegBin,
-    execWithTimeout,
-    holdSec,
-    "bottom-left"
-  );
-  if (!overlay) return clipPath;
+
+  const drawtext = buildFacelessDrawtextVF(lines, holdSec, "bottom-left");
+  if (!drawtext) return clipPath;
 
   const outPath = path.join(workDir, `scene_${sceneIndex}_b${beatIndex}_vtext.mp4`);
-  const enable = `enable='between(t,${overlay.startTime.toFixed(2)},${overlay.endTime.toFixed(2)})'`;
   try {
     await execWithTimeout(
-      `${ffmpegBin} -y -i "${clipPath}" -i "${overlay.path}" -t ${holdSec.toFixed(3)} ` +
-        `-filter_complex "[0:v][1:v]overlay=x=0:y=0:format=auto:${enable}[vout]" ` +
-        `-map "[vout]" -an -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p "${outPath}"`,
+      `${ffmpegBin} -y -i "${clipPath}" -t ${holdSec.toFixed(3)} ` +
+        `-vf "${FACELESS_VIDEO_PREP_VF},${drawtext}" ` +
+        `-an -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -r 25 "${outPath}"`,
       45_000,
       `Video beat text s${sceneIndex} b${beatIndex}`
     );
     if (fs.existsSync(outPath) && fs.statSync(outPath).size > 800) {
-      try {
-        fs.unlinkSync(overlay.path);
-      } catch {
-        /* ignore */
-      }
       return outPath;
     }
   } catch {
