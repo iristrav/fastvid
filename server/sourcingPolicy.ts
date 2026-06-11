@@ -56,5 +56,5 @@ export function archiveMaxImageClipsPerVideo(): number {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 0) return n;
   }
-  return 1;
+  return 3;
 }
