@@ -19,6 +19,10 @@ import {
 } from "lucide-react";
 import { MediaArchiveAdmin } from "@/components/admin/MediaArchiveAdmin";
 import { NicheRequestsAdmin } from "@/components/admin/NicheRequestsAdmin";
+import {
+  PipelineProgressSteps,
+  pipelineProgressHeadline,
+} from "@/components/admin/PipelineProgressSteps";
 
 function formatVideoId(id: number) {
   return `#VID-${String(id).padStart(4, "0")}`;
@@ -375,6 +379,7 @@ function VideoStatusCell({ video }: { video: VideoRow }) {
   const progressStep = (pollData as { progressStep?: string | null } | undefined)?.progressStep;
   const progressPercent = (pollData as { progressPercent?: number } | undefined)?.progressPercent ?? 0;
   const isLive = !!pollData && isInProgress;
+  const headline = pipelineProgressHeadline(progressStep, progressPercent);
   return (
     <div className="space-y-1">
       <span className={`px-2 py-0.5 rounded-md text-xs font-medium ${VIDEO_STATUS_BADGE[status] ?? 'text-slate-400 bg-white/5'}`}>
@@ -382,11 +387,11 @@ function VideoStatusCell({ video }: { video: VideoRow }) {
       </span>
       {isLive && progressStep && (
         <div className="space-y-0.5 min-w-[160px]">
-          <p className="text-[11px] text-slate-400 truncate max-w-[180px]" title={progressStep}>{progressStep}</p>
+          <p className="text-[11px] text-slate-300 truncate max-w-[200px]" title={headline}>{headline}</p>
           <div className="w-full bg-white/10 rounded-full h-1 overflow-hidden">
             <div className="h-full bg-gradient-to-r from-purple-500 to-cyan-500 rounded-full transition-all duration-700" style={{ width: `${progressPercent}%` }} />
           </div>
-          <p className="text-[10px] text-slate-600">{progressPercent}% &middot; max 1.5h total</p>
+          <p className="text-[10px] text-slate-600">{progressPercent}%</p>
         </div>
       )}
     </div>
@@ -550,7 +555,15 @@ function AdminVideoGenerator() {
     }
   );
 
-  const statusData = videoStatus as { status?: string; videoUrl?: string; title?: string; progressStep?: string | null; progressPercent?: number; generationStartedAt?: Date | null } | undefined;
+  const statusData = videoStatus as {
+    status?: string;
+    videoUrl?: string;
+    title?: string;
+    progressStep?: string | null;
+    progressPercent?: number;
+    progressLog?: Array<{ step: string; startedAt: number; completedAt?: number; status: string }>;
+    generationStartedAt?: Date | null;
+  } | undefined;
   const isGenerating = !!statusData?.status && !['completed', 'failed'].includes(statusData.status);
   // Fetch presigned URL for video playback (needed for /manus-storage/ URLs on Manus sandbox)
   const { data: genVideoUrlData } = trpc.video.getVideoUrl.useQuery(
@@ -569,16 +582,7 @@ function AdminVideoGenerator() {
   }, [isGenerating, statusData?.generationStartedAt]);
   const elapsedStr = `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, '0')}`;
   const nearingLimit = elapsed > 75 * 60; // warn after 75 min (90-min cap)
-
-  const STEPS = [
-    { key: "generating_script", label: "Writing script" },
-    { key: "generating_voiceover", label: "Generating voiceover" },
-    { key: "generating_visuals", label: "Rendering visuals" },
-    { key: "generating_effects", label: "Applying effects" },
-    { key: "completed", label: "Complete" },
-  ];
-
-  const currentStepIndex = STEPS.findIndex((s) => s.key === statusData?.status);
+  const progressHeadline = pipelineProgressHeadline(statusData?.progressStep, statusData?.progressPercent ?? 0);
 
   return (
     <div className="space-y-6">
@@ -642,7 +646,7 @@ function AdminVideoGenerator() {
           {isGenerating && statusData?.progressStep && (
             <div className="space-y-1.5">
               <div className="flex items-center justify-between">
-                <span className="text-xs text-slate-300 truncate max-w-[75%]">{statusData.progressStep}</span>
+                <span className="text-xs text-slate-300 truncate max-w-[75%]">{progressHeadline}</span>
                 <span className={`text-xs font-mono ml-2 shrink-0 ${nearingLimit ? 'text-amber-400' : 'text-slate-500'}`}>{elapsedStr} / max 1.5h</span>
               </div>
               <div className="w-full bg-white/10 rounded-full h-1.5 overflow-hidden">
@@ -657,19 +661,13 @@ function AdminVideoGenerator() {
               </div>
             </div>
           )}
-          <div className="space-y-2">
-            {STEPS.map((step, i) => {
-              const isDone = statusData?.status === "completed" || (currentStepIndex > i && currentStepIndex !== -1);
-              const isActive = step.key === statusData?.status;
-              return (
-                <div key={step.key} className={`flex items-center gap-3 text-xs transition-colors ${isDone ? "text-green-400" : isActive ? "text-purple-300" : "text-slate-600"}`}>
-                  <div className={`w-5 h-5 rounded-full flex items-center justify-center border shrink-0 ${isDone ? "bg-green-500/20 border-green-500/40" : isActive ? "bg-purple-500/20 border-purple-500/40" : "bg-white/3 border-white/10"}`}>
-                    {isDone ? <CheckCircle2 className="w-3 h-3" /> : isActive ? <Loader2 className="w-3 h-3 animate-spin" /> : <span className="text-[10px]">{i + 1}</span>}
-                  </div>
-                  <span className={isActive ? "font-medium" : ""}>{step.label}</span>
-                </div>
-              );
-            })}
+          <div className="space-y-2 pt-1">
+            <PipelineProgressSteps
+              progressStep={statusData?.progressStep}
+              progressPercent={statusData?.progressPercent ?? 0}
+              progressLog={statusData?.progressLog ?? []}
+              isComplete={statusData?.status === "completed"}
+            />
           </div>
           {statusData?.status === "completed" && statusData?.videoUrl && (
             <div className="space-y-3 pt-2 border-t border-white/8">

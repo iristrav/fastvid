@@ -40,6 +40,7 @@ import {
 } from "./db";
 import { storageGetSignedUrl } from "./storage";
 import type { ProgressLogEntry } from "./db";
+import { PIPELINE_DISPLAY_STAGES, resolvePipelineDisplayStage } from "@shared/pipelineProgress";
 import { ONE_YEAR_MS } from "@shared/const";
 
 function getSessionSecret() {
@@ -244,19 +245,24 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLength: 
   const writerSystem = buildScriptWriterSystemPrompt(videoType);
 
   // Initialize progressLog for script stage
+  const scriptStage = resolvePipelineDisplayStage("Script schrijven", 5);
   const scriptLog: ProgressLogEntry[] = [
-    { step: "📋 Prompt bekijken & professioneel script schrijven...", startedAt: Date.now(), status: "active" },
+    { step: scriptStage.label, startedAt: Date.now(), status: "active" },
   ];
   await updateVideoProgressLog(videoId, scriptLog).catch(() => {});
 
   try {
-    await updateVideoStatus(videoId, "generating_script", { progressStep: "🔍 Researching topic...", progressPercent: 5, generationStartedAt: new Date() });
+    await updateVideoStatus(videoId, "generating_script", {
+      progressStep: scriptStage.label,
+      progressPercent: 5,
+      generationStartedAt: new Date(),
+    });
 
     // 1–2 min: one LLM call (saves ~2–4 min vs outline + parallel sections + metadata)
     if (isTwoMin || videoLength === "1") {
-      scriptLog[0].step = "✍️ Writing documentary script...";
+      scriptLog[0].step = scriptStage.label;
       await updateVideoProgressLog(videoId, scriptLog).catch(() => {});
-      await updateVideoProgress(videoId, "✍️ Writing script...", 12);
+      await updateVideoProgress(videoId, scriptStage.label, 12);
 
       const shotResp = await invokeLLM({
         messages: [
@@ -277,8 +283,8 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLength: 
 
       let narrationWords = countNarrationWords(scriptContent);
       if (narrationWords < budget.minWords || narrationWords > budget.maxWords) {
-        scriptLog.push({ step: "✂️ Matching script length...", startedAt: Date.now(), status: "active" });
-        await updateVideoProgress(videoId, "✂️ Matching script length...", 22);
+        scriptLog.push({ step: scriptStage.label, startedAt: Date.now(), status: "active" });
+        await updateVideoProgress(videoId, scriptStage.label, 22);
         const scriptBeforeRefine = scriptContent;
         try {
           const refineResp = await invokeLLM({
@@ -534,7 +540,7 @@ async function _generateVideoWithAI(
 
     // ── Stage 3: Run Full Video Pipeline (TTS + Visuals + FFmpeg) ────
     await updateVideoStatus(videoId, "generating_voiceover", {
-      progressStep: "🎙️ Volledige voiceover in ElevenLabs...",
+      progressStep: resolvePipelineDisplayStage("Volledige voiceover in ElevenLabs", 30).label,
       progressPercent: 30,
     });
 
@@ -542,32 +548,30 @@ async function _generateVideoWithAI(
     // Each unique stage name becomes a row in the step list UI.
     // We track: startedAt, completedAt, status per step.
     const progressLog: ProgressLogEntry[] = [];
-    let currentStepName = "";
+    let currentStageKey = "";
 
-    const pushStep = async (stepName: string, percent: number) => {
+    const pushStep = async (rawStepName: string, percent: number) => {
+      const { key, label } = resolvePipelineDisplayStage(rawStepName, percent);
       const now = Date.now();
-      // Mark previous step as done
-      if (currentStepName && currentStepName !== stepName) {
-        const prev = progressLog.find(e => e.step === currentStepName);
-        if (prev && prev.status === "active") {
-          prev.completedAt = now;
-          prev.status = "done";
+      if (currentStageKey && currentStageKey !== key) {
+        const prevLabel = PIPELINE_DISPLAY_STAGES.find((s) => s.key === currentStageKey)?.label;
+        const prevEntry = prevLabel ? progressLog.find((e) => e.step === prevLabel) : undefined;
+        if (prevEntry && prevEntry.status === "active") {
+          prevEntry.completedAt = now;
+          prevEntry.status = "done";
         }
       }
-      // Add new step if not already in log
-      if (stepName !== currentStepName) {
-        currentStepName = stepName;
-        if (!progressLog.find(e => e.step === stepName)) {
-          progressLog.push({ step: stepName, startedAt: now, status: "active" });
+      if (key !== currentStageKey) {
+        currentStageKey = key;
+        const existing = progressLog.find((e) => e.step === label);
+        if (!existing) {
+          progressLog.push({ step: label, startedAt: now, status: "active" });
         } else {
-          // Re-activate (e.g. scene-by-scene updates)
-          const existing = progressLog.find(e => e.step === stepName)!;
           existing.status = "active";
         }
       }
-      // Persist label + percent on every callback (beat/scene updates reuse similar labels)
       await Promise.all([
-        updateVideoProgress(videoId, stepName, Math.min(percent, 95)).catch(() => {}),
+        updateVideoProgress(videoId, label, Math.min(percent, 95)).catch(() => {}),
         updateVideoProgressLog(videoId, progressLog).catch(() => {}),
       ]);
       // Update coarse status enum
@@ -610,7 +614,7 @@ async function _generateVideoWithAI(
 
     const finalTitle = (approvedMetadata as Record<string, string>).title ?? approvedTitle;
 
-    progressLog.push({ step: "✅ Video complete!", startedAt: Date.now(), completedAt: Date.now(), status: "done" });
+    progressLog.push({ step: resolvePipelineDisplayStage("Video complete", 100).label, startedAt: Date.now(), completedAt: Date.now(), status: "done" });
     await updateVideoProgressLog(videoId, progressLog).catch(() => {});
 
     await updateVideoStatus(videoId, "completed", {
