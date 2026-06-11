@@ -8066,6 +8066,65 @@ function estimateMontageDurationSec(durations: number[]): number {
   return durations.reduce((s, d) => s + d, 0) - (n - 1) * xfade;
 }
 
+function uniqueClipsInOrder(clips: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const clip of clips) {
+    const key = clipContentKey(clip);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(clip);
+  }
+  return out;
+}
+
+function montageClipInputs(clips: string[]): string {
+  return clips.map((c) => `-stream_loop -1 -i "${c}"`).join(" ");
+}
+
+async function ensureComposedSceneCoversDuration(
+  outputPath: string,
+  safeAudioPath: string,
+  outDur: number,
+  voiceDur: number,
+  sceneIndex: number,
+  threadFlag: string
+): Promise<void> {
+  const composedDur = await probeVideoDurationSec(outputPath);
+  if (composedDur <= 0 || composedDur >= outDur - 0.75) return;
+
+  console.warn(
+    `[Pipeline] Scene ${sceneIndex}: composed ${composedDur.toFixed(1)}s < ${outDur.toFixed(1)}s — looping montage`
+  );
+  const loopedPath = outputPath.replace(/\.mp4$/, "_duration_looped.mp4");
+  const audioFadeOutStart = Math.max(0, voiceDur - 0.15);
+  try {
+    await withTimeout(
+      exec(
+        `${FFMPEG_BIN} -y -stream_loop -1 -i "${outputPath}" -i "${safeAudioPath}" ` +
+          `-filter_complex "[0:v]trim=duration=${outDur.toFixed(3)},setpts=PTS-STARTPTS,${FPS_FORMAT_VF}[vout];` +
+          `[1:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${audioFadeOutStart.toFixed(3)}:d=0.12,` +
+          `atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
+          `-map "[vout]" -map "[aout]" -vsync cfr -t ${outDur.toFixed(3)} ${threadFlag} ` +
+          `-c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${loopedPath}"`
+      ),
+      90_000,
+      `Loop composed scene ${sceneIndex} to voice duration`
+    );
+    if (fs.existsSync(loopedPath) && fs.statSync(loopedPath).size > 1000) {
+      fs.unlinkSync(outputPath);
+      fs.renameSync(loopedPath, outputPath);
+    }
+  } catch (err) {
+    console.warn(`[Pipeline] Scene ${sceneIndex}: duration loop failed (non-fatal):`, (err as Error).message);
+    try {
+      if (fs.existsSync(loopedPath)) fs.unlinkSync(loopedPath);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
 function normalizeMontageDurations(durations: number[], outDur: number): number[] {
   const n = durations.length;
   if (n === 0) return durations;
@@ -8074,13 +8133,21 @@ function normalizeMontageDurations(durations: number[], outDur: number): number[
   const xfade = n > 1 ? montageXfadeSec() : 0;
 
   let normalized = durations.map((d) => Math.max(minClip, Math.min(maxClip, d)));
-  const total = normalized.reduce((s, d) => s + d, 0) - (n - 1) * xfade;
+  let total = estimateMontageDurationSec(normalized);
   if (total <= 0.1) return normalized;
 
-  // Scale montage to scene voice duration — prevents FFmpeg -t from cloning the last frame.
-  if (Math.abs(total - outDur) > 0.35) {
+  if (total < outDur - 0.35) {
     const scale = outDur / total;
-    normalized = normalized.map((d) => Math.max(minClip, Math.min(maxClip, d * scale)));
+    normalized = normalized.map((d) => Math.min(maxClip, d * scale));
+    total = estimateMontageDurationSec(normalized);
+    if (total < outDur - 0.35) {
+      const floor = curatedArchiveOnlyVisuals() ? 2.5 : VIDRUSH_CLIP_MIN_SEC * 0.85;
+      const even = (outDur + (normalized.length - 1) * xfade) / normalized.length;
+      normalized = normalized.map(() => Math.max(floor, Math.min(maxClip, even)));
+    }
+  } else if (total > outDur + 0.35) {
+    const scale = outDur / total;
+    normalized = normalized.map((d) => Math.max(minClip * 0.85, Math.min(maxClip, d * scale)));
   }
   return normalized;
 }
@@ -8092,7 +8159,7 @@ function expandClipsForSceneDuration(
   beatDurations?: number[]
 ): { clips: string[]; beatDurations?: number[] } {
   if (clips.length === 0) return { clips, beatDurations };
-  const maxClips = 18;
+  const maxClips = Math.min(24, Math.max(12, Math.ceil(outDur / effectiveMinClipSec()) + 2));
   let expanded = [...clips];
   let durs =
     beatDurations?.length === expanded.length
@@ -8156,8 +8223,7 @@ function montageClipPrepFilter(
   const fadeOut = smoothTransition ? Math.min(xfade * 0.95, dur * 0.2) : 0;
   const fadeOutStart = Math.max(0, dur - fadeOut - 0.02);
   let chain =
-    `[${inputIndex}:v]loop=loop=-1:size=512:start=0,setpts=PTS-STARTPTS,` +
-    `trim=start=${start}:duration=${dur.toFixed(3)},${CROP_FILL_VF}`;
+    `[${inputIndex}:v]trim=start=${start}:duration=${dur.toFixed(3)},${CROP_FILL_VF}`;
   if (cinematicMotion && dur > 2) {
     chain += `,scale=iw*1.05:ih*1.05,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:(iw-${VIDEO_WIDTH})/2:(ih-${VIDEO_HEIGHT})/2`;
   }
@@ -12477,7 +12543,8 @@ async function composeSceneVideo(
   totalScenes: number,
   enableSubtitles = false,  // Subtitles disabled by default
   rescueStockClip?: string | null,
-  beatDurations?: number[]
+  beatDurations?: number[],
+  usedClipsOut?: string[]
 ): Promise<string> {
   const outputPath = path.join(workDir, `scene_${scene.index}_composed.mp4`);
 
@@ -12542,6 +12609,11 @@ async function composeSceneVideo(
     throw pipelineError(
       PIPELINE_ERROR.NO_SCENES,
       `Scene ${scene.index}: all clips failed validation`
+    );
+  }
+  if (validClips.length < existingClips.length) {
+    console.warn(
+      `[Pipeline] Scene ${scene.index}: compose kept ${validClips.length}/${existingClips.length} fetched clips`
     );
   }
 
@@ -12752,6 +12824,10 @@ async function composeSceneVideo(
   const expandedMontage = expandClipsForSceneDuration(safeClips, outDur, montageDurationsRaw);
   safeClips = expandedMontage.clips;
   let montageDurations = expandedMontage.beatDurations;
+  if (usedClipsOut) {
+    usedClipsOut.length = 0;
+    usedClipsOut.push(...uniqueClipsInOrder(safeClips));
+  }
   if (montageDurations?.length === safeClips.length) {
     montageDurations = montageDurations.map((d) => Math.min(effectiveMaxClipSec(), d));
   }
@@ -12759,7 +12835,7 @@ async function composeSceneVideo(
   try {
     const { scaleFilters, mergeFilter, montageLabel: xfadeLabel } =
       buildMontageXfadeFilter(safeClips.length, outDur, scene.index, montageDurations);
-    const inputs = safeClips.map((c) => `-i "${c}"`).join(" ");
+    const inputs = montageClipInputs(safeClips);
     const durs =
       montageDurations ??
       Array.from({ length: safeClips.length }, () => computeMontageClipDuration(outDur, safeClips.length));
@@ -12808,7 +12884,7 @@ async function composeSceneVideo(
       try {
         const { scaleFilters, mergeFilter, montageLabel: xfadeLabel } =
           buildMontageXfadeFilter(safeClips.length, outDur, scene.index, montageDurations);
-        const inputs = safeClips.map((c) => `-i "${c}"`).join(" ");
+        const inputs = montageClipInputs(safeClips);
         const montageLabel = xfadeLabel;
         const audioIdx = safeClips.length;
         const kineticBaseIdx2 = audioIdx + 1;
@@ -12840,7 +12916,7 @@ async function composeSceneVideo(
       try {
         const { scaleFilters, mergeFilter, montageLabel: xfadeLabel } =
           buildMontageXfadeFilter(safeClips.length, outDur, scene.index, montageDurations);
-        const inputs = safeClips.map((c) => `-i "${c}"`).join(" ");
+        const inputs = montageClipInputs(safeClips);
         const montageLabel = xfadeLabel;
         const audioIdx = safeClips.length;
         await withTimeout(
@@ -12869,7 +12945,7 @@ async function composeSceneVideo(
       const clipDur = computeMontageClipDuration(outDur, safeClips.length);
       const n = Math.min(12, Math.max(2, safeClips.length));
       const subset = safeClips.slice(0, n);
-      const inputs = subset.map((c) => `-i "${c}"`).join(" ");
+      const inputs = montageClipInputs(subset);
       const { scaleFilters, mergeFilter, montageLabel } = buildMontageXfadeFilter(n, outDur, scene.index);
       await withTimeout(
         exec(
@@ -12887,7 +12963,7 @@ async function composeSceneVideo(
         const loopVideo = safeClips;
         const n = loopVideo.length;
         if (n > 1) {
-          const inputs = loopVideo.map((c) => `-i "${c}"`).join(" ");
+          const inputs = montageClipInputs(loopVideo);
           const { scaleFilters, mergeFilter, montageLabel } = buildMontageXfadeFilter(n, outDur, scene.index, montageDurations);
           await withTimeout(
             exec(
@@ -12940,15 +13016,33 @@ async function composeSceneVideo(
     throw pipelineError(PIPELINE_ERROR.FFMPEG, `Scene ${scene.index} produced no output video`);
   }
 
-  if (await isMostlyBlackClip(outputPath) && rescueStockClip && fs.existsSync(rescueStockClip)) {
+  await ensureComposedSceneCoversDuration(
+    outputPath,
+    safeAudioPath,
+    outDur,
+    voiceDur,
+    scene.index,
+    threadFlag
+  );
+
+  const skipBlackRescue =
+    curatedArchiveOnlyVisuals() || safeClips.length > 1;
+  if (
+    !skipBlackRescue &&
+    (await isMostlyBlackClip(outputPath)) &&
+    rescueStockClip &&
+    fs.existsSync(rescueStockClip)
+  ) {
     console.warn(`[Pipeline] Scene ${scene.index}: composed output mostly black — retry with rescue clip`);
     try {
       await withTimeout(
         exec(
-          `${FFMPEG_BIN} -y -ss 0.3 -i "${rescueStockClip}" -i "${safeAudioPath}" ` +
-          `-filter_complex "[1:a]atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
-          `-map "0:v" -map "[aout]" -t ${outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 ` +
-          `-c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
+          `${FFMPEG_BIN} -y -stream_loop -1 -ss 0.3 -i "${rescueStockClip}" -i "${safeAudioPath}" ` +
+            `-filter_complex "[0:v]trim=duration=${outDur.toFixed(3)},setpts=PTS-STARTPTS,${FPS_FORMAT_VF}[vout];` +
+            `[1:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${Math.max(0, voiceDur - 0.15).toFixed(3)}:d=0.12,` +
+            `atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
+            `-map "[vout]" -map "[aout]" -vsync cfr -t ${outDur.toFixed(3)} ${threadFlag} ` +
+            `-c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
         ),
         90_000,
         `Rescue recompose scene ${scene.index}`
@@ -13663,12 +13757,45 @@ export async function runVideoPipeline(
       }
     }
 
-    // ── Save scene manifest for editor ───────────────────────────────────────
+    // ── Stage 4: Compose all scenes in parallel batches ───────────────────────
+    onProgress?.({ stage: STAGE_LABELS.composing, percent: 47 });
+    const t3 = Date.now();
+
+    // Railway: one FFmpeg compose at a time (avoids "Resource temporarily unavailable" decoder errors)
+    const composeLimit = pLimit(composeParallelism());
+    let completedCompose = 0;
+    const composedUsedClips: string[][] = scenes.map(() => []);
+    const composedScenes = await withTimeout(
+      Promise.all(
+        scenes.map((scene, i) => composeLimit(async () => {
+          const usedClips: string[] = [];
+          const result = await composeSceneVideo(
+            scene, sceneVisualResults[i]?.clips ?? [], audioPaths[i], scene.duration, workDir, scenes.length,
+            enableSubtitles, visualDedup.lastMuskStockClip, sceneVisualResults[i]?.beatDurations, usedClips
+          );
+          composedUsedClips[i] = usedClips;
+          completedCompose++;
+          onProgress?.({
+            stage: `Composing scenes... (${completedCompose}/${scenes.length} done)`,
+            percent: 47 + Math.round((completedCompose / scenes.length) * 28)
+          });
+          return result;
+        }))
+      ),
+      2400_000, // 40 min hard limit for compositing
+      "Scene composition stage"
+    );
+    console.log(`[Pipeline] Stage 4 (compose): ${scenes.length} scenes in ${((Date.now()-t3)/1000).toFixed(1)}s`);
+
+    // ── Save scene manifest for editor (clips actually used in compose) ─────
     try {
       const editorScenes: EditorScene[] = [];
       for (let i = 0; i < scenes.length; i++) {
         const scene = scenes[i];
-        const clipPaths = sceneVisualResults[i]?.clips ?? [];
+        const clipPaths =
+          composedUsedClips[i]?.length > 0
+            ? composedUsedClips[i]
+            : (sceneVisualResults[i]?.clips ?? []);
         const editorClips: EditorClip[] = [];
         for (const clipPath of clipPaths) {
           editorClips.push(await buildEditorClipFromPath(clipPath));
@@ -13683,37 +13810,10 @@ export async function runVideoPipeline(
         });
       }
       await updateVideoScenes(videoId, editorScenes);
-      console.log(`[Pipeline] Scene manifest saved: ${editorScenes.length} scenes`);
+      console.log(`[Pipeline] Scene manifest saved: ${editorScenes.length} scenes (post-compose clips)`);
     } catch (err) {
       console.warn(`[Pipeline] Failed to save scene manifest (non-fatal):`, (err as Error).message);
     }
-
-    // ── Stage 4: Compose all scenes in parallel batches ───────────────────────
-    onProgress?.({ stage: STAGE_LABELS.composing, percent: 47 });
-    const t3 = Date.now();
-
-    // Railway: one FFmpeg compose at a time (avoids "Resource temporarily unavailable" decoder errors)
-    const composeLimit = pLimit(composeParallelism());
-    let completedCompose = 0;
-    const composedScenes = await withTimeout(
-      Promise.all(
-        scenes.map((scene, i) => composeLimit(async () => {
-          const result = await composeSceneVideo(
-            scene, sceneVisualResults[i]?.clips ?? [], audioPaths[i], scene.duration, workDir, scenes.length,
-            enableSubtitles, visualDedup.lastMuskStockClip, sceneVisualResults[i]?.beatDurations
-          );
-          completedCompose++;
-          onProgress?.({
-            stage: `Composing scenes... (${completedCompose}/${scenes.length} done)`,
-            percent: 47 + Math.round((completedCompose / scenes.length) * 28)
-          });
-          return result;
-        }))
-      ),
-      2400_000, // 40 min hard limit for compositing
-      "Scene composition stage"
-    );
-    console.log(`[Pipeline] Stage 4 (compose): ${scenes.length} scenes in ${((Date.now()-t3)/1000).toFixed(1)}s`);
 
     // Cleanup intermediates
     for (let i = 0; i < scenes.length; i++) {
