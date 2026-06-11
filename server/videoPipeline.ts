@@ -52,6 +52,7 @@ import {
 import {
   buildCinematicOverlays,
   buildCinematicSfxAudioFilter,
+  burnFacelessTextOnVideoClip,
   cinematicEffectsEnabled,
   overlayUsesFullFrame,
   planCinematicScene,
@@ -96,9 +97,7 @@ import {
   isCuratedPreparedVideoClip,
 } from "./curatedMediaSourcing";
 import {
-  buildNewsCardVideoVF,
   motionGraphicsEnabled,
-  planMotionGraphicBeat,
   resolveStillImageFilterComplex,
   tryRenderMotionGraphicBeatClip,
   type StillStyleContext,
@@ -7125,6 +7124,23 @@ function isStillPhotoClip(filePath: string): boolean {
   return /_serp_|_wiki_|_openverse_|_unsplash_|_p0_|_p2_|_yt_\d/i.test(base);
 }
 
+/** Standalone motion-graphic beat clip (text/map card) — not B-roll. */
+function isMotionGraphicClip(filePath: string): boolean {
+  return /_mgfx_/i.test(path.basename(filePath));
+}
+
+/** Real stock/archive B-roll — gets bottom-left text only, no other overlays. */
+function isRealVideoFootageClip(filePath: string): boolean {
+  if (!filePath || isPipelineFallbackClip(filePath)) return false;
+  if (isStillPhotoClip(filePath)) return false;
+  if (isMotionGraphicClip(filePath)) return false;
+  return true;
+}
+
+function sceneHasRealVideoFootage(clips: string[]): boolean {
+  return clips.some((clip) => isRealVideoFootageClip(clip));
+}
+
 /** AI-generated clip path (used only as last-resort after stock search). */
 function isAIGeneratedClip(filePath: string): boolean {
   const base = path.basename(filePath).toLowerCase();
@@ -11851,42 +11867,24 @@ async function pushMotionGraphicBeatClipIfAny(
   return pushClip(mgfxClip, holdSec);
 }
 
-async function applyBeatNewsCardToVideoClip(
+async function applyVideoBeatTextOverlay(
   clipPath: string,
   beat: SceneBeat,
   scene: Scene,
   workDir: string,
-  videoTitle: string | undefined,
-  dedup: VisualDedupState,
   holdSec: number
 ): Promise<string> {
-  if (!motionGraphicsEnabled() || isStillPhotoClip(clipPath)) return clipPath;
-  if (dedup.motionGraphicsUsed >= maxMotionGraphicsPerVideo()) return clipPath;
-
-  const plan = planMotionGraphicBeat(beat.text, scene.index, beat.index, videoTitle);
-  if (!plan || plan.kind !== "news_card") return clipPath;
-
-  const outPath = path.join(workDir, `scene_${scene.index}_b${beat.index}_news_overlay.mp4`);
-  try {
-    await withTimeout(
-      exec(
-        `${FFMPEG_BIN} -y -i "${clipPath}" -t ${holdSec.toFixed(3)} ` +
-          `-vf "${buildNewsCardVideoVF(plan)}" -an -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p "${outPath}"`
-      ),
-      45_000,
-      `news overlay s${scene.index} b${beat.index}`
-    );
-    if (fs.existsSync(outPath) && fs.statSync(outPath).size > 800) {
-      dedup.motionGraphicsUsed++;
-      return outPath;
-    }
-  } catch (err) {
-    console.warn(
-      `[Pipeline] Scene ${scene.index} beat ${beat.index}: news overlay failed:`,
-      (err as Error).message
-    );
-  }
-  return clipPath;
+  if (!facelessSubtitlesEnabled() || !isRealVideoFootageClip(clipPath)) return clipPath;
+  return burnFacelessTextOnVideoClip(
+    clipPath,
+    beat.text,
+    scene.index,
+    beat.index,
+    workDir,
+    holdSec,
+    FFMPEG_BIN,
+    (cmd, ms, label) => withTimeout(exec(cmd), ms, label)
+  );
 }
 
 async function adoptArchiveBeatClip(
@@ -11899,12 +11897,13 @@ async function adoptArchiveBeatClip(
   initialClip: string | null = null,
   holdSec = beat.holdSec
 ): Promise<boolean> {
-  const tryClip = (clipPath: string | null | undefined, sec = holdSec): boolean => {
+  const tryClip = async (clipPath: string | null | undefined, sec = holdSec): Promise<boolean> => {
     if (!clipPath || isPipelineFallbackClip(clipPath)) return false;
-    return pushClip(clipPath, sec);
+    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec);
+    return pushClip(withText, sec);
   };
 
-  if (tryClip(initialClip, holdSec)) return true;
+  if (await tryClip(initialClip, holdSec)) return true;
 
   if (await pushMotionGraphicBeatClipIfAny(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec)) {
     return true;
@@ -11930,7 +11929,7 @@ async function adoptArchiveBeatClip(
       mgfxBudget
     );
     dedup.motionGraphicsUsed = mgfxBudget.used;
-    if (tryClip(clip, holdSec)) return true;
+    if (await tryClip(clip, holdSec)) return true;
   }
   return false;
 }
@@ -12155,15 +12154,7 @@ async function fetchSceneVisuals(
       if (realOnly && isLicensedStockClip(clip) && !canUseLicensedStockBeat(dedup)) {
         clip = null;
       } else {
-        clip = await applyBeatNewsCardToVideoClip(
-          clip,
-          beat,
-          scene,
-          workDir,
-          videoTitle,
-          dedup,
-          beat.holdSec
-        );
+        clip = await applyVideoBeatTextOverlay(clip, beat, scene, workDir, beat.holdSec);
         pushClip(clip);
       }
     }
@@ -12186,7 +12177,8 @@ async function fetchSceneVisuals(
         dedup.lock = Promise.resolve();
       }
       if (aiOnly && !isPipelineFallbackClip(aiOnly)) {
-        pushClip(aiOnly);
+        const withText = await applyVideoBeatTextOverlay(aiOnly, beat, scene, workDir, beat.holdSec);
+        pushClip(withText);
         console.log(
           `[Pipeline] Scene ${scene.index} beat ${beat.index}: AI clip (power word "${beat.powerWord}")`
         );
@@ -12261,7 +12253,8 @@ async function fetchSceneVisuals(
         );
       }
       if (rescue && !isPipelineFallbackClip(rescue)) {
-        pushClip(rescue);
+        const withText = await applyVideoBeatTextOverlay(rescue, beat, scene, workDir, beat.holdSec);
+        pushClip(withText);
       } else if (!archiveOnly) {
         console.warn(
           `[Pipeline] Scene ${scene.index} beat ${beat.index}: no clip (beat skipped, no grey)`
@@ -12915,7 +12908,8 @@ async function prepareSceneEffectLayers(
   duration: number,
   workDir: string,
   enableSubtitles: boolean,
-  probedVoiceDur?: number
+  probedVoiceDur?: number,
+  sceneClips: string[] = []
 ): Promise<{
   kineticFrames: KineticFrame[];
   docOverlays: TimedOverlay[];
@@ -12927,6 +12921,7 @@ async function prepareSceneEffectLayers(
 }> {
   const voiceDur = probedVoiceDur || Math.max(0.5, duration - 0.35);
   const outDur = voiceDur + 0.12;
+  const videoTextOnly = sceneHasRealVideoFootage(sceneClips);
   let kineticFrames: KineticFrame[] = [];
   let docOverlays: TimedOverlay[] = [];
   let cinematicPlan: CinematicScenePlan | null = null;
@@ -12943,22 +12938,25 @@ async function prepareSceneEffectLayers(
         FFMPEG_BIN,
         (cmd, ms, lbl) => withTimeout(exec(cmd), ms, lbl),
         {
-          facelessSubs: facelessSubtitlesEnabled() || enableSubtitles,
-          docOverlays: true,
+          facelessSubs: !videoTextOnly && (facelessSubtitlesEnabled() || enableSubtitles),
+          docOverlays: !videoTextOnly,
+          videoTextOnly,
         }
       );
       docOverlays.push(...cinematicOverlays);
 
-      const sfxCache = new Map<string, string>();
-      for (const cue of cinematicPlan.audioCues.slice(0, 12)) {
-        if (!sfxCache.has(cue.type)) {
-          sfxCache.set(cue.type, await generateSFX(cue.type, workDir));
+      if (!videoTextOnly) {
+        const sfxCache = new Map<string, string>();
+        for (const cue of cinematicPlan.audioCues.slice(0, 12)) {
+          if (!sfxCache.has(cue.type)) {
+            sfxCache.set(cue.type, await generateSFX(cue.type, workDir));
+          }
+          sfxCueFiles.push({
+            path: sfxCache.get(cue.type)!,
+            timeSec: cue.timeSec,
+            volume: cue.volume,
+          });
         }
-        sfxCueFiles.push({
-          path: sfxCache.get(cue.type)!,
-          timeSec: cue.timeSec,
-          volume: cue.volume,
-        });
       }
     }
   } catch (err) {
@@ -12991,7 +12989,8 @@ async function applySceneEffectsPass(
   scene: Scene,
   duration: number,
   workDir: string,
-  enableSubtitles: boolean
+  enableSubtitles: boolean,
+  sceneClips: string[] = []
 ): Promise<string> {
   const outputPath = path.join(workDir, `scene_${scene.index}_composed.mp4`);
   if (!fs.existsSync(assemblyPath) || fs.statSync(assemblyPath).size < 1000) {
@@ -12999,7 +12998,14 @@ async function applySceneEffectsPass(
   }
 
   const probedDur = await probeVideoDurationSec(assemblyPath);
-  const layers = await prepareSceneEffectLayers(scene, duration, workDir, enableSubtitles, probedDur || undefined);
+  const layers = await prepareSceneEffectLayers(
+    scene,
+    duration,
+    workDir,
+    enableSubtitles,
+    probedDur || undefined,
+    sceneClips
+  );
   const threadFlag = IS_RAILWAY ? "-threads 2" : "";
   const kineticY = 80;
   const { extraInputs, filterChain, finalLabel } = buildOverlayFilterChain(
@@ -13092,7 +13098,8 @@ async function composeSceneVideo(
       scene,
       duration,
       workDir,
-      enableSubtitles
+      enableSubtitles,
+      clips
     );
   }
 
@@ -13206,6 +13213,7 @@ async function composeSceneVideo(
 
   if (!skipEffectLayers) {
   try {
+    const videoTextOnly = sceneHasRealVideoFootage(safeClips);
     if (cinematicEffectsEnabled()) {
       cinematicPlan = planCinematicScene(scene, duration);
       const cinematicOverlays = await buildCinematicOverlays(
@@ -13216,12 +13224,14 @@ async function composeSceneVideo(
         FFMPEG_BIN,
         (cmd, ms, lbl) => withTimeout(exec(cmd), ms, lbl),
         {
-          facelessSubs: facelessSubtitlesEnabled() || enableSubtitles,
-          docOverlays: true,
+          facelessSubs: !videoTextOnly && (facelessSubtitlesEnabled() || enableSubtitles),
+          docOverlays: !videoTextOnly,
+          videoTextOnly,
         }
       );
       docOverlays.push(...cinematicOverlays);
 
+      if (!videoTextOnly) {
       const sfxCache = new Map<string, string>();
       for (const cue of cinematicPlan.audioCues.slice(0, 12)) {
         if (!sfxCache.has(cue.type)) {
@@ -13237,6 +13247,7 @@ async function composeSceneVideo(
         console.log(
           `[Cinematic] Scene ${scene.index}: years [${cinematicPlan.years.join(", ")}] + ${sfxCueFiles.length} SFX cues`
         );
+      }
       }
     }
 

@@ -11,9 +11,6 @@ import { storageGetSignedUrl } from "./storage";
 import { archiveClipHasBakedEditText } from "./archiveClipFilter";
 import { buildMatFramedStillVF, buildStillEncodeArgs } from "./documentaryStyle";
 import {
-  buildNewsCardVideoVF,
-  canUseMotionGraphicStyle,
-  planMotionGraphicBeat,
   resolveStillImageFilterComplex,
   type MotionGraphicsBudget,
   type StillStyleContext,
@@ -761,30 +758,12 @@ async function trimVideoClip(
     startSec = (clipIndex * 0.41 + 0.15) % slack;
   }
 
-  const plan =
-    styleContext?.beatText != null
-      ? planMotionGraphicBeat(
-          styleContext.beatText,
-          sceneIndex,
-          beatIndex,
-          styleContext.videoTitle
-        )
-      : null;
-
-  let frameVf =
+  const frameVf =
     `scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,` +
     `crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:(iw-${VIDEO_WIDTH})/2:(ih-${VIDEO_HEIGHT})/2,` +
     `fps=25,format=yuv420p`;
 
-  if (
-    canUseMotionGraphicStyle(plan, styleContext?.motionGraphicsBudget) &&
-    plan?.kind === "news_card"
-  ) {
-    frameVf = buildNewsCardVideoVF(plan);
-    if (styleContext?.motionGraphicsBudget) {
-      styleContext.motionGraphicsBudget.used++;
-    }
-  }
+  // B-roll clips: no news-card overlay — faceless text is burned per beat in videoPipeline.
 
   await exec(
     `${ffmpegBin()} -y -ss ${startSec.toFixed(3)} -i "${inPath}" -t ${take.toFixed(3)} ` +

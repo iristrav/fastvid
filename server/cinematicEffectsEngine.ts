@@ -120,26 +120,34 @@ export function parseFacelessSubtitleLines(text: string, maxLines = 4): Faceless
   return lines;
 }
 
+export type FacelessSubtitlePlacement = "bottom-left" | "bottom-center";
+
 export async function renderFacelessSubtitleOverlay(
   lines: FacelessLine[],
   sceneIndex: number,
   workDir: string,
   ffmpegBin: string,
   execWithTimeout: (cmd: string, ms: number, label: string) => Promise<unknown>,
-  sceneDuration: number
+  sceneDuration: number,
+  placement: FacelessSubtitlePlacement = "bottom-left"
 ): Promise<TimedOverlay | null> {
   if (!lines.length) return null;
   const startTime = 0.35;
   const endTime = Math.min(sceneDuration - 0.2, startTime + Math.min(4.5, sceneDuration * 0.55));
   const pngPath = path.join(workDir, `scene_${sceneIndex}_faceless_sub.png`);
-  const baseY = Math.round(DOC_STYLE_VIDEO_HEIGHT * 0.72);
+  const marginL = 56;
+  const marginB = 72;
+  const lineHeights = lines.map((line) => (line.emphasis ? 68 : 48));
+  const totalH = lineHeights.reduce((s, h) => s + h, 0);
+  const baseY = DOC_STYLE_VIDEO_HEIGHT - marginB - totalH;
   const draws = lines
     .map((line, i) => {
       const safe = sanitizeForDrawtext(line.text, 36);
       const fs = line.emphasis ? 58 : 38;
-      const y = baseY + i * (line.emphasis ? 68 : 48);
+      const y = baseY + lineHeights.slice(0, i).reduce((s, h) => s + h, 0);
+      const x = placement === "bottom-center" ? "(w-text_w)/2" : String(marginL);
       const color = line.emphasis ? "white" : "0xDDDDDD";
-      return `drawtext=text='${safe}':fontcolor=${color}:fontsize=${fs}:x=(w-text_w)/2:y=${y}`;
+      return `drawtext=text='${safe}':fontcolor=${color}:fontsize=${fs}:x=${x}:y=${y}`;
     })
     .join(",");
   try {
@@ -156,6 +164,54 @@ export async function renderFacelessSubtitleOverlay(
     /* non-fatal */
   }
   return null;
+}
+
+/** Burn faceless kinetic text onto a B-roll clip — bottom-left only, no other overlays. */
+export async function burnFacelessTextOnVideoClip(
+  clipPath: string,
+  text: string,
+  sceneIndex: number,
+  beatIndex: number,
+  workDir: string,
+  holdSec: number,
+  ffmpegBin: string,
+  execWithTimeout: (cmd: string, ms: number, label: string) => Promise<unknown>
+): Promise<string> {
+  const lines = parseFacelessSubtitleLines(text);
+  if (!lines.length) return clipPath;
+  const overlay = await renderFacelessSubtitleOverlay(
+    lines,
+    sceneIndex,
+    workDir,
+    ffmpegBin,
+    execWithTimeout,
+    holdSec,
+    "bottom-left"
+  );
+  if (!overlay) return clipPath;
+
+  const outPath = path.join(workDir, `scene_${sceneIndex}_b${beatIndex}_vtext.mp4`);
+  const enable = `enable='between(t,${overlay.startTime.toFixed(2)},${overlay.endTime.toFixed(2)})'`;
+  try {
+    await execWithTimeout(
+      `${ffmpegBin} -y -i "${clipPath}" -i "${overlay.path}" -t ${holdSec.toFixed(3)} ` +
+        `-filter_complex "[0:v][1:v]overlay=x=0:y=0:format=auto:${enable}[vout]" ` +
+        `-map "[vout]" -an -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p "${outPath}"`,
+      45_000,
+      `Video beat text s${sceneIndex} b${beatIndex}`
+    );
+    if (fs.existsSync(outPath) && fs.statSync(outPath).size > 800) {
+      try {
+        fs.unlinkSync(overlay.path);
+      } catch {
+        /* ignore */
+      }
+      return outPath;
+    }
+  } catch {
+    /* non-fatal */
+  }
+  return clipPath;
 }
 
 export async function renderCameraFlashOverlay(
@@ -518,10 +574,15 @@ export async function buildCinematicOverlays(
   workDir: string,
   ffmpegBin: string,
   execWithTimeout: (cmd: string, ms: number, label: string) => Promise<unknown>,
-  opts: { facelessSubs?: boolean; docOverlays?: boolean } = {}
+  opts: { facelessSubs?: boolean; docOverlays?: boolean; videoTextOnly?: boolean } = {}
 ): Promise<TimedOverlay[]> {
   const overlays: TimedOverlay[] = [];
   const exec = execWithTimeout;
+
+  // B-roll scenes get text burned per beat; skip scene-level graphics on video montages.
+  if (opts.videoTextOnly) {
+    return overlays;
+  }
 
   for (let i = 0; i < plan.years.length; i++) {
     const badge = await renderYearBadgeOverlay(
@@ -616,7 +677,8 @@ export async function buildCinematicOverlays(
       workDir,
       ffmpegBin,
       exec,
-      durationSec
+      durationSec,
+      "bottom-left"
     );
     if (subs) overlays.push(subs);
   }
