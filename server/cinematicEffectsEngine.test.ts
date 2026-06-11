@@ -53,6 +53,7 @@ describe("cinematicEffectsEngine", () => {
     );
     expect(chain).toContain("adelay=1200|1200");
     expect(chain).toContain("amix=inputs=2");
+    expect(chain).toContain("normalize=0");
     expect(chain).toContain("[aout]");
   });
 

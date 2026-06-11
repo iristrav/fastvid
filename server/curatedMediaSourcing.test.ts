@@ -185,4 +185,41 @@ describe("curatedMediaSourcing", () => {
     const videoScore = scoreCuratedAsset(footage, ["hitler"], beatTags, topicAnchors, beatText);
     expect(videoScore).toBeGreaterThan(stillScore);
   });
+
+  it("prefers action footage over propaganda poster clips", () => {
+    const beatText = "Hitler gives a speech at a rally";
+    const { beatTags, topicAnchors } = buildBeatMatchTags(
+      { keywords: ["speech", "rally"], text: beatText, index: 0 },
+      { text: beatText },
+      "Hitler documentary"
+    );
+    const poster = {
+      id: 20,
+      archiveId: 1,
+      title: "Nazi propaganda poster campaign",
+      tags: ["hitler", "poster"],
+      mediaType: "video" as const,
+      mimeType: "video/mp4",
+      storageUrl: "/x",
+      isActive: 1,
+      sortOrder: 0,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      fileSizeBytes: 1,
+      width: 1920,
+      height: 1080,
+      durationSec: 5,
+      sourceUrl: null,
+      sourceLabel: null,
+    };
+    const speech = {
+      ...poster,
+      id: 21,
+      title: "Hitler geeft toespraak bij bijeenkomst",
+      tags: ["hitler", "speech"],
+    };
+    const posterScore = scoreCuratedAsset(poster, ["hitler"], beatTags, topicAnchors, beatText);
+    const speechScore = scoreCuratedAsset(speech, ["hitler"], beatTags, topicAnchors, beatText);
+    expect(speechScore).toBeGreaterThan(posterScore);
+  });
 });

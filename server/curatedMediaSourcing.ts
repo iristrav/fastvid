@@ -260,7 +260,9 @@ export function scoreCuratedAsset(
 
   score += curatedArchiveVisualBoost(asset);
   score += curatedVideoFootageBoost(asset);
+  score += curatedActionFootageBoost(asset);
   score += curatedImagePenalty(asset);
+  score += curatedPosterPenalty(asset);
   score += curatedInterviewPenalty(asset);
 
   return score;
@@ -305,6 +307,35 @@ function curatedImagePenalty(asset: Pick<MediaArchiveAsset, "mediaType">): numbe
 
 function curatedInterviewPenalty(asset: Pick<MediaArchiveAsset, "title" | "tags">): number {
   return isCuratedInterviewAsset(asset) ? -140 : 0;
+}
+
+/** Posters, portraits, propaganda stills — look like frozen photos in the montage. */
+export function isCuratedPosterOrStillAsset(
+  asset: Pick<MediaArchiveAsset, "title" | "tags" | "mediaType">
+): boolean {
+  const hay = `${(asset.title ?? "").toLowerCase()} ${normalizeMediaTags(asset.tags ?? []).join(" ")}`;
+  return /\b(portret|portrait|poster|propagandabeeld|propaganda poster|affiche|foto|photo|still|portrait)\b/i.test(
+    hay
+  );
+}
+
+function curatedPosterPenalty(asset: Pick<MediaArchiveAsset, "title" | "tags" | "mediaType">): number {
+  return isCuratedPosterOrStillAsset(asset) ? -80 : 0;
+}
+
+/** Parades, speeches, crowds — clearly moving archival footage. */
+export function isCuratedActionFootage(
+  asset: Pick<MediaArchiveAsset, "title" | "tags" | "mediaType">
+): boolean {
+  if (asset.mediaType !== "video") return false;
+  const hay = `${(asset.title ?? "").toLowerCase()} ${normalizeMediaTags(asset.tags ?? []).join(" ")}`;
+  return /\b(parade|toespraak|speech|militair|march|rally|bijeenkomst|ceremonie|troepen|crowd|sporting|gebouw|omgeving)\b/i.test(
+    hay
+  );
+}
+
+function curatedActionFootageBoost(asset: Pick<MediaArchiveAsset, "title" | "tags" | "mediaType">): number {
+  return isCuratedActionFootage(asset) ? 32 : 0;
 }
 
 function curatedArchiveVisualBoost(asset: Pick<MediaArchiveAsset, "title" | "tags" | "mediaType" | "mixKind">): number {
@@ -499,16 +530,14 @@ async function trimVideoClip(
 
   const fps = 25;
   const totalFrames = Math.max(50, Math.round(take * fps));
-  const zoomEnd = take >= 2.8 ? 1.06 : 1.0;
-  const zoomStep = zoomEnd > 1 ? (zoomEnd - 1.0) / totalFrames : 0;
+  const zoomEnd = 1.05;
+  const zoomStep = (zoomEnd - 1.0) / totalFrames;
 
   const vf =
-    zoomEnd > 1
-      ? `scale=${Math.round(VIDEO_WIDTH * 1.08)}:${Math.round(VIDEO_HEIGHT * 1.08)}:force_original_aspect_ratio=increase,` +
-        `crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:(iw-${VIDEO_WIDTH})/2:(ih-${VIDEO_HEIGHT})/2,` +
-        `zoompan=z='min(zoom+${zoomStep.toFixed(7)},${zoomEnd})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':` +
-        `d=${totalFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=${fps}`
-      : `scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}`;
+    `scale=${Math.round(VIDEO_WIDTH * 1.08)}:${Math.round(VIDEO_HEIGHT * 1.08)}:force_original_aspect_ratio=increase,` +
+    `crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:(iw-${VIDEO_WIDTH})/2:(ih-${VIDEO_HEIGHT})/2,` +
+    `zoompan=z='min(zoom+${zoomStep.toFixed(7)},${zoomEnd})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':` +
+    `d=${totalFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=${fps}`;
 
   await exec(
     `${ffmpegBin()} -y -ss ${startSec.toFixed(3)} -i "${inPath}" -t ${take.toFixed(3)} ` +

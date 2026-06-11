@@ -12828,9 +12828,9 @@ async function composeSceneVideo(
       const outLabel = idx === allOverlays.length - 1 ? "kfinal" : `kf${idx}`;
       const timed = frame as TimedOverlay;
       if (overlayUsesFullFrame(timed) || (frame as { isStatCallout?: boolean }).isStatCallout) {
-        chain += `;[${prevLabel}][${inputIdx}:v]overlay=x=0:y=0:enable='between(t,${frame.startTime.toFixed(2)},${frame.endTime.toFixed(2)})'[${outLabel}]`;
+        chain += `;[${prevLabel}][${inputIdx}:v]overlay=x=0:y=0:format=auto:enable='between(t,${frame.startTime.toFixed(2)},${frame.endTime.toFixed(2)})'[${outLabel}]`;
       } else {
-        chain += `;[${prevLabel}][${inputIdx}:v]overlay=x=0:y=${kineticY}:enable='between(t,${frame.startTime.toFixed(2)},${frame.endTime.toFixed(2)})'[${outLabel}]`;
+        chain += `;[${prevLabel}][${inputIdx}:v]overlay=x=0:y=${kineticY}:format=auto:enable='between(t,${frame.startTime.toFixed(2)},${frame.endTime.toFixed(2)})'[${outLabel}]`;
       }
       prevLabel = outLabel;
     });

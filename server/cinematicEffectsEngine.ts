@@ -44,6 +44,11 @@ export function cinematicEffectsEnabled(): boolean {
   return process.env.ENABLE_CINEMATIC_EFFECTS !== "false";
 }
 
+/** Full-frame particle layer — off by default (can look like a dirty overlay). */
+export function cinematicParticlesEnabled(): boolean {
+  return process.env.ENABLE_CINEMATIC_PARTICLES === "true";
+}
+
 export function extractYearsFromText(text: string): string[] {
   const matches = text.match(YEAR_RE) ?? [];
   const seen = new Set<string>();
@@ -328,14 +333,16 @@ export async function buildCinematicOverlays(
 ): Promise<TimedOverlay[]> {
   const overlays: TimedOverlay[] = [];
 
-  const dust = await renderParticleDustOverlay(
-    scene.index,
-    workDir,
-    ffmpegBin,
-    execWithTimeout,
-    durationSec
-  );
-  if (dust) overlays.push(dust);
+  if (cinematicParticlesEnabled()) {
+    const dust = await renderParticleDustOverlay(
+      scene.index,
+      workDir,
+      ffmpegBin,
+      execWithTimeout,
+      durationSec
+    );
+    if (dust) overlays.push(dust);
+  }
 
   for (let i = 0; i < plan.years.length; i++) {
     const badge = await renderYearBadgeOverlay(
@@ -397,7 +404,7 @@ export function buildCinematicSfxAudioFilter(
       `atrim=0:0.35,asetpts=PTS-STARTPTS[${lbl}];`;
     mixLabels.push(lbl);
   });
-  chain += `[${mixLabels.join("][")}]amix=inputs=${mixLabels.length}:duration=first:dropout_transition=2,` +
+  chain += `[${mixLabels.join("][")}]amix=inputs=${mixLabels.length}:duration=first:dropout_transition=2:normalize=0,` +
     `atrim=0:${voiceDurSec.toFixed(3)},asetpts=PTS-STARTPTS[${outLabel}]`;
   return chain;
 }
