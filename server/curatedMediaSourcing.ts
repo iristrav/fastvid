@@ -9,7 +9,21 @@ import * as path from "path";
 import { resolveLocalVideoPath, LOCAL_UPLOADS_DIR } from "./storageLocal";
 import { storageGetSignedUrl } from "./storage";
 import { archiveClipHasBakedEditText } from "./archiveClipFilter";
-import { curatedArchiveOnlyVisuals, archiveVisualMaxClipSec, archiveVisualMinClipSec, archivePreferVideoClips } from "./sourcingPolicy";
+import { buildMatFramedStillVF, buildStillEncodeArgs } from "./documentaryStyle";
+import {
+  buildImageMotionGraphicFilter,
+  buildNewsCardVideoVF,
+  canUseMotionGraphicStyle,
+  planMotionGraphicBeat,
+  type MotionGraphicsBudget,
+} from "./motionGraphicsEngine";
+import {
+  curatedArchiveOnlyVisuals,
+  archiveVisualMaxClipSec,
+  archiveVisualMinClipSec,
+  archivePreferVideoClips,
+  framedArchiveStillsEnabled,
+} from "./sourcingPolicy";
 import {
   getAllMediaArchives,
   getMediaArchiveAssets,
@@ -675,27 +689,70 @@ async function materializeArchiveAsset(asset: MediaArchiveAsset, destPath: strin
   fs.writeFileSync(destPath, buf);
 }
 
+export type CuratedClipStyleContext = {
+  beatText?: string;
+  videoTitle?: string;
+  motionGraphicsBudget?: MotionGraphicsBudget;
+};
+
 /** Ken Burns motion — visible pan/zoom for full beat duration (avoids frozen stills). */
 async function convertImageToKenBurns(
   imgPath: string,
   outPath: string,
-  duration: number
+  duration: number,
+  sceneIndex: number,
+  beatIndex: number,
+  styleContext?: CuratedClipStyleContext
 ): Promise<void> {
-  const fps = 25;
-  const totalFrames = Math.max(50, Math.round(duration * fps));
-  const zoomEnd = 1.12;
-  const zoomStep = (zoomEnd - 1.0) / totalFrames;
-  const padW = Math.round(VIDEO_WIDTH * 1.12);
-  const padH = Math.round(VIDEO_HEIGHT * 1.12);
-  await exec(
-    `${ffmpegBin()} -y -loop 1 -i "${imgPath}" -t ${duration.toFixed(3)} ` +
-      `-vf "scale=${padW}:${padH}:force_original_aspect_ratio=increase,` +
-      `crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:(iw-${VIDEO_WIDTH})/2:(ih-${VIDEO_HEIGHT})/2,` +
-      `zoompan=z='min(zoom+${zoomStep.toFixed(7)},${zoomEnd})':` +
-      `x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':` +
-      `d=${totalFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=${fps}" ` +
-      `-c:v libx264 -preset veryfast -crf 18 -an -pix_fmt yuv420p "${outPath}"`
-  );
+  const plan =
+    styleContext?.beatText != null
+      ? planMotionGraphicBeat(
+          styleContext.beatText,
+          sceneIndex,
+          beatIndex,
+          styleContext.videoTitle
+        )
+      : null;
+
+  if (canUseMotionGraphicStyle(plan, styleContext?.motionGraphicsBudget)) {
+    const styled = buildImageMotionGraphicFilter(duration, plan);
+    if (styled) {
+      await exec(
+        `${ffmpegBin()} ${buildStillEncodeArgs(imgPath, outPath, duration, styled)}`
+      );
+      if (styleContext?.motionGraphicsBudget) {
+        styleContext.motionGraphicsBudget.used++;
+      }
+      const outDur = await probeMediaDurationSec(outPath);
+      if (outDur < duration * 0.85) {
+        throw new Error(`Styled still clip too short (${outDur.toFixed(2)}s < ${duration.toFixed(2)}s)`);
+      }
+      return;
+    }
+  }
+
+  if (framedArchiveStillsEnabled()) {
+    const filterComplex = buildMatFramedStillVF(duration);
+    await exec(
+      `${ffmpegBin()} ${buildStillEncodeArgs(imgPath, outPath, duration, filterComplex)}`
+    );
+  } else {
+    const fps = 25;
+    const totalFrames = Math.max(50, Math.round(duration * fps));
+    const zoomEnd = 1.12;
+    const zoomStep = (zoomEnd - 1.0) / totalFrames;
+    const padW = Math.round(VIDEO_WIDTH * 1.12);
+    const padH = Math.round(VIDEO_HEIGHT * 1.12);
+    await exec(
+      `${ffmpegBin()} -y -loop 1 -i "${imgPath}" -t ${duration.toFixed(3)} ` +
+        `-vf "scale=${padW}:${padH}:force_original_aspect_ratio=increase,` +
+        `crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:(iw-${VIDEO_WIDTH})/2:(ih-${VIDEO_HEIGHT})/2,` +
+        `zoompan=z='min(zoom+${zoomStep.toFixed(7)},${zoomEnd})':` +
+        `x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':` +
+        `d=${totalFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=${fps}" ` +
+        `-c:v libx264 -preset veryfast -crf 18 -an -pix_fmt yuv420p "${outPath}"`
+    );
+  }
   const outDur = await probeMediaDurationSec(outPath);
   if (outDur < duration * 0.85) {
     throw new Error(`Ken Burns clip too short (${outDur.toFixed(2)}s < ${duration.toFixed(2)}s)`);
@@ -706,7 +763,10 @@ async function trimVideoClip(
   inPath: string,
   outPath: string,
   duration: number,
-  clipIndex = 0
+  clipIndex = 0,
+  styleContext?: CuratedClipStyleContext,
+  sceneIndex = 0,
+  beatIndex = 0
 ): Promise<void> {
   const sourceDur = await probeMediaDurationSec(inPath);
   const take = sourceDur > 0 ? Math.min(duration, sourceDur) : duration;
@@ -716,11 +776,30 @@ async function trimVideoClip(
     startSec = (clipIndex * 0.41 + 0.15) % slack;
   }
 
-  // Video: trim + scale/center-crop to 1080p only — no zoom, pan, or Ken Burns.
-  const frameVf =
+  const plan =
+    styleContext?.beatText != null
+      ? planMotionGraphicBeat(
+          styleContext.beatText,
+          sceneIndex,
+          beatIndex,
+          styleContext.videoTitle
+        )
+      : null;
+
+  let frameVf =
     `scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,` +
     `crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:(iw-${VIDEO_WIDTH})/2:(ih-${VIDEO_HEIGHT})/2,` +
     `fps=25,format=yuv420p`;
+
+  if (
+    canUseMotionGraphicStyle(plan, styleContext?.motionGraphicsBudget) &&
+    plan?.kind === "news_card"
+  ) {
+    frameVf = buildNewsCardVideoVF(plan);
+    if (styleContext?.motionGraphicsBudget) {
+      styleContext.motionGraphicsBudget.used++;
+    }
+  }
 
   await exec(
     `${ffmpegBin()} -y -ss ${startSec.toFixed(3)} -i "${inPath}" -t ${take.toFixed(3)} ` +
@@ -739,7 +818,8 @@ export async function prepareCuratedArchiveClip(
   workDir: string,
   sceneIndex: number,
   beatIndex: number,
-  holdSec: number
+  holdSec: number,
+  styleContext?: CuratedClipStyleContext
 ): Promise<string> {
   const duration = clampHoldSec(holdSec);
   const ext =
@@ -767,9 +847,9 @@ export async function prepareCuratedArchiveClip(
   }
 
   if (asset.mediaType === "image") {
-    await convertImageToKenBurns(rawPath, outPath, duration);
+    await convertImageToKenBurns(rawPath, outPath, duration, sceneIndex, beatIndex, styleContext);
   } else {
-    await trimVideoClip(rawPath, outPath, duration, beatIndex);
+    await trimVideoClip(rawPath, outPath, duration, beatIndex, styleContext, sceneIndex, beatIndex);
   }
 
   try {
@@ -791,7 +871,8 @@ export async function fetchCuratedArchiveBeatClip(
   usedStorageUrls: Set<string>,
   videoTitle?: string,
   interviewBudget?: { used: number; max: number },
-  imageBudget?: { used: number; max: number }
+  imageBudget?: { used: number; max: number },
+  motionGraphicsBudget?: MotionGraphicsBudget
 ): Promise<string | null> {
   const { beatTags, topicAnchors, allTags } = buildBeatMatchTags(beat, scene, videoTitle);
   const candidates = orderCuratedCandidatesForBeat(
@@ -836,7 +917,12 @@ export async function fetchCuratedArchiveBeatClip(
         workDir,
         sceneIndex,
         beat.index,
-        holdSec
+        holdSec,
+        {
+          beatText: beat.text,
+          videoTitle,
+          motionGraphicsBudget,
+        }
       );
       const matchedTags = beatTags.filter((t) => {
         const title = (picked.asset.title ?? "").toLowerCase();

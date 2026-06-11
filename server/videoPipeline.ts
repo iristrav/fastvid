@@ -83,7 +83,7 @@ import {
   scriptGuidedClipsEnabled,
 } from "./scriptGuidedClipFinder";
 import { clipPassesVisionGate, clipVisionGateEnabled } from "./visualQualityGate";
-import { curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, skipEffectsStage, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo } from "./sourcingPolicy";
+import { curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, skipEffectsStage, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, maxMotionGraphicsPerVideo } from "./sourcingPolicy";
 import {
   fetchCuratedArchiveBeatClip,
   curatedClipPathAssetId,
@@ -94,6 +94,7 @@ import {
   isCuratedPreparedStillClip,
   isCuratedPreparedVideoClip,
 } from "./curatedMediaSourcing";
+import { tryRenderMotionGraphicBeatClip } from "./motionGraphicsEngine";
 import {
   logPipelineReview,
   reviewPipelineBeforeEffects,
@@ -7468,6 +7469,8 @@ interface VisualDedupState {
   curatedInterviewClipsUsed: number;
   /** Cap Ken Burns still-image beats when archive video is available. */
   curatedImageClipsUsed: number;
+  /** FFmpeg text cards / map beats rendered this video. */
+  motionGraphicsUsed: number;
   lock: Promise<void>;
   perf: PipelinePerfProfile;
   /** Named celebrity from user prompt (e.g. Kylie Jenner) — anchor every beat's stock search. */
@@ -7519,6 +7522,7 @@ function createVisualDedupState(
     usedCuratedStorageUrls: new Set(),
     curatedInterviewClipsUsed: 0,
     curatedImageClipsUsed: 0,
+    motionGraphicsUsed: 0,
     lock: Promise.resolve(),
     perf,
     primaryPerson: topic?.primaryPerson?.trim() ?? "",
@@ -11733,6 +11737,27 @@ async function adoptArchiveBeatClip(
 
   if (tryClip(initialClip, holdSec)) return true;
 
+  const mgfxClip = await tryRenderMotionGraphicBeatClip(
+    beat.text,
+    scene.index,
+    beat.index,
+    workDir,
+    holdSec,
+    dedup.motionGraphicsUsed,
+    videoTitle,
+    FFMPEG_BIN,
+    (cmd, ms, label) => withTimeout(exec(cmd), ms, label)
+  );
+  if (mgfxClip) {
+    dedup.motionGraphicsUsed++;
+    if (tryClip(mgfxClip, holdSec)) return true;
+  }
+
+  const mgfxBudget = {
+    used: dedup.motionGraphicsUsed,
+    max: maxMotionGraphicsPerVideo(),
+  };
+
   for (let attempt = 0; attempt < ARCHIVE_BEAT_CLIP_RETRIES; attempt++) {
     const clip = await fetchCuratedArchiveBeatClip(
       beat,
@@ -11744,8 +11769,10 @@ async function adoptArchiveBeatClip(
       dedup.usedCuratedStorageUrls,
       videoTitle,
       curatedInterviewBudget(dedup),
-      curatedImageBudget(dedup)
+      curatedImageBudget(dedup),
+      mgfxBudget
     );
+    dedup.motionGraphicsUsed = mgfxBudget.used;
     if (tryClip(clip, holdSec)) return true;
   }
   return false;

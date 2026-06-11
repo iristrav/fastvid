@@ -121,6 +121,18 @@ export function buildPolaroidStillVF(duration: number): string {
   );
 }
 
+/** Photo on neutral gray mat — smaller than frame (reference-doc / City Beautiful style). */
+export function buildMatFramedStillVF(duration: number, photoScale = 0.74): string {
+  const w = DOC_STYLE_VIDEO_WIDTH;
+  const h = DOC_STYLE_VIDEO_HEIGHT;
+  const ken = buildKenBurnsTail(duration, 1.025, "center");
+  return (
+    `[0:v]scale='min(${w}*${photoScale}/iw\\,${h}*${photoScale}/ih)*iw':-2,` +
+    `pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:color=0xCFCFCF[mat];` +
+    `[mat]${ken}[vout]`
+  );
+}
+
 export function buildStillEncodeArgs(
   imgPath: string,
   outPath: string,

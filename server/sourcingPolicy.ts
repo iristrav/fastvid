@@ -58,3 +58,22 @@ export function archiveMaxImageClipsPerVideo(): number {
   }
   return 3;
 }
+
+/** Archive stills on gray mat (smaller photo, documentary YouTube style). */
+export function framedArchiveStillsEnabled(): boolean {
+  return process.env.ENABLE_FRAMED_ARCHIVE_STILLS !== "false";
+}
+
+/** FFmpeg-generated text cards, maps, and diagram beats (no external API). */
+export function motionGraphicsInVideosEnabled(): boolean {
+  return process.env.ENABLE_MOTION_GRAPHICS !== "false";
+}
+
+export function maxMotionGraphicsPerVideo(): number {
+  const raw = process.env.MAX_MOTION_GRAPHICS_PER_VIDEO?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 0 && n <= 12) return n;
+  }
+  return 5;
+}

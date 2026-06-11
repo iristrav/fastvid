@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildBlurFillStillVF,
+  buildMatFramedStillVF,
   buildPolaroidStillVF,
   buildPostGradeVF,
   documentaryStyleEnabled,
@@ -36,6 +37,13 @@ describe("documentaryStyle", () => {
     const vf = buildPolaroidStillVF(3.5);
     expect(vf).toContain("pad=960:1040");
     expect(vf).toContain("select='eq(n\\,0)'");
+    expect(vf).toContain("[vout]");
+  });
+
+  it("builds gray mat framed still with ken burns", () => {
+    const vf = buildMatFramedStillVF(4.0);
+    expect(vf).toContain("color=0xCFCFCF");
+    expect(vf).toContain("zoompan=");
     expect(vf).toContain("[vout]");
   });
 
