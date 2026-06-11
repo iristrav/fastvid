@@ -8,6 +8,8 @@ import {
   isCuratedInterviewAsset,
   scoreArchiveMetadata,
   scoreCuratedAsset,
+  isCuratedStaticInteriorAsset,
+  isCuratedPreparedStillClip,
 } from "./curatedMediaSourcing";
 import type { MediaArchiveAsset } from "./db";
 
@@ -250,5 +252,16 @@ describe("curatedMediaSourcing", () => {
   it("extractTopicAnchorTags keeps short ww2 token", () => {
     const anchors = extractTopicAnchorTags("WW2 Documentary: Battle of Berlin");
     expect(anchors).toContain("ww2");
+  });
+
+  it("isCuratedStaticInteriorAsset flags bunker/cell shots", () => {
+    expect(isCuratedStaticInteriorAsset({ title: "Cel met bed en tafel", tags: [] })).toBe(true);
+    expect(isCuratedStaticInteriorAsset({ title: "Militaire parade in Berlijn", tags: ["parade"] })).toBe(false);
+  });
+
+  it("isCuratedPreparedStillClip distinguishes still vs video beat paths", () => {
+    expect(isCuratedPreparedStillClip("scene_0_b1_curated_a42_still.mp4")).toBe(true);
+    expect(isCuratedPreparedStillClip("scene_0_b1_curated_a42.mp4")).toBe(false);
+    expect(curatedClipPathAssetId("scene_0_b1_curated_a42_still.mp4")).toBe(42);
   });
 });

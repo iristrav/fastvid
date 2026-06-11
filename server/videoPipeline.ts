@@ -91,6 +91,7 @@ import {
   archiveVisualSourcesReady,
   markCuratedAssetUsed,
   prepareCuratedArchiveClip,
+  isCuratedPreparedStillClip,
 } from "./curatedMediaSourcing";
 import {
   logPipelineReview,
@@ -8234,16 +8235,19 @@ function montageClipPrepFilter(
   sceneIndex: number,
   smoothTransition: boolean,
   xfade: number,
-  cinematicMotion = false
+  isStillClip: boolean
 ): string {
   const start = montageClipStartSec(sceneIndex, inputIndex).toFixed(2);
   const fadeIn = smoothTransition ? Math.min(0.28, dur * 0.07) : 0;
   const fadeOut = smoothTransition ? Math.min(xfade * 0.95, dur * 0.2) : 0;
   const fadeOutStart = Math.max(0, dur - fadeOut - 0.02);
-  let chain =
-    `[${inputIndex}:v]trim=start=${start}:duration=${dur.toFixed(3)},${CROP_FILL_VF}`;
-  if (cinematicMotion && dur > 2) {
-    chain += `,scale=iw*1.05:ih*1.05,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:(iw-${VIDEO_WIDTH})/2:(ih-${VIDEO_HEIGHT})/2`;
+  let chain = `[${inputIndex}:v]trim=start=${start}:duration=${dur.toFixed(3)},`;
+  if (isStillClip) {
+    // Archive still — Ken Burns already applied; only sync fps for montage.
+    chain += `${FPS_FORMAT_VF}`;
+  } else {
+    // Archive video — no zoom/crop; letterbox if aspect differs (for xfade compatibility).
+    chain += `${SCALE_PAD_VF},${FPS_FORMAT_VF}`;
   }
   if (fadeIn > 0.05) chain += `,fade=t=in:st=0:d=${fadeIn.toFixed(3)}`;
   if (fadeOut > 0.05) chain += `,fade=t=out:st=${fadeOutStart.toFixed(3)}:d=${fadeOut.toFixed(3)}`;
@@ -8256,7 +8260,8 @@ function buildMontageXfadeFilter(
   clipCount: number,
   outDur: number,
   sceneIndex: number,
-  clipDurations?: number[]
+  clipDurations?: number[],
+  clipPaths?: string[]
 ): { scaleFilters: string; mergeFilter: string; montageLabel: string } {
   const n = Math.max(1, clipCount);
   const minClip = effectiveMinClipSec();
@@ -8269,18 +8274,19 @@ function buildMontageXfadeFilter(
   const avgDur = durs.reduce((s, d) => s + d, 0) / n;
   const xfade = montageXfadeSec(avgDur);
   const smooth = curatedArchiveOnlyVisuals() || documentaryStyleEnabled();
-  const cinematicMotion = cinematicEffectsEnabled();
+  const isStillAt = (i: number) =>
+    Boolean(clipPaths?.[i] && isCuratedPreparedStillClip(clipPaths[i]));
 
   if (n === 1) {
     return {
-      scaleFilters: montageClipPrepFilter(0, durs[0], sceneIndex, smooth, xfade, cinematicMotion),
+      scaleFilters: montageClipPrepFilter(0, durs[0], sceneIndex, smooth, xfade, isStillAt(0)),
       mergeFilter: "",
       montageLabel: "v0",
     };
   }
 
   const scaleFilters = Array.from({ length: n }, (_, i) =>
-    montageClipPrepFilter(i, durs[i], sceneIndex, smooth, xfade, cinematicMotion)
+    montageClipPrepFilter(i, durs[i], sceneIndex, smooth, xfade, isStillAt(i))
   ).join(";");
 
   if (xfade <= 0.001) {
@@ -12661,57 +12667,13 @@ async function prepareSceneEffectLayers(
         });
       }
     }
-
-    if (documentaryStyleEnabled()) {
-      const primaryPerson = (scene.personNames ?? []).find((n) => n?.trim());
-      if (primaryPerson) {
-        const badge = await renderNameBadgeOverlay(
-          primaryPerson,
-          scene.index,
-          workDir,
-          FFMPEG_BIN,
-          (cmd, ms, lbl) => withTimeout(exec(cmd), ms, lbl)
-        );
-        if (badge) docOverlays.push(badge);
-      }
-
-      const hasCinematicKeywords = (cinematicPlan?.keywords.length ?? 0) > 0;
-      if (!hasCinematicKeywords) {
-        const llmWords = (scene.highlightWords || []).filter((w) => w && w.trim().length > 0);
-        const highlightWord = llmWords[0] || extractKeywords(scene.text, 1)[0];
-        if (highlightWord) {
-          const caption = await renderHighlightCaptionOverlay(
-            highlightWord,
-            scene.index,
-            workDir,
-            FFMPEG_BIN,
-            (cmd, ms, lbl) => withTimeout(exec(cmd), ms, lbl),
-            duration
-          );
-          if (caption) docOverlays.push(caption);
-        }
-      }
-    }
   } catch (err) {
     console.warn(`[Pipeline] Scene ${scene.index}: effect layers failed (non-fatal):`, err);
     kineticFrames = [];
     docOverlays = [];
   }
 
-  let statCalloutFrame: { path: string; startTime: number; endTime: number } | null = null;
-  try {
-    const cinematicHasStat = docOverlays.some((o) => o.isStatCallout);
-    if (
-      !cinematicHasStat &&
-      process.env.ENABLE_STAT_CALLOUTS === "true" &&
-      scene.statCallout &&
-      scene.statCallout.trim().length > 0
-    ) {
-      statCalloutFrame = await renderStatCallout(scene.statCallout, scene.index, workDir);
-    }
-  } catch {
-    statCalloutFrame = null;
-  }
+  const statCalloutFrame: { path: string; startTime: number; endTime: number } | null = null;
 
   const colorGrade = documentaryStyleEnabled()
     ? buildPostGradeVF()
@@ -12980,37 +12942,6 @@ async function composeSceneVideo(
       }
     }
 
-    if (documentaryStyleEnabled()) {
-      const primaryPerson = (scene.personNames ?? []).find((n) => n?.trim());
-      if (primaryPerson) {
-        const badge = await renderNameBadgeOverlay(
-          primaryPerson,
-          scene.index,
-          workDir,
-          FFMPEG_BIN,
-          (cmd, ms, lbl) => withTimeout(exec(cmd), ms, lbl)
-        );
-        if (badge) docOverlays.push(badge);
-      }
-
-      const hasCinematicKeywords = (cinematicPlan?.keywords.length ?? 0) > 0;
-      if (!hasCinematicKeywords) {
-        const llmWords = (scene.highlightWords || []).filter((w) => w && w.trim().length > 0);
-        const highlightWord = llmWords[0] || extractKeywords(scene.text, 1)[0];
-        if (highlightWord) {
-          const caption = await renderHighlightCaptionOverlay(
-            highlightWord,
-            scene.index,
-            workDir,
-            FFMPEG_BIN,
-            (cmd, ms, lbl) => withTimeout(exec(cmd), ms, lbl),
-            duration
-          );
-          if (caption) docOverlays.push(caption);
-        }
-      }
-    }
-
     const shouldShowKinetic = false; // legacy center pills disabled
     if (shouldShowKinetic) {
       const legacyWords = (scene.highlightWords || []).filter((w) => w && w.trim().length > 0);
@@ -13047,23 +12978,8 @@ async function composeSceneVideo(
   }
   }
 
-  // Stat callout from LLM when cinematic engine did not already render one
-  let statCalloutFrame: { path: string; startTime: number; endTime: number } | null = null;
-  if (!skipEffectLayers) {
-  try {
-    const cinematicHasStat = docOverlays.some((o) => o.isStatCallout);
-    if (
-      !cinematicHasStat &&
-      process.env.ENABLE_STAT_CALLOUTS === "true" &&
-      scene.statCallout &&
-      scene.statCallout.trim().length > 0
-    ) {
-      statCalloutFrame = await renderStatCallout(scene.statCallout, scene.index, workDir);
-    }
-  } catch {
-    statCalloutFrame = null;
-  }
-  }
+  // Only year badges from cinematic engine — no stat callouts or keyword pills.
+  const statCalloutFrame: { path: string; startTime: number; endTime: number } | null = null;
 
   // On Railway, limit FFmpeg threads to reduce memory usage
   const threadFlag = IS_RAILWAY ? "-threads 2" : "";
@@ -13137,7 +13053,7 @@ async function composeSceneVideo(
 
   try {
     const { scaleFilters, mergeFilter, montageLabel: xfadeLabel } =
-      buildMontageXfadeFilter(safeClips.length, outDur, scene.index, montageDurations);
+      buildMontageXfadeFilter(safeClips.length, outDur, scene.index, montageDurations, safeClips);
     const inputs = montageClipInputs(safeClips);
     const durs =
       montageDurations ??
@@ -13202,7 +13118,7 @@ async function composeSceneVideo(
     if (sfxCueFiles.length > 0) {
       try {
         const { scaleFilters, mergeFilter, montageLabel: xfadeLabel } =
-          buildMontageXfadeFilter(safeClips.length, outDur, scene.index, montageDurations);
+          buildMontageXfadeFilter(safeClips.length, outDur, scene.index, montageDurations, safeClips);
         const inputs = montageClipInputs(safeClips);
         const montageLabel = xfadeLabel;
         const audioIdx = safeClips.length;
@@ -13234,7 +13150,7 @@ async function composeSceneVideo(
     if (docOverlays.length > 0 || statCalloutFrame) {
       try {
         const { scaleFilters, mergeFilter, montageLabel: xfadeLabel } =
-          buildMontageXfadeFilter(safeClips.length, outDur, scene.index, montageDurations);
+          buildMontageXfadeFilter(safeClips.length, outDur, scene.index, montageDurations, safeClips);
         const inputs = montageClipInputs(safeClips);
         const montageLabel = xfadeLabel;
         const audioIdx = safeClips.length;
@@ -13265,7 +13181,7 @@ async function composeSceneVideo(
       const n = Math.min(12, Math.max(2, safeClips.length));
       const subset = safeClips.slice(0, n);
       const inputs = montageClipInputs(subset);
-      const { scaleFilters, mergeFilter, montageLabel } = buildMontageXfadeFilter(n, outDur, scene.index);
+      const { scaleFilters, mergeFilter, montageLabel } = buildMontageXfadeFilter(n, outDur, scene.index, undefined, subset);
       await withTimeout(
         exec(
           `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}" ` +
@@ -13283,7 +13199,7 @@ async function composeSceneVideo(
         const n = loopVideo.length;
         if (n > 1) {
           const inputs = montageClipInputs(loopVideo);
-          const { scaleFilters, mergeFilter, montageLabel } = buildMontageXfadeFilter(n, outDur, scene.index, montageDurations);
+          const { scaleFilters, mergeFilter, montageLabel } = buildMontageXfadeFilter(n, outDur, scene.index, montageDurations, loopVideo);
           await withTimeout(
             exec(
               `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}" ` +

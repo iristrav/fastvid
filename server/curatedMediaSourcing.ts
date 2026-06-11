@@ -51,8 +51,13 @@ export function curatedAssetContentKey(assetId: number): string {
 }
 
 export function curatedClipPathAssetId(filePath: string): number | null {
-  const m = path.basename(filePath).match(/_curated_a(\d+)\.mp4$/i);
+  const m = path.basename(filePath).match(/_curated_a(\d+)(?:_still)?\.mp4$/i);
   return m ? Number(m[1]) : null;
+}
+
+/** Beat clip from archive still (Ken Burns applied in prepareCuratedArchiveClip). */
+export function isCuratedPreparedStillClip(filePath: string): boolean {
+  return /_curated_a\d+_still\.mp4$/i.test(path.basename(filePath));
 }
 
 export type ArchiveVisualSourcesStatus = {
@@ -400,6 +405,7 @@ export function scoreCuratedAsset(
   score += curatedActionFootageBoost(asset);
   score += curatedImagePenalty(asset);
   score += curatedPosterPenalty(asset);
+  score += curatedStaticInteriorPenalty(asset);
   score += curatedInterviewPenalty(asset);
 
   return score;
@@ -454,6 +460,20 @@ export function isCuratedPosterOrStillAsset(
   return /\b(portret|portrait|poster|propagandabeeld|propaganda poster|affiche|foto|photo|still|portrait)\b/i.test(
     hay
   );
+}
+
+/** Bunker/cell/interior shots — often a single static frame even as MP4. */
+export function isCuratedStaticInteriorAsset(
+  asset: Pick<MediaArchiveAsset, "title" | "tags">
+): boolean {
+  const hay = `${(asset.title ?? "").toLowerCase()} ${normalizeMediaTags(asset.tags ?? []).join(" ")}`;
+  return /\b(cel met|bunker|interieur|bed en tafel|fuhrerbunker|slachthuis|gevangenis|kamer met)\b/i.test(
+    hay
+  );
+}
+
+function curatedStaticInteriorPenalty(asset: Pick<MediaArchiveAsset, "title" | "tags">): number {
+  return isCuratedStaticInteriorAsset(asset) ? -55 : 0;
 }
 
 function curatedPosterPenalty(asset: Pick<MediaArchiveAsset, "title" | "tags" | "mediaType">): number {
@@ -660,21 +680,10 @@ async function trimVideoClip(
     startSec = (clipIndex * 0.41 + 0.15) % slack;
   }
 
-  const fps = 25;
-  const totalFrames = Math.max(50, Math.round(take * fps));
-  const zoomEnd = 1.05;
-  const zoomStep = (zoomEnd - 1.0) / totalFrames;
-
-  const vf =
-    `scale=${Math.round(VIDEO_WIDTH * 1.08)}:${Math.round(VIDEO_HEIGHT * 1.08)}:force_original_aspect_ratio=increase,` +
-    `crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:(iw-${VIDEO_WIDTH})/2:(ih-${VIDEO_HEIGHT})/2,` +
-    `zoompan=z='min(zoom+${zoomStep.toFixed(7)},${zoomEnd})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':` +
-    `d=${totalFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=${fps}`;
-
+  // Video: trim only — no scale, crop, or zoom (movement comes from the source file).
   await exec(
     `${ffmpegBin()} -y -ss ${startSec.toFixed(3)} -i "${inPath}" -t ${take.toFixed(3)} ` +
-      `-vf "${vf}" ` +
-      `-c:v libx264 -preset veryfast -crf 18 -an -pix_fmt yuv420p "${outPath}"`
+      `-an -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p "${outPath}"`
   );
 
   const outDur = await probeMediaDurationSec(outPath);
@@ -703,7 +712,10 @@ export async function prepareCuratedArchiveClip(
           ? "webp"
           : "jpg";
   const rawPath = path.join(workDir, `scene_${sceneIndex}_b${beatIndex}_curated_a${asset.id}_raw.${ext}`);
-  const outPath = path.join(workDir, `scene_${sceneIndex}_b${beatIndex}_curated_a${asset.id}.mp4`);
+  const outPath =
+    asset.mediaType === "image"
+      ? path.join(workDir, `scene_${sceneIndex}_b${beatIndex}_curated_a${asset.id}_still.mp4`)
+      : path.join(workDir, `scene_${sceneIndex}_b${beatIndex}_curated_a${asset.id}.mp4`);
 
   await materializeArchiveAsset(asset, rawPath);
 

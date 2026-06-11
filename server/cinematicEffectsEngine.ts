@@ -156,20 +156,18 @@ export async function renderYearBadgeOverlay(
 ): Promise<TimedOverlay | null> {
   const safeYear = sanitizeForDrawtext(year, 8);
   const FONT_SIZE = 72;
-  const LABEL_SIZE = 22;
   const PAD_X = 28;
   const PAD_Y = 18;
   const ACCENT_W = 4;
   const MARGIN_L = 56;
   const MARGIN_B = 88;
   const boxW = Math.round(safeYear.length * FONT_SIZE * 0.52 + PAD_X * 2 + ACCENT_W + 8);
-  const boxH = FONT_SIZE + PAD_Y * 2 + LABEL_SIZE + 6;
+  const boxH = FONT_SIZE + PAD_Y * 2;
   const boxX = MARGIN_L;
   const boxY = DOC_STYLE_VIDEO_HEIGHT - boxH - MARGIN_B;
   const accentX = boxX;
   const textX = boxX + ACCENT_W + PAD_X;
   const textY = boxY + PAD_Y;
-  const labelY = textY + FONT_SIZE + 4;
 
   const slot = sceneDuration / Math.max(1, slotCount);
   const startTime = Math.max(0.3, slotIndex * slot + 0.2);
@@ -183,8 +181,7 @@ export async function renderYearBadgeOverlay(
         `-vf "` +
         `drawbox=x=${boxX}:y=${boxY}:w=${boxW}:h=${boxH}:color=0x141418@0.88:t=fill,` +
         `drawbox=x=${accentX}:y=${boxY}:w=${ACCENT_W}:h=${boxH}:color=FF7A00@0.95:t=fill,` +
-        `drawtext=text='${safeYear}':fontcolor=white:fontsize=${FONT_SIZE}:x=${textX}:y=${textY},` +
-        `drawtext=text='DATE':fontcolor=0xAAAAAA:fontsize=${LABEL_SIZE}:x=${textX}:y=${labelY}` +
+        `drawtext=text='${safeYear}':fontcolor=white:fontsize=${FONT_SIZE}:x=${textX}:y=${textY}` +
         `" -frames:v 1 -pix_fmt rgba "${pngPath}"`,
       8_000,
       `Year badge ${year} scene ${sceneIndex}`
@@ -333,17 +330,6 @@ export async function buildCinematicOverlays(
 ): Promise<TimedOverlay[]> {
   const overlays: TimedOverlay[] = [];
 
-  if (cinematicParticlesEnabled()) {
-    const dust = await renderParticleDustOverlay(
-      scene.index,
-      workDir,
-      ffmpegBin,
-      execWithTimeout,
-      durationSec
-    );
-    if (dust) overlays.push(dust);
-  }
-
   for (let i = 0; i < plan.years.length; i++) {
     const badge = await renderYearBadgeOverlay(
       plan.years[i],
@@ -356,30 +342,6 @@ export async function buildCinematicOverlays(
       plan.years.length
     );
     if (badge) overlays.push(badge);
-  }
-
-  if (plan.statText && !plan.years.includes(plan.statText)) {
-    const stat = await renderStatCalloutOverlay(
-      plan.statText,
-      scene.index,
-      workDir,
-      ffmpegBin,
-      execWithTimeout
-    );
-    if (stat) overlays.push(stat);
-  }
-
-  for (let i = 0; i < plan.keywords.length; i++) {
-    const kw = await renderKeywordPillOverlay(
-      plan.keywords[i],
-      scene.index,
-      workDir,
-      ffmpegBin,
-      execWithTimeout,
-      durationSec,
-      i
-    );
-    if (kw) overlays.push(kw);
   }
 
   return overlays;
