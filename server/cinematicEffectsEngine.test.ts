@@ -59,8 +59,19 @@ describe("cinematicEffectsEngine", () => {
 
   it("detects full-frame overlays", () => {
     expect(overlayUsesFullFrame({ path: "x", startTime: 0, endTime: 1, isYearBadge: true })).toBe(
-      true
+      false
     );
+    expect(
+      overlayUsesFullFrame({
+        path: "x",
+        startTime: 0,
+        endTime: 1,
+        isYearBadge: true,
+        overlayX: 56,
+        overlayY: 900,
+      })
+    ).toBe(false);
+    expect(overlayUsesFullFrame({ path: "x", startTime: 0, endTime: 1, fullFrame: true })).toBe(true);
     expect(overlayUsesFullFrame({ path: "x", startTime: 0, endTime: 1 })).toBe(false);
   });
 });

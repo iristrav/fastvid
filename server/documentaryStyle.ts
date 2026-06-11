@@ -160,6 +160,9 @@ export interface TimedOverlay {
   isParticle?: boolean;
   /** Full-frame PNG — overlay at 0:0 (content positioned inside PNG). */
   fullFrame?: boolean;
+  /** Positioned overlay (e.g. year badge) — composited over footage at x/y. */
+  overlayX?: number;
+  overlayY?: number;
 }
 
 export async function renderNameBadgeOverlay(

@@ -413,7 +413,33 @@ export function scoreCuratedAsset(
   score += curatedStaticInteriorPenalty(asset);
   score += curatedInterviewPenalty(asset);
 
+  score += curatedOffTopicPenalty(asset, topicAnchors, beatTags);
+
   return score;
+}
+
+/** Obvious era/topic mismatches (e.g. medieval sign in WWII Hitler doc). */
+function curatedOffTopicPenalty(
+  asset: Pick<MediaArchiveAsset, "title" | "tags">,
+  topicAnchors: string[],
+  beatTags: string[]
+): number {
+  const title = (asset.title ?? "").toLowerCase();
+  const hay = `${title} ${normalizeMediaTags(asset.tags ?? []).join(" ")}`;
+  const wwiiLike =
+    topicAnchors.some((a) =>
+      /hitler|nazi|wwii|world.?war|oorlog|berlin|1945|1944|holocaust|duitsland|germany|third reich/i.test(a)
+    ) ||
+    beatTags.some((t) => /hitler|nazi|berlin|1945|1944|oorlog|war|holocaust/i.test(t));
+  if (!wwiiLike) return 0;
+  if (
+    /\b(middeleeuws|medieval|uithangbord|titanic|prehistoric|steentijd|dinosaur|sprookje|fantasy|mytholog)\b/i.test(
+      hay
+    )
+  ) {
+    return -250;
+  }
+  return 0;
 }
 
 /** Modern talking-head / historian interview clips — poor B-roll for documentaries. */

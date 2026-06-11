@@ -165,9 +165,6 @@ export async function renderYearBadgeOverlay(
   const boxH = FONT_SIZE + PAD_Y * 2;
   const boxX = MARGIN_L;
   const boxY = DOC_STYLE_VIDEO_HEIGHT - boxH - MARGIN_B;
-  const accentX = boxX;
-  const textX = boxX + ACCENT_W + PAD_X;
-  const textY = boxY + PAD_Y;
 
   const slot = sceneDuration / Math.max(1, slotCount);
   const startTime = Math.max(0.3, slotIndex * slot + 0.2);
@@ -177,11 +174,11 @@ export async function renderYearBadgeOverlay(
   try {
     await execWithTimeout(
       `${ffmpegBin} -y ` +
-        `-f lavfi -i "color=c=black@0:size=${DOC_STYLE_VIDEO_WIDTH}x${DOC_STYLE_VIDEO_HEIGHT}:rate=1" ` +
+        `-f lavfi -i "color=c=black@0:size=${boxW}x${boxH}:rate=1" ` +
         `-vf "` +
-        `drawbox=x=${boxX}:y=${boxY}:w=${boxW}:h=${boxH}:color=0x141418@0.88:t=fill,` +
-        `drawbox=x=${accentX}:y=${boxY}:w=${ACCENT_W}:h=${boxH}:color=FF7A00@0.95:t=fill,` +
-        `drawtext=text='${safeYear}':fontcolor=white:fontsize=${FONT_SIZE}:x=${textX}:y=${textY}` +
+        `drawbox=x=0:y=0:w=${boxW}:h=${boxH}:color=0x141418@0.88:t=fill,` +
+        `drawbox=x=0:y=0:w=${ACCENT_W}:h=${boxH}:color=FF7A00@0.95:t=fill,` +
+        `drawtext=text='${safeYear}':fontcolor=white:fontsize=${FONT_SIZE}:x=${ACCENT_W + PAD_X}:y=${PAD_Y}` +
         `" -frames:v 1 -pix_fmt rgba "${pngPath}"`,
       8_000,
       `Year badge ${year} scene ${sceneIndex}`
@@ -192,7 +189,9 @@ export async function renderYearBadgeOverlay(
         startTime,
         endTime,
         isYearBadge: true,
-        fullFrame: true,
+        fullFrame: false,
+        overlayX: boxX,
+        overlayY: boxY,
       };
     }
   } catch {
@@ -376,7 +375,6 @@ export function overlayUsesFullFrame(frame: TimedOverlay): boolean {
     frame.fullFrame === true ||
     frame.isStatCallout === true ||
     frame.isNameBadge === true ||
-    frame.isYearBadge === true ||
     frame.isParticle === true
   );
 }

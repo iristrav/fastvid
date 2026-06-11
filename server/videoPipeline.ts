@@ -8172,7 +8172,72 @@ function normalizeMontageDurations(durations: number[], outDur: number): number[
   return normalized;
 }
 
-/** Cycle clips until montage covers scene duration (when compose dropped beats or clips are short). */
+/** Cycle clips until montage covers scene duration — prefer longer holds over repeating the same clip. */
+function pickMontageExpansionClip(clips: string[], expanded: string[]): string | null {
+  if (clips.length <= 1) return null;
+  const prevKey = clipContentKey(expanded[expanded.length - 1]!);
+  const useCount = new Map<string, number>();
+  for (const c of expanded) {
+    const k = clipContentKey(c);
+    useCount.set(k, (useCount.get(k) ?? 0) + 1);
+  }
+  let best: string | null = null;
+  let bestScore = -Infinity;
+  for (const c of clips) {
+    const k = clipContentKey(c);
+    if (k === prevKey) continue;
+    const uses = useCount.get(k) ?? 0;
+    const score = -uses * 100;
+    if (score > bestScore) {
+      bestScore = score;
+      best = c;
+    }
+  }
+  return best;
+}
+
+function stretchMontageDurations(durs: number[], outDur: number): number[] {
+  const maxClip = effectiveMaxClipSec();
+  let next = normalizeMontageDurations([...durs], outDur);
+  for (let pass = 0; pass < 10; pass++) {
+    if (estimateMontageDurationSec(next) >= outDur * 0.92) break;
+    let grew = false;
+    next = next.map((d) => {
+      if (d >= maxClip - 0.05) return d;
+      grew = true;
+      return Math.min(maxClip, d * 1.12);
+    });
+    next = normalizeMontageDurations(next, outDur);
+    if (!grew) break;
+  }
+  return next;
+}
+
+function dedupeAdjacentMontageClips(
+  clips: string[],
+  beatDurations?: number[]
+): { clips: string[]; beatDurations?: number[] } {
+  if (clips.length <= 1) return { clips, beatDurations };
+  const outClips: string[] = [];
+  const outDurs: number[] = [];
+  for (let i = 0; i < clips.length; i++) {
+    const clip = clips[i]!;
+    const key = clipContentKey(clip);
+    const prevKey = outClips.length ? clipContentKey(outClips[outClips.length - 1]!) : "";
+    const dur = beatDurations?.[i] ?? 0;
+    if (outClips.length && key === prevKey) {
+      if (outDurs.length) outDurs[outDurs.length - 1] = (outDurs[outDurs.length - 1] ?? 0) + dur;
+      continue;
+    }
+    outClips.push(clip);
+    if (beatDurations?.length === clips.length) outDurs.push(dur);
+  }
+  return {
+    clips: outClips,
+    beatDurations: outDurs.length === outClips.length ? outDurs : beatDurations,
+  };
+}
+
 function expandClipsForSceneDuration(
   clips: string[],
   outDur: number,
@@ -8185,16 +8250,33 @@ function expandClipsForSceneDuration(
     beatDurations?.length === expanded.length
       ? [...beatDurations]
       : expanded.map(() => computeMontageClipDuration(outDur, expanded.length));
-  durs = normalizeMontageDurations(durs, outDur);
+  durs = stretchMontageDurations(durs, outDur);
 
   while (expanded.length < maxClips && estimateMontageDurationSec(durs) < outDur * 0.92) {
-    const srcIdx = expanded.length % clips.length;
-    expanded.push(clips[srcIdx]);
+    const nextClip = pickMontageExpansionClip(clips, expanded);
+    if (!nextClip) {
+      durs = stretchMontageDurations(
+        durs.map((d) => Math.min(effectiveMaxClipSec(), d * 1.08)),
+        outDur
+      );
+      if (estimateMontageDurationSec(durs) >= outDur * 0.92) break;
+      if (clips.length === 1) break;
+      expanded.push(clips[0]!);
+    } else {
+      expanded.push(nextClip);
+    }
+    const added = expanded[expanded.length - 1]!;
+    const addedIdx = clips.indexOf(added);
     const nextDur =
-      beatDurations?.[srcIdx] ??
+      (addedIdx >= 0 ? beatDurations?.[addedIdx] : undefined) ??
       computeMontageClipDuration(outDur, clips.length);
     durs = normalizeMontageDurations([...durs, nextDur], outDur);
   }
+
+  const deduped = dedupeAdjacentMontageClips(expanded, durs);
+  expanded = deduped.clips;
+  durs = deduped.beatDurations ?? durs;
+
   if (expanded.length > clips.length) {
     console.log(
       `[Pipeline] Expanded montage ${clips.length} → ${expanded.length} clips ` +
@@ -12606,17 +12688,20 @@ function buildOverlayFilterChain(
   if (allOverlays.length === 0) {
     return { extraInputs: "", filterChain: "", finalLabel: baseLabel };
   }
-  const extraInputs = allOverlays.map((f) => `-loop 1 -i "${f.path}"`).join(" ");
+  const extraInputs = allOverlays.map((f) => `-i "${f.path}"`).join(" ");
   let chain = "";
   let prevLabel = baseLabel;
   allOverlays.forEach((frame, idx) => {
     const inputIdx = baseInputCount + idx;
     const outLabel = idx === allOverlays.length - 1 ? "kfinal" : `kf${idx}`;
     const timed = frame as TimedOverlay;
-    if (overlayUsesFullFrame(timed) || (frame as { isStatCallout?: boolean }).isStatCallout) {
-      chain += `;[${prevLabel}][${inputIdx}:v]overlay=x=0:y=0:format=auto:enable='between(t,${frame.startTime.toFixed(2)},${frame.endTime.toFixed(2)})'[${outLabel}]`;
+    const enable = `enable='between(t,${frame.startTime.toFixed(2)},${frame.endTime.toFixed(2)})'`;
+    if (timed.overlayX != null && timed.overlayY != null) {
+      chain += `;[${prevLabel}][${inputIdx}:v]overlay=x=${timed.overlayX}:y=${timed.overlayY}:format=auto:${enable}[${outLabel}]`;
+    } else if (overlayUsesFullFrame(timed) || (frame as { isStatCallout?: boolean }).isStatCallout) {
+      chain += `;[${prevLabel}][${inputIdx}:v]overlay=x=0:y=0:format=auto:${enable}[${outLabel}]`;
     } else {
-      chain += `;[${prevLabel}][${inputIdx}:v]overlay=x=0:y=${kineticY}:format=auto:enable='between(t,${frame.startTime.toFixed(2)},${frame.endTime.toFixed(2)})'[${outLabel}]`;
+      chain += `;[${prevLabel}][${inputIdx}:v]overlay=x=0:y=${kineticY}:format=auto:${enable}[${outLabel}]`;
     }
     prevLabel = outLabel;
   });
@@ -12721,7 +12806,6 @@ async function applySceneEffectsPass(
   );
   const hasOverlays =
     layers.kineticFrames.length > 0 || layers.docOverlays.length > 0 || layers.statCalloutFrame !== null;
-  const preGradeLabel = hasOverlays ? finalLabel : "0:v";
   const overlayCount =
     layers.kineticFrames.length + layers.docOverlays.length + (layers.statCalloutFrame ? 1 : 0);
   const sfxBaseIdx = 1 + overlayCount;
@@ -12739,8 +12823,9 @@ async function applySceneEffectsPass(
       : `[0:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${audioFadeOutStart.toFixed(3)}:d=0.12,` +
         `atrim=0:${layers.voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]`;
   const overlayChainRaw = filterChain.startsWith(";") ? filterChain.slice(1) : filterChain;
+  const gradedBase = "graded";
   const videoChain = hasOverlays
-    ? `${overlayChainRaw};[${preGradeLabel}]${FPS_FORMAT_VF}[vtimed];[vtimed]${layers.fadeFilter}[vout]`
+    ? `[0:v]${layers.fadeFilter}[${gradedBase}];${overlayChainRaw.replace(/\[0:v\]/g, `[${gradedBase}]`)};[kfinal]${FPS_FORMAT_VF}[vout]`
     : `[0:v]${FPS_FORMAT_VF},${layers.fadeFilter}[vout]`;
 
   await withTimeout(
@@ -12995,36 +13080,19 @@ async function composeSceneVideo(
   const subtitleDrawtext = '';
   const fadeFilter = documentaryStyleEnabled() ? colorGrade : `${colorGrade}${subtitleDrawtext}`;
 
-  // Helper: build the full overlay chain
-  // Kinetic frames: full-width PNG at y=kineticY, timed with enable='between(t,...)'.
-  // Stat callout: full-frame transparent PNG overlaid at x=0:y=0 (box is positioned inside the PNG).
+  // Helper: build the full overlay chain (shared with effects pass)
   function buildKineticChain(
     baseLabel: string,
     baseInputCount: number
   ): { extraInputs: string; filterChain: string; finalLabel: string } {
-    const allOverlays: Array<{ path: string; startTime: number; endTime: number; isStatCallout?: boolean }> = [
-      ...kineticFrames,
-      ...docOverlays,
-      ...(statCalloutFrame ? [{ ...statCalloutFrame, isStatCallout: true }] : []),
-    ];
-    if (allOverlays.length === 0) {
-      return { extraInputs: "", filterChain: "", finalLabel: baseLabel };
-    }
-    const extraInputs = allOverlays.map(f => `-loop 1 -i "${f.path}"`).join(" ");
-    let chain = "";
-    let prevLabel = baseLabel;
-    allOverlays.forEach((frame, idx) => {
-      const inputIdx = baseInputCount + idx;
-      const outLabel = idx === allOverlays.length - 1 ? "kfinal" : `kf${idx}`;
-      const timed = frame as TimedOverlay;
-      if (overlayUsesFullFrame(timed) || (frame as { isStatCallout?: boolean }).isStatCallout) {
-        chain += `;[${prevLabel}][${inputIdx}:v]overlay=x=0:y=0:format=auto:enable='between(t,${frame.startTime.toFixed(2)},${frame.endTime.toFixed(2)})'[${outLabel}]`;
-      } else {
-        chain += `;[${prevLabel}][${inputIdx}:v]overlay=x=0:y=${kineticY}:format=auto:enable='between(t,${frame.startTime.toFixed(2)},${frame.endTime.toFixed(2)})'[${outLabel}]`;
-      }
-      prevLabel = outLabel;
-    });
-    return { extraInputs, filterChain: chain, finalLabel: "kfinal" };
+    return buildOverlayFilterChain(
+      baseLabel,
+      baseInputCount,
+      kineticFrames,
+      docOverlays,
+      statCalloutFrame,
+      kineticY
+    );
   }
 
   // Final existence check before compose — log clearly if something is missing

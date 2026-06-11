@@ -73,6 +73,31 @@ describe("curatedMediaSourcing", () => {
     expect(hitlerScore).toBeGreaterThan(titanicScore);
   });
 
+  it("scoreCuratedAsset penalizes off-topic era mismatches in WWII docs", () => {
+    const medieval: MediaArchiveAsset = {
+      id: 99,
+      archiveId: 1,
+      title: "Middeleeuws uithangbord in nacht",
+      tags: ["middeleeuws", "nacht"],
+      mediaType: "image",
+      mimeType: "image/jpeg",
+      storageUrl: "/local-storage/m.jpg",
+      isActive: 1,
+      sortOrder: 0,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      fileSizeBytes: 1000,
+      width: 1920,
+      height: 1080,
+      durationSec: null,
+      sourceUrl: null,
+      sourceLabel: null,
+    };
+    const beatTags = ["berlin", "1945", "hitler"];
+    const topicAnchors = ["hitler", "wwii"];
+    expect(scoreCuratedAsset(medieval, ["hitler"], beatTags, topicAnchors)).toBeLessThanOrEqual(0);
+  });
+
   it("scoreCuratedAsset ranks beat-text title matches over unrelated archive clips", () => {
     const berlinAsset: MediaArchiveAsset = {
       id: 3,
