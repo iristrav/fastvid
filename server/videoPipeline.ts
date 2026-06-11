@@ -653,7 +653,8 @@ async function fetchBeatArchivalThenPexels(
       beat.holdSec,
       dedup.usedCuratedAssetIds,
       dedup.usedCuratedStorageUrls,
-      videoTitle
+      videoTitle,
+      curatedInterviewBudget(dedup)
     );
   }
   const topicHay = [videoTitle, scene.text, beat.text].filter(Boolean).join(" ");
@@ -789,7 +790,8 @@ async function beatPrimaryFetch(
       beat.holdSec,
       dedup.usedCuratedAssetIds,
       dedup.usedCuratedStorageUrls,
-      videoTitle
+      videoTitle,
+      curatedInterviewBudget(dedup)
     );
   }
   if (youtubeOnlySourcingEnabled()) {
@@ -7445,6 +7447,8 @@ interface VisualDedupState {
   usedCuratedAssetIds: Set<number>;
   /** Storage URLs from curated archive — blocks same file twice even with different IDs. */
   usedCuratedStorageUrls: Set<string>;
+  /** Cap modern historian interview B-roll (looks like one frozen talking head). */
+  curatedInterviewClipsUsed: number;
   lock: Promise<void>;
   perf: PipelinePerfProfile;
   /** Named celebrity from user prompt (e.g. Kylie Jenner) — anchor every beat's stock search. */
@@ -7460,6 +7464,12 @@ function canUseLicensedStockBeat(dedup: VisualDedupState): boolean {
 
 function markLicensedStockBeatUsed(dedup: VisualDedupState): void {
   if (dedup.perf.minimizeStockFootage) dedup.stockBeatsUsed++;
+}
+
+const MAX_CURATED_INTERVIEW_CLIPS_PER_VIDEO = 2;
+
+function curatedInterviewBudget(dedup: VisualDedupState): { used: number; max: number } {
+  return { used: dedup.curatedInterviewClipsUsed, max: MAX_CURATED_INTERVIEW_CLIPS_PER_VIDEO };
 }
 
 function createVisualDedupState(
@@ -7484,6 +7494,7 @@ function createVisualDedupState(
     usedImageUrls: new Set(),
     usedCuratedAssetIds: new Set(),
     usedCuratedStorageUrls: new Set(),
+    curatedInterviewClipsUsed: 0,
     lock: Promise.resolve(),
     perf,
     primaryPerson: topic?.primaryPerson?.trim() ?? "",
@@ -8925,7 +8936,8 @@ async function recoverSceneClipsIfEmpty(
         stubBeat.holdSec,
         dedup.usedCuratedAssetIds,
         dedup.usedCuratedStorageUrls,
-        topicContext
+        topicContext,
+        curatedInterviewBudget(dedup)
       );
       if (!clip || isPipelineFallbackClip(clip)) continue;
       const key = clipContentKey(clip);
@@ -9049,7 +9061,8 @@ async function fetchLastResortRealClip(
       beat.holdSec,
       dedup.usedCuratedAssetIds,
       dedup.usedCuratedStorageUrls,
-      videoTitle
+      videoTitle,
+      curatedInterviewBudget(dedup)
     );
   }
   const tag = `b${beat.index}_lr`;
@@ -10312,7 +10325,8 @@ async function fetchBeatClip(
       beat.holdSec,
       dedup.usedCuratedAssetIds,
       dedup.usedCuratedStorageUrls,
-      videoTitle
+      videoTitle,
+      curatedInterviewBudget(dedup)
     );
   }
   const tag = `b${beat.index}`;
@@ -11339,7 +11353,8 @@ async function resolveBeatClipForBeat(
       beat.holdSec,
       dedup.usedCuratedAssetIds,
       dedup.usedCuratedStorageUrls,
-      videoTitle
+      videoTitle,
+      curatedInterviewBudget(dedup)
     );
   }
 
@@ -11481,7 +11496,8 @@ async function adoptArchiveBeatClip(
       holdSec,
       dedup.usedCuratedAssetIds,
       dedup.usedCuratedStorageUrls,
-      videoTitle
+      videoTitle,
+      curatedInterviewBudget(dedup)
     );
     if (tryClip(clip, holdSec)) return true;
   }
@@ -11845,7 +11861,7 @@ async function fetchSceneVisuals(
           (async () => {
             if (archiveOnly) {
               return fetchCuratedArchiveBeatClip(
-                stub, scene, workDir, scene.index, stub.holdSec, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls, videoTitle
+                stub, scene, workDir, scene.index, stub.holdSec, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls, videoTitle, curatedInterviewBudget(dedup)
               );
             }
             if (dedup.perf.fastStockMode) {
@@ -11949,7 +11965,8 @@ async function fetchSceneVisuals(
           stub.holdSec,
           dedup.usedCuratedAssetIds,
           dedup.usedCuratedStorageUrls,
-          videoTitle
+          videoTitle,
+          curatedInterviewBudget(dedup)
         );
         if (extra && !isPipelineFallbackClip(extra) && pushSceneClip(extra, stub.holdSec, stub.index)) {
           break;
@@ -12052,7 +12069,8 @@ async function fetchSceneVisuals(
         beats[0].holdSec,
         dedup.usedCuratedAssetIds,
         dedup.usedCuratedStorageUrls,
-        videoTitle
+        videoTitle,
+        curatedInterviewBudget(dedup)
       );
     } else if (realOnly) {
       forced = await beatPrimaryFetch(
@@ -12750,6 +12768,38 @@ async function composeSceneVideo(
     );
   } catch (composeErr) {
     console.warn(`[Pipeline] Scene ${scene.index}: compose failed, trying simplified compose:`, composeErr);
+    if (sfxCueFiles.length > 0) {
+      try {
+        const { scaleFilters, mergeFilter, montageLabel: xfadeLabel } =
+          buildMontageXfadeFilter(safeClips.length, outDur, scene.index, montageDurations);
+        const inputs = safeClips.map((c) => `-i "${c}"`).join(" ");
+        const montageLabel = xfadeLabel;
+        const audioIdx = safeClips.length;
+        const kineticBaseIdx2 = audioIdx + 1;
+        const { extraInputs: kExtraInputs2, filterChain: kChain2, finalLabel: kFinalLabel2 } =
+          buildKineticChain(montageLabel, kineticBaseIdx2);
+        const preGradeLabel2 = kChain2 ? kFinalLabel2 : montageLabel;
+        const audioFadeOutStart2 = Math.max(0, voiceDur - 0.15);
+        await withTimeout(
+          exec(
+            `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}"${kExtraInputs2 ? ` ${kExtraInputs2}` : ""} ` +
+              `-filter_complex "${scaleFilters}${mergeFilter}${kChain2};` +
+              `[${preGradeLabel2}]${FPS_FORMAT_VF}[vtimed];[vtimed]${fadeFilter}[vout];` +
+              `[${audioIdx}:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${audioFadeOutStart2.toFixed(3)}:d=0.12,` +
+              `atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
+              `-map "[vout]" -map "[aout]" -vsync cfr ` +
+              `-t ${outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
+          ),
+          120_000,
+          `Compose without SFX scene ${scene.index}`
+        );
+        if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1000) {
+          return outputPath;
+        }
+      } catch (noSfxErr) {
+        console.warn(`[Pipeline] Scene ${scene.index}: compose without SFX failed:`, noSfxErr);
+      }
+    }
     if (docOverlays.length > 0 || statCalloutFrame) {
       try {
         const { scaleFilters, mergeFilter, montageLabel: xfadeLabel } =
@@ -12816,18 +12866,17 @@ async function composeSceneVideo(
         } else {
           const singleDur = await probeVideoDurationSec(safeClips[0]);
           const clipPlay = Math.min(outDur, singleDur > 0.2 ? singleDur : outDur);
-          const padTail = Math.max(0, outDur - clipPlay);
           await withTimeout(
             exec(
-              `${FFMPEG_BIN} -y -i "${safeClips[0]}" -i "${safeAudioPath}" ` +
-                `-filter_complex "[0:v]trim=duration=${clipPlay.toFixed(3)},setpts=PTS-STARTPTS,` +
-                `tpad=stop_mode=clone:stop_duration=${padTail.toFixed(3)},${FPS_FORMAT_VF}[vout];` +
-                `[1:a]atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
+              `${FFMPEG_BIN} -y -stream_loop -1 -i "${safeClips[0]}" -i "${safeAudioPath}" ` +
+                `-filter_complex "[0:v]trim=duration=${outDur.toFixed(3)},setpts=PTS-STARTPTS,${FPS_FORMAT_VF}[vout];` +
+                `[1:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${Math.max(0, voiceDur - 0.15).toFixed(3)}:d=0.12,` +
+                `atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
                 `-map "[vout]" -map "[aout]" -vsync cfr ` +
                 `-t ${outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
             ),
             45_000,
-            `Hold-last-frame mux scene ${scene.index}`
+            `Loop single clip scene ${scene.index}`
           );
         }
       } catch (muxErr) {

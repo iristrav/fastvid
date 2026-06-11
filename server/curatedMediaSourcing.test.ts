@@ -5,6 +5,7 @@ import {
   curatedAssetContentKey,
   curatedClipPathAssetId,
   extractTopicAnchorTags,
+  isCuratedInterviewAsset,
   scoreCuratedAsset,
 } from "./curatedMediaSourcing";
 import type { MediaArchiveAsset } from "./db";
@@ -111,5 +112,37 @@ describe("curatedMediaSourcing", () => {
   it("curatedClipPathAssetId parses asset id from output filename", () => {
     expect(curatedClipPathAssetId("/tmp/scene_0_b2_curated_a17.mp4")).toBe(17);
     expect(curatedClipPathAssetId("/tmp/scene_0_b2_curated.mp4")).toBeNull();
+  });
+
+  it("penalizes historian interview clips vs historical footage", () => {
+    const interview = {
+      id: 5,
+      title: "Historicus bespreekt Adolf Hitler",
+      tags: ["hitler", "interview"],
+    };
+    const parade = {
+      id: 6,
+      title: "Militaire parade in Berlijn 1939",
+      tags: ["hitler", "parade"],
+    };
+    expect(isCuratedInterviewAsset(interview)).toBe(true);
+    const { beatTags, topicAnchors } = buildBeatMatchTags(
+      { keywords: ["hitler"], text: "Hitler in Berlin", index: 0 },
+      { text: "Hitler in Berlin" },
+      "Hitler documentary"
+    );
+    const interviewScore = scoreCuratedAsset(
+      { ...interview, archiveId: 1, mediaType: "video", mimeType: "video/mp4", storageUrl: "/x", isActive: 1, sortOrder: 0, createdAt: new Date(), updatedAt: new Date(), fileSizeBytes: 1, width: 1920, height: 1080, durationSec: 5, sourceUrl: null, sourceLabel: null },
+      ["hitler"],
+      beatTags,
+      topicAnchors
+    );
+    const paradeScore = scoreCuratedAsset(
+      { ...parade, archiveId: 1, mediaType: "video", mimeType: "video/mp4", storageUrl: "/y", isActive: 1, sortOrder: 0, createdAt: new Date(), updatedAt: new Date(), fileSizeBytes: 1, width: 1920, height: 1080, durationSec: 5, sourceUrl: null, sourceLabel: null },
+      ["hitler"],
+      beatTags,
+      topicAnchors
+    );
+    expect(paradeScore).toBeGreaterThan(interviewScore);
   });
 });

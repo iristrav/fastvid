@@ -243,7 +243,39 @@ export function scoreCuratedAsset(
 
   if (beatTags.length >= 2 && beatHits === 0) score = Math.max(0, score - 25);
 
+  score += curatedArchiveVisualBoost(asset);
+  score += curatedInterviewPenalty(asset);
+
   return score;
+}
+
+/** Modern talking-head / historian interview clips — poor B-roll for documentaries. */
+export function isCuratedInterviewAsset(asset: Pick<MediaArchiveAsset, "title" | "tags">): boolean {
+  const title = (asset.title ?? "").toLowerCase();
+  const tags = normalizeMediaTags(asset.tags ?? []).join(" ");
+  const hay = `${title} ${tags}`;
+  return /\b(interview|historicus|bespreekt|talking head|woonkamer|bibliotheek|oudere man|man geeft|gesprek met)\b/i.test(
+    hay
+  );
+}
+
+/** Archival photos, parades, period footage — prefer over generic interview B-roll. */
+export function isCuratedHistoricalFootage(asset: Pick<MediaArchiveAsset, "title" | "tags" | "mediaType" | "mixKind">): boolean {
+  if (asset.mediaType === "image") return true;
+  const title = (asset.title ?? "").toLowerCase();
+  return /\b(parade|militair|zwart-wit|archief|1930|1934|1939|1945|hitler|nazi|berlijn|troepen|soldaten|portret|propaganda|rally|march|speech|crowd|war|oorlog|wehrmacht|ss)\b/i.test(
+    title
+  );
+}
+
+function curatedInterviewPenalty(asset: Pick<MediaArchiveAsset, "title" | "tags">): number {
+  return isCuratedInterviewAsset(asset) ? -140 : 0;
+}
+
+function curatedArchiveVisualBoost(asset: Pick<MediaArchiveAsset, "title" | "tags" | "mediaType" | "mixKind">): number {
+  if (isCuratedHistoricalFootage(asset)) return 35;
+  if (asset.mixKind === "photo") return 20;
+  return 0;
 }
 
 function tMatches(a: string, b: string): boolean {
@@ -497,7 +529,8 @@ export async function fetchCuratedArchiveBeatClip(
   holdSec: number,
   usedAssetIds: Set<number>,
   usedStorageUrls: Set<string>,
-  videoTitle?: string
+  videoTitle?: string,
+  interviewBudget?: { used: number; max: number }
 ): Promise<string | null> {
   const { beatTags, topicAnchors, allTags } = buildBeatMatchTags(beat, scene, videoTitle);
   const candidates = await listCuratedArchiveCandidates(
@@ -517,6 +550,13 @@ export async function fetchCuratedArchiveBeatClip(
 
   for (const picked of candidates) {
     if (usedAssetIds.has(picked.asset.id) || usedStorageUrls.has(picked.asset.storageUrl)) {
+      continue;
+    }
+    if (
+      interviewBudget &&
+      isCuratedInterviewAsset(picked.asset) &&
+      interviewBudget.used >= interviewBudget.max
+    ) {
       continue;
     }
     try {
@@ -540,6 +580,9 @@ export async function fetchCuratedArchiveBeatClip(
       );
       usedAssetIds.add(picked.asset.id);
       usedStorageUrls.add(picked.asset.storageUrl);
+      if (interviewBudget && isCuratedInterviewAsset(picked.asset)) {
+        interviewBudget.used++;
+      }
       return clipPath;
     } catch (err) {
       console.warn(
