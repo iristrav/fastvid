@@ -593,12 +593,29 @@ export async function buildCinematicOverlays(
   workDir: string,
   ffmpegBin: string,
   execWithTimeout: (cmd: string, ms: number, label: string) => Promise<unknown>,
-  opts: { facelessSubs?: boolean; docOverlays?: boolean; videoTextOnly?: boolean } = {}
+  opts: { facelessSubs?: boolean; docOverlays?: boolean; videoTextOnly?: boolean; yearsOnly?: boolean } = {}
 ): Promise<TimedOverlay[]> {
   const overlays: TimedOverlay[] = [];
   const exec = execWithTimeout;
 
-  // B-roll scenes get text burned per beat; skip scene-level graphics on video montages.
+  if (opts.yearsOnly) {
+    for (let i = 0; i < plan.years.length; i++) {
+      const badge = await renderYearBadgeOverlay(
+        plan.years[i],
+        scene.index,
+        workDir,
+        ffmpegBin,
+        exec,
+        durationSec,
+        i,
+        plan.years.length
+      );
+      if (badge) overlays.push(badge);
+    }
+    return overlays;
+  }
+
+  // Legacy: skip scene overlays when text was burned per beat on B-roll.
   if (opts.videoTextOnly) {
     return overlays;
   }

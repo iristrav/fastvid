@@ -20,13 +20,20 @@ export function skipEffectsStage(): boolean {
   return process.env.SKIP_EFFECTS_STAGE === "true";
 }
 
-/** Faceless kinetic subtitles (stacked emphasis words) — on by default. */
+/** Faceless kinetic subtitles — off by default; only year badges on screen unless ENABLE_EXTRA_ONSCREEN_TEXT=true. */
 export function facelessSubtitlesEnabled(): boolean {
-  return process.env.ENABLE_FACELESS_SUBTITLES !== "false";
+  if (yearsOnlyOnScreen()) return false;
+  return process.env.ENABLE_FACELESS_SUBTITLES === "true";
+}
+
+/** Only year numbers as on-screen text (no kinetic subs, maps, name cards). Default on. */
+export function yearsOnlyOnScreen(): boolean {
+  return process.env.ENABLE_EXTRA_ONSCREEN_TEXT !== "true";
 }
 
 /** Subtle film grain + light flash overlays in effects pass. */
 export function documentaryOverlaysEnabled(): boolean {
+  if (yearsOnlyOnScreen()) return false;
   return process.env.ENABLE_DOC_OVERLAYS !== "false";
 }
 
@@ -76,6 +83,7 @@ export function framedArchiveStillsEnabled(): boolean {
 
 /** FFmpeg-generated text cards, maps, and diagram beats (no external API). */
 export function motionGraphicsInVideosEnabled(): boolean {
+  if (yearsOnlyOnScreen()) return false;
   return process.env.ENABLE_MOTION_GRAPHICS !== "false";
 }
 

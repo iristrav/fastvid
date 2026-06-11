@@ -183,7 +183,6 @@ export function planMotionGraphicBeat(
   beatIndex: number,
   videoTitle?: string
 ): MotionGraphicPlan | null {
-  if (!motionGraphicsEnabled()) return null;
   const text = beatText.replace(/\[visual:[^\]]+\]/gi, "").trim();
   if (text.length < 10) return null;
 

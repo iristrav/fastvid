@@ -85,7 +85,7 @@ import {
   scriptGuidedClipsEnabled,
 } from "./scriptGuidedClipFinder";
 import { clipPassesVisionGate, clipVisionGateEnabled } from "./visualQualityGate";
-import { curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, skipEffectsStage, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled } from "./sourcingPolicy";
+import { curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, skipEffectsStage, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen } from "./sourcingPolicy";
 import {
   fetchCuratedArchiveBeatClip,
   curatedClipPathAssetId,
@@ -8046,6 +8046,10 @@ async function isMostlyBlackClip(filePath: string): Promise<boolean> {
   if (isPipelineFallbackClip(filePath)) return true;
   // B&W archival clips often fail Railway luma heuristics — never drop curated archive beats.
   if (curatedArchiveOnlyVisuals() && curatedClipPathAssetId(filePath) != null) {
+    if (IS_RAILWAY) {
+      const mid = await probeClipMeanLuma(filePath, 0.5);
+      if (mid !== null && mid < 18) return true;
+    }
     return false;
   }
   // Railway: one luma sample — full blackdetect runs 3+ FFmpeg probes per clip
@@ -8226,12 +8230,7 @@ function uniqueClipsInOrder(clips: string[]): string[] {
 }
 
 function montageClipInputs(clips: string[]): string {
-  return clips
-    .map((c) => {
-      const loop = isMotionGraphicClip(c) ? "" : "-stream_loop -1 ";
-      return `${loop}-i "${c}"`;
-    })
-    .join(" ");
+  return clips.map((c) => `-i "${c}"`).join(" ");
 }
 
 function montageTailPadVF(inLabel: string, montageDur: number, outDur: number): string {
@@ -8530,7 +8529,9 @@ function buildMontageXfadeFilter(
   for (let i = 1; i < n; i++) {
     const outLabel = i === n - 1 ? "montage" : `xf${i}`;
     const xfadeTransition = smooth
-      ? pickMontageXfadeTransition(sceneIndex, i)
+      ? curatedArchiveOnlyVisuals()
+        ? "dissolve"
+        : pickMontageXfadeTransition(sceneIndex, i)
       : pickStockMontageXfadeTransition(sceneIndex, i);
     mergeFilter += `;[${prev}][v${i}]xfade=transition=${xfadeTransition}:duration=${xfade.toFixed(3)}:offset=${offset.toFixed(3)}[${outLabel}]`;
     prev = outLabel;
@@ -11862,7 +11863,7 @@ async function pushMotionGraphicBeatClipIfAny(
   pushClip: (clipPath: string, holdSec?: number) => boolean,
   holdSec = beat.holdSec
 ): Promise<boolean> {
-  if (!motionGraphicsEnabled()) return false;
+  if (yearsOnlyOnScreen() || !motionGraphicsEnabled()) return false;
   if (dedup.motionGraphicsUsed >= maxMotionGraphicsPerVideo()) return false;
 
   const mgfxClip = await tryRenderMotionGraphicBeatClip(
@@ -11888,7 +11889,9 @@ async function applyVideoBeatTextOverlay(
   workDir: string,
   holdSec: number
 ): Promise<string> {
-  if (!facelessSubtitlesEnabled() || !isRealVideoFootageClip(clipPath)) return clipPath;
+  if (yearsOnlyOnScreen() || !facelessSubtitlesEnabled() || !isRealVideoFootageClip(clipPath)) {
+    return clipPath;
+  }
   return burnFacelessTextOnVideoClip(
     clipPath,
     beat.text,
@@ -12942,7 +12945,7 @@ async function prepareSceneEffectLayers(
 }> {
   const voiceDur = probedVoiceDur || Math.max(0.5, duration - 0.35);
   const outDur = voiceDur + 0.12;
-  const videoTextOnly = sceneHasRealVideoFootage(sceneClips);
+  const yearsOnly = yearsOnlyOnScreen();
   let kineticFrames: KineticFrame[] = [];
   let docOverlays: TimedOverlay[] = [];
   let cinematicPlan: CinematicScenePlan | null = null;
@@ -12959,14 +12962,14 @@ async function prepareSceneEffectLayers(
         FFMPEG_BIN,
         (cmd, ms, lbl) => withTimeout(exec(cmd), ms, lbl),
         {
-          facelessSubs: !videoTextOnly && (facelessSubtitlesEnabled() || enableSubtitles),
-          docOverlays: !videoTextOnly,
-          videoTextOnly,
+          yearsOnly,
+          facelessSubs: !yearsOnly && (facelessSubtitlesEnabled() || enableSubtitles),
+          docOverlays: !yearsOnly,
         }
       );
       docOverlays.push(...cinematicOverlays);
 
-      if (!videoTextOnly) {
+      if (!yearsOnly) {
         const sfxCache = new Map<string, string>();
         for (const cue of cinematicPlan.audioCues.slice(0, 12)) {
           if (!sfxCache.has(cue.type)) {
@@ -13234,7 +13237,7 @@ async function composeSceneVideo(
 
   if (!skipEffectLayers) {
   try {
-    const videoTextOnly = sceneHasRealVideoFootage(safeClips);
+    const yearsOnly = yearsOnlyOnScreen();
     if (cinematicEffectsEnabled()) {
       cinematicPlan = planCinematicScene(scene, duration);
       const cinematicOverlays = await buildCinematicOverlays(
@@ -13245,14 +13248,14 @@ async function composeSceneVideo(
         FFMPEG_BIN,
         (cmd, ms, lbl) => withTimeout(exec(cmd), ms, lbl),
         {
-          facelessSubs: !videoTextOnly && (facelessSubtitlesEnabled() || enableSubtitles),
-          docOverlays: !videoTextOnly,
-          videoTextOnly,
+          yearsOnly,
+          facelessSubs: !yearsOnly && (facelessSubtitlesEnabled() || enableSubtitles),
+          docOverlays: !yearsOnly,
         }
       );
       docOverlays.push(...cinematicOverlays);
 
-      if (!videoTextOnly) {
+      if (!yearsOnly) {
       const sfxCache = new Map<string, string>();
       for (const cue of cinematicPlan.audioCues.slice(0, 12)) {
         if (!sfxCache.has(cue.type)) {
