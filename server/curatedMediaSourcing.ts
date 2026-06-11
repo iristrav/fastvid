@@ -424,6 +424,14 @@ function curatedOffTopicPenalty(
   topicAnchors: string[],
   beatTags: string[]
 ): number {
+  return isCuratedOffTopicAsset(asset, topicAnchors, beatTags) ? -250 : 0;
+}
+
+export function isCuratedOffTopicAsset(
+  asset: Pick<MediaArchiveAsset, "title" | "tags">,
+  topicAnchors: string[],
+  beatTags: string[]
+): boolean {
   const title = (asset.title ?? "").toLowerCase();
   const hay = `${title} ${normalizeMediaTags(asset.tags ?? []).join(" ")}`;
   const wwiiLike =
@@ -431,15 +439,10 @@ function curatedOffTopicPenalty(
       /hitler|nazi|wwii|world.?war|oorlog|berlin|1945|1944|holocaust|duitsland|germany|third reich/i.test(a)
     ) ||
     beatTags.some((t) => /hitler|nazi|berlin|1945|1944|oorlog|war|holocaust/i.test(t));
-  if (!wwiiLike) return 0;
-  if (
-    /\b(middeleeuws|medieval|uithangbord|titanic|prehistoric|steentijd|dinosaur|sprookje|fantasy|mytholog)\b/i.test(
-      hay
-    )
-  ) {
-    return -250;
-  }
-  return 0;
+  if (!wwiiLike) return false;
+  return /\b(middeleeuws|medieval|uithangbord|titanic|prehistoric|steentijd|dinosaur|sprookje|fantasy|mytholog)\b/i.test(
+    hay
+  );
 }
 
 /** Modern talking-head / historian interview clips — poor B-roll for documentaries. */
@@ -594,6 +597,7 @@ export async function listCuratedArchiveCandidates(
     for (const asset of assets) {
       if (excludeIds.has(asset.id)) continue;
       if (excludeStorageUrls.has(asset.storageUrl)) continue;
+      if (isCuratedOffTopicAsset(asset, topicAnchors, beatTags)) continue;
       const score = scoreCuratedAsset(asset, nicheTags, beatTags, topicAnchors, beatText);
       if (score > 0) scored.push({ asset, score, archiveName: archive.name });
       else if (assetMatchesBeatTags(asset, beatTags) || assetMatchesTopicAnchors(asset, topicAnchors)) {
@@ -608,6 +612,7 @@ export async function listCuratedArchiveCandidates(
       for (const asset of assets) {
         if (excludeIds.has(asset.id)) continue;
         if (excludeStorageUrls.has(asset.storageUrl)) continue;
+        if (isCuratedOffTopicAsset(asset, topicAnchors, beatTags)) continue;
         fallback.push({ asset, score: 1, archiveName: archive.name });
       }
     }
