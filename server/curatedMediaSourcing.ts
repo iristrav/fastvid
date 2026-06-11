@@ -60,6 +60,11 @@ export function isCuratedPreparedStillClip(filePath: string): boolean {
   return /_curated_a\d+_still\.mp4$/i.test(path.basename(filePath));
 }
 
+/** Beat clip from archive video — already trimmed and framed to 1080p in prepareCuratedArchiveClip. */
+export function isCuratedPreparedVideoClip(filePath: string): boolean {
+  return /_curated_a\d+\.mp4$/i.test(path.basename(filePath)) && !isCuratedPreparedStillClip(filePath);
+}
+
 export type ArchiveVisualSourcesStatus = {
   ok: boolean;
   activeArchives: number;
@@ -680,10 +685,15 @@ async function trimVideoClip(
     startSec = (clipIndex * 0.41 + 0.15) % slack;
   }
 
-  // Video: trim only — no scale, crop, or zoom (movement comes from the source file).
+  // Video: trim + scale/center-crop to 1080p only — no zoom, pan, or Ken Burns.
+  const frameVf =
+    `scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,` +
+    `crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:(iw-${VIDEO_WIDTH})/2:(ih-${VIDEO_HEIGHT})/2,` +
+    `fps=25,format=yuv420p`;
+
   await exec(
     `${ffmpegBin()} -y -ss ${startSec.toFixed(3)} -i "${inPath}" -t ${take.toFixed(3)} ` +
-      `-an -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p "${outPath}"`
+      `-vf "${frameVf}" -an -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p "${outPath}"`
   );
 
   const outDur = await probeMediaDurationSec(outPath);

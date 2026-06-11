@@ -10,6 +10,7 @@ import {
   scoreCuratedAsset,
   isCuratedStaticInteriorAsset,
   isCuratedPreparedStillClip,
+  isCuratedPreparedVideoClip,
 } from "./curatedMediaSourcing";
 import type { MediaArchiveAsset } from "./db";
 
@@ -263,5 +264,7 @@ describe("curatedMediaSourcing", () => {
     expect(isCuratedPreparedStillClip("scene_0_b1_curated_a42_still.mp4")).toBe(true);
     expect(isCuratedPreparedStillClip("scene_0_b1_curated_a42.mp4")).toBe(false);
     expect(curatedClipPathAssetId("scene_0_b1_curated_a42_still.mp4")).toBe(42);
+    expect(isCuratedPreparedVideoClip("scene_0_b1_curated_a42.mp4")).toBe(true);
+    expect(isCuratedPreparedVideoClip("scene_0_b1_curated_a42_still.mp4")).toBe(false);
   });
 });

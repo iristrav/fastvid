@@ -92,6 +92,7 @@ import {
   markCuratedAssetUsed,
   prepareCuratedArchiveClip,
   isCuratedPreparedStillClip,
+  isCuratedPreparedVideoClip,
 } from "./curatedMediaSourcing";
 import {
   logPipelineReview,
@@ -8235,19 +8236,22 @@ function montageClipPrepFilter(
   sceneIndex: number,
   smoothTransition: boolean,
   xfade: number,
-  isStillClip: boolean
+  clipPath?: string
 ): string {
   const start = montageClipStartSec(sceneIndex, inputIndex).toFixed(2);
   const fadeIn = smoothTransition ? Math.min(0.28, dur * 0.07) : 0;
   const fadeOut = smoothTransition ? Math.min(xfade * 0.95, dur * 0.2) : 0;
   const fadeOutStart = Math.max(0, dur - fadeOut - 0.02);
+  const alreadyFramed =
+    clipPath &&
+    (isCuratedPreparedStillClip(clipPath) || isCuratedPreparedVideoClip(clipPath));
   let chain = `[${inputIndex}:v]trim=start=${start}:duration=${dur.toFixed(3)},`;
-  if (isStillClip) {
-    // Archive still — Ken Burns already applied; only sync fps for montage.
+  if (alreadyFramed) {
+    // Archive beat clip already at 1080p — montage only syncs timing/fps.
     chain += `${FPS_FORMAT_VF}`;
   } else {
-    // Archive video — no zoom/crop; letterbox if aspect differs (for xfade compatibility).
-    chain += `${SCALE_PAD_VF},${FPS_FORMAT_VF}`;
+    // Other sources: scale + center-crop to 16:9 (no zoom or Ken Burns).
+    chain += `${CROP_FILL_VF},${FPS_FORMAT_VF}`;
   }
   if (fadeIn > 0.05) chain += `,fade=t=in:st=0:d=${fadeIn.toFixed(3)}`;
   if (fadeOut > 0.05) chain += `,fade=t=out:st=${fadeOutStart.toFixed(3)}:d=${fadeOut.toFixed(3)}`;
@@ -8274,19 +8278,18 @@ function buildMontageXfadeFilter(
   const avgDur = durs.reduce((s, d) => s + d, 0) / n;
   const xfade = montageXfadeSec(avgDur);
   const smooth = curatedArchiveOnlyVisuals() || documentaryStyleEnabled();
-  const isStillAt = (i: number) =>
-    Boolean(clipPaths?.[i] && isCuratedPreparedStillClip(clipPaths[i]));
+  const clipAt = (i: number) => clipPaths?.[i];
 
   if (n === 1) {
     return {
-      scaleFilters: montageClipPrepFilter(0, durs[0], sceneIndex, smooth, xfade, isStillAt(0)),
+      scaleFilters: montageClipPrepFilter(0, durs[0], sceneIndex, smooth, xfade, clipAt(0)),
       mergeFilter: "",
       montageLabel: "v0",
     };
   }
 
   const scaleFilters = Array.from({ length: n }, (_, i) =>
-    montageClipPrepFilter(i, durs[i], sceneIndex, smooth, xfade, isStillAt(i))
+    montageClipPrepFilter(i, durs[i], sceneIndex, smooth, xfade, clipAt(i))
   ).join(";");
 
   if (xfade <= 0.001) {
