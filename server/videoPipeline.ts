@@ -7897,6 +7897,10 @@ async function probeClipMeanLuma(filePath: string, atSec: number): Promise<numbe
 
 async function isMostlyBlackClip(filePath: string): Promise<boolean> {
   if (isPipelineFallbackClip(filePath)) return true;
+  // B&W archival clips often fail Railway luma heuristics — never drop curated archive beats.
+  if (curatedArchiveOnlyVisuals() && curatedClipPathAssetId(filePath) != null) {
+    return false;
+  }
   // Railway: one luma sample — full blackdetect runs 3+ FFmpeg probes per clip
   if (IS_RAILWAY) {
     const mid = await probeClipMeanLuma(filePath, 0.5);
@@ -8054,23 +8058,63 @@ function beatsBelongTogether(prevText: string, nextText: string, prevVisual: str
   return false;
 }
 
+function estimateMontageDurationSec(durations: number[]): number {
+  const n = durations.length;
+  if (n === 0) return 0;
+  const avg = durations.reduce((s, d) => s + d, 0) / n;
+  const xfade = n > 1 ? montageXfadeSec(avg) : 0;
+  return durations.reduce((s, d) => s + d, 0) - (n - 1) * xfade;
+}
+
 function normalizeMontageDurations(durations: number[], outDur: number): number[] {
   const n = durations.length;
   if (n === 0) return durations;
   const maxClip = effectiveMaxClipSec();
+  const minClip = curatedArchiveOnlyVisuals() ? effectiveMinClipSec() : VIDRUSH_CLIP_MIN_SEC * 0.85;
   const xfade = n > 1 ? montageXfadeSec() : 0;
 
-  if (curatedArchiveOnlyVisuals()) {
-    const minClip = effectiveMinClipSec();
-    return durations.map((d) => Math.max(minClip, Math.min(maxClip, d)));
-  }
+  let normalized = durations.map((d) => Math.max(minClip, Math.min(maxClip, d)));
+  const total = normalized.reduce((s, d) => s + d, 0) - (n - 1) * xfade;
+  if (total <= 0.1) return normalized;
 
-  const total = durations.reduce((s, d) => s + d, 0) - (n - 1) * xfade;
-  if (total <= 0.1) return durations;
-  const scale = outDur / total;
-  return durations.map((d) =>
-    Math.max(VIDRUSH_CLIP_MIN_SEC * 0.85, Math.min(maxClip, d * scale))
-  );
+  // Scale montage to scene voice duration — prevents FFmpeg -t from cloning the last frame.
+  if (Math.abs(total - outDur) > 0.35) {
+    const scale = outDur / total;
+    normalized = normalized.map((d) => Math.max(minClip, Math.min(maxClip, d * scale)));
+  }
+  return normalized;
+}
+
+/** Cycle clips until montage covers scene duration (when compose dropped beats or clips are short). */
+function expandClipsForSceneDuration(
+  clips: string[],
+  outDur: number,
+  beatDurations?: number[]
+): { clips: string[]; beatDurations?: number[] } {
+  if (clips.length === 0) return { clips, beatDurations };
+  const maxClips = 18;
+  let expanded = [...clips];
+  let durs =
+    beatDurations?.length === expanded.length
+      ? [...beatDurations]
+      : expanded.map(() => computeMontageClipDuration(outDur, expanded.length));
+  durs = normalizeMontageDurations(durs, outDur);
+
+  while (expanded.length < maxClips && estimateMontageDurationSec(durs) < outDur * 0.92) {
+    const srcIdx = expanded.length % clips.length;
+    expanded.push(clips[srcIdx]);
+    const nextDur =
+      beatDurations?.[srcIdx] ??
+      computeMontageClipDuration(outDur, clips.length);
+    durs = normalizeMontageDurations([...durs, nextDur], outDur);
+  }
+  if (expanded.length > clips.length) {
+    console.log(
+      `[Pipeline] Expanded montage ${clips.length} → ${expanded.length} clips ` +
+        `(target ${outDur.toFixed(1)}s, est ${estimateMontageDurationSec(durs).toFixed(1)}s)`
+    );
+  }
+  return { clips: expanded, beatDurations: durs };
 }
 
 /** Keep per-beat timing when compose drops invalid/duplicate clips. */
@@ -8112,7 +8156,8 @@ function montageClipPrepFilter(
   const fadeOut = smoothTransition ? Math.min(xfade * 0.95, dur * 0.2) : 0;
   const fadeOutStart = Math.max(0, dur - fadeOut - 0.02);
   let chain =
-    `[${inputIndex}:v]trim=start=${start}:duration=${dur.toFixed(3)},${CROP_FILL_VF}`;
+    `[${inputIndex}:v]loop=loop=-1:size=512:start=0,setpts=PTS-STARTPTS,` +
+    `trim=start=${start}:duration=${dur.toFixed(3)},${CROP_FILL_VF}`;
   if (cinematicMotion && dur > 2) {
     chain += `,scale=iw*1.05:ih*1.05,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:(iw-${VIDEO_WIDTH})/2:(ih-${VIDEO_HEIGHT})/2`;
   }
@@ -12704,20 +12749,11 @@ async function composeSceneVideo(
   const outDur = voiceDur + 0.12;
 
   const montageDurationsRaw = alignBeatDurationsWithClips(clips, safeClips, beatDurations);
-  let montageDurations = montageDurationsRaw;
+  const expandedMontage = expandClipsForSceneDuration(safeClips, outDur, montageDurationsRaw);
+  safeClips = expandedMontage.clips;
+  let montageDurations = expandedMontage.beatDurations;
   if (montageDurations?.length === safeClips.length) {
-    montageDurations = await Promise.all(
-      montageDurations.map(async (d, i) => {
-        const probed = await probeVideoDurationSec(safeClips[i]);
-        if (probed > 0.2 && d > probed * 0.98) {
-          console.warn(
-            `[Pipeline] Scene ${scene.index}: capping beat ${i} montage ${d.toFixed(2)}s → ${probed.toFixed(2)}s (avoid frozen frame)`
-          );
-          return Math.min(effectiveMaxClipSec(), probed * 0.98);
-        }
-        return Math.min(effectiveMaxClipSec(), d);
-      })
-    );
+    montageDurations = montageDurations.map((d) => Math.min(effectiveMaxClipSec(), d));
   }
 
   try {
@@ -12886,9 +12922,11 @@ async function composeSceneVideo(
         }
         await withTimeout(
           exec(
-            `${FFMPEG_BIN} -y -i "${safeClips[0]}" -i "${safeAudioPath}" ` +
-            `-filter_complex "[1:a]atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
-            `-map "0:v" -map "[aout]" ` +
+            `${FFMPEG_BIN} -y -stream_loop -1 -i "${safeClips[0]}" -i "${safeAudioPath}" ` +
+            `-filter_complex "[0:v]trim=duration=${outDur.toFixed(3)},setpts=PTS-STARTPTS,${FPS_FORMAT_VF}[vout];` +
+            `[1:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${Math.max(0, voiceDur - 0.15).toFixed(3)}:d=0.12,` +
+            `atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
+            `-map "[vout]" -map "[aout]" -vsync cfr ` +
             `-t ${outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
           ),
           60_000,
