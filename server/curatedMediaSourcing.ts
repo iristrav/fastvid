@@ -6,7 +6,8 @@ import { promisify } from "util";
 import fetch from "node-fetch";
 import * as fs from "fs";
 import * as path from "path";
-import { resolveLocalVideoPath } from "./storageLocal";
+import { resolveLocalVideoPath, LOCAL_UPLOADS_DIR } from "./storageLocal";
+import { storageGetSignedUrl } from "./storage";
 import { archiveClipHasBakedEditText } from "./archiveClipFilter";
 import { curatedArchiveOnlyVisuals, archiveVisualMaxClipSec, archiveVisualMinClipSec } from "./sourcingPolicy";
 import {
@@ -150,7 +151,7 @@ export function buildBeatMatchTags(
   scene: CuratedSceneContext,
   videoTitle?: string
 ): BeatMatchTags {
-  const topicAnchors = extractTopicAnchorTags(videoTitle);
+  const topicAnchors = extractTopicAnchorTags(videoTitle, [beat.text, scene.text].join(" "));
   const beatRaw = [
     beat.text,
     beat.powerWord ?? "",
@@ -249,6 +250,32 @@ function tMatches(a: string, b: string): boolean {
   return a.includes(b) || b.includes(a);
 }
 
+function assetMatchesTopicAnchors(asset: MediaArchiveAsset, topicAnchors: string[]): boolean {
+  if (!topicAnchors.length) return false;
+  const title = (asset.title ?? "").toLowerCase();
+  const assetTags = normalizeMediaTags(asset.tags ?? []);
+  return topicAnchors.some(
+    (q) =>
+      title.includes(q) ||
+      assetTags.some((t) => t === q || t.includes(q) || q.includes(t))
+  );
+}
+
+function resolveArchiveAssetLocalPath(asset: MediaArchiveAsset): string | null {
+  const fromUrl = resolveLocalVideoPath(asset.storageUrl);
+  if (fromUrl) return fromUrl;
+  if (asset.storageKey) {
+    const fromKey = path.join(LOCAL_UPLOADS_DIR, asset.storageKey.replace(/\//g, "_"));
+    if (fs.existsSync(fromKey)) return fromKey;
+  }
+  if (asset.storageUrl.startsWith("/local-storage/")) {
+    const fileName = asset.storageUrl.replace(/^\/local-storage\//, "");
+    const p = path.join(LOCAL_UPLOADS_DIR, fileName);
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
+}
+
 function assetMatchesBeatTags(asset: MediaArchiveAsset, beatTags: string[]): boolean {
   if (!beatTags.length) return true;
   const title = (asset.title ?? "").toLowerCase();
@@ -287,7 +314,18 @@ export async function listCuratedArchiveCandidates(
       if (excludeStorageUrls.has(asset.storageUrl)) continue;
       const score = scoreCuratedAsset(asset, nicheTags, beatTags, topicAnchors);
       if (score > 0) scored.push({ asset, score, archiveName: archive.name });
-      else if (assetMatchesBeatTags(asset, beatTags)) {
+      else if (assetMatchesBeatTags(asset, beatTags) || assetMatchesTopicAnchors(asset, topicAnchors)) {
+        fallback.push({ asset, score: 1, archiveName: archive.name });
+      }
+    }
+  }
+
+  if (scored.length === 0 && fallback.length === 0 && searchArchives.length > 0) {
+    for (const archive of searchArchives) {
+      const assets = await getMediaArchiveAssets(archive.id);
+      for (const asset of assets) {
+        if (excludeIds.has(asset.id)) continue;
+        if (excludeStorageUrls.has(asset.storageUrl)) continue;
         fallback.push({ asset, score: 1, archiveName: archive.name });
       }
     }
@@ -314,19 +352,25 @@ async function probeMediaDurationSec(filePath: string): Promise<number> {
   }
 }
 
-async function materializeAssetUrl(storageUrl: string, destPath: string): Promise<void> {
-  const local = storageUrl.startsWith("/local-storage/")
-    ? resolveLocalVideoPath(storageUrl)
-    : fs.existsSync(storageUrl)
-      ? storageUrl
-      : null;
+async function materializeArchiveAsset(asset: MediaArchiveAsset, destPath: string): Promise<void> {
+  const local = resolveArchiveAssetLocalPath(asset);
   if (local) {
     fs.copyFileSync(local, destPath);
     return;
   }
-  const fetchUrl = storageUrl.startsWith("/")
-    ? `http://127.0.0.1:${process.env.PORT || 3000}${storageUrl}`
-    : storageUrl;
+  if (asset.storageUrl.startsWith("/manus-storage/")) {
+    const key = asset.storageKey ?? asset.storageUrl.replace(/^\/manus-storage\//, "");
+    const signedUrl = await storageGetSignedUrl(key);
+    const resp = await fetch(signedUrl, { signal: AbortSignal.timeout(120_000) });
+    if (!resp.ok) throw new Error(`Archive asset download HTTP ${resp.status}`);
+    const buf = Buffer.from(await resp.arrayBuffer());
+    if (buf.length < 500) throw new Error("Archive asset download too small");
+    fs.writeFileSync(destPath, buf);
+    return;
+  }
+  const fetchUrl = asset.storageUrl.startsWith("/")
+    ? `http://127.0.0.1:${process.env.PORT || 3000}${asset.storageUrl}`
+    : asset.storageUrl;
   const resp = await fetch(fetchUrl, { signal: AbortSignal.timeout(60_000) });
   if (!resp.ok) throw new Error(`Archive asset download HTTP ${resp.status}`);
   const buf = Buffer.from(await resp.arrayBuffer());
@@ -422,7 +466,7 @@ export async function prepareCuratedArchiveClip(
   const rawPath = path.join(workDir, `scene_${sceneIndex}_b${beatIndex}_curated_a${asset.id}_raw.${ext}`);
   const outPath = path.join(workDir, `scene_${sceneIndex}_b${beatIndex}_curated_a${asset.id}.mp4`);
 
-  await materializeAssetUrl(asset.storageUrl, rawPath);
+  await materializeArchiveAsset(asset, rawPath);
 
   const rawBuffer = fs.readFileSync(rawPath);
   if (await archiveClipHasBakedEditText(rawBuffer, asset.mimeType)) {

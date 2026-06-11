@@ -11511,6 +11511,7 @@ async function fetchSceneVisuals(
   const clips: string[] = [];
   const beatDurations: number[] = [];
   const archiveOnly = curatedArchiveOnlyVisuals();
+  const archiveBeatFilled = new Set<number>();
 
   console.log(
     `[Pipeline] Scene ${scene.index}: ${beats.length} zin-beats (~${effectiveBeatSec()}s) — ` +
@@ -11542,6 +11543,7 @@ async function fetchSceneVisuals(
     clips.push(clipPath);
     beatDurations.push(holdSec);
     markCuratedAssetUsed(clipPath, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls);
+    if (archiveOnly) archiveBeatFilled.add(beatIndex);
     if (
       clipPath && !isPipelineFallbackClip(clipPath) && !isStillPhotoClip(clipPath) &&
       fs.existsSync(clipPath)
@@ -11563,22 +11565,35 @@ async function fetchSceneVisuals(
       onBeatProgress?.(bi, beats.length, "beat");
     }, 10_000);
     try {
-      clip = await withTimeout(
-        resolveBeatClipForBeat(
-          beat,
-          scene,
-          workDir,
-          scene.index,
-          clipFetchDur,
-          dedup,
-          spaceTopic,
-          personName,
-          videoTitle,
-          beatAdoptOpts
-        ),
-        beatWallMs,
-        `scene ${scene.index} beat ${bi} visuals`
-      );
+      if (archiveOnly) {
+        const filled = await withTimeout(
+          adoptArchiveBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, null),
+          beatWallMs,
+          `scene ${scene.index} beat ${bi} archive`
+        );
+        if (!filled) {
+          console.warn(
+            `[Pipeline] Scene ${scene.index} beat ${beat.index}: no archive clip matched (tags from narration)`
+          );
+        }
+      } else {
+        clip = await withTimeout(
+          resolveBeatClipForBeat(
+            beat,
+            scene,
+            workDir,
+            scene.index,
+            clipFetchDur,
+            dedup,
+            spaceTopic,
+            personName,
+            videoTitle,
+            beatAdoptOpts
+          ),
+          beatWallMs,
+          `scene ${scene.index} beat ${bi} visuals`
+        );
+      }
     } catch (err) {
       console.warn(
         `[Pipeline] Scene ${scene.index} beat ${beat.index}: capped at ${Math.round(beatWallMs / 1000)}s:`,
@@ -11586,8 +11601,8 @@ async function fetchSceneVisuals(
       );
       dedup.lock = Promise.resolve();
       if (archiveOnly) {
-        clip = await fetchCuratedArchiveBeatClip(
-          beat, scene, workDir, scene.index, beat.holdSec, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls, videoTitle
+        await adoptArchiveBeatClip(
+          beat, scene, workDir, videoTitle, dedup, pushClip, null
         );
       } else if (
         realOnly &&
@@ -11666,15 +11681,13 @@ async function fetchSceneVisuals(
     } finally {
       clearInterval(beatPulse);
     }
+
+    if (archiveOnly) {
+      continue;
+    }
+
     if (clip && !isPipelineFallbackClip(clip)) {
       if (realOnly && isLicensedStockClip(clip) && !canUseLicensedStockBeat(dedup)) {
-        clip = null;
-      } else if (archiveOnly) {
-        if (!(await adoptArchiveBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, clip))) {
-          console.warn(
-            `[Pipeline] Scene ${scene.index} beat ${beat.index}: no unique archive clip after retries`
-          );
-        }
         clip = null;
       } else {
         pushClip(clip);
@@ -11708,15 +11721,9 @@ async function fetchSceneVisuals(
           `[Pipeline] Scene ${scene.index} beat ${beat.index}: no stock or AI clip (beat skipped, no grey)`
         );
       }
-    } else if (!clip || isPipelineFallbackClip(clip)) {
+    } else if (!archiveOnly && (!clip || isPipelineFallbackClip(clip))) {
       let rescue: string | null = null;
-      if (archiveOnly) {
-        if (!(await adoptArchiveBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, null))) {
-          console.warn(
-            `[Pipeline] Scene ${scene.index} beat ${beat.index}: no clip (beat skipped, no grey)`
-          );
-        }
-      } else if (realOnly) {
+      if (realOnly) {
         rescue = await beatPrimaryFetch(
           beat,
           scene,
@@ -11790,8 +11797,8 @@ async function fetchSceneVisuals(
   }
 
   if (archiveOnly) {
-    for (let bi = clips.length; bi < beats.length; bi++) {
-      const beat = beats[bi];
+    for (const beat of beats) {
+      if (archiveBeatFilled.has(beat.index)) continue;
       const pushBeat = (clipPath: string, holdSec = beat.holdSec) =>
         pushSceneClip(clipPath, holdSec, beat.index);
       if (!(await adoptArchiveBeatClip(beat, scene, workDir, videoTitle, dedup, pushBeat, null))) {
@@ -11916,6 +11923,24 @@ async function fetchSceneVisuals(
   }
 
   if (clips.filter((c) => c && !isPipelineFallbackClip(c)).length === 0 && beats[0]) {
+    if (archiveOnly) {
+      for (let si = 0; si < 8; si++) {
+        const stub = { ...beats[0], index: si };
+        const extra = await fetchCuratedArchiveBeatClip(
+          stub,
+          scene,
+          workDir,
+          scene.index,
+          stub.holdSec,
+          dedup.usedCuratedAssetIds,
+          dedup.usedCuratedStorageUrls,
+          videoTitle
+        );
+        if (extra && !isPipelineFallbackClip(extra) && pushSceneClip(extra, stub.holdSec, stub.index)) {
+          break;
+        }
+      }
+    } else {
     console.warn(`[Pipeline] Scene ${scene.index}: no beat clips — stock then image rescue`);
     const rescueTries = dedup.perf.fastStockMode ? 1 : 3;
     for (let si = 0; si < rescueTries; si++) {
@@ -11993,6 +12018,7 @@ async function fetchSceneVisuals(
         beatDurations.push(VIDRUSH_BEAT_SEC);
       }
       if (clips.length >= minClips) break;
+    }
     }
   }
 
@@ -12378,9 +12404,18 @@ async function composeSceneVideo(
   const outputPath = path.join(workDir, `scene_${scene.index}_composed.mp4`);
 
   // Real stock only — no grey placeholders, no duplicate clips in this scene.
-  const existingClips = clips.filter(
+  let existingClips = clips.filter(
     (p) => p && fs.existsSync(p) && fs.statSync(p).size > 100 && !isPipelineFallbackClip(p)
   );
+  if (curatedArchiveOnlyVisuals()) {
+    existingClips = existingClips.filter((p) => {
+      if (curatedClipPathAssetId(p) != null) return true;
+      console.warn(
+        `[Pipeline] Scene ${scene.index}: rejecting non-archive clip ${path.basename(p)} (archive-only mode)`
+      );
+      return false;
+    });
+  }
   const validClips: string[] = [];
   const seenKeys = new Set<string>();
   for (const clipPath of existingClips) {
