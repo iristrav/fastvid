@@ -88,7 +88,10 @@ import {
   nicheRequestAllowsPlatformAccess,
   updateNicheRequest,
 } from "./nicheRequestsDb";
-import { updateVideoScenes, updateEditedVideoUrl, getVideoScenes, type EditorScene, type EditorClip } from "./db";
+import { updateVideoScenes, updateEditedVideoUrl, getVideoScenes, readVideoEditorSettings, updateVideoEditorSettings, type EditorScene, type EditorClip, getAllMediaArchives, getMediaArchiveAssets, countMediaArchiveAssets, filterMediaArchiveAssets } from "./db";
+import { buildBeatMatchTags, listCuratedArchiveCandidates } from "./curatedMediaSourcing";
+import { editorArchiveMediaUrl } from "./archiveMediaStream";
+import { editorClipFromArchiveAsset, resolveEditorClipPreviewUrl } from "./editorClips";
 import { runVideoPipeline } from "./videoPipeline";
 import { forgotPassword, validateResetToken as validateResetTokenProcedure, resetPassword } from "./authPasswordReset";
 import {
@@ -1539,14 +1542,62 @@ export const appRouter = router({
     /** Get the scene manifest for a completed video */
     getScenes: protectedProcedure.input(z.object({ videoId: z.number().int() })).query(async ({ ctx, input }) => {
       const video = requireVideoAccess(await getVideoById(input.videoId), ctx);
-      const scenes = await getVideoScenes(input.videoId);
+      const rawScenes = await getVideoScenes(input.videoId);
+      const scenes = (rawScenes ?? []).map((scene) => ({
+        ...scene,
+        clips: scene.clips.map((clip) => ({
+          ...clip,
+          url: resolveEditorClipPreviewUrl(clip),
+          thumbnailUrl: resolveEditorClipPreviewUrl(clip),
+        })),
+      }));
       return {
-        scenes: scenes ?? [],
+        scenes,
         videoTitle: video.title ?? video.prompt,
         videoUrl: video.editedVideoUrl ?? video.videoUrl,
         originalVideoUrl: video.videoUrl,
         editedVideoUrl: video.editedVideoUrl,
+        archiveOnly: true,
+        ...readVideoEditorSettings(video),
       };
+    }),
+
+    /** Update editor audio/visual settings (subtitles, background music). */
+    updateSettings: protectedProcedure.input(z.object({
+      videoId: z.number().int(),
+      enableSubtitles: z.boolean().optional(),
+      backgroundMusicUrl: z.string().nullable().optional(),
+    })).mutation(async ({ ctx, input }) => {
+      requireVideoAccess(await getVideoById(input.videoId), ctx);
+      await updateVideoEditorSettings(input.videoId, {
+        enableSubtitles: input.enableSubtitles,
+        backgroundMusicUrl: input.backgroundMusicUrl,
+      });
+      return { success: true };
+    }),
+
+    /** Upload custom background music (MP3/WAV) for re-render. */
+    uploadBackgroundMusic: protectedProcedure.input(z.object({
+      videoId: z.number().int(),
+      base64: z.string(),
+      mimeType: z.string().default("audio/mpeg"),
+      filename: z.string().max(256).optional(),
+    })).mutation(async ({ ctx, input }) => {
+      requireVideoAccess(await getVideoById(input.videoId), ctx);
+      const buffer = Buffer.from(input.base64, "base64");
+      const maxBytes = 50 * 1024 * 1024;
+      if (buffer.length > maxBytes) {
+        throw appTrpcError("BAD_REQUEST", APP_ERROR.FILE_TOO_LARGE, "File too large (max 50MB)");
+      }
+      const allowed = ["audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav", "audio/ogg", "audio/mp4", "audio/aac"];
+      if (!input.mimeType.startsWith("audio/") && !allowed.includes(input.mimeType)) {
+        throw appTrpcError("BAD_REQUEST", APP_ERROR.SERVICE_ERROR, "Unsupported audio format. Use MP3 or WAV.");
+      }
+      const ext = input.mimeType.includes("wav") ? "wav" : input.mimeType.includes("ogg") ? "ogg" : "mp3";
+      const key = `editor-bgm/${ctx.user.id}-${input.videoId}-${Date.now()}.${ext}`;
+      const { url } = await storagePut(key, buffer, input.mimeType);
+      await updateVideoEditorSettings(input.videoId, { backgroundMusicUrl: url });
+      return { url };
     }),
 
     /** Update a single scene's clips or narration */
@@ -1558,6 +1609,9 @@ export const appRouter = router({
         type: z.enum(["video", "image"]),
         source: z.string(),
         thumbnailUrl: z.string().optional(),
+        archiveAssetId: z.number().int().optional(),
+        storageUrl: z.string().optional(),
+        title: z.string().optional(),
       })).optional(),
       narration: z.string().optional(),
       durationMs: z.number().optional(),
@@ -1580,6 +1634,92 @@ export const appRouter = router({
       if (input.durationMs !== undefined) scenes[sceneIdx].durationMs = input.durationMs;
       await updateVideoScenes(input.videoId, scenes);
       return { success: true, scene: scenes[sceneIdx] };
+    }),
+
+    /** List active media archives for the editor media picker. */
+    listArchives: protectedProcedure.query(async () => {
+      const archives = (await getAllMediaArchives()).filter((a) => a.isActive === 1);
+      const withCounts = await Promise.all(
+        archives.map(async (a) => ({
+          id: a.id,
+          name: a.name,
+          nicheTags: a.nicheTags ?? [],
+          assetCount: await countMediaArchiveAssets(a.id),
+        }))
+      );
+      return { archives: withCounts };
+    }),
+
+    /** Search the media archive to replace a clip (title + tags). */
+    searchArchive: protectedProcedure.input(z.object({
+      videoId: z.number().int(),
+      query: z.string().max(200).optional(),
+      archiveId: z.number().int().optional(),
+      tag: z.string().max(64).optional(),
+      limit: z.number().int().min(1).max(80).default(40),
+    })).query(async ({ ctx, input }) => {
+      const video = requireVideoAccess(await getVideoById(input.videoId), ctx);
+      const topic = video.title ?? video.prompt ?? "";
+      const q = input.query?.trim() ?? "";
+
+      if (input.archiveId) {
+        let assets = await getMediaArchiveAssets(input.archiveId);
+        if (q || input.tag) {
+          assets = filterMediaArchiveAssets(assets, { search: q || undefined, tag: input.tag });
+        }
+        return {
+          results: assets.slice(0, input.limit).map((asset) => ({
+            assetId: asset.id,
+            title: asset.title ?? `Asset ${asset.id}`,
+            tags: asset.tags ?? [],
+            mediaType: asset.mediaType,
+            previewUrl: editorArchiveMediaUrl(asset.id),
+            durationSec: asset.durationSec,
+            archiveName: "",
+            score: 1,
+          })),
+        };
+      }
+
+      const { beatTags, topicAnchors, allTags } = buildBeatMatchTags(
+        { keywords: [], text: q || topic, index: 0, searchQuery: q || undefined },
+        { text: topic },
+        topic
+      );
+      const candidates = await listCuratedArchiveCandidates(
+        beatTags,
+        new Set(),
+        new Set(),
+        topicAnchors,
+        allTags
+      );
+
+      return {
+        results: candidates.slice(0, input.limit).map(({ asset, archiveName, score }) => ({
+          assetId: asset.id,
+          title: asset.title ?? `Asset ${asset.id}`,
+          tags: asset.tags ?? [],
+          mediaType: asset.mediaType,
+          previewUrl: editorArchiveMediaUrl(asset.id),
+          durationSec: asset.durationSec,
+          archiveName,
+          score,
+        })),
+      };
+    }),
+
+    /** Build an EditorClip from a selected archive asset. */
+    pickArchiveAsset: protectedProcedure.input(z.object({
+      videoId: z.number().int(),
+      assetId: z.number().int(),
+    })).query(async ({ ctx, input }) => {
+      requireVideoAccess(await getVideoById(input.videoId), ctx);
+      const { getMediaArchiveAssetById } = await import("./db");
+      const asset = await getMediaArchiveAssetById(input.assetId);
+      if (!asset || asset.isActive !== 1) {
+        throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Archive asset not found");
+      }
+      return { clip: editorClipFromArchiveAsset(asset) };
     }),
 
     /** Search for media clips from Pexels or Pixabay */

@@ -156,6 +156,10 @@ export interface TimedOverlay {
   endTime: number;
   isStatCallout?: boolean;
   isNameBadge?: boolean;
+  isYearBadge?: boolean;
+  isParticle?: boolean;
+  /** Full-frame PNG — overlay at 0:0 (content positioned inside PNG). */
+  fullFrame?: boolean;
 }
 
 export async function renderNameBadgeOverlay(
@@ -191,7 +195,7 @@ export async function renderNameBadgeOverlay(
       `Name badge scene ${sceneIndex}`
     );
     if (fs.existsSync(pngPath) && fs.statSync(pngPath).size > 100) {
-      return { path: pngPath, startTime: 0.4, endTime: Math.min(durationSec, 3.4), isNameBadge: true };
+      return { path: pngPath, startTime: 0.4, endTime: Math.min(durationSec, 3.4), isNameBadge: true, fullFrame: true };
     }
   } catch {
     /* non-fatal */
@@ -235,7 +239,7 @@ export async function renderHighlightCaptionOverlay(
       `Highlight caption scene ${sceneIndex}`
     );
     if (fs.existsSync(pngPath) && fs.statSync(pngPath).size > 100) {
-      return { path: pngPath, startTime, endTime };
+      return { path: pngPath, startTime, endTime, fullFrame: true };
     }
   } catch {
     /* non-fatal */

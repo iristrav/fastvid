@@ -13,7 +13,7 @@ import {
   ChevronLeft, ChevronRight, Image, Video, Check, X,
   Loader2, Scissors, Film, Music2, Type, Layers,
   Plus, Trash2, ZoomIn, ZoomOut, Download, Eye,
-  AlertCircle, Sparkles, Clock, LayoutGrid,
+  AlertCircle, Sparkles, Clock, LayoutGrid, Archive,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -23,15 +23,11 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from "@/components/ui/dialog";
+import { ArchiveMediaPanel, type EditorClip } from "@/components/editor/ArchiveMediaPanel";
+import { VidrushTimeline, type TimelineSelection } from "@/components/editor/VidrushTimeline";
+import { EditorSettingsPanel } from "@/components/editor/EditorSettingsPanel";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-interface EditorClip {
-  url: string;
-  type: "video" | "image";
-  source: string;
-  thumbnailUrl?: string;
-}
-
 interface EditorScene {
   sceneIndex: number;
   title: string;
@@ -351,11 +347,13 @@ function SceneDetailPanel({
   videoId,
   onSceneUpdate,
   onOpenMediaSearch,
+  onReplaceClip,
 }: {
   scene: EditorScene;
   videoId: number;
   onSceneUpdate: (updated: EditorScene) => void;
   onOpenMediaSearch: () => void;
+  onReplaceClip: (clipIndex: number) => void;
 }) {
   const [narration, setNarration] = useState(scene.narration);
   const [isSavingNarration, setIsSavingNarration] = useState(false);
@@ -424,14 +422,14 @@ function SceneDetailPanel({
             className="flex items-center gap-1 text-xs text-cyan-400 hover:text-cyan-300 transition-colors"
           >
             <Plus className="w-3.5 h-3.5" />
-            Add media
+            Uit archief
           </button>
         </div>
 
         {scene.clips.length === 0 ? (
           <div className="border border-dashed border-white/15 rounded-lg p-4 text-center">
             <Film className="w-6 h-6 text-slate-600 mx-auto mb-1" />
-            <p className="text-xs text-slate-500">No clips — click "Add media" to add visuals</p>
+            <p className="text-xs text-slate-500">Geen clips — kies beelden uit het media archief</p>
           </div>
         ) : (
           <div className="space-y-2">
@@ -471,6 +469,14 @@ function SceneDetailPanel({
 
                 {/* Actions */}
                 <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <button
+                    type="button"
+                    onClick={() => onReplaceClip(i)}
+                    className="p-1 text-cyan-400 hover:text-cyan-300 text-[9px] font-semibold"
+                    title="Vervang uit archief"
+                  >
+                    ⇄
+                  </button>
                   {i > 0 && (
                     <button onClick={() => moveClip(i, i - 1)} className="p-1 text-slate-400 hover:text-white">
                       <ChevronLeft className="w-3 h-3" />
@@ -531,6 +537,13 @@ export default function VideoEditor() {
   const [activePanel, setActivePanel] = useState<"scenes" | "media">("scenes");
   const [isRerendering, setIsRerendering] = useState(false);
   const [rerenderProgress, setRerenderProgress] = useState<string | null>(null);
+  const [clipSelection, setClipSelection] = useState<TimelineSelection | null>(null);
+  const [replaceClipIndex, setReplaceClipIndex] = useState<number | null>(null);
+  const [playheadMs, setPlayheadMs] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [enableSubtitles, setEnableSubtitles] = useState(false);
+  const [backgroundMusicUrl, setBackgroundMusicUrl] = useState<string | null>(null);
+  const [settingsModified, setSettingsModified] = useState(false);
 
   // Load scene manifest
   const { data: editorData, isLoading, error } = trpc.editor.getScenes.useQuery(
@@ -541,6 +554,10 @@ export default function VideoEditor() {
   useEffect(() => {
     if (editorData?.scenes) {
       setScenes(editorData.scenes as EditorScene[]);
+    }
+    if (editorData) {
+      setEnableSubtitles(editorData.enableSubtitles ?? false);
+      setBackgroundMusicUrl(editorData.backgroundMusicUrl ?? null);
     }
   }, [editorData]);
 
@@ -557,7 +574,11 @@ export default function VideoEditor() {
 
   const handleMediaSelect = useCallback(async (clip: EditorClip) => {
     if (!selectedScene) return;
-    const newClips = [...selectedScene.clips, clip];
+    const replaceAt = replaceClipIndex;
+    const newClips =
+      replaceAt != null
+        ? selectedScene.clips.map((c, i) => (i === replaceAt ? clip : c))
+        : [...selectedScene.clips, clip];
     try {
       await updateSceneMutation.mutateAsync({
         videoId,
@@ -566,9 +587,11 @@ export default function VideoEditor() {
       });
       handleSceneUpdate({ ...selectedScene, clips: newClips });
       setMediaSearchOpen(false);
-      toast.success("Clip added to scene!");
+      setReplaceClipIndex(null);
+      setActivePanel("scenes");
+      toast.success(replaceAt != null ? "Clip vervangen uit archief!" : "Clip toegevoegd uit archief!");
     } catch { /* error handled by mutation */ }
-  }, [selectedScene, videoId, updateSceneMutation, handleSceneUpdate]);
+  }, [selectedScene, videoId, updateSceneMutation, handleSceneUpdate, replaceClipIndex]);
 
   const rerenderMutation = trpc.editor.rerender.useMutation({
     onError: (err) => {
@@ -607,10 +630,25 @@ export default function VideoEditor() {
     }
   }, [pollData, isRerendering, navigate]);
 
+  useEffect(() => {
+    if (!isPlaying || scenes.length === 0) return;
+    const duration = scenes.reduce((s, sc) => s + sc.durationMs, 0);
+    const id = window.setInterval(() => {
+      setPlayheadMs((ms) => {
+        if (ms >= duration) {
+          setIsPlaying(false);
+          return duration;
+        }
+        return ms + 100;
+      });
+    }, 100);
+    return () => window.clearInterval(id);
+  }, [isPlaying, scenes]);
+
   // Re-render: trigger a new video generation using the updated scene manifest
   const handleRerender = useCallback(async () => {
-    if (modifiedScenes.size === 0) {
-      toast.info("No changes to re-render", { description: "Modify at least one scene first" });
+    if (modifiedScenes.size === 0 && !settingsModified) {
+      toast.info("Geen wijzigingen", { description: "Pas eerst scenes of instellingen aan" });
       return;
     }
     setIsRerendering(true);
@@ -625,7 +663,7 @@ export default function VideoEditor() {
     } catch {
       // error handled by onError
     }
-  }, [modifiedScenes, videoId, rerenderMutation, navigate]);
+  }, [modifiedScenes, settingsModified, videoId, rerenderMutation, navigate]);
 
   if (!videoId || isNaN(videoId)) {
     return (
@@ -688,6 +726,23 @@ export default function VideoEditor() {
     );
   }
 
+  const totalMs = scenes.reduce((s, sc) => s + sc.durationMs, 0);
+
+  const formatEditorTime = (ms: number) => {
+    const sec = Math.floor(ms / 1000);
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+  };
+
+  const previewClip = (() => {
+    if (!selectedScene) return null;
+    if (clipSelection?.sceneIndex === selectedScene.sceneIndex) {
+      return selectedScene.clips[clipSelection.clipIndex] ?? selectedScene.clips[0];
+    }
+    return selectedScene.clips[0] ?? null;
+  })();
+
   return (
     <div className="h-screen bg-[#0a0a1a] flex flex-col overflow-hidden" style={{ fontFamily: "Space Grotesk, sans-serif" }}>
 
@@ -711,23 +766,23 @@ export default function VideoEditor() {
         </div>
 
         {/* Modified badge */}
-        {modifiedScenes.size > 0 && (
+        {(modifiedScenes.size > 0 || settingsModified) && (
           <Badge className="bg-cyan-500/20 text-cyan-300 border-cyan-500/30 text-[10px]">
-            {modifiedScenes.size} modified
+            {modifiedScenes.size + (settingsModified ? 1 : 0)} gewijzigd
           </Badge>
         )}
 
         {/* Re-render button */}
         <Button
           onClick={handleRerender}
-          disabled={isRerendering || modifiedScenes.size === 0}
+          disabled={isRerendering || (modifiedScenes.size === 0 && !settingsModified)}
           size="sm"
           className="bg-gradient-to-r from-purple-600 to-cyan-600 hover:from-purple-500 hover:to-cyan-500 text-white text-xs h-8 px-4"
         >
           {isRerendering ? (
             <><Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" />{rerenderProgress ?? "Re-rendering..."}</>
           ) : (
-            <><Sparkles className="w-3.5 h-3.5 mr-1.5" />Apply Changes</>
+            <><Sparkles className="w-3.5 h-3.5 mr-1.5" />Wijzigingen toepassen</>
           )}
         </Button>
       </div>
@@ -751,15 +806,15 @@ export default function VideoEditor() {
               Scenes
             </button>
             <button
-              onClick={() => setActivePanel("media")}
+              onClick={() => { setActivePanel("media"); setReplaceClipIndex(null); }}
               className={`flex-1 py-2.5 text-xs font-semibold transition-colors flex items-center justify-center gap-1.5 ${
                 activePanel === "media"
                   ? "text-white border-b-2 border-cyan-400"
                   : "text-slate-500 hover:text-slate-300"
               }`}
             >
-              <Search className="w-3.5 h-3.5" />
-              Media
+              <Archive className="w-3.5 h-3.5" />
+              Archief
             </button>
           </div>
 
@@ -804,9 +859,17 @@ export default function VideoEditor() {
                 ))}
               </div>
             ) : (
-              <MediaSearchPanel
-                onSelect={handleMediaSelect}
+              <ArchiveMediaPanel
                 videoId={videoId}
+                sceneNarration={selectedScene?.narration}
+                replaceLabel={
+                  replaceClipIndex != null
+                    ? `Vervang clip ${replaceClipIndex + 1} — kies uit media archief`
+                    : clipSelection
+                      ? `Clip ${clipSelection.clipIndex + 1} — kies vervanging`
+                      : undefined
+                }
+                onSelect={handleMediaSelect}
               />
             )}
           </div>
@@ -820,11 +883,11 @@ export default function VideoEditor() {
               <div className="w-full max-w-2xl">
                 {/* Scene preview */}
                 <div className="aspect-video bg-slate-900 rounded-xl overflow-hidden border border-white/10 shadow-2xl relative">
-                  {selectedScene.clips[0] ? (
-                    selectedScene.clips[0].type === "video" ? (
+                  {previewClip ? (
+                    previewClip.type === "video" ? (
                       <video
-                        key={selectedScene.clips[0].url}
-                        src={selectedScene.clips[0].url}
+                        key={previewClip.url}
+                        src={previewClip.url}
                         className="w-full h-full object-cover"
                         autoPlay
                         muted
@@ -833,8 +896,8 @@ export default function VideoEditor() {
                       />
                     ) : (
                       <img
-                        key={selectedScene.clips[0].url}
-                        src={selectedScene.clips[0].url}
+                        key={previewClip.url}
+                        src={previewClip.thumbnailUrl ?? previewClip.url}
                         alt={selectedScene.title}
                         className="w-full h-full object-cover"
                         onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
@@ -846,10 +909,10 @@ export default function VideoEditor() {
                         <Film className="w-10 h-10 text-slate-600 mx-auto mb-2" />
                         <p className="text-slate-500 text-sm">No visuals for this scene</p>
                         <button
-                          onClick={() => setActivePanel("media")}
+                          onClick={() => { setActivePanel("media"); setReplaceClipIndex(null); }}
                           className="mt-2 text-cyan-400 hover:text-cyan-300 text-xs flex items-center gap-1 mx-auto"
                         >
-                          <Plus className="w-3 h-3" /> Add media
+                          <Plus className="w-3 h-3" /> Kies uit archief
                         </button>
                       </div>
                     </div>
@@ -870,68 +933,107 @@ export default function VideoEditor() {
                 {/* Clip strip for selected scene */}
                 {selectedScene.clips.length > 1 && (
                   <div className="flex gap-2 mt-3 overflow-x-auto pb-1">
-                    {selectedScene.clips.map((clip, i) => (
-                      <div
-                        key={i}
-                        className="flex-shrink-0 w-16 h-10 rounded overflow-hidden border border-white/15 bg-slate-800"
-                      >
-                        {clip.thumbnailUrl || clip.type === "image" ? (
-                          <img src={clip.thumbnailUrl ?? clip.url} alt="" className="w-full h-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center">
-                            <Video className="w-3 h-3 text-slate-500" />
-                          </div>
-                        )}
-                      </div>
-                    ))}
+                    {selectedScene.clips.map((clip, i) => {
+                      const selected =
+                        clipSelection?.sceneIndex === selectedScene.sceneIndex &&
+                        clipSelection?.clipIndex === i;
+                      return (
+                        <button
+                          key={i}
+                          type="button"
+                          onClick={() => {
+                            setClipSelection({ sceneIndex: selectedScene.sceneIndex, clipIndex: i });
+                            setReplaceClipIndex(i);
+                            setActivePanel("media");
+                          }}
+                          className={`flex-shrink-0 w-16 h-10 rounded overflow-hidden border-2 transition-all ${
+                            selected ? "border-emerald-400" : "border-white/15 hover:border-cyan-400/50"
+                          } bg-slate-800`}
+                        >
+                          {clip.thumbnailUrl || clip.type === "image" ? (
+                            <img src={clip.thumbnailUrl ?? clip.url} alt="" className="w-full h-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center">
+                              <Video className="w-3 h-3 text-slate-500" />
+                            </div>
+                          )}
+                        </button>
+                      );
+                    })}
                   </div>
                 )}
               </div>
             ) : null}
           </div>
 
-          {/* ── Timeline ── */}
-          <div className="border-t border-white/8 bg-[#0d0d20] flex-shrink-0">
-            <div className="flex items-center gap-2 px-3 py-2 border-b border-white/5">
-              <Film className="w-3.5 h-3.5 text-slate-500" />
-              <span className="text-xs font-semibold text-slate-400">Timeline</span>
-              <span className="text-[10px] text-slate-600 ml-1">
-                {scenes.reduce((sum, s) => sum + s.durationMs, 0) / 1000 | 0}s total
-              </span>
-            </div>
-            <div className="flex gap-2 p-3 overflow-x-auto" style={{ minHeight: "96px" }}>
-              {scenes.map((scene, i) => (
-                <SceneTimelineItem
-                  key={scene.sceneIndex}
-                  scene={scene}
-                  index={i}
-                  isSelected={selectedSceneIndex === i}
-                  isModified={modifiedScenes.has(scene.sceneIndex)}
-                  onClick={() => setSelectedSceneIndex(i)}
-                />
-              ))}
-            </div>
+          {/* Transport bar */}
+          <div className="flex items-center justify-center gap-4 py-2 border-t border-white/8 bg-[#0d0d20] flex-shrink-0">
+            <button
+              type="button"
+              onClick={() => setIsPlaying((p) => !p)}
+              className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white"
+            >
+              {isPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4 ml-0.5" />}
+            </button>
+            <span className="font-mono text-xs text-cyan-400 tabular-nums">
+              {formatEditorTime(playheadMs)} / {formatEditorTime(totalMs)}
+            </span>
+            <span className="text-[10px] text-slate-500">Klik op een clip in de timeline om te vervangen</span>
           </div>
+
+          {/* ── VidRush-style Timeline ── */}
+          <VidrushTimeline
+            scenes={scenes}
+            totalMs={totalMs}
+            playheadMs={playheadMs}
+            selection={clipSelection}
+            onPlayheadChange={setPlayheadMs}
+            onSelectScene={setSelectedSceneIndex}
+            onSelectClip={(sel) => {
+              setClipSelection(sel);
+              const idx = scenes.findIndex((s) => s.sceneIndex === sel.sceneIndex);
+              if (idx >= 0) setSelectedSceneIndex(idx);
+              setActivePanel("media");
+              setReplaceClipIndex(sel.clipIndex);
+            }}
+          />
         </div>
 
-        {/* ── Right: Scene Detail ── */}
-        <div className="w-72 border-l border-white/8 bg-[#0d0d20] flex-shrink-0 overflow-hidden">
-          <div className="flex items-center gap-2 px-4 py-2.5 border-b border-white/8">
+        {/* ── Right: Scene Detail + Settings ── */}
+        <div className="w-72 border-l border-white/8 bg-[#0d0d20] flex-shrink-0 overflow-hidden flex flex-col">
+          <div className="flex items-center gap-2 px-4 py-2.5 border-b border-white/8 flex-shrink-0">
             <Scissors className="w-3.5 h-3.5 text-slate-500" />
             <span className="text-xs font-semibold text-slate-400">Scene Properties</span>
           </div>
-          {selectedScene ? (
-            <SceneDetailPanel
-              scene={selectedScene}
+          <div className="flex-1 overflow-y-auto">
+            {selectedScene ? (
+              <SceneDetailPanel
+                scene={selectedScene}
+                videoId={videoId}
+                onSceneUpdate={handleSceneUpdate}
+                onOpenMediaSearch={() => { setActivePanel("media"); setReplaceClipIndex(null); }}
+                onReplaceClip={(i) => {
+                  setReplaceClipIndex(i);
+                  setClipSelection({ sceneIndex: selectedScene.sceneIndex, clipIndex: i });
+                  setActivePanel("media");
+                }}
+              />
+            ) : (
+              <div className="flex items-center justify-center py-8">
+                <p className="text-slate-600 text-sm">Selecteer een scene</p>
+              </div>
+            )}
+            <EditorSettingsPanel
               videoId={videoId}
-              onSceneUpdate={handleSceneUpdate}
-              onOpenMediaSearch={() => setActivePanel("media")}
+              enableSubtitles={enableSubtitles}
+              backgroundMusicUrl={backgroundMusicUrl}
+              onSettingsChange={(patch) => {
+                if (patch.enableSubtitles !== undefined) setEnableSubtitles(patch.enableSubtitles);
+                if (patch.backgroundMusicUrl !== undefined) setBackgroundMusicUrl(patch.backgroundMusicUrl);
+              }}
+              onModified={() => setSettingsModified(true)}
             />
-          ) : (
-            <div className="flex items-center justify-center h-full">
-              <p className="text-slate-600 text-sm">Select a scene</p>
-            </div>
-          )}
+          </div>
         </div>
       </div>
 
@@ -942,7 +1044,7 @@ export default function VideoEditor() {
             <DialogTitle className="text-white text-sm">Add Media to Scene {(selectedScene?.sceneIndex ?? 0) + 1}</DialogTitle>
           </DialogHeader>
           <div className="flex-1 overflow-hidden">
-            <MediaSearchPanel onSelect={handleMediaSelect} videoId={videoId} />
+            <ArchiveMediaPanel onSelect={handleMediaSelect} videoId={videoId} sceneNarration={selectedScene?.narration} />
           </div>
         </DialogContent>
       </Dialog>

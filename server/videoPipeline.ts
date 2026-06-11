@@ -30,6 +30,7 @@ import * as os from "os";
 import { storagePut } from "./storage";
 import { invokeLLM } from "./_core/llm";
 import { getVideoById, updateVideoScenes, updateVideoStatus, type EditorScene, type EditorClip } from "./db";
+import { buildEditorClipFromPath } from "./editorClips";
 import pLimit from "p-limit";
 import { generateGrokVideo } from "./_core/grokVideo";
 import { generateVeoVideo } from "./_core/veoVideo";
@@ -47,6 +48,14 @@ import {
   stillOutputFrameCount,
   type TimedOverlay,
 } from "./documentaryStyle";
+import {
+  buildCinematicOverlays,
+  buildCinematicSfxAudioFilter,
+  cinematicEffectsEnabled,
+  overlayUsesFullFrame,
+  planCinematicScene,
+  type CinematicScenePlan,
+} from "./cinematicEffectsEngine";
 import { PIPELINE_ERROR, pipelineError } from "@shared/appErrors";
 import fetch from "node-fetch";
 import {
@@ -81,6 +90,7 @@ import {
   curatedAssetContentKey,
   archiveVisualSourcesReady,
   markCuratedAssetUsed,
+  prepareCuratedArchiveClip,
 } from "./curatedMediaSourcing";
 
 // API Keys
@@ -8083,7 +8093,8 @@ function montageClipPrepFilter(
   dur: number,
   sceneIndex: number,
   smoothTransition: boolean,
-  xfade: number
+  xfade: number,
+  cinematicMotion = false
 ): string {
   const start = montageClipStartSec(sceneIndex, inputIndex).toFixed(2);
   const fadeIn = smoothTransition ? Math.min(0.28, dur * 0.07) : 0;
@@ -8091,6 +8102,9 @@ function montageClipPrepFilter(
   const fadeOutStart = Math.max(0, dur - fadeOut - 0.02);
   let chain =
     `[${inputIndex}:v]trim=start=${start}:duration=${dur.toFixed(3)},${CROP_FILL_VF}`;
+  if (cinematicMotion && dur > 2) {
+    chain += `,scale=iw*1.05:ih*1.05,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:(iw-${VIDEO_WIDTH})/2:(ih-${VIDEO_HEIGHT})/2`;
+  }
   if (fadeIn > 0.05) chain += `,fade=t=in:st=0:d=${fadeIn.toFixed(3)}`;
   if (fadeOut > 0.05) chain += `,fade=t=out:st=${fadeOutStart.toFixed(3)}:d=${fadeOut.toFixed(3)}`;
   chain += `,setpts=PTS-STARTPTS[v${inputIndex}]`;
@@ -8115,17 +8129,18 @@ function buildMontageXfadeFilter(
   const avgDur = durs.reduce((s, d) => s + d, 0) / n;
   const xfade = montageXfadeSec(avgDur);
   const smooth = curatedArchiveOnlyVisuals() || documentaryStyleEnabled();
+  const cinematicMotion = cinematicEffectsEnabled();
 
   if (n === 1) {
     return {
-      scaleFilters: montageClipPrepFilter(0, durs[0], sceneIndex, smooth, xfade),
+      scaleFilters: montageClipPrepFilter(0, durs[0], sceneIndex, smooth, xfade, cinematicMotion),
       mergeFilter: "",
       montageLabel: "v0",
     };
   }
 
   const scaleFilters = Array.from({ length: n }, (_, i) =>
-    montageClipPrepFilter(i, durs[i], sceneIndex, smooth, xfade)
+    montageClipPrepFilter(i, durs[i], sceneIndex, smooth, xfade, cinematicMotion)
   ).join(";");
 
   if (xfade <= 0.001) {
@@ -12493,10 +12508,43 @@ async function composeSceneVideo(
     }
   }
 
-  // Documentary overlays: orange name badge + yellow highlight caption (reference video style)
+  // Cinematic + documentary overlays (years bottom-left, stats, keywords, particles, SFX)
   let kineticFrames: KineticFrame[] = [];
   let docOverlays: TimedOverlay[] = [];
+  let cinematicPlan: CinematicScenePlan | null = null;
+  const sfxCueFiles: Array<{ path: string; timeSec: number; volume: number }> = [];
+
   try {
+    if (cinematicEffectsEnabled()) {
+      cinematicPlan = planCinematicScene(scene, duration);
+      const cinematicOverlays = await buildCinematicOverlays(
+        cinematicPlan,
+        scene,
+        duration,
+        workDir,
+        FFMPEG_BIN,
+        (cmd, ms, lbl) => withTimeout(exec(cmd), ms, lbl)
+      );
+      docOverlays.push(...cinematicOverlays);
+
+      const sfxCache = new Map<string, string>();
+      for (const cue of cinematicPlan.audioCues.slice(0, 12)) {
+        if (!sfxCache.has(cue.type)) {
+          sfxCache.set(cue.type, await generateSFX(cue.type, workDir));
+        }
+        sfxCueFiles.push({
+          path: sfxCache.get(cue.type)!,
+          timeSec: cue.timeSec,
+          volume: cue.volume,
+        });
+      }
+      if (cinematicPlan.years.length > 0) {
+        console.log(
+          `[Cinematic] Scene ${scene.index}: years [${cinematicPlan.years.join(", ")}] + ${sfxCueFiles.length} SFX cues`
+        );
+      }
+    }
+
     if (documentaryStyleEnabled()) {
       const primaryPerson = (scene.personNames ?? []).find((n) => n?.trim());
       if (primaryPerson) {
@@ -12510,18 +12558,21 @@ async function composeSceneVideo(
         if (badge) docOverlays.push(badge);
       }
 
-      const llmWords = (scene.highlightWords || []).filter((w) => w && w.trim().length > 0);
-      const highlightWord = llmWords[0] || extractKeywords(scene.text, 1)[0];
-      if (highlightWord) {
-        const caption = await renderHighlightCaptionOverlay(
-          highlightWord,
-          scene.index,
-          workDir,
-          FFMPEG_BIN,
-          (cmd, ms, lbl) => withTimeout(exec(cmd), ms, lbl),
-          duration
-        );
-        if (caption) docOverlays.push(caption);
+      const hasCinematicKeywords = (cinematicPlan?.keywords.length ?? 0) > 0;
+      if (!hasCinematicKeywords) {
+        const llmWords = (scene.highlightWords || []).filter((w) => w && w.trim().length > 0);
+        const highlightWord = llmWords[0] || extractKeywords(scene.text, 1)[0];
+        if (highlightWord) {
+          const caption = await renderHighlightCaptionOverlay(
+            highlightWord,
+            scene.index,
+            workDir,
+            FFMPEG_BIN,
+            (cmd, ms, lbl) => withTimeout(exec(cmd), ms, lbl),
+            duration
+          );
+          if (caption) docOverlays.push(caption);
+        }
       }
     }
 
@@ -12560,10 +12611,12 @@ async function composeSceneVideo(
     docOverlays = [];
   }
 
-  // Stat callout box: yellow corner box with key statistic (reference video style)
+  // Stat callout from LLM when cinematic engine did not already render one
   let statCalloutFrame: { path: string; startTime: number; endTime: number } | null = null;
   try {
+    const cinematicHasStat = docOverlays.some((o) => o.isStatCallout);
     if (
+      !cinematicHasStat &&
       process.env.ENABLE_STAT_CALLOUTS === "true" &&
       scene.statCallout &&
       scene.statCallout.trim().length > 0
@@ -12606,11 +12659,10 @@ async function composeSceneVideo(
     allOverlays.forEach((frame, idx) => {
       const inputIdx = baseInputCount + idx;
       const outLabel = idx === allOverlays.length - 1 ? "kfinal" : `kf${idx}`;
-      if ((frame as { isStatCallout?: boolean }).isStatCallout) {
-        // Stat callout: full-frame overlay (box positioned inside PNG), bottom-right corner
+      const timed = frame as TimedOverlay;
+      if (overlayUsesFullFrame(timed) || (frame as { isStatCallout?: boolean }).isStatCallout) {
         chain += `;[${prevLabel}][${inputIdx}:v]overlay=x=0:y=0:enable='between(t,${frame.startTime.toFixed(2)},${frame.endTime.toFixed(2)})'[${outLabel}]`;
       } else {
-        // Kinetic word: top-center overlay
         chain += `;[${prevLabel}][${inputIdx}:v]overlay=x=0:y=${kineticY}:enable='between(t,${frame.startTime.toFixed(2)},${frame.endTime.toFixed(2)})'[${outLabel}]`;
       }
       prevLabel = outLabel;
@@ -12670,13 +12722,27 @@ async function composeSceneVideo(
     const hasOverlays = kineticFrames.length > 0 || docOverlays.length > 0 || statCalloutFrame !== null;
     const preGradeLabel = hasOverlays ? kFinalLabel : montageLabel;
     const audioFadeOutStart = Math.max(0, voiceDur - 0.15);
+    const overlayCount =
+      kineticFrames.length + docOverlays.length + (statCalloutFrame ? 1 : 0);
+    const sfxBaseIdx = kineticBaseIdx + overlayCount;
+    const sfxInputStr = sfxCueFiles.map((s) => `-i "${s.path}"`).join(" ");
+    const sfxMeta = sfxCueFiles.map((s, i) => ({
+      inputIndex: sfxBaseIdx + i,
+      timeSec: s.timeSec,
+      volume: s.volume,
+    }));
+    const audioFilter =
+      sfxMeta.length > 0
+        ? `[${audioIdx}:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${audioFadeOutStart.toFixed(3)}:d=0.12,asetpts=PTS-STARTPTS[voiceFaded];` +
+          buildCinematicSfxAudioFilter("voiceFaded", sfxMeta, voiceDur, "aout")
+        : `[${audioIdx}:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${audioFadeOutStart.toFixed(3)}:d=0.12,` +
+          `atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]`;
     await withTimeout(
       exec(
-        `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}"${kineticInput} ` +
+        `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}"${kineticInput}${sfxInputStr ? ` ${sfxInputStr}` : ""} ` +
         `-filter_complex "${scaleFilters}${mergeFilter}${padFilter}${kineticChainStr};` +
         `[${preGradeLabel}]${FPS_FORMAT_VF}[vtimed];[vtimed]${fadeFilter}[vout];` +
-        `[${audioIdx}:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${audioFadeOutStart.toFixed(3)}:d=0.12,` +
-        `atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
+        `${audioFilter}" ` +
         `-map "[vout]" -map "[aout]" -vsync cfr ` +
         `-t ${outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
       ),
@@ -13057,7 +13123,8 @@ async function concatenateScenesWithMusic(
   workDir: string,
   videoId: number,
   totalDuration: number,
-  videoTitle: string
+  videoTitle: string,
+  customMusicPath?: string | null
 ): Promise<string> {
   const listFile = path.join(workDir, "concat_list.txt");
   const concatPath = path.join(workDir, `fastvid_${videoId}_concat.mp4`);
@@ -13082,14 +13149,22 @@ async function concatenateScenesWithMusic(
 
   const totalWithCards = totalDuration;
 
-  const [, musicPath] = await Promise.all([
-    withTimeout(
-      exec(`${FFMPEG_BIN} -y -f concat -safe 0 -i "${listFile}" -vsync cfr -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -movflags +faststart "${concatPath}"`),
-      900_000, // 15 min for large videos (30+ scenes)
-      "Scene concatenation"
-    ),
-    generateBackgroundMusic(totalWithCards + 5, workDir),
-  ]);
+  const concatPromise = withTimeout(
+    exec(`${FFMPEG_BIN} -y -f concat -safe 0 -i "${listFile}" -vsync cfr -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -movflags +faststart "${concatPath}"`),
+    900_000, // 15 min for large videos (30+ scenes)
+    "Scene concatenation"
+  );
+
+  const musicPath =
+    customMusicPath && fs.existsSync(customMusicPath) && fs.statSync(customMusicPath).size > 100
+      ? customMusicPath
+      : await generateBackgroundMusic(totalWithCards + 5, workDir);
+
+  if (customMusicPath && musicPath === customMusicPath) {
+    console.log(`[Pipeline] Using custom background music: ${path.basename(customMusicPath)}`);
+  }
+
+  await concatPromise;
 
   // Verify concat output exists before music mixing
   if (!fs.existsSync(concatPath) || fs.statSync(concatPath).size < 1000) {
@@ -13503,22 +13578,23 @@ export async function runVideoPipeline(
 
     // ── Save scene manifest for editor ───────────────────────────────────────
     try {
-      const editorScenes: EditorScene[] = scenes.map((scene, i) => {
+      const editorScenes: EditorScene[] = [];
+      for (let i = 0; i < scenes.length; i++) {
+        const scene = scenes[i];
         const clipPaths = sceneVisualResults[i]?.clips ?? [];
-        const editorClips: EditorClip[] = clipPaths.map(clipPath => {
-          const source = inferClipSourceFromPath(clipPath);
-          const isVideo = clipPath.endsWith(".mp4") || clipPath.endsWith(".webm");
-          return { url: clipPath, type: isVideo ? "video" : "image", source };
-        });
-        return {
+        const editorClips: EditorClip[] = [];
+        for (const clipPath of clipPaths) {
+          editorClips.push(await buildEditorClipFromPath(clipPath));
+        }
+        editorScenes.push({
           sceneIndex: scene.index,
           title: scene.visualCue,
           narration: scene.text,
           durationMs: Math.round(scene.duration * 1000),
           clips: editorClips,
           chapterTitle: scene.chapterTitle,
-        };
-      });
+        });
+      }
       await updateVideoScenes(videoId, editorScenes);
       console.log(`[Pipeline] Scene manifest saved: ${editorScenes.length} scenes`);
     } catch (err) {
@@ -13642,6 +13718,28 @@ export async function rerenderFromScenes(
   const workDir = path.join(TMP_DIR, `fastvid_rerender_${videoId}_${Date.now()}`);
   fs.mkdirSync(workDir, { recursive: true });
 
+  const { getVideoById, readVideoEditorSettings } = await import("./db");
+  const video = await getVideoById(videoId);
+  const editorSettings = video ? readVideoEditorSettings(video) : { enableSubtitles: false, backgroundMusicUrl: null };
+  const enableSubtitles = editorSettings.enableSubtitles;
+
+  let customMusicPath: string | undefined;
+  if (editorSettings.backgroundMusicUrl) {
+    customMusicPath = path.join(workDir, "custom_bgm.mp3");
+    try {
+      const resp = await fetchWithTimeout(editorSettings.backgroundMusicUrl, 60_000, "custom BGM download");
+      if (resp.ok) {
+        const buf = Buffer.from(await resp.arrayBuffer());
+        fs.writeFileSync(customMusicPath, buf);
+      } else {
+        customMusicPath = undefined;
+      }
+    } catch (err) {
+      console.warn("[Rerender] Custom BGM download failed, using generated music:", (err as Error).message);
+      customMusicPath = undefined;
+    }
+  }
+
   try {
     onProgress?.("Preparing re-render...", 5);
 
@@ -13655,18 +13753,30 @@ export async function rerenderFromScenes(
 
       for (let j = 0; j < scene.clips.length; j++) {
         const clip = scene.clips[j];
-        const ext = clip.type === "video" ? "mp4" : "jpg";
-        const clipPath = path.join(workDir, `rerender_scene_${i}_clip_${j}.${ext}`);
+        const clipPath = path.join(workDir, `rerender_scene_${i}_clip_${j}.mp4`);
 
         try {
+          if (clip.archiveAssetId) {
+            const { getMediaArchiveAssetById } = await import("./db");
+            const asset = await getMediaArchiveAssetById(clip.archiveAssetId);
+            if (asset) {
+              const prepared = await prepareCuratedArchiveClip(asset, workDir, i, j, 6);
+              clipPaths.push(prepared);
+              continue;
+            }
+          }
+
           // If the URL is a local file path (from original pipeline), check if it exists
-          if (!clip.url.startsWith("http") && fs.existsSync(clip.url)) {
+          if (!clip.url.startsWith("http") && !clip.url.startsWith("/api/") && fs.existsSync(clip.url)) {
             clipPaths.push(clip.url);
             continue;
           }
 
-          // Download from URL with 15s timeout
-          const resp = await fetchWithTimeout(clip.url, 15_000, `clip ${i}-${j}`);
+          const fetchUrl = clip.url.startsWith("/") && !clip.url.startsWith("/api/")
+            ? `http://127.0.0.1:${process.env.PORT || 3000}${clip.url}`
+            : clip.url;
+
+          const resp = await fetchWithTimeout(fetchUrl, 15_000, `clip ${i}-${j}`);
           if (resp.ok) {
             const buf = Buffer.from(await resp.arrayBuffer());
             fs.writeFileSync(clipPath, buf);
@@ -13756,7 +13866,7 @@ export async function rerenderFromScenes(
           scene.duration,
           workDir,
           internalScenes.length,
-          false
+          enableSubtitles
         );
         completedCompose++;
         onProgress?.(
@@ -13774,7 +13884,14 @@ export async function rerenderFromScenes(
     onProgress?.("Assembling final video...", 78);
     const videoTitle = (internalScenes[0] as any)?.title ?? `Video ${videoId}`;
     const totalDuration = internalScenes.reduce((sum, s) => sum + s.duration, 0); // No chapter cards
-    const finalVideoPath = await concatenateScenesWithMusic(orderedClips, workDir, videoId, totalDuration, videoTitle);
+    const finalVideoPath = await concatenateScenesWithMusic(
+      orderedClips,
+      workDir,
+      videoId,
+      totalDuration,
+      videoTitle,
+      customMusicPath
+    );
 
     // ── Step 7: Upload to S3 ────────────────────────────────────────────────
     onProgress?.("Uploading re-rendered video...", 93);

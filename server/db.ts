@@ -643,12 +643,16 @@ export async function deleteExpiredPasswordResetTokens() {
 // ─── Editor ───────────────────────────────────────────────────────────────────
 
 export interface EditorClip {
-  url: string;           // /manus-storage/... or external URL
+  url: string;
   type: "video" | "image";
-  source: string;        // "pexels" | "youtube" | "pixabay" | "wikimedia" | "openverse" | "serpapi" | "upload"
-  thumbnailUrl?: string; // preview thumbnail
+  source: string;
+  thumbnailUrl?: string;
   width?: number;
   height?: number;
+  /** Media archive asset id when source is archive. */
+  archiveAssetId?: number;
+  storageUrl?: string;
+  title?: string;
 }
 
 export interface EditorScene {
@@ -681,6 +685,45 @@ export async function getVideoScenes(id: number): Promise<EditorScene[] | null> 
   const result = await db.select({ videoScenes: videos.videoScenes }).from(videos).where(eq(videos.id, id)).limit(1);
   if (!result.length || !result[0].videoScenes) return null;
   return result[0].videoScenes as EditorScene[];
+}
+
+export type VideoEditorSettings = {
+  enableSubtitles: boolean;
+  backgroundMusicUrl: string | null;
+};
+
+export function readVideoEditorSettings(video: {
+  enableSubtitles?: number | null;
+  metadata?: unknown;
+}): VideoEditorSettings {
+  const meta = (video.metadata ?? {}) as { backgroundMusicUrl?: string };
+  return {
+    enableSubtitles: video.enableSubtitles !== 0,
+    backgroundMusicUrl: meta.backgroundMusicUrl ?? null,
+  };
+}
+
+export async function updateVideoEditorSettings(
+  id: number,
+  settings: { enableSubtitles?: boolean; backgroundMusicUrl?: string | null }
+) {
+  const db = await getDb();
+  if (!db) return;
+  const video = await getVideoById(id);
+  if (!video) return;
+  const meta = { ...((video.metadata ?? {}) as Record<string, unknown>) };
+  if (settings.backgroundMusicUrl !== undefined) {
+    if (settings.backgroundMusicUrl) {
+      meta.backgroundMusicUrl = settings.backgroundMusicUrl;
+    } else {
+      delete meta.backgroundMusicUrl;
+    }
+  }
+  const patch: Record<string, unknown> = { metadata: meta, updatedAt: new Date() };
+  if (settings.enableSubtitles !== undefined) {
+    patch.enableSubtitles = settings.enableSubtitles ? 1 : 0;
+  }
+  await db.update(videos).set(patch).where(eq(videos.id, id));
 }
 
 // ─── Media Archives ───────────────────────────────────────────────────────────

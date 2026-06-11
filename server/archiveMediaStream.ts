@@ -81,6 +81,44 @@ export function archiveMediaStreamUrl(assetId: number): string {
   return `/api/admin/archive/media/${assetId}`;
 }
 
+/** User-facing stream URL for the video editor (authenticated users). */
+export function editorArchiveMediaUrl(assetId: number): string {
+  return `/api/editor/archive/media/${assetId}`;
+}
+
+async function streamArchiveAsset(req: Request, res: Response, assetId: number): Promise<void> {
+  const asset = await getMediaArchiveAssetById(assetId);
+  if (!asset) {
+    res.status(404).json({ error: "Asset not found" });
+    return;
+  }
+
+  const contentType =
+    asset.mimeType || (asset.mediaType === "video" ? "video/mp4" : "image/jpeg");
+
+  const localPath = resolveArchiveAssetPath(asset);
+  if (localPath) {
+    streamLocalFileWithRange(req, res, localPath, contentType);
+    return;
+  }
+
+  if (asset.storageUrl.startsWith("/manus-storage/")) {
+    const key = asset.storageUrl.replace(/^\/manus-storage\//, "");
+    try {
+      const signedUrl = await storageGetSignedUrl(key);
+      const ok = await proxyRemoteMedia(req, res, signedUrl);
+      if (ok) return;
+    } catch (err) {
+      console.warn("[ArchiveMedia] manus-storage proxy failed:", (err as Error).message);
+    }
+  } else if (asset.storageUrl.startsWith("http")) {
+    const ok = await proxyRemoteMedia(req, res, asset.storageUrl);
+    if (ok) return;
+  }
+
+  res.status(404).json({ error: "Media file not found on disk" });
+}
+
 export function registerArchiveMediaRoute(app: Express) {
   app.get("/api/admin/archive/media/:assetId", async (req, res) => {
     try {
@@ -96,39 +134,31 @@ export function registerArchiveMediaRoute(app: Express) {
         return;
       }
 
-      const asset = await getMediaArchiveAssetById(assetId);
-      if (!asset) {
-        res.status(404).json({ error: "Asset not found" });
-        return;
-      }
-
-      const contentType =
-        asset.mimeType ||
-        (asset.mediaType === "video" ? "video/mp4" : "image/jpeg");
-
-      const localPath = resolveArchiveAssetPath(asset);
-      if (localPath) {
-        streamLocalFileWithRange(req, res, localPath, contentType);
-        return;
-      }
-
-      if (asset.storageUrl.startsWith("/manus-storage/")) {
-        const key = asset.storageUrl.replace(/^\/manus-storage\//, "");
-        try {
-          const signedUrl = await storageGetSignedUrl(key);
-          const ok = await proxyRemoteMedia(req, res, signedUrl);
-          if (ok) return;
-        } catch (err) {
-          console.warn("[ArchiveMedia] manus-storage proxy failed:", (err as Error).message);
-        }
-      } else if (asset.storageUrl.startsWith("http")) {
-        const ok = await proxyRemoteMedia(req, res, asset.storageUrl);
-        if (ok) return;
-      }
-
-      res.status(404).json({ error: "Media file not found on disk" });
+      await streamArchiveAsset(req, res, assetId);
     } catch (err) {
       console.error("[ArchiveMedia] stream error:", err);
+      if (!res.headersSent) res.status(500).json({ error: "Stream failed" });
+    }
+  });
+
+  /** Editor: any logged-in user can preview archive assets for clip replacement. */
+  app.get("/api/editor/archive/media/:assetId", async (req, res) => {
+    try {
+      const user = await getUserFromRequest(req);
+      if (!user) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+
+      const assetId = parseInt(String(req.params.assetId), 10);
+      if (!assetId || Number.isNaN(assetId)) {
+        res.status(400).json({ error: "Invalid asset id" });
+        return;
+      }
+
+      await streamArchiveAsset(req, res, assetId);
+    } catch (err) {
+      console.error("[EditorArchiveMedia] stream error:", err);
       if (!res.headersSent) res.status(500).json({ error: "Stream failed" });
     }
   });

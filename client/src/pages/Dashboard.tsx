@@ -1069,11 +1069,11 @@ export default function Dashboard() {
               </p>
             </div>
 
-            {/* Subtitle toggle */}
+            {/* Ondertiteling */}
             <div className="flex items-center justify-between px-3 py-2.5 rounded-lg bg-white/5 border border-white/10">
               <div>
-                <p className="text-sm font-medium text-white">Subtitles</p>
-                <p className="text-xs text-slate-500">Show captions on the video</p>
+                <p className="text-sm font-medium text-white">Ondertiteling</p>
+                <p className="text-xs text-slate-500">Tekst onderin de video tonen</p>
               </div>
               <Switch
                 checked={enableSubtitles}
