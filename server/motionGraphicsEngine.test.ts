@@ -9,6 +9,7 @@ import {
   extractNewsCardContent,
   extractNewsSource,
   motionGraphicNeedsSourceImage,
+  motionGraphicSlotKind,
   planMotionGraphicBeat,
   wrapTextCardLines,
 } from "./motionGraphicsEngine";
@@ -23,53 +24,60 @@ describe("motionGraphicsEngine", () => {
     expect(lines.every((l) => l.length <= 38)).toBe(true);
   });
 
-  it("plans text card for hook beats with questions", () => {
+  it("uses beat rhythm independent of topic keywords", () => {
+    expect(motionGraphicSlotKind(0, 0)).toBe("text_card");
+    expect(motionGraphicSlotKind(0, 1)).toBe("news_card");
+    expect(motionGraphicSlotKind(0, 4)).toBe("portrait_cutout");
+    expect(motionGraphicSlotKind(1, 2)).toBe("map_card");
+  });
+
+  it("plans text card for opening beat on any topic", () => {
     const plan = planMotionGraphicBeat(
-      "Why is this city considered the best designed in America?",
+      "Why did Tesla become the most valuable car company in the world?",
       0,
       0,
-      "The Best Designed City"
+      "Elon Musk and Tesla"
     );
     expect(plan?.kind).toBe("text_card");
     expect(plan?.lines.length).toBeGreaterThan(0);
   });
 
-  it("plans map card when geo keywords appear", () => {
+  it("plans map card from video title without geo keywords", () => {
     const plan = planMotionGraphicBeat(
-      "The city grid stretches north with blocks aligned to the rail route through downtown.",
+      "He built rockets and electric cars while critics laughed at the idea.",
       1,
-      1,
-      "Chicago Urban Plan"
+      2,
+      "Elon Musk: Tesla and SpaceX"
     );
     expect(plan?.kind).toBe("map_card");
-    expect(plan?.mapTitle).toBeTruthy();
+    expect(plan?.mapTitle).toContain("ELON MUSK");
   });
 
-  it("plans news card when reporting language appears", () => {
+  it("plans news card on rhythm slot without news keywords", () => {
     const plan = planMotionGraphicBeat(
-      "According to The Guardian, Singapore hanged more people this year than it has in decades. Three were marched to the gallows in November.",
+      "Tesla stock surged after the company posted record deliveries in the quarter.",
+      0,
       1,
-      1,
-      "Singapore Crime Policy"
+      "Elon Musk Documentary"
     );
     expect(plan?.kind).toBe("news_card");
-    expect(plan?.source).toContain("Guardian");
+    expect(plan?.source).toBe("Elon Musk Documentary");
     expect(plan?.headline).toBeTruthy();
     expect(motionGraphicNeedsSourceImage("news_card")).toBe(true);
   });
 
-  it("plans portrait cutout for leader beats", () => {
+  it("plans portrait cutout on rhythm slot for any subject", () => {
     const plan = planMotionGraphicBeat(
-      "Lee Kuan Yew said the city had to stay tough on crime to survive.",
-      2,
-      2,
-      "Lee Kuan Yew vs America"
+      "Hitler rose to power in a fractured Germany after the First World War ended.",
+      0,
+      4,
+      "The Rise of Hitler"
     );
     expect(plan?.kind).toBe("portrait_cutout");
     expect(motionGraphicNeedsSourceImage("portrait_cutout")).toBe(true);
   });
 
-  it("extractNewsCardContent builds headline and source", () => {
+  it("extractNewsCardContent uses explicit outlet when present", () => {
     const news = extractNewsCardContent(
       "The Guardian reported gum control kept chewing gum off Singapore streets. Officials defended the policy."
     );
@@ -78,13 +86,22 @@ describe("motionGraphicsEngine", () => {
     expect(news.bodyLines.length).toBeGreaterThan(0);
   });
 
+  it("extractNewsSource falls back to video title", () => {
+    expect(extractNewsSource("Tesla posted record numbers this quarter.", "SpaceX Starship")).toBe(
+      "SpaceX Starship"
+    );
+  });
+
   it("extractNewsSource normalizes SMH", () => {
     expect(extractNewsSource("SMH wrote about the incident")).toBe("SMH.com.au");
   });
 
-  it("extractMapTitle prefers known cities", () => {
+  it("extractMapTitle prefers cities but accepts any title", () => {
     expect(extractMapTitle("Plans for Amsterdam expanded the district", "Urban Europe")).toBe(
       "AMSTERDAM"
+    );
+    expect(extractMapTitle("Nothing geographic here.", "Why Britain Struggles")).toBe(
+      "WHY BRITAIN STRUGGLES"
     );
   });
 
@@ -104,8 +121,8 @@ describe("motionGraphicsEngine", () => {
 
   it("buildNewsCardStillVF blurs bg and draws white card", () => {
     const plan = planMotionGraphicBeat(
-      "Reuters reported the policy shocked America. Critics called it harsh.",
-      1,
+      "The policy shocked America. Critics called it harsh and unfair to ordinary citizens.",
+      0,
       1,
       "Singapore"
     )!;
@@ -125,7 +142,7 @@ describe("motionGraphicsEngine", () => {
   });
 
   it("buildNewsCardVideoVF overlays card on blurred video", () => {
-    const plan = extractNewsCardContent("BBC News headline about the trial today.");
+    const plan = extractNewsCardContent("Headline about the trial today.", "Crime Documentary");
     const vf = buildNewsCardVideoVF({
       kind: "news_card",
       lines: [plan.headline],

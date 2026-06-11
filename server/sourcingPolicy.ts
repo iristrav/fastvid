@@ -73,7 +73,7 @@ export function maxMotionGraphicsPerVideo(): number {
   const raw = process.env.MAX_MOTION_GRAPHICS_PER_VIDEO?.trim();
   if (raw) {
     const n = parseInt(raw, 10);
-    if (!isNaN(n) && n >= 0 && n <= 12) return n;
+    if (!isNaN(n) && n >= 0 && n <= 20) return n;
   }
-  return 5;
+  return 8;
 }
