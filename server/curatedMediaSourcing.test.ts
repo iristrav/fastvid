@@ -35,9 +35,9 @@ describe("curatedMediaSourcing", () => {
       archiveId: 9,
       title: "Hitler speech 1939",
       tags: ["hitler", "nazi", "germany"],
-      mediaType: "image",
-      mimeType: "image/jpeg",
-      storageUrl: "/local-storage/a.jpg",
+      mediaType: "video",
+      mimeType: "video/mp4",
+      storageUrl: "/local-storage/a.mp4",
       isActive: 1,
       sortOrder: 0,
       createdAt: new Date(),
@@ -45,7 +45,7 @@ describe("curatedMediaSourcing", () => {
       fileSizeBytes: 1000,
       width: 1920,
       height: 1080,
-      durationSec: null,
+      durationSec: 6,
       sourceUrl: null,
       sourceLabel: null,
     };
@@ -144,5 +144,45 @@ describe("curatedMediaSourcing", () => {
       topicAnchors
     );
     expect(paradeScore).toBeGreaterThan(interviewScore);
+  });
+
+  it("prefers video clips over still images when both match the beat", () => {
+    const beatText = "Hitler gives a speech at a rally in Berlin";
+    const { beatTags, topicAnchors } = buildBeatMatchTags(
+      { keywords: ["speech", "rally"], text: beatText, index: 0 },
+      { text: beatText },
+      "Hitler documentary"
+    );
+    const still: MediaArchiveAsset = {
+      id: 10,
+      archiveId: 1,
+      title: "Hitler speech rally propaganda poster",
+      tags: ["hitler", "speech"],
+      mediaType: "image",
+      mimeType: "image/jpeg",
+      storageUrl: "/local-storage/poster.jpg",
+      isActive: 1,
+      sortOrder: 0,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      fileSizeBytes: 1000,
+      width: 1920,
+      height: 1080,
+      durationSec: null,
+      sourceUrl: null,
+      sourceLabel: null,
+    };
+    const footage: MediaArchiveAsset = {
+      ...still,
+      id: 11,
+      title: "Hitler gives speech at rally",
+      mediaType: "video",
+      mimeType: "video/mp4",
+      durationSec: 6,
+      storageUrl: "/local-storage/speech.mp4",
+    };
+    const stillScore = scoreCuratedAsset(still, ["hitler"], beatTags, topicAnchors, beatText);
+    const videoScore = scoreCuratedAsset(footage, ["hitler"], beatTags, topicAnchors, beatText);
+    expect(videoScore).toBeGreaterThan(stillScore);
   });
 });

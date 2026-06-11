@@ -83,7 +83,7 @@ import {
   scriptGuidedClipsEnabled,
 } from "./scriptGuidedClipFinder";
 import { clipPassesVisionGate, clipVisionGateEnabled } from "./visualQualityGate";
-import { curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, skipEffectsStage, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec } from "./sourcingPolicy";
+import { curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, skipEffectsStage, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo } from "./sourcingPolicy";
 import {
   fetchCuratedArchiveBeatClip,
   curatedClipPathAssetId,
@@ -654,7 +654,8 @@ async function fetchBeatArchivalThenPexels(
       dedup.usedCuratedAssetIds,
       dedup.usedCuratedStorageUrls,
       videoTitle,
-      curatedInterviewBudget(dedup)
+      curatedInterviewBudget(dedup),
+      curatedImageBudget(dedup)
     );
   }
   const topicHay = [videoTitle, scene.text, beat.text].filter(Boolean).join(" ");
@@ -791,7 +792,8 @@ async function beatPrimaryFetch(
       dedup.usedCuratedAssetIds,
       dedup.usedCuratedStorageUrls,
       videoTitle,
-      curatedInterviewBudget(dedup)
+      curatedInterviewBudget(dedup),
+      curatedImageBudget(dedup)
     );
   }
   if (youtubeOnlySourcingEnabled()) {
@@ -7449,6 +7451,8 @@ interface VisualDedupState {
   usedCuratedStorageUrls: Set<string>;
   /** Cap modern historian interview B-roll (looks like one frozen talking head). */
   curatedInterviewClipsUsed: number;
+  /** Cap Ken Burns still-image beats when archive video is available. */
+  curatedImageClipsUsed: number;
   lock: Promise<void>;
   perf: PipelinePerfProfile;
   /** Named celebrity from user prompt (e.g. Kylie Jenner) — anchor every beat's stock search. */
@@ -7470,6 +7474,10 @@ const MAX_CURATED_INTERVIEW_CLIPS_PER_VIDEO = 2;
 
 function curatedInterviewBudget(dedup: VisualDedupState): { used: number; max: number } {
   return { used: dedup.curatedInterviewClipsUsed, max: MAX_CURATED_INTERVIEW_CLIPS_PER_VIDEO };
+}
+
+function curatedImageBudget(dedup: VisualDedupState): { used: number; max: number } {
+  return { used: dedup.curatedImageClipsUsed, max: archiveMaxImageClipsPerVideo() };
 }
 
 function createVisualDedupState(
@@ -7495,6 +7503,7 @@ function createVisualDedupState(
     usedCuratedAssetIds: new Set(),
     usedCuratedStorageUrls: new Set(),
     curatedInterviewClipsUsed: 0,
+    curatedImageClipsUsed: 0,
     lock: Promise.resolve(),
     perf,
     primaryPerson: topic?.primaryPerson?.trim() ?? "",
@@ -8560,7 +8569,8 @@ function buildSceneBeats(
       }
     }
     const words = groups[splitIdx].text.split(/\s+/).filter(Boolean);
-    if (words.length < 16) break;
+    const minSplitWords = curatedArchiveOnlyVisuals() ? 10 : 16;
+    if (words.length < minSplitWords) break;
     const mid = Math.ceil(words.length / 2);
     const a = words.slice(0, mid).join(" ");
     const b = words.slice(mid).join(" ");
@@ -8592,15 +8602,30 @@ function buildSceneBeats(
     if (!searchQuery || isBlockedStockQuery(searchQuery)) {
       searchQuery = stockQueryFromBeatScript(text, scenePersons, scene.text, videoTitle);
     }
+    let holdSec = estimateBeatHoldSec(text, groups[i].sentenceCount);
     beats.push({
       index: i,
       text,
       searchQuery,
       powerWord,
       keywords: buildRelevanceKeywords(scene, text),
-      holdSec: estimateBeatHoldSec(text, groups[i].sentenceCount),
+      holdSec,
     });
   }
+
+  if (curatedArchiveOnlyVisuals() && beats.length > 0) {
+    const totalHold = beats.reduce((s, b) => s + b.holdSec, 0);
+    if (totalHold > 0.5 && Math.abs(totalHold - duration) > 0.4) {
+      const scale = duration / totalHold;
+      for (const beat of beats) {
+        beat.holdSec = Math.max(
+          archiveVisualMinClipSec(),
+          Math.min(archiveVisualMaxClipSec(), beat.holdSec * scale)
+        );
+      }
+    }
+  }
+
   return beats;
 }
 
@@ -9048,7 +9073,8 @@ async function recoverSceneClipsIfEmpty(
         dedup.usedCuratedAssetIds,
         dedup.usedCuratedStorageUrls,
         topicContext,
-        curatedInterviewBudget(dedup)
+        curatedInterviewBudget(dedup),
+      curatedImageBudget(dedup)
       );
       if (!clip || isPipelineFallbackClip(clip)) continue;
       const key = clipContentKey(clip);
@@ -9173,7 +9199,8 @@ async function fetchLastResortRealClip(
       dedup.usedCuratedAssetIds,
       dedup.usedCuratedStorageUrls,
       videoTitle,
-      curatedInterviewBudget(dedup)
+      curatedInterviewBudget(dedup),
+      curatedImageBudget(dedup)
     );
   }
   const tag = `b${beat.index}_lr`;
@@ -10437,7 +10464,8 @@ async function fetchBeatClip(
       dedup.usedCuratedAssetIds,
       dedup.usedCuratedStorageUrls,
       videoTitle,
-      curatedInterviewBudget(dedup)
+      curatedInterviewBudget(dedup),
+      curatedImageBudget(dedup)
     );
   }
   const tag = `b${beat.index}`;
@@ -11465,7 +11493,8 @@ async function resolveBeatClipForBeat(
       dedup.usedCuratedAssetIds,
       dedup.usedCuratedStorageUrls,
       videoTitle,
-      curatedInterviewBudget(dedup)
+      curatedInterviewBudget(dedup),
+      curatedImageBudget(dedup)
     );
   }
 
@@ -11608,7 +11637,8 @@ async function adoptArchiveBeatClip(
       dedup.usedCuratedAssetIds,
       dedup.usedCuratedStorageUrls,
       videoTitle,
-      curatedInterviewBudget(dedup)
+      curatedInterviewBudget(dedup),
+      curatedImageBudget(dedup)
     );
     if (tryClip(clip, holdSec)) return true;
   }
@@ -11972,7 +12002,7 @@ async function fetchSceneVisuals(
           (async () => {
             if (archiveOnly) {
               return fetchCuratedArchiveBeatClip(
-                stub, scene, workDir, scene.index, stub.holdSec, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls, videoTitle, curatedInterviewBudget(dedup)
+                stub, scene, workDir, scene.index, stub.holdSec, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls, videoTitle, curatedInterviewBudget(dedup), curatedImageBudget(dedup)
               );
             }
             if (dedup.perf.fastStockMode) {
@@ -12077,7 +12107,8 @@ async function fetchSceneVisuals(
           dedup.usedCuratedAssetIds,
           dedup.usedCuratedStorageUrls,
           videoTitle,
-          curatedInterviewBudget(dedup)
+          curatedInterviewBudget(dedup),
+      curatedImageBudget(dedup)
         );
         if (extra && !isPipelineFallbackClip(extra) && pushSceneClip(extra, stub.holdSec, stub.index)) {
           break;
@@ -12181,7 +12212,8 @@ async function fetchSceneVisuals(
         dedup.usedCuratedAssetIds,
         dedup.usedCuratedStorageUrls,
         videoTitle,
-        curatedInterviewBudget(dedup)
+        curatedInterviewBudget(dedup),
+      curatedImageBudget(dedup)
       );
     } else if (realOnly) {
       forced = await beatPrimaryFetch(

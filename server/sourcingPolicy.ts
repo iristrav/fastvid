@@ -43,3 +43,18 @@ export function archiveVisualMaxClipSec(): number {
   }
   return 8;
 }
+
+/** Prefer moving archive video over Ken Burns stills (default on). */
+export function archivePreferVideoClips(): boolean {
+  return process.env.ARCHIVE_PREFER_VIDEO !== "false";
+}
+
+/** Max still-image beats per generated video when preferVideo is on. */
+export function archiveMaxImageClipsPerVideo(): number {
+  const raw = process.env.ARCHIVE_MAX_IMAGE_CLIPS?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 0) return n;
+  }
+  return 1;
+}

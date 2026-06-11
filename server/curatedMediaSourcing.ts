@@ -9,7 +9,7 @@ import * as path from "path";
 import { resolveLocalVideoPath, LOCAL_UPLOADS_DIR } from "./storageLocal";
 import { storageGetSignedUrl } from "./storage";
 import { archiveClipHasBakedEditText } from "./archiveClipFilter";
-import { curatedArchiveOnlyVisuals, archiveVisualMaxClipSec, archiveVisualMinClipSec } from "./sourcingPolicy";
+import { curatedArchiveOnlyVisuals, archiveVisualMaxClipSec, archiveVisualMinClipSec, archivePreferVideoClips } from "./sourcingPolicy";
 import {
   getAllMediaArchives,
   getMediaArchiveAssets,
@@ -193,12 +193,27 @@ export function scoreCuratedAsset(
   asset: MediaArchiveAsset,
   archiveNicheTags: string[],
   beatTags: string[],
-  topicAnchors: string[] = []
+  topicAnchors: string[] = [],
+  beatText?: string
 ): number {
   const assetTags = normalizeMediaTags(asset.tags ?? []);
   const title = (asset.title ?? "").toLowerCase();
   let score = 0;
   let beatHits = 0;
+
+  if (beatText?.trim()) {
+    const bl = beatText.toLowerCase();
+    if (title.length >= 5 && bl.includes(title)) {
+      score += 55;
+      beatHits += 2;
+    }
+    const titleWords = title.split(/\s+/).filter((w) => w.length >= 4);
+    const titleInBeat = titleWords.filter((w) => bl.includes(w)).length;
+    if (titleWords.length >= 2 && titleInBeat >= Math.min(2, titleWords.length)) {
+      score += 28;
+      beatHits++;
+    }
+  }
 
   for (const q of beatTags) {
     if (title === q) {
@@ -241,9 +256,11 @@ export function scoreCuratedAsset(
     }
   }
 
-  if (beatTags.length >= 2 && beatHits === 0) score = Math.max(0, score - 25);
+  if (beatTags.length >= 2 && beatHits === 0) score = Math.max(0, score - 60);
 
   score += curatedArchiveVisualBoost(asset);
+  score += curatedVideoFootageBoost(asset);
+  score += curatedImagePenalty(asset);
   score += curatedInterviewPenalty(asset);
 
   return score;
@@ -259,13 +276,31 @@ export function isCuratedInterviewAsset(asset: Pick<MediaArchiveAsset, "title" |
   );
 }
 
-/** Archival photos, parades, period footage — prefer over generic interview B-roll. */
+/** Archival parade footage, speeches, period video — not generic stills. */
 export function isCuratedHistoricalFootage(asset: Pick<MediaArchiveAsset, "title" | "tags" | "mediaType" | "mixKind">): boolean {
-  if (asset.mediaType === "image") return true;
   const title = (asset.title ?? "").toLowerCase();
-  return /\b(parade|militair|zwart-wit|archief|1930|1934|1939|1945|hitler|nazi|berlijn|troepen|soldaten|portret|propaganda|rally|march|speech|crowd|war|oorlog|wehrmacht|ss)\b/i.test(
-    title
-  );
+  const hay = `${title} ${normalizeMediaTags(asset.tags ?? []).join(" ")}`;
+  if (asset.mediaType === "video") {
+    return /\b(parade|militair|zwart-wit|archief|1930|1934|1939|1945|hitler|nazi|berlijn|troepen|soldaten|propaganda|rally|march|speech|toespraak|crowd|war|oorlog|wehrmacht|ss|bijeenkomst|sporting|balkon)\b/i.test(
+      hay
+    );
+  }
+  if (asset.mediaType === "image") {
+    return /\b(propaganda poster|poster|portret|propaganda|archief|foto)\b/i.test(hay);
+  }
+  return false;
+}
+
+function curatedVideoFootageBoost(asset: Pick<MediaArchiveAsset, "mediaType" | "durationSec">): number {
+  if (!archivePreferVideoClips() || asset.mediaType !== "video") return 0;
+  let boost = 58;
+  if (asset.durationSec != null && asset.durationSec >= 3) boost += 12;
+  return boost;
+}
+
+function curatedImagePenalty(asset: Pick<MediaArchiveAsset, "mediaType">): number {
+  if (!archivePreferVideoClips() || asset.mediaType !== "image") return 0;
+  return -95;
 }
 
 function curatedInterviewPenalty(asset: Pick<MediaArchiveAsset, "title" | "tags">): number {
@@ -324,7 +359,8 @@ export async function listCuratedArchiveCandidates(
   excludeIds: Set<number>,
   excludeStorageUrls: Set<string>,
   topicAnchors: string[] = [],
-  filterTags?: string[]
+  filterTags?: string[],
+  beatText?: string
 ): Promise<Array<{ asset: MediaArchiveAsset; archiveName: string; score: number }>> {
   const queryTags = filterTags ?? normalizeMediaTags([...beatTags, ...topicAnchors]);
   const archives = (await getAllMediaArchives()).filter((a) => a.isActive === 1);
@@ -344,7 +380,7 @@ export async function listCuratedArchiveCandidates(
     for (const asset of assets) {
       if (excludeIds.has(asset.id)) continue;
       if (excludeStorageUrls.has(asset.storageUrl)) continue;
-      const score = scoreCuratedAsset(asset, nicheTags, beatTags, topicAnchors);
+      const score = scoreCuratedAsset(asset, nicheTags, beatTags, topicAnchors, beatText);
       if (score > 0) scored.push({ asset, score, archiveName: archive.name });
       else if (assetMatchesBeatTags(asset, beatTags) || assetMatchesTopicAnchors(asset, topicAnchors)) {
         fallback.push({ asset, score: 1, archiveName: archive.name });
@@ -366,10 +402,20 @@ export async function listCuratedArchiveCandidates(
   const pool = scored.length > 0 ? scored : fallback;
   pool.sort((a, b) => {
     if (b.score !== a.score) return b.score - a.score;
-    const videoBoost = (x: MediaArchiveAsset) => (x.mediaType === "video" ? 1 : 0);
+    const videoBoost = (x: MediaArchiveAsset) => (x.mediaType === "video" ? 2 : 0);
     return videoBoost(b.asset) - videoBoost(a.asset);
   });
   return pool;
+}
+
+function orderCuratedCandidatesForBeat(
+  candidates: Array<{ asset: MediaArchiveAsset; archiveName: string; score: number }>
+): typeof candidates {
+  if (!archivePreferVideoClips()) return candidates;
+  const videos = candidates.filter((c) => c.asset.mediaType === "video");
+  const images = candidates.filter((c) => c.asset.mediaType === "image");
+  if (videos.length === 0) return candidates;
+  return [...videos, ...images];
 }
 
 async function probeMediaDurationSec(filePath: string): Promise<number> {
@@ -530,15 +576,19 @@ export async function fetchCuratedArchiveBeatClip(
   usedAssetIds: Set<number>,
   usedStorageUrls: Set<string>,
   videoTitle?: string,
-  interviewBudget?: { used: number; max: number }
+  interviewBudget?: { used: number; max: number },
+  imageBudget?: { used: number; max: number }
 ): Promise<string | null> {
   const { beatTags, topicAnchors, allTags } = buildBeatMatchTags(beat, scene, videoTitle);
-  const candidates = await listCuratedArchiveCandidates(
-    beatTags,
-    usedAssetIds,
-    usedStorageUrls,
-    topicAnchors,
-    allTags
+  const candidates = orderCuratedCandidatesForBeat(
+    await listCuratedArchiveCandidates(
+      beatTags,
+      usedAssetIds,
+      usedStorageUrls,
+      topicAnchors,
+      allTags,
+      beat.text
+    )
   );
   if (!candidates.length) {
     console.warn(
@@ -556,6 +606,13 @@ export async function fetchCuratedArchiveBeatClip(
       interviewBudget &&
       isCuratedInterviewAsset(picked.asset) &&
       interviewBudget.used >= interviewBudget.max
+    ) {
+      continue;
+    }
+    if (
+      imageBudget &&
+      picked.asset.mediaType === "image" &&
+      imageBudget.used >= imageBudget.max
     ) {
       continue;
     }
@@ -582,6 +639,9 @@ export async function fetchCuratedArchiveBeatClip(
       usedStorageUrls.add(picked.asset.storageUrl);
       if (interviewBudget && isCuratedInterviewAsset(picked.asset)) {
         interviewBudget.used++;
+      }
+      if (imageBudget && picked.asset.mediaType === "image") {
+        imageBudget.used++;
       }
       return clipPath;
     } catch (err) {
