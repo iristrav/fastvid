@@ -454,6 +454,7 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry, onEdit }: {
 
 // ─── Video Detail Modal ───────────────────────────────────────────────────────
 function VideoDetailModal({ videoId, onClose }: { videoId: number; onClose: () => void }) {
+  const videoRef = useRef<HTMLVideoElement>(null);
   const { data: video, isLoading } = trpc.video.get.useQuery({ id: videoId });
   // Fetch a direct presigned CloudFront URL for video playback (bypasses 307 redirect)
   const { data: videoUrlData } = trpc.video.getVideoUrl.useQuery(
@@ -466,6 +467,25 @@ function VideoDetailModal({ videoId, onClose }: { videoId: number; onClose: () =
   const directVideoUrl = fileMissing ? null : (videoUrlData?.url ?? rawVideoUrl);
   type VideoMetadata = { title?: string; description?: string; tags?: string[]; chapters?: { time: string; title: string }[] };
   const metadata = video?.metadata as VideoMetadata | null;
+
+  useEffect(() => {
+    const el = videoRef.current;
+    if (!el || !directVideoUrl) return;
+
+    const startPlayback = () => {
+      void el.play().catch(() => {
+        /* Browser may block autoplay without gesture — controls stay usable */
+      });
+    };
+
+    if (el.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+      startPlayback();
+      return;
+    }
+
+    el.addEventListener("loadeddata", startPlayback, { once: true });
+    return () => el.removeEventListener("loadeddata", startPlayback);
+  }, [directVideoUrl, videoId]);
 
   const copyScript = () => {
     if (video?.script) {
@@ -517,11 +537,15 @@ function VideoDetailModal({ videoId, onClose }: { videoId: number; onClose: () =
                 </div>
                 {directVideoUrl ? (
                   <video
+                    ref={videoRef}
+                    key={directVideoUrl}
                     controls
+                    autoPlay
+                    playsInline
                     className="w-full"
                     src={directVideoUrl}
                     poster={video.thumbnailUrl ?? undefined}
-                    preload="metadata"
+                    preload="auto"
                   >
                     Your browser does not support the video tag.
                   </video>
