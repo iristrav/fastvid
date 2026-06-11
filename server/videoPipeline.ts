@@ -135,6 +135,10 @@ const RAPIDAPI_YT_HOST =
   process.env.RAPIDAPI_YT_HOST || "ytstream-download-youtube-videos.p.rapidapi.com";
 
 // @ts-ignore
+import {
+  pickMontageXfadeTransition,
+  pickStockMontageXfadeTransition,
+} from "./montageTransitions";
 import ffmpegStatic from "ffmpeg-static";
 import { execSync } from "child_process";
 
@@ -8386,9 +8390,11 @@ function buildMontageXfadeFilter(
   let mergeFilter = "";
   let prev = "v0";
   let offset = durs[0] - xfade;
-  const xfadeTransition = smooth ? "dissolve" : "fade";
   for (let i = 1; i < n; i++) {
     const outLabel = i === n - 1 ? "montage" : `xf${i}`;
+    const xfadeTransition = smooth
+      ? pickMontageXfadeTransition(sceneIndex, i)
+      : pickStockMontageXfadeTransition(sceneIndex, i);
     mergeFilter += `;[${prev}][v${i}]xfade=transition=${xfadeTransition}:duration=${xfade.toFixed(3)}:offset=${offset.toFixed(3)}[${outLabel}]`;
     prev = outLabel;
     offset += durs[i] - xfade;
