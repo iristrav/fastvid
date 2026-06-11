@@ -134,28 +134,44 @@ export function buildBlurFillStillVF(
   );
 }
 
-/** Archive B-roll: show full clip in frame — blurred fill instead of crop or black bars. */
-export function buildBlurFillVideoFilterComplex(): string {
+/** Archive B-roll: full clip in frame on dark gray — fast (no gblur). */
+export function buildFitGrayVideoFilterComplex(): string {
   const w = DOC_STYLE_VIDEO_WIDTH;
   const h = DOC_STYLE_VIDEO_HEIGHT;
   return (
-    `[0:v]split=2[orig][orig2];` +
-    `[orig]scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},gblur=sigma=32[bg];` +
-    `[orig2]scale=${w}:${h}:force_original_aspect_ratio=decrease[fg];` +
-    `[bg][fg]overlay=(W-w)/2:(H-h)/2,format=yuv420p[vout]`
+    `[0:v]scale=${w}:${h}:force_original_aspect_ratio=decrease,` +
+    `pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:color=0x2a2a2a,format=yuv420p[vout]`
   );
 }
 
-/** Comma-chain blur-fill for montage prep (after trim on a single labeled stream). */
-export function buildBlurFillVideoMontageChain(): string {
+/** Single -vf chain for archive clip trim (fast encode). */
+export function buildFitGrayVideoVF(): string {
   const w = DOC_STYLE_VIDEO_WIDTH;
   const h = DOC_STYLE_VIDEO_HEIGHT;
   return (
-    `split=2[bgsrc][fgsrc],` +
-    `[bgsrc]scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},gblur=sigma=32[bg],` +
-    `[fgsrc]scale=${w}:${h}:force_original_aspect_ratio=decrease[fg],` +
-    `[bg][fg]overlay=(W-w)/2:(H-h)/2`
+    `scale=${w}:${h}:force_original_aspect_ratio=decrease,` +
+    `pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:color=0x2a2a2a,fps=25,format=yuv420p`
   );
+}
+
+/** Montage prep chain after trim — fit entire clip, gray letterbox. */
+export function buildFitGrayVideoMontageChain(): string {
+  const w = DOC_STYLE_VIDEO_WIDTH;
+  const h = DOC_STYLE_VIDEO_HEIGHT;
+  return (
+    `scale=${w}:${h}:force_original_aspect_ratio=decrease,` +
+    `pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:color=0x2a2a2a`
+  );
+}
+
+/** @deprecated Use buildFitGrayVideoFilterComplex — gblur is too slow on Railway. */
+export function buildBlurFillVideoFilterComplex(): string {
+  return buildFitGrayVideoFilterComplex();
+}
+
+/** @deprecated Use buildFitGrayVideoMontageChain. */
+export function buildBlurFillVideoMontageChain(): string {
+  return buildFitGrayVideoMontageChain();
 }
 
 /** Polaroid white frame on light gray canvas (no rotate — fragile on minimal FFmpeg builds). */

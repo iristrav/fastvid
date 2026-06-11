@@ -9,7 +9,7 @@ import * as path from "path";
 import { resolveLocalVideoPath, LOCAL_UPLOADS_DIR } from "./storageLocal";
 import { storageGetSignedUrl } from "./storage";
 import { archiveClipHasBakedEditText } from "./archiveClipFilter";
-import { buildBlurFillVideoFilterComplex, buildMatFramedStillVF, buildStillEncodeArgs } from "./documentaryStyle";
+import { buildFitGrayVideoVF, buildMatFramedStillVF, buildStillEncodeArgs } from "./documentaryStyle";
 import {
   resolveStillImageFilterComplex,
   type MotionGraphicsBudget,
@@ -758,11 +758,11 @@ async function trimVideoClip(
     startSec = (clipIndex * 0.41 + 0.15) % slack;
   }
 
-  const filterComplex = buildBlurFillVideoFilterComplex();
+  const frameVf = buildFitGrayVideoVF();
 
   await exec(
     `${ffmpegBin()} -y -ss ${startSec.toFixed(3)} -i "${inPath}" -t ${take.toFixed(3)} ` +
-      `-filter_complex "${filterComplex}" -map "[vout]" -an -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p "${outPath}"`
+      `-vf "${frameVf}" -an -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p "${outPath}"`
   );
 
   const outDur = await probeMediaDurationSec(outPath);

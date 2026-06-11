@@ -38,7 +38,7 @@ import { generateMetaMovieGen } from "./_core/metaMovieGen";
 import { generateHiggsfieldTextToVideo, generateHiggsfieldImageToVideo } from "./_core/higgsfieldVideo";
 import { sanitizeForDrawtext, sanitizeForDrawtextStrict } from "./ffmpegSanitize";
 import {
-  buildBlurFillVideoMontageChain,
+  buildFitGrayVideoMontageChain,
   buildPostGradeVF,
   buildSimpleKenBurnsVF,
   buildMatFramedStillVF,
@@ -385,8 +385,8 @@ const SCALE_PAD_VF = `scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect
 const CROP_FILL_VF =
   `scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,` +
   `crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:(iw-${VIDEO_WIDTH})/2:(ih-${VIDEO_HEIGHT})/2`;
-/** Full clip visible with blurred background — default for archive montage. */
-const BLUR_FILL_VF = buildBlurFillVideoMontageChain();
+/** Full clip visible on dark gray — fast fit (no gblur). */
+const FIT_GRAY_VF = buildFitGrayVideoMontageChain();
 const FPS_FORMAT_VF = `fps=25,format=yuv420p,setsar=1,setpts=PTS-STARTPTS`;
 const STANDARD_VF = `${SCALE_PAD_VF},${FPS_FORMAT_VF}`;
 /** New clip every ~3–4s; hold up to 7s when narration/visual clearly stay on one subject. */
@@ -8475,7 +8475,7 @@ function montageClipPrepFilter(
     // Archive beat clip already at 1080p — montage only syncs timing/fps.
     chain += `${FPS_FORMAT_VF}`;
   } else if (curatedArchiveOnlyVisuals() || documentaryStyleEnabled()) {
-    chain += `${BLUR_FILL_VF},${FPS_FORMAT_VF}`;
+    chain += `${FIT_GRAY_VF},${FPS_FORMAT_VF}`;
   } else {
     chain += `${CROP_FILL_VF},${FPS_FORMAT_VF}`;
   }

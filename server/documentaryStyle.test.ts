@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildBlurFillStillVF,
-  buildBlurFillVideoFilterComplex,
+  buildFitGrayVideoFilterComplex,
   buildMatFramedStillVF,
   buildPolaroidStillVF,
   buildPostGradeVF,
@@ -34,10 +34,11 @@ describe("documentaryStyle", () => {
     expect(vf).toContain("overlay=");
   });
 
-  it("builds blur-fill video filter with fit-to-frame foreground", () => {
-    const vf = buildBlurFillVideoFilterComplex();
+  it("builds fast fit-gray video filter without blur", () => {
+    const vf = buildFitGrayVideoFilterComplex();
     expect(vf).toContain("force_original_aspect_ratio=decrease");
-    expect(vf).toContain("gblur=sigma=32");
+    expect(vf).toContain("color=0x2a2a2a");
+    expect(vf).not.toContain("gblur");
     expect(vf).toContain("[vout]");
   });
 
