@@ -21,7 +21,7 @@ import {
   FileText, Video, LogOut, User, ChevronRight, RefreshCw,
   Copy, Download, Eye, LayoutDashboard, Settings, CreditCard, Volume2,
   Trash2, Pencil, Check, X as XIcon, Mic, Upload,
-  AlertCircle, ChevronDown, Edit2, Radio,
+  AlertCircle, ChevronDown, Radio,
 } from "lucide-react";
 import { DashboardNicheRequests } from "@/components/niche/DashboardNicheRequests";
 import {
@@ -48,8 +48,7 @@ const AGENT_STAGES: Record<string, { label: string; agent: string; icon: string 
   generating_script:    { label: "Writing script...",        agent: "Scriptwriter",    icon: "✍️" },
   awaiting_approval:    { label: "Writing script...",        agent: "Scriptwriter",    icon: "✍️" },
   generating_voiceover: { label: "Creating voiceover...",    agent: "Voice Engineer",  icon: "🎙️" },
-  generating_visuals:   { label: "Matching visuals...",      agent: "Visual Director", icon: "🎬" },
-  generating_effects:   { label: "Adding effects...",        agent: "Video Editor",    icon: "✨" },
+  generating_visuals:   { label: "Building your video...",   agent: "Visual Director", icon: "🎬" },
   completed:            { label: "Completed",                agent: "Done",            icon: "✅" },
   failed:               { label: "Failed",                   agent: "Error",           icon: "❌" },
 };
@@ -60,7 +59,6 @@ const STATUS_COLORS: Record<string, string> = {
   awaiting_approval:    "text-blue-400 bg-blue-400/10",
   generating_voiceover: "text-purple-400 bg-purple-400/10",
   generating_visuals:   "text-cyan-400 bg-cyan-400/10",
-  generating_effects:   "text-orange-400 bg-orange-400/10",
   completed:            "text-green-400 bg-green-400/10",
   failed:               "text-red-400 bg-red-400/10",
 };
@@ -197,7 +195,7 @@ function ScriptReviewModal({ videoId, onClose }: { videoId: number; onClose: () 
 }
 
 // ─── Video Card ───────────────────────────────────────────────────────────────
-function VideoCard({ video, onView, onDelete, onRename, onRetry, onEdit }: {
+function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
   video: {
     id: number; title: string | null; prompt: string; status: string;
     videoLength: string; createdAt: Date; thumbnailUrl: string | null;
@@ -207,7 +205,6 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry, onEdit }: {
   onDelete: (id: number) => void;
   onRename: (id: number, title: string) => void;
   onRetry: (id: number) => void;
-  onEdit?: (id: number) => void;
 }) {
   const utils = trpc.useUtils();
   const [editing, setEditing] = useState(false);
@@ -427,23 +424,13 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry, onEdit }: {
               <Trash2 className="w-3.5 h-3.5" />
             </button>
             {currentStatus === "completed" && (
-              <>
-                <button
-                  onClick={() => onEdit?.(video.id)}
-                  className="flex items-center gap-1 text-xs text-cyan-400 hover:text-cyan-300 transition-colors"
-                  title="Edit video"
-                >
-                  <Edit2 className="w-3.5 h-3.5" />
-                  Edit
-                </button>
-                <button
-                  onClick={() => onView(video.id)}
-                  className="flex items-center gap-1 text-xs text-purple-400 hover:text-purple-300 transition-colors"
-                >
-                  <Eye className="w-3.5 h-3.5" />
-                  View
-                </button>
-              </>
+              <button
+                onClick={() => onView(video.id)}
+                className="flex items-center gap-1 text-xs text-purple-400 hover:text-purple-300 transition-colors"
+              >
+                <Eye className="w-3.5 h-3.5" />
+                View
+              </button>
             )}
           </div>
         </div>
@@ -1183,7 +1170,6 @@ export default function Dashboard() {
                     }} 
                     onRename={(id, title) => renameMutation.mutate({ id, title })}
                     onRetry={(id) => regenScriptMutation.mutate({ id })}
-                    onEdit={(id) => navigate(`/editor/${id}`)}
                   />
                 ))}
               </div>

@@ -2,8 +2,6 @@ export type PipelineDisplayStageKey =
   | "script"
   | "voiceover"
   | "visuals"
-  | "edit"
-  | "effects"
   | "finish";
 
 export const PIPELINE_DISPLAY_STAGES: ReadonlyArray<{
@@ -13,8 +11,6 @@ export const PIPELINE_DISPLAY_STAGES: ReadonlyArray<{
   { key: "script", label: "Script schrijven" },
   { key: "voiceover", label: "Voiceover genereren" },
   { key: "visuals", label: "Beelden zoeken" },
-  { key: "edit", label: "Montage editten" },
-  { key: "effects", label: "Effecten toevoegen" },
   { key: "finish", label: "Video afronden" },
 ] as const;
 
@@ -36,15 +32,12 @@ export function resolvePipelineDisplayStage(
   if (/upload|samenvoegen|export|muziek|afrond/.test(s)) {
     return stage("finish");
   }
-  if (/effect|overgang|jaartal|grade|nalopen|eindcontrole|final review/.test(s)) {
-    return stage("effects");
-  }
   if (
-    /controleren|beeld.?tekst|visual review|assembly|montage|plakken|achter elkaar|compose|edit|re-render/.test(
+    /effect|overgang|jaartal|grade|nalopen|eindcontrole|final review|controleren|beeld.?tekst|visual review|assembly|montage|plakken|achter elkaar|compose|samenstellen/.test(
       s
     )
   ) {
-    return stage("edit");
+    return stage("finish");
   }
   if (
     /visual|beeld|archive|fetching|beat|backfill|scene \d|matching archive|generating ai|tick \d|zoeken/.test(
@@ -53,7 +46,7 @@ export function resolvePipelineDisplayStage(
   ) {
     return stage("visuals");
   }
-  if (/voiceover|elevenlabs|voice|editor draft|editsysteem|parsing|omzetten naar scenes/.test(s)) {
+  if (/voiceover|elevenlabs|voice|parsing|omzetten naar scenes/.test(s)) {
     return stage("voiceover");
   }
   if (/script|research|schrijven|prompt|outline|approv|refine|matching script|sections in parallel|assembling script/.test(s)) {
@@ -62,9 +55,7 @@ export function resolvePipelineDisplayStage(
 
   if (percent < 28) return stage("script");
   if (percent < 42) return stage("voiceover");
-  if (percent < 58) return stage("visuals");
-  if (percent < 72) return stage("edit");
-  if (percent < 88) return stage("effects");
+  if (percent < 70) return stage("visuals");
   return stage("finish");
 }
 

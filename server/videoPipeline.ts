@@ -29,8 +29,7 @@ import * as path from "path";
 import * as os from "os";
 import { storagePut } from "./storage";
 import { invokeLLM } from "./_core/llm";
-import { getVideoById, updateVideoScenes, updateVideoStatus, type EditorScene, type EditorClip } from "./db";
-import { buildEditorClipFromPath } from "./editorClips";
+import { getVideoById, updateVideoStatus, type EditorScene } from "./db";
 import pLimit from "p-limit";
 import { generateGrokVideo } from "./_core/grokVideo";
 import { generateVeoVideo } from "./_core/veoVideo";
@@ -52,6 +51,7 @@ import {
 } from "./documentaryStyle";
 import {
   buildCinematicOverlays,
+  buildBeatAlignedYearOverlays,
   buildCinematicSfxAudioFilter,
   burnFacelessTextOnVideoClip,
   cinematicEffectsEnabled,
@@ -86,7 +86,7 @@ import {
   scriptGuidedClipsEnabled,
 } from "./scriptGuidedClipFinder";
 import { clipPassesVisionGate, clipVisionGateEnabled } from "./visualQualityGate";
-import { curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, skipEffectsStage, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen } from "./sourcingPolicy";
+import { curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen } from "./sourcingPolicy";
 import {
   fetchCuratedArchiveBeatClip,
   curatedClipPathAssetId,
@@ -406,12 +406,9 @@ function effectiveMinClipSec(): number {
 function effectiveMaxClipSec(): number {
   return curatedArchiveOnlyVisuals() ? archiveVisualMaxClipSec() : VIDRUSH_CLIP_HOLD_SEC;
 }
-/** Hard cuts on legacy stock mode; long dissolve crossfade for archive/documentary montage. */
-function montageXfadeSec(avgClipDur = archiveVisualBeatSec()): number {
-  if (curatedArchiveOnlyVisuals() || documentaryStyleEnabled()) {
-    return Math.min(0.85, Math.max(0.55, avgClipDur * 0.13));
-  }
-  return IS_RAILWAY ? 0.12 : 0;
+/** Hard cuts for archive docs — micro-fade on clip edges only (no dissolve/xfade). */
+function montageXfadeSec(_avgClipDur = archiveVisualBeatSec()): number {
+  return 0;
 }
 const CHAPTER_CARD_DURATION = 2.5;
 
@@ -1990,11 +1987,9 @@ export const PIPELINE_WORKFLOW = [
 export const STAGE_LABELS = {
   parsing:    "Script omzetten naar scenes...",
   voiceovers: "Volledige voiceover in ElevenLabs (één script)...",
-  editorDraft: "Voiceover in het editsysteem laden...",
   visuals:    "Juiste beelden zoeken die bij het script horen...",
-  assembly:   "Clips achter elkaar plakken (ruwe montage)...",
+  assembly:   "Video samenstellen (beelden + voice)...",
   visualReview: "Controleren of beelden bij de tekst horen...",
-  effects:    "Effecten, overgangen en tekst toevoegen...",
   finalReview: "Hele video nogmaals nalopen...",
   assembling: "Alle scenes samenvoegen + muziek...",
   uploading:  "Video uploaden...",
@@ -8045,8 +8040,50 @@ async function probeClipMeanLuma(filePath: string, atSec: number): Promise<numbe
   }
 }
 
+async function probeClipRegionMeanLuma(
+  filePath: string,
+  atSec: number,
+  region: "left" | "right" | "center"
+): Promise<number | null> {
+  const crop =
+    region === "left"
+      ? "crop=iw/8:ih:0:0"
+      : region === "right"
+        ? "crop=iw/8:ih:iw-iw/8:0"
+        : "crop=iw/3:ih/3:iw/3:ih/3";
+  try {
+    const lumCmd =
+      `"${FFMPEG_BIN}" -y -ss ${atSec.toFixed(2)} -i "${filePath}" -vframes 1 -vf "${crop},scale=32:32,format=gray" -f rawvideo -`;
+    const { stdout } = await withTimeout(exec(lumCmd), 10_000, `luma ${path.basename(filePath)}@${atSec}:${region}`);
+    const buf = Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout ?? "", "binary");
+    if (buf.length === 0) return null;
+    let sum = 0;
+    for (let i = 0; i < buf.length; i++) sum += buf[i];
+    return sum / buf.length;
+  } catch {
+    return null;
+  }
+}
+
+/** Source has baked-in black pillar/letterbox bars (not our gray pad). */
+async function hasEmbeddedBlackBars(filePath: string): Promise<boolean> {
+  const sampleTimes = [0.35, 1.0, 2.5];
+  for (const t of sampleTimes) {
+    const left = await probeClipRegionMeanLuma(filePath, t, "left");
+    const right = await probeClipRegionMeanLuma(filePath, t, "right");
+    const center = await probeClipRegionMeanLuma(filePath, t, "center");
+    if (left === null || right === null || center === null) continue;
+    if (left < 24 && right < 24 && center > 38) return true;
+  }
+  return false;
+}
+
 async function isMostlyBlackClip(filePath: string): Promise<boolean> {
   if (isPipelineFallbackClip(filePath)) return true;
+  if (await hasEmbeddedBlackBars(filePath)) {
+    console.warn(`[Pipeline] Rejecting clip with embedded black bars: ${path.basename(filePath)}`);
+    return true;
+  }
   // B&W archival clips often fail Railway luma heuristics — never drop curated archive beats.
   if (curatedArchiveOnlyVisuals() && curatedClipPathAssetId(filePath) != null) {
     if (IS_RAILWAY) {
@@ -8237,48 +8274,51 @@ function montageClipInputs(clips: string[]): string {
 }
 
 function montageTailPadVF(inLabel: string, montageDur: number, outDur: number): string {
-  const pad = Math.max(0, outDur - montageDur - 0.04);
-  if (pad < 0.12) return `[${inLabel}]${FPS_FORMAT_VF}[vmont]`;
-  return `[${inLabel}]tpad=stop_mode=clone:stop_duration=${pad.toFixed(3)},${FPS_FORMAT_VF}[vmont]`;
+  const target = Math.min(outDur, Math.max(montageDur, 0.1));
+  if (Math.abs(target - montageDur) < 0.08) {
+    return `[${inLabel}]${FPS_FORMAT_VF}[vmont]`;
+  }
+  return `[${inLabel}]trim=duration=${target.toFixed(3)},${FPS_FORMAT_VF}[vmont]`;
 }
 
-async function ensureComposedSceneCoversDuration(
+async function alignComposedSceneToMontage(
   outputPath: string,
   safeAudioPath: string,
-  outDur: number,
+  targetDur: number,
   voiceDur: number,
   sceneIndex: number,
   threadFlag: string
 ): Promise<void> {
   const composedDur = await probeVideoDurationSec(outputPath);
-  if (composedDur <= 0 || composedDur >= outDur - 0.75) return;
+  if (composedDur <= 0 || composedDur >= targetDur - 0.12) return;
 
   console.warn(
-    `[Pipeline] Scene ${sceneIndex}: composed ${composedDur.toFixed(1)}s < ${outDur.toFixed(1)}s — looping montage`
+    `[Pipeline] Scene ${sceneIndex}: montage ${composedDur.toFixed(1)}s < target ${targetDur.toFixed(1)}s — trimming to montage (no loop/freeze)`
   );
-  const loopedPath = outputPath.replace(/\.mp4$/, "_duration_looped.mp4");
-  const audioFadeOutStart = Math.max(0, voiceDur - 0.15);
+  const trimmedPath = outputPath.replace(/\.mp4$/, "_montage_trim.mp4");
+  const audioDur = Math.min(voiceDur, composedDur);
+  const audioFadeOutStart = Math.max(0, audioDur - 0.15);
   try {
     await withTimeout(
       exec(
-        `${FFMPEG_BIN} -y -stream_loop -1 -i "${outputPath}" -i "${safeAudioPath}" ` +
-          `-filter_complex "[0:v]trim=duration=${outDur.toFixed(3)},setpts=PTS-STARTPTS,${FPS_FORMAT_VF}[vout];` +
+        `${FFMPEG_BIN} -y -i "${outputPath}" -i "${safeAudioPath}" ` +
+          `-filter_complex "[0:v]trim=duration=${composedDur.toFixed(3)},setpts=PTS-STARTPTS,${FPS_FORMAT_VF}[vout];` +
           `[1:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${audioFadeOutStart.toFixed(3)}:d=0.12,` +
-          `atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
-          `-map "[vout]" -map "[aout]" -vsync cfr -t ${outDur.toFixed(3)} ${threadFlag} ` +
-          `-c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${loopedPath}"`
+          `atrim=0:${audioDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
+          `-map "[vout]" -map "[aout]" -vsync cfr -t ${composedDur.toFixed(3)} ${threadFlag} ` +
+          `-c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${trimmedPath}"`
       ),
       90_000,
-      `Loop composed scene ${sceneIndex} to voice duration`
+      `Trim scene ${sceneIndex} to montage length`
     );
-    if (fs.existsSync(loopedPath) && fs.statSync(loopedPath).size > 1000) {
+    if (fs.existsSync(trimmedPath) && fs.statSync(trimmedPath).size > 1000) {
       fs.unlinkSync(outputPath);
-      fs.renameSync(loopedPath, outputPath);
+      fs.renameSync(trimmedPath, outputPath);
     }
   } catch (err) {
-    console.warn(`[Pipeline] Scene ${sceneIndex}: duration loop failed (non-fatal):`, (err as Error).message);
+    console.warn(`[Pipeline] Scene ${sceneIndex}: montage trim failed (non-fatal):`, (err as Error).message);
     try {
-      if (fs.existsSync(loopedPath)) fs.unlinkSync(loopedPath);
+      if (fs.existsSync(trimmedPath)) fs.unlinkSync(trimmedPath);
     } catch {
       /* ignore */
     }
@@ -8369,7 +8409,9 @@ function dedupeAdjacentMontageClips(
     const prevKey = outClips.length ? clipContentKey(outClips[outClips.length - 1]!) : "";
     const dur = beatDurations?.[i] ?? 0;
     if (outClips.length && key === prevKey) {
-      if (outDurs.length) outDurs[outDurs.length - 1] = (outDurs[outDurs.length - 1] ?? 0) + dur;
+      console.warn(
+        `[Pipeline] Skipping adjacent duplicate montage clip ${path.basename(clip)} (avoids frozen repeat)`
+      );
       continue;
     }
     outClips.push(clip);
@@ -8387,46 +8429,12 @@ function expandClipsForSceneDuration(
   beatDurations?: number[]
 ): { clips: string[]; beatDurations?: number[] } {
   if (clips.length === 0) return { clips, beatDurations };
-  const maxClips = Math.min(24, Math.max(12, Math.ceil(outDur / effectiveMinClipSec()) + 2));
-  let expanded = [...clips];
   let durs =
-    beatDurations?.length === expanded.length
+    beatDurations?.length === clips.length
       ? [...beatDurations]
-      : expanded.map(() => computeMontageClipDuration(outDur, expanded.length));
+      : clips.map(() => computeMontageClipDuration(outDur, clips.length));
   durs = stretchMontageDurations(durs, outDur);
-
-  while (expanded.length < maxClips && estimateMontageDurationSec(durs) < outDur * 0.92) {
-    const nextClip = pickMontageExpansionClip(clips, expanded);
-    if (!nextClip) {
-      durs = stretchMontageDurations(
-        durs.map((d) => Math.min(effectiveMaxClipSec(), d * 1.08)),
-        outDur
-      );
-      if (estimateMontageDurationSec(durs) >= outDur * 0.92) break;
-      if (clips.length === 1) break;
-      expanded.push(clips[0]!);
-    } else {
-      expanded.push(nextClip);
-    }
-    const added = expanded[expanded.length - 1]!;
-    const addedIdx = clips.indexOf(added);
-    const nextDur =
-      (addedIdx >= 0 ? beatDurations?.[addedIdx] : undefined) ??
-      computeMontageClipDuration(outDur, clips.length);
-    durs = normalizeMontageDurations([...durs, nextDur], outDur);
-  }
-
-  const deduped = dedupeAdjacentMontageClips(expanded, durs);
-  expanded = deduped.clips;
-  durs = deduped.beatDurations ?? durs;
-
-  if (expanded.length > clips.length) {
-    console.log(
-      `[Pipeline] Expanded montage ${clips.length} → ${expanded.length} clips ` +
-        `(target ${outDur.toFixed(1)}s, est ${estimateMontageDurationSec(durs).toFixed(1)}s)`
-    );
-  }
-  return { clips: expanded, beatDurations: durs };
+  return { clips, beatDurations: durs };
 }
 
 /** Keep per-beat timing when compose drops invalid/duplicate clips. */
@@ -8464,8 +8472,9 @@ function montageClipPrepFilter(
   clipPath?: string
 ): string {
   const start = montageClipStartSec(sceneIndex, inputIndex).toFixed(2);
-  const fadeIn = smoothTransition ? Math.min(0.28, dur * 0.07) : 0;
-  const fadeOut = smoothTransition ? Math.min(xfade * 0.95, dur * 0.2) : 0;
+  const edgeFade = smoothTransition ? Math.min(0.1, dur * 0.06) : 0;
+  const fadeIn = edgeFade;
+  const fadeOut = edgeFade;
   const fadeOutStart = Math.max(0, dur - fadeOut - 0.02);
   const alreadyFramed =
     clipPath &&
@@ -8862,8 +8871,19 @@ function buildSceneBeats(
   }
 
   if (curatedArchiveOnlyVisuals() && beats.length > 0) {
+    const wordsPerBeat = beats.map((b) =>
+      b.text.replace(/\[visual:[^\]]+\]/gi, "").split(/\s+/).filter(Boolean).length
+    );
+    const totalWords = wordsPerBeat.reduce((s, w) => s + w, 0) || beats.length;
+    for (let i = 0; i < beats.length; i++) {
+      const share = wordsPerBeat[i] / totalWords;
+      beats[i].holdSec = Math.max(
+        archiveVisualMinClipSec(),
+        Math.min(archiveVisualMaxClipSec(), duration * share * 0.98)
+      );
+    }
     const totalHold = beats.reduce((s, b) => s + b.holdSec, 0);
-    if (totalHold > 0.5 && Math.abs(totalHold - duration) > 0.4) {
+    if (totalHold > 0.5 && Math.abs(totalHold - duration) > 0.25) {
       const scale = duration / totalHold;
       for (const beat of beats) {
         beat.holdSec = Math.max(
@@ -13242,7 +13262,7 @@ async function composeSceneVideo(
   if (!skipEffectLayers) {
   try {
     const yearsOnly = yearsOnlyOnScreen();
-    if (cinematicEffectsEnabled()) {
+    if (cinematicEffectsEnabled() && !yearsOnly) {
       cinematicPlan = planCinematicScene(scene, duration);
       const cinematicOverlays = await buildCinematicOverlays(
         cinematicPlan,
@@ -13252,14 +13272,13 @@ async function composeSceneVideo(
         FFMPEG_BIN,
         (cmd, ms, lbl) => withTimeout(exec(cmd), ms, lbl),
         {
-          yearsOnly,
-          facelessSubs: !yearsOnly && (facelessSubtitlesEnabled() || enableSubtitles),
-          docOverlays: !yearsOnly,
+          yearsOnly: false,
+          facelessSubs: facelessSubtitlesEnabled() || enableSubtitles,
+          docOverlays: true,
         }
       );
       docOverlays.push(...cinematicOverlays);
 
-      if (!yearsOnly) {
       const sfxCache = new Map<string, string>();
       for (const cue of cinematicPlan.audioCues.slice(0, 12)) {
         if (!sfxCache.has(cue.type)) {
@@ -13275,7 +13294,6 @@ async function composeSceneVideo(
         console.log(
           `[Cinematic] Scene ${scene.index}: years [${cinematicPlan.years.join(", ")}] + ${sfxCueFiles.length} SFX cues`
         );
-      }
       }
     }
 
@@ -13369,6 +13387,34 @@ async function composeSceneVideo(
   }
   if (montageDurations?.length === safeClips.length) {
     montageDurations = montageDurations.map((d) => Math.min(effectiveMaxClipSec(), d));
+    montageDurations = stretchMontageDurations(montageDurations, outDur);
+  }
+
+  if (!skipEffectLayers && yearsOnlyOnScreen() && cinematicEffectsEnabled()) {
+    try {
+      const sceneBeats = buildSceneBeats(scene, outDur, Math.max(safeClips.length, 8));
+      const dursForYears =
+        montageDurations ??
+        sceneBeats.slice(0, safeClips.length).map((b) => b.holdSec);
+      const yearOverlays = await buildBeatAlignedYearOverlays(
+        sceneBeats.slice(0, safeClips.length),
+        dursForYears,
+        scene.index,
+        workDir,
+        FFMPEG_BIN,
+        (cmd, ms, lbl) => withTimeout(exec(cmd), ms, lbl),
+        outDur,
+        montageXfadeSec()
+      );
+      docOverlays = yearOverlays;
+      if (yearOverlays.length > 0) {
+        console.log(
+          `[Cinematic] Scene ${scene.index}: ${yearOverlays.length} beat-synced year badge(s)`
+        );
+      }
+    } catch (err) {
+      console.warn(`[Pipeline] Scene ${scene.index}: beat year overlays failed (non-fatal):`, err);
+    }
   }
 
   try {
@@ -13579,7 +13625,7 @@ async function composeSceneVideo(
     throw pipelineError(PIPELINE_ERROR.FFMPEG, `Scene ${scene.index} produced no output video`);
   }
 
-  await ensureComposedSceneCoversDuration(
+  await alignComposedSceneToMontage(
     outputPath,
     safeAudioPath,
     outDur,
@@ -14001,26 +14047,6 @@ async function concatenateScenesWithMusic(
   return outputPath;
 }
 
-/** Voiceover-timeline in editor vóór beelden (stap 4 in PIPELINE_WORKFLOW). */
-async function persistEditorDraftAfterVoiceover(videoId: number, scenes: Scene[]): Promise<void> {
-  try {
-    const editorScenes: EditorScene[] = scenes.map((scene) => ({
-      sceneIndex: scene.index,
-      title: scene.visualCue,
-      narration: scene.text,
-      durationMs: Math.round(scene.duration * 1000),
-      clips: [],
-      chapterTitle: scene.chapterTitle,
-    }));
-    await updateVideoScenes(videoId, editorScenes);
-    console.log(
-      `[Pipeline] Editor draft: ${editorScenes.length} scenes (voiceover in edit system, visuals next)`
-    );
-  } catch (err) {
-    console.warn("[Pipeline] Editor draft save failed (non-fatal):", (err as Error).message);
-  }
-}
-
 // ─── Main Pipeline ────────────────────────────────────────────────────────────
 export async function runVideoPipeline(
   videoId: number,
@@ -14141,9 +14167,6 @@ export async function runVideoPipeline(
       console.log(`[Pipeline] VO-synced total ${voTotal.toFixed(1)}s (${scenes.length} scenes)`);
     }
     console.log(`[Pipeline] Stage 2 (voiceovers): ${scenes.length} in ${((Date.now()-t1)/1000).toFixed(1)}s`);
-
-    onProgress?.({ stage: STAGE_LABELS.editorDraft, percent: 17 });
-    await persistEditorDraftAfterVoiceover(videoId, scenes);
 
     // ── Stage 3: Per-zin visuals (power word → clip) ─────────────────────────
     onProgress?.({ stage: STAGE_LABELS.visuals, percent: 20 });
@@ -14320,82 +14343,55 @@ export async function runVideoPipeline(
       }
     }
 
-    // ── Stage 4: Raw assembly — clips + voice per scene (no effects yet) ───────
+    // ── Stage 4: Compose scenes — clips, voice, year badges (final output) ───
     onProgress?.({ stage: STAGE_LABELS.assembly, percent: 47 });
     const t3 = Date.now();
 
     // Railway: one FFmpeg compose at a time (avoids "Resource temporarily unavailable" decoder errors)
     const composeLimit = pLimit(composeParallelism());
-    let completedAssembly = 0;
-    const assembledUsedClips: string[][] = scenes.map(() => []);
-    const assembledScenes = await withTimeout(
+    let completedCompose = 0;
+    const composedUsedClips: string[][] = scenes.map(() => []);
+    const composedScenes = await withTimeout(
       Promise.all(
         scenes.map((scene, i) => composeLimit(async () => {
           const usedClips: string[] = [];
           const result = await composeSceneVideo(
             scene, sceneVisualResults[i]?.clips ?? [], audioPaths[i], scene.duration, workDir, scenes.length,
-            enableSubtitles, visualDedup.lastMuskStockClip, sceneVisualResults[i]?.beatDurations, usedClips,
-            { phase: "assembly" }
+            enableSubtitles, visualDedup.lastMuskStockClip, sceneVisualResults[i]?.beatDurations, usedClips
           );
-          assembledUsedClips[i] = usedClips;
-          completedAssembly++;
+          composedUsedClips[i] = usedClips;
+          completedCompose++;
           onProgress?.({
-            stage: `${STAGE_LABELS.assembly} (${completedAssembly}/${scenes.length})`,
-            percent: 47 + Math.round((completedAssembly / scenes.length) * 8),
+            stage: `${STAGE_LABELS.assembly} (${completedCompose}/${scenes.length})`,
+            percent: 47 + Math.round((completedCompose / scenes.length) * 18),
           });
           return result;
         }))
       ),
       2400_000,
-      "Scene assembly stage"
+      "Scene compose stage"
     );
-    console.log(`[Pipeline] Stage 4 (assembly): ${scenes.length} scenes in ${((Date.now()-t3)/1000).toFixed(1)}s`);
+    console.log(`[Pipeline] Stage 4 (compose): ${scenes.length} scenes in ${((Date.now()-t3)/1000).toFixed(1)}s`);
 
     // ── Stage 5: QA — visuals match narration + montage timing ───────────────
-    onProgress?.({ stage: STAGE_LABELS.visualReview, percent: 58 });
+    onProgress?.({ stage: STAGE_LABELS.visualReview, percent: 68 });
     const reviewInputs = sceneReviewInputs(
       scenes,
-      assembledUsedClips.map((clips, i) =>
+      composedUsedClips.map((clips, i) =>
         clips.length > 0 ? clips : (sceneVisualResults[i]?.clips ?? [])
       )
     );
-    const preEffectsReview = await reviewPipelineBeforeEffects(
+    const composeReview = await reviewPipelineBeforeEffects(
       reviewInputs,
-      assembledScenes,
+      composedScenes,
       videoTitle
     );
-    logPipelineReview("vóór effecten", preEffectsReview);
-    if (!preEffectsReview.ok) {
-      console.warn(`[Pipeline] Visual QA: ${preEffectsReview.summary} — doorgaan met effecten`);
+    logPipelineReview("na samenstellen", composeReview);
+    if (!composeReview.ok) {
+      console.warn(`[Pipeline] Visual QA: ${composeReview.summary} — doorgaan met export`);
     }
 
-    // ── Stage 6: Effects, transitions, on-screen text ────────────────────────
-    onProgress?.({ stage: STAGE_LABELS.effects, percent: 62 });
-    const tEffects = Date.now();
-    let completedEffects = 0;
-    const composedUsedClips = assembledUsedClips;
-    const composedScenes = await withTimeout(
-      Promise.all(
-        scenes.map((scene, i) => composeLimit(async () => {
-          const result = await composeSceneVideo(
-            scene, sceneVisualResults[i]?.clips ?? [], audioPaths[i], scene.duration, workDir, scenes.length,
-            enableSubtitles, visualDedup.lastMuskStockClip, sceneVisualResults[i]?.beatDurations, undefined,
-            { phase: "effects", assemblyPath: assembledScenes[i] }
-          );
-          completedEffects++;
-          onProgress?.({
-            stage: `${STAGE_LABELS.effects} (${completedEffects}/${scenes.length})`,
-            percent: 62 + Math.round((completedEffects / scenes.length) * 10),
-          });
-          return result;
-        }))
-      ),
-      2400_000,
-      "Scene effects stage"
-    );
-    console.log(`[Pipeline] Stage 6 (effects): ${scenes.length} scenes in ${((Date.now()-tEffects)/1000).toFixed(1)}s`);
-
-    // ── Stage 7: Final review before export ──────────────────────────────────
+    // ── Stage 6: Final review before export ──────────────────────────────────
     onProgress?.({ stage: STAGE_LABELS.finalReview, percent: 74 });
     const finalReview = await reviewPipelineBeforeExport(reviewInputs, composedScenes);
     logPipelineReview("eindcontrole", finalReview);
@@ -14403,38 +14399,9 @@ export async function runVideoPipeline(
       throw pipelineError(PIPELINE_ERROR.FFMPEG, finalReview.summary);
     }
 
-    // ── Save scene manifest for editor (clips actually used in compose) ─────
-    try {
-      const editorScenes: EditorScene[] = [];
-      for (let i = 0; i < scenes.length; i++) {
-        const scene = scenes[i];
-        const clipPaths =
-          composedUsedClips[i]?.length > 0
-            ? composedUsedClips[i]
-            : (sceneVisualResults[i]?.clips ?? []);
-        const editorClips: EditorClip[] = [];
-        for (const clipPath of clipPaths) {
-          editorClips.push(await buildEditorClipFromPath(clipPath));
-        }
-        editorScenes.push({
-          sceneIndex: scene.index,
-          title: scene.visualCue,
-          narration: scene.text,
-          durationMs: Math.round(scene.duration * 1000),
-          clips: editorClips,
-          chapterTitle: scene.chapterTitle,
-        });
-      }
-      await updateVideoScenes(videoId, editorScenes);
-      console.log(`[Pipeline] Scene manifest saved: ${editorScenes.length} scenes (post-compose clips)`);
-    } catch (err) {
-      console.warn(`[Pipeline] Failed to save scene manifest (non-fatal):`, (err as Error).message);
-    }
-
     // Cleanup intermediates
     for (let i = 0; i < scenes.length; i++) {
       try { fs.unlinkSync(audioPaths[i]); } catch { /* ignore */ }
-      try { fs.unlinkSync(assembledScenes[i]); } catch { /* ignore */ }
       for (const clip of sceneVisualResults[i]?.clips ?? []) {
         try { if (clip !== composedScenes[i]) fs.unlinkSync(clip); } catch { /* ignore */ }
       }
@@ -14487,13 +14454,10 @@ export async function runVideoPipeline(
     console.log(`[Pipeline] Stage 6 (upload): ${((Date.now()-t5)/1000).toFixed(1)}s, size: ${(videoBuffer.length/1024/1024).toFixed(1)}MB`);
 
     // Persist URL immediately so a crash during finalization cannot lose the finished video
-    const finalStatus = skipEffectsStage() ? "completed" as const : "generating_effects" as const;
-    const finalStep = skipEffectsStage() ? "Video complete!" : STAGE_LABELS.complete;
-    const finalPercent = skipEffectsStage() ? 100 : 95;
-    await updateVideoStatus(videoId, finalStatus, {
+    await updateVideoStatus(videoId, "completed", {
       videoUrl: url,
-      progressStep: finalStep,
-      progressPercent: finalPercent,
+      progressStep: STAGE_LABELS.complete,
+      progressPercent: 100,
     }).catch((err) => console.warn(`[Pipeline] Failed to persist videoUrl for ${videoId}:`, err));
 
     onProgress?.({ stage: STAGE_LABELS.complete, percent: 100 });

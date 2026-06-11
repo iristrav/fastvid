@@ -14,12 +14,12 @@ describe("resolvePipelineDisplayStage", () => {
     ).toBe("visuals");
   });
 
-  it("maps assembly and effects to coarse stages", () => {
-    expect(resolvePipelineDisplayStage("Clips achter elkaar plakken (ruwe montage)...", 50).label).toBe(
-      "Montage editten"
+  it("maps compose and export to Video afronden", () => {
+    expect(resolvePipelineDisplayStage("Video samenstellen (beelden + voice)...", 50).label).toBe(
+      "Video afronden"
     );
-    expect(resolvePipelineDisplayStage("Effecten, overgangen en tekst toevoegen... (6/15)", 74).label).toBe(
-      "Effecten toevoegen"
+    expect(resolvePipelineDisplayStage("Alle scenes samenvoegen + muziek...", 80).label).toBe(
+      "Video afronden"
     );
   });
 

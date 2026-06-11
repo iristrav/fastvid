@@ -15,11 +15,6 @@ export function elevenLabsOnlyVoice(): boolean {
   return process.env.ELEVENLABS_ONLY !== "false";
 }
 
-/** When true, skip generating_effects and mark video completed after assembly. Default: run effects. */
-export function skipEffectsStage(): boolean {
-  return process.env.SKIP_EFFECTS_STAGE === "true";
-}
-
 /** Faceless kinetic subtitles — off by default; only year badges on screen unless ENABLE_EXTRA_ONSCREEN_TEXT=true. */
 export function facelessSubtitlesEnabled(): boolean {
   if (yearsOnlyOnScreen()) return false;

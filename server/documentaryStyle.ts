@@ -63,6 +63,11 @@ export function pickKenBurnsVariant(sceneIndex: number, beatIndex: number): KenB
   return variants[(sceneIndex * 3 + beatIndex) % variants.length];
 }
 
+/** Archive stills always zoom in slightly — avoids static/frozen-looking frames. */
+export function archiveStillKenBurnsVariant(_sceneIndex = 0, _beatIndex = 0): KenBurnsVariant {
+  return "zoom-in";
+}
+
 /** Ken Burns zoompan — zoom 100%→120%, optional pan left/right. */
 export function buildKenBurnsTail(
   duration: number,
@@ -196,8 +201,8 @@ export function buildMatFramedStillVF(
 ): string {
   const w = DOC_STYLE_VIDEO_WIDTH;
   const h = DOC_STYLE_VIDEO_HEIGHT;
-  const variant = pickKenBurnsVariant(sceneIndex, beatIndex);
-  const zoomEnd = documentaryKenBurnsZoomEnd(duration);
+  const variant = archiveStillKenBurnsVariant(sceneIndex, beatIndex);
+  const zoomEnd = Math.max(1.06, documentaryKenBurnsZoomEnd(duration));
   const ken = buildKenBurnsTail(duration, zoomEnd, "center", variant);
   return (
     `[0:v]scale='min(${w}*${photoScale}/iw\\,${h}*${photoScale}/ih)*iw':-2,` +

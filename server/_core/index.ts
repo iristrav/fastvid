@@ -20,7 +20,6 @@ import {
   curatedArchiveOnlyVisuals,
   externalVisualSourcingEnabled,
   elevenLabsOnlyVoice,
-  skipEffectsStage,
 } from "../sourcingPolicy";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -112,10 +111,8 @@ async function startServer() {
       : "✗ Fish Audio fallback allowed (ELEVENLABS_ONLY=false)"
   );
   console.log(
-    "[Fastvid] Effects stage:",
-    skipEffectsStage()
-      ? "✗ skipped (SKIP_EFFECTS_STAGE=true)"
-      : "✓ enabled — years, stats, faceless subs, grain, flash"
+    "[Fastvid] Video pipeline:",
+    "single-pass compose (beelden + voice + jaartallen) — geen apart edit/effecten-stadium"
   );
   console.log("[Fastvid] SERPAPI_KEY:", process.env.SERPAPI_KEY ? "✓ set" : "✗ NOT SET — celebrity image search disabled");
   console.log("[Fastvid] UNSPLASH_ACCESS_KEY:", process.env.UNSPLASH_ACCESS_KEY?.trim() ? "✓ set" : "✗ NOT SET — Unsplash image search disabled");

@@ -411,6 +411,64 @@ export function planCinematicScene(scene: SceneLike, durationSec: number): Cinem
   };
 }
 
+export type YearBadgeTiming = { startTime: number; endTime: number };
+
+/** Cumulative start time per montage beat (hard cuts — xfadeSec should be 0). */
+export function computeMontageBeatStarts(durations: number[], xfadeSec = 0): number[] {
+  const starts: number[] = [];
+  let t = 0;
+  for (let i = 0; i < durations.length; i++) {
+    starts.push(t);
+    t += durations[i] - (i < durations.length - 1 ? xfadeSec : 0);
+  }
+  return starts;
+}
+
+export type BeatYearInput = { text: string; holdSec: number };
+
+/** Year badges timed to the beat when the year is spoken (bottom-left overlay). */
+export async function buildBeatAlignedYearOverlays(
+  beats: BeatYearInput[],
+  montageDurations: number[],
+  sceneIndex: number,
+  workDir: string,
+  ffmpegBin: string,
+  execWithTimeout: (cmd: string, ms: number, label: string) => Promise<unknown>,
+  sceneDuration: number,
+  xfadeSec = 0
+): Promise<TimedOverlay[]> {
+  const overlays: TimedOverlay[] = [];
+  const n = Math.min(beats.length, montageDurations.length);
+  if (n === 0) return overlays;
+  const starts = computeMontageBeatStarts(montageDurations.slice(0, n), xfadeSec);
+
+  for (let i = 0; i < n; i++) {
+    const years = extractYearsFromText(beats[i].text);
+    if (!years.length) continue;
+    const beatStart = starts[i] ?? 0;
+    const beatDur = montageDurations[i] ?? beats[i].holdSec;
+    for (let yi = 0; yi < years.length; yi++) {
+      const year = years[yi];
+      const startTime = Math.max(0.08, beatStart + 0.1 + yi * 0.05);
+      const endTime = Math.min(sceneDuration - 0.12, beatStart + beatDur - 0.06);
+      if (endTime <= startTime + 0.35) continue;
+      const badge = await renderYearBadgeOverlay(
+        year,
+        sceneIndex,
+        workDir,
+        ffmpegBin,
+        execWithTimeout,
+        sceneDuration,
+        i * 10 + yi,
+        1,
+        { startTime, endTime }
+      );
+      if (badge) overlays.push(badge);
+    }
+  }
+  return overlays;
+}
+
 export async function renderYearBadgeOverlay(
   year: string,
   sceneIndex: number,
@@ -419,23 +477,27 @@ export async function renderYearBadgeOverlay(
   execWithTimeout: (cmd: string, ms: number, label: string) => Promise<unknown>,
   sceneDuration: number,
   slotIndex: number,
-  slotCount: number
+  slotCount: number,
+  explicitTiming?: YearBadgeTiming
 ): Promise<TimedOverlay | null> {
   const safeYear = sanitizeForDrawtext(year, 8);
   const FONT_SIZE = 72;
   const PAD_X = 28;
   const PAD_Y = 18;
   const ACCENT_W = 4;
-  const MARGIN_L = 56;
-  const MARGIN_B = 88;
+  const MARGIN_L = 48;
+  const MARGIN_B = 52;
   const boxW = Math.round(safeYear.length * FONT_SIZE * 0.52 + PAD_X * 2 + ACCENT_W + 8);
   const boxH = FONT_SIZE + PAD_Y * 2;
   const boxX = MARGIN_L;
   const boxY = DOC_STYLE_VIDEO_HEIGHT - boxH - MARGIN_B;
 
   const slot = sceneDuration / Math.max(1, slotCount);
-  const startTime = Math.max(0.3, slotIndex * slot + 0.2);
-  const endTime = Math.min(sceneDuration - 0.25, startTime + Math.min(3.2, slot * 0.85));
+  const startTime =
+    explicitTiming?.startTime ?? Math.max(0.3, slotIndex * slot + 0.2);
+  const endTime =
+    explicitTiming?.endTime ??
+    Math.min(sceneDuration - 0.25, startTime + Math.min(3.2, slot * 0.85));
 
   const pngPath = path.join(workDir, `scene_${sceneIndex}_year_${slotIndex}_${safeYear}.png`);
   try {

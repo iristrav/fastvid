@@ -9,7 +9,7 @@ import * as path from "path";
 import { resolveLocalVideoPath, LOCAL_UPLOADS_DIR } from "./storageLocal";
 import { storageGetSignedUrl } from "./storage";
 import { archiveClipHasBakedEditText } from "./archiveClipFilter";
-import { buildFitGrayVideoVF, buildMatFramedStillVF, buildStillEncodeArgs } from "./documentaryStyle";
+import { buildFitGrayVideoVF, buildMatFramedStillVF, buildStillEncodeArgs, archiveStillKenBurnsVariant } from "./documentaryStyle";
 import {
   resolveStillImageFilterComplex,
   type MotionGraphicsBudget,
@@ -721,16 +721,22 @@ async function convertImageToKenBurns(
   } else {
     const fps = 25;
     const totalFrames = Math.max(50, Math.round(duration * fps));
-    const zoomEnd = 1.12;
+    const zoomEnd = 1.1;
     const zoomStep = (zoomEnd - 1.0) / totalFrames;
     const padW = Math.round(VIDEO_WIDTH * 1.12);
     const padH = Math.round(VIDEO_HEIGHT * 1.12);
+    const variant = archiveStillKenBurnsVariant(sceneIndex, beatIndex);
+    const yExpr = "ih/2-(ih/zoom/2)";
+    const xExpr =
+      variant === "pan-left"
+        ? `iw/2-(iw/zoom/2)-on*${Math.max(1, Math.round(totalFrames * 0.04))}`
+        : "iw/2-(iw/zoom/2)";
     await exec(
       `${ffmpegBin()} -y -loop 1 -i "${imgPath}" -t ${duration.toFixed(3)} ` +
         `-vf "scale=${padW}:${padH}:force_original_aspect_ratio=increase,` +
         `crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:(iw-${VIDEO_WIDTH})/2:(ih-${VIDEO_HEIGHT})/2,` +
         `zoompan=z='min(zoom+${zoomStep.toFixed(7)},${zoomEnd})':` +
-        `x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':` +
+        `x='${xExpr}':y='${yExpr}':` +
         `d=${totalFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=${fps}" ` +
         `-c:v libx264 -preset veryfast -crf 18 -an -pix_fmt yuv420p "${outPath}"`
     );
@@ -852,7 +858,13 @@ export async function fetchCuratedArchiveBeatClip(
     return null;
   }
 
+  const topScore = candidates[0]?.score ?? 0;
+  const minAcceptScore = Math.max(6, Math.round(topScore * 0.35));
+
   for (const picked of candidates) {
+    if (picked.score < minAcceptScore && topScore > minAcceptScore + 8) {
+      continue;
+    }
     if (usedAssetIds.has(picked.asset.id) || usedStorageUrls.has(picked.asset.storageUrl)) {
       continue;
     }

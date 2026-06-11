@@ -10,7 +10,6 @@ import Dashboard from "./pages/Dashboard";
 import Admin from "./pages/Admin";
 import Subscribe from "./pages/Subscribe";
 import ResetPassword from "./pages/ResetPassword";
-import VideoEditor from "./pages/VideoEditor";
 import Onboarding from "./pages/Onboarding";
 import NicheAanvraag from "./pages/NicheAanvraag";
 import PrivacyPolicy from "./pages/PrivacyPolicy";
@@ -35,7 +34,6 @@ function Router() {
       <Route path={"/admin/archive"} component={Admin} />
       <Route path={"/admin"} component={Admin} />
       <Route path={"/subscribe"} component={Subscribe} />
-      <Route path={`/editor/:videoId`} component={VideoEditor} />
       <Route path={"/404"} component={NotFound} />
       {/* Final fallback route */}
       <Route component={NotFound} />

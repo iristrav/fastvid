@@ -6,6 +6,7 @@ import {
   cinematicEffectsEnabled,
   extractStatFromText,
   extractYearsFromText,
+  computeMontageBeatStarts,
   overlayUsesFullFrame,
   parseFacelessSubtitleLines,
   planCinematicScene,
@@ -34,6 +35,10 @@ describe("cinematicEffectsEngine", () => {
     expect(extractStatFromText("Costs reached $4.2 billion in 1945")).toBe("$4.2 billion");
     expect(extractStatFromText("Unemployment hit 25%")).toMatch(/25%/);
     expect(extractStatFromText("Only year 1989")).toBeNull();
+  });
+
+  it("computes beat-aligned year overlay timing", () => {
+    expect(computeMontageBeatStarts([4, 5, 3], 0)).toEqual([0, 4, 9]);
   });
 
   it("plans year overlays and transition sfx", () => {
