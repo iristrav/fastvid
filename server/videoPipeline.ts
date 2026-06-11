@@ -8226,7 +8226,18 @@ function uniqueClipsInOrder(clips: string[]): string[] {
 }
 
 function montageClipInputs(clips: string[]): string {
-  return clips.map((c) => `-stream_loop -1 -i "${c}"`).join(" ");
+  return clips
+    .map((c) => {
+      const loop = isMotionGraphicClip(c) ? "" : "-stream_loop -1 ";
+      return `${loop}-i "${c}"`;
+    })
+    .join(" ");
+}
+
+function montageTailPadVF(inLabel: string, montageDur: number, outDur: number): string {
+  const pad = Math.max(0, outDur - montageDur - 0.04);
+  if (pad < 0.12) return `[${inLabel}]${FPS_FORMAT_VF}[vmont]`;
+  return `[${inLabel}]tpad=stop_mode=clone:stop_duration=${pad.toFixed(3)},${FPS_FORMAT_VF}[vmont]`;
 }
 
 async function ensureComposedSceneCoversDuration(
@@ -8310,7 +8321,10 @@ function pickMontageExpansionClip(clips: string[], expanded: string[]): string |
   }
   let best: string | null = null;
   let bestScore = -Infinity;
-  for (const c of clips) {
+  const pool = clips.some((c) => !isMotionGraphicClip(c))
+    ? clips.filter((c) => !isMotionGraphicClip(c))
+    : clips;
+  for (const c of pool) {
     const k = clipContentKey(c);
     if (k === prevKey) continue;
     const uses = useCount.get(k) ?? 0;
@@ -11899,15 +11913,18 @@ async function adoptArchiveBeatClip(
 ): Promise<boolean> {
   const tryClip = async (clipPath: string | null | undefined, sec = holdSec): Promise<boolean> => {
     if (!clipPath || isPipelineFallbackClip(clipPath)) return false;
+    if (await isMostlyBlackClip(clipPath)) {
+      console.warn(
+        `[Pipeline] Scene ${scene.index} beat ${beat.index}: skipping mostly-black clip ${path.basename(clipPath)}`
+      );
+      return false;
+    }
     const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec);
+    if (await isMostlyBlackClip(withText)) return false;
     return pushClip(withText, sec);
   };
 
   if (await tryClip(initialClip, holdSec)) return true;
-
-  if (await pushMotionGraphicBeatClipIfAny(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec)) {
-    return true;
-  }
 
   const mgfxBudget = {
     used: dedup.motionGraphicsUsed,
@@ -13356,6 +13373,14 @@ async function composeSceneVideo(
       Array.from({ length: safeClips.length }, () => computeMontageClipDuration(outDur, safeClips.length));
     const montageLabel = xfadeLabel;
     const padFilter = "";
+    const estMontageDur = montageDurations
+      ? estimateMontageDurationSec(montageDurations)
+      : estimateMontageDurationSec(
+          Array.from({ length: safeClips.length }, () =>
+            computeMontageClipDuration(outDur, safeClips.length)
+          )
+        );
+    const montageOutVF = montageTailPadVF(montageLabel, estMontageDur, outDur);
 
     const audioIdx = safeClips.length;
     const audioFadeOutStart = Math.max(0, voiceDur - 0.15);
@@ -13367,8 +13392,8 @@ async function composeSceneVideo(
       await withTimeout(
         exec(
           `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}" ` +
-            `-filter_complex "${scaleFilters}${mergeFilter};[${montageLabel}]${FPS_FORMAT_VF}[vout];${voiceAudioFilter}" ` +
-            `-map "[vout]" -map "[aout]" -vsync cfr ` +
+            `-filter_complex "${scaleFilters}${mergeFilter};${montageOutVF};${voiceAudioFilter}" ` +
+            `-map "[vmont]" -map "[aout]" -vsync cfr ` +
             `-t ${outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
         ),
         120_000,
@@ -13377,12 +13402,12 @@ async function composeSceneVideo(
     } else {
     const kineticBaseIdx = audioIdx + 1;
     const { extraInputs: kExtraInputs, filterChain: kChain, finalLabel: kFinalLabel } =
-      buildKineticChain(montageLabel, kineticBaseIdx);
+      buildKineticChain("vmont", kineticBaseIdx);
 
     const kineticInput = kExtraInputs ? ` ${kExtraInputs}` : "";
     const kineticChainStr = kChain ? kChain : "";
     const hasOverlays = kineticFrames.length > 0 || docOverlays.length > 0 || statCalloutFrame !== null;
-    const preGradeLabel = hasOverlays ? kFinalLabel : montageLabel;
+    const preGradeLabel = hasOverlays ? kFinalLabel : "vmont";
     const overlayCount =
       kineticFrames.length + docOverlays.length + (statCalloutFrame ? 1 : 0);
     const sfxBaseIdx = kineticBaseIdx + overlayCount;
@@ -13400,8 +13425,8 @@ async function composeSceneVideo(
     await withTimeout(
       exec(
         `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}"${kineticInput}${sfxInputStr ? ` ${sfxInputStr}` : ""} ` +
-        `-filter_complex "${scaleFilters}${mergeFilter}${padFilter}${kineticChainStr};` +
-        `[${preGradeLabel}]${FPS_FORMAT_VF}[vtimed];[vtimed]${fadeFilter}[vout];` +
+        `-filter_complex "${scaleFilters}${mergeFilter};${montageOutVF}${kineticChainStr};` +
+        `[${preGradeLabel}]${fadeFilter}[vout];` +
         `${audioFilter}" ` +
         `-map "[vout]" -map "[aout]" -vsync cfr ` +
         `-t ${outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`

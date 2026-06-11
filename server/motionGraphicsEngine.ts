@@ -46,6 +46,14 @@ export function motionGraphicSlotKind(sceneIndex: number, beatIndex: number): Mo
   return ROTATION[slot % ROTATION.length];
 }
 
+/** Motion graphics on ~15–20% of beats — opening + scattered text/map slides, mostly B-roll. */
+export function shouldUseMotionGraphicBeat(sceneIndex: number, beatIndex: number): boolean {
+  if (sceneIndex === 0 && beatIndex === 0) return true;
+  if (beatIndex === 0 && sceneIndex > 0) return true;
+  const slot = sceneIndex * 31 + beatIndex;
+  return slot % 5 === 2;
+}
+
 export function motionGraphicsEnabled(): boolean {
   return motionGraphicsInVideosEnabled();
 }
@@ -269,6 +277,27 @@ export function buildTextCardVF(lines: string[]): string {
   return drawtextChain(lines, startY, fontSize, "0xFFD200");
 }
 
+/** Opening / chapter name plate — blue box on grid (YouTube documentary style). */
+export function buildOpeningNameCardVF(title: string, subtitleLines: string[]): string {
+  const name = sanitizeForDrawtext(title.toUpperCase(), 24);
+  const sub = subtitleLines
+    .slice(0, 2)
+    .map((line, i) => {
+      const safe = sanitizeForDrawtext(line, 58);
+      return `drawtext=text='${safe}':fontcolor=white:fontsize=30:x=(w-text_w)/2:y=${870 + i * 38}`;
+    })
+    .join(",");
+  return (
+    `drawbox=x=0:y=0:w=${DOC_STYLE_VIDEO_WIDTH}:h=${DOC_STYLE_VIDEO_HEIGHT}:color=0x2a2a2a@0.92:t=fill,` +
+    `drawgrid=w=80:h=80:t=1:c=0x444444@0.22,` +
+    `drawbox=x=560:y=300:w=800:h=200:color=0x5B9BD5@0.35:t=fill,` +
+    `drawbox=x=580:y=320:w=760:h=160:color=0x3B82C4@0.22:t=fill,` +
+    `drawtext=text='${name}':fontcolor=white:fontsize=64:x=(w-text_w)/2:y=380,` +
+    `drawbox=x=660:y=450:w=600:h=4:color=0x2563EB:t=fill` +
+    (sub ? `,${sub}` : "")
+  );
+}
+
 export function buildMapCardVF(mapTitle: string, subtitleLines: string[]): string {
   const title = sanitizeForDrawtext(mapTitle, 24);
   const sub = subtitleLines
@@ -365,7 +394,9 @@ export async function renderMotionGraphicClip(
   beatIndex: number,
   durationSec: number,
   ffmpegBin: string,
-  execWithTimeout: (cmd: string, ms: number, label: string) => Promise<unknown>
+  execWithTimeout: (cmd: string, ms: number, label: string) => Promise<unknown>,
+  beatText = "",
+  videoTitle?: string
 ): Promise<string | null> {
   const tag =
     plan.kind === "map_card"
@@ -382,13 +413,20 @@ export async function renderMotionGraphicClip(
       ? "0xCFCFCF"
       : plan.kind === "portrait_cutout"
         ? "0x1a1a2e"
-        : "0x140818";
+        : plan.kind === "text_card" && beatIndex === 0
+          ? "0x2a2a2a"
+          : "0x140818";
   const vf =
     plan.kind === "map_card"
       ? buildMapCardVF(plan.mapTitle ?? "CITY", plan.lines)
-      : plan.kind === "text_card"
-        ? buildTextCardVF(plan.lines)
-        : null;
+      : plan.kind === "text_card" && beatIndex === 0
+        ? buildOpeningNameCardVF(
+            extractMapTitle(beatText || plan.lines.join(" "), videoTitle),
+            wrapTextCardLines(beatText || plan.lines.join(" "), 52).slice(0, 2)
+          )
+        : plan.kind === "text_card"
+          ? buildTextCardVF(plan.lines)
+          : null;
 
   if (!vf) return null;
 
@@ -421,6 +459,7 @@ export async function tryRenderMotionGraphicBeatClip(
   execWithTimeout: (cmd: string, ms: number, label: string) => Promise<unknown>
 ): Promise<string | null> {
   if (!motionGraphicsEnabled()) return null;
+  if (!shouldUseMotionGraphicBeat(sceneIndex, beatIndex)) return null;
   if (motionGraphicsUsed >= maxMotionGraphicsPerVideo()) return null;
 
   const plan = planMotionGraphicBeat(beatText, sceneIndex, beatIndex, videoTitle);
@@ -433,7 +472,9 @@ export async function tryRenderMotionGraphicBeatClip(
     beatIndex,
     holdSec,
     ffmpegBin,
-    execWithTimeout
+    execWithTimeout,
+    beatText,
+    videoTitle
   );
 }
 

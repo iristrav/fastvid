@@ -3,6 +3,7 @@ import {
   buildMapCardVF,
   buildNewsCardStillVF,
   buildNewsCardVideoVF,
+  buildOpeningNameCardVF,
   buildPortraitCutoutStillVF,
   buildTextCardVF,
   extractMapTitle,
@@ -11,6 +12,7 @@ import {
   motionGraphicNeedsSourceImage,
   motionGraphicSlotKind,
   planMotionGraphicBeat,
+  shouldUseMotionGraphicBeat,
   wrapTextCardLines,
 } from "./motionGraphicsEngine";
 
@@ -31,6 +33,19 @@ describe("motionGraphicsEngine", () => {
     expect(motionGraphicSlotKind(0, 3)).toBe("map_card");
     expect(motionGraphicSlotKind(0, 4)).toBe("news_card");
     expect(motionGraphicSlotKind(2, 7)).toBeTruthy();
+  });
+
+  it("uses motion graphics only on selected beats", () => {
+    expect(shouldUseMotionGraphicBeat(0, 0)).toBe(true);
+    expect(shouldUseMotionGraphicBeat(1, 0)).toBe(true);
+    expect(shouldUseMotionGraphicBeat(0, 1)).toBe(false);
+    expect(shouldUseMotionGraphicBeat(0, 2)).toBe(true);
+  });
+
+  it("buildOpeningNameCardVF draws blue name plate", () => {
+    const vf = buildOpeningNameCardVF("ADOLF HITLER", ["Rise to power in 1933"]);
+    expect(vf).toContain("ADOLF HITLER");
+    expect(vf).toContain("0x2563EB");
   });
 
   it("plans text card for opening beat on any topic", () => {
