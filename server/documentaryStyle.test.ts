@@ -41,10 +41,20 @@ describe("documentaryStyle", () => {
   });
 
   it("builds gray mat framed still with ken burns", () => {
-    const vf = buildMatFramedStillVF(4.0);
+    const vf = buildMatFramedStillVF(4.0, 0.74, 1, 2);
     expect(vf).toContain("color=0xCFCFCF");
     expect(vf).toContain("zoompan=");
     expect(vf).toContain("[vout]");
+  });
+
+  it("film grain enabled by default", () => {
+    const prev = process.env.ENABLE_FILM_GRAIN;
+    delete process.env.ENABLE_FILM_GRAIN;
+    expect(buildPostGradeVF()).toContain("noise=");
+    process.env.ENABLE_FILM_GRAIN = "false";
+    expect(buildPostGradeVF()).not.toContain("noise=");
+    if (prev === undefined) delete process.env.ENABLE_FILM_GRAIN;
+    else process.env.ENABLE_FILM_GRAIN = prev;
   });
 
   it("resolves portrait vs landscape still composition", () => {

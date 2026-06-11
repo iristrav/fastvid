@@ -284,6 +284,9 @@ export function buildMapCardVF(mapTitle: string, subtitleLines: string[]): strin
     `drawgrid=w=80:h=80:t=1:c=0x999999@0.35,` +
     `drawbox=x=700:y=280:w=520:h=8:color=0x2563EB@0.55:t=fill,` +
     `drawbox=x=700:y=420:w=8:h=260:color=0x2563EB@0.55:t=fill,` +
+    `drawbox=x=880:y=360:w=28:h=28:color=0xEF4444@0.9:t=fill,` +
+    `drawbox=x=892:y=372:w=4:h=80:color=0xEF4444@0.75:t=fill,` +
+    `drawbox=x=860:y=452:w=68:h=4:color=0xEF4444@0.75:t=fill,` +
     `drawtext=text='${title}':fontcolor=0x111111:fontsize=52:x=680:y=200` +
     (sub ? `,${sub}` : "")
   );

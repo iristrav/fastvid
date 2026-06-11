@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   buildCinematicSfxAudioFilter,
+  buildStatCountSteps,
   cinematicEffectsEnabled,
   extractStatFromText,
   extractYearsFromText,
   overlayUsesFullFrame,
+  parseFacelessSubtitleLines,
   planCinematicScene,
 } from "./cinematicEffectsEngine";
 
@@ -73,5 +75,17 @@ describe("cinematicEffectsEngine", () => {
     ).toBe(false);
     expect(overlayUsesFullFrame({ path: "x", startTime: 0, endTime: 1, fullFrame: true })).toBe(true);
     expect(overlayUsesFullFrame({ path: "x", startTime: 0, endTime: 1 })).toBe(false);
+  });
+
+  it("parses faceless subtitle emphasis lines", () => {
+    const lines = parseFacelessSubtitleLines("Elon Musk founded SpaceX in 2002");
+    expect(lines.length).toBeGreaterThan(0);
+    expect(lines.some((l) => l.emphasis)).toBe(true);
+  });
+
+  it("builds stat count steps for money", () => {
+    const steps = buildStatCountSteps("$1 Billion");
+    expect(steps[0]).toBe("$0");
+    expect(steps.length).toBeGreaterThan(2);
   });
 });

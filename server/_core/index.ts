@@ -113,7 +113,9 @@ async function startServer() {
   );
   console.log(
     "[Fastvid] Effects stage:",
-    skipEffectsStage() ? "✓ skipped — video completes after assembly" : "✗ generating_effects (SKIP_EFFECTS_STAGE=false)"
+    skipEffectsStage()
+      ? "✗ skipped (SKIP_EFFECTS_STAGE=true)"
+      : "✓ enabled — years, stats, faceless subs, grain, flash"
   );
   console.log("[Fastvid] SERPAPI_KEY:", process.env.SERPAPI_KEY ? "✓ set" : "✗ NOT SET — celebrity image search disabled");
   console.log("[Fastvid] UNSPLASH_ACCESS_KEY:", process.env.UNSPLASH_ACCESS_KEY?.trim() ? "✓ set" : "✗ NOT SET — Unsplash image search disabled");

@@ -15,9 +15,9 @@ export function documentaryStyleEnabled(): boolean {
   return process.env.ENABLE_DOC_STYLE !== "false";
 }
 
-/** Film grain breaks some Railway FFmpeg builds — opt-in only. */
+/** Film grain — on by default for documentary look (ENABLE_FILM_GRAIN=false to disable). */
 export function filmGrainEnabled(): boolean {
-  return process.env.ENABLE_FILM_GRAIN === "true";
+  return process.env.ENABLE_FILM_GRAIN !== "false";
 }
 
 /** Every 4th still uses polaroid-on-grid layout instead of blur-fill (skip on Railway — rotate/gblur can fail). */
@@ -50,20 +50,46 @@ export function stillOutputFrameCount(duration: number, fps = 25): number {
   return Math.max(25, Math.round(duration * fps));
 }
 
-/** Ken Burns zoompan — always fed a single still frame (select) so output length is exact. */
+export type KenBurnsVariant = "zoom-in" | "zoom-out" | "pan-left" | "pan-right" | "center";
+
+/** ~20% zoom over 6s — scales with clip duration. */
+export function documentaryKenBurnsZoomEnd(durationSec: number): number {
+  const t = Math.min(8, Math.max(3, durationSec));
+  return 1 + 0.2 * (t / 6);
+}
+
+export function pickKenBurnsVariant(sceneIndex: number, beatIndex: number): KenBurnsVariant {
+  const variants: KenBurnsVariant[] = ["zoom-in", "pan-left", "pan-right", "zoom-out", "center"];
+  return variants[(sceneIndex * 3 + beatIndex) % variants.length];
+}
+
+/** Ken Burns zoompan — zoom 100%→120%, optional pan left/right. */
 export function buildKenBurnsTail(
   duration: number,
   zoomEnd = 1.04,
-  yAnchor: "center" | "top" = "center"
+  yAnchor: "center" | "top" = "center",
+  variant: KenBurnsVariant = "zoom-in"
 ): string {
   const fps = 25;
   const totalFrames = stillOutputFrameCount(duration, fps);
-  const zoomStep = (zoomEnd - 1.0) / totalFrames;
+  const zoomStart = variant === "zoom-out" ? zoomEnd : 1.0;
+  const zoomTarget = variant === "zoom-out" ? 1.0 : zoomEnd;
+  const zoomStep = Math.abs(zoomTarget - zoomStart) / totalFrames;
   const yExpr = yAnchor === "top" ? "ih/4-(ih/zoom/4)" : "ih/2-(ih/zoom/2)";
+  const panStep = Math.max(1, Math.round(totalFrames * 0.06));
+  const xExpr =
+    variant === "pan-left"
+      ? `iw/2-(iw/zoom/2)-on*${panStep}`
+      : variant === "pan-right"
+        ? `iw/2-(iw/zoom/2)+on*${panStep}`
+        : "iw/2-(iw/zoom/2)";
+  const zExpr =
+    variant === "zoom-out"
+      ? `max(zoom-${zoomStep.toFixed(7)},${zoomTarget.toFixed(4)})`
+      : `min(zoom+${zoomStep.toFixed(7)},${zoomTarget.toFixed(4)})`;
   return (
     `select='eq(n\\,0)',` +
-    `zoompan=z='min(zoom+${zoomStep.toFixed(7)},${zoomEnd})':` +
-    `x='iw/2-(iw/zoom/2)':y='${yExpr}':` +
+    `zoompan=z='${zExpr}':x='${xExpr}':y='${yExpr}':` +
     `d=${totalFrames}:s=${DOC_STYLE_VIDEO_WIDTH}x${DOC_STYLE_VIDEO_HEIGHT}:fps=${fps}`
   );
 }
@@ -122,10 +148,17 @@ export function buildPolaroidStillVF(duration: number): string {
 }
 
 /** Photo on neutral gray mat — smaller than frame (reference-doc / City Beautiful style). */
-export function buildMatFramedStillVF(duration: number, photoScale = 0.74): string {
+export function buildMatFramedStillVF(
+  duration: number,
+  photoScale = 0.74,
+  sceneIndex = 0,
+  beatIndex = 0
+): string {
   const w = DOC_STYLE_VIDEO_WIDTH;
   const h = DOC_STYLE_VIDEO_HEIGHT;
-  const ken = buildKenBurnsTail(duration, 1.025, "center");
+  const variant = pickKenBurnsVariant(sceneIndex, beatIndex);
+  const zoomEnd = documentaryKenBurnsZoomEnd(duration);
+  const ken = buildKenBurnsTail(duration, zoomEnd, "center", variant);
   return (
     `[0:v]scale='min(${w}*${photoScale}/iw\\,${h}*${photoScale}/ih)*iw':-2,` +
     `pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:color=0xCFCFCF[mat];` +

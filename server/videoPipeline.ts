@@ -84,7 +84,7 @@ import {
   scriptGuidedClipsEnabled,
 } from "./scriptGuidedClipFinder";
 import { clipPassesVisionGate, clipVisionGateEnabled } from "./visualQualityGate";
-import { curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, skipEffectsStage, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled } from "./sourcingPolicy";
+import { curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, skipEffectsStage, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled } from "./sourcingPolicy";
 import {
   fetchCuratedArchiveBeatClip,
   curatedClipPathAssetId,
@@ -12941,7 +12941,11 @@ async function prepareSceneEffectLayers(
         duration,
         workDir,
         FFMPEG_BIN,
-        (cmd, ms, lbl) => withTimeout(exec(cmd), ms, lbl)
+        (cmd, ms, lbl) => withTimeout(exec(cmd), ms, lbl),
+        {
+          facelessSubs: facelessSubtitlesEnabled() || enableSubtitles,
+          docOverlays: true,
+        }
       );
       docOverlays.push(...cinematicOverlays);
 
@@ -13210,7 +13214,11 @@ async function composeSceneVideo(
         duration,
         workDir,
         FFMPEG_BIN,
-        (cmd, ms, lbl) => withTimeout(exec(cmd), ms, lbl)
+        (cmd, ms, lbl) => withTimeout(exec(cmd), ms, lbl),
+        {
+          facelessSubs: facelessSubtitlesEnabled() || enableSubtitles,
+          docOverlays: true,
+        }
       );
       docOverlays.push(...cinematicOverlays);
 
@@ -13232,7 +13240,7 @@ async function composeSceneVideo(
       }
     }
 
-    const shouldShowKinetic = false; // legacy center pills disabled
+    const shouldShowKinetic = false;
     if (shouldShowKinetic) {
       const legacyWords = (scene.highlightWords || []).filter((w) => w && w.trim().length > 0);
       const keywords = legacyWords.length > 0 ? legacyWords.slice(0, 2) : extractKeywords(scene.text, 1);
@@ -13268,7 +13276,7 @@ async function composeSceneVideo(
   }
   }
 
-  // Only year badges from cinematic engine — no stat callouts or keyword pills.
+  // Stat callouts + keyword pills handled in buildCinematicOverlays.
   const statCalloutFrame: { path: string; startTime: number; endTime: number } | null = null;
 
   // On Railway, limit FFmpeg threads to reduce memory usage

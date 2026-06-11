@@ -7,6 +7,9 @@ export const DOCUMENTARY_MONTAGE_TRANSITIONS = [
   "smoothdown",
   "wipeleft",
   "wiperight",
+  "slideleft",
+  "slideright",
+  "zoomin",
   "distance",
 ] as const;
 

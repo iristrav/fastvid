@@ -8,8 +8,10 @@ import { sanitizeForDrawtext } from "./ffmpegSanitize";
 import {
   DOC_STYLE_VIDEO_HEIGHT,
   DOC_STYLE_VIDEO_WIDTH,
+  renderNameBadgeOverlay,
   type TimedOverlay,
 } from "./documentaryStyle";
+import { documentaryOverlaysEnabled } from "./sourcingPolicy";
 
 export type CinematicAudioCue = {
   type: "whoosh" | "impact" | "shutter";
@@ -32,6 +34,7 @@ export type SceneLike = {
   index: number;
   text: string;
   title?: string;
+  sectionTitle?: string;
   statCallout?: string;
   highlightWords?: string[];
   personNames?: string[];
@@ -69,6 +72,195 @@ export function extractStatFromText(text: string): string | null {
   if (pct?.[0]) return pct[0].trim().slice(0, 24);
   const count = text.match(/\b[\d,.]+\s+(?:people|soldiers|tanks|planes|victims|doden|slachtoffers)\b/i);
   if (count?.[0]) return count[0].trim().slice(0, 24);
+  return null;
+}
+
+export function buildStatCountSteps(stat: string): string[] {
+  const raw = stat.trim();
+  const money = raw.match(/\$[\d,.]+(?:\s*(?:million|billion|miljoen|miljard|M|B|K))?/i)?.[0];
+  if (money) {
+    const suffix = /billion|miljard|B/i.test(money) ? "B" : /million|miljoen|M/i.test(money) ? "M" : "K";
+    return [`$0`, `$100${suffix}`, `$300${suffix}`, `$700${suffix}`, money.replace(/\s+/g, " ").slice(0, 18)];
+  }
+  const pct = raw.match(/\d[\d,.]*\s*(?:%|percent|procent)/i)?.[0];
+  if (pct) {
+    const n = parseFloat(pct.replace(/[^\d.]/g, ""));
+    if (!isNaN(n)) {
+      return ["0%", `${Math.round(n * 0.25)}%`, `${Math.round(n * 0.5)}%`, `${Math.round(n * 0.75)}%`, pct.slice(0, 12)];
+    }
+  }
+  return [raw.slice(0, 20)];
+}
+
+export type FacelessLine = { text: string; emphasis: boolean };
+
+/** Split narration into faceless-channel subtitle lines (emphasis words larger). */
+export function parseFacelessSubtitleLines(text: string, maxLines = 4): FacelessLine[] {
+  const cleaned = text.replace(/\[visual:[^\]]+\]/gi, "").replace(/\s+/g, " ").trim();
+  if (!cleaned) return [];
+  const words = cleaned.split(/\s+/).filter(Boolean);
+  if (words.length <= maxLines) {
+    return words.map((w, i) => ({
+      text: w.toUpperCase(),
+      emphasis: i === 0 || w.length >= 5 || /^[A-Z]/.test(w),
+    }));
+  }
+  const emphasisIdx = new Set<number>([0, words.length - 1]);
+  emphasisIdx.add(Math.floor(words.length / 2));
+  const chunk = Math.ceil(words.length / maxLines);
+  const lines: FacelessLine[] = [];
+  for (let i = 0; i < words.length && lines.length < maxLines; i += chunk) {
+    const slice = words.slice(i, i + chunk);
+    const line = slice.join(" ");
+    lines.push({
+      text: emphasisIdx.has(i) ? line.toUpperCase() : line,
+      emphasis: emphasisIdx.has(i) || slice.some((w) => w.length >= 6),
+    });
+  }
+  return lines;
+}
+
+export async function renderFacelessSubtitleOverlay(
+  lines: FacelessLine[],
+  sceneIndex: number,
+  workDir: string,
+  ffmpegBin: string,
+  execWithTimeout: (cmd: string, ms: number, label: string) => Promise<unknown>,
+  sceneDuration: number
+): Promise<TimedOverlay | null> {
+  if (!lines.length) return null;
+  const startTime = 0.35;
+  const endTime = Math.min(sceneDuration - 0.2, startTime + Math.min(4.5, sceneDuration * 0.55));
+  const pngPath = path.join(workDir, `scene_${sceneIndex}_faceless_sub.png`);
+  const baseY = Math.round(DOC_STYLE_VIDEO_HEIGHT * 0.72);
+  const draws = lines
+    .map((line, i) => {
+      const safe = sanitizeForDrawtext(line.text, 36);
+      const fs = line.emphasis ? 58 : 38;
+      const y = baseY + i * (line.emphasis ? 68 : 48);
+      const color = line.emphasis ? "white" : "0xDDDDDD";
+      return `drawtext=text='${safe}':fontcolor=${color}:fontsize=${fs}:x=(w-text_w)/2:y=${y}`;
+    })
+    .join(",");
+  try {
+    await execWithTimeout(
+      `${ffmpegBin} -y -f lavfi -i "color=c=black@0:size=${DOC_STYLE_VIDEO_WIDTH}x${DOC_STYLE_VIDEO_HEIGHT}:rate=1" ` +
+        `-vf "${draws}" -frames:v 1 -pix_fmt rgba "${pngPath}"`,
+      10_000,
+      `Faceless subs scene ${sceneIndex}`
+    );
+    if (fs.existsSync(pngPath) && fs.statSync(pngPath).size > 100) {
+      return { path: pngPath, startTime, endTime, fullFrame: true };
+    }
+  } catch {
+    /* non-fatal */
+  }
+  return null;
+}
+
+export async function renderCameraFlashOverlay(
+  sceneIndex: number,
+  workDir: string,
+  ffmpegBin: string,
+  execWithTimeout: (cmd: string, ms: number, label: string) => Promise<unknown>,
+  flashTime: number,
+  sceneDuration: number
+): Promise<TimedOverlay | null> {
+  const pngPath = path.join(workDir, `scene_${sceneIndex}_flash.png`);
+  try {
+    await execWithTimeout(
+      `${ffmpegBin} -y -f lavfi -i "color=c=white@0:size=${DOC_STYLE_VIDEO_WIDTH}x${DOC_STYLE_VIDEO_HEIGHT}:rate=1" ` +
+        `-vf "colorchannelmixer=aa=0.55" -frames:v 1 -pix_fmt rgba "${pngPath}"`,
+      8_000,
+      `Camera flash scene ${sceneIndex}`
+    );
+    if (fs.existsSync(pngPath) && fs.statSync(pngPath).size > 100) {
+      return {
+        path: pngPath,
+        startTime: Math.max(0, flashTime),
+        endTime: Math.min(sceneDuration, flashTime + 0.12),
+        fullFrame: true,
+      };
+    }
+  } catch {
+    /* non-fatal */
+  }
+  return null;
+}
+
+export async function renderStatStepOverlay(
+  stat: string,
+  sceneIndex: number,
+  stepIndex: number,
+  workDir: string,
+  ffmpegBin: string,
+  execWithTimeout: (cmd: string, ms: number, label: string) => Promise<unknown>,
+  startTime: number,
+  endTime: number
+): Promise<TimedOverlay | null> {
+  const safeStat = sanitizeForDrawtext(stat.trim().toUpperCase(), 24);
+  const FONT_SIZE = 56;
+  const PAD_X = 28;
+  const PAD_Y = 16;
+  const MARGIN = 48;
+  const estW = Math.min(safeStat.length * FONT_SIZE * 0.55, DOC_STYLE_VIDEO_WIDTH / 2);
+  const boxW = Math.round(estW + PAD_X * 2);
+  const boxH = FONT_SIZE + PAD_Y * 2;
+  const boxX = DOC_STYLE_VIDEO_WIDTH - boxW - MARGIN;
+  const boxY = DOC_STYLE_VIDEO_HEIGHT - boxH - MARGIN;
+  const pngPath = path.join(workDir, `scene_${sceneIndex}_stat_${stepIndex}.png`);
+  try {
+    await execWithTimeout(
+      `${ffmpegBin} -y -f lavfi -i "color=c=black@0:size=${DOC_STYLE_VIDEO_WIDTH}x${DOC_STYLE_VIDEO_HEIGHT}:rate=1" ` +
+        `-vf "drawbox=x=${boxX}:y=${boxY}:w=${boxW}:h=${boxH}:color=FFD200@0.96:t=fill,` +
+        `drawtext=text='${safeStat}':fontcolor=black:fontsize=${FONT_SIZE}:x=${boxX + PAD_X}:y=${boxY + PAD_Y}" ` +
+        `-frames:v 1 -pix_fmt rgba "${pngPath}"`,
+      8_000,
+      `Stat step ${stepIndex} scene ${sceneIndex}`
+    );
+    if (fs.existsSync(pngPath) && fs.statSync(pngPath).size > 100) {
+      return {
+        path: pngPath,
+        startTime,
+        endTime,
+        isStatCallout: true,
+        fullFrame: true,
+      };
+    }
+  } catch {
+    /* non-fatal */
+  }
+  return null;
+}
+
+export async function renderAnimatedHeadlineOverlay(
+  headline: string,
+  sceneIndex: number,
+  workDir: string,
+  ffmpegBin: string,
+  execWithTimeout: (cmd: string, ms: number, label: string) => Promise<unknown>,
+  sceneDuration: number
+): Promise<TimedOverlay | null> {
+  const safe = sanitizeForDrawtext(headline.toUpperCase().slice(0, 48), 48);
+  const FONT_SIZE = 52;
+  const pngPath = path.join(workDir, `scene_${sceneIndex}_headline_card.png`);
+  const startTime = 0.5;
+  const endTime = Math.min(sceneDuration - 0.3, startTime + 3.2);
+  try {
+    await execWithTimeout(
+      `${ffmpegBin} -y -f lavfi -i "color=c=black@0:size=${DOC_STYLE_VIDEO_WIDTH}x${DOC_STYLE_VIDEO_HEIGHT}:rate=1" ` +
+        `-vf "drawbox=x=280:y=420:w=1360:h=120:color=0x141818@0.88:t=fill,` +
+        `drawtext=text='${safe}':fontcolor=0xFFD200:fontsize=${FONT_SIZE}:x=(w-text_w)/2:y=455" ` +
+        `-frames:v 1 -pix_fmt rgba "${pngPath}"`,
+      8_000,
+      `Headline card scene ${sceneIndex}`
+    );
+    if (fs.existsSync(pngPath) && fs.statSync(pngPath).size > 100) {
+      return { path: pngPath, startTime, endTime, fullFrame: true };
+    }
+  } catch {
+    /* non-fatal */
+  }
   return null;
 }
 
@@ -325,9 +517,11 @@ export async function buildCinematicOverlays(
   durationSec: number,
   workDir: string,
   ffmpegBin: string,
-  execWithTimeout: (cmd: string, ms: number, label: string) => Promise<unknown>
+  execWithTimeout: (cmd: string, ms: number, label: string) => Promise<unknown>,
+  opts: { facelessSubs?: boolean; docOverlays?: boolean } = {}
 ): Promise<TimedOverlay[]> {
   const overlays: TimedOverlay[] = [];
+  const exec = execWithTimeout;
 
   for (let i = 0; i < plan.years.length; i++) {
     const badge = await renderYearBadgeOverlay(
@@ -335,12 +529,101 @@ export async function buildCinematicOverlays(
       scene.index,
       workDir,
       ffmpegBin,
-      execWithTimeout,
+      exec,
       durationSec,
       i,
       plan.years.length
     );
     if (badge) overlays.push(badge);
+
+    if (opts.docOverlays !== false && i === 0) {
+      const slot = durationSec / Math.max(1, plan.years.length);
+      const flashTime = Math.max(0.2, i * slot + 0.15);
+      const flash = await renderCameraFlashOverlay(
+        scene.index,
+        workDir,
+        ffmpegBin,
+        exec,
+        flashTime,
+        durationSec
+      );
+      if (flash) overlays.push(flash);
+    }
+  }
+
+  if (plan.statText && opts.docOverlays !== false) {
+    const steps = buildStatCountSteps(plan.statText);
+    const stepDur = Math.min(0.55, (durationSec * 0.35) / steps.length);
+    const baseStart = Math.max(0.8, durationSec * 0.15);
+    for (let i = 0; i < steps.length; i++) {
+      const start = baseStart + i * stepDur;
+      const stepOverlay = await renderStatStepOverlay(
+        steps[i],
+        scene.index,
+        i,
+        workDir,
+        ffmpegBin,
+        exec,
+        start,
+        start + stepDur + 0.05
+      );
+      if (stepOverlay) overlays.push(stepOverlay);
+    }
+  }
+
+  if (scene.sectionTitle?.trim() && opts.docOverlays !== false) {
+    const headline = await renderAnimatedHeadlineOverlay(
+      scene.sectionTitle,
+      scene.index,
+      workDir,
+      ffmpegBin,
+      exec,
+      durationSec
+    );
+    if (headline) overlays.push(headline);
+  }
+
+  for (let i = 0; i < plan.keywords.length; i++) {
+    const pill = await renderKeywordPillOverlay(
+      plan.keywords[i],
+      scene.index,
+      workDir,
+      ffmpegBin,
+      exec,
+      durationSec,
+      i
+    );
+    if (pill) overlays.push(pill);
+  }
+
+  for (const name of (scene.personNames ?? []).slice(0, 1)) {
+    const badge = await renderNameBadgeOverlay(
+      name,
+      scene.index,
+      workDir,
+      ffmpegBin,
+      exec,
+      Math.min(durationSec, 4)
+    );
+    if (badge) overlays.push(badge);
+  }
+
+  if (opts.facelessSubs) {
+    const lines = parseFacelessSubtitleLines(scene.text);
+    const subs = await renderFacelessSubtitleOverlay(
+      lines,
+      scene.index,
+      workDir,
+      ffmpegBin,
+      exec,
+      durationSec
+    );
+    if (subs) overlays.push(subs);
+  }
+
+  if (documentaryOverlaysEnabled()) {
+    const dust = await renderParticleDustOverlay(scene.index, workDir, ffmpegBin, exec, durationSec);
+    if (dust) overlays.push(dust);
   }
 
   return overlays;

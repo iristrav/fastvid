@@ -15,9 +15,19 @@ export function elevenLabsOnlyVoice(): boolean {
   return process.env.ELEVENLABS_ONLY !== "false";
 }
 
-/** When true (default), skip generating_effects and mark video completed after upload. */
+/** When true, skip generating_effects and mark video completed after assembly. Default: run effects. */
 export function skipEffectsStage(): boolean {
-  return process.env.SKIP_EFFECTS_STAGE !== "false";
+  return process.env.SKIP_EFFECTS_STAGE === "true";
+}
+
+/** Faceless kinetic subtitles (stacked emphasis words) — on by default. */
+export function facelessSubtitlesEnabled(): boolean {
+  return process.env.ENABLE_FACELESS_SUBTITLES !== "false";
+}
+
+/** Subtle film grain + light flash overlays in effects pass. */
+export function documentaryOverlaysEnabled(): boolean {
+  return process.env.ENABLE_DOC_OVERLAYS !== "false";
 }
 
 /** Target on-screen duration per archive clip (seconds). */

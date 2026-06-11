@@ -717,7 +717,7 @@ async function convertImageToKenBurns(
   }
 
   if (framedArchiveStillsEnabled()) {
-    const filterComplex = buildMatFramedStillVF(duration);
+    const filterComplex = buildMatFramedStillVF(duration, 0.74, sceneIndex, beatIndex);
     await exec(
       `${ffmpegBin()} ${buildStillEncodeArgs(imgPath, outPath, duration, filterComplex)}`
     );
