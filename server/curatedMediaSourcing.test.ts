@@ -6,6 +6,7 @@ import {
   curatedClipPathAssetId,
   extractTopicAnchorTags,
   isCuratedInterviewAsset,
+  scoreArchiveMetadata,
   scoreCuratedAsset,
 } from "./curatedMediaSourcing";
 import type { MediaArchiveAsset } from "./db";
@@ -221,5 +222,33 @@ describe("curatedMediaSourcing", () => {
     const posterScore = scoreCuratedAsset(poster, ["hitler"], beatTags, topicAnchors, beatText);
     const speechScore = scoreCuratedAsset(speech, ["hitler"], beatTags, topicAnchors, beatText);
     expect(speechScore).toBeGreaterThan(posterScore);
+  });
+
+  it("scoreArchiveMetadata matches archive name and niche tags without manual linking", () => {
+    const hitlerScore = scoreArchiveMetadata(
+      { name: "Hitler Documentary Archive", nicheTags: ["hitler", "wwii"] },
+      ["speech", "berlin"],
+      ["hitler", "reich"]
+    );
+    const titanicScore = scoreArchiveMetadata(
+      { name: "Titanic Maritime Collection", nicheTags: ["titanic", "ship"] },
+      ["speech", "berlin"],
+      ["hitler", "reich"]
+    );
+    expect(hitlerScore).toBeGreaterThan(titanicScore);
+  });
+
+  it("scoreArchiveMetadata infers from archive name when niche tags are empty", () => {
+    const score = scoreArchiveMetadata(
+      { name: "Cold War Berlin", description: "Checkpoint and wall footage", nicheTags: [] },
+      ["checkpoint", "wall"],
+      ["berlin"]
+    );
+    expect(score).toBeGreaterThanOrEqual(8);
+  });
+
+  it("extractTopicAnchorTags keeps short ww2 token", () => {
+    const anchors = extractTopicAnchorTags("WW2 Documentary: Battle of Berlin");
+    expect(anchors).toContain("ww2");
   });
 });

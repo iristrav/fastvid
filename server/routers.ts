@@ -89,7 +89,11 @@ import {
   updateNicheRequest,
 } from "./nicheRequestsDb";
 import { updateVideoScenes, updateEditedVideoUrl, getVideoScenes, readVideoEditorSettings, updateVideoEditorSettings, type EditorScene, type EditorClip, getAllMediaArchives, getMediaArchiveAssets, countMediaArchiveAssets, filterMediaArchiveAssets } from "./db";
-import { buildBeatMatchTags, listCuratedArchiveCandidates } from "./curatedMediaSourcing";
+import {
+  buildBeatMatchTags,
+  listCuratedArchiveCandidates,
+  rankArchivesForVisualQuery,
+} from "./curatedMediaSourcing";
 import { editorArchiveMediaUrl } from "./archiveMediaStream";
 import { editorClipFromArchiveAsset, resolveEditorClipPreviewUrl } from "./editorClips";
 import { runVideoPipeline } from "./videoPipeline";
@@ -1686,6 +1690,7 @@ export const appRouter = router({
         { text: topic },
         topic
       );
+      const autoArchives = await rankArchivesForVisualQuery(allTags, topicAnchors);
       const candidates = await listCuratedArchiveCandidates(
         beatTags,
         new Set(),
@@ -1695,6 +1700,7 @@ export const appRouter = router({
       );
 
       return {
+        autoArchives: autoArchives.filter((a) => a.score >= 8).slice(0, 3),
         results: candidates.slice(0, input.limit).map(({ asset, archiveName, score }) => ({
           assetId: asset.id,
           title: asset.title ?? `Asset ${asset.id}`,

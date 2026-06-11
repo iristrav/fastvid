@@ -41,15 +41,11 @@ export function ArchiveMediaPanel({
 }: ArchiveMediaPanelProps) {
   const [query, setQuery] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
-  const [archiveId, setArchiveId] = useState<number | undefined>();
-
-  const { data: archivesData } = trpc.editor.listArchives.useQuery(undefined, { staleTime: 60_000 });
 
   const { data, isLoading, isFetching } = trpc.editor.searchArchive.useQuery(
     {
       videoId,
       query: searchQuery || sceneNarration?.slice(0, 120) || undefined,
-      archiveId,
       limit: 40,
     },
     { enabled: videoId > 0, staleTime: 30_000 }
@@ -87,34 +83,14 @@ export function ArchiveMediaPanel({
           </Button>
         </div>
 
-        {archivesData?.archives && archivesData.archives.length > 0 && (
-          <div className="flex gap-1.5 flex-wrap">
-            <button
-              type="button"
-              onClick={() => setArchiveId(undefined)}
-              className={`text-[10px] px-2 py-0.5 rounded-full border transition-colors ${
-                archiveId === undefined
-                  ? "bg-cyan-500/20 border-cyan-500/50 text-cyan-300"
-                  : "border-white/15 text-slate-400 hover:border-white/30"
-              }`}
-            >
-              Alle
-            </button>
-            {archivesData.archives.map((a) => (
-              <button
-                key={a.id}
-                type="button"
-                onClick={() => setArchiveId(a.id)}
-                className={`text-[10px] px-2 py-0.5 rounded-full border transition-colors ${
-                  archiveId === a.id
-                    ? "bg-purple-500/20 border-purple-500/50 text-purple-300"
-                    : "border-white/15 text-slate-400 hover:border-white/30"
-                }`}
-              >
-                {a.name} ({a.assetCount})
-              </button>
-            ))}
-          </div>
+        {data?.autoArchives && data.autoArchives.length > 0 && (
+          <p className="text-[10px] text-slate-500">
+            Archief automatisch gekozen:{" "}
+            <span className="text-cyan-400/90">
+              {data.autoArchives.map((a) => a.name).join(", ")}
+            </span>
+            {" "}— op basis van videotitel en tags
+          </p>
         )}
       </div>
 

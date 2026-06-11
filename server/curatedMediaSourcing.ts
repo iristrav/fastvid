@@ -124,13 +124,20 @@ function tagsOverlap(a: string[], b: string[]): boolean {
 }
 
 /** High-signal topic tokens from the video title/prompt (e.g. hitler, titanic). */
+const SHORT_TOPIC_TOKENS = new Set([
+  "ww2", "wwii", "ww1", "ufo", "cia", "fbi", "dna", "nazi", "ss", "kgb",
+]);
+
 export function extractTopicAnchorTags(videoTitle?: string, extraText?: string): string[] {
   const raw = [videoTitle ?? "", extraText ?? ""]
     .join(" ")
     .toLowerCase()
     .replace(/[^a-z0-9\s-]/g, " ")
     .split(/\s+/)
-    .filter((w) => w.length >= 4 && !QUERY_STOP_WORDS.has(w));
+    .filter(
+      (w) =>
+        (w.length >= 4 || SHORT_TOPIC_TOKENS.has(w)) && !QUERY_STOP_WORDS.has(w)
+    );
   return normalizeMediaTags(raw).slice(0, 8);
 }
 
@@ -182,11 +189,141 @@ function archiveMatchesQuery(
   queryTags: string[],
   anchorTags: string[]
 ): boolean {
-  const name = archiveName.toLowerCase();
-  const combined = normalizeMediaTags([...anchorTags, ...queryTags]);
-  if (!combined.length) return true;
-  if (tagsOverlap(combined, archiveNicheTags)) return true;
-  return combined.some((q) => q.length >= 4 && name.includes(q));
+  return (
+    scoreArchiveMetadata(
+      { name: archiveName, nicheTags: archiveNicheTags },
+      queryTags,
+      anchorTags
+    ) >= 8
+  );
+}
+
+export type ArchiveRouteInput = {
+  name: string;
+  description?: string | null;
+  nicheTags?: string[] | null;
+};
+
+/** Score how well archive metadata matches a video topic (name, description, niche tags). */
+export function scoreArchiveMetadata(
+  archive: ArchiveRouteInput,
+  queryTags: string[],
+  anchorTags: string[]
+): number {
+  const combined = normalizeMediaTags([...queryTags, ...anchorTags]);
+  if (!combined.length) return 1;
+
+  const name = archive.name.toLowerCase();
+  const desc = (archive.description ?? "").toLowerCase();
+  const nicheTags = normalizeMediaTags(archive.nicheTags ?? []);
+  const nameWords = name.split(/[\s\-_/]+/).filter((w) => w.length >= 3);
+  let score = 0;
+
+  for (const q of combined) {
+    if (nicheTags.some((t) => t === q || t.includes(q) || q.includes(t))) score += 28;
+    if (q.length >= 3 && name.includes(q)) score += 22;
+    if (q.length >= 3 && desc.includes(q)) score += 14;
+    for (const w of nameWords) {
+      if (w === q || w.includes(q) || q.includes(w)) score += 16;
+    }
+  }
+
+  for (const anchor of anchorTags) {
+    if (nicheTags.includes(anchor)) score += 20;
+    if (name.includes(anchor)) score += 18;
+  }
+
+  return score;
+}
+
+function scoreArchiveAssetSample(
+  assets: MediaArchiveAsset[],
+  combinedTags: string[],
+  sampleSize = 48
+): number {
+  if (!combinedTags.length || !assets.length) return 0;
+  let hits = 0;
+  for (const asset of assets.slice(0, sampleSize)) {
+    const title = (asset.title ?? "").toLowerCase();
+    const assetTags = normalizeMediaTags(asset.tags ?? []);
+    const matched = combinedTags.some(
+      (q) =>
+        title.includes(q) ||
+        assetTags.some((t) => t === q || t.includes(q) || q.includes(t))
+    );
+    if (matched) hits++;
+  }
+  return Math.min(50, hits * 6);
+}
+
+export type RankedArchive = {
+  id: number;
+  name: string;
+  score: number;
+};
+
+/** Pick the best archive(s) for a video — no manual linking required. */
+export async function rankArchivesForVisualQuery(
+  queryTags: string[],
+  anchorTags: string[] = [],
+  opts?: { assetSampleSize?: number }
+): Promise<RankedArchive[]> {
+  const archives = (await getAllMediaArchives()).filter((a) => a.isActive === 1);
+  if (!archives.length) return [];
+
+  const combined = normalizeMediaTags([...queryTags, ...anchorTags]);
+  const ranked: RankedArchive[] = [];
+
+  for (const archive of archives) {
+    let score = scoreArchiveMetadata(archive, queryTags, anchorTags);
+    if (score < 20 && combined.length > 0) {
+      const assets = await getMediaArchiveAssets(archive.id);
+      score += scoreArchiveAssetSample(assets, combined, opts?.assetSampleSize ?? 48);
+    }
+    ranked.push({ id: archive.id, name: archive.name, score });
+  }
+
+  ranked.sort((a, b) => b.score - a.score);
+  return ranked;
+}
+
+const ARCHIVE_ROUTE_MIN_SCORE = 8;
+
+/** Archives to search for clips — auto-routed from title/tags, not manually linked. */
+export async function resolveArchivesForVisualQuery(
+  queryTags: string[],
+  anchorTags: string[] = []
+): Promise<Array<Awaited<ReturnType<typeof getAllMediaArchives>>[number]>> {
+  const archives = (await getAllMediaArchives()).filter((a) => a.isActive === 1);
+  if (archives.length <= 1) return archives;
+
+  const ranked = await rankArchivesForVisualQuery(queryTags, anchorTags);
+  const relevant = ranked.filter((r) => r.score >= ARCHIVE_ROUTE_MIN_SCORE);
+  if (relevant.length > 0) {
+    const ids = new Set(relevant.map((r) => r.id));
+    const selected = archives.filter((a) => ids.has(a.id));
+    console.log(
+      `[ArchiveRouter] Auto-routed to ${selected.length} archive(s): ${relevant
+        .slice(0, 4)
+        .map((r) => `"${r.name}" (${r.score})`)
+        .join(", ")}` +
+        (queryTags.length ? ` | tags: ${queryTags.slice(0, 6).join(", ")}` : "")
+    );
+    return selected;
+  }
+
+  if (ranked[0]?.score > 0) {
+    const best = archives.find((a) => a.id === ranked[0].id);
+    if (best) {
+      console.log(
+        `[ArchiveRouter] Best-match archive "${best.name}" (score ${ranked[0].score}) — weak tag overlap, using anyway`
+      );
+      return [best];
+    }
+  }
+
+  console.log("[ArchiveRouter] No strong archive match — searching all active archives");
+  return archives;
 }
 
 export function scoreCuratedAsset(
@@ -394,18 +531,13 @@ export async function listCuratedArchiveCandidates(
   beatText?: string
 ): Promise<Array<{ asset: MediaArchiveAsset; archiveName: string; score: number }>> {
   const queryTags = filterTags ?? normalizeMediaTags([...beatTags, ...topicAnchors]);
-  const archives = (await getAllMediaArchives()).filter((a) => a.isActive === 1);
+  const archives = await resolveArchivesForVisualQuery(queryTags, topicAnchors);
   if (!archives.length) return [];
-
-  const matchingArchives = archives.filter((archive) =>
-    archiveMatchesQuery(archive.name, normalizeMediaTags(archive.nicheTags ?? []), queryTags, topicAnchors)
-  );
-  const searchArchives = matchingArchives.length > 0 ? matchingArchives : archives;
 
   const scored: Array<{ asset: MediaArchiveAsset; archiveName: string; score: number }> = [];
   const fallback: typeof scored = [];
 
-  for (const archive of searchArchives) {
+  for (const archive of archives) {
     const nicheTags = normalizeMediaTags(archive.nicheTags ?? []);
     const assets = await getMediaArchiveAssets(archive.id);
     for (const asset of assets) {
@@ -419,8 +551,8 @@ export async function listCuratedArchiveCandidates(
     }
   }
 
-  if (scored.length === 0 && fallback.length === 0 && searchArchives.length > 0) {
-    for (const archive of searchArchives) {
+  if (scored.length === 0 && fallback.length === 0 && archives.length > 0) {
+    for (const archive of archives) {
       const assets = await getMediaArchiveAssets(archive.id);
       for (const asset of assets) {
         if (excludeIds.has(asset.id)) continue;

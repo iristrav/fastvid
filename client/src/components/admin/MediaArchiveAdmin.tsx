@@ -639,7 +639,8 @@ function ArchiveForm({
           className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-purple-500/50"
         />
         <p className="text-[11px] text-slate-500 mt-1">
-          Bij upload filtert AI fragmenten die niet bij dit onderwerp horen (naam + tags + beschrijving).
+          Optioneel — videos kiezen automatisch het juiste archief op basis van titel, tags en clip-inhoud.
+          Tags helpen ook bij upload-filtering.
         </p>
       </div>
       <div className="flex gap-2 justify-end">

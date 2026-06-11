@@ -92,6 +92,12 @@ import {
   markCuratedAssetUsed,
   prepareCuratedArchiveClip,
 } from "./curatedMediaSourcing";
+import {
+  logPipelineReview,
+  reviewPipelineBeforeEffects,
+  reviewPipelineBeforeExport,
+  type SceneReviewInput,
+} from "./pipelineReview";
 
 // API Keys
 const FISH_AUDIO_API_KEY = process.env.FISH_AUDIO_API_KEY || "";
@@ -1955,21 +1961,24 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 // ─── Documentary workflow (prompt → script → ElevenLabs → editor → per-zin beeld → montage) ─
 export const PIPELINE_WORKFLOW = [
   { key: "prompt", label: "Prompt bekijken", detail: "Onderwerp, lengte en tone uit je idee halen." },
-  { key: "script", label: "Professioneel script", detail: "Documentaire narratie — beelden worden automatisch gematcht." },
-  { key: "elevenlabs", label: "Volledig script in ElevenLabs", detail: "Eén voiceover-opname voor het hele script, consistente stem." },
-  { key: "editor", label: "Voiceover in editor", detail: "Scenes + timing in het editsysteem vóór beelden." },
-  { key: "visuals", label: "Per zin: belangrijkste woord → beeld", detail: "Elke zin krijgt een clip op het kernwoord of de persoon/event." },
-  { key: "whole", label: "Hele video doorlopen", detail: "Alle scenes en beats, zonder grijze placeholders." },
-  { key: "assemble", label: "Alles samenvoegen", detail: "Scenes concat + documentaire muziek." },
-  { key: "polish", label: "Effecten & overgangen", detail: "Montage, color grade, sync, vloeiende cuts." },
+  { key: "script", label: "Script maken", detail: "Professionele documentaire narratie op basis van je prompt." },
+  { key: "elevenlabs", label: "Script in ElevenLabs", detail: "Eén voiceover-opname voor het hele script." },
+  { key: "visuals", label: "Beelden zoeken", detail: "Juiste archiefclips op basis van titel en tags — geen handmatig koppelen." },
+  { key: "assemble", label: "Alles achter elkaar", detail: "Ruwe montage: clips + voiceover per scene." },
+  { key: "review1", label: "Beeld–tekst controle", detail: "Check of clips passen bij de tekst; hele video doorlopen." },
+  { key: "effects", label: "Effecten & tekst", detail: "Overgangen, color grade, jaartallen, ondertitels en SFX." },
+  { key: "review2", label: "Eindcontrole", detail: "Hele video nogmaals nalopen vóór export." },
 ] as const;
 
 export const STAGE_LABELS = {
-  parsing:    "Scenes uit professioneel script halen...",
+  parsing:    "Script omzetten naar scenes...",
   voiceovers: "Volledige voiceover in ElevenLabs (één script)...",
   editorDraft: "Voiceover in het editsysteem laden...",
-  visuals:    "Per zin: belangrijkste woord → beeld zoeken...",
-  composing:  "Clips monteren — effecten & overgangen...",
+  visuals:    "Juiste beelden zoeken die bij het script horen...",
+  assembly:   "Clips achter elkaar plakken (ruwe montage)...",
+  visualReview: "Controleren of beelden bij de tekst horen...",
+  effects:    "Effecten, overgangen en tekst toevoegen...",
+  finalReview: "Hele video nogmaals nalopen...",
   assembling: "Alle scenes samenvoegen + muziek...",
   uploading:  "Video uploaden...",
   complete:   "Perfecte video klaar!",
@@ -12565,6 +12574,248 @@ async function renderOutroCard(duration: number, workDir: string): Promise<strin
   return renderOutroCardFFmpeg(duration, workDir);
 }
 
+type ComposePhase = "assembly" | "effects" | "full";
+
+type ComposeSceneOptions = {
+  phase?: ComposePhase;
+  assemblyPath?: string;
+};
+
+function buildOverlayFilterChain(
+  baseLabel: string,
+  baseInputCount: number,
+  kineticFrames: KineticFrame[],
+  docOverlays: TimedOverlay[],
+  statCalloutFrame: { path: string; startTime: number; endTime: number } | null,
+  kineticY = 80
+): { extraInputs: string; filterChain: string; finalLabel: string } {
+  const allOverlays: Array<{ path: string; startTime: number; endTime: number; isStatCallout?: boolean }> = [
+    ...kineticFrames,
+    ...docOverlays,
+    ...(statCalloutFrame ? [{ ...statCalloutFrame, isStatCallout: true }] : []),
+  ];
+  if (allOverlays.length === 0) {
+    return { extraInputs: "", filterChain: "", finalLabel: baseLabel };
+  }
+  const extraInputs = allOverlays.map((f) => `-loop 1 -i "${f.path}"`).join(" ");
+  let chain = "";
+  let prevLabel = baseLabel;
+  allOverlays.forEach((frame, idx) => {
+    const inputIdx = baseInputCount + idx;
+    const outLabel = idx === allOverlays.length - 1 ? "kfinal" : `kf${idx}`;
+    const timed = frame as TimedOverlay;
+    if (overlayUsesFullFrame(timed) || (frame as { isStatCallout?: boolean }).isStatCallout) {
+      chain += `;[${prevLabel}][${inputIdx}:v]overlay=x=0:y=0:format=auto:enable='between(t,${frame.startTime.toFixed(2)},${frame.endTime.toFixed(2)})'[${outLabel}]`;
+    } else {
+      chain += `;[${prevLabel}][${inputIdx}:v]overlay=x=0:y=${kineticY}:format=auto:enable='between(t,${frame.startTime.toFixed(2)},${frame.endTime.toFixed(2)})'[${outLabel}]`;
+    }
+    prevLabel = outLabel;
+  });
+  return { extraInputs, filterChain: chain, finalLabel: "kfinal" };
+}
+
+async function prepareSceneEffectLayers(
+  scene: Scene,
+  duration: number,
+  workDir: string,
+  enableSubtitles: boolean,
+  probedVoiceDur?: number
+): Promise<{
+  kineticFrames: KineticFrame[];
+  docOverlays: TimedOverlay[];
+  statCalloutFrame: { path: string; startTime: number; endTime: number } | null;
+  sfxCueFiles: Array<{ path: string; timeSec: number; volume: number }>;
+  fadeFilter: string;
+  voiceDur: number;
+  outDur: number;
+}> {
+  const voiceDur = probedVoiceDur || Math.max(0.5, duration - 0.35);
+  const outDur = voiceDur + 0.12;
+  let kineticFrames: KineticFrame[] = [];
+  let docOverlays: TimedOverlay[] = [];
+  let cinematicPlan: CinematicScenePlan | null = null;
+  const sfxCueFiles: Array<{ path: string; timeSec: number; volume: number }> = [];
+
+  try {
+    if (cinematicEffectsEnabled()) {
+      cinematicPlan = planCinematicScene(scene, duration);
+      const cinematicOverlays = await buildCinematicOverlays(
+        cinematicPlan,
+        scene,
+        duration,
+        workDir,
+        FFMPEG_BIN,
+        (cmd, ms, lbl) => withTimeout(exec(cmd), ms, lbl)
+      );
+      docOverlays.push(...cinematicOverlays);
+
+      const sfxCache = new Map<string, string>();
+      for (const cue of cinematicPlan.audioCues.slice(0, 12)) {
+        if (!sfxCache.has(cue.type)) {
+          sfxCache.set(cue.type, await generateSFX(cue.type, workDir));
+        }
+        sfxCueFiles.push({
+          path: sfxCache.get(cue.type)!,
+          timeSec: cue.timeSec,
+          volume: cue.volume,
+        });
+      }
+    }
+
+    if (documentaryStyleEnabled()) {
+      const primaryPerson = (scene.personNames ?? []).find((n) => n?.trim());
+      if (primaryPerson) {
+        const badge = await renderNameBadgeOverlay(
+          primaryPerson,
+          scene.index,
+          workDir,
+          FFMPEG_BIN,
+          (cmd, ms, lbl) => withTimeout(exec(cmd), ms, lbl)
+        );
+        if (badge) docOverlays.push(badge);
+      }
+
+      const hasCinematicKeywords = (cinematicPlan?.keywords.length ?? 0) > 0;
+      if (!hasCinematicKeywords) {
+        const llmWords = (scene.highlightWords || []).filter((w) => w && w.trim().length > 0);
+        const highlightWord = llmWords[0] || extractKeywords(scene.text, 1)[0];
+        if (highlightWord) {
+          const caption = await renderHighlightCaptionOverlay(
+            highlightWord,
+            scene.index,
+            workDir,
+            FFMPEG_BIN,
+            (cmd, ms, lbl) => withTimeout(exec(cmd), ms, lbl),
+            duration
+          );
+          if (caption) docOverlays.push(caption);
+        }
+      }
+    }
+  } catch (err) {
+    console.warn(`[Pipeline] Scene ${scene.index}: effect layers failed (non-fatal):`, err);
+    kineticFrames = [];
+    docOverlays = [];
+  }
+
+  let statCalloutFrame: { path: string; startTime: number; endTime: number } | null = null;
+  try {
+    const cinematicHasStat = docOverlays.some((o) => o.isStatCallout);
+    if (
+      !cinematicHasStat &&
+      process.env.ENABLE_STAT_CALLOUTS === "true" &&
+      scene.statCallout &&
+      scene.statCallout.trim().length > 0
+    ) {
+      statCalloutFrame = await renderStatCallout(scene.statCallout, scene.index, workDir);
+    }
+  } catch {
+    statCalloutFrame = null;
+  }
+
+  const colorGrade = documentaryStyleEnabled()
+    ? buildPostGradeVF()
+    : `eq=contrast=1.12:saturation=0.92:brightness=-0.02:gamma=1.02,colorbalance=rs=-0.02:gs=0:bs=0.03:rm=-0.01:gm=0:bm=0.02:rh=-0.01:gh=0:bh=0.02,vignette=angle=0.6:mode=forward`;
+  const subtitleDrawtext = enableSubtitles ? "" : "";
+  const fadeFilter = documentaryStyleEnabled() ? colorGrade : `${colorGrade}${subtitleDrawtext}`;
+
+  return {
+    kineticFrames,
+    docOverlays,
+    statCalloutFrame,
+    sfxCueFiles,
+    fadeFilter,
+    voiceDur,
+    outDur,
+  };
+}
+
+async function applySceneEffectsPass(
+  assemblyPath: string,
+  scene: Scene,
+  duration: number,
+  workDir: string,
+  enableSubtitles: boolean
+): Promise<string> {
+  const outputPath = path.join(workDir, `scene_${scene.index}_composed.mp4`);
+  if (!fs.existsSync(assemblyPath) || fs.statSync(assemblyPath).size < 1000) {
+    throw pipelineError(PIPELINE_ERROR.FFMPEG, `Scene ${scene.index}: assembly missing for effects pass`);
+  }
+
+  const probedDur = await probeVideoDurationSec(assemblyPath);
+  const layers = await prepareSceneEffectLayers(scene, duration, workDir, enableSubtitles, probedDur || undefined);
+  const threadFlag = IS_RAILWAY ? "-threads 2" : "";
+  const kineticY = 80;
+  const { extraInputs, filterChain, finalLabel } = buildOverlayFilterChain(
+    "0:v",
+    1,
+    layers.kineticFrames,
+    layers.docOverlays,
+    layers.statCalloutFrame,
+    kineticY
+  );
+  const hasOverlays =
+    layers.kineticFrames.length > 0 || layers.docOverlays.length > 0 || layers.statCalloutFrame !== null;
+  const preGradeLabel = hasOverlays ? finalLabel : "0:v";
+  const overlayCount =
+    layers.kineticFrames.length + layers.docOverlays.length + (layers.statCalloutFrame ? 1 : 0);
+  const sfxBaseIdx = 1 + overlayCount;
+  const sfxInputStr = layers.sfxCueFiles.map((s) => `-i "${s.path}"`).join(" ");
+  const sfxMeta = layers.sfxCueFiles.map((s, i) => ({
+    inputIndex: sfxBaseIdx + i,
+    timeSec: s.timeSec,
+    volume: s.volume,
+  }));
+  const audioFadeOutStart = Math.max(0, layers.voiceDur - 0.15);
+  const audioFilter =
+    sfxMeta.length > 0
+      ? `[0:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${audioFadeOutStart.toFixed(3)}:d=0.12,asetpts=PTS-STARTPTS[voiceFaded];` +
+        buildCinematicSfxAudioFilter("voiceFaded", sfxMeta, layers.voiceDur, "aout")
+      : `[0:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${audioFadeOutStart.toFixed(3)}:d=0.12,` +
+        `atrim=0:${layers.voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]`;
+  const overlayChainRaw = filterChain.startsWith(";") ? filterChain.slice(1) : filterChain;
+  const videoChain = hasOverlays
+    ? `${overlayChainRaw};[${preGradeLabel}]${FPS_FORMAT_VF}[vtimed];[vtimed]${layers.fadeFilter}[vout]`
+    : `[0:v]${FPS_FORMAT_VF},${layers.fadeFilter}[vout]`;
+
+  await withTimeout(
+    exec(
+      `${FFMPEG_BIN} -y -i "${assemblyPath}"${extraInputs ? ` ${extraInputs}` : ""}${sfxInputStr ? ` ${sfxInputStr}` : ""} ` +
+        `-filter_complex "${videoChain};${audioFilter}" ` +
+        `-map "[vout]" -map "[aout]" -vsync cfr ` +
+        `-t ${layers.outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
+    ),
+    120_000,
+    `Effects pass scene ${scene.index}`
+  );
+
+  for (const frame of layers.kineticFrames) {
+    try { fs.unlinkSync(frame.path); } catch { /* ignore */ }
+  }
+  for (const overlay of layers.docOverlays) {
+    try { fs.unlinkSync(overlay.path); } catch { /* ignore */ }
+  }
+
+  if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size < 1000) {
+    throw pipelineError(PIPELINE_ERROR.FFMPEG, `Scene ${scene.index}: effects pass produced no output`);
+  }
+  return outputPath;
+}
+
+function sceneReviewInputs(
+  scenes: Scene[],
+  clipPathsPerScene: string[][]
+): SceneReviewInput[] {
+  return scenes.map((scene, i) => ({
+    index: scene.index,
+    text: scene.text,
+    duration: scene.duration,
+    clipPaths: clipPathsPerScene[i] ?? [],
+    visualCue: scene.visualCue,
+    pexelsQuery: scene.pexelsQuery,
+  }));
+}
+
 // ─── 5. Compose Scene Video (Vidrush-style hard-cut montage) ───────────────
 async function composeSceneVideo(
   scene: Scene,
@@ -12576,9 +12827,24 @@ async function composeSceneVideo(
   enableSubtitles = false,  // Subtitles disabled by default
   rescueStockClip?: string | null,
   beatDurations?: number[],
-  usedClipsOut?: string[]
+  usedClipsOut?: string[],
+  composeOptions?: ComposeSceneOptions
 ): Promise<string> {
-  const outputPath = path.join(workDir, `scene_${scene.index}_composed.mp4`);
+  if (composeOptions?.phase === "effects" && composeOptions.assemblyPath) {
+    return applySceneEffectsPass(
+      composeOptions.assemblyPath,
+      scene,
+      duration,
+      workDir,
+      enableSubtitles
+    );
+  }
+
+  const phase = composeOptions?.phase ?? "full";
+  const outputPath =
+    phase === "assembly"
+      ? path.join(workDir, `scene_${scene.index}_assembly.mp4`)
+      : path.join(workDir, `scene_${scene.index}_composed.mp4`);
 
   // Real stock only — no grey placeholders, no duplicate clips in this scene.
   let existingClips = clips.filter(
@@ -12664,9 +12930,10 @@ async function composeSceneVideo(
     }
   }
 
-  // Subtitle overlay: render if user has enabled subtitles
+  // Subtitle overlay: render if user has enabled subtitles (effects pass only — not raw assembly)
   let subtitlePath: string | null = null;
-  if (enableSubtitles) {
+  const skipEffectLayers = phase === "assembly";
+  if (!skipEffectLayers && enableSubtitles) {
     try {
       subtitlePath = await renderSubtitleOverlay(scene.text, scene.index, totalScenes, workDir);
     } catch (err) {
@@ -12681,6 +12948,7 @@ async function composeSceneVideo(
   let cinematicPlan: CinematicScenePlan | null = null;
   const sfxCueFiles: Array<{ path: string; timeSec: number; volume: number }> = [];
 
+  if (!skipEffectLayers) {
   try {
     if (cinematicEffectsEnabled()) {
       cinematicPlan = planCinematicScene(scene, duration);
@@ -12777,9 +13045,11 @@ async function composeSceneVideo(
     kineticFrames = [];
     docOverlays = [];
   }
+  }
 
   // Stat callout from LLM when cinematic engine did not already render one
   let statCalloutFrame: { path: string; startTime: number; endTime: number } | null = null;
+  if (!skipEffectLayers) {
   try {
     const cinematicHasStat = docOverlays.some((o) => o.isStatCallout);
     if (
@@ -12792,6 +13062,7 @@ async function composeSceneVideo(
     }
   } catch {
     statCalloutFrame = null;
+  }
   }
 
   // On Railway, limit FFmpeg threads to reduce memory usage
@@ -12875,6 +13146,23 @@ async function composeSceneVideo(
     const padFilter = "";
 
     const audioIdx = safeClips.length;
+    const audioFadeOutStart = Math.max(0, voiceDur - 0.15);
+    const voiceAudioFilter =
+      `[${audioIdx}:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${audioFadeOutStart.toFixed(3)}:d=0.12,` +
+      `atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]`;
+
+    if (skipEffectLayers) {
+      await withTimeout(
+        exec(
+          `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}" ` +
+            `-filter_complex "${scaleFilters}${mergeFilter};[${montageLabel}]${FPS_FORMAT_VF}[vout];${voiceAudioFilter}" ` +
+            `-map "[vout]" -map "[aout]" -vsync cfr ` +
+            `-t ${outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
+        ),
+        120_000,
+        `Assembly scene ${scene.index}`
+      );
+    } else {
     const kineticBaseIdx = audioIdx + 1;
     const { extraInputs: kExtraInputs, filterChain: kChain, finalLabel: kFinalLabel } =
       buildKineticChain(montageLabel, kineticBaseIdx);
@@ -12883,7 +13171,6 @@ async function composeSceneVideo(
     const kineticChainStr = kChain ? kChain : "";
     const hasOverlays = kineticFrames.length > 0 || docOverlays.length > 0 || statCalloutFrame !== null;
     const preGradeLabel = hasOverlays ? kFinalLabel : montageLabel;
-    const audioFadeOutStart = Math.max(0, voiceDur - 0.15);
     const overlayCount =
       kineticFrames.length + docOverlays.length + (statCalloutFrame ? 1 : 0);
     const sfxBaseIdx = kineticBaseIdx + overlayCount;
@@ -12897,8 +13184,7 @@ async function composeSceneVideo(
       sfxMeta.length > 0
         ? `[${audioIdx}:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${audioFadeOutStart.toFixed(3)}:d=0.12,asetpts=PTS-STARTPTS[voiceFaded];` +
           buildCinematicSfxAudioFilter("voiceFaded", sfxMeta, voiceDur, "aout")
-        : `[${audioIdx}:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${audioFadeOutStart.toFixed(3)}:d=0.12,` +
-          `atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]`;
+        : voiceAudioFilter;
     await withTimeout(
       exec(
         `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}"${kineticInput}${sfxInputStr ? ` ${sfxInputStr}` : ""} ` +
@@ -12910,6 +13196,7 @@ async function composeSceneVideo(
       ),
       120_000, `Compose multi-clip scene ${scene.index}`
     );
+    }
   } catch (composeErr) {
     console.warn(`[Pipeline] Scene ${scene.index}: compose failed, trying simplified compose:`, composeErr);
     if (sfxCueFiles.length > 0) {
@@ -13789,35 +14076,88 @@ export async function runVideoPipeline(
       }
     }
 
-    // ── Stage 4: Compose all scenes in parallel batches ───────────────────────
-    onProgress?.({ stage: STAGE_LABELS.composing, percent: 47 });
+    // ── Stage 4: Raw assembly — clips + voice per scene (no effects yet) ───────
+    onProgress?.({ stage: STAGE_LABELS.assembly, percent: 47 });
     const t3 = Date.now();
 
     // Railway: one FFmpeg compose at a time (avoids "Resource temporarily unavailable" decoder errors)
     const composeLimit = pLimit(composeParallelism());
-    let completedCompose = 0;
-    const composedUsedClips: string[][] = scenes.map(() => []);
-    const composedScenes = await withTimeout(
+    let completedAssembly = 0;
+    const assembledUsedClips: string[][] = scenes.map(() => []);
+    const assembledScenes = await withTimeout(
       Promise.all(
         scenes.map((scene, i) => composeLimit(async () => {
           const usedClips: string[] = [];
           const result = await composeSceneVideo(
             scene, sceneVisualResults[i]?.clips ?? [], audioPaths[i], scene.duration, workDir, scenes.length,
-            enableSubtitles, visualDedup.lastMuskStockClip, sceneVisualResults[i]?.beatDurations, usedClips
+            enableSubtitles, visualDedup.lastMuskStockClip, sceneVisualResults[i]?.beatDurations, usedClips,
+            { phase: "assembly" }
           );
-          composedUsedClips[i] = usedClips;
-          completedCompose++;
+          assembledUsedClips[i] = usedClips;
+          completedAssembly++;
           onProgress?.({
-            stage: `Composing scenes... (${completedCompose}/${scenes.length} done)`,
-            percent: 47 + Math.round((completedCompose / scenes.length) * 28)
+            stage: `${STAGE_LABELS.assembly} (${completedAssembly}/${scenes.length})`,
+            percent: 47 + Math.round((completedAssembly / scenes.length) * 8),
           });
           return result;
         }))
       ),
-      2400_000, // 40 min hard limit for compositing
-      "Scene composition stage"
+      2400_000,
+      "Scene assembly stage"
     );
-    console.log(`[Pipeline] Stage 4 (compose): ${scenes.length} scenes in ${((Date.now()-t3)/1000).toFixed(1)}s`);
+    console.log(`[Pipeline] Stage 4 (assembly): ${scenes.length} scenes in ${((Date.now()-t3)/1000).toFixed(1)}s`);
+
+    // ── Stage 5: QA — visuals match narration + montage timing ───────────────
+    onProgress?.({ stage: STAGE_LABELS.visualReview, percent: 58 });
+    const reviewInputs = sceneReviewInputs(
+      scenes,
+      assembledUsedClips.map((clips, i) =>
+        clips.length > 0 ? clips : (sceneVisualResults[i]?.clips ?? [])
+      )
+    );
+    const preEffectsReview = await reviewPipelineBeforeEffects(
+      reviewInputs,
+      assembledScenes,
+      videoTitle
+    );
+    logPipelineReview("vóór effecten", preEffectsReview);
+    if (!preEffectsReview.ok) {
+      console.warn(`[Pipeline] Visual QA: ${preEffectsReview.summary} — doorgaan met effecten`);
+    }
+
+    // ── Stage 6: Effects, transitions, on-screen text ────────────────────────
+    onProgress?.({ stage: STAGE_LABELS.effects, percent: 62 });
+    const tEffects = Date.now();
+    let completedEffects = 0;
+    const composedUsedClips = assembledUsedClips;
+    const composedScenes = await withTimeout(
+      Promise.all(
+        scenes.map((scene, i) => composeLimit(async () => {
+          const result = await composeSceneVideo(
+            scene, sceneVisualResults[i]?.clips ?? [], audioPaths[i], scene.duration, workDir, scenes.length,
+            enableSubtitles, visualDedup.lastMuskStockClip, sceneVisualResults[i]?.beatDurations, undefined,
+            { phase: "effects", assemblyPath: assembledScenes[i] }
+          );
+          completedEffects++;
+          onProgress?.({
+            stage: `${STAGE_LABELS.effects} (${completedEffects}/${scenes.length})`,
+            percent: 62 + Math.round((completedEffects / scenes.length) * 10),
+          });
+          return result;
+        }))
+      ),
+      2400_000,
+      "Scene effects stage"
+    );
+    console.log(`[Pipeline] Stage 6 (effects): ${scenes.length} scenes in ${((Date.now()-tEffects)/1000).toFixed(1)}s`);
+
+    // ── Stage 7: Final review before export ──────────────────────────────────
+    onProgress?.({ stage: STAGE_LABELS.finalReview, percent: 74 });
+    const finalReview = await reviewPipelineBeforeExport(reviewInputs, composedScenes);
+    logPipelineReview("eindcontrole", finalReview);
+    if (!finalReview.ok) {
+      throw pipelineError(PIPELINE_ERROR.FFMPEG, finalReview.summary);
+    }
 
     // ── Save scene manifest for editor (clips actually used in compose) ─────
     try {
@@ -13850,6 +14190,7 @@ export async function runVideoPipeline(
     // Cleanup intermediates
     for (let i = 0; i < scenes.length; i++) {
       try { fs.unlinkSync(audioPaths[i]); } catch { /* ignore */ }
+      try { fs.unlinkSync(assembledScenes[i]); } catch { /* ignore */ }
       for (const clip of sceneVisualResults[i]?.clips ?? []) {
         try { if (clip !== composedScenes[i]) fs.unlinkSync(clip); } catch { /* ignore */ }
       }

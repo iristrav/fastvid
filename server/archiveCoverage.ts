@@ -1,14 +1,19 @@
 /**
  * Check whether curated media archives have footage for a video topic.
  */
-import { buildCuratedQueryTags } from "./curatedMediaSourcing";
-import { getAllMediaArchives, getMediaArchiveAssets, normalizeMediaTags } from "./db";
+import {
+  buildCuratedQueryTags,
+  rankArchivesForVisualQuery,
+  resolveArchivesForVisualQuery,
+} from "./curatedMediaSourcing";
+import { getMediaArchiveAssets, normalizeMediaTags } from "./db";
 
 export type ArchiveCoverageResult = {
   hasCoverage: boolean;
   matchingAssetCount: number;
   totalActiveAssets: number;
   nicheHint: string | null;
+  autoArchiveNames: string[];
 };
 
 function tagsOverlap(a: string[], b: string[]): boolean {
@@ -29,37 +34,34 @@ export async function assessArchiveCoverageForPrompt(
     { text: prompt, visualCue: prompt, pexelsQuery: videoTitle ?? prompt },
     videoTitle
   );
+  const topicAnchors = queryTags.filter((t) => (videoTitle ?? prompt).toLowerCase().includes(t));
 
-  const archives = (await getAllMediaArchives()).filter((a) => a.isActive === 1);
+  const routedArchives = await resolveArchivesForVisualQuery(queryTags, topicAnchors);
+  const ranked = await rankArchivesForVisualQuery(queryTags, topicAnchors);
+  const autoArchiveNames = ranked.filter((r) => r.score >= 8).map((r) => r.name);
+
   let matchingAssetCount = 0;
   let totalActiveAssets = 0;
-  let nicheHint: string | null = null;
+  let nicheHint: string | null = autoArchiveNames[0] ?? ranked[0]?.name ?? null;
 
-  for (const archive of archives) {
-    const nicheTags = normalizeMediaTags(archive.nicheTags ?? []);
-    const archiveMatches =
-      queryTags.length === 0 ||
-      tagsOverlap(queryTags, nicheTags) ||
-      queryTags.some((q) => archive.name.toLowerCase().includes(q));
-
+  for (const archive of routedArchives) {
     const assets = await getMediaArchiveAssets(archive.id);
     totalActiveAssets += assets.length;
-
-    if (!archiveMatches) continue;
 
     for (const asset of assets) {
       const assetTags = normalizeMediaTags(asset.tags ?? []);
       const title = (asset.title ?? "").toLowerCase();
       const hit =
-        queryTags.some((q) => title.includes(q) || assetTags.some((t) => t === q || t.includes(q) || q.includes(t))) ||
+        queryTags.some(
+          (q) => title.includes(q) || assetTags.some((t) => t === q || t.includes(q) || q.includes(t))
+        ) ||
+        tagsOverlap(queryTags, assetTags) ||
         queryTags.length === 0;
       if (hit) matchingAssetCount++;
     }
-
-    if (archiveMatches && !nicheHint) nicheHint = archive.name;
   }
 
   const hasCoverage = matchingAssetCount >= 3 || (totalActiveAssets > 0 && matchingAssetCount >= 1);
 
-  return { hasCoverage, matchingAssetCount, totalActiveAssets, nicheHint };
+  return { hasCoverage, matchingAssetCount, totalActiveAssets, nicheHint, autoArchiveNames };
 }
