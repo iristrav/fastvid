@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildBlurFillStillVF,
+  buildBlurFillVideoFilterComplex,
   buildMatFramedStillVF,
   buildPolaroidStillVF,
   buildPostGradeVF,
@@ -31,6 +32,13 @@ describe("documentaryStyle", () => {
     expect(vf).toContain("gblur=sigma=38");
     expect(vf).toContain("zoompan=");
     expect(vf).toContain("overlay=");
+  });
+
+  it("builds blur-fill video filter with fit-to-frame foreground", () => {
+    const vf = buildBlurFillVideoFilterComplex();
+    expect(vf).toContain("force_original_aspect_ratio=decrease");
+    expect(vf).toContain("gblur=sigma=32");
+    expect(vf).toContain("[vout]");
   });
 
   it("builds polaroid filter", () => {

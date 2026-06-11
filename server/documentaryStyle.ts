@@ -134,6 +134,30 @@ export function buildBlurFillStillVF(
   );
 }
 
+/** Archive B-roll: show full clip in frame — blurred fill instead of crop or black bars. */
+export function buildBlurFillVideoFilterComplex(): string {
+  const w = DOC_STYLE_VIDEO_WIDTH;
+  const h = DOC_STYLE_VIDEO_HEIGHT;
+  return (
+    `[0:v]split=2[orig][orig2];` +
+    `[orig]scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},gblur=sigma=32[bg];` +
+    `[orig2]scale=${w}:${h}:force_original_aspect_ratio=decrease[fg];` +
+    `[bg][fg]overlay=(W-w)/2:(H-h)/2,format=yuv420p[vout]`
+  );
+}
+
+/** Comma-chain blur-fill for montage prep (after trim on a single labeled stream). */
+export function buildBlurFillVideoMontageChain(): string {
+  const w = DOC_STYLE_VIDEO_WIDTH;
+  const h = DOC_STYLE_VIDEO_HEIGHT;
+  return (
+    `split=2[bgsrc][fgsrc],` +
+    `[bgsrc]scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},gblur=sigma=32[bg],` +
+    `[fgsrc]scale=${w}:${h}:force_original_aspect_ratio=decrease[fg],` +
+    `[bg][fg]overlay=(W-w)/2:(H-h)/2`
+  );
+}
+
 /** Polaroid white frame on light gray canvas (no rotate — fragile on minimal FFmpeg builds). */
 export function buildPolaroidStillVF(duration: number): string {
   const w = DOC_STYLE_VIDEO_WIDTH;
