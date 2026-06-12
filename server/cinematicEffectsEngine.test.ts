@@ -9,6 +9,8 @@ import {
   computeMontageBeatStarts,
   planBeatAlignedYears,
   buildYearDrawtextFilterChain,
+  planPhotoShutterCues,
+  YEAR_LABEL_ON_SCREEN_SEC,
   overlayUsesFullFrame,
   parseFacelessSubtitleLines,
   planCinematicScene,
@@ -50,15 +52,27 @@ describe("cinematicEffectsEngine", () => {
     expect(labels.map((l) => l.year)).toEqual(["1933", "1939"]);
     expect(labels[0].startTime).toBeGreaterThan(0);
     expect(labels[1].startTime).toBeGreaterThan(labels[0].startTime);
+    expect(labels[0].endTime - labels[0].startTime).toBeCloseTo(YEAR_LABEL_ON_SCREEN_SEC, 1);
   });
 
-  it("builds drawtext chain without box overlay", () => {
+  it("builds drawtext chain with gray filled box", () => {
     const chain = buildYearDrawtextFilterChain("vmont", "vout", [
-      { year: "1939", startTime: 2, endTime: 6 },
+      { year: "1939", startTime: 2, endTime: 4 },
     ]);
     expect(chain).toContain("drawtext");
-    expect(chain).toContain("box=0");
-    expect(chain).not.toContain("drawbox");
+    expect(chain).toContain("box=1");
+    expect(chain).toContain("0x2A2A2A");
+  });
+
+  it("plans shutter cues when photo stills enter montage", () => {
+    const cues = planPhotoShutterCues(
+      ["a.mp4", "scene_0_b1_wiki_1.mp4", "scene_0_b2_wiki_2.mp4", "b.mp4"],
+      [4, 5, 3, 4],
+      (p) => /_wiki_/.test(p)
+    );
+    expect(cues).toHaveLength(1);
+    expect(cues[0].type).toBe("shutter");
+    expect(cues[0].timeSec).toBeCloseTo(4.03, 2);
   });
 
   it("computes beat-aligned year overlay timing", () => {

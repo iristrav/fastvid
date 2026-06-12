@@ -54,6 +54,7 @@ import {
   buildBeatAlignedYearOverlays,
   planBeatAlignedYears,
   buildYearDrawtextFilterChain,
+  planPhotoShutterCues,
   type TimedYearLabel,
   buildCinematicSfxAudioFilter,
   burnFacelessTextOnVideoClip,
@@ -13270,6 +13271,14 @@ async function composeSceneVideo(
       console.warn(`[Pipeline] Scene ${scene.index}: skipping bad clip ${path.basename(clipPath)}`);
       continue;
     }
+    const trimStart = montageClipStartSec(scene.index, validClips.length);
+    const startLuma = await probeClipMeanLuma(clipPath, trimStart + 0.08);
+    if (startLuma !== null && startLuma < 14) {
+      console.warn(
+        `[Pipeline] Scene ${scene.index}: skipping clip with black trim start ${path.basename(clipPath)} (luma ${startLuma.toFixed(0)})`
+      );
+      continue;
+    }
     const key = clipContentKey(clipPath);
     if (seenKeys.has(key)) {
       console.warn(`[Pipeline] Scene ${scene.index}: skipping duplicate clip ${path.basename(clipPath)}`);
@@ -13530,6 +13539,34 @@ async function composeSceneVideo(
       }
     } catch (err) {
       console.warn(`[Pipeline] Scene ${scene.index}: year label plan failed (non-fatal):`, err);
+    }
+  }
+
+  if (!skipEffectLayers && cinematicEffectsEnabled() && montageDurations?.length === safeClips.length) {
+    try {
+      const photoCues = planPhotoShutterCues(
+        safeClips,
+        montageDurations,
+        (clipPath) => isStillPhotoClip(clipPath) || isCuratedPreparedStillClip(clipPath)
+      );
+      const photoSfxCache = new Map<string, string>();
+      for (const cue of photoCues) {
+        if (!photoSfxCache.has(cue.type)) {
+          photoSfxCache.set(cue.type, await generateSFX(cue.type, workDir));
+        }
+        sfxCueFiles.push({
+          path: photoSfxCache.get(cue.type)!,
+          timeSec: cue.timeSec,
+          volume: cue.volume,
+        });
+      }
+      if (photoCues.length > 0) {
+        console.log(
+          `[Cinematic] Scene ${scene.index}: ${photoCues.length} photo shutter cue(s) on still clips`
+        );
+      }
+    } catch (err) {
+      console.warn(`[Pipeline] Scene ${scene.index}: photo shutter SFX failed (non-fatal):`, err);
     }
   }
 

@@ -428,6 +428,9 @@ export type BeatYearInput = { text: string; holdSec: number };
 
 export type TimedYearLabel = { year: string; startTime: number; endTime: number };
 
+/** How long each year badge stays on screen (brief flash, not full beat). */
+export const YEAR_LABEL_ON_SCREEN_SEC = 2.0;
+
 /** Year labels on the voice timeline (when the year is spoken). */
 export function planBeatAlignedYears(beats: BeatYearInput[], sceneDuration: number): TimedYearLabel[] {
   const labels: TimedYearLabel[] = [];
@@ -439,7 +442,10 @@ export function planBeatAlignedYears(beats: BeatYearInput[], sceneDuration: numb
     voiceT += beat.holdSec;
     for (let yi = 0; yi < years.length; yi++) {
       const startTime = Math.max(0.08, beatStart + 0.12 + yi * 0.05);
-      const endTime = Math.min(sceneDuration - 0.1, beatStart + beat.holdSec - 0.05);
+      const endTime = Math.min(
+        sceneDuration - 0.1,
+        startTime + YEAR_LABEL_ON_SCREEN_SEC
+      );
       if (endTime > startTime + 0.35) {
         labels.push({ year: years[yi], startTime, endTime });
       }
@@ -448,7 +454,33 @@ export function planBeatAlignedYears(beats: BeatYearInput[], sceneDuration: numb
   return labels;
 }
 
-/** Burn year numbers on B-roll — white text + shadow, no black box over the video. */
+/** Camera shutter SFX when a still/photo clip enters the montage. */
+export function planPhotoShutterCues(
+  clips: string[],
+  montageDurations: number[],
+  isPhotoClip: (clipPath: string) => boolean,
+  xfadeSec = 0
+): CinematicAudioCue[] {
+  if (clips.length === 0 || montageDurations.length === 0) return [];
+  const n = Math.min(clips.length, montageDurations.length);
+  const starts = computeMontageBeatStarts(montageDurations.slice(0, n), xfadeSec);
+  const cues: CinematicAudioCue[] = [];
+  let prevPhoto = false;
+  for (let i = 0; i < n; i++) {
+    const photo = isPhotoClip(clips[i]!);
+    if (photo && !prevPhoto) {
+      cues.push({
+        type: "shutter",
+        timeSec: Math.max(0.05, (starts[i] ?? 0) + 0.03),
+        volume: 0.34,
+      });
+    }
+    prevPhoto = photo;
+  }
+  return cues;
+}
+
+/** Burn year numbers on B-roll — white text on gray pill (matches letterbox gray). */
 export function buildYearDrawtextFilterChain(
   inLabel: string,
   outLabel: string,
@@ -462,8 +494,9 @@ export function buildYearDrawtextFilterChain(
     const safe = sanitizeForDrawtext(entry.year, 8);
     const enable = `enable='between(t\\,${entry.startTime.toFixed(2)}\\,${entry.endTime.toFixed(2)})'`;
     chain +=
-      `;[${prev}]drawtext=text='${safe}':fontcolor=white:fontsize=68:x=52:y=h-th-58:` +
-      `borderw=3:bordercolor=0x00000066:box=0:${enable}[${next}]`;
+      `;[${prev}]drawtext=text='${safe}':fontcolor=white:fontsize=64:x=48:y=h-th-52:` +
+      `box=1:boxcolor=0x2A2A2A@0.92:boxborderw=18:` +
+      `borderw=2:bordercolor=0x00000044:${enable}[${next}]`;
     prev = next;
   });
   return chain;
@@ -548,7 +581,7 @@ export async function renderYearBadgeOverlay(
       `${ffmpegBin} -y ` +
         `-f lavfi -i "color=c=black@0:size=${boxW}x${boxH}:rate=1" ` +
         `-vf "` +
-        `drawbox=x=0:y=0:w=${boxW}:h=${boxH}:color=0x141418@0.88:t=fill,` +
+        `drawbox=x=0:y=0:w=${boxW}:h=${boxH}:color=0x2A2A2A@0.92:t=fill,` +
         `drawbox=x=0:y=0:w=${ACCENT_W}:h=${boxH}:color=FF7A00@0.95:t=fill,` +
         `drawtext=text='${safeYear}':fontcolor=white:fontsize=${FONT_SIZE}:x=${ACCENT_W + PAD_X}:y=${PAD_Y}` +
         `" -frames:v 1 -pix_fmt rgba "${pngPath}"`,
