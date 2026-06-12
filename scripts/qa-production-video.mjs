@@ -110,11 +110,18 @@ function longestFrozenRun(url, fromSec, toSec, outDir) {
 }
 
 async function fetchVideo(id) {
-  const res = await fetch(`${base}/api/internal/video/${id}`, {
-    headers: { "x-internal-key": key },
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const res = await fetch(`${base}/api/internal/video/${id}`, {
+      headers: { "x-internal-key": key },
+    });
+    if (res.ok) return res.json();
+    if (res.status >= 500 && attempt < 7) {
+      await sleep(8000);
+      continue;
+    }
+    throw new Error(`HTTP ${res.status}`);
+  }
+  throw new Error("HTTP fetch retries exhausted");
 }
 
 async function startVideo() {

@@ -8260,6 +8260,18 @@ function estimateMontageDurationSec(durations: number[]): number {
   return durations.reduce((s, d) => s + d, 0) - (n - 1) * xfade;
 }
 
+/** Montage length when trims are capped to each clip's probed source duration. */
+function effectiveMontageDurationSec(durations: number[], sourceMaxDurs?: number[]): number {
+  const capped = durations.map((d, i) => {
+    const srcMax = sourceMaxDurs?.[i] ?? 0;
+    if (srcMax > 0.15) {
+      return Math.min(d, Math.max(effectiveMinClipSec() * 0.35, srcMax - 0.05));
+    }
+    return d;
+  });
+  return estimateMontageDurationSec(capped);
+}
+
 function uniqueClipsInOrder(clips: string[]): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
@@ -8380,7 +8392,7 @@ function stretchMontageDurations(
   const maxClip = effectiveMaxClipSec();
   let next = normalizeMontageDurations([...durs], outDur);
   for (let pass = 0; pass < 10; pass++) {
-    if (estimateMontageDurationSec(next) >= outDur * 0.92) break;
+    if (effectiveMontageDurationSec(next, sourceMaxDurs) >= outDur * 0.92) break;
     let grew = false;
     next = next.map((d, i) => {
       const srcMax =
@@ -8444,7 +8456,7 @@ function expandClipsForSceneDuration(
       : expanded.map(() => computeMontageClipDuration(outDur, expanded.length));
   durs = stretchMontageDurations(durs, outDur, srcMaxList);
 
-  while (expanded.length < maxClips && estimateMontageDurationSec(durs) < outDur - 0.08) {
+  while (expanded.length < maxClips && effectiveMontageDurationSec(durs, srcMaxList) < outDur - 0.08) {
     const nextClip = pickMontageExpansionClip(clips, expanded);
     if (!nextClip) break;
     expanded.push(nextClip);
@@ -8462,7 +8474,7 @@ function expandClipsForSceneDuration(
   if (expanded.length > clips.length) {
     console.log(
       `[Pipeline] Expanded montage ${clips.length} → ${expanded.length} clips ` +
-        `(target ${outDur.toFixed(1)}s, est ${estimateMontageDurationSec(durs).toFixed(1)}s)`
+        `(target ${outDur.toFixed(1)}s, est ${effectiveMontageDurationSec(durs, srcMaxList).toFixed(1)}s)`
     );
   }
   return { clips: expanded, beatDurations: durs };
@@ -8516,17 +8528,25 @@ function montageClipPrepFilter(
   sceneIndex: number,
   smoothTransition: boolean,
   xfade: number,
-  clipPath?: string
+  clipPath?: string,
+  sourceMaxSec?: number
 ): string {
   const start = montageClipStartSec(sceneIndex, inputIndex).toFixed(2);
-  const edgeFade = smoothTransition ? Math.min(0.1, dur * 0.06) : 0;
+  let effectiveDur = dur;
+  if (sourceMaxSec && sourceMaxSec > 0.15) {
+    effectiveDur = Math.min(
+      dur,
+      Math.max(effectiveMinClipSec() * 0.35, sourceMaxSec - 0.05)
+    );
+  }
+  const edgeFade = smoothTransition ? Math.min(0.1, effectiveDur * 0.06) : 0;
   const fadeIn = edgeFade;
   const fadeOut = edgeFade;
-  const fadeOutStart = Math.max(0, dur - fadeOut - 0.02);
+  const fadeOutStart = Math.max(0, effectiveDur - fadeOut - 0.02);
   const alreadyFramed =
     clipPath &&
     (isCuratedPreparedStillClip(clipPath) || isCuratedPreparedVideoClip(clipPath));
-  let chain = `[${inputIndex}:v]trim=start=${start}:duration=${dur.toFixed(3)},`;
+  let chain = `[${inputIndex}:v]trim=start=${start}:duration=${effectiveDur.toFixed(3)},`;
   if (alreadyFramed) {
     // Archive beat clip already at 1080p — montage only syncs timing/fps.
     chain += `${FPS_FORMAT_VF}`;
@@ -8547,18 +8567,26 @@ function buildMontageXfadeFilter(
   outDur: number,
   sceneIndex: number,
   clipDurations?: number[],
-  clipPaths?: string[]
+  clipPaths?: string[],
+  sourceMaxDurs?: number[]
 ): { scaleFilters: string; mergeFilter: string; montageLabel: string } {
   const n = Math.max(1, clipCount);
   const minClip = effectiveMinClipSec();
   const maxClip = effectiveMaxClipSec();
   let durs =
     clipDurations?.length === n
-      ? clipDurations.map((d) => Math.max(0.35, Math.min(maxClip, d)))
+      ? clipDurations.map((d, i) => {
+          let capped = Math.max(0.35, Math.min(maxClip, d));
+          const srcMax = sourceMaxDurs?.[i] ?? 0;
+          if (srcMax > 0.15) {
+            capped = Math.min(capped, Math.max(minClip * 0.35, srcMax - 0.05));
+          }
+          return capped;
+        })
       : Array.from({ length: n }, () => computeMontageClipDuration(outDur, n));
-  const presetTotal = estimateMontageDurationSec(durs);
+  const presetTotal = effectiveMontageDurationSec(durs, sourceMaxDurs);
   if (!clipDurations?.length || presetTotal > outDur + 0.35) {
-    durs = normalizeMontageDurations(durs, outDur);
+    durs = normalizeMontageDurations(durs, outDur, sourceMaxDurs);
   }
   const avgDur = durs.reduce((s, d) => s + d, 0) / n;
   const xfade = montageXfadeSec(avgDur);
@@ -8567,14 +8595,14 @@ function buildMontageXfadeFilter(
 
   if (n === 1) {
     return {
-      scaleFilters: montageClipPrepFilter(0, durs[0], sceneIndex, smooth, xfade, clipAt(0)),
+      scaleFilters: montageClipPrepFilter(0, durs[0], sceneIndex, smooth, xfade, clipAt(0), sourceMaxDurs?.[0]),
       mergeFilter: "",
       montageLabel: "v0",
     };
   }
 
   const scaleFilters = Array.from({ length: n }, (_, i) =>
-    montageClipPrepFilter(i, durs[i], sceneIndex, smooth, xfade, clipAt(i))
+    montageClipPrepFilter(i, durs[i], sceneIndex, smooth, xfade, clipAt(i), sourceMaxDurs?.[i])
   ).join(";");
 
   if (xfade <= 0.001) {
@@ -13459,7 +13487,7 @@ async function composeSceneVideo(
       if (srcMax > 0.15) return Math.min(d, Math.max(effectiveMinClipSec() * 0.4, srcMax - 0.05));
       return d;
     });
-    const est = estimateMontageDurationSec(montageDurations);
+    const est = effectiveMontageDurationSec(montageDurations, sourceMaxDurs);
     if (est >= outDur - 0.08) break;
     const before = safeClips.length;
     expandedMontage = expandClipsForSceneDuration(safeClips, outDur, montageDurations, sourceMaxDurs);
@@ -13477,7 +13505,7 @@ async function composeSceneVideo(
     sourceMaxDurs = await probeMontageSourceMaxDurs(safeClips);
   }
   const estBeforeCompose = montageDurations
-    ? estimateMontageDurationSec(montageDurations)
+    ? effectiveMontageDurationSec(montageDurations, sourceMaxDurs)
     : outDur;
   if (estBeforeCompose < outDur - 0.08) {
     console.warn(
@@ -13501,7 +13529,7 @@ async function composeSceneVideo(
 
   try {
     const { scaleFilters, mergeFilter, montageLabel: xfadeLabel } =
-      buildMontageXfadeFilter(safeClips.length, outDur, scene.index, montageDurations, safeClips);
+      buildMontageXfadeFilter(safeClips.length, outDur, scene.index, montageDurations, safeClips, sourceMaxDurs);
     const inputs = montageClipInputs(safeClips);
     const durs =
       montageDurations ??
@@ -13509,11 +13537,12 @@ async function composeSceneVideo(
     const montageLabel = xfadeLabel;
     const padFilter = "";
     const estMontageDur = montageDurations
-      ? estimateMontageDurationSec(montageDurations)
-      : estimateMontageDurationSec(
+      ? effectiveMontageDurationSec(montageDurations, sourceMaxDurs)
+      : effectiveMontageDurationSec(
           Array.from({ length: safeClips.length }, () =>
             computeMontageClipDuration(outDur, safeClips.length)
-          )
+          ),
+          sourceMaxDurs
         );
     const montageOutVF = montageTailPadVF(montageLabel, estMontageDur, outDur);
 
@@ -13580,7 +13609,7 @@ async function composeSceneVideo(
     if (sfxCueFiles.length > 0) {
       try {
         const { scaleFilters, mergeFilter, montageLabel: xfadeLabel } =
-          buildMontageXfadeFilter(safeClips.length, outDur, scene.index, montageDurations, safeClips);
+          buildMontageXfadeFilter(safeClips.length, outDur, scene.index, montageDurations, safeClips, sourceMaxDurs);
         const inputs = montageClipInputs(safeClips);
         const montageLabel = xfadeLabel;
         const audioIdx = safeClips.length;
@@ -13612,7 +13641,7 @@ async function composeSceneVideo(
     if (docOverlays.length > 0 || statCalloutFrame) {
       try {
         const { scaleFilters, mergeFilter, montageLabel: xfadeLabel } =
-          buildMontageXfadeFilter(safeClips.length, outDur, scene.index, montageDurations, safeClips);
+          buildMontageXfadeFilter(safeClips.length, outDur, scene.index, montageDurations, safeClips, sourceMaxDurs);
         const inputs = montageClipInputs(safeClips);
         const montageLabel = xfadeLabel;
         const audioIdx = safeClips.length;
@@ -13661,7 +13690,7 @@ async function composeSceneVideo(
         const n = loopVideo.length;
         if (n > 1) {
           const inputs = montageClipInputs(loopVideo);
-          const { scaleFilters, mergeFilter, montageLabel } = buildMontageXfadeFilter(n, outDur, scene.index, montageDurations, loopVideo);
+          const { scaleFilters, mergeFilter, montageLabel } = buildMontageXfadeFilter(n, outDur, scene.index, montageDurations, loopVideo, sourceMaxDurs.slice(0, n));
           await withTimeout(
             exec(
               `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}" ` +
