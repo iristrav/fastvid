@@ -442,22 +442,64 @@ const YEAR_CAPTION_STOP = new Set([
   "by", "from", "is", "are", "was", "were", "be", "been", "have", "has", "had",
   "this", "that", "these", "those", "it", "its", "not", "no", "de", "het", "een",
   "en", "van", "op", "te", "dat", "die", "zijn", "werd", "wordt", "when", "then",
-  "year", "years", "during", "after", "before", "into", "over", "under",
+  "year", "years", "during", "after", "before", "into", "over", "under", "when",
+  "while", "where", "which", "who", "whom", "whose", "there", "their", "they",
 ]);
 
-/** Short beat caption + year — "EUCLID V AMBLER, 1926" style. */
-export function buildYearDisplayText(beatText: string, year: string): string {
-  const withoutYears = beatText
-    .replace(/\[visual:[^\]]+\]/gi, "")
-    .replace(YEAR_RE, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  const words = withoutYears
+function findYearOccurrenceIndex(text: string, year: string, occurrence = 0): number {
+  const re = new RegExp(`\\b${year}\\b`, "g");
+  let match: RegExpExecArray | null;
+  let n = 0;
+  while ((match = re.exec(text)) !== null) {
+    if (n === occurrence) return match.index;
+    n++;
+  }
+  return -1;
+}
+
+/** Local words right before a year — not the whole beat stitched together. */
+export function buildYearDisplayText(beatText: string, year: string, occurrence = 0): string {
+  const cleaned = beatText.replace(/\[visual:[^\]]+\]/gi, "").replace(/\s+/g, " ").trim();
+  const yearIdx = findYearOccurrenceIndex(cleaned, year, occurrence);
+  if (yearIdx < 0) return year;
+
+  const before = cleaned.slice(0, yearIdx).trim();
+  const beforeWords = before
     .split(/\s+/)
+    .map((w) => w.replace(/[^a-zA-ZÀ-ÿ0-9'-]/g, ""))
     .filter((w) => w.length >= 3 && !YEAR_CAPTION_STOP.has(w.toLowerCase()));
-  const caption = words.slice(0, 4).join(" ").toUpperCase().slice(0, 36);
-  if (!caption) return year;
-  return `${caption}, ${year}`;
+
+  // Only the 1–2 words immediately before the year (e.g. "HITLER ROSE, 1933").
+  const local = beforeWords.slice(-2).join(" ").toUpperCase().slice(0, 22);
+  if (!local || local.length < 3) return year;
+  return `${local}, ${year}`;
+}
+
+function yearStartInBeat(
+  beatText: string,
+  year: string,
+  beatStart: number,
+  beatHoldSec: number,
+  occurrence = 0
+): number {
+  const cleaned = beatText.replace(/\[visual:[^\]]+\]/gi, "");
+  const yearIdx = findYearOccurrenceIndex(cleaned, year, occurrence);
+  if (yearIdx < 0) return beatStart + 0.12;
+  const pos = yearIdx / Math.max(1, cleaned.length);
+  return beatStart + Math.max(0.08, pos * beatHoldSec * 0.88);
+}
+
+function resolveOverlappingYearLabels(labels: TimedYearLabel[], sceneDuration: number): TimedYearLabel[] {
+  const sorted = [...labels].sort((a, b) => a.startTime - b.startTime);
+  for (let i = 1; i < sorted.length; i++) {
+    const prev = sorted[i - 1]!;
+    const cur = sorted[i]!;
+    if (cur.startTime < prev.endTime - 0.15) {
+      cur.startTime = prev.endTime + 0.08;
+      cur.endTime = Math.min(sceneDuration - 0.1, cur.startTime + YEAR_LABEL_ON_SCREEN_SEC);
+    }
+  }
+  return sorted;
 }
 
 /** Year labels on the voice timeline (when the year is spoken). */
@@ -469,23 +511,23 @@ export function planBeatAlignedYears(beats: BeatYearInput[], sceneDuration: numb
     const years = extractYearsFromText(beat.text);
     const beatStart = voiceT;
     voiceT += beat.holdSec;
-    for (let yi = 0; yi < years.length; yi++) {
-      const startTime = Math.max(0.08, beatStart + 0.12 + yi * 0.05);
-      const endTime = Math.min(
-        sceneDuration - 0.1,
-        startTime + YEAR_LABEL_ON_SCREEN_SEC
-      );
+    const yearCounts = new Map<string, number>();
+    for (const year of years) {
+      const occurrence = yearCounts.get(year) ?? 0;
+      yearCounts.set(year, occurrence + 1);
+      const startTime = yearStartInBeat(beat.text, year, beatStart, beat.holdSec, occurrence);
+      const endTime = Math.min(sceneDuration - 0.1, startTime + YEAR_LABEL_ON_SCREEN_SEC);
       if (endTime > startTime + 0.35) {
         labels.push({
-          year: years[yi],
-          displayText: buildYearDisplayText(beat.text, years[yi]),
+          year,
+          displayText: buildYearDisplayText(beat.text, year, occurrence),
           startTime,
           endTime,
         });
       }
     }
   }
-  return labels;
+  return resolveOverlappingYearLabels(labels, sceneDuration);
 }
 
 /** Camera shutter SFX when a still/photo clip enters the montage. */

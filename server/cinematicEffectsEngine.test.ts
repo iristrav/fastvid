@@ -57,10 +57,23 @@ describe("cinematicEffectsEngine", () => {
     expect(labels[0].displayText).toContain("1933");
   });
 
-  it("builds caption plus year display text", () => {
-    const text = buildYearDisplayText("In 1933 Hitler became chancellor of Germany.", "1933");
+  it("builds caption from words local to the year, not whole beat", () => {
+    const long =
+      "Germany was a democratic nation when Adolf Hitler rose to power in 1933.";
+    const text = buildYearDisplayText(long, "1933");
     expect(text).toContain("1933");
-    expect(text).toMatch(/HITLER|CHANCELLOR|GERMANY/i);
+    expect(text).not.toMatch(/GERMANY.*DEMOCRATIC.*NATION/i);
+    expect(text).toMatch(/HITLER|ROSE|POWER/i);
+  });
+
+  it("times each year label near when that year is spoken in the beat", () => {
+    const labels = planBeatAlignedYears(
+      [{ text: "Early talk then war in 1939 changed everything.", holdSec: 10 }],
+      12
+    );
+    expect(labels).toHaveLength(1);
+    expect(labels[0].startTime).toBeGreaterThan(2);
+    expect(labels[0].startTime).toBeLessThan(8);
   });
 
   it("builds drawtext chain with shadow only (no box)", () => {
