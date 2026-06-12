@@ -8224,6 +8224,8 @@ function clipContentKey(filePath: string): string {
 }
 
 function montageClipStartSec(_sceneIndex: number, clipIndex: number): number {
+  // Archive sources often have black leaders — never skip into them when looping segments.
+  if (curatedArchiveOnlyVisuals() || documentaryStyleEnabled()) return 0.04;
   return 0.25 * (clipIndex % 7);
 }
 
