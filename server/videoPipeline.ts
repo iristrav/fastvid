@@ -1134,7 +1134,7 @@ function minClipsForScene(duration: number, beatCount: number, fast = false): nu
   const beatSec = effectiveBeatSec();
   const byDuration = Math.max(1, Math.ceil(duration / beatSec));
   if (curatedArchiveOnlyVisuals()) {
-    return Math.max(1, byDuration);
+    return Math.max(1, Math.ceil(duration / archiveVisualMinClipSec()));
   }
   if (fast && duration <= 10) return 1;
   if (fast) return Math.max(1, Math.min(beatCount, byDuration));
@@ -11889,7 +11889,7 @@ async function pushMotionGraphicBeatClipIfAny(
   workDir: string,
   videoTitle: string | undefined,
   dedup: VisualDedupState,
-  pushClip: (clipPath: string, holdSec?: number) => boolean,
+  pushClip: (clipPath: string, holdSec?: number) => boolean | Promise<boolean>,
   holdSec = beat.holdSec
 ): Promise<boolean> {
   if (yearsOnlyOnScreen() || !motionGraphicsEnabled()) return false;
@@ -11908,7 +11908,7 @@ async function pushMotionGraphicBeatClipIfAny(
   );
   if (!mgfxClip) return false;
   dedup.motionGraphicsUsed++;
-  return pushClip(mgfxClip, holdSec);
+  return await pushClip(mgfxClip, holdSec);
 }
 
 async function applyVideoBeatTextOverlay(
@@ -11939,7 +11939,7 @@ async function adoptArchiveBeatClip(
   workDir: string,
   videoTitle: string | undefined,
   dedup: VisualDedupState,
-  pushClip: (clipPath: string, holdSec?: number) => boolean,
+  pushClip: (clipPath: string, holdSec?: number) => boolean | Promise<boolean>,
   initialClip: string | null = null,
   holdSec = beat.holdSec
 ): Promise<boolean> {
@@ -11953,7 +11953,7 @@ async function adoptArchiveBeatClip(
     }
     const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec);
     if (await isMostlyBlackClip(withText)) return false;
-    return pushClip(withText, sec);
+    return await pushClip(withText, sec);
   };
 
   if (await tryClip(initialClip, holdSec)) return true;
@@ -12041,7 +12041,7 @@ async function fetchSceneVisuals(
     scriptAnchored: dedup.perf.fastStockMode ? false : dedup.perf.scriptOnlyVisuals,
   };
 
-  const pushSceneClip = (clipPath: string, holdSec: number, beatIndex: number): boolean => {
+  const pushSceneClip = async (clipPath: string, holdSec: number, beatIndex: number): Promise<boolean> => {
     const key = clipContentKey(clipPath);
     if (dedup.usedContentKeys.has(key)) {
       console.warn(
@@ -12049,9 +12049,16 @@ async function fetchSceneVisuals(
       );
       return false;
     }
+    let actualHold = holdSec;
+    if (fs.existsSync(clipPath)) {
+      const probed = await probeVideoDurationSec(clipPath);
+      if (probed > 0.15) {
+        actualHold = Math.min(holdSec, probed - 0.04);
+      }
+    }
     dedup.usedContentKeys.add(key);
     clips.push(clipPath);
-    beatDurations.push(holdSec);
+    beatDurations.push(actualHold);
     markCuratedAssetUsed(clipPath, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls);
     if (archiveOnly) archiveBeatFilled.add(beatIndex);
     if (
@@ -12067,7 +12074,7 @@ async function fetchSceneVisuals(
     const beat = beats[bi];
     beatAdoptOpts.keywords = beat.keywords;
     onBeatProgress?.(bi, beats.length, "beat");
-    const pushClip = (clipPath: string, holdSec = beat.holdSec): boolean =>
+    const pushClip = (clipPath: string, holdSec = beat.holdSec): Promise<boolean> =>
       pushSceneClip(clipPath, holdSec, beat.index);
     const beatWallMs = beatVisualWallMs(dedup.perf);
     let clip: string | null = null;
@@ -12204,7 +12211,7 @@ async function fetchSceneVisuals(
         clip = null;
       } else {
         clip = await applyVideoBeatTextOverlay(clip, beat, scene, workDir, beat.holdSec);
-        pushClip(clip);
+        await pushClip(clip);
       }
     }
     if (
@@ -12227,7 +12234,7 @@ async function fetchSceneVisuals(
       }
       if (aiOnly && !isPipelineFallbackClip(aiOnly)) {
         const withText = await applyVideoBeatTextOverlay(aiOnly, beat, scene, workDir, beat.holdSec);
-        pushClip(withText);
+        await pushClip(withText);
         console.log(
           `[Pipeline] Scene ${scene.index} beat ${beat.index}: AI clip (power word "${beat.powerWord}")`
         );
@@ -12303,7 +12310,7 @@ async function fetchSceneVisuals(
       }
       if (rescue && !isPipelineFallbackClip(rescue)) {
         const withText = await applyVideoBeatTextOverlay(rescue, beat, scene, workDir, beat.holdSec);
-        pushClip(withText);
+        await pushClip(withText);
       } else if (!archiveOnly) {
         console.warn(
           `[Pipeline] Scene ${scene.index} beat ${beat.index}: no clip (beat skipped, no grey)`
@@ -12315,7 +12322,7 @@ async function fetchSceneVisuals(
   if (archiveOnly) {
     for (const beat of beats) {
       if (archiveBeatFilled.has(beat.index)) continue;
-      const pushBeat = (clipPath: string, holdSec = beat.holdSec) =>
+      const pushBeat = async (clipPath: string, holdSec = beat.holdSec) =>
         pushSceneClip(clipPath, holdSec, beat.index);
       if (!(await adoptArchiveBeatClip(beat, scene, workDir, videoTitle, dedup, pushBeat, null))) {
         console.warn(
@@ -12330,9 +12337,11 @@ async function fetchSceneVisuals(
   const maxBackfill = maxBackfillAttempts(dedup.perf, scene.duration);
   const backfillMs = backfillClipWallMs(dedup.perf, scene.duration);
   const scenePersonsForBackfill = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
+  const sceneClipSec = () => beatDurations.reduce((sum, d) => sum + d, 0);
   while (
-    clips.filter((c) => c && !isPipelineFallbackClip(c)).length < minClips &&
-    backfillAttempts < maxBackfill
+    backfillAttempts < maxBackfill &&
+    (clips.filter((c) => c && !isPipelineFallbackClip(c)).length < minClips ||
+      (archiveOnly && sceneClipSec() < scene.duration * 0.92))
   ) {
     const stub = beats[beats.length - 1] ?? beats[0];
     if (!stub) break;
@@ -12429,7 +12438,7 @@ async function fetchSceneVisuals(
     }
     if (!extra || isPipelineFallbackClip(extra)) break;
     if (archiveOnly) {
-      if (!pushSceneClip(extra, stub.holdSec, stub.index)) continue;
+      if (!(await pushSceneClip(extra, stub.holdSec, stub.index))) continue;
     } else {
       if (clips.some((c) => clipContentKey(c) === clipContentKey(extra))) break;
       clips.push(extra);
@@ -12454,7 +12463,7 @@ async function fetchSceneVisuals(
           curatedInterviewBudget(dedup),
       curatedImageBudget(dedup)
         );
-        if (extra && !isPipelineFallbackClip(extra) && pushSceneClip(extra, stub.holdSec, stub.index)) {
+        if (extra && !isPipelineFallbackClip(extra) && (await pushSceneClip(extra, stub.holdSec, stub.index))) {
           break;
         }
       }
