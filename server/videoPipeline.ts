@@ -8089,9 +8089,11 @@ async function isMostlyBlackClip(filePath: string): Promise<boolean> {
   }
   // B&W archival clips often fail Railway luma heuristics — never drop curated archive beats.
   if (curatedArchiveOnlyVisuals() && curatedClipPathAssetId(filePath) != null) {
-    if (IS_RAILWAY) {
-      const mid = await probeClipMeanLuma(filePath, 0.5);
-      if (mid !== null && mid < 18) return true;
+    const dur = await probeVideoDurationSec(filePath);
+    const sampleTimes = [0.12, 0.45, 1.0, Math.max(0.2, dur * 0.55)];
+    for (const t of sampleTimes) {
+      const mid = await probeClipMeanLuma(filePath, Math.min(t, Math.max(0.1, dur - 0.08)));
+      if (mid !== null && mid < 12) return true;
     }
     return false;
   }
@@ -8539,10 +8541,12 @@ function montageClipPrepFilter(
       Math.max(effectiveMinClipSec() * 0.35, sourceMaxSec - 0.05)
     );
   }
-  const edgeFade = smoothTransition ? Math.min(0.1, effectiveDur * 0.06) : 0;
+  const edgeFade =
+    smoothTransition && xfade > 0.001 ? Math.min(0.08, effectiveDur * 0.05) : 0;
   const fadeIn = edgeFade;
   const fadeOut = edgeFade;
   const fadeOutStart = Math.max(0, effectiveDur - fadeOut - 0.02);
+  const fadeColor = "0x2A2A2A";
   const alreadyFramed =
     clipPath &&
     (isCuratedPreparedStillClip(clipPath) || isCuratedPreparedVideoClip(clipPath));
@@ -8555,8 +8559,8 @@ function montageClipPrepFilter(
   } else {
     chain += `${CROP_FILL_VF},${FPS_FORMAT_VF}`;
   }
-  if (fadeIn > 0.05) chain += `,fade=t=in:st=0:d=${fadeIn.toFixed(3)}`;
-  if (fadeOut > 0.05) chain += `,fade=t=out:st=${fadeOutStart.toFixed(3)}:d=${fadeOut.toFixed(3)}`;
+  if (fadeIn > 0.05) chain += `,fade=t=in:st=0:d=${fadeIn.toFixed(3)}:color=${fadeColor}`;
+  if (fadeOut > 0.05) chain += `,fade=t=out:st=${fadeOutStart.toFixed(3)}:d=${fadeOut.toFixed(3)}:color=${fadeColor}`;
   chain += `,setpts=PTS-STARTPTS[v${inputIndex}]`;
   return chain;
 }
@@ -13742,8 +13746,7 @@ async function composeSceneVideo(
     throw pipelineError(PIPELINE_ERROR.FFMPEG, `Scene ${scene.index} produced no output video`);
   }
 
-  const skipBlackRescue =
-    curatedArchiveOnlyVisuals() || safeClips.length > 1;
+  const skipBlackRescue = false;
   if (
     !skipBlackRescue &&
     (await isMostlyBlackClip(outputPath)) &&

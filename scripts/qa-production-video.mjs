@@ -173,7 +173,7 @@ function qaReport(data) {
   if (data.status !== "completed") issues.push(`status=${data.status} ${data.errorMessage ?? ""}`);
   if (dur < 45) issues.push(`video too short: ${dur}s (voice likely cut off)`);
   if (frozen.seconds >= 5) issues.push(`frozen segment ~${frozen.seconds}s at t=${frozen.startSec}s`);
-  if (blackFrames >= 2) issues.push(`${blackFrames} near-black center frames`);
+  if (blackFrames >= 1) issues.push(`${blackFrames} near-black center frames`);
   if (grayFrames >= 3) issues.push(`${grayFrames} gray-pad filler frames (montage gap)`);
 
   const pass = issues.length === 0;
