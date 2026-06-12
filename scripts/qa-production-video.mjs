@@ -89,7 +89,7 @@ function longestFrozenRun(url, fromSec, toSec, outDir) {
   let prev = null;
   for (let t = fromSec; t <= toSec; t++) {
     const s = sampleFrame(url, t, `f_${t}`, outDir);
-    const lum = Math.round(s.center);
+    const lum = Math.round(s.center * 10) / 10;
     if (prev !== null && lum === prev) {
       if (cur === 0) curStart = t - 1;
       cur++;
