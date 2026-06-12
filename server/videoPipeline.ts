@@ -8364,32 +8364,26 @@ function normalizeMontageDurations(
   return normalized;
 }
 
-/** Cycle clips until montage covers scene duration — prefer longer holds over repeating the same clip. */
+/** Pick an unused clip from the scene pool — each clip content may appear only once. */
 function pickMontageExpansionClip(clips: string[], expanded: string[]): string | null {
   if (clips.length === 0) return null;
-  if (clips.length === 1) return clips[0]!;
-  const prevKey = clipContentKey(expanded[expanded.length - 1]!);
-  const useCount = new Map<string, number>();
-  for (const c of expanded) {
-    const k = clipContentKey(c);
-    useCount.set(k, (useCount.get(k) ?? 0) + 1);
-  }
-  let best: string | null = null;
-  let bestScore = -Infinity;
+  const usedKeys = new Set(expanded.map((c) => clipContentKey(c)));
+  const prevKey = expanded.length ? clipContentKey(expanded[expanded.length - 1]!) : "";
   const pool = clips.some((c) => !isMotionGraphicClip(c))
     ? clips.filter((c) => !isMotionGraphicClip(c))
     : clips;
+
   for (const c of pool) {
     const k = clipContentKey(c);
+    if (usedKeys.has(k)) continue;
     if (k === prevKey) continue;
-    const uses = useCount.get(k) ?? 0;
-    const score = -uses * 100;
-    if (score > bestScore) {
-      bestScore = score;
-      best = c;
-    }
+    return c;
   }
-  return best;
+  for (const c of pool) {
+    const k = clipContentKey(c);
+    if (!usedKeys.has(k)) return c;
+  }
+  return null;
 }
 
 function stretchMontageDurations(
@@ -8416,6 +8410,32 @@ function stretchMontageDurations(
     if (!grew) break;
   }
   return next;
+}
+
+function dedupeMontageClipsByContentKey(
+  clips: string[],
+  beatDurations?: number[]
+): { clips: string[]; beatDurations?: number[] } {
+  const seen = new Set<string>();
+  const outClips: string[] = [];
+  const outDurs: number[] = [];
+  for (let i = 0; i < clips.length; i++) {
+    const clip = clips[i]!;
+    const key = clipContentKey(clip);
+    if (seen.has(key)) {
+      console.warn(
+        `[Pipeline] Dropping repeat montage clip ${path.basename(clip)} (once per video)`
+      );
+      continue;
+    }
+    seen.add(key);
+    outClips.push(clip);
+    if (beatDurations?.length === clips.length) outDurs.push(beatDurations[i]!);
+  }
+  return {
+    clips: outClips,
+    beatDurations: outDurs.length === outClips.length ? outDurs : beatDurations,
+  };
 }
 
 function dedupeAdjacentMontageClips(
@@ -8478,6 +8498,15 @@ function expandClipsForSceneDuration(
   }
 
   durs = stretchMontageDurations(durs, outDur, srcMaxList);
+
+  const maxByKey = new Map<string, number>();
+  for (let i = 0; i < expanded.length; i++) {
+    maxByKey.set(clipContentKey(expanded[i]!), srcMaxList[i] ?? 0);
+  }
+  const deduped = dedupeMontageClipsByContentKey(expanded, durs);
+  expanded = deduped.clips;
+  durs = deduped.beatDurations ?? durs;
+  srcMaxList = expanded.map((c) => maxByKey.get(clipContentKey(c)) ?? 0);
 
   if (expanded.length > clips.length) {
     console.log(
@@ -12128,7 +12157,7 @@ async function fetchSceneVisuals(
     const key = clipContentKey(clipPath);
     if (dedup.usedContentKeys.has(key)) {
       console.warn(
-        `[Pipeline] Scene ${scene.index} beat ${beatIndex}: skipping duplicate clip ${path.basename(clipPath)}`
+        `[Pipeline] Scene ${scene.index} beat ${beatIndex}: skipping duplicate clip ${path.basename(clipPath)} (once per video)`
       );
       return false;
     }
@@ -13254,7 +13283,7 @@ async function composeSceneVideo(
       ? path.join(workDir, `scene_${scene.index}_assembly.mp4`)
       : path.join(workDir, `scene_${scene.index}_composed.mp4`);
 
-  // Real stock only — no grey placeholders, no duplicate clips in this scene.
+  // Real stock only — no grey placeholders, no duplicate clips in this video.
   let existingClips = clips.filter(
     (p) => p && fs.existsSync(p) && fs.statSync(p).size > 100 && !isPipelineFallbackClip(p)
   );
@@ -13522,6 +13551,10 @@ async function composeSceneVideo(
     montageDurations = await capMontageDurationsToClipFiles(safeClips, montageDurations);
     sourceMaxDurs = await probeMontageSourceMaxDurs(safeClips);
   }
+  const montageDeduped = dedupeMontageClipsByContentKey(safeClips, montageDurations);
+  safeClips = montageDeduped.clips;
+  montageDurations = montageDeduped.beatDurations;
+  sourceMaxDurs = await probeMontageSourceMaxDurs(safeClips);
   const estBeforeCompose = montageDurations
     ? effectiveMontageDurationSec(montageDurations, sourceMaxDurs)
     : outDur;
