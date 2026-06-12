@@ -8274,55 +8274,32 @@ function montageClipInputs(clips: string[]): string {
 }
 
 function montageTailPadVF(inLabel: string, montageDur: number, outDur: number): string {
-  const target = Math.min(outDur, Math.max(montageDur, 0.1));
-  if (Math.abs(target - montageDur) < 0.08) {
+  const pad = Math.max(0, outDur - montageDur - 0.04);
+  if (pad < 0.08) {
     return `[${inLabel}]${FPS_FORMAT_VF}[vmont]`;
   }
-  return `[${inLabel}]trim=duration=${target.toFixed(3)},${FPS_FORMAT_VF}[vmont]`;
+  // Pad with gray to match voice length — never freeze on the last video frame.
+  return `[${inLabel}]tpad=stop_mode=add:stop_duration=${pad.toFixed(3)}:color=0x2a2a2a,${FPS_FORMAT_VF}[vmont]`;
 }
 
-async function alignComposedSceneToMontage(
-  outputPath: string,
-  safeAudioPath: string,
-  targetDur: number,
-  voiceDur: number,
-  sceneIndex: number,
-  threadFlag: string
-): Promise<void> {
-  const composedDur = await probeVideoDurationSec(outputPath);
-  if (composedDur <= 0 || composedDur >= targetDur - 0.12) return;
-
-  console.warn(
-    `[Pipeline] Scene ${sceneIndex}: montage ${composedDur.toFixed(1)}s < target ${targetDur.toFixed(1)}s — trimming to montage (no loop/freeze)`
-  );
-  const trimmedPath = outputPath.replace(/\.mp4$/, "_montage_trim.mp4");
-  const audioDur = Math.min(voiceDur, composedDur);
-  const audioFadeOutStart = Math.max(0, audioDur - 0.15);
-  try {
-    await withTimeout(
-      exec(
-        `${FFMPEG_BIN} -y -i "${outputPath}" -i "${safeAudioPath}" ` +
-          `-filter_complex "[0:v]trim=duration=${composedDur.toFixed(3)},setpts=PTS-STARTPTS,${FPS_FORMAT_VF}[vout];` +
-          `[1:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${audioFadeOutStart.toFixed(3)}:d=0.12,` +
-          `atrim=0:${audioDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
-          `-map "[vout]" -map "[aout]" -vsync cfr -t ${composedDur.toFixed(3)} ${threadFlag} ` +
-          `-c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${trimmedPath}"`
-      ),
-      90_000,
-      `Trim scene ${sceneIndex} to montage length`
-    );
-    if (fs.existsSync(trimmedPath) && fs.statSync(trimmedPath).size > 1000) {
-      fs.unlinkSync(outputPath);
-      fs.renameSync(trimmedPath, outputPath);
-    }
-  } catch (err) {
-    console.warn(`[Pipeline] Scene ${sceneIndex}: montage trim failed (non-fatal):`, (err as Error).message);
-    try {
-      if (fs.existsSync(trimmedPath)) fs.unlinkSync(trimmedPath);
-    } catch {
-      /* ignore */
+async function capMontageDurationsToClipFiles(clips: string[], durs: number[]): Promise<number[]> {
+  const capped: number[] = [];
+  for (let i = 0; i < clips.length; i++) {
+    const req = durs[i] ?? effectiveBeatSec();
+    const probed = await probeVideoDurationSec(clips[i]!);
+    if (probed > 0.15) {
+      const maxUsable = Math.max(effectiveMinClipSec() * 0.4, probed - 0.05);
+      if (maxUsable < req - 0.1) {
+        console.warn(
+          `[Pipeline] Montage clip ${path.basename(clips[i]!)}: capping ${req.toFixed(1)}s → ${maxUsable.toFixed(1)}s (source ${probed.toFixed(1)}s)`
+        );
+      }
+      capped.push(Math.min(req, maxUsable));
+    } else {
+      capped.push(req);
     }
   }
+  return capped;
 }
 
 function normalizeMontageDurations(durations: number[], outDur: number): number[] {
@@ -8429,12 +8406,37 @@ function expandClipsForSceneDuration(
   beatDurations?: number[]
 ): { clips: string[]; beatDurations?: number[] } {
   if (clips.length === 0) return { clips, beatDurations };
+  const maxClips = Math.min(24, Math.max(12, Math.ceil(outDur / effectiveMinClipSec()) + 2));
+  let expanded = [...clips];
   let durs =
-    beatDurations?.length === clips.length
+    beatDurations?.length === expanded.length
       ? [...beatDurations]
-      : clips.map(() => computeMontageClipDuration(outDur, clips.length));
+      : expanded.map(() => computeMontageClipDuration(outDur, expanded.length));
   durs = stretchMontageDurations(durs, outDur);
-  return { clips, beatDurations: durs };
+
+  while (expanded.length < maxClips && estimateMontageDurationSec(durs) < outDur - 0.15) {
+    const nextClip = pickMontageExpansionClip(clips, expanded);
+    if (!nextClip) break;
+    expanded.push(nextClip);
+    const addedIdx = clips.indexOf(nextClip);
+    const nextDur =
+      (addedIdx >= 0 ? durs[addedIdx] ?? beatDurations?.[addedIdx] : undefined) ??
+      computeMontageClipDuration(outDur, clips.length);
+    durs = normalizeMontageDurations([...durs, nextDur], outDur);
+  }
+
+  const deduped = dedupeAdjacentMontageClips(expanded, durs);
+  expanded = deduped.clips;
+  durs = deduped.beatDurations ?? durs;
+  durs = stretchMontageDurations(durs, outDur);
+
+  if (expanded.length > clips.length) {
+    console.log(
+      `[Pipeline] Expanded montage ${clips.length} → ${expanded.length} clips ` +
+        `(target ${outDur.toFixed(1)}s, est ${estimateMontageDurationSec(durs).toFixed(1)}s)`
+    );
+  }
+  return { clips: expanded, beatDurations: durs };
 }
 
 /** Keep per-beat timing when compose drops invalid/duplicate clips. */
@@ -8507,9 +8509,12 @@ function buildMontageXfadeFilter(
   const maxClip = effectiveMaxClipSec();
   let durs =
     clipDurations?.length === n
-      ? clipDurations.map((d) => Math.max(minClip, Math.min(maxClip, d)))
+      ? clipDurations.map((d) => Math.max(0.35, Math.min(maxClip, d)))
       : Array.from({ length: n }, () => computeMontageClipDuration(outDur, n));
-  durs = normalizeMontageDurations(durs, outDur);
+  const presetTotal = estimateMontageDurationSec(durs);
+  if (!clipDurations?.length || presetTotal > outDur + 0.35) {
+    durs = normalizeMontageDurations(durs, outDur);
+  }
   const avgDur = durs.reduce((s, d) => s + d, 0) / n;
   const xfade = montageXfadeSec(avgDur);
   const smooth = curatedArchiveOnlyVisuals() || documentaryStyleEnabled();
@@ -13378,16 +13383,37 @@ async function composeSceneVideo(
   const outDur = voiceDur + 0.12;
 
   const montageDurationsRaw = alignBeatDurationsWithClips(clips, safeClips, beatDurations);
-  const expandedMontage = expandClipsForSceneDuration(safeClips, outDur, montageDurationsRaw);
+  let expandedMontage = expandClipsForSceneDuration(safeClips, outDur, montageDurationsRaw);
   safeClips = expandedMontage.clips;
   let montageDurations = expandedMontage.beatDurations;
   if (usedClipsOut) {
     usedClipsOut.length = 0;
     usedClipsOut.push(...uniqueClipsInOrder(safeClips));
   }
+  for (let fillPass = 0; fillPass < 4 && montageDurations?.length === safeClips.length; fillPass++) {
+    montageDurations = await capMontageDurationsToClipFiles(safeClips, montageDurations);
+    const est = estimateMontageDurationSec(montageDurations);
+    if (est >= outDur - 0.12) break;
+    const before = safeClips.length;
+    expandedMontage = expandClipsForSceneDuration(safeClips, outDur, montageDurations);
+    safeClips = expandedMontage.clips;
+    montageDurations = expandedMontage.beatDurations;
+    if (safeClips.length === before) break;
+    if (usedClipsOut) {
+      usedClipsOut.length = 0;
+      usedClipsOut.push(...uniqueClipsInOrder(safeClips));
+    }
+  }
   if (montageDurations?.length === safeClips.length) {
-    montageDurations = montageDurations.map((d) => Math.min(effectiveMaxClipSec(), d));
-    montageDurations = stretchMontageDurations(montageDurations, outDur);
+    montageDurations = await capMontageDurationsToClipFiles(safeClips, montageDurations);
+  }
+  const estBeforeCompose = montageDurations
+    ? estimateMontageDurationSec(montageDurations)
+    : outDur;
+  if (estBeforeCompose < outDur - 0.2) {
+    console.warn(
+      `[Pipeline] Scene ${scene.index}: montage est ${estBeforeCompose.toFixed(1)}s < voice ${outDur.toFixed(1)}s — gray pad will fill gap`
+    );
   }
 
   if (!skipEffectLayers && yearsOnlyOnScreen() && cinematicEffectsEnabled()) {
@@ -13624,15 +13650,6 @@ async function composeSceneVideo(
   if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size < 1000) {
     throw pipelineError(PIPELINE_ERROR.FFMPEG, `Scene ${scene.index} produced no output video`);
   }
-
-  await alignComposedSceneToMontage(
-    outputPath,
-    safeAudioPath,
-    outDur,
-    voiceDur,
-    scene.index,
-    threadFlag
-  );
 
   const skipBlackRescue =
     curatedArchiveOnlyVisuals() || safeClips.length > 1;
