@@ -426,6 +426,49 @@ export function computeMontageBeatStarts(durations: number[], xfadeSec = 0): num
 
 export type BeatYearInput = { text: string; holdSec: number };
 
+export type TimedYearLabel = { year: string; startTime: number; endTime: number };
+
+/** Year labels on the voice timeline (when the year is spoken). */
+export function planBeatAlignedYears(beats: BeatYearInput[], sceneDuration: number): TimedYearLabel[] {
+  const labels: TimedYearLabel[] = [];
+  let voiceT = 0;
+  for (let i = 0; i < beats.length; i++) {
+    const beat = beats[i];
+    const years = extractYearsFromText(beat.text);
+    const beatStart = voiceT;
+    voiceT += beat.holdSec;
+    for (let yi = 0; yi < years.length; yi++) {
+      const startTime = Math.max(0.08, beatStart + 0.12 + yi * 0.05);
+      const endTime = Math.min(sceneDuration - 0.1, beatStart + beat.holdSec - 0.05);
+      if (endTime > startTime + 0.35) {
+        labels.push({ year: years[yi], startTime, endTime });
+      }
+    }
+  }
+  return labels;
+}
+
+/** Burn year numbers on B-roll — white text + shadow, no black box over the video. */
+export function buildYearDrawtextFilterChain(
+  inLabel: string,
+  outLabel: string,
+  years: TimedYearLabel[]
+): string {
+  if (!years.length) return `;[${inLabel}]copy[${outLabel}]`;
+  let chain = "";
+  let prev = inLabel;
+  years.forEach((entry, i) => {
+    const next = i === years.length - 1 ? outLabel : `yr${i}`;
+    const safe = sanitizeForDrawtext(entry.year, 8);
+    const enable = `enable='between(t\\,${entry.startTime.toFixed(2)}\\,${entry.endTime.toFixed(2)})'`;
+    chain +=
+      `;[${prev}]drawtext=text='${safe}':fontcolor=white:fontsize=68:x=52:y=h-th-58:` +
+      `borderw=3:bordercolor=0x00000066:box=0:${enable}[${next}]`;
+    prev = next;
+  });
+  return chain;
+}
+
 /** Year badges timed to the beat when the year is spoken (bottom-left overlay). */
 export async function buildBeatAlignedYearOverlays(
   beats: BeatYearInput[],

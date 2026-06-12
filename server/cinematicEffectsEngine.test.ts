@@ -7,6 +7,8 @@ import {
   extractStatFromText,
   extractYearsFromText,
   computeMontageBeatStarts,
+  planBeatAlignedYears,
+  buildYearDrawtextFilterChain,
   overlayUsesFullFrame,
   parseFacelessSubtitleLines,
   planCinematicScene,
@@ -35,6 +37,28 @@ describe("cinematicEffectsEngine", () => {
     expect(extractStatFromText("Costs reached $4.2 billion in 1945")).toBe("$4.2 billion");
     expect(extractStatFromText("Unemployment hit 25%")).toMatch(/25%/);
     expect(extractStatFromText("Only year 1989")).toBeNull();
+  });
+
+  it("plans voice-synced year labels", () => {
+    const labels = planBeatAlignedYears(
+      [
+        { text: "In 1933 Hitler became chancellor.", holdSec: 5 },
+        { text: "War began in 1939.", holdSec: 4 },
+      ],
+      12
+    );
+    expect(labels.map((l) => l.year)).toEqual(["1933", "1939"]);
+    expect(labels[0].startTime).toBeGreaterThan(0);
+    expect(labels[1].startTime).toBeGreaterThan(labels[0].startTime);
+  });
+
+  it("builds drawtext chain without box overlay", () => {
+    const chain = buildYearDrawtextFilterChain("vmont", "vout", [
+      { year: "1939", startTime: 2, endTime: 6 },
+    ]);
+    expect(chain).toContain("drawtext");
+    expect(chain).toContain("box=0");
+    expect(chain).not.toContain("drawbox");
   });
 
   it("computes beat-aligned year overlay timing", () => {

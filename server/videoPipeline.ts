@@ -52,6 +52,9 @@ import {
 import {
   buildCinematicOverlays,
   buildBeatAlignedYearOverlays,
+  planBeatAlignedYears,
+  buildYearDrawtextFilterChain,
+  type TimedYearLabel,
   buildCinematicSfxAudioFilter,
   burnFacelessTextOnVideoClip,
   cinematicEffectsEnabled,
@@ -8302,36 +8305,49 @@ async function capMontageDurationsToClipFiles(clips: string[], durs: number[]): 
   return capped;
 }
 
-function normalizeMontageDurations(durations: number[], outDur: number): number[] {
+function normalizeMontageDurations(
+  durations: number[],
+  outDur: number,
+  sourceMaxDurs?: number[]
+): number[] {
   const n = durations.length;
   if (n === 0) return durations;
   const maxClip = effectiveMaxClipSec();
   const minClip = curatedArchiveOnlyVisuals() ? effectiveMinClipSec() : VIDRUSH_CLIP_MIN_SEC * 0.85;
   const xfade = n > 1 ? montageXfadeSec() : 0;
+  const capDur = (d: number, i: number) => {
+    let capped = Math.max(minClip, Math.min(maxClip, d));
+    const srcMax = sourceMaxDurs?.[i];
+    if (srcMax && srcMax > 0.15) {
+      capped = Math.min(capped, Math.max(minClip * 0.4, srcMax - 0.05));
+    }
+    return capped;
+  };
 
-  let normalized = durations.map((d) => Math.max(minClip, Math.min(maxClip, d)));
+  let normalized = durations.map((d, i) => capDur(d, i));
   let total = estimateMontageDurationSec(normalized);
   if (total <= 0.1) return normalized;
 
   if (total < outDur - 0.35) {
     const scale = outDur / total;
-    normalized = normalized.map((d) => Math.min(maxClip, d * scale));
+    normalized = normalized.map((d, i) => capDur(d * scale, i));
     total = estimateMontageDurationSec(normalized);
     if (total < outDur - 0.35) {
       const floor = curatedArchiveOnlyVisuals() ? 2.5 : VIDRUSH_CLIP_MIN_SEC * 0.85;
       const even = (outDur + (normalized.length - 1) * xfade) / normalized.length;
-      normalized = normalized.map(() => Math.max(floor, Math.min(maxClip, even)));
+      normalized = normalized.map((_, i) => capDur(even, i));
     }
   } else if (total > outDur + 0.35) {
     const scale = outDur / total;
-    normalized = normalized.map((d) => Math.max(minClip * 0.85, Math.min(maxClip, d * scale)));
+    normalized = normalized.map((d, i) => capDur(Math.max(minClip * 0.85, d * scale), i));
   }
   return normalized;
 }
 
 /** Cycle clips until montage covers scene duration — prefer longer holds over repeating the same clip. */
 function pickMontageExpansionClip(clips: string[], expanded: string[]): string | null {
-  if (clips.length <= 1) return null;
+  if (clips.length === 0) return null;
+  if (clips.length === 1) return clips[0]!;
   const prevKey = clipContentKey(expanded[expanded.length - 1]!);
   const useCount = new Map<string, number>();
   for (const c of expanded) {
@@ -8356,18 +8372,27 @@ function pickMontageExpansionClip(clips: string[], expanded: string[]): string |
   return best;
 }
 
-function stretchMontageDurations(durs: number[], outDur: number): number[] {
+function stretchMontageDurations(
+  durs: number[],
+  outDur: number,
+  sourceMaxDurs?: number[]
+): number[] {
   const maxClip = effectiveMaxClipSec();
   let next = normalizeMontageDurations([...durs], outDur);
   for (let pass = 0; pass < 10; pass++) {
     if (estimateMontageDurationSec(next) >= outDur * 0.92) break;
     let grew = false;
-    next = next.map((d) => {
-      if (d >= maxClip - 0.05) return d;
+    next = next.map((d, i) => {
+      const srcMax =
+        sourceMaxDurs?.[i] && sourceMaxDurs[i]! > 0.15
+          ? Math.max(effectiveMinClipSec() * 0.4, sourceMaxDurs[i]! - 0.05)
+          : maxClip;
+      const ceiling = Math.min(maxClip, srcMax);
+      if (d >= ceiling - 0.05) return d;
       grew = true;
-      return Math.min(maxClip, d * 1.12);
+      return Math.min(ceiling, d * 1.12);
     });
-    next = normalizeMontageDurations(next, outDur);
+    next = normalizeMontageDurations(next, outDur, sourceMaxDurs);
     if (!grew) break;
   }
   return next;
@@ -8403,32 +8428,36 @@ function dedupeAdjacentMontageClips(
 function expandClipsForSceneDuration(
   clips: string[],
   outDur: number,
-  beatDurations?: number[]
+  beatDurations?: number[],
+  sourceMaxDurs?: number[]
 ): { clips: string[]; beatDurations?: number[] } {
   if (clips.length === 0) return { clips, beatDurations };
-  const maxClips = Math.min(24, Math.max(12, Math.ceil(outDur / effectiveMinClipSec()) + 2));
+  const maxClips = Math.min(32, Math.max(14, Math.ceil(outDur / effectiveMinClipSec()) + 4));
   let expanded = [...clips];
+  let srcMaxList =
+    sourceMaxDurs?.length === expanded.length
+      ? [...sourceMaxDurs]
+      : expanded.map((c, i) => sourceMaxDurs?.[clips.indexOf(c)] ?? sourceMaxDurs?.[i] ?? 0);
   let durs =
     beatDurations?.length === expanded.length
       ? [...beatDurations]
       : expanded.map(() => computeMontageClipDuration(outDur, expanded.length));
-  durs = stretchMontageDurations(durs, outDur);
+  durs = stretchMontageDurations(durs, outDur, srcMaxList);
 
-  while (expanded.length < maxClips && estimateMontageDurationSec(durs) < outDur - 0.15) {
+  while (expanded.length < maxClips && estimateMontageDurationSec(durs) < outDur - 0.08) {
     const nextClip = pickMontageExpansionClip(clips, expanded);
     if (!nextClip) break;
     expanded.push(nextClip);
-    const addedIdx = clips.indexOf(nextClip);
+    const poolIdx = clips.indexOf(nextClip);
     const nextDur =
-      (addedIdx >= 0 ? durs[addedIdx] ?? beatDurations?.[addedIdx] : undefined) ??
+      (poolIdx >= 0 ? durs[poolIdx] ?? beatDurations?.[poolIdx] : undefined) ??
       computeMontageClipDuration(outDur, clips.length);
-    durs = normalizeMontageDurations([...durs, nextDur], outDur);
+    const nextSrcMax = poolIdx >= 0 ? srcMaxList[poolIdx] ?? sourceMaxDurs?.[poolIdx] ?? 0 : 0;
+    srcMaxList = [...srcMaxList, nextSrcMax];
+    durs = normalizeMontageDurations([...durs, nextDur], outDur, srcMaxList);
   }
 
-  const deduped = dedupeAdjacentMontageClips(expanded, durs);
-  expanded = deduped.clips;
-  durs = deduped.beatDurations ?? durs;
-  durs = stretchMontageDurations(durs, outDur);
+  durs = stretchMontageDurations(durs, outDur, srcMaxList);
 
   if (expanded.length > clips.length) {
     console.log(
@@ -8437,6 +8466,22 @@ function expandClipsForSceneDuration(
     );
   }
   return { clips: expanded, beatDurations: durs };
+}
+
+async function probeMontageSourceMaxDurs(clips: string[]): Promise<number[]> {
+  const cache = new Map<string, number>();
+  const out: number[] = [];
+  for (const clip of clips) {
+    if (cache.has(clip)) {
+      out.push(cache.get(clip)!);
+      continue;
+    }
+    const probed = await probeVideoDurationSec(clip);
+    const max = probed > 0.15 ? probed : 0;
+    cache.set(clip, max);
+    out.push(max);
+  }
+  return out;
 }
 
 /** Keep per-beat timing when compose drops invalid/duplicate clips. */
@@ -13270,6 +13315,7 @@ async function composeSceneVideo(
   // Cinematic + documentary overlays (years bottom-left, stats, keywords, particles, SFX)
   let kineticFrames: KineticFrame[] = [];
   let docOverlays: TimedOverlay[] = [];
+  let yearLabels: TimedYearLabel[] = [];
   let cinematicPlan: CinematicScenePlan | null = null;
   const sfxCueFiles: Array<{ path: string; timeSec: number; volume: number }> = [];
 
@@ -13392,21 +13438,34 @@ async function composeSceneVideo(
   const outDur = voiceDur + 0.12;
 
   const montageDurationsRaw = alignBeatDurationsWithClips(clips, safeClips, beatDurations);
-  let expandedMontage = expandClipsForSceneDuration(safeClips, outDur, montageDurationsRaw);
+  let sourceMaxDurs = await probeMontageSourceMaxDurs(safeClips);
+  let expandedMontage = expandClipsForSceneDuration(
+    safeClips,
+    outDur,
+    montageDurationsRaw,
+    sourceMaxDurs
+  );
   safeClips = expandedMontage.clips;
   let montageDurations = expandedMontage.beatDurations;
   if (usedClipsOut) {
     usedClipsOut.length = 0;
     usedClipsOut.push(...uniqueClipsInOrder(safeClips));
   }
-  for (let fillPass = 0; fillPass < 4 && montageDurations?.length === safeClips.length; fillPass++) {
+  for (let fillPass = 0; fillPass < 12 && montageDurations?.length === safeClips.length; fillPass++) {
     montageDurations = await capMontageDurationsToClipFiles(safeClips, montageDurations);
+    sourceMaxDurs = await probeMontageSourceMaxDurs(safeClips);
+    montageDurations = montageDurations.map((d, i) => {
+      const srcMax = sourceMaxDurs[i] ?? 0;
+      if (srcMax > 0.15) return Math.min(d, Math.max(effectiveMinClipSec() * 0.4, srcMax - 0.05));
+      return d;
+    });
     const est = estimateMontageDurationSec(montageDurations);
-    if (est >= outDur - 0.12) break;
+    if (est >= outDur - 0.08) break;
     const before = safeClips.length;
-    expandedMontage = expandClipsForSceneDuration(safeClips, outDur, montageDurations);
+    expandedMontage = expandClipsForSceneDuration(safeClips, outDur, montageDurations, sourceMaxDurs);
     safeClips = expandedMontage.clips;
     montageDurations = expandedMontage.beatDurations;
+    sourceMaxDurs = await probeMontageSourceMaxDurs(safeClips);
     if (safeClips.length === before) break;
     if (usedClipsOut) {
       usedClipsOut.length = 0;
@@ -13415,11 +13474,12 @@ async function composeSceneVideo(
   }
   if (montageDurations?.length === safeClips.length) {
     montageDurations = await capMontageDurationsToClipFiles(safeClips, montageDurations);
+    sourceMaxDurs = await probeMontageSourceMaxDurs(safeClips);
   }
   const estBeforeCompose = montageDurations
     ? estimateMontageDurationSec(montageDurations)
     : outDur;
-  if (estBeforeCompose < outDur - 0.2) {
+  if (estBeforeCompose < outDur - 0.08) {
     console.warn(
       `[Pipeline] Scene ${scene.index}: montage est ${estBeforeCompose.toFixed(1)}s < voice ${outDur.toFixed(1)}s — gray pad will fill gap`
     );
@@ -13428,27 +13488,14 @@ async function composeSceneVideo(
   if (!skipEffectLayers && yearsOnlyOnScreen() && cinematicEffectsEnabled()) {
     try {
       const sceneBeats = buildSceneBeats(scene, outDur, Math.max(safeClips.length, 8));
-      const dursForYears =
-        montageDurations ??
-        sceneBeats.slice(0, safeClips.length).map((b) => b.holdSec);
-      const yearOverlays = await buildBeatAlignedYearOverlays(
-        sceneBeats.slice(0, safeClips.length),
-        dursForYears,
-        scene.index,
-        workDir,
-        FFMPEG_BIN,
-        (cmd, ms, lbl) => withTimeout(exec(cmd), ms, lbl),
-        outDur,
-        montageXfadeSec()
-      );
-      docOverlays = yearOverlays;
-      if (yearOverlays.length > 0) {
+      yearLabels = planBeatAlignedYears(sceneBeats, outDur);
+      if (yearLabels.length > 0) {
         console.log(
-          `[Cinematic] Scene ${scene.index}: ${yearOverlays.length} beat-synced year badge(s)`
+          `[Cinematic] Scene ${scene.index}: ${yearLabels.length} voice-synced year label(s) [${yearLabels.map((y) => y.year).join(", ")}]`
         );
       }
     } catch (err) {
-      console.warn(`[Pipeline] Scene ${scene.index}: beat year overlays failed (non-fatal):`, err);
+      console.warn(`[Pipeline] Scene ${scene.index}: year label plan failed (non-fatal):`, err);
     }
   }
 
@@ -13495,7 +13542,14 @@ async function composeSceneVideo(
     const kineticInput = kExtraInputs ? ` ${kExtraInputs}` : "";
     const kineticChainStr = kChain ? kChain : "";
     const hasOverlays = kineticFrames.length > 0 || docOverlays.length > 0 || statCalloutFrame !== null;
-    const preGradeLabel = hasOverlays ? kFinalLabel : "vmont";
+    const yearDrawChain =
+      yearLabels.length > 0 ? buildYearDrawtextFilterChain("vgraded", "vout", yearLabels) : "";
+    const videoGradeChain =
+      yearLabels.length > 0
+        ? `;[vmont]${fadeFilter}[vgraded]${yearDrawChain}`
+        : hasOverlays
+          ? `${kineticChainStr};[${kFinalLabel}]${fadeFilter}[vout]`
+          : `;[vmont]${fadeFilter}[vout]`;
     const overlayCount =
       kineticFrames.length + docOverlays.length + (statCalloutFrame ? 1 : 0);
     const sfxBaseIdx = kineticBaseIdx + overlayCount;
@@ -13513,8 +13567,7 @@ async function composeSceneVideo(
     await withTimeout(
       exec(
         `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}"${kineticInput}${sfxInputStr ? ` ${sfxInputStr}` : ""} ` +
-        `-filter_complex "${scaleFilters}${mergeFilter};${montageOutVF}${kineticChainStr};` +
-        `[${preGradeLabel}]${fadeFilter}[vout];` +
+        `-filter_complex "${scaleFilters}${mergeFilter};${montageOutVF}${yearLabels.length === 0 ? kineticChainStr : ""}${videoGradeChain};` +
         `${audioFilter}" ` +
         `-map "[vout]" -map "[aout]" -vsync cfr ` +
         `-t ${outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
@@ -13908,28 +13961,10 @@ async function ensureFinalVideoDuration(
 
   let dur = await probeVideoDurationSec(working);
   if (dur >= targetSec - 0.3) return working;
-  const pad = Math.max(0.5, targetSec - dur);
-  const out = path.join(workDir, `fastvid_${videoId}_padded.mp4`);
-  const holdAt = Math.max(0, dur - 0.15);
-  console.log(`[Pipeline] Final ${dur.toFixed(1)}s < ${targetSec}s — padding ${pad.toFixed(1)}s from t=${holdAt.toFixed(1)}s`);
-  try {
-    await withTimeout(
-      exec(
-        `${FFMPEG_BIN} -y -ss ${holdAt.toFixed(3)} -i "${working}" ` +
-        `-vf "tpad=stop_mode=clone:stop_duration=${pad.toFixed(3)}" ` +
-        `-af "apad=pad_dur=${pad.toFixed(3)}" ` +
-        `-c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -movflags +faststart -shortest "${out}"`
-      ),
-      120_000,
-      `Pad final video to ${targetSec}s`
-    );
-    if (fs.existsSync(out) && fs.statSync(out).size > 1000) {
-      dur = await probeVideoDurationSec(out);
-      if (dur >= targetSec - 0.5) return out;
-    }
-  } catch (err) {
-    console.warn("[Pipeline] Final tpad pad failed (non-fatal):", (err as Error).message);
-  }
+  // Never clone-pad the last frame — voice-led length is authoritative for documentary mode.
+  console.log(
+    `[Pipeline] Final ${dur.toFixed(1)}s < target ${targetSec}s — keeping voice length (no freeze pad)`
+  );
   return working;
 }
 
