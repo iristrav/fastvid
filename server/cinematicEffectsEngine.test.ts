@@ -8,6 +8,7 @@ import {
   extractYearsFromText,
   computeMontageBeatStarts,
   planBeatAlignedYears,
+  buildYearDisplayText,
   buildYearDrawtextFilterChain,
   planPhotoShutterCues,
   YEAR_LABEL_ON_SCREEN_SEC,
@@ -53,15 +54,23 @@ describe("cinematicEffectsEngine", () => {
     expect(labels[0].startTime).toBeGreaterThan(0);
     expect(labels[1].startTime).toBeGreaterThan(labels[0].startTime);
     expect(labels[0].endTime - labels[0].startTime).toBeCloseTo(YEAR_LABEL_ON_SCREEN_SEC, 1);
+    expect(labels[0].displayText).toContain("1933");
   });
 
-  it("builds drawtext chain with gray filled box", () => {
+  it("builds caption plus year display text", () => {
+    const text = buildYearDisplayText("In 1933 Hitler became chancellor of Germany.", "1933");
+    expect(text).toContain("1933");
+    expect(text).toMatch(/HITLER|CHANCELLOR|GERMANY/i);
+  });
+
+  it("builds drawtext chain with shadow only (no box)", () => {
     const chain = buildYearDrawtextFilterChain("vmont", "vout", [
-      { year: "1939", startTime: 2, endTime: 4 },
+      { year: "1939", displayText: "WAR BEGAN, 1939", startTime: 2, endTime: 5.5 },
     ]);
     expect(chain).toContain("drawtext");
-    expect(chain).toContain("box=1");
-    expect(chain).toContain("0x2A2A2A");
+    expect(chain).toContain("box=0");
+    expect(chain).toContain("borderw=3");
+    expect(chain).not.toContain("0x2A2A2A");
   });
 
   it("plans shutter cues when photo stills enter montage", () => {

@@ -426,10 +426,39 @@ export function computeMontageBeatStarts(durations: number[], xfadeSec = 0): num
 
 export type BeatYearInput = { text: string; holdSec: number };
 
-export type TimedYearLabel = { year: string; startTime: number; endTime: number };
+export type TimedYearLabel = {
+  year: string;
+  /** On-screen string, e.g. "RISE TO POWER, 1933" (CityBeautiful-style). */
+  displayText: string;
+  startTime: number;
+  endTime: number;
+};
 
-/** How long each year badge stays on screen (brief flash, not full beat). */
-export const YEAR_LABEL_ON_SCREEN_SEC = 2.0;
+/** How long each year label stays on screen (reference-doc style: ~3–4s). */
+export const YEAR_LABEL_ON_SCREEN_SEC = 3.5;
+
+const YEAR_CAPTION_STOP = new Set([
+  "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with",
+  "by", "from", "is", "are", "was", "were", "be", "been", "have", "has", "had",
+  "this", "that", "these", "those", "it", "its", "not", "no", "de", "het", "een",
+  "en", "van", "op", "te", "dat", "die", "zijn", "werd", "wordt", "when", "then",
+  "year", "years", "during", "after", "before", "into", "over", "under",
+]);
+
+/** Short beat caption + year — "EUCLID V AMBLER, 1926" style. */
+export function buildYearDisplayText(beatText: string, year: string): string {
+  const withoutYears = beatText
+    .replace(/\[visual:[^\]]+\]/gi, "")
+    .replace(YEAR_RE, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const words = withoutYears
+    .split(/\s+/)
+    .filter((w) => w.length >= 3 && !YEAR_CAPTION_STOP.has(w.toLowerCase()));
+  const caption = words.slice(0, 4).join(" ").toUpperCase().slice(0, 36);
+  if (!caption) return year;
+  return `${caption}, ${year}`;
+}
 
 /** Year labels on the voice timeline (when the year is spoken). */
 export function planBeatAlignedYears(beats: BeatYearInput[], sceneDuration: number): TimedYearLabel[] {
@@ -447,7 +476,12 @@ export function planBeatAlignedYears(beats: BeatYearInput[], sceneDuration: numb
         startTime + YEAR_LABEL_ON_SCREEN_SEC
       );
       if (endTime > startTime + 0.35) {
-        labels.push({ year: years[yi], startTime, endTime });
+        labels.push({
+          year: years[yi],
+          displayText: buildYearDisplayText(beat.text, years[yi]),
+          startTime,
+          endTime,
+        });
       }
     }
   }
@@ -480,7 +514,7 @@ export function planPhotoShutterCues(
   return cues;
 }
 
-/** Burn year numbers on B-roll — white text on gray pill (matches letterbox gray). */
+/** Burn year labels on B-roll — white text + shadow, no box (reference-doc style). */
 export function buildYearDrawtextFilterChain(
   inLabel: string,
   outLabel: string,
@@ -491,12 +525,13 @@ export function buildYearDrawtextFilterChain(
   let prev = inLabel;
   years.forEach((entry, i) => {
     const next = i === years.length - 1 ? outLabel : `yr${i}`;
-    const safe = sanitizeForDrawtext(entry.year, 8);
+    const raw = entry.displayText || entry.year;
+    const safe = sanitizeForDrawtext(raw, 40);
+    const fs = safe.length > 24 ? 44 : safe.length > 16 ? 50 : 58;
     const enable = `enable='between(t\\,${entry.startTime.toFixed(2)}\\,${entry.endTime.toFixed(2)})'`;
     chain +=
-      `;[${prev}]drawtext=text='${safe}':fontcolor=white:fontsize=64:x=48:y=h-th-52:` +
-      `box=1:boxcolor=0x2A2A2A@0.92:boxborderw=18:` +
-      `borderw=2:bordercolor=0x00000044:${enable}[${next}]`;
+      `;[${prev}]drawtext=text='${safe}':fontcolor=white:fontsize=${fs}:x=52:y=h-th-58:` +
+      `borderw=3:bordercolor=0x000000aa:box=0:${enable}[${next}]`;
     prev = next;
   });
   return chain;

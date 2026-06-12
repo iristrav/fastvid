@@ -410,8 +410,11 @@ function effectiveMinClipSec(): number {
 function effectiveMaxClipSec(): number {
   return curatedArchiveOnlyVisuals() ? archiveVisualMaxClipSec() : VIDRUSH_CLIP_HOLD_SEC;
 }
-/** Hard cuts for archive docs — micro-fade on clip edges only (no dissolve/xfade). */
-function montageXfadeSec(_avgClipDur = archiveVisualBeatSec()): number {
+/** Soft dissolves for archive/documentary montage (reference-doc style). */
+function montageXfadeSec(avgClipDur = archiveVisualBeatSec()): number {
+  if (curatedArchiveOnlyVisuals() || documentaryStyleEnabled()) {
+    return Math.min(0.4, Math.max(0.2, avgClipDur * 0.05));
+  }
   return 0;
 }
 const CHAPTER_CARD_DURATION = 2.5;
