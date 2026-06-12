@@ -428,7 +428,9 @@ export type BeatYearInput = { text: string; holdSec: number };
 
 export type TimedYearLabel = {
   year: string;
-  /** On-screen string, e.g. "RISE TO POWER, 1933" (CityBeautiful-style). */
+  /** Short label under the year (yellow pill), e.g. "EVICTION RATE". */
+  caption: string;
+  /** Combined string for logs. */
   displayText: string;
   startTime: number;
   endTime: number;
@@ -457,11 +459,11 @@ function findYearOccurrenceIndex(text: string, year: string, occurrence = 0): nu
   return -1;
 }
 
-/** Local words right before a year — not the whole beat stitched together. */
-export function buildYearDisplayText(beatText: string, year: string, occurrence = 0): string {
+/** Local caption words right before a year in the beat text. */
+export function buildYearCaption(beatText: string, year: string, occurrence = 0): string {
   const cleaned = beatText.replace(/\[visual:[^\]]+\]/gi, "").replace(/\s+/g, " ").trim();
   const yearIdx = findYearOccurrenceIndex(cleaned, year, occurrence);
-  if (yearIdx < 0) return year;
+  if (yearIdx < 0) return "";
 
   const before = cleaned.slice(0, yearIdx).trim();
   const beforeWords = before
@@ -469,10 +471,14 @@ export function buildYearDisplayText(beatText: string, year: string, occurrence 
     .map((w) => w.replace(/[^a-zA-ZÀ-ÿ0-9'-]/g, ""))
     .filter((w) => w.length >= 3 && !YEAR_CAPTION_STOP.has(w.toLowerCase()));
 
-  // Only the 1–2 words immediately before the year (e.g. "HITLER ROSE, 1933").
-  const local = beforeWords.slice(-2).join(" ").toUpperCase().slice(0, 22);
-  if (!local || local.length < 3) return year;
-  return `${local}, ${year}`;
+  return beforeWords.slice(-2).join(" ").toUpperCase().slice(0, 24);
+}
+
+/** Local words right before a year — not the whole beat stitched together. */
+export function buildYearDisplayText(beatText: string, year: string, occurrence = 0): string {
+  const caption = buildYearCaption(beatText, year, occurrence);
+  if (!caption) return year;
+  return `${caption}, ${year}`;
 }
 
 function yearStartInBeat(
@@ -518,9 +524,11 @@ export function planBeatAlignedYears(beats: BeatYearInput[], sceneDuration: numb
       const startTime = yearStartInBeat(beat.text, year, beatStart, beat.holdSec, occurrence);
       const endTime = Math.min(sceneDuration - 0.1, startTime + YEAR_LABEL_ON_SCREEN_SEC);
       if (endTime > startTime + 0.35) {
+        const caption = buildYearCaption(beat.text, year, occurrence);
         labels.push({
           year,
-          displayText: buildYearDisplayText(beat.text, year, occurrence),
+          caption,
+          displayText: caption ? `${caption}, ${year}` : year,
           startTime,
           endTime,
         });
@@ -556,24 +564,43 @@ export function planPhotoShutterCues(
   return cues;
 }
 
-/** Burn year labels on B-roll — white text + shadow, no box (reference-doc style). */
+/** Stat-card year label — large white year + yellow caption pill, bottom-left. */
 export function buildYearDrawtextFilterChain(
   inLabel: string,
   outLabel: string,
   years: TimedYearLabel[]
 ): string {
   if (!years.length) return `;[${inLabel}]copy[${outLabel}]`;
+  const MARGIN_L = 56;
+  const MARGIN_B = 60;
+  const CAP_H = 42;
+  const CAP_PAD_X = 18;
+  const YEAR_FS = 96;
+  const CAP_FS = 26;
+  const GAP = 12;
+  const YELLOW = "0xFFCC00";
+
   let chain = "";
   let prev = inLabel;
   years.forEach((entry, i) => {
     const next = i === years.length - 1 ? outLabel : `yr${i}`;
-    const raw = entry.displayText || entry.year;
-    const safe = sanitizeForDrawtext(raw, 40);
-    const fs = safe.length > 24 ? 44 : safe.length > 16 ? 50 : 58;
     const enable = `enable='between(t\\,${entry.startTime.toFixed(2)}\\,${entry.endTime.toFixed(2)})'`;
+    const yearSafe = sanitizeForDrawtext(entry.year, 6);
+    const capSafe = sanitizeForDrawtext((entry.caption || "").trim().toUpperCase(), 28);
+    let step = prev;
+
+    if (capSafe.length >= 3) {
+      const boxW = Math.min(440, Math.round(capSafe.length * CAP_FS * 0.58 + CAP_PAD_X * 2));
+      const boxTop = MARGIN_B + CAP_H;
+      chain += `;[${step}]drawbox=x=${MARGIN_L}:y=h-${boxTop}:w=${boxW}:h=${CAP_H}:color=${YELLOW}@0.96:t=fill:${enable}[yb${i}]`;
+      chain += `;[yb${i}]drawtext=text='${capSafe}':fontcolor=black:fontsize=${CAP_FS}:x=${MARGIN_L + CAP_PAD_X}:y=h-${boxTop - 10}:${enable}[yc${i}]`;
+      step = `yc${i}`;
+    }
+
+    const yearTop = capSafe.length >= 3 ? MARGIN_B + CAP_H + GAP + YEAR_FS : MARGIN_B + YEAR_FS;
     chain +=
-      `;[${prev}]drawtext=text='${safe}':fontcolor=white:fontsize=${fs}:x=52:y=h-th-58:` +
-      `borderw=3:bordercolor=0x000000aa:box=0:${enable}[${next}]`;
+      `;[${step}]drawtext=text='${yearSafe}':fontcolor=white:fontsize=${YEAR_FS}:x=${MARGIN_L}:y=h-${yearTop}:` +
+      `borderw=2:bordercolor=0x00000055:box=0:${enable}[${next}]`;
     prev = next;
   });
   return chain;

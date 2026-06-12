@@ -8,6 +8,7 @@ import {
   extractYearsFromText,
   computeMontageBeatStarts,
   planBeatAlignedYears,
+  buildYearCaption,
   buildYearDisplayText,
   buildYearDrawtextFilterChain,
   planPhotoShutterCues,
@@ -76,14 +77,21 @@ describe("cinematicEffectsEngine", () => {
     expect(labels[0].startTime).toBeLessThan(8);
   });
 
-  it("builds drawtext chain with shadow only (no box)", () => {
+  it("builds stat-card drawtext with yellow caption pill bottom-left", () => {
     const chain = buildYearDrawtextFilterChain("vmont", "vout", [
-      { year: "1939", displayText: "WAR BEGAN, 1939", startTime: 2, endTime: 5.5 },
+      {
+        year: "1933",
+        caption: "RISE TO POWER",
+        displayText: "RISE TO POWER, 1933",
+        startTime: 2,
+        endTime: 5.5,
+      },
     ]);
-    expect(chain).toContain("drawtext");
-    expect(chain).toContain("box=0");
-    expect(chain).toContain("borderw=3");
-    expect(chain).not.toContain("0x2A2A2A");
+    expect(chain).toContain("drawbox");
+    expect(chain).toContain("0xFFCC00");
+    expect(chain).toContain("fontcolor=black");
+    expect(chain).toContain("1933");
+    expect(chain).toContain("y=h-");
   });
 
   it("plans shutter cues when photo stills enter montage", () => {
