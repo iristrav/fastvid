@@ -906,14 +906,6 @@ export async function fetchCuratedArchiveBeatClip(
           (matchedTags.length ? `, matched: ${matchedTags.slice(0, 4).join(", ")}` : "") +
           `)`
       );
-      usedAssetIds.add(picked.asset.id);
-      usedStorageUrls.add(picked.asset.storageUrl);
-      if (interviewBudget && isCuratedInterviewAsset(picked.asset)) {
-        interviewBudget.used++;
-      }
-      if (imageBudget && picked.asset.mediaType === "image") {
-        imageBudget.used++;
-      }
       return clipPath;
     } catch (err) {
       console.warn(
