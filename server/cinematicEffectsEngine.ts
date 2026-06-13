@@ -12,6 +12,7 @@ import {
   type TimedOverlay,
 } from "./documentaryStyle";
 import { documentaryOverlaysEnabled } from "./sourcingPolicy";
+import { extractVoiceLabelTerms, termStartInBeat } from "./visualBeatTags";
 
 export type CinematicAudioCue = {
   type: "whoosh" | "impact" | "shutter";
@@ -542,6 +543,68 @@ export function planBeatAlignedYears(beats: BeatYearInput[], sceneDuration: numb
       }
     }
   }
+  return resolveOverlappingYearLabels(labels, sceneDuration);
+}
+
+/** Labels synced to montage beats — years and keywords when spoken in the voiceover. */
+export function planVoiceSyncedScreenLabels(
+  beats: BeatLabelInput[],
+  montageDurations: number[],
+  sceneDuration: number,
+  sceneStartSec = 0
+): TimedYearLabel[] {
+  const n = Math.min(beats.length, montageDurations.length);
+  if (n === 0) return [];
+  const starts = computeMontageBeatStarts(montageDurations.slice(0, n), 0);
+  const labels: TimedYearLabel[] = [];
+  const usedLabels = new Set<string>();
+
+  for (let i = 0; i < n; i++) {
+    const beat = beats[i]!;
+    const beatStart = sceneStartSec + (starts[i] ?? 0);
+    const beatDur = montageDurations[i] ?? beat.holdSec;
+    const yearCounts = new Map<string, number>();
+
+    for (const year of extractYearsFromText(beat.text)) {
+      const occurrence = yearCounts.get(year) ?? 0;
+      yearCounts.set(year, occurrence + 1);
+      const startTime = yearStartInBeat(beat.text, year, beatStart, beatDur, occurrence);
+      const endTime = Math.min(sceneDuration - 0.08, startTime + YEAR_LABEL_ON_SCREEN_SEC);
+      if (endTime <= startTime + 0.35) continue;
+      const caption = buildYearCaption(beat.text, year, occurrence);
+      const display = caption ? `${caption} — ${year}` : year;
+      if (usedLabels.has(display.toUpperCase())) continue;
+      usedLabels.add(display.toUpperCase());
+      labels.push({
+        year,
+        caption,
+        displayText: display,
+        startTime,
+        endTime,
+      });
+    }
+
+    for (const term of extractVoiceLabelTerms(beat.text, beat.powerWord, beat.highlightWords)) {
+      if (usedLabels.has(term.label)) continue;
+      if (/^\d{4}$/.test(term.label)) continue;
+      const startTime = termStartInBeat(beat.text, term.label, beatStart, beatDur, term.matchText);
+      if (term.label.length < 3) continue;
+      const endTime = Math.min(sceneDuration - 0.08, startTime + YEAR_LABEL_ON_SCREEN_SEC);
+      if (endTime <= startTime + 0.35) continue;
+      usedLabels.add(term.label);
+      labels.push({
+        year: term.label,
+        caption: "",
+        displayText: term.label,
+        startTime,
+        endTime,
+      });
+      if (labels.filter((l) => l.startTime >= beatStart - 0.01 && l.startTime < beatStart + beatDur).length >= 2) {
+        break;
+      }
+    }
+  }
+
   return resolveOverlappingYearLabels(labels, sceneDuration);
 }
 

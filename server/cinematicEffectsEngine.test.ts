@@ -9,6 +9,7 @@ import {
   computeMontageBeatStarts,
   planBeatAlignedYears,
   planIntervalScreenLabels,
+  planVoiceSyncedScreenLabels,
   buildYearCaption,
   buildYearDisplayText,
   buildYearDrawtextFilterChain,
@@ -77,6 +78,23 @@ describe("cinematicEffectsEngine", () => {
     expect(labels).toHaveLength(1);
     expect(labels[0].startTime).toBeGreaterThan(2);
     expect(labels[0].startTime).toBeLessThan(8);
+  });
+
+  it("plans voice-synced keyword labels on montage beats", () => {
+    const labels = planVoiceSyncedScreenLabels(
+      [
+        { text: "Eerst was het rustig in Europa.", holdSec: 6, powerWord: "Europa" },
+        { text: "Maar in Duitsland veranderde alles in 1933.", holdSec: 7, powerWord: "germany" },
+      ],
+      [6, 7],
+      13
+    );
+    const duitsland = labels.find((l) => /DUITS/i.test(l.displayText));
+    const y1933 = labels.find((l) => l.year === "1933");
+    expect(duitsland).toBeDefined();
+    expect(y1933).toBeDefined();
+    expect(duitsland!.startTime).toBeGreaterThan(6);
+    expect(y1933!.startTime).toBeGreaterThan(duitsland!.startTime);
   });
 
   it("plans interval screen labels every 30s with years and keywords", () => {

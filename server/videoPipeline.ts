@@ -49,11 +49,13 @@ import {
   stillOutputFrameCount,
   type TimedOverlay,
 } from "./documentaryStyle";
+import { extractPrimaryGeoSearchTag } from "./visualBeatTags";
 import {
   buildCinematicOverlays,
   buildBeatAlignedYearOverlays,
   planBeatAlignedYears,
   planIntervalScreenLabels,
+  planVoiceSyncedScreenLabels,
   buildIntervalScreenLabelOverlays,
   burnScreenLabelOverlaysSequential,
   buildYearDrawtextFilterChain,
@@ -9552,8 +9554,12 @@ function buildSceneBeats(
   const beats: SceneBeat[] = [];
   for (let i = 0; i < groups.length; i++) {
     const text = groups[i].text;
-    const powerWord = extractPowerWordFromSentence(text, scenePersons);
-    let searchQuery = simplifyStockSearchWord(powerWord, text, true);
+    const geoTag = extractPrimaryGeoSearchTag(text);
+    let powerWord = extractPowerWordFromSentence(text, scenePersons);
+    if (geoTag) {
+      powerWord = geoTag;
+    }
+    let searchQuery = geoTag ?? simplifyStockSearchWord(powerWord, text, true);
     if (!searchQuery || isBlockedStockQuery(searchQuery)) {
       searchQuery = stockQueryFromBeatScript(text, scenePersons, scene.text, videoTitle);
     }
@@ -14511,17 +14517,21 @@ async function composeSceneVideo(
     try {
       const sceneBeats = buildSceneBeats(scene, outDur, Math.max(safeClips.length, 8));
       const sceneStartSec = composeOptions?.sceneStartSec ?? 0;
-      yearLabels = planIntervalScreenLabels(
-        sceneStartSec,
-        outDur,
-        sceneBeats.map((b) => ({
-          text: b.text,
-          holdSec: b.holdSec,
-          powerWord: b.powerWord,
-          highlightWords: b.keywords,
-        })),
-        screenLabelIntervalSec()
-      );
+      const beatInputs = sceneBeats.map((b) => ({
+        text: b.text,
+        holdSec: b.holdSec,
+        powerWord: b.powerWord,
+        highlightWords: b.keywords,
+      }));
+      yearLabels =
+        montageDurations?.length === safeClips.length && montageDurations.length > 0
+          ? planVoiceSyncedScreenLabels(beatInputs, montageDurations, outDur, sceneStartSec)
+          : planVoiceSyncedScreenLabels(
+              beatInputs,
+              sceneBeats.map((b) => b.holdSec),
+              outDur,
+              sceneStartSec
+            );
       if (yearLabels.length > 0) {
         const labelOverlays = await buildIntervalScreenLabelOverlays(
           yearLabels,
@@ -14533,7 +14543,7 @@ async function composeSceneVideo(
         docOverlays.push(...labelOverlays);
         screenLabels = labelOverlays;
         console.log(
-          `[Cinematic] Scene ${scene.index}: ${labelOverlays.length} interval label overlay(s) [${yearLabels.map((y) => y.displayText).join(" | ")}]`
+          `[Cinematic] Scene ${scene.index}: ${labelOverlays.length} voice-synced label overlay(s) [${yearLabels.map((y) => y.displayText).join(" | ")}]`
         );
       }
     } catch (err) {

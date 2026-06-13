@@ -2,6 +2,7 @@
  * Curated media archive — pick tagged assets from admin libraries for pipeline beats.
  */
 import { exec as execCb } from "child_process";
+import { extractVisualSearchTags } from "./visualBeatTags";
 import { promisify } from "util";
 import fetch from "node-fetch";
 import * as fs from "fs";
@@ -189,11 +190,13 @@ export function buildBeatMatchTags(
   videoTitle?: string
 ): BeatMatchTags {
   const topicAnchors = extractTopicAnchorTags(videoTitle, [beat.text, scene.text].join(" "));
+  const visualTags = extractVisualSearchTags(beat.text);
   const beatRaw = [
     beat.text,
     beat.powerWord ?? "",
     beat.searchQuery ?? "",
     ...beat.keywords,
+    ...visualTags,
     scene.visualCue ?? "",
   ]
     .filter(Boolean)
@@ -398,6 +401,20 @@ export function scoreCuratedAsset(
         beatHits++;
       } else if (t.includes(q) || q.includes(t)) {
         score += 12;
+        beatHits++;
+      }
+    }
+  }
+
+  const visualTags = beatText ? extractVisualSearchTags(beatText) : [];
+  for (const vt of visualTags) {
+    if (title.includes(vt)) {
+      score += 32;
+      beatHits += 2;
+    }
+    for (const t of assetTags) {
+      if (t === vt || t.includes(vt) || vt.includes(t)) {
+        score += 22;
         beatHits++;
       }
     }
