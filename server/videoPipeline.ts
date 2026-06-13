@@ -1153,6 +1153,15 @@ function requiredMontageClipsForDuration(durationSec: number): number {
   return Math.max(2, Math.ceil((durationSec - xfade) / netPerClip));
 }
 
+/** Min unique clips when each can play up to archiveVisualMaxClipSec (compose balancing). */
+function minClipsForBalancedVoice(durationSec: number): number {
+  if (!curatedArchiveOnlyVisuals()) {
+    return Math.max(1, Math.ceil(durationSec / effectiveBeatSec()));
+  }
+  const xfade = montageXfadeSec();
+  return Math.max(2, Math.ceil((durationSec + xfade) / archiveVisualMaxClipSec()));
+}
+
 function montageMinOnScreenSec(): number {
   return curatedArchiveOnlyVisuals() ? effectiveMinClipSec() : effectiveMinClipSec() * 0.35;
 }
@@ -8384,14 +8393,14 @@ async function prepareStrictUniqueMontage(
   if (!strictNoVisualRepeat()) {
     return { montageDurations, sourceMaxDurs, estSec };
   }
-  const minClips = requiredMontageClipsForDuration(outDur);
+  const minClips = minClipsForBalancedVoice(outDur);
   if (clips.length < minClips) {
     throw pipelineError(
       PIPELINE_ERROR.NO_SCENES,
       `Scene ${sceneIndex}: need ${minClips} unique clips for ${outDur.toFixed(1)}s voice — have ${clips.length}`
     );
   }
-  if (estSec < outDur - 0.06 && clips.length < Math.ceil(outDur / archiveVisualMaxClipSec())) {
+  if (estSec < outDur - 0.06) {
     throw pipelineError(
       PIPELINE_ERROR.NO_SCENES,
       `Scene ${sceneIndex}: ${clips.length} clips cover ~${estSec.toFixed(1)}s of ${outDur.toFixed(1)}s — add archive assets (no repeat/pad allowed)`
@@ -12415,6 +12424,52 @@ async function adoptArchiveBeatClip(
   return false;
 }
 
+async function backfillArchiveMontageFromPool(
+  scene: Scene,
+  workDir: string,
+  videoTitle: string | undefined,
+  outDur: number,
+  clips: string[],
+  beatDurations: number[],
+  dedup: VisualDedupState,
+  pushClip: (clipPath: string, holdSec: number) => boolean | Promise<boolean>,
+  opts?: { maxAttempts?: number; logPrefix?: string; onProgress?: (attempt: number, max: number) => void }
+): Promise<number> {
+  const minClipsNeeded = minClipsForBalancedVoice(outDur);
+  const minCoverage = strictNoVisualRepeat() ? outDur - 0.06 : outDur * 0.92;
+  let coverage = await estimateSceneMontageCoverageSec(clips, beatDurations);
+  if (coverage >= minCoverage && clips.length >= minClipsNeeded) return 0;
+
+  await loadArchiveCandidatePool(scene, videoTitle, dedup);
+  const beats = buildSceneBeats(scene, outDur, Math.max(minClipsNeeded + 2, Math.ceil(outDur / effectiveBeatSec())));
+  const maxFill = opts?.maxAttempts ?? Math.max(18, minClipsNeeded + 6);
+  const prefix = opts?.logPrefix ?? `Scene ${scene.index}`;
+  console.warn(
+    `[Pipeline] ${prefix}: montage ${clips.length}/${minClipsNeeded} clips, ` +
+      `~${coverage.toFixed(1)}s / ${outDur.toFixed(1)}s voice — pool backfill`
+  );
+
+  let added = 0;
+  for (let attempt = 0; attempt < maxFill && (coverage < minCoverage || clips.length < minClipsNeeded); attempt++) {
+    opts?.onProgress?.(attempt + 1, maxFill);
+    const beat = beats[attempt % beats.length] ?? beats[0];
+    if (!beat) break;
+    const adopted = await adoptArchiveBeatClip(
+      beat,
+      scene,
+      workDir,
+      videoTitle,
+      dedup,
+      pushClip,
+      null,
+      beat.holdSec
+    );
+    if (adopted) added++;
+    coverage = await estimateSceneMontageCoverageSec(clips, beatDurations);
+  }
+  return added;
+}
+
 async function backfillComposeMontageIfShort(
   scene: Scene,
   workDir: string,
@@ -12426,59 +12481,37 @@ async function backfillComposeMontageIfShort(
   dedup: VisualDedupState
 ): Promise<void> {
   if (!curatedArchiveOnlyVisuals()) return;
-  const minClipsNeeded = requiredMontageClipsForDuration(outDur);
+  const minClipsNeeded = minClipsForBalancedVoice(outDur);
   const minCoverage = strictNoVisualRepeat() ? outDur - 0.06 : outDur * 0.92;
   let coverage = await estimateSceneMontageCoverageSec(safeClips, composeBeatDurations);
   if (coverage >= minCoverage && safeClips.length >= minClipsNeeded) return;
 
-  const beats = buildSceneBeats(scene, outDur, Math.max(minClipsNeeded + 2, Math.ceil(outDur / effectiveBeatSec())));
-  const maxFill = Math.max(18, minClipsNeeded + 6);
-  console.warn(
-    `[Pipeline] Scene ${scene.index}: compose montage ${safeClips.length}/${minClipsNeeded} clips, ` +
-      `~${coverage.toFixed(1)}s / ${outDur.toFixed(1)}s voice — fetching more archive clips`
-  );
-
-  for (
-    let attempt = 0;
-    attempt < maxFill && (coverage < minCoverage || safeClips.length < minClipsNeeded);
-    attempt++
-  ) {
-    const beat = beats[attempt % beats.length] ?? beats[0];
-    if (!beat) break;
-    const clip = await fetchCuratedArchiveBeatClip(
-      beat,
-      scene,
-      workDir,
-      scene.index,
-      beat.holdSec,
-      dedup.usedCuratedAssetIds,
-      dedup.usedCuratedStorageUrls,
-      videoTitle,
-      curatedInterviewBudget(dedup),
-      curatedImageBudget(dedup),
-      undefined,
-      { relaxed: attempt >= Math.floor(maxFill / 2) }
-    );
-    if (!clip || isPipelineFallbackClip(clip)) continue;
-    const key = clipContentKey(clip);
-    if (seenKeys.has(key) || dedup.usedContentKeys.has(key)) continue;
-    if (!(await montageClipPassesComposeGate(clip, scene.index, safeClips.length))) {
-      dedup.usedContentKeys.add(key);
-      markCuratedAssetUsed(clip, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls);
-      continue;
-    }
-
-    let actualHold = beat.holdSec;
-    const probed = await probeVideoDurationSec(clip);
-    if (probed > 0.15) actualHold = Math.min(beat.holdSec, probed - 0.04);
-
+  const pushClip = async (clipPath: string, holdSec: number): Promise<boolean> => {
+    const key = clipContentKey(clipPath);
+    if (seenKeys.has(key) || dedup.usedContentKeys.has(key)) return false;
+    let actualHold = holdSec;
+    const probed = await probeVideoDurationSec(clipPath);
+    if (probed > 0.15) actualHold = Math.min(holdSec, probed - 0.04);
     dedup.usedContentKeys.add(key);
     seenKeys.add(key);
-    safeClips.push(clip);
+    safeClips.push(clipPath);
     composeBeatDurations.push(actualHold);
-    markCuratedAssetUsed(clip, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls);
+    markCuratedAssetUsed(clipPath, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls);
     coverage = await estimateSceneMontageCoverageSec(safeClips, composeBeatDurations);
-  }
+    return true;
+  };
+
+  await backfillArchiveMontageFromPool(
+    scene,
+    workDir,
+    videoTitle,
+    outDur,
+    safeClips,
+    composeBeatDurations,
+    dedup,
+    pushClip,
+    { logPrefix: `Scene ${scene.index} compose` }
+  );
 
   if (coverage < minCoverage || safeClips.length < minClipsNeeded) {
     const msg =
@@ -12549,6 +12582,22 @@ async function fetchArchiveSentenceMontage(
       );
     }
   }
+
+  const pushBackfillClip = (clipPath: string, holdSec: number): Promise<boolean> =>
+    pushSceneClip(clipPath, holdSec, clips.length);
+  await backfillArchiveMontageFromPool(
+    scene,
+    workDir,
+    videoTitle,
+    scene.duration,
+    clips,
+    beatDurations,
+    dedup,
+    pushBackfillClip,
+    {
+      onProgress: (attempt, max) => onBeatProgress?.(attempt, max, "backfill"),
+    }
+  );
 
   await assertSceneVisualInventory(scene, clips, beatDurations, beats.length);
   return { clips, beatDurations };
