@@ -18,6 +18,7 @@ import {
   planPhotoShutterCues,
   YEAR_LABEL_ON_SCREEN_SEC,
   SCREEN_LABEL_INTERVAL_SEC,
+  SCREEN_LABEL_FONT_SIZE,
   overlayUsesFullFrame,
   parseFacelessSubtitleLines,
   planCinematicScene,
@@ -160,6 +161,7 @@ describe("cinematicEffectsEngine", () => {
     expect(chain).toContain("drawbox");
     expect(chain).toContain("0xFFCC00");
     expect(chain).toContain("fontcolor=black");
+    expect(chain).toContain(`fontsize=${SCREEN_LABEL_FONT_SIZE}`);
     expect(chain).toContain("1933");
     expect(chain).toContain("between(t\\,2.000\\,2.042)");
     expect(chain).toContain("y=h-");

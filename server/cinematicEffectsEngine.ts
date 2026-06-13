@@ -468,6 +468,13 @@ export type TimedYearLabel = {
 export const YEAR_LABEL_ON_SCREEN_SEC = 4;
 export const SCREEN_LABEL_INTERVAL_SEC = 30;
 export const TYPEWRITER_CHAR_SEC = 0.042;
+/** Yellow pill label typography (Locomotive Historian style). */
+export const SCREEN_LABEL_FONT_SIZE = 42;
+export const SCREEN_LABEL_BOX_H = 60;
+export const SCREEN_LABEL_PAD_X = 22;
+export const SCREEN_LABEL_MAX_W = 680;
+export const SCREEN_LABEL_MARGIN_L = 48;
+export const SCREEN_LABEL_MARGIN_B = 72;
 
 const YEAR_CAPTION_STOP = new Set([
   "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with",
@@ -790,11 +797,11 @@ export function buildYearDrawtextFilterChain(
   years: TimedYearLabel[]
 ): string {
   if (!years.length) return `;[${inLabel}]copy[${outLabel}]`;
-  const MARGIN_L = 48;
-  const MARGIN_B = 72;
-  const BOX_H = 44;
-  const PAD_X = 16;
-  const FS = 32;
+  const MARGIN_L = SCREEN_LABEL_MARGIN_L;
+  const MARGIN_B = SCREEN_LABEL_MARGIN_B;
+  const BOX_H = SCREEN_LABEL_BOX_H;
+  const PAD_X = SCREEN_LABEL_PAD_X;
+  const FS = SCREEN_LABEL_FONT_SIZE;
   const YELLOW = "0xFFCC00";
 
   let chain = "";
@@ -809,9 +816,9 @@ export function buildYearDrawtextFilterChain(
 
     const next = i === valid.length - 1 ? outLabel : `yl${i}`;
     const enableFull = `enable='between(t\\,${entry.startTime.toFixed(2)}\\,${entry.endTime.toFixed(2)})'`;
-    const boxW = Math.min(520, Math.round(safeFull.length * FS * 0.62 + PAD_X * 2));
+    const boxW = Math.min(SCREEN_LABEL_MAX_W, Math.round(safeFull.length * FS * 0.62 + PAD_X * 2));
     const boxTop = MARGIN_B + BOX_H;
-    const textY = `h-${boxTop - 12}`;
+    const textY = `h-${boxTop - Math.round((BOX_H - FS) / 2)}`;
 
     chain += `;[${prev}]drawbox=x=${MARGIN_L}:y=h-${boxTop}:w=${boxW}:h=${BOX_H}:color=${YELLOW}@0.98:t=fill:${enableFull}[yb${i}]`;
 
@@ -861,9 +868,9 @@ export async function burnScreenLabelOverlaysSequential(
     const o = overlays[i]!;
     const isLast = i === overlays.length - 1;
     const out = isLast ? outputVideoPath : path.join(workDir, `_screen_label_pass_${i}.mp4`);
-    const w = ensureEvenDim(o.overlayW ?? 400);
-    const h = ensureEvenDim(o.overlayH ?? 44);
-    const x = Math.round(o.overlayX ?? 48);
+    const w = ensureEvenDim(o.overlayW ?? SCREEN_LABEL_MAX_W);
+    const h = ensureEvenDim(o.overlayH ?? SCREEN_LABEL_BOX_H);
+    const x = Math.round(o.overlayX ?? SCREEN_LABEL_MARGIN_L);
     const y = Math.round(o.overlayY ?? 900);
     const enable = `enable='between(t\\,${o.startTime.toFixed(2)}\\,${o.endTime.toFixed(2)})'`;
     await execWithTimeout(
@@ -878,9 +885,6 @@ export async function burnScreenLabelOverlaysSequential(
   }
   return outputVideoPath;
 }
-const SCREEN_LABEL_MARGIN_L = 48;
-const SCREEN_LABEL_MARGIN_B = 72;
-const SCREEN_LABEL_BOX_H = 44;
 
 /** Render one yellow typewriter label clip (isolated encode — keeps main montage filter graph small). */
 export async function renderYellowTypewriterLabelClip(
@@ -893,10 +897,11 @@ export async function renderYellowTypewriterLabelClip(
 ): Promise<{ path: string; w: number; h: number; x: number; y: number } | null> {
   const safe = sanitizeForDrawtext(text.toUpperCase(), 28);
   if (safe.length < 1) return null;
-  const PAD_X = 16;
-  const FS = 28;
-  const w = ensureEvenDim(Math.min(520, Math.round(safe.length * FS * 0.62 + PAD_X * 2)));
+  const PAD_X = SCREEN_LABEL_PAD_X;
+  const FS = SCREEN_LABEL_FONT_SIZE;
+  const w = ensureEvenDim(Math.min(SCREEN_LABEL_MAX_W, Math.round(safe.length * FS * 0.62 + PAD_X * 2)));
   const h = ensureEvenDim(SCREEN_LABEL_BOX_H);
+  const textY = Math.max(8, Math.round((h - FS) / 2));
   const dur = YEAR_LABEL_ON_SCREEN_SEC;
   const outPath = path.join(workDir, `scene_${sceneIndex}_screen_label_${labelIndex}.mp4`);
   let chain = "";
@@ -908,7 +913,7 @@ export async function renderYellowTypewriterLabelClip(
     const outLabel = k === safe.length ? "vout" : `sl${labelIndex}_${k}`;
     chain +=
       `[${prev}]drawtext=text='${sub}':fontcolor=black:fontsize=${FS}:` +
-      `x=${PAD_X}:y=10:box=0:enable='between(t\\,${t0}\\,${t1})'[${outLabel}];`;
+      `x=${PAD_X}:y=${textY}:box=0:enable='between(t\\,${t0}\\,${t1})'[${outLabel}];`;
     prev = outLabel;
   }
   try {
