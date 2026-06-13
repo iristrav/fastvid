@@ -97,6 +97,21 @@ export function screenLabelIntervalSec(): number {
   return 30;
 }
 
+/** Prefer different archive clips across consecutive videos on the same topic. */
+export function archiveCrossVideoVarietyEnabled(): boolean {
+  return process.env.ARCHIVE_CROSS_VIDEO_VARIETY !== "false";
+}
+
+/** How many recent same-topic videos contribute to the cross-video exclude set. */
+export function archiveCrossVideoCooldownVideos(): number {
+  const raw = process.env.ARCHIVE_CROSS_VIDEO_COOLDOWN?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 1 && n <= 20) return n;
+  }
+  return 6;
+}
+
 /** FFmpeg-generated text cards, maps, and diagram beats (no external API). */
 export function motionGraphicsInVideosEnabled(): boolean {
   if (yearsOnlyOnScreen()) return false;

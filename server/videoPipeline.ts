@@ -91,7 +91,11 @@ import {
   scriptGuidedClipsEnabled,
 } from "./scriptGuidedClipFinder";
 import { clipPassesVisionGate, clipVisionGateEnabled } from "./visualQualityGate";
-import { curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, strictNoVisualRepeat, screenLabelIntervalSec } from "./sourcingPolicy";
+import { curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled } from "./sourcingPolicy";
+import {
+  getCrossVideoExcludeAssetIds,
+  recordArchiveVideoUsage,
+} from "./archiveUsageMemory";
 import {
   fetchCuratedArchiveBeatClip,
   curatedClipPathAssetId,
@@ -698,7 +702,7 @@ async function fetchBeatArchivalThenPexels(
       curatedInterviewBudget(dedup),
       curatedImageBudget(dedup),
       undefined,
-      { varietySeed: dedup.varietySeed }
+      { varietySeed: dedup.varietySeed, crossVideoExcludeIds: dedup.crossVideoExcludeIds }
     );
   }
   const topicHay = [videoTitle, scene.text, beat.text].filter(Boolean).join(" ");
@@ -838,7 +842,7 @@ async function beatPrimaryFetch(
       curatedInterviewBudget(dedup),
       curatedImageBudget(dedup),
       undefined,
-      { varietySeed: dedup.varietySeed }
+      { varietySeed: dedup.varietySeed, crossVideoExcludeIds: dedup.crossVideoExcludeIds }
     );
   }
   if (youtubeOnlySourcingEnabled()) {
@@ -7645,6 +7649,8 @@ interface VisualDedupState {
   archiveCandidatePool: CuratedCandidatePick[] | null;
   /** Per-video seed so archive picks differ between generations. */
   varietySeed: number;
+  /** Assets used in recent same-topic videos — skipped when pool allows. */
+  crossVideoExcludeIds: Set<number>;
   /** asset.id → prepared beat MP4 (avoid re-trim when next zin tries same file). */
   preparedArchiveClips: Map<number, string>;
   lock: Promise<void>;
@@ -7701,6 +7707,7 @@ function createVisualDedupState(
     motionGraphicsUsed: 0,
     archiveCandidatePool: null,
     varietySeed: 0,
+    crossVideoExcludeIds: new Set(),
     preparedArchiveClips: new Map(),
     lock: Promise.resolve(),
     perf,
@@ -10096,7 +10103,7 @@ async function fetchLastResortRealClip(
       curatedInterviewBudget(dedup),
       curatedImageBudget(dedup),
       undefined,
-      { varietySeed: dedup.varietySeed }
+      { varietySeed: dedup.varietySeed, crossVideoExcludeIds: dedup.crossVideoExcludeIds }
     );
   }
   const tag = `b${beat.index}_lr`;
@@ -11363,7 +11370,7 @@ async function fetchBeatClip(
       curatedInterviewBudget(dedup),
       curatedImageBudget(dedup),
       undefined,
-      { varietySeed: dedup.varietySeed }
+      { varietySeed: dedup.varietySeed, crossVideoExcludeIds: dedup.crossVideoExcludeIds }
     );
   }
   const tag = `b${beat.index}`;
@@ -12394,7 +12401,7 @@ async function resolveBeatClipForBeat(
       curatedInterviewBudget(dedup),
       curatedImageBudget(dedup),
       undefined,
-      { varietySeed: dedup.varietySeed }
+      { varietySeed: dedup.varietySeed, crossVideoExcludeIds: dedup.crossVideoExcludeIds }
     );
   }
 
@@ -12534,7 +12541,8 @@ async function loadArchiveCandidatePool(
       dedup.usedCuratedStorageUrls,
       topicAnchors,
       allTags,
-      scene.text
+      scene.text,
+      dedup.crossVideoExcludeIds
     )
   );
   console.log(
@@ -12734,7 +12742,7 @@ async function adoptArchiveBeatClip(
       curatedInterviewBudget(dedup),
       curatedImageBudget(dedup),
       mgfxBudget,
-      { relaxed: true, varietySeed: dedup.varietySeed }
+      { relaxed: true, varietySeed: dedup.varietySeed, crossVideoExcludeIds: dedup.crossVideoExcludeIds }
     );
     dedup.motionGraphicsUsed = mgfxBudget.used;
     if (await tryClip(clip, holdSec)) return true;
@@ -15289,6 +15297,12 @@ export async function runVideoPipeline(
     }
     const visualDedup = createVisualDedupState(perf, { primaryPerson, personTopicLock: personLocked });
     visualDedup.varietySeed = ((videoId * 2654435761) ^ hashVarietySeed(topicContext)) >>> 0;
+    if (archiveCrossVideoVarietyEnabled()) {
+      visualDedup.crossVideoExcludeIds = getCrossVideoExcludeAssetIds(topicContext, videoId);
+      console.log(
+        `[Pipeline] Cross-video variety: excluding ${visualDedup.crossVideoExcludeIds.size} asset(s) from recent same-topic videos`
+      );
+    }
     console.log(`[Pipeline] Archive variety seed: ${visualDedup.varietySeed}`);
 
     const visualLimit = pLimit(perf.sceneParallelism);
@@ -15531,6 +15545,9 @@ export async function runVideoPipeline(
     onProgress?.({ stage: STAGE_LABELS.complete, percent: 100 });
     const totalMs = Date.now() - t0;
     console.log(`[Pipeline] Video ${videoId} COMPLETE in ${(totalMs/60000).toFixed(1)} min: ${url}`);
+    if (archiveCrossVideoVarietyEnabled() && curatedArchiveOnlyVisuals()) {
+      recordArchiveVideoUsage(videoId, visualDedup.usedCuratedAssetIds, topicContext);
+    }
     return url;
   } finally {
     try {

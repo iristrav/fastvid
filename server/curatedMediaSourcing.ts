@@ -29,6 +29,7 @@ import {
   archivePreferVideoClips,
   framedArchiveStillsEnabled,
 } from "./sourcingPolicy";
+import { seededShuffle } from "./archiveUsageMemory";
 import {
   getAllMediaArchives,
   getMediaArchiveAssets,
@@ -601,7 +602,8 @@ export async function listCuratedArchiveCandidates(
   excludeStorageUrls: Set<string>,
   topicAnchors: string[] = [],
   filterTags?: string[],
-  beatText?: string
+  beatText?: string,
+  crossVideoExcludeIds: Set<number> = new Set()
 ): Promise<Array<{ asset: MediaArchiveAsset; archiveName: string; score: number }>> {
   const queryTags = filterTags ?? normalizeMediaTags([...beatTags, ...topicAnchors]);
   const archives = await resolveArchivesForVisualQuery(queryTags, topicAnchors);
@@ -643,6 +645,11 @@ export async function listCuratedArchiveCandidates(
     const videoBoost = (x: MediaArchiveAsset) => (x.mediaType === "video" ? 2 : 0);
     return videoBoost(b.asset) - videoBoost(a.asset);
   });
+  if (crossVideoExcludeIds.size === 0) return pool;
+  const filtered = pool.filter((c) => !crossVideoExcludeIds.has(c.asset.id));
+  const minKeep = Math.max(8, Math.ceil(pool.length * 0.15));
+  if (filtered.length >= minKeep) return filtered;
+  if (filtered.length > 0) return filtered;
   return pool;
 }
 
@@ -879,7 +886,17 @@ export function rankCuratedCandidatesForBeat(
     }
     return ((a.asset.id * 92821 + varietySeed) >>> 0) - ((b.asset.id * 92821 + varietySeed) >>> 0);
   });
-  return rotateCuratedCandidates(ranked, varietySeed, beatIndex);
+  const banded: CuratedCandidatePick[] = [];
+  let i = 0;
+  while (i < ranked.length) {
+    const topScore = ranked[i]!.score;
+    let j = i + 1;
+    while (j < ranked.length && ranked[j]!.score >= topScore - 3) j++;
+    const band = ranked.slice(i, j);
+    banded.push(...seededShuffle(band, varietySeed + beatIndex * 9973 + i * 17));
+    i = j;
+  }
+  return rotateCuratedCandidates(banded, varietySeed, beatIndex);
 }
 
 /** Skip FFmpeg when metadata already rules out an asset. */
@@ -939,10 +956,11 @@ export async function fetchCuratedArchiveBeatClip(
   interviewBudget?: { used: number; max: number },
   imageBudget?: { used: number; max: number },
   motionGraphicsBudget?: MotionGraphicsBudget,
-  options?: { relaxed?: boolean; varietySeed?: number }
+  options?: { relaxed?: boolean; varietySeed?: number; crossVideoExcludeIds?: Set<number> }
 ): Promise<string | null> {
   const relaxed = options?.relaxed === true;
   const varietySeed = options?.varietySeed ?? 0;
+  const crossVideoExcludeIds = options?.crossVideoExcludeIds ?? new Set<number>();
   const { beatTags, topicAnchors, allTags } = buildBeatMatchTags(beat, scene, videoTitle);
   const candidates = orderCuratedCandidatesForBeat(
     await listCuratedArchiveCandidates(
@@ -951,7 +969,8 @@ export async function fetchCuratedArchiveBeatClip(
       usedStorageUrls,
       topicAnchors,
       allTags,
-      beat.text
+      beat.text,
+      crossVideoExcludeIds
     )
   );
   if (!candidates.length) {
