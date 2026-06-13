@@ -26,6 +26,11 @@ export function yearsOnlyOnScreen(): boolean {
   return process.env.ENABLE_EXTRA_ONSCREEN_TEXT !== "true";
 }
 
+/** Yellow pill keywords / year labels bottom-left. Off by default — set ENABLE_SCREEN_LABELS=true to restore. */
+export function screenLabelsEnabled(): boolean {
+  return process.env.ENABLE_SCREEN_LABELS === "true";
+}
+
 /** Fail generation rather than loop, pad, or reuse any clip content in a video. */
 export function strictNoVisualRepeat(): boolean {
   if (process.env.STRICT_NO_VISUAL_REPEAT === "false") return false;
