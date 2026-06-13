@@ -8470,6 +8470,26 @@ async function estimateSceneMontageCoverageSec(
   return effectiveMontageDurationSec(durs, sourceMaxDurs);
 }
 
+/** Coverage after compose-style duration balancing (matches prepareStrictUniqueMontage). */
+async function estimateBalancedMontageCoverageSec(
+  clips: string[],
+  beatDurations: number[],
+  outDur: number
+): Promise<number> {
+  if (clips.length === 0) return 0;
+  let sourceMaxDurs = await probeMontageSourceMaxDurs(clips);
+  let balanced = balanceMontageDurationsForVoice(clips.length, outDur, beatDurations, sourceMaxDurs);
+  balanced = await capMontageDurationsToClipFiles(clips, balanced);
+  sourceMaxDurs = await probeMontageSourceMaxDurs(clips);
+  balanced = balanceMontageDurationsForVoice(clips.length, outDur, balanced, sourceMaxDurs);
+  return effectiveMontageDurationSec(balanced, sourceMaxDurs);
+}
+
+function composeSceneTimeoutMs(clipCount: number): number {
+  if (curatedArchiveOnlyVisuals() && clipCount > 8) return 240_000;
+  return 120_000;
+}
+
 /** Spread voice duration across unique clips without exceeding each source length. */
 function balanceMontageDurationsForVoice(
   clipCount: number,
@@ -8851,7 +8871,8 @@ function buildMontageXfadeFilter(
 
   let mergeFilter = "";
   let prev = "v0";
-  let offset = durs[0] - xfade;
+  let prevDur = durs[0]!;
+  let offset = prevDur - xfade;
   for (let i = 1; i < n; i++) {
     const outLabel = i === n - 1 ? "montage" : `xf${i}`;
     const xfadeTransition = smooth
@@ -8859,9 +8880,11 @@ function buildMontageXfadeFilter(
         ? "dissolve"
         : pickMontageXfadeTransition(sceneIndex, i)
       : pickStockMontageXfadeTransition(sceneIndex, i);
-    mergeFilter += `;[${prev}][v${i}]xfade=transition=${xfadeTransition}:duration=${xfade.toFixed(3)}:offset=${offset.toFixed(3)}[${outLabel}]`;
+    const safeOffset = Math.max(0, Math.min(offset, Math.max(0, prevDur - xfade - 0.01)));
+    mergeFilter += `;[${prev}][v${i}]xfade=transition=${xfadeTransition}:duration=${xfade.toFixed(3)}:offset=${safeOffset.toFixed(3)}[${outLabel}]`;
     prev = outLabel;
-    offset += durs[i] - xfade;
+    prevDur = prevDur + durs[i]! - xfade;
+    offset += durs[i]! - xfade;
   }
   return { scaleFilters, mergeFilter, montageLabel: "montage" };
 }
@@ -12437,7 +12460,7 @@ async function backfillArchiveMontageFromPool(
 ): Promise<number> {
   const minClipsNeeded = minClipsForBalancedVoice(outDur);
   const minCoverage = strictNoVisualRepeat() ? outDur - 0.06 : outDur * 0.92;
-  let coverage = await estimateSceneMontageCoverageSec(clips, beatDurations);
+  let coverage = await estimateBalancedMontageCoverageSec(clips, beatDurations, outDur);
   if (coverage >= minCoverage && clips.length >= minClipsNeeded) return 0;
 
   await loadArchiveCandidatePool(scene, videoTitle, dedup);
@@ -12465,7 +12488,7 @@ async function backfillArchiveMontageFromPool(
       beat.holdSec
     );
     if (adopted) added++;
-    coverage = await estimateSceneMontageCoverageSec(clips, beatDurations);
+    coverage = await estimateBalancedMontageCoverageSec(clips, beatDurations, outDur);
   }
   return added;
 }
@@ -12483,7 +12506,7 @@ async function backfillComposeMontageIfShort(
   if (!curatedArchiveOnlyVisuals()) return;
   const minClipsNeeded = minClipsForBalancedVoice(outDur);
   const minCoverage = strictNoVisualRepeat() ? outDur - 0.06 : outDur * 0.92;
-  let coverage = await estimateSceneMontageCoverageSec(safeClips, composeBeatDurations);
+  let coverage = await estimateBalancedMontageCoverageSec(safeClips, composeBeatDurations, outDur);
   if (coverage >= minCoverage && safeClips.length >= minClipsNeeded) return;
 
   const pushClip = async (clipPath: string, holdSec: number): Promise<boolean> => {
@@ -12497,7 +12520,7 @@ async function backfillComposeMontageIfShort(
     safeClips.push(clipPath);
     composeBeatDurations.push(actualHold);
     markCuratedAssetUsed(clipPath, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls);
-    coverage = await estimateSceneMontageCoverageSec(safeClips, composeBeatDurations);
+    coverage = await estimateBalancedMontageCoverageSec(safeClips, composeBeatDurations, outDur);
     return true;
   };
 
@@ -13940,6 +13963,7 @@ async function composeSceneVideo(
       composeOptions.dedup
     );
   }
+  const composeTimeout = composeSceneTimeoutMs(safeClips.length);
 
   // Subtitle overlay: render if user has enabled subtitles (effects pass only — not raw assembly)
   let subtitlePath: string | null = null;
@@ -14176,7 +14200,7 @@ async function composeSceneVideo(
             `-map "[vmont]" -map "[aout]" -vsync cfr ` +
             `-t ${outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
         ),
-        120_000,
+        composeTimeout,
         `Assembly scene ${scene.index}`
       );
     } else {
@@ -14217,7 +14241,7 @@ async function composeSceneVideo(
         `-map "[vout]" -map "[aout]" -vsync cfr ` +
         `-t ${outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
       ),
-      120_000, `Compose multi-clip scene ${scene.index}`
+      composeTimeout, `Compose multi-clip scene ${scene.index}`
     );
     }
   } catch (composeErr) {
@@ -14244,7 +14268,7 @@ async function composeSceneVideo(
               `-map "[vout]" -map "[aout]" -vsync cfr ` +
               `-t ${outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
           ),
-          120_000,
+          composeTimeout,
           `Compose without SFX scene ${scene.index}`
         );
         if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1000) {
@@ -14270,7 +14294,7 @@ async function composeSceneVideo(
               `-map "[vout]" -map "[aout]" -vsync cfr ` +
               `-t ${outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
           ),
-          120_000,
+          composeTimeout,
           `Compose without overlays scene ${scene.index}`
         );
         if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1000) {
@@ -14308,7 +14332,7 @@ async function composeSceneVideo(
             `-map "[vout]" -map "[aout]" -vsync cfr ` +
             `-t ${outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
         ),
-        120_000,
+        composeTimeout,
         `Rescue montage+pad scene ${scene.index}`
       );
     } catch (rescueErr) {
