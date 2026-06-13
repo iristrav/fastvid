@@ -1144,7 +1144,7 @@ function requiredMontageClipsForDuration(durationSec: number): number {
   const minClip = archiveVisualMinClipSec();
   const xfade = montageXfadeSec();
   const netPerClip = Math.max(0.5, minClip - xfade);
-  return Math.max(2, Math.ceil((durationSec + xfade) / netPerClip));
+  return Math.max(2, Math.ceil((durationSec - xfade) / netPerClip));
 }
 
 function montageMinOnScreenSec(): number {
@@ -9605,9 +9605,10 @@ async function recoverSceneClipsIfEmpty(
       searchQuery: enrichStockQuery(stubPower, scene, topicContext, scenePersons[0], scene.text),
       powerWord: stubPower,
       keywords: recoverAdopt.keywords ?? [],
-      holdSec: VIDRUSH_BEAT_SEC,
+      holdSec: effectiveBeatSec(),
     };
-    for (let fi = 0; fi < n + 2; fi++) {
+    const need = requiredMontageClipsForDuration(scene.duration + 0.15);
+    for (let fi = 0; fi < need + 4; fi++) {
       stubBeat.index = fi;
       const clip = await fetchCuratedArchiveBeatClip(
         stubBeat,
@@ -9619,15 +9620,18 @@ async function recoverSceneClipsIfEmpty(
         dedup.usedCuratedStorageUrls,
         topicContext,
         curatedInterviewBudget(dedup),
-      curatedImageBudget(dedup)
+        curatedImageBudget(dedup),
+        undefined,
+        { relaxed: fi >= need }
       );
       if (!clip || isPipelineFallbackClip(clip)) continue;
       const key = clipContentKey(clip);
       if (clips.some((c) => clipContentKey(c) === key)) continue;
       clips.push(clip);
-      beatDurations.push(VIDRUSH_BEAT_SEC);
-      if (clips.length >= n) break;
+      beatDurations.push(stubBeat.holdSec);
+      if (clips.length >= need) break;
     }
+    await assertSceneVisualInventory(scene, clips, beatDurations);
     return { clips, beatDurations };
   }
 
@@ -12301,7 +12305,9 @@ async function backfillComposeMontageIfShort(
       dedup.usedCuratedStorageUrls,
       videoTitle,
       curatedInterviewBudget(dedup),
-      curatedImageBudget(dedup)
+      curatedImageBudget(dedup),
+      undefined,
+      { relaxed: attempt >= Math.floor(maxFill / 2) }
     );
     if (!clip || isPipelineFallbackClip(clip)) continue;
     const key = clipContentKey(clip);
@@ -12689,6 +12695,10 @@ async function fetchSceneVisuals(
   }
 
   const minClips = minClipsForScene(scene.duration, beats.length, dedup.perf.fastStockMode);
+  const strictVoiceDur = scene.duration + 0.15;
+  const strictMinClips = requiredMontageClipsForDuration(strictVoiceDur);
+  const strictMinCoverage = strictNoVisualRepeat() ? strictVoiceDur - 0.06 : scene.duration * 0.92;
+  const targetMinClips = strictNoVisualRepeat() ? strictMinClips : minClips;
   let backfillAttempts = 0;
   const maxBackfill = maxBackfillAttempts(dedup.perf, scene.duration);
   const backfillMs = backfillClipWallMs(dedup.perf, scene.duration);
@@ -12696,9 +12706,9 @@ async function fetchSceneVisuals(
   const sceneClipSec = () => beatDurations.reduce((sum, d) => sum + d, 0);
   while (
     backfillAttempts < maxBackfill &&
-    (clips.filter((c) => c && !isPipelineFallbackClip(c)).length < minClips ||
+    (clips.filter((c) => c && !isPipelineFallbackClip(c)).length < targetMinClips ||
       (archiveOnly &&
-        (await estimateSceneMontageCoverageSec(clips, beatDurations)) < scene.duration * 0.92))
+        (await estimateSceneMontageCoverageSec(clips, beatDurations)) < strictMinCoverage))
   ) {
     const stub = beats[backfillAttempts % beats.length] ?? beats[0];
     if (!stub) break;
@@ -12712,7 +12722,18 @@ async function fetchSceneVisuals(
           (async () => {
             if (archiveOnly) {
               return fetchCuratedArchiveBeatClip(
-                stub, scene, workDir, scene.index, stub.holdSec, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls, videoTitle, curatedInterviewBudget(dedup), curatedImageBudget(dedup)
+                stub,
+                scene,
+                workDir,
+                scene.index,
+                stub.holdSec,
+                dedup.usedCuratedAssetIds,
+                dedup.usedCuratedStorageUrls,
+                videoTitle,
+                curatedInterviewBudget(dedup),
+                curatedImageBudget(dedup),
+                undefined,
+                { relaxed: backfillAttempts >= Math.floor(maxBackfill / 2) }
               );
             }
             if (dedup.perf.fastStockMode) {
@@ -14640,6 +14661,7 @@ export async function runVideoPipeline(
             `Scene ${scene.index} visuals`
           );
         } catch (sceneErr) {
+          if (strictNoVisualRepeat()) throw sceneErr;
           console.warn(
             `[Pipeline] Scene ${scene.index} visuals failed after ${Math.round(perf.sceneVisualTimeoutMs / 1000)}s — recovering:`,
             (sceneErr as Error).message

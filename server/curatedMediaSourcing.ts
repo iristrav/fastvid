@@ -837,8 +837,10 @@ export async function fetchCuratedArchiveBeatClip(
   videoTitle?: string,
   interviewBudget?: { used: number; max: number },
   imageBudget?: { used: number; max: number },
-  motionGraphicsBudget?: MotionGraphicsBudget
+  motionGraphicsBudget?: MotionGraphicsBudget,
+  options?: { relaxed?: boolean }
 ): Promise<string | null> {
+  const relaxed = options?.relaxed === true;
   const { beatTags, topicAnchors, allTags } = buildBeatMatchTags(beat, scene, videoTitle);
   const candidates = orderCuratedCandidatesForBeat(
     await listCuratedArchiveCandidates(
@@ -859,10 +861,10 @@ export async function fetchCuratedArchiveBeatClip(
   }
 
   const topScore = candidates[0]?.score ?? 0;
-  const minAcceptScore = Math.max(6, Math.round(topScore * 0.35));
+  const minAcceptScore = relaxed ? 1 : Math.max(6, Math.round(topScore * 0.35));
 
   for (const picked of candidates) {
-    if (picked.score < minAcceptScore && topScore > minAcceptScore + 8) {
+    if (!relaxed && picked.score < minAcceptScore && topScore > minAcceptScore + 8) {
       continue;
     }
     if (usedAssetIds.has(picked.asset.id) || usedStorageUrls.has(picked.asset.storageUrl)) {
