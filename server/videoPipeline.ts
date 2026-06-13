@@ -54,7 +54,7 @@ import {
   buildBeatAlignedYearOverlays,
   planBeatAlignedYears,
   planIntervalScreenLabels,
-  buildYearDrawtextFilterChain,
+  buildIntervalScreenLabelOverlays,
   planPhotoShutterCues,
   type TimedYearLabel,
   buildCinematicSfxAudioFilter,
@@ -105,6 +105,7 @@ import {
   buildBeatMatchTags,
   orderCuratedCandidatesForBeat,
   rankCuratedCandidatesForBeat,
+  hashVarietySeed,
   archiveAssetPreflight,
   type CuratedCandidatePick,
 } from "./curatedMediaSourcing";
@@ -494,8 +495,14 @@ function clipRequiresFairUseTransform(filePath: string): boolean {
 }
 
 function ffmpegSupportsDrawtext(): boolean {
-  const bin = FFMPEG_BIN.toLowerCase();
-  return !bin.includes("ffmpeg-static") && !bin.includes("node_modules");
+  if (process.env.FFMPEG_DISABLE_DRAWTEXT === "true") return false;
+  try {
+    const out = execSync(`"${FFMPEG_BIN}" -filters 2>&1`, { encoding: "utf8", maxBuffer: 512 * 1024 });
+    return /\sdrawtext\s/.test(out);
+  } catch {
+    const bin = FFMPEG_BIN.toLowerCase();
+    return !bin.includes("ffmpeg-static") && !bin.includes("node_modules");
+  }
 }
 
 /** YouTube beat sourcing — disabled; pipeline uses archive, Wikimedia, stills, and Pexels only. */
@@ -689,7 +696,9 @@ async function fetchBeatArchivalThenPexels(
       dedup.usedCuratedStorageUrls,
       videoTitle,
       curatedInterviewBudget(dedup),
-      curatedImageBudget(dedup)
+      curatedImageBudget(dedup),
+      undefined,
+      { varietySeed: dedup.varietySeed }
     );
   }
   const topicHay = [videoTitle, scene.text, beat.text].filter(Boolean).join(" ");
@@ -827,7 +836,9 @@ async function beatPrimaryFetch(
       dedup.usedCuratedStorageUrls,
       videoTitle,
       curatedInterviewBudget(dedup),
-      curatedImageBudget(dedup)
+      curatedImageBudget(dedup),
+      undefined,
+      { varietySeed: dedup.varietySeed }
     );
   }
   if (youtubeOnlySourcingEnabled()) {
@@ -4142,15 +4153,19 @@ async function requireValidClip(
   _duration: number,
   _workDir: string
 ): Promise<string | null> {
-  if (
-    await isValidVideoFile(clipPath) &&
-    !isPipelineFallbackClip(clipPath) &&
-    !(await isMostlyBlackClip(clipPath))
-  ) {
+  if (!(await isValidVideoFile(clipPath)) || isPipelineFallbackClip(clipPath)) {
+    console.warn(`[Pipeline] Scene ${sceneIndex}: dropping invalid clip ${path.basename(clipPath)}`);
+    return null;
+  }
+  // Compose gate already checked start/center luma for curated archive beats.
+  if (curatedArchiveOnlyVisuals() && curatedClipPathAssetId(clipPath) != null) {
     return clipPath;
   }
-  console.warn(`[Pipeline] Scene ${sceneIndex}: dropping invalid clip ${path.basename(clipPath)}`);
-  return null;
+  if (await isMostlyBlackClip(clipPath)) {
+    console.warn(`[Pipeline] Scene ${sceneIndex}: dropping mostly-black clip ${path.basename(clipPath)}`);
+    return null;
+  }
+  return clipPath;
 }
 
 // ─── 3c1. Generate Grok Video Clip ──────────────────────────────────────────
@@ -7628,6 +7643,8 @@ interface VisualDedupState {
   motionGraphicsUsed: number;
   /** Scene/video archive pool — one DB load, per-beat re-rank only. */
   archiveCandidatePool: CuratedCandidatePick[] | null;
+  /** Per-video seed so archive picks differ between generations. */
+  varietySeed: number;
   /** asset.id → prepared beat MP4 (avoid re-trim when next zin tries same file). */
   preparedArchiveClips: Map<number, string>;
   lock: Promise<void>;
@@ -7683,6 +7700,7 @@ function createVisualDedupState(
     curatedImageClipsUsed: 0,
     motionGraphicsUsed: 0,
     archiveCandidatePool: null,
+    varietySeed: 0,
     preparedArchiveClips: new Map(),
     lock: Promise.resolve(),
     perf,
@@ -8124,7 +8142,9 @@ async function hasEmbeddedBlackBars(filePath: string): Promise<boolean> {
 
 async function isMostlyBlackClip(filePath: string): Promise<boolean> {
   if (isPipelineFallbackClip(filePath)) return true;
-  if (await hasEmbeddedBlackBars(filePath)) {
+  const curatedStill = isCuratedPreparedStillClip(filePath);
+  // Blur-fill stills darken edges by design — not embedded letterbox bars.
+  if (!curatedStill && (await hasEmbeddedBlackBars(filePath))) {
     console.warn(`[Pipeline] Rejecting clip with embedded black bars: ${path.basename(filePath)}`);
     return true;
   }
@@ -8133,8 +8153,11 @@ async function isMostlyBlackClip(filePath: string): Promise<boolean> {
     const dur = await probeVideoDurationSec(filePath);
     const sampleTimes = [0.12, 0.45, 1.0, Math.max(0.2, dur * 0.55)];
     for (const t of sampleTimes) {
-      const mid = await probeClipMeanLuma(filePath, Math.min(t, Math.max(0.1, dur - 0.08)));
-      if (mid !== null && mid < 12) return true;
+      const ts = Math.min(t, Math.max(0.1, dur - 0.08));
+      const luma = curatedStill
+        ? await probeClipRegionMeanLuma(filePath, ts, "center")
+        : await probeClipMeanLuma(filePath, ts);
+      if (luma !== null && luma < 12) return true;
     }
     return false;
   }
@@ -8699,7 +8722,7 @@ async function composeBatchedArchiveSceneWithAudio(
   outputPath: string,
   workDir: string,
   fadeFilter: string,
-  yearLabels: TimedYearLabel[],
+  docOverlays: TimedOverlay[],
   threadFlag: string,
   composeTimeout: number,
   skipEffectLayers: boolean
@@ -8720,7 +8743,7 @@ async function composeBatchedArchiveSceneWithAudio(
   const voiceAudioFilter =
     `[1:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${audioFadeOutStart.toFixed(3)}:d=0.12,` +
     `atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]`;
-  if (skipEffectLayers || yearLabels.length === 0) {
+  if (skipEffectLayers || docOverlays.length === 0) {
     await withTimeout(
       exec(
         `${FFMPEG_BIN} -y -i "${montageOnlyPath}" -i "${safeAudioPath}" ` +
@@ -8733,16 +8756,23 @@ async function composeBatchedArchiveSceneWithAudio(
     );
     return;
   }
-  const yearDrawChain = buildYearDrawtextFilterChain("vgraded", "vout", yearLabels);
+  const { extraInputs, filterChain, finalLabel } = buildOverlayFilterChain(
+    "vmont",
+    1,
+    [],
+    docOverlays,
+    null
+  );
+  const overlayInputs = extraInputs ? ` ${extraInputs}` : "";
   await withTimeout(
     exec(
-      `${FFMPEG_BIN} -y -i "${montageOnlyPath}" -i "${safeAudioPath}" ` +
-        `-filter_complex "[0:v]${fadeFilter}[vgraded]${yearDrawChain};${voiceAudioFilter}" ` +
+      `${FFMPEG_BIN} -y -i "${montageOnlyPath}" -i "${safeAudioPath}"${overlayInputs} ` +
+        `-filter_complex "[0:v]${FPS_FORMAT_VF}[vmont]${filterChain};[${finalLabel}]${fadeFilter}[vout];${voiceAudioFilter}" ` +
         `-map "[vout]" -map "[aout]" -vsync cfr -t ${outDur.toFixed(3)} ${threadFlag} ` +
         `-c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
     ),
     composeTimeout,
-    `Batched montage+years scene ${sceneIndex}`
+    `Batched montage+labels scene ${sceneIndex}`
   );
 }
 
@@ -10064,7 +10094,9 @@ async function fetchLastResortRealClip(
       dedup.usedCuratedStorageUrls,
       videoTitle,
       curatedInterviewBudget(dedup),
-      curatedImageBudget(dedup)
+      curatedImageBudget(dedup),
+      undefined,
+      { varietySeed: dedup.varietySeed }
     );
   }
   const tag = `b${beat.index}_lr`;
@@ -11329,7 +11361,9 @@ async function fetchBeatClip(
       dedup.usedCuratedStorageUrls,
       videoTitle,
       curatedInterviewBudget(dedup),
-      curatedImageBudget(dedup)
+      curatedImageBudget(dedup),
+      undefined,
+      { varietySeed: dedup.varietySeed }
     );
   }
   const tag = `b${beat.index}`;
@@ -12358,7 +12392,9 @@ async function resolveBeatClipForBeat(
       dedup.usedCuratedStorageUrls,
       videoTitle,
       curatedInterviewBudget(dedup),
-      curatedImageBudget(dedup)
+      curatedImageBudget(dedup),
+      undefined,
+      { varietySeed: dedup.varietySeed }
     );
   }
 
@@ -12472,7 +12508,7 @@ async function resolveBeatClipForBeat(
 type SceneVisualsResult = { clips: string[]; beatDurations: number[] };
 type BeatProgressPhase = "beat" | "backfill";
 
-const ARCHIVE_BEAT_TOP_CANDIDATES = 3;
+const ARCHIVE_BEAT_TOP_CANDIDATES = 8;
 const ARCHIVE_BEAT_CLIP_RETRIES = 3;
 
 async function loadArchiveCandidatePool(
@@ -12635,7 +12671,9 @@ async function adoptArchiveBeatClip(
       dedup.archiveCandidatePool ?? [],
       beatTags,
       topicAnchors,
-      beat.text
+      beat.text,
+      dedup.varietySeed,
+      beat.index
     );
     const imgMax = archiveMaxImageClipsPerVideo();
     let tried = 0;
@@ -12696,7 +12734,7 @@ async function adoptArchiveBeatClip(
       curatedInterviewBudget(dedup),
       curatedImageBudget(dedup),
       mgfxBudget,
-      { relaxed: true }
+      { relaxed: true, varietySeed: dedup.varietySeed }
     );
     dedup.motionGraphicsUsed = mgfxBudget.used;
     if (await tryClip(clip, holdSec)) return true;
@@ -13898,7 +13936,13 @@ function buildOverlayFilterChain(
     const enable = `enable='between(t,${frame.startTime.toFixed(2)},${frame.endTime.toFixed(2)})'`;
     const ovlLabel = `ov${idx}`;
     if (timed.overlayX != null && timed.overlayY != null) {
-      chain += `;[${inputIdx}:v]scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}[${ovlLabel}];` +
+      const ow = timed.overlayW ?? VIDEO_WIDTH;
+      const oh = timed.overlayH ?? VIDEO_HEIGHT;
+      const scale =
+        timed.isVideoOverlay && timed.overlayW && timed.overlayH
+          ? `scale=${ow}:${oh}`
+          : `scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}`;
+      chain += `;[${inputIdx}:v]${scale}[${ovlLabel}];` +
         `[${prevLabel}][${ovlLabel}]overlay=x=${timed.overlayX}:y=${timed.overlayY}:${enable}[${outLabel}]`;
     } else if (overlayUsesFullFrame(timed) || (frame as { isStatCallout?: boolean }).isStatCallout) {
       chain += `;[${inputIdx}:v]scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}[${ovlLabel}];` +
@@ -14385,7 +14429,7 @@ async function composeSceneVideo(
     );
   }
 
-  if (!skipEffectLayers && yearsOnlyOnScreen() && cinematicEffectsEnabled() && ffmpegSupportsDrawtext()) {
+  if (!skipEffectLayers && yearsOnlyOnScreen() && cinematicEffectsEnabled()) {
     try {
       const sceneBeats = buildSceneBeats(scene, outDur, Math.max(safeClips.length, 8));
       const sceneStartSec = composeOptions?.sceneStartSec ?? 0;
@@ -14401,8 +14445,16 @@ async function composeSceneVideo(
         screenLabelIntervalSec()
       );
       if (yearLabels.length > 0) {
+        const labelOverlays = await buildIntervalScreenLabelOverlays(
+          yearLabels,
+          scene.index,
+          workDir,
+          FFMPEG_BIN,
+          (cmd, ms, lbl) => withTimeout(exec(cmd), ms, lbl)
+        );
+        docOverlays.push(...labelOverlays);
         console.log(
-          `[Cinematic] Scene ${scene.index}: ${yearLabels.length} interval label(s) [${yearLabels.map((y) => y.displayText).join(" | ")}]`
+          `[Cinematic] Scene ${scene.index}: ${labelOverlays.length} interval label overlay(s) [${yearLabels.map((y) => y.displayText).join(" | ")}]`
         );
       }
     } catch (err) {
@@ -14451,7 +14503,7 @@ async function composeSceneVideo(
         outputPath,
         workDir,
         fadeFilter,
-        yearLabels,
+        docOverlays,
         threadFlag,
         composeTimeout,
         skipEffectLayers
@@ -14500,14 +14552,9 @@ async function composeSceneVideo(
     const kineticInput = kExtraInputs ? ` ${kExtraInputs}` : "";
     const kineticChainStr = kChain ? kChain : "";
     const hasOverlays = kineticFrames.length > 0 || docOverlays.length > 0 || statCalloutFrame !== null;
-    const yearDrawChain =
-      yearLabels.length > 0 ? buildYearDrawtextFilterChain("vgraded", "vout", yearLabels) : "";
-    const videoGradeChain =
-      yearLabels.length > 0
-        ? `;[vmont]${fadeFilter}[vgraded]${yearDrawChain}`
-        : hasOverlays
-          ? `${kineticChainStr};[${kFinalLabel}]${fadeFilter}[vout]`
-          : `;[vmont]${fadeFilter}[vout]`;
+    const videoGradeChain = hasOverlays
+      ? `${kineticChainStr};[${kFinalLabel}]${fadeFilter}[vout]`
+      : `;[vmont]${fadeFilter}[vout]`;
     const overlayCount =
       kineticFrames.length + docOverlays.length + (statCalloutFrame ? 1 : 0);
     const sfxBaseIdx = kineticBaseIdx + overlayCount;
@@ -14525,7 +14572,7 @@ async function composeSceneVideo(
     await withTimeout(
       exec(
         `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}"${kineticInput}${sfxInputStr ? ` ${sfxInputStr}` : ""} ` +
-        `-filter_complex "${scaleFilters}${mergeFilter};${montageOutVF}${yearLabels.length === 0 ? kineticChainStr : ""}${videoGradeChain};` +
+        `-filter_complex "${scaleFilters}${mergeFilter};${montageOutVF}${kineticChainStr}${videoGradeChain};` +
         `${audioFilter}" ` +
         `-map "[vout]" -map "[aout]" -vsync cfr ` +
         `-t ${outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
@@ -15241,6 +15288,8 @@ export async function runVideoPipeline(
       );
     }
     const visualDedup = createVisualDedupState(perf, { primaryPerson, personTopicLock: personLocked });
+    visualDedup.varietySeed = ((videoId * 2654435761) ^ hashVarietySeed(topicContext)) >>> 0;
+    console.log(`[Pipeline] Archive variety seed: ${visualDedup.varietySeed}`);
 
     const visualLimit = pLimit(perf.sceneParallelism);
     let completedVisuals = 0;

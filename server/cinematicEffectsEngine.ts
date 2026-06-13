@@ -729,6 +729,99 @@ export function buildYearDrawtextFilterChain(
   return chain;
 }
 
+const SCREEN_LABEL_MARGIN_L = 48;
+const SCREEN_LABEL_MARGIN_B = 72;
+const SCREEN_LABEL_BOX_H = 44;
+
+/** Render one yellow typewriter label clip (isolated encode — keeps main montage filter graph small). */
+export async function renderYellowTypewriterLabelClip(
+  text: string,
+  sceneIndex: number,
+  labelIndex: number,
+  workDir: string,
+  ffmpegBin: string,
+  execWithTimeout: (cmd: string, ms: number, label: string) => Promise<unknown>
+): Promise<{ path: string; w: number; h: number; x: number; y: number } | null> {
+  const safe = sanitizeForDrawtext(text.toUpperCase(), 28);
+  if (safe.length < 1) return null;
+  const PAD_X = 16;
+  const FS = 28;
+  const w = Math.min(520, Math.round(safe.length * FS * 0.62 + PAD_X * 2));
+  const h = SCREEN_LABEL_BOX_H;
+  const dur = YEAR_LABEL_ON_SCREEN_SEC;
+  const outPath = path.join(workDir, `scene_${sceneIndex}_screen_label_${labelIndex}.mp4`);
+  let chain = "";
+  let prev = "0:v";
+  for (let k = 1; k <= safe.length; k++) {
+    const sub = sanitizeForDrawtext(safe.slice(0, k), k);
+    const t0 = ((k - 1) * TYPEWRITER_CHAR_SEC).toFixed(3);
+    const t1 = (k < safe.length ? k * TYPEWRITER_CHAR_SEC : dur).toFixed(3);
+    const outLabel = k === safe.length ? "vout" : `sl${labelIndex}_${k}`;
+    chain +=
+      `[${prev}]drawtext=text='${sub}':fontcolor=black:fontsize=${FS}:` +
+      `x=${PAD_X}:y=10:box=0:enable='between(t\\,${t0}\\,${t1})'[${outLabel}];`;
+    prev = outLabel;
+  }
+  try {
+    await execWithTimeout(
+      `${ffmpegBin} -y -f lavfi -i "color=c=0xFFCC00:s=${w}x${h}:r=25:d=${dur.toFixed(2)}" ` +
+        `-filter_complex "${chain.slice(0, -1)}" -map "[vout]" -t ${dur.toFixed(2)} ` +
+        `-c:v libx264 -preset ultrafast -crf 18 -pix_fmt yuv420p "${outPath}"`,
+      20_000,
+      `Screen label ${text.slice(0, 12)} scene ${sceneIndex}`
+    );
+    if (fs.existsSync(outPath) && fs.statSync(outPath).size > 200) {
+      return {
+        path: outPath,
+        w,
+        h,
+        x: SCREEN_LABEL_MARGIN_L,
+        y: DOC_STYLE_VIDEO_HEIGHT - SCREEN_LABEL_MARGIN_B - h,
+      };
+    }
+  } catch {
+    /* fall through */
+  }
+  return null;
+}
+
+/** Interval labels as positioned overlay clips (works on Railway batched compose). */
+export async function buildIntervalScreenLabelOverlays(
+  labels: TimedYearLabel[],
+  sceneIndex: number,
+  workDir: string,
+  ffmpegBin: string,
+  execWithTimeout: (cmd: string, ms: number, label: string) => Promise<unknown>
+): Promise<TimedOverlay[]> {
+  const overlays: TimedOverlay[] = [];
+  for (let i = 0; i < labels.length; i++) {
+    const entry = labels[i]!;
+    const display = labelTextForEntry(entry).toUpperCase();
+    if (display.length < 1) continue;
+    const clip = await renderYellowTypewriterLabelClip(
+      display,
+      sceneIndex,
+      i,
+      workDir,
+      ffmpegBin,
+      execWithTimeout
+    );
+    if (!clip) continue;
+    overlays.push({
+      path: clip.path,
+      startTime: entry.startTime,
+      endTime: entry.endTime,
+      overlayX: clip.x,
+      overlayY: clip.y,
+      overlayW: clip.w,
+      overlayH: clip.h,
+      isScreenLabel: true,
+      isVideoOverlay: true,
+    });
+  }
+  return overlays;
+}
+
 /** Year badges timed to the beat when the year is spoken (bottom-left overlay). */
 export async function buildBeatAlignedYearOverlays(
   beats: BeatYearInput[],

@@ -253,6 +253,11 @@ export interface TimedOverlay {
   /** Positioned overlay (e.g. year badge) — composited over footage at x/y. */
   overlayX?: number;
   overlayY?: number;
+  overlayW?: number;
+  overlayH?: number;
+  /** Yellow interval label (year/keyword) — small positioned clip. */
+  isScreenLabel?: boolean;
+  isVideoOverlay?: boolean;
 }
 
 export async function renderNameBadgeOverlay(

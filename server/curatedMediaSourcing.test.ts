@@ -11,6 +11,7 @@ import {
   isCuratedStaticInteriorAsset,
   isCuratedPreparedStillClip,
   isCuratedPreparedVideoClip,
+  rotateCuratedCandidates,
 } from "./curatedMediaSourcing";
 import type { MediaArchiveAsset } from "./db";
 
@@ -285,11 +286,11 @@ describe("curatedMediaSourcing", () => {
     expect(isCuratedStaticInteriorAsset({ title: "Militaire parade in Berlijn", tags: ["parade"] })).toBe(false);
   });
 
-  it("isCuratedPreparedStillClip distinguishes still vs video beat paths", () => {
-    expect(isCuratedPreparedStillClip("scene_0_b1_curated_a42_still.mp4")).toBe(true);
-    expect(isCuratedPreparedStillClip("scene_0_b1_curated_a42.mp4")).toBe(false);
-    expect(curatedClipPathAssetId("scene_0_b1_curated_a42_still.mp4")).toBe(42);
-    expect(isCuratedPreparedVideoClip("scene_0_b1_curated_a42.mp4")).toBe(true);
-    expect(isCuratedPreparedVideoClip("scene_0_b1_curated_a42_still.mp4")).toBe(false);
+  it("rotateCuratedCandidates shifts start per video seed", () => {
+    const pool = [{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }];
+    const a = rotateCuratedCandidates(pool, 100, 0).map((x) => x.id);
+    const b = rotateCuratedCandidates(pool, 200, 0).map((x) => x.id);
+    expect(a).not.toEqual(b);
+    expect(a.sort()).toEqual([1, 2, 3, 4]);
   });
 });

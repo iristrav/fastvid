@@ -839,11 +839,33 @@ export async function prepareCuratedArchiveClip(
 
 export type CuratedCandidatePick = { asset: MediaArchiveAsset; archiveName: string; score: number };
 
+export function hashVarietySeed(input: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < input.length; i++) {
+    h ^= input.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+/** Rotate ranked list so different videos start from different archive assets. */
+export function rotateCuratedCandidates<T>(
+  candidates: T[],
+  varietySeed: number,
+  beatIndex: number
+): T[] {
+  if (candidates.length <= 1) return candidates;
+  const start = (varietySeed + beatIndex * 7919 + (varietySeed >>> 13)) % candidates.length;
+  return [...candidates.slice(start), ...candidates.slice(0, start)];
+}
+
 export function rankCuratedCandidatesForBeat(
   pool: CuratedCandidatePick[],
   beatTags: string[],
   topicAnchors: string[] = [],
-  beatText?: string
+  beatText?: string,
+  varietySeed = 0,
+  beatIndex = 0
 ): CuratedCandidatePick[] {
   const ranked = pool.map((c) => ({
     ...c,
@@ -852,9 +874,12 @@ export function rankCuratedCandidatesForBeat(
   ranked.sort((a, b) => {
     if (b.score !== a.score) return b.score - a.score;
     const videoBoost = (x: MediaArchiveAsset) => (x.mediaType === "video" ? 2 : 0);
-    return videoBoost(b.asset) - videoBoost(a.asset);
+    if (videoBoost(b.asset) !== videoBoost(a.asset)) {
+      return videoBoost(b.asset) - videoBoost(a.asset);
+    }
+    return ((a.asset.id * 92821 + varietySeed) >>> 0) - ((b.asset.id * 92821 + varietySeed) >>> 0);
   });
-  return ranked;
+  return rotateCuratedCandidates(ranked, varietySeed, beatIndex);
 }
 
 /** Skip FFmpeg when metadata already rules out an asset. */
@@ -914,9 +939,10 @@ export async function fetchCuratedArchiveBeatClip(
   interviewBudget?: { used: number; max: number },
   imageBudget?: { used: number; max: number },
   motionGraphicsBudget?: MotionGraphicsBudget,
-  options?: { relaxed?: boolean }
+  options?: { relaxed?: boolean; varietySeed?: number }
 ): Promise<string | null> {
   const relaxed = options?.relaxed === true;
+  const varietySeed = options?.varietySeed ?? 0;
   const { beatTags, topicAnchors, allTags } = buildBeatMatchTags(beat, scene, videoTitle);
   const candidates = orderCuratedCandidatesForBeat(
     await listCuratedArchiveCandidates(
@@ -938,8 +964,9 @@ export async function fetchCuratedArchiveBeatClip(
 
   const topScore = candidates[0]?.score ?? 0;
   const minAcceptScore = relaxed ? 1 : Math.max(6, Math.round(topScore * 0.35));
+  const tryOrder = rotateCuratedCandidates(candidates, varietySeed, beat.index);
 
-  for (const picked of candidates) {
+  for (const picked of tryOrder) {
     if (!relaxed && picked.score < minAcceptScore && topScore > minAcceptScore + 8) {
       continue;
     }
