@@ -639,7 +639,7 @@ export async function listCuratedArchiveCandidates(
   return pool;
 }
 
-function orderCuratedCandidatesForBeat(
+export function orderCuratedCandidatesForBeat(
   candidates: Array<{ asset: MediaArchiveAsset; archiveName: string; score: number }>
 ): typeof candidates {
   if (!archivePreferVideoClips()) return candidates;

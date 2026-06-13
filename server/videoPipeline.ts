@@ -100,6 +100,10 @@ import {
   prepareCuratedArchiveClip,
   isCuratedPreparedStillClip,
   isCuratedPreparedVideoClip,
+  listCuratedArchiveCandidates,
+  buildBeatMatchTags,
+  orderCuratedCandidatesForBeat,
+  isCuratedInterviewAsset,
 } from "./curatedMediaSourcing";
 import {
   motionGraphicsEnabled,
@@ -1123,7 +1127,7 @@ function beatScriptImageWallMs(perf: PipelinePerfProfile): number {
 
 function maxBackfillAttempts(perf: PipelinePerfProfile, sceneDurationSec: number): number {
   if (curatedArchiveOnlyVisuals()) {
-    return Math.max(24, requiredMontageClipsForDuration(sceneDurationSec) + 10);
+    return Math.max(8, requiredMontageClipsForDuration(sceneDurationSec) + 4);
   }
   if (perf.fastStockMode) return sceneDurationSec <= 10 ? 1 : 2;
   if (sceneDurationSec <= 22) return 1;
@@ -1602,11 +1606,7 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
       pexelsDownloadRetries: 1,
       maxStockQueriesPerBeat: 2,
       beatClipTimeoutMs: IS_RAILWAY ? 22_000 : 60_000,
-      sceneVisualTimeoutMs: IS_RAILWAY
-        ? curatedArchiveOnlyVisuals() && strictNoVisualRepeat()
-          ? 10 * 60_000
-          : 5 * 60_000
-        : 4 * 60_000,
+      sceneVisualTimeoutMs: IS_RAILWAY ? 5 * 60_000 : 4 * 60_000,
       fastStockMode: IS_RAILWAY,
       scriptOnlyVisuals: false,
     }, videoLength);
@@ -12161,7 +12161,7 @@ async function resolveBeatClipForBeat(
 type SceneVisualsResult = { clips: string[]; beatDurations: number[] };
 type BeatProgressPhase = "beat" | "backfill";
 
-const ARCHIVE_BEAT_CLIP_RETRIES = 12;
+const ARCHIVE_BEAT_CLIP_RETRIES = 4;
 
 async function pushMotionGraphicBeatClipIfAny(
   beat: SceneBeat,
@@ -12356,6 +12356,150 @@ async function backfillComposeMontageIfShort(
   }
 }
 
+async function fillStrictArchiveSceneVisuals(
+  scene: Scene,
+  workDir: string,
+  videoTitle: string | undefined,
+  dedup: VisualDedupState,
+  onBeatProgress?: (beatIndex: number, beatTotal: number, phase?: BeatProgressPhase) => void
+): Promise<SceneVisualsResult> {
+  const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
+  const strictVoiceDur = scene.duration + 0.15;
+  const targetMinClips = requiredMontageClipsForDuration(strictVoiceDur);
+  const strictMinCoverage = strictVoiceDur - 0.06;
+  const beats = buildSceneBeats(
+    scene,
+    scene.duration,
+    Math.max(targetMinClips, 4),
+    videoTitle,
+    scenePersons
+  );
+  const stubBeat = beats[0] ?? {
+    index: 0,
+    text: scene.text.slice(0, 220),
+    searchQuery: scene.pexelsQuery || "documentary",
+    powerWord: extractPowerWordFromSentence(scene.text.slice(0, 220), scenePersons),
+    keywords: buildRelevanceKeywords(scene, scene.text),
+    holdSec: effectiveBeatSec(),
+  };
+  const { beatTags, topicAnchors, allTags } = buildBeatMatchTags(stubBeat, scene, videoTitle);
+  const candidates = orderCuratedCandidatesForBeat(
+    await listCuratedArchiveCandidates(
+      beatTags,
+      dedup.usedCuratedAssetIds,
+      dedup.usedCuratedStorageUrls,
+      topicAnchors,
+      allTags,
+      scene.text
+    )
+  );
+  const clips: string[] = [];
+  const beatDurations: number[] = [];
+  const holdSec = effectiveBeatSec();
+  const interviewBudget = curatedInterviewBudget(dedup);
+  const imageBudget = curatedImageBudget(dedup);
+  const maxScan = Math.min(candidates.length, targetMinClips + 12);
+
+  console.log(
+    `[Pipeline] Scene ${scene.index}: strict pool fill — need ${targetMinClips} clips, ` +
+      `${candidates.length} archive candidate(s)`
+  );
+
+  const rejectAsset = (assetId: number, storageUrl: string, clipPath?: string): void => {
+    dedup.usedCuratedAssetIds.add(assetId);
+    dedup.usedCuratedStorageUrls.add(storageUrl);
+    if (clipPath) dedup.usedContentKeys.add(clipContentKey(clipPath));
+  };
+
+  for (let ci = 0; ci < maxScan; ci++) {
+    const picked = candidates[ci];
+    if (!picked) break;
+    if (
+      dedup.usedCuratedAssetIds.has(picked.asset.id) ||
+      dedup.usedCuratedStorageUrls.has(picked.asset.storageUrl)
+    ) {
+      continue;
+    }
+    if (
+      interviewBudget &&
+      isCuratedInterviewAsset(picked.asset) &&
+      interviewBudget.used >= interviewBudget.max
+    ) {
+      rejectAsset(picked.asset.id, picked.asset.storageUrl);
+      continue;
+    }
+    if (
+      imageBudget &&
+      picked.asset.mediaType === "image" &&
+      imageBudget.used >= imageBudget.max
+    ) {
+      rejectAsset(picked.asset.id, picked.asset.storageUrl);
+      continue;
+    }
+    if (
+      picked.asset.mediaType === "video" &&
+      picked.asset.durationSec != null &&
+      picked.asset.durationSec < archiveVisualMinClipSec() - 0.5
+    ) {
+      rejectAsset(picked.asset.id, picked.asset.storageUrl);
+      continue;
+    }
+
+    onBeatProgress?.(clips.length + 1, targetMinClips, "backfill");
+
+    let clipPath: string;
+    try {
+      clipPath = await prepareCuratedArchiveClip(
+        picked.asset,
+        workDir,
+        scene.index,
+        clips.length,
+        holdSec,
+        { beatText: stubBeat.text, videoTitle }
+      );
+    } catch (err) {
+      console.warn(
+        `[Pipeline] Scene ${scene.index}: skip archive asset ${picked.asset.id}:`,
+        (err as Error).message
+      );
+      rejectAsset(picked.asset.id, picked.asset.storageUrl);
+      continue;
+    }
+
+    if (await isMostlyBlackClip(clipPath)) {
+      rejectAsset(picked.asset.id, picked.asset.storageUrl, clipPath);
+      continue;
+    }
+    if (!(await montageClipPassesComposeGate(clipPath, scene.index, clips.length))) {
+      rejectAsset(picked.asset.id, picked.asset.storageUrl, clipPath);
+      continue;
+    }
+
+    let actualHold = holdSec;
+    const probed = await probeVideoDurationSec(clipPath);
+    if (probed > 0.15) actualHold = Math.min(holdSec, probed - 0.04);
+
+    dedup.usedContentKeys.add(clipContentKey(clipPath));
+    markCuratedAssetUsed(clipPath, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls);
+    if (picked.asset.mediaType === "image") dedup.curatedImageClipsUsed++;
+    if (isCuratedInterviewAsset(picked.asset)) dedup.curatedInterviewClipsUsed++;
+
+    clips.push(clipPath);
+    beatDurations.push(actualHold);
+    dedup.lastMuskStockClip = clipPath;
+
+    const coverage = await estimateSceneMontageCoverageSec(clips, beatDurations);
+    if (clips.length >= targetMinClips && coverage >= strictMinCoverage) break;
+  }
+
+  await assertSceneVisualInventory(scene, clips, beatDurations);
+  console.log(
+    `[Pipeline] Scene ${scene.index}: strict pool fill done — ${clips.length} clip(s), ` +
+      `~${(await estimateSceneMontageCoverageSec(clips, beatDurations)).toFixed(1)}s coverage`
+  );
+  return { clips, beatDurations };
+}
+
 async function fetchSceneVisuals(
   scene: Scene,
   workDir: string,
@@ -12363,6 +12507,10 @@ async function fetchSceneVisuals(
   dedup: VisualDedupState,
   onBeatProgress?: (beatIndex: number, beatTotal: number, phase?: BeatProgressPhase) => void
 ): Promise<SceneVisualsResult> {
+  if (curatedArchiveOnlyVisuals() && strictNoVisualRepeat()) {
+    return fillStrictArchiveSceneVisuals(scene, workDir, videoTitle, dedup, onBeatProgress);
+  }
+
   const clipFetchDur = 4;
   const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
   const historicalDoc = isHistoricalDocumentary(videoTitle, scene.text) && !dedup.personTopicLock;
