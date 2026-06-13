@@ -1136,13 +1136,15 @@ function celebrityFetchFastMode(perf: PipelinePerfProfile, sceneDurationSec: num
   return perf.fastStockMode && sceneDurationSec <= 15;
 }
 
-/** Min clips for scene duration without forcing extra fetches on short CTA/outro scenes. */
-/** Unique clips needed so no on-screen beat drops below archive max clip length. */
+/** Unique clips needed so montage covers voice without pad/loop (worst-case min clip length + xfades). */
 function requiredMontageClipsForDuration(durationSec: number): number {
   if (!curatedArchiveOnlyVisuals()) {
     return Math.max(1, Math.ceil(durationSec / effectiveBeatSec()));
   }
-  return Math.max(2, Math.ceil(durationSec / archiveVisualMaxClipSec()));
+  const minClip = archiveVisualMinClipSec();
+  const xfade = montageXfadeSec();
+  const netPerClip = Math.max(0.5, minClip - xfade);
+  return Math.max(2, Math.ceil((durationSec + xfade) / netPerClip));
 }
 
 function montageMinOnScreenSec(): number {
@@ -8370,7 +8372,7 @@ async function prepareStrictUniqueMontage(
       `Scene ${sceneIndex}: need ${minClips} unique clips for ${outDur.toFixed(1)}s voice — have ${clips.length}`
     );
   }
-  if (estSec < outDur * 0.95) {
+  if (estSec < outDur - 0.06) {
     throw pipelineError(
       PIPELINE_ERROR.NO_SCENES,
       `Scene ${sceneIndex}: ${clips.length} clips cover ~${estSec.toFixed(1)}s of ${outDur.toFixed(1)}s — add archive assets (no repeat/pad allowed)`
@@ -8386,12 +8388,13 @@ async function assertSceneVisualInventory(
 ): Promise<void> {
   if (!strictNoVisualRepeat()) return;
   assertMontageClipsUnique(scene.index, clips);
+  const voiceOutDur = scene.duration + 0.15;
   const coverage = await estimateSceneMontageCoverageSec(clips, beatDurations);
-  const minClips = requiredMontageClipsForDuration(scene.duration);
-  if (clips.length < minClips || coverage < scene.duration * 0.95) {
+  const minClips = requiredMontageClipsForDuration(voiceOutDur);
+  if (clips.length < minClips || coverage < voiceOutDur - 0.06) {
     throw pipelineError(
       PIPELINE_ERROR.NO_SCENES,
-      `Scene ${scene.index}: insufficient unique archive clips (${clips.length}/${minClips}, ~${coverage.toFixed(1)}s / ${scene.duration.toFixed(1)}s) — add more tagged assets`
+      `Scene ${scene.index}: insufficient unique archive clips (${clips.length}/${minClips}, ~${coverage.toFixed(1)}s / ${voiceOutDur.toFixed(1)}s) — add more tagged assets`
     );
   }
 }
@@ -12266,8 +12269,9 @@ async function backfillComposeMontageIfShort(
 ): Promise<void> {
   if (!curatedArchiveOnlyVisuals()) return;
   const minClipsNeeded = requiredMontageClipsForDuration(outDur);
+  const minCoverage = strictNoVisualRepeat() ? outDur - 0.06 : outDur * 0.92;
   let coverage = await estimateSceneMontageCoverageSec(safeClips, composeBeatDurations);
-  if (coverage >= outDur * 0.92 && safeClips.length >= minClipsNeeded) return;
+  if (coverage >= minCoverage && safeClips.length >= minClipsNeeded) return;
 
   const beats = buildSceneBeats(scene, outDur, Math.max(minClipsNeeded + 2, Math.ceil(outDur / effectiveBeatSec())));
   const maxFill = Math.max(18, minClipsNeeded + 6);
@@ -12278,7 +12282,7 @@ async function backfillComposeMontageIfShort(
 
   for (
     let attempt = 0;
-    attempt < maxFill && (coverage < outDur * 0.92 || safeClips.length < minClipsNeeded);
+    attempt < maxFill && (coverage < minCoverage || safeClips.length < minClipsNeeded);
     attempt++
   ) {
     const beat = beats[attempt % beats.length] ?? beats[0];
@@ -12312,7 +12316,7 @@ async function backfillComposeMontageIfShort(
     coverage = await estimateSceneMontageCoverageSec(safeClips, composeBeatDurations);
   }
 
-  if (coverage < outDur * 0.92 || safeClips.length < minClipsNeeded) {
+  if (coverage < minCoverage || safeClips.length < minClipsNeeded) {
     const msg =
       `Scene ${scene.index}: compose backfill still short ` +
       `(${safeClips.length}/${minClipsNeeded} clips, ${coverage.toFixed(1)}s / ${outDur.toFixed(1)}s)`;
@@ -12337,6 +12341,7 @@ async function fetchSceneVisuals(
     ? ""
     : (scenePersons[0] ?? dedup.primaryPerson ?? extractPrimaryPersonFromTitle(videoTitle) ?? "");
   const spaceTopic = isSpaceRelatedTopic(scene.visualCue, scene.pexelsQuery, scene.text, videoTitle ?? "");
+  const archiveOnly = curatedArchiveOnlyVisuals();
   const beatCap = archiveOnly
     ? Math.max(
         dedup.perf.maxBeatsPerScene,
@@ -12368,7 +12373,6 @@ async function fetchSceneVisuals(
   const beats = buildSceneBeats(scene, scene.duration, beatCap, videoTitle, scenePersons);
   const clips: string[] = [];
   const beatDurations: number[] = [];
-  const archiveOnly = curatedArchiveOnlyVisuals();
   const archiveBeatFilled = new Set<number>();
 
   console.log(
