@@ -826,6 +826,71 @@ export async function prepareCuratedArchiveClip(
   return outPath;
 }
 
+export type CuratedCandidatePick = { asset: MediaArchiveAsset; archiveName: string; score: number };
+
+export function rankCuratedCandidatesForBeat(
+  pool: CuratedCandidatePick[],
+  beatTags: string[],
+  topicAnchors: string[] = [],
+  beatText?: string
+): CuratedCandidatePick[] {
+  const ranked = pool.map((c) => ({
+    ...c,
+    score: scoreCuratedAsset(c.asset, [], beatTags, topicAnchors, beatText),
+  }));
+  ranked.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    const videoBoost = (x: MediaArchiveAsset) => (x.mediaType === "video" ? 2 : 0);
+    return videoBoost(b.asset) - videoBoost(a.asset);
+  });
+  return ranked;
+}
+
+/** Skip FFmpeg when metadata already rules out an asset. */
+export function archiveAssetPreflight(
+  asset: MediaArchiveAsset,
+  usedAssetIds: Set<number>,
+  usedStorageUrls: Set<string>,
+  topicAnchors: string[],
+  beatTags: string[],
+  opts: {
+    minVideoSec?: number;
+    interviewUsed?: number;
+    interviewMax?: number;
+    imageUsed?: number;
+    imageMax?: number;
+  } = {}
+): boolean {
+  if (usedAssetIds.has(asset.id) || usedStorageUrls.has(asset.storageUrl)) return false;
+  if (isCuratedOffTopicAsset(asset, topicAnchors, beatTags)) return false;
+  if (
+    opts.interviewMax != null &&
+    opts.interviewUsed != null &&
+    isCuratedInterviewAsset(asset) &&
+    opts.interviewUsed >= opts.interviewMax
+  ) {
+    return false;
+  }
+  if (
+    opts.imageMax != null &&
+    opts.imageUsed != null &&
+    asset.mediaType === "image" &&
+    opts.imageUsed >= opts.imageMax
+  ) {
+    return false;
+  }
+  const minVideo = opts.minVideoSec ?? archiveVisualMinClipSec() - 0.5;
+  if (
+    asset.mediaType === "video" &&
+    asset.durationSec != null &&
+    asset.durationSec > 0 &&
+    asset.durationSec < minVideo
+  ) {
+    return false;
+  }
+  return true;
+}
+
 export async function fetchCuratedArchiveBeatClip(
   beat: CuratedBeatContext,
   scene: CuratedSceneContext,

@@ -100,6 +100,12 @@ import {
   prepareCuratedArchiveClip,
   isCuratedPreparedStillClip,
   isCuratedPreparedVideoClip,
+  listCuratedArchiveCandidates,
+  buildBeatMatchTags,
+  orderCuratedCandidatesForBeat,
+  rankCuratedCandidatesForBeat,
+  archiveAssetPreflight,
+  type CuratedCandidatePick,
 } from "./curatedMediaSourcing";
 import {
   motionGraphicsEnabled,
@@ -1884,7 +1890,8 @@ async function resolveBeatClipFast(
   return null;
 }
 
-function composeParallelism(): number {
+function composeParallelism(videoLength?: string): number {
+  if (IS_RAILWAY && (videoLength === "1" || videoLength === "2")) return 2;
   return IS_RAILWAY ? 1 : 2;
 }
 
@@ -7609,6 +7616,10 @@ interface VisualDedupState {
   curatedImageClipsUsed: number;
   /** FFmpeg text cards / map beats rendered this video. */
   motionGraphicsUsed: number;
+  /** Scene/video archive pool — one DB load, per-beat re-rank only. */
+  archiveCandidatePool: CuratedCandidatePick[] | null;
+  /** asset.id → prepared beat MP4 (avoid re-trim when next zin tries same file). */
+  preparedArchiveClips: Map<number, string>;
   lock: Promise<void>;
   perf: PipelinePerfProfile;
   /** Named celebrity from user prompt (e.g. Kylie Jenner) — anchor every beat's stock search. */
@@ -7661,6 +7672,8 @@ function createVisualDedupState(
     curatedInterviewClipsUsed: 0,
     curatedImageClipsUsed: 0,
     motionGraphicsUsed: 0,
+    archiveCandidatePool: null,
+    preparedArchiveClips: new Map(),
     lock: Promise.resolve(),
     perf,
     primaryPerson: topic?.primaryPerson?.trim() ?? "",
@@ -8417,11 +8430,18 @@ async function montageClipPassesComposeGate(
   sceneIndex: number,
   clipIndex: number
 ): Promise<boolean> {
-  if (!(await isValidVideoFile(clipPath)) || (await isMostlyBlackClip(clipPath))) return false;
-  if (strictNoVisualRepeat()) {
-    const probed = await probeVideoDurationSec(clipPath);
-    if (probed > 0.15 && probed < archiveVisualMinClipSec() - 0.5) return false;
+  if (!(await isValidVideoFile(clipPath))) return false;
+  const curatedId = curatedClipPathAssetId(clipPath);
+  if (curatedId != null) {
+    if (strictNoVisualRepeat()) {
+      const probed = await probeVideoDurationSec(clipPath);
+      if (probed > 0.15 && probed < archiveVisualMinClipSec() - 0.5) return false;
+    }
+    const trimStart = montageClipStartSec(sceneIndex, clipIndex);
+    const startLuma = await probeClipMeanLuma(clipPath, trimStart + 0.08);
+    return startLuma === null || startLuma >= 14;
   }
+  if (await isMostlyBlackClip(clipPath)) return false;
   const trimStart = montageClipStartSec(sceneIndex, clipIndex);
   const startLuma = await probeClipMeanLuma(clipPath, trimStart + 0.08);
   if (startLuma !== null && startLuma < 14) return false;
@@ -12164,7 +12184,73 @@ async function resolveBeatClipForBeat(
 type SceneVisualsResult = { clips: string[]; beatDurations: number[] };
 type BeatProgressPhase = "beat" | "backfill";
 
-const ARCHIVE_BEAT_CLIP_RETRIES = 4;
+const ARCHIVE_BEAT_TOP_CANDIDATES = 4;
+const ARCHIVE_BEAT_CLIP_RETRIES = 3;
+
+async function loadArchiveCandidatePool(
+  scene: Scene,
+  videoTitle: string | undefined,
+  dedup: VisualDedupState
+): Promise<CuratedCandidatePick[]> {
+  if (dedup.archiveCandidatePool) return dedup.archiveCandidatePool;
+  const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
+  const stubBeat: SceneBeat = {
+    index: 0,
+    text: scene.text.slice(0, 400),
+    searchQuery: scene.pexelsQuery || "documentary",
+    powerWord: extractPowerWordFromSentence(scene.text.slice(0, 220), scenePersons),
+    keywords: buildRelevanceKeywords(scene, scene.text),
+    holdSec: effectiveBeatSec(),
+  };
+  const { beatTags, topicAnchors, allTags } = buildBeatMatchTags(stubBeat, scene, videoTitle);
+  dedup.archiveCandidatePool = orderCuratedCandidatesForBeat(
+    await listCuratedArchiveCandidates(
+      beatTags,
+      dedup.usedCuratedAssetIds,
+      dedup.usedCuratedStorageUrls,
+      topicAnchors,
+      allTags,
+      scene.text
+    )
+  );
+  console.log(
+    `[Pipeline] Archive pool: ${dedup.archiveCandidatePool.length} candidate(s) (single DB load for video)`
+  );
+  return dedup.archiveCandidatePool;
+}
+
+async function preparePooledArchiveClip(
+  picked: CuratedCandidatePick,
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  holdSec: number,
+  videoTitle: string | undefined,
+  dedup: VisualDedupState
+): Promise<string | null> {
+  const cached = dedup.preparedArchiveClips.get(picked.asset.id);
+  if (cached && fs.existsSync(cached)) return cached;
+  try {
+    const clipPath = await prepareCuratedArchiveClip(
+      picked.asset,
+      workDir,
+      scene.index,
+      beat.index,
+      holdSec,
+      { beatText: beat.text, videoTitle }
+    );
+    dedup.preparedArchiveClips.set(picked.asset.id, clipPath);
+    return clipPath;
+  } catch (err) {
+    console.warn(
+      `[Pipeline] Scene ${scene.index} beat ${beat.index}: asset ${picked.asset.id} prepare failed:`,
+      (err as Error).message
+    );
+    dedup.usedCuratedAssetIds.add(picked.asset.id);
+    dedup.usedCuratedStorageUrls.add(picked.asset.storageUrl);
+    return null;
+  }
+}
 
 async function pushMotionGraphicBeatClipIfAny(
   beat: SceneBeat,
@@ -12241,10 +12327,6 @@ async function adoptArchiveBeatClip(
       return false;
     }
     const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec);
-    if (await isMostlyBlackClip(withText)) {
-      rejectClip(clipPath);
-      return false;
-    }
     if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) {
       console.warn(
         `[Pipeline] Scene ${scene.index} beat ${beat.index}: skipping clip that fails compose gate ${path.basename(withText)}`
@@ -12256,6 +12338,56 @@ async function adoptArchiveBeatClip(
   };
 
   if (await tryClip(initialClip, holdSec)) return true;
+
+  if (curatedArchiveOnlyVisuals()) {
+    await loadArchiveCandidatePool(scene, videoTitle, dedup);
+    const { beatTags, topicAnchors } = buildBeatMatchTags(beat, scene, videoTitle);
+    const ranked = rankCuratedCandidatesForBeat(
+      dedup.archiveCandidatePool ?? [],
+      beatTags,
+      topicAnchors,
+      beat.text
+    );
+    const imgMax = archiveMaxImageClipsPerVideo();
+    let tried = 0;
+    for (const picked of ranked) {
+      if (tried >= ARCHIVE_BEAT_TOP_CANDIDATES) break;
+      if (
+        !archiveAssetPreflight(
+          picked.asset,
+          dedup.usedCuratedAssetIds,
+          dedup.usedCuratedStorageUrls,
+          topicAnchors,
+          beatTags,
+          {
+            interviewUsed: dedup.curatedInterviewClipsUsed,
+            interviewMax: MAX_CURATED_INTERVIEW_CLIPS_PER_VIDEO,
+            imageUsed: dedup.curatedImageClipsUsed,
+            imageMax: imgMax,
+          }
+        )
+      ) {
+        continue;
+      }
+      tried++;
+      const clip = await preparePooledArchiveClip(
+        picked,
+        beat,
+        scene,
+        workDir,
+        holdSec,
+        videoTitle,
+        dedup
+      );
+      if (await tryClip(clip, holdSec)) {
+        console.log(
+          `[Pipeline] Scene ${scene.index} zin ${beat.index}: "${picked.asset.title ?? picked.asset.id}" (score ${picked.score})`
+        );
+        return true;
+      }
+    }
+    return false;
+  }
 
   const mgfxBudget = {
     used: dedup.motionGraphicsUsed,
@@ -12388,7 +12520,7 @@ async function fetchArchiveSentenceMontage(
       return false;
     }
     let actualHold = holdSec;
-    if (fs.existsSync(clipPath)) {
+    if (!curatedClipPathAssetId(clipPath) && fs.existsSync(clipPath)) {
       const probed = await probeVideoDurationSec(clipPath);
       if (probed > 0.15) actualHold = Math.min(holdSec, probed - 0.04);
     }
@@ -12402,6 +12534,8 @@ async function fetchArchiveSentenceMontage(
     return true;
   };
 
+  await loadArchiveCandidatePool(scene, videoTitle, dedup);
+
   for (let bi = 0; bi < beats.length; bi++) {
     const beat = beats[bi]!;
     onBeatProgress?.(bi + 1, beats.length, "beat");
@@ -12409,18 +12543,6 @@ async function fetchArchiveSentenceMontage(
       pushSceneClip(clipPath, holdSec, beat.index);
 
     let filled = await adoptArchiveBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, null, beat.holdSec);
-    if (!filled) {
-      filled = await adoptArchiveBeatClip(
-        { ...beat, index: beat.index + 1000 },
-        scene,
-        workDir,
-        videoTitle,
-        dedup,
-        pushClip,
-        null,
-        beat.holdSec
-      );
-    }
     if (!filled) {
       console.warn(
         `[Pipeline] Scene ${scene.index} zin ${beat.index}: geen passend archief-beeld — "${beat.text.slice(0, 60)}..."`
@@ -14855,7 +14977,7 @@ export async function runVideoPipeline(
     const t3 = Date.now();
 
     // Railway: one FFmpeg compose at a time (avoids "Resource temporarily unavailable" decoder errors)
-    const composeLimit = pLimit(composeParallelism());
+    const composeLimit = pLimit(composeParallelism(videoLength));
     let completedCompose = 0;
     const composedUsedClips: string[][] = scenes.map(() => []);
     const composedScenes = await withTimeout(
@@ -15122,7 +15244,7 @@ export async function rerenderFromScenes(
 
     // ── Step 4: Compose all scenes ──────────────────────────────────────────
     onProgress?.("Composing scenes...", 45);
-    const composeLimit = pLimit(composeParallelism());
+    const composeLimit = pLimit(composeParallelism(videoLength));
     let completedCompose = 0;
 
     const composedScenes = await Promise.all(
