@@ -8495,11 +8495,63 @@ function composeSceneTimeoutMs(clipCount: number): number {
 
 function formatFfmpegExecError(err: unknown): string {
   const e = err as NodeJS.ErrnoException & { stderr?: string };
-  const base = e?.message ?? String(err);
   const stderr = typeof e?.stderr === "string" ? e.stderr.trim() : "";
-  if (!stderr) return base;
-  const tail = stderr.length > 600 ? stderr.slice(-600) : stderr;
-  return `${base} | stderr: ${tail}`;
+  if (stderr) {
+    const lines = stderr
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
+    const interesting = lines.find((l) =>
+      /invalid|error|failed|no such|could not|unable|corrupt|match/i.test(l)
+    );
+    if (interesting) return interesting.slice(0, 500);
+    const last = lines[lines.length - 1];
+    if (last) return last.slice(0, 500);
+  }
+  const base = e?.message ?? String(err);
+  if (/Command failed:/i.test(base)) return "FFmpeg montage encode failed";
+  return base.slice(0, 500);
+}
+
+async function composePlainMontageScene(
+  sceneIndex: number,
+  safeClips: string[],
+  montageDurations: number[],
+  sourceMaxDurs: number[],
+  outDur: number,
+  voiceDur: number,
+  safeAudioPath: string,
+  outputPath: string,
+  workDir: string,
+  fadeFilter: string,
+  threadFlag: string,
+  composeTimeout: number
+): Promise<boolean> {
+  const { scaleFilters, mergeFilter, montageLabel } = buildMontageXfadeFilter(
+    safeClips.length,
+    outDur,
+    sceneIndex,
+    montageDurations,
+    safeClips,
+    sourceMaxDurs
+  );
+  const inputs = montageClipInputs(safeClips);
+  const estMontage = effectiveMontageDurationSec(montageDurations, sourceMaxDurs);
+  const montageOutVF = montageTailPadVF(montageLabel, estMontage, outDur);
+  const audioIdx = safeClips.length;
+  await withTimeout(
+    exec(
+      `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}" ` +
+        `-filter_complex "${scaleFilters}${mergeFilter};${montageOutVF};[vmont]${fadeFilter}[vout];` +
+        `[${audioIdx}:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${Math.max(0, voiceDur - 0.15).toFixed(3)}:d=0.12,` +
+        `atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
+        `-map "[vout]" -map "[aout]" -vsync cfr ` +
+        `-t ${outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
+    ),
+    composeTimeout,
+    `Plain montage scene ${sceneIndex}`
+  );
+  return fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1000;
 }
 
 /** Spread voice duration across unique clips without exceeding each source length. */
@@ -8811,11 +8863,11 @@ function montageClipPrepFilter(
     clipPath &&
     (isCuratedPreparedStillClip(clipPath) || isCuratedPreparedVideoClip(clipPath));
   let chain = `[${inputIndex}:v]trim=start=${start}:duration=${effectiveDur.toFixed(3)},`;
-  if (alreadyFramed) {
-    // Archive beat clip already at 1080p — montage only syncs timing/fps.
-    chain += `${FPS_FORMAT_VF}`;
-  } else if (curatedArchiveOnlyVisuals() || documentaryStyleEnabled()) {
+  if (curatedArchiveOnlyVisuals() || documentaryStyleEnabled()) {
+    // Always normalize to 1080p gray-mat before xfade (mixed prep paths must match).
     chain += `${FIT_GRAY_VF},${FPS_FORMAT_VF}`;
+  } else if (alreadyFramed) {
+    chain += `${FPS_FORMAT_VF}`;
   } else {
     chain += `${CROP_FILL_VF},${FPS_FORMAT_VF}`;
   }
@@ -14256,6 +14308,29 @@ async function composeSceneVideo(
     }
   } catch (composeErr) {
     console.warn(`[Pipeline] Scene ${scene.index}: compose failed, trying simplified compose:`, composeErr);
+    try {
+      if (
+        await composePlainMontageScene(
+          scene.index,
+          safeClips,
+          montageDurations,
+          sourceMaxDurs,
+          outDur,
+          voiceDur,
+          safeAudioPath,
+          outputPath,
+          workDir,
+          fadeFilter,
+          threadFlag,
+          composeTimeout
+        )
+      ) {
+        console.warn(`[Pipeline] Scene ${scene.index}: plain montage compose succeeded (years/SFX skipped)`);
+        return outputPath;
+      }
+    } catch (plainErr) {
+      console.warn(`[Pipeline] Scene ${scene.index}: plain montage compose failed:`, plainErr);
+    }
     if (sfxCueFiles.length > 0) {
       try {
         const { scaleFilters, mergeFilter, montageLabel: xfadeLabel } =
