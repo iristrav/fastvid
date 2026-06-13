@@ -8588,6 +8588,191 @@ async function composePlainMontageScene(
   return fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1000;
 }
 
+const ARCHIVE_MONTAGE_BATCH_SIZE = 4;
+
+async function xfadeMergeTwoVideos(
+  leftPath: string,
+  rightPath: string,
+  leftDur: number,
+  rightDur: number,
+  outputPath: string,
+  composeTimeout: number,
+  threadFlag: string
+): Promise<void> {
+  const xfade = montageXfadeSec((leftDur + rightDur) / 2);
+  const offset = Math.max(0, leftDur - xfade);
+  await withTimeout(
+    exec(
+      `${FFMPEG_BIN} -y -i "${leftPath}" -i "${rightPath}" ` +
+        `-filter_complex "[0:v]${FPS_FORMAT_VF}[v0];[1:v]${FPS_FORMAT_VF}[v1];` +
+        `[v0][v1]xfade=transition=dissolve:duration=${xfade.toFixed(3)}:offset=${offset.toFixed(3)}[out]" ` +
+        `-map "[out]" -an -vsync cfr ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p "${outputPath}"`
+    ),
+    composeTimeout,
+    "Merge montage segments"
+  );
+}
+
+async function renderMontageVideoOnly(
+  clips: string[],
+  montageDurations: number[],
+  sourceMaxDurs: number[],
+  sceneIndex: number,
+  targetDur: number,
+  outputPath: string,
+  composeTimeout: number,
+  threadFlag: string
+): Promise<void> {
+  const { scaleFilters, mergeFilter, montageLabel } = buildMontageXfadeFilter(
+    clips.length,
+    targetDur,
+    sceneIndex,
+    montageDurations,
+    clips,
+    sourceMaxDurs
+  );
+  const inputs = montageClipInputs(clips);
+  const est = effectiveMontageDurationSec(montageDurations, sourceMaxDurs);
+  const montageOutVF = montageTailPadVF(montageLabel, est, targetDur);
+  await withTimeout(
+    exec(
+      `${FFMPEG_BIN} -y ${inputs} -filter_complex "${scaleFilters}${mergeFilter};${montageOutVF}" ` +
+        `-map "[vmont]" -an -vsync cfr -t ${targetDur.toFixed(3)} ${threadFlag} ` +
+        `-c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p "${outputPath}"`
+    ),
+    composeTimeout,
+    `Montage video-only scene ${sceneIndex}`
+  );
+}
+
+async function renderBatchedArchiveMontage(
+  clips: string[],
+  montageDurations: number[],
+  sourceMaxDurs: number[],
+  sceneIndex: number,
+  outDur: number,
+  workDir: string,
+  outputPath: string,
+  composeTimeout: number,
+  threadFlag: string
+): Promise<void> {
+  const batchSize = ARCHIVE_MONTAGE_BATCH_SIZE;
+  if (clips.length <= batchSize) {
+    await renderMontageVideoOnly(
+      clips,
+      montageDurations,
+      sourceMaxDurs,
+      sceneIndex,
+      outDur,
+      outputPath,
+      composeTimeout,
+      threadFlag
+    );
+    return;
+  }
+
+  const segmentPaths: string[] = [];
+  const segmentDurs: number[] = [];
+  for (let start = 0; start < clips.length; start += batchSize) {
+    const end = Math.min(start + batchSize, clips.length);
+    const batchClips = clips.slice(start, end);
+    const batchDurs = montageDurations.slice(start, end);
+    const batchSrc = sourceMaxDurs.slice(start, end);
+    const batchTarget = effectiveMontageDurationSec(batchDurs, batchSrc);
+    const segPath = path.join(workDir, `scene_${sceneIndex}_mseg_${start}.mp4`);
+    await renderMontageVideoOnly(
+      batchClips,
+      batchDurs,
+      batchSrc,
+      sceneIndex,
+      batchTarget + 0.05,
+      segPath,
+      composeTimeout,
+      threadFlag
+    );
+    segmentPaths.push(segPath);
+    segmentDurs.push((await probeVideoDurationSec(segPath)) || batchTarget);
+  }
+
+  let accPath = segmentPaths[0]!;
+  let accDur = segmentDurs[0]!;
+  for (let i = 1; i < segmentPaths.length; i++) {
+    const nextOut =
+      i === segmentPaths.length - 1
+        ? outputPath
+        : path.join(workDir, `scene_${sceneIndex}_macc_${i}.mp4`);
+    await xfadeMergeTwoVideos(
+      accPath,
+      segmentPaths[i]!,
+      accDur,
+      segmentDurs[i]!,
+      nextOut,
+      composeTimeout,
+      threadFlag
+    );
+    accPath = nextOut;
+    accDur = (await probeVideoDurationSec(accPath)) || accDur + segmentDurs[i]! - montageXfadeSec();
+  }
+}
+
+async function composeBatchedArchiveSceneWithAudio(
+  sceneIndex: number,
+  composeClips: string[],
+  montageDurations: number[],
+  sourceMaxDurs: number[],
+  outDur: number,
+  voiceDur: number,
+  safeAudioPath: string,
+  outputPath: string,
+  workDir: string,
+  fadeFilter: string,
+  yearLabels: TimedYearLabel[],
+  threadFlag: string,
+  composeTimeout: number,
+  skipEffectLayers: boolean
+): Promise<void> {
+  const montageOnlyPath = path.join(workDir, `scene_${sceneIndex}_montage_v.mp4`);
+  await renderBatchedArchiveMontage(
+    composeClips,
+    montageDurations,
+    sourceMaxDurs,
+    sceneIndex,
+    outDur,
+    workDir,
+    montageOnlyPath,
+    composeTimeout,
+    threadFlag
+  );
+  const audioFadeOutStart = Math.max(0, voiceDur - 0.15);
+  const voiceAudioFilter =
+    `[1:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${audioFadeOutStart.toFixed(3)}:d=0.12,` +
+    `atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]`;
+  if (skipEffectLayers || yearLabels.length === 0) {
+    await withTimeout(
+      exec(
+        `${FFMPEG_BIN} -y -i "${montageOnlyPath}" -i "${safeAudioPath}" ` +
+          `-filter_complex "[0:v]${FPS_FORMAT_VF}[vout];${voiceAudioFilter}" ` +
+          `-map "[vout]" -map "[aout]" -vsync cfr -t ${outDur.toFixed(3)} ${threadFlag} ` +
+          `-c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
+      ),
+      composeTimeout,
+      `Batched montage+audio scene ${sceneIndex}`
+    );
+    return;
+  }
+  const yearDrawChain = buildYearDrawtextFilterChain("vgraded", "vout", yearLabels);
+  await withTimeout(
+    exec(
+      `${FFMPEG_BIN} -y -i "${montageOnlyPath}" -i "${safeAudioPath}" ` +
+        `-filter_complex "[0:v]${fadeFilter}[vgraded]${yearDrawChain};${voiceAudioFilter}" ` +
+        `-map "[vout]" -map "[aout]" -vsync cfr -t ${outDur.toFixed(3)} ${threadFlag} ` +
+        `-c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
+    ),
+    composeTimeout,
+    `Batched montage+years scene ${sceneIndex}`
+  );
+}
+
 /** Spread voice duration across unique clips without exceeding each source length. */
 function balanceMontageDurationsForVoice(
   clipCount: number,
@@ -14280,6 +14465,24 @@ async function composeSceneVideo(
   }
 
   try {
+    if (IS_RAILWAY && curatedArchiveOnlyVisuals() && composeClips.length > 6) {
+      await composeBatchedArchiveSceneWithAudio(
+        scene.index,
+        composeClips,
+        montageDurations,
+        sourceMaxDurs,
+        outDur,
+        voiceDur,
+        safeAudioPath,
+        outputPath,
+        workDir,
+        fadeFilter,
+        yearLabels,
+        threadFlag,
+        composeTimeout,
+        skipEffectLayers
+      );
+    } else {
     const { scaleFilters, mergeFilter, montageLabel: xfadeLabel } =
       buildMontageXfadeFilter(composeClips.length, outDur, scene.index, montageDurations, composeClips, sourceMaxDurs);
     const inputs = montageClipInputs(composeClips);
@@ -14355,6 +14558,7 @@ async function composeSceneVideo(
       ),
       composeTimeout, `Compose multi-clip scene ${scene.index}`
     );
+    }
     }
   } catch (composeErr) {
     console.warn(`[Pipeline] Scene ${scene.index}: compose failed, trying simplified compose:`, composeErr);
