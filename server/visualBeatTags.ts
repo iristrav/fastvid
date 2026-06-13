@@ -30,8 +30,13 @@ const GEO_ENTRIES: GeoEntry[] = [
   { pattern: /\bitalië\b|\bitalie\b|\bitaly\b|\bitalian\b|\brome\b|\bromeinen\b/i, searchTags: ["italy", "italian", "rome"], label: "ITALIË" },
   { pattern: /\bamerika\b|\bamerica\b|\bamerican\b|\bunited states\b|\busa\b|\bunited states\b/i, searchTags: ["america", "usa", "united states"], label: "AMERIKA" },
   { pattern: /\beuropa\b|\beurope\b|\beuropean\b/i, searchTags: ["europe", "european"], label: "EUROPA" },
-  { pattern: /\bholocaust\b|\bauschwitz\b|\bconcentration camp\b|\bkamp\b/i, searchTags: ["holocaust", "auschwitz", "concentration camp"], label: "HOLOCAUST" },
+  { pattern: /\bholocaust\b|\bauschwitz\b|\bconcentration camp\b|\bkamp\b|\bconcentratiekamp\b/i, searchTags: ["holocaust", "auschwitz", "concentration camp"], label: "HOLOCAUST" },
   { pattern: /\bwehrmacht\b|\bnazi\b|\bnazis\b|\bnsdap\b|\bthird reich\b|\bderde rijk\b/i, searchTags: ["nazi", "wehrmacht", "third reich", "nsdap"], label: "NAZI" },
+  { pattern: /\bwarschau\b|\bwarsaw\b/i, searchTags: ["warsaw", "poland"], label: "WARSCHAU" },
+  { pattern: /\bmoskou\b|\bmoscow\b|\bkremlin\b/i, searchTags: ["moscow", "russia", "soviet"], label: "MOSKOU" },
+  { pattern: /\bnormandi[ëe]\b|\bnormandy\b|\bd-day\b|\bdddag\b/i, searchTags: ["normandy", "d-day", "france"], label: "NORMANDIË" },
+  { pattern: /\bstalin\b|\bsovjet\b|\bsoviet union\b/i, searchTags: ["stalin", "soviet", "russia"], label: "SOVJET" },
+  { pattern: /\bhitler\b|\badolf\b/i, searchTags: ["hitler", "nazi", "germany"], label: "HITLER" },
 ];
 
 const LABEL_STOP = new Set([
@@ -78,8 +83,8 @@ function spokenLabelForGeo(cleaned: string, entry: GeoEntry): string {
   return (entry.searchTags[0] ?? "").toUpperCase().slice(0, 28);
 }
 
-/** Voice-synced on-screen terms (places + salient keywords), deduped per beat. */
-export function extractVoiceLabelTerms(beatText: string, powerWord?: string, highlightWords: string[] = []): VoiceLabelTerm[] {
+/** Voice-synced on-screen terms — only places/entities spoken in this beat (no title/stock slugs). */
+export function extractVoiceLabelTerms(beatText: string): VoiceLabelTerm[] {
   const cleaned = beatText.replace(/\[visual:[^\]]+\]/gi, " ").trim();
   const lower = cleaned.toLowerCase();
   const out: VoiceLabelTerm[] = [];
@@ -97,30 +102,6 @@ export function extractVoiceLabelTerms(beatText: string, powerWord?: string, hig
       searchTags: entry.searchTags,
       matchText: m?.[0]?.trim() || undefined,
     });
-  }
-
-  const candidates = [
-    powerWord?.trim(),
-    ...highlightWords,
-    ...cleaned
-      .split(/\s+/)
-      .map((w) => w.replace(/[^a-zA-ZÀ-ÿ0-9'-]/g, ""))
-      .filter((w) => w.length >= 4 && !LABEL_STOP.has(w.toLowerCase()) && !/^\d{4}$/.test(w)),
-  ].filter(Boolean) as string[];
-
-  for (const raw of candidates) {
-    const label = raw.toUpperCase().slice(0, 28);
-    const key = label.toLowerCase();
-    if (seen.has(key)) continue;
-    if (GEO_ENTRIES.some((e) => e.pattern.test(key))) continue;
-    seen.add(key);
-    const wordMatch = cleaned.match(new RegExp(`\\b${raw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i"));
-    out.push({
-      label,
-      searchTags: [key.toLowerCase()],
-      matchText: wordMatch?.[0]?.trim() || raw,
-    });
-    if (out.length >= 3) break;
   }
 
   return out.slice(0, 3);

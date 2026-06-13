@@ -18,8 +18,16 @@ describe("visualBeatTags", () => {
   it("extracts geo voice label with spoken match text", () => {
     const terms = extractVoiceLabelTerms("Hitler trok naar Berlijn in 1933.");
     const berlin = terms.find((t) => t.label.includes("BERLIJ"));
+    const hitler = terms.find((t) => t.label.includes("HITLER"));
     expect(berlin?.searchTags).toEqual(expect.arrayContaining(["berlin", "germany"]));
     expect(berlin?.matchText?.toLowerCase()).toBe("berlijn");
+    expect(hitler).toBeDefined();
+  });
+
+  it("does not surface stock slugs or title words as labels", () => {
+    const terms = extractVoiceLabelTerms("De situatie escaleerde snel.");
+    expect(terms.some((t) => t.label === "GERMANY")).toBe(false);
+    expect(terms.some((t) => t.label === "HITLER")).toBe(false);
   });
 
   it("times label when the place name is spoken later in the beat", () => {

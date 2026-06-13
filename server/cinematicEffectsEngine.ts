@@ -432,6 +432,28 @@ export type BeatLabelInput = BeatYearInput & {
   highlightWords?: string[];
 };
 
+export type VoiceBeatWindow = { start: number; dur: number };
+
+/** Word-weighted voice span per beat — matches TTS pacing better than montage clip lengths. */
+export function computeVoiceBeatWindows(
+  beats: BeatYearInput[],
+  sceneDuration: number,
+  sceneStartSec = 0
+): VoiceBeatWindow[] {
+  const wordCounts = beats.map((b) => {
+    const n = b.text.replace(/\[visual:[^\]]+\]/gi, "").split(/\s+/).filter(Boolean).length;
+    return Math.max(1, n);
+  });
+  const totalWords = wordCounts.reduce((s, n) => s + n, 0) || beats.length;
+  let t = sceneStartSec;
+  return beats.map((_, i) => {
+    const dur = sceneDuration * (wordCounts[i]! / totalWords);
+    const start = t;
+    t += dur;
+    return { start, dur };
+  });
+}
+
 export type TimedYearLabel = {
   year: string;
   /** Short label in the yellow pill (keyword or context words). */
@@ -546,30 +568,29 @@ export function planBeatAlignedYears(beats: BeatYearInput[], sceneDuration: numb
   return resolveOverlappingYearLabels(labels, sceneDuration);
 }
 
-/** Labels synced to montage beats — years and keywords when spoken in the voiceover. */
+/** Labels synced to voiceover — years and place keywords when spoken in each beat. */
 export function planVoiceSyncedScreenLabels(
   beats: BeatLabelInput[],
-  montageDurations: number[],
   sceneDuration: number,
-  sceneStartSec = 0
+  sceneStartSec = 0,
+  _montageDurations?: number[]
 ): TimedYearLabel[] {
-  const n = Math.min(beats.length, montageDurations.length);
-  if (n === 0) return [];
-  const starts = computeMontageBeatStarts(montageDurations.slice(0, n), 0);
+  if (beats.length === 0 || sceneDuration <= 0) return [];
+  const voiceWindows = computeVoiceBeatWindows(beats, sceneDuration, sceneStartSec);
   const labels: TimedYearLabel[] = [];
   const usedLabels = new Set<string>();
 
-  for (let i = 0; i < n; i++) {
+  for (let i = 0; i < beats.length; i++) {
     const beat = beats[i]!;
-    const beatStart = sceneStartSec + (starts[i] ?? 0);
-    const beatDur = montageDurations[i] ?? beat.holdSec;
+    const beatStart = voiceWindows[i]!.start;
+    const beatDur = voiceWindows[i]!.dur;
     const yearCounts = new Map<string, number>();
 
     for (const year of extractYearsFromText(beat.text)) {
       const occurrence = yearCounts.get(year) ?? 0;
       yearCounts.set(year, occurrence + 1);
       const startTime = yearStartInBeat(beat.text, year, beatStart, beatDur, occurrence);
-      const endTime = Math.min(sceneDuration - 0.08, startTime + YEAR_LABEL_ON_SCREEN_SEC);
+      const endTime = Math.min(sceneDuration + sceneStartSec - 0.08, startTime + YEAR_LABEL_ON_SCREEN_SEC);
       if (endTime <= startTime + 0.35) continue;
       const caption = buildYearCaption(beat.text, year, occurrence);
       const display = caption ? `${caption} — ${year}` : year;
@@ -584,12 +605,12 @@ export function planVoiceSyncedScreenLabels(
       });
     }
 
-    for (const term of extractVoiceLabelTerms(beat.text, beat.powerWord, beat.highlightWords)) {
+    for (const term of extractVoiceLabelTerms(beat.text)) {
       if (usedLabels.has(term.label)) continue;
       if (/^\d{4}$/.test(term.label)) continue;
       const startTime = termStartInBeat(beat.text, term.label, beatStart, beatDur, term.matchText);
       if (term.label.length < 3) continue;
-      const endTime = Math.min(sceneDuration - 0.08, startTime + YEAR_LABEL_ON_SCREEN_SEC);
+      const endTime = Math.min(sceneDuration + sceneStartSec - 0.08, startTime + YEAR_LABEL_ON_SCREEN_SEC);
       if (endTime <= startTime + 0.35) continue;
       usedLabels.add(term.label);
       labels.push({
@@ -605,7 +626,7 @@ export function planVoiceSyncedScreenLabels(
     }
   }
 
-  return resolveOverlappingYearLabels(labels, sceneDuration);
+  return resolveOverlappingYearLabels(labels, sceneDuration + sceneStartSec);
 }
 
 function labelTextForEntry(entry: TimedYearLabel): string {

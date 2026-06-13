@@ -208,6 +208,24 @@ export function buildBeatMatchTags(
   return { beatTags: mergedBeat, topicAnchors, allTags };
 }
 
+/** How strongly an asset matches geo/visual tags from the spoken beat. */
+export function countVisualTagHits(
+  asset: Pick<MediaArchiveAsset, "title" | "tags">,
+  visualTags: string[]
+): number {
+  if (!visualTags.length) return 0;
+  const title = (asset.title ?? "").toLowerCase();
+  const assetTags = normalizeMediaTags(asset.tags ?? []);
+  let hits = 0;
+  for (const vt of visualTags) {
+    if (title.includes(vt)) hits += 2;
+    for (const t of assetTags) {
+      if (t === vt || t.includes(vt) || vt.includes(t)) hits++;
+    }
+  }
+  return hits;
+}
+
 export function buildCuratedQueryTags(
   beat: CuratedBeatContext,
   scene: CuratedSceneContext,
@@ -893,7 +911,7 @@ export function rankCuratedCandidatesForBeat(
 ): CuratedCandidatePick[] {
   const ranked = pool.map((c) => ({
     ...c,
-    score: scoreCuratedAsset(c.asset, [], beatTags, topicAnchors, beatText),
+    score: scoreCuratedAsset(c.asset, normalizeMediaTags(c.asset.tags ?? []), beatTags, topicAnchors, beatText),
   }));
   ranked.sort((a, b) => {
     if (b.score !== a.score) return b.score - a.score;

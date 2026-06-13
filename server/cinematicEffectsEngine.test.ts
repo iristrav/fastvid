@@ -7,6 +7,7 @@ import {
   extractStatFromText,
   extractYearsFromText,
   computeMontageBeatStarts,
+  computeVoiceBeatWindows,
   planBeatAlignedYears,
   planIntervalScreenLabels,
   planVoiceSyncedScreenLabels,
@@ -83,18 +84,31 @@ describe("cinematicEffectsEngine", () => {
   it("plans voice-synced keyword labels on montage beats", () => {
     const labels = planVoiceSyncedScreenLabels(
       [
-        { text: "Eerst was het rustig in Europa.", holdSec: 6, powerWord: "Europa" },
-        { text: "Maar in Duitsland veranderde alles in 1933.", holdSec: 7, powerWord: "germany" },
+        { text: "Eerst was het rustig in Europa.", holdSec: 6 },
+        { text: "Maar in Duitsland veranderde alles in 1933.", holdSec: 7 },
       ],
-      [6, 7],
-      13
+      13,
+      0
     );
     const duitsland = labels.find((l) => /DUITS/i.test(l.displayText));
     const y1933 = labels.find((l) => l.year === "1933");
     expect(duitsland).toBeDefined();
     expect(y1933).toBeDefined();
-    expect(duitsland!.startTime).toBeGreaterThan(6);
+    expect(duitsland!.startTime).toBeGreaterThan(4);
     expect(y1933!.startTime).toBeGreaterThan(duitsland!.startTime);
+  });
+
+  it("computes word-weighted voice beat windows", () => {
+    const windows = computeVoiceBeatWindows(
+      [
+        { text: "Korte zin.", holdSec: 3 },
+        { text: "Een veel langere zin met extra woorden voor timing.", holdSec: 7 },
+      ],
+      10
+    );
+    expect(windows[0]!.dur).toBeLessThan(windows[1]!.dur);
+    expect(windows[0]!.start).toBe(0);
+    expect(windows[1]!.start).toBeCloseTo(windows[0]!.dur, 1);
   });
 
   it("plans interval screen labels every 30s with years and keywords", () => {
