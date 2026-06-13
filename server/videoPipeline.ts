@@ -12921,7 +12921,6 @@ async function backfillArchiveMontageFromPool(
   let coverage = await estimateBalancedMontageCoverageSec(clips, beatDurations, outDur);
   if (coverage >= minCoverage) return 0;
 
-  await loadArchiveCandidatePool(scene, videoTitle, dedup);
   const beats = buildSceneBeats(scene, outDur, Math.max(minClipsNeeded + 2, Math.ceil(outDur / effectiveBeatSec())));
   const maxFill = opts?.maxAttempts ?? Math.max(12, minClipsForBalancedVoice(outDur) + 3);
   const prefix = opts?.logPrefix ?? `Scene ${scene.index}`;
@@ -13050,8 +13049,6 @@ async function fetchArchiveSentenceMontage(
     return true;
   };
 
-  await loadArchiveCandidatePool(scene, videoTitle, dedup);
-
   for (let bi = 0; bi < beats.length; bi++) {
     const beat = beats[bi]!;
     onBeatProgress?.(bi + 1, beats.length, "beat");
@@ -13093,7 +13090,7 @@ async function fetchSceneVisuals(
   dedup: VisualDedupState,
   onBeatProgress?: (beatIndex: number, beatTotal: number, phase?: BeatProgressPhase) => void
 ): Promise<SceneVisualsResult> {
-  if (curatedArchiveOnlyVisuals() && strictNoVisualRepeat()) {
+  if (curatedArchiveOnlyVisuals()) {
     return fetchArchiveSentenceMontage(scene, workDir, videoTitle, dedup, onBeatProgress);
   }
 

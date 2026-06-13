@@ -17,6 +17,13 @@ describe("visualBeatTags", () => {
     );
   });
 
+  it("extracts salient tokens for any topic sentence", () => {
+    expect(extractPrimaryVisualAnchor("The Titanic struck an iceberg in the Atlantic.")).toContain("titanic");
+    expect(extractVisualSearchTags("SpaceX launched Starship from Texas")).toEqual(
+      expect.arrayContaining(["spacex", "starship", "texas"])
+    );
+  });
+
   it("extracts bunker scene tags for archive search", () => {
     const text = "Hitler zat in zijn bunker en gaf orders.";
     expect(extractSceneSearchTags(text)).toEqual(

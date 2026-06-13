@@ -16,6 +16,22 @@ import {
 import type { MediaArchiveAsset } from "./db";
 
 describe("curatedMediaSourcing", () => {
+  it("buildBeatMatchTags anchors any-topic sentence tokens", () => {
+    const { beatTags, allTags } = buildBeatMatchTags(
+      {
+        text: "The Titanic struck an iceberg and began to sink.",
+        index: 1,
+        searchQuery: "titanic iceberg",
+        powerWord: "titanic iceberg",
+        keywords: [],
+      },
+      { text: "Maritime disaster documentary" },
+      "Titanic Documentary"
+    );
+    expect(beatTags).toEqual(expect.arrayContaining(["titanic", "iceberg"]));
+    expect(allTags).toEqual(expect.arrayContaining(["titanic"]));
+  });
+
   it("buildBeatMatchTags anchors bunker sentence to scene search tags", () => {
     const { beatTags, allTags } = buildBeatMatchTags(
       {

@@ -203,7 +203,11 @@ export function buildBeatMatchTags(
   ]
     .filter(Boolean)
     .join(" ");
-  const beatTags = tokenizeBeatText(beatRaw).filter((t) => !topicAnchors.includes(t) || beat.text.toLowerCase().includes(t));
+  const sentenceTags = tokenizeBeatText(beat.text);
+  const beatTags = normalizeMediaTags([
+    ...sentenceTags,
+    ...tokenizeBeatText(beatRaw).filter((t) => !topicAnchors.includes(t) || beat.text.toLowerCase().includes(t)),
+  ]).slice(0, 20);
   const sceneTags = tokenizeBeatText([scene.text, scene.pexelsQuery ?? ""].join(" "));
   const mergedBeat = normalizeMediaTags([...beatTags, ...sceneTags.filter((t) => beat.text.toLowerCase().includes(t))]).slice(0, 16);
   const allTags = normalizeMediaTags([...mergedBeat, ...topicAnchors]).slice(0, 24);
@@ -679,10 +683,14 @@ export async function listCuratedArchiveCandidates(
   filterTags?: string[],
   beatText?: string,
   crossVideoExcludeIds: Set<number> = new Set(),
-  assetsCache?: Map<number, MediaArchiveAsset[]>
+  assetsCache?: Map<number, MediaArchiveAsset[]>,
+  /** When true, score assets in every active archive (per-sentence search). */
+  searchAllArchives = false
 ): Promise<CuratedCandidatePick[]> {
   const queryTags = filterTags ?? normalizeMediaTags([...beatTags, ...topicAnchors]);
-  const archives = await resolveArchivesForVisualQuery(queryTags, topicAnchors);
+  const archives = searchAllArchives
+    ? (await getAllMediaArchives()).filter((a) => a.isActive === 1)
+    : await resolveArchivesForVisualQuery(queryTags, topicAnchors);
   if (!archives.length) return [];
 
   const scored: CuratedCandidatePick[] = [];
@@ -1012,8 +1020,6 @@ export async function searchCuratedCandidatesForBeat(
   const varietySeed = options?.varietySeed ?? 0;
   const crossVideoExcludeIds = options?.crossVideoExcludeIds ?? new Set<number>();
   const { beatTags, topicAnchors, allTags } = buildBeatMatchTags(beat, scene, videoTitle);
-  const sceneTags = extractSceneSearchTags(beat.text);
-  const visualTags = extractVisualSearchTags(beat.text);
 
   const listed = await listCuratedArchiveCandidates(
     beatTags,
@@ -1023,7 +1029,8 @@ export async function searchCuratedCandidatesForBeat(
     allTags,
     beat.text,
     crossVideoExcludeIds,
-    options?.assetsCache
+    options?.assetsCache,
+    true
   );
 
   let ranked = rankCuratedCandidatesForBeat(
@@ -1035,9 +1042,9 @@ export async function searchCuratedCandidatesForBeat(
     beat.index
   );
 
-  const prioritize = sceneTags.length > 0 ? sceneTags : visualTags;
-  if (prioritize.length > 0) {
-    const matched = ranked.filter((p) => countVisualTagHits(p.asset, prioritize) > 0);
+  const matchTags = extractVisualSearchTags(beat.text);
+  if (matchTags.length > 0) {
+    const matched = ranked.filter((p) => countVisualTagHits(p.asset, matchTags) > 0);
     if (matched.length > 0) {
       ranked = [...matched, ...ranked.filter((p) => !matched.includes(p))];
     }

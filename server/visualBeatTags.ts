@@ -77,22 +77,31 @@ function collectTagsFromEntries(cleaned: string, entries: TagEntry[]): string[] 
   return [...tags];
 }
 
-/** Tags for archive asset search (English/lowercase slugs). */
+/** Tags for archive asset search (English/lowercase slugs) — any topic, from the spoken sentence. */
+export function extractSalientBeatTokens(beatText: string): string[] {
+  const cleaned = beatText.replace(/\[visual:[^\]]+\]/gi, " ").trim();
+  const proper = [...cleaned.matchAll(/\b[A-ZÀ-ÿ][a-zà-ÿ]{2,}\b/g)]
+    .map((m) => m[0]!.toLowerCase())
+    .filter((w) => !LABEL_STOP.has(w));
+  const lower = cleaned.toLowerCase();
+  const words = lower
+    .replace(/[^a-z0-9à-ÿ\s'-]/g, " ")
+    .split(/\s+/)
+    .filter((w) => w.length >= 3 && !LABEL_STOP.has(w) && !/^\d{4}$/.test(w));
+  return [...new Set([...proper, ...words])].slice(0, 10);
+}
+
 export function extractVisualSearchTags(beatText: string): string[] {
   const cleaned = beatText.replace(/\[visual:[^\]]+\]/gi, " ").toLowerCase();
   const tags = new Set<string>([
     ...collectTagsFromEntries(cleaned, PLACE_ENTRIES),
     ...collectTagsFromEntries(cleaned, ENTITY_SEARCH_ENTRIES),
     ...collectTagsFromEntries(cleaned, SCENE_SEARCH_ENTRIES),
+    ...extractSalientBeatTokens(beatText),
   ]);
-  const words = cleaned
-    .replace(/[^a-z0-9à-ÿ\s'-]/g, " ")
-    .split(/\s+/)
-    .filter((w) => w.length >= 4 && !LABEL_STOP.has(w));
-  for (const w of words.slice(0, 4)) {
-    if (!/^\d{4}$/.test(w)) tags.add(w);
-  }
-  return [...tags].slice(0, 16);
+  const years = cleaned.match(/\b(1[0-9]{3}|20[0-9]{2})\b/g);
+  if (years) for (const y of years) tags.add(y);
+  return [...tags].slice(0, 20);
 }
 
 /** Scene/setting tags only (bunker, rally, troops…). */
@@ -128,6 +137,9 @@ export function extractPrimaryVisualAnchor(beatText: string): string | null {
   const geo = extractPrimaryGeoSearchTag(beatText);
   if (geo) return geo;
   if (entities.length > 0) return entities[0] ?? null;
+  const salient = extractSalientBeatTokens(beatText);
+  if (salient.length >= 2) return `${salient[0]} ${salient[1]}`;
+  if (salient.length === 1) return salient[0] ?? null;
   return null;
 }
 
