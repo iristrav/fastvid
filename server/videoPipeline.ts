@@ -49,7 +49,7 @@ import {
   stillOutputFrameCount,
   type TimedOverlay,
 } from "./documentaryStyle";
-import { extractPrimaryGeoSearchTag, extractVisualSearchTags } from "./visualBeatTags";
+import { extractPrimaryGeoSearchTag, extractPrimaryVisualAnchor, extractVisualSearchTags, extractSceneSearchTags } from "./visualBeatTags";
 import {
   buildCinematicOverlays,
   buildBeatAlignedYearOverlays,
@@ -9588,12 +9588,15 @@ function buildSceneBeats(
   const beats: SceneBeat[] = [];
   for (let i = 0; i < groups.length; i++) {
     const text = groups[i].text;
+    const visualAnchor = extractPrimaryVisualAnchor(text);
     const geoTag = extractPrimaryGeoSearchTag(text);
     let powerWord = extractPowerWordFromSentence(text, scenePersons);
-    if (geoTag) {
+    if (visualAnchor) {
+      powerWord = visualAnchor;
+    } else if (geoTag) {
       powerWord = geoTag;
     }
-    let searchQuery = geoTag ?? simplifyStockSearchWord(powerWord, text, true);
+    let searchQuery = visualAnchor ?? geoTag ?? simplifyStockSearchWord(powerWord, text, true);
     if (!searchQuery || isBlockedStockQuery(searchQuery)) {
       searchQuery = stockQueryFromBeatScript(text, scenePersons, scene.text, videoTitle);
     }
@@ -12792,6 +12795,7 @@ async function adoptArchiveBeatClip(
     await loadArchiveCandidatePool(scene, videoTitle, dedup);
     const { beatTags, topicAnchors } = buildBeatMatchTags(beat, scene, videoTitle);
     const visualTags = extractVisualSearchTags(beat.text);
+    const sceneTags = extractSceneSearchTags(beat.text);
     let ranked = rankCuratedCandidatesForBeat(
       dedup.archiveCandidatePool ?? [],
       beatTags,
@@ -12800,7 +12804,12 @@ async function adoptArchiveBeatClip(
       dedup.varietySeed,
       beat.index
     );
-    if (visualTags.length > 0) {
+    if (sceneTags.length > 0) {
+      const sceneMatched = ranked.filter((p) => countVisualTagHits(p.asset, sceneTags) > 0);
+      if (sceneMatched.length > 0) {
+        ranked = [...sceneMatched, ...ranked.filter((p) => !sceneMatched.includes(p))];
+      }
+    } else if (visualTags.length > 0) {
       const geoMatched = ranked.filter((p) => countVisualTagHits(p.asset, visualTags) > 0);
       if (geoMatched.length > 0) {
         ranked = [...geoMatched, ...ranked.filter((p) => !geoMatched.includes(p))];

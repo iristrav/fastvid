@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   extractPrimaryGeoSearchTag,
+  extractPrimaryVisualAnchor,
+  extractSceneSearchTags,
   extractVisualSearchTags,
   extractVoiceLabelTerms,
   termStartInBeat,
@@ -15,13 +17,20 @@ describe("visualBeatTags", () => {
     );
   });
 
-  it("extracts geo voice label with spoken match text", () => {
+  it("extracts bunker scene tags for archive search", () => {
+    const text = "Hitler zat in zijn bunker en gaf orders.";
+    expect(extractSceneSearchTags(text)).toEqual(
+      expect.arrayContaining(["bunker", "fuhrerbunker", "hitler bunker"])
+    );
+    expect(extractPrimaryVisualAnchor(text)).toBe("hitler bunker");
+  });
+
+  it("extracts place label with spoken match text (no person names as labels)", () => {
     const terms = extractVoiceLabelTerms("Hitler trok naar Berlijn in 1933.");
     const berlin = terms.find((t) => t.label.includes("BERLIJ"));
-    const hitler = terms.find((t) => t.label.includes("HITLER"));
     expect(berlin?.searchTags).toEqual(expect.arrayContaining(["berlin", "germany"]));
     expect(berlin?.matchText?.toLowerCase()).toBe("berlijn");
-    expect(hitler).toBeDefined();
+    expect(terms.some((t) => t.label.includes("HITLER"))).toBe(false);
   });
 
   it("does not surface stock slugs or title words as labels", () => {

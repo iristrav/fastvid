@@ -11,7 +11,7 @@ import {
   renderNameBadgeOverlay,
   type TimedOverlay,
 } from "./documentaryStyle";
-import { documentaryOverlaysEnabled } from "./sourcingPolicy";
+import { documentaryOverlaysEnabled, screenLabelMinStartSec, screenLabelMinGapSec, screenLabelMaxPerScene } from "./sourcingPolicy";
 import { extractVoiceLabelTerms, termStartInBeat } from "./visualBeatTags";
 
 export type CinematicAudioCue = {
@@ -568,7 +568,39 @@ export function planBeatAlignedYears(beats: BeatYearInput[], sceneDuration: numb
   return resolveOverlappingYearLabels(labels, sceneDuration);
 }
 
-/** Labels synced to voiceover — years and place keywords when spoken in each beat. */
+/** Pick spaced labels: from ~10s, years + places only, not too frequent. */
+export function selectSpacedScreenLabels(
+  labels: TimedYearLabel[],
+  timelineEnd: number,
+  minStartSec = screenLabelMinStartSec(),
+  minGapSec = screenLabelMinGapSec(),
+  maxCount = screenLabelMaxPerScene()
+): TimedYearLabel[] {
+  const sorted = [...labels]
+    .filter((l) => l.startTime >= minStartSec - 0.01)
+    .sort((a, b) => {
+      const aYear = /^\d{4}$/.test(a.year) ? 1 : 0;
+      const bYear = /^\d{4}$/.test(b.year) ? 1 : 0;
+      if (aYear !== bYear) return bYear - aYear;
+      return a.startTime - b.startTime;
+    });
+
+  const picked: TimedYearLabel[] = [];
+  let lastEnd = minStartSec - minGapSec;
+
+  for (const label of sorted) {
+    if (picked.length >= maxCount) break;
+    const start = Math.max(label.startTime, lastEnd + minGapSec);
+    const end = Math.min(timelineEnd - 0.08, start + YEAR_LABEL_ON_SCREEN_SEC);
+    if (end <= start + 0.35) continue;
+    picked.push({ ...label, startTime: start, endTime: end });
+    lastEnd = end;
+  }
+
+  return picked;
+}
+
+/** Labels synced to voiceover — years and place names from ~10s, spaced apart. */
 export function planVoiceSyncedScreenLabels(
   beats: BeatLabelInput[],
   sceneDuration: number,
@@ -579,6 +611,7 @@ export function planVoiceSyncedScreenLabels(
   const voiceWindows = computeVoiceBeatWindows(beats, sceneDuration, sceneStartSec);
   const labels: TimedYearLabel[] = [];
   const usedLabels = new Set<string>();
+  const timelineEnd = sceneDuration + sceneStartSec;
 
   for (let i = 0; i < beats.length; i++) {
     const beat = beats[i]!;
@@ -590,43 +623,33 @@ export function planVoiceSyncedScreenLabels(
       const occurrence = yearCounts.get(year) ?? 0;
       yearCounts.set(year, occurrence + 1);
       const startTime = yearStartInBeat(beat.text, year, beatStart, beatDur, occurrence);
-      const endTime = Math.min(sceneDuration + sceneStartSec - 0.08, startTime + YEAR_LABEL_ON_SCREEN_SEC);
-      if (endTime <= startTime + 0.35) continue;
-      const caption = buildYearCaption(beat.text, year, occurrence);
-      const display = caption ? `${caption} — ${year}` : year;
-      if (usedLabels.has(display.toUpperCase())) continue;
-      usedLabels.add(display.toUpperCase());
+      if (usedLabels.has(year)) continue;
+      usedLabels.add(year);
       labels.push({
         year,
-        caption,
-        displayText: display,
+        caption: "",
+        displayText: year,
         startTime,
-        endTime,
+        endTime: startTime + YEAR_LABEL_ON_SCREEN_SEC,
       });
     }
 
     for (const term of extractVoiceLabelTerms(beat.text)) {
       if (usedLabels.has(term.label)) continue;
-      if (/^\d{4}$/.test(term.label)) continue;
       const startTime = termStartInBeat(beat.text, term.label, beatStart, beatDur, term.matchText);
       if (term.label.length < 3) continue;
-      const endTime = Math.min(sceneDuration + sceneStartSec - 0.08, startTime + YEAR_LABEL_ON_SCREEN_SEC);
-      if (endTime <= startTime + 0.35) continue;
       usedLabels.add(term.label);
       labels.push({
         year: term.label,
         caption: "",
         displayText: term.label,
         startTime,
-        endTime,
+        endTime: startTime + YEAR_LABEL_ON_SCREEN_SEC,
       });
-      if (labels.filter((l) => l.startTime >= beatStart - 0.01 && l.startTime < beatStart + beatDur).length >= 2) {
-        break;
-      }
     }
   }
 
-  return resolveOverlappingYearLabels(labels, sceneDuration + sceneStartSec);
+  return selectSpacedScreenLabels(labels, timelineEnd);
 }
 
 function labelTextForEntry(entry: TimedYearLabel): string {

@@ -2,7 +2,7 @@
  * Curated media archive — pick tagged assets from admin libraries for pipeline beats.
  */
 import { exec as execCb } from "child_process";
-import { extractVisualSearchTags } from "./visualBeatTags";
+import { extractVisualSearchTags, extractSceneSearchTags, extractEntitySearchTags } from "./visualBeatTags";
 import { promisify } from "util";
 import fetch from "node-fetch";
 import * as fs from "fs";
@@ -438,6 +438,8 @@ export function scoreCuratedAsset(
     }
   }
 
+  score += curatedSceneContextScore(asset, beatText);
+
   if (beatHits >= 2) score += 18;
   if (beatHits >= 3) score += 12;
 
@@ -469,6 +471,42 @@ export function scoreCuratedAsset(
   score += curatedInterviewPenalty(asset);
 
   score += curatedOffTopicPenalty(asset, topicAnchors, beatTags);
+
+  return score;
+}
+
+/** Boost scene-matched footage; penalize generic portraits when narration is specific. */
+function curatedSceneContextScore(
+  asset: Pick<MediaArchiveAsset, "title" | "tags">,
+  beatText?: string
+): number {
+  if (!beatText?.trim()) return 0;
+  const sceneTags = extractSceneSearchTags(beatText);
+  const entityTags = extractEntitySearchTags(beatText);
+  const required = [...sceneTags, ...entityTags];
+  if (required.length === 0) return 0;
+
+  const title = (asset.title ?? "").toLowerCase();
+  const hay = `${title} ${normalizeMediaTags(asset.tags ?? []).join(" ")}`;
+  let score = 0;
+
+  for (const tag of sceneTags) {
+    if (hay.includes(tag)) score += 38;
+  }
+  for (const tag of entityTags) {
+    if (hay.includes(tag)) score += 28;
+  }
+
+  const sceneHits = countVisualTagHits(asset, sceneTags);
+  const entityHits = countVisualTagHits(asset, entityTags);
+  if (sceneTags.length > 0 && sceneHits === 0) {
+    if (/\b(man|men|person|portrait|unknown|civilian|people|crowd)\b/.test(title)) score -= 55;
+    else score -= 30;
+  }
+  if (entityTags.length > 0 && entityHits === 0 && sceneTags.length > 0 && sceneHits === 0) {
+    score -= 20;
+  }
+  if (sceneHits > 0 && entityHits > 0) score += 25;
 
   return score;
 }

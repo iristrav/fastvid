@@ -97,6 +97,36 @@ export function screenLabelIntervalSec(): number {
   return 30;
 }
 
+/** No yellow labels before this second in the final video timeline. */
+export function screenLabelMinStartSec(): number {
+  const raw = process.env.SCREEN_LABEL_MIN_START_SEC?.trim();
+  if (raw) {
+    const n = parseFloat(raw);
+    if (!isNaN(n) && n >= 0 && n <= 30) return n;
+  }
+  return 10;
+}
+
+/** Minimum gap between on-screen labels (years / place names). */
+export function screenLabelMinGapSec(): number {
+  const raw = process.env.SCREEN_LABEL_MIN_GAP_SEC?.trim();
+  if (raw) {
+    const n = parseFloat(raw);
+    if (!isNaN(n) && n >= 5 && n <= 20) return n;
+  }
+  return 9;
+}
+
+/** Max yellow labels per scene (years + places). */
+export function screenLabelMaxPerScene(): number {
+  const raw = process.env.SCREEN_LABEL_MAX_PER_SCENE?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 3 && n <= 12) return n;
+  }
+  return 7;
+}
+
 /** Prefer different archive clips across consecutive videos on the same topic. */
 export function archiveCrossVideoVarietyEnabled(): boolean {
   return process.env.ARCHIVE_CROSS_VIDEO_VARIETY !== "false";

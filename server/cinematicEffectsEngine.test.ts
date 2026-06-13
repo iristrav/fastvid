@@ -11,6 +11,7 @@ import {
   planBeatAlignedYears,
   planIntervalScreenLabels,
   planVoiceSyncedScreenLabels,
+  selectSpacedScreenLabels,
   buildYearCaption,
   buildYearDisplayText,
   buildYearDrawtextFilterChain,
@@ -81,21 +82,38 @@ describe("cinematicEffectsEngine", () => {
     expect(labels[0].startTime).toBeLessThan(8);
   });
 
-  it("plans voice-synced keyword labels on montage beats", () => {
+  it("plans voice-synced year and place labels from second 10", () => {
     const labels = planVoiceSyncedScreenLabels(
       [
-        { text: "Eerst was het rustig in Europa.", holdSec: 6 },
-        { text: "Maar in Duitsland veranderde alles in 1933.", holdSec: 7 },
+        { text: "Eerst was het rustig in Europa.", holdSec: 12 },
+        { text: "Maar in Duitsland veranderde alles in 1933.", holdSec: 14 },
+        { text: "In 1939 brak de oorlog uit in Polen.", holdSec: 14 },
+        { text: "Berlijn viel en de wereld veranderde.", holdSec: 12 },
       ],
-      13,
+      62,
       0
     );
-    const duitsland = labels.find((l) => /DUITS/i.test(l.displayText));
-    const y1933 = labels.find((l) => l.year === "1933");
-    expect(duitsland).toBeDefined();
-    expect(y1933).toBeDefined();
-    expect(duitsland!.startTime).toBeGreaterThan(4);
-    expect(y1933!.startTime).toBeGreaterThan(duitsland!.startTime);
+    expect(labels.length).toBeGreaterThanOrEqual(2);
+    expect(labels.every((l) => l.startTime >= 10)).toBe(true);
+    expect(labels.some((l) => /^\d{4}$/.test(l.displayText))).toBe(true);
+    expect(labels.some((l) => /DUITS|POLEN|BERLIJ/i.test(l.displayText))).toBe(true);
+    expect(labels.every((l) => !/ — /.test(l.displayText))).toBe(true);
+  });
+
+  it("spaces labels apart and caps count", () => {
+    const picked = selectSpacedScreenLabels(
+      [
+        { year: "1933", caption: "", displayText: "1933", startTime: 11, endTime: 15 },
+        { year: "1934", caption: "", displayText: "1934", startTime: 12, endTime: 16 },
+        { year: "BERLIJN", caption: "", displayText: "BERLIJN", startTime: 25, endTime: 29 },
+      ],
+      60,
+      10,
+      9,
+      2
+    );
+    expect(picked).toHaveLength(2);
+    expect(picked[1]!.startTime - picked[0]!.endTime).toBeGreaterThanOrEqual(8.5);
   });
 
   it("computes word-weighted voice beat windows", () => {
