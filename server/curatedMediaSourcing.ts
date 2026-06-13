@@ -2,7 +2,7 @@
  * Curated media archive — pick tagged assets from admin libraries for pipeline beats.
  */
 import { exec as execCb } from "child_process";
-import { extractVisualSearchTags, extractSceneSearchTags, extractEntitySearchTags, extractPrimaryVisualAnchor } from "./visualBeatTags";
+import { extractVisualSearchTags, extractSceneSearchTags, extractEntitySearchTags, extractPrimaryVisualAnchor, extractSalientBeatTokens, extractRequiredVisualTags, isGenericPeopleAsset } from "./visualBeatTags";
 import { promisify } from "util";
 import fetch from "node-fetch";
 import * as fs from "fs";
@@ -31,6 +31,16 @@ import {
   framedArchiveStillsEnabled,
 } from "./sourcingPolicy";
 import { seededShuffle } from "./archiveUsageMemory";
+import {
+  analyzeBeatSemantics,
+  applySemanticAiRerank,
+  assetMeetsSemanticMinimum,
+  scoreArchiveAssetSemantically,
+  semanticMinRelevanceScore,
+  semanticVisualMatchingEnabled,
+  type BeatSemanticProfile,
+  type SemanticMatchResult,
+} from "./semanticVisualMatching";
 import {
   getAllMediaArchives,
   getMediaArchiveAssets,
@@ -192,6 +202,7 @@ export function buildBeatMatchTags(
   const topicAnchors = extractTopicAnchorTags(videoTitle, [beat.text, scene.text].join(" "));
   const visualTags = extractVisualSearchTags(beat.text);
   const visualAnchor = extractPrimaryVisualAnchor(beat.text);
+  const anchorTokens = visualAnchor ? tokenizeBeatText(visualAnchor) : [];
   const beatRaw = [
     beat.text,
     visualAnchor ?? "",
@@ -204,14 +215,30 @@ export function buildBeatMatchTags(
     .filter(Boolean)
     .join(" ");
   const sentenceTags = tokenizeBeatText(beat.text);
+  const queryTokens = beat.searchQuery ? tokenizeBeatText(beat.searchQuery) : [];
   const beatTags = normalizeMediaTags([
+    ...anchorTokens,
+    ...queryTokens,
     ...sentenceTags,
     ...tokenizeBeatText(beatRaw).filter((t) => !topicAnchors.includes(t) || beat.text.toLowerCase().includes(t)),
   ]).slice(0, 20);
   const sceneTags = tokenizeBeatText([scene.text, scene.pexelsQuery ?? ""].join(" "));
-  const mergedBeat = normalizeMediaTags([...beatTags, ...sceneTags.filter((t) => beat.text.toLowerCase().includes(t))]).slice(0, 16);
-  const allTags = normalizeMediaTags([...mergedBeat, ...topicAnchors]).slice(0, 24);
-  return { beatTags: mergedBeat, topicAnchors, allTags };
+  const mergedBeat = normalizeMediaTags([
+    ...beatTags,
+    ...sceneTags.filter((t) => beat.text.toLowerCase().includes(t)),
+  ]).slice(0, 16);
+  const beatLower = beat.text.toLowerCase();
+  const scopedTopicAnchors = topicAnchors.filter(
+    (a) => beatLower.includes(a) || visualTags.some((v) => v.includes(a) || a.includes(v))
+  );
+  const effectiveTopicAnchors =
+    scopedTopicAnchors.length > 0 ? scopedTopicAnchors : topicAnchors.slice(0, 4);
+  const allTags = normalizeMediaTags([
+    ...mergedBeat,
+    ...effectiveTopicAnchors,
+    ...topicAnchors.slice(0, 3),
+  ]).slice(0, 24);
+  return { beatTags: mergedBeat, topicAnchors: effectiveTopicAnchors, allTags };
 }
 
 /** How strongly an asset matches geo/visual tags from the spoken beat. */
@@ -230,6 +257,44 @@ export function countVisualTagHits(
     }
   }
   return hits;
+}
+
+/** Minimum bar so a clip actually depicts what the sentence describes. */
+export function assetPassesBeatMinimum(
+  asset: Pick<MediaArchiveAsset, "title" | "tags">,
+  beatText: string,
+  score: number,
+  topScore: number,
+  semantic?: SemanticMatchResult
+): boolean {
+  if (semantic && semanticVisualMatchingEnabled()) {
+    if (!assetMeetsSemanticMinimum(semantic)) return false;
+    if (semantic.tier >= 5 && semantic.matchedEntities.length === 0) return false;
+    return true;
+  }
+
+  const requiredTags = extractRequiredVisualTags(beatText);
+  const sceneTags = extractSceneSearchTags(beatText);
+  const entityTags = extractEntitySearchTags(beatText);
+  const visualHits = countVisualTagHits(asset, requiredTags);
+  const sceneEntityHits = countVisualTagHits(asset, [...sceneTags, ...entityTags]);
+
+  const minScore = Math.max(28, Math.round(topScore * 0.38));
+  if (score < minScore && visualHits < 2) return false;
+
+  if ((sceneTags.length > 0 || entityTags.length > 0) && sceneEntityHits === 0 && visualHits < 2) {
+    return false;
+  }
+
+  if (requiredTags.length >= 3 && visualHits === 0 && score < Math.round(topScore * 0.5)) {
+    return false;
+  }
+
+  if (isGenericPeopleAsset(asset) && requiredTags.length >= 2 && visualHits === 0) {
+    return false;
+  }
+
+  return true;
 }
 
 export function buildCuratedQueryTags(
@@ -444,19 +509,40 @@ export function scoreCuratedAsset(
     }
   }
 
+  if (beatText?.trim()) {
+    const anchor = extractPrimaryVisualAnchor(beatText);
+    const hay = `${title} ${assetTags.join(" ")}`;
+    if (anchor) {
+      const anchorNorm = anchor.toLowerCase().trim();
+      if (anchorNorm.length >= 4 && title.includes(anchorNorm)) {
+        score += 80;
+        beatHits += 3;
+      } else {
+        const anchorWords = anchorNorm.split(/\s+/).filter((w) => w.length >= 4);
+        if (anchorWords.length >= 2 && anchorWords.every((w) => hay.includes(w))) {
+          score += 48;
+          beatHits += 2;
+        }
+      }
+    }
+  }
+
   score += curatedSceneContextScore(asset, beatText);
 
   if (beatHits >= 2) score += 18;
   if (beatHits >= 3) score += 12;
 
+  const beatLower = beatText?.toLowerCase() ?? "";
   for (const anchor of topicAnchors) {
-    if (title.includes(anchor)) score += 10;
+    const inBeat = beatLower.includes(anchor);
+    const topicWeight = inBeat ? 1 : 0.3;
+    if (title.includes(anchor)) score += Math.round(10 * topicWeight);
     for (const t of assetTags) {
-      if (t === anchor) score += 16;
-      else if (t.includes(anchor) || anchor.includes(t)) score += 6;
+      if (t === anchor) score += Math.round(16 * topicWeight);
+      else if (t.includes(anchor) || anchor.includes(t)) score += Math.round(6 * topicWeight);
     }
     for (const n of archiveNicheTags) {
-      if (n === anchor || tMatches(n, anchor)) score += 4;
+      if (n === anchor || tMatches(n, anchor)) score += Math.round(4 * topicWeight);
     }
   }
 
@@ -469,7 +555,7 @@ export function scoreCuratedAsset(
   if (beatTags.length >= 2 && beatHits === 0) score = Math.max(0, score - 60);
 
   score += curatedArchiveVisualBoost(asset);
-  score += curatedVideoFootageBoost(asset);
+  score += curatedVideoFootageBoost(asset, beatHits);
   score += curatedActionFootageBoost(asset);
   score += curatedImagePenalty(asset);
   score += curatedPosterPenalty(asset);
@@ -489,7 +575,8 @@ function curatedSceneContextScore(
   if (!beatText?.trim()) return 0;
   const sceneTags = extractSceneSearchTags(beatText);
   const entityTags = extractEntitySearchTags(beatText);
-  const required = [...sceneTags, ...entityTags];
+  const salient = extractSalientBeatTokens(beatText).slice(0, 4);
+  const required = [...sceneTags, ...entityTags, ...salient];
   if (required.length === 0) return 0;
 
   const title = (asset.title ?? "").toLowerCase();
@@ -502,10 +589,19 @@ function curatedSceneContextScore(
   for (const tag of entityTags) {
     if (hay.includes(tag)) score += 28;
   }
+  for (const tag of salient) {
+    if (tag.length >= 4 && hay.includes(tag)) score += 16;
+  }
 
   const sceneHits = countVisualTagHits(asset, sceneTags);
   const entityHits = countVisualTagHits(asset, entityTags);
-  if (sceneTags.length > 0 && sceneHits === 0) {
+  const salientHits = countVisualTagHits(asset, salient);
+  const hasSpecificBeat = sceneTags.length > 0 || entityTags.length > 0 || salient.length >= 2;
+
+  if (hasSpecificBeat && sceneHits === 0 && entityHits === 0 && salientHits === 0) {
+    if (isGenericPeopleAsset(asset)) score -= 85;
+    else score -= 45;
+  } else if (sceneTags.length > 0 && sceneHits === 0) {
     if (/\b(man|men|person|portrait|unknown|civilian|people|crowd)\b/.test(title)) score -= 55;
     else score -= 30;
   }
@@ -513,6 +609,7 @@ function curatedSceneContextScore(
     score -= 20;
   }
   if (sceneHits > 0 && entityHits > 0) score += 25;
+  if (sceneHits > 0 && salientHits > 0) score += 18;
 
   return score;
 }
@@ -569,8 +666,13 @@ export function isCuratedHistoricalFootage(asset: Pick<MediaArchiveAsset, "title
   return false;
 }
 
-function curatedVideoFootageBoost(asset: Pick<MediaArchiveAsset, "mediaType" | "durationSec">): number {
+function curatedVideoFootageBoost(
+  asset: Pick<MediaArchiveAsset, "mediaType" | "durationSec">,
+  beatHits = 0
+): number {
   if (!archivePreferVideoClips() || asset.mediaType !== "video") return 0;
+  if (beatHits === 0) return 0;
+  if (beatHits === 1) return 22;
   let boost = 58;
   if (asset.durationSec != null && asset.durationSec >= 3) boost += 12;
   return boost;
@@ -685,7 +787,9 @@ export async function listCuratedArchiveCandidates(
   crossVideoExcludeIds: Set<number> = new Set(),
   assetsCache?: Map<number, MediaArchiveAsset[]>,
   /** When true, score assets in every active archive (per-sentence search). */
-  searchAllArchives = false
+  searchAllArchives = false,
+  /** When true, never dump the entire archive as score-1 fallback (sentence montage). */
+  noUniversalFallback = false
 ): Promise<CuratedCandidatePick[]> {
   const queryTags = filterTags ?? normalizeMediaTags([...beatTags, ...topicAnchors]);
   const archives = searchAllArchives
@@ -711,7 +815,7 @@ export async function listCuratedArchiveCandidates(
     }
   }
 
-  if (scored.length === 0 && fallback.length === 0 && archives.length > 0) {
+  if (scored.length === 0 && fallback.length === 0 && archives.length > 0 && !noUniversalFallback) {
     for (const archive of archives) {
       const assets = await loadArchiveAssetsForSearch(archive.id, assetsCache);
       for (const asset of assets) {
@@ -933,6 +1037,7 @@ export type CuratedCandidatePick = {
   archiveName: string;
   score: number;
   archiveNicheTags?: string[];
+  semantic?: SemanticMatchResult;
 };
 
 async function loadArchiveAssetsForSearch(
@@ -971,7 +1076,8 @@ export function rankCuratedCandidatesForBeat(
   topicAnchors: string[] = [],
   beatText?: string,
   varietySeed = 0,
-  beatIndex = 0
+  beatIndex = 0,
+  opts?: { strict?: boolean }
 ): CuratedCandidatePick[] {
   const ranked = pool.map((c) => ({
     ...c,
@@ -989,19 +1095,30 @@ export function rankCuratedCandidatesForBeat(
     if (videoBoost(b.asset) !== videoBoost(a.asset)) {
       return videoBoost(b.asset) - videoBoost(a.asset);
     }
-    return ((a.asset.id * 92821 + varietySeed) >>> 0) - ((b.asset.id * 92821 + varietySeed) >>> 0);
+    return a.asset.id - b.asset.id;
   });
+
+  if (opts?.strict || ranked.length <= 1) return ranked;
+
+  const topScore = ranked[0]!.score;
+  const secondScore = ranked[1]?.score ?? 0;
+  if (topScore - secondScore >= 12) return ranked;
+
   const banded: CuratedCandidatePick[] = [];
   let i = 0;
   while (i < ranked.length) {
-    const topScore = ranked[i]!.score;
+    const bandTop = ranked[i]!.score;
     let j = i + 1;
-    while (j < ranked.length && ranked[j]!.score >= topScore - 3) j++;
+    while (j < ranked.length && ranked[j]!.score >= bandTop - 2) j++;
     const band = ranked.slice(i, j);
-    banded.push(...seededShuffle(band, varietySeed + beatIndex * 9973 + i * 17));
+    if (band.length === 1 || bandTop - (band[band.length - 1]?.score ?? bandTop) >= 8) {
+      banded.push(...band);
+    } else {
+      banded.push(...seededShuffle(band, varietySeed + beatIndex * 9973 + i * 17));
+    }
     i = j;
   }
-  return rotateCuratedCandidates(banded, varietySeed, beatIndex);
+  return banded;
 }
 
 /** Per-sentence archive search — scores all assets against this beat's narration. */
@@ -1015,10 +1132,16 @@ export async function searchCuratedCandidatesForBeat(
     varietySeed?: number;
     crossVideoExcludeIds?: Set<number>;
     assetsCache?: Map<number, MediaArchiveAsset[]>;
+    semanticProfile?: BeatSemanticProfile;
   }
 ): Promise<CuratedCandidatePick[]> {
   const varietySeed = options?.varietySeed ?? 0;
   const crossVideoExcludeIds = options?.crossVideoExcludeIds ?? new Set<number>();
+  const semanticProfile =
+    options?.semanticProfile ??
+    (semanticVisualMatchingEnabled()
+      ? await analyzeBeatSemantics(beat.text, videoTitle)
+      : undefined);
   const { beatTags, topicAnchors, allTags } = buildBeatMatchTags(beat, scene, videoTitle);
 
   const listed = await listCuratedArchiveCandidates(
@@ -1030,6 +1153,7 @@ export async function searchCuratedCandidatesForBeat(
     beat.text,
     crossVideoExcludeIds,
     options?.assetsCache,
+    true,
     true
   );
 
@@ -1039,7 +1163,8 @@ export async function searchCuratedCandidatesForBeat(
     topicAnchors,
     beat.text,
     varietySeed,
-    beat.index
+    beat.index,
+    { strict: true }
   );
 
   const matchTags = extractVisualSearchTags(beat.text);
@@ -1050,7 +1175,57 @@ export async function searchCuratedCandidatesForBeat(
     }
   }
 
-  return ranked;
+  if (semanticProfile && semanticVisualMatchingEnabled()) {
+    const pool = ranked.slice(0, 64);
+    ranked = await Promise.all(
+      pool.map(async (pick) => {
+        const semantic = await scoreArchiveAssetSemantically(semanticProfile, pick.asset);
+        return {
+          ...pick,
+          semantic,
+          score: Math.round(pick.score * 0.35 + semantic.relevanceScore * 2.2),
+        };
+      })
+    );
+    ranked.sort((a, b) => b.score - a.score);
+    ranked = await applySemanticAiRerank(ranked, semanticProfile, videoTitle);
+
+    const minSem = semanticMinRelevanceScore();
+    const semanticOk = ranked.filter(
+      (p) => p.semantic && assetMeetsSemanticMinimum(p.semantic)
+    );
+    if (semanticOk.length > 0) {
+      ranked = [...semanticOk, ...ranked.filter((p) => !semanticOk.includes(p))];
+    } else {
+      const relaxedSem = ranked.filter(
+        (p) => (p.semantic?.relevanceScore ?? 0) >= Math.max(28, minSem - 12)
+      );
+      if (relaxedSem.length > 0) ranked = relaxedSem;
+    }
+
+    console.log(
+      `[SemanticVisual] zin ${beat.index}: "${beat.text.slice(0, 50)}…" → top tier ${ranked[0]?.semantic?.tier ?? "?"} ` +
+        `score ${ranked[0]?.semantic?.relevanceScore ?? 0} (${ranked[0]?.semantic?.tierLabel ?? "n/a"})`
+    );
+  }
+
+  const topScore = ranked[0]?.score ?? 0;
+  const filtered = ranked.filter((p) =>
+    assetPassesBeatMinimum(p.asset, beat.text, p.score, topScore, p.semantic)
+  );
+  if (filtered.length > 0) return filtered;
+
+  if (topScore > 0) {
+    const relaxed = ranked.filter(
+      (p) =>
+        p.score >= Math.max(18, Math.round(topScore * 0.28)) &&
+        countVisualTagHits(p.asset, matchTags.length > 0 ? matchTags : beatTags) > 0 &&
+        !isGenericPeopleAsset(p.asset)
+    );
+    if (relaxed.length > 0) return relaxed;
+  }
+
+  return ranked.slice(0, Math.max(8, ranked.length));
 }
 
 /** Skip FFmpeg when metadata already rules out an asset. */
@@ -1066,10 +1241,15 @@ export function archiveAssetPreflight(
     interviewMax?: number;
     imageUsed?: number;
     imageMax?: number;
+    beatText?: string;
   } = {}
 ): boolean {
   if (usedAssetIds.has(asset.id) || usedStorageUrls.has(asset.storageUrl)) return false;
   if (isCuratedOffTopicAsset(asset, topicAnchors, beatTags)) return false;
+  if (opts.beatText && isGenericPeopleAsset(asset)) {
+    const required = extractRequiredVisualTags(opts.beatText);
+    if (required.length >= 2 && countVisualTagHits(asset, required) === 0) return false;
+  }
   if (
     opts.interviewMax != null &&
     opts.interviewUsed != null &&
@@ -1138,11 +1318,14 @@ export async function fetchCuratedArchiveBeatClip(
   }
 
   const topScore = candidates[0]?.score ?? 0;
-  const minAcceptScore = relaxed ? 1 : Math.max(6, Math.round(topScore * 0.35));
-  const tryOrder = rotateCuratedCandidates(candidates, varietySeed, beat.index);
+  const minAcceptScore = relaxed ? Math.max(12, Math.round(topScore * 0.25)) : Math.max(28, Math.round(topScore * 0.4));
+  const tryOrder = relaxed ? rotateCuratedCandidates(candidates, varietySeed, beat.index) : candidates;
 
   for (const picked of tryOrder) {
-    if (!relaxed && picked.score < minAcceptScore && topScore > minAcceptScore + 8) {
+    if (!relaxed && !assetPassesBeatMinimum(picked.asset, beat.text, picked.score, topScore)) {
+      continue;
+    }
+    if (!relaxed && picked.score < minAcceptScore && topScore > minAcceptScore + 6) {
       continue;
     }
     if (usedAssetIds.has(picked.asset.id) || usedStorageUrls.has(picked.asset.storageUrl)) {

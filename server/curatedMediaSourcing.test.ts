@@ -8,11 +8,13 @@ import {
   isCuratedInterviewAsset,
   scoreArchiveMetadata,
   scoreCuratedAsset,
+  assetPassesBeatMinimum,
   isCuratedStaticInteriorAsset,
   isCuratedPreparedStillClip,
   isCuratedPreparedVideoClip,
   rotateCuratedCandidates,
 } from "./curatedMediaSourcing";
+import { isGenericPeopleAsset } from "./visualBeatTags";
 import type { MediaArchiveAsset } from "./db";
 
 describe("curatedMediaSourcing", () => {
@@ -320,9 +322,48 @@ describe("curatedMediaSourcing", () => {
 
   it("rotateCuratedCandidates shifts start per video seed", () => {
     const pool = [{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }];
-    const a = rotateCuratedCandidates(pool, 100, 0).map((x) => x.id);
-    const b = rotateCuratedCandidates(pool, 200, 0).map((x) => x.id);
-    expect(a).not.toEqual(b);
-    expect(a.sort()).toEqual([1, 2, 3, 4]);
+    const rotated = rotateCuratedCandidates(pool, 100, 1).map((x) => x.id);
+    expect(rotated).not.toEqual([1, 2, 3, 4]);
+    expect(rotated.sort()).toEqual([1, 2, 3, 4]);
+  });
+
+  it("assetPassesBeatMinimum rejects generic man for bunker sentence", () => {
+    const beatText = "Hitler zat diep ondergronds in zijn bunker en gaf orders.";
+    const genericMan: MediaArchiveAsset = {
+      id: 50,
+      archiveId: 1,
+      title: "Unknown man portrait",
+      tags: ["man", "portrait"],
+      mediaType: "video",
+      mimeType: "video/mp4",
+      storageUrl: "/x.mp4",
+      isActive: 1,
+      sortOrder: 0,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      fileSizeBytes: 1,
+      width: 1920,
+      height: 1080,
+      durationSec: 6,
+      sourceUrl: null,
+      sourceLabel: null,
+    };
+    const bunkerClip: MediaArchiveAsset = {
+      ...genericMan,
+      id: 51,
+      title: "Hitler in fuhrerbunker underground command post",
+      tags: ["hitler", "bunker", "underground"],
+    };
+    expect(isGenericPeopleAsset(genericMan)).toBe(true);
+    const { beatTags, topicAnchors } = buildBeatMatchTags(
+      { text: beatText, index: 0, searchQuery: "hitler bunker", powerWord: "hitler bunker", keywords: [] },
+      { text: beatText },
+      "Hitler documentary"
+    );
+    const genericScore = scoreCuratedAsset(genericMan, ["hitler"], beatTags, topicAnchors, beatText);
+    const bunkerScore = scoreCuratedAsset(bunkerClip, ["hitler"], beatTags, topicAnchors, beatText);
+    expect(bunkerScore).toBeGreaterThan(genericScore);
+    expect(assetPassesBeatMinimum(genericMan, beatText, genericScore, bunkerScore)).toBe(false);
+    expect(assetPassesBeatMinimum(bunkerClip, beatText, bunkerScore, bunkerScore)).toBe(true);
   });
 });

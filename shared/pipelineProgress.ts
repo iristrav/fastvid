@@ -62,3 +62,18 @@ export function resolvePipelineDisplayStage(
 export function pipelineStageIndex(key: PipelineDisplayStageKey): number {
   return PIPELINE_DISPLAY_STAGES.findIndex((s) => s.key === key);
 }
+
+/** Human-readable duration for pipeline UI and logs (e.g. 42s, 3m 05s). */
+export function formatGenerationDuration(totalSec: number): string {
+  const sec = Math.max(0, Math.floor(totalSec));
+  const min = Math.floor(sec / 60);
+  const rem = sec % 60;
+  if (min > 0) return `${min}m ${String(rem).padStart(2, "0")}s`;
+  return `${sec}s`;
+}
+
+/** Append live elapsed time to a progress label shown in the dashboard badge. */
+export function progressStepWithElapsed(label: string, startedAtMs: number): string {
+  const elapsedSec = Math.floor((Date.now() - startedAtMs) / 1000);
+  return `${label} · ${formatGenerationDuration(elapsedSec)}`;
+}

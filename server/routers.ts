@@ -40,7 +40,7 @@ import {
 } from "./db";
 import { storageGetSignedUrl } from "./storage";
 import type { ProgressLogEntry } from "./db";
-import { PIPELINE_DISPLAY_STAGES, resolvePipelineDisplayStage } from "@shared/pipelineProgress";
+import { PIPELINE_DISPLAY_STAGES, formatGenerationDuration, progressStepWithElapsed, resolvePipelineDisplayStage } from "@shared/pipelineProgress";
 import { ONE_YEAR_MS } from "@shared/const";
 
 function getSessionSecret() {
@@ -243,18 +243,35 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLength: 
   ];
   await updateVideoProgressLog(videoId, scriptLog).catch(() => {});
 
+  const generationStartedAt = Date.now();
+  let lastScriptProgressLabel = scriptStage.label;
+  const scriptProgressPercent = { value: 5 };
+  const scriptHeartbeat = setInterval(() => {
+    updateVideoProgress(
+      videoId,
+      progressStepWithElapsed(lastScriptProgressLabel, generationStartedAt),
+      scriptProgressPercent.value
+    ).catch(() => {});
+  }, 15_000);
+
   try {
     await updateVideoStatus(videoId, "generating_script", {
-      progressStep: scriptStage.label,
+      progressStep: progressStepWithElapsed(scriptStage.label, generationStartedAt),
       progressPercent: 5,
-      generationStartedAt: new Date(),
+      generationStartedAt: new Date(generationStartedAt),
     });
 
     // 1–2 min: one LLM call (saves ~2–4 min vs outline + parallel sections + metadata)
     if (isTwoMin || videoLength === "1") {
       scriptLog[0].step = scriptStage.label;
       await updateVideoProgressLog(videoId, scriptLog).catch(() => {});
-      await updateVideoProgress(videoId, scriptStage.label, 12);
+      lastScriptProgressLabel = scriptStage.label;
+      scriptProgressPercent.value = 12;
+      await updateVideoProgress(
+        videoId,
+        progressStepWithElapsed(scriptStage.label, generationStartedAt),
+        scriptProgressPercent.value
+      );
 
       const shotResp = await invokeLLM({
         messages: [
@@ -317,11 +334,12 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLength: 
 
       scriptContent = stripVisualTagsFromScript(scriptContent);
       const metadata = { title, description: prompt, tags: [] as string[], chapters: [] as { time: string; title: string }[] };
+      const scriptDurationSec = Math.floor((Date.now() - generationStartedAt) / 1000);
       await updateVideoStatus(videoId, "awaiting_approval", {
         script: scriptContent,
         title,
         metadata,
-        progressStep: "✅ Script ready — starting video production...",
+        progressStep: `✅ Script ready · ${formatGenerationDuration(scriptDurationSec)} — starting video production...`,
         progressPercent: 28,
       });
       const savedVideo = await getVideoById(videoId);
@@ -360,7 +378,13 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLength: 
     scriptLog[0].completedAt = Date.now(); scriptLog[0].status = "done";
     scriptLog.push({ step: `✍️ Writing ${outline.sections.length} sections in parallel...`, startedAt: Date.now(), status: "active" });
     await updateVideoProgressLog(videoId, scriptLog).catch(() => {});
-    await updateVideoProgress(videoId, `✍️ Writing ${outline.sections.length} sections in parallel...`, 12);
+    lastScriptProgressLabel = `✍️ Writing ${outline.sections.length} sections in parallel...`;
+    scriptProgressPercent.value = 12;
+    await updateVideoProgress(
+      videoId,
+      progressStepWithElapsed(lastScriptProgressLabel, generationStartedAt),
+      scriptProgressPercent.value
+    );
 
     // Step 1b: Generate each section AND metadata in parallel
     const sectionTotal = outline.sections.length || budget.sectionCount;
@@ -405,7 +429,13 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLength: 
     if (writingStep) { writingStep.completedAt = Date.now(); writingStep.status = "done"; }
     scriptLog.push({ step: "📋 Assembling final script...", startedAt: Date.now(), status: "active" });
     await updateVideoProgressLog(videoId, scriptLog).catch(() => {});
-    await updateVideoProgress(videoId, "📋 Assembling script...", 22);
+    lastScriptProgressLabel = "📋 Assembling script...";
+    scriptProgressPercent.value = 22;
+    await updateVideoProgress(
+      videoId,
+      progressStepWithElapsed(lastScriptProgressLabel, generationStartedAt),
+      scriptProgressPercent.value
+    );
 
     // Assemble full script
     const scriptParts: string[] = [`# ${title}\n`, `## Opening\n${outline.hook}\n`];
@@ -416,7 +446,13 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLength: 
     let narrationWords = countNarrationWords(scriptContent);
     if (narrationWords < budget.minWords || narrationWords > budget.maxWords) {
       scriptLog.push({ step: "✂️ Adjusting script to target length...", startedAt: Date.now(), status: "active" });
-      await updateVideoProgress(videoId, "✂️ Matching script length to video...", 24);
+      lastScriptProgressLabel = "✂️ Matching script length to video...";
+      scriptProgressPercent.value = 24;
+      await updateVideoProgress(
+        videoId,
+        progressStepWithElapsed(lastScriptProgressLabel, generationStartedAt),
+        scriptProgressPercent.value
+      );
       const scriptBeforeRefine = scriptContent;
       try {
         const refineResp = await invokeLLM({
@@ -472,11 +508,12 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLength: 
     // Save script and return (no pause — caller decides next step)
     scriptContent = stripVisualTagsFromScript(scriptContent);
     console.log(`[Script Generation] Saving script for video ${videoId}, length=${scriptContent.length} chars`);
+    const scriptDurationSec = Math.floor((Date.now() - generationStartedAt) / 1000);
     await updateVideoStatus(videoId, "awaiting_approval", {
       script: scriptContent,
       title,
       metadata,
-      progressStep: "✅ Script ready — starting video production...",
+      progressStep: `✅ Script ready · ${formatGenerationDuration(scriptDurationSec)} — starting video production...`,
       progressPercent: 28,
     });
     // Verify the script was actually saved
@@ -495,6 +532,8 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLength: 
       progressStep: "Script generation failed",
       progressPercent: 0,
     });
+  } finally {
+    clearInterval(scriptHeartbeat);
   }
 }
 
@@ -531,8 +570,14 @@ async function _generateVideoWithAI(
     }
 
     // ── Stage 3: Run Full Video Pipeline (TTS + Visuals + FFmpeg) ────
+    const videoRow = await getVideoById(videoId);
+    const pipelineStartedAt = videoRow?.generationStartedAt
+      ? new Date(videoRow.generationStartedAt).getTime()
+      : Date.now();
+
+    const initialStage = resolvePipelineDisplayStage("Volledige voiceover in ElevenLabs", 30);
     await updateVideoStatus(videoId, "generating_voiceover", {
-      progressStep: resolvePipelineDisplayStage("Volledige voiceover in ElevenLabs", 30).label,
+      progressStep: progressStepWithElapsed(initialStage.label, pipelineStartedAt),
       progressPercent: 30,
     });
 
@@ -541,6 +586,8 @@ async function _generateVideoWithAI(
     // We track: startedAt, completedAt, status per step.
     const progressLog: ProgressLogEntry[] = [];
     let currentStageKey = "";
+    let lastProgressLabel = initialStage.label;
+    let lastProgressPercent = 30;
 
     const pushStep = async (rawStepName: string, percent: number) => {
       const { key, label } = resolvePipelineDisplayStage(rawStepName, percent);
@@ -562,8 +609,11 @@ async function _generateVideoWithAI(
           existing.status = "active";
         }
       }
+      lastProgressLabel = label;
+      lastProgressPercent = Math.min(percent, 95);
+      const stepWithElapsed = progressStepWithElapsed(label, pipelineStartedAt);
       await Promise.all([
-        updateVideoProgress(videoId, label, Math.min(percent, 95)).catch(() => {}),
+        updateVideoProgress(videoId, stepWithElapsed, lastProgressPercent).catch(() => {}),
         updateVideoProgressLog(videoId, progressLog).catch(() => {}),
       ]);
       // Update coarse status enum
@@ -577,6 +627,13 @@ async function _generateVideoWithAI(
     const pipelineHeartbeat = setInterval(() => {
       touchVideoProgress(videoId).catch(() => {});
     }, 20_000);
+    const elapsedHeartbeat = setInterval(() => {
+      updateVideoProgress(
+        videoId,
+        progressStepWithElapsed(lastProgressLabel, pipelineStartedAt),
+        lastProgressPercent
+      ).catch(() => {});
+    }, 15_000);
     let videoUrl: string;
     try {
       videoUrl = await runVideoPipeline(
@@ -595,6 +652,7 @@ async function _generateVideoWithAI(
       );
     } finally {
       clearInterval(pipelineHeartbeat);
+      clearInterval(elapsedHeartbeat);
     }
 
     // Mark last active step as done
@@ -603,21 +661,32 @@ async function _generateVideoWithAI(
     await updateVideoProgressLog(videoId, progressLog).catch(() => {});
 
     const finalTitle = (approvedMetadata as Record<string, string>).title ?? approvedTitle;
+    const generationDurationSec = Math.floor((Date.now() - pipelineStartedAt) / 1000);
+    const durationLabel = formatGenerationDuration(generationDurationSec);
+    const metadataBase =
+      approvedMetadata && typeof approvedMetadata === "object"
+        ? (approvedMetadata as Record<string, unknown>)
+        : {};
+    const enrichedMetadata = { ...metadataBase, generationDurationSec };
 
     progressLog.push({ step: resolvePipelineDisplayStage("Video complete", 100).label, startedAt: Date.now(), completedAt: Date.now(), status: "done" });
     await updateVideoProgressLog(videoId, progressLog).catch(() => {});
 
+    console.log(
+      `[Video Generation] Video ${videoId} completed in ${durationLabel} (${generationDurationSec}s since generation start)`
+    );
+
     await updateVideoStatus(videoId, "completed", {
-      metadata: approvedMetadata,
+      metadata: enrichedMetadata,
       title: finalTitle,
       videoUrl,
-      progressStep: "Video complete!",
+      progressStep: `Video complete! · ${durationLabel}`,
       progressPercent: 100,
     });
     // Notify owner on completion (non-blocking)
     notifyOwner({
       title: `✅ Video #${videoId} completed`,
-      content: `**${finalTitle}**\n\nVideo generation completed successfully.\n- Prompt: ${prompt.slice(0, 120)}${prompt.length > 120 ? "..." : ""}\n- Length: ${videoLength} min\n- Video URL: ${videoUrl ?? "N/A"}`,
+      content: `**${finalTitle}**\n\nVideo generation completed in **${durationLabel}**.\n- Prompt: ${prompt.slice(0, 120)}${prompt.length > 120 ? "..." : ""}\n- Length: ${videoLength} min\n- Video URL: ${videoUrl ?? "N/A"}`,
     }).catch(() => {});
   } catch (error) {
     console.error("[Video Generation] Error:", error);

@@ -57,6 +57,22 @@ const SCENE_SEARCH_ENTRIES: TagEntry[] = [
   { pattern: /\bberghof\b|\badlerhorst\b|\beagles?\s*nest\b|\bwolfsschanze\b|\bwolf\s*lair\b/i, searchTags: ["berghof", "eagles nest", "wolf's lair", "wolfsschanze", "hitler"] },
   { pattern: /\bvliegtuig\b|\bairplane\b|\baircraft\b|\bluchtaanval\b|\bbombardement\b|\bbombing\b/i, searchTags: ["aircraft", "airplane", "bombing", "air raid"] },
   { pattern: /\bvlag\b|\bswastika\b|\bhakenkruis\b/i, searchTags: ["swastika", "nazi flag", "flag"] },
+  { pattern: /\bondergronds\b|\bunderground\b|\bkelder\b|\bcellar\b|\bcommand\s*post\b|\bcommando\s*centrum\b/i, searchTags: ["underground", "bunker", "command post", "cellar"] },
+  { pattern: /\bovergave\b|\bsurrender\b|\bcapitulat/i, searchTags: ["surrender", "capitulation", "surrender document"] },
+  { pattern: /\bruïnes\b|\bruins\b|\brubble\b|\bverwoest\b|\bdestroyed\b|\bgebombardeerd\b|\bbombard/i, searchTags: ["ruins", "rubble", "destroyed", "bombed", "berlin ruins"] },
+  { pattern: /\bbrand\b|\bbranden\b|\bburning\b|\bfire\b|\bvlammen\b|\bflames\b/i, searchTags: ["fire", "burning", "flames", "smoke"] },
+  { pattern: /\brook\b|\bsmoke\b|\bartillerie\b|\bartillery\b|\bshelling\b|\bbombardment\b/i, searchTags: ["smoke", "artillery", "shelling", "bombardment"] },
+  { pattern: /\bofficier\b|\bofficers\b|\bgeneraal\b|\bgenerals\b|\bcommandant\b|\bstaff\b|\bstaf\b/i, searchTags: ["officers", "generals", "military staff", "command"] },
+  { pattern: /\bvergadering\b|\bmeeting\b|\bconferentie\b|\bconference\b|\btafel\b|\bdesk\b|\bmap\b|\bkaart\b|\bstrategy\b|\bstrategie\b/i, searchTags: ["meeting", "conference", "war room", "map", "strategy", "table"] },
+  { pattern: /\bself\s*destruct\b|\bself-destruct\b|\bselfdestructie\b|\bcyanide\b|\bvergif\b|\bpoison\b|\bsuicide\b|\bzelfmoord\b/i, searchTags: ["suicide", "cyanide", "poison", "death"] },
+  { pattern: /\bcrematie\b|\bcremation\b|\blijk\b|\bcorpse\b|\bbody\b|\bdood\b|\bdeath\b|\boverleden\b|\bdied\b|\bsterf\b/i, searchTags: ["death", "corpse", "funeral", "cremation"] },
+  { pattern: /\breichskanzlei\b|\breich\s*chancellery\b|\brijkskanselarij\b|\bkanzlei\b|\bchancellery\b/i, searchTags: ["reich chancellery", "reichstag", "berlin government"] },
+  { pattern: /\beva\s+braun\b|\bbraun\b/i, searchTags: ["eva braun", "hitler", "bunker"] },
+  { pattern: /\bomringd\b|\bencircled\b|\btrapped\b|\bgeïsoleerd\b|\bisolated\b|\bgeblokkeerd\b|\bblockade\b/i, searchTags: ["encircled", "surrounded", "siege", "blockade"] },
+  { pattern: /\bvlucht\b|\bescape\b|\bontsnappen\b|\bflee\b|\bvluchten\b/i, searchTags: ["escape", "flee", "retreat"] },
+  { pattern: /\bcivilian\b|\bburger\b|\bburgers\b|\brefugee\b|\bvluchteling\b|\bevacuat/i, searchTags: ["civilians", "refugees", "evacuation"] },
+  { pattern: /\bsovjet\b|\bsoviet\b|\brode\s+leger\b|\bred\s+army\b|\bruss/i, searchTags: ["soviet", "red army", "russia"] },
+  { pattern: /\bgoebbels\b|\bkeitel\b|\bjodl\b|\bdoenitz\b|\bdönitz\b|\bheinrich\b|\bheß\b|\bhess\b/i, searchTags: ["goebbels", "keitel", "jodl", "nazi leadership", "germany"] },
 ];
 
 const LABEL_STOP = new Set([
@@ -126,6 +142,32 @@ export function extractPrimaryGeoSearchTag(beatText: string): string | null {
 }
 
 /** Best single search anchor — scene+entity beats generic geo (e.g. hitler bunker). */
+/** Tags that should drive minimum clip acceptance for this sentence. */
+export function extractRequiredVisualTags(beatText: string): string[] {
+  const visual = extractVisualSearchTags(beatText);
+  const scene = extractSceneSearchTags(beatText);
+  const entity = extractEntitySearchTags(beatText);
+  const salient = extractSalientBeatTokens(beatText).slice(0, 5);
+  return [...new Set([...scene, ...entity, ...visual.slice(0, 8), ...salient])].slice(0, 14);
+}
+
+export function isGenericPeopleAsset(
+  asset: Pick<{ title?: string | null; tags?: string[] | null }, "title" | "tags">
+): boolean {
+  const title = (asset.title ?? "").toLowerCase();
+  const tags = (asset.tags ?? []).join(" ").toLowerCase();
+  const hay = `${title} ${tags}`;
+  const generic =
+    /\b(man|men|person|portrait|unknown|civilian|people|crowd|gesicht|mannen|oude man|woman|vrouw|face|headshot)\b/.test(
+      hay
+    );
+  const specific =
+    /\b(hitler|nazi|stalin|churchill|soldier|soldiers|military|troop|troops|officer|officers|general|generals|speech|rally|parade|tank|panzer|bunker|berlin|fuhrer|führer|wehrmacht|ss|goebbels|keitel|jodl|speech|toespraak|march|war|oorlog|combat|battle|front|invasion|soviet|red army)\b/.test(
+      hay
+    );
+  return generic && !specific;
+}
+
 export function extractPrimaryVisualAnchor(beatText: string): string | null {
   const cleaned = beatText.replace(/\[visual:[^\]]+\]/gi, " ").toLowerCase();
   const scenes = collectTagsFromEntries(cleaned, SCENE_SEARCH_ENTRIES);

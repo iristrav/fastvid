@@ -31,6 +31,11 @@ export function screenLabelsEnabled(): boolean {
   return process.env.ENABLE_SCREEN_LABELS === "true";
 }
 
+/** When true (default), use Pexels stock if no archive clip matches a sentence. */
+export function archivePexelsFallbackEnabled(): boolean {
+  return process.env.ARCHIVE_PEXELS_FALLBACK !== "false";
+}
+
 /** Fail generation rather than loop, pad, or reuse any clip content in a video. */
 export function strictNoVisualRepeat(): boolean {
   if (process.env.STRICT_NO_VISUAL_REPEAT === "false") return false;

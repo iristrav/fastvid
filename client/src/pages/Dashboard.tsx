@@ -28,6 +28,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
+import { formatGenerationDuration } from "@shared/pipelineProgress";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const VIDEO_LENGTHS = [
@@ -41,6 +42,23 @@ const VIDEO_LENGTHS = [
 ];
 
 type VideoLength = "1" | "2" | "5-8" | "8-12" | "12-15" | "15-20" | "20+";
+
+function readGenerationDurationSec(video: {
+  metadata?: unknown;
+  progressStep?: string | null;
+}): number | null {
+  const meta = video.metadata as { generationDurationSec?: number } | null | undefined;
+  if (typeof meta?.generationDurationSec === "number" && meta.generationDurationSec >= 0) {
+    return meta.generationDurationSec;
+  }
+  const match = video.progressStep?.match(/·\s*(\d+m\s+\d+s|\d+s)\b/);
+  if (!match?.[1]) return null;
+  const parts = match[1].match(/(?:(\d+)m\s+)?(\d+)s/);
+  if (!parts) return null;
+  const min = parts[1] ? parseInt(parts[1], 10) : 0;
+  const sec = parseInt(parts[2], 10);
+  return min * 60 + sec;
+}
 
 // Agent-style stage labels for the progress UI
 const AGENT_STAGES: Record<string, { label: string; agent: string; icon: string }> = {
@@ -200,6 +218,8 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
     id: number; title: string | null; prompt: string; status: string;
     videoLength: string; createdAt: Date; thumbnailUrl: string | null;
     errorMessage?: string | null;
+    metadata?: unknown;
+    progressStep?: string | null;
   };
   onView: (id: number) => void;
   onDelete: (id: number) => void;
@@ -218,10 +238,14 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
   const currentStatus = pollData?.status ?? video.status;
   const isProcessing = !["completed", "failed"].includes(currentStatus);
   const stageInfo = AGENT_STAGES[currentStatus] ?? { label: currentStatus, agent: "AI", icon: "⚙️" };
+  const completedDurationSec =
+    currentStatus === "completed" ? readGenerationDurationSec(video) : null;
   const statusBadgeLabel =
     isProcessing && pollData?.progressStep
       ? pollData.progressStep
-      : stageInfo.label;
+      : currentStatus === "completed" && completedDurationSec != null
+        ? `Klaar · ${formatGenerationDuration(completedDurationSec)}`
+        : stageInfo.label;
   const statusColor = STATUS_COLORS[currentStatus] ?? "text-slate-400 bg-slate-400/10";
   const displayThumbnail = pollData?.thumbnailUrl ?? video.thumbnailUrl;
 
@@ -406,7 +430,14 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
         )}
         <p className="text-xs text-slate-500 line-clamp-2 mb-3">{video.prompt}</p>
         <div className="flex items-center justify-between">
-          <span className="text-xs text-slate-600">{new Date(video.createdAt).toLocaleDateString()}</span>
+          <div className="flex items-center gap-2 text-xs text-slate-600">
+            <span>{new Date(video.createdAt).toLocaleDateString()}</span>
+            {currentStatus === "completed" && completedDurationSec != null && (
+              <span className="font-mono text-slate-500">
+                ⏱ {formatGenerationDuration(completedDurationSec)}
+              </span>
+            )}
+          </div>
           <div className="flex items-center gap-2">
 
             <button
