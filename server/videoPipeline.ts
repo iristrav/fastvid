@@ -8417,7 +8417,7 @@ async function montageClipPassesComposeGate(
   if (!(await isValidVideoFile(clipPath)) || (await isMostlyBlackClip(clipPath))) return false;
   if (strictNoVisualRepeat()) {
     const probed = await probeVideoDurationSec(clipPath);
-    if (probed > 0.15 && probed < archiveVisualMinClipSec()) return false;
+    if (probed > 0.15 && probed < archiveVisualMinClipSec() - 0.5) return false;
   }
   const trimStart = montageClipStartSec(sceneIndex, clipIndex);
   const startLuma = await probeClipMeanLuma(clipPath, trimStart + 0.08);
@@ -12223,20 +12223,30 @@ async function adoptArchiveBeatClip(
   initialClip: string | null = null,
   holdSec = beat.holdSec
 ): Promise<boolean> {
+  const rejectClip = (clipPath: string | null | undefined): void => {
+    if (!clipPath || isPipelineFallbackClip(clipPath)) return;
+    dedup.usedContentKeys.add(clipContentKey(clipPath));
+    markCuratedAssetUsed(clipPath, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls);
+  };
   const tryClip = async (clipPath: string | null | undefined, sec = holdSec): Promise<boolean> => {
     if (!clipPath || isPipelineFallbackClip(clipPath)) return false;
     if (await isMostlyBlackClip(clipPath)) {
       console.warn(
         `[Pipeline] Scene ${scene.index} beat ${beat.index}: skipping mostly-black clip ${path.basename(clipPath)}`
       );
+      rejectClip(clipPath);
       return false;
     }
     const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec);
-    if (await isMostlyBlackClip(withText)) return false;
+    if (await isMostlyBlackClip(withText)) {
+      rejectClip(clipPath);
+      return false;
+    }
     if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) {
       console.warn(
         `[Pipeline] Scene ${scene.index} beat ${beat.index}: skipping clip that fails compose gate ${path.basename(withText)}`
       );
+      rejectClip(clipPath);
       return false;
     }
     return await pushClip(withText, sec);
@@ -12261,7 +12271,8 @@ async function adoptArchiveBeatClip(
       videoTitle,
       curatedInterviewBudget(dedup),
       curatedImageBudget(dedup),
-      mgfxBudget
+      mgfxBudget,
+      { relaxed: attempt >= Math.floor(ARCHIVE_BEAT_CLIP_RETRIES / 2) }
     );
     dedup.motionGraphicsUsed = mgfxBudget.used;
     if (await tryClip(clip, holdSec)) return true;
@@ -12316,7 +12327,11 @@ async function backfillComposeMontageIfShort(
     if (!clip || isPipelineFallbackClip(clip)) continue;
     const key = clipContentKey(clip);
     if (seenKeys.has(key) || dedup.usedContentKeys.has(key)) continue;
-    if (!(await montageClipPassesComposeGate(clip, scene.index, safeClips.length))) continue;
+    if (!(await montageClipPassesComposeGate(clip, scene.index, safeClips.length))) {
+      dedup.usedContentKeys.add(key);
+      markCuratedAssetUsed(clip, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls);
+      continue;
+    }
 
     let actualHold = beat.holdSec;
     const probed = await probeVideoDurationSec(clip);
@@ -12819,8 +12834,17 @@ async function fetchSceneVisuals(
     } finally {
       clearInterval(backfillPulse);
     }
-    if (!extra || isPipelineFallbackClip(extra)) break;
+    if (!extra || isPipelineFallbackClip(extra)) {
+      backfillAttempts++;
+      continue;
+    }
     if (archiveOnly) {
+      if (!(await montageClipPassesComposeGate(extra, scene.index, clips.length))) {
+        dedup.usedContentKeys.add(clipContentKey(extra));
+        markCuratedAssetUsed(extra, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls);
+        backfillAttempts++;
+        continue;
+      }
       if (!(await pushSceneClip(extra, stub.holdSec, stub.index))) {
         backfillAttempts++;
         continue;

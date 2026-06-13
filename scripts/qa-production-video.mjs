@@ -188,7 +188,7 @@ async function startVideo() {
   return res.json();
 }
 
-async function pollUntilDone(id, maxMin = 12) {
+async function pollUntilDone(id, maxMin = 25) {
   for (let i = 0; i < maxMin * 4; i++) {
     const d = await fetchVideo(id);
     console.log(`[poll ${i}] ${d.status} ${d.progressStep ?? ""} ${d.progressPercent ?? 0}%`);
