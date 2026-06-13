@@ -1602,7 +1602,11 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
       pexelsDownloadRetries: 1,
       maxStockQueriesPerBeat: 2,
       beatClipTimeoutMs: IS_RAILWAY ? 22_000 : 60_000,
-      sceneVisualTimeoutMs: IS_RAILWAY ? 5 * 60_000 : 4 * 60_000,
+      sceneVisualTimeoutMs: IS_RAILWAY
+        ? curatedArchiveOnlyVisuals() && strictNoVisualRepeat()
+          ? 10 * 60_000
+          : 5 * 60_000
+        : 4 * 60_000,
       fastStockMode: IS_RAILWAY,
       scriptOnlyVisuals: false,
     }, videoLength);
@@ -12703,12 +12707,13 @@ async function fetchSceneVisuals(
   const maxBackfill = maxBackfillAttempts(dedup.perf, scene.duration);
   const backfillMs = backfillClipWallMs(dedup.perf, scene.duration);
   const scenePersonsForBackfill = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
-  const sceneClipSec = () => beatDurations.reduce((sum, d) => sum + d, 0);
+  let montageCoverage = archiveOnly
+    ? await estimateSceneMontageCoverageSec(clips, beatDurations)
+    : scene.duration;
   while (
     backfillAttempts < maxBackfill &&
     (clips.filter((c) => c && !isPipelineFallbackClip(c)).length < targetMinClips ||
-      (archiveOnly &&
-        (await estimateSceneMontageCoverageSec(clips, beatDurations)) < strictMinCoverage))
+      (archiveOnly && montageCoverage < strictMinCoverage))
   ) {
     const stub = beats[backfillAttempts % beats.length] ?? beats[0];
     if (!stub) break;
@@ -12820,6 +12825,7 @@ async function fetchSceneVisuals(
         backfillAttempts++;
         continue;
       }
+      montageCoverage = await estimateSceneMontageCoverageSec(clips, beatDurations);
     } else {
       if (clips.some((c) => clipContentKey(c) === clipContentKey(extra))) break;
       clips.push(extra);
