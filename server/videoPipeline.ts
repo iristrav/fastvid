@@ -12476,7 +12476,7 @@ async function resolveBeatClipForBeat(
 type SceneVisualsResult = { clips: string[]; beatDurations: number[] };
 type BeatProgressPhase = "beat" | "backfill";
 
-const ARCHIVE_BEAT_TOP_CANDIDATES = 2;
+const ARCHIVE_BEAT_TOP_CANDIDATES = 3;
 const ARCHIVE_BEAT_CLIP_RETRIES = 3;
 
 async function loadArchiveCandidatePool(
@@ -12765,8 +12765,6 @@ async function backfillComposeMontageIfShort(
   dedup: VisualDedupState
 ): Promise<void> {
   if (!curatedArchiveOnlyVisuals()) return;
-  // Per-zin fetch already pool-backfills with scene.duration (≥ voice); skip duplicate compose pass.
-  if (strictNoVisualRepeat()) return;
   const minClipsNeeded = minClipsForBalancedVoice(outDur);
   const minCoverage = strictNoVisualRepeat() ? outDur - 0.06 : outDur * 0.92;
   let coverage = await estimateBalancedMontageCoverageSec(safeClips, composeBeatDurations, outDur);
