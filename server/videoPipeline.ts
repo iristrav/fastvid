@@ -8282,12 +8282,18 @@ function estimateMontageDurationSec(durations: number[]): number {
   return durations.reduce((s, d) => s + d, 0) - (n - 1) * xfade;
 }
 
+function montageClipUsableSec(srcMax: number): number {
+  const maxClip = effectiveMaxClipSec();
+  if (srcMax <= 0.15) return maxClip;
+  return Math.min(maxClip, Math.max(0.35, srcMax - 0.05));
+}
+
 /** Montage length when trims are capped to each clip's probed source duration. */
 function effectiveMontageDurationSec(durations: number[], sourceMaxDurs?: number[]): number {
   const capped = durations.map((d, i) => {
     const srcMax = sourceMaxDurs?.[i] ?? 0;
     if (srcMax > 0.15) {
-      return Math.min(d, Math.max(montageMinOnScreenSec(), srcMax - 0.05));
+      return Math.min(d, montageClipUsableSec(srcMax));
     }
     return d;
   });
@@ -8405,6 +8411,10 @@ async function montageClipPassesComposeGate(
   clipIndex: number
 ): Promise<boolean> {
   if (!(await isValidVideoFile(clipPath)) || (await isMostlyBlackClip(clipPath))) return false;
+  if (strictNoVisualRepeat()) {
+    const probed = await probeVideoDurationSec(clipPath);
+    if (probed > 0.15 && probed < archiveVisualMinClipSec()) return false;
+  }
   const trimStart = montageClipStartSec(sceneIndex, clipIndex);
   const startLuma = await probeClipMeanLuma(clipPath, trimStart + 0.08);
   if (startLuma !== null && startLuma < 14) return false;
@@ -8436,17 +8446,11 @@ function balanceMontageDurationsForVoice(
   const minClip = effectiveMinClipSec();
   const minOnScreen = montageMinOnScreenSec();
   const maxClip = effectiveMaxClipSec();
-  const capForIndex = (i: number) => {
-    const srcMax = sourceMaxDurs[i] ?? 0;
-    if (srcMax > 0.15) {
-      return Math.min(maxClip, Math.max(minOnScreen, srcMax - 0.05));
-    }
-    return maxClip;
-  };
+  const capForIndex = (i: number) => montageClipUsableSec(sourceMaxDurs[i] ?? 0);
   let durs = Array.from({ length: n }, (_, i) => {
     const seed = seedDurations?.[i];
     const cap = capForIndex(i);
-    if (seed && seed > 0.1) return Math.max(minOnScreen, Math.min(cap, seed));
+    if (seed && seed > 0.1) return Math.min(cap, Math.max(montageMinOnScreenSec(), seed));
     return Math.min(cap, effectiveBeatSec());
   });
 
@@ -8771,10 +8775,10 @@ function buildMontageXfadeFilter(
   let durs =
     clipDurations?.length === n
       ? clipDurations.map((d, i) => {
-          let capped = Math.max(0.35, Math.min(maxClip, d));
+          let capped = Math.min(maxClip, Math.max(montageMinOnScreenSec(), d));
           const srcMax = sourceMaxDurs?.[i] ?? 0;
           if (srcMax > 0.15) {
-            capped = Math.min(capped, Math.max(minClip * 0.35, srcMax - 0.05));
+            capped = Math.min(capped, montageClipUsableSec(srcMax));
           }
           return capped;
         })
@@ -14007,9 +14011,13 @@ async function composeSceneVideo(
       );
     } catch (rescueErr) {
       console.warn(`[Pipeline] Scene ${scene.index}: rescue montage failed:`, rescueErr);
+      const detail =
+        rescueErr instanceof Error && rescueErr.message
+          ? rescueErr.message
+          : String(rescueErr);
       throw pipelineError(
         PIPELINE_ERROR.FFMPEG,
-        `Scene ${scene.index}: compose failed — refusing to loop duplicate clips`
+        `Scene ${scene.index}: compose failed — ${detail}`
       );
     }
   }
