@@ -8307,7 +8307,16 @@ function estimateMontageDurationSec(durations: number[]): number {
 function montageClipUsableSec(srcMax: number): number {
   const maxClip = effectiveMaxClipSec();
   if (srcMax <= 0.15) return maxClip;
-  return Math.min(maxClip, Math.max(0.35, srcMax - 0.05));
+  const trimStart = montageClipStartSec(0, 0);
+  return Math.min(maxClip, Math.max(0.35, srcMax - trimStart - 0.05));
+}
+
+function resolveMontageClipEffectiveDur(dur: number, sourceMaxSec?: number): number {
+  if (!sourceMaxSec || sourceMaxSec <= 0.15) return dur;
+  return Math.min(
+    dur,
+    Math.max(montageMinOnScreenSec(), sourceMaxSec - montageClipStartSec(0, 0) - 0.05)
+  );
 }
 
 /** Montage length when trims are capped to each clip's probed source duration. */
@@ -8393,17 +8402,11 @@ async function prepareStrictUniqueMontage(
   if (!strictNoVisualRepeat()) {
     return { montageDurations, sourceMaxDurs, estSec };
   }
-  const minClips = minClipsForBalancedVoice(outDur);
-  if (clips.length < minClips) {
-    throw pipelineError(
-      PIPELINE_ERROR.NO_SCENES,
-      `Scene ${sceneIndex}: need ${minClips} unique clips for ${outDur.toFixed(1)}s voice — have ${clips.length}`
-    );
-  }
   if (estSec < outDur - 0.06) {
+    const minClips = minClipsForBalancedVoice(outDur);
     throw pipelineError(
       PIPELINE_ERROR.NO_SCENES,
-      `Scene ${sceneIndex}: ${clips.length} clips cover ~${estSec.toFixed(1)}s of ${outDur.toFixed(1)}s — add archive assets (no repeat/pad allowed)`
+      `Scene ${sceneIndex}: ${clips.length} clips cover ~${estSec.toFixed(1)}s of ${outDur.toFixed(1)}s (need ~${minClips} when balanced) — add archive assets (no repeat/pad allowed)`
     );
   }
   return { montageDurations, sourceMaxDurs, estSec };
@@ -8488,6 +8491,15 @@ async function estimateBalancedMontageCoverageSec(
 function composeSceneTimeoutMs(clipCount: number): number {
   if (curatedArchiveOnlyVisuals() && clipCount > 8) return 240_000;
   return 120_000;
+}
+
+function formatFfmpegExecError(err: unknown): string {
+  const e = err as NodeJS.ErrnoException & { stderr?: string };
+  const base = e?.message ?? String(err);
+  const stderr = typeof e?.stderr === "string" ? e.stderr.trim() : "";
+  if (!stderr) return base;
+  const tail = stderr.length > 600 ? stderr.slice(-600) : stderr;
+  return `${base} | stderr: ${tail}`;
 }
 
 /** Spread voice duration across unique clips without exceeding each source length. */
@@ -8787,10 +8799,7 @@ function montageClipPrepFilter(
   const start = montageClipStartSec(sceneIndex, inputIndex).toFixed(2);
   let effectiveDur = dur;
   if (sourceMaxSec && sourceMaxSec > 0.15) {
-    effectiveDur = Math.min(
-      dur,
-      Math.max(montageMinOnScreenSec(), sourceMaxSec - 0.05)
-    );
+    effectiveDur = resolveMontageClipEffectiveDur(dur, sourceMaxSec);
   }
   const edgeFade =
     smoothTransition && xfade > 0.001 ? Math.min(0.08, effectiveDur * 0.05) : 0;
@@ -8843,6 +8852,7 @@ function buildMontageXfadeFilter(
   if (!clipDurations?.length || presetTotal > outDur + 0.35) {
     durs = normalizeMontageDurations(durs, outDur, sourceMaxDurs);
   }
+  durs = durs.map((d, i) => resolveMontageClipEffectiveDur(d, sourceMaxDurs?.[i]));
   const avgDur = durs.reduce((s, d) => s + d, 0) / n;
   const xfade = montageXfadeSec(avgDur);
   const smooth = curatedArchiveOnlyVisuals() || documentaryStyleEnabled();
@@ -12461,7 +12471,7 @@ async function backfillArchiveMontageFromPool(
   const minClipsNeeded = minClipsForBalancedVoice(outDur);
   const minCoverage = strictNoVisualRepeat() ? outDur - 0.06 : outDur * 0.92;
   let coverage = await estimateBalancedMontageCoverageSec(clips, beatDurations, outDur);
-  if (coverage >= minCoverage && clips.length >= minClipsNeeded) return 0;
+  if (coverage >= minCoverage) return 0;
 
   await loadArchiveCandidatePool(scene, videoTitle, dedup);
   const beats = buildSceneBeats(scene, outDur, Math.max(minClipsNeeded + 2, Math.ceil(outDur / effectiveBeatSec())));
@@ -12473,7 +12483,7 @@ async function backfillArchiveMontageFromPool(
   );
 
   let added = 0;
-  for (let attempt = 0; attempt < maxFill && (coverage < minCoverage || clips.length < minClipsNeeded); attempt++) {
+  for (let attempt = 0; attempt < maxFill && coverage < minCoverage; attempt++) {
     opts?.onProgress?.(attempt + 1, maxFill);
     const beat = beats[attempt % beats.length] ?? beats[0];
     if (!beat) break;
@@ -12507,7 +12517,7 @@ async function backfillComposeMontageIfShort(
   const minClipsNeeded = minClipsForBalancedVoice(outDur);
   const minCoverage = strictNoVisualRepeat() ? outDur - 0.06 : outDur * 0.92;
   let coverage = await estimateBalancedMontageCoverageSec(safeClips, composeBeatDurations, outDur);
-  if (coverage >= minCoverage && safeClips.length >= minClipsNeeded) return;
+  if (coverage >= minCoverage) return;
 
   const pushClip = async (clipPath: string, holdSec: number): Promise<boolean> => {
     const key = clipContentKey(clipPath);
@@ -12536,10 +12546,10 @@ async function backfillComposeMontageIfShort(
     { logPrefix: `Scene ${scene.index} compose` }
   );
 
-  if (coverage < minCoverage || safeClips.length < minClipsNeeded) {
+  if (coverage < minCoverage) {
     const msg =
       `Scene ${scene.index}: compose backfill still short ` +
-      `(${safeClips.length}/${minClipsNeeded} clips, ${coverage.toFixed(1)}s / ${outDur.toFixed(1)}s)`;
+      `(${safeClips.length} clips, ${coverage.toFixed(1)}s / ${outDur.toFixed(1)}s)`;
     if (strictNoVisualRepeat()) {
       throw pipelineError(PIPELINE_ERROR.NO_SCENES, `${msg} — add more archive assets (no repeat allowed)`);
     }
@@ -14337,10 +14347,7 @@ async function composeSceneVideo(
       );
     } catch (rescueErr) {
       console.warn(`[Pipeline] Scene ${scene.index}: rescue montage failed:`, rescueErr);
-      const detail =
-        rescueErr instanceof Error && rescueErr.message
-          ? rescueErr.message
-          : String(rescueErr);
+      const detail = formatFfmpegExecError(rescueErr);
       throw pipelineError(
         PIPELINE_ERROR.FFMPEG,
         `Scene ${scene.index}: compose failed — ${detail}`
