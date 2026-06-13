@@ -729,6 +729,48 @@ export function buildYearDrawtextFilterChain(
   return chain;
 }
 
+function ensureEvenDim(n: number, min = 2): number {
+  const v = Math.max(min, Math.round(n));
+  return v % 2 === 0 ? v : v + 1;
+}
+
+/** Apply screen labels one-at-a-time (2-input overlay) — avoids FFmpeg auto_scale failures. */
+export async function burnScreenLabelOverlaysSequential(
+  inputVideoPath: string,
+  outputVideoPath: string,
+  overlays: TimedOverlay[],
+  workDir: string,
+  ffmpegBin: string,
+  execWithTimeout: (cmd: string, ms: number, label: string) => Promise<unknown>
+): Promise<string> {
+  if (!overlays.length) {
+    if (inputVideoPath !== outputVideoPath) {
+      fs.copyFileSync(inputVideoPath, outputVideoPath);
+    }
+    return outputVideoPath;
+  }
+  let current = inputVideoPath;
+  for (let i = 0; i < overlays.length; i++) {
+    const o = overlays[i]!;
+    const isLast = i === overlays.length - 1;
+    const out = isLast ? outputVideoPath : path.join(workDir, `_screen_label_pass_${i}.mp4`);
+    const w = ensureEvenDim(o.overlayW ?? 400);
+    const h = ensureEvenDim(o.overlayH ?? 44);
+    const x = Math.round(o.overlayX ?? 48);
+    const y = Math.round(o.overlayY ?? 900);
+    const enable = `enable='between(t\\,${o.startTime.toFixed(2)}\\,${o.endTime.toFixed(2)})'`;
+    await execWithTimeout(
+      `${ffmpegBin} -y -i "${current}" -i "${o.path}" ` +
+        `-filter_complex "[1:v]scale=${w}:${h}:flags=fast_bilinear,format=yuv420p,setpts=PTS-STARTPTS[lbl];` +
+        `[0:v][lbl]overlay=x=${x}:y=${y}:${enable}[outv]" ` +
+        `-map "[outv]" -c:v libx264 -preset ultrafast -crf 18 -pix_fmt yuv420p -an "${out}"`,
+      120_000,
+      `Burn screen label ${i + 1}/${overlays.length}`
+    );
+    current = out;
+  }
+  return outputVideoPath;
+}
 const SCREEN_LABEL_MARGIN_L = 48;
 const SCREEN_LABEL_MARGIN_B = 72;
 const SCREEN_LABEL_BOX_H = 44;
@@ -746,8 +788,8 @@ export async function renderYellowTypewriterLabelClip(
   if (safe.length < 1) return null;
   const PAD_X = 16;
   const FS = 28;
-  const w = Math.min(520, Math.round(safe.length * FS * 0.62 + PAD_X * 2));
-  const h = SCREEN_LABEL_BOX_H;
+  const w = ensureEvenDim(Math.min(520, Math.round(safe.length * FS * 0.62 + PAD_X * 2)));
+  const h = ensureEvenDim(SCREEN_LABEL_BOX_H);
   const dur = YEAR_LABEL_ON_SCREEN_SEC;
   const outPath = path.join(workDir, `scene_${sceneIndex}_screen_label_${labelIndex}.mp4`);
   let chain = "";

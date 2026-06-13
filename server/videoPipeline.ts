@@ -55,6 +55,8 @@ import {
   planBeatAlignedYears,
   planIntervalScreenLabels,
   buildIntervalScreenLabelOverlays,
+  burnScreenLabelOverlaysSequential,
+  buildYearDrawtextFilterChain,
   planPhotoShutterCues,
   type TimedYearLabel,
   buildCinematicSfxAudioFilter,
@@ -8718,6 +8720,45 @@ async function renderBatchedArchiveMontage(
   }
 }
 
+async function renderInlineMontageToFile(
+  sceneIndex: number,
+  composeClips: string[],
+  montageDurations: number[] | undefined,
+  sourceMaxDurs: number[],
+  outDur: number,
+  outputPath: string,
+  composeTimeout: number,
+  threadFlag: string
+): Promise<void> {
+  const { scaleFilters, mergeFilter, montageLabel } = buildMontageXfadeFilter(
+    composeClips.length,
+    outDur,
+    sceneIndex,
+    montageDurations,
+    composeClips,
+    sourceMaxDurs
+  );
+  const inputs = montageClipInputs(composeClips);
+  const estMontageDur = montageDurations
+    ? effectiveMontageDurationSec(montageDurations, sourceMaxDurs)
+    : effectiveMontageDurationSec(
+        Array.from({ length: composeClips.length }, () =>
+          computeMontageClipDuration(outDur, composeClips.length)
+        ),
+        sourceMaxDurs
+      );
+  const montageOutVF = montageTailPadVF(montageLabel, estMontageDur, outDur);
+  await withTimeout(
+    exec(
+      `${FFMPEG_BIN} -y ${inputs} -filter_complex "${scaleFilters}${mergeFilter};${montageOutVF}" ` +
+        `-map "[vmont]" -vsync cfr -t ${outDur.toFixed(3)} ${threadFlag} ` +
+        `-c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p "${outputPath}"`
+    ),
+    composeTimeout,
+    `Inline montage-only scene ${sceneIndex}`
+  );
+}
+
 async function composeBatchedArchiveSceneWithAudio(
   sceneIndex: number,
   composeClips: string[],
@@ -8763,18 +8804,46 @@ async function composeBatchedArchiveSceneWithAudio(
     );
     return;
   }
-  const { extraInputs, filterChain, finalLabel } = buildOverlayFilterChain(
-    "vmont",
-    1,
-    [],
-    docOverlays,
-    null
-  );
-  const overlayInputs = extraInputs ? ` ${extraInputs}` : "";
+  const screenLabels = docOverlays.filter((o) => o.isScreenLabel);
+  let videoSrc = montageOnlyPath;
+  if (screenLabels.length > 0) {
+    const labeledPath = path.join(workDir, `scene_${sceneIndex}_labeled.mp4`);
+    await burnScreenLabelOverlaysSequential(
+      montageOnlyPath,
+      labeledPath,
+      screenLabels,
+      workDir,
+      FFMPEG_BIN,
+      (cmd, ms, lbl) => withTimeout(exec(cmd), ms, lbl)
+    );
+    videoSrc = labeledPath;
+  }
+  const otherOverlays = docOverlays.filter((o) => !o.isScreenLabel);
+  if (otherOverlays.length > 0) {
+    const { extraInputs, filterChain, finalLabel } = buildOverlayFilterChain(
+      "vmont",
+      1,
+      [],
+      otherOverlays,
+      null
+    );
+    const overlayInputs = extraInputs ? ` ${extraInputs}` : "";
+    await withTimeout(
+      exec(
+        `${FFMPEG_BIN} -y -i "${videoSrc}" -i "${safeAudioPath}"${overlayInputs} ` +
+          `-filter_complex "[0:v]${FPS_FORMAT_VF}[vmont]${filterChain};[${finalLabel}]${fadeFilter}[vout];${voiceAudioFilter}" ` +
+          `-map "[vout]" -map "[aout]" -vsync cfr -t ${outDur.toFixed(3)} ${threadFlag} ` +
+          `-c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
+      ),
+      composeTimeout,
+      `Batched montage+overlays scene ${sceneIndex}`
+    );
+    return;
+  }
   await withTimeout(
     exec(
-      `${FFMPEG_BIN} -y -i "${montageOnlyPath}" -i "${safeAudioPath}"${overlayInputs} ` +
-        `-filter_complex "[0:v]${FPS_FORMAT_VF}[vmont]${filterChain};[${finalLabel}]${fadeFilter}[vout];${voiceAudioFilter}" ` +
+      `${FFMPEG_BIN} -y -i "${videoSrc}" -i "${safeAudioPath}" ` +
+        `-filter_complex "[0:v]${FPS_FORMAT_VF}[v];[v]${fadeFilter}[vout];${voiceAudioFilter}" ` +
         `-map "[vout]" -map "[aout]" -vsync cfr -t ${outDur.toFixed(3)} ${threadFlag} ` +
         `-c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
     ),
@@ -14292,6 +14361,7 @@ async function composeSceneVideo(
   let kineticFrames: KineticFrame[] = [];
   let docOverlays: TimedOverlay[] = [];
   let yearLabels: TimedYearLabel[] = [];
+  let screenLabels: TimedOverlay[] = [];
   let cinematicPlan: CinematicScenePlan | null = null;
   const sfxCueFiles: Array<{ path: string; timeSec: number; volume: number }> = [];
 
@@ -14461,6 +14531,7 @@ async function composeSceneVideo(
           (cmd, ms, lbl) => withTimeout(exec(cmd), ms, lbl)
         );
         docOverlays.push(...labelOverlays);
+        screenLabels = labelOverlays;
         console.log(
           `[Cinematic] Scene ${scene.index}: ${labelOverlays.length} interval label overlay(s) [${yearLabels.map((y) => y.displayText).join(" | ")}]`
         );
@@ -14468,6 +14539,9 @@ async function composeSceneVideo(
     } catch (err) {
       console.warn(`[Pipeline] Scene ${scene.index}: year label plan failed (non-fatal):`, err);
     }
+  }
+  if (screenLabels.length > 0) {
+    docOverlays = docOverlays.filter((o) => !o.isScreenLabel);
   }
 
   if (!skipEffectLayers && cinematicEffectsEnabled() && montageDurations?.length === safeClips.length) {
@@ -14499,6 +14573,82 @@ async function composeSceneVideo(
   }
 
   try {
+    if (!skipEffectLayers && screenLabels.length > 0) {
+      const montageOnlyPath = path.join(workDir, `scene_${scene.index}_montage_v.mp4`);
+      const useBatchedMontage =
+        IS_RAILWAY && curatedArchiveOnlyVisuals() && composeClips.length > 4;
+      if (useBatchedMontage) {
+        await renderBatchedArchiveMontage(
+          composeClips,
+          montageDurations,
+          sourceMaxDurs,
+          scene.index,
+          outDur,
+          workDir,
+          montageOnlyPath,
+          composeTimeout,
+          threadFlag
+        );
+      } else {
+        await renderInlineMontageToFile(
+          scene.index,
+          composeClips,
+          montageDurations,
+          sourceMaxDurs,
+          outDur,
+          montageOnlyPath,
+          composeTimeout,
+          threadFlag
+        );
+      }
+      const labeledPath = path.join(workDir, `scene_${scene.index}_labeled.mp4`);
+      await burnScreenLabelOverlaysSequential(
+        montageOnlyPath,
+        labeledPath,
+        screenLabels,
+        workDir,
+        FFMPEG_BIN,
+        (cmd, ms, lbl) => withTimeout(exec(cmd), ms, lbl)
+      );
+      const audioFadeOutStart = Math.max(0, voiceDur - 0.15);
+      const voiceAudioFilter =
+        `[1:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${audioFadeOutStart.toFixed(3)}:d=0.12,` +
+        `atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]`;
+      const sfxInputStr = sfxCueFiles.map((s) => `-i "${s.path}"`).join(" ");
+      const sfxBaseIdx = 2;
+      const sfxMeta = sfxCueFiles.map((s, i) => ({
+        inputIndex: sfxBaseIdx + i,
+        timeSec: s.timeSec,
+        volume: s.volume,
+      }));
+      const audioFilter =
+        sfxMeta.length > 0
+          ? `[1:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${audioFadeOutStart.toFixed(3)}:d=0.12,asetpts=PTS-STARTPTS[voiceFaded];` +
+            buildCinematicSfxAudioFilter("voiceFaded", sfxMeta, voiceDur, "aout")
+          : voiceAudioFilter;
+      await withTimeout(
+        exec(
+          `${FFMPEG_BIN} -y -i "${labeledPath}" -i "${safeAudioPath}"${sfxInputStr ? ` ${sfxInputStr}` : ""} ` +
+            `-filter_complex "[0:v]${FPS_FORMAT_VF}[v];[v]${fadeFilter}[vout];${audioFilter}" ` +
+            `-map "[vout]" -map "[aout]" -vsync cfr -t ${outDur.toFixed(3)} ${threadFlag} ` +
+            `-c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
+        ),
+        composeTimeout,
+        `Scene ${scene.index} labels+audio`
+      );
+      if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size < 1000) {
+        throw pipelineError(PIPELINE_ERROR.FFMPEG, `Scene ${scene.index} label compose produced no output`);
+      }
+      for (const overlay of screenLabels) {
+        try {
+          fs.unlinkSync(overlay.path);
+        } catch {
+          /* ignore */
+        }
+      }
+      return outputPath;
+    }
+
     if (IS_RAILWAY && curatedArchiveOnlyVisuals() && composeClips.length > 4) {
       await composeBatchedArchiveSceneWithAudio(
         scene.index,
@@ -14560,9 +14710,15 @@ async function composeSceneVideo(
     const kineticInput = kExtraInputs ? ` ${kExtraInputs}` : "";
     const kineticChainStr = kChain ? kChain : "";
     const hasOverlays = kineticFrames.length > 0 || docOverlays.length > 0 || statCalloutFrame !== null;
-    const videoGradeChain = hasOverlays
-      ? `${kineticChainStr};[${kFinalLabel}]${fadeFilter}[vout]`
-      : `;[vmont]${fadeFilter}[vout]`;
+    const yearDrawChain =
+      yearLabels.length > 0 && screenLabels.length === 0 && ffmpegSupportsDrawtext()
+        ? buildYearDrawtextFilterChain("vgraded", "vout", yearLabels)
+        : "";
+    const videoGradeChain = yearDrawChain
+      ? `;[vmont]${fadeFilter}[vgraded]${yearDrawChain}`
+      : hasOverlays
+        ? `${kineticChainStr};[${kFinalLabel}]${fadeFilter}[vout]`
+        : `;[vmont]${fadeFilter}[vout]`;
     const overlayCount =
       kineticFrames.length + docOverlays.length + (statCalloutFrame ? 1 : 0);
     const sfxBaseIdx = kineticBaseIdx + overlayCount;
@@ -14580,7 +14736,7 @@ async function composeSceneVideo(
     await withTimeout(
       exec(
         `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}"${kineticInput}${sfxInputStr ? ` ${sfxInputStr}` : ""} ` +
-        `-filter_complex "${scaleFilters}${mergeFilter};${montageOutVF}${kineticChainStr}${videoGradeChain};` +
+        `-filter_complex "${scaleFilters}${mergeFilter};${montageOutVF}${yearDrawChain ? "" : kineticChainStr}${videoGradeChain};` +
         `${audioFilter}" ` +
         `-map "[vout]" -map "[aout]" -vsync cfr ` +
         `-t ${outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
