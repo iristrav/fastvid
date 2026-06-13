@@ -100,10 +100,6 @@ import {
   prepareCuratedArchiveClip,
   isCuratedPreparedStillClip,
   isCuratedPreparedVideoClip,
-  listCuratedArchiveCandidates,
-  buildBeatMatchTags,
-  orderCuratedCandidatesForBeat,
-  isCuratedInterviewAsset,
 } from "./curatedMediaSourcing";
 import {
   motionGraphicsEnabled,
@@ -1594,7 +1590,7 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
   if (videoLength === "1" || videoLength === "2") {
     profile = applyAiFallbackToProfile({
       targetWallClockMin: 8,
-      maxBeatsPerScene: curatedArchiveOnlyVisuals() ? (IS_RAILWAY ? 12 : 14) : IS_RAILWAY ? 4 : 6,
+      maxBeatsPerScene: curatedArchiveOnlyVisuals() ? (IS_RAILWAY ? 16 : 18) : IS_RAILWAY ? 4 : 6,
       maxTopicQueries: IS_RAILWAY ? 1 : 3,
       skipFairUseTransform: true,
       transformTimeoutMs: 15_000,
@@ -8382,7 +8378,7 @@ async function prepareStrictUniqueMontage(
       `Scene ${sceneIndex}: need ${minClips} unique clips for ${outDur.toFixed(1)}s voice — have ${clips.length}`
     );
   }
-  if (estSec < outDur - 0.06) {
+  if (estSec < outDur - 0.06 && clips.length < Math.ceil(outDur / archiveVisualMaxClipSec())) {
     throw pipelineError(
       PIPELINE_ERROR.NO_SCENES,
       `Scene ${sceneIndex}: ${clips.length} clips cover ~${estSec.toFixed(1)}s of ${outDur.toFixed(1)}s — add archive assets (no repeat/pad allowed)`
@@ -8394,17 +8390,24 @@ async function prepareStrictUniqueMontage(
 async function assertSceneVisualInventory(
   scene: Scene,
   clips: string[],
-  beatDurations: number[]
+  beatDurations: number[],
+  sentenceBeats = 0
 ): Promise<void> {
   if (!strictNoVisualRepeat()) return;
   assertMontageClipsUnique(scene.index, clips);
-  const voiceOutDur = scene.duration + 0.15;
-  const coverage = await estimateSceneMontageCoverageSec(clips, beatDurations);
-  const minClips = requiredMontageClipsForDuration(voiceOutDur);
-  if (clips.length < minClips || coverage < voiceOutDur - 0.06) {
+  if (clips.length === 0) {
     throw pipelineError(
       PIPELINE_ERROR.NO_SCENES,
-      `Scene ${scene.index}: insufficient unique archive clips (${clips.length}/${minClips}, ~${coverage.toFixed(1)}s / ${voiceOutDur.toFixed(1)}s) — add more tagged assets`
+      `Scene ${scene.index}: geen archive-beelden gevonden — tag meer assets op dit onderwerp`
+    );
+  }
+  const minClips = sentenceBeats > 0
+    ? Math.max(1, Math.ceil(sentenceBeats * 0.45))
+    : requiredMontageClipsForDuration(scene.duration + 0.15);
+  if (clips.length < minClips) {
+    throw pipelineError(
+      PIPELINE_ERROR.NO_SCENES,
+      `Scene ${scene.index}: te weinig unieke clips (${clips.length}/${minClips} zinnen) — breid het archief uit`
     );
   }
 }
@@ -12272,7 +12275,7 @@ async function adoptArchiveBeatClip(
       curatedInterviewBudget(dedup),
       curatedImageBudget(dedup),
       mgfxBudget,
-      { relaxed: attempt >= Math.floor(ARCHIVE_BEAT_CLIP_RETRIES / 2) }
+      { relaxed: true }
     );
     dedup.motionGraphicsUsed = mgfxBudget.used;
     if (await tryClip(clip, holdSec)) return true;
@@ -12356,7 +12359,7 @@ async function backfillComposeMontageIfShort(
   }
 }
 
-async function fillStrictArchiveSceneVisuals(
+async function fetchArchiveSentenceMontage(
   scene: Scene,
   workDir: string,
   videoTitle: string | undefined,
@@ -12364,139 +12367,68 @@ async function fillStrictArchiveSceneVisuals(
   onBeatProgress?: (beatIndex: number, beatTotal: number, phase?: BeatProgressPhase) => void
 ): Promise<SceneVisualsResult> {
   const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
-  const strictVoiceDur = scene.duration + 0.15;
-  const targetMinClips = requiredMontageClipsForDuration(strictVoiceDur);
-  const strictMinCoverage = strictVoiceDur - 0.06;
-  const beats = buildSceneBeats(
-    scene,
-    scene.duration,
-    Math.max(targetMinClips, 4),
-    videoTitle,
-    scenePersons
+  const beatCap = Math.max(
+    dedup.perf.maxBeatsPerScene,
+    Math.ceil(scene.duration / archiveVisualMinClipSec()) + 2
   );
-  const stubBeat = beats[0] ?? {
-    index: 0,
-    text: scene.text.slice(0, 220),
-    searchQuery: scene.pexelsQuery || "documentary",
-    powerWord: extractPowerWordFromSentence(scene.text.slice(0, 220), scenePersons),
-    keywords: buildRelevanceKeywords(scene, scene.text),
-    holdSec: effectiveBeatSec(),
-  };
-  const { beatTags, topicAnchors, allTags } = buildBeatMatchTags(stubBeat, scene, videoTitle);
-  const candidates = orderCuratedCandidatesForBeat(
-    await listCuratedArchiveCandidates(
-      beatTags,
-      dedup.usedCuratedAssetIds,
-      dedup.usedCuratedStorageUrls,
-      topicAnchors,
-      allTags,
-      scene.text
-    )
-  );
+  const beats = buildSceneBeats(scene, scene.duration, beatCap, videoTitle, scenePersons);
   const clips: string[] = [];
   const beatDurations: number[] = [];
-  const holdSec = effectiveBeatSec();
-  const interviewBudget = curatedInterviewBudget(dedup);
-  const imageBudget = curatedImageBudget(dedup);
-  const maxScan = Math.min(candidates.length, targetMinClips + 12);
 
   console.log(
-    `[Pipeline] Scene ${scene.index}: strict pool fill — need ${targetMinClips} clips, ` +
-      `${candidates.length} archive candidate(s)`
+    `[Pipeline] Scene ${scene.index}: ${beats.length} zin(en) → 1 archive-clip per zin`
   );
 
-  const rejectAsset = (assetId: number, storageUrl: string, clipPath?: string): void => {
-    dedup.usedCuratedAssetIds.add(assetId);
-    dedup.usedCuratedStorageUrls.add(storageUrl);
-    if (clipPath) dedup.usedContentKeys.add(clipContentKey(clipPath));
-  };
-
-  for (let ci = 0; ci < maxScan; ci++) {
-    const picked = candidates[ci];
-    if (!picked) break;
-    if (
-      dedup.usedCuratedAssetIds.has(picked.asset.id) ||
-      dedup.usedCuratedStorageUrls.has(picked.asset.storageUrl)
-    ) {
-      continue;
-    }
-    if (
-      interviewBudget &&
-      isCuratedInterviewAsset(picked.asset) &&
-      interviewBudget.used >= interviewBudget.max
-    ) {
-      rejectAsset(picked.asset.id, picked.asset.storageUrl);
-      continue;
-    }
-    if (
-      imageBudget &&
-      picked.asset.mediaType === "image" &&
-      imageBudget.used >= imageBudget.max
-    ) {
-      rejectAsset(picked.asset.id, picked.asset.storageUrl);
-      continue;
-    }
-    if (
-      picked.asset.mediaType === "video" &&
-      picked.asset.durationSec != null &&
-      picked.asset.durationSec < archiveVisualMinClipSec() - 0.5
-    ) {
-      rejectAsset(picked.asset.id, picked.asset.storageUrl);
-      continue;
-    }
-
-    onBeatProgress?.(clips.length + 1, targetMinClips, "backfill");
-
-    let clipPath: string;
-    try {
-      clipPath = await prepareCuratedArchiveClip(
-        picked.asset,
-        workDir,
-        scene.index,
-        clips.length,
-        holdSec,
-        { beatText: stubBeat.text, videoTitle }
-      );
-    } catch (err) {
+  const pushSceneClip = async (clipPath: string, holdSec: number, beatIndex: number): Promise<boolean> => {
+    const key = clipContentKey(clipPath);
+    if (dedup.usedContentKeys.has(key)) {
       console.warn(
-        `[Pipeline] Scene ${scene.index}: skip archive asset ${picked.asset.id}:`,
-        (err as Error).message
+        `[Pipeline] Scene ${scene.index} zin ${beatIndex}: duplicate clip ${path.basename(clipPath)}`
       );
-      rejectAsset(picked.asset.id, picked.asset.storageUrl);
-      continue;
+      return false;
     }
-
-    if (await isMostlyBlackClip(clipPath)) {
-      rejectAsset(picked.asset.id, picked.asset.storageUrl, clipPath);
-      continue;
-    }
-    if (!(await montageClipPassesComposeGate(clipPath, scene.index, clips.length))) {
-      rejectAsset(picked.asset.id, picked.asset.storageUrl, clipPath);
-      continue;
-    }
-
     let actualHold = holdSec;
-    const probed = await probeVideoDurationSec(clipPath);
-    if (probed > 0.15) actualHold = Math.min(holdSec, probed - 0.04);
-
-    dedup.usedContentKeys.add(clipContentKey(clipPath));
-    markCuratedAssetUsed(clipPath, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls);
-    if (picked.asset.mediaType === "image") dedup.curatedImageClipsUsed++;
-    if (isCuratedInterviewAsset(picked.asset)) dedup.curatedInterviewClipsUsed++;
-
+    if (fs.existsSync(clipPath)) {
+      const probed = await probeVideoDurationSec(clipPath);
+      if (probed > 0.15) actualHold = Math.min(holdSec, probed - 0.04);
+    }
+    dedup.usedContentKeys.add(key);
     clips.push(clipPath);
     beatDurations.push(actualHold);
-    dedup.lastMuskStockClip = clipPath;
+    markCuratedAssetUsed(clipPath, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls);
+    if (clipPath && !isPipelineFallbackClip(clipPath) && fs.existsSync(clipPath)) {
+      dedup.lastMuskStockClip = clipPath;
+    }
+    return true;
+  };
 
-    const coverage = await estimateSceneMontageCoverageSec(clips, beatDurations);
-    if (clips.length >= targetMinClips && coverage >= strictMinCoverage) break;
+  for (let bi = 0; bi < beats.length; bi++) {
+    const beat = beats[bi]!;
+    onBeatProgress?.(bi + 1, beats.length, "beat");
+    const pushClip = (clipPath: string, holdSec = beat.holdSec): Promise<boolean> =>
+      pushSceneClip(clipPath, holdSec, beat.index);
+
+    let filled = await adoptArchiveBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, null, beat.holdSec);
+    if (!filled) {
+      filled = await adoptArchiveBeatClip(
+        { ...beat, index: beat.index + 1000 },
+        scene,
+        workDir,
+        videoTitle,
+        dedup,
+        pushClip,
+        null,
+        beat.holdSec
+      );
+    }
+    if (!filled) {
+      console.warn(
+        `[Pipeline] Scene ${scene.index} zin ${beat.index}: geen passend archief-beeld — "${beat.text.slice(0, 60)}..."`
+      );
+    }
   }
 
-  await assertSceneVisualInventory(scene, clips, beatDurations);
-  console.log(
-    `[Pipeline] Scene ${scene.index}: strict pool fill done — ${clips.length} clip(s), ` +
-      `~${(await estimateSceneMontageCoverageSec(clips, beatDurations)).toFixed(1)}s coverage`
-  );
+  await assertSceneVisualInventory(scene, clips, beatDurations, beats.length);
   return { clips, beatDurations };
 }
 
@@ -12508,7 +12440,7 @@ async function fetchSceneVisuals(
   onBeatProgress?: (beatIndex: number, beatTotal: number, phase?: BeatProgressPhase) => void
 ): Promise<SceneVisualsResult> {
   if (curatedArchiveOnlyVisuals() && strictNoVisualRepeat()) {
-    return fillStrictArchiveSceneVisuals(scene, workDir, videoTitle, dedup, onBeatProgress);
+    return fetchArchiveSentenceMontage(scene, workDir, videoTitle, dedup, onBeatProgress);
   }
 
   const clipFetchDur = 4;

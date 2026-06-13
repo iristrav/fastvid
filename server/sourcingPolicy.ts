@@ -74,7 +74,7 @@ export function archiveMaxImageClipsPerVideo(): number {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 0) return n;
   }
-  return 3;
+  return 10;
 }
 
 /** Archive stills on gray mat (smaller photo, documentary YouTube style). */
