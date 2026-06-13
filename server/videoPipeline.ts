@@ -1900,7 +1900,7 @@ async function resolveBeatClipFast(
 }
 
 function composeParallelism(videoLength?: string): number {
-  if (IS_RAILWAY && (videoLength === "1" || videoLength === "2")) return 2;
+  if (IS_RAILWAY && (videoLength === "1" || videoLength === "2")) return 1;
   return IS_RAILWAY ? 1 : 2;
 }
 
@@ -8554,7 +8554,7 @@ async function composePlainMontageScene(
   return fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1000;
 }
 
-const ARCHIVE_MONTAGE_BATCH_SIZE = 6;
+const ARCHIVE_MONTAGE_BATCH_SIZE = 4;
 const MONTAGE_SEGMENT_ENCODE_PRESET = IS_RAILWAY ? "ultrafast" : "veryfast";
 
 async function xfadeMergeTwoVideos(
@@ -8638,38 +8638,28 @@ async function renderBatchedArchiveMontage(
     return;
   }
 
-  const segmentStarts: number[] = [];
+  const segmentPaths: string[] = [];
+  const segmentDurs: number[] = [];
   for (let start = 0; start < clips.length; start += batchSize) {
-    segmentStarts.push(start);
+    const end = Math.min(start + batchSize, clips.length);
+    const batchClips = clips.slice(start, end);
+    const batchDurs = montageDurations.slice(start, end);
+    const batchSrc = sourceMaxDurs.slice(start, end);
+    const batchTarget = effectiveMontageDurationSec(batchDurs, batchSrc);
+    const segPath = path.join(workDir, `scene_${sceneIndex}_mseg_${start}.mp4`);
+    await renderMontageVideoOnly(
+      batchClips,
+      batchDurs,
+      batchSrc,
+      sceneIndex,
+      batchTarget + 0.05,
+      segPath,
+      composeTimeout,
+      threadFlag
+    );
+    segmentPaths.push(segPath);
+    segmentDurs.push((await probeVideoDurationSec(segPath)) || batchTarget);
   }
-  const segmentLimit = pLimit(IS_RAILWAY ? 2 : 3);
-  const built = await Promise.all(
-    segmentStarts.map((start) =>
-      segmentLimit(async () => {
-        const end = Math.min(start + batchSize, clips.length);
-        const batchClips = clips.slice(start, end);
-        const batchDurs = montageDurations.slice(start, end);
-        const batchSrc = sourceMaxDurs.slice(start, end);
-        const batchTarget = effectiveMontageDurationSec(batchDurs, batchSrc);
-        const segPath = path.join(workDir, `scene_${sceneIndex}_mseg_${start}.mp4`);
-        await renderMontageVideoOnly(
-          batchClips,
-          batchDurs,
-          batchSrc,
-          sceneIndex,
-          batchTarget + 0.05,
-          segPath,
-          composeTimeout,
-          threadFlag
-        );
-        const segDur = (await probeVideoDurationSec(segPath)) || batchTarget;
-        return { start, segPath, segDur };
-      })
-    )
-  );
-  built.sort((a, b) => a.start - b.start);
-  const segmentPaths = built.map((s) => s.segPath);
-  const segmentDurs = built.map((s) => s.segDur);
 
   let accPath = segmentPaths[0]!;
   let accDur = segmentDurs[0]!;
@@ -12726,7 +12716,7 @@ async function backfillArchiveMontageFromPool(
 
   await loadArchiveCandidatePool(scene, videoTitle, dedup);
   const beats = buildSceneBeats(scene, outDur, Math.max(minClipsNeeded + 2, Math.ceil(outDur / effectiveBeatSec())));
-  const maxFill = opts?.maxAttempts ?? Math.max(18, minClipsNeeded + 6);
+  const maxFill = opts?.maxAttempts ?? Math.max(12, minClipsForBalancedVoice(outDur) + 3);
   const prefix = opts?.logPrefix ?? `Scene ${scene.index}`;
   console.warn(
     `[Pipeline] ${prefix}: montage ${clips.length}/${minClipsNeeded} clips, ` +
