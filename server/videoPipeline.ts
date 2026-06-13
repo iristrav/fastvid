@@ -90,7 +90,7 @@ import {
   scriptGuidedClipsEnabled,
 } from "./scriptGuidedClipFinder";
 import { clipPassesVisionGate, clipVisionGateEnabled } from "./visualQualityGate";
-import { curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen } from "./sourcingPolicy";
+import { curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, strictNoVisualRepeat } from "./sourcingPolicy";
 import {
   fetchCuratedArchiveBeatClip,
   curatedClipPathAssetId,
@@ -1123,7 +1123,7 @@ function beatScriptImageWallMs(perf: PipelinePerfProfile): number {
 
 function maxBackfillAttempts(perf: PipelinePerfProfile, sceneDurationSec: number): number {
   if (curatedArchiveOnlyVisuals()) {
-    return Math.max(8, Math.ceil(sceneDurationSec / archiveVisualMinClipSec()) + 6);
+    return Math.max(24, requiredMontageClipsForDuration(sceneDurationSec) + 10);
   }
   if (perf.fastStockMode) return sceneDurationSec <= 10 ? 1 : 2;
   if (sceneDurationSec <= 22) return 1;
@@ -8313,8 +8313,87 @@ function montageTailPadVF(inLabel: string, montageDur: number, outDur: number): 
   if (pad < 0.08) {
     return `[${inLabel}]${FPS_FORMAT_VF}[vmont]`;
   }
+  if (strictNoVisualRepeat()) {
+    throw pipelineError(
+      PIPELINE_ERROR.NO_SCENES,
+      `Montage ${montageDur.toFixed(1)}s shorter than voice ${outDur.toFixed(1)}s — refusing gray pad or freeze (strict no-repeat)`
+    );
+  }
   // Pad with gray to match voice length — never freeze on the last video frame.
   return `[${inLabel}]tpad=stop_mode=add:stop_duration=${pad.toFixed(3)}:color=0x2a2a2a,${FPS_FORMAT_VF}[vmont]`;
+}
+
+function assertMontageClipsUnique(sceneIndex: number, clips: string[]): void {
+  const seen = new Set<string>();
+  for (const clip of clips) {
+    const key = clipContentKey(clip);
+    if (seen.has(key)) {
+      throw pipelineError(
+        PIPELINE_ERROR.NO_SCENES,
+        `Scene ${sceneIndex}: duplicate clip content ${path.basename(clip)} (each clip once per video)`
+      );
+    }
+    seen.add(key);
+  }
+}
+
+async function prepareStrictUniqueMontage(
+  sceneIndex: number,
+  clips: string[],
+  beatDurations: number[],
+  outDur: number
+): Promise<{ montageDurations: number[]; sourceMaxDurs: number[]; estSec: number }> {
+  assertMontageClipsUnique(sceneIndex, clips);
+  let sourceMaxDurs = await probeMontageSourceMaxDurs(clips);
+  let montageDurations = balanceMontageDurationsForVoice(
+    clips.length,
+    outDur,
+    beatDurations,
+    sourceMaxDurs
+  );
+  montageDurations = await capMontageDurationsToClipFiles(clips, montageDurations);
+  sourceMaxDurs = await probeMontageSourceMaxDurs(clips);
+  montageDurations = balanceMontageDurationsForVoice(
+    clips.length,
+    outDur,
+    montageDurations,
+    sourceMaxDurs
+  );
+  const estSec = effectiveMontageDurationSec(montageDurations, sourceMaxDurs);
+  if (!strictNoVisualRepeat()) {
+    return { montageDurations, sourceMaxDurs, estSec };
+  }
+  const minClips = requiredMontageClipsForDuration(outDur);
+  if (clips.length < minClips) {
+    throw pipelineError(
+      PIPELINE_ERROR.NO_SCENES,
+      `Scene ${sceneIndex}: need ${minClips} unique clips for ${outDur.toFixed(1)}s voice — have ${clips.length}`
+    );
+  }
+  if (estSec < outDur * 0.95) {
+    throw pipelineError(
+      PIPELINE_ERROR.NO_SCENES,
+      `Scene ${sceneIndex}: ${clips.length} clips cover ~${estSec.toFixed(1)}s of ${outDur.toFixed(1)}s — add archive assets (no repeat/pad allowed)`
+    );
+  }
+  return { montageDurations, sourceMaxDurs, estSec };
+}
+
+async function assertSceneVisualInventory(
+  scene: Scene,
+  clips: string[],
+  beatDurations: number[]
+): Promise<void> {
+  if (!strictNoVisualRepeat()) return;
+  assertMontageClipsUnique(scene.index, clips);
+  const coverage = await estimateSceneMontageCoverageSec(clips, beatDurations);
+  const minClips = requiredMontageClipsForDuration(scene.duration);
+  if (clips.length < minClips || coverage < scene.duration * 0.95) {
+    throw pipelineError(
+      PIPELINE_ERROR.NO_SCENES,
+      `Scene ${scene.index}: insufficient unique archive clips (${clips.length}/${minClips}, ~${coverage.toFixed(1)}s / ${scene.duration.toFixed(1)}s) — add more tagged assets`
+    );
+  }
 }
 
 async function montageClipPassesComposeGate(
@@ -12234,10 +12313,13 @@ async function backfillComposeMontageIfShort(
   }
 
   if (coverage < outDur * 0.92 || safeClips.length < minClipsNeeded) {
-    console.warn(
-      `[Pipeline] Scene ${scene.index}: compose backfill still short ` +
-        `(${safeClips.length}/${minClipsNeeded} clips, ${coverage.toFixed(1)}s / ${outDur.toFixed(1)}s)`
-    );
+    const msg =
+      `Scene ${scene.index}: compose backfill still short ` +
+      `(${safeClips.length}/${minClipsNeeded} clips, ${coverage.toFixed(1)}s / ${outDur.toFixed(1)}s)`;
+    if (strictNoVisualRepeat()) {
+      throw pipelineError(PIPELINE_ERROR.NO_SCENES, `${msg} — add more archive assets (no repeat allowed)`);
+    }
+    console.warn(`[Pipeline] ${msg}`);
   }
 }
 
@@ -12897,6 +12979,7 @@ async function fetchSceneVisuals(
   console.log(
     `[Pipeline] Scene ${scene.index}${personLabel}: ${usable.length} beat clip(s) (${videoCount} video, ${photoCount} photo)`
   );
+  await assertSceneVisualInventory(scene, usable, beatDurations.slice(0, usable.length));
   return { clips: usable, beatDurations: beatDurations.slice(0, usable.length) };
 }
 
@@ -13683,36 +13766,26 @@ async function composeSceneVideo(
   const voiceDur = voiceDurEarly;
   const outDur = outDurEarly;
 
-  let sourceMaxDurs = await probeMontageSourceMaxDurs(safeClips);
-  const preparedMontage = prepareMontageDurationsForVoice(
+  const prepared = await prepareStrictUniqueMontage(
+    scene.index,
     safeClips,
-    outDur,
     composeBeatDurations,
-    sourceMaxDurs
+    outDur
   );
-  let montageDurations = await capMontageDurationsToClipFiles(
-    safeClips,
-    preparedMontage.beatDurations
-  );
-  sourceMaxDurs = await probeMontageSourceMaxDurs(safeClips);
-  montageDurations = balanceMontageDurationsForVoice(
-    safeClips.length,
-    outDur,
-    montageDurations,
-    sourceMaxDurs
-  );
+  let montageDurations = prepared.montageDurations;
+  let sourceMaxDurs = prepared.sourceMaxDurs;
   if (usedClipsOut) {
     usedClipsOut.length = 0;
     usedClipsOut.push(...uniqueClipsInOrder(safeClips));
   }
-  const estBeforeCompose = effectiveMontageDurationSec(montageDurations, sourceMaxDurs);
+  const estBeforeCompose = prepared.estSec;
   const minClipsNeeded = requiredMontageClipsForDuration(outDur);
   if (safeClips.length < minClipsNeeded) {
     console.warn(
       `[Pipeline] Scene ${scene.index}: only ${safeClips.length}/${minClipsNeeded} unique clips for ${outDur.toFixed(1)}s voice`
     );
   }
-  if (estBeforeCompose < outDur - 0.08) {
+  if (estBeforeCompose < outDur - 0.08 && !strictNoVisualRepeat()) {
     console.warn(
       `[Pipeline] Scene ${scene.index}: montage est ${estBeforeCompose.toFixed(1)}s < voice ${outDur.toFixed(1)}s — gray pad will fill gap`
     );
@@ -13941,7 +14014,7 @@ async function composeSceneVideo(
     throw pipelineError(PIPELINE_ERROR.FFMPEG, `Scene ${scene.index} produced no output video`);
   }
 
-  const skipBlackRescue = false;
+  const skipBlackRescue = strictNoVisualRepeat();
   if (
     !skipBlackRescue &&
     (await isMostlyBlackClip(outputPath)) &&
@@ -13950,10 +14023,12 @@ async function composeSceneVideo(
   ) {
     console.warn(`[Pipeline] Scene ${scene.index}: composed output mostly black — retry with rescue clip`);
     try {
+      const rescueProbed = await probeVideoDurationSec(rescueStockClip);
+      const playDur = Math.min(outDur, rescueProbed > 0.2 ? rescueProbed - 0.05 : outDur);
       await withTimeout(
         exec(
-          `${FFMPEG_BIN} -y -stream_loop -1 -ss 0.3 -i "${rescueStockClip}" -i "${safeAudioPath}" ` +
-            `-filter_complex "[0:v]trim=duration=${outDur.toFixed(3)},setpts=PTS-STARTPTS,${FPS_FORMAT_VF}[vout];` +
+          `${FFMPEG_BIN} -y -ss 0.3 -i "${rescueStockClip}" -i "${safeAudioPath}" ` +
+            `-filter_complex "[0:v]trim=duration=${playDur.toFixed(3)},setpts=PTS-STARTPTS,${FPS_FORMAT_VF}[vout];` +
             `[1:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${Math.max(0, voiceDur - 0.15).toFixed(3)}:d=0.12,` +
             `atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
             `-map "[vout]" -map "[aout]" -vsync cfr -t ${outDur.toFixed(3)} ${threadFlag} ` +

@@ -26,6 +26,12 @@ export function yearsOnlyOnScreen(): boolean {
   return process.env.ENABLE_EXTRA_ONSCREEN_TEXT !== "true";
 }
 
+/** Fail generation rather than loop, pad, or reuse any clip content in a video. */
+export function strictNoVisualRepeat(): boolean {
+  if (process.env.STRICT_NO_VISUAL_REPEAT === "false") return false;
+  return curatedArchiveOnlyVisuals();
+}
+
 /** Subtle film grain + light flash overlays in effects pass. */
 export function documentaryOverlaysEnabled(): boolean {
   if (yearsOnlyOnScreen()) return false;
