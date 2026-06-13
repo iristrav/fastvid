@@ -258,14 +258,21 @@ function qaReport(data) {
 
 const arg = process.argv[2];
 let videoId = parseInt(arg, 10);
+const timedRun = arg === "--start" || arg === "--timed";
 
-if (arg === "--start" || Number.isNaN(videoId)) {
+if (arg === "--start" || arg === "--timed" || Number.isNaN(videoId)) {
+  const t0 = Date.now();
   const start = await startVideo();
   videoId = start.videoId;
   console.log("Started video", videoId);
   if (!videoId) process.exit(1);
   const done = await pollUntilDone(videoId);
+  const elapsedSec = Math.round((Date.now() - t0) / 1000);
   const report = qaReport(done);
+  report.elapsedSec = elapsedSec;
+  report.elapsedMin = (elapsedSec / 60).toFixed(1);
+  console.log(`Generation time: ${report.elapsedMin} min (${elapsedSec}s)`);
+  fs.writeFileSync(path.join(root, `tmp-qa-v${videoId}.json`), JSON.stringify(report, null, 2));
   process.exit(report.pass ? 0 : 1);
 } else {
   const data = await fetchVideo(videoId);

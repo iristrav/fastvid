@@ -8513,40 +8513,6 @@ function formatFfmpegExecError(err: unknown): string {
   return base.slice(0, 500);
 }
 
-async function preNormalizeMontageClipsForCompose(
-  clips: string[],
-  montageDurations: number[],
-  sourceMaxDurs: number[],
-  sceneIndex: number,
-  workDir: string
-): Promise<string[]> {
-  const normalized: string[] = [];
-  for (let i = 0; i < clips.length; i++) {
-    const clip = clips[i]!;
-    const dur = resolveMontageClipEffectiveDur(
-      montageDurations[i] ?? effectiveBeatSec(),
-      sourceMaxDurs[i]
-    );
-    const out = path.join(workDir, `scene_${sceneIndex}_norm_b${i}.mp4`);
-    if (fs.existsSync(out) && fs.statSync(out).size > 1000) {
-      normalized.push(out);
-      continue;
-    }
-    const start = montageClipStartSec(sceneIndex, i).toFixed(2);
-    await withTimeout(
-      exec(
-        `${FFMPEG_BIN} -y -ss ${start} -i "${clip}" -t ${dur.toFixed(3)} ` +
-          `-vf "${FIT_GRAY_VF},${FPS_FORMAT_VF}" -an ` +
-          `-c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p "${out}"`
-      ),
-      45_000,
-      `Normalize montage clip ${sceneIndex}/${i}`
-    );
-    normalized.push(out);
-  }
-  return normalized;
-}
-
 async function composePlainMontageScene(
   sceneIndex: number,
   safeClips: string[],
@@ -8588,7 +8554,8 @@ async function composePlainMontageScene(
   return fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1000;
 }
 
-const ARCHIVE_MONTAGE_BATCH_SIZE = 4;
+const ARCHIVE_MONTAGE_BATCH_SIZE = 6;
+const MONTAGE_SEGMENT_ENCODE_PRESET = IS_RAILWAY ? "ultrafast" : "veryfast";
 
 async function xfadeMergeTwoVideos(
   leftPath: string,
@@ -8606,7 +8573,7 @@ async function xfadeMergeTwoVideos(
       `${FFMPEG_BIN} -y -i "${leftPath}" -i "${rightPath}" ` +
         `-filter_complex "[0:v]${FPS_FORMAT_VF}[v0];[1:v]${FPS_FORMAT_VF}[v1];` +
         `[v0][v1]xfade=transition=dissolve:duration=${xfade.toFixed(3)}:offset=${offset.toFixed(3)}[out]" ` +
-        `-map "[out]" -an -vsync cfr ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p "${outputPath}"`
+        `-map "[out]" -an -vsync cfr ${threadFlag} -c:v libx264 -preset ${MONTAGE_SEGMENT_ENCODE_PRESET} -crf 18 -pix_fmt yuv420p "${outputPath}"`
     ),
     composeTimeout,
     "Merge montage segments"
@@ -8638,7 +8605,7 @@ async function renderMontageVideoOnly(
     exec(
       `${FFMPEG_BIN} -y ${inputs} -filter_complex "${scaleFilters}${mergeFilter};${montageOutVF}" ` +
         `-map "[vmont]" -an -vsync cfr -t ${targetDur.toFixed(3)} ${threadFlag} ` +
-        `-c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p "${outputPath}"`
+        `-c:v libx264 -preset ${MONTAGE_SEGMENT_ENCODE_PRESET} -crf 18 -pix_fmt yuv420p "${outputPath}"`
     ),
     composeTimeout,
     `Montage video-only scene ${sceneIndex}`
@@ -8671,28 +8638,38 @@ async function renderBatchedArchiveMontage(
     return;
   }
 
-  const segmentPaths: string[] = [];
-  const segmentDurs: number[] = [];
+  const segmentStarts: number[] = [];
   for (let start = 0; start < clips.length; start += batchSize) {
-    const end = Math.min(start + batchSize, clips.length);
-    const batchClips = clips.slice(start, end);
-    const batchDurs = montageDurations.slice(start, end);
-    const batchSrc = sourceMaxDurs.slice(start, end);
-    const batchTarget = effectiveMontageDurationSec(batchDurs, batchSrc);
-    const segPath = path.join(workDir, `scene_${sceneIndex}_mseg_${start}.mp4`);
-    await renderMontageVideoOnly(
-      batchClips,
-      batchDurs,
-      batchSrc,
-      sceneIndex,
-      batchTarget + 0.05,
-      segPath,
-      composeTimeout,
-      threadFlag
-    );
-    segmentPaths.push(segPath);
-    segmentDurs.push((await probeVideoDurationSec(segPath)) || batchTarget);
+    segmentStarts.push(start);
   }
+  const segmentLimit = pLimit(IS_RAILWAY ? 2 : 3);
+  const built = await Promise.all(
+    segmentStarts.map((start) =>
+      segmentLimit(async () => {
+        const end = Math.min(start + batchSize, clips.length);
+        const batchClips = clips.slice(start, end);
+        const batchDurs = montageDurations.slice(start, end);
+        const batchSrc = sourceMaxDurs.slice(start, end);
+        const batchTarget = effectiveMontageDurationSec(batchDurs, batchSrc);
+        const segPath = path.join(workDir, `scene_${sceneIndex}_mseg_${start}.mp4`);
+        await renderMontageVideoOnly(
+          batchClips,
+          batchDurs,
+          batchSrc,
+          sceneIndex,
+          batchTarget + 0.05,
+          segPath,
+          composeTimeout,
+          threadFlag
+        );
+        const segDur = (await probeVideoDurationSec(segPath)) || batchTarget;
+        return { start, segPath, segDur };
+      })
+    )
+  );
+  built.sort((a, b) => a.start - b.start);
+  const segmentPaths = built.map((s) => s.segPath);
+  const segmentDurs = built.map((s) => s.segDur);
 
   let accPath = segmentPaths[0]!;
   let accDur = segmentDurs[0]!;
@@ -12499,7 +12476,7 @@ async function resolveBeatClipForBeat(
 type SceneVisualsResult = { clips: string[]; beatDurations: number[] };
 type BeatProgressPhase = "beat" | "backfill";
 
-const ARCHIVE_BEAT_TOP_CANDIDATES = 4;
+const ARCHIVE_BEAT_TOP_CANDIDATES = 2;
 const ARCHIVE_BEAT_CLIP_RETRIES = 3;
 
 async function loadArchiveCandidatePool(
@@ -12634,7 +12611,8 @@ async function adoptArchiveBeatClip(
   };
   const tryClip = async (clipPath: string | null | undefined, sec = holdSec): Promise<boolean> => {
     if (!clipPath || isPipelineFallbackClip(clipPath)) return false;
-    if (await isMostlyBlackClip(clipPath)) {
+    const curated = curatedClipPathAssetId(clipPath) != null;
+    if (!curated && (await isMostlyBlackClip(clipPath))) {
       console.warn(
         `[Pipeline] Scene ${scene.index} beat ${beat.index}: skipping mostly-black clip ${path.basename(clipPath)}`
       );
@@ -12787,6 +12765,8 @@ async function backfillComposeMontageIfShort(
   dedup: VisualDedupState
 ): Promise<void> {
   if (!curatedArchiveOnlyVisuals()) return;
+  // Per-zin fetch already pool-backfills with scene.duration (≥ voice); skip duplicate compose pass.
+  if (strictNoVisualRepeat()) return;
   const minClipsNeeded = minClipsForBalancedVoice(outDur);
   const minCoverage = strictNoVisualRepeat() ? outDur - 0.06 : outDur * 0.92;
   let coverage = await estimateBalancedMontageCoverageSec(safeClips, composeBeatDurations, outDur);
@@ -14391,20 +14371,7 @@ async function composeSceneVideo(
   );
   let montageDurations = prepared.montageDurations;
   let sourceMaxDurs = prepared.sourceMaxDurs;
-  let composeClips = safeClips;
-  if (IS_RAILWAY && curatedArchiveOnlyVisuals() && safeClips.length > 6) {
-    console.log(
-      `[Pipeline] Scene ${scene.index}: pre-normalizing ${safeClips.length} montage clips (Railway memory)`
-    );
-    composeClips = await preNormalizeMontageClipsForCompose(
-      safeClips,
-      montageDurations,
-      sourceMaxDurs,
-      scene.index,
-      workDir
-    );
-    sourceMaxDurs = await probeMontageSourceMaxDurs(composeClips);
-  }
+  const composeClips = safeClips;
   if (usedClipsOut) {
     usedClipsOut.length = 0;
     usedClipsOut.push(...uniqueClipsInOrder(safeClips));
@@ -14465,7 +14432,7 @@ async function composeSceneVideo(
   }
 
   try {
-    if (IS_RAILWAY && curatedArchiveOnlyVisuals() && composeClips.length > 6) {
+    if (IS_RAILWAY && curatedArchiveOnlyVisuals() && composeClips.length > 4) {
       await composeBatchedArchiveSceneWithAudio(
         scene.index,
         composeClips,

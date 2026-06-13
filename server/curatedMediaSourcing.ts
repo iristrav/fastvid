@@ -731,6 +731,7 @@ async function convertImageToKenBurns(
       variant === "pan-left"
         ? `iw/2-(iw/zoom/2)-on*${Math.max(1, Math.round(totalFrames * 0.04))}`
         : "iw/2-(iw/zoom/2)";
+    const preset = process.env.RAILWAY_ENVIRONMENT ? "ultrafast" : "veryfast";
     await exec(
       `${ffmpegBin()} -y -loop 1 -i "${imgPath}" -t ${duration.toFixed(3)} ` +
         `-vf "scale=${padW}:${padH}:force_original_aspect_ratio=increase,` +
@@ -738,7 +739,7 @@ async function convertImageToKenBurns(
         `zoompan=z='min(zoom+${zoomStep.toFixed(7)},${zoomEnd})':` +
         `x='${xExpr}':y='${yExpr}':` +
         `d=${totalFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=${fps}" ` +
-        `-c:v libx264 -preset veryfast -crf 18 -an -pix_fmt yuv420p "${outPath}"`
+        `-c:v libx264 -preset ${preset} -crf 18 -an -pix_fmt yuv420p "${outPath}"`
     );
   }
   const outDur = await probeMediaDurationSec(outPath);
@@ -765,10 +766,11 @@ async function trimVideoClip(
   }
 
   const frameVf = buildFitGrayVideoVF();
+  const preset = process.env.RAILWAY_ENVIRONMENT ? "ultrafast" : "veryfast";
 
   await exec(
     `${ffmpegBin()} -y -ss ${startSec.toFixed(3)} -i "${inPath}" -t ${take.toFixed(3)} ` +
-      `-vf "${frameVf}" -an -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p "${outPath}"`
+      `-vf "${frameVf}" -an -c:v libx264 -preset ${preset} -crf 18 -pix_fmt yuv420p "${outPath}"`
   );
 
   const outDur = await probeMediaDurationSec(outPath);
