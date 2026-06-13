@@ -8445,13 +8445,18 @@ async function montageClipPassesComposeGate(
   if (!(await isValidVideoFile(clipPath))) return false;
   const curatedId = curatedClipPathAssetId(clipPath);
   if (curatedId != null) {
+    const trimStart = montageClipStartSec(sceneIndex, clipIndex);
+    const startLuma = await probeClipMeanLuma(clipPath, trimStart + 0.08);
+    if (startLuma !== null && startLuma < 14) return false;
     if (strictNoVisualRepeat()) {
       const probed = await probeVideoDurationSec(clipPath);
       if (probed > 0.15 && probed < archiveVisualMinClipSec() - 0.5) return false;
+      const midAt =
+        trimStart + Math.min(Math.max(1.0, probed * 0.4), Math.max(0.5, probed - 0.25));
+      const centerLuma = await probeClipRegionMeanLuma(clipPath, midAt, "center");
+      if (centerLuma !== null && centerLuma < 18) return false;
     }
-    const trimStart = montageClipStartSec(sceneIndex, clipIndex);
-    const startLuma = await probeClipMeanLuma(clipPath, trimStart + 0.08);
-    return startLuma === null || startLuma >= 14;
+    return true;
   }
   if (await isMostlyBlackClip(clipPath)) return false;
   const trimStart = montageClipStartSec(sceneIndex, clipIndex);
