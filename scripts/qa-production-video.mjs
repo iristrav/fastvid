@@ -109,6 +109,57 @@ function longestFrozenRun(url, fromSec, toSec, outDir) {
   return { seconds: best + 1, startSec: bestStart };
 }
 
+function detectRepeatingMontageLoop(url, fromSec, toSec, outDir) {
+  const hashes = [];
+  for (let t = fromSec; t <= toSec; t++) {
+    try {
+      const raw = path.join(outDir, `loop_${t}.raw`);
+      execFileSync(
+        ffmpeg,
+        [
+          "-hide_banner",
+          "-loglevel",
+          "error",
+          "-y",
+          "-ss",
+          String(t),
+          "-i",
+          url,
+          "-frames:v",
+          "1",
+          "-vf",
+          "scale=160:90,format=rgb24",
+          "-f",
+          "rawvideo",
+          raw,
+        ],
+        { stdio: ["ignore", "pipe", "pipe"], maxBuffer: 50 * 1024 * 1024 }
+      );
+      const buf = fs.readFileSync(raw);
+      let h = 0;
+      for (let i = 0; i < Math.min(buf.length, 8000); i++) h = (h * 31 + buf[i]) >>> 0;
+      hashes.push(h);
+      fs.unlinkSync(raw);
+    } catch {
+      hashes.push(-1);
+    }
+  }
+  for (let period = 3; period <= 8; period++) {
+    if (hashes.length < period * 3) continue;
+    let matches = 0;
+    let checks = 0;
+    for (let i = period; i < hashes.length; i++) {
+      if (hashes[i] < 0 || hashes[i - period] < 0) continue;
+      checks++;
+      if (hashes[i] === hashes[i - period]) matches++;
+    }
+    if (checks >= period * 2 && matches / checks >= 0.85) {
+      return { periodSec: period, matchRatio: matches / checks, startSec: fromSec + period };
+    }
+  }
+  return null;
+}
+
 async function fetchVideo(id) {
   for (let attempt = 0; attempt < 8; attempt++) {
     const res = await fetch(`${base}/api/internal/video/${id}`, {
@@ -166,6 +217,8 @@ function qaReport(data) {
   });
 
   const frozen = dur > 10 ? longestFrozenRun(url, 2, Math.min(dur - 2, 68), outDir) : { seconds: 0, startSec: 0 };
+  const montageLoop =
+    dur > 15 ? detectRepeatingMontageLoop(url, 12, Math.min(dur - 3, 68), outDir) : null;
   const blackFrames = frames.filter((f) => f.blackCenter).length;
   const grayFrames = frames.filter((f) => f.grayPad).length;
 
@@ -175,6 +228,11 @@ function qaReport(data) {
   if (frozen.seconds >= 5) issues.push(`frozen segment ~${frozen.seconds}s at t=${frozen.startSec}s`);
   if (blackFrames >= 1) issues.push(`${blackFrames} near-black center frames`);
   if (grayFrames >= 3) issues.push(`${grayFrames} gray-pad filler frames (montage gap)`);
+  if (montageLoop) {
+    issues.push(
+      `repeating montage loop ~every ${montageLoop.periodSec}s from t≈${montageLoop.startSec}s (${Math.round(montageLoop.matchRatio * 100)}% match)`
+    );
+  }
 
   const pass = issues.length === 0;
   const report = {
@@ -184,6 +242,7 @@ function qaReport(data) {
     sizeMb: data.fileProbe?.sizeBytes ? (data.fileProbe.sizeBytes / 1024 / 1024).toFixed(1) : null,
     url,
     frozen,
+    montageLoop,
     blackFrames,
     grayFrames,
     frames,

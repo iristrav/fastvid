@@ -1137,11 +1137,23 @@ function celebrityFetchFastMode(perf: PipelinePerfProfile, sceneDurationSec: num
 }
 
 /** Min clips for scene duration without forcing extra fetches on short CTA/outro scenes. */
+/** Unique clips needed so no on-screen beat drops below archive max clip length. */
+function requiredMontageClipsForDuration(durationSec: number): number {
+  if (!curatedArchiveOnlyVisuals()) {
+    return Math.max(1, Math.ceil(durationSec / effectiveBeatSec()));
+  }
+  return Math.max(2, Math.ceil(durationSec / archiveVisualMaxClipSec()));
+}
+
+function montageMinOnScreenSec(): number {
+  return curatedArchiveOnlyVisuals() ? effectiveMinClipSec() : effectiveMinClipSec() * 0.35;
+}
+
 function minClipsForScene(duration: number, beatCount: number, fast = false): number {
   const beatSec = effectiveBeatSec();
   const byDuration = Math.max(1, Math.ceil(duration / beatSec));
   if (curatedArchiveOnlyVisuals()) {
-    return Math.max(1, Math.ceil(duration / archiveVisualMinClipSec()));
+    return Math.max(requiredMontageClipsForDuration(duration), Math.ceil(duration / archiveVisualMinClipSec()));
   }
   if (fast && duration <= 10) return 1;
   if (fast) return Math.max(1, Math.min(beatCount, byDuration));
@@ -1576,7 +1588,7 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
   if (videoLength === "1" || videoLength === "2") {
     profile = applyAiFallbackToProfile({
       targetWallClockMin: 8,
-      maxBeatsPerScene: IS_RAILWAY ? 4 : 6,
+      maxBeatsPerScene: curatedArchiveOnlyVisuals() ? (IS_RAILWAY ? 12 : 14) : IS_RAILWAY ? 4 : 6,
       maxTopicQueries: IS_RAILWAY ? 1 : 3,
       skipFairUseTransform: true,
       transformTimeoutMs: 15_000,
@@ -8273,7 +8285,7 @@ function effectiveMontageDurationSec(durations: number[], sourceMaxDurs?: number
   const capped = durations.map((d, i) => {
     const srcMax = sourceMaxDurs?.[i] ?? 0;
     if (srcMax > 0.15) {
-      return Math.min(d, Math.max(effectiveMinClipSec() * 0.35, srcMax - 0.05));
+      return Math.min(d, Math.max(montageMinOnScreenSec(), srcMax - 0.05));
     }
     return d;
   });
@@ -8340,18 +8352,19 @@ function balanceMontageDurationsForVoice(
   const n = clipCount;
   if (n === 0) return [];
   const minClip = effectiveMinClipSec();
+  const minOnScreen = montageMinOnScreenSec();
   const maxClip = effectiveMaxClipSec();
   const capForIndex = (i: number) => {
     const srcMax = sourceMaxDurs[i] ?? 0;
     if (srcMax > 0.15) {
-      return Math.min(maxClip, Math.max(minClip * 0.35, srcMax - 0.05));
+      return Math.min(maxClip, Math.max(minOnScreen, srcMax - 0.05));
     }
     return maxClip;
   };
   let durs = Array.from({ length: n }, (_, i) => {
     const seed = seedDurations?.[i];
     const cap = capForIndex(i);
-    if (seed && seed > 0.1) return Math.max(minClip * 0.35, Math.min(cap, seed));
+    if (seed && seed > 0.1) return Math.max(minOnScreen, Math.min(cap, seed));
     return Math.min(cap, effectiveBeatSec());
   });
 
@@ -8372,7 +8385,7 @@ function balanceMontageDurationsForVoice(
   if (est > outDur + 0.25) {
     const scale = outDur / est;
     durs = durs.map((d, i) =>
-      Math.max(minClip * 0.35, Math.min(capForIndex(i), d * scale))
+      Math.max(minOnScreen, Math.min(capForIndex(i), d * scale))
     );
   }
   return durs;
@@ -8634,7 +8647,7 @@ function montageClipPrepFilter(
   if (sourceMaxSec && sourceMaxSec > 0.15) {
     effectiveDur = Math.min(
       dur,
-      Math.max(effectiveMinClipSec() * 0.35, sourceMaxSec - 0.05)
+      Math.max(montageMinOnScreenSec(), sourceMaxSec - 0.05)
     );
   }
   const edgeFade =
@@ -12173,16 +12186,22 @@ async function backfillComposeMontageIfShort(
   dedup: VisualDedupState
 ): Promise<void> {
   if (!curatedArchiveOnlyVisuals()) return;
+  const minClipsNeeded = requiredMontageClipsForDuration(outDur);
   let coverage = await estimateSceneMontageCoverageSec(safeClips, composeBeatDurations);
-  if (coverage >= outDur * 0.92) return;
+  if (coverage >= outDur * 0.92 && safeClips.length >= minClipsNeeded) return;
 
-  const beats = buildSceneBeats(scene, outDur, Math.max(8, Math.ceil(outDur / effectiveBeatSec())));
-  const maxFill = Math.max(14, Math.ceil(outDur / archiveVisualMinClipSec()) + 4);
+  const beats = buildSceneBeats(scene, outDur, Math.max(minClipsNeeded + 2, Math.ceil(outDur / effectiveBeatSec())));
+  const maxFill = Math.max(18, minClipsNeeded + 6);
   console.warn(
-    `[Pipeline] Scene ${scene.index}: compose montage ~${coverage.toFixed(1)}s < voice ${outDur.toFixed(1)}s — fetching more archive clips`
+    `[Pipeline] Scene ${scene.index}: compose montage ${safeClips.length}/${minClipsNeeded} clips, ` +
+      `~${coverage.toFixed(1)}s / ${outDur.toFixed(1)}s voice — fetching more archive clips`
   );
 
-  for (let attempt = 0; attempt < maxFill && coverage < outDur * 0.92; attempt++) {
+  for (
+    let attempt = 0;
+    attempt < maxFill && (coverage < outDur * 0.92 || safeClips.length < minClipsNeeded);
+    attempt++
+  ) {
     const beat = beats[attempt % beats.length] ?? beats[0];
     if (!beat) break;
     const clip = await fetchCuratedArchiveBeatClip(
@@ -12214,9 +12233,10 @@ async function backfillComposeMontageIfShort(
     coverage = await estimateSceneMontageCoverageSec(safeClips, composeBeatDurations);
   }
 
-  if (coverage < outDur * 0.92) {
+  if (coverage < outDur * 0.92 || safeClips.length < minClipsNeeded) {
     console.warn(
-      `[Pipeline] Scene ${scene.index}: compose backfill still short (${coverage.toFixed(1)}s / ${outDur.toFixed(1)}s)`
+      `[Pipeline] Scene ${scene.index}: compose backfill still short ` +
+        `(${safeClips.length}/${minClipsNeeded} clips, ${coverage.toFixed(1)}s / ${outDur.toFixed(1)}s)`
     );
   }
 }
@@ -12235,7 +12255,15 @@ async function fetchSceneVisuals(
     ? ""
     : (scenePersons[0] ?? dedup.primaryPerson ?? extractPrimaryPersonFromTitle(videoTitle) ?? "");
   const spaceTopic = isSpaceRelatedTopic(scene.visualCue, scene.pexelsQuery, scene.text, videoTitle ?? "");
-  const beatCap = dedup.perf.fastStockMode
+  const beatCap = archiveOnly
+    ? Math.max(
+        dedup.perf.maxBeatsPerScene,
+        Math.min(
+          requiredMontageClipsForDuration(scene.duration) + 2,
+          Math.ceil(scene.duration / effectiveBeatSec())
+        )
+      )
+    : dedup.perf.fastStockMode
     ? Math.min(
         dedup.perf.maxBeatsPerScene,
         Math.max(1, Math.ceil(scene.duration / effectiveBeatSec()))
@@ -13678,13 +13706,19 @@ async function composeSceneVideo(
     usedClipsOut.push(...uniqueClipsInOrder(safeClips));
   }
   const estBeforeCompose = effectiveMontageDurationSec(montageDurations, sourceMaxDurs);
+  const minClipsNeeded = requiredMontageClipsForDuration(outDur);
+  if (safeClips.length < minClipsNeeded) {
+    console.warn(
+      `[Pipeline] Scene ${scene.index}: only ${safeClips.length}/${minClipsNeeded} unique clips for ${outDur.toFixed(1)}s voice`
+    );
+  }
   if (estBeforeCompose < outDur - 0.08) {
     console.warn(
       `[Pipeline] Scene ${scene.index}: montage est ${estBeforeCompose.toFixed(1)}s < voice ${outDur.toFixed(1)}s — gray pad will fill gap`
     );
   }
 
-  if (!skipEffectLayers && yearsOnlyOnScreen() && cinematicEffectsEnabled()) {
+  if (!skipEffectLayers && yearsOnlyOnScreen() && cinematicEffectsEnabled() && ffmpegSupportsDrawtext()) {
     try {
       const sceneBeats = buildSceneBeats(scene, outDur, Math.max(safeClips.length, 8));
       yearLabels = planBeatAlignedYears(sceneBeats, outDur);
@@ -13867,73 +13901,39 @@ async function composeSceneVideo(
       }
     }
     try {
-      const clipDur = computeMontageClipDuration(outDur, safeClips.length);
-      const n = Math.min(12, Math.max(2, safeClips.length));
-      const subset = safeClips.slice(0, n);
-      const inputs = montageClipInputs(subset);
-      const { scaleFilters, mergeFilter, montageLabel } = buildMontageXfadeFilter(n, outDur, scene.index, undefined, subset);
+      const rescueDurs =
+        montageDurations ??
+        balanceMontageDurationsForVoice(safeClips.length, outDur, composeBeatDurations, sourceMaxDurs);
+      const { scaleFilters, mergeFilter, montageLabel } = buildMontageXfadeFilter(
+        safeClips.length,
+        outDur,
+        scene.index,
+        rescueDurs,
+        safeClips,
+        sourceMaxDurs
+      );
+      const inputs = montageClipInputs(safeClips);
+      const estRescue = effectiveMontageDurationSec(rescueDurs, sourceMaxDurs);
+      const rescuePad = montageTailPadVF(montageLabel, estRescue, outDur);
+      const audioIdx = safeClips.length;
       await withTimeout(
         exec(
           `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}" ` +
-          `-filter_complex "${scaleFilters}${mergeFilter};[${montageLabel}]copy[vout];[${n}:a]atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
-          `-map "[vout]" -map "[aout]" -vsync cfr ` +
-          `-t ${outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
-        ),
-        90_000,
-        `Simplified multi-clip scene ${scene.index}`
-      );
-    } catch (simpleErr) {
-      console.warn(`[Pipeline] Scene ${scene.index}: simplified compose failed, trying looped montage mux:`, simpleErr);
-      try {
-        const loopVideo = safeClips;
-        const n = loopVideo.length;
-        if (n > 1) {
-          const inputs = montageClipInputs(loopVideo);
-          const { scaleFilters, mergeFilter, montageLabel } = buildMontageXfadeFilter(n, outDur, scene.index, montageDurations, loopVideo, sourceMaxDurs.slice(0, n));
-          await withTimeout(
-            exec(
-              `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}" ` +
-                `-filter_complex "${scaleFilters}${mergeFilter};[${montageLabel}]${FPS_FORMAT_VF}[vout];[${n}:a]atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
-                `-map "[vout]" -map "[aout]" -vsync cfr ` +
-                `-t ${outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
-            ),
-            90_000,
-            `Looped montage scene ${scene.index}`
-          );
-        } else {
-          const singleDur = await probeVideoDurationSec(safeClips[0]);
-          const clipPlay = Math.min(outDur, singleDur > 0.2 ? singleDur : outDur);
-          await withTimeout(
-            exec(
-              `${FFMPEG_BIN} -y -stream_loop -1 -i "${safeClips[0]}" -i "${safeAudioPath}" ` +
-                `-filter_complex "[0:v]trim=duration=${outDur.toFixed(3)},setpts=PTS-STARTPTS,${FPS_FORMAT_VF}[vout];` +
-                `[1:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${Math.max(0, voiceDur - 0.15).toFixed(3)}:d=0.12,` +
-                `atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
-                `-map "[vout]" -map "[aout]" -vsync cfr ` +
-                `-t ${outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
-            ),
-            45_000,
-            `Loop single clip scene ${scene.index}`
-          );
-        }
-      } catch (muxErr) {
-        console.warn(`[Pipeline] Scene ${scene.index}: simple mux failed:`, muxErr);
-        if (!safeClips[0] || isPipelineFallbackClip(safeClips[0])) {
-          throw pipelineError(PIPELINE_ERROR.FFMPEG, `Scene ${scene.index}: compose failed (no grey fallback)`);
-        }
-        await withTimeout(
-          exec(
-            `${FFMPEG_BIN} -y -stream_loop -1 -i "${safeClips[0]}" -i "${safeAudioPath}" ` +
-            `-filter_complex "[0:v]trim=duration=${outDur.toFixed(3)},setpts=PTS-STARTPTS,${FPS_FORMAT_VF}[vout];` +
-            `[1:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${Math.max(0, voiceDur - 0.15).toFixed(3)}:d=0.12,` +
+            `-filter_complex "${scaleFilters}${mergeFilter};${rescuePad};[vmont]${fadeFilter}[vout];` +
+            `[${audioIdx}:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${Math.max(0, voiceDur - 0.15).toFixed(3)}:d=0.12,` +
             `atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
             `-map "[vout]" -map "[aout]" -vsync cfr ` +
             `-t ${outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
-          ),
-          60_000,
-          `Color fallback scene ${scene.index}`
-        );
-      }
+        ),
+        120_000,
+        `Rescue montage+pad scene ${scene.index}`
+      );
+    } catch (rescueErr) {
+      console.warn(`[Pipeline] Scene ${scene.index}: rescue montage failed:`, rescueErr);
+      throw pipelineError(
+        PIPELINE_ERROR.FFMPEG,
+        `Scene ${scene.index}: compose failed — refusing to loop duplicate clips`
+      );
     }
   }
 
