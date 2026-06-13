@@ -2,7 +2,7 @@
  * Curated media archive — pick tagged assets from admin libraries for pipeline beats.
  */
 import { exec as execCb } from "child_process";
-import { extractVisualSearchTags, extractSceneSearchTags, extractEntitySearchTags } from "./visualBeatTags";
+import { extractVisualSearchTags, extractSceneSearchTags, extractEntitySearchTags, extractPrimaryVisualAnchor } from "./visualBeatTags";
 import { promisify } from "util";
 import fetch from "node-fetch";
 import * as fs from "fs";
@@ -191,8 +191,10 @@ export function buildBeatMatchTags(
 ): BeatMatchTags {
   const topicAnchors = extractTopicAnchorTags(videoTitle, [beat.text, scene.text].join(" "));
   const visualTags = extractVisualSearchTags(beat.text);
+  const visualAnchor = extractPrimaryVisualAnchor(beat.text);
   const beatRaw = [
     beat.text,
+    visualAnchor ?? "",
     beat.powerWord ?? "",
     beat.searchQuery ?? "",
     ...beat.keywords,
@@ -676,38 +678,39 @@ export async function listCuratedArchiveCandidates(
   topicAnchors: string[] = [],
   filterTags?: string[],
   beatText?: string,
-  crossVideoExcludeIds: Set<number> = new Set()
-): Promise<Array<{ asset: MediaArchiveAsset; archiveName: string; score: number }>> {
+  crossVideoExcludeIds: Set<number> = new Set(),
+  assetsCache?: Map<number, MediaArchiveAsset[]>
+): Promise<CuratedCandidatePick[]> {
   const queryTags = filterTags ?? normalizeMediaTags([...beatTags, ...topicAnchors]);
   const archives = await resolveArchivesForVisualQuery(queryTags, topicAnchors);
   if (!archives.length) return [];
 
-  const scored: Array<{ asset: MediaArchiveAsset; archiveName: string; score: number }> = [];
-  const fallback: typeof scored = [];
+  const scored: CuratedCandidatePick[] = [];
+  const fallback: CuratedCandidatePick[] = [];
 
   for (const archive of archives) {
     const nicheTags = normalizeMediaTags(archive.nicheTags ?? []);
-    const assets = await getMediaArchiveAssets(archive.id);
+    const assets = await loadArchiveAssetsForSearch(archive.id, assetsCache);
     for (const asset of assets) {
       if (excludeIds.has(asset.id)) continue;
       if (excludeStorageUrls.has(asset.storageUrl)) continue;
       if (isCuratedOffTopicAsset(asset, topicAnchors, beatTags)) continue;
       const score = scoreCuratedAsset(asset, nicheTags, beatTags, topicAnchors, beatText);
-      if (score > 0) scored.push({ asset, score, archiveName: archive.name });
+      if (score > 0) scored.push({ asset, score, archiveName: archive.name, archiveNicheTags: nicheTags });
       else if (assetMatchesBeatTags(asset, beatTags) || assetMatchesTopicAnchors(asset, topicAnchors)) {
-        fallback.push({ asset, score: 1, archiveName: archive.name });
+        fallback.push({ asset, score: 1, archiveName: archive.name, archiveNicheTags: nicheTags });
       }
     }
   }
 
   if (scored.length === 0 && fallback.length === 0 && archives.length > 0) {
     for (const archive of archives) {
-      const assets = await getMediaArchiveAssets(archive.id);
+      const assets = await loadArchiveAssetsForSearch(archive.id, assetsCache);
       for (const asset of assets) {
         if (excludeIds.has(asset.id)) continue;
         if (excludeStorageUrls.has(asset.storageUrl)) continue;
         if (isCuratedOffTopicAsset(asset, topicAnchors, beatTags)) continue;
-        fallback.push({ asset, score: 1, archiveName: archive.name });
+        fallback.push({ asset, score: 1, archiveName: archive.name, archiveNicheTags: normalizeMediaTags(archive.nicheTags ?? []) });
       }
     }
   }
@@ -727,8 +730,8 @@ export async function listCuratedArchiveCandidates(
 }
 
 export function orderCuratedCandidatesForBeat(
-  candidates: Array<{ asset: MediaArchiveAsset; archiveName: string; score: number }>
-): typeof candidates {
+  candidates: CuratedCandidatePick[]
+): CuratedCandidatePick[] {
   if (!archivePreferVideoClips()) return candidates;
   const videos = candidates.filter((c) => c.asset.mediaType === "video");
   const images = candidates.filter((c) => c.asset.mediaType === "image");
@@ -917,7 +920,22 @@ export async function prepareCuratedArchiveClip(
   return outPath;
 }
 
-export type CuratedCandidatePick = { asset: MediaArchiveAsset; archiveName: string; score: number };
+export type CuratedCandidatePick = {
+  asset: MediaArchiveAsset;
+  archiveName: string;
+  score: number;
+  archiveNicheTags?: string[];
+};
+
+async function loadArchiveAssetsForSearch(
+  archiveId: number,
+  assetsCache?: Map<number, MediaArchiveAsset[]>
+): Promise<MediaArchiveAsset[]> {
+  if (assetsCache?.has(archiveId)) return assetsCache.get(archiveId)!;
+  const assets = await getMediaArchiveAssets(archiveId);
+  assetsCache?.set(archiveId, assets);
+  return assets;
+}
 
 export function hashVarietySeed(input: string): number {
   let h = 2166136261;
@@ -949,7 +967,13 @@ export function rankCuratedCandidatesForBeat(
 ): CuratedCandidatePick[] {
   const ranked = pool.map((c) => ({
     ...c,
-    score: scoreCuratedAsset(c.asset, normalizeMediaTags(c.asset.tags ?? []), beatTags, topicAnchors, beatText),
+    score: scoreCuratedAsset(
+      c.asset,
+      c.archiveNicheTags ?? normalizeMediaTags(c.asset.tags ?? []),
+      beatTags,
+      topicAnchors,
+      beatText
+    ),
   }));
   ranked.sort((a, b) => {
     if (b.score !== a.score) return b.score - a.score;
@@ -970,6 +994,56 @@ export function rankCuratedCandidatesForBeat(
     i = j;
   }
   return rotateCuratedCandidates(banded, varietySeed, beatIndex);
+}
+
+/** Per-sentence archive search — scores all assets against this beat's narration. */
+export async function searchCuratedCandidatesForBeat(
+  beat: CuratedBeatContext,
+  scene: CuratedSceneContext,
+  usedAssetIds: Set<number>,
+  usedStorageUrls: Set<string>,
+  videoTitle?: string,
+  options?: {
+    varietySeed?: number;
+    crossVideoExcludeIds?: Set<number>;
+    assetsCache?: Map<number, MediaArchiveAsset[]>;
+  }
+): Promise<CuratedCandidatePick[]> {
+  const varietySeed = options?.varietySeed ?? 0;
+  const crossVideoExcludeIds = options?.crossVideoExcludeIds ?? new Set<number>();
+  const { beatTags, topicAnchors, allTags } = buildBeatMatchTags(beat, scene, videoTitle);
+  const sceneTags = extractSceneSearchTags(beat.text);
+  const visualTags = extractVisualSearchTags(beat.text);
+
+  const listed = await listCuratedArchiveCandidates(
+    beatTags,
+    usedAssetIds,
+    usedStorageUrls,
+    topicAnchors,
+    allTags,
+    beat.text,
+    crossVideoExcludeIds,
+    options?.assetsCache
+  );
+
+  let ranked = rankCuratedCandidatesForBeat(
+    orderCuratedCandidatesForBeat(listed),
+    beatTags,
+    topicAnchors,
+    beat.text,
+    varietySeed,
+    beat.index
+  );
+
+  const prioritize = sceneTags.length > 0 ? sceneTags : visualTags;
+  if (prioritize.length > 0) {
+    const matched = ranked.filter((p) => countVisualTagHits(p.asset, prioritize) > 0);
+    if (matched.length > 0) {
+      ranked = [...matched, ...ranked.filter((p) => !matched.includes(p))];
+    }
+  }
+
+  return ranked;
 }
 
 /** Skip FFmpeg when metadata already rules out an asset. */
@@ -1029,22 +1103,24 @@ export async function fetchCuratedArchiveBeatClip(
   interviewBudget?: { used: number; max: number },
   imageBudget?: { used: number; max: number },
   motionGraphicsBudget?: MotionGraphicsBudget,
-  options?: { relaxed?: boolean; varietySeed?: number; crossVideoExcludeIds?: Set<number> }
+  options?: {
+    relaxed?: boolean;
+    varietySeed?: number;
+    crossVideoExcludeIds?: Set<number>;
+    assetsCache?: Map<number, MediaArchiveAsset[]>;
+  }
 ): Promise<string | null> {
   const relaxed = options?.relaxed === true;
   const varietySeed = options?.varietySeed ?? 0;
   const crossVideoExcludeIds = options?.crossVideoExcludeIds ?? new Set<number>();
-  const { beatTags, topicAnchors, allTags } = buildBeatMatchTags(beat, scene, videoTitle);
-  const candidates = orderCuratedCandidatesForBeat(
-    await listCuratedArchiveCandidates(
-      beatTags,
-      usedAssetIds,
-      usedStorageUrls,
-      topicAnchors,
-      allTags,
-      beat.text,
-      crossVideoExcludeIds
-    )
+  const { beatTags } = buildBeatMatchTags(beat, scene, videoTitle);
+  const candidates = await searchCuratedCandidatesForBeat(
+    beat,
+    scene,
+    usedAssetIds,
+    usedStorageUrls,
+    videoTitle,
+    { varietySeed, crossVideoExcludeIds, assetsCache: options?.assetsCache }
   );
   if (!candidates.length) {
     console.warn(

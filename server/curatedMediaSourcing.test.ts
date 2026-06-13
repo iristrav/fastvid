@@ -16,6 +16,22 @@ import {
 import type { MediaArchiveAsset } from "./db";
 
 describe("curatedMediaSourcing", () => {
+  it("buildBeatMatchTags anchors bunker sentence to scene search tags", () => {
+    const { beatTags, allTags } = buildBeatMatchTags(
+      {
+        text: "Hitler zat diep ondergronds in zijn bunker en gaf orders.",
+        index: 2,
+        searchQuery: "hitler bunker",
+        powerWord: "hitler bunker",
+        keywords: [],
+      },
+      { text: "Hitler documentary scene" },
+      "Hitler Documentary"
+    );
+    expect(allTags).toEqual(expect.arrayContaining(["bunker", "hitler"]));
+    expect(beatTags.some((t) => t.includes("bunker") || t === "hitler")).toBe(true);
+  });
+
   it("buildCuratedQueryTags normalizes beat and scene text", () => {
     const tags = buildCuratedQueryTags(
       { keywords: ["Titanic"], text: "The ship struck an iceberg", index: 1, searchQuery: "deck" },

@@ -49,7 +49,7 @@ import {
   stillOutputFrameCount,
   type TimedOverlay,
 } from "./documentaryStyle";
-import { extractPrimaryGeoSearchTag, extractPrimaryVisualAnchor, extractVisualSearchTags, extractSceneSearchTags } from "./visualBeatTags";
+import { extractPrimaryGeoSearchTag, extractPrimaryVisualAnchor, extractSceneSearchTags } from "./visualBeatTags";
 import {
   buildCinematicOverlays,
   buildBeatAlignedYearOverlays,
@@ -113,10 +113,9 @@ import {
   listCuratedArchiveCandidates,
   buildBeatMatchTags,
   orderCuratedCandidatesForBeat,
-  rankCuratedCandidatesForBeat,
+  searchCuratedCandidatesForBeat,
   hashVarietySeed,
   archiveAssetPreflight,
-  countVisualTagHits,
   type CuratedCandidatePick,
 } from "./curatedMediaSourcing";
 import {
@@ -7651,8 +7650,10 @@ interface VisualDedupState {
   curatedImageClipsUsed: number;
   /** FFmpeg text cards / map beats rendered this video. */
   motionGraphicsUsed: number;
-  /** Scene/video archive pool — one DB load, per-beat re-rank only. */
+  /** Scene/video archive pool — legacy; sentence montage uses per-beat search. */
   archiveCandidatePool: CuratedCandidatePick[] | null;
+  /** Cache archive asset lists within one video (speeds per-sentence search). */
+  archiveAssetsCache: Map<number, import("./db").MediaArchiveAsset[]>;
   /** Per-video seed so archive picks differ between generations. */
   varietySeed: number;
   /** Assets used in recent same-topic videos — skipped when pool allows. */
@@ -7712,6 +7713,7 @@ function createVisualDedupState(
     curatedImageClipsUsed: 0,
     motionGraphicsUsed: 0,
     archiveCandidatePool: null,
+    archiveAssetsCache: new Map(),
     varietySeed: 0,
     crossVideoExcludeIds: new Set(),
     preparedArchiveClips: new Map(),
@@ -12634,7 +12636,7 @@ type SceneVisualsResult = {
 };
 type BeatProgressPhase = "beat" | "backfill";
 
-const ARCHIVE_BEAT_TOP_CANDIDATES = 8;
+const ARCHIVE_BEAT_TOP_CANDIDATES = 12;
 const ARCHIVE_BEAT_CLIP_RETRIES = 3;
 
 async function loadArchiveCandidatePool(
@@ -12661,7 +12663,8 @@ async function loadArchiveCandidatePool(
       topicAnchors,
       allTags,
       scene.text,
-      dedup.crossVideoExcludeIds
+      dedup.crossVideoExcludeIds,
+      dedup.archiveAssetsCache
     )
   );
   console.log(
@@ -12792,29 +12795,22 @@ async function adoptArchiveBeatClip(
   if (await tryClip(initialClip, holdSec)) return true;
 
   if (curatedArchiveOnlyVisuals()) {
-    await loadArchiveCandidatePool(scene, videoTitle, dedup);
-    const { beatTags, topicAnchors } = buildBeatMatchTags(beat, scene, videoTitle);
-    const visualTags = extractVisualSearchTags(beat.text);
-    const sceneTags = extractSceneSearchTags(beat.text);
-    let ranked = rankCuratedCandidatesForBeat(
-      dedup.archiveCandidatePool ?? [],
-      beatTags,
-      topicAnchors,
-      beat.text,
-      dedup.varietySeed,
-      beat.index
+    const ranked = await searchCuratedCandidatesForBeat(
+      beat,
+      scene,
+      dedup.usedCuratedAssetIds,
+      dedup.usedCuratedStorageUrls,
+      videoTitle,
+      {
+        varietySeed: dedup.varietySeed,
+        crossVideoExcludeIds: dedup.crossVideoExcludeIds,
+        assetsCache: dedup.archiveAssetsCache,
+      }
     );
-    if (sceneTags.length > 0) {
-      const sceneMatched = ranked.filter((p) => countVisualTagHits(p.asset, sceneTags) > 0);
-      if (sceneMatched.length > 0) {
-        ranked = [...sceneMatched, ...ranked.filter((p) => !sceneMatched.includes(p))];
-      }
-    } else if (visualTags.length > 0) {
-      const geoMatched = ranked.filter((p) => countVisualTagHits(p.asset, visualTags) > 0);
-      if (geoMatched.length > 0) {
-        ranked = [...geoMatched, ...ranked.filter((p) => !geoMatched.includes(p))];
-      }
-    }
+    console.log(
+      `[Pipeline] Scene ${scene.index} zin ${beat.index}: archive-zoek "${beat.text.slice(0, 55).trim()}…" → ${ranked.length} kandidaat(en)`
+    );
+    const { beatTags, topicAnchors } = buildBeatMatchTags(beat, scene, videoTitle);
     const imgMax = archiveMaxImageClipsPerVideo();
     let tried = 0;
     for (const picked of ranked) {
@@ -12847,8 +12843,13 @@ async function adoptArchiveBeatClip(
         dedup
       );
       if (await tryClip(clip, holdSec)) {
+        const sceneTags = extractSceneSearchTags(beat.text);
+        const tagHint =
+          sceneTags.length > 0
+            ? `, scene: ${sceneTags.slice(0, 3).join(", ")}`
+            : "";
         console.log(
-          `[Pipeline] Scene ${scene.index} zin ${beat.index}: "${picked.asset.title ?? picked.asset.id}" (score ${picked.score})`
+          `[Pipeline] Scene ${scene.index} zin ${beat.index}: gekozen "${picked.asset.title ?? picked.asset.id}" (score ${picked.score}${tagHint})`
         );
         return true;
       }
@@ -12866,7 +12867,12 @@ async function adoptArchiveBeatClip(
         curatedInterviewBudget(dedup),
         curatedImageBudget(dedup),
         { used: dedup.motionGraphicsUsed, max: maxMotionGraphicsPerVideo() },
-        { relaxed: true, varietySeed: dedup.varietySeed, crossVideoExcludeIds: dedup.crossVideoExcludeIds }
+        {
+          relaxed: true,
+          varietySeed: dedup.varietySeed,
+          crossVideoExcludeIds: dedup.crossVideoExcludeIds,
+          assetsCache: dedup.archiveAssetsCache,
+        }
       );
       if (await tryClip(clip, holdSec)) return true;
     }
@@ -13017,7 +13023,7 @@ async function fetchArchiveSentenceMontage(
   const clipBeatIndices: number[] = [];
 
   console.log(
-    `[Pipeline] Scene ${scene.index}: ${beats.length} zin(en) → 1 archive-clip per zin`
+    `[Pipeline] Scene ${scene.index}: ${beats.length} zin(en) → per zin volledige archive-zoek + 1 clip`
   );
 
   const pushSceneClip = async (clipPath: string, holdSec: number, beatIndex: number): Promise<boolean> => {
