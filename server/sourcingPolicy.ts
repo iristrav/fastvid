@@ -82,6 +82,21 @@ export function framedArchiveStillsEnabled(): boolean {
   return process.env.ENABLE_FRAMED_ARCHIVE_STILLS !== "false";
 }
 
+/** Archive stills: blurred fill background + sharp photo + light zoom (Locomotive Historian style). */
+export function archiveBlurFillStillsEnabled(): boolean {
+  return process.env.ARCHIVE_BLUR_FILL_STILLS !== "false";
+}
+
+/** On-screen label cadence (years + keywords) in seconds. */
+export function screenLabelIntervalSec(): number {
+  const raw = process.env.SCREEN_LABEL_INTERVAL_SEC?.trim();
+  if (raw) {
+    const n = parseFloat(raw);
+    if (!isNaN(n) && n >= 15 && n <= 60) return n;
+  }
+  return 30;
+}
+
 /** FFmpeg-generated text cards, maps, and diagram beats (no external API). */
 export function motionGraphicsInVideosEnabled(): boolean {
   if (yearsOnlyOnScreen()) return false;

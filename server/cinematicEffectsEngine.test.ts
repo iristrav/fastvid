@@ -8,11 +8,13 @@ import {
   extractYearsFromText,
   computeMontageBeatStarts,
   planBeatAlignedYears,
+  planIntervalScreenLabels,
   buildYearCaption,
   buildYearDisplayText,
   buildYearDrawtextFilterChain,
   planPhotoShutterCues,
   YEAR_LABEL_ON_SCREEN_SEC,
+  SCREEN_LABEL_INTERVAL_SEC,
   overlayUsesFullFrame,
   parseFacelessSubtitleLines,
   planCinematicScene,
@@ -77,20 +79,39 @@ describe("cinematicEffectsEngine", () => {
     expect(labels[0].startTime).toBeLessThan(8);
   });
 
-  it("builds stat-card drawtext with yellow caption pill bottom-left", () => {
+  it("plans interval screen labels every 30s with years and keywords", () => {
+    const labels = planIntervalScreenLabels(
+      0,
+      65,
+      [
+        { text: "In 1933 Hitler became chancellor.", holdSec: 20, powerWord: "Hitler" },
+        { text: "War began in 1939 across Europe.", holdSec: 20, powerWord: "War" },
+        { text: "The invasion changed everything.", holdSec: 25, powerWord: "Invasion" },
+      ],
+      SCREEN_LABEL_INTERVAL_SEC
+    );
+    expect(labels.length).toBeGreaterThanOrEqual(2);
+    expect(labels[0].startTime).toBeCloseTo(0, 0);
+    expect(labels[1].startTime).toBeCloseTo(30, 0);
+    expect(labels[0].endTime - labels[0].startTime).toBeCloseTo(YEAR_LABEL_ON_SCREEN_SEC, 1);
+    expect(labels.some((l) => /1933|1939/.test(l.displayText))).toBe(true);
+  });
+
+  it("builds yellow pill typewriter drawtext bottom-left", () => {
     const chain = buildYearDrawtextFilterChain("vmont", "vout", [
       {
         year: "1933",
         caption: "RISE TO POWER",
-        displayText: "RISE TO POWER, 1933",
+        displayText: "RISE TO POWER — 1933",
         startTime: 2,
-        endTime: 5.5,
+        endTime: 6,
       },
     ]);
     expect(chain).toContain("drawbox");
     expect(chain).toContain("0xFFCC00");
     expect(chain).toContain("fontcolor=black");
     expect(chain).toContain("1933");
+    expect(chain).toContain("between(t\\,2.000\\,2.042)");
     expect(chain).toContain("y=h-");
   });
 

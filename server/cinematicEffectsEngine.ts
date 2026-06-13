@@ -426,9 +426,14 @@ export function computeMontageBeatStarts(durations: number[], xfadeSec = 0): num
 
 export type BeatYearInput = { text: string; holdSec: number };
 
+export type BeatLabelInput = BeatYearInput & {
+  powerWord?: string;
+  highlightWords?: string[];
+};
+
 export type TimedYearLabel = {
   year: string;
-  /** Short label under the year (yellow pill), e.g. "EVICTION RATE". */
+  /** Short label in the yellow pill (keyword or context words). */
   caption: string;
   /** Combined string for logs. */
   displayText: string;
@@ -436,8 +441,10 @@ export type TimedYearLabel = {
   endTime: number;
 };
 
-/** How long each year label stays on screen (reference-doc style: ~3–4s). */
-export const YEAR_LABEL_ON_SCREEN_SEC = 3.5;
+/** How long each on-screen label stays visible. */
+export const YEAR_LABEL_ON_SCREEN_SEC = 4;
+export const SCREEN_LABEL_INTERVAL_SEC = 30;
+export const TYPEWRITER_CHAR_SEC = 0.042;
 
 const YEAR_CAPTION_STOP = new Set([
   "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with",
@@ -538,6 +545,111 @@ export function planBeatAlignedYears(beats: BeatYearInput[], sceneDuration: numb
   return resolveOverlappingYearLabels(labels, sceneDuration);
 }
 
+function labelTextForEntry(entry: TimedYearLabel): string {
+  const cap = (entry.caption || "").trim().toUpperCase();
+  if (/^\d{4}$/.test(entry.year)) {
+    return cap.length >= 2 ? `${cap} — ${entry.year}` : entry.year;
+  }
+  return cap || entry.year || entry.displayText;
+}
+
+function extractKeywordFromBeat(beat: BeatLabelInput): string | null {
+  const pw = beat.powerWord?.trim();
+  if (pw && pw.length >= 3 && !/^\d{4}$/.test(pw)) {
+    return pw.toUpperCase().slice(0, 28);
+  }
+  for (const hw of beat.highlightWords ?? []) {
+    const w = hw?.trim();
+    if (w && w.length >= 3 && !YEAR_CAPTION_STOP.has(w.toLowerCase())) {
+      return w.toUpperCase().slice(0, 28);
+    }
+  }
+  const words = beat.text
+    .replace(/\[visual:[^\]]+\]/gi, "")
+    .split(/\s+/)
+    .map((w) => w.replace(/[^a-zA-ZÀ-ÿ0-9'-]/g, ""))
+    .filter((w) => w.length >= 4 && !YEAR_CAPTION_STOP.has(w.toLowerCase()));
+  if (words.length === 0) return null;
+  return words[Math.min(words.length - 1, Math.floor(words.length / 2))]!.toUpperCase().slice(0, 28);
+}
+
+/** Yellow-pill labels every ~30s — years and important keywords, scene-local times. */
+export function planIntervalScreenLabels(
+  sceneStartSec: number,
+  sceneDurationSec: number,
+  beats: BeatLabelInput[],
+  intervalSec = SCREEN_LABEL_INTERVAL_SEC
+): TimedYearLabel[] {
+  const sceneEnd = sceneStartSec + sceneDurationSec;
+  const pool: Array<{ text: string; caption: string; priority: number; voiceTime: number }> = [];
+  let voiceT = sceneStartSec;
+
+  for (const beat of beats) {
+    const years = extractYearsFromText(beat.text);
+    const yearCounts = new Map<string, number>();
+    for (const year of years) {
+      const occurrence = yearCounts.get(year) ?? 0;
+      yearCounts.set(year, occurrence + 1);
+      const caption = buildYearCaption(beat.text, year, occurrence);
+      pool.push({
+        text: year,
+        caption,
+        priority: 12,
+        voiceTime: yearStartInBeat(beat.text, year, voiceT - sceneStartSec, beat.holdSec, occurrence) + sceneStartSec,
+      });
+    }
+    const kw = extractKeywordFromBeat(beat);
+    if (kw && !pool.some((p) => p.text === kw)) {
+      pool.push({
+        text: kw,
+        caption: kw,
+        priority: 8,
+        voiceTime: voiceT + beat.holdSec * 0.35,
+      });
+    }
+    voiceT += beat.holdSec;
+  }
+
+  const labels: TimedYearLabel[] = [];
+  const used = new Set<string>();
+
+  for (let tick = 0; tick < sceneEnd - 0.5; tick += intervalSec) {
+    if (tick < sceneStartSec - 0.01 || tick >= sceneEnd - 1.2) continue;
+    const localStart = tick - sceneStartSec;
+    if (localStart < 0 || localStart >= sceneDurationSec - 1.2) continue;
+
+    let best: (typeof pool)[0] | null = null;
+    let bestScore = -Infinity;
+    for (const item of pool) {
+      if (used.has(item.text)) continue;
+      const dist = Math.abs(item.voiceTime - tick);
+      const score = item.priority * 20 - dist;
+      if (score > bestScore) {
+        bestScore = score;
+        best = item;
+      }
+    }
+    if (!best) continue;
+    used.add(best.text);
+    const endTime = Math.min(sceneDurationSec - 0.08, localStart + YEAR_LABEL_ON_SCREEN_SEC);
+    labels.push({
+      year: /^\d{4}$/.test(best.text) ? best.text : best.caption,
+      caption: /^\d{4}$/.test(best.text) ? best.caption : "",
+      displayText: labelTextForEntry({
+        year: best.text,
+        caption: best.caption,
+        displayText: best.text,
+        startTime: localStart,
+        endTime,
+      }),
+      startTime: localStart,
+      endTime,
+    });
+  }
+
+  return resolveOverlappingYearLabels(labels, sceneDurationSec);
+}
+
 /** Camera shutter SFX when a still/photo clip enters the montage. */
 export function planPhotoShutterCues(
   clips: string[],
@@ -564,43 +676,54 @@ export function planPhotoShutterCues(
   return cues;
 }
 
-/** Stat-card year label — large white year + yellow caption pill, bottom-left. */
+/** Locomotive Historian style: yellow pill bottom-left, black ALL CAPS text, letter-by-letter reveal. */
 export function buildYearDrawtextFilterChain(
   inLabel: string,
   outLabel: string,
   years: TimedYearLabel[]
 ): string {
   if (!years.length) return `;[${inLabel}]copy[${outLabel}]`;
-  const MARGIN_L = 56;
-  const MARGIN_B = 60;
-  const CAP_H = 42;
-  const CAP_PAD_X = 18;
-  const YEAR_FS = 96;
-  const CAP_FS = 26;
-  const GAP = 12;
+  const MARGIN_L = 48;
+  const MARGIN_B = 72;
+  const BOX_H = 44;
+  const PAD_X = 16;
+  const FS = 32;
   const YELLOW = "0xFFCC00";
 
   let chain = "";
   let prev = inLabel;
-  years.forEach((entry, i) => {
-    const next = i === years.length - 1 ? outLabel : `yr${i}`;
-    const enable = `enable='between(t\\,${entry.startTime.toFixed(2)}\\,${entry.endTime.toFixed(2)})'`;
-    const yearSafe = sanitizeForDrawtext(entry.year, 6);
-    const capSafe = sanitizeForDrawtext((entry.caption || "").trim().toUpperCase(), 28);
-    let step = prev;
+  const valid = years.filter((e) => labelTextForEntry(e).trim().length > 0);
+  if (!valid.length) return `;[${inLabel}]copy[${outLabel}]`;
 
-    if (capSafe.length >= 3) {
-      const boxW = Math.min(440, Math.round(capSafe.length * CAP_FS * 0.58 + CAP_PAD_X * 2));
-      const boxTop = MARGIN_B + CAP_H;
-      chain += `;[${step}]drawbox=x=${MARGIN_L}:y=h-${boxTop}:w=${boxW}:h=${CAP_H}:color=${YELLOW}@0.96:t=fill:${enable}[yb${i}]`;
-      chain += `;[yb${i}]drawtext=text='${capSafe}':fontcolor=black:fontsize=${CAP_FS}:x=${MARGIN_L + CAP_PAD_X}:y=h-${boxTop - 10}:${enable}[yc${i}]`;
-      step = `yc${i}`;
+  valid.forEach((entry, i) => {
+    const fullText = labelTextForEntry(entry).toUpperCase();
+    const safeFull = sanitizeForDrawtext(fullText, 28);
+    if (safeFull.length < 1) return;
+
+    const next = i === valid.length - 1 ? outLabel : `yl${i}`;
+    const enableFull = `enable='between(t\\,${entry.startTime.toFixed(2)}\\,${entry.endTime.toFixed(2)})'`;
+    const boxW = Math.min(520, Math.round(safeFull.length * FS * 0.62 + PAD_X * 2));
+    const boxTop = MARGIN_B + BOX_H;
+    const textY = `h-${boxTop - 12}`;
+
+    chain += `;[${prev}]drawbox=x=${MARGIN_L}:y=h-${boxTop}:w=${boxW}:h=${BOX_H}:color=${YELLOW}@0.98:t=fill:${enableFull}[yb${i}]`;
+
+    let step = `yb${i}`;
+    const typeEnd = Math.min(
+      entry.endTime,
+      entry.startTime + safeFull.length * TYPEWRITER_CHAR_SEC + 0.05
+    );
+    for (let k = 1; k <= safeFull.length; k++) {
+      const sub = sanitizeForDrawtext(safeFull.slice(0, k), k);
+      const t0 = entry.startTime + (k - 1) * TYPEWRITER_CHAR_SEC;
+      const t1 = k < safeFull.length ? entry.startTime + k * TYPEWRITER_CHAR_SEC : typeEnd;
+      const charOut = k === safeFull.length ? next : `yt${i}_${k}`;
+      const charEnable = `enable='between(t\\,${t0.toFixed(3)}\\,${t1.toFixed(3)})'`;
+      chain +=
+        `;[${step}]drawtext=text='${sub}':fontcolor=black:fontsize=${FS}:` +
+        `x=${MARGIN_L + PAD_X}:y=${textY}:box=0:${charEnable}[${charOut}]`;
+      step = charOut;
     }
-
-    const yearTop = capSafe.length >= 3 ? MARGIN_B + CAP_H + GAP + YEAR_FS : MARGIN_B + YEAR_FS;
-    chain +=
-      `;[${step}]drawtext=text='${yearSafe}':fontcolor=white:fontsize=${YEAR_FS}:x=${MARGIN_L}:y=h-${yearTop}:` +
-      `borderw=2:bordercolor=0x00000055:box=0:${enable}[${next}]`;
     prev = next;
   });
   return chain;

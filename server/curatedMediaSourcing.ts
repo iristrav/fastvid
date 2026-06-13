@@ -9,7 +9,13 @@ import * as path from "path";
 import { resolveLocalVideoPath, LOCAL_UPLOADS_DIR } from "./storageLocal";
 import { storageGetSignedUrl } from "./storage";
 import { archiveClipHasBakedEditText } from "./archiveClipFilter";
-import { buildFitGrayVideoVF, buildMatFramedStillVF, buildStillEncodeArgs, archiveStillKenBurnsVariant } from "./documentaryStyle";
+import {
+  buildBlurFillStillVF,
+  buildFitGrayVideoVF,
+  buildMatFramedStillVF,
+  buildStillEncodeArgs,
+  archiveStillKenBurnsVariant,
+} from "./documentaryStyle";
 import {
   resolveStillImageFilterComplex,
   type MotionGraphicsBudget,
@@ -17,6 +23,7 @@ import {
 } from "./motionGraphicsEngine";
 import {
   curatedArchiveOnlyVisuals,
+  archiveBlurFillStillsEnabled,
   archiveVisualMaxClipSec,
   archiveVisualMinClipSec,
   archivePreferVideoClips,
@@ -714,7 +721,9 @@ async function convertImageToKenBurns(
   }
 
   if (framedArchiveStillsEnabled()) {
-    const filterComplex = buildMatFramedStillVF(duration, 0.74, sceneIndex, beatIndex);
+    const filterComplex = archiveBlurFillStillsEnabled()
+      ? buildBlurFillStillVF(duration, 0.78, "center")
+      : buildMatFramedStillVF(duration, 0.74, sceneIndex, beatIndex);
     await exec(
       `${ffmpegBin()} ${buildStillEncodeArgs(imgPath, outPath, duration, filterComplex)}`
     );

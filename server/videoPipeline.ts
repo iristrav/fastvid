@@ -53,6 +53,7 @@ import {
   buildCinematicOverlays,
   buildBeatAlignedYearOverlays,
   planBeatAlignedYears,
+  planIntervalScreenLabels,
   buildYearDrawtextFilterChain,
   planPhotoShutterCues,
   type TimedYearLabel,
@@ -90,7 +91,7 @@ import {
   scriptGuidedClipsEnabled,
 } from "./scriptGuidedClipFinder";
 import { clipPassesVisionGate, clipVisionGateEnabled } from "./visualQualityGate";
-import { curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, strictNoVisualRepeat } from "./sourcingPolicy";
+import { curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, strictNoVisualRepeat, screenLabelIntervalSec } from "./sourcingPolicy";
 import {
   fetchCuratedArchiveBeatClip,
   curatedClipPathAssetId,
@@ -13867,6 +13868,8 @@ type ComposeSceneOptions = {
   assemblyPath?: string;
   dedup?: VisualDedupState;
   videoTitle?: string;
+  /** Cumulative seconds before this scene in the final timeline (for 30s label ticks). */
+  sceneStartSec?: number;
 };
 
 function buildOverlayFilterChain(
@@ -14385,10 +14388,21 @@ async function composeSceneVideo(
   if (!skipEffectLayers && yearsOnlyOnScreen() && cinematicEffectsEnabled() && ffmpegSupportsDrawtext()) {
     try {
       const sceneBeats = buildSceneBeats(scene, outDur, Math.max(safeClips.length, 8));
-      yearLabels = planBeatAlignedYears(sceneBeats, outDur);
+      const sceneStartSec = composeOptions?.sceneStartSec ?? 0;
+      yearLabels = planIntervalScreenLabels(
+        sceneStartSec,
+        outDur,
+        sceneBeats.map((b) => ({
+          text: b.text,
+          holdSec: b.holdSec,
+          powerWord: b.powerWord,
+          highlightWords: b.keywords,
+        })),
+        screenLabelIntervalSec()
+      );
       if (yearLabels.length > 0) {
         console.log(
-          `[Cinematic] Scene ${scene.index}: ${yearLabels.length} voice-synced year label(s) [${yearLabels.map((y) => y.year).join(", ")}]`
+          `[Cinematic] Scene ${scene.index}: ${yearLabels.length} interval label(s) [${yearLabels.map((y) => y.displayText).join(" | ")}]`
         );
       }
     } catch (err) {
@@ -15349,6 +15363,12 @@ export async function runVideoPipeline(
     const composeLimit = pLimit(composeParallelism(videoLength));
     let completedCompose = 0;
     const composedUsedClips: string[][] = scenes.map(() => []);
+    let timelineSec = 0;
+    const sceneStartSecs = scenes.map((s) => {
+      const start = timelineSec;
+      timelineSec += s.duration;
+      return start;
+    });
     const composedScenes = await withTimeout(
       Promise.all(
         scenes.map((scene, i) => composeLimit(async () => {
@@ -15356,7 +15376,7 @@ export async function runVideoPipeline(
           const result = await composeSceneVideo(
             scene, sceneVisualResults[i]?.clips ?? [], audioPaths[i], scene.duration, workDir, scenes.length,
             enableSubtitles, visualDedup.lastMuskStockClip, sceneVisualResults[i]?.beatDurations, usedClips,
-            { dedup: visualDedup, videoTitle: topicContext }
+            { dedup: visualDedup, videoTitle: topicContext, sceneStartSec: sceneStartSecs[i] }
           );
           composedUsedClips[i] = usedClips;
           completedCompose++;
@@ -15615,6 +15635,12 @@ export async function rerenderFromScenes(
     onProgress?.("Composing scenes...", 45);
     const composeLimit = pLimit(composeParallelism(videoLength));
     let completedCompose = 0;
+    let rerenderTimelineSec = 0;
+    const rerenderSceneStartSecs = internalScenes.map((s) => {
+      const start = rerenderTimelineSec;
+      rerenderTimelineSec += s.duration;
+      return start;
+    });
 
     const composedScenes = await Promise.all(
       internalScenes.map((scene, i) => composeLimit(async () => {
@@ -15633,7 +15659,11 @@ export async function rerenderFromScenes(
           scene.duration,
           workDir,
           internalScenes.length,
-          enableSubtitles
+          enableSubtitles,
+          undefined,
+          undefined,
+          undefined,
+          { sceneStartSec: rerenderSceneStartSecs[i] }
         );
         completedCompose++;
         onProgress?.(
