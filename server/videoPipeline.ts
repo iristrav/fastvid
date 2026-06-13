@@ -8474,15 +8474,15 @@ async function assertSceneVisualInventory(
     );
   }
   const minClips = sentenceBeats > 0
-    ? sentenceBeats
+    ? Math.max(sentenceBeats, minClipsForBalancedVoice(scene.duration + 0.15))
     : requiredMontageClipsForDuration(scene.duration + 0.15);
   if (clips.length < minClips) {
     throw pipelineError(
       PIPELINE_ERROR.NO_SCENES,
-      `Scene ${scene.index}: te weinig unieke clips (${clips.length}/${minClips} zinnen) — breid het archief uit of tag assets beter`
+      `Scene ${scene.index}: te weinig unieke clips (${clips.length}/${minClips} nodig voor ${scene.duration.toFixed(1)}s voice) — breid het archief uit of zorg voor Pexels fallback`
     );
   }
-  if (sentenceBeats > 0 && clipBeatIndices && clipBeatIndices.length > 0) {
+  if (sentenceBeats > 0 && clipBeatIndices && clipBeatIndices.length === sentenceBeats) {
     const uniqueBeatSlots = new Set(clipBeatIndices);
     if (uniqueBeatSlots.size < sentenceBeats) {
       throw pipelineError(
@@ -9555,8 +9555,9 @@ function buildSceneBeats(
   videoTitle?: string,
   scenePersons: string[] = []
 ): SceneBeat[] {
-  const targetBeats = Math.max(2, Math.ceil(duration / effectiveBeatSec()));
-  const beatCap = Math.min(maxBeatsCap, targetBeats);
+  const minVoiceClips = curatedArchiveOnlyVisuals() ? minClipsForBalancedVoice(duration) : 2;
+  const targetBeats = Math.max(minVoiceClips, Math.ceil(duration / effectiveBeatSec()));
+  const beatCap = Math.max(minVoiceClips, Math.min(maxBeatsCap, targetBeats));
 
   const rawSentences =
     scene.text.match(/[^.!?]+[.!?]+/g)?.map((s) => s.trim()).filter((s) => s.length > 5) ??
@@ -9579,7 +9580,11 @@ function buildSceneBeats(
       }
     }
     const words = groups[splitIdx].text.split(/\s+/).filter(Boolean);
-    const minSplitWords = curatedArchiveOnlyVisuals() ? 10 : 16;
+    const minSplitWords = curatedArchiveOnlyVisuals()
+      ? duration <= 12
+        ? 4
+        : 10
+      : 16;
     if (words.length < minSplitWords) break;
     const mid = Math.ceil(words.length / 2);
     const a = words.slice(0, mid).join(" ");
@@ -12786,7 +12791,8 @@ async function adoptArchiveBeatClip(
   pushClip: (clipPath: string, holdSec?: number) => boolean | Promise<boolean>,
   initialClip: string | null = null,
   holdSec = beat.holdSec,
-  semanticProfile?: BeatSemanticProfile
+  semanticProfile?: BeatSemanticProfile,
+  relaxed = false
 ): Promise<boolean> {
   const rejectClip = (clipPath: string | null | undefined): void => {
     if (!clipPath || isPipelineFallbackClip(clipPath)) return;
@@ -12835,11 +12841,18 @@ async function adoptArchiveBeatClip(
     );
     const { beatTags, topicAnchors } = buildBeatMatchTags(beat, scene, videoTitle);
     const topScore = ranked[0]?.score ?? 0;
+    const minAcceptScore = relaxed
+      ? Math.max(12, Math.round(topScore * 0.25))
+      : Math.max(28, Math.round(topScore * 0.4));
     const imgMax = archiveMaxImageClipsPerVideo();
+    const tryCap = relaxed ? ARCHIVE_BEAT_TOP_CANDIDATES * 2 : ARCHIVE_BEAT_TOP_CANDIDATES;
     let tried = 0;
     for (const picked of ranked) {
-      if (tried >= ARCHIVE_BEAT_TOP_CANDIDATES) break;
-      if (!assetPassesBeatMinimum(picked.asset, beat.text, picked.score, topScore, picked.semantic)) {
+      if (tried >= tryCap) break;
+      if (!relaxed && !assetPassesBeatMinimum(picked.asset, beat.text, picked.score, topScore, picked.semantic)) {
+        continue;
+      }
+      if (relaxed && picked.score < minAcceptScore && topScore > minAcceptScore + 6) {
         continue;
       }
       if (
@@ -12883,6 +12896,33 @@ async function adoptArchiveBeatClip(
         return true;
       }
     }
+    if (relaxed) {
+      const mgfxBudget = {
+        used: dedup.motionGraphicsUsed,
+        max: maxMotionGraphicsPerVideo(),
+      };
+      const clip = await fetchCuratedArchiveBeatClip(
+        beat,
+        scene,
+        workDir,
+        scene.index,
+        holdSec,
+        dedup.usedCuratedAssetIds,
+        dedup.usedCuratedStorageUrls,
+        videoTitle,
+        curatedInterviewBudget(dedup),
+        curatedImageBudget(dedup),
+        mgfxBudget,
+        {
+          relaxed: true,
+          varietySeed: dedup.varietySeed + beat.index + scene.index,
+          crossVideoExcludeIds: dedup.crossVideoExcludeIds,
+          assetsCache: dedup.archiveAssetsCache,
+        }
+      );
+      dedup.motionGraphicsUsed = mgfxBudget.used;
+      if (await tryClip(clip, holdSec)) return true;
+    }
     return false;
   }
 
@@ -12904,7 +12944,12 @@ async function adoptArchiveBeatClip(
       curatedInterviewBudget(dedup),
       curatedImageBudget(dedup),
       mgfxBudget,
-      { relaxed: true, varietySeed: dedup.varietySeed, crossVideoExcludeIds: dedup.crossVideoExcludeIds }
+      {
+        relaxed: relaxed || attempt > 0,
+        varietySeed: dedup.varietySeed,
+        crossVideoExcludeIds: dedup.crossVideoExcludeIds,
+        assetsCache: dedup.archiveAssetsCache,
+      }
     );
     dedup.motionGraphicsUsed = mgfxBudget.used;
     if (await tryClip(clip, holdSec)) return true;
@@ -13018,15 +13063,27 @@ async function backfillArchiveMontageFromPool(
   beatDurations: number[],
   dedup: VisualDedupState,
   pushClip: (clipPath: string, holdSec: number, beatIndex?: number) => boolean | Promise<boolean>,
-  opts?: { maxAttempts?: number; logPrefix?: string; onProgress?: (attempt: number, max: number) => void }
+  opts?: {
+    maxAttempts?: number;
+    logPrefix?: string;
+    onProgress?: (attempt: number, max: number) => void;
+    semanticProfiles?: Map<number, BeatSemanticProfile>;
+  }
 ): Promise<number> {
   const minClipsNeeded = minClipsForBalancedVoice(outDur);
   const minCoverage = strictNoVisualRepeat() ? outDur - 0.06 : outDur * 0.92;
   let coverage = await estimateBalancedMontageCoverageSec(clips, beatDurations, outDur);
   if (coverage >= minCoverage) return 0;
 
-  const beats = buildSceneBeats(scene, outDur, Math.max(minClipsNeeded + 2, Math.ceil(outDur / effectiveBeatSec())));
-  const maxFill = opts?.maxAttempts ?? Math.max(12, minClipsForBalancedVoice(outDur) + 3);
+  const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
+  const beats = buildSceneBeats(
+    scene,
+    outDur,
+    Math.max(minClipsNeeded + 2, Math.ceil(outDur / effectiveBeatSec())),
+    videoTitle,
+    scenePersons
+  );
+  const maxFill = opts?.maxAttempts ?? Math.max(14, minClipsForBalancedVoice(outDur) + 5);
   const prefix = opts?.logPrefix ?? `Scene ${scene.index}`;
   console.warn(
     `[Pipeline] ${prefix}: montage ${clips.length}/${minClipsNeeded} clips, ` +
@@ -13038,16 +13095,32 @@ async function backfillArchiveMontageFromPool(
     opts?.onProgress?.(attempt + 1, maxFill);
     const beat = beats[attempt % beats.length] ?? beats[0];
     if (!beat) break;
-    const adopted = await adoptArchiveBeatClip(
+    const profile = opts?.semanticProfiles?.get(beat.index);
+    const fillHold = Math.max(beat.holdSec, outDur / minClipsNeeded);
+    let adopted = await adoptArchiveBeatClip(
       beat,
       scene,
       workDir,
       videoTitle,
       dedup,
-      (clipPath, holdSec) => pushClip(clipPath, holdSec, beat.index),
+      (clipPath, holdSec) => pushClip(clipPath, holdSec, beats.length + added),
       null,
-      beat.holdSec
+      fillHold,
+      profile,
+      true
     );
+    if (!adopted) {
+      adopted = await adoptPexelsBeatClipFallback(
+        beat,
+        scene,
+        workDir,
+        videoTitle,
+        dedup,
+        (clipPath, holdSec) => pushClip(clipPath, holdSec, beats.length + added),
+        fillHold,
+        profile
+      );
+    }
     if (adopted) added++;
     coverage = await estimateBalancedMontageCoverageSec(clips, beatDurations, outDur);
   }
@@ -13085,6 +13158,7 @@ async function backfillComposeMontageIfShort(
     return true;
   };
 
+  const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
   await backfillArchiveMontageFromPool(
     scene,
     workDir,
@@ -13094,8 +13168,49 @@ async function backfillComposeMontageIfShort(
     composeBeatDurations,
     dedup,
     pushClip,
-    { logPrefix: `Scene ${scene.index} compose` }
+    { logPrefix: `Scene ${scene.index} compose`, maxAttempts: Math.max(14, minClipsNeeded + 6) }
   );
+
+  if (coverage < minCoverage) {
+    const beats = buildSceneBeats(
+      scene,
+      outDur,
+      Math.max(minClipsNeeded + 2, Math.ceil(outDur / effectiveBeatSec())),
+      videoTitle,
+      scenePersons
+    );
+    for (let attempt = 0; attempt < 8 && coverage < minCoverage; attempt++) {
+      const beat = beats[attempt % beats.length] ?? beats[0];
+      if (!beat) break;
+      const fillHold = Math.max(beat.holdSec, outDur / minClipsNeeded);
+      const adopted =
+        (await adoptArchiveBeatClip(
+          beat,
+          scene,
+          workDir,
+          videoTitle,
+          dedup,
+          pushClip,
+          null,
+          fillHold,
+          undefined,
+          true
+        )) ||
+        (await adoptPexelsBeatClipFallback(
+          beat,
+          scene,
+          workDir,
+          videoTitle,
+          dedup,
+          pushClip,
+          fillHold,
+          undefined
+        ));
+      if (adopted) {
+        coverage = await estimateBalancedMontageCoverageSec(safeClips, composeBeatDurations, outDur);
+      }
+    }
+  }
 
   if (coverage < minCoverage) {
     const msg =
@@ -13200,8 +13315,104 @@ async function fetchArchiveSentenceMontage(
     }
   }
 
+  await ensureArchiveMontageVoiceCoverage(
+    scene,
+    workDir,
+    videoTitle,
+    dedup,
+    clips,
+    beatDurations,
+    clipBeatIndices,
+    beats,
+    semanticProfiles
+  );
+
   await assertSceneVisualInventory(scene, clips, beatDurations, beats.length, clipBeatIndices);
   return { clips, beatDurations, beats, clipBeatIndices };
+}
+
+/** Add archive/Pexels clips until balanced montage covers scene voice (no repeat). */
+async function ensureArchiveMontageVoiceCoverage(
+  scene: Scene,
+  workDir: string,
+  videoTitle: string | undefined,
+  dedup: VisualDedupState,
+  clips: string[],
+  beatDurations: number[],
+  clipBeatIndices: number[],
+  beats: SceneBeat[],
+  semanticProfiles: Map<number, BeatSemanticProfile>
+): Promise<void> {
+  const minCoverage = scene.duration - 0.06;
+  let coverage = await estimateBalancedMontageCoverageSec(clips, beatDurations, scene.duration);
+  if (coverage >= minCoverage) return;
+
+  const minClips = minClipsForBalancedVoice(scene.duration);
+  console.warn(
+    `[Pipeline] Scene ${scene.index}: montage ~${coverage.toFixed(1)}s / ${scene.duration.toFixed(1)}s — coverage backfill (need ~${minClips} clips)`
+  );
+
+  const pushSceneClip = async (clipPath: string, holdSec: number, beatIndex: number): Promise<boolean> => {
+    const key = clipContentKey(clipPath);
+    if (dedup.usedContentKeys.has(key)) return false;
+    let actualHold = holdSec;
+    if (!curatedClipPathAssetId(clipPath) && fs.existsSync(clipPath)) {
+      const probed = await probeVideoDurationSec(clipPath);
+      if (probed > 0.15) actualHold = Math.min(holdSec, probed - 0.04);
+    }
+    dedup.usedContentKeys.add(key);
+    clips.push(clipPath);
+    beatDurations.push(actualHold);
+    clipBeatIndices.push(beatIndex);
+    markCuratedAssetUsed(clipPath, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls);
+    coverage = await estimateBalancedMontageCoverageSec(clips, beatDurations, scene.duration);
+    return true;
+  };
+
+  await backfillArchiveMontageFromPool(
+    scene,
+    workDir,
+    videoTitle,
+    scene.duration,
+    clips,
+    beatDurations,
+    dedup,
+    pushSceneClip,
+    { maxAttempts: Math.max(8, minClips + 4), semanticProfiles }
+  );
+
+  if (coverage >= minCoverage) return;
+
+  for (let attempt = 0; attempt < 6 && coverage < minCoverage; attempt++) {
+    const beat = beats[attempt % Math.max(1, beats.length)] ?? beats[0];
+    if (!beat) break;
+    const fillBeatIndex = beats.length + attempt;
+    const holdSec = Math.max(beat.holdSec, scene.duration / minClips);
+    const pushClip = (clipPath: string, sec = holdSec) => pushSceneClip(clipPath, sec, fillBeatIndex);
+    const filled =
+      (await adoptArchiveBeatClip(
+        beat,
+        scene,
+        workDir,
+        videoTitle,
+        dedup,
+        pushClip,
+        null,
+        holdSec,
+        semanticProfiles.get(beat.index),
+        true
+      )) ||
+      (await adoptPexelsBeatClipFallback(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfiles.get(beat.index)));
+    if (!filled) continue;
+  }
+
+  coverage = await estimateBalancedMontageCoverageSec(clips, beatDurations, scene.duration);
+  if (coverage < minCoverage) {
+    throw pipelineError(
+      PIPELINE_ERROR.NO_SCENES,
+      `Scene ${scene.index}: montage ${clips.length} clip(s) covers ~${coverage.toFixed(1)}s of ${scene.duration.toFixed(1)}s voice — tag meer archief of zorg dat Pexels fallback actief is`
+    );
+  }
 }
 
 async function fetchSceneVisuals(
