@@ -55,6 +55,7 @@ export const videos = mysqlTable("videos", {
   videoLength: varchar("videoLength", { length: 16 }).notNull(),
   status: mysqlEnum("status", [
     "pending",
+    "queued",
     "generating_script",
     "awaiting_approval",
     "generating_voiceover",

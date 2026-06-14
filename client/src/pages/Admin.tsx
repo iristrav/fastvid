@@ -60,6 +60,7 @@ const VIDEO_STATUS_BADGE: Record<string, string> = {
   generating_voiceover: "text-purple-400 bg-purple-400/10",
   generating_visuals: "text-cyan-400 bg-cyan-400/10",
   generating_effects: "text-orange-400 bg-orange-400/10",
+  queued: "text-amber-400 bg-amber-400/10",
 };
 
 type VideoRow = {
@@ -364,7 +365,7 @@ function UsersTable() {
 }
 
 function VideoStatusCell({ video }: { video: VideoRow }) {
-  const isInProgress = !['completed', 'failed', 'pending'].includes(video.status);
+  const isInProgress = !['completed', 'failed'].includes(video.status);
   const { data: pollData } = trpc.video.pollStatus.useQuery(
     { id: video.id },
     { enabled: isInProgress, refetchInterval: isInProgress ? 3000 : false }
@@ -406,6 +407,7 @@ function VideosTable() {
     { value: "all", label: "All statuses" },
     { value: "completed", label: "Completed" },
     { value: "failed", label: "Failed" },
+    { value: "queued", label: "Queued" },
     { value: "pending", label: "Pending" },
     { value: "generating_script", label: "Generating script" },
     { value: "generating_voiceover", label: "Generating voiceover" },

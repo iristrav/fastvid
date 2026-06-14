@@ -680,7 +680,17 @@ async function recoverStuckPipelines() {
   }
 }
 
-recoverStuckPipelines().catch(console.error);
+recoverStuckPipelines()
+  .then(async () => {
+    const { shouldRunQueueWorker } = await import("@shared/videoQueue");
+    if (!shouldRunQueueWorker()) {
+      console.log("[VideoQueue] Embedded worker disabled (EMBED_QUEUE_WORKER=false)");
+      return;
+    }
+    const { startVideoQueueWorker } = await import("../videoQueue");
+    startVideoQueueWorker();
+  })
+  .catch(console.error);
 
 // Fail pipelines with no progress heartbeat (updatedAt stale) — every 90s
 setInterval(() => {

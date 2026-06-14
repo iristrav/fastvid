@@ -2,6 +2,7 @@ import { and, desc, eq, inArray, like, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import * as fs from "fs";
 import { PIPELINE_ERROR, appErrorMessage } from "@shared/appErrors";
+import { PIPELINE_PROCESSING_STATUSES } from "@shared/videoQueue";
 import { isShortVideoLength, normalizeVideoLength } from "@shared/videoLengths";
 import type { Video } from "../drizzle/schema";
 import { InsertInviteCode, InsertUser, InsertVideo, InsertPasswordResetToken, inviteCodes, users, videos, passwordResetTokens } from "../drizzle/schema";
@@ -191,6 +192,99 @@ export async function getVideosByUserId(userId: number) {
   return db.select().from(videos).where(eq(videos.userId, userId)).orderBy(desc(videos.createdAt));
 }
 
+const PROCESSING_STATUS_LIST = [...PIPELINE_PROCESSING_STATUSES];
+
+export async function countGlobalProcessingVideos(): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+  const [row] = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(videos)
+    .where(inArray(videos.status, PROCESSING_STATUS_LIST));
+  return Number(row?.count ?? 0);
+}
+
+export async function countUserProcessingVideos(userId: number): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+  const [row] = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(videos)
+    .where(and(eq(videos.userId, userId), inArray(videos.status, PROCESSING_STATUS_LIST)));
+  return Number(row?.count ?? 0);
+}
+
+export async function countUserQueuedVideos(userId: number): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+  const [row] = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(videos)
+    .where(and(eq(videos.userId, userId), eq(videos.status, "queued")));
+  return Number(row?.count ?? 0);
+}
+
+export async function countUserAwaitingScriptApproval(userId: number): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+  const [row] = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(videos)
+    .where(and(eq(videos.userId, userId), eq(videos.status, "awaiting_approval")));
+  return Number(row?.count ?? 0);
+}
+
+export async function listQueuedVideosOrdered(limit = 50) {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select()
+    .from(videos)
+    .where(eq(videos.status, "queued"))
+    .orderBy(videos.createdAt, videos.id)
+    .limit(limit);
+}
+
+/** 1-based position among all queued jobs (FIFO). */
+export async function getVideoQueuePosition(videoId: number): Promise<number | null> {
+  const db = await getDb();
+  if (!db) return null;
+  const video = await getVideoById(videoId);
+  if (!video || video.status !== "queued") return null;
+
+  const [row] = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(videos)
+    .where(
+      and(
+        eq(videos.status, "queued"),
+        sql`(${videos.createdAt} < ${video.createdAt} OR (${videos.createdAt} = ${video.createdAt} AND ${videos.id} < ${videoId}))`
+      )
+    );
+  return Number(row?.count ?? 0) + 1;
+}
+
+/** Atomically move a queued video into processing. Returns the video if claimed. */
+export async function claimQueuedVideo(videoId: number, progressStep: string): Promise<Video | undefined> {
+  const db = await getDb();
+  if (!db) return undefined;
+
+  const result = await db
+    .update(videos)
+    .set({
+      status: "generating_script",
+      progressStep,
+      progressPercent: 1,
+      generationStartedAt: new Date(),
+      errorMessage: "",
+    })
+    .where(and(eq(videos.id, videoId), eq(videos.status, "queued")));
+
+  const affected = (result as unknown as [{ affectedRows?: number }])[0]?.affectedRows ?? 0;
+  if (!affected) return undefined;
+  return getVideoById(videoId);
+}
+
 export async function updateVideoStatus(id: number, status: InsertVideo["status"], extra?: {
   script?: string; voiceoverUrl?: string; videoUrl?: string;
   thumbnailUrl?: string; metadata?: unknown; errorMessage?: string; title?: string;
@@ -259,6 +353,7 @@ export async function deleteAllFailedVideosForUser(userId: number) {
 
 const IN_PROGRESS_STATUSES = [
   "pending",
+  "queued",
   "generating_script",
   "awaiting_approval",
   "generating_voiceover",
@@ -296,7 +391,7 @@ function pipelineStallThresholdMs(
  */
 export async function failPipelineIfStalled(video: Video): Promise<Video> {
   if (video.status === "completed" || video.status === "failed") return video;
-  if (video.status === "awaiting_approval" || video.status === "pending") return video;
+  if (video.status === "awaiting_approval" || video.status === "pending" || video.status === "queued") return video;
   if (!IN_PROGRESS_STATUSES.includes(video.status as (typeof IN_PROGRESS_STATUSES)[number])) {
     return video;
   }
@@ -324,7 +419,7 @@ export async function failAllStalledPipelines(): Promise<number> {
   const db = await getDb();
   if (!db) return 0;
   const activeStatuses = IN_PROGRESS_STATUSES.filter(
-    (s) => s !== "awaiting_approval" && s !== "pending"
+    (s) => s !== "awaiting_approval" && s !== "pending" && s !== "queued"
   );
   const rows = await db.select().from(videos).where(inArray(videos.status, [...activeStatuses]));
   let failed = 0;
@@ -425,19 +520,16 @@ export async function recoverAllStuckVideos(): Promise<{ completed: number; fail
   for (const v of stuck) {
     const refreshed = await getVideoById(v.id);
     if (!refreshed || refreshed.status === "completed" || refreshed.status === "failed") continue;
-    await updateVideoStatus(refreshed.id, "failed", {
-      errorMessage: appErrorMessage(
-        PIPELINE_ERROR.SERVER_RESTART,
-        "Server restarted during generation. Please try again"
-      ),
-      progressStep: "Failed — server restarted, please retry",
+    await updateVideoStatus(refreshed.id, "queued", {
+      errorMessage: "",
+      progressStep: "Re-queued after server restart",
       progressPercent: 0,
     });
     failed++;
   }
 
   if (completed > 0 || failed > 0) {
-    console.log(`[PipelineRecovery] Recovered ${completed} completed, marked ${failed} orphaned as failed`);
+    console.log(`[PipelineRecovery] Recovered ${completed} completed, re-queued ${failed} orphaned job(s)`);
   }
   return { completed, failed };
 }
@@ -447,7 +539,9 @@ export async function expireStuckVideos(maxAgeMinutes = 95) {
   const db = await getDb();
   if (!db) return 0;
   const cutoff = new Date(Date.now() - maxAgeMinutes * 60 * 1000);
-  const stuckStatuses = IN_PROGRESS_STATUSES.filter((s) => s !== "awaiting_approval");
+  const stuckStatuses = IN_PROGRESS_STATUSES.filter(
+    (s) => s !== "awaiting_approval" && s !== "queued"
+  );
   let total = 0;
   for (const s of stuckStatuses) {
     const result = await db.update(videos)

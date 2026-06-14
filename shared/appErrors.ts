@@ -30,6 +30,8 @@ export const APP_ERROR = {
   OAUTH_USER_NOT_FOUND: 10026,
   NOTIFICATION_INVALID: 10027,
   SERVICE_ERROR: 10050,
+  QUEUE_LIMIT_REACHED: 10028,
+  SCRIPT_REVIEW_PENDING: 10029,
 } as const;
 
 /** Video pipeline failures (stored in videos.errorMessage). */

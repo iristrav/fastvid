@@ -93,6 +93,12 @@ import {
   updateNicheRequest,
 } from "./nicheRequestsDb";
 import { runVideoPipeline } from "./videoPipeline";
+import {
+  assertUserCanEnqueueVideo,
+  enqueueVideoJob,
+  getVideoQueuePosition,
+  throwEnqueueError,
+} from "./videoQueue";
 import { forgotPassword, validateResetToken as validateResetTokenProcedure, resetPassword } from "./authPasswordReset";
 import {
   buildOneShotScriptUserPrompt,
@@ -855,10 +861,13 @@ export const appRouter = router({
         }
       }
 
+      const enqueueCheck = await assertUserCanEnqueueVideo(ctx.user.id);
+      if (!enqueueCheck.ok) throwEnqueueError(enqueueCheck);
+
       const coverage = await assessArchiveCoverageForPrompt(input.prompt);
       const coverageNote = coverage.hasCoverage
-        ? "🔍 Starting generation..."
-        : "📦 Limited archive footage for this topic — we are still building your archive. Generation may take longer.";
+        ? "Waiting in queue..."
+        : "Waiting in queue — limited archive footage for this topic";
 
       const onboarding = await getLatestOnboardingRequest(ctx.user.id, ctx.user.email);
       const nicheTitle = onboarding?.nicheTitle ?? null;
@@ -871,18 +880,19 @@ export const appRouter = router({
         customVoiceoverUrl: input.customVoiceoverUrl,
         voiceId: input.voiceId,
         enableSubtitles: input.enableSubtitles ? 1 : 0,
-        status: "pending",
+        status: "queued",
         metadata: { archiveCoverage: coverage, nicheTitle },
       });
       if (!videoId) throw appTrpcError("INTERNAL_SERVER_ERROR", APP_ERROR.FAILED_CREATE_VIDEO, "Failed to create video");
-      await updateVideoStatus(videoId, "generating_script", {
-        progressStep: coverageNote,
-        progressPercent: 1,
-        generationStartedAt: new Date(),
-      }).catch(() => {});
-      // Direct full pipeline — no script review step
-      generateFullVideo(videoId, input.prompt, input.videoLength, input.videoType, input.voiceId, input.customVoiceoverUrl, input.enableSubtitles).catch(console.error);
-      return { videoId, message: "Video generation started" };
+
+      const { queuePosition } = await enqueueVideoJob(videoId, coverageNote);
+      return {
+        videoId,
+        queuePosition,
+        message: queuePosition > 1
+          ? `Video queued — position ${queuePosition}`
+          : "Video generation started",
+      };
     }),
     approveScript: protectedProcedure.input(z.object({
       id: z.number(),
@@ -926,21 +936,10 @@ export const appRouter = router({
       if (!retryable) {
         throw appTrpcError("BAD_REQUEST", APP_ERROR.VIDEO_RETRY_INVALID, "Only failed or stuck videos can be retried");
       }
-      await updateVideoStatus(video.id, "pending", {
-        errorMessage: "",
-        progressStep: "🔄 Retrying...",
-        progressPercent: 0,
-        generationStartedAt: new Date(),
-      });
-      generateFullVideo(
-        video.id,
-        video.prompt,
-        video.videoLength ?? "15-20",
-        (video as { videoType?: string | null }).videoType ?? "documentary",
-        (video as { voiceId?: string | null }).voiceId ?? undefined,
-        video.customVoiceoverUrl ?? undefined,
-        readEnableSubtitles(video)
-      ).catch(console.error);
+      const enqueueCheck = await assertUserCanEnqueueVideo(ctx.user.id);
+      if (!enqueueCheck.ok) throwEnqueueError(enqueueCheck);
+
+      await enqueueVideoJob(video.id, "🔄 Re-queued — waiting to retry...");
       return { success: true };
     }),
     rejectScript: protectedProcedure.input(z.object({ id: z.number() })).mutation(async ({ ctx, input }) => {
@@ -960,6 +959,7 @@ export const appRouter = router({
       const raw = requireVideoAccess(await getVideoById(input.id), ctx);
       let video = await recoverVideoCompletionState(raw);
       video = await failPipelineIfStalled(video);
+      const queuePosition = video.status === "queued" ? await getVideoQueuePosition(video.id) : null;
       return {
         status: video.status,
         title: video.title,
@@ -972,6 +972,7 @@ export const appRouter = router({
         progressLog: ((video as unknown as Record<string, unknown>).progressLog ?? []) as import('./db').ProgressLogEntry[],
         generationStartedAt: video.generationStartedAt,
         videoType: video.videoType,
+        queuePosition,
       };
     }),
   }),
@@ -993,14 +994,18 @@ export const appRouter = router({
       videoLength: videoLengthSchema,
       videoType: z.enum(["documentary", "listicle", "tutorial", "explainer"]).default("documentary"),
     })).mutation(async ({ ctx, input }) => {
-      const videoId = await createVideo({ userId: ctx.user.id, prompt: input.prompt, videoLength: input.videoLength, videoType: input.videoType });
+      const enqueueCheck = await assertUserCanEnqueueVideo(ctx.user.id);
+      if (!enqueueCheck.ok) throwEnqueueError(enqueueCheck);
+
+      const videoId = await createVideo({
+        userId: ctx.user.id,
+        prompt: input.prompt,
+        videoLength: input.videoLength,
+        videoType: input.videoType,
+        status: "queued",
+      });
       if (!videoId) throw appTrpcError("INTERNAL_SERVER_ERROR", APP_ERROR.FAILED_CREATE_VIDEO, "Failed to create video");
-      await updateVideoStatus(videoId, "generating_script", {
-        progressStep: "🔍 Starting generation...",
-        progressPercent: 1,
-        generationStartedAt: new Date(),
-      }).catch(() => {});
-      generateFullVideo(videoId, input.prompt, input.videoLength, input.videoType).catch(console.error);
+      await enqueueVideoJob(videoId, "🔍 Waiting in queue...");
       return { videoId };
     }),
     searchVideos: adminProcedure.input(z.object({

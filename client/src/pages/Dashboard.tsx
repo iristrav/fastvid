@@ -57,7 +57,8 @@ function readGenerationDurationSec(video: {
 
 // Agent-style stage labels for the progress UI
 const AGENT_STAGES: Record<string, { label: string; agent: string; icon: string }> = {
-  pending:              { label: "Queued",                   agent: "Queue",           icon: "⏳" },
+  queued:               { label: "In queue...",                agent: "Queue",           icon: "⏳" },
+  pending:              { label: "Starting...",                agent: "Queue",           icon: "⏳" },
   generating_script:    { label: "Writing script...",        agent: "Scriptwriter",    icon: "✍️" },
   awaiting_approval:    { label: "Writing script...",        agent: "Scriptwriter",    icon: "✍️" },
   generating_voiceover: { label: "Creating voiceover...",    agent: "Voice Engineer",  icon: "🎙️" },
@@ -67,6 +68,7 @@ const AGENT_STAGES: Record<string, { label: string; agent: string; icon: string 
 };
 
 const STATUS_COLORS: Record<string, string> = {
+  queued:               "text-amber-400 bg-amber-400/10",
   pending:              "text-yellow-400 bg-yellow-400/10",
   generating_script:    "text-blue-400 bg-blue-400/10",
   awaiting_approval:    "text-blue-400 bg-blue-400/10",
@@ -237,7 +239,9 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
   const completedDurationSec =
     currentStatus === "completed" ? readGenerationDurationSec(video) : null;
   const statusBadgeLabel =
-    isProcessing
+    currentStatus === "queued" && pollData?.queuePosition
+      ? `Queue #${pollData.queuePosition}`
+      : isProcessing
       ? "Generating"
       : currentStatus === "completed" && completedDurationSec != null
         ? `Done · ${formatGenerationDuration(completedDurationSec)}`
@@ -264,6 +268,15 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
         ) : (
           <div className="w-full h-full flex items-center justify-center">
             {isProcessing ? (
+              currentStatus === "queued" ? (
+              <div className="w-full h-full flex flex-col items-center justify-center gap-3 px-6 py-5 text-center">
+                <Loader2 className="w-8 h-8 text-amber-400 animate-spin" />
+                <p className="text-sm text-amber-200/90 font-medium">
+                  {pollData?.queuePosition ? `Position ${pollData.queuePosition} in queue` : "Waiting in queue…"}
+                </p>
+                <p className="text-[11px] text-slate-400">{pollData?.progressStep ?? "Your video will start soon"}</p>
+              </div>
+              ) : (
               <div className="w-full h-full flex flex-col items-center justify-center gap-4 px-6 py-5">
                 <Loader2 className="w-8 h-8 text-purple-400 animate-spin" />
                 <GenerationProgressBar
@@ -274,6 +287,7 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
                   className="max-w-[220px]"
                 />
               </div>
+              )
             ) : currentStatus === "failed" ? (
               <div className="flex flex-col items-center gap-2 px-4 py-3 text-center w-full">
                 <XCircle className="w-10 h-10 text-red-400/60 shrink-0" />
