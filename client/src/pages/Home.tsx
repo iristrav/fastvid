@@ -525,7 +525,7 @@ export default function Home() {
               <div className="animate-fade-up delay-450 rounded-xl border border-purple-500/25 bg-purple-500/5 px-4 py-3 text-xs text-slate-300 leading-relaxed">
                 <span className="text-purple-300 font-semibold">Getting started:</span>{" "}
                 Submit your niche, email, and content format on our{" "}
-                <button type="button" onClick={() => navigate("/niche-aanvraag")} className="text-purple-300 hover:text-white underline underline-offset-2">
+                <button type="button" onClick={() => navigate(isAuthenticated ? "/dashboard/niche-requests" : "/login")} className="text-purple-300 hover:text-white underline underline-offset-2">
                   application page
                 </button>
                 . Approval within <strong className="text-white">2 business days</strong> — start within{" "}
@@ -727,7 +727,7 @@ export default function Home() {
             </div>
             <button
               type="button"
-              onClick={() => navigate(isAuthenticated ? "/dashboard/niche-requests" : "/niche-aanvraag")}
+              onClick={() => navigate(isAuthenticated ? "/dashboard/niche-requests" : "/login")}
               className="btn-gradient px-5 py-2.5 rounded-lg text-sm font-semibold text-white flex items-center gap-2 shrink-0"
             >
               <Radio className="w-4 h-4" />

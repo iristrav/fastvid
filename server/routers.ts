@@ -1289,7 +1289,7 @@ export const appRouter = router({
       }
     }),
 
-    submitRequest: publicProcedure.input(z.object({
+    submitRequest: protectedProcedure.input(z.object({
       contactEmail: z.string().email(),
       nicheTitle: z.string().min(2).max(256),
       titleStructure: z.string().min(3).max(2000),
@@ -1297,15 +1297,11 @@ export const appRouter = router({
       subniches: z.string().min(3).max(2000),
       requestType: z.enum(["onboarding", "new_channel"]).default("onboarding"),
     })).mutation(async ({ ctx, input }) => {
-      if (input.requestType === "new_channel" && !ctx.user) {
-        throw appTrpcError("UNAUTHORIZED", APP_ERROR.SERVICE_ERROR, "Log in to request an extra channel.");
-      }
-
       const contactEmail = input.contactEmail.toLowerCase().trim();
-      const userId = ctx.user?.id ?? null;
+      const userId = ctx.user.id;
 
       if (input.requestType === "onboarding") {
-        const existing = await getLatestOnboardingRequest(userId ?? undefined, contactEmail);
+        const existing = await getLatestOnboardingRequest(userId, contactEmail);
         if (existing && existing.status === "pending") {
           throw appTrpcError("BAD_REQUEST", APP_ERROR.SERVICE_ERROR, "Your application was already submitted and is pending approval.");
         }

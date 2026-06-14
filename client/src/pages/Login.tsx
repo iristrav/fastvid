@@ -43,7 +43,7 @@ export default function Login() {
     onSuccess: async () => {
       await utils.auth.me.invalidate();
       toast.success("Account created!", { description: "Complete your niche request to continue." });
-      navigate("/niche-aanvraag");
+      navigate("/dashboard/niche-requests");
     },
     onError: (e) => toast.error("Registration failed", { description: toastErrorMessage(e) }),
   });
@@ -55,7 +55,7 @@ export default function Login() {
       if (me?.role !== "admin") {
         const access = await utils.nicheRequest.accessStatus.fetch();
         if (!access.canUsePlatform || !access.hasOnboardingRequest) {
-          navigate("/niche-aanvraag");
+          navigate("/dashboard/niche-requests");
           return;
         }
       }
@@ -130,13 +130,6 @@ export default function Login() {
                 onClick={() => setStep("invite")}
               >
                 Create account with invite code
-              </Button>
-              <Button
-                variant="ghost"
-                className="w-full text-slate-400 hover:text-white hover:bg-white/5"
-                onClick={() => navigate("/niche-aanvraag")}
-              >
-                Request a niche (without account)
               </Button>
             </CardContent>
           </Card>
