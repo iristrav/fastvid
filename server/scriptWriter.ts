@@ -176,48 +176,81 @@ function wordsPerSection(budget: ScriptLengthBudget, sectionIndex: number, secti
 }
 
 function sectionNarrativeBrief(index: number, total: number, videoLength: string): string {
+  const valueBombIndex = Math.max(1, Math.floor(total * 0.65));
   if (index === 0) {
-    return `BEGINNING (Act 1 — Setup): Ground the viewer in the topic. Make them care immediately. No "welcome" or "in this video".`;
+    return `SETUP (Act 1): Establish the central question and stakes. Ground the viewer — make them care in the first beat. Open a mid-loop that pays off later. End with a bridge teasing what comes next.`;
   }
   if (index === total - 1) {
-    return `END (Act 3 — Payoff): Deliver the clearest takeaway. Resolve the tension from the middle. Leave a memorable final image in the mind.`;
+    return `CONSEQUENCE (Act 4 — Payoff): Resolve the macro loop. Show what the revelation means in the real world today. One crisp insight the viewer remembers tomorrow — not a summary list.`;
   }
   if (index === 1 && total >= 3) {
-    return `EARLY MIDDLE (Act 2A — Escalation): Introduce the core conflict, paradox, or hidden mechanism. Use a specific fact or contrast.`;
+    return `COMPLICATION (Act 2A): Introduce resistance, paradox, or hidden mechanism. Things get harder — stakes rise. Close one micro-loop, open a bigger one.`;
   }
-  if (index === Math.floor(total / 2)) {
-    return `MIDDLE PEAK (Act 2B — Retention spike): The "why it matters" beat. Pattern interrupt — question, reversal, or number that reframes everything.`;
+  if (index === valueBombIndex) {
+    return `REVELATION (Value bomb — ~60–70% mark): The strongest insight in the video. Reframe everything with a specific fact, number, or reversal. This is the retention spike — make it unforgettable.`;
   }
-  return `MIDDLE (Act 2 — Momentum): Keep curiosity high. Partial answers, then new stakes. ${videoLength === "8-10" ? "Micro-hook every 3–4 sentences." : "No filler."}`;
+  return `ESCALATION (Act 2 — Momentum): Partial payoffs only — answer one question, immediately raise a harder one. ${videoLength === "8-10" ? "Micro-hook every 3–4 sentences." : "Pattern interrupt every 45–90 seconds (number, name, question, or contrast)."} End the section with a bridge to the next beat.`;
 }
 
 export function buildScriptWriterSystemPrompt(videoType: string): string {
   const typeInstructions: Record<string, string> = {
     documentary:
-      "Format: premium YouTube documentary (Vox, Wendover, Johnny Harris). Research-backed, cinematic narration.",
+      "Format: premium YouTube documentary (Vox, Wendover, Johnny Harris, Lemmino). Research-backed, cinematic, conversational.",
     listicle:
-      "Format: ranked listicle — each beat must feel like a reveal, not a lecture.",
+      "Format: ranked listicle — each item must feel like a reveal with rising stakes, not a lecture.",
     tutorial:
-      "Format: tutorial — clarity first, but still use story beats (problem → steps → result).",
+      "Format: tutorial — clarity first, but still use story beats (problem → tension → solution → result).",
     explainer:
-      "Format: explainer — analogies and visual metaphors, but with a narrative spine.",
+      "Format: explainer — analogies and visual metaphors, but with a narrative spine and open loops.",
   };
   const typeInstruction = typeInstructions[videoType] ?? typeInstructions.documentary;
 
   return `You are an elite YouTube scriptwriter and retention editor. ${typeInstruction}
 
-NON-NEGOTIABLE CRAFT RULES:
-- Write ONLY spoken narration. No [VISUAL: ...] tags, no stage directions, no bullet lists in the body.
-- Name real people, companies, places, and events in the spoken lines — the video system finds matching footage from your words automatically.
-- Structure every video as: HOOK → BEGINNING → MIDDLE (with rising tension) → END → CTA.
-- HOOK (first seconds): pattern interrupt — surprising fact, bold contrast, or high-stakes question. Never "Today we're going to talk about..."
-- MIDDLE: open loops early, close them later; use micro-hooks (rhetorical questions, "But here's the catch", specific numbers, named entities).
-- END: one crisp insight the viewer remembers tomorrow.
-- Tone: authoritative, vivid, conversational — short punchy sentences mixed with longer explanatory ones.
-- If the video is about a named celebrity, name them clearly in narration (full name on first mention) — never vague "she" without context in the hook.
-- Never use filler: "In this section", "Let's dive in", "Without further ado".
-- Write for the ear — the script will be read aloud in one continuous voice-over.
-- When citing a number ($, %, year, count), make it specific — it may appear as an on-screen stat callout.`;
+Your scripts are written for the EAR — one continuous voice-over. Not essays. Not blog posts. Not TV news.
+
+OUTPUT RULES (non-negotiable):
+- Write ONLY spoken narration. No [VISUAL: ...] tags, stage directions, bullet lists, or meta-commentary.
+- Name real people, companies, places, dates, and events — the video system finds footage from your words automatically.
+- Use exact brand/product names — never generic "car" or "rocket" when Tesla or SpaceX exists.
+
+RETENTION SPINE — every script follows this arc:
+HOOK → SETUP → COMPLICATION → REVELATION → CONSEQUENCE → CTA
+
+1. HOOK (first 5–15 seconds) — two-part structure in one flow:
+   (a) Pattern interrupt: surprising fact, bold contrast, or high-stakes question.
+   (b) Retention bridge: stakes (lives, money, reputation, history) + why the viewer must keep watching.
+   Line 1 MUST deliver on the title promise. Never open with "Today we're going to…", "In this video…", "Welcome back", "Let's dive in", or "Without further ado".
+
+2. SETUP: Central question + stakes. Open the MACRO LOOP — the one big question only resolved at the end.
+
+3. COMPLICATION: Resistance, paradox, hidden mechanism. Stakes rise. Close a micro-loop, open a bigger one.
+
+4. REVELATION (~60–70% of the video): The value bomb — strongest insight, reframing fact, or reversal. This prevents mid-video drop-off.
+
+5. CONSEQUENCE: What the revelation means today. Resolve the macro loop with one memorable takeaway.
+
+6. CTA: One forward-looking sentence tied to what they just learned — not generic "like and subscribe".
+
+LOOP ORCHESTRATION:
+- MACRO LOOP: The video's spine — the packaging promise (e.g. "How did this really happen?").
+- MID LOOPS: One per major section — escalating questions ("What did they hide?" / "Will it survive?").
+- MICRO LOOPS: Every 3–5 sentences — rhetorical questions, "But here's the catch", partial reveals.
+- Rule: close a loop partially → immediately open a new one. Never resolve everything at once.
+- Rule: every section ends with a BRIDGE teasing the next ("But that raises an even stranger question…").
+
+PATTERN INTERRUPTS (rotate every 45–90 seconds):
+- A specific number ($, %, year, count) — concrete, not vague.
+- A named person, company, place, or event (full name on first mention).
+- A rhetorical question or reversal ("Everyone assumed X. They were wrong.").
+- A contrast or "But here's what nobody tells you" beat.
+
+WRITING CRAFT:
+- Short punchy sentences mixed with longer explanatory ones.
+- Conversational authority — smart friend who did the research, not a professor.
+- If the topic is about a named person, use their full name in the hook — never vague "he/she" without context.
+- Forbidden filler: "In this section", "As we mentioned", "Moving on", "Interestingly enough".
+- Every sentence must create curiosity, deliver value, or advance the story — otherwise cut it.`;
 }
 
 export function buildOutlineUserPrompt(
@@ -233,21 +266,27 @@ SCRIPT BUDGET (spoken narration only):
 - Target: ${budget.targetWords} words (${budget.minWords}–${budget.maxWords} acceptable)
 - ~${budget.targetChars} characters of narration (${budget.minChars}–${budget.maxChars})
 
-NARRATIVE ARC (professional retention structure):
-1. hook — stops the scroll in under 5 seconds
-2. ${budget.sectionCount} body sections mapped to Beginning → Middle (escalation) → End
-3. cta — one sentence, forward-looking
+TITLE & HOOK:
+- Title: specific, curiosity-driven — the hook must deliver on it in line 1.
+- Hook (${budget.hookWords} words): two-part — (1) pattern interrupt, (2) retention bridge with stakes + macro loop opened.
+- Tease a near-term payoff within the first 60–90 seconds of the full video.
+
+NARRATIVE ARC (4-beat documentary structure):
+Map EXACTLY ${budget.sectionCount} body sections across:
+  Setup → Complication → Revelation (value bomb at ~section ${Math.max(2, Math.ceil(budget.sectionCount * 0.65))}) → Consequence
+Each section's keyPoints must include: concrete names, dates, or numbers + a bridge tease to the next section.
+Assign narrativeRole: "setup" | "complication" | "revelation" | "consequence" | "middle" (for escalation beats between acts).
 
 Respond with JSON:
 {
-  "title": "specific, compelling title",
-  "hook": "opening narration (${budget.hookWords} words, ${budget.hookWords - 5}–${budget.hookWords + 8} words) — pure spoken script, no labels",
+  "title": "specific, compelling title that creates a curiosity gap",
+  "hook": "full opening narration (${budget.hookWords - 5}–${budget.hookWords + 8} words) — pattern interrupt + retention bridge + macro loop, pure spoken text",
   "sections": EXACTLY ${budget.sectionCount} items, each {
     "title": "section headline",
-    "keyPoints": ["2-4 concrete facts or beats to cover"],
-    "narrativeRole": "beginning" | "middle" | "middle_peak" | "end"
+    "keyPoints": ["2-4 concrete facts with names/dates/numbers", "include bridge tease to next section"],
+    "narrativeRole": "setup" | "complication" | "revelation" | "consequence" | "middle"
   },
-  "cta": "closing line (${budget.ctaWords} words max)"
+  "cta": "one forward-looking sentence (${budget.ctaWords} words max) tied to the story — not generic subscribe bait"
 }`;
 }
 
@@ -314,6 +353,13 @@ Section ${sectionIndex + 1} of ${sectionTotal}: "${sec.title}"
 ${narrative}
 Cover these beats: ${sec.keyPoints.join("; ")}
 
+RETENTION RULES FOR THIS SECTION:
+- Open or advance a mid-loop — the viewer must feel unfinished business.
+- Include at least one pattern interrupt: a specific number, named entity, question, or reversal.
+- Micro-hooks every 3–5 sentences ("But here's the catch…", "So why did nobody stop it?").
+- End with a bridge teasing the next section (unless this is the final body section).
+- Partial payoffs only — never resolve the macro loop until the consequence/end section.
+
 WORD COUNT (spoken narration only):
 Write EXACTLY ${minW}–${maxW} words (target ${wordTarget}). This section is part of a ${budget.targetWords}-word video — do NOT go short.
 
@@ -329,10 +375,13 @@ export function buildOneShotScriptUserPrompt(
   budget: ScriptLengthBudget,
   isMuskTopic: boolean
 ): string {
+  const valueBombSection = Math.max(2, Math.ceil(budget.sectionCount * 0.65));
   const sections =
     budget.sectionCount === 2
-      ? "## Act 1 — Setup\n…\n\n## Act 2 — Payoff\n…"
-      : "## Act 1 — Setup\n…\n\n## Act 2 — Escalation\n…\n\n## Act 3 — Payoff\n…";
+      ? "## Setup\n…\n\n## Consequence\n…"
+      : budget.sectionCount <= 3
+        ? "## Setup\n…\n\n## Complication\n…\n\n## Consequence\n…"
+        : `## Setup\n…\n\n## Complication\n…\n\n(middle escalation sections)\n\n## Revelation\n(value bomb — strongest insight, ~section ${valueBombSection})\n…\n\n## Consequence\n…`;
   const brandRule = isMuskTopic
     ? "Use exact names (Tesla Model 3, SpaceX Falcon 9, Gigafactory) — never generic car/rocket."
     : "Use exact real names (people, companies, places) from the topic — never generic stock where a brand is named.";
@@ -344,12 +393,20 @@ Format: ${videoType}
 Write the COMPLETE narration script in one pass (markdown).
 
 STRUCTURE (required headings):
-# Compelling title
+# Compelling title — curiosity gap, hook must deliver on it in line 1
 ## Opening
-Hook narration (${budget.hookWords} words) — pattern interrupt, no "welcome" or "in this video"
+Two-part hook (${budget.hookWords} words): (1) pattern interrupt, (2) retention bridge with stakes + macro loop. No "welcome" or "in this video". Tease near-term payoff within 60–90s.
 ${sections}
 ## CALL TO ACTION
-${budget.ctaWords} words max — forward-looking single beat
+${budget.ctaWords} words max — one forward-looking sentence tied to the story
+
+RETENTION RULES:
+- Macro loop open until Consequence section — resolve with one memorable takeaway.
+- Mid-loops per section, micro-hooks every 3–5 sentences.
+- Pattern interrupt every 45–90 seconds (number, name, question, or contrast).
+- Value bomb in Revelation section (~60–70% of script) — strongest reframing insight.
+- Every section ends with a bridge to the next.
+- Partial payoffs only in the middle — never resolve everything at once.
 
 WORD BUDGET (spoken narration only):
 ${budget.minWords}–${budget.maxWords} words (target ${budget.targetWords})
@@ -404,8 +461,9 @@ Rules:
 - Revise ONLY the script in SCRIPT TO REVISE — same facts, people, companies, and story as that draft.
 - Never replace the topic with a different story (no unrelated art, celebrities, or viral tangents).
 - Keep HOOK → sections → CTA structure and all ## headings.
+- Preserve retention mechanics: macro loop, mid-loops, bridges between sections, value bomb near 60–70%, pattern interrupts.
 - Remove any [VISUAL: ...] tags — narration only.
-- ${direction === "EXPAND" ? "Add substance: another fact, contrast, or micro-hook — not padding." : "Cut redundancy only — keep retention beats and the narrative arc."}
+- ${direction === "EXPAND" ? "Add substance: another fact, contrast, micro-hook, or named entity — not padding or filler phrases." : "Cut redundancy only — keep hooks, loops, bridges, and the narrative arc intact."}
 - Return the FULL revised script only (markdown).
 
 SCRIPT TO REVISE:
