@@ -113,7 +113,7 @@ export async function archiveVisualSourcesReady(): Promise<ArchiveVisualSourcesS
       activeArchives: 0,
       totalAssets: 0,
       message:
-        "No active media archive — upload clips in Admin → Media Archief and mark the archive active",
+        "No active media archive — upload clips in Admin → Media Archive and mark the archive active",
     };
   }
 
@@ -127,7 +127,7 @@ export async function archiveVisualSourcesReady(): Promise<ArchiveVisualSourcesS
       activeArchives: archives.length,
       totalAssets: 0,
       message:
-        "Media archive is empty — upload tagged clips or images in Admin → Media Archief",
+        "Media archive is empty — upload tagged clips or images in Admin → Media Archive",
     };
   }
 

@@ -3,12 +3,14 @@ import {
   formatGenerationDuration,
   progressStepWithElapsed,
   resolvePipelineDisplayStage,
+  estimateRemainingGenerationSec,
+  formatRemainingGenerationLabel,
 } from "@shared/pipelineProgress";
 
 describe("resolvePipelineDisplayStage", () => {
-  it("maps beat-level visual progress to Beelden zoeken", () => {
+  it("maps beat-level visual progress to Finding visuals", () => {
     expect(resolvePipelineDisplayStage("Scene 2/15: beat 1/4...", 46).label).toBe(
-      "Beelden zoeken"
+      "Finding visuals"
     );
     expect(
       resolvePipelineDisplayStage(
@@ -18,19 +20,19 @@ describe("resolvePipelineDisplayStage", () => {
     ).toBe("visuals");
   });
 
-  it("maps compose and export to Video afronden", () => {
+  it("maps compose and export to Finishing video", () => {
     expect(resolvePipelineDisplayStage("Video samenstellen (beelden + voice)...", 50).label).toBe(
-      "Video afronden"
+      "Finishing video"
     );
     expect(resolvePipelineDisplayStage("Alle scenes samenvoegen + muziek...", 80).label).toBe(
-      "Video afronden"
+      "Finishing video"
     );
   });
 
   it("maps script and voiceover phases", () => {
-    expect(resolvePipelineDisplayStage("🔍 Researching topic...", 5).label).toBe("Script schrijven");
+    expect(resolvePipelineDisplayStage("🔍 Researching topic...", 5).label).toBe("Writing script");
     expect(resolvePipelineDisplayStage("Volledige voiceover in ElevenLabs (één script)...", 35).label).toBe(
-      "Voiceover genereren"
+      "Generating voiceover"
     );
   });
 });
@@ -44,9 +46,26 @@ describe("formatGenerationDuration", () => {
   });
 });
 
+describe("estimateRemainingGenerationSec", () => {
+  it("returns null when progress is too early", () => {
+    expect(estimateRemainingGenerationSec(1, 5, 3600)).toBeNull();
+  });
+
+  it("estimates from percent and caps by max window", () => {
+    expect(estimateRemainingGenerationSec(50, 600, 3600)).toBe(600);
+    expect(estimateRemainingGenerationSec(50, 3500, 3600)).toBe(100);
+  });
+
+  it("formats remaining label", () => {
+    expect(formatRemainingGenerationLabel(null)).toBe("Estimating time left…");
+    expect(formatRemainingGenerationLabel(0)).toBe("Almost done…");
+    expect(formatRemainingGenerationLabel(125)).toBe("~2m 05s left");
+  });
+});
+
 describe("progressStepWithElapsed", () => {
   it("appends elapsed duration to the label", () => {
     const startedAt = Date.now() - 90_000;
-    expect(progressStepWithElapsed("Beelden zoeken", startedAt)).toBe("Beelden zoeken · 1m 30s");
+    expect(progressStepWithElapsed("Finding visuals", startedAt)).toBe("Finding visuals · 1m 30s");
   });
 });

@@ -79,7 +79,7 @@ export async function reviewSceneVisualAlignment(
       sceneIndex: scene.index,
       severity: "error",
       code: "NO_CLIPS",
-      message: "Geen beelden gekoppeld aan deze scene",
+      message: "No visuals linked to this scene",
     });
     return issues;
   }
@@ -111,7 +111,7 @@ export async function reviewSceneVisualAlignment(
         sceneIndex: scene.index,
         severity: "warn",
         code: "ASSET_MISSING",
-        message: `Clip ${assetId} niet meer in archief`,
+        message: `Clip ${assetId} no longer in archive`,
       });
       continue;
     }
@@ -124,7 +124,7 @@ export async function reviewSceneVisualAlignment(
         sceneIndex: scene.index,
         severity: "warn",
         code: "LOW_VISUAL_MATCH",
-        message: `"${asset.title ?? assetId}" past mogelijk niet bij: "${scene.text.slice(0, 60)}…" (score ${score})`,
+        message: `"${asset.title ?? assetId}" may not match: "${scene.text.slice(0, 60)}…" (score ${score})`,
       });
     }
     if (isCuratedPosterOrStillAsset(asset)) posterCount++;
@@ -136,7 +136,7 @@ export async function reviewSceneVisualAlignment(
       sceneIndex: scene.index,
       severity: "warn",
       code: "MANY_STILLS",
-      message: `${posterCount} poster/portret-beelden in één scene — montage kan statisch ogen`,
+      message: `${posterCount} poster/portrait visuals in one scene — montage may feel static`,
     });
   }
   if (interviewCount >= 2) {
@@ -144,7 +144,7 @@ export async function reviewSceneVisualAlignment(
       sceneIndex: scene.index,
       severity: "warn",
       code: "MANY_INTERVIEWS",
-      message: `${interviewCount} interview-clips in één scene`,
+      message: `${interviewCount} interview clips in one scene`,
     });
   }
   if (lowScoreCount > 0 && lowScoreCount === scene.clipPaths.length) {
@@ -152,7 +152,7 @@ export async function reviewSceneVisualAlignment(
       sceneIndex: scene.index,
       severity: "error",
       code: "ALL_CLIPS_MISMATCH",
-      message: "Geen enkel beeld sluit duidelijk aan op de narratie",
+      message: "No visual clearly matches the narration",
     });
   }
 
@@ -174,7 +174,7 @@ export async function reviewAssembledScenes(
         sceneIndex: scene.index,
         severity: "error",
         code: "ASSEMBLY_MISSING",
-        message: "Gemonteerde scene ontbreekt of is te klein",
+        message: "Assembled scene missing or too small",
       });
       continue;
     }
@@ -186,7 +186,7 @@ export async function reviewAssembledScenes(
         sceneIndex: scene.index,
         severity: "warn",
         code: "DURATION_DRIFT",
-        message: `Scene duurt ${probed.toFixed(1)}s i.p.v. ~${expected.toFixed(1)}s — mogelijk bevroren frame`,
+        message: `Scene is ${probed.toFixed(1)}s instead of ~${expected.toFixed(1)}s — possible frozen frame`,
       });
     }
   }
@@ -226,7 +226,7 @@ export async function reviewPipelineBeforeEffects(
     issues,
     summary:
       errors === 0 && warns === 0
-        ? `Hele video doorgenomen (${scenes.length} scenes) — klaar voor effecten`
+        ? `Full video reviewed (${scenes.length} scenes) — ready for effects`
         : `Controle vóór effecten: ${errors} fout(en), ${warns} waarschuwing(en)`,
   };
 }
@@ -245,7 +245,7 @@ export async function reviewPipelineBeforeExport(
         sceneIndex: scenes[i].index,
         severity: "error",
         code: "COMPOSED_MISSING",
-        message: "Scene na effecten ontbreekt",
+        message: "Scene missing after effects",
       });
     }
   }

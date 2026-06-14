@@ -2,6 +2,7 @@
  * Professional documentary script generation with length budgets tied to video duration.
  * Targets spoken narration length (WPM) so VO matches chosen video length.
  */
+import { normalizeVideoLength, type VideoLength } from "../shared/videoLengths";
 
 export interface ScriptLengthBudget {
   videoLength: string;
@@ -21,28 +22,23 @@ export interface ScriptLengthBudget {
 /** Documentary voice-over pace (~145 WPM). */
 const NARRATION_WPM = 145;
 
-const SPOKEN_SECONDS: Record<string, number> = {
+const SPOKEN_SECONDS: Record<VideoLength, number> = {
   "1": 58,
-  "2": 118,
-  "5-8": 390,
-  "8-12": 600,
-  "12-15": 810,
+  "8-10": 540,
+  "10-15": 750,
   "15-20": 1050,
-  "20+": 1200,
 };
 
-const LENGTH_LABELS: Record<string, string> = {
+const LENGTH_LABELS: Record<VideoLength, string> = {
   "1": "1 minute",
-  "2": "2 minutes",
-  "5-8": "5–8 minutes",
-  "8-12": "8–12 minutes",
-  "12-15": "12–15 minutes",
+  "8-10": "8–10 minutes",
+  "10-15": "10–15 minutes",
   "15-20": "15–20 minutes",
-  "20+": "20+ minutes",
 };
 
-export function getScriptLengthBudget(videoLength: string): ScriptLengthBudget {
-  const targetSpokenSec = SPOKEN_SECONDS[videoLength] ?? 1050;
+export function getScriptLengthBudget(videoLengthRaw: string): ScriptLengthBudget {
+  const videoLength = normalizeVideoLength(videoLengthRaw);
+  const targetSpokenSec = SPOKEN_SECONDS[videoLength];
   const targetWords = Math.round((targetSpokenSec / 60) * NARRATION_WPM);
   const minWords = Math.round(targetWords * 0.9);
   const maxWords = Math.round(targetWords * 1.1);
@@ -52,19 +48,12 @@ export function getScriptLengthBudget(videoLength: string): ScriptLengthBudget {
 
   const sectionCount =
     videoLength === "1" ? 2
-      : videoLength === "2" ? 3
-        : videoLength === "5-8" ? 5
-          : videoLength === "8-12" ? 6
-            : videoLength === "12-15" ? 7
-              : videoLength === "15-20" ? 8
-                : 9;
+      : videoLength === "8-10" ? 6
+        : videoLength === "10-15" ? 7
+          : 8;
 
-  const hookWords =
-    videoLength === "1" ? 28
-      : videoLength === "2" ? 42
-        : videoLength === "5-8" ? 55
-          : 70;
-  const ctaWords = videoLength === "1" ? 18 : videoLength === "2" ? 22 : 28;
+  const hookWords = videoLength === "1" ? 28 : 70;
+  const ctaWords = videoLength === "1" ? 18 : 28;
 
   return {
     videoLength,
@@ -199,7 +188,7 @@ function sectionNarrativeBrief(index: number, total: number, videoLength: string
   if (index === Math.floor(total / 2)) {
     return `MIDDLE PEAK (Act 2B — Retention spike): The "why it matters" beat. Pattern interrupt — question, reversal, or number that reframes everything.`;
   }
-  return `MIDDLE (Act 2 — Momentum): Keep curiosity high. Partial answers, then new stakes. ${videoLength === "5-8" || videoLength === "8-12" ? "Micro-hook every 3–4 sentences." : "No filler."}`;
+  return `MIDDLE (Act 2 — Momentum): Keep curiosity high. Partial answers, then new stakes. ${videoLength === "8-10" ? "Micro-hook every 3–4 sentences." : "No filler."}`;
 }
 
 export function buildScriptWriterSystemPrompt(videoType: string): string {

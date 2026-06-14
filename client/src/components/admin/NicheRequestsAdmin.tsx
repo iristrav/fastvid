@@ -16,9 +16,9 @@ export function NicheRequestsAdmin() {
   const updateStatus = trpc.nicheRequest.updateStatus.useMutation({
     onSuccess: () => {
       utils.nicheRequest.listAll.invalidate();
-      toast.success("Status bijgewerkt");
+      toast.success("Status updated");
     },
-    onError: (e) => toast.error("Opslaan mislukt", { description: toastErrorMessage(e) }),
+    onError: (e) => toast.error("Save failed", { description: toastErrorMessage(e) }),
   });
 
   const filtered = filter === "all" ? requests : requests.filter((r) => r.status === filter);
@@ -27,15 +27,15 @@ export function NicheRequestsAdmin() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-xl font-black text-white">Niche-aanvragen</h2>
-          <p className="text-sm text-slate-400">Goedkeuren, archief koppelen, status bijwerken.</p>
+          <h2 className="text-xl font-black text-white">Niche requests</h2>
+          <p className="text-sm text-slate-400">Approve, link archive, update status.</p>
         </div>
         <select
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
           className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white"
         >
-          <option value="all" className="bg-slate-900">Alle</option>
+          <option value="all" className="bg-slate-900">All</option>
           {STATUSES.map((s) => (
             <option key={s} value={s} className="bg-slate-900">{NICHE_REQUEST_STATUS_LABELS[s]}</option>
           ))}
@@ -46,7 +46,7 @@ export function NicheRequestsAdmin() {
         <div className="flex justify-center py-12"><Loader2 className="w-6 h-6 animate-spin text-purple-400" /></div>
       ) : filtered.length === 0 ? (
         <div className="glass-card border border-white/8 rounded-xl p-8 text-center text-slate-500 text-sm">
-          Geen aanvragen in deze filter.
+          No requests in this filter.
         </div>
       ) : (
         <div className="space-y-3">
@@ -55,27 +55,33 @@ export function NicheRequestsAdmin() {
               <div className="flex flex-wrap items-start justify-between gap-2">
                 <div>
                   <p className="font-semibold text-white">
-                    {r.requestType === "onboarding" ? "Onboarding" : "Nieuw kanaal"} — {r.nicheTitle}
+                    {r.requestType === "onboarding" ? "Onboarding" : "New channel"} — {r.nicheTitle}
                   </p>
                   <p className="text-xs text-slate-400 mt-0.5">
                     {r.contactEmail ?? r.userEmail ?? "—"}
                     {r.userName ? ` · ${r.userName}` : ""}
                   </p>
-                  {r.titleStructure && (
-                    <div className="mt-2">
-                      <p className="text-[10px] uppercase tracking-wide text-slate-500 mb-1">Titelstructuur</p>
-                      <p className="text-sm text-slate-400 whitespace-pre-wrap">{r.titleStructure}</p>
-                    </div>
-                  )}
                   {r.topics && (
                     <div className="mt-2">
-                      <p className="text-[10px] uppercase tracking-wide text-slate-500 mb-1">Onderwerpen</p>
+                      <p className="text-[10px] uppercase tracking-wide text-slate-500 mb-1">Topics</p>
                       <p className="text-sm text-slate-400 whitespace-pre-wrap">{r.topics}</p>
                     </div>
                   )}
-                  {!r.titleStructure && !r.topics && r.description && (
+                  {r.subniches && (
                     <div className="mt-2">
-                      <p className="text-[10px] uppercase tracking-wide text-slate-500 mb-1">Notities</p>
+                      <p className="text-[10px] uppercase tracking-wide text-slate-500 mb-1">Sub-niches</p>
+                      <p className="text-sm text-slate-400 whitespace-pre-wrap">{r.subniches}</p>
+                    </div>
+                  )}
+                  {r.titleStructure && (
+                    <div className="mt-2">
+                      <p className="text-[10px] uppercase tracking-wide text-slate-500 mb-1">Title structure</p>
+                      <p className="text-sm text-slate-400 whitespace-pre-wrap">{r.titleStructure}</p>
+                    </div>
+                  )}
+                  {!r.titleStructure && !r.topics && !r.subniches && r.description && (
+                    <div className="mt-2">
+                      <p className="text-[10px] uppercase tracking-wide text-slate-500 mb-1">Notes</p>
                       <p className="text-sm text-slate-400 whitespace-pre-wrap">{r.description}</p>
                     </div>
                   )}
@@ -107,7 +113,7 @@ export function NicheRequestsAdmin() {
 
               {archives.length > 0 && (
                 <div className="flex flex-wrap items-center gap-2 pt-1">
-                  <span className="text-xs text-slate-500">Archief koppelen:</span>
+                  <span className="text-xs text-slate-500">Link archive:</span>
                   <select
                     defaultValue={r.linkedArchiveId ?? ""}
                     onChange={(e) => {

@@ -18,30 +18,25 @@ import { toast } from "sonner";
 import { Streamdown } from "streamdown";
 import {
   Play, Sparkles, CheckCircle2, XCircle, Loader2,
-  FileText, Video, LogOut, User, ChevronRight, RefreshCw,
-  Copy, Download, Eye, LayoutDashboard, Settings, CreditCard, Volume2,
+  FileText, Video, ChevronRight, RefreshCw,
+  Copy, Download, Eye, CreditCard, Volume2,
   Trash2, Pencil, Check, X as XIcon, Mic, Upload,
-  AlertCircle, ChevronDown, Radio,
+  AlertCircle, ChevronDown,
 } from "lucide-react";
-import { DashboardNicheRequests } from "@/components/niche/DashboardNicheRequests";
+import { NicheRequestsDashboardCard } from "@/components/niche/DashboardNicheRequests";
+import { DashboardShell } from "@/components/dashboard/DashboardShell";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
+import { FASTVID_PRO_PRICE_LABEL } from "@shared/billing";
 import { formatGenerationDuration } from "@shared/pipelineProgress";
+import { getVideoLengthLabel, VIDEO_LENGTH_OPTIONS, type VideoLength } from "@shared/videoLengths";
+import { GenerationProgressBar } from "@/components/GenerationProgressBar";
 
-// ─── Constants ────────────────────────────────────────────────────────────────
-const VIDEO_LENGTHS = [
-  { label: "1 min (test)", value: "1" as const, desc: "Quick test" },
-  { label: "2 min", value: "2" as const, desc: "Fast preview" },
-  { label: "5–8 min", value: "5-8" as const, desc: "Short & punchy" },
-  { label: "8–12 min", value: "8-12" as const, desc: "Tutorials" },
-  { label: "12–15 min", value: "12-15" as const, desc: "In-depth" },
-  { label: "15–20 min", value: "15-20" as const, desc: "Extended" },
-  { label: "20+ min", value: "20+" as const, desc: "Long-form" },
-];
-
-type VideoLength = "1" | "2" | "5-8" | "8-12" | "12-15" | "15-20" | "20+";
+const VIDEO_LENGTHS = VIDEO_LENGTH_OPTIONS.map((opt) =>
+  opt.value === "1" ? { ...opt, label: "1 min (test)" } : opt
+);
 
 function readGenerationDurationSec(video: {
   metadata?: unknown;
@@ -241,10 +236,10 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
   const completedDurationSec =
     currentStatus === "completed" ? readGenerationDurationSec(video) : null;
   const statusBadgeLabel =
-    isProcessing && pollData?.progressStep
-      ? pollData.progressStep
+    isProcessing
+      ? "Generating"
       : currentStatus === "completed" && completedDurationSec != null
-        ? `Klaar · ${formatGenerationDuration(completedDurationSec)}`
+        ? `Done · ${formatGenerationDuration(completedDurationSec)}`
         : stageInfo.label;
   const statusColor = STATUS_COLORS[currentStatus] ?? "text-slate-400 bg-slate-400/10";
   const displayThumbnail = pollData?.thumbnailUrl ?? video.thumbnailUrl;
@@ -256,41 +251,6 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
   }, [pollData?.status, video.status, utils.video.list]);
 
   const progressPercent = pollData?.progressPercent ?? 0;
-  const progressLog = (pollData?.progressLog ?? []) as Array<{ step: string; startedAt: number; completedAt?: number; status: string }>;
-  const [elapsed, setElapsed] = useState(0);
-  const [stepTimers, setStepTimers] = useState<Record<number, number>>({});
-
-  useEffect(() => {
-    const startTime = pollData?.generationStartedAt;
-    if (!isProcessing || !startTime) { setElapsed(0); return; }
-    const update = () => setElapsed(Math.floor((Date.now() - new Date(startTime).getTime()) / 1000));
-    update();
-    const id = setInterval(update, 1000);
-    return () => clearInterval(id);
-  }, [isProcessing, pollData?.generationStartedAt]);
-
-  // Live per-step elapsed timers
-  useEffect(() => {
-    if (!isProcessing || progressLog.length === 0) return;
-    const id = setInterval(() => {
-      const now = Date.now();
-      const timers: Record<number, number> = {};
-      progressLog.forEach((entry, idx) => {
-        if (entry.status === "active") {
-          timers[idx] = Math.floor((now - entry.startedAt) / 1000);
-        } else if (entry.completedAt) {
-          timers[idx] = Math.floor((entry.completedAt - entry.startedAt) / 1000);
-        }
-      });
-      setStepTimers(timers);
-    }, 1000);
-    return () => clearInterval(id);
-  }, [isProcessing, progressLog]);
-
-  const elapsedMin = Math.floor(elapsed / 60);
-  const elapsedSec = String(elapsed % 60).padStart(2, "0");
-  const elapsedStr = elapsedMin > 0 ? `${elapsedMin}m ${elapsedSec}s` : `${elapsed}s`;
-  const nearingLimit = elapsed > 75 * 60; // warn after 75 min
 
   return (
     <div className="glass-card border border-white/8 rounded-xl overflow-hidden hover:border-white/15 transition-all duration-300 group">
@@ -303,73 +263,15 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
         ) : (
           <div className="w-full h-full flex items-center justify-center">
             {isProcessing ? (
-              <div className="flex flex-col w-full h-full overflow-y-auto">
-                {/* Header: total elapsed + percent */}
-                <div className="flex items-center justify-between px-3 pt-3 pb-2 border-b border-white/8">
-                  <div className="flex items-center gap-1.5">
-                    <Loader2 className="w-3 h-3 text-purple-400 animate-spin" />
-                    <span className="text-[10px] font-bold text-white">{stageInfo.agent}</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-[10px] font-semibold text-purple-300">{progressPercent}%</span>
-                    <span className={`text-[10px] font-mono ${nearingLimit ? "text-amber-400" : "text-slate-500"}`}>⏱ {elapsedStr}</span>
-                  </div>
-                </div>
-                {/* Progress bar */}
-                <div className="w-full bg-white/8 h-0.5">
-                  <div className="h-full bg-gradient-to-r from-purple-500 to-cyan-500 transition-all duration-700" style={{ width: `${Math.max(progressPercent, 2)}%` }} />
-                </div>
-                {/* Step list */}
-                <div className="flex-1 overflow-y-auto px-3 py-2 space-y-1.5">
-                  {progressLog.length === 0 ? (
-                    <div className="flex items-center gap-2 py-1">
-                      <Loader2 className="w-3 h-3 text-slate-500 animate-spin shrink-0" />
-                      <span className="text-[10px] text-slate-500">{stageInfo.label}...</span>
-                    </div>
-                  ) : (
-                    progressLog.map((entry, idx) => {
-                      const isDone = entry.status === "done";
-                      const isActive = entry.status === "active";
-                      const stepSec = stepTimers[idx];
-                      const stepMin = stepSec !== undefined ? Math.floor(stepSec / 60) : 0;
-                      const stepSecRem = stepSec !== undefined ? stepSec % 60 : 0;
-                      const stepTimeStr = stepSec !== undefined
-                        ? (stepMin > 0 ? `${stepMin}m ${String(stepSecRem).padStart(2,"0")}s` : `${stepSec}s`)
-                        : null;
-                      return (
-                        <div key={idx} className={`flex items-start gap-2 py-0.5 transition-opacity ${isDone ? "opacity-60" : "opacity-100"}`}>
-                          {/* Status icon */}
-                          <div className="shrink-0 mt-0.5">
-                            {isDone ? (
-                              <CheckCircle2 className="w-3 h-3 text-green-400" />
-                            ) : isActive ? (
-                              <Loader2 className="w-3 h-3 text-purple-400 animate-spin" />
-                            ) : (
-                              <div className="w-3 h-3 rounded-full border border-white/20" />
-                            )}
-                          </div>
-                          {/* Step name */}
-                          <div className="flex-1 min-w-0">
-                            <p className={`text-[10px] leading-tight ${isActive ? "text-white font-semibold" : isDone ? "text-slate-400" : "text-slate-600"}`}>
-                              {entry.step}
-                            </p>
-                          </div>
-                          {/* Step timer */}
-                          {stepTimeStr && (
-                            <span className={`text-[9px] font-mono shrink-0 ${isActive ? "text-cyan-400" : "text-slate-600"}`}>
-                              {stepTimeStr}
-                            </span>
-                          )}
-                        </div>
-                      );
-                    })
-                  )}
-                </div>
-                {nearingLimit && (
-                  <div className="px-3 pb-2">
-                    <p className="text-[9px] text-amber-400 text-center">⚠️ Nearing 1.5h limit</p>
-                  </div>
-                )}
+              <div className="w-full h-full flex flex-col items-center justify-center gap-4 px-6 py-5">
+                <Loader2 className="w-8 h-8 text-purple-400 animate-spin" />
+                <GenerationProgressBar
+                  compact
+                  progressPercent={progressPercent}
+                  generationStartedAt={pollData?.generationStartedAt}
+                  videoLength={video.videoLength}
+                  className="max-w-[220px]"
+                />
               </div>
             ) : currentStatus === "failed" ? (
               <div className="flex flex-col items-center gap-2 px-4 py-3 text-center w-full">
@@ -400,7 +302,7 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
           {statusBadgeLabel}
         </div>
         <div className="absolute bottom-2 left-2 px-2 py-0.5 rounded-md bg-black/60 text-xs text-white font-mono">
-          {VIDEO_LENGTHS.find(l => l.value === video.videoLength)?.label ?? video.videoLength}
+          {getVideoLengthLabel(video.videoLength)}
         </div>
       </div>
 
@@ -530,11 +432,11 @@ function VideoDetailModal({ videoId, onClose }: { videoId: number; onClose: () =
               <div className="glass-card border border-amber-500/20 rounded-xl p-5 flex items-start gap-3 bg-amber-500/5">
                 <AlertCircle className="w-5 h-5 text-amber-400 mt-0.5 shrink-0" />
                 <div>
-                  <p className="text-sm font-medium text-amber-300">Videobestand niet beschikbaar</p>
+                  <p className="text-sm font-medium text-amber-300">Video file unavailable</p>
                   <p className="text-xs text-slate-400 mt-1">
                     {fileMissing
-                      ? "Het MP4-bestand staat niet meer op de server (vaak na een Railway-deploy zonder persistent volume). Genereer deze video opnieuw. Koppel een Railway Volume op /data/uploads om dit te voorkomen."
-                      : "Deze video is afgerond maar het bestand ontbreekt. Genereer opnieuw."}
+                      ? "The MP4 file is no longer on the server (often after a deploy without persistent storage). Regenerate this video. Attach a persistent volume at /data/uploads to prevent this."
+                      : "This video completed but the file is missing. Please regenerate."}
                   </p>
                 </div>
               </div>
@@ -796,10 +698,10 @@ function CustomVoiceoverUpload({ onUpload, onClear, uploadedUrl }: {
 
 // ─── Main Dashboard ───────────────────────────────────────────────────────────
 export default function Dashboard() {
-  const { user, loading, isAuthenticated, logout } = useAuth({ redirectOnUnauthenticated: true });
+  const { user, loading, isAuthenticated } = useAuth({ redirectOnUnauthenticated: true });
   const [, navigate] = useLocation();
   const [prompt, setPrompt] = useState("");
-  const [selectedLength, setSelectedLength] = useState<VideoLength>("2");
+  const [selectedLength, setSelectedLength] = useState<VideoLength>("8-10");
   const [selectedVoice, setSelectedVoice] = useState("pNInz6obpgDQGcFmaJgB"); // ElevenLabs Michael voice ID
   const [useCustomVoice, setUseCustomVoice] = useState(false);
   const [customVoiceoverUrl, setCustomVoiceoverUrl] = useState<string | null>(null);
@@ -873,11 +775,9 @@ export default function Dashboard() {
 
   useEffect(() => {
     if (window.location.hash === "#niche-requests") {
-      window.setTimeout(() => {
-        document.getElementById("niche-requests")?.scrollIntoView({ behavior: "smooth" });
-      }, 300);
+      navigate("/dashboard/niche-requests");
     }
-  }, [loading, nicheAccessLoading]);
+  }, [navigate]);
 
   const handleGenerate = () => {
     if (!prompt.trim() || prompt.length < 10) {
@@ -911,83 +811,8 @@ export default function Dashboard() {
   }
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
-      {/* ── Sidebar ── */}
-      <div className="fixed left-0 top-0 bottom-0 w-60 bg-background/95 border-r border-white/8 flex flex-col z-40 hidden lg:flex">
-        <div className="p-5 border-b border-white/8">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-purple-600 to-cyan-500 flex items-center justify-center">
-              <Play className="w-4 h-4 text-white fill-white" />
-            </div>
-            <span className="font-black text-xl text-white" style={{ fontFamily: 'Outfit, sans-serif' }}>
-              Fast<span className="gradient-text">vid</span>
-            </span>
-          </div>
-        </div>
-        <nav className="flex-1 p-4 space-y-1">
-          <button className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg bg-purple-600/20 text-white text-sm font-medium">
-            <LayoutDashboard className="w-4 h-4 text-purple-400" />
-            Dashboard
-          </button>
-          {user?.role !== "admin" && (
-            <button
-              type="button"
-              onClick={() => document.getElementById("niche-requests")?.scrollIntoView({ behavior: "smooth" })}
-              className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/5 text-sm transition-colors"
-            >
-              <Radio className="w-4 h-4" />
-              Niche-aanvraag
-            </button>
-          )}
-          <button onClick={() => navigate("/")} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/5 text-sm transition-colors">
-            <Video className="w-4 h-4" />
-            Landing Page
-          </button>
-          {user?.role === "admin" && (
-            <button onClick={() => navigate("/admin")} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/5 text-sm transition-colors">
-              <Settings className="w-4 h-4" />
-              Admin Panel
-            </button>
-          )}
-        </nav>
-        <div className="p-4 border-t border-white/8">
-          <div className="flex items-center gap-3 mb-3">
-            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-purple-600 to-cyan-500 flex items-center justify-center text-white font-bold text-sm">
-              {user?.name?.[0] ?? "U"}
-            </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-white truncate">{user?.name ?? "User"}</p>
-              <p className={`text-xs ${hasActiveSubscription ? "text-green-400" : "text-yellow-400"}`}>
-                {hasActiveSubscription ? "Active" : "No subscription"}
-              </p>
-            </div>
-          </div>
-          <button onClick={() => { logout(); navigate("/"); }} className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-slate-400 hover:text-white hover:bg-white/5 text-sm transition-colors">
-            <LogOut className="w-4 h-4" />
-            Log out
-          </button>
-        </div>
-      </div>
-
-      {/* ── Mobile Header ── */}
-      <div className="lg:hidden fixed top-0 left-0 right-0 z-40 bg-background/95 border-b border-white/8 px-4 h-14 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-purple-600 to-cyan-500 flex items-center justify-center">
-            <Play className="w-3.5 h-3.5 text-white fill-white" />
-          </div>
-          <span className="font-black text-lg text-white" style={{ fontFamily: 'Outfit, sans-serif' }}>Fast<span className="gradient-text">vid</span></span>
-        </div>
-        <div className="flex items-center gap-2">
-          {user?.role === "admin" && (
-            <button onClick={() => navigate("/admin")} className="text-xs text-slate-400 hover:text-white px-2 py-1 rounded-md hover:bg-white/5 transition-colors">Admin</button>
-          )}
-          <button onClick={() => { logout(); navigate("/"); }} className="text-xs text-slate-400 hover:text-white px-2 py-1 rounded-md hover:bg-white/5 transition-colors">Logout</button>
-        </div>
-      </div>
-
-      {/* ── Main Content ── */}
-      <div className="lg:pl-60 pt-14 lg:pt-0">
-        <div className="max-w-5xl mx-auto p-6 lg:p-8 space-y-8">
+    <DashboardShell activeTab="dashboard">
+      <div className="max-w-5xl mx-auto p-6 lg:p-8 space-y-8">
           {/* Header */}
           <div>
             <h1 className="text-2xl font-black text-white" style={{ fontFamily: 'Outfit, sans-serif' }}>
@@ -995,16 +820,16 @@ export default function Dashboard() {
             </h1>
             <p className="text-slate-400 text-sm mt-1">
               {needsOnboarding
-                ? "Dien je niche-aanvraag in om te starten"
+                ? "Submit your niche application to get started"
                 : "Generate your next viral YouTube video"}
             </p>
           </div>
 
-          <DashboardNicheRequests />
+          <NicheRequestsDashboardCard />
 
           {!showVideoStudio && needsOnboarding && (
-            <p className="text-sm text-slate-500 text-center py-4">
-              Na goedkeuring van je niche kun je hier video&apos;s genereren.
+            <p className="text-sm text-slate-500 text-center py-2">
+              Once your niche is approved, you can generate videos here.
             </p>
           )}
 
@@ -1019,7 +844,7 @@ export default function Dashboard() {
                 </div>
                 <div>
                   <p className="text-sm font-semibold text-yellow-300">No active subscription</p>
-                  <p className="text-xs text-yellow-400/70 mt-0.5">Subscribe to the Fastvid Pro plan for €500/month and start generating unlimited videos.</p>
+                  <p className="text-xs text-yellow-400/70 mt-0.5">Subscribe to Fastvid Pro ({FASTVID_PRO_PRICE_LABEL}) and start generating unlimited videos.</p>
                 </div>
               </div>
               <button
@@ -1028,7 +853,7 @@ export default function Dashboard() {
                 className="btn-gradient px-4 py-2.5 rounded-lg text-sm font-semibold text-white flex items-center gap-2 shrink-0 disabled:opacity-60"
               >
                 {checkoutMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <CreditCard className="w-4 h-4" />}
-                Subscribe — €500/month
+                Subscribe — {FASTVID_PRO_PRICE_LABEL}
               </button>
             </div>
           )}
@@ -1134,10 +959,10 @@ export default function Dashboard() {
               )}
             </button>
             <p className="text-xs text-slate-500 leading-relaxed">
-              Jij bent zelf verantwoordelijk voor wat je publiceert. Fastvid is niet aansprakelijk voor
-              copyright claims, Content ID of platform strikes (o.a. YouTube).{" "}
+              You are responsible for what you publish. Fastvid is not liable for
+              copyright claims, Content ID, or platform strikes (including on YouTube).{" "}
               <a href="/terms" className="text-cyan-400/80 hover:text-cyan-300 underline underline-offset-2">
-                Algemene voorwaarden
+                Terms of Service
               </a>
             </p>
           </div>
@@ -1209,14 +1034,12 @@ export default function Dashboard() {
           </>
           )}
         </div>
-      </div>
 
       {/* ── Video Detail Modal ── */}
       {viewingVideoId !== null && (
         <VideoDetailModal videoId={viewingVideoId} onClose={() => setViewingVideoId(null)} />
       )}
 
-
-    </div>
+    </DashboardShell>
   );
 }

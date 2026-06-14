@@ -8,10 +8,10 @@ export const PIPELINE_DISPLAY_STAGES: ReadonlyArray<{
   key: PipelineDisplayStageKey;
   label: string;
 }> = [
-  { key: "script", label: "Script schrijven" },
-  { key: "voiceover", label: "Voiceover genereren" },
-  { key: "visuals", label: "Beelden zoeken" },
-  { key: "finish", label: "Video afronden" },
+  { key: "script", label: "Writing script" },
+  { key: "voiceover", label: "Generating voiceover" },
+  { key: "visuals", label: "Finding visuals" },
+  { key: "finish", label: "Finishing video" },
 ] as const;
 
 function stage(key: PipelineDisplayStageKey): { key: PipelineDisplayStageKey; label: string } {
@@ -29,18 +29,18 @@ export function resolvePipelineDisplayStage(
   if (/complete|klaar|video ready|re-render complete/.test(s)) {
     return stage("finish");
   }
-  if (/upload|samenvoegen|export|muziek|afrond/.test(s)) {
+  if (/upload|samenvoegen|export|muziek|afrond|concatenat|music mix/.test(s)) {
     return stage("finish");
   }
   if (
-    /effect|overgang|jaartal|grade|nalopen|eindcontrole|final review|controleren|beeld.?tekst|visual review|assembly|montage|plakken|achter elkaar|compose|samenstellen/.test(
+    /effect|overgang|jaartal|grade|nalopen|eindcontrole|final review|controleren|beeld.?tekst|visual review|assembly|montage|plakken|achter elkaar|compose|samenstellen|stitch/.test(
       s
     )
   ) {
     return stage("finish");
   }
   if (
-    /visual|beeld|archive|fetching|beat|backfill|scene \d|matching archive|generating ai|tick \d|zoeken/.test(
+    /visual|beeld|archive|fetching|beat|backfill|scene \d|matching archive|generating ai|tick \d|zoeken|finding visuals/.test(
       s
     )
   ) {
@@ -49,7 +49,7 @@ export function resolvePipelineDisplayStage(
   if (/voiceover|elevenlabs|voice|parsing|omzetten naar scenes/.test(s)) {
     return stage("voiceover");
   }
-  if (/script|research|schrijven|prompt|outline|approv|refine|matching script|sections in parallel|assembling script/.test(s)) {
+  if (/script|research|schrijven|prompt|outline|approv|refine|matching script|sections in parallel|assembling script|writing script/.test(s)) {
     return stage("script");
   }
 
@@ -76,4 +76,34 @@ export function formatGenerationDuration(totalSec: number): string {
 export function progressStepWithElapsed(label: string, startedAtMs: number): string {
   const elapsedSec = Math.floor((Date.now() - startedAtMs) / 1000);
   return `${label} · ${formatGenerationDuration(elapsedSec)}`;
+}
+
+/** Rough max generation window for UI estimates (seconds). */
+export function maxGenerationEstimateSec(videoLength?: string | null): number {
+  if (videoLength === "1") return 12 * 60;
+  if (videoLength === "8-10") return 75 * 60;
+  if (videoLength === "10-15" || videoLength === "15-20") return 90 * 60;
+  return 90 * 60;
+}
+
+/** Estimate seconds remaining from elapsed time and progress percent. */
+export function estimateRemainingGenerationSec(
+  progressPercent: number,
+  elapsedSec: number,
+  maxTotalSec?: number
+): number | null {
+  if (progressPercent >= 99) return 0;
+  if (progressPercent < 3 || elapsedSec < 8) return null;
+
+  const fromPercent = Math.round((elapsedSec * (100 - progressPercent)) / progressPercent);
+  if (maxTotalSec != null) {
+    return Math.max(0, Math.min(fromPercent, maxTotalSec - elapsedSec));
+  }
+  return Math.max(0, fromPercent);
+}
+
+export function formatRemainingGenerationLabel(remainingSec: number | null): string {
+  if (remainingSec === null) return "Estimating time left…";
+  if (remainingSec <= 0) return "Almost done…";
+  return `~${formatGenerationDuration(remainingSec)} left`;
 }

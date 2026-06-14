@@ -1,17 +1,18 @@
 /**
  * Fastvid — Stripe Product & Price Configuration
- * Pro Plan: €500/month, unlimited video generation
+ * Pro Plan: $499/month, unlimited video generation
  */
+import { FASTVID_PRO_MONTHLY_USD, FASTVID_PRO_PRICE_CENTS } from "../shared/billing";
 
 export const FASTVID_PRO_PLAN = {
   name: "Fastvid Pro",
   description: "Unlimited AI YouTube video generation — all lengths, all features",
-  priceEur: 500_00, // in cents
-  currency: "eur",
+  priceUsd: FASTVID_PRO_PRICE_CENTS,
+  currency: "usd" as const,
   interval: "month" as const,
   features: [
     "Unlimited video generation",
-    "All 5 video lengths (5–8, 8–12, 12–15, 15–20, 20+ min)",
+    "All 4 video lengths (1, 8–10, 10–15, 15–20 min)",
     "Virally optimized scripts",
     "Professional AI voiceover",
     "Automatic visual matching",
@@ -23,3 +24,5 @@ export const FASTVID_PRO_PLAN = {
     "Priority support",
   ],
 };
+
+export { FASTVID_PRO_MONTHLY_USD, FASTVID_PRO_PRICE_LABEL } from "../shared/billing";

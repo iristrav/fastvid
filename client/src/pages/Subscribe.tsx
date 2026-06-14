@@ -13,7 +13,7 @@ import {
   Play, CheckCircle2, Loader2, CreditCard, Sparkles,
   Video, Mic, Wand2, Shield, Zap, Star,
 } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { FASTVID_PRO_PRICE_DISPLAY, FASTVID_PRO_PRICE_LABEL } from "@shared/billing";
 
 const PLAN_FEATURES = [
   { icon: Video, text: "Unlimited video generation (all lengths)" },
@@ -102,7 +102,7 @@ export default function Subscribe() {
             Fastvid Pro
           </h1>
           <div className="flex items-baseline justify-center gap-1 mb-2">
-            <span className="text-5xl font-black text-white">€500</span>
+            <span className="text-5xl font-black text-white">{FASTVID_PRO_PRICE_DISPLAY}</span>
             <span className="text-white/50 text-lg">/month</span>
           </div>
           <p className="text-white/50 text-sm">
@@ -136,7 +136,7 @@ export default function Subscribe() {
           ) : (
             <>
               <CreditCard className="w-4 h-4 mr-2" />
-              Subscribe now — €500/month
+              Subscribe now — {FASTVID_PRO_PRICE_LABEL}
             </>
           )}
         </Button>

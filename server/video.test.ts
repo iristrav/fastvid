@@ -67,7 +67,7 @@ describe("video.generate", () => {
     const ctx = createInactiveContext();
     const caller = appRouter.createCaller(ctx);
     await expect(
-      caller.video.generate({ prompt: "A test video about technology", videoLength: "5-8" })
+      caller.video.generate({ prompt: "A test video about technology", videoLength: "8-10" })
     ).rejects.toThrow(SUBSCRIPTION_REQUIRED_ERR_MSG);
   });
 
@@ -79,7 +79,7 @@ describe("video.generate", () => {
     };
     const caller = appRouter.createCaller(ctx);
     await expect(
-      caller.video.generate({ prompt: "A test video about technology", videoLength: "5-8" })
+      caller.video.generate({ prompt: "A test video about technology", videoLength: "8-10" })
     ).rejects.toThrow(UNAUTHED_ERR_MSG);
   });
 
@@ -87,7 +87,7 @@ describe("video.generate", () => {
     const ctx = createUserContext();
     const caller = appRouter.createCaller(ctx);
     await expect(
-      caller.video.generate({ prompt: "short", videoLength: "5-8" })
+      caller.video.generate({ prompt: "short", videoLength: "8-10" })
     ).rejects.toThrow();
   });
 });

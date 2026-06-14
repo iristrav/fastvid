@@ -2,6 +2,7 @@ import { and, desc, eq, inArray, like, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import * as fs from "fs";
 import { PIPELINE_ERROR, appErrorMessage } from "@shared/appErrors";
+import { isShortVideoLength, normalizeVideoLength } from "@shared/videoLengths";
 import type { Video } from "../drizzle/schema";
 import { InsertInviteCode, InsertUser, InsertVideo, InsertPasswordResetToken, inviteCodes, users, videos, passwordResetTokens } from "../drizzle/schema";
 import { ENV } from "./_core/env";
@@ -280,10 +281,11 @@ function pipelineStallThresholdMs(
   status?: string | null
 ): number {
   const visualSearch = status === "generating_visuals";
-  if (videoLength === "1" || videoLength === "2") {
+  const length = normalizeVideoLength(videoLength);
+  if (isShortVideoLength(length)) {
     return visualSearch ? 45 * 60 * 1000 : 12 * 60 * 1000;
   }
-  if (videoLength === "5-8") {
+  if (length === "8-10") {
     return visualSearch ? 60 * 60 * 1000 : 15 * 60 * 1000;
   }
   return visualSearch ? 75 * 60 * 1000 : 22 * 60 * 1000;

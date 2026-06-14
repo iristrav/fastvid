@@ -10,8 +10,8 @@ import {
 } from "lucide-react";
 
 const MIX_KINDS = [
-  { value: "real_video", label: "Echte video" },
-  { value: "photo", label: "Foto" },
+  { value: "real_video", label: "Real video" },
+  { value: "photo", label: "Photo" },
   { value: "stock", label: "Stock" },
   { value: "screenshot", label: "Screenshot" },
   { value: "motion_graphics", label: "Motion graphics" },
@@ -67,7 +67,7 @@ function AssetPreviewModal({
       >
         <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
           <div className="min-w-0">
-            <h3 className="text-white font-semibold truncate">{asset.title || "Naamloos"}</h3>
+            <h3 className="text-white font-semibold truncate">{asset.title || "Untitled"}</h3>
             {asset.sourceNote && (
               <p className="text-xs text-slate-400 truncate mt-0.5">{asset.sourceNote}</p>
             )}
@@ -78,7 +78,7 @@ function AssetPreviewModal({
               target="_blank"
               rel="noopener noreferrer"
               className="p-2 rounded-lg bg-white/10 text-slate-300 hover:text-white hover:bg-white/15"
-              title="Open in nieuw tabblad"
+              title="Open in new tab"
             >
               <ExternalLink className="w-4 h-4" />
             </a>
@@ -102,7 +102,7 @@ function AssetPreviewModal({
         </div>
         {asset.durationSec != null && asset.durationSec > 0 && (
           <div className="px-4 py-2 text-xs text-slate-500 border-t border-white/10">
-            Duur: {formatDuration(asset.durationSec)}
+            Duration: {formatDuration(asset.durationSec)}
           </div>
         )}
       </div>
@@ -160,7 +160,7 @@ function AssetCard({
             <span className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors flex items-center justify-center">
               <span className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-2 px-3 py-1.5 rounded-full bg-black/70 text-white text-xs font-medium">
                 <Play className="w-4 h-4 fill-white" />
-                Bekijken
+                View
               </span>
             </span>
             <span className="absolute top-2 left-2 flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-black/60 text-white">
@@ -181,7 +181,7 @@ function AssetCard({
                 ? "bg-purple-600 border-purple-400 text-white"
                 : "bg-black/60 border-white/20 text-slate-300 hover:bg-black/80"
             }`}
-            title={selected ? "Deselecteren" : "Selecteren"}
+            title={selected ? "Deselect" : "Select"}
           >
             {selected ? <CheckSquare className="w-4 h-4" /> : <Square className="w-4 h-4" />}
           </button>
@@ -193,7 +193,7 @@ function AssetCard({
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
                 className="w-full bg-white/5 border border-white/10 rounded px-2 py-1 text-xs text-white"
-                placeholder="Titel"
+                placeholder="Title"
               />
               <input
                 value={tags}
@@ -224,7 +224,7 @@ function AssetCard({
                   disabled={saving}
                   className="flex-1 text-xs py-1 rounded bg-purple-600/30 text-purple-200"
                 >
-                  Opslaan
+                  Save
                 </button>
                 <button onClick={() => setEditing(false)} className="px-2 py-1 text-xs text-slate-400">
                   <X className="w-3 h-3" />
@@ -233,7 +233,7 @@ function AssetCard({
             </>
           ) : (
             <>
-              <p className="text-sm text-white font-medium truncate">{asset.title || "Naamloos"}</p>
+              <p className="text-sm text-white font-medium truncate">{asset.title || "Untitled"}</p>
               {asset.sourceNote && (
                 <p className="text-xs text-slate-500 line-clamp-2">{asset.sourceNote}</p>
               )}
@@ -248,7 +248,7 @@ function AssetCard({
                 <button
                   onClick={() => setPreviewOpen(true)}
                   className="text-xs px-2 py-1 rounded bg-cyan-500/15 text-cyan-300 hover:bg-cyan-500/25"
-                  title="Bekijken"
+                  title="View"
                 >
                   <Play className="w-3 h-3 inline" />
                 </button>
@@ -286,18 +286,18 @@ export function ArchiveClipsGrid({
   const updateAsset = trpc.mediaArchive.updateAsset.useMutation({
     onSuccess: () => {
       utils.mediaArchive.listAssets.invalidate();
-      toast.success("Clip bijgewerkt!");
+      toast.success("Clip updated!");
     },
-    onError: (e) => toast.error("Opslaan mislukt", { description: toastErrorMessage(e) }),
+    onError: (e) => toast.error("Save failed", { description: toastErrorMessage(e) }),
   });
 
   const deleteAsset = trpc.mediaArchive.deleteAsset.useMutation({
     onSuccess: () => {
       utils.mediaArchive.listAssets.invalidate();
       utils.mediaArchive.listArchives.invalidate();
-      toast.success("Clip verwijderd");
+      toast.success("Clip deleted");
     },
-    onError: (e) => toast.error("Verwijderen mislukt", { description: toastErrorMessage(e) }),
+    onError: (e) => toast.error("Delete failed", { description: toastErrorMessage(e) }),
   });
 
   const deleteAssets = trpc.mediaArchive.deleteAssets.useMutation({
@@ -305,9 +305,9 @@ export function ArchiveClipsGrid({
       utils.mediaArchive.listAssets.invalidate();
       utils.mediaArchive.listArchives.invalidate();
       setSelectedIds(new Set());
-      toast.success(`${data.deleted} clip(s) verwijderd`);
+      toast.success(`${data.deleted} clip(s) deleted`);
     },
-    onError: (e) => toast.error("Verwijderen mislukt", { description: toastErrorMessage(e) }),
+    onError: (e) => toast.error("Delete failed", { description: toastErrorMessage(e) }),
   });
 
   const deleteAllAssets = trpc.mediaArchive.deleteAllAssets.useMutation({
@@ -315,9 +315,9 @@ export function ArchiveClipsGrid({
       utils.mediaArchive.listAssets.invalidate();
       utils.mediaArchive.listArchives.invalidate();
       setSelectedIds(new Set());
-      toast.success(`${data.deleted} clip(s) verwijderd`);
+      toast.success(`${data.deleted} clip(s) deleted`);
     },
-    onError: (e) => toast.error("Verwijderen mislukt", { description: toastErrorMessage(e) }),
+    onError: (e) => toast.error("Delete failed", { description: toastErrorMessage(e) }),
   });
 
   const autoTitleAssets = trpc.mediaArchive.autoTitleAssets.useMutation();
@@ -326,14 +326,14 @@ export function ArchiveClipsGrid({
       utils.mediaArchive.listAssets.invalidate();
       utils.mediaArchive.listArchives.invalidate();
       if (data.deleted === 0) {
-        toast.info("Geen duplicaten gevonden", { description: `${data.scanned} clip(s) gecontroleerd` });
+        toast.info("No duplicates found", { description: `${data.scanned} clip(s) scanned` });
       } else {
-        toast.success(`${data.deleted} duplicaat/duplicaten verwijderd`, {
-          description: `${data.kept} unieke clip(s) over`,
+        toast.success(`${data.deleted} duplicate(s) removed`, {
+          description: `${data.kept} unique clip(s) remaining`,
         });
       }
     },
-    onError: (e) => toast.error("Duplicaten opruimen mislukt", { description: toastErrorMessage(e) }),
+    onError: (e) => toast.error("Failed to remove duplicates", { description: toastErrorMessage(e) }),
   });
   const [autoTitleRunning, setAutoTitleRunning] = useState(false);
   const [autoTitleProgress, setAutoTitleProgress] = useState<{ done: number; total: number } | null>(null);
@@ -348,7 +348,7 @@ export function ArchiveClipsGrid({
 
   const runAutoTitleAll = useCallback(async () => {
     if (archiveId == null || assets.length === 0) {
-      toast.error("Geen clips om te verwerken");
+      toast.error("No clips to process");
       return;
     }
 
@@ -358,20 +358,20 @@ export function ArchiveClipsGrid({
         : assets.map((a) => a.id);
 
     if (targetIds.length === 0) {
-      toast.error("Geen clips geselecteerd");
+      toast.error("No clips selected");
       return;
     }
 
     const label =
       selectedCount > 0
-        ? `${targetIds.length} geselecteerde clip(s)`
+        ? `${targetIds.length} selected clip(s)`
         : search.trim()
-          ? `${targetIds.length} zichtbare clip(s)`
-          : `alle ${targetIds.length} clip(s)`;
+          ? `${targetIds.length} visible clip(s)`
+          : `all ${targetIds.length} clip(s)`;
 
     if (
       !confirm(
-        `AI bekijkt ${label} grondig (kan per clip ~1 minuut duren) en voegt precieze tags toe: personen, landen, steden, gebeurtenissen, acties, tijdperk (meerdere frames bij video).\n\nBestaande tags worden aangevuld. Doorgaan?`
+        `AI will analyze ${label} thoroughly (~1 minute per clip) and add precise tags: people, countries, cities, events, actions, era (multiple frames for video).\n\nExisting tags will be supplemented. Continue?`
       )
     ) {
       return;
@@ -380,7 +380,7 @@ export function ArchiveClipsGrid({
     const CHUNK = 8;
     setAutoTitleRunning(true);
     setAutoTitleProgress({ done: 0, total: targetIds.length });
-    const loadingToast = toast.loading(`AI titels starten (${targetIds.length} clips)…`);
+    const loadingToast = toast.loading(`Starting AI titles (${targetIds.length} clips)…`);
     let updated = 0;
     let skipped = 0;
     let failed = 0;
@@ -394,29 +394,29 @@ export function ArchiveClipsGrid({
         failed += result.failed;
         const done = Math.min(i + chunk.length, targetIds.length);
         setAutoTitleProgress({ done, total: targetIds.length });
-        toast.loading(`AI bezig: ${done}/${targetIds.length} clips…`, { id: loadingToast });
+        toast.loading(`AI in progress: ${done}/${targetIds.length} clips…`, { id: loadingToast });
       }
       utils.mediaArchive.listAssets.invalidate();
       utils.mediaArchive.listArchives.invalidate();
       toast.dismiss(loadingToast);
       if (updated === 0) {
-        toast.warning("Geen clips bijgewerkt", {
+        toast.warning("No clips updated", {
           description:
             skipped + failed > 0
-              ? `${skipped} overgeslagen, ${failed} mislukt — controleer of bestanden nog bestaan en LLM_API_KEY staat aan`
-              : "AI kon geen titels genereren voor deze clips",
+              ? `${skipped} skipped, ${failed} failed — check that files still exist and LLM_API_KEY is enabled`
+              : "AI could not generate titles for these clips",
         });
       } else {
-        toast.success(`${updated} clip(s) getiteld`, {
+        toast.success(`${updated} clip(s) titled`, {
           description:
             skipped + failed > 0
-              ? `${skipped} overgeslagen, ${failed} mislukt`
-              : "Titels en tags bijgewerkt voor betere filtering",
+              ? `${skipped} skipped, ${failed} failed`
+              : "Titles and tags updated for better filtering",
         });
       }
     } catch (e) {
       toast.dismiss(loadingToast);
-      toast.error("AI titels mislukt", { description: toastErrorMessage(e) });
+      toast.error("AI titles failed", { description: toastErrorMessage(e) });
     } finally {
       setAutoTitleRunning(false);
       setAutoTitleProgress(null);
@@ -453,7 +453,7 @@ export function ArchiveClipsGrid({
   function deleteSelected() {
     const ids = [...selectedIds].filter((id) => visibleIds.has(id));
     if (ids.length === 0 || archiveId == null) return;
-    if (!confirm(`${ids.length} clip(s) definitief verwijderen?`)) return;
+    if (!confirm(`Permanently delete ${ids.length} clip(s)?`)) return;
 
     if (allSelected) {
       deleteAllAssets.mutate({ archiveId, search: search.trim() || undefined });
@@ -471,10 +471,10 @@ export function ArchiveClipsGrid({
         ? [...selectedIds].filter((id) => visibleIds.has(id))
         : assets.map((a) => a.id);
     const label =
-      selectedCount > 0 ? `${targetIds.length} geselecteerde clip(s)` : `alle ${targetIds.length} clip(s)`;
+      selectedCount > 0 ? `${targetIds.length} selected clip(s)` : `all ${targetIds.length} clip(s)`;
     if (
       !confirm(
-        `Visuele duplicaten verwijderen uit ${label}?\n\nClips met (bijna) hetzelfde beeld worden gewist — de oudste clip blijft staan.`
+        `Remove visual duplicates from ${label}?\n\nClips with (nearly) identical visuals will be deleted — the oldest clip is kept.`
       )
     ) {
       return;
@@ -488,7 +488,7 @@ export function ArchiveClipsGrid({
   if (archiveId == null) {
     return (
       <div className="text-center py-8 text-slate-500 text-sm">
-        Selecteer een archief om clips te bekijken.
+        Select an archive to browse clips.
       </div>
     );
   }
@@ -502,7 +502,7 @@ export function ArchiveClipsGrid({
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Zoek clips op titel of tag..."
+            placeholder="Search clips by title or tag..."
             className="w-full bg-white/5 border border-white/10 rounded-lg pl-9 pr-3 py-2 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-purple-500/50"
           />
         </div>
@@ -511,7 +511,7 @@ export function ArchiveClipsGrid({
             type="button"
             onClick={runAutoTitleAll}
             disabled={autoTitleRunning}
-            title="Grondige AI-analyse: exacte personen, landen, steden, gebeurtenissen (duurt langer, meer frames)"
+            title="Thorough AI analysis: exact people, countries, cities, events (takes longer, more frames)"
             className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg bg-cyan-500/15 text-cyan-300 border border-cyan-500/25 hover:bg-cyan-500/25 disabled:opacity-50"
           >
             {autoTitleRunning ? (
@@ -522,8 +522,8 @@ export function ArchiveClipsGrid({
             {autoTitleRunning && autoTitleProgress
               ? `AI ${autoTitleProgress.done}/${autoTitleProgress.total}`
               : selectedCount > 0
-                ? `AI titels (${selectedCount})`
-                : "AI titels & tags"}
+                ? `AI titles (${selectedCount})`
+                : "AI titles & tags"}
           </button>
         )}
         {assets.length > 1 && (
@@ -531,7 +531,7 @@ export function ArchiveClipsGrid({
             type="button"
             onClick={dedupeVisualDuplicates}
             disabled={dedupeDuplicates.isPending || autoTitleRunning}
-            title="Verwijder clips met (bijna) identiek beeld"
+            title="Remove clips with (nearly) identical visuals"
             className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg bg-amber-500/15 text-amber-300 border border-amber-500/25 hover:bg-amber-500/25 disabled:opacity-50"
           >
             {dedupeDuplicates.isPending ? (
@@ -539,7 +539,7 @@ export function ArchiveClipsGrid({
             ) : (
               <Copy className="w-3.5 h-3.5" />
             )}
-            {dedupeDuplicates.isPending ? "Duplicaten…" : "Duplicaten opruimen"}
+            {dedupeDuplicates.isPending ? "Duplicates…" : "Remove duplicates"}
           </button>
         )}
         {assets.length > 0 && (
@@ -549,7 +549,7 @@ export function ArchiveClipsGrid({
             className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg bg-white/10 text-slate-300 hover:bg-white/15"
           >
             {allSelected ? <CheckSquare className="w-3.5 h-3.5" /> : <Square className="w-3.5 h-3.5" />}
-            {allSelected ? "Deselecteer alles" : "Selecteer alles"}
+            {allSelected ? "Deselect all" : "Select all"}
           </button>
         )}
         {selectedCount > 0 && (
@@ -560,19 +560,19 @@ export function ArchiveClipsGrid({
             className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg bg-red-500/15 text-red-400 border border-red-500/25 hover:bg-red-500/25 disabled:opacity-50"
           >
             {deletePending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
-            Verwijder ({selectedCount})
+            Delete ({selectedCount})
           </button>
         )}
       </div>
 
       {!compact && selectedCount > 0 && (
-        <p className="text-xs text-purple-300">{selectedCount} clip(s) geselecteerd</p>
+        <p className="text-xs text-purple-300">{selectedCount} clip(s) selected</p>
       )}
 
       {isLoading ? (
         <div className="flex justify-center py-12"><Loader2 className="w-6 h-6 animate-spin text-purple-400" /></div>
       ) : assets.length === 0 ? (
-        <div className="text-center py-12 text-slate-500 text-sm">Geen clips in dit archief.</div>
+        <div className="text-center py-12 text-slate-500 text-sm">No clips in this archive.</div>
       ) : (
         <div className={`grid gap-4 ${compact ? "sm:grid-cols-2 lg:grid-cols-3" : "sm:grid-cols-2 xl:grid-cols-3"}`}>
           {assets.map((asset) => (
@@ -582,7 +582,7 @@ export function ArchiveClipsGrid({
               selected={selectedIds.has(asset.id)}
               onToggleSelect={() => toggleSelect(asset.id)}
               onDelete={() => {
-                if (confirm("Deze clip verwijderen?")) deleteAsset.mutate({ id: asset.id });
+                if (confirm("Delete this clip?")) deleteAsset.mutate({ id: asset.id });
               }}
               onSave={(patch) => updateAsset.mutate({ id: asset.id, ...patch })}
               saving={updateAsset.isPending}

@@ -19,23 +19,17 @@ import {
 } from "lucide-react";
 import { MediaArchiveAdmin } from "@/components/admin/MediaArchiveAdmin";
 import { NicheRequestsAdmin } from "@/components/admin/NicheRequestsAdmin";
-import {
-  PipelineProgressSteps,
-  pipelineProgressHeadline,
-} from "@/components/admin/PipelineProgressSteps";
+import { GenerationProgressBar } from "@/components/GenerationProgressBar";
 
 function formatVideoId(id: number) {
   return `#VID-${String(id).padStart(4, "0")}`;
 }
 
-const VIDEO_LENGTHS = [
-  { label: "1 min (test)", value: "1" },
-  { label: "5-8 min", value: "5-8" },
-  { label: "8-12 min", value: "8-12" },
-  { label: "12-15 min", value: "12-15" },
-  { label: "15-20 min", value: "15-20" },
-  { label: "20+ min", value: "20+" },
-];
+import { VIDEO_LENGTH_OPTIONS, type VideoLength } from "@shared/videoLengths";
+
+const VIDEO_LENGTHS = VIDEO_LENGTH_OPTIONS.map((opt) =>
+  opt.value === "1" ? { ...opt, label: "1 min (test)" } : opt
+);
 
 function StatCard({ label, value, icon: Icon, color, sub }: {
   label: string; value: number | string; icon: React.ElementType; color: string; sub?: string;
@@ -376,23 +370,21 @@ function VideoStatusCell({ video }: { video: VideoRow }) {
     { enabled: isInProgress, refetchInterval: isInProgress ? 3000 : false }
   );
   const status = pollData?.status ?? video.status;
-  const progressStep = (pollData as { progressStep?: string | null } | undefined)?.progressStep;
   const progressPercent = (pollData as { progressPercent?: number } | undefined)?.progressPercent ?? 0;
   const isLive = !!pollData && isInProgress;
-  const headline = pipelineProgressHeadline(progressStep, progressPercent);
   return (
     <div className="space-y-1">
       <span className={`px-2 py-0.5 rounded-md text-xs font-medium ${VIDEO_STATUS_BADGE[status] ?? 'text-slate-400 bg-white/5'}`}>
         {status}
       </span>
-      {isLive && progressStep && (
-        <div className="space-y-0.5 min-w-[160px]">
-          <p className="text-[11px] text-slate-300 truncate max-w-[200px]" title={headline}>{headline}</p>
-          <div className="w-full bg-white/10 rounded-full h-1 overflow-hidden">
-            <div className="h-full bg-gradient-to-r from-purple-500 to-cyan-500 rounded-full transition-all duration-700" style={{ width: `${progressPercent}%` }} />
-          </div>
-          <p className="text-[10px] text-slate-600">{progressPercent}%</p>
-        </div>
+      {isLive && (
+        <GenerationProgressBar
+          compact
+          progressPercent={progressPercent}
+          generationStartedAt={(pollData as { generationStartedAt?: Date | null })?.generationStartedAt}
+          videoLength={video.videoLength}
+          className="min-w-[140px]"
+        />
       )}
     </div>
   );
@@ -559,9 +551,7 @@ function AdminVideoGenerator() {
     status?: string;
     videoUrl?: string;
     title?: string;
-    progressStep?: string | null;
     progressPercent?: number;
-    progressLog?: Array<{ step: string; startedAt: number; completedAt?: number; status: string }>;
     generationStartedAt?: Date | null;
   } | undefined;
   const isGenerating = !!statusData?.status && !['completed', 'failed'].includes(statusData.status);
@@ -571,18 +561,6 @@ function AdminVideoGenerator() {
     { enabled: !!(generatedId && statusData?.status === 'completed' && statusData?.videoUrl), staleTime: 1000 * 60 * 5 }
   );
   const genPlaybackUrl = genVideoUrlData?.url ?? statusData?.videoUrl;
-  const [elapsed, setElapsed] = useState(0);
-  useEffect(() => {
-    const startTime = statusData?.generationStartedAt;
-    if (!isGenerating || !startTime) { setElapsed(0); return; }
-    const update = () => setElapsed(Math.floor((Date.now() - new Date(startTime).getTime()) / 1000));
-    update();
-    const id = setInterval(update, 1000);
-    return () => clearInterval(id);
-  }, [isGenerating, statusData?.generationStartedAt]);
-  const elapsedStr = `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, '0')}`;
-  const nearingLimit = elapsed > 75 * 60; // warn after 75 min (90-min cap)
-  const progressHeadline = pipelineProgressHeadline(statusData?.progressStep, statusData?.progressPercent ?? 0);
 
   return (
     <div className="space-y-6">
@@ -622,7 +600,7 @@ function AdminVideoGenerator() {
           </div>
         </div>
         <button
-          onClick={() => generateMutation.mutate({ prompt, videoLength: videoLength as "5-8" | "8-12" | "12-15" | "15-20" | "20+" })}
+          onClick={() => generateMutation.mutate({ prompt, videoLength: videoLength as VideoLength })}
           disabled={generateMutation.isPending || prompt.trim().length < 10}
           className="w-full py-3 rounded-xl font-bold text-white text-sm flex items-center justify-center gap-2 btn-gradient disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
         >
@@ -643,32 +621,13 @@ function AdminVideoGenerator() {
             </h3>
             {statusLoading && <Loader2 className="w-4 h-4 text-purple-400 animate-spin" />}
           </div>
-          {isGenerating && statusData?.progressStep && (
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-slate-300 truncate max-w-[75%]">{progressHeadline}</span>
-                <span className={`text-xs font-mono ml-2 shrink-0 ${nearingLimit ? 'text-amber-400' : 'text-slate-500'}`}>{elapsedStr} / max 1.5h</span>
-              </div>
-              <div className="w-full bg-white/10 rounded-full h-1.5 overflow-hidden">
-                <div
-                  className="h-full bg-gradient-to-r from-purple-500 to-cyan-500 rounded-full transition-all duration-700"
-                  style={{ width: `${statusData.progressPercent ?? 0}%` }}
-                />
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-slate-600">{statusData.progressPercent ?? 0}%</span>
-                {nearingLimit && <span className="text-xs text-amber-500">Approaching time limit</span>}
-              </div>
-            </div>
-          )}
-          <div className="space-y-2 pt-1">
-            <PipelineProgressSteps
-              progressStep={statusData?.progressStep}
+          {isGenerating && (
+            <GenerationProgressBar
               progressPercent={statusData?.progressPercent ?? 0}
-              progressLog={statusData?.progressLog ?? []}
-              isComplete={statusData?.status === "completed"}
+              generationStartedAt={statusData?.generationStartedAt}
+              videoLength={videoLength}
             />
-          </div>
+          )}
           {statusData?.status === "completed" && statusData?.videoUrl && (
             <div className="space-y-3 pt-2 border-t border-white/8">
               <p className="text-xs text-green-400 font-medium flex items-center gap-1.5">

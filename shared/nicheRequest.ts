@@ -1,18 +1,18 @@
 /** Shared niche request labels (client + server). */
 
 export const NICHE_REQUEST_STATUS_LABELS: Record<string, string> = {
-  pending: "In behandeling",
-  approved: "Goedgekeurd",
-  in_progress: "Archief in opbouw",
-  ready: "Klaar om te starten",
-  rejected: "Afgewezen",
+  pending: "Under review",
+  approved: "Approved",
+  in_progress: "Archive building",
+  ready: "Ready to start",
+  rejected: "Rejected",
 };
 
 export const ONBOARDING_PENDING_MESSAGE =
-  "Je aanvraag is ontvangen. Binnen 2 werkdagen ontvang je een goedkeuringsbericht. Na goedkeuring kun je binnen 24 uur starten met je eerste video.";
+  "We received your application. You will get an approval email within 2 business days. Once approved, you can start your first video within 24 hours.";
 
 export const ONBOARDING_APPROVED_MESSAGE =
-  "Goedgekeurd! Je kunt binnen 24 uur starten — kies je abonnement en maak je eerste video.";
+  "Approved! You can start within 24 hours — choose your subscription and create your first video.";
 
 export const ARCHIVE_BUILDING_MESSAGE =
-  "Er zijn nog weinig of geen beelden in het archief voor dit onderwerp. Het duurt iets langer — we zijn bezig met het archief voor jouw niche.";
+  "There is still little or no footage in the archive for this topic. Generation may take longer while we expand the archive for your niche.";

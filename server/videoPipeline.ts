@@ -7,11 +7,10 @@
  *   3. FALLBACK:  Solid colour video (instant)
  *
  * Scene count scales with video length:
- *   5-8 min  → 12 scenes (~25-30s each)
- *   8-12 min → 20 scenes (~25-30s each)
- *   12-15 min → 25 scenes (~25-30s each)
- *   15-20 min → 30 scenes (~30-35s each)
- *   20+ min   → 35 scenes (~35-40s each)
+ *   1 min     → 3 scenes
+ *   8-10 min  → 18 scenes (~30s each)
+ *   10-15 min → 25 scenes (~30s each)
+ *   15-20 min → 35 scenes (~30-35s each)
  *
  * Per scene: 1 AI image (zoompan) + 3 Pexels clips joined with xfade transitions. All encoded at HIGH QUALITY (preset=slow, crf=18).
  * All scenes processed in parallel batches to stay within 60-min cap.
@@ -70,6 +69,7 @@ import {
   type CinematicScenePlan,
 } from "./cinematicEffectsEngine";
 import { PIPELINE_ERROR, pipelineError } from "@shared/appErrors";
+import { isShortVideoLength, normalizeVideoLength } from "@shared/videoLengths";
 import fetch from "node-fetch";
 import {
   extractFullNarrationText,
@@ -1075,7 +1075,7 @@ function resolveMaxStockBeatsPerVideo(videoLength: string): number {
     if (!isNaN(n) && n >= 0) return n;
   }
   if (realFootageFirstEnabled()) return 2;
-  const short = videoLength === "1" || videoLength === "2";
+  const short = isShortVideoLength(videoLength);
   return short ? 3 : 2;
 }
 
@@ -1098,7 +1098,7 @@ function applyMinimizeStockProfile(
     maxStockQueriesPerBeat: 1,
     maxStockBeatsPerVideo: resolveMaxStockBeatsPerVideo(videoLength),
     maxEntityYoutubePerVideo: maxEntityYoutubeFetchesPerVideo(true),
-    enableNasa: profile.enableNasa || videoLength === "1" || videoLength === "2",
+    enableNasa: profile.enableNasa || isShortVideoLength(videoLength),
     enableArchival: true,
   };
 }
@@ -1592,7 +1592,7 @@ function resolveAiFallbackConfig(videoLength: string): { enable: boolean; maxCli
   if (process.env.ENABLE_AI_FALLBACK === "false" || !aiProvidersReady()) {
     return { enable: false, maxClips: 0 };
   }
-  const short = videoLength === "1" || videoLength === "2";
+  const short = isShortVideoLength(videoLength);
   if (IS_RAILWAY && short) {
     return { enable: aiProvidersReady(), maxClips: aiProvidersReady() ? 14 : 0 };
   }
@@ -1628,11 +1628,12 @@ function applyAiFallbackToProfile(
   );
 }
 
-function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
+function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProfile {
+  const videoLength = normalizeVideoLength(videoLengthRaw);
   const railwayParallel = IS_RAILWAY ? 2 : 2;
   const maxEntityYoutube = maxEntityYoutubeFetchesPerVideo(minimizeStockFootageEnabled());
   let profile: PipelinePerfProfile;
-  if (videoLength === "1" || videoLength === "2") {
+  if (isShortVideoLength(videoLength)) {
     profile = applyAiFallbackToProfile({
       targetWallClockMin: 8,
       maxBeatsPerScene: curatedArchiveOnlyVisuals() ? (IS_RAILWAY ? 16 : 18) : IS_RAILWAY ? 4 : 6,
@@ -1651,26 +1652,7 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
       fastStockMode: IS_RAILWAY,
       scriptOnlyVisuals: false,
     }, videoLength);
-  } else if (videoLength === "5-8") {
-    profile = applyAiFallbackToProfile({
-      targetWallClockMin: 90,
-      maxBeatsPerScene: 6,
-      maxTopicQueries: 4,
-      skipFairUseTransform: true,
-      transformTimeoutMs: 35_000,
-      enableArchival: false,
-      enableNasa: true,
-      enableMuskHeroFetch: false,
-      maxEntityYoutubePerVideo: maxEntityYoutube,
-      sceneParallelism: railwayParallel,
-      pexelsDownloadRetries: 2,
-      maxStockQueriesPerBeat: 5,
-      beatClipTimeoutMs: 120_000,
-      sceneVisualTimeoutMs: 8 * 60_000,
-      fastStockMode: false,
-      scriptOnlyVisuals: true,
-    }, videoLength);
-  } else if (videoLength === "12-15" || videoLength === "15-20") {
+  } else if (videoLength === "10-15" || videoLength === "15-20") {
     profile = applyAiFallbackToProfile({
       targetWallClockMin: 90,
       maxBeatsPerScene: 5,
@@ -1728,8 +1710,8 @@ function getPipelinePerfProfile(videoLength: string): PipelinePerfProfile {
   return profile;
 }
 
-function visualStageTimeoutMs(videoLength: string, perf: PipelinePerfProfile): number {
-  if (videoLength === "1" || videoLength === "2") {
+function visualStageTimeoutMs(videoLengthRaw: string, perf: PipelinePerfProfile): number {
+  if (isShortVideoLength(videoLengthRaw)) {
     return perf.fastStockMode ? 20 * 60_000 : 20 * 60_000;
   }
   return Math.round(perf.targetWallClockMin * 60_000 * 1.15);
@@ -1930,7 +1912,7 @@ async function resolveBeatClipFast(
 }
 
 function composeParallelism(videoLength?: string): number {
-  if (IS_RAILWAY && (videoLength === "1" || videoLength === "2")) return 1;
+  if (IS_RAILWAY && isShortVideoLength(videoLength)) return 1;
   return IS_RAILWAY ? 1 : 2;
 }
 
@@ -1964,21 +1946,17 @@ async function trimDownloadedStockClip(
 
 // ─── Dynamic scene count based on video length ────────────────────────────────
 // Each scene is ~25-35s of narration. To hit target duration:
-//   5-8 min  = 300-480s → 12-18 scenes @ ~30s each → use 15
-//   8-12 min = 480-720s → 18-24 scenes @ ~30s each → use 22
-//   12-15 min= 720-900s → 24-30 scenes @ ~30s each → use 28
-//   15-20 min= 900-1200s→ 30-40 scenes @ ~30s each → use 35
-//   20+ min  = 1200s+   → 40+ scenes @ ~30s each   → use 42
-function getScenesForLength(videoLength: string): number {
+//   8-10 min = 480-600s → ~18 scenes @ ~30s each
+//   10-15 min= 600-900s → ~25 scenes @ ~30s each
+//   15-20 min= 900-1200s→ ~35 scenes @ ~30-35s each
+function getScenesForLength(videoLengthRaw: string): number {
+  const videoLength = normalizeVideoLength(videoLengthRaw);
   switch (videoLength) {
-    case "1":     return 3;   // ~1 min preview / test
-    case "2":     return 5;   // ~2 min preview / test
-    case "5-8":   return 15;
-    case "8-12":  return 22;
-    case "12-15": return 28;
+    case "1":     return 3;
+    case "8-10":  return 18;
+    case "10-15": return 25;
     case "15-20": return 35;
-    case "20+":   return 42;
-    default:      return 22;
+    default:      return 18;
   }
 }
 // ─── Types ─────────────────────────────────────────────────────────────────────────────────
@@ -2041,26 +2019,26 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 
 // ─── Documentary workflow (prompt → script → ElevenLabs → editor → per-zin beeld → montage) ─
 export const PIPELINE_WORKFLOW = [
-  { key: "prompt", label: "Prompt bekijken", detail: "Onderwerp, lengte en tone uit je idee halen." },
-  { key: "script", label: "Script maken", detail: "Professionele documentaire narratie op basis van je prompt." },
-  { key: "elevenlabs", label: "Script in ElevenLabs", detail: "Eén voiceover-opname voor het hele script." },
-  { key: "visuals", label: "Beelden zoeken", detail: "Juiste archiefclips op basis van titel en tags — geen handmatig koppelen." },
-  { key: "assemble", label: "Alles achter elkaar", detail: "Ruwe montage: clips + voiceover per scene." },
-  { key: "review1", label: "Beeld–tekst controle", detail: "Check of clips passen bij de tekst; hele video doorlopen." },
-  { key: "effects", label: "Effecten & tekst", detail: "Overgangen, color grade, jaartallen, ondertitels en SFX." },
-  { key: "review2", label: "Eindcontrole", detail: "Hele video nogmaals nalopen vóór export." },
+  { key: "prompt", label: "Read prompt", detail: "Extract topic, length, and tone from your idea." },
+  { key: "script", label: "Write script", detail: "Professional documentary narration based on your prompt." },
+  { key: "elevenlabs", label: "Script in ElevenLabs", detail: "One voiceover recording for the full script." },
+  { key: "visuals", label: "Find visuals", detail: "Match archive clips by title and tags — no manual linking." },
+  { key: "assemble", label: "Assemble timeline", detail: "Rough cut: clips + voiceover per scene." },
+  { key: "review1", label: "Visual–script review", detail: "Check clips match the narration; review the full video." },
+  { key: "effects", label: "Effects & text", detail: "Transitions, color grade, year labels, subtitles, and SFX." },
+  { key: "review2", label: "Final review", detail: "Full pass before export." },
 ] as const;
 
 export const STAGE_LABELS = {
-  parsing:    "Script omzetten naar scenes...",
-  voiceovers: "Volledige voiceover in ElevenLabs (één script)...",
-  visuals:    "Juiste beelden zoeken die bij het script horen...",
-  assembly:   "Video samenstellen (beelden + voice)...",
-  visualReview: "Controleren of beelden bij de tekst horen...",
-  finalReview: "Hele video nogmaals nalopen...",
-  assembling: "Alle scenes samenvoegen + muziek...",
-  uploading:  "Video uploaden...",
-  complete:   "Perfecte video klaar!",
+  parsing:    "Converting script to scenes...",
+  voiceovers: "Full voiceover in ElevenLabs (one script)...",
+  visuals:    "Finding visuals that match the script...",
+  assembly:   "Assembling video (visuals + voice)...",
+  visualReview: "Checking visuals match the narration...",
+  finalReview: "Final review pass...",
+  assembling: "Concatenating all scenes + music...",
+  uploading:  "Uploading video...",
+  complete:   "Video ready!",
 };
 
 // ─── 1. Parse Script into Scenes ─────────────────────────────────────────────
@@ -8496,7 +8474,7 @@ async function assertSceneVisualInventory(
   if (clips.length < minClips) {
     throw pipelineError(
       PIPELINE_ERROR.NO_SCENES,
-      `Scene ${scene.index}: te weinig unieke clips (${clips.length}/${minClips} nodig voor ${scene.duration.toFixed(1)}s voice) — breid het archief uit of zorg voor Pexels fallback`
+      `Scene ${scene.index}: not enough unique clips (${clips.length}/${minClips} needed for ${scene.duration.toFixed(1)}s voice) — expand the archive or enable Pexels fallback`
     );
   }
   if (sentenceBeats > 0 && clipBeatIndices && clipBeatIndices.length === sentenceBeats) {
@@ -8504,7 +8482,7 @@ async function assertSceneVisualInventory(
     if (uniqueBeatSlots.size < sentenceBeats) {
       throw pipelineError(
         PIPELINE_ERROR.NO_SCENES,
-        `Scene ${scene.index}: niet elke zin heeft een eigen beeld (${uniqueBeatSlots.size}/${sentenceBeats})`
+        `Scene ${scene.index}: not every sentence has its own visual (${uniqueBeatSlots.size}/${sentenceBeats})`
       );
     }
   }
@@ -13471,7 +13449,7 @@ async function fetchArchiveSentenceMontage(
     if (!filled) {
       throw pipelineError(
         PIPELINE_ERROR.NO_SCENES,
-        `Scene ${scene.index} zin ${beat.index + 1}: geen archief- of Pexels-beeld voor "${beat.text.slice(0, 90).trim()}" — tag archief of controleer PEXELS_API_KEY`
+        `Scene ${scene.index} sentence ${beat.index + 1}: no archive or Pexels visual for "${beat.text.slice(0, 90).trim()}" — tag the archive or check PEXELS_API_KEY`
       );
     }
   }
@@ -13571,7 +13549,7 @@ async function ensureArchiveMontageVoiceCoverage(
   if (coverage < minCoverage) {
     throw pipelineError(
       PIPELINE_ERROR.NO_SCENES,
-      `Scene ${scene.index}: montage ${clips.length} clip(s) covers ~${coverage.toFixed(1)}s of ${scene.duration.toFixed(1)}s voice — tag meer archief of zorg dat Pexels fallback actief is`
+      `Scene ${scene.index}: montage ${clips.length} clip(s) covers ~${coverage.toFixed(1)}s of ${scene.duration.toFixed(1)}s voice — tag more archive footage or ensure Pexels fallback is enabled`
     );
   }
 }
@@ -15917,10 +15895,11 @@ export async function runVideoPipeline(
   onProgress?: (p: PipelineProgress) => void,
   voiceId?: string,
   customVoiceoverUrl?: string,
-  videoLength: string = "8-12",
+  videoLength: string = "8-10",
   enableSubtitles = false,  // Subtitles disabled by default — user can enable via UI
   userPrompt?: string
 ): Promise<string> {
+  videoLength = normalizeVideoLength(videoLength);
   const maxScenes = getScenesForLength(videoLength);
   if (!fs.existsSync(TMP_DIR)) {
     fs.mkdirSync(TMP_DIR, { recursive: true });
@@ -16011,7 +15990,7 @@ export async function runVideoPipeline(
       );
     }
     // Tight VO sync: scene length tracks narration; target length padded only on final export
-    const shortTargetSec: Record<string, number> = { "1": 58, "2": 118 };
+    const shortTargetSec: Record<string, number> = { "1": 58 };
     const targetTotal = shortTargetSec[videoLength];
     const VO_SCENE_TAIL_SEC = 0.35;
     for (let i = 0; i < scenes.length; i++) {
@@ -16294,7 +16273,7 @@ export async function runVideoPipeline(
 
         // ── Stage 4b: Vidrush chapter cards (yellow title cards between sections) ──
     const useChapterCards =
-      process.env.ENABLE_CHAPTER_CARDS === "true" && videoLength !== "1" && videoLength !== "2";
+      process.env.ENABLE_CHAPTER_CARDS === "true" && !isShortVideoLength(videoLength);
     const orderedClips: string[] = [];
     let chapterCardCount = 0;
     for (let i = 0; i < composedScenes.length; i++) {
@@ -16321,7 +16300,7 @@ export async function runVideoPipeline(
     const totalDuration =
       scenes.reduce((sum, s) => sum + s.duration, 0) + chapterCardCount * CHAPTER_CARD_DURATION;
     let finalVideoPath = await concatenateScenesWithMusic(orderedClips, workDir, videoId, totalDuration, videoTitle);
-    if (videoLength === "1" || videoLength === "2") {
+    if (isShortVideoLength(videoLength)) {
       const targetSec = videoLength === "1" ? 58 : 118;
       finalVideoPath = await ensureFinalVideoDuration(finalVideoPath, workDir, videoId, targetSec);
     }

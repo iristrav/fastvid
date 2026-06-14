@@ -55,7 +55,7 @@ export function initArchiveUploadJob(jobId: string, filename?: string): void {
     jobId,
     filename,
     stage: "queued",
-    message: "Upload ontvangen — voorbereiden…",
+    message: "Upload received — preparing…",
     percent: 0,
     updatedAt: Date.now(),
     done: false,
@@ -128,7 +128,7 @@ export function requestArchiveUploadCancel(jobId: string): boolean {
   if (!job || job.done) return false;
   cancelRequested.add(jobId);
   patchArchiveUploadJob(jobId, {
-    message: "Annuleren…",
+    message: "Cancelling…",
   });
   return true;
 }
@@ -138,7 +138,7 @@ export function finishArchiveUploadJobCancelled(jobId: string | undefined): void
   cancelRequested.delete(jobId);
   patchArchiveUploadJob(jobId, {
     stage: "cancelled",
-    message: "Upload geannuleerd",
+    message: "Upload cancelled",
     done: true,
     cancelled: true,
     error: undefined,
@@ -146,19 +146,19 @@ export function finishArchiveUploadJobCancelled(jobId: string | undefined): void
 }
 
 export const ARCHIVE_UPLOAD_STAGE_LABELS: Record<ArchiveUploadProgressStage, string> = {
-  queued: "Wachtrij",
-  validating: "Bestand controleren",
-  split_ffmpeg: "FFmpeg controleren",
-  split_probe: "Duur meten",
-  split_detect: "Shots detecteren",
-  split_rescan: "Extra cuts scannen",
-  split_filter: "Onderwerp filteren",
-  split_extract: "Clips knippen",
-  filter_overlay: "Editor-tekst filteren",
-  filter_subject: "Archief-onderwerp filteren",
-  ai_tags: "AI-tags genereren",
-  save_clips: "Clips opslaan",
-  done: "Klaar",
-  cancelled: "Geannuleerd",
-  error: "Fout",
+  queued: "Queued",
+  validating: "Validating file",
+  split_ffmpeg: "Checking FFmpeg",
+  split_probe: "Measuring duration",
+  split_detect: "Detecting shots",
+  split_rescan: "Scanning extra cuts",
+  split_filter: "Filtering by topic",
+  split_extract: "Extracting clips",
+  filter_overlay: "Filtering editor text",
+  filter_subject: "Matching archive subject",
+  ai_tags: "Generating AI tags",
+  save_clips: "Saving clips",
+  done: "Done",
+  cancelled: "Cancelled",
+  error: "Error",
 };

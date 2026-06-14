@@ -17,16 +17,16 @@ export default function NicheAanvraag() {
 
   useEffect(() => {
     if (!authLoading && user) {
-      navigate("/dashboard#niche-requests");
+      navigate("/dashboard/niche-requests");
     }
   }, [authLoading, user, navigate]);
 
   const submitRequest = trpc.nicheRequest.submitRequest.useMutation({
     onSuccess: async () => {
-      toast.success("Aanvraag verstuurd", { description: ONBOARDING_PENDING_MESSAGE });
+      toast.success("Request submitted", { description: ONBOARDING_PENDING_MESSAGE });
       navigate("/login");
     },
-    onError: (e) => toast.error("Indienen mislukt", { description: toastErrorMessage(e) }),
+    onError: (e) => toast.error("Submission failed", { description: toastErrorMessage(e) }),
   });
 
   if (authLoading || user) {
@@ -44,24 +44,24 @@ export default function NicheAanvraag() {
       <div className="glass-card border border-white/10 rounded-2xl p-6 md:p-8 space-y-6">
         <div className="space-y-2">
           <h1 className="text-2xl font-black text-white" style={{ fontFamily: "Outfit, sans-serif" }}>
-            Niche-aanvraag
+            Niche request
           </h1>
           <p className="text-sm text-slate-400 leading-relaxed">
-            Vul het formulier in. Na registratie dien je aanvragen in via je dashboard.
+            Fill out the form. After registering, submit requests via your dashboard.
           </p>
         </div>
 
         <NicheRequestForm
           submitting={submitRequest.isPending}
-          submitLabel="Versturen"
+          submitLabel="Submit"
           onSubmit={(values) => submitRequest.mutate({ ...values, requestType: "onboarding" })}
         />
       </div>
 
       <p className="text-center text-xs text-slate-500">
-        Al een account?{" "}
+        Already have an account?{" "}
         <button type="button" onClick={() => navigate("/login")} className="text-purple-400 hover:text-purple-300">
-          Inloggen
+          Sign in
         </button>
       </p>
     </PageShell>

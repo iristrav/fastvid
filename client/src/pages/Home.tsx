@@ -42,16 +42,9 @@ const MOCKUP_IMG = "https://d2xsxph8kpxj0f.cloudfront.net/310519663314427713/B9G
 const SCRIPT_IMG = "https://d2xsxph8kpxj0f.cloudfront.net/310519663314427713/B9GyrhcpQX4Q32cZzpFMG9/fastvid-feature-script-JueTt4K7PbHkfqDhKoXwkv.webp";
 const VISUALS_IMG = "https://d2xsxph8kpxj0f.cloudfront.net/310519663314427713/B9GyrhcpQX4Q32cZzpFMG9/fastvid-feature-visuals-YGMDS8Lz6mqFNsCHUYEQDS.webp";
 
-// ─── Video length options (aligned with dashboard + documentary workflow) ───────
-const VIDEO_LENGTHS = [
-  { label: "1 min", value: "1", desc: "Quick test" },
-  { label: "2 min", value: "2", desc: "Fast preview" },
-  { label: "5–8 min", value: "5-8", desc: "Short explainers" },
-  { label: "8–12 min", value: "8-12", desc: "Standard documentary" },
-  { label: "12–15 min", value: "12-15", desc: "Deep-dive" },
-  { label: "15–20 min", value: "15-20", desc: "Extended narrative" },
-  { label: "20+ min", value: "20+", desc: "Long-form" },
-];
+import { VIDEO_LENGTH_OPTIONS } from "@shared/videoLengths";
+
+const VIDEO_LENGTHS = VIDEO_LENGTH_OPTIONS;
 
 const VIDEO_FORMATS = [
   {
@@ -206,7 +199,7 @@ export default function Home() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
   const [promptValue, setPromptValue] = useState("");
-  const [selectedLength, setSelectedLength] = useState("8-12");
+  const [selectedLength, setSelectedLength] = useState("8-10");
 
   const { isAuthenticated } = useAuth();
 
@@ -247,11 +240,11 @@ export default function Home() {
     },
     {
       q: "Which video length should I choose?",
-      a: "Match length to how much story you have. Use 1–2 min to test a topic, 5–8 min for tight explainers, 8–12 min for standard documentaries, and 15–20+ min for deep dives. Fastvid adapts pacing and scene count automatically.",
+      a: "Match length to how much story you have: 1 min to test a topic, 8–10 min for standard documentaries, 10–15 min for deep dives, and 15–20 min for extended narratives. Fastvid adapts pacing and scene count automatically.",
     },
     {
       q: "How long does generation take?",
-      a: "Short tests (1–2 min) often finish in a few minutes. A typical 8–12 minute documentary usually takes roughly 30–60 minutes in the cloud — you can leave the tab open or return when the project is ready, similar to other AI production platforms.",
+      a: "A 1 min test often finishes in a few minutes. A typical 8–10 minute documentary usually takes roughly 30–60 minutes in the cloud — you can leave the tab open or return when the project is ready.",
     },
     {
       q: "Can I change the video length for each video?",
@@ -271,7 +264,7 @@ export default function Home() {
     },
     {
       q: "What payment methods do you accept?",
-      a: "We accept SEPA Direct Debit, Bancontact, PayPal, and all major credit cards (Visa, Mastercard, Amex).",
+      a: "We accept all major credit cards (Visa, Mastercard, Amex), Apple Pay, Google Pay, and PayPal.",
     },
     {
       q: "Are the videos unique and safe to upload?",
@@ -362,7 +355,7 @@ export default function Home() {
     {
       name: "Marcus Reid",
       role: "Content agency owner",
-      text: "We're now producing 20+ videos per week for our clients. The ROI is insane. €499/month for unlimited videos is a no-brainer.",
+      text: "We're now producing 20+ videos per week for our clients. The ROI is insane. $499/month for unlimited videos is a no-brainer.",
       stars: 5,
     },
     {
@@ -529,7 +522,7 @@ export default function Home() {
       <section className="relative py-16 border-y border-white/8">
         <div className="container">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-8 md:gap-12">
-            <StatItem value="1–20+" label="minute documentaries" icon={Clock} />
+            <StatItem value="1–20" label="minute documentaries" icon={Clock} />
             <StatItem value="~60" label="min avg. full production" icon={Cloud} />
             <StatItem value="3" label="steps: brief → build → edit" icon={Film} />
             <StatItem value="100+" label="AI voice options" icon={Mic} />
@@ -634,12 +627,9 @@ export default function Home() {
           <div className="grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
             {[
               { label: "1 min", value: "1", icon: "🧪", title: "Quick test", useCases: ["Pipeline check", "Topic test", "Visual QA"] },
-              { label: "2 min", value: "2", icon: "⚡", title: "Fast preview", useCases: ["Draft narrative", "Client preview", "A/B topic"] },
-              { label: "5–8 min", value: "5-8", icon: "📰", title: "Short explainer", useCases: ["News recap", "Single event", "Crisis brief"] },
-              { label: "8–12 min", value: "8-12", icon: "🎬", title: "Standard doc", useCases: ["Biography", "Company story", "Science explainer"] },
-              { label: "12–15 min", value: "12-15", icon: "📈", title: "Deep-dive", useCases: ["True crime", "Geopolitics", "Tech analysis"] },
+              { label: "8–10 min", value: "8-10", icon: "🎬", title: "Standard doc", useCases: ["Biography", "Company story", "Science explainer"] },
+              { label: "10–15 min", value: "10-15", icon: "📈", title: "Deep-dive", useCases: ["True crime", "Geopolitics", "Tech analysis"] },
               { label: "15–20 min", value: "15-20", icon: "🔍", title: "Extended", useCases: ["Investigations", "Historical arcs", "Multi-act story"] },
-              { label: "20+ min", value: "20+", icon: "🏆", title: "Long-form", useCases: ["Epic narratives", "Mini-docs", "Course-style"] },
             ].map((opt) => (
               <div
                 key={opt.value}
@@ -822,10 +812,10 @@ export default function Home() {
               <div className="text-center mb-8">
                 <h3 className="text-xl font-bold text-white mb-2" style={{ fontFamily: 'Outfit, sans-serif' }}>Pro Plan</h3>
                 <div className="flex items-end justify-center gap-2 mb-1">
-                  <span className="text-6xl font-black gradient-text" style={{ fontFamily: 'Outfit, sans-serif' }}>€499</span>
+                  <span className="text-6xl font-black gradient-text" style={{ fontFamily: 'Outfit, sans-serif' }}>$499</span>
                   <span className="text-slate-400 mb-3">/month</span>
                 </div>
-                <p className="text-xs text-slate-500">€499/month · Cancel anytime</p>
+                <p className="text-xs text-slate-500">$499/month · Cancel anytime</p>
               </div>
 
               {/* All lengths included */}
@@ -844,7 +834,7 @@ export default function Home() {
               <ul className="space-y-3 mb-8">
                 {[
                   "Unlimited video generation",
-                  "All lengths including 1–2 min tests through 20+ min",
+                  "All lengths: 1, 8–10, 10–15, and 15–20 min",
                   "Documentary & explainer scripts",
                   "Script-matched B-roll (stock + real footage)",
                   "Professional AI voiceover",

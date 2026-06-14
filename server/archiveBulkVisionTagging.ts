@@ -134,7 +134,7 @@ async function autoTitleSingleAsset(
       const ai = await generateArchiveAssetAiMetadataFromPath(loaded.localPath, loaded.mimeType, {
         archiveNicheTags: nicheTags,
         userTags: normalizeMediaTags(asset.tags ?? []),
-        clipLabel: `archief clip ${asset.id}`,
+        clipLabel: `archive clip ${asset.id}`,
       });
       if (!ai) {
         console.warn(`[ArchiveAI] auto-title skip ${id}: vision returned no metadata`);

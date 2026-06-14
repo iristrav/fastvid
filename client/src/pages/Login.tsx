@@ -42,7 +42,7 @@ export default function Login() {
   const register = trpc.auth.register.useMutation({
     onSuccess: async () => {
       await utils.auth.me.invalidate();
-      toast.success("Account aangemaakt!", { description: "Vul je niche-aanvraag in om verder te gaan." });
+      toast.success("Account created!", { description: "Complete your niche request to continue." });
       navigate("/niche-aanvraag");
     },
     onError: (e) => toast.error("Registration failed", { description: toastErrorMessage(e) }),
@@ -136,7 +136,7 @@ export default function Login() {
                 className="w-full text-slate-400 hover:text-white hover:bg-white/5"
                 onClick={() => navigate("/niche-aanvraag")}
               >
-                Niche aanvragen (zonder account)
+                Request a niche (without account)
               </Button>
             </CardContent>
           </Card>

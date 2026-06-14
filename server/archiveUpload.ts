@@ -75,7 +75,7 @@ export class ArchiveUploadError extends Error {
   }
 }
 
-export const ARCHIVE_UPLOAD_CANCELLED_MESSAGE = "Upload geannuleerd";
+export const ARCHIVE_UPLOAD_CANCELLED_MESSAGE = "Upload cancelled";
 
 function throwIfUploadCancelled(jobId: string | undefined): void {
   if (jobId && isArchiveUploadCancelRequested(jobId)) {
@@ -112,7 +112,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
     patchArchiveUploadJob(jobId, patch);
 
   throwIfUploadCancelled(jobId);
-  progress({ stage: "validating", message: `${fileLabel}: bestand valideren…`, percent: 3 });
+  progress({ stage: "validating", message: `${fileLabel}: validating file…`, percent: 3 });
 
   const archive = await getMediaArchiveById(input.archiveId);
   if (!archive) {
@@ -205,7 +205,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
 
       progress({
         stage: "ai_tags",
-        message: `${fileLabel}: AI-tags voor ${segments.length} clips…`,
+        message: `${fileLabel}: generating AI tags for ${segments.length} clips…`,
         percent: 86,
         clipTotal: segments.length,
       });
@@ -215,7 +215,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
       let savedCount = 0;
       progress({
         stage: "save_clips",
-        message: `${fileLabel}: clips opslaan (0/${segments.length})…`,
+        message: `${fileLabel}: saving clips (0/${segments.length})…`,
         percent: 90,
         clipTotal: segments.length,
         clipsSaved: 0,
@@ -233,7 +233,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
             );
             progress({
               stage: "filter_overlay",
-              message: `${fileLabel}: clip ${seg.index + 1} overgeslagen (editor-tekst)`,
+              message: `${fileLabel}: clip ${seg.index + 1} skipped (editor text)`,
               percent: 90 + Math.round((seg.index / segments.length) * 8),
               clipIndex: seg.index + 1,
               clipTotal: segments.length,
@@ -247,7 +247,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
             );
             progress({
               stage: "filter_subject",
-              message: `${fileLabel}: clip ${seg.index + 1} overgeslagen (past niet bij archief)`,
+              message: `${fileLabel}: clip ${seg.index + 1} skipped (does not match archive subject)`,
               percent: 90 + Math.round((seg.index / segments.length) * 8),
               clipIndex: seg.index + 1,
               clipTotal: segments.length,
@@ -296,7 +296,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
           savedCount += 1;
           progress({
             stage: "save_clips",
-            message: `${fileLabel}: clip ${savedCount}/${segments.length} opgeslagen`,
+            message: `${fileLabel}: clip ${savedCount}/${segments.length} saved`,
             percent: 90 + Math.round((savedCount / segments.length) * 9),
             clipIndex: seg.index + 1,
             clipTotal: segments.length,
@@ -311,17 +311,17 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
       throwIfUploadCancelled(jobId);
 
       if (createdAssets.length === 0) {
-        finishArchiveUploadJob(jobId, false, "Geen clips opgeslagen");
+        finishArchiveUploadJob(jobId, false, "No clips saved");
         throw new ArchiveUploadError(
           500,
           appErrorMessage(
             APP_ERROR.SERVICE_ERROR,
-            "Geen clips opgeslagen — alle fragmenten bevatten editor-tekst, passen niet bij het archief, of split mislukt"
+            "No clips saved — all segments contained editor text, did not match the archive subject, or split failed"
           )
         );
       }
 
-      finishArchiveUploadJob(jobId, true, `${createdAssets.length} clip(s) opgeslagen`, {
+      finishArchiveUploadJob(jobId, true, `${createdAssets.length} clip(s) saved`, {
         clipsSaved: createdAssets.length,
         clipTotal: segments.length,
       });
@@ -339,7 +339,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
   if (isVideo && autoSplitScenes) {
     throw new ArchiveUploadError(
       400,
-      appErrorMessage(APP_ERROR.SERVICE_ERROR, "Automatisch knippen leverde geen clips op.")
+      appErrorMessage(APP_ERROR.SERVICE_ERROR, "Automatic splitting produced no clips.")
     );
   }
 
@@ -348,7 +348,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
       400,
       appErrorMessage(
         APP_ERROR.SERVICE_ERROR,
-        "Deze upload bevat editor-tekst (titel/ondertitel overlay). Alleen puur beeldmateriaal toegestaan — tekst hoort in het editprogramma."
+        "This upload contains editor text (title/subtitle overlay). Only clean footage is allowed — add text in the editor instead."
       )
     );
   }
@@ -357,7 +357,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
       400,
       appErrorMessage(
         APP_ERROR.SERVICE_ERROR,
-        `Deze upload past niet bij het archief-onderwerp "${subjectContext.archiveName}". Controleer niche-tags of kies ander materiaal.`
+        `This upload does not match the archive subject "${subjectContext.archiveName}". Check niche tags or choose different material.`
       )
     );
   }
@@ -365,7 +365,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
 
   progress({
     stage: "save_clips",
-    message: `${fileLabel}: ${isVideo ? "video" : "afbeelding"} opslaan…`,
+    message: `${fileLabel}: saving ${isVideo ? "video" : "image"}…`,
     percent: 92,
   });
 
@@ -458,7 +458,7 @@ async function handleArchiveBinaryUpload(req: Request, res: Response) {
     const buffer = Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(rawBody ?? []);
     patchArchiveUploadJob(jobId, {
       stage: "validating",
-      message: `${filename}: ${Math.round(buffer.length / (1024 * 1024))}MB ontvangen — verwerken…`,
+      message: `${filename}: ${Math.round(buffer.length / (1024 * 1024))}MB received — processing…`,
       percent: 2,
     });
     const mimeType = String(req.query.mimeType ?? req.headers["content-type"] ?? "").slice(0, 128);
@@ -485,7 +485,7 @@ async function handleArchiveBinaryUpload(req: Request, res: Response) {
     res.status(202).json({
       accepted: true,
       jobId,
-      message: "Upload ontvangen — verwerking op de achtergrond",
+      message: "Upload received — processing in background",
     });
 
     void processArchiveAssetUpload(uploadInput)
@@ -549,7 +549,7 @@ async function handleArchiveUploadCancel(req: Request, res: Response) {
 
     const ok = requestArchiveUploadCancel(jobId);
     if (!ok) {
-      res.status(404).json({ error: "Geen actieve upload gevonden voor dit jobId" });
+      res.status(404).json({ error: "No active upload found for this jobId" });
       return;
     }
 
@@ -580,7 +580,7 @@ async function handleArchiveUploadProgress(req: Request, res: Response) {
 
     const job = getArchiveUploadJob(jobId);
     if (!job) {
-      res.status(404).json({ error: "Geen actieve upload gevonden voor dit jobId" });
+      res.status(404).json({ error: "No active upload found for this jobId" });
       return;
     }
 

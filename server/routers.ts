@@ -40,6 +40,7 @@ import {
 } from "./db";
 import { storageGetSignedUrl } from "./storage";
 import type { ProgressLogEntry } from "./db";
+import { videoLengthSchema, normalizeVideoLength, isShortVideoLength } from "@shared/videoLengths";
 import { PIPELINE_DISPLAY_STAGES, formatGenerationDuration, progressStepWithElapsed, resolvePipelineDisplayStage } from "@shared/pipelineProgress";
 import { ONE_YEAR_MS } from "@shared/const";
 
@@ -230,14 +231,14 @@ async function generateFullVideo(videoId: number, prompt: string, videoLength: s
 }
 
 // ─── Phase A: Script-only generation (stops at awaiting_approval) ────────────
-async function generateScriptOnly(videoId: number, prompt: string, videoLength: string, videoType: string) {
+async function generateScriptOnly(videoId: number, prompt: string, videoLengthRaw: string, videoType: string) {
+  const videoLength = normalizeVideoLength(videoLengthRaw);
   const budget = getScriptLengthBudget(videoLength);
-  const isTwoMin = videoLength === "2";
   const muskTopic = isMuskTeslaPromptTopic(prompt, prompt);
   const writerSystem = buildScriptWriterSystemPrompt(videoType);
 
   // Initialize progressLog for script stage
-  const scriptStage = resolvePipelineDisplayStage("Script schrijven", 5);
+  const scriptStage = resolvePipelineDisplayStage("Writing script", 5);
   const scriptLog: ProgressLogEntry[] = [
     { step: scriptStage.label, startedAt: Date.now(), status: "active" },
   ];
@@ -262,7 +263,7 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLength: 
     });
 
     // 1–2 min: one LLM call (saves ~2–4 min vs outline + parallel sections + metadata)
-    if (isTwoMin || videoLength === "1") {
+    if (isShortVideoLength(videoLength)) {
       scriptLog[0].step = scriptStage.label;
       await updateVideoProgressLog(videoId, scriptLog).catch(() => {});
       lastScriptProgressLabel = scriptStage.label;
@@ -826,7 +827,7 @@ export const appRouter = router({
     }),
     generate: subscribedProcedure.input(z.object({
       prompt: z.string().min(10).max(1000),
-      videoLength: z.enum(["1", "2", "5-8", "8-12", "12-15", "15-20", "20+"]),
+      videoLength: videoLengthSchema,
       videoType: z.enum(["documentary", "listicle", "tutorial", "explainer"]).default("documentary"),
       voiceId: z.string().optional(),
       customVoiceoverUrl: z.string().optional(),
@@ -838,7 +839,7 @@ export const appRouter = router({
           throw appTrpcError(
             "FORBIDDEN",
             APP_ERROR.SERVICE_ERROR,
-            "Je niche-aanvraag wacht nog op goedkeuring. Binnen 2 werkdagen hoor je van ons."
+            "Your niche application is still pending approval. We will get back to you within 2 business days."
           );
         }
       }
@@ -846,7 +847,7 @@ export const appRouter = router({
       const coverage = await assessArchiveCoverageForPrompt(input.prompt);
       const coverageNote = coverage.hasCoverage
         ? "🔍 Starting generation..."
-        : "📦 Nog weinig archiefbeelden voor dit onderwerp — we bouwen verder aan je archief. Generatie duurt langer.";
+        : "📦 Limited archive footage for this topic — we are still building your archive. Generation may take longer.";
 
       const videoId = await createVideo({
         userId: ctx.user.id,
@@ -975,7 +976,7 @@ export const appRouter = router({
     }),
     generateVideo: adminProcedure.input(z.object({
       prompt: z.string().min(10).max(500),
-      videoLength: z.enum(["1", "2", "5-8", "8-12", "12-15", "15-20", "20+"]),
+      videoLength: videoLengthSchema,
       videoType: z.enum(["documentary", "listicle", "tutorial", "explainer"]).default("documentary"),
     })).mutation(async ({ ctx, input }) => {
       const videoId = await createVideo({ userId: ctx.user.id, prompt: input.prompt, videoLength: input.videoLength, videoType: input.videoType });
@@ -1059,7 +1060,7 @@ export const appRouter = router({
       // Create a recurring price on the fly (or use a pre-created one)
       const price = await getStripe().prices.create({
         currency: FASTVID_PRO_PLAN.currency,
-        unit_amount: FASTVID_PRO_PLAN.priceEur,
+        unit_amount: FASTVID_PRO_PLAN.priceUsd,
         recurring: { interval: FASTVID_PRO_PLAN.interval },
         product_data: { name: FASTVID_PRO_PLAN.name },
       });
@@ -1261,10 +1262,11 @@ export const appRouter = router({
       nicheTitle: z.string().min(2).max(256),
       titleStructure: z.string().min(3).max(2000),
       topics: z.string().min(3).max(2000),
+      subniches: z.string().min(3).max(2000),
       requestType: z.enum(["onboarding", "new_channel"]).default("onboarding"),
     })).mutation(async ({ ctx, input }) => {
       if (input.requestType === "new_channel" && !ctx.user) {
-        throw appTrpcError("UNAUTHORIZED", APP_ERROR.SERVICE_ERROR, "Log in om een extra kanaal aan te vragen.");
+        throw appTrpcError("UNAUTHORIZED", APP_ERROR.SERVICE_ERROR, "Log in to request an extra channel.");
       }
 
       const contactEmail = input.contactEmail.toLowerCase().trim();
@@ -1273,10 +1275,10 @@ export const appRouter = router({
       if (input.requestType === "onboarding") {
         const existing = await getLatestOnboardingRequest(userId ?? undefined, contactEmail);
         if (existing && existing.status === "pending") {
-          throw appTrpcError("BAD_REQUEST", APP_ERROR.SERVICE_ERROR, "Je aanvraag is al ingediend en wacht op goedkeuring.");
+          throw appTrpcError("BAD_REQUEST", APP_ERROR.SERVICE_ERROR, "Your application was already submitted and is pending approval.");
         }
         if (existing && ["approved", "in_progress", "ready"].includes(existing.status)) {
-          throw appTrpcError("BAD_REQUEST", APP_ERROR.SERVICE_ERROR, "Je niche-aanvraag is al goedgekeurd.");
+          throw appTrpcError("BAD_REQUEST", APP_ERROR.SERVICE_ERROR, "Your niche application is already approved.");
         }
       }
 
@@ -1289,10 +1291,11 @@ export const appRouter = router({
         videoFormat: null,
         titleStructure: input.titleStructure.trim(),
         topics: input.topics.trim(),
+        subniches: input.subniches.trim(),
         description: null,
         status: "pending",
       });
-      if (!id) throw appTrpcError("INTERNAL_SERVER_ERROR", APP_ERROR.SERVICE_ERROR, "Aanvraag opslaan mislukt");
+      if (!id) throw appTrpcError("INTERNAL_SERVER_ERROR", APP_ERROR.SERVICE_ERROR, "Failed to save request");
 
       const request = await getNicheRequestById(id);
       return { request };
@@ -1326,7 +1329,7 @@ export const appRouter = router({
       linkedArchiveId: z.number().int().optional(),
     })).mutation(async ({ ctx, input }) => {
       const req = await getNicheRequestById(input.id);
-      if (!req) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Aanvraag niet gevonden");
+      if (!req) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Application not found");
 
       await updateNicheRequest(input.id, {
         status: input.status,

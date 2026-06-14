@@ -195,7 +195,7 @@ export async function assertFfmpegAvailable(): Promise<void> {
     await exec(`${ffmpegBin()} -version`, { timeout: 8_000, maxBuffer: 256 * 1024 });
   } catch {
     throw new ArchiveSplitError(
-      "FFmpeg is niet beschikbaar op de server — automatisch knippen kan niet. Controleer de Railway-deploy (nixpacks ffmpeg)."
+      "FFmpeg is not available on the server — automatic splitting cannot run. Check the deploy includes ffmpeg (nixpacks ffmpeg)."
     );
   }
 }
@@ -647,7 +647,7 @@ async function normalizeSourceForAnalysis(
   const outPath = path.join(workDir, "analysis_normalized.mp4");
   onProgress?.({
     stage: "split_probe",
-    message: `Video normaliseren voor betrouwbare shot-detectie (${Math.round(totalDur)}s)…`,
+    message: `Normalizing video for reliable shot detection (${Math.round(totalDur)}s)…`,
     percent: 15,
   });
 
@@ -659,7 +659,7 @@ async function normalizeSourceForAnalysis(
   );
 
   if (!fs.existsSync(outPath) || fs.statSync(outPath).size < 8000) {
-    throw new ArchiveSplitError("Video normaliseren mislukt — controleer of het bestand afspeelbaar is.");
+    throw new ArchiveSplitError("Video normalization failed — check that the file is playable.");
   }
   return outPath;
 }
@@ -723,7 +723,7 @@ export async function splitVideoBySceneChanges(
   const canContinue = () => hasBudget() && (shouldContinue?.() ?? true);
   const throwIfCancelled = () => {
     if (shouldContinue && !shouldContinue()) {
-      throw new ArchiveSplitError("Upload geannuleerd");
+      throw new ArchiveSplitError("Upload cancelled");
     }
   };
 
@@ -731,7 +731,7 @@ export async function splitVideoBySceneChanges(
 
   throwIfCancelled();
 
-  report({ stage: "split_ffmpeg", message: "FFmpeg beschikbaarheid controleren…", percent: 8 });
+  report({ stage: "split_ffmpeg", message: "Checking FFmpeg availability…", percent: 8 });
   await assertFfmpegAvailable();
 
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "fastvid-archive-split-"));
@@ -740,17 +740,17 @@ export async function splitVideoBySceneChanges(
     const inputPath = path.join(workDir, `source.${ext}`);
     fs.writeFileSync(inputPath, inputBuffer);
 
-    report({ stage: "split_probe", message: "Videoduur meten (ffprobe)…", percent: 12 });
+    report({ stage: "split_probe", message: "Measuring video duration (ffprobe)…", percent: 12 });
     const totalDur = await probeVideoDurationSec(inputPath);
     if (totalDur <= 0) {
-      throw new ArchiveSplitError("Kon videoduur niet bepalen (ffprobe). Bestand corrupt of formaat niet ondersteund.");
+      throw new ArchiveSplitError("Could not determine video duration (ffprobe). File may be corrupt or unsupported.");
     }
 
     const maxDur = maxArchiveVideoDurationSec();
     if (totalDur > maxDur) {
       const maxLabel =
         maxDur >= 3600
-          ? `${Math.floor(maxDur / 3600)} uur`
+          ? `${Math.floor(maxDur / 3600)} hour${Math.floor(maxDur / 3600) === 1 ? "" : "s"}`
           : `${Math.floor(maxDur / 60)} min`;
       throw new ArchiveSplitError(
         `Video too long (${Math.ceil(totalDur / 60)} min, max ${maxLabel})`
@@ -769,7 +769,7 @@ export async function splitVideoBySceneChanges(
 
     report({
       stage: "split_detect",
-      message: `Shot-detectie starten (${Math.round(totalDur)}s video)…`,
+      message: `Starting shot detection (${Math.round(totalDur)}s video)…`,
       percent: 18,
     });
 
@@ -789,7 +789,7 @@ export async function splitVideoBySceneChanges(
       throwIfCancelled();
       report({
         stage: "split_rescan",
-        message: `Lange shots opnieuw scannen (${ranges.length} segmenten)…`,
+        message: `Rescanning long shots (${ranges.length} segments)…`,
         percent: 42,
       });
       ranges = await rescanRangesForInteriorCuts(analysisPath, ranges, deadline, shouldContinue);
@@ -806,7 +806,7 @@ export async function splitVideoBySceneChanges(
       console.warn(msg);
       if (totalDur > MIN_SPLIT_VIDEO_SEC) {
         throw new ArchiveSplitError(
-          "Geen shot/scène-wisselingen gedetecteerd. Zorg dat FFmpeg beschikbaar is en het bestand echte beeldcuts bevat."
+          "No shot/scene changes detected. Ensure FFmpeg is available and the file contains real visual cuts."
         );
       }
       return [{
@@ -821,7 +821,7 @@ export async function splitVideoBySceneChanges(
     throwIfCancelled();
     if (!hasBudget()) {
       throw new ArchiveSplitError(
-        "Knippen duurde te lang (timeout). Probeer een kortere video of zet AI-tags tijdelijk uit."
+        "Splitting timed out. Try a shorter video or temporarily disable AI tags."
       );
     }
 
@@ -829,7 +829,7 @@ export async function splitVideoBySceneChanges(
     if (subjectContext && hasArchiveSubjectContext(subjectContext)) {
       report({
         stage: "split_filter",
-        message: `Fragmenten controleren op archief-onderwerp (${ranges.length})…`,
+        message: `Checking fragments against archive subject (${ranges.length})…`,
         percent: 48,
         clipTotal: ranges.length,
       });
@@ -838,7 +838,7 @@ export async function splitVideoBySceneChanges(
         onProgress: (kept, total, skipped) => {
           report({
             stage: "split_filter",
-            message: `Onderwerp-filter: ${kept} van ${total} fragmenten behouden (${skipped} overgeslagen)`,
+            message: `Subject filter: kept ${kept} of ${total} fragments (${skipped} skipped)`,
             percent: 48 + Math.round((kept / Math.max(1, total)) * 4),
             clipTotal: total,
           });
@@ -850,15 +850,15 @@ export async function splitVideoBySceneChanges(
       );
       if (ranges.length === 0) {
         throw new ArchiveSplitError(
-          `Geen fragmenten passen bij het archief-onderwerp "${subjectContext.archiveName}". ` +
-            "Controleer niche-tags of upload materiaal dat bij dit archief hoort."
+          `No fragments match the archive subject "${subjectContext.archiveName}". ` +
+            "Check niche tags or upload material that fits this archive."
         );
       }
     }
 
     report({
       stage: "split_extract",
-      message: `${ranges.length} clips knippen met FFmpeg…`,
+      message: `Extracting ${ranges.length} clips with FFmpeg…`,
       percent: 52,
       clipTotal: ranges.length,
       clipIndex: 0,
@@ -909,12 +909,12 @@ export async function splitVideoBySceneChanges(
     throwIfCancelled();
 
     if (segments.length === 0) {
-      throw new ArchiveSplitError("Shot-detectie vond cuts maar extractie van clips mislukt (FFmpeg).");
+      throw new ArchiveSplitError("Shot detection found cuts but clip extraction failed (FFmpeg).");
     }
 
     const { kept, skipped } = await dedupeVideoSegmentsVisually(segments);
     if (kept.length === 0) {
-      throw new ArchiveSplitError("Alle clips waren visuele duplicaten — probeer een video met duidelijkere shot-wisselingen.");
+      throw new ArchiveSplitError("All clips were visual duplicates — try a video with clearer shot changes.");
     }
     if (skipped > 0) {
       console.log(`[ArchiveSplit] visual dedup: ${skipped} duplicate(s) removed, ${kept.length} unique clip(s)`);

@@ -447,7 +447,7 @@ async function startServer() {
     }
     try {
       const { createVideo } = await import('../db');
-      const { prompt, videoLength = '5-8', videoType = 'documentary', userId = 1 } = req.body;
+      const { prompt, videoLength = '8-10', videoType = 'documentary', userId = 1 } = req.body;
       if (!prompt) { res.status(400).json({ error: 'prompt required' }); return; }
       const videoId = await createVideo({ userId, prompt, videoLength, videoType });
       // Import and call generateFullVideo dynamically to avoid circular deps

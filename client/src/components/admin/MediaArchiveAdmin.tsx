@@ -11,8 +11,8 @@ import {
 import { ArchiveClipsGrid } from "@/components/admin/ArchiveClipsGrid";
 
 const MIX_KINDS = [
-  { value: "real_video", label: "Echte video" },
-  { value: "photo", label: "Foto" },
+  { value: "real_video", label: "Real video" },
+  { value: "photo", label: "Photo" },
   { value: "stock", label: "Stock" },
   { value: "screenshot", label: "Screenshot" },
   { value: "motion_graphics", label: "Motion graphics" },
@@ -68,21 +68,21 @@ type ArchiveUploadProgress = {
 };
 
 const STAGE_LABELS: Record<string, string> = {
-  queued: "Wachtrij",
-  validating: "Controleren",
+  queued: "Queued",
+  validating: "Validating",
   split_ffmpeg: "FFmpeg",
-  split_probe: "Duur meten",
-  split_detect: "Shots detecteren",
+  split_probe: "Measuring duration",
+  split_detect: "Detecting shots",
   split_rescan: "Extra cuts",
-  split_filter: "Onderwerp filter",
-  split_extract: "Clips knippen",
-  filter_overlay: "Tekstfilter",
-  filter_subject: "Onderwerp filter",
-  ai_tags: "AI-tags",
-  save_clips: "Opslaan",
-  done: "Klaar",
-  cancelled: "Geannuleerd",
-  error: "Fout",
+  split_filter: "Subject filter",
+  split_extract: "Extracting clips",
+  filter_overlay: "Text filter",
+  filter_subject: "Subject filter",
+  ai_tags: "AI tags",
+  save_clips: "Saving",
+  done: "Done",
+  cancelled: "Cancelled",
+  error: "Error",
 };
 
 function newUploadJobId(): string {
@@ -147,7 +147,7 @@ async function uploadArchiveFile(
       }
       await new Promise((r) => window.setTimeout(r, 700));
     }
-    throw new Error("Verwerking duurde te lang — controleer later het archief of probeer opnieuw.");
+    throw new Error("Processing took too long — check the archive later or try again.");
   };
 
   try {
@@ -174,14 +174,14 @@ async function uploadArchiveFile(
         const lower = text.toLowerCase();
         if (lower.includes("upstream")) {
           throw new Error(
-            "Server timeout tijdens upload (upstream error). Verwerking gaat mogelijk door — ververs de pagina over een minuut."
+            "Server timeout during upload (upstream error). Processing may continue — refresh the page in a minute."
           );
         }
         throw new Error(
-          "Server stuurde een HTML-foutpagina (bestand te groot of timeout). Probeer een kleiner bestand."
+          "Server returned an HTML error page (file too large or timeout). Try a smaller file."
         );
       }
-      throw new Error(text.slice(0, 180) || "Upload mislukt");
+      throw new Error(text.slice(0, 180) || "Upload failed");
     }
 
     if (res.status === 202 || data?.accepted) {
@@ -194,9 +194,9 @@ async function uploadArchiveFile(
 
     if (!res.ok) {
       const cancelled = Boolean(data?.cancelled)
-        || (data?.error?.toLowerCase().includes("geannuleerd") ?? false);
+        || (data?.error?.toLowerCase().includes("cancelled") ?? false);
       if (cancelled) throw new UploadCancelledError();
-      throw new Error(data?.error || "Upload mislukt");
+      throw new Error(data?.error || "Upload failed");
     }
 
     const finalProgress = await pollArchiveUploadProgress(opts.jobId);
@@ -213,7 +213,7 @@ async function uploadArchiveFile(
 
 class UploadCancelledError extends Error {
   constructor() {
-    super("Upload geannuleerd");
+    super("Upload cancelled");
     this.name = "UploadCancelledError";
   }
 }
@@ -242,27 +242,27 @@ export function MediaArchiveAdmin() {
       utils.mediaArchive.listArchives.invalidate();
       setShowCreateForm(false);
       if (data.archive?.id) setSelectedId(data.archive.id);
-      toast.success("Archief aangemaakt!");
+      toast.success("Archive created!");
     },
-    onError: (e) => toast.error("Archief aanmaken mislukt", { description: toastErrorMessage(e) }),
+    onError: (e) => toast.error("Failed to create archive", { description: toastErrorMessage(e) }),
   });
 
   const updateArchive = trpc.mediaArchive.updateArchive.useMutation({
     onSuccess: () => {
       utils.mediaArchive.listArchives.invalidate();
       setEditArchiveId(null);
-      toast.success("Archief bijgewerkt!");
+      toast.success("Archive updated!");
     },
-    onError: (e) => toast.error("Opslaan mislukt", { description: toastErrorMessage(e) }),
+    onError: (e) => toast.error("Save failed", { description: toastErrorMessage(e) }),
   });
 
   const deleteArchive = trpc.mediaArchive.deleteArchive.useMutation({
     onSuccess: () => {
       utils.mediaArchive.listArchives.invalidate();
       setSelectedId(null);
-      toast.success("Archief verwijderd");
+      toast.success("Archive deleted");
     },
-    onError: (e) => toast.error("Verwijderen mislukt", { description: toastErrorMessage(e) }),
+    onError: (e) => toast.error("Delete failed", { description: toastErrorMessage(e) }),
   });
 
   const selectedArchive = archives.find((a) => a.id === activeArchiveId);
@@ -279,16 +279,16 @@ export function MediaArchiveAdmin() {
     uploadAbortRef.current?.abort();
     setUploadProgress((prev) =>
       prev
-        ? { ...prev, stage: "cancelled", message: "Upload geannuleerd", done: true, cancelled: true }
+        ? { ...prev, stage: "cancelled", message: "Upload cancelled", done: true, cancelled: true }
         : prev
     );
-    toast.info("Upload gestopt");
+    toast.info("Upload stopped");
   }
 
   async function handleFiles(files: FileList | null) {
     if (!files?.length) return;
     if (!activeArchiveId) {
-      toast.error("Maak eerst een archief aan");
+      toast.error("Create an archive first");
       return;
     }
     setUploading(true);
@@ -296,12 +296,12 @@ export function MediaArchiveAdmin() {
     try {
       for (const file of Array.from(files)) {
         if (file.size > ARCHIVE_MAX_UPLOAD_BYTES) {
-          toast.error(`${file.name}: te groot (max ${ARCHIVE_MAX_UPLOAD_MB}MB / video tot 2 uur)`);
+          toast.error(`${file.name}: too large (max ${ARCHIVE_MAX_UPLOAD_MB}MB / video up to 2 hours)`);
           continue;
         }
         const mimeType = guessFileMime(file);
         if (!mimeType.startsWith("video/") && !mimeType.startsWith("image/")) {
-          toast.error(`${file.name}: alleen video of afbeelding (MP4, JPG, PNG, …)`);
+          toast.error(`${file.name}: video or image only (MP4, JPG, PNG, …)`);
           continue;
         }
         const isVideo = mimeType.startsWith("video/");
@@ -314,7 +314,7 @@ export function MediaArchiveAdmin() {
           jobId,
           filename: file.name,
           stage: "queued",
-          message: `${file.name}: uploaden…`,
+          message: `${file.name}: uploading…`,
           percent: 0,
           done: false,
         });
@@ -332,19 +332,19 @@ export function MediaArchiveAdmin() {
         utils.mediaArchive.listAssets.invalidate();
         utils.mediaArchive.listArchives.invalidate();
         if (isVideo && autoSplitScenes && result.clipCount > 1) {
-          toast.success(`${file.name}: ${result.clipCount} clips aangemaakt (shot/scène-wisselingen)`);
+          toast.success(`${file.name}: ${result.clipCount} clips created (shot/scene changes)`);
         } else if (isVideo && autoSplitScenes) {
-          toast.success(`${file.name}: 1 clip opgeslagen`);
+          toast.success(`${file.name}: 1 clip saved`);
         } else {
-          toast.success(`${file.name} geüpload`);
+          toast.success(`${file.name} uploaded`);
         }
       }
       setUploadTags("");
     } catch (e) {
       if (e instanceof UploadCancelledError || (e instanceof DOMException && e.name === "AbortError")) {
-        toast.info("Upload geannuleerd");
+        toast.info("Upload cancelled");
       } else {
-        toast.error("Upload mislukt", { description: toastErrorMessage(e) });
+        toast.error("Upload failed", { description: toastErrorMessage(e) });
       }
     } finally {
       setUploading(false);
@@ -361,17 +361,17 @@ export function MediaArchiveAdmin() {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h2 className="text-xl font-black text-white" style={{ fontFamily: "Outfit, sans-serif" }}>
-            Media <span className="gradient-text">Archief</span>
+            Media <span className="gradient-text">Archive</span>
           </h2>
           <p className="text-slate-400 text-sm mt-1">
-            Maak niche-archieven met video&apos;s en foto&apos;s. Lange video&apos;s worden geknipt op elke shot/scène-wisseling — geen vaste intervallen.
+            Create niche archives with videos and photos. Long videos are split at each shot/scene change — no fixed intervals.
           </p>
         </div>
         <button
           onClick={() => { setShowCreateForm(true); setEditArchiveId(null); }}
           className="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-sm font-medium transition-colors"
         >
-          <Plus className="w-4 h-4" /> Nieuw archief
+          <Plus className="w-4 h-4" /> New archive
         </button>
       </div>
 
@@ -394,12 +394,12 @@ export function MediaArchiveAdmin() {
         {/* Archive list */}
         <div className="glass-card border border-white/8 rounded-xl overflow-hidden">
           <div className="p-3 border-b border-white/8">
-            <p className="text-xs font-medium text-slate-400 uppercase tracking-wide">Archieven</p>
+            <p className="text-xs font-medium text-slate-400 uppercase tracking-wide">Archives</p>
           </div>
           {archivesLoading ? (
             <div className="p-6 flex justify-center"><Loader2 className="w-5 h-5 animate-spin text-purple-400" /></div>
           ) : archives.length === 0 ? (
-            <div className="p-6 text-center text-slate-500 text-sm">Nog geen archieven</div>
+            <div className="p-6 text-center text-slate-500 text-sm">No archives yet</div>
           ) : (
             <ul className="divide-y divide-white/5">
               {archives.map((a) => (
@@ -414,7 +414,7 @@ export function MediaArchiveAdmin() {
                       <Archive className="w-4 h-4 text-purple-400 shrink-0" />
                       <span className="font-medium text-sm truncate">{a.name}</span>
                     </div>
-                    <p className="text-xs text-slate-500 mt-0.5 ml-6">{a.assetCount} bestanden</p>
+                    <p className="text-xs text-slate-500 mt-0.5 ml-6">{a.assetCount} files</p>
                   </button>
                 </li>
               ))}
@@ -426,7 +426,7 @@ export function MediaArchiveAdmin() {
         <div className="space-y-4">
           {!activeArchiveId ? (
             <div className="glass-card border border-white/8 rounded-xl p-12 text-center text-slate-500">
-              Maak een archief om video&apos;s en afbeeldingen te uploaden.
+              Create an archive to upload videos and images.
             </div>
           ) : (
             <>
@@ -449,18 +449,18 @@ export function MediaArchiveAdmin() {
                     onClick={() => setEditArchiveId(activeArchiveId)}
                     className="flex items-center gap-1 px-3 py-1.5 text-xs rounded-lg bg-white/10 text-slate-300 hover:bg-white/15"
                   >
-                    <Pencil className="w-3 h-3" /> Bewerken
+                    <Pencil className="w-3 h-3" /> Edit
                   </button>
                   <button
                     onClick={() => {
-                      if (confirm(`Archief "${selectedArchive?.name}" en alle bestanden verwijderen?`)) {
+                      if (confirm(`Delete archive "${selectedArchive?.name}" and all files?`)) {
                         deleteArchive.mutate({ id: activeArchiveId });
                       }
                     }}
                     disabled={deleteArchive.isPending}
                     className="flex items-center gap-1 px-3 py-1.5 text-xs rounded-lg bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20"
                   >
-                    <Trash2 className="w-3 h-3" /> Verwijderen
+                    <Trash2 className="w-3 h-3" /> Delete
                   </button>
                 </div>
               </div>
@@ -468,24 +468,24 @@ export function MediaArchiveAdmin() {
               {/* Upload zone */}
               <div className="glass-card border border-white/8 rounded-xl p-5 space-y-4">
                 <h4 className="font-medium text-white flex items-center gap-2">
-                  <Upload className="w-4 h-4 text-cyan-400" /> Uploaden
+                  <Upload className="w-4 h-4 text-cyan-400" /> Upload
                 </h4>
                 <div className="grid sm:grid-cols-2 gap-3">
                   <div>
-                    <label className="text-xs text-slate-400 mb-1 block">Tags voor nieuwe uploads (komma-gescheiden)</label>
+                    <label className="text-xs text-slate-400 mb-1 block">Tags for new uploads (comma-separated)</label>
                     <input
                       type="text"
                       value={uploadTags}
                       onChange={(e) => setUploadTags(e.target.value)}
-                      placeholder="bijv. berlin, metro, skyline, modern city, transit"
+                      placeholder="e.g. berlin, metro, skyline, modern city, transit"
                       className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-purple-500/50"
                     />
                     <p className="text-[11px] text-slate-500 mt-1">
-                      Tip: AI-tags duren langer maar zijn preciezer — personen, landen, steden, gebeurtenissen (tot 56 tags).
+                      Tip: AI tags take longer but are more precise — people, countries, cities, events (up to 56 tags).
                     </p>
                   </div>
                   <div>
-                    <label className="text-xs text-slate-400 mb-1 block">Type (voor foto&apos;s)</label>
+                    <label className="text-xs text-slate-400 mb-1 block">Type (for photos)</label>
                     <select
                       value={uploadMixKind}
                       onChange={(e) => setUploadMixKind(e.target.value as MixKind)}
@@ -504,7 +504,7 @@ export function MediaArchiveAdmin() {
                     onChange={(e) => setAutoGenerateTags(e.target.checked)}
                     className="rounded border-white/20 bg-white/5 text-purple-600 focus:ring-purple-500"
                   />
-                  AI-tags en beschrijving uit beeld (LLM vision)
+                  AI tags and description from image (LLM vision)
                 </label>
                 <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer select-none">
                   <input
@@ -513,7 +513,7 @@ export function MediaArchiveAdmin() {
                     onChange={(e) => setAutoSplitScenes(e.target.checked)}
                     className="rounded border-white/20 bg-white/5 text-purple-600 focus:ring-purple-500"
                   />
-                  Automatisch knippen op shot/scène-wisseling (scdet — detecteert echte beeldcuts)
+                  Auto-split on shot/scene change (scdet — detects real visual cuts)
                 </label>
 
                 {uploadProgress && (
@@ -533,7 +533,7 @@ export function MediaArchiveAdmin() {
                             className="flex items-center gap-1 px-2 py-0.5 text-xs rounded-md bg-red-500/15 text-red-300 border border-red-500/30 hover:bg-red-500/25 transition-colors"
                           >
                             <X className="w-3 h-3" />
-                            Stoppen
+                            Stop
                           </button>
                         )}
                       </div>
@@ -554,7 +554,7 @@ export function MediaArchiveAdmin() {
                     {uploadProgress.clipTotal != null && uploadProgress.clipTotal > 0 && (
                       <p className="text-[11px] text-slate-500">
                         Clip {uploadProgress.clipIndex ?? uploadProgress.clipsSaved ?? 0}/{uploadProgress.clipTotal}
-                        {uploadProgress.clipsSaved != null ? ` · ${uploadProgress.clipsSaved} opgeslagen` : ""}
+                        {uploadProgress.clipsSaved != null ? ` · ${uploadProgress.clipsSaved} saved` : ""}
                       </p>
                     )}
                   </div>
@@ -571,9 +571,9 @@ export function MediaArchiveAdmin() {
                     <Upload className="w-8 h-8 text-slate-500" />
                   )}
                   <span className="text-sm text-slate-400">
-                    Sleep bestanden hierheen of klik om te kiezen
+                    Drag files here or click to choose
                   </span>
-                  <span className="text-xs text-slate-600">MP4, WebM, JPG, PNG — max {ARCHIVE_MAX_UPLOAD_MB}MB (video tot 2 uur)</span>
+                  <span className="text-xs text-slate-600">MP4, WebM, JPG, PNG — max {ARCHIVE_MAX_UPLOAD_MB}MB (video up to 2 hours)</span>
                   <input
                     ref={fileInputRef}
                     type="file"
@@ -611,46 +611,46 @@ function ArchiveForm({
 
   return (
     <div className="glass-card border border-purple-500/20 rounded-xl p-5 space-y-4">
-      <h3 className="font-bold text-white">{initial ? "Archief bewerken" : "Nieuw archief"}</h3>
+      <h3 className="font-bold text-white">{initial ? "Edit archive" : "New archive"}</h3>
       <div>
-        <label className="text-xs text-slate-400 mb-1 block">Naam *</label>
+        <label className="text-xs text-slate-400 mb-1 block">Name *</label>
         <input
           value={name}
           onChange={(e) => setName(e.target.value)}
-          placeholder="bijv. Titanic / Maritiem"
+          placeholder="e.g. Titanic / Maritime"
           className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-purple-500/50"
         />
       </div>
       <div>
-        <label className="text-xs text-slate-400 mb-1 block">Beschrijving</label>
+        <label className="text-xs text-slate-400 mb-1 block">Description</label>
         <textarea
           value={description}
           onChange={(e) => setDescription(e.target.value)}
           rows={2}
-          placeholder="Waar is dit archief voor?"
+          placeholder="What is this archive for?"
           className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-purple-500/50 resize-none"
         />
       </div>
       <div>
         <label className="text-xs text-slate-400 mb-1 block flex items-center gap-1">
-          <Tag className="w-3 h-3" /> Onderwerp-tags (komma-gescheiden)
+          <Tag className="w-3 h-3" /> Topic tags (comma-separated)
         </label>
         <input
           value={nicheTags}
           onChange={(e) => setNicheTags(e.target.value)}
-          placeholder="titanic, scheepsramp, maritiem"
+          placeholder="titanic, shipwreck, maritime"
           className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-purple-500/50"
         />
         <p className="text-[11px] text-slate-500 mt-1">
-          Optioneel — videos kiezen automatisch het juiste archief op basis van titel, tags en clip-inhoud.
-          Tags helpen ook bij upload-filtering.
+          Optional — videos automatically pick the right archive based on title, tags, and clip content.
+          Tags also help with upload filtering.
         </p>
       </div>
       <div className="flex gap-2 justify-end">
-        <button onClick={onCancel} className="px-4 py-2 text-sm text-slate-400 hover:text-white">Annuleren</button>
+        <button onClick={onCancel} className="px-4 py-2 text-sm text-slate-400 hover:text-white">Cancel</button>
         <button
           onClick={() => {
-            if (!name.trim()) { toast.error("Naam is verplicht"); return; }
+            if (!name.trim()) { toast.error("Name is required"); return; }
             onSave({
               name: name.trim(),
               description: description.trim() || undefined,
@@ -661,7 +661,7 @@ function ArchiveForm({
           className="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-sm font-medium disabled:opacity-50"
         >
           {saving && <Loader2 className="w-4 h-4 animate-spin" />}
-          Opslaan
+          Save
         </button>
       </div>
     </div>

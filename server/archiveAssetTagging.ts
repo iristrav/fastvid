@@ -390,7 +390,7 @@ async function invokeArchiveVisionTagging(
           {
             role: "system",
             content:
-              "Je bent een senior documentaire archivist en historicus. Analyseer elk frame zorgvuldig. Precisie over snelheid: benoem exacte personen, landen, steden en historische gebeurtenissen wanneer herkenbaar. Return alleen JSON volgens het schema.",
+              "You are a senior documentary archivist and historian. Analyze each frame carefully. Precision over speed: name exact people, countries, cities, and historical events when recognizable. Return JSON only according to the schema.",
           },
           {
             role: "user",
@@ -433,45 +433,45 @@ function buildVisionPrompt(
   frameCount = 1
 ): string {
   const lines = [
-    "Beschrijf ALLES wat je ziet voor een documentaire-archief. Neem rustig de tijd — gedetailleerde identificatie is belangrijker dan snelheid.",
+    "Describe EVERYTHING you see for a documentary archive. Take your time — precise identification matters more than speed.",
     "",
-    "title: max 15 woorden, concreet WIE/WAT/WAAR (bijv. 'Adolf Hitler speech at Nuremberg rally' of 'Berlin Alexanderplatz tram traffic'). Geen bestandsnaam.",
-    "description: 2–3 zinnen: handeling + exacte locatie + tijdperk + gebeurtenis indien herkenbaar.",
+    "title: max 15 words, concrete WHO/WHAT/WHERE (e.g. 'Adolf Hitler speech at Nuremberg rally' or 'Berlin Alexanderplatz tram traffic'). No filename.",
+    "description: 2–3 sentences: action + exact location + era + event if recognizable.",
     "",
-    "IDENTITEIT — vul zo precies mogelijk (herkenbare namen, geen vage termen):",
-    "- persons: volledige namen of unieke rollen (adolf hitler, winston churchill, german soldier, berlin commuter). Geen 'man' of 'leader' als je de persoon kent.",
-    "- countries: landnamen (germany, united states, france, soviet union). Altijd expliciet land, niet alleen 'europe'.",
-    "- cities: stadsnamen (berlin, nuremberg, paris, new york). Altijd expliciete stad als zichtbaar of afleidbaar.",
-    "- events: historische gebeurtenissen (nuremberg rally, battle of berlin, berlin wall fall, d-day, cold war). Alleen als passend bij beeld.",
+    "IDENTITY — fill as precisely as possible (recognizable names, not vague terms):",
+    "- persons: full names or unique roles (adolf hitler, winston churchill, german soldier, berlin commuter). Not 'man' or 'leader' if you know who it is.",
+    "- countries: country names (germany, united states, france, soviet union). Always explicit country, not just 'europe'.",
+    "- cities: city names (berlin, nuremberg, paris, new york). Always explicit city when visible or inferable.",
+    "- events: historical events (nuremberg rally, battle of berlin, berlin wall fall, d-day, cold war). Only when appropriate to the image.",
     "",
-    "OVERIG — vul ALLE velden; lege arrays alleen als echt niets van toepassing:",
-    "- tags: 15–25 zoek-slugs (lowercase, NL+EN), inclusief person+plaats+gebeurtenis combinaties",
-    "- locations: landmarks, gebouwen, regio's (reichstag, alexanderplatz, brandenburg gate, u-bahn)",
-    "- objects: voertuigen, uniformen, vlaggen, borden, wapens, skyline, tram",
+    "OTHER — fill ALL fields; empty arrays only when truly not applicable:",
+    "- tags: 15–25 search slugs (lowercase, English), including person+place+event combinations",
+    "- locations: landmarks, buildings, regions (reichstag, alexanderplatz, brandenburg gate, u-bahn)",
+    "- objects: vehicles, uniforms, flags, signs, weapons, skyline, tram",
     "- actions: marching, speech, salute, city traffic, train arriving, evacuation",
-    "- era: exact jaar/decennium (1936, 1940s, 1989, modern day, 2020s)",
+    "- era: exact year/decade (1936, 1940s, 1989, modern day, 2020s)",
     "- setting: indoor/outdoor/street/stadium/bunker/skyline/platform",
     "- sceneType: parade/speech/cityscape/transit/battle/ruins/portrait/propaganda",
     "- visualDetails: swastika flag, wehrmacht uniform, cobblestone, glass towers",
     "- mood: triumphant, somber, busy, propaganda, peaceful",
     "- camera: wide aerial, close-up, tracking, black and white archival",
-    "- colors: dominante kleuren of zwart-wit",
+    "- colors: dominant colors or black and white",
     "",
-    "Regels:",
-    "- Stadsgeografie: tag modern city, skyline, transit — geen WWII tenzij echt zichtbaar.",
-    "- WWII: hitler/nazi/wehrmacht ALLEEN als echt in beeld; noem dan ook land, stad en gebeurtenis.",
-    "- Liever te specifiek dan te vaag: 'adolf hitler nuremberg 1936' > 'historical figure'.",
+    "Rules:",
+    "- Urban geography: tag modern city, skyline, transit — no WWII unless truly visible.",
+    "- WWII: hitler/nazi/wehrmacht ONLY when truly on screen; then also name country, city, and event.",
+    "- Prefer too specific over too vague: 'adolf hitler nuremberg 1936' > 'historical figure'.",
   ];
   if (frameCount > 1) {
-    lines.push(`Je krijgt ${frameCount} frames uit dezelfde video — combineer tot één complete tag-set.`);
+    lines.push(`You receive ${frameCount} frames from the same video — combine into one complete tag set.`);
   }
-  if (context.clipLabel) lines.push(`Dit is ${context.clipLabel} uit een langere video.`);
-  if (context.parentFilename) lines.push(`Bronbestand: ${context.parentFilename}`);
+  if (context.clipLabel) lines.push(`This is ${context.clipLabel} from a longer video.`);
+  if (context.parentFilename) lines.push(`Source file: ${context.parentFilename}`);
   if (context.archiveNicheTags?.length) {
-    lines.push(`Archief-onderwerp: ${context.archiveNicheTags.slice(0, 10).join(", ")}`);
+    lines.push(`Archive subject: ${context.archiveNicheTags.slice(0, 10).join(", ")}`);
   }
   if (context.userTags?.length) {
-    lines.push(`Bestaande tags (aanvullen, niet herhalen tenzij relevant): ${context.userTags.join(", ")}`);
+    lines.push(`Existing tags (add to these, do not repeat unless relevant): ${context.userTags.join(", ")}`);
   }
   return lines.join("\n");
 }

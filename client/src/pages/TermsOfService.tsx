@@ -146,7 +146,7 @@ export default function TermsOfService() {
           goodwill, channel standing, monetization, or platform access (including YouTube strikes or
           copyright claims), arising from your use of the Service. Our total liability for claims relating to the
           Service in any twelve-month period is limited to the amount you paid us for the Service in that
-          period, or one hundred euros (€100), whichever is greater, unless mandatory law requires otherwise.
+          period, or one hundred dollars ($100), whichever is greater, unless mandatory law requires otherwise.
         </p>
       </LegalSection>
 
