@@ -31,6 +31,7 @@ import {
   X,
   MessageCircle,
   CalendarDays,
+  Radio,
 } from "lucide-react";
 
 /** Set VITE_DISCORD_INVITE_URL in Railway / .env (e.g. https://discord.gg/your-invite) */
@@ -69,6 +70,33 @@ const BEST_FOR_NICHES = [
   "News & current events",
   "Educational explainers",
 ];
+
+const GETTING_STARTED_STEPS = [
+  {
+    number: "01",
+    icon: Radio,
+    title: "Submit your niche",
+    desc: "Tell us your channel niche, topics, sub-niches, and title structure. We use this to build a custom media archive for your content.",
+  },
+  {
+    number: "02",
+    icon: Clock,
+    title: "We review & approve",
+    desc: "Our team reviews your application within 2 business days. Once approved, we prepare footage matched to your niche.",
+  },
+  {
+    number: "03",
+    icon: Zap,
+    title: "Subscribe & start",
+    desc: "After approval, activate Fastvid Pro and generate your first video within 24 hours — script, voiceover, and visuals included.",
+  },
+  {
+    number: "04",
+    icon: Sparkles,
+    title: "Second channel?",
+    desc: "Want another niche? Submit a new channel request from your dashboard. Each niche gets its own curated archive.",
+  },
+] as const;
 
 const WORKFLOW_STEPS = [
   {
@@ -666,17 +694,52 @@ export default function Home() {
         </div>
       </section>
 
-      {/* ── How It Works ── */}
+      {/* ── How It Works — onboarding + pipeline ── */}
       <section id="how-it-works" className="relative py-24 overflow-hidden">
         <div className="glow-orb w-72 h-72 bg-purple-600/10 top-10 right-0 animate-orb-drift" />
         <div className="container relative z-10">
-          <div className="text-center mb-16">
+          <div className="text-center mb-12">
             <span className="mono text-xs text-cyan-400 font-medium tracking-widest uppercase mb-3 block">How it works</span>
             <h2 className="text-3xl md:text-4xl font-black text-white mb-4" style={{ fontFamily: 'Outfit, sans-serif' }}>
+              From niche request to{" "}
+              <span className="gradient-text">published video</span>
+            </h2>
+            <p className="text-slate-400 max-w-2xl mx-auto text-sm md:text-base leading-relaxed">
+              Fastvid is built for documentary YouTube channels. You start with a niche application — we approve it,
+              build your archive, and then you generate videos matched to your topics and title style.
+            </p>
+          </div>
+
+          <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-20">
+            {GETTING_STARTED_STEPS.map((step) => (
+              <StepCard key={step.number} {...step} />
+            ))}
+          </div>
+
+          <div className="rounded-2xl border border-purple-500/20 bg-purple-500/5 px-6 py-5 mb-16 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+            <div className="text-left">
+              <p className="text-sm font-semibold text-white">Ready to apply?</p>
+              <p className="text-xs text-slate-400 mt-1">
+                Submit your niche, topics, sub-niches, and title structure — approval within 2 business days.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => navigate(isAuthenticated ? "/dashboard/niche-requests" : "/niche-aanvraag")}
+              className="btn-gradient px-5 py-2.5 rounded-lg text-sm font-semibold text-white flex items-center gap-2 shrink-0"
+            >
+              <Radio className="w-4 h-4" />
+              {isAuthenticated ? "Niche requests" : "Apply now"}
+            </button>
+          </div>
+
+          <div className="text-center mb-12">
+            <span className="mono text-xs text-purple-400 font-medium tracking-widest uppercase mb-3 block">Production pipeline</span>
+            <h3 className="text-2xl md:text-3xl font-black text-white mb-3" style={{ fontFamily: 'Outfit, sans-serif' }}>
               Inside each{" "}
               <span className="gradient-text">generation</span>
-            </h2>
-            <p className="text-slate-400 max-w-xl mx-auto text-sm md:text-base">
+            </h3>
+            <p className="text-slate-400 max-w-xl mx-auto text-sm">
               Under the hood, Fastvid runs a full documentary pipeline — not a single generic template.
             </p>
           </div>

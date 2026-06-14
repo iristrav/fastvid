@@ -10,10 +10,10 @@ import { DashboardNicheRequests } from "@/components/niche/DashboardNicheRequest
 export default function NicheRequestsPage() {
   const { user, loading } = useAuth({ redirectOnUnauthenticated: true });
   const { isLoading: accessLoading } = trpc.nicheRequest.accessStatus.useQuery(undefined, {
-    enabled: Boolean(user) && user?.role !== "admin",
+    enabled: Boolean(user),
   });
 
-  if (loading || (user?.role !== "admin" && accessLoading)) {
+  if (loading || accessLoading) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
         <Loader2 className="w-8 h-8 animate-spin text-purple-400" />

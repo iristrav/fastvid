@@ -789,13 +789,22 @@ export const appRouter = router({
   video: router({
     list: protectedProcedure.query(async ({ ctx }) => {
       const rows = await getVideosByUserId(ctx.user.id);
-      return Promise.all(
-        rows.map((v) =>
-          v.status === "completed" || v.status === "failed" || v.status === "awaiting_approval"
-            ? v
-            : recoverVideoCompletionState(v)
-        )
+      const onboarding = await getLatestOnboardingRequest(ctx.user.id, ctx.user.email);
+      const defaultNicheTitle = onboarding?.nicheTitle ?? null;
+      const enriched = await Promise.all(
+        rows.map(async (v) => {
+          const recovered =
+            v.status === "completed" || v.status === "failed" || v.status === "awaiting_approval"
+              ? v
+              : await recoverVideoCompletionState(v);
+          const meta = recovered.metadata as { nicheTitle?: string | null } | null | undefined;
+          return {
+            ...recovered,
+            nicheTitle: meta?.nicheTitle ?? defaultNicheTitle,
+          };
+        })
       );
+      return enriched;
     }),
     get: protectedProcedure.input(z.object({ id: z.number() })).query(async ({ ctx, input }) => {
       const raw = requireVideoAccess(await getVideoById(input.id), ctx);
@@ -849,6 +858,9 @@ export const appRouter = router({
         ? "🔍 Starting generation..."
         : "📦 Limited archive footage for this topic — we are still building your archive. Generation may take longer.";
 
+      const onboarding = await getLatestOnboardingRequest(ctx.user.id, ctx.user.email);
+      const nicheTitle = onboarding?.nicheTitle ?? null;
+
       const videoId = await createVideo({
         userId: ctx.user.id,
         prompt: input.prompt,
@@ -858,7 +870,7 @@ export const appRouter = router({
         voiceId: input.voiceId,
         enableSubtitles: input.enableSubtitles ? 1 : 0,
         status: "pending",
-        metadata: { archiveCoverage: coverage },
+        metadata: { archiveCoverage: coverage, nicheTitle },
       });
       if (!videoId) throw appTrpcError("INTERNAL_SERVER_ERROR", APP_ERROR.FAILED_CREATE_VIDEO, "Failed to create video");
       await updateVideoStatus(videoId, "generating_script", {

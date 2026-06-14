@@ -41,20 +41,18 @@ export function DashboardShell({ activeTab, children }: DashboardShellProps) {
             <LayoutDashboard className={`w-4 h-4 ${activeTab === "dashboard" ? "text-purple-400" : ""}`} />
             Dashboard
           </button>
-          {user?.role !== "admin" && (
-            <button
-              type="button"
-              onClick={() => navigate("/dashboard/niche-requests")}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors ${
-                activeTab === "niche-requests"
-                  ? "bg-purple-600/20 text-white font-medium"
-                  : "text-slate-400 hover:text-white hover:bg-white/5"
-              }`}
-            >
-              <Radio className={`w-4 h-4 ${activeTab === "niche-requests" ? "text-cyan-400" : ""}`} />
-              Niche requests
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={() => navigate("/dashboard/niche-requests")}
+            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors ${
+              activeTab === "niche-requests"
+                ? "bg-purple-600/20 text-white font-medium"
+                : "text-slate-400 hover:text-white hover:bg-white/5"
+            }`}
+          >
+            <Radio className={`w-4 h-4 ${activeTab === "niche-requests" ? "text-cyan-400" : ""}`} />
+            Niche requests
+          </button>
           <button
             type="button"
             onClick={() => navigate("/")}

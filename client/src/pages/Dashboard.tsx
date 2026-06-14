@@ -215,6 +215,7 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
     errorMessage?: string | null;
     metadata?: unknown;
     progressStep?: string | null;
+    nicheTitle?: string | null;
   };
   onView: (id: number) => void;
   onDelete: (id: number) => void;
@@ -301,6 +302,11 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
         <div className={`absolute top-2 right-2 px-2 py-0.5 rounded-full text-xs font-medium max-w-[55%] truncate ${statusColor}`}>
           {statusBadgeLabel}
         </div>
+        {video.nicheTitle && (
+          <div className="absolute top-2 left-2 px-2 py-0.5 rounded-md bg-black/70 text-[10px] text-cyan-300 font-medium max-w-[50%] truncate border border-cyan-500/30">
+            {video.nicheTitle}
+          </div>
+        )}
         <div className="absolute bottom-2 left-2 px-2 py-0.5 rounded-md bg-black/60 text-xs text-white font-mono">
           {getVideoLengthLabel(video.videoLength)}
         </div>
@@ -312,6 +318,11 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
           <span className="mono text-[10px] font-bold text-purple-400 bg-purple-500/10 border border-purple-500/20 px-1.5 py-0.5 rounded">
             {formatVideoId(video.id)}
           </span>
+          {video.nicheTitle && (
+            <span className="text-[10px] text-cyan-400/90 bg-cyan-500/10 border border-cyan-500/20 px-1.5 py-0.5 rounded truncate max-w-[140px]">
+              {video.nicheTitle}
+            </span>
+          )}
         </div>
         {editing ? (
           <div className="flex items-center gap-1 mb-1">
