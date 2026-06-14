@@ -85,9 +85,7 @@ export function registerCanonicalAppUrl(app: Express): void {
     const host = requestHost(req);
     if (!host || host === canonical.hostname) return next();
 
-    const shouldRedirect =
-      host.endsWith(".up.railway.app") ||
-      host === `www.${canonical.hostname}`;
+    const shouldRedirect = host.endsWith(".up.railway.app");
 
     if (!shouldRedirect) return next();
 
