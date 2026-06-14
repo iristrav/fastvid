@@ -416,6 +416,8 @@ const CROP_FILL_VF =
 /** Full clip visible on dark gray — fast fit (no gblur). */
 const FIT_GRAY_VF = buildFitGrayVideoMontageChain();
 const FPS_FORMAT_VF = `fps=25,format=yuv420p,setsar=1,setpts=PTS-STARTPTS`;
+/** Montage xfade requires identical size/pixfmt on every branch — never skip scale/pad. */
+const MONTAGE_BRANCH_NORM_VF = `${FIT_GRAY_VF},fps=25,format=yuv420p,setsar=1`;
 const STANDARD_VF = `${SCALE_PAD_VF},${FPS_FORMAT_VF}`;
 /** New clip every ~3–4s; hold up to 7s when narration/visual clearly stay on one subject. */
 const VIDRUSH_CLIP_MIN_SEC = 2.5;
@@ -8588,31 +8590,77 @@ async function composePlainMontageScene(
   threadFlag: string,
   composeTimeout: number
 ): Promise<boolean> {
-  const { scaleFilters, mergeFilter, montageLabel } = buildMontageXfadeFilter(
-    safeClips.length,
-    outDur,
-    sceneIndex,
-    montageDurations,
-    safeClips,
-    sourceMaxDurs
-  );
-  const inputs = montageClipInputs(safeClips);
-  const estMontage = effectiveMontageDurationSec(montageDurations, sourceMaxDurs);
-  const montageOutVF = montageTailPadVF(montageLabel, estMontage, outDur);
-  const audioIdx = safeClips.length;
-  await withTimeout(
-    exec(
-      `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}" ` +
-        `-filter_complex "${scaleFilters}${mergeFilter};${montageOutVF};[vmont]${fadeFilter}[vout];` +
-        `[${audioIdx}:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${Math.max(0, voiceDur - 0.15).toFixed(3)}:d=0.12,` +
-        `atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
-        `-map "[vout]" -map "[aout]" -vsync cfr ` +
-        `-t ${outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
-    ),
-    composeTimeout,
-    `Plain montage scene ${sceneIndex}`
-  );
-  return fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1000;
+  const muxMontageWithAudio = async (montageVideoPath: string): Promise<boolean> => {
+    const audioIdx = 1;
+    await withTimeout(
+      exec(
+        `${FFMPEG_BIN} -y -i "${montageVideoPath}" -i "${safeAudioPath}" ` +
+          `-filter_complex "[0:v]${FPS_FORMAT_VF}[vmont];[vmont]${fadeFilter}[vout];` +
+          `[${audioIdx}:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${Math.max(0, voiceDur - 0.15).toFixed(3)}:d=0.12,` +
+          `atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
+          `-map "[vout]" -map "[aout]" -vsync cfr ` +
+          `-t ${outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
+      ),
+      composeTimeout,
+      `Plain montage+audio scene ${sceneIndex}`
+    );
+    return fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1000;
+  };
+
+  try {
+    const { scaleFilters, mergeFilter, montageLabel } = buildMontageXfadeFilter(
+      safeClips.length,
+      outDur,
+      sceneIndex,
+      montageDurations,
+      safeClips,
+      sourceMaxDurs
+    );
+    const inputs = montageClipInputs(safeClips);
+    const estMontage = effectiveMontageDurationSec(montageDurations, sourceMaxDurs);
+    const montageOutVF = montageTailPadVF(montageLabel, estMontage, outDur);
+    const audioIdx = safeClips.length;
+    await withTimeout(
+      exec(
+        `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}" ` +
+          `-filter_complex "${scaleFilters}${mergeFilter};${montageOutVF};[vmont]${fadeFilter}[vout];` +
+          `[${audioIdx}:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${Math.max(0, voiceDur - 0.15).toFixed(3)}:d=0.12,` +
+          `atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
+          `-map "[vout]" -map "[aout]" -vsync cfr ` +
+          `-t ${outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
+      ),
+      composeTimeout,
+      `Plain montage scene ${sceneIndex}`
+    );
+    if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1000) return true;
+  } catch (inlineErr) {
+    console.warn(
+      `[Pipeline] Scene ${sceneIndex}: inline plain montage failed, trying sequential segments:`,
+      (inlineErr as Error).message?.slice(0, 160)
+    );
+  }
+
+  try {
+    const montageOnlyPath = path.join(workDir, `scene_${sceneIndex}_seq_montage.mp4`);
+    await renderSequentialArchiveMontage(
+      safeClips,
+      montageDurations,
+      sourceMaxDurs,
+      sceneIndex,
+      outDur,
+      workDir,
+      montageOnlyPath,
+      composeTimeout,
+      threadFlag
+    );
+    return await muxMontageWithAudio(montageOnlyPath);
+  } catch (seqErr) {
+    console.warn(
+      `[Pipeline] Scene ${sceneIndex}: sequential plain montage failed:`,
+      (seqErr as Error).message?.slice(0, 160)
+    );
+  }
+  return false;
 }
 
 const ARCHIVE_MONTAGE_BATCH_SIZE = 4;
@@ -8729,6 +8777,106 @@ async function renderBatchedArchiveMontage(
       i === segmentPaths.length - 1
         ? outputPath
         : path.join(workDir, `scene_${sceneIndex}_macc_${i}.mp4`);
+    await xfadeMergeTwoVideos(
+      accPath,
+      segmentPaths[i]!,
+      accDur,
+      segmentDurs[i]!,
+      nextOut,
+      composeTimeout,
+      threadFlag
+    );
+    accPath = nextOut;
+    accDur = (await probeVideoDurationSec(accPath)) || accDur + segmentDurs[i]! - montageXfadeSec();
+  }
+}
+
+async function renderSingleMontageSegment(
+  clipPath: string,
+  sceneIndex: number,
+  clipIndex: number,
+  duration: number,
+  sourceMaxSec: number,
+  outputPath: string,
+  composeTimeout: number,
+  threadFlag: string
+): Promise<number> {
+  const startSec = montageClipStartSec(sceneIndex, clipIndex);
+  let effectiveDur = duration;
+  if (sourceMaxSec > 0.15) {
+    effectiveDur = resolveMontageClipEffectiveDur(duration, sourceMaxSec);
+    effectiveDur = Math.min(effectiveDur, Math.max(0.35, sourceMaxSec - startSec - 0.05));
+  }
+  effectiveDur = Math.max(0.35, effectiveDur);
+  await withTimeout(
+    exec(
+      `${FFMPEG_BIN} -y -ss ${startSec.toFixed(3)} -i "${clipPath}" -t ${effectiveDur.toFixed(3)} ` +
+        `-vf "${MONTAGE_BRANCH_NORM_VF},setpts=PTS-STARTPTS" -an -vsync cfr ${threadFlag} ` +
+        `-c:v libx264 -preset ${MONTAGE_SEGMENT_ENCODE_PRESET} -crf 18 -pix_fmt yuv420p "${outputPath}"`
+    ),
+    composeTimeout,
+    `Montage segment scene ${sceneIndex} clip ${clipIndex}`
+  );
+  return (await probeVideoDurationSec(outputPath)) || effectiveDur;
+}
+
+/** Encode each montage clip separately then xfade-merge — avoids auto_scale filter-graph failures. */
+async function renderSequentialArchiveMontage(
+  clips: string[],
+  montageDurations: number[],
+  sourceMaxDurs: number[],
+  sceneIndex: number,
+  outDur: number,
+  workDir: string,
+  outputPath: string,
+  composeTimeout: number,
+  threadFlag: string
+): Promise<void> {
+  if (clips.length === 0) {
+    throw pipelineError(PIPELINE_ERROR.FFMPEG, `Scene ${sceneIndex}: no clips for sequential montage`);
+  }
+  const segmentPaths: string[] = [];
+  const segmentDurs: number[] = [];
+  for (let i = 0; i < clips.length; i++) {
+    const segPath = path.join(workDir, `scene_${sceneIndex}_seq_${i}.mp4`);
+    const dur = await renderSingleMontageSegment(
+      clips[i]!,
+      sceneIndex,
+      i,
+      montageDurations[i] ?? effectiveBeatSec(),
+      sourceMaxDurs[i] ?? 0,
+      segPath,
+      composeTimeout,
+      threadFlag
+    );
+    segmentPaths.push(segPath);
+    segmentDurs.push(dur);
+  }
+  if (segmentPaths.length === 1) {
+    const est = segmentDurs[0]!;
+    const pad = Math.max(0, outDur - est - 0.04);
+    const padFilter =
+      pad >= 0.08 && !strictNoVisualRepeat()
+        ? `tpad=stop_mode=add:stop_duration=${pad.toFixed(3)}:color=0x2a2a2a,`
+        : "";
+    await withTimeout(
+      exec(
+        `${FFMPEG_BIN} -y -i "${segmentPaths[0]!}" -vf "${padFilter}${FPS_FORMAT_VF}" ` +
+          `-an -vsync cfr -t ${outDur.toFixed(3)} ${threadFlag} ` +
+          `-c:v libx264 -preset ${MONTAGE_SEGMENT_ENCODE_PRESET} -crf 18 -pix_fmt yuv420p "${outputPath}"`
+      ),
+      composeTimeout,
+      `Sequential single-clip montage scene ${sceneIndex}`
+    );
+    return;
+  }
+  let accPath = segmentPaths[0]!;
+  let accDur = segmentDurs[0]!;
+  for (let i = 1; i < segmentPaths.length; i++) {
+    const nextOut =
+      i === segmentPaths.length - 1
+        ? outputPath
+        : path.join(workDir, `scene_${sceneIndex}_seq_acc_${i}.mp4`);
     await xfadeMergeTwoVideos(
       accPath,
       segmentPaths[i]!,
@@ -9192,6 +9340,11 @@ function computeMontageClipDuration(sceneDuration: number, clipCount: number): n
   return Math.max(effectiveMinClipSec(), Math.min(effectiveMaxClipSec(), evenSplit));
 }
 
+function ensureEvenDim(n: number, min = 2): number {
+  const v = Math.max(min, Math.round(n));
+  return v % 2 === 0 ? v : v + 1;
+}
+
 function montageClipPrepFilter(
   inputIndex: number,
   dur: number,
@@ -9201,31 +9354,23 @@ function montageClipPrepFilter(
   clipPath?: string,
   sourceMaxSec?: number
 ): string {
+  const preNormalized = clipPath ? /_norm_b\d+\.mp4$/i.test(path.basename(clipPath)) : false;
+  const startSec = preNormalized ? 0 : montageClipStartSec(sceneIndex, inputIndex);
   let effectiveDur = dur;
   if (sourceMaxSec && sourceMaxSec > 0.15) {
     effectiveDur = resolveMontageClipEffectiveDur(dur, sourceMaxSec);
+    effectiveDur = Math.min(effectiveDur, Math.max(0.35, sourceMaxSec - startSec - 0.05));
   }
-  const preNormalized = clipPath ? /_norm_b\d+\.mp4$/i.test(path.basename(clipPath)) : false;
-  const start = (preNormalized ? 0 : montageClipStartSec(sceneIndex, inputIndex)).toFixed(2);
+  effectiveDur = Math.max(0.35, effectiveDur);
+  const start = startSec.toFixed(2);
   const edgeFade =
     smoothTransition && xfade > 0.001 ? Math.min(0.08, effectiveDur * 0.05) : 0;
   const fadeIn = edgeFade;
   const fadeOut = edgeFade;
   const fadeOutStart = Math.max(0, effectiveDur - fadeOut - 0.02);
   const fadeColor = "0x2A2A2A";
-  const alreadyFramed =
-    clipPath &&
-    (isCuratedPreparedStillClip(clipPath) || isCuratedPreparedVideoClip(clipPath));
   let chain = `[${inputIndex}:v]trim=start=${start}:duration=${effectiveDur.toFixed(3)},`;
-  if (preNormalized) {
-    chain += `${FPS_FORMAT_VF}`;
-  } else if (alreadyFramed) {
-    chain += `${FPS_FORMAT_VF}`;
-  } else if (curatedArchiveOnlyVisuals() || documentaryStyleEnabled()) {
-    chain += `${FIT_GRAY_VF},${FPS_FORMAT_VF}`;
-  } else {
-    chain += `${CROP_FILL_VF},${FPS_FORMAT_VF}`;
-  }
+  chain += MONTAGE_BRANCH_NORM_VF;
   if (fadeIn > 0.05) chain += `,fade=t=in:st=0:d=${fadeIn.toFixed(3)}:color=${fadeColor}`;
   if (fadeOut > 0.05) chain += `,fade=t=out:st=${fadeOutStart.toFixed(3)}:d=${fadeOut.toFixed(3)}:color=${fadeColor}`;
   chain += `,setpts=PTS-STARTPTS[v${inputIndex}]`;
@@ -14433,19 +14578,19 @@ function buildOverlayFilterChain(
     const enable = `enable='between(t,${frame.startTime.toFixed(2)},${frame.endTime.toFixed(2)})'`;
     const ovlLabel = `ov${idx}`;
     if (timed.overlayX != null && timed.overlayY != null) {
-      const ow = timed.overlayW ?? VIDEO_WIDTH;
-      const oh = timed.overlayH ?? VIDEO_HEIGHT;
+      const ow = ensureEvenDim(timed.overlayW ?? VIDEO_WIDTH);
+      const oh = ensureEvenDim(timed.overlayH ?? VIDEO_HEIGHT);
       const scale =
         timed.isVideoOverlay && timed.overlayW && timed.overlayH
-          ? `scale=${ow}:${oh}`
-          : `scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}`;
+          ? `scale=${ow}:${oh}:flags=fast_bilinear,format=yuv420p`
+          : `scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:flags=fast_bilinear,format=yuv420p`;
       chain += `;[${inputIdx}:v]${scale}[${ovlLabel}];` +
         `[${prevLabel}][${ovlLabel}]overlay=x=${timed.overlayX}:y=${timed.overlayY}:${enable}[${outLabel}]`;
     } else if (overlayUsesFullFrame(timed) || (frame as { isStatCallout?: boolean }).isStatCallout) {
-      chain += `;[${inputIdx}:v]scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}[${ovlLabel}];` +
+      chain += `;[${inputIdx}:v]scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:flags=fast_bilinear,format=yuv420p[${ovlLabel}];` +
         `[${prevLabel}][${ovlLabel}]overlay=x=0:y=0:${enable}[${outLabel}]`;
     } else {
-      chain += `;[${inputIdx}:v]scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}[${ovlLabel}];` +
+      chain += `;[${inputIdx}:v]scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:flags=fast_bilinear,format=yuv420p[${ovlLabel}];` +
         `[${prevLabel}][${ovlLabel}]overlay=x=0:y=${kineticY}:${enable}[${outLabel}]`;
     }
     prevLabel = outLabel;
@@ -15309,6 +15454,38 @@ async function composeSceneVideo(
       );
     } catch (rescueErr) {
       console.warn(`[Pipeline] Scene ${scene.index}: rescue montage failed:`, rescueErr);
+      try {
+        const seqMontagePath = path.join(workDir, `scene_${scene.index}_rescue_seq.mp4`);
+        await renderSequentialArchiveMontage(
+          composeClips,
+          montageDurations ?? composeBeatDurations,
+          sourceMaxDurs,
+          scene.index,
+          outDur,
+          workDir,
+          seqMontagePath,
+          composeTimeout,
+          threadFlag
+        );
+        const audioFadeOutStart = Math.max(0, voiceDur - 0.15);
+        await withTimeout(
+          exec(
+            `${FFMPEG_BIN} -y -i "${seqMontagePath}" -i "${safeAudioPath}" ` +
+              `-filter_complex "[0:v]${FPS_FORMAT_VF}[vmont];[vmont]${fadeFilter}[vout];` +
+              `[1:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${audioFadeOutStart.toFixed(3)}:d=0.12,` +
+              `atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
+              `-map "[vout]" -map "[aout]" -vsync cfr ` +
+              `-t ${outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
+          ),
+          composeTimeout,
+          `Sequential rescue scene ${scene.index}`
+        );
+        if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1000) {
+          return outputPath;
+        }
+      } catch (seqRescueErr) {
+        console.warn(`[Pipeline] Scene ${scene.index}: sequential rescue failed:`, seqRescueErr);
+      }
       const detail = formatFfmpegExecError(rescueErr);
       throw pipelineError(
         PIPELINE_ERROR.FFMPEG,
