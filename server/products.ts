@@ -1,6 +1,6 @@
 /**
  * Fastvid — Stripe Product & Price Configuration
- * Pro Plan: $499/month, unlimited video generation
+ * Pro Plan: $599/month, unlimited video generation
  */
 import { FASTVID_PRO_MONTHLY_USD, FASTVID_PRO_PRICE_CENTS } from "../shared/billing";
 

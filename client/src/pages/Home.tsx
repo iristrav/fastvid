@@ -9,6 +9,7 @@ import { useState, useEffect, useRef } from "react";
 import { useLocation } from "wouter";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { LEGAL_FOOTER_LINKS } from "@/components/LegalPageShell";
+import { FASTVID_PRO_PRICE_DISPLAY, FASTVID_PRO_PRICE_LABEL } from "@shared/billing";
 import {
   Play,
   Sparkles,
@@ -383,7 +384,7 @@ export default function Home() {
     {
       name: "Marcus Reid",
       role: "Content agency owner",
-      text: "We're now producing 20+ videos per week for our clients. The ROI is insane. $499/month for unlimited videos is a no-brainer.",
+      text: `We're now producing 20+ videos per week for our clients. The ROI is insane. ${FASTVID_PRO_PRICE_LABEL} for unlimited videos is a no-brainer.`,
       stars: 5,
     },
     {
@@ -875,10 +876,10 @@ export default function Home() {
               <div className="text-center mb-8">
                 <h3 className="text-xl font-bold text-white mb-2" style={{ fontFamily: 'Outfit, sans-serif' }}>Pro Plan</h3>
                 <div className="flex items-end justify-center gap-2 mb-1">
-                  <span className="text-6xl font-black gradient-text" style={{ fontFamily: 'Outfit, sans-serif' }}>$499</span>
+                  <span className="text-6xl font-black gradient-text" style={{ fontFamily: 'Outfit, sans-serif' }}>{FASTVID_PRO_PRICE_DISPLAY}</span>
                   <span className="text-slate-400 mb-3">/month</span>
                 </div>
-                <p className="text-xs text-slate-500">$499/month · Cancel anytime</p>
+                <p className="text-xs text-slate-500">{FASTVID_PRO_PRICE_LABEL} · Cancel anytime</p>
               </div>
 
               {/* All lengths included */}
