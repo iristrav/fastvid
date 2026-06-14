@@ -5,6 +5,7 @@
 
 import { z } from "zod";
 import { publicProcedure } from "./_core/trpc";
+import { resolveAppOrigin } from "./_core/appUrl";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { APP_ERROR, appTrpcError } from "@shared/appErrors";
 import { COOKIE_NAME, ONE_YEAR_MS } from "@shared/const";
@@ -43,7 +44,7 @@ export const forgotPassword = publicProcedure
     const resetToken = createResetToken(user.id, user.email || "");
 
     // Build reset link
-    const resetLink = `${ctx.req.headers.origin}/reset-password?token=${resetToken}`;
+    const resetLink = `${resolveAppOrigin(ctx.req)}/reset-password?token=${resetToken}`;
 
     // Send email
     if (!user.email) {

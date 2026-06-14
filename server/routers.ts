@@ -2,6 +2,7 @@ import Stripe from "stripe";
 import { z } from "zod";
 import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
+import { resolveAppOrigin } from "./_core/appUrl";
 import { systemRouter } from "./_core/systemRouter";
 import {
   adminProcedure,
@@ -1054,10 +1055,11 @@ export const appRouter = router({
   }),
 
   billing: router({
-    createCheckout: protectedProcedure.input(z.object({ origin: z.string() })).mutation(async ({ ctx, input }) => {
+    createCheckout: protectedProcedure.input(z.object({ origin: z.string().optional() })).mutation(async ({ ctx, input }) => {
       if (!process.env.STRIPE_SECRET_KEY) {
         throw appTrpcError("INTERNAL_SERVER_ERROR", APP_ERROR.STRIPE_NOT_CONFIGURED, "Stripe not configured");
       }
+      const origin = resolveAppOrigin(ctx.req, input.origin);
       // Create or retrieve Stripe customer
       let customerId = (ctx.user as { stripeCustomerId?: string }).stripeCustomerId;
       if (!customerId) {
@@ -1080,8 +1082,8 @@ export const appRouter = router({
         customer: customerId,
         mode: "subscription",
         line_items: [{ price: price.id, quantity: 1 }],
-        success_url: `${input.origin}/dashboard?payment=success`,
-        cancel_url: `${input.origin}/subscribe?payment=cancelled`,
+        success_url: `${origin}/dashboard?payment=success`,
+        cancel_url: `${origin}/subscribe?payment=cancelled`,
         client_reference_id: ctx.user.id.toString(),
         allow_promotion_codes: true,
         metadata: {

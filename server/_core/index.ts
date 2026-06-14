@@ -16,6 +16,7 @@ import { LOCAL_UPLOADS_DIR } from "../storageLocal";
 import { registerArchiveUploadRoute } from "../archiveUpload";
 import { registerArchiveMediaRoute } from "../archiveMediaStream";
 import { archiveUploadRequestTimeoutMs } from "../archiveVideoSplitter";
+import { registerCanonicalAppUrl } from "./appUrl";
 import {
   curatedArchiveOnlyVisuals,
   externalVisualSourcingEnabled,
@@ -124,6 +125,8 @@ async function startServer() {
   // Trust Railway's proxy so req.protocol === 'https' and secure cookies work correctly
   app.set('trust proxy', 1);
 
+  registerCanonicalAppUrl(app);
+
   // Configure body parser with larger size limit for file uploads
   // Register Stripe webhook BEFORE express.json() for raw body access
   registerStripeWebhook(app);
@@ -196,6 +199,7 @@ async function startServer() {
     res.status(200).json({
       status: "ok",
       timestamp: new Date().toISOString(),
+      appUrl: (await import("./appUrl")).getConfiguredAppUrl(),
       env: {
         BUILT_IN_FORGE_API_KEY: !!process.env.BUILT_IN_FORGE_API_KEY,
         LLM_API_KEY: !!process.env.LLM_API_KEY,
