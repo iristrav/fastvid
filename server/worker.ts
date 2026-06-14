@@ -47,6 +47,8 @@ async function main() {
   }
 
   console.log("[Worker] Fastvid video queue worker starting...");
+  const { getStorageBackend } = await import("./storageBackend");
+  console.log("[Worker] Object storage:", getStorageBackend());
   await runMigrations();
   await recoverAllStuckVideos();
   startVideoQueueWorker();

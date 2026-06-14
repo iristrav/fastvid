@@ -90,7 +90,17 @@ async function startServer() {
       : "✗ off (MINIMIZE_STOCK_FOOTAGE=false)"
   );
   console.log("[Fastvid] PEXELS_API_KEY:", process.env.PEXELS_API_KEY ? "✓ set" : "✗ NOT SET — stock footage disabled");
-  console.log("[Fastvid] BUILT_IN_FORGE_API_KEY:", process.env.BUILT_IN_FORGE_API_KEY ? "✓ set" : "✗ NOT SET — file storage disabled");
+  console.log("[Fastvid] BUILT_IN_FORGE_API_KEY:", process.env.BUILT_IN_FORGE_API_KEY ? "✓ set" : "✗ NOT SET — Manus Forge storage unused");
+  const { getStorageBackend } = await import("../storageBackend");
+  const storageBackend = getStorageBackend();
+  console.log(
+    "[Fastvid] Object storage:",
+    storageBackend === "s3"
+      ? `✓ S3/R2 bucket ${process.env.S3_BUCKET}`
+      : storageBackend === "forge"
+        ? "✓ Manus Forge"
+        : `✓ local disk (${process.env.UPLOADS_DIR || "uploads/"} — no S3 cost; attach volume or set S3_* later)`
+  );
   const ytSearch = !!process.env.YOUTUBE_API_KEY?.trim();
   const ytDownload = !!(process.env.RAPIDAPI_KEY?.trim() || process.env.YOUTUBE_CC_DL_SERVICE?.trim());
   console.log("[Fastvid] RAPIDAPI_KEY:", ytDownload ? "✓ set" : "✗ NOT SET — YouTube CC download disabled");
@@ -140,9 +150,8 @@ async function startServer() {
   registerOAuthRoutes(app);
 
   // ─── Local Storage Serving (Railway fallback) ─────────────────────────────
-  // When BUILT_IN_FORGE_API_KEY is not set, files are stored locally.
-  // Serve them at /local-storage/* so the frontend can access them.
-  if (!process.env.BUILT_IN_FORGE_API_KEY) {
+  // When object storage is not configured, serve files from local disk.
+  if (storageBackend === "local") {
     const { LOCAL_UPLOADS_DIR } = await import("../storageLocal");
     const expressStatic = (await import("express")).static;
     app.use("/local-storage", expressStatic(LOCAL_UPLOADS_DIR, {
@@ -177,25 +186,34 @@ async function startServer() {
   // IMPORTANT: This endpoint must respond immediately (no external API calls).
   // Railway uses it as a liveness probe with a strict timeout.
   app.get("/api/health", (_req, res) => {
+    const { getStorageBackend } = await import("../storageBackend");
+    const backend = getStorageBackend();
     const storage =
-      !process.env.BUILT_IN_FORGE_API_KEY
+      backend === "local"
         ? (() => {
             const persistent =
               LOCAL_UPLOADS_DIR.startsWith("/data/") ||
               !!process.env.UPLOADS_DIR?.startsWith("/data") ||
               !!process.env.RAILWAY_VOLUME_MOUNT_PATH;
             return {
+              backend,
               uploadsDir: LOCAL_UPLOADS_DIR,
               persistent,
               ...(!persistent
                 ? {
                     warning:
-                      "Videos are stored on ephemeral disk and disappear after redeploy. Attach a Railway Volume at /data and set UPLOADS_DIR=/data/uploads.",
+                      "Videos are stored on ephemeral disk and disappear after redeploy. Attach a Railway Volume at /data, set UPLOADS_DIR=/data/uploads, or enable S3_* object storage.",
                   }
                 : {}),
             };
           })()
-        : undefined;
+        : backend === "s3"
+          ? {
+              backend,
+              bucket: process.env.S3_BUCKET,
+              endpoint: process.env.S3_ENDPOINT || "aws-default",
+            }
+          : { backend: "forge" };
     res.status(200).json({
       status: "ok",
       timestamp: new Date().toISOString(),
