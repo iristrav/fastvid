@@ -29,7 +29,7 @@ export type AutoTitleArchiveResult = {
   failed: number;
 };
 
-const BULK_AI_CONCURRENCY = 4;
+const BULK_AI_CONCURRENCY = 2;
 
 function resolveArchiveAssetPath(asset: Pick<MediaArchiveAsset, "storageUrl" | "storageKey">): string | null {
   const fromUrl = resolveLocalVideoPath(asset.storageUrl);

@@ -22,6 +22,9 @@ describe("archiveAssetTagging", () => {
       description: "Commuters on a modern subway platform.",
       tags: ["berlin", "metro", "transit"],
       persons: ["commuters", "passengers"],
+      countries: ["germany"],
+      cities: ["berlin"],
+      events: [],
       locations: ["berlin", "germany", "u-bahn station"],
       objects: ["subway train", "platform", "signage"],
       actions: ["waiting", "boarding", "train arriving"],
@@ -35,21 +38,25 @@ describe("archiveAssetTagging", () => {
     });
     expect(flat).not.toBeNull();
     expect(flat!.tags).toContain("berlin");
+    expect(flat!.tags).toContain("germany");
     expect(flat!.tags).toContain("u-bahn station");
     expect(flat!.tags).toContain("modern day");
     expect(flat!.tags).toContain("transit");
     expect(flat!.tags).toContain("train arriving");
     expect(flat!.tags.length).toBeGreaterThanOrEqual(12);
-    expect(flat!.description).toMatch(/Setting:|Era:|Actions:/);
+    expect(flat!.description).toMatch(/Countries:|Cities:|Setting:|Era:/);
   });
 
-  it("flattenArchiveAiMetadata captures WWII details when visible", () => {
+  it("flattenArchiveAiMetadata prioritizes named persons countries cities and events", () => {
     const flat = flattenArchiveAiMetadata({
-      title: "Hitler speech at Nuremberg rally",
-      description: "Crowd and podium at Nazi rally.",
+      title: "Adolf Hitler speech at Nuremberg rally",
+      description: "Hitler addresses crowd at Nazi party rally.",
       tags: ["hitler", "nazi", "rally"],
       persons: ["adolf hitler"],
-      locations: ["nuremberg", "germany"],
+      countries: ["germany"],
+      cities: ["nuremberg"],
+      events: ["nuremberg rally", "nazi party congress"],
+      locations: ["nuremberg stadium", "germany"],
       objects: ["podium", "swastika flags", "microphone"],
       actions: ["speech", "salute"],
       era: "1930s",
@@ -61,8 +68,12 @@ describe("archiveAssetTagging", () => {
       colors: ["black and white"],
     });
     expect(flat!.tags).toContain("hitler");
+    expect(flat!.tags).toContain("adolf hitler");
+    expect(flat!.tags).toContain("germany");
     expect(flat!.tags).toContain("nuremberg");
+    expect(flat!.tags).toContain("nuremberg rally");
     expect(flat!.tags).toContain("propaganda");
+    expect(flat!.description).toMatch(/Events:|Countries:|Cities:/);
     expect(flat!.tags).not.toContain("modern city");
   });
 

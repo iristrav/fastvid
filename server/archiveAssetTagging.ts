@@ -24,6 +24,9 @@ type ArchiveAiVisionPayload = {
   description?: string;
   tags?: string[];
   persons?: string[];
+  countries?: string[];
+  cities?: string[];
+  events?: string[];
   locations?: string[];
   objects?: string[];
   actions?: string[];
@@ -48,6 +51,9 @@ const TAG_JSON_SCHEMA = {
         description: { type: "string" },
         tags: { type: "array", items: { type: "string" } },
         persons: { type: "array", items: { type: "string" } },
+        countries: { type: "array", items: { type: "string" } },
+        cities: { type: "array", items: { type: "string" } },
+        events: { type: "array", items: { type: "string" } },
         locations: { type: "array", items: { type: "string" } },
         objects: { type: "array", items: { type: "string" } },
         actions: { type: "array", items: { type: "string" } },
@@ -64,6 +70,9 @@ const TAG_JSON_SCHEMA = {
         "description",
         "tags",
         "persons",
+        "countries",
+        "cities",
+        "events",
         "locations",
         "objects",
         "actions",
@@ -81,7 +90,14 @@ const TAG_JSON_SCHEMA = {
 } as const;
 
 /** Max searchable tags stored per asset (pipeline + semantic matching). */
-export const ARCHIVE_MAX_TAGS = 48;
+export const ARCHIVE_MAX_TAGS = 56;
+
+/** Vision LLM timeout — quality over speed; override via env. */
+function archiveVisionTimeoutMs(frameCount: number): number {
+  const fromEnv = parseInt(process.env.ARCHIVE_AI_TAG_TIMEOUT_MS ?? "", 10);
+  if (!isNaN(fromEnv) && fromEnv >= 15_000) return fromEnv;
+  return frameCount > 2 ? 90_000 : frameCount > 1 ? 75_000 : 55_000;
+}
 
 export function archiveAiTaggingEnabled(): boolean {
   return process.env.ENABLE_ARCHIVE_AI_TAGS !== "false" && Boolean(ENV.forgeApiKey);
@@ -108,13 +124,17 @@ function pushTags(bucket: string[], items: string[] | undefined): void {
 
 /** Flatten structured vision JSON into searchable tags + rich description. */
 export function flattenArchiveAiMetadata(parsed: ArchiveAiVisionPayload): ArchiveAssetAiMetadata | null {
-  const title = parsed.title?.trim().slice(0, 120);
+  const title = parsed.title?.trim().slice(0, 160);
   if (!title) return null;
 
   const tagParts: string[] = [];
-  pushTags(tagParts, parsed.tags);
+  // Identity tags first so they survive the cap when many visual details exist.
   pushTags(tagParts, parsed.persons);
+  pushTags(tagParts, parsed.countries);
+  pushTags(tagParts, parsed.cities);
+  pushTags(tagParts, parsed.events);
   pushTags(tagParts, parsed.locations);
+  pushTags(tagParts, parsed.tags);
   pushTags(tagParts, parsed.objects);
   pushTags(tagParts, parsed.actions);
   pushTags(tagParts, parsed.visualDetails);
@@ -139,13 +159,16 @@ export function flattenArchiveAiMetadata(parsed: ArchiveAiVisionPayload): Archiv
 
   const detailBits = [
     parsed.description?.trim(),
+    parsed.persons?.length ? `People: ${parsed.persons.slice(0, 6).join(", ")}` : "",
+    parsed.countries?.length ? `Countries: ${parsed.countries.slice(0, 4).join(", ")}` : "",
+    parsed.cities?.length ? `Cities: ${parsed.cities.slice(0, 6).join(", ")}` : "",
+    parsed.events?.length ? `Events: ${parsed.events.slice(0, 4).join(", ")}` : "",
+    parsed.locations?.length ? `Places: ${parsed.locations.slice(0, 6).join(", ")}` : "",
     parsed.setting?.trim() ? `Setting: ${parsed.setting.trim()}` : "",
     parsed.era?.trim() ? `Era: ${parsed.era.trim()}` : "",
     parsed.sceneType?.trim() ? `Scene: ${parsed.sceneType.trim()}` : "",
     parsed.actions?.length ? `Actions: ${parsed.actions.slice(0, 6).join(", ")}` : "",
     parsed.visualDetails?.length ? `Details: ${parsed.visualDetails.slice(0, 8).join(", ")}` : "",
-    parsed.persons?.length ? `People: ${parsed.persons.slice(0, 4).join(", ")}` : "",
-    parsed.locations?.length ? `Places: ${parsed.locations.slice(0, 4).join(", ")}` : "",
   ].filter(Boolean);
 
   const description = detailBits.join(" | ").slice(0, 500) || title;
@@ -249,7 +272,7 @@ async function extractVideoPreviewJpeg(
           /* ignore */
         }
         reject(new Error("frame extract timeout"));
-      }, 15_000);
+      }, 25_000);
       child.on("close", (code) => {
         clearTimeout(timer);
         if (code === 0 && fs.existsSync(outPath) && fs.statSync(outPath).size > 800) resolve();
@@ -263,13 +286,22 @@ async function extractVideoPreviewJpeg(
   }
 }
 
-/** Sample 1–3 frames across the clip for richer video tagging. */
+/** Sample frames across the clip — more frames for longer clips (slower but more accurate). */
 async function extractVideoPreviewFrames(
   videoPath: string,
   workDir: string
 ): Promise<Array<{ buffer: Buffer; mimeType: string }>> {
   const dur = await probeVideoDurationSec(videoPath);
-  const ratios = dur > 4 ? [0.12, 0.42, 0.72] : dur > 1.5 ? [0.2, 0.55] : [0.35];
+  const ratios =
+    dur > 12
+      ? [0.08, 0.25, 0.42, 0.58, 0.75]
+      : dur > 6
+        ? [0.1, 0.32, 0.55, 0.78]
+        : dur > 2
+          ? [0.12, 0.42, 0.72]
+          : dur > 1
+            ? [0.2, 0.6]
+            : [0.35];
   const out: Array<{ buffer: Buffer; mimeType: string }> = [];
   for (let i = 0; i < ratios.length; i++) {
     const seek = dur > 0.5 ? Math.max(0.08, dur * ratios[i]!) : 0.15;
@@ -344,21 +376,21 @@ async function invokeArchiveVisionTagging(
   }
 ): Promise<ArchiveAssetAiMetadata | null> {
   if (previews.length === 0) return null;
-  const timeoutMs = previews.length > 1 ? 28_000 : 20_000;
+  const timeoutMs = archiveVisionTimeoutMs(previews.length);
 
   const imageParts = previews.map((preview) => ({
     type: "image_url" as const,
     image_url: { url: imageMimeToDataUrl(preview.buffer, preview.mimeType), detail: "high" as const },
   }));
 
-  try {
+  const runOnce = async (): Promise<ArchiveAssetAiMetadata | null> => {
     const response = await Promise.race([
       invokeLLM({
         messages: [
           {
             role: "system",
             content:
-              "Je bent een documentaire archivist. Analyseer het beeld (of beelden uit dezelfde clip) en return alleen JSON volgens het schema. Wees exhaustief — elk zichtbaar detail telt voor zoeken.",
+              "Je bent een senior documentaire archivist en historicus. Analyseer elk frame zorgvuldig. Precisie over snelheid: benoem exacte personen, landen, steden en historische gebeurtenissen wanneer herkenbaar. Return alleen JSON volgens het schema.",
           },
           {
             role: "user",
@@ -366,7 +398,7 @@ async function invokeArchiveVisionTagging(
           },
         ],
         response_format: TAG_JSON_SCHEMA,
-        maxTokens: 900,
+        maxTokens: 1600,
       }),
       new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error("archive AI tag timeout")), timeoutMs)
@@ -376,6 +408,15 @@ async function invokeArchiveVisionTagging(
     const content = response.choices[0]?.message?.content;
     if (typeof content !== "string") return null;
     return flattenArchiveAiMetadata(JSON.parse(content) as ArchiveAiVisionPayload);
+  };
+
+  try {
+    let result = await runOnce();
+    if (!result) {
+      console.warn("[ArchiveAI] empty metadata, retrying vision once");
+      result = await runOnce();
+    }
+    return result;
   } catch (err) {
     console.warn("[ArchiveAI] tagging failed:", (err as Error).message?.slice(0, 160));
     return null;
@@ -392,29 +433,34 @@ function buildVisionPrompt(
   frameCount = 1
 ): string {
   const lines = [
-    "Beschrijf ALLES wat je ziet voor een documentaire-archief — zoekmachine moet later de perfecte clip vinden.",
+    "Beschrijf ALLES wat je ziet voor een documentaire-archief. Neem rustig de tijd — gedetailleerde identificatie is belangrijker dan snelheid.",
     "",
-    "title: max 10 woorden, concreet wat in beeld is (geen bestandsnaam, geen 'clip 1').",
-    "description: 1–2 zinnen met handeling + setting + tijdperk indien zichtbaar.",
+    "title: max 15 woorden, concreet WIE/WAT/WAAR (bijv. 'Adolf Hitler speech at Nuremberg rally' of 'Berlin Alexanderplatz tram traffic'). Geen bestandsnaam.",
+    "description: 2–3 zinnen: handeling + exacte locatie + tijdperk + gebeurtenis indien herkenbaar.",
     "",
-    "Vul ALLE velden — lege arrays alleen als echt niets van toepassing is:",
-    "- tags: 10–20 korte zoek-slugs (lowercase, NL+EN mix)",
-    "- persons: namen of rollen (bijv. hitler, soldier, cyclist, crowd)",
-    "- locations: steden, landen, gebouwen, landmarks (berlin, reichstag, subway station)",
-    "- objects: voertuigen, wapens, kleding, borden, meubels, skyline, tram",
-    "- actions: wat gebeurt er (marching, speech, walking, train arriving, city traffic)",
-    "- era: tijdperk (1939, 1940s, cold war, modern day, contemporary, 2020s) — schat uit beeld",
-    "- setting: indoor/outdoor/street/bunker/skyline/studio/platform/rooftop",
-    "- sceneType: parade/speech/cityscape/transit/interview/battle/ruins/portrait/documentary b-roll",
-    "- visualDetails: kleine details (swastika flag, uniform, cobblestone, glass towers, bike lane)",
-    "- mood: sfeer (triumphant, somber, busy, peaceful, propaganda)",
-    "- camera: shot type (wide aerial, close-up, tracking, static, black and white archival)",
+    "IDENTITEIT — vul zo precies mogelijk (herkenbare namen, geen vage termen):",
+    "- persons: volledige namen of unieke rollen (adolf hitler, winston churchill, german soldier, berlin commuter). Geen 'man' of 'leader' als je de persoon kent.",
+    "- countries: landnamen (germany, united states, france, soviet union). Altijd expliciet land, niet alleen 'europe'.",
+    "- cities: stadsnamen (berlin, nuremberg, paris, new york). Altijd expliciete stad als zichtbaar of afleidbaar.",
+    "- events: historische gebeurtenissen (nuremberg rally, battle of berlin, berlin wall fall, d-day, cold war). Alleen als passend bij beeld.",
+    "",
+    "OVERIG — vul ALLE velden; lege arrays alleen als echt niets van toepassing:",
+    "- tags: 15–25 zoek-slugs (lowercase, NL+EN), inclusief person+plaats+gebeurtenis combinaties",
+    "- locations: landmarks, gebouwen, regio's (reichstag, alexanderplatz, brandenburg gate, u-bahn)",
+    "- objects: voertuigen, uniformen, vlaggen, borden, wapens, skyline, tram",
+    "- actions: marching, speech, salute, city traffic, train arriving, evacuation",
+    "- era: exact jaar/decennium (1936, 1940s, 1989, modern day, 2020s)",
+    "- setting: indoor/outdoor/street/stadium/bunker/skyline/platform",
+    "- sceneType: parade/speech/cityscape/transit/battle/ruins/portrait/propaganda",
+    "- visualDetails: swastika flag, wehrmacht uniform, cobblestone, glass towers",
+    "- mood: triumphant, somber, busy, propaganda, peaceful",
+    "- camera: wide aerial, close-up, tracking, black and white archival",
     "- colors: dominante kleuren of zwart-wit",
     "",
-    "Belangrijk voor matching:",
-    "- Stadsgeografie: tag modern city, skyline, transit, architecture — NIET automatisch WWII tenzij echt zichtbaar.",
-    "- WWII: tag hitler/nazi/wehrmacht/parade/propaganda ALLEEN als echt in beeld.",
-    "- Wees specifiek: 'berlin street traffic' is beter dan alleen 'berlin'.",
+    "Regels:",
+    "- Stadsgeografie: tag modern city, skyline, transit — geen WWII tenzij echt zichtbaar.",
+    "- WWII: hitler/nazi/wehrmacht ALLEEN als echt in beeld; noem dan ook land, stad en gebeurtenis.",
+    "- Liever te specifiek dan te vaag: 'adolf hitler nuremberg 1936' > 'historical figure'.",
   ];
   if (frameCount > 1) {
     lines.push(`Je krijgt ${frameCount} frames uit dezelfde video — combineer tot één complete tag-set.`);

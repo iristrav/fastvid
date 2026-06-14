@@ -371,7 +371,7 @@ export function ArchiveClipsGrid({
 
     if (
       !confirm(
-        `AI bekijkt ${label} en voegt rijke zoek-tags toe: personen, plaatsen, acties, tijdperk, scènetype, camera, kleuren (meerdere frames bij video).\n\nBestaande tags worden aangevuld. Doorgaan?`
+        `AI bekijkt ${label} grondig (kan per clip ~1 minuut duren) en voegt precieze tags toe: personen, landen, steden, gebeurtenissen, acties, tijdperk (meerdere frames bij video).\n\nBestaande tags worden aangevuld. Doorgaan?`
       )
     ) {
       return;
@@ -511,7 +511,7 @@ export function ArchiveClipsGrid({
             type="button"
             onClick={runAutoTitleAll}
             disabled={autoTitleRunning}
-            title="AI analyseert beeldinhoud: titel, personen, plaatsen, acties, tijdperk, scènetype, camera"
+            title="Grondige AI-analyse: exacte personen, landen, steden, gebeurtenissen (duurt langer, meer frames)"
             className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg bg-cyan-500/15 text-cyan-300 border border-cyan-500/25 hover:bg-cyan-500/25 disabled:opacity-50"
           >
             {autoTitleRunning ? (
