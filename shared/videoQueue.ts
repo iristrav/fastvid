@@ -17,8 +17,17 @@ export const USER_IN_FLIGHT_VIDEO_STATUSES = [
 ] as const;
 
 export function readQueueConfig(env: NodeJS.ProcessEnv = process.env) {
+  const maxConcurrentJobs = Math.max(1, parseInt(env.MAX_CONCURRENT_JOBS ?? "25", 10) || 25);
+  const maxJobsPerWorkerRaw = env.MAX_JOBS_PER_WORKER?.trim();
+  const maxJobsPerWorker = maxJobsPerWorkerRaw
+    ? Math.max(1, parseInt(maxJobsPerWorkerRaw, 10) || maxConcurrentJobs)
+    : maxConcurrentJobs;
+
   return {
-    maxConcurrentJobs: Math.max(1, parseInt(env.MAX_CONCURRENT_JOBS ?? "6", 10) || 6),
+    /** Platform-wide cap (all workers combined). Raise via MAX_CONCURRENT_JOBS on Railway. */
+    maxConcurrentJobs,
+    /** Max jobs this Node process runs at once. Scale out: add worker replicas, lower per worker. */
+    maxJobsPerWorker: Math.min(maxJobsPerWorker, maxConcurrentJobs),
     maxActiveJobsPerUser: Math.max(1, parseInt(env.MAX_ACTIVE_JOBS_PER_USER ?? "1", 10) || 1),
     maxQueuedJobsPerUser: Math.max(1, parseInt(env.MAX_QUEUED_JOBS_PER_USER ?? "1", 10) || 1),
     pollIntervalMs: Math.max(2000, parseInt(env.QUEUE_POLL_INTERVAL_MS ?? "5000", 10) || 5000),
