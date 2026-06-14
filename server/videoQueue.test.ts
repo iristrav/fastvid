@@ -4,7 +4,7 @@ import { readQueueConfig } from "@shared/videoQueue";
 describe("video queue config", () => {
   it("reads defaults", () => {
     const config = readQueueConfig({});
-    expect(config.maxConcurrentJobs).toBe(2);
+    expect(config.maxConcurrentJobs).toBe(6);
     expect(config.maxActiveJobsPerUser).toBe(1);
     expect(config.maxQueuedJobsPerUser).toBe(1);
     expect(config.pollIntervalMs).toBe(5000);

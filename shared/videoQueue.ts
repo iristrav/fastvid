@@ -18,7 +18,7 @@ export const USER_IN_FLIGHT_VIDEO_STATUSES = [
 
 export function readQueueConfig(env: NodeJS.ProcessEnv = process.env) {
   return {
-    maxConcurrentJobs: Math.max(1, parseInt(env.MAX_CONCURRENT_JOBS ?? "2", 10) || 2),
+    maxConcurrentJobs: Math.max(1, parseInt(env.MAX_CONCURRENT_JOBS ?? "6", 10) || 6),
     maxActiveJobsPerUser: Math.max(1, parseInt(env.MAX_ACTIVE_JOBS_PER_USER ?? "1", 10) || 1),
     maxQueuedJobsPerUser: Math.max(1, parseInt(env.MAX_QUEUED_JOBS_PER_USER ?? "1", 10) || 1),
     pollIntervalMs: Math.max(2000, parseInt(env.QUEUE_POLL_INTERVAL_MS ?? "5000", 10) || 5000),
