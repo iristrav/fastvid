@@ -9,11 +9,18 @@ export const PIPELINE_PROCESSING_STATUSES = [
 
 export type PipelineProcessingStatus = (typeof PIPELINE_PROCESSING_STATUSES)[number];
 
+/** Blocks starting another video until these reach completed or failed. */
+export const USER_IN_FLIGHT_VIDEO_STATUSES = [
+  "queued",
+  ...PIPELINE_PROCESSING_STATUSES,
+  "awaiting_approval",
+] as const;
+
 export function readQueueConfig(env: NodeJS.ProcessEnv = process.env) {
   return {
     maxConcurrentJobs: Math.max(1, parseInt(env.MAX_CONCURRENT_JOBS ?? "2", 10) || 2),
     maxActiveJobsPerUser: Math.max(1, parseInt(env.MAX_ACTIVE_JOBS_PER_USER ?? "1", 10) || 1),
-    maxQueuedJobsPerUser: Math.max(1, parseInt(env.MAX_QUEUED_JOBS_PER_USER ?? "5", 10) || 5),
+    maxQueuedJobsPerUser: Math.max(1, parseInt(env.MAX_QUEUED_JOBS_PER_USER ?? "1", 10) || 1),
     pollIntervalMs: Math.max(2000, parseInt(env.QUEUE_POLL_INTERVAL_MS ?? "5000", 10) || 5000),
   };
 }

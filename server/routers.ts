@@ -936,7 +936,7 @@ export const appRouter = router({
       if (!retryable) {
         throw appTrpcError("BAD_REQUEST", APP_ERROR.VIDEO_RETRY_INVALID, "Only failed or stuck videos can be retried");
       }
-      const enqueueCheck = await assertUserCanEnqueueVideo(ctx.user.id);
+      const enqueueCheck = await assertUserCanEnqueueVideo(ctx.user.id, video.id);
       if (!enqueueCheck.ok) throwEnqueueError(enqueueCheck);
 
       await enqueueVideoJob(video.id, "🔄 Re-queued — waiting to retry...");

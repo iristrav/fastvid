@@ -2,7 +2,7 @@ import { and, desc, eq, inArray, like, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import * as fs from "fs";
 import { PIPELINE_ERROR, appErrorMessage } from "@shared/appErrors";
-import { PIPELINE_PROCESSING_STATUSES } from "@shared/videoQueue";
+import { PIPELINE_PROCESSING_STATUSES, USER_IN_FLIGHT_VIDEO_STATUSES } from "@shared/videoQueue";
 import { isShortVideoLength, normalizeVideoLength } from "@shared/videoLengths";
 import type { Video } from "../drizzle/schema";
 import { InsertInviteCode, InsertUser, InsertVideo, InsertPasswordResetToken, inviteCodes, users, videos, passwordResetTokens } from "../drizzle/schema";
@@ -193,6 +193,24 @@ export async function getVideosByUserId(userId: number) {
 }
 
 const PROCESSING_STATUS_LIST = [...PIPELINE_PROCESSING_STATUSES];
+const USER_IN_FLIGHT_STATUS_LIST = [...USER_IN_FLIGHT_VIDEO_STATUSES];
+
+export async function countUserInFlightVideos(userId: number, exceptVideoId?: number): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+  const conditions = [
+    eq(videos.userId, userId),
+    inArray(videos.status, USER_IN_FLIGHT_STATUS_LIST),
+  ];
+  if (exceptVideoId != null) {
+    conditions.push(sql`${videos.id} <> ${exceptVideoId}`);
+  }
+  const [row] = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(videos)
+    .where(and(...conditions));
+  return Number(row?.count ?? 0);
+}
 
 export async function countGlobalProcessingVideos(): Promise<number> {
   const db = await getDb();

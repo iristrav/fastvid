@@ -9,10 +9,8 @@ import type { Video } from "../drizzle/schema";
 import {
   claimQueuedVideo,
   countGlobalProcessingVideos,
-  countUserAwaitingScriptApproval,
+  countUserInFlightVideos,
   countUserProcessingVideos,
-  countUserQueuedVideos,
-  getVideoById,
   getVideoQueuePosition,
   listQueuedVideosOrdered,
   updateVideoStatus,
@@ -22,24 +20,16 @@ export type EnqueueCheckResult =
   | { ok: true }
   | { ok: false; code: number; message: string };
 
-export async function assertUserCanEnqueueVideo(userId: number): Promise<EnqueueCheckResult> {
-  const config = readQueueConfig();
-
-  const awaitingScript = await countUserAwaitingScriptApproval(userId);
-  if (awaitingScript > 0) {
+export async function assertUserCanEnqueueVideo(
+  userId: number,
+  exceptVideoId?: number
+): Promise<EnqueueCheckResult> {
+  const inFlight = await countUserInFlightVideos(userId, exceptVideoId);
+  if (inFlight > 0) {
     return {
       ok: false,
-      code: APP_ERROR.SCRIPT_REVIEW_PENDING,
-      message: "Approve or reject your pending script before starting a new video",
-    };
-  }
-
-  const queued = await countUserQueuedVideos(userId);
-  if (queued >= config.maxQueuedJobsPerUser) {
-    return {
-      ok: false,
-      code: APP_ERROR.QUEUE_LIMIT_REACHED,
-      message: `You already have ${queued} videos waiting in the queue (max ${config.maxQueuedJobsPerUser})`,
+      code: APP_ERROR.VIDEO_IN_PROGRESS,
+      message: "You already have a video in progress. Wait until it is finished before starting a new one",
     };
   }
 
