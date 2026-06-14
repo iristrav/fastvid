@@ -12,7 +12,7 @@ import { COOKIE_NAME, ONE_YEAR_MS } from "@shared/const";
 import bcrypt from "bcryptjs";
 import { SignJWT } from "jose";
 import { getUserByEmail, updateUserPassword, getUserById } from "./db";
-import { sendPasswordResetEmail } from "./_core/passwordResetEmail";
+import { sendPasswordResetEmail } from "./_core/emailService";
 import { createResetToken, validateResetToken as validateToken, consumeResetToken } from "./_core/passwordResetStore";
 
 function getSessionSecret() {
@@ -52,7 +52,7 @@ export const forgotPassword = publicProcedure
       return { success: true, message: "If an account with this email exists, a reset link has been sent" };
     }
 
-    const emailSent = await sendPasswordResetEmail(user.email, resetToken, resetLink);
+    const emailSent = await sendPasswordResetEmail(user.email, resetLink);
     if (!emailSent) {
       console.warn("[Auth] Email failed to send for", user.email);
       // Still return success to avoid revealing email existence
