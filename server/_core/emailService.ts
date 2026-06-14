@@ -4,6 +4,7 @@
  */
 
 import { ENV } from "./env";
+import { FASTVID_CONTACT_EMAIL } from "@shared/const";
 
 interface EmailOptions {
   to: string;
@@ -83,7 +84,7 @@ export async function sendPasswordResetEmail(email: string, resetLink: string): 
             <div class="warning">
               <strong>⚠️ This link expires in 1 hour.</strong> If you didn't request a password reset, you can safely ignore this email.
             </div>
-            <p>Questions? Contact us at support@fastvid.app</p>
+            <p>Questions? Contact us at ${FASTVID_CONTACT_EMAIL}</p>
           </div>
           <div class="footer">
             <p>&copy; 2026 Fastvid. All rights reserved.</p>

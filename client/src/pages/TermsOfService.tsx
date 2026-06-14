@@ -1,4 +1,5 @@
 import { LegalPageShell, LegalSection } from "@/components/LegalPageShell";
+import { FASTVID_CONTACT_EMAIL } from "@shared/const";
 
 export default function TermsOfService() {
   return (
@@ -177,8 +178,8 @@ export default function TermsOfService() {
       <LegalSection title="14. Contact">
         <p>
           Questions about these Terms:{" "}
-          <a href="mailto:legal@fastvid.app" className="text-cyan-400 hover:underline">
-            legal@fastvid.app
+          <a href={`mailto:${FASTVID_CONTACT_EMAIL}`} className="text-cyan-400 hover:underline">
+            {FASTVID_CONTACT_EMAIL}
           </a>
           . See our{" "}
           <a href="/privacy" className="text-cyan-400 hover:underline">

@@ -10,6 +10,7 @@ import { useLocation } from "wouter";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { LEGAL_FOOTER_LINKS } from "@/components/LegalPageShell";
 import { FASTVID_PRO_PRICE_DISPLAY, FASTVID_PRO_PRICE_LABEL } from "@shared/billing";
+import { FASTVID_CONTACT_EMAIL } from "@shared/const";
 import {
   Play,
   Sparkles,
@@ -1009,8 +1010,8 @@ export default function Home() {
                 ) : (
                   <p className="text-sm text-slate-500">
                     Discord invite link is being configured. Check back soon or email{" "}
-                    <a href="mailto:support@fastvid.app" className="text-cyan-400 hover:underline">
-                      support@fastvid.app
+                    <a href={`mailto:${FASTVID_CONTACT_EMAIL}`} className="text-cyan-400 hover:underline">
+                      {FASTVID_CONTACT_EMAIL}
                     </a>
                     .
                   </p>

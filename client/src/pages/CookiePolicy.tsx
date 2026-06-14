@@ -1,4 +1,5 @@
 import { LegalPageShell, LegalSection } from "@/components/LegalPageShell";
+import { FASTVID_CONTACT_EMAIL } from "@shared/const";
 
 export default function CookiePolicy() {
   return (
@@ -64,8 +65,8 @@ export default function CookiePolicy() {
       <LegalSection title="6. Contact">
         <p>
           Questions about cookies:{" "}
-          <a href="mailto:privacy@fastvid.app" className="text-cyan-400 hover:underline">
-            privacy@fastvid.app
+          <a href={`mailto:${FASTVID_CONTACT_EMAIL}`} className="text-cyan-400 hover:underline">
+            {FASTVID_CONTACT_EMAIL}
           </a>
           . General inquiries:{" "}
           <a href="/contact" className="text-cyan-400 hover:underline">
