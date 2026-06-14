@@ -58,7 +58,6 @@ export function DashboardNicheRequests({ fullPage = true }: Props) {
   const onboarding = access?.onboarding;
   const status = onboarding?.status;
   const canUsePlatform = user.role === "admin" || Boolean(access?.canUsePlatform);
-  const channelRequests = requests.filter((r) => r.requestType === "new_channel");
   const justSubmitted = submitRequest.isSuccess && submitRequest.variables?.requestType === "onboarding";
   const waitingForAccess = Boolean(user) && accessFetching && !access && !accessError;
 
@@ -223,20 +222,6 @@ export function DashboardNicheRequests({ fullPage = true }: Props) {
             </div>
           )}
 
-          {fullPage && canUsePlatform && channelRequests.length === 0 && !showNewChannelForm && (
-            <div className="rounded-xl border border-dashed border-white/10 px-4 py-5 text-center">
-              <p className="text-sm text-slate-400">
-                Want to start a second YouTube channel in a different niche?
-              </p>
-              <button
-                type="button"
-                onClick={() => setShowNewChannelForm(true)}
-                className="mt-3 inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-sm font-semibold"
-              >
-                <Plus className="w-4 h-4" /> Request a new niche
-              </button>
-            </div>
-          )}
         </>
       )}
     </div>
