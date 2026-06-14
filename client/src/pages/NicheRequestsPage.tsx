@@ -3,17 +3,13 @@
  */
 import { Loader2 } from "lucide-react";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { trpc } from "@/lib/trpc";
 import { DashboardShell } from "@/components/dashboard/DashboardShell";
 import { DashboardNicheRequests } from "@/components/niche/DashboardNicheRequests";
 
 export default function NicheRequestsPage() {
-  const { user, loading } = useAuth({ redirectOnUnauthenticated: true });
-  const { isLoading: accessLoading } = trpc.nicheRequest.accessStatus.useQuery(undefined, {
-    enabled: Boolean(user),
-  });
+  const { loading } = useAuth({ redirectOnUnauthenticated: true });
 
-  if (loading || accessLoading) {
+  if (loading) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
         <Loader2 className="w-8 h-8 animate-spin text-purple-400" />

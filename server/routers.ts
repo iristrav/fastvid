@@ -1256,17 +1256,35 @@ export const appRouter = router({
 
   nicheRequest: router({
     accessStatus: protectedProcedure.query(async ({ ctx }) => {
-      const onboarding = await getLatestOnboardingRequest(ctx.user.id, ctx.user.email);
-      const canUsePlatform = nicheRequestAllowsPlatformAccess(onboarding, ctx.user.role);
-      return {
-        canUsePlatform,
-        onboarding: onboarding ?? null,
-        hasOnboardingRequest: Boolean(onboarding),
-      };
+      try {
+        const onboarding = await getLatestOnboardingRequest(ctx.user.id, ctx.user.email);
+        const canUsePlatform = nicheRequestAllowsPlatformAccess(onboarding, ctx.user.role);
+        return {
+          canUsePlatform,
+          onboarding: onboarding ?? null,
+          hasOnboardingRequest: Boolean(onboarding),
+        };
+      } catch (err) {
+        console.error("[nicheRequest.accessStatus]", err);
+        throw appTrpcError(
+          "INTERNAL_SERVER_ERROR",
+          APP_ERROR.SERVICE_ERROR,
+          "Could not load niche status. If this persists, contact support."
+        );
+      }
     }),
 
     listMine: protectedProcedure.query(async ({ ctx }) => {
-      return listNicheRequestsByUser(ctx.user.id);
+      try {
+        return await listNicheRequestsByUser(ctx.user.id);
+      } catch (err) {
+        console.error("[nicheRequest.listMine]", err);
+        throw appTrpcError(
+          "INTERNAL_SERVER_ERROR",
+          APP_ERROR.SERVICE_ERROR,
+          "Could not load your niche requests."
+        );
+      }
     }),
 
     submitRequest: publicProcedure.input(z.object({

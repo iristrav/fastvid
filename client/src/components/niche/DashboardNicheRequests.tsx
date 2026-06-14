@@ -26,12 +26,16 @@ export function DashboardNicheRequests({ fullPage = true }: Props) {
   const utils = trpc.useUtils();
   const [showNewChannelForm, setShowNewChannelForm] = useState(false);
 
-  const { data: access, isLoading: accessLoading } = trpc.nicheRequest.accessStatus.useQuery(undefined, {
-    enabled: Boolean(user),
-  });
-  const { data: requests = [], isLoading: listLoading } = trpc.nicheRequest.listMine.useQuery(undefined, {
-    enabled: Boolean(user),
-  });
+  const { data: access, isFetching: accessFetching, isError: accessError, refetch: refetchAccess } =
+    trpc.nicheRequest.accessStatus.useQuery(undefined, {
+      enabled: Boolean(user),
+      retry: 1,
+    });
+  const { data: requests = [], isFetching: listFetching, isError: listError, refetch: refetchList } =
+    trpc.nicheRequest.listMine.useQuery(undefined, {
+      enabled: Boolean(user),
+      retry: 1,
+    });
 
   const submitRequest = trpc.nicheRequest.submitRequest.useMutation({
     onSuccess: async (_data, variables) => {
@@ -53,12 +57,14 @@ export function DashboardNicheRequests({ fullPage = true }: Props) {
 
   const onboarding = access?.onboarding;
   const status = onboarding?.status;
-  const canUsePlatform = Boolean(access?.canUsePlatform);
+  const canUsePlatform = user.role === "admin" || Boolean(access?.canUsePlatform);
   const channelRequests = requests.filter((r) => r.requestType === "new_channel");
   const justSubmitted = submitRequest.isSuccess && submitRequest.variables?.requestType === "onboarding";
+  const waitingForAccess = Boolean(user) && accessFetching && !access && !accessError;
 
   const showOnboardingForm =
-    !accessLoading &&
+    !waitingForAccess &&
+    !canUsePlatform &&
     !justSubmitted &&
     status !== "pending" &&
     status !== "approved" &&
@@ -66,10 +72,10 @@ export function DashboardNicheRequests({ fullPage = true }: Props) {
     status !== "ready";
 
   const showPending =
-    !accessLoading && (status === "pending" || justSubmitted);
+    !waitingForAccess && (status === "pending" || justSubmitted);
 
   const showApproved =
-    !accessLoading &&
+    !waitingForAccess &&
     (status === "approved" || status === "in_progress" || status === "ready") &&
     !canUsePlatform;
 
@@ -98,12 +104,28 @@ export function DashboardNicheRequests({ fullPage = true }: Props) {
         )}
       </div>
 
-      {accessLoading ? (
+      {waitingForAccess ? (
         <div className="flex justify-center py-8">
           <Loader2 className="w-6 h-6 animate-spin text-purple-400" />
         </div>
       ) : (
         <>
+          {(accessError || listError) && (
+            <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200 flex flex-wrap items-center justify-between gap-3">
+              <span>Could not load niche requests. Try again in a moment.</span>
+              <button
+                type="button"
+                onClick={() => {
+                  void refetchAccess();
+                  void refetchList();
+                }}
+                className="text-xs px-3 py-1.5 rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-100"
+              >
+                Retry
+              </button>
+            </div>
+          )}
+
           {showPending && (
             <NicheRequestPendingCard email={onboarding?.contactEmail ?? user.email ?? undefined} />
           )}
@@ -163,7 +185,7 @@ export function DashboardNicheRequests({ fullPage = true }: Props) {
           {fullPage && (
             <div className="space-y-3 pt-1 border-t border-white/8">
               <p className="text-xs text-slate-500 uppercase tracking-wide">Your requests</p>
-              {listLoading ? (
+              {listFetching && requests.length === 0 ? (
                 <div className="flex justify-center py-4">
                   <Loader2 className="w-5 h-5 animate-spin text-purple-400" />
                 </div>
@@ -235,7 +257,7 @@ export function NicheRequestsDashboardCard() {
 
   const onboarding = access?.onboarding;
   const status = onboarding?.status;
-  const canUsePlatform = Boolean(access?.canUsePlatform);
+  const canUsePlatform = user?.role === "admin" || Boolean(access?.canUsePlatform);
   const pendingCount = requests.filter((r) => r.status === "pending").length;
   const channelCount = requests.filter((r) => r.requestType === "new_channel").length;
 
