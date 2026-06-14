@@ -24,6 +24,7 @@ import type { TrpcContext } from "./_core/context";
 import type { Video } from "../drizzle/schema";
 import { invokeLLM } from "./_core/llm";
 import { notifyOwner } from "./_core/notification";
+import { sendNicheApprovedEmail } from "./_core/emailService";
 import bcrypt from "bcryptjs";
 import { SignJWT } from "jose";
 import {
@@ -1366,6 +1367,18 @@ export const appRouter = router({
         reviewedByUserId: ctx.user.id,
         reviewedAt: new Date(),
       });
+
+      if (input.status === "approved" && req.status !== "approved") {
+        const recipient = req.contactEmail.trim();
+        if (recipient) {
+          void sendNicheApprovedEmail({
+            to: recipient,
+            nicheTitle: req.nicheTitle,
+            requestType: req.requestType,
+          }).catch((err) => console.error("[nicheRequest.updateStatus] approval email failed:", err));
+        }
+      }
+
       return { success: true };
     }),
   }),
