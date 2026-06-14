@@ -199,7 +199,7 @@ function AssetCard({
                 value={tags}
                 onChange={(e) => setTags(e.target.value)}
                 className="w-full bg-white/5 border border-white/10 rounded px-2 py-1 text-xs text-white"
-                placeholder="tags, komma-gescheiden"
+                placeholder="berlin, metro, skyline, modern city, transit, architecture"
               />
               <select
                 value={mixKind}
@@ -371,7 +371,7 @@ export function ArchiveClipsGrid({
 
     if (
       !confirm(
-        `AI bekijkt ${label} en geeft elke clip een titel + zoek-tags op basis van wat er in beeld staat.\n\nBestaande tags worden aangevuld. Doorgaan?`
+        `AI bekijkt ${label} en voegt rijke zoek-tags toe: personen, plaatsen, acties, tijdperk, scènetype, camera, kleuren (meerdere frames bij video).\n\nBestaande tags worden aangevuld. Doorgaan?`
       )
     ) {
       return;
@@ -511,7 +511,7 @@ export function ArchiveClipsGrid({
             type="button"
             onClick={runAutoTitleAll}
             disabled={autoTitleRunning}
-            title="AI bekijkt clips en geeft titels + tags op basis van beeldinhoud"
+            title="AI analyseert beeldinhoud: titel, personen, plaatsen, acties, tijdperk, scènetype, camera"
             className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg bg-cyan-500/15 text-cyan-300 border border-cyan-500/25 hover:bg-cyan-500/25 disabled:opacity-50"
           >
             {autoTitleRunning ? (

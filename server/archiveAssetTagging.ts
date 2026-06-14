@@ -19,6 +19,23 @@ export type ArchiveAssetAiMetadata = {
   tags: string[];
 };
 
+type ArchiveAiVisionPayload = {
+  title?: string;
+  description?: string;
+  tags?: string[];
+  persons?: string[];
+  locations?: string[];
+  objects?: string[];
+  actions?: string[];
+  era?: string;
+  setting?: string;
+  sceneType?: string;
+  visualDetails?: string[];
+  mood?: string;
+  camera?: string;
+  colors?: string[];
+};
+
 const TAG_JSON_SCHEMA = {
   type: "json_schema" as const,
   json_schema: {
@@ -29,28 +46,114 @@ const TAG_JSON_SCHEMA = {
       properties: {
         title: { type: "string" },
         description: { type: "string" },
-        tags: {
-          type: "array",
-          items: { type: "string" },
-        },
+        tags: { type: "array", items: { type: "string" } },
+        persons: { type: "array", items: { type: "string" } },
+        locations: { type: "array", items: { type: "string" } },
+        objects: { type: "array", items: { type: "string" } },
+        actions: { type: "array", items: { type: "string" } },
+        era: { type: "string" },
+        setting: { type: "string" },
+        sceneType: { type: "string" },
+        visualDetails: { type: "array", items: { type: "string" } },
+        mood: { type: "string" },
+        camera: { type: "string" },
+        colors: { type: "array", items: { type: "string" } },
       },
-      required: ["title", "description", "tags"],
+      required: [
+        "title",
+        "description",
+        "tags",
+        "persons",
+        "locations",
+        "objects",
+        "actions",
+        "era",
+        "setting",
+        "sceneType",
+        "visualDetails",
+        "mood",
+        "camera",
+        "colors",
+      ],
       additionalProperties: false,
     },
   },
 } as const;
+
+/** Max searchable tags stored per asset (pipeline + semantic matching). */
+export const ARCHIVE_MAX_TAGS = 48;
 
 export function archiveAiTaggingEnabled(): boolean {
   return process.env.ENABLE_ARCHIVE_AI_TAGS !== "false" && Boolean(ENV.forgeApiKey);
 }
 
 export function mergeArchiveTags(userTags: string[], aiTags: string[]): string[] {
-  return normalizeMediaTags([...userTags, ...aiTags]).slice(0, 32);
+  return normalizeMediaTags([...userTags, ...aiTags]).slice(0, ARCHIVE_MAX_TAGS);
 }
 
 export function truncateArchiveSourceNote(note: string | null | undefined): string | null {
   if (!note?.trim()) return null;
   return note.trim().slice(0, 512);
+}
+
+function pushTag(bucket: string[], raw: string | undefined | null): void {
+  const v = raw?.trim().toLowerCase();
+  if (!v || v.length < 2) return;
+  bucket.push(v);
+}
+
+function pushTags(bucket: string[], items: string[] | undefined): void {
+  for (const item of items ?? []) pushTag(bucket, item);
+}
+
+/** Flatten structured vision JSON into searchable tags + rich description. */
+export function flattenArchiveAiMetadata(parsed: ArchiveAiVisionPayload): ArchiveAssetAiMetadata | null {
+  const title = parsed.title?.trim().slice(0, 120);
+  if (!title) return null;
+
+  const tagParts: string[] = [];
+  pushTags(tagParts, parsed.tags);
+  pushTags(tagParts, parsed.persons);
+  pushTags(tagParts, parsed.locations);
+  pushTags(tagParts, parsed.objects);
+  pushTags(tagParts, parsed.actions);
+  pushTags(tagParts, parsed.visualDetails);
+  pushTags(tagParts, parsed.colors);
+  pushTag(tagParts, parsed.era);
+  pushTag(tagParts, parsed.setting);
+  pushTag(tagParts, parsed.sceneType);
+  pushTag(tagParts, parsed.mood);
+  pushTag(tagParts, parsed.camera);
+
+  // Derive extra slugs from title words (4+ chars)
+  for (const w of title.split(/\s+/)) {
+    if (w.length >= 4) pushTag(tagParts, w);
+  }
+
+  let tags = normalizeMediaTags(tagParts);
+  if (tags.length === 0) {
+    tags = normalizeMediaTags(title.split(/\s+/).filter((w) => w.length > 2));
+  }
+  if (tags.length === 0) return null;
+  tags = tags.slice(0, ARCHIVE_MAX_TAGS);
+
+  const detailBits = [
+    parsed.description?.trim(),
+    parsed.setting?.trim() ? `Setting: ${parsed.setting.trim()}` : "",
+    parsed.era?.trim() ? `Era: ${parsed.era.trim()}` : "",
+    parsed.sceneType?.trim() ? `Scene: ${parsed.sceneType.trim()}` : "",
+    parsed.actions?.length ? `Actions: ${parsed.actions.slice(0, 6).join(", ")}` : "",
+    parsed.visualDetails?.length ? `Details: ${parsed.visualDetails.slice(0, 8).join(", ")}` : "",
+    parsed.persons?.length ? `People: ${parsed.persons.slice(0, 4).join(", ")}` : "",
+    parsed.locations?.length ? `Places: ${parsed.locations.slice(0, 4).join(", ")}` : "",
+  ].filter(Boolean);
+
+  const description = detailBits.join(" | ").slice(0, 500) || title;
+  return { title, description, tags };
+}
+
+export function buildArchiveSourceNote(ai: ArchiveAssetAiMetadata): string {
+  return ai.description.trim().slice(0, 512);
 }
 
 const EXT_TO_MIME: Record<string, string> = {
@@ -93,10 +196,8 @@ export function applySharedAiToClipFields(opts: {
     title = opts.ai.title.slice(0, 512);
   }
 
-  const desc = opts.ai.description.trim();
-  if (desc) {
-    sourceNote = sourceNote ? `${sourceNote} — ${desc}` : desc;
-  }
+  const aiNote = buildArchiveSourceNote(opts.ai);
+  sourceNote = sourceNote?.trim() ? `${sourceNote.trim()} — ${aiNote}` : aiNote;
 
   return { title, tags, sourceNote: truncateArchiveSourceNote(sourceNote) };
 }
@@ -138,9 +239,15 @@ async function extractVideoPreviewJpeg(
       const args = ["-y", "-ss", seek.toFixed(3), "-i", videoPath, "-frames:v", "1", "-q:v", "3", outPath];
       const child = spawn(ffmpegBin(), args, { stdio: ["ignore", "ignore", "pipe"] });
       let stderr = "";
-      child.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });
+      child.stderr.on("data", (d: Buffer) => {
+        stderr += d.toString();
+      });
       const timer = setTimeout(() => {
-        try { child.kill("SIGKILL"); } catch { /* ignore */ }
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          /* ignore */
+        }
         reject(new Error("frame extract timeout"));
       }, 15_000);
       child.on("close", (code) => {
@@ -156,77 +263,79 @@ async function extractVideoPreviewJpeg(
   }
 }
 
+/** Sample 1–3 frames across the clip for richer video tagging. */
+async function extractVideoPreviewFrames(
+  videoPath: string,
+  workDir: string
+): Promise<Array<{ buffer: Buffer; mimeType: string }>> {
+  const dur = await probeVideoDurationSec(videoPath);
+  const ratios = dur > 4 ? [0.12, 0.42, 0.72] : dur > 1.5 ? [0.2, 0.55] : [0.35];
+  const out: Array<{ buffer: Buffer; mimeType: string }> = [];
+  for (let i = 0; i < ratios.length; i++) {
+    const seek = dur > 0.5 ? Math.max(0.08, dur * ratios[i]!) : 0.15;
+    const framePath = path.join(workDir, `frame_${i}.jpg`);
+    const ok = await extractVideoPreviewJpeg(videoPath, framePath, seek);
+    if (ok) out.push({ buffer: fs.readFileSync(framePath), mimeType: "image/jpeg" });
+  }
+  return out;
+}
+
 function imageMimeToDataUrl(buffer: Buffer, mimeType: string): string {
   const mime = mimeType.startsWith("image/") ? mimeType : "image/jpeg";
   return `data:${mime};base64,${buffer.toString("base64")}`;
 }
 
-async function previewImageFromFilePath(
+async function previewImagesFromFilePath(
   filePath: string,
   mimeType: string
-): Promise<{ buffer: Buffer; mimeType: string } | null> {
+): Promise<Array<{ buffer: Buffer; mimeType: string }>> {
   if (mimeType.startsWith("image/")) {
-    if (!fs.existsSync(filePath)) return null;
+    if (!fs.existsSync(filePath)) return [];
     const buffer = fs.readFileSync(filePath);
-    if (buffer.length < 64) return null;
-    return { buffer, mimeType };
+    if (buffer.length < 64) return [];
+    return [{ buffer, mimeType }];
   }
-  if (!mimeType.startsWith("video/")) return null;
+  if (!mimeType.startsWith("video/")) return [];
 
-  const framePath = path.join(
-    os.tmpdir(),
-    `archive-ai-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`
-  );
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "archive-ai-frames-"));
   try {
-    const ok = await extractVideoPreviewJpeg(filePath, framePath);
-    if (!ok) return null;
-    return { buffer: fs.readFileSync(framePath), mimeType: "image/jpeg" };
+    const frames = await extractVideoPreviewFrames(filePath, workDir);
+    return frames;
   } finally {
-    try { fs.unlinkSync(framePath); } catch { /* ignore */ }
+    try {
+      fs.rmSync(workDir, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
   }
 }
 
-async function previewImageFromMedia(
+async function previewImagesFromMedia(
   mediaBuffer: Buffer,
   mimeType: string
-): Promise<{ buffer: Buffer; mimeType: string } | null> {
+): Promise<Array<{ buffer: Buffer; mimeType: string }>> {
   if (mimeType.startsWith("image/")) {
-    return { buffer: mediaBuffer, mimeType };
+    return [{ buffer: mediaBuffer, mimeType }];
   }
-  if (!mimeType.startsWith("video/")) return null;
+  if (!mimeType.startsWith("video/")) return [];
 
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "archive-ai-tag-"));
   const ext = mimeType.includes("webm") ? "webm" : mimeType.includes("mov") ? "mov" : "mp4";
   const videoPath = path.join(workDir, `preview.${ext}`);
-  const framePath = path.join(workDir, "frame.jpg");
   try {
     fs.writeFileSync(videoPath, mediaBuffer);
-    const ok = await extractVideoPreviewJpeg(videoPath, framePath);
-    if (!ok) return null;
-    return { buffer: fs.readFileSync(framePath), mimeType: "image/jpeg" };
+    return await extractVideoPreviewFrames(videoPath, workDir);
   } finally {
-    try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    try {
+      fs.rmSync(workDir, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
   }
-}
-
-function finalizeArchiveAiMetadata(parsed: {
-  title?: string;
-  description?: string;
-  tags?: string[];
-}): ArchiveAssetAiMetadata | null {
-  const title = parsed.title?.trim().slice(0, 120);
-  if (!title) return null;
-  const description = parsed.description?.trim().slice(0, 500) || title;
-  let tags = normalizeMediaTags((parsed.tags ?? []).filter((t) => typeof t === "string"));
-  if (tags.length === 0) {
-    tags = normalizeMediaTags(title.split(/\s+/).filter((w) => w.length > 2));
-  }
-  if (tags.length === 0) return null;
-  return { title, description, tags };
 }
 
 async function invokeArchiveVisionTagging(
-  preview: { buffer: Buffer; mimeType: string },
+  previews: Array<{ buffer: Buffer; mimeType: string }>,
   context: {
     archiveNicheTags?: string[];
     parentFilename?: string;
@@ -234,8 +343,13 @@ async function invokeArchiveVisionTagging(
     clipLabel?: string;
   }
 ): Promise<ArchiveAssetAiMetadata | null> {
-  const dataUrl = imageMimeToDataUrl(preview.buffer, preview.mimeType);
-  const timeoutMs = 18_000;
+  if (previews.length === 0) return null;
+  const timeoutMs = previews.length > 1 ? 28_000 : 20_000;
+
+  const imageParts = previews.map((preview) => ({
+    type: "image_url" as const,
+    image_url: { url: imageMimeToDataUrl(preview.buffer, preview.mimeType), detail: "high" as const },
+  }));
 
   try {
     const response = await Promise.race([
@@ -244,18 +358,15 @@ async function invokeArchiveVisionTagging(
           {
             role: "system",
             content:
-              "Je bent een documentaire archivist. Analyseer het beeld en return alleen JSON volgens het schema.",
+              "Je bent een documentaire archivist. Analyseer het beeld (of beelden uit dezelfde clip) en return alleen JSON volgens het schema. Wees exhaustief — elk zichtbaar detail telt voor zoeken.",
           },
           {
             role: "user",
-            content: [
-              { type: "text", text: buildVisionPrompt(context) },
-              { type: "image_url", image_url: { url: dataUrl, detail: "low" } },
-            ],
+            content: [{ type: "text", text: buildVisionPrompt(context, previews.length) }, ...imageParts],
           },
         ],
         response_format: TAG_JSON_SCHEMA,
-        maxTokens: 400,
+        maxTokens: 900,
       }),
       new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error("archive AI tag timeout")), timeoutMs)
@@ -264,29 +375,54 @@ async function invokeArchiveVisionTagging(
 
     const content = response.choices[0]?.message?.content;
     if (typeof content !== "string") return null;
-    return finalizeArchiveAiMetadata(JSON.parse(content));
+    return flattenArchiveAiMetadata(JSON.parse(content) as ArchiveAiVisionPayload);
   } catch (err) {
     console.warn("[ArchiveAI] tagging failed:", (err as Error).message?.slice(0, 160));
     return null;
   }
 }
 
-function buildVisionPrompt(context: {
-  archiveNicheTags?: string[];
-  parentFilename?: string;
-  userTags?: string[];
-  clipLabel?: string;
-}): string {
+function buildVisionPrompt(
+  context: {
+    archiveNicheTags?: string[];
+    parentFilename?: string;
+    userTags?: string[];
+    clipLabel?: string;
+  },
+  frameCount = 1
+): string {
   const lines = [
-    "Beschrijf wat je ziet in dit beeld voor een documentaire-archief.",
-    "Geef een korte titel (max 8 woorden) die beschrijft WAT er in beeld is — geen bestandsnaam, geen 'clip 1'.",
-    "Geef één zin beschrijving, en 6–12 zoek-tags.",
-    "Tags: lowercase, geen hashtags, mix Nederlands/Engels waar logisch (personen, plaatsen, objecten, tijdperk).",
+    "Beschrijf ALLES wat je ziet voor een documentaire-archief — zoekmachine moet later de perfecte clip vinden.",
+    "",
+    "title: max 10 woorden, concreet wat in beeld is (geen bestandsnaam, geen 'clip 1').",
+    "description: 1–2 zinnen met handeling + setting + tijdperk indien zichtbaar.",
+    "",
+    "Vul ALLE velden — lege arrays alleen als echt niets van toepassing is:",
+    "- tags: 10–20 korte zoek-slugs (lowercase, NL+EN mix)",
+    "- persons: namen of rollen (bijv. hitler, soldier, cyclist, crowd)",
+    "- locations: steden, landen, gebouwen, landmarks (berlin, reichstag, subway station)",
+    "- objects: voertuigen, wapens, kleding, borden, meubels, skyline, tram",
+    "- actions: wat gebeurt er (marching, speech, walking, train arriving, city traffic)",
+    "- era: tijdperk (1939, 1940s, cold war, modern day, contemporary, 2020s) — schat uit beeld",
+    "- setting: indoor/outdoor/street/bunker/skyline/studio/platform/rooftop",
+    "- sceneType: parade/speech/cityscape/transit/interview/battle/ruins/portrait/documentary b-roll",
+    "- visualDetails: kleine details (swastika flag, uniform, cobblestone, glass towers, bike lane)",
+    "- mood: sfeer (triumphant, somber, busy, peaceful, propaganda)",
+    "- camera: shot type (wide aerial, close-up, tracking, static, black and white archival)",
+    "- colors: dominante kleuren of zwart-wit",
+    "",
+    "Belangrijk voor matching:",
+    "- Stadsgeografie: tag modern city, skyline, transit, architecture — NIET automatisch WWII tenzij echt zichtbaar.",
+    "- WWII: tag hitler/nazi/wehrmacht/parade/propaganda ALLEEN als echt in beeld.",
+    "- Wees specifiek: 'berlin street traffic' is beter dan alleen 'berlin'.",
   ];
+  if (frameCount > 1) {
+    lines.push(`Je krijgt ${frameCount} frames uit dezelfde video — combineer tot één complete tag-set.`);
+  }
   if (context.clipLabel) lines.push(`Dit is ${context.clipLabel} uit een langere video.`);
   if (context.parentFilename) lines.push(`Bronbestand: ${context.parentFilename}`);
   if (context.archiveNicheTags?.length) {
-    lines.push(`Archief-onderwerp: ${context.archiveNicheTags.slice(0, 8).join(", ")}`);
+    lines.push(`Archief-onderwerp: ${context.archiveNicheTags.slice(0, 10).join(", ")}`);
   }
   if (context.userTags?.length) {
     lines.push(`Bestaande tags (aanvullen, niet herhalen tenzij relevant): ${context.userTags.join(", ")}`);
@@ -306,9 +442,9 @@ export async function generateArchiveAssetAiMetadataFromPath(
   } = {}
 ): Promise<ArchiveAssetAiMetadata | null> {
   if (!archiveAiTaggingEnabled()) return null;
-  const preview = await previewImageFromFilePath(filePath, mimeType);
-  if (!preview) return null;
-  return invokeArchiveVisionTagging(preview, context);
+  const previews = await previewImagesFromFilePath(filePath, mimeType);
+  if (previews.length === 0) return null;
+  return invokeArchiveVisionTagging(previews, context);
 }
 
 export async function generateArchiveAssetAiMetadata(
@@ -323,9 +459,9 @@ export async function generateArchiveAssetAiMetadata(
 ): Promise<ArchiveAssetAiMetadata | null> {
   if (!archiveAiTaggingEnabled()) return null;
 
-  const preview = await previewImageFromMedia(mediaBuffer, mimeType);
-  if (!preview) return null;
-  return invokeArchiveVisionTagging(preview, context);
+  const previews = await previewImagesFromMedia(mediaBuffer, mimeType);
+  if (previews.length === 0) return null;
+  return invokeArchiveVisionTagging(previews, context);
 }
 
 export async function enrichArchiveAssetFields(opts: {
@@ -355,19 +491,12 @@ export async function enrichArchiveAssetFields(opts: {
 
   if (!ai) return { title, tags, sourceNote };
 
-  if (opts.clipIndex != null) {
-    const root = opts.baseTitle.replace(/\s*—\s*clip\s*\d+$/i, "").trim();
-    title = `${root} — ${ai.title}`.slice(0, 512);
-  } else if (!opts.userProvidedTitle) {
-    title = ai.title.slice(0, 512);
-  }
-
-  tags = mergeArchiveTags(opts.userTags, ai.tags);
-
-  const desc = ai.description.trim();
-  if (desc) {
-    sourceNote = sourceNote ? `${sourceNote} — ${desc}` : desc;
-  }
-
-  return { title, tags, sourceNote: truncateArchiveSourceNote(sourceNote) };
+  return applySharedAiToClipFields({
+    baseTitle: opts.baseTitle,
+    userTags: opts.userTags,
+    sourceNote: opts.sourceNote,
+    ai,
+    clipIndex: opts.clipIndex,
+    userProvidedTitle: opts.userProvidedTitle,
+  });
 }

@@ -7,9 +7,8 @@ import path from "path";
 import fetch from "node-fetch";
 import {
   archiveAiTaggingEnabled,
+  applySharedAiToClipFields,
   generateArchiveAssetAiMetadataFromPath,
-  mergeArchiveTags,
-  truncateArchiveSourceNote,
 } from "./archiveAssetTagging";
 import {
   filterMediaArchiveAssets,
@@ -143,19 +142,18 @@ async function autoTitleSingleAsset(
       }
 
       const existingTags = normalizeMediaTags(asset.tags ?? []);
-      const title = ai.title.slice(0, 512);
-      const tags = mergeArchiveTags(existingTags, ai.tags);
-      const desc = ai.description.trim();
-      const sourceNote = desc
-        ? asset.sourceNote?.trim()
-          ? `${asset.sourceNote.trim()} — ${desc}`
-          : desc
-        : asset.sourceNote;
+      const fields = applySharedAiToClipFields({
+        baseTitle: ai.title,
+        userTags: existingTags,
+        sourceNote: null,
+        ai,
+        userProvidedTitle: false,
+      });
 
       await updateMediaArchiveAsset(asset.id, {
-        title,
-        tags,
-        sourceNote: truncateArchiveSourceNote(sourceNote),
+        title: fields.title,
+        tags: fields.tags,
+        sourceNote: fields.sourceNote,
       });
       return "updated";
     } finally {

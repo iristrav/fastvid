@@ -477,9 +477,12 @@ export function MediaArchiveAdmin() {
                       type="text"
                       value={uploadTags}
                       onChange={(e) => setUploadTags(e.target.value)}
-                      placeholder="bijv. titanic, dek, 1912"
+                      placeholder="bijv. berlin, metro, skyline, modern city, transit"
                       className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-purple-500/50"
                     />
+                    <p className="text-[11px] text-slate-500 mt-1">
+                      Tip: zet AI-tags aan — vision voegt personen, plaatsen, acties, tijdperk en scènetype toe (tot 48 tags).
+                    </p>
                   </div>
                   <div>
                     <label className="text-xs text-slate-400 mb-1 block">Type (voor foto&apos;s)</label>
