@@ -79,3 +79,34 @@ export function resolveLocalVideoPath(videoUrl: string): string | null {
 export function localVideoFileExists(videoUrl: string): boolean {
   return resolveLocalVideoPath(videoUrl) !== null;
 }
+
+/** Resolve on-disk path for a locally stored object (archive asset, video, voice sample). */
+export function resolveLocalStorageFilePath(opts: {
+  storageUrl?: string | null;
+  storageKey?: string | null;
+}): string | null {
+  if (opts.storageUrl?.startsWith("/local-storage/")) {
+    const fromUrl = resolveLocalVideoPath(opts.storageUrl);
+    if (fromUrl) return fromUrl;
+  }
+  if (opts.storageKey) {
+    const fromKey = path.join(LOCAL_UPLOADS_DIR, opts.storageKey.replace(/\//g, "_"));
+    if (fs.existsSync(fromKey)) return fromKey;
+  }
+  return null;
+}
+
+function guessMimeType(filePath: string): string {
+  const ext = path.extname(filePath).toLowerCase();
+  if (ext === ".mp4") return "video/mp4";
+  if (ext === ".webm") return "video/webm";
+  if (ext === ".mov") return "video/quicktime";
+  if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
+  if (ext === ".png") return "image/png";
+  if (ext === ".webp") return "image/webp";
+  if (ext === ".mp3") return "audio/mpeg";
+  if (ext === ".wav") return "audio/wav";
+  return "application/octet-stream";
+}
+
+export { guessMimeType as localStorageGuessMimeType };
