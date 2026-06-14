@@ -10,7 +10,9 @@ import {
   extractSalientBeatTokens,
   extractSceneSearchTags,
   extractVisualSearchTags,
+  inferVideoVisualTopic,
   isGenericPeopleAsset,
+  isWwiiWarArchiveAsset,
 } from "./visualBeatTags";
 import { normalizeMediaTags, type MediaArchiveAsset } from "./db";
 
@@ -122,17 +124,25 @@ function uniqueStrings(items: string[], max = 12): string[] {
 }
 
 function inferTopicDomain(text: string, videoTitle?: string): string {
+  const topic = inferVideoVisualTopic(videoTitle, text);
+  if (topic === "wwii") return "wwii";
+  if (topic === "cold_war") return "cold_war";
+  if (topic === "geography_urban") return "geography_urban";
   const hay = slug(`${videoTitle ?? ""} ${text}`);
-  if (/hitler|nazi|wwii|world war|third reich|holocaust|wehrmacht/.test(hay)) return "wwii";
   if (/elon|musk|spacex|starship|tesla|starlink|falcon/.test(hay)) return "space_tech";
   if (/titanic|maritime|ship|ocean liner/.test(hay)) return "maritime";
-  if (/cold war|berlin wall|soviet/.test(hay)) return "cold_war";
   return "general";
 }
 
 function domainFallbackTiers(domain: string): string[][] {
   if (domain === "wwii") {
     return [["world war ii", "wwii", "second world war"], ["war footage", "military archive"]];
+  }
+  if (domain === "geography_urban") {
+    return [
+      ["city skyline", "urban street", "city planning"],
+      ["public transport", "architecture", "modern city"],
+    ];
   }
   if (domain === "space_tech") {
     return [["rocket launch", "space launch"], ["technology", "innovation"]];
@@ -154,8 +164,8 @@ export function analyzeBeatSemanticsFallback(beatText: string, videoTitle?: stri
       ...( /musk|elon\b/.test(slugged) ? ["elon musk", "musk"] : []),
     ]),
     locations: uniqueStrings(
-      extractVisualSearchTags(cleaned).filter((t) =>
-        /berlin|poland|germany|france|moscow|vienna|munich|normandy|auschwitz|warsaw|america|europe|russia|uk|england/.test(
+      extractVisualSearchTags(cleaned, videoTitle).filter((t) =>
+        /berlin|poland|germany|france|moscow|vienna|munich|normandy|auschwitz|warsaw|america|europe|russia|uk|england|city|urban|skyline|street|architecture|transit|metro/.test(
           t
         )
       )
@@ -175,11 +185,14 @@ export function analyzeBeatSemanticsFallback(beatText: string, videoTitle?: stri
       )
     ),
     timePeriods: uniqueStrings(
-      years.length > 0
-        ? [`${years[0]}s`, "world war ii"]
-        : inferTopicDomain(cleaned, videoTitle) === "wwii"
-          ? ["world war ii", "1930s", "1940s"]
-          : []
+      (() => {
+        const domain = inferTopicDomain(cleaned, videoTitle);
+        if (domain === "geography_urban") return ["modern day", "contemporary city"];
+        if (domain === "wwii") {
+          return years.length > 0 ? [`${years[0]}s`, "world war ii"] : ["world war ii", "1930s", "1940s"];
+        }
+        return years.length > 0 ? [`${years[0]}s`] : [];
+      })()
     ),
     years: uniqueStrings(years),
   };
@@ -375,6 +388,16 @@ export function computeTieredRelevanceScore(
   asset: Pick<MediaArchiveAsset, "title" | "tags" | "sourceNote" | "mediaType">
 ): SemanticMatchResult {
   const hay = buildAssetSemanticDocument(asset);
+  if (profile.topicDomain === "geography_urban" && isWwiiWarArchiveAsset(asset)) {
+    return {
+      relevanceScore: 6,
+      tier: 5,
+      tierLabel: "wwii archive (off-topic)",
+      embeddingSimilarity: 0,
+      matchedEntities: [],
+    };
+  }
+
   const matchedEntities = findMatchedEntities(hay, profile);
   let tier: 1 | 2 | 3 | 4 | 5 = 5;
   let tierLabel = "generic topic";
@@ -674,7 +697,8 @@ export function clearSemanticCaches(): void {
 export function buildSemanticPexelsQueries(
   beatText: string,
   profile: BeatSemanticProfile,
-  maxQueries = 8
+  maxQueries = 8,
+  videoTitle?: string
 ): string[] {
   const ordered: string[] = [];
   const push = (q: string) => {
@@ -697,7 +721,12 @@ export function buildSemanticPexelsQueries(
     for (const item of list) push(item);
   }
   push(profile.summary);
-  for (const t of extractVisualSearchTags(beatText).slice(0, 6)) push(t);
+  for (const t of extractVisualSearchTags(beatText, videoTitle).slice(0, 6)) push(t);
+  if (profile.topicDomain === "geography_urban") {
+    push("city skyline");
+    push("urban street");
+    push("modern city");
+  }
 
   return ordered.slice(0, maxQueries);
 }

@@ -2,6 +2,14 @@
  * Extract place/keyword tags from narration for archive search + voice-synced labels.
  */
 
+/** Drives archive filtering — geography videos must not pull WWII/Hiter footage. */
+export type VideoVisualTopic = "wwii" | "cold_war" | "geography_urban" | "general";
+
+const WWII_WAR_ARCHIVE_RE =
+  /\b(hitler|adolf|nazi|nsdap|wehrmacht|\bss\b|swastika|hakenkruis|third reich|fuhrer|führer|goebbels|keitel|jodl|eva braun|propaganda rally|nuremberg rally|fuhrerbunker|führerbunker|world war ii|wwii|ww2|second world war|holocaust|concentration camp|wartime|blitzkrieg|invasion of poland|reichstag speech)\b/i;
+
+const WWII_ERA_YEAR_RE = /\b(193[3-9]|194[0-5])\b/;
+
 export type VoiceLabelTerm = {
   /** On-screen pill text (uppercase). */
   label: string;
@@ -107,7 +115,111 @@ export function extractSalientBeatTokens(beatText: string): string[] {
   return [...new Set([...proper, ...words])].slice(0, 10);
 }
 
-export function extractVisualSearchTags(beatText: string): string[] {
+export function inferVideoVisualTopic(videoTitle?: string, extraText?: string): VideoVisualTopic {
+  const hay = `${videoTitle ?? ""} ${extraText ?? ""}`.toLowerCase();
+  if (/hitler|nazi|wwii|ww2|world war ii|second world war|holocaust|third reich|wehrmacht|fuhrer|führer/.test(hay)) {
+    return "wwii";
+  }
+  if (/cold war|berlin wall|iron curtain|checkpoint charlie|soviet bloc|east germany|ddr\b|stasi/.test(hay)) {
+    return "cold_war";
+  }
+  if (
+    /geograph|urban planning|city planning|zoning|transit design|public transport|walkable|urbanism|infrastructure|metropol|skyline|city comparison|compare.*cities|versus.*city|why .* city|how .* city|city (works|planning|design|life)|opposite of every|every us city|american city|vs\.? us|unlike (american|us) cities|modern city|contemporary city|stadtplanung|stedenbouw/.test(
+      hay
+    ) ||
+    (/(berlin|berlijn|paris|london|amsterdam|tokyo|new york|chicago|munich|vienna|singapore|copenhagen)/.test(hay) &&
+      /(opposite|comparison|compare|unlike|different|versus|\bvs\b|urban|geograph|planning|transit|zoning|architecture|infrastructure|modern|contemporary|today|living|city life|every us|american)/.test(
+        hay
+      ))
+  ) {
+    return "geography_urban";
+  }
+  return "general";
+}
+
+/** WWII/Holocaust archive clip — must not appear in geography/modern city videos. */
+export function isWwiiWarArchiveAsset(
+  asset: Pick<{ title?: string | null; tags?: string[] | null; mediaType?: string | null }, "title" | "tags" | "mediaType">
+): boolean {
+  const title = (asset.title ?? "").toLowerCase();
+  const tags = (asset.tags ?? []).join(" ").toLowerCase();
+  const hay = `${title} ${tags}`;
+  if (WWII_WAR_ARCHIVE_RE.test(hay)) return true;
+  if (WWII_ERA_YEAR_RE.test(hay) && /\b(militair|military|soldat|soldier|parade|propaganda|archief|troepen|troops|nazi|hitler|berlijn|berlin|oorlog|war|zwart-wit|black.?white)\b/i.test(hay)) {
+    return true;
+  }
+  if (asset.mediaType === "video") {
+    return /\b(parade|militair|propaganda|toespraak|speech|rally|soldaten|troepen|wehrmacht|hitler|nazi|zwart-wit archief)\b/i.test(hay);
+  }
+  if (asset.mediaType === "image") {
+    return /\b(propaganda poster|portret hitler|hitler portrait|nazi poster|hakenkruis)\b/i.test(hay);
+  }
+  return false;
+}
+
+const GEOGRAPHY_BLOCKED_TAGS = new Set([
+  "hitler",
+  "adolf hitler",
+  "nazi",
+  "wehrmacht",
+  "bunker",
+  "holocaust",
+  "wwii",
+  "ww2",
+  "third reich",
+  "fuhrer",
+  "führer",
+  "propaganda",
+  "invasion",
+  "panzer",
+  "soldiers",
+  "military parade",
+  "war",
+  "oorlog",
+  "goebbels",
+]);
+
+/** Strip war-era search bias and add modern urban tags for city/geography documentaries. */
+export function refineVisualSearchTagsForTopic(
+  tags: string[],
+  topic: VideoVisualTopic,
+  beatText: string
+): string[] {
+  if (topic !== "geography_urban") return tags;
+  const lower = beatText.toLowerCase();
+  const out = new Set<string>();
+  for (const t of tags) {
+    const tl = t.toLowerCase();
+    if (GEOGRAPHY_BLOCKED_TAGS.has(tl)) continue;
+    if ([...GEOGRAPHY_BLOCKED_TAGS].some((b) => tl.includes(b))) continue;
+    if (tl === "germany" || tl === "german" || tl === "deutschland") continue;
+    out.add(t);
+  }
+  if (/berlin|berlijn/.test(lower)) {
+    out.add("berlin city");
+    out.add("berlin skyline");
+    out.add("urban berlin");
+    out.add("city street");
+    out.add("architecture");
+  }
+  if (/transit|metro|subway|u-bahn|sbahn|train|trein|tram|bus|public transport|ov\b/.test(lower)) {
+    out.add("public transport");
+    out.add("metro");
+    out.add("subway");
+    out.add("train station");
+  }
+  if (/zoning|planning|urban|infrastructure|walkable|bike|cycl|density|housing|apartment/.test(lower)) {
+    out.add("urban planning");
+    out.add("city infrastructure");
+    out.add("street scene");
+  }
+  out.add("city skyline");
+  out.add("urban street");
+  out.add("modern city");
+  return [...out].slice(0, 20);
+}
+
+export function extractVisualSearchTags(beatText: string, videoTitle?: string): string[] {
   const cleaned = beatText.replace(/\[visual:[^\]]+\]/gi, " ").toLowerCase();
   const tags = new Set<string>([
     ...collectTagsFromEntries(cleaned, PLACE_ENTRIES),
@@ -117,7 +229,8 @@ export function extractVisualSearchTags(beatText: string): string[] {
   ]);
   const years = cleaned.match(/\b(1[0-9]{3}|20[0-9]{2})\b/g);
   if (years) for (const y of years) tags.add(y);
-  return [...tags].slice(0, 20);
+  const topic = inferVideoVisualTopic(videoTitle, beatText);
+  return refineVisualSearchTagsForTopic([...tags], topic, beatText);
 }
 
 /** Scene/setting tags only (bunker, rally, troops…). */

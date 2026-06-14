@@ -49,7 +49,7 @@ import {
   stillOutputFrameCount,
   type TimedOverlay,
 } from "./documentaryStyle";
-import { extractPrimaryGeoSearchTag, extractPrimaryVisualAnchor, extractSceneSearchTags } from "./visualBeatTags";
+import { extractPrimaryGeoSearchTag, extractPrimaryVisualAnchor, extractSceneSearchTags, inferVideoVisualTopic } from "./visualBeatTags";
 import {
   buildCinematicOverlays,
   buildBeatAlignedYearOverlays,
@@ -7594,7 +7594,22 @@ function buildBeatVisualQueryList(
   const eventQueries = scriptEventSearchQueries(beatText, beatPersons);
   const entityStock = realEntityStockQueriesForBeat(beatText, scene.text, videoTitle);
 
+  const urbanQueries =
+    inferVideoVisualTopic(videoTitle, `${beatText} ${scene.text}`) === "geography_urban"
+      ? [
+          "city skyline",
+          "urban street",
+          "modern city",
+          /berlin|berlijn/i.test(beatText) || /berlin/i.test(videoTitle ?? "")
+            ? "berlin city skyline"
+            : "",
+          /transit|metro|subway|train|u-bahn/i.test(beatText) ? "public transport metro" : "",
+          /planning|zoning|infrastructure|walkable|density/i.test(beatText) ? "urban planning" : "",
+        ].filter((q): q is string => typeof q === "string" && q.length > 2)
+      : [];
+
   const ordered = [
+    ...urbanQueries,
     powerQ,
     ...scriptQueries,
     ...eventQueries,
@@ -12984,7 +12999,7 @@ async function adoptArchiveBeatClip(
     console.log(
       `[Pipeline] Scene ${scene.index} zin ${beat.index}: archive-zoek "${beat.text.slice(0, 55).trim()}…" → ${ranked.length} kandidaat(en)`
     );
-    const { beatTags, topicAnchors } = buildBeatMatchTags(beat, scene, videoTitle);
+    const { beatTags, topicAnchors, videoVisualTopic } = buildBeatMatchTags(beat, scene, videoTitle);
     const topScore = ranked[0]?.score ?? 0;
     const minAcceptScore = relaxed
       ? Math.max(12, Math.round(topScore * 0.25))
@@ -12994,7 +13009,7 @@ async function adoptArchiveBeatClip(
     let tried = 0;
     for (const picked of ranked) {
       if (tried >= tryCap) break;
-      if (!relaxed && !assetPassesBeatMinimum(picked.asset, beat.text, picked.score, topScore, picked.semantic)) {
+      if (!relaxed && !assetPassesBeatMinimum(picked.asset, beat.text, picked.score, topScore, picked.semantic, videoVisualTopic)) {
         continue;
       }
       if (relaxed && picked.score < minAcceptScore && topScore > minAcceptScore + 6) {
@@ -13013,6 +13028,7 @@ async function adoptArchiveBeatClip(
             imageUsed: dedup.curatedImageClipsUsed,
             imageMax: imgMax,
             beatText: beat.text,
+            videoVisualTopic,
           }
         )
       ) {
@@ -13117,7 +13133,7 @@ async function adoptPexelsBeatClipFallback(
 
   const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
   const semanticQueries = semanticProfile
-    ? buildSemanticPexelsQueries(beat.text, semanticProfile, 8)
+    ? buildSemanticPexelsQueries(beat.text, semanticProfile, 8, videoTitle)
     : [];
   const scriptQueries = buildBeatVisualQueryList(beat.text, scene, videoTitle, scenePersons, 6);
   const queries = [

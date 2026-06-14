@@ -5,6 +5,8 @@ import {
   extractSceneSearchTags,
   extractVisualSearchTags,
   extractVoiceLabelTerms,
+  inferVideoVisualTopic,
+  isWwiiWarArchiveAsset,
   termStartInBeat,
 } from "./visualBeatTags";
 
@@ -53,5 +55,30 @@ describe("visualBeatTags", () => {
     const start = termStartInBeat(beatText, "DUITSland", beatStart, beatDur, "Duitsland");
     expect(start).toBeGreaterThan(beatStart + 2);
     expect(start).toBeLessThan(beatStart + beatDur - 0.5);
+  });
+
+  it("detects geography urban topic from Berlin vs US city title", () => {
+    const title = "Why Berlin is the Opposite of Every US City";
+    expect(inferVideoVisualTopic(title)).toBe("geography_urban");
+    const tags = extractVisualSearchTags("Berlin has excellent public transit.", title);
+    expect(tags).toEqual(expect.arrayContaining(["berlin city", "urban berlin", "public transport"]));
+    expect(tags.some((t) => t.includes("hitler") || t === "germany")).toBe(false);
+  });
+
+  it("flags WWII archive assets for geography filtering", () => {
+    expect(
+      isWwiiWarArchiveAsset({
+        title: "Hitler speech at Nuremberg rally",
+        tags: ["hitler", "nazi", "propaganda"],
+        mediaType: "video",
+      })
+    ).toBe(true);
+    expect(
+      isWwiiWarArchiveAsset({
+        title: "Berlin skyline modern architecture",
+        tags: ["berlin", "city", "skyline"],
+        mediaType: "video",
+      })
+    ).toBe(false);
   });
 });

@@ -9,6 +9,7 @@ import {
   scoreArchiveMetadata,
   scoreCuratedAsset,
   assetPassesBeatMinimum,
+  isCuratedOffTopicAsset,
   isCuratedStaticInteriorAsset,
   isCuratedPreparedStillClip,
   isCuratedPreparedVideoClip,
@@ -365,5 +366,39 @@ describe("curatedMediaSourcing", () => {
     expect(bunkerScore).toBeGreaterThan(genericScore);
     expect(assetPassesBeatMinimum(genericMan, beatText, genericScore, bunkerScore)).toBe(false);
     expect(assetPassesBeatMinimum(bunkerClip, beatText, bunkerScore, bunkerScore)).toBe(true);
+  });
+
+  it("rejects Hitler footage for geography Berlin city comparison video", () => {
+    const title = "Why Berlin is the Opposite of Every US City";
+    const beatText = "Berlin invests heavily in public transit and walkable streets.";
+    const { beatTags, topicAnchors, videoVisualTopic } = buildBeatMatchTags(
+      { text: beatText, index: 0, searchQuery: "berlin transit", powerWord: "berlin", keywords: [] },
+      { text: beatText },
+      title
+    );
+    expect(videoVisualTopic).toBe("geography_urban");
+    const hitlerClip: MediaArchiveAsset = {
+      id: 60,
+      archiveId: 1,
+      title: "Hitler speech military parade Berlin 1939",
+      tags: ["hitler", "nazi", "parade", "berlin"],
+      mediaType: "video",
+      mimeType: "video/mp4",
+      storageUrl: "/x.mp4",
+      isActive: 1,
+      sortOrder: 0,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      fileSizeBytes: 1,
+      width: 1920,
+      height: 1080,
+      durationSec: 6,
+      sourceUrl: null,
+      sourceLabel: null,
+    };
+    expect(isCuratedOffTopicAsset(hitlerClip, topicAnchors, beatTags, videoVisualTopic)).toBe(true);
+    expect(assetPassesBeatMinimum(hitlerClip, beatText, 80, 80, undefined, videoVisualTopic)).toBe(false);
+    const hitlerScore = scoreCuratedAsset(hitlerClip, ["berlin"], beatTags, topicAnchors, beatText, videoVisualTopic);
+    expect(hitlerScore).toBeLessThanOrEqual(0);
   });
 });

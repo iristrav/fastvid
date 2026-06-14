@@ -2,7 +2,7 @@
  * Curated media archive — pick tagged assets from admin libraries for pipeline beats.
  */
 import { exec as execCb } from "child_process";
-import { extractVisualSearchTags, extractSceneSearchTags, extractEntitySearchTags, extractPrimaryVisualAnchor, extractSalientBeatTokens, extractRequiredVisualTags, isGenericPeopleAsset } from "./visualBeatTags";
+import { extractVisualSearchTags, extractSceneSearchTags, extractEntitySearchTags, extractPrimaryVisualAnchor, extractSalientBeatTokens, extractRequiredVisualTags, isGenericPeopleAsset, inferVideoVisualTopic, isWwiiWarArchiveAsset, refineVisualSearchTagsForTopic, type VideoVisualTopic } from "./visualBeatTags";
 import { promisify } from "util";
 import fetch from "node-fetch";
 import * as fs from "fs";
@@ -68,6 +68,7 @@ export type BeatMatchTags = {
   /** Topic from video title/prompt — niche filter, lower weight per beat. */
   topicAnchors: string[];
   allTags: string[];
+  videoVisualTopic: VideoVisualTopic;
 };
 
 export type CuratedSceneContext = {
@@ -199,8 +200,9 @@ export function buildBeatMatchTags(
   scene: CuratedSceneContext,
   videoTitle?: string
 ): BeatMatchTags {
+  const videoVisualTopic = inferVideoVisualTopic(videoTitle, [beat.text, scene.text].join(" "));
   const topicAnchors = extractTopicAnchorTags(videoTitle, [beat.text, scene.text].join(" "));
-  const visualTags = extractVisualSearchTags(beat.text);
+  const visualTags = extractVisualSearchTags(beat.text, videoTitle);
   const visualAnchor = extractPrimaryVisualAnchor(beat.text);
   const anchorTokens = visualAnchor ? tokenizeBeatText(visualAnchor) : [];
   const beatRaw = [
@@ -238,7 +240,14 @@ export function buildBeatMatchTags(
     ...effectiveTopicAnchors,
     ...topicAnchors.slice(0, 3),
   ]).slice(0, 24);
-  return { beatTags: mergedBeat, topicAnchors: effectiveTopicAnchors, allTags };
+  const refinedBeat = refineVisualSearchTagsForTopic(mergedBeat, videoVisualTopic, beat.text);
+  const refinedAll = refineVisualSearchTagsForTopic(allTags, videoVisualTopic, beat.text);
+  return {
+    beatTags: refinedBeat,
+    topicAnchors: effectiveTopicAnchors,
+    allTags: refinedAll,
+    videoVisualTopic,
+  };
 }
 
 /** How strongly an asset matches geo/visual tags from the spoken beat. */
@@ -265,8 +274,12 @@ export function assetPassesBeatMinimum(
   beatText: string,
   score: number,
   topScore: number,
-  semantic?: SemanticMatchResult
+  semantic?: SemanticMatchResult,
+  videoVisualTopic: VideoVisualTopic = "general"
 ): boolean {
+  if (videoVisualTopic === "geography_urban" && isWwiiWarArchiveAsset(asset)) {
+    return false;
+  }
   if (semantic && semanticVisualMatchingEnabled()) {
     if (!assetMeetsSemanticMinimum(semantic)) return false;
     if (semantic.tier >= 5 && semantic.matchedEntities.length === 0) return false;
@@ -453,7 +466,8 @@ export function scoreCuratedAsset(
   archiveNicheTags: string[],
   beatTags: string[],
   topicAnchors: string[] = [],
-  beatText?: string
+  beatText?: string,
+  videoVisualTopic: VideoVisualTopic = "general"
 ): number {
   const assetTags = normalizeMediaTags(asset.tags ?? []);
   const title = (asset.title ?? "").toLowerCase();
@@ -562,7 +576,10 @@ export function scoreCuratedAsset(
   score += curatedStaticInteriorPenalty(asset);
   score += curatedInterviewPenalty(asset);
 
-  score += curatedOffTopicPenalty(asset, topicAnchors, beatTags);
+  score += curatedOffTopicPenalty(asset, topicAnchors, beatTags, videoVisualTopic);
+  if (videoVisualTopic === "geography_urban" && isWwiiWarArchiveAsset(asset)) {
+    score = Math.max(0, score - 320);
+  }
 
   return score;
 }
@@ -618,24 +635,31 @@ function curatedSceneContextScore(
 function curatedOffTopicPenalty(
   asset: Pick<MediaArchiveAsset, "title" | "tags">,
   topicAnchors: string[],
-  beatTags: string[]
+  beatTags: string[],
+  videoVisualTopic: VideoVisualTopic = "general"
 ): number {
-  return isCuratedOffTopicAsset(asset, topicAnchors, beatTags) ? -250 : 0;
+  return isCuratedOffTopicAsset(asset, topicAnchors, beatTags, videoVisualTopic) ? -250 : 0;
 }
 
 export function isCuratedOffTopicAsset(
   asset: Pick<MediaArchiveAsset, "title" | "tags">,
   topicAnchors: string[],
-  beatTags: string[]
+  beatTags: string[],
+  videoVisualTopic: VideoVisualTopic = "general"
 ): boolean {
+  if (videoVisualTopic === "geography_urban" && isWwiiWarArchiveAsset(asset)) {
+    return true;
+  }
+
   const title = (asset.title ?? "").toLowerCase();
   const hay = `${title} ${normalizeMediaTags(asset.tags ?? []).join(" ")}`;
-  const wwiiLike =
+  const beatContextWwii =
+    videoVisualTopic === "wwii" ||
     topicAnchors.some((a) =>
-      /hitler|nazi|wwii|world.?war|oorlog|berlin|1945|1944|holocaust|duitsland|germany|third reich/i.test(a)
+      /hitler|nazi|wwii|world.?war|oorlog|1945|1944|holocaust|duitsland|third reich/i.test(a)
     ) ||
-    beatTags.some((t) => /hitler|nazi|berlin|1945|1944|oorlog|war|holocaust/i.test(t));
-  if (!wwiiLike) return false;
+    beatTags.some((t) => /hitler|nazi|1945|1944|holocaust|wehrmacht|bunker|fuhrer|third reich|wwii|ww2/i.test(t));
+  if (!beatContextWwii) return false;
   return /\b(middeleeuws|medieval|uithangbord|titanic|prehistoric|steentijd|dinosaur|sprookje|fantasy|mytholog)\b/i.test(
     hay
   );
@@ -789,7 +813,8 @@ export async function listCuratedArchiveCandidates(
   /** When true, score assets in every active archive (per-sentence search). */
   searchAllArchives = false,
   /** When true, never dump the entire archive as score-1 fallback (sentence montage). */
-  noUniversalFallback = false
+  noUniversalFallback = false,
+  videoVisualTopic: VideoVisualTopic = "general"
 ): Promise<CuratedCandidatePick[]> {
   const queryTags = filterTags ?? normalizeMediaTags([...beatTags, ...topicAnchors]);
   const archives = searchAllArchives
@@ -806,8 +831,8 @@ export async function listCuratedArchiveCandidates(
     for (const asset of assets) {
       if (excludeIds.has(asset.id)) continue;
       if (excludeStorageUrls.has(asset.storageUrl)) continue;
-      if (isCuratedOffTopicAsset(asset, topicAnchors, beatTags)) continue;
-      const score = scoreCuratedAsset(asset, nicheTags, beatTags, topicAnchors, beatText);
+      if (isCuratedOffTopicAsset(asset, topicAnchors, beatTags, videoVisualTopic)) continue;
+      const score = scoreCuratedAsset(asset, nicheTags, beatTags, topicAnchors, beatText, videoVisualTopic);
       if (score > 0) scored.push({ asset, score, archiveName: archive.name, archiveNicheTags: nicheTags });
       else if (assetMatchesBeatTags(asset, beatTags) || assetMatchesTopicAnchors(asset, topicAnchors)) {
         fallback.push({ asset, score: 1, archiveName: archive.name, archiveNicheTags: nicheTags });
@@ -821,7 +846,7 @@ export async function listCuratedArchiveCandidates(
       for (const asset of assets) {
         if (excludeIds.has(asset.id)) continue;
         if (excludeStorageUrls.has(asset.storageUrl)) continue;
-        if (isCuratedOffTopicAsset(asset, topicAnchors, beatTags)) continue;
+        if (isCuratedOffTopicAsset(asset, topicAnchors, beatTags, videoVisualTopic)) continue;
         fallback.push({ asset, score: 1, archiveName: archive.name, archiveNicheTags: normalizeMediaTags(archive.nicheTags ?? []) });
       }
     }
@@ -1142,7 +1167,7 @@ export async function searchCuratedCandidatesForBeat(
     (semanticVisualMatchingEnabled()
       ? await analyzeBeatSemantics(beat.text, videoTitle)
       : undefined);
-  const { beatTags, topicAnchors, allTags } = buildBeatMatchTags(beat, scene, videoTitle);
+  const { beatTags, topicAnchors, allTags, videoVisualTopic } = buildBeatMatchTags(beat, scene, videoTitle);
 
   const listed = await listCuratedArchiveCandidates(
     beatTags,
@@ -1154,7 +1179,8 @@ export async function searchCuratedCandidatesForBeat(
     crossVideoExcludeIds,
     options?.assetsCache,
     true,
-    true
+    true,
+    videoVisualTopic
   );
 
   let ranked = rankCuratedCandidatesForBeat(
@@ -1211,7 +1237,7 @@ export async function searchCuratedCandidatesForBeat(
 
   const topScore = ranked[0]?.score ?? 0;
   const filtered = ranked.filter((p) =>
-    assetPassesBeatMinimum(p.asset, beat.text, p.score, topScore, p.semantic)
+    assetPassesBeatMinimum(p.asset, beat.text, p.score, topScore, p.semantic, videoVisualTopic)
   );
   if (filtered.length > 0) return filtered;
 
@@ -1242,10 +1268,11 @@ export function archiveAssetPreflight(
     imageUsed?: number;
     imageMax?: number;
     beatText?: string;
+    videoVisualTopic?: VideoVisualTopic;
   } = {}
 ): boolean {
   if (usedAssetIds.has(asset.id) || usedStorageUrls.has(asset.storageUrl)) return false;
-  if (isCuratedOffTopicAsset(asset, topicAnchors, beatTags)) return false;
+  if (isCuratedOffTopicAsset(asset, topicAnchors, beatTags, opts.videoVisualTopic ?? "general")) return false;
   if (opts.beatText && isGenericPeopleAsset(asset)) {
     const required = extractRequiredVisualTags(opts.beatText);
     if (required.length >= 2 && countVisualTagHits(asset, required) === 0) return false;
@@ -1300,7 +1327,7 @@ export async function fetchCuratedArchiveBeatClip(
   const relaxed = options?.relaxed === true;
   const varietySeed = options?.varietySeed ?? 0;
   const crossVideoExcludeIds = options?.crossVideoExcludeIds ?? new Set<number>();
-  const { beatTags } = buildBeatMatchTags(beat, scene, videoTitle);
+  const { beatTags, videoVisualTopic } = buildBeatMatchTags(beat, scene, videoTitle);
   const candidates = await searchCuratedCandidatesForBeat(
     beat,
     scene,
@@ -1322,7 +1349,7 @@ export async function fetchCuratedArchiveBeatClip(
   const tryOrder = relaxed ? rotateCuratedCandidates(candidates, varietySeed, beat.index) : candidates;
 
   for (const picked of tryOrder) {
-    if (!relaxed && !assetPassesBeatMinimum(picked.asset, beat.text, picked.score, topScore)) {
+    if (!relaxed && !assetPassesBeatMinimum(picked.asset, beat.text, picked.score, topScore, undefined, videoVisualTopic)) {
       continue;
     }
     if (!relaxed && picked.score < minAcceptScore && topScore > minAcceptScore + 6) {
