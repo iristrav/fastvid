@@ -78,7 +78,7 @@ import { storagePut } from "./storage";
 import { FASTVID_PRO_PLAN } from "./products";
 import { processArchiveAssetUpload, ArchiveUploadError } from "./archiveUpload";
 import { archiveAiTaggingEnabled } from "./archiveAssetTagging";
-import { autoTitleArchiveAssets } from "./archiveBulkVisionTagging";
+import { autoTitleArchiveAssets, probeArchiveAssetAiTag } from "./archiveBulkVisionTagging";
 import { dedupeArchiveVisualDuplicates } from "./archiveClipDedup";
 import { assessArchiveCoverageForPrompt } from "./archiveCoverage";
 import {
@@ -1547,6 +1547,13 @@ export const appRouter = router({
           (err as Error).message ?? "Auto-title failed"
         );
       }
+    }),
+
+    probeAiTag: adminProcedure.input(z.object({
+      archiveId: z.number().int(),
+      assetId: z.number().int(),
+    })).query(async ({ input }) => {
+      return probeArchiveAssetAiTag(input.assetId, input.archiveId);
     }),
 
     /** Remove visually duplicate clips (keeps oldest per duplicate group). */

@@ -53,8 +53,11 @@ function describeAutoTitleOutcome(result: {
     missingAsset: number;
     fileMissing: number;
     downloadFailed: number;
+    noFrames: number;
     noVision: number;
+    llmFailed: number;
   };
+  sampleError?: string;
 }): string {
   const { skipReasons } = result;
   if (!skipReasons) {
@@ -71,6 +74,14 @@ function describeAutoTitleOutcome(result: {
   }
   if (skipReasons.downloadFailed > 0) {
     parts.push(`${skipReasons.downloadFailed} could not be downloaded from object storage — check S3_* credentials`);
+  }
+  if (skipReasons.noFrames > 0) {
+    parts.push(`${skipReasons.noFrames} clip(s) — FFmpeg could not extract preview frames`);
+  }
+  if (skipReasons.llmFailed > 0) {
+    parts.push(
+      `${skipReasons.llmFailed} clip(s) — vision AI failed${result.sampleError ? `: ${result.sampleError}` : " (check LLM_API_KEY / OpenAI quota)"}`
+    );
   }
   if (skipReasons.noVision > 0) {
     parts.push(`${skipReasons.noVision} could not be analyzed — verify LLM_API_KEY and FFmpeg`);
@@ -426,9 +437,12 @@ export function ArchiveClipsGrid({
           missingAsset: number;
           fileMissing: number;
           downloadFailed: number;
+          noFrames: number;
           noVision: number;
+          llmFailed: number;
         }
       | undefined;
+    let lastSampleError: string | undefined;
 
     try {
       for (let i = 0; i < targetIds.length; i += CHUNK) {
@@ -438,6 +452,7 @@ export function ArchiveClipsGrid({
         skipped += result.skipped;
         failed += result.failed;
         if (result.skipReasons) lastSkipReasons = result.skipReasons;
+        if (result.sampleError) lastSampleError = result.sampleError;
         const done = Math.min(i + chunk.length, targetIds.length);
         setAutoTitleProgress({ done, total: targetIds.length });
         toast.loading(`AI in progress: ${done}/${targetIds.length} clips…`, { id: loadingToast });
@@ -453,13 +468,19 @@ export function ArchiveClipsGrid({
               skipped,
               failed,
               skipReasons: lastSkipReasons,
+              sampleError: lastSampleError,
             }) || "AI could not generate titles for these clips",
         });
       } else {
         toast.success(`${updated} clip(s) titled`, {
           description:
-            describeAutoTitleOutcome({ updated, skipped, failed, skipReasons: lastSkipReasons }) ||
-            "Titles and tags updated for better filtering",
+            describeAutoTitleOutcome({
+              updated,
+              skipped,
+              failed,
+              skipReasons: lastSkipReasons,
+              sampleError: lastSampleError,
+            }) || "Titles and tags updated for better filtering",
         });
       }
     } catch (e) {

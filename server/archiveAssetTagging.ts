@@ -225,6 +225,40 @@ export function applySharedAiToClipFields(opts: {
   return { title, tags, sourceNote: truncateArchiveSourceNote(sourceNote) };
 }
 
+function extractLlmTextContent(
+  content: string | Array<{ type: string; text?: string }> | null | undefined
+): string | null {
+  if (!content) return null;
+  if (typeof content === "string") return content.trim() || null;
+  if (Array.isArray(content)) {
+    const text = content
+      .filter((part) => part.type === "text" && typeof part.text === "string")
+      .map((part) => part.text!.trim())
+      .filter(Boolean)
+      .join("\n");
+    return text || null;
+  }
+  return null;
+}
+
+function parseJsonFromLlmContent(raw: string): ArchiveAiVisionPayload {
+  const trimmed = raw.trim();
+  try {
+    return JSON.parse(trimmed) as ArchiveAiVisionPayload;
+  } catch {
+    const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fenced?.[1]) {
+      return JSON.parse(fenced[1].trim()) as ArchiveAiVisionPayload;
+    }
+    const start = trimmed.indexOf("{");
+    const end = trimmed.lastIndexOf("}");
+    if (start >= 0 && end > start) {
+      return JSON.parse(trimmed.slice(start, end + 1)) as ArchiveAiVisionPayload;
+    }
+    throw new Error("LLM response did not contain JSON");
+  }
+}
+
 function ffmpegBin(): string {
   return process.env.FFMPEG_BIN || process.env.FFMPEG_PATH || "ffmpeg";
 }
@@ -286,13 +320,14 @@ async function extractVideoPreviewJpeg(
   }
 }
 
-/** Sample frames across the clip — more frames for longer clips (slower but more accurate). */
+/** Sample frames across the clip — bulk mode uses fewer frames for speed and token limits. */
 async function extractVideoPreviewFrames(
   videoPath: string,
-  workDir: string
+  workDir: string,
+  maxFrames = 5
 ): Promise<Array<{ buffer: Buffer; mimeType: string }>> {
   const dur = await probeVideoDurationSec(videoPath);
-  const ratios =
+  const ratioSets =
     dur > 12
       ? [0.08, 0.25, 0.42, 0.58, 0.75]
       : dur > 6
@@ -302,6 +337,7 @@ async function extractVideoPreviewFrames(
           : dur > 1
             ? [0.2, 0.6]
             : [0.35];
+  const ratios = ratioSets.slice(0, Math.max(1, Math.min(maxFrames, ratioSets.length)));
   const out: Array<{ buffer: Buffer; mimeType: string }> = [];
   for (let i = 0; i < ratios.length; i++) {
     const seek = dur > 0.5 ? Math.max(0.08, dur * ratios[i]!) : 0.15;
@@ -319,7 +355,8 @@ function imageMimeToDataUrl(buffer: Buffer, mimeType: string): string {
 
 async function previewImagesFromFilePath(
   filePath: string,
-  mimeType: string
+  mimeType: string,
+  maxFrames = 5
 ): Promise<Array<{ buffer: Buffer; mimeType: string }>> {
   if (mimeType.startsWith("image/")) {
     if (!fs.existsSync(filePath)) return [];
@@ -331,8 +368,7 @@ async function previewImagesFromFilePath(
 
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "archive-ai-frames-"));
   try {
-    const frames = await extractVideoPreviewFrames(filePath, workDir);
-    return frames;
+    return await extractVideoPreviewFrames(filePath, workDir, maxFrames);
   } finally {
     try {
       fs.rmSync(workDir, { recursive: true, force: true });
@@ -373,53 +409,68 @@ async function invokeArchiveVisionTagging(
     parentFilename?: string;
     userTags?: string[];
     clipLabel?: string;
-  }
-): Promise<ArchiveAssetAiMetadata | null> {
-  if (previews.length === 0) return null;
+  },
+  opts: { imageDetail?: "auto" | "low" | "high" } = {}
+): Promise<{ metadata: ArchiveAssetAiMetadata | null; error?: string }> {
+  if (previews.length === 0) return { metadata: null, error: "No preview frames extracted" };
   const timeoutMs = archiveVisionTimeoutMs(previews.length);
+  const imageDetail = opts.imageDetail ?? (previews.length > 2 ? "low" : "high");
 
   const imageParts = previews.map((preview) => ({
     type: "image_url" as const,
-    image_url: { url: imageMimeToDataUrl(preview.buffer, preview.mimeType), detail: "high" as const },
+    image_url: { url: imageMimeToDataUrl(preview.buffer, preview.mimeType), detail: imageDetail },
   }));
 
-  const runOnce = async (): Promise<ArchiveAssetAiMetadata | null> => {
+  const runOnce = async (
+    responseFormat: typeof TAG_JSON_SCHEMA | { type: "json_object" }
+  ): Promise<ArchiveAssetAiMetadata | null> => {
+    const payload: Parameters<typeof invokeLLM>[0] = {
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are a senior documentary archivist and historian. Analyze each frame carefully. Precision over speed: name exact people, countries, cities, and historical events when recognizable. Return JSON only.",
+        },
+        {
+          role: "user",
+          content: [{ type: "text", text: buildVisionPrompt(context, previews.length) }, ...imageParts],
+        },
+      ],
+      maxTokens: 1600,
+    };
+    if (responseFormat.type === "json_object") {
+      payload.response_format = { type: "json_object" };
+    } else {
+      payload.response_format = responseFormat;
+    }
+
     const response = await Promise.race([
-      invokeLLM({
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are a senior documentary archivist and historian. Analyze each frame carefully. Precision over speed: name exact people, countries, cities, and historical events when recognizable. Return JSON only according to the schema.",
-          },
-          {
-            role: "user",
-            content: [{ type: "text", text: buildVisionPrompt(context, previews.length) }, ...imageParts],
-          },
-        ],
-        response_format: TAG_JSON_SCHEMA,
-        maxTokens: 1600,
-      }),
+      invokeLLM(payload),
       new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error("archive AI tag timeout")), timeoutMs)
       ),
     ]);
 
-    const content = response.choices[0]?.message?.content;
-    if (typeof content !== "string") return null;
-    return flattenArchiveAiMetadata(JSON.parse(content) as ArchiveAiVisionPayload);
+    const raw = extractLlmTextContent(response.choices[0]?.message?.content);
+    if (!raw) return null;
+    return flattenArchiveAiMetadata(parseJsonFromLlmContent(raw));
   };
 
   try {
-    let result = await runOnce();
+    let result = await runOnce(TAG_JSON_SCHEMA);
     if (!result) {
       console.warn("[ArchiveAI] empty metadata, retrying vision once");
-      result = await runOnce();
+      result = await runOnce(TAG_JSON_SCHEMA);
     }
-    return result;
+    if (!result) {
+      console.warn("[ArchiveAI] strict schema empty, retrying with json_object");
+      result = await runOnce({ type: "json_object" });
+    }
+    return { metadata: result, error: result ? undefined : "Vision model returned no usable metadata" };
   } catch (err) {
-    console.warn("[ArchiveAI] tagging failed:", (err as Error).message?.slice(0, 160));
-    return null;
+    const message = (err as Error).message?.slice(0, 220) ?? "Vision tagging failed";
+    console.warn("[ArchiveAI] tagging failed:", message);
+    return { metadata: null, error: message };
   }
 }
 
@@ -485,12 +536,21 @@ export async function generateArchiveAssetAiMetadataFromPath(
     parentFilename?: string;
     userTags?: string[];
     clipLabel?: string;
-  } = {}
-): Promise<ArchiveAssetAiMetadata | null> {
-  if (!archiveAiTaggingEnabled()) return null;
-  const previews = await previewImagesFromFilePath(filePath, mimeType);
-  if (previews.length === 0) return null;
-  return invokeArchiveVisionTagging(previews, context);
+  } = {},
+  opts: { maxFrames?: number; imageDetail?: "auto" | "low" | "high"; bulk?: boolean } = {}
+): Promise<{ metadata: ArchiveAssetAiMetadata | null; frameCount: number; error?: string }> {
+  if (!archiveAiTaggingEnabled()) {
+    return { metadata: null, frameCount: 0, error: "AI tagging disabled" };
+  }
+  const maxFrames = opts.maxFrames ?? (opts.bulk ? 2 : 5);
+  const previews = await previewImagesFromFilePath(filePath, mimeType, maxFrames);
+  if (previews.length === 0) {
+    return { metadata: null, frameCount: 0, error: "Could not extract preview frames (FFmpeg)" };
+  }
+  const vision = await invokeArchiveVisionTagging(previews, context, {
+    imageDetail: opts.imageDetail ?? (opts.bulk ? "low" : "high"),
+  });
+  return { metadata: vision.metadata, frameCount: previews.length, error: vision.error };
 }
 
 export async function generateArchiveAssetAiMetadata(
@@ -507,7 +567,8 @@ export async function generateArchiveAssetAiMetadata(
 
   const previews = await previewImagesFromMedia(mediaBuffer, mimeType);
   if (previews.length === 0) return null;
-  return invokeArchiveVisionTagging(previews, context);
+  const { metadata } = await invokeArchiveVisionTagging(previews, context);
+  return metadata;
 }
 
 export async function enrichArchiveAssetFields(opts: {

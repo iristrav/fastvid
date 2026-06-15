@@ -25,52 +25,76 @@ export type AutoTitleArchiveResult = {
     missingAsset: number;
     fileMissing: number;
     downloadFailed: number;
+    noFrames: number;
     noVision: number;
+    llmFailed: number;
   };
+  sampleError?: string;
 };
 
 const BULK_AI_CONCURRENCY = 2;
 
-type SingleResult = "updated" | "skipped_missing_asset" | "skipped_file_missing" | "skipped_download" | "skipped_no_vision" | "failed";
+type SingleResult =
+  | "updated"
+  | "skipped_missing_asset"
+  | "skipped_file_missing"
+  | "skipped_download"
+  | "skipped_no_frames"
+  | "skipped_no_vision"
+  | "skipped_llm_failed"
+  | "failed";
 
 async function autoTitleSingleAsset(
   id: number,
   archiveId: number,
   nicheTags: string[]
-): Promise<SingleResult> {
+): Promise<{ result: SingleResult; error?: string }> {
   try {
     const asset = await getMediaArchiveAssetById(id);
     if (!asset || asset.archiveId !== archiveId) {
-      return "skipped_missing_asset";
+      return { result: "skipped_missing_asset" };
     }
 
     const loaded = await loadArchiveAssetFile(asset);
     if (!loaded.ok) {
       if (loaded.reason === "download_failed") {
         console.warn(`[ArchiveAI] auto-title skip ${id}: remote download failed`);
-        return "skipped_download";
+        return { result: "skipped_download" };
       }
       console.warn(`[ArchiveAI] auto-title skip ${id}: media not found (${asset.storageUrl})`);
-      return "skipped_file_missing";
+      return { result: "skipped_file_missing" };
     }
 
     try {
-      const ai = await generateArchiveAssetAiMetadataFromPath(loaded.result.localPath, loaded.result.mimeType, {
-        archiveNicheTags: nicheTags,
-        userTags: normalizeMediaTags(asset.tags ?? []),
-        clipLabel: `archive clip ${asset.id}`,
-      });
-      if (!ai) {
-        console.warn(`[ArchiveAI] auto-title skip ${id}: vision returned no metadata`);
-        return "skipped_no_vision";
+      const ai = await generateArchiveAssetAiMetadataFromPath(
+        loaded.result.localPath,
+        loaded.result.mimeType,
+        {
+          archiveNicheTags: nicheTags,
+          userTags: normalizeMediaTags(asset.tags ?? []),
+          clipLabel: `archive clip ${asset.id}`,
+        },
+        { bulk: true }
+      );
+
+      if (ai.frameCount === 0) {
+        return { result: "skipped_no_frames", error: ai.error };
+      }
+      if (!ai.metadata) {
+        const err = ai.error ?? "Vision returned no metadata";
+        console.warn(`[ArchiveAI] auto-title skip ${id}: ${err}`);
+        return {
+          result: err.toLowerCase().includes("ffmpeg") ? "skipped_no_frames" : "skipped_llm_failed",
+          error: err,
+        };
       }
 
       const existingTags = normalizeMediaTags(asset.tags ?? []);
       const fields = applySharedAiToClipFields({
-        baseTitle: ai.title,
+        baseTitle: ai.metadata.title,
         userTags: existingTags,
         sourceNote: null,
-        ai,
+        ai: ai.metadata,
         userProvidedTitle: false,
       });
 
@@ -79,13 +103,14 @@ async function autoTitleSingleAsset(
         tags: fields.tags,
         sourceNote: fields.sourceNote,
       });
-      return "updated";
+      return { result: "updated" };
     } finally {
       loaded.result.cleanup?.();
     }
   } catch (err) {
-    console.warn(`[ArchiveAI] auto-title asset ${id} failed:`, (err as Error).message?.slice(0, 120));
-    return "failed";
+    const message = (err as Error).message?.slice(0, 120);
+    console.warn(`[ArchiveAI] auto-title asset ${id} failed:`, message);
+    return { result: "failed", error: message };
   }
 }
 
@@ -123,17 +148,22 @@ export async function autoTitleArchiveAssets(opts: {
   let updated = 0;
   let skipped = 0;
   let failed = 0;
+  let sampleError: string | undefined;
   const skipReasons = {
     missingAsset: 0,
     fileMissing: 0,
     downloadFailed: 0,
+    noFrames: 0,
     noVision: 0,
+    llmFailed: 0,
   };
 
   await runWithConcurrency(uniqueIds, BULK_AI_CONCURRENCY, async (id) => {
     processed += 1;
-    const result = await autoTitleSingleAsset(id, opts.archiveId, nicheTags);
-    switch (result) {
+    const outcome = await autoTitleSingleAsset(id, opts.archiveId, nicheTags);
+    if (outcome.error && !sampleError) sampleError = outcome.error;
+
+    switch (outcome.result) {
       case "updated":
         updated += 1;
         break;
@@ -152,14 +182,22 @@ export async function autoTitleArchiveAssets(opts: {
         skipped += 1;
         skipReasons.downloadFailed += 1;
         break;
+      case "skipped_no_frames":
+        skipped += 1;
+        skipReasons.noFrames += 1;
+        break;
       case "skipped_no_vision":
         skipped += 1;
         skipReasons.noVision += 1;
         break;
+      case "skipped_llm_failed":
+        skipped += 1;
+        skipReasons.llmFailed += 1;
+        break;
     }
   });
 
-  return { processed, updated, skipped, failed, skipReasons };
+  return { processed, updated, skipped, failed, skipReasons, sampleError };
 }
 
 /** Resolve asset ids for bulk retitle (all in archive or filtered subset). */
@@ -177,4 +215,37 @@ export async function resolveAutoTitleAssetIds(opts: {
     assets = assets.filter((a) => idSet.has(a.id));
   }
   return assets.map((a) => a.id);
+}
+
+/** Run one asset through the AI pipeline and return diagnostics (admin troubleshooting). */
+export async function probeArchiveAssetAiTag(assetId: number, archiveId: number) {
+  const asset = await getMediaArchiveAssetById(assetId);
+  if (!asset || asset.archiveId !== archiveId) {
+    return { ok: false, stage: "asset", error: "Asset not found in archive" };
+  }
+
+  const loaded = await loadArchiveAssetFile(asset);
+  if (!loaded.ok) {
+    return { ok: false, stage: "load", error: loaded.reason, storageUrl: asset.storageUrl, storageKey: asset.storageKey };
+  }
+
+  try {
+    const ai = await generateArchiveAssetAiMetadataFromPath(
+      loaded.result.localPath,
+      loaded.result.mimeType,
+      { clipLabel: `archive clip ${asset.id}` },
+      { bulk: true }
+    );
+    return {
+      ok: !!ai.metadata,
+      stage: ai.metadata ? "done" : ai.frameCount === 0 ? "frames" : "vision",
+      frameCount: ai.frameCount,
+      error: ai.error,
+      title: ai.metadata?.title,
+      tagCount: ai.metadata?.tags.length ?? 0,
+      storageUrl: asset.storageUrl,
+    };
+  } finally {
+    loaded.result.cleanup?.();
+  }
 }
