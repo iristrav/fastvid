@@ -198,8 +198,8 @@ export async function reviewAssembledScenes(
     issues,
     summary:
       errors === 0 && warns === 0
-        ? `${scenes.length} scenes gecontroleerd — beelden en timing OK`
-        : `${scenes.length} scenes: ${errors} fout(en), ${warns} waarschuwing(en)`,
+        ? `${scenes.length} scenes reviewed — visuals and timing OK`
+        : `${scenes.length} scenes: ${errors} error(s), ${warns} warning(s)`,
   };
 }
 
@@ -227,7 +227,7 @@ export async function reviewPipelineBeforeEffects(
     summary:
       errors === 0 && warns === 0
         ? `Full video reviewed (${scenes.length} scenes) — ready for effects`
-        : `Controle vóór effecten: ${errors} fout(en), ${warns} waarschuwing(en)`,
+        : `Pre-effects review: ${errors} error(s), ${warns} warning(s)`,
   };
 }
 
@@ -256,8 +256,8 @@ export async function reviewPipelineBeforeExport(
     issues,
     summary:
       errors === 0
-        ? `Eindcontrole OK — ${scenes.length} scenes klaar om samen te voegen`
-        : `Eindcontrole: ${errors} scene(s) ontbreken`,
+        ? `Final review OK — ${scenes.length} scenes ready to merge`
+        : `Final review: ${errors} scene(s) missing`,
   };
 }
 

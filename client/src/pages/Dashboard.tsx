@@ -778,13 +778,21 @@ export default function Dashboard() {
   });
   const generateMutation = trpc.video.generate.useMutation({
     onSuccess: (data) => {
-      toast.success("Video generation started!", { description: "Your video will be ready in a few minutes. No action needed." });
+      toast.success(data.message ?? "Video generation started!", {
+        description:
+          data.queuePosition && data.queuePosition > 1
+            ? "We will start processing as soon as your turn comes up."
+            : "Your video will be ready in a few minutes. No action needed.",
+      });
       setPrompt("");
       setTimeout(() => refetch(), 2000);
     },
     onError: (err) => {
       if (matchesAppError(err.message, APP_ERROR.SUBSCRIPTION_REQUIRED)) {
-        toast.error("Active subscription required", { description: "Please contact the admin to activate your subscription." });
+        toast.error("Active subscription required", {
+          description: "Subscribe to Fastvid Pro to generate videos.",
+          action: { label: "Subscribe", onClick: () => navigate("/subscribe") },
+        });
       } else {
         toast.error("Failed to start generation", { description: toastErrorMessage(err) });
       }

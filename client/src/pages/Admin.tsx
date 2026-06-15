@@ -26,6 +26,7 @@ function formatVideoId(id: number) {
 }
 
 import { VIDEO_LENGTH_OPTIONS, type VideoLength } from "@shared/videoLengths";
+import { FASTVID_PRO_MONTHLY_USD, FASTVID_PRO_PRICE_DISPLAY } from "@shared/billing";
 
 const VIDEO_LENGTHS = VIDEO_LENGTH_OPTIONS.map((opt) =>
   opt.value === "1" ? { ...opt, label: "1 min (test)" } : opt
@@ -696,10 +697,14 @@ export default function Admin() {
     );
   }
 
+  const activeSubscribers = stats?.users.active ?? 0;
+  const monthlyRevenue = activeSubscribers * FASTVID_PRO_MONTHLY_USD;
+  const annualRevenue = monthlyRevenue * 12;
+
   const navItems = [
     { id: "overview" as const, label: "Overview", icon: LayoutDashboard },
-    { id: "archive" as const, label: "Media Archief", icon: Archive },
-    { id: "niches" as const, label: "Niche-aanvragen", icon: Radio },
+    { id: "archive" as const, label: "Media Archive", icon: Archive },
+    { id: "niches" as const, label: "Niche Requests", icon: Radio },
     { id: "generate" as const, label: "Generate Video", icon: Sparkles },
     { id: "users" as const, label: "Users", icon: Users },
     { id: "videos" as const, label: "All Videos", icon: Video },
@@ -787,24 +792,24 @@ export default function Admin() {
                 <>
                   <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
                     <StatCard label="Total Users" value={stats?.users.total ?? 0} icon={Users} color="text-purple-400" />
-                    <StatCard label="Active Subscribers" value={stats?.users.active ?? 0} icon={UserCheck} color="text-green-400" sub={`\u20ac${(stats?.users.active ?? 0) * 500}/mo revenue`} />
+                    <StatCard label="Active Subscribers" value={activeSubscribers} icon={UserCheck} color="text-green-400" sub={`${FASTVID_PRO_PRICE_DISPLAY}/mo · $${monthlyRevenue.toLocaleString()} revenue`} />
                     <StatCard label="Total Videos" value={stats?.videos.total ?? 0} icon={Video} color="text-cyan-400" />
                     <StatCard label="Completed Videos" value={stats?.videos.completed ?? 0} icon={CheckCircle2} color="text-green-400" sub={`${stats?.videos.failed ?? 0} failed`} />
                   </div>
                   <div className="glass-card border border-purple-500/25 rounded-xl p-5 flex flex-wrap items-center justify-between gap-4 bg-purple-600/5">
                     <div>
                       <h3 className="font-bold text-white flex items-center gap-2">
-                        <Archive className="w-4 h-4 text-purple-400" /> Media Archief
+                        <Archive className="w-4 h-4 text-purple-400" /> Media Archive
                       </h3>
                       <p className="text-xs text-slate-400 mt-1 max-w-xl">
-                        Upload hier video&apos;s en foto&apos;s met tags. De pipeline gebruikt alleen bestanden uit jouw archieven.
+                        Upload tagged videos and photos. The pipeline only uses files from your archives.
                       </p>
                     </div>
                     <button
                       onClick={() => selectTab("archive")}
                       className="flex items-center gap-2 px-4 py-2.5 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-sm font-medium transition-colors shrink-0"
                     >
-                      <Upload className="w-4 h-4" /> Video&apos;s uploaden
+                      <Upload className="w-4 h-4" /> Upload media
                     </button>
                   </div>
                   <AdminVideoActions />
@@ -812,15 +817,15 @@ export default function Admin() {
                     <h3 className="font-bold text-white mb-4 flex items-center gap-2"><TrendingUp className="w-4 h-4 text-cyan-400" /> Revenue Overview</h3>
                     <div className="grid grid-cols-3 gap-4 text-center">
                       <div>
-                        <p className="text-2xl font-black gradient-text" style={{ fontFamily: "Outfit, sans-serif" }}>\u20ac{(stats?.users.active ?? 0) * 500}</p>
+                        <p className="text-2xl font-black gradient-text" style={{ fontFamily: "Outfit, sans-serif" }}>${monthlyRevenue.toLocaleString()}</p>
                         <p className="text-xs text-slate-500 mt-1">Monthly Revenue (MRR)</p>
                       </div>
                       <div>
-                        <p className="text-2xl font-black gradient-text" style={{ fontFamily: "Outfit, sans-serif" }}>\u20ac{(stats?.users.active ?? 0) * 500 * 12}</p>
+                        <p className="text-2xl font-black gradient-text" style={{ fontFamily: "Outfit, sans-serif" }}>${annualRevenue.toLocaleString()}</p>
                         <p className="text-xs text-slate-500 mt-1">Annual Run Rate (ARR)</p>
                       </div>
                       <div>
-                        <p className="text-2xl font-black gradient-text" style={{ fontFamily: "Outfit, sans-serif" }}>{stats?.users.active ?? 0}</p>
+                        <p className="text-2xl font-black gradient-text" style={{ fontFamily: "Outfit, sans-serif" }}>{activeSubscribers}</p>
                         <p className="text-xs text-slate-500 mt-1">Paying Subscribers</p>
                       </div>
                     </div>

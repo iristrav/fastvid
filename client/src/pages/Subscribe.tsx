@@ -9,6 +9,7 @@ import { trpc } from "@/lib/trpc";
 import { toastErrorMessage } from "@/const";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
 import {
   Play, CheckCircle2, Loader2, CreditCard, Sparkles,
   Video, Mic, Wand2, Shield, Zap, Star,

@@ -404,7 +404,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
   }
 
   const asset = await getMediaArchiveAssetById(assetId);
-  finishArchiveUploadJob(jobId, true, `${isVideo ? "Video" : "Afbeelding"} opgeslagen`, {
+  finishArchiveUploadJob(jobId, true, `${isVideo ? "Video" : "Image"} saved`, {
     clipsSaved: 1,
     clipTotal: 1,
   });
@@ -490,7 +490,7 @@ async function handleArchiveBinaryUpload(req: Request, res: Response) {
 
     void processArchiveAssetUpload(uploadInput)
       .then((result) => {
-        finishArchiveUploadJob(jobId, true, `${result.clipCount} clip(s) opgeslagen`, {
+        finishArchiveUploadJob(jobId, true, `${result.clipCount} clip(s) saved`, {
           clipsSaved: result.clipCount,
           clipTotal: result.clipCount,
           resultClipCount: result.clipCount,
