@@ -1,7 +1,7 @@
 import type { Express } from "express";
 import { existsSync } from "fs";
 import path from "path";
-import { getStorageBackend } from "./storageBackend";
+import { getStorageBackend } from "../storageBackend";
 import { storageGetSignedUrl } from "../storage";
 import { LOCAL_UPLOADS_DIR } from "../storageLocal";
 

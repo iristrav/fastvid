@@ -13,6 +13,7 @@ import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
 import { LOCAL_UPLOADS_DIR } from "../storageLocal";
+import { getStorageBackend } from "../storageBackend";
 import { registerArchiveUploadRoute } from "../archiveUpload";
 import { registerArchiveMediaRoute } from "../archiveMediaStream";
 import { archiveUploadRequestTimeoutMs } from "../archiveVideoSplitter";
@@ -91,7 +92,6 @@ async function startServer() {
   );
   console.log("[Fastvid] PEXELS_API_KEY:", process.env.PEXELS_API_KEY ? "✓ set" : "✗ NOT SET — stock footage disabled");
   console.log("[Fastvid] BUILT_IN_FORGE_API_KEY:", process.env.BUILT_IN_FORGE_API_KEY ? "✓ set" : "✗ NOT SET — Manus Forge storage unused");
-  const { getStorageBackend } = await import("../storageBackend");
   const storageBackend = getStorageBackend();
   console.log(
     "[Fastvid] Object storage:",
@@ -186,7 +186,6 @@ async function startServer() {
   // IMPORTANT: This endpoint must respond immediately (no external API calls).
   // Railway uses it as a liveness probe with a strict timeout.
   app.get("/api/health", (_req, res) => {
-    const { getStorageBackend } = await import("../storageBackend");
     const backend = getStorageBackend();
     const storage =
       backend === "local"
