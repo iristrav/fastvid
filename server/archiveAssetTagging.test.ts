@@ -77,6 +77,20 @@ describe("archiveAssetTagging", () => {
     expect(flat!.tags).not.toContain("modern city");
   });
 
+  it("flattenArchiveAiMetadata derives title from tags when title missing", () => {
+    const flat = flattenArchiveAiMetadata({
+      title: "",
+      description: "Crowd at a rally.",
+      tags: ["nuremberg rally", "germany", "1930s"],
+      persons: ["adolf hitler"],
+      countries: ["germany"],
+      cities: ["nuremberg"],
+    });
+    expect(flat).not.toBeNull();
+    expect(flat!.title.length).toBeGreaterThan(3);
+    expect(flat!.tags).toContain("germany");
+  });
+
   it("respects ARCHIVE_MAX_TAGS cap", () => {
     const many = Array.from({ length: 60 }, (_, i) => `tag${i}`);
     const merged = mergeArchiveTags([], many);

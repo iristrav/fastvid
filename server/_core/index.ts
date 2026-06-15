@@ -164,6 +164,30 @@ async function startServer() {
     console.log(`[Fastvid] Local storage serving enabled at /local-storage → ${LOCAL_UPLOADS_DIR}`);
   }
 
+  app.get("/api/health/llm-smoke", async (_req, res) => {
+    try {
+      const { invokeLLM } = await import("./llm");
+      const { archiveAiTaggingEnabled } = await import("../archiveAssetTagging");
+      if (!archiveAiTaggingEnabled()) {
+        res.status(503).json({ ok: false, error: "Archive AI disabled — set LLM_API_KEY" });
+        return;
+      }
+      const response = await invokeLLM({
+        messages: [{ role: "user", content: 'Reply with JSON only: {"ok":true}' }],
+        response_format: { type: "json_object" },
+        maxTokens: 32,
+      });
+      const content = response.choices[0]?.message?.content;
+      res.json({
+        ok: true,
+        model: response.model,
+        content: typeof content === "string" ? content.slice(0, 120) : content,
+      });
+    } catch (err) {
+      res.status(503).json({ ok: false, error: (err as Error).message?.slice(0, 300) });
+    }
+  });
+
   // ─── FFmpeg Debug Endpoint ────────────────────────────────────────────────────
   app.get("/api/debug/ffmpeg", async (_req, res) => {
     const { execSync: es } = await import("child_process");

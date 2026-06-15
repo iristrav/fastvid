@@ -39,6 +39,27 @@ type ArchiveAiVisionPayload = {
   colors?: string[];
 };
 
+const TAG_JSON_SCHEMA_PROPERTIES = {
+  title: { type: "string" },
+  description: { type: "string" },
+  tags: { type: "array", items: { type: "string" } },
+  persons: { type: "array", items: { type: "string" } },
+  countries: { type: "array", items: { type: "string" } },
+  cities: { type: "array", items: { type: "string" } },
+  events: { type: "array", items: { type: "string" } },
+  locations: { type: "array", items: { type: "string" } },
+  objects: { type: "array", items: { type: "string" } },
+  actions: { type: "array", items: { type: "string" } },
+  era: { type: "string" },
+  setting: { type: "string" },
+  sceneType: { type: "string" },
+  visualDetails: { type: "array", items: { type: "string" } },
+  mood: { type: "string" },
+  camera: { type: "string" },
+  colors: { type: "array", items: { type: "string" } },
+} as const;
+
+/** Full schema — used for single-clip uploads (strict, all fields). */
 const TAG_JSON_SCHEMA = {
   type: "json_schema" as const,
   json_schema: {
@@ -46,44 +67,23 @@ const TAG_JSON_SCHEMA = {
     strict: true,
     schema: {
       type: "object",
-      properties: {
-        title: { type: "string" },
-        description: { type: "string" },
-        tags: { type: "array", items: { type: "string" } },
-        persons: { type: "array", items: { type: "string" } },
-        countries: { type: "array", items: { type: "string" } },
-        cities: { type: "array", items: { type: "string" } },
-        events: { type: "array", items: { type: "string" } },
-        locations: { type: "array", items: { type: "string" } },
-        objects: { type: "array", items: { type: "string" } },
-        actions: { type: "array", items: { type: "string" } },
-        era: { type: "string" },
-        setting: { type: "string" },
-        sceneType: { type: "string" },
-        visualDetails: { type: "array", items: { type: "string" } },
-        mood: { type: "string" },
-        camera: { type: "string" },
-        colors: { type: "array", items: { type: "string" } },
-      },
-      required: [
-        "title",
-        "description",
-        "tags",
-        "persons",
-        "countries",
-        "cities",
-        "events",
-        "locations",
-        "objects",
-        "actions",
-        "era",
-        "setting",
-        "sceneType",
-        "visualDetails",
-        "mood",
-        "camera",
-        "colors",
-      ],
+      properties: TAG_JSON_SCHEMA_PROPERTIES,
+      required: Object.keys(TAG_JSON_SCHEMA_PROPERTIES),
+      additionalProperties: false,
+    },
+  },
+} as const;
+
+/** Lighter schema for bulk retitle — strict json_schema often fails with vision on OpenAI. */
+const TAG_JSON_SCHEMA_LIGHT = {
+  type: "json_schema" as const,
+  json_schema: {
+    name: "archive_asset_tags_light",
+    strict: true,
+    schema: {
+      type: "object",
+      properties: TAG_JSON_SCHEMA_PROPERTIES,
+      required: ["title", "description", "tags"],
       additionalProperties: false,
     },
   },
@@ -122,9 +122,29 @@ function pushTags(bucket: string[], items: string[] | undefined): void {
   for (const item of items ?? []) pushTag(bucket, item);
 }
 
+function deriveArchiveTitle(parsed: ArchiveAiVisionPayload): string {
+  const direct = parsed.title?.trim();
+  if (direct) return direct.slice(0, 160);
+
+  const fromDescription = parsed.description?.trim().split(/[.!?]/)[0]?.trim();
+  if (fromDescription && fromDescription.length >= 8) return fromDescription.slice(0, 160);
+
+  const bits = [
+    parsed.persons?.[0],
+    parsed.cities?.[0],
+    parsed.countries?.[0],
+    parsed.events?.[0],
+    parsed.sceneType,
+    parsed.tags?.[0],
+  ].filter(Boolean);
+  if (bits.length > 0) return bits.join(" — ").slice(0, 160);
+
+  return "";
+}
+
 /** Flatten structured vision JSON into searchable tags + rich description. */
 export function flattenArchiveAiMetadata(parsed: ArchiveAiVisionPayload): ArchiveAssetAiMetadata | null {
-  const title = parsed.title?.trim().slice(0, 160);
+  const title = deriveArchiveTitle(parsed);
   if (!title) return null;
 
   const tagParts: string[] = [];
@@ -260,7 +280,14 @@ function parseJsonFromLlmContent(raw: string): ArchiveAiVisionPayload {
 }
 
 function ffmpegBin(): string {
-  return process.env.FFMPEG_BIN || process.env.FFMPEG_PATH || "ffmpeg";
+  const fromEnv = process.env.FFMPEG_BIN?.trim() || process.env.FFMPEG_PATH?.trim();
+  if (fromEnv) return fromEnv;
+  if (process.platform !== "win32") {
+    for (const candidate of ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg"]) {
+      if (fs.existsSync(candidate)) return candidate;
+    }
+  }
+  return "ffmpeg";
 }
 
 function ffprobeBin(): string {
@@ -410,20 +437,22 @@ async function invokeArchiveVisionTagging(
     userTags?: string[];
     clipLabel?: string;
   },
-  opts: { imageDetail?: "auto" | "low" | "high" } = {}
+  opts: { imageDetail?: "auto" | "low" | "high"; preferJsonObject?: boolean } = {}
 ): Promise<{ metadata: ArchiveAssetAiMetadata | null; error?: string }> {
   if (previews.length === 0) return { metadata: null, error: "No preview frames extracted" };
   const timeoutMs = archiveVisionTimeoutMs(previews.length);
   const imageDetail = opts.imageDetail ?? (previews.length > 2 ? "low" : "high");
+  type VisionFormat = typeof TAG_JSON_SCHEMA | typeof TAG_JSON_SCHEMA_LIGHT | { type: "json_object" };
+  const formats: VisionFormat[] = opts.preferJsonObject
+    ? [{ type: "json_object" }, TAG_JSON_SCHEMA_LIGHT, { type: "json_object" }]
+    : [TAG_JSON_SCHEMA_LIGHT, { type: "json_object" }, TAG_JSON_SCHEMA];
 
   const imageParts = previews.map((preview) => ({
     type: "image_url" as const,
     image_url: { url: imageMimeToDataUrl(preview.buffer, preview.mimeType), detail: imageDetail },
   }));
 
-  const runOnce = async (
-    responseFormat: typeof TAG_JSON_SCHEMA | { type: "json_object" }
-  ): Promise<ArchiveAssetAiMetadata | null> => {
+  const runOnce = async (responseFormat: VisionFormat): Promise<ArchiveAssetAiMetadata | null> => {
     const payload: Parameters<typeof invokeLLM>[0] = {
       messages: [
         {
@@ -452,21 +481,34 @@ async function invokeArchiveVisionTagging(
     ]);
 
     const raw = extractLlmTextContent(response.choices[0]?.message?.content);
-    if (!raw) return null;
-    return flattenArchiveAiMetadata(parseJsonFromLlmContent(raw));
+    if (!raw) {
+      console.warn("[ArchiveAI] vision returned empty content");
+      return null;
+    }
+    const parsed = parseJsonFromLlmContent(raw);
+    const flat = flattenArchiveAiMetadata(parsed);
+    if (!flat) {
+      console.warn("[ArchiveAI] vision JSON parsed but no usable title/tags");
+    }
+    return flat;
   };
 
   try {
-    let result = await runOnce(TAG_JSON_SCHEMA);
-    if (!result) {
-      console.warn("[ArchiveAI] empty metadata, retrying vision once");
-      result = await runOnce(TAG_JSON_SCHEMA);
+    let result: ArchiveAssetAiMetadata | null = null;
+    let lastError: string | undefined;
+    for (const format of formats) {
+      try {
+        result = await runOnce(format);
+        if (result) break;
+      } catch (err) {
+        lastError = (err as Error).message?.slice(0, 220);
+        console.warn("[ArchiveAI] vision attempt failed:", lastError);
+      }
     }
-    if (!result) {
-      console.warn("[ArchiveAI] strict schema empty, retrying with json_object");
-      result = await runOnce({ type: "json_object" });
-    }
-    return { metadata: result, error: result ? undefined : "Vision model returned no usable metadata" };
+    return {
+      metadata: result,
+      error: result ? undefined : lastError ?? "Vision model returned no usable metadata",
+    };
   } catch (err) {
     const message = (err as Error).message?.slice(0, 220) ?? "Vision tagging failed";
     console.warn("[ArchiveAI] tagging failed:", message);
@@ -542,13 +584,14 @@ export async function generateArchiveAssetAiMetadataFromPath(
   if (!archiveAiTaggingEnabled()) {
     return { metadata: null, frameCount: 0, error: "AI tagging disabled" };
   }
-  const maxFrames = opts.maxFrames ?? (opts.bulk ? 2 : 5);
+  const maxFrames = opts.maxFrames ?? (opts.bulk ? 1 : 5);
   const previews = await previewImagesFromFilePath(filePath, mimeType, maxFrames);
   if (previews.length === 0) {
     return { metadata: null, frameCount: 0, error: "Could not extract preview frames (FFmpeg)" };
   }
   const vision = await invokeArchiveVisionTagging(previews, context, {
     imageDetail: opts.imageDetail ?? (opts.bulk ? "low" : "high"),
+    preferJsonObject: opts.bulk,
   });
   return { metadata: vision.metadata, frameCount: previews.length, error: vision.error };
 }
