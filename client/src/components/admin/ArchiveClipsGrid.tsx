@@ -45,6 +45,43 @@ function formatDuration(sec?: number | null): string {
   return m > 0 ? `${m}:${String(s).padStart(2, "0")}` : `${s}s`;
 }
 
+function describeAutoTitleOutcome(result: {
+  updated: number;
+  skipped: number;
+  failed: number;
+  skipReasons?: {
+    missingAsset: number;
+    fileMissing: number;
+    downloadFailed: number;
+    noVision: number;
+  };
+}): string {
+  const { skipReasons } = result;
+  if (!skipReasons) {
+    return result.skipped + result.failed > 0
+      ? `${result.skipped} skipped, ${result.failed} failed`
+      : "";
+  }
+
+  const parts: string[] = [];
+  if (skipReasons.fileMissing > 0) {
+    parts.push(
+      `${skipReasons.fileMissing} clip file(s) missing on the server — attach a Railway volume, migrate to S3/R2, or re-upload`
+    );
+  }
+  if (skipReasons.downloadFailed > 0) {
+    parts.push(`${skipReasons.downloadFailed} could not be downloaded from object storage — check S3_* credentials`);
+  }
+  if (skipReasons.noVision > 0) {
+    parts.push(`${skipReasons.noVision} could not be analyzed — verify LLM_API_KEY and FFmpeg`);
+  }
+  if (skipReasons.missingAsset > 0) {
+    parts.push(`${skipReasons.missingAsset} clip record(s) not found`);
+  }
+  if (result.failed > 0) parts.push(`${result.failed} failed unexpectedly`);
+  return parts.join(". ");
+}
+
 function archiveClipMediaUrl(assetId: number): string {
   return `/api/admin/archive/media/${assetId}`;
 }
@@ -384,6 +421,14 @@ export function ArchiveClipsGrid({
     let updated = 0;
     let skipped = 0;
     let failed = 0;
+    let lastSkipReasons:
+      | {
+          missingAsset: number;
+          fileMissing: number;
+          downloadFailed: number;
+          noVision: number;
+        }
+      | undefined;
 
     try {
       for (let i = 0; i < targetIds.length; i += CHUNK) {
@@ -392,6 +437,7 @@ export function ArchiveClipsGrid({
         updated += result.updated;
         skipped += result.skipped;
         failed += result.failed;
+        if (result.skipReasons) lastSkipReasons = result.skipReasons;
         const done = Math.min(i + chunk.length, targetIds.length);
         setAutoTitleProgress({ done, total: targetIds.length });
         toast.loading(`AI in progress: ${done}/${targetIds.length} clips…`, { id: loadingToast });
@@ -402,16 +448,18 @@ export function ArchiveClipsGrid({
       if (updated === 0) {
         toast.warning("No clips updated", {
           description:
-            skipped + failed > 0
-              ? `${skipped} skipped, ${failed} failed — check that files still exist and LLM_API_KEY is enabled`
-              : "AI could not generate titles for these clips",
+            describeAutoTitleOutcome({
+              updated,
+              skipped,
+              failed,
+              skipReasons: lastSkipReasons,
+            }) || "AI could not generate titles for these clips",
         });
       } else {
         toast.success(`${updated} clip(s) titled`, {
           description:
-            skipped + failed > 0
-              ? `${skipped} skipped, ${failed} failed`
-              : "Titles and tags updated for better filtering",
+            describeAutoTitleOutcome({ updated, skipped, failed, skipReasons: lastSkipReasons }) ||
+            "Titles and tags updated for better filtering",
         });
       }
     } catch (e) {

@@ -6,25 +6,15 @@ import { createReadStream, existsSync, statSync } from "fs";
 import path from "path";
 import { getUserFromRequest } from "./_core/context";
 import { getMediaArchiveAssetById } from "./db";
-import { LOCAL_UPLOADS_DIR, resolveLocalVideoPath } from "./storageLocal";
+import { resolveLocalStorageFilePath } from "./storageLocal";
 import { storageGetSignedUrl } from "./storage";
+import { getStorageBackend } from "./storageBackend";
 
 function resolveArchiveAssetPath(asset: { storageUrl: string; storageKey: string | null }): string | null {
-  const fromUrl = resolveLocalVideoPath(asset.storageUrl);
-  if (fromUrl) return fromUrl;
-
-  if (asset.storageKey) {
-    const fromKey = path.join(LOCAL_UPLOADS_DIR, asset.storageKey.replace(/\//g, "_"));
-    if (existsSync(fromKey)) return fromKey;
-  }
-
-  if (asset.storageUrl.startsWith("/local-storage/")) {
-    const fileName = asset.storageUrl.replace(/^\/local-storage\//, "");
-    const p = path.join(LOCAL_UPLOADS_DIR, fileName);
-    if (existsSync(p)) return p;
-  }
-
-  return null;
+  return resolveLocalStorageFilePath({
+    storageUrl: asset.storageUrl,
+    storageKey: asset.storageKey,
+  });
 }
 
 function streamLocalFileWithRange(req: Request, res: Response, filePath: string, contentType: string): void {
@@ -103,13 +93,24 @@ async function streamArchiveAsset(req: Request, res: Response, assetId: number):
   }
 
   if (asset.storageUrl.startsWith("/manus-storage/")) {
-    const key = asset.storageUrl.replace(/^\/manus-storage\//, "");
+    const key = asset.storageKey ?? asset.storageUrl.replace(/^\/manus-storage\//, "");
     try {
       const signedUrl = await storageGetSignedUrl(key);
       const ok = await proxyRemoteMedia(req, res, signedUrl);
       if (ok) return;
     } catch (err) {
       console.warn("[ArchiveMedia] manus-storage proxy failed:", (err as Error).message);
+    }
+  } else if (
+    asset.storageKey &&
+    (getStorageBackend() === "s3" || getStorageBackend() === "forge")
+  ) {
+    try {
+      const signedUrl = await storageGetSignedUrl(asset.storageKey);
+      const ok = await proxyRemoteMedia(req, res, signedUrl);
+      if (ok) return;
+    } catch (err) {
+      console.warn("[ArchiveMedia] storageKey proxy failed:", (err as Error).message);
     }
   } else if (asset.storageUrl.startsWith("http")) {
     const ok = await proxyRemoteMedia(req, res, asset.storageUrl);
