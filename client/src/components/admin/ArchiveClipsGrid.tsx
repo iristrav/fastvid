@@ -79,9 +79,14 @@ function describeAutoTitleOutcome(result: {
     parts.push(`${skipReasons.noFrames} clip(s) — FFmpeg could not extract preview frames`);
   }
   if (skipReasons.llmFailed > 0) {
-    parts.push(
-      `${skipReasons.llmFailed} clip(s) — vision AI failed${result.sampleError ? `: ${result.sampleError}` : " (check LLM_API_KEY / OpenAI quota)"}`
-    );
+    const quotaHint =
+      result.sampleError?.toLowerCase().includes("quota") ||
+      result.sampleError?.includes("429")
+        ? " — OpenAI quota exceeded: add billing/credits at platform.openai.com"
+        : result.sampleError
+          ? `: ${result.sampleError}`
+          : " (check LLM_API_KEY / OpenAI quota)";
+    parts.push(`${skipReasons.llmFailed} clip(s) — vision AI failed${quotaHint}`);
   }
   if (skipReasons.noVision > 0) {
     parts.push(`${skipReasons.noVision} could not be analyzed — verify LLM_API_KEY and FFmpeg`);
