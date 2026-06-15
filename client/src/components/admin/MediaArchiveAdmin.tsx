@@ -6,7 +6,7 @@ import { trpc } from "@/lib/trpc";
 import { toastErrorMessage, ARCHIVE_MAX_UPLOAD_BYTES, ARCHIVE_MAX_UPLOAD_MB } from "@/const";
 import { toast } from "sonner";
 import {
-  Archive, Plus, Loader2, Trash2, Pencil, Upload, Tag, X,
+  Archive, Plus, Loader2, Trash2, Pencil, Upload, Tag, X, Sparkles,
 } from "lucide-react";
 import { ArchiveClipsGrid } from "@/components/admin/ArchiveClipsGrid";
 
@@ -256,6 +256,22 @@ export function MediaArchiveAdmin() {
     onError: (e) => toast.error("Save failed", { description: toastErrorMessage(e) }),
   });
 
+  const seedSamples = trpc.mediaArchive.seedSampleArchives.useMutation({
+    onSuccess: (data) => {
+      utils.mediaArchive.listArchives.invalidate();
+      if (data.created === 0) {
+        toast.info("Sample niches already exist", {
+          description: `${data.skipped} archive${data.skipped === 1 ? "" : "s"} skipped.`,
+        });
+      } else {
+        toast.success(`Added ${data.created} sample niche${data.created === 1 ? "" : "s"}`, {
+          description: data.names.slice(0, 3).join(", ") + (data.names.length > 3 ? "…" : ""),
+        });
+      }
+    },
+    onError: (err) => toast.error("Could not add sample niches", { description: toastErrorMessage(err) }),
+  });
+
   const deleteArchive = trpc.mediaArchive.deleteArchive.useMutation({
     onSuccess: () => {
       utils.mediaArchive.listArchives.invalidate();
@@ -367,12 +383,22 @@ export function MediaArchiveAdmin() {
             Create niche archives with videos and photos. Long videos are split at each shot/scene change — no fixed intervals.
           </p>
         </div>
-        <button
-          onClick={() => { setShowCreateForm(true); setEditArchiveId(null); }}
-          className="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-sm font-medium transition-colors"
-        >
-          <Plus className="w-4 h-4" /> New archive
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={() => seedSamples.mutate()}
+            disabled={seedSamples.isPending}
+            className="flex items-center gap-2 px-4 py-2 bg-white/5 border border-white/10 hover:bg-white/10 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
+          >
+            {seedSamples.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4 text-cyan-400" />}
+            Add sample niches
+          </button>
+          <button
+            onClick={() => { setShowCreateForm(true); setEditArchiveId(null); }}
+            className="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-sm font-medium transition-colors"
+          >
+            <Plus className="w-4 h-4" /> New archive
+          </button>
+        </div>
       </div>
 
       {(showCreateForm || editArchiveId != null) && (

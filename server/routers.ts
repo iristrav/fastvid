@@ -1389,10 +1389,20 @@ export const appRouter = router({
   }),
 
   mediaArchive: router({
-    listArchives: adminProcedure.query(async () => {
-      const archives = await getAllMediaArchives();
+    listArchives: adminProcedure.query(async ({ ctx }) => {
+      let archives = await getAllMediaArchives();
+      if (archives.length === 0) {
+        const { seedSampleMediaArchives } = await import("./seedSampleArchives");
+        await seedSampleMediaArchives(ctx.user.id);
+        archives = await getAllMediaArchives();
+      }
       const counts = await Promise.all(archives.map((a) => countMediaArchiveAssets(a.id)));
       return archives.map((a, i) => ({ ...a, assetCount: counts[i] ?? 0 }));
+    }),
+
+    seedSampleArchives: adminProcedure.mutation(async ({ ctx }) => {
+      const { seedSampleMediaArchives } = await import("./seedSampleArchives");
+      return seedSampleMediaArchives(ctx.user.id);
     }),
 
     createArchive: adminProcedure.input(z.object({

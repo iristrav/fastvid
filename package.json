@@ -13,7 +13,8 @@
     "format": "prettier --write .",
     "test": "vitest run",
     "db:push": "drizzle-kit generate && drizzle-kit migrate",
-    "migrate:storage": "tsx scripts/migrate-local-storage-to-s3.ts"
+    "migrate:storage": "tsx scripts/migrate-local-storage-to-s3.ts",
+    "seed:archives": "node scripts/seed-sample-archives.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.693.0",
