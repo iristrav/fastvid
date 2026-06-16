@@ -704,7 +704,7 @@ async function fetchBeatArchivalThenPexels(
   stockReason: string
 ): Promise<string | null> {
   if (curatedArchiveOnlyVisuals()) {
-    return fetchCuratedArchiveBeatClip(
+    const archiveClip = await fetchCuratedArchiveBeatClip(
       beat,
       scene,
       workDir,
@@ -718,6 +718,10 @@ async function fetchBeatArchivalThenPexels(
       undefined,
       { varietySeed: dedup.varietySeed, crossVideoExcludeIds: dedup.crossVideoExcludeIds }
     );
+    if (archiveClip !== null) return archiveClip;
+    // No matching archive clip — fall through to Pexels if enabled.
+    if (!archivePexelsFallbackEnabled() || !canUseLicensedStockBeat(dedup)) return null;
+    console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: no archive match → Pexels fallback`);
   }
   const topicHay = [videoTitle, scene.text, beat.text].filter(Boolean).join(" ");
   const historicalDoc = isHistoricalDocumentary(topicHay) && !dedup.personTopicLock;
@@ -844,7 +848,7 @@ async function beatPrimaryFetch(
   stockReason: string
 ): Promise<string | null> {
   if (curatedArchiveOnlyVisuals()) {
-    return fetchCuratedArchiveBeatClip(
+    const archiveClip = await fetchCuratedArchiveBeatClip(
       beat,
       scene,
       workDir,
@@ -858,6 +862,11 @@ async function beatPrimaryFetch(
       undefined,
       { varietySeed: dedup.varietySeed, crossVideoExcludeIds: dedup.crossVideoExcludeIds }
     );
+    if (archiveClip !== null) return archiveClip;
+    // No archive match — fall through to Pexels if allowed.
+    if (!archivePexelsFallbackEnabled() || !canUseLicensedStockBeat(dedup)) return null;
+    console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: no archive match → Pexels fallback`);
+    return fetchBeatStockFallback(beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName, videoTitle, adoptOpts, stockReason);
   }
   if (youtubeOnlySourcingEnabled()) {
     return fetchBeatYoutubeThenPexels(

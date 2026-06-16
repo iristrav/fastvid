@@ -560,16 +560,12 @@ export function scoreCuratedAsset(
       if (t === anchor) score += Math.round(16 * topicWeight);
       else if (t.includes(anchor) || anchor.includes(t)) score += Math.round(6 * topicWeight);
     }
-    for (const n of archiveNicheTags) {
-      if (n === anchor || tMatches(n, anchor)) score += Math.round(4 * topicWeight);
-    }
+    // Note: archive niche-tags intentionally NOT used here —
+    // scores must reflect clip title + clip tags only.
   }
 
-  for (const n of archiveNicheTags) {
-    for (const t of assetTags) {
-      if (t === n || t.includes(n) || n.includes(t)) score += 3;
-    }
-  }
+  // Note: archive niche-tag vs asset-tag boost intentionally removed —
+  // clip relevance is determined solely by the clip's own title and tags.
 
   if (beatTags.length >= 2 && beatHits === 0) score = Math.max(0, score - 60);
 
@@ -836,7 +832,6 @@ export async function listCuratedArchiveCandidates(
   if (!archives.length) return [];
 
   const scored: CuratedCandidatePick[] = [];
-  const fallback: CuratedCandidatePick[] = [];
 
   for (const archive of archives) {
     const nicheTags = normalizeMediaTags(archive.nicheTags ?? []);
@@ -846,26 +841,15 @@ export async function listCuratedArchiveCandidates(
       if (excludeStorageUrls.has(asset.storageUrl)) continue;
       if (isCuratedOffTopicAsset(asset, topicAnchors, beatTags, videoVisualTopic)) continue;
       const score = scoreCuratedAsset(asset, nicheTags, beatTags, topicAnchors, beatText, videoVisualTopic);
+      // Only include clips that actually match by their own title/tags — no score-1 fallback.
+      // Irrelevant clips must not slip through; the pipeline falls to Pexels instead.
       if (score > 0) scored.push({ asset, score, archiveName: archive.name, archiveNicheTags: nicheTags });
-      else if (assetMatchesBeatTags(asset, beatTags) || assetMatchesTopicAnchors(asset, topicAnchors)) {
-        fallback.push({ asset, score: 1, archiveName: archive.name, archiveNicheTags: nicheTags });
-      }
     }
   }
 
-  if (scored.length === 0 && fallback.length === 0 && archives.length > 0 && !noUniversalFallback) {
-    for (const archive of archives) {
-      const assets = await loadArchiveAssetsForSearch(archive.id, assetsCache);
-      for (const asset of assets) {
-        if (excludeIds.has(asset.id)) continue;
-        if (excludeStorageUrls.has(asset.storageUrl)) continue;
-        if (isCuratedOffTopicAsset(asset, topicAnchors, beatTags, videoVisualTopic)) continue;
-        fallback.push({ asset, score: 1, archiveName: archive.name, archiveNicheTags: normalizeMediaTags(archive.nicheTags ?? []) });
-      }
-    }
-  }
-
-  const pool = scored.length > 0 ? scored : fallback;
+  // Universal fallback intentionally removed: if nothing scored > 0, return empty so the
+  // pipeline can fall back to Pexels rather than picking a random unrelated archive clip.
+  const pool = scored;
   pool.sort((a, b) => {
     if (b.score !== a.score) return b.score - a.score;
     const videoBoost = (x: MediaArchiveAsset) => (x.mediaType === "video" ? 2 : 0);
@@ -1280,11 +1264,9 @@ export async function searchCuratedCandidatesForBeat(
     if (relaxed.length > 0) return relaxed;
   }
 
-  // Last resort: return top results but still filter WWII clips for non-war beats
-  const lastResort = ranked.filter(
-    (p) => !(videoVisualTopic !== "wwii" && isWwiiWarArchiveAsset(p.asset) && !beatMentionsWwiiContent(beat.text))
-  );
-  return (lastResort.length > 0 ? lastResort : ranked).slice(0, Math.max(8, ranked.length));
+  // No match at all — return empty so the pipeline falls back to Pexels.
+  // We must never pick a random archive clip that has nothing to do with this sentence.
+  return [];
 }
 
 /** Skip FFmpeg when metadata already rules out an asset. */
