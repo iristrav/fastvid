@@ -185,6 +185,13 @@ function AssetCard({
   const [mixKind, setMixKind] = useState<MixKind>(asset.mixKind);
   const [sourceNote, setSourceNote] = useState(asset.sourceNote ?? "");
 
+  useEffect(() => {
+    setTitle(asset.title ?? "");
+    setTags(tagsToInput(asset.tags));
+    setMixKind(asset.mixKind);
+    setSourceNote(asset.sourceNote ?? "");
+  }, [asset.id, asset.title, asset.tags, asset.mixKind, asset.sourceNote]);
+
   return (
     <>
       {previewOpen && <AssetPreviewModal asset={asset} onClose={() => setPreviewOpen(false)} />}
@@ -424,7 +431,7 @@ export function ArchiveClipsGrid({
 
     if (
       !confirm(
-        `AI will analyze ${label} thoroughly (~1 minute per clip) and add precise tags: people, countries, cities, events, actions, era (multiple frames for video).\n\nExisting tags will be supplemented. Continue?`
+        `AI will analyze ${label} and set a new title plus exactly 4 English search tags per clip (~30–60s each).\n\nExisting tags will be replaced. Continue?`
       )
     ) {
       return;
@@ -462,7 +469,10 @@ export function ArchiveClipsGrid({
         setAutoTitleProgress({ done, total: targetIds.length });
         toast.loading(`AI in progress: ${done}/${targetIds.length} clips…`, { id: loadingToast });
       }
-      utils.mediaArchive.listAssets.invalidate();
+      await utils.mediaArchive.listAssets.refetch({
+        archiveId: archiveId!,
+        search: search || undefined,
+      });
       utils.mediaArchive.listArchives.invalidate();
       toast.dismiss(loadingToast);
       if (updated === 0) {
@@ -651,7 +661,7 @@ export function ArchiveClipsGrid({
         <div className={`grid gap-4 ${compact ? "sm:grid-cols-2 lg:grid-cols-3" : "sm:grid-cols-2 xl:grid-cols-3"}`}>
           {assets.map((asset) => (
             <AssetCard
-              key={asset.id}
+              key={`${asset.id}-${(asset.tags ?? []).join("|")}`}
               asset={asset as ArchiveAsset}
               selected={selectedIds.has(asset.id)}
               onToggleSelect={() => toggleSelect(asset.id)}
