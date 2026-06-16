@@ -111,7 +111,7 @@ export function fallbackVisualKeyword(sentence: string): string {
         if (cleaned) return cleaned;
       }
     }
-    const geoQuery = sanitizeVisualKeyword(`${geo} city skyline`);
+    const geoQuery = sanitizeVisualKeyword(`${geo} aerial video`);
     if (geoQuery) return geoQuery;
   }
 
@@ -290,8 +290,8 @@ Examples:
 "Dutch: De klant bekijkt verschillende producten op zijn telefoon." → online shopping smartphone
 "Dutch: Het team bespreekt de resultaten tijdens een vergadering." → business meeting team
 
-"Welcome to the Netherlands." → amsterdam canal netherlands
-"Dutch: Welkom in Nederland." → netherlands landscape aerial
+"Welcome to the Netherlands." → netherlands aerial drone video
+"Dutch: Welkom in Nederland." → amsterdam canal timelapse
 
 Return one keyword per index below.
 

@@ -116,7 +116,7 @@ describe("visualBeatTags", () => {
     expect(isGeoWelcomeBeat(text)).toBe(true);
     expect(inferVideoVisualTopic(undefined, text)).toBe("geography_urban");
     expect(buildGeoWelcomeVisualQueries(text)).toEqual(
-      expect.arrayContaining(["netherlands landscape aerial", "amsterdam canal netherlands skyline"])
+      expect.arrayContaining(["netherlands aerial drone video", "amsterdam canal timelapse"])
     );
   });
 });

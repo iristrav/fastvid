@@ -1197,6 +1197,8 @@ export async function searchCuratedCandidatesForBeat(
     crossVideoExcludeIds?: Set<number>;
     assetsCache?: Map<number, MediaArchiveAsset[]>;
     semanticProfile?: BeatSemanticProfile;
+    /** Geo welcome / opening beat — archive images are not allowed. */
+    videosOnly?: boolean;
   }
 ): Promise<CuratedCandidatePick[]> {
   const varietySeed = options?.varietySeed ?? 0;
@@ -1223,7 +1225,7 @@ export async function searchCuratedCandidatesForBeat(
   );
 
   let ranked = rankCuratedCandidatesForBeat(
-    orderCuratedCandidatesForBeat(listed, isGeoWelcomeBeat(beat.text)),
+    orderCuratedCandidatesForBeat(listed),
     beatTags,
     topicAnchors,
     beat.text,
@@ -1278,9 +1280,13 @@ export async function searchCuratedCandidatesForBeat(
   }
 
   const topScore = ranked[0]?.score ?? 0;
-  const filtered = ranked.filter((p) =>
+  let filtered = ranked.filter((p) =>
     assetPassesBeatMinimum(p.asset, beat.text, p.score, topScore, p.semantic, videoVisualTopic)
   );
+  if (options?.videosOnly) {
+    filtered = filtered.filter((p) => p.asset.mediaType === "video");
+    ranked = ranked.filter((p) => p.asset.mediaType === "video");
+  }
   if (filtered.length > 0) return filtered;
 
   if (topScore > 0) {
@@ -1468,7 +1474,7 @@ export function shouldTryPexelsFirstForBeat(
   videoVisualTopic: VideoVisualTopic
 ): boolean {
   if (!archivePexelsHybridEnabled()) return false;
-  if (isGeoWelcomeBeat(beatText)) return false;
+  if (isGeoWelcomeBeat(beatText)) return true;
   const geoTags = extractBeatGeoPlaceTags(beatText);
   return geoTags.length > 0 && videoVisualTopic === "geography_urban";
 }

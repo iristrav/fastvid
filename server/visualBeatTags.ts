@@ -290,7 +290,7 @@ export function extractBeatGeoPlaceTags(beatText: string): string[] {
 const GEO_WELCOME_RE =
   /\b(welcome|welkom)\b(?:\s+\w+){0,3}\s+\b(to|naar|in)\b|\b(welkom|welcome)\s+(in|naar)\b/i;
 
-/** Intro line naming a country/city — should show a landscape still with blur background. */
+/** Intro line naming a country/city — opening B-roll should be video, not a Ken Burns still. */
 export function isGeoWelcomeBeat(beatText: string): boolean {
   const cleaned = beatText.replace(/\[visual:[^\]]+\]/gi, " ").trim();
   if (!cleaned) return false;
@@ -298,7 +298,7 @@ export function isGeoWelcomeBeat(beatText: string): boolean {
   return extractBeatGeoPlaceTags(cleaned).length > 0;
 }
 
-/** Stock/archive queries for "Welcome to {place}" — landscape photo, not abstract b-roll. */
+/** Stock/archive queries for "Welcome to {place}" — video B-roll (drone, timelapse, city footage). */
 export function buildGeoWelcomeVisualQueries(beatText: string): string[] {
   const geoTags = extractBeatGeoPlaceTags(beatText);
   const queries: string[] = [];
@@ -311,21 +311,21 @@ export function buildGeoWelcomeVisualQueries(beatText: string): string[] {
 
   if (wantsNl) {
     queries.push(
-      "netherlands landscape aerial",
-      "amsterdam canal netherlands skyline",
-      "dutch countryside windmill landscape",
-      "netherlands tulip fields aerial"
+      "netherlands aerial drone video",
+      "amsterdam canal timelapse",
+      "netherlands city broll",
+      "dutch cycling street video"
     );
   }
   if (wantsUs) {
-    queries.push("united states landscape aerial", "american city skyline panorama");
+    queries.push("united states city aerial video", "american skyline timelapse");
   }
   if (/berlin|berlijn/i.test(lower) || geoTags.includes("berlin")) {
-    queries.push("berlin skyline aerial landmark", "berlin city panorama");
+    queries.push("berlin city aerial video", "berlin skyline timelapse");
   }
 
   for (const tag of geoTags.slice(0, 3)) {
-    queries.push(`${tag} landscape aerial`, `${tag} city skyline panorama`);
+    queries.push(`${tag} aerial city video`, `${tag} skyline timelapse`);
   }
 
   return [...new Set(queries.filter((q) => q.length >= 4))].slice(0, 10);

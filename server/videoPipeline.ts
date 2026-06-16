@@ -7181,6 +7181,25 @@ function isStillPhotoClip(filePath: string): boolean {
   return /_serp_|_wiki_|_openverse_|_unsplash_|_p0_|_p2_|_yt_\d/i.test(base);
 }
 
+/** Opening beat must be moving footage — not Ken Burns stills from archive or web. */
+function isNonVideoMontageClip(filePath: string): boolean {
+  return isStillPhotoClip(filePath) || isCuratedPreparedStillClip(filePath);
+}
+
+function rejectOpeningStillClip(
+  sceneIndex: number,
+  clipsSoFar: number,
+  clipPath: string,
+  label: string
+): boolean {
+  if (sceneIndex !== 0 || clipsSoFar > 0) return false;
+  if (!isNonVideoMontageClip(clipPath)) return false;
+  console.warn(
+    `[Pipeline] ${label}: opening must be video — rejecting still ${path.basename(clipPath)}`
+  );
+  return true;
+}
+
 /** Standalone motion-graphic beat clip (text/map card) — not B-roll. */
 function isMotionGraphicClip(filePath: string): boolean {
   return /_mgfx_/i.test(path.basename(filePath));
@@ -12997,7 +13016,8 @@ async function adoptArchiveBeatClip(
   initialClip: string | null = null,
   holdSec = beat.holdSec,
   semanticProfile?: BeatSemanticProfile,
-  relaxed = false
+  relaxed = false,
+  videosOnly = false
 ): Promise<boolean> {
   const rejectClip = (clipPath: string | null | undefined): void => {
     if (!clipPath || isPipelineFallbackClip(clipPath)) return;
@@ -13056,6 +13076,7 @@ async function adoptArchiveBeatClip(
         crossVideoExcludeIds: dedup.crossVideoExcludeIds,
         assetsCache: dedup.archiveAssetsCache,
         semanticProfile,
+        videosOnly: videosOnly || isGeoWelcomeBeat(beat.text),
       }
     );
     console.log(
@@ -13501,48 +13522,8 @@ async function adoptGeoWelcomeIntroBeat(
   };
 
   console.log(
-    `[Pipeline] Scene ${scene.index} zin ${beat.index}: geo welcome intro → ${welcomeBeat.searchQuery}`
+    `[Pipeline] Scene ${scene.index} zin ${beat.index}: geo welcome intro (video) → ${welcomeBeat.searchQuery}`
   );
-
-  if (
-    await adoptArchiveBeatClip(
-      welcomeBeat,
-      scene,
-      workDir,
-      videoTitle,
-      dedup,
-      pushClip,
-      null,
-      holdSec,
-      semanticProfile
-    )
-  ) {
-    return true;
-  }
-
-  const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
-  const still = await fetchBeatScriptImageClip(
-    welcomeBeat,
-    scene,
-    workDir,
-    scene.index,
-    4,
-    dedup,
-    scenePersons,
-    videoTitle,
-    {
-      keywords: welcomeBeat.keywords,
-      sceneText: scene.text,
-      videoTitle,
-      requireBeatMatch: false,
-      scriptAnchored: false,
-      scriptImageFallback: true,
-    },
-    `b${beat.index}_geo_welcome`
-  );
-  if (still && !isPipelineFallbackClip(still)) {
-    return await pushClip(still, holdSec);
-  }
 
   if (
     await adoptPexelsBeatClipFallback(
@@ -13555,6 +13536,24 @@ async function adoptGeoWelcomeIntroBeat(
       holdSec,
       semanticProfile,
       "geo-first"
+    )
+  ) {
+    return true;
+  }
+
+  if (
+    await adoptArchiveBeatClip(
+      welcomeBeat,
+      scene,
+      workDir,
+      videoTitle,
+      dedup,
+      pushClip,
+      null,
+      holdSec,
+      semanticProfile,
+      false,
+      true
     )
   ) {
     return true;
@@ -13592,6 +13591,9 @@ async function fetchArchiveSentenceMontage(
   );
 
   const pushSceneClip = async (clipPath: string, holdSec: number, beatIndex: number): Promise<boolean> => {
+    if (rejectOpeningStillClip(scene.index, clips.length, clipPath, `Scene ${scene.index} zin ${beatIndex}`)) {
+      return false;
+    }
     const key = clipContentKey(clipPath);
     if (dedup.usedContentKeys.has(key)) {
       console.warn(
@@ -13705,6 +13707,9 @@ async function ensureArchiveMontageVoiceCoverage(
   );
 
   const pushSceneClip = async (clipPath: string, holdSec: number, beatIndex: number): Promise<boolean> => {
+    if (rejectOpeningStillClip(scene.index, clips.length, clipPath, `Scene ${scene.index} backfill`)) {
+      return false;
+    }
     const key = clipContentKey(clipPath);
     if (dedup.usedContentKeys.has(key)) return false;
     let actualHold = holdSec;
@@ -13838,6 +13843,9 @@ async function fetchSceneVisuals(
   };
 
   const pushSceneClip = async (clipPath: string, holdSec: number, beatIndex: number): Promise<boolean> => {
+    if (rejectOpeningStillClip(scene.index, clips.length, clipPath, `Scene ${scene.index} beat ${beatIndex}`)) {
+      return false;
+    }
     const key = clipContentKey(clipPath);
     if (dedup.usedContentKeys.has(key)) {
       console.warn(
