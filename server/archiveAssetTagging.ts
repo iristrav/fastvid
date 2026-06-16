@@ -103,7 +103,7 @@ const TAG_JSON_SCHEMA_MINIMAL = {
         tags: {
           type: "array",
           items: { type: "string" },
-          minItems: 4,
+          minItems: 1,
           maxItems: 4,
         },
       },
@@ -236,6 +236,9 @@ function deriveArchiveTitle(parsed: ArchiveAiVisionPayload): string {
   ].filter(Boolean);
   if (bits.length > 0) return bits.join(" — ").slice(0, 160);
 
+  const firstTag = parsed.tags?.[0]?.trim();
+  if (firstTag) return firstTag.slice(0, 160);
+
   return "";
 }
 
@@ -341,20 +344,41 @@ function extractLlmTextContent(
 
 function parseJsonFromLlmContent(raw: string): ArchiveAiVisionPayload {
   const trimmed = raw.trim();
+  let parsed: ArchiveAiVisionPayload;
   try {
-    return JSON.parse(trimmed) as ArchiveAiVisionPayload;
+    parsed = JSON.parse(trimmed) as ArchiveAiVisionPayload;
   } catch {
     const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
     if (fenced?.[1]) {
-      return JSON.parse(fenced[1].trim()) as ArchiveAiVisionPayload;
+      parsed = JSON.parse(fenced[1].trim()) as ArchiveAiVisionPayload;
+    } else {
+      const start = trimmed.indexOf("{");
+      const end = trimmed.lastIndexOf("}");
+      if (start < 0 || end <= start) throw new Error("LLM response did not contain JSON");
+      parsed = JSON.parse(trimmed.slice(start, end + 1)) as ArchiveAiVisionPayload;
     }
-    const start = trimmed.indexOf("{");
-    const end = trimmed.lastIndexOf("}");
-    if (start >= 0 && end > start) {
-      return JSON.parse(trimmed.slice(start, end + 1)) as ArchiveAiVisionPayload;
-    }
-    throw new Error("LLM response did not contain JSON");
   }
+  parsed.tags = coerceVisionTags(parsed.tags);
+  return parsed;
+}
+
+function coerceVisionTags(raw: unknown): string[] {
+  if (Array.isArray(raw)) {
+    return raw.flatMap((item) => {
+      if (typeof item !== "string") return [];
+      return item
+        .split(/[,;|]/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+    });
+  }
+  if (typeof raw === "string") {
+    return raw
+      .split(/[,;|]/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+  return [];
 }
 
 function ffmpegBin(): string {
@@ -526,7 +550,7 @@ async function invokeArchiveVisionTagging(
     | typeof TAG_JSON_SCHEMA_MINIMAL
     | { type: "json_object" };
   const formats: VisionFormat[] = opts.bulk
-    ? [TAG_JSON_SCHEMA_MINIMAL, { type: "json_object" }, TAG_JSON_SCHEMA_LIGHT]
+    ? [{ type: "json_object" }, TAG_JSON_SCHEMA_MINIMAL]
     : opts.preferJsonObject
       ? [{ type: "json_object" }, TAG_JSON_SCHEMA_LIGHT, { type: "json_object" }]
       : [TAG_JSON_SCHEMA_LIGHT, { type: "json_object" }, TAG_JSON_SCHEMA];

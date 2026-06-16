@@ -30,6 +30,12 @@ export type AutoTitleArchiveResult = {
     llmFailed: number;
   };
   sampleError?: string;
+  /** First clip that was actually saved — proves DB write + tags for UI feedback. */
+  sampleUpdate?: {
+    assetId: number;
+    title: string;
+    tags: string[];
+  };
 };
 
 const BULK_AI_CONCURRENCY = 2;
@@ -48,7 +54,11 @@ async function autoTitleSingleAsset(
   id: number,
   archiveId: number,
   nicheTags: string[]
-): Promise<{ result: SingleResult; error?: string }> {
+): Promise<{
+  result: SingleResult;
+  error?: string;
+  saved?: { assetId: number; title: string; tags: string[] };
+}> {
   try {
     const asset = await getMediaArchiveAssetById(id);
     if (!asset || asset.archiveId !== archiveId) {
@@ -103,10 +113,27 @@ async function autoTitleSingleAsset(
         tags: fields.tags,
         sourceNote: fields.sourceNote,
       });
+
+      const saved = await getMediaArchiveAssetById(asset.id);
+      const savedTags = normalizeMediaTags(saved?.tags ?? []);
+      if (!saved || savedTags.length === 0) {
+        return {
+          result: "skipped_llm_failed",
+          error: "Tags were not saved to the database",
+        };
+      }
+
       console.log(
-        `[ArchiveAI] auto-title asset ${id}: "${fields.title.slice(0, 60)}" tags=[${fields.tags.join(", ")}]`
+        `[ArchiveAI] auto-title asset ${id}: "${fields.title.slice(0, 60)}" tags=[${savedTags.join(", ")}]`
       );
-      return { result: "updated" };
+      return {
+        result: "updated",
+        saved: {
+          assetId: asset.id,
+          title: saved.title ?? fields.title,
+          tags: savedTags,
+        },
+      };
     } finally {
       loaded.result.cleanup?.();
     }
@@ -152,6 +179,7 @@ export async function autoTitleArchiveAssets(opts: {
   let skipped = 0;
   let failed = 0;
   let sampleError: string | undefined;
+  let sampleUpdate: AutoTitleArchiveResult["sampleUpdate"];
   const skipReasons = {
     missingAsset: 0,
     fileMissing: 0,
@@ -169,6 +197,7 @@ export async function autoTitleArchiveAssets(opts: {
     switch (outcome.result) {
       case "updated":
         updated += 1;
+        if (!sampleUpdate && outcome.saved) sampleUpdate = outcome.saved;
         break;
       case "failed":
         failed += 1;
@@ -200,7 +229,7 @@ export async function autoTitleArchiveAssets(opts: {
     }
   });
 
-  return { processed, updated, skipped, failed, skipReasons, sampleError };
+  return { processed, updated, skipped, failed, skipReasons, sampleError, sampleUpdate };
 }
 
 /** Resolve asset ids for bulk retitle (all in archive or filtered subset). */

@@ -58,6 +58,7 @@ function describeAutoTitleOutcome(result: {
     llmFailed: number;
   };
   sampleError?: string;
+  sampleUpdate?: { assetId: number; title: string; tags: string[] };
 }): string {
   const { skipReasons } = result;
   if (!skipReasons) {
@@ -95,6 +96,11 @@ function describeAutoTitleOutcome(result: {
     parts.push(`${skipReasons.missingAsset} clip record(s) not found`);
   }
   if (result.failed > 0) parts.push(`${result.failed} failed unexpectedly`);
+  if (result.sampleUpdate) {
+    parts.push(
+      `Example clip #${result.sampleUpdate.assetId}: "${result.sampleUpdate.title}" → [${result.sampleUpdate.tags.join(", ")}]`
+    );
+  }
   return parts.join(". ");
 }
 
@@ -397,6 +403,12 @@ export function ArchiveClipsGrid({
   });
   const [autoTitleRunning, setAutoTitleRunning] = useState(false);
   const [autoTitleProgress, setAutoTitleProgress] = useState<{ done: number; total: number } | null>(null);
+  const [autoTitleReport, setAutoTitleReport] = useState<{
+    kind: "running" | "done" | "error";
+    message: string;
+    detail?: string;
+  } | null>(null);
+  const [probeRunning, setProbeRunning] = useState(false);
 
   useEffect(() => {
     setSelectedIds(new Set());
@@ -429,18 +441,15 @@ export function ArchiveClipsGrid({
           ? `${targetIds.length} visible clip(s)`
           : `all ${targetIds.length} clip(s)`;
 
-    if (
-      !confirm(
-        `AI will analyze ${label} and set a new title plus exactly 4 English search tags per clip (~30–60s each).\n\nExisting tags will be replaced. Continue?`
-      )
-    ) {
-      return;
-    }
-
     const CHUNK = 8;
     setAutoTitleRunning(true);
     setAutoTitleProgress({ done: 0, total: targetIds.length });
-    const loadingToast = toast.loading(`Starting AI titles + 4 tags (${targetIds.length} clips)…`);
+    setAutoTitleReport({
+      kind: "running",
+      message: `AI titles + 4 tags bezig voor ${label}…`,
+      detail: "Dit duurt ~30–60 seconden per clip. Bestaande tags worden vervangen.",
+    });
+    const loadingToast = toast.loading(`AI titles + 4 tags (${targetIds.length} clips)…`);
     let updated = 0;
     let skipped = 0;
     let failed = 0;
@@ -455,6 +464,7 @@ export function ArchiveClipsGrid({
         }
       | undefined;
     let lastSampleError: string | undefined;
+    let lastSampleUpdate: { assetId: number; title: string; tags: string[] } | undefined;
 
     try {
       for (let i = 0; i < targetIds.length; i += CHUNK) {
@@ -465,9 +475,18 @@ export function ArchiveClipsGrid({
         failed += result.failed;
         if (result.skipReasons) lastSkipReasons = result.skipReasons;
         if (result.sampleError) lastSampleError = result.sampleError;
+        if (result.sampleUpdate) lastSampleUpdate = result.sampleUpdate;
         const done = Math.min(i + chunk.length, targetIds.length);
         setAutoTitleProgress({ done, total: targetIds.length });
-        toast.loading(`AI in progress: ${done}/${targetIds.length} clips…`, { id: loadingToast });
+        setAutoTitleReport({
+          kind: "running",
+          message: `Bezig: ${done}/${targetIds.length} clips verwerkt (${updated} bijgewerkt)`,
+          detail: lastSampleUpdate
+            ? `Laatste save: #${lastSampleUpdate.assetId} → [${lastSampleUpdate.tags.join(", ")}]`
+            : lastSampleError
+              ? `Fout: ${lastSampleError}`
+              : undefined,
+        });
       }
       await utils.mediaArchive.listAssets.refetch({
         archiveId: archiveId!,
@@ -475,32 +494,38 @@ export function ArchiveClipsGrid({
       });
       utils.mediaArchive.listArchives.invalidate();
       toast.dismiss(loadingToast);
+      const outcomeDetail = describeAutoTitleOutcome({
+        updated,
+        skipped,
+        failed,
+        skipReasons: lastSkipReasons,
+        sampleError: lastSampleError,
+        sampleUpdate: lastSampleUpdate,
+      });
       if (updated === 0) {
-        toast.warning("No clips updated", {
-          description:
-            describeAutoTitleOutcome({
-              updated,
-              skipped,
-              failed,
-              skipReasons: lastSkipReasons,
-              sampleError: lastSampleError,
-            }) || "AI could not generate titles for these clips",
+        setAutoTitleReport({
+          kind: "done",
+          message: `Klaar: 0 van ${targetIds.length} clips bijgewerkt`,
+          detail: outcomeDetail || "AI kon geen titels/tags genereren voor deze clips",
+        });
+        toast.warning("Geen clips bijgewerkt", {
+          description: outcomeDetail || "AI kon geen titels/tags genereren",
         });
       } else {
-        toast.success(`${updated} clip(s) updated (title + 4 tags)`, {
-          description:
-            describeAutoTitleOutcome({
-              updated,
-              skipped,
-              failed,
-              skipReasons: lastSkipReasons,
-              sampleError: lastSampleError,
-            }) || "Titles and tags updated for better filtering",
+        setAutoTitleReport({
+          kind: "done",
+          message: `${updated} clip(s) bijgewerkt (titel + max 4 tags)`,
+          detail: outcomeDetail || "Titels en tags zijn opgeslagen",
+        });
+        toast.success(`${updated} clip(s) bijgewerkt`, {
+          description: outcomeDetail || "Titels en tags bijgewerkt",
         });
       }
     } catch (e) {
       toast.dismiss(loadingToast);
-      toast.error("AI titles failed", { description: toastErrorMessage(e) });
+      const msg = toastErrorMessage(e);
+      setAutoTitleReport({ kind: "error", message: "AI titles mislukt", detail: msg });
+      toast.error("AI titles mislukt", { description: msg });
     } finally {
       setAutoTitleRunning(false);
       setAutoTitleProgress(null);
@@ -516,6 +541,43 @@ export function ArchiveClipsGrid({
     utils.mediaArchive.listAssets,
     visibleIds,
   ]);
+
+  const runProbeFirstClip = useCallback(async () => {
+    if (archiveId == null || assets.length === 0) {
+      toast.error("Geen clips om te testen");
+      return;
+    }
+    const assetId =
+      selectedCount > 0
+        ? [...selectedIds].find((id) => visibleIds.has(id)) ?? assets[0]!.id
+        : assets[0]!.id;
+    setProbeRunning(true);
+    setAutoTitleReport({
+      kind: "running",
+      message: `Test AI op clip #${assetId}…`,
+      detail: "Vision + LLM — duurt ~30–60 seconden",
+    });
+    try {
+      const data = await utils.mediaArchive.probeAiTag.fetch({ archiveId, assetId });
+      if (!data?.ok) {
+        const detail = data?.error
+          ? `${data.stage}: ${data.error}`
+          : "Onbekende fout — check LLM_API_KEY en OpenAI credits";
+        setAutoTitleReport({ kind: "error", message: "AI test mislukt", detail });
+        toast.error("AI test mislukt", { description: detail });
+        return;
+      }
+      const detail = `"${data.title ?? "?"}" — ${data.tagCount ?? 0} tags (${data.frameCount ?? 0} frames)`;
+      setAutoTitleReport({ kind: "done", message: `AI test OK voor clip #${assetId}`, detail });
+      toast.success("AI test OK", { description: detail });
+    } catch (e) {
+      const msg = toastErrorMessage(e);
+      setAutoTitleReport({ kind: "error", message: "AI test mislukt", detail: msg });
+      toast.error("AI test mislukt", { description: msg });
+    } finally {
+      setProbeRunning(false);
+    }
+  }, [archiveId, assets, selectedCount, selectedIds, utils.mediaArchive.probeAiTag, visibleIds]);
 
   function toggleSelect(id: number) {
     setSelectedIds((prev) => {
@@ -593,9 +655,25 @@ export function ArchiveClipsGrid({
         {assets.length > 0 && (
           <button
             type="button"
+            onClick={runProbeFirstClip}
+            disabled={autoTitleRunning || probeRunning}
+            title="Test vision AI on one clip (no save)"
+            className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg bg-white/10 text-slate-300 border border-white/10 hover:bg-white/15 disabled:opacity-50"
+          >
+            {probeRunning ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Sparkles className="w-3.5 h-3.5" />
+            )}
+            Test AI (1 clip)
+          </button>
+        )}
+        {assets.length > 0 && (
+          <button
+            type="button"
             onClick={runAutoTitleAll}
             disabled={autoTitleRunning}
-            title="AI title + exactly 4 high-quality English search tags per clip"
+            title="AI title + up to 4 English search tags per clip (replaces existing tags)"
             className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg bg-cyan-500/15 text-cyan-300 border border-cyan-500/25 hover:bg-cyan-500/25 disabled:opacity-50"
           >
             {autoTitleRunning ? (
@@ -648,6 +726,37 @@ export function ArchiveClipsGrid({
           </button>
         )}
       </div>
+
+      {autoTitleReport && (
+        <div
+          className={`rounded-lg border px-3 py-2 text-sm ${
+            autoTitleReport.kind === "error"
+              ? "border-red-500/30 bg-red-500/10 text-red-200"
+              : autoTitleReport.kind === "running"
+                ? "border-cyan-500/30 bg-cyan-500/10 text-cyan-100"
+                : "border-emerald-500/30 bg-emerald-500/10 text-emerald-100"
+          }`}
+        >
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0">
+              <p className="font-medium">{autoTitleReport.message}</p>
+              {autoTitleReport.detail && (
+                <p className="text-xs mt-1 opacity-90 break-words">{autoTitleReport.detail}</p>
+              )}
+            </div>
+            {autoTitleReport.kind !== "running" && (
+              <button
+                type="button"
+                onClick={() => setAutoTitleReport(null)}
+                className="shrink-0 p-1 rounded hover:bg-white/10 text-slate-400"
+                aria-label="Sluiten"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {!compact && selectedCount > 0 && (
         <p className="text-xs text-purple-300">{selectedCount} clip(s) selected</p>
