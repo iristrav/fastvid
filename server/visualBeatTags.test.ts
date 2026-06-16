@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  extractBeatGeoPlaceTags,
   extractPrimaryGeoSearchTag,
   extractPrimaryVisualAnchor,
   extractSceneSearchTags,
   extractVisualSearchTags,
   extractVoiceLabelTerms,
   inferVideoVisualTopic,
+  isWrongGeoForBeat,
   isWwiiWarArchiveAsset,
   termStartInBeat,
 } from "./visualBeatTags";
@@ -55,6 +57,31 @@ describe("visualBeatTags", () => {
     const start = termStartInBeat(beatText, "DUITSland", beatStart, beatDur, "Duitsland");
     expect(start).toBeGreaterThan(beatStart + 2);
     expect(start).toBeLessThan(beatStart + beatDur - 0.5);
+  });
+
+  it("detects geography urban topic from Netherlands vs US title", () => {
+    const title = "Why the Netherlands is the Opposite of the U.S.";
+    expect(inferVideoVisualTopic(title)).toBe("geography_urban");
+    expect(extractBeatGeoPlaceTags("In the Netherlands, cycling is normal.")).toEqual(
+      expect.arrayContaining(["netherlands", "amsterdam", "holland"])
+    );
+    expect(extractBeatGeoPlaceTags("American cities rely on cars.")).toEqual(
+      expect.arrayContaining(["america", "usa", "united states"])
+    );
+  });
+
+  it("flags wrong-country archive clips for geo beats", () => {
+    const nlBeatTags = extractBeatGeoPlaceTags("The Netherlands invests in bike lanes.");
+    const charlotteClip = {
+      title: "Charlotte skyline Bank of America Stadium",
+      tags: ["charlotte", "usa", "city skyline", "stadium"],
+    };
+    const amsterdamClip = {
+      title: "Amsterdam canal bikes and trams",
+      tags: ["amsterdam", "netherlands", "canal", "cycling"],
+    };
+    expect(isWrongGeoForBeat(charlotteClip, nlBeatTags)).toBe(true);
+    expect(isWrongGeoForBeat(amsterdamClip, nlBeatTags)).toBe(false);
   });
 
   it("detects geography urban topic from Berlin vs US city title", () => {

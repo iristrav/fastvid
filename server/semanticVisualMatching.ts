@@ -142,6 +142,7 @@ function domainFallbackTiers(domain: string): string[][] {
     return [
       ["city skyline", "urban street", "city planning"],
       ["public transport", "architecture", "modern city"],
+      ["netherlands", "amsterdam", "dutch city", "canal"],
     ];
   }
   if (domain === "space_tech") {

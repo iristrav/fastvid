@@ -37,7 +37,12 @@ const PLACE_ENTRIES: TagEntry[] = [
   { pattern: /\boostenrijk\b|\baustria\b|\bvienna\b|\bwien\b/i, searchTags: ["austria", "vienna"], label: "OOSTENRIJK" },
   { pattern: /\brusland\b|\brussia\b|\brussian\b|\bsoviet\b|\bsovjet\b|\burss\b/i, searchTags: ["russia", "soviet", "moscow"], label: "RUSland" },
   { pattern: /\bitalië\b|\bitalie\b|\bitaly\b|\bitalian\b|\brome\b|\bromeinen\b/i, searchTags: ["italy", "italian", "rome"], label: "ITALIË" },
-  { pattern: /\bamerika\b|\bamerica\b|\bamerican\b|\bunited states\b|\busa\b/i, searchTags: ["america", "usa", "united states"], label: "AMERIKA" },
+  { pattern: /\bamerika\b|\bamerica\b|\bamerican\b|\bunited states\b|\busa\b|\bu\.?s\.?\b/i, searchTags: ["america", "usa", "united states", "american"], label: "AMERIKA" },
+  { pattern: /\bnederland\b|\bnetherlands\b|\bdutch\b|\bholland\b|\bnederlands\b/i, searchTags: ["netherlands", "holland", "dutch", "amsterdam", "nederland"], label: "NEDERLAND" },
+  { pattern: /\bamsterdam\b/i, searchTags: ["amsterdam", "netherlands", "holland", "dutch"], label: "AMSTERDAM" },
+  { pattern: /\brotterdam\b/i, searchTags: ["rotterdam", "netherlands", "holland"], label: "ROTTERDAM" },
+  { pattern: /\butrecht\b/i, searchTags: ["utrecht", "netherlands"], label: "UTRECHT" },
+  { pattern: /\bden haag\b|\bthe hague\b|\b's-gravenhage\b/i, searchTags: ["the hague", "den haag", "netherlands"], label: "DEN HAAG" },
   { pattern: /\beuropa\b|\beurope\b|\beuropean\b/i, searchTags: ["europe", "european"], label: "EUROPA" },
   { pattern: /\bwarschau\b|\bwarsaw\b/i, searchTags: ["warsaw", "poland"], label: "WARSCHAU" },
   { pattern: /\bmoskou\b|\bmoscow\b|\bkremlin\b/i, searchTags: ["moscow", "russia", "soviet"], label: "MOSKOU" },
@@ -124,10 +129,10 @@ export function inferVideoVisualTopic(videoTitle?: string, extraText?: string): 
     return "cold_war";
   }
   if (
-    /geograph|urban planning|city planning|zoning|transit design|public transport|walkable|urbanism|infrastructure|metropol|skyline|city comparison|compare.*cities|versus.*city|why .* city|how .* city|city (works|planning|design|life)|opposite of every|every us city|american city|vs\.? us|unlike (american|us) cities|modern city|contemporary city|stadtplanung|stedenbouw/.test(
+    /geograph|urban planning|city planning|zoning|transit design|public transport|walkable|urbanism|infrastructure|metropol|skyline|city comparison|compare.*cities|versus.*city|why .* city|how .* city|city (works|planning|design|life)|opposite of every|every us city|american city|vs\.? us|unlike (american|us) cities|modern city|contemporary city|stadtplanung|stedenbouw|opposite of (the )?(u\.?s\.?|united states)|netherlands.*opposite|opposite.*netherlands|nederland.*tegenover|tegenover.*amerika/.test(
       hay
     ) ||
-    (/(berlin|berlijn|paris|london|amsterdam|tokyo|new york|chicago|munich|vienna|singapore|copenhagen)/.test(hay) &&
+    (/(berlin|berlijn|paris|london|amsterdam|rotterdam|utrecht|netherlands|nederland|holland|tokyo|new york|chicago|munich|vienna|singapore|copenhagen)/.test(hay) &&
       /(opposite|comparison|compare|unlike|different|versus|\bvs\b|urban|geograph|planning|transit|zoning|architecture|infrastructure|modern|contemporary|today|living|city life|every us|american)/.test(
         hay
       ))
@@ -202,6 +207,21 @@ export function refineVisualSearchTagsForTopic(
     out.add("city street");
     out.add("architecture");
   }
+  if (/netherlands|nederland|holland|amsterdam|rotterdam|utrecht|den haag|the hague|dutch/.test(lower)) {
+    out.add("amsterdam");
+    out.add("netherlands");
+    out.add("dutch city");
+    out.add("canal");
+    out.add("bike lane");
+    out.add("cycling infrastructure");
+    out.add("public transport");
+    out.add("urban planning");
+  }
+  if (/america|american|united states|\bu\.?s\.?\b|usa\b/.test(lower)) {
+    out.add("united states");
+    out.add("american city");
+    out.add("usa skyline");
+  }
   if (/transit|metro|subway|u-bahn|sbahn|train|trein|tram|bus|public transport|ov\b/.test(lower)) {
     out.add("public transport");
     out.add("metro");
@@ -252,6 +272,126 @@ export function extractPrimaryGeoSearchTag(beatText: string): string | null {
     if (entry.pattern.test(cleaned)) return entry.searchTags[0] ?? null;
   }
   return null;
+}
+
+/** All place/country tags explicitly mentioned in this beat sentence. */
+export function extractBeatGeoPlaceTags(beatText: string): string[] {
+  const cleaned = beatText.replace(/\[visual:[^\]]+\]/gi, " ").toLowerCase();
+  const tags = new Set<string>();
+  for (const entry of PLACE_ENTRIES) {
+    if (entry.pattern.test(cleaned)) {
+      for (const t of entry.searchTags) tags.add(t);
+    }
+  }
+  return [...tags];
+}
+
+const NL_GEO_SLUGS = [
+  "netherlands",
+  "holland",
+  "dutch",
+  "nederland",
+  "amsterdam",
+  "rotterdam",
+  "utrecht",
+  "the hague",
+  "den haag",
+  "eindhoven",
+  "groningen",
+  "maastricht",
+  "canal",
+  "gracht",
+];
+
+const US_GEO_SLUGS = [
+  "united states",
+  "usa",
+  "america",
+  "american",
+  "new york",
+  "nyc",
+  "manhattan",
+  "brooklyn",
+  "empire state",
+  "chicago",
+  "los angeles",
+  "charlotte",
+  "houston",
+  "miami",
+  "san francisco",
+  "dallas",
+  "atlanta",
+  "philadelphia",
+  "boston",
+  "seattle",
+  "denver",
+  "phoenix",
+  "bank of america stadium",
+  "texas",
+  "california",
+  "florida",
+];
+
+function slugSetIncludes(slugs: string[], markers: string[]): boolean {
+  return slugs.some((s) => markers.some((m) => s === m || s.includes(m) || m.includes(s)));
+}
+
+function assetHay(asset: Pick<{ title?: string | null; tags?: string[] | null }, "title" | "tags">): string {
+  return `${(asset.title ?? "").toLowerCase()} ${(asset.tags ?? []).join(" ").toLowerCase()}`;
+}
+
+function assetHayHasMarkers(
+  asset: Pick<{ title?: string | null; tags?: string[] | null }, "title" | "tags">,
+  markers: string[]
+): boolean {
+  const hay = assetHay(asset);
+  return markers.some((m) => hay.includes(m));
+}
+
+/** Reject clips from the wrong country when the beat names a specific place (e.g. Netherlands ≠ Charlotte NC). */
+export function isWrongGeoForBeat(
+  asset: Pick<{ title?: string | null; tags?: string[] | null }, "title" | "tags">,
+  requiredGeoTags: string[]
+): boolean {
+  if (!requiredGeoTags.length) return false;
+
+  const needsNl = slugSetIncludes(requiredGeoTags, NL_GEO_SLUGS);
+  const needsUs = slugSetIncludes(requiredGeoTags, US_GEO_SLUGS);
+  const hasNl = assetHayHasMarkers(asset, NL_GEO_SLUGS);
+  const hasUs = assetHayHasMarkers(asset, US_GEO_SLUGS);
+  const geoHits = geoTagHitCount(asset, requiredGeoTags);
+
+  if (needsNl && !needsUs) {
+    if (hasUs && !hasNl) return true;
+    if (!hasNl && geoHits === 0) return true;
+    return false;
+  }
+  if (needsUs && !needsNl) {
+    if (hasNl && !hasUs) return true;
+    if (!hasUs && geoHits === 0) return true;
+    return false;
+  }
+  if (needsNl && needsUs) {
+    return geoHits === 0;
+  }
+  return geoHits === 0;
+}
+
+function geoTagHitCount(
+  asset: Pick<{ title?: string | null; tags?: string[] | null }, "title" | "tags">,
+  visualTags: string[]
+): number {
+  if (!visualTags.length) return 0;
+  const title = (asset.title ?? "").toLowerCase();
+  const assetTags = (asset.tags ?? []).map((t) => t.toLowerCase());
+  let hits = 0;
+  for (const vt of visualTags) {
+    if (title.includes(vt)) hits += 2;
+    for (const t of assetTags) {
+      if (t === vt || t.includes(vt) || vt.includes(t)) hits++;
+    }
+  }
+  return hits;
 }
 
 /** Best single search anchor — scene+entity beats generic geo (e.g. hitler bunker). */

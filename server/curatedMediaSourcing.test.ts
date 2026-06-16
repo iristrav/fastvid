@@ -368,6 +368,47 @@ describe("curatedMediaSourcing", () => {
     expect(assetPassesBeatMinimum(bunkerClip, beatText, bunkerScore, bunkerScore)).toBe(true);
   });
 
+  it("rejects US skyline for Netherlands geography beat", () => {
+    const title = "Why the Netherlands is the Opposite of the U.S.";
+    const beatText = "In the Netherlands, bike lanes are everywhere.";
+    const { beatTags, topicAnchors, videoVisualTopic } = buildBeatMatchTags(
+      { text: beatText, index: 0, searchQuery: "netherlands bikes", powerWord: "netherlands", keywords: [] },
+      { text: beatText },
+      title
+    );
+    expect(videoVisualTopic).toBe("geography_urban");
+    const charlotteClip: MediaArchiveAsset = {
+      id: 70,
+      archiveId: 1,
+      title: "Charlotte North Carolina skyline stadium",
+      tags: ["charlotte", "usa", "city skyline", "american city"],
+      mediaType: "video",
+      mimeType: "video/mp4",
+      storageUrl: "/x.mp4",
+      isActive: 1,
+      sortOrder: 0,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      fileSizeBytes: 1,
+      width: 1920,
+      height: 1080,
+      durationSec: 6,
+      sourceUrl: null,
+      sourceLabel: null,
+    };
+    const amsterdamClip: MediaArchiveAsset = {
+      ...charlotteClip,
+      id: 71,
+      title: "Amsterdam canal cycling infrastructure",
+      tags: ["amsterdam", "netherlands", "canal", "cycling", "dutch city"],
+    };
+    const charlotteScore = scoreCuratedAsset(charlotteClip, [], beatTags, topicAnchors, beatText, videoVisualTopic);
+    const amsterdamScore = scoreCuratedAsset(amsterdamClip, [], beatTags, topicAnchors, beatText, videoVisualTopic);
+    expect(amsterdamScore).toBeGreaterThan(charlotteScore);
+    expect(assetPassesBeatMinimum(charlotteClip, beatText, charlotteScore, amsterdamScore, undefined, videoVisualTopic)).toBe(false);
+    expect(assetPassesBeatMinimum(amsterdamClip, beatText, amsterdamScore, amsterdamScore, undefined, videoVisualTopic)).toBe(true);
+  });
+
   it("rejects Hitler footage for geography Berlin city comparison video", () => {
     const title = "Why Berlin is the Opposite of Every US City";
     const beatText = "Berlin invests heavily in public transit and walkable streets.";

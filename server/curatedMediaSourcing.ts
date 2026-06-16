@@ -2,7 +2,7 @@
  * Curated media archive — pick tagged assets from admin libraries for pipeline beats.
  */
 import { exec as execCb } from "child_process";
-import { extractVisualSearchTags, extractSceneSearchTags, extractEntitySearchTags, extractPrimaryVisualAnchor, extractSalientBeatTokens, extractRequiredVisualTags, isGenericPeopleAsset, inferVideoVisualTopic, isWwiiWarArchiveAsset, refineVisualSearchTagsForTopic, type VideoVisualTopic } from "./visualBeatTags";
+import { extractVisualSearchTags, extractSceneSearchTags, extractEntitySearchTags, extractPrimaryVisualAnchor, extractSalientBeatTokens, extractRequiredVisualTags, extractBeatGeoPlaceTags, isGenericPeopleAsset, isWrongGeoForBeat, inferVideoVisualTopic, isWwiiWarArchiveAsset, refineVisualSearchTagsForTopic, type VideoVisualTopic } from "./visualBeatTags";
 import { promisify } from "util";
 import fetch from "node-fetch";
 import * as fs from "fs";
@@ -280,6 +280,14 @@ export function assetPassesBeatMinimum(
   if (videoVisualTopic === "geography_urban" && isWwiiWarArchiveAsset(asset)) {
     return false;
   }
+
+  const geoTags = extractBeatGeoPlaceTags(beatText);
+  if (geoTags.length > 0) {
+    if (isWrongGeoForBeat(asset, geoTags)) return false;
+    const geoHits = countVisualTagHits(asset, geoTags);
+    if (geoHits === 0) return false;
+  }
+
   if (semantic && semanticVisualMatchingEnabled()) {
     if (!assetMeetsSemanticMinimum(semantic)) return false;
     if (semantic.tier >= 5 && semantic.matchedEntities.length === 0) return false;
@@ -524,6 +532,23 @@ export function scoreCuratedAsset(
   }
 
   if (beatText?.trim()) {
+    const geoTags = extractBeatGeoPlaceTags(beatText);
+    if (geoTags.length > 0) {
+      const geoHits = countVisualTagHits(asset, geoTags);
+      if (geoHits >= 2) {
+        score += 70;
+        beatHits += 2;
+      } else if (geoHits >= 1) {
+        score += 42;
+        beatHits++;
+      } else {
+        score -= 120;
+      }
+      if (isWrongGeoForBeat(asset, geoTags)) score = Math.max(0, score - 250);
+    }
+  }
+
+  if (beatText?.trim()) {
     const anchor = extractPrimaryVisualAnchor(beatText);
     const hay = `${title} ${assetTags.join(" ")}`;
     if (anchor) {
@@ -578,7 +603,7 @@ export function scoreCuratedAsset(
 
   score += curatedOffTopicPenalty(asset, topicAnchors, beatTags, videoVisualTopic);
   if (videoVisualTopic === "geography_urban" && isWwiiWarArchiveAsset(asset)) {
-    score = Math.max(0, score - 320);
+    return 0;
   }
 
   return score;
@@ -822,6 +847,7 @@ export async function listCuratedArchiveCandidates(
     : await resolveArchivesForVisualQuery(queryTags, topicAnchors);
   if (!archives.length) return [];
 
+  const geoRequired = beatText ? extractBeatGeoPlaceTags(beatText) : [];
   const scored: CuratedCandidatePick[] = [];
   const fallback: CuratedCandidatePick[] = [];
 
@@ -832,6 +858,7 @@ export async function listCuratedArchiveCandidates(
       if (excludeIds.has(asset.id)) continue;
       if (excludeStorageUrls.has(asset.storageUrl)) continue;
       if (isCuratedOffTopicAsset(asset, topicAnchors, beatTags, videoVisualTopic)) continue;
+      if (geoRequired.length > 0 && isWrongGeoForBeat(asset, geoRequired)) continue;
       const score = scoreCuratedAsset(asset, nicheTags, beatTags, topicAnchors, beatText, videoVisualTopic);
       if (score > 0) scored.push({ asset, score, archiveName: archive.name, archiveNicheTags: nicheTags });
       else if (assetMatchesBeatTags(asset, beatTags) || assetMatchesTopicAnchors(asset, topicAnchors)) {
@@ -840,7 +867,11 @@ export async function listCuratedArchiveCandidates(
     }
   }
 
-  if (scored.length === 0 && fallback.length === 0 && archives.length > 0 && !noUniversalFallback) {
+  const blockUniversalFallback =
+    noUniversalFallback ||
+    (videoVisualTopic === "geography_urban" && geoRequired.length > 0);
+
+  if (scored.length === 0 && fallback.length === 0 && archives.length > 0 && !blockUniversalFallback) {
     for (const archive of archives) {
       const assets = await loadArchiveAssetsForSearch(archive.id, assetsCache);
       for (const asset of assets) {
