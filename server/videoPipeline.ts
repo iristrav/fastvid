@@ -127,7 +127,7 @@ import {
   scriptGuidedClipsEnabled,
 } from "./scriptGuidedClipFinder";
 import { clipPassesVisionGate, clipVisionGateEnabled } from "./visualQualityGate";
-import { curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archivePexelsFallbackEnabled, archivePexelsHybridEnabled, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, maxPipelineWallClockMin, qualityOverSpeedEnabled, visualStageWallClockMin, pipelineMinutesPerVideoMinute } from "./sourcingPolicy";
+import { curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archivePexelsFallbackEnabled, archivePexelsHybridEnabled, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, maxPipelineWallClockMin, qualityOverSpeedEnabled, visualStageWallClockMin, pipelineMinutesPerVideoMinute, autoMotionGraphicsLayerEnabled } from "./sourcingPolicy";
 import { targetVideoDurationMinutes } from "@shared/videoLengths";
 import {
   getCrossVideoExcludeAssetIds,
@@ -166,6 +166,15 @@ import {
   tryRenderMotionGraphicBeatClip,
   type StillStyleContext,
 } from "./motionGraphicsEngine";
+import {
+  burnMotionGraphicsOverlaysDrawtext,
+  mergeMotionGraphicsIntoMetadata,
+  planMotionGraphicsScene,
+  standardMontageCrossfadeSec,
+  standardMontageTransitionName,
+  type MotionGraphicsScenePlan,
+  type MotionOverlayPlan,
+} from "./motionGraphicsLayer";
 import {
   logPipelineReview,
   reviewPipelineBeforeEffects,
@@ -473,6 +482,9 @@ function effectiveMaxClipSec(): number {
 }
 /** Soft dissolves for archive/documentary montage (reference-doc style). */
 function montageXfadeSec(avgClipDur = archiveVisualBeatSec()): number {
+  if (autoMotionGraphicsLayerEnabled()) {
+    return standardMontageCrossfadeSec();
+  }
   if (curatedArchiveOnlyVisuals() || documentaryStyleEnabled()) {
     return Math.min(0.4, Math.max(0.2, avgClipDur * 0.05));
   }
@@ -7855,6 +7867,8 @@ interface VisualDedupState {
   sentenceIntents: Map<string, ScriptVisualIntentEntry>;
   /** Visual director plan — one scene per visual idea, runs before footage search. */
   visualDirectorScenes: VisualDirectorScene[];
+  /** Auto motion graphics scene plans (white typewriter overlays + animation metadata). */
+  motionGraphicsScenes: MotionGraphicsScenePlan[];
 }
 
 /** One licensed stock clip allowed when minimizeStockFootage (whole-video cap). */
@@ -7914,6 +7928,7 @@ function createVisualDedupState(
     sentenceKeywords: new Map(),
     sentenceIntents: new Map(),
     visualDirectorScenes: [],
+    motionGraphicsScenes: [],
   };
 }
 
@@ -9666,10 +9681,12 @@ function buildMontageXfadeFilter(
   for (let i = 1; i < n; i++) {
     const outLabel = i === n - 1 ? "montage" : `xf${i}`;
     const xfadeTransition = smooth
-      ? curatedArchiveOnlyVisuals()
-        ? "dissolve"
+      ? autoMotionGraphicsLayerEnabled() || curatedArchiveOnlyVisuals()
+        ? standardMontageTransitionName()
         : pickMontageXfadeTransition(sceneIndex, i)
-      : pickStockMontageXfadeTransition(sceneIndex, i);
+      : autoMotionGraphicsLayerEnabled()
+        ? standardMontageTransitionName()
+        : pickStockMontageXfadeTransition(sceneIndex, i);
     const safeOffset = Math.max(0, Math.min(offset, Math.max(0, prevDur - xfade - 0.01)));
     mergeFilter += `;[${prev}][v${i}]xfade=transition=${xfadeTransition}:duration=${xfade.toFixed(3)}:offset=${safeOffset.toFixed(3)}[${outLabel}]`;
     prev = outLabel;
@@ -13177,7 +13194,7 @@ async function pushMotionGraphicBeatClipIfAny(
   pushClip: (clipPath: string, holdSec?: number) => boolean | Promise<boolean>,
   holdSec = beat.holdSec
 ): Promise<boolean> {
-  if (yearsOnlyOnScreen() || !motionGraphicsEnabled()) return false;
+  if (autoMotionGraphicsLayerEnabled() || yearsOnlyOnScreen() || !motionGraphicsEnabled()) return false;
   if (dedup.motionGraphicsUsed >= maxMotionGraphicsPerVideo()) return false;
 
   const mgfxClip = await tryRenderMotionGraphicBeatClip(
@@ -15415,13 +15432,15 @@ async function composeSceneVideo(
   let docOverlays: TimedOverlay[] = [];
   let yearLabels: TimedYearLabel[] = [];
   let screenLabels: TimedOverlay[] = [];
+  let motionOverlayPlans: MotionOverlayPlan[] = [];
   let cinematicPlan: CinematicScenePlan | null = null;
   const sfxCueFiles: Array<{ path: string; timeSec: number; volume: number }> = [];
+  const autoMotionLayer = autoMotionGraphicsLayerEnabled();
 
   if (!skipEffectLayers) {
   try {
     const yearsOnly = yearsOnlyOnScreen();
-    if (cinematicEffectsEnabled() && !yearsOnly) {
+    if (cinematicEffectsEnabled() && !yearsOnly && !autoMotionLayer) {
       cinematicPlan = planCinematicScene(scene, duration);
       const cinematicOverlays = await buildCinematicOverlays(
         cinematicPlan,
@@ -15556,7 +15575,54 @@ async function composeSceneVideo(
     );
   }
 
-  if (!skipEffectLayers && screenLabelsEnabled() && cinematicEffectsEnabled()) {
+  if (!skipEffectLayers && autoMotionLayer && cinematicEffectsEnabled()) {
+    try {
+      const sceneStartSec = composeOptions?.sceneStartSec ?? 0;
+      const fetchBeats = composeOptions?.montageBeats;
+      const sceneBeats =
+        fetchBeats?.length
+          ? fetchBeats
+          : buildSceneBeats(
+              scene,
+              outDur,
+              Math.max(safeClips.length, 8),
+              composeOptions?.videoTitle,
+              [],
+              composeOptions?.dedup?.sentenceKeywords,
+              composeOptions?.dedup?.sentenceIntents,
+              composeOptions?.dedup?.visualDirectorScenes
+            );
+      const beatInputs = sceneBeats.map((b) => ({
+        text: b.text,
+        holdSec: b.holdSec,
+        powerWord: b.powerWord,
+        highlightWords: b.keywords,
+      }));
+      const visualDescription =
+        sceneBeats.find((b) => b.visualDescription?.trim())?.visualDescription ??
+        composeOptions?.dedup?.visualDirectorScenes?.[0]?.visual_description;
+      const mgPlan = planMotionGraphicsScene(
+        scene.index,
+        sceneStartSec,
+        outDur,
+        beatInputs,
+        visualDescription
+      );
+      composeOptions?.dedup?.motionGraphicsScenes.push(mgPlan);
+      motionOverlayPlans = mgPlan.overlays.map((o) => ({
+        ...o,
+        start_time: Math.max(0, o.start_time - sceneStartSec),
+        end_time: Math.max(0.15, o.end_time - sceneStartSec),
+      }));
+      if (motionOverlayPlans.length > 0) {
+        console.log(
+          `[MotionGraphics] Scene ${scene.index}: ${motionOverlayPlans.length} voice-synced overlay(s) [${motionOverlayPlans.map((o) => o.text).join(" | ")}]`
+        );
+      }
+    } catch (err) {
+      console.warn(`[Pipeline] Scene ${scene.index}: motion graphics plan failed (non-fatal):`, err);
+    }
+  } else if (!skipEffectLayers && screenLabelsEnabled() && cinematicEffectsEnabled()) {
     try {
       const sceneStartSec = composeOptions?.sceneStartSec ?? 0;
       const fetchBeats = composeOptions?.montageBeats;
@@ -15600,7 +15666,7 @@ async function composeSceneVideo(
     docOverlays = docOverlays.filter((o) => !o.isScreenLabel);
   }
 
-  if (!skipEffectLayers && cinematicEffectsEnabled() && montageDurations?.length === safeClips.length) {
+  if (!skipEffectLayers && cinematicEffectsEnabled() && !autoMotionLayer && montageDurations?.length === safeClips.length) {
     try {
       const photoCues = planPhotoShutterCues(
         safeClips,
@@ -15629,7 +15695,7 @@ async function composeSceneVideo(
   }
 
   try {
-    if (!skipEffectLayers && screenLabels.length > 0) {
+    if (!skipEffectLayers && (screenLabels.length > 0 || motionOverlayPlans.length > 0)) {
       const montageOnlyPath = path.join(workDir, `scene_${scene.index}_montage_v.mp4`);
       const useBatchedMontage =
         IS_RAILWAY && curatedArchiveOnlyVisuals() && !qualityOverSpeedEnabled() && composeClips.length > 4;
@@ -15658,14 +15724,24 @@ async function composeSceneVideo(
         );
       }
       const labeledPath = path.join(workDir, `scene_${scene.index}_labeled.mp4`);
-      await burnScreenLabelOverlaysSequential(
-        montageOnlyPath,
-        labeledPath,
-        screenLabels,
-        workDir,
-        FFMPEG_BIN,
-        (cmd, ms, lbl) => withTimeout(exec(cmd), ms, lbl)
-      );
+      if (motionOverlayPlans.length > 0) {
+        await burnMotionGraphicsOverlaysDrawtext(
+          montageOnlyPath,
+          labeledPath,
+          motionOverlayPlans,
+          FFMPEG_BIN,
+          (cmd, ms, lbl) => withTimeout(exec(cmd), ms, lbl)
+        );
+      } else {
+        await burnScreenLabelOverlaysSequential(
+          montageOnlyPath,
+          labeledPath,
+          screenLabels,
+          workDir,
+          FFMPEG_BIN,
+          (cmd, ms, lbl) => withTimeout(exec(cmd), ms, lbl)
+        );
+      }
       const audioFadeOutStart = Math.max(0, voiceDur - 0.15);
       const voiceAudioFilter =
         `[1:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${audioFadeOutStart.toFixed(3)}:d=0.12,` +
@@ -16850,10 +16926,15 @@ export async function runVideoPipeline(
     console.log(`[Pipeline] Stage 6 (upload): ${((Date.now()-t5)/1000).toFixed(1)}s, size: ${(videoBuffer.length/1024/1024).toFixed(1)}MB`);
 
     // Persist URL immediately so a crash during finalization cannot lose the finished video
+    const completionMeta =
+      visualDedup.motionGraphicsScenes.length > 0
+        ? mergeMotionGraphicsIntoMetadata(videoRow?.metadata, visualDedup.motionGraphicsScenes)
+        : undefined;
     await updateVideoStatus(videoId, "completed", {
       videoUrl: url,
       progressStep: STAGE_LABELS.complete,
       progressPercent: 100,
+      ...(completionMeta ? { metadata: completionMeta } : {}),
     }).catch((err) => console.warn(`[Pipeline] Failed to persist videoUrl for ${videoId}:`, err));
 
     onProgress?.({ stage: STAGE_LABELS.complete, percent: 100 });

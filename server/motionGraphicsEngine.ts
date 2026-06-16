@@ -11,7 +11,7 @@ import {
   DOC_STYLE_VIDEO_HEIGHT,
   DOC_STYLE_VIDEO_WIDTH,
 } from "./documentaryStyle";
-import { maxMotionGraphicsPerVideo, motionGraphicsInVideosEnabled } from "./sourcingPolicy";
+import { maxMotionGraphicsPerVideo, motionGraphicsInVideosEnabled, autoMotionGraphicsLayerEnabled } from "./sourcingPolicy";
 
 export type MotionGraphicKind = "text_card" | "map_card" | "news_card" | "portrait_cutout";
 
@@ -55,6 +55,7 @@ export function shouldUseMotionGraphicBeat(sceneIndex: number, beatIndex: number
 }
 
 export function motionGraphicsEnabled(): boolean {
+  if (autoMotionGraphicsLayerEnabled()) return false;
   return motionGraphicsInVideosEnabled();
 }
 

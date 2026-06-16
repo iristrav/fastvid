@@ -55,6 +55,8 @@ import {
   buildMatFramedStillVF,
   buildStillEncodeArgs,
   archiveStillKenBurnsVariant,
+  resolveStillKenBurnsVariant,
+  standardArchiveKenBurnsZoomEnd,
 } from "./documentaryStyle";
 import {
   resolveStillImageFilterComplex,
@@ -1140,11 +1142,14 @@ async function convertImageToKenBurns(
   } else {
     const fps = 25;
     const totalFrames = Math.max(50, Math.round(duration * fps));
-    const zoomEnd = 1.1;
+    const zoomEnd =
+      process.env.ENABLE_AUTO_MOTION_GRAPHICS !== "false"
+        ? standardArchiveKenBurnsZoomEnd(duration)
+        : 1.1;
     const zoomStep = (zoomEnd - 1.0) / totalFrames;
     const padW = Math.round(VIDEO_WIDTH * 1.12);
     const padH = Math.round(VIDEO_HEIGHT * 1.12);
-    const variant = archiveStillKenBurnsVariant(sceneIndex, beatIndex);
+    const variant = resolveStillKenBurnsVariant(sceneIndex, beatIndex);
     const yExpr = "ih/2-(ih/zoom/2)";
     const xExpr =
       variant === "pan-left"

@@ -100,6 +100,28 @@ export function archiveStillKenBurnsVariant(_sceneIndex = 0, _beatIndex = 0): Ke
   return "zoom-in";
 }
 
+/** Standard B-roll motion for generated videos — slow zoom only (no pan/rotate). */
+export function standardArchiveKenBurnsVariant(_sceneIndex = 0, _beatIndex = 0): KenBurnsVariant {
+  return "zoom-in";
+}
+
+/** Slower Ken Burns for documentary B-roll (~15% over clip duration). */
+export function standardArchiveKenBurnsZoomEnd(durationSec: number): number {
+  const t = Math.min(8, Math.max(3, durationSec));
+  return 1 + 0.15 * (t / 6);
+}
+
+function autoMotionGraphicsKenBurnsLocked(): boolean {
+  return process.env.ENABLE_AUTO_MOTION_GRAPHICS !== "false";
+}
+
+export function resolveStillKenBurnsVariant(sceneIndex: number, beatIndex: number): KenBurnsVariant {
+  if (autoMotionGraphicsKenBurnsLocked()) {
+    return standardArchiveKenBurnsVariant(sceneIndex, beatIndex);
+  }
+  return archiveStillKenBurnsVariant(sceneIndex, beatIndex);
+}
+
 /** Ken Burns zoompan — zoom 100%→120%, optional pan left/right. */
 export function buildKenBurnsTail(
   duration: number,
@@ -233,8 +255,10 @@ export function buildMatFramedStillVF(
 ): string {
   const w = DOC_STYLE_VIDEO_WIDTH;
   const h = DOC_STYLE_VIDEO_HEIGHT;
-  const variant = archiveStillKenBurnsVariant(sceneIndex, beatIndex);
-  const zoomEnd = Math.max(1.06, documentaryKenBurnsZoomEnd(duration));
+  const variant = resolveStillKenBurnsVariant(sceneIndex, beatIndex);
+  const zoomEnd = autoMotionGraphicsKenBurnsLocked()
+    ? standardArchiveKenBurnsZoomEnd(duration)
+    : Math.max(1.06, documentaryKenBurnsZoomEnd(duration));
   const ken = buildKenBurnsTail(duration, zoomEnd, "center", variant);
   return (
     `[0:v]scale='min(${w}*${photoScale}/iw\\,${h}*${photoScale}/ih)*iw':-2,` +

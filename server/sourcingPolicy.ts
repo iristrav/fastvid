@@ -205,6 +205,10 @@ export function motionGraphicsInVideosEnabled(): boolean {
   return process.env.ENABLE_MOTION_GRAPHICS !== "false";
 }
 
+export function autoMotionGraphicsLayerEnabled(): boolean {
+  return process.env.ENABLE_AUTO_MOTION_GRAPHICS !== "false";
+}
+
 export function maxMotionGraphicsPerVideo(): number {
   const raw = process.env.MAX_MOTION_GRAPHICS_PER_VIDEO?.trim();
   if (raw) {
