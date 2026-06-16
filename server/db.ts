@@ -12,7 +12,13 @@ let _db: ReturnType<typeof drizzle> | null = null;
 
 export async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
-    try { _db = drizzle(process.env.DATABASE_URL); }
+    const dbUrl = process.env.DATABASE_URL;
+    // Only connect to MySQL URLs — skip PostgreSQL or other DBs
+    if (!dbUrl.startsWith("mysql://") && !dbUrl.startsWith("mysql2://")) {
+      console.warn("[Database] DATABASE_URL is not a MySQL URL (got:", dbUrl.split("://")[0] + "://...), skipping DB connection");
+      return null;
+    }
+    try { _db = drizzle(dbUrl); }
     catch (error) { console.warn("[Database] Failed to connect:", error); _db = null; }
   }
   return _db;

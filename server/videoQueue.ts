@@ -111,6 +111,8 @@ export async function processQueueTick(): Promise<void> {
           void processQueueTick();
         });
     }
+  } catch (err) {
+    console.warn("[VideoQueue] Queue tick error (DB may be unavailable):", (err as Error).message);
   } finally {
     tickInFlight = false;
   }
