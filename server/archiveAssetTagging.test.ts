@@ -4,6 +4,7 @@ import {
   flattenArchiveAiMetadata,
   inferArchiveMediaMime,
   mergeArchiveTags,
+  selectHighQualityArchiveTags,
   truncateArchiveSourceNote,
 } from "./archiveAssetTagging";
 
@@ -16,34 +17,41 @@ describe("archiveAssetTagging", () => {
     expect(merged.filter((t) => t === "titanic")).toHaveLength(1);
   });
 
-  it("flattenArchiveAiMetadata merges all structured fields into tags", () => {
+  it("selectHighQualityArchiveTags returns at most 4 specific tags", () => {
+    const tags = selectHighQualityArchiveTags({
+      title: "Berlin U-Bahn platform rush hour",
+      tags: ["berlin metro transit", "subway platform", "commuters waiting", "germany transit"],
+      persons: ["commuters"],
+      countries: ["germany"],
+      cities: ["berlin"],
+      actions: ["waiting"],
+      objects: ["subway train"],
+    });
+    expect(tags.length).toBeLessThanOrEqual(ARCHIVE_MAX_TAGS);
+    expect(tags.length).toBeGreaterThanOrEqual(2);
+    expect(tags).not.toContain("person");
+    expect(tags).not.toContain("city");
+  });
+
+  it("flattenArchiveAiMetadata stores at most 4 tags with rich description", () => {
     const flat = flattenArchiveAiMetadata({
       title: "Berlin U-Bahn platform rush hour",
       description: "Commuters on a modern subway platform.",
-      tags: ["berlin", "metro", "transit"],
-      persons: ["commuters", "passengers"],
+      tags: ["berlin metro transit", "subway platform berlin", "commuters waiting", "germany transit"],
+      persons: ["commuters"],
       countries: ["germany"],
       cities: ["berlin"],
       events: [],
-      locations: ["berlin", "germany", "u-bahn station"],
-      objects: ["subway train", "platform", "signage"],
-      actions: ["waiting", "boarding", "train arriving"],
+      locations: ["u-bahn station"],
+      objects: ["subway train"],
+      actions: ["waiting"],
       era: "modern day",
       setting: "indoor platform",
       sceneType: "transit",
-      visualDetails: ["yellow safety line", "tiled walls", "digital display"],
-      mood: "busy",
-      camera: "wide static",
-      colors: ["white", "yellow"],
     });
     expect(flat).not.toBeNull();
-    expect(flat!.tags).toContain("berlin");
-    expect(flat!.tags).toContain("germany");
-    expect(flat!.tags).toContain("u-bahn station");
-    expect(flat!.tags).toContain("modern day");
-    expect(flat!.tags).toContain("transit");
-    expect(flat!.tags).toContain("train arriving");
-    expect(flat!.tags.length).toBeGreaterThanOrEqual(12);
+    expect(flat!.tags.length).toBeLessThanOrEqual(ARCHIVE_MAX_TAGS);
+    expect(flat!.tags).toContain("berlin metro transit");
     expect(flat!.description).toMatch(/Countries:|Cities:|Setting:|Era:/);
   });
 
@@ -51,28 +59,17 @@ describe("archiveAssetTagging", () => {
     const flat = flattenArchiveAiMetadata({
       title: "Adolf Hitler speech at Nuremberg rally",
       description: "Hitler addresses crowd at Nazi party rally.",
-      tags: ["hitler", "nazi", "rally"],
+      tags: ["hitler nuremberg speech", "nazi rally germany", "propaganda stadium", "1930s germany"],
       persons: ["adolf hitler"],
       countries: ["germany"],
       cities: ["nuremberg"],
-      events: ["nuremberg rally", "nazi party congress"],
-      locations: ["nuremberg stadium", "germany"],
-      objects: ["podium", "swastika flags", "microphone"],
-      actions: ["speech", "salute"],
+      events: ["nuremberg rally"],
+      actions: ["speech"],
       era: "1930s",
-      setting: "outdoor stadium",
       sceneType: "speech",
-      visualDetails: ["propaganda banners", "uniformed crowd"],
-      mood: "propaganda",
-      camera: "black and white archival",
-      colors: ["black and white"],
     });
-    expect(flat!.tags).toContain("hitler");
-    expect(flat!.tags).toContain("adolf hitler");
-    expect(flat!.tags).toContain("germany");
-    expect(flat!.tags).toContain("nuremberg");
-    expect(flat!.tags).toContain("nuremberg rally");
-    expect(flat!.tags).toContain("propaganda");
+    expect(flat!.tags.length).toBeLessThanOrEqual(ARCHIVE_MAX_TAGS);
+    expect(flat!.tags.some((t) => t.includes("hitler") || t.includes("nuremberg"))).toBe(true);
     expect(flat!.description).toMatch(/Events:|Countries:|Cities:/);
     expect(flat!.tags).not.toContain("modern city");
   });
@@ -81,20 +78,20 @@ describe("archiveAssetTagging", () => {
     const flat = flattenArchiveAiMetadata({
       title: "",
       description: "Crowd at a rally.",
-      tags: ["nuremberg rally", "germany", "1930s"],
+      tags: ["nuremberg rally germany", "hitler speech stadium", "1930s propaganda", "germany nuremberg"],
       persons: ["adolf hitler"],
       countries: ["germany"],
       cities: ["nuremberg"],
     });
     expect(flat).not.toBeNull();
     expect(flat!.title.length).toBeGreaterThan(3);
-    expect(flat!.tags).toContain("germany");
+    expect(flat!.tags.length).toBeLessThanOrEqual(ARCHIVE_MAX_TAGS);
   });
 
   it("respects ARCHIVE_MAX_TAGS cap", () => {
-    const many = Array.from({ length: 60 }, (_, i) => `tag${i}`);
+    const many = Array.from({ length: 20 }, (_, i) => `tag${i}`);
     const merged = mergeArchiveTags([], many);
-    expect(merged.length).toBeLessThanOrEqual(ARCHIVE_MAX_TAGS);
+    expect(merged.length).toBe(ARCHIVE_MAX_TAGS);
   });
 
   it("inferArchiveMediaMime falls back to extension when type is empty", () => {

@@ -220,8 +220,9 @@ export function buildBeatMatchTags(
   const sentenceTags = tokenizeBeatText(beat.text);
   const queryTokens = beat.searchQuery ? tokenizeBeatText(beat.searchQuery) : [];
   const beatTags = normalizeMediaTags([
-    ...anchorTokens,
     ...queryTokens,
+    ...queryTokens,
+    ...anchorTokens,
     ...sentenceTags,
     ...tokenizeBeatText(beatRaw).filter((t) => !topicAnchors.includes(t) || beat.text.toLowerCase().includes(t)),
   ]).slice(0, 20);
@@ -1225,7 +1226,10 @@ export async function searchCuratedCandidatesForBeat(
     { strict: true }
   );
 
-  const matchTags = extractVisualSearchTags(beat.text);
+  const matchTags = normalizeMediaTags([
+    ...(beat.searchQuery ? tokenizeBeatText(beat.searchQuery) : []),
+    ...extractVisualSearchTags(beat.text),
+  ]);
   if (matchTags.length > 0) {
     const matched = ranked.filter((p) => countVisualTagHits(p.asset, matchTags) > 0);
     if (matched.length > 0) {

@@ -433,7 +433,7 @@ export function ArchiveClipsGrid({
     const CHUNK = 8;
     setAutoTitleRunning(true);
     setAutoTitleProgress({ done: 0, total: targetIds.length });
-    const loadingToast = toast.loading(`Starting AI titles (${targetIds.length} clips)…`);
+    const loadingToast = toast.loading(`Starting AI titles + 4 tags (${targetIds.length} clips)…`);
     let updated = 0;
     let skipped = 0;
     let failed = 0;
@@ -477,7 +477,7 @@ export function ArchiveClipsGrid({
             }) || "AI could not generate titles for these clips",
         });
       } else {
-        toast.success(`${updated} clip(s) titled`, {
+        toast.success(`${updated} clip(s) updated (title + 4 tags)`, {
           description:
             describeAutoTitleOutcome({
               updated,
@@ -585,7 +585,7 @@ export function ArchiveClipsGrid({
             type="button"
             onClick={runAutoTitleAll}
             disabled={autoTitleRunning}
-            title="Thorough AI analysis: exact people, countries, cities, events (takes longer, more frames)"
+            title="AI title + exactly 4 high-quality English search tags per clip"
             className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg bg-cyan-500/15 text-cyan-300 border border-cyan-500/25 hover:bg-cyan-500/25 disabled:opacity-50"
           >
             {autoTitleRunning ? (
@@ -596,8 +596,8 @@ export function ArchiveClipsGrid({
             {autoTitleRunning && autoTitleProgress
               ? `AI ${autoTitleProgress.done}/${autoTitleProgress.total}`
               : selectedCount > 0
-                ? `AI titles (${selectedCount})`
-                : "AI titles & tags"}
+                ? `AI titles + 4 tags (${selectedCount})`
+                : "AI titles + 4 tags"}
           </button>
         )}
         {assets.length > 1 && (

@@ -7565,7 +7565,8 @@ function buildBeatVisualQueryList(
   scene: Scene,
   videoTitle: string | undefined,
   scenePersons: string[],
-  maxQueries: number
+  maxQueries: number,
+  primaryQuery?: string
 ): string[] {
   const beatPersons = [
     ...new Set([
@@ -7605,7 +7606,9 @@ function buildBeatVisualQueryList(
         ].filter((q): q is string => typeof q === "string" && q.length > 2)
       : [];
 
+  const llmQuery = primaryQuery?.trim().toLowerCase() ?? "";
   const ordered = [
+    ...(llmQuery.length > 2 && !isBlockedStockQuery(llmQuery) ? [llmQuery] : []),
     ...urbanQueries,
     powerQ,
     ...scriptQueries,
@@ -9656,6 +9659,12 @@ function enrichStockQuery(
   personName?: string,
   beatText?: string
 ): string {
+  const trimmed = query?.trim().toLowerCase() ?? "";
+  const wordCount = trimmed.split(/\s+/).filter(Boolean).length;
+  // Keep LLM per-sentence keywords — do not replace with script heuristics.
+  if (trimmed.length >= 3 && wordCount >= 2 && wordCount <= 6 && !isBlockedStockQuery(trimmed)) {
+    return trimmed;
+  }
   if (beatText?.trim()) {
     const persons = personName ? [personName, ...(scene.personNames ?? [])] : (scene.personNames ?? []);
     const fromScript = scriptStockSearchQueries(beatText, persons, scene.text, videoTitle);
@@ -9674,8 +9683,14 @@ function tokenizeForRelevance(text: string): string[] {
     .filter((w) => w.length >= 3 && !RELEVANCE_STOP_WORDS.has(w));
 }
 
-function buildRelevanceKeywords(scene: Scene, beatText: string, videoTitle?: string): string[] {
+function buildRelevanceKeywords(
+  scene: Scene,
+  beatText: string,
+  videoTitle?: string,
+  stockQuery?: string
+): string[] {
   const parts = [
+    ...tokenizeForRelevance(stockQuery ?? ""),
     ...tokenizeForRelevance(beatText),
     ...tokenizeForRelevance(scene.visualCue),
     ...tokenizeForRelevance(scene.pexelsQuery),
@@ -9789,12 +9804,21 @@ function buildSceneBeats(
       searchQuery = stockQueryFromBeatScript(text, scenePersons, scene.text, videoTitle);
     }
     let holdSec = estimateBeatHoldSec(text, groups[i].sentenceCount);
+    if (sentenceKeywords && !llmKeyword) {
+      console.warn(
+        `[Pipeline] Beat ${i}: no stored visual keyword for "${text.slice(0, 55).trim()}…" — using fallback query "${searchQuery}"`
+      );
+    } else if (llmKeyword) {
+      console.log(
+        `[Pipeline] Beat ${i}: visual keyword "${llmKeyword}" ← "${text.slice(0, 55).trim()}…"`
+      );
+    }
     beats.push({
       index: i,
       text,
       searchQuery,
       powerWord,
-      keywords: buildRelevanceKeywords(scene, text),
+      keywords: buildRelevanceKeywords(scene, text, videoTitle, searchQuery),
       holdSec,
     });
   }
@@ -10176,7 +10200,8 @@ async function fetchUniqueStockForBeatInner(
 
   const queryCap = perf.minimizeStockFootage ? 1 : perf.fastStockMode ? 4 : 6;
   const queries = [
-    ...buildBeatVisualQueryList(beat.text, scene, videoTitle, scenePersons, queryCap),
+    beat.searchQuery,
+    ...buildBeatVisualQueryList(beat.text, scene, videoTitle, scenePersons, queryCap, beat.searchQuery),
     ...(muskTopic ? GOLDEN_MUSK_QUERIES.slice(0, perf.fastStockMode ? 2 : 4) : []),
     enrichStockQuery(scene.pexelsQuery, scene, videoTitle, personName, beat.text),
     stockQueryFromBeatScript(beat.text, scenePersons, scene.text, videoTitle),
@@ -12145,7 +12170,7 @@ async function fetchBeatStockFallback(
     enrichStockQuery(beat.powerWord, scene, videoTitle, personName, beat.text),
     scene.visualCue,
     scene.pexelsQuery,
-    ...buildBeatVisualQueryList(beat.text, scene, videoTitle, scenePersons, 3),
+    ...buildBeatVisualQueryList(beat.text, scene, videoTitle, scenePersons, 3, beat.searchQuery),
   ].filter((q): q is string => typeof q === "string" && q.trim().length > 2 && !isBlockedStockQuery(q));
   const unique = [...new Set(queries)].slice(0, 3);
   const tag = `b${beat.index}_stock`;
@@ -13173,15 +13198,22 @@ async function adoptPexelsBeatClipFallback(
     ? buildSemanticPexelsQueries(beat.text, semanticProfile, 8, videoTitle)
     : [];
   const geoQueries = buildGeoStockSearchQueries(beat.text, videoTitle);
-  const scriptQueries = buildBeatVisualQueryList(beat.text, scene, videoTitle, scenePersons, 6);
+  const scriptQueries = buildBeatVisualQueryList(
+    beat.text,
+    scene,
+    videoTitle,
+    scenePersons,
+    6,
+    beat.searchQuery
+  );
   const queries = [
     ...new Set(
       [
+        beat.searchQuery,
+        beat.powerWord,
         ...geoQueries,
         ...semanticQueries,
         ...scriptQueries,
-        beat.searchQuery,
-        beat.powerWord,
         enrichStockQuery(scene.pexelsQuery, scene, videoTitle, scenePersons[0] ?? "", beat.text),
       ]
         .filter((q): q is string => typeof q === "string" && q.trim().length > 2 && !isBlockedStockQuery(q))

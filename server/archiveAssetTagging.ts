@@ -90,7 +90,7 @@ const TAG_JSON_SCHEMA_LIGHT = {
 } as const;
 
 /** Max searchable tags stored per asset (pipeline + semantic matching). */
-export const ARCHIVE_MAX_TAGS = 56;
+export const ARCHIVE_MAX_TAGS = 4;
 
 /** Vision LLM timeout — quality over speed; override via env. */
 function archiveVisionTimeoutMs(frameCount: number): number {
@@ -104,7 +104,63 @@ export function archiveAiTaggingEnabled(): boolean {
 }
 
 export function mergeArchiveTags(userTags: string[], aiTags: string[]): string[] {
-  return normalizeMediaTags([...userTags, ...aiTags]).slice(0, ARCHIVE_MAX_TAGS);
+  return normalizeMediaTags([...aiTags, ...userTags]).slice(0, ARCHIVE_MAX_TAGS);
+}
+
+const VAGUE_ARCHIVE_TAG_RE =
+  /\b(man|woman|person|people|leader|city|street|urban|historical|modern|busy|outdoor|indoor|scene|footage|video|clip|documentary|generic|abstract|success|growth|strategy|business|company|building|day|night)\b/i;
+
+function isSpecificArchiveTag(tag: string): boolean {
+  const normalized = tag.trim().toLowerCase();
+  if (normalized.length < 3) return false;
+  const words = normalized.split(/\s+/).filter(Boolean);
+  if (words.length === 1 && VAGUE_ARCHIVE_TAG_RE.test(normalized)) return false;
+  return true;
+}
+
+/** Pick up to 4 concrete English search tags for archive/Pexels matching. */
+export function selectHighQualityArchiveTags(parsed: ArchiveAiVisionPayload): string[] {
+  const picked: string[] = [];
+  const push = (raw: string | undefined | null) => {
+    const v = raw?.trim().toLowerCase().replace(/\s+/g, " ");
+    if (!v || !isSpecificArchiveTag(v)) return;
+    if (picked.includes(v)) return;
+    picked.push(v);
+  };
+
+  for (const tag of parsed.tags ?? []) {
+    push(tag);
+    if (picked.length >= ARCHIVE_MAX_TAGS) break;
+  }
+
+  const person = parsed.persons?.[0];
+  const city = parsed.cities?.[0];
+  const country = parsed.countries?.[0];
+  const event = parsed.events?.[0];
+  const action = parsed.actions?.[0];
+  const object = parsed.objects?.[0];
+  const location = parsed.locations?.[0];
+  const sceneType = parsed.sceneType;
+
+  if (person && action) push(`${person} ${action}`);
+  else if (person) push(person);
+
+  if (city && country && city !== country) push(`${city} ${country}`);
+  else if (city) push(city);
+  else if (country) push(country);
+
+  if (event) push(event);
+  if (location) push(location);
+  if (action && !person) push(action);
+  if (object) push(object);
+  if (sceneType) push(sceneType);
+
+  for (const tag of parsed.tags ?? []) {
+    push(tag);
+    if (picked.length >= ARCHIVE_MAX_TAGS) break;
+  }
+
+  return normalizeMediaTags(picked).slice(0, ARCHIVE_MAX_TAGS);
 }
 
 export function truncateArchiveSourceNote(note: string | null | undefined): string | null {
@@ -112,15 +168,6 @@ export function truncateArchiveSourceNote(note: string | null | undefined): stri
   return note.trim().slice(0, 512);
 }
 
-function pushTag(bucket: string[], raw: string | undefined | null): void {
-  const v = raw?.trim().toLowerCase();
-  if (!v || v.length < 2) return;
-  bucket.push(v);
-}
-
-function pushTags(bucket: string[], items: string[] | undefined): void {
-  for (const item of items ?? []) pushTag(bucket, item);
-}
 
 function deriveArchiveTitle(parsed: ArchiveAiVisionPayload): string {
   const direct = parsed.title?.trim();
@@ -147,35 +194,11 @@ export function flattenArchiveAiMetadata(parsed: ArchiveAiVisionPayload): Archiv
   const title = deriveArchiveTitle(parsed);
   if (!title) return null;
 
-  const tagParts: string[] = [];
-  // Identity tags first so they survive the cap when many visual details exist.
-  pushTags(tagParts, parsed.persons);
-  pushTags(tagParts, parsed.countries);
-  pushTags(tagParts, parsed.cities);
-  pushTags(tagParts, parsed.events);
-  pushTags(tagParts, parsed.locations);
-  pushTags(tagParts, parsed.tags);
-  pushTags(tagParts, parsed.objects);
-  pushTags(tagParts, parsed.actions);
-  pushTags(tagParts, parsed.visualDetails);
-  pushTags(tagParts, parsed.colors);
-  pushTag(tagParts, parsed.era);
-  pushTag(tagParts, parsed.setting);
-  pushTag(tagParts, parsed.sceneType);
-  pushTag(tagParts, parsed.mood);
-  pushTag(tagParts, parsed.camera);
-
-  // Derive extra slugs from title words (4+ chars)
-  for (const w of title.split(/\s+/)) {
-    if (w.length >= 4) pushTag(tagParts, w);
-  }
-
-  let tags = normalizeMediaTags(tagParts);
+  let tags = selectHighQualityArchiveTags(parsed);
   if (tags.length === 0) {
-    tags = normalizeMediaTags(title.split(/\s+/).filter((w) => w.length > 2));
+    tags = normalizeMediaTags(title.split(/\s+/).filter((w) => w.length > 3)).slice(0, ARCHIVE_MAX_TAGS);
   }
   if (tags.length === 0) return null;
-  tags = tags.slice(0, ARCHIVE_MAX_TAGS);
 
   const detailBits = [
     parsed.description?.trim(),
@@ -458,7 +481,8 @@ async function invokeArchiveVisionTagging(
         {
           role: "system",
           content:
-            "You are a senior documentary archivist and historian. Analyze each frame carefully. Precision over speed: name exact people, countries, cities, and historical events when recognizable. Return JSON only.",
+            "You are a senior documentary archivist. Analyze each frame and return JSON only. " +
+            "Provide exactly 4 high-quality English search tags per clip — concrete visible subjects for stock/archive search, not vague words.",
         },
         {
           role: "user",
@@ -526,34 +550,23 @@ function buildVisionPrompt(
   frameCount = 1
 ): string {
   const lines = [
-    "Describe EVERYTHING you see for a documentary archive. Take your time — precise identification matters more than speed.",
+    "Analyze this clip for a documentary media archive.",
     "",
-    "title: max 15 words, concrete WHO/WHAT/WHERE (e.g. 'Adolf Hitler speech at Nuremberg rally' or 'Berlin Alexanderplatz tram traffic'). No filename.",
-    "description: 2–3 sentences: action + exact location + era + event if recognizable.",
+    "title: max 15 words, concrete WHO/WHAT/WHERE (e.g. 'Amsterdam cyclists on canal bridge' or 'Hitler speech at Nuremberg rally'). No filename.",
+    "description: 2–3 sentences: visible action + location + era if recognizable.",
     "",
-    "IDENTITY — fill as precisely as possible (recognizable names, not vague terms):",
-    "- persons: full names or unique roles (adolf hitler, winston churchill, german soldier, berlin commuter). Not 'man' or 'leader' if you know who it is.",
-    "- countries: country names (germany, united states, france, soviet union). Always explicit country, not just 'europe'.",
-    "- cities: city names (berlin, nuremberg, paris, new york). Always explicit city when visible or inferable.",
-    "- events: historical events (nuremberg rally, battle of berlin, berlin wall fall, d-day, cold war). Only when appropriate to the image.",
+    "tags: EXACTLY 4 high-quality English search slugs (lowercase). These are the most important output.",
+    "Each tag must be concrete and visually searchable — optimized for Pexels and archive matching.",
+    "Examples: amsterdam cyclists rain | business meeting team | subway platform berlin | entrepreneur working laptop",
+    "Do NOT use vague tags alone: person, people, city, street, success, growth, strategy, business, company, modern, historical.",
     "",
-    "OTHER — fill ALL fields; empty arrays only when truly not applicable:",
-    "- tags: 15–25 search slugs (lowercase, English), including person+place+event combinations",
-    "- locations: landmarks, buildings, regions (reichstag, alexanderplatz, brandenburg gate, u-bahn)",
-    "- objects: vehicles, uniforms, flags, signs, weapons, skyline, tram",
-    "- actions: marching, speech, salute, city traffic, train arriving, evacuation",
-    "- era: exact year/decade (1936, 1940s, 1989, modern day, 2020s)",
-    "- setting: indoor/outdoor/street/stadium/bunker/skyline/platform",
-    "- sceneType: parade/speech/cityscape/transit/battle/ruins/portrait/propaganda",
-    "- visualDetails: swastika flag, wehrmacht uniform, cobblestone, glass towers",
-    "- mood: triumphant, somber, busy, propaganda, peaceful",
-    "- camera: wide aerial, close-up, tracking, black and white archival",
-    "- colors: dominant colors or black and white",
+    "Also fill structured fields to support title/description (arrays can be short):",
+    "- persons, countries, cities, events, locations, objects, actions, era, setting, sceneType",
     "",
     "Rules:",
-    "- Urban geography: tag modern city, skyline, transit — no WWII unless truly visible.",
-    "- WWII: hitler/nazi/wehrmacht ONLY when truly on screen; then also name country, city, and event.",
-    "- Prefer too specific over too vague: 'adolf hitler nuremberg 1936' > 'historical figure'.",
+    "- Prefer specific combinations: 'amsterdam canal bikes' over separate tags 'amsterdam' + 'city'.",
+    "- Name exact people/places/events only when clearly visible.",
+    "- Urban/modern clips: tag the place + visible activity (transit, cycling, skyline), not WWII unless shown.",
   ];
   if (frameCount > 1) {
     lines.push(`You receive ${frameCount} frames from the same video — combine into one complete tag set.`);
