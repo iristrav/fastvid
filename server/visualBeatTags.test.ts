@@ -7,6 +7,8 @@ import {
   extractVisualSearchTags,
   extractVoiceLabelTerms,
   inferVideoVisualTopic,
+  isGeoWelcomeBeat,
+  buildGeoWelcomeVisualQueries,
   isWrongGeoForBeat,
   isWwiiWarArchiveAsset,
   termStartInBeat,
@@ -107,5 +109,14 @@ describe("visualBeatTags", () => {
         mediaType: "video",
       })
     ).toBe(false);
+  });
+
+  it("detects geo welcome intro beats and builds landscape queries", () => {
+    const text = "Welcome to the Netherlands.";
+    expect(isGeoWelcomeBeat(text)).toBe(true);
+    expect(inferVideoVisualTopic(undefined, text)).toBe("geography_urban");
+    expect(buildGeoWelcomeVisualQueries(text)).toEqual(
+      expect.arrayContaining(["netherlands landscape aerial", "amsterdam canal netherlands skyline"])
+    );
   });
 });

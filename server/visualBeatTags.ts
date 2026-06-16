@@ -122,6 +122,7 @@ export function extractSalientBeatTokens(beatText: string): string[] {
 
 export function inferVideoVisualTopic(videoTitle?: string, extraText?: string): VideoVisualTopic {
   const hay = `${videoTitle ?? ""} ${extraText ?? ""}`.toLowerCase();
+  if (isGeoWelcomeBeat(hay)) return "geography_urban";
   if (/hitler|nazi|wwii|ww2|world war ii|second world war|holocaust|third reich|wehrmacht|fuhrer|führer/.test(hay)) {
     return "wwii";
   }
@@ -284,6 +285,50 @@ export function extractBeatGeoPlaceTags(beatText: string): string[] {
     }
   }
   return [...tags];
+}
+
+const GEO_WELCOME_RE =
+  /\b(welcome|welkom)\b(?:\s+\w+){0,3}\s+\b(to|naar|in)\b|\b(welkom|welcome)\s+(in|naar)\b/i;
+
+/** Intro line naming a country/city — should show a landscape still with blur background. */
+export function isGeoWelcomeBeat(beatText: string): boolean {
+  const cleaned = beatText.replace(/\[visual:[^\]]+\]/gi, " ").trim();
+  if (!cleaned) return false;
+  if (!GEO_WELCOME_RE.test(cleaned)) return false;
+  return extractBeatGeoPlaceTags(cleaned).length > 0;
+}
+
+/** Stock/archive queries for "Welcome to {place}" — landscape photo, not abstract b-roll. */
+export function buildGeoWelcomeVisualQueries(beatText: string): string[] {
+  const geoTags = extractBeatGeoPlaceTags(beatText);
+  const queries: string[] = [];
+  const lower = beatText.toLowerCase();
+
+  const wantsNl = geoTags.some((t) =>
+    /netherlands|holland|amsterdam|dutch|nederland|rotterdam|utrecht|hague|den haag/.test(t)
+  );
+  const wantsUs = geoTags.some((t) => /america|usa|united states|american/.test(t));
+
+  if (wantsNl) {
+    queries.push(
+      "netherlands landscape aerial",
+      "amsterdam canal netherlands skyline",
+      "dutch countryside windmill landscape",
+      "netherlands tulip fields aerial"
+    );
+  }
+  if (wantsUs) {
+    queries.push("united states landscape aerial", "american city skyline panorama");
+  }
+  if (/berlin|berlijn/i.test(lower) || geoTags.includes("berlin")) {
+    queries.push("berlin skyline aerial landmark", "berlin city panorama");
+  }
+
+  for (const tag of geoTags.slice(0, 3)) {
+    queries.push(`${tag} landscape aerial`, `${tag} city skyline panorama`);
+  }
+
+  return [...new Set(queries.filter((q) => q.length >= 4))].slice(0, 10);
 }
 
 const NL_GEO_SLUGS = [

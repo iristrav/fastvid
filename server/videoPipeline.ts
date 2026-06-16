@@ -55,7 +55,7 @@ import {
   stillOutputFrameCount,
   type TimedOverlay,
 } from "./documentaryStyle";
-import { extractPrimaryGeoSearchTag, extractPrimaryVisualAnchor, extractSceneSearchTags, inferVideoVisualTopic } from "./visualBeatTags";
+import { extractPrimaryGeoSearchTag, extractPrimaryVisualAnchor, extractSceneSearchTags, inferVideoVisualTopic, isGeoWelcomeBeat, buildGeoWelcomeVisualQueries } from "./visualBeatTags";
 import {
   buildCinematicOverlays,
   buildBeatAlignedYearOverlays,
@@ -7536,6 +7536,15 @@ function extractPowerWordFromSentence(sentence: string, persons: string[] = []):
     if (ev.length >= 3) return ev;
   }
 
+  const geo = extractPrimaryGeoSearchTag(clean);
+  if (geo) {
+    if (isGeoWelcomeBeat(clean)) {
+      const welcome = buildGeoWelcomeVisualQueries(clean)[0];
+      if (welcome) return welcome;
+    }
+    return geo;
+  }
+
   const tokens = tokenizeForRelevance(clean);
   const scoreToken = (w: string): number => {
     if (DUTCH_STOCK_WORD_MAP[w]) return 120;
@@ -9802,6 +9811,13 @@ function buildSceneBeats(
     let searchQuery = llmKeyword ?? visualAnchor ?? geoTag ?? simplifyStockSearchWord(powerWord, text, true);
     if (!searchQuery || isBlockedStockQuery(searchQuery)) {
       searchQuery = stockQueryFromBeatScript(text, scenePersons, scene.text, videoTitle);
+    }
+    if (isGeoWelcomeBeat(text)) {
+      const welcomeQs = buildGeoWelcomeVisualQueries(text);
+      if (welcomeQs[0]) {
+        searchQuery = welcomeQs[0];
+        powerWord = welcomeQs[0];
+      }
     }
     let holdSec = estimateBeatHoldSec(text, groups[i].sentenceCount);
     if (sentenceKeywords && !llmKeyword) {
@@ -13198,6 +13214,7 @@ async function adoptPexelsBeatClipFallback(
     ? buildSemanticPexelsQueries(beat.text, semanticProfile, 8, videoTitle)
     : [];
   const geoQueries = buildGeoStockSearchQueries(beat.text, videoTitle);
+  const welcomeQueries = isGeoWelcomeBeat(beat.text) ? buildGeoWelcomeVisualQueries(beat.text) : [];
   const scriptQueries = buildBeatVisualQueryList(
     beat.text,
     scene,
@@ -13209,6 +13226,7 @@ async function adoptPexelsBeatClipFallback(
   const queries = [
     ...new Set(
       [
+        ...welcomeQueries,
         beat.searchQuery,
         beat.powerWord,
         ...geoQueries,
@@ -13463,6 +13481,88 @@ async function backfillComposeMontageIfShort(
   }
 }
 
+async function adoptGeoWelcomeIntroBeat(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  videoTitle: string | undefined,
+  dedup: VisualDedupState,
+  pushClip: (clipPath: string, holdSec?: number) => boolean | Promise<boolean>,
+  holdSec: number,
+  semanticProfile?: BeatSemanticProfile
+): Promise<boolean> {
+  if (!isGeoWelcomeBeat(beat.text)) return false;
+
+  const welcomeQs = buildGeoWelcomeVisualQueries(beat.text);
+  const welcomeBeat: SceneBeat = {
+    ...beat,
+    searchQuery: welcomeQs[0] ?? beat.searchQuery,
+    powerWord: welcomeQs[0] ?? beat.powerWord,
+  };
+
+  console.log(
+    `[Pipeline] Scene ${scene.index} zin ${beat.index}: geo welcome intro → ${welcomeBeat.searchQuery}`
+  );
+
+  if (
+    await adoptArchiveBeatClip(
+      welcomeBeat,
+      scene,
+      workDir,
+      videoTitle,
+      dedup,
+      pushClip,
+      null,
+      holdSec,
+      semanticProfile
+    )
+  ) {
+    return true;
+  }
+
+  const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
+  const still = await fetchBeatScriptImageClip(
+    welcomeBeat,
+    scene,
+    workDir,
+    scene.index,
+    4,
+    dedup,
+    scenePersons,
+    videoTitle,
+    {
+      keywords: welcomeBeat.keywords,
+      sceneText: scene.text,
+      videoTitle,
+      requireBeatMatch: false,
+      scriptAnchored: false,
+      scriptImageFallback: true,
+    },
+    `b${beat.index}_geo_welcome`
+  );
+  if (still && !isPipelineFallbackClip(still)) {
+    return await pushClip(still, holdSec);
+  }
+
+  if (
+    await adoptPexelsBeatClipFallback(
+      welcomeBeat,
+      scene,
+      workDir,
+      videoTitle,
+      dedup,
+      pushClip,
+      holdSec,
+      semanticProfile,
+      "geo-first"
+    )
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
 async function fetchArchiveSentenceMontage(
   scene: Scene,
   workDir: string,
@@ -13522,6 +13622,18 @@ async function fetchArchiveSentenceMontage(
       pushSceneClip(clipPath, holdSec, beat.index);
 
     let filled = false;
+    if (isGeoWelcomeBeat(beat.text)) {
+      filled = await adoptGeoWelcomeIntroBeat(
+        beat,
+        scene,
+        workDir,
+        videoTitle,
+        dedup,
+        pushClip,
+        beat.holdSec,
+        semanticProfiles.get(bi)
+      );
+    }
     for (let attempt = 0; attempt < ARCHIVE_BEAT_CLIP_RETRIES && !filled; attempt++) {
       filled = await adoptArchiveBeatClip(
         beat,

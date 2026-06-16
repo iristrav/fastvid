@@ -2,7 +2,7 @@
  * Curated media archive — pick tagged assets from admin libraries for pipeline beats.
  */
 import { exec as execCb } from "child_process";
-import { extractVisualSearchTags, extractSceneSearchTags, extractEntitySearchTags, extractPrimaryVisualAnchor, extractSalientBeatTokens, extractRequiredVisualTags, extractBeatGeoPlaceTags, isGenericPeopleAsset, isWrongGeoForBeat, inferVideoVisualTopic, isWwiiWarArchiveAsset, refineVisualSearchTagsForTopic, type VideoVisualTopic } from "./visualBeatTags";
+import { extractVisualSearchTags, extractSceneSearchTags, extractEntitySearchTags, extractPrimaryVisualAnchor, extractSalientBeatTokens, extractRequiredVisualTags, extractBeatGeoPlaceTags, isGenericPeopleAsset, isWrongGeoForBeat, inferVideoVisualTopic, isWwiiWarArchiveAsset, refineVisualSearchTagsForTopic, isGeoWelcomeBeat, buildGeoWelcomeVisualQueries, type VideoVisualTopic } from "./visualBeatTags";
 import { promisify } from "util";
 import fetch from "node-fetch";
 import * as fs from "fs";
@@ -900,8 +900,14 @@ export async function listCuratedArchiveCandidates(
 }
 
 export function orderCuratedCandidatesForBeat(
-  candidates: CuratedCandidatePick[]
+  candidates: CuratedCandidatePick[],
+  preferImages = false
 ): CuratedCandidatePick[] {
+  if (preferImages) {
+    const images = candidates.filter((c) => c.asset.mediaType === "image");
+    const videos = candidates.filter((c) => c.asset.mediaType === "video");
+    if (images.length > 0) return [...images, ...videos];
+  }
   if (!archivePreferVideoClips()) return candidates;
   const videos = candidates.filter((c) => c.asset.mediaType === "video");
   const images = candidates.filter((c) => c.asset.mediaType === "image");
@@ -1217,7 +1223,7 @@ export async function searchCuratedCandidatesForBeat(
   );
 
   let ranked = rankCuratedCandidatesForBeat(
-    orderCuratedCandidatesForBeat(listed),
+    orderCuratedCandidatesForBeat(listed, isGeoWelcomeBeat(beat.text)),
     beatTags,
     topicAnchors,
     beat.text,
@@ -1462,6 +1468,7 @@ export function shouldTryPexelsFirstForBeat(
   videoVisualTopic: VideoVisualTopic
 ): boolean {
   if (!archivePexelsHybridEnabled()) return false;
+  if (isGeoWelcomeBeat(beatText)) return false;
   const geoTags = extractBeatGeoPlaceTags(beatText);
   return geoTags.length > 0 && videoVisualTopic === "geography_urban";
 }
@@ -1494,6 +1501,10 @@ export function buildGeoStockSearchQueries(beatText: string, videoTitle?: string
   const visualTags = extractVisualSearchTags(beatText, videoTitle);
   const queries: string[] = [];
   const lower = beatText.toLowerCase();
+
+  if (isGeoWelcomeBeat(beatText)) {
+    queries.push(...buildGeoWelcomeVisualQueries(beatText));
+  }
 
   const wantsNl = geoTags.some((t) =>
     /netherlands|holland|amsterdam|dutch|nederland|rotterdam|utrecht|hague|den haag/.test(t)

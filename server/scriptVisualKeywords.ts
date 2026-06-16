@@ -10,6 +10,9 @@ import {
 import {
   extractPrimaryGeoSearchTag,
   extractPrimaryVisualAnchor,
+  extractBeatGeoPlaceTags,
+  isGeoWelcomeBeat,
+  buildGeoWelcomeVisualQueries,
 } from "./visualBeatTags";
 
 export type ScriptVisualKeywordEntry = {
@@ -101,7 +104,14 @@ export function fallbackVisualKeyword(sentence: string): string {
 
   const geo = extractPrimaryGeoSearchTag(sentence);
   if (geo) {
-    const geoQuery = sanitizeVisualKeyword(`${geo} city street`);
+    if (isGeoWelcomeBeat(sentence)) {
+      const welcome = buildGeoWelcomeVisualQueries(sentence)[0];
+      if (welcome) {
+        const cleaned = sanitizeVisualKeyword(welcome);
+        if (cleaned) return cleaned;
+      }
+    }
+    const geoQuery = sanitizeVisualKeyword(`${geo} city skyline`);
     if (geoQuery) return geoQuery;
   }
 
@@ -279,6 +289,9 @@ Examples:
 "Dutch: De ondernemer werkt laat door aan zijn nieuwe webshop." → entrepreneur working laptop
 "Dutch: De klant bekijkt verschillende producten op zijn telefoon." → online shopping smartphone
 "Dutch: Het team bespreekt de resultaten tijdens een vergadering." → business meeting team
+
+"Welcome to the Netherlands." → amsterdam canal netherlands
+"Dutch: Welkom in Nederland." → netherlands landscape aerial
 
 Return one keyword per index below.
 
