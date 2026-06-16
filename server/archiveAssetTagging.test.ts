@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ARCHIVE_MAX_TAGS,
+  applySharedAiToClipFields,
   flattenArchiveAiMetadata,
   inferArchiveMediaMime,
   mergeArchiveTags,
@@ -86,6 +87,23 @@ describe("archiveAssetTagging", () => {
     expect(flat).not.toBeNull();
     expect(flat!.title.length).toBeGreaterThan(3);
     expect(flat!.tags.length).toBeLessThanOrEqual(ARCHIVE_MAX_TAGS);
+  });
+
+  it("replaceTags mode stores only AI tags (max 4)", () => {
+    const fields = applySharedAiToClipFields({
+      baseTitle: "Old title",
+      userTags: ["old1", "old2", "old3", "old4", "old5"],
+      sourceNote: null,
+      ai: {
+        title: "Amsterdam cyclists on canal",
+        description: "Bikes on a canal bridge.",
+        tags: ["amsterdam canal bikes", "cyclists rain", "netherlands urban", "bike lane"],
+      },
+      replaceTags: true,
+    });
+    expect(fields.tags).toHaveLength(4);
+    expect(fields.tags).not.toContain("old1");
+    expect(fields.tags[0]).toBe("amsterdam canal bikes");
   });
 
   it("respects ARCHIVE_MAX_TAGS cap", () => {

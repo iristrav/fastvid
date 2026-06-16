@@ -89,13 +89,13 @@ async function autoTitleSingleAsset(
         };
       }
 
-      const existingTags = normalizeMediaTags(asset.tags ?? []);
       const fields = applySharedAiToClipFields({
         baseTitle: ai.metadata.title,
-        userTags: existingTags,
-        sourceNote: null,
+        userTags: [],
+        sourceNote: asset.sourceNote ?? null,
         ai: ai.metadata,
         userProvidedTitle: false,
+        replaceTags: true,
       });
 
       await updateMediaArchiveAsset(asset.id, {
@@ -103,6 +103,9 @@ async function autoTitleSingleAsset(
         tags: fields.tags,
         sourceNote: fields.sourceNote,
       });
+      console.log(
+        `[ArchiveAI] auto-title asset ${id}: "${fields.title.slice(0, 60)}" tags=[${fields.tags.join(", ")}]`
+      );
       return { result: "updated" };
     } finally {
       loaded.result.cleanup?.();

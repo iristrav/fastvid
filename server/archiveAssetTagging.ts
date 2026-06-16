@@ -89,6 +89,30 @@ const TAG_JSON_SCHEMA_LIGHT = {
   },
 } as const;
 
+/** Minimal schema for bulk — only title + description + exactly 4 tags (most reliable). */
+const TAG_JSON_SCHEMA_MINIMAL = {
+  type: "json_schema" as const,
+  json_schema: {
+    name: "archive_clip_four_tags",
+    strict: true,
+    schema: {
+      type: "object",
+      properties: {
+        title: { type: "string" },
+        description: { type: "string" },
+        tags: {
+          type: "array",
+          items: { type: "string" },
+          minItems: 4,
+          maxItems: 4,
+        },
+      },
+      required: ["title", "description", "tags"],
+      additionalProperties: false,
+    },
+  },
+} as const;
+
 /** Max searchable tags stored per asset (pipeline + semantic matching). */
 export const ARCHIVE_MAX_TAGS = 4;
 
@@ -163,6 +187,32 @@ export function selectHighQualityArchiveTags(parsed: ArchiveAiVisionPayload): st
   return normalizeMediaTags(picked).slice(0, ARCHIVE_MAX_TAGS);
 }
 
+/** Ensure we store up to 4 tags even when the model returns fewer valid ones. */
+function padArchiveTags(
+  tags: string[],
+  parsed: ArchiveAiVisionPayload,
+  title: string
+): string[] {
+  const out = [...tags];
+  const push = (raw: string | undefined | null) => {
+    const v = raw?.trim().toLowerCase().replace(/\s+/g, " ");
+    if (!v || v.length < 3 || out.includes(v)) return;
+    out.push(v);
+  };
+
+  for (const tag of parsed.tags ?? []) {
+    push(tag);
+    if (out.length >= ARCHIVE_MAX_TAGS) break;
+  }
+  if (out.length < ARCHIVE_MAX_TAGS) {
+    for (const w of title.split(/\s+/)) {
+      if (w.length >= 4) push(w);
+      if (out.length >= ARCHIVE_MAX_TAGS) break;
+    }
+  }
+  return normalizeMediaTags(out).slice(0, ARCHIVE_MAX_TAGS);
+}
+
 export function truncateArchiveSourceNote(note: string | null | undefined): string | null {
   if (!note?.trim()) return null;
   return note.trim().slice(0, 512);
@@ -195,6 +245,7 @@ export function flattenArchiveAiMetadata(parsed: ArchiveAiVisionPayload): Archiv
   if (!title) return null;
 
   let tags = selectHighQualityArchiveTags(parsed);
+  tags = padArchiveTags(tags, parsed, title);
   if (tags.length === 0) {
     tags = normalizeMediaTags(title.split(/\s+/).filter((w) => w.length > 3)).slice(0, ARCHIVE_MAX_TAGS);
   }
@@ -250,9 +301,13 @@ export function applySharedAiToClipFields(opts: {
   ai: ArchiveAssetAiMetadata;
   clipIndex?: number;
   userProvidedTitle?: boolean;
+  /** Bulk retitle: replace stored tags with AI tags only (do not merge old tag noise). */
+  replaceTags?: boolean;
 }): { title: string; tags: string[]; sourceNote: string | null } {
   let title = opts.baseTitle;
-  let tags = mergeArchiveTags(opts.userTags, opts.ai.tags);
+  let tags = opts.replaceTags
+    ? normalizeMediaTags(opts.ai.tags).slice(0, ARCHIVE_MAX_TAGS)
+    : mergeArchiveTags(opts.userTags, opts.ai.tags);
   let sourceNote = opts.sourceNote;
 
   if (opts.clipIndex != null) {
@@ -460,15 +515,21 @@ async function invokeArchiveVisionTagging(
     userTags?: string[];
     clipLabel?: string;
   },
-  opts: { imageDetail?: "auto" | "low" | "high"; preferJsonObject?: boolean } = {}
+  opts: { imageDetail?: "auto" | "low" | "high"; preferJsonObject?: boolean; bulk?: boolean } = {}
 ): Promise<{ metadata: ArchiveAssetAiMetadata | null; error?: string }> {
   if (previews.length === 0) return { metadata: null, error: "No preview frames extracted" };
   const timeoutMs = archiveVisionTimeoutMs(previews.length);
   const imageDetail = opts.imageDetail ?? (previews.length > 2 ? "low" : "high");
-  type VisionFormat = typeof TAG_JSON_SCHEMA | typeof TAG_JSON_SCHEMA_LIGHT | { type: "json_object" };
-  const formats: VisionFormat[] = opts.preferJsonObject
-    ? [{ type: "json_object" }, TAG_JSON_SCHEMA_LIGHT, { type: "json_object" }]
-    : [TAG_JSON_SCHEMA_LIGHT, { type: "json_object" }, TAG_JSON_SCHEMA];
+  type VisionFormat =
+    | typeof TAG_JSON_SCHEMA
+    | typeof TAG_JSON_SCHEMA_LIGHT
+    | typeof TAG_JSON_SCHEMA_MINIMAL
+    | { type: "json_object" };
+  const formats: VisionFormat[] = opts.bulk
+    ? [TAG_JSON_SCHEMA_MINIMAL, { type: "json_object" }, TAG_JSON_SCHEMA_LIGHT]
+    : opts.preferJsonObject
+      ? [{ type: "json_object" }, TAG_JSON_SCHEMA_LIGHT, { type: "json_object" }]
+      : [TAG_JSON_SCHEMA_LIGHT, { type: "json_object" }, TAG_JSON_SCHEMA];
 
   const imageParts = previews.map((preview) => ({
     type: "image_url" as const,
@@ -486,10 +547,13 @@ async function invokeArchiveVisionTagging(
         },
         {
           role: "user",
-          content: [{ type: "text", text: buildVisionPrompt(context, previews.length) }, ...imageParts],
+          content: [
+            { type: "text", text: buildVisionPrompt(context, previews.length, opts.bulk) },
+            ...imageParts,
+          ],
         },
       ],
-      maxTokens: 1600,
+      maxTokens: opts.bulk ? 900 : 1600,
     };
     if (responseFormat.type === "json_object") {
       payload.response_format = { type: "json_object" };
@@ -512,7 +576,15 @@ async function invokeArchiveVisionTagging(
     const parsed = parseJsonFromLlmContent(raw);
     const flat = flattenArchiveAiMetadata(parsed);
     if (!flat) {
-      console.warn("[ArchiveAI] vision JSON parsed but no usable title/tags");
+      console.warn(
+        "[ArchiveAI] vision JSON parsed but no usable title/tags",
+        parsed.title?.slice(0, 40),
+        (parsed.tags ?? []).slice(0, 4).join(", ")
+      );
+    } else {
+      console.log(
+        `[ArchiveAI] tags (${flat.tags.length}): ${flat.tags.join(" | ")} ← ${flat.title.slice(0, 50)}`
+      );
     }
     return flat;
   };
@@ -547,8 +619,32 @@ function buildVisionPrompt(
     userTags?: string[];
     clipLabel?: string;
   },
-  frameCount = 1
+  frameCount = 1,
+  bulk = false
 ): string {
+  if (bulk) {
+    const lines = [
+      "Analyze this archive clip for documentary B-roll search.",
+      "",
+      "Return JSON with:",
+      "- title: max 15 words, concrete WHO/WHAT/WHERE in English",
+      "- description: 1–2 sentences describing what is visible",
+      "- tags: EXACTLY 4 English search phrases (lowercase, 2–4 words each)",
+      "",
+      "Tag examples: amsterdam canal bikes | subway platform berlin | business meeting team | cyclists rain street",
+      "Avoid vague single words: person, city, success, business, modern, historical.",
+      "Prefer concrete visuals: place + activity, or subject + action.",
+    ];
+    if (frameCount > 1) {
+      lines.push(`You receive ${frameCount} frames from the same video — one combined result.`);
+    }
+    if (context.clipLabel) lines.push(`Clip: ${context.clipLabel}.`);
+    if (context.archiveNicheTags?.length) {
+      lines.push(`Archive topic: ${context.archiveNicheTags.slice(0, 8).join(", ")}.`);
+    }
+    return lines.join("\n");
+  }
+
   const lines = [
     "Analyze this clip for a documentary media archive.",
     "",
@@ -605,6 +701,7 @@ export async function generateArchiveAssetAiMetadataFromPath(
   const vision = await invokeArchiveVisionTagging(previews, context, {
     imageDetail: opts.imageDetail ?? (opts.bulk ? "low" : "high"),
     preferJsonObject: opts.bulk,
+    bulk: opts.bulk,
   });
   return { metadata: vision.metadata, frameCount: previews.length, error: vision.error };
 }
