@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  generationBudgetMinutes,
   getVideoLengthLabel,
   normalizeVideoLength,
+  targetVideoDurationMinutes,
   VIDEO_LENGTH_VALUES,
   videoLengthSchema,
 } from "../shared/videoLengths";
@@ -23,5 +25,13 @@ describe("videoLengths", () => {
   it("labels legacy values for display", () => {
     expect(getVideoLengthLabel("8-12")).toBe("8–12 min");
     expect(getVideoLengthLabel("8-10")).toBe("8–10 min");
+  });
+
+  it("scales generation budget 10 minutes per video minute", () => {
+    expect(targetVideoDurationMinutes("1")).toBe(1);
+    expect(generationBudgetMinutes("1")).toBe(10);
+    expect(generationBudgetMinutes("8-10")).toBe(100);
+    expect(generationBudgetMinutes("10-15")).toBe(150);
+    expect(generationBudgetMinutes("15-20")).toBe(200);
   });
 });

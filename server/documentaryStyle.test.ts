@@ -70,11 +70,12 @@ describe("documentaryStyle", () => {
     else process.env.ENABLE_FILM_GRAIN = prev;
   });
 
-  it("resolves portrait vs landscape still composition", () => {
-    const blur = resolveStillCompositionVF(4, 1, 0, false);
-    expect(blur).toContain("gblur");
-    const polaroid = resolveStillCompositionVF(4, 0, 0, false);
-    expect(polaroid).toContain("pad=960:1040");
+  it("uses consistent gray-mat still composition", () => {
+    const vf = resolveStillCompositionVF(4, 1, 0, false);
+    expect(vf).toContain("color=0xCFCFCF");
+    expect(vf).toContain("zoompan=");
+    expect(vf).not.toContain("gblur");
+    expect(vf).not.toContain("pad=960:1040");
   });
 
   it("builds post grade chain", () => {

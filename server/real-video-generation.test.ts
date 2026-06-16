@@ -212,7 +212,7 @@ describe('Real Video Generation Pipeline', () => {
       console.log(`  Target Duration: 5-8 minutes`);
       
       expect(workflow.length).toBe(7);
-      expect(totalMinMax).toBeLessThanOrEqual(90); // Max 1.5 hours
+      expect(totalMinMax).toBeLessThanOrEqual(200); // Max 10:1 for 15–20 min bucket
       console.log(`✓ Step 9 Complete: Workflow simulation successful\n`);
     });
 

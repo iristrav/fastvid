@@ -100,6 +100,8 @@ export type CuratedBeatContext = {
   index: number;
   searchQuery?: string;
   powerWord?: string;
+  /** Visual director on-screen description — primary match source (not spoken narration). */
+  visualDescription?: string;
 };
 
 export type BeatMatchTags = {
@@ -242,11 +244,12 @@ export function buildBeatMatchTags(
 ): BeatMatchTags {
   const videoVisualTopic = inferVideoVisualTopic(videoTitle, [beat.text, scene.text].join(" "));
   const topicAnchors = extractTopicAnchorTags(videoTitle, [beat.text, scene.text].join(" "));
-  const visualTags = extractVisualSearchTags(beat.text, videoTitle);
-  const visualAnchor = extractPrimaryVisualAnchor(beat.text);
+  const visualSource = beat.visualDescription?.trim() || beat.searchQuery?.trim() || beat.text;
+  const visualTags = extractVisualSearchTags(visualSource, videoTitle);
+  const visualAnchor = extractPrimaryVisualAnchor(visualSource);
   const anchorTokens = visualAnchor ? tokenizeBeatText(visualAnchor) : [];
   const beatRaw = [
-    beat.text,
+    visualSource,
     visualAnchor ?? "",
     beat.powerWord ?? "",
     beat.searchQuery ?? "",
@@ -256,7 +259,7 @@ export function buildBeatMatchTags(
   ]
     .filter(Boolean)
     .join(" ");
-  const sentenceTags = tokenizeBeatText(beat.text);
+  const sentenceTags = tokenizeBeatText(beat.visualDescription?.trim() || beat.searchQuery?.trim() || beat.text);
   const queryTokens = beat.searchQuery ? tokenizeBeatText(beat.searchQuery) : [];
   const beatTags = normalizeMediaTags([
     ...queryTokens,
@@ -1354,7 +1357,7 @@ export async function searchCuratedCandidatesForBeat(
   const semanticProfile =
     options?.semanticProfile ??
     (semanticVisualMatchingEnabled()
-      ? await analyzeBeatSemantics(beat.text, videoTitle)
+      ? await analyzeBeatSemantics(beat.visualDescription?.trim() || beat.text, videoTitle)
       : undefined);
   const { beatTags, topicAnchors, allTags, videoVisualTopic } = buildBeatMatchTags(beat, scene, videoTitle);
 
@@ -1384,7 +1387,8 @@ export async function searchCuratedCandidatesForBeat(
 
   const matchTags = normalizeMediaTags([
     ...(beat.searchQuery ? tokenizeBeatText(beat.searchQuery) : []),
-    ...extractVisualSearchTags(beat.text),
+    ...(beat.visualDescription ? tokenizeBeatText(beat.visualDescription) : []),
+    ...extractVisualSearchTags(beat.visualDescription?.trim() || beat.searchQuery?.trim() || beat.text),
   ]);
   if (matchTags.length > 0) {
     const matched = ranked.filter((p) => countVisualTagHits(p.asset, matchTags) > 0);

@@ -454,6 +454,28 @@ export function computeVoiceBeatWindows(
   });
 }
 
+/**
+ * Per-clip trim lengths so xfade montage end-to-end matches voice duration.
+ * clipBeatIndices maps each montage clip to its narration beat index.
+ */
+export function computeVoiceSyncedClipDurations(
+  beats: BeatYearInput[],
+  voiceDur: number,
+  clipBeatIndices: number[],
+  xfadeSec = 0
+): number[] {
+  if (clipBeatIndices.length === 0) return [];
+  const windows = computeVoiceBeatWindows(beats, voiceDur);
+  const overlap = clipBeatIndices.length > 1 ? (clipBeatIndices.length - 1) * xfadeSec : 0;
+  const raw = clipBeatIndices.map(
+    (beatIdx) => windows[beatIdx]?.dur ?? voiceDur / clipBeatIndices.length
+  );
+  const rawSum = raw.reduce((s, d) => s + d, 0) || 1;
+  const targetSum = voiceDur + overlap;
+  const scale = targetSum / rawSum;
+  return raw.map((d) => d * scale);
+}
+
 export type TimedYearLabel = {
   year: string;
   /** Short label in the yellow pill (keyword or context words). */

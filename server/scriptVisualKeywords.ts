@@ -28,6 +28,21 @@ import {
   buildIntentFromVisualFallbackHint,
   matchVisualFallbackHint,
 } from "./visualFallbackHints";
+import {
+  directorSceneToIntent,
+  directorScenesForSceneVoice,
+  estimateDirectorSceneHoldSec,
+  generateVisualDirectorPlan,
+  hasDirectorPlan,
+  mergeVisualDirectorIntoMetadata,
+  parseVisualDirectorFromMetadata,
+  VISUAL_DIRECTOR_MAX_SEC,
+  VISUAL_DIRECTOR_MIN_SEC,
+  type VisualDirectorScene,
+} from "./visualDirector";
+
+export type { VisualDirectorScene };
+export { hasDirectorPlan, directorSceneToIntent, generateVisualDirectorPlan };
 
 export type ScriptVisualKeywordEntry = {
   sentence: string;
@@ -39,6 +54,12 @@ export type ScriptVisualIntentEntry = {
   sentence: string;
   /** What the camera should show (English, concrete). */
   visual_intent: string;
+  /** Visual director: concrete on-screen description (primary match source). */
+  visual_description?: string;
+  camera_shot?: string;
+  emotion?: string;
+  /** Visual director: English stock search from visual_description only. */
+  search_query?: string;
   primary_keyword: string;
   secondary_keyword: string;
   fallback_keyword: string;
@@ -319,7 +340,27 @@ export function intentToKeywordEntry(intent: ScriptVisualIntentEntry): ScriptVis
 }
 
 export function intentSearchQueries(intent: ScriptVisualIntentEntry): string[] {
+  if (hasDirectorPlan(intent)) {
+    return directorSearchQueries(intent);
+  }
   return [...new Set([intent.primary_keyword, intent.secondary_keyword, intent.fallback_keyword].filter(Boolean))];
+}
+
+/** Stock/archive queries from visual director plan — never from spoken narration. */
+export function directorSearchQueries(intent: ScriptVisualIntentEntry): string[] {
+  const out: string[] = [];
+  const desc = intent.visual_description ?? intent.visual_intent;
+  const primary = intent.search_query
+    ? sanitizeVisualKeyword(intent.search_query) || intent.search_query.trim()
+    : intent.primary_keyword;
+  if (primary) out.push(primary);
+  if (intent.secondary_keyword && intent.secondary_keyword !== primary) out.push(intent.secondary_keyword);
+  if (intent.fallback_keyword && intent.fallback_keyword !== primary) out.push(intent.fallback_keyword);
+  if (desc) {
+    const compact = sanitizeVisualKeyword(desc.split(/\s+/).slice(0, 5).join(" "));
+    if (compact && compact !== primary) out.push(compact);
+  }
+  return [...new Set(out.filter((q) => q.length >= 3))].slice(0, 4);
 }
 
 export function buildRelevanceKeywordsFromIntent(
@@ -328,13 +369,16 @@ export function buildRelevanceKeywordsFromIntent(
   sceneTokens: string[] = [],
   videoTitle?: string
 ): string[] {
+  const directorMode = hasDirectorPlan(intent);
   const parts = [
     ...intentSearchQueries(intent),
-    ...tokenizeForRelevance(intent.visual_intent),
+    ...tokenizeForRelevance(intent.visual_description ?? intent.visual_intent),
+    ...tokenizeForRelevance(intent.camera_shot ?? ""),
+    ...tokenizeForRelevance(intent.emotion ?? ""),
     ...tokenizeForRelevance(intent.priority_subject),
     ...tokenizeForRelevance(intent.scene_type),
-    ...tokenizeForRelevance(beatText),
-    ...sceneTokens,
+    ...(directorMode ? [] : tokenizeForRelevance(beatText)),
+    ...(directorMode ? [] : sceneTokens),
     ...tokenizeForRelevance(videoTitle ?? ""),
   ];
   return Array.from(new Set(parts.filter((p) => p.length >= 3))).slice(0, 24);
@@ -644,7 +688,11 @@ export function parseVisualIntentsFromMetadata(metadata: unknown): ScriptVisualI
     out.push(
       normalizeVisualIntentEntry({
         sentence,
-        visual_intent: String(row.visual_intent ?? primary_keyword).trim(),
+        visual_intent: String(row.visual_intent ?? row.visual_description ?? primary_keyword).trim(),
+        visual_description: String(row.visual_description ?? row.visual_intent ?? primary_keyword).trim(),
+        camera_shot: String(row.camera_shot ?? "").trim() || undefined,
+        emotion: String(row.emotion ?? "").trim() || undefined,
+        search_query: String(row.search_query ?? primary_keyword).trim() || undefined,
         primary_keyword,
         secondary_keyword: String(row.secondary_keyword ?? primary_keyword).trim(),
         fallback_keyword: String(row.fallback_keyword ?? "documentary broll scene").trim(),
@@ -806,35 +854,51 @@ async function generateIntentBatch(
   return result;
 }
 
-/** Generate full visual intent plan per narration sentence. */
+/** Generate full visual intent plan via Visual Director (runs before footage search). */
 export async function generateScriptVisualIntents(
   script: string
 ): Promise<ScriptVisualIntentEntry[]> {
-  const sentences = extractNarrationSentences(script);
-  if (sentences.length === 0) return [];
+  const directorScenes = await generateVisualDirectorPlan(script);
+  return directorScenes.map(directorSceneToIntent);
+}
 
-  const indexToIntent = new Map<number, ScriptVisualIntentEntry>();
+export function buildSceneBeatsFromDirector(
+  sceneText: string,
+  duration: number,
+  directorScenes: VisualDirectorScene[],
+  videoTitle?: string
+): Array<{
+  text: string;
+  holdSec: number;
+  visualIntent: ScriptVisualIntentEntry;
+  searchQuery: string;
+}> {
+  const forScene = directorScenesForSceneVoice(sceneText, directorScenes);
+  if (forScene.length === 0) return [];
 
-  for (let offset = 0; offset < sentences.length; offset += BATCH_SIZE) {
-    const batch = sentences.slice(offset, offset + BATCH_SIZE);
-    const batchResult = await generateIntentBatch(batch, offset);
-    for (const [idx, intent] of batchResult) {
-      indexToIntent.set(idx, intent);
+  const beats = forScene.map((dirScene) => {
+    const intent = directorSceneToIntent(dirScene);
+    const holdSec = estimateDirectorSceneHoldSec(dirScene.spoken_text, duration, forScene.length);
+    return {
+      text: dirScene.spoken_text,
+      holdSec,
+      visualIntent: intent,
+      searchQuery: intent.search_query ?? intent.primary_keyword,
+    };
+  });
+
+  const totalHold = beats.reduce((s, b) => s + b.holdSec, 0);
+  if (totalHold > 0.5 && Math.abs(totalHold - duration) > 0.2) {
+    const scale = duration / totalHold;
+    for (const beat of beats) {
+      beat.holdSec = Math.max(
+        VISUAL_DIRECTOR_MIN_SEC,
+        Math.min(VISUAL_DIRECTOR_MAX_SEC, beat.holdSec * scale)
+      );
     }
   }
 
-  const entries: ScriptVisualIntentEntry[] = [];
-  for (let i = 0; i < sentences.length; i++) {
-    const sentence = sentences[i];
-    entries.push(indexToIntent.get(i) ?? fallbackVisualIntent(sentence));
-  }
-
-  console.log(
-    `[ScriptKeywords] Generated ${entries.length} visual intents` +
-      ` (${indexToIntent.size} from LLM, ${entries.length - indexToIntent.size} fallback)`
-  );
-
-  return entries;
+  return beats;
 }
 
 /** Generate one English visual keyword per narration sentence (legacy compat). */
@@ -854,10 +918,14 @@ export async function attachScriptVisualKeywords(
   keywords: ScriptVisualKeywordEntry[];
   intents: ScriptVisualIntentEntry[];
 }> {
-  const intents = await generateScriptVisualIntents(script);
+  const directorScenes = await generateVisualDirectorPlan(script);
+  const intents = directorScenes.map(directorSceneToIntent);
   const keywords = intents.map(intentToKeywordEntry);
   return {
-    metadata: mergeVisualIntentsIntoMetadata(metadata, intents),
+    metadata: mergeVisualDirectorIntoMetadata(
+      mergeVisualIntentsIntoMetadata(metadata, intents),
+      directorScenes
+    ),
     keywords,
     intents,
   };

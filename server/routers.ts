@@ -45,6 +45,7 @@ import type { ProgressLogEntry } from "./db";
 import { videoLengthSchema, normalizeVideoLength, isShortVideoLength } from "@shared/videoLengths";
 import { PIPELINE_DISPLAY_STAGES, formatGenerationDuration, progressStepWithElapsed, resolvePipelineDisplayStage } from "@shared/pipelineProgress";
 import { ONE_YEAR_MS } from "@shared/const";
+import { maxPipelineWallClockMin } from "./sourcingPolicy";
 
 function getSessionSecret() {
   const secret = process.env.JWT_SECRET ?? "fallback-secret-change-in-production";
@@ -147,22 +148,24 @@ function requireVideoAccess(
   return video;
 }
 
-// Global 1.5-hour (90-min) hard cap — pipeline is killed and marked failed after this
-const MAX_VIDEO_GENERATION_MS = 90 * 60 * 1000; // 1.5 hours = 90 minutes
 
-async function generateVideoWithAI(videoId: number, prompt: string, videoLength: string, voiceId?: string, customVoiceoverUrl?: string) {
-  // Wrap the entire pipeline in a 1.5-hour hard timeout
-  const timeoutHandle = setTimeout(async () => {
-    console.error(`[Video Generation] Video ${videoId} exceeded 1.5-hour limit — marking as failed`);
+function startGenerationTimeout(videoId: number, videoLength: string): ReturnType<typeof setTimeout> {
+  const capMin = maxPipelineWallClockMin(videoLength);
+  return setTimeout(async () => {
+    console.error(`[Video Generation] Video ${videoId} exceeded ${capMin}-minute limit (${videoLength}) — marking as failed`);
     await updateVideoStatus(videoId, "failed", {
       errorMessage: appErrorMessage(
         PIPELINE_ERROR.GENERATION_TIMEOUT,
-        "Video generation exceeded 1.5 hours (90 minutes). Please retry with a shorter video"
+        `Video generation exceeded ${capMin} minutes. Please retry with a shorter video`
       ),
-      progressStep: "⏰ Generation timed out (max 1.5 hours exceeded)",
+      progressStep: `⏰ Generation timed out (max ${capMin} minutes exceeded)`,
       progressPercent: 0,
     }).catch(() => {});
-  }, MAX_VIDEO_GENERATION_MS);
+  }, capMin * 60 * 1000);
+}
+
+async function generateVideoWithAI(videoId: number, prompt: string, videoLength: string, voiceId?: string, customVoiceoverUrl?: string) {
+  const timeoutHandle = startGenerationTimeout(videoId, videoLength);
 
   try {
     await _generateVideoWithAI(videoId, prompt, videoLength, voiceId, customVoiceoverUrl);
@@ -177,17 +180,7 @@ export async function generateFullVideoInternal(videoId: number, prompt: string,
 }
 
 async function generateFullVideo(videoId: number, prompt: string, videoLength: string, videoType: string, voiceId?: string, customVoiceoverUrl?: string, enableSubtitles = false) {
-  const timeoutHandle = setTimeout(async () => {
-    console.error(`[Video Generation] Video ${videoId} exceeded 1.5-hour limit — marking as failed`);
-    await updateVideoStatus(videoId, "failed", {
-      errorMessage: appErrorMessage(
-        PIPELINE_ERROR.GENERATION_TIMEOUT,
-        "Video generation exceeded 1.5 hours (90 minutes). Please retry with a shorter video"
-      ),
-      progressStep: "⏰ Generation timed out (max 1.5 hours exceeded)",
-      progressPercent: 0,
-    }).catch(() => {});
-  }, MAX_VIDEO_GENERATION_MS);
+  const timeoutHandle = startGenerationTimeout(videoId, videoLength);
 
   try {
     // Step 1: Generate script (same logic as before, but no pause)

@@ -40,6 +40,30 @@ export function isShortVideoLength(raw: string | null | undefined): boolean {
   return normalizeVideoLength(raw) === "1";
 }
 
+/** Target on-screen duration (minutes) for pipeline budget scaling. Uses upper bound of each bucket. */
+export function targetVideoDurationMinutes(raw: string | null | undefined): number {
+  switch (normalizeVideoLength(raw)) {
+    case "1":
+      return 1;
+    case "8-10":
+      return 10;
+    case "10-15":
+      return 15;
+    case "15-20":
+      return 20;
+    default:
+      return 10;
+  }
+}
+
+/** Wall-clock generation budget (minutes) = video minutes × ratio (default 10:1). */
+export function generationBudgetMinutes(
+  raw: string | null | undefined,
+  minutesPerVideoMinute = 10
+): number {
+  return Math.round(targetVideoDurationMinutes(raw) * minutesPerVideoMinute);
+}
+
 const DISPLAY_LABELS: Record<string, string> = {
   "1": "1 min",
   "8-10": "8–10 min",

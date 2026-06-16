@@ -4,6 +4,7 @@ import * as fs from "fs";
 import { PIPELINE_ERROR, appErrorMessage } from "@shared/appErrors";
 import { PIPELINE_PROCESSING_STATUSES, USER_IN_FLIGHT_VIDEO_STATUSES } from "@shared/videoQueue";
 import { isShortVideoLength, normalizeVideoLength } from "@shared/videoLengths";
+import { maxPipelineWallClockMin, visualStageWallClockMin } from "./sourcingPolicy";
 import type { Video } from "../drizzle/schema";
 import { InsertInviteCode, InsertUser, InsertVideo, InsertPasswordResetToken, inviteCodes, users, videos, passwordResetTokens } from "../drizzle/schema";
 import { ENV } from "./_core/env";
@@ -395,13 +396,15 @@ function pipelineStallThresholdMs(
 ): number {
   const visualSearch = status === "generating_visuals";
   const length = normalizeVideoLength(videoLength);
+  const visualCap = visualStageWallClockMin(length) * 60 * 1000;
+  const totalCap = maxPipelineWallClockMin(length) * 60 * 1000;
   if (isShortVideoLength(length)) {
-    return visualSearch ? 45 * 60 * 1000 : 12 * 60 * 1000;
+    return visualSearch ? visualCap : 18 * 60 * 1000;
   }
   if (length === "8-10") {
-    return visualSearch ? 60 * 60 * 1000 : 15 * 60 * 1000;
+    return visualSearch ? visualCap : 20 * 60 * 1000;
   }
-  return visualSearch ? 75 * 60 * 1000 : 22 * 60 * 1000;
+  return visualSearch ? Math.min(visualCap, totalCap - 5 * 60 * 1000) : 25 * 60 * 1000;
 }
 
 /**

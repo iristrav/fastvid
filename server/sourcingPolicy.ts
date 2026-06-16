@@ -1,5 +1,7 @@
 /** Production sourcing policy — curated media archive for visuals; ElevenLabs for voice. */
 
+import { targetVideoDurationMinutes } from "../shared/videoLengths";
+
 /** Visual beats use only the admin media archive (no YouTube, stock, Serp, Wikimedia, or AI clips). */
 export function curatedArchiveOnlyVisuals(): boolean {
   return true;
@@ -53,28 +55,68 @@ export function documentaryOverlaysEnabled(): boolean {
   return process.env.ENABLE_DOC_OVERLAYS !== "false";
 }
 
+/** Generation wall-clock minutes allowed per 1 minute of finished video (default 10:1). */
+export function pipelineMinutesPerVideoMinute(): number {
+  const raw = process.env.PIPELINE_MIN_PER_VIDEO_MIN?.trim();
+  if (raw) {
+    const n = parseFloat(raw);
+    if (!isNaN(n) && n >= 5 && n <= 20) return n;
+  }
+  return 10;
+}
+
+/**
+ * Hard cap for end-to-end video generation (minutes).
+ * Default: targetVideoMinutes × 10 (e.g. 8–10 min video → up to 100 min).
+ */
+export function maxPipelineWallClockMin(videoLength?: string | null): number {
+  const override = process.env.MAX_PIPELINE_WALL_CLOCK_MIN?.trim();
+  if (override) {
+    const n = parseInt(override, 10);
+    if (!isNaN(n) && n >= 10 && n <= 300) return n;
+  }
+  return Math.round(targetVideoDurationMinutes(videoLength) * pipelineMinutesPerVideoMinute());
+}
+
+/** Prefer quality over speed (more time per beat/scene). Default on for archive docs. */
+export function qualityOverSpeedEnabled(): boolean {
+  if (process.env.QUALITY_OVER_SPEED === "false") return false;
+  return curatedArchiveOnlyVisuals() || process.env.QUALITY_OVER_SPEED === "true";
+}
+
+/** Wall-clock budget for the visual sourcing stage (minutes). */
+export function visualStageWallClockMin(videoLength?: string | null): number {
+  const total = maxPipelineWallClockMin(videoLength);
+  return Math.max(8, Math.min(total - 6, Math.round(total * 0.88)));
+}
+
 /** Target on-screen duration per archive clip (seconds). */
 export function archiveVisualBeatSec(): number {
   const raw = process.env.ARCHIVE_VISUAL_BEAT_SEC?.trim();
   if (raw) {
     const n = parseFloat(raw);
-    if (!isNaN(n) && n >= 5 && n <= 8) return n;
+    if (!isNaN(n) && n >= 2.5 && n <= 6) return n;
   }
-  return 6;
+  return 4;
 }
 
 /** Hard limits for archive clip length in generated videos. */
 export function archiveVisualMinClipSec(): number {
-  return 5;
+  const raw = process.env.ARCHIVE_VISUAL_MIN_SEC?.trim();
+  if (raw) {
+    const n = parseFloat(raw);
+    if (!isNaN(n) && n >= 1.5 && n <= 5) return n;
+  }
+  return 3;
 }
 
 export function archiveVisualMaxClipSec(): number {
   const raw = process.env.ARCHIVE_VISUAL_MAX_SEC?.trim();
   if (raw) {
     const n = parseFloat(raw);
-    if (!isNaN(n) && n >= 5 && n <= 8) return n;
+    if (!isNaN(n) && n >= 3 && n <= 8) return n;
   }
-  return 8;
+  return 5.0;
 }
 
 /** Prefer moving archive video over Ken Burns stills (default on). */
@@ -97,9 +139,9 @@ export function framedArchiveStillsEnabled(): boolean {
   return process.env.ENABLE_FRAMED_ARCHIVE_STILLS !== "false";
 }
 
-/** Archive stills: blurred fill background + sharp photo + light zoom (Locomotive Historian style). */
+/** Archive stills: blurred fill background + sharp photo + light zoom (off by default — use gray mat for consistency). */
 export function archiveBlurFillStillsEnabled(): boolean {
-  return process.env.ARCHIVE_BLUR_FILL_STILLS !== "false";
+  return process.env.ARCHIVE_BLUR_FILL_STILLS === "true";
 }
 
 /** On-screen label cadence (years + keywords) in seconds. */

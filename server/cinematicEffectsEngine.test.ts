@@ -8,6 +8,7 @@ import {
   extractYearsFromText,
   computeMontageBeatStarts,
   computeVoiceBeatWindows,
+  computeVoiceSyncedClipDurations,
   planBeatAlignedYears,
   planIntervalScreenLabels,
   planVoiceSyncedScreenLabels,
@@ -138,6 +139,22 @@ describe("cinematicEffectsEngine", () => {
     expect(windows[0]!.dur).toBeLessThan(windows[1]!.dur);
     expect(windows[0]!.start).toBe(0);
     expect(windows[1]!.start).toBeCloseTo(windows[0]!.dur, 1);
+  });
+
+  it("computes voice-synced clip durations with xfade overlap", () => {
+    const beats = [
+      { text: "Eerste zin.", holdSec: 3 },
+      { text: "Tweede zin met meer woorden.", holdSec: 4 },
+      { text: "Derde.", holdSec: 2 },
+    ];
+    const voiceDur = 12;
+    const xfade = 0.3;
+    const durs = computeVoiceSyncedClipDurations(beats, voiceDur, [0, 1, 2], xfade);
+    expect(durs).toHaveLength(3);
+    const montageLen = durs.reduce((s, d) => s + d, 0) - 2 * xfade;
+    expect(montageLen).toBeCloseTo(voiceDur, 1);
+    expect(durs[1]).toBeGreaterThan(durs[0]);
+    expect(durs[1]).toBeGreaterThan(durs[2]);
   });
 
   it("plans interval screen labels every 30s with years and keywords", () => {

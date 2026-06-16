@@ -262,14 +262,8 @@ export function resolveStillCompositionVF(
   beatIndex: number,
   personPortrait: boolean
 ): string {
-  if (usePolaroidLayout(sceneIndex, beatIndex)) {
-    return buildPolaroidStillVF(duration);
-  }
-  return buildBlurFillStillVF(
-    duration,
-    personPortrait ? 0.72 : 0.78,
-    personPortrait ? "top" : "center"
-  );
+  void personPortrait;
+  return buildMatFramedStillVF(duration, 0.74, sceneIndex, beatIndex);
 }
 
 export interface TimedOverlay {
