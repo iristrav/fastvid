@@ -29,6 +29,13 @@ import * as os from "os";
 import { storagePut } from "./storage";
 import { invokeLLM } from "./_core/llm";
 import { getVideoById, updateVideoStatus, type EditorScene } from "./db";
+import {
+  buildSentenceKeywordMap,
+  generateScriptVisualKeywords,
+  lookupBeatVisualKeyword,
+  mergeVisualKeywordsIntoMetadata,
+  parseVisualKeywordsFromMetadata,
+} from "./scriptVisualKeywords";
 import pLimit from "p-limit";
 import { generateGrokVideo } from "./_core/grokVideo";
 import { generateVeoVideo } from "./_core/veoVideo";
@@ -7679,6 +7686,8 @@ interface VisualDedupState {
   /** Named celebrity from user prompt (e.g. Kylie Jenner) — anchor every beat's stock search. */
   primaryPerson: string;
   personTopicLock: boolean;
+  /** LLM-generated English visual search phrase per narration sentence. */
+  sentenceKeywords: Map<string, string>;
 }
 
 /** One licensed stock clip allowed when minimizeStockFootage (whole-video cap). */
@@ -7735,6 +7744,7 @@ function createVisualDedupState(
     perf,
     primaryPerson: topic?.primaryPerson?.trim() ?? "",
     personTopicLock: Boolean(topic?.personTopicLock && topic?.primaryPerson?.trim()),
+    sentenceKeywords: new Map(),
   };
 }
 
@@ -9703,7 +9713,8 @@ function buildSceneBeats(
   duration: number,
   maxBeatsCap = 16,
   videoTitle?: string,
-  scenePersons: string[] = []
+  scenePersons: string[] = [],
+  sentenceKeywords?: Map<string, string>
 ): SceneBeat[] {
   const minVoiceClips = curatedArchiveOnlyVisuals() ? minClipsForBalancedVoice(duration) : 2;
   const targetBeats = Math.max(minVoiceClips, Math.ceil(duration / effectiveBeatSec()));
@@ -9762,15 +9773,18 @@ function buildSceneBeats(
   const beats: SceneBeat[] = [];
   for (let i = 0; i < groups.length; i++) {
     const text = groups[i].text;
+    const llmKeyword = sentenceKeywords ? lookupBeatVisualKeyword(text, sentenceKeywords) : undefined;
     const visualAnchor = extractPrimaryVisualAnchor(text);
     const geoTag = extractPrimaryGeoSearchTag(text);
     let powerWord = extractPowerWordFromSentence(text, scenePersons);
-    if (visualAnchor) {
+    if (llmKeyword) {
+      powerWord = llmKeyword;
+    } else if (visualAnchor) {
       powerWord = visualAnchor;
     } else if (geoTag) {
       powerWord = geoTag;
     }
-    let searchQuery = visualAnchor ?? geoTag ?? simplifyStockSearchWord(powerWord, text, true);
+    let searchQuery = llmKeyword ?? visualAnchor ?? geoTag ?? simplifyStockSearchWord(powerWord, text, true);
     if (!searchQuery || isBlockedStockQuery(searchQuery)) {
       searchQuery = stockQueryFromBeatScript(text, scenePersons, scene.text, videoTitle);
     }
@@ -13273,7 +13287,8 @@ async function backfillArchiveMontageFromPool(
     outDur,
     Math.max(minClipsNeeded + 2, Math.ceil(outDur / effectiveBeatSec())),
     videoTitle,
-    scenePersons
+    scenePersons,
+    dedup.sentenceKeywords
   );
   const maxFill = opts?.maxAttempts ?? Math.max(14, minClipsForBalancedVoice(outDur) + 5);
   const prefix = opts?.logPrefix ?? `Scene ${scene.index}`;
@@ -13369,7 +13384,8 @@ async function backfillComposeMontageIfShort(
       outDur,
       Math.max(minClipsNeeded + 2, Math.ceil(outDur / effectiveBeatSec())),
       videoTitle,
-      scenePersons
+      scenePersons,
+      dedup.sentenceKeywords
     );
     for (let attempt = 0; attempt < 8 && coverage < minCoverage; attempt++) {
       const beat = beats[attempt % beats.length] ?? beats[0];
@@ -13427,7 +13443,7 @@ async function fetchArchiveSentenceMontage(
     dedup.perf.maxBeatsPerScene,
     Math.ceil(scene.duration / archiveVisualMinClipSec()) + 2
   );
-  const beats = buildSceneBeats(scene, scene.duration, beatCap, videoTitle, scenePersons);
+  const beats = buildSceneBeats(scene, scene.duration, beatCap, videoTitle, scenePersons, dedup.sentenceKeywords);
   const clips: string[] = [];
   const beatDurations: number[] = [];
   const clipBeatIndices: number[] = [];
@@ -13654,7 +13670,7 @@ async function fetchSceneVisuals(
         : dedup.perf.fastStockMode
           ? 2
           : maxStillPhotosForScene(scene.index, scenePersons.length > 0, dedup.personTopicLock);
-  const beats = buildSceneBeats(scene, scene.duration, beatCap, videoTitle, scenePersons);
+  const beats = buildSceneBeats(scene, scene.duration, beatCap, videoTitle, scenePersons, dedup.sentenceKeywords);
   const clips: string[] = [];
   const beatDurations: number[] = [];
   const archiveBeatFilled = new Set<number>();
@@ -15155,7 +15171,9 @@ async function composeSceneVideo(
               scene,
               outDur,
               Math.max(safeClips.length, 8),
-              composeOptions?.videoTitle
+              composeOptions?.videoTitle,
+              [],
+              composeOptions?.dedup?.sentenceKeywords
             );
       const beatInputs = sceneBeats.map((b) => ({
         text: b.text,
@@ -16125,6 +16143,25 @@ export async function runVideoPipeline(
       );
     }
     const visualDedup = createVisualDedupState(perf, { primaryPerson, personTopicLock: personLocked });
+    let visualKeywordEntries = parseVisualKeywordsFromMetadata(videoRow?.metadata);
+    if (visualKeywordEntries.length === 0) {
+      try {
+        visualKeywordEntries = await generateScriptVisualKeywords(script);
+        if (visualKeywordEntries.length > 0 && videoRow) {
+          await updateVideoStatus(videoId, videoRow.status, {
+            metadata: mergeVisualKeywordsIntoMetadata(videoRow.metadata, visualKeywordEntries),
+          }).catch(() => {});
+        }
+      } catch (err) {
+        console.warn(`[Pipeline] Video ${videoId}: visual keyword backfill failed:`, err);
+      }
+    }
+    visualDedup.sentenceKeywords = buildSentenceKeywordMap(visualKeywordEntries);
+    if (visualDedup.sentenceKeywords.size > 0) {
+      console.log(
+        `[Pipeline] Video ${videoId}: ${visualDedup.sentenceKeywords.size} sentence visual keywords loaded`
+      );
+    }
     visualDedup.varietySeed = ((videoId * 2654435761) ^ hashVarietySeed(topicContext)) >>> 0;
     if (archiveCrossVideoVarietyEnabled()) {
       visualDedup.crossVideoExcludeIds = getCrossVideoExcludeAssetIds(topicContext, videoId);

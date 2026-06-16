@@ -113,6 +113,7 @@ import {
   OUTLINE_JSON_SCHEMA,
   type ScriptOutline,
 } from "./scriptWriter";
+import { attachScriptVisualKeywords } from "./scriptVisualKeywords";
 
 // Lazy Stripe initialization — prevents crash on startup when STRIPE_SECRET_KEY is not yet set
 let _stripe: Stripe | null = null;
@@ -342,7 +343,18 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLengthRa
       await updateVideoProgressLog(videoId, scriptLog).catch(() => {});
 
       scriptContent = stripVisualTagsFromScript(scriptContent);
-      const metadata = { title, description: prompt, tags: [] as string[], chapters: [] as { time: string; title: string }[] };
+      let metadata: Record<string, unknown> = {
+        title,
+        description: prompt,
+        tags: [] as string[],
+        chapters: [] as { time: string; title: string }[],
+      };
+      try {
+        const attached = await attachScriptVisualKeywords(scriptContent, metadata);
+        metadata = attached.metadata;
+      } catch (err) {
+        console.warn(`[Script] Video ${videoId}: visual keyword generation failed (non-fatal):`, err);
+      }
       const scriptDurationSec = Math.floor((Date.now() - generationStartedAt) / 1000);
       await updateVideoStatus(videoId, "awaiting_approval", {
         script: scriptContent,
@@ -516,6 +528,12 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLengthRa
 
     // Save script and return (no pause — caller decides next step)
     scriptContent = stripVisualTagsFromScript(scriptContent);
+    try {
+      const attached = await attachScriptVisualKeywords(scriptContent, metadata);
+      metadata = attached.metadata;
+    } catch (err) {
+      console.warn(`[Script] Video ${videoId}: visual keyword generation failed (non-fatal):`, err);
+    }
     console.log(`[Script Generation] Saving script for video ${videoId}, length=${scriptContent.length} chars`);
     const scriptDurationSec = Math.floor((Date.now() - generationStartedAt) / 1000);
     await updateVideoStatus(videoId, "awaiting_approval", {
@@ -905,11 +923,19 @@ export const appRouter = router({
       // Use edited script if provided, otherwise use the stored script
       const finalScript = stripVisualTagsFromScript(input.editedScript ?? video.script ?? "");
       if (!finalScript) throw appTrpcError("BAD_REQUEST", APP_ERROR.NO_SCRIPT, "No script found");
+      let metadataForApprove: unknown = video.metadata ?? undefined;
       if (input.editedScript) {
         await updateVideoStatus(video.id, "awaiting_approval", { script: finalScript });
       }
+      try {
+        const attached = await attachScriptVisualKeywords(finalScript, metadataForApprove);
+        metadataForApprove = attached.metadata;
+      } catch (err) {
+        console.warn(`[Script] Video ${video.id}: visual keyword regen failed (non-fatal):`, err);
+      }
       await updateVideoStatus(video.id, "generating_voiceover", {
         scriptApproved: 1,
+        metadata: metadataForApprove,
         progressStep: "✅ Script approved — starting video production...",
         progressPercent: 29,
       });
@@ -917,7 +943,6 @@ export const appRouter = router({
       const voiceIdForApprove = (video as { voiceId?: string | null }).voiceId ?? undefined;
       const customVoiceoverForApprove = video.customVoiceoverUrl ?? undefined;
       const titleForApprove = video.title ?? undefined;
-      const metadataForApprove = video.metadata ?? undefined;
       setImmediate(() => {
         _generateVideoWithAI(
           video.id, video.prompt, video.videoLength ?? "15-20",
