@@ -9,7 +9,7 @@ import {
 } from "./scriptWriter";
 import type { ScriptVisualIntentEntry } from "./scriptVisualKeywords";
 
-export const VISUAL_DIRECTOR_MIN_SEC = 3;
+export const VISUAL_DIRECTOR_MIN_SEC = 3.5;
 export const VISUAL_DIRECTOR_MAX_SEC = 5;
 
 export type VisualDirectorScene = {
@@ -252,6 +252,31 @@ export function directorScenesForSceneVoice(
     if (sceneNorm.includes(key)) return true;
     return partKeys.some((p) => p.includes(key) || key.includes(p));
   });
+}
+
+/** Merge excess director scenes so each beat stays ≥ VISUAL_DIRECTOR_MIN_SEC on screen. */
+export function mergeDirectorScenesForPacing(
+  scenes: VisualDirectorScene[],
+  maxScenes: number
+): VisualDirectorScene[] {
+  if (scenes.length <= maxScenes || maxScenes < 1) return scenes;
+  const out: VisualDirectorScene[] = [];
+  const groupSize = Math.ceil(scenes.length / maxScenes);
+  for (let i = 0; i < scenes.length; i += groupSize) {
+    const chunk = scenes.slice(i, i + groupSize);
+    const first = chunk[0]!;
+    if (chunk.length === 1) {
+      out.push(first);
+      continue;
+    }
+    out.push({
+      ...first,
+      spoken_text: chunk.map((c) => c.spoken_text).join(" "),
+      visual_description: chunk.map((c) => c.visual_description).join("; "),
+      search_query: first.search_query,
+    });
+  }
+  return out.slice(0, maxScenes);
 }
 
 export function estimateDirectorSceneHoldSec(

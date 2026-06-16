@@ -72,7 +72,7 @@ import {
   framedArchiveStillsEnabled,
   archivePexelsHybridEnabled,
 } from "./sourcingPolicy";
-import { seededShuffle } from "./archiveUsageMemory";
+import { vidrushStillPhotoScale, VIDRUSH_MIN_SOURCE_VIDEO_SEC } from "./vidrushQuality";
 import {
   analyzeBeatSemantics,
   applySemanticAiRerank,
@@ -378,7 +378,7 @@ export function assetPassesBeatMinimum(
   const visualHits = countVisualTagHits(asset, requiredTags);
   const sceneEntityHits = countVisualTagHits(asset, [...sceneTags, ...entityTags]);
 
-  const minScore = Math.max(28, Math.round(topScore * 0.38));
+  const minScore = videoVisualTopic === "geography_urban" ? 36 : Math.max(28, Math.round(topScore * 0.38));
   if (score < minScore && visualHits < 2) return false;
 
   if ((sceneTags.length > 0 || entityTags.length > 0) && sceneEntityHits === 0 && visualHits < 2) {
@@ -1135,7 +1135,7 @@ async function convertImageToKenBurns(
   if (framedArchiveStillsEnabled()) {
     const filterComplex = archiveBlurFillStillsEnabled()
       ? buildBlurFillStillVF(duration, 0.78, "center")
-      : buildMatFramedStillVF(duration, 0.74, sceneIndex, beatIndex);
+      : buildMatFramedStillVF(duration, vidrushStillPhotoScale(), sceneIndex, beatIndex);
     await exec(
       `${ffmpegBin()} ${buildStillEncodeArgs(imgPath, outPath, duration, filterComplex)}`
     );
@@ -1182,7 +1182,11 @@ async function trimVideoClip(
   beatIndex = 0
 ): Promise<void> {
   const sourceDur = await probeMediaDurationSec(inPath);
-  const take = sourceDur > 0 ? Math.min(duration, sourceDur) : duration;
+  const minDur = archiveVisualMinClipSec();
+  if (sourceDur > 0 && sourceDur < VIDRUSH_MIN_SOURCE_VIDEO_SEC) {
+    throw new Error(`source video too short (${sourceDur.toFixed(2)}s)`);
+  }
+  const take = sourceDur > 0 ? Math.max(minDur, Math.min(duration, sourceDur)) : Math.max(minDur, duration);
   let startSec = 0;
   if (sourceDur > take + 0.35) {
     const slack = sourceDur - take;

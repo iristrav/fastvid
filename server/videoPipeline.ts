@@ -176,6 +176,12 @@ import {
   type MotionOverlayPlan,
 } from "./motionGraphicsLayer";
 import {
+  enforceMontageDurationFloors,
+  vidrushClipFloorSec,
+  vidrushMinClipSec,
+  VIDRUSH_MIN_SOURCE_VIDEO_SEC,
+} from "./vidrushQuality";
+import {
   logPipelineReview,
   reviewPipelineBeforeEffects,
   reviewPipelineBeforeExport,
@@ -1240,10 +1246,7 @@ function minClipsForBalancedVoice(durationSec: number): number {
 }
 
 function montageMinOnScreenSec(): number {
-  if (curatedArchiveOnlyVisuals()) {
-    return Math.max(1.5, effectiveMinClipSec() * 0.75);
-  }
-  return effectiveMinClipSec() * 0.35;
+  return vidrushMinClipSec();
 }
 
 function minClipsForScene(duration: number, beatCount: number, fast = false): number {
@@ -7258,6 +7261,35 @@ function rejectOpeningStillClip(
   return true;
 }
 
+/** Reject sub-minimum stock clips; never shrink beat hold below Vidrush floor. */
+async function resolveSceneClipHoldSec(
+  clipPath: string,
+  holdSec: number,
+  clipIndex: number,
+  sceneIndex: number,
+  label: string
+): Promise<number | null> {
+  if (curatedClipPathAssetId(clipPath) || isCuratedPreparedStillClip(clipPath)) {
+    return Math.max(vidrushClipFloorSec(clipIndex, sceneIndex), holdSec);
+  }
+  if (!fs.existsSync(clipPath)) {
+    return Math.max(vidrushClipFloorSec(clipIndex, sceneIndex), holdSec);
+  }
+  const probed = await probeVideoDurationSec(clipPath);
+  if (
+    probed > 0.15 &&
+    probed < VIDRUSH_MIN_SOURCE_VIDEO_SEC &&
+    !isStillPhotoClip(clipPath)
+  ) {
+    console.warn(
+      `[Pipeline] ${label}: rejecting short clip ${path.basename(clipPath)} (${probed.toFixed(1)}s < ${VIDRUSH_MIN_SOURCE_VIDEO_SEC}s)`
+    );
+    return null;
+  }
+  const capped = probed > 0.15 ? Math.min(holdSec, probed - 0.04) : holdSec;
+  return Math.max(vidrushClipFloorSec(clipIndex, sceneIndex), capped);
+}
+
 /** Standalone motion-graphic beat clip (text/map card) — not B-roll. */
 function isMotionGraphicClip(filePath: string): boolean {
   return /_mgfx_/i.test(path.basename(filePath));
@@ -8582,9 +8614,12 @@ function estimateMontageDurationSec(durations: number[]): number {
 
 function montageClipUsableSec(srcMax: number): number {
   const maxClip = effectiveMaxClipSec();
+  const minClip = vidrushMinClipSec();
   if (srcMax <= 0.15) return maxClip;
   const trimStart = montageClipStartSec(0, 0);
-  return Math.min(maxClip, Math.max(0.35, srcMax - trimStart - 0.05));
+  const usable = srcMax - trimStart - 0.05;
+  if (usable < minClip - 0.08) return usable;
+  return Math.min(maxClip, Math.max(minClip, usable));
 }
 
 function resolveMontageClipEffectiveDur(dur: number, sourceMaxSec?: number): number {
@@ -8667,7 +8702,8 @@ async function prepareStrictUniqueMontage(
     clips.length,
     outDur,
     beatDurations,
-    sourceMaxDurs
+    sourceMaxDurs,
+    sceneIndex
   );
   montageDurations = await capMontageDurationsToClipFiles(clips, montageDurations);
   sourceMaxDurs = await probeMontageSourceMaxDurs(clips);
@@ -8675,7 +8711,8 @@ async function prepareStrictUniqueMontage(
     clips.length,
     outDur,
     montageDurations,
-    sourceMaxDurs
+    sourceMaxDurs,
+    sceneIndex
   );
   const estSec = effectiveMontageDurationSec(montageDurations, sourceMaxDurs);
   if (!strictNoVisualRepeat()) {
@@ -8739,6 +8776,7 @@ async function montageClipPassesComposeGate(
     if (startLuma !== null && startLuma < 14) return false;
     if (strictNoVisualRepeat()) {
       const probed = await probeVideoDurationSec(clipPath);
+      if (probed > 0.15 && probed < VIDRUSH_MIN_SOURCE_VIDEO_SEC && !isStillPhotoClip(clipPath)) return false;
       if (probed > 0.15 && probed < archiveVisualMinClipSec() - 0.5) return false;
       const midAt =
         trimStart + Math.min(Math.max(1.0, probed * 0.4), Math.max(0.5, probed - 0.25));
@@ -9263,7 +9301,8 @@ function balanceMontageDurationsForVoice(
   clipCount: number,
   outDur: number,
   seedDurations: number[] | undefined,
-  sourceMaxDurs: number[]
+  sourceMaxDurs: number[],
+  sceneIndex = 0
 ): number[] {
   const n = clipCount;
   if (n === 0) return [];
@@ -9306,16 +9345,22 @@ function balanceMontageDurationsForVoice(
       Math.max(minOnScreen, Math.min(capForIndex(i), d * scale))
     );
   }
-  return durs;
+  return enforceMontageDurationFloors(durs, sceneIndex);
 }
 
 async function capMontageDurationsToClipFiles(clips: string[], durs: number[]): Promise<number[]> {
   const capped: number[] = [];
+  const minClip = vidrushMinClipSec();
   for (let i = 0; i < clips.length; i++) {
     const req = durs[i] ?? effectiveBeatSec();
     const probed = await probeVideoDurationSec(clips[i]!);
     if (probed > 0.15) {
-      const maxUsable = Math.max(effectiveMinClipSec() * 0.4, probed - 0.05);
+      if (probed < VIDRUSH_MIN_SOURCE_VIDEO_SEC && !isStillPhotoClip(clips[i]!) && !isCuratedPreparedStillClip(clips[i]!)) {
+        console.warn(
+          `[Pipeline] Montage clip ${path.basename(clips[i]!)}: source too short (${probed.toFixed(1)}s) — capping at ${probed.toFixed(1)}s`
+        );
+      }
+      const maxUsable = Math.max(minClip, probed - 0.05);
       if (maxUsable < req - 0.1) {
         console.warn(
           `[Pipeline] Montage clip ${path.basename(clips[i]!)}: capping ${req.toFixed(1)}s → ${maxUsable.toFixed(1)}s (source ${probed.toFixed(1)}s)`
@@ -9323,7 +9368,7 @@ async function capMontageDurationsToClipFiles(clips: string[], durs: number[]): 
       }
       capped.push(Math.min(req, maxUsable));
     } else {
-      capped.push(req);
+      capped.push(Math.max(minClip, req));
     }
   }
   return capped;
@@ -9343,7 +9388,7 @@ function normalizeMontageDurations(
     let capped = Math.max(minClip, Math.min(maxClip, d));
     const srcMax = sourceMaxDurs?.[i];
     if (srcMax && srcMax > 0.15) {
-      capped = Math.min(capped, Math.max(minClip * 0.4, srcMax - 0.05));
+      capped = Math.min(capped, Math.max(minClip, srcMax - 0.05));
     }
     return capped;
   };
@@ -9357,13 +9402,12 @@ function normalizeMontageDurations(
     normalized = normalized.map((d, i) => capDur(d * scale, i));
     total = estimateMontageDurationSec(normalized);
     if (total < outDur - 0.35) {
-      const floor = curatedArchiveOnlyVisuals() ? 2.5 : VIDRUSH_CLIP_MIN_SEC * 0.85;
       const even = (outDur + (normalized.length - 1) * xfade) / normalized.length;
       normalized = normalized.map((_, i) => capDur(even, i));
     }
   } else if (total > outDur + 0.35) {
     const scale = outDur / total;
-    normalized = normalized.map((d, i) => capDur(Math.max(minClip * 0.85, d * scale), i));
+    normalized = normalized.map((d, i) => capDur(Math.max(minClip, d * scale), i));
   }
   return normalized;
 }
@@ -9599,12 +9643,13 @@ function montageClipPrepFilter(
 ): string {
   const preNormalized = clipPath ? /_norm_b\d+\.mp4$/i.test(path.basename(clipPath)) : false;
   const startSec = preNormalized ? 0 : montageClipStartSec(sceneIndex, inputIndex);
+  const minDur = vidrushClipFloorSec(inputIndex, sceneIndex);
   let effectiveDur = dur;
   if (sourceMaxSec && sourceMaxSec > 0.15) {
     effectiveDur = resolveMontageClipEffectiveDur(dur, sourceMaxSec);
-    effectiveDur = Math.min(effectiveDur, Math.max(0.35, sourceMaxSec - startSec - 0.05));
+    effectiveDur = Math.min(effectiveDur, Math.max(minDur, sourceMaxSec - startSec - 0.05));
   }
-  effectiveDur = Math.max(0.35, effectiveDur);
+  effectiveDur = Math.max(minDur, effectiveDur);
   const start = startSec.toFixed(2);
   const edgeFade =
     smoothTransition && xfade > 0.001 ? Math.min(0.08, effectiveDur * 0.05) : 0;
@@ -13682,9 +13727,14 @@ async function backfillComposeMontageIfShort(
   const pushClip = async (clipPath: string, holdSec: number): Promise<boolean> => {
     const key = clipContentKey(clipPath);
     if (seenKeys.has(key) || dedup.usedContentKeys.has(key)) return false;
-    let actualHold = holdSec;
-    const probed = await probeVideoDurationSec(clipPath);
-    if (probed > 0.15) actualHold = Math.min(holdSec, probed - 0.04);
+    let actualHold = await resolveSceneClipHoldSec(
+      clipPath,
+      holdSec,
+      safeClips.length,
+      scene.index,
+      `Scene ${scene.index} backfill`
+    );
+    if (actualHold == null) return false;
     dedup.usedContentKeys.add(key);
     seenKeys.add(key);
     safeClips.push(clipPath);
@@ -13832,7 +13882,7 @@ async function fetchArchiveSentenceMontage(
   const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
   const beatCap = Math.max(
     dedup.perf.maxBeatsPerScene,
-    Math.ceil(scene.duration / archiveVisualMinClipSec()) + 2
+    Math.ceil(scene.duration / archiveVisualMinClipSec())
   );
   const beats = buildSceneBeats(scene, scene.duration, beatCap, videoTitle, scenePersons, dedup.sentenceKeywords, dedup.sentenceIntents, dedup.visualDirectorScenes);
   const clips: string[] = [];
@@ -13861,11 +13911,14 @@ async function fetchArchiveSentenceMontage(
       );
       return false;
     }
-    let actualHold = holdSec;
-    if (!curatedClipPathAssetId(clipPath) && fs.existsSync(clipPath)) {
-      const probed = await probeVideoDurationSec(clipPath);
-      if (probed > 0.15) actualHold = Math.min(holdSec, probed - 0.04);
-    }
+    let actualHold = await resolveSceneClipHoldSec(
+      clipPath,
+      holdSec,
+      clips.length,
+      scene.index,
+      `Scene ${scene.index} zin ${beatIndex}`
+    );
+    if (actualHold == null) return false;
     dedup.usedContentKeys.add(key);
     clips.push(clipPath);
     beatDurations.push(actualHold);
@@ -13972,11 +14025,14 @@ async function ensureArchiveMontageVoiceCoverage(
     }
     const key = clipContentKey(clipPath);
     if (dedup.usedContentKeys.has(key)) return false;
-    let actualHold = holdSec;
-    if (!curatedClipPathAssetId(clipPath) && fs.existsSync(clipPath)) {
-      const probed = await probeVideoDurationSec(clipPath);
-      if (probed > 0.15) actualHold = Math.min(holdSec, probed - 0.04);
-    }
+    let actualHold = await resolveSceneClipHoldSec(
+      clipPath,
+      holdSec,
+      clips.length,
+      scene.index,
+      `Scene ${scene.index} zin ${beatIndex}`
+    );
+    if (actualHold == null) return false;
     dedup.usedContentKeys.add(key);
     clips.push(clipPath);
     beatDurations.push(actualHold);
@@ -14113,13 +14169,14 @@ async function fetchSceneVisuals(
       );
       return false;
     }
-    let actualHold = holdSec;
-    if (fs.existsSync(clipPath)) {
-      const probed = await probeVideoDurationSec(clipPath);
-      if (probed > 0.15) {
-        actualHold = Math.min(holdSec, probed - 0.04);
-      }
-    }
+    let actualHold = await resolveSceneClipHoldSec(
+      clipPath,
+      holdSec,
+      clips.length,
+      scene.index,
+      `Scene ${scene.index} beat ${beatIndex}`
+    );
+    if (actualHold == null) return false;
     dedup.usedContentKeys.add(key);
     clips.push(clipPath);
     beatDurations.push(actualHold);
@@ -15395,10 +15452,11 @@ async function composeSceneVideo(
       montageBeats.map((b) => ({ text: b.text, holdSec: b.holdSec })),
       outDurEarly,
       composeClipBeatIndices,
-      xfade
+      xfade,
+      scene.index
     ).map((d, i) => {
       const cap = montageClipUsableSec(sourceMaxEarly[i] ?? 0);
-      return Math.max(montageMinOnScreenSec(), Math.min(cap, d));
+      return Math.max(vidrushClipFloorSec(i, scene.index), Math.min(cap, d));
     });
   }
   if (composeOptions?.dedup) {

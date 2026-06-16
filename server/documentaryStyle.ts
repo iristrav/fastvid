@@ -6,6 +6,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { sanitizeForDrawtext } from "./ffmpegSanitize";
+import { vidrushStillPhotoScale } from "./vidrushQuality";
 
 export const DOC_STYLE_VIDEO_WIDTH = 1920;
 export const DOC_STYLE_VIDEO_HEIGHT = 1080;
@@ -213,12 +214,12 @@ export function buildFitGrayVideoVF(): string {
   );
 }
 
-/** Montage prep chain after trim — fit entire clip, gray letterbox. */
+/** Montage prep chain after trim — fit entire clip, gray letterbox, lanczos for sharpness. */
 export function buildFitGrayVideoMontageChain(): string {
   const w = DOC_STYLE_VIDEO_WIDTH;
   const h = DOC_STYLE_VIDEO_HEIGHT;
   return (
-    `scale=${w}:${h}:force_original_aspect_ratio=decrease,` +
+    `scale=${w}:${h}:flags=lanczos:force_original_aspect_ratio=decrease,` +
     `pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:color=0x2a2a2a`
   );
 }
@@ -249,7 +250,7 @@ export function buildPolaroidStillVF(duration: number): string {
 /** Photo on neutral gray mat — smaller than frame (reference-doc / City Beautiful style). */
 export function buildMatFramedStillVF(
   duration: number,
-  photoScale = 0.74,
+  photoScale = vidrushStillPhotoScale(),
   sceneIndex = 0,
   beatIndex = 0
 ): string {
@@ -276,7 +277,7 @@ export function buildStillEncodeArgs(
   const frames = stillOutputFrameCount(duration);
   return (
     `-y -i "${imgPath}" -filter_complex "${filterComplex}" -map "[vout]" ` +
-    `-frames:v ${frames} -c:v libx264 -preset veryfast -crf 18 -an -pix_fmt yuv420p -r 25 "${outPath}"`
+    `-frames:v ${frames} -c:v libx264 -preset fast -crf 17 -an -pix_fmt yuv420p -r 25 "${outPath}"`
   );
 }
 

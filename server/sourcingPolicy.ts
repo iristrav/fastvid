@@ -107,7 +107,7 @@ export function archiveVisualMinClipSec(): number {
     const n = parseFloat(raw);
     if (!isNaN(n) && n >= 1.5 && n <= 5) return n;
   }
-  return 3;
+  return 3.5;
 }
 
 export function archiveVisualMaxClipSec(): number {

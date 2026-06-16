@@ -34,12 +34,14 @@ import {
   estimateDirectorSceneHoldSec,
   generateVisualDirectorPlan,
   hasDirectorPlan,
+  mergeDirectorScenesForPacing,
   mergeVisualDirectorIntoMetadata,
   parseVisualDirectorFromMetadata,
   VISUAL_DIRECTOR_MAX_SEC,
   VISUAL_DIRECTOR_MIN_SEC,
   type VisualDirectorScene,
 } from "./visualDirector";
+import { maxDirectorBeatsForSceneDuration } from "./vidrushQuality";
 
 export type { VisualDirectorScene };
 export { hasDirectorPlan, directorSceneToIntent, generateVisualDirectorPlan };
@@ -873,8 +875,11 @@ export function buildSceneBeatsFromDirector(
   visualIntent: ScriptVisualIntentEntry;
   searchQuery: string;
 }> {
-  const forScene = directorScenesForSceneVoice(sceneText, directorScenes);
-  if (forScene.length === 0) return [];
+  const forSceneRaw = directorScenesForSceneVoice(sceneText, directorScenes);
+  if (forSceneRaw.length === 0) return [];
+
+  const maxBeats = maxDirectorBeatsForSceneDuration(duration, VISUAL_DIRECTOR_MIN_SEC);
+  const forScene = mergeDirectorScenesForPacing(forSceneRaw, maxBeats);
 
   const beats = forScene.map((dirScene) => {
     const intent = directorSceneToIntent(dirScene);

@@ -11,7 +11,7 @@ import {
   renderNameBadgeOverlay,
   type TimedOverlay,
 } from "./documentaryStyle";
-import { documentaryOverlaysEnabled, screenLabelMinStartSec, screenLabelMinGapSec, screenLabelMaxPerScene } from "./sourcingPolicy";
+import { clampVidrushClipDuration } from "./vidrushQuality";
 import { extractVoiceLabelTerms, termStartInBeat } from "./visualBeatTags";
 
 export type CinematicAudioCue = {
@@ -462,7 +462,8 @@ export function computeVoiceSyncedClipDurations(
   beats: BeatYearInput[],
   voiceDur: number,
   clipBeatIndices: number[],
-  xfadeSec = 0
+  xfadeSec = 0,
+  sceneIndex = 0
 ): number[] {
   if (clipBeatIndices.length === 0) return [];
   const windows = computeVoiceBeatWindows(beats, voiceDur);
@@ -473,7 +474,7 @@ export function computeVoiceSyncedClipDurations(
   const rawSum = raw.reduce((s, d) => s + d, 0) || 1;
   const targetSum = voiceDur + overlap;
   const scale = targetSum / rawSum;
-  return raw.map((d) => d * scale);
+  return raw.map((d, i) => clampVidrushClipDuration(d * scale, i, sceneIndex));
 }
 
 export type TimedYearLabel = {
