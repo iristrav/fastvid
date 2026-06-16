@@ -134,7 +134,28 @@ export function inferVideoVisualTopic(videoTitle?: string, extraText?: string): 
   ) {
     return "geography_urban";
   }
+  // Netherlands / Holland / Dutch country or geography video — treat as geography_urban
+  // so WWII archive clips are blocked unless the beat itself mentions war content.
+  if (
+    /\b(nederland|netherlands|dutch|holland|nederlanden)\b/.test(hay) &&
+    !/\b(hitler|nazi|wwii|ww2|holocaust|third reich|bezetting|occupation|world war|bezet|oorlog)\b/.test(hay)
+  ) {
+    return "geography_urban";
+  }
   return "general";
+}
+
+/**
+ * True when the beat text itself explicitly references war, WWII, or armed conflict.
+ * Used to decide whether WWII archive clips are appropriate for a specific sentence,
+ * even inside a geography_urban or general-topic video.
+ */
+export function beatMentionsWwiiContent(beatText: string): boolean {
+  const lower = beatText.toLowerCase();
+  return (
+    WWII_WAR_ARCHIVE_RE.test(lower) ||
+    /\b(oorlog|war\b|battle\b|slag\b|invasie|invasion|occupation|bezetting|soldier|soldiers|military|troepen|troops|bombing|bombardement|liberation|bevrijding|verzet|resistance|persecution|vervolging|genocide|concentration camp|concentratiekamp|bevrijdd?e|executed|geëxecuteerd)\b/i.test(lower)
+  );
 }
 
 /** WWII/Holocaust archive clip — must not appear in geography/modern city videos. */

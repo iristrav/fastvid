@@ -2,7 +2,7 @@
  * Curated media archive — pick tagged assets from admin libraries for pipeline beats.
  */
 import { exec as execCb } from "child_process";
-import { extractVisualSearchTags, extractSceneSearchTags, extractEntitySearchTags, extractPrimaryVisualAnchor, extractSalientBeatTokens, extractRequiredVisualTags, isGenericPeopleAsset, inferVideoVisualTopic, isWwiiWarArchiveAsset, refineVisualSearchTagsForTopic, type VideoVisualTopic } from "./visualBeatTags";
+import { extractVisualSearchTags, extractSceneSearchTags, extractEntitySearchTags, extractPrimaryVisualAnchor, extractSalientBeatTokens, extractRequiredVisualTags, isGenericPeopleAsset, inferVideoVisualTopic, isWwiiWarArchiveAsset, beatMentionsWwiiContent, refineVisualSearchTagsForTopic, type VideoVisualTopic } from "./visualBeatTags";
 import { promisify } from "util";
 import fetch from "node-fetch";
 import * as fs from "fs";
@@ -278,6 +278,11 @@ export function assetPassesBeatMinimum(
   videoVisualTopic: VideoVisualTopic = "general"
 ): boolean {
   if (videoVisualTopic === "geography_urban" && isWwiiWarArchiveAsset(asset)) {
+    return false;
+  }
+  // For any non-WWII video, block war archive clips unless the beat itself mentions war/conflict.
+  // This prevents e.g. Hitler footage appearing in a Netherlands geography video.
+  if (videoVisualTopic !== "wwii" && isWwiiWarArchiveAsset(asset) && !beatMentionsWwiiContent(beatText)) {
     return false;
   }
   if (semantic && semanticVisualMatchingEnabled()) {
@@ -579,6 +584,14 @@ export function scoreCuratedAsset(
   score += curatedOffTopicPenalty(asset, topicAnchors, beatTags, videoVisualTopic);
   if (videoVisualTopic === "geography_urban" && isWwiiWarArchiveAsset(asset)) {
     score = Math.max(0, score - 320);
+  }
+  // For any non-WWII video, heavily penalise war archive clips when the beat
+  // doesn't mention war/conflict — prevents Hitler footage in geography/history
+  // videos that have no war content in the specific sentence.
+  if (videoVisualTopic !== "wwii" && isWwiiWarArchiveAsset(asset)) {
+    if (!beatText || !beatMentionsWwiiContent(beatText)) {
+      score = Math.max(0, score - 400);
+    }
   }
 
   return score;
@@ -1239,6 +1252,20 @@ export async function searchCuratedCandidatesForBeat(
   const filtered = ranked.filter((p) =>
     assetPassesBeatMinimum(p.asset, beat.text, p.score, topScore, p.semantic, videoVisualTopic)
   );
+
+  // Per-beat diagnostic: log top pick so clip relevance issues are easy to spot.
+  const topPick = filtered[0] ?? ranked[0];
+  if (topPick) {
+    const isWwii = isWwiiWarArchiveAsset(topPick.asset);
+    const wwiiBeatOk = beatMentionsWwiiContent(beat.text);
+    console.log(
+      `[BeatClip] beat ${beat.index} topic=${videoVisualTopic} | "${beat.text.slice(0, 60)}"` +
+        ` → "${topPick.asset.title?.slice(0, 50) ?? "??"}" score=${topPick.score}` +
+        (isWwii ? ` [WWII-asset wwiiBeat=${wwiiBeatOk}]` : "") +
+        ` (${filtered.length > 0 ? "passed" : "BLOCKED-fallback"})`
+    );
+  }
+
   if (filtered.length > 0) return filtered;
 
   if (topScore > 0) {
@@ -1246,12 +1273,18 @@ export async function searchCuratedCandidatesForBeat(
       (p) =>
         p.score >= Math.max(18, Math.round(topScore * 0.28)) &&
         countVisualTagHits(p.asset, matchTags.length > 0 ? matchTags : beatTags) > 0 &&
-        !isGenericPeopleAsset(p.asset)
+        !isGenericPeopleAsset(p.asset) &&
+        // Never let WWII clips through the relaxed path for non-war beats
+        !(videoVisualTopic !== "wwii" && isWwiiWarArchiveAsset(p.asset) && !beatMentionsWwiiContent(beat.text))
     );
     if (relaxed.length > 0) return relaxed;
   }
 
-  return ranked.slice(0, Math.max(8, ranked.length));
+  // Last resort: return top results but still filter WWII clips for non-war beats
+  const lastResort = ranked.filter(
+    (p) => !(videoVisualTopic !== "wwii" && isWwiiWarArchiveAsset(p.asset) && !beatMentionsWwiiContent(beat.text))
+  );
+  return (lastResort.length > 0 ? lastResort : ranked).slice(0, Math.max(8, ranked.length));
 }
 
 /** Skip FFmpeg when metadata already rules out an asset. */
