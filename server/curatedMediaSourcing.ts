@@ -2,7 +2,7 @@
  * Curated media archive — pick tagged assets from admin libraries for pipeline beats.
  */
 import { exec as execCb } from "child_process";
-import { extractVisualSearchTags, extractSceneSearchTags, extractEntitySearchTags, extractPrimaryVisualAnchor, extractSalientBeatTokens, extractRequiredVisualTags, extractBeatGeoPlaceTags, isGenericPeopleAsset, isWrongGeoForBeat, inferVideoVisualTopic, isWwiiWarArchiveAsset, refineVisualSearchTagsForTopic, isGeoWelcomeBeat, buildGeoWelcomeVisualQueries, type VideoVisualTopic } from "./visualBeatTags";
+import { extractVisualSearchTags, extractSceneSearchTags, extractEntitySearchTags, extractPrimaryVisualAnchor, extractSalientBeatTokens, extractRequiredVisualTags, extractBeatGeoPlaceTags, isGenericPeopleAsset, isWrongGeoForBeat, inferVideoVisualTopic, isWwiiWarArchiveAsset, refineVisualSearchTagsForTopic, isGeoWelcomeBeat, buildGeoWelcomeVisualQueries, isCyclingBeat, extractBeatCyclingTags, buildCyclingVisualQueries, assetShowsCycling, type VideoVisualTopic } from "./visualBeatTags";
 import { promisify } from "util";
 import fetch from "node-fetch";
 import * as fs from "fs";
@@ -290,6 +290,10 @@ export function assetPassesBeatMinimum(
     if (geoHits === 0) return false;
   }
 
+  if (isCyclingBeat(beatText) && !assetShowsCycling(asset)) {
+    return false;
+  }
+
   if (semantic && semanticVisualMatchingEnabled()) {
     if (!assetMeetsSemanticMinimum(semantic)) return false;
     if (semantic.tier >= 5 && semantic.matchedEntities.length === 0) return false;
@@ -547,6 +551,17 @@ export function scoreCuratedAsset(
         score -= 120;
       }
       if (isWrongGeoForBeat(asset, geoTags)) score = Math.max(0, score - 250);
+    }
+  }
+
+  if (beatText?.trim() && isCyclingBeat(beatText)) {
+    const cyclingTags = extractBeatCyclingTags(beatText);
+    const cyclingHits = countVisualTagHits(asset, cyclingTags);
+    if (assetShowsCycling(asset)) {
+      score += 55 + cyclingHits * 18;
+      beatHits += 2;
+    } else {
+      score -= 140;
     }
   }
 
@@ -1537,7 +1552,7 @@ export function buildGeoStockSearchQueries(beatText: string, videoTitle?: string
     if (/transit|metro|subway|train|u-bahn|tram|ov\b/.test(lower)) {
       queries.push(`${tag} metro public transport`);
     } else if (/bike|cycl|fiets/.test(lower)) {
-      queries.push(`${tag} cycling bike lane`);
+      queries.push(`${tag} cyclists street`, `${tag} people cycling`, `${tag} cycling bike lane`);
     } else if (/canal|gracht|water/.test(lower)) {
       queries.push(`${tag} canal waterfront`);
     } else if (/skyline|city|urban|planning/.test(lower)) {

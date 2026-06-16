@@ -461,6 +461,37 @@ describe("curatedMediaSourcing", () => {
     );
   });
 
+  it("rejects archive clip without cyclists for fietsen beat", () => {
+    const beatText = "Miljoenen mensen fietsen elke dag in Nederland.";
+    const canalClip: MediaArchiveAsset = {
+      id: 90,
+      archiveId: 1,
+      title: "Amsterdam canal boats",
+      tags: ["amsterdam", "netherlands", "canal", "water"],
+      mediaType: "video",
+      mimeType: "video/mp4",
+      storageUrl: "/x.mp4",
+      isActive: 1,
+      sortOrder: 0,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      fileSizeBytes: 1,
+      width: 1920,
+      height: 1080,
+      durationSec: 6,
+      sourceUrl: null,
+      sourceLabel: null,
+    };
+    const cyclingClip: MediaArchiveAsset = {
+      ...canalClip,
+      id: 91,
+      title: "Amsterdam cyclists on canal bridge",
+      tags: ["amsterdam", "netherlands", "cycling", "cyclists"],
+    };
+    expect(assetPassesBeatMinimum(canalClip, beatText, 70, 70)).toBe(false);
+    expect(assetPassesBeatMinimum(cyclingClip, beatText, 70, 70)).toBe(true);
+  });
+
   it("shouldPreferPexelsOverArchive when top archive is wrong country", () => {
     const beatText = "In the Netherlands, bike lanes are everywhere.";
     const charlotteClip: MediaArchiveAsset = {

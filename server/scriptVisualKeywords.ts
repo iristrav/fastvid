@@ -13,6 +13,8 @@ import {
   extractBeatGeoPlaceTags,
   isGeoWelcomeBeat,
   buildGeoWelcomeVisualQueries,
+  isCyclingBeat,
+  buildCyclingVisualQueries,
 } from "./visualBeatTags";
 
 export type ScriptVisualKeywordEntry = {
@@ -115,6 +117,14 @@ export function fallbackVisualKeyword(sentence: string): string {
     if (geoQuery) return geoQuery;
   }
 
+  if (isCyclingBeat(sentence)) {
+    const cycling = buildCyclingVisualQueries(sentence)[0];
+    if (cycling) {
+      const cleaned = sanitizeVisualKeyword(cycling);
+      if (cleaned) return cleaned;
+    }
+  }
+
   const tokens = sentence
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, " ")
@@ -162,6 +172,7 @@ function scoreSentenceVisualDominance(sentence: string): number {
   let score = sentence.split(/\s+/).filter(Boolean).length;
   if (extractPrimaryVisualAnchor(sentence)) score += 50;
   if (extractPrimaryGeoSearchTag(sentence)) score += 40;
+  if (isCyclingBeat(sentence)) score += 45;
   return score;
 }
 
@@ -292,6 +303,7 @@ Examples:
 
 "Welcome to the Netherlands." → netherlands aerial drone video
 "Dutch: Welkom in Nederland." → amsterdam canal timelapse
+"Dutch: Miljoenen mensen fietsen elke dag." → amsterdam cyclists street
 
 Return one keyword per index below.
 

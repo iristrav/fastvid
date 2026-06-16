@@ -9,6 +9,9 @@ import {
   inferVideoVisualTopic,
   isGeoWelcomeBeat,
   buildGeoWelcomeVisualQueries,
+  isCyclingBeat,
+  buildCyclingVisualQueries,
+  assetShowsCycling,
   isWrongGeoForBeat,
   isWwiiWarArchiveAsset,
   termStartInBeat,
@@ -118,5 +121,15 @@ describe("visualBeatTags", () => {
     expect(buildGeoWelcomeVisualQueries(text)).toEqual(
       expect.arrayContaining(["netherlands aerial drone video", "amsterdam canal timelapse"])
     );
+  });
+
+  it("detects cycling beats and builds NL cyclist queries", () => {
+    expect(isCyclingBeat("Miljoenen mensen fietsen elke dag.")).toBe(true);
+    expect(extractPrimaryVisualAnchor("In Amsterdam fietsen duizenden mensen.")).toBe("amsterdam cyclists");
+    expect(
+      buildCyclingVisualQueries("Mensen fietsen dagelijks.", "Why the Netherlands works", "Welcome to the Netherlands.")
+    ).toEqual(expect.arrayContaining(["amsterdam cyclists street", "netherlands people cycling"]));
+    expect(assetShowsCycling({ title: "Amsterdam canal bikes", tags: ["cycling"] })).toBe(true);
+    expect(assetShowsCycling({ title: "Charlotte skyline", tags: ["usa"] })).toBe(false);
   });
 });

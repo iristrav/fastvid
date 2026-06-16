@@ -55,7 +55,7 @@ import {
   stillOutputFrameCount,
   type TimedOverlay,
 } from "./documentaryStyle";
-import { extractPrimaryGeoSearchTag, extractPrimaryVisualAnchor, extractSceneSearchTags, inferVideoVisualTopic, isGeoWelcomeBeat, buildGeoWelcomeVisualQueries } from "./visualBeatTags";
+import { extractPrimaryGeoSearchTag, extractPrimaryVisualAnchor, extractSceneSearchTags, inferVideoVisualTopic, isGeoWelcomeBeat, buildGeoWelcomeVisualQueries, isCyclingBeat, buildCyclingVisualQueries } from "./visualBeatTags";
 import {
   buildCinematicOverlays,
   buildBeatAlignedYearOverlays,
@@ -7368,6 +7368,9 @@ function scriptStockSearchQueries(
 ): string[] {
   const narration = beatText.replace(/\[visual:[^\]]*\]/gi, " ").trim();
   const out: string[] = [];
+  if (isCyclingBeat(narration)) {
+    out.push(...buildCyclingVisualQueries(narration, videoTitle, sceneText));
+  }
   const hasPerson = persons.length > 0;
   const anchorPerson = hasPerson;
 
@@ -9836,6 +9839,12 @@ function buildSceneBeats(
       if (welcomeQs[0]) {
         searchQuery = welcomeQs[0];
         powerWord = welcomeQs[0];
+      }
+    } else if (isCyclingBeat(text)) {
+      const cyclingQs = buildCyclingVisualQueries(text, videoTitle, scene.text);
+      if (cyclingQs[0]) {
+        searchQuery = cyclingQs[0];
+        powerWord = cyclingQs[0];
       }
     }
     let holdSec = estimateBeatHoldSec(text, groups[i].sentenceCount);
@@ -13236,6 +13245,9 @@ async function adoptPexelsBeatClipFallback(
     : [];
   const geoQueries = buildGeoStockSearchQueries(beat.text, videoTitle);
   const welcomeQueries = isGeoWelcomeBeat(beat.text) ? buildGeoWelcomeVisualQueries(beat.text) : [];
+  const cyclingQueries = isCyclingBeat(beat.text)
+    ? buildCyclingVisualQueries(beat.text, videoTitle, scene.text)
+    : [];
   const scriptQueries = buildBeatVisualQueryList(
     beat.text,
     scene,
@@ -13248,6 +13260,7 @@ async function adoptPexelsBeatClipFallback(
     ...new Set(
       [
         ...welcomeQueries,
+        ...cyclingQueries,
         beat.searchQuery,
         beat.powerWord,
         ...geoQueries,

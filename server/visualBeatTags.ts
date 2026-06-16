@@ -234,6 +234,16 @@ export function refineVisualSearchTagsForTopic(
     out.add("city infrastructure");
     out.add("street scene");
   }
+  if (isCyclingBeat(beatText)) {
+    out.add("cyclists");
+    out.add("cycling");
+    out.add("bicycle");
+    out.add("people cycling");
+    if (contextMentionsNetherlands(beatText)) {
+      out.add("amsterdam cyclists");
+      out.add("netherlands cycling");
+    }
+  }
   out.add("city skyline");
   out.add("urban street");
   out.add("modern city");
@@ -285,6 +295,65 @@ export function extractBeatGeoPlaceTags(beatText: string): string[] {
     }
   }
   return [...tags];
+}
+
+const CYCLING_RE =
+  /\b(fiets|fietsen|fietser|fietsers|wielrennen|cyclist|cyclists|cycling|bicycle|bicycles|bike lane|bike lanes|fietspad|fietspaden)\b/i;
+
+/** Narration about cycling / fietsen — needs people on bikes, not generic city shots. */
+export function isCyclingBeat(beatText: string): boolean {
+  const cleaned = beatText.replace(/\[visual:[^\]]+\]/gi, " ").trim();
+  return CYCLING_RE.test(cleaned);
+}
+
+export function extractBeatCyclingTags(beatText: string): string[] {
+  if (!isCyclingBeat(beatText)) return [];
+  return ["cycling", "cyclists", "bicycle", "bike lane", "people cycling"];
+}
+
+function contextMentionsNetherlands(...parts: Array<string | undefined>): boolean {
+  const hay = parts.filter(Boolean).join(" ").toLowerCase();
+  return /netherlands|nederland|holland|amsterdam|dutch|rotterdam|utrecht|den haag|the hague/.test(hay);
+}
+
+/** Stock/archive queries when narration is about cycling — place + visible cyclists. */
+export function buildCyclingVisualQueries(
+  beatText: string,
+  videoTitle?: string,
+  sceneText?: string
+): string[] {
+  if (!isCyclingBeat(beatText)) return [];
+
+  const geoTags = extractBeatGeoPlaceTags(beatText);
+  const wantsNl =
+    geoTags.some((t) => /netherlands|holland|amsterdam|dutch|nederland/.test(t)) ||
+    contextMentionsNetherlands(beatText, sceneText, videoTitle);
+
+  const queries: string[] = [];
+  if (wantsNl) {
+    queries.push(
+      "amsterdam cyclists street",
+      "netherlands people cycling",
+      "dutch cyclists city traffic",
+      "amsterdam bicycle commuters",
+      "netherlands cycling rain street"
+    );
+  } else {
+    queries.push("people cycling city street", "cyclists urban traffic", "bicycle commuters street");
+  }
+
+  for (const tag of geoTags.slice(0, 2)) {
+    queries.push(`${tag} cyclists street`, `${tag} people cycling`);
+  }
+
+  return [...new Set(queries.filter((q) => q.length >= 4))].slice(0, 10);
+}
+
+export function assetShowsCycling(
+  asset: Pick<{ title?: string | null; tags?: string[] | null }, "title" | "tags">
+): boolean {
+  const hay = `${(asset.title ?? "").toLowerCase()} ${(asset.tags ?? []).join(" ").toLowerCase()}`;
+  return /\b(cyclists?|cycling|bicycles?|bikes?|fiets(?:en|er|ers)?|fietspad(?:en)?)\b/.test(hay);
 }
 
 const GEO_WELCOME_RE =
@@ -446,7 +515,8 @@ export function extractRequiredVisualTags(beatText: string): string[] {
   const scene = extractSceneSearchTags(beatText);
   const entity = extractEntitySearchTags(beatText);
   const salient = extractSalientBeatTokens(beatText).slice(0, 5);
-  return [...new Set([...scene, ...entity, ...visual.slice(0, 8), ...salient])].slice(0, 14);
+  const cycling = isCyclingBeat(beatText) ? extractBeatCyclingTags(beatText) : [];
+  return [...new Set([...scene, ...entity, ...visual.slice(0, 8), ...salient, ...cycling])].slice(0, 14);
 }
 
 export function isGenericPeopleAsset(
@@ -474,6 +544,13 @@ export function extractPrimaryVisualAnchor(beatText: string): string | null {
     return `${entities[0]} ${scenes[0]}`;
   }
   if (scenes.length > 0) return scenes[0] ?? null;
+  if (isCyclingBeat(beatText)) {
+    const geo = extractPrimaryGeoSearchTag(beatText);
+    const place =
+      geo && /netherlands|holland|amsterdam|dutch|nederland/.test(geo) ? "amsterdam" : geo;
+    if (place) return `${place} cyclists`;
+    return "people cycling street";
+  }
   const geo = extractPrimaryGeoSearchTag(beatText);
   if (geo) return geo;
   if (entities.length > 0) return entities[0] ?? null;
