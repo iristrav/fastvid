@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildBeatMatchTags,
   buildCuratedQueryTags,
+  buildGeoStockSearchQueries,
   curatedAssetContentKey,
   curatedClipPathAssetId,
   extractTopicAnchorTags,
@@ -14,6 +15,9 @@ import {
   isCuratedPreparedStillClip,
   isCuratedPreparedVideoClip,
   rotateCuratedCandidates,
+  shouldPreferPexelsOverArchive,
+  shouldTryPexelsFirstForBeat,
+  type CuratedCandidatePick,
 } from "./curatedMediaSourcing";
 import { isGenericPeopleAsset } from "./visualBeatTags";
 import type { MediaArchiveAsset } from "./db";
@@ -441,5 +445,46 @@ describe("curatedMediaSourcing", () => {
     expect(assetPassesBeatMinimum(hitlerClip, beatText, 80, 80, undefined, videoVisualTopic)).toBe(false);
     const hitlerScore = scoreCuratedAsset(hitlerClip, ["berlin"], beatTags, topicAnchors, beatText, videoVisualTopic);
     expect(hitlerScore).toBeLessThanOrEqual(0);
+  });
+
+  it("prefers Pexels first for geography beats that name a country", () => {
+    const title = "Why the Netherlands is the Opposite of the U.S.";
+    const beatText = "In the Netherlands, cycling is part of daily life.";
+    const { videoVisualTopic } = buildBeatMatchTags(
+      { text: beatText, index: 0, searchQuery: "netherlands cycling", powerWord: "netherlands", keywords: [] },
+      { text: beatText },
+      title
+    );
+    expect(shouldTryPexelsFirstForBeat(beatText, videoVisualTopic)).toBe(true);
+    expect(buildGeoStockSearchQueries(beatText, title)).toEqual(
+      expect.arrayContaining(["amsterdam canal bicycles", "netherlands cycling infrastructure"])
+    );
+  });
+
+  it("shouldPreferPexelsOverArchive when top archive is wrong country", () => {
+    const beatText = "In the Netherlands, bike lanes are everywhere.";
+    const charlotteClip: MediaArchiveAsset = {
+      id: 80,
+      archiveId: 1,
+      title: "Charlotte skyline",
+      tags: ["charlotte", "usa", "skyline"],
+      mediaType: "video",
+      mimeType: "video/mp4",
+      storageUrl: "/x.mp4",
+      isActive: 1,
+      sortOrder: 0,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      fileSizeBytes: 1,
+      width: 1920,
+      height: 1080,
+      durationSec: 6,
+      sourceUrl: null,
+      sourceLabel: null,
+    };
+    const ranked: CuratedCandidatePick[] = [
+      { asset: charlotteClip, archiveName: "Geografie", score: 65 },
+    ];
+    expect(shouldPreferPexelsOverArchive(beatText, ranked, "geography_urban")).toBe(true);
   });
 });

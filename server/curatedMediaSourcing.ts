@@ -29,6 +29,7 @@ import {
   archiveVisualMinClipSec,
   archivePreferVideoClips,
   framedArchiveStillsEnabled,
+  archivePexelsHybridEnabled,
 } from "./sourcingPolicy";
 import { seededShuffle } from "./archiveUsageMemory";
 import {
@@ -1449,4 +1450,81 @@ export function markCuratedAssetUsed(
   const assetId = curatedClipPathAssetId(clipPath);
   if (assetId != null) usedAssetIds.add(assetId);
   if (storageUrl) usedStorageUrls.add(storageUrl);
+}
+
+/** Geo beats (Netherlands, US, Berlin…) — Pexels has better location B-roll than a mismatched archive clip. */
+export function shouldTryPexelsFirstForBeat(
+  beatText: string,
+  videoVisualTopic: VideoVisualTopic
+): boolean {
+  if (!archivePexelsHybridEnabled()) return false;
+  const geoTags = extractBeatGeoPlaceTags(beatText);
+  return geoTags.length > 0 && videoVisualTopic === "geography_urban";
+}
+
+/** Use Pexels when the best archive candidate is weak or geographically wrong. */
+export function shouldPreferPexelsOverArchive(
+  beatText: string,
+  ranked: CuratedCandidatePick[],
+  videoVisualTopic: VideoVisualTopic
+): boolean {
+  if (!archivePexelsHybridEnabled()) return false;
+  if (ranked.length === 0) return true;
+
+  const top = ranked[0]!;
+  const geoTags = extractBeatGeoPlaceTags(beatText);
+  if (geoTags.length > 0) {
+    if (isWrongGeoForBeat(top.asset, geoTags)) return true;
+    if (countVisualTagHits(top.asset, geoTags) < 2) return true;
+  }
+  if (!assetPassesBeatMinimum(top.asset, beatText, top.score, top.score, top.semantic, videoVisualTopic)) {
+    return true;
+  }
+  const minScore = videoVisualTopic === "geography_urban" ? 52 : 38;
+  return top.score < minScore;
+}
+
+/** Targeted Pexels queries from beat geography + urban context. */
+export function buildGeoStockSearchQueries(beatText: string, videoTitle?: string): string[] {
+  const geoTags = extractBeatGeoPlaceTags(beatText);
+  const visualTags = extractVisualSearchTags(beatText, videoTitle);
+  const queries: string[] = [];
+  const lower = beatText.toLowerCase();
+
+  const wantsNl = geoTags.some((t) =>
+    /netherlands|holland|amsterdam|dutch|nederland|rotterdam|utrecht|hague|den haag/.test(t)
+  );
+  const wantsUs = geoTags.some((t) => /america|usa|united states|american/.test(t));
+
+  if (wantsNl) {
+    queries.push(
+      "amsterdam canal bicycles",
+      "netherlands cycling infrastructure",
+      "rotterdam skyline modern",
+      "dutch city tram",
+      "amsterdam urban planning"
+    );
+  }
+  if (wantsUs) {
+    queries.push("american city skyline downtown", "usa urban street traffic", "united states city aerial");
+  }
+  if (/berlin|berlijn/i.test(lower) || geoTags.includes("berlin")) {
+    queries.push("berlin city skyline", "berlin public transport");
+  }
+
+  for (const tag of geoTags.slice(0, 4)) {
+    if (/transit|metro|subway|train|u-bahn|tram|ov\b/.test(lower)) {
+      queries.push(`${tag} metro public transport`);
+    } else if (/bike|cycl|fiets/.test(lower)) {
+      queries.push(`${tag} cycling bike lane`);
+    } else if (/canal|gracht|water/.test(lower)) {
+      queries.push(`${tag} canal waterfront`);
+    } else if (/skyline|city|urban|planning/.test(lower)) {
+      queries.push(`${tag} city skyline`);
+    } else {
+      queries.push(`${tag} city street`);
+    }
+  }
+
+  return [...new Set([...queries, ...visualTags.filter((t) => t.length >= 4)])].slice(0, 12);
 }

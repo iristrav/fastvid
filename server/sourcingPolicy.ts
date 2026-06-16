@@ -36,6 +36,11 @@ export function archivePexelsFallbackEnabled(): boolean {
   return process.env.ARCHIVE_PEXELS_FALLBACK !== "false";
 }
 
+/** Archive + Pexels together: Pexels for weak/wrong geo matches; archive when it fits (default on). */
+export function archivePexelsHybridEnabled(): boolean {
+  return process.env.ARCHIVE_PEXELS_HYBRID !== "false" && archivePexelsFallbackEnabled();
+}
+
 /** Fail generation rather than loop, pad, or reuse any clip content in a video. */
 export function strictNoVisualRepeat(): boolean {
   if (process.env.STRICT_NO_VISUAL_REPEAT === "false") return false;

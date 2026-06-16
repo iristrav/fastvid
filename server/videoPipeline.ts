@@ -96,7 +96,7 @@ import {
   scriptGuidedClipsEnabled,
 } from "./scriptGuidedClipFinder";
 import { clipPassesVisionGate, clipVisionGateEnabled } from "./visualQualityGate";
-import { curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archivePexelsFallbackEnabled, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled } from "./sourcingPolicy";
+import { curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archivePexelsFallbackEnabled, archivePexelsHybridEnabled, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -117,6 +117,9 @@ import {
   hashVarietySeed,
   archiveAssetPreflight,
   assetPassesBeatMinimum,
+  buildGeoStockSearchQueries,
+  shouldPreferPexelsOverArchive,
+  shouldTryPexelsFirstForBeat,
   type CuratedCandidatePick,
 } from "./curatedMediaSourcing";
 import {
@@ -7575,11 +7578,20 @@ function buildBeatVisualQueryList(
   const urbanQueries =
     inferVideoVisualTopic(videoTitle, `${beatText} ${scene.text}`) === "geography_urban"
       ? [
+          ...buildGeoStockSearchQueries(beatText, videoTitle).slice(0, 4),
           "city skyline",
           "urban street",
           "modern city",
           /berlin|berlijn/i.test(beatText) || /berlin/i.test(videoTitle ?? "")
             ? "berlin city skyline"
+            : "",
+          /netherlands|nederland|holland|amsterdam|dutch/i.test(beatText) ||
+          /netherlands|nederland|holland/i.test(videoTitle ?? "")
+            ? "amsterdam canal netherlands"
+            : "",
+          /america|american|united states|\bu\.?s\.?\b|usa/i.test(beatText) ||
+          /united states|u\.?s\.?|america/i.test(videoTitle ?? "")
+            ? "american city skyline"
             : "",
           /transit|metro|subway|train|u-bahn/i.test(beatText) ? "public transport metro" : "",
           /planning|zoning|infrastructure|walkable|density/i.test(beatText) ? "urban planning" : "",
@@ -12961,6 +12973,23 @@ async function adoptArchiveBeatClip(
   if (await tryClip(initialClip, holdSec)) return true;
 
   if (curatedArchiveOnlyVisuals()) {
+    const { beatTags, topicAnchors, videoVisualTopic } = buildBeatMatchTags(beat, scene, videoTitle);
+
+    if (shouldTryPexelsFirstForBeat(beat.text, videoVisualTopic)) {
+      const pexFirst = await adoptPexelsBeatClipFallback(
+        beat,
+        scene,
+        workDir,
+        videoTitle,
+        dedup,
+        pushClip,
+        holdSec,
+        semanticProfile,
+        "geo-first"
+      );
+      if (pexFirst) return true;
+    }
+
     const ranked = await searchCuratedCandidatesForBeat(
       beat,
       scene,
@@ -12975,9 +13004,24 @@ async function adoptArchiveBeatClip(
       }
     );
     console.log(
-      `[Pipeline] Scene ${scene.index} zin ${beat.index}: archive-zoek "${beat.text.slice(0, 55).trim()}…" → ${ranked.length} kandidaat(en)`
+      `[Pipeline] Scene ${scene.index} zin ${beat.index}: archive+Pexels "${beat.text.slice(0, 55).trim()}…" → ${ranked.length} archive kandidaat(en)`
     );
-    const { beatTags, topicAnchors, videoVisualTopic } = buildBeatMatchTags(beat, scene, videoTitle);
+
+    if (shouldPreferPexelsOverArchive(beat.text, ranked, videoVisualTopic)) {
+      const pexHybrid = await adoptPexelsBeatClipFallback(
+        beat,
+        scene,
+        workDir,
+        videoTitle,
+        dedup,
+        pushClip,
+        holdSec,
+        semanticProfile,
+        "weak-archive"
+      );
+      if (pexHybrid) return true;
+    }
+
     const topScore = ranked[0]?.score ?? 0;
     const minAcceptScore = relaxed
       ? Math.max(12, Math.round(topScore * 0.25))
@@ -13105,7 +13149,8 @@ async function adoptPexelsBeatClipFallback(
   dedup: VisualDedupState,
   pushClip: (clipPath: string, holdSec?: number) => boolean | Promise<boolean>,
   holdSec: number,
-  semanticProfile?: BeatSemanticProfile
+  semanticProfile?: BeatSemanticProfile,
+  reason: "fallback" | "geo-first" | "weak-archive" = "fallback"
 ): Promise<boolean> {
   if (!archivePexelsFallbackEnabled() || !PEXELS_API_KEY) return false;
 
@@ -13113,10 +13158,12 @@ async function adoptPexelsBeatClipFallback(
   const semanticQueries = semanticProfile
     ? buildSemanticPexelsQueries(beat.text, semanticProfile, 8, videoTitle)
     : [];
+  const geoQueries = buildGeoStockSearchQueries(beat.text, videoTitle);
   const scriptQueries = buildBeatVisualQueryList(beat.text, scene, videoTitle, scenePersons, 6);
   const queries = [
     ...new Set(
       [
+        ...geoQueries,
         ...semanticQueries,
         ...scriptQueries,
         beat.searchQuery,
@@ -13126,7 +13173,7 @@ async function adoptPexelsBeatClipFallback(
         .filter((q): q is string => typeof q === "string" && q.trim().length > 2 && !isBlockedStockQuery(q))
         .map((q) => simplifyStockSearchWord(q, beat.text, true))
     ),
-  ].slice(0, 8);
+  ].slice(0, 10);
 
   if (queries.length === 0) return false;
 
@@ -13138,8 +13185,14 @@ async function adoptPexelsBeatClipFallback(
     return await pushClip(withText, sec);
   };
 
-  console.warn(
-    `[Pipeline] Scene ${scene.index} zin ${beat.index}: geen archief-match — Pexels fallback (${queries.slice(0, 3).join(", ")})`
+  const reasonLabel =
+    reason === "geo-first"
+      ? "Pexels geo-first"
+      : reason === "weak-archive"
+        ? "Pexels (archive match weak)"
+        : "Pexels fallback";
+  console.log(
+    `[Pipeline] Scene ${scene.index} zin ${beat.index}: ${reasonLabel} (${queries.slice(0, 3).join(", ")})`
   );
 
   for (let qi = 0; qi < queries.length; qi++) {
@@ -13178,7 +13231,7 @@ async function adoptPexelsBeatClipFallback(
           markLicensedStockBeatUsed(dedup);
           dedup.lastMuskStockClip = clipPath;
           console.log(
-            `[Pipeline] Scene ${scene.index} zin ${beat.index}: Pexels fallback clip voor "${q}"`
+            `[Pipeline] Scene ${scene.index} zin ${beat.index}: Pexels clip voor "${q}" (${reasonLabel})`
           );
           return true;
         }
@@ -13387,7 +13440,7 @@ async function fetchArchiveSentenceMontage(
     : new Map<number, BeatSemanticProfile>();
 
   console.log(
-    `[Pipeline] Scene ${scene.index}: ${beats.length} zin(en) → semantic per-zin archive-zoek`
+    `[Pipeline] Scene ${scene.index}: ${beats.length} zin(en) → archive + Pexels hybrid per zin`
   );
 
   const pushSceneClip = async (clipPath: string, holdSec: number, beatIndex: number): Promise<boolean> => {
