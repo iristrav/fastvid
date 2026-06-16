@@ -644,7 +644,8 @@ export function planVoiceSyncedScreenLabels(
     for (const term of extractVoiceLabelTerms(beat.text)) {
       if (usedLabels.has(term.label)) continue;
       const startTime = termStartInBeat(beat.text, term.label, beatStart, beatDur, term.matchText);
-      if (term.label.length < 3) continue;
+      const isPercentLabel = /\d/.test(term.label) && term.label.includes("%");
+      if (term.label.length < 3 && !isPercentLabel) continue;
       usedLabels.add(term.label);
       labels.push({
         year: term.label,

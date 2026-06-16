@@ -46,6 +46,38 @@ export function buildPostGradeVF(): string {
   return `${buildDocumentaryColorGradeVF()},${buildDocumentaryVignetteVF()}${buildFilmGrainVF()}`;
 }
 
+/** Color + vignette only — applied on each montage clip so sources match before xfade. */
+export function buildPerClipDocumentaryGradeVF(): string {
+  return `${buildDocumentaryColorGradeVF()},${buildDocumentaryVignetteVF()}`;
+}
+
+/** Fit-gray trim chain with optional per-clip documentary grade. */
+export function buildFitGrayGradedVideoVF(): string {
+  const base = buildFitGrayVideoVF();
+  if (!documentaryStyleEnabled()) return base;
+  return `${base},${buildPerClipDocumentaryGradeVF()}`;
+}
+
+/** Montage branch: scale/pad/fps + per-clip grade when documentary style is on. */
+export function buildMontageBranchNormVF(): string {
+  const base = `${buildFitGrayVideoMontageChain()},fps=25,format=yuv420p,setsar=1`;
+  if (!documentaryStyleEnabled()) return base;
+  return `${base},${buildPerClipDocumentaryGradeVF()}`;
+}
+
+/** Final scene pass after per-clip grades — grain only (avoids double color grading). */
+export function buildFinalSceneGradeVF(): string {
+  if (!documentaryStyleEnabled()) {
+    return (
+      "eq=contrast=1.12:saturation=0.92:brightness=-0.02:gamma=1.02," +
+      "colorbalance=rs=-0.02:gs=0:bs=0.03:rm=-0.01:gm=0:bm=0.02:rh=-0.01:gh=0:bh=0.02," +
+      "vignette=angle=0.6:mode=forward"
+    );
+  }
+  const grain = buildFilmGrainVF();
+  return grain ? grain.replace(/^,/, "") : "copy";
+}
+
 export function stillOutputFrameCount(duration: number, fps = 25): number {
   return Math.max(25, Math.round(duration * fps));
 }

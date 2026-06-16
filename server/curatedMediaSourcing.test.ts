@@ -10,6 +10,7 @@ import {
   scoreArchiveMetadata,
   scoreCuratedAsset,
   assetPassesBeatMinimum,
+  isGeographyIncompatibleArchiveAsset,
   isCuratedOffTopicAsset,
   isCuratedStaticInteriorAsset,
   isCuratedPreparedStillClip,
@@ -490,6 +491,194 @@ describe("curatedMediaSourcing", () => {
     };
     expect(assetPassesBeatMinimum(canalClip, beatText, 70, 70)).toBe(false);
     expect(assetPassesBeatMinimum(cyclingClip, beatText, 70, 70)).toBe(true);
+  });
+
+  it("assetPassesBeatMinimum rejects canal clip for car sentence", () => {
+    const beatText = "In Amerika rijden bijna alle mensen in auto's.";
+    const canalClip: MediaArchiveAsset = {
+      id: 90,
+      archiveId: 1,
+      title: "Amsterdam canal boats",
+      tags: ["amsterdam", "netherlands", "canal", "water"],
+      mediaType: "video",
+      mimeType: "video/mp4",
+      storageUrl: "/x.mp4",
+      isActive: 1,
+      sortOrder: 0,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      fileSizeBytes: 1,
+      width: 1920,
+      height: 1080,
+      durationSec: 6,
+      sourceUrl: null,
+      sourceLabel: null,
+    };
+    const trafficClip: MediaArchiveAsset = {
+      ...canalClip,
+      id: 92,
+      title: "Highway traffic cars USA",
+      tags: ["usa", "highway", "cars", "traffic"],
+    };
+    expect(assetPassesBeatMinimum(canalClip, beatText, 70, 70)).toBe(false);
+    expect(assetPassesBeatMinimum(trafficClip, beatText, 70, 70)).toBe(true);
+  });
+
+  it("rejects B&W war archive for geography urban videos", () => {
+    const bwClip: MediaArchiveAsset = {
+      id: 93,
+      archiveId: 1,
+      title: "Zwart-wit parade Berlijn 1939",
+      tags: ["zwart-wit", "parade", "berlin", "1939"],
+      mediaType: "video",
+      mimeType: "video/mp4",
+      storageUrl: "/x.mp4",
+      isActive: 1,
+      sortOrder: 0,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      fileSizeBytes: 1,
+      width: 1920,
+      height: 1080,
+      durationSec: 6,
+      sourceUrl: null,
+      sourceLabel: null,
+    };
+    expect(isGeographyIncompatibleArchiveAsset(bwClip)).toBe(true);
+    expect(
+      assetPassesBeatMinimum(
+        bwClip,
+        "In Amsterdam fietsen duizenden mensen.",
+        80,
+        80,
+        undefined,
+        "geography_urban"
+      )
+    ).toBe(false);
+  });
+
+  it("assetPassesBeatMinimum rejects generic clip for government sentence", () => {
+    const beatText = "The government controls zoning and housing policy.";
+    const genericClip: MediaArchiveAsset = {
+      id: 94,
+      archiveId: 1,
+      title: "Random street crowd",
+      tags: ["people", "street", "city"],
+      mediaType: "video",
+      mimeType: "video/mp4",
+      storageUrl: "/x.mp4",
+      isActive: 1,
+      sortOrder: 0,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      fileSizeBytes: 1,
+      width: 1920,
+      height: 1080,
+      durationSec: 6,
+      sourceUrl: null,
+      sourceLabel: null,
+    };
+    const capitolClip: MediaArchiveAsset = {
+      ...genericClip,
+      id: 95,
+      title: "US Capitol building facade",
+      tags: ["capitol", "government", "washington"],
+    };
+    expect(assetPassesBeatMinimum(genericClip, beatText, 70, 70)).toBe(false);
+    expect(assetPassesBeatMinimum(capitolClip, beatText, 70, 70)).toBe(true);
+  });
+
+  it("assetPassesBeatMinimum rejects generic clip for NL urban planning sentence", () => {
+    const beatText = "In the Netherlands, urban planning shapes every neighborhood.";
+    const genericClip: MediaArchiveAsset = {
+      id: 96,
+      archiveId: 1,
+      title: "Random street crowd",
+      tags: ["people", "street", "city"],
+      mediaType: "video",
+      mimeType: "video/mp4",
+      storageUrl: "/x.mp4",
+      isActive: 1,
+      sortOrder: 0,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      fileSizeBytes: 1,
+      width: 1920,
+      height: 1080,
+      durationSec: 6,
+      sourceUrl: null,
+      sourceLabel: null,
+    };
+    const planningClip: MediaArchiveAsset = {
+      ...genericClip,
+      id: 97,
+      title: "Amsterdam bike lanes and tram",
+      tags: ["amsterdam", "netherlands", "tram", "cycling", "infrastructure"],
+    };
+    expect(assetPassesBeatMinimum(genericClip, beatText, 70, 70)).toBe(false);
+    expect(assetPassesBeatMinimum(planningClip, beatText, 70, 70)).toBe(true);
+  });
+
+  it("assetPassesBeatMinimum rejects protest clip for America geo stat beat", () => {
+    const beatText = "In America, only 1% of trips are by bike.";
+    const protestClip: MediaArchiveAsset = {
+      id: 91,
+      archiveId: 1,
+      title: "Protest march Washington DC",
+      tags: ["protest", "demonstration", "usa", "crowd"],
+      mediaType: "video",
+      mimeType: "video/mp4",
+      storageUrl: "/x.mp4",
+      isActive: 1,
+      sortOrder: 0,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      fileSizeBytes: 1,
+      width: 1920,
+      height: 1080,
+      durationSec: 6,
+      sourceUrl: null,
+      sourceLabel: null,
+    };
+    const skylineClip: MediaArchiveAsset = {
+      ...protestClip,
+      id: 92,
+      title: "New York skyline timelapse",
+      tags: ["usa", "skyline", "city", "america"],
+    };
+    expect(assetPassesBeatMinimum(protestClip, beatText, 70, 70, undefined, "geography_urban")).toBe(false);
+    expect(assetPassesBeatMinimum(skylineClip, beatText, 70, 70, undefined, "geography_urban")).toBe(true);
+  });
+
+  it("assetPassesBeatMinimum rejects generic clip for NL infrastructure sentence", () => {
+    const beatText = "The Netherlands has world-class infrastructure for bikes and trains.";
+    const genericClip: MediaArchiveAsset = {
+      id: 93,
+      archiveId: 1,
+      title: "Man walking in park",
+      tags: ["people", "park", "generic"],
+      mediaType: "video",
+      mimeType: "video/mp4",
+      storageUrl: "/x.mp4",
+      isActive: 1,
+      sortOrder: 0,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      fileSizeBytes: 1,
+      width: 1920,
+      height: 1080,
+      durationSec: 6,
+      sourceUrl: null,
+      sourceLabel: null,
+    };
+    const infraClip: MediaArchiveAsset = {
+      ...genericClip,
+      id: 94,
+      title: "Netherlands train railway infrastructure",
+      tags: ["netherlands", "train", "railway", "infrastructure"],
+    };
+    expect(assetPassesBeatMinimum(genericClip, beatText, 70, 70, undefined, "geography_urban")).toBe(false);
+    expect(assetPassesBeatMinimum(infraClip, beatText, 70, 70, undefined, "geography_urban")).toBe(true);
   });
 
   it("shouldPreferPexelsOverArchive when top archive is wrong country", () => {

@@ -30,11 +30,22 @@ import { storagePut } from "./storage";
 import { invokeLLM } from "./_core/llm";
 import { getVideoById, updateVideoStatus, type EditorScene } from "./db";
 import {
+  buildRelevanceKeywordsFromIntent,
+  buildSentenceIntentMap,
   buildSentenceKeywordMap,
+  fallbackVisualIntent,
+  generateScriptVisualIntents,
   generateScriptVisualKeywords,
+  intentSearchQueries,
+  lookupBeatVisualIntent,
   lookupBeatVisualKeyword,
+  mergeVisualIntentsIntoMetadata,
   mergeVisualKeywordsIntoMetadata,
+  parseVisualIntentsFromMetadata,
   parseVisualKeywordsFromMetadata,
+  resolveBeatVisualIntent,
+  sanitizeVisualKeyword,
+  type ScriptVisualIntentEntry,
 } from "./scriptVisualKeywords";
 import pLimit from "p-limit";
 import { generateGrokVideo } from "./_core/grokVideo";
@@ -44,7 +55,9 @@ import { generateHiggsfieldTextToVideo, generateHiggsfieldImageToVideo } from ".
 import { sanitizeForDrawtext, sanitizeForDrawtextStrict } from "./ffmpegSanitize";
 import {
   buildFitGrayVideoMontageChain,
-  buildPostGradeVF,
+  buildFitGrayGradedVideoVF,
+  buildMontageBranchNormVF,
+  buildFinalSceneGradeVF,
   buildSimpleKenBurnsVF,
   buildMatFramedStillVF,
   buildStillEncodeArgs,
@@ -55,7 +68,7 @@ import {
   stillOutputFrameCount,
   type TimedOverlay,
 } from "./documentaryStyle";
-import { extractPrimaryGeoSearchTag, extractPrimaryVisualAnchor, extractSceneSearchTags, inferVideoVisualTopic, isGeoWelcomeBeat, buildGeoWelcomeVisualQueries, isCyclingBeat, buildCyclingVisualQueries } from "./visualBeatTags";
+import { extractPrimaryGeoSearchTag, extractPrimaryVisualAnchor, extractSceneSearchTags, inferVideoVisualTopic, isGeoWelcomeBeat, buildGeoWelcomeVisualQueries, isCyclingBeat, buildCyclingVisualQueries, isGeoStatBeat, buildGeoStatVisualQueries, isCarBeat, buildCarVisualQueries, isGovernmentBeat, buildGovernmentVisualQueries, isUrbanPlanningBeat, buildUrbanPlanningVisualQueries, isInfrastructureBeat, buildInfrastructureVisualQueries, isOffTopicProtestForBeat } from "./visualBeatTags";
 import {
   buildCinematicOverlays,
   buildBeatAlignedYearOverlays,
@@ -427,7 +440,7 @@ const CROP_FILL_VF =
 const FIT_GRAY_VF = buildFitGrayVideoMontageChain();
 const FPS_FORMAT_VF = `fps=25,format=yuv420p,setsar=1,setpts=PTS-STARTPTS`;
 /** Montage xfade requires identical size/pixfmt on every branch — never skip scale/pad. */
-const MONTAGE_BRANCH_NORM_VF = `${FIT_GRAY_VF},fps=25,format=yuv420p,setsar=1`;
+const MONTAGE_BRANCH_NORM_VF = buildMontageBranchNormVF();
 const STANDARD_VF = `${SCALE_PAD_VF},${FPS_FORMAT_VF}`;
 /** New clip every ~3–4s; hold up to 7s when narration/visual clearly stay on one subject. */
 const VIDRUSH_CLIP_MIN_SEC = 2.5;
@@ -1886,7 +1899,9 @@ async function resolveBeatClipFast(
           `b${beat.index}_fast`,
           dedup.usedPexelsIds,
           beat.index + sceneIndex + queries.indexOf(q),
-          1
+          1,
+          beat.text,
+          videoTitle
         ),
         10_000,
         `fast Pexels scene ${sceneIndex} beat ${beat.index}`
@@ -1896,7 +1911,7 @@ async function resolveBeatClipFast(
         let size = 0;
         try { size = fs.statSync(p).size; } catch { continue; }
         if (size < 180_000) continue;
-        if (isRejectedStockClip(p, q) || isPipelineFallbackClip(p)) continue;
+        if (isRejectedStockClip(p, q, beat.text, videoTitle) || isPipelineFallbackClip(p)) continue;
         const contentKey = clipContentKey(p);
         if (dedup.usedContentKeys.has(contentKey)) continue;
         if (dedup.personTopicLock && dedup.primaryPerson &&
@@ -1942,7 +1957,7 @@ async function trimDownloadedStockClip(
       exec(
         `${FFMPEG_BIN} -y -ss ${ss} -i "${rawPath}" ` +
         `-t ${trimDur.toFixed(3)} ` +
-        `-vf "${STANDARD_VF}" ` +
+        `-vf "${documentaryStyleEnabled() ? buildFitGrayGradedVideoVF() : STANDARD_VF}" ` +
         `-c:v libx264 -preset veryfast -crf 18 -an -pix_fmt yuv420p "${outPath}"`
       ),
       45_000,
@@ -3000,7 +3015,9 @@ async function fetchPexelsClips(
   fileTag = "pexels",
   excludeVideoIds?: Set<number>,
   candidateOffset = 0,
-  downloadRetries = 3
+  downloadRetries = 3,
+  beatText?: string,
+  videoTitle?: string
 ): Promise<string[]> {
   if (!PEXELS_API_KEY) return [];
 
@@ -3046,7 +3063,7 @@ async function fetchPexelsClips(
 
     // Filter: min 3s duration, skip already-used Pexels IDs, sort by resolution descending
     const filtered = searchData.videos
-      .filter(v => v.duration >= 3 && !excludeVideoIds?.has(v.id) && !isRejectedPexelsVideo(v))
+      .filter(v => v.duration >= 3 && !excludeVideoIds?.has(v.id) && !isRejectedPexelsVideo(v, beatText, videoTitle))
       .sort((a, b) => {
         const aMax = Math.max(...a.video_files.map(f => f.width));
         const bMax = Math.max(...b.video_files.map(f => f.width));
@@ -7364,12 +7381,29 @@ function scriptStockSearchQueries(
   beatText: string,
   persons: string[] = [],
   sceneText = "",
-  videoTitle?: string
+  videoTitle?: string,
+  visualIntent?: ScriptVisualIntentEntry
 ): string[] {
   const narration = beatText.replace(/\[visual:[^\]]*\]/gi, " ").trim();
-  const out: string[] = [];
+  const intent = visualIntent ?? fallbackVisualIntent(narration);
+  const out: string[] = [...intentSearchQueries(intent)];
   if (isCyclingBeat(narration)) {
     out.push(...buildCyclingVisualQueries(narration, videoTitle, sceneText));
+  }
+  if (isGeoStatBeat(narration)) {
+    out.push(...buildGeoStatVisualQueries(narration, videoTitle, sceneText));
+  }
+  if (isCarBeat(narration)) {
+    out.push(...buildCarVisualQueries(narration, videoTitle, sceneText));
+  }
+  if (isGovernmentBeat(narration)) {
+    out.push(...buildGovernmentVisualQueries(narration, videoTitle, sceneText));
+  }
+  if (isUrbanPlanningBeat(narration)) {
+    out.push(...buildUrbanPlanningVisualQueries(narration, videoTitle, sceneText));
+  }
+  if (isInfrastructureBeat(narration)) {
+    out.push(...buildInfrastructureVisualQueries(narration, videoTitle, sceneText));
   }
   const hasPerson = persons.length > 0;
   const anchorPerson = hasPerson;
@@ -7423,9 +7457,13 @@ function stockQueryFromBeatScript(
   beatText: string,
   persons: string[] = [],
   sceneText = "",
-  videoTitle?: string
+  videoTitle?: string,
+  visualIntent?: ScriptVisualIntentEntry
 ): string {
-  return scriptStockSearchQueries(beatText, persons, sceneText, videoTitle)[0] ?? "documentary";
+  const intent = visualIntent ?? fallbackVisualIntent(beatText);
+  const fromIntent = intent.primary_keyword;
+  const fromQueries = scriptStockSearchQueries(beatText, persons, sceneText, videoTitle, intent)[0];
+  return fromIntent || fromQueries || "documentary broll scene";
 }
 
 function isStockVideoClip(filePath: string): boolean {
@@ -7597,7 +7635,8 @@ function buildBeatVisualQueryList(
   videoTitle: string | undefined,
   scenePersons: string[],
   maxQueries: number,
-  primaryQuery?: string
+  primaryQuery?: string,
+  visualIntent?: ScriptVisualIntentEntry
 ): string[] {
   const beatPersons = [
     ...new Set([
@@ -7613,39 +7652,65 @@ function buildBeatVisualQueryList(
   );
   const eventQueries = scriptEventSearchQueries(beatText, beatPersons);
   const entityStock = realEntityStockQueriesForBeat(beatText, scene.text, videoTitle);
+  const carQueries = isCarBeat(beatText)
+    ? buildCarVisualQueries(beatText, videoTitle, scene.text)
+    : [];
+  const governmentQueries = isGovernmentBeat(beatText)
+    ? buildGovernmentVisualQueries(beatText, videoTitle, scene.text)
+    : [];
+  const urbanPlanningQueries = isUrbanPlanningBeat(beatText)
+    ? buildUrbanPlanningVisualQueries(beatText, videoTitle, scene.text)
+    : [];
+  const infrastructureQueries = isInfrastructureBeat(beatText)
+    ? buildInfrastructureVisualQueries(beatText, videoTitle, scene.text)
+    : [];
+  const topicBeat =
+    isCarBeat(beatText) || isGovernmentBeat(beatText) || isUrbanPlanningBeat(beatText) || isInfrastructureBeat(beatText);
 
   const urbanQueries =
     inferVideoVisualTopic(videoTitle, `${beatText} ${scene.text}`) === "geography_urban"
       ? [
           ...buildGeoStockSearchQueries(beatText, videoTitle).slice(0, 4),
-          "city skyline",
-          "urban street",
-          "modern city",
-          /berlin|berlijn/i.test(beatText) || /berlin/i.test(videoTitle ?? "")
-            ? "berlin city skyline"
-            : "",
-          /netherlands|nederland|holland|amsterdam|dutch/i.test(beatText) ||
-          /netherlands|nederland|holland/i.test(videoTitle ?? "")
-            ? "amsterdam canal netherlands"
-            : "",
-          /america|american|united states|\bu\.?s\.?\b|usa/i.test(beatText) ||
-          /united states|u\.?s\.?|america/i.test(videoTitle ?? "")
-            ? "american city skyline"
-            : "",
+          ...(topicBeat ? [] : ["city skyline", "urban street", "modern city"]),
+          ...(topicBeat
+            ? []
+            : [
+                /berlin|berlijn/i.test(beatText) || /berlin/i.test(videoTitle ?? "")
+                  ? "berlin city skyline"
+                  : "",
+                /netherlands|nederland|holland|amsterdam|dutch/i.test(beatText) ||
+                /netherlands|nederland|holland/i.test(videoTitle ?? "")
+                  ? "amsterdam canal netherlands"
+                  : "",
+                /america|american|united states|\bu\.?s\.?\b|usa/i.test(beatText) ||
+                /united states|u\.?s\.?|america/i.test(videoTitle ?? "")
+                  ? "american city skyline"
+                  : "",
+              ]),
           /transit|metro|subway|train|u-bahn/i.test(beatText) ? "public transport metro" : "",
-          /planning|zoning|infrastructure|walkable|density/i.test(beatText) ? "urban planning" : "",
+          isInfrastructureBeat(beatText)
+            ? (buildInfrastructureVisualQueries(beatText, videoTitle, scene.text)[0] ?? "city infrastructure")
+            : /planning|zoning|walkable|density/i.test(beatText)
+              ? "urban planning"
+              : "",
         ].filter((q): q is string => typeof q === "string" && q.length > 2)
       : [];
 
+  const intentQueries = visualIntent ? intentSearchQueries(visualIntent) : [];
   const llmQuery = primaryQuery?.trim().toLowerCase() ?? "";
   const ordered = [
-    ...(llmQuery.length > 2 && !isBlockedStockQuery(llmQuery) ? [llmQuery] : []),
+    ...intentQueries,
+    ...carQueries,
+    ...governmentQueries,
+    ...urbanPlanningQueries,
+    ...infrastructureQueries,
+    ...(llmQuery.length > 2 && !isBlockedStockQuery(llmQuery, beatText) ? [llmQuery] : []),
     ...urbanQueries,
     powerQ,
     ...scriptQueries,
     ...eventQueries,
     ...entityStock,
-  ].filter((q) => typeof q === "string" && q.trim().length > 2 && !isBlockedStockQuery(q));
+  ].filter((q) => typeof q === "string" && q.trim().length > 2 && !isBlockedStockQuery(q, beatText));
 
   return [...new Set(ordered)].slice(0, maxQueries);
 }
@@ -7672,6 +7737,8 @@ interface SceneBeat {
   keywords: string[];
   /** Seconds this beat stays on screen (3–4 default, up to 7 when merged). */
   holdSec: number;
+  /** Full context visual plan for this beat (from LLM sentence analysis). */
+  visualIntent?: ScriptVisualIntentEntry;
 }
 
 interface VisualDedupState {
@@ -7722,6 +7789,8 @@ interface VisualDedupState {
   personTopicLock: boolean;
   /** LLM-generated English visual search phrase per narration sentence. */
   sentenceKeywords: Map<string, string>;
+  /** Full visual intent per narration sentence (subject, action, editor plan). */
+  sentenceIntents: Map<string, ScriptVisualIntentEntry>;
 }
 
 /** One licensed stock clip allowed when minimizeStockFootage (whole-video cap). */
@@ -7779,6 +7848,7 @@ function createVisualDedupState(
     primaryPerson: topic?.primaryPerson?.trim() ?? "",
     personTopicLock: Boolean(topic?.personTopicLock && topic?.primaryPerson?.trim()),
     sentenceKeywords: new Map(),
+    sentenceIntents: new Map(),
   };
 }
 
@@ -8016,12 +8086,13 @@ const OPENING_MUSK_QUERIES = HERO_MUSK_QUERIES;
 const MUSK_APPROVED_ROCKET_QUERY_RE =
   /\b(rocket|spacex|falcon|starship)\b|falcon\s*9.*(land|boost|recover|drone\s*ship)|starship.*(pad|boca|texas|static)|spacex.*crew\s*dragon/i;
 
-function stockVisualCategory(query: string, filePath?: string): string {
+function stockVisualCategory(query: string, filePath?: string, beatText?: string): string {
   const combined = `${query} ${path.basename(filePath ?? "")}`.toLowerCase();
   if (/miniature|diorama|tabletop|toy|model rocket|scale model|saturn|apollo|lunar|moon[- ]?landing|moon[- ]?surface|space shuttle|shuttle|vhs|glitch|sci[- ]?fi|cgi/.test(combined)) {
     return "blocked_model";
   }
   if (/textile|weaving|loom|yarn factory|fabric mill|sewing factory|ferry|catamaran|river boat|canal|harbor cruise|container ship|cargo ship|shipping port|port crane|logistics hub|cargo terminal|container terminal|warehouse district|distribution center|highway|motorway|freeway|country road|rural road|pickup truck|pickup|semi truck|freight truck|delivery truck|desert road|coastal road|dashcam/.test(combined)) {
+    if (beatText && isCarBeat(beatText)) return "car";
     return "blocked_offtopic";
   }
   if (/\b(pickup|pick-up|off[- ]?road truck)\b/.test(combined) && !/\btesla\b/.test(combined)) {
@@ -8300,28 +8371,50 @@ function isOffTopicVisualForPersonTopic(sourceQuery: string, filePath: string, p
   return false;
 }
 
-function hasBlockedStockTags(tags?: string): boolean {
+function hasBlockedStockTags(tags?: string, beatText?: string): boolean {
+  if (beatText && isCarBeat(beatText) && CAR_STOCK_ALLOW_RE.test(tags ?? "")) return false;
   return BLOCKED_STOCK_TAGS_RE.test(tags ?? "");
 }
 
-function isBlockedStockQuery(q: string): boolean {
+function isBlockedStockQuery(q: string, beatText?: string): boolean {
   if (BLOCKED_STOCK_QUERY_RE.test(q)) return true;
   if (isAmbiguousRocketQuery(q)) return true;
   if (/\b(highway|motorway|freeway|country road|rural road|pickup truck|off road truck|desert road|coastal road|ferry route)\b/i.test(q)) {
+    if (beatText && isCarBeat(beatText)) return false;
     return true;
   }
   return false;
 }
 
-function isRejectedPexelsVideo(video: { url?: string }): boolean {
+function isRejectedPexelsVideo(
+  video: { url?: string },
+  beatText?: string,
+  videoTitle?: string
+): boolean {
   const slug = (video.url ?? "").toLowerCase();
-  return BLOCKED_STOCK_VISUAL_RE.test(slug) || BLOCKED_MUSK_COMPETITOR_RE.test(slug);
+  if (BLOCKED_STOCK_VISUAL_RE.test(slug) || BLOCKED_MUSK_COMPETITOR_RE.test(slug)) return true;
+  if (beatText && isOffTopicProtestForBeat(beatText, slug, inferVideoVisualTopic(videoTitle, beatText))) {
+    return true;
+  }
+  return false;
 }
 
-function isRejectedStockClip(filePath: string, sourceQuery = ""): boolean {
+const CAR_STOCK_ALLOW_RE =
+  /\b(highway|motorway|freeway|country road|rural road|pickup truck|desert road|coastal road|dashcam|driving|traffic|automobile|automotive|parking|cars?|vehicles?|snelweg)\b/i;
+
+function isRejectedStockClip(
+  filePath: string,
+  sourceQuery = "",
+  beatText?: string,
+  videoTitle?: string
+): boolean {
   const combined = `${sourceQuery} ${path.basename(filePath)}`.toLowerCase();
+  if (beatText && isCarBeat(beatText) && CAR_STOCK_ALLOW_RE.test(combined)) return false;
   if (BLOCKED_STOCK_VISUAL_RE.test(combined)) return true;
-  if (hasBlockedStockTags(combined)) return true;
+  if (hasBlockedStockTags(combined, beatText)) return true;
+  if (beatText && isOffTopicProtestForBeat(beatText, combined, inferVideoVisualTopic(videoTitle, beatText))) {
+    return true;
+  }
   return false;
 }
 
@@ -8455,7 +8548,10 @@ function montageTailPadVF(inLabel: string, montageDur: number, outDur: number): 
       `Montage ${montageDur.toFixed(1)}s shorter than voice ${outDur.toFixed(1)}s — refusing gray pad or freeze (strict no-repeat)`
     );
   }
-  // Pad with gray to match voice length — never freeze on the last video frame.
+  // Documentary montage: hold last frame (no gray/color flash). Legacy path: gray pad.
+  if (documentaryStyleEnabled() || curatedArchiveOnlyVisuals()) {
+    return `[${inLabel}]tpad=stop_mode=clone:stop_duration=${pad.toFixed(3)},${FPS_FORMAT_VF}[vmont]`;
+  }
   return `[${inLabel}]tpad=stop_mode=add:stop_duration=${pad.toFixed(3)}:color=0x2a2a2a,${FPS_FORMAT_VF}[vmont]`;
 }
 
@@ -9760,7 +9856,8 @@ function buildSceneBeats(
   maxBeatsCap = 16,
   videoTitle?: string,
   scenePersons: string[] = [],
-  sentenceKeywords?: Map<string, string>
+  sentenceKeywords?: Map<string, string>,
+  sentenceIntents?: Map<string, ScriptVisualIntentEntry>
 ): SceneBeat[] {
   const minVoiceClips = curatedArchiveOnlyVisuals() ? minClipsForBalancedVoice(duration) : 2;
   const targetBeats = Math.max(minVoiceClips, Math.ceil(duration / effectiveBeatSec()));
@@ -9819,7 +9916,10 @@ function buildSceneBeats(
   const beats: SceneBeat[] = [];
   for (let i = 0; i < groups.length; i++) {
     const text = groups[i].text;
-    const llmKeyword = sentenceKeywords ? lookupBeatVisualKeyword(text, sentenceKeywords) : undefined;
+    const visualIntent = resolveBeatVisualIntent(text, sentenceIntents);
+    const llmKeyword =
+      visualIntent.primary_keyword ||
+      (sentenceKeywords ? lookupBeatVisualKeyword(text, sentenceKeywords) : undefined);
     const visualAnchor = extractPrimaryVisualAnchor(text);
     const geoTag = extractPrimaryGeoSearchTag(text);
     let powerWord = extractPowerWordFromSentence(text, scenePersons);
@@ -9830,40 +9930,31 @@ function buildSceneBeats(
     } else if (geoTag) {
       powerWord = geoTag;
     }
-    let searchQuery = llmKeyword ?? visualAnchor ?? geoTag ?? simplifyStockSearchWord(powerWord, text, true);
+    let searchQuery =
+      llmKeyword ??
+      visualAnchor ??
+      geoTag ??
+      simplifyStockSearchWord(powerWord, text, true);
     if (!searchQuery || isBlockedStockQuery(searchQuery)) {
-      searchQuery = stockQueryFromBeatScript(text, scenePersons, scene.text, videoTitle);
-    }
-    if (isGeoWelcomeBeat(text)) {
-      const welcomeQs = buildGeoWelcomeVisualQueries(text);
-      if (welcomeQs[0]) {
-        searchQuery = welcomeQs[0];
-        powerWord = welcomeQs[0];
-      }
-    } else if (isCyclingBeat(text)) {
-      const cyclingQs = buildCyclingVisualQueries(text, videoTitle, scene.text);
-      if (cyclingQs[0]) {
-        searchQuery = cyclingQs[0];
-        powerWord = cyclingQs[0];
-      }
+      searchQuery = stockQueryFromBeatScript(text, scenePersons, scene.text, videoTitle, visualIntent);
     }
     let holdSec = estimateBeatHoldSec(text, groups[i].sentenceCount);
-    if (sentenceKeywords && !llmKeyword) {
-      console.warn(
-        `[Pipeline] Beat ${i}: no stored visual keyword for "${text.slice(0, 55).trim()}…" — using fallback query "${searchQuery}"`
-      );
-    } else if (llmKeyword) {
-      console.log(
-        `[Pipeline] Beat ${i}: visual keyword "${llmKeyword}" ← "${text.slice(0, 55).trim()}…"`
-      );
-    }
+    console.log(
+      `[Pipeline] Beat ${i}: visual intent "${visualIntent.visual_intent}" → "${visualIntent.primary_keyword}" ← "${text.slice(0, 55).trim()}…"`
+    );
+    const sceneTokens = [
+      ...tokenizeForRelevance(scene.visualCue),
+      ...tokenizeForRelevance(scene.pexelsQuery),
+      ...(scene.pexelsQueries ?? []).flatMap((q) => tokenizeForRelevance(q)),
+    ];
     beats.push({
       index: i,
       text,
       searchQuery,
       powerWord,
-      keywords: buildRelevanceKeywords(scene, text, videoTitle, searchQuery),
+      keywords: buildRelevanceKeywordsFromIntent(visualIntent, text, sceneTokens, videoTitle),
       holdSec,
+      visualIntent,
     });
   }
 
@@ -9946,7 +10037,7 @@ async function adoptClip(
       }
       if (isAIGeneratedClip(p) && dedup.stillPhotosMaxThisScene === 0) continue;
       if (isAIGeneratedClip(p)) continue;
-      if (isRejectedStockClip(p, sourceQuery)) continue;
+      if (isRejectedStockClip(p, sourceQuery, beatText, opts.videoTitle)) continue;
       if (isPipelineFallbackClip(p)) continue;
       if (await isMostlyBlackClip(p)) continue;
       if (!opts.scriptImageFallback) {
@@ -9965,7 +10056,7 @@ async function adoptClip(
           if (!personHit && !celebCue) continue;
         }
       }
-      const category = stockVisualCategory(sourceQuery, p);
+      const category = stockVisualCategory(sourceQuery, p, beatText);
       if (category === "blocked_model" || category === "blocked_offtopic") continue;
       if (categoryAtLimit(dedup, category, muskTopic)) continue;
       // Musk/Tesla topics: reject generic clips when query targets a specific category
@@ -10245,7 +10336,7 @@ async function fetchUniqueStockForBeatInner(
   const queryCap = perf.minimizeStockFootage ? 1 : perf.fastStockMode ? 4 : 6;
   const queries = [
     beat.searchQuery,
-    ...buildBeatVisualQueryList(beat.text, scene, videoTitle, scenePersons, queryCap, beat.searchQuery),
+    ...buildBeatVisualQueryList(beat.text, scene, videoTitle, scenePersons, queryCap, beat.searchQuery, beat.visualIntent),
     ...(muskTopic ? GOLDEN_MUSK_QUERIES.slice(0, perf.fastStockMode ? 2 : 4) : []),
     enrichStockQuery(scene.pexelsQuery, scene, videoTitle, personName, beat.text),
     stockQueryFromBeatScript(beat.text, scenePersons, scene.text, videoTitle),
@@ -10538,7 +10629,8 @@ async function fetchLastResortRealClip(
   for (const q of uniqueQueries.slice(0, stockTryCap)) {
     const pex = await fetchPexelsClips(
       q, clipFetchDur, workDir, sceneIndex, 2, undefined, true, `${tag}_pex`,
-      dedup.usedPexelsIds, candidateOffset, dedup.perf.pexelsDownloadRetries
+      dedup.usedPexelsIds, candidateOffset, dedup.perf.pexelsDownloadRetries,
+      beat.text, videoTitle
     );
     let clip = await adoptClip(pex, dedup, sceneIndex, beat.index, beat.text, workDir, q, adoptOpts);
     if (clip) {
@@ -12214,7 +12306,7 @@ async function fetchBeatStockFallback(
     enrichStockQuery(beat.powerWord, scene, videoTitle, personName, beat.text),
     scene.visualCue,
     scene.pexelsQuery,
-    ...buildBeatVisualQueryList(beat.text, scene, videoTitle, scenePersons, 3, beat.searchQuery),
+    ...buildBeatVisualQueryList(beat.text, scene, videoTitle, scenePersons, 3, beat.searchQuery, beat.visualIntent),
   ].filter((q): q is string => typeof q === "string" && q.trim().length > 2 && !isBlockedStockQuery(q));
   const unique = [...new Set(queries)].slice(0, 3);
   const tag = `b${beat.index}_stock`;
@@ -13248,19 +13340,40 @@ async function adoptPexelsBeatClipFallback(
   const cyclingQueries = isCyclingBeat(beat.text)
     ? buildCyclingVisualQueries(beat.text, videoTitle, scene.text)
     : [];
+  const geoStatQueries = isGeoStatBeat(beat.text)
+    ? buildGeoStatVisualQueries(beat.text, videoTitle, scene.text)
+    : [];
+  const carQueries = isCarBeat(beat.text)
+    ? buildCarVisualQueries(beat.text, videoTitle, scene.text)
+    : [];
+  const governmentQueries = isGovernmentBeat(beat.text)
+    ? buildGovernmentVisualQueries(beat.text, videoTitle, scene.text)
+    : [];
+  const urbanPlanningQueries = isUrbanPlanningBeat(beat.text)
+    ? buildUrbanPlanningVisualQueries(beat.text, videoTitle, scene.text)
+    : [];
+  const infrastructureQueries = isInfrastructureBeat(beat.text)
+    ? buildInfrastructureVisualQueries(beat.text, videoTitle, scene.text)
+    : [];
   const scriptQueries = buildBeatVisualQueryList(
     beat.text,
     scene,
     videoTitle,
     scenePersons,
     6,
-    beat.searchQuery
+    beat.searchQuery,
+    beat.visualIntent
   );
   const queries = [
     ...new Set(
       [
         ...welcomeQueries,
         ...cyclingQueries,
+        ...geoStatQueries,
+        ...carQueries,
+        ...governmentQueries,
+        ...urbanPlanningQueries,
+        ...infrastructureQueries,
         beat.searchQuery,
         beat.powerWord,
         ...geoQueries,
@@ -13308,7 +13421,9 @@ async function adoptPexelsBeatClipFallback(
           `b${beat.index}_pex`,
           dedup.usedPexelsIds,
           beat.index + scene.index + qi,
-          dedup.perf.pexelsDownloadRetries ?? 2
+          dedup.perf.pexelsDownloadRetries ?? 2,
+          beat.text,
+          videoTitle
         ),
         28_000,
         `Pexels fallback scene ${scene.index} beat ${beat.index}`
@@ -13316,7 +13431,7 @@ async function adoptPexelsBeatClipFallback(
       for (const clipPath of paths) {
         if (!clipPath || !fs.existsSync(clipPath)) continue;
         if (dedup.usedContentKeys.has(clipContentKey(clipPath))) continue;
-        if (isRejectedStockClip(clipPath, q)) continue;
+        if (isRejectedStockClip(clipPath, q, beat.text, videoTitle)) continue;
         if (
           dedup.personTopicLock &&
           dedup.primaryPerson &&
@@ -13372,7 +13487,8 @@ async function backfillArchiveMontageFromPool(
     Math.max(minClipsNeeded + 2, Math.ceil(outDur / effectiveBeatSec())),
     videoTitle,
     scenePersons,
-    dedup.sentenceKeywords
+    dedup.sentenceKeywords,
+    dedup.sentenceIntents
   );
   const maxFill = opts?.maxAttempts ?? Math.max(14, minClipsForBalancedVoice(outDur) + 5);
   const prefix = opts?.logPrefix ?? `Scene ${scene.index}`;
@@ -13469,7 +13585,8 @@ async function backfillComposeMontageIfShort(
       Math.max(minClipsNeeded + 2, Math.ceil(outDur / effectiveBeatSec())),
       videoTitle,
       scenePersons,
-      dedup.sentenceKeywords
+      dedup.sentenceKeywords,
+      dedup.sentenceIntents
     );
     for (let attempt = 0; attempt < 8 && coverage < minCoverage; attempt++) {
       const beat = beats[attempt % beats.length] ?? beats[0];
@@ -13587,7 +13704,7 @@ async function fetchArchiveSentenceMontage(
     dedup.perf.maxBeatsPerScene,
     Math.ceil(scene.duration / archiveVisualMinClipSec()) + 2
   );
-  const beats = buildSceneBeats(scene, scene.duration, beatCap, videoTitle, scenePersons, dedup.sentenceKeywords);
+  const beats = buildSceneBeats(scene, scene.duration, beatCap, videoTitle, scenePersons, dedup.sentenceKeywords, dedup.sentenceIntents);
   const clips: string[] = [];
   const beatDurations: number[] = [];
   const clipBeatIndices: number[] = [];
@@ -13832,7 +13949,7 @@ async function fetchSceneVisuals(
         : dedup.perf.fastStockMode
           ? 2
           : maxStillPhotosForScene(scene.index, scenePersons.length > 0, dedup.personTopicLock);
-  const beats = buildSceneBeats(scene, scene.duration, beatCap, videoTitle, scenePersons, dedup.sentenceKeywords);
+  const beats = buildSceneBeats(scene, scene.duration, beatCap, videoTitle, scenePersons, dedup.sentenceKeywords, dedup.sentenceIntents);
   const clips: string[] = [];
   const beatDurations: number[] = [];
   const archiveBeatFilled = new Set<number>();
@@ -14890,18 +15007,16 @@ async function prepareSceneEffectLayers(
 
   const statCalloutFrame: { path: string; startTime: number; endTime: number } | null = null;
 
-  const colorGrade = documentaryStyleEnabled()
-    ? buildPostGradeVF()
-    : `eq=contrast=1.12:saturation=0.92:brightness=-0.02:gamma=1.02,colorbalance=rs=-0.02:gs=0:bs=0.03:rm=-0.01:gm=0:bm=0.02:rh=-0.01:gh=0:bh=0.02,vignette=angle=0.6:mode=forward`;
+  const fadeFilter = buildFinalSceneGradeVF();
   const subtitleDrawtext = enableSubtitles ? "" : "";
-  const fadeFilter = documentaryStyleEnabled() ? colorGrade : `${colorGrade}${subtitleDrawtext}`;
+  const fadeFilterWithSubs = documentaryStyleEnabled() ? fadeFilter : `${fadeFilter}${subtitleDrawtext}`;
 
   return {
     kineticFrames,
     docOverlays,
     statCalloutFrame,
     sfxCueFiles,
-    fadeFilter,
+    fadeFilter: fadeFilterWithSubs,
     voiceDur,
     outDur,
   };
@@ -15264,12 +15379,8 @@ async function composeSceneVideo(
   const threadFlag = IS_RAILWAY ? "-threads 2" : "";
   // Kinetic text position: upper-center area
   const kineticY = 80;
-  // Cinematic color grading (documentaryStyle module when enabled)
-  const colorGrade = documentaryStyleEnabled()
-    ? buildPostGradeVF()
-    : `eq=contrast=1.12:saturation=0.92:brightness=-0.02:gamma=1.02,colorbalance=rs=-0.02:gs=0:bs=0.03:rm=-0.01:gm=0:bm=0.02:rh=-0.01:gh=0:bh=0.02,vignette=angle=0.6:mode=forward`;
-  const subtitleDrawtext = '';
-  const fadeFilter = documentaryStyleEnabled() ? colorGrade : `${colorGrade}${subtitleDrawtext}`;
+  // Final pass: grain only when per-clip documentary grade already applied in montage prep.
+  const fadeFilter = buildFinalSceneGradeVF();
 
   // Helper: build the full overlay chain (shared with effects pass)
   function buildKineticChain(
@@ -15338,7 +15449,8 @@ async function composeSceneVideo(
               Math.max(safeClips.length, 8),
               composeOptions?.videoTitle,
               [],
-              composeOptions?.dedup?.sentenceKeywords
+              composeOptions?.dedup?.sentenceKeywords,
+              composeOptions?.dedup?.sentenceIntents
             );
       const beatInputs = sceneBeats.map((b) => ({
         text: b.text,
@@ -16308,21 +16420,44 @@ export async function runVideoPipeline(
       );
     }
     const visualDedup = createVisualDedupState(perf, { primaryPerson, personTopicLock: personLocked });
+    let visualIntentEntries = parseVisualIntentsFromMetadata(videoRow?.metadata);
     let visualKeywordEntries = parseVisualKeywordsFromMetadata(videoRow?.metadata);
-    if (visualKeywordEntries.length === 0) {
+    if (visualIntentEntries.length === 0) {
       try {
-        visualKeywordEntries = await generateScriptVisualKeywords(script);
-        if (visualKeywordEntries.length > 0 && videoRow) {
+        if (visualKeywordEntries.length > 0) {
+          visualIntentEntries = visualKeywordEntries.map((entry) => {
+            const intent = fallbackVisualIntent(entry.sentence);
+            const kw = sanitizeVisualKeyword(entry.keyword);
+            if (kw) intent.primary_keyword = kw;
+            return intent;
+          });
+        } else {
+          visualIntentEntries = await generateScriptVisualIntents(script);
+          visualKeywordEntries = visualIntentEntries.map((e) => ({
+            sentence: e.sentence,
+            keyword: e.primary_keyword,
+          }));
+        }
+        if (visualIntentEntries.length > 0 && videoRow) {
           await updateVideoStatus(videoId, videoRow.status, {
-            metadata: mergeVisualKeywordsIntoMetadata(videoRow.metadata, visualKeywordEntries),
+            metadata: mergeVisualIntentsIntoMetadata(videoRow.metadata, visualIntentEntries),
           }).catch(() => {});
         }
       } catch (err) {
-        console.warn(`[Pipeline] Video ${videoId}: visual keyword backfill failed:`, err);
+        console.warn(`[Pipeline] Video ${videoId}: visual intent backfill failed:`, err);
       }
     }
-    visualDedup.sentenceKeywords = buildSentenceKeywordMap(visualKeywordEntries);
-    if (visualDedup.sentenceKeywords.size > 0) {
+    visualDedup.sentenceIntents = buildSentenceIntentMap(visualIntentEntries);
+    visualDedup.sentenceKeywords = buildSentenceKeywordMap(
+      visualKeywordEntries.length > 0
+        ? visualKeywordEntries
+        : visualIntentEntries.map((e) => ({ sentence: e.sentence, keyword: e.primary_keyword }))
+    );
+    if (visualDedup.sentenceIntents.size > 0) {
+      console.log(
+        `[Pipeline] Video ${videoId}: ${visualDedup.sentenceIntents.size} sentence visual intents loaded`
+      );
+    } else if (visualDedup.sentenceKeywords.size > 0) {
       console.log(
         `[Pipeline] Video ${videoId}: ${visualDedup.sentenceKeywords.size} sentence visual keywords loaded`
       );

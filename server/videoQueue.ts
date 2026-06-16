@@ -1,6 +1,9 @@
 /**
  * DB-backed video generation queue.
- * Web enqueues jobs; worker(s) claim and run the pipeline with concurrency limits.
+ * Web enqueues jobs; one or more workers claim and run the pipeline.
+ *
+ * Scaling: set MAX_CONCURRENT_JOBS globally (e.g. 50), run N worker replicas each with
+ * MAX_JOBS_PER_WORKER=10 and EMBED_QUEUE_WORKER=false on the web service.
  */
 
 import { APP_ERROR, appTrpcError } from "@shared/appErrors";
@@ -50,7 +53,8 @@ export async function enqueueVideoJob(
   return { queuePosition };
 }
 
-let activeJobs = 0;
+/** Jobs currently executing inside this Node process (per-worker RAM limit). */
+let localActiveJobs = 0;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let tickInFlight = false;
 
@@ -61,7 +65,7 @@ function nudgeQueueWorker(): void {
 async function pickNextQueuedVideo(): Promise<Video | undefined> {
   const config = readQueueConfig();
   const globalActive = await countGlobalProcessingVideos();
-  if (globalActive + activeJobs >= config.maxConcurrentJobs) return undefined;
+  if (globalActive >= config.maxConcurrentJobs) return undefined;
 
   const queued = await listQueuedVideosOrdered(100);
   for (const candidate of queued) {
@@ -91,9 +95,9 @@ export async function processQueueTick(): Promise<void> {
   tickInFlight = true;
   try {
     const config = readQueueConfig();
-    while (activeJobs < config.maxConcurrentJobs) {
+    while (localActiveJobs < config.maxJobsPerWorker) {
       const globalActive = await countGlobalProcessingVideos();
-      if (globalActive + activeJobs >= config.maxConcurrentJobs) break;
+      if (globalActive >= config.maxConcurrentJobs) break;
 
       const next = await pickNextQueuedVideo();
       if (!next) break;
@@ -101,13 +105,16 @@ export async function processQueueTick(): Promise<void> {
       const claimed = await claimQueuedVideo(next.id, "Starting generation...");
       if (!claimed) continue;
 
-      activeJobs++;
-      console.log(`[VideoQueue] Claimed video ${claimed.id} for user ${claimed.userId}`);
+      localActiveJobs++;
+      console.log(
+        `[VideoQueue] Claimed video ${claimed.id} for user ${claimed.userId} ` +
+          `(local ${localActiveJobs}/${config.maxJobsPerWorker}, global ${globalActive + 1}/${config.maxConcurrentJobs})`
+      );
 
       runVideoJob(claimed)
         .catch((err) => console.error(`[VideoQueue] Video ${claimed.id} failed:`, err))
         .finally(() => {
-          activeJobs = Math.max(0, activeJobs - 1);
+          localActiveJobs = Math.max(0, localActiveJobs - 1);
           void processQueueTick();
         });
     }
@@ -121,8 +128,9 @@ export function startVideoQueueWorker(): void {
   if (pollTimer) return;
 
   console.log(
-    `[VideoQueue] Worker started — max ${config.maxConcurrentJobs} global, ` +
-      `${config.maxActiveJobsPerUser}/user, poll every ${config.pollIntervalMs}ms`
+    `[VideoQueue] Worker started — global max ${config.maxConcurrentJobs}, ` +
+      `${config.maxJobsPerWorker}/process, ${config.maxActiveJobsPerUser}/user, ` +
+      `poll every ${config.pollIntervalMs}ms`
   );
 
   void processQueueTick();

@@ -2,7 +2,44 @@
  * Curated media archive — pick tagged assets from admin libraries for pipeline beats.
  */
 import { exec as execCb } from "child_process";
-import { extractVisualSearchTags, extractSceneSearchTags, extractEntitySearchTags, extractPrimaryVisualAnchor, extractSalientBeatTokens, extractRequiredVisualTags, extractBeatGeoPlaceTags, isGenericPeopleAsset, isWrongGeoForBeat, inferVideoVisualTopic, isWwiiWarArchiveAsset, refineVisualSearchTagsForTopic, isGeoWelcomeBeat, buildGeoWelcomeVisualQueries, isCyclingBeat, extractBeatCyclingTags, buildCyclingVisualQueries, assetShowsCycling, type VideoVisualTopic } from "./visualBeatTags";
+import {
+  extractVisualSearchTags,
+  extractSceneSearchTags,
+  extractEntitySearchTags,
+  extractPrimaryVisualAnchor,
+  extractSalientBeatTokens,
+  extractRequiredVisualTags,
+  extractBeatGeoPlaceTags,
+  isGenericPeopleAsset,
+  isWrongGeoForBeat,
+  inferVideoVisualTopic,
+  isWwiiWarArchiveAsset,
+  refineVisualSearchTagsForTopic,
+  isGeoWelcomeBeat,
+  buildGeoWelcomeVisualQueries,
+  isCyclingBeat,
+  extractBeatCyclingTags,
+  buildCyclingVisualQueries,
+  assetShowsCycling,
+  isCarBeat,
+  extractBeatCarTags,
+  buildCarVisualQueries,
+  assetShowsCars,
+  isGovernmentBeat,
+  extractBeatGovernmentTags,
+  buildGovernmentVisualQueries,
+  assetShowsGovernment,
+  isUrbanPlanningBeat,
+  extractBeatUrbanPlanningTags,
+  buildUrbanPlanningVisualQueries,
+  assetShowsUrbanPlanning,
+  isInfrastructureBeat,
+  extractBeatInfrastructureTags,
+  buildInfrastructureVisualQueries,
+  assetShowsInfrastructure,
+  assetIsOffTopicProtest,
+  type VideoVisualTopic,
+} from "./visualBeatTags";
 import { promisify } from "util";
 import fetch from "node-fetch";
 import * as fs from "fs";
@@ -13,6 +50,8 @@ import { archiveClipHasBakedEditText } from "./archiveClipFilter";
 import {
   buildBlurFillStillVF,
   buildFitGrayVideoVF,
+  buildFitGrayGradedVideoVF,
+  buildMontageBranchNormVF,
   buildMatFramedStillVF,
   buildStillEncodeArgs,
   archiveStillKenBurnsVariant,
@@ -283,6 +322,10 @@ export function assetPassesBeatMinimum(
     return false;
   }
 
+  if (videoVisualTopic === "geography_urban" && isGeographyIncompatibleArchiveAsset(asset)) {
+    return false;
+  }
+
   const geoTags = extractBeatGeoPlaceTags(beatText);
   if (geoTags.length > 0) {
     if (isWrongGeoForBeat(asset, geoTags)) return false;
@@ -291,6 +334,30 @@ export function assetPassesBeatMinimum(
   }
 
   if (isCyclingBeat(beatText) && !assetShowsCycling(asset)) {
+    return false;
+  }
+
+  if (isCarBeat(beatText) && !assetShowsCars(asset)) {
+    return false;
+  }
+
+  if (isGovernmentBeat(beatText) && !assetShowsGovernment(asset)) {
+    return false;
+  }
+
+  if (isUrbanPlanningBeat(beatText) && !assetShowsUrbanPlanning(asset, beatText)) {
+    if (!isGovernmentBeat(beatText) || !assetShowsGovernment(asset)) {
+      return false;
+    }
+  }
+
+  if (isInfrastructureBeat(beatText) && !assetShowsInfrastructure(asset, beatText)) {
+    if (!isUrbanPlanningBeat(beatText) || !assetShowsUrbanPlanning(asset, beatText)) {
+      return false;
+    }
+  }
+
+  if (assetIsOffTopicProtest(asset, beatText, videoVisualTopic)) {
     return false;
   }
 
@@ -565,6 +632,50 @@ export function scoreCuratedAsset(
     }
   }
 
+  if (beatText?.trim() && isCarBeat(beatText)) {
+    const carTags = extractBeatCarTags(beatText);
+    const carHits = countVisualTagHits(asset, carTags);
+    if (assetShowsCars(asset)) {
+      score += 55 + carHits * 18;
+      beatHits += 2;
+    } else {
+      score -= 140;
+    }
+  }
+
+  if (beatText?.trim() && isGovernmentBeat(beatText)) {
+    const govTags = extractBeatGovernmentTags(beatText);
+    const govHits = countVisualTagHits(asset, govTags);
+    if (assetShowsGovernment(asset)) {
+      score += 55 + govHits * 18;
+      beatHits += 2;
+    } else {
+      score -= 140;
+    }
+  }
+
+  if (beatText?.trim() && isUrbanPlanningBeat(beatText)) {
+    const planTags = extractBeatUrbanPlanningTags(beatText);
+    const planHits = countVisualTagHits(asset, planTags);
+    if (assetShowsUrbanPlanning(asset, beatText)) {
+      score += 55 + planHits * 18;
+      beatHits += 2;
+    } else {
+      score -= 140;
+    }
+  }
+
+  if (beatText?.trim() && isInfrastructureBeat(beatText)) {
+    const infraTags = extractBeatInfrastructureTags(beatText);
+    const infraHits = countVisualTagHits(asset, infraTags);
+    if (assetShowsInfrastructure(asset, beatText)) {
+      score += 55 + infraHits * 18;
+      beatHits += 2;
+    } else {
+      score -= 140;
+    }
+  }
+
   if (beatText?.trim()) {
     const anchor = extractPrimaryVisualAnchor(beatText);
     const hay = `${title} ${assetTags.join(" ")}`;
@@ -620,6 +731,9 @@ export function scoreCuratedAsset(
 
   score += curatedOffTopicPenalty(asset, topicAnchors, beatTags, videoVisualTopic);
   if (videoVisualTopic === "geography_urban" && isWwiiWarArchiveAsset(asset)) {
+    return 0;
+  }
+  if (videoVisualTopic === "geography_urban" && isGeographyIncompatibleArchiveAsset(asset)) {
     return 0;
   }
 
@@ -692,6 +806,9 @@ export function isCuratedOffTopicAsset(
   if (videoVisualTopic === "geography_urban" && isWwiiWarArchiveAsset(asset)) {
     return true;
   }
+  if (videoVisualTopic === "geography_urban" && isGeographyIncompatibleArchiveAsset(asset)) {
+    return true;
+  }
 
   const title = (asset.title ?? "").toLowerCase();
   const hay = `${title} ${normalizeMediaTags(asset.tags ?? []).join(" ")}`;
@@ -703,6 +820,22 @@ export function isCuratedOffTopicAsset(
     beatTags.some((t) => /hitler|nazi|1945|1944|holocaust|wehrmacht|bunker|fuhrer|third reich|wwii|ww2/i.test(t));
   if (!beatContextWwii) return false;
   return /\b(middeleeuws|medieval|uithangbord|titanic|prehistoric|steentijd|dinosaur|sprookje|fantasy|mytholog)\b/i.test(
+    hay
+  );
+}
+
+/** B&W / war-era / interview archive — wrong look for modern city/geography documentaries. */
+export function isGeographyIncompatibleArchiveAsset(
+  asset: Pick<MediaArchiveAsset, "title" | "tags" | "mediaType">
+): boolean {
+  if (isWwiiWarArchiveAsset(asset)) return true;
+  if (isCuratedHistoricalFootage(asset)) return true;
+  if (isCuratedInterviewAsset(asset)) return true;
+  const hay = `${(asset.title ?? "").toLowerCase()} ${normalizeMediaTags(asset.tags ?? []).join(" ")}`;
+  if (/\b(protest(?:ing|ers?|s)?|demonstration|demonstrators?|demonstratie|betog(?:ing|ers?)?|riot(?:ing|ers?)?|activists?|picket(?:ing|ers?)?|civil unrest|protest march|street protest)\b/i.test(hay)) {
+    return true;
+  }
+  return /\b(zwart-wit|black.?white|b&w|monochrome|sepia|archief footage|old footage|1930|1934|1939|1945|propaganda|militair|soldaten|parade|historical archive|newsreel|zwart wit)\b/i.test(
     hay
   );
 }
@@ -1048,7 +1181,7 @@ async function trimVideoClip(
     startSec = (clipIndex * 0.41 + 0.15) % slack;
   }
 
-  const frameVf = buildFitGrayVideoVF();
+  const frameVf = buildFitGrayGradedVideoVF();
   const preset = process.env.RAILWAY_ENVIRONMENT ? "ultrafast" : "veryfast";
 
   await exec(
@@ -1304,6 +1437,14 @@ export async function searchCuratedCandidatesForBeat(
   }
   if (filtered.length > 0) return filtered;
 
+  if (videoVisualTopic === "geography_urban") {
+    return ranked.filter(
+      (p) =>
+        p.score >= Math.max(45, Math.round(topScore * 0.55)) &&
+        assetPassesBeatMinimum(p.asset, beat.text, p.score, topScore, p.semantic, videoVisualTopic)
+    );
+  }
+
   if (topScore > 0) {
     const relaxed = ranked.filter(
       (p) =>
@@ -1490,6 +1631,9 @@ export function shouldTryPexelsFirstForBeat(
 ): boolean {
   if (!archivePexelsHybridEnabled()) return false;
   if (isGeoWelcomeBeat(beatText)) return true;
+  if (isCyclingBeat(beatText) || isCarBeat(beatText) || isGovernmentBeat(beatText) || isUrbanPlanningBeat(beatText) || isInfrastructureBeat(beatText)) {
+    return true;
+  }
   const geoTags = extractBeatGeoPlaceTags(beatText);
   return geoTags.length > 0 && videoVisualTopic === "geography_urban";
 }
@@ -1525,6 +1669,12 @@ export function buildGeoStockSearchQueries(beatText: string, videoTitle?: string
 
   if (isGeoWelcomeBeat(beatText)) {
     queries.push(...buildGeoWelcomeVisualQueries(beatText));
+  }
+  if (isUrbanPlanningBeat(beatText)) {
+    queries.push(...buildUrbanPlanningVisualQueries(beatText, videoTitle));
+  }
+  if (isInfrastructureBeat(beatText)) {
+    queries.push(...buildInfrastructureVisualQueries(beatText, videoTitle));
   }
 
   const wantsNl = geoTags.some((t) =>

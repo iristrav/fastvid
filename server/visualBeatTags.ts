@@ -72,6 +72,26 @@ const SCENE_SEARCH_ENTRIES: TagEntry[] = [
   { pattern: /\bvlag\b|\bswastika\b|\bhakenkruis\b/i, searchTags: ["swastika", "nazi flag", "flag"] },
   { pattern: /\bondergronds\b|\bunderground\b|\bkelder\b|\bcellar\b|\bcommand\s*post\b|\bcommando\s*centrum\b/i, searchTags: ["underground", "bunker", "command post", "cellar"] },
   { pattern: /\bovergave\b|\bsurrender\b|\bcapitulat/i, searchTags: ["surrender", "capitulation", "surrender document"] },
+  {
+    pattern:
+      /\bauto'?s?\b|\bautoverkeer\b|\bautomobiel(?:en)?\b|\bcars?\b|\bautomobiles?\b|\bvoertuig(?:en)?\b|\bsnelweg(?:en)?\b|\btraffic jam\b|\bparkeer(?:plaats|en)?\b|\brij(?:den|dt)\b|\bdriving\b|\bautomotive\b|\bmotor(?:ist|ists)?\b|\bopstopping(?:en)?\b|\bcongestion\b/i,
+    searchTags: ["car", "cars", "automobile", "traffic", "highway", "driving", "parking", "vehicle"],
+  },
+  {
+    pattern:
+      /\b(government|governments|governmental|overheid|parliament|parliaments|congress|senate|capitol|city hall|town hall|gemeentehuis|gemeente|ministerie|ministry|ministries|minister|municipal(?:ity|ities)?|bestuur|administration|regering|tweede kamer|local government)\b/i,
+    searchTags: ["government", "parliament", "city hall", "capitol", "municipal", "ministry", "administration"],
+  },
+  {
+    pattern:
+      /\b(urban planning|city planning|stedenbouw|stadsplanung|stadtplanung|stedelijke planning|zoning|land use|walkable city|urban design|urbanism|infrastructure planning|ruimtelijke ordening|planologie|master plan|city development|urban development|transit oriented|mixed[- ]use|woonwijk|woningbouw|housing development|compact city)\b/i,
+    searchTags: ["urban planning", "city planning", "zoning", "urban design", "infrastructure", "housing", "transit"],
+  },
+  {
+    pattern:
+      /\b(infrastructure|infrastructuur|openbare werken|public works|transport infrastructure|wegennet|road network|rail network|spoorinfrastructuur|rail infrastructure|waterbeheer|water management)\b/i,
+    searchTags: ["infrastructure", "transport", "public transport", "highway", "railway", "bridge", "tram"],
+  },
   { pattern: /\bruïnes\b|\bruins\b|\brubble\b|\bverwoest\b|\bdestroyed\b|\bgebombardeerd\b|\bbombard/i, searchTags: ["ruins", "rubble", "destroyed", "bombed", "berlin ruins"] },
   { pattern: /\bbrand\b|\bbranden\b|\bburning\b|\bfire\b|\bvlammen\b|\bflames\b/i, searchTags: ["fire", "burning", "flames", "smoke"] },
   { pattern: /\brook\b|\bsmoke\b|\bartillerie\b|\bartillery\b|\bshelling\b|\bbombardment\b/i, searchTags: ["smoke", "artillery", "shelling", "bombardment"] },
@@ -244,6 +264,44 @@ export function refineVisualSearchTagsForTopic(
       out.add("netherlands cycling");
     }
   }
+  if (isCarBeat(beatText)) {
+    out.add("car");
+    out.add("cars");
+    out.add("traffic");
+    out.add("highway");
+    out.add("driving");
+    out.add("parking");
+  }
+  if (isGovernmentBeat(beatText)) {
+    out.add("government");
+    out.add("parliament");
+    out.add("city hall");
+    out.add("capitol");
+    out.add("municipal");
+    out.add("ministry");
+  }
+  if (isUrbanPlanningBeat(beatText)) {
+    out.add("urban planning");
+    out.add("city planning");
+    out.add("zoning");
+    out.add("urban design");
+    out.add("infrastructure");
+    out.add("public transport");
+    out.add("bike lane");
+  }
+  if (isInfrastructureBeat(beatText)) {
+    out.add("infrastructure");
+    out.add("public transport");
+    out.add("highway");
+    out.add("railway");
+    out.add("bridge");
+    out.add("tram");
+    if (contextMentionsNetherlands(beatText)) {
+      out.add("netherlands infrastructure");
+      out.add("dutch tram");
+      out.add("cycling infrastructure");
+    }
+  }
   out.add("city skyline");
   out.add("urban street");
   out.add("modern city");
@@ -299,6 +357,24 @@ export function extractBeatGeoPlaceTags(beatText: string): string[] {
 
 const CYCLING_RE =
   /\b(fiets|fietsen|fietser|fietsers|wielrennen|cyclist|cyclists|cycling|bicycle|bicycles|bike lane|bike lanes|fietspad|fietspaden)\b/i;
+
+const CAR_RE =
+  /\b(auto'?s?|autoverkeer|automobiel(?:en)?|cars?|automobiles?|voertuig(?:en)?|snelweg(?:en)?|traffic jam|parkeer(?:plaats|en)?|parking lot|rij(?:den|dt)|driving|automotive|motor(?:ist|ists)?|opstopping(?:en)?|congestion)\b/i;
+
+const GOVERNMENT_RE =
+  /\b(government|governments|governmental|overheid|parliament|parliaments|congress|senate|capitol|city hall|town hall|gemeentehuis|gemeente|ministerie|ministry|ministries|minister|municipal(?:ity|ities)?|bestuur|administration|regering|tweede kamer|local government)\b/i;
+
+const URBAN_PLANNING_RE =
+  /\b(urban planning|city planning|stedenbouw|stadsplanung|stadtplanung|stedelijke planning|zoning|zoning code|land use|walkable city|urban design|urbanism|infrastructure planning|ruimtelijke ordening|planologie|master plan|city development|urban development|transit oriented|mixed[- ]use|woonwijk|woningbouw|housing development|compact city|smart city planning)\b/i;
+
+const INFRASTRUCTURE_RE =
+  /\b(infrastructure|infrastructuur|openbare werken|public works|transport infrastructure|wegennet|road network|rail network|spoorinfrastructuur|rail infrastructure|waterbeheer|water management)\b/i;
+
+const PROTEST_BEAT_RE =
+  /\b(protest(?:ing|ers?|s)?|demonstration|demonstrators?|demonstratie|betog(?:ing|ers?)?|riot(?:ing|ers?)?|activists?|civil unrest|protest march|picket(?:ing|ers?)?)\b/i;
+
+const PROTEST_VISUAL_RE =
+  /\b(protest(?:ing|ers?|s)?|demonstration|demonstrators?|demonstratie|betog(?:ing|ers?)?|riot(?:ing|ers?)?|activists?|picket(?:ing|ers?)?|civil unrest|protest march|protest signs?|street protest|anti[- ]?war protest)\b/i;
 
 /** Narration about cycling / fietsen — needs people on bikes, not generic city shots. */
 export function isCyclingBeat(beatText: string): boolean {
@@ -356,6 +432,346 @@ export function assetShowsCycling(
   return /\b(cyclists?|cycling|bicycles?|bikes?|fiets(?:en|er|ers)?|fietspad(?:en)?)\b/.test(hay);
 }
 
+/** Narration about cars / auto's — needs visible automobiles, not generic skyline. */
+export function isCarBeat(beatText: string): boolean {
+  const cleaned = beatText.replace(/\[visual:[^\]]+\]/gi, " ").trim();
+  if (!cleaned) return false;
+  return CAR_RE.test(cleaned);
+}
+
+export function extractBeatCarTags(beatText: string): string[] {
+  if (!isCarBeat(beatText)) return [];
+  return ["car", "cars", "automobile", "traffic", "highway", "driving", "parking", "vehicle"];
+}
+
+/** Stock/archive queries when narration is about cars — place + visible traffic/automobiles. */
+export function buildCarVisualQueries(
+  beatText: string,
+  videoTitle?: string,
+  sceneText?: string
+): string[] {
+  if (!isCarBeat(beatText)) return [];
+
+  const geoTags = extractBeatGeoPlaceTags(beatText);
+  const context = `${beatText} ${sceneText ?? ""} ${videoTitle ?? ""}`.toLowerCase();
+  const wantsUs =
+    geoTags.some((t) => /america|usa|united states|american/.test(t)) ||
+    /\bamerica|american|united states|\bu\.?s\.?\b|usa\b/.test(context);
+  const wantsNl =
+    geoTags.some((t) => /netherlands|holland|amsterdam|dutch|nederland/.test(t)) ||
+    contextMentionsNetherlands(beatText, sceneText, videoTitle);
+
+  const queries: string[] = [];
+  if (wantsUs) {
+    queries.push(
+      "american highway traffic cars",
+      "usa city traffic jam",
+      "united states cars freeway",
+      "american parking lot cars",
+      "usa downtown traffic driving"
+    );
+  }
+  if (wantsNl) {
+    queries.push(
+      "netherlands highway traffic cars",
+      "dutch cars street traffic",
+      "amsterdam traffic cars driving",
+      "netherlands parking lot cars"
+    );
+  }
+
+  queries.push(
+    "cars city traffic street",
+    "automobile highway driving",
+    "traffic jam cars urban",
+    "parking lot cars aerial"
+  );
+
+  for (const tag of geoTags.slice(0, 2)) {
+    queries.push(`${tag} cars traffic`, `${tag} highway driving`);
+  }
+
+  return [...new Set(queries.filter((q) => q.length >= 4))].slice(0, 10);
+}
+
+export function assetShowsCars(
+  asset: Pick<{ title?: string | null; tags?: string[] | null }, "title" | "tags">
+): boolean {
+  const hay = assetHay(asset);
+  return /\b(cars?|automobiles?|automotive|traffic|highway|motorway|freeway|snelweg|driving|dashcam|parking|vehicles?|voertuig(?:en)?|auto(?:s|'s)?|congestion|opstopping)\b/.test(
+    hay
+  );
+}
+
+/** Narration about government / overheid — needs parliament, city hall, capitol… */
+export function isGovernmentBeat(beatText: string): boolean {
+  const cleaned = beatText.replace(/\[visual:[^\]]+\]/gi, " ").trim();
+  if (!cleaned) return false;
+  return GOVERNMENT_RE.test(cleaned);
+}
+
+export function extractBeatGovernmentTags(beatText: string): string[] {
+  if (!isGovernmentBeat(beatText)) return [];
+  return ["government", "parliament", "city hall", "capitol", "municipal", "ministry", "administration"];
+}
+
+/** Stock/archive queries when narration is about government. */
+export function buildGovernmentVisualQueries(
+  beatText: string,
+  videoTitle?: string,
+  sceneText?: string
+): string[] {
+  if (!isGovernmentBeat(beatText)) return [];
+
+  const geoTags = extractBeatGeoPlaceTags(beatText);
+  const context = `${beatText} ${sceneText ?? ""} ${videoTitle ?? ""}`.toLowerCase();
+  const wantsUs =
+    geoTags.some((t) => /america|usa|united states|american/.test(t)) ||
+    /\bamerica|american|united states|\bu\.?s\.?\b|usa\b/.test(context);
+  const wantsNl =
+    geoTags.some((t) => /netherlands|holland|amsterdam|dutch|nederland/.test(t)) ||
+    contextMentionsNetherlands(beatText, sceneText, videoTitle);
+
+  const queries: string[] = [];
+  if (wantsUs) {
+    queries.push(
+      "us capitol building washington",
+      "congress building exterior",
+      "american city hall government",
+      "state capitol building",
+      "usa government building facade"
+    );
+  }
+  if (wantsNl) {
+    queries.push(
+      "dutch parliament den haag",
+      "gemeentehuis netherlands",
+      "tweede kamer den haag",
+      "netherlands government building",
+      "dutch city hall municipal"
+    );
+  }
+
+  queries.push(
+    "government building city hall",
+    "parliament building exterior",
+    "municipal city hall facade",
+    "capitol government architecture"
+  );
+
+  for (const tag of geoTags.slice(0, 2)) {
+    queries.push(`${tag} government building`, `${tag} city hall parliament`);
+  }
+
+  return [...new Set(queries.filter((q) => q.length >= 4))].slice(0, 10);
+}
+
+export function assetShowsGovernment(
+  asset: Pick<{ title?: string | null; tags?: string[] | null }, "title" | "tags">
+): boolean {
+  const hay = assetHay(asset);
+  return /\b(government|parliament|congress|capitol|city hall|town hall|gemeentehuis|ministerie|ministry|municipal|overheid|regering|senate|assembly|bestuur|tweede kamer|binnenhof|rijksgebouw)\b/.test(
+    hay
+  );
+}
+
+/** Narration about roads, rail, bridges, public transport — not generic city shots. */
+export function isInfrastructureBeat(beatText: string): boolean {
+  const cleaned = beatText.replace(/\[visual:[^\]]+\]/gi, " ").trim();
+  if (!cleaned) return false;
+  if (isUrbanPlanningBeat(beatText)) return false;
+  return INFRASTRUCTURE_RE.test(cleaned);
+}
+
+export function extractBeatInfrastructureTags(beatText: string): string[] {
+  if (!isInfrastructureBeat(beatText)) return [];
+  return [
+    "infrastructure",
+    "public transport",
+    "highway",
+    "railway",
+    "bridge",
+    "tram",
+    "train",
+    "transit",
+    "canal",
+  ];
+}
+
+/** Stock/archive queries when narration is about infrastructure. */
+export function buildInfrastructureVisualQueries(
+  beatText: string,
+  videoTitle?: string,
+  sceneText?: string
+): string[] {
+  if (!isInfrastructureBeat(beatText)) return [];
+
+  const geoTags = extractBeatGeoPlaceTags(beatText);
+  const context = `${beatText} ${sceneText ?? ""} ${videoTitle ?? ""}`.toLowerCase();
+  const wantsUs =
+    geoTags.some((t) => /america|usa|united states|american/.test(t)) ||
+    /\bamerica|american|united states|\bu\.?s\.?\b|usa\b/.test(context);
+  const wantsNl =
+    geoTags.some((t) => /netherlands|holland|amsterdam|dutch|nederland/.test(t)) ||
+    contextMentionsNetherlands(beatText, sceneText, videoTitle);
+
+  const queries: string[] = [];
+  if (wantsNl) {
+    queries.push(
+      "netherlands infrastructure aerial",
+      "dutch highway interchange drone",
+      "netherlands train railway",
+      "amsterdam tram public transport",
+      "netherlands cycling infrastructure",
+      "rotterdam port infrastructure",
+      "dutch bridge canal",
+      "netherlands public transport metro"
+    );
+  }
+  if (wantsUs) {
+    queries.push(
+      "american highway infrastructure aerial",
+      "usa bridge infrastructure",
+      "united states railway train",
+      "american public transport subway"
+    );
+  }
+
+  queries.push(
+    "city infrastructure aerial",
+    "highway interchange drone",
+    "train railway public transport",
+    "bridge urban infrastructure",
+    "tram metro city street"
+  );
+
+  for (const tag of geoTags.slice(0, 2)) {
+    queries.push(`${tag} infrastructure`, `${tag} public transport railway`);
+  }
+
+  return [...new Set(queries.filter((q) => q.length >= 4))].slice(0, 10);
+}
+
+export function assetShowsInfrastructure(
+  asset: Pick<{ title?: string | null; tags?: string[] | null }, "title" | "tags">,
+  beatText?: string
+): boolean {
+  const hay = assetHay(asset);
+  if (
+    /\b(infrastructure|infrastructuur|highway|motorway|snelweg|interchange|viaduct|overpass|bridge|brug|tunnel|railway|railroad|train|spoor|tram|metro|public transport|openbaar vervoer|fietspad|bike lane|canal|harbor|harbour|port|airport|dike|dijk|polder)\b/.test(
+      hay
+    )
+  ) {
+    return true;
+  }
+  if (beatText && contextMentionsNetherlands(beatText)) {
+    const hasNl = /\b(netherlands|holland|amsterdam|dutch|nederland|rotterdam|utrecht)\b/.test(hay);
+    const hasInfraFabric =
+      /\b(tram|train|cycling|bike|canal|highway|bridge|port|metro|transit|road|aerial|rail)\b/.test(hay);
+    if (hasNl && hasInfraFabric) return true;
+  }
+  return /\b(tram|metro|train|railway|highway|bridge|port|transit|public transport)\b/.test(hay);
+}
+
+/** Narration about urban planning / stedenbouw — needs planning, transit, housing design… */
+export function isUrbanPlanningBeat(beatText: string): boolean {
+  const cleaned = beatText.replace(/\[visual:[^\]]+\]/gi, " ").trim();
+  if (!cleaned) return false;
+  return URBAN_PLANNING_RE.test(cleaned);
+}
+
+export function extractBeatUrbanPlanningTags(beatText: string): string[] {
+  if (!isUrbanPlanningBeat(beatText)) return [];
+  return [
+    "urban planning",
+    "city planning",
+    "zoning",
+    "urban design",
+    "infrastructure",
+    "housing",
+    "transit",
+    "bike lane",
+    "public transport",
+  ];
+}
+
+/** Stock/archive queries when narration is about urban planning. */
+export function buildUrbanPlanningVisualQueries(
+  beatText: string,
+  videoTitle?: string,
+  sceneText?: string
+): string[] {
+  if (!isUrbanPlanningBeat(beatText)) return [];
+
+  const geoTags = extractBeatGeoPlaceTags(beatText);
+  const context = `${beatText} ${sceneText ?? ""} ${videoTitle ?? ""}`.toLowerCase();
+  const wantsUs =
+    geoTags.some((t) => /america|usa|united states|american/.test(t)) ||
+    /\bamerica|american|united states|\bu\.?s\.?\b|usa\b/.test(context);
+  const wantsNl =
+    geoTags.some((t) => /netherlands|holland|amsterdam|dutch|nederland/.test(t)) ||
+    contextMentionsNetherlands(beatText, sceneText, videoTitle);
+
+  const queries: string[] = [];
+  if (wantsNl) {
+    queries.push(
+      "netherlands urban planning aerial",
+      "amsterdam city planning bike lanes",
+      "dutch urban design street tram",
+      "rotterdam modern architecture city",
+      "netherlands cycling infrastructure planning",
+      "amsterdam canal city planning timelapse"
+    );
+  }
+  if (wantsUs) {
+    queries.push(
+      "american suburban sprawl aerial",
+      "usa urban planning city zoning",
+      "united states highway urban sprawl",
+      "american city downtown planning"
+    );
+  }
+
+  queries.push(
+    "urban planning city aerial",
+    "city master plan model",
+    "modern apartment blocks city",
+    "bike lane city planning street",
+    "public transport urban city"
+  );
+
+  for (const tag of geoTags.slice(0, 2)) {
+    queries.push(`${tag} urban planning city`, `${tag} city planning infrastructure`);
+  }
+
+  return [...new Set(queries.filter((q) => q.length >= 4))].slice(0, 10);
+}
+
+export function assetShowsUrbanPlanning(
+  asset: Pick<{ title?: string | null; tags?: string[] | null }, "title" | "tags">,
+  beatText?: string
+): boolean {
+  const hay = assetHay(asset);
+  if (
+    /\b(urban planning|city planning|stedenbouw|zoning|urban design|urbanism|infrastructure|master plan|mixed use|planning|compact city|architect)\b/.test(
+      hay
+    )
+  ) {
+    return true;
+  }
+  if (beatText && contextMentionsNetherlands(beatText)) {
+    const hasNl = /\b(netherlands|holland|amsterdam|dutch|nederland|rotterdam|utrecht)\b/.test(hay);
+    const hasUrbanFabric =
+      /\b(bike lane|fietspad|cycl|tram|metro|transit|apartment|housing|infrastructure|aerial city|skyline|urban|canal|modern)\b/.test(
+        hay
+      );
+    if (hasNl && hasUrbanFabric) return true;
+  }
+  return /\b(bike lane|fietspad|transit|tram|metro|apartment|housing|infrastructure|aerial city|public transport)\b/.test(
+    hay
+  );
+}
+
 const GEO_WELCOME_RE =
   /\b(welcome|welkom)\b(?:\s+\w+){0,3}\s+\b(to|naar|in)\b|\b(welkom|welcome)\s+(in|naar)\b/i;
 
@@ -368,6 +784,118 @@ export function isGeoWelcomeBeat(beatText: string): boolean {
 }
 
 /** Stock/archive queries for "Welcome to {place}" — video B-roll (drone, timelapse, city footage). */
+function extractBeatPercentStat(beatText: string): { displayText: string; matchText: string } | null {
+  const cleaned = beatText.replace(/\[visual:[^\]]+\]/gi, " ").trim();
+  const m = cleaned.match(/(\d[\d,.]*\s*(?:%|percent|procent))/i);
+  if (!m?.[1]) return null;
+  const raw = m[1].trim();
+  const numStr = raw.match(/[\d,.]+/)?.[0]?.replace(",", ".");
+  if (!numStr) return null;
+  const n = parseFloat(numStr);
+  if (Number.isNaN(n)) return null;
+  const displayText = raw.includes("%") ? `${n}%` : `${n}%`;
+  return { displayText, matchText: m[1].trim() };
+}
+
+export type GeoStatBeatInfo = {
+  geoTags: string[];
+  statLabel: string;
+  statMatchText: string;
+};
+
+/** Beat names a place and a percentage (e.g. "America 1%") — show geo B-roll + stat on screen. */
+export function extractGeoStatFromBeat(beatText: string): GeoStatBeatInfo | null {
+  const geoTags = extractBeatGeoPlaceTags(beatText);
+  if (geoTags.length === 0) return null;
+  const stat = extractBeatPercentStat(beatText);
+  if (!stat) return null;
+  return {
+    geoTags,
+    statLabel: stat.displayText,
+    statMatchText: stat.matchText,
+  };
+}
+
+export function isGeoStatBeat(beatText: string): boolean {
+  return extractGeoStatFromBeat(beatText) !== null;
+}
+
+/** Narration explicitly about protests — otherwise protest B-roll is off-topic. */
+export function isProtestBeat(beatText: string): boolean {
+  const cleaned = beatText.replace(/\[visual:[^\]]+\]/gi, " ").trim();
+  if (!cleaned) return false;
+  return PROTEST_BEAT_RE.test(cleaned);
+}
+
+export function isProtestVisualHay(hay: string): boolean {
+  return PROTEST_VISUAL_RE.test(hay.toLowerCase());
+}
+
+/** Reject protest/demonstration footage when the script does not mention protests. */
+export function isOffTopicProtestForBeat(
+  beatText: string,
+  hay: string,
+  videoVisualTopic: VideoVisualTopic = "general"
+): boolean {
+  if (!isProtestVisualHay(hay)) return false;
+  if (isProtestBeat(beatText)) return false;
+  if (videoVisualTopic === "geography_urban") return true;
+  if (extractBeatGeoPlaceTags(beatText).length > 0) return true;
+  if (isGeoStatBeat(beatText)) return true;
+  if (isCarBeat(beatText)) return true;
+  if (isGovernmentBeat(beatText)) return true;
+  if (isUrbanPlanningBeat(beatText)) return true;
+  if (isInfrastructureBeat(beatText)) return true;
+  if (isCyclingBeat(beatText)) return true;
+  if (isGeoWelcomeBeat(beatText)) return true;
+  return false;
+}
+
+export function assetIsOffTopicProtest(
+  asset: Pick<{ title?: string | null; tags?: string[] | null }, "title" | "tags">,
+  beatText: string,
+  videoVisualTopic: VideoVisualTopic = "general"
+): boolean {
+  return isOffTopicProtestForBeat(beatText, assetHay(asset), videoVisualTopic);
+}
+
+/** Stock/archive queries when narration compares a country with a percentage stat. */
+export function buildGeoStatVisualQueries(
+  beatText: string,
+  _videoTitle?: string,
+  _sceneText?: string
+): string[] {
+  const info = extractGeoStatFromBeat(beatText);
+  if (!info) return [];
+
+  const queries: string[] = [];
+  const wantsNl = info.geoTags.some((t) => /netherlands|holland|amsterdam|dutch|nederland/.test(t));
+  const wantsUs = info.geoTags.some((t) => /america|usa|united states|american/.test(t));
+
+  if (wantsUs) {
+    queries.push(
+      "united states city aerial video",
+      "american skyline timelapse",
+      "usa downtown drone",
+      "new york city skyline video",
+      "american city street broll"
+    );
+  }
+  if (wantsNl) {
+    queries.push(
+      "netherlands city aerial video",
+      "amsterdam skyline timelapse",
+      "dutch city drone video"
+    );
+  }
+
+  for (const tag of info.geoTags.slice(0, 2)) {
+    queries.push(`${tag} city skyline video`, `${tag} aerial drone`);
+  }
+
+  return [...new Set(queries.filter((q) => q.length >= 4))].slice(0, 10);
+}
+
 export function buildGeoWelcomeVisualQueries(beatText: string): string[] {
   const geoTags = extractBeatGeoPlaceTags(beatText);
   const queries: string[] = [];
@@ -516,7 +1044,11 @@ export function extractRequiredVisualTags(beatText: string): string[] {
   const entity = extractEntitySearchTags(beatText);
   const salient = extractSalientBeatTokens(beatText).slice(0, 5);
   const cycling = isCyclingBeat(beatText) ? extractBeatCyclingTags(beatText) : [];
-  return [...new Set([...scene, ...entity, ...visual.slice(0, 8), ...salient, ...cycling])].slice(0, 14);
+  const cars = isCarBeat(beatText) ? extractBeatCarTags(beatText) : [];
+  const government = isGovernmentBeat(beatText) ? extractBeatGovernmentTags(beatText) : [];
+  const urbanPlanning = isUrbanPlanningBeat(beatText) ? extractBeatUrbanPlanningTags(beatText) : [];
+  const infrastructure = isInfrastructureBeat(beatText) ? extractBeatInfrastructureTags(beatText) : [];
+  return [...new Set([...scene, ...entity, ...visual.slice(0, 8), ...salient, ...cycling, ...cars, ...government, ...urbanPlanning, ...infrastructure])].slice(0, 14);
 }
 
 export function isGenericPeopleAsset(
@@ -543,7 +1075,44 @@ export function extractPrimaryVisualAnchor(beatText: string): string | null {
   if (entities.length > 0 && scenes.length > 0) {
     return `${entities[0]} ${scenes[0]}`;
   }
-  if (scenes.length > 0) return scenes[0] ?? null;
+  if (isGeoStatBeat(beatText)) {
+    const geo = extractPrimaryGeoSearchTag(beatText);
+    if (geo && /america|usa|united states|american/.test(geo)) return "united states city skyline";
+    if (geo) return `${geo} city skyline`;
+    return "city skyline";
+  }
+  if (isInfrastructureBeat(beatText)) {
+    const geo = extractPrimaryGeoSearchTag(beatText);
+    if (geo && /netherlands|holland|amsterdam|dutch|nederland/.test(geo)) {
+      return "netherlands infrastructure aerial";
+    }
+    if (geo && /america|usa|united states|american/.test(geo)) return "american highway infrastructure";
+    if (geo) return `${geo} infrastructure`;
+    return "city infrastructure aerial";
+  }
+  if (isUrbanPlanningBeat(beatText)) {
+    const geo = extractPrimaryGeoSearchTag(beatText);
+    if (geo && /netherlands|holland|amsterdam|dutch|nederland/.test(geo)) {
+      return "netherlands urban planning aerial";
+    }
+    if (geo && /america|usa|united states|american/.test(geo)) return "american urban planning suburban";
+    if (geo) return `${geo} urban planning city`;
+    return "urban planning city aerial";
+  }
+  if (isCarBeat(beatText)) {
+    const geo = extractPrimaryGeoSearchTag(beatText);
+    if (geo && /america|usa|united states|american/.test(geo)) return "american highway traffic cars";
+    if (geo && /netherlands|holland|amsterdam|dutch|nederland/.test(geo)) return "netherlands cars traffic";
+    if (geo) return `${geo} cars traffic`;
+    return "cars city traffic";
+  }
+  if (isGovernmentBeat(beatText)) {
+    const geo = extractPrimaryGeoSearchTag(beatText);
+    if (geo && /america|usa|united states|american/.test(geo)) return "us capitol government building";
+    if (geo && /netherlands|holland|amsterdam|dutch|nederland/.test(geo)) return "dutch parliament den haag";
+    if (geo) return `${geo} government building`;
+    return "government building city hall";
+  }
   if (isCyclingBeat(beatText)) {
     const geo = extractPrimaryGeoSearchTag(beatText);
     const place =
@@ -551,6 +1120,7 @@ export function extractPrimaryVisualAnchor(beatText: string): string | null {
     if (place) return `${place} cyclists`;
     return "people cycling street";
   }
+  if (scenes.length > 0) return scenes[0] ?? null;
   const geo = extractPrimaryGeoSearchTag(beatText);
   if (geo) return geo;
   if (entities.length > 0) return entities[0] ?? null;
@@ -568,8 +1138,19 @@ function spokenLabelForGeo(cleaned: string, entry: TagEntry): string {
   return (entry.searchTags[0] ?? "").toUpperCase().slice(0, 28);
 }
 
-/** On-screen place names only (years handled separately). */
+/** On-screen place names only (years handled separately). Geo+stat beats show the percentage, not the country name. */
 export function extractVoiceLabelTerms(beatText: string): VoiceLabelTerm[] {
+  const geoStat = extractGeoStatFromBeat(beatText);
+  if (geoStat) {
+    return [
+      {
+        label: geoStat.statLabel.toUpperCase(),
+        searchTags: geoStat.geoTags,
+        matchText: geoStat.statMatchText,
+      },
+    ];
+  }
+
   const cleaned = beatText.replace(/\[visual:[^\]]+\]/gi, " ").trim();
   const lower = cleaned.toLowerCase();
   const out: VoiceLabelTerm[] = [];
@@ -602,7 +1183,9 @@ export function termStartInBeat(
   const cleaned = beatText.replace(/\[visual:[^\]]+\]/gi, "");
   for (const probe of [matchText, term].filter(Boolean) as string[]) {
     const escaped = probe.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const re = new RegExp(`\\b${escaped}\\b`, "i");
+    const re = /[%]/.test(probe)
+      ? new RegExp(escaped, "i")
+      : new RegExp(`\\b${escaped}\\b`, "i");
     const match = re.exec(cleaned);
     if (match && match.index >= 0) {
       const pos = match.index / Math.max(1, cleaned.length);

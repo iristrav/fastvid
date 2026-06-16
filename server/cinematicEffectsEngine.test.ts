@@ -101,6 +101,16 @@ describe("cinematicEffectsEngine", () => {
     expect(labels.every((l) => !/ — /.test(l.displayText))).toBe(true);
   });
 
+  it("shows percentage label for geo stat beats like America 1%", () => {
+    const labels = planVoiceSyncedScreenLabels(
+      [{ text: "In America, only 1% of trips are by bike.", holdSec: 8 }],
+      20,
+      10
+    );
+    expect(labels.some((l) => l.displayText === "1%")).toBe(true);
+    expect(labels.some((l) => /AMERIKA|AMERICA/i.test(l.displayText))).toBe(false);
+  });
+
   it("spaces labels apart and caps count", () => {
     const picked = selectSpacedScreenLabels(
       [

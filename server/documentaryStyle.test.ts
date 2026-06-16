@@ -5,6 +5,10 @@ import {
   buildMatFramedStillVF,
   buildPolaroidStillVF,
   buildPostGradeVF,
+  buildPerClipDocumentaryGradeVF,
+  buildMontageBranchNormVF,
+  buildFinalSceneGradeVF,
+  buildFitGrayGradedVideoVF,
   documentaryStyleEnabled,
   resolveStillCompositionVF,
   usePolaroidLayout,
@@ -77,5 +81,14 @@ describe("documentaryStyle", () => {
     const vf = buildPostGradeVF();
     expect(vf).toContain("vignette=");
     expect(vf).toContain("eq=contrast");
+  });
+
+  it("builds per-clip and final scene grades", () => {
+    expect(buildPerClipDocumentaryGradeVF()).toContain("eq=contrast");
+    expect(buildPerClipDocumentaryGradeVF()).toContain("vignette=");
+    expect(buildMontageBranchNormVF()).toContain("color=0x2a2a2a");
+    expect(buildMontageBranchNormVF()).toContain("eq=contrast");
+    expect(buildFitGrayGradedVideoVF()).toContain("eq=contrast");
+    expect(buildFinalSceneGradeVF()).toMatch(/noise=|copy/);
   });
 });

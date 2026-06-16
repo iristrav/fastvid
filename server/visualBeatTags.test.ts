@@ -11,7 +11,26 @@ import {
   buildGeoWelcomeVisualQueries,
   isCyclingBeat,
   buildCyclingVisualQueries,
+  isGeoStatBeat,
+  extractGeoStatFromBeat,
+  buildGeoStatVisualQueries,
+  isCarBeat,
+  buildCarVisualQueries,
+  assetShowsCars,
+  isUrbanPlanningBeat,
+  buildUrbanPlanningVisualQueries,
+  assetShowsUrbanPlanning,
+  isInfrastructureBeat,
+  buildInfrastructureVisualQueries,
+  assetShowsInfrastructure,
+  isGovernmentBeat,
+  buildGovernmentVisualQueries,
+  assetShowsGovernment,
   assetShowsCycling,
+  isProtestBeat,
+  isProtestVisualHay,
+  isOffTopicProtestForBeat,
+  assetIsOffTopicProtest,
   isWrongGeoForBeat,
   isWwiiWarArchiveAsset,
   termStartInBeat,
@@ -131,5 +150,112 @@ describe("visualBeatTags", () => {
     ).toEqual(expect.arrayContaining(["amsterdam cyclists street", "netherlands people cycling"]));
     expect(assetShowsCycling({ title: "Amsterdam canal bikes", tags: ["cycling"] })).toBe(true);
     expect(assetShowsCycling({ title: "Charlotte skyline", tags: ["usa"] })).toBe(false);
+  });
+
+  it("detects geo stat beats and shows percentage instead of country label", () => {
+    const text = "In America, only 1% of trips are by bike.";
+    expect(isGeoStatBeat(text)).toBe(true);
+    expect(extractGeoStatFromBeat(text)).toMatchObject({
+      statLabel: "1%",
+      statMatchText: "1%",
+    });
+    expect(buildGeoStatVisualQueries(text)).toEqual(
+      expect.arrayContaining(["united states city aerial video", "american skyline timelapse"])
+    );
+    const terms = extractVoiceLabelTerms(text);
+    expect(terms).toHaveLength(1);
+    expect(terms[0]?.label).toBe("1%");
+    expect(terms.some((t) => /AMERIKA|AMERICA/i.test(t.label))).toBe(false);
+  });
+
+  it("detects car beats and builds traffic queries", () => {
+    const text = "In Amerika rijden bijna alle mensen in auto's.";
+    expect(isCarBeat(text)).toBe(true);
+    expect(extractPrimaryVisualAnchor(text)).toBe("american highway traffic cars");
+    expect(buildCarVisualQueries(text)).toEqual(
+      expect.arrayContaining(["american highway traffic cars", "cars city traffic street"])
+    );
+    expect(assetShowsCars({ title: "Highway traffic jam", tags: ["cars", "highway"] })).toBe(true);
+    expect(assetShowsCars({ title: "Amsterdam canal", tags: ["netherlands"] })).toBe(false);
+  });
+
+  it("detects government beats and builds parliament/city hall queries", () => {
+    const text = "The local government decides how cities are built.";
+    expect(isGovernmentBeat(text)).toBe(true);
+    expect(extractPrimaryVisualAnchor(text)).toBe("government building city hall");
+    expect(buildGovernmentVisualQueries(text)).toEqual(
+      expect.arrayContaining(["government building city hall", "parliament building exterior"])
+    );
+    expect(assetShowsGovernment({ title: "US Capitol building", tags: ["capitol", "government"] })).toBe(true);
+    expect(assetShowsGovernment({ title: "Amsterdam canal", tags: ["netherlands"] })).toBe(false);
+    expect(isGovernmentBeat("De overheid investeert in stedelijke planning.")).toBe(true);
+  });
+
+  it("detects urban planning beats for Netherlands city design", () => {
+    const text = "In the Netherlands, urban planning prioritizes bikes and transit.";
+    expect(isUrbanPlanningBeat(text)).toBe(true);
+    expect(extractPrimaryVisualAnchor(text)).toBe("netherlands urban planning aerial");
+    expect(buildUrbanPlanningVisualQueries(text)).toEqual(
+      expect.arrayContaining([
+        "netherlands urban planning aerial",
+        "amsterdam city planning bike lanes",
+      ])
+    );
+    expect(
+      assetShowsUrbanPlanning(
+        { title: "Amsterdam tram and bike lanes", tags: ["amsterdam", "netherlands", "tram", "cycling"] },
+        text
+      )
+    ).toBe(true);
+    expect(assetShowsUrbanPlanning({ title: "Charlotte skyline", tags: ["usa"] }, text)).toBe(false);
+    expect(isUrbanPlanningBeat("Stedenbouw in Nederland werkt anders.")).toBe(true);
+  });
+
+  it("detects infrastructure beats for Netherlands transport and roads", () => {
+    const text = "The infrastructure of the Netherlands is built for bikes and trains.";
+    expect(isInfrastructureBeat(text)).toBe(true);
+    expect(isUrbanPlanningBeat(text)).toBe(false);
+    expect(extractPrimaryVisualAnchor(text)).toBe("netherlands infrastructure aerial");
+    expect(buildInfrastructureVisualQueries(text)).toEqual(
+      expect.arrayContaining([
+        "netherlands infrastructure aerial",
+        "amsterdam tram public transport",
+        "netherlands cycling infrastructure",
+      ])
+    );
+    expect(
+      assetShowsInfrastructure(
+        { title: "Amsterdam tram and train station", tags: ["amsterdam", "netherlands", "tram", "train"] },
+        text
+      )
+    ).toBe(true);
+    expect(assetShowsInfrastructure({ title: "Charlotte skyline", tags: ["usa"] }, text)).toBe(false);
+    expect(isInfrastructureBeat("De infrastructuur van Nederland is uniek.")).toBe(true);
+  });
+
+  it("blocks protest visuals for America geo beats unless script mentions protests", () => {
+    const americaBeat = "In America, only 1% of trips are by bike.";
+    const protestHay = "people protesting in washington dc demonstration";
+    expect(isProtestBeat(americaBeat)).toBe(false);
+    expect(isProtestVisualHay(protestHay)).toBe(true);
+    expect(isOffTopicProtestForBeat(americaBeat, protestHay, "geography_urban")).toBe(true);
+    expect(
+      assetIsOffTopicProtest(
+        { title: "Protest march Washington", tags: ["protest", "demonstration", "usa"] },
+        americaBeat,
+        "geography_urban"
+      )
+    ).toBe(true);
+    expect(
+      assetIsOffTopicProtest(
+        { title: "New York skyline timelapse", tags: ["usa", "skyline", "city"] },
+        americaBeat,
+        "geography_urban"
+      )
+    ).toBe(false);
+
+    const protestBeat = "Thousands joined the protest in the capital.";
+    expect(isProtestBeat(protestBeat)).toBe(true);
+    expect(isOffTopicProtestForBeat(protestBeat, protestHay, "geography_urban")).toBe(false);
   });
 });
