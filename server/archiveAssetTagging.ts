@@ -422,7 +422,20 @@ async function extractVideoPreviewJpeg(
   }
   try {
     await new Promise<void>((resolve, reject) => {
-      const args = ["-y", "-ss", seek.toFixed(3), "-i", videoPath, "-frames:v", "1", "-q:v", "3", outPath];
+      const args = [
+        "-y",
+        "-ss",
+        seek.toFixed(3),
+        "-i",
+        videoPath,
+        "-frames:v",
+        "1",
+        "-q:v",
+        "3",
+        "-f",
+        "image2",
+        outPath,
+      ];
       const child = spawn(ffmpegBin(), args, { stdio: ["ignore", "ignore", "pipe"] });
       let stderr = "";
       child.stderr.on("data", (d: Buffer) => {
@@ -478,8 +491,122 @@ async function extractVideoPreviewFrames(
 }
 
 function imageMimeToDataUrl(buffer: Buffer, mimeType: string): string {
-  const mime = mimeType.startsWith("image/") ? mimeType : "image/jpeg";
-  return `data:${mime};base64,${buffer.toString("base64")}`;
+  const mime = normalizeOpenAiVisionMime(mimeType);
+  const safeMime = OPENAI_VISION_MIMES.has(mime) ? mime : "image/jpeg";
+  return `data:${safeMime};base64,${buffer.toString("base64")}`;
+}
+
+const OPENAI_VISION_MIMES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+
+function normalizeOpenAiVisionMime(mimeType: string): string {
+  const lower = mimeType.trim().toLowerCase().split(";")[0]!.trim();
+  if (lower === "image/jpg" || lower === "image/pjpeg") return "image/jpeg";
+  if (lower.startsWith("image/")) return lower;
+  return "image/jpeg";
+}
+
+function detectImageMimeFromBuffer(buf: Buffer): string | null {
+  if (buf.length < 12) return null;
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return "image/jpeg";
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return "image/png";
+  if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) return "image/gif";
+  if (
+    buf[0] === 0x52 &&
+    buf[1] === 0x49 &&
+    buf[2] === 0x46 &&
+    buf[3] === 0x46 &&
+    buf[8] === 0x57 &&
+    buf[9] === 0x45 &&
+    buf[10] === 0x42 &&
+    buf[11] === 0x50
+  ) {
+    return "image/webp";
+  }
+  return null;
+}
+
+function extForVisionMime(mime: string): string {
+  switch (mime) {
+    case "image/png":
+      return "png";
+    case "image/gif":
+      return "gif";
+    case "image/webp":
+      return "webp";
+    default:
+      return "jpg";
+  }
+}
+
+function looksLikeVideoContainer(buf: Buffer): boolean {
+  if (buf.length < 12) return false;
+  if (buf[4] === 0x66 && buf[5] === 0x74 && buf[6] === 0x79 && buf[7] === 0x70) return true;
+  if (buf[0] === 0x1a && buf[1] === 0x45 && buf[2] === 0xdf && buf[3] === 0xa3) return true;
+  return false;
+}
+
+async function convertBufferToJpegWithFfmpeg(buffer: Buffer, inputExt: string): Promise<Buffer | null> {
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "archive-ai-img-"));
+  const inPath = path.join(workDir, `input.${inputExt}`);
+  const outPath = path.join(workDir, "output.jpg");
+  try {
+    fs.writeFileSync(inPath, buffer);
+    await new Promise<void>((resolve, reject) => {
+      const args = ["-y", "-i", inPath, "-frames:v", "1", "-q:v", "3", outPath];
+      const child = spawn(ffmpegBin(), args, { stdio: ["ignore", "ignore", "pipe"] });
+      let stderr = "";
+      child.stderr.on("data", (d: Buffer) => {
+        stderr += d.toString();
+      });
+      const timer = setTimeout(() => {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          /* ignore */
+        }
+        reject(new Error("image convert timeout"));
+      }, 25_000);
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        if (code === 0 && fs.existsSync(outPath) && fs.statSync(outPath).size > 100) resolve();
+        else reject(new Error(stderr.slice(-120) || `ffmpeg exit ${code}`));
+      });
+      child.on("error", reject);
+    });
+    return fs.readFileSync(outPath);
+  } catch {
+    return null;
+  } finally {
+    try {
+      fs.rmSync(workDir, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+/** OpenAI vision only accepts png/jpeg/gif/webp — detect real format and re-encode if needed. */
+async function ensureOpenAiVisionPreview(
+  preview: { buffer: Buffer; mimeType: string },
+  sourceExt?: string
+): Promise<{ buffer: Buffer; mimeType: string } | null> {
+  if (preview.buffer.length < 64) return null;
+
+  const detected = detectImageMimeFromBuffer(preview.buffer);
+  if (detected && OPENAI_VISION_MIMES.has(detected)) {
+    return { buffer: preview.buffer, mimeType: detected };
+  }
+
+  const ext =
+    (detected ? extForVisionMime(detected) : null) ??
+    sourceExt ??
+    extForVisionMime(normalizeOpenAiVisionMime(preview.mimeType));
+
+  const converted = await convertBufferToJpegWithFfmpeg(preview.buffer, ext);
+  if (converted && detectImageMimeFromBuffer(converted) === "image/jpeg") {
+    return { buffer: converted, mimeType: "image/jpeg" };
+  }
+  return null;
 }
 
 async function previewImagesFromFilePath(
@@ -491,7 +618,22 @@ async function previewImagesFromFilePath(
     if (!fs.existsSync(filePath)) return [];
     const buffer = fs.readFileSync(filePath);
     if (buffer.length < 64) return [];
-    return [{ buffer, mimeType }];
+    const ext = path.extname(filePath).replace(/^\./, "").toLowerCase() || extForVisionMime(mimeType);
+    const ready = await ensureOpenAiVisionPreview({ buffer, mimeType }, ext);
+    if (ready) return [ready];
+    if (looksLikeVideoContainer(buffer)) {
+      const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "archive-ai-frames-"));
+      try {
+        return await extractVideoPreviewFrames(filePath, workDir, maxFrames);
+      } finally {
+        try {
+          fs.rmSync(workDir, { recursive: true, force: true });
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+    return [];
   }
   if (!mimeType.startsWith("video/")) return [];
 
@@ -512,7 +654,8 @@ async function previewImagesFromMedia(
   mimeType: string
 ): Promise<Array<{ buffer: Buffer; mimeType: string }>> {
   if (mimeType.startsWith("image/")) {
-    return [{ buffer: mediaBuffer, mimeType }];
+    const ready = await ensureOpenAiVisionPreview({ buffer: mediaBuffer, mimeType });
+    return ready ? [ready] : [];
   }
   if (!mimeType.startsWith("video/")) return [];
 
@@ -542,8 +685,19 @@ async function invokeArchiveVisionTagging(
   opts: { imageDetail?: "auto" | "low" | "high"; preferJsonObject?: boolean; bulk?: boolean } = {}
 ): Promise<{ metadata: ArchiveAssetAiMetadata | null; error?: string }> {
   if (previews.length === 0) return { metadata: null, error: "No preview frames extracted" };
-  const timeoutMs = archiveVisionTimeoutMs(previews.length);
-  const imageDetail = opts.imageDetail ?? (previews.length > 2 ? "low" : "high");
+  const readyPreviews: Array<{ buffer: Buffer; mimeType: string }> = [];
+  for (const preview of previews) {
+    const ready = await ensureOpenAiVisionPreview(preview);
+    if (ready) readyPreviews.push(ready);
+  }
+  if (readyPreviews.length === 0) {
+    return {
+      metadata: null,
+      error: "Preview images could not be encoded for vision AI (unsupported format)",
+    };
+  }
+  const timeoutMs = archiveVisionTimeoutMs(readyPreviews.length);
+  const imageDetail = opts.imageDetail ?? (readyPreviews.length > 2 ? "low" : "high");
   type VisionFormat =
     | typeof TAG_JSON_SCHEMA
     | typeof TAG_JSON_SCHEMA_LIGHT
@@ -555,7 +709,7 @@ async function invokeArchiveVisionTagging(
       ? [{ type: "json_object" }, TAG_JSON_SCHEMA_LIGHT, { type: "json_object" }]
       : [TAG_JSON_SCHEMA_LIGHT, { type: "json_object" }, TAG_JSON_SCHEMA];
 
-  const imageParts = previews.map((preview) => ({
+  const imageParts = readyPreviews.map((preview) => ({
     type: "image_url" as const,
     image_url: { url: imageMimeToDataUrl(preview.buffer, preview.mimeType), detail: imageDetail },
   }));
@@ -572,7 +726,7 @@ async function invokeArchiveVisionTagging(
         {
           role: "user",
           content: [
-            { type: "text", text: buildVisionPrompt(context, previews.length, opts.bulk) },
+            { type: "text", text: buildVisionPrompt(context, readyPreviews.length, opts.bulk) },
             ...imageParts,
           ],
         },
