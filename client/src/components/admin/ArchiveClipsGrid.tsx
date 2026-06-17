@@ -10,6 +10,38 @@ import {
 } from "lucide-react";
 
 const CLIPS_PAGE_SIZE = 48;
+const LIST_ASSETS_PAGE = 200;
+
+async function fetchAllArchiveAssetIds(
+  fetchPage: (input: {
+    archiveId: number;
+    search?: string;
+    limit: number;
+    offset: number;
+  }) => Promise<{ items: { id: number; mediaType?: string }[]; total: number }>,
+  archiveId: number,
+  search?: string,
+  filter?: (item: { id: number; mediaType?: string }) => boolean,
+): Promise<number[]> {
+  const ids: number[] = [];
+  let offset = 0;
+  let total = Infinity;
+  while (offset < total) {
+    const batch = await fetchPage({
+      archiveId,
+      search: search || undefined,
+      limit: LIST_ASSETS_PAGE,
+      offset,
+    });
+    total = batch.total;
+    for (const item of batch.items) {
+      if (!filter || filter(item)) ids.push(item.id);
+    }
+    offset += batch.items.length;
+    if (batch.items.length === 0) break;
+  }
+  return ids;
+}
 
 const MIX_KINDS = [
   { value: "real_video", label: "Real video" },
@@ -594,14 +626,14 @@ export function ArchiveClipsGrid({
     detail?: string;
   } | null>(null);
   const [probeRunning, setProbeRunning] = useState(false);
+  const [selectAllLoading, setSelectAllLoading] = useState(false);
 
   useEffect(() => {
     setSelectedIds(new Set());
-  }, [archiveId, search, page]);
+  }, [archiveId, search]);
 
-  const visibleIds = useMemo(() => new Set(assets.map((a) => a.id)), [assets]);
-  const selectedCount = [...selectedIds].filter((id) => visibleIds.has(id)).length;
-  const allSelected = assets.length > 0 && selectedCount === assets.length;
+  const selectedCount = selectedIds.size;
+  const allArchiveSelected = total > 0 && selectedCount === total;
 
   const multiSceneCount = useMemo(
     () => Object.values(sceneAuditMap).filter((e) => e.status === "multi_scene").length,
@@ -616,15 +648,14 @@ export function ArchiveClipsGrid({
 
     let targetIds: number[];
     if (selectedCount > 0) {
-      targetIds = [...selectedIds].filter((id) => visibleIds.has(id));
+      targetIds = [...selectedIds];
     } else {
-      const full = await utils.mediaArchive.listAssets.fetch({
+      targetIds = await fetchAllArchiveAssetIds(
+        (input) => utils.mediaArchive.listAssets.fetch(input),
         archiveId,
-        search: search || undefined,
-        limit: 10000,
-        offset: 0,
-      });
-      targetIds = full.items.filter((a) => a.mediaType === "video").map((a) => a.id);
+        search,
+        (a) => a.mediaType === "video",
+      );
     }
 
     if (targetIds.length === 0) {
@@ -709,7 +740,6 @@ export function ArchiveClipsGrid({
     selectedIds,
     total,
     utils.mediaArchive.listAssets,
-    visibleIds,
   ]);
 
   const runAutoTitleAll = useCallback(async () => {
@@ -718,10 +748,7 @@ export function ArchiveClipsGrid({
       return;
     }
 
-    const targetIds =
-      selectedCount > 0
-        ? [...selectedIds].filter((id) => visibleIds.has(id))
-        : undefined;
+    const targetIds = selectedCount > 0 ? [...selectedIds] : undefined;
 
     if (selectedCount > 0 && (!targetIds || targetIds.length === 0)) {
       toast.error("No clips selected");
@@ -738,13 +765,11 @@ export function ArchiveClipsGrid({
     const CHUNK = 8;
     let resolvedIds = targetIds;
     if (!resolvedIds) {
-      const full = await utils.mediaArchive.listAssets.fetch({
-        archiveId: archiveId!,
-        search: search || undefined,
-        limit: 10000,
-        offset: 0,
-      });
-      resolvedIds = full.items.map((a) => a.id);
+      resolvedIds = await fetchAllArchiveAssetIds(
+        (input) => utils.mediaArchive.listAssets.fetch(input),
+        archiveId!,
+        search,
+      );
     }
 
     if (resolvedIds.length === 0) {
@@ -847,7 +872,6 @@ export function ArchiveClipsGrid({
     total,
     utils.mediaArchive.listArchives,
     utils.mediaArchive.listAssets,
-    visibleIds,
   ]);
 
   const runProbeFirstClip = useCallback(async () => {
@@ -856,9 +880,7 @@ export function ArchiveClipsGrid({
       return;
     }
     const assetId =
-      selectedCount > 0
-        ? [...selectedIds].find((id) => visibleIds.has(id)) ?? assets[0]!.id
-        : assets[0]!.id;
+      selectedCount > 0 ? [...selectedIds][0] ?? assets[0]!.id : assets[0]!.id;
     setProbeRunning(true);
     setAutoTitleReport({
       kind: "running",
@@ -885,7 +907,7 @@ export function ArchiveClipsGrid({
     } finally {
       setProbeRunning(false);
     }
-  }, [archiveId, assets, selectedCount, selectedIds, utils.mediaArchive.probeAiTag, visibleIds]);
+  }, [archiveId, assets, selectedCount, selectedIds, utils.mediaArchive.probeAiTag]);
 
   function toggleSelect(id: number) {
     setSelectedIds((prev) => {
@@ -896,11 +918,24 @@ export function ArchiveClipsGrid({
     });
   }
 
-  function toggleSelectAll() {
-    if (allSelected) {
+  async function toggleSelectAll() {
+    if (archiveId == null || total === 0) return;
+    if (allArchiveSelected) {
       setSelectedIds(new Set());
-    } else {
-      setSelectedIds(new Set(assets.map((a) => a.id)));
+      return;
+    }
+    setSelectAllLoading(true);
+    try {
+      const ids = await fetchAllArchiveAssetIds(
+        (input) => utils.mediaArchive.listAssets.fetch(input),
+        archiveId,
+        search,
+      );
+      setSelectedIds(new Set(ids));
+    } catch (e) {
+      toast.error("Select all failed", { description: toastErrorMessage(e) });
+    } finally {
+      setSelectAllLoading(false);
     }
   }
 
@@ -920,11 +955,11 @@ export function ArchiveClipsGrid({
   }
 
   function deleteSelected() {
-    const ids = [...selectedIds].filter((id) => visibleIds.has(id));
+    const ids = [...selectedIds];
     if (ids.length === 0 || archiveId == null) return;
     if (!confirm(`Permanently delete ${ids.length} clip(s)?`)) return;
 
-    if (allSelected) {
+    if (allArchiveSelected) {
       deleteAllAssets.mutate({ archiveId, search: search.trim() || undefined });
       return;
     }
@@ -935,12 +970,9 @@ export function ArchiveClipsGrid({
 
   function dedupeVisualDuplicates() {
     if (archiveId == null || total < 2) return;
-    const targetIds =
-      selectedCount > 0
-        ? [...selectedIds].filter((id) => visibleIds.has(id))
-        : assets.map((a) => a.id);
+    const targetIds = selectedCount > 0 ? [...selectedIds] : undefined;
     const label =
-      selectedCount > 0 ? `${targetIds.length} selected clip(s)` : `all ${targetIds.length} clip(s)`;
+      selectedCount > 0 ? `${selectedCount} selected clip(s)` : `all ${total} clip(s)`;
     if (
       !confirm(
         `Remove visual duplicates from ${label}?\n\nClips with (nearly) identical visuals will be deleted — the oldest clip is kept.`
@@ -1067,10 +1099,24 @@ export function ArchiveClipsGrid({
           <button
             type="button"
             onClick={toggleSelectAll}
-            className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg bg-white/10 text-slate-300 hover:bg-white/15"
+            disabled={selectAllLoading}
+            title={total > CLIPS_PAGE_SIZE ? `Select all ${total} clips (all pages)` : undefined}
+            className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg bg-white/10 text-slate-300 hover:bg-white/15 disabled:opacity-50"
           >
-            {allSelected ? <CheckSquare className="w-3.5 h-3.5" /> : <Square className="w-3.5 h-3.5" />}
-            {allSelected ? "Deselect all" : "Select all"}
+            {selectAllLoading ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : allArchiveSelected ? (
+              <CheckSquare className="w-3.5 h-3.5" />
+            ) : (
+              <Square className="w-3.5 h-3.5" />
+            )}
+            {selectAllLoading
+              ? "Selecting…"
+              : allArchiveSelected
+                ? "Deselect all"
+                : total > CLIPS_PAGE_SIZE
+                  ? `Select all (${total})`
+                  : "Select all"}
           </button>
         )}
         {selectedCount > 0 && (
