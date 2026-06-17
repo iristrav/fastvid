@@ -80,7 +80,7 @@ import { FASTVID_PRO_PLAN } from "./products";
 import { processArchiveAssetUpload, ArchiveUploadError } from "./archiveUpload";
 import { archiveAiTaggingEnabled } from "./archiveAssetTagging";
 import { autoTitleArchiveAssets, probeArchiveAssetAiTag } from "./archiveBulkVisionTagging";
-import { archiveAssetMediaStatus } from "./archiveAssetLoad";
+import { auditArchiveAssetScenes } from "./archiveSceneAudit";
 import { archiveAssetMediaStatus } from "./archiveAssetLoad";
 import { dedupeArchiveVisualDuplicates } from "./archiveClipDedup";
 import { assessArchiveCoverageForPrompt } from "./archiveCoverage";
@@ -1674,6 +1674,27 @@ export const appRouter = router({
       assetId: z.number().int(),
     })).query(async ({ input }) => {
       return probeArchiveAssetAiTag(input.assetId, input.archiveId);
+    }),
+
+    /** FFmpeg scene audit — detect single-scene vs multi-scene clips (max 40 ids per call). */
+    auditScenes: adminProcedure.input(z.object({
+      archiveId: z.number().int(),
+      ids: z.array(z.number().int()).min(1).max(40),
+    })).mutation(async ({ input }) => {
+      const archive = await getMediaArchiveById(input.archiveId);
+      if (!archive) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Archive not found");
+      try {
+        return await auditArchiveAssetScenes({
+          archiveId: input.archiveId,
+          ids: input.ids,
+        });
+      } catch (err) {
+        throw appTrpcError(
+          "INTERNAL_SERVER_ERROR",
+          APP_ERROR.SERVICE_ERROR,
+          (err as Error).message ?? "Scene audit failed"
+        );
+      }
     }),
 
     /** Remove visually duplicate clips (keeps oldest per duplicate group). */

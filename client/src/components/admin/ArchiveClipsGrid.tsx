@@ -6,7 +6,7 @@ import { trpc } from "@/lib/trpc";
 import { toastErrorMessage } from "@/const";
 import { toast } from "sonner";
 import {
-  Loader2, Trash2, Pencil, Search, Film, Image as ImageIcon, X, Play, ExternalLink, CheckSquare, Square, Sparkles, Copy, AlertTriangle, ChevronLeft, ChevronRight,
+  Loader2, Trash2, Pencil, Search, Film, Image as ImageIcon, X, Play, ExternalLink, CheckSquare, Square, Sparkles, Copy, AlertTriangle, ChevronLeft, ChevronRight, ScanSearch,
 } from "lucide-react";
 
 const CLIPS_PAGE_SIZE = 48;
@@ -34,6 +34,31 @@ type ArchiveAsset = {
   browserPlayable?: boolean;
   mediaIssue?: "missing" | "unsupported_format" | null;
 };
+
+type SceneAuditEntry = {
+  assetId: number;
+  status:
+    | "single_scene"
+    | "multi_scene"
+    | "skipped_image"
+    | "file_missing"
+    | "download_failed"
+    | "analyze_failed";
+  sceneCount: number;
+  interiorCutCount: number;
+  durationSec?: number;
+  cutTimesSec?: number[];
+};
+
+function sceneAuditLabel(entry?: SceneAuditEntry): string | null {
+  if (!entry) return null;
+  if (entry.status === "single_scene") return "1 scène";
+  if (entry.status === "multi_scene") return `${entry.sceneCount} scènes`;
+  if (entry.status === "file_missing") return "Bestand ontbreekt";
+  if (entry.status === "download_failed") return "Download mislukt";
+  if (entry.status === "analyze_failed") return "Check mislukt";
+  return null;
+}
 
 function parseTagsInput(raw: string): string[] {
   return raw.split(/[,;]+/).map((t) => t.trim()).filter(Boolean);
@@ -206,9 +231,11 @@ function LazyArchiveMedia({
 
 function AssetPreviewModal({
   asset,
+  sceneAudit,
   onClose,
 }: {
   asset: ArchiveAsset;
+  sceneAudit?: SceneAuditEntry;
   onClose: () => void;
 }) {
   return (
@@ -228,6 +255,18 @@ function AssetPreviewModal({
             )}
             {mediaIssueLabel(asset.mediaIssue ?? undefined) && (
               <p className="text-xs text-amber-300 mt-1">{mediaIssueLabel(asset.mediaIssue ?? undefined)}</p>
+            )}
+            {sceneAuditLabel(sceneAudit) && (
+              <p
+                className={`text-xs mt-1 ${
+                  sceneAudit?.status === "multi_scene" ? "text-red-300" : "text-emerald-300"
+                }`}
+              >
+                Scène-check: {sceneAuditLabel(sceneAudit)}
+                {sceneAudit?.cutTimesSec?.length
+                  ? ` (cuts @ ${sceneAudit.cutTimesSec.map((t) => t.toFixed(1)).join("s, ")}s)`
+                  : ""}
+              </p>
             )}
           </div>
           <div className="flex items-center gap-2 shrink-0">
@@ -267,6 +306,7 @@ function AssetPreviewModal({
 function AssetCard({
   asset,
   selected,
+  sceneAudit,
   onToggleSelect,
   onDelete,
   onSave,
@@ -274,6 +314,7 @@ function AssetCard({
 }: {
   asset: ArchiveAsset;
   selected: boolean;
+  sceneAudit?: SceneAuditEntry;
   onToggleSelect: () => void;
   onDelete: () => void;
   onSave: (patch: { title?: string; tags?: string[]; mixKind?: MixKind; sourceNote?: string }) => void;
@@ -295,7 +336,9 @@ function AssetCard({
 
   return (
     <>
-      {previewOpen && <AssetPreviewModal asset={asset} onClose={() => setPreviewOpen(false)} />}
+      {previewOpen && (
+        <AssetPreviewModal asset={asset} sceneAudit={sceneAudit} onClose={() => setPreviewOpen(false)} />
+      )}
       <div
         className={`glass-card border rounded-xl overflow-hidden transition-colors ${
           selected ? "border-purple-500/60 ring-1 ring-purple-500/40" : "border-white/8"
@@ -311,6 +354,19 @@ function AssetCard({
             {asset.mediaIssue && (
               <span className="absolute top-2 right-10 text-[10px] px-2 py-0.5 rounded bg-amber-500/90 text-black font-medium z-10">
                 {asset.mediaIssue === "missing" ? "Ontbreekt" : "MP4 nodig"}
+              </span>
+            )}
+            {sceneAudit && sceneAuditLabel(sceneAudit) && (
+              <span
+                className={`absolute bottom-2 left-2 text-[10px] px-2 py-0.5 rounded font-medium z-10 ${
+                  sceneAudit.status === "multi_scene"
+                    ? "bg-red-600/95 text-white"
+                    : sceneAudit.status === "single_scene"
+                      ? "bg-emerald-600/90 text-white"
+                      : "bg-slate-600/90 text-white"
+                }`}
+              >
+                {sceneAuditLabel(sceneAudit)}
               </span>
             )}
             <span className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors flex items-center justify-center z-[1]">
@@ -434,10 +490,26 @@ export function ArchiveClipsGrid({
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(0);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [sceneAuditMap, setSceneAuditMap] = useState<Record<number, SceneAuditEntry>>({});
+  const [showMultiSceneOnly, setShowMultiSceneOnly] = useState(false);
+  const [sceneAuditRunning, setSceneAuditRunning] = useState(false);
+  const [sceneAuditProgress, setSceneAuditProgress] = useState<{ done: number; total: number } | null>(null);
+  const [sceneAuditReport, setSceneAuditReport] = useState<{
+    kind: "running" | "done" | "error";
+    message: string;
+    detail?: string;
+  } | null>(null);
 
   useEffect(() => {
     setPage(0);
-  }, [archiveId, search]);
+    setSceneAuditMap({});
+    setShowMultiSceneOnly(false);
+    setSceneAuditReport(null);
+  }, [archiveId]);
+
+  useEffect(() => {
+    setPage(0);
+  }, [search]);
 
   const listInput = {
     archiveId: archiveId!,
@@ -496,6 +568,7 @@ export function ArchiveClipsGrid({
   });
 
   const autoTitleAssets = trpc.mediaArchive.autoTitleAssets.useMutation();
+  const auditScenes = trpc.mediaArchive.auditScenes.useMutation();
   const dedupeDuplicates = trpc.mediaArchive.dedupeDuplicateAssets.useMutation({
     onSuccess: (data) => {
       utils.mediaArchive.listAssets.invalidate();
@@ -526,6 +599,120 @@ export function ArchiveClipsGrid({
   const visibleIds = useMemo(() => new Set(assets.map((a) => a.id)), [assets]);
   const selectedCount = [...selectedIds].filter((id) => visibleIds.has(id)).length;
   const allSelected = assets.length > 0 && selectedCount === assets.length;
+
+  const multiSceneCount = useMemo(
+    () => Object.values(sceneAuditMap).filter((e) => e.status === "multi_scene").length,
+    [sceneAuditMap]
+  );
+
+  const displayedAssets = useMemo(() => {
+    if (!showMultiSceneOnly) return assets;
+    return assets.filter((a) => sceneAuditMap[a.id]?.status === "multi_scene");
+  }, [assets, sceneAuditMap, showMultiSceneOnly]);
+
+  const runSceneAudit = useCallback(async () => {
+    if (archiveId == null || total === 0) {
+      toast.error("Geen clips om te scannen");
+      return;
+    }
+
+    let targetIds: number[];
+    if (selectedCount > 0) {
+      targetIds = [...selectedIds].filter((id) => visibleIds.has(id));
+    } else {
+      const full = await utils.mediaArchive.listAssets.fetch({
+        archiveId,
+        search: search || undefined,
+        limit: 10000,
+        offset: 0,
+      });
+      targetIds = full.items.filter((a) => a.mediaType === "video").map((a) => a.id);
+    }
+
+    if (targetIds.length === 0) {
+      toast.error("Geen video-clips geselecteerd");
+      return;
+    }
+
+    const label =
+      selectedCount > 0 ? `${targetIds.length} geselecteerde clip(s)` : `${targetIds.length} video-clips`;
+
+    const CHUNK = 20;
+    setSceneAuditRunning(true);
+    setSceneAuditProgress({ done: 0, total: targetIds.length });
+    setSceneAuditReport({
+      kind: "running",
+      message: `Scène-check bezig voor ${label}…`,
+      detail: "FFmpeg scdet — ~5–20 seconden per clip.",
+    });
+    const loadingToast = toast.loading(`Scène-check (0/${targetIds.length})…`);
+
+    let singleScene = 0;
+    let multiScene = 0;
+    let failed = 0;
+    const nextMap: Record<number, SceneAuditEntry> = { ...sceneAuditMap };
+
+    try {
+      for (let i = 0; i < targetIds.length; i += CHUNK) {
+        const chunk = targetIds.slice(i, i + CHUNK);
+        const result = await auditScenes.mutateAsync({ archiveId, ids: chunk });
+        singleScene += result.singleScene;
+        multiScene += result.multiScene;
+        failed += result.fileMissing + result.downloadFailed + result.analyzeFailed;
+        for (const entry of result.results) {
+          nextMap[entry.assetId] = entry as SceneAuditEntry;
+        }
+        const done = Math.min(i + chunk.length, targetIds.length);
+        setSceneAuditProgress({ done, total: targetIds.length });
+        setSceneAuditMap({ ...nextMap });
+        setSceneAuditReport({
+          kind: "running",
+          message: `Bezig: ${done}/${targetIds.length} — ${multiScene} multi-scene tot nu toe`,
+          detail: `${singleScene} ok (1 scène), ${failed} mislukt/overgeslagen`,
+        });
+        toast.loading(`Scène-check (${done}/${targetIds.length})…`, { id: loadingToast });
+      }
+
+      toast.dismiss(loadingToast);
+      setSceneAuditReport({
+        kind: "done",
+        message: `Klaar: ${multiScene} multi-scene, ${singleScene} enkele scène`,
+        detail:
+          failed > 0
+            ? `${failed} clip(s) niet geanalyseerd (bestand ontbreekt of FFmpeg-fout). Filter op multi-scene om ze te vinden.`
+            : multiScene > 0
+              ? "Gebruik filter “Alleen multi-scene” of verwijder/herupload die clips."
+              : "Alle gecontroleerde clips zijn één scène.",
+      });
+      if (multiScene > 0) {
+        toast.warning(`${multiScene} clip(s) met meerdere scènes`, {
+          description: `${singleScene} clip(s) zijn OK (1 scène)`,
+        });
+      } else {
+        toast.success("Alle clips zijn 1 scène", {
+          description: `${singleScene} video-clips gecontroleerd`,
+        });
+      }
+    } catch (e) {
+      toast.dismiss(loadingToast);
+      const msg = toastErrorMessage(e);
+      setSceneAuditReport({ kind: "error", message: "Scène-check mislukt", detail: msg });
+      toast.error("Scène-check mislukt", { description: msg });
+    } finally {
+      setSceneAuditRunning(false);
+      setSceneAuditProgress(null);
+    }
+  }, [
+    archiveId,
+    auditScenes,
+    sceneAuditMap,
+    search,
+    selectedCount,
+    selectedIds,
+    total,
+    utils.mediaArchive.listAssets,
+    visibleIds,
+  ]);
 
   const runAutoTitleAll = useCallback(async () => {
     if (archiveId == null || total === 0) {
@@ -775,11 +962,44 @@ export function ArchiveClipsGrid({
             className="w-full bg-white/5 border border-white/10 rounded-lg pl-9 pr-3 py-2 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-purple-500/50"
           />
         </div>
+        {total > 0 && (
+          <button
+            type="button"
+            onClick={runSceneAudit}
+            disabled={sceneAuditRunning || autoTitleRunning}
+            title="Scan clips: één scène of meerdere shots in één bestand?"
+            className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg bg-violet-500/15 text-violet-200 border border-violet-500/30 hover:bg-violet-500/25 disabled:opacity-50"
+          >
+            {sceneAuditRunning ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <ScanSearch className="w-3.5 h-3.5" />
+            )}
+            {sceneAuditRunning && sceneAuditProgress
+              ? `Scène ${sceneAuditProgress.done}/${sceneAuditProgress.total}`
+              : selectedCount > 0
+                ? `Scène-check (${selectedCount})`
+                : "Scène-check"}
+          </button>
+        )}
+        {multiSceneCount > 0 && (
+          <button
+            type="button"
+            onClick={() => setShowMultiSceneOnly((v) => !v)}
+            className={`flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg border transition-colors ${
+              showMultiSceneOnly
+                ? "bg-red-500/25 text-red-200 border-red-500/40"
+                : "bg-red-500/10 text-red-300 border-red-500/25 hover:bg-red-500/20"
+            }`}
+          >
+            Alleen multi-scene ({multiSceneCount})
+          </button>
+        )}
         {assets.length > 0 && (
           <button
             type="button"
             onClick={runProbeFirstClip}
-            disabled={autoTitleRunning || probeRunning}
+            disabled={autoTitleRunning || probeRunning || sceneAuditRunning}
             title="Test vision AI on one clip (no save)"
             className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg bg-white/10 text-slate-300 border border-white/10 hover:bg-white/15 disabled:opacity-50"
           >
@@ -894,6 +1114,37 @@ export function ArchiveClipsGrid({
         </div>
       )}
 
+      {sceneAuditReport && (
+        <div
+          className={`rounded-lg border px-3 py-2 text-sm ${
+            sceneAuditReport.kind === "error"
+              ? "border-red-500/30 bg-red-500/10 text-red-200"
+              : sceneAuditReport.kind === "running"
+                ? "border-violet-500/30 bg-violet-500/10 text-violet-100"
+                : "border-emerald-500/30 bg-emerald-500/10 text-emerald-100"
+          }`}
+        >
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0">
+              <p className="font-medium">{sceneAuditReport.message}</p>
+              {sceneAuditReport.detail && (
+                <p className="text-xs mt-1 opacity-90 break-words">{sceneAuditReport.detail}</p>
+              )}
+            </div>
+            {sceneAuditReport.kind !== "running" && (
+              <button
+                type="button"
+                onClick={() => setSceneAuditReport(null)}
+                className="shrink-0 p-1 rounded hover:bg-white/10 text-slate-400"
+                aria-label="Sluiten"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       {autoTitleReport && (
         <div
           className={`rounded-lg border px-3 py-2 text-sm ${
@@ -931,15 +1182,20 @@ export function ArchiveClipsGrid({
 
       {isLoading ? (
         <div className="flex justify-center py-12"><Loader2 className="w-6 h-6 animate-spin text-purple-400" /></div>
-      ) : assets.length === 0 ? (
-        <div className="text-center py-12 text-slate-500 text-sm">No clips in this archive.</div>
+      ) : displayedAssets.length === 0 ? (
+        <div className="text-center py-12 text-slate-500 text-sm">
+          {showMultiSceneOnly
+            ? "Geen multi-scene clips op deze pagina — run scène-check op alle clips."
+            : "No clips in this archive."}
+        </div>
       ) : (
         <>
         <div className={`grid gap-4 ${compact ? "sm:grid-cols-2 lg:grid-cols-3" : "sm:grid-cols-2 xl:grid-cols-3"}`}>
-          {assets.map((asset) => (
+          {displayedAssets.map((asset) => (
             <AssetCard
               key={`${asset.id}-${(asset.tags ?? []).join("|")}`}
               asset={asset as ArchiveAsset}
+              sceneAudit={sceneAuditMap[asset.id]}
               selected={selectedIds.has(asset.id)}
               onToggleSelect={() => toggleSelect(asset.id)}
               onDelete={() => {
