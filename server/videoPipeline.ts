@@ -10713,6 +10713,32 @@ async function recoverSceneClipsIfEmpty(
       beatDurations.push(stubBeat.holdSec);
       if (clips.length >= need) break;
     }
+    // If archive yielded nothing, fall back to Wikimedia V1 / Pexels / Pixabay
+    // before failing with "geen archive-beelden gevonden".
+    if (clips.length === 0) {
+      console.log(`[Pipeline] recoverSceneClips scene ${scene.index}: no archive match — trying external fallbacks`);
+      for (let fi = 0; fi < need; fi++) {
+        const fb: SceneBeat = { ...stubBeat, index: fi };
+        const fbClip = await fetchBeatArchivalThenPexels(
+          fb,
+          scene,
+          workDir,
+          scene.index,
+          topicContext,
+          dedup,
+          recoverAdopt,
+          scenePersons,
+          `recover_fb${fi}`,
+          "recover-fallback"
+        );
+        if (!fbClip) continue;
+        const key = clipContentKey(fbClip);
+        if (clips.some((c) => clipContentKey(c) === key)) continue;
+        clips.push(fbClip);
+        beatDurations.push(fb.holdSec);
+        if (clips.length >= need) break;
+      }
+    }
     await assertSceneVisualInventory(scene, clips, beatDurations);
     return { clips, beatDurations };
   }
