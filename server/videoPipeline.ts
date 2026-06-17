@@ -126,8 +126,12 @@ import {
   scriptGuidedBudgetMs,
   scriptGuidedClipsEnabled,
 } from "./scriptGuidedClipFinder";
-import { clipPassesVisionGate, clipVisionGateEnabled } from "./visualQualityGate";
+import { clipPassesVisionGate, clipVisionGateEnabled, minClipQualityScore, sceneCriticalReviewEnabled } from "./visualQualityGate";
 import { validateGeneratedClipPlan } from "./clipPlanValidation";
+import {
+  assertSceneCriticalReview,
+  reviewSceneCritical,
+} from "./sceneCriticalReview";
 import { curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archivePexelsFallbackEnabled, archivePexelsHybridEnabled, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, maxPipelineWallClockMin, qualityOverSpeedEnabled, visualStageWallClockMin, pipelineMinutesPerVideoMinute, autoMotionGraphicsLayerEnabled, vidrushDocumentaryQualityEnabled } from "./sourcingPolicy";
 import { targetVideoDurationMinutes } from "@shared/videoLengths";
 import {
@@ -13763,6 +13767,21 @@ async function adoptArchiveBeatClip(
       rejectClip(clipPath);
       return false;
     }
+    if (
+      !(await clipPassesVisionGate(
+        withText,
+        beat.text,
+        videoTitle,
+        workDir,
+        scene.index,
+        beat.index,
+        dedup.perf.fastStockMode,
+        sceneCriticalReviewEnabled() ? minClipQualityScore() : 5
+      ))
+    ) {
+      rejectClip(clipPath);
+      return false;
+    }
     return await pushClip(withText, sec);
   };
 
@@ -14473,6 +14492,132 @@ async function adoptGeoWelcomeIntroBeat(
   return false;
 }
 
+/** Replace clips that fail voice/visual critical review (archive first, then Pexels). */
+async function criticalReviewAndRefineSceneVisuals(
+  scene: Scene,
+  result: SceneVisualsResult,
+  workDir: string,
+  videoTitle: string | undefined,
+  dedup: VisualDedupState
+): Promise<SceneVisualsResult> {
+  if (!sceneCriticalReviewEnabled()) return result;
+
+  const clips = [...result.clips];
+  const beatDurations = [...result.beatDurations];
+  const clipBeatIndices = [...(result.clipBeatIndices ?? clips.map((_, i) => i))];
+  const beats =
+    result.beats ??
+    buildSceneBeats(
+      scene,
+      scene.duration,
+      maxMontageClipsForVoiceSec(scene.duration),
+      videoTitle,
+      resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined),
+      dedup.sentenceKeywords,
+      dedup.sentenceIntents,
+      dedup.visualDirectorScenes
+    );
+
+  for (let pass = 0; pass < 2; pass++) {
+    const review = await reviewSceneCritical(
+      scene.index,
+      scene.duration,
+      clips,
+      clipBeatIndices,
+      beats,
+      workDir,
+      videoTitle
+    );
+    if (review.ok) {
+      console.log(`[SceneCritical] ${review.summary}`);
+      return { clips, beatDurations, beats, clipBeatIndices };
+    }
+
+    const failed = review.clipResults.filter((r) => !r.pass);
+    if (failed.length === 0) break;
+
+    console.warn(
+      `[SceneCritical] Scene ${scene.index}: pass ${pass + 1} — replacing ${failed.length} clip(s) (archive → Pexels)`
+    );
+
+    for (const fail of failed) {
+      const ci = fail.clipIndex;
+      const beatIdx = clipBeatIndices[ci] ?? fail.beatIndex;
+      const beat = beats.find((b) => b.index === beatIdx) ?? beats[ci % Math.max(1, beats.length)];
+      if (!beat) continue;
+
+      const removed = clips[ci];
+      if (removed) dedup.usedContentKeys.add(clipContentKey(removed));
+
+      let replaced = false;
+      const pushReplacement = async (clipPath: string, holdSec = beat.holdSec): Promise<boolean> => {
+        if (!clipPath || isPipelineFallbackClip(clipPath)) return false;
+        const key = clipContentKey(clipPath);
+        if (dedup.usedContentKeys.has(key)) return false;
+        let actualHold = await resolveSceneClipHoldSec(
+          clipPath,
+          holdSec,
+          ci,
+          scene.index,
+          `Scene ${scene.index} critical refine`
+        );
+        if (actualHold == null) return false;
+        runGeneratedClipValidation(
+          scene.index,
+          beatIdx,
+          clipPath,
+          beats,
+          "",
+          beat.text,
+          videoTitle
+        );
+        clips[ci] = clipPath;
+        beatDurations[ci] = actualHold;
+        dedup.usedContentKeys.add(key);
+        markCuratedAssetUsed(clipPath, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls);
+        replaced = true;
+        return true;
+      };
+
+      await adoptArchiveBeatClip(
+        beat,
+        scene,
+        workDir,
+        videoTitle,
+        dedup,
+        pushReplacement,
+        null,
+        beat.holdSec,
+        undefined,
+        true
+      );
+      if (!replaced) {
+        await adoptPexelsBeatClipFallback(
+          beat,
+          scene,
+          workDir,
+          videoTitle,
+          dedup,
+          pushReplacement,
+          beat.holdSec
+        );
+      }
+    }
+  }
+
+  const finalReview = await reviewSceneCritical(
+    scene.index,
+    scene.duration,
+    clips,
+    clipBeatIndices,
+    beats,
+    workDir,
+    videoTitle
+  );
+  assertSceneCriticalReview(scene.index, finalReview);
+  return { clips, beatDurations, beats, clipBeatIndices };
+}
+
 async function fetchArchiveSentenceMontage(
   scene: Scene,
   workDir: string,
@@ -14643,7 +14788,13 @@ async function fetchArchiveSentenceMontage(
   );
 
   await assertSceneVisualInventory(scene, clips, beatDurations, beats.length, clipBeatIndices);
-  return { clips, beatDurations, beats, clipBeatIndices };
+  return criticalReviewAndRefineSceneVisuals(
+    scene,
+    { clips, beatDurations, beats, clipBeatIndices },
+    workDir,
+    videoTitle,
+    dedup
+  );
 }
 
 /** Add archive/Pexels clips until balanced montage covers scene voice (no repeat). */
@@ -17689,7 +17840,7 @@ export async function runVideoPipeline(
     );
     logPipelineReview("na samenstellen", composeReview);
     if (!composeReview.ok) {
-      console.warn(`[Pipeline] Visual QA: ${composeReview.summary} — doorgaan met export`);
+      throw pipelineError(PIPELINE_ERROR.NO_SCENES, `Visual QA failed: ${composeReview.summary}`);
     }
 
     // ── Stage 6: Final review before export ──────────────────────────────────

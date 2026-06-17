@@ -7,6 +7,26 @@ import { spawn } from "child_process";
 import { invokeLLM } from "./_core/llm";
 import { ENV } from "./_core/env";
 
+const NARRATION_MATCH_SCHEMA = {
+  type: "json_schema" as const,
+  json_schema: {
+    name: "clip_narration_match",
+    strict: true,
+    schema: {
+      type: "object",
+      properties: {
+        score: { type: "number" },
+        matchesNarration: { type: "boolean" },
+        showsSubject: { type: "boolean" },
+        wellFramed: { type: "boolean" },
+        wrongSubject: { type: "boolean" },
+      },
+      required: ["score", "matchesNarration", "showsSubject", "wellFramed", "wrongSubject"],
+      additionalProperties: false,
+    },
+  },
+} as const;
+
 const VISION_JSON_SCHEMA = {
   type: "json_schema" as const,
   json_schema: {
@@ -29,15 +49,33 @@ export function clipVisionGateEnabled(): boolean {
   return process.env.ENABLE_CLIP_VISION !== "false" && Boolean(ENV.forgeApiKey);
 }
 
-/** Authentic / archival clips — skip generic Pexels unless explicitly enabled. */
+/** Critical per-clip voice/visual QA (default on with Vidrush quality). */
+export function sceneCriticalReviewEnabled(): boolean {
+  if (process.env.ENABLE_SCENE_CRITICAL_REVIEW === "false") return false;
+  return process.env.ENABLE_VIDRUSH_QUALITY !== "false";
+}
+
+/** Minimum vision score (0–10) for broadcast-quality pass. Target 10/10; pass at 8+. */
+export function minClipQualityScore(): number {
+  const raw = process.env.MIN_CLIP_QUALITY_SCORE?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 5 && n <= 10) return n;
+  }
+  return 8;
+}
+
+/** Check all adopted clips when critical scene review is enabled. */
 export function shouldVisionCheckClip(filePath: string): boolean {
+  if (process.env.ENABLE_CLIP_VISION === "false") return false;
   const base = path.basename(filePath).toLowerCase();
+  if (sceneCriticalReviewEnabled()) return true;
   if (process.env.ENABLE_CLIP_VISION_STOCK === "true") {
     if (/pexels|pixabay|_b\d+_vid/i.test(base)) return true;
   }
   return (
     /_archive_|_hist|_wikivid|_wiki_|_gdelt|_septube|_ov_|_serp_|_unsplash|_euro_|_nasa/i.test(base) ||
-    /_ytcc_|_ytfu_|_transformed/i.test(base)
+    /_ytcc_|_ytfu_|_transformed|_curated_a/i.test(base)
   );
 }
 
@@ -83,6 +121,76 @@ async function extractPreviewFrame(
       child.on("error", reject);
     });
     return outPath;
+  } catch {
+    return null;
+  }
+}
+
+async function scoreClipNarrationMatch(
+  imagePath: string,
+  beatText: string,
+  visualDescription: string | undefined,
+  videoTitle: string | undefined,
+  timeoutMs: number
+): Promise<{
+  score: number;
+  matchesNarration: boolean;
+  showsSubject: boolean;
+  wellFramed: boolean;
+  wrongSubject: boolean;
+} | null> {
+  if (!fs.existsSync(imagePath)) return null;
+  const buf = fs.readFileSync(imagePath);
+  const b64 = buf.toString("base64");
+  const dataUrl = `data:image/jpeg;base64,${b64}`;
+
+  try {
+    const response = await Promise.race([
+      invokeLLM({
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a strict documentary editor. Judge if B-roll matches spoken narration. Return JSON only. Score 10 = perfect match; below 6 = reject.",
+          },
+          {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: `Spoken narration: "${beatText.slice(0, 220)}"
+${visualDescription ? `Intended visual: ${visualDescription.slice(0, 180)}` : ""}
+${videoTitle ? `Documentary topic: ${videoTitle}` : ""}
+Does this frame show what the voiceover describes? Score 0-10, matchesNarration, wrongSubject if clearly unrelated geography/subject.`,
+              },
+              { type: "image_url", image_url: { url: dataUrl, detail: "low" } },
+            ],
+          },
+        ],
+        response_format: NARRATION_MATCH_SCHEMA,
+        maxTokens: 256,
+      }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("vision timeout")), timeoutMs)
+      ),
+    ]);
+
+    const content = response.choices[0]?.message?.content;
+    if (typeof content !== "string") return null;
+    const parsed = JSON.parse(content) as {
+      score?: number;
+      matchesNarration?: boolean;
+      showsSubject?: boolean;
+      wellFramed?: boolean;
+      wrongSubject?: boolean;
+    };
+    return {
+      score: Math.max(0, Math.min(10, parsed.score ?? 0)),
+      matchesNarration: Boolean(parsed.matchesNarration),
+      showsSubject: Boolean(parsed.showsSubject),
+      wellFramed: Boolean(parsed.wellFramed),
+      wrongSubject: Boolean(parsed.wrongSubject),
+    };
   } catch {
     return null;
   }
@@ -154,7 +262,8 @@ export async function clipPassesVisionGate(
   workDir: string,
   sceneIndex: number,
   beatIndex: number,
-  fastMode: boolean
+  fastMode: boolean,
+  minScore = 5
 ): Promise<boolean> {
   if (fastMode || !clipVisionGateEnabled() || !shouldVisionCheckClip(clipPath)) return true;
 
@@ -162,22 +271,85 @@ export async function clipPassesVisionGate(
   if (!framePath) return true;
 
   const timeoutMs = fastMode ? 7_000 : 11_000;
-  const score = await scoreFrameRelevance(framePath, beatText, videoTitle, timeoutMs);
+  const useCritical = sceneCriticalReviewEnabled() && minScore >= minClipQualityScore();
+  const score = useCritical
+    ? await scoreClipNarrationMatch(
+        framePath,
+        beatText,
+        undefined,
+        videoTitle,
+        timeoutMs
+      )
+    : await scoreFrameRelevance(framePath, beatText, videoTitle, timeoutMs);
   try { fs.unlinkSync(framePath); } catch { /* ignore */ }
 
   if (!score) return true;
 
-  const minRel = fastMode ? 4 : 5;
+  if (useCritical && "matchesNarration" in score) {
+    const critical = score as {
+      score: number;
+      matchesNarration: boolean;
+      showsSubject: boolean;
+      wellFramed: boolean;
+      wrongSubject: boolean;
+    };
+    const pass =
+      critical.score >= minScore &&
+      critical.matchesNarration &&
+      critical.showsSubject &&
+      !critical.wrongSubject &&
+      (critical.wellFramed || critical.score >= minScore + 1);
+    if (!pass) {
+      console.warn(
+        `[VisionGate] Scene ${sceneIndex} beat ${beatIndex}: reject "${path.basename(clipPath)}" ` +
+          `(score=${critical.score}/10, match=${critical.matchesNarration}, wrong=${critical.wrongSubject})`
+      );
+    }
+    return pass;
+  }
+
+  const rel = score as { relevance: number; showsSubject: boolean; wellFramed: boolean };
+  const minRel = fastMode ? 4 : minScore;
   const pass =
-    score.relevance >= minRel &&
-    score.showsSubject &&
-    (score.wellFramed || score.relevance >= minRel + 2);
+    rel.relevance >= minRel &&
+    rel.showsSubject &&
+    (rel.wellFramed || rel.relevance >= minRel + 2);
 
   if (!pass) {
     console.warn(
       `[VisionGate] Scene ${sceneIndex} beat ${beatIndex}: reject "${path.basename(clipPath)}" ` +
-        `(rel=${score.relevance}, subject=${score.showsSubject}, framed=${score.wellFramed})`
+        `(rel=${rel.relevance}, subject=${rel.showsSubject}, framed=${rel.wellFramed})`
     );
   }
   return pass;
+}
+
+/** Score clip against narration for post-adoption QA (returns null when vision unavailable). */
+export async function scoreAdoptedClipQuality(
+  clipPath: string,
+  beatText: string,
+  visualDescription: string | undefined,
+  videoTitle: string | undefined,
+  workDir: string,
+  sceneIndex: number,
+  beatIndex: number
+): Promise<{
+  score: number;
+  matchesNarration: boolean;
+  showsSubject: boolean;
+  wellFramed: boolean;
+  wrongSubject: boolean;
+} | null> {
+  if (!clipVisionGateEnabled() || !shouldVisionCheckClip(clipPath)) return null;
+  const framePath = await extractPreviewFrame(clipPath, workDir, sceneIndex, beatIndex);
+  if (!framePath) return null;
+  const score = await scoreClipNarrationMatch(
+    framePath,
+    beatText,
+    visualDescription,
+    videoTitle,
+    12_000
+  );
+  try { fs.unlinkSync(framePath); } catch { /* ignore */ }
+  return score;
 }

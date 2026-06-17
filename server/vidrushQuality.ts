@@ -13,6 +13,7 @@ import {
   curatedArchiveOnlyVisuals,
   vidrushDocumentaryQualityEnabled,
 } from "./sourcingPolicy";
+import { PIPELINE_ERROR, pipelineError } from "@shared/appErrors";
 import {
   extractBeatGeoPlaceTags,
   extractSalientBeatTokens,
@@ -293,9 +294,11 @@ export function logMotionGraphicsQa(
   }
   const warnings = auditMotionGraphicsCoverage(beats, overlays);
   if (warnings.length > 0) {
-    console.warn(
-      `[MotionGraphics QA] Scene ${sceneIndex}: ${warnings.length} candidate(s) missing — ${warnings.slice(0, 3).join("; ")}`
-    );
+    const msg = `[MotionGraphics QA] Scene ${sceneIndex}: ${warnings.length} candidate(s) missing — ${warnings.slice(0, 3).join("; ")}`;
+    if (process.env.ENABLE_SCENE_CRITICAL_REVIEW !== "false" && vidrushDocumentaryQualityEnabled()) {
+      throw pipelineError(PIPELINE_ERROR.NO_SCENES, msg);
+    }
+    console.warn(msg);
   }
 }
 
