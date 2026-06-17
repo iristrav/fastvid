@@ -183,8 +183,8 @@ export function analyzeSceneVisual(
   const visualAction = deriveVisualAction(sentence);
 
   const main_topic =
-    events[0] ??
-    (videoTitle ? videoTitle.split(/\s+/).slice(0, 5).join(" ") : "") ||
+    (events[0] ??
+      (videoTitle ? videoTitle.split(/\s+/).slice(0, 5).join(" ") : "")) ||
     sentence.slice(0, 60);
 
   const visual_subject =
