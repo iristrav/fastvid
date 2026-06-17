@@ -48,6 +48,17 @@ const PLACE_ENTRIES: TagEntry[] = [
   { pattern: /\bmoskou\b|\bmoscow\b|\bkremlin\b/i, searchTags: ["moscow", "russia", "soviet"], label: "MOSKOU" },
   { pattern: /\bnormandi[ëe]\b|\bnormandy\b|\bd-day\b|\bdddag\b/i, searchTags: ["normandy", "d-day", "france"], label: "NORMANDIË" },
   { pattern: /\bauschwitz\b/i, searchTags: ["auschwitz", "poland", "holocaust"], label: "AUSCHWITZ" },
+  // Netherlands / Dutch / Holland u2014 added for NL geography content
+  { pattern: /\bnederland\b|\bnetherlands\b|\bdutch\b|\bholland\b|\bnederlandse\b|\bnederlanden\b/i, searchTags: ["netherlands", "amsterdam", "dutch", "holland"], label: "NEDERLAND" },
+  { pattern: /\bamsterdam\b/i, searchTags: ["amsterdam", "netherlands", "dutch canal"], label: "AMSTERDAM" },
+  { pattern: /\brotterdam\b/i, searchTags: ["rotterdam", "netherlands", "rotterdam skyline"], label: "ROTTERDAM" },
+  { pattern: /\bden haag\b|\bthe hague\b|\bdenhaag\b/i, searchTags: ["the hague", "netherlands", "dutch government"], label: "DEN HAAG" },
+  { pattern: /\butrecht\b/i, searchTags: ["utrecht", "netherlands", "dutch city"], label: "UTRECHT" },
+  { pattern: /\bgracht\b|\bcanal\b|\bkanaal\b/i, searchTags: ["amsterdam canal", "dutch canal", "netherlands waterway"], label: "GRACHT" },
+  { pattern: /\bfietspad\b|\bfiets\b|\bcycling lane\b|\bbike lane\b|\bcycle path\b/i, searchTags: ["dutch cycling", "netherlands bicycle", "Amsterdam bike", "cycle path"], label: "FIETSPAD" },
+  { pattern: /\bwindmolen\b|\bwindmill\b|\bwindmolens\b/i, searchTags: ["windmill netherlands", "dutch windmill", "holland windmill"], label: "WINDMOLEN" },
+  { pattern: /\bpolder\b|\bpolders\b/i, searchTags: ["netherlands polder", "dutch landscape", "netherlands countryside"], label: "POLDER" },
+  { pattern: /\btulp\b|\btulpen\b|\btulip\b|\btulips\b/i, searchTags: ["tulip netherlands", "dutch tulip field", "holland flower"], label: "TULPEN" },
 ];
 
 /** People / factions — archive search only (not on-screen labels). */
@@ -160,7 +171,28 @@ export function inferVideoVisualTopic(videoTitle?: string, extraText?: string): 
   ) {
     return "geography_urban";
   }
+  // Netherlands / Holland / Dutch country or geography video — treat as geography_urban
+  // so WWII archive clips are blocked unless the beat itself mentions war content.
+  if (
+    /\b(nederland|netherlands|dutch|holland|nederlanden)\b/.test(hay) &&
+    !/\b(hitler|nazi|wwii|ww2|holocaust|third reich|bezetting|occupation|world war|bezet|oorlog)\b/.test(hay)
+  ) {
+    return "geography_urban";
+  }
   return "general";
+}
+
+/**
+ * True when the beat text itself explicitly references war, WWII, or armed conflict.
+ * Used to decide whether WWII archive clips are appropriate for a specific sentence,
+ * even inside a geography_urban or general-topic video.
+ */
+export function beatMentionsWwiiContent(beatText: string): boolean {
+  const lower = beatText.toLowerCase();
+  return (
+    WWII_WAR_ARCHIVE_RE.test(lower) ||
+    /\b(oorlog|war\b|battle\b|slag\b|invasie|invasion|occupation|bezetting|soldier|soldiers|military|troepen|troops|bombing|bombardement|liberation|bevrijding|verzet|resistance|persecution|vervolging|genocide|concentration camp|concentratiekamp|bevrijdd?e|executed|geëxecuteerd)\b/i.test(lower)
+  );
 }
 
 /** WWII/Holocaust archive clip — must not appear in geography/modern city videos. */
@@ -179,6 +211,141 @@ export function isWwiiWarArchiveAsset(
   }
   if (asset.mediaType === "image") {
     return /\b(propaganda poster|portret hitler|hitler portrait|nazi poster|hakenkruis)\b/i.test(hay);
+  }
+  return false;
+}
+
+/**
+ * Clip-title domain rules.
+ *
+ * Each rule defines a "domain" that a clip can belong to (via titleRe matching
+ * the clip's title/tags) and the condition under which that domain is ALLOWED
+ * for a given beat (beatAllowRe matching the beat text).
+ *
+ * If a clip's title/tags match a domain's titleRe, but the current beat text
+ * does NOT match that domain's beatAllowRe, the clip is irrelevant to this beat
+ * and must be blocked.
+ *
+ * Rules are intentionally conservative: they only block when the clip title
+ * NAMES a specific person, conflict, or graphic situation that is completely
+ * absent from the beat text. This prevents e.g. "Hitler youth rally" appearing
+ * in an Amsterdam post-war reconstruction beat.
+ */
+type ClipTitleDomainRule = {
+  id: string;
+  /** Matches clip title / tags when clip belongs to this domain. */
+  titleRe: RegExp;
+  /** Matches beat text when this domain is contextually allowed for this beat. */
+  beatAllowRe: RegExp;
+};
+
+const CLIP_TITLE_DOMAIN_RULES: ClipTitleDomainRule[] = [
+  // ── Named totalitarian / war figures ─────────────────────────────────────────
+  // Only show clips of these figures when the beat explicitly discusses them.
+  {
+    id: "hitler",
+    titleRe: /\b(hitler|adolf hitler|der führer|der fuhrer|mein kampf)\b/i,
+    beatAllowRe: /\b(hitler|nazi|third reich|gestapo|\bss\b|nsdap|führer|fuhrer|fascism)\b/i,
+  },
+  {
+    id: "stalin",
+    titleRe: /\b(stalin|joseph stalin)\b/i,
+    beatAllowRe: /\b(stalin|soviet union|ussr|gulag|bolshevik|politburo|red army|purges)\b/i,
+  },
+  {
+    id: "mussolini",
+    titleRe: /\b(mussolini|benito mussolini|il duce)\b/i,
+    beatAllowRe: /\b(mussolini|fascist italy|fascism|duce|blackshirts|march on rome)\b/i,
+  },
+  {
+    id: "mao",
+    titleRe: /\b(mao zedong|mao tse-tung|chairman mao)\b/i,
+    beatAllowRe: /\b(mao|cultural revolution|great leap forward|communist china|ccp|red guards)\b/i,
+  },
+  {
+    id: "pol_pot",
+    titleRe: /\b(pol pot|khmer rouge|killing fields)\b/i,
+    beatAllowRe: /\b(pol pot|khmer rouge|cambodia(n)? genocide|killing fields|angkar)\b/i,
+  },
+  {
+    id: "kim_jong",
+    titleRe: /\b(kim jong( un| il| nam)?|north korea(n)? (leader|dictator|parade))\b/i,
+    beatAllowRe: /\b(kim jong|north korea|dprk|pyongyang|north korean)\b/i,
+  },
+  {
+    id: "pinochet",
+    titleRe: /\b(pinochet|augusto pinochet|chilean junta)\b/i,
+    beatAllowRe: /\b(pinochet|chilean coup|junta|chile (1973|dictatorship)|allende)\b/i,
+  },
+  {
+    id: "franco",
+    titleRe: /\b(francisco franco|\bfranco\b (dictator|regime|spain)|falangist)\b/i,
+    beatAllowRe: /\b(franco|spanish civil war|falangism|falangist|nationalists spain)\b/i,
+  },
+  {
+    id: "saddam",
+    titleRe: /\b(saddam hussein|saddam)\b/i,
+    beatAllowRe: /\b(saddam|iraq (war|invasion|dictator)|hussein|gulf war|baath)\b/i,
+  },
+  // ── Named conflict events (non-WWII, extends existing WWII check) ─────────────
+  {
+    id: "iraq_war_footage",
+    titleRe: /\b(iraq war|fallujah (battle|siege)|baghdad (battle|fall)|operation iraqi freedom)\b/i,
+    beatAllowRe: /\b(iraq war|iraq invasion|fallujah|baghdad (fell|captured)|saddam|gulf war)\b/i,
+  },
+  {
+    id: "my_lai",
+    titleRe: /\b(my lai|napalm (girl|bombing photo)|nick ut)\b/i,
+    beatAllowRe: /\b(my lai|napalm|vietnam (war|atrocity)|kent state)\b/i,
+  },
+  {
+    id: "apartheid_violence",
+    titleRe: /\b(necklacing|soweto (massacre|uprising \d)|apartheid (execution|killing))\b/i,
+    beatAllowRe: /\b(apartheid|soweto|necklacing|south africa oppression|township violence)\b/i,
+  },
+  // ── Graphic / disturbing content identifiable by title ────────────────────────
+  {
+    id: "public_execution",
+    titleRe: /\b(public execution|public hanging|firing squad execution|guillotine execution|lynching)\b/i,
+    beatAllowRe: /\b(execution|public hanging|guillotine|lynching|capital punishment|death penalty|hanged)\b/i,
+  },
+  {
+    id: "graphic_atrocity",
+    titleRe: /\b(beheading video|torture footage|atrocity footage|war crimes footage|mass grave)\b/i,
+    beatAllowRe: /\b(beheading|torture|atrocity|war crime|mass grave|genocide footage)\b/i,
+  },
+  // ── Ideological imagery outside its context ──────────────────────────────────
+  {
+    id: "communist_rally",
+    titleRe: /\b(communist (rally|parade|propaganda)|may day (ussr|soviet|mao)|red square (parade|military))\b/i,
+    beatAllowRe: /\b(communis|soviet|mao|ussr|bolshevik|red army|marxist|leninist|stalinist|maoist)\b/i,
+  },
+  {
+    id: "kkk_footage",
+    titleRe: /\b(kkk|ku klux klan|klan (rally|march|burning cross))\b/i,
+    beatAllowRe: /\b(kkk|ku klux klan|klan|white supremacy|civil rights|segregation (violence|south))\b/i,
+  },
+];
+
+/**
+ * Returns true when a clip's title/tags belong to a "sensitive domain"
+ * (named figure, named atrocity, graphic content) that is NOT referenced
+ * in the current beat text — making the clip irrelevant for this beat.
+ *
+ * Used as a hard block in assetPassesBeatMinimum() and a heavy penalty in
+ * scoreCuratedAsset() to prevent e.g. "Hitler youth rally" appearing in
+ * an Amsterdam post-war reconstruction beat.
+ */
+export function isClipTitleIrrelevantToBeat(
+  asset: Pick<{ title?: string | null; tags?: string[] | null }, "title" | "tags">,
+  beatText: string
+): boolean {
+  const assetHay = `${(asset.title ?? "").toLowerCase()} ${(asset.tags ?? []).join(" ").toLowerCase()}`;
+  const beatLower = beatText.toLowerCase();
+  for (const rule of CLIP_TITLE_DOMAIN_RULES) {
+    if (rule.titleRe.test(assetHay) && !rule.beatAllowRe.test(beatLower)) {
+      return true;
+    }
   }
   return false;
 }

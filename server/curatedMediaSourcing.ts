@@ -321,7 +321,24 @@ export function countVisualTagHits(
   return hits;
 }
 
-/** Minimum bar so a clip actually depicts what the sentence describes. */
+/**
+ * Detect clips whose title looks like a broadcast/editorial production notation label
+ * that has been pre-burned into the video file (e.g. "MEDIC", "UNCERTAINTY WIDE SHOT MED",
+ * "ECU FACE", "CU HANDS"). These clips will show the label on-screen in the output.
+ */
+function hasProductionNotationTitle(asset: Pick<MediaArchiveAsset, "title">): boolean {
+  const title = (asset.title ?? "").trim();
+  if (!title) return false;
+  // All-uppercase title → likely a production/editorial shot label
+  if (title === title.toUpperCase() && /^[A-Z0-9 _\-]+$/.test(title) && title.length <= 60) {
+    // Common shot-type words from broadcast archives
+    if (/\b(MEDIC|WIDE\s*SHOT|CLOSE\s*UP|MED(?:IUM)?|ECU|BCU|MCU|CU|WS|MS|LS|XLS|OTS|UNCERTAINTY|SHOT|ANGLE|FRAME|SCENE|TAKE|SLATE)\b/.test(title)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function assetPassesBeatMinimum(
   asset: Pick<MediaArchiveAsset, "title" | "tags">,
   beatText: string,
@@ -727,16 +744,12 @@ export function scoreCuratedAsset(
       if (t === anchor) score += Math.round(16 * topicWeight);
       else if (t.includes(anchor) || anchor.includes(t)) score += Math.round(6 * topicWeight);
     }
-    for (const n of archiveNicheTags) {
-      if (n === anchor || tMatches(n, anchor)) score += Math.round(4 * topicWeight);
-    }
+    // Note: archive niche-tags intentionally NOT used here —
+    // scores must reflect clip title + clip tags only.
   }
 
-  for (const n of archiveNicheTags) {
-    for (const t of assetTags) {
-      if (t === n || t.includes(n) || n.includes(t)) score += 3;
-    }
-  }
+  // Note: archive niche-tag vs asset-tag boost intentionally removed —
+  // clip relevance is determined solely by the clip's own title and tags.
 
   if (beatTags.length >= 2 && beatHits === 0) score = Math.max(0, score - 60);
 
@@ -753,6 +766,23 @@ export function scoreCuratedAsset(
     return 0;
   }
   if (videoVisualTopic === "geography_urban" && isGeographyIncompatibleArchiveAsset(asset)) {
+    return 0;
+  }
+  // For any non-WWII video, heavily penalise war archive clips when the beat
+  // doesn't mention war/conflict — prevents Hitler footage in geography/history
+  // videos that have no war content in the specific sentence.
+  if (videoVisualTopic !== "wwii" && isWwiiWarArchiveAsset(asset)) {
+    if (!beatText || !beatMentionsWwiiContent(beatText)) {
+      score = Math.max(0, score - 400);
+    }
+  }
+  // Hard-zero clips with pre-burned production notation titles (defense-in-depth)
+  if (hasProductionNotationTitle(asset)) {
+    return 0;
+  }
+  // Defense-in-depth: also zero-score clips whose title names a domain-specific
+  // figure/event (Hitler, Stalin, Pol Pot, execution, etc.) absent from the beat.
+  if (beatText && isClipTitleIrrelevantToBeat(asset, beatText)) {
     return 0;
   }
 
@@ -1018,7 +1048,6 @@ export async function listCuratedArchiveCandidates(
 
   const geoRequired = beatText ? extractBeatGeoPlaceTags(beatText) : [];
   const scored: CuratedCandidatePick[] = [];
-  const fallback: CuratedCandidatePick[] = [];
 
   for (const archive of archives) {
     const nicheTags = normalizeMediaTags(archive.nicheTags ?? []);
@@ -1031,10 +1060,9 @@ export async function listCuratedArchiveCandidates(
       if (isCuratedOffTopicAsset(asset, topicAnchors, beatTags, videoVisualTopic)) continue;
       if (geoRequired.length > 0 && isWrongGeoForBeat(asset, geoRequired)) continue;
       const score = scoreCuratedAsset(asset, nicheTags, beatTags, topicAnchors, beatText, videoVisualTopic);
+      // Only include clips that actually match by their own title/tags — no score-1 fallback.
+      // Irrelevant clips must not slip through; the pipeline falls to Pexels instead.
       if (score > 0) scored.push({ asset, score, archiveName: archive.name, archiveNicheTags: nicheTags });
-      else if (assetMatchesBeatTags(asset, beatTags) || assetMatchesTopicAnchors(asset, topicAnchors)) {
-        fallback.push({ asset, score: 1, archiveName: archive.name, archiveNicheTags: nicheTags });
-      }
     }
   }
 
@@ -1511,7 +1539,9 @@ export async function searchCuratedCandidatesForBeat(
     if (relaxed.length > 0) return relaxed;
   }
 
-  return ranked.slice(0, Math.max(8, ranked.length));
+  // No match at all — return empty so the pipeline falls back to Pexels.
+  // We must never pick a random archive clip that has nothing to do with this sentence.
+  return [];
 }
 
 /** Skip FFmpeg when metadata already rules out an asset. */

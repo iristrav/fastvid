@@ -91,9 +91,12 @@ export function documentaryKenBurnsZoomEnd(durationSec: number): number {
   return 1 + 0.2 * (t / 6);
 }
 
-export function pickKenBurnsVariant(sceneIndex: number, beatIndex: number): KenBurnsVariant {
-  const variants: KenBurnsVariant[] = ["zoom-in", "pan-left", "pan-right", "zoom-out", "center"];
-  return variants[(sceneIndex * 3 + beatIndex) % variants.length];
+/**
+ * Always returns "zoom-in" — slow subtle Ken Burns zoom for consistent professional look.
+ * Per visual spec: one animation style throughout the entire video (no random variants).
+ */
+export function pickKenBurnsVariant(_sceneIndex: number, _beatIndex: number): KenBurnsVariant {
+  return "zoom-in";
 }
 
 /** Archive stills always zoom in slightly — avoids static/frozen-looking frames. */

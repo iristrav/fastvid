@@ -67,11 +67,20 @@ export function extractYearsFromText(text: string): string[] {
 }
 
 export function extractStatFromText(text: string): string | null {
+  // Euro amounts: €10.000, €1 miljoen, €50 miljard
+  const euro = text.match(/€\s*[\d,.]+(?:\s*(?:million|billion|miljoen|miljard|biljoen|M|B|K))?/i);
+  if (euro?.[0]) return euro[0].trim().replace(/€\s+/, "€").replace(/\s+/g, " ").slice(0, 24);
+  // Dollar amounts
   const money = text.match(/\$[\d,.]+(?:\s*(?:million|billion|miljoen|miljard|M|B|K))?/i);
   if (money?.[0]) return money[0].trim().slice(0, 24);
+  // Dutch numeric amounts: "10 miljoen", "5 miljard", "2,5 biljoen"
+  const dutchAmt = text.match(/\b[\d,.]+\s*(?:miljoen|miljard|biljoen|duizend)\b/i);
+  if (dutchAmt?.[0]) return dutchAmt[0].trim().replace(/\s+/g, " ").slice(0, 24);
+  // Percentages — Dutch "procent" and English "percent" / symbol
   const pct = text.match(/\d[\d,.]*\s*(?:%|percent|procent)/i);
   if (pct?.[0]) return pct[0].trim().slice(0, 24);
-  const count = text.match(/\b[\d,.]+\s+(?:people|soldiers|tanks|planes|victims|doden|slachtoffers)\b/i);
+  // People / casualty counts
+  const count = text.match(/\b[\d,.]+\s+(?:people|soldiers|tanks|planes|victims|doden|slachtoffers|mensen|inwoners)\b/i);
   if (count?.[0]) return count[0].trim().slice(0, 24);
   return null;
 }
@@ -630,7 +639,11 @@ export function selectSpacedScreenLabels(
   return picked;
 }
 
-/** Labels synced to voiceover — years and place names from ~10s, spaced apart. */
+/**
+ * Labels synced to voiceover — years and place names from ~10s, stats from ~5s.
+ * Two-pass selection: years first (normal constraints), then stats slotted into
+ * remaining gaps. This prevents stats from being crowded out by years.
+ */
 export function planVoiceSyncedScreenLabels(
   beats: BeatLabelInput[],
   sceneDuration: number,
@@ -639,7 +652,8 @@ export function planVoiceSyncedScreenLabels(
 ): TimedYearLabel[] {
   if (beats.length === 0 || sceneDuration <= 0) return [];
   const voiceWindows = computeVoiceBeatWindows(beats, sceneDuration, sceneStartSec);
-  const labels: TimedYearLabel[] = [];
+  const yearLabels: TimedYearLabel[] = [];
+  const statLabels: TimedYearLabel[] = [];
   const usedLabels = new Set<string>();
   const timelineEnd = sceneDuration + sceneStartSec;
 
@@ -655,7 +669,7 @@ export function planVoiceSyncedScreenLabels(
       const startTime = yearStartInBeat(beat.text, year, beatStart, beatDur, occurrence);
       if (usedLabels.has(year)) continue;
       usedLabels.add(year);
-      labels.push({
+      yearLabels.push({
         year,
         caption: "",
         displayText: year,
@@ -670,7 +684,7 @@ export function planVoiceSyncedScreenLabels(
       const isPercentLabel = /\d/.test(term.label) && term.label.includes("%");
       if (term.label.length < 3 && !isPercentLabel) continue;
       usedLabels.add(term.label);
-      labels.push({
+      yearLabels.push({
         year: term.label,
         caption: "",
         displayText: term.label,
@@ -678,9 +692,55 @@ export function planVoiceSyncedScreenLabels(
         endTime: startTime + YEAR_LABEL_ON_SCREEN_SEC,
       });
     }
+
+    // Stats get their own pool — selected in a separate pass so they are never
+    // crowded out by year labels competing for the same timing slot.
+    const statText = extractStatFromText(beat.text);
+    if (statText && !usedLabels.has(statText)) {
+      const numericToken = statText.replace(/[€$%,.]/g, "").trim().split(/\s+/)[0] ?? statText;
+      const startTime = termStartInBeat(beat.text, numericToken, beatStart, beatDur);
+      const endTime = Math.min(startTime + YEAR_LABEL_ON_SCREEN_SEC, timelineEnd - 0.1);
+      if (endTime > startTime + 0.35) {
+        usedLabels.add(statText);
+        statLabels.push({
+          year: statText,
+          caption: "",
+          displayText: statText,
+          startTime,
+          endTime,
+        });
+      }
+    }
   }
 
-  return selectSpacedScreenLabels(labels, timelineEnd);
+  // Pass 1: select year/keyword labels with normal policy (minStart=10s)
+  const pickedYears = selectSpacedScreenLabels(yearLabels, timelineEnd);
+
+  // Pass 2: slot stats into gaps around the picked years.
+  // Stats may appear from 3s (earlier than years, to capture hook statistics).
+  // Stats use a tighter no-overlap gap (display_dur + 1.5s) instead of the full
+  // minGapSec, so they can squeeze between year labels without visual overlap.
+  const STAT_MIN_START_SEC = 3;
+  const STAT_GAP_SEC = YEAR_LABEL_ON_SCREEN_SEC; // 4s — exactly the display duration; prevents true visual overlap
+  const maxStats = Math.max(2, Math.floor(screenLabelMaxPerScene() / 2));
+  const pickedStats: TimedYearLabel[] = [];
+
+  const allPicked = [...pickedYears]; // grows as we add stats
+  for (const stat of [...statLabels].sort((a, b) => a.startTime - b.startTime)) {
+    if (pickedStats.length >= maxStats) break;
+    if (stat.startTime < STAT_MIN_START_SEC) continue;
+    // Stats only need to clear the display-duration gap (4s) to prevent true visual overlap.
+    // This is tighter than the year minGapSec (9s) so stats can fit between year labels.
+    const tooClose = allPicked.some(
+      (p) => Math.abs(p.startTime - stat.startTime) < STAT_GAP_SEC
+    );
+    if (tooClose) continue;
+    const entry = { ...stat };
+    pickedStats.push(entry);
+    allPicked.push(entry);
+  }
+
+  return [...pickedYears, ...pickedStats].sort((a, b) => a.startTime - b.startTime);
 }
 
 function labelTextForEntry(entry: TimedYearLabel): string {
@@ -814,7 +874,10 @@ export function planPhotoShutterCues(
   return cues;
 }
 
-/** Locomotive Historian style: yellow pill bottom-left, black ALL CAPS text, letter-by-letter reveal. */
+/**
+ * Minimal white typewriter overlay — white ALL CAPS text, subtle dark shadow,
+ * no pill background. Letter-by-letter reveal, bottom-left position.
+ */
 export function buildYearDrawtextFilterChain(
   inLabel: string,
   outLabel: string,
@@ -824,9 +887,9 @@ export function buildYearDrawtextFilterChain(
   const MARGIN_L = SCREEN_LABEL_MARGIN_L;
   const MARGIN_B = SCREEN_LABEL_MARGIN_B;
   const BOX_H = SCREEN_LABEL_BOX_H;
-  const PAD_X = SCREEN_LABEL_PAD_X;
   const FS = SCREEN_LABEL_FONT_SIZE;
-  const YELLOW = "0xFFCC00";
+  // Text Y: bottom-left safe area, vertically centred in the label row
+  const textY = `h-${MARGIN_B + Math.round((BOX_H + FS) / 2)}`;
 
   let chain = "";
   let prev = inLabel;
@@ -838,28 +901,26 @@ export function buildYearDrawtextFilterChain(
     const safeFull = sanitizeForDrawtext(fullText, 28);
     if (safeFull.length < 1) return;
 
-    const next = i === valid.length - 1 ? outLabel : `yl${i}`;
-    const enableFull = `enable='between(t\\,${entry.startTime.toFixed(2)}\\,${entry.endTime.toFixed(2)})'`;
-    const boxW = Math.min(SCREEN_LABEL_MAX_W, Math.round(safeFull.length * FS * 0.62 + PAD_X * 2));
-    const boxTop = MARGIN_B + BOX_H;
-    const textY = `h-${boxTop - Math.round((BOX_H - FS) / 2)}`;
-
-    chain += `;[${prev}]drawbox=x=${MARGIN_L}:y=h-${boxTop}:w=${boxW}:h=${BOX_H}:color=${YELLOW}@0.98:t=fill:${enableFull}[yb${i}]`;
-
-    let step = `yb${i}`;
+    const next = i === valid.length - 1 ? outLabel : `yt_out${i}`;
     const typeEnd = Math.min(
       entry.endTime,
       entry.startTime + safeFull.length * TYPEWRITER_CHAR_SEC + 0.05
     );
+
+    let step = prev;
     for (let k = 1; k <= safeFull.length; k++) {
       const sub = sanitizeForDrawtext(safeFull.slice(0, k), k);
       const t0 = entry.startTime + (k - 1) * TYPEWRITER_CHAR_SEC;
       const t1 = k < safeFull.length ? entry.startTime + k * TYPEWRITER_CHAR_SEC : typeEnd;
       const charOut = k === safeFull.length ? next : `yt${i}_${k}`;
       const charEnable = `enable='between(t\\,${t0.toFixed(3)}\\,${t1.toFixed(3)})'`;
+      // White text, subtle dark box only around text (box=1), soft shadow
       chain +=
-        `;[${step}]drawtext=text='${sub}':fontcolor=black:fontsize=${FS}:` +
-        `x=${MARGIN_L + PAD_X}:y=${textY}:box=0:${charEnable}[${charOut}]`;
+        `;[${step}]drawtext=text='${sub}':fontcolor=white:fontsize=${FS}:` +
+        `x=${MARGIN_L}:y=${textY}:` +
+        `box=1:boxcolor=0x00000055:boxborderw=8:` +
+        `shadowcolor=0x000000BB:shadowx=2:shadowy=2:` +
+        `${charEnable}[${charOut}]`;
       step = charOut;
     }
     prev = next;
@@ -910,7 +971,7 @@ export async function burnScreenLabelOverlaysSequential(
   return outputVideoPath;
 }
 
-/** Render one yellow typewriter label clip (isolated encode — keeps main montage filter graph small). */
+/** Render one white typewriter label clip — dark background, white text, subtle shadow. */
 export async function renderYellowTypewriterLabelClip(
   text: string,
   sceneIndex: number,
@@ -936,13 +997,16 @@ export async function renderYellowTypewriterLabelClip(
     const t1 = (k < safe.length ? k * TYPEWRITER_CHAR_SEC : dur).toFixed(3);
     const outLabel = k === safe.length ? "vout" : `sl${labelIndex}_${k}`;
     chain +=
-      `[${prev}]drawtext=text='${sub}':fontcolor=black:fontsize=${FS}:` +
-      `x=${PAD_X}:y=${textY}:box=0:enable='between(t\\,${t0}\\,${t1})'[${outLabel}];`;
+      `[${prev}]drawtext=text='${sub}':fontcolor=white:fontsize=${FS}:` +
+      `x=${PAD_X}:y=${textY}:box=1:boxcolor=0x00000000:boxborderw=0:` +
+      `shadowcolor=0x000000CC:shadowx=2:shadowy=2:` +
+      `enable='between(t\\,${t0}\\,${t1})'[${outLabel}];`;
     prev = outLabel;
   }
   try {
+    // Dark near-black background so white text is always readable when composited
     await execWithTimeout(
-      `${ffmpegBin} -y -f lavfi -i "color=c=0xFFCC00:s=${w}x${h}:r=25:d=${dur.toFixed(2)}" ` +
+      `${ffmpegBin} -y -f lavfi -i "color=c=0x111111:s=${w}x${h}:r=25:d=${dur.toFixed(2)}" ` +
         `-filter_complex "${chain.slice(0, -1)}" -map "[vout]" -t ${dur.toFixed(2)} ` +
         `-c:v libx264 -preset ultrafast -crf 18 -pix_fmt yuv420p "${outPath}"`,
       20_000,

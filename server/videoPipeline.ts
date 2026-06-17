@@ -769,7 +769,7 @@ async function fetchBeatArchivalThenPexels(
   stockReason: string
 ): Promise<string | null> {
   if (curatedArchiveOnlyVisuals()) {
-    return fetchCuratedArchiveBeatClip(
+    const archiveClip = await fetchCuratedArchiveBeatClip(
       beat,
       scene,
       workDir,
@@ -783,6 +783,10 @@ async function fetchBeatArchivalThenPexels(
       undefined,
       curatedBeatFetchOpts(dedup)
     );
+    if (archiveClip !== null) return archiveClip;
+    // No matching archive clip — fall through to Pexels if enabled.
+    if (!archivePexelsFallbackEnabled() || !canUseLicensedStockBeat(dedup)) return null;
+    console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: no archive match → Pexels fallback`);
   }
   const topicHay = [videoTitle, scene.text, beat.text].filter(Boolean).join(" ");
   const historicalDoc = isHistoricalDocumentary(topicHay) && !dedup.personTopicLock;
@@ -909,7 +913,7 @@ async function beatPrimaryFetch(
   stockReason: string
 ): Promise<string | null> {
   if (curatedArchiveOnlyVisuals()) {
-    return fetchCuratedArchiveBeatClip(
+    const archiveClip = await fetchCuratedArchiveBeatClip(
       beat,
       scene,
       workDir,
@@ -923,6 +927,11 @@ async function beatPrimaryFetch(
       undefined,
       curatedBeatFetchOpts(dedup)
     );
+    if (archiveClip !== null) return archiveClip;
+    // No archive match — fall through to Pexels if allowed.
+    if (!archivePexelsFallbackEnabled() || !canUseLicensedStockBeat(dedup)) return null;
+    console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: no archive match → Pexels fallback`);
+    return fetchBeatStockFallback(beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName, videoTitle, adoptOpts, stockReason);
   }
   if (youtubeOnlySourcingEnabled()) {
     return fetchBeatYoutubeThenPexels(
@@ -3550,31 +3559,11 @@ async function encodeStillImageMp4(
     }
   }
 
-  if (framedArchiveStillsEnabled()) {
-    try {
-      const filterComplex = buildMatFramedStillVF(duration);
-      await withTimeout(
-        exec(`${FFMPEG_BIN} ${buildStillEncodeArgs(imgPath, outPath, duration, filterComplex)}`),
-        45_000,
-        `${label} (mat frame)`
-      );
-      if (fs.existsSync(outPath) && fs.statSync(outPath).size > 1000) {
-        const probed = await probeVideoDurationSec(outPath);
-        if (probed >= duration * 0.5) return;
-      }
-    } catch (err) {
-      console.warn(`[Pipeline] ${label}: mat frame still failed:`, (err as Error).message);
-    }
-    try {
-      if (fs.existsSync(outPath)) fs.unlinkSync(outPath);
-    } catch {
-      /* ignore */
-    }
-  }
-
   const fps = 25;
   const frames = stillOutputFrameCount(duration, fps);
 
+  // Documentary blur-fill (blurred background + sharp foreground) takes priority
+  // over mat-frame layout — cleaner, more professional look.
   if (documentaryStyleEnabled()) {
     const filterComplex = resolveStillCompositionVF(duration, sceneIndex, beatIndex, personPortrait);
     try {
@@ -3603,6 +3592,29 @@ async function encodeStillImageMp4(
       `${label} (fallback)`
     );
     return;
+  }
+
+  // Fallback when documentary style is off: mat-frame layout on gray mat.
+  if (framedArchiveStillsEnabled()) {
+    try {
+      const filterComplex = buildMatFramedStillVF(duration);
+      await withTimeout(
+        exec(`${FFMPEG_BIN} ${buildStillEncodeArgs(imgPath, outPath, duration, filterComplex)}`),
+        45_000,
+        `${label} (mat frame)`
+      );
+      if (fs.existsSync(outPath) && fs.statSync(outPath).size > 1000) {
+        const probed = await probeVideoDurationSec(outPath);
+        if (probed >= duration * 0.5) return;
+      }
+    } catch (err) {
+      console.warn(`[Pipeline] ${label}: mat frame still failed:`, (err as Error).message);
+    }
+    try {
+      if (fs.existsSync(outPath)) fs.unlinkSync(outPath);
+    } catch {
+      /* ignore */
+    }
   }
 
   const totalFrames = frames;
@@ -7938,9 +7950,16 @@ interface VisualDedupState {
   geoSegmentLock: BeatGeoRegion | null;
 }
 
-/** One licensed stock clip allowed when minimizeStockFootage (whole-video cap). */
+/**
+ * Whether we can spend a licensed stock (Pexels/Pixabay) clip on this beat.
+ * In archive-first mode (curatedArchiveOnlyVisuals), Pexels is the ONLY fallback
+ * when no archive clip matches — so the stock budget must not block it.
+ * The minimizeStockFootage cap only makes sense in hybrid mode.
+ */
 function canUseLicensedStockBeat(dedup: VisualDedupState): boolean {
   if (!dedup.perf.minimizeStockFootage) return true;
+  // Archive-first: Pexels IS the designated fallback — never cap it
+  if (curatedArchiveOnlyVisuals()) return true;
   return dedup.stockBeatsUsed < dedup.perf.maxStockBeatsPerVideo;
 }
 
@@ -8486,18 +8505,21 @@ async function isMostlyBlackClip(filePath: string): Promise<boolean> {
     console.warn(`[Pipeline] Rejecting clip with embedded black bars: ${path.basename(filePath)}`);
     return true;
   }
-  // B&W archival clips often fail Railway luma heuristics — never drop curated archive beats.
+  // Curated archive clips: reject if too dark — threshold 25 (was 12, too permissive).
+  // B&W archival clips have low luma by design; we still skip near-pitch-black ones.
   if (curatedArchiveOnlyVisuals() && curatedClipPathAssetId(filePath) != null) {
     const dur = await probeVideoDurationSec(filePath);
     const sampleTimes = [0.12, 0.45, 1.0, Math.max(0.2, dur * 0.55)];
+    let darkCount = 0;
     for (const t of sampleTimes) {
       const ts = Math.min(t, Math.max(0.1, dur - 0.08));
       const luma = curatedStill
         ? await probeClipRegionMeanLuma(filePath, ts, "center")
         : await probeClipMeanLuma(filePath, ts);
-      if (luma !== null && luma < 12) return true;
+      if (luma !== null && luma < 25) darkCount++;
     }
-    return false;
+    // Reject if ALL sampled frames are too dark (avoids dropping B&W clips with bright contrast)
+    return darkCount >= sampleTimes.length;
   }
   // Railway: one luma sample — full blackdetect runs 3+ FFmpeg probes per clip
   if (IS_RAILWAY) {
@@ -9891,6 +9913,253 @@ function buildTopicAnchoredQueries(
   }))];
 }
 
+/**
+ * Maps video title keywords → Pexels-friendly anchor queries for automatic topic injection.
+ * Used as the FIRST Pexels query whenever archive returns no matching clip.
+ * Ordered by specificity (more specific first within each country/region).
+ */
+const TOPIC_ANCHOR_RULES: Array<{ pattern: RegExp; anchors: string[] }> = [
+  // ── Europe ──
+  { pattern: /\b(nederland|netherlands|dutch|holland)\b/i, anchors: ["Amsterdam", "Netherlands", "Dutch cycling"] },
+  { pattern: /\bamsterdam\b/i, anchors: ["Amsterdam canal", "Amsterdam", "Netherlands"] },
+  { pattern: /\brotterdam\b/i, anchors: ["Rotterdam", "Netherlands port"] },
+  { pattern: /\b(germany|german|deutschland|duitsland)\b/i, anchors: ["Germany", "Berlin"] },
+  { pattern: /\bberlin\b/i, anchors: ["Berlin", "Germany city"] },
+  { pattern: /\b(france|french|paris|frankrijk)\b/i, anchors: ["Paris", "France"] },
+  { pattern: /\b(uk|britain|british|england|english|london)\b/i, anchors: ["London", "United Kingdom"] },
+  { pattern: /\b(sweden|swedish|sverige)\b/i, anchors: ["Stockholm", "Sweden"] },
+  { pattern: /\b(denmark|danish|copenhagen|denemarken)\b/i, anchors: ["Copenhagen", "Denmark"] },
+  { pattern: /\b(norway|norwegian|oslo)\b/i, anchors: ["Oslo", "Norway"] },
+  { pattern: /\b(finland|finnish|helsinki)\b/i, anchors: ["Helsinki", "Finland"] },
+  { pattern: /\b(switzerland|swiss|zurich|geneva)\b/i, anchors: ["Switzerland", "Zurich"] },
+  { pattern: /\b(austria|austrian|vienna|wien)\b/i, anchors: ["Vienna", "Austria"] },
+  { pattern: /\b(belgium|belgian|brussels|belgie)\b/i, anchors: ["Brussels", "Belgium"] },
+  { pattern: /\b(spain|spanish|madrid|barcelona)\b/i, anchors: ["Madrid", "Spain"] },
+  { pattern: /\b(italy|italian|rome|milan)\b/i, anchors: ["Rome", "Italy"] },
+  { pattern: /\b(portugal|portuguese|lisbon)\b/i, anchors: ["Lisbon", "Portugal"] },
+  { pattern: /\b(poland|polish|warsaw)\b/i, anchors: ["Warsaw", "Poland"] },
+  { pattern: /\b(greece|greek|athens)\b/i, anchors: ["Athens", "Greece"] },
+  { pattern: /\b(czechia|czech republic|prague)\b/i, anchors: ["Prague", "Czech Republic"] },
+  { pattern: /\b(hungary|hungarian|budapest)\b/i, anchors: ["Budapest", "Hungary"] },
+  { pattern: /\b(ukraine|ukrainian|kyiv|kiev)\b/i, anchors: ["Kyiv", "Ukraine"] },
+  // ── Asia ──
+  { pattern: /\b(japan|japanese|tokyo)\b/i, anchors: ["Tokyo", "Japan"] },
+  { pattern: /\b(south korea|south korean|korea|korean|seoul)\b/i, anchors: ["Seoul", "South Korea"] },
+  { pattern: /\b(china|chinese|beijing|shanghai)\b/i, anchors: ["Beijing", "China"] },
+  { pattern: /\b(singapore|singaporean)\b/i, anchors: ["Singapore", "Singapore city"] },
+  { pattern: /\b(taiwan|taiwanese|taipei)\b/i, anchors: ["Taipei", "Taiwan"] },
+  { pattern: /\b(india|indian|mumbai|delhi)\b/i, anchors: ["Mumbai", "India"] },
+  { pattern: /\b(vietnam|vietnamese|hanoi)\b/i, anchors: ["Hanoi", "Vietnam"] },
+  { pattern: /\b(thailand|thai|bangkok)\b/i, anchors: ["Bangkok", "Thailand"] },
+  { pattern: /\b(indonesia|indonesian|jakarta)\b/i, anchors: ["Jakarta", "Indonesia"] },
+  { pattern: /\b(malaysia|malaysian|kuala lumpur)\b/i, anchors: ["Kuala Lumpur", "Malaysia"] },
+  { pattern: /\b(hong kong)\b/i, anchors: ["Hong Kong", "Hong Kong skyline"] },
+  // ── Americas ──
+  { pattern: /\b(united states|usa|america|american)\b/i, anchors: ["United States", "America city"] },
+  { pattern: /\b(canada|canadian)\b/i, anchors: ["Canada", "Toronto"] },
+  { pattern: /\b(brazil|brazilian|brasil)\b/i, anchors: ["Brazil", "São Paulo"] },
+  { pattern: /\b(mexico|mexican)\b/i, anchors: ["Mexico City", "Mexico"] },
+  { pattern: /\b(argentina|argentine|buenos aires)\b/i, anchors: ["Buenos Aires", "Argentina"] },
+  { pattern: /\b(colombia|colombian|bogota)\b/i, anchors: ["Bogotá", "Colombia"] },
+  { pattern: /\b(chile|chilean|santiago)\b/i, anchors: ["Santiago", "Chile"] },
+  // ── Oceania ──
+  { pattern: /\b(australia|australian|sydney|melbourne)\b/i, anchors: ["Sydney", "Australia"] },
+  { pattern: /\b(new zealand|auckland)\b/i, anchors: ["New Zealand", "Auckland"] },
+  // ── Middle East & Africa ──
+  { pattern: /\b(dubai|uae|emirates)\b/i, anchors: ["Dubai", "UAE skyline"] },
+  { pattern: /\b(israel|israeli|tel aviv)\b/i, anchors: ["Tel Aviv", "Israel"] },
+  { pattern: /\b(south africa|johannesburg|cape town)\b/i, anchors: ["Cape Town", "South Africa"] },
+  { pattern: /\b(egypt|egyptian|cairo)\b/i, anchors: ["Cairo", "Egypt"] },
+  // ── Generic topics — used when no specific country/city matches ──
+  { pattern: /\b(health(care)?|zorg|hospital|medical|doctor)\b/i, anchors: ["hospital", "healthcare", "medical"] },
+  { pattern: /\b(hous(ing|e)|apartment|rental|rent|real estate)\b/i, anchors: ["housing", "apartment building", "residential"] },
+  { pattern: /\b(school|education|university|classroom)\b/i, anchors: ["education", "school classroom"] },
+  { pattern: /\b(transport|transit|public transport|metro|train)\b/i, anchors: ["public transport", "metro station"] },
+  { pattern: /\b(climate|environment|renewable|green energy|solar)\b/i, anchors: ["renewable energy", "climate"] },
+  { pattern: /\b(tech(nology)?|ai|artificial intelligence|startup)\b/i, anchors: ["technology", "innovation"] },
+  { pattern: /\b(economy|economic|finance|gdp|trade)\b/i, anchors: ["economy", "finance"] },
+  { pattern: /\b(war|conflict|military|army|invasion)\b/i, anchors: ["military", "conflict"] },
+  { pattern: /\b(cycling|bike|bicycle|fiets)\b/i, anchors: ["cycling", "bicycle lane"] },
+];
+
+/**
+ * Beat-level topic override rules — checked ONLY against the current beat's text.
+ * These represent specific events/situations whose visual identity is so distinct
+ * that they should override the video's geo-anchor.
+ *
+ * Example: a Netherlands video beat that mentions "German forces occupied" should
+ * show WWII footage, not Amsterdam canals.
+ *
+ * Rules are ordered from most-specific to most-generic. First match wins.
+ * Each rule has a unique `key` so topic-switches can be detected and logged.
+ */
+/**
+ * eventTerm: a short Pexels-friendly keyword representing this event/situation.
+ * Used in geo-event combo queries: "${geoName} ${eventTerm}" (e.g. "Netherlands flood").
+ */
+const BEAT_TOPIC_OVERRIDE_RULES: Array<{ key: string; eventTerm: string; pattern: RegExp; anchors: string[] }> = [
+  // ── Historical armed conflicts ───────────────────────────────────────────────
+  { key: "wwii",        eventTerm: "WWII",             pattern: /\b(world war (ii|two|2)|ww2|wwii|nazi|gestapo|d-day|normandy|stalingrad|blitzkrieg|luftwaffe|auschwitz|holocaust|concentration camp|liberation|nazi occupation|occupied (france|europe|netherlands|poland)|german forces|german troops|third reich)\b/i, anchors: ["World War II", "wartime Europe", "WWII soldiers"] },
+  { key: "wwi",         eventTerm: "World War I",      pattern: /\b(world war (i|one|1)|ww1|wwi|trench warfare|western front|verdun|the great war|armistice)\b/i, anchors: ["World War I", "trench warfare", "historical soldiers"] },
+  { key: "holocaust",   eventTerm: "Holocaust",         pattern: /\b(holocaust|shoah|concentration camp|auschwitz|genocide|jewish persecution|deportation train)\b/i, anchors: ["Holocaust memorial", "concentration camp history"] },
+  { key: "cold_war",    eventTerm: "Cold War",          pattern: /\b(cold war|berlin wall|iron curtain|nuclear standoff|arms race|cuban missile|soviet union|ussr|kgb|nato vs)\b/i, anchors: ["Berlin Wall", "Cold War era", "nuclear missiles"] },
+  { key: "vietnam_war", eventTerm: "Vietnam War",       pattern: /\b(vietnam war|viet cong|napalm|ho chi minh trail|saigon|tet offensive|my lai)\b/i, anchors: ["Vietnam War", "jungle warfare"] },
+  { key: "civil_war",   eventTerm: "civil war",         pattern: /\b(civil war|confederate|union army|gettysburg|slavery abolition|abraham lincoln|emancipation)\b/i, anchors: ["American Civil War", "historical battle"] },
+  { key: "colonialism", eventTerm: "colonialism",       pattern: /\b(coloni(al|alism|ization)|dutch east indies|british empire|empire (collapsed|fell|ended)|decoloni|independence movement|liberation from)\b/i, anchors: ["colonialism history", "independence movement"] },
+  // ── Modern conflicts & geopolitics ──────────────────────────────────────────
+  { key: "war_modern",  eventTerm: "military conflict", pattern: /\b(invasion|military offensive|airstrike|drone strike|refugee(s)? flee|ceasefire|warzone|frontline|troops (advance|retreat)|missile (strike|attack))\b/i, anchors: ["military conflict", "warzone", "military soldiers"] },
+  { key: "terrorism",   eventTerm: "terrorism",         pattern: /\b(terror(ist|ism)|suicide bomb|isis|al-qaeda|jihadist|radicali[sz]ation|bomb attack|mass shooting)\b/i, anchors: ["security forces", "terrorism memorial", "city aftermath"] },
+  // ── Disasters & crises ───────────────────────────────────────────────────────
+  { key: "pandemic",    eventTerm: "pandemic",          pattern: /\b(pandemic|covid|coronavirus|lockdown|quarantine|vaccine rollout|mask mandate|hospital overwhelmed|icu capacity|contact tracing)\b/i, anchors: ["pandemic mask crowd", "hospital emergency", "vaccine queue"] },
+  { key: "flood",       eventTerm: "flood",             pattern: /\b(flood(ing|s|ed)?|inundation|storm surge|levee breach|overflowed (river|banks)|dikes (breached|failed)|watersnood)\b/i, anchors: ["flood disaster", "flood waters", "emergency evacuation"] },
+  { key: "earthquake",  eventTerm: "earthquake",        pattern: /\b(earthquake|seismic|richter|tremor|aftershock|rubble (collapse|rescue)|rescue (teams|workers) (search|dig))\b/i, anchors: ["earthquake destruction", "rescue workers rubble"] },
+  { key: "wildfire",    eventTerm: "wildfire",          pattern: /\b(wildfire|forest fire|bushfire|burning homes|evacuat(e|ion) (fire|blaze)|fire (swept|engulf))\b/i, anchors: ["wildfire forest", "burning landscape"] },
+  { key: "hurricane",   eventTerm: "hurricane",         pattern: /\b(hurricane|typhoon|cyclone|category [1-5]|storm surge|tropical storm|wind (gust|damage))\b/i, anchors: ["hurricane storm", "tropical storm damage"] },
+  { key: "drought",     eventTerm: "drought",           pattern: /\b(drought|famine|crop failure|water scarcity|dry (riverbeds?|reservoirs?)|food (crisis|shortage))\b/i, anchors: ["drought cracked earth", "famine", "dry riverbed"] },
+  // ── Politics & society ───────────────────────────────────────────────────────
+  { key: "protest",     eventTerm: "protest",           pattern: /\b(protest(s|ers?)|demonstrat(ion|ors?)|riot(s|ers?)|uprising|civil unrest|marched (through|on)|took to the streets|crowd (chant|gather))\b/i, anchors: ["protest crowd street", "demonstration march"] },
+  { key: "election",    eventTerm: "election",          pattern: /\b(election(s)?|referendum|ballot|voting booth|polls (opened|closed)|election (night|results)|voter (turnout|fraud)|campaign (rally|trail))\b/i, anchors: ["election voting booth", "democracy ballot", "political rally"] },
+  { key: "immigration", eventTerm: "immigration",       pattern: /\b(immigrat|migrant(s)?|refugee(s)?|asylum seeker|border crossing|crossing the (sea|mediterranean|channel)|people smuggling|detention center)\b/i, anchors: ["refugee camp", "migrants border", "immigration crossing"] },
+  { key: "poverty",     eventTerm: "poverty",           pattern: /\b(poverty|extreme poverty|inequality|slum|homeless (camp|encampment)|food bank|bread line|social exclusion)\b/i, anchors: ["poverty urban", "inequality", "homeless camp"] },
+  { key: "strike",      eventTerm: "workers strike",    pattern: /\b(strike (action|workers)|workers (walk(ed)? out|downed tools)|general strike|picket line|labor dispute|union (action|rally))\b/i, anchors: ["workers strike", "picket line", "labor protest"] },
+  // ── Environment & energy ─────────────────────────────────────────────────────
+  { key: "climate_evt", eventTerm: "climate",           pattern: /\b(climate (summit|conference|protest|march|emergency|crisis)|paris agreement|cop\d+|carbon (tax|neutral|footprint)|net zero|emissions (cut|target))\b/i, anchors: ["climate protest", "renewable energy", "climate summit"] },
+  { key: "oil_spill",   eventTerm: "oil spill",         pattern: /\b(oil spill|deepwater|tanker (leak|disaster)|marine (pollution|disaster)|ecological disaster)\b/i, anchors: ["oil spill pollution", "ocean pollution"] },
+  { key: "nuclear",     eventTerm: "nuclear disaster",  pattern: /\b(nuclear (plant|reactor|meltdown|accident|fallout|waste)|chernobyl|fukushima|atomic (bomb|test))\b/i, anchors: ["nuclear power plant", "nuclear disaster"] },
+  // ── Technology events ────────────────────────────────────────────────────────
+  { key: "space_event", eventTerm: "space",             pattern: /\b(rocket launch|moon landing|astronaut (aboard|walks?|orbit)|space (shuttle|station|mission|exploration)|nasa (launch|mission)|orbit(ing|ed))\b/i, anchors: ["rocket launch", "astronaut space", "space station"] },
+  { key: "ai_tech",     eventTerm: "artificial intelligence", pattern: /\b(artificial intelligence|machine learning|neural network|large language model|chatgpt|generative ai|ai (revolution|takes over))\b/i, anchors: ["artificial intelligence", "technology data center"] },
+  // ── Economics ────────────────────────────────────────────────────────────────
+  { key: "financial_crisis", eventTerm: "financial crisis", pattern: /\b(financial crisis|market crash|recession|bank (collapsed|bailout|run)|lehman|wall street crash|stock market (crash|plunge)|economic collapse)\b/i, anchors: ["stock market crash", "financial crisis", "bank queue"] },
+  { key: "inflation",   eventTerm: "inflation",         pattern: /\b(inflation|cost of living (crisis|surge)|price(s)? (soar|spike|skyrocket)|hyperinflation|purchasing power)\b/i, anchors: ["inflation shopping prices", "cost of living"] },
+  // ── Social milestones ────────────────────────────────────────────────────────
+  { key: "civil_rights",  eventTerm: "civil rights",   pattern: /\b(civil rights|segregation|martin luther king|rosa parks|apartheid|racial inequality|black lives matter|racial justice)\b/i, anchors: ["civil rights march", "racial equality protest"] },
+  { key: "womens_rights", eventTerm: "women rights",   pattern: /\b(women('s)? rights|suffragette|gender equality|#metoo|feminist movement|equal pay|women (vote|suffrage))\b/i, anchors: ["women rights march", "gender equality protest"] },
+  // ── Sports events ────────────────────────────────────────────────────────────
+  { key: "olympics",    eventTerm: "Olympics",          pattern: /\b(olympic games?|olympics|paralympic|gold medal|olympic (torch|flame|ceremony)|tokyo \d{4}|paris \d{4})\b/i, anchors: ["Olympic Games", "sports competition stadium"] },
+  { key: "world_cup",   eventTerm: "World Cup",         pattern: /\b(world cup (final|match|tournament)|fifa world cup|champion(s)? league (final|match))\b/i, anchors: ["football World Cup", "stadium crowd"] },
+];
+
+/**
+ * Detects whether the current beat text signals a specific event/situation topic.
+ * Returns { key, eventTerm, anchors } when a strong beat-level topic is detected, null otherwise.
+ */
+function detectBeatTopicOverride(
+  beatText: string
+): { key: string; eventTerm: string; anchors: string[] } | null {
+  const lower = beatText.toLowerCase();
+  for (const rule of BEAT_TOPIC_OVERRIDE_RULES) {
+    if (rule.pattern.test(lower)) {
+      return { key: rule.key, eventTerm: rule.eventTerm, anchors: rule.anchors };
+    }
+  }
+  return null;
+}
+
+/**
+ * Detects a geographic context from combined title + beat text.
+ * Returns { geoName, anchors } where geoName is the most specific geo label
+ * (e.g. "Netherlands", "Tokyo") used to build geo-event combo queries.
+ */
+function detectGeoContext(
+  videoTitle: string,
+  beatText: string
+): { geoName: string; anchors: string[] } | null {
+  const hay = `${videoTitle} ${beatText}`.toLowerCase();
+  for (const rule of TOPIC_ANCHOR_RULES) {
+    if (rule.pattern.test(hay)) {
+      // anchors[0] is always the most-specific geo label (city or country name)
+      return { geoName: rule.anchors[0], anchors: rule.anchors };
+    }
+  }
+  return null;
+}
+
+/**
+ * Builds geo-event combo anchors when BOTH a geo context and an event are detected.
+ *
+ * Result order (most specific → least specific):
+ *   1. "${geoName} ${eventTerm}"   — e.g. "Netherlands flood"
+ *   2. "${geoName} ${eventTerm2}"  — second event anchor if semantically distinct
+ *   3. Event-only anchors          — e.g. "flood disaster", "flood waters"
+ *   4. Geo-only anchors            — e.g. "Amsterdam", "Dutch cycling"
+ *
+ * Duplicates are removed; total is capped at 6 (the Pexels query limit).
+ */
+function buildGeoEventComboAnchors(
+  geoName: string,
+  geoAnchors: string[],
+  eventTerm: string,
+  eventAnchors: string[]
+): string[] {
+  const combo: string[] = [];
+  // Primary combo: geo + event keyword
+  combo.push(`${geoName} ${eventTerm}`);
+  // Secondary combo: geo + first event anchor's leading noun (e.g. "flood" from "flood disaster")
+  const eventLeadNoun = eventAnchors[0]?.split(" ")[0];
+  if (eventLeadNoun && eventLeadNoun.toLowerCase() !== eventTerm.toLowerCase()) {
+    combo.push(`${geoName} ${eventLeadNoun}`);
+  }
+  // Event-only anchors (without geo)
+  for (const a of eventAnchors) combo.push(a);
+  // Geo-only anchors as last-resort variety
+  for (const a of geoAnchors) combo.push(a);
+  // Deduplicate while preserving order
+  const seen = new Set<string>();
+  return combo.filter((q) => {
+    const k = q.toLowerCase();
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  }).slice(0, 6);
+}
+
+/**
+ * Auto-detects Pexels anchor queries from a video title + beat text.
+ *
+ * Priority / combination logic:
+ * 1. Beat text is checked for strong event/situation signals (WWII, flood, protest…).
+ * 2. Combined title+beat text is checked for geographic context (country, city…).
+ * 3a. BOTH detected → geo-event COMBO anchors (e.g. "Netherlands flood", "flood disaster", "Amsterdam")
+ * 3b. Only event → event anchors only (topic switch away from geo context)
+ * 3c. Only geo → geo anchors only (current-beat topic == video title topic)
+ * 3d. Neither → [] (Pexels falls back to beat.searchQuery)
+ */
+function extractVideoTopicAnchors(videoTitle: string, beatText = ""): string[] {
+  const override = detectBeatTopicOverride(beatText);
+  const geo = detectGeoContext(videoTitle, beatText);
+
+  if (override && geo) {
+    return buildGeoEventComboAnchors(geo.geoName, geo.anchors, override.eventTerm, override.anchors);
+  }
+  if (override) return override.anchors;
+  if (geo) return geo.anchors;
+  return [];
+}
+
+/**
+ * Same as extractVideoTopicAnchors but also returns the matched topic key
+ * (used for topic-switch logging in the pipeline).
+ */
+function extractVideoTopicAnchorsWithKey(
+  videoTitle: string,
+  beatText = ""
+): { anchors: string[]; topicKey: string } {
+  const override = detectBeatTopicOverride(beatText);
+  const geo = detectGeoContext(videoTitle, beatText);
+
+  if (override && geo) {
+    const anchors = buildGeoEventComboAnchors(geo.geoName, geo.anchors, override.eventTerm, override.anchors);
+    return { anchors, topicKey: `${geo.geoName.toLowerCase().replace(/\s+/g, "_")}_${override.key}` };
+  }
+  if (override) return { anchors: override.anchors, topicKey: override.key };
+  if (geo) {
+    const key = geo.geoName.toLowerCase().replace(/\s+/g, "_");
+    return { anchors: geo.anchors, topicKey: key };
+  }
+  return { anchors: [], topicKey: "none" };
+}
+
 /** Dutch (and common non-English) → single English Pexels keyword. */
 const DUTCH_STOCK_WORD_MAP: Record<string, string> = {
   zon: "sun", strand: "beach", zee: "ocean", berg: "mountain", bos: "forest", stad: "city",
@@ -9906,10 +10175,31 @@ const DUTCH_STOCK_WORD_MAP: Record<string, string> = {
   kind: "child", gezin: "family", vrouw: "woman", man: "man", mensen: "people", menigte: "crowd",
   geld: "money", bank: "bank", winkel: "shop", markt: "market", boerderij: "farm", oogst: "harvest",
   ruimte: "space", planeet: "planet", sterren: "stars", maan: "moon",
+  // Netherlands geography — maps Dutch terms to specific Pexels-friendly English queries
+  nederland: "netherlands", nederlanden: "netherlands", nederlandse: "netherlands",
+  amsterdam: "Amsterdam", rotterdam: "rotterdam", utrecht: "utrecht",
+  gracht: "Amsterdam canal", grachtenpand: "Amsterdam canal house",
+  fietspad: "Dutch cycling", fietspaden: "Netherlands bicycle lane",
+  windmolen: "windmill Netherlands", windmolens: "dutch windmill",
+  polder: "netherlands landscape", polders: "netherlands countryside",
+  tulp: "tulip Netherlands", tulpen: "dutch tulip field",
+  woningmarkt: "Netherlands housing", woning: "dutch residential street",
+  zorg: "Netherlands healthcare", gezondheidszorg: "dutch healthcare",
 };
 
 /** Topic patterns → one English stock keyword (all documentary subjects). */
 const STOCK_TOPIC_WORD_RULES: [RegExp, string][] = [
+  // Netherlands / Dutch geography — must come before generic city/cycling rules
+  [/\bamsterdam\b/, "Amsterdam"],
+  [/\brotterdam\b/, "rotterdam"],
+  [/\bnetherlands\b|\bnederland\b|\bnederlanden\b/, "netherlands"],
+  [/\bdutch\b|\bnederlandse\b/, "Amsterdam"],
+  [/\bholland\b/, "Netherlands"],
+  [/\bgracht\b|\bdutch canal\b|\bamsterdam canal\b/, "Amsterdam canal"],
+  [/\bfietspad\b|\bdutch cycling\b|\bnl cycling\b/, "Dutch cycling"],
+  [/\bwindmolen\b|\bdutch windmill\b/, "windmill Netherlands"],
+  [/\bpolder\b/, "netherlands landscape"],
+  [/\btulpen\b|\bdutch tulip\b/, "tulip Netherlands"],
   [/\b(cybertruck|gigafactory|supercharger|model\s*[3y])\b|\btesla\b|\bmusk\b|\belon\b/, "tesla"],
   [/\bspacex\b|\bfalcon\b|\bstarship\b/, "spacex"],
   [/\brocket\b|\blaunch\b|\bbooster\b|\borbit\b|\bmissile\b/, "rocket"],
@@ -12623,6 +12913,8 @@ async function fetchBeatStockFallback(
         );
         if (clip && !isStillPhotoClip(clip) && !isPipelineFallbackClip(clip)) {
           if (canUseLicensedStockBeat(dedup)) markLicensedStockBeatUsed(dedup);
+          // Visual variety enforcer: mark this anchor as used so the next beat picks a different one
+          dedup.usedPexelsAnchors.set(q, (dedup.usedPexelsAnchors.get(q) ?? 0) + 1);
           console.log(
             `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: stock fallback (${reason}) — Pexels "${q}"`
           );
@@ -12637,6 +12929,8 @@ async function fetchBeatStockFallback(
         );
         if (clip && !isStillPhotoClip(clip) && !isPipelineFallbackClip(clip)) {
           if (canUseLicensedStockBeat(dedup)) markLicensedStockBeatUsed(dedup);
+          // Visual variety enforcer: mark this anchor as used so the next beat picks a different one
+          dedup.usedPexelsAnchors.set(q, (dedup.usedPexelsAnchors.get(q) ?? 0) + 1);
           console.log(
             `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: stock fallback (${reason}) — Pixabay "${q}"`
           );
