@@ -794,7 +794,7 @@ async function tryFetchWikimediaBeatClip(
   return adoptedPath;
 }
 
-/** Archive + Wikimedia video first, then Pexels/Pixabay, then AI. */
+/** Wikimedia → archive → Pexels/Pixabay, then AI. */
 async function fetchBeatArchivalThenPexels(
   beat: SceneBeat,
   scene: Scene,
@@ -810,6 +810,16 @@ async function fetchBeatArchivalThenPexels(
   stockReason: string
 ): Promise<string | null> {
   if (curatedArchiveOnlyVisuals()) {
+    const wikiClip = await tryFetchWikimediaBeatClip(
+      beat,
+      scene,
+      workDir,
+      sceneIndex,
+      clipFetchDur,
+      videoTitle,
+      dedup
+    );
+    if (wikiClip !== null) return wikiClip;
     const archiveClip = await fetchCuratedArchiveBeatClip(
       beat,
       scene,
@@ -825,9 +835,8 @@ async function fetchBeatArchivalThenPexels(
       curatedBeatFetchOpts(dedup)
     );
     if (archiveClip !== null) return archiveClip;
-    // No matching archive clip — Wikimedia then Pexels below.
     if (!archivePexelsFallbackEnabled() || !canUseLicensedStockBeat(dedup)) return null;
-    console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: no archive match → Wikimedia/Pexels fallback`);
+    console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: no Wikimedia/archive match → Pexels/Pixabay fallback`);
   }
   const topicHay = [videoTitle, scene.text, beat.text].filter(Boolean).join(" ");
   const historicalDoc = isHistoricalDocumentary(topicHay) && !dedup.personTopicLock;
@@ -919,17 +928,6 @@ async function fetchBeatArchivalThenPexels(
 
   if (!canUseLicensedStockBeat(dedup)) return null;
 
-  const wikiClip = await tryFetchWikimediaBeatClip(
-    beat,
-    scene,
-    workDir,
-    sceneIndex,
-    clipFetchDur,
-    videoTitle,
-    dedup
-  );
-  if (wikiClip) return wikiClip;
-
   const stock = await fetchBeatStockFallback(
     beat,
     scene,
@@ -965,6 +963,16 @@ async function beatPrimaryFetch(
   stockReason: string
 ): Promise<string | null> {
   if (curatedArchiveOnlyVisuals()) {
+    const wikiClip = await tryFetchWikimediaBeatClip(
+      beat,
+      scene,
+      workDir,
+      sceneIndex,
+      clipFetchDur,
+      videoTitle,
+      dedup
+    );
+    if (wikiClip !== null) return wikiClip;
     const archiveClip = await fetchCuratedArchiveBeatClip(
       beat,
       scene,
@@ -980,10 +988,8 @@ async function beatPrimaryFetch(
       curatedBeatFetchOpts(dedup)
     );
     if (archiveClip !== null) return archiveClip;
-    // No archive match — fall through to Pexels if allowed.
     if (!archivePexelsFallbackEnabled() || !canUseLicensedStockBeat(dedup)) return null;
-    console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: no archive match → Pexels/Pixabay fallback`);
-    return fetchBeatStockFallback(beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName, videoTitle, adoptOpts, stockReason);
+    console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: no Wikimedia/archive match → Pexels/Pixabay fallback`);
   }
   if (youtubeOnlySourcingEnabled()) {
     return fetchBeatYoutubeThenPexels(
@@ -14349,7 +14355,71 @@ function buildBeatFallbackVisualQueries(
   ].slice(0, 10);
 }
 
-/** Last resort when archive + Wikimedia find nothing — topic-aligned Pexels B-roll. */
+/** Wikimedia → archive → Pexels/Pixabay for one beat. */
+async function adoptBeatClipWikimediaThenArchiveThenStock(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  videoTitle: string | undefined,
+  dedup: VisualDedupState,
+  pushClip: (clipPath: string, holdSec?: number) => boolean | Promise<boolean>,
+  holdSec: number,
+  semanticProfile?: BeatSemanticProfile,
+  opts: {
+    archiveRetries?: number;
+    archiveRelaxed?: boolean;
+    archiveVideosOnly?: boolean;
+    stockReason?: "fallback" | "geo-first" | "weak-archive";
+  } = {}
+): Promise<boolean> {
+  if (
+    await adoptWikimediaBeatClipFallback(
+      beat,
+      scene,
+      workDir,
+      videoTitle,
+      dedup,
+      pushClip,
+      holdSec,
+      semanticProfile
+    )
+  ) {
+    return true;
+  }
+  const retries = Math.max(1, opts.archiveRetries ?? 1);
+  for (let attempt = 0; attempt < retries; attempt++) {
+    if (
+      await adoptArchiveBeatClip(
+        beat,
+        scene,
+        workDir,
+        videoTitle,
+        dedup,
+        pushClip,
+        null,
+        holdSec,
+        semanticProfile,
+        opts.archiveRelaxed ?? attempt > 0,
+        opts.archiveVideosOnly ?? false
+      )
+    ) {
+      return true;
+    }
+  }
+  return adoptPexelsBeatClipFallback(
+    beat,
+    scene,
+    workDir,
+    videoTitle,
+    dedup,
+    pushClip,
+    holdSec,
+    semanticProfile,
+    opts.stockReason ?? "fallback"
+  );
+}
+
+/** Last resort when Wikimedia + archive find nothing — topic-aligned Pexels B-roll. */
 async function adoptPexelsBeatClipFallback(
   beat: SceneBeat,
   scene: Scene,
@@ -14361,9 +14431,6 @@ async function adoptPexelsBeatClipFallback(
   semanticProfile?: BeatSemanticProfile,
   reason: "fallback" | "geo-first" | "weak-archive" = "fallback"
 ): Promise<boolean> {
-  if (await adoptWikimediaBeatClipFallback(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
-    return true;
-  }
   if (!archivePexelsFallbackEnabled() || !licensedStockFootageEnabled()) return false;
 
   const queries = buildBeatFallbackVisualQueries(beat, scene, videoTitle, dedup, semanticProfile);
@@ -14528,30 +14595,17 @@ async function backfillArchiveMontageFromPool(
         continue;
       }
     }
-    let adopted = await adoptArchiveBeatClip(
+    let adopted = await adoptBeatClipWikimediaThenArchiveThenStock(
       beat,
       scene,
       workDir,
       videoTitle,
       dedup,
       (clipPath, holdSec) => pushClip(clipPath, holdSec, beats.length + added),
-      null,
       fillHold,
       profile,
-      true
+      { archiveRelaxed: true }
     );
-    if (!adopted) {
-      adopted = await adoptPexelsBeatClipFallback(
-        beat,
-        scene,
-        workDir,
-        videoTitle,
-        dedup,
-        (clipPath, holdSec) => pushClip(clipPath, holdSec, beats.length + added),
-        fillHold,
-        profile
-      );
-    }
     if (adopted) added++;
     coverage = await estimateBalancedMontageCoverageSec(clips, beatDurations, outDur);
   }
@@ -14660,29 +14714,17 @@ async function backfillComposeMontageIfShort(
       if (!beat) break;
       touchBeatGeoLock(dedup, beat.text, videoTitle);
       const fillHold = Math.max(beat.holdSec, outDur / minClipsNeeded);
-      const adopted =
-        (await adoptArchiveBeatClip(
-          beat,
-          scene,
-          workDir,
-          videoTitle,
-          dedup,
-          pushClip,
-          null,
-          fillHold,
-          undefined,
-          true
-        )) ||
-        (await adoptPexelsBeatClipFallback(
-          beat,
-          scene,
-          workDir,
-          videoTitle,
-          dedup,
-          pushClip,
-          fillHold,
-          undefined
-        ));
+      const adopted = await adoptBeatClipWikimediaThenArchiveThenStock(
+        beat,
+        scene,
+        workDir,
+        videoTitle,
+        dedup,
+        pushClip,
+        fillHold,
+        undefined,
+        { archiveRelaxed: true }
+      );
       if (adopted) {
         coverage = await estimateBalancedMontageCoverageSec(safeClips, composeBeatDurations, outDur);
       }
@@ -14723,6 +14765,41 @@ async function adoptVidrushOpeningBeat(
   console.log(
     `[Pipeline] Scene 0 opening: Vidrush gate — ${openingQueries.slice(0, 2).join(" | ")}`
   );
+
+  if (
+    await adoptWikimediaBeatClipFallback(
+      openingBeat,
+      scene,
+      workDir,
+      videoTitle,
+      dedup,
+      pushClip,
+      openingHold,
+      semanticProfile
+    )
+  ) {
+    touchBeatGeoLock(dedup, beat.text, videoTitle);
+    return true;
+  }
+
+  if (
+    await adoptArchiveBeatClip(
+      openingBeat,
+      scene,
+      workDir,
+      videoTitle,
+      dedup,
+      pushClip,
+      null,
+      openingHold,
+      semanticProfile,
+      false,
+      true
+    )
+  ) {
+    touchBeatGeoLock(dedup, beat.text, videoTitle);
+    return true;
+  }
 
   const tryClip = async (clipPath: string | null | undefined, q: string): Promise<boolean> => {
     if (!clipPath || isPipelineFallbackClip(clipPath)) return false;
@@ -14776,26 +14853,7 @@ async function adoptVidrushOpeningBeat(
       }
     }
   } else {
-    console.warn("[Pipeline] Scene 0 opening: licensed stock unavailable — archive video-only fallback");
-  }
-
-  if (
-    await adoptArchiveBeatClip(
-      openingBeat,
-      scene,
-      workDir,
-      videoTitle,
-      dedup,
-      pushClip,
-      null,
-      openingHold,
-      semanticProfile,
-      false,
-      true
-    )
-  ) {
-    touchBeatGeoLock(dedup, beat.text, videoTitle);
-    return true;
+    console.warn("[Pipeline] Scene 0 opening: licensed stock unavailable");
   }
 
   return adoptGeoWelcomeIntroBeat(
@@ -14833,41 +14891,17 @@ async function adoptGeoWelcomeIntroBeat(
     `[Pipeline] Scene ${scene.index} zin ${beat.index}: geo welcome intro (video) → ${welcomeBeat.searchQuery}`
   );
 
-  if (
-    await adoptPexelsBeatClipFallback(
-      welcomeBeat,
-      scene,
-      workDir,
-      videoTitle,
-      dedup,
-      pushClip,
-      holdSec,
-      semanticProfile,
-      "geo-first"
-    )
-  ) {
-    return true;
-  }
-
-  if (
-    await adoptArchiveBeatClip(
-      welcomeBeat,
-      scene,
-      workDir,
-      videoTitle,
-      dedup,
-      pushClip,
-      null,
-      holdSec,
-      semanticProfile,
-      false,
-      true
-    )
-  ) {
-    return true;
-  }
-
-  return false;
+  return adoptBeatClipWikimediaThenArchiveThenStock(
+    welcomeBeat,
+    scene,
+    workDir,
+    videoTitle,
+    dedup,
+    pushClip,
+    holdSec,
+    semanticProfile,
+    { archiveVideosOnly: true, stockReason: "geo-first" }
+  );
 }
 
 /** Replace clips that fail voice/visual critical review (archive first, then Pexels). */
@@ -14915,7 +14949,7 @@ async function criticalReviewAndRefineSceneVisuals(
     if (failed.length === 0) break;
 
     console.warn(
-      `[SceneCritical] Scene ${scene.index}: pass ${pass + 1} — replacing ${failed.length} clip(s) (archive → Pexels)`
+      `[SceneCritical] Scene ${scene.index}: pass ${pass + 1} — replacing ${failed.length} clip(s) (Wikimedia → archive → Pexels)`
     );
 
     for (const fail of failed) {
@@ -14957,28 +14991,21 @@ async function criticalReviewAndRefineSceneVisuals(
         return true;
       };
 
-      await adoptArchiveBeatClip(
-        beat,
-        scene,
-        workDir,
-        videoTitle,
-        dedup,
-        pushReplacement,
-        null,
-        beat.holdSec,
-        undefined,
-        true
-      );
-      if (!replaced) {
-        await adoptPexelsBeatClipFallback(
+      if (
+        !replaced &&
+        !(await adoptBeatClipWikimediaThenArchiveThenStock(
           beat,
           scene,
           workDir,
           videoTitle,
           dedup,
           pushReplacement,
-          beat.holdSec
-        );
+          beat.holdSec,
+          undefined,
+          { archiveRelaxed: true }
+        ))
+      ) {
+        /* still missing after full fallback chain */
       }
     }
   }
@@ -15120,35 +15147,21 @@ async function fetchArchiveSentenceMontage(
         semanticProfiles.get(bi)
       );
     }
-    for (let attempt = 0; attempt < ARCHIVE_BEAT_CLIP_RETRIES && !filled; attempt++) {
-      filled = await adoptArchiveBeatClip(
-        beat,
-        scene,
-        workDir,
-        videoTitle,
-        dedup,
-        pushClip,
-        null,
-        beat.holdSec,
-        semanticProfiles.get(bi)
-      );
-    }
-    if (!filled) {
-      filled = await adoptPexelsBeatClipFallback(
-        beat,
-        scene,
-        workDir,
-        videoTitle,
-        dedup,
-        pushClip,
-        beat.holdSec,
-        semanticProfiles.get(bi)
-      );
-    }
+    filled = await adoptBeatClipWikimediaThenArchiveThenStock(
+      beat,
+      scene,
+      workDir,
+      videoTitle,
+      dedup,
+      pushClip,
+      beat.holdSec,
+      semanticProfiles.get(bi),
+      { archiveRetries: ARCHIVE_BEAT_CLIP_RETRIES }
+    );
     if (!filled) {
       throw pipelineError(
         PIPELINE_ERROR.NO_SCENES,
-        `Scene ${scene.index} sentence ${beat.index + 1}: no archive or stock visual for "${beat.text.slice(0, 90).trim()}" — tag the archive or set PEXELS_API_KEY / PIXABAY_API_KEY`
+        `Scene ${scene.index} sentence ${beat.index + 1}: no Wikimedia, archive, or stock visual for "${beat.text.slice(0, 90).trim()}" — tag the archive or set PEXELS_API_KEY / PIXABAY_API_KEY`
       );
     }
   }
@@ -15258,20 +15271,17 @@ async function ensureArchiveMontageVoiceCoverage(
     const fillBeatIndex = beats.length + attempt;
     const holdSec = Math.max(beat.holdSec, scene.duration / minClips);
     const pushClip = (clipPath: string, sec = holdSec) => pushSceneClip(clipPath, sec, fillBeatIndex);
-    const filled =
-      (await adoptArchiveBeatClip(
-        beat,
-        scene,
-        workDir,
-        videoTitle,
-        dedup,
-        pushClip,
-        null,
-        holdSec,
-        semanticProfiles.get(beat.index),
-        true
-      )) ||
-      (await adoptPexelsBeatClipFallback(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfiles.get(beat.index)));
+    const filled = await adoptBeatClipWikimediaThenArchiveThenStock(
+      beat,
+      scene,
+      workDir,
+      videoTitle,
+      dedup,
+      pushClip,
+      holdSec,
+      semanticProfiles.get(beat.index),
+      { archiveRelaxed: true }
+    );
     if (!filled) continue;
   }
 
@@ -15437,13 +15447,21 @@ async function fetchSceneVisuals(
       }
       if (archiveOnly) {
         const filled = await withTimeout(
-          adoptArchiveBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, null),
+          adoptBeatClipWikimediaThenArchiveThenStock(
+            beat,
+            scene,
+            workDir,
+            videoTitle,
+            dedup,
+            pushClip,
+            beat.holdSec
+          ),
           beatWallMs,
-          `scene ${scene.index} beat ${bi} archive`
+          `scene ${scene.index} beat ${bi} Wikimedia/archive/stock`
         );
         if (!filled) {
           console.warn(
-            `[Pipeline] Scene ${scene.index} beat ${beat.index}: no archive clip matched (tags from narration)`
+            `[Pipeline] Scene ${scene.index} beat ${beat.index}: no clip matched after Wikimedia/archive/stock`
           );
         }
       } else {
@@ -15471,8 +15489,8 @@ async function fetchSceneVisuals(
       );
       dedup.lock = Promise.resolve();
       if (archiveOnly) {
-        await adoptArchiveBeatClip(
-          beat, scene, workDir, videoTitle, dedup, pushClip, null
+        await adoptBeatClipWikimediaThenArchiveThenStock(
+          beat, scene, workDir, videoTitle, dedup, pushClip, beat.holdSec
         );
       } else if (
         realOnly &&
@@ -15674,9 +15692,19 @@ async function fetchSceneVisuals(
       if (archiveBeatFilled.has(beat.index)) continue;
       const pushBeat = async (clipPath: string, holdSec = beat.holdSec) =>
         pushSceneClip(clipPath, holdSec, beat.index);
-      if (!(await adoptArchiveBeatClip(beat, scene, workDir, videoTitle, dedup, pushBeat, null))) {
+      if (
+        !(await adoptBeatClipWikimediaThenArchiveThenStock(
+          beat,
+          scene,
+          workDir,
+          videoTitle,
+          dedup,
+          pushBeat,
+          beat.holdSec
+        ))
+      ) {
         console.warn(
-          `[Pipeline] Scene ${scene.index}: could not fill beat ${beat.index} with a unique archive clip`
+          `[Pipeline] Scene ${scene.index}: could not fill beat ${beat.index} after Wikimedia/archive/stock`
         );
       }
     }
@@ -15711,6 +15739,16 @@ async function fetchSceneVisuals(
         extra = await withTimeout(
           (async () => {
             if (archiveOnly) {
+              const wiki = await tryFetchWikimediaBeatClip(
+                stub,
+                scene,
+                workDir,
+                scene.index,
+                stub.holdSec,
+                videoTitle,
+                dedup
+              );
+              if (wiki) return wiki;
               return fetchCuratedArchiveBeatClip(
                 stub,
                 scene,

@@ -57,12 +57,12 @@ export function screenLabelsEnabled(): boolean {
   return process.env.ENABLE_SCREEN_LABELS !== "false";
 }
 
-/** When true (default), use Pexels/Pixabay stock only after archive search finds no acceptable clip. */
+/** When true (default), use Pexels/Pixabay after Wikimedia and archive miss on a beat. */
 export function archivePexelsFallbackEnabled(): boolean {
   return process.env.ARCHIVE_PEXELS_FALLBACK !== "false";
 }
 
-/** Pexels/Pixabay allowed after archive misses; never skips archive search (default on). */
+/** Pexels/Pixabay after Wikimedia + archive misses (default on). */
 export function archivePexelsHybridEnabled(): boolean {
   return process.env.ARCHIVE_PEXELS_HYBRID !== "false" && archivePexelsFallbackEnabled();
 }
