@@ -12,8 +12,22 @@ export function externalVisualSourcingEnabled(): boolean {
   return false;
 }
 
+/** Free testing: Google Translate TTS (no ElevenLabs/Fish credits). Set FREE_TTS=gtts on Railway. */
+export function freeVoiceoverMode(): boolean {
+  const raw = process.env.FREE_TTS?.trim().toLowerCase();
+  return raw === "gtts" || raw === "true" || process.env.VOICE_PROVIDER?.trim().toLowerCase() === "gtts";
+}
+
+/** gTTS language code — nl or en (default nl for Dutch scripts). */
+export function freeVoiceoverGttsLang(): "nl" | "en" {
+  const raw = process.env.FREE_TTS_LANG?.trim().toLowerCase();
+  if (raw === "en" || raw === "nl") return raw;
+  return "nl";
+}
+
 /** When true (default), voiceover uses ElevenLabs only (no Fish Audio). */
 export function elevenLabsOnlyVoice(): boolean {
+  if (freeVoiceoverMode()) return false;
   return process.env.ELEVENLABS_ONLY !== "false";
 }
 

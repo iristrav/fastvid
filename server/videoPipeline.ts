@@ -136,7 +136,7 @@ import {
   assertSceneCriticalReview,
   reviewSceneCritical,
 } from "./sceneCriticalReview";
-import { curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archivePexelsFallbackEnabled, archivePexelsHybridEnabled, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, onScreenTextEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, maxPipelineWallClockMin, qualityOverSpeedEnabled, visualStageWallClockMin, pipelineMinutesPerVideoMinute, pipelineWallClockLimitEnabled, PIPELINE_UNLIMITED_MS, autoMotionGraphicsLayerEnabled, vidrushDocumentaryQualityEnabled } from "./sourcingPolicy";
+import { curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, freeVoiceoverMode, freeVoiceoverGttsLang, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archivePexelsFallbackEnabled, archivePexelsHybridEnabled, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, onScreenTextEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, maxPipelineWallClockMin, qualityOverSpeedEnabled, visualStageWallClockMin, pipelineMinutesPerVideoMinute, pipelineWallClockLimitEnabled, PIPELINE_UNLIMITED_MS, autoMotionGraphicsLayerEnabled, vidrushDocumentaryQualityEnabled } from "./sourcingPolicy";
 import { targetVideoDurationMinutes } from "@shared/videoLengths";
 import {
   getCrossVideoExcludeAssetIds,
@@ -2569,7 +2569,7 @@ async function synthesizeFullNarrationMp3(
     const partPath = path.join(workDir, `full_voiceover_part_${i}.mp3`);
     await generateVoiceover(chunks[i], partPath, voiceId, {
       maxChars: BULK_VO_CHUNK_CHARS,
-      preferElevenLabs: true,
+      preferElevenLabs: !freeVoiceoverMode(),
     });
     partPaths.push(partPath);
   }
@@ -2743,6 +2743,77 @@ async function synthesizeElevenLabsVoice(
   throw pipelineError(PIPELINE_ERROR.VOICEOVER, "ElevenLabs TTS failed after retries");
 }
 
+async function synthesizeGttsVoice(cleanText: string, outputPath: string, lang = freeVoiceoverGttsLang()): Promise<number> {
+  const chunks: string[] = [];
+  const words = cleanText.split(" ");
+  let chunk = "";
+  for (const word of words) {
+    if ((chunk + " " + word).trim().length > 180) {
+      chunks.push(chunk.trim());
+      chunk = word;
+    } else {
+      chunk = (chunk + " " + word).trim();
+    }
+  }
+  if (chunk) chunks.push(chunk);
+
+  const chunkFiles: string[] = [];
+  for (let ci = 0; ci < chunks.length; ci++) {
+    const chunkPath = outputPath.replace(".mp3", `_gtts_chunk${ci}.mp3`);
+    const encoded = encodeURIComponent(chunks[ci]!);
+    const gttsUrl = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encoded}&tl=${lang}&client=tw-ob`;
+    const gResp = await withTimeout(
+      fetch(gttsUrl, { headers: { "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1)" } }),
+      15_000,
+      `gTTS chunk ${ci}`
+    );
+    if (!gResp.ok) throw pipelineError(PIPELINE_ERROR.VOICEOVER, `gTTS HTTP ${gResp.status}`);
+    const buf = Buffer.from(await gResp.arrayBuffer());
+    if (buf.length < 100) throw pipelineError(PIPELINE_ERROR.VOICEOVER_EMPTY, "gTTS empty response");
+    fs.writeFileSync(chunkPath, buf);
+    chunkFiles.push(chunkPath);
+  }
+
+  if (chunkFiles.length === 1) {
+    fs.renameSync(chunkFiles[0]!, outputPath);
+  } else {
+    const listFile = outputPath.replace(".mp3", "_gtts_list.txt");
+    fs.writeFileSync(listFile, chunkFiles.map((f) => `file '${f}'`).join("\n"));
+    await withTimeout(
+      exec(`${FFMPEG_BIN} -y -f concat -safe 0 -i "${listFile}" -c copy "${outputPath}"`),
+      20_000,
+      "gTTS concat"
+    );
+    chunkFiles.forEach((f) => {
+      try {
+        fs.unlinkSync(f);
+      } catch {
+        /* ignore */
+      }
+    });
+    try {
+      fs.unlinkSync(listFile);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  let durationSec = Math.max(3, Math.ceil(cleanText.split(" ").length / 2.5));
+  try {
+    const { execSync: es } = await import("child_process");
+    const probeOut = es(
+      `"${FFPROBE_BIN}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${outputPath}"`,
+      { encoding: "utf8", timeout: 8000 }
+    );
+    const parsed = parseFloat(probeOut.trim());
+    if (!isNaN(parsed) && parsed > 0) durationSec = Math.ceil(parsed);
+  } catch {
+    /* use estimate */
+  }
+  console.log(`[Pipeline] gTTS (${lang}) ${durationSec}s → ${path.basename(outputPath)}`);
+  return durationSec;
+}
+
 // Per-scene fallback only when bulk path is not used. Default pipeline: full-script ElevenLabs + split.
 export async function generateVoiceover(
   text: string,
@@ -2755,6 +2826,13 @@ export async function generateVoiceover(
 
   const MAX_ATTEMPTS = 3;
   const TTS_TIMEOUT_MS = maxChars > 2000 ? 180_000 : 90_000;
+
+  if (freeVoiceoverMode()) {
+    if (voiceId?.trim()) {
+      console.warn("[Pipeline] FREE_TTS=gtts — ignoring selected ElevenLabs voice for testing");
+    }
+    return synthesizeGttsVoice(cleanText, outputPath);
+  }
 
   const selectedElevenVoice = voiceId?.trim();
   // User picked a voice in the dashboard → always that exact ElevenLabs voice (never Fish remap).
@@ -2922,64 +3000,11 @@ export async function generateVoiceover(
     }
   }
 
-  // Fallback 2: Google TTS (free, no API key, works in any environment)
-  // Uses the unofficial Google Translate TTS endpoint — reliable for short texts
+  // Fallback 2: Google TTS (free, no API key)
   try {
-    const chunks: string[] = [];
-    const words = cleanText.split(' ');
-    let chunk = '';
-    for (const word of words) {
-      if ((chunk + ' ' + word).trim().length > 180) {
-        chunks.push(chunk.trim());
-        chunk = word;
-      } else {
-        chunk = (chunk + ' ' + word).trim();
-      }
-    }
-    if (chunk) chunks.push(chunk);
-
-    const chunkFiles: string[] = [];
-    for (let ci = 0; ci < chunks.length; ci++) {
-      const chunkPath = outputPath.replace('.mp3', `_gtts_chunk${ci}.mp3`);
-      const encoded = encodeURIComponent(chunks[ci]);
-      const gttsUrl = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encoded}&tl=en&client=tw-ob`;
-      const gResp = await withTimeout(
-        fetch(gttsUrl, { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' } }),
-        15_000, `gTTS chunk ${ci}`
-      );
-      if (!gResp.ok) throw pipelineError(PIPELINE_ERROR.VOICEOVER, `gTTS HTTP ${gResp.status}`);
-      const buf = Buffer.from(await gResp.arrayBuffer());
-      if (buf.length < 100) throw pipelineError(PIPELINE_ERROR.VOICEOVER_EMPTY, "gTTS empty response");
-      fs.writeFileSync(chunkPath, buf);
-      chunkFiles.push(chunkPath);
-    }
-
-    if (chunkFiles.length === 1) {
-      fs.renameSync(chunkFiles[0], outputPath);
-    } else {
-      // Concatenate chunks with FFmpeg
-      const listFile = outputPath.replace('.mp3', '_gtts_list.txt');
-      fs.writeFileSync(listFile, chunkFiles.map(f => `file '${f}'`).join('\n'));
-      await withTimeout(
-        exec(`${FFMPEG_BIN} -y -f concat -safe 0 -i "${listFile}" -c copy "${outputPath}"`),
-        20_000, 'gTTS concat'
-      );
-      chunkFiles.forEach(f => { try { fs.unlinkSync(f); } catch {} });
-      try { fs.unlinkSync(listFile); } catch {}
-    }
-
-    const { execSync: es } = await import('child_process');
-    let durationSec = Math.max(3, Math.ceil(cleanText.split(' ').length / 2.5));
-    try {
-      const probeOut = es(`"${FFPROBE_BIN}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${outputPath}"`, { encoding: 'utf8', timeout: 8000 });
-      const parsed = parseFloat(probeOut.trim());
-      if (!isNaN(parsed) && parsed > 0) durationSec = Math.ceil(parsed);
-    } catch { /* use estimate */ }
-
-    console.log(`[Pipeline] gTTS fallback scene ${outputPath.match(/scene_(\d+)/)?.[1] ?? '?'}: ${durationSec}s`);
-    return durationSec;
+    return await synthesizeGttsVoice(cleanText, outputPath, "en");
   } catch (gErr) {
-    console.warn('[Pipeline] gTTS fallback failed:', gErr);
+    console.warn("[Pipeline] gTTS fallback failed:", gErr);
   }
 
   // Silent fallback

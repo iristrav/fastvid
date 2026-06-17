@@ -22,6 +22,7 @@ import {
   curatedArchiveOnlyVisuals,
   externalVisualSourcingEnabled,
   elevenLabsOnlyVoice,
+  freeVoiceoverMode,
 } from "../sourcingPolicy";
 import { getVisionQaStatus } from "../visualQualityGate";
 
@@ -136,9 +137,11 @@ async function startServer() {
   }
   console.log(
     "[Fastvid] Voiceover:",
-    elevenLabsOnlyVoice()
-      ? "✓ ElevenLabs only"
-      : "✗ Fish Audio fallback allowed (ELEVENLABS_ONLY=false)"
+    freeVoiceoverMode()
+      ? "✓ FREE_TTS=gtts (Google TTS — no ElevenLabs credits)"
+      : elevenLabsOnlyVoice()
+        ? "✓ ElevenLabs only"
+        : "✗ Fish Audio fallback allowed (ELEVENLABS_ONLY=false)"
   );
   console.log(
     "[Fastvid] Video pipeline:",
