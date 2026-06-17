@@ -3477,31 +3477,11 @@ async function encodeStillImageMp4(
     }
   }
 
-  if (framedArchiveStillsEnabled()) {
-    try {
-      const filterComplex = buildMatFramedStillVF(duration);
-      await withTimeout(
-        exec(`${FFMPEG_BIN} ${buildStillEncodeArgs(imgPath, outPath, duration, filterComplex)}`),
-        45_000,
-        `${label} (mat frame)`
-      );
-      if (fs.existsSync(outPath) && fs.statSync(outPath).size > 1000) {
-        const probed = await probeVideoDurationSec(outPath);
-        if (probed >= duration * 0.5) return;
-      }
-    } catch (err) {
-      console.warn(`[Pipeline] ${label}: mat frame still failed:`, (err as Error).message);
-    }
-    try {
-      if (fs.existsSync(outPath)) fs.unlinkSync(outPath);
-    } catch {
-      /* ignore */
-    }
-  }
-
   const fps = 25;
   const frames = stillOutputFrameCount(duration, fps);
 
+  // Documentary blur-fill (blurred background + sharp foreground) takes priority
+  // over mat-frame layout — cleaner, more professional look.
   if (documentaryStyleEnabled()) {
     const filterComplex = resolveStillCompositionVF(duration, sceneIndex, beatIndex, personPortrait);
     try {
@@ -3530,6 +3510,29 @@ async function encodeStillImageMp4(
       `${label} (fallback)`
     );
     return;
+  }
+
+  // Fallback when documentary style is off: mat-frame layout on gray mat.
+  if (framedArchiveStillsEnabled()) {
+    try {
+      const filterComplex = buildMatFramedStillVF(duration);
+      await withTimeout(
+        exec(`${FFMPEG_BIN} ${buildStillEncodeArgs(imgPath, outPath, duration, filterComplex)}`),
+        45_000,
+        `${label} (mat frame)`
+      );
+      if (fs.existsSync(outPath) && fs.statSync(outPath).size > 1000) {
+        const probed = await probeVideoDurationSec(outPath);
+        if (probed >= duration * 0.5) return;
+      }
+    } catch (err) {
+      console.warn(`[Pipeline] ${label}: mat frame still failed:`, (err as Error).message);
+    }
+    try {
+      if (fs.existsSync(outPath)) fs.unlinkSync(outPath);
+    } catch {
+      /* ignore */
+    }
   }
 
   const totalFrames = frames;
