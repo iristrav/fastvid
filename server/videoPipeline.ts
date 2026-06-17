@@ -16635,9 +16635,11 @@ export async function runVideoPipeline(
             `Scene ${scene.index} visuals`
           );
         } catch (sceneErr) {
-          if (strictNoVisualRepeat()) throw sceneErr;
+          // Always attempt Wikimedia/Pexels recovery — strictNoVisualRepeat prevents
+          // clip *repeats*, not external-source fallbacks. Re-throw only if recovery
+          // also yields nothing.
           console.warn(
-            `[Pipeline] Scene ${scene.index} visuals failed after ${Math.round(perf.sceneVisualTimeoutMs / 1000)}s — recovering:`,
+            `[Pipeline] Scene ${scene.index} visuals failed — recovering:`,
             (sceneErr as Error).message
           );
           visualDedup.lock = Promise.resolve();
