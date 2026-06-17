@@ -101,6 +101,10 @@ jspm_packages/
 tmp/
 temp/
 
+# Local pipeline QA, analysis artifacts, and uploads (not source)
+tmp-*
+uploads/
+
 # Database
 *.db
 *.sqlite
