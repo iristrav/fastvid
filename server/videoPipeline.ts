@@ -13758,6 +13758,10 @@ async function adoptArchiveBeatClip(
   relaxed = false,
   videosOnly = false
 ): Promise<boolean> {
+  const literal = curatedArchiveOnlyVisuals()
+    ? applyLiteralViewerVisualToBeat(beat, videoTitle, dedup.sentenceIntents)
+    : null;
+
   const rejectClip = (clipPath: string | null | undefined): void => {
     if (!clipPath || isPipelineFallbackClip(clipPath)) return;
     dedup.usedContentKeys.add(clipContentKey(clipPath));
@@ -13802,7 +13806,8 @@ async function adoptArchiveBeatClip(
         scene.index,
         beat.index,
         dedup.perf.fastStockMode,
-        sceneCriticalReviewEnabled() ? minClipQualityScore() : 5
+        sceneCriticalReviewEnabled() ? minClipQualityScore() : 5,
+        beat.visualDescription
       ))
     ) {
       rejectClip(clipPath);
@@ -13813,8 +13818,7 @@ async function adoptArchiveBeatClip(
 
   if (await tryClip(initialClip, holdSec)) return true;
 
-  if (curatedArchiveOnlyVisuals()) {
-    const literal = applyLiteralViewerVisualToBeat(beat, videoTitle, dedup.sentenceIntents);
+  if (curatedArchiveOnlyVisuals() && literal) {
     const literalTags = literalVisualSearchTags(literal);
     console.log(
       `[ViewerVisual] Scene ${scene.index} beat ${beat.index}: kijker ziet "${literal.description}" ` +

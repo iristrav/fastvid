@@ -65,6 +65,43 @@ export function minClipQualityScore(): number {
   return 8;
 }
 
+/** Runtime status for /api/health and startup logs (Railway Vision QA). */
+export function getVisionQaStatus(): {
+  ready: boolean;
+  clipVisionGate: boolean;
+  sceneCriticalReview: boolean;
+  minScore: number;
+  llmKeyConfigured: boolean;
+  llmProvider: "openai" | "forge" | "none";
+  hint: string;
+} {
+  const llmKeyConfigured = Boolean(ENV.forgeApiKey);
+  const clipVisionGate = clipVisionGateEnabled();
+  const sceneCriticalReview = sceneCriticalReviewEnabled();
+  const minScore = minClipQualityScore();
+  const llmProvider = ENV.useOpenAI ? "openai" : llmKeyConfigured ? "forge" : "none";
+  const ready = clipVisionGate && sceneCriticalReview && llmKeyConfigured;
+
+  let hint = "Vision QA active — clips are scored against narration during generation.";
+  if (!llmKeyConfigured) {
+    hint = "Set LLM_API_KEY on Railway (OpenAI key with vision, e.g. gpt-4o) to enable Vision QA.";
+  } else if (!clipVisionGate) {
+    hint = "Clip vision gate disabled — remove ENABLE_CLIP_VISION=false if set.";
+  } else if (!sceneCriticalReview) {
+    hint = "Scene critical review disabled — remove ENABLE_SCENE_CRITICAL_REVIEW=false if set.";
+  }
+
+  return {
+    ready,
+    clipVisionGate,
+    sceneCriticalReview,
+    minScore,
+    llmKeyConfigured,
+    llmProvider,
+    hint,
+  };
+}
+
 /** Check all adopted clips when critical scene review is enabled. */
 export function shouldVisionCheckClip(filePath: string): boolean {
   if (process.env.ENABLE_CLIP_VISION === "false") return false;
@@ -263,7 +300,8 @@ export async function clipPassesVisionGate(
   sceneIndex: number,
   beatIndex: number,
   fastMode: boolean,
-  minScore = 5
+  minScore = 5,
+  visualDescription?: string
 ): Promise<boolean> {
   if (fastMode || !clipVisionGateEnabled() || !shouldVisionCheckClip(clipPath)) return true;
 
@@ -276,7 +314,7 @@ export async function clipPassesVisionGate(
     ? await scoreClipNarrationMatch(
         framePath,
         beatText,
-        undefined,
+        visualDescription,
         videoTitle,
         timeoutMs
       )
