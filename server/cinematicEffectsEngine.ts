@@ -616,7 +616,11 @@ export function selectSpacedScreenLabels(
   return picked;
 }
 
-/** Labels synced to voiceover — years and place names from ~10s, spaced apart. */
+/**
+ * Labels synced to voiceover — years and place names from ~10s, stats from ~5s.
+ * Two-pass selection: years first (normal constraints), then stats slotted into
+ * remaining gaps. This prevents stats from being crowded out by years.
+ */
 export function planVoiceSyncedScreenLabels(
   beats: BeatLabelInput[],
   sceneDuration: number,
@@ -625,7 +629,8 @@ export function planVoiceSyncedScreenLabels(
 ): TimedYearLabel[] {
   if (beats.length === 0 || sceneDuration <= 0) return [];
   const voiceWindows = computeVoiceBeatWindows(beats, sceneDuration, sceneStartSec);
-  const labels: TimedYearLabel[] = [];
+  const yearLabels: TimedYearLabel[] = [];
+  const statLabels: TimedYearLabel[] = [];
   const usedLabels = new Set<string>();
   const timelineEnd = sceneDuration + sceneStartSec;
 
@@ -641,7 +646,7 @@ export function planVoiceSyncedScreenLabels(
       const startTime = yearStartInBeat(beat.text, year, beatStart, beatDur, occurrence);
       if (usedLabels.has(year)) continue;
       usedLabels.add(year);
-      labels.push({
+      yearLabels.push({
         year,
         caption: "",
         displayText: year,
@@ -655,7 +660,7 @@ export function planVoiceSyncedScreenLabels(
       const startTime = termStartInBeat(beat.text, term.label, beatStart, beatDur, term.matchText);
       if (term.label.length < 3) continue;
       usedLabels.add(term.label);
-      labels.push({
+      yearLabels.push({
         year: term.label,
         caption: "",
         displayText: term.label,
@@ -664,17 +669,16 @@ export function planVoiceSyncedScreenLabels(
       });
     }
 
-    // Detect percentages, Euro/dollar amounts, and Dutch statistics voiced in this beat.
-    // These appear as overlay labels exactly when spoken — same timing logic as year labels.
+    // Stats get their own pool — selected in a separate pass so they are never
+    // crowded out by year labels competing for the same timing slot.
     const statText = extractStatFromText(beat.text);
     if (statText && !usedLabels.has(statText)) {
-      // Find voice-sync position: strip symbols to find the numeric token in the beat
       const numericToken = statText.replace(/[€$%,.]/g, "").trim().split(/\s+/)[0] ?? statText;
       const startTime = termStartInBeat(beat.text, numericToken, beatStart, beatDur);
       const endTime = Math.min(startTime + YEAR_LABEL_ON_SCREEN_SEC, timelineEnd - 0.1);
       if (endTime > startTime + 0.35) {
         usedLabels.add(statText);
-        labels.push({
+        statLabels.push({
           year: statText,
           caption: "",
           displayText: statText,
@@ -685,7 +689,34 @@ export function planVoiceSyncedScreenLabels(
     }
   }
 
-  return selectSpacedScreenLabels(labels, timelineEnd);
+  // Pass 1: select year/keyword labels with normal policy (minStart=10s)
+  const pickedYears = selectSpacedScreenLabels(yearLabels, timelineEnd);
+
+  // Pass 2: slot stats into gaps around the picked years.
+  // Stats may appear from 3s (earlier than years, to capture hook statistics).
+  // Stats use a tighter no-overlap gap (display_dur + 1.5s) instead of the full
+  // minGapSec, so they can squeeze between year labels without visual overlap.
+  const STAT_MIN_START_SEC = 3;
+  const STAT_GAP_SEC = YEAR_LABEL_ON_SCREEN_SEC; // 4s — exactly the display duration; prevents true visual overlap
+  const maxStats = Math.max(2, Math.floor(screenLabelMaxPerScene() / 2));
+  const pickedStats: TimedYearLabel[] = [];
+
+  const allPicked = [...pickedYears]; // grows as we add stats
+  for (const stat of [...statLabels].sort((a, b) => a.startTime - b.startTime)) {
+    if (pickedStats.length >= maxStats) break;
+    if (stat.startTime < STAT_MIN_START_SEC) continue;
+    // Stats only need to clear the display-duration gap (4s) to prevent true visual overlap.
+    // This is tighter than the year minGapSec (9s) so stats can fit between year labels.
+    const tooClose = allPicked.some(
+      (p) => Math.abs(p.startTime - stat.startTime) < STAT_GAP_SEC
+    );
+    if (tooClose) continue;
+    const entry = { ...stat };
+    pickedStats.push(entry);
+    allPicked.push(entry);
+  }
+
+  return [...pickedYears, ...pickedStats].sort((a, b) => a.startTime - b.startTime);
 }
 
 function labelTextForEntry(entry: TimedYearLabel): string {
