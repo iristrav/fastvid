@@ -73,6 +73,7 @@ import {
   archivePreferVideoClips,
   framedArchiveStillsEnabled,
   archivePexelsHybridEnabled,
+  vidrushDocumentaryQualityEnabled,
 } from "./sourcingPolicy";
 import {
   isNonDocumentaryVisualHay,
@@ -397,6 +398,10 @@ export function assetPassesBeatMinimum(
     return false;
   }
 
+  if (isClipTitleIrrelevantToBeat(asset, beatText)) {
+    return false;
+  }
+
   if (semantic && semanticVisualMatchingEnabled()) {
     if (!assetMeetsSemanticMinimum(semantic)) return false;
     if (semantic.tier >= 5 && semantic.matchedEntities.length === 0) return false;
@@ -409,7 +414,13 @@ export function assetPassesBeatMinimum(
   const visualHits = countVisualTagHits(asset, requiredTags);
   const sceneEntityHits = countVisualTagHits(asset, [...sceneTags, ...entityTags]);
 
-  const minScore = videoVisualTopic === "geography_urban" ? 36 : Math.max(28, Math.round(topScore * 0.38));
+  const minScore = vidrushDocumentaryQualityEnabled()
+    ? videoVisualTopic === "geography_urban"
+      ? 36
+      : 34
+    : videoVisualTopic === "geography_urban"
+      ? 36
+      : Math.max(28, Math.round(topScore * 0.38));
   if (score < minScore && visualHits < 2) return false;
 
   if ((sceneTags.length > 0 || entityTags.length > 0) && sceneEntityHits === 0 && visualHits < 2) {
@@ -420,8 +431,10 @@ export function assetPassesBeatMinimum(
     return false;
   }
 
-  if (isGenericPeopleAsset(asset) && requiredTags.length >= 2 && visualHits === 0) {
-    return false;
+  if (isGenericPeopleAsset(asset)) {
+    const entities = extractEntitySearchTags(beatText);
+    if (entities.length > 0 && countVisualTagHits(asset, entities) === 0) return false;
+    if (visualHits === 0 && (entities.length > 0 || requiredTags.length >= 2)) return false;
   }
 
   return true;

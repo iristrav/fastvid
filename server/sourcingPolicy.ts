@@ -205,8 +205,17 @@ export function motionGraphicsInVideosEnabled(): boolean {
   return process.env.ENABLE_MOTION_GRAPHICS !== "false";
 }
 
+/** Automatic motion graphics typewriter overlays (default on for all video topics). */
 export function autoMotionGraphicsLayerEnabled(): boolean {
   return process.env.ENABLE_AUTO_MOTION_GRAPHICS !== "false";
+}
+
+/**
+ * Vidrush documentary quality gates — opening B-roll, 3.5s pacing, non-doc filter,
+ * geo consistency, motion-graphics QA. On by default for every topic/subject.
+ */
+export function vidrushDocumentaryQualityEnabled(): boolean {
+  return process.env.ENABLE_VIDRUSH_QUALITY !== "false";
 }
 
 export function maxMotionGraphicsPerVideo(): number {

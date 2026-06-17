@@ -8,7 +8,14 @@ import {
   archiveVisualMaxClipSec,
   archiveVisualMinClipSec,
   curatedArchiveOnlyVisuals,
+  vidrushDocumentaryQualityEnabled,
 } from "./sourcingPolicy";
+import {
+  extractBeatGeoPlaceTags,
+  extractSalientBeatTokens,
+  extractVisualSearchTags,
+  inferVideoVisualTopic,
+} from "./visualBeatTags";
 
 export const VIDRUSH_OPENING_CLIP_SEC = 3.5;
 export const VIDRUSH_STOCK_MIN_CLIP_SEC = 2.5;
@@ -82,6 +89,7 @@ export function vidrushStillPhotoScale(): number {
 }
 
 export function isNonDocumentaryVisualHay(hay: string): boolean {
+  if (!vidrushDocumentaryQualityEnabled()) return false;
   const lower = hay.toLowerCase();
   if (NON_DOC_RE.test(lower)) return true;
   if (/\b(isometric|top.?down)\b/.test(lower) && /\b(city|suburb|neighborhood|housing)\b/.test(lower)) {
@@ -119,6 +127,9 @@ export function inferBeatGeoRegion(beatText: string, videoTitle?: string): BeatG
   if (wantsNl && wantsUs) return "both";
   if (wantsNl) return "nl";
   if (wantsUs) return "us";
+  const geoTags = extractBeatGeoPlaceTags(beatText);
+  if (geoTags.some((t) => /netherlands|holland|dutch|nederland|amsterdam/.test(t))) return "nl";
+  if (geoTags.some((t) => /america|usa|united states|american/.test(t))) return "us";
   return inferPrimaryGeoFromTitle(videoTitle);
 }
 
@@ -162,31 +173,66 @@ export function isWrongRegionForSegmentLock(
   return false;
 }
 
-/** Opening beat queries — real drone/video B-roll only, geo from title. */
+/** Opening beat queries — real drone/video B-roll, topic- and geo-aware for any subject. */
 export function buildVidrushOpeningQueries(videoTitle?: string, beatText?: string): string[] {
+  const hay = `${videoTitle ?? ""} ${beatText ?? ""}`.trim();
+  const topic = inferVideoVisualTopic(videoTitle, beatText);
+  const queries: string[] = [];
+
+  if (topic === "wwii") {
+    queries.push(
+      "world war ii archival footage establishing video",
+      "1930s europe city street documentary broll",
+      "historical war documentary aerial video",
+      "black white archive city footage video"
+    );
+  } else if (topic === "cold_war") {
+    queries.push(
+      "cold war era city documentary footage video",
+      "berlin wall archival broll video",
+      "soviet bloc urban street documentary video"
+    );
+  }
+
   const primary = inferPrimaryGeoFromTitle(videoTitle);
   if (primary === "nl" || (primary === "both" && !US_TITLE_RE.test(beatText ?? ""))) {
-    return [
+    queries.push(
       "netherlands aerial drone landscape video",
       "amsterdam canals drone broll",
       "dutch city cycling street video",
       "netherlands windmill countryside video",
-      "rotterdam skyline timelapse video",
-    ];
-  }
-  if (primary === "us") {
-    return [
+      "rotterdam skyline timelapse video"
+    );
+  } else if (primary === "us") {
+    queries.push(
       "united states city aerial drone video",
       "american downtown skyline timelapse",
       "usa urban street traffic broll",
-      "new york city aerial video",
-    ];
+      "new york city aerial video"
+    );
   }
-  return [
-    "city aerial drone establishing shot video",
+
+  const geoTags = extractBeatGeoPlaceTags(beatText ?? hay);
+  for (const tag of geoTags.slice(0, 3)) {
+    queries.push(`${tag} aerial drone documentary video`, `${tag} city street broll video`);
+  }
+
+  const visualTags = extractVisualSearchTags(hay, videoTitle).slice(0, 5);
+  const salient = extractSalientBeatTokens(beatText ?? videoTitle ?? "").slice(0, 4);
+  for (const tag of [...new Set([...visualTags, ...salient])]) {
+    if (tag.length >= 4 && !/^(the|and|that|this|with|from|have|were|been)$/.test(tag)) {
+      queries.push(`${tag} documentary establishing shot video`, `${tag} aerial broll video`);
+    }
+  }
+
+  queries.push(
+    "documentary establishing shot aerial video",
+    "city aerial drone landscape video",
     "urban skyline timelapse video",
-    "downtown street broll video",
-  ];
+    "downtown street documentary broll video"
+  );
+
+  return [...new Set(queries.map((q) => q.trim()).filter((q) => q.length > 8))].slice(0, 14);
 }
 
 export function clipPassesVidrushOpeningGate(
@@ -195,6 +241,7 @@ export function clipPassesVidrushOpeningGate(
   beatText = "",
   videoTitle?: string
 ): boolean {
+  if (!vidrushDocumentaryQualityEnabled()) return true;
   if (isNonDocumentaryClipPath(clipPath, sourceQuery, beatText)) return false;
   const hay = `${sourceQuery} ${pathBasename(clipPath)} ${beatText} ${videoTitle ?? ""}`.toLowerCase();
   if (isWrongRegionForSegmentLock(hay, inferPrimaryGeoFromTitle(videoTitle))) return false;

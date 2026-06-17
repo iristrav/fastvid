@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildVidrushOpeningQueries,
   clampVidrushClipDuration,
   enforceMontageDurationFloors,
   inferBeatGeoRegion,
@@ -46,6 +47,18 @@ describe("vidrushQuality", () => {
   it("caps montage clip count for short voice scenes", () => {
     expect(maxMontageClipsForVoiceSec(23)).toBeLessThanOrEqual(8);
     expect(maxMontageClipsForVoiceSec(8)).toBeGreaterThanOrEqual(2);
+  });
+
+  it("builds topic-aware opening queries for any subject", () => {
+    const wwii = buildVidrushOpeningQueries("Hitler: Rise of the Third Reich", "Germany was in turmoil");
+    expect(wwii.some((q) => /world war|archival|1930s/i.test(q))).toBe(true);
+
+    const nl = buildVidrushOpeningQueries("Why the Netherlands is the Opposite of the U.S.", "Welcome to the Netherlands");
+    expect(nl.some((q) => /netherlands|amsterdam|dutch/i.test(q))).toBe(true);
+
+    const space = buildVidrushOpeningQueries("How NASA Built the Moon Rocket", "The Saturn V was enormous");
+    expect(space.some((q) => /saturn|documentary|aerial|establishing/i.test(q))).toBe(true);
+    expect(space.length).toBeGreaterThanOrEqual(4);
   });
 });
 

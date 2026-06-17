@@ -127,7 +127,7 @@ import {
   scriptGuidedClipsEnabled,
 } from "./scriptGuidedClipFinder";
 import { clipPassesVisionGate, clipVisionGateEnabled } from "./visualQualityGate";
-import { curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archivePexelsFallbackEnabled, archivePexelsHybridEnabled, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, maxPipelineWallClockMin, qualityOverSpeedEnabled, visualStageWallClockMin, pipelineMinutesPerVideoMinute, autoMotionGraphicsLayerEnabled } from "./sourcingPolicy";
+import { curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archivePexelsFallbackEnabled, archivePexelsHybridEnabled, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, maxPipelineWallClockMin, qualityOverSpeedEnabled, visualStageWallClockMin, pipelineMinutesPerVideoMinute, autoMotionGraphicsLayerEnabled, vidrushDocumentaryQualityEnabled } from "./sourcingPolicy";
 import { targetVideoDurationMinutes } from "@shared/videoLengths";
 import {
   getCrossVideoExcludeAssetIds,
@@ -492,6 +492,7 @@ function effectiveBeatSec(): number {
 }
 
 function effectiveMinClipSec(): number {
+  if (vidrushDocumentaryQualityEnabled()) return vidrushMinClipSec();
   return curatedArchiveOnlyVisuals() ? archiveVisualMinClipSec() : VIDRUSH_CLIP_MIN_SEC;
 }
 
@@ -500,7 +501,7 @@ function effectiveMaxClipSec(): number {
 }
 /** Soft dissolves for archive/documentary montage (reference-doc style). */
 function montageXfadeSec(avgClipDur = archiveVisualBeatSec()): number {
-  if (autoMotionGraphicsLayerEnabled()) {
+  if (autoMotionGraphicsLayerEnabled() || vidrushDocumentaryQualityEnabled()) {
     return standardMontageCrossfadeSec();
   }
   if (curatedArchiveOnlyVisuals() || documentaryStyleEnabled()) {
