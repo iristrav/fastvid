@@ -127,6 +127,7 @@ import {
   scriptGuidedClipsEnabled,
 } from "./scriptGuidedClipFinder";
 import { clipPassesVisionGate, clipVisionGateEnabled } from "./visualQualityGate";
+import { validateGeneratedClipPlan } from "./clipPlanValidation";
 import { curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archivePexelsFallbackEnabled, archivePexelsHybridEnabled, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, maxPipelineWallClockMin, qualityOverSpeedEnabled, visualStageWallClockMin, pipelineMinutesPerVideoMinute, autoMotionGraphicsLayerEnabled, vidrushDocumentaryQualityEnabled } from "./sourcingPolicy";
 import { targetVideoDurationMinutes } from "@shared/videoLengths";
 import {
@@ -7891,6 +7892,36 @@ interface SceneBeat {
   visualDescription?: string;
 }
 
+function runGeneratedClipValidation(
+  sceneIndex: number,
+  beatIndex: number,
+  clipPath: string,
+  beats: SceneBeat[],
+  sourceQuery: string,
+  beatTextFallback: string,
+  videoTitle?: string
+): void {
+  const beat =
+    beats.find((b) => b.index === beatIndex) ??
+    (beats.length > 0 ? beats[Math.abs(beatIndex) % beats.length] : undefined);
+  const beatText = beat?.text ?? beatTextFallback;
+  const intent = beat?.visualIntent ?? fallbackVisualIntent(beatText);
+  validateGeneratedClipPlan({
+    sceneIndex,
+    beatIndex,
+    clipPath,
+    visualDescription: beat?.visualDescription ?? intent.visual_description ?? intent.visual_intent,
+    visualIntent: intent,
+    keywords: beat?.keywords?.length
+      ? beat.keywords
+      : buildRelevanceKeywordsFromIntent(intent, beatText, [], videoTitle),
+    searchQuery: beat?.searchQuery || sourceQuery || intent.search_query || intent.primary_keyword,
+    beatText,
+    powerWord: beat?.powerWord ?? intent.priority_subject,
+    highlightWords: beat?.keywords,
+  });
+}
+
 interface VisualDedupState {
   usedPaths: Set<string>;
   usedPexelsIds: Set<number>;
@@ -14151,6 +14182,19 @@ async function backfillComposeMontageIfShort(
   let coverage = await estimateBalancedMontageCoverageSec(safeClips, composeBeatDurations, outDur);
   if (coverage >= minCoverage) return;
 
+  const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
+  const backfillBeats = buildSceneBeats(
+    scene,
+    outDur,
+    Math.max(minClipsNeeded + 2, Math.ceil(outDur / effectiveBeatSec())),
+    videoTitle,
+    scenePersons,
+    dedup.sentenceKeywords,
+    dedup.sentenceIntents,
+    dedup.visualDirectorScenes
+  );
+  let composeBackfillIdx = 0;
+
   const pushClip = async (clipPath: string, holdSec: number): Promise<boolean> => {
     if (
       scene.index === 0 &&
@@ -14177,6 +14221,16 @@ async function backfillComposeMontageIfShort(
       `Scene ${scene.index} backfill`
     );
     if (actualHold == null) return false;
+    const beatIdx = composeBackfillIdx++;
+    runGeneratedClipValidation(
+      scene.index,
+      beatIdx,
+      clipPath,
+      backfillBeats,
+      "",
+      backfillBeats[beatIdx % Math.max(1, backfillBeats.length)]?.text ?? scene.text.slice(0, 220),
+      videoTitle
+    );
     dedup.usedContentKeys.add(key);
     seenKeys.add(key);
     safeClips.push(clipPath);
@@ -14186,7 +14240,6 @@ async function backfillComposeMontageIfShort(
     return true;
   };
 
-  const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
   await backfillArchiveMontageFromPool(
     scene,
     workDir,
@@ -14488,6 +14541,15 @@ async function fetchArchiveSentenceMontage(
       `Scene ${scene.index} zin ${beatIndex}`
     );
     if (actualHold == null) return false;
+    runGeneratedClipValidation(
+      scene.index,
+      beatIndex,
+      clipPath,
+      beats,
+      sourceQuery,
+      beats.find((b) => b.index === beatIndex)?.text ?? scene.text.slice(0, 220),
+      videoTitle
+    );
     dedup.usedContentKeys.add(key);
     clips.push(clipPath);
     beatDurations.push(actualHold);
@@ -14629,6 +14691,15 @@ async function ensureArchiveMontageVoiceCoverage(
       `Scene ${scene.index} zin ${beatIndex}`
     );
     if (actualHold == null) return false;
+    runGeneratedClipValidation(
+      scene.index,
+      beatIndex,
+      clipPath,
+      beats,
+      "",
+      beats.find((b) => b.index === beatIndex)?.text ?? scene.text.slice(0, 220),
+      videoTitle
+    );
     dedup.usedContentKeys.add(key);
     clips.push(clipPath);
     beatDurations.push(actualHold);
