@@ -201,8 +201,8 @@ export async function reviewSceneCritical(
     );
     motionOverlayIssues = auditMotionGraphicsCoverage(beatInputs, mgPlan.overlays);
     for (const o of mgPlan.overlays) {
-      if (o.position !== "bottom_left") {
-        motionOverlayIssues.push(`overlay "${o.text}" position must be bottom_left`);
+      if (o.position !== "center") {
+        motionOverlayIssues.push(`overlay "${o.text}" position must be center`);
       }
     }
     if (mgPlan.transition !== "crossfade") {
@@ -214,7 +214,7 @@ export async function reviewSceneCritical(
       );
     } else if (mgPlan.overlays.length > 0) {
       console.log(
-        `[SceneCritical] Scene ${sceneIndex}: ${mgPlan.overlays.length} overlay(s) planned (bottom_left, crossfade)`
+        `[SceneCritical] Scene ${sceneIndex}: ${mgPlan.overlays.length} overlay(s) planned (center, crossfade)`
       );
     }
   }

@@ -228,7 +228,7 @@ export function motionGraphicsInVideosEnabled(): boolean {
   return process.env.ENABLE_MOTION_GRAPHICS !== "false";
 }
 
-/** Automatic motion graphics typewriter overlays (off by default — set ENABLE_ONSCREEN_TEXT=true). */
+/** Automatic V3 text overlays — centered typewriter highlights (set ENABLE_ONSCREEN_TEXT=true). */
 export function autoMotionGraphicsLayerEnabled(): boolean {
   if (!onScreenTextEnabled()) return false;
   return process.env.ENABLE_AUTO_MOTION_GRAPHICS !== "false";

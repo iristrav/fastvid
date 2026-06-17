@@ -1976,61 +1976,33 @@ async function resolveBeatClipFast(
   for (const q of queries.slice(0, pexCap)) {
     const off = beat.index + sceneIndex + queries.indexOf(q);
     const tag = `b${beat.index}_fast`;
-    if (PEXELS_API_KEY) {
-      try {
-        const paths = await withTimeout(
-          fetchPexelsClips(
-            q,
-            clipFetchDur,
-            workDir,
-            sceneIndex,
-            1,
-            undefined,
-            true,
-            tag,
-            dedup.usedPexelsIds,
-            off,
-            1,
-            beat.text,
-            videoTitle
-          ),
-          10_000,
-          `fast Pexels scene ${sceneIndex} beat ${beat.index}`
-        );
-        const adopted = await adoptFastStockClip(paths, q, dedup, beat, sceneIndex, videoTitle);
-        if (adopted) {
-          console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: fast Pexels "${q}"`);
-          return adopted;
-        }
-      } catch {
-        /* try Pixabay or next query */
+    if (!licensedStockFootageEnabled()) continue;
+    try {
+      const paths = await withTimeout(
+        fetchLicensedStockClips({
+          query: q,
+          clipDuration: clipFetchDur,
+          workDir,
+          sceneIndex,
+          count: 1,
+          fileTag: tag,
+          pexelsExcludeIds: dedup.usedPexelsIds,
+          pixabayExcludeIds: dedup.usedPixabayIds,
+          candidateOffset: off,
+          pexelsDownloadRetries: 1,
+          beatText: beat.text,
+          videoTitle,
+        }),
+        10_000,
+        `fast stock scene ${sceneIndex} beat ${beat.index}`
+      );
+      const adopted = await adoptFastStockClip(paths, q, dedup, beat, sceneIndex, videoTitle);
+      if (adopted) {
+        console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: fast stock (Pexels/Pixabay) "${q}"`);
+        return adopted;
       }
-    }
-    if (PIXABAY_API_KEY) {
-      try {
-        const paths = await withTimeout(
-          fetchPixabayClips(
-            q,
-            clipFetchDur,
-            workDir,
-            sceneIndex,
-            1,
-            `${tag}_pix`,
-            true,
-            dedup.usedPixabayIds,
-            off
-          ),
-          10_000,
-          `fast Pixabay scene ${sceneIndex} beat ${beat.index}`
-        );
-        const adopted = await adoptFastStockClip(paths, q, dedup, beat, sceneIndex, videoTitle);
-        if (adopted) {
-          console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: fast Pixabay "${q}"`);
-          return adopted;
-        }
-      } catch {
-        /* try next script query */
-      }
+    } catch {
+      /* try next script query */
     }
   }
 
@@ -3385,95 +3357,24 @@ async function fetchBrollClips(
   for (let qi = 0; qi < brollQueries.length && results.length < 3; qi++) {
     const query = simplifyStockSearchWord(brollQueries[qi] ?? "", brollQueries[qi] ?? "", true);
     if (!query || query.length < 3 || isBlockedStockQuery(query)) continue;
-    if (!PEXELS_API_KEY) {
-      if (PIXABAY_API_KEY) {
-        const pixPaths = await fetchPixabayClips(
-          query, clipDuration, workDir, sceneIndex, 1, `scene_${sceneIndex}_broll_pix`, true, undefined, qi
-        );
-        if (pixPaths[0]) {
-          results.push(pixPaths[0]);
-          console.log(`[Pipeline] Scene ${sceneIndex}: B-roll Pixabay: "${query}"`);
-        }
-      }
-      continue;
-    }
     try {
-      const searchUrl = `https://api.pexels.com/videos/search?query=${encodeURIComponent(query)}&per_page=5&size=large&orientation=landscape&min_duration=4`;
-      const searchResp = await withTimeout(
-        fetch(searchUrl, { headers: { Authorization: PEXELS_API_KEY } }),
-        10_000,
-        `B-roll Pexels search scene ${sceneIndex} query "${query}"`
-      );
-      if (!searchResp.ok) {
-        if (PIXABAY_API_KEY) {
-          const pixPaths = await fetchPixabayClips(
-            query, clipDuration, workDir, sceneIndex, 1, `scene_${sceneIndex}_broll_pix`, true, undefined, qi
-          );
-          if (pixPaths[0]) {
-            results.push(pixPaths[0]);
-            console.log(`[Pipeline] Scene ${sceneIndex}: B-roll Pixabay: "${query}"`);
-            continue;
-          }
-        }
-        continue;
-      }
-      const searchData = await searchResp.json() as {
-        videos?: Array<{ id: number; duration: number; video_files: Array<{ width: number; height: number; link: string }> }>;
-      };
-      if (!searchData.videos?.length) {
-        if (PIXABAY_API_KEY) {
-          const pixPaths = await fetchPixabayClips(
-            query, clipDuration, workDir, sceneIndex, 1, `scene_${sceneIndex}_broll_pix`, true, undefined, qi
-          );
-          if (pixPaths[0]) {
-            results.push(pixPaths[0]);
-            console.log(`[Pipeline] Scene ${sceneIndex}: B-roll Pixabay: "${query}"`);
-            continue;
-          }
-        }
-        continue;
-      }
-      const candidates = searchData.videos
-        .filter(v => v.duration >= 3 && !excludeVideoIds?.has(v.id))
-        .slice(0, 3);
-      for (const video of candidates) {
-        if (results.length >= 3) break;
-        const videoFile = video.video_files
-          .filter(f => f.width >= 1280 && f.width <= 1920)
-          .sort((a, b) => b.width - a.width)[0]
-          || video.video_files.filter(f => f.width <= 1920).sort((a, b) => b.width - a.width)[0];
-        if (!videoFile?.link) continue;
-        const rawPath = path.join(workDir, `scene_${sceneIndex}_broll_vid${video.id}_raw.mp4`);
-        const outPath = path.join(workDir, `scene_${sceneIndex}_broll_vid${video.id}.mp4`);
-        try {
-          const dlResp = await fetchWithTimeout(videoFile.link, 8_000, `B-roll download scene ${sceneIndex}`);
-          if (!dlResp.ok) continue;
-          const buffer = Buffer.from(await dlResp.arrayBuffer());
-          if (buffer.length < 50_000) continue;
-          fs.writeFileSync(rawPath, buffer);
-          const startSec = (sceneIndex + qi) * 0.29 % 1.0;
-          const trimmed = await trimDownloadedStockClip(
-            rawPath,
-            outPath,
-            clipDuration,
-            video.duration,
-            `B-roll trim scene ${sceneIndex}`,
-            startSec
-          );
-          try { fs.unlinkSync(rawPath); } catch { /* ignore */ }
-          if (trimmed) {
-            excludeVideoIds?.add(video.id);
-            results.push(outPath);
-            console.log(`[Pipeline] Scene ${sceneIndex}: B-roll clip added: "${query}"`);
-          }
-        } catch (err) {
-          console.warn(`[Pipeline] B-roll clip failed for scene ${sceneIndex} query "${query}":`, (err as Error).message);
-          try { fs.unlinkSync(rawPath); } catch { /* ignore */ }
-        }
-        break; // one clip per query
+      const paths = await fetchLicensedStockClips({
+        query,
+        clipDuration,
+        workDir,
+        sceneIndex,
+        count: 1,
+        fileTag: `scene_${sceneIndex}_broll`,
+        pixabaySuffix: `scene_${sceneIndex}_broll_pix`,
+        candidateOffset: qi,
+        pexelsExcludeIds: excludeVideoIds,
+      });
+      if (paths[0]) {
+        results.push(paths[0]);
+        console.log(`[Pipeline] Scene ${sceneIndex}: B-roll stock (Pexels/Pixabay): "${query}"`);
       }
     } catch (err) {
-      console.warn(`[Pipeline] B-roll search failed for scene ${sceneIndex} query "${query}":`, (err as Error).message);
+      console.warn(`[Pipeline] B-roll stock failed for scene ${sceneIndex} query "${query}":`, (err as Error).message);
     }
   }
   return results;
@@ -3630,6 +3531,105 @@ async function fetchPixabayClips(
   }
 
   return results;
+}
+
+/** Pexels + Pixabay in parallel for the same query (equal priority, merged candidates). */
+async function fetchLicensedStockClips(opts: {
+  query: string;
+  clipDuration: number;
+  workDir: string;
+  sceneIndex: number;
+  count?: number;
+  fileTag: string;
+  extraQueries?: string[];
+  strictQueries?: boolean;
+  pexelsExcludeIds?: Set<number>;
+  pixabayExcludeIds?: Set<number>;
+  candidateOffset?: number;
+  pexelsDownloadRetries?: number;
+  beatText?: string;
+  videoTitle?: string;
+  pixabaySuffix?: string;
+}): Promise<string[]> {
+  const count = opts.count ?? 1;
+  const tasks: Promise<string[]>[] = [];
+  if (PEXELS_API_KEY) {
+    tasks.push(
+      fetchPexelsClips(
+        opts.query,
+        opts.clipDuration,
+        opts.workDir,
+        opts.sceneIndex,
+        count,
+        opts.extraQueries,
+        opts.strictQueries ?? true,
+        opts.fileTag,
+        opts.pexelsExcludeIds,
+        opts.candidateOffset ?? 0,
+        opts.pexelsDownloadRetries ?? 3,
+        opts.beatText,
+        opts.videoTitle
+      )
+    );
+  }
+  if (PIXABAY_API_KEY) {
+    tasks.push(
+      fetchPixabayClips(
+        opts.query,
+        opts.clipDuration,
+        opts.workDir,
+        opts.sceneIndex,
+        count,
+        opts.pixabaySuffix ?? `${opts.fileTag}_pix`,
+        opts.strictQueries ?? true,
+        opts.pixabayExcludeIds,
+        opts.candidateOffset ?? 0
+      )
+    );
+  }
+  if (!tasks.length) return [];
+  const settled = await Promise.allSettled(tasks);
+  const merged: string[] = [];
+  for (const r of settled) {
+    if (r.status === "fulfilled") merged.push(...r.value);
+  }
+  return merged;
+}
+
+function makeLicensedStockFetch(
+  query: string,
+  clipDuration: number,
+  workDir: string,
+  sceneIndex: number,
+  fileTag: string,
+  dedup: VisualDedupState,
+  candidateOffset: number,
+  count = 1,
+  extra?: {
+    extraQueries?: string[];
+    beatText?: string;
+    videoTitle?: string;
+    pixTag?: string;
+    pexelsDownloadRetries?: number;
+  }
+): () => Promise<string[]> {
+  return () =>
+    fetchLicensedStockClips({
+      query,
+      clipDuration,
+      workDir,
+      sceneIndex,
+      count,
+      fileTag,
+      extraQueries: extra?.extraQueries,
+      pexelsExcludeIds: dedup.usedPexelsIds,
+      pixabayExcludeIds: dedup.usedPixabayIds,
+      candidateOffset,
+      pexelsDownloadRetries: extra?.pexelsDownloadRetries ?? dedup.perf.pexelsDownloadRetries,
+      beatText: extra?.beatText,
+      videoTitle: extra?.videoTitle,
+      pixabaySuffix: extra?.pixTag,
+    });
 }
 
 /** Encode a still image to MP4 with Ken Burns; motion graphics, gray mat, or documentary blur-fill. */
@@ -4338,32 +4338,23 @@ async function fetchMuskGoldenStockBeat(
   for (let i = 0; i < maxTries; i++) {
     const gq = GOLDEN_MUSK_QUERIES[(start + i) % GOLDEN_MUSK_QUERIES.length];
     if (isBlockedStockQuery(gq)) continue;
-    const golden = await fetchPexelsClips(
-      gq, clipFetchDur, workDir, sceneIndex, 2, [gq], true,
-      `b${beat.index}_golden`, dedup.usedPexelsIds, beat.index + sceneIndex + i,
-      dedup.perf.pexelsDownloadRetries
-    );
+    const golden = await fetchLicensedStockClips({
+      query: gq,
+      clipDuration: clipFetchDur,
+      workDir,
+      sceneIndex,
+      count: 2,
+      fileTag: `b${beat.index}_golden`,
+      extraQueries: [gq],
+      pexelsExcludeIds: dedup.usedPexelsIds,
+      pixabayExcludeIds: dedup.usedPixabayIds,
+      candidateOffset: beat.index + sceneIndex + i,
+      pexelsDownloadRetries: dedup.perf.pexelsDownloadRetries,
+    });
     const gClip = await adoptClip(
       golden, dedup, sceneIndex, beat.index, beat.text, workDir, gq, adoptOpts
     );
     if (gClip) return gClip;
-    if (PIXABAY_API_KEY) {
-      const pix = await fetchPixabayClips(
-        gq,
-        clipFetchDur,
-        workDir,
-        sceneIndex,
-        2,
-        `b${beat.index}_golden_pix`,
-        true,
-        dedup.usedPixabayIds,
-        beat.index + sceneIndex + i
-      );
-      const pClip = await adoptClip(
-        pix, dedup, sceneIndex, beat.index, beat.text, workDir, gq, adoptOpts
-      );
-      if (pClip) return pClip;
-    }
   }
   return null;
 }
@@ -11065,36 +11056,22 @@ async function fetchUniqueStockForBeatInner(
     perf.minimizeStockFootage ? 1 : perf.fastStockMode ? 3 : 5
   );
 
-  const pexFetch = (query: string, t: string, off: number) => () =>
-    fetchPexelsClips(
-      query, clipFetchDur, workDir, sceneIndex, perf.fastStockMode ? 2 : 3, [query], true, t,
-      dedup.usedPexelsIds, off, dedup.perf.pexelsDownloadRetries
-    );
-  const pixFetch = (query: string, t: string, off: number) => () =>
-    fetchPixabayClips(query, clipFetchDur, workDir, sceneIndex, 2, t, true, dedup.usedPixabayIds, off);
+  const pexFetch = (query: string, t: string, off: number) =>
+    makeLicensedStockFetch(query, clipFetchDur, workDir, sceneIndex, t, dedup, off, perf.fastStockMode ? 2 : 3, {
+      extraQueries: [query],
+    });
 
   for (let qi = 0; qi < stockQueries.length; qi++) {
     const q = stockQueries[qi];
     const off = offset + qi * 2;
-    if (PEXELS_API_KEY) {
-      clip = await tryStockSources(
-        [{ query: q, fetch: pexFetch(q, `${tag}_pex`, off) }],
-        dedup, sceneIndex, beat.index, beat.text, workDir, "unique Pexels fallback", looseOpts
-      );
-      if (clip) {
-        markLicensedStockBeatUsed(dedup);
-        return clip;
-      }
-    }
-    if (PIXABAY_API_KEY) {
-      clip = await tryStockSources(
-        [{ query: q, fetch: pixFetch(q, `${tag}_pix`, off + 40) }],
-        dedup, sceneIndex, beat.index, beat.text, workDir, "unique Pixabay fallback", looseOpts
-      );
-      if (clip) {
-        markLicensedStockBeatUsed(dedup);
-        return clip;
-      }
+    if (!licensedStockFootageEnabled()) continue;
+    clip = await tryStockSources(
+      [{ query: q, fetch: pexFetch(q, tag, off) }],
+      dedup, sceneIndex, beat.index, beat.text, workDir, "Pexels/Pixabay stock", looseOpts
+    );
+    if (clip) {
+      markLicensedStockBeatUsed(dedup);
+      return clip;
     }
   }
   return null;
@@ -11350,26 +11327,24 @@ async function fetchLastResortRealClip(
       ? 4
       : 6;
   for (const q of uniqueQueries.slice(0, stockTryCap)) {
-    const pex = await fetchPexelsClips(
-      q, clipFetchDur, workDir, sceneIndex, 2, undefined, true, `${tag}_pex`,
-      dedup.usedPexelsIds, candidateOffset, dedup.perf.pexelsDownloadRetries,
-      beat.text, videoTitle
-    );
-    let clip = await adoptClip(pex, dedup, sceneIndex, beat.index, beat.text, workDir, q, adoptOpts);
+    const paths = await fetchLicensedStockClips({
+      query: q,
+      clipDuration: clipFetchDur,
+      workDir,
+      sceneIndex,
+      count: 2,
+      fileTag: `${tag}_stock`,
+      pexelsExcludeIds: dedup.usedPexelsIds,
+      pixabayExcludeIds: dedup.usedPixabayIds,
+      candidateOffset,
+      pexelsDownloadRetries: dedup.perf.pexelsDownloadRetries,
+      beatText: beat.text,
+      videoTitle,
+    });
+    let clip = await adoptClip(paths, dedup, sceneIndex, beat.index, beat.text, workDir, q, adoptOpts);
     if (clip) {
       markLicensedStockBeatUsed(dedup);
-      console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: last-resort Pexels "${q}"`);
-      return clip;
-    }
-
-    const pix = await fetchPixabayClips(
-      q, clipFetchDur, workDir, sceneIndex, 2, `${tag}_pix`, true,
-      dedup.usedPixabayIds, candidateOffset
-    );
-    clip = await adoptClip(pix, dedup, sceneIndex, beat.index, beat.text, workDir, q, adoptOpts);
-    if (clip) {
-      markLicensedStockBeatUsed(dedup);
-      console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: last-resort Pixabay "${q}"`);
+      console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: last-resort stock (Pexels/Pixabay) "${q}"`);
       return clip;
     }
   }
@@ -12093,35 +12068,21 @@ async function researchBeatClipUnified(
           const personQueries = buildPersonStockVideoQueries(primary, beat, scene, videoTitle).slice(0, 3);
           const out: MediaCandidate[] = [];
           for (const q of personQueries) {
-            if (PEXELS_API_KEY) {
-              const pex = await fetchPexelsClips(
-                q,
-                clipFetchDur,
-                workDir,
-                sceneIndex,
-                1,
-                undefined,
-                true,
-                `${tag}_research`,
-                dedup.usedPexelsIds,
-                candidateOffset,
-                perf.pexelsDownloadRetries
-              );
-              out.push(...toCandidates(pex, q, "pexels", true));
-            }
-            if (PIXABAY_API_KEY) {
-              const pix = await fetchPixabayClips(
-                q,
-                clipFetchDur,
-                workDir,
-                sceneIndex,
-                1,
-                `${tag}_research`,
-                true,
-                dedup.usedPixabayIds,
-                candidateOffset
-              );
-              out.push(...toCandidates(pix, q, "pixabay", true));
+            const paths = await fetchLicensedStockClips({
+              query: q,
+              clipDuration: clipFetchDur,
+              workDir,
+              sceneIndex,
+              count: 1,
+              fileTag: `${tag}_research`,
+              pexelsExcludeIds: dedup.usedPexelsIds,
+              pixabayExcludeIds: dedup.usedPixabayIds,
+              candidateOffset,
+              pexelsDownloadRetries: perf.pexelsDownloadRetries,
+            });
+            for (const p of paths) {
+              const src = /_pix|pixabay/i.test(p) ? "pixabay" : "pexels";
+              out.push(...toCandidates([p], q, src, true));
             }
           }
           return out;
@@ -12129,32 +12090,29 @@ async function researchBeatClipUnified(
       });
     } else {
       for (const q of queries.slice(0, 2)) {
-        if (PEXELS_API_KEY) {
-          tasks.push({
-            run: async () => {
-              const paths = await pexFetch(q, `${tag}_research`, candidateOffset, muskTopic ? 2 : 1)();
-              return toCandidates(paths, q, "pexels", true);
-            },
-          });
-        }
-        if (PIXABAY_API_KEY) {
-          tasks.push({
-            run: async () => {
-              const paths = await fetchPixabayClips(
-                q,
-                clipFetchDur,
-                workDir,
-                sceneIndex,
-                1,
-                `${tag}_research`,
-                true,
-                dedup.usedPixabayIds,
-                candidateOffset
-              );
-              return toCandidates(paths, q, "pixabay", true);
-            },
-          });
-        }
+        if (!licensedStockFootageEnabled()) continue;
+        tasks.push({
+          run: async () => {
+            const paths = await fetchLicensedStockClips({
+              query: q,
+              clipDuration: clipFetchDur,
+              workDir,
+              sceneIndex,
+              count: muskTopic ? 2 : 1,
+              fileTag: `${tag}_research`,
+              pexelsExcludeIds: dedup.usedPexelsIds,
+              pixabayExcludeIds: dedup.usedPixabayIds,
+              candidateOffset,
+              pexelsDownloadRetries: perf.pexelsDownloadRetries,
+            });
+            const out: MediaCandidate[] = [];
+            for (const p of paths) {
+              const src = /_pix|pixabay/i.test(p) ? "pixabay" : "pexels";
+              out.push(...toCandidates([p], q, src, true));
+            }
+            return out;
+          },
+        });
       }
     }
   }
@@ -12585,13 +12543,10 @@ async function fetchBeatClip(
   }
 
   const pexCount = muskTopic ? 4 : 2;
-  const pexFetch = (query: string, t: string, off: number, count = pexCount) =>
-    () => fetchPexelsClips(
-      query, clipFetchDur, workDir, sceneIndex, count, [query], true, t,
-      dedup.usedPexelsIds, off, perf.pexelsDownloadRetries
-    );
-  const pixFetch = (query: string, t: string, off: number) =>
-    () => fetchPixabayClips(query, clipFetchDur, workDir, sceneIndex, 2, t, true, dedup.usedPixabayIds, off);
+  const stockFetch = (query: string, t: string, off: number, count = pexCount) =>
+    makeLicensedStockFetch(query, clipFetchDur, workDir, sceneIndex, t, dedup, off, count, {
+      extraQueries: [query],
+    });
   const brollFetch = (query: string) =>
     () => fetchBrollClips([query], clipFetchDur, workDir, sceneIndex, dedup.usedPexelsIds);
 
@@ -12605,7 +12560,7 @@ async function fetchBeatClip(
     personName,
     videoTitle,
     adoptOpts,
-    pexFetch,
+    stockFetch,
     candidateOffset,
     tag,
     muskTopic
@@ -12695,11 +12650,7 @@ async function fetchBeatClip(
         },
         ...HERO_MUSK_QUERIES.map((hq, hi) => ({
           query: hq,
-          fetch: pexFetch(hq, `${tag}_hero`, candidateOffset + hi, 6),
-        })),
-        ...HERO_MUSK_QUERIES.slice(0, 3).map((hq, hi) => ({
-          query: hq,
-          fetch: pixFetch(hq, `${tag}_hero_px`, candidateOffset + hi + 20),
+          fetch: stockFetch(hq, `${tag}_hero`, candidateOffset + hi, 6),
         })),
       ],
       dedup, sceneIndex, beat.index, beat.text, workDir, "hero", heroOpts
@@ -12718,7 +12669,7 @@ async function fetchBeatClip(
     clip = await tryStockSources(
       OPENING_MUSK_QUERIES.map((oq, oi) => ({
         query: oq,
-        fetch: pexFetch(oq, `${tag}_open`, candidateOffset + oi, 4),
+        fetch: stockFetch(oq, `${tag}_open`, candidateOffset + oi, 4),
       })),
       dedup, sceneIndex, beat.index, beat.text, workDir, "opening", heroOpts
     );
@@ -12777,9 +12728,9 @@ async function fetchBeatClip(
     clip = await tryStockSources(
       topicQueries.slice(0, perf.maxTopicQueries).map((tq, ti) => ({
         query: tq,
-        fetch: pexFetch(tq, `${tag}_topic`, candidateOffset + ti, 2),
+        fetch: stockFetch(tq, `${tag}_topic`, candidateOffset + ti, 2),
       })),
-      dedup, sceneIndex, beat.index, beat.text, workDir, "topic Pexels", adoptOpts
+      dedup, sceneIndex, beat.index, beat.text, workDir, "topic stock", adoptOpts
     );
     if (clip) {
       markLicensedStockBeatUsed(dedup);
@@ -12799,8 +12750,7 @@ async function fetchBeatClip(
         fetch: () => fetchNasaVideoClips(golden, clipFetchDur, workDir, sceneIndex, 1),
       });
     }
-    goldenFetchers.push({ query: golden, fetch: pexFetch(golden, `${tag}_golden`, candidateOffset + 1) });
-    goldenFetchers.push({ query: golden, fetch: pixFetch(golden, `${tag}_golden`, candidateOffset + 1) });
+    goldenFetchers.push({ query: golden, fetch: stockFetch(golden, `${tag}_golden`, candidateOffset + 1) });
     clip = await tryStockSources(goldenFetchers, dedup, sceneIndex, beat.index, beat.text, workDir, "golden", adoptOpts);
     if (clip) { dedup.globalBeatIndex++; return clip; }
   }
@@ -12818,12 +12768,14 @@ async function fetchBeatClip(
     if (clip) { dedup.globalBeatIndex++; return clip; }
   }
 
-  // 5) Pixabay + archival sources (archival only when Pexels/Pixabay exhausted)
-  clip = await tryStockSources(
-    [{ query: q, fetch: pixFetch(q, `${tag}_pix`, candidateOffset) }],
-    dedup, sceneIndex, beat.index, beat.text, workDir, "Pixabay", adoptOpts
-  );
-  if (clip) { dedup.globalBeatIndex++; return clip; }
+  // 5) Licensed stock (Pexels + Pixabay parallel)
+  if (canUseLicensedStockBeat(dedup)) {
+    clip = await tryStockSources(
+      [{ query: q, fetch: stockFetch(q, tag, candidateOffset) }],
+      dedup, sceneIndex, beat.index, beat.text, workDir, "Pexels/Pixabay", adoptOpts
+    );
+    if (clip) { dedup.globalBeatIndex++; return clip; }
+  }
 
   if (perf.enableNasa && spaceTopic && stockVisualCategory(q) === "rocket") {
     clip = await tryStockSources(
@@ -12865,8 +12817,8 @@ async function fetchBeatClip(
 
   const looseAdopt: VisualAdoptOptions = { ...adoptOpts, requireBeatMatch: false };
   clip = await tryStockSources(
-    fallbackQueries.map((fq, fi) => ({ query: fq, fetch: pexFetch(fq, `${tag}_fb`, candidateOffset + fi, 1) })),
-    dedup, sceneIndex, beat.index, beat.text, workDir, "fallback Pexels", looseAdopt
+    fallbackQueries.map((fq, fi) => ({ query: fq, fetch: stockFetch(fq, `${tag}_fb`, candidateOffset + fi, 1) })),
+    dedup, sceneIndex, beat.index, beat.text, workDir, "fallback stock", looseAdopt
   );
   if (clip) { dedup.globalBeatIndex++; return clip; }
 
@@ -12934,42 +12886,25 @@ async function fetchBeatPersonStockVideo(
   return withTimeout(
     (async () => {
       for (const q of queries) {
-        if (PEXELS_API_KEY) {
-          const pex = await fetchPexelsClips(
-            q,
-            clipFetchDur,
-            workDir,
-            sceneIndex,
-            1,
-            undefined,
-            true,
-            tag,
-            dedup.usedPexelsIds,
-            off,
-            dedup.perf.pexelsDownloadRetries
-          );
-          let clip = await adoptClip(
-            pex, dedup, sceneIndex, beat.index, beat.text, workDir, q, personAdopt
-          );
-          if (isRealVideoClip(clip)) {
-            if (canUseLicensedStockBeat(dedup)) markLicensedStockBeatUsed(dedup);
-            console.log(
-              `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: person stock (${reason}) — Pexels "${q}"`
-            );
-            return clip;
-          }
-        }
-
-        const pix = await fetchPixabayClips(
-          q, clipFetchDur, workDir, sceneIndex, 1, tag, true, dedup.usedPixabayIds, off
-        );
-        clip = await adoptClip(
-          pix, dedup, sceneIndex, beat.index, beat.text, workDir, q, personAdopt
+        const paths = await fetchLicensedStockClips({
+          query: q,
+          clipDuration: clipFetchDur,
+          workDir,
+          sceneIndex,
+          count: 1,
+          fileTag: tag,
+          pexelsExcludeIds: dedup.usedPexelsIds,
+          pixabayExcludeIds: dedup.usedPixabayIds,
+          candidateOffset: off,
+          pexelsDownloadRetries: dedup.perf.pexelsDownloadRetries,
+        });
+        let clip = await adoptClip(
+          paths, dedup, sceneIndex, beat.index, beat.text, workDir, q, personAdopt
         );
         if (isRealVideoClip(clip)) {
           if (canUseLicensedStockBeat(dedup)) markLicensedStockBeatUsed(dedup);
           console.log(
-            `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: person stock (${reason}) — Pixabay "${q}"`
+            `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: person stock (${reason}) — Pexels/Pixabay "${q}"`
           );
           return clip;
         }
@@ -13040,45 +12975,26 @@ async function fetchBeatStockFallback(
   return withTimeout(
     (async () => {
       for (const q of unique) {
-        if (PEXELS_API_KEY) {
-          const pex = await fetchPexelsClips(
-            q,
-            clipFetchDur,
-            workDir,
-            sceneIndex,
-            1,
-            undefined,
-            true,
-            tag,
-            dedup.usedPexelsIds,
-            off,
-            dedup.perf.pexelsDownloadRetries
-          );
-          let clip = await adoptClip(
-            pex, dedup, sceneIndex, beat.index, beat.text, workDir, q, loose
-          );
-          if (clip && !isStillPhotoClip(clip) && !isPipelineFallbackClip(clip)) {
-            if (canUseLicensedStockBeat(dedup)) markLicensedStockBeatUsed(dedup);
-            dedup.usedPexelsAnchors.set(q, (dedup.usedPexelsAnchors.get(q) ?? 0) + 1);
-            console.log(
-              `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: stock fallback (${reason}) — Pexels "${q}"`
-            );
-            return clip;
-          }
-        }
-
-        const pix = await fetchPixabayClips(
-          q, clipFetchDur, workDir, sceneIndex, 1, tag, true, dedup.usedPixabayIds, off
-        );
-        clip = await adoptClip(
-          pix, dedup, sceneIndex, beat.index, beat.text, workDir, q, loose
+        const paths = await fetchLicensedStockClips({
+          query: q,
+          clipDuration: clipFetchDur,
+          workDir,
+          sceneIndex,
+          count: 1,
+          fileTag: tag,
+          pexelsExcludeIds: dedup.usedPexelsIds,
+          pixabayExcludeIds: dedup.usedPixabayIds,
+          candidateOffset: off,
+          pexelsDownloadRetries: dedup.perf.pexelsDownloadRetries,
+        });
+        let clip = await adoptClip(
+          paths, dedup, sceneIndex, beat.index, beat.text, workDir, q, loose
         );
         if (clip && !isStillPhotoClip(clip) && !isPipelineFallbackClip(clip)) {
           if (canUseLicensedStockBeat(dedup)) markLicensedStockBeatUsed(dedup);
-          // Visual variety enforcer: mark this anchor as used so the next beat picks a different one
           dedup.usedPexelsAnchors.set(q, (dedup.usedPexelsAnchors.get(q) ?? 0) + 1);
           console.log(
-            `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: stock fallback (${reason}) — Pixabay "${q}"`
+            `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: stock fallback (${reason}) — Pexels/Pixabay "${q}"`
           );
           return clip;
         }
@@ -13338,21 +13254,10 @@ async function resolveBeatClipTurbo(
   const beatQueries = buildBeatVisualQueryList(beat.text, scene, videoTitle, scenePersons, maxQ);
   const tag = `b${beat.index}`;
   const candidateOffset = beat.index * 3 + sceneIndex + dedup.globalBeatIndex;
-  const pexFetch = (query: string, t: string, off: number, count = 1) =>
-    () =>
-      fetchPexelsClips(
-        query,
-        clipFetchDur,
-        workDir,
-        sceneIndex,
-        count,
-        [query],
-        true,
-        t,
-        dedup.usedPexelsIds,
-        off,
-        dedup.perf.pexelsDownloadRetries
-      );
+  const stockFetch = (query: string, t: string, off: number, count = 1) =>
+    makeLicensedStockFetch(query, clipFetchDur, workDir, sceneIndex, t, dedup, off, count, {
+      extraQueries: [query],
+    });
 
   if (realFootageFirstEnabled()) {
     const primary = await beatPrimaryFetch(
@@ -13401,7 +13306,7 @@ async function resolveBeatClipTurbo(
     turboAdopt,
     tag,
     muskTopic,
-    pexFetch,
+    stockFetch,
     candidateOffset
   );
   const topicHay = [beat.text, videoTitle, scene.text].filter(Boolean).join(" ");
@@ -13823,7 +13728,13 @@ async function applyVideoBeatTextOverlay(
   workDir: string,
   holdSec: number
 ): Promise<string> {
-  if (yearsOnlyOnScreen() || !onScreenTextEnabled() || !facelessSubtitlesEnabled() || !isRealVideoFootageClip(clipPath)) {
+  if (
+    autoMotionGraphicsLayerEnabled() ||
+    yearsOnlyOnScreen() ||
+    !onScreenTextEnabled() ||
+    !facelessSubtitlesEnabled() ||
+    !isRealVideoFootageClip(clipPath)
+  ) {
     return clipPath;
   }
   return burnFacelessTextOnVideoClip(
@@ -14245,59 +14156,33 @@ async function adoptPexelsBeatClipFallback(
 
   for (let qi = 0; qi < queries.length; qi++) {
     const q = queries[qi]!;
-    if (PEXELS_API_KEY) {
-      try {
-        const paths = await withTimeout(
-          fetchPexelsClips(
-            q,
-            holdSec,
-            workDir,
-            scene.index,
-            1,
-            queries.slice(qi + 1, qi + 4),
-            true,
-            `b${beat.index}_pex`,
-            dedup.usedPexelsIds,
-            beat.index + scene.index + qi,
-            dedup.perf.pexelsDownloadRetries ?? 2,
-            beat.text,
-            videoTitle
-          ),
-          28_000,
-          `Pexels fallback scene ${scene.index} beat ${beat.index}`
-        );
-        if (await adoptStockPaths(paths, q, "Pexels")) return true;
-      } catch (err) {
-        console.warn(
-          `[Pipeline] Pexels fallback "${q}" failed:`,
-          (err as Error).message?.slice(0, 100)
-        );
-      }
-    }
-    if (PIXABAY_API_KEY) {
-      try {
-        const paths = await withTimeout(
-          fetchPixabayClips(
-            q,
-            holdSec,
-            workDir,
-            scene.index,
-            1,
-            `b${beat.index}_pix`,
-            true,
-            dedup.usedPixabayIds,
-            beat.index + scene.index + qi
-          ),
-          28_000,
-          `Pixabay fallback scene ${scene.index} beat ${beat.index}`
-        );
-        if (await adoptStockPaths(paths, q, "Pixabay")) return true;
-      } catch (err) {
-        console.warn(
-          `[Pipeline] Pixabay fallback "${q}" failed:`,
-          (err as Error).message?.slice(0, 100)
-        );
-      }
+    if (!licensedStockFootageEnabled()) continue;
+    try {
+      const paths = await withTimeout(
+        fetchLicensedStockClips({
+          query: q,
+          clipDuration: holdSec,
+          workDir,
+          sceneIndex: scene.index,
+          count: 1,
+          fileTag: `b${beat.index}_stock`,
+          extraQueries: queries.slice(qi + 1, qi + 4),
+          pexelsExcludeIds: dedup.usedPexelsIds,
+          pixabayExcludeIds: dedup.usedPixabayIds,
+          candidateOffset: beat.index + scene.index + qi,
+          pexelsDownloadRetries: dedup.perf.pexelsDownloadRetries ?? 2,
+          beatText: beat.text,
+          videoTitle,
+        }),
+        28_000,
+        `stock fallback scene ${scene.index} beat ${beat.index}`
+      );
+      if (await adoptStockPaths(paths, q, "Pexels/Pixabay")) return true;
+    } catch (err) {
+      console.warn(
+        `[Pipeline] Stock fallback "${q}" failed:`,
+        (err as Error).message?.slice(0, 100)
+      );
     }
   }
   return false;
@@ -14590,53 +14475,29 @@ async function adoptVidrushOpeningBeat(
         }
         return false;
       };
-      if (PEXELS_API_KEY) {
-        try {
-          const paths = await withTimeout(
-            fetchPexelsClips(
-              q,
-              openingHold,
-              workDir,
-              scene.index,
-              1,
-              openingQueries.slice(qi + 1, qi + 3),
-              true,
-              `open_b${beat.index}`,
-              dedup.usedPexelsIds,
-              beat.index + qi,
-              dedup.perf.pexelsDownloadRetries ?? 2,
-              beat.text,
-              videoTitle
-            ),
-            32_000,
-            "Vidrush opening Pexels"
-          );
-          if (await adoptOpeningPaths(paths, "Pexels")) return true;
-        } catch (err) {
-          console.warn(`[Pipeline] Opening Pexels "${q}" failed:`, (err as Error).message?.slice(0, 80));
-        }
-      }
-      if (PIXABAY_API_KEY) {
-        try {
-          const paths = await withTimeout(
-            fetchPixabayClips(
-              q,
-              openingHold,
-              workDir,
-              scene.index,
-              1,
-              `open_b${beat.index}_pix`,
-              true,
-              dedup.usedPixabayIds,
-              beat.index + qi
-            ),
-            32_000,
-            "Vidrush opening Pixabay"
-          );
-          if (await adoptOpeningPaths(paths, "Pixabay")) return true;
-        } catch (err) {
-          console.warn(`[Pipeline] Opening Pixabay "${q}" failed:`, (err as Error).message?.slice(0, 80));
-        }
+      try {
+        const paths = await withTimeout(
+          fetchLicensedStockClips({
+            query: q,
+            clipDuration: openingHold,
+            workDir,
+            sceneIndex: scene.index,
+            count: 1,
+            fileTag: `open_b${beat.index}`,
+            extraQueries: openingQueries.slice(qi + 1, qi + 3),
+            pexelsExcludeIds: dedup.usedPexelsIds,
+            pixabayExcludeIds: dedup.usedPixabayIds,
+            candidateOffset: beat.index + qi,
+            pexelsDownloadRetries: dedup.perf.pexelsDownloadRetries ?? 2,
+            beatText: beat.text,
+            videoTitle,
+          }),
+          32_000,
+          "Vidrush opening stock"
+        );
+        if (await adoptOpeningPaths(paths, "Pexels/Pixabay")) return true;
+      } catch (err) {
+        console.warn(`[Pipeline] Opening stock "${q}" failed:`, (err as Error).message?.slice(0, 80));
       }
     }
   } else {

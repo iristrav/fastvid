@@ -15,7 +15,7 @@ describe("validateGeneratedClipPlan", () => {
   it("passes when all required fields are present", () => {
     const plan = validateGeneratedClipPlan(base);
     expect(plan.transition).toBe("crossfade");
-    expect(plan.overlay_position).toBe("bottom_left");
+    expect(plan.overlay_position).toBe("center");
     expect(plan.visual_description).toContain("cyclists");
     expect(plan.image_prompt).toBe("amsterdam cyclists street");
   });

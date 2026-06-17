@@ -10,7 +10,7 @@ import {
 } from "./motionGraphicsLayer";
 import type { ScriptVisualIntentEntry } from "./scriptVisualKeywords";
 
-export const STANDARD_OVERLAY_POSITION = "bottom_left" as const;
+export const STANDARD_OVERLAY_POSITION = "center" as const;
 
 export type GeneratedClipPlanCheck = {
   sceneIndex: number;
@@ -78,8 +78,8 @@ export function validateGeneratedClipPlan(input: GeneratedClipPlanInput): Genera
   if (transition !== "crossfade") errors.push(`invalid transition: ${transition} (expected crossfade)`);
 
   const overlay_position = STANDARD_OVERLAY_POSITION;
-  if (overlay_position !== "bottom_left") {
-    errors.push(`invalid overlay position: ${overlay_position} (expected bottom_left)`);
+  if (overlay_position !== "center") {
+    errors.push(`invalid overlay position: ${overlay_position} (expected center)`);
   }
 
   const beatText = input.beatText?.trim() ?? "";
@@ -93,8 +93,8 @@ export function validateGeneratedClipPlan(input: GeneratedClipPlanInput): Genera
       }
     ).map(() => ({ position: overlay_position }));
     for (const overlay of overlayPlans) {
-      if (overlay.position !== "bottom_left") {
-        errors.push(`overlay position must be bottom_left (got ${overlay.position})`);
+      if (overlay.position !== "center") {
+        errors.push(`overlay position must be center (got ${overlay.position})`);
       }
     }
   }
@@ -108,7 +108,7 @@ export function validateGeneratedClipPlan(input: GeneratedClipPlanInput): Genera
 
   console.log(
     `[ClipValidation] OK scene ${input.sceneIndex} beat ${input.beatIndex} "${clipBasename}" ` +
-      `(visual_description present, ${keywords.length} keyword(s), image_prompt present, crossfade, bottom_left)`
+      `(visual_description present, ${keywords.length} keyword(s), image_prompt present, crossfade, center)`
   );
 
   return {
