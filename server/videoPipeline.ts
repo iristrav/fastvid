@@ -9621,92 +9621,147 @@ const TOPIC_ANCHOR_RULES: Array<{ pattern: RegExp; anchors: string[] }> = [
  * Rules are ordered from most-specific to most-generic. First match wins.
  * Each rule has a unique `key` so topic-switches can be detected and logged.
  */
-const BEAT_TOPIC_OVERRIDE_RULES: Array<{ key: string; pattern: RegExp; anchors: string[] }> = [
+/**
+ * eventTerm: a short Pexels-friendly keyword representing this event/situation.
+ * Used in geo-event combo queries: "${geoName} ${eventTerm}" (e.g. "Netherlands flood").
+ */
+const BEAT_TOPIC_OVERRIDE_RULES: Array<{ key: string; eventTerm: string; pattern: RegExp; anchors: string[] }> = [
   // ── Historical armed conflicts ───────────────────────────────────────────────
-  { key: "wwii",       pattern: /\b(world war (ii|two|2)|ww2|wwii|nazi|gestapo|d-day|normandy|stalingrad|blitzkrieg|luftwaffe|auschwitz|holocaust|concentration camp|liberation|nazi occupation|occupied (france|europe|netherlands|poland)|german forces|german troops|third reich)\b/i, anchors: ["World War II", "wartime Europe", "WWII soldiers"] },
-  { key: "wwi",        pattern: /\b(world war (i|one|1)|ww1|wwi|trench warfare|western front|verdun|the great war|armistice)\b/i, anchors: ["World War I", "trench warfare", "historical soldiers"] },
-  { key: "holocaust",  pattern: /\b(holocaust|shoah|concentration camp|auschwitz|genocide|jewish persecution|deportation train)\b/i, anchors: ["Holocaust memorial", "concentration camp history"] },
-  { key: "cold_war",   pattern: /\b(cold war|berlin wall|iron curtain|nuclear standoff|arms race|cuban missile|soviet union|ussr|kgb|nato vs)\b/i, anchors: ["Berlin Wall", "Cold War era", "nuclear missiles"] },
-  { key: "vietnam_war",pattern: /\b(vietnam war|viet cong|napalm|ho chi minh trail|saigon|tet offensive|my lai)\b/i, anchors: ["Vietnam War", "jungle warfare"] },
-  { key: "civil_war",  pattern: /\b(civil war|confederate|union army|gettysburg|slavery abolition|abraham lincoln|emancipation)\b/i, anchors: ["American Civil War", "historical battle"] },
-  { key: "colonialism",pattern: /\b(coloni(al|alism|ization)|dutch east indies|british empire|empire (collapsed|fell|ended)|decoloni|independence movement|liberation from)\b/i, anchors: ["colonialism history", "independence movement"] },
+  { key: "wwii",        eventTerm: "WWII",             pattern: /\b(world war (ii|two|2)|ww2|wwii|nazi|gestapo|d-day|normandy|stalingrad|blitzkrieg|luftwaffe|auschwitz|holocaust|concentration camp|liberation|nazi occupation|occupied (france|europe|netherlands|poland)|german forces|german troops|third reich)\b/i, anchors: ["World War II", "wartime Europe", "WWII soldiers"] },
+  { key: "wwi",         eventTerm: "World War I",      pattern: /\b(world war (i|one|1)|ww1|wwi|trench warfare|western front|verdun|the great war|armistice)\b/i, anchors: ["World War I", "trench warfare", "historical soldiers"] },
+  { key: "holocaust",   eventTerm: "Holocaust",         pattern: /\b(holocaust|shoah|concentration camp|auschwitz|genocide|jewish persecution|deportation train)\b/i, anchors: ["Holocaust memorial", "concentration camp history"] },
+  { key: "cold_war",    eventTerm: "Cold War",          pattern: /\b(cold war|berlin wall|iron curtain|nuclear standoff|arms race|cuban missile|soviet union|ussr|kgb|nato vs)\b/i, anchors: ["Berlin Wall", "Cold War era", "nuclear missiles"] },
+  { key: "vietnam_war", eventTerm: "Vietnam War",       pattern: /\b(vietnam war|viet cong|napalm|ho chi minh trail|saigon|tet offensive|my lai)\b/i, anchors: ["Vietnam War", "jungle warfare"] },
+  { key: "civil_war",   eventTerm: "civil war",         pattern: /\b(civil war|confederate|union army|gettysburg|slavery abolition|abraham lincoln|emancipation)\b/i, anchors: ["American Civil War", "historical battle"] },
+  { key: "colonialism", eventTerm: "colonialism",       pattern: /\b(coloni(al|alism|ization)|dutch east indies|british empire|empire (collapsed|fell|ended)|decoloni|independence movement|liberation from)\b/i, anchors: ["colonialism history", "independence movement"] },
   // ── Modern conflicts & geopolitics ──────────────────────────────────────────
-  { key: "war_modern", pattern: /\b(invasion|military offensive|airstrike|drone strike|refugee(s)? flee|ceasefire|warzone|frontline|troops (advance|retreat)|missile (strike|attack))\b/i, anchors: ["military conflict", "warzone", "military soldiers"] },
-  { key: "terrorism",  pattern: /\b(terror(ist|ism)|suicide bomb|isis|al-qaeda|jihadist|radicali[sz]ation|bomb attack|mass shooting)\b/i, anchors: ["security forces", "terrorism memorial", "city aftermath"] },
+  { key: "war_modern",  eventTerm: "military conflict", pattern: /\b(invasion|military offensive|airstrike|drone strike|refugee(s)? flee|ceasefire|warzone|frontline|troops (advance|retreat)|missile (strike|attack))\b/i, anchors: ["military conflict", "warzone", "military soldiers"] },
+  { key: "terrorism",   eventTerm: "terrorism",         pattern: /\b(terror(ist|ism)|suicide bomb|isis|al-qaeda|jihadist|radicali[sz]ation|bomb attack|mass shooting)\b/i, anchors: ["security forces", "terrorism memorial", "city aftermath"] },
   // ── Disasters & crises ───────────────────────────────────────────────────────
-  { key: "pandemic",   pattern: /\b(pandemic|covid|coronavirus|lockdown|quarantine|vaccine rollout|mask mandate|hospital overwhelmed|icu capacity|contact tracing)\b/i, anchors: ["pandemic mask crowd", "hospital emergency", "vaccine queue"] },
-  { key: "flood",      pattern: /\b(flood(ing|s|ed)?|inundation|storm surge|levee breach|overflowed (river|banks)|dikes (breached|failed)|watersnood)\b/i, anchors: ["flood disaster", "flood waters", "emergency evacuation"] },
-  { key: "earthquake", pattern: /\b(earthquake|seismic|richter|tremor|aftershock|rubble (collapse|rescue)|rescue (teams|workers) (search|dig))\b/i, anchors: ["earthquake destruction", "rescue workers rubble"] },
-  { key: "wildfire",   pattern: /\b(wildfire|forest fire|bushfire|burning homes|evacuat(e|ion) (fire|blaze)|fire (swept|engulf))\b/i, anchors: ["wildfire forest", "burning landscape"] },
-  { key: "hurricane",  pattern: /\b(hurricane|typhoon|cyclone|category [1-5]|storm surge|tropical storm|wind (gust|damage))\b/i, anchors: ["hurricane storm", "tropical storm damage"] },
-  { key: "drought",    pattern: /\b(drought|famine|crop failure|water scarcity|dry (riverbeds?|reservoirs?)|food (crisis|shortage))\b/i, anchors: ["drought cracked earth", "famine", "dry riverbed"] },
+  { key: "pandemic",    eventTerm: "pandemic",          pattern: /\b(pandemic|covid|coronavirus|lockdown|quarantine|vaccine rollout|mask mandate|hospital overwhelmed|icu capacity|contact tracing)\b/i, anchors: ["pandemic mask crowd", "hospital emergency", "vaccine queue"] },
+  { key: "flood",       eventTerm: "flood",             pattern: /\b(flood(ing|s|ed)?|inundation|storm surge|levee breach|overflowed (river|banks)|dikes (breached|failed)|watersnood)\b/i, anchors: ["flood disaster", "flood waters", "emergency evacuation"] },
+  { key: "earthquake",  eventTerm: "earthquake",        pattern: /\b(earthquake|seismic|richter|tremor|aftershock|rubble (collapse|rescue)|rescue (teams|workers) (search|dig))\b/i, anchors: ["earthquake destruction", "rescue workers rubble"] },
+  { key: "wildfire",    eventTerm: "wildfire",          pattern: /\b(wildfire|forest fire|bushfire|burning homes|evacuat(e|ion) (fire|blaze)|fire (swept|engulf))\b/i, anchors: ["wildfire forest", "burning landscape"] },
+  { key: "hurricane",   eventTerm: "hurricane",         pattern: /\b(hurricane|typhoon|cyclone|category [1-5]|storm surge|tropical storm|wind (gust|damage))\b/i, anchors: ["hurricane storm", "tropical storm damage"] },
+  { key: "drought",     eventTerm: "drought",           pattern: /\b(drought|famine|crop failure|water scarcity|dry (riverbeds?|reservoirs?)|food (crisis|shortage))\b/i, anchors: ["drought cracked earth", "famine", "dry riverbed"] },
   // ── Politics & society ───────────────────────────────────────────────────────
-  { key: "protest",    pattern: /\b(protest(s|ers?)|demonstrat(ion|ors?)|riot(s|ers?)|uprising|civil unrest|marched (through|on)|took to the streets|crowd (chant|gather))\b/i, anchors: ["protest crowd street", "demonstration march"] },
-  { key: "election",   pattern: /\b(election(s)?|referendum|ballot|voting booth|polls (opened|closed)|election (night|results)|voter (turnout|fraud)|campaign (rally|trail))\b/i, anchors: ["election voting booth", "democracy ballot", "political rally"] },
-  { key: "immigration",pattern: /\b(immigrat|migrant(s)?|refugee(s)?|asylum seeker|border crossing|crossing the (sea|mediterranean|channel)|people smuggling|detention center)\b/i, anchors: ["refugee camp", "migrants border", "immigration crossing"] },
-  { key: "poverty",    pattern: /\b(poverty|extreme poverty|inequality|slum|homeless (camp|encampment)|food bank|bread line|social exclusion)\b/i, anchors: ["poverty urban", "inequality", "homeless camp"] },
-  { key: "strike",     pattern: /\b(strike (action|workers)|workers (walk(ed)? out|downed tools)|general strike|picket line|labor dispute|union (action|rally))\b/i, anchors: ["workers strike", "picket line", "labor protest"] },
+  { key: "protest",     eventTerm: "protest",           pattern: /\b(protest(s|ers?)|demonstrat(ion|ors?)|riot(s|ers?)|uprising|civil unrest|marched (through|on)|took to the streets|crowd (chant|gather))\b/i, anchors: ["protest crowd street", "demonstration march"] },
+  { key: "election",    eventTerm: "election",          pattern: /\b(election(s)?|referendum|ballot|voting booth|polls (opened|closed)|election (night|results)|voter (turnout|fraud)|campaign (rally|trail))\b/i, anchors: ["election voting booth", "democracy ballot", "political rally"] },
+  { key: "immigration", eventTerm: "immigration",       pattern: /\b(immigrat|migrant(s)?|refugee(s)?|asylum seeker|border crossing|crossing the (sea|mediterranean|channel)|people smuggling|detention center)\b/i, anchors: ["refugee camp", "migrants border", "immigration crossing"] },
+  { key: "poverty",     eventTerm: "poverty",           pattern: /\b(poverty|extreme poverty|inequality|slum|homeless (camp|encampment)|food bank|bread line|social exclusion)\b/i, anchors: ["poverty urban", "inequality", "homeless camp"] },
+  { key: "strike",      eventTerm: "workers strike",    pattern: /\b(strike (action|workers)|workers (walk(ed)? out|downed tools)|general strike|picket line|labor dispute|union (action|rally))\b/i, anchors: ["workers strike", "picket line", "labor protest"] },
   // ── Environment & energy ─────────────────────────────────────────────────────
-  { key: "climate_evt",pattern: /\b(climate (summit|conference|protest|march|emergency|crisis)|paris agreement|cop\d+|carbon (tax|neutral|footprint)|net zero|emissions (cut|target))\b/i, anchors: ["climate protest", "renewable energy", "climate summit"] },
-  { key: "oil_spill",  pattern: /\b(oil spill|deepwater|tanker (leak|disaster)|marine (pollution|disaster)|ecological disaster)\b/i, anchors: ["oil spill pollution", "ocean pollution"] },
-  { key: "nuclear",    pattern: /\b(nuclear (plant|reactor|meltdown|accident|fallout|waste)|chernobyl|fukushima|atomic (bomb|test))\b/i, anchors: ["nuclear power plant", "nuclear disaster"] },
+  { key: "climate_evt", eventTerm: "climate",           pattern: /\b(climate (summit|conference|protest|march|emergency|crisis)|paris agreement|cop\d+|carbon (tax|neutral|footprint)|net zero|emissions (cut|target))\b/i, anchors: ["climate protest", "renewable energy", "climate summit"] },
+  { key: "oil_spill",   eventTerm: "oil spill",         pattern: /\b(oil spill|deepwater|tanker (leak|disaster)|marine (pollution|disaster)|ecological disaster)\b/i, anchors: ["oil spill pollution", "ocean pollution"] },
+  { key: "nuclear",     eventTerm: "nuclear disaster",  pattern: /\b(nuclear (plant|reactor|meltdown|accident|fallout|waste)|chernobyl|fukushima|atomic (bomb|test))\b/i, anchors: ["nuclear power plant", "nuclear disaster"] },
   // ── Technology events ────────────────────────────────────────────────────────
-  { key: "space_event",pattern: /\b(rocket launch|moon landing|astronaut (aboard|walks?|orbit)|space (shuttle|station|mission|exploration)|nasa (launch|mission)|orbit(ing|ed))\b/i, anchors: ["rocket launch", "astronaut space", "space station"] },
-  { key: "ai_tech",    pattern: /\b(artificial intelligence|machine learning|neural network|large language model|chatgpt|generative ai|ai (revolution|takes over))\b/i, anchors: ["artificial intelligence", "technology data center"] },
+  { key: "space_event", eventTerm: "space",             pattern: /\b(rocket launch|moon landing|astronaut (aboard|walks?|orbit)|space (shuttle|station|mission|exploration)|nasa (launch|mission)|orbit(ing|ed))\b/i, anchors: ["rocket launch", "astronaut space", "space station"] },
+  { key: "ai_tech",     eventTerm: "artificial intelligence", pattern: /\b(artificial intelligence|machine learning|neural network|large language model|chatgpt|generative ai|ai (revolution|takes over))\b/i, anchors: ["artificial intelligence", "technology data center"] },
   // ── Economics ────────────────────────────────────────────────────────────────
-  { key: "financial_crisis", pattern: /\b(financial crisis|market crash|recession|bank (collapsed|bailout|run)|lehman|wall street crash|stock market (crash|plunge)|economic collapse)\b/i, anchors: ["stock market crash", "financial crisis", "bank queue"] },
-  { key: "inflation",  pattern: /\b(inflation|cost of living (crisis|surge)|price(s)? (soar|spike|skyrocket)|hyperinflation|purchasing power)\b/i, anchors: ["inflation shopping prices", "cost of living"] },
+  { key: "financial_crisis", eventTerm: "financial crisis", pattern: /\b(financial crisis|market crash|recession|bank (collapsed|bailout|run)|lehman|wall street crash|stock market (crash|plunge)|economic collapse)\b/i, anchors: ["stock market crash", "financial crisis", "bank queue"] },
+  { key: "inflation",   eventTerm: "inflation",         pattern: /\b(inflation|cost of living (crisis|surge)|price(s)? (soar|spike|skyrocket)|hyperinflation|purchasing power)\b/i, anchors: ["inflation shopping prices", "cost of living"] },
   // ── Social milestones ────────────────────────────────────────────────────────
-  { key: "civil_rights",pattern: /\b(civil rights|segregation|martin luther king|rosa parks|apartheid|racial inequality|black lives matter|racial justice)\b/i, anchors: ["civil rights march", "racial equality protest"] },
-  { key: "womens_rights",pattern: /\b(women('s)? rights|suffragette|gender equality|#metoo|feminist movement|equal pay|women (vote|suffrage))\b/i, anchors: ["women rights march", "gender equality protest"] },
+  { key: "civil_rights",  eventTerm: "civil rights",   pattern: /\b(civil rights|segregation|martin luther king|rosa parks|apartheid|racial inequality|black lives matter|racial justice)\b/i, anchors: ["civil rights march", "racial equality protest"] },
+  { key: "womens_rights", eventTerm: "women rights",   pattern: /\b(women('s)? rights|suffragette|gender equality|#metoo|feminist movement|equal pay|women (vote|suffrage))\b/i, anchors: ["women rights march", "gender equality protest"] },
   // ── Sports events ────────────────────────────────────────────────────────────
-  { key: "olympics",   pattern: /\b(olympic games?|olympics|paralympic|gold medal|olympic (torch|flame|ceremony)|tokyo \d{4}|paris \d{4})\b/i, anchors: ["Olympic Games", "sports competition stadium"] },
-  { key: "world_cup",  pattern: /\b(world cup (final|match|tournament)|fifa world cup|champion(s)? league (final|match))\b/i, anchors: ["football World Cup", "stadium crowd"] },
+  { key: "olympics",    eventTerm: "Olympics",          pattern: /\b(olympic games?|olympics|paralympic|gold medal|olympic (torch|flame|ceremony)|tokyo \d{4}|paris \d{4})\b/i, anchors: ["Olympic Games", "sports competition stadium"] },
+  { key: "world_cup",   eventTerm: "World Cup",         pattern: /\b(world cup (final|match|tournament)|fifa world cup|champion(s)? league (final|match))\b/i, anchors: ["football World Cup", "stadium crowd"] },
 ];
 
 /**
- * Detects whether the current beat text signals a specific event/situation topic
- * that should override the video title's geographic anchor.
- *
- * Returns { key, anchors } when a strong beat-level topic is detected, null otherwise.
+ * Detects whether the current beat text signals a specific event/situation topic.
+ * Returns { key, eventTerm, anchors } when a strong beat-level topic is detected, null otherwise.
  */
-function detectBeatTopicOverride(beatText: string): { key: string; anchors: string[] } | null {
+function detectBeatTopicOverride(
+  beatText: string
+): { key: string; eventTerm: string; anchors: string[] } | null {
   const lower = beatText.toLowerCase();
   for (const rule of BEAT_TOPIC_OVERRIDE_RULES) {
     if (rule.pattern.test(lower)) {
-      return { key: rule.key, anchors: rule.anchors };
+      return { key: rule.key, eventTerm: rule.eventTerm, anchors: rule.anchors };
     }
   }
   return null;
 }
 
 /**
- * Auto-detects the primary location/topic anchor from a video title + beat text.
- *
- * Priority order:
- * 1. Beat text is checked FIRST against BEAT_TOPIC_OVERRIDE_RULES for strong
- *    event/situation signals (WWII, flood, election, protest, etc.).
- *    If found → use those anchors, ignoring geo context.
- *    This is the "topic switch detector": a Netherlands video beat about
- *    "German occupation" will get WWII anchors, not Amsterdam canals.
- * 2. Combined title + beat text is checked against TOPIC_ANCHOR_RULES
- *    for country/city/generic topic context.
- * 3. No match → return [] (no anchors; Pexels falls back to beat.searchQuery).
- *
- * Returns an ordered list of Pexels search terms (most specific first).
+ * Detects a geographic context from combined title + beat text.
+ * Returns { geoName, anchors } where geoName is the most specific geo label
+ * (e.g. "Netherlands", "Tokyo") used to build geo-event combo queries.
  */
-function extractVideoTopicAnchors(videoTitle: string, beatText = ""): string[] {
-  // Step 1: beat-first event/situation override
-  const override = detectBeatTopicOverride(beatText);
-  if (override) return override.anchors;
-
-  // Step 2: country/city/generic context from combined text
+function detectGeoContext(
+  videoTitle: string,
+  beatText: string
+): { geoName: string; anchors: string[] } | null {
   const hay = `${videoTitle} ${beatText}`.toLowerCase();
   for (const rule of TOPIC_ANCHOR_RULES) {
     if (rule.pattern.test(hay)) {
-      return rule.anchors;
+      // anchors[0] is always the most-specific geo label (city or country name)
+      return { geoName: rule.anchors[0], anchors: rule.anchors };
     }
   }
+  return null;
+}
+
+/**
+ * Builds geo-event combo anchors when BOTH a geo context and an event are detected.
+ *
+ * Result order (most specific → least specific):
+ *   1. "${geoName} ${eventTerm}"   — e.g. "Netherlands flood"
+ *   2. "${geoName} ${eventTerm2}"  — second event anchor if semantically distinct
+ *   3. Event-only anchors          — e.g. "flood disaster", "flood waters"
+ *   4. Geo-only anchors            — e.g. "Amsterdam", "Dutch cycling"
+ *
+ * Duplicates are removed; total is capped at 6 (the Pexels query limit).
+ */
+function buildGeoEventComboAnchors(
+  geoName: string,
+  geoAnchors: string[],
+  eventTerm: string,
+  eventAnchors: string[]
+): string[] {
+  const combo: string[] = [];
+  // Primary combo: geo + event keyword
+  combo.push(`${geoName} ${eventTerm}`);
+  // Secondary combo: geo + first event anchor's leading noun (e.g. "flood" from "flood disaster")
+  const eventLeadNoun = eventAnchors[0]?.split(" ")[0];
+  if (eventLeadNoun && eventLeadNoun.toLowerCase() !== eventTerm.toLowerCase()) {
+    combo.push(`${geoName} ${eventLeadNoun}`);
+  }
+  // Event-only anchors (without geo)
+  for (const a of eventAnchors) combo.push(a);
+  // Geo-only anchors as last-resort variety
+  for (const a of geoAnchors) combo.push(a);
+  // Deduplicate while preserving order
+  const seen = new Set<string>();
+  return combo.filter((q) => {
+    const k = q.toLowerCase();
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  }).slice(0, 6);
+}
+
+/**
+ * Auto-detects Pexels anchor queries from a video title + beat text.
+ *
+ * Priority / combination logic:
+ * 1. Beat text is checked for strong event/situation signals (WWII, flood, protest…).
+ * 2. Combined title+beat text is checked for geographic context (country, city…).
+ * 3a. BOTH detected → geo-event COMBO anchors (e.g. "Netherlands flood", "flood disaster", "Amsterdam")
+ * 3b. Only event → event anchors only (topic switch away from geo context)
+ * 3c. Only geo → geo anchors only (current-beat topic == video title topic)
+ * 3d. Neither → [] (Pexels falls back to beat.searchQuery)
+ */
+function extractVideoTopicAnchors(videoTitle: string, beatText = ""): string[] {
+  const override = detectBeatTopicOverride(beatText);
+  const geo = detectGeoContext(videoTitle, beatText);
+
+  if (override && geo) {
+    return buildGeoEventComboAnchors(geo.geoName, geo.anchors, override.eventTerm, override.anchors);
+  }
+  if (override) return override.anchors;
+  if (geo) return geo.anchors;
   return [];
 }
 
@@ -9719,15 +9774,16 @@ function extractVideoTopicAnchorsWithKey(
   beatText = ""
 ): { anchors: string[]; topicKey: string } {
   const override = detectBeatTopicOverride(beatText);
-  if (override) return { anchors: override.anchors, topicKey: override.key };
+  const geo = detectGeoContext(videoTitle, beatText);
 
-  const hay = `${videoTitle} ${beatText}`.toLowerCase();
-  for (const rule of TOPIC_ANCHOR_RULES) {
-    if (rule.pattern.test(hay)) {
-      // derive a stable key from the pattern source
-      const key = rule.anchors[0]?.toLowerCase().replace(/\s+/g, "_") ?? "geo";
-      return { anchors: rule.anchors, topicKey: key };
-    }
+  if (override && geo) {
+    const anchors = buildGeoEventComboAnchors(geo.geoName, geo.anchors, override.eventTerm, override.anchors);
+    return { anchors, topicKey: `${geo.geoName.toLowerCase().replace(/\s+/g, "_")}_${override.key}` };
+  }
+  if (override) return { anchors: override.anchors, topicKey: override.key };
+  if (geo) {
+    const key = geo.geoName.toLowerCase().replace(/\s+/g, "_");
+    return { anchors: geo.anchors, topicKey: key };
   }
   return { anchors: [], topicKey: "none" };
 }
