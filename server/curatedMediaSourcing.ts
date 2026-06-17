@@ -77,6 +77,7 @@ import {
 } from "./sourcingPolicy";
 import {
   isNonDocumentaryVisualHay,
+  isOffTopicGeoUrbanVisual,
   isWrongRegionForSegmentLock,
   vidrushStillPhotoScale,
   VIDRUSH_MIN_SOURCE_VIDEO_SEC,
@@ -959,6 +960,7 @@ export function isGeographyIncompatibleArchiveAsset(
   if (/\b(protest(?:ing|ers?|s)?|demonstration|demonstrators?|demonstratie|betog(?:ing|ers?)?|riot(?:ing|ers?)?|activists?|picket(?:ing|ers?)?|civil unrest|protest march|street protest)\b/i.test(hay)) {
     return true;
   }
+  if (isOffTopicGeoUrbanVisual(hay)) return true;
   return /\b(zwart-wit|black.?white|b&w|monochrome|sepia|archief footage|old footage|1930|1934|1939|1945|propaganda|militair|soldaten|parade|historical archive|newsreel|zwart wit)\b/i.test(
     hay
   );

@@ -28,7 +28,8 @@ import * as path from "path";
 import * as os from "os";
 import { storagePut } from "./storage";
 import { invokeLLM } from "./_core/llm";
-import { getVideoById, updateVideoStatus, type EditorScene } from "./db";
+import { buildEditorClipFromPath } from "./editorClips";
+import { getVideoById, updateVideoStatus, updateVideoScenes, type EditorScene } from "./db";
 import {
   buildRelevanceKeywordsFromIntent,
   buildSceneBeatsFromDirector,
@@ -136,7 +137,7 @@ import {
   assertSceneCriticalReview,
   reviewSceneCritical,
 } from "./sceneCriticalReview";
-import { curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, freeVoiceoverMode, freeVoiceoverGttsLang, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archivePexelsFallbackEnabled, archivePexelsHybridEnabled, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, onScreenTextEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, maxPipelineWallClockMin, qualityOverSpeedEnabled, visualStageWallClockMin, pipelineMinutesPerVideoMinute, pipelineWallClockLimitEnabled, PIPELINE_UNLIMITED_MS, autoMotionGraphicsLayerEnabled, vidrushDocumentaryQualityEnabled } from "./sourcingPolicy";
+import { curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, freeVoiceoverMode, freeVoiceoverGttsLang, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archivePexelsFallbackEnabled, archivePexelsHybridEnabled, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, onScreenTextEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, maxPipelineWallClockMin, qualityOverSpeedEnabled, visualStageWallClockMin, pipelineMinutesPerVideoMinute, pipelineWallClockLimitEnabled, PIPELINE_UNLIMITED_MS, autoMotionGraphicsLayerEnabled, vidrushDocumentaryQualityEnabled, wikimediaPersonPortraitsEnabled } from "./sourcingPolicy";
 import { targetVideoDurationMinutes } from "@shared/videoLengths";
 import {
   getCrossVideoExcludeAssetIds,
@@ -195,6 +196,7 @@ import {
   enforceMontageDurationFloors,
   inferBeatGeoRegion,
   isNonDocumentaryClipPath,
+  isOffTopicGeoUrbanVisual,
   isWrongRegionForSegmentLock,
   logMotionGraphicsQa,
   maxMontageClipsForVoiceSec,
@@ -765,6 +767,32 @@ async function fetchBeatYoutubeThenPexels(
   return null;
 }
 
+async function tryFetchWikimediaPersonPortraitClip(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  holdSec: number,
+  personName: string,
+  videoTitle: string | undefined,
+  dedup: VisualDedupState
+): Promise<string | null> {
+  let adoptedPath: string | null = null;
+  await adoptWikimediaPersonPortraitBeat(
+    beat,
+    scene,
+    workDir,
+    videoTitle,
+    dedup,
+    async (clipPath) => {
+      adoptedPath = clipPath;
+      return true;
+    },
+    holdSec
+  );
+  return adoptedPath;
+}
+
 /** Archive + Wikimedia video first, then Pexels/Pixabay, then AI. */
 async function fetchBeatArchivalThenPexels(
   beat: SceneBeat,
@@ -796,6 +824,19 @@ async function fetchBeatArchivalThenPexels(
       curatedBeatFetchOpts(dedup)
     );
     if (archiveClip !== null) return archiveClip;
+    if (wikimediaPersonPortraitsEnabled() && personName.trim()) {
+      const wikiClip = await tryFetchWikimediaPersonPortraitClip(
+        beat,
+        scene,
+        workDir,
+        sceneIndex,
+        clipFetchDur,
+        personName,
+        videoTitle,
+        dedup
+      );
+      if (wikiClip) return wikiClip;
+    }
     // No matching archive clip — fall through to Pexels if enabled.
     if (!archivePexelsFallbackEnabled() || !canUseLicensedStockBeat(dedup)) return null;
     console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: no archive match → Pexels/Pixabay fallback`);
@@ -3840,12 +3881,13 @@ async function fetchWikimediaImages(
   sceneIndex: number,
   count: number = 2,
   fileTag = "",
-  opts: { beatIndex?: number; stillStyleContext?: StillStyleContext } = {}
+  opts: { beatIndex?: number; stillStyleContext?: StillStyleContext; personPortrait?: boolean } = {}
 ): Promise<string[]> {
   const results: string[] = [];
   try {
-    // Search Wikimedia Commons for images
-    const searchUrl = `https://commons.wikimedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&srnamespace=6&srlimit=10&format=json&origin=*`;
+    const portraitMode = opts.personPortrait ?? /portrait|face|headshot|person|celebrity/i.test(query);
+    const searchQuery = portraitMode && !/\bportrait\b/i.test(query) ? `${query} portrait` : query;
+    const searchUrl = `https://commons.wikimedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(searchQuery)}&srnamespace=6&srlimit=10&format=json&origin=*`;
     const searchResp = await withTimeout(
       fetch(searchUrl, { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }),
       8_000,
@@ -3872,6 +3914,9 @@ async function fetchWikimediaImages(
         const page = Object.values(pages)[0];
         const imageInfo = page?.imageinfo?.[0];
         if (!imageInfo?.url) continue;
+        if (/logo|flag|map|icon|signature|coat of arms|emblem|diagram|chart|graph|screenshot|svg/i.test(title)) {
+          continue;
+        }
         // Only use JPEG/PNG images, skip SVG/PDF/audio/video
         if (!imageInfo.mime.startsWith('image/jpeg') && !imageInfo.mime.startsWith('image/png')) continue;
         // Skip very small images
@@ -3896,7 +3941,7 @@ async function fetchWikimediaImages(
           outPath,
           duration,
           `Wikimedia image to video scene ${sceneIndex}`,
-          /portrait|face|headshot|person|celebrity/i.test(query),
+          portraitMode,
           sceneIndex,
           opts.beatIndex ?? 0,
           opts.stillStyleContext
@@ -3914,6 +3959,91 @@ async function fetchWikimediaImages(
     console.warn(`[Pipeline] Wikimedia search failed for scene ${sceneIndex}:`, err);
   }
   return results;
+}
+
+function buildWikimediaPersonQueries(
+  person: string,
+  sceneIndex: number,
+  beatIndex: number,
+  beatText = ""
+): string[] {
+  const trimmed = person.trim();
+  if (!trimmed) return [];
+  const queries = [
+    `${trimmed} portrait photo`,
+    `${trimmed} face`,
+    buildPersonSerpQuery(trimmed, sceneIndex, beatIndex, beatText),
+  ];
+  return [...new Set(queries.map((q) => q.trim()).filter((q) => q.length >= 4))].slice(0, 4);
+}
+
+/** Wikimedia CC portrait when archive has no match — always blur-fill Ken Burns. */
+async function adoptWikimediaPersonPortraitBeat(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  videoTitle: string | undefined,
+  dedup: VisualDedupState,
+  pushClip: (clipPath: string, holdSec?: number) => boolean | Promise<boolean>,
+  holdSec: number
+): Promise<boolean> {
+  if (!wikimediaPersonPortraitsEnabled()) return false;
+
+  const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
+  const person =
+    scenePersons.find((p) => beatMentionsPerson(beat.text, p)) ??
+    (dedup.personTopicLock ? dedup.primaryPerson : undefined) ??
+    scenePersons[0];
+  if (!person?.trim()) return false;
+
+  const openingBeat = scene.index === 0 && beat.index === 0;
+  if (openingBeat) return false;
+
+  const queries = buildWikimediaPersonQueries(person, scene.index, beat.index, beat.text);
+  for (const q of queries) {
+    const paths = await fetchWikimediaImages(
+      q,
+      holdSec,
+      workDir,
+      scene.index,
+      1,
+      `b${beat.index}`,
+      { beatIndex: beat.index, personPortrait: true }
+    );
+    for (const clipPath of paths) {
+      if (!clipPath || isPipelineFallbackClip(clipPath)) continue;
+      const key = clipContentKey(clipPath);
+      if (dedup.usedContentKeys.has(key)) continue;
+      if (await isMostlyBlackClip(clipPath)) continue;
+      if (!(await montageClipPassesComposeGate(clipPath, scene.index, beat.index))) continue;
+      if (
+        !(await clipPassesVisionGate(
+          clipPath,
+          beat.text,
+          videoTitle,
+          workDir,
+          scene.index,
+          beat.index,
+          dedup.perf.fastStockMode,
+          sceneCriticalReviewEnabled() ? minClipQualityScore() : 5,
+          beat.visualDescription
+        ))
+      ) {
+        continue;
+      }
+      const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, holdSec);
+      dedup.usedContentKeys.add(key);
+      if (canUseGlobalStillPhoto(dedup)) markGlobalStillPhotoUsed(dedup);
+      dedup.stillPhotosThisScene++;
+      if (await pushClip(withText, holdSec)) {
+        console.log(
+          `[Pipeline] Scene ${scene.index} beat ${beat.index}: Wikimedia portrait "${person}" (blur-fill)`
+        );
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 // ─── 3c2b. Openverse API Image Search ─────────────────────────────────────
@@ -8661,8 +8791,8 @@ async function probeClipRegionMeanLuma(
   }
 }
 
-/** Source has baked-in black pillar/letterbox bars (not our gray pad). */
-async function hasEmbeddedBlackBars(filePath: string): Promise<boolean> {
+/** Source has baked-in black pillar/letterbox bars or blur-fill sidebars (not our gray pad). */
+async function hasEmbeddedPillarboxBars(filePath: string): Promise<boolean> {
   const sampleTimes = [0.35, 1.0, 2.5];
   for (const t of sampleTimes) {
     const left = await probeClipRegionMeanLuma(filePath, t, "left");
@@ -8670,16 +8800,27 @@ async function hasEmbeddedBlackBars(filePath: string): Promise<boolean> {
     const center = await probeClipRegionMeanLuma(filePath, t, "center");
     if (left === null || right === null || center === null) continue;
     if (left < 24 && right < 24 && center > 38) return true;
+    const sideAvg = (left + right) / 2;
+    const sideSpread = Math.abs(left - right);
+    if (sideSpread < 15 && center - sideAvg > 18 && sideAvg < center - 12) return true;
+    if (left < 45 && right < 45 && center > left + 20 && center > right + 20 && sideSpread < 15) {
+      return true;
+    }
   }
   return false;
+}
+
+/** @deprecated Use hasEmbeddedPillarboxBars */
+async function hasEmbeddedBlackBars(filePath: string): Promise<boolean> {
+  return hasEmbeddedPillarboxBars(filePath);
 }
 
 async function isMostlyBlackClip(filePath: string): Promise<boolean> {
   if (isPipelineFallbackClip(filePath)) return true;
   const curatedStill = isCuratedPreparedStillClip(filePath);
   // Blur-fill stills darken edges by design — not embedded letterbox bars.
-  if (!curatedStill && (await hasEmbeddedBlackBars(filePath))) {
-    console.warn(`[Pipeline] Rejecting clip with embedded black bars: ${path.basename(filePath)}`);
+  if (!curatedStill && (await hasEmbeddedPillarboxBars(filePath))) {
+    console.warn(`[Pipeline] Rejecting clip with embedded pillarbox/blur bars: ${path.basename(filePath)}`);
     return true;
   }
   // Curated archive clips: reject if too dark — threshold 25 (was 12, too permissive).
@@ -8789,6 +8930,12 @@ function isRejectedPexelsVideo(
   if (beatText && isOffTopicProtestForBeat(beatText, slug, inferVideoVisualTopic(videoTitle, beatText))) {
     return true;
   }
+  if (
+    inferVideoVisualTopic(videoTitle, beatText) === "geography_urban" &&
+    isOffTopicGeoUrbanVisual(slug)
+  ) {
+    return true;
+  }
   return false;
 }
 
@@ -8807,6 +8954,12 @@ function isRejectedStockClip(
   if (isNonDocumentaryClipPath(filePath, sourceQuery, beatText)) return true;
   if (hasBlockedStockTags(combined, beatText)) return true;
   if (beatText && isOffTopicProtestForBeat(beatText, combined, inferVideoVisualTopic(videoTitle, beatText))) {
+    return true;
+  }
+  if (
+    inferVideoVisualTopic(videoTitle, beatText) === "geography_urban" &&
+    isOffTopicGeoUrbanVisual(combined)
+  ) {
     return true;
   }
   return false;
@@ -9069,6 +9222,10 @@ async function montageClipPassesComposeGate(
     return true;
   }
   if (await isMostlyBlackClip(clipPath)) return false;
+  if (!isCuratedPreparedStillClip(clipPath) && (await hasEmbeddedPillarboxBars(clipPath))) {
+    console.warn(`[Pipeline] Compose gate: pillarbox/blur bars ${path.basename(clipPath)}`);
+    return false;
+  }
   const trimStart = montageClipStartSec(sceneIndex, clipIndex);
   const startLuma = await probeClipMeanLuma(clipPath, trimStart + 0.08);
   if (startLuma !== null && startLuma < 14) return false;
@@ -14019,6 +14176,10 @@ async function adoptArchiveBeatClip(
     dedup.motionGraphicsUsed = mgfxBudget.used;
     if (await tryClip(clip, holdSec)) return true;
   }
+
+  if (await adoptWikimediaPersonPortraitBeat(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec)) {
+    return true;
+  }
   return false;
 }
 
@@ -14290,6 +14451,17 @@ async function backfillArchiveMontageFromPool(
       profile,
       true
     );
+    if (!adopted) {
+      adopted = await adoptWikimediaPersonPortraitBeat(
+        beat,
+        scene,
+        workDir,
+        videoTitle,
+        dedup,
+        (clipPath, holdSec) => pushClip(clipPath, holdSec, beats.length + added),
+        fillHold
+      );
+    }
     if (!adopted) {
       adopted = await adoptPexelsBeatClipFallback(
         beat,
@@ -17981,6 +18153,15 @@ export async function runVideoPipeline(
       throw pipelineError(PIPELINE_ERROR.FFMPEG, finalReview.summary);
     }
 
+    const editorManifest = await buildEditorManifestFromPipeline(
+      scenes,
+      composedUsedClips,
+      sceneVisualResults
+    );
+    await updateVideoScenes(videoId, editorManifest).catch((err) =>
+      console.warn(`[Pipeline] Failed to persist videoScenes for ${videoId}:`, err)
+    );
+
     // Cleanup intermediates
     for (let i = 0; i < scenes.length; i++) {
       try { fs.unlinkSync(audioPaths[i]); } catch { /* ignore */ }
@@ -18063,6 +18244,33 @@ export async function runVideoPipeline(
 }
 
 // ─── Re-render from editor scene manifest ────────────────────────────────────
+
+async function buildEditorManifestFromPipeline(
+  scenes: Scene[],
+  composedUsedClips: string[][],
+  sceneVisualResults: SceneVisualsResult[]
+): Promise<EditorScene[]> {
+  const manifest: EditorScene[] = [];
+  for (let i = 0; i < scenes.length; i++) {
+    const scene = scenes[i];
+    const clipPaths =
+      composedUsedClips[i]?.length > 0
+        ? composedUsedClips[i]
+        : (sceneVisualResults[i]?.clips ?? []);
+    const clips = await Promise.all(clipPaths.map((p) => buildEditorClipFromPath(p)));
+    manifest.push({
+      sceneIndex: scene.index,
+      title: scene.chapterTitle || scene.sectionTitle,
+      narration: scene.text,
+      durationMs: Math.round(scene.duration * 1000),
+      clips,
+      thumbnailUrl: clips[0]?.thumbnailUrl ?? clips[0]?.url,
+      chapterTitle: scene.chapterTitle || scene.sectionTitle,
+    });
+  }
+  return manifest;
+}
+
 /**
  * Re-renders a video using the updated scene manifest from the editor.
  * Downloads clips from their stored URLs, regenerates voiceovers, composes

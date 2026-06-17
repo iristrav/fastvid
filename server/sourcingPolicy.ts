@@ -31,9 +31,11 @@ export function elevenLabsOnlyVoice(): boolean {
   return process.env.ELEVENLABS_ONLY !== "false";
 }
 
-/** Burned-in on-screen text (labels, subs, motion graphics). Off by default — set ENABLE_ONSCREEN_TEXT=true to re-enable. */
+/** Burned-in on-screen text (labels, subs, V3 motion graphics). On by default for documentary quality. */
 export function onScreenTextEnabled(): boolean {
-  return process.env.ENABLE_ONSCREEN_TEXT === "true";
+  if (process.env.ENABLE_ONSCREEN_TEXT === "false") return false;
+  if (process.env.ENABLE_ONSCREEN_TEXT === "true") return true;
+  return vidrushDocumentaryQualityEnabled();
 }
 
 /** Faceless kinetic subtitles — off by default; only year badges on screen unless ENABLE_EXTRA_ONSCREEN_TEXT=true. */
@@ -63,6 +65,11 @@ export function archivePexelsFallbackEnabled(): boolean {
 /** Pexels/Pixabay allowed after archive misses; never skips archive search (default on). */
 export function archivePexelsHybridEnabled(): boolean {
   return process.env.ARCHIVE_PEXELS_HYBRID !== "false" && archivePexelsFallbackEnabled();
+}
+
+/** CC Wikimedia portraits for named public figures (blur-fill still). Allowed even in archive-only mode. */
+export function wikimediaPersonPortraitsEnabled(): boolean {
+  return process.env.ENABLE_WIKIMEDIA_PERSON_PORTRAITS !== "false";
 }
 
 /** Fail generation rather than loop, pad, or reuse any clip content in a video. */
@@ -242,7 +249,7 @@ export function motionGraphicsInVideosEnabled(): boolean {
   return process.env.ENABLE_MOTION_GRAPHICS !== "false";
 }
 
-/** Automatic V3 text overlays — centered typewriter highlights (set ENABLE_ONSCREEN_TEXT=true). */
+/** Automatic V3 text overlays — centered typewriter highlights (on when onScreenTextEnabled). */
 export function autoMotionGraphicsLayerEnabled(): boolean {
   if (!onScreenTextEnabled()) return false;
   return process.env.ENABLE_AUTO_MOTION_GRAPHICS !== "false";

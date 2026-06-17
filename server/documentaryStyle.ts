@@ -35,7 +35,7 @@ export function buildDocumentaryColorGradeVF(): string {
 }
 
 export function buildDocumentaryVignetteVF(): string {
-  return "vignette=angle=0.62:mode=forward";
+  return "vignette=angle=0.78:mode=forward";
 }
 
 export function buildFilmGrainVF(): string {
@@ -72,7 +72,7 @@ export function buildFinalSceneGradeVF(): string {
     return (
       "eq=contrast=1.12:saturation=0.92:brightness=-0.02:gamma=1.02," +
       "colorbalance=rs=-0.02:gs=0:bs=0.03:rm=-0.01:gm=0:bm=0.02:rh=-0.01:gh=0:bh=0.02," +
-      "vignette=angle=0.6:mode=forward"
+      "vignette=angle=0.75:mode=forward"
     );
   }
   const grain = buildFilmGrainVF();

@@ -31,6 +31,28 @@ export type BeatGeoRegion = "nl" | "us" | "both" | "neutral";
 const NON_DOC_RE =
   /\b(simcity|simulation|isometric|3d render|3d model|video game|game footage|cgi render|mockup|illustration|infographic|cartoon|clip art|low poly|pixel art|suburban sprawl game|city builder|animated map|motion graphic template|green screen|screen recording|ui animation|logo animation|subscribe button|emoji|icon animation)\b/i;
 
+/** Off-topic stock/archive for modern city/geography documentaries. */
+export const GEO_URBAN_OFFTOPIC_RE =
+  /\b(ford\b|chevrolet|cadillac|gmc\b|buick\b|dealer(?:ship)?|auto dealer|car lot|used car|showroom|walgreens|cvs\b|drugstore|pharmacy|chemist|great depression|dust bowl|florida vintage|1929 crash|electrical cabinet|breaker panel|fuse box|switchgear|distribution board|electrical panel|control panel|headshot|portrait photo|studio portrait|passport photo|linkedin|vintage storefront|1950s store|1960s store|retro shop|five and dime|classic car lot|vintage america|classic america|auto repair|mechanic shop|gas station vintage|pump attendant|cash register|checkout counter|grocery aisle|supermarket interior|electrical engineer|technician at panel|fuse board|meter box|substation interior|electrical room|portrait of man|portrait of woman|generic portrait|close.?up face|talking head interview|news anchor desk)\b/i;
+
+/** Vintage US commercial/retail — wrong for NL/US city-comparison openings. */
+const GEO_URBAN_OPENING_BLOCKED_RE =
+  /\b(ford\b|chev(?:y|rolet)|cadillac|dealer(?:ship)?|auto dealer|car lot|used car|walgreens|cvs\b|drugstore|pharmacy|storefront|shop front|retail store|1950s|1960s|1970s|vintage america|classic america|great depression|florida vintage|gas station|mechanic|auto repair|showroom|classic car)\b/i;
+
+export function isOffTopicGeoUrbanVisual(hay: string): boolean {
+  if (!vidrushDocumentaryQualityEnabled()) return false;
+  return GEO_URBAN_OFFTOPIC_RE.test(hay.toLowerCase());
+}
+
+export function isOffTopicGeoUrbanOpeningVisual(
+  hay: string,
+  primaryGeo: BeatGeoRegion
+): boolean {
+  if (isOffTopicGeoUrbanVisual(hay)) return true;
+  if (primaryGeo !== "both" && primaryGeo !== "nl") return false;
+  return GEO_URBAN_OPENING_BLOCKED_RE.test(hay.toLowerCase());
+}
+
 const NL_TITLE_RE = /\b(netherlands|nederland|dutch|holland|amsterdam)\b/i;
 const US_TITLE_RE = /\b(u\.?s\.?|united states|america|american)\b/i;
 
@@ -229,7 +251,17 @@ export function buildVidrushOpeningQueries(videoTitle?: string, beatText?: strin
   }
 
   const primary = inferPrimaryGeoFromTitle(videoTitle);
-  if (primary === "nl" || (primary === "both" && !US_TITLE_RE.test(beatText ?? ""))) {
+  if (primary === "both") {
+    queries.push(
+      "netherlands city aerial drone establishing shot",
+      "amsterdam canals drone video",
+      "dutch cycling street modern city",
+      "rotterdam skyline timelapse video",
+      "american city skyline aerial drone",
+      "usa downtown drone broll video",
+      "city comparison aerial documentary"
+    );
+  } else if (primary === "nl") {
     queries.push(
       "netherlands aerial drone landscape video",
       "amsterdam canals drone broll",
@@ -279,6 +311,10 @@ export function clipPassesVidrushOpeningGate(
   if (isNonDocumentaryClipPath(clipPath, sourceQuery, beatText)) return false;
   const hay = `${sourceQuery} ${pathBasename(clipPath)} ${beatText} ${videoTitle ?? ""}`.toLowerCase();
   if (isWrongRegionForSegmentLock(hay, inferPrimaryGeoFromTitle(videoTitle))) return false;
+  const topic = inferVideoVisualTopic(videoTitle, beatText);
+  if (topic === "geography_urban") {
+    if (isOffTopicGeoUrbanOpeningVisual(hay, inferPrimaryGeoFromTitle(videoTitle))) return false;
+  }
   return true;
 }
 

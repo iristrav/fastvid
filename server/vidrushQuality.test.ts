@@ -2,9 +2,13 @@ import { describe, expect, it } from "vitest";
 import {
   buildVidrushOpeningQueries,
   clampVidrushClipDuration,
+  clipPassesVidrushOpeningGate,
   enforceMontageDurationFloors,
   inferBeatGeoRegion,
+  inferPrimaryGeoFromTitle,
   isNonDocumentaryVisualHay,
+  isOffTopicGeoUrbanOpeningVisual,
+  isOffTopicGeoUrbanVisual,
   isWrongRegionForSegmentLock,
   maxDirectorBeatsForSceneDuration,
   maxMontageClipsForVoiceSec,
@@ -59,10 +63,31 @@ describe("vidrushQuality", () => {
 
     const nl = buildVidrushOpeningQueries("Why the Netherlands is the Opposite of the U.S.", "Welcome to the Netherlands");
     expect(nl.some((q) => /netherlands|amsterdam|dutch/i.test(q))).toBe(true);
+    expect(nl.some((q) => /comparison|american|usa/i.test(q))).toBe(true);
 
     const space = buildVidrushOpeningQueries("How NASA Built the Moon Rocket", "The Saturn V was enormous");
     expect(space.some((q) => /saturn|documentary|aerial|establishing/i.test(q))).toBe(true);
     expect(space.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it("blocks off-topic geo-urban stock and weak openings", () => {
+    expect(isOffTopicGeoUrbanVisual("ford dealer showroom classic car")).toBe(true);
+    expect(isOffTopicGeoUrbanVisual("walgreens 1950s drugstore")).toBe(true);
+    expect(isOffTopicGeoUrbanVisual("amsterdam canal drone broll")).toBe(false);
+    expect(
+      isOffTopicGeoUrbanOpeningVisual(
+        "vintage ford dealership 1950s",
+        inferPrimaryGeoFromTitle("Why the Netherlands is the Opposite of the U.S.")
+      )
+    ).toBe(true);
+    expect(
+      clipPassesVidrushOpeningGate(
+        "/tmp/open_ford_dealer.mp4",
+        "ford dealership",
+        "Welcome to the Netherlands",
+        "Why the Netherlands is the Opposite of the U.S."
+      )
+    ).toBe(false);
   });
 });
 
