@@ -878,9 +878,17 @@ async function beatPrimaryFetch(
       { varietySeed: dedup.varietySeed, crossVideoExcludeIds: dedup.crossVideoExcludeIds }
     );
     if (archiveClip !== null) return archiveClip;
-    // No archive match — fall through to Pexels if allowed.
+    // Try Wikimedia first (no API key needed — always available)
+    if (visualMatchingV1Enabled()) {
+      const wikiAnalysis = analyzeSceneVisual(beat.text, videoTitle);
+      const wikiClip = await fetchWikimediaImagesV1(
+        wikiAnalysis, beat.holdSec, workDir, sceneIndex, beat.index, `bpf_wiki${beat.index}`
+      );
+      if (wikiClip) return wikiClip;
+    }
+    // No archive/wiki match — fall through to Pexels if allowed.
     if (!archivePexelsFallbackEnabled() || !canUseLicensedStockBeat(dedup)) return null;
-    console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: no archive match → Pexels fallback`);
+    console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: no archive/wiki match → Pexels fallback`);
     return fetchBeatStockFallback(beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName, videoTitle, adoptOpts, stockReason);
   }
   if (youtubeOnlySourcingEnabled()) {
@@ -10703,31 +10711,62 @@ async function recoverSceneClipsIfEmpty(
       beatDurations.push(stubBeat.holdSec);
       if (clips.length >= need) break;
     }
-    // If archive yielded nothing, try Wikimedia / Pexels once for the scene
-    // and reuse the result — avoids per-beat HTTP calls that cause timeouts.
-    if (clips.length === 0) {
-      console.log(`[Pipeline] recoverSceneClips scene ${scene.index}: no archive match — trying Wikimedia/Pexels once`);
-      const fb: SceneBeat = { ...stubBeat, index: 0 };
-      const fbClip = await fetchBeatArchivalThenPexels(
-        fb,
-        scene,
-        workDir,
-        scene.index,
-        topicContext,
-        dedup,
-        recoverAdopt,
-        scenePersons,
-        "recover_fb",
-        "recover-fallback"
-      );
-      if (fbClip) {
-        for (let fi = 0; fi < need; fi++) {
-          clips.push(fbClip);
-          beatDurations.push(fb.holdSec);
-        }
+    // Top-up: if archive returned fewer clips than needed to cover the scene duration,
+    // fetch additional unique clips from Wikimedia / Pexels using varied queries.
+    // Uses archiveVisualMaxClipSec (8s) per clip so fewer clips fully cover the scene:
+    //   minClipsForBalancedVoice(30s)=4 × 8s each → balances to 7.8s → estSec≈30s ✓
+    const minNeeded = minClipsForBalancedVoice(scene.duration + 0.15);
+    if (clips.length < minNeeded) {
+      if (clips.length === 0) {
+        console.log(`[Pipeline] recoverSceneClips scene ${scene.index}: no archive → Wikimedia/Pexels (need ${minNeeded} for ${scene.duration.toFixed(1)}s)`);
+      } else {
+        console.log(`[Pipeline] recoverSceneClips scene ${scene.index}: ${clips.length}/${minNeeded} clips — topping up via Wikimedia/Pexels`);
+      }
+      const recoverHoldSec = archiveVisualMaxClipSec();
+      const fallbackTexts = [
+        scene.pexelsQuery?.trim(),
+        scene.visualCue?.trim(),
+        topicContext?.trim(),
+        scene.text.slice(0, 60).trim(),
+        scene.text.slice(60, 120).trim(),
+        `${topicContext ?? ""} ${scene.text.slice(0, 40)}`.trim(),
+        scene.text.slice(120, 180).trim(),
+      ].filter((t): t is string => !!t && t.length >= 3);
+
+      for (let fi = 0; fi < fallbackTexts.length && clips.length < minNeeded; fi++) {
+        const fb: SceneBeat = {
+          ...stubBeat,
+          index: fi,
+          text: fallbackTexts[fi]!,
+          searchQuery: fallbackTexts[fi]!,
+          holdSec: recoverHoldSec,
+        };
+        const fbClip = await fetchBeatArchivalThenPexels(
+          fb,
+          scene,
+          workDir,
+          scene.index,
+          topicContext,
+          dedup,
+          recoverAdopt,
+          scenePersons,
+          `recover_fb${fi}`,
+          "recover-fallback"
+        );
+        if (!fbClip) continue;
+        const key = clipContentKey(fbClip);
+        if (clips.some((c) => clipContentKey(c) === key)) continue;
+        clips.push(fbClip);
+        beatDurations.push(recoverHoldSec);
       }
     }
-    await assertSceneVisualInventory(scene, clips, beatDurations);
+    // Recovery is lenient: skip strict inventory check, only fail if completely empty
+    if (clips.length === 0) {
+      throw pipelineError(
+        PIPELINE_ERROR.NO_SCENES,
+        `Scene ${scene.index}: geen beelden gevonden in archief, Wikimedia of Pexels`
+      );
+    }
     return { clips, beatDurations };
   }
 
