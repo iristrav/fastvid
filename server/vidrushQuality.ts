@@ -33,7 +33,7 @@ const NON_DOC_RE =
 
 /** Off-topic stock/archive for modern city/geography documentaries. */
 export const GEO_URBAN_OFFTOPIC_RE =
-  /\b(ford\b|chevrolet|cadillac|gmc\b|buick\b|dealer(?:ship)?|auto dealer|car lot|used car|showroom|walgreens|cvs\b|drugstore|pharmacy|chemist|great depression|dust bowl|florida vintage|1929 crash|electrical cabinet|breaker panel|fuse box|switchgear|distribution board|electrical panel|control panel|headshot|portrait photo|studio portrait|passport photo|linkedin|vintage storefront|1950s store|1960s store|retro shop|five and dime|classic car lot|vintage america|classic america|auto repair|mechanic shop|gas station vintage|pump attendant|cash register|checkout counter|grocery aisle|supermarket interior|electrical engineer|technician at panel|fuse board|meter box|substation interior|electrical room|portrait of man|portrait of woman|generic portrait|close.?up face|talking head interview|news anchor desk)\b/i;
+  /\b(ford\b|chevrolet|cadillac|gmc\b|buick\b|dealer(?:ship)?|auto dealer|car lot|used car|showroom|walgreens|cvs\b|drugstore|pharmacy|chemist|great depression|dust bowl|florida vintage|1929 crash|electrical cabinet|breaker panel|fuse box|switchgear|distribution board|electrical panel|control panel|headshot|portrait photo|studio portrait|passport photo|linkedin|vintage storefront|1950s store|1960s store|retro shop|five and dime|classic car lot|vintage america|classic america|auto repair|mechanic shop|gas station vintage|pump attendant|cash register|checkout counter|grocery aisle|supermarket interior|electrical engineer|technician at panel|fuse board|meter box|substation interior|electrical room|portrait of man|portrait of woman|generic portrait|close.?up face|talking head interview|news anchor desk|columbus ohio|columbus city|city council meeting|city council chamber|wisconsin capitol|wisconsin state capitol|state capitol building|capitol dome|legislative chamber|municipal council|town hall meeting|county board|alderman|city hall interior)\b/i;
 
 /** Vintage US commercial/retail — wrong for NL/US city-comparison openings. */
 const GEO_URBAN_OPENING_BLOCKED_RE =
@@ -118,7 +118,7 @@ export function montageSharpScaleChain(width: number, height: number): string {
 }
 
 export function vidrushStillPhotoScale(): number {
-  return curatedArchiveOnlyVisuals() ? 0.86 : 0.78;
+  return curatedArchiveOnlyVisuals() ? 0.86 : 0.72;
 }
 
 export function isNonDocumentaryVisualHay(hay: string): boolean {

@@ -15,6 +15,7 @@ import {
   isCuratedStaticInteriorAsset,
   isCuratedPreparedStillClip,
   isCuratedPreparedVideoClip,
+  isPipelineBlurFillStillClip,
   rotateCuratedCandidates,
   shouldPreferPexelsOverArchive,
   shouldTryPexelsFirstForBeat,
@@ -722,5 +723,13 @@ describe("curatedMediaSourcing", () => {
       { asset: charlotteClip, archiveName: "Geografie", score: 65 },
     ];
     expect(shouldPreferPexelsOverArchive(beatText, ranked, "geography_urban")).toBe(true);
+  });
+
+  it("isPipelineBlurFillStillClip detects Wikimedia and archive blur stills", () => {
+    expect(isPipelineBlurFillStillClip("/tmp/scene_0_b0_wiki_wiki_0.mp4")).toBe(true);
+    expect(isPipelineBlurFillStillClip("/tmp/scene_1_b2_openverse_0.mp4")).toBe(true);
+    expect(isCuratedPreparedStillClip("/tmp/scene_0_b1_curated_a42_still.mp4")).toBe(true);
+    expect(isPipelineBlurFillStillClip("/tmp/scene_0_b1_curated_a42_still.mp4")).toBe(true);
+    expect(isPipelineBlurFillStillClip("/tmp/scene_0_b0_pexels_vid123.mp4")).toBe(false);
   });
 });

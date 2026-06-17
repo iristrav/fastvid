@@ -71,6 +71,7 @@ import {
   buildFinalSceneGradeVF,
   buildSimpleKenBurnsVF,
   buildArchiveStillFilterComplex,
+  buildArchiveStillFilterComplexBoxBlur,
   buildStillEncodeArgs,
   documentaryStyleEnabled,
   renderHighlightCaptionOverlay,
@@ -152,6 +153,7 @@ import {
   prepareCuratedArchiveClip,
   isCuratedPreparedStillClip,
   isCuratedPreparedVideoClip,
+  isPipelineBlurFillStillClip,
   listCuratedArchiveCandidates,
   buildBeatMatchTags,
   orderCuratedCandidatesForBeat,
@@ -3755,13 +3757,38 @@ async function encodeStillImageMp4(
       if (fs.existsSync(outPath) && fs.statSync(outPath).size > 1000) {
         const probed = await probeVideoDurationSec(outPath);
         if (probed >= duration * 0.5) return;
-        console.warn(`[Pipeline] ${label}: documentary still too short (${probed.toFixed(2)}s), retrying simple Ken Burns`);
+        console.warn(`[Pipeline] ${label}: documentary still too short (${probed.toFixed(2)}s), retrying boxblur`);
       }
     } catch (err) {
-      console.warn(`[Pipeline] ${label}: documentary still encode failed, retrying simple Ken Burns:`, (err as Error).message);
+      console.warn(`[Pipeline] ${label}: documentary still encode failed, retrying boxblur:`, (err as Error).message);
     }
     try {
-      fs.unlinkSync(outPath);
+      if (fs.existsSync(outPath)) fs.unlinkSync(outPath);
+    } catch {
+      /* ignore */
+    }
+    const boxBlurFc = buildArchiveStillFilterComplexBoxBlur(
+      duration,
+      sceneIndex,
+      beatIndex,
+      personPortrait
+    );
+    try {
+      await withTimeout(
+        exec(`${FFMPEG_BIN} ${buildStillEncodeArgs(imgPath, outPath, duration, boxBlurFc)}`),
+        45_000,
+        `${label} (boxblur)`
+      );
+      if (fs.existsSync(outPath) && fs.statSync(outPath).size > 1000) {
+        const probed = await probeVideoDurationSec(outPath);
+        if (probed >= duration * 0.5) return;
+        console.warn(`[Pipeline] ${label}: boxblur still too short (${probed.toFixed(2)}s), retrying simple Ken Burns`);
+      }
+    } catch (err) {
+      console.warn(`[Pipeline] ${label}: boxblur still encode failed, retrying simple Ken Burns:`, (err as Error).message);
+    }
+    try {
+      if (fs.existsSync(outPath)) fs.unlinkSync(outPath);
     } catch {
       /* ignore */
     }
@@ -3892,7 +3919,7 @@ async function fetchWikimediaImages(
   try {
     const portraitMode = opts.personPortrait ?? /portrait|face|headshot|person|celebrity/i.test(query);
     const searchQuery = portraitMode && !/\bportrait\b/i.test(query) ? `${query} portrait` : query;
-    const searchUrl = `https://commons.wikimedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(searchQuery)}&srnamespace=6&srlimit=10&format=json&origin=*`;
+    const searchUrl = `https://commons.wikimedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(searchQuery)}&srnamespace=6&srlimit=15&format=json&origin=*`;
     const searchResp = await withTimeout(
       fetch(searchUrl, { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }),
       8_000,
@@ -4047,6 +4074,11 @@ async function adoptWikimediaBeatClipFallback(
     }
     if (await isMostlyBlackClip(clipPath)) return false;
     if (!(await montageClipPassesComposeGate(clipPath, scene.index, beat.index))) return false;
+    const minVisionScore = isPipelineBlurFillStillClip(clipPath)
+      ? 3
+      : sceneCriticalReviewEnabled()
+        ? minClipQualityScore()
+        : 5;
     if (
       !(await clipPassesVisionGate(
         clipPath,
@@ -4056,7 +4088,7 @@ async function adoptWikimediaBeatClipFallback(
         scene.index,
         beat.index,
         dedup.perf.fastStockMode,
-        sceneCriticalReviewEnabled() ? minClipQualityScore() : 5,
+        minVisionScore,
         beat.visualDescription
       ))
     ) {
@@ -4081,6 +4113,33 @@ async function adoptWikimediaBeatClipFallback(
   };
 
   for (const q of queries) {
+    const portraitStill = Boolean(
+      person?.trim() &&
+        (personQueries.includes(q) || beatMentionsPerson(beat.text, person))
+    );
+
+    if (!openingBeat) {
+      try {
+        const paths = await fetchWikimediaImages(
+          q,
+          holdSec,
+          workDir,
+          scene.index,
+          2,
+          `b${beat.index}_wiki`,
+          { beatIndex: beat.index, personPortrait: portraitStill }
+        );
+        for (const clipPath of paths) {
+          if (await tryAdoptPath(clipPath, q, portraitStill)) return true;
+        }
+      } catch (err) {
+        console.warn(
+          `[Pipeline] Wikimedia image "${q}" failed:`,
+          (err as Error).message?.slice(0, 80)
+        );
+      }
+    }
+
     try {
       const vids = await fetchWikimediaVideos(
         q,
@@ -4098,32 +4157,6 @@ async function adoptWikimediaBeatClipFallback(
     } catch (err) {
       console.warn(
         `[Pipeline] Wikimedia video "${q}" failed:`,
-        (err as Error).message?.slice(0, 80)
-      );
-    }
-
-    if (openingBeat) continue;
-
-    const portraitStill = Boolean(
-      person?.trim() &&
-        (personQueries.includes(q) || beatMentionsPerson(beat.text, person))
-    );
-    try {
-      const paths = await fetchWikimediaImages(
-        q,
-        holdSec,
-        workDir,
-        scene.index,
-        1,
-        `b${beat.index}_wiki`,
-        { beatIndex: beat.index, personPortrait: portraitStill }
-      );
-      for (const clipPath of paths) {
-        if (await tryAdoptPath(clipPath, q, portraitStill)) return true;
-      }
-    } catch (err) {
-      console.warn(
-        `[Pipeline] Wikimedia image "${q}" failed:`,
         (err as Error).message?.slice(0, 80)
       );
     }
@@ -8876,8 +8909,9 @@ async function probeClipRegionMeanLuma(
   }
 }
 
-/** Source has baked-in black pillar/letterbox bars or blur-fill sidebars (not our gray pad). */
+/** Source has baked-in black pillar/letterbox bars — not intentional blur-fill stills from our pipeline. */
 async function hasEmbeddedPillarboxBars(filePath: string): Promise<boolean> {
+  if (isPipelineBlurFillStillClip(filePath)) return false;
   const sampleTimes = [0.35, 1.0, 2.5];
   for (const t of sampleTimes) {
     const left = await probeClipRegionMeanLuma(filePath, t, "left");
@@ -8902,9 +8936,9 @@ async function hasEmbeddedBlackBars(filePath: string): Promise<boolean> {
 
 async function isMostlyBlackClip(filePath: string): Promise<boolean> {
   if (isPipelineFallbackClip(filePath)) return true;
-  const curatedStill = isCuratedPreparedStillClip(filePath);
+  const blurFillStill = isPipelineBlurFillStillClip(filePath);
   // Blur-fill stills darken edges by design — not embedded letterbox bars.
-  if (!curatedStill && (await hasEmbeddedPillarboxBars(filePath))) {
+  if (!blurFillStill && (await hasEmbeddedPillarboxBars(filePath))) {
     console.warn(`[Pipeline] Rejecting clip with embedded pillarbox/blur bars: ${path.basename(filePath)}`);
     return true;
   }
@@ -8916,7 +8950,7 @@ async function isMostlyBlackClip(filePath: string): Promise<boolean> {
     let darkCount = 0;
     for (const t of sampleTimes) {
       const ts = Math.min(t, Math.max(0.1, dur - 0.08));
-      const luma = curatedStill
+      const luma = blurFillStill
         ? await probeClipRegionMeanLuma(filePath, ts, "center")
         : await probeClipMeanLuma(filePath, ts);
       if (luma !== null && luma < 25) darkCount++;
@@ -9307,7 +9341,7 @@ async function montageClipPassesComposeGate(
     return true;
   }
   if (await isMostlyBlackClip(clipPath)) return false;
-  if (!isCuratedPreparedStillClip(clipPath) && (await hasEmbeddedPillarboxBars(clipPath))) {
+  if (!isPipelineBlurFillStillClip(clipPath) && (await hasEmbeddedPillarboxBars(clipPath))) {
     console.warn(`[Pipeline] Compose gate: pillarbox/blur bars ${path.basename(clipPath)}`);
     return false;
   }

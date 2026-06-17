@@ -182,15 +182,20 @@ export function buildSimpleKenBurnsVF(
 export function buildBlurFillStillVF(
   duration: number,
   foregroundScale = 0.78,
-  yAnchor: "center" | "top" = "center"
+  yAnchor: "center" | "top" = "center",
+  blurMode: "gblur" | "boxblur" = "gblur"
 ): string {
   const w = DOC_STYLE_VIDEO_WIDTH;
   const h = DOC_STYLE_VIDEO_HEIGHT;
   const fgY = yAnchor === "top" ? "(H-h)/4" : "(H-h)/2";
   const ken = buildKenBurnsTail(duration, yAnchor === "top" ? 1.02 : 1.04, yAnchor);
+  const blurFilter =
+    blurMode === "boxblur"
+      ? "boxblur=luma_radius=32:luma_power=2:chroma_radius=16:chroma_power=1"
+      : "gblur=sigma=42";
   return (
     `[0:v]split=2[orig][orig2];` +
-    `[orig]scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},gblur=sigma=38[bg];` +
+    `[orig]scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},${blurFilter}[bg];` +
     `[orig2]scale='min(${w}*${foregroundScale}/iw\\,${h}*${foregroundScale}/ih)*iw':-2[fg];` +
     `[bg][fg]overlay=(W-w)/2:${fgY}[composed];` +
     `[composed]${ken}[vout]`
@@ -304,7 +309,21 @@ export function buildArchiveStillFilterComplex(
   if (process.env.ARCHIVE_BLUR_FILL_STILLS === "false") {
     return buildMatFramedStillVF(duration, scale, sceneIndex, beatIndex);
   }
-  return buildBlurFillStillVF(duration, scale, personPortrait ? "top" : "center");
+  return buildBlurFillStillVF(duration, scale, personPortrait ? "top" : "center", "gblur");
+}
+
+/** Boxblur variant for hosts where gblur is unavailable or fails. */
+export function buildArchiveStillFilterComplexBoxBlur(
+  duration: number,
+  sceneIndex: number,
+  beatIndex: number,
+  personPortrait = false
+): string {
+  const scale = vidrushStillPhotoScale();
+  if (process.env.ARCHIVE_BLUR_FILL_STILLS === "false") {
+    return buildMatFramedStillVF(duration, scale, sceneIndex, beatIndex);
+  }
+  return buildBlurFillStillVF(duration, scale, personPortrait ? "top" : "center", "boxblur");
 }
 
 export interface TimedOverlay {

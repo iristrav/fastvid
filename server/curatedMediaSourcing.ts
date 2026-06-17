@@ -51,6 +51,7 @@ import { storageGetSignedUrl } from "./storage";
 import { archiveClipHasBakedEditText } from "./archiveClipFilter";
 import {
   buildArchiveStillFilterComplex,
+  buildArchiveStillFilterComplexBoxBlur,
   buildFitGrayVideoVF,
   buildFitGrayGradedVideoVF,
   buildMontageBranchNormVF,
@@ -146,6 +147,13 @@ export function curatedClipPathAssetId(filePath: string): number | null {
 /** Beat clip from archive still (Ken Burns applied in prepareCuratedArchiveClip). */
 export function isCuratedPreparedStillClip(filePath: string): boolean {
   return /_curated_a\d+_still\.mp4$/i.test(path.basename(filePath));
+}
+
+/** Ken Burns still with intentional blur-fill sides (archive, Wikimedia, Openverse, etc.). */
+export function isPipelineBlurFillStillClip(filePath: string): boolean {
+  if (isCuratedPreparedStillClip(filePath)) return true;
+  const base = path.basename(filePath);
+  return /_wiki_|_openverse_|_serp_|_unsplash_|_p0_|_p2_/i.test(base) && /\.mp4$/i.test(base);
 }
 
 /** Beat clip from archive video — already trimmed and framed to 1080p in prepareCuratedArchiveClip. */
@@ -1270,8 +1278,26 @@ async function convertImageToKenBurns(
     } catch (err) {
       if (archiveBlurFillStillsEnabled()) {
         console.warn(
-          `[Curated] Scene ${sceneIndex} beat ${beatIndex}: blur-fill still failed, retrying gray mat:`,
+          `[Curated] Scene ${sceneIndex} beat ${beatIndex}: blur-fill still failed, retrying boxblur:`,
           (err as Error).message?.slice(0, 120)
+        );
+        try {
+          const boxFc = buildArchiveStillFilterComplexBoxBlur(
+            duration,
+            sceneIndex,
+            beatIndex,
+            false
+          );
+          await exec(
+            `${ffmpegBin()} ${buildStillEncodeArgs(imgPath, outPath, duration, boxFc)}`
+          );
+          const boxDur = await probeMediaDurationSec(outPath);
+          if (boxDur >= duration * 0.85) return;
+        } catch {
+          /* fall through to gray mat */
+        }
+        console.warn(
+          `[Curated] Scene ${sceneIndex} beat ${beatIndex}: boxblur still failed, retrying gray mat`
         );
         const matFc = buildMatFramedStillVF(duration, vidrushStillPhotoScale(), sceneIndex, beatIndex);
         await exec(

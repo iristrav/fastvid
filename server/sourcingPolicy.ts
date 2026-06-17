@@ -69,9 +69,7 @@ export function archivePexelsHybridEnabled(): boolean {
 
 /** Wikimedia Commons fallback before Pexels/Pixabay (video + stills; person portraits use blur-fill). */
 export function wikimediaBeatFallbackEnabled(): boolean {
-  if (process.env.ENABLE_WIKIMEDIA_FALLBACK === "false") return false;
-  if (process.env.ENABLE_WIKIMEDIA_PERSON_PORTRAITS === "false") return false;
-  return true;
+  return process.env.ENABLE_WIKIMEDIA_FALLBACK !== "false";
 }
 
 /** @deprecated alias — use wikimediaBeatFallbackEnabled */

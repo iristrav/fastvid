@@ -33,7 +33,7 @@ describe("documentaryStyle", () => {
 
   it("builds blur-fill filter with ken burns", () => {
     const vf = buildBlurFillStillVF(4.0);
-    expect(vf).toContain("gblur=sigma=38");
+    expect(vf).toContain("gblur=sigma=42");
     expect(vf).toContain("zoompan=");
     expect(vf).toContain("overlay=");
   });
@@ -72,7 +72,7 @@ describe("documentaryStyle", () => {
 
   it("uses blur-fill still composition by default", () => {
     const vf = resolveStillCompositionVF(4, 1, 0, false);
-    expect(vf).toContain("gblur=sigma=38");
+    expect(vf).toContain("gblur=sigma=42");
     expect(vf).toContain("zoompan=");
     expect(vf).toContain("overlay=");
     expect(vf).not.toContain("pad=960:1040");
