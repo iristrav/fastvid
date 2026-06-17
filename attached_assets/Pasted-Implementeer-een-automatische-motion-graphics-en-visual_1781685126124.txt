@@ -1,0 +1,215 @@
+Implementeer een automatische motion graphics en visual effects laag voor alle gegenereerde video's.
+
+TEKST OVERLAYS
+
+Het systeem moet automatisch belangrijke elementen uit de voice-over detecteren, zoals:
+
+- Jaartallen (2024, 2025, 2030, etc.)
+
+- Percentages (25%, 80%, 300%, etc.)
+
+- Bedragen (€10.000, €1 miljoen, etc.)
+
+- Statistieken
+
+- KPI's
+
+- Belangrijke kernwoorden
+
+- Korte krachtige uitspraken
+
+Voor deze elementen moet automatisch een tekstoverlay worden toegevoegd.
+
+ANIMATIE
+
+De tekst verschijnt altijd:
+
+- Letter voor letter
+
+- Typewriter effect
+
+- Gelijkmatig tempo
+
+- Geen flitsende animaties
+
+- Professioneel en rustig
+
+POSITIE
+
+Plaatsing altijd:
+
+- Linksonder
+
+- Veilige marge vanaf de rand
+
+- Consistente positie in de gehele video
+
+STYLING
+
+- Witte tekst
+
+- Moderne strakke font
+
+- Goede leesbaarheid
+
+- Subtiele schaduw
+
+- Consistente grootte
+
+- Geen wisselende stijlen
+
+Voorbeeld:
+
+Voice-over:
+
+"In 2025 gebruikt al 78% van de bedrijven AI."
+
+Overlay:
+
+2025
+
+78%
+
+Deze worden letter voor letter ingetypt op het moment dat ze worden uitgesproken.
+
+--------------------------------------------------
+
+AFBEELDINGEN EN B-ROLL
+
+Wanneer afbeeldingen of stockbeelden worden getoond:
+
+- Gebruik altijd dezelfde animatiestijl
+
+- Rustige professionele beweging
+
+- Geen willekeurige effecten
+
+Toepassen:
+
+- Subtiele zoom-in (Ken Burns effect)
+
+OF
+
+- Zeer lichte pan beweging
+
+Duur:
+
+- Langzaam
+
+- Vloeiend
+
+- Constante snelheid
+
+Geen:
+
+- Bounce
+
+- Rotate
+
+- Shake
+
+- Flash
+
+- Snelle zooms
+
+--------------------------------------------------
+
+OVERGANGEN
+
+Gebruik voor de volledige video slechts één overgangstype.
+
+Overgang:
+
+- Simpele crossfade
+
+- Duur 300-500ms
+
+- Consistent tussen alle scenes
+
+Geen:
+
+- Wipes
+
+- Slides
+
+- Spins
+
+- Glitches
+
+- Flash transitions
+
+- Verschillende overgangstypes
+
+Alle overgangen moeten identiek zijn.
+
+--------------------------------------------------
+
+TIMING
+
+Tekst moet exact verschijnen wanneer het woord wordt uitgesproken in de voice-over.
+
+Voorbeeld:
+
+Voice-over:
+
+"In 2025 groeide de omzet met 43 procent."
+
+Synchronisatie:
+
+2025 verschijnt wanneer "2025" wordt uitgesproken.
+
+43% verschijnt wanneer "43 procent" wordt uitgesproken.
+
+--------------------------------------------------
+
+OUTPUT STRUCTUUR
+
+Per scene moet het systeem genereren:
+
+{
+
+  "scene_id": 1,
+
+  "start_time": 12.4,
+
+  "end_time": 16.8,
+
+  "visual_description": "...",
+
+  "image_animation": "slow_zoom_in",
+
+  "transition": "crossfade",
+
+  "overlays": [
+
+    {
+
+      "text": "2025",
+
+      "animation": "typewriter",
+
+      "position": "bottom_left",
+
+      "trigger_word": "2025"
+
+    }
+
+  ]
+
+}
+
+BELANGRIJK
+
+- Houd de stijl minimalistisch.
+
+- Houd alle video's visueel identiek qua effecten.
+
+- Prioriteit is professionaliteit en rust.
+
+- Tekstanimaties moeten de kijker ondersteunen en niet afleiden.
+
+- Gebruik altijd dezelfde overgang.
+
+- Gebruik altijd dezelfde afbeeldingsanimatie.
+
+- Gebruik altijd dezelfde overlay-stijl.
