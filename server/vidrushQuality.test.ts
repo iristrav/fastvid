@@ -2,7 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   clampVidrushClipDuration,
   enforceMontageDurationFloors,
+  inferBeatGeoRegion,
+  isNonDocumentaryVisualHay,
+  isWrongRegionForSegmentLock,
   maxDirectorBeatsForSceneDuration,
+  maxMontageClipsForVoiceSec,
+  resolveSegmentGeoLock,
   vidrushMinClipSec,
   vidrushOpeningClipSec,
 } from "./vidrushQuality";
@@ -25,6 +30,22 @@ describe("vidrushQuality", () => {
   it("never returns below floor when scaling down", () => {
     expect(clampVidrushClipDuration(0.2, 0, 0)).toBeGreaterThanOrEqual(vidrushOpeningClipSec());
     expect(clampVidrushClipDuration(0.2, 2, 1)).toBeGreaterThanOrEqual(vidrushMinClipSec());
+  });
+
+  it("blocks sim/game CGI hay and sticky NL/US segment lock", () => {
+    expect(isNonDocumentaryVisualHay("simcity suburban isometric city")).toBe(true);
+    expect(isNonDocumentaryVisualHay("amsterdam canal drone broll")).toBe(false);
+    expect(isWrongRegionForSegmentLock("american downtown skyline", "nl")).toBe(true);
+    expect(isWrongRegionForSegmentLock("amsterdam gracht bicycles", "nl")).toBe(false);
+    let lock = resolveSegmentGeoLock(inferBeatGeoRegion("In the Netherlands cycling is normal", "NL vs US"), null, "Netherlands vs US");
+    expect(lock).toBe("nl");
+    lock = resolveSegmentGeoLock(inferBeatGeoRegion("American suburbs sprawl outward", "NL vs US"), lock, "Netherlands vs US");
+    expect(lock).toBe("us");
+  });
+
+  it("caps montage clip count for short voice scenes", () => {
+    expect(maxMontageClipsForVoiceSec(23)).toBeLessThanOrEqual(8);
+    expect(maxMontageClipsForVoiceSec(8)).toBeGreaterThanOrEqual(2);
   });
 });
 

@@ -72,7 +72,14 @@ import {
   framedArchiveStillsEnabled,
   archivePexelsHybridEnabled,
 } from "./sourcingPolicy";
-import { vidrushStillPhotoScale, VIDRUSH_MIN_SOURCE_VIDEO_SEC } from "./vidrushQuality";
+import {
+  isNonDocumentaryVisualHay,
+  isWrongRegionForSegmentLock,
+  vidrushStillPhotoScale,
+  VIDRUSH_MIN_SOURCE_VIDEO_SEC,
+  VIDRUSH_MIN_STILL_WIDTH,
+  type BeatGeoRegion,
+} from "./vidrushQuality";
 import {
   analyzeBeatSemantics,
   applySemanticAiRerank,
@@ -321,8 +328,13 @@ export function assetPassesBeatMinimum(
   score: number,
   topScore: number,
   semantic?: SemanticMatchResult,
-  videoVisualTopic: VideoVisualTopic = "general"
+  videoVisualTopic: VideoVisualTopic = "general",
+  segmentLock: BeatGeoRegion | null = null
 ): boolean {
+  const hay = `${(asset.title ?? "").toLowerCase()} ${normalizeMediaTags(asset.tags ?? []).join(" ")}`;
+  if (isNonDocumentaryVisualHay(hay)) return false;
+  if (segmentLock && isWrongRegionForSegmentLock(hay, segmentLock)) return false;
+
   if (videoVisualTopic === "geography_urban" && isWwiiWarArchiveAsset(asset)) {
     return false;
   }
@@ -557,6 +569,8 @@ export function scoreCuratedAsset(
 ): number {
   const assetTags = normalizeMediaTags(asset.tags ?? []);
   const title = (asset.title ?? "").toLowerCase();
+  const assetHay = `${title} ${assetTags.join(" ")}`;
+  if (isNonDocumentaryVisualHay(assetHay)) return 0;
   let score = 0;
   let beatHits = 0;
 
@@ -1012,6 +1026,8 @@ export async function listCuratedArchiveCandidates(
     for (const asset of assets) {
       if (excludeIds.has(asset.id)) continue;
       if (excludeStorageUrls.has(asset.storageUrl)) continue;
+      const assetHay = `${(asset.title ?? "").toLowerCase()} ${normalizeMediaTags(asset.tags ?? []).join(" ")}`;
+      if (isNonDocumentaryVisualHay(assetHay)) continue;
       if (isCuratedOffTopicAsset(asset, topicAnchors, beatTags, videoVisualTopic)) continue;
       if (geoRequired.length > 0 && isWrongGeoForBeat(asset, geoRequired)) continue;
       const score = scoreCuratedAsset(asset, nicheTags, beatTags, topicAnchors, beatText, videoVisualTopic);
@@ -1032,6 +1048,8 @@ export async function listCuratedArchiveCandidates(
       for (const asset of assets) {
         if (excludeIds.has(asset.id)) continue;
         if (excludeStorageUrls.has(asset.storageUrl)) continue;
+        const assetHay = `${(asset.title ?? "").toLowerCase()} ${normalizeMediaTags(asset.tags ?? []).join(" ")}`;
+        if (isNonDocumentaryVisualHay(assetHay)) continue;
         if (isCuratedOffTopicAsset(asset, topicAnchors, beatTags, videoVisualTopic)) continue;
         fallback.push({ asset, score: 1, archiveName: archive.name, archiveNicheTags: normalizeMediaTags(archive.nicheTags ?? []) });
       }
@@ -1207,6 +1225,18 @@ async function trimVideoClip(
   }
 }
 
+async function probeImageWidthPx(filePath: string): Promise<number> {
+  try {
+    const probe = await exec(
+      `${ffprobeBin()} -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 "${filePath}"`
+    );
+    const w = parseInt(String(probe.stdout).trim(), 10);
+    return Number.isFinite(w) && w > 0 ? w : 0;
+  } catch {
+    return 0;
+  }
+}
+
 /** Download a curated archive asset and return a beat-ready MP4 path. */
 export async function prepareCuratedArchiveClip(
   asset: MediaArchiveAsset,
@@ -1234,6 +1264,16 @@ export async function prepareCuratedArchiveClip(
       : path.join(workDir, `scene_${sceneIndex}_b${beatIndex}_curated_a${asset.id}.mp4`);
 
   await materializeArchiveAsset(asset, rawPath);
+
+  if (asset.mediaType === "image") {
+    const width = await probeImageWidthPx(rawPath);
+    if (width > 0 && width < VIDRUSH_MIN_STILL_WIDTH) {
+      try { if (fs.existsSync(rawPath)) fs.unlinkSync(rawPath); } catch { /* ignore */ }
+      throw new Error(
+        `curated asset ${asset.id} still too low-res (${width}px < ${VIDRUSH_MIN_STILL_WIDTH}px)`
+      );
+    }
+  }
 
   const rawBuffer = fs.readFileSync(rawPath);
   if (await archiveClipHasBakedEditText(rawBuffer, asset.mimeType)) {
@@ -1359,6 +1399,7 @@ export async function searchCuratedCandidatesForBeat(
     semanticProfile?: BeatSemanticProfile;
     /** Geo welcome / opening beat — archive images are not allowed. */
     videosOnly?: boolean;
+    segmentLock?: BeatGeoRegion | null;
   }
 ): Promise<CuratedCandidatePick[]> {
   const varietySeed = options?.varietySeed ?? 0;
@@ -1441,8 +1482,9 @@ export async function searchCuratedCandidatesForBeat(
   }
 
   const topScore = ranked[0]?.score ?? 0;
+  const segmentLock = options?.segmentLock ?? null;
   let filtered = ranked.filter((p) =>
-    assetPassesBeatMinimum(p.asset, beat.text, p.score, topScore, p.semantic, videoVisualTopic)
+    assetPassesBeatMinimum(p.asset, beat.text, p.score, topScore, p.semantic, videoVisualTopic, segmentLock)
   );
   if (options?.videosOnly) {
     filtered = filtered.filter((p) => p.asset.mediaType === "video");
@@ -1454,7 +1496,7 @@ export async function searchCuratedCandidatesForBeat(
     return ranked.filter(
       (p) =>
         p.score >= Math.max(45, Math.round(topScore * 0.55)) &&
-        assetPassesBeatMinimum(p.asset, beat.text, p.score, topScore, p.semantic, videoVisualTopic)
+        assetPassesBeatMinimum(p.asset, beat.text, p.score, topScore, p.semantic, videoVisualTopic, segmentLock)
     );
   }
 
@@ -1463,7 +1505,8 @@ export async function searchCuratedCandidatesForBeat(
       (p) =>
         p.score >= Math.max(18, Math.round(topScore * 0.28)) &&
         countVisualTagHits(p.asset, matchTags.length > 0 ? matchTags : beatTags) > 0 &&
-        !isGenericPeopleAsset(p.asset)
+        !isGenericPeopleAsset(p.asset) &&
+        assetPassesBeatMinimum(p.asset, beat.text, p.score, topScore, p.semantic, videoVisualTopic, segmentLock)
     );
     if (relaxed.length > 0) return relaxed;
   }
@@ -1539,6 +1582,8 @@ export async function fetchCuratedArchiveBeatClip(
     varietySeed?: number;
     crossVideoExcludeIds?: Set<number>;
     assetsCache?: Map<number, MediaArchiveAsset[]>;
+    videosOnly?: boolean;
+    segmentLock?: BeatGeoRegion | null;
   }
 ): Promise<string | null> {
   const relaxed = options?.relaxed === true;
@@ -1551,7 +1596,13 @@ export async function fetchCuratedArchiveBeatClip(
     usedAssetIds,
     usedStorageUrls,
     videoTitle,
-    { varietySeed, crossVideoExcludeIds, assetsCache: options?.assetsCache }
+    {
+      varietySeed,
+      crossVideoExcludeIds,
+      assetsCache: options?.assetsCache,
+      segmentLock: options?.segmentLock,
+      videosOnly: options?.videosOnly,
+    }
   );
   if (!candidates.length) {
     console.warn(
@@ -1566,7 +1617,17 @@ export async function fetchCuratedArchiveBeatClip(
   const tryOrder = relaxed ? rotateCuratedCandidates(candidates, varietySeed, beat.index) : candidates;
 
   for (const picked of tryOrder) {
-    if (!relaxed && !assetPassesBeatMinimum(picked.asset, beat.text, picked.score, topScore, undefined, videoVisualTopic)) {
+    if (
+      !assetPassesBeatMinimum(
+        picked.asset,
+        beat.text,
+        picked.score,
+        topScore,
+        undefined,
+        videoVisualTopic,
+        options?.segmentLock ?? null
+      )
+    ) {
       continue;
     }
     if (!relaxed && picked.score < minAcceptScore && topScore > minAcceptScore + 6) {
@@ -1655,7 +1716,8 @@ export function shouldTryPexelsFirstForBeat(
 export function shouldPreferPexelsOverArchive(
   beatText: string,
   ranked: CuratedCandidatePick[],
-  videoVisualTopic: VideoVisualTopic
+  videoVisualTopic: VideoVisualTopic,
+  segmentLock: BeatGeoRegion | null = null
 ): boolean {
   if (!archivePexelsHybridEnabled()) return false;
   if (ranked.length === 0) return true;
@@ -1666,7 +1728,7 @@ export function shouldPreferPexelsOverArchive(
     if (isWrongGeoForBeat(top.asset, geoTags)) return true;
     if (countVisualTagHits(top.asset, geoTags) < 2) return true;
   }
-  if (!assetPassesBeatMinimum(top.asset, beatText, top.score, top.score, top.semantic, videoVisualTopic)) {
+  if (!assetPassesBeatMinimum(top.asset, beatText, top.score, top.score, top.semantic, videoVisualTopic, segmentLock)) {
     return true;
   }
   const minScore = videoVisualTopic === "geography_urban" ? 52 : 38;

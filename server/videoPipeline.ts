@@ -168,6 +168,7 @@ import {
 } from "./motionGraphicsEngine";
 import {
   burnMotionGraphicsOverlaysDrawtext,
+  buildWhiteTypewriterDrawtextFilterChain,
   mergeMotionGraphicsIntoMetadata,
   planMotionGraphicsScene,
   standardMontageCrossfadeSec,
@@ -176,10 +177,21 @@ import {
   type MotionOverlayPlan,
 } from "./motionGraphicsLayer";
 import {
+  buildVidrushOpeningQueries,
+  clipPassesVidrushOpeningGate,
   enforceMontageDurationFloors,
+  inferBeatGeoRegion,
+  isNonDocumentaryClipPath,
+  isWrongRegionForSegmentLock,
+  logMotionGraphicsQa,
+  maxMontageClipsForVoiceSec,
+  trimMontageDurationsToMaxClips,
+  resolveSegmentGeoLock,
   vidrushClipFloorSec,
   vidrushMinClipSec,
+  vidrushOpeningClipSec,
   VIDRUSH_MIN_SOURCE_VIDEO_SEC,
+  type BeatGeoRegion,
 } from "./vidrushQuality";
 import {
   logPipelineReview,
@@ -769,7 +781,7 @@ async function fetchBeatArchivalThenPexels(
       curatedInterviewBudget(dedup),
       curatedImageBudget(dedup),
       undefined,
-      { varietySeed: dedup.varietySeed, crossVideoExcludeIds: dedup.crossVideoExcludeIds }
+      curatedBeatFetchOpts(dedup)
     );
   }
   const topicHay = [videoTitle, scene.text, beat.text].filter(Boolean).join(" ");
@@ -909,7 +921,7 @@ async function beatPrimaryFetch(
       curatedInterviewBudget(dedup),
       curatedImageBudget(dedup),
       undefined,
-      { varietySeed: dedup.varietySeed, crossVideoExcludeIds: dedup.crossVideoExcludeIds }
+      curatedBeatFetchOpts(dedup)
     );
   }
   if (youtubeOnlySourcingEnabled()) {
@@ -7247,18 +7259,39 @@ function isNonVideoMontageClip(filePath: string): boolean {
   return isStillPhotoClip(filePath) || isCuratedPreparedStillClip(filePath);
 }
 
+function rejectInvalidOpeningClip(
+  sceneIndex: number,
+  clipsSoFar: number,
+  clipPath: string,
+  sourceQuery: string,
+  beatText: string,
+  videoTitle: string | undefined,
+  label: string
+): boolean {
+  if (sceneIndex !== 0 || clipsSoFar > 0) return false;
+  if (isNonVideoMontageClip(clipPath)) {
+    console.warn(
+      `[Pipeline] ${label}: opening must be real video — rejecting still ${path.basename(clipPath)}`
+    );
+    return true;
+  }
+  if (!clipPassesVidrushOpeningGate(clipPath, sourceQuery, beatText, videoTitle)) {
+    console.warn(
+      `[Pipeline] ${label}: opening rejected (non-documentary or wrong geo) ${path.basename(clipPath)}`
+    );
+    return true;
+  }
+  return false;
+}
+
+/** @deprecated Use rejectInvalidOpeningClip */
 function rejectOpeningStillClip(
   sceneIndex: number,
   clipsSoFar: number,
   clipPath: string,
   label: string
 ): boolean {
-  if (sceneIndex !== 0 || clipsSoFar > 0) return false;
-  if (!isNonVideoMontageClip(clipPath)) return false;
-  console.warn(
-    `[Pipeline] ${label}: opening must be video — rejecting still ${path.basename(clipPath)}`
-  );
-  return true;
+  return rejectInvalidOpeningClip(sceneIndex, clipsSoFar, clipPath, "", "", undefined, label);
 }
 
 /** Reject sub-minimum stock clips; never shrink beat hold below Vidrush floor. */
@@ -7901,6 +7934,8 @@ interface VisualDedupState {
   visualDirectorScenes: VisualDirectorScene[];
   /** Auto motion graphics scene plans (white typewriter overlays + animation metadata). */
   motionGraphicsScenes: MotionGraphicsScenePlan[];
+  /** Sticky NL/US segment lock for geography documentaries. */
+  geoSegmentLock: BeatGeoRegion | null;
 }
 
 /** One licensed stock clip allowed when minimizeStockFootage (whole-video cap). */
@@ -7961,7 +7996,54 @@ function createVisualDedupState(
     sentenceIntents: new Map(),
     visualDirectorScenes: [],
     motionGraphicsScenes: [],
+    geoSegmentLock: null,
   };
+}
+
+function curatedBeatFetchOpts(
+  dedup: VisualDedupState,
+  extra: Record<string, unknown> = {}
+) {
+  return {
+    varietySeed: dedup.varietySeed,
+    crossVideoExcludeIds: dedup.crossVideoExcludeIds,
+    assetsCache: dedup.archiveAssetsCache,
+    segmentLock: dedup.geoSegmentLock,
+    ...extra,
+  };
+}
+
+function isVidrushOpeningSlot(sceneIndex: number, beatIndex: number, clipsSoFar: number): boolean {
+  return sceneIndex === 0 && beatIndex === 0 && clipsSoFar === 0;
+}
+
+function touchBeatGeoLock(
+  dedup: VisualDedupState,
+  beatText: string,
+  videoTitle?: string
+): void {
+  dedup.geoSegmentLock = resolveSegmentGeoLock(
+    inferBeatGeoRegion(beatText, videoTitle),
+    dedup.geoSegmentLock,
+    videoTitle
+  );
+}
+
+async function withMotionGraphicsBurn(
+  montagePath: string,
+  labeledPath: string,
+  motionOverlayPlans: MotionOverlayPlan[],
+  execFn: (cmd: string, ms: number, lbl: string) => Promise<unknown>
+): Promise<string> {
+  if (motionOverlayPlans.length === 0) return montagePath;
+  await burnMotionGraphicsOverlaysDrawtext(
+    montagePath,
+    labeledPath,
+    motionOverlayPlans,
+    FFMPEG_BIN,
+    execFn
+  );
+  return labeledPath;
 }
 
 const STOCK_CATEGORY_LIMITS: Record<string, number> = {
@@ -8523,6 +8605,7 @@ function isRejectedStockClip(
   const combined = `${sourceQuery} ${path.basename(filePath)}`.toLowerCase();
   if (beatText && isCarBeat(beatText) && CAR_STOCK_ALLOW_RE.test(combined)) return false;
   if (BLOCKED_STOCK_VISUAL_RE.test(combined)) return true;
+  if (isNonDocumentaryClipPath(filePath, sourceQuery, beatText)) return true;
   if (hasBlockedStockTags(combined, beatText)) return true;
   if (beatText && isOffTopicProtestForBeat(beatText, combined, inferVideoVisualTopic(videoTitle, beatText))) {
     return true;
@@ -8769,6 +8852,7 @@ async function montageClipPassesComposeGate(
   clipIndex: number
 ): Promise<boolean> {
   if (!(await isValidVideoFile(clipPath))) return false;
+  if (isNonDocumentaryClipPath(clipPath)) return false;
   const curatedId = curatedClipPathAssetId(clipPath);
   if (curatedId != null) {
     const trimStart = montageClipStartSec(sceneIndex, clipIndex);
@@ -8860,8 +8944,10 @@ async function composePlainMontageScene(
   workDir: string,
   fadeFilter: string,
   threadFlag: string,
-  composeTimeout: number
+  composeTimeout: number,
+  motionOverlayPlans: MotionOverlayPlan[] = []
 ): Promise<boolean> {
+  const execFn = (cmd: string, ms: number, lbl: string) => withTimeout(exec(cmd), ms, lbl);
   const muxMontageWithAudio = async (montageVideoPath: string): Promise<boolean> => {
     const audioIdx = 1;
     await withTimeout(
@@ -8925,7 +9011,14 @@ async function composePlainMontageScene(
       composeTimeout,
       threadFlag
     );
-    return await muxMontageWithAudio(montageOnlyPath);
+    const labeledPath = path.join(workDir, `scene_${sceneIndex}_plain_mg.mp4`);
+    const videoSrc = await withMotionGraphicsBurn(
+      montageOnlyPath,
+      labeledPath,
+      motionOverlayPlans,
+      execFn
+    );
+    return await muxMontageWithAudio(videoSrc);
   } catch (seqErr) {
     console.warn(
       `[Pipeline] Scene ${sceneIndex}: sequential plain montage failed:`,
@@ -9076,11 +9169,12 @@ async function renderSingleMontageSegment(
 ): Promise<number> {
   const startSec = montageClipStartSec(sceneIndex, clipIndex);
   let effectiveDur = duration;
+  const minDur = vidrushClipFloorSec(clipIndex, sceneIndex);
   if (sourceMaxSec > 0.15) {
     effectiveDur = resolveMontageClipEffectiveDur(duration, sourceMaxSec);
-    effectiveDur = Math.min(effectiveDur, Math.max(0.35, sourceMaxSec - startSec - 0.05));
+    effectiveDur = Math.min(effectiveDur, Math.max(minDur, sourceMaxSec - startSec - 0.05));
   }
-  effectiveDur = Math.max(0.35, effectiveDur);
+  effectiveDur = Math.max(minDur, effectiveDur);
   await withTimeout(
     exec(
       `${FFMPEG_BIN} -y -ss ${startSec.toFixed(3)} -i "${clipPath}" -t ${effectiveDur.toFixed(3)} ` +
@@ -9217,7 +9311,8 @@ async function composeBatchedArchiveSceneWithAudio(
   docOverlays: TimedOverlay[],
   threadFlag: string,
   composeTimeout: number,
-  skipEffectLayers: boolean
+  skipEffectLayers: boolean,
+  motionOverlayPlans: MotionOverlayPlan[] = []
 ): Promise<void> {
   const montageOnlyPath = path.join(workDir, `scene_${sceneIndex}_montage_v.mp4`);
   await renderBatchedArchiveMontage(
@@ -9235,7 +9330,7 @@ async function composeBatchedArchiveSceneWithAudio(
   const voiceAudioFilter =
     `[1:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${audioFadeOutStart.toFixed(3)}:d=0.12,` +
     `atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]`;
-  if (skipEffectLayers || docOverlays.length === 0) {
+  if (skipEffectLayers || (docOverlays.length === 0 && motionOverlayPlans.length === 0)) {
     await withTimeout(
       exec(
         `${FFMPEG_BIN} -y -i "${montageOnlyPath}" -i "${safeAudioPath}" ` +
@@ -9250,6 +9345,17 @@ async function composeBatchedArchiveSceneWithAudio(
   }
   const screenLabels = docOverlays.filter((o) => o.isScreenLabel);
   let videoSrc = montageOnlyPath;
+  if (motionOverlayPlans.length > 0) {
+    const mgPath = path.join(workDir, `scene_${sceneIndex}_mgfx.mp4`);
+    await burnMotionGraphicsOverlaysDrawtext(
+      montageOnlyPath,
+      mgPath,
+      motionOverlayPlans,
+      FFMPEG_BIN,
+      (cmd, ms, lbl) => withTimeout(exec(cmd), ms, lbl)
+    );
+    videoSrc = mgPath;
+  }
   if (screenLabels.length > 0) {
     const labeledPath = path.join(workDir, `scene_${sceneIndex}_labeled.mp4`);
     await burnScreenLabelOverlaysSequential(
@@ -9382,7 +9488,7 @@ function normalizeMontageDurations(
   const n = durations.length;
   if (n === 0) return durations;
   const maxClip = effectiveMaxClipSec();
-  const minClip = curatedArchiveOnlyVisuals() ? effectiveMinClipSec() : VIDRUSH_CLIP_MIN_SEC * 0.85;
+  const minClip = vidrushMinClipSec();
   const xfade = n > 1 ? montageXfadeSec() : 0;
   const capDur = (d: number, i: number) => {
     let capped = Math.max(minClip, Math.min(maxClip, d));
@@ -9437,7 +9543,8 @@ function pickMontageExpansionClip(clips: string[], expanded: string[]): string |
 function stretchMontageDurations(
   durs: number[],
   outDur: number,
-  sourceMaxDurs?: number[]
+  sourceMaxDurs?: number[],
+  sceneIndex = 0
 ): number[] {
   const maxClip = effectiveMaxClipSec();
   let next = normalizeMontageDurations([...durs], outDur, sourceMaxDurs);
@@ -9445,9 +9552,10 @@ function stretchMontageDurations(
     if (effectiveMontageDurationSec(next, sourceMaxDurs) >= outDur * 0.92) break;
     let grew = false;
     next = next.map((d, i) => {
+      const floor = vidrushClipFloorSec(i, sceneIndex);
       const srcMax =
         sourceMaxDurs?.[i] && sourceMaxDurs[i]! > 0.15
-          ? Math.max(effectiveMinClipSec() * 0.4, sourceMaxDurs[i]! - 0.05)
+          ? Math.max(floor, sourceMaxDurs[i]! - 0.05)
           : maxClip;
       const ceiling = Math.min(maxClip, srcMax);
       if (d >= ceiling - 0.05) return d;
@@ -10611,9 +10719,18 @@ async function recoverSceneClipsIfEmpty(
         curatedInterviewBudget(dedup),
         curatedImageBudget(dedup),
         undefined,
-        { relaxed: fi >= need }
+        curatedBeatFetchOpts(dedup, { relaxed: fi >= need })
       );
       if (!clip || isPipelineFallbackClip(clip)) continue;
+      if (scene.index === 0 && clips.length === 0) {
+        if (
+          rejectInvalidOpeningClip(0, 0, clip, "", stubBeat.text, topicContext, "Recovery opening") ||
+          isStillPhotoClip(clip) ||
+          isCuratedPreparedStillClip(clip)
+        ) {
+          continue;
+        }
+      }
       const key = clipContentKey(clip);
       if (clips.some((c) => clipContentKey(c) === key)) continue;
       clips.push(clip);
@@ -10740,7 +10857,7 @@ async function fetchLastResortRealClip(
       curatedInterviewBudget(dedup),
       curatedImageBudget(dedup),
       undefined,
-      { varietySeed: dedup.varietySeed, crossVideoExcludeIds: dedup.crossVideoExcludeIds }
+      curatedBeatFetchOpts(dedup)
     );
   }
   const tag = `b${beat.index}_lr`;
@@ -12008,7 +12125,7 @@ async function fetchBeatClip(
       curatedInterviewBudget(dedup),
       curatedImageBudget(dedup),
       undefined,
-      { varietySeed: dedup.varietySeed, crossVideoExcludeIds: dedup.crossVideoExcludeIds }
+      curatedBeatFetchOpts(dedup)
     );
   }
   const tag = `b${beat.index}`;
@@ -13039,7 +13156,7 @@ async function resolveBeatClipForBeat(
       curatedInterviewBudget(dedup),
       curatedImageBudget(dedup),
       undefined,
-      { varietySeed: dedup.varietySeed, crossVideoExcludeIds: dedup.crossVideoExcludeIds }
+      curatedBeatFetchOpts(dedup)
     );
   }
 
@@ -13239,6 +13356,7 @@ async function pushMotionGraphicBeatClipIfAny(
   pushClip: (clipPath: string, holdSec?: number) => boolean | Promise<boolean>,
   holdSec = beat.holdSec
 ): Promise<boolean> {
+  if (scene.index === 0 && beat.index === 0) return false;
   if (autoMotionGraphicsLayerEnabled() || yearsOnlyOnScreen() || !motionGraphicsEnabled()) return false;
   if (dedup.motionGraphicsUsed >= maxMotionGraphicsPerVideo()) return false;
 
@@ -13300,6 +13418,11 @@ async function adoptArchiveBeatClip(
   };
   const tryClip = async (clipPath: string | null | undefined, sec = holdSec): Promise<boolean> => {
     if (!clipPath || isPipelineFallbackClip(clipPath)) return false;
+    const openingBeat = scene.index === 0 && beat.index === 0;
+    if (openingBeat && (isStillPhotoClip(clipPath) || isCuratedPreparedStillClip(clipPath))) {
+      rejectClip(clipPath);
+      return false;
+    }
     const curated = curatedClipPathAssetId(clipPath) != null;
     if (!curated && (await isMostlyBlackClip(clipPath))) {
       console.warn(
@@ -13322,6 +13445,7 @@ async function adoptArchiveBeatClip(
   if (await tryClip(initialClip, holdSec)) return true;
 
   if (curatedArchiveOnlyVisuals()) {
+    const openingBeat = scene.index === 0 && beat.index === 0;
     const { beatTags, topicAnchors, videoVisualTopic } = buildBeatMatchTags(beat, scene, videoTitle);
 
     if (shouldTryPexelsFirstForBeat(beat.text, videoVisualTopic)) {
@@ -13350,14 +13474,15 @@ async function adoptArchiveBeatClip(
         crossVideoExcludeIds: dedup.crossVideoExcludeIds,
         assetsCache: dedup.archiveAssetsCache,
         semanticProfile,
-        videosOnly: videosOnly || isGeoWelcomeBeat(beat.text),
+        videosOnly: videosOnly || isGeoWelcomeBeat(beat.text) || openingBeat,
+        segmentLock: dedup.geoSegmentLock,
       }
     );
     console.log(
       `[Pipeline] Scene ${scene.index} zin ${beat.index}: archive+Pexels "${beat.text.slice(0, 55).trim()}…" → ${ranked.length} archive kandidaat(en)`
     );
 
-    if (shouldPreferPexelsOverArchive(beat.text, ranked, videoVisualTopic)) {
+    if (shouldPreferPexelsOverArchive(beat.text, ranked, videoVisualTopic, dedup.geoSegmentLock)) {
       const pexHybrid = await adoptPexelsBeatClipFallback(
         beat,
         scene,
@@ -13381,7 +13506,7 @@ async function adoptArchiveBeatClip(
     let tried = 0;
     for (const picked of ranked) {
       if (tried >= tryCap) break;
-      if (!relaxed && !assetPassesBeatMinimum(picked.asset, beat.text, picked.score, topScore, picked.semantic, videoVisualTopic)) {
+      if (!relaxed && !assetPassesBeatMinimum(picked.asset, beat.text, picked.score, topScore, picked.semantic, videoVisualTopic, dedup.geoSegmentLock)) {
         continue;
       }
       if (relaxed && picked.score < minAcceptScore && topScore > minAcceptScore + 6) {
@@ -13451,6 +13576,7 @@ async function adoptArchiveBeatClip(
           varietySeed: dedup.varietySeed + beat.index + scene.index,
           crossVideoExcludeIds: dedup.crossVideoExcludeIds,
           assetsCache: dedup.archiveAssetsCache,
+          segmentLock: dedup.geoSegmentLock,
         }
       );
       dedup.motionGraphicsUsed = mgfxBudget.used;
@@ -13482,6 +13608,7 @@ async function adoptArchiveBeatClip(
         varietySeed: dedup.varietySeed,
         crossVideoExcludeIds: dedup.crossVideoExcludeIds,
         assetsCache: dedup.archiveAssetsCache,
+        segmentLock: dedup.geoSegmentLock,
       }
     );
     dedup.motionGraphicsUsed = mgfxBudget.used;
@@ -13537,9 +13664,14 @@ async function adoptPexelsBeatClipFallback(
     beat.searchQuery,
     beat.visualIntent
   );
+  const openingQueries =
+    scene.index === 0 && beat.index === 0
+      ? buildVidrushOpeningQueries(videoTitle, beat.text)
+      : [];
   const queries = [
     ...new Set(
       [
+        ...openingQueries,
         ...welcomeQueries,
         ...cyclingQueries,
         ...geoStatQueries,
@@ -13563,6 +13695,12 @@ async function adoptPexelsBeatClipFallback(
 
   const tryClip = async (clipPath: string | null | undefined, sec = holdSec): Promise<boolean> => {
     if (!clipPath || isPipelineFallbackClip(clipPath)) return false;
+    if (scene.index === 0 && beat.index === 0) {
+      if (isStillPhotoClip(clipPath) || isCuratedPreparedStillClip(clipPath)) return false;
+      if (rejectInvalidOpeningClip(0, 0, clipPath, "", beat.text, videoTitle, "Pexels opening fallback")) {
+        return false;
+      }
+    }
     if (await isMostlyBlackClip(clipPath)) return false;
     const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec);
     if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) return false;
@@ -13606,6 +13744,12 @@ async function adoptPexelsBeatClipFallback(
         if (dedup.usedContentKeys.has(clipContentKey(clipPath))) continue;
         if (isRejectedStockClip(clipPath, q, beat.text, videoTitle)) continue;
         if (
+          dedup.geoSegmentLock &&
+          isWrongRegionForSegmentLock(`${q} ${path.basename(clipPath)}`, dedup.geoSegmentLock)
+        ) {
+          continue;
+        }
+        if (
           dedup.personTopicLock &&
           dedup.primaryPerson &&
           isOffTopicVisualForPersonTopic(q, clipPath, dedup.primaryPerson)
@@ -13616,6 +13760,7 @@ async function adoptPexelsBeatClipFallback(
         if (await tryClip(clipPath, holdSec)) {
           markLicensedStockBeatUsed(dedup);
           dedup.lastMuskStockClip = clipPath;
+          touchBeatGeoLock(dedup, beat.text, videoTitle);
           console.log(
             `[Pipeline] Scene ${scene.index} zin ${beat.index}: Pexels clip voor "${q}" (${reasonLabel})`
           );
@@ -13676,8 +13821,27 @@ async function backfillArchiveMontageFromPool(
     opts?.onProgress?.(attempt + 1, maxFill);
     const beat = beats[attempt % beats.length] ?? beats[0];
     if (!beat) break;
+    touchBeatGeoLock(dedup, beat.text, videoTitle);
     const profile = opts?.semanticProfiles?.get(beat.index);
     const fillHold = Math.max(beat.holdSec, outDur / minClipsNeeded);
+    const openingSlot = isVidrushOpeningSlot(scene.index, beat.index, clips.length);
+    if (openingSlot) {
+      const opened = await adoptVidrushOpeningBeat(
+        beat,
+        scene,
+        workDir,
+        videoTitle,
+        dedup,
+        (clipPath, holdSec) => pushClip(clipPath, holdSec, beats.length + added),
+        vidrushOpeningClipSec(),
+        profile
+      );
+      if (opened) {
+        added++;
+        coverage = await estimateBalancedMontageCoverageSec(clips, beatDurations, outDur);
+        continue;
+      }
+    }
     let adopted = await adoptArchiveBeatClip(
       beat,
       scene,
@@ -13725,6 +13889,21 @@ async function backfillComposeMontageIfShort(
   if (coverage >= minCoverage) return;
 
   const pushClip = async (clipPath: string, holdSec: number): Promise<boolean> => {
+    if (
+      scene.index === 0 &&
+      safeClips.length === 0 &&
+      rejectInvalidOpeningClip(
+        scene.index,
+        0,
+        clipPath,
+        "",
+        scene.text.slice(0, 220),
+        videoTitle,
+        `Scene ${scene.index} compose backfill`
+      )
+    ) {
+      return false;
+    }
     const key = clipContentKey(clipPath);
     if (seenKeys.has(key) || dedup.usedContentKeys.has(key)) return false;
     let actualHold = await resolveSceneClipHoldSec(
@@ -13771,6 +13950,7 @@ async function backfillComposeMontageIfShort(
     for (let attempt = 0; attempt < 8 && coverage < minCoverage; attempt++) {
       const beat = beats[attempt % beats.length] ?? beats[0];
       if (!beat) break;
+      touchBeatGeoLock(dedup, beat.text, videoTitle);
       const fillHold = Math.max(beat.holdSec, outDur / minClipsNeeded);
       const adopted =
         (await adoptArchiveBeatClip(
@@ -13810,6 +13990,111 @@ async function backfillComposeMontageIfShort(
     }
     console.warn(`[Pipeline] ${msg}`);
   }
+}
+
+async function adoptVidrushOpeningBeat(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  videoTitle: string | undefined,
+  dedup: VisualDedupState,
+  pushClip: (clipPath: string, holdSec?: number) => boolean | Promise<boolean>,
+  holdSec: number,
+  semanticProfile?: BeatSemanticProfile
+): Promise<boolean> {
+  if (scene.index !== 0 || beat.index !== 0) return false;
+
+  const openingHold = vidrushOpeningClipSec();
+  const openingQueries = buildVidrushOpeningQueries(videoTitle, beat.text);
+  const openingBeat: SceneBeat = {
+    ...beat,
+    searchQuery: openingQueries[0] ?? beat.searchQuery,
+    powerWord: openingQueries[0] ?? beat.powerWord,
+  };
+
+  console.log(
+    `[Pipeline] Scene 0 opening: Vidrush gate — ${openingQueries.slice(0, 2).join(" | ")}`
+  );
+
+  const tryClip = async (clipPath: string | null | undefined, q: string): Promise<boolean> => {
+    if (!clipPath || isPipelineFallbackClip(clipPath)) return false;
+    if (rejectInvalidOpeningClip(0, 0, clipPath, q, beat.text, videoTitle, "Opening beat")) return false;
+    if (isStillPhotoClip(clipPath) || isCuratedPreparedStillClip(clipPath)) return false;
+    if (!(await montageClipPassesComposeGate(clipPath, 0, 0))) return false;
+    return await pushClip(clipPath, openingHold);
+  };
+
+  if (PEXELS_API_KEY && archivePexelsFallbackEnabled()) {
+    for (let qi = 0; qi < openingQueries.length; qi++) {
+      const q = openingQueries[qi]!;
+      try {
+        const paths = await withTimeout(
+          fetchPexelsClips(
+            q,
+            openingHold,
+            workDir,
+            scene.index,
+            1,
+            openingQueries.slice(qi + 1, qi + 3),
+            true,
+            `open_b${beat.index}`,
+            dedup.usedPexelsIds,
+            beat.index + qi,
+            dedup.perf.pexelsDownloadRetries ?? 2,
+            beat.text,
+            videoTitle
+          ),
+          32_000,
+          "Vidrush opening Pexels"
+        );
+        for (const clipPath of paths) {
+          if (dedup.usedContentKeys.has(clipContentKey(clipPath))) continue;
+          if (isRejectedStockClip(clipPath, q, beat.text, videoTitle)) continue;
+          dedup.usedPaths.add(clipPath);
+          if (await tryClip(clipPath, q)) {
+            markLicensedStockBeatUsed(dedup);
+            dedup.lastMuskStockClip = clipPath;
+            touchBeatGeoLock(dedup, beat.text, videoTitle);
+            return true;
+          }
+        }
+      } catch (err) {
+        console.warn(`[Pipeline] Opening Pexels "${q}" failed:`, (err as Error).message?.slice(0, 80));
+      }
+    }
+  } else {
+    console.warn("[Pipeline] Scene 0 opening: Pexels unavailable — archive video-only fallback");
+  }
+
+  if (
+    await adoptArchiveBeatClip(
+      openingBeat,
+      scene,
+      workDir,
+      videoTitle,
+      dedup,
+      pushClip,
+      null,
+      openingHold,
+      semanticProfile,
+      false,
+      true
+    )
+  ) {
+    touchBeatGeoLock(dedup, beat.text, videoTitle);
+    return true;
+  }
+
+  return adoptGeoWelcomeIntroBeat(
+    openingBeat,
+    scene,
+    workDir,
+    videoTitle,
+    dedup,
+    pushClip,
+    openingHold,
+    semanticProfile
+  );
 }
 
 async function adoptGeoWelcomeIntroBeat(
@@ -13880,11 +14165,18 @@ async function fetchArchiveSentenceMontage(
   onBeatProgress?: (beatIndex: number, beatTotal: number, phase?: BeatProgressPhase) => void
 ): Promise<SceneVisualsResult> {
   const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
-  const beatCap = Math.max(
-    dedup.perf.maxBeatsPerScene,
-    Math.ceil(scene.duration / archiveVisualMinClipSec())
+  const maxClipsThisScene = maxMontageClipsForVoiceSec(scene.duration);
+  const beatCap = Math.min(
+    Math.max(dedup.perf.maxBeatsPerScene, Math.ceil(scene.duration / archiveVisualMinClipSec())),
+    maxClipsThisScene
   );
-  const beats = buildSceneBeats(scene, scene.duration, beatCap, videoTitle, scenePersons, dedup.sentenceKeywords, dedup.sentenceIntents, dedup.visualDirectorScenes);
+  let beats = buildSceneBeats(scene, scene.duration, beatCap, videoTitle, scenePersons, dedup.sentenceKeywords, dedup.sentenceIntents, dedup.visualDirectorScenes);
+  if (beats.length > maxClipsThisScene) {
+    console.warn(
+      `[Pipeline] Scene ${scene.index}: capping ${beats.length}→${maxClipsThisScene} beats for Vidrush pacing`
+    );
+    beats = beats.slice(0, maxClipsThisScene);
+  }
   const clips: string[] = [];
   const beatDurations: number[] = [];
   const clipBeatIndices: number[] = [];
@@ -13900,8 +14192,22 @@ async function fetchArchiveSentenceMontage(
     `[Pipeline] Scene ${scene.index}: ${beats.length} zin(en) → archive + Pexels hybrid per zin`
   );
 
-  const pushSceneClip = async (clipPath: string, holdSec: number, beatIndex: number): Promise<boolean> => {
-    if (rejectOpeningStillClip(scene.index, clips.length, clipPath, `Scene ${scene.index} zin ${beatIndex}`)) {
+  const pushSceneClip = async (clipPath: string, holdSec: number, beatIndex: number, sourceQuery = ""): Promise<boolean> => {
+    if (
+      rejectInvalidOpeningClip(
+        scene.index,
+        clips.length,
+        clipPath,
+        sourceQuery,
+        beats.find((b) => b.index === beatIndex)?.text ?? "",
+        videoTitle,
+        `Scene ${scene.index} zin ${beatIndex}`
+      )
+    ) {
+      return false;
+    }
+    if (clips.length >= maxClipsThisScene) {
+      console.warn(`[Pipeline] Scene ${scene.index}: clip cap ${maxClipsThisScene} reached — skipping extra`);
       return false;
     }
     const key = clipContentKey(clipPath);
@@ -13933,11 +14239,28 @@ async function fetchArchiveSentenceMontage(
   for (let bi = 0; bi < beats.length; bi++) {
     const beat = beats[bi]!;
     onBeatProgress?.(bi + 1, beats.length, "beat");
+    dedup.geoSegmentLock = resolveSegmentGeoLock(
+      inferBeatGeoRegion(beat.text, videoTitle),
+      dedup.geoSegmentLock,
+      videoTitle
+    );
     const pushClip = (clipPath: string, holdSec = beat.holdSec): Promise<boolean> =>
       pushSceneClip(clipPath, holdSec, beat.index);
 
     let filled = false;
-    if (isGeoWelcomeBeat(beat.text)) {
+    if (scene.index === 0 && beat.index === 0 && clips.length === 0) {
+      filled = await adoptVidrushOpeningBeat(
+        beat,
+        scene,
+        workDir,
+        videoTitle,
+        dedup,
+        pushClip,
+        vidrushOpeningClipSec(),
+        semanticProfiles.get(bi)
+      );
+    }
+    if (!filled && isGeoWelcomeBeat(beat.text)) {
       filled = await adoptGeoWelcomeIntroBeat(
         beat,
         scene,
@@ -14020,7 +14343,17 @@ async function ensureArchiveMontageVoiceCoverage(
   );
 
   const pushSceneClip = async (clipPath: string, holdSec: number, beatIndex: number): Promise<boolean> => {
-    if (rejectOpeningStillClip(scene.index, clips.length, clipPath, `Scene ${scene.index} backfill`)) {
+    if (
+      rejectInvalidOpeningClip(
+        scene.index,
+        clips.length,
+        clipPath,
+        "",
+        beats.find((b) => b.index === beatIndex)?.text ?? "",
+        videoTitle,
+        `Scene ${scene.index} backfill`
+      )
+    ) {
       return false;
     }
     const key = clipContentKey(clipPath);
@@ -14159,7 +14492,17 @@ async function fetchSceneVisuals(
   };
 
   const pushSceneClip = async (clipPath: string, holdSec: number, beatIndex: number): Promise<boolean> => {
-    if (rejectOpeningStillClip(scene.index, clips.length, clipPath, `Scene ${scene.index} beat ${beatIndex}`)) {
+    if (
+      rejectInvalidOpeningClip(
+        scene.index,
+        clips.length,
+        clipPath,
+        "",
+        beats.find((b) => b.index === beatIndex)?.text ?? "",
+        videoTitle,
+        `Scene ${scene.index} beat ${beatIndex}`
+      )
+    ) {
       return false;
     }
     const key = clipContentKey(clipPath);
@@ -14195,6 +14538,11 @@ async function fetchSceneVisuals(
     const beat = beats[bi];
     beatAdoptOpts.keywords = beat.keywords;
     onBeatProgress?.(bi, beats.length, "beat");
+    dedup.geoSegmentLock = resolveSegmentGeoLock(
+      inferBeatGeoRegion(beat.text, videoTitle),
+      dedup.geoSegmentLock,
+      videoTitle
+    );
     const pushClip = (clipPath: string, holdSec = beat.holdSec): Promise<boolean> =>
       pushSceneClip(clipPath, holdSec, beat.index);
     const beatWallMs = beatVisualWallMs(dedup.perf);
@@ -14203,7 +14551,25 @@ async function fetchSceneVisuals(
       onBeatProgress?.(bi, beats.length, "beat");
     }, 10_000);
     try {
-      if (await pushMotionGraphicBeatClipIfAny(beat, scene, workDir, videoTitle, dedup, pushClip, beat.holdSec)) {
+      if (scene.index === 0 && beat.index === 0 && clips.length === 0) {
+        if (
+          await adoptVidrushOpeningBeat(
+            beat,
+            scene,
+            workDir,
+            videoTitle,
+            dedup,
+            pushClip,
+            vidrushOpeningClipSec()
+          )
+        ) {
+          continue;
+        }
+      }
+      if (
+        !(scene.index === 0 && beat.index === 0 && clips.length === 0) &&
+        (await pushMotionGraphicBeatClipIfAny(beat, scene, workDir, videoTitle, dedup, pushClip, beat.holdSec))
+      ) {
         continue;
       }
       if (archiveOnly) {
@@ -14472,6 +14838,7 @@ async function fetchSceneVisuals(
   ) {
     const stub = beats[backfillAttempts % beats.length] ?? beats[0];
     if (!stub) break;
+    touchBeatGeoLock(dedup, stub.text, videoTitle);
     onBeatProgress?.(backfillAttempts + 1, maxBackfill, "backfill");
     let extra: string | null = null;
     const backfillPulse = setInterval(() => {
@@ -14493,7 +14860,9 @@ async function fetchSceneVisuals(
                 curatedInterviewBudget(dedup),
                 curatedImageBudget(dedup),
                 undefined,
-                { relaxed: backfillAttempts >= Math.floor(maxBackfill / 2) }
+                curatedBeatFetchOpts(dedup, {
+                  relaxed: backfillAttempts >= Math.floor(maxBackfill / 2),
+                })
               );
             }
             if (dedup.perf.fastStockMode) {
@@ -14612,7 +14981,9 @@ async function fetchSceneVisuals(
           dedup.usedCuratedStorageUrls,
           videoTitle,
           curatedInterviewBudget(dedup),
-      curatedImageBudget(dedup)
+          curatedImageBudget(dedup),
+          undefined,
+          curatedBeatFetchOpts(dedup, { relaxed: true, videosOnly: scene.index === 0 && si === 0 })
         );
         if (extra && !isPipelineFallbackClip(extra) && (await pushSceneClip(extra, stub.holdSec, stub.index))) {
           break;
@@ -14717,7 +15088,9 @@ async function fetchSceneVisuals(
         dedup.usedCuratedStorageUrls,
         videoTitle,
         curatedInterviewBudget(dedup),
-      curatedImageBudget(dedup)
+        curatedImageBudget(dedup),
+        undefined,
+        curatedBeatFetchOpts(dedup, { relaxed: true, videosOnly: scene.index === 0 })
       );
     } else if (realOnly) {
       forced = await beatPrimaryFetch(
@@ -15223,6 +15596,37 @@ async function applySceneEffectsPass(
   }
 
   const probedDur = await probeVideoDurationSec(assemblyPath);
+  const voiceDur = probedDur || Math.max(0.5, duration - 0.35);
+  const outDur = voiceDur + 0.12;
+  let motionOverlayPlans: MotionOverlayPlan[] = [];
+  if (autoMotionGraphicsLayerEnabled()) {
+    try {
+      const sceneBeats = buildSceneBeats(scene, outDur, Math.max(sceneClips.length, 8), undefined, [], undefined, undefined, undefined);
+      const beatInputs = sceneBeats.map((b) => ({
+        text: b.text,
+        holdSec: b.holdSec,
+        powerWord: b.powerWord,
+        highlightWords: b.keywords,
+      }));
+      const mgPlan = planMotionGraphicsScene(scene.index, 0, outDur, beatInputs);
+      motionOverlayPlans = mgPlan.overlays;
+      logMotionGraphicsQa(scene.index, beatInputs, motionOverlayPlans);
+    } catch (err) {
+      console.warn(`[Pipeline] Scene ${scene.index}: effects-pass motion graphics failed (non-fatal):`, err);
+    }
+  }
+
+  let videoSrc = assemblyPath;
+  if (motionOverlayPlans.length > 0) {
+    const mgPath = path.join(workDir, `scene_${scene.index}_fx_mg.mp4`);
+    videoSrc = await withMotionGraphicsBurn(
+      assemblyPath,
+      mgPath,
+      motionOverlayPlans,
+      (cmd, ms, lbl) => withTimeout(exec(cmd), ms, lbl)
+    );
+  }
+
   const layers = await prepareSceneEffectLayers(
     scene,
     duration,
@@ -15267,7 +15671,7 @@ async function applySceneEffectsPass(
 
   await withTimeout(
     exec(
-      `${FFMPEG_BIN} -y -i "${assemblyPath}"${extraInputs ? ` ${extraInputs}` : ""}${sfxInputStr ? ` ${sfxInputStr}` : ""} ` +
+      `${FFMPEG_BIN} -y -i "${videoSrc}"${extraInputs ? ` ${extraInputs}` : ""}${sfxInputStr ? ` ${sfxInputStr}` : ""} ` +
         `-filter_complex "${videoChain};${audioFilter}" ` +
         `-map "[vout]" -map "[aout]" -vsync cfr ` +
         `-t ${layers.outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
@@ -15607,6 +16011,24 @@ async function composeSceneVideo(
   const voiceDur = voiceDurEarly;
   const outDur = outDurEarly;
 
+  const maxComposeClips = maxMontageClipsForVoiceSec(outDur);
+  if (safeClips.length > maxComposeClips) {
+    console.warn(
+      `[Pipeline] Scene ${scene.index}: trimming ${safeClips.length}→${maxComposeClips} clips for Vidrush pacing`
+    );
+    safeClips = safeClips.slice(0, maxComposeClips);
+    if (composeBeatDurations.length > maxComposeClips) {
+      composeBeatDurations = trimMontageDurationsToMaxClips(
+        composeBeatDurations,
+        maxComposeClips,
+        scene.index
+      );
+    }
+    if (composeClipBeatIndices.length > maxComposeClips) {
+      composeClipBeatIndices = composeClipBeatIndices.slice(0, maxComposeClips);
+    }
+  }
+
   const prepared = await prepareStrictUniqueMontage(
     scene.index,
     safeClips,
@@ -15633,7 +16055,7 @@ async function composeSceneVideo(
     );
   }
 
-  if (!skipEffectLayers && autoMotionLayer && cinematicEffectsEnabled()) {
+  if (!skipEffectLayers && autoMotionLayer) {
     try {
       const sceneStartSec = composeOptions?.sceneStartSec ?? 0;
       const fetchBeats = composeOptions?.montageBeats;
@@ -15672,11 +16094,7 @@ async function composeSceneVideo(
         start_time: Math.max(0, o.start_time - sceneStartSec),
         end_time: Math.max(0.15, o.end_time - sceneStartSec),
       }));
-      if (motionOverlayPlans.length > 0) {
-        console.log(
-          `[MotionGraphics] Scene ${scene.index}: ${motionOverlayPlans.length} voice-synced overlay(s) [${motionOverlayPlans.map((o) => o.text).join(" | ")}]`
-        );
-      }
+      logMotionGraphicsQa(scene.index, beatInputs, motionOverlayPlans);
     } catch (err) {
       console.warn(`[Pipeline] Scene ${scene.index}: motion graphics plan failed (non-fatal):`, err);
     }
@@ -15854,7 +16272,8 @@ async function composeSceneVideo(
         docOverlays,
         threadFlag,
         composeTimeout,
-        skipEffectLayers
+        skipEffectLayers,
+        motionOverlayPlans
       );
     } else {
     const { scaleFilters, mergeFilter, montageLabel: xfadeLabel } =
@@ -15904,11 +16323,17 @@ async function composeSceneVideo(
       yearLabels.length > 0 && screenLabels.length === 0 && ffmpegSupportsDrawtext()
         ? buildYearDrawtextFilterChain("vgraded", "vout", yearLabels)
         : "";
+    const motionDrawChain =
+      motionOverlayPlans.length > 0 && ffmpegSupportsDrawtext()
+        ? buildWhiteTypewriterDrawtextFilterChain("vgraded", "vout", motionOverlayPlans)
+        : "";
     const videoGradeChain = yearDrawChain
       ? `;[vmont]${fadeFilter}[vgraded]${yearDrawChain}`
-      : hasOverlays
-        ? `${kineticChainStr};[${kFinalLabel}]${fadeFilter}[vout]`
-        : `;[vmont]${fadeFilter}[vout]`;
+      : motionDrawChain
+        ? `;[vmont]${fadeFilter}[vgraded]${motionDrawChain}`
+        : hasOverlays
+          ? `${kineticChainStr};[${kFinalLabel}]${fadeFilter}[vout]`
+          : `;[vmont]${fadeFilter}[vout]`;
     const overlayCount =
       kineticFrames.length + docOverlays.length + (statCalloutFrame ? 1 : 0);
     const sfxBaseIdx = kineticBaseIdx + overlayCount;
@@ -15951,7 +16376,8 @@ async function composeSceneVideo(
           workDir,
           fadeFilter,
           threadFlag,
-          composeTimeout
+          composeTimeout,
+          motionOverlayPlans
         )
       ) {
         console.warn(`[Pipeline] Scene ${scene.index}: plain montage compose succeeded (years/SFX skipped)`);
