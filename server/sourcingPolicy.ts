@@ -1,7 +1,5 @@
 /** Production sourcing policy — curated media archive for visuals; ElevenLabs for voice. */
 
-import { targetVideoDurationMinutes } from "../shared/videoLengths";
-
 /** Visual beats use only the admin media archive (no YouTube, stock, Serp, Wikimedia, or AI clips). */
 export function curatedArchiveOnlyVisuals(): boolean {
   return true;
@@ -12,69 +10,30 @@ export function externalVisualSourcingEnabled(): boolean {
   return false;
 }
 
-/** Free testing: Google Translate TTS (no ElevenLabs/Fish credits). Set FREE_TTS=gtts on Railway. */
-export function freeVoiceoverMode(): boolean {
-  const raw = process.env.FREE_TTS?.trim().toLowerCase();
-  return raw === "gtts" || raw === "true" || process.env.VOICE_PROVIDER?.trim().toLowerCase() === "gtts";
-}
-
-/** gTTS language code — nl or en (default nl for Dutch scripts). */
-export function freeVoiceoverGttsLang(): "nl" | "en" {
-  const raw = process.env.FREE_TTS_LANG?.trim().toLowerCase();
-  if (raw === "en" || raw === "nl") return raw;
-  return "nl";
-}
-
 /** When true (default), voiceover uses ElevenLabs only (no Fish Audio). */
 export function elevenLabsOnlyVoice(): boolean {
-  if (freeVoiceoverMode()) return false;
   return process.env.ELEVENLABS_ONLY !== "false";
-}
-
-/** Burned-in on-screen text (labels, subs, V3 motion graphics). On by default for documentary quality. */
-export function onScreenTextEnabled(): boolean {
-  if (process.env.ENABLE_ONSCREEN_TEXT === "false") return false;
-  if (process.env.ENABLE_ONSCREEN_TEXT === "true") return true;
-  return vidrushDocumentaryQualityEnabled();
 }
 
 /** Faceless kinetic subtitles — off by default; only year badges on screen unless ENABLE_EXTRA_ONSCREEN_TEXT=true. */
 export function facelessSubtitlesEnabled(): boolean {
-  if (!onScreenTextEnabled()) return false;
   if (yearsOnlyOnScreen()) return false;
   return process.env.ENABLE_FACELESS_SUBTITLES === "true";
 }
 
-/** Only year numbers as on-screen text (no kinetic subs, maps, name cards). Default on when text is enabled. */
+/** Only year numbers as on-screen text (no kinetic subs, maps, name cards). Default on. */
 export function yearsOnlyOnScreen(): boolean {
-  if (!onScreenTextEnabled()) return true;
   return process.env.ENABLE_EXTRA_ONSCREEN_TEXT !== "true";
 }
 
-/** Year/stat labels bottom-left. On when text enabled — set ENABLE_SCREEN_LABELS=false to disable. */
+/** Year/stat labels bottom-left. On by default — set ENABLE_SCREEN_LABELS=false to disable. */
 export function screenLabelsEnabled(): boolean {
-  if (!onScreenTextEnabled()) return false;
   return process.env.ENABLE_SCREEN_LABELS !== "false";
 }
 
-/** When true (default), use Pexels/Pixabay after Wikimedia and archive miss on a beat. */
+/** When true (default), use Pexels stock if no archive clip matches a sentence. */
 export function archivePexelsFallbackEnabled(): boolean {
   return process.env.ARCHIVE_PEXELS_FALLBACK !== "false";
-}
-
-/** Pexels/Pixabay after Wikimedia + archive misses (default on). */
-export function archivePexelsHybridEnabled(): boolean {
-  return process.env.ARCHIVE_PEXELS_HYBRID !== "false" && archivePexelsFallbackEnabled();
-}
-
-/** Wikimedia Commons fallback before Pexels/Pixabay (video + stills; person portraits use blur-fill). */
-export function wikimediaBeatFallbackEnabled(): boolean {
-  return process.env.ENABLE_WIKIMEDIA_FALLBACK !== "false";
-}
-
-/** @deprecated alias — use wikimediaBeatFallbackEnabled */
-export function wikimediaPersonPortraitsEnabled(): boolean {
-  return wikimediaBeatFallbackEnabled();
 }
 
 /** Fail generation rather than loop, pad, or reuse any clip content in a video. */
@@ -89,106 +48,28 @@ export function documentaryOverlaysEnabled(): boolean {
   return process.env.ENABLE_DOC_OVERLAYS !== "false";
 }
 
-/** Generation wall-clock minutes allowed per 1 minute of finished video (default 10:1). */
-export function pipelineMinutesPerVideoMinute(): number {
-  const raw = process.env.PIPELINE_MIN_PER_VIDEO_MIN?.trim();
-  if (raw) {
-    const n = parseFloat(raw);
-    if (!isNaN(n) && n >= 5 && n <= 20) return n;
-  }
-  return 10;
-}
-
-/** Multiplier on target budget before hard-fail (default 1.2 → ~12 min pipeline per 1 min video). */
-export function pipelineWallClockGraceFactor(): number {
-  const raw = process.env.PIPELINE_WALL_CLOCK_GRACE?.trim();
-  if (raw) {
-    const n = parseFloat(raw);
-    if (!isNaN(n) && n >= 1.05 && n <= 1.5) return n;
-  }
-  return 1.2;
-}
-
-/** When true (default), cap generation at video_minutes × 10 wall-clock. Set PIPELINE_WALL_CLOCK_LIMIT=false to disable. */
-export function pipelineWallClockLimitEnabled(): boolean {
-  return process.env.PIPELINE_WALL_CLOCK_LIMIT !== "false";
-}
-
-/** Practical "no limit" for withTimeout / setTimeout (7 days — below Node's max delay). */
-export const PIPELINE_UNLIMITED_MS = 7 * 24 * 60 * 60 * 1000;
-
-/**
- * Target end-to-end generation budget (minutes) — video_minutes × 10 by default.
- * Used for perf profiles and stage timeouts; generation may run slightly over via grace.
- */
-export function maxPipelineWallClockMin(videoLength?: string | null): number {
-  if (!pipelineWallClockLimitEnabled()) {
-    return Math.round(PIPELINE_UNLIMITED_MS / 60_000);
-  }
-  const override = process.env.MAX_PIPELINE_WALL_CLOCK_MIN?.trim();
-  if (override) {
-    const n = parseInt(override, 10);
-    if (!isNaN(n) && n >= 10 && n <= 300) return n;
-  }
-  return Math.round(targetVideoDurationMinutes(videoLength) * pipelineMinutesPerVideoMinute());
-}
-
-/** Hard fail only after target × grace (default 12 min pipeline per 1 min video). */
-export function maxPipelineWallClockHardMin(videoLength?: string | null): number {
-  if (!pipelineWallClockLimitEnabled()) {
-    return Math.round(PIPELINE_UNLIMITED_MS / 60_000);
-  }
-  const target = maxPipelineWallClockMin(videoLength);
-  return Math.min(360, Math.round(target * pipelineWallClockGraceFactor()));
-}
-
-/** Max archive/Wikimedia candidates to try per beat when wall-clock limit is on. */
-export function maxVisualCandidatesPerBeatTry(): number {
-  return pipelineWallClockLimitEnabled() ? 4 : 12;
-}
-
-/** Prefer quality over speed (more time per beat/scene). Default on for archive docs. */
-export function qualityOverSpeedEnabled(): boolean {
-  if (process.env.QUALITY_OVER_SPEED === "false") return false;
-  return curatedArchiveOnlyVisuals() || process.env.QUALITY_OVER_SPEED === "true";
-}
-
-/** Wall-clock budget for the visual sourcing stage (minutes). */
-export function visualStageWallClockMin(videoLength?: string | null): number {
-  if (!pipelineWallClockLimitEnabled()) {
-    return Math.round(PIPELINE_UNLIMITED_MS / 60_000);
-  }
-  const total = maxPipelineWallClockMin(videoLength);
-  return Math.max(8, Math.min(total - 6, Math.round(total * 0.88)));
-}
-
 /** Target on-screen duration per archive clip (seconds). */
 export function archiveVisualBeatSec(): number {
   const raw = process.env.ARCHIVE_VISUAL_BEAT_SEC?.trim();
   if (raw) {
     const n = parseFloat(raw);
-    if (!isNaN(n) && n >= 2.5 && n <= 6) return n;
+    if (!isNaN(n) && n >= 5 && n <= 8) return n;
   }
-  return 4;
+  return 6;
 }
 
 /** Hard limits for archive clip length in generated videos. */
 export function archiveVisualMinClipSec(): number {
-  const raw = process.env.ARCHIVE_VISUAL_MIN_SEC?.trim();
-  if (raw) {
-    const n = parseFloat(raw);
-    if (!isNaN(n) && n >= 1.5 && n <= 5) return n;
-  }
-  return 3.5;
+  return 5;
 }
 
 export function archiveVisualMaxClipSec(): number {
   const raw = process.env.ARCHIVE_VISUAL_MAX_SEC?.trim();
   if (raw) {
     const n = parseFloat(raw);
-    if (!isNaN(n) && n >= 3 && n <= 8) return n;
+    if (!isNaN(n) && n >= 5 && n <= 8) return n;
   }
-  return 5.0;
+  return 8;
 }
 
 /** Prefer moving archive video over Ken Burns stills (default on). */
@@ -211,7 +92,7 @@ export function framedArchiveStillsEnabled(): boolean {
   return process.env.ENABLE_FRAMED_ARCHIVE_STILLS !== "false";
 }
 
-/** Archive stills: blurred fill background + sharp smaller photo + Ken Burns (default on). */
+/** Archive stills: blurred fill background + sharp photo + light zoom (Locomotive Historian style). */
 export function archiveBlurFillStillsEnabled(): boolean {
   return process.env.ARCHIVE_BLUR_FILL_STILLS !== "false";
 }
@@ -273,23 +154,8 @@ export function archiveCrossVideoCooldownVideos(): number {
 
 /** FFmpeg-generated text cards, maps, and diagram beats (no external API). */
 export function motionGraphicsInVideosEnabled(): boolean {
-  if (!onScreenTextEnabled()) return false;
   if (yearsOnlyOnScreen()) return false;
   return process.env.ENABLE_MOTION_GRAPHICS !== "false";
-}
-
-/** Automatic V3 text overlays — centered typewriter highlights (on when onScreenTextEnabled). */
-export function autoMotionGraphicsLayerEnabled(): boolean {
-  if (!onScreenTextEnabled()) return false;
-  return process.env.ENABLE_AUTO_MOTION_GRAPHICS !== "false";
-}
-
-/**
- * Vidrush documentary quality gates — opening B-roll, 3.5s pacing, non-doc filter,
- * geo consistency, motion-graphics QA. On by default for every topic/subject.
- */
-export function vidrushDocumentaryQualityEnabled(): boolean {
-  return process.env.ENABLE_VIDRUSH_QUALITY !== "false";
 }
 
 export function maxMotionGraphicsPerVideo(): number {
@@ -299,4 +165,12 @@ export function maxMotionGraphicsPerVideo(): number {
     if (!isNaN(n) && n >= 0 && n <= 20) return n;
   }
   return 5;
+}
+
+/**
+ * Visual Matching Engine V1: Wikimedia → Archive → Pexels → Pixabay sourcing order.
+ * Enable via env VISUAL_MATCHING_V1=true.
+ */
+export function visualMatchingV1Enabled(): boolean {
+  return process.env.VISUAL_MATCHING_V1 === "true";
 }
