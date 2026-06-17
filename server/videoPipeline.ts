@@ -9510,10 +9510,31 @@ const DUTCH_STOCK_WORD_MAP: Record<string, string> = {
   kind: "child", gezin: "family", vrouw: "woman", man: "man", mensen: "people", menigte: "crowd",
   geld: "money", bank: "bank", winkel: "shop", markt: "market", boerderij: "farm", oogst: "harvest",
   ruimte: "space", planeet: "planet", sterren: "stars", maan: "moon",
+  // Netherlands geography — maps Dutch terms to specific Pexels-friendly English queries
+  nederland: "netherlands", nederlanden: "netherlands", nederlandse: "netherlands",
+  amsterdam: "Amsterdam", rotterdam: "rotterdam", utrecht: "utrecht",
+  gracht: "Amsterdam canal", grachtenpand: "Amsterdam canal house",
+  fietspad: "Dutch cycling", fietspaden: "Netherlands bicycle lane",
+  windmolen: "windmill Netherlands", windmolens: "dutch windmill",
+  polder: "netherlands landscape", polders: "netherlands countryside",
+  tulp: "tulip Netherlands", tulpen: "dutch tulip field",
+  woningmarkt: "Netherlands housing", woning: "dutch residential street",
+  zorg: "Netherlands healthcare", gezondheidszorg: "dutch healthcare",
 };
 
 /** Topic patterns → one English stock keyword (all documentary subjects). */
 const STOCK_TOPIC_WORD_RULES: [RegExp, string][] = [
+  // Netherlands / Dutch geography — must come before generic city/cycling rules
+  [/\bamsterdam\b/, "Amsterdam"],
+  [/\brotterdam\b/, "rotterdam"],
+  [/\bnetherlands\b|\bnederland\b|\bnederlanden\b/, "netherlands"],
+  [/\bdutch\b|\bnederlandse\b/, "Amsterdam"],
+  [/\bholland\b/, "Netherlands"],
+  [/\bgracht\b|\bdutch canal\b|\bamsterdam canal\b/, "Amsterdam canal"],
+  [/\bfietspad\b|\bdutch cycling\b|\bnl cycling\b/, "Dutch cycling"],
+  [/\bwindmolen\b|\bdutch windmill\b/, "windmill Netherlands"],
+  [/\bpolder\b/, "netherlands landscape"],
+  [/\btulpen\b|\bdutch tulip\b/, "tulip Netherlands"],
   [/\b(cybertruck|gigafactory|supercharger|model\s*[3y])\b|\btesla\b|\bmusk\b|\belon\b/, "tesla"],
   [/\bspacex\b|\bfalcon\b|\bstarship\b/, "spacex"],
   [/\brocket\b|\blaunch\b|\bbooster\b|\borbit\b|\bmissile\b/, "rocket"],

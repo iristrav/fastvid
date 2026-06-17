@@ -268,7 +268,24 @@ export function countVisualTagHits(
   return hits;
 }
 
-/** Minimum bar so a clip actually depicts what the sentence describes. */
+/**
+ * Detect clips whose title looks like a broadcast/editorial production notation label
+ * that has been pre-burned into the video file (e.g. "MEDIC", "UNCERTAINTY WIDE SHOT MED",
+ * "ECU FACE", "CU HANDS"). These clips will show the label on-screen in the output.
+ */
+function hasProductionNotationTitle(asset: Pick<MediaArchiveAsset, "title">): boolean {
+  const title = (asset.title ?? "").trim();
+  if (!title) return false;
+  // All-uppercase title → likely a production/editorial shot label
+  if (title === title.toUpperCase() && /^[A-Z0-9 _\-]+$/.test(title) && title.length <= 60) {
+    // Common shot-type words from broadcast archives
+    if (/\b(MEDIC|WIDE\s*SHOT|CLOSE\s*UP|MED(?:IUM)?|ECU|BCU|MCU|CU|WS|MS|LS|XLS|OTS|UNCERTAINTY|SHOT|ANGLE|FRAME|SCENE|TAKE|SLATE)\b/.test(title)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function assetPassesBeatMinimum(
   asset: Pick<MediaArchiveAsset, "title" | "tags">,
   beatText: string,
@@ -277,6 +294,10 @@ export function assetPassesBeatMinimum(
   semantic?: SemanticMatchResult,
   videoVisualTopic: VideoVisualTopic = "general"
 ): boolean {
+  // Block clips with pre-burned production notation titles (they show labels on-screen)
+  if (hasProductionNotationTitle(asset)) {
+    return false;
+  }
   if (videoVisualTopic === "geography_urban" && isWwiiWarArchiveAsset(asset)) {
     return false;
   }

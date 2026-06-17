@@ -43,6 +43,17 @@ const PLACE_ENTRIES: TagEntry[] = [
   { pattern: /\bmoskou\b|\bmoscow\b|\bkremlin\b/i, searchTags: ["moscow", "russia", "soviet"], label: "MOSKOU" },
   { pattern: /\bnormandi[ëe]\b|\bnormandy\b|\bd-day\b|\bdddag\b/i, searchTags: ["normandy", "d-day", "france"], label: "NORMANDIË" },
   { pattern: /\bauschwitz\b/i, searchTags: ["auschwitz", "poland", "holocaust"], label: "AUSCHWITZ" },
+  // Netherlands / Dutch / Holland u2014 added for NL geography content
+  { pattern: /\bnederland\b|\bnetherlands\b|\bdutch\b|\bholland\b|\bnederlandse\b|\bnederlanden\b/i, searchTags: ["netherlands", "amsterdam", "dutch", "holland"], label: "NEDERLAND" },
+  { pattern: /\bamsterdam\b/i, searchTags: ["amsterdam", "netherlands", "dutch canal"], label: "AMSTERDAM" },
+  { pattern: /\brotterdam\b/i, searchTags: ["rotterdam", "netherlands", "rotterdam skyline"], label: "ROTTERDAM" },
+  { pattern: /\bden haag\b|\bthe hague\b|\bdenhaag\b/i, searchTags: ["the hague", "netherlands", "dutch government"], label: "DEN HAAG" },
+  { pattern: /\butrecht\b/i, searchTags: ["utrecht", "netherlands", "dutch city"], label: "UTRECHT" },
+  { pattern: /\bgracht\b|\bcanal\b|\bkanaal\b/i, searchTags: ["amsterdam canal", "dutch canal", "netherlands waterway"], label: "GRACHT" },
+  { pattern: /\bfietspad\b|\bfiets\b|\bcycling lane\b|\bbike lane\b|\bcycle path\b/i, searchTags: ["dutch cycling", "netherlands bicycle", "Amsterdam bike", "cycle path"], label: "FIETSPAD" },
+  { pattern: /\bwindmolen\b|\bwindmill\b|\bwindmolens\b/i, searchTags: ["windmill netherlands", "dutch windmill", "holland windmill"], label: "WINDMOLEN" },
+  { pattern: /\bpolder\b|\bpolders\b/i, searchTags: ["netherlands polder", "dutch landscape", "netherlands countryside"], label: "POLDER" },
+  { pattern: /\btulp\b|\btulpen\b|\btulip\b|\btulips\b/i, searchTags: ["tulip netherlands", "dutch tulip field", "holland flower"], label: "TULPEN" },
 ];
 
 /** People / factions — archive search only (not on-screen labels). */
@@ -233,6 +244,38 @@ export function refineVisualSearchTagsForTopic(
     out.add("urban planning");
     out.add("city infrastructure");
     out.add("street scene");
+  }
+  // Netherlands / Dutch — inject specific Pexels-friendly tags so the fallback finds real Dutch imagery
+  if (/nederland|netherlands|dutch|holland|amsterdam|rotterdam|utrecht|den haag|the hague/i.test(lower)) {
+    out.add("Amsterdam canal");
+    out.add("Dutch cycling");
+    out.add("Netherlands bicycle");
+    out.add("Amsterdam architecture");
+    out.add("netherlands city");
+  }
+  if (/fiets|cycl|bike|bicycle/.test(lower)) {
+    out.add("Dutch cycling");
+    out.add("Netherlands bicycle lane");
+    out.add("Amsterdam bike");
+  }
+  if (/windmill|windmolen|polder/.test(lower)) {
+    out.add("windmill Netherlands");
+    out.add("dutch windmill");
+    out.add("netherlands landscape");
+  }
+  if (/canal|gracht|water/.test(lower)) {
+    out.add("Amsterdam canal");
+    out.add("dutch canal");
+    out.add("netherlands waterway");
+  }
+  if (/housing|woning|woningmarkt|huis|apartment|appartement/.test(lower)) {
+    out.add("Netherlands housing");
+    out.add("Amsterdam apartment");
+    out.add("dutch residential street");
+  }
+  if (/health|zorg|healthcare|hospital/.test(lower)) {
+    out.add("netherlands hospital");
+    out.add("dutch healthcare");
   }
   out.add("city skyline");
   out.add("urban street");
