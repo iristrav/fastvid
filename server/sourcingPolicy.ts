@@ -33,12 +33,12 @@ export function screenLabelsEnabled(): boolean {
   return process.env.ENABLE_SCREEN_LABELS !== "false";
 }
 
-/** When true (default), use Pexels stock if no archive clip matches a sentence. */
+/** When true (default), use Pexels stock only after archive search finds no acceptable clip. */
 export function archivePexelsFallbackEnabled(): boolean {
   return process.env.ARCHIVE_PEXELS_FALLBACK !== "false";
 }
 
-/** Archive + Pexels together: Pexels for weak/wrong geo matches; archive when it fits (default on). */
+/** Pexels allowed after archive misses; never skips archive search (default on). */
 export function archivePexelsHybridEnabled(): boolean {
   return process.env.ARCHIVE_PEXELS_HYBRID !== "false" && archivePexelsFallbackEnabled();
 }

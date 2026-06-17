@@ -64,7 +64,10 @@ export function enforceMontageDurationFloors(
   return durations.map((d, i) => clampVidrushClipDuration(d, i, sceneIndex));
 }
 
-/** Max clips that fit voice duration without sub-min flashes (accounts for xfade overlap). */
+/**
+ * Max montage clips for a voice duration (Vidrush min on-screen + xfade overlap).
+ * Must cover voice at min clip length — archive first per beat, then Pexels as needed.
+ */
 export function maxMontageClipsForVoiceSec(
   outDur: number,
   xfadeSec = standardMontageCrossfadeSec()
@@ -72,7 +75,11 @@ export function maxMontageClipsForVoiceSec(
   const min = vidrushMinClipSec();
   if (outDur <= min + 0.05) return 1;
   const netPerClip = Math.max(0.55, min - xfadeSec * 0.92);
-  return Math.max(1, Math.floor((outDur + xfadeSec * 0.35) / netPerClip));
+  const pacingCap = Math.max(1, Math.floor((outDur + xfadeSec * 0.35) / netPerClip));
+  // n*min - (n-1)*xfade >= outDur  →  enough clips when sources are short (Pexels backfill).
+  const coverageMin = Math.max(2, Math.ceil((outDur - xfadeSec) / netPerClip));
+  // +2 headroom: extra Pexels clips when probed sources run shorter than min hold.
+  return Math.max(pacingCap, coverageMin) + 2;
 }
 
 export function maxDirectorBeatsForSceneDuration(sceneDurationSec: number, minSec?: number): number {

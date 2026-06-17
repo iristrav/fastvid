@@ -150,8 +150,6 @@ import {
   archiveAssetPreflight,
   assetPassesBeatMinimum,
   buildGeoStockSearchQueries,
-  shouldPreferPexelsOverArchive,
-  shouldTryPexelsFirstForBeat,
   type CuratedCandidatePick,
 } from "./curatedMediaSourcing";
 import {
@@ -1782,7 +1780,7 @@ function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProfile {
       enableAiFallback: false,
       maxAiClipsPerVideo: 0,
       minimizeStockFootage: !hybrid,
-      maxStockBeatsPerVideo: hybrid ? 32 : 0,
+      maxStockBeatsPerVideo: hybrid ? 999 : 0,
       maxStockQueriesPerBeat: hybrid ? 5 : 0,
       maxEntityYoutubePerVideo: 0,
       fastStockMode: false,
@@ -13743,21 +13741,6 @@ async function adoptArchiveBeatClip(
     const openingBeat = scene.index === 0 && beat.index === 0;
     const { beatTags, topicAnchors, videoVisualTopic } = buildBeatMatchTags(beat, scene, videoTitle);
 
-    if (shouldTryPexelsFirstForBeat(beat.text, videoVisualTopic)) {
-      const pexFirst = await adoptPexelsBeatClipFallback(
-        beat,
-        scene,
-        workDir,
-        videoTitle,
-        dedup,
-        pushClip,
-        holdSec,
-        semanticProfile,
-        "geo-first"
-      );
-      if (pexFirst) return true;
-    }
-
     const ranked = await searchCuratedCandidatesForBeat(
       beat,
       scene,
@@ -13774,23 +13757,8 @@ async function adoptArchiveBeatClip(
       }
     );
     console.log(
-      `[Pipeline] Scene ${scene.index} zin ${beat.index}: archive+Pexels "${beat.text.slice(0, 55).trim()}…" → ${ranked.length} archive kandidaat(en)`
+      `[Pipeline] Scene ${scene.index} zin ${beat.index}: archive "${beat.text.slice(0, 55).trim()}…" → ${ranked.length} kandidaat(en)`
     );
-
-    if (shouldPreferPexelsOverArchive(beat.text, ranked, videoVisualTopic, dedup.geoSegmentLock)) {
-      const pexHybrid = await adoptPexelsBeatClipFallback(
-        beat,
-        scene,
-        workDir,
-        videoTitle,
-        dedup,
-        pushClip,
-        holdSec,
-        semanticProfile,
-        "weak-archive"
-      );
-      if (pexHybrid) return true;
-    }
 
     const topScore = ranked[0]?.score ?? 0;
     const minAcceptScore = relaxed
@@ -14484,7 +14452,7 @@ async function fetchArchiveSentenceMontage(
     : new Map<number, BeatSemanticProfile>();
 
   console.log(
-    `[Pipeline] Scene ${scene.index}: ${beats.length} zin(en) → archive + Pexels hybrid per zin`
+    `[Pipeline] Scene ${scene.index}: ${beats.length} zin(en) → archive first, Pexels if needed per zin`
   );
 
   const pushSceneClip = async (clipPath: string, holdSec: number, beatIndex: number, sourceQuery = ""): Promise<boolean> => {
@@ -16308,19 +16276,30 @@ async function composeSceneVideo(
 
   const maxComposeClips = maxMontageClipsForVoiceSec(outDur);
   if (safeClips.length > maxComposeClips) {
-    console.warn(
-      `[Pipeline] Scene ${scene.index}: trimming ${safeClips.length}→${maxComposeClips} clips for Vidrush pacing`
+    const trimmedCoverage = await estimateBalancedMontageCoverageSec(
+      safeClips.slice(0, maxComposeClips),
+      composeBeatDurations.slice(0, maxComposeClips),
+      outDur
     );
-    safeClips = safeClips.slice(0, maxComposeClips);
-    if (composeBeatDurations.length > maxComposeClips) {
-      composeBeatDurations = trimMontageDurationsToMaxClips(
-        composeBeatDurations,
-        maxComposeClips,
-        scene.index
+    if (trimmedCoverage >= outDur - 0.06) {
+      console.warn(
+        `[Pipeline] Scene ${scene.index}: trimming ${safeClips.length}→${maxComposeClips} clips for Vidrush pacing`
       );
-    }
-    if (composeClipBeatIndices.length > maxComposeClips) {
-      composeClipBeatIndices = composeClipBeatIndices.slice(0, maxComposeClips);
+      safeClips = safeClips.slice(0, maxComposeClips);
+      if (composeBeatDurations.length > maxComposeClips) {
+        composeBeatDurations = trimMontageDurationsToMaxClips(
+          composeBeatDurations,
+          maxComposeClips,
+          scene.index
+        );
+      }
+      if (composeClipBeatIndices.length > maxComposeClips) {
+        composeClipBeatIndices = composeClipBeatIndices.slice(0, maxComposeClips);
+      }
+    } else {
+      console.warn(
+        `[Pipeline] Scene ${scene.index}: keeping ${safeClips.length} clips (trim to ${maxComposeClips} would leave ~${trimmedCoverage.toFixed(1)}s / ${outDur.toFixed(1)}s voice)`
+      );
     }
   }
 

@@ -45,8 +45,10 @@ describe("vidrushQuality", () => {
   });
 
   it("caps montage clip count for short voice scenes", () => {
-    expect(maxMontageClipsForVoiceSec(23)).toBeLessThanOrEqual(8);
+    expect(maxMontageClipsForVoiceSec(23)).toBeLessThanOrEqual(12);
     expect(maxMontageClipsForVoiceSec(8)).toBeGreaterThanOrEqual(2);
+    // 15.5s voice @ 3.5s min + 0.4s xfade needs ≥5 clips (+ backfill headroom)
+    expect(maxMontageClipsForVoiceSec(15.5)).toBeGreaterThanOrEqual(5);
   });
 
   it("builds topic-aware opening queries for any subject", () => {
