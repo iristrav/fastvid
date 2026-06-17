@@ -1123,6 +1123,7 @@ export async function listCuratedArchiveCandidates(
 
   const geoRequired = beatText ? extractBeatGeoPlaceTags(beatText) : [];
   const scored: CuratedCandidatePick[] = [];
+  const fallback: CuratedCandidatePick[] = [];
 
   for (const archive of archives) {
     const nicheTags = normalizeMediaTags(archive.nicheTags ?? []);
