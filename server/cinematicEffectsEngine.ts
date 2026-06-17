@@ -11,7 +11,7 @@ import {
   renderNameBadgeOverlay,
   type TimedOverlay,
 } from "./documentaryStyle";
-import { clampVidrushClipDuration } from "./vidrushQuality";
+import { documentaryOverlaysEnabled, screenLabelMinStartSec, screenLabelMinGapSec, screenLabelMaxPerScene } from "./sourcingPolicy";
 import { extractVoiceLabelTerms, termStartInBeat } from "./visualBeatTags";
 
 export type CinematicAudioCue = {
@@ -66,31 +66,22 @@ export function extractYearsFromText(text: string): string[] {
   return years;
 }
 
-/** Max words shown per on-screen text beat (Vidrush-style kinetic labels). */
-export const MAX_ONSCREEN_WORDS = 2;
-
-export function limitOnScreenText(text: string, maxWords = MAX_ONSCREEN_WORDS): string {
-  const cleaned = text.replace(/\s+/g, " ").trim();
-  if (!cleaned) return "";
-  return cleaned.split(/\s+/).filter(Boolean).slice(0, maxWords).join(" ");
-}
-
 export function extractStatFromText(text: string): string | null {
   // Euro amounts: €10.000, €1 miljoen, €50 miljard
   const euro = text.match(/€\s*[\d,.]+(?:\s*(?:million|billion|miljoen|miljard|biljoen|M|B|K))?/i);
-  if (euro?.[0]) return limitOnScreenText(euro[0].trim().replace(/€\s+/, "€"));
+  if (euro?.[0]) return euro[0].trim().replace(/€\s+/, "€").replace(/\s+/g, " ").slice(0, 24);
   // Dollar amounts
   const money = text.match(/\$[\d,.]+(?:\s*(?:million|billion|miljoen|miljard|M|B|K))?/i);
-  if (money?.[0]) return limitOnScreenText(money[0].trim());
+  if (money?.[0]) return money[0].trim().slice(0, 24);
   // Dutch numeric amounts: "10 miljoen", "5 miljard", "2,5 biljoen"
   const dutchAmt = text.match(/\b[\d,.]+\s*(?:miljoen|miljard|biljoen|duizend)\b/i);
-  if (dutchAmt?.[0]) return limitOnScreenText(dutchAmt[0].trim());
+  if (dutchAmt?.[0]) return dutchAmt[0].trim().replace(/\s+/g, " ").slice(0, 24);
   // Percentages — Dutch "procent" and English "percent" / symbol
   const pct = text.match(/\d[\d,.]*\s*(?:%|percent|procent)/i);
-  if (pct?.[0]) return limitOnScreenText(pct[0].trim());
+  if (pct?.[0]) return pct[0].trim().slice(0, 24);
   // People / casualty counts
   const count = text.match(/\b[\d,.]+\s+(?:people|soldiers|tanks|planes|victims|doden|slachtoffers|mensen|inwoners)\b/i);
-  if (count?.[0]) return limitOnScreenText(count[0].trim());
+  if (count?.[0]) return count[0].trim().slice(0, 24);
   return null;
 }
 
@@ -113,18 +104,30 @@ export function buildStatCountSteps(stat: string): string[] {
 
 export type FacelessLine = { text: string; emphasis: boolean };
 
-/** One short on-screen chunk — max two words, no stacked subtitle lines. */
-export function parseFacelessSubtitleLines(text: string, maxWords = MAX_ONSCREEN_WORDS): FacelessLine[] {
+/** Split narration into faceless-channel subtitle lines (emphasis words larger). */
+export function parseFacelessSubtitleLines(text: string, maxLines = 4): FacelessLine[] {
   const cleaned = text.replace(/\[visual:[^\]]+\]/gi, "").replace(/\s+/g, " ").trim();
   if (!cleaned) return [];
   const words = cleaned.split(/\s+/).filter(Boolean);
-  const salient = words.filter((w) => {
-    const bare = w.replace(/[^a-zA-ZÀ-ÿ0-9'%$€.-]/g, "").toLowerCase();
-    return bare.length >= 2 && !YEAR_CAPTION_STOP.has(bare);
-  });
-  const chunk = limitOnScreenText((salient.length > 0 ? salient : words).slice(0, maxWords).join(" "), maxWords);
-  if (!chunk) return [];
-  return [{ text: chunk.toUpperCase(), emphasis: true }];
+  if (words.length <= maxLines) {
+    return words.map((w, i) => ({
+      text: w.toUpperCase(),
+      emphasis: i === 0 || w.length >= 5 || /^[A-Z]/.test(w),
+    }));
+  }
+  const emphasisIdx = new Set<number>([0, words.length - 1]);
+  emphasisIdx.add(Math.floor(words.length / 2));
+  const chunk = Math.ceil(words.length / maxLines);
+  const lines: FacelessLine[] = [];
+  for (let i = 0; i < words.length && lines.length < maxLines; i += chunk) {
+    const slice = words.slice(i, i + chunk);
+    const line = slice.join(" ");
+    lines.push({
+      text: emphasisIdx.has(i) ? line.toUpperCase() : line,
+      emphasis: emphasisIdx.has(i) || slice.some((w) => w.length >= 6),
+    });
+  }
+  return lines;
 }
 
 export type FacelessSubtitlePlacement = "bottom-left" | "bottom-center";
@@ -146,13 +149,13 @@ export function buildFacelessDrawtextVF(
   const enable = `between(t\\,${startTime.toFixed(2)}\\,${endTime.toFixed(2)})`;
   const marginL = 56;
   const marginB = 72;
-  const lineHeights = lines.map(() => 84);
+  const lineHeights = lines.map((line) => (line.emphasis ? 68 : 48));
   const totalH = lineHeights.reduce((s, h) => s + h, 0);
   const baseY = DOC_STYLE_VIDEO_HEIGHT - marginB - totalH;
   return lines
     .map((line, i) => {
-      const safe = sanitizeForDrawtext(line.text, 24);
-      const fs = line.emphasis ? 72 : 68;
+      const safe = sanitizeForDrawtext(line.text, 36);
+      const fs = line.emphasis ? 58 : 38;
       const y = baseY + lineHeights.slice(0, i).reduce((s, h) => s + h, 0);
       const x = placement === "bottom-center" ? "(w-text_w)/2" : String(marginL);
       const color = line.emphasis ? "white" : "0xDDDDDD";
@@ -176,13 +179,13 @@ export async function renderFacelessSubtitleOverlay(
   const pngPath = path.join(workDir, `scene_${sceneIndex}_faceless_sub.png`);
   const marginL = 56;
   const marginB = 72;
-  const lineHeights = lines.map(() => 84);
+  const lineHeights = lines.map((line) => (line.emphasis ? 68 : 48));
   const totalH = lineHeights.reduce((s, h) => s + h, 0);
   const baseY = DOC_STYLE_VIDEO_HEIGHT - marginB - totalH;
   const draws = lines
     .map((line, i) => {
-      const safe = sanitizeForDrawtext(line.text, 24);
-      const fs = line.emphasis ? 72 : 68;
+      const safe = sanitizeForDrawtext(line.text, 36);
+      const fs = line.emphasis ? 58 : 38;
       const y = baseY + lineHeights.slice(0, i).reduce((s, h) => s + h, 0);
       const x = placement === "bottom-center" ? "(w-text_w)/2" : String(marginL);
       const color = line.emphasis ? "white" : "0xDDDDDD";
@@ -460,29 +463,6 @@ export function computeVoiceBeatWindows(
   });
 }
 
-/**
- * Per-clip trim lengths so xfade montage end-to-end matches voice duration.
- * clipBeatIndices maps each montage clip to its narration beat index.
- */
-export function computeVoiceSyncedClipDurations(
-  beats: BeatYearInput[],
-  voiceDur: number,
-  clipBeatIndices: number[],
-  xfadeSec = 0,
-  sceneIndex = 0
-): number[] {
-  if (clipBeatIndices.length === 0) return [];
-  const windows = computeVoiceBeatWindows(beats, voiceDur);
-  const overlap = clipBeatIndices.length > 1 ? (clipBeatIndices.length - 1) * xfadeSec : 0;
-  const raw = clipBeatIndices.map(
-    (beatIdx) => windows[beatIdx]?.dur ?? voiceDur / clipBeatIndices.length
-  );
-  const rawSum = raw.reduce((s, d) => s + d, 0) || 1;
-  const targetSum = voiceDur + overlap;
-  const scale = targetSum / rawSum;
-  return raw.map((d, i) => clampVidrushClipDuration(d * scale, i, sceneIndex));
-}
-
 export type TimedYearLabel = {
   year: string;
   /** Short label in the yellow pill (keyword or context words). */
@@ -497,13 +477,20 @@ export type TimedYearLabel = {
 export const YEAR_LABEL_ON_SCREEN_SEC = 4;
 export const SCREEN_LABEL_INTERVAL_SEC = 30;
 export const TYPEWRITER_CHAR_SEC = 0.042;
-/** Yellow pill label typography (Locomotive Historian style). */
-export const SCREEN_LABEL_FONT_SIZE = 68;
-export const SCREEN_LABEL_BOX_H = 84;
+/** V3 overlay style — bold centered text, no background. */
+export const SCREEN_LABEL_FONT_SIZE = 42; // kept for legacy callers
+export const SCREEN_LABEL_BOX_H = 60;
 export const SCREEN_LABEL_PAD_X = 22;
 export const SCREEN_LABEL_MAX_W = 680;
 export const SCREEN_LABEL_MARGIN_L = 48;
 export const SCREEN_LABEL_MARGIN_B = 72;
+/** V3: large bold font for center-screen impact overlays. */
+const V3_FONT_SIZE = 84;
+const V3_BOLD_FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf";
+/** Seconds text stays fully visible after typewriter completes, before fade. */
+const V3_HOLD_SEC = 1.5;
+/** Fade-out duration (200-300 ms). */
+const V3_FADE_SEC = 0.25;
 
 const YEAR_CAPTION_STOP = new Set([
   "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with",
@@ -678,8 +665,7 @@ export function planVoiceSyncedScreenLabels(
     for (const term of extractVoiceLabelTerms(beat.text)) {
       if (usedLabels.has(term.label)) continue;
       const startTime = termStartInBeat(beat.text, term.label, beatStart, beatDur, term.matchText);
-      const isPercentLabel = /\d/.test(term.label) && term.label.includes("%");
-      if (term.label.length < 3 && !isPercentLabel) continue;
+      if (term.label.length < 3) continue;
       usedLabels.add(term.label);
       yearLabels.push({
         year: term.label,
@@ -743,9 +729,9 @@ export function planVoiceSyncedScreenLabels(
 function labelTextForEntry(entry: TimedYearLabel): string {
   const cap = (entry.caption || "").trim().toUpperCase();
   if (/^\d{4}$/.test(entry.year)) {
-    return cap.length >= 2 ? limitOnScreenText(cap, MAX_ONSCREEN_WORDS) : entry.year;
+    return cap.length >= 2 ? `${cap} — ${entry.year}` : entry.year;
   }
-  return limitOnScreenText(cap || entry.year || entry.displayText, MAX_ONSCREEN_WORDS);
+  return cap || entry.year || entry.displayText;
 }
 
 function extractKeywordFromBeat(beat: BeatLabelInput): string | null {
@@ -872,8 +858,7 @@ export function planPhotoShutterCues(
 }
 
 /**
- * Minimal white typewriter overlay — white ALL CAPS text, subtle dark shadow,
- * no pill background. Letter-by-letter reveal, bottom-left position.
+ * V3 overlay — bold white ALL CAPS text, centered, no background, typewriter reveal + fade-out.
  */
 export function buildYearDrawtextFilterChain(
   inLabel: string,
@@ -881,12 +866,12 @@ export function buildYearDrawtextFilterChain(
   years: TimedYearLabel[]
 ): string {
   if (!years.length) return `;[${inLabel}]copy[${outLabel}]`;
-  const MARGIN_L = SCREEN_LABEL_MARGIN_L;
-  const MARGIN_B = SCREEN_LABEL_MARGIN_B;
-  const BOX_H = SCREEN_LABEL_BOX_H;
-  const FS = SCREEN_LABEL_FONT_SIZE;
-  // Text Y: bottom-left safe area, vertically centred in the label row
-  const textY = `h-${MARGIN_B + Math.round((BOX_H + FS) / 2)}`;
+  const FS = V3_FONT_SIZE;
+  const fontFileParam = fs.existsSync(V3_BOLD_FONT)
+    ? `:fontfile='${V3_BOLD_FONT}'`
+    : "";
+  const textX = `(w-text_w)/2`;
+  const textY = `(h-text_h)/2`;
 
   let chain = "";
   let prev = inLabel;
@@ -899,24 +884,26 @@ export function buildYearDrawtextFilterChain(
     if (safeFull.length < 1) return;
 
     const next = i === valid.length - 1 ? outLabel : `yt_out${i}`;
-    const typeEnd = Math.min(
-      entry.endTime,
-      entry.startTime + safeFull.length * TYPEWRITER_CHAR_SEC + 0.05
-    );
+    const typeEnd = entry.startTime + safeFull.length * TYPEWRITER_CHAR_SEC;
+    const holdEnd = typeEnd + V3_HOLD_SEC;
+    const fadeEnd = holdEnd + V3_FADE_SEC;
 
     let step = prev;
     for (let k = 1; k <= safeFull.length; k++) {
       const sub = sanitizeForDrawtext(safeFull.slice(0, k), k);
       const t0 = entry.startTime + (k - 1) * TYPEWRITER_CHAR_SEC;
-      const t1 = k < safeFull.length ? entry.startTime + k * TYPEWRITER_CHAR_SEC : typeEnd;
-      const charOut = k === safeFull.length ? next : `yt${i}_${k}`;
+      const isLast = k === safeFull.length;
+      const t1 = isLast ? fadeEnd : entry.startTime + k * TYPEWRITER_CHAR_SEC;
+      const charOut = isLast ? next : `yt${i}_${k}`;
       const charEnable = `enable='between(t\\,${t0.toFixed(3)}\\,${t1.toFixed(3)})'`;
-      // White text, subtle dark box only around text (box=1), soft shadow
+      // Last char: alpha fades from 1→0 after hold period. Other chars: fully opaque.
+      const alphaParam = isLast
+        ? `alpha='if(gt(t\\,${holdEnd.toFixed(3)})\\,max(0\\,1-(t-${holdEnd.toFixed(3)})/${V3_FADE_SEC})\\,1)':`
+        : "";
       chain +=
-        `;[${step}]drawtext=text='${sub}':fontcolor=white:fontsize=${FS}:` +
-        `x=${MARGIN_L}:y=${textY}:` +
-        `box=1:boxcolor=0x00000055:boxborderw=8:` +
-        `shadowcolor=0x000000BB:shadowx=2:shadowy=2:` +
+        `;[${step}]drawtext=text='${sub}':fontcolor=white:fontsize=${FS}${fontFileParam}:` +
+        `x=${textX}:y=${textY}:` +
+        `${alphaParam}` +
         `${charEnable}[${charOut}]`;
       step = charOut;
     }
@@ -950,14 +937,19 @@ export async function burnScreenLabelOverlaysSequential(
     const o = overlays[i]!;
     const isLast = i === overlays.length - 1;
     const out = isLast ? outputVideoPath : path.join(workDir, `_screen_label_pass_${i}.mp4`);
-    const w = ensureEvenDim(o.overlayW ?? SCREEN_LABEL_MAX_W);
-    const h = ensureEvenDim(o.overlayH ?? SCREEN_LABEL_BOX_H);
-    const x = Math.round(o.overlayX ?? SCREEN_LABEL_MARGIN_L);
-    const y = Math.round(o.overlayY ?? 900);
+    const x = Math.round(o.overlayX ?? 0);
+    const y = Math.round(o.overlayY ?? 0);
     const enable = `enable='between(t\\,${o.startTime.toFixed(2)}\\,${o.endTime.toFixed(2)})'`;
+    // Full-frame VP9 WebM overlays have an alpha channel — preserve it during compositing.
+    const isFullFrame =
+      (o.overlayW ?? 0) >= DOC_STYLE_VIDEO_WIDTH - 2 &&
+      (o.overlayH ?? 0) >= DOC_STYLE_VIDEO_HEIGHT - 2;
+    const prepareFilter = isFullFrame
+      ? `[1:v]format=yuva420p,setpts=PTS-STARTPTS[lbl]`
+      : `[1:v]scale=${ensureEvenDim(o.overlayW ?? SCREEN_LABEL_MAX_W)}:${ensureEvenDim(o.overlayH ?? SCREEN_LABEL_BOX_H)}:flags=fast_bilinear,format=yuva420p,setpts=PTS-STARTPTS[lbl]`;
     await execWithTimeout(
       `${ffmpegBin} -y -i "${current}" -i "${o.path}" ` +
-        `-filter_complex "[1:v]scale=${w}:${h}:flags=fast_bilinear,format=yuv420p,setpts=PTS-STARTPTS[lbl];` +
+        `-filter_complex "${prepareFilter};` +
         `[0:v][lbl]overlay=x=${x}:y=${y}:${enable}[outv]" ` +
         `-map "[outv]" -c:v libx264 -preset ultrafast -crf 18 -pix_fmt yuv420p -an "${out}"`,
       120_000,
@@ -968,7 +960,10 @@ export async function burnScreenLabelOverlaysSequential(
   return outputVideoPath;
 }
 
-/** Render one white typewriter label clip — dark background, white text, subtle shadow. */
+/**
+ * V3 overlay clip — full-frame transparent (VP9 alpha), bold white text centered,
+ * typewriter reveal, hold 1.5 s, then 250 ms fade-out. No background.
+ */
 export async function renderYellowTypewriterLabelClip(
   text: string,
   sceneIndex: number,
@@ -979,44 +974,44 @@ export async function renderYellowTypewriterLabelClip(
 ): Promise<{ path: string; w: number; h: number; x: number; y: number } | null> {
   const safe = sanitizeForDrawtext(text.toUpperCase(), 28);
   if (safe.length < 1) return null;
-  const PAD_X = SCREEN_LABEL_PAD_X;
-  const FS = SCREEN_LABEL_FONT_SIZE;
-  const w = ensureEvenDim(Math.min(SCREEN_LABEL_MAX_W, Math.round(safe.length * FS * 0.62 + PAD_X * 2)));
-  const h = ensureEvenDim(SCREEN_LABEL_BOX_H);
-  const textY = Math.max(8, Math.round((h - FS) / 2));
-  const dur = YEAR_LABEL_ON_SCREEN_SEC;
-  const outPath = path.join(workDir, `scene_${sceneIndex}_screen_label_${labelIndex}.mp4`);
+  const FS = V3_FONT_SIZE;
+  const fontFileParam = fs.existsSync(V3_BOLD_FONT)
+    ? `:fontfile='${V3_BOLD_FONT}'`
+    : "";
+  const W = DOC_STYLE_VIDEO_WIDTH;
+  const H = DOC_STYLE_VIDEO_HEIGHT;
+  const typingDur = safe.length * TYPEWRITER_CHAR_SEC;
+  const totalDur = typingDur + V3_HOLD_SEC + V3_FADE_SEC;
+  const fadeStart = typingDur + V3_HOLD_SEC;
+  // Output as WebM so VP9 alpha channel is preserved.
+  const outPath = path.join(workDir, `scene_${sceneIndex}_screen_label_${labelIndex}.webm`);
+
   let chain = "";
   let prev = "0:v";
   for (let k = 1; k <= safe.length; k++) {
     const sub = sanitizeForDrawtext(safe.slice(0, k), k);
     const t0 = ((k - 1) * TYPEWRITER_CHAR_SEC).toFixed(3);
-    const t1 = (k < safe.length ? k * TYPEWRITER_CHAR_SEC : dur).toFixed(3);
-    const outLabel = k === safe.length ? "vout" : `sl${labelIndex}_${k}`;
+    const t1 = (k < safe.length ? k * TYPEWRITER_CHAR_SEC : totalDur).toFixed(3);
+    const outLabel = k === safe.length ? "vtyped" : `sl${labelIndex}_${k}`;
     chain +=
-      `[${prev}]drawtext=text='${sub}':fontcolor=white:fontsize=${FS}:` +
-      `x=${PAD_X}:y=${textY}:box=1:boxcolor=0x00000000:boxborderw=0:` +
-      `shadowcolor=0x000000CC:shadowx=2:shadowy=2:` +
+      `[${prev}]drawtext=text='${sub}':fontcolor=white:fontsize=${FS}${fontFileParam}:` +
+      `x=(w-text_w)/2:y=(h-text_h)/2:` +
       `enable='between(t\\,${t0}\\,${t1})'[${outLabel}];`;
     prev = outLabel;
   }
+  // Fade out after hold period
+  chain += `[vtyped]fade=t=out:st=${fadeStart.toFixed(3)}:d=${V3_FADE_SEC}[vout]`;
+
   try {
-    // Dark near-black background so white text is always readable when composited
     await execWithTimeout(
-      `${ffmpegBin} -y -f lavfi -i "color=c=0x111111:s=${w}x${h}:r=25:d=${dur.toFixed(2)}" ` +
-        `-filter_complex "${chain.slice(0, -1)}" -map "[vout]" -t ${dur.toFixed(2)} ` +
-        `-c:v libx264 -preset ultrafast -crf 18 -pix_fmt yuv420p "${outPath}"`,
-      20_000,
+      `${ffmpegBin} -y -f lavfi -i "color=c=black@0.0:s=${W}x${H}:r=25:d=${totalDur.toFixed(3)}" ` +
+        `-filter_complex "${chain}" -map "[vout]" -t ${totalDur.toFixed(3)} ` +
+        `-c:v libvpx-vp9 -pix_fmt yuva420p -b:v 0 -crf 30 -an "${outPath}"`,
+      30_000,
       `Screen label ${text.slice(0, 12)} scene ${sceneIndex}`
     );
     if (fs.existsSync(outPath) && fs.statSync(outPath).size > 200) {
-      return {
-        path: outPath,
-        w,
-        h,
-        x: SCREEN_LABEL_MARGIN_L,
-        y: DOC_STYLE_VIDEO_HEIGHT - SCREEN_LABEL_MARGIN_B - h,
-      };
+      return { path: outPath, w: W, h: H, x: 0, y: 0 };
     }
   } catch {
     /* fall through */
