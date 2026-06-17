@@ -67,9 +67,16 @@ export function archivePexelsHybridEnabled(): boolean {
   return process.env.ARCHIVE_PEXELS_HYBRID !== "false" && archivePexelsFallbackEnabled();
 }
 
-/** CC Wikimedia portraits for named public figures (blur-fill still). Allowed even in archive-only mode. */
+/** Wikimedia Commons fallback before Pexels/Pixabay (video + stills; person portraits use blur-fill). */
+export function wikimediaBeatFallbackEnabled(): boolean {
+  if (process.env.ENABLE_WIKIMEDIA_FALLBACK === "false") return false;
+  if (process.env.ENABLE_WIKIMEDIA_PERSON_PORTRAITS === "false") return false;
+  return true;
+}
+
+/** @deprecated alias — use wikimediaBeatFallbackEnabled */
 export function wikimediaPersonPortraitsEnabled(): boolean {
-  return process.env.ENABLE_WIKIMEDIA_PERSON_PORTRAITS !== "false";
+  return wikimediaBeatFallbackEnabled();
 }
 
 /** Fail generation rather than loop, pad, or reuse any clip content in a video. */

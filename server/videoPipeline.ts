@@ -137,7 +137,7 @@ import {
   assertSceneCriticalReview,
   reviewSceneCritical,
 } from "./sceneCriticalReview";
-import { curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, freeVoiceoverMode, freeVoiceoverGttsLang, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archivePexelsFallbackEnabled, archivePexelsHybridEnabled, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, onScreenTextEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, maxPipelineWallClockMin, qualityOverSpeedEnabled, visualStageWallClockMin, pipelineMinutesPerVideoMinute, pipelineWallClockLimitEnabled, PIPELINE_UNLIMITED_MS, autoMotionGraphicsLayerEnabled, vidrushDocumentaryQualityEnabled, wikimediaPersonPortraitsEnabled } from "./sourcingPolicy";
+import { curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, freeVoiceoverMode, freeVoiceoverGttsLang, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archivePexelsFallbackEnabled, archivePexelsHybridEnabled, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, onScreenTextEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, maxPipelineWallClockMin, qualityOverSpeedEnabled, visualStageWallClockMin, pipelineMinutesPerVideoMinute, pipelineWallClockLimitEnabled, PIPELINE_UNLIMITED_MS, autoMotionGraphicsLayerEnabled, vidrushDocumentaryQualityEnabled, wikimediaBeatFallbackEnabled } from "./sourcingPolicy";
 import { targetVideoDurationMinutes } from "@shared/videoLengths";
 import {
   getCrossVideoExcludeAssetIds,
@@ -767,18 +767,18 @@ async function fetchBeatYoutubeThenPexels(
   return null;
 }
 
-async function tryFetchWikimediaPersonPortraitClip(
+async function tryFetchWikimediaBeatClip(
   beat: SceneBeat,
   scene: Scene,
   workDir: string,
   sceneIndex: number,
   holdSec: number,
-  personName: string,
   videoTitle: string | undefined,
-  dedup: VisualDedupState
+  dedup: VisualDedupState,
+  semanticProfile?: BeatSemanticProfile
 ): Promise<string | null> {
   let adoptedPath: string | null = null;
-  await adoptWikimediaPersonPortraitBeat(
+  await adoptWikimediaBeatClipFallback(
     beat,
     scene,
     workDir,
@@ -788,7 +788,8 @@ async function tryFetchWikimediaPersonPortraitClip(
       adoptedPath = clipPath;
       return true;
     },
-    holdSec
+    holdSec,
+    semanticProfile
   );
   return adoptedPath;
 }
@@ -824,22 +825,9 @@ async function fetchBeatArchivalThenPexels(
       curatedBeatFetchOpts(dedup)
     );
     if (archiveClip !== null) return archiveClip;
-    if (wikimediaPersonPortraitsEnabled() && personName.trim()) {
-      const wikiClip = await tryFetchWikimediaPersonPortraitClip(
-        beat,
-        scene,
-        workDir,
-        sceneIndex,
-        clipFetchDur,
-        personName,
-        videoTitle,
-        dedup
-      );
-      if (wikiClip) return wikiClip;
-    }
-    // No matching archive clip — fall through to Pexels if enabled.
+    // No matching archive clip — Wikimedia then Pexels below.
     if (!archivePexelsFallbackEnabled() || !canUseLicensedStockBeat(dedup)) return null;
-    console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: no archive match → Pexels/Pixabay fallback`);
+    console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: no archive match → Wikimedia/Pexels fallback`);
   }
   const topicHay = [videoTitle, scene.text, beat.text].filter(Boolean).join(" ");
   const historicalDoc = isHistoricalDocumentary(topicHay) && !dedup.personTopicLock;
@@ -930,6 +918,17 @@ async function fetchBeatArchivalThenPexels(
   }
 
   if (!canUseLicensedStockBeat(dedup)) return null;
+
+  const wikiClip = await tryFetchWikimediaBeatClip(
+    beat,
+    scene,
+    workDir,
+    sceneIndex,
+    clipFetchDur,
+    videoTitle,
+    dedup
+  );
+  if (wikiClip) return wikiClip;
 
   const stock = await fetchBeatStockFallback(
     beat,
@@ -3977,70 +3976,150 @@ function buildWikimediaPersonQueries(
   return [...new Set(queries.map((q) => q.trim()).filter((q) => q.length >= 4))].slice(0, 4);
 }
 
-/** Wikimedia CC portrait when archive has no match — always blur-fill Ken Burns. */
-async function adoptWikimediaPersonPortraitBeat(
+/** Wikimedia CC fallback (video + blur-fill portraits) before licensed stock. */
+async function adoptWikimediaBeatClipFallback(
   beat: SceneBeat,
   scene: Scene,
   workDir: string,
   videoTitle: string | undefined,
   dedup: VisualDedupState,
   pushClip: (clipPath: string, holdSec?: number) => boolean | Promise<boolean>,
-  holdSec: number
+  holdSec: number,
+  semanticProfile?: BeatSemanticProfile
 ): Promise<boolean> {
-  if (!wikimediaPersonPortraitsEnabled()) return false;
+  if (!wikimediaBeatFallbackEnabled()) return false;
 
   const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
   const person =
     scenePersons.find((p) => beatMentionsPerson(beat.text, p)) ??
     (dedup.personTopicLock ? dedup.primaryPerson : undefined) ??
     scenePersons[0];
-  if (!person?.trim()) return false;
+  const topicQueries = buildBeatFallbackVisualQueries(beat, scene, videoTitle, dedup, semanticProfile);
+  const personQueries = person?.trim()
+    ? buildWikimediaPersonQueries(person, scene.index, beat.index, beat.text)
+    : [];
+  const queries = [...new Set([...personQueries, ...topicQueries])].slice(0, 10);
+  if (queries.length === 0) return false;
 
   const openingBeat = scene.index === 0 && beat.index === 0;
-  if (openingBeat) return false;
+  const beatKeywords = person?.trim()
+    ? buildPersonBeatRelevanceKeywords(person, beat.text)
+    : tokenizeForRelevance(beat.text).slice(0, 12);
 
-  const queries = buildWikimediaPersonQueries(person, scene.index, beat.index, beat.text);
-  for (const q of queries) {
-    const paths = await fetchWikimediaImages(
-      q,
-      holdSec,
-      workDir,
-      scene.index,
-      1,
-      `b${beat.index}`,
-      { beatIndex: beat.index, personPortrait: true }
-    );
-    for (const clipPath of paths) {
-      if (!clipPath || isPipelineFallbackClip(clipPath)) continue;
-      const key = clipContentKey(clipPath);
-      if (dedup.usedContentKeys.has(key)) continue;
-      if (await isMostlyBlackClip(clipPath)) continue;
-      if (!(await montageClipPassesComposeGate(clipPath, scene.index, beat.index))) continue;
-      if (
-        !(await clipPassesVisionGate(
-          clipPath,
-          beat.text,
-          videoTitle,
-          workDir,
-          scene.index,
-          beat.index,
-          dedup.perf.fastStockMode,
-          sceneCriticalReviewEnabled() ? minClipQualityScore() : 5,
-          beat.visualDescription
-        ))
-      ) {
-        continue;
+  console.log(
+    `[Pipeline] Scene ${scene.index} zin ${beat.index}: Wikimedia fallback (${queries.slice(0, 3).join(", ")})`
+  );
+
+  const tryAdoptPath = async (clipPath: string, q: string, portraitStill: boolean): Promise<boolean> => {
+    if (!clipPath || isPipelineFallbackClip(clipPath)) return false;
+    const key = clipContentKey(clipPath);
+    if (dedup.usedContentKeys.has(key)) return false;
+    if (openingBeat) {
+      if (isStillPhotoClip(clipPath) || isCuratedPreparedStillClip(clipPath)) return false;
+      if (rejectInvalidOpeningClip(0, 0, clipPath, q, beat.text, videoTitle, "Wikimedia opening")) {
+        return false;
       }
-      const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, holdSec);
-      dedup.usedContentKeys.add(key);
+    }
+    if (
+      dedup.geoSegmentLock &&
+      isWrongRegionForSegmentLock(`${beat.text} ${q} ${path.basename(clipPath)}`, dedup.geoSegmentLock)
+    ) {
+      return false;
+    }
+    if (
+      inferVideoVisualTopic(videoTitle, beat.text) === "geography_urban" &&
+      isOffTopicGeoUrbanVisual(`${q} ${path.basename(clipPath)}`)
+    ) {
+      return false;
+    }
+    if (
+      dedup.personTopicLock &&
+      dedup.primaryPerson &&
+      isOffTopicVisualForPersonTopic(q, clipPath, dedup.primaryPerson)
+    ) {
+      return false;
+    }
+    if (await isMostlyBlackClip(clipPath)) return false;
+    if (!(await montageClipPassesComposeGate(clipPath, scene.index, beat.index))) return false;
+    if (
+      !(await clipPassesVisionGate(
+        clipPath,
+        beat.text,
+        videoTitle,
+        workDir,
+        scene.index,
+        beat.index,
+        dedup.perf.fastStockMode,
+        sceneCriticalReviewEnabled() ? minClipQualityScore() : 5,
+        beat.visualDescription
+      ))
+    ) {
+      return false;
+    }
+    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, holdSec);
+    dedup.usedContentKeys.add(key);
+    dedup.usedPaths.add(clipPath);
+    if (portraitStill || isStillPhotoClip(clipPath)) {
       if (canUseGlobalStillPhoto(dedup)) markGlobalStillPhotoUsed(dedup);
       dedup.stillPhotosThisScene++;
-      if (await pushClip(withText, holdSec)) {
-        console.log(
-          `[Pipeline] Scene ${scene.index} beat ${beat.index}: Wikimedia portrait "${person}" (blur-fill)`
-        );
-        return true;
+    }
+    if (await pushClip(withText, holdSec)) {
+      touchBeatGeoLock(dedup, beat.text, videoTitle);
+      console.log(
+        `[Pipeline] Scene ${scene.index} beat ${beat.index}: Wikimedia clip voor "${q}"` +
+          (portraitStill ? " (blur-fill portrait)" : "")
+      );
+      return true;
+    }
+    return false;
+  };
+
+  for (const q of queries) {
+    try {
+      const vids = await fetchWikimediaVideos(
+        q,
+        holdSec,
+        workDir,
+        scene.index,
+        1,
+        `b${beat.index}_wiki`,
+        person ?? "",
+        beatKeywords
+      );
+      for (const hit of vids) {
+        if (await tryAdoptPath(hit.path, q, false)) return true;
       }
+    } catch (err) {
+      console.warn(
+        `[Pipeline] Wikimedia video "${q}" failed:`,
+        (err as Error).message?.slice(0, 80)
+      );
+    }
+
+    if (openingBeat) continue;
+
+    const portraitStill = Boolean(
+      person?.trim() &&
+        (personQueries.includes(q) || beatMentionsPerson(beat.text, person))
+    );
+    try {
+      const paths = await fetchWikimediaImages(
+        q,
+        holdSec,
+        workDir,
+        scene.index,
+        1,
+        `b${beat.index}_wiki`,
+        { beatIndex: beat.index, personPortrait: portraitStill }
+      );
+      for (const clipPath of paths) {
+        if (await tryAdoptPath(clipPath, q, portraitStill)) return true;
+      }
+    } catch (err) {
+      console.warn(
+        `[Pipeline] Wikimedia image "${q}" failed:`,
+        (err as Error).message?.slice(0, 80)
+      );
     }
   }
   return false;
@@ -14177,26 +14256,16 @@ async function adoptArchiveBeatClip(
     if (await tryClip(clip, holdSec)) return true;
   }
 
-  if (await adoptWikimediaPersonPortraitBeat(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec)) {
-    return true;
-  }
   return false;
 }
 
-/** Last resort when archive + semantic search finds nothing — topic-aligned Pexels B-roll. */
-async function adoptPexelsBeatClipFallback(
+function buildBeatFallbackVisualQueries(
   beat: SceneBeat,
   scene: Scene,
-  workDir: string,
   videoTitle: string | undefined,
   dedup: VisualDedupState,
-  pushClip: (clipPath: string, holdSec?: number) => boolean | Promise<boolean>,
-  holdSec: number,
-  semanticProfile?: BeatSemanticProfile,
-  reason: "fallback" | "geo-first" | "weak-archive" = "fallback"
-): Promise<boolean> {
-  if (!archivePexelsFallbackEnabled() || !licensedStockFootageEnabled()) return false;
-
+  semanticProfile?: BeatSemanticProfile
+): string[] {
   const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
   const literalVisual = beat.visualDescription?.trim() || "";
   const literalSearch = beat.searchQuery?.trim() || "";
@@ -14253,7 +14322,7 @@ async function adoptPexelsBeatClipFallback(
     scene.index === 0 && beat.index === 0
       ? buildVidrushOpeningQueries(videoTitle, beat.text)
       : [];
-  const queries = [
+  return [
     ...new Set(
       [
         beat.searchQuery,
@@ -14278,6 +14347,26 @@ async function adoptPexelsBeatClipFallback(
         .map((q) => (searchFromLiteralVisual ? q.trim() : simplifyStockSearchWord(q, beat.text, true)))
     ),
   ].slice(0, 10);
+}
+
+/** Last resort when archive + Wikimedia find nothing — topic-aligned Pexels B-roll. */
+async function adoptPexelsBeatClipFallback(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  videoTitle: string | undefined,
+  dedup: VisualDedupState,
+  pushClip: (clipPath: string, holdSec?: number) => boolean | Promise<boolean>,
+  holdSec: number,
+  semanticProfile?: BeatSemanticProfile,
+  reason: "fallback" | "geo-first" | "weak-archive" = "fallback"
+): Promise<boolean> {
+  if (await adoptWikimediaBeatClipFallback(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
+    return true;
+  }
+  if (!archivePexelsFallbackEnabled() || !licensedStockFootageEnabled()) return false;
+
+  const queries = buildBeatFallbackVisualQueries(beat, scene, videoTitle, dedup, semanticProfile);
 
   if (queries.length === 0) return false;
 
@@ -14451,17 +14540,6 @@ async function backfillArchiveMontageFromPool(
       profile,
       true
     );
-    if (!adopted) {
-      adopted = await adoptWikimediaPersonPortraitBeat(
-        beat,
-        scene,
-        workDir,
-        videoTitle,
-        dedup,
-        (clipPath, holdSec) => pushClip(clipPath, holdSec, beats.length + added),
-        fillHold
-      );
-    }
     if (!adopted) {
       adopted = await adoptPexelsBeatClipFallback(
         beat,
