@@ -7697,6 +7697,13 @@ interface VisualDedupState {
   /** Named celebrity from user prompt (e.g. Kylie Jenner) — anchor every beat's stock search. */
   primaryPerson: string;
   personTopicLock: boolean;
+  /**
+   * Tracks how many times each Pexels query term has been used as the winning anchor this video.
+   * Used by the variety enforcer to promote least-used anchors for successive beats, so
+   * "Amsterdam canal", "Dutch cycling", "Netherlands bicycle" all get used instead of
+   * repeating "Amsterdam canal" for every Netherlands beat.
+   */
+  usedPexelsAnchors: Map<string, number>;
 }
 
 /**
@@ -7760,6 +7767,7 @@ function createVisualDedupState(
     perf,
     primaryPerson: topic?.primaryPerson?.trim() ?? "",
     personTopicLock: Boolean(topic?.personTopicLock && topic?.primaryPerson?.trim()),
+    usedPexelsAnchors: new Map(),
   };
 }
 
@@ -12262,9 +12270,20 @@ async function fetchBeatStockFallback(
 
   // In archive-first mode, topic-specific queries must be FIRST so they survive the slice cap.
   // Auto-detect country/topic from video title → inject as first Pexels anchor for ALL topics.
-  const topicAnchors = curatedArchiveOnlyVisuals()
+  const rawTopicAnchors = curatedArchiveOnlyVisuals()
     ? extractVideoTopicAnchors(videoTitle ?? "", beat.text)
     : [];
+
+  // ── Visual variety enforcer ──────────────────────────────────────────────────
+  // Sort topic anchors so least-used ones come first. This ensures consecutive
+  // beats on the same topic (e.g. Netherlands) get different imagery:
+  //   beat 0 → "Amsterdam canal"   (used 0×) → first
+  //   beat 3 → "Dutch cycling"     (used 0×) → first (Amsterdam used 1×)
+  //   beat 6 → "Netherlands bicycle" (used 0×) → first (others used 1×)
+  const topicAnchors = [...rawTopicAnchors].sort(
+    (a, b) => (dedup.usedPexelsAnchors.get(a) ?? 0) - (dedup.usedPexelsAnchors.get(b) ?? 0)
+  );
+
   const topicSpecific = buildBeatVisualQueryList(beat.text, scene, videoTitle, scenePersons, 5);
   const queries = curatedArchiveOnlyVisuals()
     ? [
@@ -12312,6 +12331,8 @@ async function fetchBeatStockFallback(
         );
         if (clip && !isStillPhotoClip(clip) && !isPipelineFallbackClip(clip)) {
           if (canUseLicensedStockBeat(dedup)) markLicensedStockBeatUsed(dedup);
+          // Visual variety enforcer: mark this anchor as used so the next beat picks a different one
+          dedup.usedPexelsAnchors.set(q, (dedup.usedPexelsAnchors.get(q) ?? 0) + 1);
           console.log(
             `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: stock fallback (${reason}) — Pexels "${q}"`
           );
@@ -12326,6 +12347,8 @@ async function fetchBeatStockFallback(
         );
         if (clip && !isStillPhotoClip(clip) && !isPipelineFallbackClip(clip)) {
           if (canUseLicensedStockBeat(dedup)) markLicensedStockBeatUsed(dedup);
+          // Visual variety enforcer: mark this anchor as used so the next beat picks a different one
+          dedup.usedPexelsAnchors.set(q, (dedup.usedPexelsAnchors.get(q) ?? 0) + 1);
           console.log(
             `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: stock fallback (${reason}) — Pixabay "${q}"`
           );
