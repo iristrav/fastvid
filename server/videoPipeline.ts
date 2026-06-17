@@ -711,23 +711,6 @@ async function fetchBeatArchivalThenPexels(
   tag: string,
   stockReason: string
 ): Promise<string | null> {
-  // ── V1 Visual Matching Engine: Wikimedia first ───────────────────────────
-  // Source priority per spec: Wikimedia → Archive → Pexels → Pixabay.
-  // Only active when VISUAL_MATCHING_V1=true; falls through silently on no match.
-  if (visualMatchingV1Enabled()) {
-    const analysis = analyzeSceneVisual(beat.text, videoTitle);
-    const v1Clip = await fetchWikimediaImagesV1(
-      analysis,
-      clipFetchDur,
-      workDir,
-      sceneIndex,
-      beat.index,
-      `v1b${beat.index}`
-    );
-    if (v1Clip) return v1Clip;
-    // No Wikimedia match ≥ 85 — fall through to archive
-  }
-
   if (curatedArchiveOnlyVisuals()) {
     const archiveClip = await fetchCuratedArchiveBeatClip(
       beat,
@@ -744,9 +727,16 @@ async function fetchBeatArchivalThenPexels(
       { varietySeed: dedup.varietySeed, crossVideoExcludeIds: dedup.crossVideoExcludeIds }
     );
     if (archiveClip !== null) return archiveClip;
-    // No matching archive clip — fall through to Pexels if enabled.
+    // No matching archive clip — try Wikimedia (free/public) then Pexels.
     if (!archivePexelsFallbackEnabled() || !canUseLicensedStockBeat(dedup)) return null;
-    console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: no archive match → Pexels fallback`);
+    if (visualMatchingV1Enabled()) {
+      const wikiAnalysis = analyzeSceneVisual(beat.text, videoTitle);
+      const wikiClip = await fetchWikimediaImagesV1(
+        wikiAnalysis, beat.holdSec, workDir, sceneIndex, beat.index, `wiki${beat.index}`
+      );
+      if (wikiClip) return wikiClip;
+    }
+    console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: no archive/wiki match → Pexels fallback`);
   }
   const topicHay = [videoTitle, scene.text, beat.text].filter(Boolean).join(" ");
   const historicalDoc = isHistoricalDocumentary(topicHay) && !dedup.personTopicLock;
@@ -10713,30 +10703,28 @@ async function recoverSceneClipsIfEmpty(
       beatDurations.push(stubBeat.holdSec);
       if (clips.length >= need) break;
     }
-    // If archive yielded nothing, fall back to Wikimedia V1 / Pexels / Pixabay
-    // before failing with "geen archive-beelden gevonden".
+    // If archive yielded nothing, try Wikimedia / Pexels once for the scene
+    // and reuse the result — avoids per-beat HTTP calls that cause timeouts.
     if (clips.length === 0) {
-      console.log(`[Pipeline] recoverSceneClips scene ${scene.index}: no archive match — trying external fallbacks`);
-      for (let fi = 0; fi < need; fi++) {
-        const fb: SceneBeat = { ...stubBeat, index: fi };
-        const fbClip = await fetchBeatArchivalThenPexels(
-          fb,
-          scene,
-          workDir,
-          scene.index,
-          topicContext,
-          dedup,
-          recoverAdopt,
-          scenePersons,
-          `recover_fb${fi}`,
-          "recover-fallback"
-        );
-        if (!fbClip) continue;
-        const key = clipContentKey(fbClip);
-        if (clips.some((c) => clipContentKey(c) === key)) continue;
-        clips.push(fbClip);
-        beatDurations.push(fb.holdSec);
-        if (clips.length >= need) break;
+      console.log(`[Pipeline] recoverSceneClips scene ${scene.index}: no archive match — trying Wikimedia/Pexels once`);
+      const fb: SceneBeat = { ...stubBeat, index: 0 };
+      const fbClip = await fetchBeatArchivalThenPexels(
+        fb,
+        scene,
+        workDir,
+        scene.index,
+        topicContext,
+        dedup,
+        recoverAdopt,
+        scenePersons,
+        "recover_fb",
+        "recover-fallback"
+      );
+      if (fbClip) {
+        for (let fi = 0; fi < need; fi++) {
+          clips.push(fbClip);
+          beatDurations.push(fb.holdSec);
+        }
       }
     }
     await assertSceneVisualInventory(scene, clips, beatDurations);
