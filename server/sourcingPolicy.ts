@@ -168,9 +168,9 @@ export function maxMotionGraphicsPerVideo(): number {
 }
 
 /**
- * Visual Matching Engine V1: Wikimedia → Archive → Pexels → Pixabay sourcing order.
- * Enable via env VISUAL_MATCHING_V1=true.
+ * Visual Matching Engine V1: Wikimedia Commons as a free/public fallback source.
+ * On by default (Wikimedia needs no API key). Disable via VISUAL_MATCHING_V1=false.
  */
 export function visualMatchingV1Enabled(): boolean {
-  return process.env.VISUAL_MATCHING_V1 === "true";
+  return process.env.VISUAL_MATCHING_V1 !== "false";
 }
