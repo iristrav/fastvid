@@ -2,20 +2,10 @@
  * Admin-only archive asset streaming with Range support (fixes clip preview upstream errors).
  */
 import type { Express, Request, Response } from "express";
-import { createReadStream, existsSync, statSync } from "fs";
-import path from "path";
+import { createReadStream, statSync } from "fs";
+import { loadArchiveAssetFile } from "./archiveAssetLoad";
 import { getUserFromRequest } from "./_core/context";
 import { getMediaArchiveAssetById } from "./db";
-import { resolveLocalStorageFilePath } from "./storageLocal";
-import { storageGetSignedUrl } from "./storage";
-import { getStorageBackend } from "./storageBackend";
-
-function resolveArchiveAssetPath(asset: { storageUrl: string; storageKey: string | null }): string | null {
-  return resolveLocalStorageFilePath({
-    storageUrl: asset.storageUrl,
-    storageKey: asset.storageKey,
-  });
-}
 
 function streamLocalFileWithRange(req: Request, res: Response, filePath: string, contentType: string): void {
   const stat = statSync(filePath);
@@ -30,7 +20,7 @@ function streamLocalFileWithRange(req: Request, res: Response, filePath: string,
     const parts = range.replace(/bytes=/, "").split("-");
     const start = parseInt(parts[0], 10);
     const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
-    if (start >= fileSize || end >= fileSize) {
+    if (Number.isNaN(start) || start >= fileSize || end >= fileSize) {
       res.status(416).setHeader("Content-Range", `bytes */${fileSize}`).end();
       return;
     }
@@ -44,27 +34,6 @@ function streamLocalFileWithRange(req: Request, res: Response, filePath: string,
 
   res.setHeader("Content-Length", fileSize);
   createReadStream(filePath).pipe(res);
-}
-
-async function proxyRemoteMedia(req: Request, res: Response, url: string): Promise<boolean> {
-  const headers: Record<string, string> = {};
-  if (req.headers.range) headers.Range = req.headers.range;
-
-  const upstream = await fetch(url, { headers });
-  if (!upstream.ok || !upstream.body) return false;
-
-  const contentType = upstream.headers.get("content-type") ?? "application/octet-stream";
-  res.setHeader("Content-Type", contentType);
-  res.setHeader("Accept-Ranges", upstream.headers.get("accept-ranges") ?? "bytes");
-  const contentLength = upstream.headers.get("content-length");
-  const contentRange = upstream.headers.get("content-range");
-  if (contentLength) res.setHeader("Content-Length", contentLength);
-  if (contentRange) res.setHeader("Content-Range", contentRange);
-  res.status(upstream.status === 206 ? 206 : 200);
-
-  const { Readable } = await import("stream");
-  Readable.fromWeb(upstream.body as import("stream/web").ReadableStream).pipe(res);
-  return true;
 }
 
 export function archiveMediaStreamUrl(assetId: number): string {
@@ -83,41 +52,23 @@ async function streamArchiveAsset(req: Request, res: Response, assetId: number):
     return;
   }
 
-  const contentType =
-    asset.mimeType || (asset.mediaType === "video" ? "video/mp4" : "image/jpeg");
-
-  const localPath = resolveArchiveAssetPath(asset);
-  if (localPath) {
-    streamLocalFileWithRange(req, res, localPath, contentType);
+  const loaded = await loadArchiveAssetFile(asset);
+  if (!loaded.ok) {
+    const message =
+      loaded.reason === "download_failed"
+        ? "Could not download media from object storage — check S3 credentials or re-upload"
+        : "Media file not found — attach a Railway volume or re-upload this clip";
+    res.status(404).json({ error: message });
     return;
   }
 
-  if (asset.storageUrl.startsWith("/manus-storage/")) {
-    const key = asset.storageKey ?? asset.storageUrl.replace(/^\/manus-storage\//, "");
-    try {
-      const signedUrl = await storageGetSignedUrl(key);
-      const ok = await proxyRemoteMedia(req, res, signedUrl);
-      if (ok) return;
-    } catch (err) {
-      console.warn("[ArchiveMedia] manus-storage proxy failed:", (err as Error).message);
-    }
-  } else if (
-    asset.storageKey &&
-    (getStorageBackend() === "s3" || getStorageBackend() === "forge")
-  ) {
-    try {
-      const signedUrl = await storageGetSignedUrl(asset.storageKey);
-      const ok = await proxyRemoteMedia(req, res, signedUrl);
-      if (ok) return;
-    } catch (err) {
-      console.warn("[ArchiveMedia] storageKey proxy failed:", (err as Error).message);
-    }
-  } else if (asset.storageUrl.startsWith("http")) {
-    const ok = await proxyRemoteMedia(req, res, asset.storageUrl);
-    if (ok) return;
+  const { localPath, mimeType, cleanup } = loaded.result;
+  if (cleanup) {
+    res.on("close", cleanup);
+    res.on("finish", cleanup);
   }
 
-  res.status(404).json({ error: "Media file not found on disk" });
+  streamLocalFileWithRange(req, res, localPath, mimeType);
 }
 
 export function registerArchiveMediaRoute(app: Express) {

@@ -80,6 +80,8 @@ import { FASTVID_PRO_PLAN } from "./products";
 import { processArchiveAssetUpload, ArchiveUploadError } from "./archiveUpload";
 import { archiveAiTaggingEnabled } from "./archiveAssetTagging";
 import { autoTitleArchiveAssets, probeArchiveAssetAiTag } from "./archiveBulkVisionTagging";
+import { archiveAssetMediaStatus } from "./archiveAssetLoad";
+import { archiveAssetMediaStatus } from "./archiveAssetLoad";
 import { dedupeArchiveVisualDuplicates } from "./archiveClipDedup";
 import { assessArchiveCoverageForPrompt } from "./archiveCoverage";
 import {
@@ -1549,11 +1551,32 @@ export const appRouter = router({
       archiveId: z.number().int(),
       search: z.string().max(128).optional(),
       tag: z.string().max(64).optional(),
+      limit: z.number().int().min(1).max(200).optional(),
+      offset: z.number().int().min(0).optional(),
     })).query(async ({ input }) => {
       const archive = await getMediaArchiveById(input.archiveId);
       if (!archive) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Archive not found");
       const assets = await getMediaArchiveAssets(input.archiveId);
-      return filterMediaArchiveAssets(assets, { search: input.search, tag: input.tag });
+      const filtered = filterMediaArchiveAssets(assets, { search: input.search, tag: input.tag });
+      const enriched = filtered.map((asset) => {
+        const status = archiveAssetMediaStatus(asset);
+        return {
+          ...asset,
+          mediaAvailable: status.mediaAvailable,
+          browserPlayable: status.browserPlayable,
+          mediaIssue: status.issue ?? null,
+        };
+      });
+      const offset = input.offset ?? 0;
+      const limit = input.limit ?? enriched.length;
+      return {
+        items: enriched.slice(offset, offset + limit),
+        total: enriched.length,
+        offset,
+        limit,
+        unavailableCount: enriched.filter((a) => !a.mediaAvailable).length,
+        unsupportedCount: enriched.filter((a) => a.mediaAvailable && !a.browserPlayable).length,
+      };
     }),
 
     uploadAsset: adminProcedure.input(z.object({

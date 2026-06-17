@@ -539,7 +539,7 @@ export function MediaArchiveAdmin() {
                     onChange={(e) => setAutoSplitScenes(e.target.checked)}
                     className="rounded border-white/20 bg-white/5 text-purple-600 focus:ring-purple-500"
                   />
-                  Auto-split on shot/scene change (scdet — detects real visual cuts)
+                    Auto-split on shot/scene change (scdet — detects real visual cuts). Each saved clip is one scene only.
                 </label>
 
                 {uploadProgress && (

@@ -133,6 +133,43 @@ export async function loadArchiveAssetFile(
   };
 }
 
+const BROWSER_VIDEO_MIMES = new Set([
+  "video/mp4",
+  "video/webm",
+  "video/ogg",
+]);
+
+/** Whether the clip can play inline in Chrome/Firefox/Safari without transcoding. */
+export function archiveAssetBrowserPlayable(
+  asset: Pick<MediaArchiveAsset, "mimeType" | "mediaType" | "storageUrl">
+): boolean {
+  if (asset.mediaType === "image") return true;
+  const mime = assetMimeType(asset).toLowerCase();
+  if (BROWSER_VIDEO_MIMES.has(mime)) return true;
+  const ext = path.extname(asset.storageUrl ?? "").toLowerCase();
+  return ext === ".mp4" || ext === ".webm";
+}
+
+export type ArchiveAssetMediaStatus = {
+  mediaAvailable: boolean;
+  browserPlayable: boolean;
+  issue?: "missing" | "unsupported_format";
+};
+
+export function archiveAssetMediaStatus(
+  asset: Pick<MediaArchiveAsset, "storageUrl" | "storageKey" | "mimeType" | "mediaType">
+): ArchiveAssetMediaStatus {
+  const mediaAvailable = archiveAssetHasLocalCopy(asset);
+  const browserPlayable = archiveAssetBrowserPlayable(asset);
+  if (!mediaAvailable) {
+    return { mediaAvailable: false, browserPlayable, issue: "missing" };
+  }
+  if (!browserPlayable) {
+    return { mediaAvailable: true, browserPlayable: false, issue: "unsupported_format" };
+  }
+  return { mediaAvailable: true, browserPlayable: true };
+}
+
 /** Quick check whether an asset likely still has retrievable media. */
 export function archiveAssetHasLocalCopy(
   asset: Pick<MediaArchiveAsset, "storageUrl" | "storageKey">

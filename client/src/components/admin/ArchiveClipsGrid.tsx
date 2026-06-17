@@ -1,13 +1,15 @@
 /**
  * Browse, preview, multi-select and delete media archive clips.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { toastErrorMessage } from "@/const";
 import { toast } from "sonner";
 import {
-  Loader2, Trash2, Pencil, Search, Film, Image as ImageIcon, X, Play, ExternalLink, CheckSquare, Square, Sparkles, Copy,
+  Loader2, Trash2, Pencil, Search, Film, Image as ImageIcon, X, Play, ExternalLink, CheckSquare, Square, Sparkles, Copy, AlertTriangle, ChevronLeft, ChevronRight,
 } from "lucide-react";
+
+const CLIPS_PAGE_SIZE = 48;
 
 const MIX_KINDS = [
   { value: "real_video", label: "Real video" },
@@ -28,6 +30,9 @@ type ArchiveAsset = {
   tags?: string[] | null;
   sourceNote?: string | null;
   durationSec?: number | null;
+  mediaAvailable?: boolean;
+  browserPlayable?: boolean;
+  mediaIssue?: "missing" | "unsupported_format" | null;
 };
 
 function parseTagsInput(raw: string): string[] {
@@ -108,6 +113,97 @@ function archiveClipMediaUrl(assetId: number): string {
   return `/api/admin/archive/media/${assetId}`;
 }
 
+function mediaIssueLabel(issue?: ArchiveAsset["mediaIssue"]): string | null {
+  if (issue === "missing") return "Bestand ontbreekt op server";
+  if (issue === "unsupported_format") return "Formaat werkt niet in browser (upload MP4/WebM)";
+  return null;
+}
+
+function LazyArchiveMedia({
+  asset,
+  className,
+  mode,
+}: {
+  asset: ArchiveAsset;
+  className?: string;
+  mode: "thumb" | "preview";
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [src, setSrc] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState(false);
+  const canLoad = asset.mediaAvailable !== false;
+
+  useEffect(() => {
+    setLoadError(false);
+    if (!canLoad) {
+      setSrc(null);
+      return;
+    }
+    if (mode === "preview") {
+      setSrc(archiveClipMediaUrl(asset.id));
+      return;
+    }
+    const el = containerRef.current;
+    if (!el) return;
+    const obs = new IntersectionObserver(
+      ([entry]) => {
+        if (entry?.isIntersecting) {
+          setSrc(archiveClipMediaUrl(asset.id));
+          obs.disconnect();
+        }
+      },
+      { rootMargin: "240px" }
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [asset.id, canLoad, mode]);
+
+  const issue = mediaIssueLabel(asset.mediaIssue ?? undefined);
+
+  if (!canLoad || loadError) {
+    return (
+      <div
+        ref={containerRef}
+        className={`flex flex-col items-center justify-center gap-2 bg-black/50 text-slate-400 ${className ?? ""}`}
+      >
+        <AlertTriangle className="w-8 h-8 text-amber-400/80" />
+        <p className="text-xs text-center px-3 leading-snug">
+          {loadError ? "Preview mislukt — bestand ontbreekt of is corrupt" : issue ?? "Media niet beschikbaar"}
+        </p>
+      </div>
+    );
+  }
+
+  if (asset.mediaType === "video") {
+    return (
+      <div ref={containerRef} className={className}>
+        <video
+          src={src ?? undefined}
+          className={`w-full h-full ${mode === "preview" ? "object-contain max-h-[75vh]" : "object-cover"}`}
+          muted
+          playsInline
+          preload={mode === "preview" ? "auto" : "metadata"}
+          controls={mode === "preview"}
+          autoPlay={mode === "preview"}
+          onError={() => setLoadError(true)}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div ref={containerRef} className={className}>
+      <img
+        src={src ?? undefined}
+        alt={asset.title ?? ""}
+        className="w-full h-full object-cover"
+        loading="lazy"
+        onError={() => setLoadError(true)}
+      />
+    </div>
+  );
+}
+
 function AssetPreviewModal({
   asset,
   onClose,
@@ -130,34 +226,33 @@ function AssetPreviewModal({
             {asset.sourceNote && (
               <p className="text-xs text-slate-400 truncate mt-0.5">{asset.sourceNote}</p>
             )}
+            {mediaIssueLabel(asset.mediaIssue ?? undefined) && (
+              <p className="text-xs text-amber-300 mt-1">{mediaIssueLabel(asset.mediaIssue ?? undefined)}</p>
+            )}
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            <a
-              href={archiveClipMediaUrl(asset.id)}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="p-2 rounded-lg bg-white/10 text-slate-300 hover:text-white hover:bg-white/15"
-              title="Open in new tab"
-            >
-              <ExternalLink className="w-4 h-4" />
-            </a>
+            {asset.mediaAvailable !== false && (
+              <a
+                href={archiveClipMediaUrl(asset.id)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="p-2 rounded-lg bg-white/10 text-slate-300 hover:text-white hover:bg-white/15"
+                title="Open in new tab"
+              >
+                <ExternalLink className="w-4 h-4" />
+              </a>
+            )}
             <button onClick={onClose} className="p-2 rounded-lg bg-white/10 text-slate-300 hover:text-white">
               <X className="w-4 h-4" />
             </button>
           </div>
         </div>
-        <div className="bg-black flex items-center justify-center max-h-[75vh]">
-          {asset.mediaType === "video" ? (
-            <video
-              src={archiveClipMediaUrl(asset.id)}
-              controls
-              autoPlay
-              playsInline
-              className="w-full max-h-[75vh] object-contain"
-            />
-          ) : (
-              <img src={archiveClipMediaUrl(asset.id)} alt={asset.title ?? ""} className="w-full max-h-[75vh] object-contain" />
-          )}
+        <div className="bg-black flex items-center justify-center max-h-[75vh] min-h-[200px]">
+          <LazyArchiveMedia
+            asset={asset}
+            mode="preview"
+            className="w-full max-h-[75vh] flex items-center justify-center"
+          />
         </div>
         {asset.durationSec != null && asset.durationSec > 0 && (
           <div className="px-4 py-2 text-xs text-slate-500 border-t border-white/10">
@@ -210,31 +305,26 @@ function AssetCard({
           <button
             type="button"
             onClick={() => setPreviewOpen(true)}
-            className="aspect-video bg-black/40 relative flex items-center justify-center w-full group cursor-pointer"
+            className="aspect-video bg-black/40 relative flex items-center justify-center w-full group cursor-pointer overflow-hidden"
           >
-            {asset.mediaType === "video" ? (
-              <video
-                src={archiveClipMediaUrl(asset.id)}
-                className="w-full h-full object-cover"
-                muted
-                playsInline
-                preload="metadata"
-              />
-            ) : (
-              <img src={archiveClipMediaUrl(asset.id)} alt={asset.title ?? ""} className="w-full h-full object-cover" />
+            <LazyArchiveMedia asset={asset} mode="thumb" className="absolute inset-0 w-full h-full" />
+            {asset.mediaIssue && (
+              <span className="absolute top-2 right-10 text-[10px] px-2 py-0.5 rounded bg-amber-500/90 text-black font-medium z-10">
+                {asset.mediaIssue === "missing" ? "Ontbreekt" : "MP4 nodig"}
+              </span>
             )}
-            <span className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors flex items-center justify-center">
+            <span className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors flex items-center justify-center z-[1]">
               <span className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-2 px-3 py-1.5 rounded-full bg-black/70 text-white text-xs font-medium">
                 <Play className="w-4 h-4 fill-white" />
                 View
               </span>
             </span>
-            <span className="absolute top-2 left-2 flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-black/60 text-white">
+            <span className="absolute top-2 left-2 flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-black/60 text-white z-[1]">
               {asset.mediaType === "video" ? <Film className="w-3 h-3" /> : <ImageIcon className="w-3 h-3" />}
               {asset.mediaType}
             </span>
             {asset.durationSec != null && asset.durationSec > 0 && (
-              <span className="absolute bottom-2 right-2 text-xs px-2 py-0.5 rounded bg-black/70 text-white">
+              <span className="absolute bottom-2 right-2 text-xs px-2 py-0.5 rounded bg-black/70 text-white z-[1]">
                 {formatDuration(asset.durationSec)}
               </span>
             )}
@@ -342,12 +432,31 @@ export function ArchiveClipsGrid({
 }) {
   const utils = trpc.useUtils();
   const [search, setSearch] = useState("");
+  const [page, setPage] = useState(0);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
 
-  const { data: assets = [], isLoading } = trpc.mediaArchive.listAssets.useQuery(
-    { archiveId: archiveId!, search: search || undefined },
-    { enabled: archiveId != null }
-  );
+  useEffect(() => {
+    setPage(0);
+  }, [archiveId, search]);
+
+  const listInput = {
+    archiveId: archiveId!,
+    search: search || undefined,
+    limit: CLIPS_PAGE_SIZE,
+    offset: page * CLIPS_PAGE_SIZE,
+  };
+
+  const { data: listData, isLoading } = trpc.mediaArchive.listAssets.useQuery(listInput, {
+    enabled: archiveId != null,
+  });
+
+  const assets = listData?.items ?? [];
+  const total = listData?.total ?? 0;
+  const unavailableCount = listData?.unavailableCount ?? 0;
+  const unsupportedCount = listData?.unsupportedCount ?? 0;
+  const pageCount = Math.max(1, Math.ceil(total / CLIPS_PAGE_SIZE));
+  const pageStart = total === 0 ? 0 : page * CLIPS_PAGE_SIZE + 1;
+  const pageEnd = Math.min(total, (page + 1) * CLIPS_PAGE_SIZE);
 
   const updateAsset = trpc.mediaArchive.updateAsset.useMutation({
     onSuccess: () => {
@@ -412,14 +521,14 @@ export function ArchiveClipsGrid({
 
   useEffect(() => {
     setSelectedIds(new Set());
-  }, [archiveId, search]);
+  }, [archiveId, search, page]);
 
   const visibleIds = useMemo(() => new Set(assets.map((a) => a.id)), [assets]);
   const selectedCount = [...selectedIds].filter((id) => visibleIds.has(id)).length;
   const allSelected = assets.length > 0 && selectedCount === assets.length;
 
   const runAutoTitleAll = useCallback(async () => {
-    if (archiveId == null || assets.length === 0) {
+    if (archiveId == null || total === 0) {
       toast.error("No clips to process");
       return;
     }
@@ -427,29 +536,45 @@ export function ArchiveClipsGrid({
     const targetIds =
       selectedCount > 0
         ? [...selectedIds].filter((id) => visibleIds.has(id))
-        : assets.map((a) => a.id);
+        : undefined;
 
-    if (targetIds.length === 0) {
+    if (selectedCount > 0 && (!targetIds || targetIds.length === 0)) {
       toast.error("No clips selected");
       return;
     }
 
     const label =
       selectedCount > 0
-        ? `${targetIds.length} selected clip(s)`
+        ? `${targetIds!.length} selected clip(s)`
         : search.trim()
-          ? `${targetIds.length} visible clip(s)`
-          : `all ${targetIds.length} clip(s)`;
+          ? `${total} matching clip(s)`
+          : `all ${total} clip(s)`;
 
     const CHUNK = 8;
+    let resolvedIds = targetIds;
+    if (!resolvedIds) {
+      const full = await utils.mediaArchive.listAssets.fetch({
+        archiveId: archiveId!,
+        search: search || undefined,
+        limit: 10000,
+        offset: 0,
+      });
+      resolvedIds = full.items.map((a) => a.id);
+    }
+
+    if (resolvedIds.length === 0) {
+      toast.error("No clips to process");
+      return;
+    }
+
     setAutoTitleRunning(true);
-    setAutoTitleProgress({ done: 0, total: targetIds.length });
+    setAutoTitleProgress({ done: 0, total: resolvedIds.length });
     setAutoTitleReport({
       kind: "running",
       message: `AI titles + 4 tags bezig voor ${label}…`,
       detail: "Dit duurt ~30–60 seconden per clip. Bestaande tags worden vervangen.",
     });
-    const loadingToast = toast.loading(`AI titles + 4 tags (${targetIds.length} clips)…`);
+    const loadingToast = toast.loading(`AI titles + 4 tags (${resolvedIds.length} clips)…`);
     let updated = 0;
     let skipped = 0;
     let failed = 0;
@@ -467,8 +592,8 @@ export function ArchiveClipsGrid({
     let lastSampleUpdate: { assetId: number; title: string; tags: string[] } | undefined;
 
     try {
-      for (let i = 0; i < targetIds.length; i += CHUNK) {
-        const chunk = targetIds.slice(i, i + CHUNK);
+      for (let i = 0; i < resolvedIds.length; i += CHUNK) {
+        const chunk = resolvedIds.slice(i, i + CHUNK);
         const result = await autoTitleAssets.mutateAsync({ archiveId, ids: chunk });
         updated += result.updated;
         skipped += result.skipped;
@@ -476,11 +601,11 @@ export function ArchiveClipsGrid({
         if (result.skipReasons) lastSkipReasons = result.skipReasons;
         if (result.sampleError) lastSampleError = result.sampleError;
         if (result.sampleUpdate) lastSampleUpdate = result.sampleUpdate;
-        const done = Math.min(i + chunk.length, targetIds.length);
-        setAutoTitleProgress({ done, total: targetIds.length });
+        const done = Math.min(i + chunk.length, resolvedIds.length);
+        setAutoTitleProgress({ done, total: resolvedIds.length });
         setAutoTitleReport({
           kind: "running",
-          message: `Bezig: ${done}/${targetIds.length} clips verwerkt (${updated} bijgewerkt)`,
+          message: `Bezig: ${done}/${resolvedIds.length} clips verwerkt (${updated} bijgewerkt)`,
           detail: lastSampleUpdate
             ? `Laatste save: #${lastSampleUpdate.assetId} → [${lastSampleUpdate.tags.join(", ")}]`
             : lastSampleError
@@ -488,10 +613,7 @@ export function ArchiveClipsGrid({
               : undefined,
         });
       }
-      await utils.mediaArchive.listAssets.refetch({
-        archiveId: archiveId!,
-        search: search || undefined,
-      });
+      await utils.mediaArchive.listAssets.refetch(listInput);
       utils.mediaArchive.listArchives.invalidate();
       toast.dismiss(loadingToast);
       const outcomeDetail = describeAutoTitleOutcome({
@@ -505,7 +627,7 @@ export function ArchiveClipsGrid({
       if (updated === 0) {
         setAutoTitleReport({
           kind: "done",
-          message: `Klaar: 0 van ${targetIds.length} clips bijgewerkt`,
+          message: `Klaar: 0 van ${resolvedIds.length} clips bijgewerkt`,
           detail: outcomeDetail || "AI kon geen titels/tags genereren voor deze clips",
         });
         toast.warning("Geen clips bijgewerkt", {
@@ -532,11 +654,12 @@ export function ArchiveClipsGrid({
     }
   }, [
     archiveId,
-    assets,
     autoTitleAssets,
+    listInput,
     search,
     selectedCount,
     selectedIds,
+    total,
     utils.mediaArchive.listArchives,
     utils.mediaArchive.listAssets,
     visibleIds,
@@ -611,7 +734,7 @@ export function ArchiveClipsGrid({
   const deletePending = deleteAssets.isPending || deleteAllAssets.isPending;
 
   function dedupeVisualDuplicates() {
-    if (archiveId == null || assets.length < 2) return;
+    if (archiveId == null || total < 2) return;
     const targetIds =
       selectedCount > 0
         ? [...selectedIds].filter((id) => visibleIds.has(id))
@@ -727,6 +850,50 @@ export function ArchiveClipsGrid({
         )}
       </div>
 
+      {total > 0 && (unavailableCount > 0 || unsupportedCount > 0) && (
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-100">
+          {unavailableCount > 0 && (
+            <p>
+              <strong>{unavailableCount}</strong> clip(s) missen het bestand op de server (vaak na deploy zonder Railway volume) — upload opnieuw of koppel S3.
+            </p>
+          )}
+          {unsupportedCount > 0 && (
+            <p className={unavailableCount > 0 ? "mt-1" : ""}>
+              <strong>{unsupportedCount}</strong> clip(s) zijn geen MP4/WebM — preview werkt niet in de browser.
+            </p>
+          )}
+        </div>
+      )}
+
+      {total > CLIPS_PAGE_SIZE && (
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-400">
+          <span>
+            Clip {pageStart}–{pageEnd} van {total}
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              disabled={page <= 0}
+              onClick={() => setPage((p) => Math.max(0, p - 1))}
+              className="flex items-center gap-1 px-2 py-1 rounded bg-white/10 disabled:opacity-40 hover:bg-white/15"
+            >
+              <ChevronLeft className="w-3.5 h-3.5" /> Vorige
+            </button>
+            <span>
+              Pagina {page + 1} / {pageCount}
+            </span>
+            <button
+              type="button"
+              disabled={page >= pageCount - 1}
+              onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
+              className="flex items-center gap-1 px-2 py-1 rounded bg-white/10 disabled:opacity-40 hover:bg-white/15"
+            >
+              Volgende <ChevronRight className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
+
       {autoTitleReport && (
         <div
           className={`rounded-lg border px-3 py-2 text-sm ${
@@ -767,6 +934,7 @@ export function ArchiveClipsGrid({
       ) : assets.length === 0 ? (
         <div className="text-center py-12 text-slate-500 text-sm">No clips in this archive.</div>
       ) : (
+        <>
         <div className={`grid gap-4 ${compact ? "sm:grid-cols-2 lg:grid-cols-3" : "sm:grid-cols-2 xl:grid-cols-3"}`}>
           {assets.map((asset) => (
             <AssetCard
@@ -782,6 +950,30 @@ export function ArchiveClipsGrid({
             />
           ))}
         </div>
+        {total > CLIPS_PAGE_SIZE && (
+          <div className="flex justify-center pt-2">
+            <div className="flex items-center gap-2 text-xs text-slate-400">
+              <button
+                type="button"
+                disabled={page <= 0}
+                onClick={() => setPage((p) => Math.max(0, p - 1))}
+                className="px-3 py-1.5 rounded bg-white/10 disabled:opacity-40 hover:bg-white/15"
+              >
+                Vorige
+              </button>
+              <span>Pagina {page + 1} / {pageCount}</span>
+              <button
+                type="button"
+                disabled={page >= pageCount - 1}
+                onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
+                className="px-3 py-1.5 rounded bg-white/10 disabled:opacity-40 hover:bg-white/15"
+              >
+                Volgende
+              </button>
+            </div>
+          </div>
+        )}
+        </>
       )}
     </div>
   );

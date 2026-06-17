@@ -9,6 +9,7 @@ import {
   maxArchiveClips,
   maxArchiveUploadBytes,
   maxArchiveVideoDurationSec,
+  mergeFlashFragmentsOnly,
   mergeNearbyCuts,
   normalizeWindowCutTimes,
   parsePtsTimesFromFfmpeg,
@@ -51,7 +52,25 @@ describe("archiveVideoSplitter", () => {
   });
 
   it("combineShotCutTimes ignores cuts closer than min shot gap", () => {
-    expect(combineShotCutTimes([[1, 2, 3, 4, 5, 8]])).toEqual([1, 3, 5, 8]);
+    expect(combineShotCutTimes([[1, 1.4, 3, 3.4, 5, 8]])).toEqual([1, 3, 5, 8]);
+  });
+
+  it("mergeFlashFragmentsOnly merges only sub-flash glitches not full shots", () => {
+    const merged = mergeFlashFragmentsOnly([
+      { start: 0, end: 4 },
+      { start: 4, end: 4.25 },
+      { start: 4.25, end: 9 },
+    ]);
+    expect(merged).toEqual([
+      { start: 0, end: 4.25 },
+      { start: 4.25, end: 9 },
+    ]);
+    const kept = mergeFlashFragmentsOnly([
+      { start: 0, end: 2 },
+      { start: 2, end: 4 },
+      { start: 4, end: 7 },
+    ]);
+    expect(kept.length).toBe(3);
   });
 
   it("enforceMinClipDuration merges sub-min clips with neighbors", () => {
