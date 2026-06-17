@@ -1,9 +1,12 @@
 /**
  * Vidrush pacing, asset quality, geo-segment locks, and motion-graphics QA.
  */
-import { extractMotionOverlayCandidates, type BeatLabelInput } from "./cinematicEffectsEngine";
-import type { MotionOverlayPlan } from "./motionGraphicsLayer";
-import { standardMontageCrossfadeSec } from "./motionGraphicsLayer";
+import type { BeatLabelInput } from "./cinematicEffectsEngine";
+import {
+  extractMotionOverlayCandidates,
+  standardMontageCrossfadeSec,
+  type MotionOverlayPlan,
+} from "./motionGraphicsLayer";
 import {
   archiveVisualMaxClipSec,
   archiveVisualMinClipSec,
