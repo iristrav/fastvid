@@ -7581,19 +7581,39 @@ function buildBeatVisualQueryList(
   const eventQueries = scriptEventSearchQueries(beatText, beatPersons);
   const entityStock = realEntityStockQueriesForBeat(beatText, scene.text, videoTitle);
 
-  const urbanQueries =
-    inferVideoVisualTopic(videoTitle, `${beatText} ${scene.text}`) === "geography_urban"
-      ? [
-          "city skyline",
-          "urban street",
-          "modern city",
-          /berlin|berlijn/i.test(beatText) || /berlin/i.test(videoTitle ?? "")
-            ? "berlin city skyline"
-            : "",
-          /transit|metro|subway|train|u-bahn/i.test(beatText) ? "public transport metro" : "",
-          /planning|zoning|infrastructure|walkable|density/i.test(beatText) ? "urban planning" : "",
-        ].filter((q): q is string => typeof q === "string" && q.length > 2)
-      : [];
+  const visualTopic = inferVideoVisualTopic(videoTitle, `${beatText} ${scene.text}`);
+  const beatLower = beatText.toLowerCase();
+  const titleLower = (videoTitle ?? "").toLowerCase();
+  const combinedHay = `${beatLower} ${titleLower}`;
+
+  const urbanQueries: string[] = [];
+  if (visualTopic === "geography_urban") {
+    // Netherlands / Dutch — inject specific queries so Pexels finds real Dutch footage
+    if (/nederland|netherlands|dutch|holland|amsterdam|rotterdam|utrecht|den haag/i.test(combinedHay)) {
+      urbanQueries.push("Amsterdam canal");
+      urbanQueries.push("Dutch cycling");
+      urbanQueries.push("Netherlands");
+      if (/fiets|bike|cycl|cycling/.test(combinedHay)) urbanQueries.push("Netherlands bicycle lane");
+      if (/woning|housing|huis|apartment/.test(combinedHay)) urbanQueries.push("Netherlands housing");
+      if (/windmill|windmolen/.test(combinedHay)) urbanQueries.push("windmill Netherlands");
+      if (/canal|gracht/.test(combinedHay)) urbanQueries.push("Amsterdam canal house");
+      if (/health|zorg|hospital|gezondheidszorg/.test(combinedHay)) urbanQueries.push("Netherlands healthcare");
+    }
+    // Berlin-specific
+    if (/berlin|berlijn/i.test(combinedHay)) {
+      urbanQueries.push("berlin city skyline");
+    }
+    // Transit
+    if (/transit|metro|subway|train|u-bahn/.test(combinedHay)) {
+      urbanQueries.push("public transport metro");
+    }
+    // Zoning / infrastructure
+    if (/planning|zoning|infrastructure|walkable|density/.test(combinedHay)) {
+      urbanQueries.push("urban planning");
+    }
+    // Generic urban fallback
+    urbanQueries.push("city skyline", "urban street", "modern city");
+  }
 
   const ordered = [
     ...urbanQueries,
@@ -7678,9 +7698,16 @@ interface VisualDedupState {
   personTopicLock: boolean;
 }
 
-/** One licensed stock clip allowed when minimizeStockFootage (whole-video cap). */
+/**
+ * Whether we can spend a licensed stock (Pexels/Pixabay) clip on this beat.
+ * In archive-first mode (curatedArchiveOnlyVisuals), Pexels is the ONLY fallback
+ * when no archive clip matches — so the stock budget must not block it.
+ * The minimizeStockFootage cap only makes sense in hybrid mode.
+ */
 function canUseLicensedStockBeat(dedup: VisualDedupState): boolean {
   if (!dedup.perf.minimizeStockFootage) return true;
+  // Archive-first: Pexels IS the designated fallback — never cap it
+  if (curatedArchiveOnlyVisuals()) return true;
   return dedup.stockBeatsUsed < dedup.perf.maxStockBeatsPerVideo;
 }
 
@@ -8174,18 +8201,21 @@ async function isMostlyBlackClip(filePath: string): Promise<boolean> {
     console.warn(`[Pipeline] Rejecting clip with embedded black bars: ${path.basename(filePath)}`);
     return true;
   }
-  // B&W archival clips often fail Railway luma heuristics — never drop curated archive beats.
+  // Curated archive clips: reject if too dark — threshold 25 (was 12, too permissive).
+  // B&W archival clips have low luma by design; we still skip near-pitch-black ones.
   if (curatedArchiveOnlyVisuals() && curatedClipPathAssetId(filePath) != null) {
     const dur = await probeVideoDurationSec(filePath);
     const sampleTimes = [0.12, 0.45, 1.0, Math.max(0.2, dur * 0.55)];
+    let darkCount = 0;
     for (const t of sampleTimes) {
       const ts = Math.min(t, Math.max(0.1, dur - 0.08));
       const luma = curatedStill
         ? await probeClipRegionMeanLuma(filePath, ts, "center")
         : await probeClipMeanLuma(filePath, ts);
-      if (luma !== null && luma < 12) return true;
+      if (luma !== null && luma < 25) darkCount++;
     }
-    return false;
+    // Reject if ALL sampled frames are too dark (avoids dropping B&W clips with bright contrast)
+    return darkCount >= sampleTimes.length;
   }
   // Railway: one luma sample — full blackdetect runs 3+ FFmpeg probes per clip
   if (IS_RAILWAY) {
@@ -12144,14 +12174,31 @@ async function fetchBeatStockFallback(
     requireBeatMatch: false,
     scriptAnchored: false,
   };
-  const queries = [
-    beat.searchQuery,
-    enrichStockQuery(beat.powerWord, scene, videoTitle, personName, beat.text),
-    scene.visualCue,
-    scene.pexelsQuery,
-    ...buildBeatVisualQueryList(beat.text, scene, videoTitle, scenePersons, 3),
-  ].filter((q): q is string => typeof q === "string" && q.trim().length > 2 && !isBlockedStockQuery(q));
-  const unique = [...new Set(queries)].slice(0, 3);
+
+  // In archive-first mode, topic-specific queries must be FIRST so they survive the slice cap.
+  // Otherwise "Amsterdam canal" / "Dutch cycling" get pushed out by generic scene.pexelsQuery.
+  const topicSpecific = buildBeatVisualQueryList(beat.text, scene, videoTitle, scenePersons, 5);
+  const queries = curatedArchiveOnlyVisuals()
+    ? [
+        ...topicSpecific,
+        beat.searchQuery,
+        enrichStockQuery(beat.powerWord, scene, videoTitle, personName, beat.text),
+        scene.pexelsQuery,
+        scene.visualCue,
+      ]
+    : [
+        beat.searchQuery,
+        enrichStockQuery(beat.powerWord, scene, videoTitle, personName, beat.text),
+        scene.visualCue,
+        scene.pexelsQuery,
+        ...topicSpecific,
+      ];
+  const filteredQueries = queries.filter(
+    (q): q is string => typeof q === "string" && q.trim().length > 2 && !isBlockedStockQuery(q)
+  );
+  // More queries allowed in archive-first mode since Pexels IS the only fallback
+  const maxQueries = curatedArchiveOnlyVisuals() ? 5 : 3;
+  const unique = [...new Set(filteredQueries)].slice(0, maxQueries);
   const tag = `b${beat.index}_stock`;
   const off = beat.index + sceneIndex * 3;
 

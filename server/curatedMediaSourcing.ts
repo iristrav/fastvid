@@ -610,6 +610,10 @@ export function scoreCuratedAsset(
       score = Math.max(0, score - 400);
     }
   }
+  // Hard-zero clips with pre-burned production notation titles (defense-in-depth)
+  if (hasProductionNotationTitle(asset)) {
+    return 0;
+  }
 
   return score;
 }
