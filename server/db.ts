@@ -408,9 +408,9 @@ function pipelineStallThresholdMs(
     return visualSearch ? visualCap : 18 * 60 * 1000;
   }
   if (length === "8-10") {
-    return visualSearch ? visualCap : 20 * 60 * 1000;
+    return visualSearch ? visualCap : 35 * 60 * 1000;
   }
-  return visualSearch ? Math.min(visualCap, totalCap - 5 * 60 * 1000) : 25 * 60 * 1000;
+  return visualSearch ? Math.min(visualCap, totalCap - 5 * 60 * 1000) : 45 * 60 * 1000;
 }
 
 /**

@@ -32,6 +32,16 @@ describe("motionGraphicsLayer", () => {
     expect(candidates.some((c) => c.text === "43%")).toBe(true);
   });
 
+  it("limits each overlay to at most two words", () => {
+    const candidates = extractMotionOverlayCandidates(
+      "Revenue grew to 10 million people worldwide in 2025.",
+      { powerWord: "innovation pipeline", highlightWords: ["worldwide expansion"] }
+    );
+    for (const c of candidates) {
+      expect(c.text.split(/\s+/).filter(Boolean).length).toBeLessThanOrEqual(2);
+    }
+  });
+
   it("plans voice-synced scene output structure", () => {
     const plan = planMotionGraphicsScene(
       1,
@@ -75,6 +85,7 @@ describe("motionGraphicsLayer", () => {
       },
     ]);
     expect(chain).toContain("fontcolor=white");
+    expect(chain).toContain(`fontsize=${68}`);
     expect(chain).toContain("shadowcolor=black");
     expect(chain).not.toContain("drawbox");
     expect(chain).not.toContain("0xFFCC00");

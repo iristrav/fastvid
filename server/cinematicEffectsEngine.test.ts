@@ -253,7 +253,8 @@ describe("cinematicEffectsEngine", () => {
 
   it("parses faceless subtitle emphasis lines", () => {
     const lines = parseFacelessSubtitleLines("Elon Musk founded SpaceX in 2002");
-    expect(lines.length).toBeGreaterThan(0);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.text.split(/\s+/).length).toBeLessThanOrEqual(2);
     expect(lines.some((l) => l.emphasis)).toBe(true);
   });
 

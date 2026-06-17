@@ -161,7 +161,7 @@ async function scoreClipNarrationMatch(
                 text: `Spoken narration: "${beatText.slice(0, 220)}"
 ${visualDescription ? `Intended visual: ${visualDescription.slice(0, 180)}` : ""}
 ${videoTitle ? `Documentary topic: ${videoTitle}` : ""}
-Does this frame show what the voiceover describes? Score 0-10, matchesNarration, wrongSubject if clearly unrelated geography/subject.`,
+Does this frame show what the voiceover describes? Score 0-10, matchesNarration, wrongSubject if clearly unrelated geography/subject (e.g. Toronto/USA map when narration says Netherlands).`,
               },
               { type: "image_url", image_url: { url: dataUrl, detail: "low" } },
             ],

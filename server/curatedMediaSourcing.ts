@@ -93,6 +93,7 @@ import {
   type BeatSemanticProfile,
   type SemanticMatchResult,
 } from "./semanticVisualMatching";
+import type { ArchiveMatchTier } from "./viewerVisualPlan";
 import {
   getAllMediaArchives,
   getMediaArchiveAssets,
@@ -325,6 +326,47 @@ export function countVisualTagHits(
 }
 
 /**
+ * Archive search priority tiers (internal library only):
+ * 1 exact — literal visual tag hits + tier-1/2 semantic
+ * 2 semantic — strong semantic / partial literal match
+ * 3 related — same topic, looser match
+ */
+export function filterCandidatesByArchiveTier(
+  picks: CuratedCandidatePick[],
+  tier: ArchiveMatchTier,
+  literalTags: string[]
+): CuratedCandidatePick[] {
+  if (!picks.length) return [];
+  const minSem = semanticMinRelevanceScore();
+
+  return picks.filter((p) => {
+    const literalHits = literalTags.length > 0 ? countVisualTagHits(p.asset, literalTags) : 0;
+    const sem = p.semantic;
+
+    if (tier === "exact") {
+      return (
+        literalHits >= 2 ||
+        (sem != null && sem.tier <= 2 && sem.relevanceScore >= Math.max(60, minSem + 8)) ||
+        (literalHits >= 1 && sem != null && sem.tier <= 2)
+      );
+    }
+
+    if (tier === "semantic") {
+      if (sem != null && sem.tier <= 3 && sem.relevanceScore >= minSem) return true;
+      if (literalHits >= 1 && p.score >= 38) return true;
+      if (sem != null && sem.tier <= 2 && sem.relevanceScore >= 50) return true;
+      return false;
+    }
+
+    // related
+    if (sem != null && sem.tier <= 4 && sem.relevanceScore >= 30) return true;
+    if (literalHits >= 1) return true;
+    if (p.score >= 22 && countVisualTagHits(p.asset, literalTags.slice(0, 2)) > 0) return true;
+    return p.score >= Math.max(18, Math.round((picks[0]?.score ?? 40) * 0.22));
+  });
+}
+
+/**
  * Detect clips whose title looks like a broadcast/editorial production notation label
  * that has been pre-burned into the video file (e.g. "MEDIC", "UNCERTAINTY WIDE SHOT MED",
  * "ECU FACE", "CU HANDS"). These clips will show the label on-screen in the output.
@@ -349,7 +391,8 @@ export function assetPassesBeatMinimum(
   topScore: number,
   semantic?: SemanticMatchResult,
   videoVisualTopic: VideoVisualTopic = "general",
-  segmentLock: BeatGeoRegion | null = null
+  segmentLock: BeatGeoRegion | null = null,
+  literalVisualTags: string[] = []
 ): boolean {
   const hay = `${(asset.title ?? "").toLowerCase()} ${normalizeMediaTags(asset.tags ?? []).join(" ")}`;
   if (isNonDocumentaryVisualHay(hay)) return false;
@@ -400,6 +443,18 @@ export function assetPassesBeatMinimum(
 
   if (isClipTitleIrrelevantToBeat(asset, beatText)) {
     return false;
+  }
+
+  if (literalVisualTags.length > 0) {
+    const literalHits = countVisualTagHits(asset, literalVisualTags);
+    const semStrong =
+      semantic != null && semantic.tier <= 3 && semantic.relevanceScore >= Math.max(50, semanticMinRelevanceScore());
+    if (literalHits === 0 && !semStrong) {
+      const requiredTags = extractRequiredVisualTags(beatText);
+      const sceneTags = extractSceneSearchTags(beatText);
+      const fallbackHits = countVisualTagHits(asset, [...requiredTags, ...sceneTags, ...literalVisualTags.slice(0, 3)]);
+      if (fallbackHits === 0) return false;
+    }
   }
 
   if (semantic && semanticVisualMatchingEnabled()) {
@@ -1450,7 +1505,11 @@ export async function searchCuratedCandidatesForBeat(
   const semanticProfile =
     options?.semanticProfile ??
     (semanticVisualMatchingEnabled()
-      ? await analyzeBeatSemantics(beat.visualDescription?.trim() || beat.text, videoTitle)
+      ? await analyzeBeatSemantics(
+          beat.visualDescription?.trim() || beat.text,
+          videoTitle,
+          beat.visualDescription?.trim() || undefined
+        )
       : undefined);
   const { beatTags, topicAnchors, allTags, videoVisualTopic } = buildBeatMatchTags(beat, scene, videoTitle);
 

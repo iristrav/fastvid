@@ -106,6 +106,16 @@ describe("visualBeatTags", () => {
     };
     expect(isWrongGeoForBeat(charlotteClip, nlBeatTags)).toBe(true);
     expect(isWrongGeoForBeat(amsterdamClip, nlBeatTags)).toBe(false);
+    const torontoMapClip = {
+      title: "1966 Toronto transportation expressways system map",
+      tags: ["urban planning", "expressway", "1966", "scarborough", "gardiner"],
+    };
+    expect(isWrongGeoForBeat(torontoMapClip, extractBeatGeoPlaceTags("That's the Netherlands."))).toBe(true);
+    const genericMapClip = {
+      title: "Urban highway planning map archival",
+      tags: ["urban planning", "expressway", "infrastructure"],
+    };
+    expect(isWrongGeoForBeat(genericMapClip, nlBeatTags)).toBe(true);
   });
 
   it("detects geography urban topic from Berlin vs US city title", () => {

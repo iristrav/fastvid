@@ -165,6 +165,20 @@ const US_MARKERS = [
   "united states", "usa", "america", "american", "new york", "nyc", "chicago",
   "los angeles", "washington", "usa downtown", "american city",
 ];
+/** Non-NL/US places — reject under segment lock (e.g. Toronto map when narration is Netherlands). */
+export const FOREIGN_PLACE_MARKERS = [
+  "toronto", "canada", "canadian", "ontario", "scarborough", "etobicoke", "north york",
+  "mississauga", "montreal", "vancouver", "quebec", "calgary", "ottawa",
+  "berlin", "germany", "german", "munich", "hamburg", "frankfurt",
+  "paris", "france", "french", "lyon", "marseille",
+  "london", "england", "english", "manchester", "birmingham",
+  "tokyo", "japan", "japanese", "osaka",
+  "beijing", "shanghai", "china", "chinese",
+  "sydney", "melbourne", "australia", "australian",
+  "mumbai", "delhi", "india", "indian",
+  "mexico city", "mexico", "mexican",
+  "brazil", "brasil", "sao paulo", "rio de janeiro",
+];
 
 function hayHasAny(hay: string, markers: string[]): boolean {
   return markers.some((m) => hay.includes(m));
@@ -179,8 +193,17 @@ export function isWrongRegionForSegmentLock(
   const lower = hay.toLowerCase();
   const hasNl = hayHasAny(lower, NL_MARKERS);
   const hasUs = hayHasAny(lower, US_MARKERS);
-  if (activeLock === "nl") return hasUs && !hasNl;
-  if (activeLock === "us") return hasNl && !hasUs;
+  const hasForeign = hayHasAny(lower, FOREIGN_PLACE_MARKERS);
+  if (activeLock === "nl") {
+    if (hasForeign && !hasNl) return true;
+    if (hasUs && !hasNl) return true;
+    return false;
+  }
+  if (activeLock === "us") {
+    if (hasForeign && !hasUs && !hasNl) return true;
+    if (hasNl && !hasUs) return true;
+    return false;
+  }
   return false;
 }
 

@@ -7,6 +7,7 @@ import {
   extractFullNarrationText,
   parseMarkdownNarrationBlocks,
 } from "./scriptWriter";
+import { inferLiteralViewerVisual } from "./viewerVisualPlan";
 import type { ScriptVisualIntentEntry } from "./scriptVisualKeywords";
 
 export const VISUAL_DIRECTOR_MIN_SEC = 3.5;
@@ -318,15 +319,16 @@ Rules:
 - Each scene will be 3–5 seconds on screen
 
 Example sentence (Dutch):
-"Steeds meer ondernemers verliezen tijd aan repetitieve taken."
+"Steeds meer bedrijven investeren in AI-automatisering."
 → scene 1:
-  spoken_text: "Steeds meer ondernemers verliezen tijd aan repetitieve taken."
-  visual_description: "A solo entrepreneur at a desk repeating the same laptop actions over and over."
+  spoken_text: "Steeds meer bedrijven investeren in AI-automatisering."
+  visual_description: "A person typing on a laptop at an office desk."
   camera_shot: "medium shot"
-  emotion: "frustration"
-  search_query: "frustrated entrepreneur repetitive computer work"
+  emotion: "focus"
+  search_query: "person laptop office desk"
+(NOT "AI automation" or "innovation" — show what the viewer LITERALLY sees)
 
-Example split (two visuals in one sentence):
+Example sentence (Dutch):
 "Dutch cyclists fill Amsterdam while highways expand outside the city."
 → scene A: cyclists in Amsterdam / scene B: highway construction — separate spoken_text fragments
 
@@ -395,21 +397,15 @@ async function generateDirectorBatch(
 }
 
 function fallbackDirectorScene(sentence: string, index: number): VisualDirectorScene {
-  const words = sentence
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, " ")
-    .split(/\s+/)
-    .filter((w) => w.length >= 4)
-    .slice(0, 4)
-    .join(" ");
-  const search = sanitizeVisualKeyword(words) || "documentary broll scene";
+  const literal = inferLiteralViewerVisual(sentence);
+  const search = sanitizeSearchQuery(literal.searchQuery, literal.description);
   return {
     source_sentence_index: index,
     spoken_text: sentence,
-    visual_description: `Documentary footage showing ${search.replace(/ /g, ", ")}`,
+    visual_description: literal.description,
     camera_shot: "medium shot",
     emotion: "neutral",
-    search_query: search,
+    search_query: search || literal.searchQuery,
   };
 }
 

@@ -20,7 +20,7 @@ export interface ScriptLengthBudget {
 }
 
 /** Documentary voice-over pace (~145 WPM). */
-const NARRATION_WPM = 145;
+export const NARRATION_WPM = 145;
 
 const SPOKEN_SECONDS: Record<VideoLength, number> = {
   "1": 58,
@@ -96,6 +96,40 @@ export function countNarrationWords(script: string): number {
     .replace(/[#*_`~>]/g, "")
     .trim();
   return text.split(/\s+/).filter((w) => w.length > 0).length;
+}
+
+/** Minimum acceptable voiceover duration for a script (allows ~18% under target). */
+export function expectedMinVoiceoverSec(budget: ScriptLengthBudget): number {
+  const fromTarget = budget.targetSpokenSec * 0.82;
+  const fromWords = (budget.minWords / NARRATION_WPM) * 60 * 0.85;
+  return Math.max(12, Math.min(fromTarget, fromWords));
+}
+
+export function estimateVoiceoverSecFromText(text: string): number {
+  const words = text.split(/\s+/).filter(Boolean).length;
+  return (words / NARRATION_WPM) * 60;
+}
+
+export type ScriptBudgetCheck = { ok: true } | { ok: false; words: number; message: string };
+
+/** Fail fast when LLM returned an unfinished script (too few spoken words). */
+export function checkScriptMeetsBudget(script: string, budget: ScriptLengthBudget): ScriptBudgetCheck {
+  const words = countNarrationWords(script);
+  if (words < budget.minWords) {
+    return {
+      ok: false,
+      words,
+      message: `Script incomplete: ${words} words (need ≥${budget.minWords} for ${budget.label})`,
+    };
+  }
+  return { ok: true };
+}
+
+export function assertScriptMeetsBudget(script: string, budget: ScriptLengthBudget): void {
+  const check = checkScriptMeetsBudget(script, budget);
+  if (!check.ok) {
+    throw new Error(check.message);
+  }
 }
 
 /** Spoken narration only — one continuous read order (no duplicate hooks across scenes). */

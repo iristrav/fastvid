@@ -107,6 +107,8 @@ import {
   buildScriptLengthRefinePrompt,
   buildScriptWriterSystemPrompt,
   buildSectionUserPrompt,
+  assertScriptMeetsBudget,
+  checkScriptMeetsBudget,
   countNarrationWords,
   getScriptLengthBudget,
   scriptStillOnTopic,
@@ -115,6 +117,68 @@ import {
   type ScriptOutline,
 } from "./scriptWriter";
 import { attachScriptVisualKeywords } from "./scriptVisualKeywords";
+import type { InvokeResult } from "./_core/llm";
+
+function llmMessageText(resp: InvokeResult | null | undefined): string {
+  const content = resp?.choices?.[0]?.message?.content ?? "";
+  return typeof content === "string" ? content.trim() : "";
+}
+
+function llmWasTruncated(resp: InvokeResult | null | undefined): boolean {
+  return resp?.choices?.[0]?.finish_reason === "length";
+}
+
+async function generateSectionNarration(
+  sec: ScriptOutline["sections"][number],
+  idx: number,
+  sectionTotal: number,
+  prompt: string,
+  title: string,
+  budget: ReturnType<typeof getScriptLengthBudget>,
+  muskTopic: boolean,
+  writerSystem: string
+): Promise<string> {
+  const minChars = Math.max(120, Math.round((budget.minWords / sectionTotal) * 4));
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const resp = await invokeLLM({
+        messages: [
+          { role: "system", content: writerSystem },
+          {
+            role: "user",
+            content:
+              buildSectionUserPrompt(sec, idx, sectionTotal, prompt, title, budget, muskTopic) +
+              (attempt > 1
+                ? "\n\nIMPORTANT: Your previous draft was too short or cut off. Write the FULL section narration — complete sentences only, no outline bullets."
+                : ""),
+          },
+        ],
+        maxTokens: 4096,
+      });
+      const text = llmMessageText(resp);
+      if (text.length >= minChars && !llmWasTruncated(resp)) return text;
+      if (llmWasTruncated(resp)) {
+        console.warn(`[Script] Section ${idx + 1}/${sectionTotal} truncated (finish_reason=length), retry ${attempt}`);
+      } else if (text.length < minChars) {
+        console.warn(
+          `[Script] Section ${idx + 1}/${sectionTotal} too short (${text.length} chars, need ≥${minChars}), retry ${attempt}`
+        );
+      }
+    } catch (err) {
+      console.warn(`[Script] Section ${idx + 1}/${sectionTotal} LLM failed (attempt ${attempt}):`, err);
+      if (attempt === 2) break;
+    }
+  }
+  const fallback = sec.keyPoints.filter(Boolean).join(". ").trim();
+  if (fallback.length >= minChars) {
+    console.warn(`[Script] Section ${idx + 1}/${sectionTotal}: using outline key points fallback`);
+    return `${fallback}.`;
+  }
+  throw pipelineError(
+    PIPELINE_ERROR.SCRIPT_FAILED,
+    `Section "${sec.title}" could not be written — narration incomplete`
+  );
+}
 
 // Lazy Stripe initialization — prevents crash on startup when STRIPE_SECRET_KEY is not yet set
 let _stripe: Stripe | null = null;
@@ -281,10 +345,26 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLengthRa
           { role: "system", content: writerSystem },
           { role: "user", content: buildOneShotScriptUserPrompt(prompt, videoType, budget, muskTopic) },
         ],
+        maxTokens: 8192,
       });
-      let scriptContent = shotResp?.choices?.[0]?.message?.content ?? "";
-      if (typeof scriptContent !== "string") scriptContent = "";
-      scriptContent = scriptContent.trim();
+      let scriptContent = llmMessageText(shotResp);
+      if (llmWasTruncated(shotResp)) {
+        console.warn(`[Script] Video ${videoId}: one-shot script truncated — retrying with continue prompt`);
+        const contResp = await invokeLLM({
+          messages: [
+            { role: "system", content: writerSystem },
+            { role: "user", content: buildOneShotScriptUserPrompt(prompt, videoType, budget, muskTopic) },
+            { role: "assistant", content: scriptContent },
+            {
+              role: "user",
+              content: `Continue and COMPLETE the script from where you stopped. Target ${budget.targetWords} spoken words total for a ${budget.label} video. Finish all sections and the call to action — narration only, no [VISUAL] tags.`,
+            },
+          ],
+          maxTokens: 8192,
+        });
+        const merged = `${scriptContent}\n\n${llmMessageText(contResp)}`.trim();
+        if (merged.length > scriptContent.length) scriptContent = merged;
+      }
       if (scriptContent.length < 200) {
         throw pipelineError(PIPELINE_ERROR.SCRIPT_FAILED, "Script generation returned empty content");
       }
@@ -330,6 +410,10 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLengthRa
       console.log(
         `[Script] Video ${videoId} (fast): ${narrationWords} words (target ${budget.targetWords})`
       );
+      const budgetCheck = checkScriptMeetsBudget(scriptContent, budget);
+      if (!budgetCheck.ok) {
+        throw pipelineError(PIPELINE_ERROR.SCRIPT_FAILED, budgetCheck.message);
+      }
 
       scriptLog[0].completedAt = Date.now();
       scriptLog[0].status = "done";
@@ -403,16 +487,7 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLengthRa
     // Step 1b: Generate each section AND metadata in parallel
     const sectionTotal = outline.sections.length || budget.sectionCount;
     const sectionPromises = outline.sections.map((sec, idx) =>
-      invokeLLM({
-        messages: [
-          { role: "system", content: writerSystem },
-          {
-            role: "user",
-            content: buildSectionUserPrompt(sec, idx, sectionTotal, prompt, title, budget, muskTopic),
-          },
-        ],
-      }).then(r => { const c = r?.choices?.[0]?.message?.content ?? ""; return typeof c === "string" ? c : ""; })
-      .catch(() => sec.keyPoints.join(". ") + ".")
+      generateSectionNarration(sec, idx, sectionTotal, prompt, title, budget, muskTopic, writerSystem)
     );
 
     const metaPromise = invokeLLM({
@@ -506,6 +581,10 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLengthRa
       `[Script] Video ${videoId}: ${narrationWords} words (target ${budget.targetWords}, ` +
       `${budget.minWords}–${budget.maxWords}) · ~${budget.targetSpokenSec}s VO`
     );
+    const budgetCheck = checkScriptMeetsBudget(scriptContent, budget);
+    if (!budgetCheck.ok) {
+      throw pipelineError(PIPELINE_ERROR.SCRIPT_FAILED, budgetCheck.message);
+    }
 
     let metadata: unknown = {};
     try {

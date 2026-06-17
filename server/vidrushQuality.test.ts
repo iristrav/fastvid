@@ -38,6 +38,8 @@ describe("vidrushQuality", () => {
     expect(isNonDocumentaryVisualHay("amsterdam canal drone broll")).toBe(false);
     expect(isWrongRegionForSegmentLock("american downtown skyline", "nl")).toBe(true);
     expect(isWrongRegionForSegmentLock("amsterdam gracht bicycles", "nl")).toBe(false);
+    expect(isWrongRegionForSegmentLock("1966 toronto transportation expressways scarborough", "nl")).toBe(true);
+    expect(isWrongRegionForSegmentLock("gardiner expressway ontario map", "nl")).toBe(true);
     let lock = resolveSegmentGeoLock(inferBeatGeoRegion("In the Netherlands cycling is normal", "NL vs US"), null, "Netherlands vs US");
     expect(lock).toBe("nl");
     lock = resolveSegmentGeoLock(inferBeatGeoRegion("American suburbs sprawl outward", "NL vs US"), lock, "Netherlands vs US");

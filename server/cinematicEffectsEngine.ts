@@ -66,22 +66,31 @@ export function extractYearsFromText(text: string): string[] {
   return years;
 }
 
+/** Max words shown per on-screen text beat (Vidrush-style kinetic labels). */
+export const MAX_ONSCREEN_WORDS = 2;
+
+export function limitOnScreenText(text: string, maxWords = MAX_ONSCREEN_WORDS): string {
+  const cleaned = text.replace(/\s+/g, " ").trim();
+  if (!cleaned) return "";
+  return cleaned.split(/\s+/).filter(Boolean).slice(0, maxWords).join(" ");
+}
+
 export function extractStatFromText(text: string): string | null {
   // Euro amounts: €10.000, €1 miljoen, €50 miljard
   const euro = text.match(/€\s*[\d,.]+(?:\s*(?:million|billion|miljoen|miljard|biljoen|M|B|K))?/i);
-  if (euro?.[0]) return euro[0].trim().replace(/€\s+/, "€").replace(/\s+/g, " ").slice(0, 24);
+  if (euro?.[0]) return limitOnScreenText(euro[0].trim().replace(/€\s+/, "€"));
   // Dollar amounts
   const money = text.match(/\$[\d,.]+(?:\s*(?:million|billion|miljoen|miljard|M|B|K))?/i);
-  if (money?.[0]) return money[0].trim().slice(0, 24);
+  if (money?.[0]) return limitOnScreenText(money[0].trim());
   // Dutch numeric amounts: "10 miljoen", "5 miljard", "2,5 biljoen"
   const dutchAmt = text.match(/\b[\d,.]+\s*(?:miljoen|miljard|biljoen|duizend)\b/i);
-  if (dutchAmt?.[0]) return dutchAmt[0].trim().replace(/\s+/g, " ").slice(0, 24);
+  if (dutchAmt?.[0]) return limitOnScreenText(dutchAmt[0].trim());
   // Percentages — Dutch "procent" and English "percent" / symbol
   const pct = text.match(/\d[\d,.]*\s*(?:%|percent|procent)/i);
-  if (pct?.[0]) return pct[0].trim().slice(0, 24);
+  if (pct?.[0]) return limitOnScreenText(pct[0].trim());
   // People / casualty counts
   const count = text.match(/\b[\d,.]+\s+(?:people|soldiers|tanks|planes|victims|doden|slachtoffers|mensen|inwoners)\b/i);
-  if (count?.[0]) return count[0].trim().slice(0, 24);
+  if (count?.[0]) return limitOnScreenText(count[0].trim());
   return null;
 }
 
@@ -104,30 +113,18 @@ export function buildStatCountSteps(stat: string): string[] {
 
 export type FacelessLine = { text: string; emphasis: boolean };
 
-/** Split narration into faceless-channel subtitle lines (emphasis words larger). */
-export function parseFacelessSubtitleLines(text: string, maxLines = 4): FacelessLine[] {
+/** One short on-screen chunk — max two words, no stacked subtitle lines. */
+export function parseFacelessSubtitleLines(text: string, maxWords = MAX_ONSCREEN_WORDS): FacelessLine[] {
   const cleaned = text.replace(/\[visual:[^\]]+\]/gi, "").replace(/\s+/g, " ").trim();
   if (!cleaned) return [];
   const words = cleaned.split(/\s+/).filter(Boolean);
-  if (words.length <= maxLines) {
-    return words.map((w, i) => ({
-      text: w.toUpperCase(),
-      emphasis: i === 0 || w.length >= 5 || /^[A-Z]/.test(w),
-    }));
-  }
-  const emphasisIdx = new Set<number>([0, words.length - 1]);
-  emphasisIdx.add(Math.floor(words.length / 2));
-  const chunk = Math.ceil(words.length / maxLines);
-  const lines: FacelessLine[] = [];
-  for (let i = 0; i < words.length && lines.length < maxLines; i += chunk) {
-    const slice = words.slice(i, i + chunk);
-    const line = slice.join(" ");
-    lines.push({
-      text: emphasisIdx.has(i) ? line.toUpperCase() : line,
-      emphasis: emphasisIdx.has(i) || slice.some((w) => w.length >= 6),
-    });
-  }
-  return lines;
+  const salient = words.filter((w) => {
+    const bare = w.replace(/[^a-zA-ZÀ-ÿ0-9'%$€.-]/g, "").toLowerCase();
+    return bare.length >= 2 && !YEAR_CAPTION_STOP.has(bare);
+  });
+  const chunk = limitOnScreenText((salient.length > 0 ? salient : words).slice(0, maxWords).join(" "), maxWords);
+  if (!chunk) return [];
+  return [{ text: chunk.toUpperCase(), emphasis: true }];
 }
 
 export type FacelessSubtitlePlacement = "bottom-left" | "bottom-center";
@@ -149,13 +146,13 @@ export function buildFacelessDrawtextVF(
   const enable = `between(t\\,${startTime.toFixed(2)}\\,${endTime.toFixed(2)})`;
   const marginL = 56;
   const marginB = 72;
-  const lineHeights = lines.map((line) => (line.emphasis ? 68 : 48));
+  const lineHeights = lines.map(() => 84);
   const totalH = lineHeights.reduce((s, h) => s + h, 0);
   const baseY = DOC_STYLE_VIDEO_HEIGHT - marginB - totalH;
   return lines
     .map((line, i) => {
-      const safe = sanitizeForDrawtext(line.text, 36);
-      const fs = line.emphasis ? 58 : 38;
+      const safe = sanitizeForDrawtext(line.text, 24);
+      const fs = line.emphasis ? 72 : 68;
       const y = baseY + lineHeights.slice(0, i).reduce((s, h) => s + h, 0);
       const x = placement === "bottom-center" ? "(w-text_w)/2" : String(marginL);
       const color = line.emphasis ? "white" : "0xDDDDDD";
@@ -179,13 +176,13 @@ export async function renderFacelessSubtitleOverlay(
   const pngPath = path.join(workDir, `scene_${sceneIndex}_faceless_sub.png`);
   const marginL = 56;
   const marginB = 72;
-  const lineHeights = lines.map((line) => (line.emphasis ? 68 : 48));
+  const lineHeights = lines.map(() => 84);
   const totalH = lineHeights.reduce((s, h) => s + h, 0);
   const baseY = DOC_STYLE_VIDEO_HEIGHT - marginB - totalH;
   const draws = lines
     .map((line, i) => {
-      const safe = sanitizeForDrawtext(line.text, 36);
-      const fs = line.emphasis ? 58 : 38;
+      const safe = sanitizeForDrawtext(line.text, 24);
+      const fs = line.emphasis ? 72 : 68;
       const y = baseY + lineHeights.slice(0, i).reduce((s, h) => s + h, 0);
       const x = placement === "bottom-center" ? "(w-text_w)/2" : String(marginL);
       const color = line.emphasis ? "white" : "0xDDDDDD";
@@ -501,8 +498,8 @@ export const YEAR_LABEL_ON_SCREEN_SEC = 4;
 export const SCREEN_LABEL_INTERVAL_SEC = 30;
 export const TYPEWRITER_CHAR_SEC = 0.042;
 /** Yellow pill label typography (Locomotive Historian style). */
-export const SCREEN_LABEL_FONT_SIZE = 42;
-export const SCREEN_LABEL_BOX_H = 60;
+export const SCREEN_LABEL_FONT_SIZE = 68;
+export const SCREEN_LABEL_BOX_H = 84;
 export const SCREEN_LABEL_PAD_X = 22;
 export const SCREEN_LABEL_MAX_W = 680;
 export const SCREEN_LABEL_MARGIN_L = 48;
@@ -746,9 +743,9 @@ export function planVoiceSyncedScreenLabels(
 function labelTextForEntry(entry: TimedYearLabel): string {
   const cap = (entry.caption || "").trim().toUpperCase();
   if (/^\d{4}$/.test(entry.year)) {
-    return cap.length >= 2 ? `${cap} — ${entry.year}` : entry.year;
+    return cap.length >= 2 ? limitOnScreenText(cap, MAX_ONSCREEN_WORDS) : entry.year;
   }
-  return cap || entry.year || entry.displayText;
+  return limitOnScreenText(cap || entry.year || entry.displayText, MAX_ONSCREEN_WORDS);
 }
 
 function extractKeywordFromBeat(beat: BeatLabelInput): string | null {

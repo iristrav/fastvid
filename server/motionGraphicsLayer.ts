@@ -8,6 +8,8 @@ import { sanitizeForDrawtext } from "./ffmpegSanitize";
 import {
   computeVoiceBeatWindows,
   extractYearsFromText,
+  limitOnScreenText,
+  MAX_ONSCREEN_WORDS,
   TYPEWRITER_CHAR_SEC,
   type BeatLabelInput,
 } from "./cinematicEffectsEngine";
@@ -18,7 +20,7 @@ export const STANDARD_IMAGE_ANIMATION = "slow_zoom_in" as const;
 export const STANDARD_TRANSITION = "crossfade" as const;
 export const STANDARD_CROSSFADE_MS = 400;
 
-export const MG_OVERLAY_FONT_SIZE = 44;
+export const MG_OVERLAY_FONT_SIZE = 68;
 export const MG_OVERLAY_MARGIN_L = 56;
 export const MG_OVERLAY_MARGIN_B = 80;
 export const MG_OVERLAY_ON_SCREEN_SEC = 3.8;
@@ -90,10 +92,12 @@ export function extractMotionOverlayCandidates(
   const seen = new Set<string>();
 
   const push = (c: OverlayCandidate) => {
-    const key = c.text.toLowerCase();
+    const text = limitOnScreenText(c.text, MAX_ONSCREEN_WORDS);
+    if (!text) return;
+    const key = text.toLowerCase();
     if (seen.has(key)) return;
     seen.add(key);
-    out.push(c);
+    out.push({ ...c, text });
   };
 
   for (const year of extractYearsFromText(cleaned)) {
@@ -158,7 +162,7 @@ export function extractMotionOverlayCandidates(
   const pw = beat?.powerWord?.trim();
   if (pw && pw.length >= 3 && !/^\d{4}$/.test(pw) && !STOP_WORDS.has(pw.toLowerCase())) {
     push({
-      text: pw.toUpperCase().slice(0, 28),
+      text: limitOnScreenText(pw.toUpperCase(), MAX_ONSCREEN_WORDS),
       trigger_word: pw,
       kind: "keyword",
       priority: 55,
@@ -169,7 +173,7 @@ export function extractMotionOverlayCandidates(
     const w = hw?.trim();
     if (!w || w.length < 4 || STOP_WORDS.has(w.toLowerCase())) continue;
     push({
-      text: w.toUpperCase().slice(0, 28),
+      text: limitOnScreenText(w.toUpperCase(), MAX_ONSCREEN_WORDS),
       trigger_word: w,
       kind: "keyword",
       priority: 50,
@@ -181,8 +185,8 @@ export function extractMotionOverlayCandidates(
     const quote = (m[1] ?? m[2] ?? "").trim();
     if (quote.length >= 8) {
       push({
-        text: quote.slice(0, 40),
-        trigger_word: quote.split(/\s+/).slice(0, 4).join(" "),
+        text: limitOnScreenText(quote, MAX_ONSCREEN_WORDS),
+        trigger_word: limitOnScreenText(quote, MAX_ONSCREEN_WORDS),
         kind: "quote",
         priority: 72,
       });
@@ -353,7 +357,7 @@ export function buildWhiteTypewriterDrawtextFilterChain(
   const y = `h-${MG_OVERLAY_MARGIN_B}`;
 
   valid.forEach((entry, i) => {
-    const safeFull = sanitizeForDrawtext(entry.text, 28);
+    const safeFull = sanitizeForDrawtext(entry.text, 20);
     if (safeFull.length < 1) return;
 
     const next = i === valid.length - 1 ? outLabel : `mg${i}`;
@@ -435,7 +439,7 @@ export async function buildMotionGraphicsTypewriterOverlays(
 
   for (let i = 0; i < plan.overlays.length; i++) {
     const entry = plan.overlays[i]!;
-    const safe = sanitizeForDrawtext(entry.text, 28);
+    const safe = sanitizeForDrawtext(entry.text, 20);
     if (safe.length < 1) continue;
 
     const FS = MG_OVERLAY_FONT_SIZE;

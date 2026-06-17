@@ -17,19 +17,27 @@ export function elevenLabsOnlyVoice(): boolean {
   return process.env.ELEVENLABS_ONLY !== "false";
 }
 
+/** Burned-in on-screen text (labels, subs, motion graphics). Off by default — set ENABLE_ONSCREEN_TEXT=true to re-enable. */
+export function onScreenTextEnabled(): boolean {
+  return process.env.ENABLE_ONSCREEN_TEXT === "true";
+}
+
 /** Faceless kinetic subtitles — off by default; only year badges on screen unless ENABLE_EXTRA_ONSCREEN_TEXT=true. */
 export function facelessSubtitlesEnabled(): boolean {
+  if (!onScreenTextEnabled()) return false;
   if (yearsOnlyOnScreen()) return false;
   return process.env.ENABLE_FACELESS_SUBTITLES === "true";
 }
 
-/** Only year numbers as on-screen text (no kinetic subs, maps, name cards). Default on. */
+/** Only year numbers as on-screen text (no kinetic subs, maps, name cards). Default on when text is enabled. */
 export function yearsOnlyOnScreen(): boolean {
+  if (!onScreenTextEnabled()) return true;
   return process.env.ENABLE_EXTRA_ONSCREEN_TEXT !== "true";
 }
 
-/** Year/stat labels bottom-left. On by default — set ENABLE_SCREEN_LABELS=false to disable. */
+/** Year/stat labels bottom-left. On when text enabled — set ENABLE_SCREEN_LABELS=false to disable. */
 export function screenLabelsEnabled(): boolean {
+  if (!onScreenTextEnabled()) return false;
   return process.env.ENABLE_SCREEN_LABELS !== "false";
 }
 
@@ -201,12 +209,14 @@ export function archiveCrossVideoCooldownVideos(): number {
 
 /** FFmpeg-generated text cards, maps, and diagram beats (no external API). */
 export function motionGraphicsInVideosEnabled(): boolean {
+  if (!onScreenTextEnabled()) return false;
   if (yearsOnlyOnScreen()) return false;
   return process.env.ENABLE_MOTION_GRAPHICS !== "false";
 }
 
-/** Automatic motion graphics typewriter overlays (default on for all video topics). */
+/** Automatic motion graphics typewriter overlays (off by default — set ENABLE_ONSCREEN_TEXT=true). */
 export function autoMotionGraphicsLayerEnabled(): boolean {
+  if (!onScreenTextEnabled()) return false;
   return process.env.ENABLE_AUTO_MOTION_GRAPHICS !== "false";
 }
 

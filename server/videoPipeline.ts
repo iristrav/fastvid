@@ -78,7 +78,7 @@ import {
   stillOutputFrameCount,
   type TimedOverlay,
 } from "./documentaryStyle";
-import { extractPrimaryGeoSearchTag, extractPrimaryVisualAnchor, extractSceneSearchTags, inferVideoVisualTopic, isGeoWelcomeBeat, buildGeoWelcomeVisualQueries, isCyclingBeat, buildCyclingVisualQueries, isGeoStatBeat, buildGeoStatVisualQueries, isCarBeat, buildCarVisualQueries, isGovernmentBeat, buildGovernmentVisualQueries, isUrbanPlanningBeat, buildUrbanPlanningVisualQueries, isInfrastructureBeat, buildInfrastructureVisualQueries, isOffTopicProtestForBeat } from "./visualBeatTags";
+import { extractPrimaryGeoSearchTag, extractPrimaryVisualAnchor, extractSceneSearchTags, extractBeatGeoPlaceTags, inferVideoVisualTopic, isGeoWelcomeBeat, buildGeoWelcomeVisualQueries, isCyclingBeat, buildCyclingVisualQueries, isGeoStatBeat, buildGeoStatVisualQueries, isCarBeat, buildCarVisualQueries, isGovernmentBeat, buildGovernmentVisualQueries, isUrbanPlanningBeat, buildUrbanPlanningVisualQueries, isInfrastructureBeat, buildInfrastructureVisualQueries, isOffTopicProtestForBeat, isWrongGeoForBeat } from "./visualBeatTags";
 import {
   buildCinematicOverlays,
   buildBeatAlignedYearOverlays,
@@ -103,7 +103,10 @@ import { PIPELINE_ERROR, pipelineError } from "@shared/appErrors";
 import { isShortVideoLength, normalizeVideoLength } from "@shared/videoLengths";
 import fetch from "node-fetch";
 import {
+  estimateVoiceoverSecFromText,
+  expectedMinVoiceoverSec,
   extractFullNarrationText,
+  getScriptLengthBudget,
   parseMarkdownNarrationBlocks,
   type MarkdownNarrationBlock,
 } from "./scriptWriter";
@@ -128,11 +131,12 @@ import {
 } from "./scriptGuidedClipFinder";
 import { clipPassesVisionGate, clipVisionGateEnabled, minClipQualityScore, sceneCriticalReviewEnabled } from "./visualQualityGate";
 import { validateGeneratedClipPlan } from "./clipPlanValidation";
+import { syncBeatHoldSecToVoiceTimeline } from "./voiceMomentSync";
 import {
   assertSceneCriticalReview,
   reviewSceneCritical,
 } from "./sceneCriticalReview";
-import { curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archivePexelsFallbackEnabled, archivePexelsHybridEnabled, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, maxPipelineWallClockMin, qualityOverSpeedEnabled, visualStageWallClockMin, pipelineMinutesPerVideoMinute, autoMotionGraphicsLayerEnabled, vidrushDocumentaryQualityEnabled } from "./sourcingPolicy";
+import { curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archivePexelsFallbackEnabled, archivePexelsHybridEnabled, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, onScreenTextEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, maxPipelineWallClockMin, qualityOverSpeedEnabled, visualStageWallClockMin, pipelineMinutesPerVideoMinute, autoMotionGraphicsLayerEnabled, vidrushDocumentaryQualityEnabled } from "./sourcingPolicy";
 import { targetVideoDurationMinutes } from "@shared/videoLengths";
 import {
   getCrossVideoExcludeAssetIds,
@@ -151,6 +155,7 @@ import {
   buildBeatMatchTags,
   orderCuratedCandidatesForBeat,
   searchCuratedCandidatesForBeat,
+  filterCandidatesByArchiveTier,
   hashVarietySeed,
   archiveAssetPreflight,
   assetPassesBeatMinimum,
@@ -163,6 +168,12 @@ import {
   semanticVisualMatchingEnabled,
   type BeatSemanticProfile,
 } from "./semanticVisualMatching";
+import {
+  applyLiteralViewerVisualToBeat,
+  ARCHIVE_MATCH_TIER_ORDER,
+  archiveTierLabel,
+  literalVisualSearchTags,
+} from "./viewerVisualPlan";
 import {
   motionGraphicsEnabled,
   resolveStillImageFilterComplex,
@@ -2457,10 +2468,28 @@ function sanitizeVoiceoverText(text: string, maxChars = 800): string {
     .replace(/\[visual:[^\]]*\]/gi, "")
     .replace(/[#*_`~>]/g, "")
     .replace(/\s+/g, " ")
-    .replace(/[^\x00-\x7F]/g, "")
     .trim();
   if (rawText.length <= maxChars) return rawText;
   return rawText.slice(0, maxChars).replace(/\s\S*$/, "");
+}
+
+function validateBulkVoiceoverDuration(
+  narrationText: string,
+  audioDurSec: number,
+  videoLength: string
+): void {
+  const budget = getScriptLengthBudget(videoLength);
+  const minSec = Math.min(
+    expectedMinVoiceoverSec(budget),
+    estimateVoiceoverSecFromText(narrationText) * 0.78
+  );
+  if (audioDurSec >= minSec) return;
+  const words = narrationText.split(/\s+/).filter(Boolean).length;
+  throw pipelineError(
+    PIPELINE_ERROR.VOICEOVER,
+    `Voiceover incomplete: ${audioDurSec.toFixed(1)}s audio for ${words} words ` +
+      `(expected ≥${Math.round(minSec)}s for ${budget.label}). Regenerate script/voiceover.`
+  );
 }
 
 /** ElevenLabs safe max per request; long scripts are chunked at scene boundaries then concatenated. */
@@ -2532,24 +2561,35 @@ async function generateBulkSceneVoiceovers(
   workDir: string,
   voiceId?: string,
   onProgress?: (done: number, total: number) => void,
-  sourceScript?: string
+  sourceScript?: string,
+  videoLength = "8-10"
 ): Promise<number[]> {
   onProgress?.(0, scenes.length);
-  const fullPath = await synthesizeFullNarrationMp3(scenes, workDir, voiceId, (part, total) => {
-    console.log(`[Pipeline] Bulk voiceover TTS part ${part}/${total}`);
+  const fullNarration = sanitizeVoiceoverText(
+    sourceScript ? extractFullNarrationText(sourceScript) : scenes.map((s) => s.text.trim()).join(" "),
+    200_000
+  );
+  const fullPath = await synthesizeFullNarrationMp3(scenes, workDir, voiceId, (part, totalParts) => {
+    console.log(`[Pipeline] Bulk voiceover TTS part ${part}/${totalParts}`);
+    const done = totalParts <= 1 ? 0 : Math.min(scenes.length - 1, Math.floor((part / totalParts) * scenes.length));
+    onProgress?.(done, scenes.length);
   }, sourceScript);
-  await trimVoiceoverSilence(fullPath);
+  const trimmedDur = await trimVoiceoverSilence(fullPath);
+  const voDur = trimmedDur > 0 ? trimmedDur : await probeVideoDurationSec(fullPath);
+  validateBulkVoiceoverDuration(fullNarration, voDur, videoLength);
 
   const durations = await splitFullVoiceoverByScenes(fullPath, scenes, audioPaths);
   onProgress?.(scenes.length, scenes.length);
   console.log(
-    `[Pipeline] Bulk voiceover: ${scenes.length} scenes, split durations ${durations.map((d) => d.toFixed(1)).join("s, ")}s`
+    `[Pipeline] Bulk voiceover: ${voDur.toFixed(1)}s total, ${scenes.length} scenes, split durations ${durations.map((d) => d.toFixed(1)).join("s, ")}s`
   );
   return durations;
 }
 
-function bulkVoiceoverTimeoutMs(sceneCount: number): number {
-  return Math.min(900_000, 120_000 + sceneCount * 20_000);
+function bulkVoiceoverTimeoutMs(sceneCount: number, videoLength = "8-10"): number {
+  const budget = getScriptLengthBudget(videoLength);
+  const fromDuration = 90_000 + Math.ceil(budget.targetSpokenSec / 30) * 60_000;
+  return Math.min(1_200_000, Math.max(fromDuration, 120_000 + sceneCount * 25_000));
 }
 
 async function splitFullVoiceoverByScenes(
@@ -6745,7 +6785,7 @@ async function transformClipForFairUse(
     `eq=contrast=${grade.contrast}:saturation=${grade.saturation}:brightness=${grade.brightness},` +
     `vignette=angle=${vignetteAngle}:mode=forward`;
 
-  const subtitle = sanitizeForDrawtextStrict(sceneText, 72);
+  const subtitle = onScreenTextEnabled() ? sanitizeForDrawtextStrict(sceneText, 72) : "";
   if (subtitle && ffmpegSupportsDrawtext()) {
     filterChain +=
       `,drawtext=text='${subtitle}':fontcolor=white:fontsize=30:x=(w-text_w)/2:y=h-72:` +
@@ -10437,6 +10477,7 @@ function buildSceneBeats(
   sentenceIntents?: Map<string, ScriptVisualIntentEntry>,
   directorScenes?: VisualDirectorScene[]
 ): SceneBeat[] {
+  let beats: SceneBeat[] | null = null;
   if (directorScenes && directorScenes.length > 0) {
     const directorBeats = buildSceneBeatsFromDirector(scene.text, duration, directorScenes, videoTitle);
     if (directorBeats.length > 0) {
@@ -10445,24 +10486,20 @@ function buildSceneBeats(
         ...tokenizeForRelevance(scene.pexelsQuery),
         ...(scene.pexelsQueries ?? []).flatMap((q) => tokenizeForRelevance(q)),
       ];
-      return directorBeats.map((b, i) => {
-        console.log(
-          `[VisualDirector] Beat ${i}: "${b.visualIntent.visual_description?.slice(0, 60) ?? b.visualIntent.visual_intent}" → search "${b.searchQuery}" ← "${b.text.slice(0, 50).trim()}…"`
-        );
-        return {
-          index: i,
-          text: b.text,
-          searchQuery: b.searchQuery,
-          powerWord: b.visualIntent.priority_subject,
-          keywords: buildRelevanceKeywordsFromIntent(b.visualIntent, b.text, sceneTokens, videoTitle),
-          holdSec: b.holdSec,
-          visualIntent: b.visualIntent,
-          visualDescription: b.visualIntent.visual_description ?? b.visualIntent.visual_intent,
-        };
-      });
+      beats = directorBeats.map((b, i) => ({
+        index: i,
+        text: b.text,
+        searchQuery: b.searchQuery,
+        powerWord: b.visualIntent.priority_subject,
+        keywords: buildRelevanceKeywordsFromIntent(b.visualIntent, b.text, sceneTokens, videoTitle),
+        holdSec: b.holdSec,
+        visualIntent: b.visualIntent,
+        visualDescription: b.visualIntent.visual_description ?? b.visualIntent.visual_intent,
+      }));
     }
   }
 
+  if (beats == null) {
   const minVoiceClips = curatedArchiveOnlyVisuals() ? minClipsForBalancedVoice(duration) : 2;
   const targetBeats = Math.max(minVoiceClips, Math.ceil(duration / effectiveBeatSec()));
   const beatCap = Math.max(minVoiceClips, Math.min(maxBeatsCap, targetBeats));
@@ -10517,7 +10554,7 @@ function buildSceneBeats(
     });
   }
 
-  const beats: SceneBeat[] = [];
+  beats = [];
   for (let i = 0; i < groups.length; i++) {
     const text = groups[i].text;
     const visualIntent = resolveBeatVisualIntent(text, sentenceIntents);
@@ -10543,9 +10580,6 @@ function buildSceneBeats(
       searchQuery = stockQueryFromBeatScript(text, scenePersons, scene.text, videoTitle, visualIntent);
     }
     let holdSec = estimateBeatHoldSec(text, groups[i].sentenceCount);
-    console.log(
-      `[Pipeline] Beat ${i}: visual intent "${visualIntent.visual_intent}" → "${visualIntent.primary_keyword}" ← "${text.slice(0, 55).trim()}…"`
-    );
     const sceneTokens = [
       ...tokenizeForRelevance(scene.visualCue),
       ...tokenizeForRelevance(scene.pexelsQuery),
@@ -10564,34 +10598,19 @@ function buildSceneBeats(
   }
 
   if (curatedArchiveOnlyVisuals() && beats.length > 0) {
-    const wordsPerBeat = beats.map((b) =>
-      b.text.replace(/\[visual:[^\]]+\]/gi, "").split(/\s+/).filter(Boolean).length
-    );
-    const totalWords = wordsPerBeat.reduce((s, w) => s + w, 0) || beats.length;
-    const minHold =
-      beats.length * archiveVisualMinClipSec() > duration * 0.98
-        ? Math.max(montageMinOnScreenSec(), (duration / beats.length) * 0.94)
-        : montageMinOnScreenSec();
-    for (let i = 0; i < beats.length; i++) {
-      const share = wordsPerBeat[i] / totalWords;
-      beats[i].holdSec = Math.max(
-        minHold,
-        Math.min(archiveVisualMaxClipSec(), duration * share * 0.98)
-      );
-    }
-    const totalHold = beats.reduce((s, b) => s + b.holdSec, 0);
-    if (totalHold > 0.5 && Math.abs(totalHold - duration) > 0.25) {
-      const scale = duration / totalHold;
-      for (const beat of beats) {
-        beat.holdSec = Math.max(
-          minHold,
-          Math.min(archiveVisualMaxClipSec(), beat.holdSec * scale)
-        );
-      }
-    }
+    syncBeatHoldSecToVoiceTimeline(beats, duration, montageXfadeSec());
+  }
   }
 
-  return beats;
+  const resolvedBeats = beats ?? [];
+  for (let i = 0; i < resolvedBeats.length; i++) {
+    const literal = applyLiteralViewerVisualToBeat(resolvedBeats[i], videoTitle, sentenceIntents);
+    console.log(
+      `[Pipeline] Beat ${i}: kijker ziet "${literal.description.slice(0, 72)}" → zoek "${literal.searchQuery}" ← "${resolvedBeats[i].text.slice(0, 50).trim()}…"`
+    );
+  }
+
+  return resolvedBeats;
 }
 
 async function adoptClip(
@@ -13711,7 +13730,7 @@ async function applyVideoBeatTextOverlay(
   workDir: string,
   holdSec: number
 ): Promise<string> {
-  if (yearsOnlyOnScreen() || !facelessSubtitlesEnabled() || !isRealVideoFootageClip(clipPath)) {
+  if (yearsOnlyOnScreen() || !onScreenTextEnabled() || !facelessSubtitlesEnabled() || !isRealVideoFootageClip(clipPath)) {
     return clipPath;
   }
   return burnFacelessTextOnVideoClip(
@@ -13759,6 +13778,13 @@ async function adoptArchiveBeatClip(
       rejectClip(clipPath);
       return false;
     }
+    if (
+      dedup.geoSegmentLock &&
+      isWrongRegionForSegmentLock(`${beat.text} ${path.basename(clipPath)}`, dedup.geoSegmentLock)
+    ) {
+      rejectClip(clipPath);
+      return false;
+    }
     const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec);
     if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) {
       console.warn(
@@ -13788,10 +13814,17 @@ async function adoptArchiveBeatClip(
   if (await tryClip(initialClip, holdSec)) return true;
 
   if (curatedArchiveOnlyVisuals()) {
+    const literal = applyLiteralViewerVisualToBeat(beat, videoTitle, dedup.sentenceIntents);
+    const literalTags = literalVisualSearchTags(literal);
+    console.log(
+      `[ViewerVisual] Scene ${scene.index} beat ${beat.index}: kijker ziet "${literal.description}" ` +
+        `(zoek: ${literal.searchQuery}) — niet "${beat.text.slice(0, 40).trim()}…"`
+    );
+
     const openingBeat = scene.index === 0 && beat.index === 0;
     const { beatTags, topicAnchors, videoVisualTopic } = buildBeatMatchTags(beat, scene, videoTitle);
 
-    const ranked = await searchCuratedCandidatesForBeat(
+    const rankedAll = await searchCuratedCandidatesForBeat(
       beat,
       scene,
       dedup.usedCuratedAssetIds,
@@ -13806,67 +13839,93 @@ async function adoptArchiveBeatClip(
         segmentLock: dedup.geoSegmentLock,
       }
     );
-    console.log(
-      `[Pipeline] Scene ${scene.index} zin ${beat.index}: archive "${beat.text.slice(0, 55).trim()}…" → ${ranked.length} kandidaat(en)`
-    );
 
-    const topScore = ranked[0]?.score ?? 0;
+    const topScore = rankedAll[0]?.score ?? 0;
     const minAcceptScore = relaxed
       ? Math.max(12, Math.round(topScore * 0.25))
       : Math.max(28, Math.round(topScore * 0.4));
     const imgMax = archiveMaxImageClipsPerVideo();
     const tryCap = relaxed ? ARCHIVE_BEAT_TOP_CANDIDATES * 2 : ARCHIVE_BEAT_TOP_CANDIDATES;
-    let tried = 0;
-    for (const picked of ranked) {
-      if (tried >= tryCap) break;
-      if (!relaxed && !assetPassesBeatMinimum(picked.asset, beat.text, picked.score, topScore, picked.semantic, videoVisualTopic, dedup.geoSegmentLock)) {
-        continue;
-      }
-      if (relaxed && picked.score < minAcceptScore && topScore > minAcceptScore + 6) {
-        continue;
-      }
-      if (
-        !archiveAssetPreflight(
-          picked.asset,
-          dedup.usedCuratedAssetIds,
-          dedup.usedCuratedStorageUrls,
-          topicAnchors,
-          beatTags,
-          {
-            interviewUsed: dedup.curatedInterviewClipsUsed,
-            interviewMax: MAX_CURATED_INTERVIEW_CLIPS_PER_VIDEO,
-            imageUsed: dedup.curatedImageClipsUsed,
-            imageMax: imgMax,
-            beatText: beat.text,
-            videoVisualTopic,
-          }
-        )
-      ) {
-        continue;
-      }
-      tried++;
-      const clip = await preparePooledArchiveClip(
-        picked,
-        beat,
-        scene,
-        workDir,
-        holdSec,
-        videoTitle,
-        dedup
+
+    const tryRankedList = async (
+      ranked: CuratedCandidatePick[],
+      tierLabel: string
+    ): Promise<boolean> => {
+      if (!ranked.length) return false;
+      console.log(
+        `[Pipeline] Scene ${scene.index} zin ${beat.index}: ${tierLabel} → ${ranked.length} kandidaat(en) voor "${literal.searchQuery}"`
       );
-      if (await tryClip(clip, holdSec)) {
-        const sceneTags = extractSceneSearchTags(beat.text);
-        const tagHint =
-          sceneTags.length > 0
-            ? `, scene: ${sceneTags.slice(0, 3).join(", ")}`
-            : "";
-        console.log(
-          `[Pipeline] Scene ${scene.index} zin ${beat.index}: gekozen "${picked.asset.title ?? picked.asset.id}" ` +
-            `(score ${picked.score}${picked.semantic ? `, semantic ${picked.semantic.relevanceScore} tier ${picked.semantic.tier} ${picked.semantic.tierLabel}` : ""}${tagHint})`
+      let tried = 0;
+      for (const picked of ranked) {
+        if (tried >= tryCap) break;
+        if (!relaxed && !assetPassesBeatMinimum(picked.asset, beat.text, picked.score, topScore, picked.semantic, videoVisualTopic, dedup.geoSegmentLock, literalTags)) {
+          continue;
+        }
+        if (relaxed && picked.score < minAcceptScore && topScore > minAcceptScore + 6) {
+          continue;
+        }
+        const beatGeoTags = extractBeatGeoPlaceTags(beat.text);
+        if (beatGeoTags.length > 0 && isWrongGeoForBeat(picked.asset, beatGeoTags)) {
+          continue;
+        }
+        if (dedup.geoSegmentLock) {
+          const assetHay = `${picked.asset.title ?? ""} ${(picked.asset.tags ?? []).join(" ")}`;
+          if (isWrongRegionForSegmentLock(assetHay, dedup.geoSegmentLock)) {
+            continue;
+          }
+        }
+        if (
+          !archiveAssetPreflight(
+            picked.asset,
+            dedup.usedCuratedAssetIds,
+            dedup.usedCuratedStorageUrls,
+            topicAnchors,
+            beatTags,
+            {
+              interviewUsed: dedup.curatedInterviewClipsUsed,
+              interviewMax: MAX_CURATED_INTERVIEW_CLIPS_PER_VIDEO,
+              imageUsed: dedup.curatedImageClipsUsed,
+              imageMax: imgMax,
+              beatText: beat.text,
+              videoVisualTopic,
+            }
+          )
+        ) {
+          continue;
+        }
+        tried++;
+        const clip = await preparePooledArchiveClip(
+          picked,
+          beat,
+          scene,
+          workDir,
+          holdSec,
+          videoTitle,
+          dedup
         );
+        if (await tryClip(clip, holdSec)) {
+          const sceneTags = extractSceneSearchTags(beat.text);
+          const tagHint =
+            sceneTags.length > 0
+              ? `, scene: ${sceneTags.slice(0, 3).join(", ")}`
+              : "";
+          console.log(
+            `[Pipeline] Scene ${scene.index} zin ${beat.index}: ${tierLabel} — gekozen "${picked.asset.title ?? picked.asset.id}" ` +
+              `(score ${picked.score}${picked.semantic ? `, semantic ${picked.semantic.relevanceScore} tier ${picked.semantic.tier}` : ""}${tagHint})`
+          );
+          return true;
+        }
+      }
+      return false;
+    };
+
+    for (const tier of ARCHIVE_MATCH_TIER_ORDER) {
+      const tierRanked = filterCandidatesByArchiveTier(rankedAll, tier, literalTags);
+      if (await tryRankedList(tierRanked, archiveTierLabel(tier))) {
         return true;
       }
     }
+
     if (relaxed) {
       const mgfxBudget = {
         used: dedup.motionGraphicsUsed,
@@ -13992,6 +14051,7 @@ async function adoptPexelsBeatClipFallback(
         ...governmentQueries,
         ...urbanPlanningQueries,
         ...infrastructureQueries,
+        beat.visualDescription ? sanitizeVisualKeyword(beat.visualDescription.slice(0, 72)) : "",
         beat.searchQuery,
         beat.powerWord,
         ...geoQueries,
@@ -14058,7 +14118,10 @@ async function adoptPexelsBeatClipFallback(
         if (isRejectedStockClip(clipPath, q, beat.text, videoTitle)) continue;
         if (
           dedup.geoSegmentLock &&
-          isWrongRegionForSegmentLock(`${q} ${path.basename(clipPath)}`, dedup.geoSegmentLock)
+          isWrongRegionForSegmentLock(
+            `${beat.text} ${q} ${path.basename(clipPath)}`,
+            dedup.geoSegmentLock
+          )
         ) {
           continue;
         }
@@ -14644,13 +14707,13 @@ async function fetchArchiveSentenceMontage(
 
   const semanticProfiles = semanticVisualMatchingEnabled()
     ? await analyzeBeatsSemanticsBatch(
-        beats.map((b) => b.text),
+        beats.map((b) => b.visualDescription?.trim() || b.text),
         videoTitle
       )
     : new Map<number, BeatSemanticProfile>();
 
   console.log(
-    `[Pipeline] Scene ${scene.index}: ${beats.length} zin(en) → archive first, Pexels if needed per zin`
+    `[Pipeline] Scene ${scene.index}: ${beats.length} zin(en) — literal viewer visual → archive (exact→semantic→related) → Pexels`
   );
 
   const pushSceneClip = async (clipPath: string, holdSec: number, beatIndex: number, sourceQuery = ""): Promise<boolean> => {
@@ -16365,7 +16428,7 @@ async function composeSceneVideo(
   // Subtitle overlay: render if user has enabled subtitles (effects pass only — not raw assembly)
   let subtitlePath: string | null = null;
   const skipEffectLayers = phase === "assembly";
-  if (!skipEffectLayers && enableSubtitles) {
+  if (!skipEffectLayers && enableSubtitles && onScreenTextEnabled()) {
     try {
       subtitlePath = await renderSubtitleOverlay(scene.text, scene.index, totalScenes, workDir);
     } catch (err) {
@@ -17509,8 +17572,8 @@ export async function runVideoPipeline(
                 : `${STAGE_LABELS.voiceovers} (${done}/${total})`,
             percent: 8 + Math.round((done / total) * 10),
           });
-        }, script),
-        bulkVoiceoverTimeoutMs(scenes.length),
+        }, script, videoLength),
+        bulkVoiceoverTimeoutMs(scenes.length, videoLength),
         "Bulk voiceover generation"
       );
     }

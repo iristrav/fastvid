@@ -229,13 +229,17 @@ export function analyzeBeatSemanticsFallback(beatText: string, videoTitle?: stri
 
 async function analyzeBeatSemanticsWithLlm(
   beatText: string,
-  videoTitle?: string
+  videoTitle?: string,
+  literalViewerVisual?: string
 ): Promise<BeatSemanticProfile | null> {
   if (!ENV.forgeApiKey || process.env.ENABLE_SEMANTIC_LLM_ANALYSIS === "false") return null;
 
-  const prompt = `Analyze this documentary narration sentence for visual B-roll matching.
+  const prompt = `Analyze this documentary narration for visual B-roll matching.
 
-Sentence: "${beatText.replace(/"/g, "'")}"
+What should the VIEWER LITERALLY SEE on screen? (subject + action + setting — not abstract concepts)
+
+Literal on-screen visual: "${(literalViewerVisual ?? beatText).replace(/"/g, "'")}"
+Narration sentence: "${beatText.replace(/"/g, "'")}"
 ${videoTitle ? `Video title: "${videoTitle.replace(/"/g, "'")}"` : ""}
 
 Extract:
@@ -303,7 +307,7 @@ Do NOT include generic tiers like "soldiers" or "technology" before specific tie
 
     return {
       beatText: beatText.replace(/\[visual:[^\]]+\]/gi, " ").trim(),
-      summary: parsed.summary?.trim() || beatText.slice(0, 120),
+      summary: literalViewerVisual?.trim() || parsed.summary?.trim() || beatText.slice(0, 120),
       entities,
       searchTiers:
         searchTiers.length > 0
@@ -319,13 +323,14 @@ Do NOT include generic tiers like "soldiers" or "technology" before specific tie
 
 export async function analyzeBeatSemantics(
   beatText: string,
-  videoTitle?: string
+  videoTitle?: string,
+  literalViewerVisual?: string
 ): Promise<BeatSemanticProfile> {
-  const key = beatCacheKey(beatText, videoTitle);
+  const key = beatCacheKey(`${literalViewerVisual ?? ""}|${beatText}`, videoTitle);
   const cached = profileCache.get(key);
   if (cached) return cached;
 
-  const llm = await analyzeBeatSemanticsWithLlm(beatText, videoTitle);
+  const llm = await analyzeBeatSemanticsWithLlm(beatText, videoTitle, literalViewerVisual);
   const profile = llm ?? analyzeBeatSemanticsFallback(beatText, videoTitle);
   profileCache.set(key, profile);
   return profile;

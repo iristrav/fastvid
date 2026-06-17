@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   buildScriptLengthRefinePrompt,
   scriptStillOnTopic,
+  checkScriptMeetsBudget,
   stripVisualTagsFromScript,
   getScriptLengthBudget,
 } from "./scriptWriter";
@@ -17,6 +18,16 @@ describe("scriptStillOnTopic", () => {
     const prompt = "Elon Musk: Tesla, SpaceX and the future of humanity";
     const script = `# Art\n## Opening\nSalvator Mundi sold for $450 million. Leonardo da Vinci experts disagree.`;
     expect(scriptStillOnTopic(prompt, script)).toBe(false);
+  });
+});
+
+describe("checkScriptMeetsBudget", () => {
+  it("rejects scripts below minimum word count", () => {
+    const budget = getScriptLengthBudget("8-10");
+    const short = "## Opening\nThis is far too short for an eight minute documentary video.\n";
+    const check = checkScriptMeetsBudget(short, budget);
+    expect(check.ok).toBe(false);
+    if (!check.ok) expect(check.message).toContain("incomplete");
   });
 });
 

@@ -1141,6 +1141,39 @@ const US_GEO_SLUGS = [
   "florida",
 ];
 
+/** Cities/countries that must not appear when beat requires Netherlands (or US-only segments). */
+const FOREIGN_GEO_SLUGS = [
+  "toronto",
+  "canada",
+  "canadian",
+  "ontario",
+  "scarborough",
+  "etobicoke",
+  "north york",
+  "montreal",
+  "vancouver",
+  "quebec",
+  "berlin",
+  "germany",
+  "german",
+  "paris",
+  "france",
+  "french",
+  "london",
+  "england",
+  "english",
+  "tokyo",
+  "japan",
+  "beijing",
+  "china",
+  "sydney",
+  "australia",
+  "mumbai",
+  "india",
+  "mexico",
+  "brazil",
+];
+
 function slugSetIncludes(slugs: string[], markers: string[]): boolean {
   return slugs.some((s) => markers.some((m) => s === m || s.includes(m) || m.includes(s)));
 }
@@ -1168,14 +1201,21 @@ export function isWrongGeoForBeat(
   const needsUs = slugSetIncludes(requiredGeoTags, US_GEO_SLUGS);
   const hasNl = assetHayHasMarkers(asset, NL_GEO_SLUGS);
   const hasUs = assetHayHasMarkers(asset, US_GEO_SLUGS);
+  const hasForeign = assetHayHasMarkers(asset, FOREIGN_GEO_SLUGS);
+  const nlSpecificTags = requiredGeoTags.filter((t) =>
+    NL_GEO_SLUGS.some((nl) => t === nl || t.includes(nl) || nl.includes(t))
+  );
+  const nlGeoHits = nlSpecificTags.length > 0 ? geoTagHitCount(asset, nlSpecificTags) : geoTagHitCount(asset, requiredGeoTags);
   const geoHits = geoTagHitCount(asset, requiredGeoTags);
 
   if (needsNl && !needsUs) {
+    if (hasForeign && !hasNl) return true;
     if (hasUs && !hasNl) return true;
-    if (!hasNl && geoHits === 0) return true;
+    if (!hasNl && nlGeoHits === 0) return true;
     return false;
   }
   if (needsUs && !needsNl) {
+    if (hasForeign && !hasUs && !hasNl) return true;
     if (hasNl && !hasUs) return true;
     if (!hasUs && geoHits === 0) return true;
     return false;
