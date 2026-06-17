@@ -75,6 +75,7 @@ import {
   framedArchiveStillsEnabled,
   archivePexelsHybridEnabled,
   vidrushDocumentaryQualityEnabled,
+  maxVisualCandidatesPerBeatTry,
 } from "./sourcingPolicy";
 import {
   isNonDocumentaryVisualHay,
@@ -1771,8 +1772,11 @@ export async function fetchCuratedArchiveBeatClip(
   const topScore = candidates[0]?.score ?? 0;
   const minAcceptScore = relaxed ? Math.max(12, Math.round(topScore * 0.25)) : Math.max(28, Math.round(topScore * 0.4));
   const tryOrder = relaxed ? rotateCuratedCandidates(candidates, varietySeed, beat.index) : candidates;
+  const maxTries = maxVisualCandidatesPerBeatTry();
+  let tried = 0;
 
   for (const picked of tryOrder) {
+    if (tried >= maxTries) break;
     if (
       !assetPassesBeatMinimum(
         picked.asset,
@@ -1806,6 +1810,7 @@ export async function fetchCuratedArchiveBeatClip(
     ) {
       continue;
     }
+    tried++;
     try {
       const clipPath = await prepareCuratedArchiveClip(
         picked.asset,

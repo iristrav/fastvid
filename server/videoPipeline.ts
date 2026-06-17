@@ -138,7 +138,7 @@ import {
   assertSceneCriticalReview,
   reviewSceneCritical,
 } from "./sceneCriticalReview";
-import { curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, freeVoiceoverMode, freeVoiceoverGttsLang, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archivePexelsFallbackEnabled, archivePexelsHybridEnabled, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, onScreenTextEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, maxPipelineWallClockMin, qualityOverSpeedEnabled, visualStageWallClockMin, pipelineMinutesPerVideoMinute, pipelineWallClockLimitEnabled, PIPELINE_UNLIMITED_MS, autoMotionGraphicsLayerEnabled, vidrushDocumentaryQualityEnabled, wikimediaBeatFallbackEnabled } from "./sourcingPolicy";
+import { curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, freeVoiceoverMode, freeVoiceoverGttsLang, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archivePexelsFallbackEnabled, archivePexelsHybridEnabled, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, onScreenTextEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, maxPipelineWallClockMin, maxPipelineWallClockHardMin, qualityOverSpeedEnabled, visualStageWallClockMin, pipelineMinutesPerVideoMinute, pipelineWallClockLimitEnabled, pipelineWallClockGraceFactor, PIPELINE_UNLIMITED_MS, autoMotionGraphicsLayerEnabled, vidrushDocumentaryQualityEnabled, wikimediaBeatFallbackEnabled } from "./sourcingPolicy";
 import { targetVideoDurationMinutes } from "@shared/videoLengths";
 import {
   getCrossVideoExcludeAssetIds,
@@ -1843,13 +1843,13 @@ function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProfile {
       maxAiClipsPerVideo: 0,
       minimizeStockFootage: !hybrid,
       maxStockBeatsPerVideo: hybrid ? 999 : 0,
-      maxStockQueriesPerBeat: hybrid ? 5 : 0,
+      maxStockQueriesPerBeat: hybrid ? 3 : 0,
       maxEntityYoutubePerVideo: 0,
       fastStockMode: false,
-      beatClipTimeoutMs: unlimited ? 900_000 : qualityMode ? 120_000 : profile.beatClipTimeoutMs,
+      beatClipTimeoutMs: unlimited ? 900_000 : 75_000,
       sceneVisualTimeoutMs: unlimited ? PIPELINE_UNLIMITED_MS : visualStageMin * 60_000,
-      sceneParallelism: qualityMode ? 1 : profile.sceneParallelism,
-      pexelsDownloadRetries: 2,
+      sceneParallelism: IS_RAILWAY ? 2 : profile.sceneParallelism,
+      pexelsDownloadRetries: 1,
     };
   }
   if (!pipelineWallClockLimitEnabled()) {
@@ -1867,13 +1867,14 @@ function visualStageTimeoutMs(videoLengthRaw: string, perf: PipelinePerfProfile)
     return PIPELINE_UNLIMITED_MS;
   }
   const capMs = visualStageWallClockMin(videoLengthRaw) * 60_000;
+  const hardMs = maxPipelineWallClockHardMin(videoLengthRaw) * 60_000;
   if (curatedArchiveOnlyVisuals() || qualityOverSpeedEnabled()) {
-    return capMs;
+    return Math.min(hardMs, Math.round(capMs * 1.05));
   }
   if (isShortVideoLength(videoLengthRaw)) {
-    return Math.min(capMs, perf.fastStockMode ? 20 * 60_000 : 25 * 60_000);
+    return Math.min(hardMs, perf.fastStockMode ? 20 * 60_000 : 25 * 60_000);
   }
-  return Math.min(capMs, Math.round(perf.targetWallClockMin * 60_000 * 1.05));
+  return Math.min(hardMs, Math.round(perf.targetWallClockMin * 60_000 * 1.05));
 }
 
 async function runBeatClipFetch(
@@ -3248,7 +3249,7 @@ async function fetchPexelsClips(
 
     try {
       // HD quality: large size (min 1280px), landscape orientation, fetch 15 candidates
-      const searchUrl = `https://api.pexels.com/videos/search?query=${encodeURIComponent(currentQuery)}&per_page=15&size=large&orientation=landscape&min_duration=4`;
+      const searchUrl = `https://api.pexels.com/videos/search?query=${encodeURIComponent(currentQuery)}&per_page=10&size=large&orientation=landscape&min_duration=4`;
       const searchResp = await withTimeout(
         fetch(searchUrl, { headers: { Authorization: PEXELS_API_KEY } }),
         10_000,
@@ -3919,10 +3920,10 @@ async function fetchWikimediaImages(
   try {
     const portraitMode = opts.personPortrait ?? /portrait|face|headshot|person|celebrity/i.test(query);
     const searchQuery = portraitMode && !/\bportrait\b/i.test(query) ? `${query} portrait` : query;
-    const searchUrl = `https://commons.wikimedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(searchQuery)}&srnamespace=6&srlimit=15&format=json&origin=*`;
+    const searchUrl = `https://commons.wikimedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(searchQuery)}&srnamespace=6&srlimit=8&format=json&origin=*`;
     const searchResp = await withTimeout(
       fetch(searchUrl, { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }),
-      8_000,
+      5_000,
       `Wikimedia search scene ${sceneIndex}`
     );
     if (!searchResp.ok) return [];
@@ -3937,7 +3938,7 @@ async function fetchWikimediaImages(
         const infoUrl = `https://commons.wikimedia.org/w/api.php?action=query&titles=${encodeURIComponent(title)}&prop=imageinfo&iiprop=url|mime|size&format=json&origin=*`;
         const infoResp = await withTimeout(
           fetch(infoUrl, { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }),
-          8_000,
+          5_000,
           `Wikimedia info scene ${sceneIndex}`
         );
         if (!infoResp.ok) continue;
@@ -3960,7 +3961,7 @@ async function fetchWikimediaImages(
         const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}wiki_${i}.mp4`);
         const imgResp = await withTimeout(
           fetch(imageInfo.url, { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }),
-          15_000,
+          10_000,
           `Wikimedia download scene ${sceneIndex}`
         );
         if (!imgResp.ok) continue;
@@ -4031,7 +4032,7 @@ async function adoptWikimediaBeatClipFallback(
   const personQueries = person?.trim()
     ? buildWikimediaPersonQueries(person, scene.index, beat.index, beat.text)
     : [];
-  const queries = [...new Set([...personQueries, ...topicQueries])].slice(0, 10);
+  const queries = [...new Set([...personQueries, ...topicQueries])].slice(0, 6);
   if (queries.length === 0) return false;
 
   const openingBeat = scene.index === 0 && beat.index === 0;
@@ -4080,6 +4081,7 @@ async function adoptWikimediaBeatClipFallback(
         ? minClipQualityScore()
         : 5;
     if (
+      !isPipelineBlurFillStillClip(clipPath) &&
       !(await clipPassesVisionGate(
         clipPath,
         beat.text,
@@ -4125,7 +4127,7 @@ async function adoptWikimediaBeatClipFallback(
           holdSec,
           workDir,
           scene.index,
-          2,
+          1,
           `b${beat.index}_wiki`,
           { beatIndex: beat.index, personPortrait: portraitStill }
         );
@@ -18028,7 +18030,7 @@ export async function runVideoPipeline(
       }
     }
     console.log(
-      `[Pipeline] Perf budget: ${pipelineWallClockLimitEnabled() ? `≤${perf.targetWallClockMin}min wall-clock (${targetVideoDurationMinutes(videoLength)}min video × ${pipelineMinutesPerVideoMinute()})` : "unlimited wall-clock (quality first)"}, ` +
+      `[Pipeline] Perf budget: ${pipelineWallClockLimitEnabled() ? `target ≤${perf.targetWallClockMin}min, hard ≤${maxPipelineWallClockHardMin(videoLength)}min (${targetVideoDurationMinutes(videoLength)}min video × ${pipelineMinutesPerVideoMinute()}, grace ×${pipelineWallClockGraceFactor()})` : "unlimited wall-clock (quality first)"}, ` +
       `≤${perf.maxBeatsPerScene} beats/scene, ${perf.sceneParallelism} parallel scenes, ` +
       `quality-over-speed=${qualityOverSpeedEnabled() ? "on" : "off"}, ` +
       `sourcing=${curatedArchiveOnlyVisuals() ? "media archive only" : youtubeOnlySourcingEnabled() ? `YouTube-only ≤${youtubeBeatSearchBudgetMs() / 1000}s → Pexels` : youtubeSourcingEnabled() ? "YouTube+archival" : "archival+stills → Pexels (YouTube off)"}, ` +
@@ -18153,7 +18155,6 @@ export async function runVideoPipeline(
             `Scene ${scene.index} visuals`
           );
         } catch (sceneErr) {
-          if (strictNoVisualRepeat()) throw sceneErr;
           console.warn(
             `[Pipeline] Scene ${scene.index} visuals failed after ${Math.round(perf.sceneVisualTimeoutMs / 1000)}s — recovering:`,
             (sceneErr as Error).message
@@ -18176,6 +18177,14 @@ export async function runVideoPipeline(
         ? `Visual generation stage (≤${Math.round(visualStageTimeoutMs(videoLength, perf) / 60_000)}min cap)`
         : "Visual generation stage (no time cap)"
     );
+    } catch (stageErr) {
+      console.warn(
+        `[Pipeline] Visual stage budget exceeded — recovering all scenes:`,
+        (stageErr as Error).message
+      );
+      sceneVisualResults = await Promise.all(
+        scenes.map((scene) => recoverSceneClipsIfEmpty(scene, workDir, topicContext, visualDedup))
+      );
     } finally {
       clearInterval(visualHeartbeat);
     }

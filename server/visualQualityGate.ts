@@ -6,6 +6,7 @@ import path from "path";
 import { spawn } from "child_process";
 import { invokeLLM } from "./_core/llm";
 import { ENV } from "./_core/env";
+import { pipelineWallClockLimitEnabled } from "./sourcingPolicy";
 
 const NARRATION_MATCH_SCHEMA = {
   type: "json_schema" as const,
@@ -308,7 +309,13 @@ export async function clipPassesVisionGate(
   const framePath = await extractPreviewFrame(clipPath, workDir, sceneIndex, beatIndex);
   if (!framePath) return true;
 
-  const timeoutMs = fastMode ? 7_000 : 11_000;
+  const timeoutMs = pipelineWallClockLimitEnabled()
+    ? fastMode
+      ? 5_000
+      : 8_000
+    : fastMode
+      ? 7_000
+      : 11_000;
   const useCritical = sceneCriticalReviewEnabled() && minScore >= minClipQualityScore();
   const score = useCritical
     ? await scoreClipNarrationMatch(

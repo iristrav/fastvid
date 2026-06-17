@@ -23,6 +23,8 @@ import {
   externalVisualSourcingEnabled,
   elevenLabsOnlyVoice,
   freeVoiceoverMode,
+  pipelineMinutesPerVideoMinute,
+  pipelineWallClockGraceFactor,
 } from "../sourcingPolicy";
 import { getVisionQaStatus } from "../visualQualityGate";
 
@@ -88,9 +90,9 @@ async function startServer() {
   const maxStock = process.env.MAX_STOCK_BEATS_PER_VIDEO?.trim();
   console.log(
     "[Fastvid] Pipeline wall-clock limit:",
-    process.env.PIPELINE_WALL_CLOCK_LIMIT === "true"
-      ? "✓ on (set MAX_PIPELINE_WALL_CLOCK_MIN to override cap)"
-      : "✗ off — generation runs until complete (set PIPELINE_WALL_CLOCK_LIMIT=true to cap)"
+    process.env.PIPELINE_WALL_CLOCK_LIMIT === "false"
+      ? "✗ off — generation runs until complete"
+      : `✓ target ${pipelineMinutesPerVideoMinute()} min per 1 min video (hard cap ×${pipelineWallClockGraceFactor()})`
   );
   console.log(
     "[Fastvid] Minimize licensed stock:",

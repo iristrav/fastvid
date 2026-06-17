@@ -99,17 +99,27 @@ export function pipelineMinutesPerVideoMinute(): number {
   return 10;
 }
 
-/** When false (default), generation may run as long as needed for quality. Set PIPELINE_WALL_CLOCK_LIMIT=true to cap. */
+/** Multiplier on target budget before hard-fail (default 1.2 → ~12 min pipeline per 1 min video). */
+export function pipelineWallClockGraceFactor(): number {
+  const raw = process.env.PIPELINE_WALL_CLOCK_GRACE?.trim();
+  if (raw) {
+    const n = parseFloat(raw);
+    if (!isNaN(n) && n >= 1.05 && n <= 1.5) return n;
+  }
+  return 1.2;
+}
+
+/** When true (default), cap generation at video_minutes × 10 wall-clock. Set PIPELINE_WALL_CLOCK_LIMIT=false to disable. */
 export function pipelineWallClockLimitEnabled(): boolean {
-  return process.env.PIPELINE_WALL_CLOCK_LIMIT === "true";
+  return process.env.PIPELINE_WALL_CLOCK_LIMIT !== "false";
 }
 
 /** Practical "no limit" for withTimeout / setTimeout (7 days — below Node's max delay). */
 export const PIPELINE_UNLIMITED_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
- * Hard cap for end-to-end video generation (minutes).
- * Default: unlimited. When PIPELINE_WALL_CLOCK_LIMIT=true: targetVideoMinutes × 10 (max 300).
+ * Target end-to-end generation budget (minutes) — video_minutes × 10 by default.
+ * Used for perf profiles and stage timeouts; generation may run slightly over via grace.
  */
 export function maxPipelineWallClockMin(videoLength?: string | null): number {
   if (!pipelineWallClockLimitEnabled()) {
@@ -121,6 +131,20 @@ export function maxPipelineWallClockMin(videoLength?: string | null): number {
     if (!isNaN(n) && n >= 10 && n <= 300) return n;
   }
   return Math.round(targetVideoDurationMinutes(videoLength) * pipelineMinutesPerVideoMinute());
+}
+
+/** Hard fail only after target × grace (default 12 min pipeline per 1 min video). */
+export function maxPipelineWallClockHardMin(videoLength?: string | null): number {
+  if (!pipelineWallClockLimitEnabled()) {
+    return Math.round(PIPELINE_UNLIMITED_MS / 60_000);
+  }
+  const target = maxPipelineWallClockMin(videoLength);
+  return Math.min(360, Math.round(target * pipelineWallClockGraceFactor()));
+}
+
+/** Max archive/Wikimedia candidates to try per beat when wall-clock limit is on. */
+export function maxVisualCandidatesPerBeatTry(): number {
+  return pipelineWallClockLimitEnabled() ? 4 : 12;
 }
 
 /** Prefer quality over speed (more time per beat/scene). Default on for archive docs. */

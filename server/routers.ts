@@ -45,7 +45,7 @@ import type { ProgressLogEntry } from "./db";
 import { videoLengthSchema, normalizeVideoLength, isShortVideoLength } from "@shared/videoLengths";
 import { PIPELINE_DISPLAY_STAGES, formatGenerationDuration, progressStepWithElapsed, resolvePipelineDisplayStage } from "@shared/pipelineProgress";
 import { ONE_YEAR_MS } from "@shared/const";
-import { maxPipelineWallClockMin, pipelineWallClockLimitEnabled } from "./sourcingPolicy";
+import { maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineWallClockLimitEnabled, pipelineMinutesPerVideoMinute, pipelineWallClockGraceFactor } from "./sourcingPolicy";
 
 function getSessionSecret() {
   const secret = process.env.JWT_SECRET ?? "fallback-secret-change-in-production";
@@ -217,18 +217,21 @@ function requireVideoAccess(
 
 function startGenerationTimeout(videoId: number, videoLength: string): ReturnType<typeof setTimeout> | undefined {
   if (!pipelineWallClockLimitEnabled()) return undefined;
-  const capMin = maxPipelineWallClockMin(videoLength);
+  const targetMin = maxPipelineWallClockMin(videoLength);
+  const hardMin = maxPipelineWallClockHardMin(videoLength);
   return setTimeout(async () => {
-    console.error(`[Video Generation] Video ${videoId} exceeded ${capMin}-minute limit (${videoLength}) — marking as failed`);
+    console.error(
+      `[Video Generation] Video ${videoId} exceeded ${hardMin}-minute hard limit (target ${targetMin} min, ${videoLength}) — marking as failed`
+    );
     await updateVideoStatus(videoId, "failed", {
       errorMessage: appErrorMessage(
         PIPELINE_ERROR.GENERATION_TIMEOUT,
-        `Video generation exceeded ${capMin} minutes. Please retry with a shorter video`
+        `Video generation exceeded ${hardMin} minutes (target ${targetMin} min). Please retry with a shorter video`
       ),
-      progressStep: `⏰ Generation timed out (max ${capMin} minutes exceeded)`,
+      progressStep: `⏰ Generation timed out (hard limit ${hardMin} min exceeded)`,
       progressPercent: 0,
     }).catch(() => {});
-  }, capMin * 60 * 1000);
+  }, hardMin * 60 * 1000);
 }
 
 async function generateVideoWithAI(videoId: number, prompt: string, videoLength: string, voiceId?: string, customVoiceoverUrl?: string) {
