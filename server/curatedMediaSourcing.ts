@@ -38,6 +38,8 @@ import {
   buildInfrastructureVisualQueries,
   assetShowsInfrastructure,
   assetIsOffTopicProtest,
+  beatMentionsWwiiContent,
+  isClipTitleIrrelevantToBeat,
   type VideoVisualTopic,
 } from "./visualBeatTags";
 import { promisify } from "util";

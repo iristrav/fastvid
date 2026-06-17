@@ -109,8 +109,22 @@ describe("curatedMediaSourcing", () => {
       "Hitler: Rise and Fall of the Third Reich"
     );
 
-    const hitlerScore = scoreCuratedAsset(asset, ["hitler", "wwii"], beatTags, topicAnchors);
-    const titanicScore = scoreCuratedAsset(genericVideo, ["titanic"], beatTags, topicAnchors);
+    const hitlerScore = scoreCuratedAsset(
+      asset,
+      ["hitler", "wwii"],
+      beatTags,
+      topicAnchors,
+      "Hitler rose as Germany was in turmoil",
+      "wwii"
+    );
+    const titanicScore = scoreCuratedAsset(
+      genericVideo,
+      ["titanic"],
+      beatTags,
+      topicAnchors,
+      "Hitler rose as Germany was in turmoil",
+      "wwii"
+    );
     expect(hitlerScore).toBeGreaterThan(titanicScore);
   });
 
@@ -205,13 +219,15 @@ describe("curatedMediaSourcing", () => {
       { ...interview, archiveId: 1, mediaType: "video", mimeType: "video/mp4", storageUrl: "/x", isActive: 1, sortOrder: 0, createdAt: new Date(), updatedAt: new Date(), fileSizeBytes: 1, width: 1920, height: 1080, durationSec: 5, sourceUrl: null, sourceLabel: null },
       ["hitler"],
       beatTags,
-      topicAnchors
+      topicAnchors,
+      "Hitler in Berlin"
     );
     const paradeScore = scoreCuratedAsset(
       { ...parade, archiveId: 1, mediaType: "video", mimeType: "video/mp4", storageUrl: "/y", isActive: 1, sortOrder: 0, createdAt: new Date(), updatedAt: new Date(), fileSizeBytes: 1, width: 1920, height: 1080, durationSec: 5, sourceUrl: null, sourceLabel: null },
       ["hitler"],
       beatTags,
-      topicAnchors
+      topicAnchors,
+      "Hitler in Berlin"
     );
     expect(paradeScore).toBeGreaterThan(interviewScore);
   });
