@@ -4,6 +4,7 @@
  */
 import { invokeLLM } from "./_core/llm";
 import { ENV } from "./_core/env";
+import { DOCUMENTARY_EDITOR_VIEWER_QUESTION } from "./documentaryVisualPolicy";
 import {
   extractEntitySearchTags,
   extractPrimaryVisualAnchor,
@@ -234,26 +235,25 @@ async function analyzeBeatSemanticsWithLlm(
 ): Promise<BeatSemanticProfile | null> {
   if (!ENV.forgeApiKey || process.env.ENABLE_SEMANTIC_LLM_ANALYSIS === "false") return null;
 
-  const prompt = `Analyze this documentary narration for visual B-roll matching.
+  const prompt = `${DOCUMENTARY_EDITOR_VIEWER_QUESTION}
 
-What should the VIEWER LITERALLY SEE on screen? (subject + action + setting — not abstract concepts)
+Describe ONE concrete visual scene (subject + action + setting). Derive all search tiers from that scene — not from narration words.
 
-Literal on-screen visual: "${(literalViewerVisual ?? beatText).replace(/"/g, "'")}"
-Narration sentence: "${beatText.replace(/"/g, "'")}"
+Analyze this documentary beat for visual B-roll matching.
+
+Literal on-screen visual (what the viewer should see): "${(literalViewerVisual ?? beatText).replace(/"/g, "'")}"
+Narration sentence (context only — do NOT copy words into search tiers): "${beatText.replace(/"/g, "'")}"
 ${videoTitle ? `Video title: "${videoTitle.replace(/"/g, "'")}"` : ""}
 
 Extract:
-- persons, locations, companies, events, objects, emotions, timePeriods, years
+- persons, locations, companies, events, objects, emotions, timePeriods, years visible in the literal scene
 - topicDomain (short slug, e.g. wwii, space_tech, cold_war, general)
-- searchTiers: 3-5 priority tiers of English search phrases (lowercase). Tier 1 = exact visual (named person + action/place). Tier 2 = secondary subject. Last tier = same topic only, NOT generic stock.
+- searchTiers: 3-5 priority tiers of English search phrases (lowercase) derived ONLY from the literal on-screen visual. Tier 1 = exact visible subject + action/place. Last tier = same topic only, NOT generic stock.
 
-Example "Hitler invaded Poland":
-searchTiers: [["hitler", "adolf hitler"], ["poland", "invasion of poland"], ["german army", "wehrmacht"], ["world war ii", "1939"]]
+Example literal scene "Soldiers and tanks advancing through a war-torn city":
+searchTiers: [["soldiers tanks city"], ["military advance ruins"], ["world war ii", "wartime europe"]]
 
-Example "Elon Musk launched Starship":
-searchTiers: [["elon musk"], ["starship", "spacex starship"], ["spacex launch", "rocket launch"], ["space exploration"]]
-
-Do NOT include generic tiers like "soldiers" or "technology" before specific tiers.`;
+Do NOT include generic tiers like "soldiers" or "technology" before specific tiers. Do NOT copy Dutch or abstract narration words.`;
 
   try {
     const response = await Promise.race([
@@ -699,18 +699,26 @@ export function clearSemanticCaches(): void {
   embeddingCache.clear();
 }
 
-/** Ordered Pexels search queries from semantic tiers (exact subject → related topic). */
+/** Ordered Pexels search queries from literal visual + semantic tiers (exact subject → related topic). */
 export function buildSemanticPexelsQueries(
   beatText: string,
   profile: BeatSemanticProfile,
   maxQueries = 8,
-  videoTitle?: string
+  videoTitle?: string,
+  literalViewerVisual?: string,
+  literalSearchQuery?: string
 ): string[] {
   const ordered: string[] = [];
   const push = (q: string) => {
     const v = slug(q);
     if (v.length >= 3 && !ordered.includes(v)) ordered.push(v);
   };
+
+  if (literalSearchQuery?.trim()) push(literalSearchQuery);
+  if (literalViewerVisual?.trim()) {
+    push(literalViewerVisual.slice(0, 72));
+    for (const t of extractVisualSearchTags(literalViewerVisual, videoTitle).slice(0, 5)) push(t);
+  }
 
   for (const tier of profile.searchTiers) {
     for (const term of tier) push(term);
@@ -727,7 +735,9 @@ export function buildSemanticPexelsQueries(
     for (const item of list) push(item);
   }
   push(profile.summary);
-  for (const t of extractVisualSearchTags(beatText, videoTitle).slice(0, 6)) push(t);
+  if (!literalViewerVisual?.trim() && !literalSearchQuery?.trim()) {
+    for (const t of extractVisualSearchTags(beatText, videoTitle).slice(0, 6)) push(t);
+  }
   if (profile.topicDomain === "geography_urban") {
     push("city skyline");
     push("urban street");

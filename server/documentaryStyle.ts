@@ -290,8 +290,21 @@ export function resolveStillCompositionVF(
   beatIndex: number,
   personPortrait: boolean
 ): string {
-  void personPortrait;
-  return buildMatFramedStillVF(duration, 0.74, sceneIndex, beatIndex);
+  return buildArchiveStillFilterComplex(duration, sceneIndex, beatIndex, personPortrait);
+}
+
+/** Smaller photo on blurred duplicate background — default for all archive/stock stills. */
+export function buildArchiveStillFilterComplex(
+  duration: number,
+  sceneIndex: number,
+  beatIndex: number,
+  personPortrait = false
+): string {
+  const scale = vidrushStillPhotoScale();
+  if (process.env.ARCHIVE_BLUR_FILL_STILLS === "false") {
+    return buildMatFramedStillVF(duration, scale, sceneIndex, beatIndex);
+  }
+  return buildBlurFillStillVF(duration, scale, personPortrait ? "top" : "center");
 }
 
 export interface TimedOverlay {

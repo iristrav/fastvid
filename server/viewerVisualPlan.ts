@@ -2,10 +2,15 @@
  * Per-beat literal viewer visual — what the camera shows (subject + action + setting),
  * resolved BEFORE any archive or stock search. Abstract concepts ("AI automation") are
  * translated into filmable shots ("person working on laptop").
+ *
+ * Workflow: answer the documentary-editor question → one concrete scene → search on that
+ * scene only (never on voice-over words).
  */
+import { DOCUMENTARY_EDITOR_VIEWER_QUESTION } from "./documentaryVisualPolicy";
 import type { ScriptVisualIntentEntry } from "./scriptVisualKeywords";
 import {
   fallbackVisualIntent,
+  hasDirectorPlan,
   resolveBeatVisualIntent,
   sanitizeVisualIntentText,
   sanitizeVisualKeyword,
@@ -13,6 +18,8 @@ import {
 import { extractVisualSearchTags } from "./visualBeatTags";
 
 export type ArchiveMatchTier = "exact" | "semantic" | "related";
+
+export { DOCUMENTARY_EDITOR_VIEWER_QUESTION } from "./documentaryVisualPolicy";
 
 export type LiteralViewerVisual = {
   /** Concrete English: what the viewer literally sees on screen. */
@@ -233,18 +240,34 @@ function buildFromIntent(intent: ScriptVisualIntentEntry): LiteralViewerVisual |
   return { description: desc, searchQuery: query, subject, action };
 }
 
+function searchQueryFromDescription(description: string, intent?: ScriptVisualIntentEntry): string {
+  const fromIntent =
+    sanitizeVisualKeyword(intent?.search_query ?? "") ||
+    sanitizeVisualKeyword(intent?.primary_keyword ?? "");
+  if (fromIntent && !isAbstractVisualText(fromIntent)) return fromIntent;
+  const fromDesc = sanitizeVisualKeyword(description.replace(/^a\s+/i, "").slice(0, 72));
+  if (fromDesc && !isAbstractVisualText(fromDesc)) return fromDesc;
+  const tags = extractVisualSearchTags(description).slice(0, 4);
+  if (tags.length >= 2) return sanitizeVisualKeyword(tags.slice(0, 4).join(" ")) || tags.join(" ");
+  return "documentary broll scene";
+}
+
 /** Resolve literal on-screen visual for any beat / topic. */
 export function inferLiteralViewerVisual(
   beatText: string,
   videoTitle?: string,
   storedIntent?: ScriptVisualIntentEntry
 ): LiteralViewerVisual {
-  const fromRule = buildFromRule(beatText);
-  if (fromRule) return fromRule;
-
+  // 1. Visual Director / stored plan — concrete scene before any rule or narration tokens.
   if (storedIntent) {
     const fromIntent = buildFromIntent(storedIntent);
     if (fromIntent) return fromIntent;
+  }
+
+  // 2. Topic rules translate abstract narration → filmable shot (when no director plan).
+  if (!hasDirectorPlan(storedIntent)) {
+    const fromRule = buildFromRule(beatText);
+    if (fromRule) return fromRule;
   }
 
   const intent = storedIntent ?? fallbackVisualIntent(beatText);
@@ -256,15 +279,10 @@ export function inferLiteralViewerVisual(
     if (built) return built;
   }
 
-  const tags = extractVisualSearchTags(beatText, videoTitle).slice(0, 4);
-  const subject = intent.priority_subject || tags[0] || "person";
-  const scene = intent.scene_type && intent.scene_type !== "other" ? intent.scene_type : "scene";
-  const description = `A ${subject} in a ${scene} setting, shown in documentary B-roll.`;
-  const searchQuery =
-    sanitizeVisualKeyword(intent.primary_keyword ?? "") ||
-    sanitizeVisualKeyword(`${subject} ${scene}`) ||
-    sanitizeVisualKeyword(tags.slice(0, 3).join(" ")) ||
-    "documentary broll scene";
+  const subject = intent.priority_subject || "person";
+  const scene = intent.scene_type && intent.scene_type !== "other" ? intent.scene_type : "documentary";
+  const description = `A ${subject} visible in a ${scene} setting, shown as documentary B-roll.`;
+  const searchQuery = searchQueryFromDescription(description, intent);
 
   return {
     description,
@@ -312,6 +330,10 @@ export function applyLiteralViewerVisualToBeat(
     primary_keyword: literal.searchQuery,
     priority_subject: literal.subject,
   };
+  console.log(
+    `[ViewerVisual] ${DOCUMENTARY_EDITOR_VIEWER_QUESTION} → "${literal.description.slice(0, 80)}" ` +
+      `(zoek: ${literal.searchQuery})`
+  );
   return literal;
 }
 

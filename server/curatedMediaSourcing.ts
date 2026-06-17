@@ -50,7 +50,7 @@ import { resolveLocalVideoPath, LOCAL_UPLOADS_DIR } from "./storageLocal";
 import { storageGetSignedUrl } from "./storage";
 import { archiveClipHasBakedEditText } from "./archiveClipFilter";
 import {
-  buildBlurFillStillVF,
+  buildArchiveStillFilterComplex,
   buildFitGrayVideoVF,
   buildFitGrayGradedVideoVF,
   buildMontageBranchNormVF,
@@ -257,6 +257,7 @@ export function buildBeatMatchTags(
 ): BeatMatchTags {
   const videoVisualTopic = inferVideoVisualTopic(videoTitle, [beat.text, scene.text].join(" "));
   const topicAnchors = extractTopicAnchorTags(videoTitle, [beat.text, scene.text].join(" "));
+  const hasLiteralVisual = Boolean(beat.visualDescription?.trim() || beat.searchQuery?.trim());
   const visualSource = beat.visualDescription?.trim() || beat.searchQuery?.trim() || beat.text;
   const visualTags = extractVisualSearchTags(visualSource, videoTitle);
   const visualAnchor = extractPrimaryVisualAnchor(visualSource);
@@ -268,23 +269,27 @@ export function buildBeatMatchTags(
     beat.searchQuery ?? "",
     ...beat.keywords,
     ...visualTags,
-    scene.visualCue ?? "",
+    ...(hasLiteralVisual ? [] : [scene.visualCue ?? ""]),
   ]
     .filter(Boolean)
     .join(" ");
-  const sentenceTags = tokenizeBeatText(beat.visualDescription?.trim() || beat.searchQuery?.trim() || beat.text);
+  const sentenceTags = tokenizeBeatText(
+    beat.visualDescription?.trim() || beat.searchQuery?.trim() || beat.text
+  );
   const queryTokens = beat.searchQuery ? tokenizeBeatText(beat.searchQuery) : [];
   const beatTags = normalizeMediaTags([
     ...queryTokens,
     ...queryTokens,
     ...anchorTokens,
     ...sentenceTags,
-    ...tokenizeBeatText(beatRaw).filter((t) => !topicAnchors.includes(t) || beat.text.toLowerCase().includes(t)),
+    ...(hasLiteralVisual
+      ? []
+      : tokenizeBeatText(beatRaw).filter((t) => !topicAnchors.includes(t) || beat.text.toLowerCase().includes(t))),
   ]).slice(0, 20);
   const sceneTags = tokenizeBeatText([scene.text, scene.pexelsQuery ?? ""].join(" "));
   const mergedBeat = normalizeMediaTags([
     ...beatTags,
-    ...sceneTags.filter((t) => beat.text.toLowerCase().includes(t)),
+    ...(hasLiteralVisual ? [] : sceneTags.filter((t) => beat.text.toLowerCase().includes(t))),
   ]).slice(0, 16);
   const beatLower = beat.text.toLowerCase();
   const scopedTopicAnchors = topicAnchors.filter(
@@ -1249,12 +1254,30 @@ async function convertImageToKenBurns(
   }
 
   if (framedArchiveStillsEnabled()) {
-    const filterComplex = archiveBlurFillStillsEnabled()
-      ? buildBlurFillStillVF(duration, 0.78, "center")
-      : buildMatFramedStillVF(duration, vidrushStillPhotoScale(), sceneIndex, beatIndex);
-    await exec(
-      `${ffmpegBin()} ${buildStillEncodeArgs(imgPath, outPath, duration, filterComplex)}`
+    const filterComplex = buildArchiveStillFilterComplex(
+      duration,
+      sceneIndex,
+      beatIndex,
+      false
     );
+    try {
+      await exec(
+        `${ffmpegBin()} ${buildStillEncodeArgs(imgPath, outPath, duration, filterComplex)}`
+      );
+    } catch (err) {
+      if (archiveBlurFillStillsEnabled()) {
+        console.warn(
+          `[Curated] Scene ${sceneIndex} beat ${beatIndex}: blur-fill still failed, retrying gray mat:`,
+          (err as Error).message?.slice(0, 120)
+        );
+        const matFc = buildMatFramedStillVF(duration, vidrushStillPhotoScale(), sceneIndex, beatIndex);
+        await exec(
+          `${ffmpegBin()} ${buildStillEncodeArgs(imgPath, outPath, duration, matFc)}`
+        );
+      } else {
+        throw err;
+      }
+    }
   } else {
     const fps = 25;
     const totalFrames = Math.max(50, Math.round(duration * fps));

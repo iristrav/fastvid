@@ -8,6 +8,7 @@ import {
   parseMarkdownNarrationBlocks,
 } from "./scriptWriter";
 import { inferLiteralViewerVisual } from "./viewerVisualPlan";
+import { DOCUMENTARY_EDITOR_VIEWER_QUESTION } from "./documentaryVisualPolicy";
 import type { ScriptVisualIntentEntry } from "./scriptVisualKeywords";
 
 export const VISUAL_DIRECTOR_MIN_SEC = 3.5;
@@ -299,14 +300,18 @@ function buildDirectorBatchPrompt(sentences: string[], offset: number): string {
     .map((s, i) => `${offset + i}: ${s.replace(/\s+/g, " ").trim()}`)
     .join("\n");
 
-  return `You are a professional documentary VISUAL DIRECTOR. Before any footage search, plan what the camera shows for each voice-over line.
+  return `${DOCUMENTARY_EDITOR_VIEWER_QUESTION}
+
+Describe ONE concrete visual scene per sentence (subject + action + setting). Search footage from that scene only — never from the spoken words.
+
+You are a professional documentary VISUAL DIRECTOR. Before any footage search, plan what the camera shows for each voice-over line.
 
 For EACH sentence index, output one or MORE scenes (split when the sentence contains multiple distinct visual ideas).
 
 Each scene MUST include:
 - source_sentence_index: index from the list below
 - spoken_text: the exact words this clip covers (full sentence OR a clear sub-phrase when split)
-- visual_description: concrete English description of what appears on screen (subject + action + setting). This drives clip selection — NOT the spoken words.
+- visual_description: one concrete English scene — what the viewer literally sees (subject + action + setting). This drives clip selection — NOT the spoken words.
 - camera_shot: wide shot | medium shot | close-up | aerial | establishing shot | tracking shot | detail shot
 - emotion: single English mood word (e.g. frustration, hope, tension, pride, calm)
 - search_query: 3–6 word English stock-footage search phrase derived ONLY from visual_description (never copy Dutch narration words)
@@ -315,6 +320,7 @@ Rules:
 - MAX 1 visual idea per scene
 - Split multi-concept sentences into separate scenes with different visual_description + search_query
 - search_query must describe visible footage, not abstract concepts (no: success, growth, strategy)
+- Do NOT search on voice-over words — search on what the viewer should see
 - Script may be Dutch — all director fields except spoken_text must be English
 - Each scene will be 3–5 seconds on screen
 
@@ -372,7 +378,8 @@ async function generateDirectorBatch(
         {
           role: "system",
           content:
-            "You are an expert documentary visual director. Return valid JSON only. Plan filmable B-roll from meaning — never keyword-copy narration.",
+            "You are an expert documentary visual director. Return valid JSON only. " +
+            "Answer the editorial viewer question first, then plan filmable B-roll from that scene — never keyword-copy narration.",
         },
         { role: "user", content: buildDirectorBatchPrompt(sentences, offset) },
       ],

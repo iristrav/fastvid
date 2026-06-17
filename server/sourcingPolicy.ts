@@ -147,9 +147,9 @@ export function framedArchiveStillsEnabled(): boolean {
   return process.env.ENABLE_FRAMED_ARCHIVE_STILLS !== "false";
 }
 
-/** Archive stills: blurred fill background + sharp photo + light zoom (off by default — use gray mat for consistency). */
+/** Archive stills: blurred fill background + sharp smaller photo + Ken Burns (default on). */
 export function archiveBlurFillStillsEnabled(): boolean {
-  return process.env.ARCHIVE_BLUR_FILL_STILLS === "true";
+  return process.env.ARCHIVE_BLUR_FILL_STILLS !== "false";
 }
 
 /** On-screen label cadence (years + keywords) in seconds. */

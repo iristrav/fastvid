@@ -69,7 +69,7 @@ import {
   buildMontageBranchNormVF,
   buildFinalSceneGradeVF,
   buildSimpleKenBurnsVF,
-  buildMatFramedStillVF,
+  buildArchiveStillFilterComplex,
   buildStillEncodeArgs,
   documentaryStyleEnabled,
   renderHighlightCaptionOverlay,
@@ -185,7 +185,6 @@ import {
   buildWhiteTypewriterDrawtextFilterChain,
   mergeMotionGraphicsIntoMetadata,
   planMotionGraphicsScene,
-  standardMontageCrossfadeSec,
   standardMontageTransitionName,
   type MotionGraphicsScenePlan,
   type MotionOverlayPlan,
@@ -513,14 +512,8 @@ function effectiveMinClipSec(): number {
 function effectiveMaxClipSec(): number {
   return curatedArchiveOnlyVisuals() ? archiveVisualMaxClipSec() : VIDRUSH_CLIP_HOLD_SEC;
 }
-/** Soft dissolves for archive/documentary montage (reference-doc style). */
-function montageXfadeSec(avgClipDur = archiveVisualBeatSec()): number {
-  if (autoMotionGraphicsLayerEnabled() || vidrushDocumentaryQualityEnabled()) {
-    return standardMontageCrossfadeSec();
-  }
-  if (curatedArchiveOnlyVisuals() || documentaryStyleEnabled()) {
-    return Math.min(0.4, Math.max(0.2, avgClipDur * 0.05));
-  }
+/** Montage join overlap — 0 = hard cuts (no dissolve/xfade). */
+function montageXfadeSec(_avgClipDur = archiveVisualBeatSec()): number {
   return 0;
 }
 const CHAPTER_CARD_DURATION = 2.5;
@@ -3638,21 +3631,26 @@ async function encodeStillImageMp4(
     return;
   }
 
-  // Fallback when documentary style is off: mat-frame layout on gray mat.
+  // Fallback when documentary style is off: blurred smaller photo (or gray mat if disabled).
   if (framedArchiveStillsEnabled()) {
     try {
-      const filterComplex = buildMatFramedStillVF(duration);
+      const filterComplex = buildArchiveStillFilterComplex(
+        duration,
+        sceneIndex,
+        beatIndex,
+        personPortrait
+      );
       await withTimeout(
         exec(`${FFMPEG_BIN} ${buildStillEncodeArgs(imgPath, outPath, duration, filterComplex)}`),
         45_000,
-        `${label} (mat frame)`
+        `${label} (blur-fill still)`
       );
       if (fs.existsSync(outPath) && fs.statSync(outPath).size > 1000) {
         const probed = await probeVideoDurationSec(outPath);
         if (probed >= duration * 0.5) return;
       }
     } catch (err) {
-      console.warn(`[Pipeline] ${label}: mat frame still failed:`, (err as Error).message);
+      console.warn(`[Pipeline] ${label}: blur-fill still failed:`, (err as Error).message);
     }
     try {
       if (fs.existsSync(outPath)) fs.unlinkSync(outPath);
@@ -9138,12 +9136,15 @@ async function xfadeMergeTwoVideos(
   threadFlag: string
 ): Promise<void> {
   const xfade = montageXfadeSec((leftDur + rightDur) / 2);
-  const offset = Math.max(0, leftDur - xfade);
+  const filterComplex =
+    xfade <= 0.001
+      ? `[0:v]${FPS_FORMAT_VF}[v0];[1:v]${FPS_FORMAT_VF}[v1];[v0][v1]concat=n=2:v=1:a=0[out]`
+      : `[0:v]${FPS_FORMAT_VF}[v0];[1:v]${FPS_FORMAT_VF}[v1];` +
+        `[v0][v1]xfade=transition=dissolve:duration=${xfade.toFixed(3)}:offset=${Math.max(0, leftDur - xfade).toFixed(3)}[out]`;
   await withTimeout(
     exec(
       `${FFMPEG_BIN} -y -i "${leftPath}" -i "${rightPath}" ` +
-        `-filter_complex "[0:v]${FPS_FORMAT_VF}[v0];[1:v]${FPS_FORMAT_VF}[v1];` +
-        `[v0][v1]xfade=transition=dissolve:duration=${xfade.toFixed(3)}:offset=${offset.toFixed(3)}[out]" ` +
+        `-filter_complex "${filterComplex}" ` +
         `-map "[out]" -an -vsync cfr ${threadFlag} -c:v libx264 -preset ${MONTAGE_SEGMENT_ENCODE_PRESET} -crf 18 -pix_fmt yuv420p "${outputPath}"`
     ),
     composeTimeout,
@@ -14008,38 +14009,57 @@ async function adoptPexelsBeatClipFallback(
   if (!archivePexelsFallbackEnabled() || !PEXELS_API_KEY) return false;
 
   const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
+  const literalVisual = beat.visualDescription?.trim() || "";
+  const literalSearch = beat.searchQuery?.trim() || "";
+  const searchFromLiteralVisual = Boolean(literalVisual || literalSearch);
   const semanticQueries = semanticProfile
-    ? buildSemanticPexelsQueries(beat.text, semanticProfile, 8, videoTitle)
+    ? buildSemanticPexelsQueries(
+        beat.text,
+        semanticProfile,
+        8,
+        videoTitle,
+        literalVisual || undefined,
+        literalSearch || undefined
+      )
     : [];
-  const geoQueries = buildGeoStockSearchQueries(beat.text, videoTitle);
-  const welcomeQueries = isGeoWelcomeBeat(beat.text) ? buildGeoWelcomeVisualQueries(beat.text) : [];
-  const cyclingQueries = isCyclingBeat(beat.text)
-    ? buildCyclingVisualQueries(beat.text, videoTitle, scene.text)
-    : [];
-  const geoStatQueries = isGeoStatBeat(beat.text)
-    ? buildGeoStatVisualQueries(beat.text, videoTitle, scene.text)
-    : [];
-  const carQueries = isCarBeat(beat.text)
-    ? buildCarVisualQueries(beat.text, videoTitle, scene.text)
-    : [];
-  const governmentQueries = isGovernmentBeat(beat.text)
-    ? buildGovernmentVisualQueries(beat.text, videoTitle, scene.text)
-    : [];
-  const urbanPlanningQueries = isUrbanPlanningBeat(beat.text)
-    ? buildUrbanPlanningVisualQueries(beat.text, videoTitle, scene.text)
-    : [];
-  const infrastructureQueries = isInfrastructureBeat(beat.text)
-    ? buildInfrastructureVisualQueries(beat.text, videoTitle, scene.text)
-    : [];
-  const scriptQueries = buildBeatVisualQueryList(
-    beat.text,
-    scene,
-    videoTitle,
-    scenePersons,
-    6,
-    beat.searchQuery,
-    beat.visualIntent
-  );
+  const geoQueries = searchFromLiteralVisual ? [] : buildGeoStockSearchQueries(beat.text, videoTitle);
+  const welcomeQueries =
+    !searchFromLiteralVisual && isGeoWelcomeBeat(beat.text) ? buildGeoWelcomeVisualQueries(beat.text) : [];
+  const cyclingQueries =
+    !searchFromLiteralVisual && isCyclingBeat(beat.text)
+      ? buildCyclingVisualQueries(beat.text, videoTitle, scene.text)
+      : [];
+  const geoStatQueries =
+    !searchFromLiteralVisual && isGeoStatBeat(beat.text)
+      ? buildGeoStatVisualQueries(beat.text, videoTitle, scene.text)
+      : [];
+  const carQueries =
+    !searchFromLiteralVisual && isCarBeat(beat.text)
+      ? buildCarVisualQueries(beat.text, videoTitle, scene.text)
+      : [];
+  const governmentQueries =
+    !searchFromLiteralVisual && isGovernmentBeat(beat.text)
+      ? buildGovernmentVisualQueries(beat.text, videoTitle, scene.text)
+      : [];
+  const urbanPlanningQueries =
+    !searchFromLiteralVisual && isUrbanPlanningBeat(beat.text)
+      ? buildUrbanPlanningVisualQueries(beat.text, videoTitle, scene.text)
+      : [];
+  const infrastructureQueries =
+    !searchFromLiteralVisual && isInfrastructureBeat(beat.text)
+      ? buildInfrastructureVisualQueries(beat.text, videoTitle, scene.text)
+      : [];
+  const scriptQueries = searchFromLiteralVisual
+    ? [literalSearch, literalVisual.slice(0, 72)].filter((q) => q.length >= 3)
+    : buildBeatVisualQueryList(
+        beat.text,
+        scene,
+        videoTitle,
+        scenePersons,
+        6,
+        beat.searchQuery,
+        beat.visualIntent
+      );
   const openingQueries =
     scene.index === 0 && beat.index === 0
       ? buildVidrushOpeningQueries(videoTitle, beat.text)
@@ -14047,6 +14067,10 @@ async function adoptPexelsBeatClipFallback(
   const queries = [
     ...new Set(
       [
+        beat.searchQuery,
+        beat.visualDescription ? sanitizeVisualKeyword(beat.visualDescription.slice(0, 72)) : "",
+        ...semanticQueries,
+        ...scriptQueries,
         ...openingQueries,
         ...welcomeQueries,
         ...cyclingQueries,
@@ -14055,16 +14079,14 @@ async function adoptPexelsBeatClipFallback(
         ...governmentQueries,
         ...urbanPlanningQueries,
         ...infrastructureQueries,
-        beat.visualDescription ? sanitizeVisualKeyword(beat.visualDescription.slice(0, 72)) : "",
-        beat.searchQuery,
         beat.powerWord,
         ...geoQueries,
-        ...semanticQueries,
-        ...scriptQueries,
-        enrichStockQuery(scene.pexelsQuery, scene, videoTitle, scenePersons[0] ?? "", beat.text),
+        ...(searchFromLiteralVisual
+          ? []
+          : [enrichStockQuery(scene.pexelsQuery, scene, videoTitle, scenePersons[0] ?? "", beat.text)]),
       ]
         .filter((q): q is string => typeof q === "string" && q.trim().length > 2 && !isBlockedStockQuery(q))
-        .map((q) => simplifyStockSearchWord(q, beat.text, true))
+        .map((q) => (searchFromLiteralVisual ? q.trim() : simplifyStockSearchWord(q, beat.text, true)))
     ),
   ].slice(0, 10);
 

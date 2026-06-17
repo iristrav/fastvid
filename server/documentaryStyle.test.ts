@@ -70,12 +70,22 @@ describe("documentaryStyle", () => {
     else process.env.ENABLE_FILM_GRAIN = prev;
   });
 
-  it("uses consistent gray-mat still composition", () => {
+  it("uses blur-fill still composition by default", () => {
+    const vf = resolveStillCompositionVF(4, 1, 0, false);
+    expect(vf).toContain("gblur=sigma=38");
+    expect(vf).toContain("zoompan=");
+    expect(vf).toContain("overlay=");
+    expect(vf).not.toContain("pad=960:1040");
+  });
+
+  it("falls back to gray mat when ARCHIVE_BLUR_FILL_STILLS=false", () => {
+    const prev = process.env.ARCHIVE_BLUR_FILL_STILLS;
+    process.env.ARCHIVE_BLUR_FILL_STILLS = "false";
     const vf = resolveStillCompositionVF(4, 1, 0, false);
     expect(vf).toContain("color=0xCFCFCF");
-    expect(vf).toContain("zoompan=");
     expect(vf).not.toContain("gblur");
-    expect(vf).not.toContain("pad=960:1040");
+    if (prev === undefined) delete process.env.ARCHIVE_BLUR_FILL_STILLS;
+    else process.env.ARCHIVE_BLUR_FILL_STILLS = prev;
   });
 
   it("builds post grade chain", () => {

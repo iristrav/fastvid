@@ -105,10 +105,17 @@ describe("semanticVisualMatching", () => {
     );
   });
 
-  it("buildSemanticPexelsQueries orders tiers for stock search", () => {
+  it("buildSemanticPexelsQueries orders literal visual before narration tokens", () => {
     const profile = analyzeBeatSemanticsFallback("Hitler invaded Poland in 1939.", "WWII");
-    const queries = buildSemanticPexelsQueries("Hitler invaded Poland in 1939.", profile, 8);
-    expect(queries[0]).toMatch(/hitler/);
+    const queries = buildSemanticPexelsQueries(
+      "Hitler invaded Poland in 1939.",
+      profile,
+      8,
+      "WWII",
+      "Soldiers and tanks advancing through a war-torn European city.",
+      "soldiers tanks war city"
+    );
+    expect(queries[0]).toMatch(/soldiers|tanks|war|city/);
     expect(queries.some((q) => q.includes("poland"))).toBe(true);
   });
 });

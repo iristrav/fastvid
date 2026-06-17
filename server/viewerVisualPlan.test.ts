@@ -48,6 +48,28 @@ describe("viewerVisualPlan", () => {
     expect(literalVisualSearchTags(literal).length).toBeGreaterThan(0);
   });
 
+  it("prefers Visual Director plan over narration keyword rules", () => {
+    const directorIntent = {
+      sentence: "Steeds meer bedrijven investeren in AI-automatisering.",
+      visual_intent: "Shipping containers being loaded at a busy freight port with cranes.",
+      visual_description: "Shipping containers being loaded at a busy freight port with cranes.",
+      search_query: "shipping port containers cranes",
+      primary_keyword: "shipping port containers cranes",
+      secondary_keyword: "port freight",
+      fallback_keyword: "port broll",
+      scene_type: "industrial",
+      priority_subject: "port",
+    };
+    const literal = inferLiteralViewerVisual(
+      directorIntent.sentence,
+      "Supply Chain",
+      directorIntent
+    );
+    expect(literal.searchQuery).toMatch(/port|container|shipping/i);
+    expect(literal.searchQuery).not.toMatch(/^person laptop/i);
+    expect(literal.description.toLowerCase()).toMatch(/port|container|crane/);
+  });
+
   it("filters archive candidates by exact then semantic tiers", () => {
     const picks: CuratedCandidatePick[] = [
       {
