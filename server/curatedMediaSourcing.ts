@@ -2,7 +2,7 @@
  * Curated media archive — pick tagged assets from admin libraries for pipeline beats.
  */
 import { exec as execCb } from "child_process";
-import { extractVisualSearchTags, extractSceneSearchTags, extractEntitySearchTags, extractPrimaryVisualAnchor, extractSalientBeatTokens, extractRequiredVisualTags, isGenericPeopleAsset, inferVideoVisualTopic, isWwiiWarArchiveAsset, beatMentionsWwiiContent, refineVisualSearchTagsForTopic, type VideoVisualTopic } from "./visualBeatTags";
+import { extractVisualSearchTags, extractSceneSearchTags, extractEntitySearchTags, extractPrimaryVisualAnchor, extractSalientBeatTokens, extractRequiredVisualTags, isGenericPeopleAsset, inferVideoVisualTopic, isWwiiWarArchiveAsset, beatMentionsWwiiContent, refineVisualSearchTagsForTopic, isClipTitleIrrelevantToBeat, type VideoVisualTopic } from "./visualBeatTags";
 import { promisify } from "util";
 import fetch from "node-fetch";
 import * as fs from "fs";
@@ -304,6 +304,13 @@ export function assetPassesBeatMinimum(
   // For any non-WWII video, block war archive clips unless the beat itself mentions war/conflict.
   // This prevents e.g. Hitler footage appearing in a Netherlands geography video.
   if (videoVisualTopic !== "wwii" && isWwiiWarArchiveAsset(asset) && !beatMentionsWwiiContent(beatText)) {
+    return false;
+  }
+  // Clip-title relevance blocker: if the clip title names a specific figure, conflict, or
+  // graphic situation (Hitler, Stalin, Pol Pot, public execution, etc.) that is completely
+  // absent from the current beat text, block it regardless of tag-score.
+  // Example: "Hitler youth rally" clip blocked when beat is about Amsterdam post-war reconstruction.
+  if (isClipTitleIrrelevantToBeat(asset, beatText)) {
     return false;
   }
   if (semantic && semanticVisualMatchingEnabled()) {
@@ -612,6 +619,11 @@ export function scoreCuratedAsset(
   }
   // Hard-zero clips with pre-burned production notation titles (defense-in-depth)
   if (hasProductionNotationTitle(asset)) {
+    return 0;
+  }
+  // Defense-in-depth: also zero-score clips whose title names a domain-specific
+  // figure/event (Hitler, Stalin, Pol Pot, execution, etc.) absent from the beat.
+  if (beatText && isClipTitleIrrelevantToBeat(asset, beatText)) {
     return 0;
   }
 
