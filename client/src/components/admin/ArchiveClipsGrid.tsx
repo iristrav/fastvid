@@ -491,7 +491,6 @@ export function ArchiveClipsGrid({
   const [page, setPage] = useState(0);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [sceneAuditMap, setSceneAuditMap] = useState<Record<number, SceneAuditEntry>>({});
-  const [showMultiSceneOnly, setShowMultiSceneOnly] = useState(false);
   const [sceneAuditRunning, setSceneAuditRunning] = useState(false);
   const [sceneAuditProgress, setSceneAuditProgress] = useState<{ done: number; total: number } | null>(null);
   const [sceneAuditReport, setSceneAuditReport] = useState<{
@@ -503,7 +502,6 @@ export function ArchiveClipsGrid({
   useEffect(() => {
     setPage(0);
     setSceneAuditMap({});
-    setShowMultiSceneOnly(false);
     setSceneAuditReport(null);
   }, [archiveId]);
 
@@ -548,10 +546,15 @@ export function ArchiveClipsGrid({
   });
 
   const deleteAssets = trpc.mediaArchive.deleteAssets.useMutation({
-    onSuccess: (data) => {
+    onSuccess: (data, variables) => {
       utils.mediaArchive.listAssets.invalidate();
       utils.mediaArchive.listArchives.invalidate();
       setSelectedIds(new Set());
+      setSceneAuditMap((prev) => {
+        const next = { ...prev };
+        for (const id of variables.ids) delete next[id];
+        return next;
+      });
       toast.success(`${data.deleted} clip(s) deleted`);
     },
     onError: (e) => toast.error("Delete failed", { description: toastErrorMessage(e) }),
@@ -604,11 +607,6 @@ export function ArchiveClipsGrid({
     () => Object.values(sceneAuditMap).filter((e) => e.status === "multi_scene").length,
     [sceneAuditMap]
   );
-
-  const displayedAssets = useMemo(() => {
-    if (!showMultiSceneOnly) return assets;
-    return assets.filter((a) => sceneAuditMap[a.id]?.status === "multi_scene");
-  }, [assets, sceneAuditMap, showMultiSceneOnly]);
 
   const runSceneAudit = useCallback(async () => {
     if (archiveId == null || total === 0) {
@@ -679,9 +677,9 @@ export function ArchiveClipsGrid({
         message: `Klaar: ${multiScene} multi-scene, ${singleScene} enkele scène`,
         detail:
           failed > 0
-            ? `${failed} clip(s) niet geanalyseerd (bestand ontbreekt of FFmpeg-fout). Filter op multi-scene om ze te vinden.`
+            ? `${failed} clip(s) niet geanalyseerd (bestand ontbreekt of FFmpeg-fout).`
             : multiScene > 0
-              ? "Gebruik filter “Alleen multi-scene” of verwijder/herupload die clips."
+              ? "Gebruik “Verwijder alleen multi scenes” of upload opnieuw."
               : "Alle gecontroleerde clips zijn één scène.",
       });
       if (multiScene > 0) {
@@ -906,6 +904,21 @@ export function ArchiveClipsGrid({
     }
   }
 
+  function deleteMultiSceneClips() {
+    const ids = Object.entries(sceneAuditMap)
+      .filter(([, entry]) => entry.status === "multi_scene")
+      .map(([id]) => Number(id));
+    if (ids.length === 0) return;
+    if (
+      !confirm(
+        `${ids.length} multi-scene clip(s) permanent verwijderen?\n\nAlleen clips die als multi-scene zijn gemarkeerd (na scène-check) worden verwijderd.`
+      )
+    ) {
+      return;
+    }
+    deleteAssets.mutate({ ids });
+  }
+
   function deleteSelected() {
     const ids = [...selectedIds].filter((id) => visibleIds.has(id));
     if (ids.length === 0 || archiveId == null) return;
@@ -985,14 +998,17 @@ export function ArchiveClipsGrid({
         {multiSceneCount > 0 && (
           <button
             type="button"
-            onClick={() => setShowMultiSceneOnly((v) => !v)}
-            className={`flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg border transition-colors ${
-              showMultiSceneOnly
-                ? "bg-red-500/25 text-red-200 border-red-500/40"
-                : "bg-red-500/10 text-red-300 border-red-500/25 hover:bg-red-500/20"
-            }`}
+            onClick={deleteMultiSceneClips}
+            disabled={deletePending || sceneAuditRunning}
+            title="Verwijder alle clips die als multi-scene zijn gemarkeerd (na scène-check)"
+            className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg border transition-colors bg-red-500/10 text-red-300 border-red-500/25 hover:bg-red-500/20 disabled:opacity-50"
           >
-            Alleen multi-scene ({multiSceneCount})
+            {deletePending ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Trash2 className="w-3.5 h-3.5" />
+            )}
+            Verwijder alleen multi scenes ({multiSceneCount})
           </button>
         )}
         {assets.length > 0 && (
@@ -1182,16 +1198,14 @@ export function ArchiveClipsGrid({
 
       {isLoading ? (
         <div className="flex justify-center py-12"><Loader2 className="w-6 h-6 animate-spin text-purple-400" /></div>
-      ) : displayedAssets.length === 0 ? (
+      ) : assets.length === 0 ? (
         <div className="text-center py-12 text-slate-500 text-sm">
-          {showMultiSceneOnly
-            ? "Geen multi-scene clips op deze pagina — run scène-check op alle clips."
-            : "No clips in this archive."}
+          No clips in this archive.
         </div>
       ) : (
         <>
         <div className={`grid gap-4 ${compact ? "sm:grid-cols-2 lg:grid-cols-3" : "sm:grid-cols-2 xl:grid-cols-3"}`}>
-          {displayedAssets.map((asset) => (
+          {assets.map((asset) => (
             <AssetCard
               key={`${asset.id}-${(asset.tags ?? []).join("|")}`}
               asset={asset as ArchiveAsset}
