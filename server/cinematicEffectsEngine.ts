@@ -69,7 +69,7 @@ export function extractYearsFromText(text: string): string[] {
 export function extractStatFromText(text: string): string | null {
   // Euro amounts: €10.000, €1 miljoen, €50 miljard
   const euro = text.match(/€\s*[\d,.]+(?:\s*(?:million|billion|miljoen|miljard|biljoen|M|B|K))?/i);
-  if (euro?.[0]) return euro[0].trim().replace(/\s+/g, "").slice(0, 24);
+  if (euro?.[0]) return euro[0].trim().replace(/€\s+/, "€").replace(/\s+/g, " ").slice(0, 24);
   // Dollar amounts
   const money = text.match(/\$[\d,.]+(?:\s*(?:million|billion|miljoen|miljard|M|B|K))?/i);
   if (money?.[0]) return money[0].trim().slice(0, 24);
