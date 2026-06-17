@@ -7704,6 +7704,12 @@ interface VisualDedupState {
    * repeating "Amsterdam canal" for every Netherlands beat.
    */
   usedPexelsAnchors: Map<string, number>;
+  /**
+   * The topic key returned by extractVideoTopicAnchorsWithKey for the most recent beat.
+   * Used to detect topic switches mid-video and log them for debugging.
+   * e.g. "amsterdam" → "wwii" → "amsterdam" when a Netherlands video discusses WWII occupation.
+   */
+  currentBeatTopicKey: string;
 }
 
 /**
@@ -7768,6 +7774,7 @@ function createVisualDedupState(
     primaryPerson: topic?.primaryPerson?.trim() ?? "",
     personTopicLock: Boolean(topic?.personTopicLock && topic?.primaryPerson?.trim()),
     usedPexelsAnchors: new Map(),
+    currentBeatTopicKey: "",
   };
 }
 
@@ -9604,11 +9611,96 @@ const TOPIC_ANCHOR_RULES: Array<{ pattern: RegExp; anchors: string[] }> = [
 ];
 
 /**
- * Auto-detects the primary location/topic anchor from a video title.
+ * Beat-level topic override rules — checked ONLY against the current beat's text.
+ * These represent specific events/situations whose visual identity is so distinct
+ * that they should override the video's geo-anchor.
+ *
+ * Example: a Netherlands video beat that mentions "German forces occupied" should
+ * show WWII footage, not Amsterdam canals.
+ *
+ * Rules are ordered from most-specific to most-generic. First match wins.
+ * Each rule has a unique `key` so topic-switches can be detected and logged.
+ */
+const BEAT_TOPIC_OVERRIDE_RULES: Array<{ key: string; pattern: RegExp; anchors: string[] }> = [
+  // ── Historical armed conflicts ───────────────────────────────────────────────
+  { key: "wwii",       pattern: /\b(world war (ii|two|2)|ww2|wwii|nazi|gestapo|d-day|normandy|stalingrad|blitzkrieg|luftwaffe|auschwitz|holocaust|concentration camp|liberation|nazi occupation|occupied (france|europe|netherlands|poland)|german forces|german troops|third reich)\b/i, anchors: ["World War II", "wartime Europe", "WWII soldiers"] },
+  { key: "wwi",        pattern: /\b(world war (i|one|1)|ww1|wwi|trench warfare|western front|verdun|the great war|armistice)\b/i, anchors: ["World War I", "trench warfare", "historical soldiers"] },
+  { key: "holocaust",  pattern: /\b(holocaust|shoah|concentration camp|auschwitz|genocide|jewish persecution|deportation train)\b/i, anchors: ["Holocaust memorial", "concentration camp history"] },
+  { key: "cold_war",   pattern: /\b(cold war|berlin wall|iron curtain|nuclear standoff|arms race|cuban missile|soviet union|ussr|kgb|nato vs)\b/i, anchors: ["Berlin Wall", "Cold War era", "nuclear missiles"] },
+  { key: "vietnam_war",pattern: /\b(vietnam war|viet cong|napalm|ho chi minh trail|saigon|tet offensive|my lai)\b/i, anchors: ["Vietnam War", "jungle warfare"] },
+  { key: "civil_war",  pattern: /\b(civil war|confederate|union army|gettysburg|slavery abolition|abraham lincoln|emancipation)\b/i, anchors: ["American Civil War", "historical battle"] },
+  { key: "colonialism",pattern: /\b(coloni(al|alism|ization)|dutch east indies|british empire|empire (collapsed|fell|ended)|decoloni|independence movement|liberation from)\b/i, anchors: ["colonialism history", "independence movement"] },
+  // ── Modern conflicts & geopolitics ──────────────────────────────────────────
+  { key: "war_modern", pattern: /\b(invasion|military offensive|airstrike|drone strike|refugee(s)? flee|ceasefire|warzone|frontline|troops (advance|retreat)|missile (strike|attack))\b/i, anchors: ["military conflict", "warzone", "military soldiers"] },
+  { key: "terrorism",  pattern: /\b(terror(ist|ism)|suicide bomb|isis|al-qaeda|jihadist|radicali[sz]ation|bomb attack|mass shooting)\b/i, anchors: ["security forces", "terrorism memorial", "city aftermath"] },
+  // ── Disasters & crises ───────────────────────────────────────────────────────
+  { key: "pandemic",   pattern: /\b(pandemic|covid|coronavirus|lockdown|quarantine|vaccine rollout|mask mandate|hospital overwhelmed|icu capacity|contact tracing)\b/i, anchors: ["pandemic mask crowd", "hospital emergency", "vaccine queue"] },
+  { key: "flood",      pattern: /\b(flood(ing|s|ed)?|inundation|storm surge|levee breach|overflowed (river|banks)|dikes (breached|failed)|watersnood)\b/i, anchors: ["flood disaster", "flood waters", "emergency evacuation"] },
+  { key: "earthquake", pattern: /\b(earthquake|seismic|richter|tremor|aftershock|rubble (collapse|rescue)|rescue (teams|workers) (search|dig))\b/i, anchors: ["earthquake destruction", "rescue workers rubble"] },
+  { key: "wildfire",   pattern: /\b(wildfire|forest fire|bushfire|burning homes|evacuat(e|ion) (fire|blaze)|fire (swept|engulf))\b/i, anchors: ["wildfire forest", "burning landscape"] },
+  { key: "hurricane",  pattern: /\b(hurricane|typhoon|cyclone|category [1-5]|storm surge|tropical storm|wind (gust|damage))\b/i, anchors: ["hurricane storm", "tropical storm damage"] },
+  { key: "drought",    pattern: /\b(drought|famine|crop failure|water scarcity|dry (riverbeds?|reservoirs?)|food (crisis|shortage))\b/i, anchors: ["drought cracked earth", "famine", "dry riverbed"] },
+  // ── Politics & society ───────────────────────────────────────────────────────
+  { key: "protest",    pattern: /\b(protest(s|ers?)|demonstrat(ion|ors?)|riot(s|ers?)|uprising|civil unrest|marched (through|on)|took to the streets|crowd (chant|gather))\b/i, anchors: ["protest crowd street", "demonstration march"] },
+  { key: "election",   pattern: /\b(election(s)?|referendum|ballot|voting booth|polls (opened|closed)|election (night|results)|voter (turnout|fraud)|campaign (rally|trail))\b/i, anchors: ["election voting booth", "democracy ballot", "political rally"] },
+  { key: "immigration",pattern: /\b(immigrat|migrant(s)?|refugee(s)?|asylum seeker|border crossing|crossing the (sea|mediterranean|channel)|people smuggling|detention center)\b/i, anchors: ["refugee camp", "migrants border", "immigration crossing"] },
+  { key: "poverty",    pattern: /\b(poverty|extreme poverty|inequality|slum|homeless (camp|encampment)|food bank|bread line|social exclusion)\b/i, anchors: ["poverty urban", "inequality", "homeless camp"] },
+  { key: "strike",     pattern: /\b(strike (action|workers)|workers (walk(ed)? out|downed tools)|general strike|picket line|labor dispute|union (action|rally))\b/i, anchors: ["workers strike", "picket line", "labor protest"] },
+  // ── Environment & energy ─────────────────────────────────────────────────────
+  { key: "climate_evt",pattern: /\b(climate (summit|conference|protest|march|emergency|crisis)|paris agreement|cop\d+|carbon (tax|neutral|footprint)|net zero|emissions (cut|target))\b/i, anchors: ["climate protest", "renewable energy", "climate summit"] },
+  { key: "oil_spill",  pattern: /\b(oil spill|deepwater|tanker (leak|disaster)|marine (pollution|disaster)|ecological disaster)\b/i, anchors: ["oil spill pollution", "ocean pollution"] },
+  { key: "nuclear",    pattern: /\b(nuclear (plant|reactor|meltdown|accident|fallout|waste)|chernobyl|fukushima|atomic (bomb|test))\b/i, anchors: ["nuclear power plant", "nuclear disaster"] },
+  // ── Technology events ────────────────────────────────────────────────────────
+  { key: "space_event",pattern: /\b(rocket launch|moon landing|astronaut (aboard|walks?|orbit)|space (shuttle|station|mission|exploration)|nasa (launch|mission)|orbit(ing|ed))\b/i, anchors: ["rocket launch", "astronaut space", "space station"] },
+  { key: "ai_tech",    pattern: /\b(artificial intelligence|machine learning|neural network|large language model|chatgpt|generative ai|ai (revolution|takes over))\b/i, anchors: ["artificial intelligence", "technology data center"] },
+  // ── Economics ────────────────────────────────────────────────────────────────
+  { key: "financial_crisis", pattern: /\b(financial crisis|market crash|recession|bank (collapsed|bailout|run)|lehman|wall street crash|stock market (crash|plunge)|economic collapse)\b/i, anchors: ["stock market crash", "financial crisis", "bank queue"] },
+  { key: "inflation",  pattern: /\b(inflation|cost of living (crisis|surge)|price(s)? (soar|spike|skyrocket)|hyperinflation|purchasing power)\b/i, anchors: ["inflation shopping prices", "cost of living"] },
+  // ── Social milestones ────────────────────────────────────────────────────────
+  { key: "civil_rights",pattern: /\b(civil rights|segregation|martin luther king|rosa parks|apartheid|racial inequality|black lives matter|racial justice)\b/i, anchors: ["civil rights march", "racial equality protest"] },
+  { key: "womens_rights",pattern: /\b(women('s)? rights|suffragette|gender equality|#metoo|feminist movement|equal pay|women (vote|suffrage))\b/i, anchors: ["women rights march", "gender equality protest"] },
+  // ── Sports events ────────────────────────────────────────────────────────────
+  { key: "olympics",   pattern: /\b(olympic games?|olympics|paralympic|gold medal|olympic (torch|flame|ceremony)|tokyo \d{4}|paris \d{4})\b/i, anchors: ["Olympic Games", "sports competition stadium"] },
+  { key: "world_cup",  pattern: /\b(world cup (final|match|tournament)|fifa world cup|champion(s)? league (final|match))\b/i, anchors: ["football World Cup", "stadium crowd"] },
+];
+
+/**
+ * Detects whether the current beat text signals a specific event/situation topic
+ * that should override the video title's geographic anchor.
+ *
+ * Returns { key, anchors } when a strong beat-level topic is detected, null otherwise.
+ */
+function detectBeatTopicOverride(beatText: string): { key: string; anchors: string[] } | null {
+  const lower = beatText.toLowerCase();
+  for (const rule of BEAT_TOPIC_OVERRIDE_RULES) {
+    if (rule.pattern.test(lower)) {
+      return { key: rule.key, anchors: rule.anchors };
+    }
+  }
+  return null;
+}
+
+/**
+ * Auto-detects the primary location/topic anchor from a video title + beat text.
+ *
+ * Priority order:
+ * 1. Beat text is checked FIRST against BEAT_TOPIC_OVERRIDE_RULES for strong
+ *    event/situation signals (WWII, flood, election, protest, etc.).
+ *    If found → use those anchors, ignoring geo context.
+ *    This is the "topic switch detector": a Netherlands video beat about
+ *    "German occupation" will get WWII anchors, not Amsterdam canals.
+ * 2. Combined title + beat text is checked against TOPIC_ANCHOR_RULES
+ *    for country/city/generic topic context.
+ * 3. No match → return [] (no anchors; Pexels falls back to beat.searchQuery).
+ *
  * Returns an ordered list of Pexels search terms (most specific first).
- * Used to inject topic context into Pexels fallback when archive returns nothing.
  */
 function extractVideoTopicAnchors(videoTitle: string, beatText = ""): string[] {
+  // Step 1: beat-first event/situation override
+  const override = detectBeatTopicOverride(beatText);
+  if (override) return override.anchors;
+
+  // Step 2: country/city/generic context from combined text
   const hay = `${videoTitle} ${beatText}`.toLowerCase();
   for (const rule of TOPIC_ANCHOR_RULES) {
     if (rule.pattern.test(hay)) {
@@ -9616,6 +9708,28 @@ function extractVideoTopicAnchors(videoTitle: string, beatText = ""): string[] {
     }
   }
   return [];
+}
+
+/**
+ * Same as extractVideoTopicAnchors but also returns the matched topic key
+ * (used for topic-switch logging in the pipeline).
+ */
+function extractVideoTopicAnchorsWithKey(
+  videoTitle: string,
+  beatText = ""
+): { anchors: string[]; topicKey: string } {
+  const override = detectBeatTopicOverride(beatText);
+  if (override) return { anchors: override.anchors, topicKey: override.key };
+
+  const hay = `${videoTitle} ${beatText}`.toLowerCase();
+  for (const rule of TOPIC_ANCHOR_RULES) {
+    if (rule.pattern.test(hay)) {
+      // derive a stable key from the pattern source
+      const key = rule.anchors[0]?.toLowerCase().replace(/\s+/g, "_") ?? "geo";
+      return { anchors: rule.anchors, topicKey: key };
+    }
+  }
+  return { anchors: [], topicKey: "none" };
 }
 
 /** Dutch (and common non-English) → single English Pexels keyword. */
@@ -12269,10 +12383,26 @@ async function fetchBeatStockFallback(
   };
 
   // In archive-first mode, topic-specific queries must be FIRST so they survive the slice cap.
-  // Auto-detect country/topic from video title → inject as first Pexels anchor for ALL topics.
-  const rawTopicAnchors = curatedArchiveOnlyVisuals()
-    ? extractVideoTopicAnchors(videoTitle ?? "", beat.text)
-    : [];
+  // Auto-detect country/topic from video title + beat text → inject as first Pexels anchor.
+  //
+  // Beat text is checked FIRST for event/situation overrides (WWII, flood, protest, …).
+  // If the beat signals a different topic than the video title (topic switch), those anchors
+  // replace the geo-anchors automatically — for ALL countries and ALL topics.
+  const { anchors: rawTopicAnchors, topicKey: beatTopicKey } = curatedArchiveOnlyVisuals()
+    ? extractVideoTopicAnchorsWithKey(videoTitle ?? "", beat.text)
+    : { anchors: [] as string[], topicKey: "none" };
+
+  // ── Topic-switch detector ────────────────────────────────────────────────────
+  // Log whenever a beat's topic differs from the previous beat's topic.
+  // e.g. "amsterdam" → "wwii" when the narration shifts to WWII occupation.
+  if (curatedArchiveOnlyVisuals() && beatTopicKey !== dedup.currentBeatTopicKey && beatTopicKey !== "none") {
+    if (dedup.currentBeatTopicKey) {
+      console.log(
+        `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: topic switch [${dedup.currentBeatTopicKey}] → [${beatTopicKey}] anchors: [${rawTopicAnchors.join(", ")}]`
+      );
+    }
+    dedup.currentBeatTopicKey = beatTopicKey;
+  }
 
   // ── Visual variety enforcer ──────────────────────────────────────────────────
   // Sort topic anchors so least-used ones come first. This ensures consecutive
@@ -12280,6 +12410,8 @@ async function fetchBeatStockFallback(
   //   beat 0 → "Amsterdam canal"   (used 0×) → first
   //   beat 3 → "Dutch cycling"     (used 0×) → first (Amsterdam used 1×)
   //   beat 6 → "Netherlands bicycle" (used 0×) → first (others used 1×)
+  // Per-topic rotation is automatic: each anchor key is tracked independently,
+  // so WWII anchors and Netherlands anchors each maintain their own usage counts.
   const topicAnchors = [...rawTopicAnchors].sort(
     (a, b) => (dedup.usedPexelsAnchors.get(a) ?? 0) - (dedup.usedPexelsAnchors.get(b) ?? 0)
   );
