@@ -86,12 +86,22 @@ async function startServer() {
   );
   const maxStock = process.env.MAX_STOCK_BEATS_PER_VIDEO?.trim();
   console.log(
+    "[Fastvid] Pipeline wall-clock limit:",
+    process.env.PIPELINE_WALL_CLOCK_LIMIT === "true"
+      ? "✓ on (set MAX_PIPELINE_WALL_CLOCK_MIN to override cap)"
+      : "✗ off — generation runs until complete (set PIPELINE_WALL_CLOCK_LIMIT=true to cap)"
+  );
+  console.log(
     "[Fastvid] Minimize licensed stock:",
     process.env.MINIMIZE_STOCK_FOOTAGE !== "false"
       ? `✓ on (real footage → AI; ≤${maxStock || "1 short / 2 long"} Pexels/Pixabay per video)`
       : "✗ off (MINIMIZE_STOCK_FOOTAGE=false)"
   );
-  console.log("[Fastvid] PEXELS_API_KEY:", process.env.PEXELS_API_KEY ? "✓ set" : "✗ NOT SET — stock footage disabled");
+  console.log("[Fastvid] PEXELS_API_KEY:", process.env.PEXELS_API_KEY ? "✓ set" : "✗ NOT SET");
+  console.log("[Fastvid] PIXABAY_API_KEY:", process.env.PIXABAY_API_KEY ? "✓ set" : "✗ NOT SET");
+  if (!process.env.PEXELS_API_KEY && !process.env.PIXABAY_API_KEY) {
+    console.warn("[Fastvid] No Pexels/Pixabay keys — licensed stock fallback disabled");
+  }
   console.log("[Fastvid] LLM_API_KEY:", process.env.LLM_API_KEY ? "✓ set (OpenAI / Vision QA)" : "✗ NOT SET");
   console.log("[Fastvid] BUILT_IN_FORGE_API_KEY:", process.env.BUILT_IN_FORGE_API_KEY ? "✓ set" : "✗ NOT SET — Manus Forge storage unused");
   const visionQa = getVisionQaStatus();

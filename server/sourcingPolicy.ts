@@ -41,12 +41,12 @@ export function screenLabelsEnabled(): boolean {
   return process.env.ENABLE_SCREEN_LABELS !== "false";
 }
 
-/** When true (default), use Pexels stock only after archive search finds no acceptable clip. */
+/** When true (default), use Pexels/Pixabay stock only after archive search finds no acceptable clip. */
 export function archivePexelsFallbackEnabled(): boolean {
   return process.env.ARCHIVE_PEXELS_FALLBACK !== "false";
 }
 
-/** Pexels allowed after archive misses; never skips archive search (default on). */
+/** Pexels/Pixabay allowed after archive misses; never skips archive search (default on). */
 export function archivePexelsHybridEnabled(): boolean {
   return process.env.ARCHIVE_PEXELS_HYBRID !== "false" && archivePexelsFallbackEnabled();
 }
@@ -73,11 +73,22 @@ export function pipelineMinutesPerVideoMinute(): number {
   return 10;
 }
 
+/** When false (default), generation may run as long as needed for quality. Set PIPELINE_WALL_CLOCK_LIMIT=true to cap. */
+export function pipelineWallClockLimitEnabled(): boolean {
+  return process.env.PIPELINE_WALL_CLOCK_LIMIT === "true";
+}
+
+/** Practical "no limit" for withTimeout / setTimeout (7 days — below Node's max delay). */
+export const PIPELINE_UNLIMITED_MS = 7 * 24 * 60 * 60 * 1000;
+
 /**
  * Hard cap for end-to-end video generation (minutes).
- * Default: targetVideoMinutes × 10 (e.g. 8–10 min video → up to 100 min).
+ * Default: unlimited. When PIPELINE_WALL_CLOCK_LIMIT=true: targetVideoMinutes × 10 (max 300).
  */
 export function maxPipelineWallClockMin(videoLength?: string | null): number {
+  if (!pipelineWallClockLimitEnabled()) {
+    return Math.round(PIPELINE_UNLIMITED_MS / 60_000);
+  }
   const override = process.env.MAX_PIPELINE_WALL_CLOCK_MIN?.trim();
   if (override) {
     const n = parseInt(override, 10);
@@ -94,6 +105,9 @@ export function qualityOverSpeedEnabled(): boolean {
 
 /** Wall-clock budget for the visual sourcing stage (minutes). */
 export function visualStageWallClockMin(videoLength?: string | null): number {
+  if (!pipelineWallClockLimitEnabled()) {
+    return Math.round(PIPELINE_UNLIMITED_MS / 60_000);
+  }
   const total = maxPipelineWallClockMin(videoLength);
   return Math.max(8, Math.min(total - 6, Math.round(total * 0.88)));
 }

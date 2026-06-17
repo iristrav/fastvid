@@ -1636,7 +1636,7 @@ export async function searchCuratedCandidatesForBeat(
     if (relaxed.length > 0) return relaxed;
   }
 
-  // No match at all — return empty so the pipeline falls back to Pexels.
+  // No match at all — return empty so the pipeline falls back to Pexels/Pixabay stock.
   // We must never pick a random archive clip that has nothing to do with this sentence.
   return [];
 }

@@ -45,7 +45,7 @@ import type { ProgressLogEntry } from "./db";
 import { videoLengthSchema, normalizeVideoLength, isShortVideoLength } from "@shared/videoLengths";
 import { PIPELINE_DISPLAY_STAGES, formatGenerationDuration, progressStepWithElapsed, resolvePipelineDisplayStage } from "@shared/pipelineProgress";
 import { ONE_YEAR_MS } from "@shared/const";
-import { maxPipelineWallClockMin } from "./sourcingPolicy";
+import { maxPipelineWallClockMin, pipelineWallClockLimitEnabled } from "./sourcingPolicy";
 
 function getSessionSecret() {
   const secret = process.env.JWT_SECRET ?? "fallback-secret-change-in-production";
@@ -215,7 +215,8 @@ function requireVideoAccess(
 }
 
 
-function startGenerationTimeout(videoId: number, videoLength: string): ReturnType<typeof setTimeout> {
+function startGenerationTimeout(videoId: number, videoLength: string): ReturnType<typeof setTimeout> | undefined {
+  if (!pipelineWallClockLimitEnabled()) return undefined;
   const capMin = maxPipelineWallClockMin(videoLength);
   return setTimeout(async () => {
     console.error(`[Video Generation] Video ${videoId} exceeded ${capMin}-minute limit (${videoLength}) — marking as failed`);
@@ -236,7 +237,7 @@ async function generateVideoWithAI(videoId: number, prompt: string, videoLength:
   try {
     await _generateVideoWithAI(videoId, prompt, videoLength, voiceId, customVoiceoverUrl);
   } finally {
-    clearTimeout(timeoutHandle);
+    if (timeoutHandle) clearTimeout(timeoutHandle);
   }
 }
 
@@ -294,7 +295,7 @@ async function generateFullVideo(videoId: number, prompt: string, videoLength: s
       progressPercent: 0,
     }).catch(() => {});
   } finally {
-    clearTimeout(timeoutHandle);
+    if (timeoutHandle) clearTimeout(timeoutHandle);
   }
 }
 
