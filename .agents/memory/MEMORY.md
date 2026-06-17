@@ -1,0 +1,3 @@
+- [Pexels fallback in archive-first mode](pexels-archive-fallback.md) — curatedArchiveOnlyVisuals profile used to zero-out maxStockBeatsPerVideo and maxStockQueriesPerBeat, blocking all Pexels even as sole fallback.
+- [Topic anchor injection for Pexels](topic-anchor-pexels.md) — TOPIC_ANCHOR_RULES in videoPipeline.ts auto-detects country/topic from video title and injects specific Pexels search terms as first query when archive returns null.
+- [Production notation clips](production-notation-clips.md) — Some archive clips have ALL-CAPS editorial labels (MEDIC, UNCERTAINTY WIDE SHOT MED) pre-burned into video; blocked via hasProductionNotationTitle() in curatedMediaSourcing.ts.

@@ -1710,9 +1710,10 @@ function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProfile {
       enableMuskHeroFetch: false,
       enableAiFallback: false,
       maxAiClipsPerVideo: 0,
-      minimizeStockFootage: true,
-      maxStockBeatsPerVideo: 0,
-      maxStockQueriesPerBeat: 0,
+      // Pexels is the ONLY fallback when archive has no match — never cap it.
+      minimizeStockFootage: false,
+      maxStockBeatsPerVideo: 999,
+      maxStockQueriesPerBeat: 5,
       maxEntityYoutubePerVideo: 0,
     };
   }
@@ -9525,6 +9526,90 @@ function buildTopicAnchoredQueries(
   }))];
 }
 
+/**
+ * Maps video title keywords → Pexels-friendly anchor queries for automatic topic injection.
+ * Used as the FIRST Pexels query whenever archive returns no matching clip.
+ * Ordered by specificity (more specific first within each country/region).
+ */
+const TOPIC_ANCHOR_RULES: Array<{ pattern: RegExp; anchors: string[] }> = [
+  // ── Europe ──
+  { pattern: /\b(nederland|netherlands|dutch|holland)\b/i, anchors: ["Amsterdam", "Netherlands", "Dutch cycling"] },
+  { pattern: /\bamsterdam\b/i, anchors: ["Amsterdam canal", "Amsterdam", "Netherlands"] },
+  { pattern: /\brotterdam\b/i, anchors: ["Rotterdam", "Netherlands port"] },
+  { pattern: /\b(germany|german|deutschland|duitsland)\b/i, anchors: ["Germany", "Berlin"] },
+  { pattern: /\bberlin\b/i, anchors: ["Berlin", "Germany city"] },
+  { pattern: /\b(france|french|paris|frankrijk)\b/i, anchors: ["Paris", "France"] },
+  { pattern: /\b(uk|britain|british|england|english|london)\b/i, anchors: ["London", "United Kingdom"] },
+  { pattern: /\b(sweden|swedish|sverige)\b/i, anchors: ["Stockholm", "Sweden"] },
+  { pattern: /\b(denmark|danish|copenhagen|denemarken)\b/i, anchors: ["Copenhagen", "Denmark"] },
+  { pattern: /\b(norway|norwegian|oslo)\b/i, anchors: ["Oslo", "Norway"] },
+  { pattern: /\b(finland|finnish|helsinki)\b/i, anchors: ["Helsinki", "Finland"] },
+  { pattern: /\b(switzerland|swiss|zurich|geneva)\b/i, anchors: ["Switzerland", "Zurich"] },
+  { pattern: /\b(austria|austrian|vienna|wien)\b/i, anchors: ["Vienna", "Austria"] },
+  { pattern: /\b(belgium|belgian|brussels|belgie)\b/i, anchors: ["Brussels", "Belgium"] },
+  { pattern: /\b(spain|spanish|madrid|barcelona)\b/i, anchors: ["Madrid", "Spain"] },
+  { pattern: /\b(italy|italian|rome|milan)\b/i, anchors: ["Rome", "Italy"] },
+  { pattern: /\b(portugal|portuguese|lisbon)\b/i, anchors: ["Lisbon", "Portugal"] },
+  { pattern: /\b(poland|polish|warsaw)\b/i, anchors: ["Warsaw", "Poland"] },
+  { pattern: /\b(greece|greek|athens)\b/i, anchors: ["Athens", "Greece"] },
+  { pattern: /\b(czechia|czech republic|prague)\b/i, anchors: ["Prague", "Czech Republic"] },
+  { pattern: /\b(hungary|hungarian|budapest)\b/i, anchors: ["Budapest", "Hungary"] },
+  { pattern: /\b(ukraine|ukrainian|kyiv|kiev)\b/i, anchors: ["Kyiv", "Ukraine"] },
+  // ── Asia ──
+  { pattern: /\b(japan|japanese|tokyo)\b/i, anchors: ["Tokyo", "Japan"] },
+  { pattern: /\b(south korea|south korean|korea|korean|seoul)\b/i, anchors: ["Seoul", "South Korea"] },
+  { pattern: /\b(china|chinese|beijing|shanghai)\b/i, anchors: ["Beijing", "China"] },
+  { pattern: /\b(singapore|singaporean)\b/i, anchors: ["Singapore", "Singapore city"] },
+  { pattern: /\b(taiwan|taiwanese|taipei)\b/i, anchors: ["Taipei", "Taiwan"] },
+  { pattern: /\b(india|indian|mumbai|delhi)\b/i, anchors: ["Mumbai", "India"] },
+  { pattern: /\b(vietnam|vietnamese|hanoi)\b/i, anchors: ["Hanoi", "Vietnam"] },
+  { pattern: /\b(thailand|thai|bangkok)\b/i, anchors: ["Bangkok", "Thailand"] },
+  { pattern: /\b(indonesia|indonesian|jakarta)\b/i, anchors: ["Jakarta", "Indonesia"] },
+  { pattern: /\b(malaysia|malaysian|kuala lumpur)\b/i, anchors: ["Kuala Lumpur", "Malaysia"] },
+  { pattern: /\b(hong kong)\b/i, anchors: ["Hong Kong", "Hong Kong skyline"] },
+  // ── Americas ──
+  { pattern: /\b(united states|usa|america|american)\b/i, anchors: ["United States", "America city"] },
+  { pattern: /\b(canada|canadian)\b/i, anchors: ["Canada", "Toronto"] },
+  { pattern: /\b(brazil|brazilian|brasil)\b/i, anchors: ["Brazil", "São Paulo"] },
+  { pattern: /\b(mexico|mexican)\b/i, anchors: ["Mexico City", "Mexico"] },
+  { pattern: /\b(argentina|argentine|buenos aires)\b/i, anchors: ["Buenos Aires", "Argentina"] },
+  { pattern: /\b(colombia|colombian|bogota)\b/i, anchors: ["Bogotá", "Colombia"] },
+  { pattern: /\b(chile|chilean|santiago)\b/i, anchors: ["Santiago", "Chile"] },
+  // ── Oceania ──
+  { pattern: /\b(australia|australian|sydney|melbourne)\b/i, anchors: ["Sydney", "Australia"] },
+  { pattern: /\b(new zealand|auckland)\b/i, anchors: ["New Zealand", "Auckland"] },
+  // ── Middle East & Africa ──
+  { pattern: /\b(dubai|uae|emirates)\b/i, anchors: ["Dubai", "UAE skyline"] },
+  { pattern: /\b(israel|israeli|tel aviv)\b/i, anchors: ["Tel Aviv", "Israel"] },
+  { pattern: /\b(south africa|johannesburg|cape town)\b/i, anchors: ["Cape Town", "South Africa"] },
+  { pattern: /\b(egypt|egyptian|cairo)\b/i, anchors: ["Cairo", "Egypt"] },
+  // ── Generic topics — used when no specific country/city matches ──
+  { pattern: /\b(health(care)?|zorg|hospital|medical|doctor)\b/i, anchors: ["hospital", "healthcare", "medical"] },
+  { pattern: /\b(hous(ing|e)|apartment|rental|rent|real estate)\b/i, anchors: ["housing", "apartment building", "residential"] },
+  { pattern: /\b(school|education|university|classroom)\b/i, anchors: ["education", "school classroom"] },
+  { pattern: /\b(transport|transit|public transport|metro|train)\b/i, anchors: ["public transport", "metro station"] },
+  { pattern: /\b(climate|environment|renewable|green energy|solar)\b/i, anchors: ["renewable energy", "climate"] },
+  { pattern: /\b(tech(nology)?|ai|artificial intelligence|startup)\b/i, anchors: ["technology", "innovation"] },
+  { pattern: /\b(economy|economic|finance|gdp|trade)\b/i, anchors: ["economy", "finance"] },
+  { pattern: /\b(war|conflict|military|army|invasion)\b/i, anchors: ["military", "conflict"] },
+  { pattern: /\b(cycling|bike|bicycle|fiets)\b/i, anchors: ["cycling", "bicycle lane"] },
+];
+
+/**
+ * Auto-detects the primary location/topic anchor from a video title.
+ * Returns an ordered list of Pexels search terms (most specific first).
+ * Used to inject topic context into Pexels fallback when archive returns nothing.
+ */
+function extractVideoTopicAnchors(videoTitle: string, beatText = ""): string[] {
+  const hay = `${videoTitle} ${beatText}`.toLowerCase();
+  for (const rule of TOPIC_ANCHOR_RULES) {
+    if (rule.pattern.test(hay)) {
+      return rule.anchors;
+    }
+  }
+  return [];
+}
+
 /** Dutch (and common non-English) → single English Pexels keyword. */
 const DUTCH_STOCK_WORD_MAP: Record<string, string> = {
   zon: "sun", strand: "beach", zee: "ocean", berg: "mountain", bos: "forest", stad: "city",
@@ -12176,10 +12261,14 @@ async function fetchBeatStockFallback(
   };
 
   // In archive-first mode, topic-specific queries must be FIRST so they survive the slice cap.
-  // Otherwise "Amsterdam canal" / "Dutch cycling" get pushed out by generic scene.pexelsQuery.
+  // Auto-detect country/topic from video title → inject as first Pexels anchor for ALL topics.
+  const topicAnchors = curatedArchiveOnlyVisuals()
+    ? extractVideoTopicAnchors(videoTitle ?? "", beat.text)
+    : [];
   const topicSpecific = buildBeatVisualQueryList(beat.text, scene, videoTitle, scenePersons, 5);
   const queries = curatedArchiveOnlyVisuals()
     ? [
+        ...topicAnchors,
         ...topicSpecific,
         beat.searchQuery,
         enrichStockQuery(beat.powerWord, scene, videoTitle, personName, beat.text),
@@ -12197,7 +12286,7 @@ async function fetchBeatStockFallback(
     (q): q is string => typeof q === "string" && q.trim().length > 2 && !isBlockedStockQuery(q)
   );
   // More queries allowed in archive-first mode since Pexels IS the only fallback
-  const maxQueries = curatedArchiveOnlyVisuals() ? 5 : 3;
+  const maxQueries = curatedArchiveOnlyVisuals() ? 6 : 3;
   const unique = [...new Set(filteredQueries)].slice(0, maxQueries);
   const tag = `b${beat.index}_stock`;
   const off = beat.index + sceneIndex * 3;
