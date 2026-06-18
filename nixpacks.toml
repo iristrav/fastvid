@@ -1,6 +1,9 @@
 [phases.setup]
 nixPkgs = ["ffmpeg", "nodejs_22"]
 
+[variables]
+LLM_PROVIDER = "groq"
+
 [phases.install]
 cmds = ["pnpm install --no-frozen-lockfile"]
 

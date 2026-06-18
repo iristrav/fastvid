@@ -23,6 +23,7 @@ import {
 import type { TrpcContext } from "./_core/context";
 import type { Video } from "../drizzle/schema";
 import { invokeLLM } from "./_core/llm";
+import { assertProductionLlmReady } from "./llmStartupDiagnostics";
 import { notifyOwner } from "./_core/notification";
 import { sendNicheApprovedEmail } from "./_core/emailService";
 import bcrypt from "bcryptjs";
@@ -304,6 +305,7 @@ async function generateFullVideo(videoId: number, prompt: string, videoLength: s
 
 // ─── Phase A: Script-only generation (stops at awaiting_approval) ────────────
 async function generateScriptOnly(videoId: number, prompt: string, videoLengthRaw: string, videoType: string) {
+  assertProductionLlmReady();
   const videoLength = normalizeVideoLength(videoLengthRaw);
   const budget = getScriptLengthBudget(videoLength);
   const muskTopic = isMuskTeslaPromptTopic(prompt, prompt);

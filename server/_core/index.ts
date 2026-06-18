@@ -25,6 +25,7 @@ import {
 } from "../sourcingPolicy";
 import { ENV, groqKeyFromEnv, openAiKeyFromEnv } from "./env";
 import { getVisionQaStatus } from "../visualQualityGate";
+import { getLlmDiagnostics, logLlmStartupDiagnostics } from "../llmStartupDiagnostics";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -94,26 +95,7 @@ async function startServer() {
   );
   console.log("[Fastvid] PEXELS_API_KEY:", process.env.PEXELS_API_KEY ? "✓ set" : "✗ NOT SET — stock footage disabled");
   console.log("[Fastvid] BUILT_IN_FORGE_API_KEY:", process.env.BUILT_IN_FORGE_API_KEY ? "✓ set" : "✗ NOT SET — Manus Forge storage unused");
-  const llmProviderLabel =
-    ENV.llmProvider === "forge"
-      ? "Manus Forge (gemini-2.5-flash)"
-      : ENV.llmProvider === "groq"
-        ? "Groq (llama-3.3-70b-versatile) ✓ FREE"
-        : ENV.llmProvider === "openai"
-          ? "OpenAI (gpt-4o)"
-          : "✗ NONE — set GROQ_API_KEY (free) or LLM_API_KEY (OpenAI)";
-  console.log("[Fastvid] LLM provider:", llmProviderLabel);
-  if (!process.env.GROQ_API_KEY?.trim() && !process.env.GROQ_KEY?.trim() && openAiKeyFromEnv()) {
-    console.warn(
-      "[Fastvid] ⚠ GROQ_API_KEY not set — using OpenAI (LLM_API_KEY). Add GROQ_API_KEY on Railway for free testing, or set LLM_PROVIDER=groq."
-    );
-  } else if (groqKeyFromEnv()) {
-    const via =
-      process.env.GROQ_API_KEY?.trim() || process.env.GROQ_KEY?.trim()
-        ? "GROQ_API_KEY"
-        : "LLM_API_KEY (gsk_ detected — use GROQ_API_KEY variable instead)";
-    console.log(`[Fastvid] Groq: ✓ active via ${via}`);
-  }
+  logLlmStartupDiagnostics("web");
   const storageBackend = getStorageBackend();
   console.log(
     "[Fastvid] Object storage:",
@@ -268,6 +250,7 @@ async function startServer() {
         railwayService: process.env.RAILWAY_SERVICE_NAME ?? null,
       },
       visionQA: getVisionQaStatus(),
+      llm: getLlmDiagnostics("web"),
       env: {
         BUILT_IN_FORGE_API_KEY: !!process.env.BUILT_IN_FORGE_API_KEY,
         GROQ_API_KEY: !!process.env.GROQ_API_KEY?.trim(),

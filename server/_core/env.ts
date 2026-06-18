@@ -7,13 +7,20 @@
 // Prefer GROQ_API_KEY for testing, then LLM_API_KEY (OpenAI).
 export type LlmProvider = "forge" | "groq" | "openai" | "none";
 
-/** Read Groq key — supports GROQ_API_KEY, GROQ_KEY, or gsk_* accidentally stored in LLM_API_KEY. */
+/** Read Groq key — GROQ_API_KEY, GROQ_KEY, any *GROQ* env var, or gsk_* in LLM_API_KEY. */
 export function groqKeyFromEnv(): string {
   const direct =
     process.env.GROQ_API_KEY?.trim() ||
     process.env.GROQ_KEY?.trim() ||
     "";
   if (direct) return direct;
+
+  for (const [name, value] of Object.entries(process.env)) {
+    if (!/groq/i.test(name)) continue;
+    const v = value?.trim() ?? "";
+    if (v.startsWith("gsk_")) return v;
+  }
+
   const llm = process.env.LLM_API_KEY?.trim() ?? "";
   if (llm.startsWith("gsk_")) return llm;
   return "";
@@ -34,7 +41,15 @@ export function resolveLlmProvider(): LlmProvider {
   if (forced === "forge" && process.env.BUILT_IN_FORGE_API_KEY?.trim()) return "forge";
   if (process.env.BUILT_IN_FORGE_API_KEY?.trim()) return "forge";
   if (groqKeyFromEnv()) return "groq";
-  if (openAiKeyFromEnv()) return "openai";
+  if (openAiKeyFromEnv()) {
+    if (
+      (process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_PROJECT_ID) &&
+      process.env.ALLOW_OPENAI_ON_RAILWAY !== "true"
+    ) {
+      return "none";
+    }
+    return "openai";
+  }
   return "none";
 }
 

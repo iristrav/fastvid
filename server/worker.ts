@@ -5,6 +5,7 @@ import fs from "fs";
 import { fileURLToPath } from "url";
 import { shouldRunQueueWorker } from "@shared/videoQueue";
 import { recoverAllStuckVideos } from "./db";
+import { logLlmStartupDiagnostics, assertProductionLlmReady } from "./llmStartupDiagnostics";
 import { startVideoQueueWorker } from "./videoQueue";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -47,6 +48,8 @@ async function main() {
   }
 
   console.log("[Worker] Fastvid video queue worker starting...");
+  logLlmStartupDiagnostics("worker");
+  assertProductionLlmReady();
   const { getStorageBackend } = await import("./storageBackend");
   console.log("[Worker] Object storage:", getStorageBackend());
   await runMigrations();
