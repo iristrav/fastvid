@@ -234,12 +234,25 @@ export function analyzeBeatSemanticsFallback(beatText: string, videoTitle?: stri
   };
 }
 
+/** Coerce DB/metadata values to a plain string for LLM prompts. */
+function coerceVideoTitleString(videoTitle: unknown): string {
+  if (typeof videoTitle === "string") return videoTitle;
+  if (videoTitle == null) return "";
+  if (typeof videoTitle === "object" && videoTitle !== null && "title" in videoTitle) {
+    const t = (videoTitle as { title?: unknown }).title;
+    if (typeof t === "string") return t;
+  }
+  return String(videoTitle);
+}
+
 async function analyzeBeatSemanticsWithLlm(
   beatText: string,
   videoTitle?: string,
   literalViewerVisual?: string
 ): Promise<BeatSemanticProfile | null> {
   if (!ENV.forgeApiKey || process.env.ENABLE_SEMANTIC_LLM_ANALYSIS === "false") return null;
+
+  const titleStr = coerceVideoTitleString(videoTitle);
 
   const prompt = `${DOCUMENTARY_EDITOR_VIEWER_QUESTION}
 
@@ -249,7 +262,7 @@ Analyze this documentary beat for visual B-roll matching.
 
 Literal on-screen visual (what the viewer should see): "${(literalViewerVisual ?? beatText).replace(/"/g, "'")}"
 Narration sentence (context only — do NOT copy words into search tiers): "${beatText.replace(/"/g, "'")}"
-${videoTitle ? `Video title: "${videoTitle.replace(/"/g, "'")}"` : ""}
+${titleStr ? `Video title: "${titleStr.replace(/"/g, "'")}"` : ""}
 
 Extract:
 - persons, locations, companies, events, objects, emotions, timePeriods, years visible in the literal scene
@@ -332,12 +345,13 @@ export async function analyzeBeatSemantics(
   videoTitle?: string,
   literalViewerVisual?: string
 ): Promise<BeatSemanticProfile> {
-  const key = beatCacheKey(`${literalViewerVisual ?? ""}|${beatText}`, videoTitle);
+  const title = coerceVideoTitleString(videoTitle);
+  const key = beatCacheKey(`${literalViewerVisual ?? ""}|${beatText}`, title);
   const cached = profileCache.get(key);
   if (cached) return cached;
 
-  const llm = await analyzeBeatSemanticsWithLlm(beatText, videoTitle, literalViewerVisual);
-  const profile = llm ?? analyzeBeatSemanticsFallback(beatText, videoTitle);
+  const llm = await analyzeBeatSemanticsWithLlm(beatText, title, literalViewerVisual);
+  const profile = llm ?? analyzeBeatSemanticsFallback(beatText, title);
   profileCache.set(key, profile);
   return profile;
 }
@@ -347,6 +361,7 @@ export async function analyzeBeatsSemanticsBatch(
   beatTexts: string[],
   videoTitle?: string
 ): Promise<Map<number, BeatSemanticProfile>> {
+  const title = coerceVideoTitleString(videoTitle);
   const out = new Map<number, BeatSemanticProfile>();
   const concurrency = 4;
   let idx = 0;
@@ -356,7 +371,15 @@ export async function analyzeBeatsSemanticsBatch(
       const i = idx++;
       const text = beatTexts[i];
       if (!text?.trim()) continue;
-      out.set(i, await analyzeBeatSemantics(text, videoTitle));
+      try {
+        out.set(i, await analyzeBeatSemantics(text, title));
+      } catch (err) {
+        console.warn(
+          `[Semantic] Beat ${i} analysis failed — using fallback:`,
+          (err as Error).message?.slice(0, 100)
+        );
+        out.set(i, analyzeBeatSemanticsFallback(text, title));
+      }
     }
   }
 

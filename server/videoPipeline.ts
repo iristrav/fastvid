@@ -1702,7 +1702,7 @@ function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProfile {
       pexelsDownloadRetries: 1,
       maxStockQueriesPerBeat: 2,
       beatClipTimeoutMs: IS_RAILWAY ? 22_000 : 60_000,
-      sceneVisualTimeoutMs: IS_RAILWAY ? 10 * 60_000 : 10 * 60_000,
+      sceneVisualTimeoutMs: IS_RAILWAY ? 15 * 60_000 : 12 * 60_000,
       fastStockMode: IS_RAILWAY,
       scriptOnlyVisuals: false,
     }, videoLength);
@@ -8427,7 +8427,10 @@ function isMuskTeslaTopic(videoTitle?: string, sceneText?: string): boolean {
 }
 
 function buildTopicContext(userPrompt: string | undefined, videoTitle: string): string {
-  return [userPrompt?.trim(), videoTitle.trim()].filter(Boolean).join(" — ").slice(0, 240);
+  const prompt =
+    typeof userPrompt === "string" ? userPrompt.trim() : userPrompt != null ? String(userPrompt) : "";
+  const title = typeof videoTitle === "string" ? videoTitle.trim() : String(videoTitle ?? "").trim();
+  return [prompt, title].filter(Boolean).join(" — ").slice(0, 240);
 }
 
 function isOffTopicVisualForMusk(sourceQuery: string, filePath: string): boolean {
@@ -14150,6 +14153,52 @@ async function ensureBeatVisualFilled(
     `[Pipeline] Scene ${scene.index} zin ${beat.index}: self-heal — emergency geo stock`
   );
   if (await adoptEmergencyGeoStockClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
+    return;
+  }
+  console.warn(
+    `[Pipeline] Scene ${scene.index} zin ${beat.index}: self-heal — last-resort real stock`
+  );
+  const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
+  const personName = scenePersons[0] ?? dedup.primaryPerson ?? "";
+  const lastResort = await fetchLastResortRealClip(
+    beat,
+    scene,
+    workDir,
+    scene.index,
+    holdSec,
+    dedup,
+    personName,
+    videoTitle,
+    { requireBeatMatch: false }
+  );
+  if (lastResort && !isPipelineFallbackClip(lastResort) && (await pushClip(lastResort, holdSec))) {
+    recordClipAdopt(
+      dedup.clipAdoptAudit,
+      scene.index,
+      beat.index,
+      beat.text,
+      lastResort,
+      "stock",
+      undefined,
+      dedup.segmentGeoLock
+    );
+    return;
+  }
+  console.warn(
+    `[Pipeline] Scene ${scene.index} zin ${beat.index}: self-heal — solid color fallback (pipeline must complete)`
+  );
+  const colorClip = await generateColorFallback(scene.index * 100 + beat.index, holdSec, workDir);
+  if (await pushClip(colorClip, holdSec)) {
+    recordClipAdopt(
+      dedup.clipAdoptAudit,
+      scene.index,
+      beat.index,
+      beat.text,
+      colorClip,
+      "fallback",
+      undefined,
+      dedup.segmentGeoLock
+    );
     return;
   }
   throw pipelineError(

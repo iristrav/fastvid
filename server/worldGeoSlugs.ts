@@ -541,7 +541,7 @@ function slugInPool(slug: string, pool: readonly string[]): boolean {
 
 /** Geo slugs explicitly named in the video title (longest matches first). */
 export function extractTitleGeoPlaceTags(videoTitle?: string): string[] {
-  if (!videoTitle?.trim()) return [];
+  if (!videoTitle || typeof videoTitle !== "string") return [];
   const lower = videoTitle.toLowerCase();
   const hits: string[] = [];
   const sorted = [...ALL_GEO_SLUGS].sort((a, b) => b.length - a.length);
