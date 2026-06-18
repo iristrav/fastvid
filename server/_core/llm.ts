@@ -1,4 +1,4 @@
-import { ENV } from "./env";
+import { ENV, llmApiKeyForProvider, resolveLlmProvider, type LlmProvider } from "./env";
 
 export type Role = "system" | "user" | "assistant" | "tool" | "function";
 
@@ -275,31 +275,50 @@ const normalizeToolChoice = (
   return toolChoice;
 };
 
-const resolveApiUrl = () => {
-  if (ENV.useGroq) return "https://api.groq.com/openai/v1/chat/completions";
-  if (ENV.useOpenAI) return "https://api.openai.com/v1/chat/completions";
+const resolveApiUrl = (provider: LlmProvider) => {
+  if (provider === "groq") return "https://api.groq.com/openai/v1/chat/completions";
+  if (provider === "openai") return "https://api.openai.com/v1/chat/completions";
   return ENV.forgeApiUrl && ENV.forgeApiUrl.trim().length > 0
     ? `${ENV.forgeApiUrl.replace(/\/$/, "")}/v1/chat/completions`
     : "https://forge.manus.im/v1/chat/completions";
 };
 
-function resolveModel(hasVision: boolean): string {
-  if (ENV.useGroq) {
+function resolveModel(provider: LlmProvider, hasVision: boolean): string {
+  if (provider === "groq") {
     if (hasVision) {
       return process.env.GROQ_VISION_MODEL?.trim() || "llama-3.2-11b-vision-preview";
     }
     return process.env.GROQ_MODEL?.trim() || "llama-3.3-70b-versatile";
   }
-  if (ENV.useOpenAI) {
+  if (provider === "openai") {
     return process.env.LLM_MODEL?.trim() || "gpt-4o";
   }
   return process.env.FORGE_LLM_MODEL?.trim() || "gemini-2.5-flash";
 }
 
+function isOpenAiQuotaError(status: number, body: string): boolean {
+  if (status !== 429 && status !== 402) return false;
+  const lower = body.toLowerCase();
+  return (
+    lower.includes("insufficient_quota") ||
+    lower.includes("exceeded your current quota") ||
+    lower.includes("billing")
+  );
+}
+
+function providersToTry(primary: LlmProvider): LlmProvider[] {
+  const out: LlmProvider[] = [];
+  if (primary !== "none") out.push(primary);
+  if (primary === "openai" && ENV.groqApiKey && !out.includes("groq")) {
+    out.push("groq");
+  }
+  return out;
+}
+
 const assertApiKey = () => {
-  if (!ENV.forgeApiKey) {
+  if (!ENV.forgeApiKey && !ENV.groqApiKey && !process.env.LLM_API_KEY?.trim()) {
     throw new Error(
-      "LLM API key is not configured. Set GROQ_API_KEY, LLM_API_KEY, or BUILT_IN_FORGE_API_KEY"
+      "LLM API key is not configured. Set GROQ_API_KEY on Railway (free), or LLM_API_KEY / BUILT_IN_FORGE_API_KEY"
     );
   }
 };
@@ -364,64 +383,98 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
   } = params;
 
   const hasVision = messagesIncludeImages(messages);
-  let normalizedMessages = messages.map(normalizeMessage);
-  if (ENV.useGroq) {
-    normalizedMessages = adaptGroqVisionMessages(normalizedMessages);
-  }
-
-  const payload: Record<string, unknown> = {
-    model: resolveModel(hasVision),
-    messages: normalizedMessages,
-  };
-
-  if (tools && tools.length > 0) {
-    payload.tools = tools;
-  }
-
-  const normalizedToolChoice = normalizeToolChoice(
-    toolChoice || tool_choice,
-    tools
-  );
-  if (normalizedToolChoice) {
-    payload.tool_choice = normalizedToolChoice;
-  }
-
-  const maxTokens = params.maxTokens ?? params.max_tokens;
-  if (ENV.useForge) {
-    payload.thinking = { budget_tokens: 128 };
-    payload.max_tokens = maxTokens ?? 32768;
-  } else if (ENV.useGroq) {
-    payload.max_tokens = maxTokens ?? 8192;
-  } else {
-    payload.max_tokens = maxTokens ?? 8192;
-  }
-
-  const normalizedResponseFormat = normalizeResponseFormat({
-    responseFormat,
-    response_format,
-    outputSchema,
-    output_schema,
-  });
-
-  if (normalizedResponseFormat) {
-    payload.response_format = normalizedResponseFormat;
-  }
-
-  const response = await fetch(resolveApiUrl(), {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${ENV.forgeApiKey}`,
-    },
-    body: JSON.stringify(payload),
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
+  const primary = resolveLlmProvider();
+  const chain = providersToTry(primary);
+  if (chain.length === 0) {
     throw new Error(
-      `LLM invoke failed: ${response.status} ${response.statusText} – ${errorText}`
+      "LLM API key is not configured. Set GROQ_API_KEY on Railway (free), or LLM_API_KEY / BUILT_IN_FORGE_API_KEY"
     );
   }
 
-  return (await response.json()) as InvokeResult;
+  let lastError: Error | null = null;
+  for (let i = 0; i < chain.length; i++) {
+    const provider = chain[i]!;
+    const apiKey = llmApiKeyForProvider(provider);
+    if (!apiKey) continue;
+
+    let normalizedMessages = messages.map(normalizeMessage);
+    if (provider === "groq") {
+      normalizedMessages = adaptGroqVisionMessages(normalizedMessages);
+    }
+
+    const payload: Record<string, unknown> = {
+      model: resolveModel(provider, hasVision),
+      messages: normalizedMessages,
+    };
+
+    if (tools && tools.length > 0) {
+      payload.tools = tools;
+    }
+
+    const normalizedToolChoice = normalizeToolChoice(
+      toolChoice || tool_choice,
+      tools
+    );
+    if (normalizedToolChoice) {
+      payload.tool_choice = normalizedToolChoice;
+    }
+
+    const maxTokens = params.maxTokens ?? params.max_tokens;
+    if (provider === "forge") {
+      payload.thinking = { budget_tokens: 128 };
+      payload.max_tokens = maxTokens ?? 32768;
+    } else {
+      payload.max_tokens = maxTokens ?? 8192;
+    }
+
+    const normalizedResponseFormat = normalizeResponseFormat({
+      responseFormat,
+      response_format,
+      outputSchema,
+      output_schema,
+    });
+
+    if (normalizedResponseFormat) {
+      payload.response_format = normalizedResponseFormat;
+    }
+
+    const response = await fetch(resolveApiUrl(provider), {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (response.ok) {
+      if (i > 0) {
+        console.log(`[LLM] Succeeded via ${provider} after ${chain[0]} failure`);
+      }
+      return (await response.json()) as InvokeResult;
+    }
+
+    const errorText = await response.text();
+    const err = new Error(
+      `LLM invoke failed (${provider}, model=${payload.model}): ${response.status} ${response.statusText} – ${errorText}`
+    );
+    lastError = err;
+
+    const canRetryGroq =
+      i + 1 < chain.length &&
+      provider === "openai" &&
+      chain[i + 1] === "groq" &&
+      isOpenAiQuotaError(response.status, errorText);
+
+    if (canRetryGroq) {
+      console.warn(
+        `[LLM] OpenAI quota/rate limit — falling back to Groq (${payload.model})`
+      );
+      continue;
+    }
+
+    throw err;
+  }
+
+  throw lastError ?? new Error("LLM invoke failed: no provider available");
 }

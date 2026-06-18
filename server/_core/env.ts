@@ -7,6 +7,31 @@
 // Prefer GROQ_API_KEY for testing, then LLM_API_KEY (OpenAI).
 export type LlmProvider = "forge" | "groq" | "openai" | "none";
 
+/** Which LLM backend to use (Forge > Groq > OpenAI unless LLM_PROVIDER is set). */
+export function resolveLlmProvider(): LlmProvider {
+  const forced = process.env.LLM_PROVIDER?.trim().toLowerCase();
+  if (forced === "groq" && process.env.GROQ_API_KEY?.trim()) return "groq";
+  if (forced === "openai" && process.env.LLM_API_KEY?.trim()) return "openai";
+  if (forced === "forge" && process.env.BUILT_IN_FORGE_API_KEY?.trim()) return "forge";
+  if (process.env.BUILT_IN_FORGE_API_KEY?.trim()) return "forge";
+  if (process.env.GROQ_API_KEY?.trim()) return "groq";
+  if (process.env.LLM_API_KEY?.trim()) return "openai";
+  return "none";
+}
+
+export function llmApiKeyForProvider(provider: LlmProvider): string {
+  switch (provider) {
+    case "forge":
+      return process.env.BUILT_IN_FORGE_API_KEY?.trim() ?? "";
+    case "groq":
+      return process.env.GROQ_API_KEY?.trim() ?? "";
+    case "openai":
+      return process.env.LLM_API_KEY?.trim() ?? "";
+    default:
+      return "";
+  }
+}
+
 export const ENV = {
   get appId() { return process.env.VITE_APP_ID ?? ""; },
   get cookieSecret() { return process.env.JWT_SECRET ?? ""; },
@@ -18,23 +43,11 @@ export const ENV = {
   get groqApiKey() { return process.env.GROQ_API_KEY?.trim() ?? ""; },
   /** Active LLM backend — Forge (Manus) > Groq > OpenAI. */
   get llmProvider(): LlmProvider {
-    if (process.env.BUILT_IN_FORGE_API_KEY?.trim()) return "forge";
-    if (process.env.GROQ_API_KEY?.trim()) return "groq";
-    if (process.env.LLM_API_KEY?.trim()) return "openai";
-    return "none";
+    return resolveLlmProvider();
   },
   /** Bearer token for the active LLM provider (legacy name: forgeApiKey). */
   get forgeApiKey() {
-    switch (this.llmProvider) {
-      case "forge":
-        return process.env.BUILT_IN_FORGE_API_KEY!.trim();
-      case "groq":
-        return process.env.GROQ_API_KEY!.trim();
-      case "openai":
-        return process.env.LLM_API_KEY!.trim();
-      default:
-        return "";
-    }
+    return llmApiKeyForProvider(this.llmProvider);
   },
   get useForge() { return this.llmProvider === "forge"; },
   get useGroq() { return this.llmProvider === "groq"; },

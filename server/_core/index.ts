@@ -24,6 +24,7 @@ import {
   elevenLabsOnlyVoice,
 } from "../sourcingPolicy";
 import { ENV } from "./env";
+import { getVisionQaStatus } from "../visualQualityGate";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -102,6 +103,13 @@ async function startServer() {
           ? "OpenAI (gpt-4o)"
           : "✗ NONE — set GROQ_API_KEY (free) or LLM_API_KEY (OpenAI)";
   console.log("[Fastvid] LLM provider:", llmProviderLabel);
+  if (!process.env.GROQ_API_KEY?.trim() && process.env.LLM_API_KEY?.trim()) {
+    console.warn(
+      "[Fastvid] ⚠ GROQ_API_KEY not set — using OpenAI (LLM_API_KEY). Add GROQ_API_KEY on Railway for free testing, or set LLM_PROVIDER=groq."
+    );
+  } else if (process.env.GROQ_API_KEY?.trim()) {
+    console.log("[Fastvid] GROQ_API_KEY: ✓ set (Groq preferred over OpenAI)");
+  }
   const storageBackend = getStorageBackend();
   console.log(
     "[Fastvid] Object storage:",
@@ -251,6 +259,7 @@ async function startServer() {
       status: "ok",
       timestamp: new Date().toISOString(),
       appUrl: getConfiguredAppUrl(),
+      visionQA: getVisionQaStatus(),
       env: {
         BUILT_IN_FORGE_API_KEY: !!process.env.BUILT_IN_FORGE_API_KEY,
         GROQ_API_KEY: !!process.env.GROQ_API_KEY,
