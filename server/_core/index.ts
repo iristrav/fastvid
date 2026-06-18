@@ -23,6 +23,7 @@ import {
   externalVisualSourcingEnabled,
   elevenLabsOnlyVoice,
 } from "../sourcingPolicy";
+import { ENV } from "./env";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -92,14 +93,15 @@ async function startServer() {
   );
   console.log("[Fastvid] PEXELS_API_KEY:", process.env.PEXELS_API_KEY ? "✓ set" : "✗ NOT SET — stock footage disabled");
   console.log("[Fastvid] BUILT_IN_FORGE_API_KEY:", process.env.BUILT_IN_FORGE_API_KEY ? "✓ set" : "✗ NOT SET — Manus Forge storage unused");
-  const llmProvider = process.env.BUILT_IN_FORGE_API_KEY
-    ? "Manus Forge (gemini-2.5-flash)"
-    : process.env.GROQ_API_KEY
-      ? "Groq (llama-3.3-70b-versatile) ✓ FREE"
-      : process.env.LLM_API_KEY
-        ? "OpenAI (gpt-4o)"
-        : "✗ NONE — set GROQ_API_KEY (free) or LLM_API_KEY (OpenAI)";
-  console.log("[Fastvid] LLM provider:", llmProvider);
+  const llmProviderLabel =
+    ENV.llmProvider === "forge"
+      ? "Manus Forge (gemini-2.5-flash)"
+      : ENV.llmProvider === "groq"
+        ? "Groq (llama-3.3-70b-versatile) ✓ FREE"
+        : ENV.llmProvider === "openai"
+          ? "OpenAI (gpt-4o)"
+          : "✗ NONE — set GROQ_API_KEY (free) or LLM_API_KEY (OpenAI)";
+  console.log("[Fastvid] LLM provider:", llmProviderLabel);
   const storageBackend = getStorageBackend();
   console.log(
     "[Fastvid] Object storage:",
@@ -177,7 +179,7 @@ async function startServer() {
       const { invokeLLM } = await import("./llm");
       const { archiveAiTaggingEnabled } = await import("../archiveAssetTagging");
       if (!archiveAiTaggingEnabled()) {
-        res.status(503).json({ ok: false, error: "Archive AI disabled — set LLM_API_KEY" });
+        res.status(503).json({ ok: false, error: "Archive AI disabled — set GROQ_API_KEY or LLM_API_KEY" });
         return;
       }
       const response = await invokeLLM({
@@ -251,7 +253,9 @@ async function startServer() {
       appUrl: getConfiguredAppUrl(),
       env: {
         BUILT_IN_FORGE_API_KEY: !!process.env.BUILT_IN_FORGE_API_KEY,
+        GROQ_API_KEY: !!process.env.GROQ_API_KEY,
         LLM_API_KEY: !!process.env.LLM_API_KEY,
+        llmProvider: ENV.llmProvider,
         FISH_AUDIO_API_KEY: !!process.env.FISH_AUDIO_API_KEY,
         ELEVENLABS_API_KEY: !!process.env.ELEVENLABS_API_KEY,
         voiceReady: !!(

@@ -110,6 +110,13 @@ export type ResponseFormat =
   | { type: "json_object" }
   | { type: "json_schema"; json_schema: JsonSchema };
 
+type NormalizedMessage = {
+  role: Role;
+  name?: string;
+  tool_call_id?: string;
+  content: string | Array<TextContent | ImageContent | FileContent>;
+};
+
 const ensureArray = (
   value: MessageContent | MessageContent[]
 ): MessageContent[] => (Array.isArray(value) ? value : [value]);
@@ -136,7 +143,7 @@ const normalizeContentPart = (
   throw new Error("Unsupported message content part");
 };
 
-const normalizeMessage = (message: Message) => {
+const normalizeMessage = (message: Message): NormalizedMessage => {
   const { role, name, tool_call_id } = message;
 
   if (role === "tool" || role === "function") {
@@ -154,7 +161,6 @@ const normalizeMessage = (message: Message) => {
 
   const contentParts = ensureArray(message.content).map(normalizeContentPart);
 
-  // If there's only text content, collapse to a single string for compatibility
   if (contentParts.length === 1 && contentParts[0].type === "text") {
     return {
       role,
@@ -169,6 +175,66 @@ const normalizeMessage = (message: Message) => {
     content: contentParts,
   };
 };
+
+function messagesIncludeImages(messages: Message[]): boolean {
+  for (const message of messages) {
+    for (const part of ensureArray(message.content)) {
+      if (typeof part !== "string" && part.type === "image_url") return true;
+    }
+  }
+  return false;
+}
+
+function textFromNormalizedContent(content: NormalizedMessage["content"]): string {
+  if (typeof content === "string") return content;
+  return content
+    .map((p) => (p.type === "text" ? p.text : ""))
+    .filter(Boolean)
+    .join("\n");
+}
+
+/** Groq vision models reject system + image in the same request — fold system into user. */
+function adaptGroqVisionMessages(messages: NormalizedMessage[]): NormalizedMessage[] {
+  const hasImages = messages.some(
+    (m) =>
+      Array.isArray(m.content) &&
+      m.content.some((p) => p.type === "image_url")
+  );
+  if (!hasImages) return messages;
+
+  const systems = messages.filter((m) => m.role === "system");
+  if (!systems.length) return messages;
+
+  const systemText = systems
+    .map((m) => textFromNormalizedContent(m.content))
+    .filter(Boolean)
+    .join("\n\n");
+  const rest = messages.filter((m) => m.role !== "system");
+  if (!systemText.trim()) return rest;
+
+  const userIdx = rest.findIndex((m) => m.role === "user");
+  if (userIdx < 0) {
+    return [{ role: "user", content: systemText }, ...rest];
+  }
+
+  const user = rest[userIdx]!;
+  const prefix = `${systemText}\n\n`;
+  let merged: NormalizedMessage;
+  if (typeof user.content === "string") {
+    merged = { ...user, content: prefix + user.content };
+  } else if (Array.isArray(user.content)) {
+    merged = {
+      ...user,
+      content: [{ type: "text", text: prefix }, ...user.content],
+    };
+  } else {
+    return rest;
+  }
+
+  const out = [...rest];
+  out[userIdx] = merged;
+  return out;
+}
 
 const normalizeToolChoice = (
   toolChoice: ToolChoice | undefined,
@@ -210,21 +276,31 @@ const normalizeToolChoice = (
 };
 
 const resolveApiUrl = () => {
-  if (ENV.useOpenAI) return "https://api.openai.com/v1/chat/completions";
   if (ENV.useGroq) return "https://api.groq.com/openai/v1/chat/completions";
+  if (ENV.useOpenAI) return "https://api.openai.com/v1/chat/completions";
   return ENV.forgeApiUrl && ENV.forgeApiUrl.trim().length > 0
     ? `${ENV.forgeApiUrl.replace(/\/$/, "")}/v1/chat/completions`
     : "https://forge.manus.im/v1/chat/completions";
 };
 
-const resolveApiKey = () => {
-  if (ENV.useGroq) return ENV.groqApiKey;
-  return ENV.forgeApiKey;
-};
+function resolveModel(hasVision: boolean): string {
+  if (ENV.useGroq) {
+    if (hasVision) {
+      return process.env.GROQ_VISION_MODEL?.trim() || "llama-3.2-11b-vision-preview";
+    }
+    return process.env.GROQ_MODEL?.trim() || "llama-3.3-70b-versatile";
+  }
+  if (ENV.useOpenAI) {
+    return process.env.LLM_MODEL?.trim() || "gpt-4o";
+  }
+  return process.env.FORGE_LLM_MODEL?.trim() || "gemini-2.5-flash";
+}
 
 const assertApiKey = () => {
-  if (!resolveApiKey()) {
-    throw new Error("LLM API key is not configured. Set GROQ_API_KEY, LLM_API_KEY, or BUILT_IN_FORGE_API_KEY");
+  if (!ENV.forgeApiKey) {
+    throw new Error(
+      "LLM API key is not configured. Set GROQ_API_KEY, LLM_API_KEY, or BUILT_IN_FORGE_API_KEY"
+    );
   }
 };
 
@@ -287,15 +363,15 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
     response_format,
   } = params;
 
-  const resolveModel = () => {
-    if (ENV.useOpenAI) return "gpt-4o";
-    if (ENV.useGroq) return "llama-3.3-70b-versatile";
-    return "gemini-2.5-flash";
-  };
+  const hasVision = messagesIncludeImages(messages);
+  let normalizedMessages = messages.map(normalizeMessage);
+  if (ENV.useGroq) {
+    normalizedMessages = adaptGroqVisionMessages(normalizedMessages);
+  }
 
   const payload: Record<string, unknown> = {
-    model: resolveModel(),
-    messages: messages.map(normalizeMessage),
+    model: resolveModel(hasVision),
+    messages: normalizedMessages,
   };
 
   if (tools && tools.length > 0) {
@@ -311,9 +387,11 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
   }
 
   const maxTokens = params.maxTokens ?? params.max_tokens;
-  if (!ENV.useOpenAI && !ENV.useGroq) {
+  if (ENV.useForge) {
     payload.thinking = { budget_tokens: 128 };
     payload.max_tokens = maxTokens ?? 32768;
+  } else if (ENV.useGroq) {
+    payload.max_tokens = maxTokens ?? 8192;
   } else {
     payload.max_tokens = maxTokens ?? 8192;
   }
@@ -333,7 +411,7 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      authorization: `Bearer ${resolveApiKey()}`,
+      authorization: `Bearer ${ENV.forgeApiKey}`,
     },
     body: JSON.stringify(payload),
   });

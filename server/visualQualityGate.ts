@@ -73,19 +73,19 @@ export function getVisionQaStatus(): {
   sceneCriticalReview: boolean;
   minScore: number;
   llmKeyConfigured: boolean;
-  llmProvider: "openai" | "forge" | "none";
+  llmProvider: "openai" | "groq" | "forge" | "none";
   hint: string;
 } {
   const llmKeyConfigured = Boolean(ENV.forgeApiKey);
   const clipVisionGate = clipVisionGateEnabled();
   const sceneCriticalReview = sceneCriticalReviewEnabled();
   const minScore = minClipQualityScore();
-  const llmProvider = ENV.useOpenAI ? "openai" : llmKeyConfigured ? "forge" : "none";
+  const llmProvider = ENV.llmProvider;
   const ready = clipVisionGate && sceneCriticalReview && llmKeyConfigured;
 
   let hint = "Vision QA active — clips are scored against narration during generation.";
   if (!llmKeyConfigured) {
-    hint = "Set LLM_API_KEY on Railway (OpenAI key with vision, e.g. gpt-4o) to enable Vision QA.";
+    hint = "Set GROQ_API_KEY or LLM_API_KEY on Railway to enable Vision QA.";
   } else if (!clipVisionGate) {
     hint = "Clip vision gate disabled — remove ENABLE_CLIP_VISION=false if set.";
   } else if (!sceneCriticalReview) {

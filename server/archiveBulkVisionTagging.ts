@@ -165,7 +165,7 @@ export async function autoTitleArchiveAssets(opts: {
   ids: number[];
 }): Promise<AutoTitleArchiveResult> {
   if (!archiveAiTaggingEnabled()) {
-    throw new Error("AI tagging disabled — set LLM_API_KEY (or BUILT_IN_FORGE_API_KEY) on the server");
+    throw new Error("AI tagging disabled — set GROQ_API_KEY, LLM_API_KEY, or BUILT_IN_FORGE_API_KEY on the server");
   }
 
   const archive = await getMediaArchiveById(opts.archiveId);

@@ -4,7 +4,9 @@
 // present in the process environment until after the module graph is first loaded.
 //
 // Railway deployment: BUILT_IN_FORGE_API_KEY is not available on Railway.
-// Use OPENAI_API_KEY as fallback — the LLM helper will switch to api.openai.com automatically.
+// Prefer GROQ_API_KEY for testing, then LLM_API_KEY (OpenAI).
+export type LlmProvider = "forge" | "groq" | "openai" | "none";
+
 export const ENV = {
   get appId() { return process.env.VITE_APP_ID ?? ""; },
   get cookieSecret() { return process.env.JWT_SECRET ?? ""; },
@@ -13,13 +15,31 @@ export const ENV = {
   get ownerOpenId() { return process.env.OWNER_OPEN_ID ?? ""; },
   get isProduction() { return process.env.NODE_ENV === "production"; },
   get forgeApiUrl() { return process.env.BUILT_IN_FORGE_API_URL ?? ""; },
-  // Prefer Manus Forge key; fall back to LLM_API_KEY for Railway deployments.
-  // We use LLM_API_KEY (not OPENAI_API_KEY) to avoid Railway Railpack treating it as a build secret.
-  get forgeApiKey() { return process.env.BUILT_IN_FORGE_API_KEY || process.env.LLM_API_KEY || ""; },
-  get groqApiKey() { return process.env.GROQ_API_KEY ?? ""; },
-  // True when running on Railway (no Manus Forge key available)
-  get useOpenAI() { return !process.env.BUILT_IN_FORGE_API_KEY && !process.env.GROQ_API_KEY && !!process.env.LLM_API_KEY; },
-  get useGroq() { return !process.env.BUILT_IN_FORGE_API_KEY && !!process.env.GROQ_API_KEY; },
+  get groqApiKey() { return process.env.GROQ_API_KEY?.trim() ?? ""; },
+  /** Active LLM backend — Forge (Manus) > Groq > OpenAI. */
+  get llmProvider(): LlmProvider {
+    if (process.env.BUILT_IN_FORGE_API_KEY?.trim()) return "forge";
+    if (process.env.GROQ_API_KEY?.trim()) return "groq";
+    if (process.env.LLM_API_KEY?.trim()) return "openai";
+    return "none";
+  },
+  /** Bearer token for the active LLM provider (legacy name: forgeApiKey). */
+  get forgeApiKey() {
+    switch (this.llmProvider) {
+      case "forge":
+        return process.env.BUILT_IN_FORGE_API_KEY!.trim();
+      case "groq":
+        return process.env.GROQ_API_KEY!.trim();
+      case "openai":
+        return process.env.LLM_API_KEY!.trim();
+      default:
+        return "";
+    }
+  },
+  get useForge() { return this.llmProvider === "forge"; },
+  get useGroq() { return this.llmProvider === "groq"; },
+  /** True when using OpenAI directly (no Forge / Groq key). */
+  get useOpenAI() { return this.llmProvider === "openai"; },
   get resendApiKey() { return process.env.RESEND_API_KEY ?? ""; },
   get serpApiKey() { return process.env.SERPAPI_KEY ?? ""; },
   get youtubeApiKey() { return process.env.YOUTUBE_API_KEY ?? ""; },
