@@ -12,6 +12,7 @@ import {
   type TimedOverlay,
 } from "./documentaryStyle";
 import { documentaryOverlaysEnabled, screenLabelMinStartSec, screenLabelMinGapSec, screenLabelMaxPerScene } from "./sourcingPolicy";
+import { clampVidrushClipDuration } from "./vidrushQuality";
 import { extractVoiceLabelTerms, termStartInBeat } from "./visualBeatTags";
 
 export type CinematicAudioCue = {
@@ -64,6 +65,15 @@ export function extractYearsFromText(text: string): string[] {
     }
   }
   return years;
+}
+
+/** Max words shown per on-screen text beat (Vidrush-style kinetic labels). */
+export const MAX_ONSCREEN_WORDS = 2;
+
+export function limitOnScreenText(text: string, maxWords = MAX_ONSCREEN_WORDS): string {
+  const cleaned = text.replace(/\s+/g, " ").trim();
+  if (!cleaned) return "";
+  return cleaned.split(/\s+/).filter(Boolean).slice(0, maxWords).join(" ");
 }
 
 export function extractStatFromText(text: string): string | null {
@@ -461,6 +471,29 @@ export function computeVoiceBeatWindows(
     t += dur;
     return { start, dur };
   });
+}
+
+/**
+ * Montage clip lengths aligned to voice beat windows (plus xfade overlap).
+ * clipBeatIndices maps each montage clip to its narration beat index.
+ */
+export function computeVoiceSyncedClipDurations(
+  beats: BeatYearInput[],
+  voiceDur: number,
+  clipBeatIndices: number[],
+  xfadeSec = 0,
+  sceneIndex = 0
+): number[] {
+  if (clipBeatIndices.length === 0) return [];
+  const windows = computeVoiceBeatWindows(beats, voiceDur);
+  const overlap = clipBeatIndices.length > 1 ? (clipBeatIndices.length - 1) * xfadeSec : 0;
+  const raw = clipBeatIndices.map(
+    (beatIdx) => windows[beatIdx]?.dur ?? voiceDur / clipBeatIndices.length
+  );
+  const rawSum = raw.reduce((s, d) => s + d, 0) || 1;
+  const targetSum = voiceDur + overlap;
+  const scale = targetSum / rawSum;
+  return raw.map((d, i) => clampVidrushClipDuration(d * scale, i, sceneIndex));
 }
 
 export type TimedYearLabel = {

@@ -6,6 +6,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { sanitizeForDrawtext } from "./ffmpegSanitize";
+import { vidrushStillPhotoScale } from "./vidrushQuality";
 
 export const DOC_STYLE_VIDEO_WIDTH = 1920;
 export const DOC_STYLE_VIDEO_HEIGHT = 1080;
@@ -46,6 +47,38 @@ export function buildPostGradeVF(): string {
   return `${buildDocumentaryColorGradeVF()},${buildDocumentaryVignetteVF()}${buildFilmGrainVF()}`;
 }
 
+/** Color + vignette only — applied on each montage clip so sources match before xfade. */
+export function buildPerClipDocumentaryGradeVF(): string {
+  return `${buildDocumentaryColorGradeVF()},${buildDocumentaryVignetteVF()}`;
+}
+
+/** Fit-gray trim chain with optional per-clip documentary grade. */
+export function buildFitGrayGradedVideoVF(): string {
+  const base = buildFitGrayVideoVF();
+  if (!documentaryStyleEnabled()) return base;
+  return `${base},${buildPerClipDocumentaryGradeVF()}`;
+}
+
+/** Montage branch: scale/pad/fps + per-clip grade when documentary style is on. */
+export function buildMontageBranchNormVF(): string {
+  const base = `${buildFitGrayVideoMontageChain()},fps=25,format=yuv420p,setsar=1`;
+  if (!documentaryStyleEnabled()) return base;
+  return `${base},${buildPerClipDocumentaryGradeVF()}`;
+}
+
+/** Final scene pass after per-clip grades — grain only (avoids double color grading). */
+export function buildFinalSceneGradeVF(): string {
+  if (!documentaryStyleEnabled()) {
+    return (
+      "eq=contrast=1.12:saturation=0.92:brightness=-0.02:gamma=1.02," +
+      "colorbalance=rs=-0.02:gs=0:bs=0.03:rm=-0.01:gm=0:bm=0.02:rh=-0.01:gh=0:bh=0.02," +
+      "vignette=angle=0.75:mode=forward"
+    );
+  }
+  const grain = buildFilmGrainVF();
+  return grain ? grain.replace(/^,/, "") : "copy";
+}
+
 export function stillOutputFrameCount(duration: number, fps = 25): number {
   return Math.max(25, Math.round(duration * fps));
 }
@@ -69,6 +102,28 @@ export function pickKenBurnsVariant(_sceneIndex: number, _beatIndex: number): Ke
 /** Archive stills always zoom in slightly — avoids static/frozen-looking frames. */
 export function archiveStillKenBurnsVariant(_sceneIndex = 0, _beatIndex = 0): KenBurnsVariant {
   return "zoom-in";
+}
+
+/** Standard B-roll motion for generated videos — slow zoom only (no pan/rotate). */
+export function standardArchiveKenBurnsVariant(_sceneIndex = 0, _beatIndex = 0): KenBurnsVariant {
+  return "zoom-in";
+}
+
+/** Slower Ken Burns for documentary B-roll (~15% over clip duration). */
+export function standardArchiveKenBurnsZoomEnd(durationSec: number): number {
+  const t = Math.min(8, Math.max(3, durationSec));
+  return 1 + 0.15 * (t / 6);
+}
+
+function autoMotionGraphicsKenBurnsLocked(): boolean {
+  return process.env.ENABLE_AUTO_MOTION_GRAPHICS !== "false";
+}
+
+export function resolveStillKenBurnsVariant(sceneIndex: number, beatIndex: number): KenBurnsVariant {
+  if (autoMotionGraphicsKenBurnsLocked()) {
+    return standardArchiveKenBurnsVariant(sceneIndex, beatIndex);
+  }
+  return archiveStillKenBurnsVariant(sceneIndex, beatIndex);
 }
 
 /** Ken Burns zoompan — zoom 100%→120%, optional pan left/right. */
@@ -127,15 +182,20 @@ export function buildSimpleKenBurnsVF(
 export function buildBlurFillStillVF(
   duration: number,
   foregroundScale = 0.78,
-  yAnchor: "center" | "top" = "center"
+  yAnchor: "center" | "top" = "center",
+  blurMode: "gblur" | "boxblur" = "gblur"
 ): string {
   const w = DOC_STYLE_VIDEO_WIDTH;
   const h = DOC_STYLE_VIDEO_HEIGHT;
   const fgY = yAnchor === "top" ? "(H-h)/4" : "(H-h)/2";
   const ken = buildKenBurnsTail(duration, yAnchor === "top" ? 1.02 : 1.04, yAnchor);
+  const blurFilter =
+    blurMode === "boxblur"
+      ? "boxblur=luma_radius=32:luma_power=2:chroma_radius=16:chroma_power=1"
+      : "gblur=sigma=42";
   return (
     `[0:v]split=2[orig][orig2];` +
-    `[orig]scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},gblur=sigma=38[bg];` +
+    `[orig]scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},${blurFilter}[bg];` +
     `[orig2]scale='min(${w}*${foregroundScale}/iw\\,${h}*${foregroundScale}/ih)*iw':-2[fg];` +
     `[bg][fg]overlay=(W-w)/2:${fgY}[composed];` +
     `[composed]${ken}[vout]`
@@ -198,14 +258,16 @@ export function buildPolaroidStillVF(duration: number): string {
 /** Photo on neutral gray mat — smaller than frame (reference-doc / City Beautiful style). */
 export function buildMatFramedStillVF(
   duration: number,
-  photoScale = 0.74,
+  photoScale = vidrushStillPhotoScale(),
   sceneIndex = 0,
   beatIndex = 0
 ): string {
   const w = DOC_STYLE_VIDEO_WIDTH;
   const h = DOC_STYLE_VIDEO_HEIGHT;
-  const variant = archiveStillKenBurnsVariant(sceneIndex, beatIndex);
-  const zoomEnd = Math.max(1.06, documentaryKenBurnsZoomEnd(duration));
+  const variant = resolveStillKenBurnsVariant(sceneIndex, beatIndex);
+  const zoomEnd = autoMotionGraphicsKenBurnsLocked()
+    ? standardArchiveKenBurnsZoomEnd(duration)
+    : Math.max(1.06, documentaryKenBurnsZoomEnd(duration));
   const ken = buildKenBurnsTail(duration, zoomEnd, "center", variant);
   return (
     `[0:v]scale='min(${w}*${photoScale}/iw\\,${h}*${photoScale}/ih)*iw':-2,` +
@@ -233,14 +295,35 @@ export function resolveStillCompositionVF(
   beatIndex: number,
   personPortrait: boolean
 ): string {
-  if (usePolaroidLayout(sceneIndex, beatIndex)) {
-    return buildPolaroidStillVF(duration);
+  return buildArchiveStillFilterComplex(duration, sceneIndex, beatIndex, personPortrait);
+}
+
+/** Smaller photo on blurred duplicate background — default for all archive/stock stills. */
+export function buildArchiveStillFilterComplex(
+  duration: number,
+  sceneIndex: number,
+  beatIndex: number,
+  personPortrait = false
+): string {
+  const scale = vidrushStillPhotoScale();
+  if (process.env.ARCHIVE_BLUR_FILL_STILLS === "false") {
+    return buildMatFramedStillVF(duration, scale, sceneIndex, beatIndex);
   }
-  return buildBlurFillStillVF(
-    duration,
-    personPortrait ? 0.72 : 0.78,
-    personPortrait ? "top" : "center"
-  );
+  return buildBlurFillStillVF(duration, scale, personPortrait ? "top" : "center", "gblur");
+}
+
+/** Boxblur variant for hosts where gblur is unavailable or fails. */
+export function buildArchiveStillFilterComplexBoxBlur(
+  duration: number,
+  sceneIndex: number,
+  beatIndex: number,
+  personPortrait = false
+): string {
+  const scale = vidrushStillPhotoScale();
+  if (process.env.ARCHIVE_BLUR_FILL_STILLS === "false") {
+    return buildMatFramedStillVF(duration, scale, sceneIndex, beatIndex);
+  }
+  return buildBlurFillStillVF(duration, scale, personPortrait ? "top" : "center", "boxblur");
 }
 
 export interface TimedOverlay {

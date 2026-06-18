@@ -1,5 +1,7 @@
 /** Production sourcing policy — archive-first visuals; ElevenLabs for voice. */
 
+import { targetVideoDurationMinutes } from "../shared/videoLengths";
+
 /**
  * Archive-first mode: prefer admin media archive, then Wikimedia / Pexels / Pixabay fallbacks.
  * YouTube, Serp, and AI clip generation stay off unless explicitly re-enabled elsewhere.
@@ -39,6 +41,11 @@ export function archivePexelsFallbackEnabled(): boolean {
   return process.env.ARCHIVE_PEXELS_FALLBACK !== "false";
 }
 
+/** Pexels/Pixabay after Wikimedia + archive misses (default on). */
+export function archivePexelsHybridEnabled(): boolean {
+  return process.env.ARCHIVE_PEXELS_HYBRID !== "false" && archivePexelsFallbackEnabled();
+}
+
 /** Fail generation rather than loop, pad, or reuse any clip content in a video. */
 export function strictNoVisualRepeat(): boolean {
   if (process.env.STRICT_NO_VISUAL_REPEAT === "false") return false;
@@ -49,6 +56,73 @@ export function strictNoVisualRepeat(): boolean {
 export function documentaryOverlaysEnabled(): boolean {
   if (yearsOnlyOnScreen()) return false;
   return process.env.ENABLE_DOC_OVERLAYS !== "false";
+}
+
+/** Generation wall-clock minutes allowed per 1 minute of finished video (default 10:1). */
+export function pipelineMinutesPerVideoMinute(): number {
+  const raw = process.env.PIPELINE_MIN_PER_VIDEO_MIN?.trim();
+  if (raw) {
+    const n = parseFloat(raw);
+    if (!isNaN(n) && n >= 5 && n <= 20) return n;
+  }
+  return 10;
+}
+
+/** Multiplier on target budget before hard-fail (default 1.2 → ~12 min pipeline per 1 min video). */
+export function pipelineWallClockGraceFactor(): number {
+  const raw = process.env.PIPELINE_WALL_CLOCK_GRACE?.trim();
+  if (raw) {
+    const n = parseFloat(raw);
+    if (!isNaN(n) && n >= 1.05 && n <= 1.5) return n;
+  }
+  return 1.2;
+}
+
+/** When true (default), cap generation at video_minutes × 10 wall-clock. Set PIPELINE_WALL_CLOCK_LIMIT=false to disable. */
+export function pipelineWallClockLimitEnabled(): boolean {
+  return process.env.PIPELINE_WALL_CLOCK_LIMIT !== "false";
+}
+
+/** Practical "no limit" for withTimeout / setTimeout (7 days — below Node's max delay). */
+export const PIPELINE_UNLIMITED_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Target end-to-end generation budget (minutes) — video_minutes × 10 by default.
+ * Used for perf profiles and stage timeouts; generation may run slightly over via grace.
+ */
+export function maxPipelineWallClockMin(videoLength?: string | null): number {
+  if (!pipelineWallClockLimitEnabled()) {
+    return Math.round(PIPELINE_UNLIMITED_MS / 60_000);
+  }
+  const override = process.env.MAX_PIPELINE_WALL_CLOCK_MIN?.trim();
+  if (override) {
+    const n = parseInt(override, 10);
+    if (!isNaN(n) && n >= 10 && n <= 300) return n;
+  }
+  return Math.round(targetVideoDurationMinutes(videoLength) * pipelineMinutesPerVideoMinute());
+}
+
+/** Hard fail only after target × grace (default 12 min pipeline per 1 min video). */
+export function maxPipelineWallClockHardMin(videoLength?: string | null): number {
+  if (!pipelineWallClockLimitEnabled()) {
+    return Math.round(PIPELINE_UNLIMITED_MS / 60_000);
+  }
+  const target = maxPipelineWallClockMin(videoLength);
+  return Math.min(360, Math.round(target * pipelineWallClockGraceFactor()));
+}
+
+/** Max archive/Wikimedia candidates to try per beat when wall-clock limit is on. */
+export function maxVisualCandidatesPerBeatTry(): number {
+  return pipelineWallClockLimitEnabled() ? 4 : 12;
+}
+
+/** Wall-clock budget for the visual sourcing stage (minutes). */
+export function visualStageWallClockMin(videoLength?: string | null): number {
+  if (!pipelineWallClockLimitEnabled()) {
+    return Math.round(PIPELINE_UNLIMITED_MS / 60_000);
+  }
+  const total = maxPipelineWallClockMin(videoLength);
+  return Math.max(8, Math.min(total - 6, Math.round(total * 0.88)));
 }
 
 /** Target on-screen duration per archive clip (seconds). */
@@ -159,6 +233,19 @@ export function archiveCrossVideoCooldownVideos(): number {
 export function motionGraphicsInVideosEnabled(): boolean {
   if (yearsOnlyOnScreen()) return false;
   return process.env.ENABLE_MOTION_GRAPHICS !== "false";
+}
+
+/** Automatic V3 text overlays — centered typewriter highlights (default on). */
+export function autoMotionGraphicsLayerEnabled(): boolean {
+  return process.env.ENABLE_AUTO_MOTION_GRAPHICS !== "false";
+}
+
+/**
+ * Vidrush documentary quality gates — opening B-roll, pacing, non-doc filter,
+ * geo consistency, motion-graphics QA. On by default for every topic/subject.
+ */
+export function vidrushDocumentaryQualityEnabled(): boolean {
+  return process.env.ENABLE_VIDRUSH_QUALITY !== "false";
 }
 
 export function maxMotionGraphicsPerVideo(): number {
