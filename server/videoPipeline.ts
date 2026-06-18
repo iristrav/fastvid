@@ -57,7 +57,13 @@ import {
   wikimediaV1AdoptionThreshold,
   wikimediaMetadataPassesBeatGate,
 } from "./visualMatchingEngine";
-import { extractPrimaryGeoSearchTag, extractPrimaryVisualAnchor, extractSceneSearchTags, inferVideoVisualTopic } from "./visualBeatTags";
+import {
+  extractPrimaryGeoSearchTag,
+  extractPrimaryVisualAnchor,
+  extractSceneSearchTags,
+  extractVisualSearchTags,
+  inferVideoVisualTopic,
+} from "./visualBeatTags";
 import {
   buildCinematicOverlays,
   buildBeatAlignedYearOverlays,
@@ -121,6 +127,7 @@ import {
   isCuratedPreparedVideoClip,
   listCuratedArchiveCandidates,
   buildBeatMatchTags,
+  extractTopicAnchorTags,
   orderCuratedCandidatesForBeat,
   searchCuratedCandidatesForBeat,
   hashVarietySeed,
@@ -8620,19 +8627,38 @@ async function prepareStrictUniqueMontage(
   return { montageDurations, sourceMaxDurs, estSec };
 }
 
+function archiveTagHintForScene(scene: Scene, videoTitle?: string): string {
+  const stubBeat: SceneBeat = {
+    index: 0,
+    text: scene.text.slice(0, 400),
+    searchQuery: scene.pexelsQuery || "",
+    powerWord: extractPowerWordFromSentence(scene.text.slice(0, 220)),
+    keywords: buildRelevanceKeywords(scene, scene.text),
+    holdSec: effectiveBeatSec(),
+  };
+  const { beatTags, topicAnchors } = buildBeatMatchTags(stubBeat, scene, videoTitle);
+  const tags = [...new Set([...beatTags, ...topicAnchors])].slice(0, 6);
+  const excerpt = scene.text.replace(/\s+/g, " ").trim().slice(0, 90);
+  if (!tags.length) return excerpt ? `"${excerpt}"` : "voeg 4 concrete Engelse tags toe per clip";
+  return excerpt
+    ? `"${excerpt}" — tags: ${tags.join(", ")}`
+    : `tags: ${tags.join(", ")}`;
+}
+
 async function assertSceneVisualInventory(
   scene: Scene,
   clips: string[],
   beatDurations: number[],
   sentenceBeats = 0,
-  clipBeatIndices?: number[]
+  clipBeatIndices?: number[],
+  videoTitle?: string
 ): Promise<void> {
   if (!strictNoVisualRepeat()) return;
   assertMontageClipsUnique(scene.index, clips);
   if (clips.length === 0) {
     throw pipelineError(
       PIPELINE_ERROR.NO_SCENES,
-      `Scene ${scene.index}: geen archive-beelden gevonden — tag meer assets op dit onderwerp`
+      `Scene ${scene.index}: geen archive-beelden gevonden — tag meer assets op dit onderwerp (${archiveTagHintForScene(scene, videoTitle)})`
     );
   }
   const minClips = sentenceBeats > 0
@@ -13645,7 +13671,170 @@ async function adoptArchiveBeatClip(
   return false;
 }
 
-/** Last resort when archive + semantic search finds nothing — topic-aligned Pexels B-roll. */
+/** Licensed fallback when archive semantic search finds nothing — Wikimedia → Pexels → Pixabay. */
+async function adoptLicensedBeatClipFallback(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  videoTitle: string | undefined,
+  dedup: VisualDedupState,
+  pushClip: (clipPath: string, holdSec?: number) => boolean | Promise<boolean>,
+  holdSec: number,
+  semanticProfile?: BeatSemanticProfile,
+  opts: { bestEffort?: boolean } = {}
+): Promise<boolean> {
+  if (!archivePexelsFallbackEnabled()) return false;
+
+  const tryClip = async (clipPath: string | null | undefined, sec = holdSec): Promise<boolean> => {
+    if (!clipPath || isPipelineFallbackClip(clipPath)) return false;
+    if (await isMostlyBlackClip(clipPath)) return false;
+    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec);
+    if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) return false;
+    return await pushClip(withText, sec);
+  };
+
+  const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
+  const semanticQueries = semanticProfile
+    ? buildSemanticPexelsQueries(beat.text, semanticProfile, 8, videoTitle)
+    : [];
+  const scriptQueries = buildBeatVisualQueryList(beat.text, scene, videoTitle, scenePersons, opts.bestEffort ? 10 : 6);
+  const topicQueries = opts.bestEffort
+    ? [
+        ...extractTopicAnchorTags(videoTitle, beat.text),
+        ...extractSceneSearchTags(beat.text),
+        ...extractVisualSearchTags(beat.text, videoTitle),
+        extractPrimaryGeoSearchTag(beat.text) ?? "",
+        extractPrimaryVisualAnchor(beat.text) ?? "",
+      ]
+    : [];
+  const queries = [
+    ...new Set(
+      [
+        ...semanticQueries,
+        ...scriptQueries,
+        ...topicQueries,
+        beat.searchQuery,
+        beat.powerWord,
+        enrichStockQuery(scene.pexelsQuery, scene, videoTitle, scenePersons[0] ?? "", beat.text),
+        ...(opts.bestEffort ? buildGeoStockSearchQueries(beat.text, videoTitle).slice(0, 4) : []),
+      ]
+        .filter((q): q is string => typeof q === "string" && q.trim().length > 2 && !isBlockedStockQuery(q))
+        .map((q) => simplifyStockSearchWord(q, beat.text, true))
+    ),
+  ].slice(0, opts.bestEffort ? 12 : 8);
+
+  if (queries.length === 0) return false;
+
+  const label = opts.bestEffort ? "best-effort" : "licensed fallback";
+  console.warn(
+    `[Pipeline] Scene ${scene.index} zin ${beat.index}: geen archief-match — ${label} (${queries.slice(0, 3).join(", ")})`
+  );
+
+  if (!opts.bestEffort && visualMatchingV1Enabled()) {
+    try {
+      const wikiAnalysis = analyzeSceneVisual(beat.text, videoTitle);
+      const wikiClip = await fetchWikimediaImagesV1(
+        wikiAnalysis,
+        holdSec,
+        workDir,
+        scene.index,
+        beat.index,
+        `lic_wiki${beat.index}`,
+        videoTitle
+      );
+      if (wikiClip && (await tryClip(wikiClip, holdSec))) {
+        console.log(`[Pipeline] Scene ${scene.index} zin ${beat.index}: Wikimedia fallback`);
+        return true;
+      }
+    } catch (err) {
+      console.warn(
+        `[Pipeline] Wikimedia fallback scene ${scene.index} beat ${beat.index}:`,
+        (err as Error).message?.slice(0, 100)
+      );
+    }
+  }
+
+  const tryStockPaths = async (
+    paths: string[],
+    q: string,
+    source: "Pexels" | "Pixabay"
+  ): Promise<boolean> => {
+    for (const clipPath of paths) {
+      if (!clipPath || !fs.existsSync(clipPath)) continue;
+      if (dedup.usedContentKeys.has(clipContentKey(clipPath))) continue;
+      if (!opts.bestEffort && isRejectedStockClip(clipPath, q)) continue;
+      if (
+        !opts.bestEffort &&
+        dedup.personTopicLock &&
+        dedup.primaryPerson &&
+        isOffTopicVisualForPersonTopic(q, clipPath, dedup.primaryPerson)
+      ) {
+        continue;
+      }
+      dedup.usedPaths.add(clipPath);
+      if (await tryClip(clipPath, holdSec)) {
+        markLicensedStockBeatUsed(dedup);
+        dedup.lastMuskStockClip = clipPath;
+        console.log(`[Pipeline] Scene ${scene.index} zin ${beat.index}: ${source} ${label} voor "${q}"`);
+        return true;
+      }
+    }
+    return false;
+  };
+
+  for (let qi = 0; qi < queries.length; qi++) {
+    const q = queries[qi]!;
+    if (PEXELS_API_KEY) {
+      try {
+        const paths = await withTimeout(
+          fetchPexelsClips(
+            q,
+            holdSec,
+            workDir,
+            scene.index,
+            1,
+            queries.slice(qi + 1, qi + 4),
+            true,
+            `b${beat.index}_pex`,
+            dedup.usedPexelsIds,
+            beat.index + scene.index + qi,
+            dedup.perf.pexelsDownloadRetries ?? 2
+          ),
+          opts.bestEffort ? 35_000 : 28_000,
+          `Pexels ${label} scene ${scene.index} beat ${beat.index}`
+        );
+        if (await tryStockPaths(paths, q, "Pexels")) return true;
+      } catch (err) {
+        console.warn(`[Pipeline] Pexels ${label} "${q}" failed:`, (err as Error).message?.slice(0, 100));
+      }
+    }
+    if (PIXABAY_API_KEY) {
+      try {
+        const paths = await withTimeout(
+          fetchPixabayClips(
+            q,
+            holdSec,
+            workDir,
+            scene.index,
+            opts.bestEffort ? 3 : 2,
+            `b${beat.index}_pix`,
+            true,
+            dedup.usedPixabayIds,
+            beat.index + scene.index + qi + 40
+          ),
+          opts.bestEffort ? 35_000 : 28_000,
+          `Pixabay ${label} scene ${scene.index} beat ${beat.index}`
+        );
+        if (await tryStockPaths(paths, q, "Pixabay")) return true;
+      } catch (err) {
+        console.warn(`[Pipeline] Pixabay ${label} "${q}" failed:`, (err as Error).message?.slice(0, 100));
+      }
+    }
+  }
+  return false;
+}
+
+/** @deprecated alias */
 async function adoptPexelsBeatClipFallback(
   beat: SceneBeat,
   scene: Scene,
@@ -13656,90 +13845,16 @@ async function adoptPexelsBeatClipFallback(
   holdSec: number,
   semanticProfile?: BeatSemanticProfile
 ): Promise<boolean> {
-  if (!archivePexelsFallbackEnabled() || !PEXELS_API_KEY) return false;
-
-  const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
-  const semanticQueries = semanticProfile
-    ? buildSemanticPexelsQueries(beat.text, semanticProfile, 8, videoTitle)
-    : [];
-  const scriptQueries = buildBeatVisualQueryList(beat.text, scene, videoTitle, scenePersons, 6);
-  const queries = [
-    ...new Set(
-      [
-        ...semanticQueries,
-        ...scriptQueries,
-        beat.searchQuery,
-        beat.powerWord,
-        enrichStockQuery(scene.pexelsQuery, scene, videoTitle, scenePersons[0] ?? "", beat.text),
-      ]
-        .filter((q): q is string => typeof q === "string" && q.trim().length > 2 && !isBlockedStockQuery(q))
-        .map((q) => simplifyStockSearchWord(q, beat.text, true))
-    ),
-  ].slice(0, 8);
-
-  if (queries.length === 0) return false;
-
-  const tryClip = async (clipPath: string | null | undefined, sec = holdSec): Promise<boolean> => {
-    if (!clipPath || isPipelineFallbackClip(clipPath)) return false;
-    if (await isMostlyBlackClip(clipPath)) return false;
-    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec);
-    if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) return false;
-    return await pushClip(withText, sec);
-  };
-
-  console.warn(
-    `[Pipeline] Scene ${scene.index} zin ${beat.index}: geen archief-match — Pexels fallback (${queries.slice(0, 3).join(", ")})`
+  return adoptLicensedBeatClipFallback(
+    beat,
+    scene,
+    workDir,
+    videoTitle,
+    dedup,
+    pushClip,
+    holdSec,
+    semanticProfile
   );
-
-  for (let qi = 0; qi < queries.length; qi++) {
-    const q = queries[qi]!;
-    try {
-      const paths = await withTimeout(
-        fetchPexelsClips(
-          q,
-          holdSec,
-          workDir,
-          scene.index,
-          1,
-          queries.slice(qi + 1, qi + 4),
-          true,
-          `b${beat.index}_pex`,
-          dedup.usedPexelsIds,
-          beat.index + scene.index + qi,
-          dedup.perf.pexelsDownloadRetries ?? 2
-        ),
-        28_000,
-        `Pexels fallback scene ${scene.index} beat ${beat.index}`
-      );
-      for (const clipPath of paths) {
-        if (!clipPath || !fs.existsSync(clipPath)) continue;
-        if (dedup.usedContentKeys.has(clipContentKey(clipPath))) continue;
-        if (isRejectedStockClip(clipPath, q)) continue;
-        if (
-          dedup.personTopicLock &&
-          dedup.primaryPerson &&
-          isOffTopicVisualForPersonTopic(q, clipPath, dedup.primaryPerson)
-        ) {
-          continue;
-        }
-        dedup.usedPaths.add(clipPath);
-        if (await tryClip(clipPath, holdSec)) {
-          markLicensedStockBeatUsed(dedup);
-          dedup.lastMuskStockClip = clipPath;
-          console.log(
-            `[Pipeline] Scene ${scene.index} zin ${beat.index}: Pexels fallback clip voor "${q}"`
-          );
-          return true;
-        }
-      }
-    } catch (err) {
-      console.warn(
-        `[Pipeline] Pexels fallback "${q}" failed:`,
-        (err as Error).message?.slice(0, 100)
-      );
-    }
-  }
-  return false;
 }
 
 async function backfillArchiveMontageFromPool(
@@ -13980,11 +14095,26 @@ async function fetchArchiveSentenceMontage(
         pushClip,
         null,
         beat.holdSec,
-        semanticProfiles.get(bi)
+        semanticProfiles.get(bi),
+        attempt >= 2
       );
     }
     if (!filled) {
-      filled = await adoptPexelsBeatClipFallback(
+      filled = await adoptArchiveBeatClip(
+        beat,
+        scene,
+        workDir,
+        videoTitle,
+        dedup,
+        pushClip,
+        null,
+        beat.holdSec,
+        semanticProfiles.get(bi),
+        true
+      );
+    }
+    if (!filled) {
+      filled = await adoptLicensedBeatClipFallback(
         beat,
         scene,
         workDir,
@@ -13996,9 +14126,22 @@ async function fetchArchiveSentenceMontage(
       );
     }
     if (!filled) {
+      filled = await adoptLicensedBeatClipFallback(
+        beat,
+        scene,
+        workDir,
+        videoTitle,
+        dedup,
+        pushClip,
+        beat.holdSec,
+        semanticProfiles.get(bi),
+        { bestEffort: true }
+      );
+    }
+    if (!filled) {
       throw pipelineError(
         PIPELINE_ERROR.NO_SCENES,
-        `Scene ${scene.index} sentence ${beat.index + 1}: no archive or Pexels visual for "${beat.text.slice(0, 90).trim()}" — tag the archive or check PEXELS_API_KEY`
+        `Scene ${scene.index} sentence ${beat.index + 1}: geen beeld na archief + Wikimedia + Pexels + Pixabay voor "${beat.text.slice(0, 90).trim()}" (${archiveTagHintForScene(scene, videoTitle)})`
       );
     }
   }
@@ -14015,7 +14158,7 @@ async function fetchArchiveSentenceMontage(
     semanticProfiles
   );
 
-  await assertSceneVisualInventory(scene, clips, beatDurations, beats.length, clipBeatIndices);
+  await assertSceneVisualInventory(scene, clips, beatDurations, beats.length, clipBeatIndices, videoTitle);
   return { clips, beatDurations, beats, clipBeatIndices };
 }
 
@@ -14789,7 +14932,7 @@ async function fetchSceneVisuals(
   console.log(
     `[Pipeline] Scene ${scene.index}${personLabel}: ${usable.length} beat clip(s) (${videoCount} video, ${photoCount} photo)`
   );
-  await assertSceneVisualInventory(scene, usable, beatDurations.slice(0, usable.length));
+  await assertSceneVisualInventory(scene, usable, beatDurations.slice(0, usable.length), 0, undefined, videoTitle);
   return { clips: usable, beatDurations: beatDurations.slice(0, usable.length) };
 }
 
@@ -15354,8 +15497,17 @@ async function composeSceneVideo(
   if (curatedArchiveOnlyVisuals()) {
     existingClips = existingClips.filter((p) => {
       if (curatedClipPathAssetId(p) != null) return true;
+      // Archive-first: keep licensed-stock + Wikimedia fallbacks adopted during beat fetch
+      if (
+        archivePexelsFallbackEnabled() &&
+        fs.existsSync(p) &&
+        !isPipelineFallbackClip(p) &&
+        !isAIGeneratedClip(p)
+      ) {
+        return true;
+      }
       console.warn(
-        `[Pipeline] Scene ${scene.index}: rejecting non-archive clip ${path.basename(p)} (archive-only mode)`
+        `[Pipeline] Scene ${scene.index}: rejecting clip ${path.basename(p)} (not archive or licensed fallback)`
       );
       return false;
     });

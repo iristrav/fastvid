@@ -19,6 +19,7 @@ import { registerArchiveMediaRoute } from "../archiveMediaStream";
 import { archiveUploadRequestTimeoutMs } from "../archiveVideoSplitter";
 import { getConfiguredAppUrl, registerCanonicalAppUrl } from "./appUrl";
 import {
+  archivePexelsFallbackEnabled,
   curatedArchiveOnlyVisuals,
   externalVisualSourcingEnabled,
   elevenLabsOnlyVoice,
@@ -117,8 +118,8 @@ async function startServer() {
   console.log(
     "[Fastvid] Visual sourcing:",
     curatedArchiveOnlyVisuals()
-      ? "✓ media archive only (no external clip APIs)"
-      : "✗ external sources enabled"
+      ? "✓ archive-first (Wikimedia / Pexels / Pixabay fallback when no archive match)"
+      : "✗ full external sourcing enabled"
   );
   if (externalVisualSourcingEnabled()) {
     console.warn("[Fastvid] External visual sourcing should be off — check sourcingPolicy");
@@ -292,7 +293,9 @@ async function startServer() {
         SERPAPI_KEY: !!process.env.SERPAPI_KEY,
         UNSPLASH_ACCESS_KEY: !!process.env.UNSPLASH_ACCESS_KEY?.trim(),
         youtubeSourcingEnabled: false,
-        stockFootageReady: false,
+        stockFootageReady:
+          archivePexelsFallbackEnabled() &&
+          (!!process.env.PEXELS_API_KEY?.trim() || !!process.env.PIXABAY_API_KEY?.trim()),
         serpApiReady: false,
         unsplashReady: false,
         NODE_ENV: process.env.NODE_ENV,
