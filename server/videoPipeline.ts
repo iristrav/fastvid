@@ -110,7 +110,7 @@ import {
   scriptGuidedBudgetMs,
   scriptGuidedClipsEnabled,
 } from "./scriptGuidedClipFinder";
-import { clipPassesVisionGate, clipVisionGateEnabled } from "./visualQualityGate";
+import { clipPassesVisionGate, clipVisionGateEnabled, minClipQualityScore } from "./visualQualityGate";
 import { archivePexelsFallbackEnabled, archivePexelsHybridEnabled, curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
@@ -13744,6 +13744,28 @@ async function adoptLicensedBeatClipFallback(
     `[Pipeline] Scene ${scene.index} zin ${beat.index}: geen archief-match — ${label} (${queries.slice(0, 3).join(", ")})`
   );
 
+  const visionMinScore = opts.bestEffort ? 5 : minClipQualityScore();
+  const beatVisualHint = semanticProfile?.summary;
+  const passesLicensedVisionGate = async (clipPath: string, query: string): Promise<boolean> => {
+    if (
+      !(await clipPassesVisionGate(
+        clipPath,
+        beat.text,
+        videoTitle,
+        workDir,
+        scene.index,
+        beat.index,
+        dedup.perf.fastStockMode,
+        visionMinScore,
+        beatVisualHint
+      ))
+    ) {
+      recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clipPath, "vision_gate", query);
+      return false;
+    }
+    return true;
+  };
+
   if (!opts.bestEffort && visualMatchingV1Enabled()) {
     try {
       const wikiAnalysis = analyzeSceneVisual(beat.text, videoTitle);
@@ -13756,7 +13778,11 @@ async function adoptLicensedBeatClipFallback(
         `lic_wiki${beat.index}`,
         videoTitle
       );
-      if (wikiClip && (await tryClip(wikiClip, holdSec))) {
+      if (
+        wikiClip &&
+        (await passesLicensedVisionGate(wikiClip, "wikimedia")) &&
+        (await tryClip(wikiClip, holdSec))
+      ) {
         console.log(`[Pipeline] Scene ${scene.index} zin ${beat.index}: Wikimedia fallback`);
         return true;
       }
@@ -13785,6 +13811,7 @@ async function adoptLicensedBeatClipFallback(
       ) {
         continue;
       }
+      if (!(await passesLicensedVisionGate(clipPath, q))) continue;
       dedup.usedPaths.add(clipPath);
       if (await tryClip(clipPath, holdSec)) {
         markLicensedStockBeatUsed(dedup);
@@ -13806,7 +13833,7 @@ async function adoptLicensedBeatClipFallback(
             holdSec,
             workDir,
             scene.index,
-            1,
+            clipVisionGateEnabled() && !opts.bestEffort ? 2 : 1,
             queries.slice(qi + 1, qi + 4),
             true,
             `b${beat.index}_pex`,
