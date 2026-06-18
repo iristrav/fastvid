@@ -49,6 +49,28 @@ describe("buildVideoQualityReport", () => {
             basename: "scene_0_b0_hist_archive_kansas.mp4",
             source: "archive",
             assetTitle: "Kansas City metropolitan area map 1972",
+            segmentGeoLock: "nl",
+          },
+        ],
+      }
+    );
+    expect(report.criticalGeoViolations?.length).toBeGreaterThanOrEqual(1);
+    expect(() => assertQualityReportExportGate(report)).toThrow(/Export blocked/);
+  });
+
+  it("assertQualityReportExportGate blocks Kansas City on Singapore video", () => {
+    const report = buildVideoQualityReport(
+      ["/tmp/scene_0_b0_hist_archive_kansas.mp4"],
+      "Why Singapore is the Blueprint for Future Cities",
+      {
+        adoptAudit: [
+          {
+            sceneIndex: 0,
+            beatIndex: 0,
+            beatText: "Affordable public housing shapes daily life.",
+            basename: "scene_0_b0_hist_archive_kansas.mp4",
+            source: "archive",
+            assetTitle: "Historical Map of Kansas City with Railroads",
           },
         ],
       }

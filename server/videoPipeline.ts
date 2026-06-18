@@ -28,7 +28,7 @@ import * as path from "path";
 import * as os from "os";
 import { storagePut } from "./storage";
 import { invokeLLM } from "./_core/llm";
-import { getVideoById, updateVideoStatus, updateVideoScenes, type EditorScene } from "./db";
+import { getVideoById, updateVideoStatus, updateVideoScenes, mergeVideoMetadata, type EditorScene } from "./db";
 import pLimit from "p-limit";
 import { generateGrokVideo } from "./_core/grokVideo";
 import { generateVeoVideo } from "./_core/veoVideo";
@@ -155,7 +155,7 @@ import {
   type SceneReviewInput,
 } from "./pipelineReview";
 import { assertSceneCriticalReview, reviewSceneCritical } from "./sceneCriticalReview";
-import { clipPassesDocumentaryBeatGate, resolveBeatRegionLock } from "./vidrushQuality";
+import { clipPassesDocumentaryBeatGate, resolveBeatRegionLock, inferBeatGeoRegion, resolveSegmentGeoLock, type BeatGeoRegion } from "./vidrushQuality";
 import type { ClipRejectEntry } from "./clipRejectAudit";
 import { recordClipReject, summarizeClipRejectAudit } from "./clipRejectAudit";
 import type { ClipAdoptEntry } from "./clipAdoptAudit";
@@ -7852,6 +7852,8 @@ interface VisualDedupState {
   clipRejectAudit: ClipRejectEntry[];
   /** Successfully adopted clips per beat (for geo export gate). */
   clipAdoptAudit: ClipAdoptEntry[];
+  /** Sticky NL/US segment lock for comparison documentaries. */
+  segmentGeoLock: BeatGeoRegion | null;
 }
 
 /**
@@ -7919,6 +7921,7 @@ function createVisualDedupState(
     currentBeatTopicKey: "",
     clipRejectAudit: [],
     clipAdoptAudit: createClipAdoptAudit(),
+    segmentGeoLock: null,
   };
 }
 
@@ -13617,7 +13620,8 @@ async function adoptArchiveBeatClip(
         beat.text,
         withText,
         adoptMeta?.source ?? (curated ? "archive" : "archive_fetch"),
-        adoptMeta?.assetTitle
+        adoptMeta?.assetTitle,
+        dedup.segmentGeoLock
       );
       return true;
     }
@@ -13678,6 +13682,7 @@ async function adoptArchiveBeatClip(
             imageMax: imgMax,
             beatText: beat.text,
             videoTitle,
+            segmentGeoLock: dedup.segmentGeoLock,
             videoVisualTopic,
           }
         )
@@ -14173,6 +14178,9 @@ async function fillBeatVisual(
   semanticProfile?: BeatSemanticProfile,
   holdSec = beat.holdSec
 ): Promise<boolean> {
+  const beatRegion = inferBeatGeoRegion(beat.text, videoTitle);
+  dedup.segmentGeoLock = resolveSegmentGeoLock(beatRegion, dedup.segmentGeoLock, videoTitle);
+
   const archivePrefetch = curatedArchiveOnlyVisuals()
     ? searchCuratedCandidatesForBeat(
         beat,
@@ -17180,13 +17188,9 @@ export async function runVideoPipeline(
     logVideoQualityReport(videoId, qualityReport);
     assertQualityReportExportGate(qualityReport);
 
-    const existingMetaEarly =
-      videoRow?.metadata && typeof videoRow.metadata === "object" && !Array.isArray(videoRow.metadata)
-        ? (videoRow.metadata as Record<string, unknown>)
-        : {};
-    await updateVideoStatus(videoId, "generating_visuals", {
-      metadata: { ...existingMetaEarly, qualityReport },
-    }).catch((err) => console.warn(`[Pipeline] Failed to persist qualityReport for ${videoId}:`, err));
+    await mergeVideoMetadata(videoId, { qualityReport }).catch((err) =>
+      console.warn(`[Pipeline] Failed to persist qualityReport for ${videoId}:`, err)
+    );
 
     // Cleanup intermediates
     for (let i = 0; i < scenes.length; i++) {
@@ -17252,14 +17256,15 @@ export async function runVideoPipeline(
       console.warn(`[Pipeline] Editor manifest persist failed for ${videoId}:`, (err as Error).message);
     }
 
-    const existingMeta = { ...existingMetaEarly };
+    await mergeVideoMetadata(videoId, { qualityReport }).catch((err) =>
+      console.warn(`[Pipeline] Failed to persist qualityReport on complete for ${videoId}:`, err)
+    );
 
     // Persist URL immediately so a crash during finalization cannot lose the finished video
     await updateVideoStatus(videoId, "completed", {
       videoUrl: url,
       progressStep: STAGE_LABELS.complete,
       progressPercent: 100,
-      metadata: { ...existingMeta, qualityReport },
     }).catch((err) => console.warn(`[Pipeline] Failed to persist videoUrl for ${videoId}:`, err));
 
     onProgress?.({ stage: STAGE_LABELS.complete, percent: 100 });

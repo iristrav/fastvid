@@ -39,7 +39,7 @@ import {
   getInviteCodeByCode, createInviteCode, getAllInviteCodes, markInviteCodeUsed, deleteInviteCode, deactivateInviteCode,
   getAllMediaArchives, getMediaArchiveById, createMediaArchiveUnique, updateMediaArchive, deleteMediaArchive,
   getMediaArchiveAssets, getMediaArchiveAssetById, createMediaArchiveAsset, updateMediaArchiveAsset, deleteMediaArchiveAsset, deleteMediaArchiveAssets, deleteAllMediaArchiveAssets,
-  countMediaArchiveAssets, filterMediaArchiveAssets, normalizeMediaTags,
+  countMediaArchiveAssets, filterMediaArchiveAssets, normalizeMediaTags, readVideoMetadataObject,
 } from "./db";
 import { storageGetSignedUrl } from "./storage";
 import type { ProgressLogEntry } from "./db";
@@ -774,7 +774,9 @@ async function _generateVideoWithAI(
       approvedMetadata && typeof approvedMetadata === "object"
         ? (approvedMetadata as Record<string, unknown>)
         : {};
-    const enrichedMetadata = { ...metadataBase, generationDurationSec };
+    const refreshedForMeta = await getVideoById(videoId);
+    const dbMeta = readVideoMetadataObject(refreshedForMeta);
+    const enrichedMetadata = { ...dbMeta, ...metadataBase, generationDurationSec };
 
     progressLog.push({ step: resolvePipelineDisplayStage("Video complete", 100).label, startedAt: Date.now(), completedAt: Date.now(), status: "done" });
     await updateVideoProgressLog(videoId, progressLog).catch(() => {});

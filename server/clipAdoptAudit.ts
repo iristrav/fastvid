@@ -10,6 +10,7 @@ export type ClipAdoptEntry = {
   basename: string;
   source: string;
   assetTitle?: string;
+  segmentGeoLock?: string | null;
 };
 
 const MAX_ENTRIES = 120;
@@ -25,7 +26,8 @@ export function recordClipAdopt(
   beatText: string,
   clipPath: string,
   source: string,
-  assetTitle?: string
+  assetTitle?: string,
+  segmentGeoLock?: string | null
 ): void {
   if (audit.length >= MAX_ENTRIES) return;
   audit.push({
@@ -35,5 +37,6 @@ export function recordClipAdopt(
     basename: path.basename(clipPath),
     source,
     assetTitle: assetTitle?.trim() || undefined,
+    segmentGeoLock: segmentGeoLock ?? undefined,
   });
 }

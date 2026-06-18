@@ -19,6 +19,7 @@ import {
   rotateCuratedCandidates,
   archiveAssetPreflight,
   isArchiveGeoBlockedForBeat,
+  resolveRequiredGeoTagsForBeat,
   shouldPreferPexelsOverArchive,
   shouldTryPexelsFirstForBeat,
   type CuratedCandidatePick,
@@ -781,5 +782,27 @@ describe("curatedMediaSourcing", () => {
         "Why Dutch Cities Work"
       )
     ).toBe(true);
+  });
+
+  it("isArchiveGeoBlockedForBeat rejects Kansas City map on Singapore title beat", () => {
+    const title = "Why Singapore is the Blueprint for Future Cities";
+    const beat = "Public housing keeps rent affordable across the island.";
+    expect(resolveRequiredGeoTagsForBeat(beat, title)).toEqual(
+      expect.arrayContaining(["singapore"])
+    );
+    expect(
+      isArchiveGeoBlockedForBeat(
+        { title: "Historical Map of Kansas City with Railroads", tags: ["kansas city", "map"] },
+        beat,
+        title
+      )
+    ).toBe(true);
+    expect(
+      isArchiveGeoBlockedForBeat(
+        { title: "Marina Bay Sands skyline Singapore", tags: ["singapore", "marina bay"] },
+        beat,
+        title
+      )
+    ).toBe(false);
   });
 });

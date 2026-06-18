@@ -81,6 +81,9 @@ import {
   assetHasNlMarkers,
   assetHasUsMarkers,
   assetHasForeignMarkers,
+  extractTitleGeoPlaceTags,
+  isComparisonGeoTitle,
+  geoTagsForRegion,
 } from "./worldGeoSlugs";
 import {
   isNonDocumentaryVisualHay,
@@ -1681,14 +1684,40 @@ export async function searchCuratedCandidatesForBeat(
   return [];
 }
 
+/** Required geo tags for archive acceptance — beat text, title, or sticky segment lock. */
+export function resolveRequiredGeoTagsForBeat(
+  beatText: string,
+  videoTitle?: string,
+  segmentLock?: BeatGeoRegion | null
+): string[] {
+  const beatGeo = extractBeatGeoPlaceTags(beatText);
+  if (beatGeo.length > 0) return beatGeo;
+
+  if (isComparisonGeoTitle(videoTitle)) {
+    const lock = segmentLock ?? inferBeatGeoRegion(beatText, videoTitle);
+    if (lock === "nl") return geoTagsForRegion("nl", videoTitle);
+    if (lock === "us") return geoTagsForRegion("us", videoTitle);
+    return [];
+  }
+
+  const titleGeo = extractTitleGeoPlaceTags(videoTitle);
+  if (titleGeo.length > 0) return titleGeo;
+
+  const region = inferBeatGeoRegion(beatText, videoTitle);
+  if (region === "nl") return geoTagsForRegion("nl", videoTitle);
+  if (region === "us") return geoTagsForRegion("us", videoTitle);
+  return [];
+}
+
 /** Hard reject archive assets that are clearly from the wrong country for this beat. */
 export function isArchiveGeoBlockedForBeat(
   asset: Pick<{ title?: string | null; tags?: string[] | null }, "title" | "tags">,
   beatText: string,
-  videoTitle?: string
+  videoTitle?: string,
+  segmentLock?: BeatGeoRegion | null
 ): boolean {
-  const geoTags = extractBeatGeoPlaceTags(beatText);
-  if (geoTags.length > 0 && isWrongGeoForBeat(asset, geoTags)) return true;
+  const required = resolveRequiredGeoTagsForBeat(beatText, videoTitle, segmentLock);
+  if (required.length > 0) return isWrongGeoForBeat(asset, required);
 
   const beatRegion = inferBeatGeoRegion(beatText, videoTitle);
   if (beatRegion === "us" || beatRegion === "both") return false;
@@ -1716,12 +1745,18 @@ export function archiveAssetPreflight(
     imageMax?: number;
     beatText?: string;
     videoTitle?: string;
+    segmentGeoLock?: BeatGeoRegion | null;
     videoVisualTopic?: VideoVisualTopic;
   } = {}
 ): boolean {
   if (usedAssetIds.has(asset.id) || usedStorageUrls.has(asset.storageUrl)) return false;
   if (isCuratedOffTopicAsset(asset, topicAnchors, beatTags, opts.videoVisualTopic ?? "general")) return false;
-  if (opts.beatText && isArchiveGeoBlockedForBeat(asset, opts.beatText, opts.videoTitle)) return false;
+  if (
+    opts.beatText &&
+    isArchiveGeoBlockedForBeat(asset, opts.beatText, opts.videoTitle, opts.segmentGeoLock)
+  ) {
+    return false;
+  }
   if (opts.beatText && isGenericPeopleAsset(asset)) {
     const required = extractRequiredVisualTags(opts.beatText);
     if (required.length >= 2 && countVisualTagHits(asset, required) === 0) return false;

@@ -534,3 +534,41 @@ export function assetHasForeignMarkers(
 ): boolean {
   return assetHayHasGeoMarkers(asset, FOREIGN_GEO_SLUGS);
 }
+
+function slugInPool(slug: string, pool: readonly string[]): boolean {
+  return pool.some((p) => slug === p || slug.includes(p) || p.includes(slug));
+}
+
+/** Geo slugs explicitly named in the video title (longest matches first). */
+export function extractTitleGeoPlaceTags(videoTitle?: string): string[] {
+  if (!videoTitle?.trim()) return [];
+  const lower = videoTitle.toLowerCase();
+  const hits: string[] = [];
+  const sorted = [...ALL_GEO_SLUGS].sort((a, b) => b.length - a.length);
+  for (const slug of sorted) {
+    if (!beatTextMentionsGeoSlug(lower, slug)) continue;
+    if (hits.some((h) => h.includes(slug) || slug.includes(h))) continue;
+    hits.push(slug);
+  }
+  return hits;
+}
+
+/** Title compares a non-US place with the United States (NL vs US, Berlin vs US, …). */
+export function isComparisonGeoTitle(videoTitle?: string): boolean {
+  const titleGeo = extractTitleGeoPlaceTags(videoTitle);
+  if (titleGeo.length < 2) return false;
+  const hasUs = titleGeo.some((t) => slugInPool(t, US_GEO_SLUGS));
+  const hasNonUs = titleGeo.some(
+    (t) => slugInPool(t, NL_GEO_SLUGS) || (slugInPool(t, FOREIGN_GEO_SLUGS) && !slugInPool(t, US_GEO_SLUGS))
+  );
+  return hasUs && hasNonUs;
+}
+
+export function geoTagsForRegion(region: "nl" | "us", videoTitle?: string): string[] {
+  const titleGeo = extractTitleGeoPlaceTags(videoTitle);
+  const pool = region === "nl" ? NL_GEO_SLUGS : US_GEO_SLUGS;
+  const fromTitle = titleGeo.filter((t) => slugInPool(t, pool));
+  if (fromTitle.length > 0) return fromTitle;
+  return region === "nl" ? ["netherlands", "holland", "dutch"] : ["united states", "america", "usa"];
+}
+

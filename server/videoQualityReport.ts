@@ -15,9 +15,9 @@ import {
 import type { ClipRejectEntry } from "./clipRejectAudit";
 import { summarizeClipRejectAudit } from "./clipRejectAudit";
 import type { ClipAdoptEntry } from "./clipAdoptAudit";
-import { isArchiveGeoBlockedForBeat } from "./curatedMediaSourcing";
+import { isArchiveGeoBlockedForBeat, resolveRequiredGeoTagsForBeat } from "./curatedMediaSourcing";
 import { PIPELINE_ERROR, pipelineError } from "@shared/appErrors";
-import { inferBeatGeoRegion } from "./vidrushQuality";
+import type { BeatGeoRegion } from "./vidrushQuality";
 
 export type VideoQualityReport = {
   generatedAt: string;
@@ -159,15 +159,19 @@ export function buildVideoQualityReport(
       title: adopt.assetTitle ?? adopt.basename.replace(/_/g, " "),
       tags: [] as string[],
     };
-    if (isArchiveGeoBlockedForBeat(assetLike, adopt.beatText, videoTitle)) {
-      const beatRegion = inferBeatGeoRegion(adopt.beatText, videoTitle);
+    if (isArchiveGeoBlockedForBeat(assetLike, adopt.beatText, videoTitle, adopt.segmentGeoLock as BeatGeoRegion | null)) {
+      const required = resolveRequiredGeoTagsForBeat(
+        adopt.beatText,
+        videoTitle,
+        adopt.segmentGeoLock as BeatGeoRegion | null
+      );
       criticalGeoViolations.push({
         basename: adopt.basename,
         beatText: adopt.beatText.slice(0, 120),
         assetTitle: adopt.assetTitle,
         reason:
-          beatRegion === "nl"
-            ? "US map/city on Netherlands beat"
+          required.some((t) => /singapore|berlin|netherlands|holland|dutch/.test(t))
+            ? "wrong region for title/beat"
             : "wrong region for beat",
       });
     }

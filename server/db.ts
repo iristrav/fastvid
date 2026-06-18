@@ -193,6 +193,22 @@ export async function getVideoById(id: number) {
   return result.length > 0 ? result[0] : undefined;
 }
 
+export function readVideoMetadataObject(video?: { metadata?: unknown } | null): Record<string, unknown> {
+  const metadata = video?.metadata;
+  return metadata && typeof metadata === "object" && !Array.isArray(metadata)
+    ? (metadata as Record<string, unknown>)
+    : {};
+}
+
+/** Merge keys into videos.metadata without dropping fields saved earlier in the pipeline. */
+export async function mergeVideoMetadata(id: number, patch: Record<string, unknown>): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  const video = await getVideoById(id);
+  const merged = { ...readVideoMetadataObject(video), ...patch };
+  await db.update(videos).set({ metadata: merged, updatedAt: new Date() }).where(eq(videos.id, id));
+}
+
 export async function getVideosByUserId(userId: number) {
   const db = await getDb();
   if (!db) return [];
