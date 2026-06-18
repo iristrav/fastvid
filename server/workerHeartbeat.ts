@@ -7,6 +7,18 @@ import { getLlmDiagnostics, type LlmDiagnostics } from "./llmStartupDiagnostics"
 
 let tableEnsured = false;
 
+/** drizzle mysql2 `execute()` returns `[rows, fields]` for SELECT — not a bare row array. */
+function rowsFromExecuteResult<T extends Record<string, unknown>>(raw: unknown): T[] {
+  if (!raw) return [];
+  if (!Array.isArray(raw) || raw.length === 0) return [];
+  const first = raw[0];
+  if (Array.isArray(first)) return first as T[];
+  if (typeof first === "object" && first !== null && !("affectedRows" in first)) {
+    return raw as T[];
+  }
+  return [];
+}
+
 async function ensureHeartbeatTable(): Promise<void> {
   if (tableEnsured) return;
   const db = await getDb();
@@ -55,17 +67,18 @@ export async function readWorkerHeartbeats(): Promise<WorkerHeartbeatRow[]> {
   if (!db) return [];
   try {
     await ensureHeartbeatTable();
-    const rows = (await db.execute(sql`
+    const raw = await db.execute(sql`
       SELECT role, git_commit, llm_provider, service_name, seen_at
       FROM fastvid_worker_heartbeats
       ORDER BY role
-    `)) as unknown as Array<{
+    `);
+    const rows = rowsFromExecuteResult<{
       role: string;
       git_commit: string | null;
       llm_provider: string | null;
       service_name: string | null;
       seen_at: Date | string | null;
-    }>;
+    }>(raw);
     const now = Date.now();
     return rows.map((r) => {
       const seenMs = r.seen_at ? new Date(r.seen_at).getTime() : NaN;
