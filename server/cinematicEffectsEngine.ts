@@ -95,6 +95,64 @@ export function extractStatFromText(text: string): string | null {
   return null;
 }
 
+type VoiceoverKeywordHit = { index: number; length: number; value: string };
+
+function normalizeVoiceoverKeyword(raw: string): string {
+  const s = raw.trim().replace(/\s+/g, " ");
+  if (!s) return "";
+  const pctWord = s.match(/^(\d[\d,.]*)\s*(?:percent|procent)$/i);
+  if (pctWord?.[1]) return `${pctWord[1].replace(/\s/g, "")}%`.slice(0, 28);
+  if (/\d[\d,.]*\s*%/.test(s)) return s.replace(/\s+/g, "").slice(0, 28);
+  return s.toUpperCase().slice(0, 28);
+}
+
+function addVoiceoverKeywordHit(hits: VoiceoverKeywordHit[], index: number, raw: string): void {
+  const value = normalizeVoiceoverKeyword(raw);
+  if (!value || index < 0) return;
+  const end = index + raw.length;
+  for (const h of hits) {
+    const hEnd = h.index + h.length;
+    if (index < hEnd && end > h.index) return;
+  }
+  hits.push({ index, length: raw.length, value });
+}
+
+/** Pull on-screen keywords from narration: %, years, money, Dutch amounts, large counts. */
+export function extractVoiceoverKeywords(text: string, maxItems = 2): string[] {
+  const cleaned = text.replace(/\[visual:[^\]]+\]/gi, " ").replace(/\s+/g, " ").trim();
+  if (!cleaned) return [];
+
+  const hits: VoiceoverKeywordHit[] = [];
+  const patterns: RegExp[] = [
+    /\d[\d,.]*\s*(?:%|percent|procent)\b/gi,
+    /€\s*[\d,.]+(?:\s*(?:million|billion|miljoen|miljard|biljoen|M|B|K))?/gi,
+    /\$[\d,.]+(?:\s*(?:million|billion|miljoen|miljard|M|B|K))?/gi,
+    /\b[\d,.]+\s*(?:miljoen|miljard|biljoen|duizend)\b/gi,
+    /\b(?:1[0-9]{3}|20[0-9]{2})\b/g,
+    /\b[\d,.]+\s+(?:people|soldiers|tanks|planes|victims|doden|slachtoffers|mensen|inwoners)\b/gi,
+  ];
+
+  for (const re of patterns) {
+    re.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(cleaned)) !== null) {
+      addVoiceoverKeywordHit(hits, m.index, m[0]);
+    }
+  }
+
+  hits.sort((a, b) => a.index - b.index || b.value.length - a.value.length);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const h of hits) {
+    const key = h.value.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(h.value);
+    if (out.length >= maxItems) break;
+  }
+  return out;
+}
+
 export function buildStatCountSteps(stat: string): string[] {
   const raw = stat.trim();
   const money = raw.match(/\$[\d,.]+(?:\s*(?:million|billion|miljoen|miljard|M|B|K))?/i)?.[0];
@@ -114,30 +172,10 @@ export function buildStatCountSteps(stat: string): string[] {
 
 export type FacelessLine = { text: string; emphasis: boolean };
 
-/** Split narration into faceless-channel subtitle lines (emphasis words larger). */
-export function parseFacelessSubtitleLines(text: string, maxLines = 4): FacelessLine[] {
-  const cleaned = text.replace(/\[visual:[^\]]+\]/gi, "").replace(/\s+/g, " ").trim();
-  if (!cleaned) return [];
-  const words = cleaned.split(/\s+/).filter(Boolean);
-  if (words.length <= maxLines) {
-    return words.map((w, i) => ({
-      text: w.toUpperCase(),
-      emphasis: i === 0 || w.length >= 5 || /^[A-Z]/.test(w),
-    }));
-  }
-  const emphasisIdx = new Set<number>([0, words.length - 1]);
-  emphasisIdx.add(Math.floor(words.length / 2));
-  const chunk = Math.ceil(words.length / maxLines);
-  const lines: FacelessLine[] = [];
-  for (let i = 0; i < words.length && lines.length < maxLines; i += chunk) {
-    const slice = words.slice(i, i + chunk);
-    const line = slice.join(" ");
-    lines.push({
-      text: emphasisIdx.has(i) ? line.toUpperCase() : line,
-      emphasis: emphasisIdx.has(i) || slice.some((w) => w.length >= 6),
-    });
-  }
-  return lines;
+/** Voiceover keywords only (% / years / amounts) — max 2 lines for faceless B-roll overlays. */
+export function parseFacelessSubtitleLines(text: string, maxLines = 2): FacelessLine[] {
+  const keywords = extractVoiceoverKeywords(text, maxLines);
+  return keywords.map((kw) => ({ text: kw, emphasis: true }));
 }
 
 export type FacelessSubtitlePlacement = "bottom-left" | "bottom-center";
@@ -147,31 +185,76 @@ const FACELESS_VIDEO_PREP_VF =
   `crop=${DOC_STYLE_VIDEO_WIDTH}:${DOC_STYLE_VIDEO_HEIGHT}:(iw-${DOC_STYLE_VIDEO_WIDTH})/2:(ih-${DOC_STYLE_VIDEO_HEIGHT})/2,` +
   `fps=25,format=yuv420p,setsar=1`;
 
-/** Drawtext filters for faceless kinetic subtitles (no PNG overlay — avoids FFmpeg auto_scale failures). */
+const FACELESS_TYPEWRITER_HOLD_SEC = 0.9;
+const FACELESS_TYPEWRITER_FADE_SEC = 0.22;
+const FACELESS_KEYWORD_FONT_SIZE = 58;
+
+/** Typewriter drawtext chain — substring reveal per keyword line (bottom-left/center). */
+export function buildFacelessTypewriterDrawtextChain(
+  inLabel: string,
+  outLabel: string,
+  lines: FacelessLine[],
+  sceneDuration: number,
+  placement: FacelessSubtitlePlacement = "bottom-left"
+): string {
+  if (!lines.length) return `[${inLabel}]copy[${outLabel}]`;
+
+  const marginL = 56;
+  const marginB = 72;
+  const lineHeights = lines.map((line) => (line.emphasis ? 68 : 48));
+  const totalH = lineHeights.reduce((s, h) => s + h, 0);
+  const baseY = DOC_STYLE_VIDEO_HEIGHT - marginB - totalH;
+
+  let chain = "";
+  let prev = inLabel;
+  let lineStart = 0.35;
+
+  lines.forEach((line, lineIdx) => {
+    const safeFull = sanitizeForDrawtext(line.text.toUpperCase(), 28);
+    if (safeFull.length < 1) return;
+
+    const fs = line.emphasis ? FACELESS_KEYWORD_FONT_SIZE : 42;
+    const y = baseY + lineHeights.slice(0, lineIdx).reduce((s, h) => s + h, 0);
+    const x = placement === "bottom-center" ? "(w-text_w)/2" : String(marginL);
+    const typeEnd = lineStart + safeFull.length * TYPEWRITER_CHAR_SEC;
+    const holdEnd = typeEnd + FACELESS_TYPEWRITER_HOLD_SEC;
+    const fadeEnd = Math.min(sceneDuration - 0.12, holdEnd + FACELESS_TYPEWRITER_FADE_SEC);
+    const isLastLine = lineIdx === lines.length - 1;
+
+    for (let k = 1; k <= safeFull.length; k++) {
+      const sub = sanitizeForDrawtext(safeFull.slice(0, k), k);
+      const t0 = lineStart + (k - 1) * TYPEWRITER_CHAR_SEC;
+      const isLastChar = k === safeFull.length;
+      const t1 = isLastChar ? fadeEnd : lineStart + k * TYPEWRITER_CHAR_SEC;
+      const charOut = isLastLine && isLastChar ? outLabel : `fb${lineIdx}_${k}`;
+      const charEnable = `enable='between(t\\,${t0.toFixed(3)}\\,${t1.toFixed(3)})'`;
+      const alphaParam = isLastChar
+        ? `alpha='if(gt(t\\,${holdEnd.toFixed(3)})\\,max(0\\,1-(t-${holdEnd.toFixed(3)})/${FACELESS_TYPEWRITER_FADE_SEC})\\,1)':`
+        : "";
+      chain +=
+        `;[${prev}]drawtext=text='${sub}':fontcolor=white:fontsize=${fs}:` +
+        `x=${x}:y=${y}:` +
+        `${alphaParam}` +
+        `${charEnable}[${charOut}]`;
+      prev = charOut;
+    }
+
+    lineStart = typeEnd + 0.12;
+  });
+
+  if (!chain) return `[${inLabel}]copy[${outLabel}]`;
+  return chain;
+}
+
+/** Legacy comma-join drawtext (static) — prefer buildFacelessTypewriterDrawtextChain. */
 export function buildFacelessDrawtextVF(
   lines: FacelessLine[],
   sceneDuration: number,
   placement: FacelessSubtitlePlacement = "bottom-left"
 ): string {
   if (!lines.length) return "";
-  const startTime = 0.35;
-  const endTime = Math.min(sceneDuration - 0.2, startTime + Math.min(4.5, sceneDuration * 0.55));
-  const enable = `between(t\\,${startTime.toFixed(2)}\\,${endTime.toFixed(2)})`;
-  const marginL = 56;
-  const marginB = 72;
-  const lineHeights = lines.map((line) => (line.emphasis ? 68 : 48));
-  const totalH = lineHeights.reduce((s, h) => s + h, 0);
-  const baseY = DOC_STYLE_VIDEO_HEIGHT - marginB - totalH;
-  return lines
-    .map((line, i) => {
-      const safe = sanitizeForDrawtext(line.text, 36);
-      const fs = line.emphasis ? 58 : 38;
-      const y = baseY + lineHeights.slice(0, i).reduce((s, h) => s + h, 0);
-      const x = placement === "bottom-center" ? "(w-text_w)/2" : String(marginL);
-      const color = line.emphasis ? "white" : "0xDDDDDD";
-      return `drawtext=text='${safe}':fontcolor=${color}:fontsize=${fs}:x=${x}:y=${y}:enable='${enable}'`;
-    })
-    .join(",");
+  const chain = buildFacelessTypewriterDrawtextChain("v0", "v1", lines, sceneDuration, placement);
+  return chain.replace(/^\;?\[v0\]/, "").replace(/\[v1\]$/, "") || "";
 }
 
 export async function renderFacelessSubtitleOverlay(
@@ -232,16 +315,16 @@ export async function burnFacelessTextOnVideoClip(
   const lines = parseFacelessSubtitleLines(text);
   if (!lines.length) return clipPath;
 
-  const drawtext = buildFacelessDrawtextVF(lines, holdSec, "bottom-left");
-  if (!drawtext) return clipPath;
+  const chain = buildFacelessTypewriterDrawtextChain("vprep", "vout", lines, holdSec, "bottom-left");
+  const filterComplex = `[0:v]${FACELESS_VIDEO_PREP_VF}[vprep]${chain}`;
 
   const outPath = path.join(workDir, `scene_${sceneIndex}_b${beatIndex}_vtext.mp4`);
   try {
     await execWithTimeout(
       `${ffmpegBin} -y -i "${clipPath}" -t ${holdSec.toFixed(3)} ` +
-        `-vf "${FACELESS_VIDEO_PREP_VF},${drawtext}" ` +
+        `-filter_complex "${filterComplex}" -map "[vout]" ` +
         `-an -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -r 25 "${outPath}"`,
-      45_000,
+      60_000,
       `Video beat text s${sceneIndex} b${beatIndex}`
     );
     if (fs.existsSync(outPath) && fs.statSync(outPath).size > 800) {

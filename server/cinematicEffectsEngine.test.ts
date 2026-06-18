@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   buildCinematicSfxAudioFilter,
   buildFacelessDrawtextVF,
+  buildFacelessTypewriterDrawtextChain,
   buildStatCountSteps,
   cinematicEffectsEnabled,
   extractStatFromText,
+  extractVoiceoverKeywords,
   extractYearsFromText,
   computeMontageBeatStarts,
   computeVoiceBeatWindows,
@@ -251,24 +253,35 @@ describe("cinematicEffectsEngine", () => {
     expect(overlayUsesFullFrame({ path: "x", startTime: 0, endTime: 1 })).toBe(false);
   });
 
-  it("parses faceless subtitle emphasis lines", () => {
+  it("extracts voiceover keywords in narration order", () => {
+    expect(extractVoiceoverKeywords("In 1945 costs hit $4.2 billion")).toEqual(["1945", "$4.2 BILLION"]);
+    expect(extractVoiceoverKeywords("Unemployment hit 25 procent")).toEqual(["25%"]);
+    expect(extractVoiceoverKeywords("Amsterdam groeide in 2020")).toEqual(["2020"]);
+    expect(extractVoiceoverKeywords("No numbers here")).toEqual([]);
+    expect(extractVoiceoverKeywords("€10 miljard en 15%")).toEqual(["€10 MILJARD", "15%"]);
+  });
+
+  it("parses faceless subtitle lines from voiceover keywords only", () => {
     const lines = parseFacelessSubtitleLines("Elon Musk founded SpaceX in 2002");
     expect(lines).toHaveLength(1);
-    expect(lines[0]!.text.split(/\s+/).length).toBeLessThanOrEqual(2);
-    expect(lines.some((l) => l.emphasis)).toBe(true);
+    expect(lines[0]!.text).toBe("2002");
+    expect(lines[0]!.emphasis).toBe(true);
+    expect(parseFacelessSubtitleLines("No stats in this sentence")).toEqual([]);
+  });
+
+  it("builds faceless typewriter drawtext chain bottom-left", () => {
+    const lines = parseFacelessSubtitleLines("Hitler rose to power in 1933");
+    const chain = buildFacelessTypewriterDrawtextChain("vprep", "vout", lines, 4.0, "bottom-left");
+    expect(chain).toContain("drawtext=");
+    expect(chain).toContain("x=56");
+    expect(chain).toContain("enable=");
+    expect(chain).toContain("text='1'");
+    expect(chain).toContain("[vout]");
   });
 
   it("builds stat count steps for money", () => {
     const steps = buildStatCountSteps("$1 Billion");
     expect(steps[0]).toBe("$0");
     expect(steps.length).toBeGreaterThan(2);
-  });
-
-  it("builds faceless drawtext vf bottom-left", () => {
-    const lines = parseFacelessSubtitleLines("Hitler rose to power in 1933");
-    const vf = buildFacelessDrawtextVF(lines, 4.0, "bottom-left");
-    expect(vf).toContain("drawtext=");
-    expect(vf).toContain("x=56");
-    expect(vf).toContain("enable=");
   });
 });
