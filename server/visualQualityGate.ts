@@ -59,14 +59,14 @@ export function sceneCriticalReviewEnabled(): boolean {
   return process.env.ENABLE_VIDRUSH_QUALITY !== "false";
 }
 
-/** Minimum vision score (0–10). Default 10 for broadcast target. */
+/** Minimum vision score (0–10). Default 8 — strong quality without rejecting near-perfect clips. */
 export function minClipQualityScore(): number {
   const raw = process.env.MIN_CLIP_QUALITY_SCORE?.trim();
   if (raw) {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 5 && n <= 10) return n;
   }
-  return 10;
+  return 8;
 }
 
 /** When true, inconclusive vision (timeout / extract fail) rejects the clip. */
