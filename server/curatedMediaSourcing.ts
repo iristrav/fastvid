@@ -438,13 +438,20 @@ export function assetPassesBeatMinimum(
   semantic?: SemanticMatchResult,
   videoVisualTopic: VideoVisualTopic = "general",
   segmentLock: BeatGeoRegion | null = null,
-  literalVisualTags: string[] = []
+  literalVisualTags: string[] = [],
+  videoTitle?: string
 ): boolean {
   const hay = `${(asset.title ?? "").toLowerCase()} ${normalizeMediaTags(asset.tags ?? []).join(" ")}`;
   if (isNonDocumentaryVisualHay(hay)) return false;
   if (segmentLock && isWrongRegionForSegmentLock(hay, segmentLock)) return false;
 
   if (archiveAssetRejectedForBeat(asset, beatText)) return false;
+
+  const requiredGeo = resolveRequiredGeoTagsForBeat(beatText, videoTitle, segmentLock);
+  if (requiredGeo.length > 0) {
+    if (isWrongGeoForBeat(asset, requiredGeo)) return false;
+    if (countVisualTagHits(asset, requiredGeo) === 0) return false;
+  }
 
   const geoTags = extractBeatGeoPlaceTags(beatText);
   if (geoTags.length > 0) {
@@ -1651,7 +1658,7 @@ export async function searchCuratedCandidatesForBeat(
   const topScore = ranked[0]?.score ?? 0;
   const segmentLock = options?.segmentLock ?? null;
   let filtered = ranked.filter((p) =>
-    assetPassesBeatMinimum(p.asset, beat.text, p.score, topScore, p.semantic, videoVisualTopic, segmentLock)
+    assetPassesBeatMinimum(p.asset, beat.text, p.score, topScore, p.semantic, videoVisualTopic, segmentLock, [], videoTitle)
   );
   if (options?.videosOnly) {
     filtered = filtered.filter((p) => p.asset.mediaType === "video");
@@ -1663,7 +1670,7 @@ export async function searchCuratedCandidatesForBeat(
     const medium = ranked.filter(
       (p) =>
         p.score >= Math.max(40, Math.round(topScore * 0.5)) &&
-        assetPassesBeatMinimum(p.asset, beat.text, p.score, topScore, p.semantic, videoVisualTopic, segmentLock)
+        assetPassesBeatMinimum(p.asset, beat.text, p.score, topScore, p.semantic, videoVisualTopic, segmentLock, [], videoTitle)
     );
     if (medium.length > 0) return medium;
   }
@@ -1674,7 +1681,7 @@ export async function searchCuratedCandidatesForBeat(
         p.score >= Math.max(18, Math.round(topScore * 0.28)) &&
         countVisualTagHits(p.asset, matchTags.length > 0 ? matchTags : beatTags) > 0 &&
         !isGenericPeopleAsset(p.asset) &&
-        assetPassesBeatMinimum(p.asset, beat.text, p.score, topScore, p.semantic, videoVisualTopic, segmentLock)
+        assetPassesBeatMinimum(p.asset, beat.text, p.score, topScore, p.semantic, videoVisualTopic, segmentLock, [], videoTitle)
     );
     if (relaxed.length > 0) return relaxed;
   }
@@ -1694,7 +1701,15 @@ export function resolveRequiredGeoTagsForBeat(
   if (beatGeo.length > 0) return beatGeo;
 
   if (isComparisonGeoTitle(videoTitle)) {
-    const lock = segmentLock ?? inferBeatGeoRegion(beatText, videoTitle);
+    let lock = segmentLock ?? inferBeatGeoRegion(beatText, videoTitle);
+    if (lock === "both" || lock === "neutral") {
+      if (segmentLock === "nl" || segmentLock === "us") {
+        lock = segmentLock;
+      } else {
+        const beatRegion = inferBeatGeoRegion(beatText, videoTitle);
+        lock = beatRegion === "nl" || beatRegion === "us" ? beatRegion : "nl";
+      }
+    }
     if (lock === "nl") return geoTagsForRegion("nl", videoTitle);
     if (lock === "us") return geoTagsForRegion("us", videoTitle);
     return [];
@@ -1845,6 +1860,16 @@ export async function fetchCuratedArchiveBeatClip(
   for (const picked of tryOrder) {
     if (tried >= maxTries) break;
     if (
+      isArchiveGeoBlockedForBeat(
+        picked.asset,
+        beat.text,
+        videoTitle,
+        options?.segmentLock ?? null
+      )
+    ) {
+      continue;
+    }
+    if (
       !assetPassesBeatMinimum(
         picked.asset,
         beat.text,
@@ -1852,7 +1877,9 @@ export async function fetchCuratedArchiveBeatClip(
         topScore,
         undefined,
         videoVisualTopic,
-        options?.segmentLock ?? null
+        options?.segmentLock ?? null,
+        [],
+        videoTitle
       )
     ) {
       continue;
@@ -1945,7 +1972,8 @@ export function shouldPreferPexelsOverArchive(
   beatText: string,
   ranked: CuratedCandidatePick[],
   videoVisualTopic: VideoVisualTopic,
-  segmentLock: BeatGeoRegion | null = null
+  segmentLock: BeatGeoRegion | null = null,
+  videoTitle?: string
 ): boolean {
   if (!archivePexelsHybridEnabled()) return false;
   if (ranked.length === 0) return true;
@@ -1956,7 +1984,7 @@ export function shouldPreferPexelsOverArchive(
     if (isWrongGeoForBeat(top.asset, geoTags)) return true;
     if (countVisualTagHits(top.asset, geoTags) < 2) return true;
   }
-  if (!assetPassesBeatMinimum(top.asset, beatText, top.score, top.score, top.semantic, videoVisualTopic, segmentLock)) {
+  if (!assetPassesBeatMinimum(top.asset, beatText, top.score, top.score, top.semantic, videoVisualTopic, segmentLock, [], videoTitle)) {
     return true;
   }
   const minScore = 45;

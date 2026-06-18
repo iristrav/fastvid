@@ -7,6 +7,8 @@ import { spawn } from "child_process";
 import { invokeLLM } from "./_core/llm";
 import { ENV } from "./_core/env";
 import { pipelineWallClockLimitEnabled, vidrushDocumentaryQualityEnabled } from "./sourcingPolicy";
+import { visionDetectedGeoConflict, visionGeoGateEnabled, type VisionGeoDetection } from "./visionGeoGate";
+import type { BeatGeoRegion } from "./vidrushQuality";
 
 const NARRATION_MATCH_SCHEMA = {
   type: "json_schema" as const,
@@ -21,8 +23,20 @@ const NARRATION_MATCH_SCHEMA = {
         showsSubject: { type: "boolean" },
         wellFramed: { type: "boolean" },
         wrongSubject: { type: "boolean" },
+        detectedPlaces: { type: "array", items: { type: "string" } },
+        showsMap: { type: "boolean" },
+        mapLabels: { type: "array", items: { type: "string" } },
       },
-      required: ["score", "matchesNarration", "showsSubject", "wellFramed", "wrongSubject"],
+      required: [
+        "score",
+        "matchesNarration",
+        "showsSubject",
+        "wellFramed",
+        "wrongSubject",
+        "detectedPlaces",
+        "showsMap",
+        "mapLabels",
+      ],
       additionalProperties: false,
     },
   },
@@ -89,6 +103,7 @@ export function clipVisionSampleCount(): number {
 export function getVisionQaStatus(): {
   ready: boolean;
   clipVisionGate: boolean;
+  visionGeoGate: boolean;
   sceneCriticalReview: boolean;
   minScore: number;
   visionSamplesPerClip: number;
@@ -99,6 +114,7 @@ export function getVisionQaStatus(): {
 } {
   const llmKeyConfigured = Boolean(ENV.forgeApiKey);
   const clipVisionGate = clipVisionGateEnabled();
+  const visionGeoGate = visionGeoGateEnabled();
   const sceneCriticalReview = sceneCriticalReviewEnabled();
   const minScore = minClipQualityScore();
   const visionSamplesPerClip = clipVisionSampleCount();
@@ -118,6 +134,7 @@ export function getVisionQaStatus(): {
   return {
     ready,
     clipVisionGate,
+    visionGeoGate,
     sceneCriticalReview,
     minScore,
     visionSamplesPerClip,
@@ -239,7 +256,9 @@ async function scoreClipNarrationMatch(
                 text: `Spoken narration: "${beatText.slice(0, 220)}"
 ${visualDescription ? `Intended visual: ${visualDescription.slice(0, 180)}` : ""}
 ${videoTitle ? `Documentary topic: ${videoTitle}` : ""}
-Does this frame show what the voiceover describes? Score 0-10, matchesNarration, wrongSubject if clearly unrelated geography/subject (e.g. Toronto/USA map when narration says Netherlands).`,
+Does this frame show what the voiceover describes? Score 0-10, matchesNarration, wrongSubject if clearly unrelated geography/subject (e.g. Philadelphia/US map when narration or title is about Netherlands or Singapore).
+
+Also list detectedPlaces (countries/cities visible), showsMap if a map/diagram is visible, and mapLabels (place names readable on a map). Reject wrong geography even when the shot looks like generic "urban planning".`,
               },
               { type: "image_url", image_url: { url: dataUrl, detail: "low" } },
             ],
@@ -261,6 +280,9 @@ Does this frame show what the voiceover describes? Score 0-10, matchesNarration,
       showsSubject?: boolean;
       wellFramed?: boolean;
       wrongSubject?: boolean;
+      detectedPlaces?: string[];
+      showsMap?: boolean;
+      mapLabels?: string[];
     };
     return {
       score: Math.max(0, Math.min(10, parsed.score ?? 0)),
@@ -268,6 +290,13 @@ Does this frame show what the voiceover describes? Score 0-10, matchesNarration,
       showsSubject: Boolean(parsed.showsSubject),
       wellFramed: Boolean(parsed.wellFramed),
       wrongSubject: Boolean(parsed.wrongSubject),
+      detectedPlaces: Array.isArray(parsed.detectedPlaces)
+        ? parsed.detectedPlaces.filter((p): p is string => typeof p === "string").slice(0, 8)
+        : [],
+      showsMap: Boolean(parsed.showsMap),
+      mapLabels: Array.isArray(parsed.mapLabels)
+        ? parsed.mapLabels.filter((p): p is string => typeof p === "string").slice(0, 8)
+        : [],
     };
   } catch {
     return null;
@@ -332,15 +361,24 @@ Rate relevance 0-10, whether the real subject is visible, and if the shot is wel
   }
 }
 
-type CriticalVisionScore = {
+type CriticalVisionScore = VisionGeoDetection & {
   score: number;
   matchesNarration: boolean;
   showsSubject: boolean;
   wellFramed: boolean;
-  wrongSubject: boolean;
 };
 
-function passesCriticalVision(score: CriticalVisionScore, minScore: number): boolean {
+function passesCriticalVision(
+  score: CriticalVisionScore,
+  minScore: number,
+  beatText: string,
+  videoTitle: string | undefined,
+  segmentLock: BeatGeoRegion | null | undefined
+): boolean {
+  if (visionGeoGateEnabled()) {
+    const geo = visionDetectedGeoConflict(score, beatText, videoTitle, segmentLock);
+    if (geo.conflict) return false;
+  }
   return (
     score.score >= minScore &&
     score.matchesNarration &&
@@ -371,8 +409,9 @@ async function scoreClipAcrossFrames(
   sceneIndex: number,
   beatIndex: number,
   minScore: number,
-  fastMode: boolean
-): Promise<{ pass: boolean; worstScore: number | null; framesScored: number }> {
+  fastMode: boolean,
+  segmentLock?: BeatGeoRegion | null
+): Promise<{ pass: boolean; worstScore: number | null; framesScored: number; geoReject?: string }> {
   const framePaths = await extractPreviewFrames(clipPath, workDir, sceneIndex, beatIndex);
   if (framePaths.length === 0) {
     return { pass: !strictVisionInconclusiveFails(), worstScore: null, framesScored: 0 };
@@ -401,14 +440,19 @@ async function scoreClipAcrossFrames(
   let worstScore = 10;
   for (const score of valid) {
     const pass = useCritical && "matchesNarration" in score
-      ? passesCriticalVision(score as CriticalVisionScore, minScore)
+      ? passesCriticalVision(score as CriticalVisionScore, minScore, beatText, videoTitle, segmentLock)
       : passesRelevanceVision(score as { relevance: number; showsSubject: boolean; wellFramed: boolean }, minScore);
     if (!pass) {
       const s = useCritical && "matchesNarration" in score
         ? (score as CriticalVisionScore).score
         : (score as { relevance: number }).relevance;
       worstScore = Math.min(worstScore, s);
-      return { pass: false, worstScore: s, framesScored: valid.length };
+      let geoReject: string | undefined;
+      if (useCritical && visionGeoGateEnabled() && "detectedPlaces" in score) {
+        const geo = visionDetectedGeoConflict(score as CriticalVisionScore, beatText, videoTitle, segmentLock);
+        if (geo.conflict) geoReject = geo.reason;
+      }
+      return { pass: false, worstScore: s, framesScored: valid.length, geoReject };
     }
     const s = useCritical && "matchesNarration" in score
       ? (score as CriticalVisionScore).score
@@ -429,7 +473,8 @@ export async function clipPassesVisionGate(
   beatIndex: number,
   fastMode: boolean,
   minScore = minClipQualityScore(),
-  visualDescription?: string
+  visualDescription?: string,
+  segmentLock?: BeatGeoRegion | null
 ): Promise<boolean> {
   if (fastMode || !clipVisionGateEnabled() || !shouldVisionCheckClip(clipPath)) return true;
 
@@ -442,13 +487,15 @@ export async function clipPassesVisionGate(
     sceneIndex,
     beatIndex,
     minScore,
-    fastMode
+    fastMode,
+    segmentLock
   );
 
   if (!result.pass) {
+    const geoNote = result.geoReject ? ` geo=${result.geoReject}` : "";
     console.warn(
       `[VisionGate] Scene ${sceneIndex} beat ${beatIndex}: reject "${path.basename(clipPath)}" ` +
-        `(${result.framesScored} frames, worst=${result.worstScore ?? "?"}/10, need ≥${minScore})`
+        `(${result.framesScored} frames, worst=${result.worstScore ?? "?"}/10, need ≥${minScore})${geoNote}`
     );
   }
   return result.pass;
@@ -489,7 +536,7 @@ export async function scoreAdoptedClipQuality(
   let worst = valid[0]!;
   for (const s of valid) {
     if (s.score < worst.score) worst = s;
-    if (!passesCriticalVision(s, minScore)) {
+    if (!passesCriticalVision(s, minScore, beatText, videoTitle, null)) {
       return { ...s, score: s.score };
     }
   }

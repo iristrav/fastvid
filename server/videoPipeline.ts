@@ -13439,7 +13439,8 @@ async function beatClipPassesVisionGate(
       beat.index,
       false,
       minScore,
-      semanticProfile?.summary
+      semanticProfile?.summary,
+      dedup.segmentGeoLock
     ))
   ) {
     recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clipPath, "vision_gate", queryLabel);
@@ -13670,7 +13671,7 @@ async function adoptArchiveBeatClip(
     let tried = 0;
     for (const picked of ranked) {
       if (tried >= tryCap) break;
-      if (!relaxed && !assetPassesBeatMinimum(picked.asset, beat.text, picked.score, topScore, picked.semantic, videoVisualTopic)) {
+      if (!relaxed && !assetPassesBeatMinimum(picked.asset, beat.text, picked.score, topScore, picked.semantic, videoVisualTopic, dedup.segmentGeoLock, [], videoTitle)) {
         continue;
       }
       if (relaxed && picked.score < minAcceptScore && topScore > minAcceptScore + 6) {
@@ -13742,6 +13743,7 @@ async function adoptArchiveBeatClip(
           varietySeed: dedup.varietySeed + beat.index + scene.index,
           crossVideoExcludeIds: dedup.crossVideoExcludeIds,
           assetsCache: dedup.archiveAssetsCache,
+          segmentLock: dedup.segmentGeoLock,
         }
       );
       dedup.motionGraphicsUsed = mgfxBudget.used;
@@ -14402,6 +14404,7 @@ async function fillBeatVisual(
           crossVideoExcludeIds: dedup.crossVideoExcludeIds,
           assetsCache: dedup.archiveAssetsCache,
           semanticProfile,
+          segmentLock: dedup.segmentGeoLock,
         }
       ).catch((err) => {
         console.warn(

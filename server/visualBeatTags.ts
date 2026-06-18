@@ -1159,6 +1159,14 @@ export function isWrongGeoForBeat(
   if (needsNl && needsUs) {
     return geoHits === 0;
   }
+  const needsForeignOnly =
+    requiredGeoTags.some((t) => slugSetIncludes([t], FOREIGN_GEO_SLUGS)) &&
+    !needsNl &&
+    !needsUs;
+  if (needsForeignOnly) {
+    if ((hasUs || hasNl) && geoHits === 0) return true;
+    return geoHits === 0;
+  }
   return geoHits === 0;
 }
 

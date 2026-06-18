@@ -784,6 +784,23 @@ describe("curatedMediaSourcing", () => {
     ).toBe(true);
   });
 
+  it("resolveRequiredGeoTagsForBeat uses nl lock on neutral beat in NL vs US comparison", () => {
+    const title =
+      "Why the Netherlands Is the Opposite of the U.S. — compare Dutch cycling with American sprawl.";
+    const beat = "These contrasting design philosophies reveal secrets about urban happiness.";
+    expect(resolveRequiredGeoTagsForBeat(beat, title, "nl")).toEqual(
+      expect.arrayContaining(["netherlands"])
+    );
+    expect(
+      isArchiveGeoBlockedForBeat(
+        { title: "Historical Map of Early Philadelphia Streets", tags: ["philadelphia", "map"] },
+        beat,
+        title,
+        "nl"
+      )
+    ).toBe(true);
+  });
+
   it("isArchiveGeoBlockedForBeat rejects Kansas City map on Singapore title beat", () => {
     const title = "Why Singapore is the Blueprint for Future Cities";
     const beat = "Public housing keeps rent affordable across the island.";

@@ -179,7 +179,10 @@ export function resolveSegmentGeoLock(
   videoTitle?: string
 ): BeatGeoRegion {
   if (beatRegion === "nl" || beatRegion === "us") return beatRegion;
-  if (beatRegion === "both") return priorLock ?? inferPrimaryGeoFromTitle(videoTitle);
+  if (beatRegion === "both") {
+    if (priorLock === "nl" || priorLock === "us") return priorLock;
+    return "nl";
+  }
   if (priorLock && priorLock !== "neutral" && priorLock !== "both") return priorLock;
   const fromTitle = inferPrimaryGeoFromTitle(videoTitle);
   return fromTitle === "both" ? "nl" : fromTitle;

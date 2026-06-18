@@ -18,6 +18,19 @@ import {
 import type { VideoQualityReport } from "./videoQualityReport";
 
 /** Pexels/Pixabay queries anchored to beat + title geography (wrong-country stock avoided). */
+export function buildDocumentaryShotQueries(baseQuery: string, beatIndex: number): string[] {
+  const q = baseQuery.trim();
+  if (q.length < 4) return [];
+  const variants = [
+    `${q} wide establishing aerial`,
+    `${q} medium street level documentary`,
+    `${q} detail close up architecture`,
+  ];
+  const start = beatIndex % variants.length;
+  return [variants[start]!, variants[(start + 1) % variants.length]!];
+}
+
+/** Pexels/Pixabay queries anchored to beat + title geography (wrong-country stock avoided). */
 export function buildEmergencyGeoStockQueries(
   beatText: string,
   videoTitle?: string,
@@ -36,9 +49,11 @@ export function buildEmergencyGeoStockQueries(
   ];
 
   if (!isComparisonGeoTitle(videoTitle) && titleGeo.length > 0) {
+    const beatSeed = beatText.split("").reduce((a, c) => a + c.charCodeAt(0), 0);
     for (const t of titleGeo.slice(0, 3)) {
       anchored.push(`${t} documentary b-roll`);
       anchored.push(`${t} infrastructure aerial`);
+      anchored.push(...buildDocumentaryShotQueries(`${t} city`, beatSeed + t.length));
     }
   }
 
