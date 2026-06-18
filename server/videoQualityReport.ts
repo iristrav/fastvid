@@ -40,6 +40,13 @@ export type VideoQualityReport = {
   }>;
   pipelineSec?: number;
   stockBeatsUsed?: number;
+  postRenderSpotCheck?: {
+    ok: boolean;
+    blackFrameCount: number;
+    framesChecked: number;
+    worstMeanLuma: number | null;
+    warnings: string[];
+  };
   score: number;
 };
 

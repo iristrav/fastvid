@@ -584,12 +584,27 @@ function cosineSimilarity(a: number[], b: number[]): number {
   return dot / (Math.sqrt(na) * Math.sqrt(nb));
 }
 
+/** Exported for archive embedding index — text-embedding-3-small with in-memory cache. */
+export async function createTextEmbedding(text: string): Promise<number[] | null> {
+  return createEmbedding(text);
+}
+
+export function cosineSimilarityVectors(a: number[], b: number[]): number {
+  return cosineSimilarity(a, b);
+}
+
 export async function computeSemanticSimilarity(
   profile: BeatSemanticProfile,
-  asset: Pick<MediaArchiveAsset, "title" | "tags" | "sourceNote">
+  asset: Pick<MediaArchiveAsset, "title" | "tags" | "sourceNote"> & { id?: number }
 ): Promise<number> {
   const beatDoc = `${profile.summary}. ${profile.beatText}. ${profile.searchTiers.flat().join(", ")}`;
   const assetDoc = buildAssetSemanticDocument(asset);
+
+  if (typeof asset.id === "number") {
+    const { scoreBeatAgainstStoredEmbedding } = await import("./archiveEmbeddingIndex");
+    const stored = await scoreBeatAgainstStoredEmbedding(beatDoc, asset.id);
+    if (stored != null) return stored;
+  }
 
   const [beatEmb, assetEmb] = await Promise.all([
     createEmbedding(beatDoc),

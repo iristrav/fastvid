@@ -4,6 +4,7 @@
 import type { Express, Request, Response } from "express";
 import express from "express";
 import { APP_ERROR, appErrorMessage } from "@shared/appErrors";
+import { indexArchiveAssetEmbedding } from "./archiveEmbeddingIndex";
 import {
   enrichArchiveAssetFields,
   inferArchiveMediaMime,
@@ -41,6 +42,14 @@ import {
   normalizeMediaTags,
 } from "./db";
 import { storagePut } from "./storage";
+
+function scheduleArchiveEmbeddingIndex(assetId: number): void {
+  void getMediaArchiveAssetById(assetId)
+    .then((asset) => (asset ? indexArchiveAssetEmbedding(asset) : undefined))
+    .catch((err) =>
+      console.warn(`[ArchiveIndex] asset ${assetId}:`, (err as Error).message?.slice(0, 80))
+    );
+}
 
 export type ArchiveUploadInput = {
   archiveId: number;
@@ -293,6 +302,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
             isActive: 1,
           });
           if (!assetId) return null;
+          scheduleArchiveEmbeddingIndex(assetId);
           savedCount += 1;
           progress({
             stage: "save_clips",
@@ -402,6 +412,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
   if (!assetId) {
     throw new ArchiveUploadError(500, appErrorMessage(APP_ERROR.SERVICE_ERROR, "Failed to save asset"));
   }
+  scheduleArchiveEmbeddingIndex(assetId);
 
   const asset = await getMediaArchiveAssetById(assetId);
   finishArchiveUploadJob(jobId, true, `${isVideo ? "Video" : "Image"} saved`, {

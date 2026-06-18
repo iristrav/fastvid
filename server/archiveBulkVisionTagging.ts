@@ -7,6 +7,7 @@ import {
   generateArchiveAssetAiMetadataFromPath,
 } from "./archiveAssetTagging";
 import { loadArchiveAssetFile } from "./archiveAssetLoad";
+import { indexArchiveAssetEmbedding } from "./archiveEmbeddingIndex";
 import {
   filterMediaArchiveAssets,
   getMediaArchiveAssetById,
@@ -122,6 +123,7 @@ async function autoTitleSingleAsset(
           error: "Tags were not saved to the database",
         };
       }
+      void indexArchiveAssetEmbedding(saved).catch(() => undefined);
 
       console.log(
         `[ArchiveAI] auto-title asset ${id}: "${fields.title.slice(0, 60)}" tags=[${savedTags.join(", ")}]`

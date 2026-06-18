@@ -10,6 +10,7 @@
  * Source priority: Wikimedia → Archive → Pexels → Pixabay.
  */
 import { extractBeatGeoPlaceTags, extractEntitySearchTags } from "./visualBeatTags";
+import { extractTitleGeoPlaceTags } from "./worldGeoSlugs";
 import { visualMetadataPassesBeatGate } from "./vidrushQuality";
 
 export interface VisualSceneAnalysis {
@@ -231,11 +232,14 @@ export function buildV1WikimediaQueries(
   const q2 = analysis.visual_description.slice(0, 80).trim();
   const q3 = analysis.main_topic.slice(0, 60).trim();
   const geo = extractBeatGeoPlaceTags(analysis.sentence);
-  const geoQueries = geo.slice(0, 3).map((g) => `${g} documentary`);
+  const titleGeo = extractTitleGeoPlaceTags(videoTitle);
+  const geoQueries = [...geo, ...titleGeo]
+    .slice(0, 4)
+    .map((g) => `${g} documentary photograph`);
   const entityQueries = extractEntitySearchTags(analysis.sentence)
     .slice(0, 3)
     .map((e) => `${e} historical photograph`);
-  return [...new Set([q1, q2, q3, ...geoQueries, ...entityQueries].filter((q) => q.length >= 3))].slice(0, 8);
+  return [...new Set([q1, q2, q3, ...geoQueries, ...entityQueries].filter((q) => q.length >= 3))].slice(0, 10);
 }
 
 /** Score floor for adopting a Wikimedia V1 still — universal default (override via WIKIMEDIA_V1_THRESHOLD). */
@@ -245,7 +249,12 @@ export function wikimediaV1AdoptionThreshold(_videoTitle?: string, _beatText?: s
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 50 && n <= 95) return n;
   }
-  return V1_ADOPTION_THRESHOLD;
+  return 65;
+}
+
+/** Second-pass Wikimedia metadata floor when strict pass finds nothing. */
+export function wikimediaV1RelaxedThreshold(videoTitle?: string, beatText?: string): number {
+  return Math.max(52, wikimediaV1AdoptionThreshold(videoTitle, beatText) - 12);
 }
 
 /** Reject Wikimedia metadata before download — beat-driven, all topics. */

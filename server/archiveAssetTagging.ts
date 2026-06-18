@@ -10,6 +10,11 @@ import { promisify } from "util";
 import { invokeLLM } from "./_core/llm";
 import { ENV } from "./_core/env";
 import { normalizeMediaTags } from "./db";
+import {
+  appendMapLabelsToSourceNote,
+  extractGeoSlugsFromVisionPayload,
+  mergeGeoSlugsIntoArchiveTags,
+} from "./archiveGeoTagging";
 
 const execAsync = promisify(exec);
 
@@ -37,6 +42,10 @@ type ArchiveAiVisionPayload = {
   mood?: string;
   camera?: string;
   colors?: string[];
+  /** Readable place names on maps/diagrams (OCR-style). */
+  mapLabels?: string[];
+  /** Any visible on-screen text (signs, captions, map titles). */
+  visibleTextOnScreen?: string[];
 };
 
 const TAG_JSON_SCHEMA_PROPERTIES = {
@@ -57,6 +66,8 @@ const TAG_JSON_SCHEMA_PROPERTIES = {
   mood: { type: "string" },
   camera: { type: "string" },
   colors: { type: "array", items: { type: "string" } },
+  mapLabels: { type: "array", items: { type: "string" } },
+  visibleTextOnScreen: { type: "array", items: { type: "string" } },
 } as const;
 
 /** Full schema — used for single-clip uploads (strict, all fields). */
@@ -113,8 +124,8 @@ const TAG_JSON_SCHEMA_MINIMAL = {
   },
 } as const;
 
-/** Max searchable tags stored per asset (pipeline + semantic matching). */
-export const ARCHIVE_MAX_TAGS = 4;
+/** Max searchable tags stored per asset (pipeline + semantic matching). Geo slugs prioritized. */
+export const ARCHIVE_MAX_TAGS = 6;
 
 /** Vision LLM timeout — quality over speed; override via env. */
 function archiveVisionTimeoutMs(frameCount: number): number {
@@ -248,6 +259,8 @@ export function flattenArchiveAiMetadata(parsed: ArchiveAiVisionPayload): Archiv
   if (!title) return null;
 
   let tags = selectHighQualityArchiveTags(parsed);
+  const geoSlugs = extractGeoSlugsFromVisionPayload(parsed);
+  tags = mergeGeoSlugsIntoArchiveTags(tags, geoSlugs, ARCHIVE_MAX_TAGS);
   tags = padArchiveTags(tags, parsed, title);
   if (tags.length === 0) {
     tags = normalizeMediaTags(title.split(/\s+/).filter((w) => w.length > 3)).slice(0, ARCHIVE_MAX_TAGS);
@@ -266,9 +279,15 @@ export function flattenArchiveAiMetadata(parsed: ArchiveAiVisionPayload): Archiv
     parsed.sceneType?.trim() ? `Scene: ${parsed.sceneType.trim()}` : "",
     parsed.actions?.length ? `Actions: ${parsed.actions.slice(0, 6).join(", ")}` : "",
     parsed.visualDetails?.length ? `Details: ${parsed.visualDetails.slice(0, 8).join(", ")}` : "",
+    parsed.mapLabels?.length ? `Map labels: ${parsed.mapLabels.slice(0, 8).join(", ")}` : "",
+    parsed.visibleTextOnScreen?.length
+      ? `On-screen text: ${parsed.visibleTextOnScreen.slice(0, 6).join(", ")}`
+      : "",
   ].filter(Boolean);
 
-  const description = detailBits.join(" | ").slice(0, 500) || title;
+  let description = detailBits.join(" | ").slice(0, 500) || title;
+  description =
+    appendMapLabelsToSourceNote(description, parsed.mapLabels, geoSlugs)?.slice(0, 512) ?? description;
   return { title, description, tags };
 }
 
@@ -836,8 +855,12 @@ function buildVisionPrompt(
     "",
     "Also fill structured fields to support title/description (arrays can be short):",
     "- persons, countries, cities, events, locations, objects, actions, era, setting, sceneType",
+    "- mapLabels: every readable place name on maps/diagrams (e.g. Philadelphia, Kansas City, Singapore)",
+    "- visibleTextOnScreen: signs, captions, map titles, street names visible in frame",
     "",
     "Rules:",
+    "- If the frame shows a MAP or historical diagram, list ALL readable city/country names in mapLabels.",
+    "- Wrong geography on a map must still be tagged (e.g. Philadelphia map → mapLabels: [Philadelphia, Pennsylvania]).",
     "- Prefer specific combinations: 'amsterdam canal bikes' over separate tags 'amsterdam' + 'city'.",
     "- Name exact people/places/events only when clearly visible.",
     "- Tag visible place + activity when recognizable (city, landmark, sport, vehicle, building).",

@@ -55,6 +55,7 @@ import {
   scoreVisualForScene,
   visualMatchingV1Enabled,
   wikimediaV1AdoptionThreshold,
+  wikimediaV1RelaxedThreshold,
   wikimediaMetadataPassesBeatGate,
 } from "./visualMatchingEngine";
 import {
@@ -110,7 +111,7 @@ import {
   scriptGuidedBudgetMs,
   scriptGuidedClipsEnabled,
 } from "./scriptGuidedClipFinder";
-import { clipPassesVisionGate, clipVisionGateEnabled, minClipQualityScore } from "./visualQualityGate";
+import { clipPassesVisionGate, clipVisionGateEnabled, minClipQualityScore, minWikiClipQualityScore } from "./visualQualityGate";
 import { archivePexelsFallbackEnabled, curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
@@ -164,6 +165,7 @@ import type { ClipAdoptEntry } from "./clipAdoptAudit";
 import { createClipAdoptAudit, recordClipAdopt } from "./clipAdoptAudit";
 import { buildEditorScenesFromPipeline } from "./editorClips";
 import { buildVideoQualityReport, logVideoQualityReport } from "./videoQualityReport";
+import { postRenderSpotCheckEnabled, spotCheckFinalVideo } from "./postRenderSpotCheck";
 import { buildEmergencyGeoStockQueries, logQualityReportExportWarnings } from "./pipelineSelfHeal";
 import { extractTitleGeoPlaceTags } from "./worldGeoSlugs";
 
@@ -3771,10 +3773,11 @@ async function fetchWikimediaImagesV1(
   sceneIndex: number,
   beatIndex: number,
   fileTag: string,
-  videoTitle?: string
+  videoTitle?: string,
+  minThreshold?: number
 ): Promise<string | null> {
   const UA = { "User-Agent": "Fastvid/1.0 (video generation)" };
-  const adoptThreshold = wikimediaV1AdoptionThreshold(videoTitle, analysis.sentence);
+  const adoptThreshold = minThreshold ?? wikimediaV1AdoptionThreshold(videoTitle, analysis.sentence);
   const queries = buildV1WikimediaQueries(analysis, videoTitle);
 
   for (const query of queries) {
@@ -13804,17 +13807,48 @@ async function adoptWikimediaBeatClip(
 
   const baseAnalysis = analyzeSceneVisual(beat.text, videoTitle);
   const geoQueries = buildGeoStockSearchQueries(beat.text, videoTitle).slice(0, 3);
+  const titleGeo = extractTitleGeoPlaceTags(videoTitle).slice(0, 3);
   const attempts: Array<{
     analysis: ReturnType<typeof analyzeSceneVisual>;
     fileTag: string;
     timeoutMs: number;
-  }> = [{ analysis: baseAnalysis, fileTag: `wiki${beat.index}`, timeoutMs: 40_000 }];
+    minThreshold?: number;
+    visionMinScore: number;
+  }> = [
+    {
+      analysis: baseAnalysis,
+      fileTag: `wiki${beat.index}`,
+      timeoutMs: 40_000,
+      visionMinScore: minWikiClipQualityScore(),
+    },
+  ];
   for (let gi = 0; gi < geoQueries.length; gi++) {
     const q = geoQueries[gi]!;
     attempts.push({
       analysis: { ...baseAnalysis, keyword: q },
       fileTag: `wiki${beat.index}g${gi}`,
       timeoutMs: 35_000,
+      visionMinScore: minWikiClipQualityScore(),
+    });
+  }
+  for (let ti = 0; ti < titleGeo.length; ti++) {
+    const place = titleGeo[ti]!;
+    attempts.push({
+      analysis: { ...baseAnalysis, keyword: `${place} city documentary photograph` },
+      fileTag: `wiki${beat.index}t${ti}`,
+      timeoutMs: 32_000,
+      visionMinScore: minWikiClipQualityScore(),
+    });
+  }
+  const relaxedThreshold = wikimediaV1RelaxedThreshold(videoTitle, beat.text);
+  for (let ti = 0; ti < titleGeo.length; ti++) {
+    const place = titleGeo[ti]!;
+    attempts.push({
+      analysis: { ...baseAnalysis, keyword: `${place} skyline historical photo` },
+      fileTag: `wiki${beat.index}r${ti}`,
+      timeoutMs: 28_000,
+      minThreshold: relaxedThreshold,
+      visionMinScore: Math.max(5, minWikiClipQualityScore() - 1),
     });
   }
 
@@ -13829,7 +13863,8 @@ async function adoptWikimediaBeatClip(
           scene.index,
           beat.index,
           attempt.fileTag,
-          videoTitle
+          videoTitle,
+          attempt.minThreshold
         ),
         attempt.timeoutMs,
         `Wikimedia scene ${scene.index} beat ${beat.index} attempt ${ai + 1}`
@@ -13844,7 +13879,8 @@ async function adoptWikimediaBeatClip(
           videoTitle,
           dedup,
           semanticProfile,
-          "wikimedia"
+          "wikimedia",
+          attempt.visionMinScore
         )) &&
         (await tryClip(wikiClip, holdSec))
       ) {
@@ -17454,6 +17490,23 @@ export async function runVideoPipeline(
       finalVideoPath = await ensureFinalVideoDuration(finalVideoPath, workDir, videoId, targetSec);
     }
     console.log(`[Pipeline] Stage 5 (assemble+music): ${((Date.now()-t4)/1000).toFixed(1)}s`);
+
+    if (postRenderSpotCheckEnabled()) {
+      const spot = await spotCheckFinalVideo(finalVideoPath);
+      qualityReport.postRenderSpotCheck = {
+        ok: spot.ok,
+        blackFrameCount: spot.blackFrameCount,
+        framesChecked: spot.framesChecked,
+        worstMeanLuma: spot.worstMeanLuma,
+        warnings: spot.warnings,
+      };
+      for (const w of spot.warnings) {
+        qualityReport.warnings.push(`Post-render: ${w}`);
+      }
+      if (!spot.ok) {
+        console.warn(`[Pipeline] Post-render spot-check: ${spot.warnings.join("; ")}`);
+      }
+    }
 
     // ── Stage 6: Upload to S3 ─────────────────────────────────────────────────
     onProgress?.({ stage: STAGE_LABELS.uploading, percent: 93 });
