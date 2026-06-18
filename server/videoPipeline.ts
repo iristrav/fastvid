@@ -111,7 +111,7 @@ import {
   scriptGuidedClipsEnabled,
 } from "./scriptGuidedClipFinder";
 import { clipPassesVisionGate, clipVisionGateEnabled, minClipQualityScore } from "./visualQualityGate";
-import { archivePexelsFallbackEnabled, curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled } from "./sourcingPolicy";
+import { archivePexelsFallbackEnabled, curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -2573,6 +2573,74 @@ async function trimVoiceoverLeadingSilence(audioPath: string): Promise<void> {
 }
 
 /** UI voices are ElevenLabs IDs (stored in voices.fishAudioReferenceId). Never remap to Fish. */
+const FISH_AUDIO_REFERENCE_ID = "0327fdb5da9e4fd782899a8058c8ae2b";
+
+function isElevenLabsQuotaOrAuthError(message: string): boolean {
+  return /quota_exceeded|quota exceeded|insufficient_quota|exceeds your quota/i.test(message);
+}
+
+async function synthesizeFishAudioVoice(
+  text: string,
+  outputPath: string,
+  timeoutMs: number,
+  label: string
+): Promise<number> {
+  if (!FISH_AUDIO_API_KEY) {
+    throw pipelineError(PIPELINE_ERROR.VOICEOVER, "Fish Audio API key is not configured");
+  }
+  const MAX_ATTEMPTS = 3;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const response = await withTimeout(
+        fetch("https://api.fish.audio/v1/tts", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${FISH_AUDIO_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            text,
+            reference_id: FISH_AUDIO_REFERENCE_ID,
+            format: "mp3",
+            mp3_bitrate: 192,
+            normalize: true,
+            latency: "normal",
+          }),
+        }),
+        timeoutMs,
+        `Fish Audio ${label} attempt ${attempt}`
+      );
+
+      if (response.status === 429) {
+        await new Promise((r) => setTimeout(r, 1000 + attempt * 1000));
+        continue;
+      }
+
+      if (!response.ok) {
+        const errText = await response.text();
+        throw pipelineError(
+          PIPELINE_ERROR.VOICEOVER,
+          `Fish Audio HTTP ${response.status}: ${errText.slice(0, 200)}`
+        );
+      }
+
+      const audioBuffer = Buffer.from(await response.arrayBuffer());
+      if (audioBuffer.length < 100) {
+        throw pipelineError(PIPELINE_ERROR.VOICEOVER_EMPTY, "Fish Audio returned empty audio");
+      }
+
+      fs.writeFileSync(outputPath, audioBuffer);
+      const dur = await probeVideoDurationSec(outputPath);
+      console.log(`[Pipeline] Fish Audio ${label}: ${dur.toFixed(1)}s`);
+      return dur > 0 ? dur : Math.max(3, Math.round(audioBuffer.length / 40000));
+    } catch (err) {
+      if (attempt === MAX_ATTEMPTS) throw err;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+  }
+  throw pipelineError(PIPELINE_ERROR.VOICEOVER, "Fish Audio TTS failed after retries");
+}
+
 async function synthesizeElevenLabsVoice(
   text: string,
   outputPath: string,
@@ -2612,6 +2680,12 @@ async function synthesizeElevenLabsVoice(
       }
       if (!response.ok) {
         const errText = await response.text();
+        if (fishAudioFallbackEnabled() && (response.status === 401 || isElevenLabsQuotaOrAuthError(errText))) {
+          console.warn(
+            `[Pipeline] ElevenLabs ${label}: quota/auth error — Fish Audio fallback`
+          );
+          return synthesizeFishAudioVoice(text, outputPath, timeoutMs, `fallback (${label})`);
+        }
         throw pipelineError(
           PIPELINE_ERROR.VOICEOVER,
           `ElevenLabs voice ${elevenVoiceId.slice(0, 8)}… HTTP ${response.status}: ${errText.slice(0, 200)}`
@@ -2626,6 +2700,11 @@ async function synthesizeElevenLabsVoice(
       console.log(`[Pipeline] ElevenLabs ${label}: voice=${elevenVoiceId.slice(0, 10)}… ${dur.toFixed(1)}s`);
       return dur > 0 ? dur : Math.max(3, Math.round(audioBuffer.length / 40000));
     } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (fishAudioFallbackEnabled() && isElevenLabsQuotaOrAuthError(msg)) {
+        console.warn(`[Pipeline] ElevenLabs ${label}: quota error — Fish Audio fallback`);
+        return synthesizeFishAudioVoice(text, outputPath, timeoutMs, `fallback (${label})`);
+      }
       if (attempt === MAX_ATTEMPTS) throw err;
       await new Promise((r) => setTimeout(r, 500));
     }
@@ -2678,69 +2757,9 @@ export async function generateVoiceover(
     );
   }
 
-  const fishReferenceId = "0327fdb5da9e4fd782899a8058c8ae2b";
+  const fishReferenceId = FISH_AUDIO_REFERENCE_ID;
   if (FISH_AUDIO_API_KEY && !options?.preferElevenLabs) {
-    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-      try {
-        const response = await withTimeout(
-          fetch("https://api.fish.audio/v1/tts", {
-            method: "POST",
-            headers: {
-              "Authorization": `Bearer ${FISH_AUDIO_API_KEY}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              text: cleanText,
-              reference_id: fishReferenceId,
-              format: "mp3",
-              mp3_bitrate: 192,
-              normalize: true,
-              latency: "normal",
-            }),
-          }),
-          TTS_TIMEOUT_MS,
-          `Fish Audio TTS attempt ${attempt}`
-        );
-
-        if (response.status === 429) {
-          const waitMs = 1000 + attempt * 1000;
-          console.warn(`[Pipeline] Fish Audio 429 (attempt ${attempt}), retrying in ${waitMs}ms`);
-          await new Promise(r => setTimeout(r, waitMs));
-          continue;
-        }
-
-        if (!response.ok) {
-          const errText = await response.text();
-          throw pipelineError(PIPELINE_ERROR.VOICEOVER, `Fish Audio HTTP ${response.status}: ${errText.slice(0, 200)}`);
-        }
-
-        const audioBuffer = Buffer.from(await response.arrayBuffer());
-        if (audioBuffer.length < 100) throw pipelineError(PIPELINE_ERROR.VOICEOVER_EMPTY, "Fish Audio returned empty audio");
-
-        fs.writeFileSync(outputPath, audioBuffer);
-        console.log(`[Pipeline] Fish Audio TTS written: ${audioBuffer.length} bytes to ${outputPath}`);
-
-        let durationSec = Math.max(3, Math.round(audioBuffer.length / 40000));
-        try {
-          const { execSync: es } = await import('child_process');
-          for (const probePath of FFPROBE_PATHS()) {
-            try {
-              const probeOut = es(`"${probePath}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${outputPath}"`, { encoding: 'utf8', timeout: 8000 });
-              const parsed = parseFloat(probeOut.trim());
-              if (!isNaN(parsed) && parsed > 0) { durationSec = Math.ceil(parsed); break; }
-            } catch { /* try next */ }
-          }
-        } catch { /* use estimate */ }
-        console.log(`[Pipeline] Fish Audio TTS scene ${outputPath.match(/scene_(\d+)/)?.[1] ?? '?'}: ${durationSec}s`);
-        return durationSec;
-      } catch (err) {
-        if (attempt === MAX_ATTEMPTS) {
-          console.warn(`[Pipeline] Fish Audio failed after ${MAX_ATTEMPTS} attempts:`, err);
-          break;
-        }
-        await new Promise(r => setTimeout(r, 500));
-      }
-    }
+    return synthesizeFishAudioVoice(cleanText, outputPath, TTS_TIMEOUT_MS, "primary");
   }
 
   // ── ElevenLabs TTS (FALLBACK — try if Fish Audio fails and key available) ───────────

@@ -23,6 +23,7 @@ import {
   curatedArchiveOnlyVisuals,
   externalVisualSourcingEnabled,
   elevenLabsOnlyVoice,
+  fishAudioFallbackEnabled,
 } from "../sourcingPolicy";
 import { ENV, groqKeyFromEnv, openAiKeyFromEnv } from "./env";
 import { getVisionQaStatus } from "../visualQualityGate";
@@ -130,8 +131,12 @@ async function startServer() {
   console.log(
     "[Fastvid] Voiceover:",
     elevenLabsOnlyVoice()
-      ? "✓ ElevenLabs only"
-      : "✗ Fish Audio fallback allowed (ELEVENLABS_ONLY=false)"
+      ? fishAudioFallbackEnabled()
+        ? "✓ ElevenLabs primary, Fish Audio on quota errors"
+        : "✓ ElevenLabs only"
+      : fishAudioFallbackEnabled()
+        ? "✓ ElevenLabs + Fish Audio fallback"
+        : "✗ No TTS — set ELEVENLABS_API_KEY or FISH_AUDIO_API_KEY"
   );
   console.log(
     "[Fastvid] Video pipeline:",
@@ -286,6 +291,7 @@ async function startServer() {
           process.env.ELEVENLABS_API_KEY?.trim() ||
           process.env.FISH_AUDIO_API_KEY?.trim()
         ),
+        fishAudioFallback: fishAudioFallbackEnabled(),
         curatedArchiveOnly: curatedArchiveOnlyVisuals(),
         externalVisualSourcingEnabled: externalVisualSourcingEnabled(),
         // Legacy keys below — configured but unused while archive-only visuals are enforced

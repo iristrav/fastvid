@@ -15,9 +15,17 @@ export function externalVisualSourcingEnabled(): boolean {
   return process.env.ENABLE_EXTERNAL_VISUAL_SOURCING === "true";
 }
 
-/** When true (default), voiceover uses ElevenLabs only (no Fish Audio). */
+/** When true, voiceover uses ElevenLabs only (no Fish Audio). */
 export function elevenLabsOnlyVoice(): boolean {
-  return process.env.ELEVENLABS_ONLY !== "false";
+  if (process.env.ELEVENLABS_ONLY === "true") return true;
+  if (process.env.ELEVENLABS_ONLY === "false") return false;
+  return false;
+}
+
+/** Fish Audio when ElevenLabs fails (quota, 401). On by default when FISH_AUDIO_API_KEY is set. */
+export function fishAudioFallbackEnabled(): boolean {
+  if (process.env.ELEVENLABS_ONLY === "true") return false;
+  return Boolean(process.env.FISH_AUDIO_API_KEY?.trim());
 }
 
 /** Faceless kinetic subtitles — off by default; only year badges on screen unless ENABLE_EXTRA_ONSCREEN_TEXT=true. */
