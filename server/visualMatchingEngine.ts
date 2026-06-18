@@ -228,7 +228,7 @@ export function buildV1WikimediaQueries(analysis: VisualSceneAnalysis): string[]
   return [...new Set([q1, q2, q3].filter((q) => q.length >= 3))].slice(0, 3);
 }
 
-/** Whether the V1 Visual Matching Engine is active (env VISUAL_MATCHING_V1=true). */
+/** Whether the V1 Visual Matching Engine is active. On by default — set VISUAL_MATCHING_V1=false to disable. */
 export function visualMatchingV1Enabled(): boolean {
-  return process.env.VISUAL_MATCHING_V1 === "true";
+  return process.env.VISUAL_MATCHING_V1 !== "false";
 }
