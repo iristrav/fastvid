@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import { clipVisionGateEnabled, shouldVisionCheckClip } from "./visualQualityGate";
 
 describe("visualQualityGate", () => {
-  it("checks archival filenames for vision", () => {
+  it("checks archival and stock filenames for vision when critical review on", () => {
     expect(shouldVisionCheckClip("/tmp/scene_0_b0_hist_archive_titanic.mp4")).toBe(true);
-    expect(shouldVisionCheckClip("/tmp/scene_0_b0_pexels_ocean.mp4")).toBe(false);
+    expect(shouldVisionCheckClip("/tmp/scene_0_b0_pexels_ocean.mp4")).toBe(true);
   });
 
   it("clipVisionGateEnabled respects ENABLE_CLIP_VISION=false", () => {

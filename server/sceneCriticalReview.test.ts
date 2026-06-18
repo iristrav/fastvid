@@ -30,7 +30,7 @@ describe("sceneCriticalReview", () => {
     expect(result.issues).toHaveLength(0);
   });
 
-  it("fails when visual_description is missing", async () => {
+  it("uses beatText when visual_description is omitted", async () => {
     const result = await reviewClipCritical({
       sceneIndex: 2,
       beatIndex: 1,
@@ -41,7 +41,21 @@ describe("sceneCriticalReview", () => {
       searchQuery: "test broll",
       workDir: "/tmp",
     });
+    expect(result.pass).toBe(true);
+    expect(result.issues.some((i) => i.includes("visual_description"))).toBe(false);
+  });
+
+  it("fails when beat text and visual_description are both missing", async () => {
+    const result = await reviewClipCritical({
+      sceneIndex: 2,
+      beatIndex: 1,
+      clipIndex: 0,
+      clipPath: "/tmp/clip.mp4",
+      beatText: "",
+      keywords: [],
+      searchQuery: "",
+      workDir: "/tmp",
+    });
     expect(result.pass).toBe(false);
-    expect(result.issues.some((i) => i.includes("visual_description"))).toBe(true);
   });
 });

@@ -71,14 +71,15 @@ export async function reviewClipCritical(
   const issues: string[] = [];
   const isStill = isLikelyStillClip(input.clipPath);
   let score: number | null = null;
+  const visualDesc = input.visualDescription?.trim() || input.beatText.slice(0, 220);
 
-  if (!input.visualDescription?.trim()) {
+  if (!visualDesc.trim()) {
     issues.push("missing visual_description");
   }
-  if ((input.keywords ?? []).filter((k) => k.trim().length >= 2).length < 1) {
+  if ((input.keywords ?? []).filter((k) => k.trim().length >= 2).length < 1 && !input.beatText.trim()) {
     issues.push("missing keywords");
   }
-  if (!input.searchQuery?.trim()) {
+  if (!input.searchQuery?.trim() && !input.beatText.trim()) {
     issues.push("missing image_prompt/search query");
   }
   if (STANDARD_TRANSITION !== "crossfade") {
@@ -93,7 +94,7 @@ export async function reviewClipCritical(
     const vision = await scoreAdoptedClipQuality(
       input.clipPath,
       input.beatText,
-      input.visualDescription,
+      visualDesc,
       input.videoTitle,
       input.workDir,
       input.sceneIndex,
