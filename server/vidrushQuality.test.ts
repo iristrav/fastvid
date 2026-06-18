@@ -3,6 +3,8 @@ import {
   buildVidrushOpeningQueries,
   clampVidrushClipDuration,
   clipPassesVidrushOpeningGate,
+  clipPassesDocumentaryBeatGate,
+  clipPassesGeoUrbanBeatGate,
   enforceMontageDurationFloors,
   inferBeatGeoRegion,
   inferPrimaryGeoFromTitle,
@@ -88,6 +90,23 @@ describe("vidrushQuality", () => {
         "Why the Netherlands is the Opposite of the U.S."
       )
     ).toBe(false);
+    expect(
+      clipPassesDocumentaryBeatGate(
+        "/tmp/columbus_city_council.mp4",
+        "city council meeting",
+        "American downtown planning",
+        "Netherlands vs United States cities"
+      )
+    ).toBe(false);
+    expect(
+      clipPassesDocumentaryBeatGate(
+        "/tmp/amsterdam_canal_bikes.mp4",
+        "amsterdam canal",
+        "Dutch cycling infrastructure",
+        "Netherlands vs United States cities"
+      )
+    ).toBe(true);
+    expect(clipPassesGeoUrbanBeatGate).toBe(clipPassesDocumentaryBeatGate);
   });
 });
 

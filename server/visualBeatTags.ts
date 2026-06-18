@@ -372,13 +372,19 @@ const GEOGRAPHY_BLOCKED_TAGS = new Set([
   "goebbels",
 ]);
 
-/** Strip war-era search bias and add modern urban tags for city/geography documentaries. */
+/** Strip war-era search bias when beat is modern/geo — not tied to video topic enum. */
 export function refineVisualSearchTagsForTopic(
   tags: string[],
   topic: VideoVisualTopic,
   beatText: string
 ): string[] {
-  if (topic !== "geography_urban") return tags;
+  const geoTags = extractBeatGeoPlaceTags(beatText);
+  const modernBeat =
+    geoTags.length > 0 ||
+    isGeoWelcomeBeat(beatText) ||
+    isUrbanPlanningBeat(beatText) ||
+    isInfrastructureBeat(beatText);
+  if (!modernBeat || topic === "wwii" || beatMentionsWwiiContent(beatText)) return tags;
   const lower = beatText.toLowerCase();
   const out = new Set<string>();
   for (const t of tags) {
@@ -1006,7 +1012,6 @@ export function isOffTopicProtestForBeat(
 ): boolean {
   if (!isProtestVisualHay(hay)) return false;
   if (isProtestBeat(beatText)) return false;
-  if (videoVisualTopic === "geography_urban") return true;
   if (extractBeatGeoPlaceTags(beatText).length > 0) return true;
   if (isGeoStatBeat(beatText)) return true;
   if (isCarBeat(beatText)) return true;

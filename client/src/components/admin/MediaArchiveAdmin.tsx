@@ -503,7 +503,7 @@ export function MediaArchiveAdmin() {
                       type="text"
                       value={uploadTags}
                       onChange={(e) => setUploadTags(e.target.value)}
-                      placeholder="e.g. berlin, metro, skyline, modern city, transit"
+                      placeholder="e.g. amsterdam, netherlands, cycling, dutch canal OR chicago, suburb, american downtown"
                       className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-purple-500/50"
                     />
                     <p className="text-[11px] text-slate-500 mt-1">

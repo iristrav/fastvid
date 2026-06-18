@@ -55,7 +55,7 @@ import {
   scoreVisualForScene,
   visualMatchingV1Enabled,
   wikimediaV1AdoptionThreshold,
-  wikimediaMetadataPassesGeoGate,
+  wikimediaMetadataPassesBeatGate,
 } from "./visualMatchingEngine";
 import { extractPrimaryGeoSearchTag, extractPrimaryVisualAnchor, extractSceneSearchTags, inferVideoVisualTopic } from "./visualBeatTags";
 import {
@@ -126,6 +126,7 @@ import {
   hashVarietySeed,
   archiveAssetPreflight,
   assetPassesBeatMinimum,
+  buildGeoStockSearchQueries,
   type CuratedCandidatePick,
 } from "./curatedMediaSourcing";
 import {
@@ -146,12 +147,9 @@ import {
   reviewPipelineBeforeExport,
   type SceneReviewInput,
 } from "./pipelineReview";
-import {
-  inferBeatGeoRegion,
-  inferPrimaryGeoFromTitle,
-  isOffTopicGeoUrbanVisual,
-  isWrongRegionForSegmentLock,
-} from "./vidrushQuality";
+import { clipPassesDocumentaryBeatGate } from "./vidrushQuality";
+import type { ClipRejectEntry } from "./clipRejectAudit";
+import { recordClipReject, summarizeClipRejectAudit } from "./clipRejectAudit";
 import { buildEditorScenesFromPipeline } from "./editorClips";
 import { buildVideoQualityReport, logVideoQualityReport } from "./videoQualityReport";
 
@@ -3770,7 +3768,7 @@ async function fetchWikimediaImagesV1(
       let bestScore = adoptThreshold - 1;
       for (const result of results) {
         const metadata = `${result.title} ${(result.snippet ?? "").replace(/<[^>]*>/g, " ")}`;
-        if (!wikimediaMetadataPassesGeoGate(metadata, videoTitle, analysis.sentence)) {
+        if (!wikimediaMetadataPassesBeatGate(metadata, videoTitle, analysis.sentence)) {
           console.log(`[V1] Scene ${sceneIndex} skip geo-offtopic "${result.title.slice(0, 35)}"`);
           continue;
         }
@@ -7725,42 +7723,10 @@ function buildBeatVisualQueryList(
   const eventQueries = scriptEventSearchQueries(beatText, beatPersons);
   const entityStock = realEntityStockQueriesForBeat(beatText, scene.text, videoTitle);
 
-  const visualTopic = inferVideoVisualTopic(videoTitle, `${beatText} ${scene.text}`);
-  const beatLower = beatText.toLowerCase();
-  const titleLower = (videoTitle ?? "").toLowerCase();
-  const combinedHay = `${beatLower} ${titleLower}`;
-
-  const urbanQueries: string[] = [];
-  if (visualTopic === "geography_urban") {
-    // Netherlands / Dutch — inject specific queries so Pexels finds real Dutch footage
-    if (/nederland|netherlands|dutch|holland|amsterdam|rotterdam|utrecht|den haag/i.test(combinedHay)) {
-      urbanQueries.push("Amsterdam canal");
-      urbanQueries.push("Dutch cycling");
-      urbanQueries.push("Netherlands");
-      if (/fiets|bike|cycl|cycling/.test(combinedHay)) urbanQueries.push("Netherlands bicycle lane");
-      if (/woning|housing|huis|apartment/.test(combinedHay)) urbanQueries.push("Netherlands housing");
-      if (/windmill|windmolen/.test(combinedHay)) urbanQueries.push("windmill Netherlands");
-      if (/canal|gracht/.test(combinedHay)) urbanQueries.push("Amsterdam canal house");
-      if (/health|zorg|hospital|gezondheidszorg/.test(combinedHay)) urbanQueries.push("Netherlands healthcare");
-    }
-    // Berlin-specific
-    if (/berlin|berlijn/i.test(combinedHay)) {
-      urbanQueries.push("berlin city skyline");
-    }
-    // Transit
-    if (/transit|metro|subway|train|u-bahn/.test(combinedHay)) {
-      urbanQueries.push("public transport metro");
-    }
-    // Zoning / infrastructure
-    if (/planning|zoning|infrastructure|walkable|density/.test(combinedHay)) {
-      urbanQueries.push("urban planning");
-    }
-    // Generic urban fallback
-    urbanQueries.push("city skyline", "urban street", "modern city");
-  }
+  const beatAnchored = buildGeoStockSearchQueries(beatText, videoTitle);
 
   const ordered = [
-    ...urbanQueries,
+    ...beatAnchored,
     powerQ,
     ...scriptQueries,
     ...eventQueries,
@@ -7853,6 +7819,8 @@ interface VisualDedupState {
    * e.g. "amsterdam" → "wwii" → "amsterdam" when a Netherlands video discusses WWII occupation.
    */
   currentBeatTopicKey: string;
+  /** Reject reasons during adoptClip (for quality report). */
+  clipRejectAudit: ClipRejectEntry[];
 }
 
 /**
@@ -7918,6 +7886,7 @@ function createVisualDedupState(
     personTopicLock: Boolean(topic?.personTopicLock && topic?.primaryPerson?.trim()),
     usedPexelsAnchors: new Map(),
     currentBeatTopicKey: "",
+    clipRejectAudit: [],
   };
 }
 
@@ -10340,15 +10309,9 @@ async function adoptClip(
       const category = stockVisualCategory(sourceQuery, p);
       if (category === "blocked_model" || category === "blocked_offtopic") continue;
       if (categoryAtLimit(dedup, category, muskTopic)) continue;
-      if (!opts.scriptImageFallback && inferVideoVisualTopic(opts.videoTitle, beatText) === "geography_urban") {
-        const geoHay = `${sourceQuery} ${path.basename(p)} ${beatText} ${opts.videoTitle ?? ""}`.toLowerCase();
-        if (isOffTopicGeoUrbanVisual(geoHay)) continue;
-        const beatRegion = inferBeatGeoRegion(beatText, opts.videoTitle);
-        const lockRegion =
-          beatRegion !== "neutral" && beatRegion !== "both"
-            ? beatRegion
-            : inferPrimaryGeoFromTitle(opts.videoTitle);
-        if (isWrongRegionForSegmentLock(geoHay, lockRegion)) continue;
+      if (!opts.scriptImageFallback && !clipPassesDocumentaryBeatGate(p, sourceQuery, beatText, opts.videoTitle)) {
+        recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, p, "documentary_beat_gate", sourceQuery);
+        continue;
       }
       // Musk/Tesla topics: reject generic clips when query targets a specific category
       const queryCategory = stockVisualCategory(sourceQuery);
@@ -10396,6 +10359,7 @@ async function adoptClip(
           dedup.perf.fastStockMode
         ))
       ) {
+        recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, p, "vision_gate", sourceQuery);
         continue;
       }
       const contentKey = clipContentKey(p);
@@ -16909,6 +16873,7 @@ export async function runVideoPipeline(
     const qualityReport = buildVideoQualityReport(allClipPaths, videoTitle, {
       pipelineSec,
       stockBeatsUsed: visualDedup.stockBeatsUsed,
+      rejectAudit: visualDedup.clipRejectAudit,
     });
     logVideoQualityReport(videoId, qualityReport);
 

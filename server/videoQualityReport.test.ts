@@ -3,7 +3,7 @@ import {
   buildVideoQualityReport,
   inferClipSourceFromPath,
 } from "./videoQualityReport";
-import { wikimediaV1AdoptionThreshold, wikimediaMetadataPassesGeoGate } from "./visualMatchingEngine";
+import { wikimediaV1AdoptionThreshold, wikimediaMetadataPassesBeatGate } from "./visualMatchingEngine";
 
 describe("inferClipSourceFromPath", () => {
   it("classifies wikimedia v1 stills", () => {
@@ -20,7 +20,7 @@ describe("inferClipSourceFromPath", () => {
 });
 
 describe("buildVideoQualityReport", () => {
-  it("flags geo off-topic stock for NL/US city docs", () => {
+  it("flags off-topic stock for any documentary with geo title", () => {
     const report = buildVideoQualityReport(
       [
         "/tmp/scene_0_b0_hist_archive_amsterdam.mp4",
@@ -37,19 +37,26 @@ describe("buildVideoQualityReport", () => {
 });
 
 describe("wikimediaV1AdoptionThreshold", () => {
-  it("uses lower threshold for geography docs", () => {
+  it("uses one universal default for all topics", () => {
     expect(
       wikimediaV1AdoptionThreshold("Dutch cities vs American suburbs", "Amsterdam canal district")
-    ).toBe(68);
-    expect(wikimediaV1AdoptionThreshold("The sinking of the Titanic", "RMS Titanic departure")).toBe(78);
+    ).toBe(70);
+    expect(wikimediaV1AdoptionThreshold("The sinking of the Titanic", "RMS Titanic departure")).toBe(70);
   });
 
-  it("rejects ford dealer metadata for geo docs", () => {
+  it("rejects ford dealer metadata unless beat allows", () => {
     expect(
-      wikimediaMetadataPassesGeoGate(
+      wikimediaMetadataPassesBeatGate(
         "Ford dealer showroom classic car lot",
         "Netherlands vs United States cities",
-        "American car culture"
+        "American car culture and dealers"
+      )
+    ).toBe(true);
+    expect(
+      wikimediaMetadataPassesBeatGate(
+        "Ford dealer showroom classic car lot",
+        "Netherlands vs United States cities",
+        "Dutch cycling infrastructure"
       )
     ).toBe(false);
   });

@@ -81,6 +81,7 @@ import {
   isNonDocumentaryVisualHay,
   isOffTopicGeoUrbanVisual,
   isWrongRegionForSegmentLock,
+  offTopicVisualAllowedForBeat,
   vidrushStillPhotoScale,
   VIDRUSH_MIN_SOURCE_VIDEO_SEC,
   VIDRUSH_MIN_STILL_WIDTH,
@@ -399,6 +400,27 @@ function hasProductionNotationTitle(asset: Pick<MediaArchiveAsset, "title">): bo
   return false;
 }
 
+/** Archive clip wrong for this beat — beat-driven, all video topics. */
+export function archiveAssetRejectedForBeat(
+  asset: Pick<MediaArchiveAsset, "title" | "tags" | "mediaType">,
+  beatText: string
+): boolean {
+  if (!beatText?.trim()) return false;
+  if (isWwiiWarArchiveAsset(asset) && !beatMentionsWwiiContent(beatText)) return true;
+  if (isCuratedInterviewAsset(asset) && !/\b(interview|historicus|expert|talking head|besprek)\b/i.test(beatText.toLowerCase())) {
+    return true;
+  }
+  const beatHistorical =
+    beatMentionsWwiiContent(beatText) ||
+    /\b(18\d{2}|19\d{2}|20[01]\d|histor(y|ical)|archief|archive|war|oorlog|ancient|medieval)\b/i.test(
+      beatText.toLowerCase()
+    );
+  if (!beatHistorical && isGeographyIncompatibleArchiveAsset(asset)) return true;
+  const hay = `${(asset.title ?? "").toLowerCase()} ${normalizeMediaTags(asset.tags ?? []).join(" ")}`;
+  if (isOffTopicGeoUrbanVisual(hay) && !offTopicVisualAllowedForBeat(hay, beatText)) return true;
+  return false;
+}
+
 export function assetPassesBeatMinimum(
   asset: Pick<MediaArchiveAsset, "title" | "tags">,
   beatText: string,
@@ -413,13 +435,7 @@ export function assetPassesBeatMinimum(
   if (isNonDocumentaryVisualHay(hay)) return false;
   if (segmentLock && isWrongRegionForSegmentLock(hay, segmentLock)) return false;
 
-  if (videoVisualTopic === "geography_urban" && isWwiiWarArchiveAsset(asset)) {
-    return false;
-  }
-
-  if (videoVisualTopic === "geography_urban" && isGeographyIncompatibleArchiveAsset(asset)) {
-    return false;
-  }
+  if (archiveAssetRejectedForBeat(asset, beatText)) return false;
 
   const geoTags = extractBeatGeoPlaceTags(beatText);
   if (geoTags.length > 0) {
@@ -484,13 +500,7 @@ export function assetPassesBeatMinimum(
   const visualHits = countVisualTagHits(asset, requiredTags);
   const sceneEntityHits = countVisualTagHits(asset, [...sceneTags, ...entityTags]);
 
-  const minScore = vidrushDocumentaryQualityEnabled()
-    ? videoVisualTopic === "geography_urban"
-      ? 36
-      : 34
-    : videoVisualTopic === "geography_urban"
-      ? 36
-      : Math.max(28, Math.round(topScore * 0.38));
+  const minScore = vidrushDocumentaryQualityEnabled() ? 36 : Math.max(28, Math.round(topScore * 0.38));
   if (score < minScore && visualHits < 2) return false;
 
   if ((sceneTags.length > 0 || entityTags.length > 0) && sceneEntityHits === 0 && visualHits < 2) {
@@ -847,17 +857,9 @@ export function scoreCuratedAsset(
   score += curatedInterviewPenalty(asset);
 
   score += curatedOffTopicPenalty(asset, topicAnchors, beatTags, videoVisualTopic);
-  if (videoVisualTopic === "geography_urban" && isWwiiWarArchiveAsset(asset)) {
-    return 0;
-  }
-  if (videoVisualTopic === "geography_urban" && isGeographyIncompatibleArchiveAsset(asset)) {
-    return 0;
-  }
-  // For any non-WWII video, heavily penalise war archive clips when the beat
-  // doesn't mention war/conflict — prevents Hitler footage in geography/history
-  // videos that have no war content in the specific sentence.
+  if (beatText && archiveAssetRejectedForBeat(asset, beatText)) return 0;
   if (videoVisualTopic !== "wwii" && isWwiiWarArchiveAsset(asset)) {
-    if (!beatText || !beatMentionsWwiiContent(beatText)) {
+    if (!beatMentionsWwiiContent(beatText)) {
       score = Math.max(0, score - 400);
     }
   }
@@ -937,10 +939,13 @@ export function isCuratedOffTopicAsset(
   beatTags: string[],
   videoVisualTopic: VideoVisualTopic = "general"
 ): boolean {
-  if (videoVisualTopic === "geography_urban" && isWwiiWarArchiveAsset(asset)) {
-    return true;
-  }
-  if (videoVisualTopic === "geography_urban" && isGeographyIncompatibleArchiveAsset(asset)) {
+  const beatHay = beatTags.join(" ");
+  if (isWwiiWarArchiveAsset(asset) && !beatMentionsWwiiContent(beatHay)) return true;
+  if (
+    isGeographyIncompatibleArchiveAsset(asset) &&
+    !beatMentionsWwiiContent(beatHay) &&
+    !/\b(18\d{2}|19\d{2}|20[01]\d|histor(y|ical)|archief|archive)\b/i.test(beatHay)
+  ) {
     return true;
   }
 
@@ -1153,9 +1158,7 @@ export async function listCuratedArchiveCandidates(
     }
   }
 
-  const blockUniversalFallback =
-    noUniversalFallback ||
-    (videoVisualTopic === "geography_urban" && geoRequired.length > 0);
+  const blockUniversalFallback = noUniversalFallback || geoRequired.length > 0;
 
   if (scored.length === 0 && fallback.length === 0 && archives.length > 0 && !blockUniversalFallback) {
     for (const archive of archives) {
@@ -1647,12 +1650,13 @@ export async function searchCuratedCandidatesForBeat(
   }
   if (filtered.length > 0) return filtered;
 
-  if (videoVisualTopic === "geography_urban") {
-    return ranked.filter(
+  if (topScore > 0) {
+    const medium = ranked.filter(
       (p) =>
-        p.score >= Math.max(45, Math.round(topScore * 0.55)) &&
+        p.score >= Math.max(40, Math.round(topScore * 0.5)) &&
         assetPassesBeatMinimum(p.asset, beat.text, p.score, topScore, p.semantic, videoVisualTopic, segmentLock)
     );
+    if (medium.length > 0) return medium;
   }
 
   if (topScore > 0) {
@@ -1870,7 +1874,7 @@ export function shouldTryPexelsFirstForBeat(
     return true;
   }
   const geoTags = extractBeatGeoPlaceTags(beatText);
-  return geoTags.length > 0 && videoVisualTopic === "geography_urban";
+  return geoTags.length > 0;
 }
 
 /** Use Pexels when the best archive candidate is weak or geographically wrong. */
@@ -1892,7 +1896,7 @@ export function shouldPreferPexelsOverArchive(
   if (!assetPassesBeatMinimum(top.asset, beatText, top.score, top.score, top.semantic, videoVisualTopic, segmentLock)) {
     return true;
   }
-  const minScore = videoVisualTopic === "geography_urban" ? 52 : 38;
+  const minScore = 45;
   return top.score < minScore;
 }
 
@@ -1948,5 +1952,11 @@ export function buildGeoStockSearchQueries(beatText: string, videoTitle?: string
     }
   }
 
-  return [...new Set([...queries, ...visualTags.filter((t) => t.length >= 4)])].slice(0, 12);
+  const entities = extractEntitySearchTags(beatText);
+  const salient = extractSalientBeatTokens(beatText).slice(0, 5);
+  for (const token of [...entities, ...salient]) {
+    if (token.length >= 4) queries.push(`${token} documentary footage`);
+  }
+
+  return [...new Set([...queries, ...visualTags.filter((t) => t.length >= 4)])].slice(0, 14);
 }

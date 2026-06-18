@@ -32,6 +32,11 @@ import { Switch } from "@/components/ui/switch";
 import { FASTVID_PRO_PRICE_LABEL } from "@shared/billing";
 import { formatGenerationDuration } from "@shared/pipelineProgress";
 import { getVideoLengthLabel, VIDEO_LENGTH_OPTIONS, type VideoLength } from "@shared/videoLengths";
+import {
+  qualityScoreColor,
+  qualityScoreLabel,
+  readQualityReportFromMetadata,
+} from "@shared/videoQuality";
 import { GenerationProgressBar } from "@/components/GenerationProgressBar";
 
 const VIDEO_LENGTHS = VIDEO_LENGTH_OPTIONS.map((opt) =>
@@ -256,6 +261,7 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
   }, [pollData?.status, video.status, utils.video.list]);
 
   const progressPercent = pollData?.progressPercent ?? 0;
+  const qualityReport = readQualityReportFromMetadata(video.metadata);
 
   return (
     <div className="glass-card border border-white/8 rounded-xl overflow-hidden hover:border-white/15 transition-all duration-300 group">
@@ -364,6 +370,14 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
                 ⏱ {formatGenerationDuration(completedDurationSec)}
               </span>
             )}
+            {currentStatus === "completed" && qualityReport && (
+              <span
+                className={`font-semibold px-1.5 py-0.5 rounded ${qualityScoreColor(qualityReport.score)} bg-white/5`}
+                title={qualityScoreLabel(qualityReport.score)}
+              >
+                {qualityReport.score}/100
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-2">
 
@@ -412,6 +426,7 @@ function VideoDetailModal({ videoId, onClose }: { videoId: number; onClose: () =
   const directVideoUrl = fileMissing ? null : (videoUrlData?.url ?? rawVideoUrl);
   type VideoMetadata = { title?: string; description?: string; tags?: string[]; chapters?: { time: string; title: string }[] };
   const metadata = video?.metadata as VideoMetadata | null;
+  const qualityReport = readQualityReportFromMetadata(video?.metadata);
 
   useEffect(() => {
     const el = videoRef.current;
@@ -499,6 +514,56 @@ function VideoDetailModal({ videoId, onClose }: { videoId: number; onClose: () =
                     <Download className="w-4 h-4" />
                     <span>Video ready — click Download MP4 to save it</span>
                   </div>
+                )}
+              </div>
+            )}
+            {video.status === "completed" && qualityReport && (
+              <div className="glass-card border border-white/8 rounded-xl p-4 space-y-3">
+                <h3 className="font-semibold text-white text-sm flex items-center gap-2">
+                  <CheckCircle2 className={`w-4 h-4 ${qualityScoreColor(qualityReport.score)}`} />
+                  Visual quality — {qualityReport.score}/100
+                  <span className="text-xs font-normal text-slate-500">({qualityScoreLabel(qualityReport.score)})</span>
+                </h3>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+                  {qualityReport.archiveCount != null && (
+                    <div className="rounded-lg bg-white/5 px-2 py-1.5">
+                      <p className="text-slate-500">Archive</p>
+                      <p className="text-white font-mono">{qualityReport.archiveCount}</p>
+                    </div>
+                  )}
+                  {qualityReport.wikimediaCount != null && (
+                    <div className="rounded-lg bg-white/5 px-2 py-1.5">
+                      <p className="text-slate-500">Wikimedia</p>
+                      <p className="text-white font-mono">{qualityReport.wikimediaCount}</p>
+                    </div>
+                  )}
+                  {qualityReport.stockCount != null && (
+                    <div className="rounded-lg bg-white/5 px-2 py-1.5">
+                      <p className="text-slate-500">Stock</p>
+                      <p className="text-white font-mono">{qualityReport.stockCount}</p>
+                    </div>
+                  )}
+                  {qualityReport.totalClips != null && (
+                    <div className="rounded-lg bg-white/5 px-2 py-1.5">
+                      <p className="text-slate-500">Clips</p>
+                      <p className="text-white font-mono">{qualityReport.totalClips}</p>
+                    </div>
+                  )}
+                </div>
+                {qualityReport.warnings && qualityReport.warnings.length > 0 && (
+                  <ul className="text-xs text-amber-300/90 space-y-1 list-disc list-inside">
+                    {qualityReport.warnings.map((w) => (
+                      <li key={w}>{w}</li>
+                    ))}
+                  </ul>
+                )}
+                {qualityReport.rejectSummary && Object.keys(qualityReport.rejectSummary).length > 0 && (
+                  <p className="text-[10px] text-slate-500 font-mono">
+                    Rejected:{" "}
+                    {Object.entries(qualityReport.rejectSummary)
+                      .map(([k, n]) => `${k}=${n}`)
+                      .join(", ")}
+                  </p>
                 )}
               </div>
             )}

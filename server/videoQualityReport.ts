@@ -8,7 +8,12 @@ import {
   inferPrimaryGeoFromTitle,
   isOffTopicGeoUrbanVisual,
   isWrongRegionForSegmentLock,
+  offTopicVisualAllowedForBeat,
+  resolveBeatRegionLock,
 } from "./vidrushQuality";
+
+import type { ClipRejectEntry } from "./clipRejectAudit";
+import { summarizeClipRejectAudit } from "./clipRejectAudit";
 
 export type VideoQualityReport = {
   generatedAt: string;
@@ -22,6 +27,8 @@ export type VideoQualityReport = {
   stockCount: number;
   warnings: string[];
   offTopicSuspects: Array<{ basename: string; reason: string }>;
+  rejectSummary?: Record<string, number>;
+  topRejects?: ClipRejectEntry[];
   pipelineSec?: number;
   stockBeatsUsed?: number;
   score: number;
@@ -73,13 +80,12 @@ function emptyMixCounts(): Record<VisualMixKind, number> {
 export function buildVideoQualityReport(
   clipPaths: string[],
   videoTitle: string,
-  opts?: { pipelineSec?: number; stockBeatsUsed?: number }
+  opts?: { pipelineSec?: number; stockBeatsUsed?: number; rejectAudit?: ClipRejectEntry[] }
 ): VideoQualityReport {
   const bySource: Record<string, number> = {};
   const byMixKind = emptyMixCounts();
   const warnings: string[] = [];
   const offTopicSuspects: Array<{ basename: string; reason: string }> = [];
-  const visualTopic = inferVideoVisualTopic(videoTitle, videoTitle);
   const primaryGeo = inferPrimaryGeoFromTitle(videoTitle);
   const unique = [...new Set(clipPaths.filter(Boolean))];
 
@@ -89,11 +95,14 @@ export function buildVideoQualityReport(
     const mix = classifyClipMixKind(clipPath);
     byMixKind[mix]++;
 
-    if (visualTopic === "geography_urban") {
-      const hay = `${path.basename(clipPath)} ${videoTitle}`.toLowerCase();
-      if (isOffTopicGeoUrbanVisual(hay)) {
-        offTopicSuspects.push({ basename: path.basename(clipPath), reason: "off-topic geo urban" });
-      } else if (isWrongRegionForSegmentLock(hay, primaryGeo)) {
+    const hay = `${path.basename(clipPath)} ${videoTitle}`.toLowerCase();
+    if (isOffTopicGeoUrbanVisual(hay) && !offTopicVisualAllowedForBeat(hay, videoTitle)) {
+      offTopicSuspects.push({ basename: path.basename(clipPath), reason: "off-topic visual" });
+    } else {
+      const lock = resolveBeatRegionLock(videoTitle, videoTitle);
+      if (lock !== "neutral" && lock !== "both" && isWrongRegionForSegmentLock(hay, lock)) {
+        offTopicSuspects.push({ basename: path.basename(clipPath), reason: "wrong region" });
+      } else if (primaryGeo !== "neutral" && primaryGeo !== "both" && isWrongRegionForSegmentLock(hay, primaryGeo)) {
         offTopicSuspects.push({ basename: path.basename(clipPath), reason: "wrong region for title" });
       }
     }
@@ -103,14 +112,14 @@ export function buildVideoQualityReport(
   const archiveCount = bySource.archive ?? 0;
   const stockCount = (bySource.pexels ?? 0) + (bySource.pixabay ?? 0);
 
-  if (visualTopic === "geography_urban" && wikimediaCount === 0) {
-    warnings.push("Geen Wikimedia-stills — verlaag WIKIMEDIA_V1_THRESHOLD of controleer zoekqueries.");
+  if (wikimediaCount === 0 && unique.length >= 3) {
+    warnings.push("Geen Wikimedia-stills — controleer zoekqueries of WIKIMEDIA_V1_THRESHOLD.");
   }
   if (stockCount > unique.length * 0.45) {
     warnings.push(`Veel stock (${stockCount}/${unique.length}) — vul archief aan met geo-tags.`);
   }
   if (offTopicSuspects.length > 0) {
-    warnings.push(`${offTopicSuspects.length} clip(s) met geo-waarschuwing.`);
+    warnings.push(`${offTopicSuspects.length} clip(s) met kwaliteitswaarschuwing.`);
   }
   if ((bySource.unknown ?? 0) > 0) {
     warnings.push(`${bySource.unknown} clip(s) met onbekende bron.`);
@@ -119,14 +128,19 @@ export function buildVideoQualityReport(
   let score = 100;
   score -= Math.min(30, stockCount * 4);
   score -= Math.min(25, offTopicSuspects.length * 12);
-  if (visualTopic === "geography_urban" && wikimediaCount === 0) score -= 15;
+  if (wikimediaCount === 0 && unique.length > 2) score -= 8;
   if (archiveCount === 0 && unique.length > 2) score -= 10;
   score = Math.max(0, Math.min(100, score));
+
+  const rejectSummary = opts?.rejectAudit?.length
+    ? summarizeClipRejectAudit(opts.rejectAudit)
+    : undefined;
+  const topRejects = opts?.rejectAudit?.slice(0, 12);
 
   return {
     generatedAt: new Date().toISOString(),
     videoTitle,
-    visualTopic,
+    visualTopic: inferVideoVisualTopic(videoTitle, videoTitle),
     totalClips: unique.length,
     bySource,
     byMixKind,
@@ -135,6 +149,8 @@ export function buildVideoQualityReport(
     stockCount,
     warnings,
     offTopicSuspects,
+    rejectSummary,
+    topRejects,
     pipelineSec: opts?.pipelineSec,
     stockBeatsUsed: opts?.stockBeatsUsed,
     score,

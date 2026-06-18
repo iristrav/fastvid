@@ -840,7 +840,8 @@ function buildVisionPrompt(
     "Rules:",
     "- Prefer specific combinations: 'amsterdam canal bikes' over separate tags 'amsterdam' + 'city'.",
     "- Name exact people/places/events only when clearly visible.",
-    "- Urban/modern clips: tag the place + visible activity (transit, cycling, skyline), not WWII unless shown.",
+    "- Tag visible place + activity when recognizable (city, landmark, sport, vehicle, building).",
+    "- Never tag only generic words (city, street, people) — always pair with place or activity.",
   ];
   if (frameCount > 1) {
     lines.push(`You receive ${frameCount} frames from the same video — combine into one complete tag set.`);

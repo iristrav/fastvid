@@ -6,6 +6,7 @@ import { invokeLLM } from "./_core/llm";
 import { ENV } from "./_core/env";
 import { DOCUMENTARY_EDITOR_VIEWER_QUESTION } from "./documentaryVisualPolicy";
 import {
+  beatMentionsWwiiContent,
   extractEntitySearchTags,
   extractPrimaryVisualAnchor,
   extractSalientBeatTokens,
@@ -101,6 +102,11 @@ export function semanticMinRelevanceScore(): number {
     if (!isNaN(n) && n >= 20 && n <= 90) return n;
   }
   return 44;
+}
+
+/** @deprecated Topic-specific floors removed — use semanticMinRelevanceScore() for all topics. */
+export function semanticMinRelevanceScoreForTopic(_topicDomain?: string): number {
+  return semanticMinRelevanceScore();
 }
 
 function beatCacheKey(text: string, videoTitle?: string): string {
@@ -394,7 +400,7 @@ export function computeTieredRelevanceScore(
   asset: Pick<MediaArchiveAsset, "title" | "tags" | "sourceNote" | "mediaType">
 ): SemanticMatchResult {
   const hay = buildAssetSemanticDocument(asset);
-  if (profile.topicDomain === "geography_urban" && isWwiiWarArchiveAsset(asset)) {
+  if (isWwiiWarArchiveAsset(asset) && !beatMentionsWwiiContent(profile.beatText)) {
     return {
       relevanceScore: 6,
       tier: 5,
@@ -589,7 +595,10 @@ export async function scoreArchiveAssetSemantically(
   };
 }
 
-export function assetMeetsSemanticMinimum(result: SemanticMatchResult): boolean {
+export function assetMeetsSemanticMinimum(
+  result: SemanticMatchResult,
+  _topicDomain?: string
+): boolean {
   if (result.tier === 5 && result.matchedEntities.length === 0 && result.relevanceScore < 50) {
     return false;
   }
@@ -739,11 +748,8 @@ export function buildSemanticPexelsQueries(
   if (!literalViewerVisual?.trim() && !literalSearchQuery?.trim()) {
     for (const t of extractVisualSearchTags(beatText, videoTitle).slice(0, 6)) push(t);
   }
-  if (profile.topicDomain === "geography_urban") {
-    push("city skyline");
-    push("urban street");
-    push("modern city");
-  }
+  for (const t of extractEntitySearchTags(beatText).slice(0, 4)) push(`${t} documentary`);
+  for (const t of extractSalientBeatTokens(beatText).slice(0, 3)) push(t);
 
   return ordered.slice(0, maxQueries);
 }

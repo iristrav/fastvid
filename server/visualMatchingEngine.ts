@@ -5,12 +5,12 @@
  * (VisualSceneAnalysis) and scores candidate images/clips against it.
  *
  * Scoring formula — Subject 40 · Action 30 · Location 10 · Context 20 = 100.
- * Adopt threshold: 78 default (68 for geography docs); override via WIKIMEDIA_V1_THRESHOLD.
+ * Adopt threshold: 70 default for all topics; override via WIKIMEDIA_V1_THRESHOLD.
  *
  * Source priority: Wikimedia → Archive → Pexels → Pixabay.
  */
-import { extractBeatGeoPlaceTags, inferVideoVisualTopic } from "./visualBeatTags";
-import { isOffTopicGeoUrbanVisual, isWrongRegionForSegmentLock, inferPrimaryGeoFromTitle } from "./vidrushQuality";
+import { extractBeatGeoPlaceTags, extractEntitySearchTags } from "./visualBeatTags";
+import { visualMetadataPassesBeatGate } from "./vidrushQuality";
 
 export interface VisualSceneAnalysis {
   sentence: string;
@@ -28,8 +28,8 @@ export interface VisualSceneAnalysis {
   keyword: string;
 }
 
-/** Default minimum score (0-100) to adopt a Wikimedia V1 still. */
-export const V1_ADOPTION_THRESHOLD = 78;
+/** Default minimum score (0-100) to adopt a Wikimedia V1 still — same for all topics. */
+export const V1_ADOPTION_THRESHOLD = 70;
 
 // ─── Token helpers ────────────────────────────────────────────────────────────
 
@@ -231,32 +231,34 @@ export function buildV1WikimediaQueries(
   const q2 = analysis.visual_description.slice(0, 80).trim();
   const q3 = analysis.main_topic.slice(0, 60).trim();
   const geo = extractBeatGeoPlaceTags(analysis.sentence);
-  const geoQueries = geo.slice(0, 3).map((g) => `${g} city documentary`);
-  return [...new Set([q1, q2, q3, ...geoQueries].filter((q) => q.length >= 3))].slice(0, 6);
+  const geoQueries = geo.slice(0, 3).map((g) => `${g} documentary`);
+  const entityQueries = extractEntitySearchTags(analysis.sentence)
+    .slice(0, 3)
+    .map((e) => `${e} historical photograph`);
+  return [...new Set([q1, q2, q3, ...geoQueries, ...entityQueries].filter((q) => q.length >= 3))].slice(0, 8);
 }
 
-/** Score floor for adopting a Wikimedia V1 still (lower for geography docs → more free stills). */
-export function wikimediaV1AdoptionThreshold(videoTitle?: string, beatText?: string): number {
+/** Score floor for adopting a Wikimedia V1 still — universal default (override via WIKIMEDIA_V1_THRESHOLD). */
+export function wikimediaV1AdoptionThreshold(_videoTitle?: string, _beatText?: string): number {
   const raw = process.env.WIKIMEDIA_V1_THRESHOLD?.trim();
   if (raw) {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 50 && n <= 95) return n;
   }
-  if (inferVideoVisualTopic(videoTitle, beatText ?? videoTitle) === "geography_urban") return 68;
   return V1_ADOPTION_THRESHOLD;
 }
 
-/** Reject Wikimedia metadata before download when clearly off-topic for geo docs. */
-export function wikimediaMetadataPassesGeoGate(
+/** Reject Wikimedia metadata before download — beat-driven, all topics. */
+export function wikimediaMetadataPassesBeatGate(
   metadata: string,
   videoTitle?: string,
   beatText?: string
 ): boolean {
-  if (inferVideoVisualTopic(videoTitle, beatText ?? videoTitle) !== "geography_urban") return true;
-  const hay = metadata.toLowerCase();
-  if (isOffTopicGeoUrbanVisual(hay)) return false;
-  return !isWrongRegionForSegmentLock(hay, inferPrimaryGeoFromTitle(videoTitle));
+  return visualMetadataPassesBeatGate(metadata, beatText ?? "", videoTitle);
 }
+
+/** @deprecated Use wikimediaMetadataPassesBeatGate */
+export const wikimediaMetadataPassesGeoGate = wikimediaMetadataPassesBeatGate;
 
 /** Whether the V1 Visual Matching Engine is active. On by default — set VISUAL_MATCHING_V1=false to disable. */
 export function visualMatchingV1Enabled(): boolean {

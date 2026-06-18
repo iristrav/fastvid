@@ -311,10 +311,89 @@ export function clipPassesVidrushOpeningGate(
   if (!vidrushDocumentaryQualityEnabled()) return true;
   if (isNonDocumentaryClipPath(clipPath, sourceQuery, beatText)) return false;
   const hay = `${sourceQuery} ${pathBasename(clipPath)} ${beatText} ${videoTitle ?? ""}`.toLowerCase();
-  if (isWrongRegionForSegmentLock(hay, inferPrimaryGeoFromTitle(videoTitle))) return false;
-  const topic = inferVideoVisualTopic(videoTitle, beatText);
-  if (topic === "geography_urban") {
-    if (isOffTopicGeoUrbanOpeningVisual(hay, inferPrimaryGeoFromTitle(videoTitle))) return false;
+  const titleGeo = inferPrimaryGeoFromTitle(videoTitle);
+  if (titleGeo !== "neutral" && titleGeo !== "both" && isWrongRegionForSegmentLock(hay, titleGeo)) {
+    return false;
+  }
+  if (
+    isOffTopicGeoUrbanOpeningVisual(hay, titleGeo) &&
+    !offTopicVisualAllowedForBeat(hay, beatText)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/** When clip metadata matches off-topic patterns, allow only if the beat narrates that subject. */
+export function offTopicVisualAllowedForBeat(visualHay: string, beatText: string): boolean {
+  const beat = beatText.toLowerCase();
+  if (/\b(ford|chev(?:y|rolet)|cadillac|dealer(?:ship)?|car lot|automotive|car\b|vehicle)\b/.test(visualHay)) {
+    return /\b(ford|chev(?:y|rolet)|cadillac|dealer(?:ship)?|car\b|automotive|vehicle|showroom)\b/.test(beat);
+  }
+  if (/\b(city council|capitol|legislative|municipal council|town hall)\b/.test(visualHay)) {
+    return /\b(council|capitol|legislative|government|municipal|politics|mayor|alderman)\b/.test(beat);
+  }
+  if (/\b(walgreens|cvs|drugstore|pharmacy|chemist)\b/.test(visualHay)) {
+    return /\b(pharmacy|drugstore|chemist|retail store|shop)\b/.test(beat);
+  }
+  if (/\b(columbus|ohio|wisconsin)\b/.test(visualHay)) {
+    return /\b(columbus|ohio|wisconsin)\b/.test(beat);
+  }
+  return false;
+}
+
+/** Active region lock from beat places first, then video title — any documentary topic. */
+export function resolveBeatRegionLock(beatText: string, videoTitle?: string): BeatGeoRegion {
+  const beatRegion = inferBeatGeoRegion(beatText, videoTitle);
+  if (beatRegion === "nl" || beatRegion === "us") return beatRegion;
+  if (beatRegion === "both") {
+    const fromTitle = inferPrimaryGeoFromTitle(videoTitle);
+    return fromTitle === "both" ? "neutral" : fromTitle;
+  }
+  const geoTags = extractBeatGeoPlaceTags(beatText);
+  if (geoTags.length > 0) {
+    const fromTitle = inferPrimaryGeoFromTitle(videoTitle);
+    if (fromTitle !== "neutral" && fromTitle !== "both") return fromTitle;
+  }
+  return inferPrimaryGeoFromTitle(videoTitle);
+}
+
+/**
+ * Universal per-beat clip gate — all topics. Driven by beat + title anchors, not topic enum.
+ */
+export function clipPassesDocumentaryBeatGate(
+  clipPath: string,
+  sourceQuery = "",
+  beatText = "",
+  videoTitle?: string
+): boolean {
+  if (!vidrushDocumentaryQualityEnabled()) return true;
+  if (isNonDocumentaryClipPath(clipPath, sourceQuery, beatText)) return false;
+  const hay = `${sourceQuery} ${pathBasename(clipPath)} ${beatText} ${videoTitle ?? ""}`.toLowerCase();
+  if (isOffTopicGeoUrbanVisual(hay) && !offTopicVisualAllowedForBeat(hay, beatText)) return false;
+  const lockRegion = resolveBeatRegionLock(beatText, videoTitle);
+  if (lockRegion !== "neutral" && lockRegion !== "both" && isWrongRegionForSegmentLock(hay, lockRegion)) {
+    return false;
+  }
+  return true;
+}
+
+/** @deprecated Use clipPassesDocumentaryBeatGate — kept as alias for imports. */
+export const clipPassesGeoUrbanBeatGate = clipPassesDocumentaryBeatGate;
+
+/** Wikimedia / stock metadata gate — same rules as adoptClip, all topics. */
+export function visualMetadataPassesBeatGate(
+  metadataHay: string,
+  beatText: string,
+  videoTitle?: string
+): boolean {
+  if (!vidrushDocumentaryQualityEnabled()) return true;
+  const hay = metadataHay.toLowerCase();
+  if (isNonDocumentaryVisualHay(hay)) return false;
+  if (isOffTopicGeoUrbanVisual(hay) && !offTopicVisualAllowedForBeat(hay, beatText)) return false;
+  const lockRegion = resolveBeatRegionLock(beatText, videoTitle);
+  if (lockRegion !== "neutral" && lockRegion !== "both" && isWrongRegionForSegmentLock(hay, lockRegion)) {
+    return false;
   }
   return true;
 }

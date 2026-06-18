@@ -6,7 +6,7 @@ import path from "path";
 import { spawn } from "child_process";
 import { invokeLLM } from "./_core/llm";
 import { ENV } from "./_core/env";
-import { pipelineWallClockLimitEnabled } from "./sourcingPolicy";
+import { pipelineWallClockLimitEnabled, vidrushDocumentaryQualityEnabled } from "./sourcingPolicy";
 
 const NARRATION_MATCH_SCHEMA = {
   type: "json_schema" as const,
@@ -103,14 +103,14 @@ export function getVisionQaStatus(): {
   };
 }
 
-/** Check all adopted clips when critical scene review is enabled. */
+/** Check adopted clips; stock included when Vidrush quality or ENABLE_CLIP_VISION_STOCK=true. */
 export function shouldVisionCheckClip(filePath: string): boolean {
   if (process.env.ENABLE_CLIP_VISION === "false") return false;
   const base = path.basename(filePath).toLowerCase();
   if (sceneCriticalReviewEnabled()) return true;
-  if (process.env.ENABLE_CLIP_VISION_STOCK === "true") {
-    if (/pexels|pixabay|_b\d+_vid/i.test(base)) return true;
-  }
+  const checkStock =
+    vidrushDocumentaryQualityEnabled() || process.env.ENABLE_CLIP_VISION_STOCK === "true";
+  if (checkStock && /pexels|pixabay|_b\d+_vid|person_stock/i.test(base)) return true;
   return (
     /_archive_|_hist|_wikivid|_wiki_|_gdelt|_septube|_ov_|_serp_|_unsplash|_euro_|_nasa/i.test(base) ||
     /_ytcc_|_ytfu_|_transformed|_curated_a/i.test(base)
