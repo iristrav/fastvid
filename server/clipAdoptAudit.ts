@@ -2,6 +2,7 @@
  * Per-video audit trail — clips successfully adopted per beat (for quality report geo checks).
  */
 import * as path from "path";
+import { recordGoodClipAdoption } from "./clipGoodCache";
 
 export type ClipAdoptEntry = {
   sceneIndex: number;
@@ -27,10 +28,11 @@ export function recordClipAdopt(
   clipPath: string,
   source: string,
   assetTitle?: string,
-  segmentGeoLock?: string | null
+  segmentGeoLock?: string | null,
+  assetId?: number
 ): void {
   if (audit.length >= MAX_ENTRIES) return;
-  audit.push({
+  const entry: ClipAdoptEntry = {
     sceneIndex,
     beatIndex,
     beatText,
@@ -38,5 +40,7 @@ export function recordClipAdopt(
     source,
     assetTitle: assetTitle?.trim() || undefined,
     segmentGeoLock: segmentGeoLock ?? undefined,
-  });
+  };
+  audit.push(entry);
+  recordGoodClipAdoption(entry, assetId);
 }

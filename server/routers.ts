@@ -81,6 +81,7 @@ import { FASTVID_PRO_PLAN } from "./products";
 import { processArchiveAssetUpload, ArchiveUploadError } from "./archiveUpload";
 import { archiveAiTaggingEnabled } from "./archiveAssetTagging";
 import { autoTitleArchiveAssets, probeArchiveAssetAiTag } from "./archiveBulkVisionTagging";
+import { bulkRetagArchiveGeo } from "./archiveBulkGeoRetag";
 import { auditArchiveAssetScenes } from "./archiveSceneAudit";
 import { archiveAssetMediaStatus } from "./archiveAssetLoad";
 import { dedupeArchiveVisualDuplicates } from "./archiveClipDedup";
@@ -1709,6 +1710,25 @@ export const appRouter = router({
         );
       }
     }),
+
+    /** Bulk geo-retag from title/tags/sourceNote — no LLM required (max 200 ids). */
+    bulkGeoRetag: adminProcedure
+      .input(
+        z.object({
+          archiveId: z.number().int(),
+          ids: z.array(z.number().int()).min(1).max(200).optional(),
+          search: z.string().optional(),
+        })
+      )
+      .mutation(async ({ input }) => {
+        const archive = await getMediaArchiveById(input.archiveId);
+        if (!archive) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Archive not found");
+        return bulkRetagArchiveGeo({
+          archiveId: input.archiveId,
+          ids: input.ids,
+          search: input.search,
+        });
+      }),
 
     probeAiTag: adminProcedure.input(z.object({
       archiveId: z.number().int(),

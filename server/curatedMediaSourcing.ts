@@ -106,6 +106,13 @@ import {
   type BeatSemanticProfile,
   type SemanticMatchResult,
 } from "./semanticVisualMatching";
+import { goodClipCacheBoost } from "./clipGoodCache";
+import {
+  clipEmbeddingIndexEnabled,
+  createClipTextEmbedding,
+  scoreAssetClipSimilarity,
+} from "./archiveClipEmbedding";
+import { buildDocumentaryShotQueries } from "./pipelineSelfHeal";
 import type { ArchiveMatchTier } from "./viewerVisualPlan";
 import {
   getAllMediaArchives,
@@ -1583,7 +1590,15 @@ export async function searchCuratedCandidatesForBeat(
           beat.visualDescription?.trim() || undefined
         )
       : undefined);
-  const { beatTags, topicAnchors, allTags, videoVisualTopic } = buildBeatMatchTags(beat, scene, videoTitle);
+  const shotQueries = buildDocumentaryShotQueries(
+    beat.visualDescription?.trim() || beat.searchQuery?.trim() || beat.text,
+    beat.index
+  );
+  const beatForMatch: CuratedBeatContext = {
+    ...beat,
+    searchQuery: shotQueries[0] || beat.searchQuery,
+  };
+  const { beatTags, topicAnchors, allTags, videoVisualTopic } = buildBeatMatchTags(beatForMatch, scene, videoTitle);
 
   const listed = await listCuratedArchiveCandidates(
     beatTags,
@@ -1608,6 +1623,12 @@ export async function searchCuratedCandidatesForBeat(
     beat.index,
     { strict: true }
   );
+
+  ranked = ranked.map((p) => ({
+    ...p,
+    score: p.score + goodClipCacheBoost(p.asset, beat.text),
+  }));
+  ranked.sort((a, b) => b.score - a.score);
 
   const matchTags = normalizeMediaTags([
     ...(beat.searchQuery ? tokenizeBeatText(beat.searchQuery) : []),
@@ -1653,6 +1674,23 @@ export async function searchCuratedCandidatesForBeat(
       `[SemanticVisual] zin ${beat.index}: "${beat.text.slice(0, 50)}…" → top tier ${ranked[0]?.semantic?.tier ?? "?"} ` +
         `score ${ranked[0]?.semantic?.relevanceScore ?? 0} (${ranked[0]?.semantic?.tierLabel ?? "n/a"})`
     );
+  }
+
+  if (clipEmbeddingIndexEnabled()) {
+    const clipEmb = await createClipTextEmbedding(
+      semanticProfile?.summary || beat.visualDescription?.trim() || beat.text
+    );
+    if (clipEmb) {
+      const pool = ranked.slice(0, 48);
+      const boosted = await Promise.all(
+        pool.map(async (pick) => {
+          const clipBoost = await scoreAssetClipSimilarity(pick.asset.id, clipEmb);
+          return { ...pick, score: pick.score + Math.round(clipBoost * 0.12) };
+        })
+      );
+      ranked = [...boosted, ...ranked.slice(48)];
+      ranked.sort((a, b) => b.score - a.score);
+    }
   }
 
   const topScore = ranked[0]?.score ?? 0;

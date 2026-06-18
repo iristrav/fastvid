@@ -42,12 +42,36 @@ import {
   normalizeMediaTags,
 } from "./db";
 import { storagePut } from "./storage";
+import * as fs from "fs";
+import * as path from "path";
+import * as os from "os";
+
+function scheduleClipEmbeddingFromBuffer(assetId: number, buffer: Buffer): void {
+  const tmp = path.join(os.tmpdir(), `fv_clip_emb_${assetId}_${Date.now()}.mp4`);
+  try {
+    fs.writeFileSync(tmp, buffer);
+    scheduleArchiveClipEmbedding(assetId, tmp);
+  } catch {
+    /* ignore */
+  }
+}
 
 function scheduleArchiveEmbeddingIndex(assetId: number): void {
   void getMediaArchiveAssetById(assetId)
     .then((asset) => (asset ? indexArchiveAssetEmbedding(asset) : undefined))
     .catch((err) =>
       console.warn(`[ArchiveIndex] asset ${assetId}:`, (err as Error).message?.slice(0, 80))
+    );
+}
+
+function scheduleArchiveClipEmbedding(assetId: number, localPath: string): void {
+  void import("./archiveClipEmbedding")
+    .then(({ clipEmbeddingIndexEnabled, indexArchiveClipEmbedding }) => {
+      if (!clipEmbeddingIndexEnabled()) return;
+      return indexArchiveClipEmbedding(assetId, localPath);
+    })
+    .catch((err) =>
+      console.warn(`[ClipEmbedding] asset ${assetId}:`, (err as Error).message?.slice(0, 80))
     );
 }
 
@@ -303,6 +327,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
           });
           if (!assetId) return null;
           scheduleArchiveEmbeddingIndex(assetId);
+          scheduleClipEmbeddingFromBuffer(assetId, seg.buffer);
           savedCount += 1;
           progress({
             stage: "save_clips",
@@ -413,6 +438,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
     throw new ArchiveUploadError(500, appErrorMessage(APP_ERROR.SERVICE_ERROR, "Failed to save asset"));
   }
   scheduleArchiveEmbeddingIndex(assetId);
+  if (isVideo) scheduleClipEmbeddingFromBuffer(assetId, input.buffer);
 
   const asset = await getMediaArchiveAssetById(assetId);
   finishArchiveUploadJob(jobId, true, `${isVideo ? "Video" : "Image"} saved`, {

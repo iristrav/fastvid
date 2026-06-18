@@ -166,8 +166,11 @@ import { createClipAdoptAudit, recordClipAdopt } from "./clipAdoptAudit";
 import { buildEditorScenesFromPipeline } from "./editorClips";
 import { buildVideoQualityReport, logVideoQualityReport } from "./videoQualityReport";
 import { postRenderSpotCheckEnabled, spotCheckFinalVideo } from "./postRenderSpotCheck";
-import { buildEmergencyGeoStockQueries, logQualityReportExportWarnings } from "./pipelineSelfHeal";
+import { buildEmergencyGeoStockQueries, buildDocumentaryShotQueries, logQualityReportExportWarnings } from "./pipelineSelfHeal";
 import { extractTitleGeoPlaceTags } from "./worldGeoSlugs";
+import { fetchWikimediaTitlesForVideoGeo, wikimediaGeosearchEnabled } from "./wikimediaGeoSearch";
+import { buildEuropeanaBeatQueries, titleSuggestsEuropeana } from "./europeanaGeo";
+import { buildMontageBranchNormVF } from "./documentaryStyle";
 
 // API Keys
 const FISH_AUDIO_API_KEY = process.env.FISH_AUDIO_API_KEY || "";
@@ -448,7 +451,9 @@ const CROP_FILL_VF =
 const FIT_GRAY_VF = buildFitGrayVideoMontageChain();
 const FPS_FORMAT_VF = `fps=25,format=yuv420p,setsar=1,setpts=PTS-STARTPTS`;
 /** Montage xfade requires identical size/pixfmt on every branch — never skip scale/pad. */
-const MONTAGE_BRANCH_NORM_VF = `${FIT_GRAY_VF},fps=25,format=yuv420p,setsar=1`;
+function montageBranchNormVF(): string {
+  return buildMontageBranchNormVF();
+}
 const STANDARD_VF = `${SCALE_PAD_VF},${FPS_FORMAT_VF}`;
 /** New clip every ~3–4s; hold up to 7s when narration/visual clearly stay on one subject. */
 const VIDRUSH_CLIP_MIN_SEC = 2.5;
@@ -467,10 +472,13 @@ function effectiveMinClipSec(): number {
 function effectiveMaxClipSec(): number {
   return curatedArchiveOnlyVisuals() ? archiveVisualMaxClipSec() : VIDRUSH_CLIP_HOLD_SEC;
 }
-/** Soft dissolves for archive/documentary montage (reference-doc style). */
+/** Soft dissolves for archive/documentary montage (reference-doc style). Default 0.4s crossfade. */
 function montageXfadeSec(avgClipDur = archiveVisualBeatSec()): number {
+  if (process.env.ENABLE_MONTAGE_CROSSFADE === "false") return 0;
   if (curatedArchiveOnlyVisuals() || documentaryStyleEnabled()) {
-    return Math.min(0.4, Math.max(0.2, avgClipDur * 0.05));
+    const target = parseFloat(process.env.MONTAGE_XFADE_SEC || "0.4");
+    const sec = Number.isFinite(target) && target > 0 ? target : 0.4;
+    return Math.min(sec, Math.max(0.35, sec));
   }
   return 0;
 }
@@ -3780,6 +3788,75 @@ async function fetchWikimediaImagesV1(
   const adoptThreshold = minThreshold ?? wikimediaV1AdoptionThreshold(videoTitle, analysis.sentence);
   const queries = buildV1WikimediaQueries(analysis, videoTitle);
 
+  const downloadWikimediaTitle = async (bestTitle: string, bestScore: number): Promise<string | null> => {
+    const infoUrl =
+      `https://commons.wikimedia.org/w/api.php?action=query` +
+      `&titles=${encodeURIComponent(bestTitle)}&prop=imageinfo` +
+      `&iiprop=url|mime|size&format=json&origin=*`;
+    const infoResp = await withTimeout(
+      fetch(infoUrl, { headers: UA }),
+      8_000,
+      `V1 Wikimedia info scene ${sceneIndex}`
+    );
+    if (!infoResp.ok) return null;
+    type WikiInfoPage = { imageinfo?: Array<{ url: string; mime: string; size: number }> };
+    const infoData = await infoResp.json() as { query?: { pages?: Record<string, WikiInfoPage> } };
+    const page = Object.values(infoData.query?.pages ?? {})[0];
+    const imageInfo = page?.imageinfo?.[0];
+    if (!imageInfo?.url) return null;
+    if (!imageInfo.mime.startsWith("image/jpeg") && !imageInfo.mime.startsWith("image/png")) return null;
+    if (imageInfo.size < 10_000) return null;
+
+    const tag = fileTag ? `${fileTag}_` : "";
+    const imgPath = path.join(workDir, `scene_${sceneIndex}_${tag}v1wiki_b${beatIndex}.jpg`);
+    const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}v1wiki_b${beatIndex}.mp4`);
+    const imgResp = await withTimeout(
+      fetch(imageInfo.url, { headers: UA }),
+      15_000,
+      `V1 Wikimedia download scene ${sceneIndex}`
+    );
+    if (!imgResp.ok) return null;
+    const imgBuffer = Buffer.from(await imgResp.arrayBuffer());
+    if (imgBuffer.length < 10_000) return null;
+    fs.writeFileSync(imgPath, imgBuffer);
+
+    const filterComplex = buildWikimediaDocumentaryVF(duration);
+    await withTimeout(
+      exec(`${FFMPEG_BIN} ${buildStillEncodeArgs(imgPath, outPath, duration, filterComplex)}`),
+      45_000,
+      `V1 Wikimedia image→video scene ${sceneIndex}`
+    );
+    try {
+      fs.unlinkSync(imgPath);
+    } catch {
+      /* ignore */
+    }
+
+    if (fs.existsSync(outPath) && fs.statSync(outPath).size > 1_000) {
+      console.log(
+        `[V1] Scene ${sceneIndex} beat ${beatIndex}: Wikimedia match "${bestTitle.slice(0, 40)}" score=${bestScore}`
+      );
+      return outPath;
+    }
+    return null;
+  };
+
+  if (wikimediaGeosearchEnabled()) {
+    try {
+      const geoTitles = await fetchWikimediaTitlesForVideoGeo(videoTitle, 6);
+      for (const title of geoTitles) {
+        const metadata = title;
+        if (!wikimediaMetadataPassesBeatGate(metadata, videoTitle, analysis.sentence)) continue;
+        const score = scoreVisualForScene(metadata, analysis);
+        if (score < adoptThreshold - 8) continue;
+        const clip = await downloadWikimediaTitle(title, score);
+        if (clip) return clip;
+      }
+    } catch (err) {
+      console.warn(`[V1] Wikimedia geosearch scene ${sceneIndex}:`, (err as Error).message?.slice(0, 80));
+    }
+  }
+
   for (const query of queries) {
     try {
       const searchUrl =
@@ -3814,54 +3891,8 @@ async function fetchWikimediaImagesV1(
       }
       if (!bestTitle) continue;
 
-      // Fetch download URL for best title
-      const infoUrl =
-        `https://commons.wikimedia.org/w/api.php?action=query` +
-        `&titles=${encodeURIComponent(bestTitle)}&prop=imageinfo` +
-        `&iiprop=url|mime|size&format=json&origin=*`;
-      const infoResp = await withTimeout(
-        fetch(infoUrl, { headers: UA }),
-        8_000,
-        `V1 Wikimedia info scene ${sceneIndex}`
-      );
-      if (!infoResp.ok) continue;
-      type WikiInfoPage = { imageinfo?: Array<{ url: string; mime: string; size: number }> };
-      const infoData = await infoResp.json() as { query?: { pages?: Record<string, WikiInfoPage> } };
-      const page = Object.values(infoData.query?.pages ?? {})[0];
-      const imageInfo = page?.imageinfo?.[0];
-      if (!imageInfo?.url) continue;
-      if (!imageInfo.mime.startsWith("image/jpeg") && !imageInfo.mime.startsWith("image/png")) continue;
-      if (imageInfo.size < 10_000) continue;
-
-      // Download image
-      const tag = fileTag ? `${fileTag}_` : "";
-      const imgPath = path.join(workDir, `scene_${sceneIndex}_${tag}v1wiki_b${beatIndex}.jpg`);
-      const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}v1wiki_b${beatIndex}.mp4`);
-      const imgResp = await withTimeout(
-        fetch(imageInfo.url, { headers: UA }),
-        15_000,
-        `V1 Wikimedia download scene ${sceneIndex}`
-      );
-      if (!imgResp.ok) continue;
-      const imgBuffer = Buffer.from(await imgResp.arrayBuffer());
-      if (imgBuffer.length < 10_000) continue;
-      fs.writeFileSync(imgPath, imgBuffer);
-
-      // Convert with Wikimedia documentary style (blurred BG + 80% centered FG)
-      const filterComplex = buildWikimediaDocumentaryVF(duration);
-      await withTimeout(
-        exec(`${FFMPEG_BIN} ${buildStillEncodeArgs(imgPath, outPath, duration, filterComplex)}`),
-        45_000,
-        `V1 Wikimedia image→video scene ${sceneIndex}`
-      );
-      try { fs.unlinkSync(imgPath); } catch { /* ignore */ }
-
-      if (fs.existsSync(outPath) && fs.statSync(outPath).size > 1_000) {
-        console.log(
-          `[V1] Scene ${sceneIndex} beat ${beatIndex}: Wikimedia match "${bestTitle.slice(0, 40)}" score=${bestScore}`
-        );
-        return outPath;
-      }
+      const outPath = await downloadWikimediaTitle(bestTitle, bestScore);
+      if (outPath) return outPath;
     } catch (err) {
       console.warn(`[V1] Wikimedia query "${query}" failed:`, (err as Error).message);
     }
@@ -9035,7 +9066,7 @@ async function renderSingleMontageSegment(
   await withTimeout(
     exec(
       `${FFMPEG_BIN} -y -ss ${startSec.toFixed(3)} -i "${clipPath}" -t ${effectiveDur.toFixed(3)} ` +
-        `-vf "${MONTAGE_BRANCH_NORM_VF},setpts=PTS-STARTPTS" -an -vsync cfr ${threadFlag} ` +
+        `-vf "${montageBranchNormVF()},setpts=PTS-STARTPTS" -an -vsync cfr ${threadFlag} ` +
         `-c:v libx264 -preset ${MONTAGE_SEGMENT_ENCODE_PRESET} -crf 18 -pix_fmt yuv420p "${outputPath}"`
     ),
     composeTimeout,
@@ -9594,7 +9625,7 @@ function montageClipPrepFilter(
   const fadeOutStart = Math.max(0, effectiveDur - fadeOut - 0.02);
   const fadeColor = "0x2A2A2A";
   let chain = `[${inputIndex}:v]trim=start=${start}:duration=${effectiveDur.toFixed(3)},`;
-  chain += MONTAGE_BRANCH_NORM_VF;
+  chain += montageBranchNormVF();
   if (fadeIn > 0.05) chain += `,fade=t=in:st=0:d=${fadeIn.toFixed(3)}:color=${fadeColor}`;
   if (fadeOut > 0.05) chain += `,fade=t=out:st=${fadeOutStart.toFixed(3)}:d=${fadeOut.toFixed(3)}:color=${fadeColor}`;
   chain += `,setpts=PTS-STARTPTS[v${inputIndex}]`;
@@ -13413,11 +13444,14 @@ type SceneVisualsResult = {
 };
 type BeatProgressPhase = "beat" | "backfill";
 
-const ARCHIVE_BEAT_TOP_CANDIDATES = 24;
+const ARCHIVE_BEAT_TOP_CANDIDATES = 32;
 const ARCHIVE_BEAT_CLIP_RETRIES = 4;
-/** Cap vision API calls per beat — keeps generation smooth while quality stays high. */
-const ARCHIVE_VISION_TRY_STRICT = 4;
-const ARCHIVE_VISION_TRY_RELAXED = 6;
+/** Cap vision API calls per beat — 8 candidates when ENABLE_ARCHIVE_VISION_TRY=8 (default 8). */
+function archiveVisionTryStrict(): number {
+  const n = parseInt(process.env.ARCHIVE_VISION_TRY_STRICT || "8", 10);
+  return Number.isFinite(n) && n >= 4 ? Math.min(12, n) : 8;
+}
+const ARCHIVE_VISION_TRY_RELAXED = 10;
 const STOCK_QUERY_CAP = 5;
 
 /** Vision gate on every adopted beat clip; optional relaxed floor for emergency geo stock. */
@@ -13593,6 +13627,10 @@ async function adoptArchiveBeatClip(
     adoptMeta?: { source: string; assetTitle?: string }
   ): Promise<boolean> => {
     if (!clipPath || isPipelineFallbackClip(clipPath)) return false;
+    if (dedup.usedContentKeys.has(clipContentKey(clipPath))) {
+      rejectClip(clipPath);
+      return false;
+    }
     const curated = curatedClipPathAssetId(clipPath) != null;
     if (!curated && (await isMostlyBlackClip(clipPath))) {
       console.warn(
@@ -13633,7 +13671,8 @@ async function adoptArchiveBeatClip(
         withText,
         adoptMeta?.source ?? (curated ? "archive" : "archive_fetch"),
         adoptMeta?.assetTitle,
-        dedup.segmentGeoLock
+        dedup.segmentGeoLock,
+        curated ? curatedClipPathAssetId(clipPath) ?? undefined : undefined
       );
       return true;
     }
@@ -13669,7 +13708,7 @@ async function adoptArchiveBeatClip(
     const imgMax = archiveMaxImageClipsPerVideo();
     const tryCap = Math.min(
       relaxed ? ARCHIVE_BEAT_TOP_CANDIDATES * 2 : ARCHIVE_BEAT_TOP_CANDIDATES,
-      relaxed ? ARCHIVE_VISION_TRY_RELAXED : ARCHIVE_VISION_TRY_STRICT
+      relaxed ? ARCHIVE_VISION_TRY_RELAXED : archiveVisionTryStrict()
     );
     let tried = 0;
     for (const picked of ranked) {
@@ -13907,6 +13946,83 @@ async function adoptWikimediaBeatClip(
   return false;
 }
 
+/** Europeana — EU heritage video after Wikimedia, before archive (requires EUROPEANA_API_KEY). */
+async function adoptEuropeanaBeatClip(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  videoTitle: string | undefined,
+  dedup: VisualDedupState,
+  pushClip: (clipPath: string, holdSec?: number) => boolean | Promise<boolean>,
+  holdSec: number,
+  semanticProfile?: BeatSemanticProfile
+): Promise<boolean> {
+  if (!EUROPEANA_API_KEY?.trim() || !titleSuggestsEuropeana(videoTitle)) return false;
+
+  const tryClip = async (clipPath: string | null | undefined, sec = holdSec): Promise<boolean> => {
+    if (!clipPath || isPipelineFallbackClip(clipPath)) return false;
+    if (dedup.usedContentKeys.has(clipContentKey(clipPath))) return false;
+    if (await isMostlyBlackClip(clipPath)) return false;
+    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec);
+    if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) return false;
+    if (
+      !(await beatClipPassesVisionGate(
+        withText,
+        beat,
+        scene,
+        workDir,
+        videoTitle,
+        dedup,
+        semanticProfile,
+        "europeana",
+        minWikiClipQualityScore()
+      ))
+    ) {
+      return false;
+    }
+    if (await pushClip(withText, sec)) {
+      dedup.usedContentKeys.add(clipContentKey(withText));
+      recordClipAdopt(
+        dedup.clipAdoptAudit,
+        scene.index,
+        beat.index,
+        beat.text,
+        withText,
+        "europeana",
+        undefined,
+        dedup.segmentGeoLock
+      );
+      console.log(`[Pipeline] Scene ${scene.index} zin ${beat.index}: Europeana heritage clip`);
+      return true;
+    }
+    return false;
+  };
+
+  const queries = buildEuropeanaBeatQueries(beat.text, videoTitle);
+  const beatKeywords = beat.keywords ?? [];
+  try {
+    const hits = await fetchEuropeanaVideos(
+      queries,
+      holdSec,
+      workDir,
+      scene.index,
+      2,
+      `b${beat.index}`,
+      "",
+      beatKeywords
+    );
+    for (const hit of hits) {
+      if (await tryClip(hit.path, holdSec)) return true;
+    }
+  } catch (err) {
+    console.warn(
+      `[Pipeline] Europeana scene ${scene.index} beat ${beat.index}:`,
+      (err as Error).message?.slice(0, 100)
+    );
+  }
+  return false;
+}
+
 /** Pexels + Pixabay — last resort after Wikimedia and archive. No best-effort weak clips. */
 async function adoptStockBeatClipFallback(
   beat: SceneBeat,
@@ -13938,12 +14054,17 @@ async function adoptStockBeatClipFallback(
   const titleGeoQueries = titleGeo.flatMap((t) => [`${t} city aerial`, `${t} skyline timelapse`]);
   const required = resolveRequiredGeoTagsForBeat(beat.text, videoTitle, dedup.segmentGeoLock);
   const requiredQueries = required.flatMap((t) => [`${t} aerial city`, `${t} documentary footage`]);
+  const shotQueries = buildDocumentaryShotQueries(
+    beat.searchQuery?.trim() || beat.text.slice(0, 80),
+    beat.index
+  );
   const queries = [
     ...new Set(
       [
         ...requiredQueries,
         ...titleGeoQueries,
         ...geoQueries,
+        ...shotQueries,
         ...semanticQueries,
         ...scriptQueries,
         beat.searchQuery,
@@ -14452,6 +14573,10 @@ async function fillBeatVisual(
     : null;
 
   if (await adoptWikimediaBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
+    return true;
+  }
+
+  if (await adoptEuropeanaBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
     return true;
   }
 
