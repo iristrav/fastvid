@@ -17,12 +17,6 @@ function groqEnvVarNames(): string[] {
     if (!/groq/i.test(name)) continue;
     if ((value?.trim() ?? "").length > 0) names.push(name);
   }
-  if (
-    (process.env.LLM_API_KEY?.trim() ?? "").startsWith("gsk_") &&
-    !names.includes("LLM_API_KEY")
-  ) {
-    names.push("LLM_API_KEY (gsk_)");
-  }
   return names;
 }
 
@@ -34,20 +28,18 @@ export function getLlmDiagnostics(role: "web" | "worker"): LlmDiagnostics {
   const workerMode = process.env.WORKER_MODE === "true";
 
   let hint = "LLM ready.";
-  if (provider === "groq") {
+  if (provider === "openai") {
+    hint = `Using OpenAI (${process.env.LLM_MODEL?.trim() || "gpt-4o"}).`;
+  } else if (provider === "groq") {
     hint = `Using Groq (${process.env.GROQ_MODEL?.trim() || "llama-3.3-70b-versatile"}).`;
-  } else if (provider === "openai") {
-    hint = railway
-      ? "Using OpenAI on Railway — set GROQ_API_KEY on every service (web + worker) to avoid quota errors."
-      : "Using OpenAI (gpt-4o).";
-  } else if (provider === "none") {
-    hint = railway
-      ? "No LLM key — add GROQ_API_KEY to this Railway service (Variables → Redeploy)."
-      : "No LLM key configured.";
+  } else if (provider === "forge") {
+    hint = "Using Manus Forge.";
+  } else {
+    hint = "No LLM key — set LLM_API_KEY (OpenAI) on web and worker services.";
   }
 
   if (role === "web" && railway && !workerMode) {
-    hint += " Video jobs run on the worker service — GROQ_API_KEY must be set there too.";
+    hint += " Video jobs run on the worker — set LLM_API_KEY there too.";
   }
 
   return {
@@ -64,36 +56,22 @@ export function getLlmDiagnostics(role: "web" | "worker"): LlmDiagnostics {
 
 export function logLlmStartupDiagnostics(role: "web" | "worker"): LlmDiagnostics {
   const d = getLlmDiagnostics(role);
-  const vars =
-    d.groqEnvVarNames.length > 0 ? d.groqEnvVarNames.join(", ") : "none";
   console.log(
-    `[Fastvid] LLM (${role}): provider=${d.provider}, groq=${d.groqConfigured}, ` +
-      `openai=${d.openAiConfigured}, groqVars=[${vars}]`
+    `[Fastvid] LLM (${role}): provider=${d.provider}, openai=${d.openAiConfigured}, groq=${d.groqConfigured}`
   );
-  if (d.provider === "openai" && d.railway) {
-    console.warn(`[Fastvid] ⚠ ${d.hint}`);
-  } else if (d.provider === "groq") {
-    console.log(`[Fastvid] ✓ ${d.hint}`);
-  } else if (d.provider === "none") {
+  if (d.provider === "none") {
     console.error(`[Fastvid] ✗ ${d.hint}`);
+  } else {
+    console.log(`[Fastvid] ✓ ${d.hint}`);
   }
   return d;
 }
 
-/** Fail fast on Railway when only exhausted OpenAI is available. */
+/** Ensure some LLM key is configured before script generation. */
 export function assertProductionLlmReady(): void {
-  const railway = Boolean(process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_PROJECT_ID);
-  if (!railway) return;
-
-  if (groqKeyFromEnv()) return;
-  if (resolveLlmProvider() === "forge") return;
-
-  if (process.env.ALLOW_OPENAI_ON_RAILWAY === "true" && openAiKeyFromEnv()) return;
-
+  if (resolveLlmProvider() !== "none") return;
   const service = process.env.RAILWAY_SERVICE_NAME ?? "this service";
   throw new Error(
-    `LLM not configured on Railway (${service}): add GROQ_API_KEY and redeploy. ` +
-      `Video generation runs on the worker — set the same variable on web AND worker services. ` +
-      `OpenAI (LLM_API_KEY) is skipped on Railway unless ALLOW_OPENAI_ON_RAILWAY=true.`
+    `LLM not configured (${service}): set LLM_API_KEY (OpenAI) on web and worker, then redeploy.`
   );
 }

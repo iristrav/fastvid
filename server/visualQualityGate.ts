@@ -85,7 +85,7 @@ export function getVisionQaStatus(): {
 
   let hint = "Vision QA active — clips are scored against narration during generation.";
   if (!llmKeyConfigured) {
-    hint = "Set GROQ_API_KEY or LLM_API_KEY on Railway to enable Vision QA.";
+    hint = "Set LLM_API_KEY (OpenAI) on web and worker services to enable Vision QA.";
   } else if (!clipVisionGate) {
     hint = "Clip vision gate disabled — remove ENABLE_CLIP_VISION=false if set.";
   } else if (!sceneCriticalReview) {

@@ -4,7 +4,7 @@
 // present in the process environment until after the module graph is first loaded.
 //
 // Railway deployment: BUILT_IN_FORGE_API_KEY is not available on Railway.
-// Prefer GROQ_API_KEY for testing, then LLM_API_KEY (OpenAI).
+// Railway: use LLM_API_KEY (OpenAI) by default; Groq optional via GROQ_API_KEY or LLM_PROVIDER=groq.
 export type LlmProvider = "forge" | "groq" | "openai" | "none";
 
 /** Read Groq key — GROQ_API_KEY, GROQ_KEY, any *GROQ* env var, or gsk_* in LLM_API_KEY. */
@@ -33,23 +33,15 @@ export function openAiKeyFromEnv(): string {
   return llm;
 }
 
-/** Which LLM backend to use (Forge > Groq > OpenAI unless LLM_PROVIDER is set). */
+/** Which LLM backend to use (Forge > OpenAI > Groq unless LLM_PROVIDER is set). */
 export function resolveLlmProvider(): LlmProvider {
   const forced = process.env.LLM_PROVIDER?.trim().toLowerCase();
   if (forced === "groq" && groqKeyFromEnv()) return "groq";
   if (forced === "openai" && openAiKeyFromEnv()) return "openai";
   if (forced === "forge" && process.env.BUILT_IN_FORGE_API_KEY?.trim()) return "forge";
   if (process.env.BUILT_IN_FORGE_API_KEY?.trim()) return "forge";
+  if (openAiKeyFromEnv()) return "openai";
   if (groqKeyFromEnv()) return "groq";
-  if (openAiKeyFromEnv()) {
-    if (
-      (process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_PROJECT_ID) &&
-      process.env.ALLOW_OPENAI_ON_RAILWAY !== "true"
-    ) {
-      return "none";
-    }
-    return "openai";
-  }
   return "none";
 }
 
@@ -75,7 +67,7 @@ export const ENV = {
   get isProduction() { return process.env.NODE_ENV === "production"; },
   get forgeApiUrl() { return process.env.BUILT_IN_FORGE_API_URL ?? ""; },
   get groqApiKey() { return groqKeyFromEnv(); },
-  /** Active LLM backend — Forge (Manus) > Groq > OpenAI. */
+  /** Active LLM backend — Forge (Manus) > OpenAI > Groq. */
   get llmProvider(): LlmProvider {
     return resolveLlmProvider();
   },
