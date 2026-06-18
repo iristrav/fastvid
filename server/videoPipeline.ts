@@ -17186,11 +17186,10 @@ export async function runVideoPipeline(
       adoptAudit: visualDedup.clipAdoptAudit,
     });
     logVideoQualityReport(videoId, qualityReport);
-    assertQualityReportExportGate(qualityReport);
-
     await mergeVideoMetadata(videoId, { qualityReport }).catch((err) =>
       console.warn(`[Pipeline] Failed to persist qualityReport for ${videoId}:`, err)
     );
+    assertQualityReportExportGate(qualityReport);
 
     // Cleanup intermediates
     for (let i = 0; i < scenes.length; i++) {
