@@ -22,11 +22,7 @@ import {
   curatedArchiveOnlyVisuals,
   externalVisualSourcingEnabled,
   elevenLabsOnlyVoice,
-  freeVoiceoverMode,
-  pipelineMinutesPerVideoMinute,
-  pipelineWallClockGraceFactor,
 } from "../sourcingPolicy";
-import { getVisionQaStatus } from "../visualQualityGate";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -89,31 +85,21 @@ async function startServer() {
   );
   const maxStock = process.env.MAX_STOCK_BEATS_PER_VIDEO?.trim();
   console.log(
-    "[Fastvid] Pipeline wall-clock limit:",
-    process.env.PIPELINE_WALL_CLOCK_LIMIT === "false"
-      ? "✗ off — generation runs until complete"
-      : `✓ target ${pipelineMinutesPerVideoMinute()} min per 1 min video (hard cap ×${pipelineWallClockGraceFactor()})`
-  );
-  console.log(
     "[Fastvid] Minimize licensed stock:",
     process.env.MINIMIZE_STOCK_FOOTAGE !== "false"
       ? `✓ on (real footage → AI; ≤${maxStock || "1 short / 2 long"} Pexels/Pixabay per video)`
       : "✗ off (MINIMIZE_STOCK_FOOTAGE=false)"
   );
-  console.log("[Fastvid] PEXELS_API_KEY:", process.env.PEXELS_API_KEY ? "✓ set" : "✗ NOT SET");
-  console.log("[Fastvid] PIXABAY_API_KEY:", process.env.PIXABAY_API_KEY ? "✓ set" : "✗ NOT SET");
-  if (!process.env.PEXELS_API_KEY && !process.env.PIXABAY_API_KEY) {
-    console.warn("[Fastvid] No Pexels/Pixabay keys — licensed stock fallback disabled");
-  }
-  console.log("[Fastvid] LLM_API_KEY:", process.env.LLM_API_KEY ? "✓ set (OpenAI / Vision QA)" : "✗ NOT SET");
+  console.log("[Fastvid] PEXELS_API_KEY:", process.env.PEXELS_API_KEY ? "✓ set" : "✗ NOT SET — stock footage disabled");
   console.log("[Fastvid] BUILT_IN_FORGE_API_KEY:", process.env.BUILT_IN_FORGE_API_KEY ? "✓ set" : "✗ NOT SET — Manus Forge storage unused");
-  const visionQa = getVisionQaStatus();
-  console.log(
-    "[Fastvid] Vision QA:",
-    visionQa.ready
-      ? `✓ active (${visionQa.llmProvider}, min score ${visionQa.minScore}/10, scene review on)`
-      : `✗ inactive — ${visionQa.hint}`
-  );
+  const llmProvider = process.env.BUILT_IN_FORGE_API_KEY
+    ? "Manus Forge (gemini-2.5-flash)"
+    : process.env.GROQ_API_KEY
+      ? "Groq (llama-3.3-70b-versatile) ✓ FREE"
+      : process.env.LLM_API_KEY
+        ? "OpenAI (gpt-4o)"
+        : "✗ NONE — set GROQ_API_KEY (free) or LLM_API_KEY (OpenAI)";
+  console.log("[Fastvid] LLM provider:", llmProvider);
   const storageBackend = getStorageBackend();
   console.log(
     "[Fastvid] Object storage:",
@@ -139,11 +125,9 @@ async function startServer() {
   }
   console.log(
     "[Fastvid] Voiceover:",
-    freeVoiceoverMode()
-      ? "✓ FREE_TTS=gtts (Google TTS — no ElevenLabs credits)"
-      : elevenLabsOnlyVoice()
-        ? "✓ ElevenLabs only"
-        : "✗ Fish Audio fallback allowed (ELEVENLABS_ONLY=false)"
+    elevenLabsOnlyVoice()
+      ? "✓ ElevenLabs only"
+      : "✗ Fish Audio fallback allowed (ELEVENLABS_ONLY=false)"
   );
   console.log(
     "[Fastvid] Video pipeline:",
@@ -265,7 +249,6 @@ async function startServer() {
       status: "ok",
       timestamp: new Date().toISOString(),
       appUrl: getConfiguredAppUrl(),
-      visionQA: getVisionQaStatus(),
       env: {
         BUILT_IN_FORGE_API_KEY: !!process.env.BUILT_IN_FORGE_API_KEY,
         LLM_API_KEY: !!process.env.LLM_API_KEY,
