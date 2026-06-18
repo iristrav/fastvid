@@ -730,13 +730,13 @@ export function scoreCuratedAsset(
     if (geoTags.length > 0) {
       const geoHits = countVisualTagHits(asset, geoTags);
       if (geoHits >= 2) {
-        score += 70;
+        score += 85;
         beatHits += 2;
       } else if (geoHits >= 1) {
-        score += 42;
+        score += 50;
         beatHits++;
       } else {
-        score -= 120;
+        score -= 140;
       }
       if (isWrongGeoForBeat(asset, geoTags)) score = Math.max(0, score - 250);
     }

@@ -28,7 +28,7 @@ import * as path from "path";
 import * as os from "os";
 import { storagePut } from "./storage";
 import { invokeLLM } from "./_core/llm";
-import { getVideoById, updateVideoStatus, type EditorScene } from "./db";
+import { getVideoById, updateVideoStatus, updateVideoScenes, type EditorScene } from "./db";
 import pLimit from "p-limit";
 import { generateGrokVideo } from "./_core/grokVideo";
 import { generateVeoVideo } from "./_core/veoVideo";
@@ -54,7 +54,8 @@ import {
   buildV1WikimediaQueries,
   scoreVisualForScene,
   visualMatchingV1Enabled,
-  V1_ADOPTION_THRESHOLD,
+  wikimediaV1AdoptionThreshold,
+  wikimediaMetadataPassesGeoGate,
 } from "./visualMatchingEngine";
 import { extractPrimaryGeoSearchTag, extractPrimaryVisualAnchor, extractSceneSearchTags, inferVideoVisualTopic } from "./visualBeatTags";
 import {
@@ -145,6 +146,14 @@ import {
   reviewPipelineBeforeExport,
   type SceneReviewInput,
 } from "./pipelineReview";
+import {
+  inferBeatGeoRegion,
+  inferPrimaryGeoFromTitle,
+  isOffTopicGeoUrbanVisual,
+  isWrongRegionForSegmentLock,
+} from "./vidrushQuality";
+import { buildEditorScenesFromPipeline } from "./editorClips";
+import { buildVideoQualityReport, logVideoQualityReport } from "./videoQualityReport";
 
 // API Keys
 const FISH_AUDIO_API_KEY = process.env.FISH_AUDIO_API_KEY || "";
@@ -731,7 +740,7 @@ async function fetchBeatArchivalThenPexels(
     if (visualMatchingV1Enabled()) {
       const wikiAnalysis = analyzeSceneVisual(beat.text, videoTitle);
       const wikiClip = await fetchWikimediaImagesV1(
-        wikiAnalysis, beat.holdSec, workDir, sceneIndex, beat.index, `wiki${beat.index}`
+        wikiAnalysis, beat.holdSec, workDir, sceneIndex, beat.index, `wiki${beat.index}`, videoTitle
       );
       if (wikiClip) return wikiClip;
     }
@@ -883,7 +892,7 @@ async function beatPrimaryFetch(
     if (visualMatchingV1Enabled()) {
       const wikiAnalysis = analyzeSceneVisual(beat.text, videoTitle);
       const wikiClip = await fetchWikimediaImagesV1(
-        wikiAnalysis, beat.holdSec, workDir, sceneIndex, beat.index, `bpf_wiki${beat.index}`
+        wikiAnalysis, beat.holdSec, workDir, sceneIndex, beat.index, `bpf_wiki${beat.index}`, videoTitle
       );
       if (wikiClip) return wikiClip;
     }
@@ -3722,7 +3731,7 @@ async function fetchWikimediaImages(
 // ─── 3c2v1. Visual Matching Engine V1 — Wikimedia scored search ──────────────
 // Searches Wikimedia Commons, scores each result against the structured visual
 // analysis (Subject 40 · Action 30 · Location 10 · Context 20 = 100), and
-// downloads only the best image that reaches V1_ADOPTION_THRESHOLD (85/100).
+// downloads only the best image that reaches wikimediaV1AdoptionThreshold.
 // Converts with Wikimedia documentary style (blurred BG + centered 80% FG).
 async function fetchWikimediaImagesV1(
   analysis: ReturnType<typeof analyzeSceneVisual>,
@@ -3730,10 +3739,12 @@ async function fetchWikimediaImagesV1(
   workDir: string,
   sceneIndex: number,
   beatIndex: number,
-  fileTag: string
+  fileTag: string,
+  videoTitle?: string
 ): Promise<string | null> {
   const UA = { "User-Agent": "Fastvid/1.0 (video generation)" };
-  const queries = buildV1WikimediaQueries(analysis);
+  const adoptThreshold = wikimediaV1AdoptionThreshold(videoTitle, analysis.sentence);
+  const queries = buildV1WikimediaQueries(analysis, videoTitle);
 
   for (const query of queries) {
     try {
@@ -3756,9 +3767,13 @@ async function fetchWikimediaImagesV1(
 
       // Score each result — download only the winner above threshold
       let bestTitle: string | null = null;
-      let bestScore = V1_ADOPTION_THRESHOLD - 1;
+      let bestScore = adoptThreshold - 1;
       for (const result of results) {
         const metadata = `${result.title} ${(result.snippet ?? "").replace(/<[^>]*>/g, " ")}`;
+        if (!wikimediaMetadataPassesGeoGate(metadata, videoTitle, analysis.sentence)) {
+          console.log(`[V1] Scene ${sceneIndex} skip geo-offtopic "${result.title.slice(0, 35)}"`);
+          continue;
+        }
         const score = scoreVisualForScene(metadata, analysis);
         console.log(`[V1] Scene ${sceneIndex} "${result.title.slice(0, 35)}" score=${score}`);
         if (score > bestScore) { bestScore = score; bestTitle = result.title; }
@@ -10325,6 +10340,16 @@ async function adoptClip(
       const category = stockVisualCategory(sourceQuery, p);
       if (category === "blocked_model" || category === "blocked_offtopic") continue;
       if (categoryAtLimit(dedup, category, muskTopic)) continue;
+      if (!opts.scriptImageFallback && inferVideoVisualTopic(opts.videoTitle, beatText) === "geography_urban") {
+        const geoHay = `${sourceQuery} ${path.basename(p)} ${beatText} ${opts.videoTitle ?? ""}`.toLowerCase();
+        if (isOffTopicGeoUrbanVisual(geoHay)) continue;
+        const beatRegion = inferBeatGeoRegion(beatText, opts.videoTitle);
+        const lockRegion =
+          beatRegion !== "neutral" && beatRegion !== "both"
+            ? beatRegion
+            : inferPrimaryGeoFromTitle(opts.videoTitle);
+        if (isWrongRegionForSegmentLock(geoHay, lockRegion)) continue;
+      }
       // Musk/Tesla topics: reject generic clips when query targets a specific category
       const queryCategory = stockVisualCategory(sourceQuery);
       if (queryCategory !== "generic" && category === "generic") continue;
@@ -16879,11 +16904,33 @@ export async function runVideoPipeline(
     );
     console.log(`[Pipeline] Stage 6 (upload): ${((Date.now()-t5)/1000).toFixed(1)}s, size: ${(videoBuffer.length/1024/1024).toFixed(1)}MB`);
 
+    const allClipPaths = composedUsedClips.flat().filter(Boolean);
+    const pipelineSec = Math.round((Date.now() - t0) / 1000);
+    const qualityReport = buildVideoQualityReport(allClipPaths, videoTitle, {
+      pipelineSec,
+      stockBeatsUsed: visualDedup.stockBeatsUsed,
+    });
+    logVideoQualityReport(videoId, qualityReport);
+
+    let editorScenes: EditorScene[] = [];
+    try {
+      editorScenes = await buildEditorScenesFromPipeline(scenes, composedUsedClips);
+      await updateVideoScenes(videoId, editorScenes);
+    } catch (err) {
+      console.warn(`[Pipeline] Editor manifest persist failed for ${videoId}:`, (err as Error).message);
+    }
+
+    const existingMeta =
+      videoRow?.metadata && typeof videoRow.metadata === "object" && !Array.isArray(videoRow.metadata)
+        ? (videoRow.metadata as Record<string, unknown>)
+        : {};
+
     // Persist URL immediately so a crash during finalization cannot lose the finished video
     await updateVideoStatus(videoId, "completed", {
       videoUrl: url,
       progressStep: STAGE_LABELS.complete,
       progressPercent: 100,
+      metadata: { ...existingMeta, qualityReport },
     }).catch((err) => console.warn(`[Pipeline] Failed to persist videoUrl for ${videoId}:`, err));
 
     onProgress?.({ stage: STAGE_LABELS.complete, percent: 100 });

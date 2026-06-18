@@ -511,7 +511,8 @@ export function computeLexicalSemanticSimilarity(
 }
 
 async function createEmbedding(text: string): Promise<number[] | null> {
-  if (!ENV.useOpenAI || !ENV.forgeApiKey) return null;
+  const provider = ENV.llmProvider;
+  if ((provider !== "openai" && provider !== "forge") || !ENV.forgeApiKey) return null;
   const key = slug(text).slice(0, 2000);
   const cached = embeddingCache.get(key);
   if (cached) return cached;

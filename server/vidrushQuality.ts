@@ -200,6 +200,7 @@ export const FOREIGN_PLACE_MARKERS = [
   "mumbai", "delhi", "india", "indian",
   "mexico city", "mexico", "mexican",
   "brazil", "brasil", "sao paulo", "rio de janeiro",
+  "columbus", "ohio", "wisconsin", "madison wisconsin",
 ];
 
 function hayHasAny(hay: string, markers: string[]): boolean {

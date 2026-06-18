@@ -50,6 +50,13 @@ async function main() {
   console.log("[Worker] Fastvid video queue worker starting...");
   logLlmStartupDiagnostics("worker");
   assertProductionLlmReady();
+  const { recordWorkerHeartbeat } = await import("./workerHeartbeat");
+  await recordWorkerHeartbeat("worker").catch((e) =>
+    console.warn("[Worker] Heartbeat failed:", (e as Error).message)
+  );
+  setInterval(() => {
+    recordWorkerHeartbeat("worker").catch(() => {});
+  }, 120_000);
   const { getStorageBackend } = await import("./storageBackend");
   console.log("[Worker] Object storage:", getStorageBackend());
   await runMigrations();

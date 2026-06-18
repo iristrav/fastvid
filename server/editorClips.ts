@@ -2,7 +2,7 @@
  * Editor manifest helpers — stable archive URLs for preview and re-render.
  */
 import * as path from "path";
-import type { EditorClip } from "./db";
+import type { EditorClip, EditorScene } from "./db";
 import { getMediaArchiveAssetById } from "./db";
 import type { MediaArchiveAsset } from "../drizzle/schema";
 import { editorArchiveMediaUrl } from "./archiveMediaStream";
@@ -80,6 +80,27 @@ export async function buildEditorClipFromPath(clipPath: string): Promise<EditorC
     type: isVideo ? "video" : "image",
     source: clipPath.includes("curated") ? "archive" : "unknown",
   };
+}
+
+/** Build editor manifest from pipeline temp clip paths (stable URLs for archive/stock). */
+export async function buildEditorScenesFromPipeline(
+  scenes: Array<{ index: number; text: string; duration: number; chapterTitle?: string }>,
+  clipPathsPerScene: string[][]
+): Promise<EditorScene[]> {
+  const out: EditorScene[] = [];
+  for (let i = 0; i < scenes.length; i++) {
+    const scene = scenes[i]!;
+    const paths = (clipPathsPerScene[i] ?? []).filter(Boolean);
+    const clips = await Promise.all(paths.map((p) => buildEditorClipFromPath(p)));
+    out.push({
+      sceneIndex: scene.index,
+      narration: scene.text,
+      durationMs: Math.round(scene.duration * 1000),
+      clips,
+      chapterTitle: scene.chapterTitle,
+    });
+  }
+  return out;
 }
 
 /** Resolve preview/play URL for client (handles legacy temp paths). */

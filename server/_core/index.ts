@@ -26,6 +26,7 @@ import {
 import { ENV, groqKeyFromEnv, openAiKeyFromEnv } from "./env";
 import { getVisionQaStatus } from "../visualQualityGate";
 import { getLlmDiagnostics, logLlmStartupDiagnostics } from "../llmStartupDiagnostics";
+import { recordWorkerHeartbeat, readWorkerHeartbeats, summarizeWorkerHealth } from "../workerHeartbeat";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -96,6 +97,9 @@ async function startServer() {
   console.log("[Fastvid] PEXELS_API_KEY:", process.env.PEXELS_API_KEY ? "✓ set" : "✗ NOT SET — stock footage disabled");
   console.log("[Fastvid] BUILT_IN_FORGE_API_KEY:", process.env.BUILT_IN_FORGE_API_KEY ? "✓ set" : "✗ NOT SET — Manus Forge storage unused");
   logLlmStartupDiagnostics("web");
+  await recordWorkerHeartbeat("web").catch((e) =>
+    console.warn("[Fastvid] Web heartbeat failed:", (e as Error).message)
+  );
   const storageBackend = getStorageBackend();
   console.log(
     "[Fastvid] Object storage:",
@@ -213,8 +217,12 @@ async function startServer() {
   // ─── Health Check ─────────────────────────────────────────────────────────
   // IMPORTANT: This endpoint must respond immediately (no external API calls).
   // Railway uses it as a liveness probe with a strict timeout.
-  app.get("/api/health", (_req, res) => {
+  app.get("/api/health", async (_req, res) => {
     const backend = getStorageBackend();
+    const llm = getLlmDiagnostics("web");
+    const heartbeats = await readWorkerHeartbeats();
+    const workerHealth = summarizeWorkerHealth(heartbeats, llm);
+    const gitCommit = process.env.RAILWAY_GIT_COMMIT_SHA?.slice(0, 7) ?? null;
     const storage =
       backend === "local"
         ? (() => {
@@ -242,15 +250,24 @@ async function startServer() {
             }
           : { backend: "forge" };
     res.status(200).json({
-      status: "ok",
+      status: workerHealth.workerOk && llm.provider !== "none" ? "ok" : "degraded",
       timestamp: new Date().toISOString(),
       appUrl: getConfiguredAppUrl(),
       deploy: {
-        gitCommit: process.env.RAILWAY_GIT_COMMIT_SHA?.slice(0, 7) ?? null,
+        gitCommit,
         railwayService: process.env.RAILWAY_SERVICE_NAME ?? null,
+        stale: !gitCommit,
+        hint: !gitCommit
+          ? "No RAILWAY_GIT_COMMIT_SHA — redeploy from latest main or check Railway build."
+          : undefined,
+      },
+      worker: {
+        heartbeats,
+        ok: workerHealth.workerOk,
+        hint: workerHealth.hint,
       },
       visionQA: getVisionQaStatus(),
-      llm: getLlmDiagnostics("web"),
+      llm,
       env: {
         BUILT_IN_FORGE_API_KEY: !!process.env.BUILT_IN_FORGE_API_KEY,
         GROQ_API_KEY: !!process.env.GROQ_API_KEY?.trim(),
@@ -566,6 +583,11 @@ async function startServer() {
       }
 
       const videoScenes = (video as { videoScenes?: unknown }).videoScenes;
+      const metadata = (video as { metadata?: unknown }).metadata;
+      const qualityReport =
+        metadata && typeof metadata === "object" && !Array.isArray(metadata)
+          ? (metadata as { qualityReport?: unknown }).qualityReport ?? null
+          : null;
       res.json({
         id: video.id,
         status: video.status,
@@ -577,6 +599,7 @@ async function startServer() {
         videoLength: video.videoLength,
         fileProbe,
         videoScenes: videoScenes ?? null,
+        qualityReport,
       });
     } catch (err) {
       console.error('[Internal Status] Error:', err);
