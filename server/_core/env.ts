@@ -16,8 +16,10 @@ export const ENV = {
   // Prefer Manus Forge key; fall back to LLM_API_KEY for Railway deployments.
   // We use LLM_API_KEY (not OPENAI_API_KEY) to avoid Railway Railpack treating it as a build secret.
   get forgeApiKey() { return process.env.BUILT_IN_FORGE_API_KEY || process.env.LLM_API_KEY || ""; },
+  get groqApiKey() { return process.env.GROQ_API_KEY ?? ""; },
   // True when running on Railway (no Manus Forge key available)
-  get useOpenAI() { return !process.env.BUILT_IN_FORGE_API_KEY && !!process.env.LLM_API_KEY; },
+  get useOpenAI() { return !process.env.BUILT_IN_FORGE_API_KEY && !process.env.GROQ_API_KEY && !!process.env.LLM_API_KEY; },
+  get useGroq() { return !process.env.BUILT_IN_FORGE_API_KEY && !!process.env.GROQ_API_KEY; },
   get resendApiKey() { return process.env.RESEND_API_KEY ?? ""; },
   get serpApiKey() { return process.env.SERPAPI_KEY ?? ""; },
   get youtubeApiKey() { return process.env.YOUTUBE_API_KEY ?? ""; },
