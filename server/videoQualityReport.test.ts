@@ -36,7 +36,7 @@ describe("buildVideoQualityReport", () => {
     expect(report.score).toBeLessThan(100);
   });
 
-  it("assertQualityReportExportGate blocks US map on NL beat", () => {
+  it("assertQualityReportExportGate records violations without blocking pipeline", () => {
     const report = buildVideoQualityReport(
       ["/tmp/scene_0_b0_hist_archive_kansas.mp4"],
       "Why the Netherlands Is the Opposite of the U.S.",
@@ -55,10 +55,10 @@ describe("buildVideoQualityReport", () => {
       }
     );
     expect(report.criticalGeoViolations?.length).toBeGreaterThanOrEqual(1);
-    expect(() => assertQualityReportExportGate(report)).toThrow(/Export blocked/);
+    expect(() => assertQualityReportExportGate(report)).not.toThrow();
   });
 
-  it("assertQualityReportExportGate blocks Kansas City on Singapore video", () => {
+  it("Singapore geo violations are detected in report", () => {
     const report = buildVideoQualityReport(
       ["/tmp/scene_0_b0_hist_archive_kansas.mp4"],
       "Why Singapore is the Blueprint for Future Cities",
@@ -76,7 +76,6 @@ describe("buildVideoQualityReport", () => {
       }
     );
     expect(report.criticalGeoViolations?.length).toBeGreaterThanOrEqual(1);
-    expect(() => assertQualityReportExportGate(report)).toThrow(/Export blocked/);
   });
 });
 

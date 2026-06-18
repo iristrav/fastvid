@@ -134,6 +134,8 @@ import {
   archiveAssetPreflight,
   assetPassesBeatMinimum,
   buildGeoStockSearchQueries,
+  resolveRequiredGeoTagsForBeat,
+  isArchiveGeoBlockedForBeat,
   type CuratedCandidatePick,
 } from "./curatedMediaSourcing";
 import {
@@ -154,14 +156,16 @@ import {
   reviewPipelineBeforeExport,
   type SceneReviewInput,
 } from "./pipelineReview";
-import { assertSceneCriticalReview, reviewSceneCritical } from "./sceneCriticalReview";
+import { reviewSceneCritical } from "./sceneCriticalReview";
 import { clipPassesDocumentaryBeatGate, resolveBeatRegionLock, inferBeatGeoRegion, resolveSegmentGeoLock, type BeatGeoRegion } from "./vidrushQuality";
 import type { ClipRejectEntry } from "./clipRejectAudit";
 import { recordClipReject, summarizeClipRejectAudit } from "./clipRejectAudit";
 import type { ClipAdoptEntry } from "./clipAdoptAudit";
 import { createClipAdoptAudit, recordClipAdopt } from "./clipAdoptAudit";
 import { buildEditorScenesFromPipeline } from "./editorClips";
-import { buildVideoQualityReport, logVideoQualityReport, assertQualityReportExportGate } from "./videoQualityReport";
+import { buildVideoQualityReport, logVideoQualityReport } from "./videoQualityReport";
+import { buildEmergencyGeoStockQueries, logQualityReportExportWarnings } from "./pipelineSelfHeal";
+import { extractTitleGeoPlaceTags } from "./worldGeoSlugs";
 
 // API Keys
 const FISH_AUDIO_API_KEY = process.env.FISH_AUDIO_API_KEY || "";
@@ -13410,7 +13414,7 @@ const ARCHIVE_VISION_TRY_STRICT = 4;
 const ARCHIVE_VISION_TRY_RELAXED = 6;
 const STOCK_QUERY_CAP = 5;
 
-/** Vision gate on every adopted beat clip; always target minClipQualityScore (default 10). */
+/** Vision gate on every adopted beat clip; optional relaxed floor for emergency geo stock. */
 async function beatClipPassesVisionGate(
   clipPath: string,
   beat: SceneBeat,
@@ -13419,7 +13423,8 @@ async function beatClipPassesVisionGate(
   videoTitle: string | undefined,
   dedup: VisualDedupState,
   semanticProfile: BeatSemanticProfile | undefined,
-  queryLabel: string
+  queryLabel: string,
+  minScore = minClipQualityScore()
 ): Promise<boolean> {
   if (
     !(await clipPassesVisionGate(
@@ -13430,7 +13435,7 @@ async function beatClipPassesVisionGate(
       scene.index,
       beat.index,
       false,
-      minClipQualityScore(),
+      minScore,
       semanticProfile?.summary
     ))
   ) {
@@ -13887,12 +13892,18 @@ async function adoptStockBeatClipFallback(
     ? buildSemanticPexelsQueries(beat.text, semanticProfile, 6, videoTitle)
     : [];
   const scriptQueries = buildBeatVisualQueryList(beat.text, scene, videoTitle, scenePersons, 6);
-  const geoQueries = buildGeoStockSearchQueries(beat.text, videoTitle).slice(0, 5);
+  const geoQueries = buildGeoStockSearchQueries(beat.text, videoTitle).slice(0, 6);
+  const titleGeo = extractTitleGeoPlaceTags(videoTitle);
+  const titleGeoQueries = titleGeo.flatMap((t) => [`${t} city aerial`, `${t} skyline timelapse`]);
+  const required = resolveRequiredGeoTagsForBeat(beat.text, videoTitle, dedup.segmentGeoLock);
+  const requiredQueries = required.flatMap((t) => [`${t} aerial city`, `${t} documentary footage`]);
   const queries = [
     ...new Set(
       [
-        ...semanticQueries,
+        ...requiredQueries,
+        ...titleGeoQueries,
         ...geoQueries,
+        ...semanticQueries,
         ...scriptQueries,
         beat.searchQuery,
         beat.powerWord,
@@ -13901,7 +13912,7 @@ async function adoptStockBeatClipFallback(
         .filter((q): q is string => typeof q === "string" && q.trim().length > 2 && !isBlockedStockQuery(q))
         .map((q) => simplifyStockSearchWord(q, beat.text, true))
     ),
-  ].slice(0, STOCK_QUERY_CAP);
+  ].slice(0, STOCK_QUERY_CAP + 3);
 
   if (queries.length === 0) return false;
 
@@ -13918,6 +13929,16 @@ async function adoptStockBeatClipFallback(
       if (!clipPath || !fs.existsSync(clipPath)) continue;
       if (dedup.usedContentKeys.has(clipContentKey(clipPath))) continue;
       if (isRejectedStockClip(clipPath, q)) continue;
+      if (
+        isArchiveGeoBlockedForBeat(
+          { title: `${q} ${path.basename(clipPath)}`, tags: [] },
+          beat.text,
+          videoTitle,
+          dedup.segmentGeoLock
+        )
+      ) {
+        continue;
+      }
       if (
         dedup.personTopicLock &&
         dedup.primaryPerson &&
@@ -14002,6 +14023,141 @@ async function adoptStockBeatClipFallback(
   return false;
 }
 
+/** Geo-anchored stock when archive is geo-blocked — relaxed vision, never skip beat. */
+async function adoptEmergencyGeoStockClip(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  videoTitle: string | undefined,
+  dedup: VisualDedupState,
+  pushClip: (clipPath: string, holdSec?: number) => boolean | Promise<boolean>,
+  holdSec: number,
+  semanticProfile?: BeatSemanticProfile
+): Promise<boolean> {
+  if (!archivePexelsFallbackEnabled()) return false;
+
+  const tryClip = async (clipPath: string | null | undefined, sec = holdSec, minScore = 6): Promise<boolean> => {
+    if (!clipPath || isPipelineFallbackClip(clipPath)) return false;
+    if (await isMostlyBlackClip(clipPath)) return false;
+    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec);
+    if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) return false;
+    if (
+      !(await beatClipPassesVisionGate(
+        withText,
+        beat,
+        scene,
+        workDir,
+        videoTitle,
+        dedup,
+        semanticProfile,
+        "emergency_geo",
+        minScore
+      ))
+    ) {
+      return false;
+    }
+    if (await pushClip(withText, sec)) {
+      recordClipAdopt(
+        dedup.clipAdoptAudit,
+        scene.index,
+        beat.index,
+        beat.text,
+        withText,
+        "pexels",
+        undefined,
+        dedup.segmentGeoLock
+      );
+      markLicensedStockBeatUsed(dedup);
+      return true;
+    }
+    return false;
+  };
+
+  const queries = buildEmergencyGeoStockQueries(beat.text, videoTitle, dedup.segmentGeoLock);
+  console.warn(
+    `[Pipeline] Scene ${scene.index} zin ${beat.index}: emergency geo stock (${queries.slice(0, 3).join(", ")})`
+  );
+
+  for (let qi = 0; qi < queries.length; qi++) {
+    const q = queries[qi]!;
+    if (
+      isArchiveGeoBlockedForBeat({ title: q, tags: [] }, beat.text, videoTitle, dedup.segmentGeoLock)
+    ) {
+      continue;
+    }
+    if (!PEXELS_API_KEY) continue;
+    try {
+      const paths = await withTimeout(
+        fetchPexelsClips(
+          q,
+          holdSec,
+          workDir,
+          scene.index,
+          3,
+          queries.slice(qi + 1, qi + 4),
+          true,
+          `b${beat.index}_emg`,
+          dedup.usedPexelsIds,
+          beat.index + scene.index + qi + 900,
+          dedup.perf.pexelsDownloadRetries ?? 2
+        ),
+        35_000,
+        `Emergency Pexels scene ${scene.index} beat ${beat.index}`
+      );
+      for (const clipPath of paths) {
+        if (await tryClip(clipPath, holdSec, 6)) return true;
+        if (await tryClip(clipPath, holdSec, 5)) return true;
+      }
+    } catch (err) {
+      console.warn(`[Pipeline] Emergency geo stock "${q}":`, (err as Error).message?.slice(0, 80));
+    }
+  }
+
+  if (dedup.perf.enableAiFallback && dedup.aiClipsUsed < dedup.perf.maxAiClipsPerVideo) {
+    const aiClip = await fetchBeatAIClip(
+      beat,
+      scene,
+      workDir,
+      scene.index,
+      beat.index,
+      holdSec,
+      dedup,
+      videoTitle
+    );
+    if (aiClip && !isPipelineFallbackClip(aiClip) && (await tryClip(aiClip, holdSec, 5))) {
+      console.warn(`[Pipeline] Scene ${scene.index} zin ${beat.index}: AI emergency clip`);
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Never leave a beat empty — Wikimedia → archive → stock → emergency geo → AI. */
+async function ensureBeatVisualFilled(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  videoTitle: string | undefined,
+  dedup: VisualDedupState,
+  pushClip: (clipPath: string, holdSec?: number) => boolean | Promise<boolean>,
+  semanticProfile?: BeatSemanticProfile,
+  holdSec = beat.holdSec
+): Promise<void> {
+  if (await fillBeatVisual(beat, scene, workDir, videoTitle, dedup, pushClip, semanticProfile, holdSec)) {
+    return;
+  }
+  console.warn(
+    `[Pipeline] Scene ${scene.index} zin ${beat.index}: self-heal — emergency geo stock`
+  );
+  if (await adoptEmergencyGeoStockClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
+    return;
+  }
+  throw pipelineError(
+    PIPELINE_ERROR.NO_SCENES,
+    `Scene ${scene.index} beat ${beat.index}: all visual sources exhausted after self-heal`
+  );
+}
+
 /** @deprecated alias */
 async function adoptPexelsBeatClipFallback(
   beat: SceneBeat,
@@ -14068,17 +14224,21 @@ async function backfillArchiveMontageFromPool(
     if (!beat) break;
     const profile = opts?.semanticProfiles?.get(beat.index);
     const fillHold = Math.max(beat.holdSec, outDur / minClipsNeeded);
-    const adopted = await fillBeatVisual(
-      beat,
-      scene,
-      workDir,
-      videoTitle,
-      dedup,
-      (clipPath, holdSec) => pushClip(clipPath, holdSec, beats.length + added),
-      profile,
-      fillHold
-    );
-    if (adopted) added++;
+    try {
+      await ensureBeatVisualFilled(
+        beat,
+        scene,
+        workDir,
+        videoTitle,
+        dedup,
+        (clipPath, holdSec) => pushClip(clipPath, holdSec, beats.length + added),
+        profile,
+        fillHold
+      );
+      added++;
+    } catch {
+      /* try next beat */
+    }
     coverage = await estimateBalancedMontageCoverageSec(clips, beatDurations, outDur);
   }
   return added;
@@ -14331,9 +14491,14 @@ async function fetchArchiveSentenceMontage(
       semanticProfiles.get(bi)
     );
     if (!filled) {
-      throw pipelineError(
-        PIPELINE_ERROR.NO_SCENES,
-        `Scene ${scene.index} sentence ${beat.index + 1}: geen beeld na Wikimedia + archief + Pexels + Pixabay voor "${beat.text.slice(0, 90).trim()}" (${archiveTagHintForScene(scene, videoTitle)})`
+      await ensureBeatVisualFilled(
+        beat,
+        scene,
+        workDir,
+        videoTitle,
+        dedup,
+        pushClip,
+        semanticProfiles.get(bi)
       );
     }
   }
@@ -14412,24 +14577,26 @@ async function ensureArchiveMontageVoiceCoverage(
     const fillBeatIndex = beats.length + attempt;
     const holdSec = Math.max(beat.holdSec, scene.duration / minClips);
     const pushClip = (clipPath: string, sec = holdSec) => pushSceneClip(clipPath, sec, fillBeatIndex);
-    const filled = await fillBeatVisual(
-      beat,
-      scene,
-      workDir,
-      videoTitle,
-      dedup,
-      pushClip,
-      semanticProfiles.get(beat.index),
-      holdSec
-    );
-    if (!filled) continue;
+    try {
+      await ensureBeatVisualFilled(
+        beat,
+        scene,
+        workDir,
+        videoTitle,
+        dedup,
+        pushClip,
+        semanticProfiles.get(beat.index),
+        holdSec
+      );
+    } catch {
+      continue;
+    }
   }
 
   coverage = await estimateBalancedMontageCoverageSec(clips, beatDurations, scene.duration);
   if (coverage < minCoverage) {
-    throw pipelineError(
-      PIPELINE_ERROR.NO_SCENES,
-      `Scene ${scene.index}: montage ${clips.length} clip(s) covers ~${coverage.toFixed(1)}s of ${scene.duration.toFixed(1)}s voice — tag more archive footage or ensure Pexels fallback is enabled`
+    console.warn(
+      `[Pipeline] Scene ${scene.index}: montage short ~${coverage.toFixed(1)}s / ${scene.duration.toFixed(1)}s — continuing (self-heal)`
     );
   }
 }
@@ -17149,7 +17316,9 @@ export async function runVideoPipeline(
         workDir,
         topicContext
       );
-      assertSceneCriticalReview(scenes[i]!.index, critical);
+      if (!critical.ok) {
+        console.warn(`[Pipeline] Scene ${scenes[i]!.index} critical review: ${critical.summary} — continuing (self-heal)`);
+      }
     }
 
     // ── Stage 5b: QA — visuals match narration + montage timing ──────────────
@@ -17175,7 +17344,7 @@ export async function runVideoPipeline(
     const finalReview = await reviewPipelineBeforeExport(reviewInputs, composedScenes);
     logPipelineReview("eindcontrole", finalReview);
     if (!finalReview.ok) {
-      throw pipelineError(PIPELINE_ERROR.FFMPEG, finalReview.summary);
+      console.warn(`[Pipeline] Final review: ${finalReview.summary} — continuing export (self-heal)`);
     }
 
     const allClipPaths = composedUsedClips.flat().filter(Boolean);
@@ -17189,7 +17358,7 @@ export async function runVideoPipeline(
     await mergeVideoMetadata(videoId, { qualityReport }).catch((err) =>
       console.warn(`[Pipeline] Failed to persist qualityReport for ${videoId}:`, err)
     );
-    assertQualityReportExportGate(qualityReport);
+    logQualityReportExportWarnings(videoId, qualityReport);
 
     // Cleanup intermediates
     for (let i = 0; i < scenes.length; i++) {

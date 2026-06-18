@@ -119,6 +119,7 @@ import {
   OUTLINE_JSON_SCHEMA,
   type ScriptOutline,
 } from "./scriptWriter";
+import { ensureScriptMeetsBudgetWithRetry } from "./pipelineSelfHeal";
 import { attachScriptVisualKeywords } from "./scriptVisualKeywords";
 import type { InvokeResult } from "./_core/llm";
 
@@ -418,9 +419,25 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLengthRa
       console.log(
         `[Script] Video ${videoId} (fast): ${narrationWords} words (target ${budget.targetWords})`
       );
-      const budgetCheck = checkScriptMeetsBudget(scriptContent, budget);
-      if (!budgetCheck.ok) {
-        throw pipelineError(PIPELINE_ERROR.SCRIPT_FAILED, budgetCheck.message);
+      const expanded = await ensureScriptMeetsBudgetWithRetry(
+        scriptContent,
+        budget,
+        prompt,
+        async (userPrompt) => {
+          const resp = await invokeLLM({
+            messages: [{ role: "system", content: writerSystem }, { role: "user", content: userPrompt }],
+            maxTokens: 8192,
+          });
+          return llmMessageText(resp);
+        }
+      );
+      scriptContent = expanded.script;
+      narrationWords = countNarrationWords(scriptContent);
+      if (!expanded.ok) {
+        throw pipelineError(
+          PIPELINE_ERROR.SCRIPT_FAILED,
+          `Script incomplete after retry: ${expanded.words} words (need ≥${budget.minWords})`
+        );
       }
 
       scriptLog[0].completedAt = Date.now();
@@ -589,9 +606,25 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLengthRa
       `[Script] Video ${videoId}: ${narrationWords} words (target ${budget.targetWords}, ` +
       `${budget.minWords}–${budget.maxWords}) · ~${budget.targetSpokenSec}s VO`
     );
-    const budgetCheck = checkScriptMeetsBudget(scriptContent, budget);
-    if (!budgetCheck.ok) {
-      throw pipelineError(PIPELINE_ERROR.SCRIPT_FAILED, budgetCheck.message);
+    const expanded = await ensureScriptMeetsBudgetWithRetry(
+      scriptContent,
+      budget,
+      prompt,
+      async (userPrompt) => {
+        const resp = await invokeLLM({
+          messages: [{ role: "system", content: writerSystem }, { role: "user", content: userPrompt }],
+          maxTokens: 8192,
+        });
+        return llmMessageText(resp);
+      }
+    );
+    scriptContent = expanded.script;
+    narrationWords = countNarrationWords(scriptContent);
+    if (!expanded.ok) {
+      throw pipelineError(
+        PIPELINE_ERROR.SCRIPT_FAILED,
+        `Script incomplete after retry: ${expanded.words} words (need ≥${budget.minWords})`
+      );
     }
 
     let metadata: unknown = {};

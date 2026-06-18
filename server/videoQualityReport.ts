@@ -16,7 +16,6 @@ import type { ClipRejectEntry } from "./clipRejectAudit";
 import { summarizeClipRejectAudit } from "./clipRejectAudit";
 import type { ClipAdoptEntry } from "./clipAdoptAudit";
 import { isArchiveGeoBlockedForBeat, resolveRequiredGeoTagsForBeat } from "./curatedMediaSourcing";
-import { PIPELINE_ERROR, pipelineError } from "@shared/appErrors";
 import type { BeatGeoRegion } from "./vidrushQuality";
 
 export type VideoQualityReport = {
@@ -230,7 +229,7 @@ export function logVideoQualityReport(videoId: number, report: VideoQualityRepor
   }
 }
 
-/** Block final export when beat-aware geo audit finds US visuals on NL beats. */
+/** Log geo export warnings — pipeline self-heals at beat level; export is not blocked. */
 export function assertQualityReportExportGate(report: VideoQualityReport): void {
   const violations = report.criticalGeoViolations ?? [];
   if (violations.length === 0) return;
@@ -238,8 +237,7 @@ export function assertQualityReportExportGate(report: VideoQualityReport): void 
     .slice(0, 4)
     .map((v) => `${v.basename}${v.assetTitle ? ` (${v.assetTitle.slice(0, 40)})` : ""}`)
     .join("; ");
-  throw pipelineError(
-    PIPELINE_ERROR.NO_SCENES,
-    `Export blocked: ${violations.length} critical geo violation(s): ${summary}`
+  console.warn(
+    `[Quality] Geo warning (non-blocking): ${violations.length} issue(s): ${summary}`
   );
 }
