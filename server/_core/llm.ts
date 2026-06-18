@@ -210,17 +210,21 @@ const normalizeToolChoice = (
 };
 
 const resolveApiUrl = () => {
-  // On Railway: no Forge key, use OpenAI directly
   if (ENV.useOpenAI) return "https://api.openai.com/v1/chat/completions";
-  // On Manus platform: use Forge URL if set, otherwise default Forge endpoint
+  if (ENV.useGroq) return "https://api.groq.com/openai/v1/chat/completions";
   return ENV.forgeApiUrl && ENV.forgeApiUrl.trim().length > 0
     ? `${ENV.forgeApiUrl.replace(/\/$/, "")}/v1/chat/completions`
     : "https://forge.manus.im/v1/chat/completions";
 };
 
+const resolveApiKey = () => {
+  if (ENV.useGroq) return ENV.groqApiKey;
+  return ENV.forgeApiKey;
+};
+
 const assertApiKey = () => {
-  if (!ENV.forgeApiKey) {
-    throw new Error("LLM API key is not configured. Set BUILT_IN_FORGE_API_KEY or LLM_API_KEY");
+  if (!resolveApiKey()) {
+    throw new Error("LLM API key is not configured. Set GROQ_API_KEY, LLM_API_KEY, or BUILT_IN_FORGE_API_KEY");
   }
 };
 
@@ -283,9 +287,14 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
     response_format,
   } = params;
 
+  const resolveModel = () => {
+    if (ENV.useOpenAI) return "gpt-4o";
+    if (ENV.useGroq) return "llama-3.3-70b-versatile";
+    return "gemini-2.5-flash";
+  };
+
   const payload: Record<string, unknown> = {
-    // Use gpt-4o on Railway (OpenAI), gemini-2.5-flash on Manus Forge
-    model: ENV.useOpenAI ? "gpt-4o" : "gemini-2.5-flash",
+    model: resolveModel(),
     messages: messages.map(normalizeMessage),
   };
 
@@ -302,7 +311,7 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
   }
 
   const maxTokens = params.maxTokens ?? params.max_tokens;
-  if (!ENV.useOpenAI) {
+  if (!ENV.useOpenAI && !ENV.useGroq) {
     payload.thinking = { budget_tokens: 128 };
     payload.max_tokens = maxTokens ?? 32768;
   } else {
@@ -324,7 +333,7 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      authorization: `Bearer ${ENV.forgeApiKey}`,
+      authorization: `Bearer ${resolveApiKey()}`,
     },
     body: JSON.stringify(payload),
   });
