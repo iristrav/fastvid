@@ -727,8 +727,7 @@ async function fetchBeatArchivalThenPexels(
       { varietySeed: dedup.varietySeed, crossVideoExcludeIds: dedup.crossVideoExcludeIds }
     );
     if (archiveClip !== null) return archiveClip;
-    // No matching archive clip — try Wikimedia (free/public) then Pexels.
-    if (!archivePexelsFallbackEnabled() || !canUseLicensedStockBeat(dedup)) return null;
+    // Always try Wikimedia first (free, no API key — runs regardless of Pexels gate)
     if (visualMatchingV1Enabled()) {
       const wikiAnalysis = analyzeSceneVisual(beat.text, videoTitle);
       const wikiClip = await fetchWikimediaImagesV1(
@@ -736,6 +735,8 @@ async function fetchBeatArchivalThenPexels(
       );
       if (wikiClip) return wikiClip;
     }
+    // No archive/wiki match — fall through to Pexels if enabled.
+    if (!archivePexelsFallbackEnabled() || !canUseLicensedStockBeat(dedup)) return null;
     console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: no archive/wiki match → Pexels fallback`);
   }
   const topicHay = [videoTitle, scene.text, beat.text].filter(Boolean).join(" ");
