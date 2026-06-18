@@ -101,6 +101,9 @@ async function startServer() {
   await recordWorkerHeartbeat("web").catch((e) =>
     console.warn("[Fastvid] Web heartbeat failed:", (e as Error).message)
   );
+  setInterval(() => {
+    recordWorkerHeartbeat("web").catch(() => {});
+  }, 120_000);
   const storageBackend = getStorageBackend();
   console.log(
     "[Fastvid] Object storage:",
@@ -771,6 +774,14 @@ recoverStuckPipelines()
     }
     const { startVideoQueueWorker } = await import("../videoQueue");
     startVideoQueueWorker();
+    // Embedded queue on web must register as worker for /api/health
+    await recordWorkerHeartbeat("worker").catch((e) =>
+      console.warn("[Fastvid] Embedded worker heartbeat failed:", (e as Error).message)
+    );
+    setInterval(() => {
+      recordWorkerHeartbeat("worker").catch(() => {});
+    }, 60_000);
+    console.log("[VideoQueue] Embedded worker heartbeat active (worker role)");
   })
   .catch(console.error);
 

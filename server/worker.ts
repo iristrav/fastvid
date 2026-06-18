@@ -56,7 +56,7 @@ async function main() {
   );
   setInterval(() => {
     recordWorkerHeartbeat("worker").catch(() => {});
-  }, 120_000);
+  }, 60_000);
   const { getStorageBackend } = await import("./storageBackend");
   console.log("[Worker] Object storage:", getStorageBackend());
   await runMigrations();

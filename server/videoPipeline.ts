@@ -111,7 +111,7 @@ import {
   scriptGuidedClipsEnabled,
 } from "./scriptGuidedClipFinder";
 import { clipPassesVisionGate, clipVisionGateEnabled } from "./visualQualityGate";
-import { curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archivePexelsFallbackEnabled, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled } from "./sourcingPolicy";
+import { archivePexelsFallbackEnabled, archivePexelsHybridEnabled, curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -134,6 +134,8 @@ import {
   archiveAssetPreflight,
   assetPassesBeatMinimum,
   buildGeoStockSearchQueries,
+  shouldPreferPexelsOverArchive,
+  shouldTryPexelsFirstForBeat,
   type CuratedCandidatePick,
 } from "./curatedMediaSourcing";
 import {
@@ -154,7 +156,7 @@ import {
   reviewPipelineBeforeExport,
   type SceneReviewInput,
 } from "./pipelineReview";
-import { clipPassesDocumentaryBeatGate } from "./vidrushQuality";
+import { clipPassesDocumentaryBeatGate, resolveBeatRegionLock } from "./vidrushQuality";
 import type { ClipRejectEntry } from "./clipRejectAudit";
 import { recordClipReject, summarizeClipRejectAudit } from "./clipRejectAudit";
 import { buildEditorScenesFromPipeline } from "./editorClips";
@@ -13553,7 +13555,18 @@ async function adoptArchiveBeatClip(
       `[Pipeline] Scene ${scene.index} zin ${beat.index}: archive-zoek "${beat.text.slice(0, 55).trim()}…" → ${ranked.length} kandidaat(en)`
     );
     const { beatTags, topicAnchors, videoVisualTopic } = buildBeatMatchTags(beat, scene, videoTitle);
+    const segmentLock = resolveBeatRegionLock(beat.text, videoTitle);
     const topScore = ranked[0]?.score ?? 0;
+    if (
+      !relaxed &&
+      archivePexelsHybridEnabled() &&
+      shouldPreferPexelsOverArchive(beat.text, ranked, videoVisualTopic, segmentLock)
+    ) {
+      console.log(
+        `[Pipeline] Scene ${scene.index} zin ${beat.index}: archive zwak/verkeerde geo (top ${topScore}) — licensed stock`
+      );
+      return false;
+    }
     const minAcceptScore = relaxed
       ? Math.max(12, Math.round(topScore * 0.25))
       : Math.max(28, Math.round(topScore * 0.4));
@@ -13698,6 +13711,7 @@ async function adoptLicensedBeatClipFallback(
     ? buildSemanticPexelsQueries(beat.text, semanticProfile, 8, videoTitle)
     : [];
   const scriptQueries = buildBeatVisualQueryList(beat.text, scene, videoTitle, scenePersons, opts.bestEffort ? 10 : 6);
+  const geoQueries = buildGeoStockSearchQueries(beat.text, videoTitle).slice(0, opts.bestEffort ? 6 : 5);
   const topicQueries = opts.bestEffort
     ? [
         ...extractTopicAnchorTags(videoTitle, beat.text),
@@ -13711,12 +13725,12 @@ async function adoptLicensedBeatClipFallback(
     ...new Set(
       [
         ...semanticQueries,
+        ...geoQueries,
         ...scriptQueries,
         ...topicQueries,
         beat.searchQuery,
         beat.powerWord,
         enrichStockQuery(scene.pexelsQuery, scene, videoTitle, scenePersons[0] ?? "", beat.text),
-        ...(opts.bestEffort ? buildGeoStockSearchQueries(beat.text, videoTitle).slice(0, 4) : []),
       ]
         .filter((q): q is string => typeof q === "string" && q.trim().length > 2 && !isBlockedStockQuery(q))
         .map((q) => simplifyStockSearchWord(q, beat.text, true))
@@ -14026,6 +14040,91 @@ async function backfillComposeMontageIfShort(
   }
 }
 
+async function fillArchiveBeatVisual(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  videoTitle: string | undefined,
+  dedup: VisualDedupState,
+  pushClip: (clipPath: string, holdSec?: number) => boolean | Promise<boolean>,
+  semanticProfile?: BeatSemanticProfile
+): Promise<boolean> {
+  let preferLicensedFirst = false;
+  if (curatedArchiveOnlyVisuals() && archivePexelsHybridEnabled()) {
+    const { videoVisualTopic } = buildBeatMatchTags(beat, scene, videoTitle);
+    const segmentLock = resolveBeatRegionLock(beat.text, videoTitle);
+    const preRanked = await searchCuratedCandidatesForBeat(
+      beat,
+      scene,
+      dedup.usedCuratedAssetIds,
+      dedup.usedCuratedStorageUrls,
+      videoTitle,
+      {
+        varietySeed: dedup.varietySeed,
+        crossVideoExcludeIds: dedup.crossVideoExcludeIds,
+        assetsCache: dedup.archiveAssetsCache,
+        semanticProfile,
+      }
+    );
+    preferLicensedFirst =
+      shouldTryPexelsFirstForBeat(beat.text, videoVisualTopic) &&
+      (preRanked.length === 0 ||
+        shouldPreferPexelsOverArchive(beat.text, preRanked, videoVisualTopic, segmentLock));
+    if (preferLicensedFirst) {
+      console.log(
+        `[Pipeline] Scene ${scene.index} zin ${beat.index}: geo/urban — Wikimedia/Pexels vóór archief`
+      );
+    }
+  }
+
+  const tryArchive = (relaxed: boolean, attempts = 1) =>
+    (async () => {
+      for (let attempt = 0; attempt < attempts; attempt++) {
+        const ok = await adoptArchiveBeatClip(
+          beat,
+          scene,
+          workDir,
+          videoTitle,
+          dedup,
+          pushClip,
+          null,
+          beat.holdSec,
+          semanticProfile,
+          relaxed || attempt >= 2
+        );
+        if (ok) return true;
+      }
+      return false;
+    })();
+
+  const tryLicensed = (bestEffort: boolean) =>
+    adoptLicensedBeatClipFallback(
+      beat,
+      scene,
+      workDir,
+      videoTitle,
+      dedup,
+      pushClip,
+      beat.holdSec,
+      semanticProfile,
+      bestEffort ? { bestEffort: true } : undefined
+    );
+
+  if (preferLicensedFirst) {
+    if (await tryLicensed(false)) return true;
+    if (await tryLicensed(true)) return true;
+    if (await tryArchive(false, ARCHIVE_BEAT_CLIP_RETRIES)) return true;
+    if (await tryArchive(true)) return true;
+    return false;
+  }
+
+  if (await tryArchive(false, ARCHIVE_BEAT_CLIP_RETRIES)) return true;
+  if (await tryArchive(true)) return true;
+  if (await tryLicensed(false)) return true;
+  if (await tryLicensed(true)) return true;
+  return false;
+}
+
 async function fetchArchiveSentenceMontage(
   scene: Scene,
   workDir: string,
@@ -14084,60 +14183,15 @@ async function fetchArchiveSentenceMontage(
     const pushClip = (clipPath: string, holdSec = beat.holdSec): Promise<boolean> =>
       pushSceneClip(clipPath, holdSec, beat.index);
 
-    let filled = false;
-    for (let attempt = 0; attempt < ARCHIVE_BEAT_CLIP_RETRIES && !filled; attempt++) {
-      filled = await adoptArchiveBeatClip(
-        beat,
-        scene,
-        workDir,
-        videoTitle,
-        dedup,
-        pushClip,
-        null,
-        beat.holdSec,
-        semanticProfiles.get(bi),
-        attempt >= 2
-      );
-    }
-    if (!filled) {
-      filled = await adoptArchiveBeatClip(
-        beat,
-        scene,
-        workDir,
-        videoTitle,
-        dedup,
-        pushClip,
-        null,
-        beat.holdSec,
-        semanticProfiles.get(bi),
-        true
-      );
-    }
-    if (!filled) {
-      filled = await adoptLicensedBeatClipFallback(
-        beat,
-        scene,
-        workDir,
-        videoTitle,
-        dedup,
-        pushClip,
-        beat.holdSec,
-        semanticProfiles.get(bi)
-      );
-    }
-    if (!filled) {
-      filled = await adoptLicensedBeatClipFallback(
-        beat,
-        scene,
-        workDir,
-        videoTitle,
-        dedup,
-        pushClip,
-        beat.holdSec,
-        semanticProfiles.get(bi),
-        { bestEffort: true }
-      );
-    }
+    const filled = await fillArchiveBeatVisual(
+      beat,
+      scene,
+      workDir,
+      videoTitle,
+      dedup,
+      pushClip,
+      semanticProfiles.get(bi)
+    );
     if (!filled) {
       throw pipelineError(
         PIPELINE_ERROR.NO_SCENES,
