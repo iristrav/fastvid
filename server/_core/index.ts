@@ -121,7 +121,7 @@ async function startServer() {
   console.log(
     "[Fastvid] Visual sourcing:",
     curatedArchiveOnlyVisuals()
-      ? "✓ archive-first (Wikimedia / Pexels / Pixabay fallback when no archive match)"
+      ? "✓ Wikimedia → archief → Pexels/Pixabay per beat (vision gate on all sources)"
       : "✗ full external sourcing enabled"
   );
   if (externalVisualSourcingEnabled()) {
