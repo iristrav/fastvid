@@ -7,15 +7,34 @@
 // Prefer GROQ_API_KEY for testing, then LLM_API_KEY (OpenAI).
 export type LlmProvider = "forge" | "groq" | "openai" | "none";
 
+/** Read Groq key — supports GROQ_API_KEY, GROQ_KEY, or gsk_* accidentally stored in LLM_API_KEY. */
+export function groqKeyFromEnv(): string {
+  const direct =
+    process.env.GROQ_API_KEY?.trim() ||
+    process.env.GROQ_KEY?.trim() ||
+    "";
+  if (direct) return direct;
+  const llm = process.env.LLM_API_KEY?.trim() ?? "";
+  if (llm.startsWith("gsk_")) return llm;
+  return "";
+}
+
+/** True when LLM_API_KEY is an OpenAI key (sk-), not Groq (gsk_). */
+export function openAiKeyFromEnv(): string {
+  const llm = process.env.LLM_API_KEY?.trim() ?? "";
+  if (!llm || llm.startsWith("gsk_")) return "";
+  return llm;
+}
+
 /** Which LLM backend to use (Forge > Groq > OpenAI unless LLM_PROVIDER is set). */
 export function resolveLlmProvider(): LlmProvider {
   const forced = process.env.LLM_PROVIDER?.trim().toLowerCase();
-  if (forced === "groq" && process.env.GROQ_API_KEY?.trim()) return "groq";
-  if (forced === "openai" && process.env.LLM_API_KEY?.trim()) return "openai";
+  if (forced === "groq" && groqKeyFromEnv()) return "groq";
+  if (forced === "openai" && openAiKeyFromEnv()) return "openai";
   if (forced === "forge" && process.env.BUILT_IN_FORGE_API_KEY?.trim()) return "forge";
   if (process.env.BUILT_IN_FORGE_API_KEY?.trim()) return "forge";
-  if (process.env.GROQ_API_KEY?.trim()) return "groq";
-  if (process.env.LLM_API_KEY?.trim()) return "openai";
+  if (groqKeyFromEnv()) return "groq";
+  if (openAiKeyFromEnv()) return "openai";
   return "none";
 }
 
@@ -24,9 +43,9 @@ export function llmApiKeyForProvider(provider: LlmProvider): string {
     case "forge":
       return process.env.BUILT_IN_FORGE_API_KEY?.trim() ?? "";
     case "groq":
-      return process.env.GROQ_API_KEY?.trim() ?? "";
+      return groqKeyFromEnv();
     case "openai":
-      return process.env.LLM_API_KEY?.trim() ?? "";
+      return openAiKeyFromEnv();
     default:
       return "";
   }
@@ -40,7 +59,7 @@ export const ENV = {
   get ownerOpenId() { return process.env.OWNER_OPEN_ID ?? ""; },
   get isProduction() { return process.env.NODE_ENV === "production"; },
   get forgeApiUrl() { return process.env.BUILT_IN_FORGE_API_URL ?? ""; },
-  get groqApiKey() { return process.env.GROQ_API_KEY?.trim() ?? ""; },
+  get groqApiKey() { return groqKeyFromEnv(); },
   /** Active LLM backend — Forge (Manus) > Groq > OpenAI. */
   get llmProvider(): LlmProvider {
     return resolveLlmProvider();

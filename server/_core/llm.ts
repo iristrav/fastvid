@@ -1,4 +1,4 @@
-import { ENV, llmApiKeyForProvider, resolveLlmProvider, type LlmProvider } from "./env";
+import { ENV, groqKeyFromEnv, llmApiKeyForProvider, openAiKeyFromEnv, resolveLlmProvider, type LlmProvider } from "./env";
 
 export type Role = "system" | "user" | "assistant" | "tool" | "function";
 
@@ -316,7 +316,7 @@ function providersToTry(primary: LlmProvider): LlmProvider[] {
 }
 
 const assertApiKey = () => {
-  if (!ENV.forgeApiKey && !ENV.groqApiKey && !process.env.LLM_API_KEY?.trim()) {
+  if (!ENV.forgeApiKey && !groqKeyFromEnv() && !openAiKeyFromEnv()) {
     throw new Error(
       "LLM API key is not configured. Set GROQ_API_KEY on Railway (free), or LLM_API_KEY / BUILT_IN_FORGE_API_KEY"
     );
