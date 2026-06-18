@@ -14,6 +14,10 @@ import {
 
 import type { ClipRejectEntry } from "./clipRejectAudit";
 import { summarizeClipRejectAudit } from "./clipRejectAudit";
+import type { ClipAdoptEntry } from "./clipAdoptAudit";
+import { isArchiveGeoBlockedForBeat } from "./curatedMediaSourcing";
+import { PIPELINE_ERROR, pipelineError } from "@shared/appErrors";
+import { inferBeatGeoRegion } from "./vidrushQuality";
 
 export type VideoQualityReport = {
   generatedAt: string;
@@ -29,6 +33,12 @@ export type VideoQualityReport = {
   offTopicSuspects: Array<{ basename: string; reason: string }>;
   rejectSummary?: Record<string, number>;
   topRejects?: ClipRejectEntry[];
+  criticalGeoViolations?: Array<{
+    basename: string;
+    reason: string;
+    beatText: string;
+    assetTitle?: string;
+  }>;
   pipelineSec?: number;
   stockBeatsUsed?: number;
   score: number;
@@ -80,7 +90,12 @@ function emptyMixCounts(): Record<VisualMixKind, number> {
 export function buildVideoQualityReport(
   clipPaths: string[],
   videoTitle: string,
-  opts?: { pipelineSec?: number; stockBeatsUsed?: number; rejectAudit?: ClipRejectEntry[] }
+  opts?: {
+    pipelineSec?: number;
+    stockBeatsUsed?: number;
+    rejectAudit?: ClipRejectEntry[];
+    adoptAudit?: ClipAdoptEntry[];
+  }
 ): VideoQualityReport {
   const bySource: Record<string, number> = {};
   const byMixKind = emptyMixCounts();
@@ -137,6 +152,33 @@ export function buildVideoQualityReport(
     : undefined;
   const topRejects = opts?.rejectAudit?.slice(0, 12);
 
+  const criticalGeoViolations: VideoQualityReport["criticalGeoViolations"] = [];
+  for (const adopt of opts?.adoptAudit ?? []) {
+    if (adopt.source !== "archive" && adopt.source !== "archive_fetch") continue;
+    const assetLike = {
+      title: adopt.assetTitle ?? adopt.basename.replace(/_/g, " "),
+      tags: [] as string[],
+    };
+    if (isArchiveGeoBlockedForBeat(assetLike, adopt.beatText, videoTitle)) {
+      const beatRegion = inferBeatGeoRegion(adopt.beatText, videoTitle);
+      criticalGeoViolations.push({
+        basename: adopt.basename,
+        beatText: adopt.beatText.slice(0, 120),
+        assetTitle: adopt.assetTitle,
+        reason:
+          beatRegion === "nl"
+            ? "US map/city on Netherlands beat"
+            : "wrong region for beat",
+      });
+    }
+  }
+
+  if (criticalGeoViolations.length > 0) {
+    warnings.push(`${criticalGeoViolations.length} kritieke geo-fout(en) — export geblokkeerd.`);
+    score -= Math.min(40, criticalGeoViolations.length * 20);
+    score = Math.max(0, score);
+  }
+
   return {
     generatedAt: new Date().toISOString(),
     videoTitle,
@@ -149,6 +191,7 @@ export function buildVideoQualityReport(
     stockCount,
     warnings,
     offTopicSuspects,
+    criticalGeoViolations: criticalGeoViolations.length > 0 ? criticalGeoViolations : undefined,
     rejectSummary,
     topRejects,
     pipelineSec: opts?.pipelineSec,
@@ -175,4 +218,24 @@ export function logVideoQualityReport(videoId: number, report: VideoQualityRepor
   for (const s of report.offTopicSuspects.slice(0, 5)) {
     console.warn(`[Quality] Video ${videoId}: suspect ${s.basename} — ${s.reason}`);
   }
+  for (const v of (report.criticalGeoViolations ?? []).slice(0, 5)) {
+    console.warn(
+      `[Quality] Video ${videoId}: CRITICAL GEO ${v.basename} — ${v.reason}` +
+        (v.assetTitle ? ` ("${v.assetTitle.slice(0, 60)}")` : "")
+    );
+  }
+}
+
+/** Block final export when beat-aware geo audit finds US visuals on NL beats. */
+export function assertQualityReportExportGate(report: VideoQualityReport): void {
+  const violations = report.criticalGeoViolations ?? [];
+  if (violations.length === 0) return;
+  const summary = violations
+    .slice(0, 4)
+    .map((v) => `${v.basename}${v.assetTitle ? ` (${v.assetTitle.slice(0, 40)})` : ""}`)
+    .join("; ");
+  throw pipelineError(
+    PIPELINE_ERROR.NO_SCENES,
+    `Export blocked: ${violations.length} critical geo violation(s): ${summary}`
+  );
 }

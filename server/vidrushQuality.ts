@@ -20,6 +20,12 @@ import {
   extractVisualSearchTags,
   inferVideoVisualTopic,
 } from "./visualBeatTags";
+import {
+  NL_GEO_SLUGS,
+  US_GEO_SLUGS,
+  FOREIGN_GEO_SLUGS,
+  hayHasGeoMarker,
+} from "./worldGeoSlugs";
 
 export const VIDRUSH_OPENING_CLIP_SEC = 3.5;
 export const VIDRUSH_STOCK_MIN_CLIP_SEC = 2.5;
@@ -179,32 +185,11 @@ export function resolveSegmentGeoLock(
   return fromTitle === "both" ? "nl" : fromTitle;
 }
 
-const NL_MARKERS = [
-  "netherlands", "holland", "dutch", "nederland", "amsterdam", "rotterdam", "utrecht",
-  "gracht", "windmill", "molen", "haarlem", "den haag", "hague", "fietspad",
-];
-const US_MARKERS = [
-  "united states", "usa", "america", "american", "new york", "nyc", "chicago",
-  "los angeles", "washington", "usa downtown", "american city",
-];
-/** Non-NL/US places — reject under segment lock (e.g. Toronto map when narration is Netherlands). */
-export const FOREIGN_PLACE_MARKERS = [
-  "toronto", "canada", "canadian", "ontario", "scarborough", "etobicoke", "north york",
-  "mississauga", "montreal", "vancouver", "quebec", "calgary", "ottawa",
-  "berlin", "germany", "german", "munich", "hamburg", "frankfurt",
-  "paris", "france", "french", "lyon", "marseille",
-  "london", "england", "english", "manchester", "birmingham",
-  "tokyo", "japan", "japanese", "osaka",
-  "beijing", "shanghai", "china", "chinese",
-  "sydney", "melbourne", "australia", "australian",
-  "mumbai", "delhi", "india", "indian",
-  "mexico city", "mexico", "mexican",
-  "brazil", "brasil", "sao paulo", "rio de janeiro",
-  "columbus", "ohio", "wisconsin", "madison wisconsin",
-];
+/** Re-export for tests and legacy imports. */
+export { FOREIGN_GEO_SLUGS as FOREIGN_PLACE_MARKERS } from "./worldGeoSlugs";
 
-function hayHasAny(hay: string, markers: string[]): boolean {
-  return markers.some((m) => hay.includes(m));
+function hayHasAny(hay: string, markers: readonly string[]): boolean {
+  return hayHasGeoMarker(hay, markers);
 }
 
 /** Reject clip when active segment lock conflicts (NL block ≠ US footage). */
@@ -214,9 +199,9 @@ export function isWrongRegionForSegmentLock(
 ): boolean {
   if (!activeLock || activeLock === "neutral" || activeLock === "both") return false;
   const lower = hay.toLowerCase();
-  const hasNl = hayHasAny(lower, NL_MARKERS);
-  const hasUs = hayHasAny(lower, US_MARKERS);
-  const hasForeign = hayHasAny(lower, FOREIGN_PLACE_MARKERS);
+  const hasNl = hayHasAny(lower, NL_GEO_SLUGS);
+  const hasUs = hayHasAny(lower, US_GEO_SLUGS);
+  const hasForeign = hayHasAny(lower, FOREIGN_GEO_SLUGS);
   if (activeLock === "nl") {
     if (hasForeign && !hasNl) return true;
     if (hasUs && !hasNl) return true;

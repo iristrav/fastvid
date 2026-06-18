@@ -78,10 +78,16 @@ import {
   maxVisualCandidatesPerBeatTry,
 } from "./sourcingPolicy";
 import {
+  assetHasNlMarkers,
+  assetHasUsMarkers,
+  assetHasForeignMarkers,
+} from "./worldGeoSlugs";
+import {
   isNonDocumentaryVisualHay,
   isOffTopicGeoUrbanVisual,
   isWrongRegionForSegmentLock,
   offTopicVisualAllowedForBeat,
+  inferBeatGeoRegion,
   vidrushStillPhotoScale,
   VIDRUSH_MIN_SOURCE_VIDEO_SEC,
   VIDRUSH_MIN_STILL_WIDTH,
@@ -1675,6 +1681,26 @@ export async function searchCuratedCandidatesForBeat(
   return [];
 }
 
+/** Hard reject archive assets that are clearly from the wrong country for this beat. */
+export function isArchiveGeoBlockedForBeat(
+  asset: Pick<{ title?: string | null; tags?: string[] | null }, "title" | "tags">,
+  beatText: string,
+  videoTitle?: string
+): boolean {
+  const geoTags = extractBeatGeoPlaceTags(beatText);
+  if (geoTags.length > 0 && isWrongGeoForBeat(asset, geoTags)) return true;
+
+  const beatRegion = inferBeatGeoRegion(beatText, videoTitle);
+  if (beatRegion === "us" || beatRegion === "both") return false;
+  if (beatRegion !== "nl") return false;
+
+  const hasNl = assetHasNlMarkers(asset);
+  const hasUs = assetHasUsMarkers(asset);
+  const hasForeign = assetHasForeignMarkers(asset);
+  if ((hasUs || hasForeign) && !hasNl) return true;
+  return false;
+}
+
 /** Skip FFmpeg when metadata already rules out an asset. */
 export function archiveAssetPreflight(
   asset: MediaArchiveAsset,
@@ -1689,11 +1715,13 @@ export function archiveAssetPreflight(
     imageUsed?: number;
     imageMax?: number;
     beatText?: string;
+    videoTitle?: string;
     videoVisualTopic?: VideoVisualTopic;
   } = {}
 ): boolean {
   if (usedAssetIds.has(asset.id) || usedStorageUrls.has(asset.storageUrl)) return false;
   if (isCuratedOffTopicAsset(asset, topicAnchors, beatTags, opts.videoVisualTopic ?? "general")) return false;
+  if (opts.beatText && isArchiveGeoBlockedForBeat(asset, opts.beatText, opts.videoTitle)) return false;
   if (opts.beatText && isGenericPeopleAsset(asset)) {
     const required = extractRequiredVisualTags(opts.beatText);
     if (required.length >= 2 && countVisualTagHits(asset, required) === 0) return false;

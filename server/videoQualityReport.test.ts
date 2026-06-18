@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildVideoQualityReport,
   inferClipSourceFromPath,
+  assertQualityReportExportGate,
 } from "./videoQualityReport";
 import { wikimediaV1AdoptionThreshold, wikimediaMetadataPassesBeatGate } from "./visualMatchingEngine";
 
@@ -33,6 +34,27 @@ describe("buildVideoQualityReport", () => {
     expect(report.archiveCount).toBeGreaterThanOrEqual(1);
     expect(report.offTopicSuspects.length).toBeGreaterThanOrEqual(1);
     expect(report.score).toBeLessThan(100);
+  });
+
+  it("assertQualityReportExportGate blocks US map on NL beat", () => {
+    const report = buildVideoQualityReport(
+      ["/tmp/scene_0_b0_hist_archive_kansas.mp4"],
+      "Why the Netherlands Is the Opposite of the U.S.",
+      {
+        adoptAudit: [
+          {
+            sceneIndex: 0,
+            beatIndex: 0,
+            beatText: "In cities across the Netherlands, bike lanes are everywhere.",
+            basename: "scene_0_b0_hist_archive_kansas.mp4",
+            source: "archive",
+            assetTitle: "Kansas City metropolitan area map 1972",
+          },
+        ],
+      }
+    );
+    expect(report.criticalGeoViolations?.length).toBeGreaterThanOrEqual(1);
+    expect(() => assertQualityReportExportGate(report)).toThrow(/Export blocked/);
   });
 });
 

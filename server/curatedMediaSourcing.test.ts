@@ -17,6 +17,8 @@ import {
   isCuratedPreparedVideoClip,
   isPipelineBlurFillStillClip,
   rotateCuratedCandidates,
+  archiveAssetPreflight,
+  isArchiveGeoBlockedForBeat,
   shouldPreferPexelsOverArchive,
   shouldTryPexelsFirstForBeat,
   type CuratedCandidatePick,
@@ -731,5 +733,53 @@ describe("curatedMediaSourcing", () => {
     expect(isCuratedPreparedStillClip("/tmp/scene_0_b1_curated_a42_still.mp4")).toBe(true);
     expect(isPipelineBlurFillStillClip("/tmp/scene_0_b1_curated_a42_still.mp4")).toBe(true);
     expect(isPipelineBlurFillStillClip("/tmp/scene_0_b0_pexels_vid123.mp4")).toBe(false);
+  });
+
+  it("isArchiveGeoBlockedForBeat rejects Kansas City map on Netherlands beat", () => {
+    const kansasMap = {
+      title: "Kansas City metropolitan area transportation map 1972",
+      tags: ["kansas city", "map", "urban planning"],
+    };
+    const nlBeat = "In cities across the Netherlands, bike lanes connect every neighborhood.";
+    const title = "Why the Netherlands Is the Opposite of the U.S.";
+    expect(isArchiveGeoBlockedForBeat(kansasMap, nlBeat, title)).toBe(true);
+    expect(
+      archiveAssetPreflight(
+        {
+          id: 1,
+          archiveId: 1,
+          title: kansasMap.title,
+          tags: kansasMap.tags,
+          mediaType: "image",
+          mimeType: "image/jpeg",
+          storageUrl: "/kansas.jpg",
+          isActive: 1,
+          sortOrder: 0,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          fileSizeBytes: 1,
+          width: 1920,
+          height: 1080,
+          durationSec: null,
+          sourceUrl: null,
+          sourceLabel: null,
+        },
+        new Set(),
+        new Set(),
+        [],
+        [],
+        { beatText: nlBeat, videoTitle: title, videoVisualTopic: "geography_urban" }
+      )
+    ).toBe(false);
+  });
+
+  it("isArchiveGeoBlockedForBeat rejects Tokyo on Netherlands beat", () => {
+    expect(
+      isArchiveGeoBlockedForBeat(
+        { title: "Tokyo skyline night timelapse", tags: ["tokyo", "japan", "skyline"] },
+        "Across the Netherlands, public transit connects every district.",
+        "Why Dutch Cities Work"
+      )
+    ).toBe(true);
   });
 });

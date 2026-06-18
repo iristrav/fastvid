@@ -116,6 +116,11 @@ describe("visualBeatTags", () => {
       tags: ["urban planning", "expressway", "infrastructure"],
     };
     expect(isWrongGeoForBeat(genericMapClip, nlBeatTags)).toBe(true);
+    const kansasMapClip = {
+      title: "Kansas City metropolitan area map 1970",
+      tags: ["kansas city", "map", "urban planning", "missouri"],
+    };
+    expect(isWrongGeoForBeat(kansasMapClip, nlBeatTags)).toBe(true);
   });
 
   it("detects geography urban topic from Berlin vs US city title", () => {

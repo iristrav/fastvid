@@ -1,6 +1,14 @@
 /**
  * Extract place/keyword tags from narration for archive search + voice-synced labels.
  */
+import {
+  NL_GEO_SLUGS,
+  US_GEO_SLUGS,
+  FOREIGN_GEO_SLUGS,
+  ALL_GEO_SLUGS,
+  assetHayHasGeoMarkers,
+  beatTextMentionsGeoSlug,
+} from "./worldGeoSlugs";
 
 /** Drives archive filtering — geography videos must not pull WWII/Hiter footage. */
 export type VideoVisualTopic = "wwii" | "cold_war" | "geography_urban" | "general";
@@ -524,6 +532,9 @@ export function extractBeatGeoPlaceTags(beatText: string): string[] {
     if (entry.pattern.test(cleaned)) {
       for (const t of entry.searchTags) tags.add(t);
     }
+  }
+  for (const slug of ALL_GEO_SLUGS) {
+    if (beatTextMentionsGeoSlug(cleaned, slug)) tags.add(slug);
   }
   return [...tags];
 }
@@ -1100,86 +1111,7 @@ export function buildGeoWelcomeVisualQueries(beatText: string): string[] {
   return [...new Set(queries.filter((q) => q.length >= 4))].slice(0, 10);
 }
 
-const NL_GEO_SLUGS = [
-  "netherlands",
-  "holland",
-  "dutch",
-  "nederland",
-  "amsterdam",
-  "rotterdam",
-  "utrecht",
-  "the hague",
-  "den haag",
-  "eindhoven",
-  "groningen",
-  "maastricht",
-  "canal",
-  "gracht",
-];
-
-const US_GEO_SLUGS = [
-  "united states",
-  "usa",
-  "america",
-  "american",
-  "new york",
-  "nyc",
-  "manhattan",
-  "brooklyn",
-  "empire state",
-  "chicago",
-  "los angeles",
-  "charlotte",
-  "houston",
-  "miami",
-  "san francisco",
-  "dallas",
-  "atlanta",
-  "philadelphia",
-  "boston",
-  "seattle",
-  "denver",
-  "phoenix",
-  "bank of america stadium",
-  "texas",
-  "california",
-  "florida",
-];
-
-/** Cities/countries that must not appear when beat requires Netherlands (or US-only segments). */
-const FOREIGN_GEO_SLUGS = [
-  "toronto",
-  "canada",
-  "canadian",
-  "ontario",
-  "scarborough",
-  "etobicoke",
-  "north york",
-  "montreal",
-  "vancouver",
-  "quebec",
-  "berlin",
-  "germany",
-  "german",
-  "paris",
-  "france",
-  "french",
-  "london",
-  "england",
-  "english",
-  "tokyo",
-  "japan",
-  "beijing",
-  "china",
-  "sydney",
-  "australia",
-  "mumbai",
-  "india",
-  "mexico",
-  "brazil",
-];
-
-function slugSetIncludes(slugs: string[], markers: string[]): boolean {
+function slugSetIncludes(slugs: string[], markers: readonly string[]): boolean {
   return slugs.some((s) => markers.some((m) => s === m || s.includes(m) || m.includes(s)));
 }
 
@@ -1189,10 +1121,9 @@ function assetHay(asset: Pick<{ title?: string | null; tags?: string[] | null },
 
 function assetHayHasMarkers(
   asset: Pick<{ title?: string | null; tags?: string[] | null }, "title" | "tags">,
-  markers: string[]
+  markers: readonly string[]
 ): boolean {
-  const hay = assetHay(asset);
-  return markers.some((m) => hay.includes(m));
+  return assetHayHasGeoMarkers(asset, markers);
 }
 
 /** Reject clips from the wrong country when the beat names a specific place (e.g. Netherlands ≠ Charlotte NC). */

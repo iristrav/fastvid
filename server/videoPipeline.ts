@@ -158,8 +158,10 @@ import { assertSceneCriticalReview, reviewSceneCritical } from "./sceneCriticalR
 import { clipPassesDocumentaryBeatGate, resolveBeatRegionLock } from "./vidrushQuality";
 import type { ClipRejectEntry } from "./clipRejectAudit";
 import { recordClipReject, summarizeClipRejectAudit } from "./clipRejectAudit";
+import type { ClipAdoptEntry } from "./clipAdoptAudit";
+import { createClipAdoptAudit, recordClipAdopt } from "./clipAdoptAudit";
 import { buildEditorScenesFromPipeline } from "./editorClips";
-import { buildVideoQualityReport, logVideoQualityReport } from "./videoQualityReport";
+import { buildVideoQualityReport, logVideoQualityReport, assertQualityReportExportGate } from "./videoQualityReport";
 
 // API Keys
 const FISH_AUDIO_API_KEY = process.env.FISH_AUDIO_API_KEY || "";
@@ -7848,6 +7850,8 @@ interface VisualDedupState {
   currentBeatTopicKey: string;
   /** Reject reasons during adoptClip (for quality report). */
   clipRejectAudit: ClipRejectEntry[];
+  /** Successfully adopted clips per beat (for geo export gate). */
+  clipAdoptAudit: ClipAdoptEntry[];
 }
 
 /**
@@ -7914,6 +7918,7 @@ function createVisualDedupState(
     usedPexelsAnchors: new Map(),
     currentBeatTopicKey: "",
     clipRejectAudit: [],
+    clipAdoptAudit: createClipAdoptAudit(),
   };
 }
 
@@ -13559,14 +13564,19 @@ async function adoptArchiveBeatClip(
   initialClip: string | null = null,
   holdSec = beat.holdSec,
   semanticProfile?: BeatSemanticProfile,
-  relaxed = false
+  relaxed = false,
+  prefetchedRanked?: CuratedCandidatePick[] | null
 ): Promise<boolean> {
   const rejectClip = (clipPath: string | null | undefined): void => {
     if (!clipPath || isPipelineFallbackClip(clipPath)) return;
     dedup.usedContentKeys.add(clipContentKey(clipPath));
     markCuratedAssetUsed(clipPath, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls);
   };
-  const tryClip = async (clipPath: string | null | undefined, sec = holdSec): Promise<boolean> => {
+  const tryClip = async (
+    clipPath: string | null | undefined,
+    sec = holdSec,
+    adoptMeta?: { source: string; assetTitle?: string }
+  ): Promise<boolean> => {
     if (!clipPath || isPipelineFallbackClip(clipPath)) return false;
     const curated = curatedClipPathAssetId(clipPath) != null;
     if (!curated && (await isMostlyBlackClip(clipPath))) {
@@ -13599,13 +13609,27 @@ async function adoptArchiveBeatClip(
       rejectClip(clipPath);
       return false;
     }
-    return await pushClip(withText, sec);
+    if (await pushClip(withText, sec)) {
+      recordClipAdopt(
+        dedup.clipAdoptAudit,
+        scene.index,
+        beat.index,
+        beat.text,
+        withText,
+        adoptMeta?.source ?? (curated ? "archive" : "archive_fetch"),
+        adoptMeta?.assetTitle
+      );
+      return true;
+    }
+    return false;
   };
 
-  if (await tryClip(initialClip, holdSec)) return true;
+  if (await tryClip(initialClip, holdSec, { source: "archive" })) return true;
 
   if (curatedArchiveOnlyVisuals()) {
-    const ranked = await searchCuratedCandidatesForBeat(
+    const ranked =
+      prefetchedRanked ??
+      (await searchCuratedCandidatesForBeat(
       beat,
       scene,
       dedup.usedCuratedAssetIds,
@@ -13617,7 +13641,7 @@ async function adoptArchiveBeatClip(
         assetsCache: dedup.archiveAssetsCache,
         semanticProfile,
       }
-    );
+    ));
     console.log(
       `[Pipeline] Scene ${scene.index} zin ${beat.index}: archive-zoek "${beat.text.slice(0, 55).trim()}…" → ${ranked.length} kandidaat(en)`
     );
@@ -13653,6 +13677,7 @@ async function adoptArchiveBeatClip(
             imageUsed: dedup.curatedImageClipsUsed,
             imageMax: imgMax,
             beatText: beat.text,
+            videoTitle,
             videoVisualTopic,
           }
         )
@@ -13669,7 +13694,7 @@ async function adoptArchiveBeatClip(
         videoTitle,
         dedup
       );
-      if (await tryClip(clip, holdSec)) {
+      if (await tryClip(clip, holdSec, { source: "archive", assetTitle: picked.asset.title ?? undefined })) {
         const sceneTags = extractSceneSearchTags(beat.text);
         const tagHint =
           sceneTags.length > 0
@@ -13707,7 +13732,7 @@ async function adoptArchiveBeatClip(
         }
       );
       dedup.motionGraphicsUsed = mgfxBudget.used;
-      if (await tryClip(clip, holdSec)) return true;
+      if (await tryClip(clip, holdSec, { source: "archive" })) return true;
     }
     return false;
   }
@@ -13738,7 +13763,7 @@ async function adoptArchiveBeatClip(
       }
     );
     dedup.motionGraphicsUsed = mgfxBudget.used;
-    if (await tryClip(clip, holdSec)) return true;
+    if (await tryClip(clip, holdSec, { source: "archive" })) return true;
   }
   return false;
 }
@@ -13762,43 +13787,71 @@ async function adoptWikimediaBeatClip(
     return await pushClip(withText, sec);
   };
 
-  try {
-    const wikiAnalysis = analyzeSceneVisual(beat.text, videoTitle);
-    const wikiClip = await withTimeout(
-      fetchWikimediaImagesV1(
-        wikiAnalysis,
-        holdSec,
-        workDir,
-        scene.index,
-        beat.index,
-        `wiki${beat.index}`,
-        videoTitle
-      ),
-      22_000,
-      `Wikimedia scene ${scene.index} beat ${beat.index}`
-    );
-    if (
-      wikiClip &&
-      (await beatClipPassesVisionGate(
-        wikiClip,
-        beat,
-        scene,
-        workDir,
-        videoTitle,
-        dedup,
-        semanticProfile,
-        "wikimedia"
-      )) &&
-      (await tryClip(wikiClip, holdSec))
-    ) {
-      console.log(`[Pipeline] Scene ${scene.index} zin ${beat.index}: Wikimedia`);
-      return true;
+  const baseAnalysis = analyzeSceneVisual(beat.text, videoTitle);
+  const geoQueries = buildGeoStockSearchQueries(beat.text, videoTitle).slice(0, 3);
+  const attempts: Array<{
+    analysis: ReturnType<typeof analyzeSceneVisual>;
+    fileTag: string;
+    timeoutMs: number;
+  }> = [{ analysis: baseAnalysis, fileTag: `wiki${beat.index}`, timeoutMs: 40_000 }];
+  for (let gi = 0; gi < geoQueries.length; gi++) {
+    const q = geoQueries[gi]!;
+    attempts.push({
+      analysis: { ...baseAnalysis, keyword: q },
+      fileTag: `wiki${beat.index}g${gi}`,
+      timeoutMs: 35_000,
+    });
+  }
+
+  for (let ai = 0; ai < attempts.length; ai++) {
+    const attempt = attempts[ai]!;
+    try {
+      const wikiClip = await withTimeout(
+        fetchWikimediaImagesV1(
+          attempt.analysis,
+          holdSec,
+          workDir,
+          scene.index,
+          beat.index,
+          attempt.fileTag,
+          videoTitle
+        ),
+        attempt.timeoutMs,
+        `Wikimedia scene ${scene.index} beat ${beat.index} attempt ${ai + 1}`
+      );
+      if (
+        wikiClip &&
+        (await beatClipPassesVisionGate(
+          wikiClip,
+          beat,
+          scene,
+          workDir,
+          videoTitle,
+          dedup,
+          semanticProfile,
+          "wikimedia"
+        )) &&
+        (await tryClip(wikiClip, holdSec))
+      ) {
+        recordClipAdopt(
+          dedup.clipAdoptAudit,
+          scene.index,
+          beat.index,
+          beat.text,
+          wikiClip,
+          "wikimedia"
+        );
+        console.log(
+          `[Pipeline] Scene ${scene.index} zin ${beat.index}: Wikimedia (attempt ${ai + 1}/${attempts.length})`
+        );
+        return true;
+      }
+    } catch (err) {
+      console.warn(
+        `[Pipeline] Wikimedia scene ${scene.index} beat ${beat.index} attempt ${ai + 1}:`,
+        (err as Error).message?.slice(0, 100)
+      );
     }
-  } catch (err) {
-    console.warn(
-      `[Pipeline] Wikimedia scene ${scene.index} beat ${beat.index}:`,
-      (err as Error).message?.slice(0, 100)
-    );
   }
   return false;
 }
@@ -14120,9 +14173,33 @@ async function fillBeatVisual(
   semanticProfile?: BeatSemanticProfile,
   holdSec = beat.holdSec
 ): Promise<boolean> {
+  const archivePrefetch = curatedArchiveOnlyVisuals()
+    ? searchCuratedCandidatesForBeat(
+        beat,
+        scene,
+        dedup.usedCuratedAssetIds,
+        dedup.usedCuratedStorageUrls,
+        videoTitle,
+        {
+          varietySeed: dedup.varietySeed,
+          crossVideoExcludeIds: dedup.crossVideoExcludeIds,
+          assetsCache: dedup.archiveAssetsCache,
+          semanticProfile,
+        }
+      ).catch((err) => {
+        console.warn(
+          `[Pipeline] Scene ${scene.index} beat ${beat.index}: archive prefetch failed:`,
+          (err as Error).message?.slice(0, 80)
+        );
+        return null;
+      })
+    : null;
+
   if (await adoptWikimediaBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
     return true;
   }
+
+  const prefetchedRanked = archivePrefetch ? await archivePrefetch : undefined;
 
   for (let attempt = 0; attempt < ARCHIVE_BEAT_CLIP_RETRIES; attempt++) {
     if (
@@ -14136,7 +14213,8 @@ async function fillBeatVisual(
         null,
         holdSec,
         semanticProfile,
-        attempt >= 2
+        attempt >= 2,
+        prefetchedRanked
       )
     ) {
       return true;
@@ -14153,7 +14231,8 @@ async function fillBeatVisual(
       null,
       holdSec,
       semanticProfile,
-      true
+      true,
+      prefetchedRanked
     )
   ) {
     return true;
@@ -17091,6 +17170,24 @@ export async function runVideoPipeline(
       throw pipelineError(PIPELINE_ERROR.FFMPEG, finalReview.summary);
     }
 
+    const allClipPaths = composedUsedClips.flat().filter(Boolean);
+    const qualityReport = buildVideoQualityReport(allClipPaths, videoTitle, {
+      pipelineSec: Math.round((Date.now() - t0) / 1000),
+      stockBeatsUsed: visualDedup.stockBeatsUsed,
+      rejectAudit: visualDedup.clipRejectAudit,
+      adoptAudit: visualDedup.clipAdoptAudit,
+    });
+    logVideoQualityReport(videoId, qualityReport);
+    assertQualityReportExportGate(qualityReport);
+
+    const existingMetaEarly =
+      videoRow?.metadata && typeof videoRow.metadata === "object" && !Array.isArray(videoRow.metadata)
+        ? (videoRow.metadata as Record<string, unknown>)
+        : {};
+    await updateVideoStatus(videoId, "generating_visuals", {
+      metadata: { ...existingMetaEarly, qualityReport },
+    }).catch((err) => console.warn(`[Pipeline] Failed to persist qualityReport for ${videoId}:`, err));
+
     // Cleanup intermediates
     for (let i = 0; i < scenes.length; i++) {
       try { fs.unlinkSync(audioPaths[i]); } catch { /* ignore */ }
@@ -17145,14 +17242,7 @@ export async function runVideoPipeline(
     );
     console.log(`[Pipeline] Stage 6 (upload): ${((Date.now()-t5)/1000).toFixed(1)}s, size: ${(videoBuffer.length/1024/1024).toFixed(1)}MB`);
 
-    const allClipPaths = composedUsedClips.flat().filter(Boolean);
-    const pipelineSec = Math.round((Date.now() - t0) / 1000);
-    const qualityReport = buildVideoQualityReport(allClipPaths, videoTitle, {
-      pipelineSec,
-      stockBeatsUsed: visualDedup.stockBeatsUsed,
-      rejectAudit: visualDedup.clipRejectAudit,
-    });
-    logVideoQualityReport(videoId, qualityReport);
+    qualityReport.pipelineSec = Math.round((Date.now() - t0) / 1000);
 
     let editorScenes: EditorScene[] = [];
     try {
@@ -17162,10 +17252,7 @@ export async function runVideoPipeline(
       console.warn(`[Pipeline] Editor manifest persist failed for ${videoId}:`, (err as Error).message);
     }
 
-    const existingMeta =
-      videoRow?.metadata && typeof videoRow.metadata === "object" && !Array.isArray(videoRow.metadata)
-        ? (videoRow.metadata as Record<string, unknown>)
-        : {};
+    const existingMeta = { ...existingMetaEarly };
 
     // Persist URL immediately so a crash during finalization cannot lose the finished video
     await updateVideoStatus(videoId, "completed", {
