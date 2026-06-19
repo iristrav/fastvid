@@ -7308,7 +7308,7 @@ function isMotionGraphicClip(filePath: string): boolean {
   return /_mgfx_/i.test(path.basename(filePath));
 }
 
-/** Real stock/archive B-roll — gets bottom-left text only, no other overlays. */
+/** Real stock/archive B-roll video (excludes stills and motion-graphic cards). */
 function isRealVideoFootageClip(filePath: string): boolean {
   if (!filePath || isPipelineFallbackClip(filePath)) return false;
   if (isStillPhotoClip(filePath)) return false;
@@ -7316,8 +7316,21 @@ function isRealVideoFootageClip(filePath: string): boolean {
   return true;
 }
 
-function sceneHasRealVideoFootage(clips: string[]): boolean {
-  return clips.some((clip) => isRealVideoFootageClip(clip));
+/** Video or Ken Burns still — eligible for per-beat text burned onto the visual (not black/mgfx cards). */
+function isVisualOverlayFootageClip(filePath: string): boolean {
+  if (!filePath || isPipelineFallbackClip(filePath)) return false;
+  if (isMotionGraphicClip(filePath)) return false;
+  if (isAIGeneratedClip(filePath) && !isStillPhotoClip(filePath)) return false;
+  return (
+    isRealVideoFootageClip(filePath) ||
+    isStillPhotoClip(filePath) ||
+    isCuratedPreparedStillClip(filePath) ||
+    isCuratedPreparedVideoClip(filePath)
+  );
+}
+
+function sceneHasVisualOverlayFootage(clips: string[]): boolean {
+  return clips.some((clip) => isVisualOverlayFootageClip(clip));
 }
 
 /** AI-generated clip path (used only as last-resort after stock search). */
@@ -13507,6 +13520,8 @@ async function pushMotionGraphicBeatClipIfAny(
   pushClip: (clipPath: string, holdSec?: number) => boolean | Promise<boolean>,
   holdSec = beat.holdSec
 ): Promise<boolean> {
+  // Text burns onto B-roll per beat — skip standalone text-on-color motion-graphic cards.
+  if (facelessSubtitlesEnabled()) return false;
   if (yearsOnlyOnScreen() || !motionGraphicsEnabled()) return false;
   if (dedup.motionGraphicsUsed >= maxMotionGraphicsPerVideo()) return false;
 
@@ -13533,7 +13548,13 @@ async function applyVideoBeatTextOverlay(
   workDir: string,
   holdSec: number
 ): Promise<string> {
-  if (!facelessSubtitlesEnabled() || !isRealVideoFootageClip(clipPath)) {
+  if (!facelessSubtitlesEnabled() || !isVisualOverlayFootageClip(clipPath)) {
+    return clipPath;
+  }
+  if (await isMostlyBlackClip(clipPath)) {
+    console.warn(
+      `[Pipeline] Scene ${scene.index} beat ${beat.index}: skip text on dark clip ${path.basename(clipPath)}`
+    );
     return clipPath;
   }
   return burnFacelessTextOnVideoClip(
@@ -15820,6 +15841,23 @@ async function renderOutroCard(duration: number, workDir: string): Promise<strin
 
 type ComposePhase = "assembly" | "effects" | "full";
 
+function buildCinematicOverlayOpts(enableSubtitles: boolean): {
+  yearsOnly: boolean;
+  videoTextOnly: boolean;
+  facelessSubs: boolean;
+  docOverlays: boolean;
+} {
+  const faceless = facelessSubtitlesEnabled();
+  const yearsOnly = yearsOnlyOnScreen();
+  return {
+    yearsOnly,
+    // Per-beat text is burned onto each clip — no full-frame scene text on black.
+    videoTextOnly: faceless,
+    facelessSubs: !faceless && enableSubtitles,
+    docOverlays: !yearsOnly && !faceless,
+  };
+}
+
 type ComposeSceneOptions = {
   phase?: ComposePhase;
   assemblyPath?: string;
@@ -15912,11 +15950,7 @@ async function prepareSceneEffectLayers(
         workDir,
         FFMPEG_BIN,
         (cmd, ms, lbl) => withTimeout(exec(cmd), ms, lbl),
-        {
-          yearsOnly,
-          facelessSubs: facelessSubtitlesEnabled() || enableSubtitles,
-          docOverlays: !yearsOnly,
-        }
+        buildCinematicOverlayOpts(enableSubtitles)
       );
       docOverlays.push(...cinematicOverlays);
 
@@ -16256,11 +16290,7 @@ async function composeSceneVideo(
         workDir,
         FFMPEG_BIN,
         (cmd, ms, lbl) => withTimeout(exec(cmd), ms, lbl),
-        {
-          yearsOnly: false,
-          facelessSubs: facelessSubtitlesEnabled() || enableSubtitles,
-          docOverlays: true,
-        }
+        buildCinematicOverlayOpts(enableSubtitles)
       );
       docOverlays.push(...cinematicOverlays);
 
@@ -16386,7 +16416,7 @@ async function composeSceneVideo(
     );
   }
 
-  if (!skipEffectLayers && screenLabelsEnabled() && cinematicEffectsEnabled()) {
+  if (!skipEffectLayers && screenLabelsEnabled() && sceneHasVisualOverlayFootage(safeClips) && cinematicEffectsEnabled()) {
     try {
       const sceneStartSec = composeOptions?.sceneStartSec ?? 0;
       const fetchBeats = composeOptions?.montageBeats;
