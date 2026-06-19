@@ -76,6 +76,7 @@ import {
   archivePexelsHybridEnabled,
   vidrushDocumentaryQualityEnabled,
   maxVisualCandidatesPerBeatTry,
+  archiveTagsPrimaryMatching,
 } from "./sourcingPolicy";
 import {
   assetHasNlMarkers,
@@ -735,10 +736,10 @@ export function scoreCuratedAsset(
     }
     for (const t of assetTags) {
       if (t === q) {
-        score += 34;
+        score += 42;
         beatHits++;
       } else if (t.includes(q) || q.includes(t)) {
-        score += 12;
+        score += 16;
         beatHits++;
       }
     }
@@ -768,8 +769,9 @@ export function scoreCuratedAsset(
       } else if (geoHits >= 1) {
         score += 50;
         beatHits++;
-      } else {
-        score -= 140;
+      } else if (beatHits < 2) {
+        // Only penalize when asset tags don't match the beat at all (geo slugs optional on upload).
+        score -= 60;
       }
       if (isWrongGeoForBeat(asset, geoTags)) score = Math.max(0, score - 250);
     }
@@ -1635,11 +1637,19 @@ export async function searchCuratedCandidatesForBeat(
     ...(beat.visualDescription ? tokenizeBeatText(beat.visualDescription) : []),
     ...extractVisualSearchTags(beat.visualDescription?.trim() || beat.searchQuery?.trim() || beat.text),
   ]);
+  const allArchiveMatchTags = normalizeMediaTags([...beatTags, ...topicAnchors, ...matchTags]);
   if (matchTags.length > 0) {
     const matched = ranked.filter((p) => countVisualTagHits(p.asset, matchTags) > 0);
     if (matched.length > 0) {
       ranked = [...matched, ...ranked.filter((p) => !matched.includes(p))];
     }
+  }
+  if (archiveTagsPrimaryMatching() && allArchiveMatchTags.length > 0) {
+    ranked = ranked.map((p) => ({
+      ...p,
+      score: p.score + countVisualTagHits(p.asset, allArchiveMatchTags) * 14,
+    }));
+    ranked.sort((a, b) => b.score - a.score);
   }
 
   if (semanticProfile && semanticVisualMatchingEnabled()) {
@@ -1647,15 +1657,27 @@ export async function searchCuratedCandidatesForBeat(
     ranked = await Promise.all(
       pool.map(async (pick) => {
         const semantic = await scoreArchiveAssetSemantically(semanticProfile, pick.asset);
+        const tagHits = countVisualTagHits(pick.asset, allArchiveMatchTags);
+        const blended = archiveTagsPrimaryMatching()
+          ? Math.round(pick.score * 0.62 + semantic.relevanceScore * 1.25 + tagHits * 10)
+          : Math.round(pick.score * 0.35 + semantic.relevanceScore * 2.2);
         return {
           ...pick,
           semantic,
-          score: Math.round(pick.score * 0.35 + semantic.relevanceScore * 2.2),
+          score: blended,
         };
       })
     );
     ranked.sort((a, b) => b.score - a.score);
     ranked = await applySemanticAiRerank(ranked, semanticProfile, videoTitle);
+
+    if (archiveTagsPrimaryMatching() && allArchiveMatchTags.length > 0) {
+      const tagMatched = ranked.filter((p) => countVisualTagHits(p.asset, allArchiveMatchTags) > 0);
+      const tagMiss = ranked.filter((p) => countVisualTagHits(p.asset, allArchiveMatchTags) === 0);
+      if (tagMatched.length > 0) {
+        ranked = [...tagMatched, ...tagMiss];
+      }
+    }
 
     const minSem = semanticMinRelevanceScore();
     const semanticOk = ranked.filter(
@@ -1672,7 +1694,8 @@ export async function searchCuratedCandidatesForBeat(
 
     console.log(
       `[SemanticVisual] zin ${beat.index}: "${beat.text.slice(0, 50)}…" → top tier ${ranked[0]?.semantic?.tier ?? "?"} ` +
-        `score ${ranked[0]?.semantic?.relevanceScore ?? 0} (${ranked[0]?.semantic?.tierLabel ?? "n/a"})`
+        `score ${ranked[0]?.semantic?.relevanceScore ?? 0} (${ranked[0]?.semantic?.tierLabel ?? "n/a"}) ` +
+        `archiveTags=${countVisualTagHits(ranked[0]?.asset ?? { title: "", tags: [] }, allArchiveMatchTags)}`
     );
   }
 

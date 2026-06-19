@@ -19,9 +19,9 @@ export async function summarizeArchiveHealth(): Promise<ArchiveHealthSummary> {
     totalAssets += assets.length;
   }
 
-  let hint = `${totalAssets} archiefclips — matching via titel, AI-tags bij upload, semantic search en vision (geo-tags niet verplicht).`;
+  let hint = `${totalAssets} archiefclips — koppeling via tags + titel in het media-archief (semantic/vision als extra check).`;
   if (totalAssets === 0) {
-    hint = "Geen archiefclips — upload relevante footage; AI tagt automatisch bij upload (LLM_API_KEY).";
+    hint = "Geen archiefclips — upload footage met duidelijke titel en tags in het media-archief.";
   }
 
   return {

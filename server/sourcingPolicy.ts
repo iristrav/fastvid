@@ -292,6 +292,11 @@ export function youtubeSourcingEnabled(): boolean {
   return process.env.ENABLE_YOUTUBE_SOURCING === "true";
 }
 
+/** Archive clip pick driven by asset.tags + title (default on). Set ENABLE_ARCHIVE_TAG_MATCH=false for semantic-only. */
+export function archiveTagsPrimaryMatching(): boolean {
+  return process.env.ENABLE_ARCHIVE_TAG_MATCH !== "false";
+}
+
 /** Europeana EU heritage API — off by default; set ENABLE_EUROPEANA=true + EUROPEANA_API_KEY. */
 export function europeanaSourcingEnabled(): boolean {
   return process.env.ENABLE_EUROPEANA === "true";
