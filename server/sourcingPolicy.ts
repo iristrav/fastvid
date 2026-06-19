@@ -62,9 +62,22 @@ export function curatedMaxStockBeatsPerVideo(videoLength?: string | null): numbe
     if (!isNaN(n) && n >= 0) return n;
   }
   const mins = targetVideoDurationMinutes(videoLength);
-  if (mins <= 1) return 1;
+  if (mins <= 1) return 2;
   if (mins <= 10) return 2;
   return 3;
+}
+
+/** Max AI-generated clips per video when licensed stock cap is full (Stability/Leonardo → Ken Burns). */
+export function curatedAiFallbackMaxClips(videoLength?: string | null): number {
+  const raw = process.env.MAX_AI_CLIPS_PER_VIDEO?.trim();
+  if (raw !== undefined && raw !== "") {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 0) return n;
+  }
+  const mins = targetVideoDurationMinutes(videoLength);
+  if (mins <= 1) return 12;
+  if (mins <= 10) return 20;
+  return 28;
 }
 
 /** When true (default in archive-first mode), Pexels/Pixabay are tightly capped per video. */

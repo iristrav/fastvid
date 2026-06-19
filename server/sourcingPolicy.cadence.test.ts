@@ -5,6 +5,7 @@ import {
   sceneBeatCapForCadence,
   curatedPerfBeatsFloor,
   curatedMaxStockBeatsPerVideo,
+  curatedAiFallbackMaxClips,
 } from "./sourcingPolicy";
 
 describe("visual cadence (5–8s per clip)", () => {
@@ -28,7 +29,8 @@ describe("visual cadence (5–8s per clip)", () => {
   });
 
   it("stock cap defaults very low per video length", () => {
-    expect(curatedMaxStockBeatsPerVideo("1")).toBe(1);
+    expect(curatedMaxStockBeatsPerVideo("1")).toBe(2);
     expect(curatedMaxStockBeatsPerVideo("8-10")).toBe(2);
+    expect(curatedAiFallbackMaxClips("1")).toBe(12);
   });
 });

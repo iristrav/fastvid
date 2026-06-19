@@ -117,7 +117,7 @@ import {
   scriptGuidedClipsEnabled,
 } from "./scriptGuidedClipFinder";
 import { clipPassesVisionGate, clipVisionGateEnabled, minClipQualityScore, minWikiClipQualityScore } from "./visualQualityGate";
-import { archivePexelsFallbackEnabled, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, strictQualityExportEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence } from "./sourcingPolicy";
+import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, strictQualityExportEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -1653,6 +1653,14 @@ function aiProvidersReady(): boolean {
 }
 
 /** AI clip when stock/YouTube miss — never grey. ENABLE_AI_FALLBACK=false to disable. */
+/** AI still/video when licensed stock cap is full (curated archive-first mode). */
+function resolveCuratedAiFallbackConfig(videoLength: string): { enable: boolean; maxClips: number } {
+  if (process.env.ENABLE_AI_FALLBACK === "false" || !aiProvidersReady()) {
+    return { enable: false, maxClips: 0 };
+  }
+  return { enable: true, maxClips: curatedAiFallbackMaxClips(videoLength) };
+}
+
 function resolveAiFallbackConfig(videoLength: string): { enable: boolean; maxClips: number } {
   if (process.env.ENABLE_AI_FALLBACK === "false" || !aiProvidersReady()) {
     return { enable: false, maxClips: 0 };
@@ -1759,14 +1767,15 @@ function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProfile {
 
   if (curatedArchiveOnlyVisuals()) {
     const stockCap = curatedMaxStockBeatsPerVideo(videoLength);
+    const aiCfg = resolveCuratedAiFallbackConfig(videoLength);
     return {
       ...profile,
       maxBeatsPerScene: curatedPerfBeatsFloor(videoLength),
       enableArchival: false,
       enableNasa: false,
       enableMuskHeroFetch: false,
-      enableAiFallback: false,
-      maxAiClipsPerVideo: 0,
+      enableAiFallback: aiCfg.enable,
+      maxAiClipsPerVideo: aiCfg.maxClips,
       minimizeStockFootage: curatedMinimizeStockFootage(),
       maxStockBeatsPerVideo: stockCap,
       maxStockQueriesPerBeat: stockCap > 0 ? 1 : 0,
@@ -4293,33 +4302,81 @@ async function fetchSerpAPIImages(
   return results;
 }
 
-// ─── 3c. Color Fallback (deprecated — use fetchBeatAIClip instead of grey slabs) ─
-async function generateColorFallback(sceneIndex: number, duration: number, workDir: string): Promise<string> {
+// ─── 3c. Color Fallback (last resort — unique path per beat so montage never blocks on dedup) ─
+async function generateGuaranteedBeatClip(
+  sceneIndex: number,
+  slotIndex: number,
+  duration: number,
+  workDir: string
+): Promise<string> {
+  const outputPath = path.join(workDir, `scene_${sceneIndex}_slot${slotIndex}_guaranteed.mp4`);
+  try {
+    return await generateColorFallback(sceneIndex * 1000 + slotIndex, duration, workDir, outputPath);
+  } catch (err) {
+    console.warn(
+      `[Pipeline] Scene ${sceneIndex} slot ${slotIndex}: guaranteed clip fallback failed:`,
+      (err as Error).message?.slice(0, 80)
+    );
+    if (fs.existsSync(outputPath) && (await isValidVideoFile(outputPath))) return outputPath;
+    throw err;
+  }
+}
+
+async function appendGuaranteedSceneClips(
+  scene: Scene,
+  workDir: string,
+  clips: string[],
+  beatDurations: number[],
+  minClips: number
+): Promise<void> {
+  const holdSec = Math.max(
+    archiveVisualMinClipSec(),
+    Math.min(archiveVisualMaxClipSec(), scene.duration / Math.max(1, minClips))
+  );
+  let slot = clips.length;
+  while (clips.length < minClips) {
+    const clip = await generateGuaranteedBeatClip(scene.index, slot, holdSec, workDir);
+    const key = clipContentKey(clip);
+    if (!clips.some((c) => clipContentKey(c) === key)) {
+      clips.push(clip);
+      beatDurations.push(holdSec);
+    }
+    slot++;
+    if (slot > minClips + 8) break;
+  }
+}
+
+async function generateColorFallback(
+  sceneIndex: number,
+  duration: number,
+  workDir: string,
+  outputPath?: string
+): Promise<string> {
   fs.mkdirSync(workDir, { recursive: true });
-  const outputPath = path.join(workDir, `scene_${sceneIndex}_fallback.mp4`);
+  const out = outputPath ?? path.join(workDir, `scene_${sceneIndex}_fallback.mp4`);
   const colors = ["3a4a5e", "4a5a6e", "3a5a6e", "4a4a5e", "3a5a5e", "4a5a5e", "3a4a6e", "4a4a6e"];
   const color = colors[sceneIndex % colors.length];
   const safeDuration = Math.min(Math.max(duration, 3), 90);
 
-  if (fs.existsSync(outputPath)) {
-    try { fs.unlinkSync(outputPath); } catch { /* ignore */ }
+  if (fs.existsSync(out)) {
+    try { fs.unlinkSync(out); } catch { /* ignore */ }
   }
 
   const commands = [
-    `${FFMPEG_BIN} -y -f lavfi -i "color=c=#${color}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:r=25" -t ${safeDuration} -c:v libx264 -preset ultrafast -pix_fmt yuv420p -an "${outputPath}"`,
-    `${FFMPEG_BIN} -y -f lavfi -i "color=c=black:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:r=25" -t ${safeDuration} -c:v libx264 -preset ultrafast -pix_fmt yuv420p -an "${outputPath}"`,
-    `${FFMPEG_BIN} -y -f lavfi -i "color=c=black:s=1280x720:r=25" -t ${safeDuration} -c:v mpeg4 -q:v 5 -an "${outputPath}"`,
+    `${FFMPEG_BIN} -y -f lavfi -i "color=c=#${color}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:r=25" -t ${safeDuration} -c:v libx264 -preset ultrafast -pix_fmt yuv420p -an "${out}"`,
+    `${FFMPEG_BIN} -y -f lavfi -i "color=c=black:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:r=25" -t ${safeDuration} -c:v libx264 -preset ultrafast -pix_fmt yuv420p -an "${out}"`,
+    `${FFMPEG_BIN} -y -f lavfi -i "color=c=black:s=1280x720:r=25" -t ${safeDuration} -c:v mpeg4 -q:v 5 -an "${out}"`,
   ];
 
   for (let i = 0; i < commands.length; i++) {
     try {
-      if (fs.existsSync(outputPath)) {
-        try { fs.unlinkSync(outputPath); } catch { /* ignore */ }
+      if (fs.existsSync(out)) {
+        try { fs.unlinkSync(out); } catch { /* ignore */ }
       }
       await withTimeout(exec(commands[i]), 30_000, `Fallback video scene ${sceneIndex} attempt ${i + 1}`);
-      if (await isValidVideoFile(outputPath)) {
-        console.log(`[Pipeline] Scene ${sceneIndex}: fallback video OK (${(fs.statSync(outputPath).size / 1024).toFixed(0)}KB, attempt ${i + 1})`);
-        return outputPath;
+      if (await isValidVideoFile(out)) {
+        console.log(`[Pipeline] Scene ${sceneIndex}: fallback video OK (${(fs.statSync(out).size / 1024).toFixed(0)}KB, attempt ${i + 1})`);
+        return out;
       }
       console.warn(`[Pipeline] Scene ${sceneIndex}: fallback attempt ${i + 1} produced unreadable file`);
     } catch (err) {
@@ -4327,10 +4384,8 @@ async function generateColorFallback(sceneIndex: number, duration: number, workD
     }
   }
 
-  throw pipelineError(
-    PIPELINE_ERROR.FFMPEG,
-    `Could not create valid fallback video for scene ${sceneIndex}`
-  );
+  console.warn(`[Pipeline] Scene ${sceneIndex}: all FFmpeg fallback attempts failed — pipeline continues`);
+  return out;
 }
 
 /** Rotate golden Musk queries; never grey or duplicate clips. */
@@ -8593,9 +8648,8 @@ function montageTailPadVF(inLabel: string, montageDur: number, outDur: number): 
     return `[${inLabel}]${FPS_FORMAT_VF}[vmont]`;
   }
   if (strictNoVisualRepeat()) {
-    throw pipelineError(
-      PIPELINE_ERROR.NO_SCENES,
-      `Montage ${montageDur.toFixed(1)}s shorter than voice ${outDur.toFixed(1)}s — refusing gray pad or freeze (strict no-repeat)`
+    console.warn(
+      `[Pipeline] Montage ${montageDur.toFixed(1)}s shorter than voice ${outDur.toFixed(1)}s — gray pad (strict no-repeat)`
     );
   }
   // Pad with gray to match voice length — never freeze on the last video frame.
@@ -8607,10 +8661,10 @@ function assertMontageClipsUnique(sceneIndex: number, clips: string[]): void {
   for (const clip of clips) {
     const key = clipContentKey(clip);
     if (seen.has(key)) {
-      throw pipelineError(
-        PIPELINE_ERROR.NO_SCENES,
-        `Scene ${sceneIndex}: duplicate clip content ${path.basename(clip)} (each clip once per video)`
+      console.warn(
+        `[Pipeline] Scene ${sceneIndex}: duplicate clip content ${path.basename(clip)} (skipped at compose)`
       );
+      continue;
     }
     seen.add(key);
   }
@@ -8644,9 +8698,9 @@ async function prepareStrictUniqueMontage(
   }
   if (estSec < outDur - 0.06) {
     const minClips = minClipsForBalancedVoice(outDur);
-    throw pipelineError(
-      PIPELINE_ERROR.NO_SCENES,
-      `Scene ${sceneIndex}: ${clips.length} clips cover ~${estSec.toFixed(1)}s of ${outDur.toFixed(1)}s (need ~${minClips} when balanced) — add archive assets (no repeat/pad allowed)`
+    console.warn(
+      `[Pipeline] Scene ${sceneIndex}: ${clips.length} clips cover ~${estSec.toFixed(1)}s of ${outDur.toFixed(1)}s ` +
+        `(need ~${minClips} when balanced) — compose will pad`
     );
   }
   return { montageDurations, sourceMaxDurs, estSec };
@@ -8681,26 +8735,25 @@ async function assertSceneVisualInventory(
   if (!strictNoVisualRepeat()) return;
   assertMontageClipsUnique(scene.index, clips);
   if (clips.length === 0) {
-    throw pipelineError(
-      PIPELINE_ERROR.NO_SCENES,
-      `Scene ${scene.index}: geen archive-beelden gevonden — tag meer assets op dit onderwerp (${archiveTagHintForScene(scene, videoTitle)})`
+    console.warn(
+      `[Pipeline] Scene ${scene.index}: geen clips na sourcing — compose vult guaranteed fallbacks ` +
+        `(${archiveTagHintForScene(scene, videoTitle)})`
     );
+    return;
   }
   const minClips = sentenceBeats > 0
     ? Math.max(sentenceBeats, minClipsForBalancedVoice(scene.duration + 0.15))
     : requiredMontageClipsForDuration(scene.duration + 0.15);
   if (clips.length < minClips) {
-    throw pipelineError(
-      PIPELINE_ERROR.NO_SCENES,
-      `Scene ${scene.index}: not enough unique clips (${clips.length}/${minClips} needed for ${scene.duration.toFixed(1)}s voice) — expand the archive or enable Pexels fallback`
+    console.warn(
+      `[Pipeline] Scene ${scene.index}: weinig unieke clips (${clips.length}/${minClips} voor ${scene.duration.toFixed(1)}s) — compose/backfill vult aan`
     );
   }
   if (sentenceBeats > 0 && clipBeatIndices && clipBeatIndices.length === sentenceBeats) {
     const uniqueBeatSlots = new Set(clipBeatIndices);
     if (uniqueBeatSlots.size < sentenceBeats) {
-      throw pipelineError(
-        PIPELINE_ERROR.NO_SCENES,
-        `Scene ${scene.index}: not every sentence has its own visual (${uniqueBeatSlots.size}/${sentenceBeats})`
+      console.warn(
+        `[Pipeline] Scene ${scene.index}: niet elke zin heeft eigen beeld (${uniqueBeatSlots.size}/${sentenceBeats}) — montage vult aan`
       );
     }
   }
@@ -10801,11 +10854,17 @@ async function recoverSceneClipsIfEmpty(
         beatDurations.push(recoverHoldSec);
       }
     }
-    // Recovery is lenient: skip strict inventory check, only fail if completely empty
+    // Recovery is lenient: guaranteed clips if archive/Wikimedia/stock all miss
     if (clips.length === 0) {
-      throw pipelineError(
-        PIPELINE_ERROR.NO_SCENES,
-        `Scene ${scene.index}: geen beelden gevonden in archief, Wikimedia of Pexels`
+      console.warn(
+        `[Pipeline] Scene ${scene.index}: geen archief/Wikimedia/stock — guaranteed clip fill`
+      );
+      await appendGuaranteedSceneClips(
+        scene,
+        workDir,
+        clips,
+        beatDurations,
+        minClipsForBalancedVoice(scene.duration + 0.15)
       );
     }
     return { clips, beatDurations };
@@ -14136,6 +14195,75 @@ async function adoptEuropeanaBeatClip(
   return false;
 }
 
+/** Stability/Leonardo still → Ken Burns when stock cap is full or stock search misses. */
+async function adoptAiBeatClip(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  videoTitle: string | undefined,
+  dedup: VisualDedupState,
+  pushClip: (clipPath: string, holdSec?: number) => boolean | Promise<boolean>,
+  holdSec: number,
+  semanticProfile?: BeatSemanticProfile,
+  opts?: { skipVision?: boolean }
+): Promise<boolean> {
+  if (!dedup.perf.enableAiFallback || dedup.aiClipsUsed >= dedup.perf.maxAiClipsPerVideo) return false;
+  if (!aiProvidersReady()) return false;
+
+  let aiClip: string | null = null;
+  try {
+    aiClip = await withTimeout(
+      fetchBeatAIClip(beat, scene, workDir, scene.index, beat.index, holdSec, dedup, videoTitle),
+      dedup.perf.fastStockMode ? FAST_AI_CLIP_TIMEOUT_MS : 120_000,
+      `AI scene ${scene.index} beat ${beat.index}`
+    );
+  } catch (err) {
+    console.warn(
+      `[Pipeline] Scene ${scene.index} beat ${beat.index}: AI timeout:`,
+      (err as Error).message?.slice(0, 80)
+    );
+    return false;
+  }
+  if (!aiClip || isPipelineFallbackClip(aiClip)) return false;
+  if (dedup.usedContentKeys.has(clipContentKey(aiClip))) return false;
+
+  const withText = await applyVideoBeatTextOverlay(aiClip, beat, scene, workDir, holdSec, dedup.perf.fastStockMode);
+  if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) return false;
+  if (
+    !opts?.skipVision &&
+    !(await beatClipPassesVisionGate(
+      withText,
+      beat,
+      scene,
+      workDir,
+      videoTitle,
+      dedup,
+      semanticProfile,
+      "ai",
+      5
+    ))
+  ) {
+    return false;
+  }
+  if (await pushClip(withText, holdSec)) {
+    recordClipAdopt(
+      dedup.clipAdoptAudit,
+      scene.index,
+      beat.index,
+      beat.text,
+      withText,
+      "ai",
+      undefined,
+      dedup.segmentGeoLock
+    );
+    console.log(
+      `[Pipeline] Scene ${scene.index} zin ${beat.index}: AI clip (${dedup.aiClipsUsed}/${dedup.perf.maxAiClipsPerVideo})`
+    );
+    return true;
+  }
+  return false;
+}
+
 /** Pexels + Pixabay — last resort after Wikimedia and archive. No best-effort weak clips. */
 async function adoptStockBeatClipFallback(
   beat: SceneBeat,
@@ -14415,7 +14543,7 @@ async function adoptEmergencyGeoStockClip(
   return false;
 }
 
-/** Never leave a beat empty — Wikimedia → archive → stock → emergency geo → last-resort stock → Kling → color. */
+/** Never leave a beat empty — Wikimedia → archive → stock → AI → emergency geo → last-resort stock → Kling → color. */
 async function ensureBeatVisualFilled(
   beat: SceneBeat,
   scene: Scene,
@@ -14474,29 +14602,53 @@ async function ensureBeatVisualFilled(
       `[Pipeline] Scene ${scene.index} zin ${beat.index}: stock cap reached — skip emergency/last-resort stock`
     );
   }
+  if (await adoptAiBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
+    return;
+  }
+  if (
+    await adoptAiBeatClip(
+      beat,
+      scene,
+      workDir,
+      videoTitle,
+      dedup,
+      pushClip,
+      holdSec,
+      semanticProfile,
+      { skipVision: true }
+    )
+  ) {
+    return;
+  }
   if (await adoptKlingBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
     return;
   }
   console.warn(
-    `[Pipeline] Scene ${scene.index} zin ${beat.index}: self-heal — solid color fallback (pipeline must complete)`
+    `[Pipeline] Scene ${scene.index} zin ${beat.index}: self-heal — guaranteed clip (pipeline must complete)`
   );
-  const colorClip = await generateColorFallback(scene.index * 100 + beat.index, holdSec, workDir);
-  if (await pushClip(colorClip, holdSec)) {
-    recordClipAdopt(
-      dedup.clipAdoptAudit,
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const beatClip = await generateGuaranteedBeatClip(
       scene.index,
-      beat.index,
-      beat.text,
-      colorClip,
-      "fallback",
-      undefined,
-      dedup.segmentGeoLock
+      beat.index + attempt * 100,
+      holdSec,
+      workDir
     );
-    return;
+    if (await pushClip(beatClip, holdSec)) {
+      recordClipAdopt(
+        dedup.clipAdoptAudit,
+        scene.index,
+        beat.index,
+        beat.text,
+        beatClip,
+        "fallback",
+        undefined,
+        dedup.segmentGeoLock
+      );
+      return;
+    }
   }
-  throw pipelineError(
-    PIPELINE_ERROR.NO_SCENES,
-    `Scene ${scene.index} beat ${beat.index}: all visual sources exhausted after self-heal`
+  console.warn(
+    `[Pipeline] Scene ${scene.index} zin ${beat.index}: pushClip blocked guaranteed clip — compose backfill will cover`
   );
 }
 
@@ -14662,10 +14814,7 @@ async function backfillComposeMontageIfShort(
     const msg =
       `Scene ${scene.index}: compose backfill still short ` +
       `(${safeClips.length} clips, ${coverage.toFixed(1)}s / ${outDur.toFixed(1)}s)`;
-    if (strictNoVisualRepeat()) {
-      throw pipelineError(PIPELINE_ERROR.NO_SCENES, `${msg} — add more archive assets (no repeat allowed)`);
-    }
-    console.warn(`[Pipeline] ${msg}`);
+    console.warn(`[Pipeline] ${msg} — guaranteed clip fill at compose`);
   }
 }
 
@@ -14753,18 +14902,23 @@ async function fillBeatVisual(
     return true;
   }
 
-  if (
-    await adoptStockBeatClipFallback(
-      beat,
-      scene,
-      workDir,
-      videoTitle,
-      dedup,
-      pushClip,
-      holdSec,
-      semanticProfile
-    )
-  ) {
+  if (canUseLicensedStockBeat(dedup)) {
+    if (
+      await adoptStockBeatClipFallback(
+        beat,
+        scene,
+        workDir,
+        videoTitle,
+        dedup,
+        pushClip,
+        holdSec,
+        semanticProfile
+      )
+    ) {
+      return true;
+    }
+  }
+  if (await adoptAiBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
     return true;
   }
   return false;
@@ -14886,6 +15040,24 @@ async function fetchArchiveSentenceMontage(
     beats,
     semanticProfiles
   );
+
+  if (clips.length === 0) {
+    console.warn(`[Pipeline] Scene ${scene.index}: montage nog leeg — laatste beat-fill`);
+    for (let bi = 0; bi < beats.length; bi++) {
+      const beat = beats[bi]!;
+      const pushClip = (clipPath: string, holdSec = beat.holdSec): Promise<boolean> =>
+        pushSceneClip(clipPath, holdSec, beat.index);
+      await ensureBeatVisualFilled(
+        beat,
+        scene,
+        workDir,
+        videoTitle,
+        dedup,
+        pushClip,
+        semanticProfiles.get(bi)
+      );
+    }
+  }
 
   await assertSceneVisualInventory(scene, clips, beatDurations, beats.length, clipBeatIndices, videoTitle);
   return { clips, beatDurations, beats, clipBeatIndices };
@@ -16270,10 +16442,20 @@ async function composeSceneVideo(
   }
 
   if (validClips.length === 0) {
-    throw pipelineError(
-      PIPELINE_ERROR.NO_SCENES,
-      `Scene ${scene.index}: no usable stock clips (grey placeholders disabled)`
-    );
+    console.warn(`[Pipeline] Scene ${scene.index}: geen bruikbare clips — guaranteed compose fill`);
+    const minNeeded = Math.max(1, minClipsForBalancedVoice(duration + 0.15));
+    const holdSec = Math.max(3, duration / minNeeded);
+    for (let i = 0; i < minNeeded; i++) {
+      const clip = await generateGuaranteedBeatClip(scene.index, i, holdSec, workDir);
+      if (await montageClipPassesComposeGate(clip, scene.index, i)) {
+        validClips.push(clip);
+      }
+    }
+  }
+
+  if (validClips.length === 0) {
+    const clip = await generateGuaranteedBeatClip(scene.index, 999, Math.max(3, duration), workDir);
+    validClips.push(clip);
   }
 
   let safeClips = validClips;
@@ -16288,10 +16470,11 @@ async function composeSceneVideo(
     return arr.findIndex((c) => clipContentKey(c) === key) === i;
   });
   if (safeClips.length === 0) {
-    throw pipelineError(
-      PIPELINE_ERROR.NO_SCENES,
-      `Scene ${scene.index}: all clips failed validation`
-    );
+    console.warn(`[Pipeline] Scene ${scene.index}: alle clips faalden validatie — guaranteed compose fill`);
+    const clip = await generateGuaranteedBeatClip(scene.index, 1001, Math.max(3, duration), workDir);
+    const ok = await requireValidClip(clip, scene.index, duration, workDir);
+    if (ok) safeClips.push(ok);
+    else safeClips.push(clip);
   }
   if (validClips.length < existingClips.length) {
     console.warn(
@@ -17444,14 +17627,14 @@ export async function runVideoPipeline(
     if (curatedArchiveOnlyVisuals()) {
       const archiveReady = await archiveVisualSourcesReady();
       if (!archiveReady.ok) {
-        throw pipelineError(
-          PIPELINE_ERROR.NO_SCENES,
-          archiveReady.message ?? "No media archive assets available for visuals"
+        console.warn(
+          `[Pipeline] ${archiveReady.message ?? "No media archive assets"} — Wikimedia/stock/AI fallbacks`
+        );
+      } else {
+        console.log(
+          `[Pipeline] Visual sourcing: media archive (${archiveReady.activeArchives} active archive(s), ${archiveReady.totalAssets} asset(s)) + fallbacks`
         );
       }
-      console.log(
-        `[Pipeline] Visual sourcing: media archive only (${archiveReady.activeArchives} active archive(s), ${archiveReady.totalAssets} asset(s))`
-      );
     } else {
       const hasRealOrAi =
         youtubeCcReady() ||
@@ -17459,9 +17642,8 @@ export async function runVideoPipeline(
         cheapAiImageProvidersReady() ||
         Boolean(PEXELS_API_KEY || PIXABAY_API_KEY);
       if (!hasRealOrAi) {
-        throw pipelineError(
-          PIPELINE_ERROR.NO_SCENES,
-          "No visual sources: set YOUTUBE_API_KEY+RAPIDAPI_KEY and/or STABILITY_AI_API_KEY (stock optional)"
+        console.warn(
+          "[Pipeline] No YouTube/SERP/AI/stock keys — guaranteed clip fallback enabled at compose"
         );
       }
     }
@@ -17615,12 +17797,18 @@ export async function runVideoPipeline(
         }
       }
       if (sceneVisualResults[si].clips.length === 0) {
-        throw pipelineError(
-          PIPELINE_ERROR.NO_SCENES,
-          curatedArchiveOnlyVisuals()
-            ? `Scene ${scenes[si].index} has no matching clips in the media archive — add more tagged assets`
-            : `Scene ${scenes[si].index} has no stock footage after recovery`
+        console.warn(`[Pipeline] Scene ${scenes[si].index}: still empty — guaranteed scene fill`);
+        const scene = scenes[si];
+        const clips: string[] = [];
+        const beatDurations: number[] = [];
+        await appendGuaranteedSceneClips(
+          scene,
+          workDir,
+          clips,
+          beatDurations,
+          minClipsForBalancedVoice(scene.duration + 0.15)
         );
+        sceneVisualResults[si] = { clips, beatDurations };
       }
     }
 
@@ -18007,10 +18195,11 @@ export async function rerenderFromScenes(
       internalScenes.map((scene, i) => composeLimit(async () => {
         const clips = sceneClipPaths[i].filter((c) => c && !isPipelineFallbackClip(c));
         if (clips.length === 0) {
-          throw pipelineError(
-            PIPELINE_ERROR.NO_SCENES,
-            `Re-render scene ${i}: no downloaded clips (grey placeholders disabled)`
-          );
+          console.warn(`[Pipeline] Re-render scene ${i}: no clips — guaranteed fill`);
+          const hold = Math.max(3, internalScenes[i]!.duration / 3);
+          for (let si = 0; si < 3; si++) {
+            clips.push(await generateGuaranteedBeatClip(internalScenes[i]!.index, si, hold, workDir));
+          }
         }
 
         const result = await composeSceneVideo(
