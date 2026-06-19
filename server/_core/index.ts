@@ -139,8 +139,13 @@ async function startServer() {
   console.log(
     "[Fastvid] Visual sourcing:",
     curatedArchiveOnlyVisuals()
-      ? "✓ Wikimedia → archief → Pexels/Pixabay per beat (vision gate on all sources)"
+      ? "✓ Wikimedia → archief → Pexels/Pixabay per beat (local CLIP quality gate)"
       : "✗ full external sourcing enabled"
+  );
+  const visionQa = getVisionQaStatus();
+  console.log(
+    "[Fastvid] Local vision QA:",
+    visionQa.ready ? `✓ ${visionQa.hint}` : `✗ ${visionQa.hint}`
   );
   if (externalVisualSourcingEnabled()) {
     console.warn("[Fastvid] External visual sourcing should be off — check sourcingPolicy");

@@ -74,6 +74,10 @@ async function main() {
     }
   }
   startVideoQueueWorker();
+  const { scheduleClipEmbeddingBackfill } = await import("./archiveClipIndexBackfill");
+  scheduleClipEmbeddingBackfill();
+  const { startClipBackgroundAuditor } = await import("./clipBackgroundAuditor");
+  startClipBackgroundAuditor();
 
   setInterval(() => {
     import("./db")

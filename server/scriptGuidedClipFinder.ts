@@ -1,9 +1,8 @@
 /**
  * Script-guided clip finder — locate the right moment in a YouTube video
- * using captions (fast) and optional thumbnail vision (accurate, capped).
+ * using captions (fast) and optional local CLIP thumbnail check.
  */
-import { invokeLLM } from "./_core/llm";
-import { ENV } from "./_core/env";
+import { localVisionEnabled, scoreUrlImageAgainstBeat } from "./localClipVision";
 
 export type TranscriptSegment = { startSec: number; text: string };
 
@@ -152,64 +151,15 @@ export async function fetchYoutubeTranscript(
   return [];
 }
 
-const VISION_JSON_SCHEMA = {
-  type: "object",
-  properties: {
-    relevance: { type: "number" },
-    showsSubject: { type: "boolean" },
-  },
-  required: ["relevance", "showsSubject"],
-  additionalProperties: false,
-} as const;
-
-/** Quick thumbnail vision check — max 1 image, low detail. */
+/** Local CLIP thumbnail check against beat narration. */
 export async function scoreThumbnailRelevance(
   thumbnailUrl: string,
   beatText: string,
   videoTitle: string | undefined,
   timeoutMs = 6_000
 ): Promise<{ relevance: number; showsSubject: boolean } | null> {
-  if (process.env.ENABLE_SCRIPT_GUIDED_VISION === "false" || !ENV.forgeApiKey) return null;
-  if (!thumbnailUrl?.startsWith("http")) return null;
-
-  try {
-    const response = await Promise.race([
-      invokeLLM({
-        messages: [
-          {
-            role: "system",
-            content:
-              "You judge if a YouTube thumbnail matches documentary narration. Return JSON only.",
-          },
-          {
-            role: "user",
-            content: [
-              {
-                type: "text",
-                text: `Narration: "${beatText.slice(0, 220)}"
-${videoTitle ? `Video topic: ${videoTitle}` : ""}
-Rate 0-10 if the thumbnail shows the real subject (not generic unrelated b-roll).`,
-              },
-              { type: "image_url", image_url: { url: thumbnailUrl, detail: "low" } },
-            ],
-          },
-        ],
-        response_format: VISION_JSON_SCHEMA,
-        maxTokens: 256,
-      }),
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("vision timeout")), timeoutMs)),
-    ]);
-
-    const content = response.choices[0]?.message?.content;
-    if (typeof content !== "string") return null;
-    const parsed = JSON.parse(content) as { relevance?: number; showsSubject?: boolean };
-    return {
-      relevance: Math.max(0, Math.min(10, parsed.relevance ?? 0)),
-      showsSubject: Boolean(parsed.showsSubject),
-    };
-  } catch {
-    return null;
-  }
+  if (process.env.ENABLE_SCRIPT_GUIDED_VISION === "false" || !localVisionEnabled()) return null;
+  return scoreUrlImageAgainstBeat(thumbnailUrl, beatText, videoTitle, timeoutMs);
 }
 
 export function scriptGuidedClipsEnabled(): boolean {

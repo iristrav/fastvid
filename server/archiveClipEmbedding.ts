@@ -1,29 +1,25 @@
 /**
- * Optional local CLIP embeddings for archive frames (@xenova/transformers).
- * Off by default — enable with ENABLE_CLIP_EMBEDDING_INDEX=true.
+ * Background CLIP frame index for archive assets (via localClipVision).
  */
 import fs from "fs";
 import path from "path";
-import { promisify } from "util";
-import { exec as execCb } from "child_process";
+import os from "os";
 import { LOCAL_UPLOADS_DIR } from "./storageLocal";
-import { cosineSimilarityVectors } from "./semanticVisualMatching";
-
-const exec = promisify(execCb);
+import {
+  clipEmbeddingIndexEnabled,
+  indexVideoFrameEmbeddings,
+  meanEmbedding,
+  embedTextQuery,
+  scoreEmbeddingSimilarity,
+} from "./localClipVision";
 
 export type StoredClipEmbedding = {
   assetId: number;
   model: string;
   embedding: number[];
+  frameEmbeddings?: number[][];
   updatedAt: string;
 };
-
-let clipPipeline: Awaited<ReturnType<typeof loadClipPipeline>> | null = null;
-
-async function loadClipPipeline() {
-  const { pipeline } = await import("@xenova/transformers");
-  return pipeline("image-feature-extraction", "Xenova/clip-vit-base-patch32");
-}
 
 function indexDir(): string {
   const dir = path.join(LOCAL_UPLOADS_DIR, "archive-clip-embeddings");
@@ -35,38 +31,7 @@ function indexPath(assetId: number): string {
   return path.join(indexDir(), `${assetId}.json`);
 }
 
-export function clipEmbeddingIndexEnabled(): boolean {
-  return process.env.ENABLE_CLIP_EMBEDDING_INDEX === "true";
-}
-
-function ffmpegBin(): string {
-  return process.env.FFMPEG_BIN?.trim() || "ffmpeg";
-}
-
-async function extractFrameJpeg(videoPath: string, outPath: string): Promise<boolean> {
-  try {
-    await exec(
-      `"${ffmpegBin()}" -y -ss 1.5 -i "${videoPath}" -vframes 1 -q:v 3 "${outPath}"`,
-      { timeout: 20_000 }
-    );
-    return fs.existsSync(outPath) && fs.statSync(outPath).size > 2000;
-  } catch {
-    return false;
-  }
-}
-
-async function getClipPipeline() {
-  if (!clipEmbeddingIndexEnabled()) return null;
-  if (!clipPipeline) {
-    try {
-      clipPipeline = await loadClipPipeline();
-    } catch (err) {
-      console.warn("[ClipEmbedding] Failed to load @xenova/transformers:", (err as Error).message?.slice(0, 80));
-      return null;
-    }
-  }
-  return clipPipeline;
-}
+export { clipEmbeddingIndexEnabled };
 
 export function loadStoredClipEmbedding(assetId: number): StoredClipEmbedding | null {
   if (!clipEmbeddingIndexEnabled()) return null;
@@ -81,63 +46,79 @@ export function loadStoredClipEmbedding(assetId: number): StoredClipEmbedding | 
   }
 }
 
-/** Index one archive video frame with CLIP (background-safe). */
+export function loadStoredFrameEmbeddings(assetId: number): number[][] {
+  const stored = loadStoredClipEmbedding(assetId);
+  if (!stored) return [];
+  if (Array.isArray(stored.frameEmbeddings) && stored.frameEmbeddings.length > 0) {
+    return stored.frameEmbeddings;
+  }
+  return [stored.embedding];
+}
+
+/** Index archive video frames with CLIP in the background after upload. */
 export async function indexArchiveClipEmbedding(
   assetId: number,
   localVideoPath: string
 ): Promise<boolean> {
   if (!clipEmbeddingIndexEnabled() || !fs.existsSync(localVideoPath)) return false;
-  const pipe = await getClipPipeline();
-  if (!pipe) return false;
 
-  const framePath = path.join(indexDir(), `_frame_${assetId}.jpg`);
+  const workDir = path.join(os.tmpdir(), `fv_clip_idx_${assetId}`);
   try {
-    const ok = await extractFrameJpeg(localVideoPath, framePath);
-    if (!ok) return false;
+    fs.mkdirSync(workDir, { recursive: true });
+    const frameEmbeddings = await indexVideoFrameEmbeddings(
+      localVideoPath,
+      workDir,
+      `a${assetId}`
+    );
+    if (frameEmbeddings.length === 0) return false;
 
-    const result = await pipe(framePath);
-    const embedding = Array.from((result as { data: Float32Array }).data);
-    if (embedding.length < 8) return false;
+    const embedding = meanEmbedding(frameEmbeddings);
+    if (!embedding) return false;
 
     const record: StoredClipEmbedding = {
       assetId,
       model: "Xenova/clip-vit-base-patch32",
       embedding,
+      frameEmbeddings,
       updatedAt: new Date().toISOString(),
     };
     fs.writeFileSync(indexPath(assetId), JSON.stringify(record), "utf8");
+    console.log(`[ClipEmbedding] Indexed asset ${assetId} (${frameEmbeddings.length} frames)`);
+    const { scheduleAuditForAsset } = await import("./clipBackgroundAuditor");
+    scheduleAuditForAsset(assetId);
     return true;
   } catch (err) {
     console.warn(`[ClipEmbedding] asset ${assetId}:`, (err as Error).message?.slice(0, 80));
     return false;
   } finally {
     try {
-      if (fs.existsSync(framePath)) fs.unlinkSync(framePath);
+      fs.rmSync(workDir, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
+    try {
+      if (localVideoPath.includes(os.tmpdir()) && fs.existsSync(localVideoPath)) {
+        fs.unlinkSync(localVideoPath);
+      }
     } catch {
       /* ignore */
     }
   }
 }
 
-/** Text query → CLIP text embedding for similarity against stored frame embeddings. */
 export async function createClipTextEmbedding(query: string): Promise<number[] | null> {
-  if (!clipEmbeddingIndexEnabled() || !query.trim()) return null;
-  try {
-    const { pipeline } = await import("@xenova/transformers");
-    const textPipe = await pipeline("feature-extraction", "Xenova/clip-vit-base-patch32");
-    const result = await textPipe(query, { pooling: "mean", normalize: true });
-    return Array.from(result.data as Float32Array);
-  } catch {
-    return null;
-  }
+  return embedTextQuery(query);
 }
 
 export async function scoreAssetClipSimilarity(
   assetId: number,
   queryEmbedding: number[]
 ): Promise<number> {
-  const stored = loadStoredClipEmbedding(assetId);
-  if (!stored || queryEmbedding.length === 0) return 0;
-  const sim = cosineSimilarityVectors(queryEmbedding, stored.embedding);
-  return Math.round(Math.max(0, sim) * 100);
+  const frames = loadStoredFrameEmbeddings(assetId);
+  if (!frames.length || queryEmbedding.length === 0) return 0;
+  let best = 0;
+  for (const emb of frames) {
+    best = Math.max(best, scoreEmbeddingSimilarity(queryEmbedding, emb));
+  }
+  return Math.round(best * 100);
 }

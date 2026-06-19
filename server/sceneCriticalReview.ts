@@ -114,7 +114,7 @@ export async function reviewClipCritical(
   if (!pass) {
     console.error(
       `[SceneCritical] Scene ${input.sceneIndex} beat ${input.beatIndex} clip "${path.basename(input.clipPath)}" FAIL: ${issues.join("; ")}` +
-        (score != null ? ` (vision ${score}/10)` : "")
+        (score != null ? ` (local QA ${score}/10)` : "")
     );
   } else {
     console.log(

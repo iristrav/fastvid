@@ -2,11 +2,13 @@
  * Archive health summary for /api/health and quality hints.
  */
 import { getAllMediaArchives, getMediaArchiveAssets } from "./db";
+import { summarizeClipAuditor } from "./clipBackgroundAuditor";
 
 export type ArchiveHealthSummary = {
   archiveCount: number;
   totalAssets: number;
   assetsWithoutGeoTags: number;
+  clipAuditor: Awaited<ReturnType<typeof summarizeClipAuditor>>;
   hint: string;
 };
 
@@ -19,15 +21,23 @@ export async function summarizeArchiveHealth(): Promise<ArchiveHealthSummary> {
     totalAssets += assets.length;
   }
 
-  let hint = `${totalAssets} archiefclips — koppeling via tags + titel in het media-archief (semantic/vision als extra check).`;
+  let hint = `${totalAssets} archiefclips — tags + achtergrond CLIP-audit.`;
   if (totalAssets === 0) {
     hint = "Geen archiefclips — upload footage met duidelijke titel en tags in het media-archief.";
+  }
+
+  const clipAuditor = await summarizeClipAuditor();
+  if (clipAuditor.enabled && clipAuditor.pendingEstimate > 0) {
+    hint += ` Achtergrond-check: ${clipAuditor.totalAudited} geaudit, ~${clipAuditor.pendingEstimate} wachtend.`;
+  } else if (clipAuditor.enabled && clipAuditor.totalAudited > 0) {
+    hint += ` Achtergrond-check: ${clipAuditor.passed}/${clipAuditor.totalAudited} OK.`;
   }
 
   return {
     archiveCount: archives.length,
     totalAssets,
     assetsWithoutGeoTags: 0,
+    clipAuditor,
     hint,
   };
 }

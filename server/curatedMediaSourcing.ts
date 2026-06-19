@@ -113,6 +113,7 @@ import {
   createClipTextEmbedding,
   scoreAssetClipSimilarity,
 } from "./archiveClipEmbedding";
+import { applyBackgroundClipAuditScore } from "./clipBackgroundAuditor";
 import { buildDocumentaryShotQueries } from "./pipelineSelfHeal";
 import type { ArchiveMatchTier } from "./viewerVisualPlan";
 import {
@@ -897,6 +898,8 @@ export function scoreCuratedAsset(
   if (beatText && isClipTitleIrrelevantToBeat(asset, beatText)) {
     return 0;
   }
+
+  score += applyBackgroundClipAuditScore(asset.id);
 
   return score;
 }
