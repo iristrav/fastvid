@@ -13674,8 +13674,8 @@ async function adoptArchiveBeatClip(
     const { beatTags, topicAnchors, videoVisualTopic } = buildBeatMatchTags(beat, scene, videoTitle);
     const topScore = ranked[0]?.score ?? 0;
     const minAcceptScore = relaxed
-      ? Math.max(12, Math.round(topScore * 0.25))
-      : Math.max(28, Math.round(topScore * 0.4));
+      ? Math.max(10, Math.round(topScore * 0.2))
+      : Math.max(20, Math.round(topScore * 0.32));
     const imgMax = archiveMaxImageClipsPerVideo();
     const tryCap = Math.min(
       relaxed ? ARCHIVE_BEAT_TOP_CANDIDATES * 2 : ARCHIVE_BEAT_TOP_CANDIDATES,
@@ -13818,49 +13818,108 @@ async function adoptWikimediaBeatClip(
   const baseAnalysis = analyzeSceneVisual(beat.text, videoTitle);
   const geoQueries = buildGeoStockSearchQueries(beat.text, videoTitle).slice(0, 3);
   const titleGeo = extractTitleGeoPlaceTags(videoTitle).slice(0, 3);
+  const wikiQueries = buildV1WikimediaQueries(baseAnalysis, videoTitle).slice(0, dedup.perf.fastStockMode ? 3 : 5);
+
+  const adoptWikiPath = async (
+    clipPath: string | null | undefined,
+    visionMinScore: number,
+    label: string
+  ): Promise<boolean> => {
+    if (
+      !clipPath ||
+      !(await beatClipPassesVisionGate(
+        clipPath,
+        beat,
+        scene,
+        workDir,
+        videoTitle,
+        dedup,
+        semanticProfile,
+        label,
+        visionMinScore
+      ))
+    ) {
+      return false;
+    }
+    return tryClip(clipPath, holdSec);
+  };
+
+  for (const q of wikiQueries) {
+    try {
+      const wikiVids = await withTimeout(
+        fetchWikimediaVideos(q, holdSec, workDir, scene.index, 1, `wiki${beat.index}v`, "", beat.keywords),
+        dedup.perf.fastStockMode ? 18_000 : 35_000,
+        `Wikimedia video scene ${scene.index} beat ${beat.index}`
+      );
+      const wikiVid = wikiVids[0]?.path;
+      if (wikiVid && (await adoptWikiPath(wikiVid, minWikiClipQualityScore(), "wikimedia_video"))) {
+        recordClipAdopt(dedup.clipAdoptAudit, scene.index, beat.index, beat.text, wikiVid, "wikimedia");
+        console.log(`[Pipeline] Scene ${scene.index} zin ${beat.index}: Wikimedia video`);
+        return true;
+      }
+    } catch {
+      /* try next query */
+    }
+  }
+
+  const relaxedThreshold = wikimediaV1RelaxedThreshold(videoTitle, beat.text);
   const attempts: Array<{
     analysis: ReturnType<typeof analyzeSceneVisual>;
     fileTag: string;
     timeoutMs: number;
     minThreshold?: number;
     visionMinScore: number;
-  }> = [
-    {
-      analysis: baseAnalysis,
-      fileTag: `wiki${beat.index}`,
-      timeoutMs: 40_000,
-      visionMinScore: minWikiClipQualityScore(),
-    },
-  ];
-  for (let gi = 0; gi < geoQueries.length; gi++) {
-    const q = geoQueries[gi]!;
-    attempts.push({
-      analysis: { ...baseAnalysis, keyword: q },
-      fileTag: `wiki${beat.index}g${gi}`,
-      timeoutMs: 35_000,
-      visionMinScore: minWikiClipQualityScore(),
-    });
-  }
-  for (let ti = 0; ti < titleGeo.length; ti++) {
-    const place = titleGeo[ti]!;
-    attempts.push({
-      analysis: { ...baseAnalysis, keyword: `${place} city documentary photograph` },
-      fileTag: `wiki${beat.index}t${ti}`,
-      timeoutMs: 32_000,
-      visionMinScore: minWikiClipQualityScore(),
-    });
-  }
-  const relaxedThreshold = wikimediaV1RelaxedThreshold(videoTitle, beat.text);
-  for (let ti = 0; ti < titleGeo.length; ti++) {
-    const place = titleGeo[ti]!;
-    attempts.push({
-      analysis: { ...baseAnalysis, keyword: `${place} skyline historical photo` },
-      fileTag: `wiki${beat.index}r${ti}`,
-      timeoutMs: 28_000,
-      minThreshold: relaxedThreshold,
-      visionMinScore: Math.max(5, minWikiClipQualityScore() - 1),
-    });
-  }
+  }> = dedup.perf.fastStockMode
+    ? [
+        {
+          analysis: baseAnalysis,
+          fileTag: `wiki${beat.index}`,
+          timeoutMs: 22_000,
+          minThreshold: relaxedThreshold,
+          visionMinScore: Math.max(5, minWikiClipQualityScore() - 1),
+        },
+        ...titleGeo.slice(0, 2).map((place, ti) => ({
+          analysis: { ...baseAnalysis, keyword: `${place} documentary photograph` },
+          fileTag: `wiki${beat.index}t${ti}`,
+          timeoutMs: 20_000,
+          minThreshold: relaxedThreshold,
+          visionMinScore: Math.max(5, minWikiClipQualityScore() - 1),
+        })),
+        ...geoQueries.slice(0, 1).map((q, gi) => ({
+          analysis: { ...baseAnalysis, keyword: q },
+          fileTag: `wiki${beat.index}g${gi}`,
+          timeoutMs: 18_000,
+          minThreshold: relaxedThreshold,
+          visionMinScore: Math.max(5, minWikiClipQualityScore() - 1),
+        })),
+      ]
+    : [
+        {
+          analysis: baseAnalysis,
+          fileTag: `wiki${beat.index}`,
+          timeoutMs: 40_000,
+          visionMinScore: minWikiClipQualityScore(),
+        },
+        ...geoQueries.map((q, gi) => ({
+          analysis: { ...baseAnalysis, keyword: q },
+          fileTag: `wiki${beat.index}g${gi}`,
+          timeoutMs: 35_000,
+          visionMinScore: minWikiClipQualityScore(),
+        })),
+        ...titleGeo.map((place, ti) => ({
+          analysis: { ...baseAnalysis, keyword: `${place} city documentary photograph` },
+          fileTag: `wiki${beat.index}t${ti}`,
+          timeoutMs: 32_000,
+          visionMinScore: minWikiClipQualityScore(),
+        })),
+        ...titleGeo.map((place, ti) => ({
+          analysis: { ...baseAnalysis, keyword: `${place} skyline historical photo` },
+          fileTag: `wiki${beat.index}r${ti}`,
+          timeoutMs: 28_000,
+          minThreshold: relaxedThreshold,
+          visionMinScore: Math.max(5, minWikiClipQualityScore() - 1),
+        })),
+      ];
 
   for (let ai = 0; ai < attempts.length; ai++) {
     const attempt = attempts[ai]!;
@@ -13879,21 +13938,7 @@ async function adoptWikimediaBeatClip(
         attempt.timeoutMs,
         `Wikimedia scene ${scene.index} beat ${beat.index} attempt ${ai + 1}`
       );
-      if (
-        wikiClip &&
-        (await beatClipPassesVisionGate(
-          wikiClip,
-          beat,
-          scene,
-          workDir,
-          videoTitle,
-          dedup,
-          semanticProfile,
-          "wikimedia",
-          attempt.visionMinScore
-        )) &&
-        (await tryClip(wikiClip, holdSec))
-      ) {
+      if (wikiClip && (await adoptWikiPath(wikiClip, attempt.visionMinScore, "wikimedia"))) {
         recordClipAdopt(
           dedup.clipAdoptAudit,
           scene.index,
@@ -13903,7 +13948,7 @@ async function adoptWikimediaBeatClip(
           "wikimedia"
         );
         console.log(
-          `[Pipeline] Scene ${scene.index} zin ${beat.index}: Wikimedia (attempt ${ai + 1}/${attempts.length})`
+          `[Pipeline] Scene ${scene.index} zin ${beat.index}: Wikimedia still (attempt ${ai + 1}/${attempts.length})`
         );
         return true;
       }
@@ -13912,6 +13957,26 @@ async function adoptWikimediaBeatClip(
         `[Pipeline] Wikimedia scene ${scene.index} beat ${beat.index} attempt ${ai + 1}:`,
         (err as Error).message?.slice(0, 100)
       );
+    }
+  }
+
+  const openverseQueries = [...new Set([...wikiQueries, ...geoQueries, beat.searchQuery].filter(Boolean))].slice(0, 4);
+  for (const q of openverseQueries) {
+    try {
+      const ovPaths = await withTimeout(
+        fetchOpenverseImages(q, holdSec, workDir, scene.index, 1, `wiki${beat.index}ov`, { beatIndex: beat.index }),
+        dedup.perf.fastStockMode ? 14_000 : 25_000,
+        `Openverse scene ${scene.index} beat ${beat.index}`
+      );
+      for (const ov of ovPaths) {
+        if (await adoptWikiPath(ov, Math.max(5, minWikiClipQualityScore() - 1), "openverse")) {
+          recordClipAdopt(dedup.clipAdoptAudit, scene.index, beat.index, beat.text, ov, "openverse");
+          console.log(`[Pipeline] Scene ${scene.index} zin ${beat.index}: Openverse still`);
+          return true;
+        }
+      }
+    } catch {
+      /* try next query */
     }
   }
   return false;

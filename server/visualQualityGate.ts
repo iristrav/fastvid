@@ -111,7 +111,9 @@ export function shouldVisionCheckClip(filePath: string, fastMode = false): boole
   if (!localVisionEnabled()) return false;
   const base = path.basename(filePath).toLowerCase();
   const isStock = /pexels|pixabay|_b\d+_vid|person_stock/i.test(base);
+  const isWikimedia = /wikivid|_wiki_|v1wiki/i.test(base);
   if (fastMode && isStock && process.env.ENABLE_CLIP_VISION_STOCK !== "true") return false;
+  if (fastMode && isWikimedia && process.env.ENABLE_CLIP_VISION_WIKIMEDIA !== "true") return false;
   if (sceneCriticalReviewEnabled()) return true;
   const checkStock =
     vidrushDocumentaryQualityEnabled() || process.env.ENABLE_CLIP_VISION_STOCK === "true";

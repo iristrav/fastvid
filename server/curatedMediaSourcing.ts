@@ -330,6 +330,7 @@ export function buildBeatMatchTags(
     ...mergedBeat,
     ...effectiveTopicAnchors,
     ...topicAnchors.slice(0, 3),
+    ...(videoTitle ? tokenizeBeatText(videoTitle) : []),
   ]).slice(0, 24);
   const refinedBeat = refineVisualSearchTagsForTopic(mergedBeat, videoVisualTopic, beat.text);
   const refinedAll = refineVisualSearchTagsForTopic(allTags, videoVisualTopic, beat.text);
@@ -459,7 +460,14 @@ export function assetPassesBeatMinimum(
   const requiredGeo = resolveRequiredGeoTagsForBeat(beatText, videoTitle, segmentLock);
   if (requiredGeo.length > 0) {
     if (isWrongGeoForBeat(asset, requiredGeo)) return false;
-    if (countVisualTagHits(asset, requiredGeo) === 0) return false;
+    const geoHits = countVisualTagHits(asset, requiredGeo);
+    if (geoHits === 0) {
+      const titleHay = (asset.title ?? "").toLowerCase();
+      const titleMentionsPlace = requiredGeo.some(
+        (g) => g.length >= 4 && titleHay.includes(g.replace(/-/g, " "))
+      );
+      if (!titleMentionsPlace) return false;
+    }
   }
 
   const geoTags = extractBeatGeoPlaceTags(beatText);
@@ -525,7 +533,7 @@ export function assetPassesBeatMinimum(
   const visualHits = countVisualTagHits(asset, requiredTags);
   const sceneEntityHits = countVisualTagHits(asset, [...sceneTags, ...entityTags]);
 
-  const minScore = vidrushDocumentaryQualityEnabled() ? 36 : Math.max(28, Math.round(topScore * 0.38));
+  const minScore = vidrushDocumentaryQualityEnabled() ? 28 : Math.max(22, Math.round(topScore * 0.32));
   if (score < minScore && visualHits < 2) return false;
 
   if ((sceneTags.length > 0 || entityTags.length > 0) && sceneEntityHits === 0 && visualHits < 2) {

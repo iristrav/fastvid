@@ -101,7 +101,7 @@ export function semanticMinRelevanceScore(): number {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 20 && n <= 90) return n;
   }
-  return 44;
+  return 38;
 }
 
 /** @deprecated Topic-specific floors removed — use semanticMinRelevanceScore() for all topics. */

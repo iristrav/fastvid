@@ -30,7 +30,7 @@ export interface VisualSceneAnalysis {
 }
 
 /** Default minimum score (0-100) to adopt a Wikimedia V1 still — same for all topics. */
-export const V1_ADOPTION_THRESHOLD = 70;
+export const V1_ADOPTION_THRESHOLD = 55;
 
 // ─── Token helpers ────────────────────────────────────────────────────────────
 
@@ -249,12 +249,12 @@ export function wikimediaV1AdoptionThreshold(_videoTitle?: string, _beatText?: s
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 50 && n <= 95) return n;
   }
-  return 65;
+  return 55;
 }
 
 /** Second-pass Wikimedia metadata floor when strict pass finds nothing. */
 export function wikimediaV1RelaxedThreshold(videoTitle?: string, beatText?: string): number {
-  return Math.max(52, wikimediaV1AdoptionThreshold(videoTitle, beatText) - 12);
+  return Math.max(45, wikimediaV1AdoptionThreshold(videoTitle, beatText) - 10);
 }
 
 /** Reject Wikimedia metadata before download — beat-driven, all topics. */

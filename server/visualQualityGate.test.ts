@@ -27,6 +27,16 @@ describe("visualQualityGate", () => {
     process.env.ENABLE_SCENE_CRITICAL_REVIEW = prevReview;
   });
 
+  it("skips wikimedia CLIP in fast mode unless ENABLE_CLIP_VISION_WIKIMEDIA=true", () => {
+    const prevWiki = process.env.ENABLE_CLIP_VISION_WIKIMEDIA;
+    const prevReview = process.env.ENABLE_SCENE_CRITICAL_REVIEW;
+    process.env.ENABLE_CLIP_VISION_WIKIMEDIA = "false";
+    process.env.ENABLE_SCENE_CRITICAL_REVIEW = "false";
+    expect(shouldVisionCheckClip("/tmp/scene_0_b1_v1wiki_b2.mp4", true)).toBe(false);
+    process.env.ENABLE_CLIP_VISION_WIKIMEDIA = prevWiki;
+    process.env.ENABLE_SCENE_CRITICAL_REVIEW = prevReview;
+  });
+
   it("clipVisionGateEnabled respects ENABLE_LOCAL_VISION=false", () => {
     const prev = process.env.ENABLE_LOCAL_VISION;
     process.env.ENABLE_LOCAL_VISION = "false";
