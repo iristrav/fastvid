@@ -85,10 +85,10 @@ export function summarizeAdoptAudit(audit: ClipAdoptEntry[]): AdoptAuditSummary 
   const beatsFilled = beatKeys.size;
   const hints: string[] = [];
   if (beatsFilled > 0 && wikiBeats === 0 && archiveBeats === 0) {
-    hints.push("Alle beats via stock/Kling — vul archief of verbeter Wikimedia-queries.");
+    hints.push("Alle beats via stock/Kling — upload meer relevant archief (vision + semantic match).");
   }
   if (stockBeats > beatsFilled * 0.5 && beatsFilled >= 3) {
-    hints.push(`${stockBeats}/${beatsFilled} beats uit stock — upload geo-getagde archiefclips.`);
+    hints.push(`${stockBeats}/${beatsFilled} beats uit stock — meer archiefclips helpen (geen geo-tags nodig).`);
   }
   if (klingBeats > 0) {
     hints.push(`${klingBeats} Kling-clip(s) — controleer of archief/stock beter kan matchen.`);

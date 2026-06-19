@@ -140,7 +140,7 @@ export function buildVideoQualityReport(
     warnings.push("Geen Wikimedia-stills — controleer zoekqueries of WIKIMEDIA_V1_THRESHOLD.");
   }
   if (stockCount > unique.length * 0.45) {
-    warnings.push(`Veel stock (${stockCount}/${unique.length}) — vul archief aan met geo-tags.`);
+    warnings.push(`Veel stock (${stockCount}/${unique.length}) — vul archief aan met relevante clips (titel volstaat; AI tagt bij upload).`);
   }
   if (offTopicSuspects.length > 0) {
     warnings.push(`${offTopicSuspects.length} clip(s) met kwaliteitswaarschuwing.`);

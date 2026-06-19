@@ -27,6 +27,7 @@ import {
   facelessSubtitlesEnabled,
   fishAudioFallbackEnabled,
   youtubeSourcingEnabled,
+  europeanaSourcingEnabled,
 } from "../sourcingPolicy";
 import { ENV, groqKeyFromEnv, openAiKeyFromEnv } from "./env";
 import { getVisionQaStatus } from "../visualQualityGate";
@@ -326,7 +327,7 @@ async function startServer() {
         SERPAPI_KEY: !!process.env.SERPAPI_KEY,
         UNSPLASH_ACCESS_KEY: !!process.env.UNSPLASH_ACCESS_KEY?.trim(),
         youtubeSourcingEnabled: youtubeSourcingEnabled(),
-        europeanaReady: Boolean(process.env.EUROPEANA_API_KEY?.trim()),
+        europeanaReady: europeanaSourcingEnabled() && Boolean(process.env.EUROPEANA_API_KEY?.trim()),
         klingReady: klingBeatFallbackEnabled(),
         falKeySet: Boolean(process.env.FAL_KEY?.trim() || process.env.FAL_API_KEY?.trim()),
         facelessSubtitles: facelessSubtitlesEnabled(),

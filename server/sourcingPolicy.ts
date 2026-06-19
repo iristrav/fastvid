@@ -292,6 +292,11 @@ export function youtubeSourcingEnabled(): boolean {
   return process.env.ENABLE_YOUTUBE_SOURCING === "true";
 }
 
+/** Europeana EU heritage API — off by default; set ENABLE_EUROPEANA=true + EUROPEANA_API_KEY. */
+export function europeanaSourcingEnabled(): boolean {
+  return process.env.ENABLE_EUROPEANA === "true";
+}
+
 /** Run bulk geo-retag on all archive assets once at worker startup. */
 export function autoArchiveGeoRetagOnStart(): boolean {
   return process.env.AUTO_ARCHIVE_GEO_RETAG_ON_START === "true";

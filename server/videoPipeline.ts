@@ -117,7 +117,7 @@ import {
   scriptGuidedClipsEnabled,
 } from "./scriptGuidedClipFinder";
 import { clipPassesVisionGate, clipVisionGateEnabled, minClipQualityScore, minWikiClipQualityScore } from "./visualQualityGate";
-import { archivePexelsFallbackEnabled, curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, strictQualityExportEnabled } from "./sourcingPolicy";
+import { archivePexelsFallbackEnabled, curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, strictQualityExportEnabled, europeanaSourcingEnabled } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -5542,7 +5542,7 @@ async function fetchEuropeanaVideos(
   personName = "",
   beatKeywords: string[] = []
 ): Promise<CelebrityClipCandidate[]> {
-  if (!EUROPEANA_API_KEY?.trim()) return [];
+  if (!europeanaSourcingEnabled() || !EUROPEANA_API_KEY?.trim()) return [];
   const queryList = [...new Set((Array.isArray(queries) ? queries : [queries]).filter((q) => q?.trim()))];
   if (!queryList.length) return [];
 
@@ -5904,7 +5904,7 @@ async function fetchPersonCelebrityVideoClips(
     results.push(...archiveHits);
   }
 
-  if (results.length < candidateTarget && EUROPEANA_API_KEY && !fastMode) {
+  if (results.length < candidateTarget && europeanaSourcingEnabled() && EUROPEANA_API_KEY && !fastMode) {
     const euroHits = await fetchEuropeanaVideos(
       scriptQueries,
       duration,
@@ -11572,6 +11572,7 @@ async function researchBeatClipUnified(
   const allResearchTasks = [...ytTasks, ...tasks];
 
   if (
+    europeanaSourcingEnabled() &&
     EUROPEANA_API_KEY?.trim() &&
     (intent.topicKind === "historical" || intent.topicKind === "news")
   ) {
@@ -13968,7 +13969,7 @@ async function adoptKlingBeatClip(
   return false;
 }
 
-/** Europeana — EU heritage video after Wikimedia, before archive (requires EUROPEANA_API_KEY). */
+/** Europeana — off unless ENABLE_EUROPEANA=true + EUROPEANA_API_KEY + EU title. */
 async function adoptEuropeanaBeatClip(
   beat: SceneBeat,
   scene: Scene,
@@ -13979,7 +13980,7 @@ async function adoptEuropeanaBeatClip(
   holdSec: number,
   semanticProfile?: BeatSemanticProfile
 ): Promise<boolean> {
-  if (!EUROPEANA_API_KEY?.trim() || !titleSuggestsEuropeana(videoTitle)) return false;
+  if (!europeanaSourcingEnabled() || !EUROPEANA_API_KEY?.trim() || !titleSuggestsEuropeana(videoTitle)) return false;
 
   const tryClip = async (clipPath: string | null | undefined, sec = holdSec): Promise<boolean> => {
     if (!clipPath || isPipelineFallbackClip(clipPath)) return false;
