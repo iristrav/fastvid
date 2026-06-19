@@ -349,19 +349,21 @@ function normalizeDirectorScene(
 ): VisualDirectorScene | null {
   if (typeof row.source_sentence_index !== "number") return null;
   const sentence = sentences[row.source_sentence_index - offset];
-  const spoken = (row.spoken_text ?? sentence ?? "").replace(/\s+/g, " ").trim();
-  const visualDescription = sanitizeVisualDescription(row.visual_description ?? "");
+  const spoken = String(row.spoken_text ?? sentence ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const visualDescription = sanitizeVisualDescription(String(row.visual_description ?? ""));
   if (!spoken || spoken.length < 4 || !visualDescription) return null;
 
-  const searchQuery = sanitizeSearchQuery(row.search_query ?? "", visualDescription);
+  const searchQuery = sanitizeSearchQuery(String(row.search_query ?? ""), visualDescription);
   if (!searchQuery) return null;
 
   return {
     source_sentence_index: row.source_sentence_index,
     spoken_text: spoken,
     visual_description: visualDescription,
-    camera_shot: sanitizeCameraShot(row.camera_shot ?? "medium shot"),
-    emotion: sanitizeEmotion(row.emotion ?? "neutral"),
+    camera_shot: sanitizeCameraShot(String(row.camera_shot ?? "medium shot")),
+    emotion: sanitizeEmotion(String(row.emotion ?? "neutral")),
     search_query: searchQuery,
   };
 }
