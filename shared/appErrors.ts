@@ -52,6 +52,7 @@ export const PIPELINE_ERROR = {
   STUCK_TIMEOUT: 10113,
   FFMPEG_OVERLOAD: 10114,
   GENERIC: 10199,
+  QUALITY_GATE: 10115,
 } as const;
 
 export type AppErrorCode = (typeof APP_ERROR)[keyof typeof APP_ERROR];

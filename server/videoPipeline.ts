@@ -117,7 +117,7 @@ import {
   scriptGuidedClipsEnabled,
 } from "./scriptGuidedClipFinder";
 import { clipPassesVisionGate, clipVisionGateEnabled, minClipQualityScore, minWikiClipQualityScore } from "./visualQualityGate";
-import { archivePexelsFallbackEnabled, curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled } from "./sourcingPolicy";
+import { archivePexelsFallbackEnabled, curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, strictQualityExportEnabled } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -171,7 +171,7 @@ import { createClipAdoptAudit, recordClipAdopt } from "./clipAdoptAudit";
 import { buildEditorScenesFromPipeline } from "./editorClips";
 import { buildVideoQualityReport, logVideoQualityReport } from "./videoQualityReport";
 import { postRenderSpotCheckEnabled, spotCheckFinalVideo } from "./postRenderSpotCheck";
-import { buildEmergencyGeoStockQueries, buildDocumentaryShotQueries, logQualityReportExportWarnings } from "./pipelineSelfHeal";
+import { buildEmergencyGeoStockQueries, buildDocumentaryShotQueries, enforceQualityExportGate } from "./pipelineSelfHeal";
 import { extractTitleGeoPlaceTags } from "./worldGeoSlugs";
 import { fetchWikimediaTitlesForVideoGeo, wikimediaGeosearchEnabled } from "./wikimediaGeoSearch";
 import { buildEuropeanaBeatQueries, titleSuggestsEuropeana } from "./europeanaGeo";
@@ -565,12 +565,7 @@ function ffmpegSupportsDrawtext(): boolean {
   }
 }
 
-/** YouTube beat sourcing — disabled; pipeline uses archive, Wikimedia, stills, and Pexels only. */
-function youtubeSourcingEnabled(): boolean {
-  return false;
-}
-
-/** YouTube only (≤1 min/beat) then Pexels — requires ENABLE_YOUTUBE_SOURCING=true. */
+/** YouTube beat sourcing — opt-in via ENABLE_YOUTUBE_SOURCING=true (requires YOUTUBE_API_KEY + RAPIDAPI_KEY). */
 function youtubeOnlySourcingEnabled(): boolean {
   return youtubeSourcingEnabled() && process.env.YOUTUBE_ONLY_SOURCING !== "false";
 }
@@ -17540,6 +17535,7 @@ export async function runVideoPipeline(
 
     // ── Stage 5: Critical scene review — multi-frame vision 10/10, blocks export ─
     onProgress?.({ stage: STAGE_LABELS.visualReview, percent: 66 });
+    const criticalFailures: string[] = [];
     for (let i = 0; i < scenes.length; i++) {
       const vr = sceneVisualResults[i];
       if (!vr?.beats?.length) continue;
@@ -17560,8 +17556,18 @@ export async function runVideoPipeline(
         topicContext
       );
       if (!critical.ok) {
-        console.warn(`[Pipeline] Scene ${scenes[i]!.index} critical review: ${critical.summary} — continuing (self-heal)`);
+        const msg = `Scene ${scenes[i]!.index} critical review: ${critical.summary}`;
+        console.warn(`[Pipeline] ${msg} — continuing (self-heal)`);
+        if (strictQualityExportEnabled()) {
+          criticalFailures.push(msg);
+        }
       }
+    }
+    if (criticalFailures.length > 0) {
+      throw pipelineError(
+        PIPELINE_ERROR.QUALITY_GATE,
+        `Scene critical review failed: ${criticalFailures.slice(0, 3).join("; ")}`
+      );
     }
 
     // ── Stage 5b: QA — visuals match narration + montage timing ──────────────
@@ -17601,7 +17607,6 @@ export async function runVideoPipeline(
     await mergeVideoMetadata(videoId, { qualityReport }).catch((err) =>
       console.warn(`[Pipeline] Failed to persist qualityReport for ${videoId}:`, err)
     );
-    logQualityReportExportWarnings(videoId, qualityReport);
 
     // Cleanup intermediates
     for (let i = 0; i < scenes.length; i++) {
@@ -17660,8 +17665,11 @@ export async function runVideoPipeline(
       }
       if (!spot.ok) {
         console.warn(`[Pipeline] Post-render spot-check: ${spot.warnings.join("; ")}`);
+        qualityReport.score = Math.max(0, qualityReport.score - 15);
       }
     }
+
+    enforceQualityExportGate(videoId, qualityReport);
 
     // ── Stage 6: Upload to S3 ─────────────────────────────────────────────────
     onProgress?.({ stage: STAGE_LABELS.uploading, percent: 93 });

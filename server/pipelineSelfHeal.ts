@@ -16,6 +16,9 @@ import {
   type ScriptLengthBudget,
 } from "./scriptWriter";
 import type { VideoQualityReport } from "./videoQualityReport";
+import { assertQualityReportExportGate } from "./videoQualityReport";
+import { minQualityExportScore, strictQualityExportEnabled } from "./sourcingPolicy";
+import { PIPELINE_ERROR, pipelineError } from "@shared/appErrors";
 
 /** Pexels/Pixabay queries anchored to beat + title geography (wrong-country stock avoided). */
 export function buildDocumentaryShotQueries(baseQuery: string, beatIndex: number): string[] {
@@ -108,14 +111,51 @@ export async function ensureScriptMeetsBudgetWithRetry(
   return { script: current, ok: false, words };
 }
 
-/** Log geo export warnings — never fail the pipeline (beats should self-heal earlier). */
+/** Log geo export warnings — never fail the pipeline when strict mode off. */
 export function logQualityReportExportWarnings(videoId: number, report: VideoQualityReport): void {
-  const violations = report.criticalGeoViolations ?? [];
-  if (violations.length === 0) return;
-  console.warn(
-    `[Quality] Video ${videoId}: ${violations.length} geo warning(s) in report — export continues (self-heal should prevent on new runs)`
-  );
-  for (const v of violations.slice(0, 5)) {
-    console.warn(`[Quality] Video ${videoId}: geo warn ${v.basename} — ${v.reason}`);
+  assertQualityReportExportGate(report);
+}
+
+/** Block upload when quality thresholds fail (strict mode on by default). */
+export function enforceQualityExportGate(videoId: number, report: VideoQualityReport): void {
+  if (!strictQualityExportEnabled()) {
+    logQualityReportExportWarnings(videoId, report);
+    return;
   }
+
+  const violations = report.criticalGeoViolations ?? [];
+  if (violations.length > 0) {
+    const summary = violations
+      .slice(0, 4)
+      .map((v) => `${v.basename}${v.assetTitle ? ` (${v.assetTitle.slice(0, 40)})` : ""}`)
+      .join("; ");
+    throw pipelineError(
+      PIPELINE_ERROR.QUALITY_GATE,
+      `Export blocked: ${violations.length} geo violation(s): ${summary}`
+    );
+  }
+
+  const minScore = minQualityExportScore();
+  if (report.score < minScore) {
+    throw pipelineError(
+      PIPELINE_ERROR.QUALITY_GATE,
+      `Export blocked: quality score ${report.score}/100 below minimum ${minScore}`
+    );
+  }
+
+  if (report.postRenderSpotCheck && !report.postRenderSpotCheck.ok) {
+    throw pipelineError(
+      PIPELINE_ERROR.QUALITY_GATE,
+      `Export blocked: post-render spot check failed (${report.postRenderSpotCheck.warnings.join("; ")})`
+    );
+  }
+
+  if ((report.adoptAuditSummary?.fallbackBeats ?? 0) > 0) {
+    throw pipelineError(
+      PIPELINE_ERROR.QUALITY_GATE,
+      `Export blocked: ${report.adoptAuditSummary!.fallbackBeats} beat(s) used color fallback`
+    );
+  }
+
+  console.log(`[Quality] Video ${videoId}: export gate passed (score=${report.score}/100)`);
 }

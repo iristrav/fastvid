@@ -14,7 +14,8 @@ import {
 
 import type { ClipRejectEntry } from "./clipRejectAudit";
 import { summarizeClipRejectAudit } from "./clipRejectAudit";
-import type { ClipAdoptEntry } from "./clipAdoptAudit";
+import type { ClipAdoptEntry, AdoptAuditSummary } from "./clipAdoptAudit";
+import { summarizeAdoptAudit } from "./clipAdoptAudit";
 import { isArchiveGeoBlockedForBeat, resolveRequiredGeoTagsForBeat } from "./curatedMediaSourcing";
 import type { BeatGeoRegion } from "./vidrushQuality";
 
@@ -47,6 +48,7 @@ export type VideoQualityReport = {
     worstMeanLuma: number | null;
     warnings: string[];
   };
+  adoptAuditSummary?: AdoptAuditSummary;
   score: number;
 };
 
@@ -185,9 +187,25 @@ export function buildVideoQualityReport(
   }
 
   if (criticalGeoViolations.length > 0) {
-    warnings.push(`${criticalGeoViolations.length} kritieke geo-fout(en) — export geblokkeerd.`);
+    warnings.push(`${criticalGeoViolations.length} kritieke geo-fout(en).`);
     score -= Math.min(40, criticalGeoViolations.length * 20);
     score = Math.max(0, score);
+  }
+
+  const adoptAuditSummary = opts?.adoptAudit?.length
+    ? summarizeAdoptAudit(opts.adoptAudit)
+    : undefined;
+  if (adoptAuditSummary) {
+    for (const hint of adoptAuditSummary.hints) {
+      warnings.push(hint);
+    }
+    if (adoptAuditSummary.fallbackBeats > 0) {
+      score -= Math.min(25, adoptAuditSummary.fallbackBeats * 15);
+    }
+    if (adoptAuditSummary.klingBeats > 2) {
+      score -= Math.min(15, (adoptAuditSummary.klingBeats - 2) * 5);
+    }
+    score = Math.max(0, Math.min(100, score));
   }
 
   return {
@@ -207,6 +225,7 @@ export function buildVideoQualityReport(
     topRejects,
     pipelineSec: opts?.pipelineSec,
     stockBeatsUsed: opts?.stockBeatsUsed,
+    adoptAuditSummary,
     score,
   };
 }
@@ -235,9 +254,15 @@ export function logVideoQualityReport(videoId: number, report: VideoQualityRepor
         (v.assetTitle ? ` ("${v.assetTitle.slice(0, 60)}")` : "")
     );
   }
+  if (report.adoptAuditSummary) {
+    const a = report.adoptAuditSummary;
+    console.log(
+      `[Quality] Video ${videoId}: adopt audit beats=${a.beatsFilled} wiki=${a.wikiBeats} arch=${a.archiveBeats} stock=${a.stockBeats} kling=${a.klingBeats}`
+    );
+  }
 }
 
-/** Log geo export warnings — pipeline self-heals at beat level; export is not blocked. */
+/** Log geo export warnings when strict mode off. */
 export function assertQualityReportExportGate(report: VideoQualityReport): void {
   const violations = report.criticalGeoViolations ?? [];
   if (violations.length === 0) return;

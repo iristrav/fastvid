@@ -132,7 +132,7 @@ export function getVisionQaStatus(): {
   const llmProvider = ENV.llmProvider;
   const ready = clipVisionGate && sceneCriticalReview && llmKeyConfigured;
 
-  let hint = `Vision QA active — ${visionSamplesPerClip} frames/clip, pass ≥${minScore}/10.`;
+  let hint = `Vision QA active — ${visionSamplesPerClip} frames/clip (2 on Railway fast mode), pass ≥${minScore}/10.`;
   if (!llmKeyConfigured) {
     hint = "Set LLM_API_KEY (OpenAI) on web and worker services to enable Vision QA.";
   } else if (!clipVisionGate) {
@@ -169,8 +169,9 @@ export function shouldVisionCheckClip(filePath: string): boolean {
   );
 }
 
-function visionSampleFractions(): number[] {
-  return VISION_SAMPLE_FRACTIONS.slice(0, clipVisionSampleCount());
+function visionSampleFractions(fastMode = false): number[] {
+  const count = fastMode ? Math.min(2, clipVisionSampleCount()) : clipVisionSampleCount();
+  return VISION_SAMPLE_FRACTIONS.slice(0, count);
 }
 
 async function extractPreviewFrameAt(
@@ -216,9 +217,10 @@ async function extractPreviewFrames(
   clipPath: string,
   workDir: string,
   sceneIndex: number,
-  beatIndex: number
+  beatIndex: number,
+  fastMode = false
 ): Promise<string[]> {
-  const fractions = visionSampleFractions();
+  const fractions = visionSampleFractions(fastMode);
   const paths = await Promise.all(
     fractions.map((f, i) => extractPreviewFrameAt(clipPath, workDir, sceneIndex, beatIndex, i, f))
   );
@@ -422,7 +424,7 @@ async function scoreClipAcrossFrames(
   fastMode: boolean,
   segmentLock?: BeatGeoRegion | null
 ): Promise<{ pass: boolean; worstScore: number | null; framesScored: number; geoReject?: string }> {
-  const framePaths = await extractPreviewFrames(clipPath, workDir, sceneIndex, beatIndex);
+  const framePaths = await extractPreviewFrames(clipPath, workDir, sceneIndex, beatIndex, fastMode);
   if (framePaths.length === 0) {
     return { pass: !strictVisionInconclusiveFails(), worstScore: null, framesScored: 0 };
   }
@@ -486,7 +488,7 @@ export async function clipPassesVisionGate(
   visualDescription?: string,
   segmentLock?: BeatGeoRegion | null
 ): Promise<boolean> {
-  if (fastMode || !clipVisionGateEnabled() || !shouldVisionCheckClip(clipPath)) return true;
+  if (!clipVisionGateEnabled() || !shouldVisionCheckClip(clipPath)) return true;
 
   const result = await scoreClipAcrossFrames(
     clipPath,
@@ -529,7 +531,7 @@ export async function scoreAdoptedClipQuality(
 } | null> {
   if (!clipVisionGateEnabled() || !shouldVisionCheckClip(clipPath)) return null;
 
-  const framePaths = await extractPreviewFrames(clipPath, workDir, sceneIndex, beatIndex);
+  const framePaths = await extractPreviewFrames(clipPath, workDir, sceneIndex, beatIndex, fastMode);
   if (framePaths.length === 0) return null;
 
   const scores = await Promise.all(

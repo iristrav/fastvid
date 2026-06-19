@@ -61,6 +61,18 @@ async function main() {
   console.log("[Worker] Object storage:", getStorageBackend());
   await runMigrations();
   await recoverAllStuckVideos();
+  const { autoArchiveGeoRetagOnStart } = await import("./sourcingPolicy");
+  if (autoArchiveGeoRetagOnStart()) {
+    try {
+      const { runBulkGeoRetagAllArchives } = await import("./archiveHealth");
+      const result = await runBulkGeoRetagAllArchives();
+      console.log(
+        `[Worker] Archive geo-retag: ${result.updated}/${result.processed} assets updated across ${result.archives} archive(s)`
+      );
+    } catch (err) {
+      console.warn("[Worker] Archive geo-retag failed (non-fatal):", (err as Error).message);
+    }
+  }
   startVideoQueueWorker();
 
   setInterval(() => {

@@ -33,9 +33,9 @@ export function facelessSubtitlesEnabled(): boolean {
   return process.env.ENABLE_FACELESS_SUBTITLES !== "false";
 }
 
-/** Only year numbers as on-screen text (no kinetic subs, maps, name cards). Default on. */
+/** Extra on-screen overlays (stat pills, film grain, motion graphics cards). On by default — set ENABLE_EXTRA_ONSCREEN_TEXT=false for years-only. */
 export function yearsOnlyOnScreen(): boolean {
-  return process.env.ENABLE_EXTRA_ONSCREEN_TEXT !== "true";
+  return process.env.ENABLE_EXTRA_ONSCREEN_TEXT === "false";
 }
 
 /** Year/stat labels bottom-left. On by default — set ENABLE_SCREEN_LABELS=false to disable. */
@@ -270,4 +270,29 @@ export function maxMotionGraphicsPerVideo(): number {
  */
 export function visualMatchingV1Enabled(): boolean {
   return process.env.VISUAL_MATCHING_V1 !== "false";
+}
+
+/** Block upload when qualityReport fails thresholds (on by default). */
+export function strictQualityExportEnabled(): boolean {
+  return process.env.ENABLE_STRICT_QUALITY_EXPORT !== "false";
+}
+
+/** Minimum qualityReport.score before export (default 45). */
+export function minQualityExportScore(): number {
+  const raw = process.env.MIN_QUALITY_EXPORT_SCORE?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 0 && n <= 100) return n;
+  }
+  return 45;
+}
+
+/** YouTube Creative Commons clips — off unless ENABLE_YOUTUBE_SOURCING=true and keys set. */
+export function youtubeSourcingEnabled(): boolean {
+  return process.env.ENABLE_YOUTUBE_SOURCING === "true";
+}
+
+/** Run bulk geo-retag on all archive assets once at worker startup. */
+export function autoArchiveGeoRetagOnStart(): boolean {
+  return process.env.AUTO_ARCHIVE_GEO_RETAG_ON_START === "true";
 }

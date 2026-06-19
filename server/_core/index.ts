@@ -14,7 +14,7 @@ import fs from "fs";
 import { fileURLToPath } from "url";
 import { LOCAL_UPLOADS_DIR } from "../storageLocal";
 import { getStorageBackend } from "../storageBackend";
-import { isKlingAvailable } from "./klingVideo";
+import { isKlingAvailable, klingBeatFallbackEnabled } from "./klingVideo";
 import { registerArchiveUploadRoute } from "../archiveUpload";
 import { registerArchiveMediaRoute } from "../archiveMediaStream";
 import { archiveUploadRequestTimeoutMs } from "../archiveVideoSplitter";
@@ -26,6 +26,7 @@ import {
   elevenLabsOnlyVoice,
   facelessSubtitlesEnabled,
   fishAudioFallbackEnabled,
+  youtubeSourcingEnabled,
 } from "../sourcingPolicy";
 import { ENV, groqKeyFromEnv, openAiKeyFromEnv } from "./env";
 import { getVisionQaStatus } from "../visualQualityGate";
@@ -247,6 +248,14 @@ async function startServer() {
     const heartbeats = await readWorkerHeartbeats();
     const workerHealth = summarizeWorkerHealth(heartbeats, llm);
     const gitCommit = process.env.RAILWAY_GIT_COMMIT_SHA?.slice(0, 7) ?? null;
+    let archiveHealth: Awaited<ReturnType<typeof import("../archiveHealth").summarizeArchiveHealth>> | null =
+      null;
+    try {
+      const { summarizeArchiveHealth } = await import("../archiveHealth");
+      archiveHealth = await summarizeArchiveHealth();
+    } catch {
+      archiveHealth = null;
+    }
     const storage =
       backend === "local"
         ? (() => {
@@ -316,7 +325,12 @@ async function startServer() {
         RAPIDAPI_KEY: !!process.env.RAPIDAPI_KEY,
         SERPAPI_KEY: !!process.env.SERPAPI_KEY,
         UNSPLASH_ACCESS_KEY: !!process.env.UNSPLASH_ACCESS_KEY?.trim(),
-        youtubeSourcingEnabled: false,
+        youtubeSourcingEnabled: youtubeSourcingEnabled(),
+        europeanaReady: Boolean(process.env.EUROPEANA_API_KEY?.trim()),
+        klingReady: klingBeatFallbackEnabled(),
+        falKeySet: Boolean(process.env.FAL_KEY?.trim() || process.env.FAL_API_KEY?.trim()),
+        facelessSubtitles: facelessSubtitlesEnabled(),
+        extraOnScreenText: process.env.ENABLE_EXTRA_ONSCREEN_TEXT !== "false",
         stockFootageReady:
           archivePexelsFallbackEnabled() &&
           (!!process.env.PEXELS_API_KEY?.trim() || !!process.env.PIXABAY_API_KEY?.trim()),
@@ -324,6 +338,7 @@ async function startServer() {
         unsplashReady: false,
         NODE_ENV: process.env.NODE_ENV,
       },
+      archive: archiveHealth,
       storage,
     });
   });
