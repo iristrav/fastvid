@@ -252,6 +252,49 @@ export async function generateFullVideoInternal(videoId: number, prompt: string,
   return generateFullVideo(videoId, prompt, videoLength, videoType, voiceId, customVoiceoverUrl, enableSubtitles);
 }
 
+/** Re-run pipeline for a failed/stuck video (reuses saved script when present). */
+export async function retryFailedVideo(
+  videoId: number
+): Promise<{ mode: "pipeline" | "queue"; status: string }> {
+  const video = await getVideoById(videoId);
+  if (!video) {
+    throw new Error("Video not found");
+  }
+  const retryable =
+    video.status === "failed" ||
+    video.status === "queued" ||
+    ORPHANED_PIPELINE_STATUSES.includes(video.status as (typeof ORPHANED_PIPELINE_STATUSES)[number]);
+  if (!retryable) {
+    throw new Error(`Video status "${video.status}" is not retryable`);
+  }
+
+  if (video.script?.trim()) {
+    await updateVideoStatus(videoId, "generating_voiceover", {
+      scriptApproved: 1,
+      errorMessage: "",
+      progressStep: "🔄 Retry — starting video production...",
+      progressPercent: 29,
+    });
+    setImmediate(() => {
+      _generateVideoWithAI(
+        video.id,
+        video.prompt,
+        video.videoLength ?? "15-20",
+        video.voiceId ?? undefined,
+        video.customVoiceoverUrl ?? undefined,
+        video.script!,
+        video.title ?? undefined,
+        video.metadata ?? undefined,
+        readEnableSubtitles(video)
+      ).catch(console.error);
+    });
+    return { mode: "pipeline", status: "generating_voiceover" };
+  }
+
+  const { queuePosition } = await enqueueVideoJob(videoId, "🔄 Re-queued — waiting to retry...");
+  return { mode: "queue", status: `queued (#${queuePosition})` };
+}
+
 async function generateFullVideo(videoId: number, prompt: string, videoLength: string, videoType: string, voiceId?: string, customVoiceoverUrl?: string, enableSubtitles = false) {
   const timeoutHandle = startGenerationTimeout(videoId, videoLength);
 

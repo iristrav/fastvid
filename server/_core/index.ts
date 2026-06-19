@@ -655,6 +655,28 @@ async function startServer() {
     }
   });
 
+  app.post("/api/internal/video/:id/retry", async (req, res) => {
+    const key = req.headers["x-internal-key"];
+    const expectedKey = process.env.INTERNAL_TRIGGER_KEY || "dev-trigger-key-2026";
+    if (key !== expectedKey) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+    try {
+      const videoId = parseInt(req.params.id, 10);
+      if (isNaN(videoId)) {
+        res.status(400).json({ error: "Invalid video ID" });
+        return;
+      }
+      const { retryFailedVideo } = await import("../routers");
+      const result = await retryFailedVideo(videoId);
+      res.json({ ok: true, videoId, ...result });
+    } catch (err) {
+      console.error("[Internal Retry] Error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
   // tRPC API
   app.use(
     "/api/trpc",
