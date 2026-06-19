@@ -117,7 +117,7 @@ import {
   scriptGuidedClipsEnabled,
 } from "./scriptGuidedClipFinder";
 import { clipPassesVisionGate, clipVisionGateEnabled, minClipQualityScore, minWikiClipQualityScore } from "./visualQualityGate";
-import { archivePexelsFallbackEnabled, curatedArchiveOnlyVisuals, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, strictQualityExportEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence } from "./sourcingPolicy";
+import { archivePexelsFallbackEnabled, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, strictQualityExportEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -1131,6 +1131,9 @@ function minimizeStockFootageEnabled(): boolean {
 
 /** Max licensed Pexels/Pixabay/B-roll clips per video (0 = real footage + AI only). */
 function resolveMaxStockBeatsPerVideo(videoLength: string): number {
+  if (curatedArchiveOnlyVisuals()) {
+    return curatedMaxStockBeatsPerVideo(videoLength);
+  }
   const raw = process.env.MAX_STOCK_BEATS_PER_VIDEO?.trim();
   if (raw !== undefined && raw !== "") {
     const n = parseInt(raw, 10);
@@ -1138,7 +1141,7 @@ function resolveMaxStockBeatsPerVideo(videoLength: string): number {
   }
   if (realFootageFirstEnabled()) return 2;
   const short = isShortVideoLength(videoLength);
-  return short ? 3 : 2;
+  return short ? 1 : 2;
 }
 
 function maxEntityYoutubeFetchesPerVideo(minimizeStock = minimizeStockFootageEnabled()): number {
@@ -1755,6 +1758,7 @@ function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProfile {
   }
 
   if (curatedArchiveOnlyVisuals()) {
+    const stockCap = curatedMaxStockBeatsPerVideo(videoLength);
     return {
       ...profile,
       maxBeatsPerScene: curatedPerfBeatsFloor(videoLength),
@@ -1763,10 +1767,9 @@ function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProfile {
       enableMuskHeroFetch: false,
       enableAiFallback: false,
       maxAiClipsPerVideo: 0,
-      // Pexels is the ONLY fallback when archive has no match — never cap it.
-      minimizeStockFootage: false,
-      maxStockBeatsPerVideo: 999,
-      maxStockQueriesPerBeat: 5,
+      minimizeStockFootage: curatedMinimizeStockFootage(),
+      maxStockBeatsPerVideo: stockCap,
+      maxStockQueriesPerBeat: stockCap > 0 ? 1 : 0,
       maxEntityYoutubePerVideo: 0,
     };
   }
@@ -7852,14 +7855,10 @@ interface VisualDedupState {
 
 /**
  * Whether we can spend a licensed stock (Pexels/Pixabay) clip on this beat.
- * In archive-first mode (curatedArchiveOnlyVisuals), Pexels is the ONLY fallback
- * when no archive clip matches — so the stock budget must not block it.
- * The minimizeStockFootage cap only makes sense in hybrid mode.
  */
 function canUseLicensedStockBeat(dedup: VisualDedupState): boolean {
   if (!dedup.perf.minimizeStockFootage) return true;
-  // Archive-first: Pexels IS the designated fallback — never cap it
-  if (curatedArchiveOnlyVisuals()) return true;
+  if (dedup.perf.maxStockBeatsPerVideo <= 0) return false;
   return dedup.stockBeatsUsed < dedup.perf.maxStockBeatsPerVideo;
 }
 
@@ -13403,7 +13402,7 @@ type SceneVisualsResult = {
 type BeatProgressPhase = "beat" | "backfill";
 
 const ARCHIVE_BEAT_TOP_CANDIDATES = 32;
-const ARCHIVE_BEAT_CLIP_RETRIES = 4;
+const ARCHIVE_BEAT_CLIP_RETRIES = 6;
 /** Cap vision tries per beat — 3 in fast mode, 8 otherwise (override via ARCHIVE_VISION_TRY_STRICT). */
 function archiveVisionTryStrict(fastMode = false): number {
   const fallback = fastMode ? 3 : 8;
@@ -14149,6 +14148,13 @@ async function adoptStockBeatClipFallback(
   semanticProfile?: BeatSemanticProfile
 ): Promise<boolean> {
   if (!archivePexelsFallbackEnabled()) return false;
+  if (!canUseLicensedStockBeat(dedup)) {
+    console.warn(
+      `[Pipeline] Scene ${scene.index} zin ${beat.index}: stock cap reached ` +
+        `(${dedup.stockBeatsUsed}/${dedup.perf.maxStockBeatsPerVideo}) — skip Pexels/Pixabay`
+    );
+    return false;
+  }
 
   const tryClip = async (clipPath: string | null | undefined, sec = holdSec): Promise<boolean> => {
     if (!clipPath || isPipelineFallbackClip(clipPath)) return false;
@@ -14188,7 +14194,7 @@ async function adoptStockBeatClipFallback(
         .filter((q): q is string => typeof q === "string" && q.trim().length > 2 && !isBlockedStockQuery(q))
         .map((q) => simplifyStockSearchWord(q, beat.text, true))
     ),
-  ].slice(0, STOCK_QUERY_CAP + 3);
+  ].slice(0, dedup.perf.minimizeStockFootage ? 2 : STOCK_QUERY_CAP + 3);
 
   if (queries.length === 0) return false;
 
@@ -14311,6 +14317,7 @@ async function adoptEmergencyGeoStockClip(
   semanticProfile?: BeatSemanticProfile
 ): Promise<boolean> {
   if (!archivePexelsFallbackEnabled()) return false;
+  if (!canUseLicensedStockBeat(dedup)) return false;
 
   const tryClip = async (clipPath: string | null | undefined, sec = holdSec, minScore = 6): Promise<boolean> => {
     if (!clipPath || isPipelineFallbackClip(clipPath)) return false;
@@ -14422,40 +14429,50 @@ async function ensureBeatVisualFilled(
   if (await fillBeatVisual(beat, scene, workDir, videoTitle, dedup, pushClip, semanticProfile, holdSec)) {
     return;
   }
-  console.warn(
-    `[Pipeline] Scene ${scene.index} zin ${beat.index}: self-heal — emergency geo stock`
-  );
-  if (await adoptEmergencyGeoStockClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
+  if (await retryAuthenticBeforeLicensedStock(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
     return;
   }
-  console.warn(
-    `[Pipeline] Scene ${scene.index} zin ${beat.index}: self-heal — last-resort real stock`
-  );
-  const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
-  const personName = scenePersons[0] ?? dedup.primaryPerson ?? "";
-  const lastResort = await fetchLastResortRealClip(
-    beat,
-    scene,
-    workDir,
-    scene.index,
-    holdSec,
-    dedup,
-    personName,
-    videoTitle,
-    { requireBeatMatch: false }
-  );
-  if (lastResort && !isPipelineFallbackClip(lastResort) && (await pushClip(lastResort, holdSec))) {
-    recordClipAdopt(
-      dedup.clipAdoptAudit,
-      scene.index,
-      beat.index,
-      beat.text,
-      lastResort,
-      "stock",
-      undefined,
-      dedup.segmentGeoLock
+  if (canUseLicensedStockBeat(dedup)) {
+    console.warn(
+      `[Pipeline] Scene ${scene.index} zin ${beat.index}: self-heal — emergency geo stock`
     );
-    return;
+    if (await adoptEmergencyGeoStockClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
+      return;
+    }
+    console.warn(
+      `[Pipeline] Scene ${scene.index} zin ${beat.index}: self-heal — last-resort real stock`
+    );
+    const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
+    const personName = scenePersons[0] ?? dedup.primaryPerson ?? "";
+    const lastResort = await fetchLastResortRealClip(
+      beat,
+      scene,
+      workDir,
+      scene.index,
+      holdSec,
+      dedup,
+      personName,
+      videoTitle,
+      { requireBeatMatch: false }
+    );
+    if (lastResort && !isPipelineFallbackClip(lastResort) && (await pushClip(lastResort, holdSec))) {
+      markLicensedStockBeatUsed(dedup);
+      recordClipAdopt(
+        dedup.clipAdoptAudit,
+        scene.index,
+        beat.index,
+        beat.text,
+        lastResort,
+        "stock",
+        undefined,
+        dedup.segmentGeoLock
+      );
+      return;
+    }
+  } else {
+    console.warn(
+      `[Pipeline] Scene ${scene.index} zin ${beat.index}: stock cap reached — skip emergency/last-resort stock`
+    );
   }
   if (await adoptKlingBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
     return;
@@ -14751,6 +14768,34 @@ async function fillBeatVisual(
     return true;
   }
   return false;
+}
+
+/** Extra Wikimedia + archive pass before any licensed stock in self-heal. */
+async function retryAuthenticBeforeLicensedStock(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  videoTitle: string | undefined,
+  dedup: VisualDedupState,
+  pushClip: (clipPath: string, holdSec?: number) => boolean | Promise<boolean>,
+  holdSec: number,
+  semanticProfile?: BeatSemanticProfile
+): Promise<boolean> {
+  if (await adoptWikimediaBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
+    return true;
+  }
+  return adoptArchiveBeatClip(
+    beat,
+    scene,
+    workDir,
+    videoTitle,
+    dedup,
+    pushClip,
+    null,
+    holdSec,
+    semanticProfile,
+    true
+  );
 }
 
 async function fetchArchiveSentenceMontage(

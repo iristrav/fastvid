@@ -53,6 +53,25 @@ export function archivePexelsHybridEnabled(): boolean {
   return process.env.ARCHIVE_PEXELS_HYBRID !== "false" && archivePexelsFallbackEnabled();
 }
 
+/** Cap licensed stock (Pexels/Pixabay) per video — archive-first default is very low. */
+export function curatedMaxStockBeatsPerVideo(videoLength?: string | null): number {
+  if (!archivePexelsFallbackEnabled()) return 0;
+  const raw = process.env.MAX_STOCK_BEATS_PER_VIDEO?.trim();
+  if (raw !== undefined && raw !== "") {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 0) return n;
+  }
+  const mins = targetVideoDurationMinutes(videoLength);
+  if (mins <= 1) return 1;
+  if (mins <= 10) return 2;
+  return 3;
+}
+
+/** When true (default in archive-first mode), Pexels/Pixabay are tightly capped per video. */
+export function curatedMinimizeStockFootage(): boolean {
+  return process.env.MINIMIZE_STOCK_FOOTAGE !== "false";
+}
+
 /** Fail generation rather than loop, pad, or reuse any clip content in a video. */
 export function strictNoVisualRepeat(): boolean {
   if (process.env.STRICT_NO_VISUAL_REPEAT === "false") return false;

@@ -4,6 +4,7 @@ import {
   minBeatsForVisualCadence,
   sceneBeatCapForCadence,
   curatedPerfBeatsFloor,
+  curatedMaxStockBeatsPerVideo,
 } from "./sourcingPolicy";
 
 describe("visual cadence (5–8s per clip)", () => {
@@ -24,5 +25,10 @@ describe("visual cadence (5–8s per clip)", () => {
   it("1-min video perf floor allows per-scene cadence", () => {
     expect(curatedPerfBeatsFloor("1")).toBeGreaterThanOrEqual(4);
     expect(curatedPerfBeatsFloor("1")).toBeLessThanOrEqual(6);
+  });
+
+  it("stock cap defaults very low per video length", () => {
+    expect(curatedMaxStockBeatsPerVideo("1")).toBe(1);
+    expect(curatedMaxStockBeatsPerVideo("8-10")).toBe(2);
   });
 });
