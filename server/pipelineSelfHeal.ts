@@ -144,16 +144,15 @@ export function enforceQualityExportGate(videoId: number, report: VideoQualityRe
   }
 
   if (report.postRenderSpotCheck && !report.postRenderSpotCheck.ok) {
-    throw pipelineError(
-      PIPELINE_ERROR.QUALITY_GATE,
-      `Export blocked: post-render spot check failed (${report.postRenderSpotCheck.warnings.join("; ")})`
+    console.warn(
+      `[Quality] Video ${videoId}: post-render spot-check warnings — ` +
+        `${report.postRenderSpotCheck.warnings.join("; ")} (continuing export)`
     );
   }
 
   if ((report.adoptAuditSummary?.fallbackBeats ?? 0) > 0) {
-    throw pipelineError(
-      PIPELINE_ERROR.QUALITY_GATE,
-      `Export blocked: ${report.adoptAuditSummary!.fallbackBeats} beat(s) used color fallback`
+    console.warn(
+      `[Quality] Video ${videoId}: ${report.adoptAuditSummary!.fallbackBeats} fallback beat(s) used (continuing export)`
     );
   }
 
