@@ -16,6 +16,17 @@ describe("visualQualityGate", () => {
     expect(shouldVisionCheckClip("/tmp/scene_0_b0_pexels_ocean.mp4")).toBe(true);
   });
 
+  it("skips stock vision in fast mode unless ENABLE_CLIP_VISION_STOCK=true", () => {
+    const prevStock = process.env.ENABLE_CLIP_VISION_STOCK;
+    const prevReview = process.env.ENABLE_SCENE_CRITICAL_REVIEW;
+    process.env.ENABLE_CLIP_VISION_STOCK = "false";
+    process.env.ENABLE_SCENE_CRITICAL_REVIEW = "false";
+    expect(shouldVisionCheckClip("/tmp/scene_0_b0_pexels_ocean.mp4", true)).toBe(false);
+    expect(shouldVisionCheckClip("/tmp/scene_0_b0_hist_archive_titanic.mp4", true)).toBe(true);
+    process.env.ENABLE_CLIP_VISION_STOCK = prevStock;
+    process.env.ENABLE_SCENE_CRITICAL_REVIEW = prevReview;
+  });
+
   it("clipVisionGateEnabled respects ENABLE_LOCAL_VISION=false", () => {
     const prev = process.env.ENABLE_LOCAL_VISION;
     process.env.ENABLE_LOCAL_VISION = "false";

@@ -107,13 +107,15 @@ export function getVisionQaStatus(): {
 }
 
 /** Check adopted clips; stock included when Vidrush quality or ENABLE_CLIP_VISION_STOCK=true. */
-export function shouldVisionCheckClip(filePath: string): boolean {
+export function shouldVisionCheckClip(filePath: string, fastMode = false): boolean {
   if (!localVisionEnabled()) return false;
   const base = path.basename(filePath).toLowerCase();
+  const isStock = /pexels|pixabay|_b\d+_vid|person_stock/i.test(base);
+  if (fastMode && isStock && process.env.ENABLE_CLIP_VISION_STOCK !== "true") return false;
   if (sceneCriticalReviewEnabled()) return true;
   const checkStock =
     vidrushDocumentaryQualityEnabled() || process.env.ENABLE_CLIP_VISION_STOCK === "true";
-  if (checkStock && /pexels|pixabay|_b\d+_vid|person_stock/i.test(base)) return true;
+  if (checkStock && isStock) return true;
   return (
     /_archive_|_hist|_wikivid|_wiki_|_gdelt|_septube|_ov_|_serp_|_unsplash|_euro_|_nasa/i.test(base) ||
     /_ytcc_|_ytfu_|_transformed|_curated_a/i.test(base)
@@ -214,7 +216,7 @@ export async function clipPassesVisionGate(
   visualDescription?: string,
   _segmentLock?: unknown
 ): Promise<boolean> {
-  if (!clipVisionGateEnabled() || !shouldVisionCheckClip(clipPath)) return true;
+  if (!clipVisionGateEnabled() || !shouldVisionCheckClip(clipPath, fastMode)) return true;
 
   const result = await scoreClipAcrossFrames(
     clipPath,

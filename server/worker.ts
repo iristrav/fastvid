@@ -74,6 +74,10 @@ async function main() {
     }
   }
   startVideoQueueWorker();
+  const { warmUpLocalClipVision } = await import("./localClipVision");
+  warmUpLocalClipVision().catch((err) =>
+    console.warn("[Worker] CLIP warm-up failed (non-fatal):", (err as Error).message)
+  );
   const { scheduleClipEmbeddingBackfill } = await import("./archiveClipIndexBackfill");
   scheduleClipEmbeddingBackfill();
   const { startClipBackgroundAuditor } = await import("./clipBackgroundAuditor");

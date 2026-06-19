@@ -117,7 +117,7 @@ import {
   scriptGuidedClipsEnabled,
 } from "./scriptGuidedClipFinder";
 import { clipPassesVisionGate, clipVisionGateEnabled, minClipQualityScore, minWikiClipQualityScore } from "./visualQualityGate";
-import { archivePexelsFallbackEnabled, curatedArchiveOnlyVisuals, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, strictQualityExportEnabled, europeanaSourcingEnabled } from "./sourcingPolicy";
+import { archivePexelsFallbackEnabled, curatedArchiveOnlyVisuals, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, strictQualityExportEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -1757,7 +1757,7 @@ function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProfile {
   if (curatedArchiveOnlyVisuals()) {
     return {
       ...profile,
-      maxBeatsPerScene: 64,
+      maxBeatsPerScene: curatedPerfBeatsFloor(videoLength),
       enableArchival: false,
       enableNasa: false,
       enableMuskHeroFetch: false,
@@ -10181,8 +10181,11 @@ function buildSceneBeats(
   scenePersons: string[] = []
 ): SceneBeat[] {
   const minVoiceClips = curatedArchiveOnlyVisuals() ? minClipsForBalancedVoice(duration) : 2;
+  const cadenceCap = curatedArchiveOnlyVisuals()
+    ? sceneBeatCapForCadence(duration, maxBeatsCap)
+    : maxBeatsCap;
   const targetBeats = Math.max(minVoiceClips, Math.ceil(duration / effectiveBeatSec()));
-  const beatCap = Math.max(minVoiceClips, Math.min(maxBeatsCap, targetBeats));
+  const beatCap = Math.max(minVoiceClips, Math.min(cadenceCap, targetBeats));
 
   const rawSentences =
     scene.text.match(/[^.!?]+[.!?]+/g)?.map((s) => s.trim()).filter((s) => s.length > 5) ??
@@ -10217,7 +10220,7 @@ function buildSceneBeats(
     groups.splice(splitIdx, 1, { text: a, sentenceCount: 1 }, { text: b, sentenceCount: 1 });
   }
 
-  while (groups.length > beatCap && !curatedArchiveOnlyVisuals()) {
+  while (groups.length > beatCap) {
     let mergeIdx = 0;
     let minWords = Infinity;
     for (let i = 0; i < groups.length - 1; i++) {
@@ -10265,10 +10268,7 @@ function buildSceneBeats(
       b.text.replace(/\[visual:[^\]]+\]/gi, "").split(/\s+/).filter(Boolean).length
     );
     const totalWords = wordsPerBeat.reduce((s, w) => s + w, 0) || beats.length;
-    const minHold =
-      beats.length * archiveVisualMinClipSec() > duration * 0.98
-        ? Math.max(3.2, (duration / beats.length) * 0.94)
-        : archiveVisualMinClipSec();
+    const minHold = archiveVisualMinClipSec();
     for (let i = 0; i < beats.length; i++) {
       const share = wordsPerBeat[i] / totalWords;
       beats[i].holdSec = Math.max(
@@ -13404,10 +13404,11 @@ type BeatProgressPhase = "beat" | "backfill";
 
 const ARCHIVE_BEAT_TOP_CANDIDATES = 32;
 const ARCHIVE_BEAT_CLIP_RETRIES = 4;
-/** Cap vision API calls per beat — 8 candidates when ENABLE_ARCHIVE_VISION_TRY=8 (default 8). */
-function archiveVisionTryStrict(): number {
-  const n = parseInt(process.env.ARCHIVE_VISION_TRY_STRICT || "8", 10);
-  return Number.isFinite(n) && n >= 4 ? Math.min(12, n) : 8;
+/** Cap vision tries per beat — 3 in fast mode, 8 otherwise (override via ARCHIVE_VISION_TRY_STRICT). */
+function archiveVisionTryStrict(fastMode = false): number {
+  const fallback = fastMode ? 3 : 8;
+  const n = parseInt(process.env.ARCHIVE_VISION_TRY_STRICT || String(fallback), 10);
+  return Number.isFinite(n) && n >= 2 ? Math.min(12, n) : fallback;
 }
 const ARCHIVE_VISION_TRY_RELAXED = 10;
 const STOCK_QUERY_CAP = 5;
@@ -13432,7 +13433,7 @@ async function beatClipPassesVisionGate(
       workDir,
       scene.index,
       beat.index,
-      false,
+      dedup.perf.fastStockMode,
       minScore,
       semanticProfile?.summary,
       dedup.segmentGeoLock
@@ -13546,9 +13547,13 @@ async function applyVideoBeatTextOverlay(
   beat: SceneBeat,
   scene: Scene,
   workDir: string,
-  holdSec: number
+  holdSec: number,
+  fastMode = false
 ): Promise<string> {
   if (!facelessSubtitlesEnabled() || !isVisualOverlayFootageClip(clipPath)) {
+    return clipPath;
+  }
+  if (fastMode && isLicensedStockClip(clipPath)) {
     return clipPath;
   }
   if (await isMostlyBlackClip(clipPath)) {
@@ -13605,7 +13610,7 @@ async function adoptArchiveBeatClip(
       rejectClip(clipPath);
       return false;
     }
-    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec);
+    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode);
     if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) {
       console.warn(
         `[Pipeline] Scene ${scene.index} beat ${beat.index}: skipping clip that fails compose gate ${path.basename(withText)}`
@@ -13674,7 +13679,7 @@ async function adoptArchiveBeatClip(
     const imgMax = archiveMaxImageClipsPerVideo();
     const tryCap = Math.min(
       relaxed ? ARCHIVE_BEAT_TOP_CANDIDATES * 2 : ARCHIVE_BEAT_TOP_CANDIDATES,
-      relaxed ? ARCHIVE_VISION_TRY_RELAXED : archiveVisionTryStrict()
+      relaxed ? ARCHIVE_VISION_TRY_RELAXED : archiveVisionTryStrict(dedup.perf.fastStockMode)
     );
     let tried = 0;
     for (const picked of ranked) {
@@ -13805,7 +13810,7 @@ async function adoptWikimediaBeatClip(
   const tryClip = async (clipPath: string | null | undefined, sec = holdSec): Promise<boolean> => {
     if (!clipPath || isPipelineFallbackClip(clipPath)) return false;
     if (await isMostlyBlackClip(clipPath)) return false;
-    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec);
+    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode);
     if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) return false;
     return await pushClip(withText, sec);
   };
@@ -13929,7 +13934,7 @@ async function adoptKlingBeatClip(
     if (!clipPath || isPipelineFallbackClip(clipPath)) return false;
     if (dedup.usedContentKeys.has(clipContentKey(clipPath))) return false;
     if (await isMostlyBlackClip(clipPath)) return false;
-    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec);
+    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode);
     if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) return false;
     if (
       !(await beatClipPassesVisionGate(
@@ -14007,7 +14012,7 @@ async function adoptEuropeanaBeatClip(
     if (!clipPath || isPipelineFallbackClip(clipPath)) return false;
     if (dedup.usedContentKeys.has(clipContentKey(clipPath))) return false;
     if (await isMostlyBlackClip(clipPath)) return false;
-    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec);
+    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode);
     if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) return false;
     if (
       !(await beatClipPassesVisionGate(
@@ -14083,7 +14088,7 @@ async function adoptStockBeatClipFallback(
   const tryClip = async (clipPath: string | null | undefined, sec = holdSec): Promise<boolean> => {
     if (!clipPath || isPipelineFallbackClip(clipPath)) return false;
     if (await isMostlyBlackClip(clipPath)) return false;
-    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec);
+    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode);
     if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) return false;
     return await pushClip(withText, sec);
   };
@@ -14245,7 +14250,7 @@ async function adoptEmergencyGeoStockClip(
   const tryClip = async (clipPath: string | null | undefined, sec = holdSec, minScore = 6): Promise<boolean> => {
     if (!clipPath || isPipelineFallbackClip(clipPath)) return false;
     if (await isMostlyBlackClip(clipPath)) return false;
-    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec);
+    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode);
     if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) return false;
     if (
       !(await beatClipPassesVisionGate(
@@ -14691,10 +14696,7 @@ async function fetchArchiveSentenceMontage(
   onBeatProgress?: (beatIndex: number, beatTotal: number, phase?: BeatProgressPhase) => void
 ): Promise<SceneVisualsResult> {
   const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
-  const beatCap = Math.max(
-    dedup.perf.maxBeatsPerScene,
-    Math.ceil(scene.duration / archiveVisualMinClipSec()) + 2
-  );
+  const beatCap = sceneBeatCapForCadence(scene.duration, dedup.perf.maxBeatsPerScene);
   const beats = buildSceneBeats(scene, scene.duration, beatCap, videoTitle, scenePersons);
   const clips: string[] = [];
   const beatDurations: number[] = [];
@@ -14881,22 +14883,13 @@ async function fetchSceneVisuals(
   const spaceTopic = isSpaceRelatedTopic(scene.visualCue, scene.pexelsQuery, scene.text, videoTitle ?? "");
   const archiveOnly = curatedArchiveOnlyVisuals();
   const beatCap = archiveOnly
-    ? Math.max(
-        dedup.perf.maxBeatsPerScene,
-        Math.min(
-          requiredMontageClipsForDuration(scene.duration) + 2,
-          Math.ceil(scene.duration / effectiveBeatSec())
-        )
-      )
+    ? sceneBeatCapForCadence(scene.duration, dedup.perf.maxBeatsPerScene)
     : dedup.perf.fastStockMode
-    ? Math.min(
-        dedup.perf.maxBeatsPerScene,
-        Math.max(1, Math.ceil(scene.duration / effectiveBeatSec()))
-      )
-    : Math.min(
-        dedup.perf.maxBeatsPerScene,
-        Math.max(2, Math.ceil(scene.duration / effectiveBeatSec()))
-      );
+      ? sceneBeatCapForCadence(scene.duration, dedup.perf.maxBeatsPerScene)
+      : Math.min(
+          dedup.perf.maxBeatsPerScene,
+          Math.max(2, Math.ceil(scene.duration / effectiveBeatSec()))
+        );
   dedup.stillPhotosThisScene = 0;
   const realOnly = realFootageFirstEnabled();
   dedup.stillPhotosMaxThisScene = historicalDoc && dedup.perf.fastStockMode
@@ -15100,7 +15093,7 @@ async function fetchSceneVisuals(
       if (realOnly && isLicensedStockClip(clip) && !canUseLicensedStockBeat(dedup)) {
         clip = null;
       } else {
-        clip = await applyVideoBeatTextOverlay(clip, beat, scene, workDir, beat.holdSec);
+        clip = await applyVideoBeatTextOverlay(clip, beat, scene, workDir, beat.holdSec, dedup.perf.fastStockMode);
         await pushClip(clip);
       }
     }
@@ -15123,7 +15116,7 @@ async function fetchSceneVisuals(
         dedup.lock = Promise.resolve();
       }
       if (aiOnly && !isPipelineFallbackClip(aiOnly)) {
-        const withText = await applyVideoBeatTextOverlay(aiOnly, beat, scene, workDir, beat.holdSec);
+        const withText = await applyVideoBeatTextOverlay(aiOnly, beat, scene, workDir, beat.holdSec, dedup.perf.fastStockMode);
         await pushClip(withText);
         console.log(
           `[Pipeline] Scene ${scene.index} beat ${beat.index}: AI clip (power word "${beat.powerWord}")`
@@ -15199,7 +15192,7 @@ async function fetchSceneVisuals(
         );
       }
       if (rescue && !isPipelineFallbackClip(rescue)) {
-        const withText = await applyVideoBeatTextOverlay(rescue, beat, scene, workDir, beat.holdSec);
+        const withText = await applyVideoBeatTextOverlay(rescue, beat, scene, workDir, beat.holdSec, dedup.perf.fastStockMode);
         await pushClip(withText);
       } else if (!archiveOnly) {
         console.warn(

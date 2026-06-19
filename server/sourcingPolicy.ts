@@ -156,6 +156,41 @@ export function archiveVisualMaxClipSec(): number {
   return 8;
 }
 
+/** Min beats per scene so no single shot exceeds archiveVisualMaxClipSec (default 8s). */
+export function minBeatsForVisualCadence(sceneDurationSec: number): number {
+  if (sceneDurationSec <= 0) return 1;
+  return Math.max(1, Math.ceil(sceneDurationSec / archiveVisualMaxClipSec()));
+}
+
+/** Max beats per scene so clips stay at least archiveVisualMinClipSec (default 5s). */
+export function maxBeatCapForVisualCadence(sceneDurationSec: number): number {
+  if (sceneDurationSec <= 0) return 2;
+  return Math.max(
+    minBeatsForVisualCadence(sceneDurationSec),
+    Math.ceil(sceneDurationSec / archiveVisualMinClipSec())
+  );
+}
+
+/**
+ * Beat cap for one scene — targets ~5–8s per visual (sentence length still splits within this band).
+ * perfFloor is a profile minimum, not a ceiling.
+ */
+export function sceneBeatCapForCadence(sceneDurationSec: number, perfFloor = 1): number {
+  const minBeats = minBeatsForVisualCadence(sceneDurationSec);
+  const maxBeats = maxBeatCapForVisualCadence(sceneDurationSec);
+  const target = Math.max(minBeats, Math.ceil(sceneDurationSec / archiveVisualBeatSec()));
+  return Math.max(perfFloor, Math.min(maxBeats, target));
+}
+
+/** Pipeline perf floor: enough beats for the longest typical scene in this video length. */
+export function curatedPerfBeatsFloor(videoLength: string): number {
+  const totalSec = targetVideoDurationMinutes(videoLength) * 60;
+  const scenes =
+    videoLength === "1" ? 3 : videoLength === "8-10" ? 18 : videoLength === "10-15" ? 25 : 35;
+  const longestTypicalSceneSec = totalSec / scenes + 4;
+  return maxBeatCapForVisualCadence(longestTypicalSceneSec);
+}
+
 /** Prefer moving archive video over Ken Burns stills (default on). */
 export function archivePreferVideoClips(): boolean {
   return process.env.ARCHIVE_PREFER_VIDEO !== "false";
