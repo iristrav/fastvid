@@ -92,7 +92,7 @@ async function startServer() {
   );
   const klingOn = process.env.ENABLE_KLING_BEAT_FALLBACK !== "false" && isKlingAvailable();
   console.log(
-    "[Fastvid] Kling beat fallback (after Wikimedia):",
+    "[Fastvid] Kling beat fallback (last resort after all stock/archive):",
     klingOn
       ? `✓ on (max ${process.env.KLING_MAX_CLIPS_PER_VIDEO || "6"}/video — FAL_KEY or KLING_API_KEY)`
       : "✗ set FAL_KEY or KLING_API_KEY+KLING_API_SECRET"

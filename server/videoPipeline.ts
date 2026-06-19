@@ -7385,6 +7385,33 @@ function buildBeatAIPrompt(beat: SceneBeat, scene: Scene, videoTitle?: string): 
   ).slice(0, 500);
 }
 
+/** Kling text-to-video prompt — moving B-roll (not a still); geo + narration from the beat. */
+function buildKlingBeatPrompt(beat: SceneBeat, scene: Scene, videoTitle?: string): string {
+  const muskTopic = isMuskTeslaTopic(videoTitle, beat.text);
+  const entities = extractBeatRealEntities(beat.text, scene.text, videoTitle);
+  const entityLabel = entities.map((r) => r.id).join(", ");
+  const titleGeo = extractTitleGeoPlaceTags(videoTitle).slice(0, 2).join(", ");
+  const beatGeo = buildGeoStockSearchQueries(beat.text, videoTitle).slice(0, 2).join(", ");
+  const geoHint = titleGeo || beatGeo;
+  const visual =
+    beat.powerWord ||
+    extractInlineVisualCues(beat.text)[0] ||
+    beat.searchQuery ||
+    realEntityStockQueriesForBeat(beat.text, scene.text, videoTitle)[0] ||
+    deriveBeatStockQuery(beat.text, scene, videoTitle, undefined, muskTopic) ||
+    scene.literalVisualCue ||
+    scene.visualCue ||
+    scene.pexelsQuery;
+  const narration = beat.text.replace(/\[visual:[^\]]+\]/gi, "").trim().slice(0, 220);
+  return (
+    `Cinematic documentary B-roll video footage, photorealistic 16:9, smooth slow camera motion. ` +
+    `${geoHint ? `Location: ${geoHint}. ` : ""}` +
+    `Subject: ${visual}. ` +
+    `Matches spoken narration: ${narration}. ` +
+    `Real-world ${entityLabel || "documentary"} context, natural lighting, no on-screen text, no watermark.`
+  ).slice(0, 500);
+}
+
 /** AI clip only when stock could not match this beat (prompt = narration + visual cue). */
 async function fetchBeatAIClip(
   beat: SceneBeat,
@@ -13868,7 +13895,7 @@ async function adoptWikimediaBeatClip(
   return false;
 }
 
-/** Kling AI text-to-video — after Wikimedia, before Europeana/archive (~$0.35/5s via FAL). */
+/** Kling AI text-to-video — last resort after Wikimedia, archive, stock, and emergency paths (~$0.35/5s). */
 async function adoptKlingBeatClip(
   beat: SceneBeat,
   scene: Scene,
@@ -13909,7 +13936,7 @@ async function adoptKlingBeatClip(
     return false;
   };
 
-  const prompt = buildBeatAIPrompt(beat, scene, videoTitle);
+  const prompt = buildKlingBeatPrompt(beat, scene, videoTitle);
   const outPath = path.join(workDir, `scene_${scene.index}_b${beat.index}_kling.mp4`);
   const genDur = Math.min(Math.max(holdSec, 4), 10);
 
@@ -14294,7 +14321,7 @@ async function adoptEmergencyGeoStockClip(
   return false;
 }
 
-/** Never leave a beat empty — Wikimedia → archive → stock → emergency geo → AI. */
+/** Never leave a beat empty — Wikimedia → archive → stock → emergency geo → last-resort stock → Kling → color. */
 async function ensureBeatVisualFilled(
   beat: SceneBeat,
   scene: Scene,
@@ -14341,6 +14368,9 @@ async function ensureBeatVisualFilled(
       undefined,
       dedup.segmentGeoLock
     );
+    return;
+  }
+  if (await adoptKlingBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
     return;
   }
   console.warn(
@@ -14535,7 +14565,7 @@ async function backfillComposeMontageIfShort(
   }
 }
 
-/** Wikimedia → Kling → Europeana → archive → stock (Pexels/Pixabay), vision gate on every source. */
+/** Wikimedia → Europeana → archive → stock (Pexels/Pixabay), vision gate on every source. */
 async function fillBeatVisual(
   beat: SceneBeat,
   scene: Scene,
@@ -14573,10 +14603,6 @@ async function fillBeatVisual(
     : null;
 
   if (await adoptWikimediaBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
-    return true;
-  }
-
-  if (await adoptKlingBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
     return true;
   }
 
@@ -14665,7 +14691,7 @@ async function fetchArchiveSentenceMontage(
     : new Map<number, BeatSemanticProfile>();
 
   console.log(
-    `[Pipeline] Scene ${scene.index}: ${beats.length} zin(en) → Wikimedia → Kling → archief → stock per zin`
+    `[Pipeline] Scene ${scene.index}: ${beats.length} zin(en) → Wikimedia → archief → stock per zin (Kling alleen als alles faalt)`
   );
 
   const pushSceneClip = async (clipPath: string, holdSec: number, beatIndex: number): Promise<boolean> => {
