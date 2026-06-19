@@ -34,6 +34,11 @@ import { generateGrokVideo } from "./_core/grokVideo";
 import { generateVeoVideo } from "./_core/veoVideo";
 import { generateMetaMovieGen } from "./_core/metaMovieGen";
 import { generateHiggsfieldTextToVideo, generateHiggsfieldImageToVideo } from "./_core/higgsfieldVideo";
+import {
+  generateKlingBeatVideo,
+  klingBeatFallbackEnabled,
+  maxKlingClipsPerVideo,
+} from "./_core/klingVideo";
 import { sanitizeForDrawtext, sanitizeForDrawtextStrict } from "./ffmpegSanitize";
 import {
   buildFitGrayVideoMontageChain,
@@ -192,8 +197,6 @@ const VIMEO_ACCESS_TOKEN = process.env.VIMEO_ACCESS_TOKEN || "";
 const GDELT_TV_API = "https://api.gdeltproject.org/api/v2/tv/tv";
 const GDELT_TV_STATIONS = ["CNN", "FOXNEWS", "MSNBC", "BBCNEWS"] as const;
 const RUNWAY_API_KEY = process.env.RUNWAY_API_KEY || "";
-const KLING_API_KEY = process.env.KLING_API_KEY || "";
-const KLING_API_SECRET = process.env.KLING_API_SECRET || "";
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY || "";
 const LUMA_API_KEY = process.env.LUMA_API_KEY || "";
 const LEONARDO_API_KEY = process.env.LEONARDO_API_KEY || "";
@@ -4714,90 +4717,6 @@ async function generateRunwayClip(
   }
 }
 
-// ─── 3c8. Kling AI Image-to-Video ─────────────────────────────────────────────
-async function generateKlingClip(
-  prompt: string,
-  imageUrl: string | null,
-  duration: number,
-  outputPath: string,
-  sceneIndex: number
-): Promise<string | null> {
-  if (!KLING_API_KEY || !KLING_API_SECRET) return null;
-  try {
-    console.log(`[Pipeline] Scene ${sceneIndex}: Generating Kling AI video...`);
-    const t = Date.now();
-
-    // Generate JWT token for Kling
-    const { createHmac } = await import('crypto');
-    const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString('base64url');
-    const payload = Buffer.from(JSON.stringify({ iss: KLING_API_KEY, exp: Math.floor(Date.now()/1000) + 1800, nbf: Math.floor(Date.now()/1000) - 5 })).toString('base64url');
-    const sig = createHmac('sha256', KLING_API_SECRET).update(`${header}.${payload}`).digest('base64url');
-    const klingJWT = `${header}.${payload}.${sig}`;
-
-    const body: Record<string, unknown> = {
-      model_name: "kling-v1-5",
-      prompt: prompt,
-      duration: Math.min(duration, 10) <= 5 ? "5" : "10",
-      mode: "std",
-      cfg_scale: 0.5,
-    };
-    if (imageUrl) body.image_url = imageUrl;
-
-    const endpoint = imageUrl
-      ? "https://api.klingai.com/v1/videos/image2video"
-      : "https://api.klingai.com/v1/videos/text2video";
-
-    const createResp = await withTimeout(
-      fetch(endpoint, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${klingJWT}`, "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      }),
-      30_000, `Kling create scene ${sceneIndex}`
-    );
-    if (!createResp.ok) {
-      const errText = await createResp.text();
-      console.warn(`[Pipeline] Scene ${sceneIndex}: Kling error ${createResp.status}: ${errText.slice(0, 200)}`);
-      return null;
-    }
-    const createData = await createResp.json() as { data?: { task_id: string } };
-    const taskId = createData.data?.task_id;
-    if (!taskId) return null;
-
-    // Poll for completion (max 3 minutes)
-    let videoUrl: string | null = null;
-    const pollEndpoint = imageUrl
-      ? `https://api.klingai.com/v1/videos/image2video/${taskId}`
-      : `https://api.klingai.com/v1/videos/text2video/${taskId}`;
-    for (let poll = 0; poll < 36; poll++) {
-      await new Promise(r => setTimeout(r, 5000));
-      const pollResp = await withTimeout(
-        fetch(pollEndpoint, { headers: { Authorization: `Bearer ${klingJWT}` } }),
-        10_000, `Kling poll scene ${sceneIndex}`
-      );
-      if (!pollResp.ok) continue;
-      const pollData = await pollResp.json() as { data?: { task_status: string; task_result?: { videos?: Array<{ url: string }> } } };
-      if (pollData.data?.task_status === "succeed" && pollData.data.task_result?.videos?.[0]?.url) {
-        videoUrl = pollData.data.task_result.videos[0].url;
-        break;
-      }
-      if (pollData.data?.task_status === "failed") break;
-    }
-    if (!videoUrl) return null;
-
-    const dlResp = await withTimeout(fetch(videoUrl), 60_000, `Kling download scene ${sceneIndex}`);
-    if (!dlResp.ok) return null;
-    const buffer = Buffer.from(await dlResp.arrayBuffer());
-    const klingOutputPath = outputPath.replace(".mp4", "_kling.mp4");
-    fs.writeFileSync(klingOutputPath, buffer);
-    console.log(`[Pipeline] Scene ${sceneIndex}: Kling video in ${((Date.now()-t)/1000).toFixed(1)}s (${(buffer.length/1024/1024).toFixed(1)}MB)`);
-    return klingOutputPath;
-  } catch (err) {
-    console.warn(`[Pipeline] Scene ${sceneIndex}: Kling clip failed:`, err);
-    return null;
-  }
-}
-
 // ─── 3c9. Luma Dream Machine Image-to-Video ────────────────────────────────────
 async function generateLumaClip(
   prompt: string,
@@ -7838,6 +7757,8 @@ interface VisualDedupState {
   /** Last adopted real stock clip (any topic) — reused instead of color/black placeholders. */
   lastMuskStockClip: string | null;
   aiClipsUsed: number;
+  /** Kling AI video clips (Wikimedia fallback tier). */
+  klingClipsUsed: number;
   entityYoutubeFetchesUsed: number;
   /** Licensed Pexels/Pixabay clips used (capped when minimizeStockFootage). */
   stockBeatsUsed: number;
@@ -7935,6 +7856,7 @@ function createVisualDedupState(
     muskHeroFetchUsed: false,
     lastMuskStockClip: null,
     aiClipsUsed: 0,
+    klingClipsUsed: 0,
     entityYoutubeFetchesUsed: 0,
     stockBeatsUsed: 0,
     stillPhotosThisScene: 0,
@@ -13946,6 +13868,84 @@ async function adoptWikimediaBeatClip(
   return false;
 }
 
+/** Kling AI text-to-video — after Wikimedia, before Europeana/archive (~$0.35/5s via FAL). */
+async function adoptKlingBeatClip(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  videoTitle: string | undefined,
+  dedup: VisualDedupState,
+  pushClip: (clipPath: string, holdSec?: number) => boolean | Promise<boolean>,
+  holdSec: number,
+  semanticProfile?: BeatSemanticProfile
+): Promise<boolean> {
+  if (!klingBeatFallbackEnabled() || dedup.klingClipsUsed >= maxKlingClipsPerVideo()) return false;
+
+  const tryClip = async (clipPath: string | null | undefined, sec = holdSec): Promise<boolean> => {
+    if (!clipPath || isPipelineFallbackClip(clipPath)) return false;
+    if (dedup.usedContentKeys.has(clipContentKey(clipPath))) return false;
+    if (await isMostlyBlackClip(clipPath)) return false;
+    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec);
+    if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) return false;
+    if (
+      !(await beatClipPassesVisionGate(
+        withText,
+        beat,
+        scene,
+        workDir,
+        videoTitle,
+        dedup,
+        semanticProfile,
+        "kling",
+        minWikiClipQualityScore()
+      ))
+    ) {
+      return false;
+    }
+    if (await pushClip(withText, sec)) {
+      dedup.usedContentKeys.add(clipContentKey(withText));
+      return true;
+    }
+    return false;
+  };
+
+  const prompt = buildBeatAIPrompt(beat, scene, videoTitle);
+  const outPath = path.join(workDir, `scene_${scene.index}_b${beat.index}_kling.mp4`);
+  const genDur = Math.min(Math.max(holdSec, 4), 10);
+
+  try {
+    const result = await withTimeout(
+      generateKlingBeatVideo(prompt, outPath, genDur),
+      200_000,
+      `Kling scene ${scene.index} beat ${beat.index}`
+    );
+    if (result && (await tryClip(result.filePath, holdSec))) {
+      dedup.klingClipsUsed++;
+      recordClipAdopt(
+        dedup.clipAdoptAudit,
+        scene.index,
+        beat.index,
+        beat.text,
+        result.filePath,
+        "kling",
+        undefined,
+        dedup.segmentGeoLock
+      );
+      console.log(
+        `[Pipeline] Scene ${scene.index} zin ${beat.index}: Kling ${result.provider} ` +
+          `(${dedup.klingClipsUsed}/${maxKlingClipsPerVideo()})`
+      );
+      return true;
+    }
+  } catch (err) {
+    console.warn(
+      `[Pipeline] Kling scene ${scene.index} beat ${beat.index}:`,
+      (err as Error).message?.slice(0, 100)
+    );
+  }
+  return false;
+}
+
 /** Europeana — EU heritage video after Wikimedia, before archive (requires EUROPEANA_API_KEY). */
 async function adoptEuropeanaBeatClip(
   beat: SceneBeat,
@@ -14535,7 +14535,7 @@ async function backfillComposeMontageIfShort(
   }
 }
 
-/** Wikimedia → archive → stock (Pexels/Pixabay), vision gate on every source. */
+/** Wikimedia → Kling → Europeana → archive → stock (Pexels/Pixabay), vision gate on every source. */
 async function fillBeatVisual(
   beat: SceneBeat,
   scene: Scene,
@@ -14573,6 +14573,10 @@ async function fillBeatVisual(
     : null;
 
   if (await adoptWikimediaBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
+    return true;
+  }
+
+  if (await adoptKlingBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
     return true;
   }
 
@@ -14661,7 +14665,7 @@ async function fetchArchiveSentenceMontage(
     : new Map<number, BeatSemanticProfile>();
 
   console.log(
-    `[Pipeline] Scene ${scene.index}: ${beats.length} zin(en) → Wikimedia → archief → stock per zin`
+    `[Pipeline] Scene ${scene.index}: ${beats.length} zin(en) → Wikimedia → Kling → archief → stock per zin`
   );
 
   const pushSceneClip = async (clipPath: string, holdSec: number, beatIndex: number): Promise<boolean> => {

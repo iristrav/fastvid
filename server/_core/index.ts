@@ -14,6 +14,7 @@ import fs from "fs";
 import { fileURLToPath } from "url";
 import { LOCAL_UPLOADS_DIR } from "../storageLocal";
 import { getStorageBackend } from "../storageBackend";
+import { isKlingAvailable } from "./klingVideo";
 import { registerArchiveUploadRoute } from "../archiveUpload";
 import { registerArchiveMediaRoute } from "../archiveMediaStream";
 import { archiveUploadRequestTimeoutMs } from "../archiveVideoSplitter";
@@ -88,6 +89,13 @@ async function startServer() {
   console.log(
     "[Fastvid] AI video fallback (Runway/Grok, expensive):",
     premiumVideo ? "✓ enabled" : "✗ off (default — saves cost)"
+  );
+  const klingOn = process.env.ENABLE_KLING_BEAT_FALLBACK !== "false" && isKlingAvailable();
+  console.log(
+    "[Fastvid] Kling beat fallback (after Wikimedia):",
+    klingOn
+      ? `✓ on (max ${process.env.KLING_MAX_CLIPS_PER_VIDEO || "6"}/video — FAL_KEY or KLING_API_KEY)`
+      : "✗ set FAL_KEY or KLING_API_KEY+KLING_API_SECRET"
   );
   const maxStock = process.env.MAX_STOCK_BEATS_PER_VIDEO?.trim();
   console.log(

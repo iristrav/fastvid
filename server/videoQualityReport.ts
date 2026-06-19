@@ -71,6 +71,7 @@ export function inferClipSourceFromPath(filePath: string): string {
   if (/nasa/i.test(base)) return "nasa";
   if (/archive|curated|_hist/i.test(base)) return "archive";
   if (/pixabay|_pix_|beat_vid|fb_vid/i.test(base)) return "pixabay";
+  if (/_kling_|scene_\d+_b\d+_kling/i.test(base)) return "kling";
   if (
     /_ai_fallback|_stability_|_leonardo_|_grok_|_runway_|_kling_|_luma_|_pika_|_veo_|_forge_|scene_\d+_b\d+_ai/i.test(
       base
