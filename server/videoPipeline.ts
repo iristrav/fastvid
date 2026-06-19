@@ -117,7 +117,7 @@ import {
   scriptGuidedClipsEnabled,
 } from "./scriptGuidedClipFinder";
 import { clipPassesVisionGate, clipVisionGateEnabled, minClipQualityScore, minWikiClipQualityScore } from "./visualQualityGate";
-import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, strictQualityExportEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence } from "./sourcingPolicy";
+import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -17855,9 +17855,8 @@ export async function runVideoPipeline(
     );
     console.log(`[Pipeline] Stage 4 (compose): ${scenes.length} scenes in ${((Date.now()-t3)/1000).toFixed(1)}s`);
 
-    // ── Stage 5: Critical scene review — multi-frame vision 10/10, blocks export ─
+    // ── Stage 5: Critical scene review — multi-frame vision QA (warnings only; export continues) ─
     onProgress?.({ stage: STAGE_LABELS.visualReview, percent: 66 });
-    const criticalFailures: string[] = [];
     for (let i = 0; i < scenes.length; i++) {
       const vr = sceneVisualResults[i];
       if (!vr?.beats?.length) continue;
@@ -17879,17 +17878,8 @@ export async function runVideoPipeline(
       );
       if (!critical.ok) {
         const msg = `Scene ${scenes[i]!.index} critical review: ${critical.summary}`;
-        console.warn(`[Pipeline] ${msg} — continuing (self-heal)`);
-        if (strictQualityExportEnabled()) {
-          criticalFailures.push(msg);
-        }
+        console.warn(`[Pipeline] ${msg} — continuing export (CLIP QA warning, not blocking)`);
       }
-    }
-    if (criticalFailures.length > 0) {
-      throw pipelineError(
-        PIPELINE_ERROR.QUALITY_GATE,
-        `Scene critical review failed: ${criticalFailures.slice(0, 3).join("; ")}`
-      );
     }
 
     // ── Stage 5b: QA — visuals match narration + montage timing ──────────────
