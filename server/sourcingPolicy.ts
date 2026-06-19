@@ -28,10 +28,9 @@ export function fishAudioFallbackEnabled(): boolean {
   return Boolean(process.env.FISH_AUDIO_API_KEY?.trim());
 }
 
-/** Faceless kinetic subtitles — off by default; only year badges on screen unless ENABLE_EXTRA_ONSCREEN_TEXT=true. */
+/** Faceless typewriter keywords on B-roll (% / years / €). On by default — set ENABLE_FACELESS_SUBTITLES=false to disable. */
 export function facelessSubtitlesEnabled(): boolean {
-  if (yearsOnlyOnScreen()) return false;
-  return process.env.ENABLE_FACELESS_SUBTITLES === "true";
+  return process.env.ENABLE_FACELESS_SUBTITLES !== "false";
 }
 
 /** Only year numbers as on-screen text (no kinetic subs, maps, name cards). Default on. */

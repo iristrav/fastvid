@@ -24,6 +24,7 @@ import {
   curatedArchiveOnlyVisuals,
   externalVisualSourcingEnabled,
   elevenLabsOnlyVoice,
+  facelessSubtitlesEnabled,
   fishAudioFallbackEnabled,
 } from "../sourcingPolicy";
 import { ENV, groqKeyFromEnv, openAiKeyFromEnv } from "./env";
@@ -96,6 +97,12 @@ async function startServer() {
     klingOn
       ? `✓ on (max ${process.env.KLING_MAX_CLIPS_PER_VIDEO || "6"}/video — FAL_KEY or KLING_API_KEY)`
       : "✗ set FAL_KEY or KLING_API_KEY+KLING_API_SECRET"
+  );
+  console.log(
+    "[Fastvid] Faceless typewriter keywords on B-roll:",
+    facelessSubtitlesEnabled()
+      ? "✓ on (% / years / € — ENABLE_FACELESS_SUBTITLES=false to disable)"
+      : "✗ off"
   );
   const maxStock = process.env.MAX_STOCK_BEATS_PER_VIDEO?.trim();
   console.log(

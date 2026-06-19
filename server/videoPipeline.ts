@@ -13537,7 +13537,7 @@ async function applyVideoBeatTextOverlay(
   workDir: string,
   holdSec: number
 ): Promise<string> {
-  if (yearsOnlyOnScreen() || !facelessSubtitlesEnabled() || !isRealVideoFootageClip(clipPath)) {
+  if (!facelessSubtitlesEnabled() || !isRealVideoFootageClip(clipPath)) {
     return clipPath;
   }
   return burnFacelessTextOnVideoClip(
@@ -15918,7 +15918,7 @@ async function prepareSceneEffectLayers(
         (cmd, ms, lbl) => withTimeout(exec(cmd), ms, lbl),
         {
           yearsOnly,
-          facelessSubs: !yearsOnly && (facelessSubtitlesEnabled() || enableSubtitles),
+          facelessSubs: facelessSubtitlesEnabled() || enableSubtitles,
           docOverlays: !yearsOnly,
         }
       );
