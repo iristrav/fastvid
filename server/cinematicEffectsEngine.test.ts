@@ -11,6 +11,8 @@ import {
   computeMontageBeatStarts,
   computeVoiceBeatWindows,
   computeVoiceSyncedClipDurations,
+  pickVoiceBackfillBeatIndex,
+  finalizeVoiceSyncedMontageDurations,
   planBeatAlignedYears,
   planIntervalScreenLabels,
   planVoiceSyncedScreenLabels,
@@ -157,6 +159,40 @@ describe("cinematicEffectsEngine", () => {
     expect(montageLen).toBeCloseTo(voiceDur, 1);
     expect(durs[1]).toBeGreaterThan(durs[0]);
     expect(durs[1]).toBeGreaterThan(durs[2]);
+  });
+
+  it("splits voice window when multiple clips map to one beat", () => {
+    const beats = [
+      { text: "Kort.", holdSec: 3 },
+      { text: "Langere slot aan het einde van de voiceover.", holdSec: 7 },
+    ];
+    const voiceDur = 10;
+    const xfade = 0.25;
+    const durs = computeVoiceSyncedClipDurations(beats, voiceDur, [0, 1, 1], xfade, 0);
+    expect(durs).toHaveLength(3);
+    expect(durs[2]).toBeCloseTo(durs[1], 0);
+    expect(durs[1]).toBeGreaterThan(durs[0]);
+  });
+
+  it("prefers later beats for backfill when end voice still needs footage", () => {
+    const beats = [
+      { text: "Opening zin.", holdSec: 3 },
+      { text: "Midden.", holdSec: 3 },
+      { text: "Afsluitende zin met veel woorden.", holdSec: 4 },
+    ];
+    const voiceDur = 12;
+    const windows = computeVoiceBeatWindows(beats, voiceDur);
+    const clipBeatIndices = [0, 1];
+    const clipDurations = [windows[0]!.dur, windows[1]!.dur * 0.5];
+    const pick = pickVoiceBackfillBeatIndex(beats, voiceDur, clipBeatIndices, clipDurations, 0.3);
+    expect(pick).toBe(2);
+  });
+
+  it("finalizeVoiceSyncedMontageDurations scales down when montage runs long", () => {
+    const seed = [6, 6, 6];
+    const out = finalizeVoiceSyncedMontageDurations(seed, 10, [20, 20, 20], 0.3, 0);
+    const montageLen = out.reduce((s, d) => s + d, 0) - 2 * 0.3;
+    expect(montageLen).toBeLessThanOrEqual(10.3);
   });
 
   it("plans interval screen labels every 30s with years and keywords", () => {

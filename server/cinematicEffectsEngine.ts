@@ -569,14 +569,91 @@ export function computeVoiceSyncedClipDurations(
 ): number[] {
   if (clipBeatIndices.length === 0) return [];
   const windows = computeVoiceBeatWindows(beats, voiceDur);
+  const clipsPerBeat = new Map<number, number>();
+  for (const beatIdx of clipBeatIndices) {
+    clipsPerBeat.set(beatIdx, (clipsPerBeat.get(beatIdx) ?? 0) + 1);
+  }
   const overlap = clipBeatIndices.length > 1 ? (clipBeatIndices.length - 1) * xfadeSec : 0;
-  const raw = clipBeatIndices.map(
-    (beatIdx) => windows[beatIdx]?.dur ?? voiceDur / clipBeatIndices.length
-  );
+  const raw = clipBeatIndices.map((beatIdx) => {
+    const winDur = windows[beatIdx]?.dur ?? voiceDur / clipBeatIndices.length;
+    const share = clipsPerBeat.get(beatIdx) ?? 1;
+    return winDur / share;
+  });
   const rawSum = raw.reduce((s, d) => s + d, 0) || 1;
   const targetSum = voiceDur + overlap;
   const scale = targetSum / rawSum;
   return raw.map((d, i) => clampVidrushClipDuration(d * scale, i, sceneIndex));
+}
+
+/** Pick the beat that still needs the most montage time (prefer later voice gaps). */
+export function pickVoiceBackfillBeatIndex(
+  beats: BeatYearInput[],
+  voiceDur: number,
+  clipBeatIndices: number[],
+  clipDurations: number[],
+  xfadeSec = 0
+): number {
+  if (beats.length === 0) return 0;
+  const windows = computeVoiceBeatWindows(beats, voiceDur);
+  const allocated = new Array<number>(beats.length).fill(0);
+  for (let i = 0; i < clipBeatIndices.length; i++) {
+    const bi = clipBeatIndices[i] ?? 0;
+    if (bi < 0 || bi >= beats.length) continue;
+    allocated[bi] += clipDurations[i] ?? 0;
+  }
+  for (let i = 1; i < clipBeatIndices.length; i++) {
+    if (clipBeatIndices[i] === clipBeatIndices[i - 1]) {
+      const bi = clipBeatIndices[i]!;
+      if (bi >= 0 && bi < beats.length) allocated[bi] -= xfadeSec;
+    }
+  }
+  let bestIdx = beats.length - 1;
+  let bestGap = -Infinity;
+  for (let b = 0; b < beats.length; b++) {
+    const gap = windows[b]!.dur - allocated[b]!;
+    if (gap > bestGap) {
+      bestGap = gap;
+      bestIdx = b;
+    }
+  }
+  return bestIdx;
+}
+
+/** Cap to source length and lightly extend/scale without breaking clip order. */
+export function finalizeVoiceSyncedMontageDurations(
+  seedDurations: number[],
+  voiceDur: number,
+  sourceMaxDurs: number[],
+  xfadeSec = 0,
+  sceneIndex = 0
+): number[] {
+  if (seedDurations.length === 0) return seedDurations;
+  const capDur = (i: number, d: number) => {
+    const src = sourceMaxDurs[i] ?? 0;
+    if (src > 0.15) return Math.min(d, Math.max(0.35, src - 0.05));
+    return d;
+  };
+  let durs = seedDurations.map((d, i) => capDur(i, d));
+  const estSec = () => {
+    const overlap = durs.length > 1 ? (durs.length - 1) * xfadeSec : 0;
+    return durs.reduce((s, d) => s + d, 0) - overlap;
+  };
+  let est = estSec();
+  for (let pass = 0; pass < 24 && est < voiceDur - 0.08; pass++) {
+    let grew = false;
+    durs = durs.map((d, i) => {
+      const next = capDur(i, d + 0.35);
+      if (next > d + 0.01) grew = true;
+      return next;
+    });
+    if (!grew) break;
+    est = estSec();
+  }
+  if (est > voiceDur + 0.25) {
+    const scale = voiceDur / est;
+    durs = durs.map((d, i) => capDur(i, clampVidrushClipDuration(d * scale, i, sceneIndex)));
+  }
+  return durs;
 }
 
 export type TimedYearLabel = {
@@ -1026,6 +1103,44 @@ export function buildYearDrawtextFilterChain(
     prev = next;
   });
   return chain;
+}
+
+const SCREEN_LABEL_VIDEO_PREP_VF = `fps=25,format=yuv420p,setsar=1`;
+
+/** Burn voice-synced screen labels directly onto footage — no full-frame alpha overlays. */
+export async function burnTimedScreenLabelsDrawtext(
+  inputVideoPath: string,
+  outputVideoPath: string,
+  labels: TimedYearLabel[],
+  ffmpegBin: string,
+  execWithTimeout: (cmd: string, ms: number, label: string) => Promise<unknown>
+): Promise<string> {
+  if (!labels.length) {
+    if (inputVideoPath !== outputVideoPath) {
+      fs.copyFileSync(inputVideoPath, outputVideoPath);
+    }
+    return outputVideoPath;
+  }
+  const chain = buildYearDrawtextFilterChain("vprep", "vout", labels);
+  const filterComplex = `[0:v]${SCREEN_LABEL_VIDEO_PREP_VF}[vprep]${chain}`;
+  try {
+    await execWithTimeout(
+      `${ffmpegBin} -y -i "${inputVideoPath}" ` +
+        `-filter_complex "${filterComplex}" -map "[vout]" ` +
+        `-an -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -r 25 "${outputVideoPath}"`,
+      120_000,
+      `Burn screen labels drawtext (${labels.length})`
+    );
+    if (fs.existsSync(outputVideoPath) && fs.statSync(outputVideoPath).size > 1000) {
+      return outputVideoPath;
+    }
+  } catch {
+    /* fall through */
+  }
+  if (inputVideoPath !== outputVideoPath) {
+    fs.copyFileSync(inputVideoPath, outputVideoPath);
+  }
+  return outputVideoPath;
 }
 
 function ensureEvenDim(n: number, min = 2): number {

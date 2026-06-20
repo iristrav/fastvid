@@ -77,8 +77,10 @@ import {
   planIntervalScreenLabels,
   planVoiceSyncedScreenLabels,
   computeVoiceBeatWindows,
-  buildIntervalScreenLabelOverlays,
-  burnScreenLabelOverlaysSequential,
+  computeVoiceSyncedClipDurations,
+  pickVoiceBackfillBeatIndex,
+  finalizeVoiceSyncedMontageDurations,
+  burnTimedScreenLabelsDrawtext,
   buildYearDrawtextFilterChain,
   planPhotoShutterCues,
   type TimedYearLabel,
@@ -8696,24 +8698,51 @@ async function prepareStrictUniqueMontage(
   sceneIndex: number,
   clips: string[],
   beatDurations: number[],
-  outDur: number
+  outDur: number,
+  voiceSync?: {
+    beats: Array<{ text: string; holdSec: number }>;
+    clipBeatIndices: number[];
+    voiceDur: number;
+  }
 ): Promise<{ montageDurations: number[]; sourceMaxDurs: number[]; estSec: number }> {
   assertMontageClipsUnique(sceneIndex, clips);
   let sourceMaxDurs = await probeMontageSourceMaxDurs(clips);
-  let montageDurations = balanceMontageDurationsForVoice(
-    clips.length,
-    outDur,
-    beatDurations,
-    sourceMaxDurs
-  );
-  montageDurations = await capMontageDurationsToClipFiles(clips, montageDurations);
-  sourceMaxDurs = await probeMontageSourceMaxDurs(clips);
-  montageDurations = balanceMontageDurationsForVoice(
-    clips.length,
-    outDur,
-    montageDurations,
-    sourceMaxDurs
-  );
+  const xfade = clips.length > 1 ? montageXfadeSec() : 0;
+  let montageDurations: number[];
+
+  if (voiceSync && voiceSync.clipBeatIndices.length === clips.length) {
+    montageDurations = computeVoiceSyncedClipDurations(
+      voiceSync.beats,
+      voiceSync.voiceDur,
+      voiceSync.clipBeatIndices,
+      xfade,
+      sceneIndex
+    );
+    montageDurations = await capMontageDurationsToClipFiles(clips, montageDurations);
+    sourceMaxDurs = await probeMontageSourceMaxDurs(clips);
+    montageDurations = finalizeVoiceSyncedMontageDurations(
+      montageDurations,
+      voiceSync.voiceDur,
+      sourceMaxDurs,
+      xfade,
+      sceneIndex
+    );
+  } else {
+    montageDurations = balanceMontageDurationsForVoice(
+      clips.length,
+      outDur,
+      beatDurations,
+      sourceMaxDurs
+    );
+    montageDurations = await capMontageDurationsToClipFiles(clips, montageDurations);
+    sourceMaxDurs = await probeMontageSourceMaxDurs(clips);
+    montageDurations = balanceMontageDurationsForVoice(
+      clips.length,
+      outDur,
+      montageDurations,
+      sourceMaxDurs
+    );
+  }
   const estSec = effectiveMontageDurationSec(montageDurations, sourceMaxDurs);
   if (!strictNoVisualRepeat()) {
     return { montageDurations, sourceMaxDurs, estSec };
@@ -9261,21 +9290,8 @@ async function composeBatchedArchiveSceneWithAudio(
     );
     return;
   }
-  const screenLabels = docOverlays.filter((o) => o.isScreenLabel);
-  let videoSrc = montageOnlyPath;
-  if (screenLabels.length > 0) {
-    const labeledPath = path.join(workDir, `scene_${sceneIndex}_labeled.mp4`);
-    await burnScreenLabelOverlaysSequential(
-      montageOnlyPath,
-      labeledPath,
-      screenLabels,
-      workDir,
-      FFMPEG_BIN,
-      (cmd, ms, lbl) => withTimeout(exec(cmd), ms, lbl)
-    );
-    videoSrc = labeledPath;
-  }
-  const otherOverlays = docOverlays.filter((o) => !o.isScreenLabel);
+  const videoSrc = montageOnlyPath;
+  const otherOverlays = docOverlays;
   if (otherOverlays.length > 0) {
     const { extraInputs, filterChain, finalLabel } = buildOverlayFilterChain(
       "vmont",
@@ -14723,6 +14739,7 @@ async function backfillArchiveMontageFromPool(
     logPrefix?: string;
     onProgress?: (attempt: number, max: number) => void;
     semanticProfiles?: Map<number, BeatSemanticProfile>;
+    clipBeatIndices?: number[];
   }
 ): Promise<number> {
   const minClipsNeeded = minClipsForBalancedVoice(outDur);
@@ -14746,9 +14763,15 @@ async function backfillArchiveMontageFromPool(
   );
 
   let added = 0;
+  const beatInputs = beats.map((b) => ({ text: b.text, holdSec: b.holdSec }));
+  const xfade = montageXfadeSec();
   for (let attempt = 0; attempt < maxFill && coverage < minCoverage; attempt++) {
     opts?.onProgress?.(attempt + 1, maxFill);
-    const beat = beats[attempt % beats.length] ?? beats[0];
+    const beatIdx =
+      opts?.clipBeatIndices?.length === beatDurations.length
+        ? pickVoiceBackfillBeatIndex(beatInputs, outDur, opts.clipBeatIndices, beatDurations, xfade)
+        : attempt % Math.max(1, beats.length);
+    const beat = beats[beatIdx] ?? beats[0];
     if (!beat) break;
     const profile = opts?.semanticProfiles?.get(beat.index);
     const fillHold = Math.max(beat.holdSec, outDur / minClipsNeeded);
@@ -14759,7 +14782,7 @@ async function backfillArchiveMontageFromPool(
         workDir,
         videoTitle,
         dedup,
-        (clipPath, holdSec) => pushClip(clipPath, holdSec, beats.length + added),
+        (clipPath, holdSec) => pushClip(clipPath, holdSec, beat.index),
         profile,
         fillHold
       );
@@ -14779,8 +14802,10 @@ async function backfillComposeMontageIfShort(
   outDur: number,
   safeClips: string[],
   composeBeatDurations: number[],
+  composeClipBeatIndices: number[],
   seenKeys: Set<string>,
-  dedup: VisualDedupState
+  dedup: VisualDedupState,
+  montageBeats?: SceneBeat[]
 ): Promise<void> {
   if (!curatedArchiveOnlyVisuals()) return;
   const minClipsNeeded = minClipsForBalancedVoice(outDur);
@@ -14788,7 +14813,21 @@ async function backfillComposeMontageIfShort(
   let coverage = await estimateBalancedMontageCoverageSec(safeClips, composeBeatDurations, outDur);
   if (coverage >= minCoverage) return;
 
-  const pushClip = async (clipPath: string, holdSec: number): Promise<boolean> => {
+  const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
+  const beats =
+    montageBeats?.length
+      ? montageBeats
+      : buildSceneBeats(
+          scene,
+          outDur,
+          Math.max(minClipsNeeded + 2, Math.ceil(outDur / effectiveBeatSec())),
+          videoTitle,
+          scenePersons
+        );
+  const beatInputs = beats.map((b) => ({ text: b.text, holdSec: b.holdSec }));
+  const xfade = montageXfadeSec();
+
+  const pushClip = async (clipPath: string, holdSec: number, beatIndex?: number): Promise<boolean> => {
     const key = clipContentKey(clipPath);
     if (seenKeys.has(key) || dedup.usedContentKeys.has(key)) return false;
     let actualHold = holdSec;
@@ -14798,12 +14837,15 @@ async function backfillComposeMontageIfShort(
     seenKeys.add(key);
     safeClips.push(clipPath);
     composeBeatDurations.push(actualHold);
+    const bi =
+      beatIndex ??
+      pickVoiceBackfillBeatIndex(beatInputs, outDur, composeClipBeatIndices, composeBeatDurations, xfade);
+    composeClipBeatIndices.push(bi);
     markCuratedAssetUsed(clipPath, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls);
     coverage = await estimateBalancedMontageCoverageSec(safeClips, composeBeatDurations, outDur);
     return true;
   };
 
-  const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
   await backfillArchiveMontageFromPool(
     scene,
     workDir,
@@ -14813,19 +14855,23 @@ async function backfillComposeMontageIfShort(
     composeBeatDurations,
     dedup,
     pushClip,
-    { logPrefix: `Scene ${scene.index} compose`, maxAttempts: Math.max(14, minClipsNeeded + 6) }
+    {
+      logPrefix: `Scene ${scene.index} compose`,
+      maxAttempts: Math.max(14, minClipsNeeded + 6),
+      clipBeatIndices: composeClipBeatIndices,
+    }
   );
 
   if (coverage < minCoverage) {
-    const beats = buildSceneBeats(
-      scene,
-      outDur,
-      Math.max(minClipsNeeded + 2, Math.ceil(outDur / effectiveBeatSec())),
-      videoTitle,
-      scenePersons
-    );
     for (let attempt = 0; attempt < 8 && coverage < minCoverage; attempt++) {
-      const beat = beats[attempt % beats.length] ?? beats[0];
+      const beatIdx = pickVoiceBackfillBeatIndex(
+        beatInputs,
+        outDur,
+        composeClipBeatIndices,
+        composeBeatDurations,
+        xfade
+      );
+      const beat = beats[beatIdx] ?? beats[0];
       if (!beat) break;
       const fillHold = Math.max(beat.holdSec, outDur / minClipsNeeded);
       const adopted = await fillBeatVisual(
@@ -14834,7 +14880,7 @@ async function backfillComposeMontageIfShort(
         workDir,
         videoTitle,
         dedup,
-        pushClip,
+        (clipPath, holdSec) => pushClip(clipPath, holdSec, beat.index),
         undefined,
         fillHold
       );
@@ -15262,17 +15308,19 @@ async function ensureArchiveMontageVoiceCoverage(
     beatDurations,
     dedup,
     pushSceneClip,
-    { maxAttempts: Math.max(8, minClips + 4), semanticProfiles }
+    { maxAttempts: Math.max(8, minClips + 4), semanticProfiles, clipBeatIndices }
   );
 
   if (coverage >= minCoverage) return;
 
+  const beatInputs = beats.map((b) => ({ text: b.text, holdSec: b.holdSec }));
+  const xfade = montageXfadeSec();
   for (let attempt = 0; attempt < 6 && coverage < minCoverage; attempt++) {
-    const beat = beats[attempt % Math.max(1, beats.length)] ?? beats[0];
+    const beatIdx = pickVoiceBackfillBeatIndex(beatInputs, scene.duration, clipBeatIndices, beatDurations, xfade);
+    const beat = beats[beatIdx] ?? beats[0];
     if (!beat) break;
-    const fillBeatIndex = beats.length + attempt;
     const holdSec = Math.max(beat.holdSec, scene.duration / minClips);
-    const pushClip = (clipPath: string, sec = holdSec) => pushSceneClip(clipPath, sec, fillBeatIndex);
+    const pushClip = (clipPath: string, sec = holdSec) => pushSceneClip(clipPath, sec, beat.index);
     try {
       await ensureBeatVisualFilled(
         beat,
@@ -16648,6 +16696,9 @@ async function composeSceneVideo(
     composeBeatDurations = aligned.beatDurations;
     composeClipBeatIndices = aligned.clipBeatIndices;
   }
+  if (!composeClipBeatIndices || composeClipBeatIndices.length !== safeClips.length) {
+    composeClipBeatIndices = safeClips.map((_, i) => i);
+  }
 
   // Validate audio
   const audioValid = fs.existsSync(audioPath) && fs.statSync(audioPath).size > 100;
@@ -16669,19 +16720,6 @@ async function composeSceneVideo(
     Math.max(0.5, duration - 0.35);
   const outDurEarly = voiceDurEarly + 0.12;
   const montageBeats = composeOptions?.montageBeats;
-  if (
-    montageBeats?.length &&
-    composeClipBeatIndices?.length === safeClips.length &&
-    outDurEarly > 0
-  ) {
-    const voiceWindows = computeVoiceBeatWindows(
-      montageBeats.map((b) => ({ text: b.text, holdSec: b.holdSec })),
-      outDurEarly
-    );
-    composeBeatDurations = composeClipBeatIndices.map(
-      (beatIdx) => voiceWindows[beatIdx]?.dur ?? effectiveBeatSec()
-    );
-  }
   if (composeOptions?.dedup) {
     await backfillComposeMontageIfShort(
       scene,
@@ -16690,8 +16728,24 @@ async function composeSceneVideo(
       outDurEarly,
       safeClips,
       composeBeatDurations,
+      composeClipBeatIndices,
       seenKeys,
-      composeOptions.dedup
+      composeOptions.dedup,
+      montageBeats
+    );
+  }
+  if (
+    montageBeats?.length &&
+    composeClipBeatIndices?.length === safeClips.length &&
+    outDurEarly > 0
+  ) {
+    const xfade = safeClips.length > 1 ? montageXfadeSec() : 0;
+    composeBeatDurations = computeVoiceSyncedClipDurations(
+      montageBeats.map((b) => ({ text: b.text, holdSec: b.holdSec })),
+      outDurEarly,
+      composeClipBeatIndices,
+      xfade,
+      scene.index
     );
   }
   const composeTimeout = composeSceneTimeoutMs(safeClips.length);
@@ -16712,7 +16766,6 @@ async function composeSceneVideo(
   let kineticFrames: KineticFrame[] = [];
   let docOverlays: TimedOverlay[] = [];
   let yearLabels: TimedYearLabel[] = [];
-  let screenLabels: TimedOverlay[] = [];
   let cinematicPlan: CinematicScenePlan | null = null;
   const sfxCueFiles: Array<{ path: string; timeSec: number; volume: number }> = [];
 
@@ -16828,11 +16881,21 @@ async function composeSceneVideo(
   const voiceDur = voiceDurEarly;
   const outDur = outDurEarly;
 
+  const voiceSync =
+    montageBeats?.length && composeClipBeatIndices?.length === safeClips.length
+      ? {
+          beats: montageBeats.map((b) => ({ text: b.text, holdSec: b.holdSec })),
+          clipBeatIndices: composeClipBeatIndices,
+          voiceDur: outDurEarly,
+        }
+      : undefined;
+
   const prepared = await prepareStrictUniqueMontage(
     scene.index,
     safeClips,
     composeBeatDurations,
-    outDur
+    outDur,
+    voiceSync
   );
   let montageDurations = prepared.montageDurations;
   let sourceMaxDurs = prepared.sourceMaxDurs;
@@ -16873,27 +16936,14 @@ async function composeSceneVideo(
       }));
       yearLabels = planVoiceSyncedScreenLabels(beatInputs, outDur, sceneStartSec, montageDurations);
       if (yearLabels.length > 0) {
-        const labelOverlays = await buildIntervalScreenLabelOverlays(
-          yearLabels,
-          scene.index,
-          workDir,
-          FFMPEG_BIN,
-          (cmd, ms, lbl) => withTimeout(exec(cmd), ms, lbl)
-        );
-        docOverlays.push(...labelOverlays);
-        screenLabels = labelOverlays;
         console.log(
-          `[Cinematic] Scene ${scene.index}: ${labelOverlays.length} voice-synced label overlay(s) [${yearLabels.map((y) => y.displayText).join(" | ")}]`
+          `[Cinematic] Scene ${scene.index}: ${yearLabels.length} voice-synced label(s) drawtext [${yearLabels.map((y) => y.displayText).join(" | ")}]`
         );
       }
     } catch (err) {
       console.warn(`[Pipeline] Scene ${scene.index}: year label plan failed (non-fatal):`, err);
     }
   }
-  if (screenLabels.length > 0) {
-    docOverlays = docOverlays.filter((o) => !o.isScreenLabel);
-  }
-
   if (!skipEffectLayers && cinematicEffectsEnabled() && montageDurations?.length === safeClips.length) {
     try {
       const photoCues = planPhotoShutterCues(
@@ -16923,7 +16973,7 @@ async function composeSceneVideo(
   }
 
   try {
-    if (!skipEffectLayers && screenLabels.length > 0) {
+    if (!skipEffectLayers && yearLabels.length > 0) {
       const montageOnlyPath = path.join(workDir, `scene_${scene.index}_montage_v.mp4`);
       const useBatchedMontage =
         IS_RAILWAY && curatedArchiveOnlyVisuals() && composeClips.length > 4;
@@ -16952,11 +17002,10 @@ async function composeSceneVideo(
         );
       }
       const labeledPath = path.join(workDir, `scene_${scene.index}_labeled.mp4`);
-      await burnScreenLabelOverlaysSequential(
+      await burnTimedScreenLabelsDrawtext(
         montageOnlyPath,
         labeledPath,
-        screenLabels,
-        workDir,
+        yearLabels,
         FFMPEG_BIN,
         (cmd, ms, lbl) => withTimeout(exec(cmd), ms, lbl)
       );
@@ -16988,13 +17037,6 @@ async function composeSceneVideo(
       );
       if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size < 1000) {
         throw pipelineError(PIPELINE_ERROR.FFMPEG, `Scene ${scene.index} label compose produced no output`);
-      }
-      for (const overlay of screenLabels) {
-        try {
-          fs.unlinkSync(overlay.path);
-        } catch {
-          /* ignore */
-        }
       }
       return outputPath;
     }
