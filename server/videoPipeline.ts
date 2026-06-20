@@ -13711,10 +13711,12 @@ async function adoptArchiveBeatClip(
   prefetchedRanked?: CuratedCandidatePick[] | null,
   adoptOpts?: { videosOnly?: boolean }
 ): Promise<boolean> {
-  const rejectClip = (clipPath: string | null | undefined): void => {
+  const rejectClip = async (clipPath: string | null | undefined): Promise<void> => {
     if (!clipPath || isPipelineFallbackClip(clipPath)) return;
-    dedup.usedContentKeys.add(clipContentKey(clipPath));
-    markCuratedAssetUsed(clipPath, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls);
+    await withVisualDedupLock(dedup, async () => {
+      dedup.usedContentKeys.add(clipContentKey(clipPath));
+      markCuratedAssetUsed(clipPath, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls);
+    });
   };
   const tryClip = async (
     clipPath: string | null | undefined,
@@ -13723,7 +13725,7 @@ async function adoptArchiveBeatClip(
   ): Promise<boolean> => {
     if (!clipPath || isPipelineFallbackClip(clipPath)) return false;
     if (dedup.usedContentKeys.has(clipContentKey(clipPath))) {
-      rejectClip(clipPath);
+      await rejectClip(clipPath);
       return false;
     }
     const curated = curatedClipPathAssetId(clipPath) != null;
@@ -13731,7 +13733,7 @@ async function adoptArchiveBeatClip(
       console.warn(
         `[Pipeline] Scene ${scene.index} beat ${beat.index}: skipping mostly-black clip ${path.basename(clipPath)}`
       );
-      rejectClip(clipPath);
+      await rejectClip(clipPath);
       return false;
     }
     if (
@@ -13746,7 +13748,7 @@ async function adoptArchiveBeatClip(
         curated ? "archive" : "archive_fetch"
       ))
     ) {
-      rejectClip(clipPath);
+      await rejectClip(clipPath);
       return false;
     }
     const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode);
@@ -13754,7 +13756,7 @@ async function adoptArchiveBeatClip(
       console.warn(
         `[Pipeline] Scene ${scene.index} beat ${beat.index}: skipping clip that fails compose gate ${path.basename(withText)}`
       );
-      rejectClip(clipPath);
+      await rejectClip(withText);
       return false;
     }
     if (await pushClip(withText, sec)) {
@@ -15238,27 +15240,29 @@ async function fetchArchiveSentenceMontage(
   );
 
   const pushSceneClip = async (clipPath: string, holdSec: number, beatIndex: number): Promise<boolean> => {
-    const key = clipContentKey(clipPath);
-    if (dedup.usedContentKeys.has(key)) {
-      console.warn(
-        `[Pipeline] Scene ${scene.index} zin ${beatIndex}: duplicate clip ${path.basename(clipPath)}`
-      );
-      return false;
-    }
-    let actualHold = holdSec;
-    if (!curatedClipPathAssetId(clipPath) && fs.existsSync(clipPath)) {
-      const probed = await probeVideoDurationSec(clipPath);
-      if (probed > 0.15) actualHold = Math.min(holdSec, probed - 0.04);
-    }
-    dedup.usedContentKeys.add(key);
-    clips.push(clipPath);
-    beatDurations.push(actualHold);
-    clipBeatIndices.push(beatIndex);
-    markCuratedAssetUsed(clipPath, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls);
-    if (clipPath && !isPipelineFallbackClip(clipPath) && fs.existsSync(clipPath)) {
-      dedup.lastMuskStockClip = clipPath;
-    }
-    return true;
+    return withVisualDedupLock(dedup, async () => {
+      const key = clipContentKey(clipPath);
+      if (dedup.usedContentKeys.has(key)) {
+        console.warn(
+          `[Pipeline] Scene ${scene.index} zin ${beatIndex}: duplicate clip ${path.basename(clipPath)}`
+        );
+        return false;
+      }
+      let actualHold = holdSec;
+      if (!curatedClipPathAssetId(clipPath) && fs.existsSync(clipPath)) {
+        const probed = await probeVideoDurationSec(clipPath);
+        if (probed > 0.15) actualHold = Math.min(holdSec, probed - 0.04);
+      }
+      dedup.usedContentKeys.add(key);
+      clips.push(clipPath);
+      beatDurations.push(actualHold);
+      clipBeatIndices.push(beatIndex);
+      markCuratedAssetUsed(clipPath, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls);
+      if (clipPath && !isPipelineFallbackClip(clipPath) && fs.existsSync(clipPath)) {
+        dedup.lastMuskStockClip = clipPath;
+      }
+      return true;
+    });
   };
 
   const beatConcurrency = dedup.perf.fastStockMode ? 6 : 2;
@@ -15267,11 +15271,20 @@ async function fetchArchiveSentenceMontage(
     beats.map((beat, bi) =>
       beatLimit(async () => {
         onBeatProgress?.(bi + 1, beats.length, "beat");
-        await withVisualDedupLock(dedup, async () => {
-          const pushClip = (clipPath: string, holdSec = beat.holdSec): Promise<boolean> =>
-            pushSceneClip(clipPath, holdSec, beat.index);
+        const pushClip = (clipPath: string, holdSec = beat.holdSec): Promise<boolean> =>
+          pushSceneClip(clipPath, holdSec, beat.index);
 
-          const filled = await fillBeatVisual(
+        const filled = await fillBeatVisual(
+          beat,
+          scene,
+          workDir,
+          videoTitle,
+          dedup,
+          pushClip,
+          semanticProfiles.get(bi)
+        );
+        if (!filled) {
+          await ensureBeatVisualFilled(
             beat,
             scene,
             workDir,
@@ -15280,18 +15293,7 @@ async function fetchArchiveSentenceMontage(
             pushClip,
             semanticProfiles.get(bi)
           );
-          if (!filled) {
-            await ensureBeatVisualFilled(
-              beat,
-              scene,
-              workDir,
-              videoTitle,
-              dedup,
-              pushClip,
-              semanticProfiles.get(bi)
-            );
-          }
-        });
+        }
       })
     )
   );
@@ -15377,7 +15379,13 @@ async function ensureArchiveMontageVoiceCoverage(
     beatDurations,
     dedup,
     pushSceneClip,
-    { maxAttempts: Math.max(8, minClips + 4), semanticProfiles, clipBeatIndices }
+    {
+      maxAttempts: dedup.perf.fastStockMode
+        ? Math.max(4, minClips + 2)
+        : Math.max(8, minClips + 4),
+      semanticProfiles,
+      clipBeatIndices,
+    }
   );
 
   if (coverage >= minCoverage) return;

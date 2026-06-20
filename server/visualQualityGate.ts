@@ -240,6 +240,15 @@ async function scoreClipAcrossFrames(
       return { pass: false, worstScore: worstScore10, framesScored: storedEmbeddings.length };
     }
     if (storedOnly?.similarityPass) {
+      const worstScore10 = Math.max(0, Math.min(10, Math.round(storedOnly.worstSimilarity * 40)));
+      if (
+        fastMode &&
+        storedOnly.score >= minScore &&
+        worstScore10 >= minScore &&
+        !storedOnly.modernMismatch
+      ) {
+        return { pass: true, worstScore: worstScore10, framesScored: storedEmbeddings.length };
+      }
       const lumaPath = path.join(
         workDir,
         `scene_${sceneIndex}_b${beatIndex}_lv_luma_${path.basename(clipPath).replace(/\.[^.]+$/, "")}.jpg`

@@ -165,7 +165,7 @@ export function maxPipelineWallClockHardMin(videoLength?: string | null): number
 
 /** Max archive/Wikimedia candidates to try per beat when wall-clock limit is on. */
 export function maxVisualCandidatesPerBeatTry(): number {
-  return pipelineWallClockLimitEnabled() ? 4 : 12;
+  return pipelineWallClockLimitEnabled() ? 3 : 12;
 }
 
 /** Wall-clock budget for the visual sourcing stage (minutes). */
