@@ -14145,7 +14145,7 @@ async function adoptKlingBeatClip(
         "kling",
         minClipQualityScore()
       ))
-    {
+    ) {
       return false;
     }
     if (await pushClip(withText, sec)) {
