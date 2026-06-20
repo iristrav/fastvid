@@ -260,7 +260,6 @@ async function scoreClipAcrossFrames(
         darkReject = luma !== null && luma < 12;
         cleanupFramePaths([lumaPath]);
       }
-      const worstScore10 = Math.max(0, Math.min(10, Math.round(storedOnly.worstSimilarity * 40)));
       const pass =
         !darkReject &&
         storedOnly.score >= minScore &&
