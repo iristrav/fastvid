@@ -8,6 +8,7 @@ import { spawn } from "child_process";
 import { promisify } from "util";
 import { exec as execCb } from "child_process";
 import { cosineSimilarityVectors } from "./semanticVisualMatching";
+import { inferVideoVisualTopic } from "./visualBeatTags";
 
 const exec = promisify(execCb);
 
@@ -48,6 +49,45 @@ export function minLocalClipSimilarity(minScore10 = 8): number {
     if (!isNaN(n) && n >= 0.08 && n <= 0.55) return n;
   }
   return minScore10 / 40;
+}
+
+const MODERN_MISMATCH_QUERIES = [
+  "modern business conference presentation projector screen audience",
+  "laptop computer software code documentation office meeting",
+  "corporate keynote speaker slide deck technology startup",
+  "smartphone tablet digital app interface screen",
+  "contemporary office whiteboard team meeting",
+];
+
+function topicNeedsHistoricalFootage(beatText: string, videoTitle?: string): boolean {
+  const topic = inferVideoVisualTopic(videoTitle, beatText);
+  if (topic === "wwii" || topic === "cold_war") return true;
+  const hay = `${videoTitle ?? ""} ${beatText}`.toLowerCase();
+  return /\b(19\d{2}|20[0-1]\d|world war|wwii|ww2|war|historical|archive|ancient|century|hitler|nazi|berlin|titanic)\b/.test(
+    hay
+  );
+}
+
+async function modernContentMismatchAgainstBeat(
+  framePaths: string[],
+  beatQueryEmb: number[],
+  beatText: string,
+  videoTitle?: string
+): Promise<boolean> {
+  if (!topicNeedsHistoricalFootage(beatText, videoTitle)) return false;
+  const samples = framePaths.slice(0, Math.min(2, framePaths.length));
+  for (const fp of samples) {
+    const imgEmb = await embedImageFromPath(fp);
+    if (!imgEmb) continue;
+    const beatSim = scoreEmbeddingSimilarity(beatQueryEmb, imgEmb);
+    for (const q of MODERN_MISMATCH_QUERIES) {
+      const negEmb = await embedTextQuery(q);
+      if (!negEmb) continue;
+      const negSim = scoreEmbeddingSimilarity(negEmb, imgEmb);
+      if (negSim >= beatSim + 0.03) return true;
+    }
+  }
+  return false;
 }
 
 function beatQueryText(
@@ -272,9 +312,16 @@ export async function scoreFramePathsAgainstBeat(
   const allWellFramed = frameScores.every((s) => s.wellFramed);
   const darkReject = frameScores.some((s) => s.luma !== null && s.luma < 12);
 
-  const matchesNarration = worst.similarity >= minSim && !darkReject;
-  const showsSubject = worst.similarity >= minSim - 0.04;
-  const wrongSubject = worst.similarity < minSim - 0.08 || darkReject;
+  const modernMismatch = await modernContentMismatchAgainstBeat(
+    framePaths,
+    queryEmb,
+    beatText,
+    videoTitle
+  );
+
+  const matchesNarration = worst.similarity >= minSim && !darkReject && !modernMismatch;
+  const showsSubject = worst.similarity >= minSim;
+  const wrongSubject = worst.similarity < minSim || darkReject || modernMismatch;
 
   return {
     score,

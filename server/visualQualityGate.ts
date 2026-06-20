@@ -3,7 +3,6 @@
  */
 import fs from "fs";
 import path from "path";
-import { vidrushDocumentaryQualityEnabled } from "./sourcingPolicy";
 import { curatedClipPathAssetId } from "./curatedMediaSourcing";
 import { loadStoredFrameEmbeddings } from "./archiveClipEmbedding";
 import {
@@ -24,14 +23,14 @@ export function sceneCriticalReviewEnabled(): boolean {
   return process.env.ENABLE_VIDRUSH_QUALITY !== "false";
 }
 
-/** Minimum vision score for Wikimedia clips (lower than archive — stills need more room). */
+/** Minimum vision score for Wikimedia/Openverse stills — same bar as archive (default 8). */
 export function minWikiClipQualityScore(): number {
   const raw = process.env.MIN_WIKI_CLIP_QUALITY_SCORE?.trim();
   if (raw) {
     const n = parseInt(raw, 10);
-    if (!isNaN(n) && n >= 4 && n <= 10) return n;
+    if (!isNaN(n) && n >= 5 && n <= 10) return n;
   }
-  return 6;
+  return minClipQualityScore();
 }
 
 /** Minimum quality score (0–10). Default 8. */
@@ -47,7 +46,8 @@ export function minClipQualityScore(): number {
 /** When true, inconclusive local vision (CLIP load fail / no frames) rejects the clip. */
 export function strictVisionInconclusiveFails(): boolean {
   if (process.env.STRICT_CLIP_VISION === "false") return false;
-  return minClipQualityScore() >= 9;
+  if (process.env.STRICT_CLIP_VISION === "true") return true;
+  return minClipQualityScore() >= 8;
 }
 
 /** Frames scored per clip (1–6). Default 4 across the full duration. */
@@ -106,22 +106,18 @@ export function getVisionQaStatus(): {
   };
 }
 
-/** Check adopted clips; stock included when Vidrush quality or ENABLE_CLIP_VISION_STOCK=true. */
-export function shouldVisionCheckClip(filePath: string, fastMode = false): boolean {
+/** Every adopted montage clip must pass vision QA — all scenes, all sources. */
+export function shouldVisionCheckClip(filePath: string, _fastMode = false): boolean {
   if (!localVisionEnabled()) return false;
   const base = path.basename(filePath).toLowerCase();
-  const isStock = /pexels|pixabay|_b\d+_vid|person_stock/i.test(base);
-  const isWikimedia = /wikivid|_wiki_|v1wiki/i.test(base);
-  if (fastMode && isStock && process.env.ENABLE_CLIP_VISION_STOCK !== "true") return false;
-  if (fastMode && isWikimedia && process.env.ENABLE_CLIP_VISION_WIKIMEDIA !== "true") return false;
-  if (sceneCriticalReviewEnabled()) return true;
-  const checkStock =
-    vidrushDocumentaryQualityEnabled() || process.env.ENABLE_CLIP_VISION_STOCK === "true";
-  if (checkStock && isStock) return true;
-  return (
-    /_archive_|_hist|_wikivid|_wiki_|_gdelt|_septube|_ov_|_serp_|_unsplash|_euro_|_nasa/i.test(base) ||
-    /_ytcc_|_ytfu_|_transformed|_curated_a/i.test(base)
-  );
+  if (
+    /guaranteed|_guaranteed|_slot\d+_guaranteed|motion_graphic|_mgfx|_intro_card|_outro_card|silent\.mp4$/i.test(
+      base
+    )
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function visionSampleFractions(fastMode = false): number[] {
@@ -191,16 +187,19 @@ async function scoreClipAcrossFrames(
     return { pass: !strictVisionInconclusiveFails(), worstScore: null, framesScored: 0 };
   }
 
+  const worstScore10 = Math.max(0, Math.min(10, Math.round(result.worstSimilarity * 40)));
   const pass =
+    result.framesScored > 0 &&
     result.matchesNarration &&
     result.showsSubject &&
     !result.wrongSubject &&
-    (result.wellFramed || result.score >= minScore) &&
+    result.wellFramed &&
+    worstScore10 >= minScore &&
     result.score >= minScore;
 
   return {
     pass,
-    worstScore: result.score,
+    worstScore: worstScore10,
     framesScored: result.framesScored,
   };
 }
@@ -235,7 +234,7 @@ export async function clipPassesVisionGate(
   if (!result.pass) {
     console.warn(
       `[LocalVision] Scene ${sceneIndex} beat ${beatIndex}: reject "${path.basename(clipPath)}" ` +
-        `(${result.framesScored} frames, score=${result.worstScore ?? "?"}/10, need ≥${minScore})`
+        `(${result.framesScored} frames, worst=${result.worstScore ?? "?"}/10 avg needed ≥${minScore})`
     );
   }
   return result.pass;

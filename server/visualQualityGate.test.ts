@@ -11,30 +11,23 @@ import {
 } from "./localClipVision";
 
 describe("visualQualityGate", () => {
-  it("checks archival and stock filenames when critical review on", () => {
+  it("vision-checks all montage clips including openverse and stock", () => {
     expect(shouldVisionCheckClip("/tmp/scene_0_b0_hist_archive_titanic.mp4")).toBe(true);
+    expect(shouldVisionCheckClip("/tmp/scene_0_wiki2ov_openverse_0.mp4")).toBe(true);
     expect(shouldVisionCheckClip("/tmp/scene_0_b0_pexels_ocean.mp4")).toBe(true);
+    expect(shouldVisionCheckClip("/tmp/scene_0_b1_v1wiki_b2.mp4")).toBe(true);
   });
 
-  it("skips stock vision in fast mode unless ENABLE_CLIP_VISION_STOCK=true", () => {
-    const prevStock = process.env.ENABLE_CLIP_VISION_STOCK;
-    const prevReview = process.env.ENABLE_SCENE_CRITICAL_REVIEW;
-    process.env.ENABLE_CLIP_VISION_STOCK = "false";
-    process.env.ENABLE_SCENE_CRITICAL_REVIEW = "false";
-    expect(shouldVisionCheckClip("/tmp/scene_0_b0_pexels_ocean.mp4", true)).toBe(false);
-    expect(shouldVisionCheckClip("/tmp/scene_0_b0_hist_archive_titanic.mp4", true)).toBe(true);
-    process.env.ENABLE_CLIP_VISION_STOCK = prevStock;
-    process.env.ENABLE_SCENE_CRITICAL_REVIEW = prevReview;
+  it("skips guaranteed and motion-graphic fallbacks", () => {
+    expect(shouldVisionCheckClip("/tmp/scene_0_slot3_guaranteed.mp4")).toBe(false);
+    expect(shouldVisionCheckClip("/tmp/scene_0_mgfx_card.mp4")).toBe(false);
   });
 
-  it("skips wikimedia CLIP in fast mode unless ENABLE_CLIP_VISION_WIKIMEDIA=true", () => {
-    const prevWiki = process.env.ENABLE_CLIP_VISION_WIKIMEDIA;
-    const prevReview = process.env.ENABLE_SCENE_CRITICAL_REVIEW;
-    process.env.ENABLE_CLIP_VISION_WIKIMEDIA = "false";
-    process.env.ENABLE_SCENE_CRITICAL_REVIEW = "false";
-    expect(shouldVisionCheckClip("/tmp/scene_0_b1_v1wiki_b2.mp4", true)).toBe(false);
-    process.env.ENABLE_CLIP_VISION_WIKIMEDIA = prevWiki;
-    process.env.ENABLE_SCENE_CRITICAL_REVIEW = prevReview;
+  it("skips vision when ENABLE_LOCAL_VISION=false", () => {
+    const prev = process.env.ENABLE_LOCAL_VISION;
+    process.env.ENABLE_LOCAL_VISION = "false";
+    expect(shouldVisionCheckClip("/tmp/scene_0_b0_pexels_ocean.mp4")).toBe(false);
+    process.env.ENABLE_LOCAL_VISION = prev;
   });
 
   it("clipVisionGateEnabled respects ENABLE_LOCAL_VISION=false", () => {
