@@ -289,8 +289,11 @@ function resolveModel(provider: LlmProvider, hasVision: boolean, maxTokens?: num
       return process.env.GROQ_VISION_MODEL?.trim() || "llama-3.2-11b-vision-preview";
     }
     const fastModel = process.env.GROQ_FAST_MODEL?.trim() || "llama-3.1-8b-instant";
-    if (maxTokens != null && maxTokens <= 2500) return fastModel;
-    return process.env.GROQ_MODEL?.trim() || "llama-3.3-70b-versatile";
+    const heavyModel = process.env.GROQ_MODEL?.trim() || "llama-3.3-70b-versatile";
+    if (process.env.GROQ_USE_70B === "true") return heavyModel;
+    if (maxTokens != null && maxTokens > 4000) return heavyModel;
+    // Default fast model — preserves Groq TPD quota on Railway.
+    return fastModel;
   }
   if (provider === "openai") {
     return process.env.LLM_MODEL?.trim() || "gpt-4o";
@@ -298,12 +301,47 @@ function resolveModel(provider: LlmProvider, hasVision: boolean, maxTokens?: num
   return process.env.FORGE_LLM_MODEL?.trim() || "gemini-2.5-flash";
 }
 
+/** Groq daily quota hit — skip retries and prefer OpenAI for subsequent calls. */
+let groqCooldownUntilMs = 0;
+
+export function isGroqInCooldown(): boolean {
+  return Date.now() < groqCooldownUntilMs;
+}
+
+function isGroqDailyQuotaError(body: string): boolean {
+  const lower = body.toLowerCase();
+  return (
+    lower.includes("tokens per day") ||
+    lower.includes("tpd") ||
+    lower.includes("tokens per minute (tpm)") ||
+    lower.includes("tokens per minute (tpd)")
+  );
+}
+
+function markGroqCooldown(errorText: string): void {
+  if (!isGroqDailyQuotaError(errorText) && !isRateLimitError(429)) return;
+  const waitSec = parseRetryAfterSeconds(errorText);
+  const cooldownMs =
+    waitSec != null && waitSec > 0
+      ? waitSec * 1000
+      : isGroqDailyQuotaError(errorText)
+        ? 60 * 60 * 1000
+        : 5 * 60 * 1000;
+  groqCooldownUntilMs = Math.max(groqCooldownUntilMs, Date.now() + cooldownMs);
+}
+
 function parseRetryAfterSeconds(body: string): number | null {
-  const m = body.match(/try again in (\d+(?:\.\d+)?)\s*s/i);
-  if (!m) return null;
-  const sec = parseFloat(m[1]!);
-  if (isNaN(sec) || sec <= 0) return null;
-  return Math.min(90, Math.ceil(sec + 0.5));
+  const minSec = body.match(/try again in (\d+)m(\d+(?:\.\d+)?)s/i);
+  if (minSec) {
+    const sec = parseInt(minSec[1]!, 10) * 60 + parseFloat(minSec[2]!);
+    if (!isNaN(sec) && sec > 0) return Math.ceil(sec);
+  }
+  const secOnly = body.match(/try again in (\d+(?:\.\d+)?)\s*s/i);
+  if (secOnly) {
+    const sec = parseFloat(secOnly[1]!);
+    if (!isNaN(sec) && sec > 0) return Math.ceil(sec + 0.5);
+  }
+  return null;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -332,13 +370,25 @@ function shouldFallbackToNextProvider(status: number, body: string): boolean {
 
 function providersToTry(primary: LlmProvider): LlmProvider[] {
   const out: LlmProvider[] = [];
-  if (primary !== "none") out.push(primary);
-  if (primary === "groq" && openAiKeyFromEnv() && !out.includes("openai")) {
-    out.push("openai");
+  const groqAvailable = Boolean(groqKeyFromEnv()) && !isGroqInCooldown();
+  const openAiAvailable = Boolean(openAiKeyFromEnv());
+
+  const push = (p: LlmProvider) => {
+    if (p === "none" || out.includes(p)) return;
+    if (p === "groq" && !groqAvailable) return;
+    if (p === "openai" && !openAiAvailable) return;
+    if (!llmApiKeyForProvider(p)) return;
+    out.push(p);
+  };
+
+  if (primary === "groq" && !groqAvailable && openAiAvailable) {
+    push("openai");
+  } else if (primary !== "none") {
+    push(primary);
   }
-  if (primary === "openai" && groqKeyFromEnv() && !out.includes("groq")) {
-    out.push("groq");
-  }
+
+  if (openAiAvailable) push("openai");
+  if (groqAvailable) push("groq");
   return out;
 }
 
@@ -491,8 +541,23 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
         `LLM invoke failed (${provider}, model=${payload.model}): ${response.status} ${response.statusText} – ${errorText}`
       );
 
-      if (isRateLimitError(response.status) && attempt < 3) {
-        const waitSec = parseRetryAfterSeconds(errorText) ?? Math.min(30, 2 ** attempt * 3);
+      if (provider === "groq" && isRateLimitError(response.status)) {
+        markGroqCooldown(errorText);
+      }
+
+      const retryAfterSec = parseRetryAfterSeconds(errorText);
+      const skipGroqRetries =
+        provider === "groq" &&
+        (isGroqDailyQuotaError(errorText) || (retryAfterSec != null && retryAfterSec > 120));
+
+      if (
+        isRateLimitError(response.status) &&
+        !skipGroqRetries &&
+        attempt < 3 &&
+        retryAfterSec != null &&
+        retryAfterSec <= 120
+      ) {
+        const waitSec = Math.min(90, retryAfterSec);
         console.warn(
           `[LLM] ${provider} rate limit (attempt ${attempt + 1}/4) — retry in ${waitSec}s`
         );
@@ -502,7 +567,9 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
 
       if (shouldFallbackToNextProvider(response.status, errorText) && i + 1 < chain.length) {
         console.warn(
-          `[LLM] ${provider} failed (${response.status}) — falling back to ${chain[i + 1]}`
+          `[LLM] ${provider} failed (${response.status})` +
+            (skipGroqRetries ? " [daily/long quota — no retry]" : "") +
+            ` — falling back to ${chain[i + 1]}`
         );
         break;
       }
@@ -511,5 +578,9 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
     }
   }
 
-  throw lastError ?? new Error("LLM invoke failed: no provider available");
+  throw lastError ?? new Error(
+    groqKeyFromEnv() && !openAiKeyFromEnv() && isGroqInCooldown()
+      ? "LLM invoke failed: Groq daily quota exhausted — set LLM_API_KEY (OpenAI sk-...) for fallback"
+      : "LLM invoke failed: no provider available"
+  );
 }
