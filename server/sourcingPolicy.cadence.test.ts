@@ -6,6 +6,8 @@ import {
   curatedPerfBeatsFloor,
   curatedMaxStockBeatsPerVideo,
   curatedAiFallbackMaxClips,
+  archiveMinVideoClipsTarget,
+  archiveMaxImageClipsPerVideo,
   archiveOpeningVideoBeatsTarget,
 } from "./sourcingPolicy";
 
@@ -30,9 +32,11 @@ describe("visual cadence (5–8s per clip)", () => {
   });
 
   it("stock cap defaults very low per video length", () => {
-    expect(curatedMaxStockBeatsPerVideo("1")).toBe(2);
+    expect(curatedMaxStockBeatsPerVideo("1")).toBe(1);
     expect(curatedMaxStockBeatsPerVideo("8-10")).toBe(2);
     expect(curatedAiFallbackMaxClips("1")).toBe(12);
-    expect(archiveOpeningVideoBeatsTarget("1")).toBe(8);
+    expect(archiveMaxImageClipsPerVideo("1")).toBe(3);
+    expect(archiveMinVideoClipsTarget("1")).toBe(7);
+    expect(archiveOpeningVideoBeatsTarget("1")).toBe(7);
   });
 });

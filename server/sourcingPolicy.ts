@@ -15,6 +15,19 @@ export function externalVisualSourcingEnabled(): boolean {
   return process.env.ENABLE_EXTERNAL_VISUAL_SOURCING === "true";
 }
 
+/** Openverse CC stills — off in archive-first mode (unvetted random internet photos). */
+export function openverseStillsEnabled(): boolean {
+  if (process.env.ENABLE_OPENVERSE_STILLS === "false") return false;
+  if (curatedArchiveOnlyVisuals()) return false;
+  return true;
+}
+
+/** Wikimedia Commons still photos — on when V1 matching is on (not random Openverse). */
+export function wikimediaInternetStillsEnabled(): boolean {
+  if (process.env.ENABLE_WIKIMEDIA_STILLS === "false") return false;
+  return visualMatchingV1Enabled();
+}
+
 /** When true, voiceover uses ElevenLabs only (no Fish Audio). */
 export function elevenLabsOnlyVoice(): boolean {
   if (process.env.ELEVENLABS_ONLY === "true") return true;
@@ -53,7 +66,7 @@ export function archivePexelsHybridEnabled(): boolean {
   return process.env.ARCHIVE_PEXELS_HYBRID !== "false" && archivePexelsFallbackEnabled();
 }
 
-/** Cap licensed stock (Pexels/Pixabay) per video — archive-first default is very low. */
+/** Cap licensed stock (Pexels/Pixabay) per video — last resort only; default very low. */
 export function curatedMaxStockBeatsPerVideo(videoLength?: string | null): number {
   if (!archivePexelsFallbackEnabled()) return 0;
   const raw = process.env.MAX_STOCK_BEATS_PER_VIDEO?.trim();
@@ -62,7 +75,7 @@ export function curatedMaxStockBeatsPerVideo(videoLength?: string | null): numbe
     if (!isNaN(n) && n >= 0) return n;
   }
   const mins = targetVideoDurationMinutes(videoLength);
-  if (mins <= 1) return 2;
+  if (mins <= 1) return 1;
   if (mins <= 10) return 2;
   return 3;
 }
@@ -228,27 +241,43 @@ export function archivePreferVideoClips(): boolean {
   return process.env.ARCHIVE_PREFER_VIDEO !== "false";
 }
 
-/** Max still-image beats per generated video when preferVideo is on. */
-export function archiveMaxImageClipsPerVideo(): number {
+/** Target Ken Burns / heritage stills per minute of finished video (default ~2–3). */
+export function archiveStillsPerMinute(): number {
+  const raw = process.env.ARCHIVE_STILLS_PER_MINUTE?.trim();
+  if (raw) {
+    const n = parseFloat(raw);
+    if (!isNaN(n) && n >= 1 && n <= 5) return n;
+  }
+  return 2.5;
+}
+
+/** Max still-image beats per generated video — scales with length (~2–3/min). */
+export function archiveMaxImageClipsPerVideo(videoLength?: string | null): number {
   const raw = process.env.ARCHIVE_MAX_IMAGE_CLIPS?.trim();
   if (raw) {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 0) return n;
   }
-  return 6;
+  const mins = targetVideoDurationMinutes(videoLength);
+  return Math.max(2, Math.round(mins * archiveStillsPerMinute()));
 }
 
-/** Min archive video clips before Ken Burns stills / Wikimedia photos (opening montage). */
-export function archiveOpeningVideoBeatsTarget(videoLength?: string | null): number {
+/** Min moving archive/authentic video clips before stills fill the remaining beats. */
+export function archiveMinVideoClipsTarget(videoLength?: string | null): number {
   const raw = process.env.ARCHIVE_OPENING_VIDEO_BEATS?.trim();
   if (raw !== undefined && raw !== "") {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 0) return n;
   }
   const mins = targetVideoDurationMinutes(videoLength);
-  if (mins <= 1) return 8;
-  if (mins <= 10) return 12;
-  return 16;
+  const expectedBeats = Math.max(1, Math.ceil((mins * 60) / archiveVisualBeatSec()));
+  const maxStills = archiveMaxImageClipsPerVideo(videoLength);
+  return Math.max(1, expectedBeats - maxStills);
+}
+
+/** @deprecated alias — prefer archiveMinVideoClipsTarget */
+export function archiveOpeningVideoBeatsTarget(videoLength?: string | null): number {
+  return archiveMinVideoClipsTarget(videoLength);
 }
 
 /** Archive stills on gray mat (smaller photo, documentary YouTube style). */

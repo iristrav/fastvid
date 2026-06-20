@@ -59,7 +59,7 @@ const MODERN_MISMATCH_QUERIES = [
   "contemporary office whiteboard team meeting",
 ];
 
-function topicNeedsHistoricalFootage(beatText: string, videoTitle?: string): boolean {
+export function topicNeedsHistoricalFootage(beatText: string, videoTitle?: string): boolean {
   const topic = inferVideoVisualTopic(videoTitle, beatText);
   if (topic === "wwii" || topic === "cold_war") return true;
   const hay = `${videoTitle ?? ""} ${beatText}`.toLowerCase();
@@ -84,7 +84,8 @@ async function modernContentMismatchAgainstBeat(
       const negEmb = await embedTextQuery(q);
       if (!negEmb) continue;
       const negSim = scoreEmbeddingSimilarity(negEmb, imgEmb);
-      if (negSim >= beatSim + 0.03) return true;
+      if (negSim >= beatSim - 0.01) return true;
+      if (negSim >= 0.18 && beatSim < 0.24) return true;
     }
   }
   return false;

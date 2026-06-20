@@ -119,7 +119,7 @@ import {
   scriptGuidedClipsEnabled,
 } from "./scriptGuidedClipFinder";
 import { clipPassesVisionGate, clipVisionGateEnabled, minClipQualityScore } from "./visualQualityGate";
-import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveOpeningVideoBeatsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence } from "./sourcingPolicy";
+import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, openverseStillsEnabled, wikimediaInternetStillsEnabled } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -3931,6 +3931,7 @@ async function fetchOpenverseImages(
     stillStyleContext?: StillStyleContext;
   } = {}
 ): Promise<string[]> {
+  if (!openverseStillsEnabled()) return [];
   const results: string[] = [];
   try {
     // Search Openverse for CC-licensed images (commercial use + modification allowed)
@@ -7649,6 +7650,9 @@ function isAuthenticVideoClip(filePath: string): boolean {
 }
 
 function maxStillPhotosGlobal(dedup: VisualDedupState): number {
+  if (curatedArchiveOnlyVisuals()) {
+    return archiveMaxImageClipsPerVideo(dedup.videoLength);
+  }
   if (dedup.perf.fastStockMode) return 16;
   if (dedup.personTopicLock) return Math.max(10, dedup.perf.maxBeatsPerScene * 3);
   if (minimizeStockFootageEnabled()) return 6;
@@ -7935,17 +7939,29 @@ function curatedInterviewBudget(dedup: VisualDedupState): { used: number; max: n
 }
 
 function curatedImageBudget(dedup: VisualDedupState): { used: number; max: number } {
-  return { used: dedup.curatedImageClipsUsed, max: archiveMaxImageClipsPerVideo() };
+  const max = archiveMaxImageClipsPerVideo(dedup.videoLength);
+  const used = Math.max(dedup.curatedImageClipsUsed, dedup.stillPhotosUsedGlobal);
+  return { used, max };
+}
+
+function canUseDocumentaryStill(dedup: VisualDedupState): boolean {
+  const { used, max } = curatedImageBudget(dedup);
+  return used < max;
+}
+
+function markDocumentaryStillUsed(dedup: VisualDedupState): void {
+  dedup.stillPhotosUsedGlobal++;
+  dedup.curatedImageClipsUsed = Math.max(dedup.curatedImageClipsUsed, dedup.stillPhotosUsedGlobal);
 }
 
 function archiveNeedsOpeningFootage(dedup: VisualDedupState): boolean {
   if (!curatedArchiveOnlyVisuals() || !archivePreferVideoClips()) return false;
-  return dedup.archiveVideoClipsUsed < archiveOpeningVideoBeatsTarget(dedup.videoLength);
+  return dedup.archiveVideoClipsUsed < archiveMinVideoClipsTarget(dedup.videoLength);
 }
 
 function markCuratedArchiveClipUsage(dedup: VisualDedupState, clipPath: string): void {
   if (isCuratedPreparedStillClip(clipPath)) {
-    dedup.curatedImageClipsUsed++;
+    markDocumentaryStillUsed(dedup);
     return;
   }
   if (curatedClipPathAssetId(clipPath) != null) {
@@ -13777,7 +13793,7 @@ async function adoptArchiveBeatClip(
     const minAcceptScore = relaxed
       ? Math.max(10, Math.round(topScore * 0.2))
       : Math.max(20, Math.round(topScore * 0.32));
-    const imgMax = archiveMaxImageClipsPerVideo();
+    const imgMax = archiveMaxImageClipsPerVideo(dedup.videoLength);
     const tryCap = Math.min(
       relaxed ? ARCHIVE_BEAT_TOP_CANDIDATES * 2 : ARCHIVE_BEAT_TOP_CANDIDATES,
       relaxed ? ARCHIVE_VISION_TRY_RELAXED : archiveVisionTryStrict(dedup.perf.fastStockMode)
@@ -13946,7 +13962,13 @@ async function adoptWikimediaBeatClip(
     ) {
       return false;
     }
-    return tryClip(clipPath, holdSec);
+    if (isStillPhotoClip(clipPath) && !canUseDocumentaryStill(dedup)) {
+      recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clipPath, "still_cap", label);
+      return false;
+    }
+    if (!(await tryClip(clipPath, holdSec))) return false;
+    if (isStillPhotoClip(clipPath)) markDocumentaryStillUsed(dedup);
+    return true;
   };
 
   for (const q of wikiQueries) {
@@ -13969,6 +13991,8 @@ async function adoptWikimediaBeatClip(
   }
 
   if (opts?.videoOnly || !wantStills) return false;
+  if (!wikimediaInternetStillsEnabled()) return false;
+  if (!canUseDocumentaryStill(dedup)) return false;
 
   const relaxedThreshold = wikimediaV1RelaxedThreshold(videoTitle, beat.text);
   const attempts: Array<{
@@ -14985,7 +15009,7 @@ async function fillBeatVisual(
     if (openingVideosOnly) {
       console.log(
         `[Pipeline] Scene ${scene.index} zin ${beat.index}: opening footage — archive video only ` +
-          `(${dedup.archiveVideoClipsUsed}/${archiveOpeningVideoBeatsTarget(dedup.videoLength)})`
+          `(${dedup.archiveVideoClipsUsed}/${archiveMinVideoClipsTarget(dedup.videoLength)})`
       );
     }
     if (await tryArchivePasses(prefetchedRanked, openingVideosOnly)) {
@@ -15018,7 +15042,10 @@ async function fillBeatVisual(
       return true;
     }
     if (
-      await adoptWikimediaBeatClip(
+      !openingVideosOnly &&
+      canUseDocumentaryStill(dedup) &&
+      wikimediaInternetStillsEnabled() &&
+      (await adoptWikimediaBeatClip(
         beat,
         scene,
         workDir,
@@ -15028,7 +15055,7 @@ async function fillBeatVisual(
         holdSec,
         semanticProfile,
         { stillsOnly: true }
-      )
+      ))
     ) {
       return true;
     }
@@ -15050,6 +15077,9 @@ async function fillBeatVisual(
     }
   }
 
+  if (await adoptAiBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
+    return true;
+  }
   if (canUseLicensedStockBeat(dedup)) {
     if (
       await adoptStockBeatClipFallback(
@@ -15065,9 +15095,6 @@ async function fillBeatVisual(
     ) {
       return true;
     }
-  }
-  if (await adoptAiBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
-    return true;
   }
   return false;
 }
@@ -15119,17 +15146,39 @@ async function retryAuthenticBeforeLicensedStock(
       return true;
     }
     if (!openingVideosOnly) {
-      return adoptWikimediaBeatClip(
-        beat,
-        scene,
-        workDir,
-        videoTitle,
-        dedup,
-        pushClip,
-        holdSec,
-        semanticProfile,
-        { stillsOnly: true }
-      );
+      if (
+        await adoptArchiveBeatClip(
+          beat,
+          scene,
+          workDir,
+          videoTitle,
+          dedup,
+          pushClip,
+          null,
+          holdSec,
+          semanticProfile,
+          true
+        )
+      ) {
+        return true;
+      }
+      if (
+        canUseDocumentaryStill(dedup) &&
+        wikimediaInternetStillsEnabled() &&
+        (await adoptWikimediaBeatClip(
+          beat,
+          scene,
+          workDir,
+          videoTitle,
+          dedup,
+          pushClip,
+          holdSec,
+          semanticProfile,
+          { stillsOnly: true }
+        ))
+      ) {
+        return true;
+      }
     }
     return false;
   }
