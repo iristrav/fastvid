@@ -369,6 +369,48 @@ async function isValidVideoFile(filePath: string): Promise<boolean> {
     return false;
   }
 }
+
+async function probeVideoStreamMeta(
+  filePath: string
+): Promise<{ width: number; height: number; durationSec: number } | null> {
+  if (!fs.existsSync(filePath)) return null;
+  for (const probePath of FFPROBE_PATHS()) {
+    try {
+      const { stdout } = await exec(
+        `"${probePath}" -v error -select_streams v:0 -show_entries stream=width,height,duration -of default=noprint_wrappers=1:nokey=1 "${filePath}"`
+      );
+      const lines = stdout
+        .trim()
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean);
+      if (lines.length < 2) continue;
+      const width = parseInt(lines[0]!, 10);
+      const height = parseInt(lines[1]!, 10);
+      const durationSec = lines[2] ? parseFloat(lines[2]) : 0;
+      if (!Number.isFinite(width) || !Number.isFinite(height) || width < 1 || height < 1) {
+        continue;
+      }
+      return {
+        width,
+        height,
+        durationSec: Number.isFinite(durationSec) ? durationSec : 0,
+      };
+    } catch {
+      /* try next probe binary */
+    }
+  }
+  return null;
+}
+
+function montageStreamMetaUsable(
+  meta: { width: number; height: number; durationSec: number },
+  trimStart: number
+): boolean {
+  if (meta.width < 2 || meta.height < 2) return false;
+  if (meta.durationSec > 0.15 && meta.durationSec <= trimStart + 0.15) return false;
+  return true;
+}
 // Use 256MB maxBuffer — FFmpeg concat of 15+ scenes can produce large stderr output
 const execRaw = (cmd: string) => new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
   execCb(cmd, { maxBuffer: 256 * 1024 * 1024 }, (err, stdout, stderr) => {
@@ -4437,6 +4479,13 @@ async function requireValidClip(
 ): Promise<string | null> {
   if (!(await isValidVideoFile(clipPath)) || isPipelineFallbackClip(clipPath)) {
     console.warn(`[Pipeline] Scene ${sceneIndex}: dropping invalid clip ${path.basename(clipPath)}`);
+    return null;
+  }
+  const meta = await probeVideoStreamMeta(clipPath);
+  if (!meta || !montageStreamMetaUsable(meta, montageClipStartSec(sceneIndex, 0))) {
+    console.warn(
+      `[Pipeline] Scene ${sceneIndex}: dropping clip with unusable stream ${path.basename(clipPath)}`
+    );
     return null;
   }
   // Compose gate already checked start/center luma for curated archive beats.
@@ -8840,9 +8889,17 @@ async function montageClipPassesComposeGate(
   clipIndex: number
 ): Promise<boolean> {
   if (!(await isValidVideoFile(clipPath))) return false;
+  const trimStart = montageClipStartSec(sceneIndex, clipIndex);
+  const meta = await probeVideoStreamMeta(clipPath);
+  if (!meta || !montageStreamMetaUsable(meta, trimStart)) {
+    console.warn(
+      `[Pipeline] Scene ${sceneIndex} clip ${clipIndex}: unusable stream ${path.basename(clipPath)}` +
+        (meta ? ` (${meta.width}x${meta.height}, ${meta.durationSec.toFixed(2)}s)` : "")
+    );
+    return false;
+  }
   const curatedId = curatedClipPathAssetId(clipPath);
   if (curatedId != null) {
-    const trimStart = montageClipStartSec(sceneIndex, clipIndex);
     const startLuma = await probeClipMeanLuma(clipPath, trimStart + 0.08);
     if (startLuma !== null && startLuma < 14) return false;
     if (strictNoVisualRepeat()) {
@@ -8856,7 +8913,6 @@ async function montageClipPassesComposeGate(
     return true;
   }
   if (await isMostlyBlackClip(clipPath)) return false;
-  const trimStart = montageClipStartSec(sceneIndex, clipIndex);
   const startLuma = await probeClipMeanLuma(clipPath, trimStart + 0.08);
   if (startLuma !== null && startLuma < 14) return false;
   return true;
@@ -8946,6 +9002,29 @@ async function composePlainMontageScene(
     return fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1000;
   };
 
+  if (IS_RAILWAY && curatedArchiveOnlyVisuals()) {
+    try {
+      const montageOnlyPath = path.join(workDir, `scene_${sceneIndex}_seq_montage.mp4`);
+      await renderSequentialArchiveMontage(
+        safeClips,
+        montageDurations,
+        sourceMaxDurs,
+        sceneIndex,
+        outDur,
+        workDir,
+        montageOnlyPath,
+        composeTimeout,
+        threadFlag
+      );
+      if (await muxMontageWithAudio(montageOnlyPath)) return true;
+    } catch (seqErr) {
+      console.warn(
+        `[Pipeline] Scene ${sceneIndex}: sequential plain montage failed:`,
+        (seqErr as Error).message?.slice(0, 160)
+      );
+    }
+  }
+
   try {
     const { scaleFilters, mergeFilter, montageLabel } = buildMontageXfadeFilter(
       safeClips.length,
@@ -9016,10 +9095,11 @@ async function xfadeMergeTwoVideos(
 ): Promise<void> {
   const xfade = montageXfadeSec((leftDur + rightDur) / 2);
   const offset = Math.max(0, leftDur - xfade);
+  const branchNorm = `${montageBranchNormVF()},setpts=PTS-STARTPTS`;
   await withTimeout(
     exec(
       `${FFMPEG_BIN} -y -i "${leftPath}" -i "${rightPath}" ` +
-        `-filter_complex "[0:v]${FPS_FORMAT_VF}[v0];[1:v]${FPS_FORMAT_VF}[v1];` +
+        `-filter_complex "[0:v]${branchNorm}[v0];[1:v]${branchNorm}[v1];` +
         `[v0][v1]xfade=transition=dissolve:duration=${xfade.toFixed(3)}:offset=${offset.toFixed(3)}[out]" ` +
         `-map "[out]" -an -vsync cfr ${threadFlag} -c:v libx264 -preset ${MONTAGE_SEGMENT_ENCODE_PRESET} -crf 18 -pix_fmt yuv420p "${outputPath}"`
     ),
@@ -9071,6 +9151,20 @@ async function renderBatchedArchiveMontage(
   composeTimeout: number,
   threadFlag: string
 ): Promise<void> {
+  if (IS_RAILWAY && curatedArchiveOnlyVisuals()) {
+    await renderSequentialArchiveMontage(
+      clips,
+      montageDurations,
+      sourceMaxDurs,
+      sceneIndex,
+      outDur,
+      workDir,
+      outputPath,
+      composeTimeout,
+      threadFlag
+    );
+    return;
+  }
   const batchSize = ARCHIVE_MONTAGE_BATCH_SIZE;
   if (clips.length <= batchSize) {
     await renderMontageVideoOnly(
@@ -9140,7 +9234,10 @@ async function renderSingleMontageSegment(
   composeTimeout: number,
   threadFlag: string
 ): Promise<number> {
-  const startSec = montageClipStartSec(sceneIndex, clipIndex);
+  let startSec = montageClipStartSec(sceneIndex, clipIndex);
+  if (sourceMaxSec > 0.15) {
+    startSec = Math.min(startSec, Math.max(0, sourceMaxSec - 0.35));
+  }
   let effectiveDur = duration;
   if (sourceMaxSec > 0.15) {
     effectiveDur = resolveMontageClipEffectiveDur(duration, sourceMaxSec);
@@ -9681,7 +9778,10 @@ function montageClipPrepFilter(
   sourceMaxSec?: number
 ): string {
   const preNormalized = clipPath ? /_norm_b\d+\.mp4$/i.test(path.basename(clipPath)) : false;
-  const startSec = preNormalized ? 0 : montageClipStartSec(sceneIndex, inputIndex);
+  let startSec = preNormalized ? 0 : montageClipStartSec(sceneIndex, inputIndex);
+  if (sourceMaxSec && sourceMaxSec > 0.15) {
+    startSec = Math.min(startSec, Math.max(0, sourceMaxSec - 0.35));
+  }
   let effectiveDur = dur;
   if (sourceMaxSec && sourceMaxSec > 0.15) {
     effectiveDur = resolveMontageClipEffectiveDur(dur, sourceMaxSec);
@@ -17118,7 +17218,7 @@ async function composeSceneVideo(
       return outputPath;
     }
 
-    if (IS_RAILWAY && curatedArchiveOnlyVisuals() && composeClips.length > 4) {
+    if (IS_RAILWAY && curatedArchiveOnlyVisuals()) {
       await composeBatchedArchiveSceneWithAudio(
         scene.index,
         composeClips,
