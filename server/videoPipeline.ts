@@ -117,13 +117,14 @@ import {
   scriptGuidedClipsEnabled,
 } from "./scriptGuidedClipFinder";
 import { clipPassesVisionGate, clipVisionGateEnabled, minClipQualityScore, minWikiClipQualityScore } from "./visualQualityGate";
-import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence } from "./sourcingPolicy";
+import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveOpeningVideoBeatsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
 } from "./archiveUsageMemory";
 import {
   fetchCuratedArchiveBeatClip,
+  isCuratedPreparedStillClip,
   curatedClipPathAssetId,
   curatedAssetContentKey,
   archiveVisualSourcesReady,
@@ -7870,6 +7871,10 @@ interface VisualDedupState {
   curatedInterviewClipsUsed: number;
   /** Cap Ken Burns still-image beats when archive video is available. */
   curatedImageClipsUsed: number;
+  /** Moving archive footage adopted (opening montage targets video first). */
+  archiveVideoClipsUsed: number;
+  /** Target video length key for opening-footage policy (e.g. "1", "8-10"). */
+  videoLength: string;
   /** FFmpeg text cards / map beats rendered this video. */
   motionGraphicsUsed: number;
   /** Scene/video archive pool — legacy; sentence montage uses per-beat search. */
@@ -7931,6 +7936,21 @@ function curatedImageBudget(dedup: VisualDedupState): { used: number; max: numbe
   return { used: dedup.curatedImageClipsUsed, max: archiveMaxImageClipsPerVideo() };
 }
 
+function archiveNeedsOpeningFootage(dedup: VisualDedupState): boolean {
+  if (!curatedArchiveOnlyVisuals() || !archivePreferVideoClips()) return false;
+  return dedup.archiveVideoClipsUsed < archiveOpeningVideoBeatsTarget(dedup.videoLength);
+}
+
+function markCuratedArchiveClipUsage(dedup: VisualDedupState, clipPath: string): void {
+  if (isCuratedPreparedStillClip(clipPath)) {
+    dedup.curatedImageClipsUsed++;
+    return;
+  }
+  if (curatedClipPathAssetId(clipPath) != null) {
+    dedup.archiveVideoClipsUsed++;
+  }
+}
+
 function createVisualDedupState(
   perf: PipelinePerfProfile,
   topic?: { primaryPerson?: string; personTopicLock?: boolean }
@@ -7956,6 +7976,8 @@ function createVisualDedupState(
     usedCuratedStorageUrls: new Set(),
     curatedInterviewClipsUsed: 0,
     curatedImageClipsUsed: 0,
+    archiveVideoClipsUsed: 0,
+    videoLength: "15-20",
     motionGraphicsUsed: 0,
     archiveCandidatePool: null,
     archiveAssetsCache: new Map(),
@@ -13643,7 +13665,8 @@ async function adoptArchiveBeatClip(
   holdSec = beat.holdSec,
   semanticProfile?: BeatSemanticProfile,
   relaxed = false,
-  prefetchedRanked?: CuratedCandidatePick[] | null
+  prefetchedRanked?: CuratedCandidatePick[] | null,
+  adoptOpts?: { videosOnly?: boolean }
 ): Promise<boolean> {
   const rejectClip = (clipPath: string | null | undefined): void => {
     if (!clipPath || isPipelineFallbackClip(clipPath)) return;
@@ -13703,6 +13726,7 @@ async function adoptArchiveBeatClip(
         dedup.segmentGeoLock,
         curated ? curatedClipPathAssetId(clipPath) ?? undefined : undefined
       );
+      if (curated) markCuratedArchiveClipUsage(dedup, withText);
       return true;
     }
     return false;
@@ -13711,6 +13735,7 @@ async function adoptArchiveBeatClip(
   if (await tryClip(initialClip, holdSec, { source: "archive" })) return true;
 
   if (curatedArchiveOnlyVisuals()) {
+    const videosOnly = adoptOpts?.videosOnly ?? archiveNeedsOpeningFootage(dedup);
     const ranked =
       prefetchedRanked ??
       (await searchCuratedCandidatesForBeat(
@@ -13724,6 +13749,8 @@ async function adoptArchiveBeatClip(
         crossVideoExcludeIds: dedup.crossVideoExcludeIds,
         assetsCache: dedup.archiveAssetsCache,
         semanticProfile,
+        videosOnly,
+        segmentLock: dedup.segmentGeoLock,
       }
     ));
     console.log(
@@ -13742,6 +13769,7 @@ async function adoptArchiveBeatClip(
     let tried = 0;
     for (const picked of ranked) {
       if (tried >= tryCap) break;
+      if (videosOnly && picked.asset.mediaType !== "video") continue;
       if (!relaxed && !assetPassesBeatMinimum(picked.asset, beat.text, picked.score, topScore, picked.semantic, videoVisualTopic, dedup.segmentGeoLock, [], videoTitle)) {
         continue;
       }
@@ -13854,7 +13882,7 @@ async function adoptArchiveBeatClip(
   return false;
 }
 
-/** Wikimedia Commons — always first source for every beat (public-domain stills/video). */
+/** Wikimedia Commons — video first, stills deferred in archive-first mode. */
 async function adoptWikimediaBeatClip(
   beat: SceneBeat,
   scene: Scene,
@@ -13863,8 +13891,11 @@ async function adoptWikimediaBeatClip(
   dedup: VisualDedupState,
   pushClip: (clipPath: string, holdSec?: number) => boolean | Promise<boolean>,
   holdSec: number,
-  semanticProfile?: BeatSemanticProfile
+  semanticProfile?: BeatSemanticProfile,
+  opts?: { videoOnly?: boolean; stillsOnly?: boolean }
 ): Promise<boolean> {
+  const wantVideo = !opts?.stillsOnly;
+  const wantStills = !opts?.videoOnly;
   const tryClip = async (clipPath: string | null | undefined, sec = holdSec): Promise<boolean> => {
     if (!clipPath || isPipelineFallbackClip(clipPath)) return false;
     if (await isMostlyBlackClip(clipPath)) return false;
@@ -13903,6 +13934,7 @@ async function adoptWikimediaBeatClip(
   };
 
   for (const q of wikiQueries) {
+    if (!wantVideo) break;
     try {
       const wikiVids = await withTimeout(
         fetchWikimediaVideos(q, holdSec, workDir, scene.index, 1, `wiki${beat.index}v`, "", beat.keywords),
@@ -13919,6 +13951,8 @@ async function adoptWikimediaBeatClip(
       /* try next query */
     }
   }
+
+  if (opts?.videoOnly || !wantStills) return false;
 
   const relaxedThreshold = wikimediaV1RelaxedThreshold(videoTitle, beat.text);
   const attempts: Array<{
@@ -14818,7 +14852,7 @@ async function backfillComposeMontageIfShort(
   }
 }
 
-/** Wikimedia → Europeana → archive → stock (Pexels/Pixabay), vision gate on every source. */
+/** Archive-first: moving footage before stills; legacy: Wikimedia → Europeana → archive → stock. */
 async function fillBeatVisual(
   beat: SceneBeat,
   scene: Scene,
@@ -14832,6 +14866,16 @@ async function fillBeatVisual(
   const beatRegion = inferBeatGeoRegion(beat.text, videoTitle);
   dedup.segmentGeoLock = resolveSegmentGeoLock(beatRegion, dedup.segmentGeoLock, videoTitle);
 
+  const openingVideosOnly = archiveNeedsOpeningFootage(dedup);
+  const archiveSearchOpts = {
+    varietySeed: dedup.varietySeed,
+    crossVideoExcludeIds: dedup.crossVideoExcludeIds,
+    assetsCache: dedup.archiveAssetsCache,
+    semanticProfile,
+    segmentLock: dedup.segmentGeoLock,
+    videosOnly: openingVideosOnly,
+  };
+
   const archivePrefetch = curatedArchiveOnlyVisuals()
     ? searchCuratedCandidatesForBeat(
         beat,
@@ -14839,13 +14883,7 @@ async function fillBeatVisual(
         dedup.usedCuratedAssetIds,
         dedup.usedCuratedStorageUrls,
         videoTitle,
-        {
-          varietySeed: dedup.varietySeed,
-          crossVideoExcludeIds: dedup.crossVideoExcludeIds,
-          assetsCache: dedup.archiveAssetsCache,
-          semanticProfile,
-          segmentLock: dedup.segmentGeoLock,
-        }
+        archiveSearchOpts
       ).catch((err) => {
         console.warn(
           `[Pipeline] Scene ${scene.index} beat ${beat.index}: archive prefetch failed:`,
@@ -14855,37 +14893,32 @@ async function fillBeatVisual(
       })
     : null;
 
-  if (await adoptWikimediaBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
-    return true;
-  }
-
-  if (await adoptEuropeanaBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
-    return true;
-  }
-
-  const prefetchedRanked = archivePrefetch ? await archivePrefetch : undefined;
-
-  for (let attempt = 0; attempt < ARCHIVE_BEAT_CLIP_RETRIES; attempt++) {
-    if (
-      await adoptArchiveBeatClip(
-        beat,
-        scene,
-        workDir,
-        videoTitle,
-        dedup,
-        pushClip,
-        null,
-        holdSec,
-        semanticProfile,
-        attempt >= 2,
-        prefetchedRanked
-      )
-    ) {
-      return true;
+  async function tryArchivePasses(
+    prefetchedRanked?: CuratedCandidatePick[] | null,
+    videosOnly?: boolean
+  ): Promise<boolean> {
+    const adoptOpts = videosOnly ? { videosOnly: true } : undefined;
+    for (let attempt = 0; attempt < ARCHIVE_BEAT_CLIP_RETRIES; attempt++) {
+      if (
+        await adoptArchiveBeatClip(
+          beat,
+          scene,
+          workDir,
+          videoTitle,
+          dedup,
+          pushClip,
+          null,
+          holdSec,
+          semanticProfile,
+          attempt >= 2,
+          prefetchedRanked,
+          adoptOpts
+        )
+      ) {
+        return true;
+      }
     }
-  }
-  if (
-    await adoptArchiveBeatClip(
+    return adoptArchiveBeatClip(
       beat,
       scene,
       workDir,
@@ -14896,10 +14929,79 @@ async function fillBeatVisual(
       holdSec,
       semanticProfile,
       true,
-      prefetchedRanked
-    )
-  ) {
-    return true;
+      prefetchedRanked,
+      adoptOpts
+    );
+  }
+
+  if (curatedArchiveOnlyVisuals()) {
+    const prefetchedRanked = archivePrefetch ? await archivePrefetch : undefined;
+    if (openingVideosOnly) {
+      console.log(
+        `[Pipeline] Scene ${scene.index} zin ${beat.index}: opening footage — archive video only ` +
+          `(${dedup.archiveVideoClipsUsed}/${archiveOpeningVideoBeatsTarget(dedup.videoLength)})`
+      );
+    }
+    if (await tryArchivePasses(prefetchedRanked, openingVideosOnly)) {
+      return true;
+    }
+    if (
+      await adoptWikimediaBeatClip(
+        beat,
+        scene,
+        workDir,
+        videoTitle,
+        dedup,
+        pushClip,
+        holdSec,
+        semanticProfile,
+        { videoOnly: true }
+      )
+    ) {
+      return true;
+    }
+    if (!openingVideosOnly) {
+      if (await adoptEuropeanaBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
+        return true;
+      }
+    }
+    if (openingVideosOnly && (await tryArchivePasses(prefetchedRanked, true))) {
+      return true;
+    }
+    if (await tryArchivePasses(prefetchedRanked, false)) {
+      return true;
+    }
+    if (
+      await adoptWikimediaBeatClip(
+        beat,
+        scene,
+        workDir,
+        videoTitle,
+        dedup,
+        pushClip,
+        holdSec,
+        semanticProfile,
+        { stillsOnly: true }
+      )
+    ) {
+      return true;
+    }
+    if (openingVideosOnly) {
+      if (await adoptEuropeanaBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
+        return true;
+      }
+    }
+  } else {
+    if (await adoptWikimediaBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
+      return true;
+    }
+    if (await adoptEuropeanaBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
+      return true;
+    }
+    const prefetchedRanked = archivePrefetch ? await archivePrefetch : undefined;
+    if (await tryArchivePasses(prefetchedRanked)) {
+      return true;
+    }
   }
 
   if (canUseLicensedStockBeat(dedup)) {
@@ -14924,7 +15026,7 @@ async function fillBeatVisual(
   return false;
 }
 
-/** Extra Wikimedia + archive pass before any licensed stock in self-heal. */
+/** Extra archive + Wikimedia pass before any licensed stock in self-heal. */
 async function retryAuthenticBeforeLicensedStock(
   beat: SceneBeat,
   scene: Scene,
@@ -14935,6 +15037,56 @@ async function retryAuthenticBeforeLicensedStock(
   holdSec: number,
   semanticProfile?: BeatSemanticProfile
 ): Promise<boolean> {
+  if (curatedArchiveOnlyVisuals()) {
+    const openingVideosOnly = archiveNeedsOpeningFootage(dedup);
+    if (
+      await adoptArchiveBeatClip(
+        beat,
+        scene,
+        workDir,
+        videoTitle,
+        dedup,
+        pushClip,
+        null,
+        holdSec,
+        semanticProfile,
+        true,
+        undefined,
+        openingVideosOnly ? { videosOnly: true } : undefined
+      )
+    ) {
+      return true;
+    }
+    if (
+      await adoptWikimediaBeatClip(
+        beat,
+        scene,
+        workDir,
+        videoTitle,
+        dedup,
+        pushClip,
+        holdSec,
+        semanticProfile,
+        { videoOnly: true }
+      )
+    ) {
+      return true;
+    }
+    if (!openingVideosOnly) {
+      return adoptWikimediaBeatClip(
+        beat,
+        scene,
+        workDir,
+        videoTitle,
+        dedup,
+        pushClip,
+        holdSec,
+        semanticProfile,
+        { stillsOnly: true }
+      );
+    }
+    return false;
+  }
   if (await adoptWikimediaBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
     return true;
   }
@@ -14974,7 +15126,7 @@ async function fetchArchiveSentenceMontage(
     : new Map<number, BeatSemanticProfile>();
 
   console.log(
-    `[Pipeline] Scene ${scene.index}: ${beats.length} zin(en) → Wikimedia → archief → stock per zin (Kling alleen als alles faalt)`
+    `[Pipeline] Scene ${scene.index}: ${beats.length} zin(en) → archief video → Wikimedia → stock per zin`
   );
 
   const pushSceneClip = async (clipPath: string, holdSec: number, beatIndex: number): Promise<boolean> => {
@@ -17682,6 +17834,7 @@ export async function runVideoPipeline(
       );
     }
     const visualDedup = createVisualDedupState(perf, { primaryPerson, personTopicLock: personLocked });
+    visualDedup.videoLength = videoLength;
     visualDedup.varietySeed = ((videoId * 2654435761) ^ hashVarietySeed(topicContext)) >>> 0;
     if (archiveCrossVideoVarietyEnabled()) {
       visualDedup.crossVideoExcludeIds = getCrossVideoExcludeAssetIds(topicContext, videoId);

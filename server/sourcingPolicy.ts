@@ -235,7 +235,20 @@ export function archiveMaxImageClipsPerVideo(): number {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 0) return n;
   }
-  return 10;
+  return 6;
+}
+
+/** Min archive video clips before Ken Burns stills / Wikimedia photos (opening montage). */
+export function archiveOpeningVideoBeatsTarget(videoLength?: string | null): number {
+  const raw = process.env.ARCHIVE_OPENING_VIDEO_BEATS?.trim();
+  if (raw !== undefined && raw !== "") {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 0) return n;
+  }
+  const mins = targetVideoDurationMinutes(videoLength);
+  if (mins <= 1) return 8;
+  if (mins <= 10) return 12;
+  return 16;
 }
 
 /** Archive stills on gray mat (smaller photo, documentary YouTube style). */
