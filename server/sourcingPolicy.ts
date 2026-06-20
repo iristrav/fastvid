@@ -174,6 +174,11 @@ export function visualStageWallClockMin(videoLength?: string | null): number {
     return Math.round(PIPELINE_UNLIMITED_MS / 60_000);
   }
   const total = maxPipelineWallClockMin(videoLength);
+  const mins = targetVideoDurationMinutes(videoLength);
+  if (mins <= 1) {
+    // ~7 min visual stage within 10 min total pipeline (script/voice ~2–3 min).
+    return 7;
+  }
   return Math.max(8, Math.min(total - 6, Math.round(total * 0.88)));
 }
 

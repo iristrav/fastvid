@@ -1724,7 +1724,7 @@ function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProfile {
       pexelsDownloadRetries: 1,
       maxStockQueriesPerBeat: 2,
       beatClipTimeoutMs: IS_RAILWAY ? 22_000 : 60_000,
-      sceneVisualTimeoutMs: IS_RAILWAY ? 8 * 60_000 : 10 * 60_000,
+      sceneVisualTimeoutMs: IS_RAILWAY ? 7 * 60_000 : 10 * 60_000,
       fastStockMode: IS_RAILWAY,
       scriptOnlyVisuals: false,
     }, videoLength);

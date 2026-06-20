@@ -83,6 +83,29 @@ export function clipVisionSampleCount(): number {
   return 4;
 }
 
+/**
+ * Fraction of preview frames scored per clip (0.5–1).
+ * Default 0.8 → 3/4 frames (or 1/2 in fast mode) with the same ≥8/10 pass bar.
+ */
+export function clipVisionFrameCoverage(): number {
+  const raw = process.env.CLIP_VISION_COVERAGE?.trim();
+  if (raw) {
+    const n = parseFloat(raw);
+    if (!isNaN(n) && n >= 0.5 && n <= 1) return n;
+  }
+  return 0.8;
+}
+
+/** Effective frame count after CLIP_VISION_COVERAGE (same min score on worst sampled frame). */
+export function effectiveVisionSampleCount(fastMode = false): number {
+  const base = fastMode ? Math.min(2, clipVisionSampleCount()) : clipVisionSampleCount();
+  const coverage = clipVisionFrameCoverage();
+  if (fastMode) {
+    return Math.max(1, Math.floor(base * coverage + 0.001));
+  }
+  return Math.max(1, Math.min(base, Math.round(base * coverage)));
+}
+
 /** Runtime status for /api/health. */
 export function getVisionQaStatus(): {
   ready: boolean;
@@ -91,6 +114,9 @@ export function getVisionQaStatus(): {
   sceneCriticalReview: boolean;
   minScore: number;
   visionSamplesPerClip: number;
+  visionFrameCoverage: number;
+  effectiveSamplesFast: number;
+  effectiveSamplesFull: number;
   strictInconclusive: boolean;
   llmKeyConfigured: boolean;
   llmProvider: "local-clip";
@@ -102,6 +128,9 @@ export function getVisionQaStatus(): {
   const sceneCriticalReview = sceneCriticalReviewEnabled();
   const minScore = minClipQualityScore();
   const visionSamplesPerClip = clipVisionSampleCount();
+  const visionFrameCoverage = clipVisionFrameCoverage();
+  const effectiveSamplesFast = effectiveVisionSampleCount(true);
+  const effectiveSamplesFull = effectiveVisionSampleCount(false);
   const strictInconclusive = strictVisionInconclusiveFails();
   const ready = clipVisionGate && sceneCriticalReview;
 
@@ -111,7 +140,7 @@ export function getVisionQaStatus(): {
   } else if (!sceneCriticalReview) {
     hint = "Scene critical review disabled — remove ENABLE_SCENE_CRITICAL_REVIEW=false if set.";
   } else {
-    hint += ` ${visionSamplesPerClip} frames/clip (2 on fast mode), pass ≥${minScore}/10.`;
+    hint += ` ${effectiveSamplesFull} frames/clip (${effectiveSamplesFast} fast), ${Math.round(visionFrameCoverage * 100)}% coverage, pass ≥${minScore}/10.`;
   }
 
   return {
@@ -121,6 +150,9 @@ export function getVisionQaStatus(): {
     sceneCriticalReview,
     minScore,
     visionSamplesPerClip,
+    visionFrameCoverage,
+    effectiveSamplesFast,
+    effectiveSamplesFull,
     strictInconclusive,
     llmKeyConfigured: false,
     llmProvider: "local-clip",
@@ -144,7 +176,7 @@ export function shouldVisionCheckClip(filePath: string, _fastMode = false): bool
 }
 
 function visionSampleFractions(fastMode = false): number[] {
-  const count = fastMode ? Math.min(2, clipVisionSampleCount()) : clipVisionSampleCount();
+  const count = effectiveVisionSampleCount(fastMode);
   return LOCAL_FRAME_FRACTIONS.slice(0, count);
 }
 
@@ -156,7 +188,7 @@ async function extractPreviewFrames(
   fastMode = false
 ): Promise<string[]> {
   const fractions = visionSampleFractions(fastMode);
-  const extractMs = fastMode ? 6_000 : 12_000;
+  const extractMs = fastMode ? 4_500 : 8_000;
   const paths = await Promise.all(
     fractions.map(async (frac, i) => {
       const outPath = path.join(

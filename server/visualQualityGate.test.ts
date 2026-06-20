@@ -3,6 +3,8 @@ import {
   clipVisionGateEnabled,
   shouldVisionCheckClip,
   minClipQualityScore,
+  clipVisionFrameCoverage,
+  effectiveVisionSampleCount,
 } from "./visualQualityGate";
 import {
   filenameLexicalBoost,
@@ -35,6 +37,15 @@ describe("visualQualityGate", () => {
     process.env.ENABLE_LOCAL_VISION = "false";
     expect(clipVisionGateEnabled()).toBe(false);
     process.env.ENABLE_LOCAL_VISION = prev;
+  });
+
+  it("defaults to 80% vision frame coverage with same min score", () => {
+    const prev = process.env.CLIP_VISION_COVERAGE;
+    delete process.env.CLIP_VISION_COVERAGE;
+    expect(clipVisionFrameCoverage()).toBe(0.8);
+    expect(effectiveVisionSampleCount(false)).toBe(3);
+    expect(effectiveVisionSampleCount(true)).toBe(1);
+    process.env.CLIP_VISION_COVERAGE = prev;
   });
 });
 
