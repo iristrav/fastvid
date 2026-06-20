@@ -10,8 +10,31 @@ import {
   extractFrameAtFraction,
   getLocalVisionStatus,
   localVisionEnabled,
+  probeImageMeanLuma,
+  resolveBeatQueryEmbedding,
+  scoreEmbeddingsAgainstBeat,
   scoreFramePathsAgainstBeat,
 } from "./localClipVision";
+
+const VISION_GATE_CACHE_MAX = 512;
+const visionGateCache = new Map<string, boolean>();
+
+function visionGateCacheKey(
+  clipPath: string,
+  beatText: string,
+  minScore: number,
+  visualDescription?: string
+): string {
+  return `${path.basename(clipPath)}|${minScore}|${beatText.slice(0, 120)}|${(visualDescription ?? "").slice(0, 80)}`;
+}
+
+function rememberVisionGateResult(key: string, pass: boolean): void {
+  if (visionGateCache.size >= VISION_GATE_CACHE_MAX) {
+    const oldest = visionGateCache.keys().next().value;
+    if (oldest) visionGateCache.delete(oldest);
+  }
+  visionGateCache.set(key, pass);
+}
 
 export function clipVisionGateEnabled(): boolean {
   return localVisionEnabled();
@@ -133,16 +156,18 @@ async function extractPreviewFrames(
   fastMode = false
 ): Promise<string[]> {
   const fractions = visionSampleFractions(fastMode);
-  const paths: string[] = [];
-  for (let i = 0; i < fractions.length; i++) {
-    const outPath = path.join(
-      workDir,
-      `scene_${sceneIndex}_b${beatIndex}_lv${i}_${path.basename(clipPath).replace(/\.[^.]+$/, "")}.jpg`
-    );
-    const ok = await extractFrameAtFraction(clipPath, outPath, fractions[i]!);
-    if (ok) paths.push(outPath);
-  }
-  return paths;
+  const extractMs = fastMode ? 6_000 : 12_000;
+  const paths = await Promise.all(
+    fractions.map(async (frac, i) => {
+      const outPath = path.join(
+        workDir,
+        `scene_${sceneIndex}_b${beatIndex}_lv${i}_${path.basename(clipPath).replace(/\.[^.]+$/, "")}.jpg`
+      );
+      const ok = await extractFrameAtFraction(clipPath, outPath, frac, extractMs);
+      return ok ? outPath : null;
+    })
+  );
+  return paths.filter((p): p is string => p != null);
 }
 
 function cleanupFramePaths(framePaths: string[]): void {
@@ -163,14 +188,50 @@ async function scoreClipAcrossFrames(
   minScore: number,
   fastMode: boolean
 ): Promise<{ pass: boolean; worstScore: number | null; framesScored: number }> {
+  const assetId = curatedClipPathAssetId(clipPath);
+  const storedEmbeddings =
+    assetId != null ? loadStoredFrameEmbeddings(assetId) : undefined;
+  const queryEmb = await resolveBeatQueryEmbedding(beatText, visualDescription, videoTitle);
+
+  if (storedEmbeddings?.length && queryEmb) {
+    const storedOnly = await scoreEmbeddingsAgainstBeat(
+      storedEmbeddings,
+      beatText,
+      visualDescription,
+      videoTitle,
+      clipPath,
+      minScore,
+      queryEmb
+    );
+    if (storedOnly?.definiteFail) {
+      const worstScore10 = Math.max(0, Math.min(10, Math.round(storedOnly.worstSimilarity * 40)));
+      return { pass: false, worstScore: worstScore10, framesScored: storedEmbeddings.length };
+    }
+    if (storedOnly?.similarityPass) {
+      const lumaPath = path.join(
+        workDir,
+        `scene_${sceneIndex}_b${beatIndex}_lv_luma_${path.basename(clipPath).replace(/\.[^.]+$/, "")}.jpg`
+      );
+      const lumaOk = await extractFrameAtFraction(clipPath, lumaPath, 0.38, fastMode ? 6_000 : 10_000);
+      let darkReject = false;
+      if (lumaOk) {
+        const luma = await probeImageMeanLuma(lumaPath);
+        darkReject = luma !== null && luma < 12;
+        cleanupFramePaths([lumaPath]);
+      }
+      const worstScore10 = Math.max(0, Math.min(10, Math.round(storedOnly.worstSimilarity * 40)));
+      const pass =
+        !darkReject &&
+        storedOnly.score >= minScore &&
+        worstScore10 >= minScore;
+      return { pass, worstScore: worstScore10, framesScored: storedEmbeddings.length };
+    }
+  }
+
   const framePaths = await extractPreviewFrames(clipPath, workDir, sceneIndex, beatIndex, fastMode);
   if (framePaths.length === 0) {
     return { pass: !strictVisionInconclusiveFails(), worstScore: null, framesScored: 0 };
   }
-
-  const assetId = curatedClipPathAssetId(clipPath);
-  const storedEmbeddings =
-    assetId != null ? loadStoredFrameEmbeddings(assetId) : undefined;
 
   const result = await scoreFramePathsAgainstBeat(
     framePaths,
@@ -179,7 +240,8 @@ async function scoreClipAcrossFrames(
     videoTitle,
     clipPath,
     minScore,
-    storedEmbeddings
+    storedEmbeddings,
+    queryEmb
   );
   cleanupFramePaths(framePaths);
 
@@ -219,6 +281,11 @@ export async function clipPassesVisionGate(
 ): Promise<boolean> {
   if (!clipVisionGateEnabled() || !shouldVisionCheckClip(clipPath, fastMode)) return true;
 
+  const cacheKey = visionGateCacheKey(clipPath, beatText, minScore, visualDescription);
+  if (visionGateCache.has(cacheKey)) {
+    return visionGateCache.get(cacheKey)!;
+  }
+
   const result = await scoreClipAcrossFrames(
     clipPath,
     beatText,
@@ -237,6 +304,7 @@ export async function clipPassesVisionGate(
         `(${result.framesScored} frames, worst=${result.worstScore ?? "?"}/10 avg needed ≥${minScore})`
     );
   }
+  rememberVisionGateResult(cacheKey, result.pass);
   return result.pass;
 }
 

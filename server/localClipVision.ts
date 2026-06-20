@@ -68,27 +68,62 @@ export function topicNeedsHistoricalFootage(beatText: string, videoTitle?: strin
   );
 }
 
-async function modernContentMismatchAgainstBeat(
-  framePaths: string[],
+async function getModernMismatchEmbeddings(): Promise<number[][]> {
+  if (modernMismatchEmbCache) return modernMismatchEmbCache;
+  const out: number[][] = [];
+  for (const q of MODERN_MISMATCH_QUERIES) {
+    const emb = await embedTextQuery(q);
+    if (emb) out.push(emb);
+  }
+  modernMismatchEmbCache = out;
+  return out;
+}
+
+async function modernContentMismatchAgainstEmbeddings(
+  imageEmbeddings: number[][],
   beatQueryEmb: number[],
   beatText: string,
   videoTitle?: string
 ): Promise<boolean> {
   if (!topicNeedsHistoricalFootage(beatText, videoTitle)) return false;
-  const samples = framePaths.slice(0, Math.min(2, framePaths.length));
-  for (const fp of samples) {
-    const imgEmb = await embedImageFromPath(fp);
-    if (!imgEmb) continue;
+  const negEmbs = await getModernMismatchEmbeddings();
+  if (negEmbs.length === 0) return false;
+  const samples = imageEmbeddings.slice(0, Math.min(2, imageEmbeddings.length));
+  for (const imgEmb of samples) {
     const beatSim = scoreEmbeddingSimilarity(beatQueryEmb, imgEmb);
-    for (const q of MODERN_MISMATCH_QUERIES) {
-      const negEmb = await embedTextQuery(q);
-      if (!negEmb) continue;
+    for (const negEmb of negEmbs) {
       const negSim = scoreEmbeddingSimilarity(negEmb, imgEmb);
       if (negSim >= beatSim - 0.01) return true;
       if (negSim >= 0.18 && beatSim < 0.24) return true;
     }
   }
   return false;
+}
+
+async function modernContentMismatchAgainstBeat(
+  framePaths: string[],
+  beatQueryEmb: number[],
+  beatText: string,
+  videoTitle?: string
+): Promise<boolean> {
+  const imageEmbeddings: number[][] = [];
+  for (const fp of framePaths.slice(0, Math.min(2, framePaths.length))) {
+    const emb = await embedImageFromPath(fp);
+    if (emb) imageEmbeddings.push(emb);
+  }
+  return modernContentMismatchAgainstEmbeddings(imageEmbeddings, beatQueryEmb, beatText, videoTitle);
+}
+
+const TEXT_EMBED_CACHE_MAX = 320;
+const textEmbeddingCache = new Map<string, number[]>();
+let modernMismatchEmbCache: number[][] | null = null;
+
+export async function resolveBeatQueryEmbedding(
+  beatText: string,
+  visualDescription?: string,
+  videoTitle?: string
+): Promise<number[] | null> {
+  return embedTextQuery(beatQueryText(beatText, visualDescription, videoTitle));
 }
 
 function beatQueryText(
@@ -168,12 +203,22 @@ export async function embedImageFromPath(imagePath: string): Promise<number[] | 
 }
 
 export async function embedTextQuery(query: string): Promise<number[] | null> {
-  if (!localVisionEnabled() || !query.trim()) return null;
+  const key = query.trim();
+  if (!localVisionEnabled() || !key) return null;
+  const cached = textEmbeddingCache.get(key);
+  if (cached) return cached;
   const pipe = await loadTextPipeline();
   if (!pipe) return null;
   try {
-    const result = await pipe(query, { pooling: "mean", normalize: true });
-    return Array.from(result.data);
+    const result = await pipe(key, { pooling: "mean", normalize: true });
+    const embedding = Array.from(result.data);
+    if (embedding.length < 8) return null;
+    if (textEmbeddingCache.size >= TEXT_EMBED_CACHE_MAX) {
+      const oldest = textEmbeddingCache.keys().next().value;
+      if (oldest) textEmbeddingCache.delete(oldest);
+    }
+    textEmbeddingCache.set(key, embedding);
+    return embedding;
   } catch {
     return null;
   }
@@ -204,7 +249,8 @@ export async function probeImageMeanLuma(jpegPath: string): Promise<number | nul
 export async function extractFrameAtFraction(
   videoPath: string,
   outPath: string,
-  fraction: number
+  fraction: number,
+  timeoutMs = 12_000
 ): Promise<boolean> {
   if (!fs.existsSync(videoPath)) return false;
   const pct = `${Math.round(fraction * 1000) / 10}%`;
@@ -217,7 +263,7 @@ export async function extractFrameAtFraction(
       const timer = setTimeout(() => {
         try { child.kill("SIGKILL"); } catch { /* ignore */ }
         reject(new Error("frame extract timeout"));
-      }, 12_000);
+      }, timeoutMs);
       child.on("close", (code) => {
         clearTimeout(timer);
         if (code === 0 && fs.existsSync(outPath) && fs.statSync(outPath).size > 800) resolve();
@@ -266,6 +312,64 @@ export type LocalClipScoreResult = {
   framesScored: number;
 };
 
+export type StoredEmbeddingScore = {
+  definiteFail: boolean;
+  similarityPass: boolean;
+  modernMismatch: boolean;
+  worstSimilarity: number;
+  score: number;
+};
+
+export async function scoreEmbeddingsAgainstBeat(
+  imageEmbeddings: number[][],
+  beatText: string,
+  visualDescription: string | undefined,
+  videoTitle: string | undefined,
+  clipPath: string,
+  minScore10: number,
+  queryEmb?: number[] | null
+): Promise<StoredEmbeddingScore | null> {
+  if (imageEmbeddings.length === 0) return null;
+  const beatEmb = queryEmb ?? (await resolveBeatQueryEmbedding(beatText, visualDescription, videoTitle));
+  if (!beatEmb) return null;
+
+  const lexBoost = filenameLexicalBoost(clipPath, beatText, videoTitle);
+  const minSim = minLocalClipSimilarity(minScore10);
+  const frameScores: LocalFrameScore[] = imageEmbeddings.map((emb) => {
+    const sim = scoreEmbeddingSimilarity(beatEmb, emb) + lexBoost;
+    return {
+      similarity: sim,
+      score: clipSimToScore(sim),
+      luma: null,
+      wellFramed: true,
+    };
+  });
+
+  let worst = frameScores[0]!;
+  for (const s of frameScores) {
+    if (s.similarity < worst.similarity) worst = s;
+  }
+  const avgSim =
+    frameScores.reduce((sum, s) => sum + s.similarity, 0) / frameScores.length;
+  const modernMismatch = await modernContentMismatchAgainstEmbeddings(
+    imageEmbeddings,
+    beatEmb,
+    beatText,
+    videoTitle
+  );
+  const similarityPass = worst.similarity >= minSim && !modernMismatch;
+  const definiteFail =
+    worst.similarity < minSim - 0.04 || modernMismatch;
+
+  return {
+    definiteFail,
+    similarityPass,
+    modernMismatch,
+    worstSimilarity: worst.similarity,
+    score: clipSimToScore(avgSim),
+  };
+}
+
 export async function scoreFramePathsAgainstBeat(
   framePaths: string[],
   beatText: string,
@@ -273,25 +377,47 @@ export async function scoreFramePathsAgainstBeat(
   videoTitle: string | undefined,
   clipPath: string,
   minScore10: number,
-  storedEmbeddings?: number[][]
+  storedEmbeddings?: number[][],
+  queryEmb?: number[] | null
 ): Promise<LocalClipScoreResult | null> {
-  const query = beatQueryText(beatText, visualDescription, videoTitle);
-  const queryEmb = await embedTextQuery(query);
-  if (!queryEmb) return null;
+  const beatEmb = queryEmb ?? (await resolveBeatQueryEmbedding(beatText, visualDescription, videoTitle));
+  if (!beatEmb) return null;
 
   const lexBoost = filenameLexicalBoost(clipPath, beatText, videoTitle);
   const minSim = minLocalClipSimilarity(minScore10);
 
-  const frameScores: LocalFrameScore[] = [];
-  for (const fp of framePaths) {
-    const s = await scoreImagePathAgainstQuery(fp, queryEmb, lexBoost);
-    if (s) frameScores.push(s);
+  const frameScores: LocalFrameScore[] = (
+    await Promise.all(
+      framePaths.map(async (fp) => {
+        const [emb, luma] = await Promise.all([embedImageFromPath(fp), probeImageMeanLuma(fp)]);
+        if (!emb) return null;
+        const sim = scoreEmbeddingSimilarity(beatEmb, emb) + lexBoost;
+        return {
+          similarity: sim,
+          score: clipSimToScore(sim),
+          luma,
+          wellFramed: luma === null || luma >= 18,
+          _emb: emb,
+        } as LocalFrameScore & { _emb: number[] };
+      })
+    )
+  ).filter((s): s is LocalFrameScore & { _emb: number[] } => s != null);
+
+  const imageEmbeddings = frameScores.map((s) => s._emb);
+  for (const s of frameScores) {
+    delete (s as { _emb?: number[] })._emb;
   }
+  const scoredFrames: LocalFrameScore[] = frameScores.map(({ similarity, score, luma, wellFramed }) => ({
+    similarity,
+    score,
+    luma,
+    wellFramed,
+  }));
 
   if (storedEmbeddings?.length) {
     for (const stored of storedEmbeddings) {
-      const sim = scoreEmbeddingSimilarity(queryEmb, stored) + lexBoost;
-      frameScores.push({
+      const sim = scoreEmbeddingSimilarity(beatEmb, stored) + lexBoost;
+      scoredFrames.push({
         similarity: sim,
         score: clipSimToScore(sim),
         luma: null,
@@ -300,22 +426,22 @@ export async function scoreFramePathsAgainstBeat(
     }
   }
 
-  if (frameScores.length === 0) return null;
+  if (scoredFrames.length === 0) return null;
 
-  let worst = frameScores[0]!;
-  for (const s of frameScores) {
+  let worst = scoredFrames[0]!;
+  for (const s of scoredFrames) {
     if (s.similarity < worst.similarity) worst = s;
   }
 
   const avgSim =
-    frameScores.reduce((sum, s) => sum + s.similarity, 0) / frameScores.length;
+    scoredFrames.reduce((sum, s) => sum + s.similarity, 0) / scoredFrames.length;
   const score = clipSimToScore(avgSim);
-  const allWellFramed = frameScores.every((s) => s.wellFramed);
-  const darkReject = frameScores.some((s) => s.luma !== null && s.luma < 12);
+  const allWellFramed = scoredFrames.every((s) => s.wellFramed);
+  const darkReject = scoredFrames.some((s) => s.luma !== null && s.luma < 12);
 
-  const modernMismatch = await modernContentMismatchAgainstBeat(
-    framePaths,
-    queryEmb,
+  const modernMismatch = await modernContentMismatchAgainstEmbeddings(
+    imageEmbeddings.length > 0 ? imageEmbeddings : storedEmbeddings?.slice(0, 2) ?? [],
+    beatEmb,
     beatText,
     videoTitle
   );
@@ -331,7 +457,7 @@ export async function scoreFramePathsAgainstBeat(
     wellFramed: allWellFramed,
     wrongSubject,
     worstSimilarity: worst.similarity,
-    framesScored: frameScores.length,
+    framesScored: scoredFrames.length,
   };
 }
 

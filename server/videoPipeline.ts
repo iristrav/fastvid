@@ -1706,7 +1706,7 @@ function applyAiFallbackToProfile(
 
 function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProfile {
   const videoLength = normalizeVideoLength(videoLengthRaw);
-  const railwayParallel = IS_RAILWAY ? 2 : 2;
+  const railwayParallel = IS_RAILWAY ? (isShortVideoLength(videoLength) ? 3 : 2) : 2;
   const maxEntityYoutube = maxEntityYoutubeFetchesPerVideo(minimizeStockFootageEnabled());
   let profile: PipelinePerfProfile;
   if (isShortVideoLength(videoLength)) {
@@ -13514,11 +13514,11 @@ type SceneVisualsResult = {
 };
 type BeatProgressPhase = "beat" | "backfill";
 
-const ARCHIVE_BEAT_TOP_CANDIDATES = 32;
-const ARCHIVE_BEAT_CLIP_RETRIES = 6;
+const ARCHIVE_BEAT_TOP_CANDIDATES = 24;
+const ARCHIVE_BEAT_CLIP_RETRIES = 3;
 /** Cap vision tries per beat — 3 in fast mode, 8 otherwise (override via ARCHIVE_VISION_TRY_STRICT). */
 function archiveVisionTryStrict(fastMode = false): number {
-  const fallback = fastMode ? 3 : 8;
+  const fallback = fastMode ? 3 : 6;
   const n = parseInt(process.env.ARCHIVE_VISION_TRY_STRICT || String(fallback), 10);
   return Number.isFinite(n) && n >= 2 ? Math.min(12, n) : fallback;
 }
