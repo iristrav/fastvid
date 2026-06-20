@@ -669,8 +669,9 @@ async function startServer() {
         return;
       }
       const { retryFailedVideo } = await import("../routers");
-      const result = await retryFailedVideo(videoId);
-      res.json({ ok: true, videoId, ...result });
+      const force = req.body?.force === true || req.query.force === "true";
+      const result = await retryFailedVideo(videoId, { force });
+      res.json({ ok: true, videoId, force, ...result });
     } catch (err) {
       console.error("[Internal Retry] Error:", err);
       res.status(500).json({ error: String(err) });

@@ -254,13 +254,15 @@ export async function generateFullVideoInternal(videoId: number, prompt: string,
 
 /** Re-run pipeline for a failed/stuck video (reuses saved script when present). */
 export async function retryFailedVideo(
-  videoId: number
+  videoId: number,
+  opts?: { force?: boolean }
 ): Promise<{ mode: "pipeline" | "queue"; status: string }> {
   const video = await getVideoById(videoId);
   if (!video) {
     throw new Error("Video not found");
   }
   const retryable =
+    opts?.force === true ||
     video.status === "failed" ||
     video.status === "queued" ||
     ORPHANED_PIPELINE_STATUSES.includes(video.status as (typeof ORPHANED_PIPELINE_STATUSES)[number]);
