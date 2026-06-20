@@ -359,10 +359,17 @@ export async function analyzeBeatSemantics(
 /** Batch-analyze all beats in a scene (parallel with cap). */
 export async function analyzeBeatsSemanticsBatch(
   beatTexts: string[],
-  videoTitle?: string
+  videoTitle?: string,
+  opts?: { fastMode?: boolean }
 ): Promise<Map<number, BeatSemanticProfile>> {
   const title = coerceVideoTitleString(videoTitle);
   const out = new Map<number, BeatSemanticProfile>();
+  if (opts?.fastMode) {
+    beatTexts.forEach((text, i) => {
+      if (text?.trim()) out.set(i, analyzeBeatSemanticsFallback(text, title));
+    });
+    return out;
+  }
   const concurrency = 4;
   let idx = 0;
 

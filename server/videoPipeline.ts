@@ -1706,7 +1706,7 @@ function applyAiFallbackToProfile(
 
 function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProfile {
   const videoLength = normalizeVideoLength(videoLengthRaw);
-  const railwayParallel = IS_RAILWAY ? (isShortVideoLength(videoLength) ? 3 : 2) : 2;
+  const railwayParallel = IS_RAILWAY ? (isShortVideoLength(videoLength) ? 4 : 2) : 2;
   const maxEntityYoutube = maxEntityYoutubeFetchesPerVideo(minimizeStockFootageEnabled());
   let profile: PipelinePerfProfile;
   if (isShortVideoLength(videoLength)) {
@@ -13723,17 +13723,9 @@ async function adoptArchiveBeatClip(
       rejectClip(clipPath);
       return false;
     }
-    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode);
-    if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) {
-      console.warn(
-        `[Pipeline] Scene ${scene.index} beat ${beat.index}: skipping clip that fails compose gate ${path.basename(withText)}`
-      );
-      rejectClip(clipPath);
-      return false;
-    }
     if (
       !(await beatClipPassesVisionGate(
-        withText,
+        clipPath,
         beat,
         scene,
         workDir,
@@ -13743,6 +13735,14 @@ async function adoptArchiveBeatClip(
         curated ? "archive" : "archive_fetch"
       ))
     ) {
+      rejectClip(clipPath);
+      return false;
+    }
+    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode);
+    if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) {
+      console.warn(
+        `[Pipeline] Scene ${scene.index} beat ${beat.index}: skipping clip that fails compose gate ${path.basename(withText)}`
+      );
       rejectClip(clipPath);
       return false;
     }
@@ -14131,11 +14131,9 @@ async function adoptKlingBeatClip(
     if (!clipPath || isPipelineFallbackClip(clipPath)) return false;
     if (dedup.usedContentKeys.has(clipContentKey(clipPath))) return false;
     if (await isMostlyBlackClip(clipPath)) return false;
-    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode);
-    if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) return false;
     if (
       !(await beatClipPassesVisionGate(
-        withText,
+        clipPath,
         beat,
         scene,
         workDir,
@@ -14148,6 +14146,8 @@ async function adoptKlingBeatClip(
     ) {
       return false;
     }
+    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode);
+    if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) return false;
     if (await pushClip(withText, sec)) {
       dedup.usedContentKeys.add(clipContentKey(withText));
       return true;
@@ -14209,11 +14209,9 @@ async function adoptEuropeanaBeatClip(
     if (!clipPath || isPipelineFallbackClip(clipPath)) return false;
     if (dedup.usedContentKeys.has(clipContentKey(clipPath))) return false;
     if (await isMostlyBlackClip(clipPath)) return false;
-    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode);
-    if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) return false;
     if (
       !(await beatClipPassesVisionGate(
-        withText,
+        clipPath,
         beat,
         scene,
         workDir,
@@ -14226,6 +14224,8 @@ async function adoptEuropeanaBeatClip(
     ) {
       return false;
     }
+    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode);
+    if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) return false;
     if (await pushClip(withText, sec)) {
       dedup.usedContentKeys.add(clipContentKey(withText));
       recordClipAdopt(
@@ -14301,12 +14301,10 @@ async function adoptAiBeatClip(
   if (!aiClip || isPipelineFallbackClip(aiClip)) return false;
   if (dedup.usedContentKeys.has(clipContentKey(aiClip))) return false;
 
-  const withText = await applyVideoBeatTextOverlay(aiClip, beat, scene, workDir, holdSec, dedup.perf.fastStockMode);
-  if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) return false;
   if (
     !opts?.skipVision &&
     !(await beatClipPassesVisionGate(
-      withText,
+      aiClip,
       beat,
       scene,
       workDir,
@@ -14319,6 +14317,8 @@ async function adoptAiBeatClip(
   ) {
     return false;
   }
+  const withText = await applyVideoBeatTextOverlay(aiClip, beat, scene, workDir, holdSec, dedup.perf.fastStockMode);
+  if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) return false;
   if (await pushClip(withText, holdSec)) {
     recordClipAdopt(
       dedup.clipAdoptAudit,
@@ -14524,11 +14524,9 @@ async function adoptEmergencyGeoStockClip(
   const tryClip = async (clipPath: string | null | undefined, sec = holdSec, minScore = 6): Promise<boolean> => {
     if (!clipPath || isPipelineFallbackClip(clipPath)) return false;
     if (await isMostlyBlackClip(clipPath)) return false;
-    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode);
-    if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) return false;
     if (
       !(await beatClipPassesVisionGate(
-        withText,
+        clipPath,
         beat,
         scene,
         workDir,
@@ -14541,6 +14539,8 @@ async function adoptEmergencyGeoStockClip(
     ) {
       return false;
     }
+    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode);
+    if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) return false;
     if (await pushClip(withText, sec)) {
       recordClipAdopt(
         dedup.clipAdoptAudit,
@@ -15216,7 +15216,8 @@ async function fetchArchiveSentenceMontage(
   const semanticProfiles = semanticVisualMatchingEnabled()
     ? await analyzeBeatsSemanticsBatch(
         beats.map((b) => b.text),
-        videoTitle
+        videoTitle,
+        { fastMode: dedup.perf.fastStockMode }
       )
     : new Map<number, BeatSemanticProfile>();
 
@@ -15248,33 +15249,40 @@ async function fetchArchiveSentenceMontage(
     return true;
   };
 
-  for (let bi = 0; bi < beats.length; bi++) {
-    const beat = beats[bi]!;
-    onBeatProgress?.(bi + 1, beats.length, "beat");
-    const pushClip = (clipPath: string, holdSec = beat.holdSec): Promise<boolean> =>
-      pushSceneClip(clipPath, holdSec, beat.index);
+  const beatConcurrency = dedup.perf.fastStockMode ? 4 : 2;
+  const beatLimit = pLimit(beatConcurrency);
+  await Promise.all(
+    beats.map((beat, bi) =>
+      beatLimit(async () => {
+        onBeatProgress?.(bi + 1, beats.length, "beat");
+        await withVisualDedupLock(dedup, async () => {
+          const pushClip = (clipPath: string, holdSec = beat.holdSec): Promise<boolean> =>
+            pushSceneClip(clipPath, holdSec, beat.index);
 
-    const filled = await fillBeatVisual(
-      beat,
-      scene,
-      workDir,
-      videoTitle,
-      dedup,
-      pushClip,
-      semanticProfiles.get(bi)
-    );
-    if (!filled) {
-      await ensureBeatVisualFilled(
-        beat,
-        scene,
-        workDir,
-        videoTitle,
-        dedup,
-        pushClip,
-        semanticProfiles.get(bi)
-      );
-    }
-  }
+          const filled = await fillBeatVisual(
+            beat,
+            scene,
+            workDir,
+            videoTitle,
+            dedup,
+            pushClip,
+            semanticProfiles.get(bi)
+          );
+          if (!filled) {
+            await ensureBeatVisualFilled(
+              beat,
+              scene,
+              workDir,
+              videoTitle,
+              dedup,
+              pushClip,
+              semanticProfiles.get(bi)
+            );
+          }
+        });
+      })
+    )
+  );
 
   await ensureArchiveMontageVoiceCoverage(
     scene,
