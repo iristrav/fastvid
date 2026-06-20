@@ -224,7 +224,8 @@ export function sceneBeatCapForCadence(sceneDurationSec: number, perfFloor = 1):
   const minBeats = minBeatsForVisualCadence(sceneDurationSec);
   const maxBeats = maxBeatCapForVisualCadence(sceneDurationSec);
   const target = Math.max(minBeats, Math.ceil(sceneDurationSec / archiveVisualBeatSec()));
-  return Math.max(perfFloor, Math.min(maxBeats, target));
+  const cappedFloor = Math.min(Math.max(1, perfFloor), maxBeats);
+  return Math.max(minBeats, Math.min(maxBeats, Math.max(target, cappedFloor)));
 }
 
 /** Pipeline perf floor: enough beats for the longest typical scene in this video length. */
@@ -232,8 +233,8 @@ export function curatedPerfBeatsFloor(videoLength: string): number {
   const totalSec = targetVideoDurationMinutes(videoLength) * 60;
   const scenes =
     videoLength === "1" ? 3 : videoLength === "8-10" ? 18 : videoLength === "10-15" ? 25 : 35;
-  const longestTypicalSceneSec = totalSec / scenes + 4;
-  return maxBeatCapForVisualCadence(longestTypicalSceneSec);
+  const typicalSceneSec = totalSec / scenes;
+  return sceneBeatCapForCadence(typicalSceneSec, 1);
 }
 
 /** Prefer moving archive video over Ken Burns stills (default on). */

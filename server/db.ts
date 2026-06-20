@@ -878,7 +878,9 @@ import {
 } from "../drizzle/schema";
 
 export function normalizeMediaTags(tags: string[]): string[] {
-  return Array.from(new Set(tags.map((t) => t.trim().toLowerCase()).filter(Boolean)));
+  return Array.from(
+    new Set(tags.map((t) => (typeof t === "string" ? t : t == null ? "" : String(t)).trim().toLowerCase()).filter(Boolean))
+  );
 }
 
 export function slugifyArchiveName(name: string): string {

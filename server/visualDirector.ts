@@ -82,6 +82,12 @@ const BATCH_SIZE = 12;
 const ABSTRACT_KEYWORD_RE =
   /\b(success|growth|groei|strategy|strategie|company|bedrijf|business|person|persoon|people|concept|idea|innovation|future|impact|value|vision|mission|goal|doel|solution|opportunity|challenge|important|significant|powerful|amazing|incredible|remarkable)\b/i;
 
+function coerceText(raw: unknown, fallback = ""): string {
+  if (typeof raw === "string") return raw;
+  if (raw == null) return fallback;
+  return String(raw);
+}
+
 function normalizeSentenceKey(sentence: string): string {
   return sentence.replace(/\s+/g, " ").trim().toLowerCase();
 }
@@ -113,8 +119,8 @@ function splitBeatSentences(text: string): string[] {
   return [];
 }
 
-function sanitizeVisualKeyword(keyword: string): string {
-  let k = keyword
+function sanitizeVisualKeyword(keyword: unknown): string {
+  let k = coerceText(keyword)
     .toLowerCase()
     .replace(/["'`]/g, "")
     .replace(/[^\w\s-]/g, " ")
@@ -134,19 +140,19 @@ function sanitizeVisualIntentText(text: string): string {
   return t;
 }
 
-function sanitizeSceneType(sceneType: string): string {
+function sanitizeSceneType(sceneType: unknown): string {
   const SCENE_TYPES = new Set([
     "office", "city", "nature", "home", "factory", "street", "transport", "government",
     "sports", "technology", "medical", "education", "historical", "aerial", "retail", "restaurant", "other",
   ]);
-  const t = sceneType.toLowerCase().replace(/[^a-z_]/g, "").trim();
+  const t = coerceText(sceneType, "other").toLowerCase().replace(/[^a-z_]/g, "").trim();
   return SCENE_TYPES.has(t) ? t : "other";
 }
 
-function sanitizePrioritySubject(subject: string): string {
+function sanitizePrioritySubject(subject: unknown): string {
   const k = sanitizeVisualKeyword(subject);
   if (k) return k.split(/\s+/).slice(0, 2).join(" ");
-  const words = subject
+  const words = coerceText(subject, "scene")
     .toLowerCase()
     .replace(/[^\w\s-]/g, " ")
     .split(/\s+/)
@@ -155,8 +161,8 @@ function sanitizePrioritySubject(subject: string): string {
   return words.join(" ") || "scene";
 }
 
-function sanitizeCameraShot(raw: string): string {
-  const t = raw.toLowerCase().replace(/\s+/g, " ").trim();
+function sanitizeCameraShot(raw: unknown): string {
+  const t = coerceText(raw, "medium shot").toLowerCase().replace(/\s+/g, " ").trim();
   if (CAMERA_SHOTS.has(t)) return t === "close up" || t === "closeup" ? "close-up" : t;
   if (/wide|establishing|aerial|overhead|drone/.test(t)) return "wide shot";
   if (/close|detail|macro/.test(t)) return "close-up";
@@ -164,8 +170,8 @@ function sanitizeCameraShot(raw: string): string {
   return "medium shot";
 }
 
-function sanitizeEmotion(raw: string): string {
-  const t = raw.toLowerCase().replace(/[^a-z\s-]/g, " ").replace(/\s+/g, " ").trim();
+function sanitizeEmotion(raw: unknown): string {
+  const t = coerceText(raw, "neutral").toLowerCase().replace(/[^a-z\s-]/g, " ").replace(/\s+/g, " ").trim();
   if (t.length >= 3 && t.length <= 32) return t;
   return "neutral";
 }
@@ -206,23 +212,25 @@ function inferSceneTypeFromDescription(description: string, searchQuery: string)
 /** Map a director scene to the legacy intent shape used by the pipeline. */
 export function directorSceneToIntent(scene: VisualDirectorScene): ScriptVisualIntentEntry {
   const visualDescription =
-    sanitizeVisualIntentText(scene.visual_description) || scene.visual_description.trim();
+    sanitizeVisualIntentText(scene.visual_description) || coerceText(scene.visual_description).trim();
   const searchQuery = sanitizeSearchQuery(scene.search_query, visualDescription);
   const primary = searchQuery || sanitizeVisualKeyword(visualDescription) || "documentary broll scene";
   const sceneType = sanitizeSceneType(inferSceneTypeFromDescription(visualDescription, primary));
+  const cameraShot = sanitizeCameraShot(scene.camera_shot);
+  const emotion = sanitizeEmotion(scene.emotion);
   const secondary =
-    sanitizeVisualKeyword(`${scene.emotion} ${scene.camera_shot} ${primary.split(/\s+/).slice(0, 2).join(" ")}`) ||
+    sanitizeVisualKeyword(`${emotion} ${cameraShot} ${primary.split(/\s+/).slice(0, 2).join(" ")}`) ||
     primary;
   const fallback =
     sanitizeVisualKeyword(`${sceneType} broll ${primary.split(/\s+/)[0] ?? "scene"}`) || primary;
 
   return {
-    sentence: scene.spoken_text,
+    sentence: coerceText(scene.spoken_text),
     visual_intent: visualDescription,
     visual_description: visualDescription,
-    camera_shot: scene.camera_shot,
-    emotion: scene.emotion,
-    search_query: scene.search_query,
+    camera_shot: cameraShot,
+    emotion,
+    search_query: searchQuery || coerceText(scene.search_query).trim(),
     primary_keyword: primary,
     secondary_keyword: secondary,
     fallback_keyword: fallback,

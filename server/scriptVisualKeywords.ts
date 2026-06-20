@@ -169,8 +169,9 @@ export function extractNarrationSentences(script: string): string[] {
 }
 
 /** Sanitize LLM keyword for Pexels/archive search. */
-export function sanitizeVisualKeyword(keyword: string): string {
-  let k = keyword
+export function sanitizeVisualKeyword(keyword: unknown): string {
+  const raw = typeof keyword === "string" ? keyword : keyword == null ? "" : String(keyword);
+  let k = raw
     .toLowerCase()
     .replace(/["'`]/g, "")
     .replace(/[^\w\s-]/g, " ")
@@ -194,15 +195,16 @@ export function sanitizeVisualIntentText(text: string): string {
   return t;
 }
 
-export function sanitizeSceneType(sceneType: string): string {
-  const t = sceneType.toLowerCase().replace(/[^a-z_]/g, "").trim();
+export function sanitizeSceneType(sceneType: unknown): string {
+  const t = (typeof sceneType === "string" ? sceneType : sceneType == null ? "other" : String(sceneType))
+    .toLowerCase().replace(/[^a-z_]/g, "").trim();
   return SCENE_TYPES.has(t) ? t : "other";
 }
 
-export function sanitizePrioritySubject(subject: string): string {
+export function sanitizePrioritySubject(subject: unknown): string {
   const k = sanitizeVisualKeyword(subject);
   if (k) return k.split(/\s+/).slice(0, 2).join(" ");
-  const words = subject
+  const words = (typeof subject === "string" ? subject : subject == null ? "scene" : String(subject))
     .toLowerCase()
     .replace(/[^\w\s-]/g, " ")
     .split(/\s+/)
@@ -386,8 +388,9 @@ export function buildRelevanceKeywordsFromIntent(
   return Array.from(new Set(parts.filter((p) => p.length >= 3))).slice(0, 24);
 }
 
-function tokenizeForRelevance(text: string): string[] {
-  return text
+function tokenizeForRelevance(text: unknown): string[] {
+  const raw = typeof text === "string" ? text : text == null ? "" : String(text);
+  return raw
     .toLowerCase()
     .replace(/[^\w\s-]/g, " ")
     .split(/\s+/)
@@ -840,12 +843,12 @@ async function generateIntentBatch(
         row.index,
         normalizeVisualIntentEntry({
           sentence,
-          visual_intent: row.visual_intent ?? primary,
+          visual_intent: String(row.visual_intent ?? primary),
           primary_keyword: primary,
-          secondary_keyword: row.secondary_keyword ?? primary,
-          fallback_keyword: row.fallback_keyword ?? primary,
-          scene_type: row.scene_type ?? "other",
-          priority_subject: row.priority_subject ?? primary.split(/\s+/)[0] ?? "scene",
+          secondary_keyword: String(row.secondary_keyword ?? primary),
+          fallback_keyword: String(row.fallback_keyword ?? primary),
+          scene_type: String(row.scene_type ?? "other"),
+          priority_subject: String(row.priority_subject ?? primary.split(/\s+/)[0] ?? "scene"),
         })
       );
     }

@@ -119,7 +119,7 @@ import {
   scriptGuidedClipsEnabled,
 } from "./scriptGuidedClipFinder";
 import { clipPassesVisionGate, clipVisionGateEnabled, minClipQualityScore } from "./visualQualityGate";
-import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, openverseStillsEnabled, wikimediaInternetStillsEnabled } from "./sourcingPolicy";
+import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, openverseStillsEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -1724,7 +1724,7 @@ function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProfile {
       pexelsDownloadRetries: 1,
       maxStockQueriesPerBeat: 2,
       beatClipTimeoutMs: IS_RAILWAY ? 22_000 : 60_000,
-      sceneVisualTimeoutMs: IS_RAILWAY ? 15 * 60_000 : 12 * 60_000,
+      sceneVisualTimeoutMs: IS_RAILWAY ? 8 * 60_000 : 10 * 60_000,
       fastStockMode: IS_RAILWAY,
       scriptOnlyVisuals: false,
     }, videoLength);
@@ -1790,9 +1790,17 @@ function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProfile {
 
 function visualStageTimeoutMs(videoLengthRaw: string, perf: PipelinePerfProfile): number {
   if (isShortVideoLength(videoLengthRaw)) {
-    return perf.fastStockMode ? 20 * 60_000 : 20 * 60_000;
+    return visualStageWallClockMin(videoLengthRaw) * 60_000;
   }
   return Math.round(perf.targetWallClockMin * 60_000 * 1.15);
+}
+
+function archiveBeatTopCandidates(fastMode = false): number {
+  return fastMode ? 16 : ARCHIVE_BEAT_TOP_CANDIDATES;
+}
+
+function archiveBeatClipRetries(fastMode = false): number {
+  return fastMode ? 2 : ARCHIVE_BEAT_CLIP_RETRIES;
 }
 
 async function runBeatClipFetch(
@@ -13518,7 +13526,10 @@ const ARCHIVE_BEAT_TOP_CANDIDATES = 24;
 const ARCHIVE_BEAT_CLIP_RETRIES = 3;
 /** Cap vision tries per beat — 3 in fast mode, 8 otherwise (override via ARCHIVE_VISION_TRY_STRICT). */
 function archiveVisionTryStrict(fastMode = false): number {
-  const fallback = fastMode ? 3 : 6;
+  if (pipelineWallClockLimitEnabled()) {
+    return maxVisualCandidatesPerBeatTry();
+  }
+  const fallback = fastMode ? 2 : 6;
   const n = parseInt(process.env.ARCHIVE_VISION_TRY_STRICT || String(fallback), 10);
   return Number.isFinite(n) && n >= 2 ? Math.min(12, n) : fallback;
 }
@@ -13794,8 +13805,9 @@ async function adoptArchiveBeatClip(
       ? Math.max(10, Math.round(topScore * 0.2))
       : Math.max(20, Math.round(topScore * 0.32));
     const imgMax = archiveMaxImageClipsPerVideo(dedup.videoLength);
+    const topCandidates = archiveBeatTopCandidates(dedup.perf.fastStockMode);
     const tryCap = Math.min(
-      relaxed ? ARCHIVE_BEAT_TOP_CANDIDATES * 2 : ARCHIVE_BEAT_TOP_CANDIDATES,
+      relaxed ? topCandidates * 2 : topCandidates,
       relaxed ? ARCHIVE_VISION_TRY_RELAXED : archiveVisionTryStrict(dedup.perf.fastStockMode)
     );
     let tried = 0;
@@ -13888,7 +13900,7 @@ async function adoptArchiveBeatClip(
     max: maxMotionGraphicsPerVideo(),
   };
 
-  for (let attempt = 0; attempt < ARCHIVE_BEAT_CLIP_RETRIES; attempt++) {
+  for (let attempt = 0; attempt < archiveBeatClipRetries(dedup.perf.fastStockMode); attempt++) {
     const clip = await fetchCuratedArchiveBeatClip(
       beat,
       scene,
@@ -14968,7 +14980,7 @@ async function fillBeatVisual(
     videosOnly?: boolean
   ): Promise<boolean> {
     const adoptOpts = videosOnly ? { videosOnly: true } : undefined;
-    for (let attempt = 0; attempt < ARCHIVE_BEAT_CLIP_RETRIES; attempt++) {
+    for (let attempt = 0; attempt < archiveBeatClipRetries(dedup.perf.fastStockMode); attempt++) {
       if (
         await adoptArchiveBeatClip(
           beat,
@@ -15249,7 +15261,7 @@ async function fetchArchiveSentenceMontage(
     return true;
   };
 
-  const beatConcurrency = dedup.perf.fastStockMode ? 4 : 2;
+  const beatConcurrency = dedup.perf.fastStockMode ? 6 : 2;
   const beatLimit = pLimit(beatConcurrency);
   await Promise.all(
     beats.map((beat, bi) =>

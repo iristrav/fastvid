@@ -267,10 +267,23 @@ export function extractTopicAnchorTags(videoTitle?: string, extraText?: string):
   return normalizeMediaTags(raw).slice(0, 8);
 }
 
+/** Coerce DB/LLM values to plain text before string ops. */
+function coerceBeatText(raw: unknown): string {
+  if (typeof raw === "string") return raw;
+  if (raw == null) return "";
+  if (typeof raw === "object" && raw !== null && "title" in raw) {
+    const t = (raw as { title?: unknown }).title;
+    if (typeof t === "string") return t;
+  }
+  return String(raw);
+}
+
 /** Tokenize narration into searchable tags (beat text first). */
-function tokenizeBeatText(raw: string): string[] {
+function tokenizeBeatText(raw: unknown): string[] {
+  const text = coerceBeatText(raw).trim();
+  if (!text) return [];
   return normalizeMediaTags(
-    raw
+    text
       .toLowerCase()
       .replace(/[^a-z0-9\s-]/g, " ")
       .split(/\s+/)
@@ -284,28 +297,33 @@ export function buildBeatMatchTags(
   scene: CuratedSceneContext,
   videoTitle?: string
 ): BeatMatchTags {
-  const videoVisualTopic = inferVideoVisualTopic(videoTitle, [beat.text, scene.text].join(" "));
-  const topicAnchors = extractTopicAnchorTags(videoTitle, [beat.text, scene.text].join(" "));
-  const hasLiteralVisual = Boolean(beat.visualDescription?.trim() || beat.searchQuery?.trim());
-  const visualSource = beat.visualDescription?.trim() || beat.searchQuery?.trim() || beat.text;
+  const beatText = coerceBeatText(beat.text);
+  const sceneText = coerceBeatText(scene.text);
+  const titleStr = coerceBeatText(videoTitle);
+  const searchQuery = coerceBeatText(beat.searchQuery);
+  const visualDescription = coerceBeatText(beat.visualDescription);
+  const videoVisualTopic = inferVideoVisualTopic(titleStr, [beatText, sceneText].join(" "));
+  const topicAnchors = extractTopicAnchorTags(titleStr, [beatText, sceneText].join(" "));
+  const hasLiteralVisual = Boolean(visualDescription.trim() || searchQuery.trim());
+  const visualSource = visualDescription.trim() || searchQuery.trim() || beatText;
   const visualTags = extractVisualSearchTags(visualSource, videoTitle);
   const visualAnchor = extractPrimaryVisualAnchor(visualSource);
   const anchorTokens = visualAnchor ? tokenizeBeatText(visualAnchor) : [];
   const beatRaw = [
     visualSource,
     visualAnchor ?? "",
-    beat.powerWord ?? "",
-    beat.searchQuery ?? "",
-    ...beat.keywords,
+    coerceBeatText(beat.powerWord),
+    searchQuery,
+    ...beat.keywords.map((k) => coerceBeatText(k)),
     ...visualTags,
-    ...(hasLiteralVisual ? [] : [scene.visualCue ?? ""]),
+    ...(hasLiteralVisual ? [] : [coerceBeatText(scene.visualCue)]),
   ]
     .filter(Boolean)
     .join(" ");
   const sentenceTags = tokenizeBeatText(
-    beat.visualDescription?.trim() || beat.searchQuery?.trim() || beat.text
+    visualDescription.trim() || searchQuery.trim() || beatText
   );
-  const queryTokens = beat.searchQuery ? tokenizeBeatText(beat.searchQuery) : [];
+  const queryTokens = searchQuery.trim() ? tokenizeBeatText(searchQuery) : [];
   const beatTags = normalizeMediaTags([
     ...queryTokens,
     ...queryTokens,
@@ -313,14 +331,14 @@ export function buildBeatMatchTags(
     ...sentenceTags,
     ...(hasLiteralVisual
       ? []
-      : tokenizeBeatText(beatRaw).filter((t) => !topicAnchors.includes(t) || beat.text.toLowerCase().includes(t))),
+      : tokenizeBeatText(beatRaw).filter((t) => !topicAnchors.includes(t) || beatText.toLowerCase().includes(t))),
   ]).slice(0, 20);
-  const sceneTags = tokenizeBeatText([scene.text, scene.pexelsQuery ?? ""].join(" "));
+  const sceneTags = tokenizeBeatText([sceneText, coerceBeatText(scene.pexelsQuery)].join(" "));
   const mergedBeat = normalizeMediaTags([
     ...beatTags,
-    ...(hasLiteralVisual ? [] : sceneTags.filter((t) => beat.text.toLowerCase().includes(t))),
+    ...(hasLiteralVisual ? [] : sceneTags.filter((t) => beatText.toLowerCase().includes(t))),
   ]).slice(0, 16);
-  const beatLower = beat.text.toLowerCase();
+  const beatLower = beatText.toLowerCase();
   const scopedTopicAnchors = topicAnchors.filter(
     (a) => beatLower.includes(a) || visualTags.some((v) => v.includes(a) || a.includes(v))
   );
@@ -330,10 +348,10 @@ export function buildBeatMatchTags(
     ...mergedBeat,
     ...effectiveTopicAnchors,
     ...topicAnchors.slice(0, 3),
-    ...(videoTitle ? tokenizeBeatText(videoTitle) : []),
+    ...(titleStr ? tokenizeBeatText(titleStr) : []),
   ]).slice(0, 24);
-  const refinedBeat = refineVisualSearchTagsForTopic(mergedBeat, videoVisualTopic, beat.text);
-  const refinedAll = refineVisualSearchTagsForTopic(allTags, videoVisualTopic, beat.text);
+  const refinedBeat = refineVisualSearchTagsForTopic(mergedBeat, videoVisualTopic, beatText);
+  const refinedAll = refineVisualSearchTagsForTopic(allTags, videoVisualTopic, beatText);
   return {
     beatTags: refinedBeat,
     topicAnchors: effectiveTopicAnchors,
