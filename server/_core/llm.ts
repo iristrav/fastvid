@@ -283,17 +283,35 @@ const resolveApiUrl = (provider: LlmProvider) => {
     : "https://forge.manus.im/v1/chat/completions";
 };
 
-function resolveModel(provider: LlmProvider, hasVision: boolean): string {
+function resolveModel(provider: LlmProvider, hasVision: boolean, maxTokens?: number): string {
   if (provider === "groq") {
     if (hasVision) {
       return process.env.GROQ_VISION_MODEL?.trim() || "llama-3.2-11b-vision-preview";
     }
+    const fastModel = process.env.GROQ_FAST_MODEL?.trim() || "llama-3.1-8b-instant";
+    if (maxTokens != null && maxTokens <= 2500) return fastModel;
     return process.env.GROQ_MODEL?.trim() || "llama-3.3-70b-versatile";
   }
   if (provider === "openai") {
     return process.env.LLM_MODEL?.trim() || "gpt-4o";
   }
   return process.env.FORGE_LLM_MODEL?.trim() || "gemini-2.5-flash";
+}
+
+function parseRetryAfterSeconds(body: string): number | null {
+  const m = body.match(/try again in (\d+(?:\.\d+)?)\s*s/i);
+  if (!m) return null;
+  const sec = parseFloat(m[1]!);
+  if (isNaN(sec) || sec <= 0) return null;
+  return Math.min(90, Math.ceil(sec + 0.5));
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRateLimitError(status: number): boolean {
+  return status === 429;
 }
 
 function isOpenAiQuotaError(status: number, body: string): boolean {
@@ -306,10 +324,19 @@ function isOpenAiQuotaError(status: number, body: string): boolean {
   );
 }
 
+function shouldFallbackToNextProvider(status: number, body: string): boolean {
+  if (isRateLimitError(status)) return true;
+  if (isOpenAiQuotaError(status, body)) return true;
+  return status >= 500 && status < 600;
+}
+
 function providersToTry(primary: LlmProvider): LlmProvider[] {
   const out: LlmProvider[] = [];
   if (primary !== "none") out.push(primary);
-  if (primary === "openai" && ENV.groqApiKey && !out.includes("groq")) {
+  if (primary === "groq" && openAiKeyFromEnv() && !out.includes("openai")) {
+    out.push("openai");
+  }
+  if (primary === "openai" && groqKeyFromEnv() && !out.includes("groq")) {
     out.push("groq");
   }
   return out;
@@ -392,6 +419,8 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
   }
 
   let lastError: Error | null = null;
+  const maxTokens = params.maxTokens ?? params.max_tokens;
+
   for (let i = 0; i < chain.length; i++) {
     const provider = chain[i]!;
     const apiKey = llmApiKeyForProvider(provider);
@@ -403,7 +432,7 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
     }
 
     const payload: Record<string, unknown> = {
-      model: resolveModel(provider, hasVision),
+      model: resolveModel(provider, hasVision, maxTokens),
       messages: normalizedMessages,
     };
 
@@ -419,7 +448,6 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
       payload.tool_choice = normalizedToolChoice;
     }
 
-    const maxTokens = params.maxTokens ?? params.max_tokens;
     if (provider === "forge") {
       payload.thinking = { budget_tokens: 128 };
       payload.max_tokens = maxTokens ?? 32768;
@@ -438,42 +466,49 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
       payload.response_format = normalizedResponseFormat;
     }
 
-    const response = await fetch(resolveApiUrl(provider), {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify(payload),
-    });
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const response = await fetch(resolveApiUrl(provider), {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify(payload),
+      });
 
-    if (response.ok) {
-      if (i > 0) {
-        console.log(`[LLM] Succeeded via ${provider} after ${chain[0]} failure`);
+      if (response.ok) {
+        if (i > 0 || attempt > 0) {
+          console.log(
+            `[LLM] Succeeded via ${provider}${attempt > 0 ? ` (after ${attempt} rate-limit retries)` : ""}` +
+              (i > 0 ? ` after ${chain[0]} failure` : "")
+          );
+        }
+        return (await response.json()) as InvokeResult;
       }
-      return (await response.json()) as InvokeResult;
-    }
 
-    const errorText = await response.text();
-    const err = new Error(
-      `LLM invoke failed (${provider}, model=${payload.model}): ${response.status} ${response.statusText} – ${errorText}`
-    );
-    lastError = err;
-
-    const canRetryGroq =
-      i + 1 < chain.length &&
-      provider === "openai" &&
-      chain[i + 1] === "groq" &&
-      isOpenAiQuotaError(response.status, errorText);
-
-    if (canRetryGroq) {
-      console.warn(
-        `[LLM] OpenAI quota/rate limit — falling back to Groq (${payload.model})`
+      const errorText = await response.text();
+      lastError = new Error(
+        `LLM invoke failed (${provider}, model=${payload.model}): ${response.status} ${response.statusText} – ${errorText}`
       );
-      continue;
-    }
 
-    throw err;
+      if (isRateLimitError(response.status) && attempt < 3) {
+        const waitSec = parseRetryAfterSeconds(errorText) ?? Math.min(30, 2 ** attempt * 3);
+        console.warn(
+          `[LLM] ${provider} rate limit (attempt ${attempt + 1}/4) — retry in ${waitSec}s`
+        );
+        await sleep(waitSec * 1000);
+        continue;
+      }
+
+      if (shouldFallbackToNextProvider(response.status, errorText) && i + 1 < chain.length) {
+        console.warn(
+          `[LLM] ${provider} failed (${response.status}) — falling back to ${chain[i + 1]}`
+        );
+        break;
+      }
+
+      throw lastError;
+    }
   }
 
   throw lastError ?? new Error("LLM invoke failed: no provider available");
