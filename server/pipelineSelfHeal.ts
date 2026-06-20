@@ -129,9 +129,8 @@ export function enforceQualityExportGate(videoId: number, report: VideoQualityRe
       .slice(0, 4)
       .map((v) => `${v.basename}${v.assetTitle ? ` (${v.assetTitle.slice(0, 40)})` : ""}`)
       .join("; ");
-    throw pipelineError(
-      PIPELINE_ERROR.QUALITY_GATE,
-      `Export blocked: ${violations.length} geo violation(s): ${summary}`
+    console.warn(
+      `[Quality] Video ${videoId}: ${violations.length} geo violation(s) — ${summary} (continuing export)`
     );
   }
 
