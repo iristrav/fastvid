@@ -58,6 +58,34 @@ describe("buildVideoQualityReport", () => {
     expect(() => assertQualityReportExportGate(report)).not.toThrow();
   });
 
+  it("archive-only wwii skips unfair wikimedia and post-hoc geo penalties", () => {
+    const report = buildVideoQualityReport(
+      [
+        "/tmp/scene_0_b0_curated_a12.mp4",
+        "/tmp/scene_1_b1_curated_a44.mp4",
+        "/tmp/scene_2_b2_curated_a88.mp4",
+      ],
+      "Why Did Hitler Kill Himself?",
+      {
+        archiveOnly: true,
+        fastShort: true,
+        adoptAudit: [
+          {
+            sceneIndex: 0,
+            beatIndex: 0,
+            beatText: "In April 1945, Berlin was collapsing.",
+            basename: "scene_0_b0_curated_a12.mp4",
+            source: "archive",
+            assetTitle: "Berlin street 1945 archival footage",
+          },
+        ],
+      }
+    );
+    expect(report.visualTopic).toBe("wwii");
+    expect(report.score).toBeGreaterThanOrEqual(45);
+    expect(report.criticalGeoViolations ?? []).toHaveLength(0);
+  });
+
   it("Singapore geo violations are detected in report", () => {
     const report = buildVideoQualityReport(
       ["/tmp/scene_0_b0_hist_archive_kansas.mp4"],

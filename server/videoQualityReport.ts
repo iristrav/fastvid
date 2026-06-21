@@ -104,6 +104,8 @@ export function buildVideoQualityReport(
     stockBeatsUsed?: number;
     rejectAudit?: ClipRejectEntry[];
     adoptAudit?: ClipAdoptEntry[];
+    archiveOnly?: boolean;
+    fastShort?: boolean;
   }
 ): VideoQualityReport {
   const bySource: Record<string, number> = {};
@@ -111,6 +113,12 @@ export function buildVideoQualityReport(
   const warnings: string[] = [];
   const offTopicSuspects: Array<{ basename: string; reason: string }> = [];
   const primaryGeo = inferPrimaryGeoFromTitle(videoTitle);
+  const visualTopic = inferVideoVisualTopic(videoTitle, videoTitle);
+  const archiveOnly = opts?.archiveOnly === true;
+  const fastShort = opts?.fastShort === true;
+  const skipUrbanOffTopic =
+    archiveOnly &&
+    (visualTopic === "wwii" || visualTopic === "cold_war" || visualTopic === "general");
   const unique = [...new Set(clipPaths.filter(Boolean))];
 
   for (const clipPath of unique) {
@@ -120,9 +128,13 @@ export function buildVideoQualityReport(
     byMixKind[mix]++;
 
     const hay = `${path.basename(clipPath)} ${videoTitle}`.toLowerCase();
-    if (isOffTopicGeoUrbanVisual(hay) && !offTopicVisualAllowedForBeat(hay, videoTitle)) {
+    if (
+      !skipUrbanOffTopic &&
+      isOffTopicGeoUrbanVisual(hay) &&
+      !offTopicVisualAllowedForBeat(hay, videoTitle)
+    ) {
       offTopicSuspects.push({ basename: path.basename(clipPath), reason: "off-topic visual" });
-    } else {
+    } else if (!skipUrbanOffTopic) {
       const lock = resolveBeatRegionLock(videoTitle, videoTitle);
       if (lock !== "neutral" && lock !== "both" && isWrongRegionForSegmentLock(hay, lock)) {
         offTopicSuspects.push({ basename: path.basename(clipPath), reason: "wrong region" });
@@ -136,7 +148,7 @@ export function buildVideoQualityReport(
   const archiveCount = bySource.archive ?? 0;
   const stockCount = (bySource.pexels ?? 0) + (bySource.pixabay ?? 0);
 
-  if (wikimediaCount === 0 && unique.length >= 3) {
+  if (!archiveOnly && wikimediaCount === 0 && unique.length >= 3) {
     warnings.push("Geen Wikimedia-stills — controleer zoekqueries of WIKIMEDIA_V1_THRESHOLD.");
   }
   if (stockCount > unique.length * 0.25) {
@@ -151,8 +163,8 @@ export function buildVideoQualityReport(
 
   let score = 100;
   score -= Math.min(30, stockCount * 4);
-  score -= Math.min(25, offTopicSuspects.length * 12);
-  if (wikimediaCount === 0 && unique.length > 2) score -= 8;
+  score -= Math.min(fastShort ? 15 : 25, offTopicSuspects.length * (fastShort ? 8 : 12));
+  if (!archiveOnly && wikimediaCount === 0 && unique.length > 2) score -= 8;
   if (archiveCount === 0 && unique.length > 2) score -= 10;
   score = Math.max(0, Math.min(100, score));
 
@@ -162,7 +174,13 @@ export function buildVideoQualityReport(
   const topRejects = opts?.rejectAudit?.slice(0, 12);
 
   const criticalGeoViolations: VideoQualityReport["criticalGeoViolations"] = [];
+  const skipPostHocGeo =
+    archiveOnly &&
+    (visualTopic === "wwii" || visualTopic === "cold_war" || visualTopic === "general");
   for (const adopt of opts?.adoptAudit ?? []) {
+    if (skipPostHocGeo && (adopt.source === "archive" || adopt.source === "archive_fetch")) {
+      continue;
+    }
     if (adopt.source !== "archive" && adopt.source !== "archive_fetch") continue;
     const assetLike = {
       title: adopt.assetTitle ?? adopt.basename.replace(/_/g, " "),
@@ -188,7 +206,9 @@ export function buildVideoQualityReport(
 
   if (criticalGeoViolations.length > 0) {
     warnings.push(`${criticalGeoViolations.length} kritieke geo-fout(en).`);
-    score -= Math.min(40, criticalGeoViolations.length * 20);
+    const geoPenalty = fastShort ? 10 : 20;
+    const geoCap = fastShort ? 20 : 40;
+    score -= Math.min(geoCap, criticalGeoViolations.length * geoPenalty);
     score = Math.max(0, score);
   }
 

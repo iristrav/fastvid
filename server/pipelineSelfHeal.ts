@@ -117,7 +117,11 @@ export function logQualityReportExportWarnings(videoId: number, report: VideoQua
 }
 
 /** Block upload when quality thresholds fail (strict mode on by default). */
-export function enforceQualityExportGate(videoId: number, report: VideoQualityReport): void {
+export function enforceQualityExportGate(
+  videoId: number,
+  report: VideoQualityReport,
+  videoLength?: string | null
+): void {
   if (!strictQualityExportEnabled()) {
     logQualityReportExportWarnings(videoId, report);
     return;
@@ -134,7 +138,7 @@ export function enforceQualityExportGate(videoId: number, report: VideoQualityRe
     );
   }
 
-  const minScore = minQualityExportScore();
+  const minScore = minQualityExportScore(videoLength);
   if (report.score < minScore) {
     throw pipelineError(
       PIPELINE_ERROR.QUALITY_GATE,

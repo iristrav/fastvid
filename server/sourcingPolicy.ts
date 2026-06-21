@@ -410,12 +410,13 @@ export function strictQualityExportEnabled(): boolean {
 }
 
 /** Minimum qualityReport.score before export (default 45). */
-export function minQualityExportScore(): number {
+export function minQualityExportScore(videoLength?: string | null): number {
   const raw = process.env.MIN_QUALITY_EXPORT_SCORE?.trim();
   if (raw) {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 0 && n <= 100) return n;
   }
+  if (isFastShortVideoLength(videoLength)) return 25;
   return 45;
 }
 

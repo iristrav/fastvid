@@ -18316,6 +18316,8 @@ export async function runVideoPipeline(
       stockBeatsUsed: visualDedup.stockBeatsUsed,
       rejectAudit: visualDedup.clipRejectAudit,
       adoptAudit: visualDedup.clipAdoptAudit,
+      archiveOnly: curatedArchiveOnlyVisuals(),
+      fastShort: isFastShortVideoLength(videoLength),
     });
     logVideoQualityReport(videoId, qualityReport);
     await mergeVideoMetadata(videoId, { qualityReport }).catch((err) =>
@@ -18383,7 +18385,7 @@ export async function runVideoPipeline(
       }
     }
 
-    enforceQualityExportGate(videoId, qualityReport);
+    enforceQualityExportGate(videoId, qualityReport, videoLength);
 
     // ── Stage 6: Upload to S3 ─────────────────────────────────────────────────
     onProgress?.({ stage: STAGE_LABELS.uploading, percent: 93 });
