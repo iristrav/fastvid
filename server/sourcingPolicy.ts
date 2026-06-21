@@ -165,7 +165,7 @@ export function maxPipelineWallClockHardMin(videoLength?: string | null): number
 
 /** Max archive/Wikimedia candidates to try per beat when wall-clock limit is on. */
 export function maxVisualCandidatesPerBeatTry(): number {
-  return pipelineWallClockLimitEnabled() ? 3 : 12;
+  return pipelineWallClockLimitEnabled() ? 2 : 12;
 }
 
 /** Wall-clock budget for the visual sourcing stage (minutes). */
@@ -176,8 +176,8 @@ export function visualStageWallClockMin(videoLength?: string | null): number {
   const total = maxPipelineWallClockMin(videoLength);
   const mins = targetVideoDurationMinutes(videoLength);
   if (mins <= 1) {
-    // ~7 min visual stage within 10 min total pipeline (script/voice ~2–3 min).
-    return 7;
+    // ~10 min visual stage — script/voice ~2–3 min; strict vision on ~12 beats needs headroom.
+    return 10;
   }
   return Math.max(8, Math.min(total - 6, Math.round(total * 0.88)));
 }

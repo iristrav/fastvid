@@ -77,6 +77,7 @@ import {
   vidrushDocumentaryQualityEnabled,
   maxVisualCandidatesPerBeatTry,
   archiveTagsPrimaryMatching,
+  pipelineWallClockLimitEnabled,
 } from "./sourcingPolicy";
 import {
   assetHasNlMarkers,
@@ -1682,7 +1683,7 @@ export async function searchCuratedCandidatesForBeat(
   }
 
   if (semanticProfile && semanticVisualMatchingEnabled()) {
-    const pool = ranked.slice(0, 64);
+    const pool = ranked.slice(0, pipelineWallClockLimitEnabled() ? 20 : 64);
     ranked = await Promise.all(
       pool.map(async (pick) => {
         const semantic = await scoreArchiveAssetSemantically(semanticProfile, pick.asset);
