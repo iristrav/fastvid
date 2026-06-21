@@ -1,4 +1,5 @@
 import "dotenv/config";
+import http from "http";
 import { migrate } from "drizzle-orm/mysql2/migrator";
 import path from "path";
 import fs from "fs";
@@ -41,11 +42,38 @@ async function runMigrations() {
   }
 }
 
+/** Minimal HTTP probe for Railway deploy healthchecks (worker has no full web app). */
+function startWorkerHealthServer(): void {
+  const port = parseInt(process.env.PORT || "3000", 10);
+  const server = http.createServer((req, res) => {
+    const path = req.url?.split("?")[0] ?? "";
+    if (req.method === "GET" && path === "/api/health") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          status: "ok",
+          role: "worker",
+          timestamp: new Date().toISOString(),
+          gitCommit: process.env.RAILWAY_GIT_COMMIT_SHA?.slice(0, 7) ?? null,
+        })
+      );
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  server.listen(port, "0.0.0.0", () => {
+    console.log(`[Worker] Health probe on :${port}/api/health (Railway deploy check)`);
+  });
+}
+
 async function main() {
   if (!shouldRunQueueWorker({ ...process.env, WORKER_MODE: "true" })) {
     console.error("[Worker] WORKER_MODE must be true");
     process.exit(1);
   }
+
+  startWorkerHealthServer();
 
   console.log("[Worker] Fastvid video queue worker starting...");
   logLlmStartupDiagnostics("worker");

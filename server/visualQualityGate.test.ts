@@ -43,6 +43,7 @@ describe("visualQualityGate", () => {
     const prev = process.env.CLIP_VISION_COVERAGE;
     delete process.env.CLIP_VISION_COVERAGE;
     expect(clipVisionFrameCoverage()).toBe(0.8);
+    expect(clipVisionFrameCoverage(true)).toBe(0.5);
     expect(effectiveVisionSampleCount(false)).toBe(3);
     expect(effectiveVisionSampleCount(true)).toBe(1);
     process.env.CLIP_VISION_COVERAGE = prev;

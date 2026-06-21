@@ -1914,6 +1914,7 @@ export async function fetchCuratedArchiveBeatClip(
     assetsCache?: Map<number, MediaArchiveAsset[]>;
     videosOnly?: boolean;
     segmentLock?: BeatGeoRegion | null;
+    videoLength?: string | null;
   }
 ): Promise<string | null> {
   const relaxed = options?.relaxed === true;
@@ -1945,7 +1946,7 @@ export async function fetchCuratedArchiveBeatClip(
   const topScore = candidates[0]?.score ?? 0;
   const minAcceptScore = relaxed ? Math.max(12, Math.round(topScore * 0.25)) : Math.max(28, Math.round(topScore * 0.4));
   const tryOrder = relaxed ? rotateCuratedCandidates(candidates, varietySeed, beat.index) : candidates;
-  const maxTries = maxVisualCandidatesPerBeatTry();
+  const maxTries = maxVisualCandidatesPerBeatTry(options?.videoLength);
   let tried = 0;
 
   for (const picked of tryOrder) {

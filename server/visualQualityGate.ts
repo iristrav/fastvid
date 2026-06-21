@@ -67,10 +67,18 @@ export function minClipQualityScore(): number {
 }
 
 /** When true, inconclusive local vision (CLIP load fail / no frames) rejects the clip. */
-export function strictVisionInconclusiveFails(): boolean {
+export function strictVisionInconclusiveFails(fastMode = false): boolean {
+  if (fastMode) return false;
   if (process.env.STRICT_CLIP_VISION === "false") return false;
   if (process.env.STRICT_CLIP_VISION === "true") return true;
   return minClipQualityScore() >= 8;
+}
+
+/** Min CLIP score — slightly relaxed on fast 1-min Railway path. */
+export function effectiveMinClipQualityScore(fastMode = false, shortVideo = false): number {
+  if (fastMode && shortVideo) return Math.min(minClipQualityScore(), 7);
+  if (fastMode) return Math.min(minClipQualityScore(), 7);
+  return minClipQualityScore();
 }
 
 /** Frames scored per clip (1–6). Default 4 across the full duration. */
@@ -87,19 +95,19 @@ export function clipVisionSampleCount(): number {
  * Fraction of preview frames scored per clip (0.5–1).
  * Default 0.8 → 3/4 frames (or 1/2 in fast mode) with the same ≥8/10 pass bar.
  */
-export function clipVisionFrameCoverage(): number {
+export function clipVisionFrameCoverage(fastMode = false): number {
   const raw = process.env.CLIP_VISION_COVERAGE?.trim();
   if (raw) {
     const n = parseFloat(raw);
     if (!isNaN(n) && n >= 0.5 && n <= 1) return n;
   }
-  return 0.8;
+  return fastMode ? 0.5 : 0.8;
 }
 
 /** Effective frame count after CLIP_VISION_COVERAGE (same min score on worst sampled frame). */
 export function effectiveVisionSampleCount(fastMode = false): number {
   const base = fastMode ? Math.min(2, clipVisionSampleCount()) : clipVisionSampleCount();
-  const coverage = clipVisionFrameCoverage();
+  const coverage = clipVisionFrameCoverage(fastMode);
   if (fastMode) {
     return Math.max(1, Math.floor(base * coverage + 0.001));
   }
@@ -270,7 +278,7 @@ async function scoreClipAcrossFrames(
 
   const framePaths = await extractPreviewFrames(clipPath, workDir, sceneIndex, beatIndex, fastMode);
   if (framePaths.length === 0) {
-    return { pass: !strictVisionInconclusiveFails(), worstScore: null, framesScored: 0 };
+    return { pass: !strictVisionInconclusiveFails(fastMode), worstScore: null, framesScored: 0 };
   }
 
   const result = await scoreFramePathsAgainstBeat(
@@ -286,7 +294,7 @@ async function scoreClipAcrossFrames(
   cleanupFramePaths(framePaths);
 
   if (!result) {
-    return { pass: !strictVisionInconclusiveFails(), worstScore: null, framesScored: 0 };
+    return { pass: !strictVisionInconclusiveFails(fastMode), worstScore: null, framesScored: 0 };
   }
 
   const worstScore10 = Math.max(0, Math.min(10, Math.round(result.worstSimilarity * 40)));

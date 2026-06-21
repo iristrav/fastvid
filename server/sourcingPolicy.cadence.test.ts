@@ -26,9 +26,9 @@ describe("visual cadence (5–8s per clip)", () => {
     expect(27 / cap).toBeLessThanOrEqual(8);
   });
 
-  it("1-min video perf floor allows per-scene cadence", () => {
-    expect(curatedPerfBeatsFloor("1")).toBeGreaterThanOrEqual(4);
-    expect(curatedPerfBeatsFloor("1")).toBeLessThanOrEqual(6);
+  it("1-min video perf floor allows per-scene cadence (fast path uses 8s beats)", () => {
+    expect(curatedPerfBeatsFloor("1")).toBeGreaterThanOrEqual(3);
+    expect(curatedPerfBeatsFloor("1")).toBeLessThanOrEqual(4);
   });
 
   it("stock cap defaults very low per video length", () => {

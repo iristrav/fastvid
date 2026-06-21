@@ -118,8 +118,8 @@ import {
   scriptGuidedBudgetMs,
   scriptGuidedClipsEnabled,
 } from "./scriptGuidedClipFinder";
-import { clipPassesVisionGate, clipVisionGateEnabled, minClipQualityScore } from "./visualQualityGate";
-import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, openverseStillsEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled } from "./sourcingPolicy";
+import { clipPassesVisionGate, clipVisionGateEnabled, effectiveMinClipQualityScore, minClipQualityScore } from "./visualQualityGate";
+import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, openverseStillsEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -1748,7 +1748,7 @@ function applyAiFallbackToProfile(
 
 function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProfile {
   const videoLength = normalizeVideoLength(videoLengthRaw);
-  const railwayParallel = IS_RAILWAY ? (isShortVideoLength(videoLength) ? 4 : 2) : 2;
+  const railwayParallel = IS_RAILWAY ? (isShortVideoLength(videoLength) ? 2 : 2) : 2;
   const maxEntityYoutube = maxEntityYoutubeFetchesPerVideo(minimizeStockFootageEnabled());
   let profile: PipelinePerfProfile;
   if (isShortVideoLength(videoLength)) {
@@ -1838,7 +1838,7 @@ function visualStageTimeoutMs(videoLengthRaw: string, perf: PipelinePerfProfile)
 }
 
 function archiveBeatTopCandidates(fastMode = false): number {
-  return fastMode ? 10 : ARCHIVE_BEAT_TOP_CANDIDATES;
+  return fastMode ? 5 : ARCHIVE_BEAT_TOP_CANDIDATES;
 }
 
 function archiveBeatClipRetries(fastMode = false): number {
@@ -7936,6 +7936,9 @@ interface VisualDedupState {
   curatedImageClipsUsed: number;
   /** Moving archive footage adopted (opening montage targets video first). */
   archiveVideoClipsUsed: number;
+  /** Live beat progress for dashboard (visual stage). */
+  visualBeatsCompleted: number;
+  visualBeatsTotal: number;
   /** Target video length key for opening-footage policy (e.g. "1", "8-10"). */
   videoLength: string;
   /** FFmpeg text cards / map beats rendered this video. */
@@ -8052,6 +8055,8 @@ function createVisualDedupState(
     curatedInterviewClipsUsed: 0,
     curatedImageClipsUsed: 0,
     archiveVideoClipsUsed: 0,
+    visualBeatsCompleted: 0,
+    visualBeatsTotal: 0,
     videoLength: "15-20",
     motionGraphicsUsed: 0,
     archiveCandidatePool: null,
@@ -13625,9 +13630,9 @@ type BeatProgressPhase = "beat" | "backfill";
 const ARCHIVE_BEAT_TOP_CANDIDATES = 24;
 const ARCHIVE_BEAT_CLIP_RETRIES = 3;
 /** Cap vision tries per beat — 3 in fast mode, 8 otherwise (override via ARCHIVE_VISION_TRY_STRICT). */
-function archiveVisionTryStrict(fastMode = false): number {
+function archiveVisionTryStrict(fastMode = false, videoLength?: string): number {
   if (pipelineWallClockLimitEnabled()) {
-    return maxVisualCandidatesPerBeatTry();
+    return maxVisualCandidatesPerBeatTry(videoLength);
   }
   const fallback = fastMode ? 2 : 6;
   const n = parseInt(process.env.ARCHIVE_VISION_TRY_STRICT || String(fallback), 10);
@@ -13646,8 +13651,11 @@ async function beatClipPassesVisionGate(
   dedup: VisualDedupState,
   semanticProfile: BeatSemanticProfile | undefined,
   queryLabel: string,
-  minScore = minClipQualityScore()
+  minScore?: number
 ): Promise<boolean> {
+  const scoreFloor =
+    minScore ??
+    effectiveMinClipQualityScore(dedup.perf.fastStockMode, isFastShortVideoLength(dedup.videoLength));
   if (
     !(await clipPassesVisionGate(
       clipPath,
@@ -13657,7 +13665,7 @@ async function beatClipPassesVisionGate(
       scene.index,
       beat.index,
       dedup.perf.fastStockMode,
-      minScore,
+      scoreFloor,
       semanticProfile?.summary,
       dedup.segmentGeoLock
     ))
@@ -13903,14 +13911,17 @@ async function adoptArchiveBeatClip(
     );
     const { beatTags, topicAnchors, videoVisualTopic } = buildBeatMatchTags(beat, scene, videoTitle);
     const topScore = ranked[0]?.score ?? 0;
+    const fastShort = isFastShortVideoLength(dedup.videoLength) && dedup.perf.fastStockMode;
     const minAcceptScore = relaxed
       ? Math.max(10, Math.round(topScore * 0.2))
-      : Math.max(20, Math.round(topScore * 0.32));
+      : fastShort
+        ? Math.max(14, Math.round(topScore * 0.22))
+        : Math.max(20, Math.round(topScore * 0.32));
     const imgMax = archiveMaxImageClipsPerVideo(dedup.videoLength);
     const topCandidates = archiveBeatTopCandidates(dedup.perf.fastStockMode);
     const tryCap = Math.min(
       relaxed ? topCandidates * 2 : topCandidates,
-      relaxed ? ARCHIVE_VISION_TRY_RELAXED : archiveVisionTryStrict(dedup.perf.fastStockMode)
+      relaxed ? ARCHIVE_VISION_TRY_RELAXED : archiveVisionTryStrict(dedup.perf.fastStockMode, dedup.videoLength)
     );
     let tried = 0;
     for (const picked of ranked) {
@@ -13989,6 +14000,7 @@ async function adoptArchiveBeatClip(
           crossVideoExcludeIds: dedup.crossVideoExcludeIds,
           assetsCache: dedup.archiveAssetsCache,
           segmentLock: dedup.segmentGeoLock,
+          videoLength: dedup.videoLength,
         }
       );
       dedup.motionGraphicsUsed = mgfxBudget.used;
@@ -14020,6 +14032,7 @@ async function adoptArchiveBeatClip(
         varietySeed: dedup.varietySeed,
         crossVideoExcludeIds: dedup.crossVideoExcludeIds,
         assetsCache: dedup.archiveAssetsCache,
+        videoLength: dedup.videoLength,
       }
     );
     dedup.motionGraphicsUsed = mgfxBudget.used;
@@ -15049,6 +15062,7 @@ async function fillBeatVisual(
 ): Promise<boolean> {
   const beatRegion = inferBeatGeoRegion(beat.text, videoTitle);
   dedup.segmentGeoLock = resolveSegmentGeoLock(beatRegion, dedup.segmentGeoLock, videoTitle);
+  const fastShort = isFastShortVideoLength(dedup.videoLength) && dedup.perf.fastStockMode;
 
   const openingVideosOnly = archiveNeedsOpeningFootage(dedup);
   const archiveSearchOpts = {
@@ -15082,7 +15096,9 @@ async function fillBeatVisual(
     videosOnly?: boolean
   ): Promise<boolean> {
     const adoptOpts = videosOnly ? { videosOnly: true } : undefined;
-    for (let attempt = 0; attempt < archiveBeatClipRetries(dedup.perf.fastStockMode); attempt++) {
+    const fastShort = isFastShortVideoLength(dedup.videoLength) && dedup.perf.fastStockMode;
+    const maxAttempts = fastShort ? 1 : archiveBeatClipRetries(dedup.perf.fastStockMode);
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
       if (
         await adoptArchiveBeatClip(
           beat,
@@ -15144,7 +15160,7 @@ async function fillBeatVisual(
     ) {
       return true;
     }
-    if (!openingVideosOnly) {
+    if (!openingVideosOnly && !fastShort) {
       if (await adoptEuropeanaBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
         return true;
       }
@@ -15321,7 +15337,8 @@ async function fetchArchiveSentenceMontage(
   onBeatProgress?: (beatIndex: number, beatTotal: number, phase?: BeatProgressPhase) => void
 ): Promise<SceneVisualsResult> {
   const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
-  const beatCap = sceneBeatCapForCadence(scene.duration, dedup.perf.maxBeatsPerScene);
+  const beatSec = archiveVisualBeatSecForVideo(dedup.videoLength);
+  const beatCap = sceneBeatCapForCadence(scene.duration, dedup.perf.maxBeatsPerScene, beatSec);
   const beats = buildSceneBeats(scene, scene.duration, beatCap, videoTitle, scenePersons);
   const clips: string[] = [];
   const beatDurations: number[] = [];
@@ -15370,7 +15387,6 @@ async function fetchArchiveSentenceMontage(
   await Promise.all(
     beats.map((beat, bi) =>
       beatLimit(async () => {
-        onBeatProgress?.(bi + 1, beats.length, "beat");
         const pushClip = (clipPath: string, holdSec = beat.holdSec): Promise<boolean> =>
           pushSceneClip(clipPath, holdSec, beat.index);
 
@@ -15394,6 +15410,9 @@ async function fetchArchiveSentenceMontage(
             semanticProfiles.get(bi)
           );
         }
+        dedup.visualBeatsCompleted = (dedup.visualBeatsCompleted ?? 0) + 1;
+        const beatTotal = dedup.visualBeatsTotal || beats.length;
+        onBeatProgress?.(dedup.visualBeatsCompleted, beatTotal, "beat");
       })
     )
   );
@@ -16667,7 +16686,7 @@ async function applySceneEffectsPass(
     probedDur || undefined,
     sceneClips
   );
-  const threadFlag = IS_RAILWAY ? "-threads 2" : "";
+  const threadFlag = IS_RAILWAY ? "-threads 1" : "";
   const kineticY = 80;
   const { extraInputs, filterChain, finalLabel } = buildOverlayFilterChain(
     "0:v",
@@ -17020,7 +17039,7 @@ async function composeSceneVideo(
   const statCalloutFrame: { path: string; startTime: number; endTime: number } | null = null;
 
   // On Railway, limit FFmpeg threads to reduce memory usage
-  const threadFlag = IS_RAILWAY ? "-threads 2" : "";
+  const threadFlag = IS_RAILWAY ? "-threads 1" : "";
   // Kinetic text position: upper-center area
   const kineticY = 80;
   // Cinematic color grading (documentaryStyle module when enabled)
@@ -18054,6 +18073,12 @@ export async function runVideoPipeline(
     }
     const visualDedup = createVisualDedupState(perf, { primaryPerson, personTopicLock: personLocked });
     visualDedup.videoLength = videoLength;
+    const beatSec = archiveVisualBeatSecForVideo(videoLength);
+    visualDedup.visualBeatsTotal = scenes.reduce(
+      (sum, s) => sum + sceneBeatCapForCadence(s.duration, perf.maxBeatsPerScene, beatSec),
+      0
+    );
+    visualDedup.visualBeatsCompleted = 0;
     visualDedup.varietySeed = ((videoId * 2654435761) ^ hashVarietySeed(topicContext)) >>> 0;
     if (archiveCrossVideoVarietyEnabled()) {
       visualDedup.crossVideoExcludeIds = getCrossVideoExcludeAssetIds(topicContext, videoId);
@@ -18069,10 +18094,11 @@ export async function runVideoPipeline(
     let heartbeatTick = 0;
     const visualHeartbeat = setInterval(() => {
       heartbeatTick++;
-      const sceneNum = Math.min(activeSceneIdx + 1, scenes.length);
+      const beatTotal = Math.max(1, visualDedup.visualBeatsTotal || scenes.length);
+      const beatsDone = visualDedup.visualBeatsCompleted ?? completedVisuals;
       onProgress?.({
-        stage: `Fetching visuals (scene ${sceneNum}/${scenes.length}, ${completedVisuals} done, tick ${heartbeatTick})...`,
-        percent: 20 + Math.round(((completedVisuals + 0.15) / scenes.length) * 25),
+        stage: `Finding visuals (${beatsDone}/${beatTotal} beats, scene ${Math.min(activeSceneIdx + 1, scenes.length)}/${scenes.length})...`,
+        percent: 20 + Math.round((beatsDone / beatTotal) * 25),
       });
     }, 10_000);
     let sceneVisualResults: SceneVisualsResult[];
@@ -18087,10 +18113,14 @@ export async function runVideoPipeline(
               const stage =
                 phase === "backfill"
                   ? `Scene ${sceneIdx + 1}/${scenes.length}: backfill ${beatIdx}/${beatTotal}...`
-                  : `Scene ${sceneIdx + 1}/${scenes.length}: beat ${beatIdx + 1}/${beatTotal}...`;
+                  : `Finding visuals (${visualDedup.visualBeatsCompleted}/${visualDedup.visualBeatsTotal || beatTotal} beats)...`;
+              const progressBase =
+                visualDedup.visualBeatsTotal > 0
+                  ? visualDedup.visualBeatsCompleted / visualDedup.visualBeatsTotal
+                  : (sceneIdx + beatIdx / Math.max(1, beatTotal)) / scenes.length;
               onProgress?.({
                 stage,
-                percent: 20 + Math.round(((sceneIdx + (beatIdx + 1) / Math.max(1, beatTotal)) / scenes.length) * 25),
+                percent: 20 + Math.round(progressBase * 25),
               });
             }),
             perf.sceneVisualTimeoutMs,

@@ -1,9 +1,9 @@
 #!/bin/sh
-# Video queue worker — same FFmpeg bootstrap as start.sh, runs dist/worker.js.
-# Railway worker service:
-#   - Start Command: sh worker-start.sh  (or use railway.worker.json)
-#   - Config-as-code path: railway.worker.json  (no HTTP healthcheck — worker has no web server)
-# Web/API service keeps railway.json with healthcheckPath /api/health.
+# Railway worker service (fastvid-worker / fastvid Copy):
+#   - Start Command: sh worker-start.sh
+#   - Config-as-code: railway.worker.json (no healthcheckPath — dashboard path may still stick)
+#   - Worker exposes GET /api/health immediately for Railway deploy probes (no full web app)
+# Web/API service: railway.json with healthcheckPath /api/health
 
 echo "[worker-start.sh] Setting up FFmpeg..."
 

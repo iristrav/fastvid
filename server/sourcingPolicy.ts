@@ -163,9 +163,16 @@ export function maxPipelineWallClockHardMin(videoLength?: string | null): number
   return Math.min(360, Math.round(target * pipelineWallClockGraceFactor()));
 }
 
+/** ≤1 min videos on wall-clock-limited hosts (Railway worker). */
+export function isFastShortVideoLength(videoLength?: string | null): boolean {
+  return pipelineWallClockLimitEnabled() && targetVideoDurationMinutes(videoLength) <= 1;
+}
+
 /** Max archive/Wikimedia candidates to try per beat when wall-clock limit is on. */
-export function maxVisualCandidatesPerBeatTry(): number {
-  return pipelineWallClockLimitEnabled() ? 2 : 12;
+export function maxVisualCandidatesPerBeatTry(videoLength?: string | null): number {
+  if (!pipelineWallClockLimitEnabled()) return 12;
+  if (isFastShortVideoLength(videoLength)) return 1;
+  return 2;
 }
 
 /** Wall-clock budget for the visual sourcing stage (minutes). */
@@ -176,10 +183,16 @@ export function visualStageWallClockMin(videoLength?: string | null): number {
   const total = maxPipelineWallClockMin(videoLength);
   const mins = targetVideoDurationMinutes(videoLength);
   if (mins <= 1) {
-    // ~10 min visual stage — script/voice ~2–3 min; strict vision on ~12 beats needs headroom.
-    return 10;
+    // Fast path targets ~6–8 min visuals; 12 min cap avoids timeout while beats finish.
+    return 12;
   }
   return Math.max(8, Math.min(total - 6, Math.round(total * 0.88)));
+}
+
+/** Beat cadence for 1-min fast path — fewer beats → faster visual stage. */
+export function archiveVisualBeatSecForVideo(videoLength?: string | null): number {
+  if (isFastShortVideoLength(videoLength)) return 8;
+  return archiveVisualBeatSec();
 }
 
 /** Target on-screen duration per archive clip (seconds). */
@@ -225,10 +238,14 @@ export function maxBeatCapForVisualCadence(sceneDurationSec: number): number {
  * Beat cap for one scene — targets ~5–8s per visual (sentence length still splits within this band).
  * perfFloor is a profile minimum, not a ceiling.
  */
-export function sceneBeatCapForCadence(sceneDurationSec: number, perfFloor = 1): number {
+export function sceneBeatCapForCadence(
+  sceneDurationSec: number,
+  perfFloor = 1,
+  beatSec = archiveVisualBeatSec()
+): number {
   const minBeats = minBeatsForVisualCadence(sceneDurationSec);
   const maxBeats = maxBeatCapForVisualCadence(sceneDurationSec);
-  const target = Math.max(minBeats, Math.ceil(sceneDurationSec / archiveVisualBeatSec()));
+  const target = Math.max(minBeats, Math.ceil(sceneDurationSec / beatSec));
   const cappedFloor = Math.min(Math.max(1, perfFloor), maxBeats);
   return Math.max(minBeats, Math.min(maxBeats, Math.max(target, cappedFloor)));
 }
@@ -239,7 +256,7 @@ export function curatedPerfBeatsFloor(videoLength: string): number {
   const scenes =
     videoLength === "1" ? 3 : videoLength === "8-10" ? 18 : videoLength === "10-15" ? 25 : 35;
   const typicalSceneSec = totalSec / scenes;
-  return sceneBeatCapForCadence(typicalSceneSec, 1);
+  return sceneBeatCapForCadence(typicalSceneSec, 1, archiveVisualBeatSecForVideo(videoLength));
 }
 
 /** Prefer moving archive video over Ken Burns stills (default on). */
