@@ -11,7 +11,13 @@ import {
   meanEmbedding,
   embedTextQuery,
   scoreEmbeddingSimilarity,
+  clipSimToScore,
+  minLocalClipSimilarity,
+  resolveBeatVisionQueryEmbedding,
+  beatVisionContextFromProfile,
+  type BeatVisionQueryContext,
 } from "./localClipVision";
+import type { BeatSemanticProfile } from "./semanticVisualMatching";
 
 export type StoredClipEmbedding = {
   assetId: number;
@@ -108,6 +114,128 @@ export async function indexArchiveClipEmbedding(
 
 export async function createClipTextEmbedding(query: string): Promise<number[] | null> {
   return embedTextQuery(query);
+}
+
+export type ClipPreRankScore = {
+  worstScore10: number;
+  bestScore10: number;
+  hasEmbeddings: boolean;
+  definiteFail: boolean;
+};
+
+/** Score indexed archive frames against a beat embedding (no FFmpeg). */
+export function scoreAssetClipPreRank(
+  assetId: number,
+  queryEmbedding: number[],
+  minScore10 = 7
+): ClipPreRankScore {
+  const frames = loadStoredFrameEmbeddings(assetId);
+  if (!frames.length || !queryEmbedding.length) {
+    return { worstScore10: 0, bestScore10: 0, hasEmbeddings: false, definiteFail: false };
+  }
+  const minSim = minLocalClipSimilarity(minScore10);
+  let worst = Infinity;
+  let best = 0;
+  for (const emb of frames) {
+    const sim = scoreEmbeddingSimilarity(queryEmbedding, emb);
+    worst = Math.min(worst, sim);
+    best = Math.max(best, sim);
+  }
+  const worstSim = worst === Infinity ? 0 : worst;
+  return {
+    worstScore10: clipSimToScore(worstSim),
+    bestScore10: clipSimToScore(best),
+    hasEmbeddings: true,
+    definiteFail: worstSim < minSim - 0.04,
+  };
+}
+
+export function clipPreRankPoolSize(fastMode = false): number {
+  const raw = process.env.CLIP_PRE_RANK_POOL?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 8 && n <= 128) return n;
+  }
+  return fastMode ? 24 : 48;
+}
+
+export function clipPreRankMinScore10(fastMode = false): number {
+  return fastMode ? 6 : 7;
+}
+
+export { beatVisionContextFromProfile, type BeatVisionQueryContext };
+
+/** Re-rank archive candidates by stored CLIP embeddings before clip prepare. */
+export async function preRankCuratedCandidatesByClipEmbedding<
+  T extends { asset: { id: number }; score: number; clipVisionScore10?: number },
+>(
+  candidates: T[],
+  ctx: BeatVisionQueryContext,
+  options?: {
+    fastMode?: boolean;
+    minScore10?: number;
+    maxPool?: number;
+    queryEmb?: number[] | null;
+  }
+): Promise<{ ranked: T[]; queryEmb: number[] | null }> {
+  if (!clipEmbeddingIndexEnabled() || candidates.length === 0) {
+    return { ranked: candidates, queryEmb: null };
+  }
+
+  const queryEmb = options?.queryEmb ?? (await resolveBeatVisionQueryEmbedding(ctx));
+  if (!queryEmb) return { ranked: candidates, queryEmb: null };
+
+  const maxPool = options?.maxPool ?? clipPreRankPoolSize(options?.fastMode);
+  const minScore10 = options?.minScore10 ?? clipPreRankMinScore10(options?.fastMode);
+  const head = candidates.slice(0, maxPool);
+  const tail = candidates.slice(maxPool);
+
+  const scored = head.map((pick) => ({
+    pick,
+    pr: scoreAssetClipPreRank(pick.asset.id, queryEmb, minScore10),
+  }));
+
+  const withEmb = scored.filter((s) => s.pr.hasEmbeddings);
+  const withoutEmb = scored.filter((s) => !s.pr.hasEmbeddings);
+  const definiteFails = withEmb.filter((s) => s.pr.definiteFail);
+  const viable = withEmb.filter((s) => !s.pr.definiteFail);
+
+  viable.sort((a, b) => {
+    if (b.pr.worstScore10 !== a.pr.worstScore10) return b.pr.worstScore10 - a.pr.worstScore10;
+    return b.pick.score - a.pick.score;
+  });
+
+  const blendScore = (pick: T, worst10: number) => Math.round(pick.score * 0.5 + worst10 * 9);
+
+  const reranked: T[] = [
+    ...viable.map(({ pick, pr }) => ({
+      ...pick,
+      clipVisionScore10: pr.worstScore10,
+      score: blendScore(pick, pr.worstScore10),
+    })),
+    ...withoutEmb.map(({ pick }) => pick),
+    ...definiteFails.map(({ pick, pr }) => ({
+      ...pick,
+      clipVisionScore10: pr.worstScore10,
+      score: Math.max(0, pick.score - 20),
+    })),
+  ];
+  reranked.sort((a, b) => b.score - a.score);
+
+  return { ranked: [...reranked, ...tail], queryEmb };
+}
+
+export function beatVisionContextForSearch(
+  beat: {
+    text: string;
+    searchQuery?: string;
+    powerWord?: string;
+    visualDescription?: string;
+  },
+  videoTitle?: string,
+  semanticProfile?: BeatSemanticProfile
+): BeatVisionQueryContext {
+  return beatVisionContextFromProfile(beat, videoTitle, semanticProfile);
 }
 
 export async function scoreAssetClipSimilarity(

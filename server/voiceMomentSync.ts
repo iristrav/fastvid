@@ -17,14 +17,18 @@ export type BeatHoldInput = { text: string; holdSec: number };
 export function syncBeatHoldSecToVoiceTimeline(
   beats: BeatHoldInput[],
   voiceSec: number,
-  xfadeSec = 0.35
+  xfadeSec = 0.35,
+  weightOverride?: number[]
 ): void {
   if (!beats.length || voiceSec <= 0) return;
 
   const minSec = archiveVisualMinClipSec();
   const maxSec = archiveVisualMaxClipSec();
   const n = beats.length;
-  const weights = beats.map((b) => Math.max(1, beatWordCount(b.text)));
+  const weights =
+    weightOverride?.length === beats.length
+      ? weightOverride.map((w) => Math.max(0.25, w))
+      : beats.map((b) => Math.max(1, beatWordCount(b.text)));
   const totalWords = weights.reduce((s, w) => s + w, 0) || beats.length;
   const grossBudget = voiceSec + (n > 1 ? (n - 1) * xfadeSec : 0);
 

@@ -111,8 +111,8 @@ import {
 import { goodClipCacheBoost } from "./clipGoodCache";
 import {
   clipEmbeddingIndexEnabled,
-  createClipTextEmbedding,
-  scoreAssetClipSimilarity,
+  beatVisionContextForSearch,
+  preRankCuratedCandidatesByClipEmbedding,
 } from "./archiveClipEmbedding";
 import { applyBackgroundClipAuditScore } from "./clipBackgroundAuditor";
 import { buildDocumentaryShotQueries } from "./pipelineSelfHeal";
@@ -1511,6 +1511,8 @@ export type CuratedCandidatePick = {
   score: number;
   archiveNicheTags?: string[];
   semantic?: SemanticMatchResult;
+  /** Worst-frame CLIP score from pre-rank (0–10), when indexed. */
+  clipVisionScore10?: number;
 };
 
 async function loadArchiveAssetsForSearch(
@@ -1730,19 +1732,20 @@ export async function searchCuratedCandidatesForBeat(
   }
 
   if (clipEmbeddingIndexEnabled()) {
-    const clipEmb = await createClipTextEmbedding(
-      semanticProfile?.summary || beat.visualDescription?.trim() || beat.text
+    const visionCtx = beatVisionContextForSearch(beat, videoTitle, semanticProfile);
+    const { ranked: clipRanked } = await preRankCuratedCandidatesByClipEmbedding(
+      ranked,
+      visionCtx,
+      { fastMode: pipelineWallClockLimitEnabled() }
     );
-    if (clipEmb) {
-      const pool = ranked.slice(0, 48);
-      const boosted = await Promise.all(
-        pool.map(async (pick) => {
-          const clipBoost = await scoreAssetClipSimilarity(pick.asset.id, clipEmb);
-          return { ...pick, score: pick.score + Math.round(clipBoost * 0.12) };
-        })
+    ranked = clipRanked;
+    const topVision = ranked[0]?.clipVisionScore10;
+    if (topVision != null) {
+      const scored = ranked.filter((c) => c.clipVisionScore10 != null).length;
+      console.log(
+        `[ClipPreRank] zin ${beat.index}: top vision ${topVision}/10 ` +
+          `"${beat.text.slice(0, 45)}…" (${scored} indexed)`
       );
-      ranked = [...boosted, ...ranked.slice(48)];
-      ranked.sort((a, b) => b.score - a.score);
     }
   }
 

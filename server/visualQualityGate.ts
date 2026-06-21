@@ -40,6 +40,18 @@ export function clipVisionGateEnabled(): boolean {
   return localVisionEnabled();
 }
 
+/** 1-frame-first cascade before full multi-frame scoring (default on). */
+export function cascadeVisionGateEnabled(): boolean {
+  if (process.env.ENABLE_CASCADE_VISION_GATE === "false") return false;
+  return localVisionEnabled();
+}
+
+export function cascadeVisionExpandBelow(minScore: number): number {
+  return Math.max(5, minScore - 2);
+}
+
+const CASCADE_PRIMARY_FRAME_FRAC = 0.38;
+
 /** Critical per-clip voice/visual QA (default on with Vidrush quality). */
 export function sceneCriticalReviewEnabled(): boolean {
   if (process.env.ENABLE_SCENE_CRITICAL_REVIEW === "false") return false;
@@ -216,6 +228,55 @@ function cleanupFramePaths(framePaths: string[]): void {
   }
 }
 
+function simToScore10(sim: number): number {
+  return Math.max(0, Math.min(10, Math.round(sim * 40)));
+}
+
+async function extractSinglePreviewFrame(
+  clipPath: string,
+  workDir: string,
+  sceneIndex: number,
+  beatIndex: number,
+  fraction: number,
+  fastMode: boolean
+): Promise<string | null> {
+  const outPath = path.join(
+    workDir,
+    `scene_${sceneIndex}_b${beatIndex}_lv0_${path.basename(clipPath).replace(/\.[^.]+$/, "")}.jpg`
+  );
+  const ok = await extractFrameAtFraction(
+    clipPath,
+    outPath,
+    fraction,
+    fastMode ? 4_500 : 8_000
+  );
+  return ok ? outPath : null;
+}
+
+async function lumaRejectAtFraction(
+  clipPath: string,
+  workDir: string,
+  sceneIndex: number,
+  beatIndex: number,
+  fraction: number,
+  fastMode: boolean
+): Promise<boolean> {
+  const lumaPath = path.join(
+    workDir,
+    `scene_${sceneIndex}_b${beatIndex}_lv_luma_${path.basename(clipPath).replace(/\.[^.]+$/, "")}.jpg`
+  );
+  const lumaOk = await extractFrameAtFraction(
+    clipPath,
+    lumaPath,
+    fraction,
+    fastMode ? 6_000 : 10_000
+  );
+  if (!lumaOk) return false;
+  const luma = await probeImageMeanLuma(lumaPath);
+  cleanupFramePaths([lumaPath]);
+  return luma !== null && luma < 12;
+}
+
 /** Score multiple frames via local CLIP; all must pass for clip acceptance. */
 async function scoreClipAcrossFrames(
   clipPath: string,
@@ -226,14 +287,58 @@ async function scoreClipAcrossFrames(
   sceneIndex: number,
   beatIndex: number,
   minScore: number,
-  fastMode: boolean
+  fastMode: boolean,
+  queryEmb?: number[] | null
 ): Promise<{ pass: boolean; worstScore: number | null; framesScored: number }> {
   const assetId = curatedClipPathAssetId(clipPath);
   const storedEmbeddings =
     assetId != null ? loadStoredFrameEmbeddings(assetId) : undefined;
-  const queryEmb = await resolveBeatQueryEmbedding(beatText, visualDescription, videoTitle);
+  const queryEmbResolved =
+    queryEmb ?? (await resolveBeatQueryEmbedding(beatText, visualDescription, videoTitle));
 
-  if (storedEmbeddings?.length && queryEmb) {
+  if (storedEmbeddings?.length && queryEmbResolved) {
+    const useCascade = cascadeVisionGateEnabled();
+    const primaryIdx = Math.min(
+      Math.max(0, Math.floor(storedEmbeddings.length * CASCADE_PRIMARY_FRAME_FRAC)),
+      storedEmbeddings.length - 1
+    );
+
+    if (useCascade && storedEmbeddings.length > 1) {
+      const quickEmb = [storedEmbeddings[primaryIdx]!];
+      const quick = await scoreEmbeddingsAgainstBeat(
+        quickEmb,
+        beatText,
+        visualDescription,
+        videoTitle,
+        clipPath,
+        minScore,
+        queryEmbResolved
+      );
+      if (quick?.definiteFail) {
+        const worstScore10 = simToScore10(quick.worstSimilarity);
+        return { pass: false, worstScore: worstScore10, framesScored: 1 };
+      }
+      const quickScore10 = simToScore10(quick?.worstSimilarity ?? 0);
+      if (
+        quick &&
+        quickScore10 >= minScore &&
+        !quick.modernMismatch &&
+        !(await lumaRejectAtFraction(
+          clipPath,
+          workDir,
+          sceneIndex,
+          beatIndex,
+          CASCADE_PRIMARY_FRAME_FRAC,
+          fastMode
+        ))
+      ) {
+        return { pass: true, worstScore: quickScore10, framesScored: 1 };
+      }
+      if (quick && quickScore10 < cascadeVisionExpandBelow(minScore)) {
+        return { pass: false, worstScore: quickScore10, framesScored: 1 };
+      }
+    }
+
     const storedOnly = await scoreEmbeddingsAgainstBeat(
       storedEmbeddings,
       beatText,
@@ -241,14 +346,14 @@ async function scoreClipAcrossFrames(
       videoTitle,
       clipPath,
       minScore,
-      queryEmb
+      queryEmbResolved
     );
     if (storedOnly?.definiteFail) {
       const worstScore10 = Math.max(0, Math.min(10, Math.round(storedOnly.worstSimilarity * 40)));
       return { pass: false, worstScore: worstScore10, framesScored: storedEmbeddings.length };
     }
     if (storedOnly?.similarityPass) {
-      const worstScore10 = Math.max(0, Math.min(10, Math.round(storedOnly.worstSimilarity * 40)));
+      const worstScore10 = simToScore10(storedOnly.worstSimilarity);
       if (
         fastMode &&
         storedOnly.score >= minScore &&
@@ -257,22 +362,62 @@ async function scoreClipAcrossFrames(
       ) {
         return { pass: true, worstScore: worstScore10, framesScored: storedEmbeddings.length };
       }
-      const lumaPath = path.join(
+      const darkReject = await lumaRejectAtFraction(
+        clipPath,
         workDir,
-        `scene_${sceneIndex}_b${beatIndex}_lv_luma_${path.basename(clipPath).replace(/\.[^.]+$/, "")}.jpg`
+        sceneIndex,
+        beatIndex,
+        CASCADE_PRIMARY_FRAME_FRAC,
+        fastMode
       );
-      const lumaOk = await extractFrameAtFraction(clipPath, lumaPath, 0.38, fastMode ? 6_000 : 10_000);
-      let darkReject = false;
-      if (lumaOk) {
-        const luma = await probeImageMeanLuma(lumaPath);
-        darkReject = luma !== null && luma < 12;
-        cleanupFramePaths([lumaPath]);
-      }
       const pass =
         !darkReject &&
         storedOnly.score >= minScore &&
         worstScore10 >= minScore;
       return { pass, worstScore: worstScore10, framesScored: storedEmbeddings.length };
+    }
+  }
+
+  if (cascadeVisionGateEnabled()) {
+    const primaryPath = await extractSinglePreviewFrame(
+      clipPath,
+      workDir,
+      sceneIndex,
+      beatIndex,
+      CASCADE_PRIMARY_FRAME_FRAC,
+      fastMode
+    );
+    if (primaryPath) {
+      const primaryResult = await scoreFramePathsAgainstBeat(
+        [primaryPath],
+        beatText,
+        visualDescription,
+        videoTitle,
+        clipPath,
+        minScore,
+        storedEmbeddings,
+        queryEmbResolved
+      );
+      cleanupFramePaths([primaryPath]);
+
+      if (primaryResult) {
+        const primaryScore10 = simToScore10(primaryResult.worstSimilarity);
+        const primaryPass =
+          primaryResult.framesScored > 0 &&
+          primaryResult.matchesNarration &&
+          primaryResult.showsSubject &&
+          !primaryResult.wrongSubject &&
+          primaryResult.wellFramed &&
+          primaryScore10 >= minScore &&
+          primaryResult.score >= minScore;
+
+        if (primaryPass) {
+          return { pass: true, worstScore: primaryScore10, framesScored: 1 };
+        }
+        if (primaryScore10 < cascadeVisionExpandBelow(minScore) || primaryResult.wrongSubject) {
+          return { pass: false, worstScore: primaryScore10, framesScored: 1 };
+        }
+      }
     }
   }
 
@@ -289,7 +434,7 @@ async function scoreClipAcrossFrames(
     clipPath,
     minScore,
     storedEmbeddings,
-    queryEmb
+    queryEmbResolved
   );
   cleanupFramePaths(framePaths);
 
@@ -331,7 +476,8 @@ export async function evaluateClipVisionGate(
   fastMode: boolean,
   minScore = minClipQualityScore(),
   visualDescription?: string,
-  _segmentLock?: unknown
+  _segmentLock?: unknown,
+  queryEmb?: number[] | null
 ): Promise<VisionGateResult> {
   if (!clipVisionGateEnabled() || !shouldVisionCheckClip(clipPath, fastMode)) {
     return { pass: true, worstScore10: null, skipped: true };
@@ -352,7 +498,8 @@ export async function evaluateClipVisionGate(
     sceneIndex,
     beatIndex,
     minScore,
-    fastMode
+    fastMode,
+    queryEmb
   );
 
   if (!result.pass) {
@@ -386,7 +533,8 @@ export async function clipPassesVisionGate(
   fastMode: boolean,
   minScore = minClipQualityScore(),
   visualDescription?: string,
-  _segmentLock?: unknown
+  _segmentLock?: unknown,
+  queryEmb?: number[] | null
 ): Promise<boolean> {
   return (
     await evaluateClipVisionGate(
@@ -399,7 +547,8 @@ export async function clipPassesVisionGate(
       fastMode,
       minScore,
       visualDescription,
-      _segmentLock
+      _segmentLock,
+      queryEmb
     )
   ).pass;
 }

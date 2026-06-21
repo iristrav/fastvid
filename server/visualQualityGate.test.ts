@@ -5,11 +5,14 @@ import {
   minClipQualityScore,
   clipVisionFrameCoverage,
   effectiveVisionSampleCount,
+  cascadeVisionGateEnabled,
+  cascadeVisionExpandBelow,
 } from "./visualQualityGate";
 import {
   filenameLexicalBoost,
   localVisionEnabled,
   minLocalClipSimilarity,
+  buildBeatVisionQueryText,
 } from "./localClipVision";
 
 describe("visualQualityGate", () => {
@@ -63,6 +66,22 @@ describe("localClipVision helpers", () => {
   it("minLocalClipSimilarity scales with min quality score", () => {
     expect(minLocalClipSimilarity(8)).toBeCloseTo(0.2, 2);
     expect(minLocalClipSimilarity(6)).toBeCloseTo(0.15, 2);
+  });
+
+  it("cascadeVisionGateEnabled is on with local vision", () => {
+    const prev = process.env.ENABLE_CASCADE_VISION_GATE;
+    delete process.env.ENABLE_CASCADE_VISION_GATE;
+    expect(cascadeVisionGateEnabled()).toBe(true);
+    expect(cascadeVisionExpandBelow(8)).toBe(6);
+    process.env.ENABLE_CASCADE_VISION_GATE = prev;
+  });
+
+  it("buildBeatVisionQueryText prefers visual description over narration", () => {
+    const q = buildBeatVisionQueryText({
+      beatText: "Something abstract about history.",
+      visualDescription: "World War II soldiers marching in Berlin",
+    });
+    expect(q.indexOf("World War II")).toBeLessThan(q.indexOf("Something abstract"));
   });
 
   it("localVisionEnabled is on by default", () => {

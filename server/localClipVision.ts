@@ -7,7 +7,7 @@ import path from "path";
 import { spawn } from "child_process";
 import { promisify } from "util";
 import { exec as execCb } from "child_process";
-import { cosineSimilarityVectors } from "./semanticVisualMatching";
+import { cosineSimilarityVectors, type BeatSemanticProfile } from "./semanticVisualMatching";
 import { inferVideoVisualTopic } from "./visualBeatTags";
 
 const exec = promisify(execCb);
@@ -37,7 +37,7 @@ export function ffmpegBin(): string {
   return process.env.FFMPEG_BIN?.trim() || "ffmpeg";
 }
 
-function clipSimToScore(sim: number): number {
+export function clipSimToScore(sim: number): number {
   return Math.max(0, Math.min(10, Math.round(sim * 40)));
 }
 
@@ -118,23 +118,104 @@ const TEXT_EMBED_CACHE_MAX = 320;
 const textEmbeddingCache = new Map<string, number[]>();
 let modernMismatchEmbCache: number[][] | null = null;
 
+export type BeatVisionQueryContext = {
+  beatText: string;
+  visualDescription?: string;
+  videoTitle?: string;
+  searchQuery?: string;
+  powerWord?: string;
+  semanticSummary?: string;
+  semanticPersons?: string[];
+  semanticLocations?: string[];
+  semanticObjects?: string[];
+  semanticYears?: string[];
+  semanticEvents?: string[];
+};
+
+function uniqueQueryParts(items: string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const item of items) {
+    const v = item.trim();
+    if (!v || v.length < 2 || seen.has(v.toLowerCase())) continue;
+    seen.add(v.toLowerCase());
+    out.push(v);
+  }
+  return out;
+}
+
+/** Rich CLIP query — concrete visual intent and entities before raw narration. */
+export function buildBeatVisionQueryText(ctx: BeatVisionQueryContext): string {
+  const parts: string[] = [];
+  const visual = ctx.visualDescription?.replace(/\[visual:[^\]]+\]/gi, " ").trim();
+  if (visual && visual.length >= 8) parts.push(visual.slice(0, 180));
+
+  const summary = ctx.semanticSummary?.trim();
+  if (summary && summary !== visual) parts.push(summary.slice(0, 160));
+
+  const entityBits = uniqueQueryParts([
+    ...(ctx.semanticPersons ?? []).slice(0, 2),
+    ...(ctx.semanticLocations ?? []).slice(0, 2),
+    ...(ctx.semanticObjects ?? []).slice(0, 2),
+    ...(ctx.semanticYears ?? []).slice(0, 2),
+    ...(ctx.semanticEvents ?? []).slice(0, 1),
+  ]);
+  if (entityBits.length) parts.push(`Subject: ${entityBits.join(", ")}`);
+
+  const shot = ctx.searchQuery?.trim();
+  if (shot && shot.length >= 4 && !parts.some((p) => p.includes(shot.slice(0, 20)))) {
+    parts.push(shot.slice(0, 100));
+  }
+  if (ctx.powerWord?.trim() && ctx.powerWord.length >= 3) {
+    parts.push(ctx.powerWord.trim().slice(0, 40));
+  }
+
+  const narration = ctx.beatText.replace(/\[visual:[^\]]+\]/gi, " ").trim();
+  if (narration) parts.push(narration.slice(0, 180));
+  if (ctx.videoTitle?.trim()) parts.push(ctx.videoTitle.trim().slice(0, 60));
+
+  return parts.filter(Boolean).join(". ");
+}
+
+export function beatVisionContextFromProfile(
+  beat: {
+    text: string;
+    searchQuery?: string;
+    powerWord?: string;
+    visualDescription?: string;
+  },
+  videoTitle?: string,
+  semanticProfile?: BeatSemanticProfile
+): BeatVisionQueryContext {
+  const visualDescription =
+    beat.visualDescription?.trim() || semanticProfile?.summary?.trim() || undefined;
+  return {
+    beatText: beat.text,
+    visualDescription,
+    videoTitle,
+    searchQuery: beat.searchQuery,
+    powerWord: beat.powerWord,
+    semanticSummary: semanticProfile?.summary,
+    semanticPersons: semanticProfile?.entities.persons,
+    semanticLocations: semanticProfile?.entities.locations,
+    semanticObjects: semanticProfile?.entities.objects,
+    semanticYears: semanticProfile?.entities.years,
+    semanticEvents: semanticProfile?.entities.events,
+  };
+}
+
+export async function resolveBeatVisionQueryEmbedding(
+  ctx: BeatVisionQueryContext
+): Promise<number[] | null> {
+  return embedTextQuery(buildBeatVisionQueryText(ctx));
+}
+
 export async function resolveBeatQueryEmbedding(
   beatText: string,
   visualDescription?: string,
   videoTitle?: string
 ): Promise<number[] | null> {
-  return embedTextQuery(beatQueryText(beatText, visualDescription, videoTitle));
-}
-
-function beatQueryText(
-  beatText: string,
-  visualDescription?: string,
-  videoTitle?: string
-): string {
-  const parts = [beatText.slice(0, 220)];
-  if (visualDescription?.trim()) parts.push(visualDescription.slice(0, 180));
-  if (videoTitle?.trim()) parts.push(videoTitle.slice(0, 80));
-  return parts.join(". ");
+  return resolveBeatVisionQueryEmbedding({ beatText, visualDescription, videoTitle });
 }
 
 function significantBeatTokens(beatText: string, videoTitle?: string): Set<string> {
@@ -500,7 +581,7 @@ export async function scoreUrlImageAgainstBeat(
 ): Promise<{ relevance: number; showsSubject: boolean } | null> {
   if (!localVisionEnabled() || !imageUrl.startsWith("http")) return null;
 
-  const query = beatQueryText(beatText, undefined, videoTitle);
+  const query = buildBeatVisionQueryText({ beatText, videoTitle });
   const queryEmb = await embedTextQuery(query);
   if (!queryEmb) return null;
 

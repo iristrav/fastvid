@@ -14,6 +14,15 @@ describe("voiceMomentSync", () => {
     expect(gross).toBeLessThan(13);
   });
 
+  it("syncBeatHoldSecToVoiceTimeline accepts weight overrides", () => {
+    const beats = [
+      { text: "A", holdSec: 0 },
+      { text: "B", holdSec: 0 },
+    ];
+    syncBeatHoldSecToVoiceTimeline(beats, 10, 0.35, [2, 8]);
+    expect(beats[1]!.holdSec).toBeGreaterThan(beats[0]!.holdSec);
+  });
+
   it("counts words in narration", () => {
     expect(beatWordCount("In 2024 groeide de vraag.")).toBe(5);
     expect(beatWordCount("[visual: map]")).toBe(0);

@@ -119,6 +119,12 @@ import {
   scriptGuidedClipsEnabled,
 } from "./scriptGuidedClipFinder";
 import { clipPassesVisionGate, clipVisionGateEnabled, effectiveMinClipQualityScore, evaluateClipVisionGate, minClipQualityScore, targetClipVisionScore, type VisionGateResult } from "./visualQualityGate";
+import {
+  beatVisionContextFromProfile,
+  clipEmbeddingIndexEnabled,
+  preRankCuratedCandidatesByClipEmbedding,
+} from "./archiveClipEmbedding";
+import { resolveBeatVisionQueryEmbedding } from "./localClipVision";
 import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, openverseStillsEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, maxPipelineWallClockMin } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
@@ -174,6 +180,11 @@ import { createClipAdoptAudit, recordClipAdopt } from "./clipAdoptAudit";
 import { buildEditorScenesFromPipeline } from "./editorClips";
 import { buildVideoQualityReport, computeMeritQualityScore, logVideoQualityReport } from "./videoQualityReport";
 import { postRenderSpotCheckEnabled, spotCheckFinalVideo } from "./postRenderSpotCheck";
+import {
+  alignSceneBeatsToVoiceAudio,
+  spotCheckComposedSceneBeatSync,
+  validateMontageVoiceCoverage,
+} from "./voiceBeatAlignment";
 import { buildEmergencyGeoStockQueries, buildDocumentaryShotQueries, enforceQualityExportGate } from "./pipelineSelfHeal";
 import { ensureFinalVideoExportReady, plainConcatSceneVideos } from "./finalVideoGate";
 import { extractTitleGeoPlaceTags } from "./worldGeoSlugs";
@@ -7881,6 +7892,17 @@ function buildBeatVisualQueryList(
 }
 
 // ─── Beat-level visual matching (narration ↔ footage alignment) ───────────────
+const VO_SCENE_TAIL_SEC = 0.35;
+
+async function applyVoiceAlignmentToBeats(
+  beats: SceneBeat[],
+  sceneAudioPath: string | undefined,
+  sceneDuration: number
+): Promise<void> {
+  if (!sceneAudioPath || !fs.existsSync(sceneAudioPath)) return;
+  const voiceSec = Math.max(0.5, sceneDuration - VO_SCENE_TAIL_SEC);
+  await alignSceneBeatsToVoiceAudio(beats, sceneAudioPath, voiceSec, montageXfadeSec());
+}
 const RELEVANCE_STOP_WORDS = new Set([
   "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with", "by", "from",
   "is", "are", "was", "were", "be", "been", "being", "have", "has", "had", "will", "would", "could",
@@ -13757,7 +13779,8 @@ async function beatClipPassesVisionGate(
   dedup: VisualDedupState,
   semanticProfile: BeatSemanticProfile | undefined,
   queryLabel: string,
-  minScore?: number
+  minScore?: number,
+  queryEmb?: number[] | null
 ): Promise<VisionGateResult> {
   const scoreFloor =
     minScore ??
@@ -13772,7 +13795,8 @@ async function beatClipPassesVisionGate(
     dedup.perf.fastStockMode,
     scoreFloor,
     semanticProfile?.summary,
-    dedup.segmentGeoLock
+    dedup.segmentGeoLock,
+    queryEmb
   );
   if (!result.pass) {
     recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clipPath, "vision_gate", queryLabel);
@@ -13923,6 +13947,12 @@ async function adoptArchiveBeatClip(
   prefetchedRanked?: CuratedCandidatePick[] | null,
   adoptOpts?: { videosOnly?: boolean }
 ): Promise<boolean> {
+  const visionCtx = beatVisionContextFromProfile(beat, videoTitle, semanticProfile);
+  let beatQueryEmb: number[] | null = null;
+  if (clipEmbeddingIndexEnabled()) {
+    beatQueryEmb = await resolveBeatVisionQueryEmbedding(visionCtx);
+  }
+
   const rejectClip = async (clipPath: string | null | undefined): Promise<void> => {
     if (!clipPath || isPipelineFallbackClip(clipPath)) return;
     await withVisualDedupLock(dedup, async () => {
@@ -13959,7 +13989,9 @@ async function adoptArchiveBeatClip(
         videoTitle,
         dedup,
         semanticProfile,
-        curated ? "archive" : "archive_fetch"
+        curated ? "archive" : "archive_fetch",
+        undefined,
+        beatQueryEmb
       ));
     if (!vision.pass) {
       await rejectClip(clipPath);
@@ -13996,7 +14028,7 @@ async function adoptArchiveBeatClip(
 
   if (curatedArchiveOnlyVisuals()) {
     const videosOnly = adoptOpts?.videosOnly ?? archiveNeedsOpeningFootage(dedup);
-    const ranked =
+    let ranked =
       prefetchedRanked ??
       (await searchCuratedCandidatesForBeat(
       beat,
@@ -14013,6 +14045,18 @@ async function adoptArchiveBeatClip(
         segmentLock: dedup.segmentGeoLock,
       }
     ));
+    if (
+      clipEmbeddingIndexEnabled() &&
+      ranked.length > 0 &&
+      ranked[0]?.clipVisionScore10 == null
+    ) {
+      const pre = await preRankCuratedCandidatesByClipEmbedding(ranked, visionCtx, {
+        fastMode: dedup.perf.fastStockMode,
+        queryEmb: beatQueryEmb,
+      });
+      ranked = pre.ranked;
+      beatQueryEmb = pre.queryEmb ?? beatQueryEmb;
+    }
     console.log(
       `[Pipeline] Scene ${scene.index} zin ${beat.index}: archive-zoek "${beat.text.slice(0, 55).trim()}…" → ${ranked.length} kandidaat(en)`
     );
@@ -14086,7 +14130,9 @@ async function adoptArchiveBeatClip(
         videoTitle,
         dedup,
         semanticProfile,
-        "archive"
+        "archive",
+        undefined,
+        beatQueryEmb
       );
       if (!vision.pass) {
         await rejectClip(clip);
@@ -15496,12 +15542,14 @@ async function fetchArchiveSentenceMontage(
   workDir: string,
   videoTitle: string | undefined,
   dedup: VisualDedupState,
-  onBeatProgress?: (beatIndex: number, beatTotal: number, phase?: BeatProgressPhase) => void
+  onBeatProgress?: (beatIndex: number, beatTotal: number, phase?: BeatProgressPhase) => void,
+  sceneAudioPath?: string
 ): Promise<SceneVisualsResult> {
   const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
   const beatSec = archiveVisualBeatSecForVideo(dedup.videoLength);
   const beatCap = sceneBeatCapForCadence(scene.duration, dedup.perf.maxBeatsPerScene, beatSec);
   const beats = buildSceneBeats(scene, scene.duration, beatCap, videoTitle, scenePersons);
+  await applyVoiceAlignmentToBeats(beats, sceneAudioPath, scene.duration);
   const clips: string[] = [];
   const beatDurations: number[] = [];
   const clipBeatIndices: number[] = [];
@@ -15708,10 +15756,11 @@ async function fetchSceneVisuals(
   workDir: string,
   videoTitle: string | undefined,
   dedup: VisualDedupState,
-  onBeatProgress?: (beatIndex: number, beatTotal: number, phase?: BeatProgressPhase) => void
+  onBeatProgress?: (beatIndex: number, beatTotal: number, phase?: BeatProgressPhase) => void,
+  sceneAudioPath?: string
 ): Promise<SceneVisualsResult> {
   if (curatedArchiveOnlyVisuals()) {
-    return fetchArchiveSentenceMontage(scene, workDir, videoTitle, dedup, onBeatProgress);
+    return fetchArchiveSentenceMontage(scene, workDir, videoTitle, dedup, onBeatProgress, sceneAudioPath);
   }
 
   const clipFetchDur = 4;
@@ -15742,6 +15791,7 @@ async function fetchSceneVisuals(
           ? 2
           : maxStillPhotosForScene(scene.index, scenePersons.length > 0, dedup.personTopicLock);
   const beats = buildSceneBeats(scene, scene.duration, beatCap, videoTitle, scenePersons);
+  await applyVoiceAlignmentToBeats(beats, sceneAudioPath, scene.duration);
   const clips: string[] = [];
   const beatDurations: number[] = [];
   const archiveBeatFilled = new Set<number>();
@@ -18291,7 +18341,12 @@ export async function runVideoPipeline(
         let result: SceneVisualsResult;
         try {
           result = await withTimeout(
-            fetchSceneVisuals(scene, workDir, topicContext, visualDedup, (beatIdx, beatTotal, phase) => {
+            fetchSceneVisuals(
+              scene,
+              workDir,
+              topicContext,
+              visualDedup,
+              (beatIdx, beatTotal, phase) => {
               const stage =
                 phase === "backfill"
                   ? `Scene ${sceneIdx + 1}/${scenes.length}: backfill ${beatIdx}/${beatTotal}...`
@@ -18304,7 +18359,9 @@ export async function runVideoPipeline(
                 stage,
                 percent: 20 + Math.round(progressBase * 25),
               });
-            }),
+            },
+              audioPaths[sceneIdx]
+            ),
             perf.sceneVisualTimeoutMs,
             `Scene ${scene.index} visuals`
           );
@@ -18443,6 +18500,30 @@ export async function runVideoPipeline(
             }
           );
           composedUsedClips[i] = usedClips;
+          const vr = sceneVisualResults[i];
+          if (vr?.beats?.length && vr.beatDurations?.length) {
+            const voiceSec = Math.max(0.5, scene.duration - VO_SCENE_TAIL_SEC);
+            const coverage = validateMontageVoiceCoverage(
+              vr.beatDurations,
+              voiceSec,
+              montageXfadeSec()
+            );
+            if (!coverage.ok) {
+              console.warn(
+                `[Pipeline] Scene ${scene.index} voice coverage: ${coverage.warnings.join("; ")}`
+              );
+            }
+            await spotCheckComposedSceneBeatSync(
+              result,
+              vr.beats,
+              vr.beatDurations,
+              vr.clipBeatIndices ?? [],
+              workDir,
+              scene.index,
+              topicContext,
+              montageXfadeSec()
+            );
+          }
           completedCompose++;
           onProgress?.({
             stage: `${STAGE_LABELS.assembly} (${completedCompose}/${scenes.length})`,
