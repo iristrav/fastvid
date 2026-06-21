@@ -1,6 +1,7 @@
 /**
  * Curated media archive — pick tagged assets from admin libraries for pipeline beats.
  */
+import pLimit from "p-limit";
 import { exec as execCb } from "child_process";
 import {
   extractVisualSearchTags,
@@ -79,6 +80,7 @@ import {
   archiveTagsPrimaryMatching,
   pipelineWallClockLimitEnabled,
   isFastShortVideoLength,
+  semanticRerankClipSkipMin,
 } from "./sourcingPolicy";
 import {
   assetHasNlMarkers,
@@ -1727,7 +1729,8 @@ export async function searchCuratedCandidatesForBeat(
     const skipSemanticRerank =
       process.env.ENABLE_SEMANTIC_AI_RERANK === "false" ||
       options?.fastMode === true ||
-      isFastShortVideoLength(options?.videoLength);
+      isFastShortVideoLength(options?.videoLength) ||
+      (ranked[0]?.clipVisionScore10 != null && ranked[0].clipVisionScore10 >= semanticRerankClipSkipMin());
     if (!skipSemanticRerank) {
       ranked = await applySemanticAiRerank(ranked, semanticProfile, videoTitle);
     }
@@ -1981,10 +1984,10 @@ export async function fetchCuratedArchiveBeatClip(
   const minAcceptScore = relaxed ? Math.max(12, Math.round(topScore * 0.25)) : Math.max(28, Math.round(topScore * 0.4));
   const tryOrder = relaxed ? rotateCuratedCandidates(candidates, varietySeed, beat.index) : candidates;
   const maxTries = maxVisualCandidatesPerBeatTry(options?.videoLength);
-  let tried = 0;
 
+  const eligible: CuratedCandidatePick[] = [];
   for (const picked of tryOrder) {
-    if (tried >= maxTries) break;
+    if (eligible.length >= maxTries) break;
     if (
       isArchiveGeoBlockedForBeat(
         picked.asset,
@@ -2030,7 +2033,18 @@ export async function fetchCuratedArchiveBeatClip(
     ) {
       continue;
     }
-    tried++;
+    eligible.push(picked);
+  }
+
+  if (eligible.length === 0) {
+    console.warn(
+      `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: no usable curated archive asset` +
+        (beatTags.length ? ` (beat tags: ${beatTags.slice(0, 6).join(", ")})` : "")
+    );
+    return null;
+  }
+
+  const tryPrepare = async (picked: CuratedCandidatePick): Promise<string | null> => {
     try {
       const clipPath = await prepareCuratedArchiveClip(
         picked.asset,
@@ -2061,10 +2075,34 @@ export async function fetchCuratedArchiveBeatClip(
         `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: curated asset ${picked.asset.id} failed:`,
         (err as Error).message
       );
+      return null;
     }
+  };
+
+  if (eligible.length === 1) {
+    return tryPrepare(eligible[0]!);
   }
 
-  return null;
+  const parallelLimit = pLimit(Math.min(2, eligible.length));
+  const prepared = await Promise.all(
+    eligible.map((picked) => parallelLimit(() => tryPrepare(picked)))
+  );
+  const successes = eligible
+    .map((picked, i) => ({ picked, clipPath: prepared[i] }))
+    .filter((r): r is { picked: CuratedCandidatePick; clipPath: string } => !!r.clipPath);
+
+  if (successes.length === 0) return null;
+
+  successes.sort((a, b) => b.picked.score - a.picked.score);
+  const winner = successes[0]!;
+  for (const alt of successes.slice(1)) {
+    try {
+      if (fs.existsSync(alt.clipPath)) fs.unlinkSync(alt.clipPath);
+    } catch {
+      /* ignore */
+    }
+  }
+  return winner.clipPath;
 }
 
 /** Mark a curated asset as used after it is adopted into the montage. */

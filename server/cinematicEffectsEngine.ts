@@ -549,6 +549,61 @@ function beatsHaveTtsWindows(beats: BeatYearInput[]): boolean {
   );
 }
 
+/** ≥50% beats with TTS windows — enough to anchor hard-cut montage. */
+export function beatsHavePartialTtsWindows(beats: BeatYearInput[], minRatio = 0.5): boolean {
+  if (beats.length === 0) return false;
+  const withTts = beats.filter((b) => b.voiceStartSec != null).length;
+  return withTts / beats.length >= minRatio;
+}
+
+/** Word-weighted fill for beats missing voiceStartSec between known TTS anchors. */
+export function fillPartialTtsVoiceStarts(beats: BeatYearInput[], voiceDur: number): BeatYearInput[] {
+  const out = beats.map((b) => ({ ...b }));
+  const anchors = out.map((b, i) => (b.voiceStartSec != null ? i : -1)).filter((i) => i >= 0);
+  if (anchors.length === 0) return out;
+
+  const distribute = (fromIdx: number, toIdx: number, startSec: number, endSec: number) => {
+    if (toIdx < fromIdx || endSec <= startSec) return;
+    const words = out.slice(fromIdx, toIdx + 1).map((b) =>
+      Math.max(1, b.text.replace(/\[visual:[^\]]+\]/gi, "").split(/\s+/).filter(Boolean).length)
+    );
+    const total = words.reduce((s, w) => s + w, 0) || words.length;
+    let t = startSec;
+    for (let j = 0; j <= toIdx - fromIdx; j++) {
+      const slot = ((endSec - startSec) * words[j]!) / total;
+      out[fromIdx + j]!.voiceStartSec = t;
+      out[fromIdx + j]!.voiceEndSec = t + slot;
+      t += slot;
+    }
+  };
+
+  const first = anchors[0]!;
+  if (first > 0) {
+    distribute(0, first - 1, 0, out[first]!.voiceStartSec!);
+  }
+  for (let a = 0; a < anchors.length - 1; a++) {
+    const i0 = anchors[a]!;
+    const i1 = anchors[a + 1]!;
+    const gapStart = out[i0]!.voiceEndSec ?? out[i0]!.voiceStartSec!;
+    const gapEnd = out[i1]!.voiceStartSec!;
+    if (i1 - i0 > 1) {
+      distribute(i0 + 1, i1 - 1, gapStart, gapEnd);
+    }
+  }
+  const last = anchors[anchors.length - 1]!;
+  if (last < out.length - 1) {
+    const gapStart = out[last]!.voiceEndSec ?? out[last]!.voiceStartSec!;
+    distribute(last + 1, out.length - 1, gapStart, voiceDur);
+  }
+  for (let i = 0; i < out.length; i++) {
+    if (out[i]!.voiceEndSec == null && out[i]!.voiceStartSec != null) {
+      const next = i + 1 < out.length ? out[i + 1]!.voiceStartSec : voiceDur;
+      out[i]!.voiceEndSec = next ?? voiceDur;
+    }
+  }
+  return out;
+}
+
 /** Word-weighted or TTS voice span per beat — TTS uses inter-beat cut points. */
 export function computeVoiceBeatWindows(
   beats: BeatYearInput[],
@@ -635,12 +690,17 @@ export function computeTtsHardCutMontagePlan(
 ): TtsMontagePlan | null {
   if (
     !ttsHardCutMontageEnabled() ||
-    !beatsHaveTtsWindows(beats) ||
     clipBeatIndices.length === 0 ||
     voiceDur <= 0
   ) {
     return null;
   }
+  const fullTts = beatsHaveTtsWindows(beats);
+  const partialTts = !fullTts && beatsHavePartialTtsWindows(beats);
+  if (!fullTts && !partialTts) {
+    return null;
+  }
+  const timedBeats = fullTts ? beats : fillPartialTtsVoiceStarts(beats, voiceDur);
 
   const n = clipBeatIndices.length;
   const cutStartsSec = new Array<number>(n).fill(0);
@@ -650,12 +710,12 @@ export function computeTtsHardCutMontagePlan(
     let runEnd = ci;
     while (runEnd < n && (clipBeatIndices[runEnd] ?? 0) === beatIdx) runEnd++;
     const runLen = runEnd - ci;
-    const beat = beats[beatIdx];
+    const beat = timedBeats[beatIdx];
     if (beat?.voiceStartSec == null) return null;
     const beatStart = beat.voiceStartSec;
     const beatEnd =
-      beatIdx + 1 < beats.length && beats[beatIdx + 1]!.voiceStartSec != null
-        ? beats[beatIdx + 1]!.voiceStartSec!
+      beatIdx + 1 < timedBeats.length && timedBeats[beatIdx + 1]!.voiceStartSec != null
+        ? timedBeats[beatIdx + 1]!.voiceStartSec!
         : Math.max(beat.voiceEndSec ?? beatStart, voiceDur);
     const window = Math.max(0.35 * runLen, beatEnd - beatStart);
     const slot = window / runLen;

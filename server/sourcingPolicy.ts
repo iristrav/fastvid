@@ -191,6 +191,45 @@ export function composeParallelismForVideo(videoLength?: string | null, isRailwa
   return 2;
 }
 
+/** Parallel montage segment encodes within a scene (1–3). */
+export function montageSegmentParallelism(): number {
+  const raw = process.env.MONTAGE_SEGMENT_PARALLELISM?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 1 && n <= 3) return n;
+  }
+  return 2;
+}
+
+/** FFmpeg thread cap per encode (0 = libx264 default). Railway default: 2. */
+export function ffmpegThreadFlag(isRailway = false): string {
+  const raw = process.env.FFMPEG_THREADS?.trim();
+  const n = raw ? parseInt(raw, 10) : isRailway ? 2 : 0;
+  if (!n || isNaN(n) || n < 1) return "";
+  return `-threads ${Math.min(4, n)}`;
+}
+
+/** Burn faceless subtitles during montage segment encode (skip per-clip adopt burn). */
+export function deferFacelessSubtitlesToCompose(): boolean {
+  if (process.env.ENABLE_DEFER_FACELESS_SUBTITLES === "false") return false;
+  return process.env.ENABLE_FACELESS_SUBTITLES !== "false";
+}
+
+/** No score self-heal; hard fail on sync/fallback beats (ENABLE_QUALITY_EXPORT_HARD_TIER=true). */
+export function qualityExportHardTierEnabled(): boolean {
+  return process.env.ENABLE_QUALITY_EXPORT_HARD_TIER === "true";
+}
+
+/** Skip LLM semantic rerank when CLIP pre-rank top score ≥ this (default 8). */
+export function semanticRerankClipSkipMin(): number {
+  const raw = process.env.SEMANTIC_RERANK_CLIP_SKIP_MIN?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 5 && n <= 10) return n;
+  }
+  return 8;
+}
+
 /** Max archive/Wikimedia candidates to try per beat when wall-clock limit is on. */
 export function maxVisualCandidatesPerBeatTry(videoLength?: string | null): number {
   if (!pipelineWallClockLimitEnabled()) return 12;

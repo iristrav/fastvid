@@ -172,6 +172,19 @@ describe("cinematicEffectsEngine", () => {
     expect(plan!.durations[1]).toBeCloseTo(3.5, 1);
   });
 
+  it("computeTtsHardCutMontagePlan works with partial TTS windows", () => {
+    const beats = [
+      { text: "First sentence here.", holdSec: 3, voiceStartSec: 0, voiceEndSec: 2.5 },
+      { text: "Second without timestamps.", holdSec: 3 },
+      { text: "Third anchored.", holdSec: 3, voiceStartSec: 5.0, voiceEndSec: 7.0 },
+    ];
+    const plan = computeTtsHardCutMontagePlan(beats, 7.0, [0, 1, 2], 0);
+    expect(plan).not.toBeNull();
+    expect(plan!.xfadeSec).toBe(0);
+    expect(plan!.cutStartsSec[0]).toBeCloseTo(0, 1);
+    expect(plan!.cutStartsSec[2]).toBeGreaterThan(plan!.cutStartsSec[1]!);
+  });
+
   it("computes voice-synced clip durations with xfade overlap", () => {
     const beats = [
       { text: "Eerste zin.", holdSec: 3 },

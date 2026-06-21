@@ -20,7 +20,7 @@ import type { VideoQualityReport } from "./videoQualityReport";
 import { assertQualityReportExportGate } from "./videoQualityReport";
 import { strictVoiceMontageSyncExport } from "./voiceMontageSyncAudit";
 import type { FinalVideoValidation } from "./finalVideoGate";
-import { minQualityExportScore, strictQualityExportEnabled } from "./sourcingPolicy";
+import { minQualityExportScore, strictQualityExportEnabled, qualityExportHardTierEnabled } from "./sourcingPolicy";
 
 /** Auto-bump export score when montage completed — all video lengths, never block export. */
 export function healQualityReportForExport(
@@ -28,6 +28,9 @@ export function healQualityReportForExport(
   videoLength?: string | null,
   finalVideo?: FinalVideoValidation | null
 ): VideoQualityReport {
+  if (qualityExportHardTierEnabled()) {
+    return report;
+  }
   const minScore = minQualityExportScore(videoLength);
   const fallbackBeats = report.adoptAuditSummary?.fallbackBeats ?? 0;
   const archiveRatio = report.totalClips > 0 ? report.archiveCount / report.totalClips : 0;
@@ -160,6 +163,8 @@ export function enforceQualityExportGate(
     return;
   }
 
+  const hardTier = qualityExportHardTierEnabled();
+
   const violations = report.criticalGeoViolations ?? [];
   if (violations.length > 0) {
     const summary = violations
@@ -173,6 +178,12 @@ export function enforceQualityExportGate(
 
   const minScore = minQualityExportScore(videoLength);
   if (report.score < minScore && finalVideo?.ok) {
+    if (hardTier) {
+      throw pipelineError(
+        PIPELINE_ERROR.QUALITY_GATE,
+        `Quality score ${report.score}/100 below minimum ${minScore} (hard export tier)`
+      );
+    }
     const before = report.score;
     healQualityReportForExport(report, videoLength, finalVideo);
     console.warn(
@@ -181,33 +192,50 @@ export function enforceQualityExportGate(
   }
 
   if (report.postRenderSpotCheck && !report.postRenderSpotCheck.ok) {
+    if (hardTier) {
+      throw pipelineError(
+        PIPELINE_ERROR.QUALITY_GATE,
+        `Post-render spot-check failed: ${report.postRenderSpotCheck.warnings.slice(0, 3).join("; ")}`
+      );
+    }
     console.warn(
       `[Quality] Video ${videoId}: post-render spot-check warnings — ` +
         `${report.postRenderSpotCheck.warnings.join("; ")} (continuing export)`
     );
   }
 
-  if (strictVoiceMontageSyncExport() && report.voiceMontageSync && !report.voiceMontageSync.ok) {
-    const detail = report.voiceMontageSync.warnings.slice(0, 4).join("; ");
+  const syncFailed =
+    report.voiceMontageSync && !report.voiceMontageSync.ok;
+  if (syncFailed && (strictVoiceMontageSyncExport() || hardTier)) {
+    const detail = report.voiceMontageSync!.warnings.slice(0, 4).join("; ");
     throw pipelineError(
       PIPELINE_ERROR.QUALITY_GATE,
-      `Voice montage sync audit failed (${report.voiceMontageSync.failedScenes.length} scene(s)): ${detail}`
+      `Voice montage sync audit failed (${report.voiceMontageSync!.failedScenes.length} scene(s)): ${detail}`
     );
   }
-  if (report.voiceMontageSync && !report.voiceMontageSync.ok) {
+  if (syncFailed) {
     console.warn(
       `[Quality] Video ${videoId}: voice montage sync warnings — ` +
-        `${report.voiceMontageSync.warnings.slice(0, 3).join("; ")} (set STRICT_VOICE_MONTAGE_SYNC=true to block export)`
+        `${report.voiceMontageSync!.warnings.slice(0, 3).join("; ")} (set STRICT_VOICE_MONTAGE_SYNC=true to block export)`
     );
   }
 
-  if ((report.adoptAuditSummary?.fallbackBeats ?? 0) > 0) {
+  const fallbackBeats = report.adoptAuditSummary?.fallbackBeats ?? 0;
+  if (fallbackBeats > 0) {
+    if (hardTier) {
+      throw pipelineError(
+        PIPELINE_ERROR.QUALITY_GATE,
+        `${fallbackBeats} fallback beat(s) used — hard export tier blocks export`
+      );
+    }
     console.warn(
-      `[Quality] Video ${videoId}: ${report.adoptAuditSummary!.fallbackBeats} fallback beat(s) used (continuing export)`
+      `[Quality] Video ${videoId}: ${fallbackBeats} fallback beat(s) used (continuing export)`
     );
   }
 
-  healQualityReportForExport(report, videoLength, finalVideo);
+  if (!hardTier) {
+    healQualityReportForExport(report, videoLength, finalVideo);
+  }
 
   console.log(`[Quality] Video ${videoId}: export gate passed (score=${report.score}/100)`);
 }

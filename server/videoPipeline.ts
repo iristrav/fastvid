@@ -81,6 +81,9 @@ import {
   pickVoiceBackfillBeatIndex,
   finalizeVoiceSyncedMontageDurations,
   resolveVoiceSyncMontagePlan,
+  computeTtsHardCutMontagePlan,
+  buildFacelessTypewriterDrawtextChain,
+  parseFacelessSubtitleLines,
   type TtsMontagePlan,
   burnTimedScreenLabelsDrawtext,
   buildYearDrawtextFilterChain,
@@ -126,10 +129,10 @@ import {
   clipEmbeddingIndexEnabled,
   preRankCuratedCandidatesByClipEmbedding,
 } from "./archiveClipEmbedding";
-import { scheduleStockClipEmbedding, ensureStockClipIndexed, rankStockVideoIdsByEmbedding, stockClipEmbeddingEnabled } from "./stockClipEmbedding";
+import { scheduleStockClipEmbedding, scheduleStockClipEmbeddingByKey, rankStockVideoIdsByEmbedding, stockClipEmbeddingEnabled } from "./stockClipEmbedding";
 import { pickStockInClipStartSec, stockInClipOffsetEnabled } from "./clipInClipOffset";
 import { resolveBeatVisionQueryEmbedding } from "./localClipVision";
-import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, openverseStillsEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, maxPipelineWallClockMin, composeParallelismForVideo, polishBeforeComposeEnabled } from "./sourcingPolicy";
+import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, openverseStillsEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, maxPipelineWallClockMin, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -183,13 +186,11 @@ import type { ClipAdoptEntry } from "./clipAdoptAudit";
 import { createClipAdoptAudit, recordClipAdopt } from "./clipAdoptAudit";
 import { buildEditorScenesFromPipeline } from "./editorClips";
 import { buildVideoQualityReport, computeMeritQualityScore, logVideoQualityReport } from "./videoQualityReport";
-import { postRenderSpotCheckEnabled, spotCheckFinalVideo } from "./postRenderSpotCheck";
-import {
-  alignSceneBeatsToVoiceAudio,
-  validateMontageVoiceCoverage,
-} from "./voiceBeatAlignment";
+import { postRenderSpotCheckEnabledForVideo, spotCheckFinalVideo } from "./postRenderSpotCheck";
+import { spotCheckComposedSceneBeatSync, alignSceneBeatsToVoiceAudio, validateMontageVoiceCoverage } from "./voiceBeatAlignment";
 import {
   auditSceneVoiceMontageSync,
+  voiceMontageSyncAuditEnabled,
   summarizeVoiceMontageSyncAudits,
   strictVoiceMontageSyncExport,
   type VoiceMontageSyncAuditResult,
@@ -542,7 +543,15 @@ const VIDRUSH_CLIP_MAX_SEC = 4.0;
 const VIDRUSH_CLIP_HOLD_SEC = 7.0;
 const VIDRUSH_BEAT_SEC = 3.5;
 
-type MontageFilterOpts = { xfadeSec?: number; preserveDurations?: boolean };
+type MontageFilterOpts = {
+  xfadeSec?: number;
+  preserveDurations?: boolean;
+  segmentBeatTexts?: string[];
+};
+
+function pipelineFfmpegThreadFlag(): string {
+  return ffmpegThreadFlag(IS_RAILWAY);
+}
 
 function effectiveBeatSec(): number {
   return curatedArchiveOnlyVisuals() ? archiveVisualBeatSec() : VIDRUSH_BEAT_SEC;
@@ -3394,7 +3403,7 @@ async function fetchPexelsClips(
 
         const stockKey = `pexels:${video.id}`;
         if (stockClipEmbeddingEnabled()) {
-          await ensureStockClipIndexed(stockKey, rawPath);
+          scheduleStockClipEmbeddingByKey(stockKey, rawPath);
         }
 
         // Validate downloaded file with ffprobe before processing
@@ -3480,6 +3489,10 @@ async function fetchBrollClips(
   for (let qi = 0; qi < brollQueries.length && results.length < 3; qi++) {
     const query = simplifyStockSearchWord(brollQueries[qi] ?? "", brollQueries[qi] ?? "", true);
     if (!query || query.length < 3 || isBlockedStockQuery(query)) continue;
+    let queryEmbForStock: number[] | null = null;
+    if (stockClipEmbeddingEnabled()) {
+      queryEmbForStock = await resolveBeatVisionQueryEmbedding({ beatText: query });
+    }
     try {
       const searchUrl = `https://api.pexels.com/videos/search?query=${encodeURIComponent(query)}&per_page=5&size=large&orientation=landscape&min_duration=4`;
       const searchResp = await withTimeout(
@@ -3534,6 +3547,10 @@ async function fetchBrollClips(
           const buffer = Buffer.from(await dlResp.arrayBuffer());
           if (buffer.length < 50_000) continue;
           fs.writeFileSync(rawPath, buffer);
+          const stockKey = `pexels:${video.id}`;
+          if (stockClipEmbeddingEnabled()) {
+            scheduleStockClipEmbeddingByKey(stockKey, rawPath);
+          }
           const startSec = (sceneIndex + qi) * 0.29 % 1.0;
           const trimmed = await trimDownloadedStockClip(
             rawPath,
@@ -3541,7 +3558,8 @@ async function fetchBrollClips(
             clipDuration,
             video.duration,
             `B-roll trim scene ${sceneIndex}`,
-            startSec
+            startSec,
+            { stockKey, queryEmbedding: queryEmbForStock, clipIndex: qi }
           );
           try { fs.unlinkSync(rawPath); } catch { /* ignore */ }
           if (trimmed) {
@@ -3686,7 +3704,7 @@ async function fetchPixabayClips(
 
           const stockKey = `pixabay:${video.id}`;
           if (stockClipEmbeddingEnabled()) {
-            await ensureStockClipIndexed(stockKey, rawPath);
+            scheduleStockClipEmbeddingByKey(stockKey, rawPath);
           }
 
           // Validate with ffprobe
@@ -8046,6 +8064,9 @@ async function applyVoiceAlignmentToBeats(
   if (dedup && sceneIndex != null && dedup.ttsSceneBeats.get(sceneIndex)?.length) {
     return;
   }
+  if (dedup && dedup.ttsSceneBeats.size > 0 && ttsWordAlignmentEnabled()) {
+    return;
+  }
   if (!sceneAudioPath || !fs.existsSync(sceneAudioPath)) return;
   const voiceSec = Math.max(0.5, sceneDuration - VO_SCENE_TAIL_SEC);
   await alignSceneBeatsToVoiceAudio(beats, sceneAudioPath, voiceSec, montageXfadeSec());
@@ -9005,7 +9026,8 @@ async function prepareStrictUniqueMontage(
     beats: Array<{ text: string; holdSec: number; voiceStartSec?: number; voiceEndSec?: number }>;
     clipBeatIndices: number[];
     voiceDur: number;
-  }
+  },
+  forceTtsHardCut = false
 ): Promise<{
   montageDurations: number[];
   sourceMaxDurs: number[];
@@ -9019,13 +9041,23 @@ async function prepareStrictUniqueMontage(
   let montagePlan: TtsMontagePlan | undefined;
 
   if (voiceSync && voiceSync.clipBeatIndices.length === clips.length) {
-    const plan = resolveVoiceSyncMontagePlan(
-      voiceSync.beats,
-      voiceSync.voiceDur,
-      voiceSync.clipBeatIndices,
-      defaultXfade,
-      sceneIndex
-    );
+    const hardPlan = forceTtsHardCut
+      ? computeTtsHardCutMontagePlan(
+          voiceSync.beats,
+          voiceSync.voiceDur,
+          voiceSync.clipBeatIndices,
+          sceneIndex
+        )
+      : null;
+    const plan =
+      hardPlan ??
+      resolveVoiceSyncMontagePlan(
+        voiceSync.beats,
+        voiceSync.voiceDur,
+        voiceSync.clipBeatIndices,
+        defaultXfade,
+        sceneIndex
+      );
     montagePlan = plan;
     montageDurations = plan.durations;
     const xfade = plan.xfadeSec;
@@ -9506,7 +9538,8 @@ async function renderSingleMontageSegment(
   sourceMaxSec: number,
   outputPath: string,
   composeTimeout: number,
-  threadFlag: string
+  threadFlag: string,
+  segmentBeatText?: string
 ): Promise<number> {
   let startSec = montageClipStartSec(sceneIndex, clipIndex);
   if (sourceMaxSec > 0.15) {
@@ -9518,15 +9551,38 @@ async function renderSingleMontageSegment(
     effectiveDur = Math.min(effectiveDur, Math.max(0.35, sourceMaxSec - startSec - 0.05));
   }
   effectiveDur = Math.max(0.35, effectiveDur);
-  await withTimeout(
-    exec(
-      `${FFMPEG_BIN} -y -ss ${startSec.toFixed(3)} -i "${clipPath}" -t ${effectiveDur.toFixed(3)} ` +
-        `-vf "${montageBranchNormVF()},setpts=PTS-STARTPTS" -an -vsync cfr ${threadFlag} ` +
-        `-c:v libx264 -preset ${MONTAGE_SEGMENT_ENCODE_PRESET} -crf 18 -pix_fmt yuv420p "${outputPath}"`
-    ),
-    composeTimeout,
-    `Montage segment scene ${sceneIndex} clip ${clipIndex}`
-  );
+
+  const burnDeferred =
+    deferFacelessSubtitlesToCompose() &&
+    facelessSubtitlesEnabled() &&
+    segmentBeatText?.trim() &&
+    isVisualOverlayFootageClip(clipPath);
+  const lines = burnDeferred ? parseFacelessSubtitleLines(segmentBeatText!) : [];
+
+  if (burnDeferred && lines.length > 0) {
+    const chain = buildFacelessTypewriterDrawtextChain("vprep", "vout", lines, effectiveDur, "bottom-left");
+    const filterComplex = `[0:v]${montageBranchNormVF()}[vprep]${chain}`;
+    await withTimeout(
+      exec(
+        `${FFMPEG_BIN} -y -ss ${startSec.toFixed(3)} -i "${clipPath}" -t ${effectiveDur.toFixed(3)} ` +
+          `-filter_complex "${filterComplex}" -map "[vout]" ` +
+          `-an -vsync cfr ${threadFlag} ` +
+          `-c:v libx264 -preset ${MONTAGE_SEGMENT_ENCODE_PRESET} -crf 18 -pix_fmt yuv420p "${outputPath}"`
+      ),
+      composeTimeout,
+      `Montage segment+text scene ${sceneIndex} clip ${clipIndex}`
+    );
+  } else {
+    await withTimeout(
+      exec(
+        `${FFMPEG_BIN} -y -ss ${startSec.toFixed(3)} -i "${clipPath}" -t ${effectiveDur.toFixed(3)} ` +
+          `-vf "${montageBranchNormVF()},setpts=PTS-STARTPTS" -an -vsync cfr ${threadFlag} ` +
+          `-c:v libx264 -preset ${MONTAGE_SEGMENT_ENCODE_PRESET} -crf 18 -pix_fmt yuv420p "${outputPath}"`
+      ),
+      composeTimeout,
+      `Montage segment scene ${sceneIndex} clip ${clipIndex}`
+    );
+  }
   return (await probeVideoDurationSec(outputPath)) || effectiveDur;
 }
 
@@ -9546,23 +9602,30 @@ async function renderSequentialArchiveMontage(
   if (clips.length === 0) {
     throw pipelineError(PIPELINE_ERROR.FFMPEG, `Scene ${sceneIndex}: no clips for sequential montage`);
   }
-  const segmentPaths: string[] = [];
-  const segmentDurs: number[] = [];
-  for (let i = 0; i < clips.length; i++) {
-    const segPath = path.join(workDir, `scene_${sceneIndex}_seq_${i}.mp4`);
-    const dur = await renderSingleMontageSegment(
-      clips[i]!,
-      sceneIndex,
-      i,
-      montageDurations[i] ?? effectiveBeatSec(),
-      sourceMaxDurs[i] ?? 0,
-      segPath,
-      composeTimeout,
-      threadFlag
-    );
-    segmentPaths.push(segPath);
-    segmentDurs.push(dur);
-  }
+  const segmentPaths: string[] = new Array(clips.length);
+  const segmentDurs: number[] = new Array(clips.length);
+  const segLimit = pLimit(Math.min(montageSegmentParallelism(), clips.length));
+  await Promise.all(
+    clips.map((clip, i) =>
+      segLimit(async () => {
+        const segPath = path.join(workDir, `scene_${sceneIndex}_seq_${i}.mp4`);
+        const beatText = montageFilterOpts?.segmentBeatTexts?.[i];
+        const dur = await renderSingleMontageSegment(
+          clip,
+          sceneIndex,
+          i,
+          montageDurations[i] ?? effectiveBeatSec(),
+          sourceMaxDurs[i] ?? 0,
+          segPath,
+          composeTimeout,
+          threadFlag,
+          beatText
+        );
+        segmentPaths[i] = segPath;
+        segmentDurs[i] = dur;
+      })
+    )
+  );
   if (segmentPaths.length === 1) {
     const est = segmentDurs[0]!;
     const pad = Math.max(0, outDur - est - 0.04);
@@ -14179,6 +14242,9 @@ async function applyVideoBeatTextOverlay(
   holdSec: number,
   fastMode = false
 ): Promise<string> {
+  if (deferFacelessSubtitlesToCompose() && facelessSubtitlesEnabled()) {
+    return clipPath;
+  }
   if (!facelessSubtitlesEnabled() || !isVisualOverlayFootageClip(clipPath)) {
     return clipPath;
   }
@@ -17010,6 +17076,8 @@ type ComposeSceneOptions = {
     clipBeatIndices: number[];
     montagePlan?: TtsMontagePlan;
   };
+  /** Re-compose montage with TTS hard-cut after sync audit failure. */
+  forceTtsHardCutRemontage?: boolean;
 };
 
 function buildOverlayFilterChain(
@@ -17157,7 +17225,7 @@ async function applySceneEffectsPass(
     probedDur || undefined,
     sceneClips
   );
-  const threadFlag = IS_RAILWAY ? "-threads 1" : "";
+  const threadFlag = pipelineFfmpegThreadFlag();
   const kineticY = 80;
   const { extraInputs, filterChain, finalLabel } = buildOverlayFilterChain(
     "0:v",
@@ -17515,7 +17583,7 @@ async function composeSceneVideo(
   const statCalloutFrame: { path: string; startTime: number; endTime: number } | null = null;
 
   // On Railway, limit FFmpeg threads to reduce memory usage
-  const threadFlag = IS_RAILWAY ? "-threads 1" : "";
+  const threadFlag = pipelineFfmpegThreadFlag();
   // Kinetic text position: upper-center area
   const kineticY = 80;
   // Cinematic color grading (documentaryStyle module when enabled)
@@ -17572,14 +17640,21 @@ async function composeSceneVideo(
     safeClips,
     composeBeatDurations,
     outDur,
-    voiceSync
+    voiceSync,
+    composeOptions?.forceTtsHardCutRemontage === true
   );
   let montageDurations = prepared.montageDurations;
   let sourceMaxDurs = prepared.sourceMaxDurs;
   const montagePlan = prepared.montagePlan;
+  const segmentBeatTexts =
+    montageBeats?.length && composeClipBeatIndices?.length
+      ? composeClipBeatIndices.map((bi) => montageBeats[bi]?.text ?? "")
+      : undefined;
   const montageFilterOpts: MontageFilterOpts | undefined = montagePlan?.ttsHardCut
-    ? { xfadeSec: 0, preserveDurations: true }
-    : undefined;
+    ? { xfadeSec: 0, preserveDurations: true, segmentBeatTexts }
+    : segmentBeatTexts?.length && deferFacelessSubtitlesToCompose()
+      ? { segmentBeatTexts }
+      : undefined;
   if (montagePlan?.ttsHardCut) {
     console.log(
       `[Pipeline] Scene ${scene.index}: TTS hard-cut montage (${montageDurations.length} clips on voiceStartSec)`
@@ -18819,7 +18894,7 @@ export async function runVideoPipeline(
             montageDurations: [],
             clipBeatIndices: [],
           };
-          const result = await composeSceneVideo(
+          let result = await composeSceneVideo(
             scene, sceneVisualResults[i]?.clips ?? [], audioPaths[i], scene.duration, workDir, scenes.length,
             enableSubtitles, visualDedup.lastMuskStockClip, sceneVisualResults[i]?.beatDurations, usedClips,
             {
@@ -18846,7 +18921,7 @@ export async function runVideoPipeline(
                 `[Pipeline] Scene ${scene.index} voice coverage: ${coverage.warnings.join("; ")}`
               );
             }
-            const audit = await auditSceneVoiceMontageSync(
+            let audit = await auditSceneVoiceMontageSync(
               result,
               vr.beats.map((b) => ({
                 text: b.text,
@@ -18862,6 +18937,63 @@ export async function runVideoPipeline(
               topicContext,
               composeMeta.montagePlan
             );
+            const spot = await spotCheckComposedSceneBeatSync(
+              result,
+              vr.beats,
+              composeMeta.montageDurations,
+              composeMeta.clipBeatIndices,
+              workDir,
+              scene.index,
+              topicContext,
+              auditXfade,
+              { skipClipScoring: voiceMontageSyncAuditEnabled() }
+            );
+            if (!spot.ok) {
+              audit = {
+                ...audit,
+                ok: false,
+                warnings: [...audit.warnings, ...spot.warnings.map((w) => `spot: ${w}`)],
+              };
+            }
+            if (!audit.ok && !composeMeta.montagePlan?.ttsHardCut) {
+              console.warn(
+                `[Pipeline] Scene ${scene.index}: sync audit failed — remontage with TTS hard-cut`
+              );
+              composeMeta.montageDurations = [];
+              composeMeta.clipBeatIndices = [];
+              composeMeta.montagePlan = undefined;
+              usedClips.length = 0;
+              result = await composeSceneVideo(
+                scene, sceneVisualResults[i]?.clips ?? [], audioPaths[i], scene.duration, workDir, scenes.length,
+                enableSubtitles, visualDedup.lastMuskStockClip, sceneVisualResults[i]?.beatDurations, usedClips,
+                {
+                  dedup: visualDedup,
+                  videoTitle: topicContext,
+                  sceneStartSec: sceneStartSecs[i],
+                  montageBeats: sceneVisualResults[i]?.beats,
+                  clipBeatIndices: sceneVisualResults[i]?.clipBeatIndices,
+                  composeMetaOut: composeMeta,
+                  forceTtsHardCutRemontage: true,
+                }
+              );
+              composedUsedClips[i] = usedClips;
+              audit = await auditSceneVoiceMontageSync(
+                result,
+                vr.beats.map((b) => ({
+                  text: b.text,
+                  holdSec: b.holdSec,
+                  voiceStartSec: b.voiceStartSec,
+                  voiceEndSec: b.voiceEndSec,
+                })),
+                composeMeta.montageDurations,
+                composeMeta.clipBeatIndices,
+                voiceSec,
+                workDir,
+                scene.index,
+                topicContext,
+                composeMeta.montagePlan
+              );
+            }
             voiceMontageSyncResults.push({ sceneIndex: scene.index, audit });
           }
           completedCompose++;
@@ -19046,7 +19178,7 @@ export async function runVideoPipeline(
       );
     }
 
-    if (postRenderSpotCheckEnabled()) {
+    if (postRenderSpotCheckEnabledForVideo(videoLength)) {
       const spot = await spotCheckFinalVideo(finalVideoPath);
       qualityReport.postRenderSpotCheck = {
         ok: spot.ok,

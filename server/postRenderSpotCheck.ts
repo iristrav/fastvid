@@ -6,6 +6,7 @@ import path from "path";
 import { spawn } from "child_process";
 import { promisify } from "util";
 import { exec as execCb } from "child_process";
+import { isFastShortVideoLength } from "./sourcingPolicy";
 
 const exec = promisify(execCb);
 
@@ -246,4 +247,11 @@ export async function spotCheckFinalVideo(filePath: string): Promise<PostRenderS
 
 export function postRenderSpotCheckEnabled(): boolean {
   return process.env.ENABLE_POST_RENDER_SPOT_CHECK !== "false";
+}
+
+/** Per-video gate — fast 1-min Railway skips by default (see sourcingPolicy). */
+export function postRenderSpotCheckEnabledForVideo(videoLength?: string | null): boolean {
+  if (process.env.ENABLE_POST_RENDER_SPOT_CHECK === "false") return false;
+  if (process.env.ENABLE_POST_RENDER_SPOT_CHECK === "true") return true;
+  return !isFastShortVideoLength(videoLength);
 }

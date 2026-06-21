@@ -169,6 +169,24 @@ export async function reviewSceneCritical(
     };
   }
 
+  if (
+    adoptVisionByBeat &&
+    adoptVisionByBeat.size > 0 &&
+    clips.length > 0 &&
+    clips.every((_, i) => {
+      const beatIdx = clipBeatIndices[i] ?? i;
+      const known = adoptVisionByBeat.get(beatIdx);
+      return typeof known === "number" && known >= minClipQualityScore();
+    })
+  ) {
+    return {
+      ok: true,
+      clipResults: [],
+      motionOverlayIssues: [],
+      summary: "Skipped — all beats passed adopt vision gate",
+    };
+  }
+
   const clipResults: ClipCriticalReviewResult[] = [];
   for (let i = 0; i < clips.length; i++) {
     const beatIdx = clipBeatIndices[i] ?? i;

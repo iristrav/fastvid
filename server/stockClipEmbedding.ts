@@ -87,6 +87,16 @@ export async function ensureStockClipIndexed(key: string, localVideoPath: string
   return indexStockClipEmbedding(key, localVideoPath);
 }
 
+/** Non-blocking background index (hot path uses hash offset until cache warm). */
+export function scheduleStockClipEmbeddingByKey(key: string, localVideoPath: string): void {
+  if (!stockClipEmbeddingEnabled()) return;
+  if (loadStoredStockFrameEmbeddings(key).length > 0) return;
+  if (pendingKeys.has(key)) return;
+  if (!fs.existsSync(localVideoPath)) return;
+  pendingKeys.add(key);
+  void indexStockClipEmbedding(key, localVideoPath).finally(() => pendingKeys.delete(key));
+}
+
 /** Re-order Pexels/Pixabay search hits when cached embeddings match the beat query. */
 export function rankStockVideoIdsByEmbedding<
   T extends { id: number; duration?: number },

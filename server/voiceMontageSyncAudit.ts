@@ -6,6 +6,8 @@ import path from "path";
 import { beatVisionContextFromProfile } from "./archiveClipEmbedding";
 import {
   computeMontageBeatStarts,
+  fillPartialTtsVoiceStarts,
+  beatsHavePartialTtsWindows,
   type BeatYearInput,
   type TtsMontagePlan,
 } from "./cinematicEffectsEngine";
@@ -71,7 +73,10 @@ function computeTtsCutStarts(
   voiceDur: number,
   clipBeatIndices: number[]
 ): number[] | null {
-  if (!beatsHaveTtsWindows(beats) || clipBeatIndices.length === 0) return null;
+  const full = beatsHaveTtsWindows(beats);
+  const partial = !full && beatsHavePartialTtsWindows(beats);
+  if ((!full && !partial) || clipBeatIndices.length === 0) return null;
+  const timed = full ? beats : fillPartialTtsVoiceStarts(beats, voiceDur);
   const n = clipBeatIndices.length;
   const cutStartsSec = new Array<number>(n).fill(0);
   let ci = 0;
@@ -80,11 +85,11 @@ function computeTtsCutStarts(
     let runEnd = ci;
     while (runEnd < n && (clipBeatIndices[runEnd] ?? 0) === beatIdx) runEnd++;
     const runLen = runEnd - ci;
-    const beat = beats[beatIdx]!;
+    const beat = timed[beatIdx]!;
     const beatStart = beat.voiceStartSec!;
     const beatEnd =
-      beatIdx + 1 < beats.length && beats[beatIdx + 1]!.voiceStartSec != null
-        ? beats[beatIdx + 1]!.voiceStartSec!
+      beatIdx + 1 < timed.length && timed[beatIdx + 1]!.voiceStartSec != null
+        ? timed[beatIdx + 1]!.voiceStartSec!
         : Math.max(beat.voiceEndSec ?? beatStart, voiceDur);
     const window = Math.max(0.35 * runLen, beatEnd - beatStart);
     const slot = window / runLen;
@@ -164,6 +169,10 @@ export async function auditSceneVoiceMontageSync(
       warnings.push(
         `clip ${ci} beat ${beatIdx}: cut drift ${deltaSec.toFixed(2)}s ` +
           `(expected ${expectedStartSec.toFixed(2)}s, plan ${actualStartSec.toFixed(2)}s)`
+      );
+    } else if (!plan?.ttsHardCut && beatsHavePartialTtsWindows(beats) && deltaSec > MAX_TIMELINE_DRIFT_SEC) {
+      warnings.push(
+        `clip ${ci} beat ${beatIdx}: montage drift ${deltaSec.toFixed(2)}s (partial TTS — consider hard-cut remontage)`
       );
     }
 

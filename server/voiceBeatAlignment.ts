@@ -258,12 +258,14 @@ export async function spotCheckComposedSceneBeatSync(
   workDir: string,
   sceneIndex: number,
   videoTitle?: string,
-  xfadeSec = 0.35
+  xfadeSec = 0.35,
+  options?: { skipClipScoring?: boolean }
 ): Promise<{ ok: boolean; warnings: string[] }> {
   if (!voiceAlignmentSpotCheckEnabled() || !fs.existsSync(composedPath)) {
     return { ok: true, warnings: [] };
   }
 
+  const skipClip = options?.skipClipScoring === true;
   const warnings: string[] = [];
   const minScore = Math.max(6, minClipQualityScore() - 1);
   const totalDur = await probeVideoDurationSec(composedPath);
@@ -297,28 +299,29 @@ export async function spotCheckComposedSceneBeatSync(
       continue;
     }
 
-    const ctx = beatVisionContextFromProfile({ text: beat.text }, videoTitle);
-    const queryEmb = await resolveBeatVisionQueryEmbedding(ctx);
-    const scored = await scoreFramePathsAgainstBeat(
-      [framePath],
-      beat.text,
-      undefined,
-      videoTitle,
-      composedPath,
-      minScore,
-      undefined,
-      queryEmb
-    );
+    if (!skipClip) {
+      const ctx = beatVisionContextFromProfile({ text: beat.text }, videoTitle);
+      const queryEmb = await resolveBeatVisionQueryEmbedding(ctx);
+      const scored = await scoreFramePathsAgainstBeat(
+        [framePath],
+        beat.text,
+        undefined,
+        videoTitle,
+        composedPath,
+        minScore,
+        undefined,
+        queryEmb
+      );
+      if (scored && scored.score < minScore) {
+        warnings.push(
+          `beat ${beatIdx} timeline ${sampleSec.toFixed(1)}s CLIP ${scored.score}/10 < ${minScore}`
+        );
+      }
+    }
     try {
       fs.unlinkSync(framePath);
     } catch {
       /* ignore */
-    }
-
-    if (scored && scored.score < minScore) {
-      warnings.push(
-        `beat ${beatIdx} timeline ${sampleSec.toFixed(1)}s CLIP ${scored.score}/10 < ${minScore}`
-      );
     }
 
     timeline += beatDurations[ci]! - (ci > 0 ? xfadeSec : 0);
