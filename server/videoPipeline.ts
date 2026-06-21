@@ -174,7 +174,7 @@ import { createClipAdoptAudit, recordClipAdopt } from "./clipAdoptAudit";
 import { buildEditorScenesFromPipeline } from "./editorClips";
 import { buildVideoQualityReport, computeMeritQualityScore, logVideoQualityReport } from "./videoQualityReport";
 import { postRenderSpotCheckEnabled, spotCheckFinalVideo } from "./postRenderSpotCheck";
-import { buildEmergencyGeoStockQueries, buildDocumentaryShotQueries, enforceQualityExportGate } from "./pipelineSelfHeal";
+import { buildEmergencyGeoStockQueries, buildDocumentaryShotQueries, enforceQualityExportGate, healQualityReportForExport } from "./pipelineSelfHeal";
 import { extractTitleGeoPlaceTags } from "./worldGeoSlugs";
 import { fetchWikimediaTitlesForVideoGeo, wikimediaGeosearchEnabled } from "./wikimediaGeoSearch";
 import { buildEuropeanaBeatQueries, titleSuggestsEuropeana } from "./europeanaGeo";
@@ -18574,6 +18574,8 @@ export async function runVideoPipeline(
     }
 
     enforceQualityExportGate(videoId, qualityReport, videoLength);
+    healQualityReportForExport(qualityReport, videoLength);
+    qualityReport.generatedAt = new Date().toISOString();
 
     // ── Stage 6: Upload to S3 ─────────────────────────────────────────────────
     onProgress?.({ stage: STAGE_LABELS.uploading, percent: 93 });
