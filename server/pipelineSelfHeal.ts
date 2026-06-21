@@ -17,18 +17,19 @@ import {
 } from "./scriptWriter";
 import type { VideoQualityReport } from "./videoQualityReport";
 import { assertQualityReportExportGate } from "./videoQualityReport";
+import type { FinalVideoValidation } from "./finalVideoGate";
 import { minQualityExportScore, strictQualityExportEnabled } from "./sourcingPolicy";
 
 /** Auto-bump export score when montage completed — all video lengths, never block export. */
 export function healQualityReportForExport(
   report: VideoQualityReport,
-  videoLength?: string | null
+  videoLength?: string | null,
+  finalVideo?: FinalVideoValidation | null
 ): VideoQualityReport {
   const minScore = minQualityExportScore(videoLength);
   const fallbackBeats = report.adoptAuditSummary?.fallbackBeats ?? 0;
   const archiveRatio = report.totalClips > 0 ? report.archiveCount / report.totalClips : 0;
-  const exportReady =
-    report.totalClips > 0 && report.postRenderSpotCheck?.ok !== false;
+  const exportReady = finalVideo?.ok === true && report.totalClips > 0;
   const archiveMontageOk =
     archiveRatio >= 0.75 && fallbackBeats === 0 && report.stockCount <= 1;
 
@@ -148,12 +149,12 @@ export function logQualityReportExportWarnings(videoId: number, report: VideoQua
 export function enforceQualityExportGate(
   videoId: number,
   report: VideoQualityReport,
-  videoLength?: string | null
+  videoLength?: string | null,
+  finalVideo?: FinalVideoValidation | null
 ): void {
-  healQualityReportForExport(report, videoLength);
-
   if (!strictQualityExportEnabled()) {
     logQualityReportExportWarnings(videoId, report);
+    healQualityReportForExport(report, videoLength, finalVideo);
     return;
   }
 
@@ -169,9 +170,9 @@ export function enforceQualityExportGate(
   }
 
   const minScore = minQualityExportScore(videoLength);
-  if (report.score < minScore) {
+  if (report.score < minScore && finalVideo?.ok) {
     const before = report.score;
-    healQualityReportForExport(report, videoLength);
+    healQualityReportForExport(report, videoLength, finalVideo);
     console.warn(
       `[Quality] Video ${videoId}: score self-healed ${before}→${report.score}/100 (min ${minScore}) — continuing export`
     );
@@ -189,6 +190,8 @@ export function enforceQualityExportGate(
       `[Quality] Video ${videoId}: ${report.adoptAuditSummary!.fallbackBeats} fallback beat(s) used (continuing export)`
     );
   }
+
+  healQualityReportForExport(report, videoLength, finalVideo);
 
   console.log(`[Quality] Video ${videoId}: export gate passed (score=${report.score}/100)`);
 }

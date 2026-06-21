@@ -4,6 +4,7 @@ import * as fs from "fs";
 import { PIPELINE_ERROR, appErrorMessage } from "@shared/appErrors";
 import { PIPELINE_PROCESSING_STATUSES, USER_IN_FLIGHT_VIDEO_STATUSES } from "@shared/videoQueue";
 import { isShortVideoLength, normalizeVideoLength } from "@shared/videoLengths";
+import { validateFinalVideoForExport, resolveStoredVideoLocalPath } from "./finalVideoGate";
 import { maxPipelineWallClockMin, maxPipelineWallClockHardMin, visualStageWallClockMin, pipelineWallClockLimitEnabled, pipelineMinutesPerVideoMinute, pipelineWallClockGraceFactor, PIPELINE_UNLIMITED_MS } from "./sourcingPolicy";
 import type { Video } from "../drizzle/schema";
 import { InsertInviteCode, InsertUser, InsertVideo, InsertPasswordResetToken, inviteCodes, users, videos, passwordResetTokens } from "../drizzle/schema";
@@ -505,6 +506,16 @@ export async function recoverVideoCompletionState(video: Video): Promise<Video> 
   }
 
   if (videoUrl) {
+    const localPath = resolveStoredVideoLocalPath(videoUrl);
+    if (localPath) {
+      const validation = await validateFinalVideoForExport(localPath, video.videoLength);
+      if (!validation.ok) {
+        console.warn(
+          `[Recovery] Video ${video.id}: stored MP4 fails export check — not marking completed (${validation.reasons.slice(0, 2).join("; ")})`
+        );
+        return video;
+      }
+    }
     await updateVideoStatus(video.id, "completed", {
       videoUrl,
       progressStep: "Video complete!",

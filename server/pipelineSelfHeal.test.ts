@@ -33,7 +33,15 @@ describe("pipelineSelfHeal", () => {
       { archiveOnly: true, fastShort: true }
     );
     report.score = 28;
-    healQualityReportForExport(report, "1");
+    healQualityReportForExport(report, "1", {
+      ok: true,
+      durationSec: 62,
+      hasAudio: true,
+      hasVideo: true,
+      sizeBytes: 5_000_000,
+      spotOk: true,
+      reasons: [],
+    });
     expect(report.score).toBeGreaterThanOrEqual(70);
   });
 
@@ -48,7 +56,15 @@ describe("pipelineSelfHeal", () => {
       { archiveOnly: true }
     );
     report.score = 30;
-    healQualityReportForExport(report, "10-15");
+    healQualityReportForExport(report, "10-15", {
+      ok: true,
+      durationSec: 600,
+      hasAudio: true,
+      hasVideo: true,
+      sizeBytes: 80_000_000,
+      spotOk: true,
+      reasons: [],
+    });
     expect(report.score).toBeGreaterThanOrEqual(45);
   });
 
@@ -59,7 +75,16 @@ describe("pipelineSelfHeal", () => {
       { archiveOnly: true, fastShort: true }
     );
     report.score = 20;
-    expect(() => enforceQualityExportGate(330, report, "1")).not.toThrow();
+    const finalOk = {
+      ok: true,
+      durationSec: 58,
+      hasAudio: true,
+      hasVideo: true,
+      sizeBytes: 4_000_000,
+      spotOk: true,
+      reasons: [],
+    };
+    expect(() => enforceQualityExportGate(330, report, "1", finalOk)).not.toThrow();
     expect(report.score).toBeGreaterThanOrEqual(70);
   });
 
@@ -69,7 +94,16 @@ describe("pipelineSelfHeal", () => {
       "Netherlands vs United States cities",
     );
     report.score = 25;
-    expect(() => enforceQualityExportGate(99, report, "10-15")).not.toThrow();
+    const finalOk = {
+      ok: true,
+      durationSec: 540,
+      hasAudio: true,
+      hasVideo: true,
+      sizeBytes: 50_000_000,
+      spotOk: true,
+      reasons: [],
+    };
+    expect(() => enforceQualityExportGate(99, report, "10-15", finalOk)).not.toThrow();
     expect(report.score).toBeGreaterThanOrEqual(45);
   });
 });

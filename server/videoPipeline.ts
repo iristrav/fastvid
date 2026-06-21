@@ -174,7 +174,8 @@ import { createClipAdoptAudit, recordClipAdopt } from "./clipAdoptAudit";
 import { buildEditorScenesFromPipeline } from "./editorClips";
 import { buildVideoQualityReport, computeMeritQualityScore, logVideoQualityReport } from "./videoQualityReport";
 import { postRenderSpotCheckEnabled, spotCheckFinalVideo } from "./postRenderSpotCheck";
-import { buildEmergencyGeoStockQueries, buildDocumentaryShotQueries, enforceQualityExportGate, healQualityReportForExport } from "./pipelineSelfHeal";
+import { buildEmergencyGeoStockQueries, buildDocumentaryShotQueries, enforceQualityExportGate } from "./pipelineSelfHeal";
+import { ensureFinalVideoExportReady } from "./finalVideoGate";
 import { extractTitleGeoPlaceTags } from "./worldGeoSlugs";
 import { fetchWikimediaTitlesForVideoGeo, wikimediaGeosearchEnabled } from "./wikimediaGeoSearch";
 import { buildEuropeanaBeatQueries, titleSuggestsEuropeana } from "./europeanaGeo";
@@ -18545,6 +18546,34 @@ export async function runVideoPipeline(
     }
     console.log(`[Pipeline] Stage 5 (assemble+music): ${((Date.now()-t4)/1000).toFixed(1)}s`);
 
+    const { path: exportReadyPath, validation: finalValidation } = await ensureFinalVideoExportReady({
+      filePath: finalVideoPath,
+      workDir,
+      videoId,
+      videoLength,
+      reassemble: async () => {
+        const validClips = orderedClips.filter(
+          (p) => p && fs.existsSync(p) && fs.statSync(p).size > 1_000
+        );
+        if (validClips.length === 0) return null;
+        return concatenateScenesWithMusic(
+          validClips,
+          workDir,
+          videoId,
+          totalDuration,
+          videoTitle
+        );
+      },
+    });
+    finalVideoPath = exportReadyPath;
+
+    if (!finalValidation.ok) {
+      throw pipelineError(
+        PIPELINE_ERROR.CONCAT,
+        `Final video not export-ready: ${finalValidation.reasons.slice(0, 3).join("; ")}`
+      );
+    }
+
     if (postRenderSpotCheckEnabled()) {
       const spot = await spotCheckFinalVideo(finalVideoPath);
       qualityReport.postRenderSpotCheck = {
@@ -18575,8 +18604,7 @@ export async function runVideoPipeline(
       });
     }
 
-    enforceQualityExportGate(videoId, qualityReport, videoLength);
-    healQualityReportForExport(qualityReport, videoLength);
+    enforceQualityExportGate(videoId, qualityReport, videoLength, finalValidation);
     qualityReport.generatedAt = new Date().toISOString();
 
     // ── Stage 6: Upload to S3 ─────────────────────────────────────────────────
