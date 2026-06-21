@@ -116,6 +116,7 @@ import {
 } from "./archiveClipEmbedding";
 import { applyBackgroundClipAuditScore } from "./clipBackgroundAuditor";
 import { buildDocumentaryShotQueries } from "./pipelineSelfHeal";
+import { pickInClipStartSec } from "./clipInClipOffset";
 import type { ArchiveMatchTier } from "./viewerVisualPlan";
 import {
   getAllMediaArchives,
@@ -1297,7 +1298,11 @@ async function materializeArchiveAsset(asset: MediaArchiveAsset, destPath: strin
   fs.writeFileSync(destPath, buf);
 }
 
-export type CuratedClipStyleContext = StillStyleContext;
+export type CuratedClipStyleContext = StillStyleContext & {
+  assetId?: number;
+  queryEmbedding?: number[] | null;
+  trimStartSec?: number;
+};
 
 /** Ken Burns motion — visible pan/zoom for full beat duration (avoids frozen stills). */
 async function convertImageToKenBurns(
@@ -1414,11 +1419,26 @@ async function trimVideoClip(
     throw new Error(`source video too short (${sourceDur.toFixed(2)}s)`);
   }
   const take = sourceDur > 0 ? Math.max(minDur, Math.min(duration, sourceDur)) : Math.max(minDur, duration);
-  let startSec = 0;
-  if (sourceDur > take + 0.35) {
-    const slack = sourceDur - take;
-    startSec = (clipIndex * 0.41 + 0.15) % slack;
+  let startSec = styleContext?.trimStartSec;
+  if (startSec == null || !Number.isFinite(startSec)) {
+    startSec =
+      styleContext?.assetId != null
+        ? pickInClipStartSec(
+            sourceDur,
+            take,
+            styleContext.assetId,
+            styleContext.queryEmbedding,
+            clipIndex
+          )
+        : (() => {
+            if (sourceDur > take + 0.35) {
+              const slack = sourceDur - take;
+              return (clipIndex * 0.41 + 0.15) % slack;
+            }
+            return 0;
+          })();
   }
+  startSec = Math.max(0, Math.min(Math.max(0, sourceDur - take), startSec));
 
   const frameVf = buildFitGrayGradedVideoVF();
   const preset = process.env.RAILWAY_ENVIRONMENT ? "ultrafast" : "veryfast";

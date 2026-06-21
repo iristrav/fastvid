@@ -28,6 +28,8 @@ export type ClipCriticalReviewInput = {
   highlightWords?: string[];
   videoTitle?: string;
   workDir: string;
+  /** Skip re-running CLIP when adopt already scored this beat. */
+  knownVisionScore10?: number;
 };
 
 export type ClipCriticalReviewResult = {
@@ -91,21 +93,26 @@ export async function reviewClipCritical(
   }
 
   if (sceneCriticalReviewEnabled()) {
-    const vision = await scoreAdoptedClipQuality(
-      input.clipPath,
-      input.beatText,
-      visualDesc,
-      input.videoTitle,
-      input.workDir,
-      input.sceneIndex,
-      input.beatIndex
-    );
-    if (vision) {
-      score = vision.score;
-      if (vision.wrongSubject) issues.push("visual shows wrong subject vs narration");
-      if (!vision.matchesNarration) issues.push("visual does not match voiceover");
-      if (vision.score < minClipQualityScore()) {
-        issues.push(`quality ${vision.score}/10 below target ${minClipQualityScore()}/10`);
+    const known = input.knownVisionScore10;
+    if (typeof known === "number" && known >= minClipQualityScore()) {
+      score = known;
+    } else {
+      const vision = await scoreAdoptedClipQuality(
+        input.clipPath,
+        input.beatText,
+        visualDesc,
+        input.videoTitle,
+        input.workDir,
+        input.sceneIndex,
+        input.beatIndex
+      );
+      if (vision) {
+        score = vision.score;
+        if (vision.wrongSubject) issues.push("visual shows wrong subject vs narration");
+        if (!vision.matchesNarration) issues.push("visual does not match voiceover");
+        if (vision.score < minClipQualityScore()) {
+          issues.push(`quality ${vision.score}/10 below target ${minClipQualityScore()}/10`);
+        }
       }
     }
   }
@@ -150,7 +157,8 @@ export async function reviewSceneCritical(
     visualDescription?: string;
   }>,
   workDir: string,
-  videoTitle?: string
+  videoTitle?: string,
+  adoptVisionByBeat?: Map<number, number>
 ): Promise<SceneCriticalReviewResult> {
   if (!sceneCriticalReviewEnabled()) {
     return {
@@ -180,6 +188,7 @@ export async function reviewSceneCritical(
         highlightWords: beat.keywords,
         videoTitle,
         workDir,
+        knownVisionScore10: adoptVisionByBeat?.get(beatIdx),
       })
     );
   }
