@@ -185,9 +185,9 @@ export async function healFinalVideoForExport(
   videoId: number,
   validation: FinalVideoValidation
 ): Promise<string | null> {
-  const needsTrim =
-    validation.reasons.some((r) => /black|nearly black|blackdetect/i.test(r)) ||
-    validation.spotOk === false;
+  const needsTrim = validation.reasons.some((r) =>
+    /appears fully black|trailing black/i.test(r)
+  );
   if (needsTrim) {
     const trimmed = await trimTrailingBlack(filePath, workDir, videoId);
     if (trimmed) {

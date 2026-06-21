@@ -107,9 +107,16 @@ function countFilterMatches(stderr: string, filterName: string): number {
   return (stderr.match(re) ?? []).length;
 }
 
-/** Intentional montage holds (5–8s/archive stills) — log only, never block export. */
+/** Archive montage / dark grading — log only. Only `appears fully black` blocks export. */
 export function isInformationalSpotWarning(warning: string): boolean {
-  return /^freezedetect:/i.test(warning) || /^silencedetect:/i.test(warning);
+  if (/appears fully black/i.test(warning)) return false;
+  return (
+    /^freezedetect:/i.test(warning) ||
+    /^silencedetect:/i.test(warning) ||
+    /^blackdetect:/i.test(warning) ||
+    /spot-check frames are dark/i.test(warning) ||
+    /spot-check frames are nearly black/i.test(warning)
+  );
 }
 
 function countFreezeStarts(stderr: string): number {
@@ -195,10 +202,13 @@ export async function spotCheckFinalVideo(filePath: string): Promise<PostRenderS
 
   if (framesChecked === 0) {
     warnings.push("Could not extract spot-check frames from final video");
-  }
-  if (blackFrameCount >= 2) {
+  } else if ((worstMeanLuma ?? 255) < 2) {
     warnings.push(
-      `${blackFrameCount}/${framesChecked} spot-check frames are nearly black (worst luma ${worstMeanLuma?.toFixed(0) ?? "?"})`
+      `Final video appears fully black (worst luma ${worstMeanLuma?.toFixed(0) ?? "?"})`
+    );
+  } else if (blackFrameCount >= 2) {
+    warnings.push(
+      `${blackFrameCount}/${framesChecked} spot-check frames are dark (worst luma ${worstMeanLuma?.toFixed(0) ?? "?"} — expected for dark archive footage)`
     );
   }
 
@@ -211,7 +221,9 @@ export async function spotCheckFinalVideo(filePath: string): Promise<PostRenderS
     freezeSegments = det.freezeSegments;
     silentSegments = det.silentSegments;
     if (blackSegments > 0) {
-      warnings.push(`blackdetect: ${blackSegments} black segment(s) in final video`);
+      warnings.push(
+        `blackdetect: ${blackSegments} dark/black segment(s) in final video (expected for dark archive scenes)`
+      );
     }
     if (freezeSegments > 0) {
       warnings.push(
