@@ -89,6 +89,13 @@ async function main() {
   console.log("[Worker] Object storage:", getStorageBackend());
   await runMigrations();
   await recoverAllStuckVideos();
+  const { warmUpLocalClipVision, clipPreloadEnabled } = await import("./localClipVision");
+  if (clipPreloadEnabled()) {
+    console.log("[Worker] Pre-loading CLIP model (ENABLE_CLIP_PRELOAD)...");
+    await warmUpLocalClipVision().catch((err) =>
+      console.warn("[Worker] CLIP warm-up failed (non-fatal):", (err as Error).message)
+    );
+  }
   const { autoArchiveGeoRetagOnStart } = await import("./sourcingPolicy");
   if (autoArchiveGeoRetagOnStart()) {
     try {
@@ -102,10 +109,6 @@ async function main() {
     }
   }
   startVideoQueueWorker();
-  const { warmUpLocalClipVision } = await import("./localClipVision");
-  warmUpLocalClipVision().catch((err) =>
-    console.warn("[Worker] CLIP warm-up failed (non-fatal):", (err as Error).message)
-  );
   const { scheduleClipEmbeddingBackfill } = await import("./archiveClipIndexBackfill");
   scheduleClipEmbeddingBackfill();
   const { startClipBackgroundAuditor } = await import("./clipBackgroundAuditor");

@@ -124,6 +124,7 @@ import {
   clipEmbeddingIndexEnabled,
   preRankCuratedCandidatesByClipEmbedding,
 } from "./archiveClipEmbedding";
+import { scheduleStockClipEmbedding } from "./stockClipEmbedding";
 import { resolveBeatVisionQueryEmbedding } from "./localClipVision";
 import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, openverseStillsEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, maxPipelineWallClockMin } from "./sourcingPolicy";
 import {
@@ -191,6 +192,7 @@ import {
   loadStoredTtsAlignment,
   mergeCharacterAlignments,
   saveStoredTtsAlignment,
+  sceneSplitBoundariesFromTts,
   ttsWordAlignmentEnabled,
   type TtsCharacterAlignment,
   wordsFromCharacterAlignment,
@@ -2636,9 +2638,16 @@ async function generateBulkSceneVoiceovers(
   const fullPath = await synthesizeFullNarrationMp3(scenes, workDir, voiceId, (part, total) => {
     console.log(`[Pipeline] Bulk voiceover TTS part ${part}/${total}`);
   }, sourceScript);
-  await trimVoiceoverSilence(fullPath);
 
-  const durations = await splitFullVoiceoverByScenes(fullPath, scenes, audioPaths);
+  const storedTts = loadStoredTtsAlignment(workDir);
+  const useTtsSplit = Boolean(storedTts?.words.length);
+  if (!useTtsSplit) {
+    await trimVoiceoverSilence(fullPath);
+  } else {
+    console.log("[Pipeline] TTS scene split: skipping full-file silence trim (word-timed boundaries)");
+  }
+
+  const durations = await splitFullVoiceoverByScenes(fullPath, scenes, audioPaths, workDir);
   onProgress?.(scenes.length, scenes.length);
   console.log(
     `[Pipeline] Bulk voiceover: ${scenes.length} scenes, split durations ${durations.map((d) => d.toFixed(1)).join("s, ")}s`
@@ -2653,11 +2662,42 @@ function bulkVoiceoverTimeoutMs(sceneCount: number): number {
 async function splitFullVoiceoverByScenes(
   fullAudioPath: string,
   scenes: Scene[],
-  outputPaths: string[]
+  outputPaths: string[],
+  workDir?: string
 ): Promise<number[]> {
   const totalDur = await probeVideoDurationSec(fullAudioPath);
   if (totalDur <= 0) {
     throw pipelineError(PIPELINE_ERROR.VOICEOVER_EMPTY, "Bulk voiceover file has no duration");
+  }
+
+  const storedTts = workDir ? loadStoredTtsAlignment(workDir) : null;
+  const ttsBounds =
+    storedTts?.words.length ? sceneSplitBoundariesFromTts(scenes, storedTts) : null;
+
+  if (ttsBounds?.length === scenes.length) {
+    const durations: number[] = [];
+    for (let i = 0; i < scenes.length; i++) {
+      const { startSec, endSec } = ttsBounds[i]!;
+      const segDur = Math.max(0.25, endSec - startSec);
+      const out = outputPaths[i];
+      await withTimeout(
+        exec(
+          `${FFMPEG_BIN} -y -ss ${startSec.toFixed(3)} -i "${fullAudioPath}" -t ${segDur.toFixed(3)} ` +
+          `-c:a libmp3lame -b:a 192k "${out}"`
+        ),
+        45_000,
+        `TTS split bulk VO scene ${i}`
+      );
+      if (i > 0) await trimVoiceoverLeadingSilence(out);
+      let dur = await probeVideoDurationSec(out);
+      if (dur <= 0) dur = segDur;
+      durations.push(dur);
+    }
+    console.log(
+      `[Pipeline] TTS scene split: ${scenes.length} scenes at word boundaries ` +
+      `(${durations.map((d) => d.toFixed(1)).join("s, ")}s)`
+    );
+    return durations;
   }
 
   const weights = scenes.map((s) => {
@@ -3375,6 +3415,7 @@ async function fetchPexelsClips(
 
         if (trimmed) {
           excludeVideoIds?.add(video.id);
+          scheduleStockClipEmbedding(outPath);
           return outPath;
         }
         return null;
@@ -3474,6 +3515,7 @@ async function fetchBrollClips(
           if (trimmed) {
             excludeVideoIds?.add(video.id);
             results.push(outPath);
+            scheduleStockClipEmbedding(outPath);
             console.log(`[Pipeline] Scene ${sceneIndex}: B-roll clip added: "${query}"`);
           }
         } catch (err) {
@@ -3627,6 +3669,7 @@ async function fetchPixabayClips(
           if (trimmed) {
             excludeVideoIds?.add(video.id);
             results.push(outPath);
+            scheduleStockClipEmbedding(outPath);
             console.log(`[Pipeline] Scene ${sceneIndex}: Pixabay clip added: "${currentQuery}"`);
           }
         } catch (err) {
@@ -17246,7 +17289,12 @@ async function composeSceneVideo(
   ) {
     const xfade = safeClips.length > 1 ? montageXfadeSec() : 0;
     composeBeatDurations = computeVoiceSyncedClipDurations(
-      montageBeats.map((b) => ({ text: b.text, holdSec: b.holdSec })),
+      montageBeats.map((b) => ({
+        text: b.text,
+        holdSec: b.holdSec,
+        voiceStartSec: b.voiceStartSec,
+        voiceEndSec: b.voiceEndSec,
+      })),
       outDurEarly,
       composeClipBeatIndices,
       xfade,
@@ -17389,7 +17437,12 @@ async function composeSceneVideo(
   const voiceSync =
     montageBeats?.length && composeClipBeatIndices?.length === safeClips.length
       ? {
-          beats: montageBeats.map((b) => ({ text: b.text, holdSec: b.holdSec })),
+          beats: montageBeats.map((b) => ({
+            text: b.text,
+            holdSec: b.holdSec,
+            voiceStartSec: b.voiceStartSec,
+            voiceEndSec: b.voiceEndSec,
+          })),
           clipBeatIndices: composeClipBeatIndices,
           voiceDur: outDurEarly,
         }

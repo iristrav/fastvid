@@ -5,6 +5,7 @@ import fs from "fs";
 import path from "path";
 import { curatedClipPathAssetId } from "./curatedMediaSourcing";
 import { loadStoredFrameEmbeddings } from "./archiveClipEmbedding";
+import { loadStoredStockFrameEmbeddingsFromPath } from "./stockClipEmbedding";
 import {
   LOCAL_FRAME_FRACTIONS,
   extractFrameAtFraction,
@@ -292,7 +293,9 @@ async function scoreClipAcrossFrames(
 ): Promise<{ pass: boolean; worstScore: number | null; framesScored: number }> {
   const assetId = curatedClipPathAssetId(clipPath);
   const storedEmbeddings =
-    assetId != null ? loadStoredFrameEmbeddings(assetId) : undefined;
+    assetId != null
+      ? loadStoredFrameEmbeddings(assetId)
+      : loadStoredStockFrameEmbeddingsFromPath(clipPath);
   const queryEmbResolved =
     queryEmb ?? (await resolveBeatQueryEmbedding(beatText, visualDescription, videoTitle));
 
@@ -577,7 +580,9 @@ export async function scoreAdoptedClipQuality(
 
   const assetId = curatedClipPathAssetId(clipPath);
   const storedEmbeddings =
-    assetId != null ? loadStoredFrameEmbeddings(assetId) : undefined;
+    assetId != null
+      ? loadStoredFrameEmbeddings(assetId)
+      : loadStoredStockFrameEmbeddingsFromPath(clipPath);
 
   const result = await scoreFramePathsAgainstBeat(
     framePaths,

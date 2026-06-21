@@ -318,6 +318,43 @@ export async function fetchElevenLabsWithTimestamps(
   }
 }
 
+export type SceneSplitBoundary = { startSec: number; endSec: number };
+
+/** Scene audio boundaries from TTS word spans (global timeline). */
+export function sceneSplitBoundariesFromTts(
+  scenes: Array<{ text: string }>,
+  stored: StoredTtsAlignment
+): SceneSplitBoundary[] | null {
+  const cursor = { index: 0 };
+  const bounds: SceneSplitBoundary[] = [];
+  for (const scene of scenes) {
+    const { words } = sliceWordsForSceneText(stored.words, scene.text, cursor);
+    if (!words.length) return null;
+    const win = sceneVoiceWindowFromWords(words);
+    bounds.push({ startSec: win.startSec, endSec: win.endSec });
+  }
+  if (bounds.length > 0) {
+    const last = bounds[bounds.length - 1]!;
+    if (stored.totalDurationSec > last.endSec + 0.05) {
+      last.endSec = stored.totalDurationSec;
+    }
+  }
+  return bounds;
+}
+
+/** Shift beat voice windows to scene-local seconds (after per-scene audio split). */
+export function normalizeTtsBeatsToSceneLocal(
+  beats: TtsPlannedBeat[],
+  sceneStartSec: number
+): TtsPlannedBeat[] {
+  if (sceneStartSec <= 0.001) return beats;
+  return beats.map((b) => ({
+    ...b,
+    voiceStartSec: Math.max(0, b.voiceStartSec - sceneStartSec),
+    voiceEndSec: Math.max(0, b.voiceEndSec - sceneStartSec),
+  }));
+}
+
 /** Build per-scene TTS beat plans from stored global word alignment. */
 export function buildTtsSceneBeatMap(
   scenes: Array<{ index: number; text: string; duration: number }>,
@@ -329,10 +366,16 @@ export function buildTtsSceneBeatMap(
   for (const scene of scenes) {
     const { words } = sliceWordsForSceneText(stored.words, scene.text, cursor);
     if (!words.length) continue;
+    const sceneWin = sceneVoiceWindowFromWords(words);
     const planned = planBeatsFromTtsWords(words, {
       maxBeats: maxBeatsForScene(Math.max(1, scene.duration - 0.35)),
     });
-    if (planned.length) out.set(scene.index, planned);
+    if (planned.length) {
+      out.set(
+        scene.index,
+        normalizeTtsBeatsToSceneLocal(planned, sceneWin.startSec)
+      );
+    }
   }
   return out;
 }

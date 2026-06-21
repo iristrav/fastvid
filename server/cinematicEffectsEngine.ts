@@ -527,7 +527,13 @@ export function computeMontageBeatStarts(durations: number[], xfadeSec = 0): num
   return starts;
 }
 
-export type BeatYearInput = { text: string; holdSec: number };
+export type BeatYearInput = {
+  text: string;
+  holdSec: number;
+  /** Scene-local TTS start (seconds) — montage cuts align here when set. */
+  voiceStartSec?: number;
+  voiceEndSec?: number;
+};
 
 export type BeatLabelInput = BeatYearInput & {
   powerWord?: string;
@@ -536,12 +542,31 @@ export type BeatLabelInput = BeatYearInput & {
 
 export type VoiceBeatWindow = { start: number; dur: number };
 
-/** Word-weighted voice span per beat — matches TTS pacing better than montage clip lengths. */
+function beatsHaveTtsWindows(beats: BeatYearInput[]): boolean {
+  return (
+    beats.length > 0 &&
+    beats.every((b) => b.voiceStartSec != null && b.voiceEndSec != null)
+  );
+}
+
+/** Word-weighted or TTS voice span per beat — TTS uses inter-beat cut points. */
 export function computeVoiceBeatWindows(
   beats: BeatYearInput[],
   sceneDuration: number,
   sceneStartSec = 0
 ): VoiceBeatWindow[] {
+  if (beatsHaveTtsWindows(beats)) {
+    return beats.map((b, i) => {
+      const start = b.voiceStartSec!;
+      const nextStart =
+        i < beats.length - 1
+          ? beats[i + 1]!.voiceStartSec!
+          : Math.max(b.voiceEndSec!, sceneDuration);
+      const dur = Math.max(0.35, nextStart - start);
+      return { start: sceneStartSec + start, dur };
+    });
+  }
+
   const wordCounts = beats.map((b) => {
     const n = b.text.replace(/\[visual:[^\]]+\]/gi, "").split(/\s+/).filter(Boolean).length;
     return Math.max(1, n);

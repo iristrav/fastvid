@@ -641,8 +641,13 @@ export function getLocalVisionStatus(): {
 }
 
 /** Pre-load CLIP pipelines on worker start so first clip adopt is not blocked on model download. */
+export function clipPreloadEnabled(): boolean {
+  if (process.env.ENABLE_CLIP_PRELOAD === "false") return false;
+  return localVisionEnabled();
+}
+
 export async function warmUpLocalClipVision(): Promise<void> {
-  if (!localVisionEnabled()) return;
+  if (!clipPreloadEnabled()) return;
   const [image, text] = await Promise.all([loadImagePipeline(), loadTextPipeline()]);
   if (image && text) {
     console.log("[LocalVision] CLIP model warm-up complete");

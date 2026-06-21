@@ -145,6 +145,18 @@ describe("cinematicEffectsEngine", () => {
     expect(windows[1]!.start).toBeCloseTo(windows[0]!.dur, 1);
   });
 
+  it("uses TTS voiceStartSec windows when present", () => {
+    const beats = [
+      { text: "First.", holdSec: 3, voiceStartSec: 0, voiceEndSec: 2.5 },
+      { text: "Second longer.", holdSec: 4, voiceStartSec: 2.5, voiceEndSec: 6.0 },
+    ];
+    const windows = computeVoiceBeatWindows(beats, 6.5);
+    expect(windows[0]!.start).toBe(0);
+    expect(windows[0]!.dur).toBeCloseTo(2.5, 1);
+    expect(windows[1]!.start).toBeCloseTo(2.5, 1);
+    expect(windows[1]!.dur).toBeCloseTo(4.0, 1);
+  });
+
   it("computes voice-synced clip durations with xfade overlap", () => {
     const beats = [
       { text: "Eerste zin.", holdSec: 3 },
