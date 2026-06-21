@@ -119,7 +119,7 @@ import {
   scriptGuidedClipsEnabled,
 } from "./scriptGuidedClipFinder";
 import { clipPassesVisionGate, clipVisionGateEnabled, effectiveMinClipQualityScore, evaluateClipVisionGate, minClipQualityScore, targetClipVisionScore, type VisionGateResult } from "./visualQualityGate";
-import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, openverseStillsEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength } from "./sourcingPolicy";
+import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, openverseStillsEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, maxPipelineWallClockMin } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -1748,7 +1748,7 @@ function applyAiFallbackToProfile(
 
 function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProfile {
   const videoLength = normalizeVideoLength(videoLengthRaw);
-  const railwayParallel = IS_RAILWAY ? (isShortVideoLength(videoLength) ? 2 : 2) : 2;
+  const railwayParallel = IS_RAILWAY ? (isShortVideoLength(videoLength) ? 3 : 2) : 2;
   const maxEntityYoutube = maxEntityYoutubeFetchesPerVideo(minimizeStockFootageEnabled());
   let profile: PipelinePerfProfile;
   if (isShortVideoLength(videoLength)) {
@@ -9007,7 +9007,7 @@ async function composePlainMontageScene(
     return fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1000;
   };
 
-  if (IS_RAILWAY && curatedArchiveOnlyVisuals()) {
+  if (IS_RAILWAY) {
     try {
       const montageOnlyPath = path.join(workDir, `scene_${sceneIndex}_seq_montage.mp4`);
       await renderSequentialArchiveMontage(
@@ -11126,6 +11126,109 @@ async function recoverSceneClipsIfEmpty(
     if (clips.length >= n) break;
   }
   return { clips, beatDurations };
+}
+
+/** Re-try up to two weak archive beats before compose when time budget allows. */
+async function polishWeakAdoptBeatsBeforeCompose(
+  scenes: Scene[],
+  sceneVisualResults: SceneVisualsResult[],
+  workDir: string,
+  topicContext: string | undefined,
+  dedup: VisualDedupState,
+  pipelineStartedMs: number,
+  videoLength: string
+): Promise<void> {
+  if (!isFastShortVideoLength(videoLength) || !curatedArchiveOnlyVisuals()) return;
+  const polishBudgetMs = maxPipelineWallClockMin(videoLength) * 60_000 * 0.82;
+  if (Date.now() - pipelineStartedMs > polishBudgetMs) return;
+
+  const target = targetClipVisionScore();
+  const weak = dedup.clipAdoptAudit
+    .filter(
+      (e) =>
+        (e.source === "archive" || e.source === "archive_fetch") &&
+        typeof e.visionScore10 === "number" &&
+        e.visionScore10 < target
+    )
+    .sort((a, b) => (a.visionScore10 ?? 0) - (b.visionScore10 ?? 0))
+    .slice(0, 2);
+
+  for (const entry of weak) {
+    if (Date.now() - pipelineStartedMs > polishBudgetMs) break;
+    const sceneIdx = scenes.findIndex((s) => s.index === entry.sceneIndex);
+    if (sceneIdx < 0) continue;
+    const scene = scenes[sceneIdx]!;
+    const vr = sceneVisualResults[sceneIdx];
+    if (!vr?.beats?.length) continue;
+    const beat = vr.beats.find((b) => b.index === entry.beatIndex);
+    if (!beat) continue;
+    const clipIdx = vr.clipBeatIndices?.findIndex((bi) => bi === entry.beatIndex) ?? -1;
+    if (clipIdx < 0 || !vr.clips[clipIdx]) continue;
+
+    const upgraded = await fetchCuratedArchiveBeatClip(
+      beat,
+      scene,
+      workDir,
+      scene.index,
+      beat.holdSec,
+      dedup.usedCuratedAssetIds,
+      dedup.usedCuratedStorageUrls,
+      topicContext,
+      curatedInterviewBudget(dedup),
+      curatedImageBudget(dedup),
+      undefined,
+      {
+        relaxed: true,
+        varietySeed: dedup.varietySeed + entry.beatIndex * 17 + scene.index * 3,
+        crossVideoExcludeIds: dedup.crossVideoExcludeIds,
+        assetsCache: dedup.archiveAssetsCache,
+        segmentLock: dedup.segmentGeoLock,
+        videoLength: dedup.videoLength,
+      }
+    );
+    if (!upgraded || isPipelineFallbackClip(upgraded)) continue;
+    const vision = await beatClipPassesVisionGate(
+      upgraded,
+      beat,
+      scene,
+      workDir,
+      topicContext,
+      dedup,
+      undefined,
+      "polish"
+    );
+    const newScore = vision.worstScore10 ?? 0;
+    if (!vision.pass || newScore <= (entry.visionScore10 ?? 0)) {
+      try {
+        if (fs.existsSync(upgraded)) fs.unlinkSync(upgraded);
+      } catch {
+        /* ignore */
+      }
+      continue;
+    }
+    const oldClip = vr.clips[clipIdx]!;
+    vr.clips[clipIdx] = upgraded;
+    recordClipAdopt(
+      dedup.clipAdoptAudit,
+      scene.index,
+      beat.index,
+      beat.text,
+      upgraded,
+      "archive",
+      entry.assetTitle,
+      dedup.segmentGeoLock,
+      curatedClipPathAssetId(upgraded) ?? undefined,
+      newScore
+    );
+    console.log(
+      `[Pipeline] Scene ${scene.index} beat ${beat.index}: polished vision ${entry.visionScore10}→${newScore}/10`
+    );
+    try {
+      if (oldClip !== upgraded && fs.existsSync(oldClip)) fs.unlinkSync(oldClip);
+    } catch {
+      /* ignore */
+    }
+  }
 }
 
 /** Last-resort real stock video — broad queries, non-strict mode. No still photos. */
@@ -18157,10 +18260,10 @@ export async function runVideoPipeline(
         percent: 20 + Math.round((beatsDone / beatTotal) * 25),
       });
     }, 10_000);
-    let sceneVisualResults: SceneVisualsResult[];
+    let sceneVisualResults: SceneVisualsResult[] = new Array(scenes.length);
     try {
-    sceneVisualResults = await withTimeout(
-      Promise.all(scenes.map((scene, sceneIdx) => visualLimit(async () => {
+      await withTimeout(
+        Promise.all(scenes.map((scene, sceneIdx) => visualLimit(async () => {
         activeSceneIdx = sceneIdx;
         let result: SceneVisualsResult;
         try {
@@ -18194,6 +18297,7 @@ export async function runVideoPipeline(
           result = await recoverSceneClipsIfEmpty(scene, workDir, topicContext, visualDedup);
           if (result.clips.length === 0) throw sceneErr;
         }
+        sceneVisualResults[sceneIdx] = result;
         completedVisuals++;
         onProgress?.({
           stage: curatedArchiveOnlyVisuals()
@@ -18206,6 +18310,12 @@ export async function runVideoPipeline(
       visualStageTimeoutMs(videoLength, perf),
       `Visual generation stage (≤${Math.round(visualStageTimeoutMs(videoLength, perf) / 60_000)}min cap)`
     );
+    } catch (visualStageErr) {
+      console.warn(
+        `[Pipeline] Visual stage cap hit (${completedVisuals}/${scenes.length} scenes done) — self-healing:`,
+        (visualStageErr as Error).message
+      );
+      visualDedup.lock = Promise.resolve();
     } finally {
       clearInterval(visualHeartbeat);
     }
@@ -18269,6 +18379,16 @@ export async function runVideoPipeline(
         sceneVisualResults[si] = { clips, beatDurations };
       }
     }
+
+    await polishWeakAdoptBeatsBeforeCompose(
+      scenes,
+      sceneVisualResults,
+      workDir,
+      topicContext,
+      visualDedup,
+      t0,
+      videoLength
+    );
 
     // ── Stage 4: Compose scenes — clips, voice, year badges (final output) ───
     onProgress?.({ stage: STAGE_LABELS.assembly, percent: 47 });

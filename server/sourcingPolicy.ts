@@ -183,8 +183,8 @@ export function visualStageWallClockMin(videoLength?: string | null): number {
   const total = maxPipelineWallClockMin(videoLength);
   const mins = targetVideoDurationMinutes(videoLength);
   if (mins <= 1) {
-    // Fast path targets ~6–8 min visuals; 12 min cap avoids timeout while beats finish.
-    return 12;
+    // Fast path: ~8 min visuals + ~2 min compose/export within 10–12 min total budget.
+    return 10;
   }
   return Math.max(8, Math.min(total - 6, Math.round(total * 0.88)));
 }
