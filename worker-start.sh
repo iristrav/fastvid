@@ -1,6 +1,9 @@
 #!/bin/sh
 # Video queue worker — same FFmpeg bootstrap as start.sh, runs dist/worker.js.
-# Railway: set Start Command to `sh worker-start.sh` on the worker service.
+# Railway worker service:
+#   - Start Command: sh worker-start.sh  (or use railway.worker.json)
+#   - Config-as-code path: railway.worker.json  (no HTTP healthcheck — worker has no web server)
+# Web/API service keeps railway.json with healthcheckPath /api/health.
 
 echo "[worker-start.sh] Setting up FFmpeg..."
 
