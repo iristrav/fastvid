@@ -168,6 +168,29 @@ export function isFastShortVideoLength(videoLength?: string | null): boolean {
   return pipelineWallClockLimitEnabled() && targetVideoDurationMinutes(videoLength) <= 1;
 }
 
+/** Weak-beat archive polish before compose (skipped on fast 1-min path by default). */
+export function polishBeforeComposeEnabled(
+  videoLength?: string | null,
+  fastMode = false
+): boolean {
+  if (process.env.ENABLE_POLISH_BEFORE_COMPOSE === "false") return false;
+  if (fastMode && isFastShortVideoLength(videoLength)) return false;
+  return true;
+}
+
+/** Parallel scene compose jobs (1–4). Railway default: 2 for ≤1 min, 1 for longer. */
+export function composeParallelismForVideo(videoLength?: string | null, isRailway = false): number {
+  const raw = process.env.COMPOSE_PARALLELISM?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 1 && n <= 4) return n;
+  }
+  if (isRailway) {
+    return isFastShortVideoLength(videoLength) ? 2 : 1;
+  }
+  return 2;
+}
+
 /** Max archive/Wikimedia candidates to try per beat when wall-clock limit is on. */
 export function maxVisualCandidatesPerBeatTry(videoLength?: string | null): number {
   if (!pipelineWallClockLimitEnabled()) return 12;

@@ -80,6 +80,36 @@ export type StockClipPreRankScore = {
   definiteFail: boolean;
 };
 
+/** Index raw stock download if missing (enables in-clip offset + pre-rank). */
+export async function ensureStockClipIndexed(key: string, localVideoPath: string): Promise<boolean> {
+  if (!stockClipEmbeddingEnabled() || !fs.existsSync(localVideoPath)) return false;
+  if (loadStoredStockFrameEmbeddings(key).length > 0) return true;
+  return indexStockClipEmbedding(key, localVideoPath);
+}
+
+/** Re-order Pexels/Pixabay search hits when cached embeddings match the beat query. */
+export function rankStockVideoIdsByEmbedding<
+  T extends { id: number; duration?: number },
+>(
+  videos: T[],
+  provider: "pexels" | "pixabay",
+  queryEmbedding: number[] | null | undefined,
+  minScore10 = 7
+): T[] {
+  if (!stockClipEmbeddingEnabled() || !queryEmbedding?.length || videos.length < 2) {
+    return videos;
+  }
+  const scored = videos.map((v) => ({
+    v,
+    pr: scoreStockClipPreRank(`${provider}:${v.id}`, queryEmbedding, minScore10),
+  }));
+  const withEmb = scored.filter((s) => s.pr.hasEmbeddings && !s.pr.definiteFail);
+  const withoutEmb = scored.filter((s) => !s.pr.hasEmbeddings);
+  const fails = scored.filter((s) => s.pr.hasEmbeddings && s.pr.definiteFail);
+  withEmb.sort((a, b) => b.pr.bestScore10 - a.pr.bestScore10);
+  return [...withEmb, ...withoutEmb, ...fails].map((s) => s.v);
+}
+
 export function scoreStockClipPreRank(
   key: string,
   queryEmbedding: number[],

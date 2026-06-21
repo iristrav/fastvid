@@ -78,6 +78,7 @@ import {
   maxVisualCandidatesPerBeatTry,
   archiveTagsPrimaryMatching,
   pipelineWallClockLimitEnabled,
+  isFastShortVideoLength,
 } from "./sourcingPolicy";
 import {
   assetHasNlMarkers,
@@ -1631,6 +1632,8 @@ export async function searchCuratedCandidatesForBeat(
     /** Geo welcome / opening beat — archive images are not allowed. */
     videosOnly?: boolean;
     segmentLock?: BeatGeoRegion | null;
+    fastMode?: boolean;
+    videoLength?: string | null;
   }
 ): Promise<CuratedCandidatePick[]> {
   const varietySeed = options?.varietySeed ?? 0;
@@ -1721,7 +1724,13 @@ export async function searchCuratedCandidatesForBeat(
       })
     );
     ranked.sort((a, b) => b.score - a.score);
-    ranked = await applySemanticAiRerank(ranked, semanticProfile, videoTitle);
+    const skipSemanticRerank =
+      process.env.ENABLE_SEMANTIC_AI_RERANK === "false" ||
+      options?.fastMode === true ||
+      isFastShortVideoLength(options?.videoLength);
+    if (!skipSemanticRerank) {
+      ranked = await applySemanticAiRerank(ranked, semanticProfile, videoTitle);
+    }
 
     if (archiveTagsPrimaryMatching() && allArchiveMatchTags.length > 0) {
       const tagMatched = ranked.filter((p) => countVisualTagHits(p.asset, allArchiveMatchTags) > 0);
@@ -1956,6 +1965,8 @@ export async function fetchCuratedArchiveBeatClip(
       assetsCache: options?.assetsCache,
       segmentLock: options?.segmentLock,
       videosOnly: options?.videosOnly,
+      videoLength: options?.videoLength,
+      fastMode: isFastShortVideoLength(options?.videoLength),
     }
   );
   if (!candidates.length) {

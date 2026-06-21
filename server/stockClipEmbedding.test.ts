@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { stockClipKeyFromPath, scoreStockClipPreRank } from "./stockClipEmbedding";
+import { stockClipKeyFromPath, scoreStockClipPreRank, rankStockVideoIdsByEmbedding } from "./stockClipEmbedding";
 
 describe("stockClipEmbedding", () => {
   it("stockClipKeyFromPath parses Pexels and Pixabay filenames", () => {
@@ -11,5 +11,10 @@ describe("stockClipEmbedding", () => {
   it("scoreStockClipPreRank returns no embeddings for unknown stock", () => {
     const pr = scoreStockClipPreRank("pexels:999999999", [0.1, 0.2, 0.3], 8);
     expect(pr.hasEmbeddings).toBe(false);
+  });
+
+  it("rankStockVideoIdsByEmbedding preserves order without query embedding", () => {
+    const videos = [{ id: 1 }, { id: 2 }, { id: 3 }];
+    expect(rankStockVideoIdsByEmbedding(videos, "pexels", null)).toEqual(videos);
   });
 });

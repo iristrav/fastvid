@@ -126,9 +126,10 @@ import {
   clipEmbeddingIndexEnabled,
   preRankCuratedCandidatesByClipEmbedding,
 } from "./archiveClipEmbedding";
-import { scheduleStockClipEmbedding } from "./stockClipEmbedding";
+import { scheduleStockClipEmbedding, ensureStockClipIndexed, rankStockVideoIdsByEmbedding, stockClipEmbeddingEnabled } from "./stockClipEmbedding";
+import { pickStockInClipStartSec, stockInClipOffsetEnabled } from "./clipInClipOffset";
 import { resolveBeatVisionQueryEmbedding } from "./localClipVision";
-import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, openverseStillsEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, maxPipelineWallClockMin } from "./sourcingPolicy";
+import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, openverseStillsEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, maxPipelineWallClockMin, composeParallelismForVideo, polishBeforeComposeEnabled } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -2073,10 +2074,7 @@ async function resolveBeatClipFast(
   return null;
 }
 
-function composeParallelism(videoLength?: string): number {
-  if (IS_RAILWAY && isShortVideoLength(videoLength)) return 1;
-  return IS_RAILWAY ? 1 : 2;
-}
+type StockBeatCtx = { beatText?: string; queryEmbedding?: number[] | null };
 
 /** Stable stock trim — no animated Ken Burns pan (avoids jitter on real footage). */
 async function trimDownloadedStockClip(
@@ -2085,14 +2083,25 @@ async function trimDownloadedStockClip(
   clipDuration: number,
   sourceDuration: number,
   label: string,
-  startOffsetSec = 0
+  startOffsetSec = 0,
+  stockTrim?: { stockKey?: string; queryEmbedding?: number[] | null; clipIndex?: number }
 ): Promise<boolean> {
+  let ss = startOffsetSec;
+  if (stockTrim?.stockKey && stockInClipOffsetEnabled()) {
+    ss = pickStockInClipStartSec(
+      sourceDuration,
+      clipDuration,
+      stockTrim.stockKey,
+      stockTrim.queryEmbedding,
+      stockTrim.clipIndex ?? 0
+    );
+  }
   const trimDur = Math.min(clipDuration, Math.max(2.5, sourceDuration - 0.05));
-  const ss = Math.max(0, Math.min(startOffsetSec, Math.max(0, sourceDuration - trimDur - 0.1))).toFixed(2);
+  const ssStr = Math.max(0, Math.min(ss, Math.max(0, sourceDuration - trimDur - 0.1))).toFixed(2);
   try {
     await withTimeout(
       exec(
-        `${FFMPEG_BIN} -y -ss ${ss} -i "${rawPath}" ` +
+        `${FFMPEG_BIN} -y -ss ${ssStr} -i "${rawPath}" ` +
         `-t ${trimDur.toFixed(3)} ` +
         `-vf "${STANDARD_VF}" ` +
         `-c:v libx264 -preset veryfast -crf 18 -an -pix_fmt yuv420p "${outPath}"`
@@ -3250,7 +3259,8 @@ async function fetchPexelsClips(
   fileTag = "pexels",
   excludeVideoIds?: Set<number>,
   candidateOffset = 0,
-  downloadRetries = 3
+  downloadRetries = 3,
+  stockBeatCtx?: StockBeatCtx
 ): Promise<string[]> {
   if (!PEXELS_API_KEY) return [];
 
@@ -3271,6 +3281,12 @@ async function fetchPexelsClips(
 
   for (const currentQuery of uniqueQueries) {
     if (results.length >= count) break; // Stop if we have enough clips
+
+    let queryEmbForStock = stockBeatCtx?.queryEmbedding ?? null;
+    if (stockClipEmbeddingEnabled() && !queryEmbForStock?.length) {
+      const beatText = stockBeatCtx?.beatText?.trim() || currentQuery;
+      queryEmbForStock = await resolveBeatVisionQueryEmbedding({ beatText });
+    }
 
     try {
       // HD quality: large size (min 1280px), landscape orientation, fetch 15 candidates
@@ -3302,8 +3318,9 @@ async function fetchPexelsClips(
         const bMax = Math.max(...b.video_files.map(f => f.width));
         return bMax - aMax;
       });
-    const offset = filtered.length > 0 ? candidateOffset % filtered.length : 0;
-    const candidates = [...filtered.slice(offset), ...filtered.slice(0, offset)].slice(0, count * 3);
+    const rankedFiltered = rankStockVideoIdsByEmbedding(filtered, "pexels", queryEmbForStock);
+    const offset = rankedFiltered.length > 0 ? candidateOffset % rankedFiltered.length : 0;
+    const candidates = [...rankedFiltered.slice(offset), ...rankedFiltered.slice(0, offset)].slice(0, count * 3);
 
     const needed = count - results.length;
     // Download up to `needed` clips in parallel
@@ -3375,6 +3392,11 @@ async function fetchPexelsClips(
 
         fs.writeFileSync(rawPath, buffer);
 
+        const stockKey = `pexels:${video.id}`;
+        if (stockClipEmbeddingEnabled()) {
+          await ensureStockClipIndexed(stockKey, rawPath);
+        }
+
         // Validate downloaded file with ffprobe before processing
         // Use system ffprobe which supports -show_entries (ffmpeg-static does not have drawtext/libfreetype)
         try {
@@ -3417,7 +3439,8 @@ async function fetchPexelsClips(
           clipDuration,
           video.duration,
           `Trim Pexels clip ${idx} scene ${sceneIndex}`,
-          startSec
+          startSec,
+          { stockKey, queryEmbedding: queryEmbForStock, clipIndex: idx }
         );
 
         try { fs.unlinkSync(rawPath); } catch { /* ignore */ }
@@ -3553,7 +3576,8 @@ async function fetchPixabayClips(
   suffix: string = "pixabay",
   strictQueries = false,
   excludeVideoIds?: Set<number>,
-  candidateOffset = 0
+  candidateOffset = 0,
+  stockBeatCtx?: StockBeatCtx
 ): Promise<string[]> {
   if (!PIXABAY_API_KEY) return [];
   const results: string[] = [];
@@ -3571,6 +3595,13 @@ async function fetchPixabayClips(
 
   for (const currentQuery of uniqueQueries) {
     if (results.length >= count) break;
+
+    let queryEmbForStock = stockBeatCtx?.queryEmbedding ?? null;
+    if (stockClipEmbeddingEnabled() && !queryEmbForStock?.length) {
+      const beatText = stockBeatCtx?.beatText?.trim() || currentQuery;
+      queryEmbForStock = await resolveBeatVisionQueryEmbedding({ beatText });
+    }
+
     try {
       // Pixabay Video API: https://pixabay.com/api/docs/#api_videos
       // video_type=film gives real footage (not animation); min_width=1280 for HD
@@ -3613,8 +3644,9 @@ async function fetchPixabayClips(
           const bW = b.videos.large?.width ?? b.videos.medium?.width ?? 0;
           return bW - aW;
         });
-      const offset = filtered.length > 0 ? candidateOffset % filtered.length : 0;
-      const candidates = [...filtered.slice(offset), ...filtered.slice(0, offset)].slice(0, count * 2);
+      const rankedFiltered = rankStockVideoIdsByEmbedding(filtered, "pixabay", queryEmbForStock);
+      const offset = rankedFiltered.length > 0 ? candidateOffset % rankedFiltered.length : 0;
+      const candidates = [...rankedFiltered.slice(offset), ...rankedFiltered.slice(0, offset)].slice(0, count * 2);
 
       for (let idx = 0; idx < candidates.length && results.length < count; idx++) {
         const video = candidates[idx];
@@ -3652,6 +3684,11 @@ async function fetchPixabayClips(
 
           fs.writeFileSync(rawPath, buffer);
 
+          const stockKey = `pixabay:${video.id}`;
+          if (stockClipEmbeddingEnabled()) {
+            await ensureStockClipIndexed(stockKey, rawPath);
+          }
+
           // Validate with ffprobe
           try {
             const probeResult = await withTimeout(
@@ -3670,7 +3707,8 @@ async function fetchPixabayClips(
             clipDuration,
             video.duration,
             `Trim Pixabay clip ${idx} scene ${sceneIndex}`,
-            startSec
+            startSec,
+            { stockKey, queryEmbedding: queryEmbForStock, clipIndex: idx }
           );
 
           try { fs.unlinkSync(rawPath); } catch { /**/ }
@@ -11123,10 +11161,13 @@ async function fetchUniqueStockForBeatInner(
   const pexFetch = (query: string, t: string, off: number) => () =>
     fetchPexelsClips(
       query, clipFetchDur, workDir, sceneIndex, perf.fastStockMode ? 2 : 3, [query], true, t,
-      dedup.usedPexelsIds, off, dedup.perf.pexelsDownloadRetries
+      dedup.usedPexelsIds, off, dedup.perf.pexelsDownloadRetries,
+      { beatText: beat.text }
     );
   const pixFetch = (query: string, t: string, off: number) => () =>
-    fetchPixabayClips(query, clipFetchDur, workDir, sceneIndex, 2, t, true, dedup.usedPixabayIds, off);
+    fetchPixabayClips(query, clipFetchDur, workDir, sceneIndex, 2, t, true, dedup.usedPixabayIds, off, {
+      beatText: beat.text,
+    });
 
   for (let qi = 0; qi < stockQueries.length; qi++) {
     const q = stockQueries[qi];
@@ -11383,6 +11424,7 @@ async function polishWeakAdoptBeatsBeforeCompose(
   videoLength: string
 ): Promise<void> {
   if (!curatedArchiveOnlyVisuals()) return;
+  if (!polishBeforeComposeEnabled(videoLength, dedup.perf?.fastStockMode)) return;
   const polishBudgetMs = maxPipelineWallClockMin(videoLength) * 60_000 * 0.85;
   if (Date.now() - pipelineStartedMs > polishBudgetMs) return;
 
@@ -14271,6 +14313,8 @@ async function adoptArchiveBeatClip(
         semanticProfile,
         videosOnly,
         segmentLock: dedup.segmentGeoLock,
+        fastMode: dedup.perf?.fastStockMode,
+        videoLength: dedup.videoLength,
       }
     ));
     if (
@@ -15487,6 +15531,8 @@ async function fillBeatVisual(
     semanticProfile,
     segmentLock: dedup.segmentGeoLock,
     videosOnly: openingVideosOnly,
+    fastMode: dedup.perf?.fastStockMode,
+    videoLength: dedup.videoLength,
   };
 
   const archivePrefetch = curatedArchiveOnlyVisuals()
@@ -18755,7 +18801,7 @@ export async function runVideoPipeline(
     const t3 = Date.now();
 
     // Railway: one FFmpeg compose at a time (avoids "Resource temporarily unavailable" decoder errors)
-    const composeLimit = pLimit(composeParallelism(videoLength));
+    const composeLimit = pLimit(composeParallelismForVideo(videoLength, IS_RAILWAY));
     let completedCompose = 0;
     const composedUsedClips: string[][] = scenes.map(() => []);
     let timelineSec = 0;
@@ -19225,7 +19271,7 @@ export async function rerenderFromScenes(
 
     // ── Step 4: Compose all scenes ──────────────────────────────────────────
     onProgress?.("Composing scenes...", 45);
-    const composeLimit = pLimit(composeParallelism(videoLength));
+    const composeLimit = pLimit(composeParallelismForVideo(videoLength, IS_RAILWAY));
     let completedCompose = 0;
     let rerenderTimelineSec = 0;
     const rerenderSceneStartSecs = internalScenes.map((s) => {
