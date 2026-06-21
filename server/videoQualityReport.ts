@@ -50,6 +50,12 @@ export type VideoQualityReport = {
     warnings: string[];
   };
   adoptAuditSummary?: AdoptAuditSummary;
+  voiceMontageSync?: {
+    ok: boolean;
+    sceneCount: number;
+    failedScenes: number[];
+    warnings: string[];
+  };
   score: number;
 };
 

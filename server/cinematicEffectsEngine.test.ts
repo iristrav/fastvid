@@ -11,6 +11,7 @@ import {
   computeMontageBeatStarts,
   computeVoiceBeatWindows,
   computeVoiceSyncedClipDurations,
+  computeTtsHardCutMontagePlan,
   pickVoiceBackfillBeatIndex,
   finalizeVoiceSyncedMontageDurations,
   planBeatAlignedYears,
@@ -155,6 +156,20 @@ describe("cinematicEffectsEngine", () => {
     expect(windows[0]!.dur).toBeCloseTo(2.5, 1);
     expect(windows[1]!.start).toBeCloseTo(2.5, 1);
     expect(windows[1]!.dur).toBeCloseTo(4.0, 1);
+  });
+
+  it("computeTtsHardCutMontagePlan anchors cuts to voiceStartSec with xfade=0", () => {
+    const beats = [
+      { text: "One.", holdSec: 3, voiceStartSec: 0, voiceEndSec: 2.0 },
+      { text: "Two.", holdSec: 4, voiceStartSec: 2.0, voiceEndSec: 5.5 },
+    ];
+    const plan = computeTtsHardCutMontagePlan(beats, 5.5, [0, 1], 0);
+    expect(plan).not.toBeNull();
+    expect(plan!.xfadeSec).toBe(0);
+    expect(plan!.cutStartsSec[0]).toBeCloseTo(0, 2);
+    expect(plan!.cutStartsSec[1]).toBeCloseTo(2.0, 2);
+    expect(plan!.durations[0]).toBeCloseTo(2.0, 1);
+    expect(plan!.durations[1]).toBeCloseTo(3.5, 1);
   });
 
   it("computes voice-synced clip durations with xfade overlap", () => {

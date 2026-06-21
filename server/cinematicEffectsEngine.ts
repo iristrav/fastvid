@@ -610,6 +610,94 @@ export function computeVoiceSyncedClipDurations(
   return raw.map((d, i) => clampVidrushClipDuration(d * scale, i, sceneIndex));
 }
 
+export type TtsMontagePlan = {
+  durations: number[];
+  cutStartsSec: number[];
+  xfadeSec: number;
+  ttsHardCut: boolean;
+};
+
+/** Hard cuts on TTS voiceStartSec — no xfade drift (default on). */
+export function ttsHardCutMontageEnabled(): boolean {
+  if (process.env.ENABLE_TTS_HARD_CUT_MONTAGE === "false") return false;
+  return true;
+}
+
+/**
+ * Montage plan with clip cuts anchored to TTS voiceStartSec (xfade=0).
+ * Returns null when TTS windows are unavailable or hard-cut is disabled.
+ */
+export function computeTtsHardCutMontagePlan(
+  beats: BeatYearInput[],
+  voiceDur: number,
+  clipBeatIndices: number[],
+  sceneIndex = 0
+): TtsMontagePlan | null {
+  if (
+    !ttsHardCutMontageEnabled() ||
+    !beatsHaveTtsWindows(beats) ||
+    clipBeatIndices.length === 0 ||
+    voiceDur <= 0
+  ) {
+    return null;
+  }
+
+  const n = clipBeatIndices.length;
+  const cutStartsSec = new Array<number>(n).fill(0);
+  let ci = 0;
+  while (ci < n) {
+    const beatIdx = clipBeatIndices[ci] ?? 0;
+    let runEnd = ci;
+    while (runEnd < n && (clipBeatIndices[runEnd] ?? 0) === beatIdx) runEnd++;
+    const runLen = runEnd - ci;
+    const beat = beats[beatIdx];
+    if (beat?.voiceStartSec == null) return null;
+    const beatStart = beat.voiceStartSec;
+    const beatEnd =
+      beatIdx + 1 < beats.length && beats[beatIdx + 1]!.voiceStartSec != null
+        ? beats[beatIdx + 1]!.voiceStartSec!
+        : Math.max(beat.voiceEndSec ?? beatStart, voiceDur);
+    const window = Math.max(0.35 * runLen, beatEnd - beatStart);
+    const slot = window / runLen;
+    for (let j = 0; j < runLen; j++) {
+      cutStartsSec[ci + j] = beatStart + j * slot;
+    }
+    ci = runEnd;
+  }
+
+  const durations = cutStartsSec.map((start, i) => {
+    const end = i < n - 1 ? cutStartsSec[i + 1]! : voiceDur;
+    return clampVidrushClipDuration(Math.max(0.35, end - start), i, sceneIndex);
+  });
+
+  return { durations, cutStartsSec, xfadeSec: 0, ttsHardCut: true };
+}
+
+/** Resolve TTS hard-cut plan or fall back to scaled voice-sync durations. */
+export function resolveVoiceSyncMontagePlan(
+  beats: BeatYearInput[],
+  voiceDur: number,
+  clipBeatIndices: number[],
+  xfadeSec: number,
+  sceneIndex = 0
+): TtsMontagePlan & { ttsHardCut: boolean } {
+  const hard = computeTtsHardCutMontagePlan(beats, voiceDur, clipBeatIndices, sceneIndex);
+  if (hard) return hard;
+  const durations = computeVoiceSyncedClipDurations(
+    beats,
+    voiceDur,
+    clipBeatIndices,
+    xfadeSec,
+    sceneIndex
+  );
+  return {
+    durations,
+    cutStartsSec: computeMontageBeatStarts(durations, xfadeSec),
+    xfadeSec,
+    ttsHardCut: false,
+  };
+}
+
 /** Pick the beat that still needs the most montage time (prefer later voice gaps). */
 export function pickVoiceBackfillBeatIndex(
   beats: BeatYearInput[],

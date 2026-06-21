@@ -80,6 +80,8 @@ import {
   computeVoiceSyncedClipDurations,
   pickVoiceBackfillBeatIndex,
   finalizeVoiceSyncedMontageDurations,
+  resolveVoiceSyncMontagePlan,
+  type TtsMontagePlan,
   burnTimedScreenLabelsDrawtext,
   buildYearDrawtextFilterChain,
   planPhotoShutterCues,
@@ -183,9 +185,14 @@ import { buildVideoQualityReport, computeMeritQualityScore, logVideoQualityRepor
 import { postRenderSpotCheckEnabled, spotCheckFinalVideo } from "./postRenderSpotCheck";
 import {
   alignSceneBeatsToVoiceAudio,
-  spotCheckComposedSceneBeatSync,
   validateMontageVoiceCoverage,
 } from "./voiceBeatAlignment";
+import {
+  auditSceneVoiceMontageSync,
+  summarizeVoiceMontageSyncAudits,
+  strictVoiceMontageSyncExport,
+  type VoiceMontageSyncAuditResult,
+} from "./voiceMontageSyncAudit";
 import {
   buildTtsSceneBeatMap,
   fetchElevenLabsWithTimestamps,
@@ -533,6 +540,8 @@ const VIDRUSH_CLIP_MIN_SEC = 2.5;
 const VIDRUSH_CLIP_MAX_SEC = 4.0;
 const VIDRUSH_CLIP_HOLD_SEC = 7.0;
 const VIDRUSH_BEAT_SEC = 3.5;
+
+type MontageFilterOpts = { xfadeSec?: number; preserveDurations?: boolean };
 
 function effectiveBeatSec(): number {
   return curatedArchiveOnlyVisuals() ? archiveVisualBeatSec() : VIDRUSH_BEAT_SEC;
@@ -8955,33 +8964,51 @@ async function prepareStrictUniqueMontage(
   beatDurations: number[],
   outDur: number,
   voiceSync?: {
-    beats: Array<{ text: string; holdSec: number }>;
+    beats: Array<{ text: string; holdSec: number; voiceStartSec?: number; voiceEndSec?: number }>;
     clipBeatIndices: number[];
     voiceDur: number;
   }
-): Promise<{ montageDurations: number[]; sourceMaxDurs: number[]; estSec: number }> {
+): Promise<{
+  montageDurations: number[];
+  sourceMaxDurs: number[];
+  estSec: number;
+  montagePlan?: TtsMontagePlan;
+}> {
   assertMontageClipsUnique(sceneIndex, clips);
   let sourceMaxDurs = await probeMontageSourceMaxDurs(clips);
-  const xfade = clips.length > 1 ? montageXfadeSec() : 0;
+  const defaultXfade = clips.length > 1 ? montageXfadeSec() : 0;
   let montageDurations: number[];
+  let montagePlan: TtsMontagePlan | undefined;
 
   if (voiceSync && voiceSync.clipBeatIndices.length === clips.length) {
-    montageDurations = computeVoiceSyncedClipDurations(
+    const plan = resolveVoiceSyncMontagePlan(
       voiceSync.beats,
       voiceSync.voiceDur,
       voiceSync.clipBeatIndices,
-      xfade,
+      defaultXfade,
       sceneIndex
     );
+    montagePlan = plan;
+    montageDurations = plan.durations;
+    const xfade = plan.xfadeSec;
     montageDurations = await capMontageDurationsToClipFiles(clips, montageDurations);
     sourceMaxDurs = await probeMontageSourceMaxDurs(clips);
-    montageDurations = finalizeVoiceSyncedMontageDurations(
-      montageDurations,
-      voiceSync.voiceDur,
-      sourceMaxDurs,
-      xfade,
-      sceneIndex
-    );
+    if (!plan.ttsHardCut) {
+      montageDurations = finalizeVoiceSyncedMontageDurations(
+        montageDurations,
+        voiceSync.voiceDur,
+        sourceMaxDurs,
+        xfade,
+        sceneIndex
+      );
+    }
+    if (plan.ttsHardCut) {
+      montagePlan = {
+        ...plan,
+        durations: montageDurations,
+        cutStartsSec: plan.cutStartsSec.slice(0, montageDurations.length),
+      };
+    }
   } else {
     montageDurations = balanceMontageDurationsForVoice(
       clips.length,
@@ -9000,7 +9027,7 @@ async function prepareStrictUniqueMontage(
   }
   const estSec = effectiveMontageDurationSec(montageDurations, sourceMaxDurs);
   if (!strictNoVisualRepeat()) {
-    return { montageDurations, sourceMaxDurs, estSec };
+    return { montageDurations, sourceMaxDurs, estSec, montagePlan };
   }
   if (estSec < outDur - 0.06) {
     const minClips = minClipsForBalancedVoice(outDur);
@@ -9009,7 +9036,7 @@ async function prepareStrictUniqueMontage(
         `(need ~${minClips} when balanced) — compose will pad`
     );
   }
-  return { montageDurations, sourceMaxDurs, estSec };
+  return { montageDurations, sourceMaxDurs, estSec, montagePlan };
 }
 
 function archiveTagHintForScene(scene: Scene, videoTitle?: string): string {
@@ -9165,7 +9192,8 @@ async function composePlainMontageScene(
   workDir: string,
   fadeFilter: string,
   threadFlag: string,
-  composeTimeout: number
+  composeTimeout: number,
+  montageFilterOpts?: MontageFilterOpts
 ): Promise<boolean> {
   const muxMontageWithAudio = async (montageVideoPath: string): Promise<boolean> => {
     const audioIdx = 1;
@@ -9196,7 +9224,8 @@ async function composePlainMontageScene(
         workDir,
         montageOnlyPath,
         composeTimeout,
-        threadFlag
+        threadFlag,
+        montageFilterOpts
       );
       if (await muxMontageWithAudio(montageOnlyPath)) return true;
     } catch (seqErr) {
@@ -9214,7 +9243,8 @@ async function composePlainMontageScene(
       sceneIndex,
       montageDurations,
       safeClips,
-      sourceMaxDurs
+      sourceMaxDurs,
+      montageFilterOpts
     );
     const inputs = montageClipInputs(safeClips);
     const estMontage = effectiveMontageDurationSec(montageDurations, sourceMaxDurs);
@@ -9273,11 +9303,25 @@ async function xfadeMergeTwoVideos(
   rightDur: number,
   outputPath: string,
   composeTimeout: number,
-  threadFlag: string
+  threadFlag: string,
+  montageFilterOpts?: MontageFilterOpts
 ): Promise<void> {
-  const xfade = montageXfadeSec((leftDur + rightDur) / 2);
-  const offset = Math.max(0, leftDur - xfade);
+  const xfade = montageFilterOpts?.xfadeSec ?? montageXfadeSec((leftDur + rightDur) / 2);
   const branchNorm = `${montageBranchNormVF()},setpts=PTS-STARTPTS`;
+  if (xfade <= 0.001) {
+    await withTimeout(
+      exec(
+        `${FFMPEG_BIN} -y -i "${leftPath}" -i "${rightPath}" ` +
+          `-filter_complex "[0:v]${branchNorm}[v0];[1:v]${branchNorm}[v1];` +
+          `[v0][v1]concat=n=2:v=1:a=0[out]" ` +
+          `-map "[out]" -an -vsync cfr ${threadFlag} -c:v libx264 -preset ${MONTAGE_SEGMENT_ENCODE_PRESET} -crf 18 -pix_fmt yuv420p "${outputPath}"`
+      ),
+      composeTimeout,
+      "Concat montage segments (hard cut)"
+    );
+    return;
+  }
+  const offset = Math.max(0, leftDur - xfade);
   await withTimeout(
     exec(
       `${FFMPEG_BIN} -y -i "${leftPath}" -i "${rightPath}" ` +
@@ -9298,7 +9342,8 @@ async function renderMontageVideoOnly(
   targetDur: number,
   outputPath: string,
   composeTimeout: number,
-  threadFlag: string
+  threadFlag: string,
+  montageFilterOpts?: MontageFilterOpts
 ): Promise<void> {
   const { scaleFilters, mergeFilter, montageLabel } = buildMontageXfadeFilter(
     clips.length,
@@ -9306,7 +9351,8 @@ async function renderMontageVideoOnly(
     sceneIndex,
     montageDurations,
     clips,
-    sourceMaxDurs
+    sourceMaxDurs,
+    montageFilterOpts
   );
   const inputs = montageClipInputs(clips);
   const est = effectiveMontageDurationSec(montageDurations, sourceMaxDurs);
@@ -9331,7 +9377,8 @@ async function renderBatchedArchiveMontage(
   workDir: string,
   outputPath: string,
   composeTimeout: number,
-  threadFlag: string
+  threadFlag: string,
+  montageFilterOpts?: MontageFilterOpts
 ): Promise<void> {
   if (IS_RAILWAY && curatedArchiveOnlyVisuals()) {
     await renderSequentialArchiveMontage(
@@ -9343,7 +9390,8 @@ async function renderBatchedArchiveMontage(
       workDir,
       outputPath,
       composeTimeout,
-      threadFlag
+      threadFlag,
+      montageFilterOpts
     );
     return;
   }
@@ -9357,7 +9405,8 @@ async function renderBatchedArchiveMontage(
       outDur,
       outputPath,
       composeTimeout,
-      threadFlag
+      threadFlag,
+      montageFilterOpts
     );
     return;
   }
@@ -9379,12 +9428,14 @@ async function renderBatchedArchiveMontage(
       batchTarget + 0.05,
       segPath,
       composeTimeout,
-      threadFlag
+      threadFlag,
+      montageFilterOpts
     );
     segmentPaths.push(segPath);
     segmentDurs.push((await probeVideoDurationSec(segPath)) || batchTarget);
   }
 
+  const mergeXfade = montageFilterOpts?.xfadeSec ?? montageXfadeSec();
   let accPath = segmentPaths[0]!;
   let accDur = segmentDurs[0]!;
   for (let i = 1; i < segmentPaths.length; i++) {
@@ -9399,10 +9450,13 @@ async function renderBatchedArchiveMontage(
       segmentDurs[i]!,
       nextOut,
       composeTimeout,
-      threadFlag
+      threadFlag,
+      montageFilterOpts
     );
     accPath = nextOut;
-    accDur = (await probeVideoDurationSec(accPath)) || accDur + segmentDurs[i]! - montageXfadeSec();
+    accDur =
+      (await probeVideoDurationSec(accPath)) ||
+      accDur + segmentDurs[i]! - (mergeXfade > 0.001 ? mergeXfade : 0);
   }
 }
 
@@ -9448,7 +9502,8 @@ async function renderSequentialArchiveMontage(
   workDir: string,
   outputPath: string,
   composeTimeout: number,
-  threadFlag: string
+  threadFlag: string,
+  montageFilterOpts?: MontageFilterOpts
 ): Promise<void> {
   if (clips.length === 0) {
     throw pipelineError(PIPELINE_ERROR.FFMPEG, `Scene ${sceneIndex}: no clips for sequential montage`);
@@ -9488,6 +9543,7 @@ async function renderSequentialArchiveMontage(
     );
     return;
   }
+  const mergeXfade = montageFilterOpts?.xfadeSec ?? montageXfadeSec();
   let accPath = segmentPaths[0]!;
   let accDur = segmentDurs[0]!;
   for (let i = 1; i < segmentPaths.length; i++) {
@@ -9502,10 +9558,13 @@ async function renderSequentialArchiveMontage(
       segmentDurs[i]!,
       nextOut,
       composeTimeout,
-      threadFlag
+      threadFlag,
+      montageFilterOpts
     );
     accPath = nextOut;
-    accDur = (await probeVideoDurationSec(accPath)) || accDur + segmentDurs[i]! - montageXfadeSec();
+    accDur =
+      (await probeVideoDurationSec(accPath)) ||
+      accDur + segmentDurs[i]! - (mergeXfade > 0.001 ? mergeXfade : 0);
   }
 }
 
@@ -9517,7 +9576,8 @@ async function renderInlineMontageToFile(
   outDur: number,
   outputPath: string,
   composeTimeout: number,
-  threadFlag: string
+  threadFlag: string,
+  montageFilterOpts?: MontageFilterOpts
 ): Promise<void> {
   const { scaleFilters, mergeFilter, montageLabel } = buildMontageXfadeFilter(
     composeClips.length,
@@ -9525,7 +9585,8 @@ async function renderInlineMontageToFile(
     sceneIndex,
     montageDurations,
     composeClips,
-    sourceMaxDurs
+    sourceMaxDurs,
+    montageFilterOpts
   );
   const inputs = montageClipInputs(composeClips);
   const estMontageDur = montageDurations
@@ -9562,7 +9623,8 @@ async function composeBatchedArchiveSceneWithAudio(
   docOverlays: TimedOverlay[],
   threadFlag: string,
   composeTimeout: number,
-  skipEffectLayers: boolean
+  skipEffectLayers: boolean,
+  montageFilterOpts?: MontageFilterOpts
 ): Promise<void> {
   const montageOnlyPath = path.join(workDir, `scene_${sceneIndex}_montage_v.mp4`);
   await renderBatchedArchiveMontage(
@@ -9574,7 +9636,8 @@ async function composeBatchedArchiveSceneWithAudio(
     workDir,
     montageOnlyPath,
     composeTimeout,
-    threadFlag
+    threadFlag,
+    montageFilterOpts
   );
   const audioFadeOutStart = Math.max(0, voiceDur - 0.15);
   const voiceAudioFilter =
@@ -9992,7 +10055,8 @@ function buildMontageXfadeFilter(
   sceneIndex: number,
   clipDurations?: number[],
   clipPaths?: string[],
-  sourceMaxDurs?: number[]
+  sourceMaxDurs?: number[],
+  montageOpts?: { xfadeSec?: number; preserveDurations?: boolean }
 ): { scaleFilters: string; mergeFilter: string; montageLabel: string } {
   const n = Math.max(1, clipCount);
   const minClip = effectiveMinClipSec();
@@ -10009,12 +10073,15 @@ function buildMontageXfadeFilter(
         })
       : Array.from({ length: n }, () => computeMontageClipDuration(outDur, n));
   const presetTotal = effectiveMontageDurationSec(durs, sourceMaxDurs);
-  if (!clipDurations?.length || presetTotal > outDur + 0.35) {
+  if (
+    !montageOpts?.preserveDurations &&
+    (!clipDurations?.length || presetTotal > outDur + 0.35)
+  ) {
     durs = normalizeMontageDurations(durs, outDur, sourceMaxDurs);
   }
   durs = durs.map((d, i) => resolveMontageClipEffectiveDur(d, sourceMaxDurs?.[i]));
   const avgDur = durs.reduce((s, d) => s + d, 0) / n;
-  const xfade = montageXfadeSec(avgDur);
+  const xfade = montageOpts?.xfadeSec ?? montageXfadeSec(avgDur);
   const smooth = curatedArchiveOnlyVisuals() || documentaryStyleEnabled();
   const clipAt = (i: number) => clipPaths?.[i];
 
@@ -16891,6 +16958,12 @@ type ComposeSceneOptions = {
   /** Beats from visual fetch — keeps labels/clips aligned to voiceover sentences. */
   montageBeats?: SceneBeat[];
   clipBeatIndices?: number[];
+  /** Filled after montage plan is resolved (TTS hard-cut audit). */
+  composeMetaOut?: {
+    montageDurations: number[];
+    clipBeatIndices: number[];
+    montagePlan?: TtsMontagePlan;
+  };
 };
 
 function buildOverlayFilterChain(
@@ -17287,8 +17360,7 @@ async function composeSceneVideo(
     composeClipBeatIndices?.length === safeClips.length &&
     outDurEarly > 0
   ) {
-    const xfade = safeClips.length > 1 ? montageXfadeSec() : 0;
-    composeBeatDurations = computeVoiceSyncedClipDurations(
+    const plan = resolveVoiceSyncMontagePlan(
       montageBeats.map((b) => ({
         text: b.text,
         holdSec: b.holdSec,
@@ -17297,9 +17369,10 @@ async function composeSceneVideo(
       })),
       outDurEarly,
       composeClipBeatIndices,
-      xfade,
+      safeClips.length > 1 ? montageXfadeSec() : 0,
       scene.index
     );
+    composeBeatDurations = plan.durations;
   }
   const composeTimeout = composeSceneTimeoutMs(safeClips.length);
 
@@ -17457,6 +17530,20 @@ async function composeSceneVideo(
   );
   let montageDurations = prepared.montageDurations;
   let sourceMaxDurs = prepared.sourceMaxDurs;
+  const montagePlan = prepared.montagePlan;
+  const montageFilterOpts: MontageFilterOpts | undefined = montagePlan?.ttsHardCut
+    ? { xfadeSec: 0, preserveDurations: true }
+    : undefined;
+  if (montagePlan?.ttsHardCut) {
+    console.log(
+      `[Pipeline] Scene ${scene.index}: TTS hard-cut montage (${montageDurations.length} clips on voiceStartSec)`
+    );
+  }
+  if (composeOptions?.composeMetaOut) {
+    composeOptions.composeMetaOut.montageDurations = [...montageDurations];
+    composeOptions.composeMetaOut.clipBeatIndices = [...(composeClipBeatIndices ?? [])];
+    composeOptions.composeMetaOut.montagePlan = montagePlan;
+  }
   const composeClips = safeClips;
   if (usedClipsOut) {
     usedClipsOut.length = 0;
@@ -17545,7 +17632,8 @@ async function composeSceneVideo(
           workDir,
           montageOnlyPath,
           composeTimeout,
-          threadFlag
+          threadFlag,
+          montageFilterOpts
         );
       } else {
         await renderInlineMontageToFile(
@@ -17556,7 +17644,8 @@ async function composeSceneVideo(
           outDur,
           montageOnlyPath,
           composeTimeout,
-          threadFlag
+          threadFlag,
+          montageFilterOpts
         );
       }
       const labeledPath = path.join(workDir, `scene_${scene.index}_labeled.mp4`);
@@ -17614,11 +17703,20 @@ async function composeSceneVideo(
         docOverlays,
         threadFlag,
         composeTimeout,
-        skipEffectLayers
+        skipEffectLayers,
+        montageFilterOpts
       );
     } else {
     const { scaleFilters, mergeFilter, montageLabel: xfadeLabel } =
-      buildMontageXfadeFilter(composeClips.length, outDur, scene.index, montageDurations, composeClips, sourceMaxDurs);
+      buildMontageXfadeFilter(
+        composeClips.length,
+        outDur,
+        scene.index,
+        montageDurations,
+        composeClips,
+        sourceMaxDurs,
+        montageFilterOpts
+      );
     const inputs = montageClipInputs(composeClips);
     const durs =
       montageDurations ??
@@ -17711,7 +17809,8 @@ async function composeSceneVideo(
           workDir,
           fadeFilter,
           threadFlag,
-          composeTimeout
+          composeTimeout,
+          montageFilterOpts
         )
       ) {
         console.warn(`[Pipeline] Scene ${scene.index}: plain montage compose succeeded (years/SFX skipped)`);
@@ -17723,7 +17822,15 @@ async function composeSceneVideo(
     if (sfxCueFiles.length > 0) {
       try {
         const { scaleFilters, mergeFilter, montageLabel: xfadeLabel } =
-          buildMontageXfadeFilter(composeClips.length, outDur, scene.index, montageDurations, composeClips, sourceMaxDurs);
+          buildMontageXfadeFilter(
+            composeClips.length,
+            outDur,
+            scene.index,
+            montageDurations,
+            composeClips,
+            sourceMaxDurs,
+            montageFilterOpts
+          );
         const inputs = montageClipInputs(composeClips);
         const montageLabel = xfadeLabel;
         const audioIdx = composeClips.length;
@@ -17755,7 +17862,15 @@ async function composeSceneVideo(
     if (docOverlays.length > 0 || statCalloutFrame) {
       try {
         const { scaleFilters, mergeFilter, montageLabel: xfadeLabel } =
-          buildMontageXfadeFilter(composeClips.length, outDur, scene.index, montageDurations, composeClips, sourceMaxDurs);
+          buildMontageXfadeFilter(
+            composeClips.length,
+            outDur,
+            scene.index,
+            montageDurations,
+            composeClips,
+            sourceMaxDurs,
+            montageFilterOpts
+          );
         const inputs = montageClipInputs(composeClips);
         const montageLabel = xfadeLabel;
         const audioIdx = composeClips.length;
@@ -17791,7 +17906,8 @@ async function composeSceneVideo(
         scene.index,
         rescueDurs,
         composeClips,
-        sourceMaxDurs
+        sourceMaxDurs,
+        montageFilterOpts
       );
       const inputs = montageClipInputs(composeClips);
       const estRescue = effectiveMontageDurationSec(rescueDurs, sourceMaxDurs);
@@ -18648,10 +18764,15 @@ export async function runVideoPipeline(
       timelineSec += s.duration;
       return start;
     });
+    const voiceMontageSyncResults: Array<{ sceneIndex: number; audit: VoiceMontageSyncAuditResult }> = [];
     const composedScenes = await withTimeout(
       Promise.all(
         scenes.map((scene, i) => composeLimit(async () => {
           const usedClips: string[] = [];
+          const composeMeta: NonNullable<ComposeSceneOptions["composeMetaOut"]> = {
+            montageDurations: [],
+            clipBeatIndices: [],
+          };
           const result = await composeSceneVideo(
             scene, sceneVisualResults[i]?.clips ?? [], audioPaths[i], scene.duration, workDir, scenes.length,
             enableSubtitles, visualDedup.lastMuskStockClip, sceneVisualResults[i]?.beatDurations, usedClips,
@@ -18661,32 +18782,41 @@ export async function runVideoPipeline(
               sceneStartSec: sceneStartSecs[i],
               montageBeats: sceneVisualResults[i]?.beats,
               clipBeatIndices: sceneVisualResults[i]?.clipBeatIndices,
+              composeMetaOut: composeMeta,
             }
           );
           composedUsedClips[i] = usedClips;
           const vr = sceneVisualResults[i];
-          if (vr?.beats?.length && vr.beatDurations?.length) {
+          if (vr?.beats?.length && composeMeta.montageDurations.length > 0) {
             const voiceSec = Math.max(0.5, scene.duration - VO_SCENE_TAIL_SEC);
+            const auditXfade = composeMeta.montagePlan?.xfadeSec ?? montageXfadeSec();
             const coverage = validateMontageVoiceCoverage(
-              vr.beatDurations,
+              composeMeta.montageDurations,
               voiceSec,
-              montageXfadeSec()
+              auditXfade
             );
             if (!coverage.ok) {
               console.warn(
                 `[Pipeline] Scene ${scene.index} voice coverage: ${coverage.warnings.join("; ")}`
               );
             }
-            await spotCheckComposedSceneBeatSync(
+            const audit = await auditSceneVoiceMontageSync(
               result,
-              vr.beats,
-              vr.beatDurations,
-              vr.clipBeatIndices ?? [],
+              vr.beats.map((b) => ({
+                text: b.text,
+                holdSec: b.holdSec,
+                voiceStartSec: b.voiceStartSec,
+                voiceEndSec: b.voiceEndSec,
+              })),
+              composeMeta.montageDurations,
+              composeMeta.clipBeatIndices,
+              voiceSec,
               workDir,
               scene.index,
               topicContext,
-              montageXfadeSec()
+              composeMeta.montagePlan
             );
+            voiceMontageSyncResults.push({ sceneIndex: scene.index, audit });
           }
           completedCompose++;
           onProgress?.({
@@ -18775,6 +18905,17 @@ export async function runVideoPipeline(
       fastShort: isFastShortVideoLength(videoLength),
     });
     logVideoQualityReport(videoId, qualityReport);
+    if (voiceMontageSyncResults.length > 0) {
+      qualityReport.voiceMontageSync = summarizeVoiceMontageSyncAudits(voiceMontageSyncResults);
+      for (const w of qualityReport.voiceMontageSync.warnings.slice(0, 10)) {
+        qualityReport.warnings.push(`VoiceSync: ${w}`);
+      }
+      if (!qualityReport.voiceMontageSync.ok) {
+        console.warn(
+          `[Pipeline] Voice montage sync: ${qualityReport.voiceMontageSync.failedScenes.length}/${qualityReport.voiceMontageSync.sceneCount} scene(s) with issues`
+        );
+      }
+    }
     await mergeVideoMetadata(videoId, { qualityReport }).catch((err) =>
       console.warn(`[Pipeline] Failed to persist qualityReport for ${videoId}:`, err)
     );

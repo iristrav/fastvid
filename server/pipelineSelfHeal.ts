@@ -1,6 +1,7 @@
 /**
  * Self-healing helpers — geo stock queries, script expansion, non-fatal quality gates.
  */
+import { PIPELINE_ERROR, pipelineError } from "@shared/appErrors";
 import {
   buildGeoStockSearchQueries,
   resolveRequiredGeoTagsForBeat,
@@ -17,6 +18,7 @@ import {
 } from "./scriptWriter";
 import type { VideoQualityReport } from "./videoQualityReport";
 import { assertQualityReportExportGate } from "./videoQualityReport";
+import { strictVoiceMontageSyncExport } from "./voiceMontageSyncAudit";
 import type { FinalVideoValidation } from "./finalVideoGate";
 import { minQualityExportScore, strictQualityExportEnabled } from "./sourcingPolicy";
 
@@ -182,6 +184,20 @@ export function enforceQualityExportGate(
     console.warn(
       `[Quality] Video ${videoId}: post-render spot-check warnings — ` +
         `${report.postRenderSpotCheck.warnings.join("; ")} (continuing export)`
+    );
+  }
+
+  if (strictVoiceMontageSyncExport() && report.voiceMontageSync && !report.voiceMontageSync.ok) {
+    const detail = report.voiceMontageSync.warnings.slice(0, 4).join("; ");
+    throw pipelineError(
+      PIPELINE_ERROR.QUALITY_GATE,
+      `Voice montage sync audit failed (${report.voiceMontageSync.failedScenes.length} scene(s)): ${detail}`
+    );
+  }
+  if (report.voiceMontageSync && !report.voiceMontageSync.ok) {
+    console.warn(
+      `[Quality] Video ${videoId}: voice montage sync warnings — ` +
+        `${report.voiceMontageSync.warnings.slice(0, 3).join("; ")} (set STRICT_VOICE_MONTAGE_SYNC=true to block export)`
     );
   }
 
