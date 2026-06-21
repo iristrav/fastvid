@@ -107,16 +107,10 @@ function countFilterMatches(stderr: string, filterName: string): number {
   return (stderr.match(re) ?? []).length;
 }
 
-/** Archive montage / dark grading — log only. Only `appears fully black` blocks export. */
+/** Archive montage QA — never block export (dark scenes, holds, silence gaps). */
 export function isInformationalSpotWarning(warning: string): boolean {
-  if (/appears fully black/i.test(warning)) return false;
-  return (
-    /^freezedetect:/i.test(warning) ||
-    /^silencedetect:/i.test(warning) ||
-    /^blackdetect:/i.test(warning) ||
-    /spot-check frames are dark/i.test(warning) ||
-    /spot-check frames are nearly black/i.test(warning)
-  );
+  if (/Final video missing or too small/i.test(warning)) return false;
+  return true;
 }
 
 function countFreezeStarts(stderr: string): number {

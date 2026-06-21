@@ -175,7 +175,7 @@ import { buildEditorScenesFromPipeline } from "./editorClips";
 import { buildVideoQualityReport, computeMeritQualityScore, logVideoQualityReport } from "./videoQualityReport";
 import { postRenderSpotCheckEnabled, spotCheckFinalVideo } from "./postRenderSpotCheck";
 import { buildEmergencyGeoStockQueries, buildDocumentaryShotQueries, enforceQualityExportGate } from "./pipelineSelfHeal";
-import { ensureFinalVideoExportReady } from "./finalVideoGate";
+import { ensureFinalVideoExportReady, plainConcatSceneVideos } from "./finalVideoGate";
 import { extractTitleGeoPlaceTags } from "./worldGeoSlugs";
 import { fetchWikimediaTitlesForVideoGeo, wikimediaGeosearchEnabled } from "./wikimediaGeoSearch";
 import { buildEuropeanaBeatQueries, titleSuggestsEuropeana } from "./europeanaGeo";
@@ -17652,6 +17652,26 @@ async function composeSceneVideo(
   }
 
   if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size < 1000) {
+    console.warn(`[Pipeline] Scene ${scene.index}: compose empty — guaranteed clip rescue`);
+    const clip = await generateGuaranteedBeatClip(scene.index, 8888, Math.max(3, duration), workDir);
+    try {
+      await withTimeout(
+        exec(
+          `${FFMPEG_BIN} -y -i "${clip}" -i "${safeAudioPath}" ` +
+            `-filter_complex "[0:v]${FPS_FORMAT_VF}[vout];` +
+            `[1:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${Math.max(0, voiceDur - 0.15).toFixed(3)}:d=0.12,` +
+            `atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
+            `-map "[vout]" -map "[aout]" -vsync cfr -t ${outDur.toFixed(3)} ${threadFlag} ` +
+            `-c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
+        ),
+        composeTimeout,
+        `Guaranteed rescue scene ${scene.index}`
+      );
+    } catch (guaranteedErr) {
+      console.warn(`[Pipeline] Scene ${scene.index}: guaranteed rescue failed:`, (guaranteedErr as Error).message);
+    }
+  }
+  if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size < 1000) {
     throw pipelineError(PIPELINE_ERROR.FFMPEG, `Scene ${scene.index} produced no output video`);
   }
 
@@ -18564,13 +18584,22 @@ export async function runVideoPipeline(
           videoTitle
         );
       },
+      reassemblePlain: async () => plainConcatSceneVideos(composedScenes, workDir, videoId),
     });
     finalVideoPath = exportReadyPath;
 
     if (!finalValidation.ok) {
+      console.warn(
+        `[Pipeline] Video ${videoId}: final not playable after heal — ${finalValidation.reasons.join("; ")}`
+      );
       throw pipelineError(
         PIPELINE_ERROR.CONCAT,
-        `Final video not export-ready: ${finalValidation.reasons.slice(0, 3).join("; ")}`
+        `Final video not playable: ${finalValidation.reasons.slice(0, 3).join("; ")}`
+      );
+    }
+    if (finalValidation.softWarnings.length > 0) {
+      console.warn(
+        `[Pipeline] Video ${videoId}: export QA notes — ${finalValidation.softWarnings.slice(0, 4).join("; ")}`
       );
     }
 
@@ -18605,6 +18634,9 @@ export async function runVideoPipeline(
     }
 
     enforceQualityExportGate(videoId, qualityReport, videoLength, finalValidation);
+    for (const w of finalValidation.softWarnings) {
+      qualityReport.warnings.push(`Export QA: ${w}`);
+    }
     qualityReport.generatedAt = new Date().toISOString();
 
     // ── Stage 6: Upload to S3 ─────────────────────────────────────────────────

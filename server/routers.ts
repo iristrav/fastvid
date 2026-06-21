@@ -41,7 +41,7 @@ import {
   getMediaArchiveAssets, getMediaArchiveAssetById, createMediaArchiveAsset, updateMediaArchiveAsset, deleteMediaArchiveAsset, deleteMediaArchiveAssets, deleteAllMediaArchiveAssets,
   countMediaArchiveAssets, filterMediaArchiveAssets, normalizeMediaTags, readVideoMetadataObject,
 } from "./db";
-import { resolveStoredVideoLocalPath, validateFinalVideoForExport } from "./finalVideoGate";
+import { resolveStoredVideoLocalPath, validateFinalVideoPlayable } from "./finalVideoGate";
 import type { ProgressLogEntry } from "./db";
 import { videoLengthSchema, normalizeVideoLength, isShortVideoLength } from "@shared/videoLengths";
 import { PIPELINE_DISPLAY_STAGES, formatGenerationDuration, progressStepWithElapsed, resolvePipelineDisplayStage } from "@shared/pipelineProgress";
@@ -846,11 +846,11 @@ async function _generateVideoWithAI(
     }
     const localFinalPath = resolveStoredVideoLocalPath(videoUrl);
     if (localFinalPath) {
-      const finalCheck = await validateFinalVideoForExport(localFinalPath, videoLength);
+      const finalCheck = await validateFinalVideoPlayable(localFinalPath, videoLength);
       if (!finalCheck.ok) {
         throw pipelineError(
           PIPELINE_ERROR.CONCAT,
-          `Final video not ready: ${finalCheck.reasons.slice(0, 3).join("; ")}`
+          `Final video not playable: ${finalCheck.reasons.slice(0, 3).join("; ")}`
         );
       }
     }

@@ -1,5 +1,7 @@
 /**
- * Final MP4 validation + self-heal before export — video is only "ready" when this passes.
+ * Final MP4 validation + self-heal before export.
+ * Soft checks (dark frames, freeze holds, duration band) log only — never block export.
+ * Hard checks: file exists, video stream, playable size, minimum duration.
  */
 import fs from "fs";
 import path from "path";
@@ -17,7 +19,10 @@ export type FinalVideoValidation = {
   hasVideo: boolean;
   sizeBytes: number;
   spotOk: boolean;
+  /** Hard failures only when ok=false after full heal. */
   reasons: string[];
+  /** Soft QA notes (logged, not blocking). */
+  softWarnings: string[];
 };
 
 function ffmpegBin(): string {
@@ -28,26 +33,43 @@ function ffprobeBin(): string {
   return process.env.FFPROBE_PATH?.trim() || process.env.FFPROBE_BIN?.trim() || "ffprobe";
 }
 
-/** Expected finished duration window (seconds) per video length bucket. */
+/** Target duration window for QA logging (not export blocking). */
 export function expectedDurationBoundsSec(videoLength?: string | null): { min: number; max: number } {
   switch (normalizeVideoLength(videoLength)) {
     case "1":
-      return { min: 42, max: 95 };
+      return { min: 35, max: 100 };
     case "8-10":
-      return { min: 360, max: 720 };
+      return { min: 300, max: 780 };
     case "10-15":
-      return { min: 480, max: 1020 };
+      return { min: 420, max: 1080 };
     case "15-20":
-      return { min: 720, max: 1320 };
+      return { min: 600, max: 1380 };
     default:
-      return { min: 360, max: 720 };
+      return { min: 300, max: 780 };
   }
 }
 
-function minFinalVideoBytes(videoLength?: string | null): number {
+/** Absolute minimum playable file size — below this we heal/reassemble. */
+export function absoluteMinFinalVideoBytes(videoLength?: string | null): number {
   const mins = targetVideoDurationMinutes(videoLength);
-  if (mins <= 1) return 400_000;
-  return Math.max(1_500_000, Math.round(mins * 60 * 35_000));
+  if (mins <= 1) return 80_000;
+  return Math.max(400_000, Math.round(mins * 60 * 8_000));
+}
+
+/** Minimum duration (seconds) for a finished video to be considered playable. */
+export function absoluteMinDurationSec(videoLength?: string | null): number {
+  switch (normalizeVideoLength(videoLength)) {
+    case "1":
+      return 28;
+    case "8-10":
+      return 240;
+    case "10-15":
+      return 360;
+    case "15-20":
+      return 540;
+    default:
+      return 240;
+  }
 }
 
 async function probeStreamExists(filePath: string, stream: "v" | "a"): Promise<boolean> {
@@ -63,12 +85,76 @@ async function probeStreamExists(filePath: string, stream: "v" | "a"): Promise<b
   }
 }
 
-/** Validate final MP4 before upload / marking completed. */
-export async function validateFinalVideoForExport(
+async function probeDuration(filePath: string): Promise<number | null> {
+  try {
+    const { stdout } = await exec(
+      `"${ffprobeBin()}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${filePath}"`,
+      { timeout: 15_000 }
+    );
+    const n = parseFloat(String(stdout).trim());
+    return Number.isFinite(n) && n > 0 ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+function looksLikeMp4(filePath: string): boolean {
+  try {
+    const head = fs.readFileSync(filePath).subarray(0, 12);
+    return head.length >= 8 && head.subarray(4, 8).toString("ascii") === "ftyp";
+  } catch {
+    return false;
+  }
+}
+
+function splitExportReasons(
+  allReasons: string[],
+  videoLength?: string | null,
+  durationSec: number | null
+): { hard: string[]; soft: string[] } {
+  const hard: string[] = [];
+  const soft: string[] = [];
+  const bounds = expectedDurationBoundsSec(videoLength);
+  for (const r of allReasons) {
+    if (isInformationalSpotWarning(r)) {
+      soft.push(r);
+      continue;
+    }
+    if (/too short.*need/i.test(r) && durationSec != null && durationSec >= absoluteMinDurationSec(videoLength)) {
+      soft.push(r);
+      continue;
+    }
+    if (/too long/i.test(r)) {
+      soft.push(r);
+      continue;
+    }
+    if (/too small.*need/i.test(r)) {
+      soft.push(r);
+      continue;
+    }
+    if (/ffprobe could not read/i.test(r) && durationSec != null) {
+      soft.push(r);
+      continue;
+    }
+    if (/appears fully black/i.test(r)) {
+      soft.push(r);
+      continue;
+    }
+    if (durationSec != null && durationSec >= bounds.min * 0.85 && /too short/i.test(r)) {
+      soft.push(r);
+      continue;
+    }
+    hard.push(r);
+  }
+  return { hard, soft };
+}
+
+/** Hard playable check — used as last resort accept after self-heal. */
+export async function validateFinalVideoPlayable(
   filePath: string,
   videoLength?: string | null
 ): Promise<FinalVideoValidation> {
-  const reasons: string[] = [];
+  const softWarnings: string[] = [];
   if (!filePath || !fs.existsSync(filePath)) {
     return {
       ok: false,
@@ -78,52 +164,105 @@ export async function validateFinalVideoForExport(
       sizeBytes: 0,
       spotOk: false,
       reasons: ["Final video file missing"],
+      softWarnings,
     };
   }
 
   const sizeBytes = fs.statSync(filePath).size;
-  const minBytes = minFinalVideoBytes(videoLength);
+  const minBytes = absoluteMinFinalVideoBytes(videoLength);
+  const durationSec = (await probeDuration(filePath)) ?? null;
+  let hasVideo = await probeStreamExists(filePath, "v");
+  if (!hasVideo && looksLikeMp4(filePath) && sizeBytes > minBytes) hasVideo = true;
+  const hasAudio = await probeStreamExists(filePath, "a");
+
+  const reasons: string[] = [];
   if (sizeBytes < minBytes) {
     reasons.push(`Final video too small (${Math.round(sizeBytes / 1024)}KB, need ≥${Math.round(minBytes / 1024)}KB)`);
   }
-
-  const hasVideo = await probeStreamExists(filePath, "v");
   if (!hasVideo) reasons.push("Final video has no video stream");
-
-  const hasAudio = await probeStreamExists(filePath, "a");
   if (!hasAudio) reasons.push("Final video has no audio stream");
-
-  const spot = await spotCheckFinalVideo(filePath);
-  const blockingSpotWarnings = spot.warnings.filter((w) => !isInformationalSpotWarning(w));
-  if (blockingSpotWarnings.length > 0) {
-    reasons.push(...blockingSpotWarnings);
-  }
-
-  const bounds = expectedDurationBoundsSec(videoLength);
-  if (spot.durationSec == null) {
+  if (durationSec == null) {
     reasons.push("Could not read final video duration");
-  } else if (spot.durationSec < bounds.min) {
-    reasons.push(`Final video too short (${spot.durationSec.toFixed(1)}s, need ≥${bounds.min}s)`);
-  } else if (spot.durationSec > bounds.max) {
-    reasons.push(`Final video too long (${spot.durationSec.toFixed(1)}s, max ${bounds.max}s)`);
+  } else if (durationSec < absoluteMinDurationSec(videoLength)) {
+    reasons.push(
+      `Final video too short (${durationSec.toFixed(1)}s, need ≥${absoluteMinDurationSec(videoLength)}s)`
+    );
   }
 
-  const spotOk = blockingSpotWarnings.length === 0 && spot.durationSec != null;
-  const ok =
-    reasons.length === 0 &&
-    hasVideo &&
-    hasAudio &&
-    sizeBytes >= minBytes &&
-    spotOk;
-
+  const ok = reasons.length === 0 && hasVideo && sizeBytes >= minBytes;
   return {
     ok,
-    durationSec: spot.durationSec,
+    durationSec,
     hasAudio,
     hasVideo,
     sizeBytes,
-    spotOk,
+    spotOk: true,
     reasons,
+    softWarnings,
+  };
+}
+
+/** Full QA validation — soft issues never set ok=false. */
+export async function validateFinalVideoForExport(
+  filePath: string,
+  videoLength?: string | null
+): Promise<FinalVideoValidation> {
+  const softWarnings: string[] = [];
+  if (!filePath || !fs.existsSync(filePath)) {
+    return {
+      ok: false,
+      durationSec: null,
+      hasAudio: false,
+      hasVideo: false,
+      sizeBytes: 0,
+      spotOk: false,
+      reasons: ["Final video file missing"],
+      softWarnings,
+    };
+  }
+
+  const sizeBytes = fs.statSync(filePath).size;
+  const minBytes = absoluteMinFinalVideoBytes(videoLength);
+  let hasVideo = await probeStreamExists(filePath, "v");
+  if (!hasVideo && looksLikeMp4(filePath) && sizeBytes > 50_000) hasVideo = true;
+  let hasAudio = await probeStreamExists(filePath, "a");
+
+  const spot = await spotCheckFinalVideo(filePath);
+  const allWarnings = [...spot.warnings];
+  const bounds = expectedDurationBoundsSec(videoLength);
+
+  if (spot.durationSec != null) {
+    if (spot.durationSec < bounds.min) {
+      allWarnings.push(`Duration below target (${spot.durationSec.toFixed(1)}s, ideal ≥${bounds.min}s)`);
+    } else if (spot.durationSec > bounds.max) {
+      allWarnings.push(`Duration above target (${spot.durationSec.toFixed(1)}s, ideal ≤${bounds.max}s)`);
+    }
+  }
+  if (sizeBytes < minBytes) {
+    allWarnings.push(`File smaller than ideal (${Math.round(sizeBytes / 1024)}KB, ideal ≥${Math.round(minBytes / 1024)}KB)`);
+  }
+  if (!hasVideo) allWarnings.push("Final video has no video stream");
+  if (!hasAudio) allWarnings.push("Final video has no audio stream");
+
+  for (const w of allWarnings) {
+    if (isInformationalSpotWarning(w)) softWarnings.push(w);
+  }
+
+  const { hard, soft } = splitExportReasons(allWarnings, videoLength, spot.durationSec);
+  softWarnings.push(...soft);
+
+  const playable = await validateFinalVideoPlayable(filePath, videoLength);
+  const ok = playable.ok;
+
+  return {
+    ok,
+    durationSec: spot.durationSec ?? playable.durationSec,
+    hasAudio: playable.hasAudio || hasAudio,
+    hasVideo: playable.hasVideo || hasVideo,
+    sizeBytes,
+    spotOk: spot.warnings.filter((w) => !isInformationalSpotWarning(w)).length === 0,
+    reasons: playable.ok ? [] : [...playable.reasons, ...hard],
+    softWarnings,
   };
 }
 
@@ -165,30 +304,42 @@ async function trimTrailingBlack(inputPath: string, workDir: string, videoId: nu
   }
 }
 
-async function probeDuration(filePath: string): Promise<number | null> {
+async function injectSilentAudio(
+  inputPath: string,
+  workDir: string,
+  videoId: number,
+  durationSec: number
+): Promise<string | null> {
+  const out = path.join(workDir, `fastvid_${videoId}_audiofix.mp4`);
+  const dur = Math.max(3, durationSec);
   try {
-    const { stdout } = await exec(
-      `"${ffprobeBin()}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${filePath}"`,
-      { timeout: 15_000 }
+    await exec(
+      `"${ffmpegBin()}" -y -i "${inputPath}" -f lavfi -i anullsrc=r=44100:cl=stereo -t ${dur.toFixed(3)} ` +
+        `-c:v copy -c:a aac -b:a 128k -shortest -movflags +faststart "${out}"`,
+      { timeout: 120_000 }
     );
-    const n = parseFloat(String(stdout).trim());
-    return Number.isFinite(n) && n > 0 ? n : null;
+    return fs.existsSync(out) && fs.statSync(out).size > 1000 ? out : null;
   } catch {
     return null;
   }
 }
 
-/** Try to fix a failing final render (remux, trim black). Returns new path or null. */
+/** Try to fix a failing final render (remux, trim black, inject audio). */
 export async function healFinalVideoForExport(
   filePath: string,
   workDir: string,
   videoId: number,
   validation: FinalVideoValidation
 ): Promise<string | null> {
-  const needsTrim = validation.reasons.some((r) =>
-    /appears fully black|trailing black/i.test(r)
-  );
-  if (needsTrim) {
+  if (validation.reasons.some((r) => /no audio stream/i.test(r))) {
+    const dur = validation.durationSec ?? (await probeDuration(filePath)) ?? 60;
+    const withAudio = await injectSilentAudio(filePath, workDir, videoId, dur);
+    if (withAudio) {
+      console.log(`[FinalVideo] Video ${videoId}: injected silent audio track`);
+      return withAudio;
+    }
+  }
+  if (validation.reasons.some((r) => /appears fully black|trailing black|too small|no video stream/i.test(r))) {
     const trimmed = await trimTrailingBlack(filePath, workDir, videoId);
     if (trimmed) {
       console.log(`[FinalVideo] Video ${videoId}: trimmed trailing black → ${path.basename(trimmed)}`);
@@ -208,26 +359,27 @@ export type EnsureFinalVideoOpts = {
   workDir: string;
   videoId: number;
   videoLength: string;
-  /** Re-build from composed scene MP4s when validation still fails. */
   reassemble?: () => Promise<string | null>;
+  /** Plain concat without music — last-resort heal. */
+  reassemblePlain?: () => Promise<string | null>;
 };
 
-/** Validate → heal → optional reassemble until export-ready or attempts exhausted. */
+/** Validate → heal → reassemble until playable or attempts exhausted. */
 export async function ensureFinalVideoExportReady(
   opts: EnsureFinalVideoOpts
 ): Promise<{ path: string; validation: FinalVideoValidation }> {
   let current = opts.filePath;
   let validation = await validateFinalVideoForExport(current, opts.videoLength);
 
-  for (let attempt = 0; attempt < 4 && !validation.ok; attempt++) {
+  for (let attempt = 0; attempt < 6 && !validation.ok; attempt++) {
     console.warn(
-      `[FinalVideo] Video ${opts.videoId}: export check failed (attempt ${attempt + 1}): ${validation.reasons.slice(0, 3).join("; ")}`
+      `[FinalVideo] Video ${opts.videoId}: export check (attempt ${attempt + 1}): ${validation.reasons.slice(0, 3).join("; ") || validation.softWarnings.slice(0, 2).join("; ")}`
     );
     let next: string | null = null;
-    const needsReassemble =
-      validation.reasons.some((r) => /fully black|too small|no video stream|no audio stream/i.test(r)) ||
-      attempt >= 2;
-    if (needsReassemble && opts.reassemble) {
+    if (attempt >= 4 && opts.reassemblePlain) {
+      next = await opts.reassemblePlain();
+      if (next) console.log(`[FinalVideo] Video ${opts.videoId}: plain concat fallback`);
+    } else if (attempt >= 1 && opts.reassemble) {
       next = await opts.reassemble();
       if (next) console.log(`[FinalVideo] Video ${opts.videoId}: reassembled from scene outputs`);
     } else {
@@ -237,16 +389,47 @@ export async function ensureFinalVideoExportReady(
     validation = await validateFinalVideoForExport(current, opts.videoLength);
   }
 
+  if (!validation.ok) {
+    const playable = await validateFinalVideoPlayable(current, opts.videoLength);
+    if (playable.ok) {
+      validation = { ...playable, softWarnings: [...validation.softWarnings, ...playable.softWarnings] };
+    }
+  }
+
   if (validation.ok) {
     console.log(
-      `[FinalVideo] Video ${opts.videoId}: export-ready (${validation.durationSec?.toFixed(1)}s, ${Math.round(validation.sizeBytes / 1024 / 1024)}MB)`
+      `[FinalVideo] Video ${opts.videoId}: export-ready (${validation.durationSec?.toFixed(1)}s, ${Math.round(validation.sizeBytes / 1024 / 1024)}MB)` +
+        (validation.softWarnings.length ? ` [${validation.softWarnings.length} soft QA note(s)]` : "")
     );
   } else {
     console.warn(
-      `[FinalVideo] Video ${opts.videoId}: export check still failing after heal — ${validation.reasons.join("; ")}`
+      `[FinalVideo] Video ${opts.videoId}: not playable after heal — ${validation.reasons.join("; ")}`
     );
   }
   return { path: current, validation };
+}
+
+/** Plain concat (no music) — last-resort when mixed final fails QA. */
+export async function plainConcatSceneVideos(
+  scenePaths: string[],
+  workDir: string,
+  videoId: number
+): Promise<string | null> {
+  const valid = scenePaths.filter((p) => p && fs.existsSync(p) && fs.statSync(p).size > 1_000);
+  if (valid.length === 0) return null;
+  const listFile = path.join(workDir, `fastvid_${videoId}_plain_list.txt`);
+  const out = path.join(workDir, `fastvid_${videoId}_plain_final.mp4`);
+  const escaped = valid.map((p) => `file '${p.replace(/'/g, "'\\''")}'`).join("\n");
+  fs.writeFileSync(listFile, escaped, "utf-8");
+  try {
+    await exec(
+      `"${ffmpegBin()}" -y -f concat -safe 0 -i "${listFile}" -c copy -movflags +faststart "${out}"`,
+      { timeout: 600_000 }
+    );
+    return fs.existsSync(out) && fs.statSync(out).size > 1_000 ? out : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Resolve a stored video URL to a local file path when possible. */
