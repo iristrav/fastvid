@@ -107,6 +107,23 @@ function countFilterMatches(stderr: string, filterName: string): number {
   return (stderr.match(re) ?? []).length;
 }
 
+/** Intentional montage holds (5–8s/archive stills) — log only, never block export. */
+export function isInformationalSpotWarning(warning: string): boolean {
+  return /^freezedetect:/i.test(warning) || /^silencedetect:/i.test(warning);
+}
+
+function countFreezeStarts(stderr: string): number {
+  return (stderr.match(/lavfi\.freezedetect\.freeze_start/gi) ?? []).length;
+}
+
+function countBlackStarts(stderr: string): number {
+  return (stderr.match(/lavfi\.blackdetect\.black_start/gi) ?? []).length;
+}
+
+function countSilentStarts(stderr: string): number {
+  return (stderr.match(/silence_start:/gi) ?? []).length;
+}
+
 /** Run FFmpeg blackdetect + freezedetect + silencedetect on final MP4. */
 async function runFfmpegQualityFilters(filePath: string): Promise<{
   blackSegments: number;
@@ -124,16 +141,16 @@ async function runFfmpegQualityFilters(filePath: string): Promise<{
       { timeout: 90_000, maxBuffer: 4 * 1024 * 1024 }
     );
     const out = String(stderr);
-    const blackSegments = countFilterMatches(out, "blackdetect");
-    const freezeSegments = countFilterMatches(out, "freezedetect");
-    const silentSegments = countFilterMatches(out, "silencedetect");
+    const blackSegments = countBlackStarts(out) || countFilterMatches(out, "blackdetect");
+    const freezeSegments = countFreezeStarts(out);
+    const silentSegments = countSilentStarts(out);
     return { blackSegments, freezeSegments, silentSegments, stderr: out };
   } catch (err) {
     const stderr = String((err as { stderr?: string }).stderr ?? "");
     return {
-      blackSegments: countFilterMatches(stderr, "blackdetect"),
-      freezeSegments: countFilterMatches(stderr, "freezedetect"),
-      silentSegments: countFilterMatches(stderr, "silencedetect"),
+      blackSegments: countBlackStarts(stderr) || countFilterMatches(stderr, "blackdetect"),
+      freezeSegments: countFreezeStarts(stderr),
+      silentSegments: countSilentStarts(stderr),
       stderr,
     };
   }
@@ -197,15 +214,19 @@ export async function spotCheckFinalVideo(filePath: string): Promise<PostRenderS
       warnings.push(`blackdetect: ${blackSegments} black segment(s) in final video`);
     }
     if (freezeSegments > 0) {
-      warnings.push(`freezedetect: ${freezeSegments} frozen segment(s) in final video`);
+      warnings.push(
+        `freezedetect: ${freezeSegments} frozen segment(s) in final video (expected for archive montage holds)`
+      );
     }
     if (silentSegments > 2 && durationSec != null && durationSec > 20) {
       warnings.push(`silencedetect: ${silentSegments} silent gap(s) in audio track`);
     }
   }
 
+  const blockingWarnings = warnings.filter((w) => !isInformationalSpotWarning(w));
+
   return {
-    ok: warnings.length === 0,
+    ok: blockingWarnings.length === 0,
     durationSec,
     framesChecked,
     blackFrameCount,

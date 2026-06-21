@@ -6,7 +6,7 @@ import path from "path";
 import { promisify } from "util";
 import { exec as execCb } from "child_process";
 import { normalizeVideoLength, targetVideoDurationMinutes } from "@shared/videoLengths";
-import { spotCheckFinalVideo } from "./postRenderSpotCheck";
+import { spotCheckFinalVideo, isInformationalSpotWarning } from "./postRenderSpotCheck";
 
 const exec = promisify(execCb);
 
@@ -94,8 +94,9 @@ export async function validateFinalVideoForExport(
   if (!hasAudio) reasons.push("Final video has no audio stream");
 
   const spot = await spotCheckFinalVideo(filePath);
-  if (!spot.ok) {
-    reasons.push(...spot.warnings);
+  const blockingSpotWarnings = spot.warnings.filter((w) => !isInformationalSpotWarning(w));
+  if (blockingSpotWarnings.length > 0) {
+    reasons.push(...blockingSpotWarnings);
   }
 
   const bounds = expectedDurationBoundsSec(videoLength);
@@ -107,7 +108,7 @@ export async function validateFinalVideoForExport(
     reasons.push(`Final video too long (${spot.durationSec.toFixed(1)}s, max ${bounds.max}s)`);
   }
 
-  const spotOk = spot.ok && spot.durationSec != null;
+  const spotOk = blockingSpotWarnings.length === 0 && spot.durationSec != null;
   const ok =
     reasons.length === 0 &&
     hasVideo &&
