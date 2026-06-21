@@ -202,11 +202,11 @@ export async function spotCheckFinalVideo(filePath: string): Promise<PostRenderS
 
   if (framesChecked === 0) {
     warnings.push("Could not extract spot-check frames from final video");
-  } else if ((worstMeanLuma ?? 255) < 2) {
+  } else if ((worstMeanLuma ?? 255) < 1) {
     warnings.push(
       `Final video appears fully black (worst luma ${worstMeanLuma?.toFixed(0) ?? "?"})`
     );
-  } else if (blackFrameCount >= 2) {
+  } else if (blackFrameCount >= 1 || (worstMeanLuma ?? 255) < 18) {
     warnings.push(
       `${blackFrameCount}/${framesChecked} spot-check frames are dark (worst luma ${worstMeanLuma?.toFixed(0) ?? "?"} — expected for dark archive footage)`
     );

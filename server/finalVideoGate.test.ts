@@ -21,5 +21,6 @@ describe("isInformationalSpotWarning", () => {
 
   it("blocks only fully black renders", () => {
     expect(isInformationalSpotWarning("Final video appears fully black (worst luma 1)")).toBe(false);
+    expect(isInformationalSpotWarning("3/4 spot-check frames are dark (worst luma 2)")).toBe(true);
   });
 });

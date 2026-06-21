@@ -224,7 +224,10 @@ export async function ensureFinalVideoExportReady(
       `[FinalVideo] Video ${opts.videoId}: export check failed (attempt ${attempt + 1}): ${validation.reasons.slice(0, 3).join("; ")}`
     );
     let next: string | null = null;
-    if (attempt >= 2 && opts.reassemble) {
+    const needsReassemble =
+      validation.reasons.some((r) => /fully black|too small|no video stream|no audio stream/i.test(r)) ||
+      attempt >= 2;
+    if (needsReassemble && opts.reassemble) {
       next = await opts.reassemble();
       if (next) console.log(`[FinalVideo] Video ${opts.videoId}: reassembled from scene outputs`);
     } else {
