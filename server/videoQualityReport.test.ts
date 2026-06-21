@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildVideoQualityReport,
+  computeMeritQualityScore,
   inferClipSourceFromPath,
   assertQualityReportExportGate,
 } from "./videoQualityReport";
@@ -58,7 +59,7 @@ describe("buildVideoQualityReport", () => {
     expect(() => assertQualityReportExportGate(report)).not.toThrow();
   });
 
-  it("archive-only wwii skips unfair wikimedia and post-hoc geo penalties", () => {
+  it("archive-only wwii scores high with vision-tracked adopts", () => {
     const report = buildVideoQualityReport(
       [
         "/tmp/scene_0_b0_curated_a12.mp4",
@@ -77,13 +78,51 @@ describe("buildVideoQualityReport", () => {
             basename: "scene_0_b0_curated_a12.mp4",
             source: "archive",
             assetTitle: "Berlin street 1945 archival footage",
+            visionScore10: 8,
+          },
+          {
+            sceneIndex: 1,
+            beatIndex: 0,
+            beatText: "Allied forces closed in from every direction.",
+            basename: "scene_1_b1_curated_a44.mp4",
+            source: "archive",
+            assetTitle: "Allied tanks advance Germany 1945",
+            visionScore10: 9,
+          },
+          {
+            sceneIndex: 2,
+            beatIndex: 0,
+            beatText: "Inside the bunker, the end was near.",
+            basename: "scene_2_b2_curated_a88.mp4",
+            source: "archive",
+            assetTitle: "Hitler bunker documentary still",
+            visionScore10: 8,
           },
         ],
       }
     );
     expect(report.visualTopic).toBe("wwii");
-    expect(report.score).toBeGreaterThanOrEqual(45);
+    expect(report.score).toBeGreaterThanOrEqual(85);
     expect(report.criticalGeoViolations ?? []).toHaveLength(0);
+  });
+
+  it("computeMeritQualityScore rewards strong vision averages", () => {
+    const score = computeMeritQualityScore({
+      totalClips: 3,
+      archiveCount: 3,
+      stockCount: 0,
+      fallbackBeats: 0,
+      offTopicCount: 0,
+      geoViolationCount: 0,
+      archiveOnly: true,
+      fastShort: true,
+      byMixKind: { real_video: 3, photo: 0, stock: 0, screenshot: 0, motion_graphics: 0 },
+      adoptAudit: [
+        { sceneIndex: 0, beatIndex: 0, beatText: "a", basename: "a.mp4", source: "archive", visionScore10: 8 },
+        { sceneIndex: 0, beatIndex: 1, beatText: "b", basename: "b.mp4", source: "archive", visionScore10: 9 },
+      ],
+    });
+    expect(score).toBeGreaterThanOrEqual(88);
   });
 
   it("Singapore geo violations are detected in report", () => {

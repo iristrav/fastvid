@@ -118,7 +118,7 @@ import {
   scriptGuidedBudgetMs,
   scriptGuidedClipsEnabled,
 } from "./scriptGuidedClipFinder";
-import { clipPassesVisionGate, clipVisionGateEnabled, effectiveMinClipQualityScore, minClipQualityScore } from "./visualQualityGate";
+import { clipPassesVisionGate, clipVisionGateEnabled, effectiveMinClipQualityScore, evaluateClipVisionGate, minClipQualityScore, targetClipVisionScore, type VisionGateResult } from "./visualQualityGate";
 import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, openverseStillsEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
@@ -172,7 +172,7 @@ import { recordClipReject, summarizeClipRejectAudit } from "./clipRejectAudit";
 import type { ClipAdoptEntry } from "./clipAdoptAudit";
 import { createClipAdoptAudit, recordClipAdopt } from "./clipAdoptAudit";
 import { buildEditorScenesFromPipeline } from "./editorClips";
-import { buildVideoQualityReport, logVideoQualityReport } from "./videoQualityReport";
+import { buildVideoQualityReport, computeMeritQualityScore, logVideoQualityReport } from "./videoQualityReport";
 import { postRenderSpotCheckEnabled, spotCheckFinalVideo } from "./postRenderSpotCheck";
 import { buildEmergencyGeoStockQueries, buildDocumentaryShotQueries, enforceQualityExportGate } from "./pipelineSelfHeal";
 import { extractTitleGeoPlaceTags } from "./worldGeoSlugs";
@@ -13652,28 +13652,26 @@ async function beatClipPassesVisionGate(
   semanticProfile: BeatSemanticProfile | undefined,
   queryLabel: string,
   minScore?: number
-): Promise<boolean> {
+): Promise<VisionGateResult> {
   const scoreFloor =
     minScore ??
     effectiveMinClipQualityScore(dedup.perf.fastStockMode, isFastShortVideoLength(dedup.videoLength));
-  if (
-    !(await clipPassesVisionGate(
-      clipPath,
-      beat.text,
-      videoTitle,
-      workDir,
-      scene.index,
-      beat.index,
-      dedup.perf.fastStockMode,
-      scoreFloor,
-      semanticProfile?.summary,
-      dedup.segmentGeoLock
-    ))
-  ) {
+  const result = await evaluateClipVisionGate(
+    clipPath,
+    beat.text,
+    videoTitle,
+    workDir,
+    scene.index,
+    beat.index,
+    dedup.perf.fastStockMode,
+    scoreFloor,
+    semanticProfile?.summary,
+    dedup.segmentGeoLock
+  );
+  if (!result.pass) {
     recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clipPath, "vision_gate", queryLabel);
-    return false;
   }
-  return true;
+  return result;
 }
 
 async function loadArchiveCandidatePool(
@@ -13829,7 +13827,8 @@ async function adoptArchiveBeatClip(
   const tryClip = async (
     clipPath: string | null | undefined,
     sec = holdSec,
-    adoptMeta?: { source: string; assetTitle?: string }
+    adoptMeta?: { source: string; assetTitle?: string },
+    preVision?: VisionGateResult
   ): Promise<boolean> => {
     if (!clipPath || isPipelineFallbackClip(clipPath)) return false;
     if (dedup.usedContentKeys.has(clipContentKey(clipPath))) {
@@ -13844,8 +13843,9 @@ async function adoptArchiveBeatClip(
       await rejectClip(clipPath);
       return false;
     }
-    if (
-      !(await beatClipPassesVisionGate(
+    const vision =
+      preVision ??
+      (await beatClipPassesVisionGate(
         clipPath,
         beat,
         scene,
@@ -13854,8 +13854,8 @@ async function adoptArchiveBeatClip(
         dedup,
         semanticProfile,
         curated ? "archive" : "archive_fetch"
-      ))
-    ) {
+      ));
+    if (!vision.pass) {
       await rejectClip(clipPath);
       return false;
     }
@@ -13877,7 +13877,8 @@ async function adoptArchiveBeatClip(
         adoptMeta?.source ?? (curated ? "archive" : "archive_fetch"),
         adoptMeta?.assetTitle,
         dedup.segmentGeoLock,
-        curated ? curatedClipPathAssetId(clipPath) ?? undefined : undefined
+        curated ? curatedClipPathAssetId(clipPath) ?? undefined : undefined,
+        vision.worstScore10 ?? undefined
       );
       if (curated) markCuratedArchiveClipUsage(dedup, withText);
       return true;
@@ -13924,6 +13925,12 @@ async function adoptArchiveBeatClip(
       relaxed ? ARCHIVE_VISION_TRY_RELAXED : archiveVisionTryStrict(dedup.perf.fastStockMode, dedup.videoLength)
     );
     let tried = 0;
+    const targetVision = targetClipVisionScore();
+    let bestCandidate: {
+      clip: string;
+      vision: VisionGateResult;
+      assetTitle?: string;
+    } | null = null;
     for (const picked of ranked) {
       if (tried >= tryCap) break;
       if (videosOnly && picked.asset.mediaType !== "video") continue;
@@ -13964,18 +13971,57 @@ async function adoptArchiveBeatClip(
         videoTitle,
         dedup
       );
-      if (await tryClip(clip, holdSec, { source: "archive", assetTitle: picked.asset.title ?? undefined })) {
-        const sceneTags = extractSceneSearchTags(beat.text);
-        const tagHint =
-          sceneTags.length > 0
-            ? `, scene: ${sceneTags.slice(0, 3).join(", ")}`
-            : "";
-        console.log(
-          `[Pipeline] Scene ${scene.index} zin ${beat.index}: gekozen "${picked.asset.title ?? picked.asset.id}" ` +
-            `(score ${picked.score}${picked.semantic ? `, semantic ${picked.semantic.relevanceScore} tier ${picked.semantic.tier} ${picked.semantic.tierLabel}` : ""}${tagHint})`
-        );
-        return true;
+      if (!clip) continue;
+      const vision = await beatClipPassesVisionGate(
+        clip,
+        beat,
+        scene,
+        workDir,
+        videoTitle,
+        dedup,
+        semanticProfile,
+        "archive"
+      );
+      if (!vision.pass) {
+        await rejectClip(clip);
+        continue;
       }
+      const visionScore = vision.worstScore10 ?? targetVision;
+      if (visionScore >= targetVision) {
+        if (
+          await tryClip(clip, holdSec, { source: "archive", assetTitle: picked.asset.title ?? undefined }, vision)
+        ) {
+          const sceneTags = extractSceneSearchTags(beat.text);
+          const tagHint =
+            sceneTags.length > 0
+              ? `, scene: ${sceneTags.slice(0, 3).join(", ")}`
+              : "";
+          console.log(
+            `[Pipeline] Scene ${scene.index} zin ${beat.index}: gekozen "${picked.asset.title ?? picked.asset.id}" ` +
+              `(score ${picked.score}, vision ${visionScore}/10${picked.semantic ? `, semantic ${picked.semantic.relevanceScore} tier ${picked.semantic.tier} ${picked.semantic.tierLabel}` : ""}${tagHint})`
+          );
+          return true;
+        }
+        continue;
+      }
+      const bestScore = bestCandidate?.vision.worstScore10 ?? -1;
+      if (visionScore > bestScore) {
+        bestCandidate = { clip, vision, assetTitle: picked.asset.title ?? undefined };
+      }
+    }
+    if (
+      bestCandidate &&
+      (await tryClip(
+        bestCandidate.clip,
+        holdSec,
+        { source: "archive", assetTitle: bestCandidate.assetTitle },
+        bestCandidate.vision
+      ))
+    ) {
+      console.log(
+        `[Pipeline] Scene ${scene.index} zin ${beat.index}: best-of adopt vision ${bestCandidate.vision.worstScore10 ?? "?"}/10`
+      );
+      return true;
     }
     if (relaxed) {
       const mgfxBudget = {
@@ -14073,27 +14119,38 @@ async function adoptWikimediaBeatClip(
     visionMinScore: number,
     label: string
   ): Promise<boolean> => {
-    if (
-      !clipPath ||
-      !(await beatClipPassesVisionGate(
-        clipPath,
-        beat,
-        scene,
-        workDir,
-        videoTitle,
-        dedup,
-        semanticProfile,
-        label,
-        visionMinScore
-      ))
-    ) {
-      return false;
-    }
+    if (!clipPath) return false;
+    const vision = await beatClipPassesVisionGate(
+      clipPath,
+      beat,
+      scene,
+      workDir,
+      videoTitle,
+      dedup,
+      semanticProfile,
+      label,
+      visionMinScore
+    );
+    if (!vision.pass) return false;
     if (isStillPhotoClip(clipPath) && !canUseDocumentaryStill(dedup)) {
       recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clipPath, "still_cap", label);
       return false;
     }
-    if (!(await tryClip(clipPath, holdSec))) return false;
+    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, holdSec, dedup.perf.fastStockMode);
+    if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) return false;
+    if (!(await pushClip(withText, holdSec))) return false;
+    recordClipAdopt(
+      dedup.clipAdoptAudit,
+      scene.index,
+      beat.index,
+      beat.text,
+      withText,
+      label,
+      undefined,
+      dedup.segmentGeoLock,
+      undefined,
+      vision.worstScore10 ?? undefined
+    );
     if (isStillPhotoClip(clipPath)) markDocumentaryStillUsed(dedup);
     return true;
   };
@@ -14108,7 +14165,6 @@ async function adoptWikimediaBeatClip(
       );
       const wikiVid = wikiVids[0]?.path;
       if (wikiVid && (await adoptWikiPath(wikiVid, minClipQualityScore(), "wikimedia_video"))) {
-        recordClipAdopt(dedup.clipAdoptAudit, scene.index, beat.index, beat.text, wikiVid, "wikimedia");
         console.log(`[Pipeline] Scene ${scene.index} zin ${beat.index}: Wikimedia video`);
         return true;
       }
@@ -14269,7 +14325,7 @@ async function adoptKlingBeatClip(
         semanticProfile,
         "kling",
         minClipQualityScore()
-      ))
+      )).pass
     ) {
       return false;
     }
@@ -14347,7 +14403,7 @@ async function adoptEuropeanaBeatClip(
         semanticProfile,
         "europeana",
         minClipQualityScore()
-      ))
+      )).pass
     ) {
       return false;
     }
@@ -14440,7 +14496,7 @@ async function adoptAiBeatClip(
       semanticProfile,
       "ai",
       5
-    ))
+    )).pass
   ) {
     return false;
   }
@@ -14567,7 +14623,7 @@ async function adoptStockBeatClipFallback(
           dedup,
           semanticProfile,
           q
-        ))
+        )).pass
       ) {
         continue;
       }
@@ -14662,7 +14718,7 @@ async function adoptEmergencyGeoStockClip(
         semanticProfile,
         "emergency_geo",
         minScore
-      ))
+      )).pass
     ) {
       return false;
     }
@@ -18381,8 +18437,20 @@ export async function runVideoPipeline(
       }
       if (!spot.ok) {
         console.warn(`[Pipeline] Post-render spot-check: ${spot.warnings.join("; ")}`);
-        qualityReport.score = Math.max(0, qualityReport.score - 15);
       }
+      qualityReport.score = computeMeritQualityScore({
+        totalClips: qualityReport.totalClips,
+        archiveCount: qualityReport.archiveCount,
+        stockCount: qualityReport.stockCount,
+        fallbackBeats: qualityReport.adoptAuditSummary?.fallbackBeats ?? 0,
+        offTopicCount: qualityReport.offTopicSuspects.length,
+        geoViolationCount: qualityReport.criticalGeoViolations?.length ?? 0,
+        adoptAudit: visualDedup.clipAdoptAudit,
+        archiveOnly: curatedArchiveOnlyVisuals(),
+        fastShort: isFastShortVideoLength(videoLength),
+        byMixKind: qualityReport.byMixKind,
+        postRenderOk: spot.ok,
+      });
     }
 
     enforceQualityExportGate(videoId, qualityReport, videoLength);

@@ -18,6 +18,7 @@ import type { ClipAdoptEntry, AdoptAuditSummary } from "./clipAdoptAudit";
 import { summarizeAdoptAudit } from "./clipAdoptAudit";
 import { isArchiveGeoBlockedForBeat, resolveRequiredGeoTagsForBeat } from "./curatedMediaSourcing";
 import type { BeatGeoRegion } from "./vidrushQuality";
+import { targetClipVisionScore } from "./visualQualityGate";
 
 export type VideoQualityReport = {
   generatedAt: string;
@@ -96,6 +97,73 @@ function emptyMixCounts(): Record<VisualMixKind, number> {
   };
 }
 
+/** Merit-based score from vision QA + sourcing mix (not subtract-from-100 heuristics). */
+export function computeMeritQualityScore(params: {
+  totalClips: number;
+  archiveCount: number;
+  stockCount: number;
+  fallbackBeats: number;
+  offTopicCount: number;
+  geoViolationCount: number;
+  adoptAudit?: ClipAdoptEntry[];
+  archiveOnly: boolean;
+  fastShort: boolean;
+  byMixKind: Record<VisualMixKind, number>;
+  postRenderOk?: boolean;
+}): number {
+  const visionScores = (params.adoptAudit ?? [])
+    .map((e) => e.visionScore10)
+    .filter((s): s is number => typeof s === "number" && s > 0);
+
+  let score: number;
+  if (visionScores.length > 0) {
+    const avg = visionScores.reduce((a, b) => a + b, 0) / visionScores.length;
+    const min = Math.min(...visionScores);
+    score = Math.round(45 + avg * 5.5 + min * 0.5);
+  } else if (params.archiveOnly && params.archiveCount >= params.totalClips * 0.8) {
+    score = 84;
+  } else {
+    score = 72;
+  }
+
+  const archiveRatio = params.totalClips > 0 ? params.archiveCount / params.totalClips : 0;
+  if (params.archiveOnly && archiveRatio >= 0.85) score += 4;
+  if ((params.byMixKind.real_video ?? 0) >= params.totalClips * 0.55) score += 4;
+  if (visionScores.length > 0 && visionScores.every((s) => s >= targetClipVisionScore() - 1)) {
+    score += 3;
+  }
+
+  score -= params.fallbackBeats * 14;
+  score -= Math.min(12, params.stockCount * 3);
+  score -= Math.min(params.fastShort ? 8 : 16, params.offTopicCount * (params.fastShort ? 4 : 8));
+  score -= Math.min(params.fastShort ? 10 : 20, params.geoViolationCount * (params.fastShort ? 6 : 12));
+  if (params.postRenderOk === false) score -= 8;
+
+  const beatsFilled = new Set(
+    (params.adoptAudit ?? []).map((e) => `${e.sceneIndex}:${e.beatIndex}`)
+  ).size;
+  const visionCoverage =
+    beatsFilled > 0 ? visionScores.length / beatsFilled : params.totalClips > 0 ? 1 : 0;
+  if (
+    params.archiveOnly &&
+    params.fallbackBeats === 0 &&
+    params.stockCount === 0 &&
+    visionCoverage >= 0.5 &&
+    (visionScores.length === 0 || visionScores.every((s) => s >= targetClipVisionScore() - 1))
+  ) {
+    score = Math.max(score, 82);
+  }
+  if (
+    visionScores.length >= 3 &&
+    visionScores.every((s) => s >= targetClipVisionScore()) &&
+    params.fallbackBeats === 0
+  ) {
+    score = Math.max(score, 88);
+  }
+
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
 export function buildVideoQualityReport(
   clipPaths: string[],
   videoTitle: string,
@@ -161,17 +229,14 @@ export function buildVideoQualityReport(
     warnings.push(`${bySource.unknown} clip(s) met onbekende bron.`);
   }
 
-  let score = 100;
-  score -= Math.min(30, stockCount * 4);
-  score -= Math.min(fastShort ? 15 : 25, offTopicSuspects.length * (fastShort ? 8 : 12));
-  if (!archiveOnly && wikimediaCount === 0 && unique.length > 2) score -= 8;
-  if (archiveCount === 0 && unique.length > 2) score -= 10;
-  score = Math.max(0, Math.min(100, score));
-
-  const rejectSummary = opts?.rejectAudit?.length
-    ? summarizeClipRejectAudit(opts.rejectAudit)
+  const adoptAuditSummary = opts?.adoptAudit?.length
+    ? summarizeAdoptAudit(opts.adoptAudit)
     : undefined;
-  const topRejects = opts?.rejectAudit?.slice(0, 12);
+  if (adoptAuditSummary) {
+    for (const hint of adoptAuditSummary.hints) {
+      warnings.push(hint);
+    }
+  }
 
   const criticalGeoViolations: VideoQualityReport["criticalGeoViolations"] = [];
   const skipPostHocGeo =
@@ -206,27 +271,25 @@ export function buildVideoQualityReport(
 
   if (criticalGeoViolations.length > 0) {
     warnings.push(`${criticalGeoViolations.length} kritieke geo-fout(en).`);
-    const geoPenalty = fastShort ? 10 : 20;
-    const geoCap = fastShort ? 20 : 40;
-    score -= Math.min(geoCap, criticalGeoViolations.length * geoPenalty);
-    score = Math.max(0, score);
   }
 
-  const adoptAuditSummary = opts?.adoptAudit?.length
-    ? summarizeAdoptAudit(opts.adoptAudit)
+  const rejectSummary = opts?.rejectAudit?.length
+    ? summarizeClipRejectAudit(opts.rejectAudit)
     : undefined;
-  if (adoptAuditSummary) {
-    for (const hint of adoptAuditSummary.hints) {
-      warnings.push(hint);
-    }
-    if (adoptAuditSummary.fallbackBeats > 0) {
-      score -= Math.min(25, adoptAuditSummary.fallbackBeats * 15);
-    }
-    if (adoptAuditSummary.klingBeats > 2) {
-      score -= Math.min(15, (adoptAuditSummary.klingBeats - 2) * 5);
-    }
-    score = Math.max(0, Math.min(100, score));
-  }
+  const topRejects = opts?.rejectAudit?.slice(0, 12);
+
+  const score = computeMeritQualityScore({
+    totalClips: unique.length,
+    archiveCount,
+    stockCount,
+    fallbackBeats: adoptAuditSummary?.fallbackBeats ?? 0,
+    offTopicCount: offTopicSuspects.length,
+    geoViolationCount: criticalGeoViolations.length,
+    adoptAudit: opts?.adoptAudit,
+    archiveOnly,
+    fastShort,
+    byMixKind,
+  });
 
   return {
     generatedAt: new Date().toISOString(),

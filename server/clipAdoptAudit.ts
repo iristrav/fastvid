@@ -12,6 +12,8 @@ export type ClipAdoptEntry = {
   source: string;
   assetTitle?: string;
   segmentGeoLock?: string | null;
+  /** Worst CLIP frame score (0–10) when vision gate ran on adopt. */
+  visionScore10?: number;
 };
 
 export type AdoptAuditSummary = {
@@ -40,7 +42,8 @@ export function recordClipAdopt(
   source: string,
   assetTitle?: string,
   segmentGeoLock?: string | null,
-  assetId?: number
+  assetId?: number,
+  visionScore10?: number
 ): void {
   if (audit.length >= MAX_ENTRIES) return;
   const entry: ClipAdoptEntry = {
@@ -51,6 +54,8 @@ export function recordClipAdopt(
     source,
     assetTitle: assetTitle?.trim() || undefined,
     segmentGeoLock: segmentGeoLock ?? undefined,
+    visionScore10:
+      typeof visionScore10 === "number" && visionScore10 > 0 ? Math.round(visionScore10) : undefined,
   };
   audit.push(entry);
   recordGoodClipAdoption(entry, assetId);

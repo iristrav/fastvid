@@ -314,8 +314,14 @@ async function scoreClipAcrossFrames(
   };
 }
 
-/** Returns true when clip passes local vision gate (or gate skipped). */
-export async function clipPassesVisionGate(
+export type VisionGateResult = {
+  pass: boolean;
+  worstScore10: number | null;
+  skipped: boolean;
+};
+
+/** Evaluate local CLIP vision gate and return pass + worst frame score. */
+export async function evaluateClipVisionGate(
   clipPath: string,
   beatText: string,
   videoTitle: string | undefined,
@@ -326,12 +332,15 @@ export async function clipPassesVisionGate(
   minScore = minClipQualityScore(),
   visualDescription?: string,
   _segmentLock?: unknown
-): Promise<boolean> {
-  if (!clipVisionGateEnabled() || !shouldVisionCheckClip(clipPath, fastMode)) return true;
+): Promise<VisionGateResult> {
+  if (!clipVisionGateEnabled() || !shouldVisionCheckClip(clipPath, fastMode)) {
+    return { pass: true, worstScore10: null, skipped: true };
+  }
 
   const cacheKey = visionGateCacheKey(clipPath, beatText, minScore, visualDescription);
   if (visionGateCache.has(cacheKey)) {
-    return visionGateCache.get(cacheKey)!;
+    const pass = visionGateCache.get(cacheKey)!;
+    return { pass, worstScore10: pass ? minScore : null, skipped: false };
   }
 
   const result = await scoreClipAcrossFrames(
@@ -353,7 +362,46 @@ export async function clipPassesVisionGate(
     );
   }
   rememberVisionGateResult(cacheKey, result.pass);
-  return result.pass;
+  return { pass: result.pass, worstScore10: result.worstScore, skipped: false };
+}
+
+/** Target vision score for high-quality beat adoption (0–10). */
+export function targetClipVisionScore(): number {
+  const raw = process.env.TARGET_CLIP_VISION_SCORE?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 5 && n <= 10) return n;
+  }
+  return 8;
+}
+
+/** Returns true when clip passes local vision gate (or gate skipped). */
+export async function clipPassesVisionGate(
+  clipPath: string,
+  beatText: string,
+  videoTitle: string | undefined,
+  workDir: string,
+  sceneIndex: number,
+  beatIndex: number,
+  fastMode: boolean,
+  minScore = minClipQualityScore(),
+  visualDescription?: string,
+  _segmentLock?: unknown
+): Promise<boolean> {
+  return (
+    await evaluateClipVisionGate(
+      clipPath,
+      beatText,
+      videoTitle,
+      workDir,
+      sceneIndex,
+      beatIndex,
+      fastMode,
+      minScore,
+      visualDescription,
+      _segmentLock
+    )
+  ).pass;
 }
 
 /** Score clip against narration for post-adoption QA (returns null when local vision unavailable). */

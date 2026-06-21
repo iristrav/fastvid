@@ -171,7 +171,7 @@ export function isFastShortVideoLength(videoLength?: string | null): boolean {
 /** Max archive/Wikimedia candidates to try per beat when wall-clock limit is on. */
 export function maxVisualCandidatesPerBeatTry(videoLength?: string | null): number {
   if (!pipelineWallClockLimitEnabled()) return 12;
-  if (isFastShortVideoLength(videoLength)) return 1;
+  if (isFastShortVideoLength(videoLength)) return 2;
   return 2;
 }
 
@@ -416,7 +416,7 @@ export function minQualityExportScore(videoLength?: string | null): number {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 0 && n <= 100) return n;
   }
-  if (isFastShortVideoLength(videoLength)) return 25;
+  if (isFastShortVideoLength(videoLength)) return 70;
   return 45;
 }
 
