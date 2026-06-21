@@ -92,7 +92,7 @@ import {
   type CinematicScenePlan,
 } from "./cinematicEffectsEngine";
 import { PIPELINE_ERROR, pipelineError } from "@shared/appErrors";
-import { isShortVideoLength, normalizeVideoLength } from "@shared/videoLengths";
+import { isShortVideoLength, normalizeVideoLength, targetVideoDurationMinutes } from "@shared/videoLengths";
 import fetch from "node-fetch";
 import {
   extractFullNarrationText,
@@ -11128,7 +11128,7 @@ async function recoverSceneClipsIfEmpty(
   return { clips, beatDurations };
 }
 
-/** Re-try up to two weak archive beats before compose when time budget allows. */
+/** Re-try weak archive beats before compose when time budget allows (all video lengths). */
 async function polishWeakAdoptBeatsBeforeCompose(
   scenes: Scene[],
   sceneVisualResults: SceneVisualsResult[],
@@ -11138,10 +11138,12 @@ async function polishWeakAdoptBeatsBeforeCompose(
   pipelineStartedMs: number,
   videoLength: string
 ): Promise<void> {
-  if (!isFastShortVideoLength(videoLength) || !curatedArchiveOnlyVisuals()) return;
-  const polishBudgetMs = maxPipelineWallClockMin(videoLength) * 60_000 * 0.82;
+  if (!curatedArchiveOnlyVisuals()) return;
+  const polishBudgetMs = maxPipelineWallClockMin(videoLength) * 60_000 * 0.85;
   if (Date.now() - pipelineStartedMs > polishBudgetMs) return;
 
+  const mins = targetVideoDurationMinutes(videoLength);
+  const polishCap = mins <= 1 ? 2 : mins <= 10 ? 4 : 6;
   const target = targetClipVisionScore();
   const weak = dedup.clipAdoptAudit
     .filter(
@@ -11151,7 +11153,7 @@ async function polishWeakAdoptBeatsBeforeCompose(
         e.visionScore10 < target
     )
     .sort((a, b) => (a.visionScore10 ?? 0) - (b.visionScore10 ?? 0))
-    .slice(0, 2);
+    .slice(0, polishCap);
 
   for (const entry of weak) {
     if (Date.now() - pipelineStartedMs > polishBudgetMs) break;

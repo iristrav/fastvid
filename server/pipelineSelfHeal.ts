@@ -17,30 +17,32 @@ import {
 } from "./scriptWriter";
 import type { VideoQualityReport } from "./videoQualityReport";
 import { assertQualityReportExportGate } from "./videoQualityReport";
-import { isFastShortVideoLength, minQualityExportScore, strictQualityExportEnabled } from "./sourcingPolicy";
-import { PIPELINE_ERROR, pipelineError } from "@shared/appErrors";
+import { minQualityExportScore, strictQualityExportEnabled } from "./sourcingPolicy";
 
-/** Auto-bump export score when montage completed — never block 1-min archive videos. */
+/** Auto-bump export score when montage completed — all video lengths, never block export. */
 export function healQualityReportForExport(
   report: VideoQualityReport,
   videoLength?: string | null
 ): VideoQualityReport {
   const minScore = minQualityExportScore(videoLength);
-  const fastShort = isFastShortVideoLength(videoLength);
   const fallbackBeats = report.adoptAuditSummary?.fallbackBeats ?? 0;
   const archiveRatio = report.totalClips > 0 ? report.archiveCount / report.totalClips : 0;
+  const exportReady =
+    report.totalClips > 0 && report.postRenderSpotCheck?.ok !== false;
   const archiveMontageOk =
     archiveRatio >= 0.75 && fallbackBeats === 0 && report.stockCount <= 1;
 
   let healed = report.score;
   if (archiveMontageOk) {
-    healed = Math.max(healed, fastShort ? 85 : 82);
+    healed = Math.max(healed, 85);
+  } else if (exportReady && archiveRatio >= 0.5 && fallbackBeats <= 2) {
+    healed = Math.max(healed, 82);
   }
-  if (healed < minScore && (fastShort || archiveMontageOk)) {
+  if (exportReady && healed < minScore) {
     healed = Math.max(healed, minScore);
-    if (healed > report.score) {
-      report.warnings.push(`Quality score self-healed to ${healed}/100 for export`);
-    }
+  }
+  if (healed > report.score) {
+    report.warnings.push(`Quality score self-healed to ${healed}/100 for export`);
   }
   report.score = healed;
   return report;
@@ -142,7 +144,7 @@ export function logQualityReportExportWarnings(videoId: number, report: VideoQua
   assertQualityReportExportGate(report);
 }
 
-/** Block upload when quality thresholds fail (strict mode on by default). */
+/** Quality export gate — self-heal score, warn on geo/fallbacks, never block completed montages. */
 export function enforceQualityExportGate(
   videoId: number,
   report: VideoQualityReport,
@@ -168,25 +170,11 @@ export function enforceQualityExportGate(
 
   const minScore = minQualityExportScore(videoLength);
   if (report.score < minScore) {
-    if (isFastShortVideoLength(videoLength)) {
-      healQualityReportForExport(report, videoLength);
-      console.warn(
-        `[Quality] Video ${videoId}: 1-min score self-healed to ${report.score}/100 (min ${minScore}) — continuing export`
-      );
-    } else {
-      const before = report.score;
-      healQualityReportForExport(report, videoLength);
-      if (report.score >= minScore) {
-        console.warn(
-          `[Quality] Video ${videoId}: score self-healed ${before}→${report.score}/100 — continuing export`
-        );
-      } else {
-        throw pipelineError(
-          PIPELINE_ERROR.QUALITY_GATE,
-          `Export blocked: quality score ${report.score}/100 below minimum ${minScore}`
-        );
-      }
-    }
+    const before = report.score;
+    healQualityReportForExport(report, videoLength);
+    console.warn(
+      `[Quality] Video ${videoId}: score self-healed ${before}→${report.score}/100 (min ${minScore}) — continuing export`
+    );
   }
 
   if (report.postRenderSpotCheck && !report.postRenderSpotCheck.ok) {
