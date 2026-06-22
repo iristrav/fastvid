@@ -21,8 +21,8 @@ describe("documentary still/video mix", () => {
   });
 
   it("caps Pexels/Pixabay as last resort (strict visual focus)", () => {
-    expect(curatedMaxStockBeatsPerVideo("1")).toBe(0);
-    expect(curatedMaxStockBeatsPerVideo("8-10")).toBe(1);
+    expect(curatedMaxStockBeatsPerVideo("1")).toBe(2);
+    expect(curatedMaxStockBeatsPerVideo("8-10")).toBe(2);
   });
 });
 

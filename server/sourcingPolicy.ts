@@ -76,8 +76,8 @@ export function curatedMaxStockBeatsPerVideo(videoLength?: string | null): numbe
   if (!archivePexelsFallbackEnabled()) return 0;
   if (visualFootageFocusEnabled() && strictVoiceVisualMatchEnabled()) {
     const mins = targetVideoDurationMinutes(videoLength);
-    if (mins <= 1) return 0;
-    return 1;
+    if (mins <= 1) return 2;
+    return 2;
   }
   const raw = process.env.MAX_STOCK_BEATS_PER_VIDEO?.trim();
   if (raw !== undefined && raw !== "") {
@@ -179,12 +179,13 @@ export function isFastShortVideoLength(videoLength?: string | null): boolean {
   return pipelineWallClockLimitEnabled() && targetVideoDurationMinutes(videoLength) <= 1;
 }
 
-/** Weak-beat archive polish before compose (skipped on fast 1-min path by default). */
+/** Weak-beat archive polish before compose (always on when strict voice↔visual match). */
 export function polishBeforeComposeEnabled(
   videoLength?: string | null,
   fastMode = false
 ): boolean {
   if (process.env.ENABLE_POLISH_BEFORE_COMPOSE === "false") return false;
+  if (strictVoiceVisualMatchEnabled()) return true;
   if (fastMode && isFastShortVideoLength(videoLength)) return false;
   return true;
 }
@@ -280,8 +281,8 @@ export function visualFootageFocusEnabled(): boolean {
 export function maxVisualCandidatesPerBeatTry(videoLength?: string | null): number {
   if (!pipelineWallClockLimitEnabled()) return 12;
   if (visualFootageFocusEnabled()) {
-    if (isFastShortVideoLength(videoLength)) return 6;
-    return 5;
+    if (isFastShortVideoLength(videoLength)) return 8;
+    return 6;
   }
   if (isFastShortVideoLength(videoLength)) return 2;
   return 2;

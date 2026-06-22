@@ -14111,7 +14111,7 @@ function archiveVisionTryStrict(fastMode = false, videoLength?: string): number 
     return maxVisualCandidatesPerBeatTry(videoLength);
   }
   if (visualFootageFocusEnabled()) {
-    const fallback = fastMode ? 6 : 8;
+    const fallback = fastMode ? 8 : 10;
     const n = parseInt(process.env.ARCHIVE_VISION_TRY_STRICT || String(fallback), 10);
     return Number.isFinite(n) && n >= 2 ? Math.min(12, n) : fallback;
   }
@@ -14500,6 +14500,51 @@ async function adoptArchiveBeatClip(
         beatQueryEmb
       );
       if (!vision.pass) {
+        if (strictVoiceVisualMatchEnabled() && picked.asset.mediaType === "video") {
+          const altBeatIdx = beat.index + 9000 + scanned;
+          try {
+            const altClip = await prepareCuratedArchiveClip(
+              picked.asset,
+              workDir,
+              scene.index,
+              altBeatIdx,
+              holdSec,
+              {
+                beatText: beat.text,
+                videoTitle,
+                assetId: picked.asset.id,
+                queryEmbedding: beatQueryEmb,
+              }
+            );
+            if (altClip) {
+              const visionAlt = await beatClipPassesVisionGate(
+                altClip,
+                beat,
+                scene,
+                workDir,
+                videoTitle,
+                dedup,
+                semanticProfile,
+                "archive_offset",
+                undefined,
+                beatQueryEmb
+              );
+              if (
+                visionAlt.pass &&
+                (await tryClip(altClip, holdSec, { source: "archive", assetTitle: picked.asset.title ?? undefined }, visionAlt))
+              ) {
+                console.log(
+                  `[Pipeline] Scene ${scene.index} zin ${beat.index}: offset-trim match ` +
+                    `"${picked.asset.title ?? picked.asset.id}" (vision ${visionAlt.worstScore10 ?? "?"}/10)`
+                );
+                return true;
+              }
+              await rejectClip(altClip);
+            }
+          } catch {
+            /* try next candidate */
+          }
+        }
         await rejectClip(clip);
         continue;
       }
@@ -15369,7 +15414,7 @@ async function ensureBeatVisualFilled(
       pushClip,
       holdSec,
       semanticProfile,
-      { skipVision: true }
+      { skipVision: !strictVoiceVisualMatchEnabled() }
     ))
   ) {
     return;
@@ -16013,6 +16058,109 @@ async function fetchArchiveSentenceMontage(
   }
 
   await assertSceneVisualInventory(scene, clips, beatDurations, beats.length, clipBeatIndices, videoTitle);
+  return { clips, beatDurations, beats, clipBeatIndices };
+}
+
+/**
+ * Sequential beat fill — every zin must get a CLIP-verified clip (archive → Wikimedia → stock).
+ * Throws when strict match cannot be satisfied (no grey placeholders).
+ */
+async function refillSceneStrictVoiceMatch(
+  scene: Scene,
+  workDir: string,
+  videoTitle: string | undefined,
+  dedup: VisualDedupState,
+  sceneAudioPath?: string
+): Promise<SceneVisualsResult> {
+  videoTitle = coerceVisionString(videoTitle);
+  const minNeeded = minClipsForBalancedVoice(scene.duration + 0.15);
+  const beatSec = archiveVisualBeatSecForVideo(dedup.videoLength);
+  const beatCap = sceneBeatCapForCadence(scene.duration, dedup.perf.maxBeatsPerScene, beatSec);
+  const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
+  const beats = resolveSceneBeats(scene, scene.duration, beatCap, videoTitle, scenePersons, dedup);
+  await applyVoiceAlignmentToBeats(beats, sceneAudioPath, scene.duration, dedup, scene.index);
+
+  const semanticProfiles = semanticVisualMatchingEnabled()
+    ? await analyzeBeatsSemanticsBatch(
+        beats.map((b) => b.text),
+        videoTitle,
+        { fastMode: false }
+      )
+    : new Map<number, BeatSemanticProfile>();
+
+  const clips: string[] = [];
+  const beatDurations: number[] = [];
+  const clipBeatIndices: number[] = [];
+
+  const pushSceneClip = async (
+    clipPath: string,
+    holdSec: number,
+    beatIndex: number
+  ): Promise<boolean> => {
+    return withVisualDedupLock(dedup, async () => {
+      const key = clipContentKey(clipPath);
+      if (dedup.usedContentKeys.has(key)) return false;
+      let actualHold = holdSec;
+      if (fs.existsSync(clipPath)) {
+        const probed = await probeVideoDurationSec(clipPath);
+        if (probed > 0.15) actualHold = Math.min(holdSec, probed - 0.04);
+      }
+      dedup.usedContentKeys.add(key);
+      clips.push(clipPath);
+      beatDurations.push(actualHold);
+      clipBeatIndices.push(beatIndex);
+      markCuratedAssetUsed(clipPath, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls);
+      return true;
+    });
+  };
+
+  const prevFast = dedup.perf.fastStockMode;
+  dedup.perf = { ...dedup.perf, fastStockMode: false };
+
+  try {
+    for (let bi = 0; bi < beats.length; bi++) {
+      const beat = beats[bi]!;
+      const pushClip = (clipPath: string, holdSec = beat.holdSec) =>
+        pushSceneClip(clipPath, holdSec, beat.index);
+      const profile = semanticProfiles.get(bi);
+      if (!(await fillBeatVisual(beat, scene, workDir, videoTitle, dedup, pushClip, profile, beat.holdSec))) {
+        await ensureBeatVisualFilled(
+          beat,
+          scene,
+          workDir,
+          videoTitle,
+          dedup,
+          pushClip,
+          profile,
+          beat.holdSec
+        );
+      }
+      dedup.visualBeatsCompleted = (dedup.visualBeatsCompleted ?? 0) + 1;
+    }
+
+    await ensureArchiveMontageVoiceCoverage(
+      scene,
+      workDir,
+      videoTitle,
+      dedup,
+      clips,
+      beatDurations,
+      clipBeatIndices,
+      beats,
+      semanticProfiles
+    );
+  } finally {
+    dedup.perf.fastStockMode = prevFast;
+  }
+
+  const usable = clips.filter((c) => c && !isPipelineFallbackClip(c));
+  if (usable.length < minNeeded) {
+    throw pipelineError(
+      PIPELINE_ERROR.FFMPEG,
+      `Scene ${scene.index}: ${beats.length} zinnen maar ${usable.length} voice/script-matchende clips — export geblokkeerd`
+    );
+  }
+
   return { clips, beatDurations, beats, clipBeatIndices };
 }
 
@@ -17428,6 +17576,42 @@ async function composeSceneVideo(
       console.warn(
         `[Pipeline] Scene ${scene.index}: geen bruikbare clips — strict voice↔visual, geen guaranteed fill`
       );
+      if (
+        strictVoiceVisualMatchEnabled() &&
+        composeOptions?.dedup &&
+        composeOptions.montageBeats?.length
+      ) {
+        const recovered: string[] = [];
+        const seenRecover = new Set<string>();
+        const title = coerceVisionString(composeOptions.videoTitle);
+        for (const beat of composeOptions.montageBeats) {
+          await ensureBeatVisualFilled(
+            beat,
+            scene,
+            workDir,
+            title,
+            composeOptions.dedup,
+            async (clipPath, holdSec) => {
+              const key = clipContentKey(clipPath);
+              if (seenRecover.has(key)) return false;
+              if (!(await montageClipPassesComposeGate(clipPath, scene.index, recovered.length))) {
+                return false;
+              }
+              seenRecover.add(key);
+              recovered.push(clipPath);
+              return true;
+            },
+            undefined,
+            beat.holdSec
+          );
+        }
+        for (const clipPath of recovered) {
+          const key = clipContentKey(clipPath);
+          if (seenKeys.has(key)) continue;
+          seenKeys.add(key);
+          validClips.push(clipPath);
+        }
+      }
     }
   }
 
@@ -18898,18 +19082,50 @@ export async function runVideoPipeline(
         }
       }
       if (sceneVisualResults[si].clips.length === 0) {
-        console.warn(`[Pipeline] Scene ${scenes[si].index}: still empty — guaranteed scene fill`);
-        const scene = scenes[si];
-        const clips: string[] = [];
-        const beatDurations: number[] = [];
-        await appendGuaranteedSceneClips(
-          scene,
-          workDir,
-          clips,
-          beatDurations,
-          minClipsForBalancedVoice(scene.duration + 0.15)
+        if (strictVoiceVisualMatchEnabled()) {
+          console.warn(
+            `[Pipeline] Scene ${scenes[si].index}: strict refill — elke zin moet voice/script-matchen`
+          );
+          sceneVisualResults[si] = await refillSceneStrictVoiceMatch(
+            scenes[si],
+            workDir,
+            topicContext,
+            visualDedup,
+            audioPaths[si]
+          );
+        } else {
+          console.warn(`[Pipeline] Scene ${scenes[si].index}: still empty — guaranteed scene fill`);
+          const scene = scenes[si];
+          const clips: string[] = [];
+          const beatDurations: number[] = [];
+          await appendGuaranteedSceneClips(
+            scene,
+            workDir,
+            clips,
+            beatDurations,
+            minClipsForBalancedVoice(scene.duration + 0.15)
+          );
+          sceneVisualResults[si] = { clips, beatDurations };
+        }
+      }
+    }
+
+    if (strictVoiceVisualMatchEnabled()) {
+      for (let si = 0; si < scenes.length; si++) {
+        const vr = sceneVisualResults[si];
+        const minNeeded = minClipsForBalancedVoice(scenes[si].duration + 0.15);
+        const usable = (vr?.clips ?? []).filter((c) => c && !isPipelineFallbackClip(c));
+        if (usable.length >= minNeeded) continue;
+        console.warn(
+          `[Pipeline] Scene ${scenes[si].index}: ${usable.length}/${minNeeded} clips — strict beat refill`
         );
-        sceneVisualResults[si] = { clips, beatDurations };
+        sceneVisualResults[si] = await refillSceneStrictVoiceMatch(
+          scenes[si],
+          workDir,
+          topicContext,
+          visualDedup,
+          audioPaths[si]
+        );
       }
     }
 
