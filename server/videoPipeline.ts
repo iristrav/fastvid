@@ -562,6 +562,12 @@ function toQueryString(raw: unknown): string {
   return asVideoTitleString(raw).trim();
 }
 
+function coercePersonName(raw: unknown): string {
+  if (typeof raw === "string") return raw.trim();
+  if (raw == null) return "";
+  return asVideoTitleString(raw).trim();
+}
+
 function queryStringsMinLen(parts: unknown[], minLen = 3): string[] {
   return parts.map(toQueryString).filter((s) => s.length >= minLen);
 }
@@ -700,7 +706,7 @@ function buildBeatYoutubeQueries(
     ...new Set(
       [
         ...realEntityYoutubeQueriesForBeat(beat.text, scene.text, videoTitle),
-        ...(personName.trim()
+        ...(coercePersonName(personName)
           ? buildPersonCelebrityVideoQueries(personName, beat.text, beat.index)
           : []),
         ...buildTopicDocumentaryYoutubeQueries(beat, scene, videoTitle),
@@ -918,7 +924,7 @@ async function fetchBeatArchivalThenPexels(
   );
   if (isAuthenticVideoClip(hist ?? "")) return hist;
 
-  if (personName.trim() && !historicalDoc) {
+  if (coercePersonName(personName) && !historicalDoc) {
     const celebVids = await fetchPersonCelebrityVideoClips(
       personName,
       clipFetchDur,
@@ -1142,12 +1148,12 @@ async function fetchBeatAuthenticStills(
   ].filter((q): q is string => typeof q === "string" && q.trim().length > 3);
   const queryCap = historicalDoc ? 3 : dedup.perf.fastStockMode ? 2 : 4;
   const unique = [...new Set(queries)].slice(0, queryCap);
-  const personPortrait = Boolean(personName.trim()) && !historicalDoc;
+  const personPortrait = Boolean(coercePersonName(personName)) && !historicalDoc;
   const trySerp = SERPAPI_KEY && (historicalDoc || !dedup.perf.fastStockMode);
 
   if (trySerp) {
     for (let qi = 0; qi < Math.min(unique.length, historicalDoc ? 3 : 1); qi++) {
-      const serpQ = personPortrait && personName.trim()
+      const serpQ = personPortrait && coercePersonName(personName)
         ? buildPersonSerpQuery(personName, sceneIndex, beat.index, beat.text)
         : (unique[qi] ?? beat.searchQuery);
       const serpPaths = await fetchSerpAPIImages(
@@ -1205,7 +1211,7 @@ async function fetchBeatAuthenticStills(
     }
   }
 
-  const ovQ = personPortrait && personName.trim()
+  const ovQ = personPortrait && coercePersonName(personName)
     ? `${personName} ${unique[0] ?? ""}`.trim()
     : (unique[0] ?? beat.searchQuery);
   if ((historicalDoc || !dedup.perf.fastStockMode) && ovQ.length > 3) {
@@ -7931,7 +7937,7 @@ function maxStillPhotosForScene(_sceneIndex: number, hasPerson: boolean, personT
 }
 
 function beatMentionsPerson(beatText: string, personName: string): boolean {
-  if (!personName.trim()) return false;
+  if (!coercePersonName(personName)) return false;
   const lower = beatText.toLowerCase();
   const parts = personName.toLowerCase().split(/\s+/).filter((p) => p.length >= 2);
   if (parts.length >= 2) {
@@ -7992,9 +7998,12 @@ function scriptEventSearchQueries(beatText: string, persons: string[]): string[]
 }
 
 function resolveScenePersons(scene: Scene, videoTitle?: string, globalPrimaryPerson?: string): string[] {
-  const persons = new Set((scene.personNames ?? []).map((n) => n.trim()).filter(Boolean));
+  const persons = new Set(
+    (scene.personNames ?? []).map(coercePersonName).filter((n) => n.length > 0)
+  );
   for (const n of extractPersonNamesFromText(scene.text)) persons.add(n);
-  const titlePerson = globalPrimaryPerson?.trim() || extractPrimaryPersonFromTitle(videoTitle);
+  const titlePerson =
+    coercePersonName(globalPrimaryPerson) || extractPrimaryPersonFromTitle(coerceVisionString(videoTitle));
   if (titlePerson) persons.add(titlePerson);
   return Array.from(persons);
 }
@@ -10714,7 +10723,9 @@ function enrichStockQuery(
   beatText?: string
 ): string {
   if (beatText?.trim()) {
-    const persons = personName ? [personName, ...(scene.personNames ?? [])] : (scene.personNames ?? []);
+    const persons = coercePersonName(personName)
+      ? [coercePersonName(personName), ...(scene.personNames ?? []).map(coercePersonName)]
+      : (scene.personNames ?? []).map(coercePersonName);
     const fromScript = scriptStockSearchQueries(beatText, persons, scene.text, videoTitle);
     if (fromScript.length > 0) return fromScript[0];
   }
@@ -11659,7 +11670,7 @@ async function fetchLastResortRealClip(
 
   const ytQueries = [
     ...realEntityYoutubeQueriesForBeat(beat.text, scene.text, videoTitle),
-    ...(personName.trim()
+    ...(coercePersonName(personName)
       ? buildPersonCelebrityVideoQueries(personName, beat.text, beat.index)
       : []),
   ];
@@ -11743,7 +11754,7 @@ async function fetchPersonBeatClip(
   tag: string
 ): Promise<string | null> {
   const personLocked = dedup.personTopicLock && Boolean(dedup.primaryPerson);
-  if (!personName.trim()) return null;
+  if (!coercePersonName(personName)) return null;
   if (!personLocked && !beatMentionsPerson(beat.text, personName)) return null;
 
   const personQueries = buildPersonCelebrityVideoQueries(personName, beat.text, beat.index);
@@ -13273,7 +13284,7 @@ async function fetchBeatPersonStockVideo(
   adoptOpts: VisualAdoptOptions,
   reason: string
 ): Promise<string | null> {
-  if (!personName.trim()) return null;
+  if (!coercePersonName(personName)) return null;
   const personAdopt: VisualAdoptOptions = {
     ...adoptOpts,
     requireBeatMatch: false,
@@ -13536,7 +13547,7 @@ async function fetchBeatAuthenticVideo(
   if (youtubeSourcingEnabled()) {
     const ytQueries = [
       ...realEntityYoutubeQueriesForBeat(beat.text, scene.text, videoTitle),
-      ...(personName.trim() ? buildPersonCelebrityVideoQueries(personName, beat.text, beat.index) : []),
+      ...(coercePersonName(personName) ? buildPersonCelebrityVideoQueries(personName, beat.text, beat.index) : []),
       ...(videoTitle?.trim() ? [`${videoTitle} documentary footage`, `${videoTitle} archival`] : []),
     ];
     const yt = await tryBeatRealYouTubeFootage(
@@ -13560,7 +13571,7 @@ async function fetchBeatAuthenticVideo(
   );
   if (isAuthenticVideoClip(hist ?? "")) return hist;
 
-  if (personName.trim()) {
+  if (coercePersonName(personName)) {
     const celebVids = await fetchPersonCelebrityVideoClips(
       personName,
       clipFetchDur,
@@ -15130,12 +15141,12 @@ async function adoptStockBeatClipFallback(
         ...scriptQueries,
         beat.searchQuery,
         beat.powerWord,
-        enrichStockQuery(scene.pexelsQuery, scene, videoTitle, scenePersons[0] ?? "", beat.text),
+        enrichStockQuery(scene.pexelsQuery, scene, videoTitle, coercePersonName(scenePersons[0]), beat.text),
       ]
         .filter((q): q is string => typeof q === "string" && q.trim().length > 2 && !isBlockedStockQuery(q))
         .map((q) => simplifyStockSearchWord(q, beat.text, true))
     ),
-  ].slice(0, dedup.perf.minimizeStockFootage ? 2 : STOCK_QUERY_CAP + 3);
+  ].slice(0, strictVoiceVisualMatchEnabled() ? STOCK_QUERY_CAP + 2 : dedup.perf.minimizeStockFootage ? 2 : STOCK_QUERY_CAP + 3);
 
   if (queries.length === 0) return false;
 
