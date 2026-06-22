@@ -48,7 +48,7 @@ export function defaultMaxHamming(): number {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 0 && n <= 24) return n;
   }
-  return 10;
+  return 8;
 }
 
 async function extractGray8x8FromFile(
@@ -195,6 +195,135 @@ function isAdjacentSameSourceFragment(
   return gap <= maxGapSec;
 }
 
+function rangesOverlapRatio(
+  a: { startSec: number; endSec: number },
+  b: { startSec: number; endSec: number }
+): number {
+  const overlap = Math.min(a.endSec, b.endSec) - Math.max(a.startSec, b.startSec);
+  if (overlap <= 0) return 0;
+  const minDur = Math.min(a.endSec - a.startSec, b.endSec - b.startSec);
+  return minDur > 0 ? overlap / minDur : 0;
+}
+
+export type ArchiveFingerprintEntry = {
+  fp: bigint[];
+  fragment: ParsedArchiveFragment | null;
+  exactKey?: string;
+};
+
+/** Fingerprints of clips already stored in an archive (for upload dedup). */
+export async function buildArchiveFingerprintIndex(
+  assets: Array<{
+    sourceNote?: string | null;
+    storageUrl: string;
+    storageKey: string | null;
+    mimeType: string | null;
+    mediaType: "video" | "image";
+    durationSec: number | null;
+  }>
+): Promise<ArchiveFingerprintEntry[]> {
+  const entries: ArchiveFingerprintEntry[] = [];
+  for (const asset of assets) {
+    const local = resolveArchiveAssetPath(asset);
+    if (!local) continue;
+    try {
+      const mime =
+        asset.mimeType ?? (asset.mediaType === "image" ? "image/jpeg" : "video/mp4");
+      const fp = await fingerprintMediaFileMulti(local, {
+        durationSec: asset.durationSec,
+        mimeType: mime,
+      });
+      if (fp == null) continue;
+      entries.push({
+        fp,
+        fragment: parseArchiveFragmentNote(asset.sourceNote),
+      });
+    } catch {
+      /* skip unreadable */
+    }
+  }
+  return entries;
+}
+
+function segmentMatchesArchiveIndex(
+  seg: VideoClipSegment,
+  exactKey: string,
+  fp: bigint[] | null,
+  fragment: ParsedArchiveFragment | null,
+  index: ArchiveFingerprintEntry[],
+  maxDist: number
+): boolean {
+  for (const entry of index) {
+    if (entry.exactKey === exactKey) return true;
+    if (fp != null && entry.fp.length > 0 && isNearDuplicateFingerprint(entry.fp, fp, maxDist)) {
+      return true;
+    }
+    if (
+      fragment != null &&
+      entry.fragment != null &&
+      fp != null &&
+      entry.fp.length > 0 &&
+      isAdjacentSameSourceFragment(entry.fragment, fragment, 4) &&
+      isNearDuplicateFingerprint(entry.fp, fp, maxDist + 1)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Drop clips that duplicate existing archive entries or earlier clips in this upload batch.
+ */
+export async function dedupeSegmentsForArchiveUpload(
+  segments: VideoClipSegment[],
+  existingIndex: ArchiveFingerprintEntry[],
+  parentSource?: string | null
+): Promise<{ kept: VideoClipSegment[]; skipped: number }> {
+  const maxDist = defaultMaxHamming();
+  const index: ArchiveFingerprintEntry[] = [...existingIndex];
+  const kept: VideoClipSegment[] = [];
+  let skipped = 0;
+
+  for (const seg of segments) {
+    const exactKey = exactBufferKey(seg.buffer);
+    const fragment = parentSource
+      ? {
+          sourceKey: parentSource.trim().toLowerCase(),
+          startSec: seg.startSec,
+          endSec: seg.endSec,
+        }
+      : null;
+
+    const overlapsKept = kept.some((k) => rangesOverlapRatio(seg, k) >= 0.65);
+    if (overlapsKept) {
+      skipped += 1;
+      continue;
+    }
+
+    const fp = await fingerprintVideoBuffer(seg.buffer, "video/mp4", seg.durationSec);
+
+    if (segmentMatchesArchiveIndex(seg, exactKey, fp, fragment, index, maxDist)) {
+      skipped += 1;
+      console.log(
+        `[ArchiveDedup] skip duplicate upload clip ${seg.index + 1} ` +
+          `(${seg.startSec.toFixed(1)}–${seg.endSec.toFixed(1)}s)`
+      );
+      continue;
+    }
+
+    if (fp != null) {
+      index.push({ fp, fragment, exactKey });
+    }
+    kept.push({ ...seg, index: kept.length });
+  }
+
+  if (skipped > 0) {
+    console.log(`[ArchiveDedup] upload filter: ${skipped} duplicate(s) skipped, ${kept.length} unique`);
+  }
+  return { kept, skipped };
+}
+
 /** Drop visually near-duplicate segments from a split batch (keeps first occurrence). */
 export async function dedupeVideoSegmentsVisually(
   segments: VideoClipSegment[]
@@ -208,6 +337,12 @@ export async function dedupeVideoSegmentsVisually(
   for (const seg of segments) {
     const exact = exactBufferKey(seg.buffer);
     if (exactKeys.has(exact)) {
+      skipped += 1;
+      continue;
+    }
+
+    const overlapsKept = kept.some((k) => rangesOverlapRatio(seg, k) >= 0.65);
+    if (overlapsKept) {
       skipped += 1;
       continue;
     }
