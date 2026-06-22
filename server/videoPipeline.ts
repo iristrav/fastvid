@@ -140,7 +140,7 @@ import {
   uniqueQueryStrings,
   uniqueCoercedQueries,
 } from "./stringCoercion";
-import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, openverseStillsEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, maxPipelineWallClockMin, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled } from "./sourcingPolicy";
+import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, maxPipelineWallClockMin, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -220,6 +220,11 @@ import { ensureFinalVideoExportReady, plainConcatSceneVideos } from "./finalVide
 import { extractTitleGeoPlaceTags } from "./worldGeoSlugs";
 import { fetchWikimediaTitlesForVideoGeo, wikimediaGeosearchEnabled } from "./wikimediaGeoSearch";
 import { buildEuropeanaBeatQueries, titleSuggestsEuropeana } from "./europeanaGeo";
+import {
+  buildInternetArchiveGeoQueries,
+  buildWikimediaVideoGeoQueries,
+  isGeoDocumentaryContext,
+} from "./geoDocumentarySources";
 import { buildMontageBranchNormVF } from "./documentaryStyle";
 
 // API Keys
@@ -4177,9 +4182,11 @@ async function fetchOpenverseImages(
     dedup?: VisualDedupState;
     beatIndex?: number;
     stillStyleContext?: StillStyleContext;
+    geoDocumentary?: boolean;
   } = {}
 ): Promise<string[]> {
-  if (!openverseStillsEnabled()) return [];
+  const geoOk = Boolean(opts.geoDocumentary && openverseGeoDocumentaryEnabled());
+  if (!openverseStillsEnabled() && !geoOk) return [];
   const results: string[] = [];
   try {
     // Search Openverse for CC-licensed images (commercial use + modification allowed)
@@ -14692,6 +14699,15 @@ async function adoptWikimediaBeatClip(
   const geoQueries = buildGeoStockSearchQueries(beat.text, videoTitle).slice(0, 3);
   const titleGeo = extractTitleGeoPlaceTags(videoTitle).slice(0, 3);
   const wikiQueries = buildV1WikimediaQueries(baseAnalysis, videoTitle).slice(0, dedup.perf.fastStockMode ? 3 : 5);
+  const geoVideoQueries = uniqueQueryStrings(
+    [
+      ...wikiQueries,
+      ...geoQueries,
+      ...buildWikimediaVideoGeoQueries(beat.text, videoTitle),
+      toQueryString(beat.searchQuery),
+    ],
+    3
+  ).slice(0, dedup.perf.fastStockMode ? 5 : 8);
 
   const adoptWikiPath = async (
     clipPath: string | null | undefined,
@@ -14734,7 +14750,7 @@ async function adoptWikimediaBeatClip(
     return true;
   };
 
-  for (const q of wikiQueries) {
+  for (const q of geoVideoQueries) {
     if (!wantVideo) break;
     try {
       const wikiVids = await withTimeout(
@@ -14854,11 +14870,18 @@ async function adoptWikimediaBeatClip(
     }
   }
 
-  const openverseQueries = [...new Set([...wikiQueries, ...geoQueries, beat.searchQuery].filter(Boolean))].slice(0, 4);
+  const geoDoc = isGeoDocumentaryContext(beat.text, videoTitle);
+  const openverseQueries = uniqueQueryStrings(
+    [...wikiQueries, ...geoQueries, beat.searchQuery],
+    3
+  ).slice(0, geoDoc ? 6 : 4);
   for (const q of openverseQueries) {
     try {
       const ovPaths = await withTimeout(
-        fetchOpenverseImages(q, holdSec, workDir, scene.index, 1, `wiki${beat.index}ov`, { beatIndex: beat.index }),
+        fetchOpenverseImages(q, holdSec, workDir, scene.index, 1, `wiki${beat.index}ov`, {
+          beatIndex: beat.index,
+          geoDocumentary: geoDoc,
+        }),
         dedup.perf.fastStockMode ? 14_000 : 25_000,
         `Openverse scene ${scene.index} beat ${beat.index}`
       );
@@ -14872,6 +14895,83 @@ async function adoptWikimediaBeatClip(
     } catch {
       /* try next query */
     }
+  }
+  return false;
+}
+
+/** Internet Archive — free documentary video for geo/urban beats (CLIP-gated per beat). */
+async function adoptInternetArchiveBeatClip(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  videoTitle: string | undefined,
+  dedup: VisualDedupState,
+  pushClip: (clipPath: string, holdSec?: number) => boolean | Promise<boolean>,
+  holdSec: number,
+  semanticProfile?: BeatSemanticProfile
+): Promise<boolean> {
+  if (!isGeoDocumentaryContext(beat.text, videoTitle)) return false;
+
+  const tryClip = async (clipPath: string | null | undefined, sec = holdSec): Promise<boolean> => {
+    if (!clipPath || isPipelineFallbackClip(clipPath)) return false;
+    if (dedup.usedContentKeys.has(clipContentKey(clipPath))) return false;
+    if (await isMostlyBlackClip(clipPath)) return false;
+    if (
+      !(await beatClipPassesVisionGate(
+        clipPath,
+        beat,
+        scene,
+        workDir,
+        videoTitle,
+        dedup,
+        semanticProfile,
+        "internet_archive",
+        minClipQualityScore()
+      )).pass
+    ) {
+      return false;
+    }
+    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode);
+    if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) return false;
+    if (await pushClip(withText, sec)) {
+      dedup.usedContentKeys.add(clipContentKey(withText));
+      recordClipAdopt(
+        dedup.clipAdoptAudit,
+        scene.index,
+        beat.index,
+        beat.text,
+        withText,
+        "internet_archive",
+        undefined,
+        dedup.segmentGeoLock
+      );
+      console.log(`[Pipeline] Scene ${scene.index} zin ${beat.index}: Internet Archive geo clip`);
+      return true;
+    }
+    return false;
+  };
+
+  const queries = buildInternetArchiveGeoQueries(beat.text, videoTitle, beat.index);
+  const beatKeywords = beat.keywords ?? [];
+  try {
+    const hits = await fetchInternetArchiveClips(
+      queries,
+      holdSec,
+      workDir,
+      scene.index,
+      dedup.perf.fastStockMode ? 2 : 3,
+      `b${beat.index}_ia`,
+      "",
+      beatKeywords
+    );
+    for (const hit of hits) {
+      if (await tryClip(hit.path, holdSec)) return true;
+    }
+  } catch (err) {
+    console.warn(
+      `[Pipeline] Internet Archive scene ${scene.index} beat ${beat.index}:`,
+      (err as Error).message?.slice(0, 100)
+    );
   }
   return false;
 }
@@ -15805,6 +15905,9 @@ async function fillBeatVisual(
     ) {
       return true;
     }
+    if (await adoptInternetArchiveBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
+      return true;
+    }
     if (!openingVideosOnly && !fastShort) {
       if (await adoptEuropeanaBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
         return true;
@@ -15841,6 +15944,9 @@ async function fillBeatVisual(
     }
   } else {
     if (await adoptWikimediaBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
+      return true;
+    }
+    if (await adoptInternetArchiveBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
       return true;
     }
     if (await adoptEuropeanaBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
@@ -15920,6 +16026,9 @@ async function retryAuthenticBeforeLicensedStock(
     ) {
       return true;
     }
+    if (await adoptInternetArchiveBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
+      return true;
+    }
     if (!openingVideosOnly) {
       if (
         await adoptArchiveBeatClip(
@@ -15958,6 +16067,9 @@ async function retryAuthenticBeforeLicensedStock(
     return false;
   }
   if (await adoptWikimediaBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
+    return true;
+  }
+  if (await adoptInternetArchiveBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
     return true;
   }
   return adoptArchiveBeatClip(

@@ -22,6 +22,13 @@ export function openverseStillsEnabled(): boolean {
   return true;
 }
 
+/** Openverse for geo/urban documentary beats even in archive-first strict mode. */
+export function openverseGeoDocumentaryEnabled(): boolean {
+  if (process.env.ENABLE_OPENVERSE_GEO === "false") return false;
+  if (process.env.ENABLE_OPENVERSE_GEO === "true") return true;
+  return strictVoiceVisualMatchEnabled() || visualFootageFocusEnabled();
+}
+
 /** Wikimedia Commons still photos — on when V1 matching is on (not random Openverse). */
 export function wikimediaInternetStillsEnabled(): boolean {
   if (process.env.ENABLE_WIKIMEDIA_STILLS === "false") return false;
