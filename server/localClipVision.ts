@@ -226,6 +226,26 @@ export async function resolveBeatQueryEmbedding(
   return resolveBeatVisionQueryEmbedding({ beatText, visualDescription, videoTitle });
 }
 
+/** Rich CLIP gate context — script [visual:] cues, beat description, semantic summary. */
+export function beatGateVisualDescription(
+  beat: { text: string; visualDescription?: string; searchQuery?: string; powerWord?: string },
+  semanticProfile?: { summary?: string }
+): string | undefined {
+  const parts: string[] = [];
+  const cue = beat.text.match(/\[visual:\s*([^\]]+)\]/i)?.[1];
+  if (cue?.trim()) parts.push(cue.trim());
+  for (const raw of [
+    beat.visualDescription,
+    semanticProfile?.summary,
+    beat.searchQuery,
+    beat.powerWord,
+  ]) {
+    const v = coerceVisionString(raw)?.trim();
+    if (v && !parts.some((p) => p.toLowerCase() === v.toLowerCase())) parts.push(v);
+  }
+  return parts.length ? parts.join(". ").slice(0, 320) : undefined;
+}
+
 function significantBeatTokens(beatText: string, videoTitle?: string): Set<string> {
   const text = `${asVideoTitleString(videoTitle)} ${beatText}`.toLowerCase();
   const tokens = text.match(/[a-zà-ÿ]{4,}/g) ?? [];

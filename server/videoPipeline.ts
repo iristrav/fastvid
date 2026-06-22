@@ -131,7 +131,7 @@ import {
 } from "./archiveClipEmbedding";
 import { scheduleStockClipEmbedding, scheduleStockClipEmbeddingByKey, rankStockVideoIdsByEmbedding, stockClipEmbeddingEnabled } from "./stockClipEmbedding";
 import { pickStockInClipStartSec, stockInClipOffsetEnabled } from "./clipInClipOffset";
-import { resolveBeatVisionQueryEmbedding, coerceVisionString, asVideoTitleString } from "./localClipVision";
+import { resolveBeatVisionQueryEmbedding, coerceVisionString, asVideoTitleString, beatGateVisualDescription } from "./localClipVision";
 import {
   coercePersonName,
   toQueryString,
@@ -8192,6 +8192,8 @@ interface SceneBeat {
   keywords: string[];
   /** Seconds this beat stays on screen (3–4 default, up to 7 when merged). */
   holdSec: number;
+  /** Script [visual:…] cue or visual anchor — fed into CLIP gate. */
+  visualDescription?: string;
   /** TTS-aligned window within scene voice (seconds). */
   voiceStartSec?: number;
   voiceEndSec?: number;
@@ -8404,6 +8406,9 @@ type VisualAdoptOptions = {
   keywords?: string[];
   sceneText?: string;
   videoTitle?: string;
+  /** Rich CLIP query context (semantic summary, [visual:] cue). */
+  visualDescription?: string;
+  semanticSummary?: string;
   /** Hero/opening: require Tesla/SpaceX tokens in slug or query. */
   requireMuskBrand?: boolean;
   /** Clip must match words in the beat narration (real footage on-topic). */
@@ -10872,6 +10877,9 @@ function buildSceneBeats(
       searchQuery = stockQueryFromBeatScript(text, scenePersons, scene.text, videoTitle);
     }
     let holdSec = estimateBeatHoldSec(text, groups[i].sentenceCount);
+    const visualCues = extractInlineVisualCues(text);
+    const visualDescription =
+      visualCues[0] ?? (visualAnchor || geoTag || undefined);
     beats.push({
       index: i,
       text,
@@ -10879,6 +10887,7 @@ function buildSceneBeats(
       powerWord,
       keywords: buildRelevanceKeywords(scene, text),
       holdSec,
+      visualDescription,
     });
   }
 
@@ -10922,6 +10931,12 @@ async function adoptClip(
 ): Promise<string | null> {
   const keywords = opts.keywords ?? [];
   const muskTopic = opts.muskTopic ?? false;
+  const strictBeat = strictVoiceVisualMatchEnabled() && !opts.scriptImageFallback;
+  const requireBeat = opts.requireBeatMatch || strictBeat;
+  const scriptAnchored = opts.scriptAnchored || strictBeat;
+  const gateVisualDesc =
+    [opts.visualDescription, opts.semanticSummary].filter(Boolean).join(". ").slice(0, 320) ||
+    undefined;
   const entityRules = extractBeatRealEntities(beatText, opts.sceneText ?? "", opts.videoTitle ?? "");
   const sortedPaths = [...paths].sort((a, b) => {
     const stillA = isStillPhotoClip(a) ? 1 : 0;
@@ -10992,8 +11007,8 @@ async function adoptClip(
       const queryWords = sourceQuery.split(/\s+/).filter((w) => w.length >= 3);
       const queryInBeat = scoreVisualRelevance(beatText, queryWords) >= 1;
       if (!opts.scriptImageFallback) {
-        if (opts.requireBeatMatch && beatMatch < 1 && !queryInBeat) continue;
-        if (opts.scriptAnchored && beatMatch < 1 && !queryInBeat && entityRules.length === 0) continue;
+        if (requireBeat && beatMatch < 1 && !queryInBeat) continue;
+        if (scriptAnchored && beatMatch < 1 && !queryInBeat && entityRules.length === 0) continue;
         if (opts.personTopic && opts.primaryPerson) {
           const parts = opts.primaryPerson.toLowerCase().split(/\s+/).filter((x) => x.length >= 3);
           const hay = `${sourceQuery} ${path.basename(p)}`.toLowerCase();
@@ -11027,7 +11042,11 @@ async function adoptClip(
           workDir,
           sceneIndex,
           beatIndex,
-          dedup.perf.fastStockMode
+          dedup.perf.fastStockMode,
+          undefined,
+          gateVisualDesc,
+          undefined,
+          null
         ))
       ) {
         recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, p, "vision_gate", sourceQuery);
@@ -11547,6 +11566,7 @@ async function polishWeakAdoptBeatsBeforeCompose(
   pipelineStartedMs: number,
   videoLength: string
 ): Promise<void> {
+  if (strictVoiceVisualMatchEnabled()) return;
   if (!curatedArchiveOnlyVisuals()) return;
   if (!polishBeforeComposeEnabled(videoLength, dedup.perf?.fastStockMode)) return;
   const polishBudgetMs = maxPipelineWallClockMin(videoLength) * 60_000 * 0.85;
@@ -14183,6 +14203,7 @@ async function beatClipPassesVisionGate(
   const scoreFloor =
     minScore ??
     effectiveMinClipQualityScore(dedup.perf.fastStockMode, isFastShortVideoLength(dedup.videoLength));
+  const visualDesc = beatGateVisualDescription(beat, semanticProfile);
   const result = await evaluateClipVisionGate(
     clipPath,
     beat.text,
@@ -14192,7 +14213,7 @@ async function beatClipPassesVisionGate(
     beat.index,
     dedup.perf.fastStockMode,
     scoreFloor,
-    semanticProfile?.summary,
+    visualDesc,
     dedup.segmentGeoLock,
     queryEmb
   );
@@ -15143,6 +15164,7 @@ async function adoptAiBeatClip(
   semanticProfile?: BeatSemanticProfile,
   opts?: { skipVision?: boolean }
 ): Promise<boolean> {
+  if (strictVoiceVisualMatchEnabled()) return false;
   if (!dedup.perf.enableAiFallback || dedup.aiClipsUsed >= dedup.perf.maxAiClipsPerVideo) return false;
   if (!aiProvidersReady()) return false;
 
@@ -15173,8 +15195,7 @@ async function adoptAiBeatClip(
       videoTitle,
       dedup,
       semanticProfile,
-      "ai",
-      5
+      "ai"
     )).pass
   ) {
     return false;
@@ -15220,15 +15241,82 @@ async function adoptStockBeatClipFallback(
     return false;
   }
 
-  const tryClip = async (clipPath: string | null | undefined, sec = holdSec): Promise<boolean> => {
+  const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
+
+  const tryClip = async (
+    clipPath: string | null | undefined,
+    q: string,
+    source: "Pexels" | "Pixabay",
+    sec = holdSec
+  ): Promise<boolean> => {
     if (!clipPath || isPipelineFallbackClip(clipPath)) return false;
     if (await isMostlyBlackClip(clipPath)) return false;
+    const vision = await beatClipPassesVisionGate(
+      clipPath,
+      beat,
+      scene,
+      workDir,
+      videoTitle,
+      dedup,
+      semanticProfile,
+      q
+    );
+    if (!vision.pass) return false;
     const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode);
     if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) return false;
-    return await pushClip(withText, sec);
+    if (!(await pushClip(withText, sec))) return false;
+    recordClipAdopt(
+      dedup.clipAdoptAudit,
+      scene.index,
+      beat.index,
+      beat.text,
+      withText,
+      source === "Pexels" ? "pexels" : "pixabay",
+      undefined,
+      dedup.segmentGeoLock,
+      undefined,
+      vision.worstScore10 ?? undefined
+    );
+    return true;
   };
 
-  const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
+  const tryStockPaths = async (
+    paths: string[],
+    q: string,
+    source: "Pexels" | "Pixabay"
+  ): Promise<boolean> => {
+    for (const clipPath of paths) {
+      if (!clipPath || !fs.existsSync(clipPath)) continue;
+      if (dedup.usedContentKeys.has(clipContentKey(clipPath))) continue;
+      if (isRejectedStockClip(clipPath, q)) continue;
+      if (
+        isArchiveGeoBlockedForBeat(
+          { title: `${q} ${path.basename(clipPath)}`, tags: [] },
+          beat.text,
+          videoTitle,
+          dedup.segmentGeoLock
+        )
+      ) {
+        continue;
+      }
+      if (
+        dedup.personTopicLock &&
+        dedup.primaryPerson &&
+        isOffTopicVisualForPersonTopic(q, clipPath, dedup.primaryPerson)
+      ) {
+        continue;
+      }
+      dedup.usedPaths.add(clipPath);
+      if (await tryClip(clipPath, q, source, holdSec)) {
+        markLicensedStockBeatUsed(dedup);
+        dedup.lastMuskStockClip = clipPath;
+        console.log(`[Pipeline] Scene ${scene.index} zin ${beat.index}: ${source} voor "${q}"`);
+        return true;
+      }
+    }
+    return false;
+  };
+
   const semanticQueries = semanticProfile
     ? buildSemanticPexelsQueries(beat.text, semanticProfile, 6, videoTitle)
     : [];
@@ -15265,57 +15353,6 @@ async function adoptStockBeatClipFallback(
   console.warn(
     `[Pipeline] Scene ${scene.index} zin ${beat.index}: stock fallback (${queries.slice(0, 3).join(", ")})`
   );
-
-  const tryStockPaths = async (
-    paths: string[],
-    q: string,
-    source: "Pexels" | "Pixabay"
-  ): Promise<boolean> => {
-    for (const clipPath of paths) {
-      if (!clipPath || !fs.existsSync(clipPath)) continue;
-      if (dedup.usedContentKeys.has(clipContentKey(clipPath))) continue;
-      if (isRejectedStockClip(clipPath, q)) continue;
-      if (
-        isArchiveGeoBlockedForBeat(
-          { title: `${q} ${path.basename(clipPath)}`, tags: [] },
-          beat.text,
-          videoTitle,
-          dedup.segmentGeoLock
-        )
-      ) {
-        continue;
-      }
-      if (
-        dedup.personTopicLock &&
-        dedup.primaryPerson &&
-        isOffTopicVisualForPersonTopic(q, clipPath, dedup.primaryPerson)
-      ) {
-        continue;
-      }
-      if (
-        !(await beatClipPassesVisionGate(
-          clipPath,
-          beat,
-          scene,
-          workDir,
-          videoTitle,
-          dedup,
-          semanticProfile,
-          q
-        )).pass
-      ) {
-        continue;
-      }
-      dedup.usedPaths.add(clipPath);
-      if (await tryClip(clipPath, holdSec)) {
-        markLicensedStockBeatUsed(dedup);
-        dedup.lastMuskStockClip = clipPath;
-        console.log(`[Pipeline] Scene ${scene.index} zin ${beat.index}: ${source} voor "${q}"`);
-        return true;
-      }
-    }
-    return false;
-  };
 
   for (let qi = 0; qi < queries.length; qi++) {
     const q = queries[qi]!;
@@ -15380,6 +15417,7 @@ async function adoptEmergencyGeoStockClip(
   holdSec: number,
   semanticProfile?: BeatSemanticProfile
 ): Promise<boolean> {
+  if (strictVoiceVisualMatchEnabled()) return false;
   if (!archivePexelsFallbackEnabled()) return false;
   if (!canUseLicensedStockBeat(dedup)) return false;
 
@@ -15496,7 +15534,7 @@ async function ensureBeatVisualFilled(
   if (await retryAuthenticBeforeLicensedStock(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
     return;
   }
-  if (canUseLicensedStockBeat(dedup)) {
+  if (!strictVoiceVisualMatchEnabled() && canUseLicensedStockBeat(dedup)) {
     console.warn(
       `[Pipeline] Scene ${scene.index} zin ${beat.index}: self-heal — emergency geo stock`
     );
@@ -15543,21 +15581,8 @@ async function ensureBeatVisualFilled(
   }
   if (
     !strictVoiceVisualMatchEnabled() &&
-    (await adoptAiBeatClip(
-      beat,
-      scene,
-      workDir,
-      videoTitle,
-      dedup,
-      pushClip,
-      holdSec,
-      semanticProfile,
-      { skipVision: !strictVoiceVisualMatchEnabled() }
-    ))
+    (await adoptKlingBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile))
   ) {
-    return;
-  }
-  if (await adoptKlingBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
     return;
   }
   if (!canAddGuaranteedFallbackClip(dedup)) {
@@ -15863,6 +15888,7 @@ async function fillBeatVisual(
         return true;
       }
     }
+    if (strictVoiceVisualMatchEnabled()) return false;
     return adoptArchiveBeatClip(
       beat,
       scene,
@@ -19448,7 +19474,8 @@ export async function runVideoPipeline(
       }
       const beatsForReview = vr.beats.map((b) => ({
         ...b,
-        visualDescription: b.text.slice(0, 220),
+        visualDescription:
+          beatGateVisualDescription(b, undefined) ?? b.visualDescription ?? b.text.slice(0, 220),
       }));
       const critical = await reviewSceneCritical(
         scenes[i]!.index,

@@ -17,6 +17,7 @@ import {
   scoreFramePathsAgainstBeat,
 } from "./localClipVision";
 import { minClipQualityScore } from "./visualQualityGate";
+import { strictVoiceVisualMatchEnabled } from "./sourcingPolicy";
 import { voiceVisualAuditMinScore } from "./voiceVisualMatch";
 
 export type VoiceMontageSyncCheck = {
@@ -40,9 +41,11 @@ export function voiceMontageSyncAuditEnabled(): boolean {
   return true;
 }
 
-/** When true, failed sync audit blocks export (STRICT_VOICE_MONTAGE_SYNC=true). */
+/** When true, failed sync audit blocks export (default ON with strict voice↔visual match). */
 export function strictVoiceMontageSyncExport(): boolean {
-  return process.env.STRICT_VOICE_MONTAGE_SYNC === "true";
+  if (process.env.STRICT_VOICE_MONTAGE_SYNC === "false") return false;
+  if (process.env.STRICT_VOICE_MONTAGE_SYNC === "true") return true;
+  return strictVoiceVisualMatchEnabled();
 }
 
 const MAX_TIMELINE_DRIFT_SEC = 0.45;
