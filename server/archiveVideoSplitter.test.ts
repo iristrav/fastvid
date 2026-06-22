@@ -73,6 +73,14 @@ describe("archiveVideoSplitter", () => {
     expect(kept.length).toBe(3);
   });
 
+  it("capClipRanges evenly samples when shot count exceeds max and no flash merges", () => {
+    const ranges = Array.from({ length: 10 }, (_, i) => ({ start: i * 2, end: i * 2 + 1.5 }));
+    const capped = capClipRanges(ranges, 4);
+    expect(capped.length).toBe(4);
+    expect(capped[0]?.start).toBe(0);
+    expect(capped[capped.length - 1]?.start).toBeGreaterThan(10);
+  });
+
   it("enforceMinClipDuration merges sub-min clips with neighbors", () => {
     const merged = enforceMinClipDuration(
       [

@@ -411,8 +411,14 @@ export function capClipRanges(
     const mergeIdx = flashOnly();
     if (mergeIdx === -1) {
       console.warn(
-        `[ArchiveSplit] ${result.length} shots exceeds max ${maxClips} — keeping separate clips (no multi-shot merge)`
+        `[ArchiveSplit] ${result.length} shots exceeds max ${maxClips} — evenly sampling ${maxClips} clips`
       );
+      const step = result.length / maxClips;
+      const sampled: Array<{ start: number; end: number }> = [];
+      for (let i = 0; i < maxClips; i++) {
+        sampled.push(result[Math.floor(i * step)]!);
+      }
+      result = sampled.sort((a, b) => a.start - b.start);
       break;
     }
     result[mergeIdx].end = result[mergeIdx + 1].end;
@@ -673,19 +679,49 @@ async function extractVideoSegment(
   inputPath: string,
   outputPath: string,
   startSec: number,
-  endSec: number
+  endSec: number,
+  preferStreamCopy = false
 ): Promise<void> {
-  const durationSec = endSec - startSec;
+  const durationSec = Math.max(0.05, endSec - startSec);
   const perClipTimeout = Math.round(
-    Math.max(30_000, Math.min(180_000, durationSec * 5000))
+    Math.max(20_000, Math.min(120_000, durationSec * 4000 + 15_000))
   );
-  // -ss after -i for frame-accurate cuts (avoids bleeding the next/previous shot).
-  await exec(
-    `${ffmpegBin()} -y -i "${inputPath}" -ss ${startSec.toFixed(3)} -to ${endSec.toFixed(3)} ` +
+  const start = startSec.toFixed(3);
+  const dur = durationSec.toFixed(3);
+
+  const strategies: string[] = [];
+  if (preferStreamCopy) {
+    strategies.push(
+      `${ffmpegBin()} -y -ss ${start} -i "${inputPath}" -t ${dur} -an -c:v copy ` +
+        `-movflags +faststart -avoid_negative_ts make_zero "${outputPath}"`,
+      `${ffmpegBin()} -y -i "${inputPath}" -ss ${start} -t ${dur} -an -c:v copy ` +
+        `-movflags +faststart -avoid_negative_ts make_zero "${outputPath}"`
+    );
+  }
+  strategies.push(
+    `${ffmpegBin()} -y -ss ${start} -i "${inputPath}" -t ${dur} ` +
       `-c:v libx264 -preset ultrafast -crf 23 -an -pix_fmt yuv420p -movflags +faststart ` +
       `-avoid_negative_ts make_zero -reset_timestamps 1 -threads 2 "${outputPath}"`,
-    { maxBuffer: 8 * 1024 * 1024, timeout: perClipTimeout }
+    `${ffmpegBin()} -y -i "${inputPath}" -ss ${start} -t ${dur} ` +
+      `-c:v libx264 -preset ultrafast -crf 23 -an -pix_fmt yuv420p -movflags +faststart ` +
+      `-avoid_negative_ts make_zero -reset_timestamps 1 -threads 2 "${outputPath}"`
   );
+
+  let lastErr = "extract failed";
+  for (const cmd of strategies) {
+    try {
+      await exec(cmd, { maxBuffer: 8 * 1024 * 1024, timeout: perClipTimeout });
+      if (fs.existsSync(outputPath) && fs.statSync(outputPath).size >= 8000) return;
+    } catch (err) {
+      lastErr = (err as Error).message?.slice(0, 160) ?? lastErr;
+      try {
+        fs.unlinkSync(outputPath);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  throw new Error(lastErr);
 }
 
 async function splitSegmentBufferAtInteriorCuts(
@@ -976,6 +1012,7 @@ export async function splitVideoBySceneChanges(
         if (ranges.length === before) break;
       }
     }
+    ranges = capClipRanges(ranges, maxArchiveClips());
     console.log(
       `[ArchiveSplit] ${cuts.length} shot cuts → ${ranges.length} clip(s) (${totalDur.toFixed(1)}s, ` +
         `scdet=${scdetThreshold()} scene=${sceneThreshold()})`
@@ -1045,6 +1082,9 @@ export async function splitVideoBySceneChanges(
       clipIndex: 0,
     });
 
+    const extractSourcePath = inputPath;
+    const streamCopyExtract = path.extname(inputPath).toLowerCase() === ".mp4" && isH264Codec(await probeVideoCodec(inputPath));
+
     const extractResults = await mapPool(
       ranges,
       extractConcurrency(),
@@ -1060,7 +1100,7 @@ export async function splitVideoBySceneChanges(
           clipTotal: ranges.length,
         });
         try {
-          await extractVideoSegment(analysisPath, outPath, start, end);
+          await extractVideoSegment(extractSourcePath, outPath, start, end, streamCopyExtract);
           const buf = fs.readFileSync(outPath);
           if (buf.length < 8000) return null;
           return {
@@ -1090,7 +1130,15 @@ export async function splitVideoBySceneChanges(
     throwIfCancelled();
 
     if (segments.length === 0) {
-      throw new ArchiveSplitError("Shot detection found cuts but clip extraction failed (FFmpeg).");
+      throw new ArchiveSplitError(
+        `Shot detection found ${ranges.length} cuts but clip extraction failed (FFmpeg). ` +
+          "Try a shorter video or disable auto-split."
+      );
+    }
+    if (segments.length < ranges.length) {
+      console.warn(
+        `[ArchiveSplit] partial extract: ${segments.length}/${ranges.length} clips saved — continuing`
+      );
     }
 
     report({
