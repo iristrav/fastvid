@@ -171,7 +171,12 @@ export function maxPipelineWallClockHardMin(videoLength?: string | null): number
     return Math.round(PIPELINE_UNLIMITED_MS / 60_000);
   }
   const target = maxPipelineWallClockMin(videoLength);
-  return Math.min(360, Math.round(target * pipelineWallClockGraceFactor()));
+  let grace = pipelineWallClockGraceFactor();
+  // Strict 1-min: CLIP-gated archive refill needs headroom beyond the 10 min target.
+  if (strictVoiceVisualMatchEnabled() && isFastShortVideoLength(videoLength)) {
+    grace = Math.max(grace, 1.5);
+  }
+  return Math.min(360, Math.round(target * grace));
 }
 
 /** ≤1 min videos on wall-clock-limited hosts (Railway worker). */
@@ -294,10 +299,11 @@ export function visualStageWallClockMin(videoLength?: string | null): number {
     return Math.round(PIPELINE_UNLIMITED_MS / 60_000);
   }
   const total = maxPipelineWallClockMin(videoLength);
+  const hard = maxPipelineWallClockHardMin(videoLength);
   const mins = targetVideoDurationMinutes(videoLength);
   if (mins <= 1) {
-    // Visual focus: more archive tries before stock/fallback within total budget.
-    if (visualFootageFocusEnabled()) return 12;
+    // Visual focus: more archive tries; cap so compose/TTS keep ~2 min within hard limit.
+    if (visualFootageFocusEnabled()) return Math.min(13, Math.max(10, hard - 2));
     return 10;
   }
   return Math.max(8, Math.min(total - 6, Math.round(total * 0.88)));
