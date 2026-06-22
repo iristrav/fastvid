@@ -46,7 +46,15 @@ describe("archiveClipDedup", () => {
     });
   });
 
-  it("isNearDuplicateFingerprint rejects when samples do not align", () => {
+  it("fragments from same source with identical time range are redundant", () => {
+    const a = parseArchiveFragmentNote("Fragment uit netherlands.mp4 (16:54–16:55)");
+    const b = parseArchiveFragmentNote("Fragment uit netherlands.mp4 (16:54–16:55)");
+    expect(a).not.toBeNull();
+    expect(b).not.toBeNull();
+    expect(a!.sourceKey).toBe(b!.sourceKey);
+    expect(a!.startSec).toBe(b!.startSec);
+    expect(a!.endSec).toBe(b!.endSec);
+  });
     const a = [1n, 2n, 3n];
     const b = [255n, 254n, 253n];
     expect(isNearDuplicateFingerprint(a, b, 2)).toBe(false);

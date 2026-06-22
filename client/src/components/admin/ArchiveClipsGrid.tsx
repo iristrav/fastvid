@@ -1092,7 +1092,7 @@ export function ArchiveClipsGrid({
             ) : (
               <Copy className="w-3.5 h-3.5" />
             )}
-            {dedupeDuplicates.isPending ? "Duplicates…" : "Remove duplicates"}
+            {dedupeDuplicates.isPending ? "Duplicates… (even geduld)" : "Remove duplicates"}
           </button>
         )}
         {assets.length > 0 && (

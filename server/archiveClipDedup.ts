@@ -85,12 +85,70 @@ async function extractGray8x8FromFile(
   }
 }
 
-function seekPointsForDuration(durationSec?: number | null): number[] {
-  if (durationSec != null && durationSec > 0.8) {
-    if (durationSec <= 1.5) return [durationSec * 0.35, durationSec * 0.65];
-    return [durationSec * 0.25, durationSec * 0.5, durationSec * 0.75];
+function seeksForFingerprint(durationSec?: number | null, fast = false): number[] {
+  if (fast) {
+    if (durationSec != null && durationSec > 0.8) return [durationSec * 0.35];
+    return [0.35];
   }
-  return [0.35];
+  return seekPointsForDuration(durationSec);
+}
+
+function dedupeFingerprintConcurrency(): number {
+  const raw = process.env.ARCHIVE_DEDUP_CONCURRENCY?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 1 && n <= 12) return n;
+  }
+  return 6;
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  if (items.length === 0) return [];
+  const out: R[] = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (true) {
+      const i = next++;
+      if (i >= items.length) return;
+      out[i] = await fn(items[i]!, i);
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, items.length) }, () => worker())
+  );
+  return out;
+}
+
+function fragmentsAreRedundant(a: ParsedArchiveFragment, b: ParsedArchiveFragment): boolean {
+  if (a.sourceKey !== b.sourceKey) return false;
+  if (a.startSec === b.startSec && a.endSec === b.endSec) return true;
+  return (
+    rangesOverlapRatio(
+      { startSec: a.startSec, endSec: a.endSec },
+      { startSec: b.startSec, endSec: b.endSec }
+    ) >= 0.85
+  );
+}
+
+function exactSampleKey(localPath: string): string | null {
+  try {
+    const stat = fs.statSync(localPath);
+    const sampleLen = Math.min(stat.size, 96_000);
+    const sample = Buffer.alloc(sampleLen);
+    const fd = fs.openSync(localPath, "r");
+    try {
+      fs.readSync(fd, sample, 0, sampleLen, 0);
+    } finally {
+      fs.closeSync(fd);
+    }
+    return exactBufferKey(sample);
+  } catch {
+    return null;
+  }
 }
 
 export async function fingerprintMediaFile(
@@ -103,7 +161,7 @@ export async function fingerprintMediaFile(
 
 export async function fingerprintMediaFileMulti(
   filePath: string,
-  opts?: { seekSec?: number; mimeType?: string; durationSec?: number | null }
+  opts?: { seekSec?: number; mimeType?: string; durationSec?: number | null; fast?: boolean }
 ): Promise<bigint[] | null> {
   const mime = opts?.mimeType ?? "";
   if (mime.startsWith("image/") || /\.(jpe?g|png|webp|gif)$/i.test(filePath)) {
@@ -114,7 +172,7 @@ export async function fingerprintMediaFileMulti(
   const seeks =
     opts?.seekSec != null
       ? [opts.seekSec]
-      : seekPointsForDuration(opts?.durationSec);
+      : seeksForFingerprint(opts?.durationSec, opts?.fast);
   const hashes: bigint[] = [];
   for (const seek of seeks) {
     const gray = await extractGray8x8FromFile(filePath, seek);
@@ -222,25 +280,33 @@ export async function buildArchiveFingerprintIndex(
     durationSec: number | null;
   }>
 ): Promise<ArchiveFingerprintEntry[]> {
+  const fast = assets.length > 12;
   const entries: ArchiveFingerprintEntry[] = [];
-  for (const asset of assets) {
-    const local = resolveArchiveAssetPath(asset);
-    if (!local) continue;
+  const candidates = assets
+    .map((asset) => ({ asset, local: resolveArchiveAssetPath(asset) }))
+    .filter((row): row is { asset: (typeof assets)[0]; local: string } => Boolean(row.local));
+
+  const rows = await mapWithConcurrency(candidates, dedupeFingerprintConcurrency(), async ({ asset, local }) => {
     try {
       const mime =
         asset.mimeType ?? (asset.mediaType === "image" ? "image/jpeg" : "video/mp4");
       const fp = await fingerprintMediaFileMulti(local, {
         durationSec: asset.durationSec,
         mimeType: mime,
+        fast,
       });
-      if (fp == null) continue;
-      entries.push({
+      if (fp == null) return null;
+      return {
         fp,
         fragment: parseArchiveFragmentNote(asset.sourceNote),
-      });
+      } satisfies ArchiveFingerprintEntry;
     } catch {
-      /* skip unreadable */
+      return null;
     }
+  });
+
+  for (const row of rows) {
+    if (row) entries.push(row);
   }
   return entries;
 }
@@ -406,70 +472,90 @@ export async function dedupeArchiveVisualDuplicates(
     mediaType: "video" | "image";
     durationSec: number | null;
   }>
-): Promise<{ deleteIds: number[]; scanned: number }> {
+): Promise<{ deleteIds: number[]; scanned: number; metadataDeleted: number }> {
   const maxDist = defaultMaxHamming();
   const sorted = [...assets].sort((a, b) => a.id - b.id);
-  const keptEntries: Array<{ fp: bigint[]; fragment: ParsedArchiveFragment | null }> = [];
-  const keptExact = new Set<string>();
   const deleteIds: number[] = [];
-  let scanned = 0;
+  const deleteSet = new Set<number>();
+  let metadataDeleted = 0;
 
+  const keptFragments: ParsedArchiveFragment[] = [];
   for (const asset of sorted) {
-    scanned += 1;
-    const local = resolveArchiveAssetPath(asset);
-    if (!local) continue;
-
     const fragment = parseArchiveFragmentNote(asset.sourceNote);
-
-    try {
-      const stat = fs.statSync(local);
-      const sampleLen = Math.min(stat.size, 96_000);
-      const sample = Buffer.alloc(sampleLen);
-      const fd = fs.openSync(local, "r");
-      try {
-        fs.readSync(fd, sample, 0, sampleLen, 0);
-      } finally {
-        fs.closeSync(fd);
-      }
-      const exact = exactBufferKey(sample);
-      if (keptExact.has(exact)) {
-        deleteIds.push(asset.id);
-        continue;
-      }
-
-      const mime =
-        asset.mimeType ??
-        (asset.mediaType === "image" ? "image/jpeg" : "video/mp4");
-      const fp = await fingerprintMediaFileMulti(local, {
-        durationSec: asset.durationSec,
-        mimeType: mime,
-      });
-
-      const visualDup =
-        fp != null &&
-        keptEntries.some((entry) => isNearDuplicateFingerprint(entry.fp, fp, maxDist));
-
-      const adjacentDup =
-        fragment != null &&
-        fp != null &&
-        keptEntries.some(
-          (entry) =>
-            entry.fragment != null &&
-            isAdjacentSameSourceFragment(entry.fragment, fragment) &&
-            isNearDuplicateFingerprint(entry.fp, fp, maxDist + 2)
-        );
-
-      if (visualDup || adjacentDup) {
-        deleteIds.push(asset.id);
-        continue;
-      }
-
-      keptExact.add(exact);
-      if (fp != null) keptEntries.push({ fp, fragment });
-    } catch {
-      /* skip unreadable */
+    if (!fragment) continue;
+    const redundant = keptFragments.some((f) => fragmentsAreRedundant(f, fragment));
+    if (redundant) {
+      deleteIds.push(asset.id);
+      deleteSet.add(asset.id);
+      metadataDeleted += 1;
+      continue;
     }
+    keptFragments.push(fragment);
   }
 
-  return { deleteIds, scanned };
+  const remaining = sorted.filter((a) => !deleteSet.has(a.id));
+  const candidates = remaining
+    .map((asset) => ({ asset, local: resolveArchiveAssetPath(asset) }))
+    .filter((row): row is { asset: (typeof assets)[0]; local: string } => Boolean(row.local));
+
+  type FpRow = {
+    id: number;
+    fp: bigint[] | null;
+    fragment: ParsedArchiveFragment | null;
+    exact: string | null;
+  };
+
+  const fpRows = await mapWithConcurrency(candidates, dedupeFingerprintConcurrency(), async ({ asset, local }) => {
+    const mime =
+      asset.mimeType ?? (asset.mediaType === "image" ? "image/jpeg" : "video/mp4");
+    const fp = await fingerprintMediaFileMulti(local, {
+      durationSec: asset.durationSec,
+      mimeType: mime,
+      fast: true,
+    });
+    return {
+      id: asset.id,
+      fp,
+      fragment: parseArchiveFragmentNote(asset.sourceNote),
+      exact: exactSampleKey(local),
+    } satisfies FpRow;
+  });
+
+  const keptEntries: Array<{ fp: bigint[]; fragment: ParsedArchiveFragment | null }> = [];
+  const keptExact = new Set<string>();
+
+  for (const row of fpRows.sort((a, b) => a.id - b.id)) {
+    if (deleteSet.has(row.id)) continue;
+
+    if (row.exact && keptExact.has(row.exact)) {
+      deleteIds.push(row.id);
+      deleteSet.add(row.id);
+      continue;
+    }
+
+    const visualDup =
+      row.fp != null &&
+      keptEntries.some((entry) => isNearDuplicateFingerprint(entry.fp, row.fp!, maxDist));
+
+    const adjacentDup =
+      row.fragment != null &&
+      row.fp != null &&
+      keptEntries.some(
+        (entry) =>
+          entry.fragment != null &&
+          isAdjacentSameSourceFragment(entry.fragment, row.fragment!) &&
+          isNearDuplicateFingerprint(entry.fp, row.fp!, maxDist + 2)
+      );
+
+    if (visualDup || adjacentDup) {
+      deleteIds.push(row.id);
+      deleteSet.add(row.id);
+      continue;
+    }
+
+    if (row.exact) keptExact.add(row.exact);
+    if (row.fp != null) keptEntries.push({ fp: row.fp, fragment: row.fragment });
+  }
+
+  return { deleteIds, scanned: assets.length, metadataDeleted };
 }
