@@ -8,6 +8,7 @@ import { uniqueQueryStrings } from "./stringCoercion";
 import { inferBeatGeoRegion } from "./vidrushQuality";
 import { extractBeatGeoPlaceTags, inferVideoVisualTopic } from "./visualBeatTags";
 import { extractTitleGeoPlaceTags } from "./worldGeoSlugs";
+import { beatVisualSearchSubjects } from "./scriptVisualKeywords";
 
 export function isGeoDocumentaryContext(beatText: string, videoTitle?: string): boolean {
   if (inferVideoVisualTopic(videoTitle, beatText) === "geography_urban") return true;
@@ -25,10 +26,11 @@ export function buildInternetArchiveGeoQueries(
   videoTitle?: string,
   beatIndex = 0
 ): string[] {
+  const scriptSubjects = beatVisualSearchSubjects(beatText);
   const titleGeo = extractTitleGeoPlaceTags(videoTitle);
   const beatGeo = buildGeoStockSearchQueries(beatText, videoTitle);
   const region = inferBeatGeoRegion(beatText, videoTitle);
-  const raw: unknown[] = [];
+  const raw: unknown[] = [...scriptSubjects];
 
   for (const t of titleGeo.slice(0, 3)) {
     raw.push(`title:(${t}) AND mediatype:movies`);
@@ -52,21 +54,24 @@ export function buildInternetArchiveGeoQueries(
     raw.push("united states city documentary", "american suburban sprawl documentary");
   }
 
-  for (const q of beatGeo.slice(0, 8)) {
+  for (const q of beatGeo.slice(0, 4)) {
     raw.push(q);
     raw.push(`${q} documentary`);
   }
 
-  const beatAnchored: unknown[] = [];
   const narration = beatText.replace(/\[visual:[^\]]+\]/gi, " ").trim().slice(0, 55);
   if (narration.length >= 8) {
-    beatAnchored.push(`${narration} documentary`, `${narration} footage`);
+    raw.unshift(`${narration} documentary`, `${narration} footage`);
   }
 
-  return uniqueQueryStrings([...beatAnchored, ...raw], 4).slice(0, 8);
+  return uniqueQueryStrings(raw, 4).slice(0, 8);
 }
 
 /** Wikimedia Commons video search — beat/geo anchored. */
 export function buildWikimediaVideoGeoQueries(beatText: string, videoTitle?: string): string[] {
-  return buildGeoStockSearchQueries(beatText, videoTitle).slice(0, 7);
+  const subjects = beatVisualSearchSubjects(beatText);
+  return uniqueQueryStrings(
+    [...subjects, ...buildGeoStockSearchQueries(beatText, videoTitle)],
+    3
+  ).slice(0, 7);
 }

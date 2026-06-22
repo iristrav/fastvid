@@ -13,6 +13,7 @@ import {
   asVideoTitleString,
   coerceVisionString,
 } from "./stringCoercion";
+import { beatVisualDescriptionFromIntent } from "./scriptVisualKeywords";
 
 export { coerceVisionString, asVideoTitleString } from "./stringCoercion";
 
@@ -236,6 +237,7 @@ export function beatGateVisualDescription(
   if (cue?.trim()) parts.push(cue.trim());
   for (const raw of [
     beat.visualDescription,
+    beatVisualDescriptionFromIntent(beat.text),
     semanticProfile?.summary,
     beat.searchQuery,
     beat.powerWord,

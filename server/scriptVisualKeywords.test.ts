@@ -4,6 +4,7 @@ import {
   buildSentenceIntentMap,
   buildSentenceKeywordMap,
   buildVisualIntentSegments,
+  beatVisualSearchSubjects,
   extractNarrationSentences,
   fallbackVisualIntent,
   fallbackVisualKeyword,
@@ -15,7 +16,9 @@ import {
   normalizeSentenceKey,
   parseVisualIntentsFromMetadata,
   parseVisualKeywordsFromMetadata,
-  sanitizeVisualKeyword,
+  beatVisualSearchSubjects,
+  hydrateBeatScriptVisuals,
+  resolveBeatScriptVisualAnchor,
   splitBeatSentences,
 } from "./scriptVisualKeywords";
 
@@ -126,6 +129,36 @@ Het team bespreekt de resultaten tijdens een vergadering.`;
     expect(intent.visual_intent.length).toBeGreaterThan(10);
     expect(intent.scene_type).toBe("office");
     expect(intentSearchQueries(intent).length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("hydrateBeatScriptVisuals fills searchQuery and visualDescription from script", () => {
+    const beat = hydrateBeatScriptVisuals({
+      text: "Amsterdam has more bikes than people, with dedicated cycling lanes everywhere.",
+      searchQuery: "",
+      powerWord: "",
+      keywords: [],
+    });
+    expect(beat.searchQuery.length).toBeGreaterThan(5);
+    expect(beat.powerWord).toBe(beat.searchQuery);
+    expect(beat.visualDescription?.length ?? 0).toBeGreaterThan(4);
+    expect(beat.keywords?.length ?? 0).toBeGreaterThanOrEqual(1);
+  });
+
+  it("resolveBeatScriptVisualAnchor returns at most two search subjects", () => {
+    const anchor = resolveBeatScriptVisualAnchor(
+      "Dutch cyclists cross a bridge while cars wait at a suburban intersection."
+    );
+    expect(anchor.searchSubjects.length).toBeLessThanOrEqual(2);
+    expect(anchor.primarySubject.length).toBeGreaterThan(4);
+  });
+
+  it("beatVisualSearchSubjects returns at most two script-anchored queries", () => {
+    const subjects = beatVisualSearchSubjects(
+      "Amsterdam has more bikes than people, and cyclists have their own dedicated lanes."
+    );
+    expect(subjects.length).toBeGreaterThanOrEqual(1);
+    expect(subjects.length).toBeLessThanOrEqual(2);
+    expect(subjects[0]!.toLowerCase()).toMatch(/amsterdam|cycl|cycling|bike/);
   });
 
   it("fallback avoids bare abstract terms", () => {

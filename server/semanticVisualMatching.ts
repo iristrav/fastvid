@@ -361,7 +361,7 @@ export async function analyzeBeatSemantics(
 export async function analyzeBeatsSemanticsBatch(
   beatTexts: string[],
   videoTitle?: string,
-  opts?: { fastMode?: boolean }
+  opts?: { fastMode?: boolean; literalViewerVisuals?: (string | undefined)[] }
 ): Promise<Map<number, BeatSemanticProfile>> {
   const title = coerceVideoTitleString(videoTitle);
   const out = new Map<number, BeatSemanticProfile>();
@@ -380,7 +380,10 @@ export async function analyzeBeatsSemanticsBatch(
       const text = beatTexts[i];
       if (!text?.trim()) continue;
       try {
-        out.set(i, await analyzeBeatSemantics(text, title));
+        out.set(
+          i,
+          await analyzeBeatSemantics(text, title, opts?.literalViewerVisuals?.[i])
+        );
       } catch (err) {
         console.warn(
           `[Semantic] Beat ${i} analysis failed — using fallback:`,

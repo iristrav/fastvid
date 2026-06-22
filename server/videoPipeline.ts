@@ -123,6 +123,13 @@ import {
   scriptGuidedBudgetMs,
   scriptGuidedClipsEnabled,
 } from "./scriptGuidedClipFinder";
+import {
+  beatVisualDescriptionFromIntent,
+  beatVisualSearchSubjects,
+  hydrateBeatScriptVisuals,
+  resolveBeatScriptVisualAnchor,
+  resolveBeatVisualIntent,
+} from "./scriptVisualKeywords";
 import { clipPassesVisionGate, clipVisionGateEnabled, effectiveMinClipQualityScore, evaluateClipVisionGate, minClipQualityScore, targetClipVisionScore, type VisionGateResult } from "./visualQualityGate";
 import {
   beatVisionContextFromProfile,
@@ -888,7 +895,7 @@ async function fetchBeatArchivalThenPexels(
   const historicalDoc = isHistoricalDocumentary(topicHay) && !dedup.personTopicLock;
   const intent = buildMediaSearchIntent({
     beatText: beat.text,
-    searchQueries: queryStringsMinLen([beat.searchQuery, videoTitle]),
+    searchQueries: beatMediaSearchQueries(beat, videoTitle),
     keywords: adoptOpts.keywords ?? beat.keywords,
     primaryPerson: historicalDoc ? "" : personName,
     persons: scenePersons,
@@ -1125,7 +1132,7 @@ async function fetchBeatAuthenticStills(
   };
   const intent = buildMediaSearchIntent({
     beatText: beat.text,
-    searchQueries: queryStringsMinLen([beat.searchQuery, videoTitle]),
+    searchQueries: beatMediaSearchQueries(beat, videoTitle),
     keywords: adoptOpts.keywords ?? beat.keywords,
     primaryPerson: historicalDoc ? "" : personName,
     persons: scenePersons,
@@ -7344,8 +7351,9 @@ function buildBeatImageSearchQueries(
   videoTitle: string | undefined,
   scenePersons: string[]
 ): string[] {
+  hydrateSceneBeatInPlace(beat);
   const primary = scenePersons[0]?.trim() ?? "";
-  const out: string[] = [];
+  const out: string[] = [...beatVisualSearchSubjects(beat.text)];
   if (primary) {
     out.push(buildPersonSerpQuery(primary, scene.index, beat.index, beat.text));
     out.push(`${primary} face portrait photo`);
@@ -8067,7 +8075,7 @@ function extractPowerWordFromSentence(sentence: string, persons: string[] = []):
   return stockQueryFromBeatScript(clean, persons, "", undefined);
 }
 
-/** Ordered queries for one beat — power word, persons, events, entities (from narration). */
+/** Ordered queries for one beat — max 2 script subjects, then geo fallbacks. */
 function buildBeatVisualQueryList(
   beatText: string,
   scene: Scene,
@@ -8075,32 +8083,26 @@ function buildBeatVisualQueryList(
   scenePersons: string[],
   maxQueries: number
 ): string[] {
-  const beatPersons = [
-    ...new Set([
-      ...scenePersons,
-      ...extractPersonNamesFromText(beatText),
-      ...extractPersonNamesFromText(scene.text),
-    ]),
-  ];
-  const power = extractPowerWordFromSentence(beatText, beatPersons);
-  const powerQ = simplifyStockSearchWord(power, beatText, true);
-  const scriptQueries = scriptStockSearchQueries(
-    beatText, beatPersons, scene.text, videoTitle
-  );
-  const eventQueries = scriptEventSearchQueries(beatText, beatPersons);
-  const entityStock = realEntityStockQueriesForBeat(beatText, scene.text, videoTitle);
-
+  const anchor = resolveBeatScriptVisualAnchor(beatText);
   const beatAnchored = buildGeoStockSearchQueries(beatText, videoTitle);
-
   const ordered = [
-    ...beatAnchored,
-    powerQ,
-    ...scriptQueries,
-    ...eventQueries,
-    ...entityStock,
+    ...anchor.searchSubjects,
+    ...beatAnchored.slice(0, 2),
   ].filter((q) => toQueryString(q).length > 2 && !isBlockedStockQuery(toQueryString(q)));
 
-  return [...new Set(ordered)].slice(0, maxQueries);
+  return [...new Set(ordered.map((q) => toQueryString(q)))].slice(0, Math.max(2, maxQueries));
+}
+
+function hydrateSceneBeatInPlace(beat: SceneBeat): SceneBeat {
+  return hydrateBeatScriptVisuals(beat);
+}
+
+function beatMediaSearchQueries(beat: SceneBeat, videoTitle?: string): string[] {
+  hydrateSceneBeatInPlace(beat);
+  return queryStringsMinLen(
+    [...beatVisualSearchSubjects(beat.text), beat.searchQuery, videoTitle],
+    3
+  ).slice(0, 3);
 }
 
 // ─── Beat-level visual matching (narration ↔ footage alignment) ───────────────
@@ -8131,15 +8133,23 @@ function ttsPlannedBeatToSceneBeat(
   scenePersons: string[]
 ): SceneBeat {
   const text = planned.text;
+  const intent = resolveBeatVisualIntent(text);
+  const subjects = beatVisualSearchSubjects(text);
   const visualAnchor = extractPrimaryVisualAnchor(text);
   const geoTag = extractPrimaryGeoSearchTag(text);
-  let powerWord = extractPowerWordFromSentence(text, scenePersons);
+  let powerWord = subjects[0] ?? extractPowerWordFromSentence(text, scenePersons);
   if (visualAnchor) powerWord = visualAnchor;
   else if (geoTag) powerWord = geoTag;
-  let searchQuery = visualAnchor ?? geoTag ?? simplifyStockSearchWord(powerWord, text, true);
+  let searchQuery =
+    subjects[0] ?? visualAnchor ?? geoTag ?? simplifyStockSearchWord(powerWord, text, true);
   if (!searchQuery || isBlockedStockQuery(searchQuery)) {
     searchQuery = stockQueryFromBeatScript(text, scenePersons, scene.text, videoTitle);
   }
+  const visualCues = extractInlineVisualCues(text);
+  const visualDescription =
+    visualCues[0] ??
+    beatVisualDescriptionFromIntent(text) ??
+    (visualAnchor || geoTag || subjects[1] || undefined);
   return {
     index: planned.index,
     text,
@@ -8149,6 +8159,7 @@ function ttsPlannedBeatToSceneBeat(
     holdSec: planned.holdSec,
     voiceStartSec: planned.voiceStartSec,
     voiceEndSec: planned.voiceEndSec,
+    visualDescription,
   };
 }
 
@@ -8162,9 +8173,11 @@ function resolveSceneBeats(
 ): SceneBeat[] {
   const ttsPlan = dedup.ttsSceneBeats.get(scene.index);
   if (ttsPlan?.length) {
-    return ttsPlan.map((p) => ttsPlannedBeatToSceneBeat(p, scene, videoTitle, scenePersons));
+    return ttsPlan.map((p) => hydrateBeatScriptVisuals(ttsPlannedBeatToSceneBeat(p, scene, videoTitle, scenePersons)));
   }
-  return buildSceneBeats(scene, duration, beatCap, videoTitle, scenePersons);
+  return buildSceneBeats(scene, duration, beatCap, videoTitle, scenePersons).map((b) =>
+    hydrateBeatScriptVisuals(b)
+  );
 }
 
 function archivePrepareAttemptsPerBeat(fastMode: boolean, relaxed: boolean): number {
@@ -10871,22 +10884,26 @@ function buildSceneBeats(
   const beats: SceneBeat[] = [];
   for (let i = 0; i < groups.length; i++) {
     const text = groups[i].text;
+    const subjects = beatVisualSearchSubjects(text);
     const visualAnchor = extractPrimaryVisualAnchor(text);
     const geoTag = extractPrimaryGeoSearchTag(text);
-    let powerWord = extractPowerWordFromSentence(text, scenePersons);
+    let powerWord = subjects[0] ?? extractPowerWordFromSentence(text, scenePersons);
     if (visualAnchor) {
       powerWord = visualAnchor;
     } else if (geoTag) {
       powerWord = geoTag;
     }
-    let searchQuery = visualAnchor ?? geoTag ?? simplifyStockSearchWord(powerWord, text, true);
+    let searchQuery =
+      subjects[0] ?? visualAnchor ?? geoTag ?? simplifyStockSearchWord(powerWord, text, true);
     if (!searchQuery || isBlockedStockQuery(searchQuery)) {
       searchQuery = stockQueryFromBeatScript(text, scenePersons, scene.text, videoTitle);
     }
     let holdSec = estimateBeatHoldSec(text, groups[i].sentenceCount);
     const visualCues = extractInlineVisualCues(text);
     const visualDescription =
-      visualCues[0] ?? (visualAnchor || geoTag || undefined);
+      visualCues[0] ??
+      beatVisualDescriptionFromIntent(text) ??
+      (visualAnchor || geoTag || subjects[1] || undefined);
     beats.push({
       index: i,
       text,
@@ -13573,7 +13590,7 @@ async function fetchBeatAuthenticVideo(
   const historicalDoc = isHistoricalDocumentary(topicHay) && !dedup.personTopicLock;
   const intent = buildMediaSearchIntent({
     beatText: beat.text,
-    searchQueries: queryStringsMinLen([beat.searchQuery, videoTitle]),
+    searchQueries: beatMediaSearchQueries(beat, videoTitle),
     keywords: adoptOpts.keywords ?? beat.keywords,
     primaryPerson: historicalDoc ? "" : personName,
     persons: scenePersons,
@@ -14383,6 +14400,7 @@ async function adoptArchiveBeatClip(
   prefetchedRanked?: CuratedCandidatePick[] | null,
   adoptOpts?: { videosOnly?: boolean }
 ): Promise<boolean> {
+  hydrateSceneBeatInPlace(beat);
   const visionCtx = beatVisionContextFromProfile(beat, videoTitle, semanticProfile);
   let beatQueryEmb: number[] | null = null;
   if (clipEmbeddingIndexEnabled()) {
@@ -14730,6 +14748,7 @@ async function adoptWikimediaBeatClip(
   semanticProfile?: BeatSemanticProfile,
   opts?: { videoOnly?: boolean; stillsOnly?: boolean }
 ): Promise<boolean> {
+  hydrateSceneBeatInPlace(beat);
   const wantVideo = !opts?.stillsOnly;
   const wantStills = !opts?.videoOnly;
   const tryClip = async (clipPath: string | null | undefined, sec = holdSec): Promise<boolean> => {
@@ -14955,6 +14974,7 @@ async function adoptInternetArchiveBeatClip(
   holdSec: number,
   semanticProfile?: BeatSemanticProfile
 ): Promise<boolean> {
+  hydrateSceneBeatInPlace(beat);
   if (!isGeoDocumentaryContext(beat.text, videoTitle)) return false;
 
   const tryClip = async (clipPath: string | null | undefined, sec = holdSec): Promise<boolean> => {
@@ -15254,6 +15274,7 @@ async function adoptStockBeatClipFallback(
   holdSec: number,
   semanticProfile?: BeatSemanticProfile
 ): Promise<boolean> {
+  hydrateSceneBeatInPlace(beat);
   if (!archivePexelsFallbackEnabled()) return false;
   if (!canUseLicensedStockBeat(dedup)) {
     console.warn(
@@ -15873,6 +15894,7 @@ async function fillBeatVisual(
   semanticProfile?: BeatSemanticProfile,
   holdSec = beat.holdSec
 ): Promise<boolean> {
+  hydrateSceneBeatInPlace(beat);
   videoTitle = coerceVisionString(videoTitle);
   const beatRegion = inferBeatGeoRegion(beat.text, videoTitle);
   dedup.segmentGeoLock = resolveSegmentGeoLock(beatRegion, dedup.segmentGeoLock, videoTitle);
@@ -16244,7 +16266,10 @@ async function fetchArchiveSentenceMontage(
     ? await analyzeBeatsSemanticsBatch(
         beats.map((b) => b.text),
         videoTitle,
-        { fastMode: dedup.perf.fastStockMode }
+        {
+          fastMode: dedup.perf.fastStockMode,
+          literalViewerVisuals: beats.map((b) => b.visualDescription),
+        }
       )
     : new Map<number, BeatSemanticProfile>();
 
@@ -16370,7 +16395,10 @@ async function refillSceneStrictVoiceMatch(
     ? await analyzeBeatsSemanticsBatch(
         beats.map((b) => b.text),
         videoTitle,
-        { fastMode: false }
+        {
+          fastMode: false,
+          literalViewerVisuals: beats.map((b) => b.visualDescription),
+        }
       )
     : new Map<number, BeatSemanticProfile>();
 

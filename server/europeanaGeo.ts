@@ -4,6 +4,7 @@
 import { NL_GEO_SLUGS, extractTitleGeoPlaceTags } from "./worldGeoSlugs";
 import { asVideoTitleString, toQueryString } from "./stringCoercion";
 import { buildGeoStockSearchQueries } from "./curatedMediaSourcing";
+import { beatVisualSearchSubjects } from "./scriptVisualKeywords";
 
 const EU_GEO_HINTS = new Set([
   ...NL_GEO_SLUGS,
@@ -59,15 +60,15 @@ export function buildEuropeanaBeatQueries(
   beatText: string,
   videoTitle?: string
 ): string[] {
+  const scriptSubjects = beatVisualSearchSubjects(beatText);
   const titleGeo = extractTitleGeoPlaceTags(videoTitle).slice(0, 3);
   const beatGeo = buildGeoStockSearchQueries(beatText, videoTitle).slice(0, 4);
   const queries = [
+    ...scriptSubjects,
     ...titleGeo.map((t) => `${t} city documentary`),
     ...titleGeo.map((t) => `${t} urban aerial`),
     ...beatGeo.map((q) => `${q} heritage`),
-    ...beatGeo,
-    `${beatText.slice(0, 60)} documentary`,
-    `${beatText.slice(0, 40)} news archive`,
+    ...beatGeo.slice(0, 2),
   ];
   return [...new Set(
     queries

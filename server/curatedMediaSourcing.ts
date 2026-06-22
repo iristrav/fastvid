@@ -92,6 +92,7 @@ import {
   geoTagsForRegion,
 } from "./worldGeoSlugs";
 import { asVideoTitleString, coerceVisionString, queryStringsMinLen } from "./stringCoercion";
+import { hydrateBeatScriptVisuals } from "./scriptVisualKeywords";
 import {
   isNonDocumentaryVisualHay,
   isOffTopicGeoUrbanVisual,
@@ -293,11 +294,12 @@ export function buildBeatMatchTags(
   scene: CuratedSceneContext,
   videoTitle?: string
 ): BeatMatchTags {
-  const beatText = asVideoTitleString(coerceVisionString(beat.text));
+  const anchored = hydrateBeatScriptVisuals(beat);
+  const beatText = asVideoTitleString(coerceVisionString(anchored.text));
   const sceneText = asVideoTitleString(coerceVisionString(scene.text));
   const titleStr = asVideoTitleString(coerceVisionString(videoTitle));
-  const searchQuery = asVideoTitleString(coerceVisionString(beat.searchQuery));
-  const visualDescription = asVideoTitleString(coerceVisionString(beat.visualDescription));
+  const searchQuery = asVideoTitleString(coerceVisionString(anchored.searchQuery));
+  const visualDescription = asVideoTitleString(coerceVisionString(anchored.visualDescription));
   const videoVisualTopic = inferVideoVisualTopic(titleStr, [beatText, sceneText].join(" "));
   const topicAnchors = extractTopicAnchorTags(titleStr, [beatText, sceneText].join(" "));
   const hasLiteralVisual = Boolean(visualDescription.trim() || searchQuery.trim());
@@ -308,9 +310,9 @@ export function buildBeatMatchTags(
   const beatRaw = [
     visualSource,
     visualAnchor ?? "",
-    coerceVisionString(beat.powerWord),
+    coerceVisionString(anchored.powerWord),
     searchQuery,
-    ...beat.keywords.map((k) => coerceVisionString(k)),
+    ...anchored.keywords.map((k) => coerceVisionString(k)),
     ...visualTags,
     ...(hasLiteralVisual ? [] : [coerceVisionString(scene.visualCue)]),
   ]
@@ -1629,24 +1631,25 @@ export async function searchCuratedCandidatesForBeat(
     videoLength?: string | null;
   }
 ): Promise<CuratedCandidatePick[]> {
+  const anchoredBeat = hydrateBeatScriptVisuals(beat);
   const varietySeed = options?.varietySeed ?? 0;
   const crossVideoExcludeIds = options?.crossVideoExcludeIds ?? new Set<number>();
   const semanticProfile =
     options?.semanticProfile ??
     (semanticVisualMatchingEnabled()
       ? await analyzeBeatSemantics(
-          beat.visualDescription?.trim() || beat.text,
+          anchoredBeat.text,
           videoTitle,
-          beat.visualDescription?.trim() || undefined
+          anchoredBeat.visualDescription?.trim() || undefined
         )
       : undefined);
   const shotQueries = buildDocumentaryShotQueries(
-    beat.visualDescription?.trim() || beat.searchQuery?.trim() || beat.text,
-    beat.index
+    anchoredBeat.visualDescription?.trim() || anchoredBeat.searchQuery?.trim() || anchoredBeat.text,
+    anchoredBeat.index
   );
   const beatForMatch: CuratedBeatContext = {
-    ...beat,
-    searchQuery: shotQueries[0] || beat.searchQuery,
+    ...anchoredBeat,
+    searchQuery: shotQueries[0] || anchoredBeat.searchQuery,
   };
   const { beatTags, topicAnchors, allTags, videoVisualTopic } = buildBeatMatchTags(beatForMatch, scene, videoTitle);
 
@@ -1656,7 +1659,7 @@ export async function searchCuratedCandidatesForBeat(
     usedStorageUrls,
     topicAnchors,
     allTags,
-    beat.text,
+    anchoredBeat.text,
     crossVideoExcludeIds,
     options?.assetsCache,
     true,

@@ -350,6 +350,79 @@ export function intentSearchQueries(intent: ScriptVisualIntentEntry): string[] {
   return [...new Set([intent.primary_keyword, intent.secondary_keyword, intent.fallback_keyword].filter(Boolean))];
 }
 
+/** Stap 1: max 2 concrete search subjects per zin (primary + secondary). */
+export function beatVisualSearchSubjects(beatText: string): string[] {
+  return intentSearchQueries(resolveBeatVisualIntent(beatText))
+    .filter((q) => q.length >= 3)
+    .slice(0, 2);
+}
+
+/** CLIP / gate context from script intent — visual_description or visual_intent. */
+export function beatVisualDescriptionFromIntent(beatText: string): string | undefined {
+  const intent = resolveBeatVisualIntent(beatText);
+  const desc = (intent.visual_description ?? intent.visual_intent)?.trim();
+  return desc && desc.length >= 4 ? desc : undefined;
+}
+
+export type BeatScriptVisualAnchor = {
+  primarySubject: string;
+  secondarySubject?: string;
+  visualDescription?: string;
+  searchSubjects: string[];
+};
+
+/** Resolved 1–2 script subjects + visual description for sourcing / CLIP. */
+export function resolveBeatScriptVisualAnchor(beatText: string): BeatScriptVisualAnchor {
+  const intent = resolveBeatVisualIntent(beatText);
+  const searchSubjects = beatVisualSearchSubjects(beatText);
+  const primarySubject =
+    searchSubjects[0] ?? sanitizeVisualKeyword(intent.primary_keyword) ?? "documentary broll scene";
+  const secondarySubject =
+    searchSubjects[1] ??
+    (intent.secondary_keyword && intent.secondary_keyword !== primarySubject
+      ? sanitizeVisualKeyword(intent.secondary_keyword)
+      : undefined);
+  const visualDescription = beatVisualDescriptionFromIntent(beatText);
+  return {
+    primarySubject,
+    secondarySubject,
+    visualDescription,
+    searchSubjects: searchSubjects.length ? searchSubjects : [primarySubject],
+  };
+}
+
+/**
+ * Fill beat searchQuery / powerWord / visualDescription / keywords from script intent.
+ * Idempotent when fields are already set from [visual:] cues or TTS plan.
+ */
+export function hydrateBeatScriptVisuals<
+  T extends {
+    text: string;
+    searchQuery?: string;
+    powerWord?: string;
+    visualDescription?: string;
+    keywords?: string[];
+  },
+>(beat: T): T {
+  const anchor = resolveBeatScriptVisualAnchor(beat.text);
+  const cue = beat.text.match(/\[visual:\s*([^\]]+)\]/i)?.[1]?.trim();
+  const existingQuery = beat.searchQuery?.trim();
+  const existingPower = beat.powerWord?.trim();
+  const existingDesc = beat.visualDescription?.trim();
+  const subjectKeywords = anchor.searchSubjects.filter(Boolean);
+  return {
+    ...beat,
+    searchQuery: existingQuery || anchor.primarySubject,
+    powerWord: existingPower || anchor.primarySubject,
+    visualDescription:
+      cue || existingDesc || anchor.visualDescription || anchor.secondarySubject || undefined,
+    keywords:
+      beat.keywords?.length && beat.keywords.some((k) => k.trim().length > 2)
+        ? beat.keywords
+        : subjectKeywords,
+  };
+}
+
 /** Stock/archive queries from visual director plan — never from spoken narration. */
 export function directorSearchQueries(intent: ScriptVisualIntentEntry): string[] {
   const out: string[] = [];
