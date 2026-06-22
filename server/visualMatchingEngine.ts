@@ -12,6 +12,7 @@
 import { extractBeatGeoPlaceTags, extractEntitySearchTags } from "./visualBeatTags";
 import { extractTitleGeoPlaceTags } from "./worldGeoSlugs";
 import { visualMetadataPassesBeatGate } from "./vidrushQuality";
+import { coerceVisionString } from "./localClipVision";
 
 export interface VisualSceneAnalysis {
   sentence: string;
@@ -161,7 +162,8 @@ function bestKeyword(sentence: string, events: string[], persons: string[], loca
     .split(/\s+/)
     .filter((w) => w.length >= 5 && !STOP_WORDS.has(w.toLowerCase()));
   if (words[0]) return words[0];
-  return videoTitle?.split(/\s+/).slice(0, 3).join(" ") ?? sentence.slice(0, 30);
+  const title = coerceVisionString(videoTitle);
+  return title?.split(/\s+/).slice(0, 3).join(" ") ?? sentence.slice(0, 30);
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -179,6 +181,7 @@ export function analyzeSceneVisual(
   sentence: string,
   videoTitle?: string
 ): VisualSceneAnalysis {
+  const titleStr = coerceVisionString(videoTitle);
   const locations = extractLocations(sentence);
   const locationSet = new Set(locations.map((l) => l.toLowerCase()));
   const persons = extractPersonNames(sentence, locationSet);
@@ -187,7 +190,7 @@ export function analyzeSceneVisual(
 
   const main_topic =
     (events[0] ??
-      (videoTitle ? videoTitle.split(/\s+/).slice(0, 5).join(" ") : "")) ||
+      (titleStr ? titleStr.split(/\s+/).slice(0, 5).join(" ") : "")) ||
     sentence.slice(0, 60);
 
   const visual_subject =
@@ -197,7 +200,7 @@ export function analyzeSceneVisual(
 
   const visual_location = locations[0] ?? "";
 
-  const keyword = bestKeyword(sentence, events, persons, locations, videoTitle);
+  const keyword = bestKeyword(sentence, events, persons, locations, titleStr);
 
   const descParts = [
     visual_subject,

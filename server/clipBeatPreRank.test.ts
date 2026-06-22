@@ -3,6 +3,7 @@ import {
   buildBeatVisionQueryText,
   beatVisionContextFromProfile,
 } from "./localClipVision";
+import { analyzeSceneVisual } from "./visualMatchingEngine";
 import {
   clipPreRankPoolSize,
   clipPreRankMinScore10,
@@ -56,13 +57,12 @@ describe("buildBeatVisionQueryText", () => {
   });
 
   it("coerces non-string videoTitle from metadata objects", () => {
-    const ctx = beatVisionContextFromProfile(
-      { text: "Cyclists cross a Dutch canal bridge." },
+    const analysis = analyzeSceneVisual(
+      "Cyclists cross a Dutch canal bridge.",
       { title: "Why the Netherlands Is the Opposite of the U.S." } as unknown as string
     );
-    const query = buildBeatVisionQueryText(ctx);
-    expect(query).toContain("Netherlands");
-    expect(() => buildBeatVisionQueryText(ctx)).not.toThrow();
+    expect(analysis.main_topic).toContain("Netherlands");
+    expect(() => analyzeSceneVisual("Test sentence.", { foo: 1 } as unknown as string)).not.toThrow();
   });
 });
 

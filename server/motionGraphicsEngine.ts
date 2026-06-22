@@ -87,10 +87,12 @@ export function formatNewsDate(d = new Date()): string {
   return `${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()}`;
 }
 
+import { coerceVisionString } from "./localClipVision";
+
 export function extractNewsSource(text: string, videoTitle?: string): string {
   const m = text.match(NEWS_SOURCES);
   if (m) return m[1].replace(/SMH/i, "SMH.com.au");
-  const head = videoTitle?.split(/[:–—-]/)[0]?.trim();
+  const head = coerceVisionString(videoTitle)?.split(/[:–—-]/)?.[0]?.trim();
   if (head && head.length >= 4) return head.slice(0, 28);
   return "Documentary Report";
 }
@@ -127,7 +129,7 @@ export function extractMapTitle(beatText: string, videoTitle?: string): string {
   )?.[1];
   if (city) return city.toUpperCase();
 
-  const titleHead = videoTitle?.split(/[:–—-]/)[0]?.trim();
+  const titleHead = coerceVisionString(videoTitle)?.split(/[:–—-]/)?.[0]?.trim();
   if (titleHead && titleHead.length >= 4) return titleHead.toUpperCase().slice(0, 28);
 
   const cap = beatText.match(/\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})\b/);

@@ -131,7 +131,7 @@ import {
 } from "./archiveClipEmbedding";
 import { scheduleStockClipEmbedding, scheduleStockClipEmbeddingByKey, rankStockVideoIdsByEmbedding, stockClipEmbeddingEnabled } from "./stockClipEmbedding";
 import { pickStockInClipStartSec, stockInClipOffsetEnabled } from "./clipInClipOffset";
-import { resolveBeatVisionQueryEmbedding } from "./localClipVision";
+import { resolveBeatVisionQueryEmbedding, coerceVisionString } from "./localClipVision";
 import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, openverseStillsEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, maxPipelineWallClockMin, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
@@ -1126,7 +1126,10 @@ async function fetchBeatAuthenticStills(
     beat.searchQuery,
     scene.visualCue,
     scene.pexelsQuery,
-    ...(videoTitle?.trim() ? [videoTitle.split(/\s+/).slice(0, 4).join(" ")] : []),
+    ...(() => {
+      const titleStr = coerceVisionString(videoTitle);
+      return titleStr?.trim() ? [titleStr.split(/\s+/).slice(0, 4).join(" ")] : [];
+    })(),
   ].filter((q): q is string => typeof q === "string" && q.trim().length > 3);
   const queryCap = historicalDoc ? 3 : dedup.perf.fastStockMode ? 2 : 4;
   const unique = [...new Set(queries)].slice(0, queryCap);
@@ -1444,7 +1447,8 @@ function buildTopicDocumentaryYoutubeQueries(
 ): string[] {
   const topic = beat.powerWord?.trim() || beat.searchQuery?.trim() || "";
   if (!topic || topic.length < 3) return [];
-  const titleHint = videoTitle ? videoTitle.split(/\s+/).slice(0, 5).join(" ") : "";
+  const titleStr = coerceVisionString(videoTitle);
+  const titleHint = titleStr ? titleStr.split(/\s+/).slice(0, 5).join(" ") : "";
   return [
     ...new Set(
       [
@@ -1472,7 +1476,7 @@ function buildTopicRealMediaQuery(
     scene.pexelsQuery?.trim() ||
     scene.visualCue?.trim() ||
     "";
-  const titleBits = videoTitle?.split(/\s+/).slice(0, 3).join(" ") ?? "";
+  const titleBits = coerceVisionString(videoTitle)?.split(/\s+/).slice(0, 3).join(" ") ?? "";
   return [primaryPerson, topic, titleBits].filter(Boolean).join(" ").trim() || topic;
 }
 
@@ -16108,6 +16112,7 @@ async function fetchSceneVisuals(
   onBeatProgress?: (beatIndex: number, beatTotal: number, phase?: BeatProgressPhase) => void,
   sceneAudioPath?: string
 ): Promise<SceneVisualsResult> {
+  videoTitle = coerceVisionString(videoTitle);
   if (curatedArchiveOnlyVisuals()) {
     return fetchArchiveSentenceMontage(scene, workDir, videoTitle, dedup, onBeatProgress, sceneAudioPath);
   }
