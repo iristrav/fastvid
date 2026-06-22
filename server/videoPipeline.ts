@@ -1837,7 +1837,7 @@ function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProfile {
       enableNasa: false,
       enableMuskHeroFetch: false,
       maxEntityYoutubePerVideo: maxEntityYoutube,
-      sceneParallelism: railwayParallel,
+      sceneParallelism: IS_RAILWAY ? 4 : 3,
       pexelsDownloadRetries: 1,
       maxStockQueriesPerBeat: 2,
       beatClipTimeoutMs: IS_RAILWAY ? 22_000 : 60_000,
@@ -8169,7 +8169,14 @@ function resolveSceneBeats(
 
 function archivePrepareAttemptsPerBeat(fastMode: boolean, relaxed: boolean): number {
   if (relaxed) return 3;
-  return fastMode ? 1 : 2;
+  if (fastMode && strictVoiceVisualMatchEnabled()) return 4;
+  return fastMode ? 2 : 2;
+}
+
+function archivePrepareConcurrency(fastMode: boolean, relaxed: boolean): number {
+  if (relaxed) return 1;
+  if (fastMode && strictVoiceVisualMatchEnabled()) return 3;
+  return fastMode ? 2 : 1;
 }
 const RELEVANCE_STOP_WORDS = new Set([
   "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with", "by", "from",
@@ -14506,9 +14513,11 @@ async function adoptArchiveBeatClip(
       relaxed ? ARCHIVE_VISION_TRY_RELAXED : archiveVisionTryStrict(dedup.perf.fastStockMode, dedup.videoLength)
     );
     const prepareCap = archivePrepareAttemptsPerBeat(dedup.perf.fastStockMode, relaxed);
-    let scanned = 0;
-    let prepares = 0;
+    const prepConcurrency = archivePrepareConcurrency(dedup.perf.fastStockMode, relaxed);
+    const prepLimit = pLimit(prepConcurrency);
     const targetVision = targetClipVisionScore();
+    const queue: CuratedCandidatePick[] = [];
+    let scanned = 0;
     for (const picked of ranked) {
       if (scanned >= tryCap) break;
       if (videosOnly && picked.asset.mediaType !== "video") continue;
@@ -14540,8 +14549,10 @@ async function adoptArchiveBeatClip(
         continue;
       }
       scanned++;
-      if (prepares >= prepareCap) continue;
-      prepares++;
+      queue.push(picked);
+    }
+
+    const tryRankedPick = async (picked: CuratedCandidatePick, scanIdx: number): Promise<boolean> => {
       const clip = await preparePooledArchiveClip(
         picked,
         beat,
@@ -14552,7 +14563,7 @@ async function adoptArchiveBeatClip(
         dedup,
         beatQueryEmb
       );
-      if (!clip) continue;
+      if (!clip) return false;
       const vision = await beatClipPassesVisionGate(
         clip,
         beat,
@@ -14567,7 +14578,7 @@ async function adoptArchiveBeatClip(
       );
       if (!vision.pass) {
         if (strictVoiceVisualMatchEnabled() && picked.asset.mediaType === "video") {
-          const altBeatIdx = beat.index + 9000 + scanned;
+          const altBeatIdx = beat.index + 9000 + scanIdx;
           try {
             const altClip = await prepareCuratedArchiveClip(
               picked.asset,
@@ -14612,7 +14623,7 @@ async function adoptArchiveBeatClip(
           }
         }
         await rejectClip(clip);
-        continue;
+        return false;
       }
       const visionScore = vision.worstScore10 ?? targetVision;
       if (
@@ -14625,10 +14636,23 @@ async function adoptArchiveBeatClip(
             : "";
         console.log(
           `[Pipeline] Scene ${scene.index} zin ${beat.index}: gekozen "${picked.asset.title ?? picked.asset.id}" ` +
-            `(score ${picked.score}, vision ${visionScore}/10, prepare ${prepares}/${prepareCap}${picked.semantic ? `, semantic ${picked.semantic.relevanceScore} tier ${picked.semantic.tier}` : ""}${tagHint})`
+            `(score ${picked.score}, vision ${visionScore}/10, prepare ≤${prepareCap}${picked.semantic ? `, semantic ${picked.semantic.relevanceScore} tier ${picked.semantic.tier}` : ""}${tagHint})`
         );
         return true;
       }
+      return false;
+    };
+
+    let prepared = 0;
+    for (let i = 0; i < queue.length && prepared < prepareCap; i += prepConcurrency) {
+      const waveSize = Math.min(prepConcurrency, prepareCap - prepared, queue.length - i);
+      const wave = queue.slice(i, i + waveSize);
+      prepared += wave.length;
+      const results =
+        prepConcurrency > 1
+          ? await Promise.all(wave.map((picked, wi) => prepLimit(() => tryRankedPick(picked, i + wi + 1))))
+          : await Promise.all(wave.map((picked, wi) => tryRankedPick(picked, i + wi + 1)));
+      if (results.some(Boolean)) return true;
     }
     if (relaxed) {
       const mgfxBudget = {
@@ -14937,21 +14961,17 @@ async function adoptInternetArchiveBeatClip(
     if (!clipPath || isPipelineFallbackClip(clipPath)) return false;
     if (dedup.usedContentKeys.has(clipContentKey(clipPath))) return false;
     if (await isMostlyBlackClip(clipPath)) return false;
-    if (
-      !(await beatClipPassesVisionGate(
-        clipPath,
-        beat,
-        scene,
-        workDir,
-        videoTitle,
-        dedup,
-        semanticProfile,
-        "internet_archive",
-        minClipQualityScore()
-      )).pass
-    ) {
-      return false;
-    }
+    const vision = await beatClipPassesVisionGate(
+      clipPath,
+      beat,
+      scene,
+      workDir,
+      videoTitle,
+      dedup,
+      semanticProfile,
+      "internet_archive"
+    );
+    if (!vision.pass) return false;
     const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode);
     if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) return false;
     if (await pushClip(withText, sec)) {
@@ -14964,7 +14984,9 @@ async function adoptInternetArchiveBeatClip(
         withText,
         "internet_archive",
         undefined,
-        dedup.segmentGeoLock
+        dedup.segmentGeoLock,
+        undefined,
+        vision.worstScore10 ?? undefined
       );
       console.log(`[Pipeline] Scene ${scene.index} zin ${beat.index}: Internet Archive geo clip`);
       return true;
@@ -15816,6 +15838,30 @@ async function backfillComposeMontageIfShort(
   }
 }
 
+/** First successful beat adopter wins (pushClip dedup prevents double-adopt). */
+async function raceFirstBeatAdopt(adopters: Array<() => Promise<boolean>>): Promise<boolean> {
+  if (!adopters.length) return false;
+  return new Promise((resolve) => {
+    let pending = adopters.length;
+    let won = false;
+    const settle = (ok: boolean) => {
+      if (won) return;
+      if (ok) {
+        won = true;
+        resolve(true);
+        return;
+      }
+      pending--;
+      if (pending <= 0) resolve(false);
+    };
+    for (const adopt of adopters) {
+      void adopt()
+        .then(settle)
+        .catch(() => settle(false));
+    }
+  });
+}
+
 /** Archive-first: moving footage before stills; legacy: Wikimedia → Europeana → archive → stock. */
 async function fillBeatVisual(
   beat: SceneBeat,
@@ -15907,17 +15953,10 @@ async function fillBeatVisual(
 
   if (curatedArchiveOnlyVisuals()) {
     const prefetchedRanked = archivePrefetch ? await archivePrefetch : undefined;
-    if (openingVideosOnly) {
-      console.log(
-        `[Pipeline] Scene ${scene.index} zin ${beat.index}: opening footage — archive video only ` +
-          `(${dedup.archiveVideoClipsUsed}/${archiveMinVideoClipsTarget(dedup.videoLength)})`
-      );
-    }
-    if (await tryArchivePasses(prefetchedRanked, openingVideosOnly)) {
-      return true;
-    }
-    if (
-      await adoptWikimediaBeatClip(
+    const geoDoc = isGeoDocumentaryContext(beat.text, videoTitle);
+    const parallelAuthentic = fastShort || geoDoc;
+    const wikiVideo = () =>
+      adoptWikimediaBeatClip(
         beat,
         scene,
         workDir,
@@ -15927,23 +15966,56 @@ async function fillBeatVisual(
         holdSec,
         semanticProfile,
         { videoOnly: true }
-      )
-    ) {
-      return true;
+      );
+    const iaClip = () =>
+      adoptInternetArchiveBeatClip(
+        beat,
+        scene,
+        workDir,
+        videoTitle,
+        dedup,
+        pushClip,
+        holdSec,
+        semanticProfile
+      );
+
+    if (openingVideosOnly) {
+      console.log(
+        `[Pipeline] Scene ${scene.index} zin ${beat.index}: opening footage — archive video only ` +
+          `(${dedup.archiveVideoClipsUsed}/${archiveMinVideoClipsTarget(dedup.videoLength)})`
+      );
     }
-    if (await adoptInternetArchiveBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
-      return true;
+
+    if (parallelAuthentic) {
+      const primary: Array<() => Promise<boolean>> = [
+        () => tryArchivePasses(prefetchedRanked, openingVideosOnly),
+        wikiVideo,
+      ];
+      if (geoDoc) primary.push(iaClip);
+      if (await raceFirstBeatAdopt(primary)) return true;
+    } else {
+      if (await tryArchivePasses(prefetchedRanked, openingVideosOnly)) return true;
+      if (await wikiVideo()) return true;
+      if (await iaClip()) return true;
+      if (!openingVideosOnly && !fastShort) {
+        if (await adoptEuropeanaBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
+          return true;
+        }
+      }
+      if (openingVideosOnly && (await tryArchivePasses(prefetchedRanked, true))) return true;
+      if (await tryArchivePasses(prefetchedRanked, false)) return true;
     }
+
     if (!openingVideosOnly && !fastShort) {
       if (await adoptEuropeanaBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
         return true;
       }
     }
-    if (openingVideosOnly && (await tryArchivePasses(prefetchedRanked, true))) {
-      return true;
-    }
-    if (await tryArchivePasses(prefetchedRanked, false)) {
-      return true;
+    if (openingVideosOnly && parallelAuthentic) {
+      if (await tryArchivePasses(prefetchedRanked, false)) return true;
+      if (await adoptEuropeanaBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
+        return true;
+      }
     }
     if (
       !openingVideosOnly &&
@@ -15963,7 +16035,7 @@ async function fillBeatVisual(
     ) {
       return true;
     }
-    if (openingVideosOnly) {
+    if (openingVideosOnly && !parallelAuthentic) {
       if (await adoptEuropeanaBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
         return true;
       }
@@ -16019,6 +16091,44 @@ async function retryAuthenticBeforeLicensedStock(
 ): Promise<boolean> {
   if (curatedArchiveOnlyVisuals()) {
     const openingVideosOnly = archiveNeedsOpeningFootage(dedup);
+    const strict = strictVoiceVisualMatchEnabled();
+    const relaxed = !strict;
+    const fastShort = isFastShortVideoLength(dedup.videoLength) && dedup.perf.fastStockMode;
+    const geoDoc = isGeoDocumentaryContext(beat.text, videoTitle);
+
+    if (strict && (fastShort || geoDoc)) {
+      return raceFirstBeatAdopt([
+        () =>
+          adoptArchiveBeatClip(
+            beat,
+            scene,
+            workDir,
+            videoTitle,
+            dedup,
+            pushClip,
+            null,
+            holdSec,
+            semanticProfile,
+            false,
+            undefined,
+            openingVideosOnly ? { videosOnly: true } : undefined
+          ),
+        () =>
+          adoptWikimediaBeatClip(
+            beat,
+            scene,
+            workDir,
+            videoTitle,
+            dedup,
+            pushClip,
+            holdSec,
+            semanticProfile,
+            { videoOnly: true }
+          ),
+        () => adoptInternetArchiveBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile),
+      ]);
+    }
+
     if (
       await adoptArchiveBeatClip(
         beat,
@@ -16030,7 +16140,7 @@ async function retryAuthenticBeforeLicensedStock(
         null,
         holdSec,
         semanticProfile,
-        true,
+        relaxed,
         undefined,
         openingVideosOnly ? { videosOnly: true } : undefined
       )
@@ -16067,7 +16177,7 @@ async function retryAuthenticBeforeLicensedStock(
           null,
           holdSec,
           semanticProfile,
-          true
+          relaxed
         )
       ) {
         return true;
@@ -16168,7 +16278,7 @@ async function fetchArchiveSentenceMontage(
     });
   };
 
-  const beatConcurrency = dedup.perf.fastStockMode ? 6 : 2;
+  const beatConcurrency = dedup.perf.fastStockMode ? 8 : 2;
   const beatLimit = pLimit(beatConcurrency);
   await Promise.all(
     beats.map((beat, bi) =>

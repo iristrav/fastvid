@@ -293,8 +293,8 @@ export function visualFootageFocusEnabled(): boolean {
 export function maxVisualCandidatesPerBeatTry(videoLength?: string | null): number {
   if (!pipelineWallClockLimitEnabled()) return 12;
   if (visualFootageFocusEnabled()) {
-    if (isFastShortVideoLength(videoLength)) return 8;
-    return 6;
+    if (isFastShortVideoLength(videoLength)) return 10;
+    return 8;
   }
   if (isFastShortVideoLength(videoLength)) return 2;
   return 2;
@@ -310,7 +310,7 @@ export function visualStageWallClockMin(videoLength?: string | null): number {
   const mins = targetVideoDurationMinutes(videoLength);
   if (mins <= 1) {
     // Visual focus: more archive tries; cap so compose/TTS keep ~2 min within hard limit.
-    if (visualFootageFocusEnabled()) return Math.min(13, Math.max(10, hard - 2));
+    if (visualFootageFocusEnabled()) return Math.min(12, Math.max(9, hard - 3));
     return 10;
   }
   return Math.max(8, Math.min(total - 6, Math.round(total * 0.88)));

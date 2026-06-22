@@ -57,10 +57,13 @@ export function buildInternetArchiveGeoQueries(
     raw.push(`${q} documentary`);
   }
 
+  const beatAnchored: unknown[] = [];
   const narration = beatText.replace(/\[visual:[^\]]+\]/gi, " ").trim().slice(0, 55);
-  if (narration.length >= 8) raw.push(`${narration} documentary`);
+  if (narration.length >= 8) {
+    beatAnchored.push(`${narration} documentary`, `${narration} footage`);
+  }
 
-  return uniqueQueryStrings(raw, 4).slice(0, 10);
+  return uniqueQueryStrings([...beatAnchored, ...raw], 4).slice(0, 8);
 }
 
 /** Wikimedia Commons video search — beat/geo anchored. */
