@@ -131,7 +131,7 @@ import {
 } from "./archiveClipEmbedding";
 import { scheduleStockClipEmbedding, scheduleStockClipEmbeddingByKey, rankStockVideoIdsByEmbedding, stockClipEmbeddingEnabled } from "./stockClipEmbedding";
 import { pickStockInClipStartSec, stockInClipOffsetEnabled } from "./clipInClipOffset";
-import { resolveBeatVisionQueryEmbedding, coerceVisionString } from "./localClipVision";
+import { resolveBeatVisionQueryEmbedding, coerceVisionString, asVideoTitleString } from "./localClipVision";
 import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, openverseStillsEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, maxPipelineWallClockMin, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
@@ -10256,7 +10256,7 @@ function buildTopicAnchoredQueries(
   beatText?: string
 ): string[] {
   const person = personName || scene.personNames?.[0] || extractPrimaryPersonFromTitle(videoTitle) || "";
-  const titleLower = (videoTitle ?? "").toLowerCase();
+  const titleLower = asVideoTitleString(videoTitle).toLowerCase();
   const textLower = (beatText ?? scene.text).toLowerCase();
   const script = beatText?.trim() || scene.text;
   const queries: string[] = [];
@@ -15619,6 +15619,7 @@ async function fillBeatVisual(
   semanticProfile?: BeatSemanticProfile,
   holdSec = beat.holdSec
 ): Promise<boolean> {
+  videoTitle = coerceVisionString(videoTitle);
   const beatRegion = inferBeatGeoRegion(beat.text, videoTitle);
   dedup.segmentGeoLock = resolveSegmentGeoLock(beatRegion, dedup.segmentGeoLock, videoTitle);
   const fastShort = isFastShortVideoLength(dedup.videoLength) && dedup.perf.fastStockMode;
@@ -15898,6 +15899,7 @@ async function fetchArchiveSentenceMontage(
   onBeatProgress?: (beatIndex: number, beatTotal: number, phase?: BeatProgressPhase) => void,
   sceneAudioPath?: string
 ): Promise<SceneVisualsResult> {
+  videoTitle = coerceVisionString(videoTitle);
   const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
   const beatSec = archiveVisualBeatSecForVideo(dedup.videoLength);
   const beatCap = sceneBeatCapForCadence(scene.duration, dedup.perf.maxBeatsPerScene, beatSec);
@@ -18589,7 +18591,7 @@ export async function runVideoPipeline(
   const videoTitle = titleMatch?.[1]?.trim().slice(0, 80)
     || script.split("\n").find(l => l.trim().length > 5)?.trim().slice(0, 80)
     || "AI Generated Video";
-  const topicContext = buildTopicContext(userPrompt ?? videoRow?.prompt, videoTitle);
+  const topicContext = asVideoTitleString(buildTopicContext(userPrompt ?? videoRow?.prompt, videoTitle));
   const muskLocked = isMuskTeslaTopic(topicContext, script);
   const primaryPerson =
     extractPrimaryPersonFromText(userPrompt ?? videoRow?.prompt ?? "") ||

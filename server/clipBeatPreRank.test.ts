@@ -4,6 +4,7 @@ import {
   beatVisionContextFromProfile,
 } from "./localClipVision";
 import { analyzeSceneVisual } from "./visualMatchingEngine";
+import { inferPrimaryGeoFromTitle } from "./vidrushQuality";
 import {
   clipPreRankPoolSize,
   clipPreRankMinScore10,
@@ -63,6 +64,10 @@ describe("buildBeatVisionQueryText", () => {
     );
     expect(analysis.main_topic).toContain("Netherlands");
     expect(() => analyzeSceneVisual("Test sentence.", { foo: 1 } as unknown as string)).not.toThrow();
+  });
+
+  it("coerces numeric videoTitle for geo inference", () => {
+    expect(() => inferPrimaryGeoFromTitle(42 as unknown as string)).not.toThrow();
   });
 });
 

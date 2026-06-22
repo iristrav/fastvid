@@ -2,6 +2,7 @@
  * Europeana sourcing helpers — EU geo titles get priority heritage video fetch.
  */
 import { NL_GEO_SLUGS, extractTitleGeoPlaceTags } from "./worldGeoSlugs";
+import { asVideoTitleString } from "./localClipVision";
 
 const EU_GEO_HINTS = new Set([
   ...NL_GEO_SLUGS,
@@ -46,7 +47,7 @@ const EU_GEO_HINTS = new Set([
 ]);
 
 export function titleSuggestsEuropeana(videoTitle?: string): boolean {
-  const hay = (videoTitle ?? "").toLowerCase();
+  const hay = asVideoTitleString(videoTitle).toLowerCase();
   if (!hay.trim()) return false;
   if (/\beurope|eu\b|nederland|holland|berlin|amsterdam|brussels|paris/i.test(hay)) return true;
   const tags = extractTitleGeoPlaceTags(videoTitle);

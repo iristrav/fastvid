@@ -136,11 +136,17 @@ export type BeatVisionQueryContext = {
 export function coerceVisionString(raw: unknown): string | undefined {
   if (typeof raw === "string") return raw;
   if (raw == null) return undefined;
+  if (typeof raw === "number" || typeof raw === "boolean") return String(raw);
   if (typeof raw === "object" && raw !== null && "title" in raw) {
     const t = (raw as { title?: unknown }).title;
     if (typeof t === "string") return t;
   }
   return String(raw);
+}
+
+/** Always a plain string — safe for .toLowerCase() / .split(). */
+export function asVideoTitleString(raw: unknown): string {
+  return coerceVisionString(raw) ?? "";
 }
 
 function uniqueQueryParts(items: string[]): string[] {

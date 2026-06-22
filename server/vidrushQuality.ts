@@ -14,6 +14,7 @@ import {
   vidrushDocumentaryQualityEnabled,
 } from "./sourcingPolicy";
 import { PIPELINE_ERROR, pipelineError } from "@shared/appErrors";
+import { asVideoTitleString } from "./localClipVision";
 import {
   extractBeatGeoPlaceTags,
   extractSalientBeatTokens,
@@ -147,7 +148,7 @@ export function isNonDocumentaryClipPath(
 }
 
 export function inferPrimaryGeoFromTitle(videoTitle?: string): BeatGeoRegion {
-  const hay = (videoTitle ?? "").toLowerCase();
+  const hay = asVideoTitleString(videoTitle).toLowerCase();
   const wantsNl = NL_TITLE_RE.test(hay);
   const wantsUs = US_TITLE_RE.test(hay);
   if (wantsNl && wantsUs) return "both";
