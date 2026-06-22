@@ -54,6 +54,16 @@ describe("buildBeatVisionQueryText", () => {
     expect(query).toContain("Amsterdam canal district");
     expect(query).not.toContain("[visual:");
   });
+
+  it("coerces non-string videoTitle from metadata objects", () => {
+    const ctx = beatVisionContextFromProfile(
+      { text: "Cyclists cross a Dutch canal bridge." },
+      { title: "Why the Netherlands Is the Opposite of the U.S." } as unknown as string
+    );
+    const query = buildBeatVisionQueryText(ctx);
+    expect(query).toContain("Netherlands");
+    expect(() => buildBeatVisionQueryText(ctx)).not.toThrow();
+  });
 });
 
 describe("clip pre-rank helpers", () => {

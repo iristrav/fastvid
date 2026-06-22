@@ -132,6 +132,17 @@ export type BeatVisionQueryContext = {
   semanticEvents?: string[];
 };
 
+/** Coerce DB/metadata values to plain string before .trim() / string ops. */
+export function coerceVisionString(raw: unknown): string | undefined {
+  if (typeof raw === "string") return raw;
+  if (raw == null) return undefined;
+  if (typeof raw === "object" && raw !== null && "title" in raw) {
+    const t = (raw as { title?: unknown }).title;
+    if (typeof t === "string") return t;
+  }
+  return String(raw);
+}
+
 function uniqueQueryParts(items: string[]): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
@@ -147,10 +158,10 @@ function uniqueQueryParts(items: string[]): string[] {
 /** Rich CLIP query — concrete visual intent and entities before raw narration. */
 export function buildBeatVisionQueryText(ctx: BeatVisionQueryContext): string {
   const parts: string[] = [];
-  const visual = ctx.visualDescription?.replace(/\[visual:[^\]]+\]/gi, " ").trim();
+  const visual = coerceVisionString(ctx.visualDescription)?.replace(/\[visual:[^\]]+\]/gi, " ").trim();
   if (visual && visual.length >= 8) parts.push(visual.slice(0, 180));
 
-  const summary = ctx.semanticSummary?.trim();
+  const summary = coerceVisionString(ctx.semanticSummary)?.trim();
   if (summary && summary !== visual) parts.push(summary.slice(0, 160));
 
   const entityBits = uniqueQueryParts([
@@ -162,17 +173,19 @@ export function buildBeatVisionQueryText(ctx: BeatVisionQueryContext): string {
   ]);
   if (entityBits.length) parts.push(`Subject: ${entityBits.join(", ")}`);
 
-  const shot = ctx.searchQuery?.trim();
+  const shot = coerceVisionString(ctx.searchQuery)?.trim();
   if (shot && shot.length >= 4 && !parts.some((p) => p.includes(shot.slice(0, 20)))) {
     parts.push(shot.slice(0, 100));
   }
-  if (ctx.powerWord?.trim() && ctx.powerWord.length >= 3) {
-    parts.push(ctx.powerWord.trim().slice(0, 40));
+  const powerWord = coerceVisionString(ctx.powerWord);
+  if (powerWord?.trim() && powerWord.length >= 3) {
+    parts.push(powerWord.trim().slice(0, 40));
   }
 
-  const narration = ctx.beatText.replace(/\[visual:[^\]]+\]/gi, " ").trim();
+  const narration = coerceVisionString(ctx.beatText)?.replace(/\[visual:[^\]]+\]/gi, " ").trim() ?? "";
   if (narration) parts.push(narration.slice(0, 180));
-  if (ctx.videoTitle?.trim()) parts.push(ctx.videoTitle.trim().slice(0, 60));
+  const videoTitle = coerceVisionString(ctx.videoTitle);
+  if (videoTitle?.trim()) parts.push(videoTitle.trim().slice(0, 60));
 
   return parts.filter(Boolean).join(". ");
 }
@@ -190,11 +203,11 @@ export function beatVisionContextFromProfile(
   const visualDescription =
     beat.visualDescription?.trim() || semanticProfile?.summary?.trim() || undefined;
   return {
-    beatText: beat.text,
+    beatText: coerceVisionString(beat.text) ?? "",
     visualDescription,
-    videoTitle,
-    searchQuery: beat.searchQuery,
-    powerWord: beat.powerWord,
+    videoTitle: coerceVisionString(videoTitle),
+    searchQuery: coerceVisionString(beat.searchQuery),
+    powerWord: coerceVisionString(beat.powerWord),
     semanticSummary: semanticProfile?.summary,
     semanticPersons: semanticProfile?.entities.persons,
     semanticLocations: semanticProfile?.entities.locations,
