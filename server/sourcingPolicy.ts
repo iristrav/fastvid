@@ -83,7 +83,7 @@ export function curatedMaxStockBeatsPerVideo(videoLength?: string | null): numbe
   if (!archivePexelsFallbackEnabled()) return 0;
   if (visualFootageFocusEnabled() && strictVoiceVisualMatchEnabled()) {
     const mins = targetVideoDurationMinutes(videoLength);
-    if (mins <= 1) return 2;
+    if (mins <= 1) return 4;
     return 2;
   }
   const raw = process.env.MAX_STOCK_BEATS_PER_VIDEO?.trim();
@@ -178,11 +178,7 @@ export function maxPipelineWallClockHardMin(videoLength?: string | null): number
     return Math.round(PIPELINE_UNLIMITED_MS / 60_000);
   }
   const target = maxPipelineWallClockMin(videoLength);
-  let grace = pipelineWallClockGraceFactor();
-  // Strict 1-min: CLIP-gated archive refill needs headroom beyond the 10 min target.
-  if (strictVoiceVisualMatchEnabled() && isFastShortVideoLength(videoLength)) {
-    grace = Math.max(grace, 1.5);
-  }
+  const grace = pipelineWallClockGraceFactor();
   return Math.min(360, Math.round(target * grace));
 }
 
@@ -197,6 +193,7 @@ export function polishBeforeComposeEnabled(
   fastMode = false
 ): boolean {
   if (process.env.ENABLE_POLISH_BEFORE_COMPOSE === "false") return false;
+  if (isFastShortVideoLength(videoLength)) return false;
   if (strictVoiceVisualMatchEnabled()) return true;
   if (fastMode && isFastShortVideoLength(videoLength)) return false;
   return true;
@@ -210,7 +207,7 @@ export function composeParallelismForVideo(videoLength?: string | null, isRailwa
     if (!isNaN(n) && n >= 1 && n <= 4) return n;
   }
   if (isRailway) {
-    return isFastShortVideoLength(videoLength) ? 2 : 1;
+    return isFastShortVideoLength(videoLength) ? 3 : 1;
   }
   return 2;
 }
@@ -293,7 +290,7 @@ export function visualFootageFocusEnabled(): boolean {
 export function maxVisualCandidatesPerBeatTry(videoLength?: string | null): number {
   if (!pipelineWallClockLimitEnabled()) return 12;
   if (visualFootageFocusEnabled()) {
-    if (isFastShortVideoLength(videoLength)) return 10;
+    if (isFastShortVideoLength(videoLength)) return 4;
     return 8;
   }
   if (isFastShortVideoLength(videoLength)) return 2;
@@ -309,16 +306,16 @@ export function visualStageWallClockMin(videoLength?: string | null): number {
   const hard = maxPipelineWallClockHardMin(videoLength);
   const mins = targetVideoDurationMinutes(videoLength);
   if (mins <= 1) {
-    // Visual focus: more archive tries; cap so compose/TTS keep ~2 min within hard limit.
-    if (visualFootageFocusEnabled()) return Math.min(12, Math.max(9, hard - 3));
-    return 10;
+    // ≤8 min visuals leaves ~4 min for script, voice, compose within 12 min hard cap.
+    if (visualFootageFocusEnabled()) return Math.min(8, Math.max(6, hard - 4));
+    return 8;
   }
   return Math.max(8, Math.min(total - 6, Math.round(total * 0.88)));
 }
 
 /** Beat cadence for 1-min fast path — fewer beats → faster visual stage. */
 export function archiveVisualBeatSecForVideo(videoLength?: string | null): number {
-  if (isFastShortVideoLength(videoLength)) return 8;
+  if (isFastShortVideoLength(videoLength)) return 11;
   return archiveVisualBeatSec();
 }
 

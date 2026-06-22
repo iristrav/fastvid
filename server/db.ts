@@ -425,7 +425,7 @@ function pipelineStallThresholdMs(
   const visualCap = visualStageWallClockMin(length) * 60 * 1000;
   const totalCap = maxPipelineWallClockHardMin(length) * 60 * 1000;
   if (isShortVideoLength(length)) {
-    return visualSearch ? visualCap : 18 * 60 * 1000;
+    return visualSearch ? visualCap : totalCap;
   }
   if (length === "8-10") {
     return visualSearch ? visualCap : 35 * 60 * 1000;
