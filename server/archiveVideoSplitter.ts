@@ -74,6 +74,26 @@ function ffprobeBin(): string {
   return process.env.FFPROBE_BIN || process.env.FFPROBE_PATH || "ffprobe";
 }
 
+function isH264Codec(codec: string | null): boolean {
+  if (!codec) return false;
+  const c = codec.toLowerCase();
+  return c === "h264" || c === "avc1" || c.includes("avc");
+}
+
+/** Downscale + limit fps for shot detect on long/high-fps sources (60fps × 30min is too heavy). */
+function shotDetectScaleFilter(totalDur: number): string {
+  if (totalDur > 900) return "fps=2,scale=480:-1";
+  if (totalDur > 300) return "fps=3,scale=480:-1";
+  return "scale=480:-1";
+}
+
+/** Small proxy file for analysis when codecs confuse detectors — not a full re-encode. */
+function analysisProxyScaleFilter(totalDur: number): string {
+  if (totalDur > 900) return "fps=2,scale=480:-2";
+  if (totalDur > 300) return "fps=3,scale=640:-2";
+  return "fps=5,scale=640:-2";
+}
+
 export function sceneThreshold(): number {
   const raw = process.env.ARCHIVE_SCENE_THRESHOLD?.trim();
   if (raw) {
@@ -581,9 +601,10 @@ async function detectScdetCutTimes(
   threshold: number,
   timeoutMs: number
 ): Promise<number[]> {
+  const scale = shotDetectScaleFilter(totalDur);
   const cmd =
     `${ffmpegBin()} -i "${inputPath}" -an ` +
-    `-vf "scale=480:-1,scdet=threshold=${threshold}:sc_pass=1,showinfo" -f null -`;
+    `-vf "${scale},scdet=threshold=${threshold}:sc_pass=1,showinfo" -f null -`;
   const stderr = await runFfmpegDetect(cmd, timeoutMs);
   const fromMeta = parseScdetTimesFromFfmpeg(stderr, totalDur);
   if (fromMeta.length > 0) return mergeNearbyCuts(fromMeta, cutMergeGapSec());
@@ -597,9 +618,10 @@ async function detectSceneFilterCutTimes(
   threshold: number,
   timeoutMs: number
 ): Promise<number[]> {
+  const scale = shotDetectScaleFilter(totalDur);
   const cmd =
     `${ffmpegBin()} -i "${inputPath}" -an ` +
-    `-vf "scale=480:-1,select='gt(scene,${threshold})',showinfo" -f null -`;
+    `-vf "${scale},select='gt(scene,${threshold})',showinfo" -f null -`;
   const stderr = await runFfmpegDetect(cmd, timeoutMs);
   return mergeNearbyCuts(parsePtsTimesFromFfmpeg(stderr, totalDur), cutMergeGapSec());
 }
@@ -781,7 +803,7 @@ async function enforceSingleSceneClipSegments(
     .map((seg, index) => ({ ...seg, index }));
 }
 
-/** Re-encode to H.264 MP4 when codecs/containers confuse shot detectors. */
+/** Low-res analysis proxy when codecs/containers confuse shot detectors (not a full re-encode). */
 async function normalizeSourceForAnalysis(
   inputPath: string,
   workDir: string,
@@ -791,19 +813,30 @@ async function normalizeSourceForAnalysis(
   const outPath = path.join(workDir, "analysis_normalized.mp4");
   onProgress?.({
     stage: "split_probe",
-    message: `Normalizing video for reliable shot detection (${Math.round(totalDur)}s)…`,
+    message: `Building analysis proxy for shot detection (${Math.round(totalDur / 60)} min)…`,
     percent: 15,
   });
 
-  const timeoutMs = Math.round(Math.min(1_800_000, Math.max(60_000, totalDur * 800)));
-  await exec(
-    `${ffmpegBin()} -y -i "${inputPath}" -an -c:v libx264 -preset ultrafast -crf 23 ` +
-      `-pix_fmt yuv420p -movflags +faststart -threads 0 "${outPath}"`,
-    { maxBuffer: 8 * 1024 * 1024, timeout: timeoutMs }
-  );
+  const vf = analysisProxyScaleFilter(totalDur);
+  const timeoutMs = Math.round(Math.min(900_000, Math.max(90_000, totalDur * 80)));
+  try {
+    await exec(
+      `${ffmpegBin()} -y -i "${inputPath}" -an -vf "${vf}" ` +
+        `-c:v libx264 -preset ultrafast -crf 28 -pix_fmt yuv420p -movflags +faststart -threads 2 "${outPath}"`,
+      { maxBuffer: 8 * 1024 * 1024, timeout: timeoutMs }
+    );
+  } catch (err) {
+    const hint = (err as { killed?: boolean }).killed
+      ? "Server ran out of time or memory"
+      : ((err as Error).message?.slice(0, 120) ?? "FFmpeg failed");
+    throw new ArchiveSplitError(
+      `Could not prepare this video for shot detection (${Math.round(totalDur / 60)} min). ` +
+        `${hint}. Try a shorter clip, export at 30fps, or turn off auto-split.`
+    );
+  }
 
   if (!fs.existsSync(outPath) || fs.statSync(outPath).size < 8000) {
-    throw new ArchiveSplitError("Video normalization failed — check that the file is playable.");
+    throw new ArchiveSplitError("Video analysis proxy failed — check that the file is playable.");
   }
   return outPath;
 }
@@ -830,8 +863,8 @@ async function prepareAnalysisVideo(
 ): Promise<string> {
   const ext = path.extname(inputPath).toLowerCase();
   const codec = await probeVideoCodec(inputPath);
-  const isH264 = codec === "h264" || codec === "avc1";
-  if (ext === ".mp4" && isH264) {
+  const isH264 = isH264Codec(codec);
+  if (ext === ".mp4" && (isH264 || !codec)) {
     return inputPath;
   }
   console.log(
