@@ -20,7 +20,7 @@ import type { VideoQualityReport } from "./videoQualityReport";
 import { assertQualityReportExportGate } from "./videoQualityReport";
 import { strictVoiceMontageSyncExport } from "./voiceMontageSyncAudit";
 import type { FinalVideoValidation } from "./finalVideoGate";
-import { minQualityExportScore, strictQualityExportEnabled, qualityExportHardTierEnabled } from "./sourcingPolicy";
+import { minQualityExportScore, strictQualityExportEnabled, qualityExportHardTierEnabled, blockExportOnVisualMismatch } from "./sourcingPolicy";
 
 /** Auto-bump export score when montage completed — all video lengths, never block export. */
 export function healQualityReportForExport(
@@ -28,7 +28,7 @@ export function healQualityReportForExport(
   videoLength?: string | null,
   finalVideo?: FinalVideoValidation | null
 ): VideoQualityReport {
-  if (qualityExportHardTierEnabled()) {
+  if (qualityExportHardTierEnabled() || blockExportOnVisualMismatch()) {
     return report;
   }
   const minScore = minQualityExportScore(videoLength);
@@ -157,13 +157,27 @@ export function enforceQualityExportGate(
   videoLength?: string | null,
   finalVideo?: FinalVideoValidation | null
 ): void {
+  if (
+    blockExportOnVisualMismatch() &&
+    report.voiceVisualMatch &&
+    !report.voiceVisualMatch.ok
+  ) {
+    throw pipelineError(
+      PIPELINE_ERROR.QUALITY_GATE,
+      `Voice↔visual match failed: ${report.voiceVisualMatch.warnings.join("; ")}`
+    );
+  }
+
   if (!strictQualityExportEnabled()) {
     logQualityReportExportWarnings(videoId, report);
-    healQualityReportForExport(report, videoLength, finalVideo);
+    if (!blockExportOnVisualMismatch()) {
+      healQualityReportForExport(report, videoLength, finalVideo);
+    }
     return;
   }
 
   const hardTier = qualityExportHardTierEnabled();
+  const blockVisual = blockExportOnVisualMismatch();
 
   const violations = report.criticalGeoViolations ?? [];
   if (violations.length > 0) {
@@ -221,11 +235,15 @@ export function enforceQualityExportGate(
   }
 
   const fallbackBeats = report.adoptAuditSummary?.fallbackBeats ?? 0;
-  if (fallbackBeats > 0) {
-    if (hardTier) {
+  const visualMismatch = report.voiceVisualMatch && !report.voiceVisualMatch.ok;
+  if (fallbackBeats > 0 || visualMismatch) {
+    if (hardTier || blockVisual) {
+      const detail =
+        report.voiceVisualMatch?.warnings.join("; ") ??
+        `${fallbackBeats} fallback beat(s)`;
       throw pipelineError(
         PIPELINE_ERROR.QUALITY_GATE,
-        `${fallbackBeats} fallback beat(s) used — hard export tier blocks export`
+        `Voice↔visual match failed: ${detail}`
       );
     }
     console.warn(
@@ -233,7 +251,7 @@ export function enforceQualityExportGate(
     );
   }
 
-  if (!hardTier) {
+  if (!hardTier && !blockVisual) {
     healQualityReportForExport(report, videoLength, finalVideo);
   }
 

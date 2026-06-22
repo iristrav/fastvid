@@ -7,6 +7,7 @@ import {
   effectiveVisionSampleCount,
   cascadeVisionGateEnabled,
   cascadeVisionExpandBelow,
+  effectiveMinClipQualityScore,
 } from "./visualQualityGate";
 import {
   filenameLexicalBoost,
@@ -84,11 +85,10 @@ describe("localClipVision helpers", () => {
     expect(q.indexOf("World War II")).toBeLessThan(q.indexOf("Something abstract"));
   });
 
-  it("localVisionEnabled is on by default", () => {
-    const prev = process.env.ENABLE_LOCAL_VISION;
-    delete process.env.ENABLE_LOCAL_VISION;
-    expect(localVisionEnabled()).toBe(true);
-    expect(minClipQualityScore()).toBe(8);
-    process.env.ENABLE_LOCAL_VISION = prev;
+  it("effectiveMinClipQualityScore stays at 8 when strict voice visual match is on", () => {
+    const prev = process.env.STRICT_VOICE_VISUAL_MATCH;
+    process.env.STRICT_VOICE_VISUAL_MATCH = "true";
+    expect(effectiveMinClipQualityScore(true, true)).toBe(8);
+    process.env.STRICT_VOICE_VISUAL_MATCH = prev;
   });
 });

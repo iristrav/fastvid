@@ -15,6 +15,7 @@ import {
   localVisionEnabled,
 } from "./localClipVision";
 import { minClipQualityScore } from "./visualQualityGate";
+import { voiceVisualAuditMinScore } from "./voiceVisualMatch";
 import { probeVideoDurationSec } from "./archiveVideoSplitter";
 
 export type BeatVoiceAlignment = {
@@ -267,7 +268,7 @@ export async function spotCheckComposedSceneBeatSync(
 
   const skipClip = options?.skipClipScoring === true;
   const warnings: string[] = [];
-  const minScore = Math.max(6, minClipQualityScore() - 1);
+  const minScore = voiceVisualAuditMinScore();
   const totalDur = await probeVideoDurationSec(composedPath);
   if (totalDur <= 0.5) return { ok: true, warnings: [] };
 

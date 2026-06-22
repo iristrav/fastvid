@@ -333,6 +333,17 @@ const CLIP_TITLE_DOMAIN_RULES: ClipTitleDomainRule[] = [
     titleRe: /\b(kkk|ku klux klan|klan (rally|march|burning cross))\b/i,
     beatAllowRe: /\b(kkk|ku klux klan|klan|white supremacy|civil rights|segregation (violence|south))\b/i,
   },
+  // ── Animated / unrelated maps (e.g. US+China map on WWII beat) ───────────────
+  {
+    id: "animated_world_map",
+    titleRe: /\b(animated (world )?map|world map (animation|showing)|map (animation|graphic) showing)\b/i,
+    beatAllowRe: /\b(map|cartograph|border(s)? (changed|shifted)|territor(y|ies)|geograph(y|ical)|atlas)\b/i,
+  },
+  {
+    id: "unrelated_country_map",
+    titleRe: /\b(world map showing (the )?(united states|usa|u\.s\.|china|india|brazil))\b/i,
+    beatAllowRe: /\b(united states|usa|america|u\.s\.|china|chinese|india|brazil|american)\b/i,
+  },
 ];
 
 /**

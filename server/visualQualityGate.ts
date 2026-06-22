@@ -4,6 +4,7 @@
 import fs from "fs";
 import path from "path";
 import { curatedClipPathAssetId } from "./curatedMediaSourcing";
+import { strictVoiceVisualMatchEnabled } from "./sourcingPolicy";
 import { loadStoredFrameEmbeddings } from "./archiveClipEmbedding";
 import { loadStoredStockFrameEmbeddingsFromPath } from "./stockClipEmbedding";
 import {
@@ -81,14 +82,16 @@ export function minClipQualityScore(): number {
 
 /** When true, inconclusive local vision (CLIP load fail / no frames) rejects the clip. */
 export function strictVisionInconclusiveFails(fastMode = false): boolean {
+  if (strictVoiceVisualMatchEnabled()) return true;
   if (fastMode) return false;
   if (process.env.STRICT_CLIP_VISION === "false") return false;
   if (process.env.STRICT_CLIP_VISION === "true") return true;
   return minClipQualityScore() >= 8;
 }
 
-/** Min CLIP score — slightly relaxed on fast 1-min Railway path. */
+/** Min CLIP score — no fast-path relaxation when strict voice↔visual match is on. */
 export function effectiveMinClipQualityScore(fastMode = false, shortVideo = false): number {
+  if (strictVoiceVisualMatchEnabled()) return minClipQualityScore();
   if (fastMode && shortVideo) return Math.min(minClipQualityScore(), 7);
   if (fastMode) return Math.min(minClipQualityScore(), 7);
   return minClipQualityScore();
@@ -114,6 +117,7 @@ export function clipVisionFrameCoverage(fastMode = false): number {
     const n = parseFloat(raw);
     if (!isNaN(n) && n >= 0.5 && n <= 1) return n;
   }
+  if (strictVoiceVisualMatchEnabled()) return 0.8;
   return fastMode ? 0.5 : 0.8;
 }
 

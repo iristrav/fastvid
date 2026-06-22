@@ -19,6 +19,10 @@ import { summarizeAdoptAudit } from "./clipAdoptAudit";
 import { isArchiveGeoBlockedForBeat, resolveRequiredGeoTagsForBeat } from "./curatedMediaSourcing";
 import type { BeatGeoRegion } from "./vidrushQuality";
 import { targetClipVisionScore } from "./visualQualityGate";
+import type { VoiceVisualMatchSummary } from "./voiceVisualMatch";
+import { buildVoiceVisualMatchSummary } from "./voiceVisualMatch";
+
+export type { VoiceVisualMatchSummary };
 
 export type VideoQualityReport = {
   generatedAt: string;
@@ -56,6 +60,7 @@ export type VideoQualityReport = {
     failedScenes: number[];
     warnings: string[];
   };
+  voiceVisualMatch?: VoiceVisualMatchSummary;
   score: number;
 };
 
@@ -88,7 +93,7 @@ export function inferClipSourceFromPath(filePath: string): string {
   ) {
     return "ai";
   }
-  if (/_fallback/i.test(base)) return "fallback";
+  if (/_fallback|guaranteed|_slot\d+_guaranteed/i.test(base)) return "fallback";
   if (/broll_vid/i.test(base)) return "broll";
   return "unknown";
 }
@@ -180,6 +185,7 @@ export function buildVideoQualityReport(
     adoptAudit?: ClipAdoptEntry[];
     archiveOnly?: boolean;
     fastShort?: boolean;
+    sceneCriticalFailed?: number[];
   }
 ): VideoQualityReport {
   const bySource: Record<string, number> = {};
@@ -297,6 +303,15 @@ export function buildVideoQualityReport(
     byMixKind,
   });
 
+  const voiceVisualMatch = buildVoiceVisualMatchSummary(
+    opts?.adoptAudit,
+    unique,
+    opts?.sceneCriticalFailed ?? []
+  );
+  for (const w of voiceVisualMatch.warnings) {
+    warnings.push(`VoiceVisual: ${w}`);
+  }
+
   return {
     generatedAt: new Date().toISOString(),
     videoTitle,
@@ -315,6 +330,7 @@ export function buildVideoQualityReport(
     pipelineSec: opts?.pipelineSec,
     stockBeatsUsed: opts?.stockBeatsUsed,
     adoptAuditSummary,
+    voiceVisualMatch,
     score,
   };
 }

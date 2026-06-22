@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { isClipTitleIrrelevantToBeat } from "./visualBeatTags";
 import {
   buildBeatMatchTags,
   buildCuratedQueryTags,
@@ -821,5 +821,15 @@ describe("curatedMediaSourcing", () => {
         title
       )
     ).toBe(false);
+  });
+
+  it("rejects US+China animated map for Hitler suicide beat", () => {
+    const beatText = "Hitler's suicide marked the end of Nazi Germany.";
+    const mapClip = {
+      title: "Animated World Map Showing United States and China",
+      tags: ["map", "animation", "world"],
+    };
+    expect(isClipTitleIrrelevantToBeat(mapClip, beatText)).toBe(true);
+    expect(assetPassesBeatMinimum(mapClip as MediaArchiveAsset, beatText, 80, 80)).toBe(false);
   });
 });

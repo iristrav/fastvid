@@ -17,6 +17,7 @@ import {
   scoreFramePathsAgainstBeat,
 } from "./localClipVision";
 import { minClipQualityScore } from "./visualQualityGate";
+import { voiceVisualAuditMinScore } from "./voiceVisualMatch";
 
 export type VoiceMontageSyncCheck = {
   clipIndex: number;
@@ -153,7 +154,7 @@ export async function auditSceneVoiceMontageSync(
   const warnings: string[] = [];
   const checks: VoiceMontageSyncCheck[] = [];
   const totalDur = await probeVideoDurationSec(composedPath);
-  const minScore = Math.max(6, minClipQualityScore() - 1);
+  const minScore = voiceVisualAuditMinScore();
   const checkIndices = selectCheckClipIndices(montageDurations.length);
 
   for (const ci of checkIndices) {

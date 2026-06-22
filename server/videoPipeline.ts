@@ -132,7 +132,7 @@ import {
 import { scheduleStockClipEmbedding, scheduleStockClipEmbeddingByKey, rankStockVideoIdsByEmbedding, stockClipEmbeddingEnabled } from "./stockClipEmbedding";
 import { pickStockInClipStartSec, stockInClipOffsetEnabled } from "./clipInClipOffset";
 import { resolveBeatVisionQueryEmbedding } from "./localClipVision";
-import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, openverseStillsEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, maxPipelineWallClockMin, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose } from "./sourcingPolicy";
+import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, openverseStillsEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, maxPipelineWallClockMin, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -551,6 +551,18 @@ type MontageFilterOpts = {
 
 function pipelineFfmpegThreadFlag(): string {
   return ffmpegThreadFlag(IS_RAILWAY);
+}
+
+function countFallbackAdopts(dedup: VisualDedupState): number {
+  return dedup.clipAdoptAudit.filter((e) => e.source === "fallback").length;
+}
+
+/** Grey guaranteed clips only when strict voice↔visual match allows (default: never). */
+function canAddGuaranteedFallbackClip(dedup?: VisualDedupState): boolean {
+  const cap = maxFallbackBeatsPerVideo();
+  if (cap === 0) return false;
+  if (!dedup) return true;
+  return countFallbackAdopts(dedup) < cap;
 }
 
 function effectiveBeatSec(): number {
@@ -11371,16 +11383,22 @@ async function recoverSceneClipsIfEmpty(
     }
     // Recovery is lenient: guaranteed clips if archive/Wikimedia/stock all miss
     if (clips.length === 0) {
-      console.warn(
-        `[Pipeline] Scene ${scene.index}: geen archief/Wikimedia/stock — guaranteed clip fill`
-      );
-      await appendGuaranteedSceneClips(
-        scene,
-        workDir,
-        clips,
-        beatDurations,
-        minClipsForBalancedVoice(scene.duration + 0.15)
-      );
+      if (canAddGuaranteedFallbackClip(dedup)) {
+        console.warn(
+          `[Pipeline] Scene ${scene.index}: geen archief/Wikimedia/stock — guaranteed clip fill`
+        );
+        await appendGuaranteedSceneClips(
+          scene,
+          workDir,
+          clips,
+          beatDurations,
+          minClipsForBalancedVoice(scene.duration + 0.15)
+        );
+      } else {
+        console.warn(
+          `[Pipeline] Scene ${scene.index}: geen clips — strict voice↔visual: geen kleur-fallback`
+        );
+      }
     }
     return { clips, beatDurations };
   }
@@ -15332,7 +15350,8 @@ async function ensureBeatVisualFilled(
     return;
   }
   if (
-    await adoptAiBeatClip(
+    !strictVoiceVisualMatchEnabled() &&
+    (await adoptAiBeatClip(
       beat,
       scene,
       workDir,
@@ -15342,11 +15361,17 @@ async function ensureBeatVisualFilled(
       holdSec,
       semanticProfile,
       { skipVision: true }
-    )
+    ))
   ) {
     return;
   }
   if (await adoptKlingBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
+    return;
+  }
+  if (!canAddGuaranteedFallbackClip(dedup)) {
+    console.warn(
+      `[Pipeline] Scene ${scene.index} zin ${beat.index}: strict voice↔visual — geen match, geen kleur-fallback`
+    );
     return;
   }
   console.warn(
@@ -17377,18 +17402,24 @@ async function composeSceneVideo(
   }
 
   if (validClips.length === 0) {
-    console.warn(`[Pipeline] Scene ${scene.index}: geen bruikbare clips — guaranteed compose fill`);
-    const minNeeded = Math.max(1, minClipsForBalancedVoice(duration + 0.15));
-    const holdSec = Math.max(3, duration / minNeeded);
-    for (let i = 0; i < minNeeded; i++) {
-      const clip = await generateGuaranteedBeatClip(scene.index, i, holdSec, workDir);
-      if (await montageClipPassesComposeGate(clip, scene.index, i)) {
-        validClips.push(clip);
+    if (canAddGuaranteedFallbackClip(composeOptions?.dedup)) {
+      console.warn(`[Pipeline] Scene ${scene.index}: geen bruikbare clips — guaranteed compose fill`);
+      const minNeeded = Math.max(1, minClipsForBalancedVoice(duration + 0.15));
+      const holdSec = Math.max(3, duration / minNeeded);
+      for (let i = 0; i < minNeeded; i++) {
+        const clip = await generateGuaranteedBeatClip(scene.index, i, holdSec, workDir);
+        if (await montageClipPassesComposeGate(clip, scene.index, i)) {
+          validClips.push(clip);
+        }
       }
+    } else {
+      console.warn(
+        `[Pipeline] Scene ${scene.index}: geen bruikbare clips — strict voice↔visual, geen guaranteed fill`
+      );
     }
   }
 
-  if (validClips.length === 0) {
+  if (validClips.length === 0 && canAddGuaranteedFallbackClip(composeOptions?.dedup)) {
     const clip = await generateGuaranteedBeatClip(scene.index, 999, Math.max(3, duration), workDir);
     validClips.push(clip);
   }
@@ -17405,11 +17436,18 @@ async function composeSceneVideo(
     return arr.findIndex((c) => clipContentKey(c) === key) === i;
   });
   if (safeClips.length === 0) {
-    console.warn(`[Pipeline] Scene ${scene.index}: alle clips faalden validatie — guaranteed compose fill`);
-    const clip = await generateGuaranteedBeatClip(scene.index, 1001, Math.max(3, duration), workDir);
-    const ok = await requireValidClip(clip, scene.index, duration, workDir);
-    if (ok) safeClips.push(ok);
-    else safeClips.push(clip);
+    if (canAddGuaranteedFallbackClip(composeOptions?.dedup)) {
+      console.warn(`[Pipeline] Scene ${scene.index}: alle clips faalden validatie — guaranteed compose fill`);
+      const clip = await generateGuaranteedBeatClip(scene.index, 1001, Math.max(3, duration), workDir);
+      const ok = await requireValidClip(clip, scene.index, duration, workDir);
+      if (ok) safeClips.push(ok);
+      else safeClips.push(clip);
+    } else {
+      throw pipelineError(
+        PIPELINE_ERROR.FFMPEG,
+        `Scene ${scene.index}: no valid clips and strict voice↔visual match forbids grey fallback`
+      );
+    }
   }
   if (validClips.length < existingClips.length) {
     console.warn(
@@ -18946,7 +18984,7 @@ export async function runVideoPipeline(
               scene.index,
               topicContext,
               auditXfade,
-              { skipClipScoring: voiceMontageSyncAuditEnabled() }
+              { skipClipScoring: false }
             );
             if (!spot.ok) {
               audit = {
@@ -19009,8 +19047,9 @@ export async function runVideoPipeline(
     );
     console.log(`[Pipeline] Stage 4 (compose): ${scenes.length} scenes in ${((Date.now()-t3)/1000).toFixed(1)}s`);
 
-    // ── Stage 5: Critical scene review — multi-frame vision QA (warnings only; export continues) ─
+    // ── Stage 5: Critical scene review — multi-frame vision QA ─────────────────
     onProgress?.({ stage: STAGE_LABELS.visualReview, percent: 66 });
+    const sceneCriticalFailed: number[] = [];
     for (let i = 0; i < scenes.length; i++) {
       const vr = sceneVisualResults[i];
       if (!vr?.beats?.length) continue;
@@ -19042,8 +19081,13 @@ export async function runVideoPipeline(
         adoptVisionByBeat
       );
       if (!critical.ok) {
+        sceneCriticalFailed.push(scenes[i]!.index);
         const msg = `Scene ${scenes[i]!.index} critical review: ${critical.summary}`;
-        console.warn(`[Pipeline] ${msg} — continuing export (CLIP QA warning, not blocking)`);
+        if (strictVoiceVisualMatchEnabled()) {
+          console.error(`[Pipeline] ${msg} — blocks export (strict voice↔visual)`);
+        } else {
+          console.warn(`[Pipeline] ${msg} — continuing export (CLIP QA warning, not blocking)`);
+        }
       }
     }
 
@@ -19081,6 +19125,7 @@ export async function runVideoPipeline(
       adoptAudit: visualDedup.clipAdoptAudit,
       archiveOnly: curatedArchiveOnlyVisuals(),
       fastShort: isFastShortVideoLength(videoLength),
+      sceneCriticalFailed,
     });
     logVideoQualityReport(videoId, qualityReport);
     if (voiceMontageSyncResults.length > 0) {

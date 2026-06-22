@@ -217,7 +217,33 @@ export function deferFacelessSubtitlesToCompose(): boolean {
 
 /** No score self-heal; hard fail on sync/fallback beats (ENABLE_QUALITY_EXPORT_HARD_TIER=true). */
 export function qualityExportHardTierEnabled(): boolean {
-  return process.env.ENABLE_QUALITY_EXPORT_HARD_TIER === "true";
+  if (process.env.ENABLE_QUALITY_EXPORT_HARD_TIER === "true") return true;
+  if (process.env.ENABLE_QUALITY_EXPORT_HARD_TIER === "false") return false;
+  return strictVoiceVisualMatchEnabled();
+}
+
+/**
+ * Strict voice↔visual CLIP matching — every beat must pass vision gate (default ON).
+ * Set STRICT_VOICE_VISUAL_MATCH=false to restore relaxed fast-path scoring.
+ */
+export function strictVoiceVisualMatchEnabled(): boolean {
+  return process.env.STRICT_VOICE_VISUAL_MATCH !== "false";
+}
+
+/** Max grey color-fallback beats per video (0 when strict match is on). */
+export function maxFallbackBeatsPerVideo(): number {
+  const raw = process.env.MAX_FALLBACK_BEATS_PER_VIDEO?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 0 && n <= 20) return n;
+  }
+  return strictVoiceVisualMatchEnabled() ? 0 : 6;
+}
+
+/** Block export when visuals fail CLIP bar / use grey fallbacks (default on with strict match). */
+export function blockExportOnVisualMismatch(): boolean {
+  if (process.env.BLOCK_EXPORT_ON_VISUAL_MISMATCH === "false") return false;
+  return strictVoiceVisualMatchEnabled();
 }
 
 /** Skip LLM semantic rerank when CLIP pre-rank top score ≥ this (default 8). */
