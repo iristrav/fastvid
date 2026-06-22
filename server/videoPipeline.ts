@@ -557,6 +557,15 @@ function countFallbackAdopts(dedup: VisualDedupState): number {
   return dedup.clipAdoptAudit.filter((e) => e.source === "fallback").length;
 }
 
+function toQueryString(raw: unknown): string {
+  if (typeof raw === "string") return raw.trim();
+  return asVideoTitleString(raw).trim();
+}
+
+function queryStringsMinLen(parts: unknown[], minLen = 3): string[] {
+  return parts.map(toQueryString).filter((s) => s.length >= minLen);
+}
+
 /** Grey guaranteed clips only when strict voice↔visual match allows (default: never). */
 function canAddGuaranteedFallbackClip(dedup?: VisualDedupState): boolean {
   const cap = maxFallbackBeatsPerVideo();
@@ -873,7 +882,7 @@ async function fetchBeatArchivalThenPexels(
   const historicalDoc = isHistoricalDocumentary(topicHay) && !dedup.personTopicLock;
   const intent = buildMediaSearchIntent({
     beatText: beat.text,
-    searchQueries: [beat.searchQuery, videoTitle ?? ""].filter((q) => q.trim().length >= 3),
+    searchQueries: queryStringsMinLen([beat.searchQuery, videoTitle]),
     keywords: adoptOpts.keywords ?? beat.keywords,
     primaryPerson: historicalDoc ? "" : personName,
     persons: scenePersons,
@@ -1110,7 +1119,7 @@ async function fetchBeatAuthenticStills(
   };
   const intent = buildMediaSearchIntent({
     beatText: beat.text,
-    searchQueries: [beat.searchQuery, videoTitle ?? ""].filter((q) => q.trim().length >= 3),
+    searchQueries: queryStringsMinLen([beat.searchQuery, videoTitle]),
     keywords: adoptOpts.keywords ?? beat.keywords,
     primaryPerson: historicalDoc ? "" : personName,
     persons: scenePersons,
@@ -7226,7 +7235,10 @@ function buildPersonCelebrityVideoQueries(
     ...visualCues.map((c) => `${personName} ${c}`.trim()),
     ...beatTokens.map((t) => `${personName} ${t}`),
     ...mediaQs,
-  ].filter((q) => q.trim().length > 3 && !isBlockedStockQuery(q));
+  ].filter((q) => {
+    const s = toQueryString(q);
+    return s.length > 3 && !isBlockedStockQuery(s);
+  });
 
   const unique = [...new Set(combined)];
   const offset = beatIndex % Math.max(1, unique.length);
@@ -12088,7 +12100,7 @@ async function researchBeatClipUnified(
         clipFetchDur,
         dedup,
         { ...adoptOpts, requireBeatMatch: false, scriptAnchored: false },
-        [...new Set(ytFirstQueries.filter((q) => q.trim().length > 3))].slice(0, 6),
+        [...new Set(ytFirstQueries.map(toQueryString).filter((q) => q.length > 3))].slice(0, 6),
         "research YouTube first",
         youtubeBeatFetchTimeoutMs(perf.fastStockMode)
       );
@@ -13241,7 +13253,10 @@ function buildPersonStockVideoQueries(
     `${personName} makeup brand`,
     ...buildPersonCelebrityVideoQueries(personName, beat.text, beat.index).slice(0, 5),
     ...scriptEventSearchQueries(beat.text, persons),
-  ].filter((q) => q.trim().length > 3 && !isBlockedStockQuery(q));
+  ].filter((q) => {
+    const s = toQueryString(q);
+    return s.length > 3 && !isBlockedStockQuery(s);
+  });
   return [...new Set(out)].slice(0, 6);
 }
 
@@ -13506,7 +13521,7 @@ async function fetchBeatAuthenticVideo(
   const historicalDoc = isHistoricalDocumentary(topicHay) && !dedup.personTopicLock;
   const intent = buildMediaSearchIntent({
     beatText: beat.text,
-    searchQueries: [beat.searchQuery, videoTitle ?? ""].filter((q) => q.trim().length >= 3),
+    searchQueries: queryStringsMinLen([beat.searchQuery, videoTitle]),
     keywords: adoptOpts.keywords ?? beat.keywords,
     primaryPerson: historicalDoc ? "" : personName,
     persons: scenePersons,
@@ -13836,7 +13851,7 @@ async function resolveBeatClipTurbo(
       clipFetchDur,
       dedup,
       turboAdopt,
-      [...new Set(turboYtQueries.filter((q) => q.trim().length > 3))].slice(0, 5),
+      [...new Set(turboYtQueries.map(toQueryString).filter((q) => q.length > 3))].slice(0, 5),
       "turbo archival YouTube",
       youtubeBeatFetchTimeoutMs(dedup.perf.fastStockMode)
     );

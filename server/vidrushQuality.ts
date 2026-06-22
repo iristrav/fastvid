@@ -288,7 +288,11 @@ export function buildVidrushOpeningQueries(videoTitle?: string, beatText?: strin
     "downtown street documentary broll video"
   );
 
-  return [...new Set(queries.map((q) => q.trim()).filter((q) => q.length > 8))].slice(0, 14);
+  return [...new Set(
+    queries
+      .map((q) => (typeof q === "string" ? q.trim() : asVideoTitleString(q)))
+      .filter((q) => q.length > 8)
+  )].slice(0, 14);
 }
 
 export function clipPassesVidrushOpeningGate(

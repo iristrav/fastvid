@@ -65,5 +65,9 @@ export function buildEuropeanaBeatQueries(
     `${beatText.slice(0, 60)} documentary`,
     `${beatText.slice(0, 40)} news archive`,
   ];
-  return [...new Set(queries.filter((q) => q.trim().length >= 4))].slice(0, 6);
+  return [...new Set(
+    queries
+      .map((q) => (typeof q === "string" ? q.trim() : asVideoTitleString(q)))
+      .filter((q) => q.length >= 4)
+  )].slice(0, 6);
 }
