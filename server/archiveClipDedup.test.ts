@@ -55,6 +55,8 @@ describe("archiveClipDedup", () => {
     expect(a!.startSec).toBe(b!.startSec);
     expect(a!.endSec).toBe(b!.endSec);
   });
+
+  it("isNearDuplicateFingerprint rejects when samples do not align", () => {
     const a = [1n, 2n, 3n];
     const b = [255n, 254n, 253n];
     expect(isNearDuplicateFingerprint(a, b, 2)).toBe(false);
