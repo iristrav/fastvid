@@ -83,7 +83,7 @@ export function curatedMaxStockBeatsPerVideo(videoLength?: string | null): numbe
   if (!archivePexelsFallbackEnabled()) return 0;
   if (visualFootageFocusEnabled() && strictVoiceVisualMatchEnabled()) {
     const mins = targetVideoDurationMinutes(videoLength);
-    if (mins <= 1) return 4;
+    if (mins <= 1) return 6;
     return 2;
   }
   const raw = process.env.MAX_STOCK_BEATS_PER_VIDEO?.trim();
@@ -290,7 +290,7 @@ export function visualFootageFocusEnabled(): boolean {
 export function maxVisualCandidatesPerBeatTry(videoLength?: string | null): number {
   if (!pipelineWallClockLimitEnabled()) return 12;
   if (visualFootageFocusEnabled()) {
-    if (isFastShortVideoLength(videoLength)) return 4;
+    if (isFastShortVideoLength(videoLength)) return 2;
     return 8;
   }
   if (isFastShortVideoLength(videoLength)) return 2;
@@ -306,16 +306,26 @@ export function visualStageWallClockMin(videoLength?: string | null): number {
   const hard = maxPipelineWallClockHardMin(videoLength);
   const mins = targetVideoDurationMinutes(videoLength);
   if (mins <= 1) {
-    // ≤8 min visuals leaves ~4 min for script, voice, compose within 12 min hard cap.
-    if (visualFootageFocusEnabled()) return Math.min(8, Math.max(6, hard - 4));
-    return 8;
+    if (visualFootageFocusEnabled()) return Math.min(6, Math.max(5, hard - 5));
+    return 6;
   }
   return Math.max(8, Math.min(total - 6, Math.round(total * 0.88)));
 }
 
+/** Stock clips on 1-min fast path — slightly lower bar than archive (7 vs 8) for speed. */
+export function stockClipQualityFloor(videoLength?: string | null): number {
+  if (isFastShortVideoLength(videoLength) && strictVoiceVisualMatchEnabled()) return 7;
+  const raw = process.env.MIN_CLIP_QUALITY_SCORE?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 5 && n <= 10) return n;
+  }
+  return 8;
+}
+
 /** Beat cadence for 1-min fast path — fewer beats → faster visual stage. */
 export function archiveVisualBeatSecForVideo(videoLength?: string | null): number {
-  if (isFastShortVideoLength(videoLength)) return 11;
+  if (isFastShortVideoLength(videoLength)) return 14;
   return archiveVisualBeatSec();
 }
 
