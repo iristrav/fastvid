@@ -132,7 +132,7 @@ import {
 import { scheduleStockClipEmbedding, scheduleStockClipEmbeddingByKey, rankStockVideoIdsByEmbedding, stockClipEmbeddingEnabled } from "./stockClipEmbedding";
 import { pickStockInClipStartSec, stockInClipOffsetEnabled } from "./clipInClipOffset";
 import { resolveBeatVisionQueryEmbedding } from "./localClipVision";
-import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, openverseStillsEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, maxPipelineWallClockMin, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled } from "./sourcingPolicy";
+import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, openverseStillsEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, maxPipelineWallClockMin, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -14106,6 +14106,11 @@ function archiveVisionTryStrict(fastMode = false, videoLength?: string): number 
   if (pipelineWallClockLimitEnabled()) {
     return maxVisualCandidatesPerBeatTry(videoLength);
   }
+  if (visualFootageFocusEnabled()) {
+    const fallback = fastMode ? 6 : 8;
+    const n = parseInt(process.env.ARCHIVE_VISION_TRY_STRICT || String(fallback), 10);
+    return Number.isFinite(n) && n >= 2 ? Math.min(12, n) : fallback;
+  }
   const fallback = fastMode ? 2 : 6;
   const n = parseInt(process.env.ARCHIVE_VISION_TRY_STRICT || String(fallback), 10);
   return Number.isFinite(n) && n >= 2 ? Math.min(12, n) : fallback;
@@ -17685,7 +17690,9 @@ async function composeSceneVideo(
   let sourceMaxDurs = prepared.sourceMaxDurs;
   const montagePlan = prepared.montagePlan;
   const segmentBeatTexts =
-    montageBeats?.length && composeClipBeatIndices?.length
+    facelessSubtitlesEnabled() &&
+    montageBeats?.length &&
+    composeClipBeatIndices?.length
       ? composeClipBeatIndices.map((bi) => montageBeats[bi]?.text ?? "")
       : undefined;
   const montageFilterOpts: MontageFilterOpts | undefined = montagePlan?.ttsHardCut

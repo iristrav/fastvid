@@ -468,7 +468,7 @@ describe("curatedMediaSourcing", () => {
     expect(hitlerScore).toBeLessThanOrEqual(0);
   });
 
-  it("prefers Pexels first for geography beats that name a country", () => {
+  it("prefers archive over Pexels-first for geography beats under visual focus", () => {
     const title = "Why the Netherlands is the Opposite of the U.S.";
     const beatText = "In the Netherlands, cycling is part of daily life.";
     const { videoVisualTopic } = buildBeatMatchTags(
@@ -476,10 +476,31 @@ describe("curatedMediaSourcing", () => {
       { text: beatText },
       title
     );
-    expect(shouldTryPexelsFirstForBeat(beatText, videoVisualTopic)).toBe(true);
+    expect(shouldTryPexelsFirstForBeat(beatText, videoVisualTopic)).toBe(false);
     expect(buildGeoStockSearchQueries(beatText, title)).toEqual(
       expect.arrayContaining(["amsterdam canal bicycles", "netherlands cycling infrastructure"])
     );
+  });
+
+  it("prefers Pexels first for geography beats when visual focus is off", () => {
+    const prevStrict = process.env.STRICT_VOICE_VISUAL_MATCH;
+    const prevFocus = process.env.VISUAL_FOOTAGE_FOCUS;
+    process.env.STRICT_VOICE_VISUAL_MATCH = "false";
+    process.env.VISUAL_FOOTAGE_FOCUS = "false";
+    try {
+      const beatText = "In the Netherlands, cycling is part of daily life.";
+      const { videoVisualTopic } = buildBeatMatchTags(
+        { text: beatText, index: 0, searchQuery: "netherlands cycling", powerWord: "netherlands", keywords: [] },
+        { text: beatText },
+        "Why the Netherlands is the Opposite of the U.S."
+      );
+      expect(shouldTryPexelsFirstForBeat(beatText, videoVisualTopic)).toBe(true);
+    } finally {
+      if (prevStrict === undefined) delete process.env.STRICT_VOICE_VISUAL_MATCH;
+      else process.env.STRICT_VOICE_VISUAL_MATCH = prevStrict;
+      if (prevFocus === undefined) delete process.env.VISUAL_FOOTAGE_FOCUS;
+      else process.env.VISUAL_FOOTAGE_FOCUS = prevFocus;
+    }
   });
 
   it("rejects archive clip without cyclists for fietsen beat", () => {

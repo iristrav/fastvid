@@ -41,19 +41,24 @@ export function fishAudioFallbackEnabled(): boolean {
   return Boolean(process.env.FISH_AUDIO_API_KEY?.trim());
 }
 
-/** Faceless typewriter keywords on B-roll (% / years / €). On by default — set ENABLE_FACELESS_SUBTITLES=false to disable. */
+/** Burn typewriter keywords on clips — default OFF (footage + voice only). Set ENABLE_FACELESS_SUBTITLES=true to enable. */
 export function facelessSubtitlesEnabled(): boolean {
-  return process.env.ENABLE_FACELESS_SUBTITLES !== "false";
+  return process.env.ENABLE_FACELESS_SUBTITLES === "true";
 }
 
-/** Extra on-screen overlays (stat pills, film grain, motion graphics cards). On by default — set ENABLE_EXTRA_ONSCREEN_TEXT=false for years-only. */
+/** Extra on-screen overlays (stat pills, film grain, motion graphics cards). Default OFF. */
+export function extraOnScreenTextEnabled(): boolean {
+  return process.env.ENABLE_EXTRA_ONSCREEN_TEXT === "true";
+}
+
+/** When extra overlays are off, skip cinematic pills/grain (year labels use screenLabelsEnabled). */
 export function yearsOnlyOnScreen(): boolean {
-  return process.env.ENABLE_EXTRA_ONSCREEN_TEXT === "false";
+  return !extraOnScreenTextEnabled();
 }
 
-/** Year/stat labels bottom-left. On by default — set ENABLE_SCREEN_LABELS=false to disable. */
+/** Year/stat labels burned on footage — default OFF. Set ENABLE_SCREEN_LABELS=true to enable. */
 export function screenLabelsEnabled(): boolean {
-  return process.env.ENABLE_SCREEN_LABELS !== "false";
+  return process.env.ENABLE_SCREEN_LABELS === "true";
 }
 
 /** When true (default), use Pexels stock if no archive clip matches a sentence. */
@@ -66,9 +71,14 @@ export function archivePexelsHybridEnabled(): boolean {
   return process.env.ARCHIVE_PEXELS_HYBRID !== "false" && archivePexelsFallbackEnabled();
 }
 
-/** Cap licensed stock (Pexels/Pixabay) per video — last resort only; default very low. */
+/** Cap licensed stock (Pexels/Pixabay) per video — last resort; 0 when strict visual focus. */
 export function curatedMaxStockBeatsPerVideo(videoLength?: string | null): number {
   if (!archivePexelsFallbackEnabled()) return 0;
+  if (visualFootageFocusEnabled() && strictVoiceVisualMatchEnabled()) {
+    const mins = targetVideoDurationMinutes(videoLength);
+    if (mins <= 1) return 0;
+    return 1;
+  }
   const raw = process.env.MAX_STOCK_BEATS_PER_VIDEO?.trim();
   if (raw !== undefined && raw !== "") {
     const n = parseInt(raw, 10);
@@ -80,8 +90,9 @@ export function curatedMaxStockBeatsPerVideo(videoLength?: string | null): numbe
   return 3;
 }
 
-/** Max AI-generated clips per video when licensed stock cap is full (Stability/Leonardo → Ken Burns). */
+/** Max AI-generated clips when stock cap is full — 0 under visual focus (archive/stock only). */
 export function curatedAiFallbackMaxClips(videoLength?: string | null): number {
+  if (visualFootageFocusEnabled()) return 0;
   const raw = process.env.MAX_AI_CLIPS_PER_VIDEO?.trim();
   if (raw !== undefined && raw !== "") {
     const n = parseInt(raw, 10);
@@ -209,10 +220,10 @@ export function ffmpegThreadFlag(isRailway = false): string {
   return `-threads ${Math.min(4, n)}`;
 }
 
-/** Burn faceless subtitles during montage segment encode (skip per-clip adopt burn). */
+/** Burn faceless subtitles during montage segment encode (only when faceless subs enabled). */
 export function deferFacelessSubtitlesToCompose(): boolean {
-  if (process.env.ENABLE_DEFER_FACELESS_SUBTITLES === "false") return false;
-  return process.env.ENABLE_FACELESS_SUBTITLES !== "false";
+  if (!facelessSubtitlesEnabled()) return false;
+  return process.env.ENABLE_DEFER_FACELESS_SUBTITLES !== "false";
 }
 
 /** No score self-heal; hard fail on sync/fallback beats (ENABLE_QUALITY_EXPORT_HARD_TIER=true). */
@@ -256,9 +267,22 @@ export function semanticRerankClipSkipMin(): number {
   return 8;
 }
 
-/** Max archive/Wikimedia candidates to try per beat when wall-clock limit is on. */
+/**
+ * Prioritize archive + CLIP match over speed/stock (default ON with strict voice↔visual).
+ * Raises per-beat archive tries and minimizes generic stock.
+ */
+export function visualFootageFocusEnabled(): boolean {
+  if (process.env.VISUAL_FOOTAGE_FOCUS === "false") return false;
+  return strictVoiceVisualMatchEnabled();
+}
+
+/** Max archive candidates to try per beat when wall-clock limit is on. */
 export function maxVisualCandidatesPerBeatTry(videoLength?: string | null): number {
   if (!pipelineWallClockLimitEnabled()) return 12;
+  if (visualFootageFocusEnabled()) {
+    if (isFastShortVideoLength(videoLength)) return 6;
+    return 5;
+  }
   if (isFastShortVideoLength(videoLength)) return 2;
   return 2;
 }
@@ -271,7 +295,8 @@ export function visualStageWallClockMin(videoLength?: string | null): number {
   const total = maxPipelineWallClockMin(videoLength);
   const mins = targetVideoDurationMinutes(videoLength);
   if (mins <= 1) {
-    // Fast path: ~8 min visuals + ~2 min compose/export within 10–12 min total budget.
+    // Visual focus: more archive tries before stock/fallback within total budget.
+    if (visualFootageFocusEnabled()) return 12;
     return 10;
   }
   return Math.max(8, Math.min(total - 6, Math.round(total * 0.88)));

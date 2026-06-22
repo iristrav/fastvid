@@ -31,10 +31,10 @@ describe("visual cadence (5–8s per clip)", () => {
     expect(curatedPerfBeatsFloor("1")).toBeLessThanOrEqual(4);
   });
 
-  it("stock cap defaults very low per video length", () => {
-    expect(curatedMaxStockBeatsPerVideo("1")).toBe(1);
-    expect(curatedMaxStockBeatsPerVideo("8-10")).toBe(2);
-    expect(curatedAiFallbackMaxClips("1")).toBe(12);
+  it("stock cap defaults very low per video length (strict visual focus)", () => {
+    expect(curatedMaxStockBeatsPerVideo("1")).toBe(0);
+    expect(curatedMaxStockBeatsPerVideo("8-10")).toBe(1);
+    expect(curatedAiFallbackMaxClips("1")).toBe(0);
     expect(archiveMaxImageClipsPerVideo("1")).toBe(3);
     expect(archiveMinVideoClipsTarget("1")).toBe(7);
     expect(archiveOpeningVideoBeatsTarget("1")).toBe(7);

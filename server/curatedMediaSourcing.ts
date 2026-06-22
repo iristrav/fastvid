@@ -77,6 +77,7 @@ import {
   archivePexelsHybridEnabled,
   vidrushDocumentaryQualityEnabled,
   maxVisualCandidatesPerBeatTry,
+  visualFootageFocusEnabled,
   archiveTagsPrimaryMatching,
   pipelineWallClockLimitEnabled,
   isFastShortVideoLength,
@@ -2083,7 +2084,10 @@ export async function fetchCuratedArchiveBeatClip(
     return tryPrepare(eligible[0]!);
   }
 
-  const parallelLimit = pLimit(Math.min(2, eligible.length));
+  const parallelTries = visualFootageFocusEnabled()
+    ? Math.min(4, eligible.length)
+    : Math.min(2, eligible.length);
+  const parallelLimit = pLimit(parallelTries);
   const prepared = await Promise.all(
     eligible.map((picked) => parallelLimit(() => tryPrepare(picked)))
   );
@@ -2122,6 +2126,7 @@ export function shouldTryPexelsFirstForBeat(
   beatText: string,
   videoVisualTopic: VideoVisualTopic
 ): boolean {
+  if (visualFootageFocusEnabled()) return false;
   if (!archivePexelsHybridEnabled()) return false;
   if (isGeoWelcomeBeat(beatText)) return true;
   if (isCyclingBeat(beatText) || isCarBeat(beatText) || isGovernmentBeat(beatText) || isUrbanPlanningBeat(beatText) || isInfrastructureBeat(beatText)) {
@@ -2140,6 +2145,9 @@ export function shouldPreferPexelsOverArchive(
   videoTitle?: string
 ): boolean {
   if (!archivePexelsHybridEnabled()) return false;
+  if (visualFootageFocusEnabled()) {
+    return ranked.length === 0;
+  }
   if (ranked.length === 0) return true;
 
   const top = ranked[0]!;

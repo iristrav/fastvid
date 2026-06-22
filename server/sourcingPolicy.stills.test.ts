@@ -20,9 +20,9 @@ describe("documentary still/video mix", () => {
     expect(archiveMinVideoClipsTarget("1")).toBe(7);
   });
 
-  it("caps Pexels/Pixabay as last resort", () => {
-    expect(curatedMaxStockBeatsPerVideo("1")).toBe(1);
-    expect(curatedMaxStockBeatsPerVideo("8-10")).toBe(2);
+  it("caps Pexels/Pixabay as last resort (strict visual focus)", () => {
+    expect(curatedMaxStockBeatsPerVideo("1")).toBe(0);
+    expect(curatedMaxStockBeatsPerVideo("8-10")).toBe(1);
   });
 });
 
