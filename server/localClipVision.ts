@@ -9,6 +9,12 @@ import { promisify } from "util";
 import { exec as execCb } from "child_process";
 import { cosineSimilarityVectors, type BeatSemanticProfile } from "./semanticVisualMatching";
 import { inferVideoVisualTopic } from "./visualBeatTags";
+import {
+  asVideoTitleString,
+  coerceVisionString,
+} from "./stringCoercion";
+
+export { coerceVisionString, asVideoTitleString } from "./stringCoercion";
 
 const exec = promisify(execCb);
 
@@ -59,10 +65,10 @@ const MODERN_MISMATCH_QUERIES = [
   "contemporary office whiteboard team meeting",
 ];
 
-export function topicNeedsHistoricalFootage(beatText: string, videoTitle?: string): boolean {
+export function topicNeedsHistoricalFootage(beatText: string, videoTitle?: unknown): boolean {
   const topic = inferVideoVisualTopic(videoTitle, beatText);
   if (topic === "wwii" || topic === "cold_war") return true;
-  const hay = `${videoTitle ?? ""} ${beatText}`.toLowerCase();
+  const hay = `${asVideoTitleString(videoTitle)} ${beatText}`.toLowerCase();
   return /\b(19\d{2}|20[0-1]\d|world war|wwii|ww2|war|historical|archive|ancient|century|hitler|nazi|berlin|titanic)\b/.test(
     hay
   );
@@ -131,23 +137,6 @@ export type BeatVisionQueryContext = {
   semanticYears?: string[];
   semanticEvents?: string[];
 };
-
-/** Coerce DB/metadata values to plain string before .trim() / string ops. */
-export function coerceVisionString(raw: unknown): string | undefined {
-  if (typeof raw === "string") return raw;
-  if (raw == null) return undefined;
-  if (typeof raw === "number" || typeof raw === "boolean") return String(raw);
-  if (typeof raw === "object" && raw !== null && "title" in raw) {
-    const t = (raw as { title?: unknown }).title;
-    if (typeof t === "string") return t;
-  }
-  return String(raw);
-}
-
-/** Always a plain string — safe for .toLowerCase() / .split(). */
-export function asVideoTitleString(raw: unknown): string {
-  return coerceVisionString(raw) ?? "";
-}
 
 function uniqueQueryParts(items: string[]): string[] {
   const out: string[] = [];
@@ -238,7 +227,7 @@ export async function resolveBeatQueryEmbedding(
 }
 
 function significantBeatTokens(beatText: string, videoTitle?: string): Set<string> {
-  const text = `${beatText} ${videoTitle ?? ""}`.toLowerCase();
+  const text = `${asVideoTitleString(videoTitle)} ${beatText}`.toLowerCase();
   const tokens = text.match(/[a-zà-ÿ]{4,}/g) ?? [];
   const stop = new Set([
     "that", "this", "with", "from", "they", "were", "have", "been", "their", "which",

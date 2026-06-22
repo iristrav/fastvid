@@ -132,6 +132,14 @@ import {
 import { scheduleStockClipEmbedding, scheduleStockClipEmbeddingByKey, rankStockVideoIdsByEmbedding, stockClipEmbeddingEnabled } from "./stockClipEmbedding";
 import { pickStockInClipStartSec, stockInClipOffsetEnabled } from "./clipInClipOffset";
 import { resolveBeatVisionQueryEmbedding, coerceVisionString, asVideoTitleString } from "./localClipVision";
+import {
+  coercePersonName,
+  toQueryString,
+  queryStringsMinLen,
+  filterQueryStrings,
+  uniqueQueryStrings,
+  uniqueCoercedQueries,
+} from "./stringCoercion";
 import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, openverseStillsEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, maxPipelineWallClockMin, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
@@ -557,21 +565,6 @@ function countFallbackAdopts(dedup: VisualDedupState): number {
   return dedup.clipAdoptAudit.filter((e) => e.source === "fallback").length;
 }
 
-function toQueryString(raw: unknown): string {
-  if (typeof raw === "string") return raw.trim();
-  return asVideoTitleString(raw).trim();
-}
-
-function coercePersonName(raw: unknown): string {
-  if (typeof raw === "string") return raw.trim();
-  if (raw == null) return "";
-  return asVideoTitleString(raw).trim();
-}
-
-function queryStringsMinLen(parts: unknown[], minLen = 3): string[] {
-  return parts.map(toQueryString).filter((s) => s.length >= minLen);
-}
-
 /** Grey guaranteed clips only when strict voice↔visual match allows (default: never). */
 function canAddGuaranteedFallbackClip(dedup?: VisualDedupState): boolean {
   const cap = maxFallbackBeatsPerVideo();
@@ -713,8 +706,10 @@ function buildBeatYoutubeQueries(
         beat.searchQuery,
         scene.visualCue,
         scene.pexelsQuery,
-        ...(videoTitle?.trim() ? [`${videoTitle} documentary footage`] : []),
-      ].filter((q): q is string => typeof q === "string" && q.trim().length > 3)
+        ...(asVideoTitleString(videoTitle).trim()
+          ? [`${asVideoTitleString(videoTitle)} documentary footage`]
+          : []),
+      ].filter((q) => toQueryString(q).length > 3)
     ),
   ].slice(0, 6);
 }
@@ -1145,7 +1140,7 @@ async function fetchBeatAuthenticStills(
       const titleStr = coerceVisionString(videoTitle);
       return titleStr?.trim() ? [titleStr.split(/\s+/).slice(0, 4).join(" ")] : [];
     })(),
-  ].filter((q): q is string => typeof q === "string" && q.trim().length > 3);
+  ].filter((q) => toQueryString(q).length > 3);
   const queryCap = historicalDoc ? 3 : dedup.perf.fastStockMode ? 2 : 4;
   const unique = [...new Set(queries)].slice(0, queryCap);
   const personPortrait = Boolean(coercePersonName(personName)) && !historicalDoc;
@@ -1474,7 +1469,7 @@ function buildTopicDocumentaryYoutubeQueries(
         beat.searchQuery,
         scene.pexelsQuery,
         ...(titleHint.length > 5 ? [`${titleHint} ${topic}`] : []),
-      ].filter((q): q is string => typeof q === "string" && q.trim().length > 4)
+      ].filter((q) => toQueryString(q).length > 4)
     ),
   ];
 }
@@ -2490,9 +2485,9 @@ function mapRawScene(
   const personNames = [
     ...new Set(
       [
-        ...((rawS.personNames as string[] | undefined) || [])
-          .filter((n) => typeof n === "string" && n.trim().length > 0)
-          .map((n) => n.trim()),
+        ...(Array.isArray(rawS.personNames) ? rawS.personNames : [])
+          .map(coercePersonName)
+          .filter((n) => n.length > 0),
         ...extractPersonNamesFromText(hint),
       ]
     ),
@@ -3309,9 +3304,9 @@ async function fetchPexelsClips(
   // Never fall back to generic nature/city b-roll — that produces irrelevant footage (wind turbines, cyclists, etc.)
   const queryList = Array.from(
     new Set(
-      [query, ...(extraQueries ?? [])]
-        .filter((q) => q && q.trim().length > 2 && !isBlockedStockQuery(q))
-        .map((q) => simplifyStockSearchWord(q, q, true))
+      filterQueryStrings([query, ...(extraQueries ?? [])], 3, (q) => !isBlockedStockQuery(q)).map((q) =>
+        simplifyStockSearchWord(q, q, true)
+      )
     )
   );
   if (queryList.length === 0) return [];
@@ -3633,9 +3628,9 @@ async function fetchPixabayClips(
 
   const queryList = Array.from(
     new Set(
-      [query]
-        .filter((q) => q && q.trim().length > 2 && !isBlockedStockQuery(q))
-        .map((q) => simplifyStockSearchWord(q, q, true))
+      filterQueryStrings([query], 3, (q) => !isBlockedStockQuery(q)).map((q) =>
+        simplifyStockSearchWord(q, q, true)
+      )
     )
   );
   if (queryList.length === 0) return [];
@@ -5363,21 +5358,24 @@ async function fetchWikimediaVideos(
 
 /** Archive.org queries for real person footage (news, TV, documentaries) — no API key. */
 function buildPersonArchiveVideoQueries(person: string, beatIndex: number, beatText = ""): string[] {
-  const first = person.split(/\s+/)[0] ?? person;
+  const personName = coercePersonName(person);
+  if (!personName) return [];
+  const first = personName.split(/\s+/)[0] ?? personName;
   const scriptQs = beatText
-    ? scriptEventSearchQueries(beatText, [person]).map((q) =>
-        textMentionsPersonName(q, person) ? q : `${person} ${q}`.trim()
+    ? scriptEventSearchQueries(beatText, [personName]).map((q) =>
+        textMentionsPersonName(q, personName) ? q : `${personName} ${q}`.trim()
       )
     : [];
-  const variants = [
+  const rawVariants = [
     ...scriptQs,
-    `title:(${person}) AND mediatype:movies`,
-    `collection:tvnews AND ${person}`,
-    `${person} interview`,
-    `${person} television`,
+    `title:(${personName}) AND mediatype:movies`,
+    `collection:tvnews AND ${personName}`,
+    `${personName} interview`,
+    `${personName} television`,
     `${first} celebrity news`,
-    `subject:"${person}"`,
-  ].filter((q, i, arr) => q.trim().length > 3 && arr.indexOf(q) === i);
+    `subject:"${personName}"`,
+  ];
+  const variants = uniqueCoercedQueries(rawVariants, 4);
   const offset = beatIndex % Math.max(1, variants.length);
   return [...variants.slice(offset), ...variants.slice(0, offset)].slice(0, 5);
 }
@@ -5521,7 +5519,7 @@ async function fetchSepiaSearchVideos(
   personName = "",
   beatKeywords: string[] = []
 ): Promise<CelebrityClipCandidate[]> {
-  const queryList = [...new Set((Array.isArray(queries) ? queries : [queries]).filter((q) => q?.trim()))];
+  const queryList = uniqueQueryStrings(Array.isArray(queries) ? queries : [queries]);
   if (!queryList.length) return [];
 
   type RankedHit = {
@@ -5750,7 +5748,7 @@ async function fetchGdeltTvNewsClips(
   beatKeywords: string[] = [],
   fastMode = false
 ): Promise<CelebrityClipCandidate[]> {
-  const queryList = [...new Set((Array.isArray(queries) ? queries : [queries]).filter((q) => q?.trim()))];
+  const queryList = uniqueQueryStrings(Array.isArray(queries) ? queries : [queries]);
   if (!queryList.length) return [];
 
   const results: CelebrityClipCandidate[] = [];
@@ -5865,7 +5863,7 @@ async function fetchEuropeanaVideos(
   beatKeywords: string[] = []
 ): Promise<CelebrityClipCandidate[]> {
   if (!europeanaSourcingEnabled() || !EUROPEANA_API_KEY?.trim()) return [];
-  const queryList = [...new Set((Array.isArray(queries) ? queries : [queries]).filter((q) => q?.trim()))];
+  const queryList = uniqueQueryStrings(Array.isArray(queries) ? queries : [queries]);
   if (!queryList.length) return [];
 
   const results: CelebrityClipCandidate[] = [];
@@ -5971,7 +5969,7 @@ async function fetchVimeoCCVideos(
   beatKeywords: string[] = []
 ): Promise<CelebrityClipCandidate[]> {
   if (!VIMEO_ACCESS_TOKEN?.trim()) return [];
-  const queryList = [...new Set((Array.isArray(queries) ? queries : [queries]).filter((q) => q?.trim()))];
+  const queryList = uniqueQueryStrings(Array.isArray(queries) ? queries : [queries]);
   if (!queryList.length) return [];
 
   const results: CelebrityClipCandidate[] = [];
@@ -6403,7 +6401,7 @@ async function fetchInternetArchiveClips(
 ): Promise<CelebrityClipCandidate[]> {
   const results: CelebrityClipCandidate[] = [];
   const queryList = Array.isArray(queries) ? queries : [queries];
-  const uniqueQueries = Array.from(new Set(queryList.filter((q) => q && q.trim().length > 0)));
+  const uniqueQueries = uniqueQueryStrings(queryList);
   let fetched = 0;
 
   for (const query of uniqueQueries) {
@@ -6922,7 +6920,7 @@ async function fetchYouTubeCCClips(
   // Normalise: accept single string or array of query variants (specific→broad)
   const queryList = Array.isArray(queries) ? queries : [queries];
   // Deduplicate and filter empty strings
-  const uniqueQueries = Array.from(new Set(queryList.filter(q => q && q.trim().length > 0)));
+  const uniqueQueries = uniqueQueryStrings(queryList);
 
   // Track video IDs already downloaded to avoid duplicates across query variants
   const downloadedIds = new Set<string>();
@@ -7183,15 +7181,20 @@ function isPersonCelebrityTopic(topicContext?: string): boolean {
 }
 
 function buildPersonMediaQueries(person: string, visualCue?: string): string[] {
-  const cue = visualCue?.split(/\s+/).slice(0, 3).join(" ") ?? "";
-  return [
-    person,
-    `${person} interview`,
-    `${person} speech`,
-    `${person} news conference`,
-    `${person} red carpet`,
-    cue ? `${person} ${cue}` : `${person} documentary`,
-  ].filter((q, i, arr) => q.trim().length > 0 && arr.indexOf(q) === i);
+  const p = coercePersonName(person);
+  if (!p) return [];
+  const cue = toQueryString(visualCue).split(/\s+/).slice(0, 3).join(" ");
+  return uniqueCoercedQueries(
+    [
+      p,
+      `${p} interview`,
+      `${p} speech`,
+      `${p} news conference`,
+      `${p} red carpet`,
+      cue ? `${p} ${cue}` : `${p} documentary`,
+    ],
+    1
+  );
 }
 
 interface CelebrityClipCandidate {
@@ -7201,8 +7204,10 @@ interface CelebrityClipCandidate {
 
 /** True when haystack contains the celebrity name (last name or full name). */
 function textMentionsPersonName(haystack: string, personName: string): boolean {
+  const name = coercePersonName(personName);
+  if (!name) return false;
   const hay = haystack.toLowerCase();
-  const parts = personName.toLowerCase().split(/\s+/).filter((p) => p.length >= 2);
+  const parts = name.toLowerCase().split(/\s+/).filter((p) => p.length >= 2);
   if (!parts.length) return false;
   if (parts.length === 1) return hay.includes(parts[0]);
   const last = parts[parts.length - 1];
@@ -7212,9 +7217,10 @@ function textMentionsPersonName(haystack: string, personName: string): boolean {
 
 /** Beat + person tokens for filtering celebrity search hits. */
 function buildPersonBeatRelevanceKeywords(personName: string, beatText: string): string[] {
+  const person = coercePersonName(personName);
   const clean = beatText.replace(/\[visual:[^\]]*\]/gi, " ").trim();
   return [
-    ...personName.split(/\s+/).filter((p) => p.length >= 3),
+    ...person.split(/\s+/).filter((p) => p.length >= 3),
     ...tokenizeForRelevance(clean),
     ...extractInlineVisualCues(clean).flatMap((c) => tokenizeForRelevance(c)),
   ].filter((k, i, arr) => arr.indexOf(k) === i).slice(0, 18);
@@ -7350,7 +7356,8 @@ function buildBeatImageSearchQueries(
   const scriptQ = stockQueryFromBeatScript(beat.text, scenePersons, scene.text, videoTitle);
   if (scriptQ) out.push(scriptQ);
   for (const q of [beat.searchQuery, scene.visualCue, scene.pexelsQuery]) {
-    if (q?.trim()) out.push(q.trim());
+    const s = toQueryString(q);
+    if (s) out.push(s);
   }
   return [...new Set(out.filter((q) => q.length >= 3 && !isBlockedStockQuery(q)))].slice(0, 6);
 }
@@ -7937,9 +7944,10 @@ function maxStillPhotosForScene(_sceneIndex: number, hasPerson: boolean, personT
 }
 
 function beatMentionsPerson(beatText: string, personName: string): boolean {
-  if (!coercePersonName(personName)) return false;
+  const name = coercePersonName(personName);
+  if (!name) return false;
   const lower = beatText.toLowerCase();
-  const parts = personName.toLowerCase().split(/\s+/).filter((p) => p.length >= 2);
+  const parts = name.toLowerCase().split(/\s+/).filter((p) => p.length >= 2);
   if (parts.length >= 2) {
     if (parts.every((p) => lower.includes(p))) return true;
     return lower.includes(parts[0]);
@@ -8083,7 +8091,7 @@ function buildBeatVisualQueryList(
     ...scriptQueries,
     ...eventQueries,
     ...entityStock,
-  ].filter((q) => typeof q === "string" && q.trim().length > 2 && !isBlockedStockQuery(q));
+  ].filter((q) => toQueryString(q).length > 2 && !isBlockedStockQuery(toQueryString(q)));
 
   return [...new Set(ordered)].slice(0, maxQueries);
 }
@@ -8669,8 +8677,8 @@ function sanitizeSceneStockQueries(scene: Scene, videoTitle?: string): void {
 function sanitizeSceneForMuskTopic(scene: Scene, sceneIndex: number, videoTitle?: string): void {
   if (!isMuskTeslaTopic(videoTitle, scene.text)) return;
   const fallback = pickMuskGoldenQuery(sceneIndex, 0);
-  const safe = (q: string): string => {
-    const trimmed = q.trim();
+  const safe = (raw: unknown): string => {
+    const trimmed = toQueryString(raw);
     if (!trimmed) return fallback;
     const cat = stockVisualCategory(trimmed);
     if (cat === "blocked_model" || isBlockedStockQuery(trimmed)) return fallback;
@@ -8687,7 +8695,7 @@ function sanitizeSceneForMuskTopic(scene: Scene, sceneIndex: number, videoTitle?
   scene.visualCue = safe(scene.visualCue);
   scene.pexelsQueries = (scene.pexelsQueries ?? []).map(safe).filter((q, i, arr) => q && arr.indexOf(q) === i);
   scene.brollQueries = (scene.brollQueries ?? []).map((q) => {
-    const cat = stockVisualCategory(q);
+    const cat = stockVisualCategory(toQueryString(q));
     if (cat === "tesla" || cat === "factory" || cat === "robot") return safe(q);
     return "factory";
   });
@@ -8695,11 +8703,11 @@ function sanitizeSceneForMuskTopic(scene: Scene, sceneIndex: number, videoTitle?
 
 /** Celebrity/person videos: never search wildlife metaphors (flamingo etc.) — anchor on the named person. */
 function sanitizeSceneForPersonTopic(scene: Scene, primaryPerson: string): void {
-  const anchor = primaryPerson.trim();
+  const anchor = coercePersonName(primaryPerson);
   if (!anchor) return;
   const first = anchor.split(/\s+/)[0] ?? anchor;
-  const safe = (q: string): string => {
-    const trimmed = q.trim();
+  const safe = (raw: unknown): string => {
+    const trimmed = toQueryString(raw);
     if (!trimmed || PERSON_OFFTOPIC_VISUAL_RE.test(trimmed)) {
       return `${first} interview`;
     }
@@ -8855,10 +8863,9 @@ function isMuskTeslaTopic(videoTitle?: string, sceneText?: string): boolean {
   return /musk|tesla|spacex|starlink|gigafactory|cybertruck|falcon|starship|elon/.test(text);
 }
 
-function buildTopicContext(userPrompt: string | undefined, videoTitle: string): string {
-  const prompt =
-    typeof userPrompt === "string" ? userPrompt.trim() : userPrompt != null ? String(userPrompt) : "";
-  const title = typeof videoTitle === "string" ? videoTitle.trim() : String(videoTitle ?? "").trim();
+function buildTopicContext(userPrompt: unknown, videoTitle: unknown): string {
+  const prompt = asVideoTitleString(userPrompt);
+  const title = asVideoTitleString(videoTitle);
   return [prompt, title].filter(Boolean).join(" — ").slice(0, 240);
 }
 
@@ -8874,7 +8881,8 @@ function isOffTopicVisualForMusk(sourceQuery: string, filePath: string): boolean
 function isOffTopicVisualForPersonTopic(sourceQuery: string, filePath: string, primaryPerson: string): boolean {
   const hay = `${sourceQuery} ${path.basename(filePath)}`.toLowerCase();
   if (PERSON_OFFTOPIC_VISUAL_RE.test(hay)) return true;
-  const parts = primaryPerson.toLowerCase().split(/\s+/).filter((p) => p.length >= 3);
+  const person = coercePersonName(primaryPerson);
+  const parts = person.toLowerCase().split(/\s+/).filter((p) => p.length >= 3);
   if (parts.length >= 2 && parts.every((p) => hay.includes(p))) return false;
   if (parts.length === 1 && hay.includes(parts[0])) return false;
   if (/\b(celebrity|interview|red carpet|paparazzi|influencer|makeup|fashion)\b/.test(hay)) return false;
@@ -10299,11 +10307,11 @@ function buildTopicAnchoredQueries(
   }
 
   const allowSolar = /solar|photovoltaic|sun energy|panel|zon\b|sun\b/.test(textLower);
-  return [...new Set(queries.filter((q) => {
-    if (!q.trim() || q.trim().length <= 2 || isBlockedStockQuery(q)) return false;
+  return uniqueCoercedQueries(queries, 3, (q) => {
+    if (isBlockedStockQuery(q)) return false;
     if (!allowSolar && stockVisualCategory(q) === "solar") return false;
     return true;
-  }))];
+  });
 }
 
 /**
@@ -10716,12 +10724,13 @@ function simplifyStockSearchWord(input: string, hintText = "", scriptOnly = fals
 }
 
 function enrichStockQuery(
-  query: string,
+  query: unknown,
   scene: Scene,
   videoTitle?: string,
   personName?: string,
   beatText?: string
 ): string {
+  const q = toQueryString(query);
   if (beatText?.trim()) {
     const persons = coercePersonName(personName)
       ? [coercePersonName(personName), ...(scene.personNames ?? []).map(coercePersonName)]
@@ -10730,8 +10739,8 @@ function enrichStockQuery(
     if (fromScript.length > 0) return fromScript[0];
   }
   const hint = beatText?.trim() || scene.text;
-  if (isBlockedStockQuery(query)) return simplifyStockSearchWord(hint, hint, true);
-  return simplifyStockSearchWord(query, hint, Boolean(beatText?.trim()));
+  if (isBlockedStockQuery(q)) return simplifyStockSearchWord(hint, hint, true);
+  return simplifyStockSearchWord(q, hint, Boolean(beatText?.trim()));
 }
 
 function tokenizeForRelevance(text: string): string[] {
@@ -10749,7 +10758,7 @@ function buildRelevanceKeywords(scene: Scene, beatText: string, videoTitle?: str
     ...tokenizeForRelevance(scene.pexelsQuery),
     ...(scene.pexelsQueries ?? []).flatMap((q) => tokenizeForRelevance(q)),
     ...(scene.personNames ?? []).flatMap((n) => tokenizeForRelevance(n)),
-    ...tokenizeForRelevance(videoTitle ?? ""),
+    ...tokenizeForRelevance(asVideoTitleString(videoTitle)),
   ];
   return Array.from(new Set(parts)).slice(0, 20);
 }
@@ -11253,7 +11262,7 @@ async function fetchUniqueStockForBeatInner(
       enrichStockQuery(q, scene, videoTitle, personName, beat.text)
     ),
   ].filter(
-    (q): q is string => typeof q === "string" && q.trim().length > 2 && !isBlockedStockQuery(q)
+    (q) => toQueryString(q).length > 2 && !isBlockedStockQuery(toQueryString(q))
   );
   const stockQueries = [...new Set(queries)].slice(
     0,
@@ -11664,7 +11673,7 @@ async function fetchLastResortRealClip(
     enrichStockQuery(scene.pexelsQuery, scene, videoTitle, personName, beat.text),
     ...(scene.pexelsQueries ?? []).map((q) => enrichStockQuery(q, scene, videoTitle, personName, beat.text)),
     ...(scene.brollQueries ?? []).map((q) => enrichStockQuery(q, scene, videoTitle, personName, beat.text)),
-  ].filter((q): q is string => typeof q === "string" && q.trim().length > 2 && !isBlockedStockQuery(q));
+  ].filter((q) => toQueryString(q).length > 2 && !isBlockedStockQuery(toQueryString(q)));
 
   const uniqueQueries = [...new Set(queries)];
 
@@ -13219,11 +13228,11 @@ async function fetchBeatClip(
   }
 
   // 6) Scene fallback queries
-  const fallbackQueries = [
-    scene.visualCue,
-    scene.pexelsQuery,
-    ...(scene.pexelsQueries ?? []),
-  ].filter((fq): fq is string => typeof fq === "string" && fq.trim().length > 2 && fq !== q && !isBlockedStockQuery(fq));
+  const fallbackQueries = filterQueryStrings(
+    [scene.visualCue, scene.pexelsQuery, ...(scene.pexelsQueries ?? [])],
+    3,
+    (fq) => fq !== toQueryString(q) && !isBlockedStockQuery(fq)
+  );
 
   const looseAdopt: VisualAdoptOptions = { ...adoptOpts, requireBeatMatch: false };
   clip = await tryStockSources(
@@ -13362,10 +13371,10 @@ async function fetchBeatStockFallback(
 ): Promise<string | null> {
   const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
   const primary =
-    personName?.trim() ||
-    adoptOpts.primaryPerson?.trim() ||
-    dedup.primaryPerson?.trim() ||
-    scenePersons[0]?.trim() ||
+    coercePersonName(personName) ||
+    coercePersonName(adoptOpts.primaryPerson) ||
+    coercePersonName(dedup.primaryPerson) ||
+    coercePersonName(scenePersons[0]) ||
     "";
   if (primary || dedup.personTopicLock) {
     const personClip = await fetchBeatPersonStockVideo(
@@ -13441,9 +13450,7 @@ async function fetchBeatStockFallback(
         scene.pexelsQuery,
         ...topicSpecific,
       ];
-  const filteredQueries = queries.filter(
-    (q): q is string => typeof q === "string" && q.trim().length > 2 && !isBlockedStockQuery(q)
-  );
+  const filteredQueries = filterQueryStrings(queries, 3, (q) => !isBlockedStockQuery(q));
   // More queries allowed in archive-first mode since Pexels IS the only fallback
   const maxQueries = curatedArchiveOnlyVisuals() ? 6 : 3;
   const unique = [...new Set(filteredQueries)].slice(0, maxQueries);
@@ -13548,7 +13555,12 @@ async function fetchBeatAuthenticVideo(
     const ytQueries = [
       ...realEntityYoutubeQueriesForBeat(beat.text, scene.text, videoTitle),
       ...(coercePersonName(personName) ? buildPersonCelebrityVideoQueries(personName, beat.text, beat.index) : []),
-      ...(videoTitle?.trim() ? [`${videoTitle} documentary footage`, `${videoTitle} archival`] : []),
+      ...(asVideoTitleString(videoTitle).trim()
+        ? [
+            `${asVideoTitleString(videoTitle)} documentary footage`,
+            `${asVideoTitleString(videoTitle)} archival`,
+          ]
+        : []),
     ];
     const yt = await tryBeatRealYouTubeFootage(
       beat,
@@ -13897,7 +13909,7 @@ async function resolveBeatClipTurbo(
           );
           if (isRealVideoClip(yt) && !(await isMostlyBlackClip(yt!))) return yt;
         } else if (youtubeSourcingEnabled() && youtubeCcReady()) {
-          const ytQueries = [beat.searchQuery, scene.visualCue].filter((q) => q?.trim());
+          const ytQueries = uniqueQueryStrings([beat.searchQuery, scene.visualCue], 1);
           const yt = await tryBeatRealYouTubeFootage(
             beat, scene, workDir, sceneIndex, clipFetchDur, dedup, turboAdopt, ytQueries, "turbo YouTube", 35_000
           );
@@ -15143,8 +15155,8 @@ async function adoptStockBeatClipFallback(
         beat.powerWord,
         enrichStockQuery(scene.pexelsQuery, scene, videoTitle, coercePersonName(scenePersons[0]), beat.text),
       ]
-        .filter((q): q is string => typeof q === "string" && q.trim().length > 2 && !isBlockedStockQuery(q))
-        .map((q) => simplifyStockSearchWord(q, beat.text, true))
+        .filter((q) => toQueryString(q).length > 2 && !isBlockedStockQuery(toQueryString(q)))
+        .map((q) => simplifyStockSearchWord(toQueryString(q), beat.text, true))
     ),
   ].slice(0, strictVoiceVisualMatchEnabled() ? STOCK_QUERY_CAP + 2 : dedup.perf.minimizeStockFootage ? 2 : STOCK_QUERY_CAP + 3);
 

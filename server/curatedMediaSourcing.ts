@@ -91,6 +91,7 @@ import {
   isComparisonGeoTitle,
   geoTagsForRegion,
 } from "./worldGeoSlugs";
+import { asVideoTitleString, coerceVisionString, queryStringsMinLen } from "./stringCoercion";
 import {
   isNonDocumentaryVisualHay,
   isOffTopicGeoUrbanVisual,
@@ -260,8 +261,8 @@ const SHORT_TOPIC_TOKENS = new Set([
   "ww2", "wwii", "ww1", "ufo", "cia", "fbi", "dna", "nazi", "ss", "kgb",
 ]);
 
-export function extractTopicAnchorTags(videoTitle?: string, extraText?: string): string[] {
-  const raw = [videoTitle ?? "", extraText ?? ""]
+export function extractTopicAnchorTags(videoTitle?: unknown, extraText?: unknown): string[] {
+  const raw = [asVideoTitleString(videoTitle), asVideoTitleString(extraText)]
     .join(" ")
     .toLowerCase()
     .replace(/[^a-z0-9\s-]/g, " ")
@@ -273,20 +274,9 @@ export function extractTopicAnchorTags(videoTitle?: string, extraText?: string):
   return normalizeMediaTags(raw).slice(0, 8);
 }
 
-/** Coerce DB/LLM values to plain text before string ops. */
-function coerceBeatText(raw: unknown): string {
-  if (typeof raw === "string") return raw;
-  if (raw == null) return "";
-  if (typeof raw === "object" && raw !== null && "title" in raw) {
-    const t = (raw as { title?: unknown }).title;
-    if (typeof t === "string") return t;
-  }
-  return String(raw);
-}
-
 /** Tokenize narration into searchable tags (beat text first). */
 function tokenizeBeatText(raw: unknown): string[] {
-  const text = coerceBeatText(raw).trim();
+  const text = asVideoTitleString(raw).trim();
   if (!text) return [];
   return normalizeMediaTags(
     text
@@ -303,11 +293,11 @@ export function buildBeatMatchTags(
   scene: CuratedSceneContext,
   videoTitle?: string
 ): BeatMatchTags {
-  const beatText = coerceBeatText(beat.text);
-  const sceneText = coerceBeatText(scene.text);
-  const titleStr = coerceBeatText(videoTitle);
-  const searchQuery = coerceBeatText(beat.searchQuery);
-  const visualDescription = coerceBeatText(beat.visualDescription);
+  const beatText = asVideoTitleString(coerceVisionString(beat.text));
+  const sceneText = asVideoTitleString(coerceVisionString(scene.text));
+  const titleStr = asVideoTitleString(coerceVisionString(videoTitle));
+  const searchQuery = asVideoTitleString(coerceVisionString(beat.searchQuery));
+  const visualDescription = asVideoTitleString(coerceVisionString(beat.visualDescription));
   const videoVisualTopic = inferVideoVisualTopic(titleStr, [beatText, sceneText].join(" "));
   const topicAnchors = extractTopicAnchorTags(titleStr, [beatText, sceneText].join(" "));
   const hasLiteralVisual = Boolean(visualDescription.trim() || searchQuery.trim());
@@ -318,11 +308,11 @@ export function buildBeatMatchTags(
   const beatRaw = [
     visualSource,
     visualAnchor ?? "",
-    coerceBeatText(beat.powerWord),
+    coerceVisionString(beat.powerWord),
     searchQuery,
-    ...beat.keywords.map((k) => coerceBeatText(k)),
+    ...beat.keywords.map((k) => coerceVisionString(k)),
     ...visualTags,
-    ...(hasLiteralVisual ? [] : [coerceBeatText(scene.visualCue)]),
+    ...(hasLiteralVisual ? [] : [coerceVisionString(scene.visualCue)]),
   ]
     .filter(Boolean)
     .join(" ");
@@ -339,7 +329,7 @@ export function buildBeatMatchTags(
       ? []
       : tokenizeBeatText(beatRaw).filter((t) => !topicAnchors.includes(t) || beatText.toLowerCase().includes(t))),
   ]).slice(0, 20);
-  const sceneTags = tokenizeBeatText([sceneText, coerceBeatText(scene.pexelsQuery)].join(" "));
+  const sceneTags = tokenizeBeatText([sceneText, coerceVisionString(scene.pexelsQuery)].join(" "));
   const mergedBeat = normalizeMediaTags([
     ...beatTags,
     ...(hasLiteralVisual ? [] : sceneTags.filter((t) => beatText.toLowerCase().includes(t))),

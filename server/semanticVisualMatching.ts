@@ -17,6 +17,7 @@ import {
   isWwiiWarArchiveAsset,
 } from "./visualBeatTags";
 import { normalizeMediaTags, type MediaArchiveAsset } from "./db";
+import { asVideoTitleString } from "./stringCoercion";
 
 export type SemanticEntityList = {
   persons: string[];
@@ -109,8 +110,8 @@ export function semanticMinRelevanceScoreForTopic(_topicDomain?: string): number
   return semanticMinRelevanceScore();
 }
 
-function beatCacheKey(text: string, videoTitle?: string): string {
-  return `${(videoTitle ?? "").slice(0, 80)}::${text.trim().slice(0, 400)}`;
+function beatCacheKey(text: string, videoTitle?: unknown): string {
+  return `${asVideoTitleString(videoTitle).slice(0, 80)}::${text.trim().slice(0, 400)}`;
 }
 
 function slug(s: string): string {
@@ -135,7 +136,7 @@ function inferTopicDomain(text: string, videoTitle?: string): string {
   if (topic === "wwii") return "wwii";
   if (topic === "cold_war") return "cold_war";
   if (topic === "geography_urban") return "geography_urban";
-  const hay = slug(`${videoTitle ?? ""} ${text}`);
+  const hay = slug(`${asVideoTitleString(videoTitle)} ${text}`);
   if (/elon|musk|spacex|starship|tesla|starlink|falcon/.test(hay)) return "space_tech";
   if (/titanic|maritime|ship|ocean liner/.test(hay)) return "maritime";
   return "general";

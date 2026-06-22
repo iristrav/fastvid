@@ -7,6 +7,7 @@ import {
   resolveArchivesForVisualQuery,
 } from "./curatedMediaSourcing";
 import { getMediaArchiveAssets, normalizeMediaTags } from "./db";
+import { asVideoTitleString } from "./stringCoercion";
 
 export type ArchiveCoverageResult = {
   hasCoverage: boolean;
@@ -34,7 +35,8 @@ export async function assessArchiveCoverageForPrompt(
     { text: prompt, visualCue: prompt, pexelsQuery: videoTitle ?? prompt },
     videoTitle
   );
-  const topicAnchors = queryTags.filter((t) => (videoTitle ?? prompt).toLowerCase().includes(t));
+  const titleHay = asVideoTitleString(videoTitle ?? prompt);
+  const topicAnchors = queryTags.filter((t) => titleHay.toLowerCase().includes(t));
 
   const routedArchives = await resolveArchivesForVisualQuery(queryTags, topicAnchors);
   const ranked = await rankArchivesForVisualQuery(queryTags, topicAnchors);

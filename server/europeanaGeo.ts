@@ -2,7 +2,7 @@
  * Europeana sourcing helpers — EU geo titles get priority heritage video fetch.
  */
 import { NL_GEO_SLUGS, extractTitleGeoPlaceTags } from "./worldGeoSlugs";
-import { asVideoTitleString } from "./localClipVision";
+import { asVideoTitleString, toQueryString } from "./stringCoercion";
 
 const EU_GEO_HINTS = new Set([
   ...NL_GEO_SLUGS,
@@ -67,7 +67,7 @@ export function buildEuropeanaBeatQueries(
   ];
   return [...new Set(
     queries
-      .map((q) => (typeof q === "string" ? q.trim() : asVideoTitleString(q)))
+      .map((q) => toQueryString(q))
       .filter((q) => q.length >= 4)
   )].slice(0, 6);
 }

@@ -9,6 +9,7 @@ import {
   assetHayHasGeoMarkers,
   beatTextMentionsGeoSlug,
 } from "./worldGeoSlugs";
+import { asVideoTitleString } from "./stringCoercion";
 
 /** Drives archive filtering — geography videos must not pull WWII/Hiter footage. */
 export type VideoVisualTopic = "wwii" | "cold_war" | "geography_urban" | "general";
@@ -159,8 +160,8 @@ export function extractSalientBeatTokens(beatText: string): string[] {
   return [...new Set([...proper, ...words])].slice(0, 10);
 }
 
-export function inferVideoVisualTopic(videoTitle?: string, extraText?: string): VideoVisualTopic {
-  const hay = `${videoTitle ?? ""} ${extraText ?? ""}`.toLowerCase();
+export function inferVideoVisualTopic(videoTitle?: unknown, extraText?: unknown): VideoVisualTopic {
+  const hay = `${asVideoTitleString(videoTitle)} ${asVideoTitleString(extraText)}`.toLowerCase();
   if (isGeoWelcomeBeat(hay)) return "geography_urban";
   if (/hitler|nazi|wwii|ww2|world war ii|second world war|holocaust|third reich|wehrmacht|fuhrer|führer/.test(hay)) {
     return "wwii";
@@ -648,7 +649,7 @@ export function buildCarVisualQueries(
   if (!isCarBeat(beatText)) return [];
 
   const geoTags = extractBeatGeoPlaceTags(beatText);
-  const context = `${beatText} ${sceneText ?? ""} ${videoTitle ?? ""}`.toLowerCase();
+  const context = `${beatText} ${sceneText ?? ""} ${asVideoTitleString(videoTitle)}`.toLowerCase();
   const wantsUs =
     geoTags.some((t) => /america|usa|united states|american/.test(t)) ||
     /\bamerica|american|united states|\bu\.?s\.?\b|usa\b/.test(context);
@@ -719,7 +720,7 @@ export function buildGovernmentVisualQueries(
   if (!isGovernmentBeat(beatText)) return [];
 
   const geoTags = extractBeatGeoPlaceTags(beatText);
-  const context = `${beatText} ${sceneText ?? ""} ${videoTitle ?? ""}`.toLowerCase();
+  const context = `${beatText} ${sceneText ?? ""} ${asVideoTitleString(videoTitle)}`.toLowerCase();
   const wantsUs =
     geoTags.some((t) => /america|usa|united states|american/.test(t)) ||
     /\bamerica|american|united states|\bu\.?s\.?\b|usa\b/.test(context);
@@ -802,7 +803,7 @@ export function buildInfrastructureVisualQueries(
   if (!isInfrastructureBeat(beatText)) return [];
 
   const geoTags = extractBeatGeoPlaceTags(beatText);
-  const context = `${beatText} ${sceneText ?? ""} ${videoTitle ?? ""}`.toLowerCase();
+  const context = `${beatText} ${sceneText ?? ""} ${asVideoTitleString(videoTitle)}`.toLowerCase();
   const wantsUs =
     geoTags.some((t) => /america|usa|united states|american/.test(t)) ||
     /\bamerica|american|united states|\bu\.?s\.?\b|usa\b/.test(context);
@@ -899,7 +900,7 @@ export function buildUrbanPlanningVisualQueries(
   if (!isUrbanPlanningBeat(beatText)) return [];
 
   const geoTags = extractBeatGeoPlaceTags(beatText);
-  const context = `${beatText} ${sceneText ?? ""} ${videoTitle ?? ""}`.toLowerCase();
+  const context = `${beatText} ${sceneText ?? ""} ${asVideoTitleString(videoTitle)}`.toLowerCase();
   const wantsUs =
     geoTags.some((t) => /america|usa|united states|american/.test(t)) ||
     /\bamerica|american|united states|\bu\.?s\.?\b|usa\b/.test(context);

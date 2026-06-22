@@ -14,7 +14,7 @@ import {
   vidrushDocumentaryQualityEnabled,
 } from "./sourcingPolicy";
 import { PIPELINE_ERROR, pipelineError } from "@shared/appErrors";
-import { asVideoTitleString } from "./localClipVision";
+import { asVideoTitleString, toQueryString } from "./stringCoercion";
 import {
   extractBeatGeoPlaceTags,
   extractSalientBeatTokens,
@@ -221,7 +221,7 @@ export function isWrongRegionForSegmentLock(
 
 /** Opening beat queries — real drone/video B-roll, topic- and geo-aware for any subject. */
 export function buildVidrushOpeningQueries(videoTitle?: string, beatText?: string): string[] {
-  const hay = `${videoTitle ?? ""} ${beatText ?? ""}`.trim();
+  const hay = `${asVideoTitleString(videoTitle)} ${asVideoTitleString(beatText)}`.trim();
   const topic = inferVideoVisualTopic(videoTitle, beatText);
   const queries: string[] = [];
 
@@ -274,7 +274,7 @@ export function buildVidrushOpeningQueries(videoTitle?: string, beatText?: strin
   }
 
   const visualTags = extractVisualSearchTags(hay, videoTitle).slice(0, 5);
-  const salient = extractSalientBeatTokens(beatText ?? videoTitle ?? "").slice(0, 4);
+  const salient = extractSalientBeatTokens(beatText ?? asVideoTitleString(videoTitle)).slice(0, 4);
   for (const tag of [...new Set([...visualTags, ...salient])]) {
     if (tag.length >= 4 && !/^(the|and|that|this|with|from|have|were|been)$/.test(tag)) {
       queries.push(`${tag} documentary establishing shot video`, `${tag} aerial broll video`);
@@ -290,7 +290,7 @@ export function buildVidrushOpeningQueries(videoTitle?: string, beatText?: strin
 
   return [...new Set(
     queries
-      .map((q) => (typeof q === "string" ? q.trim() : asVideoTitleString(q)))
+      .map((q) => toQueryString(q))
       .filter((q) => q.length > 8)
   )].slice(0, 14);
 }
@@ -303,7 +303,7 @@ export function clipPassesVidrushOpeningGate(
 ): boolean {
   if (!vidrushDocumentaryQualityEnabled()) return true;
   if (isNonDocumentaryClipPath(clipPath, sourceQuery, beatText)) return false;
-  const hay = `${sourceQuery} ${pathBasename(clipPath)} ${beatText} ${videoTitle ?? ""}`.toLowerCase();
+  const hay = `${sourceQuery} ${pathBasename(clipPath)} ${beatText} ${asVideoTitleString(videoTitle)}`.toLowerCase();
   const titleGeo = inferPrimaryGeoFromTitle(videoTitle);
   if (titleGeo !== "neutral" && titleGeo !== "both" && isWrongRegionForSegmentLock(hay, titleGeo)) {
     return false;
@@ -362,7 +362,7 @@ export function clipPassesDocumentaryBeatGate(
 ): boolean {
   if (!vidrushDocumentaryQualityEnabled()) return true;
   if (isNonDocumentaryClipPath(clipPath, sourceQuery, beatText)) return false;
-  const hay = `${sourceQuery} ${pathBasename(clipPath)} ${beatText} ${videoTitle ?? ""}`.toLowerCase();
+  const hay = `${sourceQuery} ${pathBasename(clipPath)} ${beatText} ${asVideoTitleString(videoTitle)}`.toLowerCase();
   if (isOffTopicGeoUrbanVisual(hay) && !offTopicVisualAllowedForBeat(hay, beatText)) return false;
   const lockRegion = resolveBeatRegionLock(beatText, videoTitle);
   if (lockRegion !== "neutral" && lockRegion !== "both" && isWrongRegionForSegmentLock(hay, lockRegion)) {

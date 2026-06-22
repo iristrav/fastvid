@@ -2,6 +2,7 @@
  * World geography slugs for archive geo-blocking and beat matching.
  * NL + US have dedicated lists; everything else is FOREIGN.
  */
+import { asVideoTitleString } from "./stringCoercion";
 
 function dedupe(slugs: string[]): string[] {
   return [...new Set(slugs.map((s) => s.toLowerCase().trim()).filter((s) => s.length >= 2))];
@@ -540,9 +541,10 @@ function slugInPool(slug: string, pool: readonly string[]): boolean {
 }
 
 /** Geo slugs explicitly named in the video title (longest matches first). */
-export function extractTitleGeoPlaceTags(videoTitle?: string): string[] {
-  if (!videoTitle || typeof videoTitle !== "string") return [];
-  const lower = videoTitle.toLowerCase();
+export function extractTitleGeoPlaceTags(videoTitle?: unknown): string[] {
+  const title = asVideoTitleString(videoTitle);
+  if (!title) return [];
+  const lower = title.toLowerCase();
   const hits: string[] = [];
   const sorted = [...ALL_GEO_SLUGS].sort((a, b) => b.length - a.length);
   for (const slug of sorted) {

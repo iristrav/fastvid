@@ -5,6 +5,7 @@
 import path from "path";
 import { invokeLLM } from "./_core/llm";
 import { ENV } from "./_core/env";
+import { asVideoTitleString, coercePersonName, queryStringsMinLen } from "./stringCoercion";
 
 export type MediaTopicKind = "person" | "historical" | "space" | "news" | "general";
 
@@ -100,9 +101,10 @@ function keywordOverlap(text: string, keywords: string[]): number {
 }
 
 function mentionsPerson(haystack: string, personName: string): boolean {
-  if (!personName.trim()) return false;
+  const name = coercePersonName(personName);
+  if (!name) return false;
   const hay = haystack.toLowerCase();
-  const parts = personName.toLowerCase().split(/\s+/).filter((p) => p.length >= 2);
+  const parts = name.toLowerCase().split(/\s+/).filter((p) => p.length >= 2);
   if (!parts.length) return false;
   if (parts.length === 1) return hay.includes(parts[0]);
   const last = parts[parts.length - 1];
@@ -121,7 +123,7 @@ export function inferTopicKind(
   if (personTopicLock) return "person";
   if (HISTORICAL_TOPIC_RE.test(beatText)) return "historical";
   if (NEWS_TOPIC_RE.test(beatText)) return "news";
-  if (primaryPerson.trim()) return "person";
+  if (coercePersonName(primaryPerson)) return "person";
   return "general";
 }
 
@@ -144,7 +146,7 @@ export function buildMediaSearchIntent(params: {
   spaceTopic: boolean;
   muskTopic: boolean;
 }): MediaSearchIntent {
-  const topicHay = [params.beatText, params.videoTitle].filter(Boolean).join(" ");
+  const topicHay = [params.beatText, asVideoTitleString(params.videoTitle)].filter(Boolean).join(" ");
   const topicKind = inferTopicKind(
     topicHay,
     params.primaryPerson,
@@ -152,11 +154,7 @@ export function buildMediaSearchIntent(params: {
     params.personTopicLock
   );
   const queries = Array.from(
-    new Set(
-      params.searchQueries
-        .map((q) => q.trim())
-        .filter((q) => q.length >= 3)
-    )
+    new Set(queryStringsMinLen(params.searchQueries, 3))
   ).slice(0, 8);
 
   return {
@@ -297,7 +295,7 @@ export function buildHistoricalArchivalQueries(
     `${anchor} ship`,
     ...intent.searchQueries,
   ];
-  return Array.from(new Set(out.map((q) => q.trim()).filter((q) => q.length >= 3))).slice(0, 8);
+  return queryStringsMinLen(out, 3).slice(0, 8);
 }
 
 /** Split ranked pool: authentic video → stills → licensed stock (last). */
