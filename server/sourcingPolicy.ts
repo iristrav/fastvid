@@ -587,6 +587,16 @@ export function visualMatchingV1Enabled(): boolean {
   return process.env.VISUAL_MATCHING_V1 !== "false";
 }
 
+/** Lowest CLIP score still accepted as “looks similar” when strict match found nothing (default 5). */
+export function archiveSimilarMatchVisionFloor(): number {
+  const raw = process.env.ARCHIVE_SIMILAR_VISION_FLOOR?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 4 && n <= 7) return n;
+  }
+  return 5;
+}
+
 /** Min CLIP score for last-chance 1-min compose rescue (archive still preferred). */
 export function fastShortComposeRescueVisionFloor(): number {
   const raw = process.env.FAST_COMPOSE_RESCUE_VISION_FLOOR?.trim();
