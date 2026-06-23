@@ -14249,7 +14249,9 @@ async function beatClipPassesVisionGate(
 ): Promise<VisionGateResult> {
   const scoreFloor =
     minScore ??
-    effectiveMinClipQualityScore(dedup.perf.fastStockMode, isFastShortVideoLength(dedup.videoLength));
+    (isFastShortVideoLength(dedup.videoLength) && visualSourcingTurbo(dedup)
+      ? stockClipQualityFloor(dedup.videoLength)
+      : effectiveMinClipQualityScore(dedup.perf.fastStockMode, isFastShortVideoLength(dedup.videoLength)));
   const visualDesc = beatGateVisualDescription(beat, semanticProfile);
   const result = await evaluateClipVisionGate(
     clipPath,
@@ -14521,7 +14523,8 @@ async function adoptArchiveBeatClip(
     if (
       clipEmbeddingIndexEnabled() &&
       ranked.length > 0 &&
-      ranked[0]?.clipVisionScore10 == null
+      ranked[0]?.clipVisionScore10 == null &&
+      !isFastShortVideoLength(dedup.videoLength)
     ) {
       const pre = await preRankCuratedCandidatesByClipEmbedding(ranked, visionCtx, {
         fastMode: dedup.perf.fastStockMode,
@@ -15969,8 +15972,16 @@ async function backfillComposeMontageIfShort(
 }
 
 /** First successful beat adopter wins (pushClip dedup prevents double-adopt). */
-async function raceFirstBeatAdopt(adopters: Array<() => Promise<boolean>>): Promise<boolean> {
+async function raceFirstBeatAdopt(
+  adopters: Array<() => Promise<boolean>>,
+  timeoutMs?: number
+): Promise<boolean> {
   if (!adopters.length) return false;
+  const wrap = (fn: () => Promise<boolean>) => {
+    if (!timeoutMs) return fn;
+    return () =>
+      withTimeout(fn(), timeoutMs, "beat adopt race").catch(() => false);
+  };
   return new Promise((resolve) => {
     let pending = adopters.length;
     let won = false;
@@ -15985,7 +15996,7 @@ async function raceFirstBeatAdopt(adopters: Array<() => Promise<boolean>>): Prom
       if (pending <= 0) resolve(false);
     };
     for (const adopt of adopters) {
-      void adopt()
+      void wrap(adopt)()
         .then(settle)
         .catch(() => settle(false));
     }
@@ -16122,7 +16133,7 @@ async function fillBeatVisual(
   if (curatedArchiveOnlyVisuals()) {
     const prefetchedRanked = archivePrefetch ? await archivePrefetch : undefined;
     const geoDoc = isGeoDocumentaryContext(beat.text, videoTitle);
-    const parallelAuthentic = fastShort || geoDoc;
+    const parallelAuthentic = !fastShort && geoDoc;
     const wikiVideo = () =>
       adoptWikimediaBeatClip(
         beat,
@@ -16300,41 +16311,72 @@ async function retryAuthenticBeforeLicensedStock(
     const fastShort = isFastShortVideoLength(dedup.videoLength) && dedup.perf.fastStockMode;
     const geoDoc = isGeoDocumentaryContext(beat.text, videoTitle);
 
-    if (strict && (fastShort || geoDoc)) {
-      return raceFirstBeatAdopt([
-        () =>
-          adoptArchiveBeatClip(
-            beat,
-            scene,
-            workDir,
-            videoTitle,
-            dedup,
-            pushClip,
-            null,
-            holdSec,
-            semanticProfile,
-            false,
-            undefined,
-            openingVideosOnly ? { videosOnly: true } : undefined
-          ),
-        () =>
-          adoptWikimediaBeatClip(
-            beat,
-            scene,
-            workDir,
-            videoTitle,
-            dedup,
-            pushClip,
-            holdSec,
-            semanticProfile,
-            { videoOnly: true }
-          ),
-        () => adoptInternetArchiveBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile),
-      ]);
+    if (strict && fastShort) {
+      return adoptArchiveBeatClipWithBudget(
+        beat,
+        scene,
+        workDir,
+        videoTitle,
+        dedup,
+        pushClip,
+        null,
+        holdSec,
+        semanticProfile,
+        visualSourcingTurbo(dedup),
+        undefined,
+        openingVideosOnly ? { videosOnly: true } : undefined
+      );
+    }
+
+    if (strict && geoDoc) {
+      const archiveAdopt = () =>
+        adoptArchiveBeatClipWithBudget(
+          beat,
+          scene,
+          workDir,
+          videoTitle,
+          dedup,
+          pushClip,
+          null,
+          holdSec,
+          semanticProfile,
+          false,
+          undefined,
+          openingVideosOnly ? { videosOnly: true } : undefined
+        );
+      return raceFirstBeatAdopt(
+        [
+          archiveAdopt,
+          () =>
+            adoptWikimediaBeatClip(
+              beat,
+              scene,
+              workDir,
+              videoTitle,
+              dedup,
+              pushClip,
+              holdSec,
+              semanticProfile,
+              { videoOnly: true }
+            ),
+          () =>
+            adoptInternetArchiveBeatClip(
+              beat,
+              scene,
+              workDir,
+              videoTitle,
+              dedup,
+              pushClip,
+              holdSec,
+              semanticProfile
+            ),
+        ],
+        archiveBeatTryTimeoutMs(dedup.videoLength)
+      );
     }
 
     if (
-      await adoptArchiveBeatClip(
+      await adoptArchiveBeatClipWithBudget(
         beat,
         scene,
         workDir,
@@ -16634,6 +16676,7 @@ async function refillSceneStrictVoiceMatch(
     const pushClip = (clipPath: string, holdSec = beat.holdSec) =>
       pushSceneClip(clipPath, holdSec, beat.index);
     const profile = semanticProfiles.get(bi);
+    const beatFilled = () => clipBeatIndices.includes(beat.index);
     if (!(await fillBeatVisual(beat, scene, workDir, videoTitle, dedup, pushClip, profile, beat.holdSec))) {
       await ensureBeatVisualFilled(
         beat,
@@ -16644,6 +16687,34 @@ async function refillSceneStrictVoiceMatch(
         pushClip,
         profile,
         beat.holdSec
+      );
+    }
+    if (fastShort && !beatFilled()) {
+      await adoptArchiveBeatClipWithBudget(
+        beat,
+        scene,
+        workDir,
+        videoTitle,
+        dedup,
+        pushClip,
+        null,
+        beat.holdSec,
+        profile,
+        true,
+        undefined,
+        archiveNeedsOpeningFootage(dedup) ? { videosOnly: true } : undefined
+      );
+    }
+    if (fastShort && !beatFilled() && archivePexelsFallbackEnabled() && canUseLicensedStockBeat(dedup)) {
+      await adoptStockBeatClipFallback(
+        beat,
+        scene,
+        workDir,
+        videoTitle,
+        dedup,
+        pushClip,
+        beat.holdSec,
+        profile
       );
     }
     dedup.visualBeatsCompleted = (dedup.visualBeatsCompleted ?? 0) + 1;
@@ -16679,6 +16750,39 @@ async function refillSceneStrictVoiceMatch(
 
   const usable = clips.filter((c) => c && !isPipelineFallbackClip(c));
   if (usable.length < minNeeded) {
+    if (fastShort) {
+      for (let bi = 0; bi < beats.length; bi++) {
+        if (clipBeatIndices.includes(beats[bi]!.index)) continue;
+        const beat = beats[bi]!;
+        const pushClip = (clipPath: string, holdSec = beat.holdSec) =>
+          pushSceneClip(clipPath, holdSec, beat.index);
+        await adoptArchiveBeatClipWithBudget(
+          beat,
+          scene,
+          workDir,
+          videoTitle,
+          dedup,
+          pushClip,
+          null,
+          beat.holdSec,
+          semanticProfiles.get(bi),
+          true,
+          undefined,
+          undefined
+        );
+      }
+      const afterRelaxed = clips.filter((c) => c && !isPipelineFallbackClip(c));
+      if (afterRelaxed.length === 0) {
+        const recovered = await recoverSceneClipsIfEmpty(scene, workDir, videoTitle, dedup);
+        if (recovered.clips.length > 0) return recovered;
+      }
+      if (afterRelaxed.length > 0) {
+        console.warn(
+          `[Pipeline] Scene ${scene.index}: fast path — ${afterRelaxed.length}/${minNeeded} clip(s), continuing`
+        );
+        return { clips, beatDurations, beats, clipBeatIndices };
+      }
+    }
     throw pipelineError(
       PIPELINE_ERROR.FFMPEG,
       `Scene ${scene.index}: ${beats.length} zinnen maar ${usable.length} voice/script-matchende clips — export geblokkeerd`
@@ -19652,7 +19756,24 @@ export async function runVideoPipeline(
         }
       }
       if (sceneVisualResults[si].clips.length === 0) {
-        if (strictVoiceVisualMatchEnabled()) {
+        if (isFastShortVideoLength(videoLength)) {
+          console.warn(
+            `[Pipeline] Scene ${scenes[si].index}: empty after fetch — fast recovery (≤2min)`
+          );
+          try {
+            sceneVisualResults[si] = await withTimeout(
+              recoverSceneClipsIfEmpty(scenes[si], workDir, topicContext, visualDedup),
+              120_000,
+              `Scene ${scenes[si].index} fast recovery`
+            );
+          } catch (recoverErr) {
+            console.warn(
+              `[Pipeline] Scene ${scenes[si].index}: fast recovery timed out:`,
+              (recoverErr as Error).message?.slice(0, 80)
+            );
+            sceneVisualResults[si] = { clips: [], beatDurations: [] };
+          }
+        } else if (strictVoiceVisualMatchEnabled()) {
           console.warn(
             `[Pipeline] Scene ${scenes[si].index}: strict refill — elke zin moet voice/script-matchen`
           );

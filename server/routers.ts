@@ -250,6 +250,7 @@ export async function retryFailedVideo(
       errorMessage: "",
       progressStep: "🔄 Retry — starting video production...",
       progressPercent: 29,
+      generationStartedAt: new Date(),
     });
     setImmediate(() => {
       _generateVideoWithAI(
