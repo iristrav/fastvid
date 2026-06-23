@@ -1404,6 +1404,41 @@ async function convertImageToKenBurns(
   }
 }
 
+type VideoStreamMeta = {
+  width: number;
+  height: number;
+  codec: string;
+  pixFmt: string;
+};
+
+async function probeVideoStreamMeta(filePath: string): Promise<VideoStreamMeta | null> {
+  try {
+    const probe = await exec(
+      `${ffprobeBin()} -v error -select_streams v:0 ` +
+        `-show_entries stream=width,height,codec_name,pix_fmt ` +
+        `-of csv=p=0 "${filePath}"`
+    );
+    const parts = String(probe.stdout).trim().split(",");
+    if (parts.length < 4) return null;
+    const width = parseInt(parts[0]!, 10);
+    const height = parseInt(parts[1]!, 10);
+    const codec = (parts[2] ?? "").toLowerCase();
+    const pixFmt = (parts[3] ?? "").toLowerCase();
+    if (!width || !height || !codec) return null;
+    return { width, height, codec, pixFmt };
+  } catch {
+    return null;
+  }
+}
+
+/** Stream-copy trim when source is already 1080p H.264 — skips re-encode. */
+function canStreamCopyTrim(meta: VideoStreamMeta | null): boolean {
+  if (!meta) return false;
+  if (meta.codec !== "h264") return false;
+  if (meta.pixFmt && meta.pixFmt !== "yuv420p" && meta.pixFmt !== "yuvj420p") return false;
+  return meta.width === VIDEO_WIDTH && meta.height === VIDEO_HEIGHT;
+}
+
 async function trimVideoClip(
   inPath: string,
   outPath: string,
@@ -1441,6 +1476,22 @@ async function trimVideoClip(
   startSec = Math.max(0, Math.min(Math.max(0, sourceDur - take), startSec));
 
   const fastTrim = styleContext?.fastTrim === true;
+  const streamMeta = await probeVideoStreamMeta(inPath);
+  const useStreamCopy = fastTrim && canStreamCopyTrim(streamMeta);
+
+  if (useStreamCopy) {
+    try {
+      await exec(
+        `${ffmpegBin()} -y -ss ${startSec.toFixed(3)} -i "${inPath}" -t ${take.toFixed(3)} ` +
+          `-c copy -avoid_negative_ts make_zero -an "${outPath}"`
+      );
+      const outDur = await probeMediaDurationSec(outPath);
+      if (outDur >= take * 0.8) return;
+    } catch {
+      /* fall through to re-encode */
+    }
+  }
+
   const frameVf = fastTrim ? "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2" : buildFitGrayGradedVideoVF();
   const preset = fastTrim || process.env.RAILWAY_ENVIRONMENT ? "ultrafast" : "veryfast";
   const crf = fastTrim ? 20 : 18;

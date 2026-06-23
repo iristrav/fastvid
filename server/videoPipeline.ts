@@ -19393,10 +19393,13 @@ export async function runVideoPipeline(
         `[Pipeline] Archive pool warmed: ${visualDedup.archiveCandidatePool.length} candidate(s) for this video`
       );
       try {
-        const { backfillMissingClipEmbeddings } = await import("./archiveClipIndexBackfill");
-        const warmed = await backfillMissingClipEmbeddings(48);
+        const { backfillClipEmbeddingsWithBudget } = await import("./archiveClipIndexBackfill");
+        const warmed = await backfillClipEmbeddingsWithBudget(100, 90_000);
         if (warmed.indexed > 0) {
-          console.log(`[Pipeline] CLIP index pre-warm: +${warmed.indexed} archive clip(s) indexed`);
+          console.log(
+            `[Pipeline] CLIP index pre-warm: +${warmed.indexed} archive clip(s) indexed` +
+              (warmed.timedOut ? " (90s budget)" : "")
+          );
         }
       } catch (warmErr) {
         console.warn(

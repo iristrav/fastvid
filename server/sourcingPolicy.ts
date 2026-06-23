@@ -323,10 +323,15 @@ export function stockClipQualityFloor(videoLength?: string | null): number {
   return 8;
 }
 
-/** Beat cadence for 1-min fast path — fewer beats → faster visual stage. */
+/** Beat cadence for 1-min fast path — fewer beats → faster visual stage (default 18s). */
 export function archiveVisualBeatSecForVideo(videoLength?: string | null): number {
-  if (isFastShortVideoLength(videoLength)) return 14;
-  return archiveVisualBeatSec();
+  if (!isFastShortVideoLength(videoLength)) return archiveVisualBeatSec();
+  const raw = process.env.FAST_ARCHIVE_BEAT_SEC?.trim();
+  if (raw) {
+    const n = parseFloat(raw);
+    if (!isNaN(n) && n >= 12 && n <= 24) return n;
+  }
+  return 18;
 }
 
 /** Target on-screen duration per archive clip (seconds). */
@@ -427,9 +432,14 @@ export function archiveMinVideoClipsTarget(videoLength?: string | null): number 
     if (!isNaN(n) && n >= 0) return n;
   }
   const mins = targetVideoDurationMinutes(videoLength);
-  const expectedBeats = Math.max(1, Math.ceil((mins * 60) / archiveVisualBeatSec()));
+  const beatSec = isFastShortVideoLength(videoLength)
+    ? archiveVisualBeatSecForVideo(videoLength)
+    : archiveVisualBeatSec();
+  const expectedBeats = Math.max(1, Math.ceil((mins * 60) / beatSec));
   const maxStills = archiveMaxImageClipsPerVideo(videoLength);
-  return Math.max(1, expectedBeats - maxStills);
+  const target = Math.max(1, expectedBeats - maxStills);
+  if (isFastShortVideoLength(videoLength)) return Math.min(3, target);
+  return target;
 }
 
 /** @deprecated alias — prefer archiveMinVideoClipsTarget */

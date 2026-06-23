@@ -34,9 +34,27 @@ function backfillBatchSize(): number {
   const raw = process.env.CLIP_EMBEDDING_BACKFILL_BATCH?.trim();
   if (raw) {
     const n = parseInt(raw, 10);
-    if (!isNaN(n) && n >= 1 && n <= 200) return n;
+    if (!isNaN(n) && n >= 1 && n <= 300) return n;
   }
-  return 40;
+  return 80;
+}
+
+function backfillIntervalMs(): number {
+  const raw = process.env.CLIP_EMBEDDING_BACKFILL_INTERVAL_MIN?.trim();
+  if (raw) {
+    const n = parseFloat(raw);
+    if (!isNaN(n) && n >= 0.5 && n <= 30) return Math.round(n * 60_000);
+  }
+  return 2 * 60_000;
+}
+
+function backfillStartupRounds(): number {
+  const raw = process.env.CLIP_EMBEDDING_BACKFILL_STARTUP_ROUNDS?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 1 && n <= 10) return n;
+  }
+  return 3;
 }
 
 /** Index CLIP embeddings for archive videos that lack a stored index (non-blocking batches). */
@@ -85,6 +103,32 @@ export async function backfillMissingClipEmbeddings(
   return { indexed, skipped, missing };
 }
 
+/**
+ * Pre-warm index before visual stage — indexes up to maxAssets but stops after maxWaitMs.
+ */
+export async function backfillClipEmbeddingsWithBudget(
+  maxAssets: number,
+  maxWaitMs: number
+): Promise<{ indexed: number; timedOut: boolean }> {
+  if (!backfillEnabled()) return { indexed: 0, timedOut: false };
+  const started = Date.now();
+  let indexed = 0;
+  let timedOut = false;
+
+  while (indexed < maxAssets && Date.now() - started < maxWaitMs) {
+    const batch = Math.min(24, maxAssets - indexed);
+    const result = await backfillMissingClipEmbeddings(batch);
+    indexed += result.indexed;
+    if (result.indexed === 0) break;
+    if (Date.now() - started >= maxWaitMs) {
+      timedOut = true;
+      break;
+    }
+  }
+
+  return { indexed, timedOut };
+}
+
 /** Fire-and-forget backfill loop — runs on worker startup and every few minutes. */
 export function scheduleClipEmbeddingBackfill(): void {
   if (!backfillEnabled()) return;
@@ -95,6 +139,16 @@ export function scheduleClipEmbeddingBackfill(): void {
       console.warn("[ClipEmbedding] Backfill failed:", (err as Error).message?.slice(0, 120));
     }
   };
-  void run();
-  setInterval(() => void run(), 4 * 60_000).unref?.();
+  void (async () => {
+    for (let round = 0; round < backfillStartupRounds(); round++) {
+      try {
+        const result = await backfillMissingClipEmbeddings();
+        if (result.indexed === 0) break;
+      } catch (err) {
+        console.warn("[ClipEmbedding] Startup backfill failed:", (err as Error).message?.slice(0, 120));
+        break;
+      }
+    }
+  })();
+  setInterval(() => void run(), backfillIntervalMs()).unref?.();
 }
