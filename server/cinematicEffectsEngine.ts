@@ -533,6 +533,8 @@ export type BeatYearInput = {
   /** Scene-local TTS start (seconds) — montage cuts align here when set. */
   voiceStartSec?: number;
   voiceEndSec?: number;
+  visualDescription?: string;
+  searchQuery?: string;
 };
 
 export type BeatLabelInput = BeatYearInput & {

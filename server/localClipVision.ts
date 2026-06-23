@@ -22,7 +22,8 @@ const exec = promisify(execCb);
 
 const CLIP_MODEL = "Xenova/clip-vit-base-patch32";
 export const LOCAL_FRAME_FRACTIONS = [0.12, 0.38, 0.62, 0.88];
-const INDEX_FRAME_FRACTIONS = [0.15, 0.5, 0.85];
+/** Index frames aligned with gate sampling so pre-rank scores predict adopt gates. */
+const INDEX_FRAME_FRACTIONS = LOCAL_FRAME_FRACTIONS.slice(0, 3);
 
 type ClipPipeline = (input: string, options?: Record<string, unknown>) => Promise<{ data: Float32Array }>;
 
@@ -227,10 +228,13 @@ export function buildBeatVisionQueryText(ctx: BeatVisionQueryContext): string {
     parts.push(powerWord.trim().slice(0, 40));
   }
 
+  const hasRichVisualIntent = parts.length > 0;
   const narration = coerceVisionString(ctx.beatText)?.replace(/\[visual:[^\]]+\]/gi, " ").trim() ?? "";
-  if (narration) parts.push(narration.slice(0, 180));
+  if (narration) {
+    parts.push(hasRichVisualIntent ? narration.slice(0, 80) : narration.slice(0, 180));
+  }
   const videoTitle = coerceVisionString(ctx.videoTitle);
-  if (videoTitle?.trim()) parts.push(videoTitle.trim().slice(0, 60));
+  if (videoTitle?.trim() && !hasRichVisualIntent) parts.push(videoTitle.trim().slice(0, 60));
 
   return parts.filter(Boolean).join(". ");
 }

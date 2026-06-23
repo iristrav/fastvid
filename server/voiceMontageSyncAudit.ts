@@ -138,7 +138,8 @@ export async function auditSceneVoiceMontageSync(
   workDir: string,
   sceneIndex: number,
   videoTitle?: string,
-  plan?: Pick<TtsMontagePlan, "cutStartsSec" | "xfadeSec" | "ttsHardCut">
+  plan?: Pick<TtsMontagePlan, "cutStartsSec" | "xfadeSec" | "ttsHardCut">,
+  adoptVisionByBeat?: ReadonlyMap<number, number>
 ): Promise<VoiceMontageSyncAuditResult> {
   if (!voiceMontageSyncAuditEnabled() || !fs.existsSync(composedPath)) {
     return { ok: true, blocking: false, warnings: [], checks: [] };
@@ -158,7 +159,11 @@ export async function auditSceneVoiceMontageSync(
   const checks: VoiceMontageSyncCheck[] = [];
   const totalDur = await probeVideoDurationSec(composedPath);
   const minScore = voiceVisualAuditMinScore();
-  const checkIndices = selectCheckClipIndices(montageDurations.length);
+  const checkIndices = selectCheckClipIndices(
+    montageDurations.length,
+    clipBeatIndices,
+    adoptVisionByBeat
+  );
 
   for (const ci of checkIndices) {
     const beatIdx = clipBeatIndices[ci] ?? ci;
@@ -190,12 +195,19 @@ export async function auditSceneVoiceMontageSync(
       );
       const ok = await extractFrameAtFraction(composedPath, framePath, sampleFrac, 8_000);
       if (ok) {
-        const ctx = beatVisionContextFromProfile({ text: beat.text }, videoTitle);
+        const ctx = beatVisionContextFromProfile(
+          {
+            text: beat.text,
+            visualDescription: beat.visualDescription,
+            searchQuery: beat.searchQuery,
+          },
+          videoTitle
+        );
         const queryEmb = await resolveBeatVisionQueryEmbedding(ctx);
         const scored = await scoreFramePathsAgainstBeat(
           [framePath],
           beat.text,
-          undefined,
+          beat.visualDescription,
           videoTitle,
           composedPath,
           minScore,
@@ -241,9 +253,26 @@ export async function auditSceneVoiceMontageSync(
   };
 }
 
-function selectCheckClipIndices(clipCount: number): number[] {
+export function selectCheckClipIndices(
+  clipCount: number,
+  clipBeatIndices: number[] = [],
+  adoptVisionByBeat?: ReadonlyMap<number, number>
+): number[] {
   if (clipCount <= MAX_CLIP_CHECKS) {
     return Array.from({ length: clipCount }, (_, i) => i);
+  }
+  if (adoptVisionByBeat && adoptVisionByBeat.size > 0 && clipBeatIndices.length === clipCount) {
+    const scored = Array.from({ length: clipCount }, (_, ci) => ({
+      ci,
+      score: adoptVisionByBeat.get(clipBeatIndices[ci] ?? ci) ?? 10,
+    }));
+    scored.sort((a, b) => a.score - b.score || a.ci - b.ci);
+    const picks = new Set<number>();
+    for (const { ci } of scored) {
+      if (picks.size >= MAX_CLIP_CHECKS) break;
+      picks.add(ci);
+    }
+    return [...picks].sort((a, b) => a - b);
   }
   const picks = new Set<number>([0, clipCount - 1]);
   const step = Math.max(1, Math.floor(clipCount / (MAX_CLIP_CHECKS - 2)));

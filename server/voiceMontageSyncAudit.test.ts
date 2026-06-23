@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   expectedMontageCutStarts,
+  selectCheckClipIndices,
   summarizeVoiceMontageSyncAudits,
 } from "./voiceMontageSyncAudit";
 
@@ -13,6 +14,19 @@ describe("voiceMontageSyncAudit", () => {
     const starts = expectedMontageCutStarts(beats, 5, [0, 1]);
     expect(starts[0]).toBeCloseTo(0, 2);
     expect(starts[1]).toBeCloseTo(2, 2);
+  });
+
+  it("selectCheckClipIndices prefers weakest adopt vision scores", () => {
+    const clipBeatIndices = [0, 0, 1, 1, 2, 2, 3, 3];
+    const adoptVision = new Map<number, number>([
+      [0, 9],
+      [1, 5],
+      [2, 7],
+      [3, 8],
+    ]);
+    const picks = selectCheckClipIndices(8, clipBeatIndices, adoptVision);
+    expect(picks.length).toBe(6);
+    expect(picks.some((ci) => clipBeatIndices[ci] === 1)).toBe(true);
   });
 
   it("summarizeVoiceMontageSyncAudits collects failed scenes", () => {

@@ -147,7 +147,7 @@ import {
   uniqueQueryStrings,
   uniqueCoercedQueries,
 } from "./stringCoercion";
-import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, maxPipelineWallClockMin, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor } from "./sourcingPolicy";
+import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, maxPipelineWallClockMin, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -170,12 +170,15 @@ import {
   hashVarietySeed,
   archiveAssetPreflight,
   assetPassesBeatMinimum,
+  buildBeatMatchTags,
   buildGeoStockSearchQueries,
+  countVisualTagHits,
   resolveRequiredGeoTagsForBeat,
   isArchiveGeoBlockedForBeat,
   type CuratedCandidatePick,
 } from "./curatedMediaSourcing";
 import {
+  analyzeBeatSemanticsFallback,
   analyzeBeatsSemanticsBatch,
   buildSemanticPexelsQueries,
   semanticVisualMatchingEnabled,
@@ -14876,10 +14879,18 @@ async function adoptBestSimilarBeatClip(
     return true;
   }
 
+  const { beatTags, topicAnchors } = buildBeatMatchTags(beat, scene, videoTitle);
+  const topicMatchTags = [...beatTags, ...topicAnchors];
+
   for (let i = 0; i < tryCap; i++) {
     const picked = ranked[i]!;
     if (videosOnly && picked.asset.mediaType !== "video") continue;
     if (dedup.usedCuratedAssetIds.has(picked.asset.id)) continue;
+    if (topicMatchTags.length > 0 && countVisualTagHits(picked.asset, topicMatchTags) === 0) continue;
+
+    const preScore = picked.clipVisionScore10;
+    if (preScore != null && preScore < similarFloor) continue;
+
     const clip = await preparePooledArchiveClip(
       picked,
       beat,
@@ -14892,10 +14903,29 @@ async function adoptBestSimilarBeatClip(
     );
     if (!clip || isPipelineFallbackClip(clip)) continue;
     if (!(await montageClipPassesComposeGate(clip, scene.index, beat.index))) continue;
+
+    const vision =
+      preScore != null && preScore >= targetClipVisionScore()
+        ? ({ pass: true, worstScore10: preScore, skipped: true } satisfies VisionGateResult)
+        : await beatClipPassesVisionGate(
+            clip,
+            beat,
+            scene,
+            workDir,
+            videoTitle,
+            dedup,
+            semanticProfile,
+            "archive_topic",
+            similarFloor,
+            beatQueryEmb
+          );
+    const score = vision.worstScore10 ?? preScore ?? 0;
+    if (!vision.pass) continue;
+
     if (await pushClip(clip, holdSec)) {
       console.warn(
         `[Pipeline] Scene ${scene.index} beat ${beat.index}: topic-anchored archive ` +
-          `"${picked.asset.title ?? picked.asset.id}" (tags/score ${picked.score}, CLIP skipped)`
+          `"${picked.asset.title ?? picked.asset.id}" (tags/score ${picked.score}, CLIP ${score}/10)`
       );
       markCuratedArchiveClipUsage(dedup, clip);
       recordClipAdopt(
@@ -14907,7 +14937,8 @@ async function adoptBestSimilarBeatClip(
         "archive_topic",
         picked.asset.title ?? undefined,
         dedup.segmentGeoLock,
-        picked.asset.id
+        picked.asset.id,
+        score
       );
       return true;
     }
@@ -16575,23 +16606,6 @@ async function fillBeatVisual(
       })
     : null;
 
-  if (fastShort && !openingVideosOnly && canUseLicensedStockBeat(dedup)) {
-    if (
-      await adoptStockBeatClipFallback(
-        beat,
-        scene,
-        workDir,
-        videoTitle,
-        dedup,
-        pushClip,
-        holdSec,
-        semanticProfile
-      )
-    ) {
-      return true;
-    }
-  }
-
   async function tryArchivePasses(
     prefetchedRanked?: CuratedCandidatePick[] | null,
     videosOnly?: boolean
@@ -16690,19 +16704,22 @@ async function fillBeatVisual(
     }
 
     if (visualSourcingTurbo(dedup) && canUseLicensedStockBeat(dedup)) {
-      if (
-        await adoptStockBeatClipFallback(
-          beat,
-          scene,
-          workDir,
-          videoTitle,
-          dedup,
-          pushClip,
-          holdSec,
-          semanticProfile
-        )
-      ) {
-        return true;
+      const topVision = prefetchedRanked?.[0]?.clipVisionScore10;
+      if (topVision == null || topVision < semanticRerankClipSkipMin()) {
+        if (
+          await adoptStockBeatClipFallback(
+            beat,
+            scene,
+            workDir,
+            videoTitle,
+            dedup,
+            pushClip,
+            holdSec,
+            semanticProfile
+          )
+        ) {
+          return true;
+        }
       }
     }
 
@@ -17034,16 +17051,20 @@ async function fetchArchiveSentenceMontage(
   const clipBeatIndices: number[] = [];
 
   const semanticProfiles =
-    !isFastShortVideoLength(dedup.videoLength) && semanticVisualMatchingEnabled()
-      ? await analyzeBeatsSemanticsBatch(
-          beats.map((b) => b.text),
-          videoTitle,
-          {
-            fastMode: dedup.perf.fastStockMode,
-            literalViewerVisuals: beats.map((b) => b.visualDescription),
-          }
+    isFastShortVideoLength(dedup.videoLength)
+      ? new Map(
+          beats.map((b, i) => [i, analyzeBeatSemanticsFallback(b.text, videoTitle)] as const)
         )
-      : new Map<number, BeatSemanticProfile>();
+      : semanticVisualMatchingEnabled()
+        ? await analyzeBeatsSemanticsBatch(
+            beats.map((b) => b.text),
+            videoTitle,
+            {
+              fastMode: dedup.perf.fastStockMode,
+              literalViewerVisuals: beats.map((b) => b.visualDescription),
+            }
+          )
+        : new Map<number, BeatSemanticProfile>();
 
   console.log(
     `[Pipeline] Scene ${scene.index}: ${beats.length} zin(en) → stock/archief per zin (parallel)`
@@ -17169,8 +17190,11 @@ async function refillSceneStrictVoiceMatch(
   await applyVoiceAlignmentToBeats(beats, sceneAudioPath, scene.duration, dedup, scene.index);
 
   const fastShort = isFastShortVideoLength(dedup.videoLength);
-  const semanticProfiles =
-    !fastShort && semanticVisualMatchingEnabled()
+  const semanticProfiles = fastShort
+    ? new Map(
+        beats.map((b, i) => [i, analyzeBeatSemanticsFallback(b.text, videoTitle)] as const)
+      )
+    : semanticVisualMatchingEnabled()
       ? await analyzeBeatsSemanticsBatch(
           beats.map((b) => b.text),
           videoTitle,
@@ -20592,21 +20616,36 @@ export async function runVideoPipeline(
                 `[Pipeline] Scene ${scene.index} voice coverage: ${coverage.warnings.join("; ")}`
               );
             }
+            const adoptVisionByBeat = new Map<number, number>();
+            for (const entry of visualDedup.clipAdoptAudit) {
+              if (
+                entry.sceneIndex === scene.index &&
+                typeof entry.visionScore10 === "number" &&
+                entry.visionScore10 > 0
+              ) {
+                adoptVisionByBeat.set(entry.beatIndex, entry.visionScore10);
+              }
+            }
+            const beatsForSyncAudit = vr.beats.map((b) => ({
+              text: b.text,
+              holdSec: b.holdSec,
+              voiceStartSec: b.voiceStartSec,
+              voiceEndSec: b.voiceEndSec,
+              visualDescription:
+                beatGateVisualDescription(b, undefined) ?? b.visualDescription,
+              searchQuery: b.searchQuery,
+            }));
             let audit = await auditSceneVoiceMontageSync(
               result,
-              vr.beats.map((b) => ({
-                text: b.text,
-                holdSec: b.holdSec,
-                voiceStartSec: b.voiceStartSec,
-                voiceEndSec: b.voiceEndSec,
-              })),
+              beatsForSyncAudit,
               composeMeta.montageDurations,
               composeMeta.clipBeatIndices,
               voiceSec,
               workDir,
               scene.index,
               topicContext,
-              composeMeta.montagePlan
+              composeMeta.montagePlan,
+              adoptVisionByBeat
             );
             const spot =
               isFastShortVideoLength(videoLength) || adoptVisionOk
@@ -20658,19 +20697,15 @@ export async function runVideoPipeline(
               composedUsedClips[i] = usedClips;
               audit = await auditSceneVoiceMontageSync(
                 result,
-                vr.beats.map((b) => ({
-                  text: b.text,
-                  holdSec: b.holdSec,
-                  voiceStartSec: b.voiceStartSec,
-                  voiceEndSec: b.voiceEndSec,
-                })),
+                beatsForSyncAudit,
                 composeMeta.montageDurations,
                 composeMeta.clipBeatIndices,
                 voiceSec,
                 workDir,
                 scene.index,
                 topicContext,
-                composeMeta.montagePlan
+                composeMeta.montagePlan,
+                adoptVisionByBeat
               );
             }
             voiceMontageSyncResults.push({ sceneIndex: scene.index, audit });

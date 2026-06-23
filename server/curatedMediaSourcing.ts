@@ -106,6 +106,7 @@ import {
 } from "./vidrushQuality";
 import {
   analyzeBeatSemantics,
+  analyzeBeatSemanticsFallback,
   applySemanticAiRerank,
   assetMeetsSemanticMinimum,
   scoreArchiveAssetSemantically,
@@ -1758,21 +1759,21 @@ export async function searchCuratedCandidatesForBeat(
   const varietySeed = options?.varietySeed ?? 0;
   const crossVideoExcludeIds = options?.crossVideoExcludeIds ?? new Set<number>();
   const fastShort = isFastShortVideoLength(options?.videoLength);
-  const skipSemantic =
+  const skipLlmSemantic =
     options?.skipSemantic === true ||
     options?.fastMode === true ||
     fastShort;
   const semanticProfile =
-    skipSemantic
-      ? undefined
-      : options?.semanticProfile ??
-        (semanticVisualMatchingEnabled()
-          ? await analyzeBeatSemantics(
-              anchoredBeat.text,
-              videoTitle,
-              anchoredBeat.visualDescription?.trim() || undefined
-            )
-          : undefined);
+    options?.semanticProfile ??
+    (skipLlmSemantic
+      ? analyzeBeatSemanticsFallback(anchoredBeat.text, videoTitle)
+      : semanticVisualMatchingEnabled()
+        ? await analyzeBeatSemantics(
+            anchoredBeat.text,
+            videoTitle,
+            anchoredBeat.visualDescription?.trim() || undefined
+          )
+        : undefined);
   const shotQueries = buildDocumentaryShotQueries(
     anchoredBeat.visualDescription?.trim() || anchoredBeat.searchQuery?.trim() || anchoredBeat.text,
     anchoredBeat.index
@@ -1841,7 +1842,7 @@ export async function searchCuratedCandidatesForBeat(
     ranked.sort((a, b) => b.score - a.score);
   }
 
-  if (semanticProfile && semanticVisualMatchingEnabled() && !skipSemantic) {
+  if (semanticProfile && semanticVisualMatchingEnabled()) {
     const pool = ranked.slice(0, pipelineWallClockLimitEnabled() ? 20 : 64);
     ranked = await Promise.all(
       pool.map(async (pick) => {
