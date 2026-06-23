@@ -587,6 +587,16 @@ export function visualMatchingV1Enabled(): boolean {
   return process.env.VISUAL_MATCHING_V1 !== "false";
 }
 
+/** Min CLIP score for last-chance 1-min compose rescue (archive still preferred). */
+export function fastShortComposeRescueVisionFloor(): number {
+  const raw = process.env.FAST_COMPOSE_RESCUE_VISION_FLOOR?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 5 && n <= 8) return n;
+  }
+  return 6;
+}
+
 /** Block upload when qualityReport fails thresholds (on by default). */
 export function strictQualityExportEnabled(): boolean {
   return process.env.ENABLE_STRICT_QUALITY_EXPORT !== "false";

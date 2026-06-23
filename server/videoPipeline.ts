@@ -147,7 +147,7 @@ import {
   uniqueQueryStrings,
   uniqueCoercedQueries,
 } from "./stringCoercion";
-import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, maxPipelineWallClockMin, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs } from "./sourcingPolicy";
+import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, maxPipelineWallClockMin, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -11514,6 +11514,23 @@ async function recoverSceneClipsIfEmpty(
     }
     // Recovery is lenient: guaranteed clips if archive/Wikimedia/stock all miss
     if (clips.length === 0) {
+      if (fastShort && archivePexelsFallbackEnabled() && canUseLicensedStockBeat(dedup)) {
+        await adoptStockBeatClipFallback(
+          stubBeat,
+          scene,
+          workDir,
+          topicContext,
+          dedup,
+          async (clipPath, holdSec = stubBeat.holdSec) => {
+            const key = clipContentKey(clipPath);
+            if (clips.some((c) => clipContentKey(c) === key)) return false;
+            clips.push(clipPath);
+            beatDurations.push(holdSec);
+            return true;
+          },
+          stubBeat.holdSec
+        );
+      }
       if (canAddGuaranteedFallbackClip(dedup)) {
         console.warn(
           `[Pipeline] Scene ${scene.index}: geen archief/Wikimedia/stock — guaranteed clip fill`
@@ -11625,7 +11642,162 @@ async function recoverSceneClipsIfEmpty(
   return { clips, beatDurations };
 }
 
-/** Re-try weak archive beats before compose when time budget allows (all video lengths). */
+async function composeReadySceneClips(clips: string[], sceneIndex: number): Promise<string[]> {
+  const out: string[] = [];
+  for (const clipPath of clips) {
+    if (!clipPath || isPipelineFallbackClip(clipPath)) continue;
+    if (!(await montageClipPassesComposeGate(clipPath, sceneIndex, out.length))) continue;
+    const key = clipContentKey(clipPath);
+    if (out.some((c) => clipContentKey(c) === key)) continue;
+    out.push(clipPath);
+  }
+  return out;
+}
+
+/** Archive → stock rescue when strict 1-min compose would otherwise have zero clips. */
+async function rescueFastShortComposeClips(
+  scene: Scene,
+  workDir: string,
+  videoTitle: string | undefined,
+  dedup: VisualDedupState
+): Promise<string[]> {
+  if (!isFastShortVideoLength(dedup.videoLength)) return [];
+
+  const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
+  const holdSec = archiveVisualBeatSecForVideo(dedup.videoLength);
+  const beat: SceneBeat = {
+    index: 0,
+    text: scene.text.slice(0, 220),
+    searchQuery: stockQueryFromBeatScript(scene.text, scenePersons, scene.text, videoTitle),
+    powerWord: extractPowerWordFromSentence(scene.text.slice(0, 200), scenePersons),
+    keywords: buildRelevanceKeywords(scene, scene.text),
+    holdSec,
+  };
+  const collected: string[] = [];
+  const pushClip = async (clipPath: string, sec = holdSec): Promise<boolean> => {
+    if (!clipPath || isPipelineFallbackClip(clipPath)) return false;
+    if (!(await montageClipPassesComposeGate(clipPath, scene.index, collected.length))) return false;
+    const key = clipContentKey(clipPath);
+    if (collected.some((c) => clipContentKey(c) === key)) return false;
+    collected.push(clipPath);
+    markCuratedAssetUsed(clipPath, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls);
+    dedup.usedContentKeys.add(key);
+    return true;
+  };
+  const rescueVision = fastShortComposeRescueVisionFloor();
+
+  console.warn(`[Pipeline] Scene ${scene.index}: fast compose rescue — relaxed archive (CLIP ≥${rescueVision})`);
+  const archiveClip = await fetchCuratedArchiveBeatClip(
+    beat,
+    scene,
+    workDir,
+    scene.index,
+    holdSec,
+    dedup.usedCuratedAssetIds,
+    dedup.usedCuratedStorageUrls,
+    videoTitle,
+    curatedInterviewBudget(dedup),
+    curatedImageBudget(dedup),
+    undefined,
+    { relaxed: true, videoLength: dedup.videoLength, segmentLock: dedup.segmentGeoLock }
+  );
+  if (archiveClip) {
+    const vision = await beatClipPassesVisionGate(
+      archiveClip,
+      beat,
+      scene,
+      workDir,
+      videoTitle,
+      dedup,
+      undefined,
+      "compose_rescue_archive",
+      rescueVision
+    );
+    if (vision.pass) await pushClip(archiveClip, holdSec);
+  }
+
+  if (collected.length === 0) {
+    await adoptArchiveBeatClipWithBudget(
+      beat,
+      scene,
+      workDir,
+      videoTitle,
+      dedup,
+      pushClip,
+      null,
+      holdSec,
+      undefined,
+      true,
+      undefined,
+      undefined
+    );
+  }
+
+  if (collected.length === 0) {
+    const recovered = await recoverSceneClipsIfEmpty(scene, workDir, videoTitle, dedup);
+    for (let i = 0; i < recovered.clips.length; i++) {
+      if (await pushClip(recovered.clips[i]!, recovered.beatDurations[i] ?? holdSec)) break;
+    }
+  }
+
+  if (collected.length === 0 && archivePexelsFallbackEnabled() && canUseLicensedStockBeat(dedup)) {
+    console.warn(`[Pipeline] Scene ${scene.index}: fast compose rescue — licensed stock`);
+    await adoptStockBeatClipFallback(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec);
+  }
+
+  return collected;
+}
+
+/** Prune bad clips and last-chance fill before compose on 1-min fast path. */
+async function ensureFastShortScenesReadyForCompose(
+  scenes: Scene[],
+  sceneVisualResults: SceneVisualsResult[],
+  workDir: string,
+  topicContext: string | undefined,
+  visualDedup: VisualDedupState,
+  videoLength: string
+): Promise<void> {
+  if (!isFastShortVideoLength(videoLength)) return;
+
+  for (let si = 0; si < scenes.length; si++) {
+    const scene = scenes[si]!;
+    let vr = sceneVisualResults[si] ?? { clips: [], beatDurations: [] };
+    let ready = await composeReadySceneClips(vr.clips ?? [], scene.index);
+    if (ready.length > 0) {
+      sceneVisualResults[si] = { ...vr, clips: ready, beatDurations: vr.beatDurations?.slice(0, ready.length) };
+      continue;
+    }
+
+    console.warn(`[Pipeline] Scene ${scene.index}: fast pre-compose — no compose-ready clips`);
+    const rescued = await rescueFastShortComposeClips(scene, workDir, topicContext, visualDedup);
+    if (rescued.length > 0) {
+      sceneVisualResults[si] = {
+        ...vr,
+        clips: rescued,
+        beatDurations: rescued.map(() => archiveVisualBeatSecForVideo(videoLength)),
+      };
+      continue;
+    }
+
+    try {
+      vr = await withTimeout(
+        recoverSceneClipsIfEmpty(scene, workDir, topicContext, visualDedup),
+        90_000,
+        `Scene ${scene.index} pre-compose recovery`
+      );
+      ready = await composeReadySceneClips(vr.clips, scene.index);
+      if (ready.length > 0) {
+        sceneVisualResults[si] = { ...vr, clips: ready };
+      }
+    } catch (err) {
+      console.warn(
+        `[Pipeline] Scene ${scene.index}: pre-compose recovery failed:`,
+        (err as Error).message?.slice(0, 80)
+      );
+    }
+  }
+}
+
 async function polishWeakAdoptBeatsBeforeCompose(
   scenes: Scene[],
   sceneVisualResults: SceneVisualsResult[],
@@ -18292,10 +18464,27 @@ async function composeSceneVideo(
       if (ok) safeClips.push(ok);
       else safeClips.push(clip);
     } else {
-      throw pipelineError(
-        PIPELINE_ERROR.FFMPEG,
-        `Scene ${scene.index}: no valid clips and strict voice↔visual match forbids grey fallback`
-      );
+      const fastShort = isFastShortVideoLength(composeOptions?.dedup?.videoLength);
+      if (fastShort && composeOptions?.dedup) {
+        const rescued = await rescueFastShortComposeClips(
+          scene,
+          workDir,
+          coerceVisionString(composeOptions.videoTitle),
+          composeOptions.dedup
+        );
+        for (const clipPath of rescued) {
+          const key = clipContentKey(clipPath);
+          if (seenKeys.has(key)) continue;
+          seenKeys.add(key);
+          safeClips.push(clipPath);
+        }
+      }
+      if (safeClips.length === 0) {
+        throw pipelineError(
+          PIPELINE_ERROR.FFMPEG,
+          `Scene ${scene.index}: no valid clips and strict voice↔visual match forbids grey fallback`
+        );
+      }
     }
   }
   if (validClips.length < existingClips.length) {
@@ -19866,6 +20055,15 @@ export async function runVideoPipeline(
       topicContext,
       visualDedup,
       t0,
+      videoLength
+    );
+
+    await ensureFastShortScenesReadyForCompose(
+      scenes,
+      sceneVisualResults,
+      workDir,
+      topicContext,
+      visualDedup,
       videoLength
     );
 
