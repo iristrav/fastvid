@@ -1298,6 +1298,10 @@ export type CuratedClipStyleContext = StillStyleContext & {
   assetId?: number;
   queryEmbedding?: number[] | null;
   trimStartSec?: number;
+  /** asset.id → shared raw file on disk (one copy per video). */
+  rawCache?: Map<number, string>;
+  /** Lighter FFmpeg trim for 1-min fast path. */
+  fastTrim?: boolean;
 };
 
 /** Ken Burns motion — visible pan/zoom for full beat duration (avoids frozen stills). */
@@ -1436,12 +1440,14 @@ async function trimVideoClip(
   }
   startSec = Math.max(0, Math.min(Math.max(0, sourceDur - take), startSec));
 
-  const frameVf = buildFitGrayGradedVideoVF();
-  const preset = process.env.RAILWAY_ENVIRONMENT ? "ultrafast" : "veryfast";
+  const fastTrim = styleContext?.fastTrim === true;
+  const frameVf = fastTrim ? "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2" : buildFitGrayGradedVideoVF();
+  const preset = fastTrim || process.env.RAILWAY_ENVIRONMENT ? "ultrafast" : "veryfast";
+  const crf = fastTrim ? 20 : 18;
 
   await exec(
     `${ffmpegBin()} -y -ss ${startSec.toFixed(3)} -i "${inPath}" -t ${take.toFixed(3)} ` +
-      `-vf "${frameVf}" -an -c:v libx264 -preset ${preset} -crf 18 -pix_fmt yuv420p "${outPath}"`
+      `-vf "${frameVf}" -an -c:v libx264 -preset ${preset} -crf ${crf} -pix_fmt yuv420p "${outPath}"`
   );
 
   const outDur = await probeMediaDurationSec(outPath);
@@ -1482,18 +1488,31 @@ export async function prepareCuratedArchiveClip(
         : asset.mimeType.includes("webp")
           ? "webp"
           : "jpg";
-  const rawPath = path.join(workDir, `scene_${sceneIndex}_b${beatIndex}_curated_a${asset.id}_raw.${ext}`);
+  const sharedRaw = styleContext?.rawCache?.get(asset.id);
+  const rawPath =
+    sharedRaw && fs.existsSync(sharedRaw)
+      ? sharedRaw
+      : path.join(workDir, `archive_raw_a${asset.id}.${ext}`);
   const outPath =
     asset.mediaType === "image"
       ? path.join(workDir, `scene_${sceneIndex}_b${beatIndex}_curated_a${asset.id}_still.mp4`)
       : path.join(workDir, `scene_${sceneIndex}_b${beatIndex}_curated_a${asset.id}.mp4`);
 
-  await materializeArchiveAsset(asset, rawPath);
+  if (rawPath === sharedRaw && fs.existsSync(rawPath)) {
+    /* reuse shared raw */
+  } else {
+    await materializeArchiveAsset(asset, rawPath);
+    styleContext?.rawCache?.set(asset.id, rawPath);
+  }
+
+  const isSharedRaw = styleContext?.rawCache?.get(asset.id) === rawPath;
 
   if (asset.mediaType === "image") {
     const width = await probeImageWidthPx(rawPath);
     if (width > 0 && width < VIDRUSH_MIN_STILL_WIDTH) {
-      try { if (fs.existsSync(rawPath)) fs.unlinkSync(rawPath); } catch { /* ignore */ }
+      if (!isSharedRaw) {
+        try { if (fs.existsSync(rawPath)) fs.unlinkSync(rawPath); } catch { /* ignore */ }
+      }
       throw new Error(
         `curated asset ${asset.id} still too low-res (${width}px < ${VIDRUSH_MIN_STILL_WIDTH}px)`
       );
@@ -1502,7 +1521,9 @@ export async function prepareCuratedArchiveClip(
 
   const rawBuffer = fs.readFileSync(rawPath);
   if (await archiveClipHasBakedEditText(rawBuffer, asset.mimeType)) {
-    try { if (fs.existsSync(rawPath)) fs.unlinkSync(rawPath); } catch { /* ignore */ }
+    if (!isSharedRaw) {
+      try { if (fs.existsSync(rawPath)) fs.unlinkSync(rawPath); } catch { /* ignore */ }
+    }
     throw new Error(`curated asset ${asset.id} has baked edit text — skipped`);
   }
 
@@ -1512,10 +1533,12 @@ export async function prepareCuratedArchiveClip(
     await trimVideoClip(rawPath, outPath, duration, beatIndex, styleContext, sceneIndex, beatIndex);
   }
 
-  try {
-    if (fs.existsSync(rawPath)) fs.unlinkSync(rawPath);
-  } catch {
-    /* ignore */
+  if (!isSharedRaw) {
+    try {
+      if (fs.existsSync(rawPath)) fs.unlinkSync(rawPath);
+    } catch {
+      /* ignore */
+    }
   }
 
   return outPath;
@@ -1612,6 +1635,49 @@ export function rankCuratedCandidatesForBeat(
   return banded;
 }
 
+/** One-time per-video archive pool — avoids re-scanning every asset on each beat. */
+export async function buildVideoArchiveCandidatePool(
+  videoTitle: string | undefined,
+  combinedSceneText: string,
+  options?: {
+    assetsCache?: Map<number, MediaArchiveAsset[]>;
+    crossVideoExcludeIds?: Set<number>;
+    excludeIds?: Set<number>;
+    excludeStorageUrls?: Set<string>;
+    maxPool?: number;
+  }
+): Promise<CuratedCandidatePick[]> {
+  const text = combinedSceneText.trim().slice(0, 1200);
+  const stubBeat: CuratedBeatContext = {
+    index: 0,
+    text,
+    searchQuery: text.split(/\s+/).slice(0, 8).join(" ") || "documentary",
+    powerWord: text.split(/\s+/).find((w) => w.length > 4) ?? "documentary",
+  };
+  const stubScene: CuratedSceneContext = { index: 0, text, pexelsQuery: stubBeat.searchQuery };
+  const { beatTags, topicAnchors, allTags, videoVisualTopic } = buildBeatMatchTags(
+    stubBeat,
+    stubScene,
+    videoTitle
+  );
+  const geoRequired = extractBeatGeoPlaceTags(text);
+  const listed = await listCuratedArchiveCandidates(
+    beatTags,
+    options?.excludeIds ?? new Set(),
+    options?.excludeStorageUrls ?? new Set(),
+    topicAnchors,
+    allTags,
+    text,
+    options?.crossVideoExcludeIds ?? new Set(),
+    options?.assetsCache,
+    true,
+    geoRequired.length > 0,
+    videoVisualTopic
+  );
+  const maxPool = options?.maxPool ?? 480;
+  return orderCuratedCandidatesForBeat(listed).slice(0, maxPool);
+}
+
 /** Per-sentence archive search — scores all assets against this beat's narration. */
 export async function searchCuratedCandidatesForBeat(
   beat: CuratedBeatContext,
@@ -1629,20 +1695,30 @@ export async function searchCuratedCandidatesForBeat(
     segmentLock?: BeatGeoRegion | null;
     fastMode?: boolean;
     videoLength?: string | null;
+    /** Pre-built video pool — skips full archive DB scan per beat. */
+    candidatePool?: CuratedCandidatePick[];
+    skipSemantic?: boolean;
   }
 ): Promise<CuratedCandidatePick[]> {
   const anchoredBeat = hydrateBeatScriptVisuals(beat);
   const varietySeed = options?.varietySeed ?? 0;
   const crossVideoExcludeIds = options?.crossVideoExcludeIds ?? new Set<number>();
+  const fastShort = isFastShortVideoLength(options?.videoLength);
+  const skipSemantic =
+    options?.skipSemantic === true ||
+    options?.fastMode === true ||
+    fastShort;
   const semanticProfile =
-    options?.semanticProfile ??
-    (semanticVisualMatchingEnabled()
-      ? await analyzeBeatSemantics(
-          anchoredBeat.text,
-          videoTitle,
-          anchoredBeat.visualDescription?.trim() || undefined
-        )
-      : undefined);
+    skipSemantic
+      ? undefined
+      : options?.semanticProfile ??
+        (semanticVisualMatchingEnabled()
+          ? await analyzeBeatSemantics(
+              anchoredBeat.text,
+              videoTitle,
+              anchoredBeat.visualDescription?.trim() || undefined
+            )
+          : undefined);
   const shotQueries = buildDocumentaryShotQueries(
     anchoredBeat.visualDescription?.trim() || anchoredBeat.searchQuery?.trim() || anchoredBeat.text,
     anchoredBeat.index
@@ -1653,19 +1729,27 @@ export async function searchCuratedCandidatesForBeat(
   };
   const { beatTags, topicAnchors, allTags, videoVisualTopic } = buildBeatMatchTags(beatForMatch, scene, videoTitle);
 
-  const listed = await listCuratedArchiveCandidates(
-    beatTags,
-    usedAssetIds,
-    usedStorageUrls,
-    topicAnchors,
-    allTags,
-    anchoredBeat.text,
-    crossVideoExcludeIds,
-    options?.assetsCache,
-    true,
-    true,
-    videoVisualTopic
-  );
+  const listed =
+    options?.candidatePool && options.candidatePool.length > 0
+      ? options.candidatePool.filter(
+          (p) =>
+            !usedAssetIds.has(p.asset.id) &&
+            !usedStorageUrls.has(p.asset.storageUrl) &&
+            !crossVideoExcludeIds.has(p.asset.id)
+        )
+      : await listCuratedArchiveCandidates(
+          beatTags,
+          usedAssetIds,
+          usedStorageUrls,
+          topicAnchors,
+          allTags,
+          anchoredBeat.text,
+          crossVideoExcludeIds,
+          options?.assetsCache,
+          true,
+          true,
+          videoVisualTopic
+        );
 
   let ranked = rankCuratedCandidatesForBeat(
     orderCuratedCandidatesForBeat(listed),
@@ -1703,7 +1787,7 @@ export async function searchCuratedCandidatesForBeat(
     ranked.sort((a, b) => b.score - a.score);
   }
 
-  if (semanticProfile && semanticVisualMatchingEnabled()) {
+  if (semanticProfile && semanticVisualMatchingEnabled() && !skipSemantic) {
     const pool = ranked.slice(0, pipelineWallClockLimitEnabled() ? 20 : 64);
     ranked = await Promise.all(
       pool.map(async (pick) => {
@@ -1759,10 +1843,11 @@ export async function searchCuratedCandidatesForBeat(
 
   if (clipEmbeddingIndexEnabled()) {
     const visionCtx = beatVisionContextForSearch(beat, videoTitle, semanticProfile);
+    const clipFast = options?.fastMode === true || fastShort || pipelineWallClockLimitEnabled();
     const { ranked: clipRanked } = await preRankCuratedCandidatesByClipEmbedding(
       ranked,
       visionCtx,
-      { fastMode: pipelineWallClockLimitEnabled() }
+      { fastMode: clipFast }
     );
     ranked = clipRanked;
     const topVision = ranked[0]?.clipVisionScore10;

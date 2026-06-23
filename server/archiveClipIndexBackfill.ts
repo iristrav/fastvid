@@ -36,7 +36,7 @@ function backfillBatchSize(): number {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 1 && n <= 200) return n;
   }
-  return 25;
+  return 40;
 }
 
 /** Index CLIP embeddings for archive videos that lack a stored index (non-blocking batches). */
@@ -85,14 +85,16 @@ export async function backfillMissingClipEmbeddings(
   return { indexed, skipped, missing };
 }
 
-/** Fire-and-forget backfill loop — runs on worker startup. */
+/** Fire-and-forget backfill loop — runs on worker startup and every few minutes. */
 export function scheduleClipEmbeddingBackfill(): void {
   if (!backfillEnabled()) return;
-  void (async () => {
+  const run = async () => {
     try {
       await backfillMissingClipEmbeddings();
     } catch (err) {
       console.warn("[ClipEmbedding] Backfill failed:", (err as Error).message?.slice(0, 120));
     }
-  })();
+  };
+  void run();
+  setInterval(() => void run(), 4 * 60_000).unref?.();
 }

@@ -156,7 +156,7 @@ export function clipPreRankPoolSize(fastMode = false): number {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 8 && n <= 128) return n;
   }
-  return fastMode ? 24 : 48;
+  return fastMode ? 36 : 48;
 }
 
 export function clipPreRankMinScore10(fastMode = false): number {
