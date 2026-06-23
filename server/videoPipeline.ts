@@ -147,7 +147,7 @@ import {
   uniqueQueryStrings,
   uniqueCoercedQueries,
 } from "./stringCoercion";
-import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, maxPipelineWallClockMin, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs } from "./sourcingPolicy";
+import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, maxPipelineWallClockMin, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -594,8 +594,13 @@ function effectiveMinClipSec(): number {
   return curatedArchiveOnlyVisuals() ? archiveVisualMinClipSec() : VIDRUSH_CLIP_MIN_SEC;
 }
 
-function effectiveMaxClipSec(): number {
-  return curatedArchiveOnlyVisuals() ? archiveVisualMaxClipSec() : VIDRUSH_CLIP_HOLD_SEC;
+function effectiveMaxClipSec(videoLength?: string | null): number {
+  if (curatedArchiveOnlyVisuals()) {
+    return isFastShortVideoLength(videoLength)
+      ? archiveVisualMaxClipSecForVideo(videoLength)
+      : archiveVisualMaxClipSec();
+  }
+  return VIDRUSH_CLIP_HOLD_SEC;
 }
 /** Soft dissolves for archive/documentary montage (reference-doc style). Default 0.4s crossfade. */
 function montageXfadeSec(avgClipDur = archiveVisualBeatSec()): number {
@@ -8177,7 +8182,8 @@ function resolveSceneBeats(
   scenePersons: string[],
   dedup: VisualDedupState
 ): SceneBeat[] {
-  const ttsPlan = dedup.ttsSceneBeats.get(scene.index);
+  const ttsPlan =
+    !isFastShortVideoLength(dedup.videoLength) ? dedup.ttsSceneBeats.get(scene.index) : undefined;
   if (ttsPlan?.length) {
     return ttsPlan.map((p) => hydrateBeatScriptVisuals(ttsPlannedBeatToSceneBeat(p, scene, videoTitle, scenePersons)));
   }
@@ -16431,7 +16437,12 @@ async function fetchArchiveSentenceMontage(
   videoTitle = coerceVisionString(videoTitle);
   const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
   const beatSec = archiveVisualBeatSecForVideo(dedup.videoLength);
-  const beatCap = sceneBeatCapForCadence(scene.duration, dedup.perf.maxBeatsPerScene, beatSec);
+  const beatCap = sceneBeatCapForCadenceForVideo(
+    scene.duration,
+    dedup.perf.maxBeatsPerScene,
+    dedup.videoLength,
+    beatSec
+  );
   const beats = resolveSceneBeats(scene, scene.duration, beatCap, videoTitle, scenePersons, dedup);
   await applyVoiceAlignmentToBeats(beats, sceneAudioPath, scene.duration, dedup, scene.index);
   const clips: string[] = [];
@@ -16563,7 +16574,12 @@ async function refillSceneStrictVoiceMatch(
   videoTitle = coerceVisionString(videoTitle);
   const minNeeded = minClipsForBalancedVoice(scene.duration + 0.15, dedup.videoLength);
   const beatSec = archiveVisualBeatSecForVideo(dedup.videoLength);
-  const beatCap = sceneBeatCapForCadence(scene.duration, dedup.perf.maxBeatsPerScene, beatSec);
+  const beatCap = sceneBeatCapForCadenceForVideo(
+    scene.duration,
+    dedup.perf.maxBeatsPerScene,
+    dedup.videoLength,
+    beatSec
+  );
   const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
   const beats = resolveSceneBeats(scene, scene.duration, beatCap, videoTitle, scenePersons, dedup);
   await applyVoiceAlignmentToBeats(beats, sceneAudioPath, scene.duration, dedup, scene.index);
@@ -16644,17 +16660,19 @@ async function refillSceneStrictVoiceMatch(
       }
     }
 
-    await ensureArchiveMontageVoiceCoverage(
-      scene,
-      workDir,
-      videoTitle,
-      dedup,
-      clips,
-      beatDurations,
-      clipBeatIndices,
-      beats,
-      semanticProfiles
-    );
+    if (!fastShort) {
+      await ensureArchiveMontageVoiceCoverage(
+        scene,
+        workDir,
+        videoTitle,
+        dedup,
+        clips,
+        beatDurations,
+        clipBeatIndices,
+        beats,
+        semanticProfiles
+      );
+    }
   } finally {
     if (slowRefill) dedup.perf.fastStockMode = prevFast;
   }
@@ -16770,6 +16788,9 @@ async function fetchSceneVisuals(
 ): Promise<SceneVisualsResult> {
   videoTitle = coerceVisionString(videoTitle);
   if (curatedArchiveOnlyVisuals()) {
+    if (isFastShortVideoLength(dedup.videoLength)) {
+      return refillSceneStrictVoiceMatch(scene, workDir, videoTitle, dedup, sceneAudioPath);
+    }
     return fetchArchiveSentenceMontage(scene, workDir, videoTitle, dedup, onBeatProgress, sceneAudioPath);
   }
 
@@ -19435,14 +19456,19 @@ export async function runVideoPipeline(
     const visualDedup = createVisualDedupState(perf, { primaryPerson, personTopicLock: personLocked });
     visualDedup.videoLength = videoLength;
     visualDedup.pipelineStartedMs = t0;
-    if (ttsWordAlignmentEnabled()) {
+    if (ttsWordAlignmentEnabled() && !isFastShortVideoLength(videoLength)) {
       const storedTts = loadStoredTtsAlignment(workDir);
       if (storedTts) {
         visualDedup.ttsSceneBeats = buildTtsSceneBeatMap(
           scenes,
           storedTts,
           (dur) =>
-            sceneBeatCapForCadence(dur, perf.maxBeatsPerScene, archiveVisualBeatSecForVideo(videoLength))
+            sceneBeatCapForCadenceForVideo(
+              dur,
+              perf.maxBeatsPerScene,
+              videoLength,
+              archiveVisualBeatSecForVideo(videoLength)
+            )
         );
         console.log(
           `[Pipeline] TTS beat planner: ${visualDedup.ttsSceneBeats.size}/${scenes.length} scene(s) word-timed`
@@ -19451,7 +19477,9 @@ export async function runVideoPipeline(
     }
     const beatSec = archiveVisualBeatSecForVideo(videoLength);
     visualDedup.visualBeatsTotal = scenes.reduce(
-      (sum, s) => sum + sceneBeatCapForCadence(s.duration, perf.maxBeatsPerScene, beatSec),
+      (sum, s) =>
+        sum +
+        sceneBeatCapForCadenceForVideo(s.duration, perf.maxBeatsPerScene, videoLength, beatSec),
       0
     );
     visualDedup.visualBeatsCompleted = 0;
@@ -19481,13 +19509,16 @@ export async function runVideoPipeline(
       );
       try {
         const { backfillClipEmbeddingsWithBudget } = await import("./archiveClipIndexBackfill");
-        const warmed = await backfillClipEmbeddingsWithBudget(100, 90_000);
-        if (warmed.indexed > 0) {
-          console.log(
-            `[Pipeline] CLIP index pre-warm: +${warmed.indexed} archive clip(s) indexed` +
-              (warmed.timedOut ? " (90s budget)" : "")
-          );
-        }
+        void backfillClipEmbeddingsWithBudget(16, 20_000)
+          .then((warmed) => {
+            if (warmed.indexed > 0) {
+              console.log(
+                `[Pipeline] CLIP index background warm: +${warmed.indexed} archive clip(s) indexed` +
+                  (warmed.timedOut ? " (20s budget)" : "")
+              );
+            }
+          })
+          .catch(() => {});
       } catch (warmErr) {
         console.warn(
           "[Pipeline] CLIP index pre-warm skipped:",
@@ -19649,7 +19680,7 @@ export async function runVideoPipeline(
       }
     }
 
-    if (strictVoiceVisualMatchEnabled()) {
+    if (strictVoiceVisualMatchEnabled() && !isFastShortVideoLength(videoLength)) {
       for (let si = 0; si < scenes.length; si++) {
         const vr = sceneVisualResults[si];
         const minNeeded = minClipsForBalancedVoice(scenes[si].duration + 0.15, videoLength);

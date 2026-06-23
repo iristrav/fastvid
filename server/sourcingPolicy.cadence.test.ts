@@ -3,6 +3,7 @@ import {
   maxBeatCapForVisualCadence,
   minBeatsForVisualCadence,
   sceneBeatCapForCadence,
+  sceneBeatCapForCadenceForVideo,
   curatedPerfBeatsFloor,
   curatedMaxStockBeatsPerVideo,
   curatedAiFallbackMaxClips,
@@ -26,9 +27,13 @@ describe("visual cadence (5–8s per clip)", () => {
     expect(27 / cap).toBeLessThanOrEqual(8);
   });
 
-  it("1-min video perf floor allows per-scene cadence (fast path uses 8s beats)", () => {
-    expect(curatedPerfBeatsFloor("1")).toBeGreaterThanOrEqual(3);
-    expect(curatedPerfBeatsFloor("1")).toBeLessThanOrEqual(4);
+  it("1-min video perf floor: one beat per ~20s scene (fast path)", () => {
+    expect(sceneBeatCapForCadenceForVideo(20, 1, "1")).toBe(1);
+    expect(curatedPerfBeatsFloor("1")).toBe(1);
+  });
+
+  it("long-form 20s scene still needs 3–4 beats", () => {
+    expect(sceneBeatCapForCadenceForVideo(20, 1, "8-10")).toBe(4);
   });
 
   it("stock cap defaults very low per video length (strict visual focus)", () => {
@@ -36,7 +41,7 @@ describe("visual cadence (5–8s per clip)", () => {
     expect(curatedMaxStockBeatsPerVideo("8-10")).toBe(2);
     expect(curatedAiFallbackMaxClips("1")).toBe(0);
     expect(archiveMaxImageClipsPerVideo("1")).toBe(3);
-    expect(archiveMinVideoClipsTarget("1")).toBe(7);
-    expect(archiveOpeningVideoBeatsTarget("1")).toBe(7);
+    expect(archiveMinVideoClipsTarget("1")).toBe(1);
+    expect(archiveOpeningVideoBeatsTarget("1")).toBe(1);
   });
 });

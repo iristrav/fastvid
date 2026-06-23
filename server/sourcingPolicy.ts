@@ -290,10 +290,10 @@ export function visualFootageFocusEnabled(): boolean {
 export function maxVisualCandidatesPerBeatTry(videoLength?: string | null): number {
   if (!pipelineWallClockLimitEnabled()) return 12;
   if (visualFootageFocusEnabled()) {
-    if (isFastShortVideoLength(videoLength)) return 2;
+    if (isFastShortVideoLength(videoLength)) return 1;
     return 8;
   }
-  if (isFastShortVideoLength(videoLength)) return 2;
+  if (isFastShortVideoLength(videoLength)) return 1;
   return 2;
 }
 
@@ -341,7 +341,7 @@ export function visualSourcingTurboMs(): number {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 30_000 && n <= 300_000) return n;
   }
-  return 60_000;
+  return 45_000;
 }
 
 /** Max ms per beat spent trying archive candidates before moving on (default 25s on 1-min). */
@@ -351,7 +351,7 @@ export function archiveBeatTryTimeoutMs(videoLength?: string | null): number {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 8_000 && n <= 120_000) return n;
   }
-  if (isFastShortVideoLength(videoLength)) return 25_000;
+  if (isFastShortVideoLength(videoLength)) return 15_000;
   return 45_000;
 }
 
@@ -410,13 +410,36 @@ export function sceneBeatCapForCadence(
   return Math.max(minBeats, Math.min(maxBeats, Math.max(target, cappedFloor)));
 }
 
+/**
+ * Beat cap per scene — on 1-min fast path one archive clip covers the full beat window
+ * (no 8s min-splitting that would force 3× more CLIP work per scene).
+ */
+export function sceneBeatCapForCadenceForVideo(
+  sceneDurationSec: number,
+  perfFloor = 1,
+  videoLength?: string | null,
+  beatSec?: number
+): number {
+  const cadence = beatSec ?? archiveVisualBeatSecForVideo(videoLength);
+  if (isFastShortVideoLength(videoLength)) {
+    return Math.max(1, Math.min(Math.max(1, perfFloor), Math.ceil(sceneDurationSec / cadence)));
+  }
+  return sceneBeatCapForCadence(sceneDurationSec, perfFloor, cadence);
+}
+
+/** Max on-screen clip length — 1-min fast path allows full beat holds (default 20s). */
+export function archiveVisualMaxClipSecForVideo(videoLength?: string | null): number {
+  if (!isFastShortVideoLength(videoLength)) return archiveVisualMaxClipSec();
+  return archiveVisualBeatSecForVideo(videoLength);
+}
+
 /** Pipeline perf floor: enough beats for the longest typical scene in this video length. */
 export function curatedPerfBeatsFloor(videoLength: string): number {
   const totalSec = targetVideoDurationMinutes(videoLength) * 60;
   const scenes =
     videoLength === "1" ? 3 : videoLength === "8-10" ? 18 : videoLength === "10-15" ? 25 : 35;
   const typicalSceneSec = totalSec / scenes;
-  return sceneBeatCapForCadence(typicalSceneSec, 1, archiveVisualBeatSecForVideo(videoLength));
+  return sceneBeatCapForCadenceForVideo(typicalSceneSec, 1, videoLength);
 }
 
 /** Prefer moving archive video over Ken Burns stills (default on). */
