@@ -334,6 +334,27 @@ export function archiveVisualBeatSecForVideo(videoLength?: string | null): numbe
   return 18;
 }
 
+/** Wall-clock ms after pipeline start before turbo stock fallback on 1-min videos (default 90s). */
+export function visualSourcingTurboMs(): number {
+  const raw = process.env.VISUAL_SOURCING_TURBO_MS?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 30_000 && n <= 300_000) return n;
+  }
+  return 90_000;
+}
+
+/** Max ms per beat spent trying archive candidates before moving on (default 25s on 1-min). */
+export function archiveBeatTryTimeoutMs(videoLength?: string | null): number {
+  const raw = process.env.ARCHIVE_BEAT_TRY_TIMEOUT_MS?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 8_000 && n <= 120_000) return n;
+  }
+  if (isFastShortVideoLength(videoLength)) return 25_000;
+  return 45_000;
+}
+
 /** Target on-screen duration per archive clip (seconds). */
 export function archiveVisualBeatSec(): number {
   const raw = process.env.ARCHIVE_VISUAL_BEAT_SEC?.trim();

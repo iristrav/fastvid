@@ -147,7 +147,7 @@ import {
   uniqueQueryStrings,
   uniqueCoercedQueries,
 } from "./stringCoercion";
-import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, maxPipelineWallClockMin, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor } from "./sourcingPolicy";
+import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, maxPipelineWallClockMin, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -8342,10 +8342,10 @@ function archiveNeedsOpeningFootage(dedup: VisualDedupState): boolean {
   return dedup.archiveVideoClipsUsed < archiveMinVideoClipsTarget(dedup.videoLength);
 }
 
-/** After ~3 min total on 1-min videos, prefer stock and skip slow archive retries. */
+/** After ~90s total on 1-min videos, prefer stock and skip slow archive retries. */
 function visualSourcingTurbo(dedup: VisualDedupState): boolean {
   if (!isFastShortVideoLength(dedup.videoLength) || !dedup.pipelineStartedMs) return false;
-  return Date.now() - dedup.pipelineStartedMs > 3 * 60_000;
+  return Date.now() - dedup.pipelineStartedMs > visualSourcingTurboMs();
 }
 
 function markCuratedArchiveClipUsage(dedup: VisualDedupState, clipPath: string): void {
@@ -14758,6 +14758,53 @@ async function adoptArchiveBeatClip(
   return false;
 }
 
+/** Archive adopt with per-beat wall-clock cap on 1-min fast path. */
+async function adoptArchiveBeatClipWithBudget(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  videoTitle: string | undefined,
+  dedup: VisualDedupState,
+  pushClip: (clipPath: string, holdSec?: number) => boolean | Promise<boolean>,
+  initialClip: string | null,
+  holdSec: number,
+  semanticProfile: BeatSemanticProfile | undefined,
+  relaxed: boolean,
+  prefetchedRanked: CuratedCandidatePick[] | null | undefined,
+  adoptOpts?: { videosOnly?: boolean }
+): Promise<boolean> {
+  const fastShort = isFastShortVideoLength(dedup.videoLength) && dedup.perf.fastStockMode;
+  const run = () =>
+    adoptArchiveBeatClip(
+      beat,
+      scene,
+      workDir,
+      videoTitle,
+      dedup,
+      pushClip,
+      initialClip,
+      holdSec,
+      semanticProfile,
+      relaxed,
+      prefetchedRanked,
+      adoptOpts
+    );
+  if (!fastShort) return run();
+  try {
+    return await withTimeout(
+      run(),
+      archiveBeatTryTimeoutMs(dedup.videoLength),
+      `archive s${scene.index} b${beat.index}`
+    );
+  } catch (err) {
+    console.warn(
+      `[Pipeline] Scene ${scene.index} zin ${beat.index}: archive beat budget (${Math.round(archiveBeatTryTimeoutMs(dedup.videoLength) / 1000)}s) —`,
+      (err as Error).message?.slice(0, 80)
+    );
+    return false;
+  }
+}
+
 /** Wikimedia Commons — video first, stills deferred in archive-first mode. */
 async function adoptWikimediaBeatClip(
   beat: SceneBeat,
@@ -15608,6 +15655,22 @@ async function ensureBeatVisualFilled(
   if (await fillBeatVisual(beat, scene, workDir, videoTitle, dedup, pushClip, semanticProfile, holdSec)) {
     return;
   }
+  if (visualSourcingTurbo(dedup) && canUseLicensedStockBeat(dedup)) {
+    if (
+      await adoptStockBeatClipFallback(
+        beat,
+        scene,
+        workDir,
+        videoTitle,
+        dedup,
+        pushClip,
+        holdSec,
+        semanticProfile
+      )
+    ) {
+      return;
+    }
+  }
   if (await retryAuthenticBeforeLicensedStock(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
     return;
   }
@@ -15991,7 +16054,7 @@ async function fillBeatVisual(
     const maxAttempts = fastShort ? 1 : archiveBeatClipRetries(dedup.perf.fastStockMode);
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       if (
-        await adoptArchiveBeatClip(
+        await adoptArchiveBeatClipWithBudget(
           beat,
           scene,
           workDir,
@@ -16009,8 +16072,26 @@ async function fillBeatVisual(
         return true;
       }
     }
-    if (strictVoiceVisualMatchEnabled()) return false;
-    return adoptArchiveBeatClip(
+    if (strictVoiceVisualMatchEnabled()) {
+      if (visualSourcingTurbo(dedup) && canUseLicensedStockBeat(dedup)) {
+        if (
+          await adoptStockBeatClipFallback(
+            beat,
+            scene,
+            workDir,
+            videoTitle,
+            dedup,
+            pushClip,
+            holdSec,
+            semanticProfile
+          )
+        ) {
+          return true;
+        }
+      }
+      return false;
+    }
+    return adoptArchiveBeatClipWithBudget(
       beat,
       scene,
       workDir,
