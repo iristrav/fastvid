@@ -11554,7 +11554,7 @@ async function recoverSceneClipsIfEmpty(
           keywords: stubBeat.keywords,
           holdSec: stubBeat.holdSec,
         };
-        await adoptBestSimilarArchiveClip(
+        await adoptBestSimilarBeatClip(
           sceneBeat,
           scene,
           workDir,
@@ -11717,7 +11717,7 @@ async function rescueFastShortComposeClips(
   const pushRescue = async (clipPath: string, sec = holdSec): Promise<boolean> =>
     pushClip(clipPath, sec);
   if (
-    await adoptBestSimilarArchiveClip(
+    await adoptBestSimilarBeatClip(
       beatForRescue,
       scene,
       workDir,
@@ -14644,14 +14644,11 @@ async function applyVideoBeatTextOverlay(
   );
 }
 
-  }
-}
-
 /**
- * Never leave a beat empty — pick the closest archive match (relaxed CLIP, then tag-ranked).
+ * Never leave a beat empty — archive similar match, then Wikimedia / stock.
  * Used when strict ≥8/10 matching found nothing.
  */
-async function adoptBestSimilarArchiveClip(
+async function adoptBestSimilarBeatClip(
   beat: SceneBeat,
   scene: Scene,
   workDir: string,
@@ -14663,15 +14660,77 @@ async function adoptBestSimilarArchiveClip(
   beatQueryEmb: number[] | null = null,
   adoptOpts?: { videosOnly?: boolean }
 ): Promise<boolean> {
-  if (!curatedArchiveOnlyVisuals()) return false;
-
   hydrateSceneBeatInPlace(beat);
+  const videosOnly = adoptOpts?.videosOnly ?? false;
+
+  const adoptSimilarExternal = async (): Promise<boolean> => {
+    console.warn(
+      `[Pipeline] Scene ${scene.index} beat ${beat.index}: similar-match — Wikimedia zoeken`
+    );
+    if (
+      await adoptWikimediaBeatClip(
+        beat,
+        scene,
+        workDir,
+        videoTitle,
+        dedup,
+        pushClip,
+        holdSec,
+        semanticProfile,
+        { videoOnly: videosOnly }
+      )
+    ) {
+      return true;
+    }
+    if (isGeoDocumentaryContext(beat.text, videoTitle)) {
+      if (
+        await adoptInternetArchiveBeatClip(
+          beat,
+          scene,
+          workDir,
+          videoTitle,
+          dedup,
+          pushClip,
+          holdSec,
+          semanticProfile
+        )
+      ) {
+        return true;
+      }
+    }
+    if (archivePexelsFallbackEnabled() && canUseLicensedStockBeat(dedup)) {
+      console.warn(
+        `[Pipeline] Scene ${scene.index} beat ${beat.index}: similar-match — licensed stock`
+      );
+      if (
+        await adoptStockBeatClipFallback(
+          beat,
+          scene,
+          workDir,
+          videoTitle,
+          dedup,
+          pushClip,
+          holdSec,
+          semanticProfile
+        )
+      ) {
+        markLicensedStockBeatUsed(dedup);
+        return true;
+      }
+    }
+    return false;
+  };
+
+  if (!curatedArchiveOnlyVisuals()) {
+    return adoptSimilarExternal();
+  }
+
   const visionCtx = beatVisionContextFromProfile(beat, videoTitle, semanticProfile);
-  if (beatQueryEmb == null && clipEmbeddingIndexEnabled()) {
+  let beatQueryEmb: number[] | null = null;
+  if (clipEmbeddingIndexEnabled()) {
     beatQueryEmb = await resolveBeatVisionQueryEmbedding(visionCtx);
   }
 
-  const videosOnly = adoptOpts?.videosOnly ?? false;
   let ranked = await searchCuratedCandidatesForBeat(
     beat,
     scene,
@@ -14702,9 +14761,9 @@ async function adoptBestSimilarArchiveClip(
 
   if (!ranked.length) {
     console.warn(
-      `[Pipeline] Scene ${scene.index} beat ${beat.index}: similar-match — geen archive kandidaten in pool`
+      `[Pipeline] Scene ${scene.index} beat ${beat.index}: similar-match — geen archive kandidaten, extern zoeken`
     );
-    return false;
+    return adoptSimilarExternal();
   }
 
   const similarFloor = archiveSimilarMatchVisionFloor();
@@ -14829,7 +14888,7 @@ async function adoptBestSimilarArchiveClip(
     }
   }
 
-  return false;
+  return adoptSimilarExternal();
 }
 
 async function adoptArchiveBeatClip(
@@ -15167,7 +15226,7 @@ async function adoptArchiveBeatClip(
       dedup.motionGraphicsUsed = mgfxBudget.used;
       if (await tryClip(clip, holdSec, { source: "archive" })) return true;
     }
-    return adoptBestSimilarArchiveClip(
+    return adoptBestSimilarBeatClip(
       beat,
       scene,
       workDir,
@@ -16732,7 +16791,7 @@ async function fillBeatVisual(
   }
   if (curatedArchiveOnlyVisuals()) {
     if (
-      await adoptBestSimilarArchiveClip(
+      await adoptBestSimilarBeatClip(
         beat,
         scene,
         workDir,
@@ -17213,7 +17272,7 @@ async function refillSceneStrictVoiceMatch(
 
     for (let bi = 0; bi < beats.length; bi++) {
       if (clipBeatIndices.includes(beats[bi]!.index)) continue;
-      await adoptBestSimilarArchiveClip(
+      await adoptBestSimilarBeatClip(
         beats[bi]!,
         scene,
         workDir,
@@ -17264,7 +17323,7 @@ async function refillSceneStrictVoiceMatch(
         keywords: buildRelevanceKeywords(scene, scene.text),
         holdSec: archiveVisualBeatSecForVideo(dedup.videoLength),
       };
-      await adoptBestSimilarArchiveClip(
+      await adoptBestSimilarBeatClip(
         sceneBeat,
         scene,
         workDir,
@@ -18812,7 +18871,7 @@ async function composeSceneVideo(
         const beats = composeOptions.montageBeats;
         const rescueBeat = beats?.[0];
         if (rescueBeat && composeOptions.dedup) {
-          await adoptBestSimilarArchiveClip(
+          await adoptBestSimilarBeatClip(
             rescueBeat,
             scene,
             workDir,
