@@ -3,7 +3,7 @@
  */
 import * as path from "path";
 import { PIPELINE_ERROR, pipelineError } from "@shared/appErrors";
-import { autoMotionGraphicsLayerEnabled, framedArchiveStillsEnabled, strictVoiceVisualMatchEnabled } from "./sourcingPolicy";
+import { autoMotionGraphicsLayerEnabled, framedArchiveStillsEnabled } from "./sourcingPolicy";
 import {
   planMotionGraphicsScene,
   STANDARD_TRANSITION,
@@ -173,7 +173,6 @@ export async function reviewSceneCritical(
     adoptVisionByBeat &&
     adoptVisionByBeat.size > 0 &&
     clips.length > 0 &&
-    !strictVoiceVisualMatchEnabled() &&
     clips.every((_, i) => {
       const beatIdx = clipBeatIndices[i] ?? i;
       const known = adoptVisionByBeat.get(beatIdx);

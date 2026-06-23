@@ -759,6 +759,13 @@ export function getLocalVisionStatus(): {
   };
 }
 
+function resetClipPipelineLoadState(): void {
+  pipelineLoadFailed = false;
+  imageLoadAttempts = 0;
+  textLoadAttempts = 0;
+  pipelineLoadInFlight = null;
+}
+
 /** Pre-load CLIP pipelines on worker start so first clip adopt is not blocked on model download. */
 export function clipPreloadEnabled(): boolean {
   if (process.env.ENABLE_CLIP_PRELOAD === "false") return false;
@@ -768,13 +775,20 @@ export function clipPreloadEnabled(): boolean {
 export async function warmUpLocalClipVision(): Promise<boolean> {
   if (!clipPreloadEnabled()) return false;
   console.log(`[LocalVision] Loading CLIP model (cache: ${clipModelCacheDir()})...`);
-  const ok = await ensureClipPipelinesLoaded();
-  if (ok) {
-    console.log("[LocalVision] CLIP model warm-up complete");
-  } else {
-    console.warn(
-      "[LocalVision] CLIP warm-up incomplete — vision gate may skip or reject clips until load succeeds"
-    );
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const ok = await ensureClipPipelinesLoaded();
+    if (ok) {
+      console.log("[LocalVision] CLIP model warm-up complete");
+      return true;
+    }
+    if (attempt < 2) {
+      console.warn("[LocalVision] CLIP warm-up retry in 15s (background tasks may have contended for RAM)...");
+      resetClipPipelineLoadState();
+      await new Promise((r) => setTimeout(r, 15_000));
+    }
   }
-  return ok;
+  console.warn(
+    "[LocalVision] CLIP warm-up incomplete — vision gate may skip or reject clips until load succeeds"
+  );
+  return false;
 }

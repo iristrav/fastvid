@@ -224,6 +224,10 @@ export async function runClipAuditorBatch(
   maxAssets = auditorBatchSize()
 ): Promise<{ audited: number; skipped: number; failed: number }> {
   if (!clipAuditorEnabled()) return { audited: 0, skipped: 0, failed: 0 };
+  const { workerLocalActiveJobs } = await import("./videoQueue");
+  if (workerLocalActiveJobs() > 0) {
+    return { audited: 0, skipped: 0, failed: 0 };
+  }
 
   const archives = (await getAllMediaArchives()).filter((a) => a.isActive === 1);
   let audited = 0;
@@ -290,7 +294,7 @@ export function startClipBackgroundAuditor(): void {
   }
 
   void (async () => {
-    await new Promise((r) => setTimeout(r, 8_000));
+    await new Promise((r) => setTimeout(r, 120_000));
     try {
       await runClipAuditorBatch();
     } catch (err) {

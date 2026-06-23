@@ -1841,7 +1841,13 @@ function applyAiFallbackToProfile(
 
 function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProfile {
   const videoLength = normalizeVideoLength(videoLengthRaw);
-  const railwayParallel = IS_RAILWAY ? (isShortVideoLength(videoLength) ? 3 : 2) : 2;
+  const railwayParallel = IS_RAILWAY
+    ? isShortVideoLength(videoLength)
+      ? 3
+      : videoLength === "8-10"
+        ? 3
+        : 2
+    : 2;
   const maxEntityYoutube = maxEntityYoutubeFetchesPerVideo(minimizeStockFootageEnabled());
   let profile: PipelinePerfProfile;
   if (isShortVideoLength(videoLength)) {
@@ -8118,6 +8124,26 @@ function beatMediaSearchQueries(beat: SceneBeat, videoTitle?: string): string[] 
 
 // ─── Beat-level visual matching (narration ↔ footage alignment) ───────────────
 const VO_SCENE_TAIL_SEC = 0.35;
+
+/** True when every montage beat already passed CLIP at adopt time — skip redundant compose QA. */
+function sceneMontageBeatsPassedAdoptVision(
+  sceneIndex: number,
+  clipBeatIndices: number[],
+  dedup: VisualDedupState,
+  minScore = targetClipVisionScore()
+): boolean {
+  if (clipBeatIndices.length === 0) return false;
+  const beats = new Set(clipBeatIndices);
+  for (const beatIdx of beats) {
+    const entry = dedup.clipAdoptAudit.find(
+      (e) => e.sceneIndex === sceneIndex && e.beatIndex === beatIdx
+    );
+    if (!entry || typeof entry.visionScore10 !== "number" || entry.visionScore10 < minScore) {
+      return false;
+    }
+  }
+  return true;
+}
 
 async function applyVoiceAlignmentToBeats(
   beats: SceneBeat[],
@@ -20551,6 +20577,11 @@ export async function runVideoPipeline(
           if (vr?.beats?.length && composeMeta.montageDurations.length > 0) {
             const voiceSec = Math.max(0.5, scene.duration - VO_SCENE_TAIL_SEC);
             const auditXfade = composeMeta.montagePlan?.xfadeSec ?? montageXfadeSec();
+            const adoptVisionOk = sceneMontageBeatsPassedAdoptVision(
+              scene.index,
+              composeMeta.clipBeatIndices,
+              visualDedup
+            );
             const coverage = validateMontageVoiceCoverage(
               composeMeta.montageDurations,
               voiceSec,
@@ -20577,9 +20608,10 @@ export async function runVideoPipeline(
               topicContext,
               composeMeta.montagePlan
             );
-            const spot = isFastShortVideoLength(videoLength)
-              ? { ok: true, warnings: [] as string[] }
-              : await spotCheckComposedSceneBeatSync(
+            const spot =
+              isFastShortVideoLength(videoLength) || adoptVisionOk
+                ? { ok: true, warnings: [] as string[] }
+                : await spotCheckComposedSceneBeatSync(
               result,
               vr.beats,
               composeMeta.montageDurations,
@@ -20597,7 +20629,12 @@ export async function runVideoPipeline(
                 warnings: [...audit.warnings, ...spot.warnings.map((w) => `spot: ${w}`)],
               };
             }
-            if (!audit.ok && !composeMeta.montagePlan?.ttsHardCut && !isFastShortVideoLength(videoLength)) {
+            if (
+              !audit.ok &&
+              !adoptVisionOk &&
+              !composeMeta.montagePlan?.ttsHardCut &&
+              !isFastShortVideoLength(videoLength)
+            ) {
               console.warn(
                 `[Pipeline] Scene ${scene.index}: sync audit failed — remontage with TTS hard-cut`
               );

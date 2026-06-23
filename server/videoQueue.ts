@@ -148,6 +148,11 @@ export function stopVideoQueueWorker(): void {
   }
 }
 
+/** Active pipeline jobs in this worker process (for deferring background CLIP work). */
+export function workerLocalActiveJobs(): number {
+  return localActiveJobs;
+}
+
 export function throwEnqueueError(check: Extract<EnqueueCheckResult, { ok: false }>): never {
   throw appTrpcError("TOO_MANY_REQUESTS", check.code, check.message);
 }

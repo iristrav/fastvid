@@ -1,6 +1,6 @@
 /** Production sourcing policy — archive-first visuals; ElevenLabs for voice. */
 
-import { targetVideoDurationMinutes } from "../shared/videoLengths";
+import { normalizeVideoLength, targetVideoDurationMinutes } from "../shared/videoLengths";
 
 /**
  * Archive-first mode: prefer admin media archive, then Wikimedia / Pexels / Pixabay fallbacks.
@@ -202,7 +202,9 @@ export function composeParallelismForVideo(videoLength?: string | null, isRailwa
     if (!isNaN(n) && n >= 1 && n <= 4) return n;
   }
   if (isRailway) {
-    return isFastShortVideoLength(videoLength) ? 3 : 1;
+    if (isFastShortVideoLength(videoLength)) return 3;
+    if (normalizeVideoLength(videoLength) === "8-10") return 2;
+    return 1;
   }
   return 2;
 }
@@ -284,7 +286,7 @@ export function maxVisualCandidatesPerBeatTry(videoLength?: string | null): numb
   if (!pipelineWallClockLimitEnabled()) return 12;
   if (visualFootageFocusEnabled()) {
     if (isFastShortVideoLength(videoLength)) return 1;
-    return 8;
+    return 5;
   }
   if (isFastShortVideoLength(videoLength)) return 1;
   return 2;

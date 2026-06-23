@@ -48,15 +48,24 @@ function startWorkerHealthServer(): void {
   const server = http.createServer((req, res) => {
     const path = req.url?.split("?")[0] ?? "";
     if (req.method === "GET" && path === "/api/health") {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(
-        JSON.stringify({
-          status: "ok",
-          role: "worker",
-          timestamp: new Date().toISOString(),
-          gitCommit: process.env.RAILWAY_GIT_COMMIT_SHA?.slice(0, 7) ?? null,
-        })
-      );
+      void (async () => {
+        const { getLocalVisionStatus } = await import("./localClipVision");
+        const clip = getLocalVisionStatus();
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            status: "ok",
+            role: "worker",
+            timestamp: new Date().toISOString(),
+            gitCommit: process.env.RAILWAY_GIT_COMMIT_SHA?.slice(0, 7) ?? null,
+            clipReady: clip.pipelineReady,
+            clipHint: clip.hint,
+          })
+        );
+      })().catch(() => {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ status: "ok", role: "worker" }));
+      });
       return;
     }
     res.writeHead(404);
@@ -109,18 +118,6 @@ async function main() {
     clipReady,
     clipHint: clipStatus.hint,
   }).catch((e) => console.warn("[Worker] Heartbeat (post-CLIP) failed:", (e as Error).message));
-  const { autoArchiveGeoRetagOnStart } = await import("./sourcingPolicy");
-  if (autoArchiveGeoRetagOnStart()) {
-    try {
-      const { runBulkGeoRetagAllArchives } = await import("./archiveHealth");
-      const result = await runBulkGeoRetagAllArchives();
-      console.log(
-        `[Worker] Archive geo-retag: ${result.updated}/${result.processed} assets updated across ${result.archives} archive(s)`
-      );
-    } catch (err) {
-      console.warn("[Worker] Archive geo-retag failed (non-fatal):", (err as Error).message);
-    }
-  }
   startVideoQueueWorker();
   const { scheduleClipEmbeddingBackfill } = await import("./archiveClipIndexBackfill");
   scheduleClipEmbeddingBackfill();

@@ -82,6 +82,10 @@ export async function backfillMissingClipEmbeddings(
   if (!backfillEnabled()) {
     return { indexed: 0, skipped: 0, missing: 0 };
   }
+  const { workerLocalActiveJobs } = await import("./videoQueue");
+  if (workerLocalActiveJobs() > 0) {
+    return { indexed: 0, skipped: 0, missing: 0 };
+  }
 
   const archives = (await getAllMediaArchives()).filter((a) => a.isActive === 1);
   let indexed = 0;
