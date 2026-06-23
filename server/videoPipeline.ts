@@ -14726,8 +14726,7 @@ async function adoptBestSimilarBeatClip(
   }
 
   const visionCtx = beatVisionContextFromProfile(beat, videoTitle, semanticProfile);
-  let beatQueryEmb: number[] | null = null;
-  if (clipEmbeddingIndexEnabled()) {
+  if (beatQueryEmb == null && clipEmbeddingIndexEnabled()) {
     beatQueryEmb = await resolveBeatVisionQueryEmbedding(visionCtx);
   }
 
