@@ -172,14 +172,9 @@ export function maxPipelineWallClockMin(videoLength?: string | null): number {
   return Math.round(targetVideoDurationMinutes(videoLength) * pipelineMinutesPerVideoMinute());
 }
 
-/** Hard fail only after target × grace (default 12 min pipeline per 1 min video). */
-export function maxPipelineWallClockHardMin(videoLength?: string | null): number {
-  if (!pipelineWallClockLimitEnabled()) {
-    return Math.round(PIPELINE_UNLIMITED_MS / 60_000);
-  }
-  const target = maxPipelineWallClockMin(videoLength);
-  const grace = pipelineWallClockGraceFactor();
-  return Math.min(360, Math.round(target * grace));
+/** No hard wall-clock fail — soft perf targets use maxPipelineWallClockMin only. */
+export function maxPipelineWallClockHardMin(_videoLength?: string | null): number {
+  return Math.round(PIPELINE_UNLIMITED_MS / 60_000);
 }
 
 /** ≤1 min videos on wall-clock-limited hosts (Railway worker). */
