@@ -4,7 +4,7 @@
 import fs from "fs";
 import path from "path";
 import { curatedClipPathAssetId } from "./curatedMediaSourcing";
-import { strictVoiceVisualMatchEnabled } from "./sourcingPolicy";
+import { strictVoiceVisualMatchEnabled, isFastShortVideoLength } from "./sourcingPolicy";
 import { loadStoredFrameEmbeddings } from "./archiveClipEmbedding";
 import { loadStoredStockFrameEmbeddingsFromPath } from "./stockClipEmbedding";
 import {
@@ -54,8 +54,9 @@ export function cascadeVisionExpandBelow(minScore: number): number {
 
 const CASCADE_PRIMARY_FRAME_FRAC = 0.38;
 
-/** Critical per-clip voice/visual QA (default on with Vidrush quality). */
-export function sceneCriticalReviewEnabled(): boolean {
+/** Critical per-clip voice/visual QA — skipped on 1-min fast path for speed. */
+export function sceneCriticalReviewEnabled(videoLength?: string | null): boolean {
+  if (isFastShortVideoLength(videoLength)) return false;
   if (process.env.ENABLE_SCENE_CRITICAL_REVIEW === "false") return false;
   return process.env.ENABLE_VIDRUSH_QUALITY !== "false";
 }
@@ -111,20 +112,22 @@ export function clipVisionSampleCount(): number {
  * Fraction of preview frames scored per clip (0.5–1).
  * Default 0.8 → 3/4 frames (or 1/2 in fast mode) with the same ≥8/10 pass bar.
  */
-export function clipVisionFrameCoverage(fastMode = false): number {
+export function clipVisionFrameCoverage(fastMode = false, shortVideo = false): number {
   const raw = process.env.CLIP_VISION_COVERAGE?.trim();
   if (raw) {
     const n = parseFloat(raw);
     if (!isNaN(n) && n >= 0.5 && n <= 1) return n;
   }
+  if (shortVideo && fastMode) return 0.35;
   if (strictVoiceVisualMatchEnabled()) return 0.8;
   return fastMode ? 0.5 : 0.8;
 }
 
 /** Effective frame count after CLIP_VISION_COVERAGE (same min score on worst sampled frame). */
-export function effectiveVisionSampleCount(fastMode = false): number {
+export function effectiveVisionSampleCount(fastMode = false, shortVideo = false): number {
+  if (shortVideo && fastMode) return 1;
   const base = fastMode ? Math.min(2, clipVisionSampleCount()) : clipVisionSampleCount();
-  const coverage = clipVisionFrameCoverage(fastMode);
+  const coverage = clipVisionFrameCoverage(fastMode, shortVideo);
   if (fastMode) {
     return Math.max(1, Math.floor(base * coverage + 0.001));
   }
@@ -200,8 +203,8 @@ export function shouldVisionCheckClip(filePath: string, _fastMode = false): bool
   return true;
 }
 
-function visionSampleFractions(fastMode = false): number[] {
-  const count = effectiveVisionSampleCount(fastMode);
+function visionSampleFractions(fastMode = false, shortVideo = false): number[] {
+  const count = effectiveVisionSampleCount(fastMode, shortVideo);
   return LOCAL_FRAME_FRACTIONS.slice(0, count);
 }
 
@@ -210,9 +213,10 @@ async function extractPreviewFrames(
   workDir: string,
   sceneIndex: number,
   beatIndex: number,
-  fastMode = false
+  fastMode = false,
+  shortVideo = false
 ): Promise<string[]> {
-  const fractions = visionSampleFractions(fastMode);
+  const fractions = visionSampleFractions(fastMode, shortVideo);
   const extractMs = fastMode ? 4_500 : 8_000;
   const paths = await Promise.all(
     fractions.map(async (frac, i) => {
@@ -293,7 +297,8 @@ async function scoreClipAcrossFrames(
   beatIndex: number,
   minScore: number,
   fastMode: boolean,
-  queryEmb?: number[] | null
+  queryEmb?: number[] | null,
+  shortVideo = false
 ): Promise<{ pass: boolean; worstScore: number | null; framesScored: number }> {
   const assetId = curatedClipPathAssetId(clipPath);
   const storedEmbeddings =
@@ -428,7 +433,7 @@ async function scoreClipAcrossFrames(
     }
   }
 
-  const framePaths = await extractPreviewFrames(clipPath, workDir, sceneIndex, beatIndex, fastMode);
+  const framePaths = await extractPreviewFrames(clipPath, workDir, sceneIndex, beatIndex, fastMode, shortVideo);
   if (framePaths.length === 0) {
     return { pass: !strictVisionInconclusiveFails(fastMode), worstScore: null, framesScored: 0 };
   }
@@ -484,7 +489,8 @@ export async function evaluateClipVisionGate(
   minScore = minClipQualityScore(),
   visualDescription?: string,
   _segmentLock?: unknown,
-  queryEmb?: number[] | null
+  queryEmb?: number[] | null,
+  shortVideo = false
 ): Promise<VisionGateResult> {
   if (!clipVisionGateEnabled() || !shouldVisionCheckClip(clipPath, fastMode)) {
     return { pass: true, worstScore10: null, skipped: true };
@@ -506,7 +512,8 @@ export async function evaluateClipVisionGate(
     beatIndex,
     minScore,
     fastMode,
-    queryEmb
+    queryEmb,
+    shortVideo
   );
 
   if (!result.pass) {
@@ -579,7 +586,7 @@ export async function scoreAdoptedClipQuality(
 } | null> {
   if (!clipVisionGateEnabled() || !shouldVisionCheckClip(clipPath)) return null;
 
-  const framePaths = await extractPreviewFrames(clipPath, workDir, sceneIndex, beatIndex, fastMode);
+  const framePaths = await extractPreviewFrames(clipPath, workDir, sceneIndex, beatIndex, fastMode, shortVideo);
   if (framePaths.length === 0) return null;
 
   const assetId = curatedClipPathAssetId(clipPath);

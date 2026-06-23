@@ -130,7 +130,7 @@ import {
   resolveBeatScriptVisualAnchor,
   resolveBeatVisualIntent,
 } from "./scriptVisualKeywords";
-import { clipPassesVisionGate, clipVisionGateEnabled, effectiveMinClipQualityScore, evaluateClipVisionGate, minClipQualityScore, targetClipVisionScore, type VisionGateResult } from "./visualQualityGate";
+import { clipPassesVisionGate, clipVisionGateEnabled, effectiveMinClipQualityScore, evaluateClipVisionGate, minClipQualityScore, sceneCriticalReviewEnabled, targetClipVisionScore, type VisionGateResult } from "./visualQualityGate";
 import {
   beatVisionContextFromProfile,
   clipEmbeddingIndexEnabled,
@@ -1376,10 +1376,15 @@ function requiredMontageClipsForDuration(durationSec: number): number {
 }
 
 /** Min unique clips when each can play up to archiveVisualMaxClipSec (compose balancing). */
-function minClipsForBalancedVoice(durationSec: number): number {
+function minClipsForBalancedVoice(durationSec: number, videoLength?: string | null): number {
   if (!curatedArchiveOnlyVisuals()) {
     return Math.max(1, Math.ceil(durationSec / effectiveBeatSec()));
   }
+  const beatSec = isFastShortVideoLength(videoLength)
+    ? archiveVisualBeatSecForVideo(videoLength)
+    : archiveVisualBeatSec();
+  const byBeats = Math.max(1, Math.ceil(durationSec / beatSec));
+  if (isFastShortVideoLength(videoLength)) return byBeats;
   const xfade = montageXfadeSec();
   return Math.max(2, Math.ceil((durationSec + xfade) / archiveVisualMaxClipSec()));
 }
@@ -14251,7 +14256,8 @@ async function beatClipPassesVisionGate(
     scoreFloor,
     visualDesc,
     dedup.segmentGeoLock,
-    queryEmb
+    queryEmb,
+    isFastShortVideoLength(dedup.videoLength)
   );
   if (!result.pass) {
     recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clipPath, "vision_gate", queryLabel);
@@ -16555,7 +16561,7 @@ async function refillSceneStrictVoiceMatch(
   sceneAudioPath?: string
 ): Promise<SceneVisualsResult> {
   videoTitle = coerceVisionString(videoTitle);
-  const minNeeded = minClipsForBalancedVoice(scene.duration + 0.15);
+  const minNeeded = minClipsForBalancedVoice(scene.duration + 0.15, dedup.videoLength);
   const beatSec = archiveVisualBeatSecForVideo(dedup.videoLength);
   const beatCap = sceneBeatCapForCadence(scene.duration, dedup.perf.maxBeatsPerScene, beatSec);
   const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
@@ -16680,7 +16686,7 @@ async function ensureArchiveMontageVoiceCoverage(
   let coverage = await estimateBalancedMontageCoverageSec(clips, beatDurations, scene.duration);
   if (coverage >= minCoverage) return;
 
-  const minClips = minClipsForBalancedVoice(scene.duration);
+  const minClips = minClipsForBalancedVoice(scene.duration, dedup.videoLength);
   console.warn(
     `[Pipeline] Scene ${scene.index}: montage ~${coverage.toFixed(1)}s / ${scene.duration.toFixed(1)}s — coverage backfill (need ~${minClips} clips)`
   );
@@ -19646,9 +19652,26 @@ export async function runVideoPipeline(
     if (strictVoiceVisualMatchEnabled()) {
       for (let si = 0; si < scenes.length; si++) {
         const vr = sceneVisualResults[si];
-        const minNeeded = minClipsForBalancedVoice(scenes[si].duration + 0.15);
+        const minNeeded = minClipsForBalancedVoice(scenes[si].duration + 0.15, videoLength);
         const usable = (vr?.clips ?? []).filter((c) => c && !isPipelineFallbackClip(c));
         if (usable.length >= minNeeded) continue;
+        if (isFastShortVideoLength(videoLength) && usable.length > 0 && vr?.beats?.length) {
+          console.warn(
+            `[Pipeline] Scene ${scenes[si].index}: ${usable.length}/${minNeeded} clips — light backfill (skip full strict refill)`
+          );
+          await ensureArchiveMontageVoiceCoverage(
+            scenes[si],
+            workDir,
+            topicContext,
+            visualDedup,
+            vr.clips,
+            vr.beatDurations,
+            vr.clipBeatIndices ?? [],
+            vr.beats,
+            new Map()
+          );
+          continue;
+        }
         console.warn(
           `[Pipeline] Scene ${scenes[si].index}: ${usable.length}/${minNeeded} clips — strict beat refill`
         );
@@ -19738,7 +19761,9 @@ export async function runVideoPipeline(
               topicContext,
               composeMeta.montagePlan
             );
-            const spot = await spotCheckComposedSceneBeatSync(
+            const spot = isFastShortVideoLength(videoLength)
+              ? { ok: true, warnings: [] as string[] }
+              : await spotCheckComposedSceneBeatSync(
               result,
               vr.beats,
               composeMeta.montageDurations,
@@ -19756,7 +19781,7 @@ export async function runVideoPipeline(
                 warnings: [...audit.warnings, ...spot.warnings.map((w) => `spot: ${w}`)],
               };
             }
-            if (!audit.ok && !composeMeta.montagePlan?.ttsHardCut) {
+            if (!audit.ok && !composeMeta.montagePlan?.ttsHardCut && !isFastShortVideoLength(videoLength)) {
               console.warn(
                 `[Pipeline] Scene ${scene.index}: sync audit failed — remontage with TTS hard-cut`
               );
@@ -19813,6 +19838,7 @@ export async function runVideoPipeline(
     // ── Stage 5: Critical scene review — multi-frame vision QA ─────────────────
     onProgress?.({ stage: STAGE_LABELS.visualReview, percent: 66 });
     const sceneCriticalFailed: number[] = [];
+    if (sceneCriticalReviewEnabled(videoLength)) {
     for (let i = 0; i < scenes.length; i++) {
       const vr = sceneVisualResults[i];
       if (!vr?.beats?.length) continue;
@@ -19854,16 +19880,20 @@ export async function runVideoPipeline(
         }
       }
     }
+    }
 
     // ── Stage 5b: QA — visuals match narration + montage timing ──────────────
     onProgress?.({ stage: STAGE_LABELS.visualReview, percent: 68 });
+    let composeReview: { ok: boolean; summary: string } = { ok: true, summary: "skipped (fast 1-min)" };
+    let finalReview: { ok: boolean; summary: string } = { ok: true, summary: "skipped (fast 1-min)" };
+    if (!isFastShortVideoLength(videoLength)) {
     const reviewInputs = sceneReviewInputs(
       scenes,
       composedUsedClips.map((clips, i) =>
         clips.length > 0 ? clips : (sceneVisualResults[i]?.clips ?? [])
       )
     );
-    const composeReview = await reviewPipelineBeforeEffects(
+    composeReview = await reviewPipelineBeforeEffects(
       reviewInputs,
       composedScenes,
       videoTitle
@@ -19875,10 +19905,11 @@ export async function runVideoPipeline(
 
     // ── Stage 6: Final review before export ──────────────────────────────────
     onProgress?.({ stage: STAGE_LABELS.finalReview, percent: 74 });
-    const finalReview = await reviewPipelineBeforeExport(reviewInputs, composedScenes);
+    finalReview = await reviewPipelineBeforeExport(reviewInputs, composedScenes);
     logPipelineReview("eindcontrole", finalReview);
     if (!finalReview.ok) {
       console.warn(`[Pipeline] Final review: ${finalReview.summary} — continuing export (self-heal)`);
+    }
     }
 
     const allClipPaths = composedUsedClips.flat().filter(Boolean);

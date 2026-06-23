@@ -323,7 +323,7 @@ export function stockClipQualityFloor(videoLength?: string | null): number {
   return 8;
 }
 
-/** Beat cadence for 1-min fast path — fewer beats → faster visual stage (default 18s). */
+/** Beat cadence for 1-min fast path — fewer beats → faster visual stage (default 20s). */
 export function archiveVisualBeatSecForVideo(videoLength?: string | null): number {
   if (!isFastShortVideoLength(videoLength)) return archiveVisualBeatSec();
   const raw = process.env.FAST_ARCHIVE_BEAT_SEC?.trim();
@@ -331,7 +331,7 @@ export function archiveVisualBeatSecForVideo(videoLength?: string | null): numbe
     const n = parseFloat(raw);
     if (!isNaN(n) && n >= 12 && n <= 24) return n;
   }
-  return 18;
+  return 20;
 }
 
 /** Wall-clock ms after pipeline start before turbo stock fallback on 1-min videos (default 90s). */
@@ -341,7 +341,7 @@ export function visualSourcingTurboMs(): number {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 30_000 && n <= 300_000) return n;
   }
-  return 90_000;
+  return 60_000;
 }
 
 /** Max ms per beat spent trying archive candidates before moving on (default 25s on 1-min). */
