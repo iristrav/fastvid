@@ -1,4 +1,4 @@
-import { generationBudgetMinutes } from "./videoLengths";
+import { generationBudgetMinutes, targetVideoDurationMinutes } from "./videoLengths";
 
 export type PipelineDisplayStageKey =
   | "script"
@@ -80,9 +80,11 @@ export function progressStepWithElapsed(label: string, startedAtMs: number): str
   return `${label} · ${formatGenerationDuration(elapsedSec)}`;
 }
 
-/** Rough max generation window for UI estimates (seconds) — 10 min pipeline per 1 min video. */
+/** Rough max generation window for UI estimates — 8 min pipeline per 1 min video, 10:1 for longer. */
 export function maxGenerationEstimateSec(videoLength?: string | null): number {
-  return generationBudgetMinutes(videoLength, 10) * 60;
+  const mins = targetVideoDurationMinutes(videoLength);
+  const ratio = mins <= 1 ? 8 : 10;
+  return generationBudgetMinutes(videoLength, ratio) * 60;
 }
 
 /** Estimate seconds remaining from elapsed time and progress percent. */

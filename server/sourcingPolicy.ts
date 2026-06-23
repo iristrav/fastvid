@@ -157,8 +157,8 @@ export function pipelineWallClockLimitEnabled(): boolean {
 export const PIPELINE_UNLIMITED_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
- * Target end-to-end generation budget (minutes) — video_minutes × 10 by default.
- * Used for perf profiles and stage timeouts; generation may run slightly over via grace.
+ * Target end-to-end generation budget (minutes).
+ * 1-min videos: 8 min total; longer videos: video_minutes × PIPELINE_MIN_PER_VIDEO_MIN (default 10).
  */
 export function maxPipelineWallClockMin(videoLength?: string | null): number {
   if (!pipelineWallClockLimitEnabled()) {
@@ -167,9 +167,11 @@ export function maxPipelineWallClockMin(videoLength?: string | null): number {
   const override = process.env.MAX_PIPELINE_WALL_CLOCK_MIN?.trim();
   if (override) {
     const n = parseInt(override, 10);
-    if (!isNaN(n) && n >= 10 && n <= 300) return n;
+    if (!isNaN(n) && n >= 8 && n <= 300) return n;
   }
-  return Math.round(targetVideoDurationMinutes(videoLength) * pipelineMinutesPerVideoMinute());
+  const mins = targetVideoDurationMinutes(videoLength);
+  if (mins <= 1) return 8;
+  return Math.round(mins * pipelineMinutesPerVideoMinute());
 }
 
 /** No hard wall-clock fail — soft perf targets use maxPipelineWallClockMin only. */
@@ -311,8 +313,7 @@ export function visualStageWallClockMin(videoLength?: string | null): number {
   const hard = maxPipelineWallClockHardMin(videoLength);
   const mins = targetVideoDurationMinutes(videoLength);
   if (mins <= 1) {
-    if (visualFootageFocusEnabled()) return Math.min(6, Math.max(5, hard - 5));
-    return 6;
+    return 8;
   }
   return Math.max(8, Math.min(total - 6, Math.round(total * 0.88)));
 }
@@ -346,17 +347,17 @@ export function visualSourcingTurboMs(): number {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 30_000 && n <= 300_000) return n;
   }
-  return 45_000;
+  return 30_000;
 }
 
-/** Max ms per beat spent trying archive candidates before moving on (default 25s on 1-min). */
+/** Max ms per beat spent trying archive candidates before moving on (default 10s on 1-min). */
 export function archiveBeatTryTimeoutMs(videoLength?: string | null): number {
   const raw = process.env.ARCHIVE_BEAT_TRY_TIMEOUT_MS?.trim();
   if (raw) {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 8_000 && n <= 120_000) return n;
   }
-  if (isFastShortVideoLength(videoLength)) return 15_000;
+  if (isFastShortVideoLength(videoLength)) return 10_000;
   return 45_000;
 }
 

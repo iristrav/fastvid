@@ -1855,7 +1855,7 @@ function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProfile {
   let profile: PipelinePerfProfile;
   if (isShortVideoLength(videoLength)) {
     profile = applyAiFallbackToProfile({
-      targetWallClockMin: 10,
+      targetWallClockMin: 8,
       maxBeatsPerScene: curatedArchiveOnlyVisuals() ? (IS_RAILWAY ? 16 : 18) : IS_RAILWAY ? 4 : 6,
       maxTopicQueries: IS_RAILWAY ? 1 : 3,
       skipFairUseTransform: true,
@@ -1867,8 +1867,8 @@ function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProfile {
       sceneParallelism: IS_RAILWAY ? 4 : 3,
       pexelsDownloadRetries: 1,
       maxStockQueriesPerBeat: 2,
-      beatClipTimeoutMs: IS_RAILWAY ? 16_000 : 45_000,
-      sceneVisualTimeoutMs: IS_RAILWAY ? 6 * 60_000 : 8 * 60_000,
+      beatClipTimeoutMs: IS_RAILWAY ? 12_000 : 45_000,
+      sceneVisualTimeoutMs: IS_RAILWAY ? 5 * 60_000 : 8 * 60_000,
       fastStockMode: IS_RAILWAY,
       scriptOnlyVisuals: false,
     }, videoLength);
