@@ -1842,8 +1842,32 @@ export async function searchCuratedCandidatesForBeat(
     ranked.sort((a, b) => b.score - a.score);
   }
 
-  if (semanticProfile && semanticVisualMatchingEnabled()) {
-    const pool = ranked.slice(0, pipelineWallClockLimitEnabled() ? 20 : 64);
+  let clipPreRankDone = false;
+  if (clipEmbeddingIndexEnabled() && skipLlmSemantic) {
+    const visionCtxEarly = beatVisionContextForSearch(beat, videoTitle, semanticProfile);
+    const { ranked: clipRankedEarly } = await preRankCuratedCandidatesByClipEmbedding(
+      ranked,
+      visionCtxEarly,
+      { fastMode: true }
+    );
+    ranked = clipRankedEarly;
+    clipPreRankDone = true;
+    const topEarly = ranked[0]?.clipVisionScore10;
+    if (topEarly != null) {
+      console.log(
+        `[ClipPreRank] zin ${beat.index}: early top vision ${topEarly}/10 (fast path)`
+      );
+    }
+  }
+
+  const skipSemanticPool =
+    skipLlmSemantic &&
+    ranked[0]?.clipVisionScore10 != null &&
+    ranked[0]!.clipVisionScore10! >= semanticRerankClipSkipMin();
+
+  if (semanticProfile && semanticVisualMatchingEnabled() && !skipSemanticPool) {
+    const poolCap = skipLlmSemantic ? 8 : pipelineWallClockLimitEnabled() ? 20 : 64;
+    const pool = ranked.slice(0, poolCap);
     ranked = await Promise.all(
       pool.map(async (pick) => {
         const semantic = await scoreArchiveAssetSemantically(semanticProfile, pick.asset);
@@ -1896,7 +1920,7 @@ export async function searchCuratedCandidatesForBeat(
     );
   }
 
-  if (clipEmbeddingIndexEnabled()) {
+  if (clipEmbeddingIndexEnabled() && !clipPreRankDone) {
     const visionCtx = beatVisionContextForSearch(beat, videoTitle, semanticProfile);
     const clipFast = options?.fastMode === true || fastShort || pipelineWallClockLimitEnabled();
     const { ranked: clipRanked } = await preRankCuratedCandidatesByClipEmbedding(

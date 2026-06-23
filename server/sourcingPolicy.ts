@@ -182,6 +182,16 @@ export function isFastShortVideoLength(videoLength?: string | null): boolean {
   return pipelineWallClockLimitEnabled() && targetVideoDurationMinutes(videoLength) <= 1;
 }
 
+/** Parallel beat fills on 1-min fast path — low default avoids CLIP model contention on worker. */
+export function fastBeatConcurrency(isRailway = false): number {
+  const raw = process.env.FAST_BEAT_CONCURRENCY?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 1 && n <= 8) return n;
+  }
+  return isRailway ? 3 : 4;
+}
+
 /** Weak-beat archive polish before compose (always on when strict voice↔visual match). */
 export function polishBeforeComposeEnabled(
   videoLength?: string | null,

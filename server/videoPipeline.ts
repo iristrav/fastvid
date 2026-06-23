@@ -147,7 +147,7 @@ import {
   uniqueQueryStrings,
   uniqueCoercedQueries,
 } from "./stringCoercion";
-import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, maxPipelineWallClockMin, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin } from "./sourcingPolicy";
+import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, maxPipelineWallClockMin, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin, fastBeatConcurrency } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -14795,7 +14795,8 @@ async function adoptBestSimilarBeatClip(
   }
 
   const similarFloor = archiveSimilarMatchVisionFloor();
-  const tryCap = Math.min(6, ranked.length);
+  const fastSimilarCap = isFastShortVideoLength(dedup.videoLength) ? 4 : 6;
+  const tryCap = Math.min(fastSimilarCap, ranked.length);
   let bestClip: string | null = null;
   let bestScore = -1;
   let bestTitle = "";
@@ -17096,7 +17097,9 @@ async function fetchArchiveSentenceMontage(
     });
   };
 
-  const beatConcurrency = dedup.perf.fastStockMode ? 12 : 2;
+  const beatConcurrency = dedup.perf.fastStockMode
+    ? fastBeatConcurrency(IS_RAILWAY)
+    : 2;
   const beatLimit = pLimit(beatConcurrency);
   await Promise.all(
     beats.map((beat, bi) =>
@@ -17288,7 +17291,9 @@ async function refillSceneStrictVoiceMatch(
 
   try {
     if (fastShort) {
-      const beatConcurrency = dedup.perf.fastStockMode ? 12 : 4;
+      const beatConcurrency = dedup.perf.fastStockMode
+        ? fastBeatConcurrency(IS_RAILWAY)
+        : 4;
       const beatLimit = pLimit(beatConcurrency);
       await Promise.all(beats.map((_, bi) => beatLimit(() => fillOneBeat(bi))));
     } else {
