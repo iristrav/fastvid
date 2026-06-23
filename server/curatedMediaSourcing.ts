@@ -1860,10 +1860,7 @@ export async function searchCuratedCandidatesForBeat(
     }
   }
 
-  const skipSemanticPool =
-    skipLlmSemantic &&
-    ranked[0]?.clipVisionScore10 != null &&
-    ranked[0]!.clipVisionScore10! >= semanticRerankClipSkipMin();
+  const skipSemanticPool = skipLlmSemantic;
 
   if (semanticProfile && semanticVisualMatchingEnabled() && !skipSemanticPool) {
     const poolCap = skipLlmSemantic ? 8 : pipelineWallClockLimitEnabled() ? 20 : 64;

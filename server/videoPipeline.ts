@@ -17177,7 +17177,8 @@ async function refillSceneStrictVoiceMatch(
   workDir: string,
   videoTitle: string | undefined,
   dedup: VisualDedupState,
-  sceneAudioPath?: string
+  sceneAudioPath?: string,
+  onBeatProgress?: (beatIndex: number, beatTotal: number, phase?: BeatProgressPhase) => void
 ): Promise<SceneVisualsResult> {
   videoTitle = coerceVisionString(videoTitle);
   const minNeeded = minClipsForBalancedVoice(scene.duration + 0.15, dedup.videoLength);
@@ -17287,6 +17288,11 @@ async function refillSceneStrictVoiceMatch(
       );
     }
     dedup.visualBeatsCompleted = (dedup.visualBeatsCompleted ?? 0) + 1;
+    onBeatProgress?.(
+      dedup.visualBeatsCompleted ?? 0,
+      Math.max(beats.length, dedup.visualBeatsTotal || beats.length),
+      "beat"
+    );
   };
 
   try {
@@ -17529,7 +17535,14 @@ async function fetchSceneVisuals(
   videoTitle = coerceVisionString(videoTitle);
   if (curatedArchiveOnlyVisuals()) {
     if (isFastShortVideoLength(dedup.videoLength)) {
-      return refillSceneStrictVoiceMatch(scene, workDir, videoTitle, dedup, sceneAudioPath);
+      return refillSceneStrictVoiceMatch(
+        scene,
+        workDir,
+        videoTitle,
+        dedup,
+        sceneAudioPath,
+        onBeatProgress
+      );
     }
     return fetchArchiveSentenceMontage(scene, workDir, videoTitle, dedup, onBeatProgress, sceneAudioPath);
   }
