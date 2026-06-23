@@ -36,7 +36,7 @@ function backfillBatchSize(): number {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 1 && n <= 300) return n;
   }
-  return 80;
+  return 30;
 }
 
 function backfillIntervalMs(): number {
@@ -45,7 +45,7 @@ function backfillIntervalMs(): number {
     const n = parseFloat(raw);
     if (!isNaN(n) && n >= 0.5 && n <= 30) return Math.round(n * 60_000);
   }
-  return 2 * 60_000;
+  return 5 * 60_000;
 }
 
 function backfillStartupRounds(): number {
@@ -54,7 +54,25 @@ function backfillStartupRounds(): number {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 1 && n <= 10) return n;
   }
-  return 3;
+  return 1;
+}
+
+/** Skip assets that failed indexing recently — avoids log spam on deploy. */
+const recentIndexFailures = new Map<number, number>();
+const INDEX_FAIL_COOLDOWN_MS = 6 * 60 * 60_000;
+
+function shouldSkipRecentIndexFailure(assetId: number): boolean {
+  const until = recentIndexFailures.get(assetId);
+  if (!until) return false;
+  if (Date.now() > until) {
+    recentIndexFailures.delete(assetId);
+    return false;
+  }
+  return true;
+}
+
+function markIndexFailure(assetId: number): void {
+  recentIndexFailures.set(assetId, Date.now() + INDEX_FAIL_COOLDOWN_MS);
 }
 
 /** Index CLIP embeddings for archive videos that lack a stored index (non-blocking batches). */
@@ -83,15 +101,22 @@ export async function backfillMissingClipEmbeddings(
         skipped++;
         continue;
       }
+      if (shouldSkipRecentIndexFailure(asset.id)) {
+        skipped++;
+        continue;
+      }
       missing++;
       const local = resolveArchiveAssetLocalPath(asset);
       if (!local) {
         skipped++;
         continue;
       }
-      const ok = await indexArchiveClipEmbedding(asset.id, local);
+      const ok = await indexArchiveClipEmbedding(asset.id, local, { quiet: true });
       if (ok) indexed++;
-      else skipped++;
+      else {
+        markIndexFailure(asset.id);
+        skipped++;
+      }
     }
   }
 

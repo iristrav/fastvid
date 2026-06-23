@@ -64,7 +64,8 @@ export function loadStoredFrameEmbeddings(assetId: number): number[][] {
 /** Index archive video frames with CLIP in the background after upload. */
 export async function indexArchiveClipEmbedding(
   assetId: number,
-  localVideoPath: string
+  localVideoPath: string,
+  opts?: { quiet?: boolean }
 ): Promise<boolean> {
   if (!clipEmbeddingIndexEnabled() || !fs.existsSync(localVideoPath)) return false;
 
@@ -94,7 +95,9 @@ export async function indexArchiveClipEmbedding(
     scheduleAuditForAsset(assetId);
     return true;
   } catch (err) {
-    console.warn(`[ClipEmbedding] asset ${assetId}:`, (err as Error).message?.slice(0, 80));
+    if (!opts?.quiet) {
+      console.warn(`[ClipEmbedding] asset ${assetId}:`, (err as Error).message?.slice(0, 80));
+    }
     return false;
   } finally {
     try {
