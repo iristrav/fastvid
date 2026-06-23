@@ -174,9 +174,12 @@ export function maxPipelineWallClockMin(videoLength?: string | null): number {
   return Math.round(mins * pipelineMinutesPerVideoMinute());
 }
 
-/** No hard wall-clock fail — soft perf targets use maxPipelineWallClockMin only. */
-export function maxPipelineWallClockHardMin(_videoLength?: string | null): number {
-  return Math.round(PIPELINE_UNLIMITED_MS / 60_000);
+/** Hard wall-clock fail — maxPipelineWallClockMin × grace (default 8×1.2 = 9.6 min for 1-min videos). */
+export function maxPipelineWallClockHardMin(videoLength?: string | null): number {
+  if (!pipelineWallClockLimitEnabled()) {
+    return Math.round(PIPELINE_UNLIMITED_MS / 60_000);
+  }
+  return Math.ceil(maxPipelineWallClockMin(videoLength) * pipelineWallClockGraceFactor());
 }
 
 /** ≤1 min videos on wall-clock-limited hosts (Railway worker). */
@@ -329,7 +332,7 @@ export function stockClipQualityFloor(videoLength?: string | null): number {
   return 8;
 }
 
-/** Beat cadence for 1-min fast path — fewer beats → faster visual stage (default 20s). */
+/** Beat cadence for 1-min fast path — fewer beats → faster visual stage (default 22s). */
 export function archiveVisualBeatSecForVideo(videoLength?: string | null): number {
   if (!isFastShortVideoLength(videoLength)) return archiveVisualBeatSec();
   const raw = process.env.FAST_ARCHIVE_BEAT_SEC?.trim();
@@ -337,7 +340,7 @@ export function archiveVisualBeatSecForVideo(videoLength?: string | null): numbe
     const n = parseFloat(raw);
     if (!isNaN(n) && n >= 12 && n <= 24) return n;
   }
-  return 20;
+  return 22;
 }
 
 /** Wall-clock ms after pipeline start before turbo stock fallback on 1-min videos (default 90s). */

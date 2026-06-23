@@ -348,6 +348,29 @@ export async function updateVideoProgress(id: number, progressStep: string, prog
     .where(eq(videos.id, id));
 }
 
+/** Mark an in-flight video as cancelled (user or admin request). */
+export async function cancelVideoGeneration(id: number): Promise<boolean> {
+  const video = await getVideoById(id);
+  if (!video) return false;
+  if (video.status === "completed" || video.status === "failed") return false;
+  if (video.status === "pending" || video.status === "queued" || video.status === "awaiting_approval") {
+    await updateVideoStatus(id, "failed", {
+      errorMessage: "Generation cancelled",
+      progressStep: "Cancelled",
+      progressPercent: 0,
+    });
+    return true;
+  }
+  const { requestVideoGenerationCancel } = await import("./videoGenerationCancel");
+  requestVideoGenerationCancel(id);
+  await updateVideoStatus(id, "failed", {
+    errorMessage: "Generation cancelled",
+    progressStep: "Cancelled",
+    progressPercent: 0,
+  });
+  return true;
+}
+
 /** Refresh updatedAt while a long clip search runs (prevents false stall kills). */
 export async function touchVideoProgress(id: number): Promise<void> {
   const db = await getDb();
@@ -445,18 +468,25 @@ export async function failPipelineIfStalled(video: Video): Promise<Video> {
 
   const updatedAt = video.updatedAt ? new Date(video.updatedAt).getTime() : Date.now();
   const threshold = pipelineStallThresholdMs(video.videoLength, video.status);
-  if (Date.now() - updatedAt < threshold) return video;
+  const startedAt = video.generationStartedAt
+    ? new Date(video.generationStartedAt).getTime()
+    : updatedAt;
+  const totalHardMs = maxPipelineWallClockHardMin(video.videoLength) * 60 * 1000;
+  const totalElapsed = Date.now() - startedAt;
+  const staleProgress = Date.now() - updatedAt >= threshold;
+  const overTotalBudget = totalElapsed >= totalHardMs;
+  if (!staleProgress && !overTotalBudget) return video;
 
   const step = video.progressStep ?? "unknown step";
+  const reason = overTotalBudget
+    ? `Generation exceeded ${Math.round(totalHardMs / 60000)} minute wall-clock budget`
+    : `Generation stalled at "${step}" for over ${Math.round(threshold / 60000)} minutes`;
   await updateVideoStatus(video.id, "failed", {
-    errorMessage: appErrorMessage(
-      PIPELINE_ERROR.STUCK_TIMEOUT,
-      `Generation stalled at "${step}" for over ${Math.round(threshold / 60000)} minutes`
-    ),
+    errorMessage: appErrorMessage(PIPELINE_ERROR.STUCK_TIMEOUT, reason),
     progressStep: "Failed — generation stalled",
     progressPercent: 0,
   });
-  console.warn(`[Pipeline] Video ${video.id} failed: stalled at "${step}"`);
+  console.warn(`[Pipeline] Video ${video.id} failed: ${reason}`);
   const refreshed = await getVideoById(video.id);
   return refreshed ?? video;
 }

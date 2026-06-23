@@ -147,7 +147,7 @@ import {
   uniqueQueryStrings,
   uniqueCoercedQueries,
 } from "./stringCoercion";
-import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, maxPipelineWallClockMin, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin, fastBeatConcurrency } from "./sourcingPolicy";
+import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, maxPipelineWallClockMin, maxPipelineWallClockHardMin, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin, fastBeatConcurrency } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -214,6 +214,7 @@ import {
   strictVoiceMontageSyncExport,
   type VoiceMontageSyncAuditResult,
 } from "./voiceMontageSyncAudit";
+import { throwIfVideoGenerationCancelled } from "./videoGenerationCancel";
 import {
   buildTtsSceneBeatMap,
   fetchElevenLabsWithTimestamps,
@@ -2253,6 +2254,22 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
       )
     ),
   ]);
+}
+
+function assertPipelineWithinBudget(
+  videoId: number,
+  pipelineStartedMs: number,
+  videoLength: string
+): void {
+  if (!pipelineWallClockLimitEnabled()) return;
+  throwIfVideoGenerationCancelled(videoId);
+  const hardMs = maxPipelineWallClockHardMin(videoLength) * 60_000;
+  if (Date.now() - pipelineStartedMs > hardMs) {
+    throw pipelineError(
+      PIPELINE_ERROR.STUCK_TIMEOUT,
+      `Pipeline exceeded ${Math.round(hardMs / 60_000)} minute wall-clock budget`
+    );
+  }
 }
 
 // ─── Documentary workflow (prompt → script → ElevenLabs → editor → per-zin beeld → montage) ─
@@ -11858,7 +11875,10 @@ async function ensureFastShortScenesReadyForCompose(
     try {
       vr = await withTimeout(
         recoverSceneClipsIfEmpty(scene, workDir, topicContext, visualDedup),
-        90_000,
+        visualDedup.pipelineStartedMs > 0 &&
+          Date.now() - visualDedup.pipelineStartedMs > visualSourcingTurboMs()
+          ? 45_000
+          : 90_000,
         `Scene ${scene.index} pre-compose recovery`
       );
       ready = await composeReadySceneClips(vr.clips, scene.index);
@@ -20330,6 +20350,7 @@ export async function runVideoPipeline(
     let heartbeatTick = 0;
     const visualHeartbeat = setInterval(() => {
       heartbeatTick++;
+      assertPipelineWithinBudget(videoId, t0, videoLength);
       const beatTotal = Math.max(1, visualDedup.visualBeatsTotal || scenes.length);
       const beatsDone = visualDedup.visualBeatsCompleted ?? completedVisuals;
       onProgress?.({
@@ -20550,6 +20571,7 @@ export async function runVideoPipeline(
     );
 
     // ── Stage 4: Compose scenes — clips, voice, year badges (final output) ───
+    assertPipelineWithinBudget(videoId, t0, videoLength);
     onProgress?.({ stage: STAGE_LABELS.assembly, percent: 47 });
     const t3 = Date.now();
 
@@ -20616,7 +20638,11 @@ export async function runVideoPipeline(
           }
           composedUsedClips[i] = usedClips;
           const vr = sceneVisualResults[i];
-          if (vr?.beats?.length && composeMeta.montageDurations.length > 0) {
+          if (
+            vr?.beats?.length &&
+            composeMeta.montageDurations.length > 0 &&
+            !isFastShortVideoLength(videoLength)
+          ) {
             const voiceSec = Math.max(0.5, scene.duration - VO_SCENE_TAIL_SEC);
             const auditXfade = composeMeta.montagePlan?.xfadeSec ?? montageXfadeSec();
             const adoptVisionOk = sceneMontageBeatsPassedAdoptVision(
@@ -20736,7 +20762,7 @@ export async function runVideoPipeline(
           return result;
         }))
       ),
-      2400_000,
+      isFastShortVideoLength(videoLength) ? 4 * 60_000 : 2400_000,
       "Scene compose stage"
     );
     console.log(`[Pipeline] Stage 4 (compose): ${scenes.length} scenes in ${((Date.now()-t3)/1000).toFixed(1)}s`);

@@ -31,11 +31,8 @@ export function resolvePipelineDisplayStage(
   if (/complete|klaar|video ready|re-render complete/.test(s)) {
     return stage("finish");
   }
-  if (/upload|samenvoegen|export|muziek|afrond|concatenat|music mix/.test(s)) {
-    return stage("finish");
-  }
   if (
-    /effect|overgang|jaartal|grade|nalopen|eindcontrole|final review|controleren|beeld.?tekst|visual review|assembly|montage|plakken|achter elkaar|compose|samenstellen|stitch/.test(
+    /assembl|samenvoeg|concatenat|upload|export|muziek|afrond|effect|overgang|jaartal|grade|nalopen|eindcontrole|final review|controleren|beeld.?tekst|visual review|montage|plakken|achter elkaar|compose|samenstellen|stitch/.test(
       s
     )
   ) {

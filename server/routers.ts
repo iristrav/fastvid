@@ -46,6 +46,7 @@ import type { ProgressLogEntry } from "./db";
 import { videoLengthSchema, normalizeVideoLength, isShortVideoLength } from "@shared/videoLengths";
 import { PIPELINE_DISPLAY_STAGES, formatGenerationDuration, progressStepWithElapsed, resolvePipelineDisplayStage } from "@shared/pipelineProgress";
 import { ONE_YEAR_MS } from "@shared/const";
+import { clearVideoGenerationCancel, isVideoGenerationCancelRequested } from "./videoGenerationCancel";
 
 function getSessionSecret() {
   const secret = process.env.JWT_SECRET ?? "fallback-secret-change-in-production";
@@ -767,14 +768,16 @@ async function _generateVideoWithAI(
         }
       }
       lastProgressLabel = label;
-      lastProgressPercent = Math.min(percent, 95);
+      const capped = Math.min(percent, 99);
+      lastProgressPercent = Math.max(lastProgressPercent, capped);
       const stepWithElapsed = progressStepWithElapsed(label, pipelineStartedAt);
       await Promise.all([
         updateVideoProgress(videoId, stepWithElapsed, lastProgressPercent).catch(() => {}),
         updateVideoProgressLog(videoId, progressLog).catch(() => {}),
       ]);
-      // Update coarse status enum
-      if (percent < 35) {
+      if (key === "finish" || lastProgressPercent >= 62) {
+        await updateVideoStatus(videoId, "generating_effects").catch(() => {});
+      } else if (lastProgressPercent < 35) {
         await updateVideoStatus(videoId, "generating_voiceover").catch(() => {});
       } else {
         await updateVideoStatus(videoId, "generating_visuals").catch(() => {});
@@ -782,6 +785,7 @@ async function _generateVideoWithAI(
     };
 
     const pipelineHeartbeat = setInterval(() => {
+      if (isVideoGenerationCancelRequested(videoId)) return;
       touchVideoProgress(videoId).catch(() => {});
     }, 20_000);
     const elapsedHeartbeat = setInterval(() => {
@@ -810,6 +814,7 @@ async function _generateVideoWithAI(
     } finally {
       clearInterval(pipelineHeartbeat);
       clearInterval(elapsedHeartbeat);
+      clearVideoGenerationCancel(videoId);
     }
 
     if (!videoUrl?.trim()) {

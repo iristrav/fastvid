@@ -24,6 +24,9 @@ describe("resolvePipelineDisplayStage", () => {
     expect(resolvePipelineDisplayStage("Video samenstellen (beelden + voice)...", 50).label).toBe(
       "Finishing video"
     );
+    expect(resolvePipelineDisplayStage("Assembling video (visuals + voice)...", 61).label).toBe(
+      "Finishing video"
+    );
     expect(resolvePipelineDisplayStage("Alle scenes samenvoegen + muziek...", 80).label).toBe(
       "Finishing video"
     );

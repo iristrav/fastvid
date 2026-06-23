@@ -661,6 +661,32 @@ async function startServer() {
     }
   });
 
+  app.post("/api/internal/video/:id/cancel", async (req, res) => {
+    const key = req.headers["x-internal-key"];
+    const expectedKey = process.env.INTERNAL_TRIGGER_KEY || "dev-trigger-key-2026";
+    if (key !== expectedKey) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+    try {
+      const videoId = parseInt(req.params.id, 10);
+      if (isNaN(videoId)) {
+        res.status(400).json({ error: "Invalid video ID" });
+        return;
+      }
+      const { cancelVideoGeneration } = await import("../db");
+      const ok = await cancelVideoGeneration(videoId);
+      if (!ok) {
+        res.status(404).json({ error: "Video not found or already finished" });
+        return;
+      }
+      res.json({ ok: true, videoId, status: "cancelled" });
+    } catch (err) {
+      console.error("[Internal Cancel] Error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
   app.post("/api/internal/video/:id/retry", async (req, res) => {
     const key = req.headers["x-internal-key"];
     const expectedKey = process.env.INTERNAL_TRIGGER_KEY || "dev-trigger-key-2026";
