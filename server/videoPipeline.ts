@@ -11417,8 +11417,12 @@ async function recoverSceneClipsIfEmpty(
       keywords: recoverAdopt.keywords ?? [],
       holdSec: effectiveBeatSec(),
     };
-    const need = requiredMontageClipsForDuration(scene.duration + 0.15);
-    for (let fi = 0; fi < need + 4; fi++) {
+    const fastShort = isFastShortVideoLength(dedup.videoLength);
+    const need = fastShort
+      ? minClipsForBalancedVoice(scene.duration + 0.15, dedup.videoLength)
+      : requiredMontageClipsForDuration(scene.duration + 0.15);
+    const loopMax = fastShort ? Math.min(need + 1, 2) : need + 4;
+    for (let fi = 0; fi < loopMax; fi++) {
       stubBeat.index = fi;
       const clip = await fetchCuratedArchiveBeatClip(
         stubBeat,
@@ -11432,7 +11436,7 @@ async function recoverSceneClipsIfEmpty(
         curatedInterviewBudget(dedup),
         curatedImageBudget(dedup),
         undefined,
-        { relaxed: fi >= need }
+        { relaxed: fastShort || fi >= need, videoLength: dedup.videoLength }
       );
       if (!clip || isPipelineFallbackClip(clip)) continue;
       const key = clipContentKey(clip);
@@ -11441,12 +11445,30 @@ async function recoverSceneClipsIfEmpty(
       beatDurations.push(stubBeat.holdSec);
       if (clips.length >= need) break;
     }
+    if (fastShort && clips.length < need && archivePexelsFallbackEnabled() && canUseLicensedStockBeat(dedup)) {
+      const stockBeat: SceneBeat = { ...stubBeat, index: 99 };
+      await adoptStockBeatClipFallback(
+        stockBeat,
+        scene,
+        workDir,
+        topicContext,
+        dedup,
+        async (clipPath, holdSec = stubBeat.holdSec) => {
+          const key = clipContentKey(clipPath);
+          if (clips.some((c) => clipContentKey(c) === key)) return false;
+          clips.push(clipPath);
+          beatDurations.push(holdSec);
+          return true;
+        },
+        stubBeat.holdSec
+      );
+    }
     // Top-up: if archive returned fewer clips than needed to cover the scene duration,
     // fetch additional unique clips from Wikimedia / Pexels using varied queries.
     // Uses archiveVisualMaxClipSec (8s) per clip so fewer clips fully cover the scene:
     //   minClipsForBalancedVoice(30s)=4 × 8s each → balances to 7.8s → estSec≈30s ✓
-    const minNeeded = minClipsForBalancedVoice(scene.duration + 0.15);
-    if (clips.length < minNeeded) {
+    const minNeeded = minClipsForBalancedVoice(scene.duration + 0.15, dedup.videoLength);
+    if (clips.length < minNeeded && !fastShort) {
       if (clips.length === 0) {
         console.log(`[Pipeline] recoverSceneClips scene ${scene.index}: no archive → Wikimedia/Pexels (need ${minNeeded} for ${scene.duration.toFixed(1)}s)`);
       } else {
