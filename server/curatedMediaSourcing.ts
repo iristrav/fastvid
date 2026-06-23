@@ -130,6 +130,7 @@ import {
   normalizeMediaTags,
   type MediaArchiveAsset,
 } from "./db";
+import { seededShuffle } from "./archiveUsageMemory";
 
 const exec = promisify(execCb);
 const VIDEO_WIDTH = 1920;
@@ -1699,13 +1700,15 @@ export async function buildVideoArchiveCandidatePool(
   }
 ): Promise<CuratedCandidatePick[]> {
   const text = combinedSceneText.trim().slice(0, 1200);
+  const stubKeywords = text.split(/\s+/).filter((w) => w.length > 3).slice(0, 12);
   const stubBeat: CuratedBeatContext = {
     index: 0,
     text,
+    keywords: stubKeywords.length > 0 ? stubKeywords : ["documentary"],
     searchQuery: text.split(/\s+/).slice(0, 8).join(" ") || "documentary",
     powerWord: text.split(/\s+/).find((w) => w.length > 4) ?? "documentary",
   };
-  const stubScene: CuratedSceneContext = { index: 0, text, pexelsQuery: stubBeat.searchQuery };
+  const stubScene: CuratedSceneContext = { text, pexelsQuery: stubBeat.searchQuery };
   const { beatTags, topicAnchors, allTags, videoVisualTopic } = buildBeatMatchTags(
     stubBeat,
     stubScene,

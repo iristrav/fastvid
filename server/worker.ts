@@ -82,20 +82,33 @@ async function main() {
   await recordWorkerHeartbeat("worker").catch((e) =>
     console.warn("[Worker] Heartbeat failed:", (e as Error).message)
   );
-  setInterval(() => {
-    recordWorkerHeartbeat("worker").catch(() => {});
+  setInterval(async () => {
+    const { getLocalVisionStatus } = await import("./localClipVision");
+    const clipStatus = getLocalVisionStatus();
+    await recordWorkerHeartbeat("worker", {
+      clipReady: clipStatus.pipelineReady,
+      clipHint: clipStatus.hint,
+    }).catch(() => {});
   }, 60_000);
   const { getStorageBackend } = await import("./storageBackend");
   console.log("[Worker] Object storage:", getStorageBackend());
   await runMigrations();
   await recoverAllStuckVideos();
-  const { warmUpLocalClipVision, clipPreloadEnabled } = await import("./localClipVision");
+  const { warmUpLocalClipVision, clipPreloadEnabled, getLocalVisionStatus, clipModelCacheDir } =
+    await import("./localClipVision");
+  let clipReady = false;
   if (clipPreloadEnabled()) {
-    console.log("[Worker] Pre-loading CLIP model (ENABLE_CLIP_PRELOAD)...");
-    await warmUpLocalClipVision().catch((err) =>
-      console.warn("[Worker] CLIP warm-up failed (non-fatal):", (err as Error).message)
-    );
+    console.log(`[Worker] Pre-loading CLIP model (cache: ${clipModelCacheDir()})...`);
+    clipReady = await warmUpLocalClipVision().catch((err) => {
+      console.warn("[Worker] CLIP warm-up failed (non-fatal):", (err as Error).message);
+      return false;
+    });
   }
+  const clipStatus = getLocalVisionStatus();
+  await recordWorkerHeartbeat("worker", {
+    clipReady,
+    clipHint: clipStatus.hint,
+  }).catch((e) => console.warn("[Worker] Heartbeat (post-CLIP) failed:", (e as Error).message));
   const { autoArchiveGeoRetagOnStart } = await import("./sourcingPolicy");
   if (autoArchiveGeoRetagOnStart()) {
     try {

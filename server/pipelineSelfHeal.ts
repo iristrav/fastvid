@@ -28,7 +28,7 @@ export function healQualityReportForExport(
   videoLength?: string | null,
   finalVideo?: FinalVideoValidation | null
 ): VideoQualityReport {
-  if (qualityExportHardTierEnabled() || blockExportOnVisualMismatch()) {
+  if (qualityExportHardTierEnabled()) {
     return report;
   }
   const minScore = minQualityExportScore(videoLength);

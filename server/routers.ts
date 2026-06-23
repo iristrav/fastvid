@@ -1012,7 +1012,7 @@ export const appRouter = router({
       videoType: z.enum(["documentary", "listicle", "tutorial", "explainer"]).default("documentary"),
       voiceId: z.string().optional(),
       customVoiceoverUrl: z.string().optional(),
-      enableSubtitles: z.boolean().default(true),
+      enableSubtitles: z.boolean().default(false),
     })).mutation(async ({ ctx, input }) => {
       if (ctx.user.role !== "admin") {
         const onboarding = await getLatestOnboardingRequest(ctx.user.id, ctx.user.email);

@@ -231,11 +231,9 @@ export function deferFacelessSubtitlesToCompose(): boolean {
   return process.env.ENABLE_DEFER_FACELESS_SUBTITLES !== "false";
 }
 
-/** No score self-heal; hard fail on sync/fallback beats (ENABLE_QUALITY_EXPORT_HARD_TIER=true). */
+/** No score self-heal; hard fail on sync/fallback beats — opt-in via ENABLE_QUALITY_EXPORT_HARD_TIER=true. */
 export function qualityExportHardTierEnabled(): boolean {
-  if (process.env.ENABLE_QUALITY_EXPORT_HARD_TIER === "true") return true;
-  if (process.env.ENABLE_QUALITY_EXPORT_HARD_TIER === "false") return false;
-  return strictVoiceVisualMatchEnabled();
+  return process.env.ENABLE_QUALITY_EXPORT_HARD_TIER === "true";
 }
 
 /**

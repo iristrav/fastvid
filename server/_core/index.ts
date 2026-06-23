@@ -30,7 +30,7 @@ import {
   europeanaSourcingEnabled,
 } from "../sourcingPolicy";
 import { ENV, groqKeyFromEnv, openAiKeyFromEnv } from "./env";
-import { getVisionQaStatus } from "../visualQualityGate";
+import { getVisionQaStatus, mergeWorkerClipVisionStatus } from "../visualQualityGate";
 import { getLlmDiagnostics, logLlmStartupDiagnostics } from "../llmStartupDiagnostics";
 import { recordWorkerHeartbeat, readWorkerHeartbeats, summarizeWorkerHealth } from "../workerHeartbeat";
 
@@ -288,6 +288,12 @@ async function startServer() {
               endpoint: process.env.S3_ENDPOINT || "aws-default",
             }
           : { backend: "forge" };
+    const workerHb = heartbeats.find((h) => h.role === "worker");
+    const visionQA = mergeWorkerClipVisionStatus(
+      getVisionQaStatus(),
+      workerHb?.clipReady ?? null,
+      workerHb?.clipHint
+    );
     res.status(200).json({
       status: workerHealth.workerOk && llm.provider !== "none" ? "ok" : "degraded",
       timestamp: new Date().toISOString(),
@@ -305,7 +311,7 @@ async function startServer() {
         ok: workerHealth.workerOk,
         hint: workerHealth.hint,
       },
-      visionQA: getVisionQaStatus(),
+      visionQA,
       llm,
       env: {
         BUILT_IN_FORGE_API_KEY: !!process.env.BUILT_IN_FORGE_API_KEY,

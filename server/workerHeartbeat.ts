@@ -29,9 +29,21 @@ async function ensureHeartbeatTable(): Promise<void> {
       git_commit VARCHAR(64),
       llm_provider VARCHAR(16),
       service_name VARCHAR(128),
+      clip_ready TINYINT DEFAULT NULL,
+      clip_hint VARCHAR(512) DEFAULT NULL,
       seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
     )
   `);
+  try {
+    await db.execute(sql`ALTER TABLE fastvid_worker_heartbeats ADD COLUMN clip_ready TINYINT DEFAULT NULL`);
+  } catch {
+    /* column exists */
+  }
+  try {
+    await db.execute(sql`ALTER TABLE fastvid_worker_heartbeats ADD COLUMN clip_hint VARCHAR(512) DEFAULT NULL`);
+  } catch {
+    /* column exists */
+  }
   tableEnsured = true;
 }
 
@@ -40,24 +52,34 @@ export type WorkerHeartbeatRow = {
   gitCommit: string | null;
   llmProvider: string | null;
   serviceName: string | null;
+  clipReady: boolean | null;
+  clipHint: string | null;
   seenAt: string | null;
   ageSec: number | null;
 };
 
-export async function recordWorkerHeartbeat(role: "web" | "worker"): Promise<void> {
+export async function recordWorkerHeartbeat(
+  role: "web" | "worker",
+  opts?: { clipReady?: boolean; clipHint?: string }
+): Promise<void> {
   const db = await getDb();
   if (!db) return;
   await ensureHeartbeatTable();
   const d = getLlmDiagnostics(role);
   const gitCommit = process.env.RAILWAY_GIT_COMMIT_SHA?.slice(0, 7) ?? null;
   const serviceName = process.env.RAILWAY_SERVICE_NAME ?? null;
+  const clipReady =
+    opts?.clipReady === undefined ? null : opts.clipReady ? 1 : 0;
+  const clipHint = opts?.clipHint?.slice(0, 512) ?? null;
   await db.execute(sql`
-    INSERT INTO fastvid_worker_heartbeats (role, git_commit, llm_provider, service_name, seen_at)
-    VALUES (${role}, ${gitCommit}, ${d.provider}, ${serviceName}, NOW())
+    INSERT INTO fastvid_worker_heartbeats (role, git_commit, llm_provider, service_name, clip_ready, clip_hint, seen_at)
+    VALUES (${role}, ${gitCommit}, ${d.provider}, ${serviceName}, ${clipReady}, ${clipHint}, NOW())
     ON DUPLICATE KEY UPDATE
       git_commit = VALUES(git_commit),
       llm_provider = VALUES(llm_provider),
       service_name = VALUES(service_name),
+      clip_ready = COALESCE(VALUES(clip_ready), clip_ready),
+      clip_hint = COALESCE(VALUES(clip_hint), clip_hint),
       seen_at = NOW()
   `);
 }
@@ -68,7 +90,7 @@ export async function readWorkerHeartbeats(): Promise<WorkerHeartbeatRow[]> {
   try {
     await ensureHeartbeatTable();
     const raw = await db.execute(sql`
-      SELECT role, git_commit, llm_provider, service_name, seen_at
+      SELECT role, git_commit, llm_provider, service_name, clip_ready, clip_hint, seen_at
       FROM fastvid_worker_heartbeats
       ORDER BY role
     `);
@@ -77,6 +99,8 @@ export async function readWorkerHeartbeats(): Promise<WorkerHeartbeatRow[]> {
       git_commit: string | null;
       llm_provider: string | null;
       service_name: string | null;
+      clip_ready: number | null;
+      clip_hint: string | null;
       seen_at: Date | string | null;
     }>(raw);
     const now = Date.now();
@@ -88,6 +112,8 @@ export async function readWorkerHeartbeats(): Promise<WorkerHeartbeatRow[]> {
         gitCommit: r.git_commit,
         llmProvider: r.llm_provider,
         serviceName: r.service_name,
+        clipReady: r.clip_ready == null ? null : r.clip_ready !== 0,
+        clipHint: r.clip_hint,
         seenAt: r.seen_at ? new Date(r.seen_at).toISOString() : null,
         ageSec,
       };

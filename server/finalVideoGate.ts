@@ -109,8 +109,8 @@ function looksLikeMp4(filePath: string): boolean {
 
 function splitExportReasons(
   allReasons: string[],
-  videoLength?: string | null,
-  durationSec: number | null
+  durationSec: number | null,
+  videoLength?: string | null
 ): { hard: string[]; soft: string[] } {
   const hard: string[] = [];
   const soft: string[] = [];
@@ -248,7 +248,7 @@ export async function validateFinalVideoForExport(
     if (isInformationalSpotWarning(w)) softWarnings.push(w);
   }
 
-  const { hard, soft } = splitExportReasons(allWarnings, videoLength, spot.durationSec);
+  const { hard, soft } = splitExportReasons(allWarnings, spot.durationSec, videoLength);
   softWarnings.push(...soft);
 
   const playable = await validateFinalVideoPlayable(filePath, videoLength);

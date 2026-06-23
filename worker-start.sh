@@ -7,6 +7,20 @@
 
 echo "[worker-start.sh] Setting up FFmpeg..."
 
+# CLIP model cache on persistent Railway volume (survives redeploys)
+if [ -z "$TRANSFORMERS_CACHE" ] && [ -d "/data" ]; then
+  export TRANSFORMERS_CACHE="/data/transformers-cache"
+fi
+if [ -n "$TRANSFORMERS_CACHE" ]; then
+  mkdir -p "$TRANSFORMERS_CACHE" 2>/dev/null || true
+  export HF_HOME="${HF_HOME:-$TRANSFORMERS_CACHE}"
+  export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$TRANSFORMERS_CACHE}"
+  echo "[worker-start.sh] CLIP cache: $TRANSFORMERS_CACHE"
+fi
+if [ -z "$NODE_OPTIONS" ]; then
+  export NODE_OPTIONS="--max-old-space-size=1024"
+fi
+
 FFMPEG_PATH=""
 
 if command -v ffmpeg >/dev/null 2>&1; then

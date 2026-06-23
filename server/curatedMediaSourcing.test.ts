@@ -1,3 +1,4 @@
+import { describe, expect, it } from "vitest";
 import { isClipTitleIrrelevantToBeat } from "./visualBeatTags";
 import {
   buildBeatMatchTags,

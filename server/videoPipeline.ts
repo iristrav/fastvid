@@ -160,7 +160,6 @@ import {
   archiveVisualSourcesReady,
   markCuratedAssetUsed,
   prepareCuratedArchiveClip,
-  isCuratedPreparedStillClip,
   isCuratedPreparedVideoClip,
   listCuratedArchiveCandidates,
   buildVideoArchiveCandidatePool,
@@ -192,6 +191,7 @@ import {
   logPipelineReview,
   reviewPipelineBeforeEffects,
   reviewPipelineBeforeExport,
+  type PipelineReviewResult,
   type SceneReviewInput,
 } from "./pipelineReview";
 import { reviewSceneCritical } from "./sceneCriticalReview";
@@ -19372,7 +19372,7 @@ async function composeSceneVideo(
     const kineticChainStr = kChain ? kChain : "";
     const hasOverlays = kineticFrames.length > 0 || docOverlays.length > 0 || statCalloutFrame !== null;
     const yearDrawChain =
-      yearLabels.length > 0 && screenLabels.length === 0 && ffmpegSupportsDrawtext()
+      yearLabels.length > 0 && docOverlays.length === 0 && ffmpegSupportsDrawtext()
         ? buildYearDrawtextFilterChain("vgraded", "vout", yearLabels)
         : "";
     const videoGradeChain = yearDrawChain
@@ -20504,18 +20504,48 @@ export async function runVideoPipeline(
             montageDurations: [],
             clipBeatIndices: [],
           };
-          let result = await composeSceneVideo(
-            scene, sceneVisualResults[i]?.clips ?? [], audioPaths[i], scene.duration, workDir, scenes.length,
-            enableSubtitles, visualDedup.lastMuskStockClip, sceneVisualResults[i]?.beatDurations, usedClips,
-            {
-              dedup: visualDedup,
-              videoTitle: topicContext,
-              sceneStartSec: sceneStartSecs[i],
-              montageBeats: sceneVisualResults[i]?.beats,
-              clipBeatIndices: sceneVisualResults[i]?.clipBeatIndices,
-              composeMetaOut: composeMeta,
+          const composeOpts = {
+            dedup: visualDedup,
+            videoTitle: topicContext,
+            sceneStartSec: sceneStartSecs[i],
+            montageBeats: sceneVisualResults[i]?.beats,
+            clipBeatIndices: sceneVisualResults[i]?.clipBeatIndices,
+            composeMetaOut: composeMeta,
+          };
+          let result: string;
+          try {
+            result = await composeSceneVideo(
+              scene, sceneVisualResults[i]?.clips ?? [], audioPaths[i], scene.duration, workDir, scenes.length,
+              enableSubtitles, visualDedup.lastMuskStockClip, sceneVisualResults[i]?.beatDurations, usedClips,
+              composeOpts
+            );
+          } catch (composeErr) {
+            console.warn(
+              `[Pipeline] Scene ${scene.index}: compose failed — rescue retry:`,
+              (composeErr as Error).message?.slice(0, 120)
+            );
+            let rescueClips = isFastShortVideoLength(videoLength)
+              ? await rescueFastShortComposeClips(scene, workDir, topicContext, visualDedup)
+              : [];
+            if (rescueClips.length === 0) {
+              const minNeeded = Math.max(1, minClipsForBalancedVoice(scene.duration + 0.15, videoLength));
+              const hold = Math.max(3, scene.duration / minNeeded);
+              for (let si = 0; si < minNeeded; si++) {
+                rescueClips.push(await generateGuaranteedBeatClip(scene.index, si, hold, workDir));
+              }
             }
-          );
+            composeMeta.montageDurations = [];
+            composeMeta.clipBeatIndices = [];
+            composeMeta.montagePlan = undefined;
+            usedClips.length = 0;
+            result = await composeSceneVideo(
+              scene, rescueClips, audioPaths[i], scene.duration, workDir, scenes.length,
+              enableSubtitles, visualDedup.lastMuskStockClip,
+              rescueClips.map(() => archiveVisualBeatSecForVideo(videoLength)),
+              usedClips,
+              composeOpts
+            );
+          }
           composedUsedClips[i] = usedClips;
           const vr = sceneVisualResults[i];
           if (vr?.beats?.length && composeMeta.montageDurations.length > 0) {
@@ -20670,8 +20700,8 @@ export async function runVideoPipeline(
 
     // ── Stage 5b: QA — visuals match narration + montage timing ──────────────
     onProgress?.({ stage: STAGE_LABELS.visualReview, percent: 68 });
-    let composeReview: { ok: boolean; summary: string } = { ok: true, summary: "skipped (fast 1-min)" };
-    let finalReview: { ok: boolean; summary: string } = { ok: true, summary: "skipped (fast 1-min)" };
+    let composeReview: PipelineReviewResult = { ok: true, summary: "skipped (fast 1-min)", issues: [] };
+    let finalReview: PipelineReviewResult = { ok: true, summary: "skipped (fast 1-min)", issues: [] };
     if (!isFastShortVideoLength(videoLength)) {
     const reviewInputs = sceneReviewInputs(
       scenes,
@@ -20741,7 +20771,7 @@ export async function runVideoPipeline(
       const scene = scenes[i];
       const cardTitle = scene.chapterTitle || scene.sectionTitle;
       // Never open on a card — real footage first; skip script meta labels (HOOK, CTA)
-      if (useChapterCards && i > 0 && isPublishableChapterTitle(cardTitle)) {
+      if (useChapterCards && i > 0 && cardTitle && isPublishableChapterTitle(cardTitle)) {
         try {
           const card = await renderChapterCard(cardTitle, i, workDir);
           if (fs.existsSync(card) && fs.statSync(card).size > 1000) {
@@ -20881,8 +20911,7 @@ export async function runVideoPipeline(
     return url;
   } finally {
     try {
-      const { exec: execCp } = await import("child_process");
-      execCp(`rm -rf "${workDir}"`);
+      fs.rmSync(workDir, { recursive: true, force: true });
     } catch { /* ignore */ }
   }
 }
@@ -20905,6 +20934,7 @@ export async function rerenderFromScenes(
   const video = await getVideoById(videoId);
   const editorSettings = video ? readVideoEditorSettings(video) : { enableSubtitles: false, backgroundMusicUrl: null };
   const enableSubtitles = editorSettings.enableSubtitles;
+  const videoLength = video?.videoLength ?? "15-20";
 
   let customMusicPath: string | undefined;
   if (editorSettings.backgroundMusicUrl) {
@@ -21101,8 +21131,7 @@ export async function rerenderFromScenes(
     return url;
   } finally {
     try {
-      const { exec: execCp } = await import("child_process");
-      execCp(`rm -rf "${workDir}"`);
+      fs.rmSync(workDir, { recursive: true, force: true });
     } catch { /* ignore */ }
   }
 }

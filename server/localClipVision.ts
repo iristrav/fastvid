@@ -3,6 +3,7 @@
  * Indexes archive frames on upload; scores adopt candidates via text↔image similarity + luma.
  */
 import fs from "fs";
+import os from "os";
 import path from "path";
 import { spawn } from "child_process";
 import { promisify } from "util";
@@ -28,6 +29,54 @@ type ClipPipeline = (input: string, options?: Record<string, unknown>) => Promis
 let imagePipeline: ClipPipeline | null = null;
 let textPipeline: ClipPipeline | null = null;
 let pipelineLoadFailed = false;
+let pipelineLoadInFlight: Promise<boolean> | null = null;
+let imageLoadAttempts = 0;
+let textLoadAttempts = 0;
+const MAX_PIPELINE_LOAD_ATTEMPTS = 3;
+
+/** Writable cache dir for Hugging Face / ONNX model weights (Railway volume preferred). */
+export function clipModelCacheDir(): string {
+  const explicit =
+    process.env.TRANSFORMERS_CACHE?.trim() ||
+    process.env.HF_HOME?.trim() ||
+    process.env.XDG_CACHE_HOME?.trim();
+  if (explicit) return explicit;
+  if (process.env.UPLOADS_DIR?.startsWith("/data")) {
+    return path.join(path.dirname(process.env.UPLOADS_DIR), "transformers-cache");
+  }
+  if (process.env.RAILWAY_VOLUME_MOUNT_PATH?.trim()) {
+    return path.join(process.env.RAILWAY_VOLUME_MOUNT_PATH.trim(), "transformers-cache");
+  }
+  return path.join(os.tmpdir(), "fastvid-transformers-cache");
+}
+
+let transformersEnvConfigured = false;
+
+function configureTransformersEnv(): string {
+  const cacheDir = clipModelCacheDir();
+  if (!transformersEnvConfigured) {
+    transformersEnvConfigured = true;
+    try {
+      fs.mkdirSync(cacheDir, { recursive: true });
+    } catch {
+      /* ignore — import may still succeed with in-memory cache */
+    }
+    process.env.TRANSFORMERS_CACHE = cacheDir;
+    process.env.HF_HOME = cacheDir;
+    process.env.XDG_CACHE_HOME = cacheDir;
+  }
+  return cacheDir;
+}
+
+async function importTransformersPipeline() {
+  const cacheDir = configureTransformersEnv();
+  const { env, pipeline } = await import("@xenova/transformers");
+  env.cacheDir = cacheDir;
+  env.allowRemoteModels = true;
+  env.useBrowserCache = false;
+  env.backends.onnx.wasm.numThreads = 1;
+  return pipeline;
+}
 
 /** Local visual QA on by default — set ENABLE_LOCAL_VISION=false to disable. */
 export function localVisionEnabled(): boolean {
@@ -273,31 +322,65 @@ export function filenameLexicalBoost(clipPath: string, beatText: string, videoTi
 }
 
 async function loadImagePipeline(): Promise<ClipPipeline | null> {
-  if (pipelineLoadFailed) return null;
+  if (!localVisionEnabled()) return null;
   if (imagePipeline) return imagePipeline;
+  if (pipelineLoadFailed && imageLoadAttempts >= MAX_PIPELINE_LOAD_ATTEMPTS) return null;
   try {
-    const { pipeline } = await import("@xenova/transformers");
-    imagePipeline = (await pipeline("image-feature-extraction", CLIP_MODEL)) as ClipPipeline;
+    const pipeline = await importTransformersPipeline();
+    imagePipeline = (await pipeline("image-feature-extraction", CLIP_MODEL, {
+      quantized: true,
+    })) as ClipPipeline;
+    pipelineLoadFailed = false;
     return imagePipeline;
   } catch (err) {
-    pipelineLoadFailed = true;
-    console.warn("[LocalVision] CLIP image pipeline failed:", (err as Error).message?.slice(0, 80));
+    imageLoadAttempts++;
+    console.warn(
+      `[LocalVision] CLIP image pipeline failed (attempt ${imageLoadAttempts}/${MAX_PIPELINE_LOAD_ATTEMPTS}):`,
+      (err as Error).message?.slice(0, 200)
+    );
+    if (imageLoadAttempts >= MAX_PIPELINE_LOAD_ATTEMPTS) {
+      pipelineLoadFailed = true;
+    }
     return null;
   }
 }
 
 async function loadTextPipeline(): Promise<ClipPipeline | null> {
-  if (pipelineLoadFailed) return null;
+  if (!localVisionEnabled()) return null;
   if (textPipeline) return textPipeline;
+  if (pipelineLoadFailed && textLoadAttempts >= MAX_PIPELINE_LOAD_ATTEMPTS) return null;
   try {
-    const { pipeline } = await import("@xenova/transformers");
-    textPipeline = (await pipeline("feature-extraction", CLIP_MODEL)) as ClipPipeline;
+    const pipeline = await importTransformersPipeline();
+    textPipeline = (await pipeline("feature-extraction", CLIP_MODEL, {
+      quantized: true,
+    })) as ClipPipeline;
+    pipelineLoadFailed = false;
     return textPipeline;
   } catch (err) {
-    pipelineLoadFailed = true;
-    console.warn("[LocalVision] CLIP text pipeline failed:", (err as Error).message?.slice(0, 80));
+    textLoadAttempts++;
+    console.warn(
+      `[LocalVision] CLIP text pipeline failed (attempt ${textLoadAttempts}/${MAX_PIPELINE_LOAD_ATTEMPTS}):`,
+      (err as Error).message?.slice(0, 200)
+    );
+    if (textLoadAttempts >= MAX_PIPELINE_LOAD_ATTEMPTS) {
+      pipelineLoadFailed = true;
+    }
     return null;
   }
+}
+
+/** Load image + text pipelines once (sequential to reduce peak RAM on Railway). */
+export async function ensureClipPipelinesLoaded(): Promise<boolean> {
+  if (!localVisionEnabled()) return false;
+  if (imagePipeline && textPipeline) return true;
+  if (pipelineLoadInFlight) return pipelineLoadInFlight;
+  pipelineLoadInFlight = (async () => {
+    const image = await loadImagePipeline();
+    const text = image ? await loadTextPipeline() : null;
+    pipelineLoadInFlight = null;
+    return !!(image && text);
+  })();
+  return pipelineLoadInFlight;
 }
 
 export async function embedImageFromPath(imagePath: string): Promise<number[] | null> {
@@ -650,22 +733,28 @@ export function getLocalVisionStatus(): {
   clipIndexEnabled: boolean;
   model: string;
   pipelineReady: boolean;
+  cacheDir: string;
   hint: string;
 } {
   const enabled = localVisionEnabled();
   const clipIndexEnabled = clipEmbeddingIndexEnabled();
-  const pipelineReady = !pipelineLoadFailed && enabled;
-  let hint = "Local CLIP vision QA active — no external vision API.";
+  const cacheDir = clipModelCacheDir();
+  const loaded = !!(imagePipeline && textPipeline);
+  const pipelineReady = enabled && loaded;
+  let hint = loaded
+    ? `Local CLIP vision QA active (cache: ${cacheDir}).`
+    : pipelineLoadFailed
+      ? `CLIP model failed to load after ${MAX_PIPELINE_LOAD_ATTEMPTS} attempts — check worker logs and ${cacheDir}.`
+      : "CLIP not loaded in this process yet — worker preloads on startup.";
   if (!enabled) {
     hint = "Local vision disabled — set ENABLE_LOCAL_VISION=true (default on).";
-  } else if (pipelineLoadFailed) {
-    hint = "CLIP model failed to load — check @xenova/transformers on worker.";
   }
   return {
     enabled,
     clipIndexEnabled,
     model: CLIP_MODEL,
     pipelineReady,
+    cacheDir,
     hint,
   };
 }
@@ -676,12 +765,16 @@ export function clipPreloadEnabled(): boolean {
   return localVisionEnabled();
 }
 
-export async function warmUpLocalClipVision(): Promise<void> {
-  if (!clipPreloadEnabled()) return;
-  const [image, text] = await Promise.all([loadImagePipeline(), loadTextPipeline()]);
-  if (image && text) {
+export async function warmUpLocalClipVision(): Promise<boolean> {
+  if (!clipPreloadEnabled()) return false;
+  console.log(`[LocalVision] Loading CLIP model (cache: ${clipModelCacheDir()})...`);
+  const ok = await ensureClipPipelinesLoaded();
+  if (ok) {
     console.log("[LocalVision] CLIP model warm-up complete");
   } else {
-    console.warn("[LocalVision] CLIP warm-up incomplete — vision gate may skip or reject clips");
+    console.warn(
+      "[LocalVision] CLIP warm-up incomplete — vision gate may skip or reject clips until load succeeds"
+    );
   }
+  return ok;
 }

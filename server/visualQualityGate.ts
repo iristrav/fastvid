@@ -9,6 +9,7 @@ import { loadStoredFrameEmbeddings } from "./archiveClipEmbedding";
 import { loadStoredStockFrameEmbeddingsFromPath } from "./stockClipEmbedding";
 import {
   LOCAL_FRAME_FRACTIONS,
+  ensureClipPipelinesLoaded,
   extractFrameAtFraction,
   getLocalVisionStatus,
   localVisionEnabled,
@@ -132,6 +133,26 @@ export function effectiveVisionSampleCount(fastMode = false, shortVideo = false)
     return Math.max(1, Math.floor(base * coverage + 0.001));
   }
   return Math.max(1, Math.min(base, Math.round(base * coverage)));
+}
+
+/** Merge worker-reported CLIP status into web /api/health (CLIP runs on worker, not web). */
+export function mergeWorkerClipVisionStatus(
+  visionQa: ReturnType<typeof getVisionQaStatus>,
+  workerClipReady: boolean | null,
+  workerClipHint: string | null | undefined
+): ReturnType<typeof getVisionQaStatus> {
+  if (workerClipReady == null) return visionQa;
+  const localVision = {
+    ...visionQa.localVision,
+    pipelineReady: workerClipReady,
+    hint: workerClipHint?.trim() || visionQa.localVision.hint,
+  };
+  const ready = visionQa.clipVisionGate && visionQa.sceneCriticalReview && workerClipReady;
+  let hint = localVision.hint;
+  if (visionQa.clipVisionGate && visionQa.sceneCriticalReview && workerClipReady) {
+    hint += ` ${visionQa.effectiveSamplesFull} frames/clip (${visionQa.effectiveSamplesFast} fast), ${Math.round(visionQa.visionFrameCoverage * 100)}% coverage, pass ≥${visionQa.minScore}/10.`;
+  }
+  return { ...visionQa, ready, localVision, hint };
 }
 
 /** Runtime status for /api/health. */
@@ -496,6 +517,8 @@ export async function evaluateClipVisionGate(
     return { pass: true, worstScore10: null, skipped: true };
   }
 
+  await ensureClipPipelinesLoaded();
+
   const cacheKey = visionGateCacheKey(clipPath, beatText, minScore, visualDescription);
   if (visionGateCache.has(cacheKey)) {
     const pass = visionGateCache.get(cacheKey)!;
@@ -576,7 +599,8 @@ export async function scoreAdoptedClipQuality(
   workDir: string,
   sceneIndex: number,
   beatIndex: number,
-  fastMode = false
+  fastMode = false,
+  shortVideo = false
 ): Promise<{
   score: number;
   matchesNarration: boolean;
