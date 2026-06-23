@@ -44,6 +44,7 @@ import {
 import { resolveStoredVideoLocalPath, validateFinalVideoPlayable } from "./finalVideoGate";
 import type { ProgressLogEntry } from "./db";
 import { videoLengthSchema, normalizeVideoLength, isShortVideoLength } from "@shared/videoLengths";
+import { isFastShortVideoLength, maxPipelineWallClockHardMin, pipelineWallClockLimitEnabled } from "./sourcingPolicy";
 import { PIPELINE_DISPLAY_STAGES, formatGenerationDuration, progressStepWithElapsed, resolvePipelineDisplayStage } from "@shared/pipelineProgress";
 import { ONE_YEAR_MS } from "@shared/const";
 import { clearVideoGenerationCancel, isVideoGenerationCancelRequested } from "./videoGenerationCancel";
@@ -797,7 +798,7 @@ async function _generateVideoWithAI(
     }, 15_000);
     let videoUrl: string;
     try {
-      videoUrl = await runVideoPipeline(
+      const pipelineRun = runVideoPipeline(
         videoId,
         approvedScript,
         async (progress) => {
@@ -811,6 +812,28 @@ async function _generateVideoWithAI(
         enableSubtitles,
         prompt
       );
+      if (isFastShortVideoLength(videoLength) && pipelineWallClockLimitEnabled()) {
+        const hardMs = maxPipelineWallClockHardMin(videoLength) * 60_000;
+        const elapsed = Date.now() - pipelineStartedAt;
+        const remainingMs = Math.max(45_000, hardMs - elapsed);
+        videoUrl = await Promise.race([
+          pipelineRun,
+          new Promise<never>((_, reject) =>
+            setTimeout(
+              () =>
+                reject(
+                  pipelineError(
+                    PIPELINE_ERROR.STUCK_TIMEOUT,
+                    `Pipeline exceeded ${Math.round(hardMs / 60_000)} minute wall-clock budget`
+                  )
+                ),
+              remainingMs
+            )
+          ),
+        ]);
+      } else {
+        videoUrl = await pipelineRun;
+      }
     } finally {
       clearInterval(pipelineHeartbeat);
       clearInterval(elapsedHeartbeat);

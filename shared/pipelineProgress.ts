@@ -77,10 +77,11 @@ export function progressStepWithElapsed(label: string, startedAtMs: number): str
   return `${label} · ${formatGenerationDuration(elapsedSec)}`;
 }
 
-/** Rough max generation window for UI estimates — 8 min pipeline per 1 min video, 10:1 for longer. */
+/** Rough max generation window for UI estimates — 10 min hard cap for 1-min videos. */
 export function maxGenerationEstimateSec(videoLength?: string | null): number {
   const mins = targetVideoDurationMinutes(videoLength);
-  const ratio = mins <= 1 ? 8 : 10;
+  if (mins <= 1) return 10 * 60;
+  const ratio = 10;
   return generationBudgetMinutes(videoLength, ratio) * 60;
 }
 

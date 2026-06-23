@@ -83,7 +83,7 @@ export function curatedMaxStockBeatsPerVideo(videoLength?: string | null): numbe
   if (!archivePexelsFallbackEnabled()) return 0;
   if (visualFootageFocusEnabled() && strictVoiceVisualMatchEnabled()) {
     const mins = targetVideoDurationMinutes(videoLength);
-    if (mins <= 1) return 6;
+    if (mins <= 1) return 8;
     return 2;
   }
   const raw = process.env.MAX_STOCK_BEATS_PER_VIDEO?.trim();
@@ -158,7 +158,7 @@ export const PIPELINE_UNLIMITED_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
  * Target end-to-end generation budget (minutes).
- * 1-min videos: 8 min total; longer videos: video_minutes × PIPELINE_MIN_PER_VIDEO_MIN (default 10).
+ * 1-min videos: 9 min target; longer videos: video_minutes × PIPELINE_MIN_PER_VIDEO_MIN (default 10).
  */
 export function maxPipelineWallClockMin(videoLength?: string | null): number {
   if (!pipelineWallClockLimitEnabled()) {
@@ -170,16 +170,28 @@ export function maxPipelineWallClockMin(videoLength?: string | null): number {
     if (!isNaN(n) && n >= 8 && n <= 300) return n;
   }
   const mins = targetVideoDurationMinutes(videoLength);
-  if (mins <= 1) return 8;
+  if (mins <= 1) return 9;
   return Math.round(mins * pipelineMinutesPerVideoMinute());
 }
 
-/** Hard wall-clock fail — maxPipelineWallClockMin × grace (default 8×1.2 = 9.6 min for 1-min videos). */
+/** Hard wall-clock fail — 1-min videos: exactly 10 min; longer: target × grace. */
 export function maxPipelineWallClockHardMin(videoLength?: string | null): number {
   if (!pipelineWallClockLimitEnabled()) {
     return Math.round(PIPELINE_UNLIMITED_MS / 60_000);
   }
+  const mins = targetVideoDurationMinutes(videoLength);
+  if (mins <= 1) return 10;
   return Math.ceil(maxPipelineWallClockMin(videoLength) * pipelineWallClockGraceFactor());
+}
+
+/** After this many ms on 1-min fast path, prefer licensed stock over slow archive retries. */
+export function pipelineRushModeMs(): number {
+  const raw = process.env.PIPELINE_RUSH_MODE_MS?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 120_000 && n <= 540_000) return n;
+  }
+  return 6 * 60_000;
 }
 
 /** ≤1 min videos on wall-clock-limited hosts (Railway worker). */
@@ -316,7 +328,7 @@ export function visualStageWallClockMin(videoLength?: string | null): number {
   const hard = maxPipelineWallClockHardMin(videoLength);
   const mins = targetVideoDurationMinutes(videoLength);
   if (mins <= 1) {
-    return 8;
+    return 5;
   }
   return Math.max(8, Math.min(total - 6, Math.round(total * 0.88)));
 }
@@ -332,7 +344,7 @@ export function stockClipQualityFloor(videoLength?: string | null): number {
   return 8;
 }
 
-/** Beat cadence for 1-min fast path — fewer beats → faster visual stage (default 22s). */
+/** Beat cadence for 1-min fast path — fewer beats → faster visual stage (default 24s). */
 export function archiveVisualBeatSecForVideo(videoLength?: string | null): number {
   if (!isFastShortVideoLength(videoLength)) return archiveVisualBeatSec();
   const raw = process.env.FAST_ARCHIVE_BEAT_SEC?.trim();
@@ -340,27 +352,27 @@ export function archiveVisualBeatSecForVideo(videoLength?: string | null): numbe
     const n = parseFloat(raw);
     if (!isNaN(n) && n >= 12 && n <= 24) return n;
   }
-  return 22;
+  return 24;
 }
 
-/** Wall-clock ms after pipeline start before turbo stock fallback on 1-min videos (default 90s). */
+/** Wall-clock ms after pipeline start before turbo stock fallback on 1-min videos (default 20s). */
 export function visualSourcingTurboMs(): number {
   const raw = process.env.VISUAL_SOURCING_TURBO_MS?.trim();
   if (raw) {
     const n = parseInt(raw, 10);
-    if (!isNaN(n) && n >= 30_000 && n <= 300_000) return n;
+    if (!isNaN(n) && n >= 15_000 && n <= 300_000) return n;
   }
-  return 30_000;
+  return 20_000;
 }
 
-/** Max ms per beat spent trying archive candidates before moving on (default 10s on 1-min). */
+/** Max ms per beat spent trying archive candidates before moving on (default 8s on 1-min). */
 export function archiveBeatTryTimeoutMs(videoLength?: string | null): number {
   const raw = process.env.ARCHIVE_BEAT_TRY_TIMEOUT_MS?.trim();
   if (raw) {
     const n = parseInt(raw, 10);
-    if (!isNaN(n) && n >= 8_000 && n <= 120_000) return n;
+    if (!isNaN(n) && n >= 5_000 && n <= 120_000) return n;
   }
-  if (isFastShortVideoLength(videoLength)) return 10_000;
+  if (isFastShortVideoLength(videoLength)) return 8_000;
   return 45_000;
 }
 
@@ -551,7 +563,8 @@ export function screenLabelMaxPerScene(): number {
 }
 
 /** Prefer different archive clips across consecutive videos on the same topic. */
-export function archiveCrossVideoVarietyEnabled(): boolean {
+export function archiveCrossVideoVarietyEnabled(videoLength?: string | null): boolean {
+  if (isFastShortVideoLength(videoLength)) return false;
   return process.env.ARCHIVE_CROSS_VIDEO_VARIETY !== "false";
 }
 

@@ -37,7 +37,7 @@ describe("visual cadence (5–8s per clip)", () => {
   });
 
   it("stock cap defaults very low per video length (strict visual focus)", () => {
-    expect(curatedMaxStockBeatsPerVideo("1")).toBe(6);
+    expect(curatedMaxStockBeatsPerVideo("1")).toBe(8);
     expect(curatedMaxStockBeatsPerVideo("8-10")).toBe(2);
     expect(curatedAiFallbackMaxClips("1")).toBe(0);
     expect(archiveMaxImageClipsPerVideo("1")).toBe(3);

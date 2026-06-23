@@ -147,7 +147,7 @@ import {
   uniqueQueryStrings,
   uniqueCoercedQueries,
 } from "./stringCoercion";
-import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, maxPipelineWallClockMin, maxPipelineWallClockHardMin, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin, fastBeatConcurrency } from "./sourcingPolicy";
+import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin, fastBeatConcurrency } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -1856,11 +1856,11 @@ function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProfile {
   let profile: PipelinePerfProfile;
   if (isShortVideoLength(videoLength)) {
     profile = applyAiFallbackToProfile({
-      targetWallClockMin: 8,
+      targetWallClockMin: 9,
       maxBeatsPerScene: curatedArchiveOnlyVisuals() ? (IS_RAILWAY ? 16 : 18) : IS_RAILWAY ? 4 : 6,
       maxTopicQueries: IS_RAILWAY ? 1 : 3,
       skipFairUseTransform: true,
-      transformTimeoutMs: 15_000,
+      transformTimeoutMs: 12_000,
       enableArchival: true,
       enableNasa: false,
       enableMuskHeroFetch: false,
@@ -1868,8 +1868,8 @@ function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProfile {
       sceneParallelism: IS_RAILWAY ? 4 : 3,
       pexelsDownloadRetries: 1,
       maxStockQueriesPerBeat: 2,
-      beatClipTimeoutMs: IS_RAILWAY ? 12_000 : 45_000,
-      sceneVisualTimeoutMs: IS_RAILWAY ? 5 * 60_000 : 8 * 60_000,
+      beatClipTimeoutMs: IS_RAILWAY ? 8_000 : 30_000,
+      sceneVisualTimeoutMs: IS_RAILWAY ? 4 * 60_000 : 6 * 60_000,
       fastStockMode: IS_RAILWAY,
       scriptOnlyVisuals: false,
     }, videoLength);
@@ -2757,7 +2757,10 @@ async function generateBulkSceneVoiceovers(
   return durations;
 }
 
-function bulkVoiceoverTimeoutMs(sceneCount: number): number {
+function bulkVoiceoverTimeoutMs(sceneCount: number, videoLength?: string): number {
+  if (isFastShortVideoLength(videoLength)) {
+    return Math.min(75_000, 40_000 + sceneCount * 8_000);
+  }
   return Math.min(900_000, 120_000 + sceneCount * 20_000);
 }
 
@@ -8399,10 +8402,16 @@ function archiveNeedsOpeningFootage(dedup: VisualDedupState): boolean {
   return dedup.archiveVideoClipsUsed < archiveMinVideoClipsTarget(dedup.videoLength);
 }
 
-/** After ~90s total on 1-min videos, prefer stock and skip slow archive retries. */
+/** After turbo threshold on 1-min videos, prefer stock and skip slow archive retries. */
 function visualSourcingTurbo(dedup: VisualDedupState): boolean {
   if (!isFastShortVideoLength(dedup.videoLength) || !dedup.pipelineStartedMs) return false;
   return Date.now() - dedup.pipelineStartedMs > visualSourcingTurboMs();
+}
+
+/** Late in the 1-min budget — stock-first to guarantee finish before hard cap. */
+function isPipelineRushMode(dedup: VisualDedupState): boolean {
+  if (!isFastShortVideoLength(dedup.videoLength) || !dedup.pipelineStartedMs) return false;
+  return Date.now() - dedup.pipelineStartedMs > pipelineRushModeMs();
 }
 
 function markCuratedArchiveClipUsage(dedup: VisualDedupState, clipPath: string): void {
@@ -16596,7 +16605,7 @@ async function fillBeatVisual(
   dedup.segmentGeoLock = resolveSegmentGeoLock(beatRegion, dedup.segmentGeoLock, videoTitle);
   const fastShort = isFastShortVideoLength(dedup.videoLength) && dedup.perf.fastStockMode;
 
-  const openingVideosOnly = archiveNeedsOpeningFootage(dedup);
+  const openingVideosOnly = archiveNeedsOpeningFootage(dedup) && !isPipelineRushMode(dedup);
   const archiveSearchOpts = {
     varietySeed: dedup.varietySeed,
     crossVideoExcludeIds: dedup.crossVideoExcludeIds,
@@ -16690,6 +16699,23 @@ async function fillBeatVisual(
   }
 
   if (curatedArchiveOnlyVisuals()) {
+    if (isPipelineRushMode(dedup) && canUseLicensedStockBeat(dedup)) {
+      if (
+        await adoptStockBeatClipFallback(
+          beat,
+          scene,
+          workDir,
+          videoTitle,
+          dedup,
+          pushClip,
+          holdSec,
+          semanticProfile
+        )
+      ) {
+        return true;
+      }
+    }
+
     const prefetchedRanked = archivePrefetch ? await archivePrefetch : undefined;
     const geoDoc = isGeoDocumentaryContext(beat.text, videoTitle);
     const parallelAuthentic = !fastShort && geoDoc;
@@ -20108,6 +20134,9 @@ export async function runVideoPipeline(
   fs.mkdirSync(workDir, { recursive: true });
 
   const videoRow = await getVideoById(videoId);
+  const pipelineWallStartMs = videoRow?.generationStartedAt
+    ? new Date(videoRow.generationStartedAt).getTime()
+    : Date.now();
   const effectiveVoiceId = voiceId?.trim() || videoRow?.voiceId?.trim() || undefined;
   if (effectiveVoiceId) {
     console.log(`[Pipeline] Video ${videoId}: using selected ElevenLabs voice ${effectiveVoiceId.slice(0, 12)}…`);
@@ -20185,7 +20214,7 @@ export async function runVideoPipeline(
             percent: 8 + Math.round((done / total) * 10),
           });
         }, script),
-        bulkVoiceoverTimeoutMs(scenes.length),
+        bulkVoiceoverTimeoutMs(scenes.length, videoLength),
         "Bulk voiceover generation"
       );
     }
@@ -20272,7 +20301,7 @@ export async function runVideoPipeline(
     }
     const visualDedup = createVisualDedupState(perf, { primaryPerson, personTopicLock: personLocked });
     visualDedup.videoLength = videoLength;
-    visualDedup.pipelineStartedMs = t0;
+    visualDedup.pipelineStartedMs = pipelineWallStartMs;
     if (ttsWordAlignmentEnabled() && !isFastShortVideoLength(videoLength)) {
       const storedTts = loadStoredTtsAlignment(workDir);
       if (storedTts) {
@@ -20301,7 +20330,7 @@ export async function runVideoPipeline(
     );
     visualDedup.visualBeatsCompleted = 0;
     visualDedup.varietySeed = ((videoId * 2654435761) ^ hashVarietySeed(topicContext)) >>> 0;
-    if (archiveCrossVideoVarietyEnabled()) {
+    if (archiveCrossVideoVarietyEnabled(videoLength)) {
       visualDedup.crossVideoExcludeIds = getCrossVideoExcludeAssetIds(topicContext, videoId);
       console.log(
         `[Pipeline] Cross-video variety: excluding ${visualDedup.crossVideoExcludeIds.size} asset(s) from recent same-topic videos`
@@ -20311,36 +20340,51 @@ export async function runVideoPipeline(
 
     if (curatedArchiveOnlyVisuals()) {
       const combinedSceneText = scenes.map((s) => s.text).join(" ");
-      visualDedup.archiveCandidatePool = await buildVideoArchiveCandidatePool(
-        topicContext,
-        combinedSceneText,
-        {
-          assetsCache: visualDedup.archiveAssetsCache,
-          crossVideoExcludeIds: visualDedup.crossVideoExcludeIds,
-          excludeIds: visualDedup.usedCuratedAssetIds,
-          excludeStorageUrls: visualDedup.usedCuratedStorageUrls,
-        }
-      );
+      const poolMs = isFastShortVideoLength(videoLength) ? 6_000 : 45_000;
+      try {
+        visualDedup.archiveCandidatePool = await withTimeout(
+          buildVideoArchiveCandidatePool(
+            topicContext,
+            combinedSceneText,
+            {
+              assetsCache: visualDedup.archiveAssetsCache,
+              crossVideoExcludeIds: visualDedup.crossVideoExcludeIds,
+              excludeIds: visualDedup.usedCuratedAssetIds,
+              excludeStorageUrls: visualDedup.usedCuratedStorageUrls,
+            }
+          ),
+          poolMs,
+          "Archive pool warm"
+        );
+      } catch (poolErr) {
+        console.warn(
+          `[Pipeline] Archive pool warm skipped (${poolMs / 1000}s cap):`,
+          (poolErr as Error).message?.slice(0, 80)
+        );
+        visualDedup.archiveCandidatePool = [];
+      }
       console.log(
         `[Pipeline] Archive pool warmed: ${visualDedup.archiveCandidatePool.length} candidate(s) for this video`
       );
-      try {
-        const { backfillClipEmbeddingsWithBudget } = await import("./archiveClipIndexBackfill");
-        void backfillClipEmbeddingsWithBudget(16, 20_000)
-          .then((warmed) => {
-            if (warmed.indexed > 0) {
-              console.log(
-                `[Pipeline] CLIP index background warm: +${warmed.indexed} archive clip(s) indexed` +
-                  (warmed.timedOut ? " (20s budget)" : "")
-              );
-            }
-          })
-          .catch(() => {});
-      } catch (warmErr) {
-        console.warn(
-          "[Pipeline] CLIP index pre-warm skipped:",
-          (warmErr as Error).message?.slice(0, 80)
-        );
+      if (!isFastShortVideoLength(videoLength)) {
+        try {
+          const { backfillClipEmbeddingsWithBudget } = await import("./archiveClipIndexBackfill");
+          void backfillClipEmbeddingsWithBudget(16, 20_000)
+            .then((warmed) => {
+              if (warmed.indexed > 0) {
+                console.log(
+                  `[Pipeline] CLIP index background warm: +${warmed.indexed} archive clip(s) indexed` +
+                    (warmed.timedOut ? " (20s budget)" : "")
+                );
+              }
+            })
+            .catch(() => {});
+        } catch (warmErr) {
+          console.warn(
+            "[Pipeline] CLIP index pre-warm skipped:",
+            (warmErr as Error).message?.slice(0, 80)
+          );
+        }
       }
     }
 
@@ -20350,7 +20394,7 @@ export async function runVideoPipeline(
     let heartbeatTick = 0;
     const visualHeartbeat = setInterval(() => {
       heartbeatTick++;
-      assertPipelineWithinBudget(videoId, t0, videoLength);
+      assertPipelineWithinBudget(videoId, pipelineWallStartMs, videoLength);
       const beatTotal = Math.max(1, visualDedup.visualBeatsTotal || scenes.length);
       const beatsDone = visualDedup.visualBeatsCompleted ?? completedVisuals;
       onProgress?.({
@@ -20472,20 +20516,49 @@ export async function runVideoPipeline(
       if (sceneVisualResults[si].clips.length === 0) {
         if (isFastShortVideoLength(videoLength)) {
           console.warn(
-            `[Pipeline] Scene ${scenes[si].index}: empty after fetch — fast recovery (≤2min)`
+            `[Pipeline] Scene ${scenes[si].index}: empty after fetch — fast stock/guaranteed fill`
           );
-          try {
-            sceneVisualResults[si] = await withTimeout(
-              recoverSceneClipsIfEmpty(scenes[si], workDir, topicContext, visualDedup),
-              120_000,
-              `Scene ${scenes[si].index} fast recovery`
-            );
-          } catch (recoverErr) {
-            console.warn(
-              `[Pipeline] Scene ${scenes[si].index}: fast recovery timed out:`,
-              (recoverErr as Error).message?.slice(0, 80)
-            );
-            sceneVisualResults[si] = { clips: [], beatDurations: [] };
+          const scene = scenes[si]!;
+          const clips: string[] = [];
+          const beatDurations: number[] = [];
+          const minNeeded = Math.max(1, minClipsForBalancedVoice(scene.duration + 0.15, videoLength));
+          if (archivePexelsFallbackEnabled() && canUseLicensedStockBeat(visualDedup)) {
+            const scenePersons = resolveScenePersons(scene, topicContext, visualDedup.primaryPerson || undefined);
+            const stubBeat: SceneBeat = {
+              index: 0,
+              text: scene.text.slice(0, 200),
+              searchQuery: stockQueryFromBeatScript(scene.text, scenePersons, scene.text, topicContext),
+              powerWord: extractPowerWordFromSentence(scene.text.slice(0, 200), scenePersons),
+              keywords: buildRelevanceKeywords(scene, scene.text),
+              holdSec: archiveVisualBeatSecForVideo(videoLength),
+            };
+            try {
+              await withTimeout(
+                adoptStockBeatClipFallback(
+                  stubBeat,
+                  scene,
+                  workDir,
+                  topicContext,
+                  visualDedup,
+                  async (clipPath, holdSec = stubBeat.holdSec) => {
+                    clips.push(clipPath);
+                    beatDurations.push(holdSec);
+                    return clips.length < minNeeded;
+                  },
+                  stubBeat.holdSec
+                ),
+                25_000,
+                `Scene ${scene.index} fast stock rescue`
+              );
+            } catch {
+              /* fall through to guaranteed */
+            }
+          }
+          if (clips.length < minNeeded) {
+            await appendGuaranteedSceneClips(scene, workDir, clips, beatDurations, minNeeded);
+          }
+          if (clips.length > 0) {
+            sceneVisualResults[si] = { clips, beatDurations };
           }
         } else if (strictVoiceVisualMatchEnabled()) {
           console.warn(
@@ -20571,7 +20644,7 @@ export async function runVideoPipeline(
     );
 
     // ── Stage 4: Compose scenes — clips, voice, year badges (final output) ───
-    assertPipelineWithinBudget(videoId, t0, videoLength);
+    assertPipelineWithinBudget(videoId, pipelineWallStartMs, videoLength);
     onProgress?.({ stage: STAGE_LABELS.assembly, percent: 47 });
     const t3 = Date.now();
 
@@ -20762,7 +20835,7 @@ export async function runVideoPipeline(
           return result;
         }))
       ),
-      isFastShortVideoLength(videoLength) ? 4 * 60_000 : 2400_000,
+      isFastShortVideoLength(videoLength) ? 150_000 : 2400_000,
       "Scene compose stage"
     );
     console.log(`[Pipeline] Stage 4 (compose): ${scenes.length} scenes in ${((Date.now()-t3)/1000).toFixed(1)}s`);
@@ -21021,7 +21094,7 @@ export async function runVideoPipeline(
     onProgress?.({ stage: STAGE_LABELS.complete, percent: 100 });
     const totalMs = Date.now() - t0;
     console.log(`[Pipeline] Video ${videoId} COMPLETE in ${(totalMs/60000).toFixed(1)} min: ${url}`);
-    if (archiveCrossVideoVarietyEnabled() && curatedArchiveOnlyVisuals()) {
+    if (archiveCrossVideoVarietyEnabled(videoLength) && curatedArchiveOnlyVisuals()) {
       recordArchiveVideoUsage(videoId, visualDedup.usedCuratedAssetIds, topicContext);
     }
     return url;
@@ -21142,7 +21215,7 @@ export async function rerenderFromScenes(
             30 + Math.round((done / total) * 15)
           );
         }),
-        bulkVoiceoverTimeoutMs(scenes.length),
+        bulkVoiceoverTimeoutMs(scenes.length, videoLength),
         "Rerender bulk voiceover"
       );
       bulkDurations.forEach((d, i) => { durations[i] = d; });
