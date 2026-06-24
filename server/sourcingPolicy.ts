@@ -170,37 +170,39 @@ export function maxPipelineWallClockMin(videoLength?: string | null): number {
     if (!isNaN(n) && n >= 8 && n <= 300) return n;
   }
   const mins = targetVideoDurationMinutes(videoLength);
-  if (mins <= 1) return 9;
+  if (mins <= 1) return 14;
   return Math.round(mins * pipelineMinutesPerVideoMinute());
 }
 
-/** Hard wall-clock fail — 1-min videos: exactly 10 min; longer: target × grace. */
+/** Hard wall-clock fail — 1-min videos: 15 min; longer: target × grace. */
 export function maxPipelineWallClockHardMin(videoLength?: string | null): number {
   if (!pipelineWallClockLimitEnabled()) {
     return Math.round(PIPELINE_UNLIMITED_MS / 60_000);
   }
   const mins = targetVideoDurationMinutes(videoLength);
-  if (mins <= 1) return 10;
+  if (mins <= 1) return 15;
   return Math.ceil(maxPipelineWallClockMin(videoLength) * pipelineWallClockGraceFactor());
 }
 
 /** After this many ms on 1-min fast path, prefer licensed stock over slow archive retries. */
-export function pipelineRushModeMs(): number {
+export function pipelineRushModeMs(videoLength?: string | null): number {
   const raw = process.env.PIPELINE_RUSH_MODE_MS?.trim();
   if (raw) {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 90_000 && n <= 540_000) return n;
   }
+  if (isFastShortVideoLength(videoLength)) return 10 * 60_000;
   return 3 * 60_000;
 }
 
-/** Near hard cap — parallel archive+stock, then guaranteed so export finishes before 10 min. */
-export function pipelineEmergencyFinishMs(): number {
+/** Near hard cap — finish compose before wall-clock hard fail (quality path keeps archive longer on 1-min). */
+export function pipelineEmergencyFinishMs(videoLength?: string | null): number {
   const raw = process.env.PIPELINE_EMERGENCY_FINISH_MS?.trim();
   if (raw) {
     const n = parseInt(raw, 10);
-    if (!isNaN(n) && n >= 300_000 && n <= 600_000) return n;
+    if (!isNaN(n) && n >= 300_000 && n <= 900_000) return n;
   }
+  if (isFastShortVideoLength(videoLength)) return 12 * 60_000;
   return 7 * 60_000;
 }
 
@@ -368,7 +370,7 @@ export function visualStageWallClockMin(videoLength?: string | null): number {
   const hard = maxPipelineWallClockHardMin(videoLength);
   const mins = targetVideoDurationMinutes(videoLength);
   if (mins <= 1) {
-    return 5;
+    return 8;
   }
   return Math.max(8, Math.min(total - 6, Math.round(total * 0.88)));
 }
@@ -395,13 +397,14 @@ export function archiveVisualBeatSecForVideo(videoLength?: string | null): numbe
   return 24;
 }
 
-/** Wall-clock ms after pipeline start before turbo stock fallback on 1-min videos (default 12s). */
-export function visualSourcingTurboMs(): number {
+/** Wall-clock ms after pipeline start before turbo stock fallback on 1-min videos (default 12s; 8min on 1-min quality path). */
+export function visualSourcingTurboMs(videoLength?: string | null): number {
   const raw = process.env.VISUAL_SOURCING_TURBO_MS?.trim();
   if (raw) {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 8_000 && n <= 300_000) return n;
   }
+  if (isFastShortVideoLength(videoLength)) return 8 * 60_000;
   return 12_000;
 }
 

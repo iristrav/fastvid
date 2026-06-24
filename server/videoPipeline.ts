@@ -1866,7 +1866,7 @@ function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProfile {
   let profile: PipelinePerfProfile;
   if (isShortVideoLength(videoLength)) {
     profile = applyAiFallbackToProfile({
-      targetWallClockMin: 9,
+      targetWallClockMin: 14,
       maxBeatsPerScene: curatedArchiveOnlyVisuals() ? (IS_RAILWAY ? 16 : 18) : IS_RAILWAY ? 4 : 6,
       maxTopicQueries: IS_RAILWAY ? 1 : 3,
       skipFairUseTransform: true,
@@ -1878,8 +1878,8 @@ function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProfile {
       sceneParallelism: IS_RAILWAY ? 4 : 3,
       pexelsDownloadRetries: 1,
       maxStockQueriesPerBeat: 2,
-      beatClipTimeoutMs: IS_RAILWAY ? 8_000 : 30_000,
-      sceneVisualTimeoutMs: IS_RAILWAY ? 4 * 60_000 : 6 * 60_000,
+      beatClipTimeoutMs: IS_RAILWAY ? 22_000 : 30_000,
+      sceneVisualTimeoutMs: IS_RAILWAY ? 8 * 60_000 : 6 * 60_000,
       fastStockMode: IS_RAILWAY,
       scriptOnlyVisuals: false,
     }, videoLength);
@@ -8438,19 +8438,19 @@ function archiveNeedsOpeningFootage(dedup: VisualDedupState): boolean {
 /** After turbo threshold on 1-min videos, prefer stock and skip slow archive retries. */
 function visualSourcingTurbo(dedup: VisualDedupState): boolean {
   if (!isFastShortVideoLength(dedup.videoLength) || !dedup.pipelineStartedMs) return false;
-  return Date.now() - dedup.pipelineStartedMs > visualSourcingTurboMs();
+  return Date.now() - dedup.pipelineStartedMs > visualSourcingTurboMs(dedup.videoLength);
 }
 
 /** Late in the 1-min budget — archive+stock parallel race to guarantee finish before hard cap. */
 function isPipelineRushMode(dedup: VisualDedupState): boolean {
   if (!isFastShortVideoLength(dedup.videoLength) || !dedup.pipelineStartedMs) return false;
-  return Date.now() - dedup.pipelineStartedMs > pipelineRushModeMs();
+  return Date.now() - dedup.pipelineStartedMs > pipelineRushModeMs(dedup.videoLength);
 }
 
 /** Last resort before hard cap — short archive+stock race, then guaranteed clips. */
 function isPipelineEmergencyFinish(dedup: VisualDedupState): boolean {
   if (!isFastShortVideoLength(dedup.videoLength) || !dedup.pipelineStartedMs) return false;
-  return Date.now() - dedup.pipelineStartedMs > pipelineEmergencyFinishMs();
+  return Date.now() - dedup.pipelineStartedMs > pipelineEmergencyFinishMs(dedup.videoLength);
 }
 
 function ensurePipelineForceExport(dedup: VisualDedupState): void {
@@ -8458,7 +8458,7 @@ function ensurePipelineForceExport(dedup: VisualDedupState): void {
   if (!dedup.forceExportMode) {
     dedup.forceExportMode = true;
     console.warn(
-      `[Pipeline] Force-export mode (≥${Math.round(pipelineEmergencyFinishMs() / 60_000)} min) — finishing with archive+stock then compose`
+      `[Pipeline] Force-export mode (≥${Math.round(pipelineEmergencyFinishMs(dedup.videoLength) / 60_000)} min) — finishing with archive+stock then compose`
     );
   }
 }
@@ -11991,7 +11991,7 @@ async function finalizeLocalClipCacheForScene(
   try {
     const refilled = await withTimeout(
       refillSceneStrictVoiceMatch(scene, workDir, topicContext, dedup, sceneAudioPath),
-      dedup.pipelineStartedMs > 0 && Date.now() - dedup.pipelineStartedMs > visualSourcingTurboMs()
+      dedup.pipelineStartedMs > 0 && Date.now() - dedup.pipelineStartedMs > visualSourcingTurboMs(dedup.videoLength)
         ? 25_000
         : 45_000,
       `Scene ${scene.index} pre-compose strict refill`
@@ -12009,7 +12009,7 @@ async function finalizeLocalClipCacheForScene(
     const recovered = await withTimeout(
       recoverSceneClipsIfEmpty(scene, workDir, topicContext, dedup),
       dedup.pipelineStartedMs > 0 &&
-        Date.now() - dedup.pipelineStartedMs > visualSourcingTurboMs()
+        Date.now() - dedup.pipelineStartedMs > visualSourcingTurboMs(dedup.videoLength)
         ? 20_000
         : 35_000,
       `Scene ${scene.index} pre-compose recovery`
@@ -12079,7 +12079,7 @@ async function ensureFastShortScenesReadyForCompose(
       const recovered = await withTimeout(
         recoverSceneClipsIfEmpty(scene, workDir, topicContext, visualDedup),
         visualDedup.pipelineStartedMs > 0 &&
-          Date.now() - visualDedup.pipelineStartedMs > visualSourcingTurboMs()
+          Date.now() - visualDedup.pipelineStartedMs > visualSourcingTurboMs(visualDedup.videoLength)
           ? 20_000
           : 35_000,
         `Scene ${scene.index} pre-compose recovery`
@@ -16873,7 +16873,7 @@ async function fillBeatVisual(
   ): Promise<boolean> {
     const adoptOpts = videosOnly ? { videosOnly: true } : undefined;
     const fastShort = isFastShortVideoLength(dedup.videoLength) && dedup.perf.fastStockMode;
-    const maxAttempts = fastShort ? 1 : archiveBeatClipRetries(dedup.perf.fastStockMode);
+    const maxAttempts = fastShort ? 2 : archiveBeatClipRetries(dedup.perf.fastStockMode);
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       if (
         await adoptArchiveBeatClipWithBudget(
