@@ -147,7 +147,7 @@ import {
   uniqueQueryStrings,
   uniqueCoercedQueries,
 } from "./stringCoercion";
-import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin, fastBeatConcurrency } from "./sourcingPolicy";
+import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin, fastBeatConcurrency } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -1319,7 +1319,7 @@ function beatVisualSearchMaxMs(perf: PipelinePerfProfile): number {
 
 function beatStockFallbackWallMs(perf: PipelinePerfProfile): number {
   if (youtubeOnlySourcingEnabled()) return 45_000;
-  return perf.fastStockMode ? 12_000 : 30_000;
+  return perf.fastStockMode ? 8_000 : 30_000;
 }
 
 /** Wall-clock cap for one beat: search + stock fallback. */
@@ -8398,6 +8398,7 @@ function markDocumentaryStillUsed(dedup: VisualDedupState): void {
 }
 
 function archiveNeedsOpeningFootage(dedup: VisualDedupState): boolean {
+  if (isFastShortVideoLength(dedup.videoLength)) return false;
   if (!curatedArchiveOnlyVisuals() || !archivePreferVideoClips()) return false;
   return dedup.archiveVideoClipsUsed < archiveMinVideoClipsTarget(dedup.videoLength);
 }
@@ -8412,6 +8413,12 @@ function visualSourcingTurbo(dedup: VisualDedupState): boolean {
 function isPipelineRushMode(dedup: VisualDedupState): boolean {
   if (!isFastShortVideoLength(dedup.videoLength) || !dedup.pipelineStartedMs) return false;
   return Date.now() - dedup.pipelineStartedMs > pipelineRushModeMs();
+}
+
+/** Last resort before hard cap — skip archive/CLIP, finish with stock or guaranteed clips. */
+function isPipelineEmergencyFinish(dedup: VisualDedupState): boolean {
+  if (!isFastShortVideoLength(dedup.videoLength) || !dedup.pipelineStartedMs) return false;
+  return Date.now() - dedup.pipelineStartedMs > pipelineEmergencyFinishMs();
 }
 
 function markCuratedArchiveClipUsage(dedup: VisualDedupState, clipPath: string): void {
@@ -16699,6 +16706,29 @@ async function fillBeatVisual(
   }
 
   if (curatedArchiveOnlyVisuals()) {
+    if (isPipelineEmergencyFinish(dedup)) {
+      if (canUseLicensedStockBeat(dedup)) {
+        try {
+          if (
+            await withTimeout(
+              adoptStockBeatClipFallback(
+                beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile
+              ),
+              6_000,
+              `emergency stock s${scene.index} b${beat.index}`
+            )
+          ) {
+            return true;
+          }
+        } catch {
+          /* guaranteed next */
+        }
+      }
+      const guaranteed = await generateGuaranteedBeatClip(scene.index, beat.index, holdSec, workDir);
+      if (guaranteed && (await pushClip(guaranteed, holdSec))) return true;
+      return false;
+    }
+
     if (isPipelineRushMode(dedup) && canUseLicensedStockBeat(dedup)) {
       if (
         await adoptStockBeatClipFallback(
@@ -16713,6 +16743,27 @@ async function fillBeatVisual(
         )
       ) {
         return true;
+      }
+    }
+
+    if ((visualSourcingTurbo(dedup) || isPipelineRushMode(dedup)) && canUseLicensedStockBeat(dedup)) {
+      const prefetchedForTurbo = archivePrefetch ? await archivePrefetch : undefined;
+      const topVision = prefetchedForTurbo?.[0]?.clipVisionScore10;
+      if (topVision == null || topVision < semanticRerankClipSkipMin()) {
+        if (
+          await adoptStockBeatClipFallback(
+            beat,
+            scene,
+            workDir,
+            videoTitle,
+            dedup,
+            pushClip,
+            holdSec,
+            semanticProfile
+          )
+        ) {
+          return true;
+        }
       }
     }
 
@@ -16750,27 +16801,7 @@ async function fillBeatVisual(
       );
     }
 
-    if (visualSourcingTurbo(dedup) && canUseLicensedStockBeat(dedup)) {
-      const topVision = prefetchedRanked?.[0]?.clipVisionScore10;
-      if (topVision == null || topVision < semanticRerankClipSkipMin()) {
-        if (
-          await adoptStockBeatClipFallback(
-            beat,
-            scene,
-            workDir,
-            videoTitle,
-            dedup,
-            pushClip,
-            holdSec,
-            semanticProfile
-          )
-        ) {
-          return true;
-        }
-      }
-    }
-
-    if (parallelAuthentic) {
+    if (parallelAuthentic && !fastShort) {
       const primary: Array<() => Promise<boolean>> = [
         () => tryArchivePasses(prefetchedRanked, openingVideosOnly),
         wikiVideo,
@@ -16779,15 +16810,17 @@ async function fillBeatVisual(
       if (await raceFirstBeatAdopt(primary)) return true;
     } else {
       if (await tryArchivePasses(prefetchedRanked, openingVideosOnly)) return true;
-      if (await wikiVideo()) return true;
-      if (await iaClip()) return true;
-      if (!openingVideosOnly && !fastShort) {
-        if (await adoptEuropeanaBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
-          return true;
+      if (!fastShort) {
+        if (await wikiVideo()) return true;
+        if (await iaClip()) return true;
+        if (!openingVideosOnly) {
+          if (await adoptEuropeanaBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
+            return true;
+          }
         }
       }
       if (openingVideosOnly && (await tryArchivePasses(prefetchedRanked, true))) return true;
-      if (await tryArchivePasses(prefetchedRanked, false)) return true;
+      if (!fastShort && (await tryArchivePasses(prefetchedRanked, false))) return true;
     }
 
     if (fastShort && canUseLicensedStockBeat(dedup)) {
@@ -17293,45 +17326,72 @@ async function refillSceneStrictVoiceMatch(
       pushSceneClip(clipPath, holdSec, beat.index);
     const profile = semanticProfiles.get(bi);
     const beatFilled = () => clipBeatIndices.includes(beat.index);
-    if (!(await fillBeatVisual(beat, scene, workDir, videoTitle, dedup, pushClip, profile, beat.holdSec))) {
-      await ensureBeatVisualFilled(
-        beat,
-        scene,
-        workDir,
-        videoTitle,
-        dedup,
-        pushClip,
-        profile,
-        beat.holdSec
+    const beatBudgetMs = isPipelineEmergencyFinish(dedup)
+      ? 6_000
+      : visualSourcingTurbo(dedup) || isPipelineRushMode(dedup)
+        ? 12_000
+        : 20_000;
+
+    const runFill = async () => {
+      if (!(await fillBeatVisual(beat, scene, workDir, videoTitle, dedup, pushClip, profile, beat.holdSec))) {
+        if (!fastShort) {
+          await ensureBeatVisualFilled(
+            beat,
+            scene,
+            workDir,
+            videoTitle,
+            dedup,
+            pushClip,
+            profile,
+            beat.holdSec
+          );
+        }
+      }
+      if (fastShort && !beatFilled() && !isPipelineEmergencyFinish(dedup)) {
+        await adoptArchiveBeatClipWithBudget(
+          beat,
+          scene,
+          workDir,
+          videoTitle,
+          dedup,
+          pushClip,
+          null,
+          beat.holdSec,
+          profile,
+          true,
+          undefined,
+          undefined
+        );
+      }
+      if (fastShort && !beatFilled() && archivePexelsFallbackEnabled() && canUseLicensedStockBeat(dedup)) {
+        await adoptStockBeatClipFallback(
+          beat,
+          scene,
+          workDir,
+          videoTitle,
+          dedup,
+          pushClip,
+          beat.holdSec,
+          profile
+        );
+      }
+      if (fastShort && !beatFilled()) {
+        const guaranteed = await generateGuaranteedBeatClip(scene.index, beat.index, beat.holdSec, workDir);
+        if (guaranteed) await pushClip(guaranteed, beat.holdSec);
+      }
+    };
+
+    try {
+      await withTimeout(runFill(), beatBudgetMs, `beat fill s${scene.index} b${beat.index}`);
+    } catch (err) {
+      console.warn(
+        `[Pipeline] Scene ${scene.index} beat ${beat.index}: fill budget (${Math.round(beatBudgetMs / 1000)}s) —`,
+        (err as Error).message?.slice(0, 80)
       );
-    }
-    if (fastShort && !beatFilled()) {
-      await adoptArchiveBeatClipWithBudget(
-        beat,
-        scene,
-        workDir,
-        videoTitle,
-        dedup,
-        pushClip,
-        null,
-        beat.holdSec,
-        profile,
-        true,
-        undefined,
-        archiveNeedsOpeningFootage(dedup) ? { videosOnly: true } : undefined
-      );
-    }
-    if (fastShort && !beatFilled() && archivePexelsFallbackEnabled() && canUseLicensedStockBeat(dedup)) {
-      await adoptStockBeatClipFallback(
-        beat,
-        scene,
-        workDir,
-        videoTitle,
-        dedup,
-        pushClip,
-        beat.holdSec,
-        profile
-      );
+      if (fastShort && !beatFilled()) {
+        const guaranteed = await generateGuaranteedBeatClip(scene.index, beat.index, beat.holdSec, workDir);
+        if (guaranteed) await pushClip(guaranteed, beat.holdSec);
+      }
     }
     dedup.visualBeatsCompleted = (dedup.visualBeatsCompleted ?? 0) + 1;
     onBeatProgress?.(
@@ -17378,6 +17438,26 @@ async function refillSceneStrictVoiceMatch(
 
     for (let bi = 0; bi < beats.length; bi++) {
       if (clipBeatIndices.includes(beats[bi]!.index)) continue;
+      if (fastShort) {
+        const beat = beats[bi]!;
+        if (archivePexelsFallbackEnabled() && canUseLicensedStockBeat(dedup)) {
+          await adoptStockBeatClipFallback(
+            beat,
+            scene,
+            workDir,
+            videoTitle,
+            dedup,
+            pushForBeat(bi),
+            beat.holdSec,
+            semanticProfiles.get(bi)
+          );
+        }
+        if (!clipBeatIndices.includes(beat.index)) {
+          const guaranteed = await generateGuaranteedBeatClip(scene.index, beat.index, beat.holdSec, workDir);
+          if (guaranteed) await pushForBeat(bi)(guaranteed, beat.holdSec);
+        }
+        continue;
+      }
       await adoptBestSimilarBeatClip(
         beats[bi]!,
         scene,
@@ -17392,35 +17472,14 @@ async function refillSceneStrictVoiceMatch(
       );
     }
 
-    if (fastShort) {
-      for (let bi = 0; bi < beats.length; bi++) {
-        if (clipBeatIndices.includes(beats[bi]!.index)) continue;
-        const beat = beats[bi]!;
-        await adoptArchiveBeatClipWithBudget(
-          beat,
-          scene,
-          workDir,
-          videoTitle,
-          dedup,
-          pushForBeat(bi),
-          null,
-          beat.holdSec,
-          semanticProfiles.get(bi),
-          true,
-          undefined,
-          undefined
-        );
-      }
-    }
-
     let afterRelaxed = clips.filter((c) => c && !isPipelineFallbackClip(c));
-    if (afterRelaxed.length === 0) {
+    if (afterRelaxed.length === 0 && !fastShort) {
       const recovered = await recoverSceneClipsIfEmpty(scene, workDir, videoTitle, dedup);
       if (recovered.clips.length > 0) return recovered;
     }
     afterRelaxed = clips.filter((c) => c && !isPipelineFallbackClip(c));
 
-    if (afterRelaxed.length === 0 && curatedArchiveOnlyVisuals()) {
+    if (afterRelaxed.length === 0 && curatedArchiveOnlyVisuals() && !fastShort) {
       const sceneBeat = beats[0] ?? {
         index: 0,
         text: scene.text.slice(0, 220),
@@ -20339,8 +20398,12 @@ export async function runVideoPipeline(
     console.log(`[Pipeline] Archive variety seed: ${visualDedup.varietySeed}`);
 
     if (curatedArchiveOnlyVisuals()) {
+      if (isFastShortVideoLength(videoLength)) {
+        visualDedup.archiveCandidatePool = [];
+        console.log("[Pipeline] Archive pool skipped on 1-min fast path (on-demand per beat)");
+      } else {
       const combinedSceneText = scenes.map((s) => s.text).join(" ");
-      const poolMs = isFastShortVideoLength(videoLength) ? 6_000 : 45_000;
+      const poolMs = 45_000;
       try {
         visualDedup.archiveCandidatePool = await withTimeout(
           buildVideoArchiveCandidatePool(
@@ -20366,25 +20429,24 @@ export async function runVideoPipeline(
       console.log(
         `[Pipeline] Archive pool warmed: ${visualDedup.archiveCandidatePool.length} candidate(s) for this video`
       );
-      if (!isFastShortVideoLength(videoLength)) {
-        try {
-          const { backfillClipEmbeddingsWithBudget } = await import("./archiveClipIndexBackfill");
-          void backfillClipEmbeddingsWithBudget(16, 20_000)
-            .then((warmed) => {
-              if (warmed.indexed > 0) {
-                console.log(
-                  `[Pipeline] CLIP index background warm: +${warmed.indexed} archive clip(s) indexed` +
-                    (warmed.timedOut ? " (20s budget)" : "")
-                );
-              }
-            })
-            .catch(() => {});
-        } catch (warmErr) {
-          console.warn(
-            "[Pipeline] CLIP index pre-warm skipped:",
-            (warmErr as Error).message?.slice(0, 80)
-          );
-        }
+      try {
+        const { backfillClipEmbeddingsWithBudget } = await import("./archiveClipIndexBackfill");
+        void backfillClipEmbeddingsWithBudget(16, 20_000)
+          .then((warmed) => {
+            if (warmed.indexed > 0) {
+              console.log(
+                `[Pipeline] CLIP index background warm: +${warmed.indexed} archive clip(s) indexed` +
+                  (warmed.timedOut ? " (20s budget)" : "")
+              );
+            }
+          })
+          .catch(() => {});
+      } catch (warmErr) {
+        console.warn(
+          "[Pipeline] CLIP index pre-warm skipped:",
+          (warmErr as Error).message?.slice(0, 80)
+        );
+      }
       }
     }
 

@@ -83,7 +83,7 @@ export function curatedMaxStockBeatsPerVideo(videoLength?: string | null): numbe
   if (!archivePexelsFallbackEnabled()) return 0;
   if (visualFootageFocusEnabled() && strictVoiceVisualMatchEnabled()) {
     const mins = targetVideoDurationMinutes(videoLength);
-    if (mins <= 1) return 8;
+    if (mins <= 1) return 12;
     return 2;
   }
   const raw = process.env.MAX_STOCK_BEATS_PER_VIDEO?.trim();
@@ -189,9 +189,19 @@ export function pipelineRushModeMs(): number {
   const raw = process.env.PIPELINE_RUSH_MODE_MS?.trim();
   if (raw) {
     const n = parseInt(raw, 10);
-    if (!isNaN(n) && n >= 120_000 && n <= 540_000) return n;
+    if (!isNaN(n) && n >= 90_000 && n <= 540_000) return n;
   }
-  return 6 * 60_000;
+  return 3 * 60_000;
+}
+
+/** Near hard cap — stock/guaranteed only so export finishes before 10 min. */
+export function pipelineEmergencyFinishMs(): number {
+  const raw = process.env.PIPELINE_EMERGENCY_FINISH_MS?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 300_000 && n <= 600_000) return n;
+  }
+  return 8 * 60_000;
 }
 
 /** ≤1 min videos on wall-clock-limited hosts (Railway worker). */
@@ -206,7 +216,7 @@ export function fastBeatConcurrency(isRailway = false): number {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 1 && n <= 8) return n;
   }
-  return isRailway ? 3 : 4;
+  return isRailway ? 4 : 4;
 }
 
 /** Weak-beat archive polish before compose (always on when strict voice↔visual match). */
@@ -355,24 +365,24 @@ export function archiveVisualBeatSecForVideo(videoLength?: string | null): numbe
   return 24;
 }
 
-/** Wall-clock ms after pipeline start before turbo stock fallback on 1-min videos (default 20s). */
+/** Wall-clock ms after pipeline start before turbo stock fallback on 1-min videos (default 12s). */
 export function visualSourcingTurboMs(): number {
   const raw = process.env.VISUAL_SOURCING_TURBO_MS?.trim();
   if (raw) {
     const n = parseInt(raw, 10);
-    if (!isNaN(n) && n >= 15_000 && n <= 300_000) return n;
+    if (!isNaN(n) && n >= 8_000 && n <= 300_000) return n;
   }
-  return 20_000;
+  return 12_000;
 }
 
-/** Max ms per beat spent trying archive candidates before moving on (default 8s on 1-min). */
+/** Max ms per beat spent trying archive candidates before moving on (default 5s on 1-min). */
 export function archiveBeatTryTimeoutMs(videoLength?: string | null): number {
   const raw = process.env.ARCHIVE_BEAT_TRY_TIMEOUT_MS?.trim();
   if (raw) {
     const n = parseInt(raw, 10);
-    if (!isNaN(n) && n >= 5_000 && n <= 120_000) return n;
+    if (!isNaN(n) && n >= 4_000 && n <= 120_000) return n;
   }
-  if (isFastShortVideoLength(videoLength)) return 8_000;
+  if (isFastShortVideoLength(videoLength)) return 5_000;
   return 45_000;
 }
 
@@ -503,7 +513,7 @@ export function archiveMinVideoClipsTarget(videoLength?: string | null): number 
   const expectedBeats = Math.max(1, Math.ceil((mins * 60) / beatSec));
   const maxStills = archiveMaxImageClipsPerVideo(videoLength);
   const target = Math.max(1, expectedBeats - maxStills);
-  if (isFastShortVideoLength(videoLength)) return Math.min(3, target);
+  if (isFastShortVideoLength(videoLength)) return 0;
   return target;
 }
 
