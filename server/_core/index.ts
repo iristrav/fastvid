@@ -246,8 +246,12 @@ async function startServer() {
   });
 
   // ─── Health Check ─────────────────────────────────────────────────────────
-  // IMPORTANT: This endpoint must respond immediately (no external API calls).
-  // Railway uses it as a liveness probe with a strict timeout.
+  // Liveness: instant response for Railway probes (no DB archive scans).
+  app.get("/api/health/live", (_req, res) => {
+    res.status(200).json({ status: "ok", timestamp: new Date().toISOString() });
+  });
+
+  // Full health: worker/LLM status; archive summary cached 2 min.
   app.get("/api/health", async (_req, res) => {
     const backend = getStorageBackend();
     const llm = getLlmDiagnostics("web");
@@ -257,8 +261,8 @@ async function startServer() {
     let archiveHealth: Awaited<ReturnType<typeof import("../archiveHealth").summarizeArchiveHealth>> | null =
       null;
     try {
-      const { summarizeArchiveHealth } = await import("../archiveHealth");
-      archiveHealth = await summarizeArchiveHealth();
+      const { summarizeArchiveHealthCached } = await import("../archiveHealth");
+      archiveHealth = await summarizeArchiveHealthCached();
     } catch {
       archiveHealth = null;
     }

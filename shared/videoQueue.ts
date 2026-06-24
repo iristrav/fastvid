@@ -21,7 +21,7 @@ export function readQueueConfig(env: NodeJS.ProcessEnv = process.env) {
   const maxJobsPerWorkerRaw = env.MAX_JOBS_PER_WORKER?.trim();
   const maxJobsPerWorker = maxJobsPerWorkerRaw
     ? Math.max(1, parseInt(maxJobsPerWorkerRaw, 10) || maxConcurrentJobs)
-    : maxConcurrentJobs;
+    : 1;
 
   return {
     /** Platform-wide cap (all workers combined). Raise via MAX_CONCURRENT_JOBS on Railway. */
@@ -39,8 +39,8 @@ export function isWorkerMode(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.WORKER_MODE === "true";
 }
 
-/** Run queue poller inside the web process unless explicitly disabled. */
+/** Run queue poller inside the web process only when explicitly enabled. */
 export function shouldRunQueueWorker(env: NodeJS.ProcessEnv = process.env): boolean {
   if (isWorkerMode(env)) return true;
-  return env.EMBED_QUEUE_WORKER !== "false";
+  return env.EMBED_QUEUE_WORKER === "true";
 }

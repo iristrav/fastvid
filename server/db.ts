@@ -1058,6 +1058,30 @@ export async function countMediaArchiveAssets(archiveId: number) {
   return Number(rows[0]?.count ?? 0);
 }
 
+/** Fast aggregate for health checks — avoids loading thousands of asset rows. */
+export async function summarizeActiveArchiveCounts(): Promise<{
+  archiveCount: number;
+  totalAssets: number;
+  videoAssets: number;
+}> {
+  const db = await getDb();
+  if (!db) return { archiveCount: 0, totalAssets: 0, videoAssets: 0 };
+  const archives = await getAllMediaArchives();
+  const [totalRow] = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(mediaArchiveAssets)
+    .where(eq(mediaArchiveAssets.isActive, 1));
+  const [videoRow] = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(mediaArchiveAssets)
+    .where(and(eq(mediaArchiveAssets.isActive, 1), eq(mediaArchiveAssets.mediaType, "video")));
+  return {
+    archiveCount: archives.length,
+    totalAssets: Number(totalRow?.count ?? 0),
+    videoAssets: Number(videoRow?.count ?? 0),
+  };
+}
+
 /** Filter assets by tag/title search (used by admin UI and future pipeline). */
 export function filterMediaArchiveAssets<
   T extends { title?: string | null; tags?: string[] | null }

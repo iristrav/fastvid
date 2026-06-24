@@ -236,7 +236,7 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
   const needsApproval = video.status === "awaiting_approval";
   const { data: pollData } = trpc.video.pollStatus.useQuery(
     { id: video.id },
-    { enabled: listStillProcessing, refetchInterval: listStillProcessing ? 2000 : false }
+    { enabled: listStillProcessing, refetchInterval: listStillProcessing ? 5000 : false }
   );
   const currentStatus = pollData?.status ?? video.status;
   const isProcessing = !["completed", "failed"].includes(currentStatus);

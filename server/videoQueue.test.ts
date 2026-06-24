@@ -5,7 +5,7 @@ describe("video queue config", () => {
   it("reads defaults", () => {
     const config = readQueueConfig({});
     expect(config.maxConcurrentJobs).toBe(25);
-    expect(config.maxJobsPerWorker).toBe(25);
+    expect(config.maxJobsPerWorker).toBe(1);
     expect(config.maxActiveJobsPerUser).toBe(1);
     expect(config.maxQueuedJobsPerUser).toBe(1);
     expect(config.pollIntervalMs).toBe(5000);

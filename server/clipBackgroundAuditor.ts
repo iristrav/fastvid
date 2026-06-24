@@ -314,7 +314,7 @@ export function startClipBackgroundAuditor(): void {
   );
 }
 
-export async function summarizeClipAuditor(): Promise<{
+export async function summarizeClipAuditor(videoAssetCount?: number): Promise<{
   enabled: boolean;
   totalAudited: number;
   passed: number;
@@ -339,11 +339,10 @@ export async function summarizeClipAuditor(): Promise<{
     }
   }
 
-  const archives = await getAllMediaArchives();
-  let videoCount = 0;
-  for (const archive of archives) {
-    const assets = await getMediaArchiveAssets(archive.id);
-    videoCount += assets.filter((a) => a.mediaType === "video").length;
+  let videoCount = videoAssetCount;
+  if (videoCount == null) {
+    const { summarizeActiveArchiveCounts } = await import("./db");
+    videoCount = (await summarizeActiveArchiveCounts()).videoAssets;
   }
 
   return {

@@ -369,7 +369,7 @@ function VideoStatusCell({ video }: { video: VideoRow }) {
   const isInProgress = !['completed', 'failed'].includes(video.status);
   const { data: pollData } = trpc.video.pollStatus.useQuery(
     { id: video.id },
-    { enabled: isInProgress, refetchInterval: isInProgress ? 3000 : false }
+    { enabled: isInProgress, refetchInterval: isInProgress ? 5000 : false }
   );
   const status = pollData?.status ?? video.status;
   const progressPercent = (pollData as { progressPercent?: number } | undefined)?.progressPercent ?? 0;
