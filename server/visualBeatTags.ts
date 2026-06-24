@@ -11,6 +11,7 @@ import {
 } from "./worldGeoSlugs";
 import { asVideoTitleString } from "./stringCoercion";
 import { normalizeMediaTags } from "./db";
+import { metadataVisualBlocksEnabled } from "./sourcingPolicy";
 
 /** Drives archive filtering — geography videos must not pull WWII/Hiter footage. */
 export type VideoVisualTopic = "wwii" | "cold_war" | "geography_urban" | "general";
@@ -361,6 +362,7 @@ export function isClipTitleIrrelevantToBeat(
   asset: Pick<{ title?: string | null; tags?: string[] | null }, "title" | "tags">,
   beatText: string
 ): boolean {
+  if (!metadataVisualBlocksEnabled()) return false;
   const assetHay = `${(asset.title ?? "").toLowerCase()} ${(asset.tags ?? []).join(" ").toLowerCase()}`;
   const beatLower = beatText.toLowerCase();
   for (const rule of CLIP_TITLE_DOMAIN_RULES) {

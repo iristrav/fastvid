@@ -83,6 +83,7 @@ import {
   pipelineWallClockLimitEnabled,
   isFastShortVideoLength,
   semanticRerankClipSkipMin,
+  metadataVisualBlocksEnabled,
 } from "./sourcingPolicy";
 import {
   assetHasNlMarkers,
@@ -443,6 +444,7 @@ export function archiveAssetRejectedForBeat(
   asset: Pick<MediaArchiveAsset, "title" | "tags" | "mediaType">,
   beatText: string
 ): boolean {
+  if (!metadataVisualBlocksEnabled()) return false;
   if (!beatText?.trim()) return false;
   if (isWwiiWarArchiveAsset(asset) && !beatMentionsWwiiContent(beatText)) return true;
   if (isCuratedInterviewAsset(asset) && !/\b(interview|historicus|expert|talking head|besprek)\b/i.test(beatText.toLowerCase())) {
@@ -472,6 +474,7 @@ export function assetPassesBeatMinimum(
 ): boolean {
   const hay = `${(asset.title ?? "").toLowerCase()} ${normalizeMediaTags(asset.tags ?? []).join(" ")}`;
   if (isNonDocumentaryVisualHay(hay)) return false;
+  if (!metadataVisualBlocksEnabled()) return true;
   if (segmentLock && isWrongRegionForSegmentLock(hay, segmentLock)) return false;
 
   if (archiveAssetRejectedForBeat(asset, beatText)) return false;
@@ -910,19 +913,19 @@ export function scoreCuratedAsset(
   score += curatedInterviewPenalty(asset);
 
   score += curatedOffTopicPenalty(asset, topicAnchors, beatTags, videoVisualTopic);
-  if (beatText && archiveAssetRejectedForBeat(asset, beatText)) return 0;
-  if (videoVisualTopic !== "wwii" && isWwiiWarArchiveAsset(asset)) {
-    if (!beatMentionsWwiiContent(beatText)) {
-      score = Math.max(0, score - 400);
+  if (metadataVisualBlocksEnabled()) {
+    if (beatText && archiveAssetRejectedForBeat(asset, beatText)) return 0;
+    if (videoVisualTopic !== "wwii" && isWwiiWarArchiveAsset(asset)) {
+      if (!beatMentionsWwiiContent(beatText)) {
+        score = Math.max(0, score - 400);
+      }
+    }
+    if (beatText && isClipTitleIrrelevantToBeat(asset, beatText)) {
+      return 0;
     }
   }
   // Hard-zero clips with pre-burned production notation titles (defense-in-depth)
   if (hasProductionNotationTitle(asset)) {
-    return 0;
-  }
-  // Defense-in-depth: also zero-score clips whose title names a domain-specific
-  // figure/event (Hitler, Stalin, Pol Pot, execution, etc.) absent from the beat.
-  if (beatText && isClipTitleIrrelevantToBeat(asset, beatText)) {
     return 0;
   }
 
@@ -994,6 +997,7 @@ export function isCuratedOffTopicAsset(
   beatTags: string[],
   videoVisualTopic: VideoVisualTopic = "general"
 ): boolean {
+  if (!metadataVisualBlocksEnabled()) return false;
   const beatHay = beatTags.join(" ");
   if (isWwiiWarArchiveAsset(asset) && !beatMentionsWwiiContent(beatHay)) return true;
   if (
@@ -1206,6 +1210,7 @@ export async function listCuratedArchiveCandidates(
   const geoRequired = beatText ? extractBeatGeoPlaceTags(beatText) : [];
   const scored: CuratedCandidatePick[] = [];
   const fallback: CuratedCandidatePick[] = [];
+  const metadataBlocks = metadataVisualBlocksEnabled();
 
   for (const archive of archives) {
     const nicheTags = normalizeMediaTags(archive.nicheTags ?? []);
@@ -1215,16 +1220,23 @@ export async function listCuratedArchiveCandidates(
       if (excludeStorageUrls.has(asset.storageUrl)) continue;
       const assetHay = `${(asset.title ?? "").toLowerCase()} ${normalizeMediaTags(asset.tags ?? []).join(" ")}`;
       if (isNonDocumentaryVisualHay(assetHay)) continue;
-      if (isCuratedOffTopicAsset(asset, topicAnchors, beatTags, videoVisualTopic)) continue;
-      if (geoRequired.length > 0 && isWrongGeoForBeat(asset, geoRequired)) continue;
+      if (metadataBlocks && isCuratedOffTopicAsset(asset, topicAnchors, beatTags, videoVisualTopic)) continue;
+      if (metadataBlocks && geoRequired.length > 0 && isWrongGeoForBeat(asset, geoRequired)) continue;
       const score = scoreCuratedAsset(asset, nicheTags, beatTags, topicAnchors, beatText, videoVisualTopic);
-      // Only include clips that actually match by their own title/tags — no score-1 fallback.
-      // Irrelevant clips must not slip through; the pipeline falls to Pexels instead.
-      if (score > 0) scored.push({ asset, score, archiveName: archive.name, archiveNicheTags: nicheTags });
+      const effectiveScore = score > 0 ? score : metadataBlocks ? 0 : 1;
+      if (effectiveScore > 0) {
+        scored.push({
+          asset,
+          score: effectiveScore,
+          archiveName: archive.name,
+          archiveNicheTags: nicheTags,
+        });
+      }
     }
   }
 
-  const blockUniversalFallback = noUniversalFallback || geoRequired.length > 0;
+  const blockUniversalFallback =
+    metadataBlocks && (noUniversalFallback || geoRequired.length > 0);
 
   if (scored.length === 0 && fallback.length === 0 && archives.length > 0 && !blockUniversalFallback) {
     for (const archive of archives) {
@@ -1234,7 +1246,7 @@ export async function listCuratedArchiveCandidates(
         if (excludeStorageUrls.has(asset.storageUrl)) continue;
         const assetHay = `${(asset.title ?? "").toLowerCase()} ${normalizeMediaTags(asset.tags ?? []).join(" ")}`;
         if (isNonDocumentaryVisualHay(assetHay)) continue;
-        if (isCuratedOffTopicAsset(asset, topicAnchors, beatTags, videoVisualTopic)) continue;
+        if (metadataBlocks && isCuratedOffTopicAsset(asset, topicAnchors, beatTags, videoVisualTopic)) continue;
         fallback.push({ asset, score: 1, archiveName: archive.name, archiveNicheTags: normalizeMediaTags(archive.nicheTags ?? []) });
       }
     }
@@ -2033,6 +2045,7 @@ export function isArchiveGeoBlockedForBeat(
   videoTitle?: string,
   segmentLock?: BeatGeoRegion | null
 ): boolean {
+  if (!metadataVisualBlocksEnabled()) return false;
   const required = resolveRequiredGeoTagsForBeat(beatText, videoTitle, segmentLock);
   if (required.length > 0) return isWrongGeoForBeat(asset, required);
 
@@ -2067,16 +2080,18 @@ export function archiveAssetPreflight(
   } = {}
 ): boolean {
   if (usedAssetIds.has(asset.id) || usedStorageUrls.has(asset.storageUrl)) return false;
-  if (isCuratedOffTopicAsset(asset, topicAnchors, beatTags, opts.videoVisualTopic ?? "general")) return false;
-  if (
-    opts.beatText &&
-    isArchiveGeoBlockedForBeat(asset, opts.beatText, opts.videoTitle, opts.segmentGeoLock)
-  ) {
-    return false;
-  }
-  if (opts.beatText && isGenericPeopleAsset(asset)) {
-    const required = extractRequiredVisualTags(opts.beatText);
-    if (required.length >= 2 && countVisualTagHits(asset, required) === 0) return false;
+  if (metadataVisualBlocksEnabled()) {
+    if (isCuratedOffTopicAsset(asset, topicAnchors, beatTags, opts.videoVisualTopic ?? "general")) return false;
+    if (
+      opts.beatText &&
+      isArchiveGeoBlockedForBeat(asset, opts.beatText, opts.videoTitle, opts.segmentGeoLock)
+    ) {
+      return false;
+    }
+    if (opts.beatText && isGenericPeopleAsset(asset)) {
+      const required = extractRequiredVisualTags(opts.beatText);
+      if (required.length >= 2 && countVisualTagHits(asset, required) === 0) return false;
+    }
   }
   if (
     opts.interviewMax != null &&
@@ -2320,6 +2335,9 @@ export function shouldPreferPexelsOverArchive(
   videoTitle?: string
 ): boolean {
   if (!archivePexelsHybridEnabled()) return false;
+  if (!metadataVisualBlocksEnabled()) {
+    return ranked.length === 0;
+  }
   if (visualFootageFocusEnabled()) {
     return ranked.length === 0;
   }

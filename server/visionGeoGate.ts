@@ -3,6 +3,7 @@
  */
 import { resolveRequiredGeoTagsForBeat } from "./curatedMediaSourcing";
 import { isWrongGeoForBeat } from "./visualBeatTags";
+import { metadataVisualBlocksEnabled } from "./sourcingPolicy";
 import { NL_GEO_SLUGS, US_GEO_SLUGS, FOREIGN_GEO_SLUGS } from "./worldGeoSlugs";
 import type { BeatGeoRegion } from "./vidrushQuality";
 
@@ -39,8 +40,9 @@ function visionHay(detection: VisionGeoDetection): string {
   return [...detection.detectedPlaces, ...detection.mapLabels].join(" ").toLowerCase();
 }
 
-/** True when ENABLE_VISION_GEO_GATE is not false and required geo tags exist for this beat. */
+/** True when ENABLE_VISION_GEO_GATE is not false and metadata pre-blocks are on. */
 export function visionGeoGateEnabled(): boolean {
+  if (!metadataVisualBlocksEnabled()) return false;
   return process.env.ENABLE_VISION_GEO_GATE !== "false";
 }
 

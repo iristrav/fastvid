@@ -307,6 +307,15 @@ export function strictVoiceVisualMatchEnabled(): boolean {
   return process.env.STRICT_VOICE_VISUAL_MATCH !== "false";
 }
 
+/**
+ * Hard metadata blocks (geo tags, WWII, cycling-only, title domain rules, vision geo gate).
+ * Default OFF — only the CLIP vision gate decides topic/script/voiceover fit.
+ * Set ENABLE_METADATA_VISUAL_BLOCKS=true to restore legacy pre-filters.
+ */
+export function metadataVisualBlocksEnabled(): boolean {
+  return process.env.ENABLE_METADATA_VISUAL_BLOCKS === "true";
+}
+
 /** Max grey color-fallback beats per video (0 when strict match is on). */
 export function maxFallbackBeatsPerVideo(): number {
   const raw = process.env.MAX_FALLBACK_BEATS_PER_VIDEO?.trim();

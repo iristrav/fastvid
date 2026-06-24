@@ -1,7 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import { visionDetectedGeoConflict } from "./visionGeoGate";
 
 describe("visionGeoGate", () => {
+  beforeEach(() => {
+    process.env.ENABLE_METADATA_VISUAL_BLOCKS = "true";
+  });
+  afterEach(() => {
+    delete process.env.ENABLE_METADATA_VISUAL_BLOCKS;
+  });
+
   it("rejects Philadelphia map on Singapore title beat", () => {
     const r = visionDetectedGeoConflict(
       {

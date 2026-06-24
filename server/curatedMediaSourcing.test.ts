@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import { isClipTitleIrrelevantToBeat } from "./visualBeatTags";
 import {
   buildBeatMatchTags,
@@ -32,6 +32,13 @@ import { isGenericPeopleAsset } from "./visualBeatTags";
 import type { MediaArchiveAsset } from "./db";
 
 describe("curatedMediaSourcing", () => {
+  beforeEach(() => {
+    process.env.ENABLE_METADATA_VISUAL_BLOCKS = "true";
+  });
+  afterEach(() => {
+    delete process.env.ENABLE_METADATA_VISUAL_BLOCKS;
+  });
+
   it("buildBeatMatchTags anchors any-topic sentence tokens", () => {
     const { beatTags, allTags } = buildBeatMatchTags(
       {
@@ -906,5 +913,31 @@ describe("curatedMediaSourcing", () => {
       throw new Error("should not search");
     });
     expect(cached).toBe(picks);
+  });
+
+  it("assetPassesBeatMinimum allows any documentary clip when metadata blocks off", () => {
+    delete process.env.ENABLE_METADATA_VISUAL_BLOCKS;
+    const beatText = "In Amsterdam fietsen duizenden mensen.";
+    const bwClip: MediaArchiveAsset = {
+      id: 201,
+      archiveId: 1,
+      title: "Zwart-wit parade Berlijn 1939",
+      tags: ["zwart-wit", "parade", "berlin", "1939"],
+      mediaType: "video",
+      mimeType: "video/mp4",
+      storageUrl: "/x.mp4",
+      isActive: 1,
+      sortOrder: 0,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      fileSizeBytes: 1,
+      width: 1920,
+      height: 1080,
+      durationSec: 6,
+      sourceUrl: null,
+      sourceLabel: null,
+    };
+    expect(assetPassesBeatMinimum(bwClip, beatText, 80, 80, undefined, "geography_urban")).toBe(true);
+    expect(isClipTitleIrrelevantToBeat(bwClip, beatText)).toBe(false);
   });
 });
