@@ -284,7 +284,10 @@ WRITING CRAFT:
 - Conversational authority — smart friend who did the research, not a professor.
 - If the topic is about a named person, use their full name in the hook — never vague "he/she" without context.
 - Forbidden filler: "In this section", "As we mentioned", "Moving on", "Interestingly enough".
-- Every sentence must create curiosity, deliver value, or advance the story — otherwise cut it.`;
+- Every sentence must create curiosity, deliver value, or advance the story — otherwise cut it.
+
+LANGUAGE:
+- Write all spoken narration in English unless the user explicitly asks for another language (e.g. Dutch, German).`;
 }
 
 export function buildOutlineUserPrompt(
@@ -444,6 +447,7 @@ RETENTION RULES:
 
 WORD BUDGET (spoken narration only):
 ${budget.minWords}–${budget.maxWords} words (target ${budget.targetWords})
+Language: English narration throughout (unless the topic prompt explicitly requests another language).
 No [VISUAL: ...] tags — the editor finds footage from narration automatically.
 ${brandRule}
 
