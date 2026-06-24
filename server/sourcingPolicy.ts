@@ -298,7 +298,10 @@ export function polishBeforeComposeEnabled(
   return true;
 }
 
-/** Parallel scene compose jobs (1–4). Railway default: 2 for ≤1 min, 2 for longer (was 1 — avoid full serialization). */
+/** Parallel scene compose jobs (1–4). Railway default: 2 for ≤1 min / 8-10 min, 1 for longer
+ *  (kept serialized on Railway — actual instance RAM is unknown, and 2 concurrent FFmpeg
+ *  encodes roughly doubles peak memory regardless of thread count. Override via
+ *  COMPOSE_PARALLELISM if you've confirmed the instance has headroom). */
 export function composeParallelismForVideo(videoLength?: string | null, isRailway = false): number {
   const raw = process.env.COMPOSE_PARALLELISM?.trim();
   if (raw) {
@@ -308,7 +311,7 @@ export function composeParallelismForVideo(videoLength?: string | null, isRailwa
   if (isRailway) {
     if (isFastShortVideoLength(videoLength)) return 2;
     if (normalizeVideoLength(videoLength) === "8-10") return 2;
-    return 2;
+    return 1;
   }
   return 2;
 }
@@ -320,15 +323,13 @@ export function montageSegmentParallelism(isRailway = false): number {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 1 && n <= 3) return n;
   }
-  return isRailway ? 2 : 2;
+  return isRailway ? 1 : 2;
 }
 
-/** FFmpeg thread cap per encode (0 = libx264 default). Railway default: 1 — compose/montage now
- *  run 2 jobs in parallel, so 1 thread/job keeps total CPU use roughly the same as the old
- *  1-job × 2-threads setup instead of doubling it. */
+/** FFmpeg thread cap per encode (0 = libx264 default). Railway default: 2. */
 export function ffmpegThreadFlag(isRailway = false): string {
   const raw = process.env.FFMPEG_THREADS?.trim();
-  const n = raw ? parseInt(raw, 10) : isRailway ? 1 : 0;
+  const n = raw ? parseInt(raw, 10) : isRailway ? 2 : 0;
   if (!n || isNaN(n) || n < 1) return "";
   return `-threads ${Math.min(4, n)}`;
 }
