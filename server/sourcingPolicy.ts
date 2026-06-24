@@ -276,14 +276,17 @@ export function isFastShortVideoLength(videoLength?: string | null): boolean {
   return targetVideoDurationMinutes(videoLength) <= 1;
 }
 
-/** Parallel beat fills on 1-min fast path — low default avoids CLIP model contention on worker. */
+/** Parallel beat fills on 1-min fast path. Confirmed Railway plan has 24 vCPU, so raise
+ *  the default from 4 — CLIP scoring is light per-call (embedding lookup, not a heavy
+ *  forward pass on contended hardware), and more concurrency here lets the visual stage
+ *  evaluate more candidates per beat in the same wall-clock budget. */
 export function fastBeatConcurrency(isRailway = false): number {
   const raw = process.env.FAST_BEAT_CONCURRENCY?.trim();
   if (raw) {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 1 && n <= 8) return n;
   }
-  return isRailway ? 4 : 4;
+  return 6;
 }
 
 /** Weak-beat archive polish before compose (always on when strict voice↔visual match). */
@@ -469,12 +472,14 @@ export function visualFootageFocusEnabled(): boolean {
   return strictVoiceVisualMatchEnabled();
 }
 
-/** Max archive candidates to try per beat when wall-clock limit is on. */
+/** Max archive candidates to try per beat when wall-clock limit is on. Raised now that
+ *  Railway has 24 vCPU headroom — more candidates per beat means a better CLIP match
+ *  without slowing the video down, since beats are fetched/scored concurrently. */
 export function maxVisualCandidatesPerBeatTry(videoLength?: string | null): number {
-  if (!pipelineWallClockLimitEnabled()) return 12;
-  if (isFastShortVideoLength(videoLength)) return 6;
-  if (visualFootageFocusEnabled()) return 5;
-  return 2;
+  if (!pipelineWallClockLimitEnabled()) return 14;
+  if (isFastShortVideoLength(videoLength)) return 8;
+  if (visualFootageFocusEnabled()) return 6;
+  return 4;
 }
 
 /** Wall-clock budget for the visual sourcing stage (minutes). */
@@ -524,15 +529,17 @@ export function visualSourcingTurboMs(videoLength?: string | null): number {
   return 12_000;
 }
 
-/** Max ms per beat spent trying archive candidates before moving on (default 22s on 1-min). */
+/** Max ms per beat spent trying archive candidates before moving on. Raised slightly so the
+ *  extra candidates from maxVisualCandidatesPerBeatTry have time to actually run — beats
+ *  are processed concurrently (fastBeatConcurrency), so this doesn't add up serially. */
 export function archiveBeatTryTimeoutMs(videoLength?: string | null): number {
   const raw = process.env.ARCHIVE_BEAT_TRY_TIMEOUT_MS?.trim();
   if (raw) {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 4_000 && n <= 120_000) return n;
   }
-  if (isFastShortVideoLength(videoLength)) return 22_000;
-  return 45_000;
+  if (isFastShortVideoLength(videoLength)) return 26_000;
+  return 50_000;
 }
 
 /** Target on-screen duration per archive clip (seconds). */

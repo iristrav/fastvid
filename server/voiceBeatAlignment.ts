@@ -27,9 +27,15 @@ export type BeatVoiceAlignment = {
 
 const alignCache = new Map<string, WhisperSegment[]>();
 
+/** Dedicated Whisper key — independent of the LLM_API_KEY used for script/script-judging
+ *  calls, so a non-OpenAI LLM provider (e.g. Groq) doesn't silently disable voice-beat sync. */
+function whisperApiKey(): string {
+  return process.env.OPENAI_API_KEY?.trim() || ENV.forgeApiKey;
+}
+
 export function voiceBeatAlignmentEnabled(): boolean {
   if (process.env.ENABLE_VOICE_BEAT_ALIGNMENT === "false") return false;
-  return Boolean(ENV.forgeApiKey);
+  return Boolean(whisperApiKey());
 }
 
 export function voiceAlignmentSpotCheckEnabled(): boolean {
@@ -61,6 +67,11 @@ function tokenOverlapScore(expected: string[], haystack: string[]): number {
 }
 
 function whisperApiUrl(): string {
+  // A dedicated OPENAI_API_KEY always talks to OpenAI directly; only fall back to the
+  // LLM provider's own base URL (e.g. Forge) when reusing its key for Whisper too.
+  if (process.env.OPENAI_API_KEY?.trim()) {
+    return "https://api.openai.com/v1/audio/transcriptions";
+  }
   const base = ENV.forgeApiUrl?.trim();
   if (base) {
     return new URL("v1/audio/transcriptions", base.endsWith("/") ? base : `${base}/`).toString();
@@ -69,7 +80,8 @@ function whisperApiUrl(): string {
 }
 
 async function transcribeSceneAudio(audioPath: string): Promise<WhisperSegment[] | null> {
-  if (!ENV.forgeApiKey || !fs.existsSync(audioPath)) return null;
+  const apiKey = whisperApiKey();
+  if (!apiKey || !fs.existsSync(audioPath)) return null;
 
   const stat = fs.statSync(audioPath);
   const cacheKey = `${audioPath}:${stat.size}:${stat.mtimeMs}`;
@@ -86,7 +98,7 @@ async function transcribeSceneAudio(audioPath: string): Promise<WhisperSegment[]
     const resp = await fetch(whisperApiUrl(), {
       method: "POST",
       headers: {
-        authorization: `Bearer ${ENV.forgeApiKey}`,
+        authorization: `Bearer ${apiKey}`,
         "Accept-Encoding": "identity",
       },
       body: formData,
