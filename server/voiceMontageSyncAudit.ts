@@ -110,17 +110,20 @@ async function probeVideoDurationSec(filePath: string): Promise<number> {
   try {
     const { execFile } = await import("child_process");
     const { promisify } = await import("util");
+    const { withForkRetry } = await import("./_core/execForkRetry");
     const exec = promisify(execFile);
     const ffprobe = process.env.FFPROBE_BIN || process.env.FFPROBE_PATH || "ffprobe";
-    const { stdout } = await exec(ffprobe, [
-      "-v",
-      "error",
-      "-show_entries",
-      "format=duration",
-      "-of",
-      "default=noprint_wrappers=1:nokey=1",
-      filePath,
-    ]);
+    const { stdout } = await withForkRetry(() =>
+      exec(ffprobe, [
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        filePath,
+      ])
+    );
     const n = parseFloat(String(stdout).trim());
     return Number.isFinite(n) && n > 0 ? n : 0;
   } catch {

@@ -6,6 +6,7 @@ import os from "os";
 import path from "path";
 import { exec as execCb } from "child_process";
 import { promisify } from "util";
+import { withForkRetry } from "./_core/execForkRetry";
 import { invokeLLM } from "./_core/llm";
 import { ENV } from "./_core/env";
 import {
@@ -13,7 +14,9 @@ import {
   imageMimeToDataUrl,
 } from "./archiveClipFilter";
 
-const exec = promisify(execCb);
+const execRaw = promisify(execCb);
+const exec = ((cmd: string, opts?: Record<string, unknown>) =>
+  withForkRetry(() => execRaw(cmd, opts as never))) as typeof execRaw;
 
 export type ArchiveSubjectContext = {
   archiveName: string;

@@ -7,10 +7,13 @@ import os from "os";
 import path from "path";
 import { exec as execCb, spawn } from "child_process";
 import { promisify } from "util";
+import { withForkRetry } from "./_core/execForkRetry";
 import { invokeLLM } from "./_core/llm";
 import { ENV } from "./_core/env";
 
-const exec = promisify(execCb);
+const execRaw = promisify(execCb);
+const exec = ((cmd: string, opts?: Record<string, unknown>) =>
+  withForkRetry(() => execRaw(cmd, opts as never))) as typeof execRaw;
 
 const OVERLAY_JSON_SCHEMA = {
   type: "json_schema" as const,
@@ -61,7 +64,7 @@ async function extractVideoPreviewJpeg(
 ): Promise<boolean> {
   if (!fs.existsSync(videoPath)) return false;
   try {
-    await new Promise<void>((resolve, reject) => {
+    await withForkRetry(() => new Promise<void>((resolve, reject) => {
       const seekArg = typeof seek === "number" ? seek.toFixed(3) : `${Math.round(parseFloat(seek))}%`;
       const args = ["-y", "-ss", seekArg, "-i", videoPath, "-frames:v", "1", "-q:v", "3", outPath];
       const child = spawn(ffmpegBin(), args, { stdio: ["ignore", "ignore", "pipe"] });
@@ -77,7 +80,7 @@ async function extractVideoPreviewJpeg(
         else reject(new Error(stderr.slice(-120) || `ffmpeg exit ${code}`));
       });
       child.on("error", reject);
-    });
+    }));
     return true;
   } catch {
     return false;

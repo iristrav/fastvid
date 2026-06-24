@@ -7,6 +7,7 @@ import path from "path";
 import { spawn } from "child_process";
 import { exec } from "child_process";
 import { promisify } from "util";
+import { withForkRetry } from "./_core/execForkRetry";
 import { invokeLLM } from "./_core/llm";
 import { ENV } from "./_core/env";
 import { normalizeMediaTags } from "./db";
@@ -16,7 +17,9 @@ import {
   mergeGeoSlugsIntoArchiveTags,
 } from "./archiveGeoTagging";
 
-const execAsync = promisify(exec);
+const execRaw = promisify(exec);
+const execAsync = ((cmd: string, opts?: Record<string, unknown>) =>
+  withForkRetry(() => execRaw(cmd, opts as never))) as typeof execRaw;
 
 export type ArchiveAssetAiMetadata = {
   title: string;
@@ -440,7 +443,7 @@ async function extractVideoPreviewJpeg(
     seek = dur > 0.5 ? dur * 0.35 : 0.25;
   }
   try {
-    await new Promise<void>((resolve, reject) => {
+    await withForkRetry(() => new Promise<void>((resolve, reject) => {
       const args = [
         "-y",
         "-ss",
@@ -474,7 +477,7 @@ async function extractVideoPreviewJpeg(
         else reject(new Error(stderr.slice(-120) || `ffmpeg exit ${code}`));
       });
       child.on("error", reject);
-    });
+    }));
     return true;
   } catch {
     return false;
@@ -570,7 +573,7 @@ async function convertBufferToJpegWithFfmpeg(buffer: Buffer, inputExt: string): 
   const outPath = path.join(workDir, "output.jpg");
   try {
     fs.writeFileSync(inPath, buffer);
-    await new Promise<void>((resolve, reject) => {
+    await withForkRetry(() => new Promise<void>((resolve, reject) => {
       const args = ["-y", "-i", inPath, "-frames:v", "1", "-q:v", "3", outPath];
       const child = spawn(ffmpegBin(), args, { stdio: ["ignore", "ignore", "pipe"] });
       let stderr = "";
@@ -591,7 +594,7 @@ async function convertBufferToJpegWithFfmpeg(buffer: Buffer, inputExt: string): 
         else reject(new Error(stderr.slice(-120) || `ffmpeg exit ${code}`));
       });
       child.on("error", reject);
-    });
+    }));
     return fs.readFileSync(outPath);
   } catch {
     return null;

@@ -5,10 +5,13 @@ import fs from "fs";
 import path from "path";
 import { spawn } from "child_process";
 import { promisify } from "util";
+import { withForkRetry } from "./_core/execForkRetry";
 import { exec as execCb } from "child_process";
 import { isFastShortVideoLength } from "./sourcingPolicy";
 
-const exec = promisify(execCb);
+const execRaw = promisify(execCb);
+const exec = ((cmd: string, opts?: Record<string, unknown>) =>
+  withForkRetry(() => execRaw(cmd, opts as never))) as typeof execRaw;
 
 const SAMPLE_FRACTIONS = [0.12, 0.38, 0.62, 0.88];
 const BLACK_LUMA_THRESHOLD = 22;
@@ -52,7 +55,7 @@ async function probeFrameMeanLuma(filePath: string, atSec: number): Promise<numb
     `_spot_${path.basename(filePath, path.extname(filePath))}_${Math.round(atSec * 100)}.raw`
   );
   try {
-    await new Promise<void>((resolve, reject) => {
+    await withForkRetry(() => new Promise<void>((resolve, reject) => {
       const args = [
         "-y",
         "-ss",
@@ -68,6 +71,10 @@ async function probeFrameMeanLuma(filePath: string, atSec: number): Promise<numb
         outPath,
       ];
       const child = spawn(ffmpegBin(), args, { stdio: ["ignore", "ignore", "pipe"] });
+      let stderr = "";
+      child.stderr.on("data", (d: Buffer) => {
+        stderr += d.toString();
+      });
       const timer = setTimeout(() => {
         try {
           child.kill("SIGKILL");
@@ -79,10 +86,10 @@ async function probeFrameMeanLuma(filePath: string, atSec: number): Promise<numb
       child.on("close", (code) => {
         clearTimeout(timer);
         if (code === 0 && fs.existsSync(outPath)) resolve();
-        else reject(new Error(`ffmpeg ${code}`));
+        else reject(new Error(`ffmpeg ${code}: ${stderr.slice(-200)}`));
       });
       child.on("error", reject);
-    });
+    }));
     const buf = fs.readFileSync(outPath);
     try {
       fs.unlinkSync(outPath);

@@ -6,11 +6,14 @@
 import fs from "fs";
 import path from "path";
 import { promisify } from "util";
+import { withForkRetry } from "./_core/execForkRetry";
 import { exec as execCb } from "child_process";
 import { normalizeVideoLength, targetVideoDurationMinutes } from "@shared/videoLengths";
 import { spotCheckFinalVideo, isInformationalSpotWarning } from "./postRenderSpotCheck";
 
-const exec = promisify(execCb);
+const execRaw = promisify(execCb);
+const exec = ((cmd: string, opts?: Record<string, unknown>) =>
+  withForkRetry(() => execRaw(cmd, opts as never))) as typeof execRaw;
 
 export type FinalVideoValidation = {
   ok: boolean;

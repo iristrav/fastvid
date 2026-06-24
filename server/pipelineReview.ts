@@ -4,6 +4,7 @@
 import { execFile as execFileCb } from "child_process";
 import { promisify } from "util";
 import * as fs from "fs";
+import { withForkRetry } from "./_core/execForkRetry";
 import {
   buildBeatMatchTags,
   curatedClipPathAssetId,
@@ -44,15 +45,17 @@ async function probeDurationSec(filePath: string): Promise<number> {
   if (!fs.existsSync(filePath)) return 0;
   try {
     const ffprobe = process.env.FFPROBE_BIN || process.env.FFPROBE_PATH || "ffprobe";
-    const { stdout } = await execFile(ffprobe, [
-      "-v",
-      "error",
-      "-show_entries",
-      "format=duration",
-      "-of",
-      "default=noprint_wrappers=1:nokey=1",
-      filePath,
-    ]);
+    const { stdout } = await withForkRetry(() =>
+      execFile(ffprobe, [
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        filePath,
+      ])
+    );
     const n = parseFloat(String(stdout).trim());
     return Number.isFinite(n) && n > 0 ? n : 0;
   } catch {

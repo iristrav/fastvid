@@ -45,6 +45,7 @@ import {
   type VideoVisualTopic,
 } from "./visualBeatTags";
 import { promisify } from "util";
+import { withForkRetry } from "./_core/execForkRetry";
 import fetch from "node-fetch";
 import * as fs from "fs";
 import * as path from "path";
@@ -135,7 +136,9 @@ import {
 } from "./db";
 import { seededShuffle } from "./archiveUsageMemory";
 
-const exec = promisify(execCb);
+const execRaw = promisify(execCb);
+const exec = ((cmd: string, opts?: Record<string, unknown>) =>
+  withForkRetry(() => execRaw(cmd, opts as never))) as typeof execRaw;
 const VIDEO_WIDTH = 1920;
 const VIDEO_HEIGHT = 1080;
 const CLIP_MIN_SEC = 2.5;
