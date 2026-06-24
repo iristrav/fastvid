@@ -276,17 +276,16 @@ export function isFastShortVideoLength(videoLength?: string | null): boolean {
   return targetVideoDurationMinutes(videoLength) <= 1;
 }
 
-/** Parallel beat fills on 1-min fast path. Confirmed Railway plan has 24 vCPU, so raise
- *  the default from 4 — CLIP scoring is light per-call (embedding lookup, not a heavy
- *  forward pass on contended hardware), and more concurrency here lets the visual stage
- *  evaluate more candidates per beat in the same wall-clock budget. */
+/** Parallel beat fills on 1-min fast path. Railway has 24 vCPU but the container's pids
+ *  cgroup limit (process/thread count, not CPU) is hit well before vCPU saturation when
+ *  combined with compose/montage parallelism below — keep this moderate. */
 export function fastBeatConcurrency(isRailway = false): number {
   const raw = process.env.FAST_BEAT_CONCURRENCY?.trim();
   if (raw) {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 1 && n <= 8) return n;
   }
-  return 6;
+  return 4;
 }
 
 /** Weak-beat archive polish before compose (always on when strict voice↔visual match). */
@@ -301,34 +300,35 @@ export function polishBeforeComposeEnabled(
   return true;
 }
 
-/** Parallel scene compose jobs (1–4). Confirmed Railway plan: 24 vCPU / 24GB RAM — well
- *  past the old "~512MB free tier" assumption this used to be tuned for, so run at the max
- *  on Railway too. Override via COMPOSE_PARALLELISM if needed. */
+/** Parallel scene compose jobs (1–4). Railway has 24 vCPU/24GB RAM, but each compose job
+ *  forks a shell + ffmpeg + N encode threads — multiplied across compose × montage ×
+ *  thread parallelism this hit the container's pids/fork limit ("Cannot fork") well
+ *  before CPU/RAM did. Keep this moderate; override via COMPOSE_PARALLELISM if needed. */
 export function composeParallelismForVideo(videoLength?: string | null, isRailway = false): number {
   const raw = process.env.COMPOSE_PARALLELISM?.trim();
   if (raw) {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 1 && n <= 4) return n;
   }
-  return 4;
+  return 2;
 }
 
-/** Parallel montage segment encodes within a scene (1–3). Confirmed Railway plan has
- *  24 vCPU / 24GB RAM, so no need to serialize here either. */
+/** Parallel montage segment encodes within a scene (1–3). See composeParallelismForVideo —
+ *  combined process/thread fan-out hit the container's fork limit, so keep this moderate. */
 export function montageSegmentParallelism(isRailway = false): number {
   const raw = process.env.MONTAGE_SEGMENT_PARALLELISM?.trim();
   if (raw) {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 1 && n <= 3) return n;
   }
-  return 3;
+  return 2;
 }
 
-/** FFmpeg thread cap per encode (0 = libx264 default). Railway plan has 24 vCPU, so give
- *  each parallel encode more threads instead of capping at 2. */
+/** FFmpeg thread cap per encode (0 = libx264 default). Keep at 2 — combined with compose ×
+ *  montage parallelism, higher values hit the container's fork/pids limit, not CPU. */
 export function ffmpegThreadFlag(isRailway = false): string {
   const raw = process.env.FFMPEG_THREADS?.trim();
-  const n = raw ? parseInt(raw, 10) : isRailway ? 4 : 0;
+  const n = raw ? parseInt(raw, 10) : isRailway ? 2 : 0;
   if (!n || isNaN(n) || n < 1) return "";
   return `-threads ${Math.min(4, n)}`;
 }
