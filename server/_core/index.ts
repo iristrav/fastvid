@@ -582,13 +582,13 @@ async function startServer() {
     }
     try {
       const { createVideo } = await import('../db');
+      const { enqueueVideoJob } = await import('../videoQueue');
       const { prompt, videoLength = '8-10', videoType = 'documentary', userId = 1 } = req.body;
       if (!prompt) { res.status(400).json({ error: 'prompt required' }); return; }
-      const videoId = await createVideo({ userId, prompt, videoLength, videoType });
-      // Import and call generateFullVideo dynamically to avoid circular deps
-      const { generateFullVideoInternal } = await import('../routers');
-      generateFullVideoInternal(videoId, prompt, videoLength, videoType, undefined, undefined, false).catch(console.error);
-      res.json({ videoId, status: 'started' });
+      const videoId = await createVideo({ userId, prompt, videoLength, videoType, status: 'queued' });
+      if (!videoId) { res.status(500).json({ error: 'Failed to create video' }); return; }
+      const { queuePosition } = await enqueueVideoJob(videoId, '🔍 Internal test — waiting in queue...');
+      res.json({ videoId, status: 'queued', queuePosition });
     } catch (err) {
       console.error('[Internal Trigger] Error:', err);
       res.status(500).json({ error: String(err) });

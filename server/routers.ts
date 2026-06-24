@@ -709,6 +709,16 @@ async function _generateVideoWithAI(
   preloadedMetadata?: unknown,
   enableSubtitles = false
 ) {
+  const { isWorkerMode, shouldRunQueueWorker } = await import("@shared/videoQueue");
+  if (!isWorkerMode() && !shouldRunQueueWorker()) {
+    console.error(
+      `[Video Generation] Refusing pipeline on web for video ${videoId} — re-queuing for worker`
+    );
+    const { enqueueVideoJob } = await import("./videoQueue");
+    await enqueueVideoJob(videoId, "🔄 Waiting for worker...");
+    return;
+  }
+
   try {
     // Use preloaded script if available, otherwise read from DB (legacy path)
     let approvedScript: string;
