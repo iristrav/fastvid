@@ -20939,7 +20939,7 @@ export async function runVideoPipeline(
           return result;
         }))
       ),
-      isFastShortVideoLength(videoLength) ? 150_000 : 2400_000,
+      isFastShortVideoLength(videoLength) ? 300_000 : 2400_000,
       "Scene compose stage"
     );
     console.log(`[Pipeline] Stage 4 (compose): ${scenes.length} scenes in ${((Date.now()-t3)/1000).toFixed(1)}s`);
