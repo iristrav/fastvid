@@ -41,6 +41,7 @@ import {
   assetIsOffTopicProtest,
   beatMentionsWwiiContent,
   isClipTitleIrrelevantToBeat,
+  effectiveArchiveAssetTags,
   type VideoVisualTopic,
 } from "./visualBeatTags";
 import { promisify } from "util";
@@ -367,7 +368,7 @@ export function countVisualTagHits(
 ): number {
   if (!visualTags.length) return 0;
   const title = (asset.title ?? "").toLowerCase();
-  const assetTags = normalizeMediaTags(asset.tags ?? []);
+  const assetTags = effectiveArchiveAssetTags(asset);
   let hits = 0;
   for (const vt of visualTags) {
     if (title.includes(vt)) hits += 2;
@@ -1018,17 +1019,28 @@ export function isCuratedOffTopicAsset(
 }
 
 /** B&W / war-era / interview archive — wrong look for modern city/geography documentaries. */
+export function isModernUrbanArchiveAsset(
+  asset: Pick<MediaArchiveAsset, "title" | "tags" | "mediaType">
+): boolean {
+  const hay = `${(asset.title ?? "").toLowerCase()} ${effectiveArchiveAssetTags(asset).join(" ")}`;
+  return /\b(timelapse|time.?lapse|drone|aerial|4k|uhd|hd\b|1080p|contemporary|modern|skyline|street view|kleur|color footage|cityscape|urban scene|stadsmilieu|vandaag|today|current|recent|living city|walkable|bike lane|fietspad|tram|metro|ns trein|train station|gracht|canal tour)\b/i.test(
+    hay
+  );
+}
+
+/** B&W / war-era / interview archive — wrong look for modern city/geography documentaries. */
 export function isGeographyIncompatibleArchiveAsset(
   asset: Pick<MediaArchiveAsset, "title" | "tags" | "mediaType">
 ): boolean {
   if (isWwiiWarArchiveAsset(asset)) return true;
-  if (isCuratedHistoricalFootage(asset)) return true;
   if (isCuratedInterviewAsset(asset)) return true;
-  const hay = `${(asset.title ?? "").toLowerCase()} ${normalizeMediaTags(asset.tags ?? []).join(" ")}`;
+  const hay = `${(asset.title ?? "").toLowerCase()} ${effectiveArchiveAssetTags(asset).join(" ")}`;
   if (/\b(protest(?:ing|ers?|s)?|demonstration|demonstrators?|demonstratie|betog(?:ing|ers?)?|riot(?:ing|ers?)?|activists?|picket(?:ing|ers?)?|civil unrest|protest march|street protest)\b/i.test(hay)) {
     return true;
   }
   if (isOffTopicGeoUrbanVisual(hay)) return true;
+  if (isModernUrbanArchiveAsset(asset)) return false;
+  if (isCuratedHistoricalFootage(asset)) return true;
   return /\b(zwart-wit|black.?white|b&w|monochrome|sepia|archief footage|old footage|1930|1934|1939|1945|propaganda|militair|soldaten|parade|historical archive|newsreel|zwart wit)\b/i.test(
     hay
   );
@@ -1240,6 +1252,15 @@ export async function listCuratedArchiveCandidates(
   if (filtered.length >= minKeep) return filtered;
   if (filtered.length > 0) return filtered;
   return pool;
+}
+
+/** Use prefetch when non-empty; empty [] or null triggers a fresh search. */
+export async function resolvePrefetchedArchiveCandidates(
+  prefetched: CuratedCandidatePick[] | null | undefined,
+  search: () => Promise<CuratedCandidatePick[]>
+): Promise<CuratedCandidatePick[]> {
+  if (prefetched != null && prefetched.length > 0) return prefetched;
+  return search();
 }
 
 export function orderCuratedCandidatesForBeat(

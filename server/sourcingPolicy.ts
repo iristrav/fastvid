@@ -346,10 +346,10 @@ export function visualFootageFocusEnabled(): boolean {
 export function maxVisualCandidatesPerBeatTry(videoLength?: string | null): number {
   if (!pipelineWallClockLimitEnabled()) return 12;
   if (visualFootageFocusEnabled()) {
-    if (isFastShortVideoLength(videoLength)) return 1;
+    if (isFastShortVideoLength(videoLength)) return 4;
     return 5;
   }
-  if (isFastShortVideoLength(videoLength)) return 1;
+  if (isFastShortVideoLength(videoLength)) return 3;
   return 2;
 }
 
@@ -399,14 +399,14 @@ export function visualSourcingTurboMs(): number {
   return 12_000;
 }
 
-/** Max ms per beat spent trying archive candidates before moving on (default 5s on 1-min). */
+/** Max ms per beat spent trying archive candidates before moving on (default 18s on 1-min). */
 export function archiveBeatTryTimeoutMs(videoLength?: string | null): number {
   const raw = process.env.ARCHIVE_BEAT_TRY_TIMEOUT_MS?.trim();
   if (raw) {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 4_000 && n <= 120_000) return n;
   }
-  if (isFastShortVideoLength(videoLength)) return 5_000;
+  if (isFastShortVideoLength(videoLength)) return 18_000;
   return 45_000;
 }
 

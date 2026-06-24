@@ -167,6 +167,7 @@ import {
   extractTopicAnchorTags,
   orderCuratedCandidatesForBeat,
   searchCuratedCandidatesForBeat,
+  resolvePrefetchedArchiveCandidates,
   hashVarietySeed,
   archiveAssetPreflight,
   assetPassesBeatMinimum,
@@ -15268,27 +15269,27 @@ async function adoptArchiveBeatClip(
 
   if (curatedArchiveOnlyVisuals()) {
     const videosOnly = adoptOpts?.videosOnly ?? archiveNeedsOpeningFootage(dedup);
-    let ranked =
-      prefetchedRanked ??
-      (await searchCuratedCandidatesForBeat(
-      beat,
-      scene,
-      dedup.usedCuratedAssetIds,
-      dedup.usedCuratedStorageUrls,
-      videoTitle,
-      {
-        varietySeed: dedup.varietySeed,
-        crossVideoExcludeIds: dedup.crossVideoExcludeIds,
-        assetsCache: dedup.archiveAssetsCache,
-        semanticProfile,
-        videosOnly,
-        segmentLock: dedup.segmentGeoLock,
-        fastMode: dedup.perf?.fastStockMode,
-        videoLength: dedup.videoLength,
-        candidatePool: dedup.archiveCandidatePool ?? undefined,
-        skipSemantic: isFastShortVideoLength(dedup.videoLength),
-      }
-    ));
+    const searchRanked = () =>
+      searchCuratedCandidatesForBeat(
+        beat,
+        scene,
+        dedup.usedCuratedAssetIds,
+        dedup.usedCuratedStorageUrls,
+        videoTitle,
+        {
+          varietySeed: dedup.varietySeed,
+          crossVideoExcludeIds: dedup.crossVideoExcludeIds,
+          assetsCache: dedup.archiveAssetsCache,
+          semanticProfile,
+          videosOnly,
+          segmentLock: dedup.segmentGeoLock,
+          fastMode: dedup.perf?.fastStockMode,
+          videoLength: dedup.videoLength,
+          candidatePool: dedup.archiveCandidatePool ?? undefined,
+          skipSemantic: isFastShortVideoLength(dedup.videoLength),
+        }
+      );
+    let ranked = await resolvePrefetchedArchiveCandidates(prefetchedRanked, searchRanked);
     if (
       clipEmbeddingIndexEnabled() &&
       ranked.length > 0 &&
@@ -16974,28 +16975,25 @@ async function fillBeatVisual(
           () => tryArchivePasses(prefetchedRanked, openingVideosOnly),
           scene.index
         );
-      if (visualSourcingTurbo(dedup) || isPipelineRushMode(dedup)) {
-        const parallelAdopters: Array<() => Promise<boolean>> = [archiveFn];
-        if (canUseLicensedStockBeat(dedup)) {
-          parallelAdopters.push(() =>
-            adoptStockBeatClipFallback(
-              beat,
-              scene,
-              workDir,
-              videoTitle,
-              dedup,
-              pushClip,
-              holdSec,
-              semanticProfile
-            )
-          );
-        }
-        const raceMs = isPipelineRushMode(dedup) ? 10_000 : 14_000;
-        if (await raceFirstBeatAdopt(parallelAdopters, raceMs)) return true;
-      } else if (await archiveFn()) {
-        return true;
-      }
+      // 1-min: archive first (exclusive budget), then stock — no parallel race with Pexels.
+      if (await archiveFn()) return true;
       if (openingVideosOnly && (await tryArchivePasses(prefetchedRanked, true))) return true;
+      if (canUseLicensedStockBeat(dedup)) {
+        if (
+          await adoptStockBeatClipFallback(
+            beat,
+            scene,
+            workDir,
+            videoTitle,
+            dedup,
+            pushClip,
+            holdSec,
+            semanticProfile
+          )
+        ) {
+          return true;
+        }
+      }
     } else {
       const geoDoc = isGeoDocumentaryContext(beat.text, videoTitle);
       const parallelAuthentic = geoDoc;
@@ -17076,23 +17074,6 @@ async function fillBeatVisual(
         if (await adoptEuropeanaBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
           return true;
         }
-      }
-    }
-
-    if (fastShort && canUseLicensedStockBeat(dedup)) {
-      if (
-        await adoptStockBeatClipFallback(
-          beat,
-          scene,
-          workDir,
-          videoTitle,
-          dedup,
-          pushClip,
-          holdSec,
-          semanticProfile
-        )
-      ) {
-        return true;
       }
     }
   } else {
@@ -20748,12 +20729,12 @@ export async function runVideoPipeline(
         console.log("[Pipeline] Archive pool skipped on 1-min fast path (on-demand per beat)");
         try {
           const { backfillClipEmbeddingsWithBudget } = await import("./archiveClipIndexBackfill");
-          void backfillClipEmbeddingsWithBudget(8, 10_000)
+          void backfillClipEmbeddingsWithBudget(24, 30_000)
             .then((warmed) => {
               if (warmed.indexed > 0) {
                 console.log(
                   `[Pipeline] CLIP index 1-min pre-warm: +${warmed.indexed} archive clip(s)` +
-                    (warmed.timedOut ? " (10s budget)" : "")
+                    (warmed.timedOut ? " (30s budget)" : "")
                 );
               }
             })

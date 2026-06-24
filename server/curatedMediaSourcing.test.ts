@@ -12,6 +12,9 @@ import {
   scoreCuratedAsset,
   assetPassesBeatMinimum,
   isGeographyIncompatibleArchiveAsset,
+  isModernUrbanArchiveAsset,
+  countVisualTagHits,
+  resolvePrefetchedArchiveCandidates,
   isCuratedOffTopicAsset,
   isCuratedStaticInteriorAsset,
   isCuratedPreparedStillClip,
@@ -853,5 +856,55 @@ describe("curatedMediaSourcing", () => {
     };
     expect(isClipTitleIrrelevantToBeat(mapClip, beatText)).toBe(true);
     expect(assetPassesBeatMinimum(mapClip as MediaArchiveAsset, beatText, 80, 80)).toBe(false);
+  });
+
+  it("countVisualTagHits infers geo tags from title when metadata tags are empty", () => {
+    const asset: MediaArchiveAsset = {
+      id: 200,
+      archiveId: 1,
+      title: "Fietsen over Amsterdamse grachten",
+      tags: [],
+      mediaType: "video",
+      mimeType: "video/mp4",
+      storageUrl: "/x.mp4",
+      isActive: 1,
+      sortOrder: 0,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      fileSizeBytes: 1,
+      width: 1920,
+      height: 1080,
+      durationSec: 6,
+      sourceUrl: null,
+      sourceLabel: null,
+    };
+    expect(countVisualTagHits(asset, ["netherlands", "amsterdam"])).toBeGreaterThan(0);
+  });
+
+  it("isGeographyIncompatibleArchiveAsset allows modern urban footage despite archief tag", () => {
+    expect(
+      isGeographyIncompatibleArchiveAsset({
+        title: "Amsterdam grachten drone 4k timelapse",
+        tags: ["archief"],
+        mediaType: "video",
+      })
+    ).toBe(false);
+    expect(isModernUrbanArchiveAsset({ title: "Rotterdam skyline aerial HD", tags: [], mediaType: "video" })).toBe(
+      true
+    );
+  });
+
+  it("resolvePrefetchedArchiveCandidates re-searches when prefetch is empty", async () => {
+    let searched = false;
+    const picks = await resolvePrefetchedArchiveCandidates([], async () => {
+      searched = true;
+      return [{ asset: { id: 1 } as MediaArchiveAsset, score: 50, archiveName: "test", archiveNicheTags: [] }];
+    });
+    expect(searched).toBe(true);
+    expect(picks).toHaveLength(1);
+    const cached = await resolvePrefetchedArchiveCandidates(picks, async () => {
+      throw new Error("should not search");
+    });
+    expect(cached).toBe(picks);
   });
 });

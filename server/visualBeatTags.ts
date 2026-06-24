@@ -10,6 +10,7 @@ import {
   beatTextMentionsGeoSlug,
 } from "./worldGeoSlugs";
 import { asVideoTitleString } from "./stringCoercion";
+import { normalizeMediaTags } from "./db";
 
 /** Drives archive filtering — geography videos must not pull WWII/Hiter footage. */
 export type VideoVisualTopic = "wwii" | "cold_war" | "geography_urban" | "general";
@@ -1128,7 +1129,7 @@ function slugSetIncludes(slugs: string[], markers: readonly string[]): boolean {
 }
 
 function assetHay(asset: Pick<{ title?: string | null; tags?: string[] | null }, "title" | "tags">): string {
-  return `${(asset.title ?? "").toLowerCase()} ${(asset.tags ?? []).join(" ").toLowerCase()}`;
+  return `${(asset.title ?? "").toLowerCase()} ${effectiveArchiveAssetTags(asset).join(" ").toLowerCase()}`;
 }
 
 function assetHayHasMarkers(
@@ -1188,7 +1189,7 @@ function geoTagHitCount(
 ): number {
   if (!visualTags.length) return 0;
   const title = (asset.title ?? "").toLowerCase();
-  const assetTags = (asset.tags ?? []).map((t) => t.toLowerCase());
+  const assetTags = effectiveArchiveAssetTags(asset).map((t) => t.toLowerCase());
   let hits = 0;
   for (const vt of visualTags) {
     if (title.includes(vt)) hits += 2;
@@ -1356,4 +1357,28 @@ export function termStartInBeat(
     }
   }
   return beatStart + 0.12;
+}
+
+/** Infer searchable geo/subject tags from clip title when metadata tags are sparse. */
+export function inferArchiveAssetTagsFromTitle(
+  asset: Pick<{ title?: string | null; tags?: string[] | null }>
+): string[] {
+  const title = (asset.title ?? "").trim();
+  if (!title) return [];
+  return normalizeMediaTags([
+    ...extractBeatGeoPlaceTags(title),
+    ...extractVisualSearchTags(title),
+    ...extractBeatCyclingTags(title),
+    ...extractBeatInfrastructureTags(title),
+  ]);
+}
+
+/** Tags used for archive matching — stored tags plus title-inferred geo/subject tokens. */
+export function effectiveArchiveAssetTags(
+  asset: Pick<{ title?: string | null; tags?: string[] | null }>
+): string[] {
+  return normalizeMediaTags([
+    ...normalizeMediaTags(asset.tags ?? []),
+    ...inferArchiveAssetTagsFromTitle(asset),
+  ]);
 }
