@@ -72,14 +72,14 @@ export function minWikiClipQualityScore(): number {
   return minClipQualityScore();
 }
 
-/** Minimum quality score (0–10). Default 8. */
+/** Minimum quality score (0–10). Default 7 — balanced hit-rate vs speed on 1-min. */
 export function minClipQualityScore(): number {
   const raw = process.env.MIN_CLIP_QUALITY_SCORE?.trim();
   if (raw) {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 5 && n <= 10) return n;
   }
-  return 8;
+  return 7;
 }
 
 /** When true, inconclusive local vision (CLIP load fail / no frames) rejects the clip. */

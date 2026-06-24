@@ -85,10 +85,10 @@ describe("localClipVision helpers", () => {
     expect(q.indexOf("World War II")).toBeLessThan(q.indexOf("Something abstract"));
   });
 
-  it("effectiveMinClipQualityScore stays at 8 when strict voice visual match is on", () => {
+  it("effectiveMinClipQualityScore stays at minClipQualityScore when strict voice visual match is on", () => {
     const prev = process.env.STRICT_VOICE_VISUAL_MATCH;
     process.env.STRICT_VOICE_VISUAL_MATCH = "true";
-    expect(effectiveMinClipQualityScore(true, true)).toBe(8);
+    expect(effectiveMinClipQualityScore(true, true)).toBe(minClipQualityScore());
     process.env.STRICT_VOICE_VISUAL_MATCH = prev;
   });
 });
