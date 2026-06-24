@@ -444,6 +444,45 @@ export async function probeImageMeanLuma(jpegPath: string): Promise<number | nul
   }
 }
 
+function isForkPressureSpawnError(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException)?.code;
+  if (code === "EAGAIN") return true;
+  const msg = (err as Error)?.message || "";
+  return /resource temporarily unavailable/i.test(msg) || /cannot fork/i.test(msg);
+}
+
+async function extractFrameAtFractionOnce(
+  videoPath: string,
+  outPath: string,
+  fraction: number,
+  timeoutMs: number
+): Promise<void> {
+  const pct = `${Math.round(fraction * 1000) / 10}%`;
+  await new Promise<void>((resolve, reject) => {
+    const args = ["-y", "-ss", pct, "-i", videoPath, "-frames:v", "1", "-q:v", "3", outPath];
+    const child = spawn(ffmpegBin(), args, { stdio: ["ignore", "ignore", "pipe"] });
+    let stderr = "";
+    child.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });
+    const timer = setTimeout(() => {
+      try { child.kill("SIGKILL"); } catch { /* ignore */ }
+      reject(new Error("frame extract timeout"));
+    }, timeoutMs);
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0 && fs.existsSync(outPath) && fs.statSync(outPath).size > 800) resolve();
+      else reject(new Error(stderr.slice(-120) || `ffmpeg exit ${code}`));
+    });
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+  });
+}
+
+// Under heavy concurrent ffmpeg load, spawn can transiently fail with EAGAIN/"Cannot
+// fork" — retry with backoff instead of dropping the CLIP candidate entirely.
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 export async function extractFrameAtFraction(
   videoPath: string,
   outPath: string,
@@ -451,27 +490,19 @@ export async function extractFrameAtFraction(
   timeoutMs = 12_000
 ): Promise<boolean> {
   if (!fs.existsSync(videoPath)) return false;
-  const pct = `${Math.round(fraction * 1000) / 10}%`;
-  try {
-    await new Promise<void>((resolve, reject) => {
-      const args = ["-y", "-ss", pct, "-i", videoPath, "-frames:v", "1", "-q:v", "3", outPath];
-      const child = spawn(ffmpegBin(), args, { stdio: ["ignore", "ignore", "pipe"] });
-      let stderr = "";
-      child.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });
-      const timer = setTimeout(() => {
-        try { child.kill("SIGKILL"); } catch { /* ignore */ }
-        reject(new Error("frame extract timeout"));
-      }, timeoutMs);
-      child.on("close", (code) => {
-        clearTimeout(timer);
-        if (code === 0 && fs.existsSync(outPath) && fs.statSync(outPath).size > 800) resolve();
-        else reject(new Error(stderr.slice(-120) || `ffmpeg exit ${code}`));
-      });
-      child.on("error", reject);
-    });
-    return true;
-  } catch {
-    return false;
+  let retriesLeft = 2;
+  while (true) {
+    try {
+      await extractFrameAtFractionOnce(videoPath, outPath, fraction, timeoutMs);
+      return true;
+    } catch (err) {
+      if (retriesLeft > 0 && isForkPressureSpawnError(err)) {
+        retriesLeft--;
+        await sleep(1500 * (3 - retriesLeft));
+        continue;
+      }
+      return false;
+    }
   }
 }
 

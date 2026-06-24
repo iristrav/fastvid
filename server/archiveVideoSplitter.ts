@@ -20,7 +20,33 @@ import {
   ARCHIVE_MIN_SAVED_CLIP_SEC,
 } from "@shared/const";
 
-const exec = promisify(execCb);
+const execPromise = promisify(execCb);
+
+// Under heavy concurrent ffmpeg/ffprobe load (compose + archive splitting running at the
+// same time) spawns can transiently fail with EAGAIN/"Cannot fork" — retry with backoff
+// instead of hard-failing the split.
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const isForkPressureError = (err: unknown): boolean => {
+  const code = (err as NodeJS.ErrnoException)?.code;
+  if (code === "EAGAIN") return true;
+  const msg = (err as Error)?.message || "";
+  return /resource temporarily unavailable/i.test(msg) || /cannot fork/i.test(msg);
+};
+const exec = (async (cmd: string, opts?: Record<string, unknown>) => {
+  let retriesLeft = 3;
+  while (true) {
+    try {
+      return await execPromise(cmd, opts as never);
+    } catch (err) {
+      if (retriesLeft > 0 && isForkPressureError(err)) {
+        retriesLeft--;
+        await sleep(1500 * (4 - retriesLeft));
+        continue;
+      }
+      throw err;
+    }
+  }
+}) as typeof execPromise;
 
 export type VideoClipSegment = {
   buffer: Buffer;
