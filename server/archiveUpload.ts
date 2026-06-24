@@ -21,8 +21,10 @@ import {
 } from "./archiveClipDedup";
 import {
   ArchiveSplitError,
+  archiveStoredDurationSec,
   formatTimecode,
   mapPool,
+  minSavedArchiveClipSec,
   archiveUploadRequestTimeoutMs,
   maxArchiveUploadBytes,
   MIN_SPLIT_VIDEO_SEC,
@@ -317,6 +319,22 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
             });
             return null;
           }
+          const storedDur = archiveStoredDurationSec(seg.durationSec);
+          if (storedDur <= 0) {
+            console.log(
+              `[ArchiveUpload] skip clip ${seg.index + 1} (${formatTimecode(seg.startSec)}–${formatTimecode(seg.endSec)}): ` +
+                `${seg.durationSec.toFixed(2)}s < ${minSavedArchiveClipSec()}s minimum`
+            );
+            progress({
+              stage: "filter_duration",
+              message: `${fileLabel}: clip ${seg.index + 1} skipped (shorter than ${minSavedArchiveClipSec()}s)`,
+              percent: 90 + Math.round((seg.index / segments.length) * 8),
+              clipIndex: seg.index + 1,
+              clipTotal: segments.length,
+              clipsSaved: savedCount,
+            });
+            return null;
+          }
           const key = `media-archive/${input.archiveId}/${Date.now()}-clip${seg.index}-${Math.random().toString(36).slice(2, 10)}.mp4`;
           const fragmentNote = parentSource
             ? `Fragment uit ${parentSource} (${formatTimecode(seg.startSec)}–${formatTimecode(seg.endSec)})`
@@ -351,7 +369,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
             storageKey: key,
             tags: enriched.tags,
             sourceNote: enriched.sourceNote,
-            durationSec: Math.round(seg.durationSec),
+            durationSec: storedDur,
             isActive: 1,
           });
           if (!assetId) return null;
@@ -480,6 +498,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
     storageKey: key,
     tags: enriched.tags,
     sourceNote: enriched.sourceNote,
+    durationSec: minSavedArchiveClipSec(),
     isActive: 1,
   });
   if (!assetId) {

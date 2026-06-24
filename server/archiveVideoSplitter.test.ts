@@ -17,6 +17,9 @@ import {
   refineClipRangesWithInteriorCuts,
   splitBudgetMs,
   splitRangeAtInteriorCuts,
+  filterClipRangesBelowMinDuration,
+  archiveStoredDurationSec,
+  minSavedArchiveClipSec,
 } from "./archiveVideoSplitter";
 
 describe("archiveVideoSplitter", () => {
@@ -163,6 +166,30 @@ describe("archiveVideoSplitter", () => {
     expect(splitBudgetMs()).toBe(3_600_000);
     expect(maxArchiveUploadBytes()).toBe(2048 * 1024 * 1024);
     expect(archiveUploadRequestTimeoutMs()).toBeGreaterThan(splitBudgetMs());
+  });
+
+  it("filterClipRangesBelowMinDuration drops sub-min shots without merging scenes", () => {
+    const filtered = filterClipRangesBelowMinDuration(
+      [
+        { start: 0, end: 2 },
+        { start: 2, end: 6 },
+        { start: 6, end: 6.8 },
+        { start: 6.8, end: 12 },
+      ],
+      3
+    );
+    expect(filtered).toEqual([
+      { start: 2, end: 6 },
+      { start: 6.8, end: 12 },
+    ]);
+  });
+
+  it("archiveStoredDurationSec never returns 0 for saved clips", () => {
+    expect(archiveStoredDurationSec(0.4)).toBe(0);
+    expect(archiveStoredDurationSec(2.9)).toBe(0);
+    expect(archiveStoredDurationSec(3)).toBe(3);
+    expect(archiveStoredDurationSec(4.2)).toBe(4.2);
+    expect(minSavedArchiveClipSec()).toBe(3);
   });
 
   it("mapPool runs with bounded concurrency and preserves order", async () => {

@@ -17,6 +17,7 @@ import {
 import {
   ARCHIVE_MAX_UPLOAD_BYTES,
   ARCHIVE_MAX_VIDEO_DURATION_SEC,
+  ARCHIVE_MIN_SAVED_CLIP_SEC,
 } from "@shared/const";
 
 const exec = promisify(execCb);
@@ -110,6 +111,39 @@ export function scdetThreshold(): number {
     if (!isNaN(n) && n >= 1 && n <= 50) return n;
   }
   return DEFAULT_SCDET_THRESHOLD;
+}
+
+/** Minimum duration saved to archive / shown in admin (default 3s). */
+export function minSavedArchiveClipSec(): number {
+  const raw = process.env.ARCHIVE_MIN_SAVED_CLIP_SEC?.trim();
+  if (raw) {
+    const n = parseFloat(raw);
+    if (!isNaN(n) && n >= 1 && n <= 30) return n;
+  }
+  return ARCHIVE_MIN_SAVED_CLIP_SEC;
+}
+
+/** Drop shot ranges shorter than minSec — keeps one scene per clip (no merging across cuts). */
+export function filterClipRangesBelowMinDuration(
+  ranges: Array<{ start: number; end: number }>,
+  minSec = minSavedArchiveClipSec()
+): Array<{ start: number; end: number }> {
+  if (minSec <= MIN_SCENE_SEC) return ranges;
+  const kept = ranges.filter((r) => r.end - r.start >= minSec - 0.02);
+  const dropped = ranges.length - kept.length;
+  if (dropped > 0) {
+    console.log(
+      `[ArchiveSplit] dropped ${dropped} clip(s) shorter than ${minSec}s (one scene per remaining clip)`
+    );
+  }
+  return kept;
+}
+
+/** Round duration for DB storage — never persist 0s from sub-second shots. */
+export function archiveStoredDurationSec(actualSec: number): number {
+  const minSec = minSavedArchiveClipSec();
+  if (actualSec < minSec - 0.05) return 0;
+  return Math.max(minSec, Math.round(actualSec * 10) / 10);
 }
 
 /** Minimum duration per saved clip (merges shorter adjacent ranges). */
@@ -971,6 +1005,11 @@ export async function splitVideoBySceneChanges(
     }
 
     if (totalDur < MIN_SCENE_SEC * 2) {
+      if (totalDur < minSavedArchiveClipSec() - 0.05) {
+        throw new ArchiveSplitError(
+          `Video too short (${totalDur.toFixed(1)}s). Each archive clip must be at least ${minSavedArchiveClipSec()} seconds.`
+        );
+      }
       return [{
         buffer: inputBuffer,
         startSec: 0,
@@ -998,6 +1037,7 @@ export async function splitVideoBySceneChanges(
 
     let ranges = buildClipRanges(cuts, totalDur);
     ranges = mergeFlashFragmentsOnly(ranges);
+    ranges = filterClipRangesBelowMinDuration(ranges);
     if (ranges.length > 1 && hasBudget()) {
       for (let pass = 0; pass < INTERNAL_RESCAN_PASSES && hasBudget(); pass++) {
         throwIfCancelled();
@@ -1009,6 +1049,7 @@ export async function splitVideoBySceneChanges(
         });
         ranges = await rescanRangesForInteriorCuts(analysisPath, ranges, deadline, shouldContinue);
         ranges = mergeFlashFragmentsOnly(ranges);
+        ranges = filterClipRangesBelowMinDuration(ranges);
         if (ranges.length === before) break;
       }
     }
@@ -1123,6 +1164,7 @@ export async function splitVideoBySceneChanges(
 
     const segments = extractResults
       .filter((s): s is VideoClipSegment => s != null)
+      .filter((s) => s.durationSec >= minSavedArchiveClipSec() - 0.02)
       .sort((a, b) => a.startSec - b.startSec)
       .map((seg, index) => ({ ...seg, index }));
     console.log(`[ArchiveSplit] extracted ${segments.length}/${ranges.length} shot clips in ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);

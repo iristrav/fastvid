@@ -7,6 +7,8 @@ export const AXIOS_TIMEOUT_MS = 30_000;
 export const ARCHIVE_MAX_VIDEO_DURATION_SEC = 2 * 60 * 60;
 export const ARCHIVE_MAX_UPLOAD_MB = 2048;
 export const ARCHIVE_MAX_UPLOAD_BYTES = ARCHIVE_MAX_UPLOAD_MB * 1024 * 1024;
+/** Minimum stored on-screen duration for archive clips (still = Ken Burns hold; video = shot length). */
+export const ARCHIVE_MIN_SAVED_CLIP_SEC = 3;
 
 export {
   APP_ERROR,
