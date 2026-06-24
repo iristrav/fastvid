@@ -604,6 +604,20 @@ export function ArchiveClipsGrid({
 
   const autoTitleAssets = trpc.mediaArchive.autoTitleAssets.useMutation();
   const auditScenes = trpc.mediaArchive.auditScenes.useMutation();
+  const repairDurations = trpc.mediaArchive.repairDurations.useMutation({
+    onSuccess: (data) => {
+      utils.mediaArchive.listAssets.invalidate();
+      toast.success(`Duration repair: ${data.updated} updated`, {
+        description:
+          data.deactivated > 0
+            ? `${data.deactivated} sub-3s clip(s) deactivated, ${data.skipped} skipped`
+            : data.skipped > 0
+              ? `${data.skipped} skipped`
+              : undefined,
+      });
+    },
+    onError: (e) => toast.error("Duration repair failed", { description: toastErrorMessage(e) }),
+  });
   const dedupeDuplicates = trpc.mediaArchive.dedupeDuplicateAssets.useMutation({
     onSuccess: (data) => {
       utils.mediaArchive.listAssets.invalidate();
@@ -741,6 +755,15 @@ export function ArchiveClipsGrid({
     total,
     utils.mediaArchive.listAssets,
   ]);
+
+  const runRepairDurations = useCallback(() => {
+    if (archiveId == null || total === 0) {
+      toast.error("Geen clips om te repareren");
+      return;
+    }
+    const ids = selectedCount > 0 ? [...selectedIds] : undefined;
+    repairDurations.mutate({ archiveId, ids });
+  }, [archiveId, repairDurations, selectedCount, selectedIds, total]);
 
   const runAutoTitleAll = useCallback(async () => {
     if (archiveId == null || total === 0) {
@@ -1077,6 +1100,26 @@ export function ArchiveClipsGrid({
               : selectedCount > 0
                 ? `AI titles + 4 tags (${selectedCount})`
                 : "AI titles + 4 tags"}
+          </button>
+        )}
+        {assets.length > 1 && (
+          <button
+            type="button"
+            onClick={runRepairDurations}
+            disabled={repairDurations.isPending || autoTitleRunning}
+            title="Zet 0s / ontbrekende duur op min. 3s (video's via ffprobe; korter dan 3s wordt gedeactiveerd)"
+            className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg bg-violet-500/15 text-violet-300 border border-violet-500/25 hover:bg-violet-500/25 disabled:opacity-50"
+          >
+            {repairDurations.isPending ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <ScanSearch className="w-3.5 h-3.5" />
+            )}
+            {repairDurations.isPending
+              ? "Duur repareren…"
+              : selectedCount > 0
+                ? `Fix 0s duur (${selectedCount})`
+                : "Fix 0s duur (archief)"}
           </button>
         )}
         {assets.length > 1 && (

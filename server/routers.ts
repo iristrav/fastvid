@@ -1799,6 +1799,24 @@ export const appRouter = router({
         });
       }),
 
+    /** Fix durationSec 0 / missing — images → 3s, videos ffprobe; sub-3s videos deactivated. */
+    repairDurations: adminProcedure
+      .input(
+        z.object({
+          archiveId: z.number().int(),
+          ids: z.array(z.number().int()).min(1).max(100).optional(),
+        })
+      )
+      .mutation(async ({ input }) => {
+        const archive = await getMediaArchiveById(input.archiveId);
+        if (!archive) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Archive not found");
+        const { repairArchiveAssetDurations } = await import("./archiveDurationRepair");
+        return repairArchiveAssetDurations({
+          archiveId: input.archiveId,
+          ids: input.ids,
+        });
+      }),
+
     probeAiTag: adminProcedure.input(z.object({
       archiveId: z.number().int(),
       assetId: z.number().int(),
