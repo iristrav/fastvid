@@ -198,6 +198,12 @@ import {
   type SceneReviewInput,
 } from "./pipelineReview";
 import { reviewSceneCritical } from "./sceneCriticalReview";
+import {
+  PipelineStepTiming,
+  recordPipelineTiming,
+  timePipelineStep,
+  warnComposeTimeNetwork,
+} from "./pipelineStepTiming";
 import { clipPassesDocumentaryBeatGate, resolveBeatRegionLock, inferBeatGeoRegion, resolveSegmentGeoLock, type BeatGeoRegion } from "./vidrushQuality";
 import type { ClipRejectEntry } from "./clipRejectAudit";
 import { recordClipReject, summarizeClipRejectAudit } from "./clipRejectAudit";
@@ -2484,10 +2490,16 @@ const SCENE_JSON_SCHEMA = {
 async function parseScriptIntoScenesBatch(
   script: string,
   sceneCount: number,
-  startIndex: number
+  startIndex: number,
+  stepTiming?: PipelineStepTiming
 ): Promise<Scene[]> {
-  const response = await withTimeout(
-    invokeLLM({
+  const response = await timePipelineStep(
+    stepTiming,
+    "llm_call",
+    "Script scene parse (GPT)",
+    () =>
+      withTimeout(
+        invokeLLM({
       messages: [
         {
           role: "system",
@@ -2515,9 +2527,10 @@ Split narration into contiguous slices — NEVER repeat the opening hook or earl
       ],
       response_format: SCENE_JSON_SCHEMA,
       maxTokens: 16384,
-    }),
-    120_000,
-    `Parse scenes batch from ${startIndex}`
+        }),
+        120_000,
+        `Parse scenes batch from ${startIndex}`
+      )
   );
 
   const content = response.choices[0]?.message?.content;
@@ -2578,16 +2591,22 @@ function mapRawScene(
   };
 }
 
-async function parseScriptIntoScenes(script: string, maxScenes: number, topicContext?: string): Promise<Scene[]> {
+async function parseScriptIntoScenes(
+  script: string,
+  maxScenes: number,
+  topicContext?: string,
+  stepTiming?: PipelineStepTiming
+): Promise<Scene[]> {
   const fromMarkdown = scenesFromMarkdownScript(script, maxScenes, topicContext);
   if (fromMarkdown && fromMarkdown.length >= Math.min(2, maxScenes)) {
     console.log(`[Pipeline] Parsed ${fromMarkdown.length} scenes from markdown (no LLM re-parse)`);
+    recordPipelineTiming(stepTiming, "scene_generation", "Script parse (markdown)", 0);
     return dedupeSceneNarration(fromMarkdown);
   }
 
   let scenes: Scene[];
   if (maxScenes <= SCENE_PARSE_BATCH_SIZE) {
-    scenes = await parseScriptIntoScenesBatch(script, maxScenes, 0);
+    scenes = await parseScriptIntoScenesBatch(script, maxScenes, 0, stepTiming);
   } else {
     const batchCount = Math.ceil(maxScenes / SCENE_PARSE_BATCH_SIZE);
     const chunks = splitScriptForSceneParsing(script, batchCount);
@@ -2598,7 +2617,7 @@ async function parseScriptIntoScenes(script: string, maxScenes: number, topicCon
       const remaining = maxScenes - allScenes.length;
       if (remaining <= 0) break;
       const count = Math.min(scenesPerBatch, remaining, SCENE_PARSE_BATCH_SIZE);
-      const batchScenes = await parseScriptIntoScenesBatch(chunks[b], count, allScenes.length);
+      const batchScenes = await parseScriptIntoScenesBatch(chunks[b], count, allScenes.length, stepTiming);
       allScenes.push(...batchScenes);
     }
     scenes = allScenes;
@@ -8367,6 +8386,8 @@ interface VisualDedupState {
   pipelineStartedMs?: number;
   /** At 7 min on 1-min path — finish visuals and export with compose grace past hard cap. */
   forceExportMode?: boolean;
+  /** Per-step timing for compose/visual bottleneck diagnosis. */
+  stepTiming?: PipelineStepTiming;
 }
 
 /**
@@ -8494,6 +8515,7 @@ function createVisualDedupState(
     clipRejectAudit: [],
     clipAdoptAudit: createClipAdoptAudit(),
     segmentGeoLock: null,
+    stepTiming: new PipelineStepTiming(),
   };
 }
 
@@ -11782,7 +11804,13 @@ async function rescueFastShortComposeClips(
   dedup: VisualDedupState
 ): Promise<string[]> {
   if (!isFastShortVideoLength(dedup.videoLength)) return [];
+  warnComposeTimeNetwork(dedup.stepTiming, "archive+stock rescue", scene.index);
 
+  return timePipelineStep(
+    dedup.stepTiming,
+    "compose_rescue",
+    "Compose-time rescue (archive+stock)",
+    async () => {
   const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
   const holdSec = archiveVisualBeatSecForVideo(dedup.videoLength);
   const beat: SceneBeat = {
@@ -11883,10 +11911,14 @@ async function rescueFastShortComposeClips(
 
   if (collected.length === 0 && archivePexelsFallbackEnabled() && canUseLicensedStockBeat(dedup)) {
     console.warn(`[Pipeline] Scene ${scene.index}: fast compose rescue — licensed stock`);
+    warnComposeTimeNetwork(dedup.stepTiming, "Pexels/Pixabay", scene.index);
     await adoptStockBeatClipFallback(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec);
   }
 
   return collected;
+    },
+    scene.index
+  );
 }
 
 /** Prune bad clips and last-chance fill before compose on 1-min fast path. */
@@ -15526,10 +15558,17 @@ async function adoptWikimediaBeatClip(
   for (const q of geoVideoQueries) {
     if (!wantVideo) break;
     try {
-      const wikiVids = await withTimeout(
-        fetchWikimediaVideos(q, holdSec, workDir, scene.index, 1, `wiki${beat.index}v`, "", beat.keywords),
-        dedup.perf.fastStockMode ? 18_000 : 35_000,
-        `Wikimedia video scene ${scene.index} beat ${beat.index}`
+      const wikiVids = await timePipelineStep(
+        dedup.stepTiming,
+        "image_search",
+        "Wikimedia search+download (video)",
+        () =>
+          withTimeout(
+            fetchWikimediaVideos(q, holdSec, workDir, scene.index, 1, `wiki${beat.index}v`, "", beat.keywords),
+            dedup.perf.fastStockMode ? 18_000 : 35_000,
+            `Wikimedia video scene ${scene.index} beat ${beat.index}`
+          ),
+        scene.index
       );
       const wikiVid = wikiVids[0]?.path;
       if (wikiVid && (await adoptWikiPath(wikiVid, minClipQualityScore(), "wikimedia_video"))) {
@@ -15607,19 +15646,26 @@ async function adoptWikimediaBeatClip(
   for (let ai = 0; ai < attempts.length; ai++) {
     const attempt = attempts[ai]!;
     try {
-      const wikiClip = await withTimeout(
-        fetchWikimediaImagesV1(
-          attempt.analysis,
-          holdSec,
-          workDir,
-          scene.index,
-          beat.index,
-          attempt.fileTag,
-          videoTitle,
-          attempt.minThreshold
-        ),
-        attempt.timeoutMs,
-        `Wikimedia scene ${scene.index} beat ${beat.index} attempt ${ai + 1}`
+      const wikiClip = await timePipelineStep(
+        dedup.stepTiming,
+        "image_search",
+        "Wikimedia search+download (still)",
+        () =>
+          withTimeout(
+            fetchWikimediaImagesV1(
+              attempt.analysis,
+              holdSec,
+              workDir,
+              scene.index,
+              beat.index,
+              attempt.fileTag,
+              videoTitle,
+              attempt.minThreshold
+            ),
+            attempt.timeoutMs,
+            `Wikimedia scene ${scene.index} beat ${beat.index} attempt ${ai + 1}`
+          ),
+        scene.index
       );
       if (wikiClip && (await adoptWikiPath(wikiClip, attempt.visionMinScore, "wikimedia"))) {
         recordClipAdopt(
@@ -16122,22 +16168,29 @@ async function adoptStockBeatClipFallback(
     const pexelsTimeoutMs = fastShortStock ? 10_000 : 16_000;
     if (PEXELS_API_KEY) {
       try {
-        const paths = await withTimeout(
-          fetchPexelsClips(
-            q,
-            holdSec,
-            workDir,
-            scene.index,
-            pexelsClipCap,
-            queries.slice(qi + 1, qi + 4),
-            true,
-            `b${beat.index}_pex`,
-            dedup.usedPexelsIds,
-            beat.index + scene.index + qi,
-            dedup.perf.pexelsDownloadRetries ?? 2
-          ),
-          pexelsTimeoutMs,
-          `Pexels stock scene ${scene.index} beat ${beat.index}`
+        const paths = await timePipelineStep(
+          dedup.stepTiming,
+          "image_search",
+          "Pexels search+download",
+          () =>
+            withTimeout(
+              fetchPexelsClips(
+                q,
+                holdSec,
+                workDir,
+                scene.index,
+                pexelsClipCap,
+                queries.slice(qi + 1, qi + 4),
+                true,
+                `b${beat.index}_pex`,
+                dedup.usedPexelsIds,
+                beat.index + scene.index + qi,
+                dedup.perf.pexelsDownloadRetries ?? 2
+              ),
+              pexelsTimeoutMs,
+              `Pexels stock scene ${scene.index} beat ${beat.index}`
+            ),
+          scene.index
         );
         if (await tryStockPaths(paths, q, "Pexels")) return true;
       } catch (err) {
@@ -16146,20 +16199,27 @@ async function adoptStockBeatClipFallback(
     }
     if (PIXABAY_API_KEY && !fastShortStock) {
       try {
-        const paths = await withTimeout(
-          fetchPixabayClips(
-            q,
-            holdSec,
-            workDir,
-            scene.index,
-            2,
-            `b${beat.index}_pix`,
-            true,
-            dedup.usedPixabayIds,
-            beat.index + scene.index + qi + 40
-          ),
-          28_000,
-          `Pixabay stock scene ${scene.index} beat ${beat.index}`
+        const paths = await timePipelineStep(
+          dedup.stepTiming,
+          "image_search",
+          "Pixabay search+download",
+          () =>
+            withTimeout(
+              fetchPixabayClips(
+                q,
+                holdSec,
+                workDir,
+                scene.index,
+                2,
+                `b${beat.index}_pix`,
+                true,
+                dedup.usedPixabayIds,
+                beat.index + scene.index + qi + 40
+              ),
+              28_000,
+              `Pixabay stock scene ${scene.index} beat ${beat.index}`
+            ),
+          scene.index
         );
         if (await tryStockPaths(paths, q, "Pixabay")) return true;
       } catch (err) {
@@ -16777,7 +16837,14 @@ async function fillBeatVisual(
     }
 
     if (fastShort) {
-      const archiveFn = () => tryArchivePasses(prefetchedRanked, openingVideosOnly);
+      const archiveFn = () =>
+        timePipelineStep(
+          dedup.stepTiming,
+          "image_search",
+          "Archive match+download",
+          () => tryArchivePasses(prefetchedRanked, openingVideosOnly),
+          scene.index
+        );
       if (visualSourcingTurbo(dedup) || isPipelineRushMode(dedup)) {
         const parallelAdopters: Array<() => Promise<boolean>> = [archiveFn];
         if (canUseLicensedStockBeat(dedup)) {
@@ -18931,6 +18998,12 @@ async function composeSceneVideo(
   }
 
   const phase = composeOptions?.phase ?? "full";
+  const stepTiming = composeOptions?.dedup?.stepTiming;
+  const finishSceneTiming = () => stepTiming?.summarizeScene(scene.index);
+  const returnComposed = (composedPath: string): string => {
+    finishSceneTiming();
+    return composedPath;
+  };
   const outputPath =
     phase === "assembly"
       ? path.join(workDir, `scene_${scene.index}_assembly.mp4`)
@@ -19046,10 +19119,18 @@ async function composeSceneVideo(
   let safeClips = validClips;
 
   const verifiedClips: string[] = [];
-  for (const clip of safeClips) {
-    const ok = await requireValidClip(clip, scene.index, duration, workDir);
-    if (ok) verifiedClips.push(ok);
-  }
+  await timePipelineStep(
+    stepTiming,
+    "image_processing",
+    "Compose clip validation (ffprobe)",
+    async () => {
+      for (const clip of safeClips) {
+        const ok = await requireValidClip(clip, scene.index, duration, workDir);
+        if (ok) verifiedClips.push(ok);
+      }
+    },
+    scene.index
+  );
   safeClips = verifiedClips.filter((clip, i, arr) => {
     const key = clipContentKey(clip);
     return arr.findIndex((c) => clipContentKey(c) === key) === i;
@@ -19157,17 +19238,24 @@ async function composeSceneVideo(
   const outDurEarly = voiceDurEarly + 0.12;
   const montageBeats = composeOptions?.montageBeats;
   if (composeOptions?.dedup) {
-    await backfillComposeMontageIfShort(
-      scene,
-      workDir,
-      composeOptions.videoTitle,
-      outDurEarly,
-      safeClips,
-      composeBeatDurations,
-      composeClipBeatIndices,
-      seenKeys,
-      composeOptions.dedup,
-      montageBeats
+    await timePipelineStep(
+      stepTiming,
+      "compose_rescue",
+      "Compose montage backfill",
+      () =>
+        backfillComposeMontageIfShort(
+          scene,
+          workDir,
+          composeOptions.videoTitle,
+          outDurEarly,
+          safeClips,
+          composeBeatDurations,
+          composeClipBeatIndices,
+          seenKeys,
+          composeOptions.dedup!,
+          montageBeats
+        ),
+      scene.index
     );
   }
   if (
@@ -19398,23 +19486,30 @@ async function composeSceneVideo(
     };
     console.log(`[Pipeline] Scene ${scene.index}: fast 1-min plain compose (hard cuts, no cinematic pass)`);
     if (
-      await composePlainMontageScene(
-        scene.index,
-        composeClips,
-        montageDurations,
-        sourceMaxDurs,
-        outDur,
-        voiceDur,
-        safeAudioPath,
-        outputPath,
-        workDir,
-        FPS_FORMAT_VF,
-        threadFlag,
-        composeTimeout,
-        fastMontageOpts
+      await timePipelineStep(
+        stepTiming,
+        "scene_composition",
+        "Composition (plain FFmpeg)",
+        () =>
+          composePlainMontageScene(
+            scene.index,
+            composeClips,
+            montageDurations,
+            sourceMaxDurs,
+            outDur,
+            voiceDur,
+            safeAudioPath,
+            outputPath,
+            workDir,
+            FPS_FORMAT_VF,
+            threadFlag,
+            composeTimeout,
+            fastMontageOpts
+          ),
+        scene.index
       )
     ) {
-      return outputPath;
+      return returnComposed(outputPath);
     }
     console.warn(`[Pipeline] Scene ${scene.index}: fast plain compose failed — trying full compose path`);
   }
@@ -19474,6 +19569,7 @@ async function composeSceneVideo(
     }
   }
 
+  const composeFfmpegT0 = Date.now();
   try {
     if (!skipEffectLayers && yearLabels.length > 0) {
       const montageOnlyPath = path.join(workDir, `scene_${scene.index}_montage_v.mp4`);
@@ -19542,7 +19638,7 @@ async function composeSceneVideo(
       if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size < 1000) {
         throw pipelineError(PIPELINE_ERROR.FFMPEG, `Scene ${scene.index} label compose produced no output`);
       }
-      return outputPath;
+      return returnComposed(outputPath);
     }
 
     if (IS_RAILWAY && curatedArchiveOnlyVisuals()) {
@@ -19671,7 +19767,7 @@ async function composeSceneVideo(
         )
       ) {
         console.warn(`[Pipeline] Scene ${scene.index}: plain montage compose succeeded (years/SFX skipped)`);
-        return outputPath;
+        return returnComposed(outputPath);
       }
     } catch (plainErr) {
       console.warn(`[Pipeline] Scene ${scene.index}: plain montage compose failed:`, plainErr);
@@ -19710,7 +19806,7 @@ async function composeSceneVideo(
           `Compose without SFX scene ${scene.index}`
         );
         if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1000) {
-          return outputPath;
+          return returnComposed(outputPath);
         }
       } catch (noSfxErr) {
         console.warn(`[Pipeline] Scene ${scene.index}: compose without SFX failed:`, noSfxErr);
@@ -19747,7 +19843,7 @@ async function composeSceneVideo(
           if (subtitlePath) { try { fs.unlinkSync(subtitlePath); } catch { /* ignore */ } }
           for (const frame of kineticFrames) { try { fs.unlinkSync(frame.path); } catch { /* ignore */ } }
           for (const overlay of docOverlays) { try { fs.unlinkSync(overlay.path); } catch { /* ignore */ } }
-          return outputPath;
+          return returnComposed(outputPath);
         }
       } catch (noOverlayErr) {
         console.warn(`[Pipeline] Scene ${scene.index}: compose without overlays failed:`, noOverlayErr);
@@ -19811,7 +19907,7 @@ async function composeSceneVideo(
           `Sequential rescue scene ${scene.index}`
         );
         if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1000) {
-          return outputPath;
+          return returnComposed(outputPath);
         }
       } catch (seqRescueErr) {
         console.warn(`[Pipeline] Scene ${scene.index}: sequential rescue failed:`, seqRescueErr);
@@ -19823,6 +19919,14 @@ async function composeSceneVideo(
       );
     }
   }
+
+  recordPipelineTiming(
+    stepTiming,
+    "scene_composition",
+    "Composition (FFmpeg montage)",
+    Date.now() - composeFfmpegT0,
+    scene.index
+  );
 
   if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size < 1000) {
     console.warn(`[Pipeline] Scene ${scene.index}: compose empty — guaranteed clip rescue`);
@@ -19884,7 +19988,7 @@ async function composeSceneVideo(
   for (const overlay of docOverlays) {
     try { fs.unlinkSync(overlay.path); } catch { /* ignore */ }
   }
-  return outputPath;
+  return returnComposed(outputPath);
 }
 
 // ─── 6. Ambient Documentary Background Music ─────────────────────────────────
@@ -20323,8 +20427,14 @@ export async function runVideoPipeline(
   try {
     // ── Stage 1: Parse script into scenes ────────────────────────────────────
     onProgress?.({ stage: STAGE_LABELS.parsing, percent: 3 });
+    const pipelineStepTiming = new PipelineStepTiming();
     const t0 = Date.now();
-    const scenes = await parseScriptIntoScenes(script, maxScenes, topicContext);
+    const scenes = await timePipelineStep(
+      pipelineStepTiming,
+      "scene_generation",
+      "Script parse into scenes",
+      () => parseScriptIntoScenes(script, maxScenes, topicContext, pipelineStepTiming)
+    );
     for (const scene of scenes) {
       sanitizeSceneStockQueries(scene, topicContext ?? videoTitle);
       if (muskLocked) sanitizeSceneForMuskTopic(scene, scene.index, topicContext ?? videoTitle);
@@ -20358,18 +20468,24 @@ export async function runVideoPipeline(
       }
       durations = scenes.map(() => perScene);
     } else {
-      durations = await withTimeout(
-        generateBulkSceneVoiceovers(scenes, audioPaths, workDir, effectiveVoiceId, (done, total) => {
-          onProgress?.({
-            stage:
-              done === 0
-                ? STAGE_LABELS.voiceovers
-                : `${STAGE_LABELS.voiceovers} (${done}/${total})`,
-            percent: 8 + Math.round((done / total) * 10),
-          });
-        }, script),
-        bulkVoiceoverTimeoutMs(scenes.length, videoLength),
-        "Bulk voiceover generation"
+      durations = await timePipelineStep(
+        pipelineStepTiming,
+        "voiceover",
+        "Bulk voiceover generation",
+        () =>
+          withTimeout(
+            generateBulkSceneVoiceovers(scenes, audioPaths, workDir, effectiveVoiceId, (done, total) => {
+              onProgress?.({
+                stage:
+                  done === 0
+                    ? STAGE_LABELS.voiceovers
+                    : `${STAGE_LABELS.voiceovers} (${done}/${total})`,
+                percent: 8 + Math.round((done / total) * 10),
+              });
+            }, script),
+            bulkVoiceoverTimeoutMs(scenes.length, videoLength),
+            "Bulk voiceover generation"
+          )
       );
     }
     // Tight VO sync: scene length tracks narration; target length padded only on final export
@@ -20454,6 +20570,7 @@ export async function runVideoPipeline(
       );
     }
     const visualDedup = createVisualDedupState(perf, { primaryPerson, personTopicLock: personLocked });
+    visualDedup.stepTiming = pipelineStepTiming;
     visualDedup.videoLength = videoLength;
     visualDedup.pipelineStartedMs = pipelineWallStartMs;
     if (ttsWordAlignmentEnabled() && !isFastShortVideoLength(videoLength)) {
@@ -20585,13 +20702,18 @@ export async function runVideoPipeline(
         activeSceneIdx = sceneIdx;
         let result: SceneVisualsResult;
         try {
-          result = await withTimeout(
-            fetchSceneVisuals(
-              scene,
-              workDir,
-              topicContext,
-              visualDedup,
-              (beatIdx, beatTotal, phase) => {
+          result = await timePipelineStep(
+            pipelineStepTiming,
+            "image_search",
+            `Scene ${scene.index} visuals (all beats)`,
+            () =>
+              withTimeout(
+                fetchSceneVisuals(
+                  scene,
+                  workDir,
+                  topicContext,
+                  visualDedup,
+                  (beatIdx, beatTotal, phase) => {
               const stage =
                 phase === "backfill"
                   ? `Scene ${sceneIdx + 1}/${scenes.length}: backfill ${beatIdx}/${beatTotal}...`
@@ -20605,10 +20727,12 @@ export async function runVideoPipeline(
                 percent: 20 + Math.round(progressBase * 25),
               });
             },
-              audioPaths[sceneIdx]
-            ),
-            perf.sceneVisualTimeoutMs,
-            `Scene ${scene.index} visuals`
+                  audioPaths[sceneIdx]
+                ),
+                perf.sceneVisualTimeoutMs,
+                `Scene ${scene.index} visuals`
+              ),
+            scene.index
           );
         } catch (sceneErr) {
           // Always attempt Wikimedia/Pexels recovery — strictNoVisualRepeat prevents
@@ -20856,10 +20980,17 @@ export async function runVideoPipeline(
           };
           let result: string;
           try {
-            result = await composeSceneVideo(
-              scene, sceneVisualResults[i]?.clips ?? [], audioPaths[i], scene.duration, workDir, scenes.length,
-              enableSubtitles, visualDedup.lastMuskStockClip, sceneVisualResults[i]?.beatDurations, usedClips,
-              composeOpts
+            result = await timePipelineStep(
+              pipelineStepTiming,
+              "scene_composition",
+              `Scene ${scene.index} compose (total)`,
+              () =>
+                composeSceneVideo(
+                  scene, sceneVisualResults[i]?.clips ?? [], audioPaths[i], scene.duration, workDir, scenes.length,
+                  enableSubtitles, visualDedup.lastMuskStockClip, sceneVisualResults[i]?.beatDurations, usedClips,
+                  composeOpts
+                ),
+              scene.index
             );
           } catch (composeErr) {
             console.warn(
@@ -21018,6 +21149,7 @@ export async function runVideoPipeline(
       "Scene compose stage"
     );
     console.log(`[Pipeline] Stage 4 (compose): ${scenes.length} scenes in ${((Date.now()-t3)/1000).toFixed(1)}s`);
+    pipelineStepTiming.summarizeAll();
 
     // ── Stage 5: Critical scene review — multi-frame vision QA ─────────────────
     onProgress?.({ stage: STAGE_LABELS.visualReview, percent: 66 });
@@ -21118,7 +21250,10 @@ export async function runVideoPipeline(
         );
       }
     }
-    await mergeVideoMetadata(videoId, { qualityReport }).catch((err) =>
+    await mergeVideoMetadata(videoId, {
+      qualityReport,
+      pipelineStepTiming: pipelineStepTiming.toReport(),
+    }).catch((err) =>
       console.warn(`[Pipeline] Failed to persist qualityReport for ${videoId}:`, err)
     );
 
@@ -21158,19 +21293,27 @@ export async function runVideoPipeline(
     const t4 = Date.now();
     const totalDuration =
       scenes.reduce((sum, s) => sum + s.duration, 0) + chapterCardCount * CHAPTER_CARD_DURATION;
-    let finalVideoPath = await concatenateScenesWithMusic(
-      orderedClips,
-      workDir,
-      videoId,
-      totalDuration,
-      videoTitle,
-      undefined,
-      videoLength
+    let finalVideoPath = await timePipelineStep(
+      pipelineStepTiming,
+      "video_rendering",
+      "Final concat + music",
+      async () => {
+        let pathOut = await concatenateScenesWithMusic(
+          orderedClips,
+          workDir,
+          videoId,
+          totalDuration,
+          videoTitle,
+          undefined,
+          videoLength
+        );
+        if (isShortVideoLength(videoLength)) {
+          const targetSec = videoLength === "1" ? 58 : 118;
+          pathOut = await ensureFinalVideoDuration(pathOut, workDir, videoId, targetSec);
+        }
+        return pathOut;
+      }
     );
-    if (isShortVideoLength(videoLength)) {
-      const targetSec = videoLength === "1" ? 58 : 118;
-      finalVideoPath = await ensureFinalVideoDuration(finalVideoPath, workDir, videoId, targetSec);
-    }
     console.log(`[Pipeline] Stage 5 (assemble+music): ${((Date.now()-t4)/1000).toFixed(1)}s`);
 
     const { path: exportReadyPath, validation: finalValidation } = await ensureFinalVideoExportReady({
@@ -21269,7 +21412,10 @@ export async function runVideoPipeline(
       console.warn(`[Pipeline] Editor manifest persist failed for ${videoId}:`, (err as Error).message);
     }
 
-    await mergeVideoMetadata(videoId, { qualityReport }).catch((err) =>
+    await mergeVideoMetadata(videoId, {
+      qualityReport,
+      pipelineStepTiming: pipelineStepTiming.toReport(),
+    }).catch((err) =>
       console.warn(`[Pipeline] Failed to persist qualityReport on complete for ${videoId}:`, err)
     );
 
