@@ -491,17 +491,21 @@ const execRaw = (cmd: string) => new Promise<{ stdout: string; stderr: string }>
 // heavy concurrent ffmpeg load, not real input problems — retry a couple of times with a
 // short backoff before giving up.
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const isForkPressureError = (msg: string) =>
-  /resource temporarily unavailable/i.test(msg) || /cannot fork/i.test(msg);
+const isForkPressureError = (err: unknown): boolean => {
+  const code = (err as NodeJS.ErrnoException)?.code;
+  if (code === "EAGAIN") return true;
+  const msg = (err as Error)?.message || "";
+  return /resource temporarily unavailable/i.test(msg) || /cannot fork/i.test(msg);
+};
 
 // Wrapper that retries with a different ffmpeg binary if the current one fails
-const exec = async (cmd: string, eagainRetriesLeft = 2): Promise<{ stdout: string; stderr: string }> => {
+const exec = async (cmd: string, eagainRetriesLeft = 3): Promise<{ stdout: string; stderr: string }> => {
   try {
     return await execRaw(cmd);
   } catch (err: unknown) {
     const errMsg = (err as Error)?.message || '';
-    if (eagainRetriesLeft > 0 && isForkPressureError(errMsg)) {
-      await sleep(1500 * (3 - eagainRetriesLeft));
+    if (eagainRetriesLeft > 0 && isForkPressureError(err)) {
+      await sleep(1500 * (4 - eagainRetriesLeft));
       return exec(cmd, eagainRetriesLeft - 1);
     }
     // If current FFMPEG_BIN failed with a binary-not-found error, try alternatives
