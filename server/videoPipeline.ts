@@ -9781,7 +9781,7 @@ async function renderSequentialArchiveMontage(
   }
   const segmentPaths: string[] = new Array(clips.length);
   const segmentDurs: number[] = new Array(clips.length);
-  const segLimit = pLimit(Math.min(montageSegmentParallelism(), clips.length));
+  const segLimit = pLimit(Math.min(montageSegmentParallelism(IS_RAILWAY), clips.length));
   await Promise.all(
     clips.map((clip, i) =>
       segLimit(async () => {

@@ -249,7 +249,7 @@ export function composeParallelismForVideo(videoLength?: string | null, isRailwa
     if (!isNaN(n) && n >= 1 && n <= 4) return n;
   }
   if (isRailway) {
-    if (isFastShortVideoLength(videoLength)) return 3;
+    if (isFastShortVideoLength(videoLength)) return 1;
     if (normalizeVideoLength(videoLength) === "8-10") return 2;
     return 1;
   }
@@ -257,13 +257,13 @@ export function composeParallelismForVideo(videoLength?: string | null, isRailwa
 }
 
 /** Parallel montage segment encodes within a scene (1–3). */
-export function montageSegmentParallelism(): number {
+export function montageSegmentParallelism(isRailway = false): number {
   const raw = process.env.MONTAGE_SEGMENT_PARALLELISM?.trim();
   if (raw) {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 1 && n <= 3) return n;
   }
-  return 2;
+  return isRailway ? 1 : 2;
 }
 
 /** FFmpeg thread cap per encode (0 = libx264 default). Railway default: 2. */
