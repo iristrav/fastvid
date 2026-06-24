@@ -1,11 +1,11 @@
-import { and, desc, eq, inArray, like, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, like, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import * as fs from "fs";
 import { PIPELINE_ERROR, appErrorMessage } from "@shared/appErrors";
 import { PIPELINE_PROCESSING_STATUSES, USER_IN_FLIGHT_VIDEO_STATUSES } from "@shared/videoQueue";
 import { isShortVideoLength, normalizeVideoLength } from "@shared/videoLengths";
 import { validateFinalVideoForExport, resolveStoredVideoLocalPath, validateFinalVideoPlayable } from "./finalVideoGate";
-import { maxPipelineWallClockMin, maxPipelineWallClockHardMin, visualStageWallClockMin, pipelineWallClockLimitEnabled, pipelineMinutesPerVideoMinute, pipelineWallClockGraceFactor, PIPELINE_UNLIMITED_MS } from "./sourcingPolicy";
+import { maxPipelineWallClockMin, maxPipelineWallClockHardMin, visualStageWallClockMin, pipelineWallClockLimitEnabled, pipelineMinutesPerVideoMinute, pipelineWallClockGraceFactor, pipelineComposeGraceMs, PIPELINE_UNLIMITED_MS } from "./sourcingPolicy";
 import type { Video } from "../drizzle/schema";
 import { InsertInviteCode, InsertUser, InsertVideo, InsertPasswordResetToken, inviteCodes, users, videos, passwordResetTokens } from "../drizzle/schema";
 import { ENV } from "./_core/env";
@@ -471,7 +471,9 @@ export async function failPipelineIfStalled(video: Video): Promise<Video> {
   const startedAt = video.generationStartedAt
     ? new Date(video.generationStartedAt).getTime()
     : updatedAt;
-  const totalHardMs = maxPipelineWallClockHardMin(video.videoLength) * 60 * 1000;
+  const totalHardMs =
+    maxPipelineWallClockHardMin(video.videoLength) * 60 * 1000 +
+    pipelineComposeGraceMs(video.videoLength);
   const totalElapsed = Date.now() - startedAt;
   const staleProgress = Date.now() - updatedAt >= threshold;
   const overTotalBudget = totalElapsed >= totalHardMs;
@@ -995,6 +997,24 @@ export async function getMediaArchiveAssets(archiveId: number) {
     .from(mediaArchiveAssets)
     .where(and(eq(mediaArchiveAssets.archiveId, archiveId), eq(mediaArchiveAssets.isActive, 1)))
     .orderBy(desc(mediaArchiveAssets.sortOrder), desc(mediaArchiveAssets.id));
+}
+
+/** Paginated active video assets — avoids loading the full archive for CLIP backfill. */
+export async function listActiveVideoArchiveAssetsBatch(afterId: number, limit: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select()
+    .from(mediaArchiveAssets)
+    .where(
+      and(
+        eq(mediaArchiveAssets.isActive, 1),
+        eq(mediaArchiveAssets.mediaType, "video"),
+        gt(mediaArchiveAssets.id, afterId)
+      )
+    )
+    .orderBy(asc(mediaArchiveAssets.id))
+    .limit(limit);
 }
 
 export async function getMediaArchiveAssetById(id: number) {

@@ -44,7 +44,7 @@ import {
 import { resolveStoredVideoLocalPath, validateFinalVideoPlayable } from "./finalVideoGate";
 import type { ProgressLogEntry } from "./db";
 import { videoLengthSchema, normalizeVideoLength, isShortVideoLength } from "@shared/videoLengths";
-import { isFastShortVideoLength, maxPipelineWallClockHardMin, pipelineWallClockLimitEnabled } from "./sourcingPolicy";
+import { isFastShortVideoLength, maxPipelineWallClockHardMin, pipelineComposeGraceMs, pipelineWallClockLimitEnabled } from "./sourcingPolicy";
 import { PIPELINE_DISPLAY_STAGES, formatGenerationDuration, progressStepWithElapsed, resolvePipelineDisplayStage } from "@shared/pipelineProgress";
 import { ONE_YEAR_MS } from "@shared/const";
 import { clearVideoGenerationCancel, isVideoGenerationCancelRequested } from "./videoGenerationCancel";
@@ -813,7 +813,8 @@ async function _generateVideoWithAI(
         prompt
       );
       if (isFastShortVideoLength(videoLength) && pipelineWallClockLimitEnabled()) {
-        const hardMs = maxPipelineWallClockHardMin(videoLength) * 60_000;
+        const hardMs =
+          maxPipelineWallClockHardMin(videoLength) * 60_000 + pipelineComposeGraceMs(videoLength);
         const elapsed = Date.now() - pipelineStartedAt;
         const remainingMs = Math.max(45_000, hardMs - elapsed);
         videoUrl = await Promise.race([

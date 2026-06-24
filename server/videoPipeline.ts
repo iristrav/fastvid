@@ -147,7 +147,7 @@ import {
   uniqueQueryStrings,
   uniqueCoercedQueries,
 } from "./stringCoercion";
-import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin, fastBeatConcurrency } from "./sourcingPolicy";
+import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, pipelineComposeGraceMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin, fastBeatConcurrency } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -2259,12 +2259,15 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 function assertPipelineWithinBudget(
   videoId: number,
   pipelineStartedMs: number,
-  videoLength: string
+  videoLength: string,
+  dedup?: VisualDedupState
 ): void {
   if (!pipelineWallClockLimitEnabled()) return;
   throwIfVideoGenerationCancelled(videoId);
+  if (dedup) ensurePipelineForceExport(dedup);
   const hardMs = maxPipelineWallClockHardMin(videoLength) * 60_000;
-  if (Date.now() - pipelineStartedMs > hardMs) {
+  const graceMs = dedup?.forceExportMode ? pipelineComposeGraceMs(videoLength) : 0;
+  if (Date.now() - pipelineStartedMs > hardMs + graceMs) {
     throw pipelineError(
       PIPELINE_ERROR.STUCK_TIMEOUT,
       `Pipeline exceeded ${Math.round(hardMs / 60_000)} minute wall-clock budget`
@@ -8360,6 +8363,8 @@ interface VisualDedupState {
   segmentGeoLock: BeatGeoRegion | null;
   /** Pipeline wall-clock start (ms) — used for turbo sourcing on 1-min videos. */
   pipelineStartedMs?: number;
+  /** At 7 min on 1-min path — finish visuals and export with compose grace past hard cap. */
+  forceExportMode?: boolean;
 }
 
 /**
@@ -8409,16 +8414,26 @@ function visualSourcingTurbo(dedup: VisualDedupState): boolean {
   return Date.now() - dedup.pipelineStartedMs > visualSourcingTurboMs();
 }
 
-/** Late in the 1-min budget — stock-first to guarantee finish before hard cap. */
+/** Late in the 1-min budget — archive+stock parallel race to guarantee finish before hard cap. */
 function isPipelineRushMode(dedup: VisualDedupState): boolean {
   if (!isFastShortVideoLength(dedup.videoLength) || !dedup.pipelineStartedMs) return false;
   return Date.now() - dedup.pipelineStartedMs > pipelineRushModeMs();
 }
 
-/** Last resort before hard cap — skip archive/CLIP, finish with stock or guaranteed clips. */
+/** Last resort before hard cap — short archive+stock race, then guaranteed clips. */
 function isPipelineEmergencyFinish(dedup: VisualDedupState): boolean {
   if (!isFastShortVideoLength(dedup.videoLength) || !dedup.pipelineStartedMs) return false;
   return Date.now() - dedup.pipelineStartedMs > pipelineEmergencyFinishMs();
+}
+
+function ensurePipelineForceExport(dedup: VisualDedupState): void {
+  if (!isPipelineEmergencyFinish(dedup)) return;
+  if (!dedup.forceExportMode) {
+    dedup.forceExportMode = true;
+    console.warn(
+      `[Pipeline] Force-export mode (≥${Math.round(pipelineEmergencyFinishMs() / 60_000)} min) — finishing with archive+stock then compose`
+    );
+  }
 }
 
 function markCuratedArchiveClipUsage(dedup: VisualDedupState, clipPath: string): void {
@@ -11919,6 +11934,7 @@ async function polishWeakAdoptBeatsBeforeCompose(
   pipelineStartedMs: number,
   videoLength: string
 ): Promise<void> {
+  if (dedup.forceExportMode) return;
   if (strictVoiceVisualMatchEnabled()) return;
   if (!curatedArchiveOnlyVisuals()) return;
   if (!polishBeforeComposeEnabled(videoLength, dedup.perf?.fastStockMode)) return;
@@ -16706,93 +16722,34 @@ async function fillBeatVisual(
   }
 
   if (curatedArchiveOnlyVisuals()) {
+    const prefetchedRanked = archivePrefetch ? await archivePrefetch : undefined;
+
     if (isPipelineEmergencyFinish(dedup)) {
+      ensurePipelineForceExport(dedup);
+      const emergencyAdopters: Array<() => Promise<boolean>> = [
+        () =>
+          withTimeout(
+            tryArchivePasses(prefetchedRanked, openingVideosOnly),
+            5_000,
+            `emergency archive s${scene.index} b${beat.index}`
+          ).catch(() => false),
+      ];
       if (canUseLicensedStockBeat(dedup)) {
-        try {
-          if (
-            await withTimeout(
-              adoptStockBeatClipFallback(
-                beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile
-              ),
-              6_000,
-              `emergency stock s${scene.index} b${beat.index}`
-            )
-          ) {
-            return true;
-          }
-        } catch {
-          /* guaranteed next */
-        }
+        emergencyAdopters.push(() =>
+          withTimeout(
+            adoptStockBeatClipFallback(
+              beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile
+            ),
+            6_000,
+            `emergency stock s${scene.index} b${beat.index}`
+          ).catch(() => false)
+        );
       }
+      if (await raceFirstBeatAdopt(emergencyAdopters, 6_000)) return true;
       const guaranteed = await generateGuaranteedBeatClip(scene.index, beat.index, holdSec, workDir);
       if (guaranteed && (await pushClip(guaranteed, holdSec))) return true;
       return false;
     }
-
-    if (isPipelineRushMode(dedup) && canUseLicensedStockBeat(dedup)) {
-      if (
-        await adoptStockBeatClipFallback(
-          beat,
-          scene,
-          workDir,
-          videoTitle,
-          dedup,
-          pushClip,
-          holdSec,
-          semanticProfile
-        )
-      ) {
-        return true;
-      }
-    }
-
-    if ((visualSourcingTurbo(dedup) || isPipelineRushMode(dedup)) && canUseLicensedStockBeat(dedup)) {
-      const prefetchedForTurbo = archivePrefetch ? await archivePrefetch : undefined;
-      const topVision = prefetchedForTurbo?.[0]?.clipVisionScore10;
-      if (topVision == null || topVision < semanticRerankClipSkipMin()) {
-        if (
-          await adoptStockBeatClipFallback(
-            beat,
-            scene,
-            workDir,
-            videoTitle,
-            dedup,
-            pushClip,
-            holdSec,
-            semanticProfile
-          )
-        ) {
-          return true;
-        }
-      }
-    }
-
-    const prefetchedRanked = archivePrefetch ? await archivePrefetch : undefined;
-    const geoDoc = isGeoDocumentaryContext(beat.text, videoTitle);
-    const parallelAuthentic = !fastShort && geoDoc;
-    const wikiVideo = () =>
-      adoptWikimediaBeatClip(
-        beat,
-        scene,
-        workDir,
-        videoTitle,
-        dedup,
-        pushClip,
-        holdSec,
-        semanticProfile,
-        { videoOnly: true }
-      );
-    const iaClip = () =>
-      adoptInternetArchiveBeatClip(
-        beat,
-        scene,
-        workDir,
-        videoTitle,
-        dedup,
-        pushClip,
-        holdSec,
-        semanticProfile
-      );
 
     if (openingVideosOnly) {
       console.log(
@@ -16801,31 +16758,47 @@ async function fillBeatVisual(
       );
     }
 
-    if (parallelAuthentic && !fastShort) {
-      const primary: Array<() => Promise<boolean>> = [
-        () => tryArchivePasses(prefetchedRanked, openingVideosOnly),
-        wikiVideo,
-      ];
-      if (geoDoc) primary.push(iaClip);
-      if (await raceFirstBeatAdopt(primary)) return true;
-    } else {
-      if (await tryArchivePasses(prefetchedRanked, openingVideosOnly)) return true;
-      if (!fastShort) {
-        if (await wikiVideo()) return true;
-        if (await iaClip()) return true;
-        if (!openingVideosOnly) {
-          if (await adoptEuropeanaBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
-            return true;
-          }
+    if (fastShort) {
+      const archiveFn = () => tryArchivePasses(prefetchedRanked, openingVideosOnly);
+      if (visualSourcingTurbo(dedup) || isPipelineRushMode(dedup)) {
+        const parallelAdopters: Array<() => Promise<boolean>> = [archiveFn];
+        if (canUseLicensedStockBeat(dedup)) {
+          parallelAdopters.push(() =>
+            adoptStockBeatClipFallback(
+              beat,
+              scene,
+              workDir,
+              videoTitle,
+              dedup,
+              pushClip,
+              holdSec,
+              semanticProfile
+            )
+          );
         }
+        const raceMs = isPipelineRushMode(dedup) ? 10_000 : 14_000;
+        if (await raceFirstBeatAdopt(parallelAdopters, raceMs)) return true;
+      } else if (await archiveFn()) {
+        return true;
       }
       if (openingVideosOnly && (await tryArchivePasses(prefetchedRanked, true))) return true;
-      if (!fastShort && (await tryArchivePasses(prefetchedRanked, false))) return true;
-    }
-
-    if (fastShort && canUseLicensedStockBeat(dedup)) {
-      if (
-        await adoptStockBeatClipFallback(
+    } else {
+      const geoDoc = isGeoDocumentaryContext(beat.text, videoTitle);
+      const parallelAuthentic = geoDoc;
+      const wikiVideo = () =>
+        adoptWikimediaBeatClip(
+          beat,
+          scene,
+          workDir,
+          videoTitle,
+          dedup,
+          pushClip,
+          holdSec,
+          semanticProfile,
+          { videoOnly: true }
+        );
+      const iaClip = () =>
+        adoptInternetArchiveBeatClip(
           beat,
           scene,
           workDir,
@@ -16834,13 +16807,28 @@ async function fillBeatVisual(
           pushClip,
           holdSec,
           semanticProfile
-        )
-      ) {
-        return true;
-      }
-    }
+        );
 
-    if (!fastShort) {
+      if (parallelAuthentic) {
+        const primary: Array<() => Promise<boolean>> = [
+          () => tryArchivePasses(prefetchedRanked, openingVideosOnly),
+          wikiVideo,
+        ];
+        if (geoDoc) primary.push(iaClip);
+        if (await raceFirstBeatAdopt(primary)) return true;
+      } else {
+        if (await tryArchivePasses(prefetchedRanked, openingVideosOnly)) return true;
+        if (await wikiVideo()) return true;
+        if (await iaClip()) return true;
+        if (!openingVideosOnly) {
+          if (await adoptEuropeanaBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
+            return true;
+          }
+        }
+        if (openingVideosOnly && (await tryArchivePasses(prefetchedRanked, true))) return true;
+        if (await tryArchivePasses(prefetchedRanked, false)) return true;
+      }
+
       if (!openingVideosOnly) {
         if (await adoptEuropeanaBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
           return true;
@@ -16874,6 +16862,23 @@ async function fillBeatVisual(
         if (await adoptEuropeanaBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
           return true;
         }
+      }
+    }
+
+    if (fastShort && canUseLicensedStockBeat(dedup)) {
+      if (
+        await adoptStockBeatClipFallback(
+          beat,
+          scene,
+          workDir,
+          videoTitle,
+          dedup,
+          pushClip,
+          holdSec,
+          semanticProfile
+        )
+      ) {
+        return true;
       }
     }
   } else {
@@ -17326,7 +17331,9 @@ async function refillSceneStrictVoiceMatch(
       pushSceneClip(clipPath, holdSec, beat.index);
     const profile = semanticProfiles.get(bi);
     const beatFilled = () => clipBeatIndices.includes(beat.index);
-    const beatBudgetMs = isPipelineEmergencyFinish(dedup)
+    const beatBudgetMs = dedup.forceExportMode
+      ? 5_000
+      : isPipelineEmergencyFinish(dedup)
       ? 6_000
       : visualSourcingTurbo(dedup) || isPipelineRushMode(dedup)
         ? 12_000
@@ -17347,7 +17354,20 @@ async function refillSceneStrictVoiceMatch(
           );
         }
       }
-      if (fastShort && !beatFilled() && !isPipelineEmergencyFinish(dedup)) {
+      if (fastShort && !beatFilled() && (dedup.forceExportMode || isPipelineEmergencyFinish(dedup))) {
+        if (archivePexelsFallbackEnabled() && canUseLicensedStockBeat(dedup)) {
+          await adoptStockBeatClipFallback(
+            beat,
+            scene,
+            workDir,
+            videoTitle,
+            dedup,
+            pushClip,
+            beat.holdSec,
+            profile
+          );
+        }
+      } else if (fastShort && !beatFilled() && !isPipelineEmergencyFinish(dedup)) {
         await adoptArchiveBeatClipWithBudget(
           beat,
           scene,
@@ -20401,6 +20421,24 @@ export async function runVideoPipeline(
       if (isFastShortVideoLength(videoLength)) {
         visualDedup.archiveCandidatePool = [];
         console.log("[Pipeline] Archive pool skipped on 1-min fast path (on-demand per beat)");
+        try {
+          const { backfillClipEmbeddingsWithBudget } = await import("./archiveClipIndexBackfill");
+          void backfillClipEmbeddingsWithBudget(8, 10_000)
+            .then((warmed) => {
+              if (warmed.indexed > 0) {
+                console.log(
+                  `[Pipeline] CLIP index 1-min pre-warm: +${warmed.indexed} archive clip(s)` +
+                    (warmed.timedOut ? " (10s budget)" : "")
+                );
+              }
+            })
+            .catch(() => {});
+        } catch (warmErr) {
+          console.warn(
+            "[Pipeline] CLIP index 1-min pre-warm skipped:",
+            (warmErr as Error).message?.slice(0, 80)
+          );
+        }
       } else {
       const combinedSceneText = scenes.map((s) => s.text).join(" ");
       const poolMs = 45_000;
@@ -20456,7 +20494,8 @@ export async function runVideoPipeline(
     let heartbeatTick = 0;
     const visualHeartbeat = setInterval(() => {
       heartbeatTick++;
-      assertPipelineWithinBudget(videoId, pipelineWallStartMs, videoLength);
+      ensurePipelineForceExport(visualDedup);
+      assertPipelineWithinBudget(videoId, pipelineWallStartMs, videoLength, visualDedup);
       const beatTotal = Math.max(1, visualDedup.visualBeatsTotal || scenes.length);
       const beatsDone = visualDedup.visualBeatsCompleted ?? completedVisuals;
       onProgress?.({
@@ -20531,6 +20570,9 @@ export async function runVideoPipeline(
       clearInterval(visualHeartbeat);
     }
     console.log(`[Pipeline] Stage 3 (visuals): ${((Date.now()-t2)/1000).toFixed(1)}s`);
+    if (visualDedup.forceExportMode) {
+      console.warn("[Pipeline] Force-export — skipping polish, proceeding to compose with current clips");
+    }
 
     for (let si = 0; si < scenes.length; si++) {
       const usable = (sceneVisualResults[si]?.clips ?? []).filter(
@@ -20706,7 +20748,7 @@ export async function runVideoPipeline(
     );
 
     // ── Stage 4: Compose scenes — clips, voice, year badges (final output) ───
-    assertPipelineWithinBudget(videoId, pipelineWallStartMs, videoLength);
+    assertPipelineWithinBudget(videoId, pipelineWallStartMs, videoLength, visualDedup);
     onProgress?.({ stage: STAGE_LABELS.assembly, percent: 47 });
     const t3 = Date.now();
 

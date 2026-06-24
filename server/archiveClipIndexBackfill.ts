@@ -3,7 +3,7 @@
  */
 import fs from "fs";
 import path from "path";
-import { getAllMediaArchives, getMediaArchiveAssets } from "./db";
+import { listActiveVideoArchiveAssetsBatch } from "./db";
 import { clipEmbeddingIndexEnabled, indexArchiveClipEmbedding, loadStoredClipEmbedding } from "./archiveClipEmbedding";
 import { LOCAL_UPLOADS_DIR, resolveLocalVideoPath } from "./storageLocal";
 
@@ -36,7 +36,7 @@ function backfillBatchSize(): number {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 1 && n <= 300) return n;
   }
-  return 30;
+  return 50;
 }
 
 function backfillIntervalMs(): number {
@@ -45,21 +45,22 @@ function backfillIntervalMs(): number {
     const n = parseFloat(raw);
     if (!isNaN(n) && n >= 0.5 && n <= 30) return Math.round(n * 60_000);
   }
-  return 5 * 60_000;
+  return 2 * 60_000;
 }
 
 function backfillStartupRounds(): number {
   const raw = process.env.CLIP_EMBEDDING_BACKFILL_STARTUP_ROUNDS?.trim();
   if (raw) {
     const n = parseInt(raw, 10);
-    if (!isNaN(n) && n >= 1 && n <= 10) return n;
+    if (!isNaN(n) && n >= 1 && n <= 20) return n;
   }
-  return 1;
+  return 5;
 }
 
 /** Skip assets that failed indexing recently — avoids log spam on deploy. */
 const recentIndexFailures = new Map<number, number>();
 const INDEX_FAIL_COOLDOWN_MS = 6 * 60 * 60_000;
+let backfillAssetCursor = 0;
 
 function shouldSkipRecentIndexFailure(assetId: number): boolean {
   const until = recentIndexFailures.get(assetId);
@@ -83,24 +84,25 @@ export async function backfillMissingClipEmbeddings(
     return { indexed: 0, skipped: 0, missing: 0 };
   }
   const { workerLocalActiveJobs } = await import("./videoQueue");
-  if (workerLocalActiveJobs() > 0) {
-    return { indexed: 0, skipped: 0, missing: 0 };
-  }
+  const activeJobs = workerLocalActiveJobs();
+  const effectiveBatch = activeJobs > 0 ? Math.min(maxAssets, 10) : maxAssets;
 
-  const archives = (await getAllMediaArchives()).filter((a) => a.isActive === 1);
   let indexed = 0;
   let skipped = 0;
   let missing = 0;
+  let cursor = backfillAssetCursor;
+  const maxScan = Math.max(effectiveBatch * 12, 120);
+  let scanned = 0;
 
-  for (const archive of archives) {
-    if (indexed >= maxAssets) break;
-    const assets = await getMediaArchiveAssets(archive.id);
-    for (const asset of assets) {
-      if (indexed >= maxAssets) break;
-      if (asset.mediaType !== "video") {
-        skipped++;
-        continue;
-      }
+  while (indexed < effectiveBatch && scanned < maxScan) {
+    const page = await listActiveVideoArchiveAssetsBatch(cursor, 50);
+    if (page.length === 0) {
+      backfillAssetCursor = 0;
+      break;
+    }
+    for (const asset of page) {
+      cursor = asset.id;
+      scanned++;
       if (loadStoredClipEmbedding(asset.id)) {
         skipped++;
         continue;
@@ -121,12 +123,15 @@ export async function backfillMissingClipEmbeddings(
         markIndexFailure(asset.id);
         skipped++;
       }
+      if (indexed >= effectiveBatch) break;
     }
+    backfillAssetCursor = cursor;
   }
 
   if (indexed > 0 || missing > 0) {
     console.log(
-      `[ClipEmbedding] Backfill batch: indexed ${indexed}, skipped ${skipped}, still missing ~${Math.max(0, missing - indexed)}`
+      `[ClipEmbedding] Backfill batch: indexed ${indexed}, skipped ${skipped}, still missing ~${Math.max(0, missing - indexed)}` +
+        (activeJobs > 0 ? ` (worker has ${activeJobs} active job(s), batch capped)` : "")
     );
   }
   return { indexed, skipped, missing };
@@ -158,6 +163,21 @@ export async function backfillClipEmbeddingsWithBudget(
   return { indexed, timedOut };
 }
 
+async function runStartupClipIndexBurst(): Promise<void> {
+  const deadline = Date.now() + 3 * 60_000;
+  let totalIndexed = 0;
+  while (Date.now() < deadline) {
+    const { workerLocalActiveJobs } = await import("./videoQueue");
+    if (workerLocalActiveJobs() > 0) break;
+    const result = await backfillMissingClipEmbeddings(50);
+    totalIndexed += result.indexed;
+    if (result.indexed === 0) break;
+  }
+  if (totalIndexed > 0) {
+    console.log(`[ClipEmbedding] Startup burst: indexed ${totalIndexed} archive clip(s)`);
+  }
+}
+
 /** Fire-and-forget backfill loop — runs on worker startup and every few minutes. */
 export function scheduleClipEmbeddingBackfill(): void {
   if (!backfillEnabled()) return;
@@ -169,6 +189,9 @@ export function scheduleClipEmbeddingBackfill(): void {
     }
   };
   void (async () => {
+    await runStartupClipIndexBurst().catch((err) => {
+      console.warn("[ClipEmbedding] Startup burst failed:", (err as Error).message?.slice(0, 120));
+    });
     for (let round = 0; round < backfillStartupRounds(); round++) {
       try {
         const result = await backfillMissingClipEmbeddings();

@@ -194,14 +194,24 @@ export function pipelineRushModeMs(): number {
   return 3 * 60_000;
 }
 
-/** Near hard cap — stock/guaranteed only so export finishes before 10 min. */
+/** Near hard cap — parallel archive+stock, then guaranteed so export finishes before 10 min. */
 export function pipelineEmergencyFinishMs(): number {
   const raw = process.env.PIPELINE_EMERGENCY_FINISH_MS?.trim();
   if (raw) {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 300_000 && n <= 600_000) return n;
   }
-  return 8 * 60_000;
+  return 7 * 60_000;
+}
+
+/** Extra wall-clock after hard cap while compose/upload finishes (1-min fast path). */
+export function pipelineComposeGraceMs(videoLength?: string | null): number {
+  const raw = process.env.PIPELINE_COMPOSE_GRACE_MS?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 30_000 && n <= 300_000) return n;
+  }
+  return isFastShortVideoLength(videoLength) ? 120_000 : 0;
 }
 
 /** ≤1 min videos on wall-clock-limited hosts (Railway worker). */
