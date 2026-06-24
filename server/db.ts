@@ -476,7 +476,8 @@ export async function failPipelineIfStalled(video: Video): Promise<Video> {
     pipelineComposeGraceMs(video.videoLength);
   const totalElapsed = Date.now() - startedAt;
   const staleProgress = Date.now() - updatedAt >= threshold;
-  const overTotalBudget = totalElapsed >= totalHardMs;
+  const overTotalBudget =
+    pipelineWallClockLimitEnabled() && totalElapsed >= totalHardMs;
   if (!staleProgress && !overTotalBudget) return video;
 
   const step = video.progressStep ?? "unknown step";

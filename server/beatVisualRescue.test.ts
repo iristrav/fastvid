@@ -8,6 +8,8 @@ import {
   maxFallbackBeatsPerVideo,
   fastShortArchivePoolMax,
   fastShortClipIndexPrewarmMax,
+  isFastShortVideoLength,
+  pipelineWallClockLimitEnabled,
 } from "./sourcingPolicy";
 
 describe("beatVisualRescue", () => {
@@ -18,6 +20,7 @@ describe("beatVisualRescue", () => {
     delete process.env.BEAT_VISUAL_RESCUE_FLOOR;
     delete process.env.MAX_FALLBACK_BEATS_PER_VIDEO;
     delete process.env.STRICT_VOICE_VISUAL_MATCH;
+    delete process.env.PIPELINE_WALL_CLOCK_LIMIT;
   });
 
   it("enabled by default with rescue floor 5", () => {
@@ -38,5 +41,13 @@ describe("beatVisualRescue", () => {
     expect(allowDegradedVisualExport()).toBe(false);
     expect(blockExportOnVisualMismatch()).toBe(true);
     expect(maxFallbackBeatsPerVideo()).toBe(0);
+  });
+
+  it("disables wall-clock limit by default but keeps 1-min fast path", () => {
+    expect(pipelineWallClockLimitEnabled()).toBe(false);
+    expect(isFastShortVideoLength("1")).toBe(true);
+    process.env.PIPELINE_WALL_CLOCK_LIMIT = "true";
+    expect(pipelineWallClockLimitEnabled()).toBe(true);
+    expect(isFastShortVideoLength("1")).toBe(true);
   });
 });

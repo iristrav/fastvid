@@ -148,9 +148,9 @@ export function pipelineWallClockGraceFactor(): number {
   return 1.2;
 }
 
-/** When true (default), cap generation at video_minutes × 10 wall-clock. Set PIPELINE_WALL_CLOCK_LIMIT=false to disable. */
+/** When true, enforce hard wall-clock fail + router race timeout. Default OFF — jobs finish at their own pace. */
 export function pipelineWallClockLimitEnabled(): boolean {
-  return process.env.PIPELINE_WALL_CLOCK_LIMIT !== "false";
+  return process.env.PIPELINE_WALL_CLOCK_LIMIT === "true";
 }
 
 /** Practical "no limit" for withTimeout / setTimeout (7 days — below Node's max delay). */
@@ -230,9 +230,9 @@ export function pipelineComposeGraceMs(videoLength?: string | null): number {
   return isFastShortVideoLength(videoLength) ? 120_000 : 0;
 }
 
-/** ≤1 min videos on wall-clock-limited hosts (Railway worker). */
+/** ≤1 min videos — fast archive-first path (independent of wall-clock limit). */
 export function isFastShortVideoLength(videoLength?: string | null): boolean {
-  return pipelineWallClockLimitEnabled() && targetVideoDurationMinutes(videoLength) <= 1;
+  return targetVideoDurationMinutes(videoLength) <= 1;
 }
 
 /** Parallel beat fills on 1-min fast path — low default avoids CLIP model contention on worker. */
