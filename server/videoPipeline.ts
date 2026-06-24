@@ -486,10 +486,13 @@ const execRaw = (cmd: string) => new Promise<{ stdout: string; stderr: string }>
   });
 });
 
-// "Resource temporarily unavailable" (EAGAIN) when opening a decoder is a transient
-// fork/fd-pressure error under heavy concurrent ffmpeg load, not a real input problem —
-// retry a couple of times with a short backoff before giving up.
+// "Resource temporarily unavailable" (EAGAIN) when opening a decoder, and "Cannot fork"
+// from the /bin/sh wrapper itself, are both transient fork/pids-pressure errors under
+// heavy concurrent ffmpeg load, not real input problems — retry a couple of times with a
+// short backoff before giving up.
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const isForkPressureError = (msg: string) =>
+  /resource temporarily unavailable/i.test(msg) || /cannot fork/i.test(msg);
 
 // Wrapper that retries with a different ffmpeg binary if the current one fails
 const exec = async (cmd: string, eagainRetriesLeft = 2): Promise<{ stdout: string; stderr: string }> => {
@@ -497,8 +500,8 @@ const exec = async (cmd: string, eagainRetriesLeft = 2): Promise<{ stdout: strin
     return await execRaw(cmd);
   } catch (err: unknown) {
     const errMsg = (err as Error)?.message || '';
-    if (eagainRetriesLeft > 0 && /resource temporarily unavailable/i.test(errMsg)) {
-      await sleep(750 * (3 - eagainRetriesLeft));
+    if (eagainRetriesLeft > 0 && isForkPressureError(errMsg)) {
+      await sleep(1500 * (3 - eagainRetriesLeft));
       return exec(cmd, eagainRetriesLeft - 1);
     }
     // If current FFMPEG_BIN failed with a binary-not-found error, try alternatives
