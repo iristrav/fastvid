@@ -298,38 +298,34 @@ export function polishBeforeComposeEnabled(
   return true;
 }
 
-/** Parallel scene compose jobs (1–4). Railway default: 2 for ≤1 min / 8-10 min, 1 for longer
- *  (kept serialized on Railway — actual instance RAM is unknown, and 2 concurrent FFmpeg
- *  encodes roughly doubles peak memory regardless of thread count. Override via
- *  COMPOSE_PARALLELISM if you've confirmed the instance has headroom). */
+/** Parallel scene compose jobs (1–4). Confirmed Railway plan: 24 vCPU / 24GB RAM — well
+ *  past the old "~512MB free tier" assumption this used to be tuned for, so run at the max
+ *  on Railway too. Override via COMPOSE_PARALLELISM if needed. */
 export function composeParallelismForVideo(videoLength?: string | null, isRailway = false): number {
   const raw = process.env.COMPOSE_PARALLELISM?.trim();
   if (raw) {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 1 && n <= 4) return n;
   }
-  if (isRailway) {
-    if (isFastShortVideoLength(videoLength)) return 2;
-    if (normalizeVideoLength(videoLength) === "8-10") return 2;
-    return 1;
-  }
-  return 2;
+  return 4;
 }
 
-/** Parallel montage segment encodes within a scene (1–3). */
+/** Parallel montage segment encodes within a scene (1–3). Confirmed Railway plan has
+ *  24 vCPU / 24GB RAM, so no need to serialize here either. */
 export function montageSegmentParallelism(isRailway = false): number {
   const raw = process.env.MONTAGE_SEGMENT_PARALLELISM?.trim();
   if (raw) {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 1 && n <= 3) return n;
   }
-  return isRailway ? 1 : 2;
+  return 3;
 }
 
-/** FFmpeg thread cap per encode (0 = libx264 default). Railway default: 2. */
+/** FFmpeg thread cap per encode (0 = libx264 default). Railway plan has 24 vCPU, so give
+ *  each parallel encode more threads instead of capping at 2. */
 export function ffmpegThreadFlag(isRailway = false): string {
   const raw = process.env.FFMPEG_THREADS?.trim();
-  const n = raw ? parseInt(raw, 10) : isRailway ? 2 : 0;
+  const n = raw ? parseInt(raw, 10) : isRailway ? 4 : 0;
   if (!n || isNaN(n) || n < 1) return "";
   return `-threads ${Math.min(4, n)}`;
 }

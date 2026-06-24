@@ -550,8 +550,8 @@ const CANVAS_AVAILABLE = false; // kept for reference, all functions use FFmpeg-
 const TMP_DIR =
   process.env.FASTVID_TMP_DIR ??
   (process.platform === "win32" ? path.join(os.tmpdir(), "fastvid") : "/var/tmp");
-// Use lower resolution on Railway (no Forge key = Railway environment) to avoid OOM
-// Railway free tier has ~512MB RAM; 1280x720 FFmpeg compositing OOM-kills the process
+// No Forge key = Railway environment. Confirmed plan: 24 vCPU / 24GB RAM (not the old
+// ~512MB free-tier assumption this flag used to gate conservative defaults around).
 const IS_RAILWAY = !process.env.BUILT_IN_FORGE_API_KEY;
 // 1080p resolution for professional YouTube quality
 const VIDEO_WIDTH = 1920;
@@ -1855,13 +1855,9 @@ function applyAiFallbackToProfile(
 
 function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProfile {
   const videoLength = normalizeVideoLength(videoLengthRaw);
-  const railwayParallel = IS_RAILWAY
-    ? isShortVideoLength(videoLength)
-      ? 3
-      : videoLength === "8-10"
-        ? 3
-        : 2
-    : 2;
+  // Confirmed Railway plan: 24 vCPU / 24GB RAM — plenty of headroom for scene-level
+  // concurrency on longer videos too (was capped at 2, tuned for an old 512MB assumption).
+  const railwayParallel = isShortVideoLength(videoLength) ? 4 : 3;
   const maxEntityYoutube = maxEntityYoutubeFetchesPerVideo(minimizeStockFootageEnabled());
   let profile: PipelinePerfProfile;
   if (isShortVideoLength(videoLength)) {
