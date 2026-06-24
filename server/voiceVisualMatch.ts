@@ -9,6 +9,7 @@ import { strictVoiceVisualMatchEnabled } from "./sourcingPolicy";
 export type VoiceVisualMatchSummary = {
   ok: boolean;
   fallbackBeats: number;
+  rescueBeats: number;
   guaranteedClips: number;
   lowVisionBeats: number;
   sceneCriticalFailed: number[];
@@ -36,6 +37,8 @@ export function buildVoiceVisualMatchSummary(
 ): VoiceVisualMatchSummary {
   const min = minClipQualityScore();
   const fallbackBeats = adoptAudit?.filter((e) => e.source === "fallback").length ?? 0;
+  const rescueBeats =
+    adoptAudit?.filter((e) => e.source.startsWith("rescue_")).length ?? 0;
   const guaranteedClips = countGuaranteedClipsInPaths(composedClipPaths);
   const lowVisionBeats = (adoptAudit ?? []).filter(
     (e) =>
@@ -47,6 +50,9 @@ export function buildVoiceVisualMatchSummary(
   const warnings: string[] = [];
   if (fallbackBeats > 0) {
     warnings.push(`${fallbackBeats} beat(s) zonder matchend beeld (kleur-fallback)`);
+  }
+  if (rescueBeats > 0) {
+    warnings.push(`${rescueBeats} beat(s) via rescue-tier (degraded CLIP match of placeholder)`);
   }
   if (guaranteedClips > 0) {
     warnings.push(`${guaranteedClips} guaranteed clip(s) in montage — geen voice-match`);
@@ -62,11 +68,13 @@ export function buildVoiceVisualMatchSummary(
   const ok =
     fallbackBeats === 0 &&
     guaranteedClips === 0 &&
+    rescueBeats === 0 &&
     lowVisionBeats === 0 &&
     sceneCriticalFailed.length === 0;
   return {
     ok,
     fallbackBeats,
+    rescueBeats,
     guaranteedClips,
     lowVisionBeats,
     sceneCriticalFailed,

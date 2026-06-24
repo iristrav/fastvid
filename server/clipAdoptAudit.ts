@@ -78,12 +78,14 @@ export function summarizeAdoptAudit(audit: ClipAdoptEntry[]): AdoptAuditSummary 
       stockBeats += 1;
     } else if (entry.source === "wikimedia" || entry.source === "wikimedia_video") {
       wikiBeats += 1;
-    } else if (entry.source === "archive" || entry.source === "archive_fetch") {
+    } else if (entry.source === "archive" || entry.source === "archive_fetch" || entry.source.startsWith("rescue_similar") || entry.source === "rescue_archive") {
       archiveBeats += 1;
     } else if (entry.source === "kling") {
       klingBeats += 1;
-    } else if (entry.source === "fallback") {
+    } else if (entry.source === "fallback" || entry.source === "rescue_placeholder") {
       fallbackBeats += 1;
+    } else if (entry.source === "rescue_stock") {
+      stockBeats += 1;
     }
   }
 

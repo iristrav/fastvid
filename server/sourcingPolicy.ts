@@ -318,6 +318,30 @@ export function metadataVisualBlocksEnabled(): boolean {
   return process.env.ENABLE_METADATA_VISUAL_BLOCKS === "true";
 }
 
+/** Allow export when rescue tiers used (default ON with beat visual rescue). */
+export function allowDegradedVisualExport(): boolean {
+  if (process.env.ALLOW_DEGRADED_VISUAL_EXPORT === "false") return false;
+  return beatVisualRescueEnabled();
+}
+
+/**
+ * When no clip passes strict CLIP match, run a degraded rescue ladder instead of failing export.
+ * Default ON — rescue uses lower CLIP floor, then stock, AI, then neutral placeholder still.
+ */
+export function beatVisualRescueEnabled(): boolean {
+  return process.env.BEAT_VISUAL_RESCUE !== "false";
+}
+
+/** Min CLIP score (0–10) for rescue-tier archive/stock (default 5). */
+export function beatVisualRescueVisionFloor(): number {
+  const raw = process.env.BEAT_VISUAL_RESCUE_FLOOR?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 4 && n <= 7) return n;
+  }
+  return 5;
+}
+
 /** Max grey color-fallback beats per video (0 when strict match is on). */
 export function maxFallbackBeatsPerVideo(): number {
   const raw = process.env.MAX_FALLBACK_BEATS_PER_VIDEO?.trim();
@@ -325,12 +349,14 @@ export function maxFallbackBeatsPerVideo(): number {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 0 && n <= 20) return n;
   }
+  if (beatVisualRescueEnabled()) return 20;
   return strictVoiceVisualMatchEnabled() ? 0 : 6;
 }
 
 /** Block export when visuals fail CLIP bar / use grey fallbacks (default on with strict match). */
 export function blockExportOnVisualMismatch(): boolean {
   if (process.env.BLOCK_EXPORT_ON_VISUAL_MISMATCH === "false") return false;
+  if (allowDegradedVisualExport()) return false;
   return strictVoiceVisualMatchEnabled();
 }
 

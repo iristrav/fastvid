@@ -48,4 +48,24 @@ describe("voiceVisualMatch", () => {
     );
     expect(summary.ok).toBe(true);
   });
+
+  it("flags rescue-tier beats but allows export when degraded export is on", () => {
+    const summary = buildVoiceVisualMatchSummary(
+      [
+        {
+          sceneIndex: 0,
+          beatIndex: 1,
+          beatText: "Amsterdam grachten.",
+          basename: "scene_0_rescue.mp4",
+          source: "rescue_similar",
+          visionScore10: 5,
+        },
+      ],
+      ["/tmp/scene_0_rescue.mp4"],
+      []
+    );
+    expect(summary.ok).toBe(false);
+    expect(summary.rescueBeats).toBe(1);
+    expect(summary.warnings.some((w) => w.includes("rescue-tier"))).toBe(true);
+  });
 });

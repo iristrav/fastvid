@@ -147,7 +147,7 @@ import {
   uniqueQueryStrings,
   uniqueCoercedQueries,
 } from "./stringCoercion";
-import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, pipelineComposeGraceMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin, fastBeatConcurrency } from "./sourcingPolicy";
+import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, pipelineComposeGraceMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -14911,7 +14911,7 @@ async function adoptBestSimilarBeatClip(
   holdSec: number,
   semanticProfile?: BeatSemanticProfile,
   beatQueryEmb: number[] | null = null,
-  adoptOpts?: { videosOnly?: boolean }
+  adoptOpts?: { videosOnly?: boolean; visionFloor?: number; adoptSource?: string }
 ): Promise<boolean> {
   hydrateSceneBeatInPlace(beat);
   if (skipComposeNetworkFetch(dedup, "similar-match", scene.index, beat.index)) return false;
@@ -15019,7 +15019,8 @@ async function adoptBestSimilarBeatClip(
     return adoptSimilarExternal();
   }
 
-  const similarFloor = archiveSimilarMatchVisionFloor();
+  const similarFloor = adoptOpts?.visionFloor ?? archiveSimilarMatchVisionFloor();
+  const similarSource = adoptOpts?.adoptSource ?? "archive_similar";
   const fastSimilarCap = isFastShortVideoLength(dedup.videoLength) ? 4 : 6;
   const tryCap = Math.min(fastSimilarCap, ranked.length);
   let bestClip: string | null = null;
@@ -15074,7 +15075,7 @@ async function adoptBestSimilarBeatClip(
         beat.index,
         beat.text,
         clip,
-        "archive_similar",
+        similarSource,
         picked.asset.title ?? undefined,
         dedup.segmentGeoLock,
         picked.asset.id,
@@ -15096,7 +15097,7 @@ async function adoptBestSimilarBeatClip(
       beat.index,
       beat.text,
       bestClip,
-      "archive_similar",
+      similarSource,
       bestTitle,
       dedup.segmentGeoLock,
       curatedClipPathAssetId(bestClip) ?? undefined,
@@ -16155,7 +16156,8 @@ async function adoptStockBeatClipFallback(
   dedup: VisualDedupState,
   pushClip: (clipPath: string, holdSec?: number) => boolean | Promise<boolean>,
   holdSec: number,
-  semanticProfile?: BeatSemanticProfile
+  semanticProfile?: BeatSemanticProfile,
+  stockOpts?: { visionFloor?: number; adoptSource?: string }
 ): Promise<boolean> {
   hydrateSceneBeatInPlace(beat);
   if (skipComposeNetworkFetch(dedup, "Pexels/Pixabay", scene.index, beat.index)) return false;
@@ -16169,6 +16171,8 @@ async function adoptStockBeatClipFallback(
   }
 
   const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
+  const stockVisionFloor = stockOpts?.visionFloor ?? stockClipQualityFloor(dedup.videoLength);
+  const stockAdoptSource = stockOpts?.adoptSource;
 
   const tryClip = async (
     clipPath: string | null | undefined,
@@ -16187,7 +16191,7 @@ async function adoptStockBeatClipFallback(
       dedup,
       semanticProfile,
       q,
-      stockClipQualityFloor(dedup.videoLength)
+      stockVisionFloor
     );
     if (!vision.pass) return false;
     const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode);
@@ -16199,7 +16203,7 @@ async function adoptStockBeatClipFallback(
       beat.index,
       beat.text,
       withText,
-      source === "Pexels" ? "pexels" : "pixabay",
+      stockAdoptSource ?? (source === "Pexels" ? "pexels" : "pixabay"),
       undefined,
       dedup.segmentGeoLock,
       undefined,
@@ -16464,6 +16468,124 @@ async function adoptEmergencyGeoStockClip(
     );
     if (aiClip && !isPipelineFallbackClip(aiClip) && (await tryClip(aiClip, holdSec, 5))) {
       console.warn(`[Pipeline] Scene ${scene.index} zin ${beat.index}: AI emergency clip`);
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Degraded rescue when strict CLIP match found nothing — never leave export blocked for an empty beat.
+ * Ladder: similar archive (lower floor) → stock → relaxed archive → AI → neutral placeholder.
+ */
+async function rescueBeatVisualWhenEmpty(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  videoTitle: string | undefined,
+  dedup: VisualDedupState,
+  pushClip: (clipPath: string, holdSec?: number) => boolean | Promise<boolean>,
+  holdSec: number,
+  semanticProfile?: BeatSemanticProfile
+): Promise<boolean> {
+  if (!beatVisualRescueEnabled()) return false;
+  if (skipComposeNetworkFetch(dedup, "visual rescue", scene.index, beat.index)) return false;
+
+  const floor = beatVisualRescueVisionFloor();
+  console.warn(
+    `[Pipeline] Scene ${scene.index} zin ${beat.index}: visual rescue (CLIP floor ${floor}/10) — ` +
+      `"${beat.text.slice(0, 50).trim()}…"`
+  );
+
+  if (curatedArchiveOnlyVisuals()) {
+    if (
+      await adoptBestSimilarBeatClip(
+        beat,
+        scene,
+        workDir,
+        videoTitle,
+        dedup,
+        pushClip,
+        holdSec,
+        semanticProfile,
+        null,
+        { visionFloor: floor, adoptSource: "rescue_similar" }
+      )
+    ) {
+      return true;
+    }
+    if (
+      await adoptArchiveBeatClipWithBudget(
+        beat,
+        scene,
+        workDir,
+        videoTitle,
+        dedup,
+        pushClip,
+        null,
+        holdSec,
+        semanticProfile,
+        true,
+        null,
+        undefined
+      )
+    ) {
+      const last = dedup.clipAdoptAudit[dedup.clipAdoptAudit.length - 1];
+      if (last && last.sceneIndex === scene.index && last.beatIndex === beat.index) {
+        last.source = "rescue_archive";
+      }
+      return true;
+    }
+  }
+
+  if (archivePexelsFallbackEnabled() && canUseLicensedStockBeat(dedup)) {
+    if (
+      await adoptStockBeatClipFallback(
+        beat,
+        scene,
+        workDir,
+        videoTitle,
+        dedup,
+        pushClip,
+        holdSec,
+        semanticProfile,
+        { visionFloor: floor, adoptSource: "rescue_stock" }
+      )
+    ) {
+      return true;
+    }
+  }
+
+  if (await adoptAiBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
+    const last = dedup.clipAdoptAudit[dedup.clipAdoptAudit.length - 1];
+    if (last && last.sceneIndex === scene.index && last.beatIndex === beat.index) {
+      last.source = "rescue_ai";
+    }
+    return true;
+  }
+
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const placeholder = await generateGuaranteedBeatClip(
+      scene.index,
+      beat.index + attempt * 100,
+      holdSec,
+      workDir
+    );
+    if (!placeholder) continue;
+    if (await pushClip(placeholder, holdSec)) {
+      recordClipAdopt(
+        dedup.clipAdoptAudit,
+        scene.index,
+        beat.index,
+        beat.text,
+        placeholder,
+        "rescue_placeholder",
+        undefined,
+        dedup.segmentGeoLock
+      );
+      console.warn(
+        `[Pipeline] Scene ${scene.index} zin ${beat.index}: rescue placeholder (geen CLIP-match)`
+      );
       return true;
     }
   }
@@ -17129,6 +17251,20 @@ async function fillBeatVisual(
       return true;
     }
   }
+  if (
+    await rescueBeatVisualWhenEmpty(
+      beat,
+      scene,
+      workDir,
+      videoTitle,
+      dedup,
+      pushClip,
+      holdSec,
+      semanticProfile
+    )
+  ) {
+    return true;
+  }
   return false;
 }
 
@@ -17591,8 +17727,16 @@ async function refillSceneStrictVoiceMatch(
         );
       }
       if (fastShort && !beatFilled()) {
-        const guaranteed = await generateGuaranteedBeatClip(scene.index, beat.index, beat.holdSec, workDir);
-        if (guaranteed) await pushClip(guaranteed, beat.holdSec);
+        await rescueBeatVisualWhenEmpty(
+          beat,
+          scene,
+          workDir,
+          videoTitle,
+          dedup,
+          pushClip,
+          beat.holdSec,
+          profile
+        );
       }
     };
 
@@ -17604,8 +17748,16 @@ async function refillSceneStrictVoiceMatch(
         (err as Error).message?.slice(0, 80)
       );
       if (fastShort && !beatFilled()) {
-        const guaranteed = await generateGuaranteedBeatClip(scene.index, beat.index, beat.holdSec, workDir);
-        if (guaranteed) await pushClip(guaranteed, beat.holdSec);
+        await rescueBeatVisualWhenEmpty(
+          beat,
+          scene,
+          workDir,
+          videoTitle,
+          dedup,
+          pushClip,
+          beat.holdSec,
+          profile
+        );
       }
     }
     dedup.visualBeatsCompleted = (dedup.visualBeatsCompleted ?? 0) + 1;
@@ -17668,8 +17820,16 @@ async function refillSceneStrictVoiceMatch(
           );
         }
         if (!clipBeatIndices.includes(beat.index)) {
-          const guaranteed = await generateGuaranteedBeatClip(scene.index, beat.index, beat.holdSec, workDir);
-          if (guaranteed) await pushForBeat(bi)(guaranteed, beat.holdSec);
+          await rescueBeatVisualWhenEmpty(
+            beat,
+            scene,
+            workDir,
+            videoTitle,
+            dedup,
+            pushForBeat(bi),
+            beat.holdSec,
+            semanticProfiles.get(bi)
+          );
         }
         continue;
       }
