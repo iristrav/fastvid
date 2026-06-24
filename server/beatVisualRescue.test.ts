@@ -3,8 +3,11 @@ import {
   allowDegradedVisualExport,
   beatVisualRescueEnabled,
   beatVisualRescueVisionFloor,
+  beatVisualRescueAiMaxClips,
   blockExportOnVisualMismatch,
   maxFallbackBeatsPerVideo,
+  fastShortArchivePoolMax,
+  fastShortClipIndexPrewarmMax,
 } from "./sourcingPolicy";
 
 describe("beatVisualRescue", () => {
@@ -20,6 +23,9 @@ describe("beatVisualRescue", () => {
   it("enabled by default with rescue floor 5", () => {
     expect(beatVisualRescueEnabled()).toBe(true);
     expect(beatVisualRescueVisionFloor()).toBe(5);
+    expect(beatVisualRescueAiMaxClips("1")).toBe(2);
+    expect(fastShortArchivePoolMax()).toBe(200);
+    expect(fastShortClipIndexPrewarmMax()).toBe(48);
     expect(allowDegradedVisualExport()).toBe(true);
     expect(blockExportOnVisualMismatch()).toBe(false);
     expect(maxFallbackBeatsPerVideo()).toBe(20);

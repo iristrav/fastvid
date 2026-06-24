@@ -342,6 +342,56 @@ export function beatVisualRescueVisionFloor(): number {
   return 5;
 }
 
+/** Max AI-generated clips in rescue tier only (strict match still blocks normal AI). */
+export function beatVisualRescueAiMaxClips(videoLength?: string | null): number {
+  if (!beatVisualRescueEnabled()) return 0;
+  const raw = process.env.BEAT_VISUAL_RESCUE_AI_MAX?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 0 && n <= 6) return n;
+  }
+  return isFastShortVideoLength(videoLength) ? 2 : 3;
+}
+
+/** 1-min archive pool warm — candidates pre-ranked for the whole video (default 200). */
+export function fastShortArchivePoolMax(): number {
+  const raw = process.env.FAST_ARCHIVE_POOL_MAX?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 60 && n <= 480) return n;
+  }
+  return 200;
+}
+
+/** Wall-clock ms to warm archive pool before 1-min visual stage (default 18s). */
+export function fastShortArchivePoolWarmMs(): number {
+  const raw = process.env.FAST_ARCHIVE_POOL_WARM_MS?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 8_000 && n <= 45_000) return n;
+  }
+  return 18_000;
+}
+
+/** CLIP index pre-warm before 1-min visuals — max assets / budget ms. */
+export function fastShortClipIndexPrewarmMax(): number {
+  const raw = process.env.FAST_CLIP_INDEX_PREWARM_MAX?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 12 && n <= 120) return n;
+  }
+  return 48;
+}
+
+export function fastShortClipIndexPrewarmMs(): number {
+  const raw = process.env.FAST_CLIP_INDEX_PREWARM_MS?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 15_000 && n <= 90_000) return n;
+  }
+  return 45_000;
+}
+
 /** Max grey color-fallback beats per video (0 when strict match is on). */
 export function maxFallbackBeatsPerVideo(): number {
   const raw = process.env.MAX_FALLBACK_BEATS_PER_VIDEO?.trim();

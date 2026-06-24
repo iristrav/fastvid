@@ -80,7 +80,7 @@ export function summarizeAdoptAudit(audit: ClipAdoptEntry[]): AdoptAuditSummary 
       wikiBeats += 1;
     } else if (entry.source === "archive" || entry.source === "archive_fetch" || entry.source.startsWith("rescue_similar") || entry.source === "rescue_archive") {
       archiveBeats += 1;
-    } else if (entry.source === "kling") {
+    } else if (entry.source === "kling" || entry.source === "rescue_ai") {
       klingBeats += 1;
     } else if (entry.source === "fallback" || entry.source === "rescue_placeholder") {
       fallbackBeats += 1;

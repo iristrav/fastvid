@@ -78,14 +78,18 @@ function markIndexFailure(assetId: number): void {
 
 /** Index CLIP embeddings for archive videos that lack a stored index (non-blocking batches). */
 export async function backfillMissingClipEmbeddings(
-  maxAssets = backfillBatchSize()
+  maxAssets = backfillBatchSize(),
+  options?: { ignoreActiveJobCap?: boolean }
 ): Promise<{ indexed: number; skipped: number; missing: number }> {
   if (!backfillEnabled()) {
     return { indexed: 0, skipped: 0, missing: 0 };
   }
   const { workerLocalActiveJobs } = await import("./videoQueue");
   const activeJobs = workerLocalActiveJobs();
-  const effectiveBatch = activeJobs > 0 ? Math.min(maxAssets, 10) : maxAssets;
+  const effectiveBatch =
+    options?.ignoreActiveJobCap || activeJobs === 0
+      ? maxAssets
+      : Math.min(maxAssets, 10);
 
   let indexed = 0;
   let skipped = 0;
@@ -142,7 +146,8 @@ export async function backfillMissingClipEmbeddings(
  */
 export async function backfillClipEmbeddingsWithBudget(
   maxAssets: number,
-  maxWaitMs: number
+  maxWaitMs: number,
+  options?: { ignoreActiveJobCap?: boolean }
 ): Promise<{ indexed: number; timedOut: boolean }> {
   if (!backfillEnabled()) return { indexed: 0, timedOut: false };
   const started = Date.now();
@@ -151,7 +156,7 @@ export async function backfillClipEmbeddingsWithBudget(
 
   while (indexed < maxAssets && Date.now() - started < maxWaitMs) {
     const batch = Math.min(24, maxAssets - indexed);
-    const result = await backfillMissingClipEmbeddings(batch);
+    const result = await backfillMissingClipEmbeddings(batch, options);
     indexed += result.indexed;
     if (result.indexed === 0) break;
     if (Date.now() - started >= maxWaitMs) {

@@ -147,7 +147,7 @@ import {
   uniqueQueryStrings,
   uniqueCoercedQueries,
 } from "./stringCoercion";
-import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, pipelineComposeGraceMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor } from "./sourcingPolicy";
+import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, pipelineComposeGraceMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -7842,10 +7842,21 @@ async function fetchBeatAIClip(
   beatIndex: number,
   clipFetchDur: number,
   dedup: VisualDedupState,
-  videoTitle?: string
+  videoTitle?: string,
+  opts?: { rescueTier?: boolean }
 ): Promise<string | null> {
   const { perf } = dedup;
-  if (!perf.enableAiFallback || dedup.aiClipsUsed >= perf.maxAiClipsPerVideo) return null;
+  const rescueTier = Boolean(opts?.rescueTier);
+  if (rescueTier) {
+    if (
+      !beatVisualRescueEnabled() ||
+      dedup.rescueAiClipsUsed >= beatVisualRescueAiMaxClips(dedup.videoLength)
+    ) {
+      return null;
+    }
+  } else if (!perf.enableAiFallback || dedup.aiClipsUsed >= perf.maxAiClipsPerVideo) {
+    return null;
+  }
   if (!aiProvidersReady()) return null;
 
   const prompt = buildBeatAIPrompt(beat, scene, videoTitle);
@@ -7881,10 +7892,17 @@ async function fetchBeatAIClip(
     if (dedup.usedContentKeys.has(contentKey)) return null;
     dedup.usedPaths.add(generated!);
     dedup.usedContentKeys.add(contentKey);
-    dedup.aiClipsUsed++;
-    console.log(
-      `[Pipeline] Scene ${sceneIndex} beat ${beatIndex}: AI fallback ${dedup.aiClipsUsed}/${perf.maxAiClipsPerVideo} — "${prompt.slice(0, 90)}..."`
-    );
+    if (rescueTier) {
+      dedup.rescueAiClipsUsed++;
+      console.log(
+        `[Pipeline] Scene ${sceneIndex} beat ${beatIndex}: rescue AI ${dedup.rescueAiClipsUsed}/${beatVisualRescueAiMaxClips(dedup.videoLength)} — "${prompt.slice(0, 90)}..."`
+      );
+    } else {
+      dedup.aiClipsUsed++;
+      console.log(
+        `[Pipeline] Scene ${sceneIndex} beat ${beatIndex}: AI fallback ${dedup.aiClipsUsed}/${perf.maxAiClipsPerVideo} — "${prompt.slice(0, 90)}..."`
+      );
+    }
     return generated;
   });
 }
@@ -8317,6 +8335,8 @@ interface VisualDedupState {
   /** Last adopted real stock clip (any topic) — reused instead of color/black placeholders. */
   lastMuskStockClip: string | null;
   aiClipsUsed: number;
+  /** AI clips used only in visual rescue tier (separate cap from main AI fallback). */
+  rescueAiClipsUsed: number;
   /** Kling AI video clips (Wikimedia fallback tier). */
   klingClipsUsed: number;
   entityYoutubeFetchesUsed: number;
@@ -8487,6 +8507,7 @@ function createVisualDedupState(
     muskHeroFetchUsed: false,
     lastMuskStockClip: null,
     aiClipsUsed: 0,
+    rescueAiClipsUsed: 0,
     klingClipsUsed: 0,
     entityYoutubeFetchesUsed: 0,
     stockBeatsUsed: 0,
@@ -16088,16 +16109,36 @@ async function adoptAiBeatClip(
   pushClip: (clipPath: string, holdSec?: number) => boolean | Promise<boolean>,
   holdSec: number,
   semanticProfile?: BeatSemanticProfile,
-  opts?: { skipVision?: boolean }
+  opts?: { skipVision?: boolean; rescueTier?: boolean }
 ): Promise<boolean> {
-  if (strictVoiceVisualMatchEnabled()) return false;
-  if (!dedup.perf.enableAiFallback || dedup.aiClipsUsed >= dedup.perf.maxAiClipsPerVideo) return false;
+  const rescueTier = Boolean(opts?.rescueTier);
+  if (!rescueTier && strictVoiceVisualMatchEnabled()) return false;
+  if (rescueTier) {
+    if (
+      !beatVisualRescueEnabled() ||
+      dedup.rescueAiClipsUsed >= beatVisualRescueAiMaxClips(dedup.videoLength)
+    ) {
+      return false;
+    }
+  } else if (!dedup.perf.enableAiFallback || dedup.aiClipsUsed >= dedup.perf.maxAiClipsPerVideo) {
+    return false;
+  }
   if (!aiProvidersReady()) return false;
 
   let aiClip: string | null = null;
   try {
     aiClip = await withTimeout(
-      fetchBeatAIClip(beat, scene, workDir, scene.index, beat.index, holdSec, dedup, videoTitle),
+      fetchBeatAIClip(
+        beat,
+        scene,
+        workDir,
+        scene.index,
+        beat.index,
+        holdSec,
+        dedup,
+        videoTitle,
+        { rescueTier }
+      ),
       dedup.perf.fastStockMode ? FAST_AI_CLIP_TIMEOUT_MS : 120_000,
       `AI scene ${scene.index} beat ${beat.index}`
     );
@@ -16121,7 +16162,8 @@ async function adoptAiBeatClip(
       videoTitle,
       dedup,
       semanticProfile,
-      "ai"
+      rescueTier ? "rescue_ai" : "ai",
+      rescueTier ? beatVisualRescueVisionFloor() : undefined
     )).pass
   ) {
     return false;
@@ -16135,12 +16177,12 @@ async function adoptAiBeatClip(
       beat.index,
       beat.text,
       withText,
-      "ai",
+      rescueTier ? "rescue_ai" : "ai",
       undefined,
       dedup.segmentGeoLock
     );
     console.log(
-      `[Pipeline] Scene ${scene.index} zin ${beat.index}: AI clip (${dedup.aiClipsUsed}/${dedup.perf.maxAiClipsPerVideo})`
+      `[Pipeline] Scene ${scene.index} zin ${beat.index}: ${rescueTier ? "rescue AI" : "AI clip"} (${rescueTier ? dedup.rescueAiClipsUsed : dedup.aiClipsUsed}/${rescueTier ? beatVisualRescueAiMaxClips(dedup.videoLength) : dedup.perf.maxAiClipsPerVideo})`
     );
     return true;
   }
@@ -16556,11 +16598,7 @@ async function rescueBeatVisualWhenEmpty(
     }
   }
 
-  if (await adoptAiBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
-    const last = dedup.clipAdoptAudit[dedup.clipAdoptAudit.length - 1];
-    if (last && last.sceneIndex === scene.index && last.beatIndex === beat.index) {
-      last.source = "rescue_ai";
-    }
+  if (await adoptAiBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile, { rescueTier: true })) {
     return true;
   }
 
@@ -20885,20 +20923,43 @@ export async function runVideoPipeline(
 
     if (curatedArchiveOnlyVisuals()) {
       if (isFastShortVideoLength(videoLength)) {
-        visualDedup.archiveCandidatePool = [];
-        console.log("[Pipeline] Archive pool skipped on 1-min fast path (on-demand per beat)");
+        const combinedSceneText = scenes.map((s) => s.text).join(" ");
+        const poolMs = fastShortArchivePoolWarmMs();
+        try {
+          visualDedup.archiveCandidatePool = await withTimeout(
+            buildVideoArchiveCandidatePool(topicContext, combinedSceneText, {
+              assetsCache: visualDedup.archiveAssetsCache,
+              crossVideoExcludeIds: visualDedup.crossVideoExcludeIds,
+              excludeIds: visualDedup.usedCuratedAssetIds,
+              excludeStorageUrls: visualDedup.usedCuratedStorageUrls,
+              maxPool: fastShortArchivePoolMax(),
+            }),
+            poolMs,
+            "Archive pool 1-min warm"
+          );
+        } catch (poolErr) {
+          console.warn(
+            `[Pipeline] Archive pool 1-min warm skipped (${poolMs / 1000}s cap):`,
+            (poolErr as Error).message?.slice(0, 80)
+          );
+          visualDedup.archiveCandidatePool = [];
+        }
+        console.log(
+          `[Pipeline] Archive pool 1-min: ${visualDedup.archiveCandidatePool.length} candidate(s)`
+        );
         try {
           const { backfillClipEmbeddingsWithBudget } = await import("./archiveClipIndexBackfill");
-          void backfillClipEmbeddingsWithBudget(24, 30_000)
-            .then((warmed) => {
-              if (warmed.indexed > 0) {
-                console.log(
-                  `[Pipeline] CLIP index 1-min pre-warm: +${warmed.indexed} archive clip(s)` +
-                    (warmed.timedOut ? " (30s budget)" : "")
-                );
-              }
-            })
-            .catch(() => {});
+          const prewarmMax = fastShortClipIndexPrewarmMax();
+          const prewarmMs = fastShortClipIndexPrewarmMs();
+          const warmed = await backfillClipEmbeddingsWithBudget(prewarmMax, prewarmMs, {
+            ignoreActiveJobCap: true,
+          });
+          if (warmed.indexed > 0) {
+            console.log(
+              `[Pipeline] CLIP index 1-min pre-warm: +${warmed.indexed} archive clip(s)` +
+                (warmed.timedOut ? ` (${prewarmMs / 1000}s budget)` : "")
+            );
+          }
         } catch (warmErr) {
           console.warn(
             "[Pipeline] CLIP index 1-min pre-warm skipped:",
