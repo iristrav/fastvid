@@ -147,7 +147,7 @@ import {
   uniqueQueryStrings,
   uniqueCoercedQueries,
 } from "./stringCoercion";
-import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, pipelineComposeGraceMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin, fastBeatConcurrency } from "./sourcingPolicy";
+import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, pipelineComposeGraceMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin, fastBeatConcurrency } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -572,6 +572,8 @@ type MontageFilterOpts = {
   xfadeSec?: number;
   preserveDurations?: boolean;
   segmentBeatTexts?: string[];
+  /** Ultrafast x264 on Railway 1-min plain compose. */
+  fastEncode?: boolean;
 };
 
 function pipelineFfmpegThreadFlag(): string {
@@ -9402,9 +9404,17 @@ async function estimateBalancedMontageCoverageSec(
   return effectiveMontageDurationSec(balanced, sourceMaxDurs);
 }
 
-function composeSceneTimeoutMs(clipCount: number): number {
+function composeSceneTimeoutMs(clipCount: number, videoLength?: string): number {
+  if (isFastShortVideoLength(videoLength)) return 90_000;
   if (curatedArchiveOnlyVisuals() && clipCount > 8) return 240_000;
   return 120_000;
+}
+
+function montageEncodeFlags(montageFilterOpts?: MontageFilterOpts): string {
+  const fast = montageFilterOpts?.fastEncode === true;
+  const preset = fast ? MONTAGE_SEGMENT_ENCODE_PRESET : "veryfast";
+  const crf = fast ? 22 : 18;
+  return `-c:v libx264 -preset ${preset} -crf ${crf}`;
 }
 
 function formatFfmpegExecError(err: unknown): string {
@@ -9442,16 +9452,20 @@ async function composePlainMontageScene(
   composeTimeout: number,
   montageFilterOpts?: MontageFilterOpts
 ): Promise<boolean> {
+  const encodeFlags = montageEncodeFlags(montageFilterOpts);
   const muxMontageWithAudio = async (montageVideoPath: string): Promise<boolean> => {
     const audioIdx = 1;
+    const gradeChain = montageFilterOpts?.fastEncode
+      ? `[vmont]${FPS_FORMAT_VF}[vout]`
+      : `[vmont]${fadeFilter}[vout]`;
     await withTimeout(
       exec(
         `${FFMPEG_BIN} -y -i "${montageVideoPath}" -i "${safeAudioPath}" ` +
-          `-filter_complex "[0:v]${FPS_FORMAT_VF}[vmont];[vmont]${fadeFilter}[vout];` +
+          `-filter_complex "[0:v]${FPS_FORMAT_VF}[vmont];${gradeChain};` +
           `[${audioIdx}:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${Math.max(0, voiceDur - 0.15).toFixed(3)}:d=0.12,` +
           `atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
           `-map "[vout]" -map "[aout]" -vsync cfr ` +
-          `-t ${outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
+          `-t ${outDur.toFixed(3)} ${threadFlag} ${encodeFlags} -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
       ),
       composeTimeout,
       `Plain montage+audio scene ${sceneIndex}`
@@ -9500,11 +9514,14 @@ async function composePlainMontageScene(
     await withTimeout(
       exec(
         `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}" ` +
-          `-filter_complex "${scaleFilters}${mergeFilter};${montageOutVF};[vmont]${fadeFilter}[vout];` +
+          `-filter_complex "${scaleFilters}${mergeFilter};${montageOutVF};` +
+          (montageFilterOpts?.fastEncode
+            ? `[vmont]${FPS_FORMAT_VF}[vout];`
+            : `[vmont]${fadeFilter}[vout];`) +
           `[${audioIdx}:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${Math.max(0, voiceDur - 0.15).toFixed(3)}:d=0.12,` +
           `atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
           `-map "[vout]" -map "[aout]" -vsync cfr ` +
-          `-t ${outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
+          `-t ${outDur.toFixed(3)} ${threadFlag} ${encodeFlags} -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
       ),
       composeTimeout,
       `Plain montage scene ${sceneIndex}`
@@ -11908,8 +11925,8 @@ async function ensureFastShortScenesReadyForCompose(
         recoverSceneClipsIfEmpty(scene, workDir, topicContext, visualDedup),
         visualDedup.pipelineStartedMs > 0 &&
           Date.now() - visualDedup.pipelineStartedMs > visualSourcingTurboMs()
-          ? 45_000
-          : 90_000,
+          ? 20_000
+          : 35_000,
         `Scene ${scene.index} pre-compose recovery`
       );
       ready = await composeReadySceneClips(vr.clips, scene.index);
@@ -16489,6 +16506,7 @@ async function backfillComposeMontageIfShort(
   montageBeats?: SceneBeat[]
 ): Promise<void> {
   if (!curatedArchiveOnlyVisuals()) return;
+  if (isFastShortVideoLength(dedup.videoLength)) return;
   const minClipsNeeded = minClipsForBalancedVoice(outDur);
   const minCoverage = strictNoVisualRepeat() ? outDur - 0.06 : outDur * 0.92;
   let coverage = await estimateBalancedMontageCoverageSec(safeClips, composeBeatDurations, outDur);
@@ -19171,7 +19189,10 @@ async function composeSceneVideo(
     );
     composeBeatDurations = plan.durations;
   }
-  const composeTimeout = composeSceneTimeoutMs(safeClips.length);
+  const composeTimeout = composeSceneTimeoutMs(
+    safeClips.length,
+    composeOptions?.dedup?.videoLength
+  );
 
   // Subtitle overlay: render if user has enabled subtitles (effects pass only — not raw assembly)
   let subtitlePath: string | null = null;
@@ -19366,6 +19387,36 @@ async function composeSceneVideo(
     console.warn(
       `[Pipeline] Scene ${scene.index}: montage est ${estBeforeCompose.toFixed(1)}s < voice ${outDur.toFixed(1)}s — gray pad will fill gap`
     );
+  }
+
+  if (fastShortPlainComposeEnabled(composeOptions?.dedup?.videoLength)) {
+    const fastMontageOpts: MontageFilterOpts = {
+      xfadeSec: 0,
+      preserveDurations: true,
+      fastEncode: true,
+      ...(segmentBeatTexts?.length ? { segmentBeatTexts } : {}),
+    };
+    console.log(`[Pipeline] Scene ${scene.index}: fast 1-min plain compose (hard cuts, no cinematic pass)`);
+    if (
+      await composePlainMontageScene(
+        scene.index,
+        composeClips,
+        montageDurations,
+        sourceMaxDurs,
+        outDur,
+        voiceDur,
+        safeAudioPath,
+        outputPath,
+        workDir,
+        FPS_FORMAT_VF,
+        threadFlag,
+        composeTimeout,
+        fastMontageOpts
+      )
+    ) {
+      return outputPath;
+    }
+    console.warn(`[Pipeline] Scene ${scene.index}: fast plain compose failed — trying full compose path`);
   }
 
   if (!skipEffectLayers && screenLabelsEnabled() && sceneHasVisualOverlayFootage(safeClips) && cinematicEffectsEnabled()) {
@@ -19844,8 +19895,25 @@ async function composeSceneVideo(
 // - Deep sub-bass foundation
 // - Long reverb tails for spacious, cinematic atmosphere
 // Mixed at -20dB relative to voiceover (ducked further by sidechaincompress in final mix)
-async function generateBackgroundMusic(duration: number, workDir: string): Promise<string> {
+async function generateBackgroundMusic(duration: number, workDir: string, fast = false): Promise<string> {
   const outputPath = path.join(workDir, "bg_music.mp3");
+  if (fast) {
+    try {
+      await withTimeout(
+        exec(
+          `${FFMPEG_BIN} -y -f lavfi -i "sine=frequency=110:duration=${duration}" ` +
+            `-f lavfi -i "sine=frequency=165:duration=${duration}" ` +
+            `-filter_complex "[0]volume=0.25,lowpass=f=200[a];[1]volume=0.15,lowpass=f=280[b];[a][b]amix=inputs=2:duration=first,lowpass=f=900" ` +
+            `-c:a libmp3lame -b:a 128k "${outputPath}"`
+        ),
+        25_000,
+        "Fast background music"
+      );
+      if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 400) return outputPath;
+    } catch (err) {
+      console.warn("[Pipeline] Fast background music failed:", (err as Error).message?.slice(0, 80));
+    }
+  }
   try {
     // Root: A2 (110Hz) — warm, serious documentary tone
     // Fifth: E3 (165Hz) — harmonic stability
@@ -20060,8 +20128,10 @@ async function concatenateScenesWithMusic(
   videoId: number,
   totalDuration: number,
   videoTitle: string,
-  customMusicPath?: string | null
+  customMusicPath?: string | null,
+  videoLength?: string
 ): Promise<string> {
+  const fastShort = isFastShortVideoLength(videoLength);
   const listFile = path.join(workDir, "concat_list.txt");
   const concatPath = path.join(workDir, `fastvid_${videoId}_concat.mp4`);
   const outputPath = path.join(workDir, `fastvid_${videoId}_final.mp4`);
@@ -20085,16 +20155,21 @@ async function concatenateScenesWithMusic(
 
   const totalWithCards = totalDuration;
 
+  const concatPreset = fastShort ? MONTAGE_SEGMENT_ENCODE_PRESET : "veryfast";
+  const concatCrf = fastShort ? 22 : 18;
   const concatPromise = withTimeout(
-    exec(`${FFMPEG_BIN} -y -f concat -safe 0 -i "${listFile}" -vsync cfr -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -movflags +faststart "${concatPath}"`),
-    900_000, // 15 min for large videos (30+ scenes)
+    exec(
+      `${FFMPEG_BIN} -y -f concat -safe 0 -i "${listFile}" -vsync cfr ` +
+        `-c:v libx264 -preset ${concatPreset} -crf ${concatCrf} -c:a aac -b:a 320k -movflags +faststart "${concatPath}"`
+    ),
+    fastShort ? 120_000 : 900_000,
     "Scene concatenation"
   );
 
   const musicPath =
     customMusicPath && fs.existsSync(customMusicPath) && fs.statSync(customMusicPath).size > 100
       ? customMusicPath
-      : await generateBackgroundMusic(totalWithCards + 5, workDir);
+      : await generateBackgroundMusic(totalWithCards + 5, workDir, fastShort);
 
   if (customMusicPath && musicPath === customMusicPath) {
     console.log(`[Pipeline] Using custom background music: ${path.basename(customMusicPath)}`);
@@ -20147,7 +20222,7 @@ async function concatenateScenesWithMusic(
           `-map "0:v" -map "[aout]" ` +
           `-c:v copy -c:a aac -b:a 320k -movflags +faststart "${outputPath}"`
         ),
-        180_000,
+        fastShort ? 60_000 : 180_000,
         "Background music mixing"
       );
     } catch (err) {
@@ -20160,7 +20235,7 @@ async function concatenateScenesWithMusic(
             `-map "0:v" -map "[aout]" ` +
             `-c:v copy -c:a aac -b:a 320k -movflags +faststart "${outputPath}"`
           ),
-          180_000,
+          fastShort ? 60_000 : 180_000,
           "Background music mixing (no loop)"
         );
       } catch (err2) {
@@ -20939,7 +21014,7 @@ export async function runVideoPipeline(
           return result;
         }))
       ),
-      isFastShortVideoLength(videoLength) ? 300_000 : 2400_000,
+      isFastShortVideoLength(videoLength) ? 420_000 : 2400_000,
       "Scene compose stage"
     );
     console.log(`[Pipeline] Stage 4 (compose): ${scenes.length} scenes in ${((Date.now()-t3)/1000).toFixed(1)}s`);
@@ -21083,7 +21158,15 @@ export async function runVideoPipeline(
     const t4 = Date.now();
     const totalDuration =
       scenes.reduce((sum, s) => sum + s.duration, 0) + chapterCardCount * CHAPTER_CARD_DURATION;
-    let finalVideoPath = await concatenateScenesWithMusic(orderedClips, workDir, videoId, totalDuration, videoTitle);
+    let finalVideoPath = await concatenateScenesWithMusic(
+      orderedClips,
+      workDir,
+      videoId,
+      totalDuration,
+      videoTitle,
+      undefined,
+      videoLength
+    );
     if (isShortVideoLength(videoLength)) {
       const targetSec = videoLength === "1" ? 58 : 118;
       finalVideoPath = await ensureFinalVideoDuration(finalVideoPath, workDir, videoId, targetSec);
@@ -21105,7 +21188,9 @@ export async function runVideoPipeline(
           workDir,
           videoId,
           totalDuration,
-          videoTitle
+          videoTitle,
+          undefined,
+          videoLength
         );
       },
       reassemblePlain: async () => plainConcatSceneVideos(composedScenes, workDir, videoId),

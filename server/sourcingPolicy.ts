@@ -204,6 +204,13 @@ export function pipelineEmergencyFinishMs(): number {
   return 7 * 60_000;
 }
 
+/** 1-min Railway: hard-cut plain montage — skip cinematic/year-label compose passes. */
+export function fastShortPlainComposeEnabled(videoLength?: string | null): boolean {
+  if (!isFastShortVideoLength(videoLength)) return false;
+  if (process.env.FAST_SHORT_PLAIN_COMPOSE === "false") return false;
+  return true;
+}
+
 /** Extra wall-clock after hard cap while compose/upload finishes (1-min fast path). */
 export function pipelineComposeGraceMs(videoLength?: string | null): number {
   const raw = process.env.PIPELINE_COMPOSE_GRACE_MS?.trim();
