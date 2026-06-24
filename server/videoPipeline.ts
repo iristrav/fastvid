@@ -486,13 +486,22 @@ const execRaw = (cmd: string) => new Promise<{ stdout: string; stderr: string }>
   });
 });
 
+// "Resource temporarily unavailable" (EAGAIN) when opening a decoder is a transient
+// fork/fd-pressure error under heavy concurrent ffmpeg load, not a real input problem —
+// retry a couple of times with a short backoff before giving up.
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 // Wrapper that retries with a different ffmpeg binary if the current one fails
-const exec = async (cmd: string): Promise<{ stdout: string; stderr: string }> => {
+const exec = async (cmd: string, eagainRetriesLeft = 2): Promise<{ stdout: string; stderr: string }> => {
   try {
     return await execRaw(cmd);
   } catch (err: unknown) {
-    // If current FFMPEG_BIN failed with a binary-not-found error, try alternatives
     const errMsg = (err as Error)?.message || '';
+    if (eagainRetriesLeft > 0 && /resource temporarily unavailable/i.test(errMsg)) {
+      await sleep(750 * (3 - eagainRetriesLeft));
+      return exec(cmd, eagainRetriesLeft - 1);
+    }
+    // If current FFMPEG_BIN failed with a binary-not-found error, try alternatives
     // Only treat as binary-not-found if the error mentions the FFmpeg binary path itself,
     // NOT if it's an input file ENOENT (which would incorrectly trigger binary switching)
     const isBinaryNotFound = (
