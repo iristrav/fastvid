@@ -138,14 +138,14 @@ export function pipelineMinutesPerVideoMinute(): number {
   return 10;
 }
 
-/** Multiplier on target budget before hard-fail (default 1.2 → ~12 min pipeline per 1 min video). */
+/** Multiplier on target budget before hard-fail (default 1.3 → ~13 min pipeline per 1 min video). */
 export function pipelineWallClockGraceFactor(): number {
   const raw = process.env.PIPELINE_WALL_CLOCK_GRACE?.trim();
   if (raw) {
     const n = parseFloat(raw);
     if (!isNaN(n) && n >= 1.05 && n <= 1.5) return n;
   }
-  return 1.2;
+  return 1.3;
 }
 
 /** When true, enforce hard wall-clock fail + router race timeout. Default OFF — jobs finish at their own pace. */
@@ -298,7 +298,7 @@ export function polishBeforeComposeEnabled(
   return true;
 }
 
-/** Parallel scene compose jobs (1–4). Railway default: 2 for ≤1 min, 1 for longer. */
+/** Parallel scene compose jobs (1–4). Railway default: 2 for ≤1 min, 2 for longer (was 1 — avoid full serialization). */
 export function composeParallelismForVideo(videoLength?: string | null, isRailway = false): number {
   const raw = process.env.COMPOSE_PARALLELISM?.trim();
   if (raw) {
@@ -306,9 +306,9 @@ export function composeParallelismForVideo(videoLength?: string | null, isRailwa
     if (!isNaN(n) && n >= 1 && n <= 4) return n;
   }
   if (isRailway) {
-    if (isFastShortVideoLength(videoLength)) return 1;
+    if (isFastShortVideoLength(videoLength)) return 2;
     if (normalizeVideoLength(videoLength) === "8-10") return 2;
-    return 1;
+    return 2;
   }
   return 2;
 }
@@ -320,13 +320,15 @@ export function montageSegmentParallelism(isRailway = false): number {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 1 && n <= 3) return n;
   }
-  return isRailway ? 1 : 2;
+  return isRailway ? 2 : 2;
 }
 
-/** FFmpeg thread cap per encode (0 = libx264 default). Railway default: 2. */
+/** FFmpeg thread cap per encode (0 = libx264 default). Railway default: 1 — compose/montage now
+ *  run 2 jobs in parallel, so 1 thread/job keeps total CPU use roughly the same as the old
+ *  1-job × 2-threads setup instead of doubling it. */
 export function ffmpegThreadFlag(isRailway = false): string {
   const raw = process.env.FFMPEG_THREADS?.trim();
-  const n = raw ? parseInt(raw, 10) : isRailway ? 2 : 0;
+  const n = raw ? parseInt(raw, 10) : isRailway ? 1 : 0;
   if (!n || isNaN(n) || n < 1) return "";
   return `-threads ${Math.min(4, n)}`;
 }
