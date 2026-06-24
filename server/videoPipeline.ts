@@ -494,7 +494,10 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const isForkPressureError = (err: unknown): boolean => {
   const code = (err as NodeJS.ErrnoException)?.code;
   if (code === "EAGAIN") return true;
-  const msg = (err as Error)?.message || "";
+  // Node's exec error .message often omits stderr — the actual "Resource temporarily
+  // unavailable" text from ffmpeg's filter graph (not just the spawn layer) lives in
+  // err.stderr, which execRaw attaches explicitly below.
+  const msg = `${(err as Error)?.message || ""} ${(err as { stderr?: string })?.stderr || ""}`;
   return /resource temporarily unavailable/i.test(msg) || /cannot fork/i.test(msg);
 };
 

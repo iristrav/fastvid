@@ -29,7 +29,9 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const isForkPressureError = (err: unknown): boolean => {
   const code = (err as NodeJS.ErrnoException)?.code;
   if (code === "EAGAIN") return true;
-  const msg = (err as Error)?.message || "";
+  // ffmpeg's own filter-graph errors ("Resource temporarily unavailable" from inside the
+  // process, not just at spawn time) land in stderr, not necessarily err.message.
+  const msg = `${(err as Error)?.message || ""} ${(err as { stderr?: string })?.stderr || ""}`;
   return /resource temporarily unavailable/i.test(msg) || /cannot fork/i.test(msg);
 };
 const exec = (async (cmd: string, opts?: Record<string, unknown>) => {
