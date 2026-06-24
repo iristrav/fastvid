@@ -127,8 +127,9 @@ async function main() {
   setInterval(() => {
     import("./db")
       .then(({ failAllStalledPipelines }) => failAllStalledPipelines())
-      .then((n) => {
-        if (n > 0) console.log(`[Worker] Marked ${n} stalled video(s) as failed`);
+      .then(({ failed, requeued }) => {
+        if (failed > 0) console.log(`[Worker] Marked ${failed} stalled video(s) as failed`);
+        if (requeued > 0) console.log(`[Worker] Re-queued ${requeued} stalled video(s)`);
       })
       .catch((e) => console.error("[Worker] Stall check failed:", e));
   }, 90_000);

@@ -276,6 +276,31 @@ export async function retryFailedVideo(
 
 async function generateFullVideo(videoId: number, prompt: string, videoLength: string, videoType: string, voiceId?: string, customVoiceoverUrl?: string, enableSubtitles = false) {
   try {
+    const existing = await getVideoById(videoId);
+    if (existing?.script?.trim()) {
+      console.log(
+        `[Video Generation] Video ${videoId}: reusing saved script (${existing.script.length} chars)`
+      );
+      await updateVideoStatus(videoId, "generating_voiceover", {
+        scriptApproved: 1,
+        progressStep: "🎥 Script ready — starting video production...",
+        progressPercent: 29,
+        generationStartedAt: new Date(),
+      });
+      await _generateVideoWithAI(
+        videoId,
+        prompt,
+        videoLength,
+        voiceId,
+        customVoiceoverUrl,
+        existing.script,
+        existing.title ?? undefined,
+        existing.metadata ?? undefined,
+        enableSubtitles
+      );
+      return;
+    }
+
     // Step 1: Generate script (same logic as before, but no pause)
     await generateScriptOnly(videoId, prompt, videoLength, videoType);
 

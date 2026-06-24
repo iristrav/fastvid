@@ -890,8 +890,9 @@ recoverStuckPipelines()
 setInterval(() => {
   import("../db")
     .then(({ failAllStalledPipelines }) => failAllStalledPipelines())
-    .then((n) => {
-      if (n > 0) console.log(`[PipelineRecovery] Marked ${n} stalled video(s) as failed`);
+    .then(({ failed, requeued }) => {
+      if (failed > 0) console.log(`[PipelineRecovery] Marked ${failed} stalled video(s) as failed`);
+      if (requeued > 0) console.log(`[PipelineRecovery] Re-queued ${requeued} stalled video(s)`);
     })
     .catch((e) => console.error("[PipelineRecovery] Stall check failed:", e));
 }, 90_000);

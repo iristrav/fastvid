@@ -153,6 +153,47 @@ export function pipelineWallClockLimitEnabled(): boolean {
   return process.env.PIPELINE_WALL_CLOCK_LIMIT === "true";
 }
 
+/** Re-queue jobs with no DB heartbeat (independent of wall-clock limit). Default ON. */
+export function pipelineProgressStallRecoveryEnabled(): boolean {
+  return process.env.PIPELINE_PROGRESS_STALL_RECOVERY !== "false";
+}
+
+/** Max automatic stall recoveries per video before marking failed. */
+export function pipelineMaxStallRecoveries(): number {
+  const raw = process.env.PIPELINE_MAX_STALL_RECOVERIES?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 0 && n <= 10) return n;
+  }
+  return 3;
+}
+
+/**
+ * No progress heartbeat (updatedAt stale) → zombie worker detection.
+ * Used when wall-clock limit is off; also caps script/voice stalls when limit is on.
+ */
+export function pipelineProgressStallThresholdMs(
+  videoLength?: string | null,
+  status?: string | null
+): number {
+  const raw = process.env.PIPELINE_PROGRESS_STALL_MIN?.trim();
+  if (raw) {
+    const n = parseFloat(raw);
+    if (!isNaN(n) && n >= 3 && n <= 60) return Math.round(n * 60_000);
+  }
+  const mins = targetVideoDurationMinutes(videoLength);
+  if (status === "generating_script" || status === "generating_voiceover") {
+    return 10 * 60_000;
+  }
+  if (status === "generating_visuals") {
+    return mins <= 1 ? 25 * 60_000 : 35 * 60_000;
+  }
+  if (status === "generating_effects") {
+    return mins <= 1 ? 20 * 60_000 : 30 * 60_000;
+  }
+  return 15 * 60_000;
+}
+
 /** Practical "no limit" for withTimeout / setTimeout (7 days — below Node's max delay). */
 export const PIPELINE_UNLIMITED_MS = 7 * 24 * 60 * 60 * 1000;
 

@@ -5,7 +5,7 @@ import { PIPELINE_ERROR, appErrorMessage } from "@shared/appErrors";
 import { PIPELINE_PROCESSING_STATUSES, USER_IN_FLIGHT_VIDEO_STATUSES } from "@shared/videoQueue";
 import { isShortVideoLength, normalizeVideoLength } from "@shared/videoLengths";
 import { validateFinalVideoForExport, resolveStoredVideoLocalPath, validateFinalVideoPlayable } from "./finalVideoGate";
-import { maxPipelineWallClockMin, maxPipelineWallClockHardMin, visualStageWallClockMin, pipelineWallClockLimitEnabled, pipelineMinutesPerVideoMinute, pipelineWallClockGraceFactor, pipelineComposeGraceMs, PIPELINE_UNLIMITED_MS } from "./sourcingPolicy";
+import { maxPipelineWallClockMin, maxPipelineWallClockHardMin, visualStageWallClockMin, pipelineWallClockLimitEnabled, pipelineProgressStallRecoveryEnabled, pipelineProgressStallThresholdMs, pipelineMaxStallRecoveries, pipelineMinutesPerVideoMinute, pipelineWallClockGraceFactor, pipelineComposeGraceMs, PIPELINE_UNLIMITED_MS } from "./sourcingPolicy";
 import type { Video } from "../drizzle/schema";
 import { InsertInviteCode, InsertUser, InsertVideo, InsertPasswordResetToken, inviteCodes, users, videos, passwordResetTokens } from "../drizzle/schema";
 import { ENV } from "./_core/env";
@@ -440,20 +440,39 @@ function pipelineStallThresholdMs(
   videoLength: string | null | undefined,
   status?: string | null
 ): number {
+  const progressMs = pipelineProgressStallThresholdMs(videoLength, status);
   if (!pipelineWallClockLimitEnabled()) {
-    return PIPELINE_UNLIMITED_MS;
+    return progressMs;
   }
   const visualSearch = status === "generating_visuals";
   const length = normalizeVideoLength(videoLength);
   const visualCap = visualStageWallClockMin(length) * 60 * 1000;
   const totalCap = maxPipelineWallClockHardMin(length) * 60 * 1000;
+  let wallMs: number;
   if (isShortVideoLength(length)) {
-    return visualSearch ? visualCap : totalCap;
+    wallMs = visualSearch ? visualCap : totalCap;
+  } else if (length === "8-10") {
+    wallMs = visualSearch ? visualCap : 35 * 60 * 1000;
+  } else {
+    wallMs = visualSearch ? Math.min(visualCap, totalCap - 5 * 60 * 1000) : 45 * 60 * 1000;
   }
-  if (length === "8-10") {
-    return visualSearch ? visualCap : 35 * 60 * 1000;
-  }
-  return visualSearch ? Math.min(visualCap, totalCap - 5 * 60 * 1000) : 45 * 60 * 1000;
+  return Math.min(progressMs, wallMs);
+}
+
+async function requeueStalledPipeline(video: Video, step: string, recoveries: number): Promise<Video> {
+  const label = `Re-queued after stall (${recoveries}/${pipelineMaxStallRecoveries()}) at "${step}"`;
+  await mergeVideoMetadata(video.id, { stallRecoveries: recoveries });
+  await updateVideoStatus(video.id, "queued", {
+    errorMessage: "",
+    progressStep: label,
+    progressPercent: 0,
+    generationStartedAt: new Date(),
+  });
+  const { enqueueVideoJob } = await import("./videoQueue");
+  await enqueueVideoJob(video.id, "🔄 Re-queued — worker will retry...");
+  console.warn(`[Pipeline] Video ${video.id} re-queued after progress stall at "${step}" (${recoveries}/${pipelineMaxStallRecoveries()})`);
+  const refreshed = await getVideoById(video.id);
+  return refreshed ?? video;
 }
 
 /**
@@ -481,6 +500,15 @@ export async function failPipelineIfStalled(video: Video): Promise<Video> {
   if (!staleProgress && !overTotalBudget) return video;
 
   const step = video.progressStep ?? "unknown step";
+  if (staleProgress && !overTotalBudget && pipelineProgressStallRecoveryEnabled()) {
+    const meta = readVideoMetadataObject(video);
+    const prior = typeof meta.stallRecoveries === "number" ? meta.stallRecoveries : 0;
+    const nextRecovery = prior + 1;
+    if (nextRecovery <= pipelineMaxStallRecoveries()) {
+      return requeueStalledPipeline(video, step, nextRecovery);
+    }
+  }
+
   const reason = overTotalBudget
     ? `Generation exceeded ${Math.round(totalHardMs / 60000)} minute wall-clock budget`
     : `Generation stalled at "${step}" for over ${Math.round(threshold / 60000)} minutes`;
@@ -494,21 +522,24 @@ export async function failPipelineIfStalled(video: Video): Promise<Video> {
   return refreshed ?? video;
 }
 
-/** Scan all in-flight pipelines and fail any that have stalled. */
-export async function failAllStalledPipelines(): Promise<number> {
+/** Scan in-flight pipelines — re-queue zombies or fail on hard stall / wall-clock cap. */
+export async function failAllStalledPipelines(): Promise<{ failed: number; requeued: number }> {
   const db = await getDb();
-  if (!db) return 0;
+  if (!db) return { failed: 0, requeued: 0 };
   const activeStatuses = IN_PROGRESS_STATUSES.filter(
     (s) => s !== "awaiting_approval" && s !== "pending" && s !== "queued"
   );
   const rows = await db.select().from(videos).where(inArray(videos.status, [...activeStatuses]));
   let failed = 0;
+  let requeued = 0;
   for (const v of rows) {
     const before = v.status;
     const after = await failPipelineIfStalled(v);
-    if (before !== "failed" && after.status === "failed") failed++;
+    if (before === after.status) continue;
+    if (after.status === "failed") failed++;
+    else if (before !== "queued" && after.status === "queued") requeued++;
   }
-  return failed;
+  return { failed, requeued };
 }
 
 /** Locate a finished MP4 on disk when videoUrl was never persisted (Railway local storage). */
