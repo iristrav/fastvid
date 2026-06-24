@@ -545,7 +545,7 @@ function AdminVideoGenerator() {
       enabled: !!generatedId,
       refetchInterval: (query: { state: { data: unknown } }) => {
         const status = (query.state.data as { status?: string } | undefined)?.status;
-        return (status === "completed" || status === "failed") ? false : 3000;
+        return (status === "completed" || status === "failed") ? false : 5000;
       },
     }
   );
