@@ -147,7 +147,7 @@ import {
   uniqueQueryStrings,
   uniqueCoercedQueries,
 } from "./stringCoercion";
-import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, pipelineComposeGraceMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin, fastBeatConcurrency } from "./sourcingPolicy";
+import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, pipelineComposeGraceMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin, fastBeatConcurrency } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -203,6 +203,7 @@ import {
   recordPipelineTiming,
   timePipelineStep,
   warnComposeTimeNetwork,
+  isComposeNetworkBlocked,
 } from "./pipelineStepTiming";
 import { clipPassesDocumentaryBeatGate, resolveBeatRegionLock, inferBeatGeoRegion, resolveSegmentGeoLock, type BeatGeoRegion } from "./vidrushQuality";
 import type { ClipRejectEntry } from "./clipRejectAudit";
@@ -8388,6 +8389,8 @@ interface VisualDedupState {
   forceExportMode?: boolean;
   /** Per-step timing for compose/visual bottleneck diagnosis. */
   stepTiming?: PipelineStepTiming;
+  /** When true, beat adopt / rescue must not use network (compose render phase). */
+  composeNetworkBlocked?: boolean;
 }
 
 /**
@@ -11503,6 +11506,9 @@ async function recoverSceneClipsIfEmpty(
   topicContext: string | undefined,
   dedup: VisualDedupState
 ): Promise<SceneVisualsResult> {
+  if (isComposeNetworkBlocked(dedup)) {
+    return { clips: [], beatDurations: [] };
+  }
   const clipFetchDur = 4;
   const scenePersons = resolveScenePersons(scene, topicContext, dedup.primaryPerson || undefined);
   const historicalDoc = isHistoricalDocumentary(topicContext, scene.text) && !dedup.personTopicLock;
@@ -11796,6 +11802,21 @@ async function composeReadySceneClips(clips: string[], sceneIndex: number): Prom
   return out;
 }
 
+function skipComposeNetworkFetch(
+  dedup: VisualDedupState | undefined,
+  source: string,
+  sceneIndex: number,
+  beatIndex?: number
+): boolean {
+  if (!isComposeNetworkBlocked(dedup)) return false;
+  const beat = beatIndex != null ? ` beat ${beatIndex}` : "";
+  console.warn(
+    `[Pipeline] Scene ${sceneIndex}${beat}: compose local-only — blocked ${source}`
+  );
+  warnComposeTimeNetwork(dedup?.stepTiming, `blocked:${source}`, sceneIndex);
+  return true;
+}
+
 /** Archive → stock rescue when strict 1-min compose would otherwise have zero clips. */
 async function rescueFastShortComposeClips(
   scene: Scene,
@@ -11804,6 +11825,10 @@ async function rescueFastShortComposeClips(
   dedup: VisualDedupState
 ): Promise<string[]> {
   if (!isFastShortVideoLength(dedup.videoLength)) return [];
+  if (isComposeNetworkBlocked(dedup)) {
+    console.warn(`[Pipeline] Scene ${scene.index}: compose rescue skipped (local-only mode)`);
+    return [];
+  }
   warnComposeTimeNetwork(dedup.stepTiming, "archive+stock rescue", scene.index);
 
   return timePipelineStep(
@@ -11921,6 +11946,84 @@ async function rescueFastShortComposeClips(
   );
 }
 
+/** Prune bad clips and cache all visuals on disk before compose (1-min cache-then-render). */
+async function finalizeLocalClipCacheForScene(
+  scene: Scene,
+  vr: SceneVisualsResult,
+  workDir: string,
+  topicContext: string | undefined,
+  dedup: VisualDedupState,
+  videoLength: string,
+  sceneAudioPath?: string
+): Promise<SceneVisualsResult> {
+  const beatSec = archiveVisualBeatSecForVideo(videoLength);
+  const minNeeded = minClipsForBalancedVoice(scene.duration + 0.15, videoLength);
+
+  const applyReady = async (clips: string[], source: SceneVisualsResult): Promise<SceneVisualsResult> => {
+    const ready = await composeReadySceneClips(clips, scene.index);
+    const durations =
+      source.beatDurations?.slice(0, ready.length) ??
+      ready.map(() => beatSec);
+    const beatIndices =
+      source.clipBeatIndices?.slice(0, ready.length) ??
+      ready.map((_, i) => i);
+    return { ...source, clips: ready, beatDurations: durations, clipBeatIndices: beatIndices };
+  };
+
+  let result = await applyReady(vr.clips ?? [], vr);
+  if (result.clips.length >= minNeeded) return result;
+
+  console.warn(
+    `[Pipeline] Scene ${scene.index}: ${result.clips.length}/${minNeeded} compose-ready clips — pre-compose cache fill`
+  );
+
+  const rescued = await rescueFastShortComposeClips(scene, workDir, topicContext, dedup);
+  if (rescued.length > 0) {
+    result = await applyReady(rescued, {
+      ...vr,
+      clips: rescued,
+      beatDurations: rescued.map(() => beatSec),
+    });
+    if (result.clips.length >= minNeeded) return result;
+  }
+
+  try {
+    const refilled = await withTimeout(
+      refillSceneStrictVoiceMatch(scene, workDir, topicContext, dedup, sceneAudioPath),
+      dedup.pipelineStartedMs > 0 && Date.now() - dedup.pipelineStartedMs > visualSourcingTurboMs()
+        ? 25_000
+        : 45_000,
+      `Scene ${scene.index} pre-compose strict refill`
+    );
+    result = await applyReady(refilled.clips, refilled);
+    if (result.clips.length >= minNeeded) return result;
+  } catch (err) {
+    console.warn(
+      `[Pipeline] Scene ${scene.index}: pre-compose strict refill failed:`,
+      (err as Error).message?.slice(0, 80)
+    );
+  }
+
+  try {
+    const recovered = await withTimeout(
+      recoverSceneClipsIfEmpty(scene, workDir, topicContext, dedup),
+      dedup.pipelineStartedMs > 0 &&
+        Date.now() - dedup.pipelineStartedMs > visualSourcingTurboMs()
+        ? 20_000
+        : 35_000,
+      `Scene ${scene.index} pre-compose recovery`
+    );
+    result = await applyReady(recovered.clips, recovered);
+  } catch (err) {
+    console.warn(
+      `[Pipeline] Scene ${scene.index}: pre-compose recovery failed:`,
+      (err as Error).message?.slice(0, 80)
+    );
+  }
+
+  return result;
+}
+
 /** Prune bad clips and last-chance fill before compose on 1-min fast path. */
 async function ensureFastShortScenesReadyForCompose(
   scenes: Scene[],
@@ -11928,13 +12031,32 @@ async function ensureFastShortScenesReadyForCompose(
   workDir: string,
   topicContext: string | undefined,
   visualDedup: VisualDedupState,
-  videoLength: string
+  videoLength: string,
+  audioPaths?: string[]
 ): Promise<void> {
   if (!isFastShortVideoLength(videoLength)) return;
 
   for (let si = 0; si < scenes.length; si++) {
     const scene = scenes[si]!;
-    let vr = sceneVisualResults[si] ?? { clips: [], beatDurations: [] };
+    const vr = sceneVisualResults[si] ?? { clips: [], beatDurations: [] };
+    if (composeLocalClipsOnly(videoLength)) {
+      sceneVisualResults[si] = await finalizeLocalClipCacheForScene(
+        scene,
+        vr,
+        workDir,
+        topicContext,
+        visualDedup,
+        videoLength,
+        audioPaths?.[si]
+      );
+      const cached = sceneVisualResults[si]!.clips?.length ?? 0;
+      const minNeeded = minClipsForBalancedVoice(scene.duration + 0.15, videoLength);
+      console.log(
+        `[Pipeline] Scene ${scene.index}: ${cached}/${minNeeded} clip(s) cached on disk for compose`
+      );
+      continue;
+    }
+
     let ready = await composeReadySceneClips(vr.clips ?? [], scene.index);
     if (ready.length > 0) {
       sceneVisualResults[si] = { ...vr, clips: ready, beatDurations: vr.beatDurations?.slice(0, ready.length) };
@@ -11953,7 +12075,7 @@ async function ensureFastShortScenesReadyForCompose(
     }
 
     try {
-      vr = await withTimeout(
+      const recovered = await withTimeout(
         recoverSceneClipsIfEmpty(scene, workDir, topicContext, visualDedup),
         visualDedup.pipelineStartedMs > 0 &&
           Date.now() - visualDedup.pipelineStartedMs > visualSourcingTurboMs()
@@ -11961,9 +12083,9 @@ async function ensureFastShortScenesReadyForCompose(
           : 35_000,
         `Scene ${scene.index} pre-compose recovery`
       );
-      ready = await composeReadySceneClips(vr.clips, scene.index);
+      ready = await composeReadySceneClips(recovered.clips, scene.index);
       if (ready.length > 0) {
-        sceneVisualResults[si] = { ...vr, clips: ready };
+        sceneVisualResults[si] = { ...recovered, clips: ready };
       }
     } catch (err) {
       console.warn(
@@ -14791,6 +14913,7 @@ async function adoptBestSimilarBeatClip(
   adoptOpts?: { videosOnly?: boolean }
 ): Promise<boolean> {
   hydrateSceneBeatInPlace(beat);
+  if (skipComposeNetworkFetch(dedup, "similar-match", scene.index, beat.index)) return false;
   const videosOnly = adoptOpts?.videosOnly ?? false;
 
   const adoptSimilarExternal = async (): Promise<boolean> => {
@@ -15445,6 +15568,8 @@ async function adoptArchiveBeatClipWithBudget(
   prefetchedRanked: CuratedCandidatePick[] | null | undefined,
   adoptOpts?: { videosOnly?: boolean }
 ): Promise<boolean> {
+  hydrateSceneBeatInPlace(beat);
+  if (skipComposeNetworkFetch(dedup, "archive adopt", scene.index, beat.index)) return false;
   const fastShort = isFastShortVideoLength(dedup.videoLength) && dedup.perf.fastStockMode;
   const run = () =>
     adoptArchiveBeatClip(
@@ -15490,6 +15615,7 @@ async function adoptWikimediaBeatClip(
   opts?: { videoOnly?: boolean; stillsOnly?: boolean }
 ): Promise<boolean> {
   hydrateSceneBeatInPlace(beat);
+  if (skipComposeNetworkFetch(dedup, "Wikimedia", scene.index, beat.index)) return false;
   const wantVideo = !opts?.stillsOnly;
   const wantStills = !opts?.videoOnly;
   const tryClip = async (clipPath: string | null | undefined, sec = holdSec): Promise<boolean> => {
@@ -15730,6 +15856,7 @@ async function adoptInternetArchiveBeatClip(
   semanticProfile?: BeatSemanticProfile
 ): Promise<boolean> {
   hydrateSceneBeatInPlace(beat);
+  if (skipComposeNetworkFetch(dedup, "Internet Archive", scene.index, beat.index)) return false;
   if (!isGeoDocumentaryContext(beat.text, videoTitle)) return false;
 
   const tryClip = async (clipPath: string | null | undefined, sec = holdSec): Promise<boolean> => {
@@ -16030,6 +16157,7 @@ async function adoptStockBeatClipFallback(
   semanticProfile?: BeatSemanticProfile
 ): Promise<boolean> {
   hydrateSceneBeatInPlace(beat);
+  if (skipComposeNetworkFetch(dedup, "Pexels/Pixabay", scene.index, beat.index)) return false;
   if (!archivePexelsFallbackEnabled()) return false;
   if (!canUseLicensedStockBeat(dedup)) {
     console.warn(
@@ -16352,6 +16480,7 @@ async function ensureBeatVisualFilled(
   semanticProfile?: BeatSemanticProfile,
   holdSec = beat.holdSec
 ): Promise<void> {
+  if (skipComposeNetworkFetch(dedup, "beat visual fill", scene.index, beat.index)) return;
   if (await fillBeatVisual(beat, scene, workDir, videoTitle, dedup, pushClip, semanticProfile, holdSec)) {
     return;
   }
@@ -19075,6 +19204,7 @@ async function composeSceneVideo(
       if (
         strictVoiceVisualMatchEnabled() &&
         composeOptions?.dedup &&
+        !isComposeNetworkBlocked(composeOptions.dedup) &&
         composeOptions.montageBeats?.length
       ) {
         const recovered: string[] = [];
@@ -19144,7 +19274,7 @@ async function composeSceneVideo(
       else safeClips.push(clip);
     } else {
       const fastShort = isFastShortVideoLength(composeOptions?.dedup?.videoLength);
-      if (fastShort && composeOptions?.dedup) {
+      if (fastShort && composeOptions?.dedup && !isComposeNetworkBlocked(composeOptions.dedup)) {
         const rescued = await rescueFastShortComposeClips(
           scene,
           workDir,
@@ -19161,7 +19291,7 @@ async function composeSceneVideo(
       if (safeClips.length === 0) {
         const beats = composeOptions.montageBeats;
         const rescueBeat = beats?.[0];
-        if (rescueBeat && composeOptions.dedup) {
+        if (rescueBeat && composeOptions.dedup && !isComposeNetworkBlocked(composeOptions.dedup)) {
           await adoptBestSimilarBeatClip(
             rescueBeat,
             scene,
@@ -19186,9 +19316,12 @@ async function composeSceneVideo(
         }
       }
       if (safeClips.length === 0) {
+        const localOnly = isComposeNetworkBlocked(composeOptions?.dedup);
         throw pipelineError(
           PIPELINE_ERROR.FFMPEG,
-          `Scene ${scene.index}: no valid clips and strict voice↔visual match forbids grey fallback`
+          localOnly
+            ? `Scene ${scene.index}: no local clips cached before compose — visual stage must finish sourcing first`
+            : `Scene ${scene.index}: no valid clips and strict voice↔visual match forbids grey fallback`
         );
       }
     }
@@ -20943,8 +21076,16 @@ export async function runVideoPipeline(
       workDir,
       topicContext,
       visualDedup,
-      videoLength
+      videoLength,
+      audioPaths
     );
+
+    if (composeLocalClipsOnly(videoLength)) {
+      visualDedup.composeNetworkBlocked = true;
+      console.log(
+        "[Pipeline] Cache-then-render: compose uses local clips only (set COMPOSE_LOCAL_CLIPS_ONLY=false to allow compose-time fetch)"
+      );
+    }
 
     // ── Stage 4: Compose scenes — clips, voice, year badges (final output) ───
     assertPipelineWithinBudget(videoId, pipelineWallStartMs, videoLength, visualDedup);
@@ -20997,9 +21138,10 @@ export async function runVideoPipeline(
               `[Pipeline] Scene ${scene.index}: compose failed — rescue retry:`,
               (composeErr as Error).message?.slice(0, 120)
             );
-            let rescueClips = isFastShortVideoLength(videoLength)
-              ? await rescueFastShortComposeClips(scene, workDir, topicContext, visualDedup)
-              : [];
+            let rescueClips =
+              isFastShortVideoLength(videoLength) && !isComposeNetworkBlocked(visualDedup)
+                ? await rescueFastShortComposeClips(scene, workDir, topicContext, visualDedup)
+                : [];
             if (rescueClips.length === 0) {
               const minNeeded = Math.max(1, minClipsForBalancedVoice(scene.duration + 0.15, videoLength));
               const hold = Math.max(3, scene.duration / minNeeded);

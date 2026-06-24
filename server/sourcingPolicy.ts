@@ -211,6 +211,13 @@ export function fastShortPlainComposeEnabled(videoLength?: string | null): boole
   return true;
 }
 
+/** 1-min: compose may only read clips already on disk — no Wikimedia/Pexels/archive fetch during render. */
+export function composeLocalClipsOnly(videoLength?: string | null): boolean {
+  if (!isFastShortVideoLength(videoLength)) return false;
+  if (process.env.COMPOSE_LOCAL_CLIPS_ONLY === "false") return false;
+  return true;
+}
+
 /** Extra wall-clock after hard cap while compose/upload finishes (1-min fast path). */
 export function pipelineComposeGraceMs(videoLength?: string | null): number {
   const raw = process.env.PIPELINE_COMPOSE_GRACE_MS?.trim();

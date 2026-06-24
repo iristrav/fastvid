@@ -3,6 +3,8 @@
  * Logs human-readable summaries to identify compose/visual bottlenecks.
  */
 
+import { composeLocalClipsOnly } from "./sourcingPolicy";
+
 export type PipelineTimingCategory =
   | "scene_generation"
   | "voiceover"
@@ -165,6 +167,14 @@ export async function timePipelineStep<T>(
 ): Promise<T> {
   if (!timing) return fn();
   return timing.time(category, label, fn, sceneIndex);
+}
+
+/** True when compose render must not trigger Wikimedia/Pexels/archive network fetches. */
+export function isComposeNetworkBlocked(dedup?: {
+  composeNetworkBlocked?: boolean;
+  videoLength?: string;
+}): boolean {
+  return Boolean(dedup?.composeNetworkBlocked) && composeLocalClipsOnly(dedup?.videoLength);
 }
 
 /** Loud marker when network sourcing runs during compose (should be rare). */
