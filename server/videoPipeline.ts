@@ -28,7 +28,7 @@ import * as path from "path";
 import * as os from "os";
 import { storagePut } from "./storage";
 import { invokeLLM } from "./_core/llm";
-import { getVideoById, updateVideoStatus, updateVideoScenes, mergeVideoMetadata, type EditorScene } from "./db";
+import { getVideoById, updateVideoStatus, updateVideoScenes, mergeVideoMetadata, touchVideoProgress, type EditorScene } from "./db";
 import pLimit from "p-limit";
 import { generateGrokVideo } from "./_core/grokVideo";
 import { generateVeoVideo } from "./_core/veoVideo";
@@ -21696,6 +21696,7 @@ export async function runVideoPipeline(
         );
       },
       reassemblePlain: async () => plainConcatSceneVideos(composedScenes, workDir, videoId),
+      onHeartbeat: () => touchVideoProgress(videoId),
     });
     finalVideoPath = exportReadyPath;
 
@@ -21715,6 +21716,7 @@ export async function runVideoPipeline(
     }
 
     if (postRenderSpotCheckEnabledForVideo(videoLength)) {
+      await touchVideoProgress(videoId);
       const spot = await spotCheckFinalVideo(finalVideoPath);
       qualityReport.postRenderSpotCheck = {
         ok: spot.ok,

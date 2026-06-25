@@ -365,6 +365,8 @@ export type EnsureFinalVideoOpts = {
   reassemble?: () => Promise<string | null>;
   /** Plain concat without music — last-resort heal. */
   reassemblePlain?: () => Promise<string | null>;
+  /** Called after each heal/reassemble attempt so the stall watchdog doesn't kill genuinely-progressing work. */
+  onHeartbeat?: () => void | Promise<void>;
 };
 
 /** Validate → heal → reassemble until playable or attempts exhausted. */
@@ -390,6 +392,11 @@ export async function ensureFinalVideoExportReady(
     }
     if (next) current = next;
     validation = await validateFinalVideoForExport(current, opts.videoLength);
+    try {
+      await opts.onHeartbeat?.();
+    } catch {
+      /* heartbeat failures must not abort the heal loop */
+    }
   }
 
   if (!validation.ok) {
