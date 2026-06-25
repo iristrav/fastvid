@@ -310,11 +310,12 @@ export function composeParallelismForVideo(videoLength?: string | null, isRailwa
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 1 && n <= 4) return n;
   }
-  return 2;
+  return 3;
 }
 
 /** Parallel montage segment encodes within a scene (1–3). See composeParallelismForVideo —
- *  combined process/thread fan-out hit the container's fork limit, so keep this moderate. */
+ *  combined process/thread fan-out hit the container's fork limit; fork-pressure retries
+ *  now cover transient spikes, so this can run a bit hotter than the original safe floor. */
 export function montageSegmentParallelism(isRailway = false): number {
   const raw = process.env.MONTAGE_SEGMENT_PARALLELISM?.trim();
   if (raw) {
@@ -324,11 +325,12 @@ export function montageSegmentParallelism(isRailway = false): number {
   return 2;
 }
 
-/** FFmpeg thread cap per encode (0 = libx264 default). Keep at 2 — combined with compose ×
- *  montage parallelism, higher values hit the container's fork/pids limit, not CPU. */
+/** FFmpeg thread cap per encode (0 = libx264 default). Combined with compose ×
+ *  montage parallelism, higher values risk the container's fork/pids limit, not CPU —
+ *  fork-pressure retries now cover transient spikes from this. */
 export function ffmpegThreadFlag(isRailway = false): string {
   const raw = process.env.FFMPEG_THREADS?.trim();
-  const n = raw ? parseInt(raw, 10) : isRailway ? 2 : 0;
+  const n = raw ? parseInt(raw, 10) : isRailway ? 3 : 0;
   if (!n || isNaN(n) || n < 1) return "";
   return `-threads ${Math.min(4, n)}`;
 }
