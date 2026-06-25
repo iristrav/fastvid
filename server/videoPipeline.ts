@@ -15226,7 +15226,7 @@ async function adoptArchiveBeatClip(
 ): Promise<boolean> {
   hydrateSceneBeatInPlace(beat);
   const visionCtx = beatVisionContextFromProfile(beat, videoTitle, semanticProfile);
-  let beatQueryEmb: number[] | null = null;
+  beatQueryEmb = null;
   if (clipEmbeddingIndexEnabled()) {
     beatQueryEmb = await resolveBeatVisionQueryEmbedding(visionCtx);
   }
