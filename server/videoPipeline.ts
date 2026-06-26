@@ -21373,13 +21373,57 @@ export async function runVideoPipeline(
             composeMeta.clipBeatIndices = [];
             composeMeta.montagePlan = undefined;
             usedClips.length = 0;
-            result = await composeSceneVideo(
-              scene, rescueClips, audioPaths[i], scene.duration, workDir, scenes.length,
-              enableSubtitles, visualDedup.lastMuskStockClip,
-              rescueClips.map(() => archiveVisualBeatSecForVideo(videoLength)),
-              usedClips,
-              composeOpts
-            );
+            try {
+              result = await composeSceneVideo(
+                scene, rescueClips, audioPaths[i], scene.duration, workDir, scenes.length,
+                enableSubtitles, visualDedup.lastMuskStockClip,
+                rescueClips.map(() => archiveVisualBeatSecForVideo(videoLength)),
+                usedClips,
+                composeOpts
+              );
+            } catch (rescueComposeErr) {
+              // Last resort so one scene's persistent compose failure doesn't abort the whole
+              // video: build a minimal single-clip+audio output directly, bypassing montage logic.
+              console.warn(
+                `[Pipeline] Scene ${scene.index}: rescue compose also failed — last-resort minimal compose:`,
+                (rescueComposeErr as Error).message?.slice(0, 120)
+              );
+              const outputPath = path.join(workDir, `scene_${scene.index}_lastresort.mp4`);
+              const lastClip =
+                rescueClips[0] ?? (await generateGuaranteedBeatClip(scene.index, 9999, Math.max(3, scene.duration), workDir));
+              const audioPath = audioPaths[i];
+              const audioValid = fs.existsSync(audioPath) && fs.statSync(audioPath).size > 100;
+              let safeAudioPath = audioPath;
+              if (!audioValid) {
+                safeAudioPath = path.join(workDir, `scene_${scene.index}_lastresort_silent.mp3`);
+                try {
+                  await withTimeout(
+                    exec(
+                      `${FFMPEG_BIN} -y -f lavfi -i anullsrc=r=44100:cl=stereo -t ${scene.duration} -c:a libmp3lame -b:a 64k "${safeAudioPath}"`
+                    ),
+                    10_000, `Last-resort silent audio scene ${scene.index}`
+                  );
+                } catch {
+                  fs.writeFileSync(safeAudioPath, Buffer.from([0xff, 0xfb, 0x90, 0x00, ...Array(413).fill(0)]));
+                }
+              }
+              await withTimeout(
+                exec(
+                  `${FFMPEG_BIN} -y -i "${lastClip}" -i "${safeAudioPath}" ` +
+                    `-filter_complex "[0:v]trim=duration=${scene.duration.toFixed(3)},setpts=PTS-STARTPTS,${FPS_FORMAT_VF}[vout];` +
+                    `[1:a]atrim=0:${scene.duration.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
+                    `-map "[vout]" -map "[aout]" -vsync cfr -t ${scene.duration.toFixed(3)} ` +
+                    `-c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
+                ),
+                90_000,
+                `Last-resort compose scene ${scene.index}`
+              );
+              if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size < 1000) {
+                throw pipelineError(PIPELINE_ERROR.FFMPEG, `Scene ${scene.index}: compose failed — all rescue paths exhausted`);
+              }
+              usedClips.push(lastClip);
+              result = outputPath;
+            }
           }
           composedUsedClips[i] = usedClips;
           const vr = sceneVisualResults[i];
