@@ -1966,7 +1966,7 @@ function visualStageTimeoutMs(videoLengthRaw: string, perf: PipelinePerfProfile)
 }
 
 function archiveBeatTopCandidates(fastMode = false): number {
-  return fastMode ? 5 : ARCHIVE_BEAT_TOP_CANDIDATES;
+  return fastMode ? 8 : ARCHIVE_BEAT_TOP_CANDIDATES;
 }
 
 function archiveBeatClipRetries(fastMode = false): number {
@@ -8309,7 +8309,9 @@ function archivePrepareAttemptsPerBeat(fastMode: boolean, relaxed: boolean): num
 function archivePrepareConcurrency(fastMode: boolean, relaxed: boolean): number {
   if (relaxed) return 1;
   if (fastMode && strictVoiceVisualMatchEnabled()) return 4;
-  return fastMode ? 2 : 1;
+  // Run candidate prep more in parallel so trying more candidates per beat
+  // (maxVisualCandidatesPerBeatTry) doesn't add proportional wall-clock time.
+  return fastMode ? 3 : 2;
 }
 const RELEVANCE_STOP_WORDS = new Set([
   "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with", "by", "from",

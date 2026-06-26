@@ -483,8 +483,8 @@ export function visualFootageFocusEnabled(): boolean {
 export function maxVisualCandidatesPerBeatTry(videoLength?: string | null): number {
   if (!pipelineWallClockLimitEnabled()) return 14;
   if (isFastShortVideoLength(videoLength)) return 8;
-  if (visualFootageFocusEnabled()) return 6;
-  return 4;
+  if (visualFootageFocusEnabled()) return 8;
+  return 6;
 }
 
 /** Wall-clock budget for the visual sourcing stage (minutes). */
