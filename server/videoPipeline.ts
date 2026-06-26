@@ -1967,7 +1967,9 @@ function visualStageTimeoutMs(videoLengthRaw: string, perf: PipelinePerfProfile)
 }
 
 function archiveBeatTopCandidates(fastMode = false): number {
-  return fastMode ? 8 : ARCHIVE_BEAT_TOP_CANDIDATES;
+  // Fast/short videos have a tight wall-clock budget — trying more candidates per beat
+  // (raised to 8 earlier) pushed beats past their timeout under concurrent Railway load.
+  return fastMode ? 5 : ARCHIVE_BEAT_TOP_CANDIDATES;
 }
 
 function archiveBeatClipRetries(fastMode = false): number {
