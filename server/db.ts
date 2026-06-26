@@ -747,6 +747,8 @@ export async function searchVideos(opts: {
       metadata: videos.metadata,
       videoUrl: videos.videoUrl,
       errorMessage: videos.errorMessage,
+      progressStep: videos.progressStep,
+      progressPercent: videos.progressPercent,
       createdAt: videos.createdAt,
       updatedAt: videos.updatedAt,
       userName: users.name,

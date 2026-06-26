@@ -75,6 +75,8 @@ type VideoRow = {
   metadata?: string | null;
   videoUrl?: string | null;
   errorMessage?: string | null;
+  progressStep?: string | null;
+  progressPercent?: number | null;
   createdAt: Date;
   updatedAt: Date;
   userName?: string | null;
@@ -372,21 +374,30 @@ function VideoStatusCell({ video }: { video: VideoRow }) {
     { enabled: isInProgress, refetchInterval: isInProgress ? 5000 : false }
   );
   const status = pollData?.status ?? video.status;
-  const progressPercent = (pollData as { progressPercent?: number } | undefined)?.progressPercent ?? 0;
-  const isLive = !!pollData && isInProgress;
+  const progressPercent =
+    (pollData as { progressPercent?: number } | undefined)?.progressPercent ?? video.progressPercent ?? 0;
+  const progressStep =
+    (pollData as { progressStep?: string | null } | undefined)?.progressStep ?? video.progressStep ?? null;
   return (
     <div className="space-y-1">
       <span className={`px-2 py-0.5 rounded-md text-xs font-medium ${VIDEO_STATUS_BADGE[status] ?? 'text-slate-400 bg-white/5'}`}>
         {status}
       </span>
-      {isLive && (
-        <GenerationProgressBar
-          compact
-          progressPercent={progressPercent}
-          generationStartedAt={(pollData as { generationStartedAt?: Date | null })?.generationStartedAt}
-          videoLength={video.videoLength}
-          className="min-w-[140px]"
-        />
+      {isInProgress && (
+        <>
+          {progressStep && (
+            <p className="text-xs text-slate-400 truncate max-w-[180px]" title={progressStep}>
+              {progressStep}
+            </p>
+          )}
+          <GenerationProgressBar
+            compact
+            progressPercent={progressPercent}
+            generationStartedAt={(pollData as { generationStartedAt?: Date | null })?.generationStartedAt}
+            videoLength={video.videoLength}
+            className="min-w-[140px]"
+          />
+        </>
       )}
     </div>
   );
