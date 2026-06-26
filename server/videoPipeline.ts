@@ -910,22 +910,26 @@ async function fetchBeatArchivalThenPexels(
   tag: string,
   stockReason: string
 ): Promise<string | null> {
+  // User's own curated media archive is checked first for every beat, on every topic —
+  // not just when curatedArchiveOnlyVisuals() mode is on. That flag still controls the
+  // rest of this function's archive-only behavior (Wikimedia-first, Pexels gating below).
+  const ownArchiveClip = await fetchCuratedArchiveBeatClip(
+    beat,
+    scene,
+    workDir,
+    sceneIndex,
+    beat.holdSec,
+    dedup.usedCuratedAssetIds,
+    dedup.usedCuratedStorageUrls,
+    videoTitle,
+    curatedInterviewBudget(dedup),
+    curatedImageBudget(dedup),
+    undefined,
+    { varietySeed: dedup.varietySeed, crossVideoExcludeIds: dedup.crossVideoExcludeIds }
+  );
+  if (ownArchiveClip !== null) return ownArchiveClip;
+
   if (curatedArchiveOnlyVisuals()) {
-    const archiveClip = await fetchCuratedArchiveBeatClip(
-      beat,
-      scene,
-      workDir,
-      sceneIndex,
-      beat.holdSec,
-      dedup.usedCuratedAssetIds,
-      dedup.usedCuratedStorageUrls,
-      videoTitle,
-      curatedInterviewBudget(dedup),
-      curatedImageBudget(dedup),
-      undefined,
-      { varietySeed: dedup.varietySeed, crossVideoExcludeIds: dedup.crossVideoExcludeIds }
-    );
-    if (archiveClip !== null) return archiveClip;
     // Always try Wikimedia first (free, no API key — runs regardless of Pexels gate)
     if (visualMatchingV1Enabled()) {
       const wikiAnalysis = analyzeSceneVisual(beat.text, videoTitle);
@@ -12264,22 +12268,22 @@ async function fetchLastResortRealClip(
   videoTitle?: string,
   adoptOpts: VisualAdoptOptions = {}
 ): Promise<string | null> {
-  if (curatedArchiveOnlyVisuals()) {
-    return fetchCuratedArchiveBeatClip(
-      beat,
-      scene,
-      workDir,
-      sceneIndex,
-      beat.holdSec,
-      dedup.usedCuratedAssetIds,
-      dedup.usedCuratedStorageUrls,
-      videoTitle,
-      curatedInterviewBudget(dedup),
-      curatedImageBudget(dedup),
-      undefined,
-      { varietySeed: dedup.varietySeed, crossVideoExcludeIds: dedup.crossVideoExcludeIds }
-    );
-  }
+  const ownArchiveClip = await fetchCuratedArchiveBeatClip(
+    beat,
+    scene,
+    workDir,
+    sceneIndex,
+    beat.holdSec,
+    dedup.usedCuratedAssetIds,
+    dedup.usedCuratedStorageUrls,
+    videoTitle,
+    curatedInterviewBudget(dedup),
+    curatedImageBudget(dedup),
+    undefined,
+    { varietySeed: dedup.varietySeed, crossVideoExcludeIds: dedup.crossVideoExcludeIds }
+  );
+  if (ownArchiveClip !== null) return ownArchiveClip;
+  if (curatedArchiveOnlyVisuals()) return null;
   const tag = `b${beat.index}_lr`;
   const candidateOffset = beat.index * 5 + sceneIndex + 11;
   const queries = [
