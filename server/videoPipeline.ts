@@ -478,9 +478,16 @@ function montageStreamMetaUsable(
   if (meta.durationSec > 0.15 && meta.durationSec <= trimStart + 0.15) return false;
   return true;
 }
+// Web server and pipeline worker share one Railway process — lower the OS scheduling
+// priority of ffmpeg/ffprobe children (Linux `nice`) so a heavy render doesn't starve the
+// HTTP request handlers for CPU time. No-op on platforms without `nice` (e.g. local Windows).
+const NICE_PREFIX = process.platform === "linux" ? "nice -n 10 " : "";
+const niceCmd = (cmd: string): string =>
+  NICE_PREFIX && (cmd.startsWith(FFMPEG_BIN) || cmd.includes(FFPROBE_BIN)) ? `${NICE_PREFIX}${cmd}` : cmd;
+
 // Use 256MB maxBuffer — FFmpeg concat of 15+ scenes can produce large stderr output
 const execRaw = (cmd: string) => new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
-  execCb(cmd, { maxBuffer: 256 * 1024 * 1024 }, (err, stdout, stderr) => {
+  execCb(niceCmd(cmd), { maxBuffer: 256 * 1024 * 1024 }, (err, stdout, stderr) => {
     if (err) { (err as NodeJS.ErrnoException & { stdout?: string; stderr?: string }).stdout = stdout; (err as NodeJS.ErrnoException & { stdout?: string; stderr?: string }).stderr = stderr; reject(err); }
     else resolve({ stdout, stderr });
   });
