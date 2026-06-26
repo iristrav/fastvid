@@ -337,6 +337,10 @@ export async function claimQueuedVideo(videoId: number, progressStep: string): P
 
   const affected = (result as unknown as [{ affectedRows?: number }])[0]?.affectedRows ?? 0;
   if (!affected) return undefined;
+  // Fresh claim starts a brand-new run — clear any stall-requeue cancel flag left over from a
+  // prior (possibly zombie) run of this same video id so this new run isn't born pre-cancelled.
+  const { clearVideoGenerationCancel } = await import("./videoGenerationCancel");
+  clearVideoGenerationCancel(videoId);
   return getVideoById(videoId);
 }
 
@@ -474,6 +478,11 @@ function pipelineStallThresholdMs(
 
 async function requeueStalledPipeline(video: Video, step: string, recoveries: number): Promise<Video> {
   const label = `Re-queued after stall (${recoveries}/${pipelineMaxStallRecoveries()}) at "${step}"`;
+  // The "stalled" detection can be a false positive (event-loop/CPU contention rather than a
+  // truly dead process) — if the original pipeline run is actually still alive, flag it to stop
+  // writing progress so it can't race the freshly re-queued run and clobber its higher percent.
+  const { requestVideoGenerationCancel } = await import("./videoGenerationCancel");
+  requestVideoGenerationCancel(video.id);
   await mergeVideoMetadata(video.id, { stallRecoveries: recoveries });
   await updateVideoStatus(video.id, "queued", {
     errorMessage: "",

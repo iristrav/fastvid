@@ -784,6 +784,10 @@ async function _generateVideoWithAI(
     let lastProgressPercent = 30;
 
     const pushStep = async (rawStepName: string, percent: number) => {
+      // A stall-requeue may have re-claimed this video id for a fresh run while this
+      // (falsely-flagged-as-stalled) run is still executing — stop writing so the zombie
+      // run can't race the new run's progress and clobber it with a stale/lower percent.
+      if (isVideoGenerationCancelRequested(videoId)) return;
       const { key, label } = resolvePipelineDisplayStage(rawStepName, percent);
       const now = Date.now();
       if (currentStageKey && currentStageKey !== key) {
@@ -828,6 +832,7 @@ async function _generateVideoWithAI(
       touchVideoProgress(videoId).catch(() => {});
     }, 20_000);
     const elapsedHeartbeat = setInterval(() => {
+      if (isVideoGenerationCancelRequested(videoId)) return;
       updateVideoProgress(
         videoId,
         progressStepWithElapsed(lastProgressLabel, pipelineStartedAt),
