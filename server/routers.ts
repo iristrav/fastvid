@@ -45,7 +45,7 @@ import { resolveStoredVideoLocalPath, validateFinalVideoPlayable } from "./final
 import type { ProgressLogEntry } from "./db";
 import { videoLengthSchema, normalizeVideoLength, isShortVideoLength } from "@shared/videoLengths";
 import { isFastShortVideoLength, maxPipelineWallClockHardMin, pipelineComposeGraceMs, pipelineWallClockLimitEnabled } from "./sourcingPolicy";
-import { PIPELINE_DISPLAY_STAGES, formatGenerationDuration, progressStepWithElapsed, resolvePipelineDisplayStage } from "@shared/pipelineProgress";
+import { PIPELINE_DISPLAY_STAGES, formatGenerationDuration, progressStepWithElapsed, resolvePipelineDisplayStage, type PipelineDisplayStageKey } from "@shared/pipelineProgress";
 import { ONE_YEAR_MS } from "@shared/const";
 import { clearVideoGenerationCancel, isVideoGenerationCancelRequested } from "./videoGenerationCancel";
 
@@ -811,13 +811,16 @@ async function _generateVideoWithAI(
         updateVideoProgress(videoId, stepWithElapsed, lastProgressPercent).catch(() => {}),
         updateVideoProgressLog(videoId, progressLog).catch(() => {}),
       ]);
-      if (key === "finish" || lastProgressPercent >= 62) {
-        await updateVideoStatus(videoId, "generating_effects").catch(() => {});
-      } else if (lastProgressPercent < 35) {
-        await updateVideoStatus(videoId, "generating_voiceover").catch(() => {});
-      } else {
-        await updateVideoStatus(videoId, "generating_visuals").catch(() => {});
-      }
+      // Derive status from the same `key` used for the label text above so the status
+      // badge and the displayed step can never disagree (was previously a separate
+      // percent-threshold check that could land on a different stage than the label).
+      const statusForKey: Record<PipelineDisplayStageKey, "generating_script" | "generating_voiceover" | "generating_visuals" | "generating_effects"> = {
+        script: "generating_script",
+        voiceover: "generating_voiceover",
+        visuals: "generating_visuals",
+        finish: "generating_effects",
+      };
+      await updateVideoStatus(videoId, statusForKey[key]).catch(() => {});
     };
 
     const pipelineHeartbeat = setInterval(() => {
