@@ -310,6 +310,9 @@ export function composeParallelismForVideo(videoLength?: string | null, isRailwa
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 1 && n <= 4) return n;
   }
+  // 1-min fast path has a tight 420s hard cap on the compose stage — keep it at the
+  // original safe level since extra parallelism + fork-pressure retries can blow that budget.
+  if (isFastShortVideoLength(videoLength)) return 2;
   return 3;
 }
 
