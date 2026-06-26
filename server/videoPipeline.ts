@@ -502,13 +502,14 @@ const isForkPressureError = (err: unknown): boolean => {
 };
 
 // Wrapper that retries with a different ffmpeg binary if the current one fails
-const exec = async (cmd: string, eagainRetriesLeft = 3): Promise<{ stdout: string; stderr: string }> => {
+const EXEC_FORK_RETRIES = 5;
+const exec = async (cmd: string, eagainRetriesLeft = EXEC_FORK_RETRIES): Promise<{ stdout: string; stderr: string }> => {
   try {
     return await execRaw(cmd);
   } catch (err: unknown) {
     const errMsg = (err as Error)?.message || '';
     if (eagainRetriesLeft > 0 && isForkPressureError(err)) {
-      await sleep(1500 * (4 - eagainRetriesLeft));
+      await sleep(1500 * (EXEC_FORK_RETRIES + 1 - eagainRetriesLeft));
       return exec(cmd, eagainRetriesLeft - 1);
     }
     // If current FFMPEG_BIN failed with a binary-not-found error, try alternatives
