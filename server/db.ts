@@ -20,7 +20,20 @@ export async function getDb() {
       console.warn("[Database] DATABASE_URL is not a MySQL URL (got:", dbUrl.split("://")[0] + "://...), skipping DB connection");
       return null;
     }
-    try { _db = drizzle(dbUrl); }
+    try {
+      // Explicit pool + keep-alive so dead sockets left behind by a DB-side
+      // blip (e.g. a volume resize) get detected and replaced instead of hanging.
+      const mysql = await import("mysql2/promise");
+      const pool = mysql.createPool({
+        uri: dbUrl,
+        connectionLimit: 15,
+        waitForConnections: true,
+        connectTimeout: 10_000,
+        enableKeepAlive: true,
+        keepAliveInitialDelay: 10_000,
+      });
+      _db = drizzle(pool);
+    }
     catch (error) { console.warn("[Database] Failed to connect:", error); _db = null; }
   }
   return _db;
