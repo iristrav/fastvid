@@ -3150,10 +3150,13 @@ export async function generateVoiceover(
 
         let durationSec = 5;
         try {
-          const { execSync: es } = await import('child_process');
           for (const probePath of FFPROBE_PATHS()) {
             try {
-              const probeOut = es(`"${probePath}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${outputPath}"`, { encoding: 'utf8', timeout: 8000 });
+              const { stdout: probeOut } = await withTimeout(
+                exec(`"${probePath}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${outputPath}"`),
+                8000,
+                "ffprobe TTS duration"
+              );
               const parsed = parseFloat(probeOut.trim());
               if (!isNaN(parsed) && parsed > 0) { durationSec = Math.ceil(parsed); break; }
             } catch { /* try next */ }
@@ -3220,10 +3223,13 @@ export async function generateVoiceover(
       try { fs.unlinkSync(listFile); } catch {}
     }
 
-    const { execSync: es } = await import('child_process');
     let durationSec = Math.max(3, Math.ceil(cleanText.split(' ').length / 2.5));
     try {
-      const probeOut = es(`"${FFPROBE_BIN}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${outputPath}"`, { encoding: 'utf8', timeout: 8000 });
+      const { stdout: probeOut } = await withTimeout(
+        exec(`"${FFPROBE_BIN}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${outputPath}"`),
+        8000,
+        "ffprobe gTTS duration"
+      );
       const parsed = parseFloat(probeOut.trim());
       if (!isNaN(parsed) && parsed > 0) durationSec = Math.ceil(parsed);
     } catch { /* use estimate */ }
@@ -20634,11 +20640,14 @@ async function concatenateScenesWithMusic(
   // Try multiple probe methods; if all fail, assume audio IS present to avoid silent videos
   let concatHasAudio = true; // default: assume audio present
   try {
-    const { execSync: es } = await import("child_process");
     let probed = false;
     for (const probePath of FFPROBE_PATHS()) {
       try {
-        const probeOut = es(`${probePath} -v error -select_streams a -show_entries stream=codec_type -of csv=p=0 "${concatPath}"`, { encoding: 'utf8', timeout: 10000 });
+        const { stdout: probeOut } = await withTimeout(
+          exec(`${probePath} -v error -select_streams a -show_entries stream=codec_type -of csv=p=0 "${concatPath}"`),
+          10000,
+          "ffprobe audio stream check"
+        );
         concatHasAudio = probeOut.trim().includes('audio');
         probed = true;
         console.log(`[Pipeline] Audio probe (${probePath}): hasAudio=${concatHasAudio}`);
