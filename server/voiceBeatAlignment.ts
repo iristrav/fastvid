@@ -25,6 +25,10 @@ export type BeatVoiceAlignment = {
   durationSec: number;
 };
 
+// Whisper transcripts are keyed per audio file and never invalidated otherwise — without a
+// cap this grows for the lifetime of the (long-running) process across every video ever
+// rendered, which was causing the server to OOM after enough renders.
+const ALIGN_CACHE_MAX = 200;
 const alignCache = new Map<string, WhisperSegment[]>();
 
 /** Dedicated Whisper key — independent of the LLM_API_KEY used for script/script-judging
@@ -113,6 +117,10 @@ async function transcribeSceneAudio(audioPath: string): Promise<WhisperSegment[]
     const data = (await resp.json()) as { segments?: WhisperSegment[] };
     const segments = Array.isArray(data.segments) ? data.segments : [];
     if (segments.length === 0) return null;
+    if (alignCache.size >= ALIGN_CACHE_MAX) {
+      const oldest = alignCache.keys().next().value;
+      if (oldest) alignCache.delete(oldest);
+    }
     alignCache.set(cacheKey, segments);
     return segments;
   } catch (err) {

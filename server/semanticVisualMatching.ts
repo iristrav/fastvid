@@ -89,8 +89,19 @@ const BEAT_ANALYSIS_SCHEMA = {
   },
 } as const;
 
+// clearSemanticCaches() exists but nothing calls it in production, so these caches grew
+// unbounded for the life of the (long-running) process across every video ever rendered —
+// caps + LRU-style eviction here prevent that from OOM-ing the server.
+const PROFILE_CACHE_MAX = 2000;
+const EMBEDDING_CACHE_MAX = 2000;
 const profileCache = new Map<string, BeatSemanticProfile>();
 const embeddingCache = new Map<string, number[]>();
+
+function capMap<K, V>(map: Map<K, V>, max: number): void {
+  if (map.size < max) return;
+  const oldest = map.keys().next().value;
+  if (oldest !== undefined) map.delete(oldest);
+}
 
 export function semanticVisualMatchingEnabled(): boolean {
   return process.env.ENABLE_SEMANTIC_VISUAL_MATCH !== "false";
@@ -353,6 +364,7 @@ export async function analyzeBeatSemantics(
 
   const llm = await analyzeBeatSemanticsWithLlm(beatText, title, literalViewerVisual);
   const profile = llm ?? analyzeBeatSemanticsFallback(beatText, title);
+  capMap(profileCache, PROFILE_CACHE_MAX);
   profileCache.set(key, profile);
   return profile;
 }
@@ -574,6 +586,7 @@ async function createEmbedding(text: string): Promise<number[] | null> {
     const data = (await resp.json()) as { data?: Array<{ embedding?: number[] }> };
     const emb = data.data?.[0]?.embedding;
     if (!emb?.length) return null;
+    capMap(embeddingCache, EMBEDDING_CACHE_MAX);
     embeddingCache.set(key, emb);
     return emb;
   } catch {
