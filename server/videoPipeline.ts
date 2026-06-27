@@ -21573,7 +21573,10 @@ export async function runVideoPipeline(
           return result;
         }))
       ),
-      isFastShortVideoLength(videoLength) ? 420_000 : 2400_000,
+      // Curated-archive lookup now runs unconditionally for every beat (not just archive-only
+      // mode), adding real per-beat DB + clip-prep time — 420s was cutting fast-short videos off
+      // mid-compose. Stay under the 720s emergency-finish budget for that mode.
+      isFastShortVideoLength(videoLength) ? 600_000 : 2400_000,
       "Scene compose stage"
     );
     console.log(`[Pipeline] Stage 4 (compose): ${scenes.length} scenes in ${((Date.now()-t3)/1000).toFixed(1)}s`);
