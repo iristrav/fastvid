@@ -10,6 +10,7 @@ import { withForkRetry } from "./_core/execForkRetry";
 import { exec as execCb } from "child_process";
 import { normalizeVideoLength, targetVideoDurationMinutes } from "@shared/videoLengths";
 import { spotCheckFinalVideo, isInformationalSpotWarning } from "./postRenderSpotCheck";
+import { resolveLocalVideoPath } from "./storageLocal";
 
 const execRaw = promisify(execCb);
 const exec = ((cmd: string, opts?: Record<string, unknown>) =>
@@ -447,10 +448,7 @@ export function resolveStoredVideoLocalPath(videoUrl: string | null | undefined)
   if (!videoUrl?.trim()) return null;
   const url = videoUrl.trim();
   if (url.startsWith("/local-storage/")) {
-    const rel = url.slice("/local-storage/".length);
-    const uploadsDir = process.env.UPLOADS_DIR?.trim() || path.join(process.cwd(), "uploads");
-    const local = path.join(uploadsDir, rel);
-    return fs.existsSync(local) ? local : null;
+    return resolveLocalVideoPath(url);
   }
   return null;
 }
