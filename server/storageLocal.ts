@@ -56,7 +56,9 @@ export async function localStoragePut(
   const filePath = path.join(LOCAL_UPLOADS_DIR, safeFileName);
 
   const buf = typeof data === "string" ? Buffer.from(data) : Buffer.from(data as any);
-  fs.writeFileSync(filePath, buf);
+  // Final videos can be hundreds of MB — a sync write here blocks Node's single-threaded
+  // event loop for the whole site while a render is uploading, so use the async fs API.
+  await fs.promises.writeFile(filePath, buf);
 
   console.log(`[LocalStorage] Saved ${(buf.length / 1024).toFixed(0)}KB → ${filePath}`);
   return { key, url: `/local-storage/${safeFileName}` };

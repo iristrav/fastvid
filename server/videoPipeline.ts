@@ -21824,7 +21824,9 @@ export async function runVideoPipeline(
     // ── Stage 6: Upload to S3 ─────────────────────────────────────────────────
     onProgress?.({ stage: STAGE_LABELS.uploading, percent: 93 });
     const t5 = Date.now();
-    const videoBuffer = fs.readFileSync(finalVideoPath);
+    // Final videos can be hundreds of MB — a sync read here blocks the whole site's event
+    // loop right when a render finishes, so use the async fs API.
+    const videoBuffer = await fs.promises.readFile(finalVideoPath);
     const { url } = await withTimeout(
       storagePut(`videos/${videoId}/final.mp4`, videoBuffer, "video/mp4"),
       600_000, // 10 min upload timeout for large files
@@ -22073,7 +22075,7 @@ export async function rerenderFromScenes(
 
     // ── Step 7: Upload to S3 ────────────────────────────────────────────────
     onProgress?.("Uploading re-rendered video...", 93);
-    const videoBuffer = fs.readFileSync(finalVideoPath);
+    const videoBuffer = await fs.promises.readFile(finalVideoPath);
     const { url } = await withTimeout(
       storagePut(`videos/${videoId}/edited_final.mp4`, videoBuffer, "video/mp4"),
       600_000,
