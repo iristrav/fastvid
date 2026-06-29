@@ -505,7 +505,11 @@ const isForkPressureError = (err: unknown): boolean => {
   // unavailable" text from ffmpeg's filter graph (not just the spawn layer) lives in
   // err.stderr, which execRaw attaches explicitly below.
   const msg = `${(err as Error)?.message || ""} ${(err as { stderr?: string })?.stderr || ""}`;
-  return /resource temporarily unavailable/i.test(msg) || /cannot fork/i.test(msg);
+  if (/resource temporarily unavailable/i.test(msg) || /cannot fork/i.test(msg)) return true;
+  // Same class of transient resource pressure, but surfaced by libx264's threaded encoder
+  // failing to init its worker pthreads instead of as an EAGAIN spawn error.
+  if (/error initializing output stream/i.test(msg) && /error while opening encoder/i.test(msg)) return true;
+  return false;
 };
 
 // Wrapper that retries with a different ffmpeg binary if the current one fails
