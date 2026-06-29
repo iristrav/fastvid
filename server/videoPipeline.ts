@@ -913,11 +913,9 @@ async function fetchBeatArchivalThenPexels(
   // User's own curated media archive is checked first for every beat, on every topic —
   // not just when curatedArchiveOnlyVisuals() mode is on. That flag still controls the
   // rest of this function's archive-only behavior (Wikimedia-first, Pexels gating below).
-  // Skipped for fast-short videos: the per-beat DB scan + CLIP pre-rank is too slow for
-  // that mode's tight wall-clock budget (was blowing the 600s compose-stage timeout).
-  const ownArchiveClip = isFastShortVideoLength(dedup.videoLength)
-    ? null
-    : await fetchCuratedArchiveBeatClip(
+  // assetsCache makes this a single DB scan per video instead of one per beat — that
+  // per-beat re-scan, not the archive check itself, was blowing the compose timeout.
+  const ownArchiveClip = await fetchCuratedArchiveBeatClip(
         beat,
         scene,
         workDir,
@@ -929,7 +927,11 @@ async function fetchBeatArchivalThenPexels(
         curatedInterviewBudget(dedup),
         curatedImageBudget(dedup),
         undefined,
-        { varietySeed: dedup.varietySeed, crossVideoExcludeIds: dedup.crossVideoExcludeIds }
+        {
+          varietySeed: dedup.varietySeed,
+          crossVideoExcludeIds: dedup.crossVideoExcludeIds,
+          assetsCache: dedup.archiveAssetsCache,
+        }
       );
   if (ownArchiveClip !== null) return ownArchiveClip;
 
@@ -12278,10 +12280,7 @@ async function fetchLastResortRealClip(
   videoTitle?: string,
   adoptOpts: VisualAdoptOptions = {}
 ): Promise<string | null> {
-  // Skipped for fast-short videos — see fetchBeatArchivalThenPexels for why.
-  const ownArchiveClip = isFastShortVideoLength(dedup.videoLength)
-    ? null
-    : await fetchCuratedArchiveBeatClip(
+  const ownArchiveClip = await fetchCuratedArchiveBeatClip(
         beat,
         scene,
         workDir,
@@ -12293,7 +12292,11 @@ async function fetchLastResortRealClip(
         curatedInterviewBudget(dedup),
         curatedImageBudget(dedup),
         undefined,
-        { varietySeed: dedup.varietySeed, crossVideoExcludeIds: dedup.crossVideoExcludeIds }
+        {
+          varietySeed: dedup.varietySeed,
+          crossVideoExcludeIds: dedup.crossVideoExcludeIds,
+          assetsCache: dedup.archiveAssetsCache,
+        }
       );
   if (ownArchiveClip !== null) return ownArchiveClip;
   if (curatedArchiveOnlyVisuals()) return null;
