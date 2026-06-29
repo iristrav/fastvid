@@ -15672,7 +15672,6 @@ async function adoptArchiveBeatClipWithBudget(
 ): Promise<boolean> {
   hydrateSceneBeatInPlace(beat);
   if (skipComposeNetworkFetch(dedup, "archive adopt", scene.index, beat.index)) return false;
-  const fastShort = isFastShortVideoLength(dedup.videoLength) && dedup.perf.fastStockMode;
   const run = () =>
     adoptArchiveBeatClip(
       beat,
@@ -15688,10 +15687,9 @@ async function adoptArchiveBeatClipWithBudget(
       prefetchedRanked,
       adoptOpts
     );
-  // Non-fast-short videos used to get NO timeout here at all, so a candidate loop stuck on
-  // sustained (not transient) resource pressure could hang the whole render indefinitely with
-  // no further log output. Give them a generous but bounded budget instead of skipping it.
-  const budgetMs = fastShort ? archiveBeatTryTimeoutMs(dedup.videoLength) : 180_000;
+  // Same budget for every video length: this used to be skipped entirely for non-fast-short
+  // videos, letting the candidate loop hang indefinitely under sustained resource pressure.
+  const budgetMs = 180_000;
   try {
     return await withTimeout(run(), budgetMs, `archive s${scene.index} b${beat.index}`);
   } catch (err) {
