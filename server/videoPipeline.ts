@@ -913,20 +913,24 @@ async function fetchBeatArchivalThenPexels(
   // User's own curated media archive is checked first for every beat, on every topic —
   // not just when curatedArchiveOnlyVisuals() mode is on. That flag still controls the
   // rest of this function's archive-only behavior (Wikimedia-first, Pexels gating below).
-  const ownArchiveClip = await fetchCuratedArchiveBeatClip(
-    beat,
-    scene,
-    workDir,
-    sceneIndex,
-    beat.holdSec,
-    dedup.usedCuratedAssetIds,
-    dedup.usedCuratedStorageUrls,
-    videoTitle,
-    curatedInterviewBudget(dedup),
-    curatedImageBudget(dedup),
-    undefined,
-    { varietySeed: dedup.varietySeed, crossVideoExcludeIds: dedup.crossVideoExcludeIds }
-  );
+  // Skipped for fast-short videos: the per-beat DB scan + CLIP pre-rank is too slow for
+  // that mode's tight wall-clock budget (was blowing the 600s compose-stage timeout).
+  const ownArchiveClip = isFastShortVideoLength(dedup.videoLength)
+    ? null
+    : await fetchCuratedArchiveBeatClip(
+        beat,
+        scene,
+        workDir,
+        sceneIndex,
+        beat.holdSec,
+        dedup.usedCuratedAssetIds,
+        dedup.usedCuratedStorageUrls,
+        videoTitle,
+        curatedInterviewBudget(dedup),
+        curatedImageBudget(dedup),
+        undefined,
+        { varietySeed: dedup.varietySeed, crossVideoExcludeIds: dedup.crossVideoExcludeIds }
+      );
   if (ownArchiveClip !== null) return ownArchiveClip;
 
   if (curatedArchiveOnlyVisuals()) {
@@ -12274,20 +12278,23 @@ async function fetchLastResortRealClip(
   videoTitle?: string,
   adoptOpts: VisualAdoptOptions = {}
 ): Promise<string | null> {
-  const ownArchiveClip = await fetchCuratedArchiveBeatClip(
-    beat,
-    scene,
-    workDir,
-    sceneIndex,
-    beat.holdSec,
-    dedup.usedCuratedAssetIds,
-    dedup.usedCuratedStorageUrls,
-    videoTitle,
-    curatedInterviewBudget(dedup),
-    curatedImageBudget(dedup),
-    undefined,
-    { varietySeed: dedup.varietySeed, crossVideoExcludeIds: dedup.crossVideoExcludeIds }
-  );
+  // Skipped for fast-short videos — see fetchBeatArchivalThenPexels for why.
+  const ownArchiveClip = isFastShortVideoLength(dedup.videoLength)
+    ? null
+    : await fetchCuratedArchiveBeatClip(
+        beat,
+        scene,
+        workDir,
+        sceneIndex,
+        beat.holdSec,
+        dedup.usedCuratedAssetIds,
+        dedup.usedCuratedStorageUrls,
+        videoTitle,
+        curatedInterviewBudget(dedup),
+        curatedImageBudget(dedup),
+        undefined,
+        { varietySeed: dedup.varietySeed, crossVideoExcludeIds: dedup.crossVideoExcludeIds }
+      );
   if (ownArchiveClip !== null) return ownArchiveClip;
   if (curatedArchiveOnlyVisuals()) return null;
   const tag = `b${beat.index}_lr`;
