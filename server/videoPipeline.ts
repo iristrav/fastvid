@@ -15688,16 +15688,15 @@ async function adoptArchiveBeatClipWithBudget(
       prefetchedRanked,
       adoptOpts
     );
-  if (!fastShort) return run();
+  // Non-fast-short videos used to get NO timeout here at all, so a candidate loop stuck on
+  // sustained (not transient) resource pressure could hang the whole render indefinitely with
+  // no further log output. Give them a generous but bounded budget instead of skipping it.
+  const budgetMs = fastShort ? archiveBeatTryTimeoutMs(dedup.videoLength) : 180_000;
   try {
-    return await withTimeout(
-      run(),
-      archiveBeatTryTimeoutMs(dedup.videoLength),
-      `archive s${scene.index} b${beat.index}`
-    );
+    return await withTimeout(run(), budgetMs, `archive s${scene.index} b${beat.index}`);
   } catch (err) {
     console.warn(
-      `[Pipeline] Scene ${scene.index} zin ${beat.index}: archive beat budget (${Math.round(archiveBeatTryTimeoutMs(dedup.videoLength) / 1000)}s) —`,
+      `[Pipeline] Scene ${scene.index} zin ${beat.index}: archive beat budget (${Math.round(budgetMs / 1000)}s) —`,
       (err as Error).message?.slice(0, 80)
     );
     return false;
