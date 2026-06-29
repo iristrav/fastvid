@@ -36,6 +36,17 @@ import { recordWorkerHeartbeat, readWorkerHeartbeats, summarizeWorkerHealth } fr
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// Without these, any unhandled error/rejection anywhere in the (very large) video pipeline —
+// a bad network response, a missing field on one specific video — crashes the entire Node
+// process by default, taking the whole site down for every user, not just that one render.
+// Log and keep running instead; the pipeline's own per-video error handling still applies.
+process.on("uncaughtException", (err) => {
+  console.error("[Fastvid] Uncaught exception (process kept alive):", err);
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("[Fastvid] Unhandled rejection (process kept alive):", reason);
+});
+
 // ─── Auto-Migration ───────────────────────────────────────────────────────────
 // Runs all pending SQL migrations on startup so Railway DB is always up to date.
 async function runMigrations() {
