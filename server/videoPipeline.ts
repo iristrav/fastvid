@@ -915,7 +915,12 @@ async function fetchBeatArchivalThenPexels(
   // rest of this function's archive-only behavior (Wikimedia-first, Pexels gating below).
   // assetsCache makes this a single DB scan per video instead of one per beat — that
   // per-beat re-scan, not the archive check itself, was blowing the compose timeout.
-  const ownArchiveClip = await fetchCuratedArchiveBeatClip(
+  // Still, a single slow lookup (e.g. a large interview transcode) shouldn't eat the whole
+  // sequential compose-stage budget — bound each beat's attempt and fall through on timeout.
+  let ownArchiveClip: string | null = null;
+  try {
+    ownArchiveClip = await withTimeout(
+      fetchCuratedArchiveBeatClip(
         beat,
         scene,
         workDir,
@@ -932,7 +937,16 @@ async function fetchBeatArchivalThenPexels(
           crossVideoExcludeIds: dedup.crossVideoExcludeIds,
           assetsCache: dedup.archiveAssetsCache,
         }
-      );
+      ),
+      archiveBeatTryTimeoutMs(dedup.videoLength),
+      `archive s${sceneIndex} b${beat.index}`
+    );
+  } catch (err) {
+    console.warn(
+      `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: archive beat budget exceeded —`,
+      (err as Error).message?.slice(0, 80)
+    );
+  }
   if (ownArchiveClip !== null) return ownArchiveClip;
 
   if (curatedArchiveOnlyVisuals()) {
@@ -12280,7 +12294,12 @@ async function fetchLastResortRealClip(
   videoTitle?: string,
   adoptOpts: VisualAdoptOptions = {}
 ): Promise<string | null> {
-  const ownArchiveClip = await fetchCuratedArchiveBeatClip(
+  // Bound each beat's archive attempt so one slow lookup can't eat the whole sequential
+  // compose-stage budget — falls through to the stock chain below on timeout.
+  let ownArchiveClip: string | null = null;
+  try {
+    ownArchiveClip = await withTimeout(
+      fetchCuratedArchiveBeatClip(
         beat,
         scene,
         workDir,
@@ -12297,7 +12316,16 @@ async function fetchLastResortRealClip(
           crossVideoExcludeIds: dedup.crossVideoExcludeIds,
           assetsCache: dedup.archiveAssetsCache,
         }
-      );
+      ),
+      archiveBeatTryTimeoutMs(dedup.videoLength),
+      `archive s${sceneIndex} b${beat.index} (last resort)`
+    );
+  } catch (err) {
+    console.warn(
+      `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: archive beat budget exceeded (last resort) —`,
+      (err as Error).message?.slice(0, 80)
+    );
+  }
   if (ownArchiveClip !== null) return ownArchiveClip;
   if (curatedArchiveOnlyVisuals()) return null;
   const tag = `b${beat.index}_lr`;
