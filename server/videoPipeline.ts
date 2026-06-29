@@ -1099,7 +1099,7 @@ async function beatPrimaryFetch(
       curatedInterviewBudget(dedup),
       curatedImageBudget(dedup),
       undefined,
-      { varietySeed: dedup.varietySeed, crossVideoExcludeIds: dedup.crossVideoExcludeIds }
+      { varietySeed: dedup.varietySeed, crossVideoExcludeIds: dedup.crossVideoExcludeIds, assetsCache: dedup.archiveAssetsCache }
     );
     if (archiveClip !== null) return archiveClip;
     // Try Wikimedia first (no API key needed — always available)
@@ -11637,7 +11637,7 @@ async function recoverSceneClipsIfEmpty(
         curatedInterviewBudget(dedup),
         curatedImageBudget(dedup),
         undefined,
-        { relaxed: fastShort || fi >= need, videoLength: dedup.videoLength }
+        { relaxed: fastShort || fi >= need, videoLength: dedup.videoLength, assetsCache: dedup.archiveAssetsCache }
       );
       if (!clip || isPipelineFallbackClip(clip)) continue;
       const key = clipContentKey(clip);
@@ -11972,7 +11972,7 @@ async function rescueFastShortComposeClips(
     curatedInterviewBudget(dedup),
     curatedImageBudget(dedup),
     undefined,
-    { relaxed: true, videoLength: dedup.videoLength, segmentLock: dedup.segmentGeoLock }
+    { relaxed: true, videoLength: dedup.videoLength, segmentLock: dedup.segmentGeoLock, assetsCache: dedup.archiveAssetsCache }
   );
   if (archiveClip) {
     const vision = await beatClipPassesVisionGate(
@@ -13593,7 +13593,7 @@ async function fetchBeatClip(
       curatedInterviewBudget(dedup),
       curatedImageBudget(dedup),
       undefined,
-      { varietySeed: dedup.varietySeed, crossVideoExcludeIds: dedup.crossVideoExcludeIds }
+      { varietySeed: dedup.varietySeed, crossVideoExcludeIds: dedup.crossVideoExcludeIds, assetsCache: dedup.archiveAssetsCache }
     );
   }
   const tag = `b${beat.index}`;
@@ -14684,7 +14684,7 @@ async function resolveBeatClipForBeat(
       curatedInterviewBudget(dedup),
       curatedImageBudget(dedup),
       undefined,
-      { varietySeed: dedup.varietySeed, crossVideoExcludeIds: dedup.crossVideoExcludeIds }
+      { varietySeed: dedup.varietySeed, crossVideoExcludeIds: dedup.crossVideoExcludeIds, assetsCache: dedup.archiveAssetsCache }
     );
   }
 
@@ -18522,7 +18522,7 @@ async function fetchSceneVisuals(
                 curatedInterviewBudget(dedup),
                 curatedImageBudget(dedup),
                 undefined,
-                { relaxed: backfillAttempts >= Math.floor(maxBackfill / 2) }
+                { relaxed: backfillAttempts >= Math.floor(maxBackfill / 2), assetsCache: dedup.archiveAssetsCache }
               );
             }
             if (dedup.perf.fastStockMode) {
@@ -18641,7 +18641,9 @@ async function fetchSceneVisuals(
           dedup.usedCuratedStorageUrls,
           videoTitle,
           curatedInterviewBudget(dedup),
-      curatedImageBudget(dedup)
+          curatedImageBudget(dedup),
+          undefined,
+          { assetsCache: dedup.archiveAssetsCache }
         );
         if (extra && !isPipelineFallbackClip(extra) && (await pushSceneClip(extra, stub.holdSec, stub.index))) {
           break;
@@ -18746,7 +18748,9 @@ async function fetchSceneVisuals(
         dedup.usedCuratedStorageUrls,
         videoTitle,
         curatedInterviewBudget(dedup),
-      curatedImageBudget(dedup)
+        curatedImageBudget(dedup),
+        undefined,
+        { assetsCache: dedup.archiveAssetsCache }
       );
     } else if (realOnly) {
       forced = await beatPrimaryFetch(
