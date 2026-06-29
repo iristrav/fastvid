@@ -36,13 +36,19 @@ import { recordWorkerHeartbeat, readWorkerHeartbeats, summarizeWorkerHealth } fr
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// Without these, any unhandled error/rejection anywhere in the (very large) video pipeline —
-// a bad network response, a missing field on one specific video — crashes the entire Node
-// process by default, taking the whole site down for every user, not just that one render.
-// Log and keep running instead; the pipeline's own per-video error handling still applies.
+// railway.json sets restartPolicyType=ON_FAILURE, so Railway auto-restarts within seconds
+// whenever this process exits non-zero — that's the site's actual safety net, not "never
+// crash". An uncaughtException means Node's internal state is no longer guaranteed
+// consistent (Node's own docs: do not resume normal operation after one) — staying alive
+// risks a silently hung/zombie process that never trips Railway's restart policy, which is
+// worse than a brief restart and matches "site stays down until I manually restart it".
+// Log for visibility, then exit so Railway's restart policy actually kicks in.
 process.on("uncaughtException", (err) => {
-  console.error("[Fastvid] Uncaught exception (process kept alive):", err);
+  console.error("[Fastvid] Uncaught exception — exiting so Railway restarts the process:", err);
+  process.exit(1);
 });
+// An unhandled rejection just means one abandoned promise chain (e.g. a network call in one
+// video's render) — process state is otherwise fine, so log and keep serving everyone else.
 process.on("unhandledRejection", (reason) => {
   console.error("[Fastvid] Unhandled rejection (process kept alive):", reason);
 });
