@@ -21583,10 +21583,12 @@ export async function runVideoPipeline(
           return result;
         }))
       ),
-      // Curated-archive lookup now runs unconditionally for every beat (not just archive-only
-      // mode), adding real per-beat DB + clip-prep time — 420s was cutting fast-short videos off
-      // mid-compose. Stay under the 720s emergency-finish budget for that mode.
-      isFastShortVideoLength(videoLength) ? 600_000 : 2400_000,
+      // Scenes compose sequentially on Railway (composeLimit=1), so this is a sum over every
+      // scene's archive lookup + ffmpeg work, not a per-scene budget — a fixed 600s kept being
+      // too tight as soon as a video had more than a handful of scenes. Tie the fast-short case
+      // to the same emergency-finish budget the rest of the pipeline already uses for that video
+      // length, so it can never be the thing that fails a video the wall-clock budget allowed.
+      isFastShortVideoLength(videoLength) ? pipelineEmergencyFinishMs(videoLength) : 2400_000,
       "Scene compose stage"
     );
     console.log(`[Pipeline] Stage 4 (compose): ${scenes.length} scenes in ${((Date.now()-t3)/1000).toFixed(1)}s`);
