@@ -64,6 +64,13 @@ export function visualMatchingV2CandidateRankingEnabled(): boolean {
   return process.env.VISUAL_MATCHING_V2_CANDIDATE_RANKING === "true";
 }
 
+/** V2 LLM Vision Scorer — fourth funnel stage (Ranked candidates -> per-dimension content
+ *  scores via a single multi-image LLM call per beat). Inert until read by the active
+ *  pipeline. */
+export function visualMatchingV2VisionScorerEnabled(): boolean {
+  return process.env.VISUAL_MATCHING_V2_VISION_SCORER === "true";
+}
+
 /** Full external sourcing (YouTube, internet stills, Serp) — off by default; stock fallbacks still run in archive-first mode. */
 export function externalVisualSourcingEnabled(): boolean {
   return process.env.ENABLE_EXTERNAL_VISUAL_SOURCING === "true";

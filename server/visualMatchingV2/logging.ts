@@ -90,6 +90,12 @@ export function logCandidateRanking(event: "ranking_complete" | "error", data: R
   console.log(`${PREFIX} CandidateRanking.${event}`, JSON.stringify(data));
 }
 
+/** LLM Vision Scorer — fourth funnel stage. Logs one trace per beat: model, prompt
+ *  version, token usage, per-candidate scores/reasoning/latency, cache hits. */
+export function logVisionScorer(event: "score_complete" | "cache_hit" | "error", data: Record<string, unknown>) {
+  console.log(`${PREFIX} VisionScorer.${event}`, JSON.stringify(data));
+}
+
 /** Wraps an async step, logging duration_ms and any thrown error under a consistent shape. */
 export async function timedStep<T>(label: string, fn: () => Promise<T>): Promise<T> {
   const start = Date.now();

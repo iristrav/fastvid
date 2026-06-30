@@ -421,6 +421,54 @@ export type RankingTrace = {
   }[];
 };
 
+// ─── LLM Vision Scorer: fourth funnel stage, operates on the Ranking Layer's top 3-5
+// candidates. Purely content/visual judgement — no retrieval signals, no ranking signals,
+// no fallback, no winner selection. Those belong to the Selector stage. ─────────────────
+
+/** Fixed scoring schema: every candidate gets exactly these six dimensions plus an
+ *  overall score and a one-sentence reasoning string. No confidence tier, no accept/reject. */
+export type VisionScores = {
+  subjectMatch: number;       // 0-100
+  actionMatch: number;        // 0-100
+  historicalAccuracy: number; // 0-100
+  contextMatch: number;       // 0-100
+  locationMatch: number;      // 0-100
+  emotionMatch: number;       // 0-100
+  overallScore: number;       // 0-100
+  /** One sentence max — for explainability only, not used for selection. */
+  reasoning: string;
+};
+
+export type ScoredCandidate = {
+  candidate: RankedCandidate;
+  visionScores: VisionScores;
+  /** Model id that produced visionScores, e.g. "gpt-4o-mini". */
+  visionModel: string;
+  promptVersion: string;
+  /** Wall-clock ms for the LLM call that produced this candidate's score (0 for cache hits). */
+  visionLatencyMs: number;
+  cacheHit: boolean;
+};
+
+/** Explainability trace for one scoreCandidates() call (one beat). */
+export type VisionScoreTrace = {
+  beatId: string;
+  startedAt: string;
+  durationMs: number;
+  candidateCount: number;
+  model: string;
+  promptVersion: string;
+  promptTokens: number;
+  completionTokens: number;
+  cacheHits: number;
+  entries: {
+    candidateId: string;
+    visionLatencyMs: number;
+    cacheHit: boolean;
+    scores: VisionScores;
+  }[];
+};
+
 export type RetrievalOrchestratorOptions = {
   /** The strategy produced by the Strategy Engine — the Orchestrator executes it
    *  verbatim, with no internal decisions. */
