@@ -65,6 +65,15 @@ function normalizeCandidate(
     metadata: partial.metadata,
     searchQuery,
     retrievalMethod,
+    language: null,
+    license: null,
+    attribution: null,
+    width: null,
+    height: null,
+    duration: null,
+    mimeType: null,
+    originalSource: null,
+    downloadTimeMs: null,
     fetchedAt: new Date().toISOString(),
   };
 }

@@ -52,6 +52,16 @@ export type CandidateAsset = {
   searchQuery: string;
   retrievalMethod: CandidateRetrievalMethod;
   fetchedAt: string;
+  // ─── Stage 2 completion: fields needed by later stages, not populated by every adapter yet ──
+  language: string | null;
+  license: string | null;
+  attribution: string | null;
+  width: number | null;
+  height: number | null;
+  duration: number | null;
+  mimeType: string | null;
+  originalSource: string | null;
+  downloadTimeMs: number | null;
 };
 
 export type SourceAdapter = {
@@ -65,6 +75,10 @@ export type SourceAdapterSearchCtx = {
   workDir: string;
   sceneIndex: number;
   count?: number;
+  /** Abort signal for this search. Adapters that can honor it (e.g. via fetch's `signal`
+   *  option) should; adapters that wrap legacy functions without signal support may ignore
+   *  it — the Candidate Fetcher still stops waiting on abort either way. */
+  signal?: AbortSignal;
 };
 
 // ─── Stage 2: Candidate Fetcher / Parallel Search Engine ──────────────────────
@@ -101,4 +115,35 @@ export type CandidateFetcherOptions = {
 export type CandidateFetchResult = {
   candidates: CandidateAsset[];
   trace: CandidateFetchTrace;
+};
+
+// ─── Stage 2 completion: cache provider abstraction + metrics ─────────────────
+
+export type SearchCacheKey = {
+  source: CandidateSource;
+  query: string;
+  language?: string;
+  filters?: Record<string, unknown>;
+};
+
+/**
+ * Backend-agnostic cache contract. The Candidate Fetcher and Search Cache module only
+ * depend on this interface, never on a concrete backend — swapping memory/Redis/DB
+ * implementations later requires no changes to the Fetcher.
+ */
+export interface SearchCacheProvider {
+  get(key: SearchCacheKey): Promise<CandidateAsset[] | undefined>;
+  set(key: SearchCacheKey, candidates: CandidateAsset[], ttlMs: number): Promise<void>;
+  delete(key: SearchCacheKey): Promise<void>;
+  clear(): Promise<void>;
+}
+
+export type SourceMetricsSnapshot = {
+  source: CandidateSource;
+  searches: number;
+  avgDurationMs: number;
+  timeoutRate: number;
+  retryRate: number;
+  cacheHitRate: number;
+  avgCandidatesPerSearch: number;
 };
