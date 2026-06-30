@@ -6599,6 +6599,13 @@ async function fetchInternetArchiveClips(
           parseInt(a.size || '999999999') - parseInt(b.size || '999999999')
         )[0];
 
+        const MAX_ARCHIVE_SIZE = 50 * 1024 * 1024;
+        const knownSize = parseInt(videoFile.size || '0');
+        if (knownSize > MAX_ARCHIVE_SIZE) {
+          console.warn(`[Pipeline] Scene ${sceneIndex}: Archive clip too large (${(knownSize / 1024 / 1024).toFixed(1)}MB per metadata), skipping download`);
+          continue;
+        }
+
         const videoUrl = `https://archive.org/download/${doc.identifier}/${encodeURIComponent(videoFile.name)}`;
         const tag = fileTag ? `${fileTag}_` : "";
         const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}archive_${fetched}.mp4`);
@@ -6612,7 +6619,6 @@ async function fetchInternetArchiveClips(
         );
         if (!dlResp.ok) continue;
 
-        const MAX_ARCHIVE_SIZE = 50 * 1024 * 1024;
         const arrayBuf = await dlResp.arrayBuffer();
         if (arrayBuf.byteLength > MAX_ARCHIVE_SIZE) {
           console.warn(`[Pipeline] Scene ${sceneIndex}: Archive clip too large (${(arrayBuf.byteLength / 1024 / 1024).toFixed(1)}MB), skipping`);
