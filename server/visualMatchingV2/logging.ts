@@ -83,6 +83,13 @@ export function logClipPreFilter(
   console.log(`${PREFIX} ClipPreFilter.${event}`, JSON.stringify(data));
 }
 
+/** Candidate Ranking Layer — third funnel stage. Logs one trace per beat: the weights and
+ *  source priority used, and per-candidate signals/contributions/final position. Combines
+ *  only existing retrieval signals — no semantic judgement, no LLM. */
+export function logCandidateRanking(event: "ranking_complete" | "error", data: Record<string, unknown>) {
+  console.log(`${PREFIX} CandidateRanking.${event}`, JSON.stringify(data));
+}
+
 /** Wraps an async step, logging duration_ms and any thrown error under a consistent shape. */
 export async function timedStep<T>(label: string, fn: () => Promise<T>): Promise<T> {
   const start = Date.now();

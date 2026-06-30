@@ -57,6 +57,13 @@ export function visualMatchingV2ClipPreFilterEnabled(): boolean {
   return process.env.VISUAL_MATCHING_V2_CLIP_PREFILTER === "true";
 }
 
+/** V2 Candidate Ranking Layer — third funnel stage (CLIP Pre-Filter -> weighted ranking by
+ *  existing retrieval signals, before LLM Vision scoring). Inert until read by the active
+ *  pipeline. */
+export function visualMatchingV2CandidateRankingEnabled(): boolean {
+  return process.env.VISUAL_MATCHING_V2_CANDIDATE_RANKING === "true";
+}
+
 /** Full external sourcing (YouTube, internet stills, Serp) — off by default; stock fallbacks still run in archive-first mode. */
 export function externalVisualSourcingEnabled(): boolean {
   return process.env.ENABLE_EXTERNAL_VISUAL_SOURCING === "true";

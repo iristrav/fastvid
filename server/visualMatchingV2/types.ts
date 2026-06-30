@@ -90,6 +90,16 @@ export type CandidateAsset = {
   clipEmbeddingVersion: string | null;
   /** Wall-clock ms spent embedding (or cache-hitting) this specific candidate's image. */
   clipLatencyMs: number | null;
+  // ─── Candidate Ranking Layer (stage: candidateRanking.ts): combines existing retrieval
+  // signals (embeddingSimilarity, keywordScore, clipSimilarity, source priority) into one
+  // weighted score, purely so later stages don't have to re-weigh raw signals themselves.
+  // No semantic judgement, no confidence, no winner — those belong to LLM Vision scoring. ──
+  /** Weighted combination of this candidate's retrieval signals. Null until rankCandidates()
+   *  has scored this candidate. */
+  rankingScore: number | null;
+  /** Per-signal normalized values and their weighted contributions to rankingScore, kept
+   *  for explainability. Null until rankCandidates() has scored this candidate. */
+  rankingBreakdown: RankingBreakdown | null;
 };
 
 export type SourceAdapter = {
@@ -343,6 +353,72 @@ export type ClipFilterResult = {
   /** Every candidate that was scored but didn't make the top-N cut, or couldn't be scored. */
   rejected: CandidateAsset[];
   trace: ClipFilterTrace;
+};
+
+// ─── Candidate Ranking Layer: third funnel stage, run on the CLIP Pre-Filter's already-
+// narrowed candidate list. Purely combines existing retrieval signals (no semantic
+// judgement) into one configurable, explainable score — no winner, no confidence, no LLM. ──
+
+/** Relative weight given to each existing signal when computing rankingScore. Fully
+ *  configurable so weighting can be tuned by experiment without code changes. Weights are
+ *  applied to each signal's normalized (0..1) contribution — they don't need to sum to 1. */
+export type RankingWeights = {
+  clipSimilarity: number;
+  embeddingSimilarity: number;
+  keywordScore: number;
+  sourcePriority: number;
+};
+
+/** Configured priority per source, higher = preferred. Known only to the Ranking Layer —
+ *  no other component (retrieval, CLIP) is aware sources are prioritized at all. */
+export type SourcePriority = Record<CandidateSource, number>;
+
+export type RankingConfig = {
+  weights: RankingWeights;
+  sourcePriority: SourcePriority;
+};
+
+/** Per-signal normalized value and its weighted contribution to rankingScore, for one
+ *  candidate. `signalsUsed` lists which signals were actually present (non-null) for this
+ *  candidate, since not every candidate carries every signal. */
+export type RankingBreakdown = {
+  clipContribution: number;
+  embeddingContribution: number;
+  keywordContribution: number;
+  sourceContribution: number;
+  signalsUsed: ("clipSimilarity" | "embeddingSimilarity" | "keywordScore" | "sourcePriority")[];
+};
+
+export type RankedCandidate = {
+  candidate: CandidateAsset;
+  rankingScore: number;
+  rankingBreakdown: RankingBreakdown;
+  /** 1-based position in the ranked output, highest rankingScore first. */
+  position: number;
+};
+
+/** Explainability trace for one rankCandidates() call (one beat) — per candidate: every
+ *  signal used, its computed contribution, the final score, and final position. */
+export type RankingTrace = {
+  beatId: string;
+  startedAt: string;
+  durationMs: number;
+  candidateCount: number;
+  weights: RankingWeights;
+  sourcePriority: SourcePriority;
+  entries: {
+    candidateId: string;
+    source: CandidateSource;
+    signals: {
+      clipSimilarity: number | null;
+      embeddingSimilarity: number | null;
+      keywordScore: number | null;
+      sourcePriorityRaw: number;
+    };
+    breakdown: RankingBreakdown;
+    rankingScore: number;
+    position: number;
+  }[];
 };
 
 export type RetrievalOrchestratorOptions = {
