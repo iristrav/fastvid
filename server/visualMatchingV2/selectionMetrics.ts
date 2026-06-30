@@ -1,8 +1,8 @@
 /** Visual Matching Engine V2 — Candidate Selector metrics.
  *  Global, cross-beat aggregates: avg confidence, reject rate, tiebreak rate, avg
- *  overallScore, source win distribution, and the rate at which selection triggers a
- *  research retry. Separate from SelectorTrace (per-beat) so this can feed a dashboard. */
-import type { CandidateSource, ConfidenceTier } from "./types";
+ *  overallScore, source win distribution, researchReason distribution, avg winner rank,
+ *  avg winning clip/embedding/vision signals. Separate from SelectorTrace (per-beat). */
+import type { CandidateSource, ConfidenceTier, ResearchReason } from "./types";
 
 type SelectionAccumulator = {
   selections: number;
@@ -10,10 +10,19 @@ type SelectionAccumulator = {
   tieBreaks: number;
   researchRequired: number;
   totalOverallScore: number;
-  totalConfidenceScore: number;
+  totalConfidence: number;
   confidenceCount: number;
+  totalWinnerRank: number;
+  winnerRankCount: number;
+  totalWinningClipSimilarity: number;
+  clipSimilarityCount: number;
+  totalWinningEmbeddingSimilarity: number;
+  embeddingSimilarityCount: number;
+  totalWinningVisionScore: number;
+  visionScoreCount: number;
   winsBySource: Map<CandidateSource, number>;
   winsByTier: Map<ConfidenceTier, number>;
+  researchReasonCounts: Map<ResearchReason, number>;
 };
 
 function emptyAccumulator(): SelectionAccumulator {
@@ -23,28 +32,40 @@ function emptyAccumulator(): SelectionAccumulator {
     tieBreaks: 0,
     researchRequired: 0,
     totalOverallScore: 0,
-    totalConfidenceScore: 0,
+    totalConfidence: 0,
     confidenceCount: 0,
+    totalWinnerRank: 0,
+    winnerRankCount: 0,
+    totalWinningClipSimilarity: 0,
+    clipSimilarityCount: 0,
+    totalWinningEmbeddingSimilarity: 0,
+    embeddingSimilarityCount: 0,
+    totalWinningVisionScore: 0,
+    visionScoreCount: 0,
     winsBySource: new Map(),
     winsByTier: new Map(),
+    researchReasonCounts: new Map(),
   };
 }
 
 let acc = emptyAccumulator();
 
 export type SelectionOutcome = {
-  /** True when a winner was found (needsResearch = false). */
   selected: boolean;
   needsResearch: boolean;
+  researchReason: ResearchReason | null;
   tieBreakApplied: boolean;
   winnerSource: CandidateSource | null;
   winnerTier: ConfidenceTier | null;
   winnerOverallScore: number | null;
-  /** Numeric representation of the tier for averaging (perfect=4, good=3, acceptable=2, reject=1). */
-  winnerTierScore: number | null;
+  winnerConfidence: number | null;
+  winnerRankPosition: number | null;
+  winnerClipSimilarity: number | null;
+  winnerEmbeddingSimilarity: number | null;
+  winnerVisionScore: number | null;
 };
 
-function tierScore(tier: ConfidenceTier): number {
+export function tierScore(tier: ConfidenceTier): number {
   if (tier === "perfect") return 4;
   if (tier === "good") return 3;
   if (tier === "acceptable") return 2;
@@ -57,10 +78,29 @@ export function recordSelectionOutcome(outcome: SelectionOutcome): void {
   if (!outcome.selected) acc.rejects += 1;
   if (outcome.needsResearch) acc.researchRequired += 1;
   if (outcome.tieBreakApplied) acc.tieBreaks += 1;
+  if (outcome.researchReason) {
+    acc.researchReasonCounts.set(outcome.researchReason, (acc.researchReasonCounts.get(outcome.researchReason) ?? 0) + 1);
+  }
   if (outcome.winnerOverallScore !== null) acc.totalOverallScore += outcome.winnerOverallScore;
-  if (outcome.winnerTierScore !== null) {
-    acc.totalConfidenceScore += outcome.winnerTierScore;
+  if (outcome.winnerConfidence !== null) {
+    acc.totalConfidence += outcome.winnerConfidence;
     acc.confidenceCount += 1;
+  }
+  if (outcome.winnerRankPosition !== null) {
+    acc.totalWinnerRank += outcome.winnerRankPosition;
+    acc.winnerRankCount += 1;
+  }
+  if (outcome.winnerClipSimilarity !== null) {
+    acc.totalWinningClipSimilarity += outcome.winnerClipSimilarity;
+    acc.clipSimilarityCount += 1;
+  }
+  if (outcome.winnerEmbeddingSimilarity !== null) {
+    acc.totalWinningEmbeddingSimilarity += outcome.winnerEmbeddingSimilarity;
+    acc.embeddingSimilarityCount += 1;
+  }
+  if (outcome.winnerVisionScore !== null) {
+    acc.totalWinningVisionScore += outcome.winnerVisionScore;
+    acc.visionScoreCount += 1;
   }
   if (outcome.winnerSource !== null) {
     acc.winsBySource.set(outcome.winnerSource, (acc.winsBySource.get(outcome.winnerSource) ?? 0) + 1);
@@ -75,13 +115,17 @@ export type SelectionMetricsSnapshot = {
   rejectRate: number;
   researchRequiredRate: number;
   tieBreakRate: number;
-  /** Average numeric tier score (4=perfect, 3=good, 2=acceptable, 1=reject). */
+  /** Average numeric confidence of the winner (0..1). */
   avgConfidence: number | null;
   avgOverallScore: number | null;
-  /** Source distribution for winning candidates (candidate source -> win count). */
+  /** Average 1-based rank position of the winner in the ranked candidate list. */
+  averageWinnerRank: number | null;
+  averageWinningClipSimilarity: number | null;
+  averageWinningEmbeddingSimilarity: number | null;
+  averageWinningVisionScore: number | null;
   sourceWinDistribution: Record<string, number>;
-  /** Tier distribution for winning candidates. */
   tierWinDistribution: Record<string, number>;
+  researchReasonDistribution: Record<string, number>;
 };
 
 export function getSelectionMetrics(): SelectionMetricsSnapshot {
@@ -91,10 +135,15 @@ export function getSelectionMetrics(): SelectionMetricsSnapshot {
     rejectRate: acc.selections > 0 ? acc.rejects / acc.selections : 0,
     researchRequiredRate: acc.selections > 0 ? acc.researchRequired / acc.selections : 0,
     tieBreakRate: acc.selections > 0 ? acc.tieBreaks / acc.selections : 0,
-    avgConfidence: acc.confidenceCount > 0 ? acc.totalConfidenceScore / acc.confidenceCount : null,
+    avgConfidence: acc.confidenceCount > 0 ? acc.totalConfidence / acc.confidenceCount : null,
     avgOverallScore: selectedCount > 0 ? acc.totalOverallScore / selectedCount : null,
+    averageWinnerRank: acc.winnerRankCount > 0 ? acc.totalWinnerRank / acc.winnerRankCount : null,
+    averageWinningClipSimilarity: acc.clipSimilarityCount > 0 ? acc.totalWinningClipSimilarity / acc.clipSimilarityCount : null,
+    averageWinningEmbeddingSimilarity: acc.embeddingSimilarityCount > 0 ? acc.totalWinningEmbeddingSimilarity / acc.embeddingSimilarityCount : null,
+    averageWinningVisionScore: acc.visionScoreCount > 0 ? acc.totalWinningVisionScore / acc.visionScoreCount : null,
     sourceWinDistribution: Object.fromEntries(acc.winsBySource),
     tierWinDistribution: Object.fromEntries(acc.winsByTier),
+    researchReasonDistribution: Object.fromEntries(acc.researchReasonCounts),
   };
 }
 
@@ -102,5 +151,3 @@ export function getSelectionMetrics(): SelectionMetricsSnapshot {
 export function resetSelectionMetrics(): void {
   acc = emptyAccumulator();
 }
-
-export { tierScore };

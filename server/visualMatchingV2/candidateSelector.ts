@@ -5,22 +5,24 @@
  *  This is the ONLY component in the V2 pipeline permitted to choose a winner.
  *  All prior stages gather and score information; this stage decides.
  *
- *  Scope:
- *   - Assigns each candidate a ConfidenceTier based on its visionScores.overallScore and
- *     configurable thresholds.
- *   - Selects the highest-confidence candidate, with a strict deterministic tiebreaker
- *     chain (overallScore -> confidenceTier -> rankingScore -> source priority -> candidateId)
- *     that never depends on array order.
- *   - Returns needsResearch=true (no winner) when every candidate falls below "acceptable".
- *   - Produces a complete SelectorTrace that the future BeatSelectionTrace component can
- *     persist as-is, with no extra reconstruction logic.
+ *  What it does:
+ *   - Reads SelectionConfig exclusively via a SelectionConfigProvider interface (no
+ *     hardcoded business rules — subscription tiers, archive-first policy, fast/quality
+ *     mode are all invisible here; those belong in the Retrieval Strategy Engine).
+ *   - Assigns each candidate a numeric confidence (overallScore/100) and a ConfidenceTier
+ *     from configurable thresholds.
+ *   - Selects the highest-confidence candidate using a strict deterministic five-step
+ *     tiebreaker chain; records every evaluated step in tieBreakPath.
+ *   - Returns needsResearch=true with a typed ResearchReason when no candidate qualifies.
+ *   - Produces a complete, immutable SelectionResult + SelectorTrace that BeatSelectionTrace
+ *     can persist with `await store.save(result.trace)` — no further reconstruction needed.
  *
  *  What it does NOT do:
- *   - Compute any new scores (uses visionScores.overallScore, rankingScore, clipSimilarity,
- *     embeddingSimilarity, keywordScore exactly as set by prior stages).
- *   - Download, render, or materialise the selected clip.
- *   - Call any LLM, CLIP model, or external API.
- *   - Make any decisions on behalf of the Retrieval, Ranking, or Vision stages. */
+ *   - Compute new scores — uses only visionScores.overallScore, rankingScore,
+ *     clipSimilarity, embeddingSimilarity, keywordScore exactly as set by prior stages.
+ *   - Mutate any input candidate object — all returned objects are new.
+ *   - Know about subscriptions, video length, archive-first policy, or fallback behaviour.
+ *   - Download, render, or materialise the selected clip. */
 import { DEFAULT_SOURCE_PRIORITY } from "./candidateRanking";
 import { recordSelectionOutcome, tierScore } from "./selectionMetrics";
 import { logSelector } from "./logging";
@@ -29,13 +31,19 @@ import type {
   CandidateVerdict,
   ConfidenceTier,
   ConfidenceTierThresholds,
+  ResearchReason,
   ScoredCandidate,
   SelectionConfig,
+  SelectionConfigProvider,
   SelectionResult,
   SelectorTrace,
   SourcePriority,
+  TieBreakStep,
   VisualIntent,
+  WinnerSnapshot,
 } from "./types";
+
+// ─── Default config (fallback only — callers should supply a SelectionConfigProvider) ──
 
 export const DEFAULT_THRESHOLDS: ConfidenceTierThresholds = {
   perfect: 85,
@@ -47,137 +55,224 @@ export const DEFAULT_SELECTION_CONFIG: SelectionConfig = {
   thresholds: DEFAULT_THRESHOLDS,
 };
 
-function toTier(overallScore: number, thresholds: ConfidenceTierThresholds): ConfidenceTier {
-  if (overallScore >= thresholds.perfect) return "perfect";
-  if (overallScore >= thresholds.good) return "good";
-  if (overallScore >= thresholds.acceptable) return "acceptable";
+/** Default provider — returns the hardcoded defaults above. Replace with an injected
+ *  provider to drive config from a database, experiment framework, or subscription tier
+ *  without changing any Selector code. */
+export class DefaultSelectionConfigProvider implements SelectionConfigProvider {
+  getSelectionConfig(): SelectionConfig {
+    return DEFAULT_SELECTION_CONFIG;
+  }
+}
+
+// ─── Internal helpers ──────────────────────────────────────────────────────────
+
+function toTier(overallScore: number, t: ConfidenceTierThresholds): ConfidenceTier {
+  if (overallScore >= t.perfect) return "perfect";
+  if (overallScore >= t.good) return "good";
+  if (overallScore >= t.acceptable) return "acceptable";
   return "reject";
 }
 
-function sourcePriorityFor(source: CandidateSource, sourcePriority: SourcePriority): number {
-  return sourcePriority[source] ?? 0;
+function toConfidence(overallScore: number): number {
+  return Math.max(0, Math.min(1, overallScore / 100));
+}
+
+function sourcePriorityFor(source: CandidateSource, sp: SourcePriority): number {
+  return sp[source] ?? 0;
 }
 
 type ScoredEntry = {
-  candidate: ScoredCandidate;
-  overallScore: number;
-  tier: ConfidenceTier;
+  readonly scored: ScoredCandidate;
+  readonly overallScore: number;
+  readonly confidence: number;
+  readonly tier: ConfidenceTier;
 };
 
 /**
- * Deterministic tiebreaker chain — never depends on array order:
- *   1. overallScore (higher wins)
- *   2. confidenceTier numeric weight (perfect=4 > good=3 > acceptable=2 > reject=1)
- *   3. rankingScore (higher wins, null = 0)
- *   4. source priority (from config, higher wins)
- *   5. candidateId lexicographic ascending (stable, arbitrary but deterministic)
+ * Deterministic tiebreaker compare — never depends on array order.
+ * Returns { diff, step } where step is the first discriminating step name.
+ * diff > 0 means a wins; diff < 0 means b wins; 0 means fully equal (shouldn't happen
+ * after candidateId step but handled safely).
  */
-function compareEntries(a: ScoredEntry, b: ScoredEntry, sourcePriority: SourcePriority): number {
+function compareEntries(
+  a: ScoredEntry,
+  b: ScoredEntry,
+  sp: SourcePriority
+): { diff: number; step: TieBreakStep } {
   const scoreDiff = b.overallScore - a.overallScore;
-  if (scoreDiff !== 0) return scoreDiff;
+  if (scoreDiff !== 0) return { diff: -scoreDiff, step: "overallScore" };
 
   const tierDiff = tierScore(b.tier) - tierScore(a.tier);
-  if (tierDiff !== 0) return tierDiff;
+  if (tierDiff !== 0) return { diff: -tierDiff, step: "confidenceTier" };
 
-  const rankA = a.candidate.candidate.candidate.rankingScore ?? 0;
-  const rankB = b.candidate.candidate.candidate.rankingScore ?? 0;
-  if (rankB !== rankA) return rankB - rankA;
+  const rankA = a.scored.candidate.candidate.rankingScore ?? 0;
+  const rankB = b.scored.candidate.candidate.rankingScore ?? 0;
+  if (rankA !== rankB) return { diff: rankB > rankA ? -1 : 1, step: "rankingScore" };
 
-  const srcA = sourcePriorityFor(a.candidate.candidate.candidate.source, sourcePriority);
-  const srcB = sourcePriorityFor(b.candidate.candidate.candidate.source, sourcePriority);
-  if (srcB !== srcA) return srcB - srcA;
+  const srcA = sourcePriorityFor(a.scored.candidate.candidate.source, sp);
+  const srcB = sourcePriorityFor(b.scored.candidate.candidate.source, sp);
+  if (srcA !== srcB) return { diff: srcB > srcA ? -1 : 1, step: "sourcePriority" };
 
-  return a.candidate.candidate.candidate.candidateId < b.candidate.candidate.candidate.candidateId ? -1 : 1;
+  const idCmp = a.scored.candidate.candidate.candidateId < b.scored.candidate.candidate.candidateId ? -1 : 1;
+  return { diff: idCmp, step: "candidateId" };
+}
+
+/** Full sort comparator that calls compareEntries and returns only the sign (for Array.sort). */
+function sortEntries(a: ScoredEntry, b: ScoredEntry, sp: SourcePriority): number {
+  return -compareEntries(a, b, sp).diff;
 }
 
 /**
- * Selects one winner (or returns needsResearch=true) from a list of Vision-scored candidates.
- * The sole decision-making component in the V2 pipeline.
+ * Builds the tieBreakPath for the trace: the ordered list of steps that were evaluated
+ * between the winning candidate and the closest runner-up, up to and including the step
+ * that resolved the tie. Empty when winner and runner-up differed on overallScore.
+ */
+function buildTieBreakPath(winner: ScoredEntry, runnerUp: ScoredEntry, sp: SourcePriority): TieBreakStep[] {
+  const steps: TieBreakStep[] = ["overallScore", "confidenceTier", "rankingScore", "sourcePriority", "candidateId"];
+  const path: TieBreakStep[] = [];
+
+  for (const step of steps) {
+    path.push(step);
+    let diff = 0;
+    if (step === "overallScore") diff = winner.overallScore - runnerUp.overallScore;
+    else if (step === "confidenceTier") diff = tierScore(winner.tier) - tierScore(runnerUp.tier);
+    else if (step === "rankingScore") {
+      const wRank = winner.scored.candidate.candidate.rankingScore ?? 0;
+      const rRank = runnerUp.scored.candidate.candidate.rankingScore ?? 0;
+      diff = wRank - rRank;
+    } else if (step === "sourcePriority") {
+      diff = sourcePriorityFor(winner.scored.candidate.candidate.source, sp)
+           - sourcePriorityFor(runnerUp.scored.candidate.candidate.source, sp);
+    } else {
+      diff = winner.scored.candidate.candidate.candidateId < runnerUp.scored.candidate.candidate.candidateId ? -1 : 1;
+    }
+    if (diff !== 0) return path; // this step resolved it — stop
+  }
+  return path;
+}
+
+function buildTieBreakReason(path: TieBreakStep[], winner: ScoredEntry, runnerUp: ScoredEntry, sp: SourcePriority): string {
+  const decidingStep = path[path.length - 1];
+  const wc = winner.scored.candidate.candidate;
+  const rc = runnerUp.scored.candidate.candidate;
+  if (decidingStep === "overallScore") return `Resolved by overallScore (${winner.overallScore} > ${runnerUp.overallScore}).`;
+  if (decidingStep === "confidenceTier") return `Equal overallScore; resolved by confidence tier (${winner.tier} > ${runnerUp.tier}).`;
+  if (decidingStep === "rankingScore") return `Equal overallScore and tier; resolved by rankingScore (${(wc.rankingScore ?? 0).toFixed(3)} > ${(rc.rankingScore ?? 0).toFixed(3)}).`;
+  if (decidingStep === "sourcePriority") return `Equal overallScore, tier, rankingScore; resolved by source priority (${wc.source}=${sourcePriorityFor(wc.source, sp)} > ${rc.source}=${sourcePriorityFor(rc.source, sp)}).`;
+  return `All signals tied; resolved by candidateId lexicographic order.`;
+}
+
+function detectResearchReason(scored: ScoredCandidate[], eligible: ScoredEntry[]): ResearchReason {
+  if (scored.length === 0) return "NO_CANDIDATES";
+  const allZeroVision = scored.every((s) => s.visionScores.overallScore === 0 && !s.cacheHit);
+  if (allZeroVision) return "VISION_FAILED";
+  const allFallback = scored.every((s) => s.visionScores.reasoning.startsWith("No embeddable image"));
+  if (allFallback) return "NO_IMAGES";
+  return "ALL_REJECTED";
+}
+
+// ─── Main export ───────────────────────────────────────────────────────────────
+
+/**
+ * Selects one winner (or returns needsResearch=true) from a list of Vision-scored
+ * candidates. The sole decision-making component in the V2 pipeline.
+ *
+ * Config is read from the provider on every call so experiments can vary thresholds
+ * per video, per subscription tier, or per A/B bucket without code changes.
  */
 export function selectCandidate(
   intent: VisualIntent,
   scored: ScoredCandidate[],
-  config: SelectionConfig = DEFAULT_SELECTION_CONFIG
+  configProvider: SelectionConfigProvider = new DefaultSelectionConfigProvider()
 ): SelectionResult {
   const startedAt = new Date().toISOString();
   const start = Date.now();
-  const thresholds = config.thresholds;
-  const sourcePriority = config.sourcePriority ?? DEFAULT_SOURCE_PRIORITY;
 
   logSelector("start", { beatId: intent.beatId, candidateCount: scored.length });
 
+  const config = configProvider.getSelectionConfig();
+  const thresholds = config.thresholds;
+  const sourcePriority = config.sourcePriority ?? DEFAULT_SOURCE_PRIORITY;
+
+  // Build immutable entries (no mutation of input scored array or its elements).
   const entries: ScoredEntry[] = scored.map((s) => ({
-    candidate: s,
+    scored: s,
     overallScore: s.visionScores.overallScore,
+    confidence: toConfidence(s.visionScores.overallScore),
     tier: toTier(s.visionScores.overallScore, thresholds),
   }));
 
-  // Sort all candidates by the full tiebreaker chain up front — this determines display
-  // order in allCandidates and also which candidate is #1 after filtering to acceptable+.
-  const sorted = [...entries].sort((a, b) => compareEntries(a, b, sourcePriority));
-
+  // Sort the full list by the tiebreaker chain — sets display order in allCandidates and
+  // verdicts, and makes the winner == eligible[0] after filtering.
+  const sorted = [...entries].sort((a, b) => sortEntries(a, b, sourcePriority));
   const eligible = sorted.filter((e) => e.tier !== "reject");
-
   const needsResearch = eligible.length === 0;
 
   let winner: ScoredEntry | null = null;
   let tieBreakApplied = false;
+  let tieBreakPath: TieBreakStep[] = [];
   let tieBreakReason: string | null = null;
   let selectionReason: string;
   let confidenceTier: ConfidenceTier | null = null;
+  let confidence: number | null = null;
+  let researchReason: ResearchReason | null = null;
+  let winnerSnapshot: WinnerSnapshot | null = null;
 
   if (!needsResearch) {
     winner = eligible[0];
     confidenceTier = winner.tier;
+    confidence = winner.confidence;
 
-    // Detect whether a tiebreak was actually needed (first two eligible share overallScore).
     if (eligible.length >= 2 && eligible[0].overallScore === eligible[1].overallScore) {
       tieBreakApplied = true;
-
-      const a = eligible[0];
-      const b = eligible[1];
-      if (tierScore(a.tier) !== tierScore(b.tier)) {
-        tieBreakReason = `Equal overallScore (${a.overallScore}); resolved by confidence tier (${a.tier} > ${b.tier}).`;
-      } else {
-        const rankA = a.candidate.candidate.candidate.rankingScore ?? 0;
-        const rankB = b.candidate.candidate.candidate.rankingScore ?? 0;
-        if (rankA !== rankB) {
-          tieBreakReason = `Equal overallScore and tier; resolved by rankingScore (${rankA.toFixed(3)} > ${rankB.toFixed(3)}).`;
-        } else {
-          const srcA = sourcePriorityFor(a.candidate.candidate.candidate.source, sourcePriority);
-          const srcB = sourcePriorityFor(b.candidate.candidate.candidate.source, sourcePriority);
-          if (srcA !== srcB) {
-            tieBreakReason = `Equal overallScore, tier and rankingScore; resolved by source priority (${a.candidate.candidate.candidate.source}=${srcA} > ${b.candidate.candidate.candidate.source}=${srcB}).`;
-          } else {
-            tieBreakReason = `All scoring signals tied; resolved by candidateId lexicographic order.`;
-          }
-        }
-      }
-
-      logSelector("tieBreak", { beatId: intent.beatId, tieBreakReason, winnerId: winner.candidate.candidate.candidate.candidateId });
+      tieBreakPath = buildTieBreakPath(eligible[0], eligible[1], sourcePriority);
+      tieBreakReason = buildTieBreakReason(tieBreakPath, eligible[0], eligible[1], sourcePriority);
+      logSelector("tieBreak", {
+        beatId: intent.beatId,
+        tieBreakPath,
+        tieBreakReason,
+        winnerId: winner.scored.candidate.candidate.candidateId,
+      });
     }
 
-    selectionReason = `Selected ${winner.candidate.candidate.candidate.candidateId} with overallScore=${winner.overallScore} (tier: ${confidenceTier}).`;
+    const wc = winner.scored.candidate.candidate;
+    winnerSnapshot = {
+      candidateId: wc.candidateId,
+      source: wc.source,
+      overallScore: winner.overallScore,
+      confidence: winner.confidence,
+      confidenceTier: winner.tier,
+      rankingScore: wc.rankingScore ?? null,
+      clipSimilarity: wc.clipSimilarity ?? null,
+      embeddingSimilarity: wc.embeddingSimilarity ?? null,
+      keywordScore: wc.keywordScore ?? null,
+      rankPosition: winner.scored.candidate.position,
+    };
+
+    selectionReason = `Selected ${wc.candidateId} (${wc.source}) — overallScore=${winner.overallScore}, confidence=${winner.confidence.toFixed(2)}, tier=${confidenceTier}.`;
   } else {
-    selectionReason = `All ${scored.length} candidate${scored.length === 1 ? "" : "s"} scored below the acceptable threshold (${thresholds.acceptable}); research retry needed.`;
-    logSelector("reject", { beatId: intent.beatId, candidateCount: scored.length, lowestThreshold: thresholds.acceptable });
+    researchReason = detectResearchReason(scored, eligible);
+    selectionReason = `No winner: ${researchReason} — all ${scored.length} candidate(s) below acceptable threshold (${thresholds.acceptable}).`;
+    logSelector("reject", { beatId: intent.beatId, researchReason, candidateCount: scored.length });
   }
 
-  // Build per-candidate verdicts for the trace — one entry per candidate in sorted order.
+  // Build per-candidate verdicts — new objects, no mutation of inputs.
   const verdicts: CandidateVerdict[] = sorted.map((e) => {
-    const c = e.candidate.candidate.candidate;
-    const isWinner = winner !== null && c.candidateId === winner.candidate.candidate.candidate.candidateId;
+    const c = e.scored.candidate.candidate;
+    const isWinner = winner !== null && c.candidateId === winner.scored.candidate.candidate.candidateId;
     return {
       candidateId: c.candidateId,
       overallScore: e.overallScore,
+      confidence: e.confidence,
       confidenceTier: e.tier,
       rankingScore: c.rankingScore ?? null,
       clipSimilarity: c.clipSimilarity ?? null,
       embeddingSimilarity: c.embeddingSimilarity ?? null,
       keywordScore: c.keywordScore ?? null,
-      rejectedReason: isWinner ? null : e.tier === "reject"
-        ? `overallScore ${e.overallScore} below acceptable threshold ${thresholds.acceptable}.`
-        : `Another candidate had a higher score or better tiebreak result.`,
+      rejectedReason: isWinner ? null
+        : e.tier === "reject"
+          ? `overallScore ${e.overallScore} below acceptable threshold ${thresholds.acceptable}.`
+          : `Outscored by ${winner?.scored.candidate.candidate.candidateId ?? "another candidate"}.`,
     };
   });
 
@@ -190,40 +285,54 @@ export function selectCandidate(
     candidateCount: scored.length,
     thresholds,
     tieBreakApplied,
+    tieBreakPath,
     tieBreakReason,
-    selectedCandidateId: winner?.candidate.candidate.candidate.candidateId ?? null,
+    selectedCandidateId: winner?.scored.candidate.candidate.candidateId ?? null,
     selectionReason,
+    confidence,
     confidenceTier,
     needsResearch,
+    researchReason,
+    winnerSnapshot,
     verdicts,
   };
 
   recordSelectionOutcome({
     selected: !needsResearch,
     needsResearch,
+    researchReason,
     tieBreakApplied,
-    winnerSource: winner?.candidate.candidate.candidate.source ?? null,
+    winnerSource: winner?.scored.candidate.candidate.source ?? null,
     winnerTier: confidenceTier,
     winnerOverallScore: winner?.overallScore ?? null,
-    winnerTierScore: confidenceTier ? tierScore(confidenceTier) : null,
+    winnerConfidence: confidence,
+    winnerRankPosition: winner?.scored.candidate.position ?? null,
+    winnerClipSimilarity: winner?.scored.candidate.candidate.clipSimilarity ?? null,
+    winnerEmbeddingSimilarity: winner?.scored.candidate.candidate.embeddingSimilarity ?? null,
+    winnerVisionScore: winner?.overallScore ?? null,
   });
 
   logSelector(needsResearch ? "reject" : "complete", {
     beatId: intent.beatId,
     selectedCandidateId: trace.selectedCandidateId,
+    confidence,
     confidenceTier,
     needsResearch,
+    researchReason,
     durationMs,
     tieBreakApplied,
+    tieBreakPath,
   });
 
   return {
-    selectedCandidate: winner?.candidate ?? null,
-    selectedCandidateId: winner?.candidate.candidate.candidate.candidateId ?? null,
+    selectedCandidate: winner?.scored ?? null,
+    selectedCandidateId: winner?.scored.candidate.candidate.candidateId ?? null,
+    confidence,
     confidenceTier,
     needsResearch,
+    researchReason,
     selectionReason,
     trace,
-    allCandidates: sorted.map((e) => e.candidate),
+    allCandidates: sorted.map((e) => e.scored),
   };
 }
