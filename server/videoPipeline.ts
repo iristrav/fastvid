@@ -5685,42 +5685,52 @@ async function fetchSepiaSearchVideos(
   const ranked: RankedHit[] = [];
 
   try {
-    for (const query of queryList.slice(0, 4)) {
+    // Fire all per-query searches concurrently — pure network fetches, results are merged
+    // and globally re-sorted by score afterward, so query order doesn't matter.
+    const perQueryHits = await Promise.all(
+      queryList.slice(0, 4).map(async (query) => {
+        try {
+          const searchUrl = new URL(`${SEPIA_SEARCH_API}/search/videos`);
+          searchUrl.searchParams.set("search", query);
+          searchUrl.searchParams.set("count", "15");
+          searchUrl.searchParams.append("licenceOneOf", "1");
+          searchUrl.searchParams.append("licenceOneOf", "2");
+          searchUrl.searchParams.append("licenceOneOf", "7");
+
+          const searchResp = await withTimeout(
+            fetch(searchUrl.toString(), { headers: { "User-Agent": "Fastvid/1.0 (CC PeerTube clips)" } }),
+            14_000,
+            `SepiaSearch scene ${sceneIndex}`
+          );
+          if (!searchResp.ok) return [];
+          const data = await searchResp.json() as {
+            data?: Array<{
+              uuid: string;
+              name?: string;
+              duration?: number;
+              isLive?: boolean;
+              channel?: { host?: string };
+            }>;
+          };
+          return (data.data ?? []).map((item) => ({ item, query }));
+        } catch (err) {
+          console.warn(`[Pipeline] SepiaSearch query "${query}" failed:`, (err as Error).message);
+          return [];
+        }
+      })
+    );
+
+    for (const { item, query } of perQueryHits.flat()) {
       if (ranked.length >= count * 4) break;
-      const searchUrl = new URL(`${SEPIA_SEARCH_API}/search/videos`);
-      searchUrl.searchParams.set("search", query);
-      searchUrl.searchParams.set("count", "15");
-      searchUrl.searchParams.append("licenceOneOf", "1");
-      searchUrl.searchParams.append("licenceOneOf", "2");
-      searchUrl.searchParams.append("licenceOneOf", "7");
-
-      const searchResp = await withTimeout(
-        fetch(searchUrl.toString(), { headers: { "User-Agent": "Fastvid/1.0 (CC PeerTube clips)" } }),
-        14_000,
-        `SepiaSearch scene ${sceneIndex}`
-      );
-      if (!searchResp.ok) continue;
-      const data = await searchResp.json() as {
-        data?: Array<{
-          uuid: string;
-          name?: string;
-          duration?: number;
-          isLive?: boolean;
-          channel?: { host?: string };
-        }>;
-      };
-
-      for (const item of data.data ?? []) {
-        const host = item.channel?.host;
-        const uuid = item.uuid;
-        if (!host || !uuid || item.isLive || seenUuids.has(uuid)) continue;
-        if ((item.duration ?? 0) < 8 || (item.duration ?? 0) > 900) continue;
-        const title = item.name ?? "";
-        const score = scoreSepiaSearchHit(title, query, personName, beatKeywords);
-        if (score < 0) continue;
-        seenUuids.add(uuid);
-        ranked.push({ uuid, host, title, query, score });
-      }
+      const host = item.channel?.host;
+      const uuid = item.uuid;
+      if (!host || !uuid || item.isLive || seenUuids.has(uuid)) continue;
+      if ((item.duration ?? 0) < 8 || (item.duration ?? 0) > 900) continue;
+      const title = item.name ?? "";
+      const score = scoreSepiaSearchHit(title, query, personName, beatKeywords);
+      if (score < 0) continue;
+      seenUuids.add(uuid);
+      ranked.push({ uuid, host, title, query, score });
     }
 
     ranked.sort((a, b) => b.score - a.score);
@@ -5917,48 +5927,59 @@ async function fetchGdeltTvNewsClips(
 
   try {
     const queryCap = fastMode ? 2 : queryList.length;
-    for (const query of queryList.slice(0, queryCap)) {
+    // Fire all per-query searches concurrently — pure network fetches, results are merged
+    // and globally re-sorted by score afterward, so query order doesn't matter.
+    const perQueryClips = await Promise.all(
+      queryList.slice(0, queryCap).map(async (query) => {
+        try {
+          const apiUrl =
+            `${GDELT_TV_API}?query=${encodeURIComponent(query)}&mode=ClipGallery&format=json` +
+            `&maxrecords=${fastMode ? 4 : 8}&timespan=5y`;
+          const resp = await withTimeout(
+            fetch(apiUrl, { headers: { "User-Agent": "Fastvid/1.0 (GDELT TV news)" } }),
+            fastMode ? 14_000 : 22_000,
+            `GDELT TV search scene ${sceneIndex}`
+          );
+          if (!resp.ok) return [];
+          const text = await resp.text();
+          if (text.includes("must contain at least one station")) return [];
+          let data: {
+            clips?: Array<{
+              preview_url?: string;
+              snippet?: string;
+              show?: string;
+              station?: string;
+            }>;
+          };
+          try {
+            data = JSON.parse(text) as typeof data;
+          } catch {
+            return [];
+          }
+          return (data.clips ?? []).map((clip) => ({ clip, query }));
+        } catch (err) {
+          console.warn(`[Pipeline] GDELT TV query "${query}" failed:`, (err as Error).message);
+          return [];
+        }
+      })
+    );
+
+    for (const { clip, query } of perQueryClips.flat()) {
       if (ranked.length >= (fastMode ? count * 2 : count * 4)) break;
-      const apiUrl =
-        `${GDELT_TV_API}?query=${encodeURIComponent(query)}&mode=ClipGallery&format=json` +
-        `&maxrecords=${fastMode ? 4 : 8}&timespan=5y`;
-      const resp = await withTimeout(
-        fetch(apiUrl, { headers: { "User-Agent": "Fastvid/1.0 (GDELT TV news)" } }),
-        fastMode ? 14_000 : 22_000,
-        `GDELT TV search scene ${sceneIndex}`
-      );
-      if (!resp.ok) continue;
-      const text = await resp.text();
-      if (text.includes("must contain at least one station")) continue;
-      let data: {
-        clips?: Array<{
-          preview_url?: string;
-          snippet?: string;
-          show?: string;
-          station?: string;
-        }>;
-      };
-      try {
-        data = JSON.parse(text) as typeof data;
-      } catch {
-        continue;
-      }
-      for (const clip of data.clips ?? []) {
-        if (!clip.preview_url || seenPreviews.has(clip.preview_url)) continue;
-        const hay = `${clip.snippet ?? ""} ${clip.show ?? ""} ${query}`.toLowerCase();
-        if (personName && !textMentionsPersonName(hay, personName)) continue;
-        const score =
-          scoreVisualRelevance(hay, beatKeywords) + (textMentionsPersonName(hay, personName) ? 4 : 0);
-        seenPreviews.add(clip.preview_url);
-        ranked.push({
-          preview_url: clip.preview_url,
-          snippet: clip.snippet,
-          show: clip.show,
-          station: clip.station,
-          query,
-          score,
-        });
-      }
+      if (!clip.preview_url || seenPreviews.has(clip.preview_url)) continue;
+      const hay = `${clip.snippet ?? ""} ${clip.show ?? ""} ${query}`.toLowerCase();
+      if (personName && !textMentionsPersonName(hay, personName)) continue;
+      const score =
+        scoreVisualRelevance(hay, beatKeywords) + (textMentionsPersonName(hay, personName) ? 4 : 0);
+      seenPreviews.add(clip.preview_url);
+      ranked.push({
+        preview_url: clip.preview_url,
+        snippet: clip.snippet,
+        show: clip.show,
+        station: clip.station,
+        query,
+        score,
+      });
     }
 
     ranked.sort((a, b) => b.score - a.score);
