@@ -70,9 +70,13 @@ export type CandidateAsset = {
   /** Relevance score from keyword/metadata search, on whatever scale that source produces.
    *  Null when the candidate wasn't found via keyword search. */
   keywordScore: number | null;
-  /** Which retrieval path(s) produced this candidate. "both" when the same asset was found
-   *  via keyword and semantic search in the same beat and dedup merged the two outcomes. */
-  retrievalReason: "keyword" | "semantic" | "both" | null;
+  /** Every retrieval path that produced this candidate. More than one entry when dedup
+   *  merged a keyword hit and a semantic hit for the same underlying asset. */
+  retrievalReasons: ("keyword" | "semantic")[];
+  /** Provenance trail: one entry per retrieval path that found this candidate, carrying
+   *  that path's own score on its own scale (never blended). Lets later stages (scoring,
+   *  explainability) show exactly why a candidate was chosen. */
+  retrievalSources: { source: string; score: number }[];
 };
 
 export type SourceAdapter = {
@@ -262,6 +266,16 @@ export type CandidatePool = {
     keywordHits: number;
     duplicatesRemoved: number;
     earlyExitTriggered: boolean;
+    // ─── Refinement: per-path latency + hit-rate metrics, for objectively comparing
+    // retrieval strategies later. All latencies are averages in ms; -1 when no samples. ──
+    avgEmbeddingLatencyMs: number;
+    avgQdrantSearchLatencyMs: number;
+    avgKeywordLatencyMs: number;
+    avgSemanticLatencyMs: number;
+    dedupLatencyMs: number;
+    mergeCount: number;
+    semanticHitRate: number;
+    keywordHitRate: number;
   };
 };
 

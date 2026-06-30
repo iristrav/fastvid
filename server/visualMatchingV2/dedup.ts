@@ -27,16 +27,36 @@ function dedupKeyOf(candidate: CandidateAsset): { key: string; matchedOn: Duplic
   return { key: `id:${candidate.candidateId}`, matchedOn: "candidateId" };
 }
 
+/** Merges `incoming` into `base` (the survivor), combining retrieval signals from both
+ *  instead of discarding the loser. `base` wins on every plain field (title, thumbnail,
+ *  etc. — first-seen order still decides those); only the retrieval-signal fields are
+ *  unioned, since that's the data the Candidate Scorer needs intact regardless of which
+ *  retrieval path arrived first. */
+function mergeCandidates(base: CandidateAsset, incoming: CandidateAsset): CandidateAsset {
+  return {
+    ...base,
+    embeddingSimilarity: base.embeddingSimilarity ?? incoming.embeddingSimilarity,
+    keywordScore: base.keywordScore ?? incoming.keywordScore,
+    retrievalReasons: Array.from(new Set([...base.retrievalReasons, ...incoming.retrievalReasons])),
+    retrievalSources: [...base.retrievalSources, ...incoming.retrievalSources],
+  };
+}
+
 export type DedupResult = {
   deduped: CandidateAsset[];
   duplicateGroups: DuplicateGroup[];
+  /** Count of candidates merged into an existing survivor (not just dropped) — used for
+   *  the orchestrator's mergeCount metric. */
+  mergeCount: number;
 };
 
-/** Deduplicates a flat candidate list. The first candidate seen for a given key is kept;
- *  source-phase order (own archive first, then external sources) means archive/embedding
- *  hits are preferred survivors over external duplicates of the same asset. */
+/** Deduplicates a flat candidate list. The first candidate seen for a given key is kept as
+ *  the base; every subsequent candidate resolving to the same key is merged into it (point
+ *  1 of the dedup refinement) rather than dropped, so a keyword hit and a semantic hit for
+ *  the same asset both contribute their score and retrieval path to the single survivor. */
 export function dedupeCandidates(candidates: CandidateAsset[]): DedupResult {
   const seen = new Map<string, { kept: CandidateAsset; matchedOn: DuplicateGroup["matchedOn"]; dropped: string[] }>();
+  let mergeCount = 0;
 
   for (const candidate of candidates) {
     const { key, matchedOn } = dedupKeyOf(candidate);
@@ -44,7 +64,9 @@ export function dedupeCandidates(candidates: CandidateAsset[]): DedupResult {
     if (!existing) {
       seen.set(key, { kept: candidate, matchedOn, dropped: [] });
     } else {
+      existing.kept = mergeCandidates(existing.kept, candidate);
       existing.dropped.push(candidate.candidateId);
+      mergeCount += 1;
     }
   }
 
@@ -62,5 +84,5 @@ export function dedupeCandidates(candidates: CandidateAsset[]): DedupResult {
     }
   }
 
-  return { deduped, duplicateGroups };
+  return { deduped, duplicateGroups, mergeCount };
 }

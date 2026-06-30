@@ -974,6 +974,7 @@ import {
   InsertMediaArchiveAsset,
   mediaArchiveAssets,
   mediaArchives,
+  backfillCursors,
 } from "../drizzle/schema";
 
 export function normalizeMediaTags(tags: string[]): string[] {
@@ -1233,6 +1234,55 @@ export async function createMediaArchiveAssetEmbedding(data: InsertMediaArchiveA
   if (!db) return undefined;
   const result = await db.insert(mediaArchiveAssetEmbeddings).values(data);
   return (result as unknown as [{ insertId: number }])[0]?.insertId as number;
+}
+
+// ─── Visual Matching Engine V2 — resumable backfill cursor ────────────────────
+
+/** Reads the persisted lastProcessedId for one (jobName, provider, model, embeddingVersion)
+ *  combination, so a crashed backfill can resume mid-scan instead of starting at id 0 and
+ *  rescanning every page. Returns 0 (start from the beginning) when no cursor exists yet,
+ *  or when DATABASE_URL is unset — same "degrade to no-op" pattern as the rest of V2. */
+export async function getBackfillCursor(jobName: string, provider: string, model: string, embeddingVersion: string): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+  const rows = await db
+    .select()
+    .from(backfillCursors)
+    .where(
+      and(
+        eq(backfillCursors.jobName, jobName),
+        eq(backfillCursors.provider, provider),
+        eq(backfillCursors.model, model),
+        eq(backfillCursors.embeddingVersion, embeddingVersion)
+      )
+    )
+    .limit(1);
+  return rows[0]?.lastProcessedId ?? 0;
+}
+
+/** Upserts the cursor after each processed page. Plain insert-then-update via the unique
+ *  (jobName, provider, model, embeddingVersion) key — no native upsert needed since this is
+ *  called at low frequency (once per backfill page, not per asset). */
+export async function setBackfillCursor(jobName: string, provider: string, model: string, embeddingVersion: string, lastProcessedId: number): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  const existing = await db
+    .select({ id: backfillCursors.id })
+    .from(backfillCursors)
+    .where(
+      and(
+        eq(backfillCursors.jobName, jobName),
+        eq(backfillCursors.provider, provider),
+        eq(backfillCursors.model, model),
+        eq(backfillCursors.embeddingVersion, embeddingVersion)
+      )
+    )
+    .limit(1);
+  if (existing[0]) {
+    await db.update(backfillCursors).set({ lastProcessedId }).where(eq(backfillCursors.id, existing[0].id));
+  } else {
+    await db.insert(backfillCursors).values({ jobName, provider, model, embeddingVersion, lastProcessedId });
+  }
 }
 
 export async function deleteMediaArchiveAssets(ids: number[]) {

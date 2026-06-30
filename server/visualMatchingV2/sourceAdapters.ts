@@ -76,7 +76,8 @@ function normalizeCandidate(
     downloadTimeMs: null,
     embeddingSimilarity: null,
     keywordScore: null,
-    retrievalReason: "keyword",
+    retrievalReasons: ["keyword"],
+    retrievalSources: [{ source: `${partial.source}_keyword`, score: 0 }],
     fetchedAt: new Date().toISOString(),
   };
 }

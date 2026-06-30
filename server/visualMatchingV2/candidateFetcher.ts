@@ -65,10 +65,18 @@ export async function searchOneSourceWithRetry(
   intent: VisualIntent,
   ctx: SourceAdapterSearchCtx,
   perSourceTimeoutMs: number,
-  retriesPerSource: number
+  retriesPerSource: number,
+  /** Optional cache-key discriminator. Needed when two distinct retrieval paths share the
+   *  same adapter.name (e.g. own_archive keyword vs. own_archive embedding) — without this,
+   *  both would collide on the same cache entry and silently return each other's results. */
+  cacheKeyDiscriminator?: Record<string, unknown>
 ): Promise<SourceFetchOutcome> {
   const start = Date.now();
-  const cacheKey = { source: adapter.name, query: intent.primaryKeyword || intent.visualDescription || intent.visualSubject };
+  const cacheKey = {
+    source: adapter.name,
+    query: intent.primaryKeyword || intent.visualDescription || intent.visualSubject,
+    filters: cacheKeyDiscriminator,
+  };
   const cached = await getCachedSearch(cacheKey);
   if (cached) {
     const outcome: SourceFetchOutcome = { source: adapter.name, candidates: cached, durationMs: Date.now() - start, cacheHit: true, timedOut: false, retries: 0, error: null };

@@ -51,4 +51,22 @@ export class ResilientVectorStore implements VectorStore {
       logVectorStore("error", { operation: "delete", id, error: (err as Error).message, degraded: true });
     }
   }
+
+  /** Forwards to the inner store's batchUpsert when it implements one (e.g.
+   *  QdrantVectorStore, chunked internally), so batch writers get the same degrade-on-error
+   *  guarantee as every other method instead of bypassing the decorator. Falls back to
+   *  sequential upsert() calls (still through this same try/catch) when the inner store has
+   *  no native batch path. */
+  async batchUpsert(points: { id: string; vector: number[]; payload?: Record<string, unknown> }[]): Promise<void> {
+    try {
+      const maybeBatch = this.inner as unknown as { batchUpsert?: (pts: typeof points) => Promise<void> };
+      if (typeof maybeBatch.batchUpsert === "function") {
+        await maybeBatch.batchUpsert(points);
+      } else {
+        await Promise.all(points.map((p) => this.inner.upsert(p.id, p.vector, p.payload)));
+      }
+    } catch (err) {
+      logVectorStore("error", { operation: "batchUpsert", count: points.length, error: (err as Error).message, degraded: true });
+    }
+  }
 }

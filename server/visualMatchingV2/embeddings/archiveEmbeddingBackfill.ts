@@ -22,7 +22,7 @@
  *   - MySQL (media_archive_asset_embeddings): durable backup / source of truth for
  *     "already embedded" checks, independent of Qdrant's availability. */
 
-import { listActiveMediaArchiveAssetsBatch } from "../../db";
+import { listActiveMediaArchiveAssetsBatch, getBackfillCursor, setBackfillCursor } from "../../db";
 import { storeAssetEmbedding, getAssetIdsWithCurrentEmbedding } from "./assetEmbeddings";
 import { buildAssetSemanticDocument } from "./semanticDocumentBuilder";
 import { VoyageEmbeddingProvider } from "./voyageProvider";
@@ -33,6 +33,7 @@ import type { MediaArchiveAsset } from "../../../drizzle/schema";
 const EMBEDDING_VERSION = "1";
 const PAGE_SIZE = 200;
 const PROVIDER_NAME = "voyage";
+const JOB_NAME = "archive_embedding_backfill";
 
 function requireBackfillEnabled(): void {
   if (process.env.VISUAL_MATCHING_V2_ARCHIVE_BACKFILL !== "true") {
@@ -51,7 +52,7 @@ function pointIdFor(asset: MediaArchiveAsset): string {
   return `own_archive:${asset.id}`;
 }
 
-function payloadFor(asset: MediaArchiveAsset): Record<string, unknown> {
+function payloadFor(asset: MediaArchiveAsset, provider: string, model: string, embeddingVersion: string): Record<string, unknown> {
   return {
     assetId: asset.id,
     title: asset.title ?? null,
@@ -65,6 +66,12 @@ function payloadFor(asset: MediaArchiveAsset): Record<string, unknown> {
     width: asset.width ?? null,
     height: asset.height ?? null,
     language: null,
+    // Mirrors exactly what's stored in MySQL (media_archive_asset_embeddings), so a future
+    // migration could be driven entirely from Qdrant without consulting MySQL first.
+    provider,
+    model,
+    embeddingVersion,
+    createdAt: new Date().toISOString(),
   };
 }
 
@@ -114,13 +121,14 @@ async function run(): Promise<void> {
   }
 
   const alreadyEmbedded = await getAssetIdsWithCurrentEmbedding(PROVIDER_NAME, provider.modelId, EMBEDDING_VERSION);
+  const resumeFromId = await getBackfillCursor(JOB_NAME, PROVIDER_NAME, provider.modelId, EMBEDDING_VERSION);
   console.log(
     `[ArchiveEmbeddingBackfill] starting. model=${provider.modelId} version=${EMBEDDING_VERSION} ` +
-      `alreadyEmbedded=${alreadyEmbedded.size}`
+      `alreadyEmbedded=${alreadyEmbedded.size} resumeFromId=${resumeFromId}`
   );
 
   const stats: RunStats = { processed: 0, skipped: 0, apiErrors: 0, retries: 0, totalEmbedMs: 0, startedAt: Date.now() };
-  let afterId = 0;
+  let afterId = resumeFromId;
   let totalSeen = 0;
 
   for (;;) {
@@ -154,22 +162,14 @@ async function run(): Promise<void> {
     const points = pending.map((asset, i) => ({
       id: pointIdFor(asset),
       vector: embeddings[i],
-      payload: payloadFor(asset),
+      payload: payloadFor(asset, PROVIDER_NAME, provider.modelId, EMBEDDING_VERSION),
     }));
 
-    // ResilientVectorStore implements the plain VectorStore interface (upsert/search/delete),
-    // not Qdrant's batchUpsert extension, so go through the underlying store directly for the
-    // batch path — still degrade-on-error, just handled locally instead of via the decorator.
-    try {
-      const maybeBatch = warm.store as unknown as { batchUpsert?: (pts: typeof points) => Promise<void> };
-      if (typeof maybeBatch.batchUpsert === "function") {
-        await maybeBatch.batchUpsert(points);
-      } else {
-        await Promise.all(points.map((p) => warm.resilientStore.upsert(p.id, p.vector, p.payload)));
-      }
-    } catch (err) {
-      console.warn("[ArchiveEmbeddingBackfill] Qdrant upsert failed for this batch (continuing):", (err as Error).message);
-    }
+    // batchUpsert always goes through the resilient store now, so it degrades (logs + no-op)
+    // on a Qdrant outage exactly like every other write here, instead of a bespoke local
+    // try/catch around the raw store. ResilientVectorStore.batchUpsert itself forwards to
+    // the inner store's native batchUpsert (chunked HTTP, not one request per point).
+    await warm.resilientStore.batchUpsert(points);
 
     for (let i = 0; i < pending.length; i++) {
       try {
@@ -181,6 +181,7 @@ async function run(): Promise<void> {
       }
     }
 
+    await setBackfillCursor(JOB_NAME, PROVIDER_NAME, provider.modelId, EMBEDDING_VERSION, afterId);
     logProgress(stats, null);
   }
 

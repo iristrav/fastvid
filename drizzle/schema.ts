@@ -245,3 +245,22 @@ export type NicheRequest = typeof nicheRequests.$inferSelect;
 export type InsertNicheRequest = typeof nicheRequests.$inferInsert;
 export type NicheRequestStatus = NicheRequest["status"];
 export type NicheRequestType = NicheRequest["requestType"];
+
+// ─── Visual Matching Engine V2 — resumable backfill cursor ────────────────────
+/** One row per (jobName, provider, model, embeddingVersion) combination. Lets a
+ *  multi-million-asset backfill resume from lastProcessedId after a crash instead of
+ *  rescanning every page from the start. Only ever written by
+ *  server/visualMatchingV2/embeddings/archiveEmbeddingBackfill.ts. */
+export const backfillCursors = mysqlTable("backfill_cursors", {
+  id: int("id").autoincrement().primaryKey(),
+  jobName: varchar("jobName", { length: 128 }).notNull(),
+  provider: varchar("provider", { length: 64 }).notNull(),
+  model: varchar("model", { length: 128 }).notNull(),
+  embeddingVersion: varchar("embeddingVersion", { length: 32 }).notNull(),
+  lastProcessedId: int("lastProcessedId").default(0).notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type BackfillCursor = typeof backfillCursors.$inferSelect;
+export type InsertBackfillCursor = typeof backfillCursors.$inferInsert;
