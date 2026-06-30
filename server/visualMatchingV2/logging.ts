@@ -16,6 +16,14 @@ export function logSourceAdapter(event: "search_start" | "search_result" | "erro
   console.log(`${PREFIX} SourceAdapter.${event}`, JSON.stringify(data));
 }
 
+/** Stage 2 — Candidate Fetcher trace: per-beat summary of which sources ran, how long they
+ *  took, cache hits, timeouts, retries and errors. This is the CandidateFetchTrace; it
+ *  follows the same per-beat shape the design calls BeatSelectionTrace and will be merged
+ *  into it once scoring/selection (later stages) exist to log against. */
+export function logCandidateFetch(event: "fetch_complete", trace: Record<string, unknown>) {
+  console.log(`${PREFIX} CandidateFetch.${event}`, JSON.stringify(trace));
+}
+
 /** Wraps an async step, logging duration_ms and any thrown error under a consistent shape. */
 export async function timedStep<T>(label: string, fn: () => Promise<T>): Promise<T> {
   const start = Date.now();

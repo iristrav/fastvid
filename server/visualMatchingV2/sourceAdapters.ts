@@ -47,6 +47,28 @@ async function withAdapterLogging<T extends CandidateAsset[]>(
   }
 }
 
+function normalizeCandidate(
+  partial: Pick<CandidateAsset, "candidateId" | "source" | "assetType" | "localPath" | "remoteUrl" | "metadata">,
+  searchQuery: string,
+  retrievalMethod: CandidateAsset["retrievalMethod"] = "search"
+): CandidateAsset {
+  return {
+    candidateId: partial.candidateId,
+    source: partial.source,
+    assetType: partial.assetType,
+    title: null,
+    description: null,
+    tags: [],
+    thumbnail: null,
+    localPath: partial.localPath ?? null,
+    remoteUrl: partial.remoteUrl ?? null,
+    metadata: partial.metadata,
+    searchQuery,
+    retrievalMethod,
+    fetchedAt: new Date().toISOString(),
+  };
+}
+
 export const ownArchiveAdapter: SourceAdapter = {
   name: "own_archive",
   supportsPreEmbedding: true,
@@ -69,13 +91,19 @@ export const ownArchiveAdapter: SourceAdapter = {
         new Set<string>()
       );
       if (!path) return [];
-      const candidate: CandidateAsset = {
-        candidateId: `own_archive:${path}`,
-        source: "own_archive",
-        localPath: path,
-        raw: { path },
-      };
-      return [candidate];
+      return [
+        normalizeCandidate(
+          {
+            candidateId: `own_archive:${path}`,
+            source: "own_archive",
+            assetType: "video",
+            localPath: path,
+            remoteUrl: null,
+            metadata: { path },
+          },
+          searchQueryFromIntent(intent)
+        ),
+      ];
     });
   },
 };
@@ -85,19 +113,14 @@ export const wikimediaAdapter: SourceAdapter = {
   supportsPreEmbedding: false,
   async search(intent, ctx) {
     return withAdapterLogging("wikimedia", intent, async () => {
-      const paths = await fetchWikimediaImages(
-        searchQueryFromIntent(intent),
-        5,
-        ctx.workDir,
-        ctx.sceneIndex,
-        ctx.count ?? 5
+      const query = searchQueryFromIntent(intent);
+      const paths = await fetchWikimediaImages(query, 5, ctx.workDir, ctx.sceneIndex, ctx.count ?? 5);
+      return paths.map((p): CandidateAsset =>
+        normalizeCandidate(
+          { candidateId: `wikimedia:${p}`, source: "wikimedia", assetType: "image", localPath: p, remoteUrl: null, metadata: { path: p } },
+          query
+        )
       );
-      return paths.map((p): CandidateAsset => ({
-        candidateId: `wikimedia:${p}`,
-        source: "wikimedia",
-        localPath: p,
-        raw: { path: p },
-      }));
     });
   },
 };
@@ -107,19 +130,14 @@ export const pexelsAdapter: SourceAdapter = {
   supportsPreEmbedding: false,
   async search(intent, ctx) {
     return withAdapterLogging("pexels", intent, async () => {
-      const paths = await fetchPexelsClips(
-        searchQueryFromIntent(intent),
-        5,
-        ctx.workDir,
-        ctx.sceneIndex,
-        ctx.count ?? 5
+      const query = searchQueryFromIntent(intent);
+      const paths = await fetchPexelsClips(query, 5, ctx.workDir, ctx.sceneIndex, ctx.count ?? 5);
+      return paths.map((p): CandidateAsset =>
+        normalizeCandidate(
+          { candidateId: `pexels:${p}`, source: "pexels", assetType: "video", localPath: p, remoteUrl: null, metadata: { path: p } },
+          query
+        )
       );
-      return paths.map((p): CandidateAsset => ({
-        candidateId: `pexels:${p}`,
-        source: "pexels",
-        localPath: p,
-        raw: { path: p },
-      }));
     });
   },
 };
@@ -129,19 +147,14 @@ export const pixabayAdapter: SourceAdapter = {
   supportsPreEmbedding: false,
   async search(intent, ctx) {
     return withAdapterLogging("pixabay", intent, async () => {
-      const paths = await fetchPixabayClips(
-        searchQueryFromIntent(intent),
-        5,
-        ctx.workDir,
-        ctx.sceneIndex,
-        ctx.count ?? 5
+      const query = searchQueryFromIntent(intent);
+      const paths = await fetchPixabayClips(query, 5, ctx.workDir, ctx.sceneIndex, ctx.count ?? 5);
+      return paths.map((p): CandidateAsset =>
+        normalizeCandidate(
+          { candidateId: `pixabay:${p}`, source: "pixabay", assetType: "video", localPath: p, remoteUrl: null, metadata: { path: p } },
+          query
+        )
       );
-      return paths.map((p): CandidateAsset => ({
-        candidateId: `pixabay:${p}`,
-        source: "pixabay",
-        localPath: p,
-        raw: { path: p },
-      }));
     });
   },
 };
@@ -151,18 +164,21 @@ export const internetArchiveAdapter: SourceAdapter = {
   supportsPreEmbedding: false,
   async search(intent, ctx) {
     return withAdapterLogging("internet_archive", intent, async () => {
-      const candidates = await fetchInternetArchiveClips(
-        searchQueryFromIntent(intent),
-        5,
-        ctx.workDir,
-        ctx.sceneIndex,
-        ctx.count ?? 5
+      const query = searchQueryFromIntent(intent);
+      const candidates = await fetchInternetArchiveClips(query, 5, ctx.workDir, ctx.sceneIndex, ctx.count ?? 5);
+      return candidates.map((c): CandidateAsset =>
+        normalizeCandidate(
+          {
+            candidateId: `internet_archive:${JSON.stringify(c).slice(0, 64)}`,
+            source: "internet_archive",
+            assetType: "video",
+            localPath: c.path ?? null,
+            remoteUrl: null,
+            metadata: c,
+          },
+          query
+        )
       );
-      return candidates.map((c): CandidateAsset => ({
-        candidateId: `internet_archive:${JSON.stringify(c).slice(0, 64)}`,
-        source: "internet_archive",
-        raw: c,
-      }));
     });
   },
 };

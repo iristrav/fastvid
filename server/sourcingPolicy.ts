@@ -27,6 +27,11 @@ export function visualMatchingV2SourceAdaptersEnabled(): boolean {
   return process.env.VISUAL_MATCHING_V2_ADAPTERS === "true";
 }
 
+/** V2 Candidate Fetcher (parallel search across all source adapters, search cache, fetch trace). Inert until read by the active pipeline. */
+export function visualMatchingV2FetcherEnabled(): boolean {
+  return process.env.VISUAL_MATCHING_V2_FETCHER === "true";
+}
+
 /** Full external sourcing (YouTube, internet stills, Serp) — off by default; stock fallbacks still run in archive-first mode. */
 export function externalVisualSourcingEnabled(): boolean {
   return process.env.ENABLE_EXTERNAL_VISUAL_SOURCING === "true";
