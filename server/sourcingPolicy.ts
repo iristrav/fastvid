@@ -71,6 +71,13 @@ export function visualMatchingV2VisionScorerEnabled(): boolean {
   return process.env.VISUAL_MATCHING_V2_VISION_SCORER === "true";
 }
 
+/** V2 Candidate Selector — fifth and final funnel stage (scored candidates -> single winner
+ *  or needsResearch signal). The only component in the V2 pipeline permitted to choose a
+ *  winner. Inert until read by the active pipeline. */
+export function visualMatchingV2SelectorEnabled(): boolean {
+  return process.env.VISUAL_MATCHING_V2_SELECTOR === "true";
+}
+
 /** Full external sourcing (YouTube, internet stills, Serp) — off by default; stock fallbacks still run in archive-first mode. */
 export function externalVisualSourcingEnabled(): boolean {
   return process.env.ENABLE_EXTERNAL_VISUAL_SOURCING === "true";

@@ -96,6 +96,16 @@ export function logVisionScorer(event: "score_complete" | "cache_hit" | "error",
   console.log(`${PREFIX} VisionScorer.${event}`, JSON.stringify(data));
 }
 
+/** Candidate Selector — fifth funnel stage, the sole component that may choose a winner.
+ *  Logs start/complete/reject/tiebreak/error, each carrying the beatId and minimal fields
+ *  needed to diagnose selection decisions without parsing the full SelectorTrace. */
+export function logSelector(
+  event: "start" | "complete" | "reject" | "tieBreak" | "error",
+  data: Record<string, unknown>
+) {
+  console.log(`${PREFIX} Selection.${event}`, JSON.stringify(data));
+}
+
 /** Wraps an async step, logging duration_ms and any thrown error under a consistent shape. */
 export async function timedStep<T>(label: string, fn: () => Promise<T>): Promise<T> {
   const start = Date.now();

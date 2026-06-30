@@ -469,6 +469,84 @@ export type VisionScoreTrace = {
   }[];
 };
 
+// ─── Candidate Selector: fifth and final funnel stage. The only component that may choose
+// a winner. All prior stages gather information; this stage decides. ─────────────────────
+
+export type ConfidenceTier = "perfect" | "good" | "acceptable" | "reject";
+
+/** Configurable tier boundaries — all thresholds are inclusive lower bounds on
+ *  visionScores.overallScore (0-100). Callers may override via SelectionConfig.
+ *  Deliberately separate from VisionScores so they can evolve independently. */
+export type ConfidenceTierThresholds = {
+  /** Minimum overallScore to qualify as "perfect". Default 85. */
+  perfect: number;
+  /** Minimum overallScore to qualify as "good". Default 70. */
+  good: number;
+  /** Minimum overallScore to qualify as "acceptable". Default 50. */
+  acceptable: number;
+  /** Anything below "acceptable" is "reject" — no explicit field needed. */
+};
+
+export type SelectionConfig = {
+  thresholds: ConfidenceTierThresholds;
+  /** Source priority map — same shape as RankingConfig.sourcePriority, used as the final
+   *  tiebreaker so the Selector's tie-break logic stays data-driven, not hardcoded. If
+   *  omitted, defaults from DEFAULT_SOURCE_PRIORITY in candidateRanking.ts are used. */
+  sourcePriority?: SourcePriority;
+};
+
+/** Per-candidate verdict recorded in the trace for every candidate, winner and losers alike. */
+export type CandidateVerdict = {
+  candidateId: string;
+  overallScore: number;
+  confidenceTier: ConfidenceTier;
+  rankingScore: number | null;
+  clipSimilarity: number | null;
+  embeddingSimilarity: number | null;
+  keywordScore: number | null;
+  /** Why this candidate was NOT selected (null for the winner). */
+  rejectedReason: string | null;
+};
+
+/** Complete trace from one selectCandidate() call — designed so the future
+ *  BeatSelectionTrace component only needs `trace.save(selectionResult.trace)`. Contains
+ *  every signal and decision that went into the selection, with no post-hoc reconstruction
+ *  needed. */
+export type SelectorTrace = {
+  beatId: string;
+  startedAt: string;
+  durationMs: number;
+  candidateCount: number;
+  thresholds: ConfidenceTierThresholds;
+  /** Whether a tiebreak had to be applied to break a score tie among equal-scoring candidates. */
+  tieBreakApplied: boolean;
+  /** Human-readable description of the tiebreak step that resolved the tie, or null. */
+  tieBreakReason: string | null;
+  /** Id of the selected candidate, or null when needsResearch is true. */
+  selectedCandidateId: string | null;
+  /** Single human-readable sentence explaining the selection or rejection decision. */
+  selectionReason: string;
+  confidenceTier: ConfidenceTier | null;
+  needsResearch: boolean;
+  verdicts: CandidateVerdict[];
+};
+
+export type SelectionResult = {
+  /** The winning ScoredCandidate — null when needsResearch is true. */
+  selectedCandidate: ScoredCandidate | null;
+  selectedCandidateId: string | null;
+  confidenceTier: ConfidenceTier | null;
+  /** True when every candidate scored below the "acceptable" threshold. The pipeline should
+   *  trigger another retrieval pass rather than materializing a reject-tier clip. */
+  needsResearch: boolean;
+  selectionReason: string;
+  /** Complete, self-contained trace ready to be persisted by BeatSelectionTrace. */
+  trace: SelectorTrace;
+  /** All candidates, sorted by overallScore descending, with their verdicts attached so
+   *  the BeatSelectionTrace can present a full ranked explanation without re-sorting. */
+  allCandidates: ScoredCandidate[];
+};
+
 export type RetrievalOrchestratorOptions = {
   /** The strategy produced by the Strategy Engine — the Orchestrator executes it
    *  verbatim, with no internal decisions. */
