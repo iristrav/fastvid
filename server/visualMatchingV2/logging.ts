@@ -24,6 +24,15 @@ export function logCandidateFetch(event: "fetch_complete", trace: Record<string,
   console.log(`${PREFIX} CandidateFetch.${event}`, JSON.stringify(trace));
 }
 
+/** Stage 3 — embedding layer: generation, cache hits/misses, vector search timing,
+ *  candidate counts, and which provider was used. */
+export function logEmbedding(
+  event: "generated" | "cache_hit" | "cache_miss" | "vector_search" | "error",
+  data: Record<string, unknown>
+) {
+  console.log(`${PREFIX} Embedding.${event}`, JSON.stringify(data));
+}
+
 /** Wraps an async step, logging duration_ms and any thrown error under a consistent shape. */
 export async function timedStep<T>(label: string, fn: () => Promise<T>): Promise<T> {
   const start = Date.now();

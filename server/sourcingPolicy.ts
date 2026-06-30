@@ -32,6 +32,11 @@ export function visualMatchingV2FetcherEnabled(): boolean {
   return process.env.VISUAL_MATCHING_V2_FETCHER === "true";
 }
 
+/** V2 embedding infrastructure (provider interface, embedding cache, vector store, embedding search engine). Inert until read by the active pipeline. */
+export function visualMatchingV2EmbeddingsEnabled(): boolean {
+  return process.env.VISUAL_MATCHING_V2_EMBEDDINGS === "true";
+}
+
 /** Full external sourcing (YouTube, internet stills, Serp) — off by default; stock fallbacks still run in archive-first mode. */
 export function externalVisualSourcingEnabled(): boolean {
   return process.env.ENABLE_EXTERNAL_VISUAL_SOURCING === "true";

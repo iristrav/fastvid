@@ -183,6 +183,34 @@ export const visualIntentCache = mysqlTable("visual_intent_cache", {
 export type VisualIntentCacheRow = typeof visualIntentCache.$inferSelect;
 export type InsertVisualIntentCacheRow = typeof visualIntentCache.$inferInsert;
 
+// ─── Visual Matching Engine V2 — Embedding infrastructure (stage 3) ───────────
+/** Permanent embedding cache, keyed by subject (asset id, or a content hash for ad-hoc
+ *  text like a search query) + model + embedding_version, so an embedding is computed at
+ *  most once per (subject, model, version) triple regardless of provider churn. */
+export const embeddingCache = mysqlTable("embedding_cache", {
+  id: int("id").autoincrement().primaryKey(),
+  subjectId: varchar("subjectId", { length: 128 }).notNull(),
+  model: varchar("model", { length: 128 }).notNull(),
+  embeddingVersion: varchar("embeddingVersion", { length: 32 }).notNull(),
+  embedding: json("embedding").$type<number[]>().notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+export type EmbeddingCacheRow = typeof embeddingCache.$inferSelect;
+export type InsertEmbeddingCacheRow = typeof embeddingCache.$inferInsert;
+
+/** Per-asset embedding storage for the own-archive library. Infrastructure only for stage
+ *  3 — no backfill is run yet, so this table starts empty in production. */
+export const mediaArchiveAssetEmbeddings = mysqlTable("media_archive_asset_embeddings", {
+  id: int("id").autoincrement().primaryKey(),
+  assetId: int("assetId").notNull().references(() => mediaArchiveAssets.id),
+  model: varchar("model", { length: 128 }).notNull(),
+  embeddingVersion: varchar("embeddingVersion", { length: 32 }).notNull(),
+  embedding: json("embedding").$type<number[]>().notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+export type MediaArchiveAssetEmbeddingRow = typeof mediaArchiveAssetEmbeddings.$inferSelect;
+export type InsertMediaArchiveAssetEmbeddingRow = typeof mediaArchiveAssetEmbeddings.$inferInsert;
+
 // ─── Niche / channel requests ─────────────────────────────────────────────────
 export const nicheRequests = mysqlTable("niche_requests", {
   id: int("id").autoincrement().primaryKey(),

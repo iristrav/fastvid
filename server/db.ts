@@ -1106,6 +1106,10 @@ import {
   InsertVisualIntentCacheRow,
   visualContextCache,
   visualIntentCache,
+  InsertEmbeddingCacheRow,
+  InsertMediaArchiveAssetEmbeddingRow,
+  embeddingCache,
+  mediaArchiveAssetEmbeddings,
 } from "../drizzle/schema";
 
 export async function getVisualContextCacheByTopicHash(topicHash: string) {
@@ -1141,6 +1145,56 @@ export async function createVisualIntentCache(data: InsertVisualIntentCacheRow) 
   const db = await getDb();
   if (!db) return undefined;
   const result = await db.insert(visualIntentCache).values(data);
+  return (result as unknown as [{ insertId: number }])[0]?.insertId as number;
+}
+
+// ─── Visual Matching Engine V2: Embedding cache + own-archive asset embeddings (stage 3) ──
+
+export async function getEmbeddingCache(subjectId: string, model: string, embeddingVersion: string) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db
+    .select()
+    .from(embeddingCache)
+    .where(
+      and(
+        eq(embeddingCache.subjectId, subjectId),
+        eq(embeddingCache.model, model),
+        eq(embeddingCache.embeddingVersion, embeddingVersion)
+      )
+    )
+    .limit(1);
+  return result.length > 0 ? result[0] : undefined;
+}
+
+export async function createEmbeddingCache(data: InsertEmbeddingCacheRow) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db.insert(embeddingCache).values(data);
+  return (result as unknown as [{ insertId: number }])[0]?.insertId as number;
+}
+
+export async function getMediaArchiveAssetEmbedding(assetId: number, model: string, embeddingVersion: string) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db
+    .select()
+    .from(mediaArchiveAssetEmbeddings)
+    .where(
+      and(
+        eq(mediaArchiveAssetEmbeddings.assetId, assetId),
+        eq(mediaArchiveAssetEmbeddings.model, model),
+        eq(mediaArchiveAssetEmbeddings.embeddingVersion, embeddingVersion)
+      )
+    )
+    .limit(1);
+  return result.length > 0 ? result[0] : undefined;
+}
+
+export async function createMediaArchiveAssetEmbedding(data: InsertMediaArchiveAssetEmbeddingRow) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db.insert(mediaArchiveAssetEmbeddings).values(data);
   return (result as unknown as [{ insertId: number }])[0]?.insertId as number;
 }
 

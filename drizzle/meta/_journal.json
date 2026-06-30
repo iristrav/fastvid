@@ -141,6 +141,13 @@
       "when": 1781100006000,
       "tag": "0019_visual_matching_v2",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "5",
+      "when": 1781100007000,
+      "tag": "0020_visual_matching_v2_embeddings",
+      "breakpoints": true
     }
   ]
 }
