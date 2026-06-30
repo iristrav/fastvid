@@ -148,6 +148,13 @@
       "when": 1781100007000,
       "tag": "0020_visual_matching_v2_embeddings",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "5",
+      "when": 1781100008000,
+      "tag": "0021_visual_matching_v2_embedding_provider",
+      "breakpoints": true
     }
   ]
 }

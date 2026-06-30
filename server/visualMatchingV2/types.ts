@@ -62,6 +62,17 @@ export type CandidateAsset = {
   mimeType: string | null;
   originalSource: string | null;
   downloadTimeMs: number | null;
+  // ─── Semantic retrieval (Priority 1): kept separate, never blended into one score, so
+  // later stages (scoring/explainability) can see exactly which signal(s) found a candidate. ──
+  /** Cosine similarity from vector search, 0..1. Null when the candidate wasn't found via
+   *  embedding search (e.g. keyword-only sources, or fast mode where semantic is disabled). */
+  embeddingSimilarity: number | null;
+  /** Relevance score from keyword/metadata search, on whatever scale that source produces.
+   *  Null when the candidate wasn't found via keyword search. */
+  keywordScore: number | null;
+  /** Which retrieval path(s) produced this candidate. "both" when the same asset was found
+   *  via keyword and semantic search in the same beat and dedup merged the two outcomes. */
+  retrievalReason: "keyword" | "semantic" | "both" | null;
 };
 
 export type SourceAdapter = {

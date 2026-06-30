@@ -1073,6 +1073,21 @@ export async function listActiveVideoArchiveAssetsBatch(afterId: number, limit: 
     .limit(limit);
 }
 
+/** Paginated active assets of any media type (video + image) — used by the Visual Matching
+ *  Engine V2 archive embedding backfill, a standalone script (see
+ *  server/visualMatchingV2/embeddings/archiveEmbeddingBackfill.ts). Not called from any
+ *  worker startup path. */
+export async function listActiveMediaArchiveAssetsBatch(afterId: number, limit: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select()
+    .from(mediaArchiveAssets)
+    .where(and(eq(mediaArchiveAssets.isActive, 1), gt(mediaArchiveAssets.id, afterId)))
+    .orderBy(asc(mediaArchiveAssets.id))
+    .limit(limit);
+}
+
 export async function getMediaArchiveAssetById(id: number) {
   const db = await getDb();
   if (!db) return undefined;
@@ -1172,6 +1187,28 @@ export async function createEmbeddingCache(data: InsertEmbeddingCacheRow) {
   if (!db) return undefined;
   const result = await db.insert(embeddingCache).values(data);
   return (result as unknown as [{ insertId: number }])[0]?.insertId as number;
+}
+
+/** Asset IDs that already have a current embedding (matching provider/model/version) —
+ *  used by the incremental backfill to skip assets that don't need re-embedding. */
+export async function listMediaArchiveAssetIdsWithEmbedding(
+  provider: string,
+  model: string,
+  embeddingVersion: string
+): Promise<Set<number>> {
+  const db = await getDb();
+  if (!db) return new Set();
+  const rows = await db
+    .select({ assetId: mediaArchiveAssetEmbeddings.assetId })
+    .from(mediaArchiveAssetEmbeddings)
+    .where(
+      and(
+        eq(mediaArchiveAssetEmbeddings.provider, provider),
+        eq(mediaArchiveAssetEmbeddings.model, model),
+        eq(mediaArchiveAssetEmbeddings.embeddingVersion, embeddingVersion)
+      )
+    );
+  return new Set(rows.map((r) => r.assetId));
 }
 
 export async function getMediaArchiveAssetEmbedding(assetId: number, model: string, embeddingVersion: string) {

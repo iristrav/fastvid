@@ -65,14 +65,14 @@ function candidateFromEmbeddingHit(
   return {
     candidateId: `own_archive:embedding:${hit.id}`,
     source: "own_archive",
-    assetType: (metadata.assetType as CandidateAsset["assetType"]) ?? "video",
+    assetType: ((metadata.assetType as string) ?? (metadata.mediaType as string) ?? "video") as CandidateAsset["assetType"],
     title: (metadata.title as string) ?? null,
     description: (metadata.description as string) ?? null,
     tags: (metadata.tags as string[]) ?? [],
     thumbnail: (metadata.thumbnail as string) ?? null,
     localPath: (metadata.localPath as string) ?? (metadata.path as string) ?? null,
     remoteUrl: (metadata.remoteUrl as string) ?? null,
-    metadata: { ...metadata, embeddingSimilarity: hit.similarity },
+    metadata,
     searchQuery,
     retrievalMethod: "search",
     language: (metadata.language as string) ?? null,
@@ -82,14 +82,107 @@ function candidateFromEmbeddingHit(
     height: (metadata.height as number) ?? null,
     duration: (metadata.duration as number) ?? null,
     mimeType: (metadata.mimeType as string) ?? null,
-    originalSource: (metadata.originalSource as string) ?? null,
+    originalSource: (metadata.originalSource as string) ?? (metadata.source as string) ?? null,
     downloadTimeMs: null,
+    embeddingSimilarity: hit.similarity,
+    keywordScore: null,
+    retrievalReason: "semantic",
     fetchedAt: new Date().toISOString(),
   };
 }
 
 // ─── Phase executors ──────────────────────────────────────────────────────────
 
+/** Runs the keyword/metadata sources for the own-archive phase. Sequential across sources
+ *  within this group (today there's only ever one: own_archive), but this whole group runs
+ *  concurrently with the embedding group below — see runArchivePhase. */
+async function runKeywordGroup(
+  archivePlans: SourcePlan[],
+  intent: VisualIntent,
+  ctx: SourceAdapterSearchCtx,
+  strategy: RetrievalStrategy,
+  adapterOverrides: RetrievalOrchestratorOptions["adapterOverrides"]
+): Promise<{ outcomes: RetrievalSourceOutcome[]; candidates: CandidateAsset[] }> {
+  const outcomes: RetrievalSourceOutcome[] = [];
+  const candidates: CandidateAsset[] = [];
+  if (!strategy.enableMetadataSearch) return { outcomes, candidates };
+
+  for (const plan of archivePlans) {
+    const adapter = resolveAdapter(plan.source, adapterOverrides);
+    if (!adapter) continue;
+    logRetrievalOrchestrator("phase_start", { beatId: intent.beatId, phase: "own_archive_metadata", source: plan.source });
+    const outcome = await searchOneSourceWithRetry(adapter, intent, ctx, plan.timeoutMs, strategy.retriesPerSource);
+    outcomes.push({ ...outcome, phase: "own_archive_metadata", skippedForEarlyExit: false });
+    candidates.push(...outcome.candidates);
+  }
+  return { outcomes, candidates };
+}
+
+/** Runs the semantic/embedding search for the own-archive phase. Never throws — a failed
+ *  or unavailable vector store (already degraded to an empty result by ResilientVectorStore
+ *  upstream of embeddingSearch) just yields zero embedding candidates, so this phase can
+ *  never block or fail the pipeline. Runs concurrently with runKeywordGroup. */
+async function runEmbeddingGroup(
+  embeddingPlans: SourcePlan[],
+  intent: VisualIntent,
+  strategy: RetrievalStrategy,
+  embeddingSearch: EmbeddingSearchProvider | undefined
+): Promise<{ outcomes: RetrievalSourceOutcome[]; candidates: CandidateAsset[]; embeddingHits: number }> {
+  if (!strategy.enableEmbedding || !embeddingSearch || embeddingPlans.length === 0) {
+    return { outcomes: [], candidates: [], embeddingHits: 0 };
+  }
+
+  logRetrievalOrchestrator("phase_start", { beatId: intent.beatId, phase: "own_archive_embedding" });
+  const start = Date.now();
+  const queryText = searchQueryFromIntent(intent);
+  try {
+    const { hits, cacheHit } = await embeddingSearch.search(queryText, embeddingPlans[0]?.maxCandidates ?? 10);
+    const embCandidates = hits.map((h) => candidateFromEmbeddingHit(h, queryText));
+    return {
+      outcomes: [
+        {
+          source: "own_archive",
+          candidates: embCandidates,
+          durationMs: Date.now() - start,
+          cacheHit,
+          timedOut: false,
+          retries: 0,
+          error: null,
+          phase: "own_archive_embedding",
+          skippedForEarlyExit: false,
+        },
+      ],
+      candidates: embCandidates,
+      embeddingHits: hits.length,
+    };
+  } catch (err) {
+    logRetrievalOrchestrator("error", { beatId: intent.beatId, phase: "own_archive_embedding", error: (err as Error).message });
+    return {
+      outcomes: [
+        {
+          source: "own_archive",
+          candidates: [],
+          durationMs: Date.now() - start,
+          cacheHit: false,
+          timedOut: false,
+          retries: 0,
+          error: (err as Error).message,
+          phase: "own_archive_embedding",
+          skippedForEarlyExit: false,
+        },
+      ],
+      candidates: [],
+      embeddingHits: 0,
+    };
+  }
+}
+
+/** Own-archive phase: keyword/metadata search and semantic/embedding search run in
+ *  parallel (never one waiting on the other), per the Strategy Engine's per-mode plan —
+ *  in "fast" mode the strategy simply produces no embedding SourcePlan, so this group is a
+ *  no-op there; every other mode that enables embedding runs both groups concurrently and
+ *  lets dedup reconcile overlapping results afterward. Embedding failures never block or
+ *  fail keyword results, and vice versa. */
 async function runArchivePhase(
   archivePlans: SourcePlan[],
   embeddingPlans: SourcePlan[],
@@ -99,58 +192,16 @@ async function runArchivePhase(
   embeddingSearch: EmbeddingSearchProvider | undefined,
   adapterOverrides: RetrievalOrchestratorOptions["adapterOverrides"]
 ): Promise<{ outcomes: RetrievalSourceOutcome[]; candidates: CandidateAsset[]; embeddingHits: number }> {
-  const outcomes: RetrievalSourceOutcome[] = [];
-  const candidates: CandidateAsset[] = [];
-  let embeddingHits = 0;
+  const [keywordResult, embeddingResult] = await Promise.all([
+    runKeywordGroup(archivePlans, intent, ctx, strategy, adapterOverrides),
+    runEmbeddingGroup(embeddingPlans, intent, strategy, embeddingSearch),
+  ]);
 
-  for (const plan of archivePlans) {
-    if (!strategy.enableMetadataSearch) continue;
-    const adapter = resolveAdapter(plan.source, adapterOverrides);
-    if (!adapter) continue;
-    logRetrievalOrchestrator("phase_start", { beatId: intent.beatId, phase: "own_archive_metadata", source: plan.source });
-    const outcome = await searchOneSourceWithRetry(adapter, intent, ctx, plan.timeoutMs, strategy.retriesPerSource);
-    outcomes.push({ ...outcome, phase: "own_archive_metadata", skippedForEarlyExit: false });
-    candidates.push(...outcome.candidates);
-  }
-
-  if (strategy.enableEmbedding && embeddingSearch && embeddingPlans.length > 0) {
-    logRetrievalOrchestrator("phase_start", { beatId: intent.beatId, phase: "own_archive_embedding" });
-    const start = Date.now();
-    const queryText = searchQueryFromIntent(intent);
-    try {
-      const { hits, cacheHit } = await embeddingSearch.search(queryText, embeddingPlans[0]?.maxCandidates ?? 10);
-      const embCandidates = hits.map((h) => candidateFromEmbeddingHit(h, queryText));
-      candidates.push(...embCandidates);
-      embeddingHits = hits.length;
-      outcomes.push({
-        source: "own_archive",
-        candidates: embCandidates,
-        durationMs: Date.now() - start,
-        cacheHit,
-        timedOut: false,
-        retries: 0,
-        error: null,
-        phase: "own_archive_embedding",
-        skippedForEarlyExit: false,
-      });
-    } catch (err) {
-      outcomes.push({
-        source: "own_archive",
-        candidates: [],
-        durationMs: Date.now() - start,
-        cacheHit: false,
-        timedOut: false,
-        retries: 0,
-        error: (err as Error).message,
-        phase: "own_archive_embedding",
-        skippedForEarlyExit: false,
-      });
-      logRetrievalOrchestrator("error", { beatId: intent.beatId, phase: "own_archive_embedding", error: (err as Error).message });
-    }
-  }
+  const outcomes = [...keywordResult.outcomes, ...embeddingResult.outcomes];
+  const candidates = [...keywordResult.candidates, ...embeddingResult.candidates];
 
   logRetrievalOrchestrator("phase_complete", { beatId: intent.beatId, phase: "own_archive", candidateCount: candidates.length });
-  return { outcomes, candidates, embeddingHits };
+  return { outcomes, candidates, embeddingHits: embeddingResult.embeddingHits };
 }
 
 async function runExternalPhase(

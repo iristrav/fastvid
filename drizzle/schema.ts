@@ -190,6 +190,9 @@ export type InsertVisualIntentCacheRow = typeof visualIntentCache.$inferInsert;
 export const embeddingCache = mysqlTable("embedding_cache", {
   id: int("id").autoincrement().primaryKey(),
   subjectId: varchar("subjectId", { length: 128 }).notNull(),
+  /** Which embedding provider produced this vector, e.g. "voyage". Defaults to "voyage" for
+   *  rows written before this column existed. */
+  provider: varchar("provider", { length: 64 }).default("voyage").notNull(),
   model: varchar("model", { length: 128 }).notNull(),
   embeddingVersion: varchar("embeddingVersion", { length: 32 }).notNull(),
   embedding: json("embedding").$type<number[]>().notNull(),
@@ -199,10 +202,15 @@ export type EmbeddingCacheRow = typeof embeddingCache.$inferSelect;
 export type InsertEmbeddingCacheRow = typeof embeddingCache.$inferInsert;
 
 /** Per-asset embedding storage for the own-archive library. Infrastructure only for stage
- *  3 — no backfill is run yet, so this table starts empty in production. */
+ *  3 — no backfill is run yet, so this table starts empty in production. Old and new rows
+ *  (different provider/model/embeddingVersion) coexist side by side; nothing deletes a row
+ *  on its own — a backfill re-run with a new version just adds new rows alongside old ones. */
 export const mediaArchiveAssetEmbeddings = mysqlTable("media_archive_asset_embeddings", {
   id: int("id").autoincrement().primaryKey(),
   assetId: int("assetId").notNull().references(() => mediaArchiveAssets.id),
+  /** Which embedding provider produced this vector, e.g. "voyage". Defaults to "voyage" for
+   *  rows written before this column existed. */
+  provider: varchar("provider", { length: 64 }).default("voyage").notNull(),
   model: varchar("model", { length: 128 }).notNull(),
   embeddingVersion: varchar("embeddingVersion", { length: 32 }).notNull(),
   embedding: json("embedding").$type<number[]>().notNull(),

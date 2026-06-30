@@ -161,11 +161,13 @@ function buildStrategy(
 
   switch (mode) {
     case "fast":
+      // Fast mode is keyword-only, always — never enables semantic retrieval regardless
+      // of whether embeddings are configured, per the "additive, never a replacement"
+      // requirement: speed-critical mode skips the extra retrieval path entirely.
       return {
         mode,
         sources: [
           archivePlan(timeouts.archiveMs, 5),
-          ...(enableEmbedding ? [embeddingPlan(5)] : []),
           // Fast mode: only two external sources (fastest ones: pexels, pixabay)
           ...externalPlans(
             external.filter((s) => s === "pexels" || s === "pixabay"),
@@ -174,7 +176,7 @@ function buildStrategy(
           ),
         ],
         maxCandidates,
-        enableEmbedding,
+        enableEmbedding: false,
         enableKeywordSearch: true,
         enableMetadataSearch: true,
         allowEarlyExit: true,

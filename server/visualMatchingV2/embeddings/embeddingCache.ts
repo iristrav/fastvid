@@ -26,7 +26,8 @@ export async function setCachedEmbedding(
   subjectId: string,
   model: string,
   embeddingVersion: string,
-  embedding: number[]
+  embedding: number[],
+  provider: string = "voyage"
 ): Promise<void> {
-  await createEmbeddingCache({ subjectId, model, embeddingVersion, embedding });
+  await createEmbeddingCache({ subjectId, provider, model, embeddingVersion, embedding });
 }

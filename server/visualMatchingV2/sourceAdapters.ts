@@ -74,6 +74,9 @@ function normalizeCandidate(
     mimeType: null,
     originalSource: null,
     downloadTimeMs: null,
+    embeddingSimilarity: null,
+    keywordScore: null,
+    retrievalReason: "keyword",
     fetchedAt: new Date().toISOString(),
   };
 }

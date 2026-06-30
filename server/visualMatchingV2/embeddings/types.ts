@@ -14,6 +14,10 @@ export interface EmbeddingProvider {
   /** Embedding dimensionality this provider produces, for vector store sizing. */
   readonly dimensions: number;
   embedText(text: string): Promise<number[]>;
+  /** Batched variant of embedText — embeds many texts in as few provider calls as possible
+   *  (provider-internal batching, e.g. 100 texts -> ~10 batch API calls). Falls back to
+   *  one-at-a-time embedText calls for providers that don't override this. */
+  embedBatch?(texts: string[]): Promise<number[][]>;
   /** Optional — image embeddings are out of scope for stage 3. */
   embedImage?(image: Buffer): Promise<number[]>;
 }
