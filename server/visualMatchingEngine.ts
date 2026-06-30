@@ -146,6 +146,19 @@ function extractPersonNames(text: string, locationSet: Set<string>): string[] {
   return [...new Set(found)].filter((n) => n.split(/\s+/).length >= 2);
 }
 
+/** Reduce free text (e.g. a clickbait video title or a full sentence) down to just its
+ *  topic words — a location/entity if one is found, else the first few non-stopword
+ *  words — so we never send a full sentence/title as a search query. */
+function extractTopicWords(text: string, maxWords = 3): string {
+  const locations = extractLocations(text);
+  if (locations.length) return locations.slice(0, 2).join(" ");
+  const words = text
+    .replace(/[^a-zA-Z\s]/g, " ")
+    .split(/\s+/)
+    .filter((w) => w.length >= 4 && !STOP_WORDS.has(w.toLowerCase()));
+  return words.slice(0, maxWords).join(" ");
+}
+
 function deriveVisualAction(sentence: string): string {
   for (const [re, visual] of NARRATIVE_TO_VISUAL) {
     if (re.test(sentence)) return visual;
@@ -163,7 +176,11 @@ function bestKeyword(sentence: string, events: string[], persons: string[], loca
     .filter((w) => w.length >= 5 && !STOP_WORDS.has(w.toLowerCase()));
   if (words[0]) return words[0];
   const title = coerceVisionString(videoTitle);
-  return title?.split(/\s+/).slice(0, 3).join(" ") ?? sentence.slice(0, 30);
+  if (title) {
+    const topic = extractTopicWords(title);
+    if (topic) return topic;
+  }
+  return extractTopicWords(sentence) || sentence.slice(0, 30);
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -190,7 +207,8 @@ export function analyzeSceneVisual(
 
   const main_topic =
     (events[0] ??
-      (titleStr ? titleStr.split(/\s+/).slice(0, 5).join(" ") : "")) ||
+      (titleStr ? extractTopicWords(titleStr) : "")) ||
+    extractTopicWords(sentence) ||
     sentence.slice(0, 60);
 
   const visual_subject =
@@ -208,7 +226,9 @@ export function analyzeSceneVisual(
     visual_location ? `in ${visual_location}` : undefined,
   ].filter((p): p is string => !!p);
   const visual_description =
-    descParts.length > 0 ? descParts.join(", ") : sentence.slice(0, 80);
+    descParts.length > 0
+      ? descParts.join(", ")
+      : extractTopicWords(sentence, 5) || sentence.slice(0, 80);
 
   return {
     sentence,
