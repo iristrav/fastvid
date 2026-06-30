@@ -4099,7 +4099,7 @@ async function fetchWikimediaImages(
     const searchUrl = `https://commons.wikimedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&srnamespace=6&srlimit=10&format=json&origin=*`;
     const searchResp = await withTimeout(
       fetch(searchUrl, { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }),
-      8_000,
+      5_000,
       `Wikimedia search scene ${sceneIndex}`
     );
     if (!searchResp.ok) return [];
@@ -4114,7 +4114,7 @@ async function fetchWikimediaImages(
         const infoUrl = `https://commons.wikimedia.org/w/api.php?action=query&titles=${encodeURIComponent(title)}&prop=imageinfo&iiprop=url|mime|size&format=json&origin=*`;
         const infoResp = await withTimeout(
           fetch(infoUrl, { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }),
-          8_000,
+          5_000,
           `Wikimedia info scene ${sceneIndex}`
         );
         if (!infoResp.ok) continue;
@@ -4193,7 +4193,7 @@ async function fetchWikimediaImagesV1(
       `&iiprop=url|mime|size&format=json&origin=*`;
     const infoResp = await withTimeout(
       fetch(infoUrl, { headers: UA }),
-      8_000,
+      5_000,
       `V1 Wikimedia info scene ${sceneIndex}`
     );
     if (!infoResp.ok) return null;
@@ -4263,7 +4263,7 @@ async function fetchWikimediaImagesV1(
         `&srprop=snippet|size&format=json&origin=*`;
       const searchResp = await withTimeout(
         fetch(searchUrl, { headers: UA }),
-        8_000,
+        5_000,
         `V1 Wikimedia search scene ${sceneIndex}`
       );
       if (!searchResp.ok) continue;
@@ -4325,7 +4325,7 @@ async function fetchOpenverseImages(
     const searchUrl = `https://api.openverse.org/v1/images/?q=${encodeURIComponent(query)}&license_type=commercial,modification&page_size=${maxResults * 3}&format=json`;
     const searchResp = await withTimeout(
       fetch(searchUrl, { headers: { 'User-Agent': 'Fastvid/1.0 (video generation; contact@fastvid.ai)' } }),
-      8000,
+      5000,
       `Openverse search scene ${sceneIndex}`
     );
     if (!searchResp.ok) {
