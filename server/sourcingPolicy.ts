@@ -831,6 +831,11 @@ export function archiveTagsPrimaryMatching(): boolean {
   return process.env.ENABLE_ARCHIVE_TAG_MATCH !== "false";
 }
 
+/** Stability AI image-gen fallback — off (out of credits); set STABILITY_AI_ENABLED=true to re-enable. */
+export function stabilityAiEnabled(): boolean {
+  return process.env.STABILITY_AI_ENABLED === "true";
+}
+
 /** Europeana EU heritage API — off by default; set ENABLE_EUROPEANA=true + EUROPEANA_API_KEY. */
 export function europeanaSourcingEnabled(): boolean {
   return process.env.ENABLE_EUROPEANA === "true";
