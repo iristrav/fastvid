@@ -54,6 +54,15 @@ export function logVectorStore(
   console.log(`${PREFIX} VectorStore.${event}`, JSON.stringify(data));
 }
 
+/** Retrieval Strategy Engine — the sole location where strategy selection decisions are
+ *  logged. One event per beat: which mode was selected and why (inferred from context). */
+export function logRetrievalStrategy(
+  event: "selected" | "override" | "error",
+  data: Record<string, unknown>
+) {
+  console.log(`${PREFIX} RetrievalStrategy.${event}`, JSON.stringify(data));
+}
+
 /** Retrieval Orchestrator — the single component that decides how candidates are fetched
  *  across all sources. Logs phase transitions, early-exit decisions, and the final pool
  *  summary, separately from the per-source CandidateFetch trace it builds on top of. */

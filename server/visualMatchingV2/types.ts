@@ -148,6 +148,64 @@ export type SourceMetricsSnapshot = {
   avgCandidatesPerSearch: number;
 };
 
+// ─── Retrieval Strategy Engine: determines what strategy to use before the Orchestrator
+// executes it. Strict separation: the Engine decides, the Orchestrator executes. ──────
+
+export type RetrievalStrategyMode =
+  | "archive_only"
+  | "archive_first"
+  | "balanced"
+  | "external_first"
+  | "high_quality"
+  | "fast";
+
+/** Per-source execution plan produced by the Strategy Engine and consumed verbatim by
+ *  the Orchestrator. No if/else in the Orchestrator — all per-source decisions are here. */
+export type SourcePlan = {
+  source: CandidateSource;
+  /** Lower = higher priority; own archive is always 1, external sources start at 2. */
+  priority: number;
+  /** Max candidates to request from this source. */
+  maxCandidates: number;
+  /** Per-source timeout. Overrides the strategy-level archiveTimeoutMs/externalTimeoutMs. */
+  timeoutMs: number;
+  /** Which phase this source belongs to in the Orchestrator's two-phase execution plan. */
+  phase: RetrievalSourcePhase;
+};
+
+/** Complete retrieval strategy — the only input the Orchestrator needs besides intent and
+ *  execution context. The Orchestrator never contains if/else about retrieval behavior;
+ *  every decision is in this object, produced by the Strategy Engine. */
+export interface RetrievalStrategy {
+  mode: RetrievalStrategyMode;
+  sources: SourcePlan[];
+  maxCandidates: number;
+  enableEmbedding: boolean;
+  enableKeywordSearch: boolean;
+  enableMetadataSearch: boolean;
+  allowEarlyExit: boolean;
+  /** When true and the archive phase already found >= maxCandidates, skip the external
+   *  parallel phase entirely instead of starting it and cutting it off mid-run. */
+  allowFallback: boolean;
+  retriesPerSource: number;
+  externalTimeoutMs: number;
+  archiveTimeoutMs: number;
+}
+
+/** Input to the Strategy Engine. Everything it needs to choose a strategy: the intent
+ *  already holds keyword/topic/emotion signals; videoContext adds era/setting context;
+ *  the remaining fields carry runtime flags. */
+export type RetrievalStrategyContext = {
+  videoContext?: VideoContext;
+  videoLength?: string | null;
+  performanceMode?: "fast" | "high_quality" | "balanced";
+  /** Passed from visualMatchingV2EmbeddingsEnabled() — the engine doesn't import
+   *  sourcingPolicy.ts to respect the layering: policy → engine, not engine → policy. */
+  embeddingEnabled?: boolean;
+  /** Passed from visualMatchingV2SourceAdaptersEnabled() / feature flag state. */
+  availableSources?: CandidateSource[];
+};
+
 // ─── Retrieval Orchestrator: the single component that decides how candidates are
 // fetched. Every source goes through this — no adapter or caller searches on its own.
 // Returns only a CandidatePool: no scoring, no selection, no CLIP, no LLM. ───────────
@@ -196,24 +254,20 @@ export type CandidatePool = {
   };
 };
 
+export type EmbeddingSearchProvider = {
+  search(queryText: string, topK: number): Promise<{ hits: { id: string; similarity: number; metadata?: Record<string, unknown> }[]; cacheHit: boolean }>;
+};
+
 export type RetrievalOrchestratorOptions = {
-  /** Own-archive metadata adapter + external adapters default to the standard registry
-   *  (sourceAdapters.ts) — override only for tests. */
-  ownArchiveAdapter?: SourceAdapter;
-  externalAdapters?: SourceAdapter[];
-  /** Optional embedding-backed own-archive search. Omit to skip the embedding phase
-   *  entirely (e.g. when VISUAL_MATCHING_V2_EMBEDDINGS is off) — metadata search alone
-   *  still runs. */
-  embeddingSearch?: {
-    search(queryText: string, topK: number): Promise<{ hits: { id: string; similarity: number; metadata?: Record<string, unknown> }[]; cacheHit: boolean }>;
-    topK?: number;
-  };
-  perSourceTimeoutMs?: number;
-  retriesPerSource?: number;
-  /** Stop waiting on remaining (slower) external sources once the pool reaches this many
-   *  candidates. Already-dispatched requests are not cancelled, only no longer awaited —
-   *  same documented semantics as the per-source timeout in candidateFetcher.ts. */
-  maxTotalCandidates?: number;
+  /** The strategy produced by the Strategy Engine — the Orchestrator executes it
+   *  verbatim, with no internal decisions. */
+  strategy: RetrievalStrategy;
+  /** Override the standard adapter registry (sourceAdapters.ts) — for tests only. */
+  adapterOverrides?: Partial<Record<CandidateSource, SourceAdapter>>;
+  /** The embedding-search provider instance; the Strategy must have enableEmbedding:true
+   *  for this to be invoked. Omit if no embeddings are configured. */
+  embeddingSearch?: EmbeddingSearchProvider;
+  /** Execution context — workdir/index/count are pipeline state, not strategy. */
   workDir: string;
   sceneIndex: number;
   count?: number;

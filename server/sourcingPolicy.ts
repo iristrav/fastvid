@@ -43,6 +43,13 @@ export function visualMatchingV2RetrievalOrchestratorEnabled(): boolean {
   return process.env.VISUAL_MATCHING_V2_RETRIEVAL_ORCHESTRATOR === "true";
 }
 
+/** V2 Retrieval Strategy Engine — determines which retrieval strategy (mode, sources,
+ *  timeouts, embedding/keyword flags) to use before the Orchestrator executes. Inert
+ *  until read by the active pipeline. */
+export function visualMatchingV2RetrievalStrategyEnabled(): boolean {
+  return process.env.VISUAL_MATCHING_V2_RETRIEVAL_STRATEGY === "true";
+}
+
 /** Full external sourcing (YouTube, internet stills, Serp) — off by default; stock fallbacks still run in archive-first mode. */
 export function externalVisualSourcingEnabled(): boolean {
   return process.env.ENABLE_EXTERNAL_VISUAL_SOURCING === "true";
