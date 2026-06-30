@@ -11,6 +11,18 @@ import { startVideoQueueWorker } from "./videoQueue";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// Mirrors server/_core/index.ts: an uncaughtException means Node's internal state is no
+// longer guaranteed consistent, so exit and let Railway's restartPolicy (ON_FAILURE) restart
+// us. An unhandledRejection (e.g. one stray ETIMEDOUT from an S3 fetch) is just one abandoned
+// promise chain — log and keep the worker alive so it doesn't drop every in-flight render.
+process.on("uncaughtException", (err) => {
+  console.error("[Worker] Uncaught exception — exiting so Railway restarts the process:", err);
+  process.exit(1);
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("[Worker] Unhandled rejection (worker kept alive):", reason);
+});
+
 async function runMigrations() {
   if (!process.env.DATABASE_URL) {
     console.log("[Worker] DATABASE_URL not set, skipping migrations");
