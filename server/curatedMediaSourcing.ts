@@ -1306,6 +1306,14 @@ async function probeMediaDurationSec(filePath: string): Promise<number> {
   }
 }
 
+/** Persistent on-disk cache for assets fetched from S3/R2 — survives across renders on the
+ * same volume, so repeat use of the same archive clip (the common case) skips the network. */
+const ARCHIVE_S3_CACHE_DIR = path.join(LOCAL_UPLOADS_DIR, "archive-s3-cache");
+
+function archiveS3CachePath(key: string): string {
+  return path.join(ARCHIVE_S3_CACHE_DIR, key.replace(/\//g, "_"));
+}
+
 async function materializeArchiveAsset(asset: MediaArchiveAsset, destPath: string): Promise<void> {
   const local = resolveArchiveAssetLocalPath(asset);
   if (local) {
@@ -1314,12 +1322,23 @@ async function materializeArchiveAsset(asset: MediaArchiveAsset, destPath: strin
   }
   if (asset.storageUrl.startsWith("/manus-storage/")) {
     const key = asset.storageKey ?? asset.storageUrl.replace(/^\/manus-storage\//, "");
+    const cachePath = archiveS3CachePath(key);
+    if (fs.existsSync(cachePath)) {
+      fs.copyFileSync(cachePath, destPath);
+      return;
+    }
     const signedUrl = await storageGetSignedUrl(key);
     const resp = await fetch(signedUrl, { signal: AbortSignal.timeout(120_000) });
     if (!resp.ok) throw new Error(`Archive asset download HTTP ${resp.status}`);
     const buf = Buffer.from(await resp.arrayBuffer());
     if (buf.length < 500) throw new Error("Archive asset download too small");
     fs.writeFileSync(destPath, buf);
+    try {
+      fs.mkdirSync(ARCHIVE_S3_CACHE_DIR, { recursive: true });
+      fs.writeFileSync(cachePath, buf);
+    } catch (err) {
+      console.warn(`[CuratedMedia] Failed to cache archive asset ${key}:`, (err as Error).message);
+    }
     return;
   }
   const fetchUrl = asset.storageUrl.startsWith("/")
