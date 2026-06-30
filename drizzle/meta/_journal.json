@@ -127,6 +127,13 @@
       "when": 1781100004000,
       "tag": "0017_video_queue_status",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "5",
+      "when": 1781100005000,
+      "tag": "0018_archive_overlay_cache",
+      "breakpoints": true
     }
   ]
 }

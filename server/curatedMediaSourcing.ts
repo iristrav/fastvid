@@ -132,6 +132,7 @@ import {
   getAllMediaArchives,
   getMediaArchiveAssets,
   normalizeMediaTags,
+  updateMediaArchiveAsset,
   type MediaArchiveAsset,
 } from "./db";
 import { seededShuffle } from "./archiveUsageMemory";
@@ -1627,8 +1628,22 @@ export async function prepareCuratedArchiveClip(
     }
   }
 
-  const rawBuffer = fs.readFileSync(rawPath);
-  if (await archiveClipHasBakedEditText(rawBuffer, asset.mimeType)) {
+  let hasBakedText: boolean;
+  if (asset.hasBakedEditText != null) {
+    // Cached verdict from a prior check of this exact asset — clip content never changes,
+    // so the result stays valid forever and re-running the LLM check would be wasted time.
+    hasBakedText = asset.hasBakedEditText === 1;
+  } else {
+    const rawBuffer = fs.readFileSync(rawPath);
+    hasBakedText = await archiveClipHasBakedEditText(rawBuffer, asset.mimeType);
+    try {
+      await updateMediaArchiveAsset(asset.id, { hasBakedEditText: hasBakedText ? 1 : 0 });
+      asset.hasBakedEditText = hasBakedText ? 1 : 0;
+    } catch (err) {
+      console.warn(`[CuratedMedia] Failed to cache overlay verdict for asset ${asset.id}:`, (err as Error).message);
+    }
+  }
+  if (hasBakedText) {
     if (!isSharedRaw) {
       try { if (fs.existsSync(rawPath)) fs.unlinkSync(rawPath); } catch { /* ignore */ }
     }

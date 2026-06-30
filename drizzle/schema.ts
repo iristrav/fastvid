@@ -153,6 +153,8 @@ export const mediaArchiveAssets = mysqlTable("media_archive_assets", {
   durationSec: int("durationSec"),
   sortOrder: int("sortOrder").default(0).notNull(),
   isActive: int("isActive").default(1).notNull(),
+  /** Cached overlay-filter verdict: null = not yet checked, 0 = clean, 1 = baked edit text detected. */
+  hasBakedEditText: int("hasBakedEditText"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
