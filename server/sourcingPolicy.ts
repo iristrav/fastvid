@@ -37,6 +37,12 @@ export function visualMatchingV2EmbeddingsEnabled(): boolean {
   return process.env.VISUAL_MATCHING_V2_EMBEDDINGS === "true";
 }
 
+/** V2 Retrieval Orchestrator — single component deciding source order/parallelism/timeouts/
+ *  fallback/dedup for every candidate fetch. Inert until read by the active pipeline. */
+export function visualMatchingV2RetrievalOrchestratorEnabled(): boolean {
+  return process.env.VISUAL_MATCHING_V2_RETRIEVAL_ORCHESTRATOR === "true";
+}
+
 /** Full external sourcing (YouTube, internet stills, Serp) — off by default; stock fallbacks still run in archive-first mode. */
 export function externalVisualSourcingEnabled(): boolean {
   return process.env.ENABLE_EXTERNAL_VISUAL_SOURCING === "true";

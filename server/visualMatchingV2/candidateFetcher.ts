@@ -57,7 +57,10 @@ function withAbortableTimeout<T>(
   });
 }
 
-async function searchOneSourceWithRetry(
+/** Exported so the Retrieval Orchestrator can dispatch individual sources itself (e.g. to
+ *  implement early-exit once enough candidates are in) without duplicating the per-source
+ *  cache/timeout/retry/metrics logic implemented here. */
+export async function searchOneSourceWithRetry(
   adapter: SourceAdapter,
   intent: VisualIntent,
   ctx: SourceAdapterSearchCtx,

@@ -147,3 +147,74 @@ export type SourceMetricsSnapshot = {
   cacheHitRate: number;
   avgCandidatesPerSearch: number;
 };
+
+// ─── Retrieval Orchestrator: the single component that decides how candidates are
+// fetched. Every source goes through this — no adapter or caller searches on its own.
+// Returns only a CandidatePool: no scoring, no selection, no CLIP, no LLM. ───────────
+
+/** One group of candidates considered duplicates of each other. `keptCandidateId` is the
+ *  single survivor that remains in the pool's `candidates` list; the rest are recorded
+ *  here for transparency but dropped from the pool. */
+export type DuplicateGroup = {
+  dedupKey: string;
+  matchedOn: "candidateId" | "remoteUrl" | "hash" | "perceptualHash";
+  keptCandidateId: string;
+  droppedCandidateIds: string[];
+};
+
+export type RetrievalSourcePhase = "own_archive_metadata" | "own_archive_embedding" | "external_parallel";
+
+/** Per-source outcome, tagged with which orchestration phase it ran in. Superset of
+ *  SourceFetchOutcome (Candidate Fetcher's own per-source result shape) — the
+ *  orchestrator reuses that shape rather than inventing a parallel one. */
+export type RetrievalSourceOutcome = SourceFetchOutcome & {
+  phase: RetrievalSourcePhase;
+  /** True if this source's result was excluded from the final wait because the pool
+   *  already had enough candidates by the time it would have settled. The source's
+   *  underlying network call may still complete in the background — see
+   *  candidateFetcher.ts's documented cancellation semantics. */
+  skippedForEarlyExit: boolean;
+};
+
+export type CandidatePool = {
+  beatId: string;
+  /** Final, deduplicated candidate list — this is the orchestrator's sole output beyond
+   *  bookkeeping. No scoring or ordering beyond source-phase order. */
+  candidates: CandidateAsset[];
+  duplicateGroups: DuplicateGroup[];
+  sources: RetrievalSourceOutcome[];
+  stats: {
+    startedAt: string;
+    durationMs: number;
+    totalCandidatesBeforeDedup: number;
+    totalCandidatesAfterDedup: number;
+    cacheHits: number;
+    embeddingHits: number;
+    keywordHits: number;
+    duplicatesRemoved: number;
+    earlyExitTriggered: boolean;
+  };
+};
+
+export type RetrievalOrchestratorOptions = {
+  /** Own-archive metadata adapter + external adapters default to the standard registry
+   *  (sourceAdapters.ts) — override only for tests. */
+  ownArchiveAdapter?: SourceAdapter;
+  externalAdapters?: SourceAdapter[];
+  /** Optional embedding-backed own-archive search. Omit to skip the embedding phase
+   *  entirely (e.g. when VISUAL_MATCHING_V2_EMBEDDINGS is off) — metadata search alone
+   *  still runs. */
+  embeddingSearch?: {
+    search(queryText: string, topK: number): Promise<{ hits: { id: string; similarity: number; metadata?: Record<string, unknown> }[]; cacheHit: boolean }>;
+    topK?: number;
+  };
+  perSourceTimeoutMs?: number;
+  retriesPerSource?: number;
+  /** Stop waiting on remaining (slower) external sources once the pool reaches this many
+   *  candidates. Already-dispatched requests are not cancelled, only no longer awaited —
+   *  same documented semantics as the per-source timeout in candidateFetcher.ts. */
+  maxTotalCandidates?: number;
+  workDir: string;
+  sceneIndex: number;
+  count?: number;
+};

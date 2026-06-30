@@ -54,6 +54,16 @@ export function logVectorStore(
   console.log(`${PREFIX} VectorStore.${event}`, JSON.stringify(data));
 }
 
+/** Retrieval Orchestrator — the single component that decides how candidates are fetched
+ *  across all sources. Logs phase transitions, early-exit decisions, and the final pool
+ *  summary, separately from the per-source CandidateFetch trace it builds on top of. */
+export function logRetrievalOrchestrator(
+  event: "phase_start" | "phase_complete" | "early_exit" | "dedup_complete" | "pool_complete" | "error",
+  data: Record<string, unknown>
+) {
+  console.log(`${PREFIX} RetrievalOrchestrator.${event}`, JSON.stringify(data));
+}
+
 /** Wraps an async step, logging duration_ms and any thrown error under a consistent shape. */
 export async function timedStep<T>(label: string, fn: () => Promise<T>): Promise<T> {
   const start = Date.now();
