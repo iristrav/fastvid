@@ -41,3 +41,26 @@ export type EmbeddingSearchResult = {
   provider: string;
   cacheHit: boolean;
 };
+
+// ─── Cloud-independence layer: factory, health, resilience ────────────────────
+
+/** Every backend the factory knows the name of. Not every name has an implementation yet —
+ *  see vectorStoreFactory.ts's registry. Adding a new backend later means writing one class
+ *  and one registry entry, never touching this list's consumers. */
+export type VectorStoreProviderName = "qdrant" | "pinecone" | "weaviate" | "milvus" | "pgvector" | "memory";
+
+export type VectorStoreHealth = {
+  healthy: boolean;
+  latencyMs: number;
+  version?: string;
+  error?: string;
+};
+
+/**
+ * Optional capability — a VectorStore MAY implement this in addition to the required
+ * interface. Kept separate (Interface Segregation) so `VectorStore` itself never grows
+ * health-check obligations that not every backend can support identically.
+ */
+export interface HealthCheckable {
+  checkHealth(): Promise<VectorStoreHealth>;
+}

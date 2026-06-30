@@ -17,7 +17,7 @@
 
 import { logVectorStore } from "../logging";
 import { recordVectorStoreCall } from "./vectorStoreMetrics";
-import type { VectorSearchHit, VectorStore } from "./types";
+import type { HealthCheckable, VectorSearchHit, VectorStore, VectorStoreHealth } from "./types";
 
 const DEFAULT_TIMEOUT_MS = 8_000;
 const DEFAULT_MAX_RETRIES = 2;
@@ -54,7 +54,7 @@ function buildPayloadFilter(filter?: Record<string, unknown>): Record<string, un
   };
 }
 
-export class QdrantVectorStore implements VectorStore {
+export class QdrantVectorStore implements VectorStore, HealthCheckable {
   private url: string | undefined;
   private apiKey: string | undefined;
   private collection: string;
@@ -136,12 +136,17 @@ export class QdrantVectorStore implements VectorStore {
           await sleep(DEFAULT_RETRY_BASE_DELAY_MS * 2 ** attempt);
           continue;
         }
-        recordVectorStoreCall(operation, Date.now() - start, { error: true });
+        recordVectorStoreCall(operation, Date.now() - start, {
+          error: true,
+          timeout: isAbort,
+          providerError: !isAbort,
+          healthFailure: operation === "healthCheck",
+        });
         logVectorStore("error", { operation, error: (err as Error).message });
         throw err;
       }
     }
-    recordVectorStoreCall(operation, Date.now() - start, { error: true });
+    recordVectorStoreCall(operation, Date.now() - start, { error: true, healthFailure: operation === "healthCheck" });
     throw lastError ?? new Error(`Qdrant ${operation} failed after ${this.maxRetries} retries`);
   }
 
@@ -177,12 +182,34 @@ export class QdrantVectorStore implements VectorStore {
     );
   }
 
+  /** Legacy boolean health check — kept for backward compatibility with any existing
+   *  callers. New code should prefer `checkHealth()` for the richer result shape. */
   async healthCheck(): Promise<boolean> {
+    const result = await this.checkHealth();
+    return result.healthy;
+  }
+
+  /** Implements `HealthCheckable`. Reports connection liveness, latency, and Qdrant's
+   *  reported version — used by the VectorStoreHealthManager for periodic polling. */
+  async checkHealth(): Promise<VectorStoreHealth> {
+    const start = Date.now();
     try {
-      await this.request(`/collections/${this.collection}`, { method: "GET" }, "healthCheck");
-      return true;
-    } catch {
-      return false;
+      if (!this.url) {
+        return { healthy: false, latencyMs: 0, error: "QDRANT_URL is not set" };
+      }
+      const result = await this.request<{ result?: { status?: string }; version?: string }>(
+        `/collections/${this.collection}`,
+        { method: "GET" },
+        "healthCheck"
+      );
+      const latencyMs = Date.now() - start;
+      logVectorStore("health_check", { collection: this.collection, latencyMs, healthy: true });
+      return { healthy: true, latencyMs, version: (result as { version?: string }).version };
+    } catch (err) {
+      const latencyMs = Date.now() - start;
+      const error = (err as Error).message;
+      logVectorStore("health_check", { collection: this.collection, latencyMs, healthy: false, error });
+      return { healthy: false, latencyMs, error };
     }
   }
 
