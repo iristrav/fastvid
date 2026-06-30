@@ -4255,45 +4255,56 @@ async function fetchWikimediaImagesV1(
     }
   }
 
-  for (const query of queries) {
-    try {
-      const searchUrl =
-        `https://commons.wikimedia.org/w/api.php?action=query&list=search` +
-        `&srsearch=${encodeURIComponent(query)}&srnamespace=6&srlimit=10` +
-        `&srprop=snippet|size&format=json&origin=*`;
-      const searchResp = await withTimeout(
-        fetch(searchUrl, { headers: UA }),
-        5_000,
-        `V1 Wikimedia search scene ${sceneIndex}`
-      );
-      if (!searchResp.ok) continue;
-      type WikiSearchResult = { title: string; snippet?: string };
-      const searchData = await searchResp.json() as {
-        query?: { search?: WikiSearchResult[] };
-      };
-      const results = searchData.query?.search ?? [];
-      if (!results.length) continue;
-
-      // Score each result — download only the winner above threshold
-      let bestTitle: string | null = null;
-      let bestScore = adoptThreshold - 1;
-      for (const result of results) {
-        const metadata = `${result.title} ${(result.snippet ?? "").replace(/<[^>]*>/g, " ")}`;
-        if (!wikimediaMetadataPassesBeatGate(metadata, videoTitle, analysis.sentence)) {
-          console.log(`[V1] Scene ${sceneIndex} skip geo-offtopic "${result.title.slice(0, 35)}"`);
-          continue;
-        }
-        const score = scoreVisualForScene(metadata, analysis);
-        console.log(`[V1] Scene ${sceneIndex} "${result.title.slice(0, 35)}" score=${score}`);
-        if (score > bestScore) { bestScore = score; bestTitle = result.title; }
+  // Fire all per-query searches concurrently (pure network fetches, no ffmpeg/process spawns,
+  // so this doesn't compete for Railway's container pids limit) instead of waiting out each
+  // query's search latency one at a time before starting the next.
+  type WikiSearchResult = { title: string; snippet?: string };
+  const searchResults = await Promise.all(
+    queries.map(async (query) => {
+      try {
+        const searchUrl =
+          `https://commons.wikimedia.org/w/api.php?action=query&list=search` +
+          `&srsearch=${encodeURIComponent(query)}&srnamespace=6&srlimit=10` +
+          `&srprop=snippet|size&format=json&origin=*`;
+        const searchResp = await withTimeout(
+          fetch(searchUrl, { headers: UA }),
+          5_000,
+          `V1 Wikimedia search scene ${sceneIndex}`
+        );
+        if (!searchResp.ok) return { query, results: [] as WikiSearchResult[] };
+        const searchData = await searchResp.json() as {
+          query?: { search?: WikiSearchResult[] };
+        };
+        return { query, results: searchData.query?.search ?? [] };
+      } catch (err) {
+        console.warn(`[V1] Wikimedia query "${query}" failed:`, (err as Error).message);
+        return { query, results: [] as WikiSearchResult[] };
       }
-      if (!bestTitle) continue;
+    })
+  );
 
-      const outPath = await downloadWikimediaTitle(bestTitle, bestScore);
-      if (outPath) return outPath;
-    } catch (err) {
-      console.warn(`[V1] Wikimedia query "${query}" failed:`, (err as Error).message);
+  // Downloads still happen one at a time, in original query priority order, stopping at the
+  // first one that actually adopts — same "first good match wins" behavior as before.
+  for (const { results } of searchResults) {
+    if (!results.length) continue;
+
+    // Score each result — download only the winner above threshold
+    let bestTitle: string | null = null;
+    let bestScore = adoptThreshold - 1;
+    for (const result of results) {
+      const metadata = `${result.title} ${(result.snippet ?? "").replace(/<[^>]*>/g, " ")}`;
+      if (!wikimediaMetadataPassesBeatGate(metadata, videoTitle, analysis.sentence)) {
+        console.log(`[V1] Scene ${sceneIndex} skip geo-offtopic "${result.title.slice(0, 35)}"`);
+        continue;
+      }
+      const score = scoreVisualForScene(metadata, analysis);
+      console.log(`[V1] Scene ${sceneIndex} "${result.title.slice(0, 35)}" score=${score}`);
+      if (score > bestScore) { bestScore = score; bestTitle = result.title; }
     }
+    if (!bestTitle) continue;
+
+    const outPath = await downloadWikimediaTitle(bestTitle, bestScore);
+    if (outPath) return outPath;
   }
   return null;
 }
