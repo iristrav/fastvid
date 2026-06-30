@@ -33,6 +33,27 @@ export function logEmbedding(
   console.log(`${PREFIX} Embedding.${event}`, JSON.stringify(data));
 }
 
+/** Stage 3 — vector store layer: connection/health, upserts, deletes, searches, retries,
+ *  timeouts, and errors. Backend-agnostic event names so a future non-Qdrant VectorStore
+ *  implementation logs through the same shape. */
+export function logVectorStore(
+  event:
+    | "init"
+    | "health_check"
+    | "ensure_collection"
+    | "upsert"
+    | "batch_upsert"
+    | "search"
+    | "delete"
+    | "delete_many"
+    | "retry"
+    | "timeout"
+    | "error",
+  data: Record<string, unknown>
+) {
+  console.log(`${PREFIX} VectorStore.${event}`, JSON.stringify(data));
+}
+
 /** Wraps an async step, logging duration_ms and any thrown error under a consistent shape. */
 export async function timedStep<T>(label: string, fn: () => Promise<T>): Promise<T> {
   const start = Date.now();
