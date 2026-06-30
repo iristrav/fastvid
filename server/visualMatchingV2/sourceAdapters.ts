@@ -79,6 +79,10 @@ function normalizeCandidate(
     retrievalReasons: ["keyword"],
     retrievalSources: [{ source: `${partial.source}_keyword`, score: 0 }],
     fetchedAt: new Date().toISOString(),
+    clipSimilarity: null,
+    clipModel: null,
+    clipEmbeddingVersion: null,
+    clipLatencyMs: null,
   };
 }
 

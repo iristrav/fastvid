@@ -80,6 +80,10 @@ function candidateFromEmbeddingHit(
     retrievalReasons: ["semantic"],
     retrievalSources: [{ source: "own_archive_embedding", score: hit.similarity }],
     fetchedAt: new Date().toISOString(),
+    clipSimilarity: null,
+    clipModel: null,
+    clipEmbeddingVersion: null,
+    clipLatencyMs: null,
   };
 }
 

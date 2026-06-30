@@ -50,6 +50,13 @@ export function visualMatchingV2RetrievalStrategyEnabled(): boolean {
   return process.env.VISUAL_MATCHING_V2_RETRIEVAL_STRATEGY === "true";
 }
 
+/** V2 CLIP Pre-Filter — second funnel stage (Candidate Pool -> top 3-5 by CLIP similarity).
+ *  Wraps the existing localClipVision.ts CLIP infrastructure; no second CLIP implementation.
+ *  Inert until read by the active pipeline. */
+export function visualMatchingV2ClipPreFilterEnabled(): boolean {
+  return process.env.VISUAL_MATCHING_V2_CLIP_PREFILTER === "true";
+}
+
 /** Full external sourcing (YouTube, internet stills, Serp) — off by default; stock fallbacks still run in archive-first mode. */
 export function externalVisualSourcingEnabled(): boolean {
   return process.env.ENABLE_EXTERNAL_VISUAL_SOURCING === "true";

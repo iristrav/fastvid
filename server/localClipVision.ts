@@ -400,6 +400,46 @@ export async function embedImageFromPath(imagePath: string): Promise<number[] | 
   }
 }
 
+export type ClipBatchEmbedMode = "batch" | "sequential";
+
+/**
+ * Embed multiple images in one pipeline call when the underlying transformers.js pipeline
+ * accepts array input (most image-feature-extraction pipelines do). Falls back to
+ * sequential embedImageFromPath calls if batched output can't be cleanly split per image
+ * (e.g. older/incompatible pipeline build) or the batched call throws. Order of the
+ * returned array always matches imagePaths; missing/failed files are null.
+ */
+export async function embedImagesFromPaths(imagePaths: string[]): Promise<{ embeddings: (number[] | null)[]; mode: ClipBatchEmbedMode }> {
+  if (!localVisionEnabled() || imagePaths.length === 0) {
+    return { embeddings: imagePaths.map(() => null), mode: "sequential" };
+  }
+  const exists = imagePaths.map((p) => fs.existsSync(p));
+  const pipe = await loadImagePipeline();
+  if (!pipe) return { embeddings: imagePaths.map(() => null), mode: "sequential" };
+
+  if (imagePaths.length > 1 && exists.every(Boolean)) {
+    try {
+      const result = await (pipe as unknown as (input: string[]) => Promise<{ data: Float32Array }>)(imagePaths);
+      const data = Array.from(result.data);
+      const dim = data.length / imagePaths.length;
+      if (Number.isInteger(dim) && dim >= 8) {
+        const embeddings: number[][] = [];
+        for (let i = 0; i < imagePaths.length; i++) {
+          embeddings.push(data.slice(i * dim, (i + 1) * dim));
+        }
+        return { embeddings, mode: "batch" };
+      }
+    } catch {
+      // Fall through to sequential — batched array input isn't supported by this pipeline build.
+    }
+  }
+
+  const embeddings = await Promise.all(
+    imagePaths.map((p, i) => (exists[i] ? embedImageFromPath(p) : Promise.resolve(null)))
+  );
+  return { embeddings, mode: "sequential" };
+}
+
 export async function embedTextQuery(query: string): Promise<number[] | null> {
   const key = query.trim();
   if (!localVisionEnabled() || !key) return null;

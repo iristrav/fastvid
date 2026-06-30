@@ -77,6 +77,19 @@ export type CandidateAsset = {
    *  that path's own score on its own scale (never blended). Lets later stages (scoring,
    *  explainability) show exactly why a candidate was chosen. */
   retrievalSources: { source: string; score: number }[];
+  // ─── CLIP Pre-Filter (stage: clipPreFilter.ts): populated only after clipPreFilter()
+  // runs on this candidate. Deliberately just the raw signal + its provenance — no
+  // overallScore/confidence/winner, which belong to the future LLM Vision scoring stage. ──
+  /** Cosine similarity (0..1) between this candidate's resolved image and the beat's CLIP
+   *  text query embedding. Null until clipPreFilter() has scored this candidate. */
+  clipSimilarity: number | null;
+  /** CLIP model id that produced clipSimilarity, e.g. "Xenova/clip-vit-base-patch32". */
+  clipModel: string | null;
+  /** Embedding schema version for the CLIP cache, so a future model/version bump doesn't
+   *  silently reuse stale cached vectors. */
+  clipEmbeddingVersion: string | null;
+  /** Wall-clock ms spent embedding (or cache-hitting) this specific candidate's image. */
+  clipLatencyMs: number | null;
 };
 
 export type SourceAdapter = {
@@ -281,6 +294,55 @@ export type CandidatePool = {
 
 export type EmbeddingSearchProvider = {
   search(queryText: string, topK: number): Promise<{ hits: { id: string; similarity: number; metadata?: Record<string, unknown> }[]; cacheHit: boolean }>;
+};
+
+// ─── CLIP Pre-Filter: second stage of the funnel, run on the already-fetched Candidate
+// Pool only (never on the unbounded source results). Output is purely a similarity-ranked
+// top-N — no overallScore, no confidence, no winner. Those belong to the future LLM Vision
+// scoring stage. ────────────────────────────────────────────────────────────────────────
+
+export type ClipCandidateOutcome = {
+  candidateId: string;
+  clipSimilarity: number | null;
+  clipLatencyMs: number;
+  cacheHit: boolean;
+  /** Why this candidate has no similarity — e.g. no resolvable local image, pipeline not
+   *  loaded, download failed. Null when clipSimilarity was computed successfully. */
+  skippedReason: string | null;
+};
+
+/** Explainability trace for one clipPreFilter() call (one beat). Deliberately CLIP-only —
+ *  not a BeatSelectionTrace, which is reserved for the future LLM Vision/selection stage. */
+export type ClipFilterTrace = {
+  beatId: string;
+  startedAt: string;
+  durationMs: number;
+  candidateCount: number;
+  batchMode: "batch" | "sequential";
+  batchSize: number;
+  model: string;
+  embeddingVersion: string;
+  outcomes: ClipCandidateOutcome[];
+  passedCandidateIds: string[];
+  rejectedCandidateIds: string[];
+  avgSimilarity: number | null;
+  cacheHitRate: number;
+};
+
+export type ClipPreFilterOptions = {
+  /** Max candidates returned in `passed`, sorted by clipSimilarity descending. Default 5. */
+  topN?: number;
+  /** Minimum cosine similarity (0..1) required to be eligible for `passed`. Candidates
+   *  below this are still scored and returned in `rejected`. Default: no floor (0). */
+  minSimilarity?: number;
+};
+
+export type ClipFilterResult = {
+  /** Top 3-5 candidates by clipSimilarity, descending. No further ranking signal attached. */
+  passed: CandidateAsset[];
+  /** Every candidate that was scored but didn't make the top-N cut, or couldn't be scored. */
+  rejected: CandidateAsset[];
+  trace: ClipFilterTrace;
 };
 
 export type RetrievalOrchestratorOptions = {

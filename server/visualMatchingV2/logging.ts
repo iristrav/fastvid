@@ -73,6 +73,16 @@ export function logRetrievalOrchestrator(
   console.log(`${PREFIX} RetrievalOrchestrator.${event}`, JSON.stringify(data));
 }
 
+/** CLIP Pre-Filter — second funnel stage. Logs one trace per beat: candidate count,
+ *  latency, per-candidate similarity, which candidates passed vs. were rejected. CLIP-only;
+ *  not the (future) BeatSelectionTrace, which covers LLM Vision + final selection. */
+export function logClipPreFilter(
+  event: "filter_complete" | "batch_embed" | "error",
+  data: Record<string, unknown>
+) {
+  console.log(`${PREFIX} ClipPreFilter.${event}`, JSON.stringify(data));
+}
+
 /** Wraps an async step, logging duration_ms and any thrown error under a consistent shape. */
 export async function timedStep<T>(label: string, fn: () => Promise<T>): Promise<T> {
   const start = Date.now();
