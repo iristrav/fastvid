@@ -1099,6 +1099,51 @@ export async function deleteMediaArchiveAsset(id: number) {
   await db.delete(mediaArchiveAssets).where(eq(mediaArchiveAssets.id, id));
 }
 
+// ─── Visual Matching Engine V2: VideoContext + VisualIntent caches ────────────
+
+import {
+  InsertVisualContextCacheRow,
+  InsertVisualIntentCacheRow,
+  visualContextCache,
+  visualIntentCache,
+} from "../drizzle/schema";
+
+export async function getVisualContextCacheByTopicHash(topicHash: string) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db
+    .select()
+    .from(visualContextCache)
+    .where(eq(visualContextCache.topicHash, topicHash))
+    .limit(1);
+  return result.length > 0 ? result[0] : undefined;
+}
+
+export async function createVisualContextCache(data: InsertVisualContextCacheRow) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db.insert(visualContextCache).values(data);
+  return (result as unknown as [{ insertId: number }])[0]?.insertId as number;
+}
+
+export async function getVisualIntentCacheByIntentHash(intentHash: string) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db
+    .select()
+    .from(visualIntentCache)
+    .where(eq(visualIntentCache.intentHash, intentHash))
+    .limit(1);
+  return result.length > 0 ? result[0] : undefined;
+}
+
+export async function createVisualIntentCache(data: InsertVisualIntentCacheRow) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db.insert(visualIntentCache).values(data);
+  return (result as unknown as [{ insertId: number }])[0]?.insertId as number;
+}
+
 export async function deleteMediaArchiveAssets(ids: number[]) {
   const db = await getDb();
   if (!db || ids.length === 0) return 0;

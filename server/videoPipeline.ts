@@ -3423,7 +3423,7 @@ async function generateStabilityAIClip(
 }
 
 // ─── 3b. Pexels Stock Clips (SECONDARY — multiple per scene) ─────────────────
-async function fetchPexelsClips(
+export async function fetchPexelsClips(
   query: string,
   clipDuration: number,
   workDir: string,
@@ -3751,7 +3751,7 @@ async function fetchBrollClips(
 // ─── 3b3. Fetch Clips from Pixabay (B-roll + main visual source) ─────────────────────────────
 // Pixabay Video API: free, no attribution required for commercial use.
 // Returns up to `count` trimmed HD clips matching the query.
-async function fetchPixabayClips(
+export async function fetchPixabayClips(
   query: string,
   clipDuration: number,
   workDir: string,
@@ -4087,7 +4087,7 @@ function normalizeImageSourceUrl(url: string): string {
 
 // ─── 3c2. Wikimedia Commons Image Search ────────────────────────────────────
 // Searches Wikimedia Commons for freely licensed images (good for celebrities, news, etc.)
-async function fetchWikimediaImages(
+export async function fetchWikimediaImages(
   query: string,
   duration: number,
   workDir: string,
@@ -6563,7 +6563,7 @@ function isSpaceRelatedTopic(...parts: string[]): boolean {
 }
 
 // ─── 3c2. Fetch Internet Archive Video Clips ────────────────────────────────
-async function fetchInternetArchiveClips(
+export async function fetchInternetArchiveClips(
   queries: string | string[],
   duration: number,
   workDir: string,

@@ -10,6 +10,23 @@ export function curatedArchiveOnlyVisuals(): boolean {
   return process.env.CURATED_ARCHIVE_ONLY !== "false";
 }
 
+// ─── Visual Matching Engine V2 (build-out, off until proven — see /server/visualMatchingV2) ──
+
+/** V2 VideoContext layer (one LLM call per video, cached/reused across videos). Inert until read by the active pipeline. */
+export function visualMatchingV2ContextEnabled(): boolean {
+  return process.env.VISUAL_MATCHING_V2_CONTEXT === "true";
+}
+
+/** V2 VisualIntent Extractor (scene-batched, context-aware). Inert until read by the active pipeline. */
+export function visualMatchingV2IntentEnabled(): boolean {
+  return process.env.VISUAL_MATCHING_V2_INTENT === "true";
+}
+
+/** V2 SourceAdapter framework (uniform candidate fetch across sources). Inert until read by the active pipeline. */
+export function visualMatchingV2SourceAdaptersEnabled(): boolean {
+  return process.env.VISUAL_MATCHING_V2_ADAPTERS === "true";
+}
+
 /** Full external sourcing (YouTube, internet stills, Serp) — off by default; stock fallbacks still run in archive-first mode. */
 export function externalVisualSourcingEnabled(): boolean {
   return process.env.ENABLE_EXTERNAL_VISUAL_SOURCING === "true";

@@ -162,6 +162,27 @@ export const mediaArchiveAssets = mysqlTable("media_archive_assets", {
 export type MediaArchiveAsset = typeof mediaArchiveAssets.$inferSelect;
 export type InsertMediaArchiveAsset = typeof mediaArchiveAssets.$inferInsert;
 
+// ─── Visual Matching Engine V2: VideoContext + VisualIntent caches ────────────
+/** One row per distinct topic — reused across videos sharing the same subject/era. */
+export const visualContextCache = mysqlTable("visual_context_cache", {
+  id: int("id").autoincrement().primaryKey(),
+  topicHash: varchar("topicHash", { length: 128 }).notNull(),
+  contextJson: json("contextJson").$type<Record<string, unknown>>().notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+export type VisualContextCacheRow = typeof visualContextCache.$inferSelect;
+export type InsertVisualContextCacheRow = typeof visualContextCache.$inferInsert;
+
+/** One row per distinct beat intent — reused when an identical beat is re-analyzed. */
+export const visualIntentCache = mysqlTable("visual_intent_cache", {
+  id: int("id").autoincrement().primaryKey(),
+  intentHash: varchar("intentHash", { length: 128 }).notNull(),
+  intentJson: json("intentJson").$type<Record<string, unknown>>().notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+export type VisualIntentCacheRow = typeof visualIntentCache.$inferSelect;
+export type InsertVisualIntentCacheRow = typeof visualIntentCache.$inferInsert;
+
 // ─── Niche / channel requests ─────────────────────────────────────────────────
 export const nicheRequests = mysqlTable("niche_requests", {
   id: int("id").autoincrement().primaryKey(),
