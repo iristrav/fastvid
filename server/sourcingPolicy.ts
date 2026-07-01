@@ -945,3 +945,20 @@ export function europeanaSourcingEnabled(): boolean {
 export function autoArchiveGeoRetagOnStart(): boolean {
   return process.env.AUTO_ARCHIVE_GEO_RETAG_ON_START === "true";
 }
+
+// ─── Performance optimisation — caches ───────────────────────────────────────
+
+/** Persistent Media Asset Cache (P3): cache downloaded Pexels/Wikimedia/Archive
+ *  assets in R2/S3 so the same file is never re-downloaded across videos.
+ *  Requires ENABLE_MEDIA_CACHE=true AND S3 storage configured (S3_BUCKET etc.).
+ *  Off by default until cache warm-up is sufficient to see ROI. */
+export function mediaCacheEnabled(): boolean {
+  return process.env.ENABLE_MEDIA_CACHE === "true";
+}
+
+/** Persistent Scene Candidate Cache: cache search API responses per normalised
+ *  query so Wikimedia/Archive providers are not re-queried for identical topics.
+ *  Requires ENABLE_SCENE_CANDIDATE_CACHE=true. */
+export function sceneCandidateCacheEnabled(): boolean {
+  return process.env.ENABLE_SCENE_CANDIDATE_CACHE === "true";
+}

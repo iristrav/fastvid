@@ -212,6 +212,9 @@ import { recordClipReject, summarizeClipRejectAudit } from "./clipRejectAudit";
 import type { ClipAdoptEntry } from "./clipAdoptAudit";
 import { createClipAdoptAudit, recordClipAdopt } from "./clipAdoptAudit";
 import { buildEditorScenesFromPipeline } from "./editorClips";
+import { tryRestoreFromMediaCache, reportToMediaCache } from "./mediaCache";
+import { getCandidatePool, putCandidatePool } from "./sceneCandidateCache";
+import type { CachedCandidate } from "./sceneCandidateCache";
 import { buildVideoQualityReport, computeMeritQualityScore, logVideoQualityReport } from "./videoQualityReport";
 import { postRenderSpotCheckEnabledForVideo, spotCheckFinalVideo } from "./postRenderSpotCheck";
 import { spotCheckComposedSceneBeatSync, alignSceneBeatsToVoiceAudio, validateMontageVoiceCoverage } from "./voiceBeatAlignment";
@@ -3523,49 +3526,56 @@ export async function fetchPexelsClips(
         const rawPath = path.join(workDir, `scene_${sceneIndex}_${fileTag}_vid${video.id}_raw.mp4`);
         const outPath = path.join(workDir, `scene_${sceneIndex}_${fileTag}_vid${video.id}.mp4`);
 
-        // Download with retry logic
-        let downloadResp;
-        let buffer: Buffer | null = null;
-        let retries = downloadRetries;
-        
-        while (retries > 0 && !buffer) {
-          try {
-            downloadResp = await withTimeout(
-              fetch(videoFile.link),
-              45_000,
-              `Download Pexels clip ${idx} scene ${sceneIndex} (attempt ${4 - retries}/3)`
-            );
-            if (!downloadResp.ok) {
-              retries--;
-              if (retries > 0) await new Promise(r => setTimeout(r, 1000)); // Wait before retry
-              continue;
-            }
+        // Check media cache before downloading from Pexels CDN
+        const fromMediaCache = await tryRestoreFromMediaCache(videoFile.link, rawPath);
 
-            buffer = Buffer.from(await downloadResp.arrayBuffer());
-            
-            // Validate buffer size (minimum 50KB for valid video)
-            if (buffer.length < 50_000) {
-              console.warn(`[Pipeline] Pexels clip ${idx} too small (${buffer.length} bytes), retrying...`);
-              buffer = null;
+        if (!fromMediaCache) {
+          // Download with retry logic
+          let downloadResp;
+          let buffer: Buffer | null = null;
+          let retries = downloadRetries;
+
+          while (retries > 0 && !buffer) {
+            try {
+              downloadResp = await withTimeout(
+                fetch(videoFile.link),
+                45_000,
+                `Download Pexels clip ${idx} scene ${sceneIndex} (attempt ${4 - retries}/3)`
+              );
+              if (!downloadResp.ok) {
+                retries--;
+                if (retries > 0) await new Promise(r => setTimeout(r, 1000));
+                continue;
+              }
+
+              buffer = Buffer.from(await downloadResp.arrayBuffer());
+
+              // Validate buffer size (minimum 50KB for valid video)
+              if (buffer.length < 50_000) {
+                console.warn(`[Pipeline] Pexels clip ${idx} too small (${buffer.length} bytes), retrying...`);
+                buffer = null;
+                retries--;
+                if (retries > 0) await new Promise(r => setTimeout(r, 1000));
+                continue;
+              }
+
+              break; // Success
+            } catch (err) {
+              console.warn(`[Pipeline] Download attempt failed for Pexels clip ${idx}:`, err);
               retries--;
               if (retries > 0) await new Promise(r => setTimeout(r, 1000));
-              continue;
             }
-            
-            break; // Success
-          } catch (err) {
-            console.warn(`[Pipeline] Download attempt failed for Pexels clip ${idx}:`, err);
-            retries--;
-            if (retries > 0) await new Promise(r => setTimeout(r, 1000));
           }
-        }
-        
-        if (!buffer) {
-          console.warn(`[Pipeline] Failed to download Pexels clip ${idx} after 3 attempts`);
-          return null;
-        }
 
-        fs.writeFileSync(rawPath, buffer);
+          if (!buffer) {
+            console.warn(`[Pipeline] Failed to download Pexels clip ${idx} after 3 attempts`);
+            return null;
+          }
+
+          fs.writeFileSync(rawPath, buffer);
+          // Store in cache for future videos (best-effort, never blocks pipeline)
+          void reportToMediaCache(videoFile.link, rawPath, "video/mp4");
+        }
 
         const stockKey = `pexels:${video.id}`;
         if (stockClipEmbeddingEnabled()) {
@@ -4098,7 +4108,41 @@ export async function fetchWikimediaImages(
 ): Promise<string[]> {
   const results: string[] = [];
   try {
-    // Search Wikimedia Commons for images
+    // ── Scene candidate cache: skip Wikimedia search + imageinfo API calls on hit ──
+    const cachedCandidates = await getCandidatePool(query, "wikimedia");
+    if (cachedCandidates) {
+      for (let i = 0; i < Math.min(cachedCandidates.length, count); i++) {
+        const c = cachedCandidates[i];
+        if (!c.url || !c.contentType.startsWith("image/")) continue;
+        const tag = fileTag ? `${fileTag}_` : "";
+        const imgPath = path.join(workDir, `scene_${sceneIndex}_${tag}wiki_cached_${i}.jpg`);
+        const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}wiki_cached_${i}.mp4`);
+        const fromCache = await tryRestoreFromMediaCache(c.url, imgPath);
+        if (!fromCache) {
+          const imgResp = await withTimeout(
+            fetch(c.url, { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }),
+            15_000,
+            `Wikimedia cached download scene ${sceneIndex}`
+          );
+          if (!imgResp.ok) continue;
+          const imgBuffer = Buffer.from(await imgResp.arrayBuffer());
+          if (imgBuffer.length < 10_000) continue;
+          fs.writeFileSync(imgPath, imgBuffer);
+          void reportToMediaCache(c.url, imgPath, c.contentType);
+        }
+        await stillImageToVideo(
+          imgPath, outPath, duration,
+          `Wikimedia cached image to video scene ${sceneIndex}`,
+          /portrait|face|headshot|person|celebrity/i.test(query),
+          sceneIndex, opts.beatIndex ?? 0, opts.stillStyleContext
+        );
+        try { fs.unlinkSync(imgPath); } catch { /* ignore */ }
+        if (fs.existsSync(outPath) && fs.statSync(outPath).size > 1_000) results.push(outPath);
+      }
+      return results;
+    }
+
+    // Cache miss — search Wikimedia Commons
     const searchUrl = `https://commons.wikimedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&srnamespace=6&srlimit=10&format=json&origin=*`;
     const searchResp = await withTimeout(
       fetch(searchUrl, { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }),
@@ -4109,6 +4153,7 @@ export async function fetchWikimediaImages(
     const searchData = await searchResp.json() as { query?: { search?: Array<{ title: string }> } };
     const titles = searchData.query?.search?.map(r => r.title).slice(0, count * 2) || [];
     if (!titles.length) return [];
+    const poolForCache: CachedCandidate[] = [];
 
     // Get image info for each result
     for (let i = 0; i < Math.min(titles.length, count); i++) {
@@ -4131,19 +4176,34 @@ export async function fetchWikimediaImages(
         // Skip very small images
         if (imageInfo.size < 10_000) continue;
 
-        // Download the image
+        // Record for scene candidate cache (stable Wikimedia URLs)
+        poolForCache.push({
+          assetId: title,
+          title,
+          url: imageInfo.url,
+          thumbnailUrl: null,
+          contentType: imageInfo.mime,
+          durationSec: null,
+          meta: { size: imageInfo.size },
+        });
+
+        // Download the image (check media cache first)
         const tag = fileTag ? `${fileTag}_` : "";
         const imgPath = path.join(workDir, `scene_${sceneIndex}_${tag}wiki_${i}.jpg`);
         const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}wiki_${i}.mp4`);
-        const imgResp = await withTimeout(
-          fetch(imageInfo.url, { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }),
-          15_000,
-          `Wikimedia download scene ${sceneIndex}`
-        );
-        if (!imgResp.ok) continue;
-        const imgBuffer = Buffer.from(await imgResp.arrayBuffer());
-        if (imgBuffer.length < 10_000) continue;
-        fs.writeFileSync(imgPath, imgBuffer);
+        const fromWikiCache = await tryRestoreFromMediaCache(imageInfo.url, imgPath);
+        if (!fromWikiCache) {
+          const imgResp = await withTimeout(
+            fetch(imageInfo.url, { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }),
+            15_000,
+            `Wikimedia download scene ${sceneIndex}`
+          );
+          if (!imgResp.ok) continue;
+          const imgBuffer = Buffer.from(await imgResp.arrayBuffer());
+          if (imgBuffer.length < 10_000) continue;
+          fs.writeFileSync(imgPath, imgBuffer);
+          void reportToMediaCache(imageInfo.url, imgPath, imageInfo.mime ?? "image/jpeg");
+        }
 
         await stillImageToVideo(
           imgPath,
@@ -4163,6 +4223,10 @@ export async function fetchWikimediaImages(
       } catch (err) {
         console.warn(`[Pipeline] Wikimedia image ${i} failed for scene ${sceneIndex}:`, err);
       }
+    }
+    // Populate scene candidate cache for this query (best-effort)
+    if (poolForCache.length > 0) {
+      void putCandidatePool(query, "wikimedia", poolForCache);
     }
   } catch (err) {
     console.warn(`[Pipeline] Wikimedia search failed for scene ${sceneIndex}:`, err);
@@ -4211,15 +4275,19 @@ async function fetchWikimediaImagesV1(
     const tag = fileTag ? `${fileTag}_` : "";
     const imgPath = path.join(workDir, `scene_${sceneIndex}_${tag}v1wiki_b${beatIndex}.jpg`);
     const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}v1wiki_b${beatIndex}.mp4`);
-    const imgResp = await withTimeout(
-      fetch(imageInfo.url, { headers: UA }),
-      15_000,
-      `V1 Wikimedia download scene ${sceneIndex}`
-    );
-    if (!imgResp.ok) return null;
-    const imgBuffer = Buffer.from(await imgResp.arrayBuffer());
-    if (imgBuffer.length < 10_000) return null;
-    fs.writeFileSync(imgPath, imgBuffer);
+    const fromV1WikiCache = await tryRestoreFromMediaCache(imageInfo.url, imgPath);
+    if (!fromV1WikiCache) {
+      const imgResp = await withTimeout(
+        fetch(imageInfo.url, { headers: UA }),
+        15_000,
+        `V1 Wikimedia download scene ${sceneIndex}`
+      );
+      if (!imgResp.ok) return null;
+      const imgBuffer = Buffer.from(await imgResp.arrayBuffer());
+      if (imgBuffer.length < 10_000) return null;
+      fs.writeFileSync(imgPath, imgBuffer);
+      void reportToMediaCache(imageInfo.url, imgPath, imageInfo.mime ?? "image/jpeg");
+    }
 
     const filterComplex = buildWikimediaDocumentaryVF(duration);
     await withTimeout(

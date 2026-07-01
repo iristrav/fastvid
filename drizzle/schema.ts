@@ -383,3 +383,55 @@ export const selectionFeedbackEvents = mysqlTable("selection_feedback_events", {
 
 export type SelectionFeedbackEventRow = typeof selectionFeedbackEvents.$inferSelect;
 export type InsertSelectionFeedbackEventRow = typeof selectionFeedbackEvents.$inferInsert;
+
+// ─── Media Asset Cache ────────────────────────────────────────────────────────
+/** One row per distinct source URL. Caches raw downloaded assets in R2/S3 so
+ *  the same Pexels, Wikimedia, or Archive.org asset is never re-downloaded.
+ *  Active only when ENABLE_MEDIA_CACHE=true and S3 storage is configured. */
+export const mediaAssetCache = mysqlTable("media_asset_cache", {
+  id: int("id").autoincrement().primaryKey(),
+  /** SHA256 of the source URL — used as the lookup key. */
+  urlHash: varchar("urlHash", { length: 64 }).notNull().unique(),
+  /** Full source URL for debugging and cache management. */
+  sourceUrl: text("sourceUrl").notNull(),
+  /** Relative key in R2/S3 where the asset is stored. */
+  r2Key: varchar("r2Key", { length: 512 }).notNull(),
+  contentType: varchar("contentType", { length: 64 }).notNull().default("application/octet-stream"),
+  fileSizeBytes: int("fileSizeBytes").notNull().default(0),
+  /** Duration in seconds for video assets; null for images. */
+  durationSec: int("durationSec"),
+  /** Bump to invalidate all entries (e.g. if encoding settings change). */
+  cacheVersion: varchar("cacheVersion", { length: 32 }).notNull().default("1"),
+  hitCount: int("hitCount").notNull().default(0),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  lastHitAt: timestamp("lastHitAt").defaultNow().notNull(),
+});
+
+export type MediaAssetCacheRow = typeof mediaAssetCache.$inferSelect;
+export type InsertMediaAssetCacheRow = typeof mediaAssetCache.$inferInsert;
+
+// ─── Scene Candidate Cache ────────────────────────────────────────────────────
+/** One row per (normalised query, source, cacheVersion). Caches search API
+ *  responses so Pexels/Wikimedia/Archive.org are not re-queried for the same
+ *  topic across videos. expiresAt is compared at read time; expired rows are
+ *  replaced on next write. */
+export const sceneCandidateCache = mysqlTable("scene_candidate_cache", {
+  id: int("id").autoincrement().primaryKey(),
+  /** SHA256 of normalised(queryText + "|" + source + "|" + cacheVersion). */
+  queryHash: varchar("queryHash", { length: 64 }).notNull(),
+  /** Original query text for debugging. */
+  queryText: varchar("queryText", { length: 512 }).notNull(),
+  /** Provider: "pexels" | "pixabay" | "wikimedia" | "archive". */
+  source: varchar("source", { length: 32 }).notNull(),
+  /** Bump to invalidate entries when retrieval logic changes. */
+  cacheVersion: varchar("cacheVersion", { length: 32 }).notNull(),
+  /** JSON array of CachedCandidate objects. */
+  candidatesJson: longtext("candidatesJson").notNull(),
+  hitCount: int("hitCount").notNull().default(0),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  /** Application-managed TTL (typically 7 days). */
+  expiresAt: timestamp("expiresAt").notNull(),
+});
+
+export type SceneCandidateCacheRow = typeof sceneCandidateCache.$inferSelect;
+export type InsertSceneCandidateCacheRow = typeof sceneCandidateCache.$inferInsert;
