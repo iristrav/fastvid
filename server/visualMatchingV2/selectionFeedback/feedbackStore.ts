@@ -7,7 +7,27 @@ import { eq } from "drizzle-orm";
 import { selectionFeedback, selectionFeedbackEvents } from "../../../drizzle/schema";
 import { getDb } from "../../../server/db";
 import { logSelectionFeedback } from "../logging";
+import { PIPELINE_VERSION, ENGINE_VERSION, RANKING_VERSION } from "../beatSelectionTrace";
 import type { InsertSelectionFeedback, SelectionFeedback, SelectionFeedbackStore } from "./types";
+
+function rowToFeedback(row: typeof selectionFeedback.$inferSelect): SelectionFeedback {
+  return {
+    id: row.id,
+    pipelineRunId: row.pipelineRunId,
+    beatId: row.beatId,
+    candidateId: row.candidateId,
+    feedbackType: row.feedbackType as SelectionFeedback["feedbackType"],
+    comment: row.comment ?? null,
+    createdBy: row.createdBy,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+    pipelineVersion: row.pipelineVersion ?? null,
+    engineVersion: row.engineVersion ?? null,
+    visionModel: row.visionModel ?? null,
+    embeddingModel: row.embeddingModel ?? null,
+    rankingConfigVersion: row.rankingConfigVersion ?? null,
+  };
+}
 
 export class DatabaseSelectionFeedbackStore implements SelectionFeedbackStore {
   async submit(input: InsertSelectionFeedback): Promise<SelectionFeedback> {
@@ -21,6 +41,11 @@ export class DatabaseSelectionFeedbackStore implements SelectionFeedbackStore {
       feedbackType: input.feedbackType,
       comment: input.comment ?? null,
       createdBy: input.createdBy,
+      pipelineVersion: input.pipelineVersion ?? PIPELINE_VERSION,
+      engineVersion: input.engineVersion ?? ENGINE_VERSION,
+      visionModel: input.visionModel ?? null,
+      embeddingModel: input.embeddingModel ?? null,
+      rankingConfigVersion: input.rankingConfigVersion ?? RANKING_VERSION,
     });
 
     const insertId = Number((result as unknown as { insertId: bigint | number }).insertId);
@@ -31,26 +56,16 @@ export class DatabaseSelectionFeedbackStore implements SelectionFeedbackStore {
       .where(eq(selectionFeedback.id, insertId))
       .limit(1);
 
-    const row = rows[0];
-    const stored: SelectionFeedback = {
-      id: row.id,
-      pipelineRunId: row.pipelineRunId,
-      beatId: row.beatId,
-      candidateId: row.candidateId,
-      feedbackType: row.feedbackType as SelectionFeedback["feedbackType"],
-      comment: row.comment ?? null,
-      createdBy: row.createdBy,
-      createdAt: row.createdAt.toISOString(),
-    };
+    const stored = rowToFeedback(rows[0]);
 
-    // Append event log entry (best-effort — does not block or throw on failure).
+    // Append event log entry — best-effort, never throws to caller.
     await db
       .insert(selectionFeedbackEvents)
       .values({
         feedbackId: stored.id,
         eventType: "created",
         snapshot: JSON.stringify(stored),
-        changedBy: stored.createdBy,
+        actor: stored.createdBy,
       })
       .catch((err: unknown) => {
         logSelectionFeedback("error", {
@@ -66,6 +81,7 @@ export class DatabaseSelectionFeedbackStore implements SelectionFeedbackStore {
       beatId: stored.beatId,
       feedbackType: stored.feedbackType,
       createdBy: stored.createdBy,
+      pipelineVersion: stored.pipelineVersion,
     });
 
     return stored;
@@ -74,43 +90,21 @@ export class DatabaseSelectionFeedbackStore implements SelectionFeedbackStore {
   async listByRun(pipelineRunId: string): Promise<SelectionFeedback[]> {
     const db = await getDb();
     if (!db) return [];
-
     const rows = await db
       .select()
       .from(selectionFeedback)
       .where(eq(selectionFeedback.pipelineRunId, pipelineRunId));
-
-    return rows.map((row) => ({
-      id: row.id,
-      pipelineRunId: row.pipelineRunId,
-      beatId: row.beatId,
-      candidateId: row.candidateId,
-      feedbackType: row.feedbackType as SelectionFeedback["feedbackType"],
-      comment: row.comment ?? null,
-      createdBy: row.createdBy,
-      createdAt: row.createdAt.toISOString(),
-    }));
+    return rows.map(rowToFeedback);
   }
 
   async listByBeat(beatId: string): Promise<SelectionFeedback[]> {
     const db = await getDb();
     if (!db) return [];
-
     const rows = await db
       .select()
       .from(selectionFeedback)
       .where(eq(selectionFeedback.beatId, beatId));
-
-    return rows.map((row) => ({
-      id: row.id,
-      pipelineRunId: row.pipelineRunId,
-      beatId: row.beatId,
-      candidateId: row.candidateId,
-      feedbackType: row.feedbackType as SelectionFeedback["feedbackType"],
-      comment: row.comment ?? null,
-      createdBy: row.createdBy,
-      createdAt: row.createdAt.toISOString(),
-    }));
+    return rows.map(rowToFeedback);
   }
 }
 
@@ -120,11 +114,22 @@ export class MemorySelectionFeedbackStore implements SelectionFeedbackStore {
   private nextId = 1;
 
   async submit(input: InsertSelectionFeedback): Promise<SelectionFeedback> {
+    const now = new Date().toISOString();
     const stored: SelectionFeedback = {
-      ...input,
       id: this.nextId++,
+      pipelineRunId: input.pipelineRunId,
+      beatId: input.beatId,
+      candidateId: input.candidateId,
+      feedbackType: input.feedbackType,
       comment: input.comment ?? null,
-      createdAt: new Date().toISOString(),
+      createdBy: input.createdBy,
+      createdAt: now,
+      updatedAt: now,
+      pipelineVersion: input.pipelineVersion ?? PIPELINE_VERSION,
+      engineVersion: input.engineVersion ?? ENGINE_VERSION,
+      visionModel: input.visionModel ?? null,
+      embeddingModel: input.embeddingModel ?? null,
+      rankingConfigVersion: input.rankingConfigVersion ?? RANKING_VERSION,
     };
     this.rows.push(stored);
     return stored;

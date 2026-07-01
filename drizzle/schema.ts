@@ -355,6 +355,14 @@ export const selectionFeedback = mysqlTable("selection_feedback", {
   comment: text("comment"),
   createdBy: varchar("createdBy", { length: 320 }).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  /** Version metadata — captured at submission so feedback can be grouped by the exact
+   *  engine configuration that produced the selection being reviewed. */
+  pipelineVersion: varchar("pipelineVersion", { length: 64 }),
+  engineVersion: varchar("engineVersion", { length: 32 }),
+  visionModel: varchar("visionModel", { length: 128 }),
+  embeddingModel: varchar("embeddingModel", { length: 128 }),
+  rankingConfigVersion: varchar("rankingConfigVersion", { length: 32 }),
 });
 
 export type SelectionFeedbackRow = typeof selectionFeedback.$inferSelect;
@@ -365,10 +373,11 @@ export type InsertSelectionFeedbackRow = typeof selectionFeedback.$inferInsert;
 export const selectionFeedbackEvents = mysqlTable("selection_feedback_events", {
   id: int("id").autoincrement().primaryKey(),
   feedbackId: int("feedbackId").notNull().references(() => selectionFeedback.id),
-  eventType: mysqlEnum("eventType", ["created", "updated", "deleted"]).notNull(),
+  eventType: mysqlEnum("eventType", ["created", "updated", "deleted", "restored"]).notNull(),
   /** Full JSON snapshot of the selection_feedback row at the time of the event. */
   snapshot: longtext("snapshot").notNull(),
-  changedBy: varchar("changedBy", { length: 320 }).notNull(),
+  /** Identity of the person or system that triggered this event. */
+  actor: varchar("actor", { length: 320 }).notNull(),
   changedAt: timestamp("changedAt").defaultNow().notNull(),
 });
 

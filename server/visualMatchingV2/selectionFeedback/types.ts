@@ -29,10 +29,26 @@ export type FeedbackType =
   | "not_relevant"        // clip is unrelated to the beat content
   | "other";              // free-text only, see comment field
 
+/** Version metadata captured at feedback submission time.
+ *  Allows later analysis to answer "was this feedback given before or after
+ *  ranking-config v5?" without joining back to the pipeline trace. */
+export type FeedbackVersionContext = {
+  /** e.g. "visual-matching-v2" */
+  pipelineVersion: string | null;
+  /** e.g. "v2" */
+  engineVersion: string | null;
+  /** e.g. "gpt-4o-mini" */
+  visionModel: string | null;
+  /** e.g. "voyage-3" */
+  embeddingModel: string | null;
+  /** e.g. "1" — RANKING_VERSION constant */
+  rankingConfigVersion: string | null;
+};
+
 /** One piece of feedback for one beat selection. Links to the beat trace by
  *  (pipelineRunId, beatId). candidateId identifies which candidate the reviewer assessed —
  *  usually the selected one, but may point to a rejected candidate for comparison. */
-export type SelectionFeedback = {
+export type SelectionFeedback = FeedbackVersionContext & {
   id: number;
   pipelineRunId: string;
   beatId: string;
@@ -42,16 +58,21 @@ export type SelectionFeedback = {
   comment: string | null;
   /** User identifier of the reviewer — email, userId, or system label ("auto"). */
   createdBy: string;
-  createdAt: string;  // ISO
+  createdAt: string;   // ISO
+  updatedAt: string;   // ISO — tracks the latest edit; equals createdAt for new rows
 };
 
-export type InsertSelectionFeedback = Omit<SelectionFeedback, "id" | "createdAt">;
+/** All fields except id, createdAt, updatedAt. Version fields are optional —
+ *  the store fills in current constants when omitted. */
+export type InsertSelectionFeedback = Omit<SelectionFeedback, "id" | "createdAt" | "updatedAt"> &
+  Partial<FeedbackVersionContext>;
 
 // ─── Event log ──────────────────────────────────────────────────────────────────
 
-/** Every change to a SelectionFeedback row is recorded here for audit purposes.
- *  Keeps SelectionFeedback itself as the current state; this table is the full history. */
-export type FeedbackEventType = "created" | "updated" | "deleted";
+/** Every change to a SelectionFeedback row is appended here — never updated or deleted.
+ *  Keeps SelectionFeedback as the current state; this table is the complete history.
+ *  "restored" covers soft-delete undo. */
+export type FeedbackEventType = "created" | "updated" | "deleted" | "restored";
 
 export type SelectionFeedbackEvent = {
   id: number;
@@ -59,8 +80,9 @@ export type SelectionFeedbackEvent = {
   eventType: FeedbackEventType;
   /** Full SelectionFeedback snapshot at the time of the event, serialized as JSON. */
   snapshot: string;
-  changedBy: string;
-  changedAt: string;
+  /** Identity of the person or system that triggered this event. */
+  actor: string;
+  changedAt: string;  // ISO
 };
 
 // ─── Store interface ────────────────────────────────────────────────────────────

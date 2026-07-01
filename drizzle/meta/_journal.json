@@ -204,6 +204,13 @@
       "when": 1781100015000,
       "tag": "0028_selection_feedback",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "5",
+      "when": 1781100016000,
+      "tag": "0029_selection_feedback_v2",
+      "breakpoints": true
     }
   ]
 }
