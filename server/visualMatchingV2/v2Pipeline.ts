@@ -168,7 +168,7 @@ export async function runV2Pipeline(
     else beatsSelected += 1;
 
     // ── Stage 9: BeatSelectionTrace (failure-isolated) ─────────────────────
-    await beatStore.save(selectionResult.trace, { videoId });
+    await beatStore.save(selectionResult.trace, { videoId, pipelineRunId });
 
     const beatDurationMs = elapsed(beatStart);
 

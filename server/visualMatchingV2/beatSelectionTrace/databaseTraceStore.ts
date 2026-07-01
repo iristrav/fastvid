@@ -47,6 +47,7 @@ export class DatabaseTraceStore implements BeatSelectionTraceStore {
       traceId: versioned.traceId,
       beatId: trace.beatId,
       videoId: context?.videoId ?? null,
+      pipelineRunId: context?.pipelineRunId ?? null,
       selectedCandidateId: trace.selectedCandidateId,
       needsResearch: trace.needsResearch ? 1 : 0,
       researchReason: trace.researchReason,

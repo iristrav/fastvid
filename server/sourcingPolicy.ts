@@ -85,6 +85,12 @@ export function visualMatchingV2PipelineEnabled(): boolean {
   return process.env.VISUAL_MATCHING_V2_PIPELINE === "true";
 }
 
+/** V2 VideoQualityReport — generates aggregated quality reports from stored traces.
+ *  Off by default; reads exclusively from beat_selection_traces and pipeline_run_traces. */
+export function visualMatchingV2VideoQualityReportEnabled(): boolean {
+  return process.env.VISUAL_MATCHING_V2_VIDEO_QUALITY_REPORT === "true";
+}
+
 /** V2 PipelineRunTrace store — persists one run-level trace per complete video-scene run.
  *  Off by default; enable together with the pipeline flag for full observability. */
 export function visualMatchingV2PipelineRunTraceEnabled(): boolean {

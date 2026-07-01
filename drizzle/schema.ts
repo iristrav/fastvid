@@ -276,6 +276,8 @@ export const beatSelectionTraces = mysqlTable("beat_selection_traces", {
   traceId: varchar("traceId", { length: 64 }).notNull().unique(),
   beatId: varchar("beatId", { length: 256 }).notNull(),
   videoId: varchar("videoId", { length: 256 }),
+  /** UUID of the enclosing pipeline run — join key for VideoQualityReport. */
+  pipelineRunId: varchar("pipelineRunId", { length: 64 }),
   selectedCandidateId: varchar("selectedCandidateId", { length: 256 }),
   needsResearch: int("needsResearch").default(0).notNull(),
   researchReason: varchar("researchReason", { length: 64 }),

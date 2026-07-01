@@ -27,6 +27,9 @@ export { PROMPT_VERSION };
  *  not the selector). All fields are optional; absent fields produce NULL in the DB. */
 export type TraceContext = {
   videoId?: string;
+  /** UUID of the enclosing pipeline run — required for VideoQualityReport to join
+   *  beat traces to their run without relying on time-window heuristics. */
+  pipelineRunId?: string;
 };
 
 // ─── Trace metadata (storage-layer generated) ──────────────────────────────────
