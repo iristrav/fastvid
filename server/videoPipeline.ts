@@ -504,7 +504,10 @@ const niceCmd = (cmd: string): string =>
 // Active watchdog for the currently-running render — auto-tracks every child process.
 // Set by generateVideo, cleared on finish. null when no render is active.
 import type { RenderWatchdog } from "./renderWatchdog";
+import type { RenderBudget } from "./renderBudget";
 let _activeWatchdog: RenderWatchdog | null = null;
+/** Active budget for the currently-running render — null when idle. */
+let _activeRenderBudget: RenderBudget | null = null;
 
 // execRaw exposes the ChildProcess so withTimeout can kill it on abort,
 // and registers it with the active render watchdog for hard-kill coverage.
@@ -1426,11 +1429,25 @@ function youtubeBeatFetchTimeoutMs(fastStockMode: boolean): number {
 
 /** Max time per beat for online/script image search before stock footage. */
 function beatVisualSearchMaxMs(perf: PipelinePerfProfile): number {
+  if (_activeRenderBudget) {
+    return perf.fastStockMode
+      ? Math.round(_activeRenderBudget.perBeatSearchMs * 0.4)
+      : _activeRenderBudget.perBeatSearchMs;
+  }
   return perf.fastStockMode ? 12_000 : 35_000;
 }
 
 function beatStockFallbackWallMs(perf: PipelinePerfProfile): number {
-  if (youtubeOnlySourcingEnabled()) return 30_000;
+  if (youtubeOnlySourcingEnabled()) {
+    return _activeRenderBudget
+      ? Math.round(_activeRenderBudget.perBeatFallbackMs * 1.4)
+      : 30_000;
+  }
+  if (_activeRenderBudget) {
+    return perf.fastStockMode
+      ? Math.round(_activeRenderBudget.perBeatFallbackMs * 0.35)
+      : _activeRenderBudget.perBeatFallbackMs;
+  }
   return perf.fastStockMode ? 6_000 : 20_000;
 }
 
@@ -3016,6 +3033,7 @@ async function generateBulkSceneVoiceovers(
 }
 
 function bulkVoiceoverTimeoutMs(sceneCount: number, videoLength?: string): number {
+  if (_activeRenderBudget) return _activeRenderBudget.ttsMs;
   if (isFastShortVideoLength(videoLength)) {
     return Math.min(75_000, 40_000 + sceneCount * 8_000);
   }
@@ -9796,7 +9814,13 @@ async function estimateBalancedMontageCoverageSec(
   return effectiveMontageDurationSec(balanced, sourceMaxDurs);
 }
 
-function composeSceneTimeoutMs(clipCount: number, videoLength?: string): number {
+function composeSceneTimeoutMs(clipCount: number, videoLength?: string, sceneDurationSec = 30): number {
+  if (_activeRenderBudget) {
+    // Complexity formula: scene_duration × 3s/s + 2.5s per clip, bounded by budget base
+    const complexity = Math.round(sceneDurationSec * 3_000 + Math.max(0, clipCount) * 2_500);
+    const base = _activeRenderBudget.basePerSceneComposeMs;
+    return Math.round(Math.min(Math.max(complexity, 45_000), base));
+  }
   if (isFastShortVideoLength(videoLength)) return 60_000;
   if (curatedArchiveOnlyVisuals() && clipCount > 8) return 90_000;
   return 75_000;
@@ -20231,7 +20255,7 @@ async function composeSceneVideo(
     composeBeatDurations = plan.durations;
   }
   const composeTimeout = composeOptions?.sceneTimeoutMs
-    ?? composeSceneTimeoutMs(safeClips.length, composeOptions?.dedup?.videoLength);
+    ?? composeSceneTimeoutMs(safeClips.length, composeOptions?.dedup?.videoLength, duration);
 
   // Subtitle overlay: render if user has enabled subtitles (effects pass only — not raw assembly)
   let subtitlePath: string | null = null;
@@ -21187,7 +21211,8 @@ async function concatenateScenesWithMusic(
   videoTitle: string,
   customMusicPath?: string | null,
   videoLength?: string,
-  concatTimeoutMs = 120_000
+  concatTimeoutMs = 120_000,
+  musicMixTimeoutMs = 180_000
 ): Promise<string> {
   const fastShort = isFastShortVideoLength(videoLength);
   const listFile = path.join(workDir, "concat_list.txt");
@@ -21283,7 +21308,7 @@ async function concatenateScenesWithMusic(
           `-map "0:v" -map "[aout]" ` +
           `-c:v copy -c:a aac -b:a 320k -movflags +faststart "${outputPath}"`
         ),
-        fastShort ? 60_000 : 180_000,
+        musicMixTimeoutMs,
         "Background music mixing"
       );
     } catch (err) {
@@ -21296,14 +21321,14 @@ async function concatenateScenesWithMusic(
             `-map "0:v" -map "[aout]" ` +
             `-c:v copy -c:a aac -b:a 320k -movflags +faststart "${outputPath}"`
           ),
-          fastShort ? 60_000 : 180_000,
+          musicMixTimeoutMs,
           "Background music mixing (no loop)"
         );
       } catch (err2) {
         console.warn("[Pipeline] Audio mixing failed completely, copying video:", err2);
         await withTimeout(
           exec(`${FFMPEG_BIN} -y -i "${concatPath}" -c copy -movflags +faststart "${outputPath}"`),
-          60_000, "Copy concat as output"
+          Math.round(musicMixTimeoutMs * 0.3), "Copy concat as output"
         );
       }
     }
@@ -21317,7 +21342,7 @@ async function concatenateScenesWithMusic(
         `-map "0:v" -map "[aout]" ` +
         `-c:v copy -c:a aac -b:a 320k -movflags +faststart "${outputPath}"`
       ),
-      120_000, "Background music mixing (no voiceover)"
+      Math.round(musicMixTimeoutMs * 0.8), "Background music mixing (no voiceover)"
     );
   }
 
@@ -21526,16 +21551,15 @@ export async function runVideoPipeline(
     }
     console.log(`[Pipeline] Stage 2 (voiceovers): ${scenes.length} in ${((Date.now()-t1)/1000).toFixed(1)}s`);
 
-    // ── RenderBudget: compute dynamic timeouts now that real durations are known ──
+    // ── RenderBudget: derive all timeouts from actual VO durations ───────────
     {
       const { computeRenderBudget, logRenderBudget } = await import("./renderBudget");
-      // beats are built during retrieval — estimate from average 6 beats/scene as proxy
-      const totalBeats = scenes.length * 6;
       const totalVoSec = scenes.reduce((s, sc) => s + sc.duration, 0);
-      const budget = computeRenderBudget(scenes.length, totalBeats, totalVoSec);
+      const budget = computeRenderBudget(scenes.length, totalVoSec);
       logRenderBudget(budget, videoId);
+      _activeRenderBudget = budget;
       watchdog.updateBudget(budget.totalMs);
-      renderBudgetComposeMs = budget.perSceneComposeMs;
+      renderBudgetComposeMs = budget.basePerSceneComposeMs;
       renderBudgetConcatMs  = budget.concatMs;
       renderBudgetUploadMs  = budget.uploadMs;
     }
@@ -22952,7 +22976,8 @@ export async function runVideoPipeline(
           videoTitle,
           undefined,
           videoLength,
-          renderBudgetConcatMs
+          renderBudgetConcatMs,
+          _activeRenderBudget?.musicMixMs ?? 180_000
         );
         if (isShortVideoLength(videoLength)) {
           const targetSec = videoLength === "1" ? 58 : 118;
@@ -23164,6 +23189,7 @@ export async function runVideoPipeline(
   } finally {
     watchdog.stop();
     _activeWatchdog = null;
+    _activeRenderBudget = null;
     try {
       fs.rmSync(workDir, { recursive: true, force: true });
     } catch { /* ignore */ }
