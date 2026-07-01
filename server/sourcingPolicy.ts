@@ -85,6 +85,12 @@ export function visualMatchingV2PipelineEnabled(): boolean {
   return process.env.VISUAL_MATCHING_V2_PIPELINE === "true";
 }
 
+/** V2 PipelineRunTrace store — persists one run-level trace per complete video-scene run.
+ *  Off by default; enable together with the pipeline flag for full observability. */
+export function visualMatchingV2PipelineRunTraceEnabled(): boolean {
+  return process.env.VISUAL_MATCHING_V2_PIPELINE_RUN_TRACE === "true";
+}
+
 /** V2 BeatSelectionTrace store — persists SelectorTrace to the database after each beat.
  *  Off by default; enable to start recording selection decisions. Video production is
  *  unaffected if this flag is off or if the store write fails. */

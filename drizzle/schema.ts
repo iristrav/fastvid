@@ -306,3 +306,30 @@ export const beatSelectionTraces = mysqlTable("beat_selection_traces", {
 
 export type BeatSelectionTraceRow = typeof beatSelectionTraces.$inferSelect;
 export type InsertBeatSelectionTraceRow = typeof beatSelectionTraces.$inferInsert;
+
+// ─── Visual Matching Engine V2 — Pipeline run traces ─────────────────────────
+/** One row per complete video-scene pipeline run. Captures run-level aggregates and
+ *  stage timings for VideoQualityReport, separate from per-beat BeatSelectionTrace. */
+export const pipelineRunTraces = mysqlTable("pipeline_run_traces", {
+  id: int("id").autoincrement().primaryKey(),
+  pipelineRunId: varchar("pipelineRunId", { length: 64 }).notNull().unique(),
+  videoId: varchar("videoId", { length: 256 }).notNull(),
+  pipelineVersion: varchar("pipelineVersion", { length: 64 }).notNull(),
+  beatsProcessed: int("beatsProcessed").notNull(),
+  beatsSelected: int("beatsSelected").notNull(),
+  beatsResearchRequired: int("beatsResearchRequired").notNull(),
+  totalDurationMs: int("totalDurationMs").notNull(),
+  videoContextMs: int("videoContextMs").notNull(),
+  visualIntentMs: int("visualIntentMs").notNull(),
+  retrievalTotalMs: int("retrievalTotalMs").notNull(),
+  clipTotalMs: int("clipTotalMs").notNull(),
+  rankingTotalMs: int("rankingTotalMs").notNull(),
+  visionTotalMs: int("visionTotalMs").notNull(),
+  selectionTotalMs: int("selectionTotalMs").notNull(),
+  startedAt: timestamp("startedAt").notNull(),
+  completedAt: timestamp("completedAt").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type PipelineRunTraceRow = typeof pipelineRunTraces.$inferSelect;
+export type InsertPipelineRunTraceRow = typeof pipelineRunTraces.$inferInsert;

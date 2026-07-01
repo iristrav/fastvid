@@ -106,6 +106,14 @@ export function logSelector(
   console.log(`${PREFIX} Selection.${event}`, JSON.stringify(data));
 }
 
+/** PipelineRunTrace store — one event per pipeline-run save attempt. */
+export function logPipelineRunTrace(
+  event: "saved" | "error",
+  data: Record<string, unknown>
+) {
+  console.log(`${PREFIX} PipelineRunTrace.${event}`, JSON.stringify(data));
+}
+
 /** BeatSelectionTrace store — one event per save attempt. Separate from SelectorTrace
  *  (decision log) so storage errors are visible without polluting selection logs. */
 export function logBeatSelectionTrace(

@@ -183,6 +183,13 @@
       "when": 1781100012000,
       "tag": "0025_beat_selection_traces_pipeline_version",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "5",
+      "when": 1781100013000,
+      "tag": "0026_pipeline_run_traces",
+      "breakpoints": true
     }
   ]
 }
