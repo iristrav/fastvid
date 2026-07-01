@@ -272,13 +272,17 @@ export type InsertBackfillCursor = typeof backfillCursors.$inferInsert;
  *  older than N days). No foreign-key to beats — beats may not exist in all envs. */
 export const beatSelectionTraces = mysqlTable("beat_selection_traces", {
   id: int("id").autoincrement().primaryKey(),
+  /** UUID generated at write time — unique per trace for integrity checks and dedup. */
+  traceId: varchar("traceId", { length: 64 }).notNull().unique(),
   beatId: varchar("beatId", { length: 256 }).notNull(),
+  videoId: varchar("videoId", { length: 256 }),
   selectedCandidateId: varchar("selectedCandidateId", { length: 256 }),
   needsResearch: int("needsResearch").default(0).notNull(),
   researchReason: varchar("researchReason", { length: 64 }),
   confidenceTier: varchar("confidenceTier", { length: 32 }),
   confidence: varchar("confidence", { length: 32 }),
   overallScore: int("overallScore"),
+  winnerSource: varchar("winnerSource", { length: 64 }),
   candidateCount: int("candidateCount").notNull(),
   durationMs: int("durationMs").notNull(),
   tieBreakApplied: int("tieBreakApplied").default(0).notNull(),
@@ -287,6 +291,12 @@ export const beatSelectionTraces = mysqlTable("beat_selection_traces", {
   visionVersion: varchar("visionVersion", { length: 32 }).notNull(),
   rankingVersion: varchar("rankingVersion", { length: 32 }).notNull(),
   promptVersion: varchar("promptVersion", { length: 64 }).notNull(),
+  schemaVersion: varchar("schemaVersion", { length: 16 }).notNull(),
+  engineVersion: varchar("engineVersion", { length: 32 }).notNull(),
+  host: varchar("host", { length: 256 }).notNull(),
+  workerId: varchar("workerId", { length: 128 }).notNull(),
+  /** SHA256 of the serialized payload for integrity checks, deduplication, and export. */
+  traceHash: varchar("traceHash", { length: 64 }).notNull(),
   contentType: varchar("contentType", { length: 64 }).notNull(),
   payload: longtext("payload").notNull(),
   startedAt: timestamp("startedAt").notNull(),

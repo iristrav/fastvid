@@ -169,6 +169,13 @@
       "when": 1781100010000,
       "tag": "0023_beat_selection_traces",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "5",
+      "when": 1781100011000,
+      "tag": "0024_beat_selection_traces_v2",
+      "breakpoints": true
     }
   ]
 }

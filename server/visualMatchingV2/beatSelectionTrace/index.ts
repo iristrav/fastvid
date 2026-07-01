@@ -1,13 +1,13 @@
 /** Visual Matching Engine V2 — BeatSelectionTrace factory.
  *
- *  Returns a BeatSelectionTraceStore appropriate for the current environment:
- *  - NullTraceStore when the feature flag is off
- *  - DatabaseTraceStore otherwise
+ *  Active composition (flag on):  AsyncTraceWriter → DatabaseTraceStore
+ *  Flag off:                      NullTraceStore
  *
- *  The factory is the ONLY place that reads the feature flag; callers receive a store and
- *  call save() without knowing which implementation is behind it. */
+ *  The factory is the ONLY place that reads the feature flag and wires up the composition.
+ *  Callers receive a BeatSelectionTraceStore and call save() without knowing the impl. */
 import { visualMatchingV2BeatSelectionTraceEnabled } from "../../sourcingPolicy";
 import type { BeatSelectionTraceStore } from "./types";
+import { AsyncTraceWriter } from "./asyncTraceWriter";
 import { DatabaseTraceStore } from "./databaseTraceStore";
 import { NullTraceStore } from "./nullTraceStore";
 
@@ -15,12 +15,15 @@ export function createBeatSelectionTraceStore(): BeatSelectionTraceStore {
   if (!visualMatchingV2BeatSelectionTraceEnabled()) {
     return new NullTraceStore();
   }
-  return new DatabaseTraceStore();
+  return new AsyncTraceWriter(new DatabaseTraceStore());
 }
 
-export type { BeatSelectionTraceStore } from "./types";
+export type { BeatSelectionTraceStore, TraceContext, VersionedSelectorTrace, TraceSerializer, TraceRetentionPolicy } from "./types";
 export { MemoryTraceStore } from "./memoryTraceStore";
 export { NullTraceStore } from "./nullTraceStore";
 export { DatabaseTraceStore } from "./databaseTraceStore";
-export { JsonTraceSerializer, TRACE_VERSION, SELECTOR_VERSION, VISION_VERSION, RANKING_VERSION, PROMPT_VERSION } from "./types";
-export type { VersionedSelectorTrace, TraceSerializer } from "./types";
+export { AsyncTraceWriter } from "./asyncTraceWriter";
+export { BatchTraceBuffer } from "./batchTraceBuffer";
+export { JsonTraceSerializer, GzipJsonSerializer, MsgPackSerializer } from "./types";
+export { TRACE_VERSION, SELECTOR_VERSION, VISION_VERSION, RANKING_VERSION, PROMPT_VERSION, SCHEMA_VERSION, ENGINE_VERSION } from "./types";
+export { getTraceStorageMetrics, resetTraceStorageMetrics } from "./traceMetrics";
