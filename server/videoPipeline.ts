@@ -1398,12 +1398,12 @@ function youtubeBeatFetchTimeoutMs(fastStockMode: boolean): number {
 
 /** Max time per beat for online/script image search before stock footage. */
 function beatVisualSearchMaxMs(perf: PipelinePerfProfile): number {
-  return perf.fastStockMode ? 18_000 : 60_000;
+  return perf.fastStockMode ? 12_000 : 35_000;
 }
 
 function beatStockFallbackWallMs(perf: PipelinePerfProfile): number {
-  if (youtubeOnlySourcingEnabled()) return 45_000;
-  return perf.fastStockMode ? 8_000 : 30_000;
+  if (youtubeOnlySourcingEnabled()) return 30_000;
+  return perf.fastStockMode ? 6_000 : 20_000;
 }
 
 /** Wall-clock cap for one beat: search + stock fallback. */
@@ -2292,14 +2292,14 @@ async function downloadAndTrimPoolCandidate(
   try {
     console.log(`[Hang] downloadAndTrim BEFORE cache-restore s${sceneIndex}b${beatIndex}`);
     const _cr0 = Date.now();
-    const fromCache = await withTimeout(tryRestoreFromMediaCache(candidate.remoteUrl, rawPath), 10_000, `cache-restore s${sceneIndex}b${beatIndex}`).catch(() => false);
+    const fromCache = await withTimeout(tryRestoreFromMediaCache(candidate.remoteUrl, rawPath), 5_000, `cache-restore s${sceneIndex}b${beatIndex}`).catch(() => false);
     console.log(`[Hang] downloadAndTrim AFTER cache-restore s${sceneIndex}b${beatIndex} hit=${fromCache} elapsed=${Date.now()-_cr0}ms`);
     if (!fromCache) {
       console.log(`[Hang] downloadAndTrim BEFORE fetch s${sceneIndex}b${beatIndex} url=${candidate.remoteUrl.slice(0,80)}`);
       const _f0 = Date.now();
       const resp = await withTimeout(
         fetch(candidate.remoteUrl),
-        45_000,
+        22_000,
         `Pool download s${sceneIndex}b${beatIndex} ${candidate.source}:${candidate.assetId}`
       );
       console.log(`[Hang] downloadAndTrim AFTER fetch s${sceneIndex}b${beatIndex} ok=${resp.ok} elapsed=${Date.now()-_f0}ms`);
@@ -2317,7 +2317,7 @@ async function downloadAndTrimPoolCandidate(
       try {
         console.log(`[Hang] downloadAndTrim BEFORE ffprobe s${sceneIndex}b${beatIndex}`);
         const _p0 = Date.now();
-        const { stdout } = await withTimeout(exec(probeCmd), 10_000, `probe pool s${sceneIndex}b${beatIndex}`);
+        const { stdout } = await withTimeout(exec(probeCmd), 5_000, `probe pool s${sceneIndex}b${beatIndex}`);
         console.log(`[Hang] downloadAndTrim AFTER ffprobe s${sceneIndex}b${beatIndex} elapsed=${Date.now()-_p0}ms`);
         const parsed = parseFloat(stdout.trim());
         if (!isNaN(parsed) && parsed > 0) sourceDur = parsed;
@@ -2374,7 +2374,7 @@ async function trimDownloadedStockClip(
         `-vf "${STANDARD_VF}" ` +
         `-c:v libx264 -preset veryfast -crf 18 -an -pix_fmt yuv420p "${outPath}"`
       ),
-      45_000,
+      35_000,
       label
     );
     return fs.existsSync(outPath) && fs.statSync(outPath).size > 1_000;
@@ -4076,7 +4076,7 @@ async function encodeStillImageMp4(
     try {
       await withTimeout(
         exec(`${FFMPEG_BIN} ${buildStillEncodeArgs(imgPath, outPath, duration, styled.filterComplex)}`),
-        45_000,
+        25_000,
         label
       );
       if (styled.consumedBudget && styleContext?.motionGraphicsBudget) {
@@ -4106,7 +4106,7 @@ async function encodeStillImageMp4(
     try {
       await withTimeout(
         exec(`${FFMPEG_BIN} ${buildStillEncodeArgs(imgPath, outPath, duration, filterComplex)}`),
-        45_000,
+        25_000,
         label
       );
       if (fs.existsSync(outPath) && fs.statSync(outPath).size > 1000) {
@@ -4125,7 +4125,7 @@ async function encodeStillImageMp4(
     const fallbackFc = buildSimpleKenBurnsVF(duration, personPortrait);
     await withTimeout(
       exec(`${FFMPEG_BIN} ${buildStillEncodeArgs(imgPath, outPath, duration, fallbackFc)}`),
-      45_000,
+      25_000,
       `${label} (fallback)`
     );
     return;
@@ -4137,7 +4137,7 @@ async function encodeStillImageMp4(
       const filterComplex = buildMatFramedStillVF(duration);
       await withTimeout(
         exec(`${FFMPEG_BIN} ${buildStillEncodeArgs(imgPath, outPath, duration, filterComplex)}`),
-        45_000,
+        25_000,
         `${label} (mat frame)`
       );
       if (fs.existsSync(outPath) && fs.statSync(outPath).size > 1000) {
@@ -4171,7 +4171,7 @@ async function encodeStillImageMp4(
         `d=${totalFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=${fps}" ` +
         `-frames:v ${totalFrames} -c:v libx264 -preset veryfast -crf 18 -an -pix_fmt yuv420p -r ${fps} "${outPath}"`
     ),
-    45_000,
+    25_000,
     label
   );
 }
@@ -9756,9 +9756,9 @@ async function estimateBalancedMontageCoverageSec(
 }
 
 function composeSceneTimeoutMs(clipCount: number, videoLength?: string): number {
-  if (isFastShortVideoLength(videoLength)) return 90_000;
-  if (curatedArchiveOnlyVisuals() && clipCount > 8) return 120_000;
-  return 120_000;
+  if (isFastShortVideoLength(videoLength)) return 60_000;
+  if (curatedArchiveOnlyVisuals() && clipCount > 8) return 90_000;
+  return 75_000;
 }
 
 function montageEncodeFlags(montageFilterOpts?: MontageFilterOpts): string {
@@ -18808,7 +18808,7 @@ async function fetchSceneVisuals(
             fetchBeatAIClip(
               beat, scene, workDir, scene.index, beat.index, clipFetchDur, dedup, videoTitle
             ),
-            dedup.perf.fastStockMode ? FAST_AI_CLIP_TIMEOUT_MS : 120_000,
+            dedup.perf.fastStockMode ? FAST_AI_CLIP_TIMEOUT_MS : 45_000,
             `beat cap AI s${scene.index} b${beat.index}`
           );
         } catch {
