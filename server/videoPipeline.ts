@@ -147,7 +147,7 @@ import {
   uniqueQueryStrings,
   uniqueCoercedQueries,
 } from "./stringCoercion";
-import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, pipelineComposeGraceMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs } from "./sourcingPolicy";
+import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, pipelineComposeGraceMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -183,6 +183,7 @@ import {
   analyzeBeatsSemanticsBatch,
   buildSemanticPexelsQueries,
   semanticVisualMatchingEnabled,
+  createTextEmbedding,
   type BeatSemanticProfile,
 } from "./semanticVisualMatching";
 import {
@@ -215,7 +216,15 @@ import { buildEditorScenesFromPipeline } from "./editorClips";
 import { tryRestoreFromMediaCache, reportToMediaCache } from "./mediaCache";
 import { getCandidatePool, putCandidatePool } from "./sceneCandidateCache";
 import { buildSceneCandidatePool, selectCandidatesFromPool, rankCandidatesByThumbnailClip, type PoolCandidate } from "./scenePool";
-import { buildRetrievalFunnel, type FunnelCandidate, type RetrievalFunnelResult } from "./retrievalFunnel";
+import {
+  buildRetrievalFunnel,
+  findBestArchiveScoreForBeat,
+  resolvePerBeatGapStrategy,
+  orderCandidatesForBeatGap,
+  type FunnelCandidate,
+  type RetrievalFunnelResult,
+} from "./retrievalFunnel";
+import { ingestExternalClipToArchive } from "./archiveIngestion";
 import type { CachedCandidate } from "./sceneCandidateCache";
 import { buildVideoQualityReport, computeMeritQualityScore, logVideoQualityReport } from "./videoQualityReport";
 import { postRenderSpotCheckEnabledForVideo, spotCheckFinalVideo } from "./postRenderSpotCheck";
@@ -18518,14 +18527,35 @@ async function fetchSceneVisuals(
           );
         }
       } else if (funnelResult && funnelResult.candidates.length > 0) {
-        // Funnel path: hybrid archive+internet, coverage-weighted ranking
-        // Select top candidates by rankingScore, optionally rerank by CLIP thumbnail
-        let funnelCandidates: FunnelCandidate[] = funnelResult.candidates
-          .slice(0, poolThumbnailRankingEnabled() ? 8 : 3);
+        // Funnel path: archive-first with per-beat gap detection (when enabled),
+        // or hybrid coverage-weighted ranking (original behaviour).
+        let funnelCandidates: FunnelCandidate[];
+
+        if (archiveFirstBeatsEnabled()) {
+          // ── Archive-first per-beat gap detection ──────────────────────────────
+          // 1. Compute beat embedding (1 API call; model caches by text)
+          const beatDoc = `${beat.text}. ${beat.visualDescription ?? ""}`.slice(0, 400);
+          const beatEmb = await createTextEmbedding(beatDoc).catch(() => null);
+          // 2. Score archive candidates in-memory (no API calls)
+          const bestArchiveScore = beatEmb
+            ? findBestArchiveScoreForBeat(funnelResult.candidates, beatEmb)
+            : null;
+          // 3. Resolve gap strategy based on confidence
+          const gapStrategy = resolvePerBeatGapStrategy(bestArchiveScore);
+          console.log(
+            `[Funnel] s${scene.index}b${beat.index}: archiveScore=${bestArchiveScore?.toFixed(3) ?? "n/a"} strategy=${gapStrategy}`
+          );
+          // 4. Order candidates: archive leads unless aggressive mode
+          funnelCandidates = orderCandidatesForBeatGap(funnelResult.candidates, gapStrategy);
+          funnelCandidates = funnelCandidates.slice(0, poolThumbnailRankingEnabled() ? 8 : 4);
+        } else {
+          // Original coverage-weighted ranking (no per-beat gap detection)
+          funnelCandidates = funnelResult.candidates.slice(0, poolThumbnailRankingEnabled() ? 8 : 3);
+        }
+
         if (poolThumbnailRankingEnabled() && funnelCandidates.some(c => c.thumbnailUrl)) {
           // Rerank external candidates (pool ones) by CLIP — archive ones have no thumbnail
           const external = funnelCandidates.filter(c => c.poolCandidate && c.thumbnailUrl);
-          const archive = funnelCandidates.filter(c => !c.poolCandidate || !c.thumbnailUrl);
           if (external.length > 0) {
             const reranked = await rankCandidatesByThumbnailClip(
               external.map(c => c.poolCandidate!),
@@ -18537,13 +18567,47 @@ async function fetchSceneVisuals(
               if (rr) { fc.clipSimilarity = rr.clipSimilarity; fc.rankingScore += (rr.clipSimilarity ?? 0) * 0.3; }
             }
           }
-          funnelCandidates = [...funnelCandidates].sort((a, b) => b.rankingScore - a.rankingScore).slice(0, 3);
+          if (!archiveFirstBeatsEnabled()) {
+            // Only re-sort when NOT in archive-first mode (gap detection already ordered candidates)
+            funnelCandidates = [...funnelCandidates].sort((a, b) => b.rankingScore - a.rankingScore);
+          }
+          funnelCandidates = funnelCandidates.slice(0, 3);
         }
+
         let funnelClip: string | null = null;
+        let winningExternalCandidate: FunnelCandidate | null = null;
         for (const candidate of funnelCandidates) {
-          funnelClip = await downloadFunnelCandidate(candidate, workDir, scene.index, beat.index, beat.holdSec);
-          if (funnelClip) break;
+          const clipPath = await downloadFunnelCandidate(candidate, workDir, scene.index, beat.index, beat.holdSec);
+          if (clipPath) {
+            funnelClip = clipPath;
+            if (candidate.source !== "archive") winningExternalCandidate = candidate;
+            break;
+          }
         }
+
+        // Self-learning: ingest winning external clip into archive (best-effort, background)
+        if (funnelClip && winningExternalCandidate && externalAssetIngestionEnabled()) {
+          const wec = winningExternalCandidate;
+          const clipPath = funnelClip;
+          void (async () => {
+            try {
+              await ingestExternalClipToArchive(clipPath, {
+                title: wec.title,
+                tags: beat.keywords ?? [],
+                sourceNote: `${wec.source}:${wec.poolCandidate?.id ?? wec.id}`,
+                mediaType: wec.mediaType,
+                mimeType: wec.mediaType === "video" ? "video/mp4" : "image/jpeg",
+                durationSec: wec.poolCandidate?.durationSec ?? undefined,
+                licenseNote: wec.source === "pexels" ? "Pexels license" :
+                             wec.source === "pixabay" ? "Pixabay license" :
+                             wec.source === "wikimedia" ? "CC BY-SA / CC0" : undefined,
+              });
+            } catch {
+              // best-effort: never block video production
+            }
+          })();
+        }
+
         if (funnelClip) {
           clip = funnelClip;
         } else {

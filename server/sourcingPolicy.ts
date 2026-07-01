@@ -986,3 +986,23 @@ export function poolThumbnailRankingEnabled(): boolean {
 export function retrievalFunnelEnabled(): boolean {
   return process.env.ENABLE_RETRIEVAL_FUNNEL === "true";
 }
+
+/** Archive-first per-beat gap detection (self-learning retrieval).
+ *  When enabled, the archive is always consulted first per beat.  The embedding
+ *  confidence score determines how many external sources are queried:
+ *    > 0.90 → archive only (no internet call)
+ *    0.75–0.90 → one external source
+ *    0.50–0.75 → all external sources
+ *    < 0.50 → aggressive external retrieval
+ *  Requires ENABLE_ARCHIVE_FIRST_BEATS=true AND ENABLE_RETRIEVAL_FUNNEL=true. */
+export function archiveFirstBeatsEnabled(): boolean {
+  return process.env.ENABLE_ARCHIVE_FIRST_BEATS === "true";
+}
+
+/** Self-learning ingestion: winning external clips are uploaded to the own archive
+ *  (quality gate → R2 → DB record → embedding index) so future videos can use them
+ *  without external API calls.  Best-effort; never blocks video production.
+ *  Requires ENABLE_EXTERNAL_ASSET_INGESTION=true. */
+export function externalAssetIngestionEnabled(): boolean {
+  return process.env.ENABLE_EXTERNAL_ASSET_INGESTION === "true";
+}

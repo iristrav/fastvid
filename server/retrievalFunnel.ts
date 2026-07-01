@@ -24,7 +24,9 @@ import {
 } from "./curatedMediaSourcing";
 import {
   scoreBeatAgainstStoredEmbedding,
+  loadStoredAssetEmbedding,
 } from "./archiveEmbeddingIndex";
+import { cosineSimilarityVectors } from "./semanticVisualMatching";
 import {
   buildSceneCandidatePool,
   type PoolCandidate,
@@ -75,6 +77,14 @@ export type FunnelCandidate = {
   archivePick?: CuratedCandidatePick;
   /** Set when source !== "archive" — pass to downloadAndTrimPoolCandidate. */
   poolCandidate?: PoolCandidate;
+
+  // ── Self-learning: per-beat scoring ────────────────────────────────────────
+  /**
+   * Pre-loaded text embedding for this asset (archive only).
+   * Used by scoreFunnelCandidateForBeat() to do fast in-memory per-beat cosine
+   * similarity without extra API calls.
+   */
+  storedEmbedding?: number[];
 };
 
 export type FunnelMetrics = {
@@ -104,6 +114,97 @@ const INTERNET_DOMINANT_THRESHOLD = 0.45;
 /** When the archive has NO embedding index at all, fall back to normalised keyword
  *  score.  The keyword scorer returns raw integer points — 100 pts ~ good match. */
 const KEYWORD_SCORE_MAX = 100;
+
+// ─── Per-beat gap strategy (self-learning retrieval) ─────────────────────────
+
+/**
+ * Tiered confidence thresholds for per-beat archive gap detection.
+ * When an archive candidate's per-beat embedding similarity meets one of these
+ * thresholds, only the specified number of external sources are queried.
+ */
+export const BEAT_ARCHIVE_STOP_THRESHOLD = 0.90;       // archive wins — skip internet entirely
+export const BEAT_ARCHIVE_ONE_EXTERNAL_THRESHOLD = 0.75; // good match — hedge with one external
+export const BEAT_ARCHIVE_ALL_EXTERNAL_THRESHOLD = 0.50; // weak match — try all externals
+
+export type BeatGapStrategy =
+  | "archive_only"    // score > 0.90 — use archive, no internet call
+  | "one_external"    // score 0.75–0.90 — archive + one external source as hedge
+  | "all_external"    // score 0.50–0.75 — archive + all external sources
+  | "aggressive";     // score < 0.50 — archive deprioritised, all external, more results
+
+/** Determines how many external sources to query based on the best archive score for a beat. */
+export function resolvePerBeatGapStrategy(bestArchiveScore: number | null): BeatGapStrategy {
+  if (bestArchiveScore === null || bestArchiveScore < BEAT_ARCHIVE_ALL_EXTERNAL_THRESHOLD) {
+    return "aggressive";
+  }
+  if (bestArchiveScore >= BEAT_ARCHIVE_STOP_THRESHOLD) return "archive_only";
+  if (bestArchiveScore >= BEAT_ARCHIVE_ONE_EXTERNAL_THRESHOLD) return "one_external";
+  return "all_external";
+}
+
+/**
+ * Scores a FunnelCandidate against a pre-computed beat embedding using the
+ * pre-loaded storedEmbedding (in-memory cosine similarity — no API call).
+ * Returns null when no stored embedding is available.
+ */
+export function scoreFunnelCandidateForBeat(
+  candidate: FunnelCandidate,
+  beatEmbedding: number[]
+): number | null {
+  if (!candidate.storedEmbedding || candidate.storedEmbedding.length === 0) return null;
+  return Math.max(0, cosineSimilarityVectors(beatEmbedding, candidate.storedEmbedding));
+}
+
+/**
+ * Finds the best archive candidate for a specific beat, scoring each archive
+ * candidate against the beat embedding.  Returns the best score (0–1) or null
+ * when no archive candidates have stored embeddings.
+ */
+export function findBestArchiveScoreForBeat(
+  candidates: FunnelCandidate[],
+  beatEmbedding: number[]
+): number | null {
+  let best: number | null = null;
+  for (const c of candidates) {
+    if (c.source !== "archive") continue;
+    const score = scoreFunnelCandidateForBeat(c, beatEmbedding);
+    if (score !== null && (best === null || score > best)) {
+      best = score;
+    }
+  }
+  return best;
+}
+
+/**
+ * Orders funnel candidates for archive-first per-beat retrieval.
+ * Archive candidates always come first; external candidates are appended
+ * according to the gap strategy:
+ *   archive_only  → external candidates removed
+ *   one_external  → only the top-ranked external candidate kept
+ *   all_external  → all external candidates kept (ranked by rankingScore)
+ *   aggressive    → same as all_external but archive candidates are moved last
+ */
+export function orderCandidatesForBeatGap(
+  candidates: FunnelCandidate[],
+  strategy: BeatGapStrategy
+): FunnelCandidate[] {
+  const archiveCands = candidates.filter(c => c.source === "archive");
+  const externalCands = candidates
+    .filter(c => c.source !== "archive")
+    .sort((a, b) => b.rankingScore - a.rankingScore);
+
+  switch (strategy) {
+    case "archive_only":
+      return archiveCands;
+    case "one_external":
+      return [...archiveCands, ...externalCands.slice(0, 1)];
+    case "all_external":
+      return [...archiveCands, ...externalCands];
+    case "aggressive":
+      // Archive still available as fallback but external leads
+      return [...externalCands, ...archiveCands];
+  }
+}
 
 // ─── Coverage scoring ─────────────────────────────────────────────────────────
 
@@ -231,6 +332,9 @@ function mergeCandidates(
     const embBoost = embSim !== null ? embSim * 0.4 : 0;
     const rankingScore = (kwBase + embBoost) * archiveWeight;
 
+    // Load stored embedding for fast per-beat cosine scoring (no extra API call)
+    const storedEmb = loadStoredAssetEmbedding(pick.asset.id);
+
     merged.push({
       id,
       source: "archive",
@@ -242,6 +346,7 @@ function mergeCandidates(
       clipSimilarity: null,
       rankingScore,
       archivePick: pick,
+      storedEmbedding: storedEmb?.embedding,
     });
   }
 
