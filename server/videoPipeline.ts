@@ -147,7 +147,7 @@ import {
   uniqueQueryStrings,
   uniqueCoercedQueries,
 } from "./stringCoercion";
-import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, pipelineComposeGraceMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs } from "./sourcingPolicy";
+import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, pipelineComposeGraceMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -215,6 +215,7 @@ import { buildEditorScenesFromPipeline } from "./editorClips";
 import { tryRestoreFromMediaCache, reportToMediaCache } from "./mediaCache";
 import { getCandidatePool, putCandidatePool } from "./sceneCandidateCache";
 import { buildSceneCandidatePool, selectCandidatesFromPool, rankCandidatesByThumbnailClip, type PoolCandidate } from "./scenePool";
+import { buildRetrievalFunnel, type FunnelCandidate, type RetrievalFunnelResult } from "./retrievalFunnel";
 import type { CachedCandidate } from "./sceneCandidateCache";
 import { buildVideoQualityReport, computeMeritQualityScore, logVideoQualityReport } from "./videoQualityReport";
 import { postRenderSpotCheckEnabledForVideo, spotCheckFinalVideo } from "./postRenderSpotCheck";
@@ -2210,6 +2211,46 @@ async function resolveBeatClipFast(
 }
 
 type StockBeatCtx = { beatText?: string; queryEmbedding?: number[] | null };
+
+// ─── Retrieval Funnel: unified download helper ────────────────────────────────
+
+/**
+ * Downloads a FunnelCandidate — dispatches to the correct download path based
+ * on source: archive candidates use prepareCuratedArchiveClip (direct, no re-search),
+ * external candidates use downloadAndTrimPoolCandidate.
+ * Returns the local clip path on success, null on failure.
+ * Called only when ENABLE_RETRIEVAL_FUNNEL=true.
+ */
+async function downloadFunnelCandidate(
+  candidate: FunnelCandidate,
+  workDir: string,
+  sceneIndex: number,
+  beatIndex: number,
+  holdSec: number
+): Promise<string | null> {
+  try {
+    if (candidate.archivePick) {
+      const clip = await prepareCuratedArchiveClip(
+        candidate.archivePick.asset,
+        workDir,
+        sceneIndex,
+        beatIndex,
+        holdSec
+      );
+      return clip && fs.existsSync(clip) ? clip : null;
+    }
+    if (candidate.poolCandidate) {
+      return downloadAndTrimPoolCandidate(candidate.poolCandidate, workDir, sceneIndex, beatIndex, holdSec);
+    }
+    return null;
+  } catch (err) {
+    console.warn(
+      `[Funnel] downloadFunnelCandidate failed s${sceneIndex}b${beatIndex} ${candidate.id}:`,
+      (err as Error).message?.slice(0, 80)
+    );
+    return null;
+  }
+}
 
 // ─── P1: Pool candidate download helper ───────────────────────────────────────
 
@@ -18294,7 +18335,8 @@ async function fetchSceneVisuals(
   dedup: VisualDedupState,
   onBeatProgress?: (beatIndex: number, beatTotal: number, phase?: BeatProgressPhase) => void,
   sceneAudioPath?: string,
-  prefetchPools?: Map<number, Promise<import("./scenePool").SceneCandidatePool>>
+  prefetchPools?: Map<number, Promise<import("./scenePool").SceneCandidatePool>>,
+  prefetchFunnels?: Map<number, Promise<RetrievalFunnelResult>>
 ): Promise<SceneVisualsResult> {
   videoTitle = coerceVisionString(videoTitle);
   if (curatedArchiveOnlyVisuals()) {
@@ -18350,34 +18392,60 @@ async function fetchSceneVisuals(
     (archiveOnly ? " [curated archive only]" : "")
   );
 
-  // ── P1 + P4: Scene-level candidate pool ────────────────────────────────────
-  // P1: ONE pool build per scene (metadata only, no downloads).
-  // P4: When prefetchPools is provided, the pool was already built during TTS
-  //     (zero wait here).  Otherwise build it inline (P1 only, no P4).
-  // Falls back to normal per-beat retrieval if pool is unavailable or flag is off.
+  // ── P1 + P4 + Funnel: Scene-level candidate pool ───────────────────────────
+  // When ENABLE_RETRIEVAL_FUNNEL=true: use hybrid archive+internet funnel.
+  // Otherwise P1/P4: external-only pool (archive searched separately per beat).
+  // P4: prefetch promises are already resolved by the time we get here.
+  // Falls back to normal per-beat retrieval on any error or when flags are off.
   let scenePool: import("./scenePool").SceneCandidatePool | null = null;
+  let funnelResult: RetrievalFunnelResult | null = null;
+
   if (!archiveOnly && sceneCandidatePoolEnabled()) {
     try {
       const poolT0 = Date.now();
-      const prefetchPromise = prefetchPools?.get(scene.index);
-      scenePool = prefetchPromise
-        ? await prefetchPromise
-        : await buildSceneCandidatePool({
-            sceneIndex: scene.index,
-            sceneText: scene.text,
-            primaryQuery: scene.pexelsQuery || scene.visualCue || scene.text.slice(0, 80),
-            extraQueries: scene.pexelsQueries?.slice(0, 2),
-            pexelsApiKey: PEXELS_API_KEY || undefined,
-            pixabayApiKey: process.env.PIXABAY_API_KEY || undefined,
-          });
-      const waited = Date.now() - poolT0;
-      console.log(
-        `[Pool] Scene ${scene.index}: pool ready (${prefetchPromise ? `prefetch, waited ${waited}ms` : `inline ${waited}ms`}) — ` +
-        `${scenePool.candidates.length} candidates, cache=${scenePool.metrics.cacheHit}`
-      );
+      if (retrievalFunnelEnabled()) {
+        // Funnel path: archive + internet in parallel, coverage-weighted
+        const prefetchFunnel = prefetchFunnels?.get(scene.index);
+        funnelResult = prefetchFunnel
+          ? await prefetchFunnel
+          : await buildRetrievalFunnel({
+              sceneIndex: scene.index,
+              sceneText: scene.text,
+              primaryQuery: scene.pexelsQuery || scene.visualCue || scene.text.slice(0, 80),
+              extraQueries: scene.pexelsQueries?.slice(0, 2),
+              pexelsApiKey: PEXELS_API_KEY || undefined,
+              pixabayApiKey: process.env.PIXABAY_API_KEY || undefined,
+              videoTitle: videoTitle || undefined,
+            });
+        const waited = Date.now() - poolT0;
+        console.log(
+          `[Funnel] Scene ${scene.index}: ${funnelResult.candidates.length} candidates ` +
+          `(coverage=${funnelResult.archiveCoverage.toFixed(2)}, strategy=${funnelResult.strategy}) ` +
+          `${prefetchFunnel ? `prefetch waited ${waited}ms` : `inline ${waited}ms`}`
+        );
+      } else {
+        // P1/P4 path: external-only pool
+        const prefetchPromise = prefetchPools?.get(scene.index);
+        scenePool = prefetchPromise
+          ? await prefetchPromise
+          : await buildSceneCandidatePool({
+              sceneIndex: scene.index,
+              sceneText: scene.text,
+              primaryQuery: scene.pexelsQuery || scene.visualCue || scene.text.slice(0, 80),
+              extraQueries: scene.pexelsQueries?.slice(0, 2),
+              pexelsApiKey: PEXELS_API_KEY || undefined,
+              pixabayApiKey: process.env.PIXABAY_API_KEY || undefined,
+            });
+        const waited = Date.now() - poolT0;
+        console.log(
+          `[Pool] Scene ${scene.index}: pool ready (${prefetchPromise ? `prefetch, waited ${waited}ms` : `inline ${waited}ms`}) — ` +
+          `${scenePool.candidates.length} candidates, cache=${scenePool.metrics.cacheHit}`
+        );
+      }
     } catch (err) {
-      console.warn(`[Pool] Scene ${scene.index}: pool unavailable, falling back to per-beat retrieval:`, (err as Error).message?.slice(0, 80));
+      console.warn(`[Pool/Funnel] Scene ${scene.index}: unavailable, falling back to per-beat retrieval:`, (err as Error).message?.slice(0, 80));
       scenePool = null;
+      funnelResult = null;
     }
   }
   // ───────────────────────────────────────────────────────────────────────────
@@ -18447,6 +18515,45 @@ async function fetchSceneVisuals(
         if (!filled) {
           console.warn(
             `[Pipeline] Scene ${scene.index} beat ${beat.index}: no archive clip matched (tags from narration)`
+          );
+        }
+      } else if (funnelResult && funnelResult.candidates.length > 0) {
+        // Funnel path: hybrid archive+internet, coverage-weighted ranking
+        // Select top candidates by rankingScore, optionally rerank by CLIP thumbnail
+        let funnelCandidates: FunnelCandidate[] = funnelResult.candidates
+          .slice(0, poolThumbnailRankingEnabled() ? 8 : 3);
+        if (poolThumbnailRankingEnabled() && funnelCandidates.some(c => c.thumbnailUrl)) {
+          // Rerank external candidates (pool ones) by CLIP — archive ones have no thumbnail
+          const external = funnelCandidates.filter(c => c.poolCandidate && c.thumbnailUrl);
+          const archive = funnelCandidates.filter(c => !c.poolCandidate || !c.thumbnailUrl);
+          if (external.length > 0) {
+            const reranked = await rankCandidatesByThumbnailClip(
+              external.map(c => c.poolCandidate!),
+              beat.text, beat.visualDescription, videoTitle, scene.index, beat.index
+            );
+            // Update clipSimilarity back onto funnel candidates
+            for (const fc of external) {
+              const rr = reranked.find(r => r.id === fc.poolCandidate!.id);
+              if (rr) { fc.clipSimilarity = rr.clipSimilarity; fc.rankingScore += (rr.clipSimilarity ?? 0) * 0.3; }
+            }
+          }
+          funnelCandidates = [...funnelCandidates].sort((a, b) => b.rankingScore - a.rankingScore).slice(0, 3);
+        }
+        let funnelClip: string | null = null;
+        for (const candidate of funnelCandidates) {
+          funnelClip = await downloadFunnelCandidate(candidate, workDir, scene.index, beat.index, beat.holdSec);
+          if (funnelClip) break;
+        }
+        if (funnelClip) {
+          clip = funnelClip;
+        } else {
+          clip = await withTimeout(
+            resolveBeatClipForBeat(
+              beat, scene, workDir, scene.index, clipFetchDur, dedup,
+              spaceTopic, personName, videoTitle, beatAdoptOpts
+            ),
+            beatWallMs,
+            `scene ${scene.index} beat ${bi} visuals (funnel fallback)`
           );
         }
       } else if (scenePool && scenePool.candidates.length > 0) {
@@ -21078,28 +21185,50 @@ export async function runVideoPipeline(
     }
     console.log(`[Pipeline] Stage 1 (parse): ${scenes.length} scenes in ${((Date.now()-t0)/1000).toFixed(1)}s`);
 
-    // ── P4: Prefetch scene candidate pools during TTS ─────────────────────────
-    // Kick off pool building for ALL scenes immediately after parse so it runs
-    // in parallel with Stage 2 (TTS). By the time Stage 3 starts the pools are
-    // warm (or cached). Active only when ENABLE_SCENE_CANDIDATE_POOL=true.
+    // ── P4: Prefetch scene candidate pools / retrieval funnels during TTS ──────
+    // Kick off retrieval for ALL scenes immediately after parse so it runs in
+    // parallel with Stage 2 (TTS). Active only when ENABLE_SCENE_CANDIDATE_POOL=true.
+    // When ENABLE_RETRIEVAL_FUNNEL=true, builds full hybrid funnels (archive+internet).
+    // When only ENABLE_SCENE_CANDIDATE_POOL=true, builds external-only pools.
     let prefetchPools: Map<number, Promise<import("./scenePool").SceneCandidatePool>> | undefined;
+    let prefetchFunnels: Map<number, Promise<RetrievalFunnelResult>> | undefined;
     if (sceneCandidatePoolEnabled() && !curatedArchiveOnlyVisuals()) {
-      prefetchPools = new Map();
-      for (const scene of scenes) {
-        const poolPromise = buildSceneCandidatePool({
-          sceneIndex: scene.index,
-          sceneText: scene.text,
-          primaryQuery: scene.pexelsQuery || scene.visualCue || scene.text.slice(0, 80),
-          extraQueries: scene.pexelsQueries?.slice(0, 2),
-          pexelsApiKey: PEXELS_API_KEY || undefined,
-          pixabayApiKey: process.env.PIXABAY_API_KEY || undefined,
-        }).catch(err => {
-          console.warn(`[Pool P4] Scene ${scene.index} prefetch failed:`, (err as Error).message?.slice(0, 80));
-          return Promise.reject(err);
-        });
-        prefetchPools.set(scene.index, poolPromise);
+      if (retrievalFunnelEnabled()) {
+        prefetchFunnels = new Map();
+        for (const scene of scenes) {
+          const funnelPromise = buildRetrievalFunnel({
+            sceneIndex: scene.index,
+            sceneText: scene.text,
+            primaryQuery: scene.pexelsQuery || scene.visualCue || scene.text.slice(0, 80),
+            extraQueries: scene.pexelsQueries?.slice(0, 2),
+            pexelsApiKey: PEXELS_API_KEY || undefined,
+            pixabayApiKey: process.env.PIXABAY_API_KEY || undefined,
+            videoTitle: topicContext || undefined,
+          }).catch(err => {
+            console.warn(`[Funnel P4] Scene ${scene.index} prefetch failed:`, (err as Error).message?.slice(0, 80));
+            return Promise.reject(err);
+          });
+          prefetchFunnels.set(scene.index, funnelPromise);
+        }
+        console.log(`[Funnel P4] Hybrid retrieval prefetch started for ${scenes.length} scene(s) during TTS`);
+      } else {
+        prefetchPools = new Map();
+        for (const scene of scenes) {
+          const poolPromise = buildSceneCandidatePool({
+            sceneIndex: scene.index,
+            sceneText: scene.text,
+            primaryQuery: scene.pexelsQuery || scene.visualCue || scene.text.slice(0, 80),
+            extraQueries: scene.pexelsQueries?.slice(0, 2),
+            pexelsApiKey: PEXELS_API_KEY || undefined,
+            pixabayApiKey: process.env.PIXABAY_API_KEY || undefined,
+          }).catch(err => {
+            console.warn(`[Pool P4] Scene ${scene.index} prefetch failed:`, (err as Error).message?.slice(0, 80));
+            return Promise.reject(err);
+          });
+          prefetchPools.set(scene.index, poolPromise);
+        }
+        console.log(`[Pool P4] Prefetch started for ${scenes.length} scene(s) during TTS`);
       }
-      console.log(`[Pool P4] Prefetch started for ${scenes.length} scene(s) during TTS`);
     }
     // ─────────────────────────────────────────────────────────────────────────
 
@@ -21412,7 +21541,8 @@ export async function runVideoPipeline(
               });
             },
                   audioPaths[sceneIdx],
-                  prefetchPools
+                  prefetchPools,
+                  prefetchFunnels
                 ),
                 perf.sceneVisualTimeoutMs,
                 `Scene ${scene.index} visuals`

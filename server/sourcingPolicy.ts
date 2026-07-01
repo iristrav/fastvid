@@ -977,3 +977,12 @@ export function sceneCandidatePoolEnabled(): boolean {
 export function poolThumbnailRankingEnabled(): boolean {
   return process.env.ENABLE_POOL_THUMBNAIL_RANKING === "true";
 }
+
+/** Hybrid Retrieval Funnel (parallel archive + internet with coverage-based weighting).
+ *  Replaces the waterfall "archive first → fallback to internet" logic with a model
+ *  where both are queried in parallel and the archive's embedding coverage determines
+ *  how much weight it receives.  Requires ENABLE_RETRIEVAL_FUNNEL=true AND
+ *  ENABLE_SCENE_CANDIDATE_POOL=true.  Off by default. */
+export function retrievalFunnelEnabled(): boolean {
+  return process.env.ENABLE_RETRIEVAL_FUNNEL === "true";
+}
