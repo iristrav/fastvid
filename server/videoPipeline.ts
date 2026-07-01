@@ -501,12 +501,18 @@ const niceCmd = (cmd: string): string =>
   NICE_PREFIX && (cmd.startsWith(FFMPEG_BIN) || cmd.includes(FFPROBE_BIN)) ? `${NICE_PREFIX}${cmd}` : cmd;
 
 // Use 256MB maxBuffer — FFmpeg concat of 15+ scenes can produce large stderr output
-const execRaw = (cmd: string) => new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
-  execCb(niceCmd(cmd), { maxBuffer: 256 * 1024 * 1024 }, (err, stdout, stderr) => {
-    if (err) { (err as NodeJS.ErrnoException & { stdout?: string; stderr?: string }).stdout = stdout; (err as NodeJS.ErrnoException & { stdout?: string; stderr?: string }).stderr = stderr; reject(err); }
-    else resolve({ stdout, stderr });
-  });
-});
+// execRaw exposes the ChildProcess so withTimeout can kill it on abort.
+const execRaw = (cmd: string): Promise<{ stdout: string; stderr: string }> & { childProcess?: import("child_process").ChildProcess } => {
+  let child: import("child_process").ChildProcess | undefined;
+  const p = new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+    child = execCb(niceCmd(cmd), { maxBuffer: 256 * 1024 * 1024 }, (err, stdout, stderr) => {
+      if (err) { (err as NodeJS.ErrnoException & { stdout?: string; stderr?: string }).stdout = stdout; (err as NodeJS.ErrnoException & { stdout?: string; stderr?: string }).stderr = stderr; reject(err); }
+      else resolve({ stdout, stderr });
+    });
+  }) as Promise<{ stdout: string; stderr: string }> & { childProcess?: import("child_process").ChildProcess };
+  p.childProcess = child;
+  return p;
+};
 
 // "Resource temporarily unavailable" (EAGAIN) when opening a decoder, and "Cannot fork"
 // from the /bin/sh wrapper itself, are both transient fork/pids-pressure errors under
@@ -523,10 +529,13 @@ const isForkPressureError = (err: unknown): boolean => {
   if (/resource temporarily unavailable/i.test(msg) || /cannot fork/i.test(msg)) return true;
   // Same class of transient resource pressure, but surfaced by libx264's threaded encoder
   // failing to init its worker pthreads instead of as an EAGAIN spawn error.
-  if (/error initializing output stream/i.test(msg) && /error while opening encoder/i.test(msg)) {
+  // "Error initializing output stream" is an encoder config failure (wrong dimensions,
+  // codec unavailable, libx264 thread init). It is NOT transient — retrying the same
+  // command will produce the same error. Log it and do NOT retry.
+  if (/error initializing output stream/i.test(msg) || /error while opening encoder/i.test(msg)) {
     const stderr = (err as { stderr?: string })?.stderr ?? "";
-    console.error(`[FFmpegEncoderError] Error initializing output stream — full stderr:\n${stderr.slice(0, 3000)}`);
-    return true;
+    console.error(`[FFmpegEncoderError] Encoder init failed (not retrying) — full stderr:\n${stderr.slice(0, 3000)}`);
+    return false;
   }
   return false;
 };
@@ -2459,17 +2468,27 @@ async function fetchWithTimeout(url: string, timeoutMs: number, label: string, o
   }
 }
 
-function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+function withTimeout<T>(
+  promise: Promise<T> & { childProcess?: import("child_process").ChildProcess },
+  ms: number,
+  label: string
+): Promise<T> {
   const delayMs = Math.max(1, Math.round(ms));
-  return Promise.race([
-    promise,
-    new Promise<never>((_, reject) =>
-      setTimeout(
-        () => reject(pipelineError(PIPELINE_ERROR.TIMEOUT, `Timeout: ${label} exceeded ${Math.round(delayMs / 1000)}s`)),
-        delayMs
-      )
-    ),
-  ]);
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      // Kill orphan child process so it doesn't keep running after timeout.
+      const cp = promise.childProcess;
+      if (cp && !cp.killed) {
+        try { cp.kill("SIGKILL"); } catch { /* already dead */ }
+        console.warn(`[withTimeout] Killed orphan child process (pid=${cp.pid}) for: ${label}`);
+      }
+      reject(pipelineError(PIPELINE_ERROR.TIMEOUT, `Timeout: ${label} exceeded ${Math.round(delayMs / 1000)}s`));
+    }, delayMs);
+    promise.then(
+      (val) => { clearTimeout(timer); resolve(val); },
+      (err) => { clearTimeout(timer); reject(err); }
+    );
+  });
 }
 
 function assertPipelineWithinBudget(
@@ -21954,41 +21973,58 @@ export async function runVideoPipeline(
                 };
                 let result: string;
                 try {
-                  result = await timePipelineStep(
-                    pipelineStepTiming, "scene_composition",
-                    `Scene ${scene.index} compose (total)`,
-                    () => composeSceneVideo(
-                      scene, svr?.clips ?? [], audioPaths[i], scene.duration, workDir, scenes.length,
-                      enableSubtitles, visualDedup.lastMuskStockClip, svr?.beatDurations, usedClips,
-                      composeOpts
-                    ),
-                    scene.index
-                  );
-                } catch (composeErr) {
-                  console.warn(
-                    `[Compose] Scene ${scene.index} FAILED (${((Date.now() - composeStartMs[i]) / 1000).toFixed(1)}s) — rescue:`,
-                    (composeErr as Error).message?.slice(0, 120)
-                  );
-                  let rescueClips = isFastShortVideoLength(videoLength) && !isComposeNetworkBlocked(visualDedup)
-                    ? await rescueFastShortComposeClips(scene, workDir, topicContext, visualDedup)
-                    : [];
-                  if (rescueClips.length === 0) {
-                    const minNeeded = Math.max(1, minClipsForBalancedVoice(scene.duration + 0.15, videoLength));
-                    const hold = Math.max(3, scene.duration / minNeeded);
-                    for (let si = 0; si < minNeeded; si++) {
-                      rescueClips.push(await generateGuaranteedBeatClip(scene.index, si, hold, workDir));
+                  try {
+                    result = await timePipelineStep(
+                      pipelineStepTiming, "scene_composition",
+                      `Scene ${scene.index} compose (total)`,
+                      () => composeSceneVideo(
+                        scene, svr?.clips ?? [], audioPaths[i], scene.duration, workDir, scenes.length,
+                        enableSubtitles, visualDedup.lastMuskStockClip, svr?.beatDurations, usedClips,
+                        composeOpts
+                      ),
+                      scene.index
+                    );
+                  } catch (composeErr) {
+                    console.warn(
+                      `[Compose] Scene ${scene.index} FAILED (${((Date.now() - composeStartMs[i]) / 1000).toFixed(1)}s) — rescue:`,
+                      (composeErr as Error).message?.slice(0, 120)
+                    );
+                    let rescueClips = isFastShortVideoLength(videoLength) && !isComposeNetworkBlocked(visualDedup)
+                      ? await rescueFastShortComposeClips(scene, workDir, topicContext, visualDedup)
+                      : [];
+                    if (rescueClips.length === 0) {
+                      const minNeeded = Math.max(1, minClipsForBalancedVoice(scene.duration + 0.15, videoLength));
+                      const hold = Math.max(3, scene.duration / minNeeded);
+                      for (let si = 0; si < minNeeded; si++) {
+                        rescueClips.push(await generateGuaranteedBeatClip(scene.index, si, hold, workDir));
+                      }
+                    }
+                    composeMeta.montageDurations = [];
+                    composeMeta.clipBeatIndices = [];
+                    composeMeta.montagePlan = undefined;
+                    usedClips.length = 0;
+                    try {
+                      result = await composeSceneVideo(
+                        scene, rescueClips, audioPaths[i], scene.duration, workDir, scenes.length,
+                        enableSubtitles, visualDedup.lastMuskStockClip,
+                        rescueClips.map(() => archiveVisualBeatSecForVideo(videoLength)),
+                        usedClips, composeOpts
+                      );
+                    } catch (rescueErr) {
+                      // Rescue compose also failed — use a guaranteed black-fill path so the
+                      // pLimit slot is released and the rest of the pipeline can continue.
+                      console.error(
+                        `[Compose] Scene ${scene.index} RESCUE FAILED — using black-fill:`,
+                        (rescueErr as Error).message?.slice(0, 120)
+                      );
+                      result = await generateColorFallback(scene.index, scene.duration, workDir);
                     }
                   }
-                  composeMeta.montageDurations = [];
-                  composeMeta.clipBeatIndices = [];
-                  composeMeta.montagePlan = undefined;
-                  usedClips.length = 0;
-                  result = await composeSceneVideo(
-                    scene, rescueClips, audioPaths[i], scene.duration, workDir, scenes.length,
-                    enableSubtitles, visualDedup.lastMuskStockClip,
-                    rescueClips.map(() => archiveVisualBeatSecForVideo(videoLength)),
-                    usedClips, composeOpts
-                  );
+                } finally {
+                  // CRITICAL: always release slot so pLimit queue doesn't deadlock.
+                  activeComposes--;
+                  completedPipelineCompose++;
+                  composeElapsedMs[i] = Date.now() - composeStartMs[i];
                 }
                 composedUsedClips[i] = usedClips;
 
@@ -22042,9 +22078,7 @@ export async function runVideoPipeline(
                   voiceMontageSyncResults.push({ sceneIndex: scene.index, audit });
                 }
 
-                activeComposes--;
-                completedPipelineCompose++;
-                composeElapsedMs[i] = Date.now() - composeStartMs[i];
+                // activeComposes--, completedPipelineCompose++, composeElapsedMs[i] set in finally above.
                 profiler.recordSceneCompose(i, scene.index, composeWaitMs[i], composeStartMs[i], Date.now());
                 gantt(`Scene ${scene.index} compose END   (${(composeElapsedMs[i] / 1000).toFixed(1)}s, active=${activeComposes})`, t2p);
                 console.log(
@@ -22443,6 +22477,7 @@ export async function runVideoPipeline(
             composeMetaOut: composeMeta,
           };
           let result: string;
+          try { // outer try/finally guarantees slot release + clearInterval(hangCheck)
           try {
             result = await timePipelineStep(
               pipelineStepTiming,
@@ -22646,12 +22681,15 @@ export async function runVideoPipeline(
             }
             voiceMontageSyncResults.push({ sceneIndex: scene.index, audit });
           }
-          seqActiveComposes--;
-          completedCompose++;
-          seqComposeElapsedMs[i] = Date.now() - seqComposeStartMs[i];
+          } finally {
+            // CRITICAL: always release slot + clear interval so pipeline never deadlocks.
+            seqActiveComposes--;
+            completedCompose++;
+            seqComposeElapsedMs[i] = Date.now() - seqComposeStartMs[i];
+            clearInterval(hangCheck);
+          }
           profiler.recordSceneRetrieve(i, scene.index, scene.duration, t2, t3, 0, sceneVisualResults[i]?.clips?.length ?? 0);
           profiler.recordSceneCompose(i, scene.index, 0, seqComposeStartMs[i], Date.now());
-          clearInterval(hangCheck);
           console.log(
             `[Compose] Scene ${scene.index} finished (${(seqComposeElapsedMs[i] / 1000).toFixed(1)}s) — ` +
             `active=${seqActiveComposes}, queued=${seqQueuedComposes}, done=${completedCompose}/${scenes.length}`
