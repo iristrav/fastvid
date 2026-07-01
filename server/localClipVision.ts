@@ -325,15 +325,30 @@ export function filenameLexicalBoost(clipPath: string, beatText: string, videoTi
   return Math.min(0.06, hits * 0.02);
 }
 
+const PIPELINE_LOAD_TIMEOUT_MS = 90_000;
+
+function withPipelineTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`[LocalVision] TIMEOUT after ${PIPELINE_LOAD_TIMEOUT_MS / 1000}s: ${label}`)), PIPELINE_LOAD_TIMEOUT_MS)
+    ),
+  ]);
+}
+
 async function loadImagePipeline(): Promise<ClipPipeline | null> {
   if (!localVisionEnabled()) return null;
   if (imagePipeline) return imagePipeline;
   if (pipelineLoadFailed && imageLoadAttempts >= MAX_PIPELINE_LOAD_ATTEMPTS) return null;
+  console.log(`[LocalVision] BEFORE load image pipeline (attempt ${imageLoadAttempts + 1})`);
   try {
-    const pipeline = await importTransformersPipeline();
-    imagePipeline = (await pipeline("image-feature-extraction", CLIP_MODEL, {
-      quantized: true,
-    })) as ClipPipeline;
+    const pipeline = await withPipelineTimeout(importTransformersPipeline(), "import @xenova/transformers");
+    console.log(`[LocalVision] BEFORE pipeline("image-feature-extraction")`);
+    imagePipeline = (await withPipelineTimeout(
+      pipeline("image-feature-extraction", CLIP_MODEL, { quantized: true }),
+      `pipeline(image-feature-extraction, ${CLIP_MODEL})`
+    )) as ClipPipeline;
+    console.log(`[LocalVision] AFTER pipeline("image-feature-extraction") — OK`);
     pipelineLoadFailed = false;
     return imagePipeline;
   } catch (err) {
@@ -353,11 +368,15 @@ async function loadTextPipeline(): Promise<ClipPipeline | null> {
   if (!localVisionEnabled()) return null;
   if (textPipeline) return textPipeline;
   if (pipelineLoadFailed && textLoadAttempts >= MAX_PIPELINE_LOAD_ATTEMPTS) return null;
+  console.log(`[LocalVision] BEFORE load text pipeline (attempt ${textLoadAttempts + 1})`);
   try {
-    const pipeline = await importTransformersPipeline();
-    textPipeline = (await pipeline("feature-extraction", CLIP_MODEL, {
-      quantized: true,
-    })) as ClipPipeline;
+    const pipeline = await withPipelineTimeout(importTransformersPipeline(), "import @xenova/transformers (text)");
+    console.log(`[LocalVision] BEFORE pipeline("feature-extraction")`);
+    textPipeline = (await withPipelineTimeout(
+      pipeline("feature-extraction", CLIP_MODEL, { quantized: true }),
+      `pipeline(feature-extraction, ${CLIP_MODEL})`
+    )) as ClipPipeline;
+    console.log(`[LocalVision] AFTER pipeline("feature-extraction") — OK`);
     pipelineLoadFailed = false;
     return textPipeline;
   } catch (err) {
@@ -377,12 +396,20 @@ async function loadTextPipeline(): Promise<ClipPipeline | null> {
 export async function ensureClipPipelinesLoaded(): Promise<boolean> {
   if (!localVisionEnabled()) return false;
   if (imagePipeline && textPipeline) return true;
-  if (pipelineLoadInFlight) return pipelineLoadInFlight;
+  if (pipelineLoadInFlight) {
+    console.log(`[LocalVision] BEFORE ensureClipPipelinesLoaded (in-flight, waiting)`);
+    const r = await pipelineLoadInFlight;
+    console.log(`[LocalVision] AFTER ensureClipPipelinesLoaded (was in-flight) => ${r}`);
+    return r;
+  }
+  console.log(`[LocalVision] BEFORE ensureClipPipelinesLoaded (starting load)`);
   pipelineLoadInFlight = (async () => {
     const image = await loadImagePipeline();
     const text = image ? await loadTextPipeline() : null;
     pipelineLoadInFlight = null;
-    return !!(image && text);
+    const ok = !!(image && text);
+    console.log(`[LocalVision] AFTER ensureClipPipelinesLoaded => image=${!!image} text=${!!text} ok=${ok}`);
+    return ok;
   })();
   return pipelineLoadInFlight;
 }

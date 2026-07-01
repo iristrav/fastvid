@@ -639,7 +639,12 @@ export async function rankCandidatesByThumbnailClip(
     return candidates;
   }
 
-  const beatEmb = await resolveBeatQueryEmbedding(beatText, visualDescription, videoTitle).catch(() => null);
+  console.log(`[Pool P2] BEFORE resolveBeatQueryEmbedding s${sceneIndex}b${beatIndex}`);
+  const beatEmb = await Promise.race([
+    resolveBeatQueryEmbedding(beatText, visualDescription, videoTitle).catch(() => null),
+    new Promise<null>((_, reject) => setTimeout(() => reject(new Error(`[Pool P2] TIMEOUT resolveBeatQueryEmbedding 30s s${sceneIndex}b${beatIndex}`)), 30_000)),
+  ]).catch((err: Error) => { console.warn(err.message); return null; });
+  console.log(`[Pool P2] AFTER resolveBeatQueryEmbedding s${sceneIndex}b${beatIndex} emb=${!!beatEmb}`);
   if (!beatEmb) return candidates;
 
   const tmpDir = os.tmpdir();
@@ -661,7 +666,10 @@ export async function rankCandidatesByThumbnailClip(
       fs.writeFileSync(tmpPath, buf);
 
       // CLIP embed
-      const emb = await embedImageFromPath(tmpPath);
+      const emb = await Promise.race([
+        embedImageFromPath(tmpPath),
+        new Promise<null>((_, reject) => setTimeout(() => reject(new Error(`[Pool P2] TIMEOUT embedImageFromPath 20s`)), 20_000)),
+      ]).catch(() => null as null);
       if (!emb) return;
       const sim = scoreEmbeddingSimilarity(beatEmb, emb);
       candidate.clipSimilarity = sim;

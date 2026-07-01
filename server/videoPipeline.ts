@@ -523,7 +523,11 @@ const isForkPressureError = (err: unknown): boolean => {
   if (/resource temporarily unavailable/i.test(msg) || /cannot fork/i.test(msg)) return true;
   // Same class of transient resource pressure, but surfaced by libx264's threaded encoder
   // failing to init its worker pthreads instead of as an EAGAIN spawn error.
-  if (/error initializing output stream/i.test(msg) && /error while opening encoder/i.test(msg)) return true;
+  if (/error initializing output stream/i.test(msg) && /error while opening encoder/i.test(msg)) {
+    const stderr = (err as { stderr?: string })?.stderr ?? "";
+    console.error(`[FFmpegEncoderError] Error initializing output stream — full stderr:\n${stderr.slice(0, 3000)}`);
+    return true;
+  }
   return false;
 };
 
@@ -9765,6 +9769,39 @@ function formatFfmpegExecError(err: unknown): string {
   return base.slice(0, 500);
 }
 
+async function logComposePreFlight(
+  sceneIndex: number,
+  clips: string[],
+  outputPath: string,
+  encodeFlags: string
+): Promise<void> {
+  const preset = encodeFlags.match(/-preset\s+(\S+)/)?.[1] ?? "?";
+  const crf = encodeFlags.match(/-crf\s+(\S+)/)?.[1] ?? "?";
+  const codec = encodeFlags.match(/-c:v\s+(\S+)/)?.[1] ?? "?";
+  console.log(
+    `[ComposePreFlight] Scene ${sceneIndex}: codec=${codec} preset=${preset} crf=${crf} ` +
+    `output_wxh=${VIDEO_WIDTH}x${VIDEO_HEIGHT} fps=25 pix_fmt=yuv420p ` +
+    `clips=${clips.length} outputPath=${path.basename(outputPath)}`
+  );
+  const FFPROBE_BIN = process.env.FFPROBE_PATH || "ffprobe";
+  for (const clip of clips.slice(0, 5)) {
+    if (!clip || !fs.existsSync(clip)) {
+      console.warn(`[ComposePreFlight] Scene ${sceneIndex}: clip MISSING ${clip ? path.basename(clip) : "(null)"}`);
+      continue;
+    }
+    const sz = fs.statSync(clip).size;
+    try {
+      const { stdout } = await Promise.race([
+        execRaw(`"${FFPROBE_BIN}" -v error -select_streams v:0 -show_entries stream=width,height,r_frame_rate,pix_fmt,codec_name -of default=noprint_wrappers=1:nokey=0 "${clip}"`),
+        new Promise<{ stdout: string; stderr: string }>((_, r) => setTimeout(() => r(new Error("ffprobe timeout")), 5_000)),
+      ] as const).catch(() => ({ stdout: "", stderr: "" }));
+      console.log(`[ComposePreFlight] Scene ${sceneIndex}: clip=${path.basename(clip)} size=${sz} probe=${stdout.replace(/\n/g, " ").trim().slice(0, 200)}`);
+    } catch {
+      console.log(`[ComposePreFlight] Scene ${sceneIndex}: clip=${path.basename(clip)} size=${sz} probe=FAILED`);
+    }
+  }
+}
+
 async function composePlainMontageScene(
   sceneIndex: number,
   safeClips: string[],
@@ -9781,6 +9818,7 @@ async function composePlainMontageScene(
   montageFilterOpts?: MontageFilterOpts
 ): Promise<boolean> {
   const encodeFlags = montageEncodeFlags(montageFilterOpts);
+  await logComposePreFlight(sceneIndex, safeClips, outputPath, encodeFlags);
   const muxMontageWithAudio = async (montageVideoPath: string): Promise<boolean> => {
     const audioIdx = 1;
     const gradeChain = montageFilterOpts?.fastEncode
@@ -16016,9 +16054,15 @@ async function adoptWikimediaBeatClip(
         scene.index
       );
       const wikiVid = wikiVids[0]?.path;
+      if (wikiVid) {
+        console.log(`[Hang] BEFORE adoptWikiPath video s${scene.index}b${beat.index} clip=${path.basename(wikiVid)}`);
+      }
       if (wikiVid && (await adoptWikiPath(wikiVid, minClipQualityScore(), "wikimedia_video"))) {
+        console.log(`[Hang] AFTER adoptWikiPath video s${scene.index}b${beat.index} => adopted`);
         console.log(`[Pipeline] Scene ${scene.index} zin ${beat.index}: Wikimedia video`);
         return true;
+      } else if (wikiVid) {
+        console.log(`[Hang] AFTER adoptWikiPath video s${scene.index}b${beat.index} => rejected`);
       }
     } catch {
       /* try next query */
@@ -16112,7 +16156,11 @@ async function adoptWikimediaBeatClip(
           ),
         scene.index
       );
+      if (wikiClip) {
+        console.log(`[Hang] BEFORE adoptWikiPath still s${scene.index}b${beat.index} attempt${ai + 1}`);
+      }
       if (wikiClip && (await adoptWikiPath(wikiClip, attempt.visionMinScore, "wikimedia"))) {
+        console.log(`[Hang] AFTER adoptWikiPath still s${scene.index}b${beat.index} => adopted`);
         recordClipAdopt(
           dedup.clipAdoptAudit,
           scene.index,
@@ -16125,6 +16173,8 @@ async function adoptWikimediaBeatClip(
           `[Pipeline] Scene ${scene.index} zin ${beat.index}: Wikimedia still (attempt ${ai + 1}/${attempts.length})`
         );
         return true;
+      } else if (wikiClip) {
+        console.log(`[Hang] AFTER adoptWikiPath still s${scene.index}b${beat.index} => rejected`);
       }
     } catch (err) {
       console.warn(
@@ -18416,9 +18466,10 @@ async function fetchSceneVisuals(
       if (retrievalFunnelEnabled()) {
         // Funnel path: archive + internet in parallel, coverage-weighted
         const prefetchFunnel = prefetchFunnels?.get(scene.index);
+        console.log(`[Hang] BEFORE funnel await s${scene.index} prefetch=${!!prefetchFunnel}`);
         funnelResult = prefetchFunnel
-          ? await prefetchFunnel
-          : await buildRetrievalFunnel({
+          ? await withTimeout(prefetchFunnel, 60_000, `prefetchFunnel s${scene.index}`)
+          : await withTimeout(buildRetrievalFunnel({
               sceneIndex: scene.index,
               sceneText: scene.text,
               primaryQuery: scene.pexelsQuery || scene.visualCue || scene.text.slice(0, 80),
@@ -18426,7 +18477,8 @@ async function fetchSceneVisuals(
               pexelsApiKey: PEXELS_API_KEY || undefined,
               pixabayApiKey: process.env.PIXABAY_API_KEY || undefined,
               videoTitle: videoTitle || undefined,
-            });
+            }), 60_000, `buildRetrievalFunnel s${scene.index}`);
+        console.log(`[Hang] AFTER funnel await s${scene.index} candidates=${funnelResult?.candidates?.length ?? 0}`);
         const waited = Date.now() - poolT0;
         console.log(
           `[Funnel] Scene ${scene.index}: ${funnelResult.candidates.length} candidates ` +
@@ -18436,16 +18488,18 @@ async function fetchSceneVisuals(
       } else {
         // P1/P4 path: external-only pool
         const prefetchPromise = prefetchPools?.get(scene.index);
+        console.log(`[Hang] BEFORE pool await s${scene.index} prefetch=${!!prefetchPromise}`);
         scenePool = prefetchPromise
-          ? await prefetchPromise
-          : await buildSceneCandidatePool({
+          ? await withTimeout(prefetchPromise, 60_000, `prefetchPool s${scene.index}`)
+          : await withTimeout(buildSceneCandidatePool({
               sceneIndex: scene.index,
               sceneText: scene.text,
               primaryQuery: scene.pexelsQuery || scene.visualCue || scene.text.slice(0, 80),
               extraQueries: scene.pexelsQueries?.slice(0, 2),
               pexelsApiKey: PEXELS_API_KEY || undefined,
               pixabayApiKey: process.env.PIXABAY_API_KEY || undefined,
-            });
+            }), 60_000, `buildSceneCandidatePool s${scene.index}`);
+        console.log(`[Hang] AFTER pool await s${scene.index} candidates=${scenePool?.candidates?.length ?? 0}`);
         const waited = Date.now() - poolT0;
         console.log(
           `[Pool] Scene ${scene.index}: pool ready (${prefetchPromise ? `prefetch, waited ${waited}ms` : `inline ${waited}ms`}) — ` +

@@ -517,7 +517,13 @@ export async function evaluateClipVisionGate(
     return { pass: true, worstScore10: null, skipped: true };
   }
 
-  await ensureClipPipelinesLoaded();
+  const visionT0 = Date.now();
+  console.log(`[VisionGate] BEFORE ensureClipPipelinesLoaded s${sceneIndex}b${beatIndex}`);
+  const pipelineReady = await Promise.race([
+    ensureClipPipelinesLoaded(),
+    new Promise<false>((_, reject) => setTimeout(() => reject(new Error(`[VisionGate] TIMEOUT ensureClipPipelinesLoaded after 90s s${sceneIndex}b${beatIndex}`)), 90_000)),
+  ]).catch((err: Error) => { console.warn(err.message); return false as const; });
+  console.log(`[VisionGate] AFTER ensureClipPipelinesLoaded s${sceneIndex}b${beatIndex} ok=${pipelineReady} in ${Date.now() - visionT0}ms`);
 
   const cacheKey = visionGateCacheKey(clipPath, beatText, minScore, visualDescription);
   if (visionGateCache.has(cacheKey)) {
@@ -525,19 +531,21 @@ export async function evaluateClipVisionGate(
     return { pass, worstScore10: pass ? minScore : null, skipped: false };
   }
 
-  const result = await scoreClipAcrossFrames(
-    clipPath,
-    beatText,
-    visualDescription,
-    videoTitle,
-    workDir,
-    sceneIndex,
-    beatIndex,
-    minScore,
-    fastMode,
-    queryEmb,
-    shortVideo
-  );
+  console.log(`[VisionGate] BEFORE scoreClipAcrossFrames s${sceneIndex}b${beatIndex} clip=${path.basename(clipPath)}`);
+  const scoreT0 = Date.now();
+  const result = await Promise.race([
+    scoreClipAcrossFrames(
+      clipPath, beatText, visualDescription, videoTitle, workDir,
+      sceneIndex, beatIndex, minScore, fastMode, queryEmb, shortVideo
+    ),
+    new Promise<{ pass: boolean; worstScore: null; framesScored: number }>((_, reject) =>
+      setTimeout(() => reject(new Error(`[VisionGate] TIMEOUT scoreClipAcrossFrames after 30s s${sceneIndex}b${beatIndex}`)), 30_000)
+    ),
+  ]).catch((err: Error) => {
+    console.warn(err.message);
+    return { pass: true, worstScore: null, framesScored: 0 };
+  });
+  console.log(`[VisionGate] AFTER scoreClipAcrossFrames s${sceneIndex}b${beatIndex} pass=${result.pass} in ${Date.now() - scoreT0}ms`);
 
   if (!result.pass) {
     console.warn(
