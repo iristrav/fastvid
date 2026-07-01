@@ -147,7 +147,7 @@ import {
   uniqueQueryStrings,
   uniqueCoercedQueries,
 } from "./stringCoercion";
-import { archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, pipelineComposeGraceMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs } from "./sourcingPolicy";
+import { sceneCandidatePoolEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, pipelineComposeGraceMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -214,6 +214,7 @@ import { createClipAdoptAudit, recordClipAdopt } from "./clipAdoptAudit";
 import { buildEditorScenesFromPipeline } from "./editorClips";
 import { tryRestoreFromMediaCache, reportToMediaCache } from "./mediaCache";
 import { getCandidatePool, putCandidatePool } from "./sceneCandidateCache";
+import { buildSceneCandidatePool, selectCandidatesFromPool, type PoolCandidate } from "./scenePool";
 import type { CachedCandidate } from "./sceneCandidateCache";
 import { buildVideoQualityReport, computeMeritQualityScore, logVideoQualityReport } from "./videoQualityReport";
 import { postRenderSpotCheckEnabledForVideo, spotCheckFinalVideo } from "./postRenderSpotCheck";
@@ -2209,6 +2210,65 @@ async function resolveBeatClipFast(
 }
 
 type StockBeatCtx = { beatText?: string; queryEmbedding?: number[] | null };
+
+// ─── P1: Pool candidate download helper ───────────────────────────────────────
+
+/**
+ * Downloads a PoolCandidate asset (video or image) from its remoteUrl and
+ * prepares it as a trimmed/encoded clip file.  Media cache is checked first.
+ * Returns the local clip path on success, null on failure.
+ * Used only when ENABLE_SCENE_CANDIDATE_POOL=true (never called otherwise).
+ */
+async function downloadAndTrimPoolCandidate(
+  candidate: PoolCandidate,
+  workDir: string,
+  sceneIndex: number,
+  beatIndex: number,
+  holdSec: number
+): Promise<string | null> {
+  const safeId = candidate.assetId.replace(/[^a-z0-9_-]/gi, "_").slice(0, 40);
+  const isVideo = candidate.mediaType === "video";
+  const ext = isVideo ? "mp4" : "jpg";
+  const rawPath = path.join(workDir, `scene_${sceneIndex}_b${beatIndex}_pool_${candidate.source}_${safeId}_raw.${ext}`);
+  const outPath = path.join(workDir, `scene_${sceneIndex}_b${beatIndex}_pool_${candidate.source}_${safeId}.mp4`);
+
+  try {
+    const fromCache = await tryRestoreFromMediaCache(candidate.remoteUrl, rawPath);
+    if (!fromCache) {
+      const resp = await withTimeout(
+        fetch(candidate.remoteUrl),
+        45_000,
+        `Pool download s${sceneIndex}b${beatIndex} ${candidate.source}:${candidate.assetId}`
+      );
+      if (!resp.ok) return null;
+      const buf = Buffer.from(await resp.arrayBuffer());
+      if (buf.length < 50_000) return null;
+      fs.writeFileSync(rawPath, buf);
+      void reportToMediaCache(candidate.remoteUrl, rawPath, isVideo ? "video/mp4" : "image/jpeg");
+    }
+
+    if (isVideo) {
+      const FFPROBE_BIN = process.env.FFPROBE_PATH || "ffprobe";
+      const probeCmd = `"${FFPROBE_BIN}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${rawPath}"`;
+      let sourceDur = candidate.durationSec ?? 0;
+      try {
+        const { stdout } = await withTimeout(exec(probeCmd), 10_000, `probe pool s${sceneIndex}b${beatIndex}`);
+        const parsed = parseFloat(stdout.trim());
+        if (!isNaN(parsed) && parsed > 0) sourceDur = parsed;
+      } catch { /* use candidate.durationSec */ }
+      if (sourceDur < 1.5) return null;
+      const ok = await trimDownloadedStockClip(rawPath, outPath, holdSec, sourceDur, `pool s${sceneIndex}b${beatIndex}`);
+      return ok ? outPath : null;
+    } else {
+      // Image: convert to still video
+      await stillImageToVideo(rawPath, outPath, holdSec, `pool img s${sceneIndex}b${beatIndex}`, false, sceneIndex, beatIndex);
+      return fs.existsSync(outPath) && fs.statSync(outPath).size > 1_000 ? outPath : null;
+    }
+  } catch (err) {
+    console.warn(`[Pool] downloadAndTrimPoolCandidate failed s${sceneIndex}b${beatIndex}:`, (err as Error).message?.slice(0, 100));
+    return null;
+  }
+}
 
 /** Stable stock trim — no animated Ken Burns pan (avoids jitter on real footage). */
 async function trimDownloadedStockClip(
@@ -18289,6 +18349,32 @@ async function fetchSceneVisuals(
     (archiveOnly ? " [curated archive only]" : "")
   );
 
+  // ── P1: Scene-level candidate pool ─────────────────────────────────────────
+  // Build one pool per scene (metadata only, no downloads) when flag is on.
+  // Falls back to normal per-beat retrieval if pool build fails or flag is off.
+  let scenePool: import("./scenePool").SceneCandidatePool | null = null;
+  if (!archiveOnly && sceneCandidatePoolEnabled()) {
+    try {
+      const poolT0 = Date.now();
+      scenePool = await buildSceneCandidatePool({
+        sceneIndex: scene.index,
+        sceneText: scene.text,
+        primaryQuery: scene.pexelsQuery || scene.visualCue || scene.text.slice(0, 80),
+        extraQueries: scene.pexelsQueries?.slice(0, 2),
+        pexelsApiKey: PEXELS_API_KEY || undefined,
+        pixabayApiKey: process.env.PIXABAY_API_KEY || undefined,
+      });
+      console.log(
+        `[Pool] Scene ${scene.index}: pool ready in ${Date.now() - poolT0}ms — ` +
+        `${scenePool.candidates.length} candidates, cache=${scenePool.metrics.cacheHit}`
+      );
+    } catch (err) {
+      console.warn(`[Pool] Scene ${scene.index}: pool build failed, falling back to per-beat retrieval:`, (err as Error).message?.slice(0, 80));
+      scenePool = null;
+    }
+  }
+  // ───────────────────────────────────────────────────────────────────────────
+
   const muskTopic = isMuskTeslaTopic(videoTitle, scene.text);
   const beatAdoptOpts: VisualAdoptOptions = {
     muskTopic,
@@ -18354,6 +18440,33 @@ async function fetchSceneVisuals(
         if (!filled) {
           console.warn(
             `[Pipeline] Scene ${scene.index} beat ${beat.index}: no archive clip matched (tags from narration)`
+          );
+        }
+      } else if (scenePool && scenePool.candidates.length > 0) {
+        // P1: try pool candidate first (no extra API calls), fall back to normal retrieval
+        const poolCandidates = selectCandidatesFromPool(
+          beat.text,
+          beat.powerWord,
+          beat.keywords,
+          scenePool,
+          3
+        );
+        let poolClip: string | null = null;
+        for (const candidate of poolCandidates) {
+          poolClip = await downloadAndTrimPoolCandidate(candidate, workDir, scene.index, beat.index, beat.holdSec);
+          if (poolClip) break;
+        }
+        if (poolClip) {
+          clip = poolClip;
+        } else {
+          // Pool candidates failed to download — fall back to normal per-beat retrieval
+          clip = await withTimeout(
+            resolveBeatClipForBeat(
+              beat, scene, workDir, scene.index, clipFetchDur, dedup,
+              spaceTopic, personName, videoTitle, beatAdoptOpts
+            ),
+            beatWallMs,
+            `scene ${scene.index} beat ${bi} visuals (pool fallback)`
           );
         }
       } else {

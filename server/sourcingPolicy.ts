@@ -962,3 +962,10 @@ export function mediaCacheEnabled(): boolean {
 export function sceneCandidateCacheEnabled(): boolean {
   return process.env.ENABLE_SCENE_CANDIDATE_CACHE === "true";
 }
+
+/** Scene-level Candidate Pool (P1): build ONE candidate pool per scene instead
+ *  of one retrieval per beat.  Reduces 108 API calls to ~18.
+ *  Requires ENABLE_SCENE_CANDIDATE_POOL=true. */
+export function sceneCandidatePoolEnabled(): boolean {
+  return process.env.ENABLE_SCENE_CANDIDATE_POOL === "true";
+}
