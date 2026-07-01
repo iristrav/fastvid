@@ -999,6 +999,16 @@ export function archiveFirstBeatsEnabled(): boolean {
   return process.env.ENABLE_ARCHIVE_FIRST_BEATS === "true";
 }
 
+/** Async QA (P6): move pipeline review + post-render spot check off the critical path.
+ *  When enabled, the two LLM reviews (compose review + final review) are fired as
+ *  background promises that run concurrently with the final concat/music stage.
+ *  The post-render spot check runs in parallel with the S3 upload.
+ *  Net saving: ~30–70 s depending on video length and LLM latency.
+ *  Requires ENABLE_ASYNC_QA=true.  Off by default. */
+export function asyncQaEnabled(): boolean {
+  return process.env.ENABLE_ASYNC_QA === "true";
+}
+
 /** Self-learning ingestion: winning external clips are uploaded to the own archive
  *  (quality gate → R2 → DB record → embedding index) so future videos can use them
  *  without external API calls.  Best-effort; never blocks video production.

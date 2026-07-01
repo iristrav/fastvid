@@ -147,7 +147,7 @@ import {
   uniqueQueryStrings,
   uniqueCoercedQueries,
 } from "./stringCoercion";
-import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, pipelineComposeGraceMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs } from "./sourcingPolicy";
+import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, asyncQaEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, pipelineComposeGraceMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -22136,9 +22136,14 @@ export async function runVideoPipeline(
     }
 
     // ── Stage 5b: QA — visuals match narration + montage timing ──────────────
+    // P6: when asyncQaEnabled(), fire reviews as background promises that run
+    // concurrently with the final concat/music stage (~30-60s FFmpeg headroom).
+    // They are awaited (with timeout) just before enforceQualityExportGate.
     onProgress?.({ stage: STAGE_LABELS.visualReview, percent: 68 });
     let composeReview: PipelineReviewResult = { ok: true, summary: "skipped (fast 1-min)", issues: [] };
     let finalReview: PipelineReviewResult = { ok: true, summary: "skipped (fast 1-min)", issues: [] };
+    let composeReviewPromise: Promise<PipelineReviewResult> | null = null;
+    let finalReviewPromise: Promise<PipelineReviewResult> | null = null;
     if (!isFastShortVideoLength(videoLength)) {
     const reviewInputs = sceneReviewInputs(
       scenes,
@@ -22146,6 +22151,17 @@ export async function runVideoPipeline(
         clips.length > 0 ? clips : (sceneVisualResults[i]?.clips ?? [])
       )
     );
+    if (asyncQaEnabled()) {
+      // Fire both reviews concurrently; they complete during concat (free headroom)
+      const skipResult: PipelineReviewResult = { ok: true, summary: "async (running during concat)", issues: [] };
+      composeReview = skipResult;
+      finalReview = skipResult;
+      composeReviewPromise = reviewPipelineBeforeEffects(reviewInputs, composedScenes, videoTitle)
+        .catch(() => ({ ok: true, summary: "async review failed (non-fatal)", issues: [] } satisfies PipelineReviewResult));
+      finalReviewPromise = reviewPipelineBeforeExport(reviewInputs, composedScenes)
+        .catch(() => ({ ok: true, summary: "async review failed (non-fatal)", issues: [] } satisfies PipelineReviewResult));
+      console.log("[Pipeline] P6: reviews fired async (running during concat)");
+    } else {
     composeReview = await reviewPipelineBeforeEffects(
       reviewInputs,
       composedScenes,
@@ -22162,6 +22178,7 @@ export async function runVideoPipeline(
     logPipelineReview("eindcontrole", finalReview);
     if (!finalReview.ok) {
       console.warn(`[Pipeline] Final review: ${finalReview.summary} — continuing export (self-heal)`);
+    }
     }
     }
 
@@ -22293,9 +22310,55 @@ export async function runVideoPipeline(
       );
     }
 
-    if (postRenderSpotCheckEnabledForVideo(videoLength)) {
+    // ── P6: Gather async reviews before quality gate ──────────────────────────
+    // Reviews fired after compose; by now (after concat) they should be complete.
+    if (composeReviewPromise || finalReviewPromise) {
+      const REVIEW_GATHER_TIMEOUT = 45_000;
+      const [cr, fr] = await Promise.all([
+        composeReviewPromise
+          ? withTimeout(composeReviewPromise, REVIEW_GATHER_TIMEOUT, "async compose review")
+              .catch(() => composeReview)
+          : Promise.resolve(composeReview),
+        finalReviewPromise
+          ? withTimeout(finalReviewPromise, REVIEW_GATHER_TIMEOUT, "async final review")
+              .catch(() => finalReview)
+          : Promise.resolve(finalReview),
+      ]);
+      composeReview = cr;
+      finalReview = fr;
+      logPipelineReview("na samenstellen (async)", composeReview);
+      logPipelineReview("eindcontrole (async)", finalReview);
+      if (!composeReview.ok) {
+        console.warn(`[Pipeline] Visual QA (async): ${composeReview.summary} — doorgaan met export`);
+      }
+      if (!finalReview.ok) {
+        console.warn(`[Pipeline] Final review (async): ${finalReview.summary} — continuing export (self-heal)`);
+      }
+    }
+
+    // ── Stage 6: Upload + spot check ─────────────────────────────────────────
+    // P6: when asyncQaEnabled(), spot check runs concurrently with the S3 upload
+    // (both read finalVideoPath; upload is I/O-bound, spot check is CPU/ffprobe).
+    onProgress?.({ stage: STAGE_LABELS.uploading, percent: 93 });
+    const t5 = Date.now();
+    // Final videos can be hundreds of MB — a sync read here blocks the whole site's event
+    // loop right when a render finishes, so use the async fs API.
+    const videoBuffer = await fs.promises.readFile(finalVideoPath);
+    let url: string;
+
+    if (asyncQaEnabled() && postRenderSpotCheckEnabledForVideo(videoLength)) {
+      // Spot check + upload in parallel — spot check reads the local file,
+      // upload reads the same buffer; both start at the same wall-clock time.
       await touchVideoProgress(videoId);
-      const spot = await spotCheckFinalVideo(finalVideoPath);
+      const [uploadResult, spot] = await Promise.all([
+        withTimeout(
+          storagePut(`videos/${videoId}/final.mp4`, videoBuffer, "video/mp4"),
+          600_000,
+          "S3 upload"
+        ),
+        spotCheckFinalVideo(finalVideoPath),
+      ]);
+      url = uploadResult.url;
       qualityReport.postRenderSpotCheck = {
         ok: spot.ok,
         blackFrameCount: spot.blackFrameCount,
@@ -22307,7 +22370,7 @@ export async function runVideoPipeline(
         qualityReport.warnings.push(`Post-render: ${w}`);
       }
       if (!spot.ok) {
-        console.warn(`[Pipeline] Post-render spot-check: ${spot.warnings.join("; ")}`);
+        console.warn(`[Pipeline] Post-render spot-check (async): ${spot.warnings.join("; ")}`);
       }
       qualityReport.score = computeMeritQualityScore({
         totalClips: qualityReport.totalClips,
@@ -22322,6 +22385,43 @@ export async function runVideoPipeline(
         byMixKind: qualityReport.byMixKind,
         postRenderOk: spot.ok,
       });
+    } else {
+      if (postRenderSpotCheckEnabledForVideo(videoLength)) {
+        await touchVideoProgress(videoId);
+        const spot = await spotCheckFinalVideo(finalVideoPath);
+        qualityReport.postRenderSpotCheck = {
+          ok: spot.ok,
+          blackFrameCount: spot.blackFrameCount,
+          framesChecked: spot.framesChecked,
+          worstMeanLuma: spot.worstMeanLuma,
+          warnings: spot.warnings,
+        };
+        for (const w of spot.warnings) {
+          qualityReport.warnings.push(`Post-render: ${w}`);
+        }
+        if (!spot.ok) {
+          console.warn(`[Pipeline] Post-render spot-check: ${spot.warnings.join("; ")}`);
+        }
+        qualityReport.score = computeMeritQualityScore({
+          totalClips: qualityReport.totalClips,
+          archiveCount: qualityReport.archiveCount,
+          stockCount: qualityReport.stockCount,
+          fallbackBeats: qualityReport.adoptAuditSummary?.fallbackBeats ?? 0,
+          offTopicCount: qualityReport.offTopicSuspects.length,
+          geoViolationCount: qualityReport.criticalGeoViolations?.length ?? 0,
+          adoptAudit: visualDedup.clipAdoptAudit,
+          archiveOnly: curatedArchiveOnlyVisuals(),
+          fastShort: isFastShortVideoLength(videoLength),
+          byMixKind: qualityReport.byMixKind,
+          postRenderOk: spot.ok,
+        });
+      }
+      const uploadResult = await withTimeout(
+        storagePut(`videos/${videoId}/final.mp4`, videoBuffer, "video/mp4"),
+        600_000,
+        "S3 upload"
+      );
+      url = uploadResult.url;
     }
 
     enforceQualityExportGate(videoId, qualityReport, videoLength, finalValidation);
@@ -22330,17 +22430,6 @@ export async function runVideoPipeline(
     }
     qualityReport.generatedAt = new Date().toISOString();
 
-    // ── Stage 6: Upload to S3 ─────────────────────────────────────────────────
-    onProgress?.({ stage: STAGE_LABELS.uploading, percent: 93 });
-    const t5 = Date.now();
-    // Final videos can be hundreds of MB — a sync read here blocks the whole site's event
-    // loop right when a render finishes, so use the async fs API.
-    const videoBuffer = await fs.promises.readFile(finalVideoPath);
-    const { url } = await withTimeout(
-      storagePut(`videos/${videoId}/final.mp4`, videoBuffer, "video/mp4"),
-      600_000, // 10 min upload timeout for large files
-      "S3 upload"
-    );
     console.log(`[Pipeline] Stage 6 (upload): ${((Date.now()-t5)/1000).toFixed(1)}s, size: ${(videoBuffer.length/1024/1024).toFixed(1)}MB`);
 
     qualityReport.pipelineSec = Math.round((Date.now() - t0) / 1000);
