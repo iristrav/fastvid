@@ -969,3 +969,11 @@ export function sceneCandidateCacheEnabled(): boolean {
 export function sceneCandidatePoolEnabled(): boolean {
   return process.env.ENABLE_SCENE_CANDIDATE_POOL === "true";
 }
+
+/** Thumbnail-first selection (P2): download thumbnails for pool candidates and
+ *  run CLIP similarity scoring before downloading the full asset.  Only the
+ *  winner is fully downloaded.  Requires ENABLE_POOL_THUMBNAIL_RANKING=true
+ *  AND local vision (ENABLE_LOCAL_VISION != false).  Off by default. */
+export function poolThumbnailRankingEnabled(): boolean {
+  return process.env.ENABLE_POOL_THUMBNAIL_RANKING === "true";
+}

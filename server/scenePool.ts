@@ -17,6 +17,9 @@
  */
 
 import { createHash } from "crypto";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 import { getCandidatePool, putCandidatePool } from "./sceneCandidateCache";
 import type { CachedCandidate, CandidateSource } from "./sceneCandidateCache";
 
@@ -597,4 +600,92 @@ export function selectCandidatesFromPool(
 
   scored.sort((a, b) => b.score - a.score);
   return scored.slice(0, count).map(s => s.candidate);
+}
+
+// ─── P2: Thumbnail-first CLIP ranking ────────────────────────────────────────
+
+/**
+ * Downloads thumbnail images for the given candidates (parallel, bounded),
+ * runs CLIP embedding on each, and returns the same candidates sorted by
+ * `clipSimilarity` descending.  Mutates `clipSimilarity` in-place on each
+ * candidate so the score is available to downstream code.
+ *
+ * Candidates without a `thumbnailUrl`, or whose thumbnail fails to download/
+ * embed, keep their original keyword-based order (clipSimilarity stays null).
+ * Best-effort: never throws.
+ *
+ * Requires ENABLE_LOCAL_VISION != false (checked by caller).
+ */
+export async function rankCandidatesByThumbnailClip(
+  candidates: PoolCandidate[],
+  beatText: string,
+  visualDescription: string | undefined,
+  videoTitle: string | undefined,
+  sceneIndex: number,
+  beatIndex: number
+): Promise<PoolCandidate[]> {
+  if (candidates.length === 0) return candidates;
+
+  let embedImageFromPath: (p: string) => Promise<number[] | null>;
+  let resolveBeatQueryEmbedding: (b: string, v?: string, t?: string) => Promise<number[] | null>;
+  let scoreEmbeddingSimilarity: (a: number[], b: number[]) => number;
+  try {
+    // Dynamic import to avoid circular deps and keep scenePool.ts standalone
+    const vision = await import("./localClipVision");
+    embedImageFromPath = vision.embedImageFromPath;
+    resolveBeatQueryEmbedding = vision.resolveBeatQueryEmbedding;
+    scoreEmbeddingSimilarity = vision.scoreEmbeddingSimilarity;
+  } catch {
+    return candidates;
+  }
+
+  const beatEmb = await resolveBeatQueryEmbedding(beatText, visualDescription, videoTitle).catch(() => null);
+  if (!beatEmb) return candidates;
+
+  const tmpDir = os.tmpdir();
+  const MAX_THUMB_CONCURRENT = 5;
+
+  const downloadThumb = async (candidate: PoolCandidate): Promise<void> => {
+    if (!candidate.thumbnailUrl) return;
+    const ext = candidate.thumbnailUrl.includes(".png") ? ".png" : ".jpg";
+    const tmpPath = path.join(
+      tmpDir,
+      `pool_thumb_s${sceneIndex}_b${beatIndex}_${candidate.assetId.replace(/[^a-z0-9]/gi, "_").slice(0, 30)}${ext}`
+    );
+    try {
+      // Download thumbnail
+      const resp = await withTimeoutFetch(candidate.thumbnailUrl, {}, 12_000, `thumb ${candidate.id}`);
+      if (!resp.ok) return;
+      const buf = Buffer.from(await resp.arrayBuffer());
+      if (buf.length < 1_000) return;
+      fs.writeFileSync(tmpPath, buf);
+
+      // CLIP embed
+      const emb = await embedImageFromPath(tmpPath);
+      if (!emb) return;
+      const sim = scoreEmbeddingSimilarity(beatEmb, emb);
+      candidate.clipSimilarity = sim;
+    } catch {
+      // best-effort
+    } finally {
+      try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+    }
+  };
+
+  // Process in batches of MAX_THUMB_CONCURRENT
+  for (let i = 0; i < candidates.length; i += MAX_THUMB_CONCURRENT) {
+    await Promise.allSettled(candidates.slice(i, i + MAX_THUMB_CONCURRENT).map(downloadThumb));
+  }
+
+  // Rerank: scored first (by clipSimilarity desc), then unscored (preserve keyword order)
+  const scored = candidates.filter(c => c.clipSimilarity !== null);
+  const unscored = candidates.filter(c => c.clipSimilarity === null);
+  scored.sort((a, b) => (b.clipSimilarity ?? 0) - (a.clipSimilarity ?? 0));
+
+  console.log(
+    `[Pool P2] Scene ${sceneIndex} beat ${beatIndex}: CLIP-ranked ${scored.length}/${candidates.length} candidates` +
+    (scored.length > 0 ? ` (top sim=${scored[0].clipSimilarity?.toFixed(3)})` : "")
+  );
+
+  return [...scored, ...unscored];
 }
