@@ -1016,3 +1016,12 @@ export function asyncQaEnabled(): boolean {
 export function externalAssetIngestionEnabled(): boolean {
   return process.env.ENABLE_EXTERNAL_ASSET_INGESTION === "true";
 }
+
+/** P5A Scene Processing Pipeline: each scene runs fetch → recovery → compose as a unit,
+ *  so Scene N+1 composes while Scene N+2 is still fetching.  Eliminates the Stage 3 →
+ *  Stage 4 sequential barrier.  Aggregate polish steps (polishWeakAdoptBeats,
+ *  ensureFastShortScenesReady) are skipped in pipeline mode — per-scene recovery still runs.
+ *  Requires ENABLE_SCENE_PIPELINE=true. */
+export function scenePipelineEnabled(): boolean {
+  return process.env.ENABLE_SCENE_PIPELINE === "true";
+}
