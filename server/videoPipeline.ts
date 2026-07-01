@@ -147,6 +147,7 @@ import {
   uniqueQueryStrings,
   uniqueCoercedQueries,
 } from "./stringCoercion";
+import { createPipelineProfiler } from "./pipelineProfiler";
 import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, asyncQaEnabled, scenePipelineEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, pipelineComposeGraceMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
@@ -21390,6 +21391,18 @@ export async function runVideoPipeline(
       }
     }
     const perf = getPipelinePerfProfile(videoLength);
+    const profiler = createPipelineProfiler(String(videoId), videoLength, {
+      composeParallelism: composeParallelismForVideo(videoLength, IS_RAILWAY),
+      retrieveParallelism: perf.sceneParallelism,
+      montageSegmentParallelism: montageSegmentParallelism(IS_RAILWAY),
+      ffmpegPreset: process.env.FFMPEG_PRESET ?? "veryfast",
+      crf: process.env.FFMPEG_CRF ?? "18",
+    });
+    profiler.recordStageStart("script", t0);
+    profiler.recordStageEnd("script", t1);
+    profiler.recordStageStart("tts", t1);
+    profiler.recordStageEnd("tts", Date.now());
+    profiler.recordStageStart("retrieval", Date.now());
     if (!curatedArchiveOnlyVisuals()) {
       if (minimizeStockFootageEnabled()) {
         console.log(
@@ -21670,6 +21683,8 @@ export async function runVideoPipeline(
       let completedPipelineVisuals = 0;
       let completedPipelineCompose = 0;
       const t2p = Date.now();
+      profiler.recordStageEnd("retrieval", t2p);
+      profiler.recordStageStart("compose", t2p);
       const composeStartMs: number[] = new Array(scenes.length).fill(0);
       const composeElapsedMs: number[] = new Array(scenes.length).fill(0);
       const composeWaitMs: number[] = new Array(scenes.length).fill(0);
@@ -21722,6 +21737,7 @@ export async function runVideoPipeline(
           Promise.all(scenes.map((scene, i) => {
             // ── Retrieval phase — retrieve slot released when visuals are ready ─
             const svrReady = retrieveLimit(async () => {
+              const retrieveStartMs = Date.now();
               gantt(`Scene ${scene.index} retrieve START`, t2p);
               let svr: SceneVisualsResult;
               try {
@@ -21781,6 +21797,7 @@ export async function runVideoPipeline(
               sceneVisualResults[i] = svr;
               completedPipelineVisuals++;
               gantt(`Scene ${scene.index} retrieve END  (${svr.clips.length} clips)`, t2p);
+              profiler.recordSceneRetrieve(i, scene.index, scene.duration, retrieveStartMs, Date.now(), 0, svr.clips.length);
               // retrieve slot released here — scene joins compose queue independently
               return svr;
             });
@@ -21908,6 +21925,7 @@ export async function runVideoPipeline(
                 activeComposes--;
                 completedPipelineCompose++;
                 composeElapsedMs[i] = Date.now() - composeStartMs[i];
+                profiler.recordSceneCompose(i, scene.index, composeWaitMs[i], composeStartMs[i], Date.now());
                 gantt(`Scene ${scene.index} compose END   (${(composeElapsedMs[i] / 1000).toFixed(1)}s, active=${activeComposes})`, t2p);
                 console.log(
                   `[Compose] Scene ${scene.index} finished (${(composeElapsedMs[i] / 1000).toFixed(1)}s) — ` +
@@ -21955,6 +21973,7 @@ export async function runVideoPipeline(
         console.warn(`[Compose] Scenes >60s: ${slowScenes.map((s) => `Scene ${s.index}(${(composeElapsedMs[scenes.indexOf(s)] / 1000).toFixed(0)}s)`).join(", ")}`);
       }
       console.log(`[Pipeline] P5A scene pipeline: ${scenes.length} scenes in ${((Date.now() - t2p) / 1000).toFixed(1)}s`);
+      profiler.recordStageEnd("compose", Date.now());
       pipelineStepTiming.summarizeAll();
     } else {
     // ── Sequential: Stage 3 (visuals) then Stage 4 (compose) ────────────────
@@ -22239,6 +22258,8 @@ export async function runVideoPipeline(
     assertPipelineWithinBudget(videoId, pipelineWallStartMs, videoLength, visualDedup);
     onProgress?.({ stage: STAGE_LABELS.assembly, percent: 47 });
     const t3 = Date.now();
+    profiler.recordStageEnd("retrieval", t3);
+    profiler.recordStageStart("compose", t3);
 
     // Railway: one FFmpeg compose at a time (avoids "Resource temporarily unavailable" decoder errors)
     const composeLimit = pLimit(composeParallelismForVideo(videoLength, IS_RAILWAY));
@@ -22508,6 +22529,8 @@ export async function runVideoPipeline(
           seqActiveComposes--;
           completedCompose++;
           seqComposeElapsedMs[i] = Date.now() - seqComposeStartMs[i];
+          profiler.recordSceneRetrieve(i, scene.index, scene.duration, t2, t3, 0, sceneVisualResults[i]?.clips?.length ?? 0);
+          profiler.recordSceneCompose(i, scene.index, 0, seqComposeStartMs[i], Date.now());
           clearInterval(hangCheck);
           console.log(
             `[Compose] Scene ${scene.index} finished (${(seqComposeElapsedMs[i] / 1000).toFixed(1)}s) — ` +
@@ -22548,6 +22571,7 @@ export async function runVideoPipeline(
       console.warn(`[Compose] Scenes >60s: ${seqSlowScenes.map((s, si) => `Scene ${s.index}(${(seqComposeElapsedMs[scenes.indexOf(s)] / 1000).toFixed(0)}s)`).join(", ")}`);
     }
     console.log(`[Pipeline] Stage 4 (compose): ${scenes.length} scenes in ${((Date.now()-t3)/1000).toFixed(1)}s`);
+    profiler.recordStageEnd("compose", Date.now());
     pipelineStepTiming.summarizeAll();
     } // end else (sequential Stage 3 + Stage 4)
 
@@ -22708,6 +22732,7 @@ export async function runVideoPipeline(
     // ── Stage 5: Concatenate + intro/outro + music ────────────────────────
     onProgress?.({ stage: STAGE_LABELS.assembling, percent: 77 });
     const t4 = Date.now();
+    profiler.recordStageStart("concat", t4);
     const totalDuration =
       scenes.reduce((sum, s) => sum + s.duration, 0) + chapterCardCount * CHAPTER_CARD_DURATION;
     let finalVideoPath = await timePipelineStep(
@@ -22731,6 +22756,7 @@ export async function runVideoPipeline(
         return pathOut;
       }
     );
+    profiler.recordStageEnd("concat", Date.now());
     console.log(`[Pipeline] Stage 5 (assemble+music): ${((Date.now()-t4)/1000).toFixed(1)}s`);
 
     const { path: exportReadyPath, validation: finalValidation } = await ensureFinalVideoExportReady({
@@ -22804,6 +22830,7 @@ export async function runVideoPipeline(
     // (both read finalVideoPath; upload is I/O-bound, spot check is CPU/ffprobe).
     onProgress?.({ stage: STAGE_LABELS.uploading, percent: 93 });
     const t5 = Date.now();
+    profiler.recordStageStart("upload", t5);
     // Final videos can be hundreds of MB — a sync read here blocks the whole site's event
     // loop right when a render finishes, so use the async fs API.
     const videoBuffer = await fs.promises.readFile(finalVideoPath);
@@ -22893,6 +22920,7 @@ export async function runVideoPipeline(
     }
     qualityReport.generatedAt = new Date().toISOString();
 
+    profiler.recordStageEnd("upload", Date.now());
     console.log(`[Pipeline] Stage 6 (upload): ${((Date.now()-t5)/1000).toFixed(1)}s, size: ${(videoBuffer.length/1024/1024).toFixed(1)}MB`);
 
     qualityReport.pipelineSec = Math.round((Date.now() - t0) / 1000);
@@ -22922,6 +22950,7 @@ export async function runVideoPipeline(
     onProgress?.({ stage: STAGE_LABELS.complete, percent: 100 });
     const totalMs = Date.now() - t0;
     console.log(`[Pipeline] Video ${videoId} COMPLETE in ${(totalMs/60000).toFixed(1)} min: ${url}`);
+    profiler.printReport(totalMs, pipelineStepTiming.toReport());
     if (archiveCrossVideoVarietyEnabled(videoLength) && curatedArchiveOnlyVisuals()) {
       recordArchiveVideoUsage(videoId, visualDedup.usedCuratedAssetIds, topicContext);
     }
