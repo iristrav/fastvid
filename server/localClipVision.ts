@@ -69,11 +69,34 @@ function configureTransformersEnv(): string {
   return cacheDir;
 }
 
+function clipModelExistsLocally(cacheDir: string): boolean {
+  // @xenova/transformers stores models under <cacheDir>/Xenova/clip-vit-base-patch32/
+  // The onnx quantized file is the critical artifact.
+  try {
+    const modelSlug = CLIP_MODEL.replace("/", path.sep);
+    const modelDir = path.join(cacheDir, modelSlug);
+    if (!fs.existsSync(modelDir)) return false;
+    const onnxFiles = fs.readdirSync(modelDir).filter(f => f.endsWith(".onnx"));
+    return onnxFiles.length > 0;
+  } catch {
+    return false;
+  }
+}
+
 async function importTransformersPipeline() {
   const cacheDir = configureTransformersEnv();
+
+  // Never download models at runtime — only use what's pre-cached on the volume.
+  // If the model is missing, fail in <1s instead of hanging for 15+ minutes.
+  const modelExists = clipModelExistsLocally(cacheDir);
+  if (!modelExists) {
+    console.warn(`[LocalVision] CLIP model not found in cache (${cacheDir}) — local vision disabled. Pre-download model or mount volume.`);
+    throw new Error(`CLIP model missing from cache: ${cacheDir}`);
+  }
+
   const { env, pipeline } = await import("@xenova/transformers");
   env.cacheDir = cacheDir;
-  env.allowRemoteModels = true;
+  env.allowRemoteModels = false;
   env.useBrowserCache = false;
   env.backends.onnx.wasm.numThreads = 1;
   return pipeline;

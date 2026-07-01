@@ -2287,14 +2287,22 @@ async function downloadAndTrimPoolCandidate(
   const rawPath = path.join(workDir, `scene_${sceneIndex}_b${beatIndex}_pool_${candidate.source}_${safeId}_raw.${ext}`);
   const outPath = path.join(workDir, `scene_${sceneIndex}_b${beatIndex}_pool_${candidate.source}_${safeId}.mp4`);
 
+  const _dtT0 = Date.now();
+  console.log(`[Hang] downloadAndTrim ENTER s${sceneIndex}b${beatIndex} src=${candidate.source} id=${candidate.assetId.slice(0,20)} type=${candidate.mediaType}`);
   try {
-    const fromCache = await tryRestoreFromMediaCache(candidate.remoteUrl, rawPath);
+    console.log(`[Hang] downloadAndTrim BEFORE cache-restore s${sceneIndex}b${beatIndex}`);
+    const _cr0 = Date.now();
+    const fromCache = await withTimeout(tryRestoreFromMediaCache(candidate.remoteUrl, rawPath), 10_000, `cache-restore s${sceneIndex}b${beatIndex}`).catch(() => false);
+    console.log(`[Hang] downloadAndTrim AFTER cache-restore s${sceneIndex}b${beatIndex} hit=${fromCache} elapsed=${Date.now()-_cr0}ms`);
     if (!fromCache) {
+      console.log(`[Hang] downloadAndTrim BEFORE fetch s${sceneIndex}b${beatIndex} url=${candidate.remoteUrl.slice(0,80)}`);
+      const _f0 = Date.now();
       const resp = await withTimeout(
         fetch(candidate.remoteUrl),
         45_000,
         `Pool download s${sceneIndex}b${beatIndex} ${candidate.source}:${candidate.assetId}`
       );
+      console.log(`[Hang] downloadAndTrim AFTER fetch s${sceneIndex}b${beatIndex} ok=${resp.ok} elapsed=${Date.now()-_f0}ms`);
       if (!resp.ok) return null;
       const buf = Buffer.from(await resp.arrayBuffer());
       if (buf.length < 50_000) return null;
@@ -2307,17 +2315,28 @@ async function downloadAndTrimPoolCandidate(
       const probeCmd = `"${FFPROBE_BIN}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${rawPath}"`;
       let sourceDur = candidate.durationSec ?? 0;
       try {
+        console.log(`[Hang] downloadAndTrim BEFORE ffprobe s${sceneIndex}b${beatIndex}`);
+        const _p0 = Date.now();
         const { stdout } = await withTimeout(exec(probeCmd), 10_000, `probe pool s${sceneIndex}b${beatIndex}`);
+        console.log(`[Hang] downloadAndTrim AFTER ffprobe s${sceneIndex}b${beatIndex} elapsed=${Date.now()-_p0}ms`);
         const parsed = parseFloat(stdout.trim());
         if (!isNaN(parsed) && parsed > 0) sourceDur = parsed;
       } catch { /* use candidate.durationSec */ }
       if (sourceDur < 1.5) return null;
+      console.log(`[Hang] downloadAndTrim BEFORE trim s${sceneIndex}b${beatIndex} dur=${sourceDur.toFixed(1)}s`);
+      const _t0 = Date.now();
       const ok = await trimDownloadedStockClip(rawPath, outPath, holdSec, sourceDur, `pool s${sceneIndex}b${beatIndex}`);
+      console.log(`[Hang] downloadAndTrim AFTER trim s${sceneIndex}b${beatIndex} ok=${ok} elapsed=${Date.now()-_t0}ms`);
+      console.log(`[Hang] downloadAndTrim EXIT s${sceneIndex}b${beatIndex} result=${ok ? outPath.slice(-30) : "null"} total=${Date.now()-_dtT0}ms`);
       return ok ? outPath : null;
     } else {
-      // Image: convert to still video
+      console.log(`[Hang] downloadAndTrim BEFORE stillImageToVideo s${sceneIndex}b${beatIndex}`);
+      const _sv0 = Date.now();
       await stillImageToVideo(rawPath, outPath, holdSec, `pool img s${sceneIndex}b${beatIndex}`, false, sceneIndex, beatIndex);
-      return fs.existsSync(outPath) && fs.statSync(outPath).size > 1_000 ? outPath : null;
+      console.log(`[Hang] downloadAndTrim AFTER stillImageToVideo s${sceneIndex}b${beatIndex} elapsed=${Date.now()-_sv0}ms`);
+      const exists = fs.existsSync(outPath) && fs.statSync(outPath).size > 1_000;
+      console.log(`[Hang] downloadAndTrim EXIT s${sceneIndex}b${beatIndex} result=${exists ? "ok" : "null"} total=${Date.now()-_dtT0}ms`);
+      return exists ? outPath : null;
     }
   } catch (err) {
     console.warn(`[Pool] downloadAndTrimPoolCandidate failed s${sceneIndex}b${beatIndex}:`, (err as Error).message?.slice(0, 100));
@@ -9738,7 +9757,7 @@ async function estimateBalancedMontageCoverageSec(
 
 function composeSceneTimeoutMs(clipCount: number, videoLength?: string): number {
   if (isFastShortVideoLength(videoLength)) return 90_000;
-  if (curatedArchiveOnlyVisuals() && clipCount > 8) return 240_000;
+  if (curatedArchiveOnlyVisuals() && clipCount > 8) return 120_000;
   return 120_000;
 }
 
@@ -16003,25 +16022,38 @@ async function adoptWikimediaBeatClip(
     label: string
   ): Promise<boolean> => {
     if (!clipPath) return false;
-    const vision = await beatClipPassesVisionGate(
-      clipPath,
-      beat,
-      scene,
-      workDir,
-      videoTitle,
-      dedup,
-      semanticProfile,
-      label,
-      visionMinScore
-    );
+    const _awpT0 = Date.now();
+    const _si = scene.index, _bi = beat.index, _cl = path.basename(clipPath);
+    console.log(`[Hang] adoptWikiPath ENTER s${_si}b${_bi} ${label} clip=${_cl}`);
+    console.log(`[Hang] adoptWikiPath BEFORE beatClipPassesVisionGate s${_si}b${_bi}`);
+    const _vt0 = Date.now();
+    const vision = await withTimeout(
+      beatClipPassesVisionGate(clipPath, beat, scene, workDir, videoTitle, dedup, semanticProfile, label, visionMinScore),
+      90_000, `beatClipPassesVisionGate s${_si}b${_bi} ${label}`
+    ).catch((err: Error) => { console.error(`[Hang] beatClipPassesVisionGate TIMEOUT/ERROR s${_si}b${_bi}: ${err.message}`); return { pass: false, worstScore10: null, skipped: false }; });
+    console.log(`[Hang] adoptWikiPath AFTER beatClipPassesVisionGate s${_si}b${_bi} pass=${vision.pass} elapsed=${Date.now()-_vt0}ms`);
     if (!vision.pass) return false;
     if (isStillPhotoClip(clipPath) && !canUseDocumentaryStill(dedup)) {
       recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clipPath, "still_cap", label);
       return false;
     }
-    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, holdSec, dedup.perf.fastStockMode);
-    if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) return false;
+    console.log(`[Hang] adoptWikiPath BEFORE applyVideoBeatTextOverlay s${_si}b${_bi}`);
+    const _ot0 = Date.now();
+    const withText = await withTimeout(
+      applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, holdSec, dedup.perf.fastStockMode),
+      30_000, `applyVideoBeatTextOverlay s${_si}b${_bi}`
+    ).catch((err: Error) => { console.error(`[Hang] applyVideoBeatTextOverlay TIMEOUT/ERROR s${_si}b${_bi}: ${err.message}`); return clipPath; });
+    console.log(`[Hang] adoptWikiPath AFTER applyVideoBeatTextOverlay s${_si}b${_bi} elapsed=${Date.now()-_ot0}ms`);
+    console.log(`[Hang] adoptWikiPath BEFORE montageClipPassesComposeGate s${_si}b${_bi}`);
+    const _gt0 = Date.now();
+    const gatePass = await withTimeout(
+      montageClipPassesComposeGate(withText, scene.index, beat.index),
+      20_000, `montageClipPassesComposeGate s${_si}b${_bi}`
+    ).catch((err: Error) => { console.error(`[Hang] montageClipPassesComposeGate TIMEOUT/ERROR s${_si}b${_bi}: ${err.message}`); return true; });
+    console.log(`[Hang] adoptWikiPath AFTER montageClipPassesComposeGate s${_si}b${_bi} pass=${gatePass} elapsed=${Date.now()-_gt0}ms`);
+    if (!gatePass) return false;
     if (!(await pushClip(withText, holdSec))) return false;
+    console.log(`[Hang] adoptWikiPath EXIT s${_si}b${_bi} adopted=true total=${Date.now()-_awpT0}ms`);
     recordClipAdopt(
       dedup.clipAdoptAudit,
       scene.index,
@@ -19841,8 +19873,10 @@ async function composeSceneVideo(
   usedClipsOut?: string[],
   composeOptions?: ComposeSceneOptions
 ): Promise<string> {
+  const _csvT0 = Date.now();
+  console.log(`[Hang] composeSceneVideo ENTER s${scene.index} clips=${clips.length} dur=${duration.toFixed(2)}s phase=${composeOptions?.phase ?? "full"}`);
   if (composeOptions?.phase === "effects" && composeOptions.assemblyPath) {
-    return applySceneEffectsPass(
+    const r = await applySceneEffectsPass(
       composeOptions.assemblyPath,
       scene,
       duration,
@@ -19850,12 +19884,15 @@ async function composeSceneVideo(
       enableSubtitles,
       clips
     );
+    console.log(`[Hang] composeSceneVideo EXIT s${scene.index} effects-pass total=${Date.now()-_csvT0}ms`);
+    return r;
   }
 
   const phase = composeOptions?.phase ?? "full";
   const stepTiming = composeOptions?.dedup?.stepTiming;
   const finishSceneTiming = () => stepTiming?.summarizeScene(scene.index);
   const returnComposed = (composedPath: string): string => {
+    console.log(`[Hang] composeSceneVideo EXIT s${scene.index} out=${composedPath.slice(-30)} total=${Date.now()-_csvT0}ms`);
     finishSceneTiming();
     return composedPath;
   };
@@ -21125,7 +21162,7 @@ async function concatenateScenesWithMusic(
       `${FFMPEG_BIN} -y -f concat -safe 0 -i "${listFile}" -vsync cfr ` +
         `-c:v libx264 -preset ${concatPreset} -crf ${concatCrf} -c:a aac -b:a 320k -movflags +faststart "${concatPath}"`
     ),
-    fastShort ? 120_000 : 900_000,
+    120_000,
     "Scene concatenation"
   );
 
