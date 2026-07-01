@@ -505,9 +505,12 @@ const niceCmd = (cmd: string): string =>
 // Set by generateVideo, cleared on finish. null when no render is active.
 import type { RenderWatchdog } from "./renderWatchdog";
 import type { RenderBudget } from "./renderBudget";
+import type { BudgetTracker } from "./renderBudgetTracker";
 let _activeWatchdog: RenderWatchdog | null = null;
 /** Active budget for the currently-running render — null when idle. */
 let _activeRenderBudget: RenderBudget | null = null;
+/** Active budget tracker for the currently-running render — null when idle. */
+let _activeBudgetTracker: BudgetTracker | null = null;
 
 // execRaw exposes the ChildProcess so withTimeout can kill it on abort,
 // and registers it with the active render watchdog for hard-kill coverage.
@@ -21554,10 +21557,12 @@ export async function runVideoPipeline(
     // ── RenderBudget: derive all timeouts from actual VO durations ───────────
     {
       const { computeRenderBudget, logRenderBudget } = await import("./renderBudget");
+      const { BudgetTracker: BT } = await import("./renderBudgetTracker");
       const totalVoSec = scenes.reduce((s, sc) => s + sc.duration, 0);
       const budget = computeRenderBudget(scenes.length, totalVoSec);
       logRenderBudget(budget, videoId);
-      _activeRenderBudget = budget;
+      _activeRenderBudget  = budget;
+      _activeBudgetTracker = new BT(budget, videoId);
       watchdog.updateBudget(budget.totalMs);
       renderBudgetComposeMs = budget.basePerSceneComposeMs;
       renderBudgetConcatMs  = budget.concatMs;
@@ -21567,6 +21572,7 @@ export async function runVideoPipeline(
     // ── Stage 3: Per-zin visuals (power word → clip) ─────────────────────────
     onProgress?.({ stage: STAGE_LABELS.visuals, percent: 20 });
     const t2 = Date.now();
+    _activeBudgetTracker?.stageStart("retrieval", (_activeRenderBudget?.perSceneRetrieveMs ?? 35_000) * scenes.length);
     if (curatedArchiveOnlyVisuals()) {
       const archiveReady = await archiveVisualSourcesReady();
       if (!archiveReady.ok) {
@@ -22288,7 +22294,27 @@ export async function runVideoPipeline(
     } finally {
       clearInterval(visualHeartbeat);
     }
+    _activeBudgetTracker?.stageEnd("retrieval");
     console.log(`[Pipeline] Stage 3 (visuals): ${((Date.now()-t2)/1000).toFixed(1)}s`);
+
+    // Refine compose budget based on actual clip mix from retrieval
+    if (_activeBudgetTracker && _activeRenderBudget) {
+      const allRetrievedClips = sceneVisualResults.flatMap(r => r?.clips ?? []);
+      const totalClips = allRetrievedClips.length || 1;
+      const archiveClips = allRetrievedClips.filter(p => curatedClipPathAssetId(p) != null).length;
+      const aiClips = allRetrievedClips.filter(p => isAIGeneratedClip(p)).length;
+      const signals = {
+        archiveClipRatio:    archiveClips / totalClips,
+        aiClipRatio:         aiClips / totalClips,
+        clipCacheHitRatio:   0,
+        totalClipsRetrieved: totalClips,
+        avgClipsPerScene:    totalClips / scenes.length,
+      };
+      const { newComposeMs, newConfidence } = _activeBudgetTracker.refineFromSignals(signals, _activeRenderBudget);
+      _activeRenderBudget = { ..._activeRenderBudget, basePerSceneComposeMs: newComposeMs, confidence: newConfidence };
+      renderBudgetComposeMs = newComposeMs;
+    }
+
     if (visualDedup.forceExportMode) {
       console.warn("[Pipeline] Force-export — skipping polish, proceeding to compose with current clips");
     }
@@ -22480,6 +22506,7 @@ export async function runVideoPipeline(
     const t3 = Date.now();
     profiler.recordStageEnd("retrieval", t3);
     profiler.recordStageStart("compose", t3);
+    _activeBudgetTracker?.stageStart("compose", (_activeRenderBudget?.basePerSceneComposeMs ?? 90_000) * scenes.length);
 
     // Railway: one FFmpeg compose at a time (avoids "Resource temporarily unavailable" decoder errors)
     const composeLimit = pLimit(composeParallelismForVideo(videoLength, IS_RAILWAY));
@@ -22798,6 +22825,7 @@ export async function runVideoPipeline(
     if (seqSlowScenes.length > 0) {
       console.warn(`[Compose] Scenes >60s: ${seqSlowScenes.map((s, si) => `Scene ${s.index}(${(seqComposeElapsedMs[scenes.indexOf(s)] / 1000).toFixed(0)}s)`).join(", ")}`);
     }
+    _activeBudgetTracker?.stageEnd("compose");
     console.log(`[Pipeline] Stage 4 (compose): ${scenes.length} scenes in ${((Date.now()-t3)/1000).toFixed(1)}s`);
     profiler.recordStageEnd("compose", Date.now());
     pipelineStepTiming.summarizeAll();
@@ -22961,6 +22989,7 @@ export async function runVideoPipeline(
     onProgress?.({ stage: STAGE_LABELS.assembling, percent: 77 });
     const t4 = Date.now();
     profiler.recordStageStart("concat", t4);
+    _activeBudgetTracker?.stageStart("concat", _activeRenderBudget?.concatMs ?? 120_000);
     const totalDuration =
       scenes.reduce((sum, s) => sum + s.duration, 0) + chapterCardCount * CHAPTER_CARD_DURATION;
     let finalVideoPath = await timePipelineStep(
@@ -22986,6 +23015,7 @@ export async function runVideoPipeline(
         return pathOut;
       }
     );
+    _activeBudgetTracker?.stageEnd("concat");
     profiler.recordStageEnd("concat", Date.now());
     console.log(`[Pipeline] Stage 5 (assemble+music): ${((Date.now()-t4)/1000).toFixed(1)}s`);
 
@@ -23062,6 +23092,7 @@ export async function runVideoPipeline(
     onProgress?.({ stage: STAGE_LABELS.uploading, percent: 93 });
     const t5 = Date.now();
     profiler.recordStageStart("upload", t5);
+    _activeBudgetTracker?.stageStart("upload", _activeRenderBudget?.uploadMs ?? 300_000);
     // Final videos can be hundreds of MB — a sync read here blocks the whole site's event
     // loop right when a render finishes, so use the async fs API.
     const videoBuffer = await fs.promises.readFile(finalVideoPath);
@@ -23151,6 +23182,7 @@ export async function runVideoPipeline(
     }
     qualityReport.generatedAt = new Date().toISOString();
 
+    _activeBudgetTracker?.stageEnd("upload");
     profiler.recordStageEnd("upload", Date.now());
     console.log(`[Pipeline] Stage 6 (upload): ${((Date.now()-t5)/1000).toFixed(1)}s, size: ${(videoBuffer.length/1024/1024).toFixed(1)}MB`);
 
@@ -23164,12 +23196,27 @@ export async function runVideoPipeline(
       console.warn(`[Pipeline] Editor manifest persist failed for ${videoId}:`, (err as Error).message);
     }
 
-    await mergeVideoMetadata(videoId, {
-      qualityReport,
-      pipelineStepTiming: pipelineStepTiming.toReport(),
-    }).catch((err) =>
-      console.warn(`[Pipeline] Failed to persist qualityReport on complete for ${videoId}:`, err)
-    );
+    // Budget summary + history persistence
+    if (_activeBudgetTracker) {
+      _activeBudgetTracker.logSummary();
+      const { recordBudgetOutcome } = await import("./renderBudgetTracker");
+      const budgetOutcome = _activeBudgetTracker.outcome();
+      recordBudgetOutcome(budgetOutcome);
+      await mergeVideoMetadata(videoId, {
+        qualityReport,
+        pipelineStepTiming: pipelineStepTiming.toReport(),
+        renderBudget: budgetOutcome,
+      }).catch((err) =>
+        console.warn(`[Pipeline] Failed to persist qualityReport on complete for ${videoId}:`, err)
+      );
+    } else {
+      await mergeVideoMetadata(videoId, {
+        qualityReport,
+        pipelineStepTiming: pipelineStepTiming.toReport(),
+      }).catch((err) =>
+        console.warn(`[Pipeline] Failed to persist qualityReport on complete for ${videoId}:`, err)
+      );
+    }
 
     // Persist URL immediately so a crash during finalization cannot lose the finished video
     await updateVideoStatus(videoId, "completed", {
@@ -23190,6 +23237,7 @@ export async function runVideoPipeline(
     watchdog.stop();
     _activeWatchdog = null;
     _activeRenderBudget = null;
+    _activeBudgetTracker = null;
     try {
       fs.rmSync(workDir, { recursive: true, force: true });
     } catch { /* ignore */ }
