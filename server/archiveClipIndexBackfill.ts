@@ -86,10 +86,13 @@ export async function backfillMissingClipEmbeddings(
   }
   const { workerLocalActiveJobs } = await import("./videoQueue");
   const activeJobs = workerLocalActiveJobs();
-  const effectiveBatch =
-    options?.ignoreActiveJobCap || activeJobs === 0
-      ? maxAssets
-      : Math.min(maxAssets, 10);
+  // Fully pause CLIP backfill while any render is active — CLIP is CPU-heavy and
+  // competes directly with the render pipeline on the same worker process.
+  if (!options?.ignoreActiveJobCap && activeJobs > 0) {
+    console.log(`[ClipEmbedding] Backfill paused — ${activeJobs} active render job(s) in progress`);
+    return { indexed: 0, skipped: 0, missing: 0 };
+  }
+  const effectiveBatch = maxAssets;
 
   let indexed = 0;
   let skipped = 0;

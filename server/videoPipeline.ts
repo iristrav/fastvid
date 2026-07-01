@@ -533,7 +533,19 @@ const isForkPressureError = (err: unknown): boolean => {
 
 // Wrapper that retries with a different ffmpeg binary if the current one fails
 const EXEC_FORK_RETRIES = 5;
+// ── Worker heartbeat ──────────────────────────────────────────────────────────
+// Tracks the current blocking function for the 5s heartbeat log.
+let _workerHeartbeatLabel = "idle";
+export function setWorkerHeartbeat(label: string): void { _workerHeartbeatLabel = label; }
+export function clearWorkerHeartbeat(): void { _workerHeartbeatLabel = "idle"; }
+/** Returns the current heartbeat label (read by worker.ts timer). */
+export function getWorkerHeartbeat(): string { return _workerHeartbeatLabel; }
+
 const exec = async (cmd: string, eagainRetriesLeft = EXEC_FORK_RETRIES): Promise<{ stdout: string; stderr: string }> => {
+  // Log every FFmpeg call with the full command so hangs can be diagnosed.
+  if (cmd.startsWith(FFMPEG_BIN) || /\bffmpeg\b/.test(cmd.slice(0, 80))) {
+    console.log(`[FFmpegCmd] ${cmd.slice(0, 1200)}`);
+  }
   try {
     return await execRaw(cmd);
   } catch (err: unknown) {
@@ -2288,6 +2300,7 @@ async function downloadAndTrimPoolCandidate(
   const outPath = path.join(workDir, `scene_${sceneIndex}_b${beatIndex}_pool_${candidate.source}_${safeId}.mp4`);
 
   const _dtT0 = Date.now();
+  setWorkerHeartbeat(`downloadAndTrim s${sceneIndex}b${beatIndex} src=${candidate.source}`);
   console.log(`[Hang] downloadAndTrim ENTER s${sceneIndex}b${beatIndex} src=${candidate.source} id=${candidate.assetId.slice(0,20)} type=${candidate.mediaType}`);
   try {
     console.log(`[Hang] downloadAndTrim BEFORE cache-restore s${sceneIndex}b${beatIndex}`);
@@ -2328,6 +2341,7 @@ async function downloadAndTrimPoolCandidate(
       const ok = await trimDownloadedStockClip(rawPath, outPath, holdSec, sourceDur, `pool s${sceneIndex}b${beatIndex}`);
       console.log(`[Hang] downloadAndTrim AFTER trim s${sceneIndex}b${beatIndex} ok=${ok} elapsed=${Date.now()-_t0}ms`);
       console.log(`[Hang] downloadAndTrim EXIT s${sceneIndex}b${beatIndex} result=${ok ? outPath.slice(-30) : "null"} total=${Date.now()-_dtT0}ms`);
+      clearWorkerHeartbeat();
       return ok ? outPath : null;
     } else {
       console.log(`[Hang] downloadAndTrim BEFORE stillImageToVideo s${sceneIndex}b${beatIndex}`);
@@ -2336,10 +2350,12 @@ async function downloadAndTrimPoolCandidate(
       console.log(`[Hang] downloadAndTrim AFTER stillImageToVideo s${sceneIndex}b${beatIndex} elapsed=${Date.now()-_sv0}ms`);
       const exists = fs.existsSync(outPath) && fs.statSync(outPath).size > 1_000;
       console.log(`[Hang] downloadAndTrim EXIT s${sceneIndex}b${beatIndex} result=${exists ? "ok" : "null"} total=${Date.now()-_dtT0}ms`);
+      clearWorkerHeartbeat();
       return exists ? outPath : null;
     }
   } catch (err) {
     console.warn(`[Pool] downloadAndTrimPoolCandidate failed s${sceneIndex}b${beatIndex}:`, (err as Error).message?.slice(0, 100));
+    clearWorkerHeartbeat();
     return null;
   }
 }
@@ -16024,6 +16040,7 @@ async function adoptWikimediaBeatClip(
     if (!clipPath) return false;
     const _awpT0 = Date.now();
     const _si = scene.index, _bi = beat.index, _cl = path.basename(clipPath);
+    setWorkerHeartbeat(`adoptWikiPath s${_si}b${_bi} ${label}`);
     console.log(`[Hang] adoptWikiPath ENTER s${_si}b${_bi} ${label} clip=${_cl}`);
     console.log(`[Hang] adoptWikiPath BEFORE beatClipPassesVisionGate s${_si}b${_bi}`);
     const _vt0 = Date.now();
@@ -16052,8 +16069,9 @@ async function adoptWikimediaBeatClip(
     ).catch((err: Error) => { console.error(`[Hang] montageClipPassesComposeGate TIMEOUT/ERROR s${_si}b${_bi}: ${err.message}`); return true; });
     console.log(`[Hang] adoptWikiPath AFTER montageClipPassesComposeGate s${_si}b${_bi} pass=${gatePass} elapsed=${Date.now()-_gt0}ms`);
     if (!gatePass) return false;
-    if (!(await pushClip(withText, holdSec))) return false;
+    if (!(await pushClip(withText, holdSec))) { clearWorkerHeartbeat(); return false; }
     console.log(`[Hang] adoptWikiPath EXIT s${_si}b${_bi} adopted=true total=${Date.now()-_awpT0}ms`);
+    clearWorkerHeartbeat();
     recordClipAdopt(
       dedup.clipAdoptAudit,
       scene.index,
@@ -18430,6 +18448,7 @@ async function fetchSceneVisuals(
   prefetchPools?: Map<number, Promise<import("./scenePool").SceneCandidatePool>>,
   prefetchFunnels?: Map<number, Promise<RetrievalFunnelResult>>
 ): Promise<SceneVisualsResult> {
+  setWorkerHeartbeat(`fetchSceneVisuals s${scene.index}`);
   videoTitle = coerceVisionString(videoTitle);
   if (curatedArchiveOnlyVisuals()) {
     if (isFastShortVideoLength(dedup.videoLength)) {
@@ -18729,13 +18748,21 @@ async function fetchSceneVisuals(
           poolCandidates = poolCandidates.slice(0, 3);
         }
         let poolClip: string | null = null;
+        let _poolFailReasons: string[] = [];
         for (const candidate of poolCandidates) {
+          const _cT0 = Date.now();
           poolClip = await downloadAndTrimPoolCandidate(candidate, workDir, scene.index, beat.index, beat.holdSec);
           if (poolClip) break;
+          const reason = `${candidate.source}:${candidate.assetId.slice(0,20)} failed in ${Date.now()-_cT0}ms`;
+          _poolFailReasons.push(reason);
+          console.log(`[Retry] s${scene.index}b${beat.index} pool candidate rejected — ${reason}`);
         }
         if (poolClip) {
           clip = poolClip;
         } else {
+          if (_poolFailReasons.length > 0) {
+            console.log(`[Retry] s${scene.index}b${beat.index} all ${_poolFailReasons.length} pool candidate(s) failed — falling back to per-beat retrieval. Reasons: ${_poolFailReasons.join(" | ")}`);
+          }
           // Pool candidates failed to download — fall back to normal per-beat retrieval
           clip = await withTimeout(
             resolveBeatClipForBeat(
@@ -19874,6 +19901,7 @@ async function composeSceneVideo(
   composeOptions?: ComposeSceneOptions
 ): Promise<string> {
   const _csvT0 = Date.now();
+  setWorkerHeartbeat(`composeSceneVideo s${scene.index} clips=${clips.length}`);
   console.log(`[Hang] composeSceneVideo ENTER s${scene.index} clips=${clips.length} dur=${duration.toFixed(2)}s phase=${composeOptions?.phase ?? "full"}`);
   if (composeOptions?.phase === "effects" && composeOptions.assemblyPath) {
     const r = await applySceneEffectsPass(
@@ -19893,6 +19921,7 @@ async function composeSceneVideo(
   const finishSceneTiming = () => stepTiming?.summarizeScene(scene.index);
   const returnComposed = (composedPath: string): string => {
     console.log(`[Hang] composeSceneVideo EXIT s${scene.index} out=${composedPath.slice(-30)} total=${Date.now()-_csvT0}ms`);
+    clearWorkerHeartbeat();
     finishSceneTiming();
     return composedPath;
   };

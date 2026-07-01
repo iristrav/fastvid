@@ -136,6 +136,27 @@ async function main() {
   const { startClipBackgroundAuditor } = await import("./clipBackgroundAuditor");
   startClipBackgroundAuditor();
 
+  // ── 5s heartbeat: logs which function the pipeline is currently blocking in ──
+  // Diagnoses hangs: if label stays the same for many ticks, that's the hang site.
+  let _lastHeartbeatLabel = "";
+  let _heartbeatSameCount = 0;
+  setInterval(async () => {
+    const { getWorkerHeartbeat } = await import("./videoPipeline");
+    const label = getWorkerHeartbeat();
+    if (label !== "idle") {
+      if (label === _lastHeartbeatLabel) {
+        _heartbeatSameCount++;
+        console.log(`[WorkerHeartbeat] ${label} (still running, ${_heartbeatSameCount * 5}s)`);
+      } else {
+        _heartbeatSameCount = 0;
+        console.log(`[WorkerHeartbeat] ${label}`);
+      }
+    } else {
+      _heartbeatSameCount = 0;
+    }
+    _lastHeartbeatLabel = label;
+  }, 5_000);
+
   setInterval(() => {
     import("./db")
       .then(({ failAllStalledPipelines }) => failAllStalledPipelines())
