@@ -85,6 +85,12 @@ export function visualMatchingV2PipelineEnabled(): boolean {
   return process.env.VISUAL_MATCHING_V2_PIPELINE === "true";
 }
 
+/** V2 SelectionFeedback — enables human feedback submission on beat selections.
+ *  Writes to selection_feedback + selection_feedback_events only; traces are immutable. */
+export function visualMatchingV2SelectionFeedbackEnabled(): boolean {
+  return process.env.VISUAL_MATCHING_V2_SELECTION_FEEDBACK === "true";
+}
+
 /** V2 VideoQualityReport — generates aggregated quality reports from stored traces.
  *  Off by default; reads exclusively from beat_selection_traces and pipeline_run_traces. */
 export function visualMatchingV2VideoQualityReportEnabled(): boolean {

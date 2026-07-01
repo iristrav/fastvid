@@ -106,6 +106,14 @@ export function logSelector(
   console.log(`${PREFIX} Selection.${event}`, JSON.stringify(data));
 }
 
+/** SelectionFeedback — feedback submission and event log operations. */
+export function logSelectionFeedback(
+  event: "submitted" | "error",
+  data: Record<string, unknown>
+) {
+  console.log(`${PREFIX} SelectionFeedback.${event}`, JSON.stringify(data));
+}
+
 /** PipelineRunTrace store — one event per pipeline-run save attempt. */
 export function logPipelineRunTrace(
   event: "saved" | "error",

@@ -335,3 +335,42 @@ export const pipelineRunTraces = mysqlTable("pipeline_run_traces", {
 
 export type PipelineRunTraceRow = typeof pipelineRunTraces.$inferSelect;
 export type InsertPipelineRunTraceRow = typeof pipelineRunTraces.$inferInsert;
+
+// ─── Visual Matching Engine V2 — Selection feedback ───────────────────────────
+/** Human feedback on individual beat selections. Third, independent data source —
+ *  never modifies beat_selection_traces or pipeline_run_traces (traces are immutable).
+ *  Links to traces by (pipelineRunId, beatId) reference only. */
+export const selectionFeedback = mysqlTable("selection_feedback", {
+  id: int("id").autoincrement().primaryKey(),
+  pipelineRunId: varchar("pipelineRunId", { length: 64 }).notNull(),
+  beatId: varchar("beatId", { length: 256 }).notNull(),
+  /** The candidate being evaluated — typically the selected one, but may be a rejected
+   *  candidate when the reviewer flags a missed alternative. */
+  candidateId: varchar("candidateId", { length: 256 }).notNull(),
+  feedbackType: mysqlEnum("feedbackType", [
+    "correct", "wrong", "acceptable", "preferred_candidate",
+    "duplicate", "bad_crop", "wrong_time_period", "wrong_location",
+    "wrong_subject", "low_quality", "not_relevant", "other",
+  ]).notNull(),
+  comment: text("comment"),
+  createdBy: varchar("createdBy", { length: 320 }).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type SelectionFeedbackRow = typeof selectionFeedback.$inferSelect;
+export type InsertSelectionFeedbackRow = typeof selectionFeedback.$inferInsert;
+
+/** Full event log for every create/update/delete on selection_feedback rows.
+ *  Keeps selection_feedback as current state; this table is the audit trail. */
+export const selectionFeedbackEvents = mysqlTable("selection_feedback_events", {
+  id: int("id").autoincrement().primaryKey(),
+  feedbackId: int("feedbackId").notNull().references(() => selectionFeedback.id),
+  eventType: mysqlEnum("eventType", ["created", "updated", "deleted"]).notNull(),
+  /** Full JSON snapshot of the selection_feedback row at the time of the event. */
+  snapshot: longtext("snapshot").notNull(),
+  changedBy: varchar("changedBy", { length: 320 }).notNull(),
+  changedAt: timestamp("changedAt").defaultNow().notNull(),
+});
+
+export type SelectionFeedbackEventRow = typeof selectionFeedbackEvents.$inferSelect;
+export type InsertSelectionFeedbackEventRow = typeof selectionFeedbackEvents.$inferInsert;
