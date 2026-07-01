@@ -1,5 +1,5 @@
 import type { BeatSelectionTraceStore, TraceContext, VersionedSelectorTrace } from "./types";
-import { TRACE_VERSION, SELECTOR_VERSION, VISION_VERSION, RANKING_VERSION, PROMPT_VERSION, SCHEMA_VERSION, ENGINE_VERSION } from "./types";
+import { TRACE_VERSION, SELECTOR_VERSION, VISION_VERSION, RANKING_VERSION, PROMPT_VERSION, SCHEMA_VERSION, ENGINE_VERSION, PIPELINE_VERSION } from "./types";
 import type { SelectorTrace } from "../types";
 import { randomUUID } from "crypto";
 import * as os from "os";
@@ -19,6 +19,7 @@ export class MemoryTraceStore implements BeatSelectionTraceStore {
       traceId: randomUUID(),
       schemaVersion: SCHEMA_VERSION,
       engineVersion: ENGINE_VERSION,
+      pipelineVersion: PIPELINE_VERSION,
       createdAt: new Date().toISOString(),
       host: os.hostname(),
       workerId: String(process.pid),

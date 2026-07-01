@@ -78,6 +78,13 @@ export function visualMatchingV2SelectorEnabled(): boolean {
   return process.env.VISUAL_MATCHING_V2_SELECTOR === "true";
 }
 
+/** V2 Pipeline Orchestrator — chains all V2 stages end-to-end for one scene.
+ *  Off by default; enable only after individual stage flags have been validated.
+ *  The active production pipeline is not affected regardless of this flag. */
+export function visualMatchingV2PipelineEnabled(): boolean {
+  return process.env.VISUAL_MATCHING_V2_PIPELINE === "true";
+}
+
 /** V2 BeatSelectionTrace store — persists SelectorTrace to the database after each beat.
  *  Off by default; enable to start recording selection decisions. Video production is
  *  unaffected if this flag is off or if the store write fails. */

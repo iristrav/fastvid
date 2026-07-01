@@ -293,6 +293,7 @@ export const beatSelectionTraces = mysqlTable("beat_selection_traces", {
   promptVersion: varchar("promptVersion", { length: 64 }).notNull(),
   schemaVersion: varchar("schemaVersion", { length: 16 }).notNull(),
   engineVersion: varchar("engineVersion", { length: 32 }).notNull(),
+  pipelineVersion: varchar("pipelineVersion", { length: 64 }).notNull(),
   host: varchar("host", { length: 256 }).notNull(),
   workerId: varchar("workerId", { length: 128 }).notNull(),
   /** SHA256 of the serialized payload for integrity checks, deduplication, and export. */

@@ -13,6 +13,9 @@ export const VISION_VERSION = "1";
 export const RANKING_VERSION = "1";
 export const SCHEMA_VERSION = "1.0";
 export const ENGINE_VERSION = "v2";
+/** Identifies the pipeline that produced this trace. Allows traces from different pipeline
+ *  variants (v1, v2, v2.1, experimental-v3) to be filtered without parsing engineVersion. */
+export const PIPELINE_VERSION = "visual-matching-v2";
 
 // Re-export for convenience so DatabaseTraceStore does not need to import visionPromptBuilder.
 export { PROMPT_VERSION };
@@ -34,6 +37,7 @@ export type TraceMetadata = {
   traceId: string;
   schemaVersion: string;
   engineVersion: string;
+  pipelineVersion: string;
   createdAt: string;  // ISO timestamp — when the trace was persisted (not when selection ran)
   host: string;
   workerId: string;

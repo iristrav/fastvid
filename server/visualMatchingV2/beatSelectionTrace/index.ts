@@ -25,5 +25,5 @@ export { DatabaseTraceStore } from "./databaseTraceStore";
 export { AsyncTraceWriter } from "./asyncTraceWriter";
 export { BatchTraceBuffer } from "./batchTraceBuffer";
 export { JsonTraceSerializer, GzipJsonSerializer, MsgPackSerializer } from "./types";
-export { TRACE_VERSION, SELECTOR_VERSION, VISION_VERSION, RANKING_VERSION, PROMPT_VERSION, SCHEMA_VERSION, ENGINE_VERSION } from "./types";
+export { TRACE_VERSION, SELECTOR_VERSION, VISION_VERSION, RANKING_VERSION, PROMPT_VERSION, SCHEMA_VERSION, ENGINE_VERSION, PIPELINE_VERSION } from "./types";
 export { getTraceStorageMetrics, resetTraceStorageMetrics } from "./traceMetrics";

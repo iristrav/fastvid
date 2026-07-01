@@ -176,6 +176,13 @@
       "when": 1781100011000,
       "tag": "0024_beat_selection_traces_v2",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "5",
+      "when": 1781100012000,
+      "tag": "0025_beat_selection_traces_pipeline_version",
+      "breakpoints": true
     }
   ]
 }

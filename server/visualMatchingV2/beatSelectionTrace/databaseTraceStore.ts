@@ -8,7 +8,7 @@ import * as os from "os";
 import { beatSelectionTraces } from "../../../drizzle/schema";
 import { getDb } from "../../../server/db";
 import type { BeatSelectionTraceStore, TraceContext, TraceSerializer, VersionedSelectorTrace } from "./types";
-import { JsonTraceSerializer, TRACE_VERSION, SELECTOR_VERSION, VISION_VERSION, RANKING_VERSION, PROMPT_VERSION, SCHEMA_VERSION, ENGINE_VERSION } from "./types";
+import { JsonTraceSerializer, TRACE_VERSION, SELECTOR_VERSION, VISION_VERSION, RANKING_VERSION, PROMPT_VERSION, SCHEMA_VERSION, ENGINE_VERSION, PIPELINE_VERSION } from "./types";
 import type { SelectorTrace } from "../types";
 
 export class DatabaseTraceStore implements BeatSelectionTraceStore {
@@ -31,6 +31,7 @@ export class DatabaseTraceStore implements BeatSelectionTraceStore {
       traceId: randomUUID(),
       schemaVersion: SCHEMA_VERSION,
       engineVersion: ENGINE_VERSION,
+      pipelineVersion: PIPELINE_VERSION,
       createdAt,
       host: os.hostname(),
       workerId: process.env.WORKER_ID ?? String(process.pid),
@@ -63,6 +64,7 @@ export class DatabaseTraceStore implements BeatSelectionTraceStore {
       promptVersion: PROMPT_VERSION,
       schemaVersion: SCHEMA_VERSION,
       engineVersion: ENGINE_VERSION,
+      pipelineVersion: PIPELINE_VERSION,
       host: versioned.host,
       workerId: versioned.workerId,
       traceHash,
