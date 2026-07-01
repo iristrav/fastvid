@@ -21557,6 +21557,87 @@ export async function runVideoPipeline(
       }
     }
 
+    // ── Compose diagnostics helpers (shared between P5A and sequential Stage 4) ─
+
+    /** Log detailed diagnostics for a scene that took >60s to compose. */
+    const diagnoseSlowCompose = async (
+      sceneIdx: number,
+      sceneIndex: number,
+      sceneDuration: number,
+      outputPath: string,
+      clipPaths: string[],
+      elapsedMs: number,
+      wallStartMs: number,
+      pipelineT0Ms: number
+    ): Promise<void> => {
+      try {
+        const rel = ((wallStartMs - pipelineT0Ms) / 1000).toFixed(1);
+        console.warn(
+          `[ComposeDiag] t=${rel}s Scene ${sceneIndex}: SLOW COMPOSE ${(elapsedMs / 1000).toFixed(1)}s — ` +
+          `clips=${clipPaths.length}, scene_dur=${sceneDuration.toFixed(1)}s`
+        );
+        // Clip sizes
+        const clipStats = clipPaths.map((p) => {
+          try {
+            const stat = fs.statSync(p);
+            return `${path.basename(p)}(${(stat.size / 1024 / 1024).toFixed(1)}MB)`;
+          } catch { return path.basename(p) + "(?)"; }
+        });
+        console.warn(`[ComposeDiag] Scene ${sceneIndex} inputs: ${clipStats.join(", ")}`);
+
+        // ffprobe output file for encoder/resolution/fps/duration
+        try {
+          const probe = await withTimeout(
+            exec(`${FFPROBE_BIN} -v quiet -print_format json -show_streams -show_format "${outputPath}"`),
+            10_000, "ffprobe output"
+          );
+          const info = JSON.parse(probe.stdout);
+          const vs = (info.streams as Array<Record<string, unknown>>).find((s) => s.codec_type === "video");
+          const as_ = (info.streams as Array<Record<string, unknown>>).find((s) => s.codec_type === "audio");
+          console.warn(
+            `[ComposeDiag] Scene ${sceneIndex} output: ` +
+            `codec=${vs?.codec_name ?? "?"}, ` +
+            `resolution=${vs?.width ?? "?"}x${vs?.height ?? "?"}, ` +
+            `fps=${vs?.r_frame_rate ?? "?"}, ` +
+            `duration=${Number(info.format?.duration ?? 0).toFixed(2)}s, ` +
+            `size=${(Number(info.format?.size ?? 0) / 1024 / 1024).toFixed(1)}MB, ` +
+            `audio=${as_?.codec_name ?? "none"}`
+          );
+        } catch { /* non-fatal */ }
+
+        // CPU and memory snapshot from /proc
+        try {
+          const cpuInfo = fs.readFileSync("/proc/stat", "utf8").split("\n")[0];
+          const memInfo = fs.readFileSync("/proc/meminfo", "utf8");
+          const memTotal = Number(memInfo.match(/MemTotal:\s+(\d+)/)?.[1] ?? 0);
+          const memAvail = Number(memInfo.match(/MemAvailable:\s+(\d+)/)?.[1] ?? 0);
+          const memUsedPct = memTotal > 0 ? ((1 - memAvail / memTotal) * 100).toFixed(0) : "?";
+          // /proc/stat: cpu user nice system idle iowait irq softirq
+          const cpuNums = cpuInfo.replace("cpu", "").trim().split(/\s+/).map(Number);
+          const idle = cpuNums[3] + (cpuNums[4] ?? 0);
+          const total = cpuNums.reduce((s, n) => s + n, 0);
+          const iowaitPct = total > 0 ? ((cpuNums[4] ?? 0) / total * 100).toFixed(0) : "?";
+          const cpuUsedPct = total > 0 ? ((1 - idle / total) * 100).toFixed(0) : "?";
+          console.warn(`[ComposeDiag] Scene ${sceneIndex} system: CPU=${cpuUsedPct}% IOWait=${iowaitPct}% RAM=${memUsedPct}%`);
+        } catch { /* non-fatal — /proc may not be available */ }
+
+        // Check encoder preset from env (a common source of slowness)
+        const ffmpegPreset = process.env.FFMPEG_PRESET ?? "veryfast";
+        if (ffmpegPreset !== "veryfast" && ffmpegPreset !== "superfast" && ffmpegPreset !== "ultrafast") {
+          console.warn(
+            `[ComposeDiag] Encoder preset "${ffmpegPreset}" is slow — ` +
+            `consider FFMPEG_PRESET=veryfast for 2-5x faster encode with minimal quality loss`
+          );
+        }
+      } catch { /* always non-fatal */ }
+    }
+
+    /** Log Gantt-style relative timestamp for a pipeline event. */
+    const gantt = (tag: string, t0Ms: number): void => {
+      const rel = ((Date.now() - t0Ms) / 1000).toFixed(1);
+      process.stdout.write(`[Gantt] t=${rel}s  ${tag}\n`);
+    }
+
     // ── Shared outputs from Stage 3 + Stage 4 (hoisted for P5A pipeline mode) ─
     let sceneVisualResults: SceneVisualsResult[] = new Array(scenes.length);
     let composedScenes: string[] = [];
@@ -21597,11 +21678,16 @@ export async function runVideoPipeline(
 
       const cpuCount = (() => { try { return require("os").cpus().length; } catch { return "?"; } })();
       const composePar = composeParallelismForVideo(videoLength, IS_RAILWAY);
+      const p5aPreset = process.env.FFMPEG_PRESET ?? "veryfast";
       console.log(
         `[Compose] P5A startup — CPU cores: ${cpuCount}, compose parallelism: ${composePar}, ` +
         `retrieve parallelism: ${perf.sceneParallelism}, montage segment parallelism: ${montageSegmentParallelism(IS_RAILWAY)}, ` +
-        `max concurrent ffmpeg (compose×montage): ~${composePar * montageSegmentParallelism(IS_RAILWAY)}`
+        `max concurrent ffmpeg (compose×montage): ~${composePar * montageSegmentParallelism(IS_RAILWAY)}, ` +
+        `encoder preset: ${p5aPreset}`
       );
+      if (p5aPreset !== "veryfast" && p5aPreset !== "superfast" && p5aPreset !== "ultrafast") {
+        console.warn(`[Compose] Slow encoder preset "${p5aPreset}" — set FFMPEG_PRESET=veryfast for 2–5x speedup`);
+      }
 
       const heartbeatP5A = setInterval(() => {
         ensurePipelineForceExport(visualDedup);
@@ -21636,6 +21722,7 @@ export async function runVideoPipeline(
           Promise.all(scenes.map((scene, i) => {
             // ── Retrieval phase — retrieve slot released when visuals are ready ─
             const svrReady = retrieveLimit(async () => {
+              gantt(`Scene ${scene.index} retrieve START`, t2p);
               let svr: SceneVisualsResult;
               try {
                 svr = await timePipelineStep(
@@ -21693,6 +21780,7 @@ export async function runVideoPipeline(
               }
               sceneVisualResults[i] = svr;
               completedPipelineVisuals++;
+              gantt(`Scene ${scene.index} retrieve END  (${svr.clips.length} clips)`, t2p);
               // retrieve slot released here — scene joins compose queue independently
               return svr;
             });
@@ -21701,11 +21789,13 @@ export async function runVideoPipeline(
             return svrReady.then((svr) => {
               const enqueueMs = Date.now();
               queuedComposes++;
+              gantt(`Scene ${scene.index} compose QUEUED (active=${activeComposes} queued=${queuedComposes})`, t2p);
               return pipelineComposeLimit(async () => {
                 queuedComposes--;
                 activeComposes++;
                 composeWaitMs[i] = Date.now() - enqueueMs;
                 composeStartMs[i] = Date.now();
+                gantt(`Scene ${scene.index} compose START  (waited ${(composeWaitMs[i] / 1000).toFixed(1)}s, active=${activeComposes})`, t2p);
                 console.log(
                   `[Compose] Scene ${scene.index} started (waited ${(composeWaitMs[i] / 1000).toFixed(1)}s in queue) — ` +
                   `clips=${svr?.clips?.length ?? 0}, duration=${scene.duration.toFixed(1)}s, ` +
@@ -21818,10 +21908,17 @@ export async function runVideoPipeline(
                 activeComposes--;
                 completedPipelineCompose++;
                 composeElapsedMs[i] = Date.now() - composeStartMs[i];
+                gantt(`Scene ${scene.index} compose END   (${(composeElapsedMs[i] / 1000).toFixed(1)}s, active=${activeComposes})`, t2p);
                 console.log(
                   `[Compose] Scene ${scene.index} finished (${(composeElapsedMs[i] / 1000).toFixed(1)}s) — ` +
                   `active=${activeComposes}, queued=${queuedComposes}, done=${completedPipelineCompose}/${scenes.length}`
                 );
+                if (composeElapsedMs[i] > 60_000) {
+                  void diagnoseSlowCompose(
+                    i, scene.index, scene.duration, result,
+                    svr?.clips ?? [], composeElapsedMs[i], composeStartMs[i], t2p
+                  );
+                }
                 onProgress?.({
                   stage: `Scene pipeline (${completedPipelineCompose}/${scenes.length} composed)...`,
                   percent: 47 + Math.round((completedPipelineCompose / scenes.length) * 18),
@@ -22156,11 +22253,16 @@ export async function runVideoPipeline(
     voiceMontageSyncResults = [];
     const seqComposePar = composeParallelismForVideo(videoLength, IS_RAILWAY);
     const seqCpuCount = (() => { try { return require("os").cpus().length; } catch { return "?"; } })();
+    const seqPreset = process.env.FFMPEG_PRESET ?? "veryfast";
     console.log(
       `[Compose] Stage 4 startup — CPU cores: ${seqCpuCount}, compose parallelism: ${seqComposePar}, ` +
       `montage segment parallelism: ${montageSegmentParallelism(IS_RAILWAY)}, ` +
-      `max concurrent ffmpeg (compose×montage): ~${seqComposePar * montageSegmentParallelism(IS_RAILWAY)}`
+      `max concurrent ffmpeg (compose×montage): ~${seqComposePar * montageSegmentParallelism(IS_RAILWAY)}, ` +
+      `encoder preset: ${seqPreset}`
     );
+    if (seqPreset !== "veryfast" && seqPreset !== "superfast" && seqPreset !== "ultrafast") {
+      console.warn(`[Compose] Slow encoder preset "${seqPreset}" — set FFMPEG_PRESET=veryfast for 2–5x speedup`);
+    }
     const seqComposeStartMs: number[] = new Array(scenes.length).fill(0);
     const seqComposeElapsedMs: number[] = new Array(scenes.length).fill(0);
     let seqActiveComposes = 0;
@@ -22411,6 +22513,12 @@ export async function runVideoPipeline(
             `[Compose] Scene ${scene.index} finished (${(seqComposeElapsedMs[i] / 1000).toFixed(1)}s) — ` +
             `active=${seqActiveComposes}, queued=${seqQueuedComposes}, done=${completedCompose}/${scenes.length}`
           );
+          if (seqComposeElapsedMs[i] > 60_000) {
+            void diagnoseSlowCompose(
+              i, scene.index, scene.duration, result,
+              sceneVisualResults[i]?.clips ?? [], seqComposeElapsedMs[i], seqComposeStartMs[i], t3
+            );
+          }
           onProgress?.({
             stage: `${STAGE_LABELS.assembly} (${completedCompose}/${scenes.length})`,
             percent: 47 + Math.round((completedCompose / scenes.length) * 18),
