@@ -162,6 +162,13 @@
       "when": 1781100009000,
       "tag": "0022_visual_matching_v2_backfill_cursor",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "5",
+      "when": 1781100010000,
+      "tag": "0023_beat_selection_traces",
+      "breakpoints": true
     }
   ]
 }

@@ -264,3 +264,34 @@ export const backfillCursors = mysqlTable("backfill_cursors", {
 
 export type BackfillCursor = typeof backfillCursors.$inferSelect;
 export type InsertBackfillCursor = typeof backfillCursors.$inferInsert;
+
+// ─── Visual Matching Engine V2 — Beat selection traces ────────────────────────
+/** One row per beat selection call. The full SelectorTrace JSON is stored in `payload`
+ *  alongside denormalised index columns for fast queries without parsing JSON.
+ *  Retention is controlled at the application layer (e.g. a nightly cron deletes rows
+ *  older than N days). No foreign-key to beats — beats may not exist in all envs. */
+export const beatSelectionTraces = mysqlTable("beat_selection_traces", {
+  id: int("id").autoincrement().primaryKey(),
+  beatId: varchar("beatId", { length: 256 }).notNull(),
+  selectedCandidateId: varchar("selectedCandidateId", { length: 256 }),
+  needsResearch: int("needsResearch").default(0).notNull(),
+  researchReason: varchar("researchReason", { length: 64 }),
+  confidenceTier: varchar("confidenceTier", { length: 32 }),
+  confidence: varchar("confidence", { length: 32 }),
+  overallScore: int("overallScore"),
+  candidateCount: int("candidateCount").notNull(),
+  durationMs: int("durationMs").notNull(),
+  tieBreakApplied: int("tieBreakApplied").default(0).notNull(),
+  traceVersion: varchar("traceVersion", { length: 32 }).notNull(),
+  selectorVersion: varchar("selectorVersion", { length: 32 }).notNull(),
+  visionVersion: varchar("visionVersion", { length: 32 }).notNull(),
+  rankingVersion: varchar("rankingVersion", { length: 32 }).notNull(),
+  promptVersion: varchar("promptVersion", { length: 64 }).notNull(),
+  contentType: varchar("contentType", { length: 64 }).notNull(),
+  payload: longtext("payload").notNull(),
+  startedAt: timestamp("startedAt").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type BeatSelectionTraceRow = typeof beatSelectionTraces.$inferSelect;
+export type InsertBeatSelectionTraceRow = typeof beatSelectionTraces.$inferInsert;

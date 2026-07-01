@@ -78,6 +78,13 @@ export function visualMatchingV2SelectorEnabled(): boolean {
   return process.env.VISUAL_MATCHING_V2_SELECTOR === "true";
 }
 
+/** V2 BeatSelectionTrace store — persists SelectorTrace to the database after each beat.
+ *  Off by default; enable to start recording selection decisions. Video production is
+ *  unaffected if this flag is off or if the store write fails. */
+export function visualMatchingV2BeatSelectionTraceEnabled(): boolean {
+  return process.env.VISUAL_MATCHING_V2_BEAT_SELECTION_TRACE === "true";
+}
+
 /** Full external sourcing (YouTube, internet stills, Serp) — off by default; stock fallbacks still run in archive-first mode. */
 export function externalVisualSourcingEnabled(): boolean {
   return process.env.ENABLE_EXTERNAL_VISUAL_SOURCING === "true";

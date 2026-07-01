@@ -106,6 +106,15 @@ export function logSelector(
   console.log(`${PREFIX} Selection.${event}`, JSON.stringify(data));
 }
 
+/** BeatSelectionTrace store — one event per save attempt. Separate from SelectorTrace
+ *  (decision log) so storage errors are visible without polluting selection logs. */
+export function logBeatSelectionTrace(
+  event: "saved" | "error",
+  data: Record<string, unknown>
+) {
+  console.log(`${PREFIX} BeatSelectionTrace.${event}`, JSON.stringify(data));
+}
+
 /** Wraps an async step, logging duration_ms and any thrown error under a consistent shape. */
 export async function timedStep<T>(label: string, fn: () => Promise<T>): Promise<T> {
   const start = Date.now();
