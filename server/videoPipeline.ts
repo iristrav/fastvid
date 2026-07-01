@@ -21589,6 +21589,19 @@ export async function runVideoPipeline(
       let completedPipelineVisuals = 0;
       let completedPipelineCompose = 0;
       const t2p = Date.now();
+      const composeStartMs: number[] = new Array(scenes.length).fill(0);
+      const composeElapsedMs: number[] = new Array(scenes.length).fill(0);
+      const composeWaitMs: number[] = new Array(scenes.length).fill(0);
+      let activeComposes = 0;
+      let queuedComposes = 0;
+
+      const cpuCount = (() => { try { return require("os").cpus().length; } catch { return "?"; } })();
+      const composePar = composeParallelismForVideo(videoLength, IS_RAILWAY);
+      console.log(
+        `[Compose] P5A startup — CPU cores: ${cpuCount}, compose parallelism: ${composePar}, ` +
+        `retrieve parallelism: ${perf.sceneParallelism}, montage segment parallelism: ${montageSegmentParallelism(IS_RAILWAY)}, ` +
+        `max concurrent ffmpeg (compose×montage): ~${composePar * montageSegmentParallelism(IS_RAILWAY)}`
+      );
 
       const heartbeatP5A = setInterval(() => {
         ensurePipelineForceExport(visualDedup);
@@ -21597,184 +21610,227 @@ export async function runVideoPipeline(
           stage: `Scene pipeline (${completedPipelineVisuals} retrieved, ${completedPipelineCompose}/${scenes.length} composed)...`,
           percent: 20 + Math.round(((completedPipelineVisuals + completedPipelineCompose) / (scenes.length * 2)) * 45),
         });
+        // Log any scene compose running >120s (potential FFmpeg hang)
+        const nowMs = Date.now();
+        for (let si = 0; si < scenes.length; si++) {
+          if (composeStartMs[si] > 0 && composeElapsedMs[si] === 0) {
+            const runningMs = nowMs - composeStartMs[si];
+            if (runningMs > 120_000) {
+              console.warn(
+                `[Compose] Scene ${scenes[si]?.index} SLOW: running ${(runningMs / 1000).toFixed(0)}s — ` +
+                `clips=${sceneVisualResults[si]?.clips?.length ?? 0}, ` +
+                `active=${activeComposes}, queued=${queuedComposes}, done=${completedPipelineCompose}/${scenes.length}`
+              );
+            }
+          }
+        }
       }, 10_000);
 
+      // ── P5A core: retrieve slot released BEFORE entering compose queue ────────
+      // Each scene: retrieveLimit(fetch+recover) → release slot → pipelineComposeLimit(compose)
+      // This is the key producer/consumer property: retrieve concurrency and compose
+      // concurrency are truly independent — a scene in the compose queue does NOT hold
+      // a retrieve slot, so the next scene can start fetching immediately.
       try {
         const pipelineOut = await withTimeout(
-          Promise.all(scenes.map((scene, i) => retrieveLimit(async () => {
-            // ── Retrieval phase ───────────────────────────────────────────────
-            let svr: SceneVisualsResult;
-            try {
-              svr = await timePipelineStep(
-                pipelineStepTiming, "image_search",
-                `Scene ${scene.index} visuals (all beats)`,
-                () => withTimeout(
-                  fetchSceneVisuals(
-                    scene, workDir, topicContext, visualDedup,
-                    (beatIdx, beatTotal, phase) => {
-                      onProgress?.({
-                        stage: phase === "backfill"
-                          ? `Scene ${i + 1}/${scenes.length}: backfill ${beatIdx}/${beatTotal}...`
-                          : `Finding visuals (scene ${i + 1}/${scenes.length}, beat ${beatIdx}/${beatTotal})...`,
-                        percent: 20 + Math.round(((i / scenes.length) + (beatIdx / Math.max(1, beatTotal)) / scenes.length) * 22),
-                      });
-                    },
-                    audioPaths[i], prefetchPools, prefetchFunnels
-                  ),
-                  perf.sceneVisualTimeoutMs,
-                  `Scene ${scene.index} visuals`
-                ),
-                scene.index
-              );
-            } catch (sceneErr) {
-              console.warn(`[Pipeline] P5A Scene ${scene.index}: fetch failed — recovering:`, (sceneErr as Error).message);
-              visualDedup.lock = Promise.resolve();
-              svr = await recoverSceneClipsIfEmpty(scene, workDir, topicContext, visualDedup);
-              if (svr.clips.length === 0) throw sceneErr;
-            }
-
-            // Per-scene empty recovery (mirrors post-Stage-3 loop)
-            const usable = (svr.clips ?? []).filter((c) => c && !isPipelineFallbackClip(c));
-            if (usable.length === 0) {
-              console.warn(`[Pipeline] P5A Scene ${scene.index}: empty — recovery sweep`);
-              svr = await recoverSceneClipsIfEmpty(scene, workDir, topicContext, visualDedup);
-              if (svr.clips.length === 0) {
-                if (strictVoiceVisualMatchEnabled() && !isFastShortVideoLength(videoLength)) {
-                  svr = await refillSceneStrictVoiceMatch(scene, workDir, topicContext, visualDedup, audioPaths[i]);
-                } else {
-                  const clips: string[] = [];
-                  const beatDurations: number[] = [];
-                  await appendGuaranteedSceneClips(
-                    scene, workDir, clips, beatDurations,
-                    minClipsForBalancedVoice(scene.duration + 0.15)
-                  );
-                  svr = { clips, beatDurations };
-                }
-              }
-            } else if (strictVoiceVisualMatchEnabled() && !isFastShortVideoLength(videoLength)) {
-              const minNeeded = minClipsForBalancedVoice(scene.duration + 0.15, videoLength);
-              if (usable.length < minNeeded) {
-                console.warn(`[Pipeline] P5A Scene ${scene.index}: ${usable.length}/${minNeeded} clips — strict refill`);
-                svr = await refillSceneStrictVoiceMatch(scene, workDir, topicContext, visualDedup, audioPaths[i]);
-              }
-            }
-            sceneVisualResults[i] = svr;
-            completedPipelineVisuals++;
-
-            // ── Compose phase (separate pLimit — overlaps with next scene's retrieval) ──
-            return pipelineComposeLimit(async () => {
-              const usedClips: string[] = [];
-              const composeMeta: NonNullable<ComposeSceneOptions["composeMetaOut"]> = {
-                montageDurations: [],
-                clipBeatIndices: [],
-              };
-              const composeOpts: ComposeSceneOptions = {
-                dedup: visualDedup,
-                videoTitle: topicContext,
-                sceneStartSec: sceneStartSecs[i],
-                montageBeats: svr?.beats,
-                clipBeatIndices: svr?.clipBeatIndices,
-                composeMetaOut: composeMeta,
-              };
-              let result: string;
+          Promise.all(scenes.map((scene, i) => {
+            // ── Retrieval phase — retrieve slot released when visuals are ready ─
+            const svrReady = retrieveLimit(async () => {
+              let svr: SceneVisualsResult;
               try {
-                result = await timePipelineStep(
-                  pipelineStepTiming, "scene_composition",
-                  `Scene ${scene.index} compose (total)`,
-                  () => composeSceneVideo(
-                    scene, svr?.clips ?? [], audioPaths[i], scene.duration, workDir, scenes.length,
-                    enableSubtitles, visualDedup.lastMuskStockClip, svr?.beatDurations, usedClips,
-                    composeOpts
+                svr = await timePipelineStep(
+                  pipelineStepTiming, "image_search",
+                  `Scene ${scene.index} visuals (all beats)`,
+                  () => withTimeout(
+                    fetchSceneVisuals(
+                      scene, workDir, topicContext, visualDedup,
+                      (beatIdx, beatTotal, phase) => {
+                        onProgress?.({
+                          stage: phase === "backfill"
+                            ? `Scene ${i + 1}/${scenes.length}: backfill ${beatIdx}/${beatTotal}...`
+                            : `Finding visuals (scene ${i + 1}/${scenes.length}, beat ${beatIdx}/${beatTotal})...`,
+                          percent: 20 + Math.round(((i / scenes.length) + (beatIdx / Math.max(1, beatTotal)) / scenes.length) * 22),
+                        });
+                      },
+                      audioPaths[i], prefetchPools, prefetchFunnels
+                    ),
+                    perf.sceneVisualTimeoutMs,
+                    `Scene ${scene.index} visuals`
                   ),
                   scene.index
                 );
-              } catch (composeErr) {
-                console.warn(
-                  `[Pipeline] P5A Scene ${scene.index}: compose failed — rescue:`,
-                  (composeErr as Error).message?.slice(0, 120)
-                );
-                let rescueClips = isFastShortVideoLength(videoLength) && !isComposeNetworkBlocked(visualDedup)
-                  ? await rescueFastShortComposeClips(scene, workDir, topicContext, visualDedup)
-                  : [];
-                if (rescueClips.length === 0) {
-                  const minNeeded = Math.max(1, minClipsForBalancedVoice(scene.duration + 0.15, videoLength));
-                  const hold = Math.max(3, scene.duration / minNeeded);
-                  for (let si = 0; si < minNeeded; si++) {
-                    rescueClips.push(await generateGuaranteedBeatClip(scene.index, si, hold, workDir));
-                  }
-                }
-                composeMeta.montageDurations = [];
-                composeMeta.clipBeatIndices = [];
-                composeMeta.montagePlan = undefined;
-                usedClips.length = 0;
-                result = await composeSceneVideo(
-                  scene, rescueClips, audioPaths[i], scene.duration, workDir, scenes.length,
-                  enableSubtitles, visualDedup.lastMuskStockClip,
-                  rescueClips.map(() => archiveVisualBeatSecForVideo(videoLength)),
-                  usedClips, composeOpts
-                );
+              } catch (sceneErr) {
+                console.warn(`[Pipeline] P5A Scene ${scene.index}: fetch failed — recovering:`, (sceneErr as Error).message);
+                visualDedup.lock = Promise.resolve();
+                svr = await recoverSceneClipsIfEmpty(scene, workDir, topicContext, visualDedup);
+                if (svr.clips.length === 0) throw sceneErr;
               }
-              composedUsedClips[i] = usedClips;
 
-              // Voice montage sync audit (mirrors Stage 4 audit + remontage retry)
-              if (svr?.beats?.length && composeMeta.montageDurations.length > 0 && !isFastShortVideoLength(videoLength)) {
-                const voiceSec = Math.max(0.5, scene.duration - VO_SCENE_TAIL_SEC);
-                const auditXfade = composeMeta.montagePlan?.xfadeSec ?? montageXfadeSec();
-                const adoptVisionOk = sceneMontageBeatsPassedAdoptVision(scene.index, composeMeta.clipBeatIndices, visualDedup);
-                const adoptVisionByBeat = new Map<number, number>();
-                for (const entry of visualDedup.clipAdoptAudit) {
-                  if (entry.sceneIndex === scene.index && typeof entry.visionScore10 === "number" && entry.visionScore10 > 0) {
-                    adoptVisionByBeat.set(entry.beatIndex, entry.visionScore10);
+              // Per-scene empty recovery (mirrors post-Stage-3 loop)
+              const usable = (svr.clips ?? []).filter((c) => c && !isPipelineFallbackClip(c));
+              if (usable.length === 0) {
+                console.warn(`[Pipeline] P5A Scene ${scene.index}: empty — recovery sweep`);
+                svr = await recoverSceneClipsIfEmpty(scene, workDir, topicContext, visualDedup);
+                if (svr.clips.length === 0) {
+                  if (strictVoiceVisualMatchEnabled() && !isFastShortVideoLength(videoLength)) {
+                    svr = await refillSceneStrictVoiceMatch(scene, workDir, topicContext, visualDedup, audioPaths[i]);
+                  } else {
+                    const clips: string[] = [];
+                    const beatDurations: number[] = [];
+                    await appendGuaranteedSceneClips(
+                      scene, workDir, clips, beatDurations,
+                      minClipsForBalancedVoice(scene.duration + 0.15)
+                    );
+                    svr = { clips, beatDurations };
                   }
                 }
-                const beatsForSyncAudit = svr.beats.map((b) => ({
-                  text: b.text, holdSec: b.holdSec,
-                  voiceStartSec: b.voiceStartSec, voiceEndSec: b.voiceEndSec,
-                  visualDescription: beatGateVisualDescription(b, undefined) ?? b.visualDescription,
-                  searchQuery: b.searchQuery,
-                }));
-                let audit = await auditSceneVoiceMontageSync(
-                  result, beatsForSyncAudit, composeMeta.montageDurations, composeMeta.clipBeatIndices,
-                  voiceSec, workDir, scene.index, topicContext, composeMeta.montagePlan, adoptVisionByBeat
-                );
-                const spot = (isFastShortVideoLength(videoLength) || adoptVisionOk)
-                  ? { ok: true, warnings: [] as string[] }
-                  : await spotCheckComposedSceneBeatSync(
-                      result, svr.beats, composeMeta.montageDurations, composeMeta.clipBeatIndices,
-                      workDir, scene.index, topicContext, auditXfade, { skipClipScoring: false }
-                    );
-                if (!spot.ok) {
-                  audit = { ...audit, ok: false, warnings: [...audit.warnings, ...spot.warnings.map((w) => `spot: ${w}`)] };
+              } else if (strictVoiceVisualMatchEnabled() && !isFastShortVideoLength(videoLength)) {
+                const minNeeded = minClipsForBalancedVoice(scene.duration + 0.15, videoLength);
+                if (usable.length < minNeeded) {
+                  console.warn(`[Pipeline] P5A Scene ${scene.index}: ${usable.length}/${minNeeded} clips — strict refill`);
+                  svr = await refillSceneStrictVoiceMatch(scene, workDir, topicContext, visualDedup, audioPaths[i]);
                 }
-                if (!audit.ok && !adoptVisionOk && !composeMeta.montagePlan?.ttsHardCut && !isFastShortVideoLength(videoLength)) {
-                  console.warn(`[Pipeline] P5A Scene ${scene.index}: sync audit failed — remontage with TTS hard-cut`);
+              }
+              sceneVisualResults[i] = svr;
+              completedPipelineVisuals++;
+              // retrieve slot released here — scene joins compose queue independently
+              return svr;
+            });
+
+            // ── Compose phase — queues in pipelineComposeLimit without holding retrieve slot ──
+            return svrReady.then((svr) => {
+              const enqueueMs = Date.now();
+              queuedComposes++;
+              return pipelineComposeLimit(async () => {
+                queuedComposes--;
+                activeComposes++;
+                composeWaitMs[i] = Date.now() - enqueueMs;
+                composeStartMs[i] = Date.now();
+                console.log(
+                  `[Compose] Scene ${scene.index} started (waited ${(composeWaitMs[i] / 1000).toFixed(1)}s in queue) — ` +
+                  `clips=${svr?.clips?.length ?? 0}, duration=${scene.duration.toFixed(1)}s, ` +
+                  `active=${activeComposes}, queued=${queuedComposes}, done=${completedPipelineCompose}/${scenes.length}`
+                );
+
+                const usedClips: string[] = [];
+                const composeMeta: NonNullable<ComposeSceneOptions["composeMetaOut"]> = {
+                  montageDurations: [],
+                  clipBeatIndices: [],
+                };
+                const composeOpts: ComposeSceneOptions = {
+                  dedup: visualDedup,
+                  videoTitle: topicContext,
+                  sceneStartSec: sceneStartSecs[i],
+                  montageBeats: svr?.beats,
+                  clipBeatIndices: svr?.clipBeatIndices,
+                  composeMetaOut: composeMeta,
+                };
+                let result: string;
+                try {
+                  result = await timePipelineStep(
+                    pipelineStepTiming, "scene_composition",
+                    `Scene ${scene.index} compose (total)`,
+                    () => composeSceneVideo(
+                      scene, svr?.clips ?? [], audioPaths[i], scene.duration, workDir, scenes.length,
+                      enableSubtitles, visualDedup.lastMuskStockClip, svr?.beatDurations, usedClips,
+                      composeOpts
+                    ),
+                    scene.index
+                  );
+                } catch (composeErr) {
+                  console.warn(
+                    `[Compose] Scene ${scene.index} FAILED (${((Date.now() - composeStartMs[i]) / 1000).toFixed(1)}s) — rescue:`,
+                    (composeErr as Error).message?.slice(0, 120)
+                  );
+                  let rescueClips = isFastShortVideoLength(videoLength) && !isComposeNetworkBlocked(visualDedup)
+                    ? await rescueFastShortComposeClips(scene, workDir, topicContext, visualDedup)
+                    : [];
+                  if (rescueClips.length === 0) {
+                    const minNeeded = Math.max(1, minClipsForBalancedVoice(scene.duration + 0.15, videoLength));
+                    const hold = Math.max(3, scene.duration / minNeeded);
+                    for (let si = 0; si < minNeeded; si++) {
+                      rescueClips.push(await generateGuaranteedBeatClip(scene.index, si, hold, workDir));
+                    }
+                  }
                   composeMeta.montageDurations = [];
                   composeMeta.clipBeatIndices = [];
                   composeMeta.montagePlan = undefined;
                   usedClips.length = 0;
                   result = await composeSceneVideo(
-                    scene, svr?.clips ?? [], audioPaths[i], scene.duration, workDir, scenes.length,
-                    enableSubtitles, visualDedup.lastMuskStockClip, svr?.beatDurations, usedClips,
-                    { ...composeOpts, composeMetaOut: composeMeta, forceTtsHardCutRemontage: true }
+                    scene, rescueClips, audioPaths[i], scene.duration, workDir, scenes.length,
+                    enableSubtitles, visualDedup.lastMuskStockClip,
+                    rescueClips.map(() => archiveVisualBeatSecForVideo(videoLength)),
+                    usedClips, composeOpts
                   );
-                  composedUsedClips[i] = usedClips;
-                  audit = await auditSceneVoiceMontageSync(
+                }
+                composedUsedClips[i] = usedClips;
+
+                // Voice montage sync audit (mirrors Stage 4 audit + remontage retry)
+                if (svr?.beats?.length && composeMeta.montageDurations.length > 0 && !isFastShortVideoLength(videoLength)) {
+                  const voiceSec = Math.max(0.5, scene.duration - VO_SCENE_TAIL_SEC);
+                  const auditXfade = composeMeta.montagePlan?.xfadeSec ?? montageXfadeSec();
+                  const adoptVisionOk = sceneMontageBeatsPassedAdoptVision(scene.index, composeMeta.clipBeatIndices, visualDedup);
+                  const adoptVisionByBeat = new Map<number, number>();
+                  for (const entry of visualDedup.clipAdoptAudit) {
+                    if (entry.sceneIndex === scene.index && typeof entry.visionScore10 === "number" && entry.visionScore10 > 0) {
+                      adoptVisionByBeat.set(entry.beatIndex, entry.visionScore10);
+                    }
+                  }
+                  const beatsForSyncAudit = svr.beats.map((b) => ({
+                    text: b.text, holdSec: b.holdSec,
+                    voiceStartSec: b.voiceStartSec, voiceEndSec: b.voiceEndSec,
+                    visualDescription: beatGateVisualDescription(b, undefined) ?? b.visualDescription,
+                    searchQuery: b.searchQuery,
+                  }));
+                  let audit = await auditSceneVoiceMontageSync(
                     result, beatsForSyncAudit, composeMeta.montageDurations, composeMeta.clipBeatIndices,
                     voiceSec, workDir, scene.index, topicContext, composeMeta.montagePlan, adoptVisionByBeat
                   );
+                  const spot = (isFastShortVideoLength(videoLength) || adoptVisionOk)
+                    ? { ok: true, warnings: [] as string[] }
+                    : await spotCheckComposedSceneBeatSync(
+                        result, svr.beats, composeMeta.montageDurations, composeMeta.clipBeatIndices,
+                        workDir, scene.index, topicContext, auditXfade, { skipClipScoring: false }
+                      );
+                  if (!spot.ok) {
+                    audit = { ...audit, ok: false, warnings: [...audit.warnings, ...spot.warnings.map((w) => `spot: ${w}`)] };
+                  }
+                  if (!audit.ok && !adoptVisionOk && !composeMeta.montagePlan?.ttsHardCut && !isFastShortVideoLength(videoLength)) {
+                    console.warn(`[Compose] Scene ${scene.index}: sync audit failed — remontage with TTS hard-cut`);
+                    composeMeta.montageDurations = [];
+                    composeMeta.clipBeatIndices = [];
+                    composeMeta.montagePlan = undefined;
+                    usedClips.length = 0;
+                    result = await composeSceneVideo(
+                      scene, svr?.clips ?? [], audioPaths[i], scene.duration, workDir, scenes.length,
+                      enableSubtitles, visualDedup.lastMuskStockClip, svr?.beatDurations, usedClips,
+                      { ...composeOpts, composeMetaOut: composeMeta, forceTtsHardCutRemontage: true }
+                    );
+                    composedUsedClips[i] = usedClips;
+                    audit = await auditSceneVoiceMontageSync(
+                      result, beatsForSyncAudit, composeMeta.montageDurations, composeMeta.clipBeatIndices,
+                      voiceSec, workDir, scene.index, topicContext, composeMeta.montagePlan, adoptVisionByBeat
+                    );
+                  }
+                  voiceMontageSyncResults.push({ sceneIndex: scene.index, audit });
                 }
-                voiceMontageSyncResults.push({ sceneIndex: scene.index, audit });
-              }
 
-              completedPipelineCompose++;
-              onProgress?.({
-                stage: `Scene pipeline (${completedPipelineCompose}/${scenes.length} composed)...`,
-                percent: 47 + Math.round((completedPipelineCompose / scenes.length) * 18),
+                activeComposes--;
+                completedPipelineCompose++;
+                composeElapsedMs[i] = Date.now() - composeStartMs[i];
+                console.log(
+                  `[Compose] Scene ${scene.index} finished (${(composeElapsedMs[i] / 1000).toFixed(1)}s) — ` +
+                  `active=${activeComposes}, queued=${queuedComposes}, done=${completedPipelineCompose}/${scenes.length}`
+                );
+                onProgress?.({
+                  stage: `Scene pipeline (${completedPipelineCompose}/${scenes.length} composed)...`,
+                  percent: 47 + Math.round((completedPipelineCompose / scenes.length) * 18),
+                });
+                return result;
               });
-              return result;
             });
-          }))),
-          // Budget: retrieval cap + compose cap combined (stages now overlap)
+          })),
+          // Budget: retrieval cap + compose cap (stages overlap, so add both)
           visualStageTimeoutMs(videoLength, perf) +
             (isFastShortVideoLength(videoLength) ? pipelineEmergencyFinishMs(videoLength) : 2_400_000),
           "P5A scene pipeline"
@@ -21783,10 +21839,25 @@ export async function runVideoPipeline(
       } finally {
         clearInterval(heartbeatP5A);
       }
+
+      // Compose timing summary
+      const finishedComposeTimes = composeElapsedMs.filter((ms) => ms > 0);
+      const sortedComposeTimes = [...finishedComposeTimes].sort((a, b) => b - a);
+      const avgComposeMs = finishedComposeTimes.length > 0
+        ? finishedComposeTimes.reduce((s, v) => s + v, 0) / finishedComposeTimes.length : 0;
+      const p95ComposeMs = sortedComposeTimes[Math.floor(sortedComposeTimes.length * 0.05)] ?? 0;
+      const totalWaitMs = composeWaitMs.reduce((s, v) => s + v, 0);
       console.log(
-        `[Pipeline] P5A scene pipeline: ${scenes.length} scenes in ${((Date.now() - t2p) / 1000).toFixed(1)}s ` +
-        `(${completedPipelineVisuals} retrieved, ${completedPipelineCompose} composed)`
+        `[Compose] P5A summary — scenes=${scenes.length}, ` +
+        `avg=${(avgComposeMs / 1000).toFixed(1)}s, P95=${(p95ComposeMs / 1000).toFixed(1)}s, ` +
+        `total_queue_wait=${(totalWaitMs / 1000).toFixed(1)}s, ` +
+        `slowest top-3: [${sortedComposeTimes.slice(0, 3).map((ms) => `${(ms / 1000).toFixed(1)}s`).join(", ")}]`
       );
+      const slowScenes = scenes.filter((_, i) => composeElapsedMs[i] > 60_000);
+      if (slowScenes.length > 0) {
+        console.warn(`[Compose] Scenes >60s: ${slowScenes.map((s) => `Scene ${s.index}(${(composeElapsedMs[scenes.indexOf(s)] / 1000).toFixed(0)}s)`).join(", ")}`);
+      }
+      console.log(`[Pipeline] P5A scene pipeline: ${scenes.length} scenes in ${((Date.now() - t2p) / 1000).toFixed(1)}s`);
       pipelineStepTiming.summarizeAll();
     } else {
     // ── Sequential: Stage 3 (visuals) then Stage 4 (compose) ────────────────
@@ -22083,9 +22154,38 @@ export async function runVideoPipeline(
       return start;
     });
     voiceMontageSyncResults = [];
+    const seqComposePar = composeParallelismForVideo(videoLength, IS_RAILWAY);
+    const seqCpuCount = (() => { try { return require("os").cpus().length; } catch { return "?"; } })();
+    console.log(
+      `[Compose] Stage 4 startup — CPU cores: ${seqCpuCount}, compose parallelism: ${seqComposePar}, ` +
+      `montage segment parallelism: ${montageSegmentParallelism(IS_RAILWAY)}, ` +
+      `max concurrent ffmpeg (compose×montage): ~${seqComposePar * montageSegmentParallelism(IS_RAILWAY)}`
+    );
+    const seqComposeStartMs: number[] = new Array(scenes.length).fill(0);
+    const seqComposeElapsedMs: number[] = new Array(scenes.length).fill(0);
+    let seqActiveComposes = 0;
+    let seqQueuedComposes = scenes.length; // all scenes queued at start
     composedScenes = await withTimeout(
       Promise.all(
-        scenes.map((scene, i) => composeLimit(async () => {
+        scenes.map((scene, i) => {
+          return composeLimit(async () => {
+          seqQueuedComposes--;
+          seqActiveComposes++;
+          seqComposeStartMs[i] = Date.now();
+          console.log(
+            `[Compose] Scene ${scene.index} started — ` +
+            `clips=${sceneVisualResults[i]?.clips?.length ?? 0}, duration=${scene.duration.toFixed(1)}s, ` +
+            `active=${seqActiveComposes}, queued=${seqQueuedComposes}, done=${completedCompose}/${scenes.length}`
+          );
+          const hangCheck = setInterval(() => {
+            const runningMs = Date.now() - seqComposeStartMs[i];
+            if (runningMs > 120_000) {
+              console.warn(
+                `[Compose] Scene ${scene.index} SLOW: ${(runningMs / 1000).toFixed(0)}s — ` +
+                `clips=${sceneVisualResults[i]?.clips?.length ?? 0}, active=${seqActiveComposes}, queued=${seqQueuedComposes}`
+              );
+            }
+          }, 30_000);
           const usedClips: string[] = [];
           const composeMeta: NonNullable<ComposeSceneOptions["composeMetaOut"]> = {
             montageDurations: [],
@@ -22303,13 +22403,21 @@ export async function runVideoPipeline(
             }
             voiceMontageSyncResults.push({ sceneIndex: scene.index, audit });
           }
+          seqActiveComposes--;
           completedCompose++;
+          seqComposeElapsedMs[i] = Date.now() - seqComposeStartMs[i];
+          clearInterval(hangCheck);
+          console.log(
+            `[Compose] Scene ${scene.index} finished (${(seqComposeElapsedMs[i] / 1000).toFixed(1)}s) — ` +
+            `active=${seqActiveComposes}, queued=${seqQueuedComposes}, done=${completedCompose}/${scenes.length}`
+          );
           onProgress?.({
             stage: `${STAGE_LABELS.assembly} (${completedCompose}/${scenes.length})`,
             percent: 47 + Math.round((completedCompose / scenes.length) * 18),
           });
           return result;
-        }))
+        });
+        })
       ),
       // Scenes compose sequentially on Railway (composeLimit=1), so this is a sum over every
       // scene's archive lookup + ffmpeg work, not a per-scene budget — a fixed 600s kept being
@@ -22319,6 +22427,18 @@ export async function runVideoPipeline(
       isFastShortVideoLength(videoLength) ? pipelineEmergencyFinishMs(videoLength) : 2400_000,
       "Scene compose stage"
     );
+    const seqFinished = seqComposeElapsedMs.filter((ms) => ms > 0);
+    const seqSorted = [...seqFinished].sort((a, b) => b - a);
+    const seqAvgMs = seqFinished.length > 0 ? seqFinished.reduce((s, v) => s + v, 0) / seqFinished.length : 0;
+    const seqP95Ms = seqSorted[Math.floor(seqSorted.length * 0.05)] ?? 0;
+    console.log(
+      `[Compose] Stage 4 summary — avg=${(seqAvgMs / 1000).toFixed(1)}s, P95=${(seqP95Ms / 1000).toFixed(1)}s, ` +
+      `slowest top-3: [${seqSorted.slice(0, 3).map((ms) => `${(ms / 1000).toFixed(1)}s`).join(", ")}]`
+    );
+    const seqSlowScenes = scenes.filter((_, i) => seqComposeElapsedMs[i] > 60_000);
+    if (seqSlowScenes.length > 0) {
+      console.warn(`[Compose] Scenes >60s: ${seqSlowScenes.map((s, si) => `Scene ${s.index}(${(seqComposeElapsedMs[scenes.indexOf(s)] / 1000).toFixed(0)}s)`).join(", ")}`);
+    }
     console.log(`[Pipeline] Stage 4 (compose): ${scenes.length} scenes in ${((Date.now()-t3)/1000).toFixed(1)}s`);
     pipelineStepTiming.summarizeAll();
     } // end else (sequential Stage 3 + Stage 4)
