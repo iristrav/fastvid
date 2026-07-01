@@ -19692,6 +19692,8 @@ type ComposeSceneOptions = {
   };
   /** Re-compose montage with TTS hard-cut after sync audit failure. */
   forceTtsHardCutRemontage?: boolean;
+  /** Per-scene compose timeout derived from RenderBudget; overrides composeSceneTimeoutMs(). */
+  sceneTimeoutMs?: number;
 };
 
 function buildOverlayFilterChain(
@@ -20228,10 +20230,8 @@ async function composeSceneVideo(
     );
     composeBeatDurations = plan.durations;
   }
-  const composeTimeout = composeSceneTimeoutMs(
-    safeClips.length,
-    composeOptions?.dedup?.videoLength
-  );
+  const composeTimeout = composeOptions?.sceneTimeoutMs
+    ?? composeSceneTimeoutMs(safeClips.length, composeOptions?.dedup?.videoLength);
 
   // Subtitle overlay: render if user has enabled subtitles (effects pass only — not raw assembly)
   let subtitlePath: string | null = null;
@@ -21186,7 +21186,8 @@ async function concatenateScenesWithMusic(
   totalDuration: number,
   videoTitle: string,
   customMusicPath?: string | null,
-  videoLength?: string
+  videoLength?: string,
+  concatTimeoutMs = 120_000
 ): Promise<string> {
   const fastShort = isFastShortVideoLength(videoLength);
   const listFile = path.join(workDir, "concat_list.txt");
@@ -21219,7 +21220,7 @@ async function concatenateScenesWithMusic(
       `${FFMPEG_BIN} -y -f concat -safe 0 -i "${listFile}" -vsync cfr ` +
         `-c:v libx264 -preset ${concatPreset} -crf ${concatCrf} -c:a aac -b:a 320k -movflags +faststart "${concatPath}"`
     ),
-    120_000,
+    concatTimeoutMs,
     "Scene concatenation"
   );
 
@@ -21348,11 +21349,17 @@ export async function runVideoPipeline(
   fs.mkdirSync(workDir, { recursive: true });
 
   // ── Global render watchdog ────────────────────────────────────────────────
-  // Hard kills all child processes and rejects the pipeline if the 12-min
-  // budget is exceeded, regardless of what the event loop is awaiting.
-  const { createRenderWatchdog, WATCHDOG_RENDER_MAX_MS, WATCHDOG_SCENE_MAX_MS } = await import("./renderWatchdog");
+  // Starts with a conservative fallback budget; updated to the RenderBudget
+  // after voiceover sync when actual durations are known.
+  const { createRenderWatchdog, WATCHDOG_RENDER_MAX_MS } = await import("./renderWatchdog");
   const watchdog = createRenderWatchdog(videoId, WATCHDOG_RENDER_MAX_MS);
   _activeWatchdog = watchdog;
+
+  // Per-stage budgets — initialised to fallback values, replaced with
+  // RenderBudget values once actual scene durations are available post-VO.
+  let renderBudgetComposeMs = 90_000;   // per-scene compose
+  let renderBudgetConcatMs  = 120_000;  // final concat
+  let renderBudgetUploadMs  = 300_000;  // storage upload
 
   const videoRow = await getVideoById(videoId);
   const pipelineWallStartMs = videoRow?.generationStartedAt
@@ -21518,6 +21525,20 @@ export async function runVideoPipeline(
       console.log(`[Pipeline] VO-synced total ${voTotal.toFixed(1)}s (${scenes.length} scenes)`);
     }
     console.log(`[Pipeline] Stage 2 (voiceovers): ${scenes.length} in ${((Date.now()-t1)/1000).toFixed(1)}s`);
+
+    // ── RenderBudget: compute dynamic timeouts now that real durations are known ──
+    {
+      const { computeRenderBudget, logRenderBudget } = await import("./renderBudget");
+      // beats are built during retrieval — estimate from average 6 beats/scene as proxy
+      const totalBeats = scenes.length * 6;
+      const totalVoSec = scenes.reduce((s, sc) => s + sc.duration, 0);
+      const budget = computeRenderBudget(scenes.length, totalBeats, totalVoSec);
+      logRenderBudget(budget, videoId);
+      watchdog.updateBudget(budget.totalMs);
+      renderBudgetComposeMs = budget.perSceneComposeMs;
+      renderBudgetConcatMs  = budget.concatMs;
+      renderBudgetUploadMs  = budget.uploadMs;
+    }
 
     // ── Stage 3: Per-zin visuals (power word → clip) ─────────────────────────
     onProgress?.({ stage: STAGE_LABELS.visuals, percent: 20 });
@@ -21986,6 +22007,7 @@ export async function runVideoPipeline(
                   montageBeats: svr?.beats,
                   clipBeatIndices: svr?.clipBeatIndices,
                   composeMetaOut: composeMeta,
+                  sceneTimeoutMs: renderBudgetComposeMs,
                 };
                 let result: string;
                 try {
@@ -21999,7 +22021,7 @@ export async function runVideoPipeline(
                           enableSubtitles, visualDedup.lastMuskStockClip, svr?.beatDurations, usedClips,
                           composeOpts
                         ),
-                        WATCHDOG_SCENE_MAX_MS,
+                        renderBudgetComposeMs,
                         `P5A composeSceneVideo s${scene.index}`
                       ),
                       scene.index
@@ -22488,13 +22510,14 @@ export async function runVideoPipeline(
             montageDurations: [],
             clipBeatIndices: [],
           };
-          const composeOpts = {
+          const composeOpts: ComposeSceneOptions = {
             dedup: visualDedup,
             videoTitle: topicContext,
             sceneStartSec: sceneStartSecs[i],
             montageBeats: sceneVisualResults[i]?.beats,
             clipBeatIndices: sceneVisualResults[i]?.clipBeatIndices,
             composeMetaOut: composeMeta,
+            sceneTimeoutMs: renderBudgetComposeMs,
           };
           let result: string;
           try { // outer try/finally guarantees slot release + clearInterval(hangCheck)
@@ -22509,7 +22532,7 @@ export async function runVideoPipeline(
                   enableSubtitles, visualDedup.lastMuskStockClip, sceneVisualResults[i]?.beatDurations, usedClips,
                   composeOpts
                 ),
-                WATCHDOG_SCENE_MAX_MS,
+                renderBudgetComposeMs,
                 `Stage4 composeSceneVideo s${scene.index}`
               ),
               scene.index
@@ -22928,7 +22951,8 @@ export async function runVideoPipeline(
           totalDuration,
           videoTitle,
           undefined,
-          videoLength
+          videoLength,
+          renderBudgetConcatMs
         );
         if (isShortVideoLength(videoLength)) {
           const targetSec = videoLength === "1" ? 58 : 118;
@@ -22957,7 +22981,8 @@ export async function runVideoPipeline(
           totalDuration,
           videoTitle,
           undefined,
-          videoLength
+          videoLength,
+          renderBudgetConcatMs
         );
       },
       reassemblePlain: async () => plainConcatSceneVideos(composedScenes, workDir, videoId),
@@ -23089,7 +23114,7 @@ export async function runVideoPipeline(
       }
       const uploadResult = await withTimeout(
         storagePut(`videos/${videoId}/final.mp4`, videoBuffer, "video/mp4"),
-        600_000,
+        renderBudgetUploadMs,
         "S3 upload"
       );
       url = uploadResult.url;

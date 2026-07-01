@@ -5,21 +5,27 @@
  * A per-render setInterval fires every 5 seconds and kills all tracked
  * child processes + rejects the render Promise when the budget is exceeded.
  *
- * Budgets (all hard limits, not soft warnings):
- *   Total render:  12 minutes  (WATCHDOG_RENDER_MAX_MS)
- *   Per-scene:      2 minutes  (WATCHDOG_SCENE_MAX_MS)
- *   Compose:       75 seconds  (WATCHDOG_COMPOSE_MAX_MS)
- *   Retrieval:     35 seconds  (WATCHDOG_RETRIEVE_MAX_MS)
- *   Final concat: 120 seconds  (WATCHDOG_CONCAT_MAX_MS)
+ * All budget values are derived from RenderBudget (renderBudget.ts) so
+ * timeouts scale with video length rather than using hardcoded numbers.
+ * The static constants below are fallback defaults only — they apply for the
+ * brief window before the pipeline computes its RenderBudget after VO sync.
+ *
+ * Fallback defaults:
+ *   Total render:  18 minutes  (covers up to ~10 min video)
+ *   Per-scene:      2 minutes
+ *   Compose:        90 seconds
+ *   Retrieval:      45 seconds
+ *   Final concat:  120 seconds
  */
 
 import type { ChildProcess } from "child_process";
 
-export const WATCHDOG_RENDER_MAX_MS   = 12 * 60_000;  // 12 min total
-export const WATCHDOG_SCENE_MAX_MS    =  2 * 60_000;  //  2 min per scene
-export const WATCHDOG_COMPOSE_MAX_MS  = 75_000;        // 75s compose
-export const WATCHDOG_RETRIEVE_MAX_MS = 35_000;        // 35s retrieval
-export const WATCHDOG_CONCAT_MAX_MS   = 120_000;       // 120s concat
+/** Conservative fallback used only before RenderBudget is computed. */
+export const WATCHDOG_RENDER_MAX_MS   = 18 * 60_000;  // 18 min fallback
+export const WATCHDOG_SCENE_MAX_MS    =  2 * 60_000;  //  2 min per scene (fallback)
+export const WATCHDOG_COMPOSE_MAX_MS  = 90_000;        // 90s compose (fallback)
+export const WATCHDOG_RETRIEVE_MAX_MS = 45_000;        // 45s retrieval (fallback)
+export const WATCHDOG_CONCAT_MAX_MS   = 120_000;       // 120s concat (fallback)
 
 export interface RenderWatchdog {
   /** Register a child process so the watchdog can kill it on timeout. */
@@ -38,6 +44,11 @@ export interface RenderWatchdog {
   concatEnd(): void;
   /** Stop the watchdog (called when render completes normally). */
   stop(): void;
+  /**
+   * Update the total budget after RenderBudget is computed post-VO-sync.
+   * Safe to call at any point before the watchdog fires.
+   */
+  updateBudget(newBudgetMs: number): void;
   /** Promise that rejects when the watchdog fires. Use Promise.race() with this. */
   readonly deadline: Promise<never>;
 }
@@ -51,6 +62,7 @@ export function createRenderWatchdog(videoId: number | string, budgetMs = WATCHD
   const children = new Set<ChildProcess>();
   const startMs = Date.now();
   let stopped = false;
+  let activeBudgetMs = budgetMs;
   let deadlineReject!: (err: Error) => void;
   let sceneRetrieveStartMs: Record<number, number> = {};
   let sceneComposeStartMs: Record<number, number> = {};
@@ -75,9 +87,9 @@ export function createRenderWatchdog(videoId: number | string, budgetMs = WATCHD
     if (stopped) { clearInterval(timer); return; }
     const elapsedMs = Date.now() - startMs;
 
-    if (elapsedMs > budgetMs) {
+    if (elapsedMs > activeBudgetMs) {
       clearInterval(timer);
-      killAll(`total budget exceeded (${Math.round(elapsedMs / 1000)}s > ${Math.round(budgetMs / 1000)}s)`);
+      killAll(`total budget exceeded (${Math.round(elapsedMs / 1000)}s > ${Math.round(activeBudgetMs / 1000)}s)`);
       return;
     }
 
@@ -135,6 +147,12 @@ export function createRenderWatchdog(videoId: number | string, budgetMs = WATCHD
     sceneComposeEnd(si)    { delete sceneComposeStartMs[si]; },
     concatStart()          { concatStartMs = Date.now(); },
     concatEnd()            { concatStartMs = 0; },
+    updateBudget(newBudgetMs: number) {
+      if (stopped) return;
+      const oldSec = Math.round(activeBudgetMs / 1000);
+      activeBudgetMs = newBudgetMs;
+      console.log(`[Watchdog] video=${videoId} budget updated: ${oldSec}s → ${Math.round(newBudgetMs / 1000)}s`);
+    },
     stop() {
       if (stopped) return;
       stopped = true;
