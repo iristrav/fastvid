@@ -18293,7 +18293,8 @@ async function fetchSceneVisuals(
   videoTitle: string | undefined,
   dedup: VisualDedupState,
   onBeatProgress?: (beatIndex: number, beatTotal: number, phase?: BeatProgressPhase) => void,
-  sceneAudioPath?: string
+  sceneAudioPath?: string,
+  prefetchPools?: Map<number, Promise<import("./scenePool").SceneCandidatePool>>
 ): Promise<SceneVisualsResult> {
   videoTitle = coerceVisionString(videoTitle);
   if (curatedArchiveOnlyVisuals()) {
@@ -18349,27 +18350,33 @@ async function fetchSceneVisuals(
     (archiveOnly ? " [curated archive only]" : "")
   );
 
-  // ── P1: Scene-level candidate pool ─────────────────────────────────────────
-  // Build one pool per scene (metadata only, no downloads) when flag is on.
-  // Falls back to normal per-beat retrieval if pool build fails or flag is off.
+  // ── P1 + P4: Scene-level candidate pool ────────────────────────────────────
+  // P1: ONE pool build per scene (metadata only, no downloads).
+  // P4: When prefetchPools is provided, the pool was already built during TTS
+  //     (zero wait here).  Otherwise build it inline (P1 only, no P4).
+  // Falls back to normal per-beat retrieval if pool is unavailable or flag is off.
   let scenePool: import("./scenePool").SceneCandidatePool | null = null;
   if (!archiveOnly && sceneCandidatePoolEnabled()) {
     try {
       const poolT0 = Date.now();
-      scenePool = await buildSceneCandidatePool({
-        sceneIndex: scene.index,
-        sceneText: scene.text,
-        primaryQuery: scene.pexelsQuery || scene.visualCue || scene.text.slice(0, 80),
-        extraQueries: scene.pexelsQueries?.slice(0, 2),
-        pexelsApiKey: PEXELS_API_KEY || undefined,
-        pixabayApiKey: process.env.PIXABAY_API_KEY || undefined,
-      });
+      const prefetchPromise = prefetchPools?.get(scene.index);
+      scenePool = prefetchPromise
+        ? await prefetchPromise
+        : await buildSceneCandidatePool({
+            sceneIndex: scene.index,
+            sceneText: scene.text,
+            primaryQuery: scene.pexelsQuery || scene.visualCue || scene.text.slice(0, 80),
+            extraQueries: scene.pexelsQueries?.slice(0, 2),
+            pexelsApiKey: PEXELS_API_KEY || undefined,
+            pixabayApiKey: process.env.PIXABAY_API_KEY || undefined,
+          });
+      const waited = Date.now() - poolT0;
       console.log(
-        `[Pool] Scene ${scene.index}: pool ready in ${Date.now() - poolT0}ms — ` +
+        `[Pool] Scene ${scene.index}: pool ready (${prefetchPromise ? `prefetch, waited ${waited}ms` : `inline ${waited}ms`}) — ` +
         `${scenePool.candidates.length} candidates, cache=${scenePool.metrics.cacheHit}`
       );
     } catch (err) {
-      console.warn(`[Pool] Scene ${scene.index}: pool build failed, falling back to per-beat retrieval:`, (err as Error).message?.slice(0, 80));
+      console.warn(`[Pool] Scene ${scene.index}: pool unavailable, falling back to per-beat retrieval:`, (err as Error).message?.slice(0, 80));
       scenePool = null;
     }
   }
@@ -21071,6 +21078,31 @@ export async function runVideoPipeline(
     }
     console.log(`[Pipeline] Stage 1 (parse): ${scenes.length} scenes in ${((Date.now()-t0)/1000).toFixed(1)}s`);
 
+    // ── P4: Prefetch scene candidate pools during TTS ─────────────────────────
+    // Kick off pool building for ALL scenes immediately after parse so it runs
+    // in parallel with Stage 2 (TTS). By the time Stage 3 starts the pools are
+    // warm (or cached). Active only when ENABLE_SCENE_CANDIDATE_POOL=true.
+    let prefetchPools: Map<number, Promise<import("./scenePool").SceneCandidatePool>> | undefined;
+    if (sceneCandidatePoolEnabled() && !curatedArchiveOnlyVisuals()) {
+      prefetchPools = new Map();
+      for (const scene of scenes) {
+        const poolPromise = buildSceneCandidatePool({
+          sceneIndex: scene.index,
+          sceneText: scene.text,
+          primaryQuery: scene.pexelsQuery || scene.visualCue || scene.text.slice(0, 80),
+          extraQueries: scene.pexelsQueries?.slice(0, 2),
+          pexelsApiKey: PEXELS_API_KEY || undefined,
+          pixabayApiKey: process.env.PIXABAY_API_KEY || undefined,
+        }).catch(err => {
+          console.warn(`[Pool P4] Scene ${scene.index} prefetch failed:`, (err as Error).message?.slice(0, 80));
+          return Promise.reject(err);
+        });
+        prefetchPools.set(scene.index, poolPromise);
+      }
+      console.log(`[Pool P4] Prefetch started for ${scenes.length} scene(s) during TTS`);
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
     // ── Stage 2: Generate ALL voiceovers in parallel batches ──────────────────
     onProgress?.({ stage: STAGE_LABELS.voiceovers, percent: 8 });
     const t1 = Date.now();
@@ -21379,7 +21411,8 @@ export async function runVideoPipeline(
                 percent: 20 + Math.round(progressBase * 25),
               });
             },
-                  audioPaths[sceneIdx]
+                  audioPaths[sceneIdx],
+                  prefetchPools
                 ),
                 perf.sceneVisualTimeoutMs,
                 `Scene ${scene.index} visuals`
