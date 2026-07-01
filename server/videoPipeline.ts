@@ -501,7 +501,13 @@ const niceCmd = (cmd: string): string =>
   NICE_PREFIX && (cmd.startsWith(FFMPEG_BIN) || cmd.includes(FFPROBE_BIN)) ? `${NICE_PREFIX}${cmd}` : cmd;
 
 // Use 256MB maxBuffer — FFmpeg concat of 15+ scenes can produce large stderr output
-// execRaw exposes the ChildProcess so withTimeout can kill it on abort.
+// Active watchdog for the currently-running render — auto-tracks every child process.
+// Set by generateVideo, cleared on finish. null when no render is active.
+import type { RenderWatchdog } from "./renderWatchdog";
+let _activeWatchdog: RenderWatchdog | null = null;
+
+// execRaw exposes the ChildProcess so withTimeout can kill it on abort,
+// and registers it with the active render watchdog for hard-kill coverage.
 const execRaw = (cmd: string): Promise<{ stdout: string; stderr: string }> & { childProcess?: import("child_process").ChildProcess } => {
   let child: import("child_process").ChildProcess | undefined;
   const p = new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
@@ -511,6 +517,7 @@ const execRaw = (cmd: string): Promise<{ stdout: string; stderr: string }> & { c
     });
   }) as Promise<{ stdout: string; stderr: string }> & { childProcess?: import("child_process").ChildProcess };
   p.childProcess = child;
+  if (child) _activeWatchdog?.trackChild(child);
   return p;
 };
 
@@ -5026,8 +5033,7 @@ async function generateColorFallback(
     }
   }
 
-  console.warn(`[Pipeline] Scene ${sceneIndex}: all FFmpeg fallback attempts failed — pipeline continues`);
-  return out;
+  throw pipelineError(PIPELINE_ERROR.FFMPEG, `Scene ${sceneIndex}: all color-fallback attempts failed`);
 }
 
 /** Rotate golden Musk queries; never grey or duplicate clips. */
@@ -19932,6 +19938,7 @@ async function composeSceneVideo(
       clips
     );
     console.log(`[Hang] composeSceneVideo EXIT s${scene.index} effects-pass total=${Date.now()-_csvT0}ms`);
+    clearWorkerHeartbeat();
     return r;
   }
 
@@ -20857,6 +20864,7 @@ async function composeSceneVideo(
         console.warn(`[Pipeline] Scene ${scene.index}: sequential rescue failed:`, seqRescueErr);
       }
       const detail = formatFfmpegExecError(rescueErr);
+      clearWorkerHeartbeat();
       throw pipelineError(
         PIPELINE_ERROR.FFMPEG,
         `Scene ${scene.index}: compose failed — ${detail}`
@@ -20893,6 +20901,7 @@ async function composeSceneVideo(
     }
   }
   if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size < 1000) {
+    clearWorkerHeartbeat();
     throw pipelineError(PIPELINE_ERROR.FFMPEG, `Scene ${scene.index} produced no output video`);
   }
 
@@ -21337,6 +21346,13 @@ export async function runVideoPipeline(
   }
   const workDir = path.join(TMP_DIR, `fastvid_${videoId}_${Date.now()}`);
   fs.mkdirSync(workDir, { recursive: true });
+
+  // ── Global render watchdog ────────────────────────────────────────────────
+  // Hard kills all child processes and rejects the pipeline if the 12-min
+  // budget is exceeded, regardless of what the event loop is awaiting.
+  const { createRenderWatchdog, WATCHDOG_RENDER_MAX_MS, WATCHDOG_SCENE_MAX_MS } = await import("./renderWatchdog");
+  const watchdog = createRenderWatchdog(videoId, WATCHDOG_RENDER_MAX_MS);
+  _activeWatchdog = watchdog;
 
   const videoRow = await getVideoById(videoId);
   const pipelineWallStartMs = videoRow?.generationStartedAt
@@ -21977,10 +21993,14 @@ export async function runVideoPipeline(
                     result = await timePipelineStep(
                       pipelineStepTiming, "scene_composition",
                       `Scene ${scene.index} compose (total)`,
-                      () => composeSceneVideo(
-                        scene, svr?.clips ?? [], audioPaths[i], scene.duration, workDir, scenes.length,
-                        enableSubtitles, visualDedup.lastMuskStockClip, svr?.beatDurations, usedClips,
-                        composeOpts
+                      () => withTimeout(
+                        composeSceneVideo(
+                          scene, svr?.clips ?? [], audioPaths[i], scene.duration, workDir, scenes.length,
+                          enableSubtitles, visualDedup.lastMuskStockClip, svr?.beatDurations, usedClips,
+                          composeOpts
+                        ),
+                        WATCHDOG_SCENE_MAX_MS,
+                        `P5A composeSceneVideo s${scene.index}`
                       ),
                       scene.index
                     );
@@ -22483,12 +22503,15 @@ export async function runVideoPipeline(
               pipelineStepTiming,
               "scene_composition",
               `Scene ${scene.index} compose (total)`,
-              () =>
+              () => withTimeout(
                 composeSceneVideo(
                   scene, sceneVisualResults[i]?.clips ?? [], audioPaths[i], scene.duration, workDir, scenes.length,
                   enableSubtitles, visualDedup.lastMuskStockClip, sceneVisualResults[i]?.beatDurations, usedClips,
                   composeOpts
                 ),
+                WATCHDOG_SCENE_MAX_MS,
+                `Stage4 composeSceneVideo s${scene.index}`
+              ),
               scene.index
             );
           } catch (composeErr) {
@@ -23114,6 +23137,8 @@ export async function runVideoPipeline(
     }
     return url;
   } finally {
+    watchdog.stop();
+    _activeWatchdog = null;
     try {
       fs.rmSync(workDir, { recursive: true, force: true });
     } catch { /* ignore */ }
