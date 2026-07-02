@@ -190,7 +190,10 @@ import {
 import {
   getOrGenerateSearchPlan,
   searchPlanRounds,
+  logRetrievalRound,
   visualSearchPlanEnabled,
+  buildVideoVisualContext,
+  type VideoVisualContext,
 } from "./visualSearchPlan";
 import {
   motionGraphicsEnabled,
@@ -8766,6 +8769,8 @@ interface VisualDedupState {
   lastMuskStockClip: string | null;
   /** Last adopted real (non-fallback) clip this video — used for extendLastClip rescue. */
   lastRealClip: string | null;
+  /** Video-level visual context (persons, period, locations, styles) — built once per render. */
+  videoVisualContext?: VideoVisualContext;
   aiClipsUsed: number;
   /** AI clips used only in visual rescue tier (separate cap from main AI fallback). */
   rescueAiClipsUsed: number;
@@ -17131,13 +17136,15 @@ async function rescueBeatVisualWhenEmpty(
     }
   }
 
-  // Plan-based multi-round rescue — expand Pexels/stock queries via search plan before AI
+  // Plan-based multi-round rescue — adaptive: stops at first hit
   if (visualSearchPlanEnabled() && archivePexelsFallbackEnabled() && canUseLicensedStockBeat(dedup)) {
     try {
+      const videoCtx: VideoVisualContext | undefined = dedup.videoVisualContext;
       const plan = await getOrGenerateSearchPlan(`s${scene.index}`, {
         beatText: beat.text,
         sceneText: scene.text ?? beat.text,
         topic: videoTitle ?? beat.text,
+        videoContext: videoCtx,
       });
       const rounds = searchPlanRounds(plan);
       for (const round of rounds) {
@@ -17147,11 +17154,8 @@ async function rescueBeatVisualWhenEmpty(
           clonedBeat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile,
           { visionFloor: 0, adoptSource: `rescue_plan_${round.label}` }
         );
-        if (hit) {
-          console.log(`[Retrieval] s${scene.index}b${beat.index} plan round "${round.label}" HIT`);
-          return true;
-        }
-        console.log(`[Retrieval] s${scene.index}b${beat.index} plan round "${round.label}" miss`);
+        logRetrievalRound(scene.index, beat.index, round, hit, hit ? round.queries[0] : undefined);
+        if (hit) return true;
       }
     } catch (err) {
       console.warn("[Retrieval] plan rescue error:", (err as Error).message?.slice(0, 100));
@@ -21769,6 +21773,12 @@ export async function runVideoPipeline(
     visualDedup.stepTiming = pipelineStepTiming;
     visualDedup.videoLength = videoLength;
     visualDedup.pipelineStartedMs = pipelineWallStartMs;
+    if (visualSearchPlanEnabled()) {
+      visualDedup.videoVisualContext = await buildVideoVisualContext(
+        videoTitle ?? "",
+        scenes.map((s) => s.text).filter(Boolean).slice(0, 3).join(" ")
+      ).catch(() => undefined);
+    }
     if (ttsWordAlignmentEnabled() && !isFastShortVideoLength(videoLength)) {
       const storedTts = loadStoredTtsAlignment(workDir);
       if (storedTts) {
