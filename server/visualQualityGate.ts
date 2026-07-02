@@ -307,6 +307,28 @@ async function lumaRejectAtFraction(
   return luma !== null && luma < 12;
 }
 
+// ── Per-step timeout helper (logs BEFORE/AFTER/TIMEOUT + elapsed) ────────────
+
+async function stepWithTimeout<T>(
+  label: string,
+  budgetMs: number,
+  fn: () => Promise<T>
+): Promise<T> {
+  const t0 = Date.now();
+  console.log(`[VisionStep] BEFORE ${label}`);
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const result = await Promise.race([
+    fn().then((v) => { if (timer) clearTimeout(timer); return v; }),
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        reject(new Error(`[VisionStep] TIMEOUT ${label} after ${budgetMs}ms`));
+      }, budgetMs);
+    }),
+  ]);
+  console.log(`[VisionStep] AFTER  ${label} in ${Date.now() - t0}ms`);
+  return result;
+}
+
 /** Score multiple frames via local CLIP; all must pass for clip acceptance. */
 async function scoreClipAcrossFrames(
   clipPath: string,
@@ -321,13 +343,21 @@ async function scoreClipAcrossFrames(
   queryEmb?: number[] | null,
   shortVideo = false
 ): Promise<{ pass: boolean; worstScore: number | null; framesScored: number }> {
+  const tag = `s${sceneIndex}b${beatIndex} clip=${path.basename(clipPath)}`;
+
   const assetId = curatedClipPathAssetId(clipPath);
   const storedEmbeddings =
     assetId != null
       ? loadStoredFrameEmbeddings(assetId)
       : loadStoredStockFrameEmbeddingsFromPath(clipPath);
+
   const queryEmbResolved =
-    queryEmb ?? (await resolveBeatQueryEmbedding(beatText, visualDescription, videoTitle));
+    queryEmb ??
+    (await stepWithTimeout(
+      `resolveBeatQueryEmbedding ${tag}`,
+      10_000,
+      () => resolveBeatQueryEmbedding(beatText, visualDescription, videoTitle)
+    ));
 
   if (storedEmbeddings?.length && queryEmbResolved) {
     const useCascade = cascadeVisionGateEnabled();
@@ -338,48 +368,33 @@ async function scoreClipAcrossFrames(
 
     if (useCascade && storedEmbeddings.length > 1) {
       const quickEmb = [storedEmbeddings[primaryIdx]!];
-      const quick = await scoreEmbeddingsAgainstBeat(
-        quickEmb,
-        beatText,
-        visualDescription,
-        videoTitle,
-        clipPath,
-        minScore,
-        queryEmbResolved
+      const quick = await stepWithTimeout(
+        `scoreEmbeddingsAgainstBeat(cascade-quick) ${tag}`,
+        8_000,
+        () => scoreEmbeddingsAgainstBeat(quickEmb, beatText, visualDescription, videoTitle, clipPath, minScore, queryEmbResolved)
       );
       if (quick?.definiteFail) {
         const worstScore10 = simToScore10(quick.worstSimilarity);
         return { pass: false, worstScore: worstScore10, framesScored: 1 };
       }
       const quickScore10 = simToScore10(quick?.worstSimilarity ?? 0);
-      if (
-        quick &&
-        quickScore10 >= minScore &&
-        !quick.modernMismatch &&
-        !(await lumaRejectAtFraction(
-          clipPath,
-          workDir,
-          sceneIndex,
-          beatIndex,
-          CASCADE_PRIMARY_FRAME_FRAC,
-          fastMode
-        ))
-      ) {
-        return { pass: true, worstScore: quickScore10, framesScored: 1 };
+      if (quick && quickScore10 >= minScore && !quick.modernMismatch) {
+        const luma = await stepWithTimeout(
+          `lumaRejectAtFraction(cascade-quick) ${tag}`,
+          fastMode ? 7_000 : 12_000,
+          () => lumaRejectAtFraction(clipPath, workDir, sceneIndex, beatIndex, CASCADE_PRIMARY_FRAME_FRAC, fastMode)
+        );
+        if (!luma) return { pass: true, worstScore: quickScore10, framesScored: 1 };
       }
       if (quick && quickScore10 < cascadeVisionExpandBelow(minScore)) {
         return { pass: false, worstScore: quickScore10, framesScored: 1 };
       }
     }
 
-    const storedOnly = await scoreEmbeddingsAgainstBeat(
-      storedEmbeddings,
-      beatText,
-      visualDescription,
-      videoTitle,
-      clipPath,
-      minScore,
-      queryEmbResolved
+    const storedOnly = await stepWithTimeout(
+      `scoreEmbeddingsAgainstBeat(full) ${tag}`,
+      10_000,
+      () => scoreEmbeddingsAgainstBeat(storedEmbeddings, beatText, visualDescription, videoTitle, clipPath, minScore, queryEmbResolved)
     );
     if (storedOnly?.definiteFail) {
       const worstScore10 = Math.max(0, Math.min(10, Math.round(storedOnly.worstSimilarity * 40)));
@@ -387,49 +402,30 @@ async function scoreClipAcrossFrames(
     }
     if (storedOnly?.similarityPass) {
       const worstScore10 = simToScore10(storedOnly.worstSimilarity);
-      if (
-        fastMode &&
-        storedOnly.score >= minScore &&
-        worstScore10 >= minScore &&
-        !storedOnly.modernMismatch
-      ) {
+      if (fastMode && storedOnly.score >= minScore && worstScore10 >= minScore && !storedOnly.modernMismatch) {
         return { pass: true, worstScore: worstScore10, framesScored: storedEmbeddings.length };
       }
-      const darkReject = await lumaRejectAtFraction(
-        clipPath,
-        workDir,
-        sceneIndex,
-        beatIndex,
-        CASCADE_PRIMARY_FRAME_FRAC,
-        fastMode
+      const darkReject = await stepWithTimeout(
+        `lumaRejectAtFraction(storedOnly) ${tag}`,
+        fastMode ? 7_000 : 12_000,
+        () => lumaRejectAtFraction(clipPath, workDir, sceneIndex, beatIndex, CASCADE_PRIMARY_FRAME_FRAC, fastMode)
       );
-      const pass =
-        !darkReject &&
-        storedOnly.score >= minScore &&
-        worstScore10 >= minScore;
+      const pass = !darkReject && storedOnly.score >= minScore && worstScore10 >= minScore;
       return { pass, worstScore: worstScore10, framesScored: storedEmbeddings.length };
     }
   }
 
   if (cascadeVisionGateEnabled()) {
-    const primaryPath = await extractSinglePreviewFrame(
-      clipPath,
-      workDir,
-      sceneIndex,
-      beatIndex,
-      CASCADE_PRIMARY_FRAME_FRAC,
-      fastMode
+    const primaryPath = await stepWithTimeout(
+      `extractSinglePreviewFrame(cascade) ${tag}`,
+      fastMode ? 6_000 : 10_000,
+      () => extractSinglePreviewFrame(clipPath, workDir, sceneIndex, beatIndex, CASCADE_PRIMARY_FRAME_FRAC, fastMode)
     );
     if (primaryPath) {
-      const primaryResult = await scoreFramePathsAgainstBeat(
-        [primaryPath],
-        beatText,
-        visualDescription,
-        videoTitle,
-        clipPath,
-        minScore,
-        storedEmbeddings,
-        queryEmbResolved
+      const primaryResult = await stepWithTimeout(
+        `scoreFramePathsAgainstBeat(cascade-primary) ${tag}`,
+        12_000,
+        () => scoreFramePathsAgainstBeat([primaryPath], beatText, visualDescription, videoTitle, clipPath, minScore, storedEmbeddings, queryEmbResolved)
       );
       cleanupFramePaths([primaryPath]);
 
@@ -444,9 +440,7 @@ async function scoreClipAcrossFrames(
           primaryScore10 >= minScore &&
           primaryResult.score >= minScore;
 
-        if (primaryPass) {
-          return { pass: true, worstScore: primaryScore10, framesScored: 1 };
-        }
+        if (primaryPass) return { pass: true, worstScore: primaryScore10, framesScored: 1 };
         if (primaryScore10 < cascadeVisionExpandBelow(minScore) || primaryResult.wrongSubject) {
           return { pass: false, worstScore: primaryScore10, framesScored: 1 };
         }
@@ -454,20 +448,19 @@ async function scoreClipAcrossFrames(
     }
   }
 
-  const framePaths = await extractPreviewFrames(clipPath, workDir, sceneIndex, beatIndex, fastMode, shortVideo);
+  const framePaths = await stepWithTimeout(
+    `extractPreviewFrames(full) ${tag}`,
+    fastMode ? 20_000 : 35_000,
+    () => extractPreviewFrames(clipPath, workDir, sceneIndex, beatIndex, fastMode, shortVideo)
+  );
   if (framePaths.length === 0) {
     return { pass: !strictVisionInconclusiveFails(fastMode), worstScore: null, framesScored: 0 };
   }
 
-  const result = await scoreFramePathsAgainstBeat(
-    framePaths,
-    beatText,
-    visualDescription,
-    videoTitle,
-    clipPath,
-    minScore,
-    storedEmbeddings,
-    queryEmbResolved
+  const result = await stepWithTimeout(
+    `scoreFramePathsAgainstBeat(full) ${tag}`,
+    15_000,
+    () => scoreFramePathsAgainstBeat(framePaths, beatText, visualDescription, videoTitle, clipPath, minScore, storedEmbeddings, queryEmbResolved)
   );
   cleanupFramePaths(framePaths);
 
@@ -485,11 +478,7 @@ async function scoreClipAcrossFrames(
     worstScore10 >= minScore &&
     result.score >= minScore;
 
-  return {
-    pass,
-    worstScore: worstScore10,
-    framesScored: result.framesScored,
-  };
+  return { pass, worstScore: worstScore10, framesScored: result.framesScored };
 }
 
 export type VisionGateResult = {

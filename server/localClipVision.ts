@@ -437,15 +437,27 @@ export async function ensureClipPipelinesLoaded(): Promise<boolean> {
   return pipelineLoadInFlight;
 }
 
+const EMBED_IMAGE_TIMEOUT_MS = 15_000;
+
 export async function embedImageFromPath(imagePath: string): Promise<number[] | null> {
   if (!localVisionEnabled() || !fs.existsSync(imagePath)) return null;
   const pipe = await loadImagePipeline();
   if (!pipe) return null;
+  const base = path.basename(imagePath);
+  const t0 = Date.now();
+  console.log(`[LocalVision] BEFORE CLIP-image-embed ${base}`);
   try {
-    const result = await pipe(imagePath);
+    const result = await Promise.race([
+      pipe(imagePath),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`[LocalVision] TIMEOUT CLIP-image-embed ${base} after ${EMBED_IMAGE_TIMEOUT_MS}ms`)), EMBED_IMAGE_TIMEOUT_MS)
+      ),
+    ]);
     const embedding = Array.from(result.data);
+    console.log(`[LocalVision] AFTER  CLIP-image-embed ${base} in ${Date.now() - t0}ms dim=${embedding.length}`);
     return embedding.length >= 8 ? embedding : null;
-  } catch {
+  } catch (err) {
+    console.warn(`[LocalVision] embedImageFromPath failed ${base} in ${Date.now() - t0}ms: ${(err as Error).message}`);
     return null;
   }
 }
@@ -490,6 +502,8 @@ export async function embedImagesFromPaths(imagePaths: string[]): Promise<{ embe
   return { embeddings, mode: "sequential" };
 }
 
+const EMBED_TEXT_TIMEOUT_MS = 10_000;
+
 export async function embedTextQuery(query: string): Promise<number[] | null> {
   const key = query.trim();
   if (!localVisionEnabled() || !key) return null;
@@ -497,9 +511,18 @@ export async function embedTextQuery(query: string): Promise<number[] | null> {
   if (cached) return cached;
   const pipe = await loadTextPipeline();
   if (!pipe) return null;
+  const short = key.slice(0, 60);
+  const t0 = Date.now();
+  console.log(`[LocalVision] BEFORE CLIP-text-embed "${short}"`);
   try {
-    const result = await pipe(key, { pooling: "mean", normalize: true });
+    const result = await Promise.race([
+      pipe(key, { pooling: "mean", normalize: true }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`[LocalVision] TIMEOUT CLIP-text-embed after ${EMBED_TEXT_TIMEOUT_MS}ms`)), EMBED_TEXT_TIMEOUT_MS)
+      ),
+    ]);
     const embedding = Array.from(result.data);
+    console.log(`[LocalVision] AFTER  CLIP-text-embed "${short}" in ${Date.now() - t0}ms dim=${embedding.length}`);
     if (embedding.length < 8) return null;
     if (textEmbeddingCache.size >= TEXT_EMBED_CACHE_MAX) {
       const oldest = textEmbeddingCache.keys().next().value;
@@ -507,7 +530,8 @@ export async function embedTextQuery(query: string): Promise<number[] | null> {
     }
     textEmbeddingCache.set(key, embedding);
     return embedding;
-  } catch {
+  } catch (err) {
+    console.warn(`[LocalVision] embedTextQuery failed "${short}" in ${Date.now() - t0}ms: ${(err as Error).message}`);
     return null;
   }
 }
