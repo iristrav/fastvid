@@ -370,9 +370,23 @@ export async function dedupeSegmentsForArchiveUpload(
         }
       : null;
 
-    const overlapsKept = kept.some((k) => rangesOverlapRatio(seg, k) >= 0.65);
+    const overlapsKept = !seg.timeFallback && kept.some((k) => rangesOverlapRatio(seg, k) >= 0.65);
     if (overlapsKept) {
       skipped += 1;
+      continue;
+    }
+
+    // Time-based fallback clips are fixed-interval slices of continuous footage — adjacent
+    // clips look nearly identical in perceptual fingerprints but are not true duplicates.
+    // Skip fuzzy fingerprint check; only reject exact byte-for-byte matches.
+    if (seg.timeFallback) {
+      const exactDup = index.some((e) => e.exactKey === exactKey);
+      if (exactDup) {
+        skipped += 1;
+        continue;
+      }
+      index.push({ fp: [], fragment, exactKey });
+      kept.push({ ...seg, index: kept.length });
       continue;
     }
 
