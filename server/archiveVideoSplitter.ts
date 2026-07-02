@@ -1090,7 +1090,7 @@ export async function splitVideoBySceneChanges(
         `[ArchiveSplit] no shot boundaries detected in ${totalDur.toFixed(1)}s video`;
       console.warn(msg);
       if (totalDur > MIN_SPLIT_VIDEO_SEC) {
-        const intervalSec = Math.max(minSavedArchiveClipSec(), Math.min(10, totalDur / 10));
+        const intervalSec = Math.max(minSavedArchiveClipSec(), Math.min(5, totalDur / 20));
         const fallbackRanges: Array<{ start: number; end: number }> = [];
         for (let t = 0; t < totalDur; t += intervalSec) {
           fallbackRanges.push({ start: t, end: Math.min(t + intervalSec, totalDur) });
