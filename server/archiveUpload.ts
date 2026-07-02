@@ -405,24 +405,30 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
         );
       }
 
-      void (async () => {
-        try {
-          const allAssets = await getMediaArchiveAssets(input.archiveId);
-          if (allAssets.length < 2) return;
-          const { deleteIds } = await dedupeArchiveVisualDuplicates(allAssets);
-          if (deleteIds.length > 0) {
-            await deleteMediaArchiveAssets(deleteIds);
-            console.log(
-              `[ArchiveUpload] post-upload dedup: removed ${deleteIds.length} duplicate(s) from archive ${input.archiveId}`
+      // Skip post-upload visual dedup when all clips are time-based fallback (continuous
+      // documentary footage). Adjacent fixed-interval clips look nearly identical and would
+      // all be flagged as duplicates, wiping out the entire upload.
+      const allTimeFallback = segments.every((s) => s.timeFallback);
+      if (!allTimeFallback) {
+        void (async () => {
+          try {
+            const allAssets = await getMediaArchiveAssets(input.archiveId);
+            if (allAssets.length < 2) return;
+            const { deleteIds } = await dedupeArchiveVisualDuplicates(allAssets);
+            if (deleteIds.length > 0) {
+              await deleteMediaArchiveAssets(deleteIds);
+              console.log(
+                `[ArchiveUpload] post-upload dedup: removed ${deleteIds.length} duplicate(s) from archive ${input.archiveId}`
+              );
+            }
+          } catch (err) {
+            console.warn(
+              "[ArchiveUpload] post-upload dedup failed:",
+              (err as Error).message?.slice(0, 100)
             );
           }
-        } catch (err) {
-          console.warn(
-            "[ArchiveUpload] post-upload dedup failed:",
-            (err as Error).message?.slice(0, 100)
-          );
-        }
-      })();
+        })();
+      }
 
       finishArchiveUploadJob(jobId, true, `${createdAssets.length} unique clip(s) saved`, {
         clipsSaved: createdAssets.length,
