@@ -514,6 +514,13 @@ export async function evaluateClipVisionGate(
   ]).catch((err: Error) => { console.warn(err.message); return false as const; });
   console.log(`[VisionGate] AFTER ensureClipPipelinesLoaded s${sceneIndex}b${beatIndex} ok=${pipelineReady} in ${Date.now() - visionT0}ms`);
 
+  // If pipeline failed to load, skip vision check (fail-open) rather than
+  // re-attempting to load the model on every single embedImageFromPath call.
+  if (!pipelineReady) {
+    console.warn(`[VisionGate] pipeline not ready s${sceneIndex}b${beatIndex} — skipping vision gate (fail-open)`);
+    return { pass: true, worstScore10: null, skipped: true };
+  }
+
   const cacheKey = visionGateCacheKey(clipPath, beatText, minScore, visualDescription);
   if (visionGateCache.has(cacheKey)) {
     const pass = visionGateCache.get(cacheKey)!;

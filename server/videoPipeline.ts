@@ -16110,9 +16110,10 @@ async function adoptWikimediaBeatClip(
       90_000, `beatClipPassesVisionGate s${_si}b${_bi} ${label}`
     ).catch((err: Error) => { console.error(`[Hang] beatClipPassesVisionGate TIMEOUT/ERROR s${_si}b${_bi}: ${err.message}`); return { pass: false, worstScore10: null, skipped: false }; });
     console.log(`[Hang] adoptWikiPath AFTER beatClipPassesVisionGate s${_si}b${_bi} pass=${vision.pass} elapsed=${Date.now()-_vt0}ms`);
-    if (!vision.pass) return false;
+    if (!vision.pass) { clearWorkerHeartbeat(); return false; }
     if (isStillPhotoClip(clipPath) && !canUseDocumentaryStill(dedup)) {
       recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clipPath, "still_cap", label);
+      clearWorkerHeartbeat();
       return false;
     }
     console.log(`[Hang] adoptWikiPath BEFORE applyVideoBeatTextOverlay s${_si}b${_bi}`);
@@ -16129,7 +16130,7 @@ async function adoptWikimediaBeatClip(
       20_000, `montageClipPassesComposeGate s${_si}b${_bi}`
     ).catch((err: Error) => { console.error(`[Hang] montageClipPassesComposeGate TIMEOUT/ERROR s${_si}b${_bi}: ${err.message}`); return true; });
     console.log(`[Hang] adoptWikiPath AFTER montageClipPassesComposeGate s${_si}b${_bi} pass=${gatePass} elapsed=${Date.now()-_gt0}ms`);
-    if (!gatePass) return false;
+    if (!gatePass) { clearWorkerHeartbeat(); return false; }
     if (!(await pushClip(withText, holdSec))) { clearWorkerHeartbeat(); return false; }
     console.log(`[Hang] adoptWikiPath EXIT s${_si}b${_bi} adopted=true total=${Date.now()-_awpT0}ms`);
     clearWorkerHeartbeat();
