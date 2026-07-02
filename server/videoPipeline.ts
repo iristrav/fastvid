@@ -23196,27 +23196,26 @@ export async function runVideoPipeline(
       console.warn(`[Pipeline] Editor manifest persist failed for ${videoId}:`, (err as Error).message);
     }
 
-    // Budget summary + history persistence
-    if (_activeBudgetTracker) {
-      _activeBudgetTracker.logSummary();
-      const { recordBudgetOutcome } = await import("./renderBudgetTracker");
-      const budgetOutcome = _activeBudgetTracker.outcome();
-      recordBudgetOutcome(budgetOutcome);
-      await mergeVideoMetadata(videoId, {
-        qualityReport,
-        pipelineStepTiming: pipelineStepTiming.toReport(),
-        renderBudget: budgetOutcome,
-      }).catch((err) =>
-        console.warn(`[Pipeline] Failed to persist qualityReport on complete for ${videoId}:`, err)
-      );
-    } else {
-      await mergeVideoMetadata(videoId, {
-        qualityReport,
-        pipelineStepTiming: pipelineStepTiming.toReport(),
-      }).catch((err) =>
-        console.warn(`[Pipeline] Failed to persist qualityReport on complete for ${videoId}:`, err)
-      );
+    // Budget summary + history persistence (non-fatal — never block URL persistence)
+    let budgetOutcome: import("./renderBudgetTracker").BudgetOutcome | undefined;
+    try {
+      if (_activeBudgetTracker) {
+        _activeBudgetTracker.logSummary();
+        const { recordBudgetOutcome } = await import("./renderBudgetTracker");
+        budgetOutcome = _activeBudgetTracker.outcome();
+        recordBudgetOutcome(budgetOutcome);
+      }
+    } catch (err) {
+      console.warn(`[Pipeline] BudgetTracker summary failed for ${videoId}:`, (err as Error).message);
     }
+
+    await mergeVideoMetadata(videoId, {
+      qualityReport,
+      pipelineStepTiming: pipelineStepTiming.toReport(),
+      ...(budgetOutcome ? { renderBudget: budgetOutcome } : {}),
+    }).catch((err) =>
+      console.warn(`[Pipeline] Failed to persist qualityReport on complete for ${videoId}:`, err)
+    );
 
     // Persist URL immediately so a crash during finalization cannot lose the finished video
     await updateVideoStatus(videoId, "completed", {
