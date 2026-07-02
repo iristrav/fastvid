@@ -2,10 +2,15 @@
  * Background CLIP index backfill for archive assets missing frame embeddings.
  */
 import fs from "fs";
+import os from "os";
 import path from "path";
 import { listActiveVideoArchiveAssetsBatch } from "./db";
 import { clipEmbeddingIndexEnabled, indexArchiveClipEmbedding, loadStoredClipEmbedding } from "./archiveClipEmbedding";
 import { LOCAL_UPLOADS_DIR, resolveLocalVideoPath } from "./storageLocal";
+import { storageGetSignedUrl } from "./storage";
+
+// Max asset size to download during backfill — skip larger files to avoid memory pressure.
+const BACKFILL_MAX_BYTES = 80 * 1024 * 1024;
 
 function resolveArchiveAssetLocalPath(asset: {
   storageUrl: string;
@@ -23,6 +28,64 @@ function resolveArchiveAssetLocalPath(asset: {
     if (fs.existsSync(p)) return p;
   }
   return null;
+}
+
+/**
+ * Download a remote archive asset to a temp file for backfill indexing.
+ * Handles /manus-storage/ (signed URL via S3) and direct https:// URLs.
+ * Returns the temp path on success, or null if the asset should be skipped.
+ */
+async function downloadAssetForBackfill(asset: {
+  id: number;
+  storageUrl: string;
+  storageKey: string | null;
+}): Promise<string | null> {
+  const { storageUrl, storageKey } = asset;
+  let fetchUrl: string;
+
+  if (storageUrl.startsWith("/manus-storage/")) {
+    const key = storageKey ?? storageUrl.replace(/^\/manus-storage\//, "");
+    try {
+      fetchUrl = await storageGetSignedUrl(key);
+    } catch (err) {
+      console.warn(`[ClipEmbedding] Backfill: signed URL failed for asset ${asset.id}:`, (err as Error).message?.slice(0, 80));
+      return null;
+    }
+  } else if (storageUrl.startsWith("https://") || storageUrl.startsWith("http://")) {
+    fetchUrl = storageUrl;
+  } else {
+    // Unknown URL scheme — no download strategy
+    return null;
+  }
+
+  const tempPath = path.join(os.tmpdir(), `fv_backfill_${asset.id}_${Date.now()}.mp4`);
+  try {
+    const resp = await fetch(fetchUrl, { signal: AbortSignal.timeout(90_000) });
+    if (!resp.ok) {
+      console.warn(`[ClipEmbedding] Backfill: HTTP ${resp.status} for asset ${asset.id}`);
+      return null;
+    }
+    const contentLength = Number(resp.headers.get("content-length") ?? 0);
+    if (contentLength > 0 && contentLength > BACKFILL_MAX_BYTES) {
+      console.log(`[ClipEmbedding] Backfill: skipping asset ${asset.id} — too large (${Math.round(contentLength / 1024 / 1024)}MB)`);
+      return null;
+    }
+    const buf = Buffer.from(await resp.arrayBuffer());
+    if (buf.length < 500) {
+      console.warn(`[ClipEmbedding] Backfill: asset ${asset.id} download too small (${buf.length}b)`);
+      return null;
+    }
+    if (buf.length > BACKFILL_MAX_BYTES) {
+      console.log(`[ClipEmbedding] Backfill: skipping asset ${asset.id} — too large (${Math.round(buf.length / 1024 / 1024)}MB)`);
+      return null;
+    }
+    fs.writeFileSync(tempPath, buf);
+    return tempPath;
+  } catch (err) {
+    console.warn(`[ClipEmbedding] Backfill: download failed for asset ${asset.id}:`, (err as Error).message?.slice(0, 80));
+    try { fs.unlinkSync(tempPath); } catch { /* ignore */ }
+    return null;
+  }
 }
 
 function backfillEnabled(): boolean {
@@ -120,11 +183,16 @@ export async function backfillMissingClipEmbeddings(
       }
       missing++;
       const local = resolveArchiveAssetLocalPath(asset);
-      if (!local) {
+      let videoPath = local;
+      if (!videoPath) {
+        // Asset is on R2/remote storage — download to a temp file for indexing.
+        videoPath = await downloadAssetForBackfill(asset);
+      }
+      if (!videoPath) {
         skipped++;
         continue;
       }
-      const ok = await indexArchiveClipEmbedding(asset.id, local, { quiet: true });
+      const ok = await indexArchiveClipEmbedding(asset.id, videoPath, { quiet: true });
       if (ok) indexed++;
       else {
         markIndexFailure(asset.id);

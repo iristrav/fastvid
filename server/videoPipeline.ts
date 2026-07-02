@@ -9768,34 +9768,59 @@ async function montageClipPassesComposeGate(
   sceneIndex: number,
   clipIndex: number
 ): Promise<boolean> {
-  if (!(await isValidVideoFile(clipPath))) return false;
-  const trimStart = montageClipStartSec(sceneIndex, clipIndex);
-  const meta = await probeVideoStreamMeta(clipPath);
-  if (!meta || !montageStreamMetaUsable(meta, trimStart)) {
-    console.warn(
-      `[Pipeline] Scene ${sceneIndex} clip ${clipIndex}: unusable stream ${path.basename(clipPath)}` +
-        (meta ? ` (${meta.width}x${meta.height}, ${meta.durationSec.toFixed(2)}s)` : "")
-    );
-    return false;
-  }
-  const curatedId = curatedClipPathAssetId(clipPath);
-  if (curatedId != null) {
+  const GATE_TIMEOUT_MS = 25_000;
+  const base = path.basename(clipPath);
+  const t0 = Date.now();
+  console.log(`[ComposeGate] BEGIN s${sceneIndex}b${clipIndex} ${base}`);
+
+  let resolved = false;
+  const work = (async (): Promise<boolean> => {
+    if (!(await isValidVideoFile(clipPath))) return false;
+    const trimStart = montageClipStartSec(sceneIndex, clipIndex);
+    const meta = await probeVideoStreamMeta(clipPath);
+    if (!meta || !montageStreamMetaUsable(meta, trimStart)) {
+      console.warn(
+        `[Pipeline] Scene ${sceneIndex} clip ${clipIndex}: unusable stream ${base}` +
+          (meta ? ` (${meta.width}x${meta.height}, ${meta.durationSec.toFixed(2)}s)` : "")
+      );
+      return false;
+    }
+    const curatedId = curatedClipPathAssetId(clipPath);
+    if (curatedId != null) {
+      const startLuma = await probeClipMeanLuma(clipPath, trimStart + 0.08);
+      if (startLuma !== null && startLuma < 14) return false;
+      if (strictNoVisualRepeat()) {
+        const probed = await probeVideoDurationSec(clipPath);
+        if (probed > 0.15 && probed < archiveVisualMinClipSec() - 0.5) return false;
+        const midAt =
+          trimStart + Math.min(Math.max(1.0, probed * 0.4), Math.max(0.5, probed - 0.25));
+        const centerLuma = await probeClipRegionMeanLuma(clipPath, midAt, "center");
+        if (centerLuma !== null && centerLuma < 18) return false;
+      }
+      return true;
+    }
+    if (await isMostlyBlackClip(clipPath)) return false;
     const startLuma = await probeClipMeanLuma(clipPath, trimStart + 0.08);
     if (startLuma !== null && startLuma < 14) return false;
-    if (strictNoVisualRepeat()) {
-      const probed = await probeVideoDurationSec(clipPath);
-      if (probed > 0.15 && probed < archiveVisualMinClipSec() - 0.5) return false;
-      const midAt =
-        trimStart + Math.min(Math.max(1.0, probed * 0.4), Math.max(0.5, probed - 0.25));
-      const centerLuma = await probeClipRegionMeanLuma(clipPath, midAt, "center");
-      if (centerLuma !== null && centerLuma < 18) return false;
-    }
     return true;
+  })().then((v) => { resolved = true; return v; });
+
+  const timeout = new Promise<boolean>((resolve) =>
+    setTimeout(() => {
+      if (!resolved) {
+        console.warn(`[ComposeGate] TIMEOUT s${sceneIndex}b${clipIndex} ${base} after ${GATE_TIMEOUT_MS}ms — skipping clip`);
+        resolve(false);
+      } else {
+        resolve(false); // already resolved via work — value ignored
+      }
+    }, GATE_TIMEOUT_MS)
+  );
+
+  const result = await Promise.race([work, timeout]);
+  if (resolved) {
+    console.log(`[ComposeGate] END s${sceneIndex}b${clipIndex} ${base} in ${Date.now() - t0}ms`);
   }
-  if (await isMostlyBlackClip(clipPath)) return false;
-  const startLuma = await probeClipMeanLuma(clipPath, trimStart + 0.08);
-  if (startLuma !== null && startLuma < 14) return false;
-  return true;
+  return result;
 }
 
 async function estimateSceneMontageCoverageSec(
