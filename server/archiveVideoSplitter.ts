@@ -751,23 +751,17 @@ async function extractVideoSegment(
   const start = startSec.toFixed(3);
   const dur = durationSec.toFixed(3);
 
-  const strategies: string[] = [];
-  if (preferStreamCopy) {
-    strategies.push(
-      `${ffmpegBin()} -y -ss ${start} -i "${inputPath}" -t ${dur} -an -c:v copy ` +
-        `-movflags +faststart -avoid_negative_ts make_zero "${outputPath}"`,
-      `${ffmpegBin()} -y -i "${inputPath}" -ss ${start} -t ${dur} -an -c:v copy ` +
-        `-movflags +faststart -avoid_negative_ts make_zero "${outputPath}"`
-    );
-  }
-  strategies.push(
+  // Always re-encode so the clip starts on a fresh I-frame — stream copy risks clips that
+  // start mid-GOP, which browsers cannot decode and show as corrupt/no-preview.
+  const _ = preferStreamCopy; // reserved for future use
+  const strategies: string[] = [
     `${ffmpegBin()} -y -ss ${start} -i "${inputPath}" -t ${dur} ` +
       `-c:v libx264 -preset ultrafast -crf 23 -an -pix_fmt yuv420p -movflags +faststart ` +
       `-avoid_negative_ts make_zero -reset_timestamps 1 -threads 2 "${outputPath}"`,
     `${ffmpegBin()} -y -i "${inputPath}" -ss ${start} -t ${dur} ` +
       `-c:v libx264 -preset ultrafast -crf 23 -an -pix_fmt yuv420p -movflags +faststart ` +
-      `-avoid_negative_ts make_zero -reset_timestamps 1 -threads 2 "${outputPath}"`
-  );
+      `-avoid_negative_ts make_zero -reset_timestamps 1 -threads 2 "${outputPath}"`,
+  ];
 
   let lastErr = "extract failed";
   for (const cmd of strategies) {
