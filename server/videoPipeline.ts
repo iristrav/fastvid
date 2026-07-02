@@ -435,15 +435,16 @@ async function isValidVideoFile(filePath: string): Promise<boolean> {
   if (size < 1000) return false;
   for (const probePath of FFPROBE_PATHS()) {
     try {
-      const { stdout } = await exec(
+      const p = execRaw(
         `"${probePath}" -v error -select_streams v:0 -show_entries stream=codec_type -of default=noprint_wrappers=1:nokey=1 "${filePath}"`
       );
+      const { stdout } = await withTimeout(p, 8_000, `isValidVideoFile ${path.basename(filePath)}`);
       if (stdout.trim().includes("video")) return true;
     } catch {
       /* try next probe binary */
     }
   }
-  // ffprobe missing or failed — accept files that look like MP4 and are non-trivial size
+  // ffprobe missing or timed out — accept files that look like MP4 and are non-trivial size
   try {
     const head = fs.readFileSync(filePath).subarray(0, 12);
     return head.length >= 8 && head.subarray(4, 8).toString("ascii") === "ftyp" && size > 5000;
@@ -458,9 +459,10 @@ async function probeVideoStreamMeta(
   if (!fs.existsSync(filePath)) return null;
   for (const probePath of FFPROBE_PATHS()) {
     try {
-      const { stdout } = await exec(
+      const p = execRaw(
         `"${probePath}" -v error -select_streams v:0 -show_entries stream=width,height,duration -of default=noprint_wrappers=1:nokey=1 "${filePath}"`
       );
+      const { stdout } = await withTimeout(p, 8_000, `probeVideoStreamMeta ${path.basename(filePath)}`);
       const lines = stdout
         .trim()
         .split("\n")
@@ -9770,8 +9772,6 @@ async function montageClipPassesComposeGate(
 ): Promise<boolean> {
   const GATE_TIMEOUT_MS = 25_000;
   const base = path.basename(clipPath);
-  const t0 = Date.now();
-  console.log(`[ComposeGate] BEGIN s${sceneIndex}b${clipIndex} ${base}`);
 
   let resolved = false;
   const work = (async (): Promise<boolean> => {
@@ -9809,18 +9809,12 @@ async function montageClipPassesComposeGate(
     setTimeout(() => {
       if (!resolved) {
         console.warn(`[ComposeGate] TIMEOUT s${sceneIndex}b${clipIndex} ${base} after ${GATE_TIMEOUT_MS}ms — skipping clip`);
-        resolve(false);
-      } else {
-        resolve(false); // already resolved via work — value ignored
       }
+      resolve(false);
     }, GATE_TIMEOUT_MS)
   );
 
-  const result = await Promise.race([work, timeout]);
-  if (resolved) {
-    console.log(`[ComposeGate] END s${sceneIndex}b${clipIndex} ${base} in ${Date.now() - t0}ms`);
-  }
-  return result;
+  return Promise.race([work, timeout]);
 }
 
 async function estimateSceneMontageCoverageSec(
@@ -21138,15 +21132,12 @@ async function generateSFX(
 }
 
 async function probeVideoDurationSec(filePath: string): Promise<number> {
-  const { execFile } = await import("child_process");
-  const { promisify } = await import("util");
-  const execFileAsync = promisify(execFile);
   for (const probe of FFPROBE_PATHS()) {
     try {
-      const { stdout } = await execFileAsync(probe, [
-        "-v", "error", "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1", filePath,
-      ]);
+      const p = execRaw(
+        `"${probe}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${filePath}"`
+      );
+      const { stdout } = await withTimeout(p, 10_000, `probeVideoDurationSec ${path.basename(filePath)}`);
       const d = parseFloat(String(stdout).trim());
       if (!isNaN(d) && d > 0) return d;
     } catch { /* try next */ }
