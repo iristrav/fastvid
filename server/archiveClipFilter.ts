@@ -89,13 +89,18 @@ async function extractVideoPreviewJpeg(
 
 const OVERLAY_PROMPT = `Beoordeel deze videostill(s) voor een documentaire-archief.
 
-hasBakedEditText = true wanneer ÉÉN of meer stills duidelijk editor-tekst in beeld hebben:
-- titelkaarten, chapter cards, intro/outro-tekst
-- ondertitels, captions of quote-tekst over het beeld
-- lower thirds, namen, datums, locaties als overlay
-- grote tekst-overlays of montage-tekst
+hasBakedEditText = true ALLEEN wanneer ÉÉN of meer stills duidelijk onbruikbare editor-tekst bevatten:
+- titelkaarten of chapter cards die het beeld volledig overdekken
+- intro/outro-tekst of aftiteling
+- grote montage-tekst die het beeldmateriaal onbruikbaar maakt
+- bewerkingssoftware-interface zichtbaar in beeld (DaVinci, Premiere, etc.)
 
-hasBakedEditText = false wanneer het puur beeldmateriaal is, ook als er kleine natuurlijke tekst in de scène staat (borden, etiketten, krantenkoppen) of alleen een klein logo/watermerk zonder titel.`;
+hasBakedEditText = false bij normaal documentaire- of archiefmateriaal, ook als er:
+- kleine lower thirds zijn met naam, datum, locatie of jaar
+- ondertitels of captions in beeld staan
+- historische tekst, krantenkoppen, kaarten of labels zichtbaar zijn
+- een klein logo of watermerk in de hoek staat
+Documentaire-labels zijn GEEN reden voor afwijzing.`;
 
 async function detectOnScreenTextInImages(dataUrls: string[]): Promise<boolean> {
   if (dataUrls.length === 0) return false;

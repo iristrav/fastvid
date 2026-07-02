@@ -74,13 +74,12 @@ export function buildArchiveSubjectPrompt(context: ArchiveSubjectContext): strin
   }
   lines.push(
     "",
-    "matchesArchiveSubject = true ALLEEN wanneer het beeldmateriaal duidelijk over dit archief-onderwerp gaat.",
+    "matchesArchiveSubject = true wanneer het beeldmateriaal past bij het onderwerp, tijdperk of thema van het archief — ook als de exacte persoon/locatie niet zichtbaar is. Bij twijfel: true.",
     "",
-    "matchesArchiveSubject = false wanneer het fragment:",
-    "- een ander onderwerp, tijdperk of thema toont",
-    "- intro/outro, credits, logo-only of filler is",
-    "- generiek beeldmateriaal is zonder duidelijke link met het archief",
-    "- niet past bij de archiefnaam/tags (ook bij twijfel: false)",
+    "matchesArchiveSubject = false ALLEEN wanneer het fragment:",
+    "- duidelijk een ander, niets-te-maken-hebbend onderwerp toont",
+    "- intro/outro, credits, logo-only of reclame is",
+    "- moderne beelden zijn die absoluut niet in het archief-tijdperk/thema passen",
   );
   return lines.join("\n");
 }
