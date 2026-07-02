@@ -1238,6 +1238,13 @@ export async function splitVideoBySceneChanges(
       );
     }
 
+    // Skip visual dedup for time-based fallback: continuous documentary footage looks
+    // identical across adjacent clips, so fingerprint dedup would drop all but one.
+    if (skipRangeSubjectFilter) {
+      console.log(`[ArchiveSplit] time-based fallback — skipping visual dedup (${singleSceneSegments.length} clip(s))`);
+      return singleSceneSegments;
+    }
+
     const { kept, skipped } = await dedupeVideoSegmentsVisually(singleSceneSegments);
     if (kept.length === 0) {
       throw new ArchiveSplitError("All clips were visual duplicates — try a video with clearer shot changes.");
