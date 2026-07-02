@@ -56,6 +56,8 @@ export type VideoClipSegment = {
   endSec: number;
   durationSec: number;
   index: number;
+  /** True when produced by time-based fallback (no hard cuts detected). Skip subject filter at save time. */
+  timeFallback?: boolean;
 };
 
 export type ArchiveSplitProgress = {
@@ -1184,6 +1186,7 @@ export async function splitVideoBySceneChanges(
             endSec: end,
             durationSec: dur,
             index: i,
+            timeFallback: skipRangeSubjectFilter || undefined,
           } satisfies VideoClipSegment;
         } catch (err) {
           console.warn(

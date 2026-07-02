@@ -305,7 +305,9 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
             });
             return null;
           }
-            if (!(await archiveClipMatchesArchiveSubject(seg.buffer, "video/mp4", subjectContext, { clipCount: segments.length }))) {
+            // Skip per-clip subject check for time-based fallback segments — these are
+            // intervals of continuous footage where all clips share the same subject.
+            if (!seg.timeFallback && !(await archiveClipMatchesArchiveSubject(seg.buffer, "video/mp4", subjectContext, { clipCount: segments.length }))) {
             console.log(
               `[ArchiveUpload] skip clip ${seg.index + 1} (${formatTimecode(seg.startSec)}–${formatTimecode(seg.endSec)}): off-topic for "${subjectContext.archiveName}"`
             );
