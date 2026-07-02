@@ -9,11 +9,7 @@ import {
   enrichArchiveAssetFields,
   inferArchiveMediaMime,
 } from "./archiveAssetTagging";
-import { archiveClipHasBakedEditText } from "./archiveClipFilter";
-import {
-  archiveClipMatchesArchiveSubject,
-  type ArchiveSubjectContext,
-} from "./archiveClipRelevance";
+import type { ArchiveSubjectContext } from "./archiveClipRelevance";
 import {
   buildArchiveFingerprintIndex,
   dedupeArchiveVisualDuplicates,
@@ -273,7 +269,9 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
         percent: 86,
         clipTotal: segments.length,
       });
-      const perClipAiTags = autoGenerateTags && segments.length <= 15;
+      // For large batches use bulk mode (1 frame, faster prompt) to keep upload time reasonable.
+      const perClipAiTags = autoGenerateTags && segments.length <= 200;
+      const perClipAiBulk = perClipAiTags && segments.length > 15;
       throwIfUploadCancelled(jobId);
 
       let savedCount = 0;
@@ -291,37 +289,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
           3,
           async (seg) => {
             throwIfUploadCancelled(jobId);
-            if (await archiveClipHasBakedEditText(seg.buffer, "video/mp4", { clipCount: segments.length })) {
-            console.log(
-              `[ArchiveUpload] skip clip ${seg.index + 1} (${formatTimecode(seg.startSec)}–${formatTimecode(seg.endSec)}): baked edit text`
-            );
-            progress({
-              stage: "filter_overlay",
-              message: `${fileLabel}: clip ${seg.index + 1} skipped (editor text)`,
-              percent: 90 + Math.round((seg.index / segments.length) * 8),
-              clipIndex: seg.index + 1,
-              clipTotal: segments.length,
-              clipsSaved: savedCount,
-            });
-            return null;
-          }
-            // Skip per-clip subject check for time-based fallback segments — these are
-            // intervals of continuous footage where all clips share the same subject.
-            if (!seg.timeFallback && !(await archiveClipMatchesArchiveSubject(seg.buffer, "video/mp4", subjectContext, { clipCount: segments.length }))) {
-            console.log(
-              `[ArchiveUpload] skip clip ${seg.index + 1} (${formatTimecode(seg.startSec)}–${formatTimecode(seg.endSec)}): off-topic for "${subjectContext.archiveName}"`
-            );
-            progress({
-              stage: "filter_subject",
-              message: `${fileLabel}: clip ${seg.index + 1} skipped (does not match archive subject)`,
-              percent: 90 + Math.round((seg.index / segments.length) * 8),
-              clipIndex: seg.index + 1,
-              clipTotal: segments.length,
-              clipsSaved: savedCount,
-            });
-            return null;
-          }
-          const storedDur = archiveStoredDurationSec(seg.durationSec);
+            const storedDur = archiveStoredDurationSec(seg.durationSec);
           if (storedDur <= 0) {
             console.log(
               `[ArchiveUpload] skip clip ${seg.index + 1} (${formatTimecode(seg.startSec)}–${formatTimecode(seg.endSec)}): ` +
@@ -354,6 +322,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
                 parentFilename: input.filename,
                 clipIndex: seg.index,
                 userProvidedTitle,
+                bulk: perClipAiBulk,
               })
             : {
                 title: draftTitle,
@@ -452,24 +421,6 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
     );
   }
 
-  if (await archiveClipHasBakedEditText(input.buffer, mimeType)) {
-    throw new ArchiveUploadError(
-      400,
-      appErrorMessage(
-        APP_ERROR.SERVICE_ERROR,
-        "This upload contains editor text (title/subtitle overlay). Only clean footage is allowed — add text in the editor instead."
-      )
-    );
-  }
-  if (!(await archiveClipMatchesArchiveSubject(input.buffer, mimeType, subjectContext))) {
-    throw new ArchiveUploadError(
-      400,
-      appErrorMessage(
-        APP_ERROR.SERVICE_ERROR,
-        `This upload does not match the archive subject "${subjectContext.archiveName}". Check niche tags or choose different material.`
-      )
-    );
-  }
   throwIfUploadCancelled(jobId);
 
   progress({

@@ -128,7 +128,7 @@ const TAG_JSON_SCHEMA_MINIMAL = {
 } as const;
 
 /** Max searchable tags stored per asset (pipeline + semantic matching). Geo slugs prioritized. */
-export const ARCHIVE_MAX_TAGS = 6;
+export const ARCHIVE_MAX_TAGS = 10;
 
 /** Vision LLM timeout — quality over speed; override via env. */
 function archiveVisionTimeoutMs(frameCount: number): number {
@@ -846,28 +846,35 @@ function buildVisionPrompt(
   }
 
   const lines = [
-    "Analyze this clip for a documentary media archive.",
+    "Analyze this clip for a documentary media archive. Return JSON with rich, searchable metadata.",
     "",
-    "title: max 15 words, concrete WHO/WHAT/WHERE (e.g. 'Amsterdam cyclists on canal bridge' or 'Hitler speech at Nuremberg rally'). No filename.",
-    "description: 2–3 sentences: visible action + location + era if recognizable.",
+    "title: max 15 words, concrete WHO/WHAT/WHERE (e.g. 'Hitler speech Nuremberg 1934' or 'D-Day soldiers Omaha Beach 1944'). No filename.",
+    "description: 2–3 sentences: visible action + location + era.",
     "",
-    "tags: EXACTLY 4 high-quality English search slugs (lowercase). These are the most important output.",
-    "Each tag must be concrete and visually searchable — optimized for Pexels and archive matching.",
-    "Examples: amsterdam cyclists rain | business meeting team | subway platform berlin | entrepreneur working laptop",
-    "Do NOT use vague tags alone: person, people, city, street, success, growth, strategy, business, company, modern, historical.",
+    "tags: 6–10 high-quality English search slugs (lowercase). MOST IMPORTANT OUTPUT.",
+    "Cover ALL of these angles that apply:",
+    "1. Named person(s) visible or implied: 'adolf hitler', 'winston churchill', 'erwin rommel'",
+    "2. Historical event: 'd-day landings', 'battle of normandy', 'operation overlord', 'blitzkrieg'",
+    "3. Location: 'omaha beach normandy', 'berlin 1945', 'nuremberg rally'",
+    "4. Era/year: 'world war 2', '1944', 'ww2 footage', 'nazi germany'",
+    "5. Visible action: 'soldiers storming beach', 'troops marching', 'tanks advancing', 'bombing raid'",
+    "6. Subject/objects: 'german soldiers', 'allied forces', 'panzer tank', 'warship', 'aircraft'",
+    "7. Visual style: 'black and white footage', 'archival film', 'historical photograph'",
+    "Use specific combinations, not single vague words.",
+    "Examples: 'normandy beach landing 1944' | 'hitler speech reichstag' | 'german army advance' | 'ww2 aerial bombing'",
     "",
-    "Also fill structured fields to support title/description (arrays can be short):",
-    "- persons, countries, cities, events, locations, objects, actions, era, setting, sceneType",
-    "- mapLabels: every readable place name on maps/diagrams (e.g. Philadelphia, Kansas City, Singapore)",
-    "- visibleTextOnScreen: signs, captions, map titles, street names visible in frame",
+    "Also fill structured fields:",
+    "- persons: named individuals clearly visible or strongly implied",
+    "- countries, cities, events, locations, objects, actions, era, setting, sceneType",
+    "- mapLabels: every readable place name on maps/diagrams",
+    "- visibleTextOnScreen: signs, captions, dates, location labels visible in frame",
     "",
     "Rules:",
-    "- If the frame shows a MAP or historical diagram, list ALL readable city/country names in mapLabels.",
-    "- Wrong geography on a map must still be tagged (e.g. Philadelphia map → mapLabels: [Philadelphia, Pennsylvania]).",
-    "- Prefer specific combinations: 'amsterdam canal bikes' over separate tags 'amsterdam' + 'city'.",
-    "- Name exact people/places/events only when clearly visible.",
-    "- Tag visible place + activity when recognizable (city, landmark, sport, vehicle, building).",
-    "- Never tag only generic words (city, street, people) — always pair with place or activity.",
+    "- Historical archive: always tag the era/period even if not 100% certain.",
+    "- Named persons: use full names ('Adolf Hitler' not just 'leader').",
+    "- Specific events beat generic actions ('D-Day landing' beats 'beach scene').",
+    "- If frame shows a MAP, list ALL readable city/country names in mapLabels.",
+    "- Never use only vague words: person, people, city, scene, footage, documentary.",
   ];
   if (frameCount > 1) {
     lines.push(`You receive ${frameCount} frames from the same video — combine into one complete tag set.`);
@@ -940,6 +947,7 @@ export async function enrichArchiveAssetFields(opts: {
   parentFilename?: string;
   clipIndex?: number;
   userProvidedTitle?: boolean;
+  bulk?: boolean;
 }): Promise<{ title: string; tags: string[]; sourceNote: string | null }> {
   let title = opts.baseTitle;
   let tags = opts.userTags;
@@ -947,12 +955,18 @@ export async function enrichArchiveAssetFields(opts: {
 
   if (!opts.autoGenerateTags) return { title, tags, sourceNote };
 
-  const ai = await generateArchiveAssetAiMetadata(opts.buffer, opts.mimeType, {
-    archiveNicheTags: opts.archiveNicheTags,
-    parentFilename: opts.parentFilename,
-    userTags: opts.userTags,
-    clipLabel: opts.clipIndex != null ? `fragment ${opts.clipIndex + 1}` : undefined,
-  });
+  const previews = await previewImagesFromMedia(opts.buffer, opts.mimeType);
+  if (previews.length === 0) return { title, tags, sourceNote };
+  const { metadata: ai } = await invokeArchiveVisionTagging(
+    previews,
+    {
+      archiveNicheTags: opts.archiveNicheTags,
+      parentFilename: opts.parentFilename,
+      userTags: opts.userTags,
+      clipLabel: opts.clipIndex != null ? `fragment ${opts.clipIndex + 1}` : undefined,
+    },
+    { bulk: opts.bulk ?? false, preferJsonObject: opts.bulk ?? false }
+  );
 
   if (!ai) return { title, tags, sourceNote };
 

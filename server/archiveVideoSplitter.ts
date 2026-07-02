@@ -9,11 +9,7 @@ import * as os from "os";
 import * as path from "path";
 
 import { dedupeVideoSegmentsVisually } from "./archiveClipDedup";
-import {
-  filterClipRangesByArchiveSubject,
-  hasArchiveSubjectContext,
-  type ArchiveSubjectContext,
-} from "./archiveClipRelevance";
+import type { ArchiveSubjectContext } from "./archiveClipRelevance";
 import {
   ARCHIVE_MAX_UPLOAD_BYTES,
   ARCHIVE_MAX_VIDEO_DURATION_SEC,
@@ -1120,36 +1116,8 @@ export async function splitVideoBySceneChanges(
       );
     }
 
-    const subjectContext = options?.subjectContext;
-    if (!skipRangeSubjectFilter && subjectContext && hasArchiveSubjectContext(subjectContext)) {
-      report({
-        stage: "split_filter",
-        message: `Checking fragments against archive subject (${ranges.length})…`,
-        percent: 48,
-        clipTotal: ranges.length,
-      });
-      const before = ranges.length;
-      ranges = await filterClipRangesByArchiveSubject(analysisPath, ranges, subjectContext, {
-        onProgress: (kept, total, skipped) => {
-          report({
-            stage: "split_filter",
-            message: `Subject filter: kept ${kept} of ${total} fragments (${skipped} skipped)`,
-            percent: 48 + Math.round((kept / Math.max(1, total)) * 4),
-            clipTotal: total,
-          });
-        },
-        shouldContinue: canContinue,
-      });
-      console.log(
-        `[ArchiveSplit] subject filter: ${before} → ${ranges.length} range(s) for "${subjectContext.archiveName}"`
-      );
-      if (ranges.length === 0) {
-        throw new ArchiveSplitError(
-          `No fragments match the archive subject "${subjectContext.archiveName}". ` +
-            "Check niche tags or upload material that fits this archive."
-        );
-      }
-    }
+    // Subject filter removed from upload — all footage is saved as-is.
+    // Filtering happens at search/retrieval time, not at upload time.
 
     report({
       stage: "split_extract",
