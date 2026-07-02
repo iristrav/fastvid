@@ -1085,18 +1085,28 @@ export async function splitVideoBySceneChanges(
       const msg =
         `[ArchiveSplit] no shot boundaries detected in ${totalDur.toFixed(1)}s video`;
       console.warn(msg);
+      // No hard cuts found (common for documentaries using dissolves/fades).
+      // Fall back to fixed-interval splitting instead of refusing the upload.
       if (totalDur > MIN_SPLIT_VIDEO_SEC) {
-        throw new ArchiveSplitError(
-          "No shot/scene changes detected. Ensure FFmpeg is available and the file contains real visual cuts."
-        );
+        const intervalSec = Math.max(minSavedArchiveClipSec(), Math.min(10, totalDur / 10));
+        const fallbackRanges: Array<{ start: number; end: number }> = [];
+        for (let t = 0; t < totalDur; t += intervalSec) {
+          fallbackRanges.push({ start: t, end: Math.min(t + intervalSec, totalDur) });
+        }
+        const filtered = fallbackRanges.filter((r) => r.end - r.start >= minSavedArchiveClipSec() - 0.02);
+        if (filtered.length > 0) {
+          console.log(
+            `[ArchiveSplit] no hard cuts detected — time-based fallback: ${filtered.length} clip(s) of ~${intervalSec.toFixed(0)}s each`
+          );
+          ranges = filtered;
+        } else {
+          // Single clip as last resort
+          console.log(`[ArchiveSplit] no cuts, no fallback ranges — saving as single clip (${totalDur.toFixed(1)}s)`);
+          return [{ buffer: inputBuffer, startSec: 0, endSec: totalDur, durationSec: totalDur, index: 0 }];
+        }
+      } else {
+        return [{ buffer: inputBuffer, startSec: 0, endSec: totalDur, durationSec: totalDur, index: 0 }];
       }
-      return [{
-        buffer: inputBuffer,
-        startSec: 0,
-        endSec: totalDur,
-        durationSec: totalDur,
-        index: 0,
-      }];
     }
 
     throwIfCancelled();
