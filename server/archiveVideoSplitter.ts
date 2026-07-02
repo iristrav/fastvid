@@ -8,7 +8,6 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 
-import { dedupeVideoSegmentsVisually } from "./archiveClipDedup";
 import type { ArchiveSubjectContext } from "./archiveClipRelevance";
 import {
   ARCHIVE_MAX_UPLOAD_BYTES,
@@ -1206,22 +1205,10 @@ export async function splitVideoBySceneChanges(
       );
     }
 
-    // Skip visual dedup for time-based fallback: continuous documentary footage looks
-    // identical across adjacent clips, so fingerprint dedup would drop all but one.
-    if (skipRangeSubjectFilter) {
-      console.log(`[ArchiveSplit] time-based fallback — skipping visual dedup (${singleSceneSegments.length} clip(s))`);
-      return singleSceneSegments;
-    }
-
-    const { kept, skipped } = await dedupeVideoSegmentsVisually(singleSceneSegments);
-    if (kept.length === 0) {
-      throw new ArchiveSplitError("All clips were visual duplicates — try a video with clearer shot changes.");
-    }
-    if (skipped > 0) {
-      console.log(`[ArchiveSplit] visual dedup: ${skipped} duplicate(s) removed, ${kept.length} unique clip(s)`);
-    }
-
-    return kept;
+    // Visual dedup removed — archive saves all footage as-is.
+    // Dedup at search/retrieval time, not at upload time.
+    console.log(`[ArchiveSplit] returning ${singleSceneSegments.length} clip(s) (visual dedup skipped)`);
+    return singleSceneSegments;
   } finally {
     try {
       fs.rmSync(workDir, { recursive: true, force: true });
