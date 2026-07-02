@@ -5025,17 +5025,25 @@ async function generateColorFallback(
   fs.mkdirSync(workDir, { recursive: true });
   const out = outputPath ?? path.join(workDir, `scene_${sceneIndex}_fallback.mp4`);
   const colors = ["3a4a5e", "4a5a6e", "3a5a6e", "4a4a5e", "3a5a5e", "4a5a5e", "3a4a6e", "4a4a6e"];
-  const color = colors[sceneIndex % colors.length];
-  const safeDuration = Math.min(Math.max(duration, 3), 90);
+  const color = colors[Math.abs(sceneIndex) % colors.length];
+  // Guard NaN/Infinity/0 — Math.max(NaN, 3) = NaN which breaks ffmpeg -t
+  const rawDuration = Number.isFinite(duration) && duration > 0 ? duration : 5;
+  const safeDuration = Math.min(Math.max(rawDuration, 3), 90);
+
+  console.log(`[Pipeline] Scene ${sceneIndex}: generateColorFallback duration=${duration} safe=${safeDuration} out=${path.basename(out)}`);
 
   if (fs.existsSync(out)) {
     try { fs.unlinkSync(out); } catch { /* ignore */ }
   }
 
+  // Ordered from most-compatible to simplest. Attempts 1-2 use full res + libx264;
+  // attempt 3 drops to 1280x720 + mpeg4 (works when libx264 is unavailable);
+  // attempt 4 is the absolute floor: 640x360 + mpeg4 + 5s minimum duration.
   const commands = [
     `${FFMPEG_BIN} -y -f lavfi -i "color=c=#${color}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:r=25" -t ${safeDuration} -c:v libx264 -preset ultrafast -pix_fmt yuv420p -an "${out}"`,
     `${FFMPEG_BIN} -y -f lavfi -i "color=c=black:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:r=25" -t ${safeDuration} -c:v libx264 -preset ultrafast -pix_fmt yuv420p -an "${out}"`,
     `${FFMPEG_BIN} -y -f lavfi -i "color=c=black:s=1280x720:r=25" -t ${safeDuration} -c:v mpeg4 -q:v 5 -an "${out}"`,
+    `${FFMPEG_BIN} -y -f lavfi -i "color=c=black:s=640x360:r=25" -t ${safeDuration} -c:v mpeg4 -q:v 8 -an "${out}"`,
   ];
 
   for (let i = 0; i < commands.length; i++) {
@@ -5043,18 +5051,19 @@ async function generateColorFallback(
       if (fs.existsSync(out)) {
         try { fs.unlinkSync(out); } catch { /* ignore */ }
       }
-      await withTimeout(exec(commands[i]), 30_000, `Fallback video scene ${sceneIndex} attempt ${i + 1}`);
+      await withTimeout(exec(commands[i]), 45_000, `Fallback video scene ${sceneIndex} attempt ${i + 1}`);
       if (await isValidVideoFile(out)) {
         console.log(`[Pipeline] Scene ${sceneIndex}: fallback video OK (${(fs.statSync(out).size / 1024).toFixed(0)}KB, attempt ${i + 1})`);
         return out;
       }
       console.warn(`[Pipeline] Scene ${sceneIndex}: fallback attempt ${i + 1} produced unreadable file`);
     } catch (err) {
-      console.warn(`[Pipeline] Scene ${sceneIndex}: fallback attempt ${i + 1} failed:`, (err as Error).message);
+      const msg = (err as Error).message ?? String(err);
+      console.warn(`[Pipeline] Scene ${sceneIndex}: fallback attempt ${i + 1} failed: ${msg.slice(0, 300)}`);
     }
   }
 
-  throw pipelineError(PIPELINE_ERROR.FFMPEG, `Scene ${sceneIndex}: all color-fallback attempts failed`);
+  throw pipelineError(PIPELINE_ERROR.FFMPEG, `Scene ${sceneIndex}: all color-fallback attempts failed (duration=${rawDuration}s, workDir=${workDir})`);
 }
 
 /** Rotate golden Musk queries; never grey or duplicate clips. */
