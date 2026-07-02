@@ -1081,12 +1081,14 @@ export async function splitVideoBySceneChanges(
         `scdet=${scdetThreshold()} scene=${sceneThreshold()})`
     );
 
+    // When no hard cuts are found (documentaries with dissolves/fades), fall back to
+    // fixed-interval splitting. In this case all intervals share the same subject so
+    // the per-range subject filter is skipped (per-clip check still runs at save time).
+    let skipRangeSubjectFilter = false;
     if (ranges.length <= 1) {
       const msg =
         `[ArchiveSplit] no shot boundaries detected in ${totalDur.toFixed(1)}s video`;
       console.warn(msg);
-      // No hard cuts found (common for documentaries using dissolves/fades).
-      // Fall back to fixed-interval splitting instead of refusing the upload.
       if (totalDur > MIN_SPLIT_VIDEO_SEC) {
         const intervalSec = Math.max(minSavedArchiveClipSec(), Math.min(10, totalDur / 10));
         const fallbackRanges: Array<{ start: number; end: number }> = [];
@@ -1096,12 +1098,12 @@ export async function splitVideoBySceneChanges(
         const filtered = fallbackRanges.filter((r) => r.end - r.start >= minSavedArchiveClipSec() - 0.02);
         if (filtered.length > 0) {
           console.log(
-            `[ArchiveSplit] no hard cuts detected — time-based fallback: ${filtered.length} clip(s) of ~${intervalSec.toFixed(0)}s each`
+            `[ArchiveSplit] time-based fallback: ${filtered.length} clip(s) of ~${intervalSec.toFixed(0)}s each (subject filter skipped — all same scene)`
           );
           ranges = filtered;
+          skipRangeSubjectFilter = true;
         } else {
-          // Single clip as last resort
-          console.log(`[ArchiveSplit] no cuts, no fallback ranges — saving as single clip (${totalDur.toFixed(1)}s)`);
+          console.log(`[ArchiveSplit] no cuts — saving as single clip (${totalDur.toFixed(1)}s)`);
           return [{ buffer: inputBuffer, startSec: 0, endSec: totalDur, durationSec: totalDur, index: 0 }];
         }
       } else {
@@ -1117,7 +1119,7 @@ export async function splitVideoBySceneChanges(
     }
 
     const subjectContext = options?.subjectContext;
-    if (subjectContext && hasArchiveSubjectContext(subjectContext)) {
+    if (!skipRangeSubjectFilter && subjectContext && hasArchiveSubjectContext(subjectContext)) {
       report({
         stage: "split_filter",
         message: `Checking fragments against archive subject (${ranges.length})…`,
