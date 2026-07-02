@@ -188,6 +188,11 @@ import {
   type BeatSemanticProfile,
 } from "./semanticVisualMatching";
 import {
+  getOrGenerateSearchPlan,
+  searchPlanRounds,
+  visualSearchPlanEnabled,
+} from "./visualSearchPlan";
+import {
   motionGraphicsEnabled,
   resolveStillImageFilterComplex,
   tryRenderMotionGraphicBeatClip,
@@ -2140,7 +2145,7 @@ async function resolveBeatClipFast(
       "fast primary"
     );
     if (primary) {
-      dedup.lastMuskStockClip = primary;
+      dedup.lastMuskStockClip = primary; dedup.lastRealClip = primary;
       return primary;
     }
   }
@@ -2152,7 +2157,7 @@ async function resolveBeatClipFast(
       beat, scene, workDir, sceneIndex, clipFetchDur, dedup, adoptOpts, entityYt, "fast event YouTube", ytMs
     );
     if (clip) {
-      dedup.lastMuskStockClip = clip;
+      dedup.lastMuskStockClip = clip; dedup.lastRealClip = clip;
       return clip;
     }
     const person = scenePersons[0] ?? dedup.primaryPerson;
@@ -2171,7 +2176,7 @@ async function resolveBeatClipFast(
         ytMs
       );
       if (clip) {
-        dedup.lastMuskStockClip = clip;
+        dedup.lastMuskStockClip = clip; dedup.lastRealClip = clip;
         console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: fast person YouTube (${person})`);
         return clip;
       }
@@ -2194,7 +2199,7 @@ async function resolveBeatClipFast(
     );
     if (stock && isRealVideoClip(stock)) {
       markLicensedStockBeatUsed(dedup);
-      dedup.lastMuskStockClip = stock;
+      dedup.lastMuskStockClip = stock; dedup.lastRealClip = stock;
       return stock;
     }
     return null;
@@ -2214,7 +2219,7 @@ async function resolveBeatClipFast(
       { includeTopicYoutube: true, fileTag: `b${beat.index}_fast` }
     );
     if (topicClip) {
-      dedup.lastMuskStockClip = topicClip;
+      dedup.lastMuskStockClip = topicClip; dedup.lastRealClip = topicClip;
       return topicClip;
     }
     return null;
@@ -2262,7 +2267,7 @@ async function resolveBeatClipFast(
         }
         dedup.usedPaths.add(p);
         dedup.usedContentKeys.add(contentKey);
-        dedup.lastMuskStockClip = p;
+        dedup.lastMuskStockClip = p; dedup.lastRealClip = p;
         console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: fast Pexels "${q}"`);
         return p;
       }
@@ -4972,6 +4977,54 @@ async function fetchSerpAPIImages(
     console.warn(`[Pipeline] SerpAPI search failed for scene ${sceneIndex}:`, err);
   }
   return results;
+}
+
+// ─── 3b. Extend Last Real Clip ───────────────────────────────────────────────
+/**
+ * Loop/extend the last adopted real clip to fill `beatDuration` seconds.
+ * Used as a last resort before color fallback — always better than a solid color.
+ */
+async function extendLastClip(
+  lastClipPath: string,
+  beatDuration: number,
+  sceneIndex: number,
+  beatIndex: number,
+  workDir: string
+): Promise<string | null> {
+  if (!lastClipPath || !fs.existsSync(lastClipPath)) return null;
+  if (isPipelineFallbackClip(lastClipPath)) return null;
+  if (!(await isValidVideoFile(lastClipPath))) return null;
+  const safeDuration = Math.min(Math.max(beatDuration, 1), 60);
+  const out = path.join(workDir, `extend_s${sceneIndex}b${beatIndex}_${Date.now()}.mp4`);
+  try {
+    await withTimeout(
+      exec(
+        `${FFMPEG_BIN} -y -stream_loop -1 -i "${lastClipPath}" -t ${safeDuration.toFixed(2)} -c copy -avoid_negative_ts make_zero "${out}"`
+      ),
+      20_000,
+      `extendLastClip s${sceneIndex}b${beatIndex}`
+    );
+    if (await isValidVideoFile(out)) {
+      console.log(`[Retrieval] s${sceneIndex}b${beatIndex}: extendLastClip ${path.basename(lastClipPath)} → ${safeDuration.toFixed(1)}s`);
+      return out;
+    }
+  } catch {
+    // copy failed — try re-encode at low quality
+    try {
+      await withTimeout(
+        exec(
+          `${FFMPEG_BIN} -y -stream_loop -1 -i "${lastClipPath}" -t ${safeDuration.toFixed(2)} -c:v libx264 -preset ultrafast -crf 28 -an "${out}"`
+        ),
+        25_000,
+        `extendLastClip-reencode s${sceneIndex}b${beatIndex}`
+      );
+      if (await isValidVideoFile(out)) {
+        console.log(`[Retrieval] s${sceneIndex}b${beatIndex}: extendLastClip (re-encode) ${path.basename(lastClipPath)} → ${safeDuration.toFixed(1)}s`);
+        return out;
+      }
+    } catch { /* give up */ }
+  }
+  return null;
 }
 
 // ─── 3c. Color Fallback (last resort — unique path per beat so montage never blocks on dedup) ─
@@ -8711,6 +8764,8 @@ interface VisualDedupState {
   muskHeroFetchUsed: boolean;
   /** Last adopted real stock clip (any topic) — reused instead of color/black placeholders. */
   lastMuskStockClip: string | null;
+  /** Last adopted real (non-fallback) clip this video — used for extendLastClip rescue. */
+  lastRealClip: string | null;
   aiClipsUsed: number;
   /** AI clips used only in visual rescue tier (separate cap from main AI fallback). */
   rescueAiClipsUsed: number;
@@ -8883,6 +8938,7 @@ function createVisualDedupState(
     globalBeatIndex: 0,
     muskHeroFetchUsed: false,
     lastMuskStockClip: null,
+    lastRealClip: null,
     aiClipsUsed: 0,
     rescueAiClipsUsed: 0,
     klingClipsUsed: 0,
@@ -11682,7 +11738,7 @@ async function adoptClip(
       const mustFairUse = clipRequiresFairUseTransform(p);
       if (dedup.perf.skipFairUseTransform && !mustFairUse) {
         if (await isValidVideoFile(p)) {
-          if (!isPipelineFallbackClip(p) && !(await isMostlyBlackClip(p))) dedup.lastMuskStockClip = p;
+          if (!isPipelineFallbackClip(p) && !(await isMostlyBlackClip(p))) { dedup.lastMuskStockClip = p; dedup.lastRealClip = p; }
           return p;
         }
         dedup.usedCategories.set(category, Math.max(0, (dedup.usedCategories.get(category) ?? 1) - 1));
@@ -11703,14 +11759,14 @@ async function adoptClip(
       }
       if (await isValidVideoFile(transformed)) {
         if (!isPipelineFallbackClip(transformed) && !(await isMostlyBlackClip(transformed))) {
-          dedup.lastMuskStockClip = transformed;
+          dedup.lastMuskStockClip = transformed; dedup.lastRealClip = transformed;
         }
         return transformed;
       }
       dedup.usedCategories.set(category, Math.max(0, (dedup.usedCategories.get(category) ?? 1) - 1));
       if (mustFairUse) continue;
       if (await isValidVideoFile(p) && !isPipelineFallbackClip(p) && !(await isMostlyBlackClip(p))) {
-        dedup.lastMuskStockClip = p;
+        dedup.lastMuskStockClip = p; dedup.lastRealClip = p;
       }
     }
     return null;
@@ -16760,7 +16816,7 @@ async function adoptStockBeatClipFallback(
       dedup.usedPaths.add(clipPath);
       if (await tryClip(clipPath, q, source, holdSec)) {
         markLicensedStockBeatUsed(dedup);
-        dedup.lastMuskStockClip = clipPath;
+        dedup.lastMuskStockClip = clipPath; dedup.lastRealClip = clipPath;
         console.log(`[Pipeline] Scene ${scene.index} zin ${beat.index}: ${source} voor "${q}"`);
         return true;
       }
@@ -17075,8 +17131,49 @@ async function rescueBeatVisualWhenEmpty(
     }
   }
 
+  // Plan-based multi-round rescue — expand Pexels/stock queries via search plan before AI
+  if (visualSearchPlanEnabled() && archivePexelsFallbackEnabled() && canUseLicensedStockBeat(dedup)) {
+    try {
+      const plan = await getOrGenerateSearchPlan(`s${scene.index}`, {
+        beatText: beat.text,
+        sceneText: scene.text ?? beat.text,
+        topic: videoTitle ?? beat.text,
+      });
+      const rounds = searchPlanRounds(plan);
+      for (const round of rounds) {
+        if (!round.queries.length) continue;
+        const clonedBeat = { ...beat, pexelsQueries: round.queries };
+        const hit = await adoptStockBeatClipFallback(
+          clonedBeat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile,
+          { visionFloor: 0, adoptSource: `rescue_plan_${round.label}` }
+        );
+        if (hit) {
+          console.log(`[Retrieval] s${scene.index}b${beat.index} plan round "${round.label}" HIT`);
+          return true;
+        }
+        console.log(`[Retrieval] s${scene.index}b${beat.index} plan round "${round.label}" miss`);
+      }
+    } catch (err) {
+      console.warn("[Retrieval] plan rescue error:", (err as Error).message?.slice(0, 100));
+    }
+  }
+
   if (await adoptAiBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile, { rescueTier: true })) {
     return true;
+  }
+
+  // Try extending the last real clip before falling back to color
+  if (dedup.lastRealClip) {
+    try {
+      const extended = await extendLastClip(dedup.lastRealClip, holdSec, scene.index, beat.index, workDir);
+      if (extended && await pushClip(extended, holdSec)) {
+        recordClipAdopt(dedup.clipAdoptAudit, scene.index, beat.index, beat.text, extended, "rescue_extend", undefined, dedup.segmentGeoLock);
+        console.log(`[Retrieval] s${scene.index}b${beat.index} extendLastClip HIT`);
+        return true;
+      }
+    } catch (err) {
+      console.warn("[Retrieval] extendLastClip error:", (err as Error).message?.slice(0, 80));
+    }
   }
 
   for (let attempt = 0; attempt < 4; attempt++) {
@@ -18021,7 +18118,7 @@ async function fetchArchiveSentenceMontage(
       clipBeatIndices.push(beatIndex);
       markCuratedAssetUsed(clipPath, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls);
       if (clipPath && !isPipelineFallbackClip(clipPath) && fs.existsSync(clipPath)) {
-        dedup.lastMuskStockClip = clipPath;
+        dedup.lastMuskStockClip = clipPath; dedup.lastRealClip = clipPath;
       }
       return true;
     });
@@ -18682,7 +18779,7 @@ async function fetchSceneVisuals(
       clipPath && !isPipelineFallbackClip(clipPath) && !isStillPhotoClip(clipPath) &&
       fs.existsSync(clipPath)
     ) {
-      dedup.lastMuskStockClip = clipPath;
+      dedup.lastMuskStockClip = clipPath; dedup.lastRealClip = clipPath;
     }
     return true;
   };
