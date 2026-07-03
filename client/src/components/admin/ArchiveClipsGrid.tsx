@@ -257,7 +257,7 @@ function LazyArchiveMedia({
       <img
         src={src ?? undefined}
         alt={asset.title ?? ""}
-        className="w-full h-full object-cover object-top"
+        className={`w-full ${mode === "preview" ? "max-h-[75vh] object-contain" : "h-full object-cover object-top"}`}
         loading="lazy"
         onError={() => setLoadError(true)}
       />
