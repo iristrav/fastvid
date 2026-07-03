@@ -371,11 +371,8 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
         );
       }
 
-      // Skip post-upload visual dedup when all clips are time-based fallback (continuous
-      // documentary footage). Adjacent fixed-interval clips look nearly identical and would
-      // all be flagged as duplicates, wiping out the entire upload.
-      const allTimeFallback = segments.every((s) => s.timeFallback);
-      if (!allTimeFallback) {
+      // Post-upload dedup disabled — save all clips as-is.
+      if (false) {
         void (async () => {
           try {
             const allAssets = await getMediaArchiveAssets(input.archiveId);
