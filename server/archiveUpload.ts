@@ -336,20 +336,32 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
           } else {
             enriched = { title: draftTitle, tags: userTags, sourceNote: fragmentNote };
           }
-          const { url, key: storedKey } = await storagePut(key, seg.buffer, "video/mp4");
-          const assetId = await createMediaArchiveAsset({
-            archiveId: input.archiveId,
-            title: enriched.title,
-            mediaType: "video",
-            mixKind,
-            mimeType: "video/mp4",
-            storageUrl: url,
-            storageKey: storedKey,
-            tags: enriched.tags,
-            sourceNote: enriched.sourceNote,
-            durationSec: storedDur,
-            isActive: 1,
-          });
+          let url: string, storedKey: string;
+          try {
+            ({ url, key: storedKey } = await storagePut(key, seg.buffer, "video/mp4"));
+          } catch (uploadErr) {
+            console.error(`[ArchiveUpload] S3 upload failed for clip ${seg.index + 1}:`, (uploadErr as Error).message?.slice(0, 120));
+            return null;
+          }
+          let assetId: number | null | undefined;
+          try {
+            assetId = await createMediaArchiveAsset({
+              archiveId: input.archiveId,
+              title: enriched.title,
+              mediaType: "video",
+              mixKind,
+              mimeType: "video/mp4",
+              storageUrl: url,
+              storageKey: storedKey,
+              tags: enriched.tags,
+              sourceNote: enriched.sourceNote,
+              durationSec: storedDur,
+              isActive: 1,
+            });
+          } catch (dbErr) {
+            console.error(`[ArchiveUpload] DB insert failed for clip ${seg.index + 1}:`, (dbErr as Error).message?.slice(0, 120));
+            return null;
+          }
           if (!assetId) return null;
           scheduleArchiveEmbeddingIndex(assetId);
           scheduleClipEmbeddingFromBuffer(assetId, seg.buffer);
@@ -362,7 +374,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
             clipTotal: segments.length,
             clipsSaved: savedCount,
           });
-          return getMediaArchiveAssetById(assetId);
+          try { return await getMediaArchiveAssetById(assetId); } catch { return null; }
           },
           uploadShouldContinue(jobId)
         )
