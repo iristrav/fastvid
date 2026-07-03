@@ -240,7 +240,7 @@ function LazyArchiveMedia({
       <div ref={containerRef} className={className}>
         <video
           src={src ?? undefined}
-          className="w-full h-full object-cover object-top"
+          className="w-full h-full object-cover object-[center_20%]"
           muted
           playsInline
           preload={mode === "preview" ? "auto" : "metadata"}
@@ -257,7 +257,7 @@ function LazyArchiveMedia({
       <img
         src={src ?? undefined}
         alt={asset.title ?? ""}
-        className="w-full h-full object-cover object-top"
+        className="w-full h-full object-cover object-[center_20%]"
         loading="lazy"
         onError={() => setLoadError(true)}
       />
