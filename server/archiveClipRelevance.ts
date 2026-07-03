@@ -127,9 +127,7 @@ async function detectMatchesArchiveSubject(dataUrls: string[], context: ArchiveS
               {
                 type: "text",
                 text:
-                  dataUrls.length > 1
-                    ? `${buildArchiveSubjectPrompt(context)}\n\nEr zijn ${dataUrls.length} stills van hetzelfde fragment — markeer true alleen als het fragment duidelijk past.`
-                    : buildArchiveSubjectPrompt(context),
+                  buildArchiveSubjectPrompt(context),
               },
               ...dataUrls.map((url) => ({
                 type: "image_url" as const,
@@ -240,7 +238,10 @@ export async function filterClipRangesByArchiveSubject(
     opts?.shouldContinue
   );
 
-  const kept = flags.filter((r): r is { start: number; end: number } => r != null);
+  // Slots left undefined mean the worker exited early (budget/cancel) — keep those clips.
+  const kept = flags
+    .map((r, i) => (r === undefined ? ranges[i] : r))
+    .filter((r): r is { start: number; end: number } => r !== null);
   const skipped = ranges.length - kept.length;
   opts?.onProgress?.(kept.length, ranges.length, skipped);
   if (skipped > 0) {
