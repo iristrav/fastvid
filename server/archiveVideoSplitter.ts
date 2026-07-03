@@ -47,6 +47,8 @@ const exec = (async (cmd: string, opts?: Record<string, unknown>) => {
 
 export type VideoClipSegment = {
   buffer: Buffer;
+  /** Path to extracted clip file on disk — set when using lazy-load mode to avoid holding all buffers in memory. */
+  localPath?: string;
   startSec: number;
   endSec: number;
   durationSec: number;
@@ -1007,9 +1009,15 @@ export type ArchiveSplitOptions = {
   subjectContext?: ArchiveSubjectContext;
 };
 
+export type SplitVideoResult = {
+  segments: VideoClipSegment[];
+  /** Call after all segments have been read/uploaded to free temp disk space. */
+  cleanup: () => void;
+};
+
 /**
- * Detect shot/scene changes and return one buffer per clip.
- * Never splits on fixed time intervals — only on detected visual cuts.
+ * Detect shot/scene changes and return one file path per clip (lazy-load).
+ * Caller must invoke result.cleanup() after consuming all segments.
  */
 export async function splitVideoBySceneChanges(
   inputBuffer: Buffer,
@@ -1017,7 +1025,7 @@ export async function splitVideoBySceneChanges(
   onProgress?: ArchiveSplitProgressFn,
   shouldContinue?: () => boolean,
   options?: ArchiveSplitOptions
-): Promise<VideoClipSegment[]> {
+): Promise<SplitVideoResult> {
   const startedAt = Date.now();
   const deadline = startedAt + splitBudgetMs();
   const hasBudget = () => Date.now() < deadline;
@@ -1064,13 +1072,8 @@ export async function splitVideoBySceneChanges(
           `Video too short (${totalDur.toFixed(1)}s). Each archive clip must be at least ${minSavedArchiveClipSec()} seconds.`
         );
       }
-      return [{
-        buffer: inputBuffer,
-        startSec: 0,
-        endSec: totalDur,
-        durationSec: totalDur,
-        index: 0,
-      }];
+      const cleanup = () => { try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* ignore */ } };
+      return { segments: [{ buffer: inputBuffer, startSec: 0, endSec: totalDur, durationSec: totalDur, index: 0 }], cleanup };
     }
 
     report({
@@ -1129,10 +1132,12 @@ export async function splitVideoBySceneChanges(
           ranges = filtered;
           skipRangeSubjectFilter = true;
         } else {
-          return [{ buffer: inputBuffer, startSec: 0, endSec: totalDur, durationSec: totalDur, index: 0 }];
+          const cleanup = () => { try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* ignore */ } };
+          return { segments: [{ buffer: inputBuffer, startSec: 0, endSec: totalDur, durationSec: totalDur, index: 0 }], cleanup };
         }
       } else {
-        return [{ buffer: inputBuffer, startSec: 0, endSec: totalDur, durationSec: totalDur, index: 0 }];
+        const cleanup = () => { try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* ignore */ } };
+        return { segments: [{ buffer: inputBuffer, startSec: 0, endSec: totalDur, durationSec: totalDur, index: 0 }], cleanup };
       }
     }
 
@@ -1183,10 +1188,11 @@ export async function splitVideoBySceneChanges(
         });
         try {
           await extractVideoSegment(extractSourcePath, outPath, start, end, streamCopyExtract);
-          const buf = fs.readFileSync(outPath);
-          if (buf.length < 8000) return null;
+          const fileStat = fs.statSync(outPath);
+          if (fileStat.size < 8000) return null;
           return {
-            buffer: buf,
+            buffer: Buffer.alloc(0), // placeholder — actual data read lazily via localPath
+            localPath: outPath,
             startSec: start,
             endSec: end,
             durationSec: dur,
@@ -1204,16 +1210,16 @@ export async function splitVideoBySceneChanges(
       canContinue
     );
 
-    const segments = extractResults
-      .filter((s): s is VideoClipSegment => s != null)
+    const segments: VideoClipSegment[] = (extractResults.filter((s) => s != null) as VideoClipSegment[])
       .filter((s) => s.durationSec >= minSavedArchiveClipSec() - 0.02)
       .sort((a, b) => a.startSec - b.startSec)
-      .map((seg, index) => ({ ...seg, index }));
+      .map((seg, index) => ({ ...seg, index } as VideoClipSegment));
     console.log(`[ArchiveSplit] extracted ${segments.length}/${ranges.length} shot clips in ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
 
     throwIfCancelled();
 
     if (segments.length === 0) {
+      fs.rmSync(workDir, { recursive: true, force: true });
       throw new ArchiveSplitError(
         `Shot detection found ${ranges.length} cuts but clip extraction failed (FFmpeg). ` +
           "Try a shorter video or disable auto-split."
@@ -1227,14 +1233,18 @@ export async function splitVideoBySceneChanges(
 
     // enforceSingleSceneClipSegments disabled — with low thresholds + splitLongRanges,
     // clips are already ≤10s and re-scanning creates false-positive sub-3s fragments.
-    console.log(`[ArchiveSplit] returning ${segments.length} clip(s)`);
-    return segments;
-  } finally {
-    try {
-      fs.rmSync(workDir, { recursive: true, force: true });
-    } catch {
-      /* ignore */
-    }
+    console.log(`[ArchiveSplit] returning ${segments.length} clip(s), workDir kept until upload completes`);
+
+    // Do NOT clean up workDir here — segments reference files inside it.
+    // The caller must invoke cleanup() after all segments are read/uploaded.
+    const cleanup = () => {
+      try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    };
+    return { segments, cleanup };
+  } catch (err) {
+    // On error, clean up immediately since no segments are returned.
+    try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    throw err;
   }
 }
 

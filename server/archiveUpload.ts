@@ -194,6 +194,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
 
   if (isVideo && autoSplitScenes) {
     let segments: VideoClipSegment[];
+    let splitCleanup: (() => void) | undefined;
     const onSplitProgress = (p: ArchiveSplitProgress) => {
       progress({
         stage: p.stage,
@@ -204,13 +205,15 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
       });
     };
     try {
-      segments = await splitVideoBySceneChanges(
+      const splitResult = await splitVideoBySceneChanges(
         input.buffer,
         mimeType,
         onSplitProgress,
         uploadShouldContinue(jobId),
         { subjectContext }
       );
+      segments = splitResult.segments;
+      splitCleanup = splitResult.cleanup;
     } catch (err) {
       if (err instanceof ArchiveSplitError && isArchiveUploadCancelRequested(jobId)) {
         finishArchiveUploadJobCancelled(jobId);
@@ -314,9 +317,17 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
           } else {
             enriched = { title: draftTitle, tags: userTags, sourceNote: fragmentNote };
           }
+          // Read buffer lazily from disk to avoid holding all 300 clips in memory at once.
+          let clipBuffer: Buffer;
+          try {
+            clipBuffer = seg.localPath ? fs.readFileSync(seg.localPath) : seg.buffer;
+          } catch (readErr) {
+            console.error(`[ArchiveUpload] read failed for clip ${seg.index + 1}:`, (readErr as Error).message?.slice(0, 120));
+            return null;
+          }
           let url: string, storedKey: string;
           try {
-            ({ url, key: storedKey } = await storagePut(key, seg.buffer, "video/mp4"));
+            ({ url, key: storedKey } = await storagePut(key, clipBuffer, "video/mp4"));
           } catch (uploadErr) {
             console.error(`[ArchiveUpload] S3 upload failed for clip ${seg.index + 1}:`, (uploadErr as Error).message?.slice(0, 120));
             return null;
@@ -342,7 +353,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
           }
           if (!assetId) return null;
           scheduleArchiveEmbeddingIndex(assetId);
-          scheduleClipEmbeddingFromBuffer(assetId, seg.buffer);
+          scheduleClipEmbeddingFromBuffer(assetId, clipBuffer);
           savedCount += 1;
           progress({
             stage: "save_clips",
@@ -357,6 +368,9 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
           uploadShouldContinue(jobId)
         )
       ).filter((a): a is NonNullable<typeof a> => a != null);
+
+      // Free temp clip files now that all uploads are complete.
+      splitCleanup?.();
 
       throwIfUploadCancelled(jobId);
 
