@@ -1055,53 +1055,55 @@ export async function splitVideoBySceneChanges(
   report({ stage: "split_ffmpeg", message: "Checking FFmpeg availability…", percent: 8 });
   await assertFfmpegAvailable();
 
-  // Prefer the Railway volume (real disk) over /tmp (tmpfs = RAM-backed).
-  // For 300 clips, /tmp would consume 300MB of RAM; /data uses actual disk.
-  const tmpBase =
+  // The source file is already in RAM as inputBuffer — write it to /tmp (tmpfs) so it never
+  // consumes space on the Railway volume. Clip output files (max 4 at a time × ~5MB each = ~20MB)
+  // go to the volume so they survive the heavier I/O without touching RAM-backed storage.
+  const sourceBase = os.tmpdir(); // /tmp — source file stays in RAM (same as inputBuffer)
+  const clipBase =
     (process.env.RAILWAY_VOLUME_MOUNT_PATH?.trim() && fs.existsSync(process.env.RAILWAY_VOLUME_MOUNT_PATH.trim()))
       ? process.env.RAILWAY_VOLUME_MOUNT_PATH.trim()
-      : fs.existsSync("/data")
-        ? "/data"
-        : os.tmpdir();
+      : fs.existsSync("/data") ? "/data" : os.tmpdir();
 
-  // Clean up stale temp dirs from previous killed/crashed uploads so they don't fill the volume.
+  // Clean up stale clip temp dirs from previous killed/crashed uploads.
+  if (clipBase !== sourceBase) {
+    try {
+      const staleMs = 2 * 60 * 60 * 1000; // 2 hours
+      let cleaned = 0;
+      for (const entry of fs.readdirSync(clipBase)) {
+        if (!entry.startsWith("fastvid-archive-split-")) continue;
+        const full = path.join(clipBase, entry);
+        try {
+          if (Date.now() - fs.statSync(full).mtimeMs > staleMs) {
+            fs.rmSync(full, { recursive: true, force: true });
+            cleaned++;
+          }
+        } catch { /* ignore */ }
+      }
+      if (cleaned > 0) console.log(`[ArchiveSplit] cleaned ${cleaned} stale temp dir(s) from ${clipBase}`);
+    } catch { /* ignore */ }
+  }
+
+  // Log disk space on both paths.
   try {
-    const entries = fs.readdirSync(tmpBase);
-    const staleMs = 2 * 60 * 60 * 1000; // 2 hours
-    let cleaned = 0;
-    for (const entry of entries) {
-      if (!entry.startsWith("fastvid-archive-split-")) continue;
-      const full = path.join(tmpBase, entry);
-      try {
-        const stat = fs.statSync(full);
-        if (Date.now() - stat.mtimeMs > staleMs) {
-          fs.rmSync(full, { recursive: true, force: true });
-          cleaned++;
-        }
-      } catch { /* ignore */ }
-    }
-    if (cleaned > 0) console.log(`[ArchiveSplit] cleaned up ${cleaned} stale temp dir(s) from ${tmpBase}`);
+    const { stdout: dfOut } = await execPromise(`df -h "${clipBase}" 2>/dev/null | tail -1`, { timeout: 5000 });
+    console.log(`[ArchiveSplit] disk (${clipBase}): ${dfOut.trim()}`);
   } catch { /* ignore */ }
 
-  // Log disk space before writing source file so we can diagnose full-disk failures.
-  try {
-    const { stdout: dfOut } = await execPromise(`df -h "${tmpBase}" 2>/dev/null | tail -1`, { timeout: 5000 });
-    console.log(`[ArchiveSplit] disk space (${tmpBase}): ${dfOut.trim()}`);
-  } catch { /* ignore */ }
-
-  const workDir = fs.mkdtempSync(path.join(tmpBase, "fastvid-archive-split-"));
+  // workDir holds only the source file; clips go to a separate dir on the volume.
+  const workDir = fs.mkdtempSync(path.join(sourceBase, "fastvid-archive-split-src-"));
+  const clipDir = fs.mkdtempSync(path.join(clipBase, "fastvid-archive-split-"));
   try {
     const ext = mimeType.includes("webm") ? "webm" : mimeType.includes("quicktime") || mimeType.includes("mov") ? "mov" : "mp4";
     const inputPath = path.join(workDir, `source.${ext}`);
-    console.log(`[ArchiveSplit] writing source file: ${(inputBuffer.length / (1024 * 1024)).toFixed(1)}MB → ${inputPath}`);
+    console.log(`[ArchiveSplit] writing ${(inputBuffer.length / (1024 * 1024)).toFixed(1)}MB source → ${inputPath}`);
     fs.writeFileSync(inputPath, inputBuffer);
     const writtenBytes = fs.statSync(inputPath).size;
     if (writtenBytes !== inputBuffer.length) {
       throw new ArchiveSplitError(
-        `Source file truncated on disk (${writtenBytes} of ${inputBuffer.length} bytes written) — volume may be full`
+        `Source file truncated (${writtenBytes}/${inputBuffer.length} bytes) — /tmp may be full`
       );
     }
-    console.log(`[ArchiveSplit] source file written ok (${writtenBytes} bytes on disk)`);
+    console.log(`[ArchiveSplit] source written ok (${writtenBytes} bytes)`);
 
 
 
@@ -1128,7 +1130,10 @@ export async function splitVideoBySceneChanges(
           `Video too short (${totalDur.toFixed(1)}s). Each archive clip must be at least ${minSavedArchiveClipSec()} seconds.`
         );
       }
-      const cleanup = () => { try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* ignore */ } };
+      const cleanup = () => {
+        try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* ignore */ }
+        try { fs.rmSync(clipDir, { recursive: true, force: true }); } catch { /* ignore */ }
+      };
       return { segments: [{ buffer: inputBuffer, startSec: 0, endSec: totalDur, durationSec: totalDur, index: 0 }], cleanup };
     }
 
@@ -1188,11 +1193,17 @@ export async function splitVideoBySceneChanges(
           ranges = filtered;
           skipRangeSubjectFilter = true;
         } else {
-          const cleanup = () => { try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* ignore */ } };
+          const cleanup = () => {
+            try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* ignore */ }
+            try { fs.rmSync(clipDir, { recursive: true, force: true }); } catch { /* ignore */ }
+          };
           return { segments: [{ buffer: inputBuffer, startSec: 0, endSec: totalDur, durationSec: totalDur, index: 0 }], cleanup };
         }
       } else {
-        const cleanup = () => { try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* ignore */ } };
+        const cleanup = () => {
+          try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* ignore */ }
+          try { fs.rmSync(clipDir, { recursive: true, force: true }); } catch { /* ignore */ }
+        };
         return { segments: [{ buffer: inputBuffer, startSec: 0, endSec: totalDur, durationSec: totalDur, index: 0 }], cleanup };
       }
     }
@@ -1235,7 +1246,7 @@ export async function splitVideoBySceneChanges(
       async (range, i) => {
         const { start, end } = range;
         const dur = end - start;
-        const outPath = path.join(workDir, `clip_${String(i).padStart(3, "0")}.mp4`);
+        const outPath = path.join(clipDir, `clip_${String(i).padStart(3, "0")}.mp4`);
         report({
           stage: "split_extract",
           message: `Clip ${i + 1}/${ranges.length}: ${formatTimecode(start)}–${formatTimecode(end)}`,
@@ -1305,11 +1316,13 @@ export async function splitVideoBySceneChanges(
 
     const cleanup = () => {
       try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* ignore */ }
+      try { fs.rmSync(clipDir, { recursive: true, force: true }); } catch { /* ignore */ }
     };
     return { segments, cleanup };
   } catch (err) {
     // On error, clean up immediately since no segments are returned.
     try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    try { fs.rmSync(clipDir, { recursive: true, force: true }); } catch { /* ignore */ }
     throw err;
   }
 }
