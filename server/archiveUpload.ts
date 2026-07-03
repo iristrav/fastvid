@@ -336,7 +336,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
           } else {
             enriched = { title: draftTitle, tags: userTags, sourceNote: fragmentNote };
           }
-          const { url } = await storagePut(key, seg.buffer, "video/mp4");
+          const { url, key: storedKey } = await storagePut(key, seg.buffer, "video/mp4");
           const assetId = await createMediaArchiveAsset({
             archiveId: input.archiveId,
             title: enriched.title,
@@ -344,7 +344,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
             mixKind,
             mimeType: "video/mp4",
             storageUrl: url,
-            storageKey: key,
+            storageKey: storedKey,
             tags: enriched.tags,
             sourceNote: enriched.sourceNote,
             durationSec: storedDur,
@@ -452,7 +452,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
     userProvidedTitle,
   });
   const key = `media-archive/${input.archiveId}/${Date.now()}-${Math.random().toString(36).slice(2, 6)}.${ext}`;
-  const { url } = await storagePut(key, input.buffer, mimeType);
+  const { url, key: storedKey } = await storagePut(key, input.buffer, mimeType);
 
   const assetId = await createMediaArchiveAsset({
     archiveId: input.archiveId,
@@ -461,7 +461,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
     mixKind,
     mimeType,
     storageUrl: url,
-    storageKey: key,
+    storageKey: storedKey,
     tags: enriched.tags,
     sourceNote: enriched.sourceNote,
     durationSec: minSavedArchiveClipSec(),

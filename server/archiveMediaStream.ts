@@ -58,10 +58,12 @@ async function streamArchiveAsset(req: Request, res: Response, assetId: number):
   // range requests, and streaming — avoids double download via temp file.
   const backend = getStorageBackend();
   if (backend === "s3" || backend === "forge") {
-    const key = asset.storageKey
-      ? normalizeStorageKey(asset.storageKey)
-      : asset.storageUrl.startsWith("/manus-storage/")
-        ? asset.storageUrl.replace(/^\/manus-storage\//, "")
+    // storageUrl always has the correct key (with hash suffix added by storagePut).
+    // storageKey in DB may lack the hash suffix — do not use it as primary source.
+    const key = asset.storageUrl.startsWith("/manus-storage/")
+      ? asset.storageUrl.replace(/^\/manus-storage\//, "")
+      : asset.storageKey
+        ? normalizeStorageKey(asset.storageKey)
         : null;
     if (key) {
       res.redirect(307, `/manus-storage/${key}`);
