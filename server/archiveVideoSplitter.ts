@@ -805,8 +805,9 @@ async function extractVideoSegment(
     } catch (err) {
       const errMsg = (err as Error).message ?? "";
       const stderr = (err as { stderr?: string }).stderr ?? "";
-      // Log full stderr for disk-full / codec failures — truncated messages hide root cause.
-      console.warn(`[ArchiveSplit] ffmpeg failed (cmd=${cmd.slice(0, 120)}): ${errMsg.slice(0, 200)} | stderr=${stderr.slice(0, 300)}`);
+      // Log the TAIL of stderr — FFmpeg prepends a long version banner before the actual error.
+      const stderrTail = stderr.length > 400 ? stderr.slice(-500) : stderr;
+      console.warn(`[ArchiveSplit] ffmpeg failed ss=${start}: ${errMsg.slice(0, 120)} | stderr_tail=${stderrTail.replace(/\n/g, " ").trim().slice(0, 400)}`);
       lastErr = errMsg.slice(0, 160) || lastErr;
       try {
         fs.unlinkSync(outputPath);
@@ -1094,7 +1095,14 @@ export async function splitVideoBySceneChanges(
     const inputPath = path.join(workDir, `source.${ext}`);
     console.log(`[ArchiveSplit] writing source file: ${(inputBuffer.length / (1024 * 1024)).toFixed(1)}MB → ${inputPath}`);
     fs.writeFileSync(inputPath, inputBuffer);
-    console.log(`[ArchiveSplit] source file written ok (${fs.statSync(inputPath).size} bytes)`);
+    const writtenBytes = fs.statSync(inputPath).size;
+    if (writtenBytes !== inputBuffer.length) {
+      throw new ArchiveSplitError(
+        `Source file truncated on disk (${writtenBytes} of ${inputBuffer.length} bytes written) — volume may be full`
+      );
+    }
+    console.log(`[ArchiveSplit] source file written ok (${writtenBytes} bytes on disk)`);
+
 
 
     report({ stage: "split_probe", message: "Measuring video duration (ffprobe)…", percent: 12 });
