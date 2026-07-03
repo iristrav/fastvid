@@ -1277,8 +1277,12 @@ export async function splitVideoBySceneChanges(
         });
         try {
           await extractVideoSegment(extractSourcePath, outPath, start, end, streamCopyExtract);
-          const fileStat = fs.statSync(outPath);
-          if (fileStat.size < 8000) {
+          const fileSize = fs.existsSync(outPath) ? fs.statSync(outPath).size : 0;
+          if (fileSize < 8000) {
+            if (i < 5 || i % 50 === 0) {
+              // Log first few and periodic silent failures so we can detect corrupt/truncated source files.
+              console.warn(`[ArchiveSplit] clip ${i} (${formatTimecode(start)}–${formatTimecode(end)}) empty output (${fileSize}B) — source may be truncated at ${formatTimecode(start)}`);
+            }
             try { fs.unlinkSync(outPath); } catch { /* ignore */ }
             return null;
           }
@@ -1325,6 +1329,13 @@ export async function splitVideoBySceneChanges(
       throw new ArchiveSplitError(
         `Shot detection found ${ranges.length} cuts but clip extraction failed (FFmpeg). ` +
           "Try a shorter video or disable auto-split."
+      );
+    }
+    // Warn if the vast majority of clips produced empty output — likely a corrupt/truncated source.
+    if (segments.length < ranges.length * 0.05 && ranges.length > 10) {
+      console.warn(
+        `[ArchiveSplit] WARNING: only ${segments.length}/${ranges.length} clips extracted (${Math.round(segments.length / ranges.length * 100)}%). ` +
+        `Source file may be truncated — video data ends around ${formatTimecode(segments[segments.length - 1]?.endSec ?? 0)}.`
       );
     }
     if (segments.length < ranges.length) {
