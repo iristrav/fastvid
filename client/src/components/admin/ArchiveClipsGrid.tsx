@@ -240,7 +240,7 @@ function LazyArchiveMedia({
       <div ref={containerRef} className={className}>
         <video
           src={src ?? undefined}
-          className="w-full h-full object-cover object-[center_20%]"
+          className={`w-full h-full object-cover ${mode === "preview" ? "object-top" : "object-[center_20%]"}`}
           muted
           playsInline
           preload={mode === "preview" ? "auto" : "metadata"}
