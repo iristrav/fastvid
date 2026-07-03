@@ -9,7 +9,6 @@ import * as os from "os";
 import * as path from "path";
 
 import type { ArchiveSubjectContext } from "./archiveClipRelevance";
-import { filterClipRangesByArchiveSubject } from "./archiveClipRelevance";
 import {
   ARCHIVE_MAX_UPLOAD_BYTES,
   ARCHIVE_MAX_VIDEO_DURATION_SEC,
@@ -1156,47 +1155,6 @@ export async function splitVideoBySceneChanges(
     );
 
     throwIfCancelled();
-    if (!hasBudget()) {
-      throw new ArchiveSplitError(
-        "Splitting timed out. Try a shorter video or temporarily disable AI tags."
-      );
-    }
-
-    // Filter out off-topic clips (modern narrators, unrelated footage) using vision AI.
-    if (!skipRangeSubjectFilter && options?.subjectContext && ranges.length > 0) {
-      report({
-        stage: "split_filter",
-        message: `Filtering ${ranges.length} clips for archive subject…`,
-        percent: 50,
-        clipTotal: ranges.length,
-      });
-      const beforeFilter = ranges.length;
-      ranges = await filterClipRangesByArchiveSubject(
-        analysisPath,
-        ranges,
-        options.subjectContext,
-        {
-          onProgress: (kept, total, skipped) => {
-            if (skipped > 0) {
-              report({
-                stage: "split_filter",
-                message: `Subject filter: ${kept}/${total} clips kept (${skipped} off-topic removed)`,
-                percent: 51,
-              });
-            }
-          },
-          shouldContinue: canContinue,
-        }
-      );
-      if (ranges.length < beforeFilter) {
-        console.log(`[ArchiveSplit] subject filter: ${beforeFilter} → ${ranges.length} clip ranges`);
-      }
-      if (ranges.length === 0) {
-        throw new ArchiveSplitError(
-          "No clips matched the archive subject after filtering. Try uploading footage that matches the archive topic."
-        );
-      }
-    }
 
     report({
       stage: "split_extract",
