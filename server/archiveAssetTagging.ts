@@ -88,12 +88,12 @@ const TAG_JSON_SCHEMA = {
   },
 } as const;
 
-/** Lighter schema for bulk retitle — strict json_schema often fails with vision on OpenAI. */
+/** Lighter schema for bulk retitle — strict: false so partial required list is accepted. */
 const TAG_JSON_SCHEMA_LIGHT = {
   type: "json_schema" as const,
   json_schema: {
     name: "archive_asset_tags_light",
-    strict: true,
+    strict: false,
     schema: {
       type: "object",
       properties: TAG_JSON_SCHEMA_PROPERTIES,
@@ -103,12 +103,12 @@ const TAG_JSON_SCHEMA_LIGHT = {
   },
 } as const;
 
-/** Minimal schema for bulk — only title + description + exactly 4 tags (most reliable). */
+/** Minimal schema for bulk — only title + description + tags; strict: false for compatibility. */
 const TAG_JSON_SCHEMA_MINIMAL = {
   type: "json_schema" as const,
   json_schema: {
     name: "archive_clip_four_tags",
-    strict: true,
+    strict: false,
     schema: {
       type: "object",
       properties: {

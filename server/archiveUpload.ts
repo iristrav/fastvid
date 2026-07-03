@@ -310,8 +310,10 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
             ? `Fragment uit ${parentSource} (${formatTimecode(seg.startSec)}–${formatTimecode(seg.endSec)})`
             : `Fragment ${formatTimecode(seg.startSec)}–${formatTimecode(seg.endSec)}`;
           const draftTitle = `${baseTitle} — clip ${seg.index + 1}`;
-          const enriched = perClipAiTags
-            ? await enrichArchiveAssetFields({
+          let enriched: { title: string; tags: string[]; sourceNote: string | null };
+          if (perClipAiTags) {
+            try {
+              enriched = await enrichArchiveAssetFields({
                 buffer: seg.buffer,
                 mimeType: "video/mp4",
                 autoGenerateTags: true,
@@ -323,12 +325,17 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
                 clipIndex: seg.index,
                 userProvidedTitle,
                 bulk: perClipAiBulk,
-              })
-            : {
-                title: draftTitle,
-                tags: userTags,
-                sourceNote: fragmentNote,
-              };
+              });
+            } catch (tagErr) {
+              console.warn(
+                `[ArchiveUpload] AI tagging failed for clip ${seg.index + 1}, saving with fallback title:`,
+                (tagErr as Error).message?.slice(0, 120)
+              );
+              enriched = { title: draftTitle, tags: userTags, sourceNote: fragmentNote };
+            }
+          } else {
+            enriched = { title: draftTitle, tags: userTags, sourceNote: fragmentNote };
+          }
           const { url } = await storagePut(key, seg.buffer, "video/mp4");
           const assetId = await createMediaArchiveAsset({
             archiveId: input.archiveId,
