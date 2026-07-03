@@ -355,7 +355,6 @@ export async function dedupeSegmentsForArchiveUpload(
   existingIndex: ArchiveFingerprintEntry[],
   parentSource?: string | null
 ): Promise<{ kept: VideoClipSegment[]; skipped: number }> {
-  const maxDist = defaultMaxHamming();
   const index: ArchiveFingerprintEntry[] = [...existingIndex];
   const kept: VideoClipSegment[] = [];
   let skipped = 0;
@@ -370,40 +369,19 @@ export async function dedupeSegmentsForArchiveUpload(
         }
       : null;
 
-    const overlapsKept = !seg.timeFallback && kept.some((k) => rangesOverlapRatio(seg, k) >= 0.65);
-    if (overlapsKept) {
-      skipped += 1;
-      continue;
-    }
-
-    // Time-based fallback clips are fixed-interval slices of continuous footage — adjacent
-    // clips look nearly identical in perceptual fingerprints but are not true duplicates.
-    // Skip fuzzy fingerprint check; only reject exact byte-for-byte matches.
-    if (seg.timeFallback) {
-      const exactDup = index.some((e) => e.exactKey === exactKey);
-      if (exactDup) {
-        skipped += 1;
-        continue;
-      }
-      index.push({ fp: [], fragment, exactKey });
-      kept.push({ ...seg, index: kept.length });
-      continue;
-    }
-
-    const fp = await fingerprintVideoBuffer(seg.buffer, "video/mp4", seg.durationSec);
-
-    if (segmentMatchesArchiveIndex(seg, exactKey, fp, fragment, index, maxDist)) {
+    // Archive uploads save all footage — only reject exact byte-for-byte duplicates.
+    // Perceptual fingerprint dedup is too aggressive for documentary/archive footage
+    // where consecutive shots share the same grain, era, and color profile.
+    const exactDup = index.some((e) => e.exactKey === exactKey);
+    if (exactDup) {
       skipped += 1;
       console.log(
-        `[ArchiveDedup] skip duplicate upload clip ${seg.index + 1} ` +
+        `[ArchiveDedup] skip exact duplicate upload clip ${seg.index + 1} ` +
           `(${seg.startSec.toFixed(1)}–${seg.endSec.toFixed(1)}s)`
       );
       continue;
     }
-
-    if (fp != null) {
-      index.push({ fp, fragment, exactKey });
-    }
+    index.push({ fp: [], fragment, exactKey });
     kept.push({ ...seg, index: kept.length });
   }
 
