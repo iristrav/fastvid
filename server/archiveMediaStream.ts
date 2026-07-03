@@ -6,6 +6,8 @@ import { createReadStream, statSync } from "fs";
 import { loadArchiveAssetFile } from "./archiveAssetLoad";
 import { getUserFromRequest } from "./_core/context";
 import { getMediaArchiveAssetById } from "./db";
+import { getStorageBackend } from "./storageBackend";
+import { normalizeStorageKey } from "./storageBackend";
 
 function streamLocalFileWithRange(req: Request, res: Response, filePath: string, contentType: string): void {
   const stat = statSync(filePath);
@@ -52,6 +54,22 @@ async function streamArchiveAsset(req: Request, res: Response, assetId: number):
     return;
   }
 
+  // For S3/Forge assets, redirect to the storage proxy which handles signed URLs,
+  // range requests, and streaming — avoids double download via temp file.
+  const backend = getStorageBackend();
+  if (backend === "s3" || backend === "forge") {
+    const key = asset.storageKey
+      ? normalizeStorageKey(asset.storageKey)
+      : asset.storageUrl.startsWith("/manus-storage/")
+        ? asset.storageUrl.replace(/^\/manus-storage\//, "")
+        : null;
+    if (key) {
+      res.redirect(307, `/manus-storage/${key}`);
+      return;
+    }
+  }
+
+  // Local storage: stream directly with range support.
   const loaded = await loadArchiveAssetFile(asset);
   if (!loaded.ok) {
     const message =
