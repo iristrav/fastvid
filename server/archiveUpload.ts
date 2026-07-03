@@ -11,9 +11,7 @@ import {
 } from "./archiveAssetTagging";
 import type { ArchiveSubjectContext } from "./archiveClipRelevance";
 import {
-  buildArchiveFingerprintIndex,
   dedupeArchiveVisualDuplicates,
-  dedupeSegmentsForArchiveUpload,
 } from "./archiveClipDedup";
 import {
   ArchiveSplitError,
@@ -241,27 +239,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
       throwIfUploadCancelled(jobId);
       assertSplitSegmentsValid(segments, autoSplitScenes);
 
-      const existingAssets = await getMediaArchiveAssets(input.archiveId);
-      const archiveFingerIndex = await buildArchiveFingerprintIndex(existingAssets);
-      const { kept: uniqueSegments, skipped: archiveDupes } = await dedupeSegmentsForArchiveUpload(
-        segments,
-        archiveFingerIndex,
-        parentSource
-      );
-      if (uniqueSegments.length === 0) {
-        finishArchiveUploadJob(jobId, false, "All clips were duplicates of existing archive footage");
-        throw new ArchiveUploadError(
-          400,
-          appErrorMessage(
-            APP_ERROR.SERVICE_ERROR,
-            "All extracted clips were visual duplicates — nothing new to save. Use Remove duplicates on existing clips or upload different material."
-          )
-        );
-      }
-      segments = uniqueSegments;
-      if (archiveDupes > 0) {
-        console.log(`[ArchiveUpload] ${archiveDupes} duplicate clip(s) skipped before save`);
-      }
+      // Dedup disabled — save all detected clips every time.
 
       progress({
         stage: "ai_tags",
