@@ -195,6 +195,8 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
   if (isVideo && autoSplitScenes) {
     // Pipeline: each clip is extracted → read → uploaded → file deleted before the next clip.
     // This keeps disk usage bounded to extractConcurrency × clipSize (never 300 files at once).
+    const { getStorageBackend } = await import("./storageBackend");
+    console.log(`[ArchiveUpload] storage backend: ${getStorageBackend()} archiveId=${input.archiveId} file="${fileLabel}"`);
     let totalRanges = 0; // filled by onProgress before extraction starts
     let savedCount = 0;
     const createdAssets: NonNullable<Awaited<ReturnType<typeof getMediaArchiveAssetById>>>[] = [];
@@ -224,6 +226,9 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
     // Per-segment pipeline callback — called by the splitter immediately after each clip is ready.
     // The file at localPath is deleted by the splitter after this callback returns.
     const onSegment = async (localPath: string, meta: Omit<VideoClipSegment, "buffer" | "localPath">) => {
+      console.log(
+        `[ArchiveUpload] onSegment clip ${meta.index + 1} (${formatTimecode(meta.startSec)}–${formatTimecode(meta.endSec)}, ${meta.durationSec.toFixed(2)}s) cancelled=${!uploadShouldContinue(jobId)()}`
+      );
       if (!uploadShouldContinue(jobId)()) return;
       const storedDur = archiveStoredDurationSec(meta.durationSec);
       if (storedDur <= 0) {
@@ -237,6 +242,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
       let clipBuffer: Buffer;
       try {
         clipBuffer = fs.readFileSync(localPath);
+        console.log(`[ArchiveUpload] clip ${meta.index + 1} read ok (${(clipBuffer.length / 1024).toFixed(0)}KB)`);
       } catch (readErr) {
         console.error(`[ArchiveUpload] read failed for clip ${meta.index + 1}:`, (readErr as Error).message?.slice(0, 120));
         return;
@@ -276,7 +282,9 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
 
       let url: string, storedKey: string;
       try {
+        console.log(`[ArchiveUpload] clip ${meta.index + 1} uploading to storage (key=${key})`);
         ({ url, key: storedKey } = await storagePut(key, clipBuffer, "video/mp4"));
+        console.log(`[ArchiveUpload] clip ${meta.index + 1} stored at url=${url} key=${storedKey}`);
       } catch (uploadErr) {
         console.error(`[ArchiveUpload] S3 upload failed for clip ${meta.index + 1}:`, (uploadErr as Error).message?.slice(0, 120));
         return;
@@ -332,6 +340,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
       );
       segments = splitResult.segments;
       splitCleanup = splitResult.cleanup;
+      console.log(`[ArchiveUpload] split complete: ${segments.length} segment(s) returned, savedCount=${savedCount}`);
       // The original video buffer is no longer needed — clear reference so GC can reclaim it.
       (input as Record<string, unknown>).buffer = Buffer.alloc(0);
     } catch (err) {
