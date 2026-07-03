@@ -214,6 +214,9 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
       );
       segments = splitResult.segments;
       splitCleanup = splitResult.cleanup;
+      // The original video buffer is no longer needed — clips are on disk.
+      // Clear reference so GC can reclaim it before uploading 300 clips.
+      (input as Record<string, unknown>).buffer = Buffer.alloc(0);
     } catch (err) {
       if (err instanceof ArchiveSplitError && isArchiveUploadCancelRequested(jobId)) {
         finishArchiveUploadJobCancelled(jobId);
