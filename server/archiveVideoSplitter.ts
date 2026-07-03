@@ -1109,6 +1109,27 @@ export async function splitVideoBySceneChanges(
 
     report({ stage: "split_probe", message: "Measuring video duration (ffprobe)…", percent: 12 });
     const totalDur = await probeVideoDurationSec(inputPath);
+    // Diagnose source file to catch truncated uploads or weird container issues.
+    try {
+      const ffprobe = process.env.FFPROBE_BIN || process.env.FFPROBE_PATH || "ffprobe";
+      const { stdout: probeOut } = await execPromise(
+        `${ffprobe} -v error -select_streams v:0 -show_entries stream=codec_name,nb_frames,duration,bit_rate -show_entries format=size,duration -of json "${inputPath}"`,
+        { timeout: 15_000 }
+      );
+      const probe = JSON.parse(probeOut) as { streams?: Array<{ codec_name?: string; nb_frames?: string; duration?: string; bit_rate?: string }>; format?: { size?: string; duration?: string } };
+      const stream = probe.streams?.[0];
+      console.log(
+        `[ArchiveSplit] source probe: bufSize=${(inputBuffer.length / (1024 * 1024)).toFixed(1)}MB ` +
+        `fileSize=${probe.format?.size ?? "?"} ` +
+        `format_dur=${probe.format?.duration ?? "?"} ` +
+        `stream_dur=${stream?.duration ?? "?"} ` +
+        `codec=${stream?.codec_name ?? "?"} ` +
+        `nb_frames=${stream?.nb_frames ?? "?"} ` +
+        `bitrate=${stream?.bit_rate ?? "?"}`
+      );
+    } catch (probeErr) {
+      console.warn(`[ArchiveSplit] source probe failed:`, (probeErr as Error).message?.slice(0, 100));
+    }
     if (totalDur <= 0) {
       throw new ArchiveSplitError("Could not determine video duration (ffprobe). File may be corrupt or unsupported.");
     }
