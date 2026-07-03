@@ -803,7 +803,11 @@ async function extractVideoSegment(
       await exec(cmd, { maxBuffer: 8 * 1024 * 1024, timeout: perClipTimeout });
       if (fs.existsSync(outputPath) && fs.statSync(outputPath).size >= 8000) return;
     } catch (err) {
-      lastErr = (err as Error).message?.slice(0, 160) ?? lastErr;
+      const errMsg = (err as Error).message ?? "";
+      const stderr = (err as { stderr?: string }).stderr ?? "";
+      // Log full stderr for disk-full / codec failures — truncated messages hide root cause.
+      console.warn(`[ArchiveSplit] ffmpeg failed (cmd=${cmd.slice(0, 120)}): ${errMsg.slice(0, 200)} | stderr=${stderr.slice(0, 300)}`);
+      lastErr = errMsg.slice(0, 160) || lastErr;
       try {
         fs.unlinkSync(outputPath);
       } catch {
@@ -1058,11 +1062,40 @@ export async function splitVideoBySceneChanges(
       : fs.existsSync("/data")
         ? "/data"
         : os.tmpdir();
+
+  // Clean up stale temp dirs from previous killed/crashed uploads so they don't fill the volume.
+  try {
+    const entries = fs.readdirSync(tmpBase);
+    const staleMs = 2 * 60 * 60 * 1000; // 2 hours
+    let cleaned = 0;
+    for (const entry of entries) {
+      if (!entry.startsWith("fastvid-archive-split-")) continue;
+      const full = path.join(tmpBase, entry);
+      try {
+        const stat = fs.statSync(full);
+        if (Date.now() - stat.mtimeMs > staleMs) {
+          fs.rmSync(full, { recursive: true, force: true });
+          cleaned++;
+        }
+      } catch { /* ignore */ }
+    }
+    if (cleaned > 0) console.log(`[ArchiveSplit] cleaned up ${cleaned} stale temp dir(s) from ${tmpBase}`);
+  } catch { /* ignore */ }
+
+  // Log disk space before writing source file so we can diagnose full-disk failures.
+  try {
+    const { stdout: dfOut } = await execPromise(`df -h "${tmpBase}" 2>/dev/null | tail -1`, { timeout: 5000 });
+    console.log(`[ArchiveSplit] disk space (${tmpBase}): ${dfOut.trim()}`);
+  } catch { /* ignore */ }
+
   const workDir = fs.mkdtempSync(path.join(tmpBase, "fastvid-archive-split-"));
   try {
     const ext = mimeType.includes("webm") ? "webm" : mimeType.includes("quicktime") || mimeType.includes("mov") ? "mov" : "mp4";
     const inputPath = path.join(workDir, `source.${ext}`);
+    console.log(`[ArchiveSplit] writing source file: ${(inputBuffer.length / (1024 * 1024)).toFixed(1)}MB → ${inputPath}`);
     fs.writeFileSync(inputPath, inputBuffer);
+    console.log(`[ArchiveSplit] source file written ok (${fs.statSync(inputPath).size} bytes)`);
+
 
     report({ stage: "split_probe", message: "Measuring video duration (ffprobe)…", percent: 12 });
     const totalDur = await probeVideoDurationSec(inputPath);
