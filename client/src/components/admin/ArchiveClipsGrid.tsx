@@ -240,7 +240,7 @@ function LazyArchiveMedia({
       <div ref={containerRef} className={className}>
         <video
           src={src ?? undefined}
-          className={`w-full ${mode === "preview" ? "max-h-[75vh] object-contain" : "h-full object-cover object-top"}`}
+          className="w-full h-full object-cover object-top"
           muted
           playsInline
           preload={mode === "preview" ? "auto" : "metadata"}
@@ -257,7 +257,7 @@ function LazyArchiveMedia({
       <img
         src={src ?? undefined}
         alt={asset.title ?? ""}
-        className={`w-full ${mode === "preview" ? "max-h-[75vh] object-contain" : "h-full object-cover object-top"}`}
+        className="w-full h-full object-cover object-top"
         loading="lazy"
         onError={() => setLoadError(true)}
       />
@@ -322,11 +322,11 @@ function AssetPreviewModal({
             </button>
           </div>
         </div>
-        <div className="bg-black flex items-center justify-center max-h-[75vh] min-h-[200px]">
+        <div className="bg-black flex items-center justify-center h-[75vh]">
           <LazyArchiveMedia
             asset={asset}
             mode="preview"
-            className="w-full max-h-[75vh] flex items-center justify-center"
+            className="w-full h-full overflow-hidden"
           />
         </div>
         {asset.durationSec != null && asset.durationSec > 0 && (
