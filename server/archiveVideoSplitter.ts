@@ -1261,8 +1261,27 @@ export async function splitVideoBySceneChanges(
     const streamCopyExtract = path.extname(inputPath).toLowerCase() === ".mp4" && isH264Codec(await probeVideoCodec(inputPath));
     const onSegment = options?.onSegment;
 
+    // Clamp all ranges to the probed video duration and drop sub-1s clips up front.
+    const MIN_EXTRACT_SEC = 1.0;
+    const clampedRanges = ranges.map((r) => ({
+      start: r.start,
+      end: Math.min(r.end, totalDur),
+    }));
+    const skippedEndOfVideo = clampedRanges.filter((r) => r.end - r.start < MIN_EXTRACT_SEC).length;
+    const extractRanges = clampedRanges.filter((r) => r.end - r.start >= MIN_EXTRACT_SEC);
+
+    console.log(
+      `[ArchiveSplit] extraction plan: duration=${totalDur.toFixed(2)}s ` +
+      `expected=${ranges.length} after_clamp=${extractRanges.length} ` +
+      `skipped_short=${skippedEndOfVideo} (clips <${MIN_EXTRACT_SEC}s after clamping to duration)`
+    );
+
+    // mapPool: `i` is captured as const before each await — no shared-index race condition.
+    let successCount = 0;
+    let failedCount = 0;
+
     const extractResults = await mapPool(
-      ranges,
+      extractRanges,
       extractConcurrency(),
       async (range, i) => {
         const { start, end } = range;
@@ -1270,19 +1289,20 @@ export async function splitVideoBySceneChanges(
         const outPath = path.join(clipDir, `clip_${String(i).padStart(3, "0")}.mp4`);
         report({
           stage: "split_extract",
-          message: `Clip ${i + 1}/${ranges.length}: ${formatTimecode(start)}–${formatTimecode(end)}`,
-          percent: 52 + Math.round(((i + 1) / ranges.length) * 33),
+          message: `Clip ${i + 1}/${extractRanges.length}: ${formatTimecode(start)}–${formatTimecode(end)}`,
+          percent: 52 + Math.round(((i + 1) / extractRanges.length) * 33),
           clipIndex: i + 1,
-          clipTotal: ranges.length,
+          clipTotal: extractRanges.length,
         });
         try {
           await extractVideoSegment(extractSourcePath, outPath, start, end, streamCopyExtract);
           const fileSize = fs.existsSync(outPath) ? fs.statSync(outPath).size : 0;
           if (fileSize < 8000) {
+            // Log first few and periodic silent failures to detect corrupt/truncated source files.
             if (i < 5 || i % 50 === 0) {
-              // Log first few and periodic silent failures so we can detect corrupt/truncated source files.
               console.warn(`[ArchiveSplit] clip ${i} (${formatTimecode(start)}–${formatTimecode(end)}) empty output (${fileSize}B) — source may be truncated at ${formatTimecode(start)}`);
             }
+            failedCount++;
             try { fs.unlinkSync(outPath); } catch { /* ignore */ }
             return null;
           }
@@ -1300,12 +1320,15 @@ export async function splitVideoBySceneChanges(
             } finally {
               try { fs.unlinkSync(outPath); } catch { /* ignore */ }
             }
+            successCount++;
             // Return a lightweight marker so the caller knows this segment was processed.
             return { buffer: Buffer.alloc(0), ...meta } satisfies VideoClipSegment;
           }
+          successCount++;
           // Legacy mode: keep file on disk, caller reads it later.
           return { buffer: Buffer.alloc(0), localPath: outPath, ...meta } satisfies VideoClipSegment;
         } catch (err) {
+          failedCount++;
           console.warn(
             `[ArchiveSplit] clip ${i} (${formatTimecode(start)}–${formatTimecode(end)}) failed:`,
             (err as Error).message
@@ -1317,11 +1340,17 @@ export async function splitVideoBySceneChanges(
       canContinue
     );
 
+    const elapsedS = ((Date.now() - startedAt) / 1000).toFixed(1);
+    console.log(
+      `[ArchiveSplit] extraction complete: duration=${totalDur.toFixed(2)}s ` +
+      `expected=${ranges.length} success=${successCount} ` +
+      `skipped_end_of_video=${skippedEndOfVideo} failed_ffmpeg=${failedCount} elapsed=${elapsedS}s`
+    );
+
     const segments: VideoClipSegment[] = (extractResults.filter((s) => s != null) as VideoClipSegment[])
       .filter((s) => s.durationSec >= minSavedArchiveClipSec() - 0.02)
       .sort((a, b) => a.startSec - b.startSec)
       .map((seg, index) => ({ ...seg, index } as VideoClipSegment));
-    console.log(`[ArchiveSplit] extracted ${segments.length}/${ranges.length} clips in ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
 
     throwIfCancelled();
 
@@ -1332,14 +1361,14 @@ export async function splitVideoBySceneChanges(
       );
     }
     // Warn if the vast majority of clips produced empty output — likely a corrupt/truncated source.
-    if (segments.length < ranges.length * 0.05 && ranges.length > 10) {
+    if (segments.length < extractRanges.length * 0.05 && extractRanges.length > 10) {
       console.warn(
-        `[ArchiveSplit] WARNING: only ${segments.length}/${ranges.length} clips extracted (${Math.round(segments.length / ranges.length * 100)}%). ` +
+        `[ArchiveSplit] WARNING: only ${segments.length}/${extractRanges.length} clips extracted (${Math.round(segments.length / extractRanges.length * 100)}%). ` +
         `Source file may be truncated — video data ends around ${formatTimecode(segments[segments.length - 1]?.endSec ?? 0)}.`
       );
     }
-    if (segments.length < ranges.length) {
-      console.warn(`[ArchiveSplit] partial extract: ${segments.length}/${ranges.length} clips — continuing`);
+    if (segments.length < extractRanges.length) {
+      console.warn(`[ArchiveSplit] partial extract: ${segments.length}/${extractRanges.length} clips — continuing`);
     }
 
     // enforceSingleSceneClipSegments disabled — with low thresholds + splitLongRanges,
