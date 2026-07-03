@@ -1225,28 +1225,10 @@ export async function splitVideoBySceneChanges(
       );
     }
 
-    report({
-      stage: "split_extract",
-      message: `Enforcing one scene per clip (${segments.length} extracted)…`,
-      percent: 86,
-      clipTotal: segments.length,
-    });
-    const singleSceneSegments = await enforceSingleSceneClipSegments(
-      segments,
-      workDir,
-      deadline,
-      canContinue
-    );
-    if (singleSceneSegments.length > segments.length) {
-      console.log(
-        `[ArchiveSplit] single-scene validation: ${segments.length} → ${singleSceneSegments.length} clip(s)`
-      );
-    }
-
-    // Visual dedup removed — archive saves all footage as-is.
-    // Dedup at search/retrieval time, not at upload time.
-    console.log(`[ArchiveSplit] returning ${singleSceneSegments.length} clip(s) (visual dedup skipped)`);
-    return singleSceneSegments;
+    // enforceSingleSceneClipSegments disabled — with low thresholds + splitLongRanges,
+    // clips are already ≤10s and re-scanning creates false-positive sub-3s fragments.
+    console.log(`[ArchiveSplit] returning ${segments.length} clip(s)`);
+    return segments;
   } finally {
     try {
       fs.rmSync(workDir, { recursive: true, force: true });
