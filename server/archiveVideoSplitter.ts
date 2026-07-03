@@ -1007,6 +1007,13 @@ function formatTimecode(sec: number): string {
 
 export type ArchiveSplitOptions = {
   subjectContext?: ArchiveSubjectContext;
+  /**
+   * Called immediately after each clip is extracted and ready on disk.
+   * The file at localPath is deleted by the splitter right after this callback returns.
+   * Use this to upload each clip to S3 before the next clip is written to disk,
+   * keeping disk usage bounded to extractConcurrency × clipSize at any time.
+   */
+  onSegment?: (localPath: string, meta: Omit<VideoClipSegment, "buffer" | "localPath">) => Promise<void>;
 };
 
 export type SplitVideoResult = {
@@ -1179,6 +1186,7 @@ export async function splitVideoBySceneChanges(
 
     const extractSourcePath = inputPath;
     const streamCopyExtract = path.extname(inputPath).toLowerCase() === ".mp4" && isH264Codec(await probeVideoCodec(inputPath));
+    const onSegment = options?.onSegment;
 
     const extractResults = await mapPool(
       ranges,
@@ -1197,21 +1205,35 @@ export async function splitVideoBySceneChanges(
         try {
           await extractVideoSegment(extractSourcePath, outPath, start, end, streamCopyExtract);
           const fileStat = fs.statSync(outPath);
-          if (fileStat.size < 8000) return null;
-          return {
-            buffer: Buffer.alloc(0), // placeholder — actual data read lazily via localPath
-            localPath: outPath,
+          if (fileStat.size < 8000) {
+            try { fs.unlinkSync(outPath); } catch { /* ignore */ }
+            return null;
+          }
+          const meta: Omit<VideoClipSegment, "buffer" | "localPath"> = {
             startSec: start,
             endSec: end,
             durationSec: dur,
             index: i,
             timeFallback: skipRangeSubjectFilter || undefined,
-          } satisfies VideoClipSegment;
+          };
+          if (onSegment) {
+            // Pipeline mode: upload immediately, then delete the file — disk stays bounded.
+            try {
+              await onSegment(outPath, meta);
+            } finally {
+              try { fs.unlinkSync(outPath); } catch { /* ignore */ }
+            }
+            // Return a lightweight marker so the caller knows this segment was processed.
+            return { buffer: Buffer.alloc(0), ...meta } satisfies VideoClipSegment;
+          }
+          // Legacy mode: keep file on disk, caller reads it later.
+          return { buffer: Buffer.alloc(0), localPath: outPath, ...meta } satisfies VideoClipSegment;
         } catch (err) {
           console.warn(
             `[ArchiveSplit] clip ${i} (${formatTimecode(start)}–${formatTimecode(end)}) failed:`,
             (err as Error).message
           );
+          try { fs.unlinkSync(outPath); } catch { /* ignore */ }
           return null;
         }
       },
@@ -1222,29 +1244,24 @@ export async function splitVideoBySceneChanges(
       .filter((s) => s.durationSec >= minSavedArchiveClipSec() - 0.02)
       .sort((a, b) => a.startSec - b.startSec)
       .map((seg, index) => ({ ...seg, index } as VideoClipSegment));
-    console.log(`[ArchiveSplit] extracted ${segments.length}/${ranges.length} shot clips in ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
+    console.log(`[ArchiveSplit] extracted ${segments.length}/${ranges.length} clips in ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
 
     throwIfCancelled();
 
     if (segments.length === 0) {
-      fs.rmSync(workDir, { recursive: true, force: true });
       throw new ArchiveSplitError(
         `Shot detection found ${ranges.length} cuts but clip extraction failed (FFmpeg). ` +
           "Try a shorter video or disable auto-split."
       );
     }
     if (segments.length < ranges.length) {
-      console.warn(
-        `[ArchiveSplit] partial extract: ${segments.length}/${ranges.length} clips saved — continuing`
-      );
+      console.warn(`[ArchiveSplit] partial extract: ${segments.length}/${ranges.length} clips — continuing`);
     }
 
     // enforceSingleSceneClipSegments disabled — with low thresholds + splitLongRanges,
     // clips are already ≤10s and re-scanning creates false-positive sub-3s fragments.
-    console.log(`[ArchiveSplit] returning ${segments.length} clip(s), workDir kept until upload completes`);
+    console.log(`[ArchiveSplit] returning ${segments.length} clip(s)`);
 
-    // Do NOT clean up workDir here — segments reference files inside it.
-    // The caller must invoke cleanup() after all segments are read/uploaded.
     const cleanup = () => {
       try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* ignore */ }
     };

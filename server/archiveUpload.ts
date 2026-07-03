@@ -193,29 +193,146 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
   const autoGenerateTags = input.autoGenerateTags ?? true;
 
   if (isVideo && autoSplitScenes) {
-    let segments: VideoClipSegment[];
-    let splitCleanup: (() => void) | undefined;
+    // Pipeline: each clip is extracted → read → uploaded → file deleted before the next clip.
+    // This keeps disk usage bounded to extractConcurrency × clipSize (never 300 files at once).
+    let totalRanges = 0; // filled by onProgress before extraction starts
+    let savedCount = 0;
+    const createdAssets: NonNullable<Awaited<ReturnType<typeof getMediaArchiveAssetById>>>[] = [];
+
     const onSplitProgress = (p: ArchiveSplitProgress) => {
+      if (p.stage === "split_extract" && p.clipIndex === 0 && p.clipTotal) {
+        totalRanges = p.clipTotal;
+        // Now we know clip count — decide AI tagging mode upfront.
+        const perClipAiTagsHere = autoGenerateTags && totalRanges <= 200;
+        progress({
+          stage: "ai_tags",
+          message: `${fileLabel}: extracting & saving ${totalRanges} clips…`,
+          percent: 52,
+          clipTotal: totalRanges,
+        });
+        void perClipAiTagsHere; // used via closure below
+      }
       progress({
         stage: p.stage,
         message: `${fileLabel}: ${p.message}`,
         percent: Math.min(85, p.percent),
         clipIndex: p.clipIndex,
-        clipTotal: p.clipTotal,
+        clipTotal: (p.clipTotal ?? totalRanges) || undefined,
       });
     };
+
+    // Per-segment pipeline callback — called by the splitter immediately after each clip is ready.
+    // The file at localPath is deleted by the splitter after this callback returns.
+    const onSegment = async (localPath: string, meta: Omit<VideoClipSegment, "buffer" | "localPath">) => {
+      if (!uploadShouldContinue(jobId)()) return;
+      const storedDur = archiveStoredDurationSec(meta.durationSec);
+      if (storedDur <= 0) {
+        console.log(
+          `[ArchiveUpload] skip clip ${meta.index + 1} (${formatTimecode(meta.startSec)}–${formatTimecode(meta.endSec)}): ` +
+            `${meta.durationSec.toFixed(2)}s < ${minSavedArchiveClipSec()}s minimum`
+        );
+        return;
+      }
+
+      let clipBuffer: Buffer;
+      try {
+        clipBuffer = fs.readFileSync(localPath);
+      } catch (readErr) {
+        console.error(`[ArchiveUpload] read failed for clip ${meta.index + 1}:`, (readErr as Error).message?.slice(0, 120));
+        return;
+      }
+
+      const key = `media-archive/${input.archiveId}/${Date.now()}-clip${meta.index}-${Math.random().toString(36).slice(2, 10)}.mp4`;
+      const fragmentNote = parentSource
+        ? `Fragment uit ${parentSource} (${formatTimecode(meta.startSec)}–${formatTimecode(meta.endSec)})`
+        : `Fragment ${formatTimecode(meta.startSec)}–${formatTimecode(meta.endSec)}`;
+      const draftTitle = `${baseTitle} — clip ${meta.index + 1}`;
+
+      // For large batches skip AI tagging to keep upload time reasonable.
+      const perClipAiTags = autoGenerateTags && (totalRanges || 999) <= 200;
+      const perClipAiBulk = perClipAiTags && (totalRanges || 999) > 15;
+      let enriched: { title: string; tags: string[]; sourceNote: string | null };
+      if (perClipAiTags) {
+        try {
+          enriched = await enrichArchiveAssetFields({
+            buffer: clipBuffer,
+            mimeType: "video/mp4",
+            autoGenerateTags: true,
+            baseTitle: draftTitle,
+            userTags,
+            sourceNote: fragmentNote,
+            archiveNicheTags,
+            parentFilename: input.filename,
+            clipIndex: meta.index,
+            userProvidedTitle,
+            bulk: perClipAiBulk,
+          });
+        } catch {
+          enriched = { title: draftTitle, tags: userTags, sourceNote: fragmentNote };
+        }
+      } else {
+        enriched = { title: draftTitle, tags: userTags, sourceNote: fragmentNote };
+      }
+
+      let url: string, storedKey: string;
+      try {
+        ({ url, key: storedKey } = await storagePut(key, clipBuffer, "video/mp4"));
+      } catch (uploadErr) {
+        console.error(`[ArchiveUpload] S3 upload failed for clip ${meta.index + 1}:`, (uploadErr as Error).message?.slice(0, 120));
+        return;
+      }
+
+      let assetId: number | null | undefined;
+      try {
+        assetId = await createMediaArchiveAsset({
+          archiveId: input.archiveId,
+          title: enriched.title,
+          mediaType: "video",
+          mixKind,
+          mimeType: "video/mp4",
+          storageUrl: url,
+          storageKey: storedKey,
+          tags: enriched.tags,
+          sourceNote: enriched.sourceNote,
+          durationSec: storedDur,
+          isActive: 1,
+        });
+      } catch (dbErr) {
+        console.error(`[ArchiveUpload] DB insert failed for clip ${meta.index + 1}:`, (dbErr as Error).message?.slice(0, 120));
+        return;
+      }
+      if (!assetId) return;
+
+      scheduleArchiveEmbeddingIndex(assetId);
+      scheduleClipEmbeddingFromBuffer(assetId, clipBuffer);
+      savedCount += 1;
+      progress({
+        stage: "save_clips",
+        message: `${fileLabel}: clip ${savedCount} saved`,
+        percent: 52 + Math.round((meta.index / Math.max(totalRanges, 1)) * 45),
+        clipIndex: meta.index + 1,
+        clipTotal: totalRanges || undefined,
+        clipsSaved: savedCount,
+      });
+      try {
+        const asset = await getMediaArchiveAssetById(assetId);
+        if (asset) createdAssets.push(asset);
+      } catch { /* ignore */ }
+    };
+
+    let segments: VideoClipSegment[];
+    let splitCleanup: (() => void) | undefined;
     try {
       const splitResult = await splitVideoBySceneChanges(
         input.buffer,
         mimeType,
         onSplitProgress,
         uploadShouldContinue(jobId),
-        { subjectContext }
+        { subjectContext, onSegment }
       );
       segments = splitResult.segments;
       splitCleanup = splitResult.cleanup;
-      // The original video buffer is no longer needed — clips are on disk.
-      // Clear reference so GC can reclaim it before uploading 300 clips.
+      // The original video buffer is no longer needed — clear reference so GC can reclaim it.
       (input as Record<string, unknown>).buffer = Buffer.alloc(0);
     } catch (err) {
       if (err instanceof ArchiveSplitError && isArchiveUploadCancelRequested(jobId)) {
@@ -233,151 +350,15 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
       const msg = (err as Error).message ?? "Scene split failed";
       finishArchiveUploadJob(jobId, false, msg);
       if (msg.includes("too long")) {
-        throw new ArchiveUploadError(
-          400,
-          appErrorMessage(APP_ERROR.FILE_TOO_LARGE, msg)
-        );
+        throw new ArchiveUploadError(400, appErrorMessage(APP_ERROR.FILE_TOO_LARGE, msg));
       }
       throw err;
     }
+    splitCleanup?.();
 
     if (segments.length >= 1) {
       throwIfUploadCancelled(jobId);
       assertSplitSegmentsValid(segments, autoSplitScenes);
-
-      // Dedup disabled — save all detected clips every time.
-
-      progress({
-        stage: "ai_tags",
-        message: `${fileLabel}: generating AI tags for ${segments.length} unique clips…`,
-        percent: 86,
-        clipTotal: segments.length,
-      });
-      // For large batches use bulk mode (1 frame, faster prompt) to keep upload time reasonable.
-      const perClipAiTags = autoGenerateTags && segments.length <= 200;
-      const perClipAiBulk = perClipAiTags && segments.length > 15;
-      throwIfUploadCancelled(jobId);
-
-      let savedCount = 0;
-      progress({
-        stage: "save_clips",
-        message: `${fileLabel}: saving clips (0/${segments.length})…`,
-        percent: 90,
-        clipTotal: segments.length,
-        clipsSaved: 0,
-      });
-
-      const createdAssets = (
-        await mapPool(
-          segments,
-          3,
-          async (seg) => {
-            throwIfUploadCancelled(jobId);
-            const storedDur = archiveStoredDurationSec(seg.durationSec);
-          if (storedDur <= 0) {
-            console.log(
-              `[ArchiveUpload] skip clip ${seg.index + 1} (${formatTimecode(seg.startSec)}–${formatTimecode(seg.endSec)}): ` +
-                `${seg.durationSec.toFixed(2)}s < ${minSavedArchiveClipSec()}s minimum`
-            );
-            progress({
-              stage: "filter_duration",
-              message: `${fileLabel}: clip ${seg.index + 1} skipped (shorter than ${minSavedArchiveClipSec()}s)`,
-              percent: 90 + Math.round((seg.index / segments.length) * 8),
-              clipIndex: seg.index + 1,
-              clipTotal: segments.length,
-              clipsSaved: savedCount,
-            });
-            return null;
-          }
-          const key = `media-archive/${input.archiveId}/${Date.now()}-clip${seg.index}-${Math.random().toString(36).slice(2, 10)}.mp4`;
-          const fragmentNote = parentSource
-            ? `Fragment uit ${parentSource} (${formatTimecode(seg.startSec)}–${formatTimecode(seg.endSec)})`
-            : `Fragment ${formatTimecode(seg.startSec)}–${formatTimecode(seg.endSec)}`;
-          const draftTitle = `${baseTitle} — clip ${seg.index + 1}`;
-          let enriched: { title: string; tags: string[]; sourceNote: string | null };
-          if (perClipAiTags) {
-            try {
-              enriched = await enrichArchiveAssetFields({
-                buffer: seg.buffer,
-                mimeType: "video/mp4",
-                autoGenerateTags: true,
-                baseTitle: draftTitle,
-                userTags,
-                sourceNote: fragmentNote,
-                archiveNicheTags,
-                parentFilename: input.filename,
-                clipIndex: seg.index,
-                userProvidedTitle,
-                bulk: perClipAiBulk,
-              });
-            } catch (tagErr) {
-              console.warn(
-                `[ArchiveUpload] AI tagging failed for clip ${seg.index + 1}, saving with fallback title:`,
-                (tagErr as Error).message?.slice(0, 120)
-              );
-              enriched = { title: draftTitle, tags: userTags, sourceNote: fragmentNote };
-            }
-          } else {
-            enriched = { title: draftTitle, tags: userTags, sourceNote: fragmentNote };
-          }
-          // Read buffer lazily from disk to avoid holding all 300 clips in memory at once.
-          // Delete the temp file immediately after reading to free disk space (tmpfs = RAM).
-          let clipBuffer: Buffer;
-          try {
-            clipBuffer = seg.localPath ? fs.readFileSync(seg.localPath) : seg.buffer;
-            if (seg.localPath) {
-              try { fs.unlinkSync(seg.localPath); } catch { /* ignore */ }
-            }
-          } catch (readErr) {
-            console.error(`[ArchiveUpload] read failed for clip ${seg.index + 1}:`, (readErr as Error).message?.slice(0, 120));
-            return null;
-          }
-          let url: string, storedKey: string;
-          try {
-            ({ url, key: storedKey } = await storagePut(key, clipBuffer, "video/mp4"));
-          } catch (uploadErr) {
-            console.error(`[ArchiveUpload] S3 upload failed for clip ${seg.index + 1}:`, (uploadErr as Error).message?.slice(0, 120));
-            return null;
-          }
-          let assetId: number | null | undefined;
-          try {
-            assetId = await createMediaArchiveAsset({
-              archiveId: input.archiveId,
-              title: enriched.title,
-              mediaType: "video",
-              mixKind,
-              mimeType: "video/mp4",
-              storageUrl: url,
-              storageKey: storedKey,
-              tags: enriched.tags,
-              sourceNote: enriched.sourceNote,
-              durationSec: storedDur,
-              isActive: 1,
-            });
-          } catch (dbErr) {
-            console.error(`[ArchiveUpload] DB insert failed for clip ${seg.index + 1}:`, (dbErr as Error).message?.slice(0, 120));
-            return null;
-          }
-          if (!assetId) return null;
-          scheduleArchiveEmbeddingIndex(assetId);
-          scheduleClipEmbeddingFromBuffer(assetId, clipBuffer);
-          savedCount += 1;
-          progress({
-            stage: "save_clips",
-            message: `${fileLabel}: clip ${savedCount}/${segments.length} saved`,
-            percent: 90 + Math.round((savedCount / segments.length) * 9),
-            clipIndex: seg.index + 1,
-            clipTotal: segments.length,
-            clipsSaved: savedCount,
-          });
-          try { return await getMediaArchiveAssetById(assetId); } catch { return null; }
-          },
-          uploadShouldContinue(jobId)
-        )
-      ).filter((a): a is NonNullable<typeof a> => a != null);
-
-      // Free temp clip files now that all uploads are complete.
-      splitCleanup?.();
 
       throwIfUploadCancelled(jobId);
 
