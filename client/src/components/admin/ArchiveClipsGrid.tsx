@@ -190,6 +190,10 @@ function LazyArchiveMedia({
   const [loadError, setLoadError] = useState(false);
   const canLoad = asset.mediaAvailable !== false;
 
+  // Images can be served directly from their storage URL (storage proxy or local-storage
+  // static), avoiding the extra server hop through the media streaming endpoint.
+  const mediaSrc = asset.mediaType === "image" ? asset.storageUrl : archiveClipMediaUrl(asset.id);
+
   useEffect(() => {
     setLoadError(false);
     if (!canLoad) {
@@ -197,7 +201,7 @@ function LazyArchiveMedia({
       return;
     }
     if (mode === "preview") {
-      setSrc(archiveClipMediaUrl(asset.id));
+      setSrc(mediaSrc);
       return;
     }
     const el = containerRef.current;
@@ -205,7 +209,7 @@ function LazyArchiveMedia({
     const obs = new IntersectionObserver(
       ([entry]) => {
         if (entry?.isIntersecting) {
-          setSrc(archiveClipMediaUrl(asset.id));
+          setSrc(mediaSrc);
           obs.disconnect();
         }
       },
@@ -213,7 +217,7 @@ function LazyArchiveMedia({
     );
     obs.observe(el);
     return () => obs.disconnect();
-  }, [asset.id, canLoad, mode]);
+  }, [asset.id, canLoad, mediaSrc, mode]);
 
   const issue = mediaIssueLabel(asset.mediaIssue ?? undefined);
 

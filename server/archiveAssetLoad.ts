@@ -181,9 +181,11 @@ export function archiveAssetHasLocalCopy(
   if (local && fs.existsSync(local)) return true;
 
   if (asset.storageUrl.startsWith("http://") || asset.storageUrl.startsWith("https://")) return true;
+  // /manus-storage/ URLs were uploaded via S3/Forge — available if that backend is active.
   if (asset.storageUrl.startsWith("/manus-storage/")) return getStorageBackend() === "s3" || getStorageBackend() === "forge";
-  if (asset.storageKey && (getStorageBackend() === "s3" || getStorageBackend() === "forge")) return true;
-
+  // /local-storage/ URLs were stored on local disk — check if the file still exists.
+  // Do NOT assume S3 availability just because storageKey is set: old local-storage clips
+  // were never uploaded to S3 and would 404 if we tried to fetch them.
   if (asset.storageUrl.startsWith("/local-storage/")) {
     const fileName = asset.storageUrl.replace(/^\/local-storage\//, "");
     return fs.existsSync(path.join(LOCAL_UPLOADS_DIR, fileName));
