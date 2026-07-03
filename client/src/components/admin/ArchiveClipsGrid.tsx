@@ -424,7 +424,7 @@ function AssetCard({
           <button
             type="button"
             onClick={(e) => { e.stopPropagation(); onToggleSelect(); }}
-            className={`absolute top-2 right-2 p-1.5 rounded-md border transition-colors ${
+            className={`absolute top-2 right-2 z-20 p-1.5 rounded-md border transition-colors ${
               selected
                 ? "bg-purple-600 border-purple-400 text-white"
                 : "bg-black/60 border-white/20 text-slate-300 hover:bg-black/80"
