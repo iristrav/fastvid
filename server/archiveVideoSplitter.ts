@@ -1043,7 +1043,15 @@ export async function splitVideoBySceneChanges(
   report({ stage: "split_ffmpeg", message: "Checking FFmpeg availability…", percent: 8 });
   await assertFfmpegAvailable();
 
-  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "fastvid-archive-split-"));
+  // Prefer the Railway volume (real disk) over /tmp (tmpfs = RAM-backed).
+  // For 300 clips, /tmp would consume 300MB of RAM; /data uses actual disk.
+  const tmpBase =
+    (process.env.RAILWAY_VOLUME_MOUNT_PATH?.trim() && fs.existsSync(process.env.RAILWAY_VOLUME_MOUNT_PATH.trim()))
+      ? process.env.RAILWAY_VOLUME_MOUNT_PATH.trim()
+      : fs.existsSync("/data")
+        ? "/data"
+        : os.tmpdir();
+  const workDir = fs.mkdtempSync(path.join(tmpBase, "fastvid-archive-split-"));
   try {
     const ext = mimeType.includes("webm") ? "webm" : mimeType.includes("quicktime") || mimeType.includes("mov") ? "mov" : "mp4";
     const inputPath = path.join(workDir, `source.${ext}`);

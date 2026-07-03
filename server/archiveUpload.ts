@@ -321,9 +321,13 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
             enriched = { title: draftTitle, tags: userTags, sourceNote: fragmentNote };
           }
           // Read buffer lazily from disk to avoid holding all 300 clips in memory at once.
+          // Delete the temp file immediately after reading to free disk space (tmpfs = RAM).
           let clipBuffer: Buffer;
           try {
             clipBuffer = seg.localPath ? fs.readFileSync(seg.localPath) : seg.buffer;
+            if (seg.localPath) {
+              try { fs.unlinkSync(seg.localPath); } catch { /* ignore */ }
+            }
           } catch (readErr) {
             console.error(`[ArchiveUpload] read failed for clip ${seg.index + 1}:`, (readErr as Error).message?.slice(0, 120));
             return null;
