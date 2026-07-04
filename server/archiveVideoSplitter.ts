@@ -850,20 +850,20 @@ async function extractVideoSegment(
   let lastErr = "extract failed";
   for (const cmd of strategies) {
     try {
-      await exec(cmd, { maxBuffer: 8 * 1024 * 1024, timeout: perClipTimeout });
-      if (fs.existsSync(outputPath) && fs.statSync(outputPath).size >= 8000) return;
+      const { stderr: ffstderr } = await exec(cmd, { maxBuffer: 8 * 1024 * 1024, timeout: perClipTimeout });
+      const fileSize = fs.existsSync(outputPath) ? fs.statSync(outputPath).size : 0;
+      if (fileSize >= 8000) return;
+      // FFmpeg exited 0 but produced no usable output — log stderr so we can diagnose.
+      const stderrSnip = (ffstderr ?? "").slice(-400).replace(/\n/g, " ").trim();
+      console.warn(`[ArchiveSplit] ffmpeg exit0 empty output (ss=${start} size=${fileSize}B): ${stderrSnip.slice(0, 350)}`);
+      try { fs.unlinkSync(outputPath); } catch { /* ignore */ }
     } catch (err) {
       const errMsg = (err as Error).message ?? "";
       const stderr = (err as { stderr?: string }).stderr ?? "";
-      // Log the TAIL of stderr — FFmpeg prepends a long version banner before the actual error.
       const stderrTail = stderr.length > 400 ? stderr.slice(-500) : stderr;
-      console.warn(`[ArchiveSplit] ffmpeg failed ss=${start}: ${errMsg.slice(0, 120)} | stderr_tail=${stderrTail.replace(/\n/g, " ").trim().slice(0, 400)}`);
+      console.warn(`[ArchiveSplit] ffmpeg error (ss=${start}): ${errMsg.slice(0, 120)} | ${stderrTail.replace(/\n/g, " ").trim().slice(0, 350)}`);
       lastErr = errMsg.slice(0, 160) || lastErr;
-      try {
-        fs.unlinkSync(outputPath);
-      } catch {
-        /* ignore */
-      }
+      try { fs.unlinkSync(outputPath); } catch { /* ignore */ }
     }
   }
   throw new Error(lastErr);
@@ -1460,6 +1460,28 @@ export async function splitVideoBySceneChanges(
     );
 
     throwIfCancelled();
+
+    // Pre-extraction readability check: probe 1 frame at 1/3 and 2/3 of effective duration.
+    // Logs whether video data is actually decodable at those positions.
+    {
+      const ffp = ffprobeBin();
+      for (const frac of [1 / 3, 2 / 3]) {
+        const pos = (effectiveDur * frac).toFixed(1);
+        try {
+          const { stdout } = await execPromise(
+            `${ffp} -v error -ss ${pos} -i "${inputPath}" -select_streams v:0 -frames:v 1 -show_entries frame=pts_time -of json`,
+            { timeout: 12_000 }
+          );
+          const d = JSON.parse(String(stdout)) as { frames?: Array<{ pts_time?: string }> };
+          const frames = d.frames ?? [];
+          console.log(
+            `[ArchiveSplit] readability check at ${pos}s: ${frames.length > 0 ? `OK (pts=${frames[0]?.pts_time ?? "?"})` : "NO FRAMES — source has no video data here"}`
+          );
+        } catch (e) {
+          console.warn(`[ArchiveSplit] readability check at ${pos}s failed: ${(e as Error).message?.slice(0, 80)}`);
+        }
+      }
+    }
 
     const onSegment = options?.onSegment;
 
