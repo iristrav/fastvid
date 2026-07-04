@@ -1398,52 +1398,9 @@ export async function splitVideoBySceneChanges(
     }
     ranges = capClipRanges(ranges, maxArchiveClips());
 
-    // When no hard cuts are found (documentaries with dissolves/fades), fall back to
-    // fixed-interval splitting using maxClipDurationSec as interval size.
-    let skipRangeSubjectFilter = false;
+    const skipRangeSubjectFilter = false;
     if (ranges.length <= 1) {
-      const msg = `[ArchiveSplit] no shot boundaries detected in ${effectiveDur.toFixed(1)}s video`;
-      console.warn(msg);
-      if (effectiveDur > MIN_SPLIT_VIDEO_SEC) {
-        const intervalSec = maxClipDurationSec();
-        const fallbackRanges: Array<{ start: number; end: number }> = [];
-        for (let t = 0; t < effectiveDur; t += intervalSec) {
-          fallbackRanges.push({ start: t, end: Math.min(t + intervalSec, effectiveDur) });
-        }
-        const filtered = fallbackRanges.filter((r) => r.end - r.start >= minSavedArchiveClipSec() - 0.02);
-        if (filtered.length > 0) {
-          console.log(
-            `[ArchiveSplit] time-based fallback: ${filtered.length} clip(s) of ~${intervalSec.toFixed(0)}s each`
-          );
-          ranges = filtered;
-          skipRangeSubjectFilter = true;
-        } else {
-          const cleanup = () => {
-            try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* ignore */ }
-            try { fs.rmSync(clipDir, { recursive: true, force: true }); } catch { /* ignore */ }
-          };
-          return { segments: [{ buffer: inputBuffer, startSec: 0, endSec: effectiveDur, durationSec: effectiveDur, index: 0 }], cleanup };
-        }
-      } else {
-        const cleanup = () => {
-          try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* ignore */ }
-          try { fs.rmSync(clipDir, { recursive: true, force: true }); } catch { /* ignore */ }
-        };
-        return { segments: [{ buffer: inputBuffer, startSec: 0, endSec: effectiveDur, durationSec: effectiveDur, index: 0 }], cleanup };
-      }
-    }
-
-    // Split any clip still longer than maxClipDurationSec into equal sub-intervals.
-    // This ensures every distinct visual moment gets its own clip, even when soft
-    // transitions (dissolves, fades) were not detected as hard cuts.
-    const beforeMaxDur = ranges.length;
-    ranges = splitLongRanges(ranges);
-    ranges = filterClipRangesBelowMinDuration(ranges);
-    ranges = capClipRanges(ranges, maxArchiveClips());
-    if (ranges.length !== beforeMaxDur) {
-      console.log(
-        `[ArchiveSplit] max-duration split: ${beforeMaxDur} → ${ranges.length} clip(s) (max ${maxClipDurationSec()}s each)`
-      );
+      console.warn(`[ArchiveSplit] no shot boundaries detected in ${effectiveDur.toFixed(1)}s video — saving as single clip`);
     }
 
     console.log(
