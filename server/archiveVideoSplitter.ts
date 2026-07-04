@@ -1086,13 +1086,17 @@ async function extractAllClipsSinglePass(
   }
   const sortedCuts = Array.from(cutSet).sort((a, b) => a - b);
 
-  // segment_times are all internal boundaries (everything except first and last cut).
-  const segmentTimes = sortedCuts.slice(1, -1).map((t) => t.toFixed(3)).join(",");
-
   // Start reading from first range start, stop at last range end.
   const passStart = sortedCuts[0];
   const passEnd = sortedCuts[sortedCuts.length - 1];
   const passDuration = passEnd - passStart;
+
+  // segment_times must be relative to the output start (passStart), because -reset_timestamps 1
+  // resets output PTS to 0. Internal cuts = absolute_time - passStart.
+  const segmentTimes = sortedCuts
+    .slice(1, -1)
+    .map((t) => (t - passStart).toFixed(3))
+    .join(",");
 
   // Match output file index → desired range. Output file i covers sortedCuts[i]–sortedCuts[i+1].
   const segmentCount = sortedCuts.length - 1;
