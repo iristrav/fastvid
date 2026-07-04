@@ -308,6 +308,56 @@ export async function probeVideoDurationSec(filePath: string): Promise<number> {
   }
 }
 
+/**
+ * Find the last timestamp at which actual decodable video frames exist.
+ * Returns `declaredDur` when the file appears complete; returns a smaller value
+ * when the video data is truncated (container declares more than it contains).
+ *
+ * Method: binary search with ffprobe frame decode checks. Each probe attempt decodes
+ * one frame at the given position; no frames → no data at that position.
+ * Typically completes in 5–15 probes (~10–30s total for a large truncated file).
+ */
+async function probeActualVideoDuration(filePath: string, declaredDur: number): Promise<number> {
+  const hasFrameAt = async (posSec: number): Promise<boolean> => {
+    try {
+      const ffprobe = ffprobeBin();
+      const { stdout } = await execPromise(
+        `${ffprobe} -v error -ss ${posSec.toFixed(2)} -i "${filePath}" ` +
+          `-select_streams v:0 -frames:v 1 -show_entries frame=pts_time -of json`,
+        { timeout: 12_000 }
+      );
+      const data = JSON.parse(String(stdout)) as { frames?: unknown[] };
+      return (data.frames?.length ?? 0) > 0;
+    } catch {
+      return false;
+    }
+  };
+
+  // Quick check: does data exist at 90% of the declared duration?
+  const checkPoint = declaredDur * 0.9;
+  if (await hasFrameAt(checkPoint)) {
+    return declaredDur; // File looks complete — trust the container duration.
+  }
+
+  // Data is missing near the end. Binary-search for the actual endpoint.
+  let lo = 0;
+  let hi = checkPoint;
+  let iterations = 0;
+  while (hi - lo > 5 && iterations < 10) {
+    const mid = (lo + hi) / 2;
+    if (await hasFrameAt(mid)) {
+      lo = mid;
+    } else {
+      hi = mid;
+    }
+    iterations++;
+  }
+
+  // lo is the last confirmed good position. Add a small buffer and round down.
+  const actualEnd = Math.max(0, lo + 5);
+  return Math.min(actualEnd, declaredDur);
+}
+
 export async function assertFfmpegAvailable(): Promise<void> {
   try {
     await exec(`${ffmpegBin()} -version`, { timeout: 8_000, maxBuffer: 256 * 1024 });
@@ -1279,6 +1329,19 @@ export async function splitVideoBySceneChanges(
       throw new ArchiveSplitError("Could not determine video duration (ffprobe). File may be corrupt or unsupported.");
     }
 
+    // Probe actual decodable video extent. The container may declare a long duration while
+    // actual frame data ends much earlier (truncated download / partial upload).
+    // We binary-search for where decodable frames stop and limit all processing to that.
+    const actualDur = await probeActualVideoDuration(inputPath, totalDur);
+    if (actualDur < totalDur - 1) {
+      const pct = Math.round((actualDur / totalDur) * 100);
+      console.warn(
+        `[ArchiveSplit] TRUNCATED SOURCE: container declares ${totalDur.toFixed(0)}s but ` +
+          `decodable video ends at ${actualDur.toFixed(1)}s (${pct}%). ` +
+          `Only clips within the first ${actualDur.toFixed(0)}s will be extracted.`
+      );
+    }
+
     const maxDur = maxArchiveVideoDurationSec();
     if (totalDur > maxDur) {
       const maxLabel =
@@ -1290,36 +1353,40 @@ export async function splitVideoBySceneChanges(
       );
     }
 
-    if (totalDur < MIN_SCENE_SEC * 2) {
-      if (totalDur < minSavedArchiveClipSec() - 0.05) {
+    // Use actualDur (proven decodable extent) for all range/detection logic.
+    // This prevents generating hundreds of ranges beyond the point where video data stops.
+    const effectiveDur = actualDur;
+
+    if (effectiveDur < MIN_SCENE_SEC * 2) {
+      if (effectiveDur < minSavedArchiveClipSec() - 0.05) {
         throw new ArchiveSplitError(
-          `Video too short (${totalDur.toFixed(1)}s). Each archive clip must be at least ${minSavedArchiveClipSec()} seconds.`
+          `Video too short (${effectiveDur.toFixed(1)}s). Each archive clip must be at least ${minSavedArchiveClipSec()} seconds.`
         );
       }
       const cleanup = () => {
         try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* ignore */ }
         try { fs.rmSync(clipDir, { recursive: true, force: true }); } catch { /* ignore */ }
       };
-      return { segments: [{ buffer: inputBuffer, startSec: 0, endSec: totalDur, durationSec: totalDur, index: 0 }], cleanup };
+      return { segments: [{ buffer: inputBuffer, startSec: 0, endSec: effectiveDur, durationSec: effectiveDur, index: 0 }], cleanup };
     }
 
     report({
       stage: "split_detect",
-      message: `Starting shot detection (${Math.round(totalDur)}s video)…`,
+      message: `Starting shot detection (${Math.round(effectiveDur)}s video)…`,
       percent: 18,
     });
 
-    let analysisPath = await prepareAnalysisVideo(inputPath, workDir, totalDur, report);
-    let cuts = await detectSceneCutTimes(analysisPath, totalDur, deadline);
+    let analysisPath = await prepareAnalysisVideo(inputPath, workDir, effectiveDur, report);
+    let cuts = await detectSceneCutTimes(analysisPath, effectiveDur, deadline);
 
     // Retry on normalized video when exotic codecs/containers hid cuts on the first pass.
-    if (cuts.length < 2 && totalDur > MIN_SPLIT_VIDEO_SEC && analysisPath === inputPath) {
-      analysisPath = await normalizeSourceForAnalysis(inputPath, workDir, totalDur, report);
-      cuts = await detectSceneCutTimes(analysisPath, totalDur, deadline);
+    if (cuts.length < 2 && effectiveDur > MIN_SPLIT_VIDEO_SEC && analysisPath === inputPath) {
+      analysisPath = await normalizeSourceForAnalysis(inputPath, workDir, effectiveDur, report);
+      cuts = await detectSceneCutTimes(analysisPath, effectiveDur, deadline);
       console.log(`[ArchiveSplit] retry after normalize: ${cuts.length} cut(s)`);
     }
 
-    let ranges = buildClipRanges(cuts, totalDur);
+    let ranges = buildClipRanges(cuts, effectiveDur);
     ranges = mergeFlashFragmentsOnly(ranges);
     ranges = filterClipRangesBelowMinDuration(ranges);
     if (ranges.length > 1 && hasBudget()) {
@@ -1343,13 +1410,13 @@ export async function splitVideoBySceneChanges(
     // fixed-interval splitting using maxClipDurationSec as interval size.
     let skipRangeSubjectFilter = false;
     if (ranges.length <= 1) {
-      const msg = `[ArchiveSplit] no shot boundaries detected in ${totalDur.toFixed(1)}s video`;
+      const msg = `[ArchiveSplit] no shot boundaries detected in ${effectiveDur.toFixed(1)}s video`;
       console.warn(msg);
-      if (totalDur > MIN_SPLIT_VIDEO_SEC) {
+      if (effectiveDur > MIN_SPLIT_VIDEO_SEC) {
         const intervalSec = maxClipDurationSec();
         const fallbackRanges: Array<{ start: number; end: number }> = [];
-        for (let t = 0; t < totalDur; t += intervalSec) {
-          fallbackRanges.push({ start: t, end: Math.min(t + intervalSec, totalDur) });
+        for (let t = 0; t < effectiveDur; t += intervalSec) {
+          fallbackRanges.push({ start: t, end: Math.min(t + intervalSec, effectiveDur) });
         }
         const filtered = fallbackRanges.filter((r) => r.end - r.start >= minSavedArchiveClipSec() - 0.02);
         if (filtered.length > 0) {
@@ -1363,14 +1430,14 @@ export async function splitVideoBySceneChanges(
             try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* ignore */ }
             try { fs.rmSync(clipDir, { recursive: true, force: true }); } catch { /* ignore */ }
           };
-          return { segments: [{ buffer: inputBuffer, startSec: 0, endSec: totalDur, durationSec: totalDur, index: 0 }], cleanup };
+          return { segments: [{ buffer: inputBuffer, startSec: 0, endSec: effectiveDur, durationSec: effectiveDur, index: 0 }], cleanup };
         }
       } else {
         const cleanup = () => {
           try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* ignore */ }
           try { fs.rmSync(clipDir, { recursive: true, force: true }); } catch { /* ignore */ }
         };
-        return { segments: [{ buffer: inputBuffer, startSec: 0, endSec: totalDur, durationSec: totalDur, index: 0 }], cleanup };
+        return { segments: [{ buffer: inputBuffer, startSec: 0, endSec: effectiveDur, durationSec: effectiveDur, index: 0 }], cleanup };
       }
     }
 
@@ -1388,7 +1455,7 @@ export async function splitVideoBySceneChanges(
     }
 
     console.log(
-      `[ArchiveSplit] ${cuts.length} shot cuts → ${ranges.length} clip(s) (${totalDur.toFixed(1)}s, ` +
+      `[ArchiveSplit] ${cuts.length} shot cuts → ${ranges.length} clip(s) (effectiveDur=${effectiveDur.toFixed(1)}s, ` +
         `scdet=${scdetThreshold()} scene=${sceneThreshold()} maxDur=${maxClipDurationSec()}s)`
     );
 
