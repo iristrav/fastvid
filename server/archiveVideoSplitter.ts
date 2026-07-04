@@ -1333,19 +1333,6 @@ export async function splitVideoBySceneChanges(
       throw new ArchiveSplitError("Could not determine video duration (ffprobe). File may be corrupt or unsupported.");
     }
 
-    // Probe actual decodable video extent. The container may declare a long duration while
-    // actual frame data ends much earlier (truncated download / partial upload).
-    // We binary-search for where decodable frames stop and limit all processing to that.
-    const actualDur = await probeActualVideoDuration(inputPath, totalDur);
-    if (actualDur < totalDur - 1) {
-      const pct = Math.round((actualDur / totalDur) * 100);
-      console.warn(
-        `[ArchiveSplit] TRUNCATED SOURCE: container declares ${totalDur.toFixed(0)}s but ` +
-          `decodable video ends at ${actualDur.toFixed(1)}s (${pct}%). ` +
-          `Only clips within the first ${actualDur.toFixed(0)}s will be extracted.`
-      );
-    }
-
     const maxDur = maxArchiveVideoDurationSec();
     if (totalDur > maxDur) {
       const maxLabel =
@@ -1357,9 +1344,10 @@ export async function splitVideoBySceneChanges(
       );
     }
 
-    // Use actualDur (proven decodable extent) for all range/detection logic.
-    // This prevents generating hundreds of ranges beyond the point where video data stops.
-    const effectiveDur = actualDur;
+    // Trust the container-reported duration. Fast-seek probing (probeActualVideoDuration) was
+    // unreliable for files with sparse keyframes — ffprobe timed out at 90% of duration and the
+    // binary search converged to ~10s, falsely truncating all processing to a tiny window.
+    const effectiveDur = totalDur;
 
     if (effectiveDur < MIN_SCENE_SEC * 2) {
       if (effectiveDur < minSavedArchiveClipSec() - 0.05) {
@@ -1465,21 +1453,22 @@ export async function splitVideoBySceneChanges(
 
     throwIfCancelled();
 
-    // Pre-extraction readability check: probe 1 frame at 1/3 and 2/3 of effective duration.
-    // Logs whether video data is actually decodable at those positions.
+    // Pre-extraction readability check: probe 1 frame at 1/3 and 2/3 of the container duration
+    // using slow-seek (ss after -i) so keyframe gaps don't cause false misses.
+    // This diagnoses genuinely truncated files without affecting extraction.
     {
       const ffp = ffprobeBin();
       for (const frac of [1 / 3, 2 / 3]) {
-        const pos = (effectiveDur * frac).toFixed(1);
+        const pos = (totalDur * frac).toFixed(1);
         try {
           const { stdout } = await execPromise(
-            `${ffp} -v error -ss ${pos} -i "${inputPath}" -select_streams v:0 -frames:v 1 -show_entries frame=pts_time -of json`,
-            { timeout: 12_000 }
+            `${ffp} -v error -i "${inputPath}" -ss ${pos} -select_streams v:0 -frames:v 1 -show_entries frame=pts_time -of json`,
+            { timeout: 60_000 }
           );
           const d = JSON.parse(String(stdout)) as { frames?: Array<{ pts_time?: string }> };
           const frames = d.frames ?? [];
           console.log(
-            `[ArchiveSplit] readability check at ${pos}s: ${frames.length > 0 ? `OK (pts=${frames[0]?.pts_time ?? "?"})` : "NO FRAMES — source has no video data here"}`
+            `[ArchiveSplit] readability check at ${pos}s/${totalDur.toFixed(0)}s: ${frames.length > 0 ? `OK (pts=${frames[0]?.pts_time ?? "?"})` : "NO FRAMES — source may be truncated here"}`
           );
         } catch (e) {
           console.warn(`[ArchiveSplit] readability check at ${pos}s failed: ${(e as Error).message?.slice(0, 80)}`);
