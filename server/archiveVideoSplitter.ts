@@ -1112,8 +1112,9 @@ async function extractAllClipsSinglePass(
 
   const outputPattern = path.join(clipDir, "singlepass_%04d.mp4");
 
-  // Timeout: allow 60s base + 1s per second of video span (ultrafast ~2–5× real-time).
-  const timeoutMs = Math.round(Math.min(3_600_000, Math.max(120_000, passDuration * 1000 + 60_000)));
+  // Timeout: 5× real-time + 60s base. Under server load ultrafast encode can run at ~1.5–2× real-time,
+  // so 1× was not enough. Cap at 2 hours for very long sources.
+  const timeoutMs = Math.round(Math.min(7_200_000, Math.max(300_000, passDuration * 5000 + 60_000)));
 
   // Use slow-seek (-ss AFTER -i) so ffmpeg decodes linearly — no keyframe hunting.
   const ssArgs = passStart > 0.5 ? `-ss ${passStart.toFixed(3)}` : "";
