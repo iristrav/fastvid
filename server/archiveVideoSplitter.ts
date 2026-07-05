@@ -1540,13 +1540,26 @@ export async function splitVideoBySceneChanges(
     throwIfCancelled();
 
     if (segments.length === 0) {
-      // Extraction produced nothing — fall back to saving the whole video as one clip.
-      console.warn(`[ArchiveSplit] extraction produced 0 clips — saving full video as single clip`);
-      const cleanup = () => {
-        try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* ignore */ }
-        try { fs.rmSync(clipDir, { recursive: true, force: true }); } catch { /* ignore */ }
-      };
-      return { segments: [{ buffer: inputBuffer, startSec: 0, endSec: totalDur, durationSec: totalDur, index: 0 }], cleanup };
+      // Single-pass produced nothing (exotic codec / container issue).
+      // Re-encode to plain h264, rebuild ranges from the same cuts, and retry extraction.
+      console.warn(`[ArchiveSplit] extraction produced 0 clips — re-encoding source and retrying`);
+      try {
+        const reencPath = path.join(workDir, "reenc.mp4");
+        const reencTimeout = Math.round(Math.max(120_000, totalDur * 5000 + 60_000));
+        await exec(
+          `${ffmpegBin()} -y -i "${inputPath}" -c:v libx264 -preset ultrafast -crf 23 -pix_fmt yuv420p -an -movflags +faststart -threads 2 "${reencPath}"`,
+          { maxBuffer: 8 * 1024 * 1024, timeout: reencTimeout }
+        );
+        const retry = await extractAllClipsSinglePass(reencPath, clipDir, extractRanges, skipRangeSubjectFilter, onProgress, onSegment, shouldContinue);
+        if (retry.segments.length > 0) {
+          segments = retry.segments.filter((s) => s.durationSec >= 1.0 - 0.02);
+          successCount = retry.successCount;
+          failedCount = retry.failedCount;
+          console.log(`[ArchiveSplit] re-encode retry: ${segments.length} clips recovered`);
+        }
+      } catch (reencErr) {
+        console.warn(`[ArchiveSplit] re-encode retry failed: ${(reencErr as Error).message?.slice(0, 120)}`);
+      }
     }
     if (segments.length < extractRanges.length * 0.05 && extractRanges.length > 10) {
       console.warn(
