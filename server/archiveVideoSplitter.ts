@@ -76,7 +76,7 @@ export class ArchiveSplitError extends Error {
 
 export const MIN_SPLIT_VIDEO_SEC = 4;
 const MIN_SCENE_SEC = 0.12;
-const DEFAULT_MAX_CLIPS = 300;
+const DEFAULT_MAX_CLIPS = 99999; // no practical limit — video length determines clip count
 /** Minimum seconds between distinct shot cuts (filters grain/flicker false positives). */
 const DEFAULT_MIN_SHOT_CUT_GAP_SEC = 0.55;
 /** Legacy min clip length for env override — only sub-flash glitches are merged, not full shots. */
@@ -90,7 +90,7 @@ const SINGLE_SCENE_VALIDATE_MAX_DEPTH = 4;
 const DEFAULT_SCENE_THRESHOLD = 0.03;
 const DEFAULT_SCDET_THRESHOLD = 1;
 /** Split any clip longer than this into fixed intervals — catches scenes without hard cuts. */
-const DEFAULT_MAX_CLIP_DURATION_SEC = 5;
+const DEFAULT_MAX_CLIP_DURATION_SEC = 8;
 const DEFAULT_CUT_MERGE_GAP_SEC = 0.18;
 const DEFAULT_SPLIT_BUDGET_MS = 3_600_000;
 const DEFAULT_MAX_SOURCE_SEC = ARCHIVE_MAX_VIDEO_DURATION_SEC;
