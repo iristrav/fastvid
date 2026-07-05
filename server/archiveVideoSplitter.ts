@@ -80,7 +80,7 @@ const DEFAULT_MAX_CLIPS = 300;
 /** Minimum seconds between distinct shot cuts (filters grain/flicker false positives). */
 const DEFAULT_MIN_SHOT_CUT_GAP_SEC = 0.55;
 /** Legacy min clip length for env override — only sub-flash glitches are merged, not full shots. */
-const DEFAULT_MIN_OUTPUT_CLIP_SEC = 1.0;
+const DEFAULT_MIN_OUTPUT_CLIP_SEC = 2.0;
 /** Never merge shots — sub-1s clips are simply dropped, not glued to neighbours. */
 const DEFAULT_FLASH_MERGE_MAX_SEC = 0.0;
 const INTERNAL_RESCAN_MIN_SEC = 0.85;
@@ -1371,7 +1371,7 @@ export async function splitVideoBySceneChanges(
 
     let ranges = buildClipRanges(cuts, effectiveDur);
     ranges = mergeFlashFragmentsOnly(ranges);
-    ranges = filterClipRangesBelowMinDuration(ranges, 1.0);
+    ranges = filterClipRangesBelowMinDuration(ranges, 2.0);
     if (ranges.length > 1 && hasBudget()) {
       for (let pass = 0; pass < INTERNAL_RESCAN_PASSES && hasBudget(); pass++) {
         throwIfCancelled();
@@ -1383,7 +1383,7 @@ export async function splitVideoBySceneChanges(
         });
         ranges = await rescanRangesForInteriorCuts(analysisPath, ranges, deadline, shouldContinue);
         ranges = mergeFlashFragmentsOnly(ranges);
-        ranges = filterClipRangesBelowMinDuration(ranges, 1.0);
+        ranges = filterClipRangesBelowMinDuration(ranges, 2.0);
         if (ranges.length === before) break;
       }
     }
@@ -1398,7 +1398,7 @@ export async function splitVideoBySceneChanges(
     // This catches shots without hard cuts (dissolves, fades, long uncut scenes).
     const beforeMaxDur = ranges.length;
     ranges = splitLongRanges(ranges);
-    ranges = filterClipRangesBelowMinDuration(ranges, 1.0);
+    ranges = filterClipRangesBelowMinDuration(ranges, 2.0);
     ranges = capClipRanges(ranges, maxArchiveClips());
     if (ranges.length !== beforeMaxDur) {
       console.log(
@@ -1524,7 +1524,7 @@ export async function splitVideoBySceneChanges(
     );
 
     segments = segments
-      .filter((s) => s.durationSec >= 1.0 - 0.02)
+      .filter((s) => s.durationSec >= 2.0 - 0.05)
       .sort((a, b) => a.startSec - b.startSec)
       .map((seg, index) => ({ ...seg, index } as VideoClipSegment));
 
@@ -1566,7 +1566,7 @@ export async function splitVideoBySceneChanges(
         );
         const retrySegments = retryResults.filter((s) => s != null) as VideoClipSegment[];
         if (retrySegments.length > 0) {
-          segments = retrySegments.filter((s) => s.durationSec >= 1.0 - 0.02);
+          segments = retrySegments.filter((s) => s.durationSec >= 2.0 - 0.05);
           successCount = segments.length;
           failedCount = extractRanges.length - successCount;
           console.log(`[ArchiveSplit] re-encode retry: ${segments.length} clips recovered`);
