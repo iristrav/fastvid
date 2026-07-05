@@ -90,7 +90,7 @@ const SINGLE_SCENE_VALIDATE_MAX_DEPTH = 4;
 const DEFAULT_SCENE_THRESHOLD = 0.08;
 const DEFAULT_SCDET_THRESHOLD = 2;
 /** Split any clip longer than this into fixed intervals — catches scenes without hard cuts. */
-const DEFAULT_MAX_CLIP_DURATION_SEC = 120;
+const DEFAULT_MAX_CLIP_DURATION_SEC = 10;
 const DEFAULT_CUT_MERGE_GAP_SEC = 0.18;
 const DEFAULT_SPLIT_BUDGET_MS = 3_600_000;
 const DEFAULT_MAX_SOURCE_SEC = ARCHIVE_MAX_VIDEO_DURATION_SEC;
