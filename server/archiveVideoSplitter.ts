@@ -81,8 +81,8 @@ const DEFAULT_MAX_CLIPS = 300;
 const DEFAULT_MIN_SHOT_CUT_GAP_SEC = 0.55;
 /** Legacy min clip length for env override — only sub-flash glitches are merged, not full shots. */
 const DEFAULT_MIN_OUTPUT_CLIP_SEC = 1.0;
-/** Merge shots shorter than this into the adjacent shot (flash/glitch suppression). */
-const DEFAULT_FLASH_MERGE_MAX_SEC = 1.0;
+/** Never merge shots — sub-1s clips are simply dropped, not glued to neighbours. */
+const DEFAULT_FLASH_MERGE_MAX_SEC = 0.0;
 const INTERNAL_RESCAN_MIN_SEC = 0.85;
 const INTERNAL_RESCAN_MAX_RANGES = 300;
 const INTERNAL_RESCAN_PASSES = 3;
@@ -1381,7 +1381,7 @@ export async function splitVideoBySceneChanges(
 
     let ranges = buildClipRanges(cuts, effectiveDur);
     ranges = mergeFlashFragmentsOnly(ranges);
-    ranges = filterClipRangesBelowMinDuration(ranges);
+    ranges = filterClipRangesBelowMinDuration(ranges, 1.0);
     if (ranges.length > 1 && hasBudget()) {
       for (let pass = 0; pass < INTERNAL_RESCAN_PASSES && hasBudget(); pass++) {
         throwIfCancelled();
@@ -1393,7 +1393,7 @@ export async function splitVideoBySceneChanges(
         });
         ranges = await rescanRangesForInteriorCuts(analysisPath, ranges, deadline, shouldContinue);
         ranges = mergeFlashFragmentsOnly(ranges);
-        ranges = filterClipRangesBelowMinDuration(ranges);
+        ranges = filterClipRangesBelowMinDuration(ranges, 1.0);
         if (ranges.length === before) break;
       }
     }
@@ -1408,7 +1408,7 @@ export async function splitVideoBySceneChanges(
     // This catches shots without hard cuts (dissolves, fades, long uncut scenes).
     const beforeMaxDur = ranges.length;
     ranges = splitLongRanges(ranges);
-    ranges = filterClipRangesBelowMinDuration(ranges);
+    ranges = filterClipRangesBelowMinDuration(ranges, 1.0);
     ranges = capClipRanges(ranges, maxArchiveClips());
     if (ranges.length !== beforeMaxDur) {
       console.log(
