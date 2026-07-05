@@ -1542,7 +1542,7 @@ export async function splitVideoBySceneChanges(
     );
 
     segments = segments
-      .filter((s) => s.durationSec >= minSavedArchiveClipSec() - 0.02)
+      .filter((s) => s.durationSec >= 1.0 - 0.02)
       .sort((a, b) => a.startSec - b.startSec)
       .map((seg, index) => ({ ...seg, index } as VideoClipSegment));
 
