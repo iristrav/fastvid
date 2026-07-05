@@ -1540,10 +1540,13 @@ export async function splitVideoBySceneChanges(
     throwIfCancelled();
 
     if (segments.length === 0) {
-      throw new ArchiveSplitError(
-        `Shot detection found ${ranges.length} cuts but clip extraction failed (FFmpeg). ` +
-          "Try a shorter video or disable auto-split."
-      );
+      // Extraction produced nothing — fall back to saving the whole video as one clip.
+      console.warn(`[ArchiveSplit] extraction produced 0 clips — saving full video as single clip`);
+      const cleanup = () => {
+        try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* ignore */ }
+        try { fs.rmSync(clipDir, { recursive: true, force: true }); } catch { /* ignore */ }
+      };
+      return { segments: [{ buffer: inputBuffer, startSec: 0, endSec: totalDur, durationSec: totalDur, index: 0 }], cleanup };
     }
     if (segments.length < extractRanges.length * 0.05 && extractRanges.length > 10) {
       console.warn(

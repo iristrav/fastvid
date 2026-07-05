@@ -5,7 +5,7 @@ export const AXIOS_TIMEOUT_MS = 30_000;
 
 /** Media archive — max source video length and file size (server env can override). */
 export const ARCHIVE_MAX_VIDEO_DURATION_SEC = 24 * 60 * 60; // kept for env override only — no hard limit enforced
-export const ARCHIVE_MAX_UPLOAD_MB = 10240; // 10 GB
+export const ARCHIVE_MAX_UPLOAD_MB = 20480; // 20 GB
 export const ARCHIVE_MAX_UPLOAD_BYTES = ARCHIVE_MAX_UPLOAD_MB * 1024 * 1024;
 /** Minimum stored on-screen duration for archive clips (still = Ken Burns hold; video = shot length). */
 export const ARCHIVE_MIN_SAVED_CLIP_SEC = 3;
