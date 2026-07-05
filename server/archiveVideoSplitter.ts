@@ -87,8 +87,8 @@ const INTERNAL_RESCAN_MIN_SEC = 0.85;
 const INTERNAL_RESCAN_MAX_RANGES = 300;
 const INTERNAL_RESCAN_PASSES = 3;
 const SINGLE_SCENE_VALIDATE_MAX_DEPTH = 4;
-const DEFAULT_SCENE_THRESHOLD = 0.08;
-const DEFAULT_SCDET_THRESHOLD = 2;
+const DEFAULT_SCENE_THRESHOLD = 0.03;
+const DEFAULT_SCDET_THRESHOLD = 1;
 /** Split any clip longer than this into fixed intervals — catches scenes without hard cuts. */
 const DEFAULT_MAX_CLIP_DURATION_SEC = 10;
 const DEFAULT_CUT_MERGE_GAP_SEC = 0.18;
@@ -128,7 +128,7 @@ export function sceneThreshold(): number {
   const raw = process.env.ARCHIVE_SCENE_THRESHOLD?.trim();
   if (raw) {
     const n = parseFloat(raw);
-    if (!isNaN(n) && n >= 0.08 && n <= 0.9) return n;
+    if (!isNaN(n) && n >= 0.01 && n <= 0.9) return n;
   }
   return DEFAULT_SCENE_THRESHOLD;
 }
