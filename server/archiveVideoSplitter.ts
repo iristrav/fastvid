@@ -90,7 +90,7 @@ const SINGLE_SCENE_VALIDATE_MAX_DEPTH = 4;
 const DEFAULT_SCENE_THRESHOLD = 0.08;
 const DEFAULT_SCDET_THRESHOLD = 2;
 /** Split any clip longer than this into fixed intervals — catches scenes without hard cuts. */
-const DEFAULT_MAX_CLIP_DURATION_SEC = 10;
+const DEFAULT_MAX_CLIP_DURATION_SEC = 120;
 const DEFAULT_CUT_MERGE_GAP_SEC = 0.18;
 const DEFAULT_SPLIT_BUDGET_MS = 3_600_000;
 const DEFAULT_MAX_SOURCE_SEC = ARCHIVE_MAX_VIDEO_DURATION_SEC;
@@ -1401,7 +1401,19 @@ export async function splitVideoBySceneChanges(
 
     const skipRangeSubjectFilter = false;
     if (ranges.length <= 1) {
-      console.warn(`[ArchiveSplit] no shot boundaries detected in ${effectiveDur.toFixed(1)}s video — saving as single clip`);
+      console.warn(`[ArchiveSplit] no shot boundaries detected in ${effectiveDur.toFixed(1)}s video — will split on max duration`);
+    }
+
+    // Always split any range longer than maxClipDurationSec into equal sub-intervals.
+    // This catches shots without hard cuts (dissolves, fades, long uncut scenes).
+    const beforeMaxDur = ranges.length;
+    ranges = splitLongRanges(ranges);
+    ranges = filterClipRangesBelowMinDuration(ranges);
+    ranges = capClipRanges(ranges, maxArchiveClips());
+    if (ranges.length !== beforeMaxDur) {
+      console.log(
+        `[ArchiveSplit] max-duration split: ${beforeMaxDur} → ${ranges.length} clip(s) (max ${maxClipDurationSec()}s each)`
+      );
     }
 
     console.log(
