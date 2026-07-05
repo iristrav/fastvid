@@ -1454,76 +1454,67 @@ export async function splitVideoBySceneChanges(
 
     report({
       stage: "split_extract",
-      message: `Extracting ${extractRanges.length} clips (single pass)…`,
+      message: `Extracting ${extractRanges.length} clips…`,
       percent: 52,
       clipTotal: extractRanges.length,
       clipIndex: 0,
     });
 
-    // Primary strategy: one linear ffmpeg pass using the segment muxer.
-    // Why: per-clip seeking with sparse keyframes forces ffmpeg to decode from the
-    // nearest keyframe (which may be minutes away), overrunning the per-clip timeout.
-    // A single linear pass has zero seek overhead regardless of keyframe spacing.
-    let { segments, successCount, failedCount } = await extractAllClipsSinglePass(
-      inputPath, clipDir, extractRanges,
-      skipRangeSubjectFilter, report, onSegment, canContinue
-    );
+    // Primary strategy: per-clip parallel extraction using fast-seek.
+    // Fast-seek (-ss before -i) snaps to the nearest keyframe and re-encodes,
+    // which is reliable for any container/codec and handles sparse keyframes correctly.
+    // The segment muxer was the previous primary but produced empty files for clips
+    // that didn't align with keyframe boundaries.
+    let successCount = 0;
+    let failedCount = 0;
+    const streamCopyExtract = false; // always re-encode for correctness
 
-    // Fallback: if single-pass produced nothing, retry with individual per-clip seeks.
-    // Covers edge cases: container format not supported by segment muxer, very short clips, etc.
-    if (segments.length === 0 && extractRanges.length > 0) {
-      console.warn(`[ArchiveSplit] single-pass produced 0 clips — falling back to per-clip extraction`);
-      successCount = 0;
-      failedCount = 0;
-      const streamCopyExtract = path.extname(inputPath).toLowerCase() === ".mp4" && isH264Codec(await probeVideoCodec(inputPath));
-
-      const fallbackResults = await mapPool(
-        extractRanges,
-        extractConcurrency(),
-        async (range, i) => {
-          const { start, end } = range;
-          const outPath = path.join(clipDir, `clip_${String(i).padStart(3, "0")}.mp4`);
-          report({
-            stage: "split_extract",
-            message: `Clip ${i + 1}/${extractRanges.length}: ${formatTimecode(start)}–${formatTimecode(end)}`,
-            percent: 52 + Math.round(((i + 1) / extractRanges.length) * 33),
-            clipIndex: i + 1,
-            clipTotal: extractRanges.length,
-          });
-          try {
-            await extractVideoSegment(inputPath, outPath, start, end, streamCopyExtract);
-            const fileSize = fs.existsSync(outPath) ? fs.statSync(outPath).size : 0;
-            if (fileSize < 8000) {
-              if (i < 5 || i % 50 === 0) {
-                console.warn(`[ArchiveSplit] fallback clip ${i} (${formatTimecode(start)}–${formatTimecode(end)}) empty (${fileSize}B)`);
-              }
-              failedCount++;
-              try { fs.unlinkSync(outPath); } catch { /* ignore */ }
-              return null;
+    const perClipResults = await mapPool(
+      extractRanges,
+      extractConcurrency(),
+      async (range, i) => {
+        const { start, end } = range;
+        const outPath = path.join(clipDir, `clip_${String(i).padStart(3, "0")}.mp4`);
+        report({
+          stage: "split_extract",
+          message: `Clip ${i + 1}/${extractRanges.length}: ${formatTimecode(start)}–${formatTimecode(end)}`,
+          percent: 52 + Math.round(((i + 1) / extractRanges.length) * 33),
+          clipIndex: i + 1,
+          clipTotal: extractRanges.length,
+        });
+        try {
+          await extractVideoSegment(inputPath, outPath, start, end, streamCopyExtract);
+          const fileSize = fs.existsSync(outPath) ? fs.statSync(outPath).size : 0;
+          if (fileSize < 8000) {
+            if (i < 5 || i % 50 === 0) {
+              console.warn(`[ArchiveSplit] clip ${i} (${formatTimecode(start)}–${formatTimecode(end)}) empty (${fileSize}B)`);
             }
-            const meta: Omit<VideoClipSegment, "buffer" | "localPath"> = {
-              startSec: start, endSec: end, durationSec: end - start, index: i,
-              timeFallback: skipRangeSubjectFilter || undefined,
-            };
-            if (onSegment) {
-              try { await onSegment(outPath, meta); }
-              finally { try { fs.unlinkSync(outPath); } catch { /* ignore */ } }
-              successCount++;
-              return { buffer: Buffer.alloc(0), ...meta } satisfies VideoClipSegment;
-            }
-            successCount++;
-            return { buffer: Buffer.alloc(0), localPath: outPath, ...meta } satisfies VideoClipSegment;
-          } catch (err) {
             failedCount++;
-            console.warn(`[ArchiveSplit] fallback clip ${i} failed:`, (err as Error).message?.slice(0, 100));
             try { fs.unlinkSync(outPath); } catch { /* ignore */ }
             return null;
           }
-        },
-        canContinue
-      );
-      segments = (fallbackResults.filter((s) => s != null) as VideoClipSegment[]);
-    }
+          const meta: Omit<VideoClipSegment, "buffer" | "localPath"> = {
+            startSec: start, endSec: end, durationSec: end - start, index: i,
+            timeFallback: skipRangeSubjectFilter || undefined,
+          };
+          if (onSegment) {
+            try { await onSegment(outPath, meta); }
+            finally { try { fs.unlinkSync(outPath); } catch { /* ignore */ } }
+            successCount++;
+            return { buffer: Buffer.alloc(0), ...meta } satisfies VideoClipSegment;
+          }
+          successCount++;
+          return { buffer: Buffer.alloc(0), localPath: outPath, ...meta } satisfies VideoClipSegment;
+        } catch (err) {
+          failedCount++;
+          console.warn(`[ArchiveSplit] clip ${i} failed:`, (err as Error).message?.slice(0, 100));
+          try { fs.unlinkSync(outPath); } catch { /* ignore */ }
+          return null;
+        }
+      },
+      canContinue
+    );
+    let segments = (perClipResults.filter((s) => s != null) as VideoClipSegment[]);
 
     const elapsedS = ((Date.now() - startedAt) / 1000).toFixed(1);
     console.log(
@@ -1550,11 +1541,34 @@ export async function splitVideoBySceneChanges(
           `${ffmpegBin()} -y -i "${inputPath}" -c:v libx264 -preset ultrafast -crf 23 -pix_fmt yuv420p -an -movflags +faststart -threads 2 "${reencPath}"`,
           { maxBuffer: 8 * 1024 * 1024, timeout: reencTimeout }
         );
-        const retry = await extractAllClipsSinglePass(reencPath, clipDir, extractRanges, skipRangeSubjectFilter, onProgress, onSegment, shouldContinue);
-        if (retry.segments.length > 0) {
-          segments = retry.segments.filter((s) => s.durationSec >= 1.0 - 0.02);
-          successCount = retry.successCount;
-          failedCount = retry.failedCount;
+        const retryResults = await mapPool(
+          extractRanges,
+          extractConcurrency(),
+          async (range, i) => {
+            const { start, end } = range;
+            const outPath = path.join(clipDir, `reenc_clip_${String(i).padStart(3, "0")}.mp4`);
+            try {
+              await extractVideoSegment(reencPath, outPath, start, end, false);
+              const fileSize = fs.existsSync(outPath) ? fs.statSync(outPath).size : 0;
+              if (fileSize < 8000) { try { fs.unlinkSync(outPath); } catch { /* ignore */ } return null; }
+              const meta: Omit<VideoClipSegment, "buffer" | "localPath"> = {
+                startSec: start, endSec: end, durationSec: end - start, index: i,
+                timeFallback: skipRangeSubjectFilter || undefined,
+              };
+              if (onSegment) {
+                try { await onSegment(outPath, meta); } finally { try { fs.unlinkSync(outPath); } catch { /* ignore */ } }
+                return { buffer: Buffer.alloc(0), ...meta } satisfies VideoClipSegment;
+              }
+              return { buffer: Buffer.alloc(0), localPath: outPath, ...meta } satisfies VideoClipSegment;
+            } catch { try { fs.unlinkSync(outPath); } catch { /* ignore */ } return null; }
+          },
+          canContinue
+        );
+        const retrySegments = retryResults.filter((s) => s != null) as VideoClipSegment[];
+        if (retrySegments.length > 0) {
+          segments = retrySegments.filter((s) => s.durationSec >= 1.0 - 0.02);
+          successCount = segments.length;
+          failedCount = extractRanges.length - successCount;
           console.log(`[ArchiveSplit] re-encode retry: ${segments.length} clips recovered`);
         }
       } catch (reencErr) {
