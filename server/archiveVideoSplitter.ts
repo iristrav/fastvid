@@ -168,11 +168,10 @@ export function filterClipRangesBelowMinDuration(
   return kept;
 }
 
-/** Round duration for DB storage — never persist 0s from sub-second shots. */
+/** Round duration for DB storage — clips shorter than 1s are rejected, shorter than stored min get stored as min. */
 export function archiveStoredDurationSec(actualSec: number): number {
-  const minSec = minSavedArchiveClipSec();
-  if (actualSec < minSec - 0.05) return 0;
-  return Math.max(minSec, Math.round(actualSec * 10) / 10);
+  if (actualSec < 1.0 - 0.05) return 0;
+  return Math.round(actualSec * 10) / 10;
 }
 
 /** Minimum duration per saved clip (merges shorter adjacent ranges). */
