@@ -204,15 +204,12 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
     const onSplitProgress = (p: ArchiveSplitProgress) => {
       if (p.stage === "split_extract" && p.clipIndex === 0 && p.clipTotal) {
         totalRanges = p.clipTotal;
-        // Now we know clip count — decide AI tagging mode upfront.
-        const perClipAiTagsHere = autoGenerateTags && totalRanges <= 200;
         progress({
           stage: "ai_tags",
           message: `${fileLabel}: extracting & saving ${totalRanges} clips…`,
           percent: 52,
           clipTotal: totalRanges,
         });
-        void perClipAiTagsHere; // used via closure below
       }
       progress({
         stage: p.stage,
@@ -254,8 +251,8 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
         : `Fragment ${formatTimecode(meta.startSec)}–${formatTimecode(meta.endSec)}`;
       const draftTitle = `${baseTitle} — clip ${meta.index + 1}`;
 
-      // For large batches skip AI tagging to keep upload time reasonable.
-      const perClipAiTags = autoGenerateTags && (totalRanges || 999) <= 200;
+      // Use bulk mode for batches > 15 clips (faster, still full metadata per clip).
+      const perClipAiTags = autoGenerateTags;
       const perClipAiBulk = perClipAiTags && (totalRanges || 999) > 15;
       let enriched: { title: string; tags: string[]; sourceNote: string | null };
       if (perClipAiTags) {

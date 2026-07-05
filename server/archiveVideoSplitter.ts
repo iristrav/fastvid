@@ -80,9 +80,9 @@ const DEFAULT_MAX_CLIPS = 300;
 /** Minimum seconds between distinct shot cuts (filters grain/flicker false positives). */
 const DEFAULT_MIN_SHOT_CUT_GAP_SEC = 0.55;
 /** Legacy min clip length for env override — only sub-flash glitches are merged, not full shots. */
-const DEFAULT_MIN_OUTPUT_CLIP_SEC = 0.45;
-/** Only merge adjacent clips when capping count if one side is a sub-second flash/glitch. */
-const DEFAULT_FLASH_MERGE_MAX_SEC = 0.45;
+const DEFAULT_MIN_OUTPUT_CLIP_SEC = 1.0;
+/** Merge shots shorter than this into the adjacent shot (flash/glitch suppression). */
+const DEFAULT_FLASH_MERGE_MAX_SEC = 1.0;
 const INTERNAL_RESCAN_MIN_SEC = 0.85;
 const INTERNAL_RESCAN_MAX_RANGES = 300;
 const INTERNAL_RESCAN_PASSES = 3;
@@ -90,7 +90,7 @@ const SINGLE_SCENE_VALIDATE_MAX_DEPTH = 4;
 const DEFAULT_SCENE_THRESHOLD = 0.03;
 const DEFAULT_SCDET_THRESHOLD = 1;
 /** Split any clip longer than this into fixed intervals — catches scenes without hard cuts. */
-const DEFAULT_MAX_CLIP_DURATION_SEC = 10;
+const DEFAULT_MAX_CLIP_DURATION_SEC = 5;
 const DEFAULT_CUT_MERGE_GAP_SEC = 0.18;
 const DEFAULT_SPLIT_BUDGET_MS = 3_600_000;
 const DEFAULT_MAX_SOURCE_SEC = ARCHIVE_MAX_VIDEO_DURATION_SEC;
