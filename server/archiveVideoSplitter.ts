@@ -1113,7 +1113,7 @@ async function extractAllClipsSinglePass(
 
   // Timeout: 5× real-time + 60s base. Under server load ultrafast encode can run at ~1.5–2× real-time,
   // so 1× was not enough. Cap at 2 hours for very long sources.
-  const timeoutMs = Math.round(Math.min(7_200_000, Math.max(300_000, passDuration * 5000 + 60_000)));
+  const timeoutMs = Math.round(Math.max(300_000, passDuration * 5000 + 60_000));
 
   // Use slow-seek (-ss AFTER -i) so ffmpeg decodes linearly — no keyframe hunting.
   const ssArgs = passStart > 0.5 ? `-ss ${passStart.toFixed(3)}` : "";
@@ -1333,16 +1333,7 @@ export async function splitVideoBySceneChanges(
       throw new ArchiveSplitError("Could not determine video duration (ffprobe). File may be corrupt or unsupported.");
     }
 
-    const maxDur = maxArchiveVideoDurationSec();
-    if (totalDur > maxDur) {
-      const maxLabel =
-        maxDur >= 3600
-          ? `${Math.floor(maxDur / 3600)} hour${Math.floor(maxDur / 3600) === 1 ? "" : "s"}`
-          : `${Math.floor(maxDur / 60)} min`;
-      throw new ArchiveSplitError(
-        `Video too long (${Math.ceil(totalDur / 60)} min, max ${maxLabel})`
-      );
-    }
+    // No duration limit — all videos are accepted regardless of length.
 
     // Trust the container-reported duration. Fast-seek probing (probeActualVideoDuration) was
     // unreliable for files with sparse keyframes — ffprobe timed out at 90% of duration and the
