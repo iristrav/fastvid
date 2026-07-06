@@ -1932,6 +1932,26 @@ export const appRouter = router({
       });
       return { success: true, deleted };
     }),
+
+    /** Delete all clips in an archive that have a visible logo or watermark in tags/title. */
+    deleteLogoClips: adminProcedure.input(z.object({
+      archiveId: z.number().int(),
+    })).mutation(async ({ input }) => {
+      const archive = await getMediaArchiveById(input.archiveId);
+      if (!archive) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Archive not found");
+      const assets = await getMediaArchiveAssets(input.archiveId);
+      const LOGO_RE = /\b(logo|watermark|branded|brand|copyright|subtitle|ondertitel|caption|text.?overlay|burned.?in|tv.?logo|channel.?logo|station.?logo|network.?logo|lower.?third|chyron|bug)\b/i;
+      const logoIds = assets
+        .filter((a) => {
+          const hay = `${(a.title ?? "").toLowerCase()} ${(a.tags ?? []).join(" ").toLowerCase()}`;
+          return LOGO_RE.test(hay);
+        })
+        .map((a) => a.id);
+      if (logoIds.length === 0) return { deleted: 0, scanned: assets.length };
+      await deleteMediaArchiveAssets(logoIds);
+      console.log(`[Admin] deleteLogoClips archive=${input.archiveId}: deleted ${logoIds.length}/${assets.length}`);
+      return { deleted: logoIds.length, scanned: assets.length };
+    }),
   }),
 
   // ── Video Management ──────────────────────────────────────────────────────

@@ -6,7 +6,7 @@ import { trpc } from "@/lib/trpc";
 import { toastErrorMessage } from "@/const";
 import { toast } from "sonner";
 import {
-  Loader2, Trash2, Pencil, Search, Film, Image as ImageIcon, X, Play, ExternalLink, CheckSquare, Square, Sparkles, Copy, AlertTriangle, ChevronLeft, ChevronRight, ScanSearch,
+  Loader2, Trash2, Pencil, Search, Film, Image as ImageIcon, X, Play, ExternalLink, CheckSquare, Square, Sparkles, Copy, AlertTriangle, ChevronLeft, ChevronRight, ScanSearch, Ban,
 } from "lucide-react";
 
 const CLIPS_PAGE_SIZE = 48;
@@ -606,6 +606,19 @@ export function ArchiveClipsGrid({
     onError: (e) => toast.error("Delete failed", { description: toastErrorMessage(e) }),
   });
 
+  const deleteLogoClips = trpc.mediaArchive.deleteLogoClips.useMutation({
+    onSuccess: (data) => {
+      utils.mediaArchive.listAssets.invalidate();
+      utils.mediaArchive.listArchives.invalidate();
+      if (data.deleted === 0) {
+        toast.info(`Geen logo-clips gevonden (${data.scanned} gescand)`);
+      } else {
+        toast.success(`${data.deleted} logo-clip(s) verwijderd (van ${data.scanned} gescand)`);
+      }
+    },
+    onError: (e) => toast.error("Verwijderen mislukt", { description: toastErrorMessage(e) }),
+  });
+
   const autoTitleAssets = trpc.mediaArchive.autoTitleAssets.useMutation();
   const auditScenes = trpc.mediaArchive.auditScenes.useMutation();
   const repairDurations = trpc.mediaArchive.repairDurations.useMutation({
@@ -998,6 +1011,16 @@ export function ArchiveClipsGrid({
     deleteAssets.mutate({ ids });
   }
 
+  function deleteClipsWithLogo() {
+    if (archiveId == null) return;
+    if (
+      !confirm(
+        "Alle clips met een logo of watermerk permanent verwijderen?\n\nClips worden herkend via hun tags en titel (logo, watermark, branded, tv-logo, etc.)."
+      )
+    ) return;
+    deleteLogoClips.mutate({ archiveId });
+  }
+
   const deletePending = deleteAssets.isPending || deleteAllAssets.isPending;
 
   function dedupeVisualDuplicates() {
@@ -1141,6 +1164,22 @@ export function ArchiveClipsGrid({
               <Copy className="w-3.5 h-3.5" />
             )}
             {dedupeDuplicates.isPending ? "Duplicates… (even geduld)" : "Remove duplicates"}
+          </button>
+        )}
+        {assets.length > 0 && (
+          <button
+            type="button"
+            onClick={deleteClipsWithLogo}
+            disabled={deleteLogoClips.isPending || autoTitleRunning}
+            title="Verwijder alle clips met een logo of watermerk (herkend via tags/titel)"
+            className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg bg-red-500/15 text-red-300 border border-red-500/25 hover:bg-red-500/25 disabled:opacity-50"
+          >
+            {deleteLogoClips.isPending ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Ban className="w-3.5 h-3.5" />
+            )}
+            {deleteLogoClips.isPending ? "Logo's verwijderen…" : "Verwijder logo-clips"}
           </button>
         )}
         {assets.length > 0 && (
