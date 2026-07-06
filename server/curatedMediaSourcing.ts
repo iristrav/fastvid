@@ -1898,27 +1898,38 @@ export async function searchCuratedCandidatesForBeat(
     (options?.candidatePool ? `\n  pool:         ${options.candidatePool.length} clips (pre-built)` : `\n  pool:         full archive scan`)
   );
 
-  const listed =
-    options?.candidatePool && options.candidatePool.length > 0
-      ? options.candidatePool.filter(
-          (p) =>
-            !usedAssetIds.has(p.asset.id) &&
-            !usedStorageUrls.has(p.asset.storageUrl) &&
-            !crossVideoExcludeIds.has(p.asset.id)
-        )
-      : await listCuratedArchiveCandidates(
-          beatTags,
-          usedAssetIds,
-          usedStorageUrls,
-          topicAnchors,
-          allTags,
-          anchoredBeat.text,
-          crossVideoExcludeIds,
-          options?.assetsCache,
-          true,
-          true,
-          videoVisualTopic
-        );
+  let listed: CuratedCandidatePick[];
+  if (options?.candidatePool && options.candidatePool.length > 0) {
+    const fresh = options.candidatePool.filter(
+      (p) =>
+        !usedAssetIds.has(p.asset.id) &&
+        !usedStorageUrls.has(p.asset.storageUrl) &&
+        !crossVideoExcludeIds.has(p.asset.id)
+    );
+    if (fresh.length > 0) {
+      listed = fresh;
+    } else {
+      // Pool exhausted by dedup — allow reuse rather than falling back to color
+      console.warn(
+        `[ArchiveSearch] zin ${beat.index}: pool exhausted by dedup — hergebruik toegestaan (${options.candidatePool.length} clips)`
+      );
+      listed = options.candidatePool.filter((p) => !crossVideoExcludeIds.has(p.asset.id));
+    }
+  } else {
+    listed = await listCuratedArchiveCandidates(
+      beatTags,
+      usedAssetIds,
+      usedStorageUrls,
+      topicAnchors,
+      allTags,
+      anchoredBeat.text,
+      crossVideoExcludeIds,
+      options?.assetsCache,
+      true,
+      true,
+      videoVisualTopic
+    );
+  }
 
   let ranked = rankCuratedCandidatesForBeat(
     orderCuratedCandidatesForBeat(listed),
