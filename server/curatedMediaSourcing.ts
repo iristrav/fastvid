@@ -1264,7 +1264,24 @@ export async function listCuratedArchiveCandidates(
     }
   }
 
-  const pool = scored.length > 0 ? scored : fallback;
+  let pool = scored.length > 0 ? scored : fallback;
+
+  // Pool exhausted by same-video dedup — allow clip reuse rather than falling back to color
+  if (pool.length === 0 && archives.length > 0 && !blockUniversalFallback) {
+    console.warn("[ArchiveSearch] pool exhausted by dedup — allowing clip reuse");
+    for (const archive of archives) {
+      const assets = await loadArchiveAssetsForSearch(archive.id, assetsCache);
+      const nicheTags = normalizeMediaTags(archive.nicheTags ?? []);
+      for (const asset of assets) {
+        if (excludeStorageUrls.has(asset.storageUrl)) continue;
+        const assetHay = `${(asset.title ?? "").toLowerCase()} ${normalizeMediaTags(asset.tags ?? []).join(" ")}`;
+        if (isNonDocumentaryVisualHay(assetHay)) continue;
+        const score = scoreCuratedAsset(asset, nicheTags, beatTags, topicAnchors, beatText, videoVisualTopic);
+        pool.push({ asset, score: Math.max(score, 1), archiveName: archive.name, archiveNicheTags: nicheTags });
+      }
+    }
+  }
+
   pool.sort((a, b) => {
     if (b.score !== a.score) return b.score - a.score;
     const videoBoost = (x: MediaArchiveAsset) => (x.mediaType === "video" ? 2 : 0);
