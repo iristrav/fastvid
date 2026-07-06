@@ -17162,6 +17162,27 @@ async function rescueBeatVisualWhenEmpty(
     }
   }
 
+  // Wikimedia rescue — try plan queries + original beat queries with relaxed threshold
+  try {
+    const wikiQueries: string[] = [];
+    if (beat.pexelsQueries?.length) wikiQueries.push(...beat.pexelsQueries.slice(0, 3));
+    wikiQueries.push(beat.text.slice(0, 80));
+    for (const q of wikiQueries) {
+      const wikiClips = await fetchWikimediaImages(q, holdSec, workDir, scene.index, 1, `rescue_wiki`, { beatIndex: beat.index });
+      if (wikiClips.length > 0) {
+        const clip = wikiClips[0]!;
+        if (clip && (await pushClip(clip, holdSec))) {
+          recordClipAdopt(dedup.clipAdoptAudit, scene.index, beat.index, beat.text, clip, "rescue_wikimedia", undefined, dedup.segmentGeoLock);
+          dedup.lastRealClip = clip;
+          console.log(`[Retrieval] s${scene.index}b${beat.index} Wikimedia rescue HIT: "${q.slice(0, 50)}"`);
+          return true;
+        }
+      }
+    }
+  } catch (err) {
+    console.warn("[Retrieval] Wikimedia rescue error:", (err as Error).message?.slice(0, 80));
+  }
+
   if (await adoptAiBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile, { rescueTier: true })) {
     return true;
   }
