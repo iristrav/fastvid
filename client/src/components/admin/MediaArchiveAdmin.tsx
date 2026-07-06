@@ -164,80 +164,48 @@ async function uploadArchiveFile(
     }
   };
 
+  // Chunked upload: split the file into 10MB chunks, POST each to /upload/chunk,
+  // then call /upload/assemble to start processing. Works for any file size without
+  // needing CORS config or proxy size-limit overrides.
+  const CHUNK_SIZE = 10 * 1024 * 1024; // 10 MB
+  const totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
+  const uploadId = opts.jobId;
+
   try {
-    // For large files (>50MB), upload directly to R2 via presigned URL to bypass Railway proxy limits.
-    const useDirect = file.size > 50 * 1024 * 1024;
+    for (let i = 0; i < totalChunks; i++) {
+      if (opts.signal?.aborted) throw new UploadCancelledError();
+      const start = i * CHUNK_SIZE;
+      const end = Math.min(start + CHUNK_SIZE, file.size);
+      const chunk = file.slice(start, end);
+      const pct = Math.round(5 + (i / totalChunks) * 40);
+      opts.onProgress?.({ jobId: opts.jobId, stage: "validating", message: `Uploading chunk ${i + 1}/${totalChunks}…`, percent: pct, done: false, error: undefined, cancelled: false });
 
-    if (useDirect) {
-      // Step 1: get a presigned PUT URL
-      const presignParams = new URLSearchParams({ filename: file.name, mimeType: opts.mimeType });
-      const presignRes = await fetch(`/api/admin/archive/upload/presign?${presignParams}`, {
-        credentials: "include",
-        signal: opts.signal,
-      });
-      const presignData = await parseJsonResponse(presignRes);
-      if (!presignRes.ok || !presignData.uploadUrl || !presignData.storageKey) {
-        throw new Error(presignData.error || "Failed to get upload URL");
-      }
-
-      // Step 2: upload directly to R2 — bypasses Railway proxy entirely
-      opts.onProgress?.({ stage: "validating", message: "Uploading to storage…", percent: 5, done: false, error: undefined, cancelled: false });
-      const r2Res = await fetch(presignData.uploadUrl, {
-        method: "PUT",
-        headers: { "Content-Type": opts.mimeType || "application/octet-stream" },
-        body: file,
-        signal: opts.signal,
-      });
-      if (!r2Res.ok) throw new Error(`Direct upload failed (${r2Res.status})`);
-
-      // Step 3: notify server to start processing
-      params.append("storageKey", presignData.storageKey);
-      const notifyRes = await fetch(`/api/admin/archive/upload/notify?${params}`, {
+      const chunkParams = new URLSearchParams({ uploadId, chunk: String(i), totalChunks: String(totalChunks), filename: file.name });
+      const chunkRes = await fetch(`/api/admin/archive/upload/chunk?${chunkParams}`, {
         method: "POST",
         credentials: "include",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: chunk,
         signal: opts.signal,
       });
-      const notifyData = await parseJsonResponse(notifyRes);
-      if (!notifyRes.ok) throw new Error(notifyData.error || "Failed to start processing");
-
-      const finalProgress = await waitForJobDone();
-      return {
-        clipCount: finalProgress.resultClipCount ?? finalProgress.clipsSaved ?? 1,
-        split: Boolean(finalProgress.resultSplit ?? (finalProgress.clipsSaved ?? 0) > 1),
-      };
+      const chunkData = await parseJsonResponse(chunkRes);
+      if (!chunkRes.ok) throw new Error(chunkData.error || `Chunk ${i + 1} upload failed`);
     }
 
-    // Small files: stream directly through the server
-    const res = await fetch(`/api/admin/archive/upload?${params}`, {
+    // All chunks received — start processing
+    opts.onProgress?.({ jobId: opts.jobId, stage: "validating", message: "Processing…", percent: 48, done: false, error: undefined, cancelled: false });
+    const assembleRes = await fetch(`/api/admin/archive/upload/assemble?${params}`, {
       method: "POST",
       credentials: "include",
-      headers: { "Content-Type": opts.mimeType || "application/octet-stream" },
-      body: file,
       signal: opts.signal,
     });
+    const assembleData = await parseJsonResponse(assembleRes);
+    if (!assembleRes.ok) throw new Error(assembleData.error || "Failed to start processing");
 
-    const data = await parseJsonResponse(res);
-
-    if (res.status === 202 || data?.accepted) {
-      const finalProgress = await waitForJobDone();
-      return {
-        clipCount: finalProgress.resultClipCount ?? finalProgress.clipsSaved ?? 1,
-        split: Boolean(finalProgress.resultSplit ?? (finalProgress.clipsSaved ?? 0) > 1),
-      };
-    }
-
-    if (!res.ok) {
-      const cancelled = Boolean(data?.cancelled) || (data?.error?.toLowerCase().includes("cancelled") ?? false);
-      if (cancelled) throw new UploadCancelledError();
-      throw new Error(data?.error || "Upload failed");
-    }
-
-    const finalProgress = await pollArchiveUploadProgress(opts.jobId);
-    if (finalProgress) opts.onProgress?.(finalProgress);
-
+    const finalProgress = await waitForJobDone();
     return {
-      clipCount: data?.clipCount ?? finalProgress?.clipsSaved ?? 1,
-      split: Boolean(data?.split ?? (finalProgress?.clipsSaved ?? 0) > 1),
+      clipCount: finalProgress.resultClipCount ?? finalProgress.clipsSaved ?? 1,
+      split: Boolean(finalProgress.resultSplit ?? (finalProgress.clipsSaved ?? 0) > 1),
     };
   } finally {
     window.clearInterval(pollTimer);
