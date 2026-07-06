@@ -150,62 +150,61 @@ async function uploadArchiveFile(
     throw new Error("Processing took too long — check the archive later or try again.");
   };
 
-  const parseJsonResponse = async (res: Response) => {
+  try {
+    const res = await fetch(`/api/admin/archive/upload?${params}`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": opts.mimeType || "application/octet-stream" },
+      body: file,
+      signal: opts.signal,
+    });
+
     const text = await res.text();
+    let data: {
+      error?: string;
+      accepted?: boolean;
+      clipCount?: number;
+      split?: boolean;
+      cancelled?: boolean;
+    } | null = null;
     try {
-      return JSON.parse(text) as { error?: string; accepted?: boolean; clipCount?: number; split?: boolean; cancelled?: boolean; uploadUrl?: string; storageKey?: string };
+      data = JSON.parse(text) as typeof data;
     } catch {
       if (text.trimStart().startsWith("<!DOCTYPE") || text.trimStart().startsWith("<html")) {
         const lower = text.toLowerCase();
-        if (lower.includes("upstream")) throw new Error("Server timeout during upload. Processing may continue — refresh in a minute.");
-        throw new Error("Server returned an HTML error page (file too large or timeout). Try a smaller file.");
+        if (lower.includes("upstream")) {
+          throw new Error(
+            "Server timeout during upload (upstream error). Processing may continue — refresh the page in a minute."
+          );
+        }
+        throw new Error(
+          "Server returned an HTML error page (file too large or timeout). Try a smaller file."
+        );
       }
       throw new Error(text.slice(0, 180) || "Upload failed");
     }
-  };
 
-  // Chunked upload: split the file into 10MB chunks, POST each to /upload/chunk,
-  // then call /upload/assemble to start processing. Works for any file size without
-  // needing CORS config or proxy size-limit overrides.
-  const CHUNK_SIZE = 10 * 1024 * 1024; // 10 MB
-  const totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
-  const uploadId = opts.jobId;
-
-  try {
-    for (let i = 0; i < totalChunks; i++) {
-      if (opts.signal?.aborted) throw new UploadCancelledError();
-      const start = i * CHUNK_SIZE;
-      const end = Math.min(start + CHUNK_SIZE, file.size);
-      const chunk = file.slice(start, end);
-      const pct = Math.round(5 + (i / totalChunks) * 40);
-      opts.onProgress?.({ jobId: opts.jobId, stage: "validating", message: `Uploading chunk ${i + 1}/${totalChunks}…`, percent: pct, done: false, error: undefined, cancelled: false });
-
-      const chunkParams = new URLSearchParams({ uploadId, chunk: String(i), totalChunks: String(totalChunks), filename: file.name });
-      const chunkRes = await fetch(`/api/admin/archive/upload/chunk?${chunkParams}`, {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/octet-stream" },
-        body: chunk,
-        signal: opts.signal,
-      });
-      const chunkData = await parseJsonResponse(chunkRes);
-      if (!chunkRes.ok) throw new Error(chunkData.error || `Chunk ${i + 1} upload failed`);
+    if (res.status === 202 || data?.accepted) {
+      const finalProgress = await waitForJobDone();
+      return {
+        clipCount: finalProgress.resultClipCount ?? finalProgress.clipsSaved ?? 1,
+        split: Boolean(finalProgress.resultSplit ?? (finalProgress.clipsSaved ?? 0) > 1),
+      };
     }
 
-    // All chunks received — start processing
-    opts.onProgress?.({ jobId: opts.jobId, stage: "validating", message: "Processing…", percent: 48, done: false, error: undefined, cancelled: false });
-    const assembleRes = await fetch(`/api/admin/archive/upload/assemble?${params}`, {
-      method: "POST",
-      credentials: "include",
-      signal: opts.signal,
-    });
-    const assembleData = await parseJsonResponse(assembleRes);
-    if (!assembleRes.ok) throw new Error(assembleData.error || "Failed to start processing");
+    if (!res.ok) {
+      const cancelled = Boolean(data?.cancelled)
+        || (data?.error?.toLowerCase().includes("cancelled") ?? false);
+      if (cancelled) throw new UploadCancelledError();
+      throw new Error(data?.error || "Upload failed");
+    }
 
-    const finalProgress = await waitForJobDone();
+    const finalProgress = await pollArchiveUploadProgress(opts.jobId);
+    if (finalProgress) opts.onProgress?.(finalProgress);
+
     return {
-      clipCount: finalProgress.resultClipCount ?? finalProgress.clipsSaved ?? 1,
-      split: Boolean(finalProgress.resultSplit ?? (finalProgress.clipsSaved ?? 0) > 1),
+      clipCount: data?.clipCount ?? finalProgress?.clipsSaved ?? 1,
+      split: Boolean(data?.split ?? (finalProgress?.clipsSaved ?? 0) > 1),
     };
   } finally {
     window.clearInterval(pollTimer);

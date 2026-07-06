@@ -45,7 +45,6 @@ import {
   normalizeMediaTags,
 } from "./db";
 import { storagePut } from "./storage";
-import { getStorageBackend } from "./storageBackend";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
@@ -81,10 +80,7 @@ function scheduleArchiveClipEmbedding(assetId: number, localPath: string): void 
 
 export type ArchiveUploadInput = {
   archiveId: number;
-  /** In-memory buffer. Mutually exclusive with localPath. */
   buffer: Buffer;
-  /** Path to a file already written to disk. When set, buffer may be empty. */
-  localPath?: string;
   mimeType: string;
   filename?: string;
   title?: string;
@@ -160,16 +156,13 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
   }
 
   const maxBytes = maxArchiveUploadBytes();
-  const fileBytes = input.localPath
-    ? (fs.existsSync(input.localPath) ? fs.statSync(input.localPath).size : 0)
-    : input.buffer.length;
-  if (fileBytes > maxBytes) {
+  if (input.buffer.length > maxBytes) {
     throw new ArchiveUploadError(
       400,
       appErrorMessage(APP_ERROR.FILE_TOO_LARGE, `File too large (max ${Math.round(maxBytes / (1024 * 1024))}MB)`)
     );
   }
-  if (fileBytes === 0) {
+  if (input.buffer.length === 0) {
     throw new ArchiveUploadError(400, appErrorMessage(APP_ERROR.SERVICE_ERROR, "Empty file"));
   }
 
@@ -336,7 +329,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
     let splitCleanup: (() => void) | undefined;
     try {
       const splitResult = await splitVideoBySceneChanges(
-        input.localPath ?? input.buffer,
+        input.buffer,
         mimeType,
         onSplitProgress,
         uploadShouldContinue(jobId),
@@ -442,9 +435,8 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
   const ext = isVideo
     ? (mimeType.includes("webm") ? "webm" : mimeType.includes("quicktime") || mimeType.includes("mov") ? "mov" : "mp4")
     : (mimeType.includes("png") ? "png" : mimeType.includes("gif") ? "gif" : mimeType.includes("webp") ? "webp" : "jpg");
-  const fileBuffer = input.localPath ? fs.readFileSync(input.localPath) : input.buffer;
   const enriched = await enrichArchiveAssetFields({
-    buffer: fileBuffer,
+    buffer: input.buffer,
     mimeType,
     autoGenerateTags,
     baseTitle,
@@ -455,7 +447,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
     userProvidedTitle,
   });
   const key = `media-archive/${input.archiveId}/${Date.now()}-${Math.random().toString(36).slice(2, 6)}.${ext}`;
-  const { url, key: storedKey } = await storagePut(key, fileBuffer, mimeType);
+  const { url, key: storedKey } = await storagePut(key, input.buffer, mimeType);
 
   const assetId = await createMediaArchiveAsset({
     archiveId: input.archiveId,
@@ -474,7 +466,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
     throw new ArchiveUploadError(500, appErrorMessage(APP_ERROR.SERVICE_ERROR, "Failed to save asset"));
   }
   scheduleArchiveEmbeddingIndex(assetId);
-  if (isVideo) scheduleClipEmbeddingFromBuffer(assetId, fileBuffer);
+  if (isVideo) scheduleClipEmbeddingFromBuffer(assetId, input.buffer);
 
   const asset = await getMediaArchiveAssetById(assetId);
   finishArchiveUploadJob(jobId, true, `${isVideo ? "Video" : "Image"} saved`, {
@@ -498,21 +490,6 @@ function parseBoolQuery(value: unknown, defaultValue: boolean): boolean {
   return defaultValue;
 }
 
-/** Stream request body to a temp file, resolving when done. */
-function streamBodyToFile(req: Request, destPath: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const out = fs.createWriteStream(destPath);
-    let finished = false;
-    const done = (err?: Error) => { if (!finished) { finished = true; err ? reject(err) : resolve(); } };
-    req.pipe(out);
-    out.on("finish", () => done());
-    out.on("error", (err) => done(err));
-    req.on("error", (err) => done(err));
-    // 'close' fires when socket is destroyed; error only if body was not fully received
-    req.on("close", () => { if (!req.complete) done(new Error("Upload connection closed before body was fully received")); });
-  });
-}
-
 async function handleArchiveBinaryUpload(req: Request, res: Response) {
   const jobId = String(req.query.jobId ?? "").trim() || undefined;
   const filename = String(req.query.filename ?? "upload").slice(0, 256);
@@ -525,60 +502,30 @@ async function handleArchiveBinaryUpload(req: Request, res: Response) {
     initArchiveUploadJob(jobId, filename);
   }
 
-  // Determine upload temp dir: prefer Railway volume so large files stay off RAM-backed /tmp.
-  const uploadBase =
-    (process.env.RAILWAY_VOLUME_MOUNT_PATH?.trim() && fs.existsSync(process.env.RAILWAY_VOLUME_MOUNT_PATH.trim()))
-      ? process.env.RAILWAY_VOLUME_MOUNT_PATH.trim()
-      : fs.existsSync("/data") ? "/data" : os.tmpdir();
-  const ext = (() => {
-    const mt = String(req.query.mimeType ?? req.headers["content-type"] ?? "");
-    if (mt.includes("webm")) return "webm";
-    if (mt.includes("quicktime") || mt.includes("mov")) return "mov";
-    return "mp4";
-  })();
-  const tempPath = path.join(uploadBase, `fv-upload-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.${ext}`);
-
-  // Start streaming to disk IMMEDIATELY — before async auth — so the TCP receive buffer
-  // never stalls. Auth runs in parallel with the data transfer.
-  const streamDone = streamBodyToFile(req, tempPath);
-
-  let localPath: string | undefined;
-  const cleanupTemp = () => { try { if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath); } catch { /* ignore */ } };
-
   try {
-    // Auth check runs while data streams to disk
-    const user = await Promise.race([getUserFromRequest(req), streamDone.then(() => null as never)]);
+    const user = await getUserFromRequest(req);
     if (!user) {
       res.status(401).json({ error: appErrorMessage(APP_ERROR.UNAUTHED, "Please login") });
-      streamDone.catch(() => {}).finally(cleanupTemp);
       return;
     }
     if (user.role !== "admin") {
       res.status(403).json({ error: appErrorMessage(APP_ERROR.NOT_ADMIN, "You do not have required permission") });
-      streamDone.catch(() => {}).finally(cleanupTemp);
       return;
     }
-
-    // Wait for full body to arrive on disk
-    await streamDone;
-    localPath = tempPath;
 
     const archiveId = parseInt(String(req.query.archiveId ?? ""), 10);
     if (!archiveId || Number.isNaN(archiveId)) {
       res.status(400).json({ error: appErrorMessage(APP_ERROR.SERVICE_ERROR, "archiveId is required") });
-      cleanupTemp();
       return;
     }
 
-    patchArchiveUploadJob(jobId, { stage: "validating", message: `${filename}: receiving…`, percent: 1 });
-    const fileSizeMb = Math.round(fs.statSync(tempPath).size / (1024 * 1024));
-
+    const rawBody = req.body;
+    const buffer = Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(rawBody ?? []);
     patchArchiveUploadJob(jobId, {
       stage: "validating",
-      message: `${filename}: ${fileSizeMb}MB received — processing…`,
+      message: `${filename}: ${Math.round(buffer.length / (1024 * 1024))}MB received — processing…`,
       percent: 2,
     });
-
     const mimeType = String(req.query.mimeType ?? req.headers["content-type"] ?? "").slice(0, 128);
     const tagsRaw = String(req.query.tags ?? "");
     const tags = tagsRaw ? normalizeMediaTags(tagsRaw.split(/[,;]+/)) : [];
@@ -589,8 +536,7 @@ async function handleArchiveBinaryUpload(req: Request, res: Response) {
 
     const uploadInput: ArchiveUploadInput = {
       archiveId,
-      buffer: Buffer.alloc(0),
-      localPath: tempPath,
+      buffer,
       mimeType,
       filename,
       tags,
@@ -615,10 +561,8 @@ async function handleArchiveBinaryUpload(req: Request, res: Response) {
           resultClipCount: result.clipCount,
           resultSplit: result.split,
         });
-        cleanupTemp();
       })
       .catch((err) => {
-        cleanupTemp();
         if (err instanceof ArchiveUploadError) {
           if (err.cancelled) {
             finishArchiveUploadJobCancelled(jobId);
@@ -635,7 +579,6 @@ async function handleArchiveBinaryUpload(req: Request, res: Response) {
         );
       });
   } catch (err) {
-    cleanupTemp();
     if (err instanceof ArchiveUploadError) {
       if (err.cancelled) {
         finishArchiveUploadJobCancelled(jobId);
@@ -713,305 +656,14 @@ async function handleArchiveUploadProgress(req: Request, res: Response) {
   }
 }
 
-/**
- * Chunk upload endpoint: receives one 10MB chunk at a time and appends it to a temp file.
- * Chunks are small enough to pass through any proxy without body-size limits.
- */
-async function handleArchiveUploadChunk(req: Request, res: Response) {
-  try {
-    const user = await Promise.race([
-      getUserFromRequest(req),
-      // start reading body immediately in parallel with auth
-      new Promise<never>((_, reject) => req.on("error", reject)),
-    ]).catch(() => null as null);
-
-    const uploadId = String(req.query.uploadId ?? "").trim();
-    const chunkIndex = parseInt(String(req.query.chunk ?? ""), 10);
-    const totalChunks = parseInt(String(req.query.totalChunks ?? ""), 10);
-    const filename = String(req.query.filename ?? "upload").slice(0, 256);
-
-    if (!uploadId || isNaN(chunkIndex) || isNaN(totalChunks)) {
-      // drain body before responding to avoid ECONNRESET
-      req.resume();
-      res.status(400).json({ error: "uploadId, chunk and totalChunks are required" });
-      return;
-    }
-
-    // Auth runs while body is being read
-    const uploadBase =
-      (process.env.RAILWAY_VOLUME_MOUNT_PATH?.trim() && fs.existsSync(process.env.RAILWAY_VOLUME_MOUNT_PATH.trim()))
-        ? process.env.RAILWAY_VOLUME_MOUNT_PATH.trim()
-        : fs.existsSync("/data") ? "/data" : os.tmpdir();
-    const assembledPath = path.join(uploadBase, `fv-chunks-${uploadId}.bin`);
-
-    // Write chunk to a temp file, then append to the assembled file
-    const chunkPath = path.join(uploadBase, `fv-chunk-${uploadId}-${chunkIndex}.bin`);
-    await streamBodyToFile(req, chunkPath);
-
-    if (!user || user.role !== "admin") {
-      try { fs.unlinkSync(chunkPath); } catch { /* ignore */ }
-      res.status(user ? 403 : 401).json({ error: user ? "Not admin" : "Please login" });
-      return;
-    }
-
-    // Append chunk to assembled file in order (chunks may arrive out of order, write by index)
-    // Simple approach: write each chunk to its own file, assemble at the end
-    if (chunkIndex === 0) {
-      // First chunk: overwrite any stale assembled file
-      try { if (fs.existsSync(assembledPath)) fs.unlinkSync(assembledPath); } catch { /* ignore */ }
-    }
-
-    // Append this chunk's bytes to the assembled file
-    const chunkData = fs.readFileSync(chunkPath);
-    const assembleStream = fs.createWriteStream(assembledPath, { flags: chunkIndex === 0 ? "w" : "a" });
-    await new Promise<void>((resolve, reject) => {
-      assembleStream.on("finish", resolve);
-      assembleStream.on("error", reject);
-      assembleStream.end(chunkData);
-    });
-    try { fs.unlinkSync(chunkPath); } catch { /* ignore */ }
-
-    const isLast = chunkIndex === totalChunks - 1;
-    console.log(`[ArchiveUpload] chunk ${chunkIndex + 1}/${totalChunks} for uploadId=${uploadId} (${(chunkData.length / 1024).toFixed(0)}KB)${isLast ? " — all chunks received" : ""}`);
-
-    res.json({ ok: true, chunk: chunkIndex, done: isLast, filename });
-  } catch (err) {
-    console.error("[ArchiveUpload] chunk failed:", err);
-    res.status(500).json({ error: appErrorMessage(APP_ERROR.SERVICE_ERROR, "Chunk upload failed") });
-  }
-}
-
-/**
- * Assemble endpoint: called after all chunks are uploaded. Starts scene splitting from the assembled file.
- */
-async function handleArchiveUploadAssemble(req: Request, res: Response) {
-  const jobId = String(req.query.jobId ?? "").trim() || undefined;
-  const filename = String(req.query.filename ?? "upload").slice(0, 256);
-
-  if (jobId) initArchiveUploadJob(jobId, filename);
-
-  try {
-    const user = await getUserFromRequest(req);
-    if (!user) { res.status(401).json({ error: appErrorMessage(APP_ERROR.UNAUTHED, "Please login") }); return; }
-    if (user.role !== "admin") { res.status(403).json({ error: appErrorMessage(APP_ERROR.NOT_ADMIN, "You do not have required permission") }); return; }
-
-    const archiveId = parseInt(String(req.query.archiveId ?? ""), 10);
-    if (!archiveId || Number.isNaN(archiveId)) {
-      res.status(400).json({ error: appErrorMessage(APP_ERROR.SERVICE_ERROR, "archiveId is required") });
-      return;
-    }
-
-    const uploadBase =
-      (process.env.RAILWAY_VOLUME_MOUNT_PATH?.trim() && fs.existsSync(process.env.RAILWAY_VOLUME_MOUNT_PATH.trim()))
-        ? process.env.RAILWAY_VOLUME_MOUNT_PATH.trim()
-        : fs.existsSync("/data") ? "/data" : os.tmpdir();
-    const assembledPath = path.join(uploadBase, `fv-chunks-${jobId}.bin`);
-
-    if (!fs.existsSync(assembledPath)) {
-      res.status(400).json({ error: appErrorMessage(APP_ERROR.SERVICE_ERROR, "No chunks found for this upload — did all chunks arrive?") });
-      return;
-    }
-
-    const mimeType = String(req.query.mimeType ?? "video/mp4").slice(0, 128);
-    const ext = mimeType.includes("webm") ? "webm" : mimeType.includes("quicktime") || mimeType.includes("mov") ? "mov" : "mp4";
-    const finalPath = assembledPath.replace(/\.bin$/, `.${ext}`);
-    fs.renameSync(assembledPath, finalPath);
-
-    patchArchiveUploadJob(jobId, { stage: "validating", message: `${filename}: assembling complete — processing…`, percent: 50 });
-
-    const tagsRaw = String(req.query.tags ?? "");
-    const tags = tagsRaw ? normalizeMediaTags(tagsRaw.split(/[,;]+/)) : [];
-    const mixKindRaw = String(req.query.mixKind ?? "");
-    const mixKind = ["real_video", "photo", "stock", "screenshot", "motion_graphics"].includes(mixKindRaw)
-      ? (mixKindRaw as ArchiveUploadInput["mixKind"])
-      : undefined;
-
-    const uploadInput: ArchiveUploadInput = {
-      archiveId,
-      buffer: Buffer.alloc(0),
-      localPath: finalPath,
-      mimeType,
-      filename,
-      tags,
-      mixKind,
-      autoSplitScenes: parseBoolQuery(req.query.autoSplitScenes, true),
-      autoGenerateTags: parseBoolQuery(req.query.autoGenerateTags, true),
-      jobId,
-    };
-
-    res.status(202).json({ accepted: true, jobId, message: "Processing started" });
-
-    const cleanupTemp = () => { try { if (fs.existsSync(finalPath)) fs.unlinkSync(finalPath); } catch { /* ignore */ } };
-
-    void processArchiveAssetUpload(uploadInput)
-      .then((result) => {
-        finishArchiveUploadJob(jobId, true, `${result.clipCount} clip(s) saved`, {
-          clipsSaved: result.clipCount, clipTotal: result.clipCount,
-          resultClipCount: result.clipCount, resultSplit: result.split,
-        });
-        cleanupTemp();
-      })
-      .catch((err) => {
-        cleanupTemp();
-        if (err instanceof ArchiveUploadError) {
-          err.cancelled ? finishArchiveUploadJobCancelled(jobId) : finishArchiveUploadJob(jobId, false, err.message);
-          return;
-        }
-        console.error("[ArchiveUpload] assemble processing failed:", err);
-        finishArchiveUploadJob(jobId, false, (err as Error).message ?? appErrorMessage(APP_ERROR.SERVICE_ERROR, "Upload failed"));
-      });
-  } catch (err) {
-    console.error("[ArchiveUpload] assemble failed:", err);
-    finishArchiveUploadJob(jobId, false, "Upload failed");
-    res.status(500).json({ error: appErrorMessage(APP_ERROR.SERVICE_ERROR, "Assemble failed") });
-  }
-}
-
-/**
- * Presign endpoint: returns a signed PUT URL for direct browser→R2 upload, bypassing the Railway proxy.
- * Only available when S3 storage is configured (Cloudflare R2).
- */
-async function handleArchiveUploadPresign(req: Request, res: Response) {
-  try {
-    const user = await getUserFromRequest(req);
-    if (!user) { res.status(401).json({ error: appErrorMessage(APP_ERROR.UNAUTHED, "Please login") }); return; }
-    if (user.role !== "admin") { res.status(403).json({ error: appErrorMessage(APP_ERROR.NOT_ADMIN, "You do not have required permission") }); return; }
-
-    if (getStorageBackend() !== "s3") {
-      res.status(400).json({ error: "Direct upload not available — storage backend is not S3/R2" });
-      return;
-    }
-
-    const filename = String(req.query.filename ?? "upload").slice(0, 256);
-    const mimeType = String(req.query.mimeType ?? "video/mp4").slice(0, 128);
-    const ext = mimeType.includes("webm") ? "webm" : mimeType.includes("quicktime") || mimeType.includes("mov") ? "mov" : "mp4";
-    const relKey = `media-archive-upload-tmp/${Date.now()}-${Math.random().toString(36).slice(2, 6)}-${filename.slice(0, 40)}.${ext}`;
-
-    const { s3GetPresignedPutUrl } = await import("./storageS3");
-    const { uploadUrl, key } = await s3GetPresignedPutUrl(relKey, mimeType, 7200);
-
-    res.json({ uploadUrl, storageKey: key });
-  } catch (err) {
-    console.error("[ArchiveUpload] presign failed:", err);
-    res.status(500).json({ error: appErrorMessage(APP_ERROR.SERVICE_ERROR, "Presign failed") });
-  }
-}
-
-/**
- * Notify endpoint: called by client after a successful direct R2 upload.
- * Starts scene splitting and metadata generation from the already-uploaded R2 object.
- */
-async function handleArchiveUploadNotify(req: Request, res: Response) {
-  const jobId = String(req.query.jobId ?? "").trim() || undefined;
-  const filename = String(req.query.filename ?? "upload").slice(0, 256);
-
-  if (jobId) initArchiveUploadJob(jobId, filename);
-
-  try {
-    const user = await getUserFromRequest(req);
-    if (!user) { res.status(401).json({ error: appErrorMessage(APP_ERROR.UNAUTHED, "Please login") }); return; }
-    if (user.role !== "admin") { res.status(403).json({ error: appErrorMessage(APP_ERROR.NOT_ADMIN, "You do not have required permission") }); return; }
-
-    const archiveId = parseInt(String(req.query.archiveId ?? ""), 10);
-    if (!archiveId || Number.isNaN(archiveId)) {
-      res.status(400).json({ error: appErrorMessage(APP_ERROR.SERVICE_ERROR, "archiveId is required") });
-      return;
-    }
-
-    const storageKey = String(req.query.storageKey ?? "").trim();
-    if (!storageKey) {
-      res.status(400).json({ error: appErrorMessage(APP_ERROR.SERVICE_ERROR, "storageKey is required") });
-      return;
-    }
-
-    const mimeType = String(req.query.mimeType ?? "video/mp4").slice(0, 128);
-    const tagsRaw = String(req.query.tags ?? "");
-    const tags = tagsRaw ? normalizeMediaTags(tagsRaw.split(/[,;]+/)) : [];
-    const mixKindRaw = String(req.query.mixKind ?? "");
-    const mixKind = ["real_video", "photo", "stock", "screenshot", "motion_graphics"].includes(mixKindRaw)
-      ? (mixKindRaw as ArchiveUploadInput["mixKind"])
-      : undefined;
-
-    // Download the uploaded file from R2 to a temp path on the Railway volume
-    const uploadBase =
-      (process.env.RAILWAY_VOLUME_MOUNT_PATH?.trim() && fs.existsSync(process.env.RAILWAY_VOLUME_MOUNT_PATH.trim()))
-        ? process.env.RAILWAY_VOLUME_MOUNT_PATH.trim()
-        : fs.existsSync("/data") ? "/data" : os.tmpdir();
-    const ext = mimeType.includes("webm") ? "webm" : mimeType.includes("quicktime") || mimeType.includes("mov") ? "mov" : "mp4";
-    const tempPath = path.join(uploadBase, `fv-notify-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.${ext}`);
-
-    patchArchiveUploadJob(jobId, { stage: "validating", message: `${filename}: downloading from storage…`, percent: 2 });
-
-    // Download the file from R2 to local disk
-    const { storageGetSignedUrl } = await import("./storage");
-    const downloadUrl = await storageGetSignedUrl(storageKey);
-    const dlResp = await fetch(downloadUrl);
-    if (!dlResp.ok || !dlResp.body) throw new Error(`Failed to download from storage: ${dlResp.status}`);
-    const writeStream = fs.createWriteStream(tempPath);
-    await new Promise<void>((resolve, reject) => {
-      const reader = dlResp.body!.getReader();
-      const pump = async () => {
-        try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) { writeStream.end(); break; }
-            if (!writeStream.write(value)) await new Promise<void>((r) => writeStream.once("drain", r));
-          }
-          writeStream.on("finish", resolve);
-        } catch (err) { reject(err); }
-      };
-      writeStream.on("error", reject);
-      void pump();
-    });
-
-    res.status(202).json({ accepted: true, jobId, message: "Processing started" });
-
-    const uploadInput: ArchiveUploadInput = {
-      archiveId,
-      buffer: Buffer.alloc(0),
-      localPath: tempPath,
-      mimeType,
-      filename,
-      tags,
-      mixKind,
-      autoSplitScenes: parseBoolQuery(req.query.autoSplitScenes, true),
-      autoGenerateTags: parseBoolQuery(req.query.autoGenerateTags, true),
-      jobId,
-    };
-
-    const cleanupTemp = () => { try { if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath); } catch { /* ignore */ } };
-
-    void processArchiveAssetUpload(uploadInput)
-      .then((result) => {
-        finishArchiveUploadJob(jobId, true, `${result.clipCount} clip(s) saved`, {
-          clipsSaved: result.clipCount, clipTotal: result.clipCount,
-          resultClipCount: result.clipCount, resultSplit: result.split,
-        });
-        cleanupTemp();
-      })
-      .catch((err) => {
-        cleanupTemp();
-        if (err instanceof ArchiveUploadError) {
-          err.cancelled ? finishArchiveUploadJobCancelled(jobId) : finishArchiveUploadJob(jobId, false, err.message);
-          return;
-        }
-        console.error("[ArchiveUpload] notify processing failed:", err);
-        finishArchiveUploadJob(jobId, false, (err as Error).message ?? appErrorMessage(APP_ERROR.SERVICE_ERROR, "Upload failed"));
-      });
-  } catch (err) {
-    console.error("[ArchiveUpload] notify failed:", err);
-    finishArchiveUploadJob(jobId, false, "Upload failed");
-    res.status(500).json({ error: appErrorMessage(APP_ERROR.SERVICE_ERROR, "Upload failed") });
-  }
-}
-
-/** Register before express.json() — all upload routes stream bodies directly to disk. */
+/** Register before express.json() — raw binary body, no base64 JSON bloat. */
 export function registerArchiveUploadRoute(app: Express) {
+  const bodyLimitMb = Math.ceil(maxArchiveUploadBytes() / (1024 * 1024)) + 32;
   app.get("/api/admin/archive/upload/progress", handleArchiveUploadProgress);
   app.post("/api/admin/archive/upload/cancel", handleArchiveUploadCancel);
-  app.post("/api/admin/archive/upload/chunk", handleArchiveUploadChunk);
-  app.post("/api/admin/archive/upload/assemble", handleArchiveUploadAssemble);
-  app.get("/api/admin/archive/upload/presign", handleArchiveUploadPresign);
-  app.post("/api/admin/archive/upload/notify", handleArchiveUploadNotify);
-  app.post("/api/admin/archive/upload", handleArchiveBinaryUpload);
+  app.post(
+    "/api/admin/archive/upload",
+    express.raw({ type: () => true, limit: `${bodyLimitMb}mb` }),
+    handleArchiveBinaryUpload
+  );
 }

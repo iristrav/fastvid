@@ -1231,7 +1231,7 @@ export type SplitVideoResult = {
  * Caller must invoke result.cleanup() after consuming all segments.
  */
 export async function splitVideoBySceneChanges(
-  inputBuffer: Buffer | string,
+  inputBuffer: Buffer,
   mimeType: string,
   onProgress?: ArchiveSplitProgressFn,
   shouldContinue?: () => boolean,
@@ -1293,23 +1293,16 @@ export async function splitVideoBySceneChanges(
   const clipDir = fs.mkdtempSync(path.join(clipBase, "fastvid-archive-split-"));
   try {
     const ext = mimeType.includes("webm") ? "webm" : mimeType.includes("quicktime") || mimeType.includes("mov") ? "mov" : "mp4";
-    let inputPath: string;
-    if (typeof inputBuffer === "string") {
-      // Caller already wrote the file to disk — use it directly, no copy needed.
-      inputPath = inputBuffer;
-      console.log(`[ArchiveSplit] using pre-written source: ${inputPath} (${(fs.statSync(inputPath).size / (1024 * 1024)).toFixed(1)}MB)`);
-    } else {
-      inputPath = path.join(workDir, `source.${ext}`);
-      console.log(`[ArchiveSplit] writing ${(inputBuffer.length / (1024 * 1024)).toFixed(1)}MB source → ${inputPath}`);
-      fs.writeFileSync(inputPath, inputBuffer);
-      const writtenBytes = fs.statSync(inputPath).size;
-      if (writtenBytes !== inputBuffer.length) {
-        throw new ArchiveSplitError(
-          `Source file truncated (${writtenBytes}/${inputBuffer.length} bytes) — /tmp may be full`
-        );
-      }
-      console.log(`[ArchiveSplit] source written ok (${writtenBytes} bytes)`);
+    const inputPath = path.join(workDir, `source.${ext}`);
+    console.log(`[ArchiveSplit] writing ${(inputBuffer.length / (1024 * 1024)).toFixed(1)}MB source → ${inputPath}`);
+    fs.writeFileSync(inputPath, inputBuffer);
+    const writtenBytes = fs.statSync(inputPath).size;
+    if (writtenBytes !== inputBuffer.length) {
+      throw new ArchiveSplitError(
+        `Source file truncated (${writtenBytes}/${inputBuffer.length} bytes) — /tmp may be full`
+      );
     }
+    console.log(`[ArchiveSplit] source written ok (${writtenBytes} bytes)`);
 
 
 
@@ -1357,8 +1350,7 @@ export async function splitVideoBySceneChanges(
         try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* ignore */ }
         try { fs.rmSync(clipDir, { recursive: true, force: true }); } catch { /* ignore */ }
       };
-      const singleBuf = typeof inputBuffer === "string" ? fs.readFileSync(inputBuffer) : inputBuffer;
-      return { segments: [{ buffer: singleBuf, startSec: 0, endSec: effectiveDur, durationSec: effectiveDur, index: 0 }], cleanup };
+      return { segments: [{ buffer: inputBuffer, startSec: 0, endSec: effectiveDur, durationSec: effectiveDur, index: 0 }], cleanup };
     }
 
     report({
