@@ -395,6 +395,96 @@ const GEOGRAPHY_BLOCKED_TAGS = new Set([
   "goebbels",
 ]);
 
+/**
+ * NL→EN token translation for archive tag matching.
+ * Dutch beat-text tokens won't match English archive tags without this.
+ */
+const NL_TO_EN_TOKENS: Record<string, string[]> = {
+  // People / actions
+  soldaten: ["soldiers"],
+  troepen: ["troops"],
+  leger: ["army", "troops"],
+  officier: ["officer"],
+  generaal: ["general"],
+  admiraal: ["admiral"],
+  piloot: ["pilot"],
+  vliegenier: ["pilot", "aviator"],
+  gevangenen: ["prisoners"],
+  burgers: ["civilians"],
+  bevolking: ["population", "civilians"],
+  // War / events
+  oorlog: ["war"],
+  gevecht: ["battle", "combat"],
+  slag: ["battle"],
+  aanval: ["attack", "offensive"],
+  invasie: ["invasion"],
+  bezetting: ["occupation"],
+  bevrijding: ["liberation"],
+  bombardement: ["bombing", "bombardment"],
+  bom: ["bomb"],
+  explosie: ["explosion"],
+  capitulatie: ["surrender", "capitulation"],
+  overgave: ["surrender"],
+  mars: ["march"],
+  marcheert: ["march", "marching"],
+  parade: ["parade"],
+  optocht: ["parade", "procession"],
+  toespraak: ["speech"],
+  vergadering: ["meeting", "assembly"],
+  rally: ["rally"],
+  // Locations
+  parijs: ["paris"],
+  berlijn: ["berlin"],
+  londen: ["london"],
+  moskou: ["moscow"],
+  amsterdam: ["amsterdam"],
+  rotterdam: ["rotterdam"],
+  brussel: ["brussels"],
+  rome: ["rome"],
+  warschau: ["warsaw"],
+  praag: ["prague"],
+  wenen: ["vienna"],
+  // Objects / vehicles
+  tank: ["tank"],
+  tanks: ["tanks"],
+  vliegtuig: ["aircraft", "airplane"],
+  vliegtuigen: ["aircraft"],
+  schip: ["ship", "vessel"],
+  schepen: ["ships"],
+  kanon: ["cannon", "artillery"],
+  geweer: ["rifle", "gun"],
+  // General
+  stad: ["city"],
+  straat: ["street"],
+  haven: ["harbor", "port"],
+  brug: ["bridge"],
+  paleis: ["palace"],
+  gebouw: ["building"],
+  mensen: ["people", "crowd"],
+  menigte: ["crowd"],
+  leider: ["leader"],
+  president: ["president"],
+  minister: ["minister"],
+  koning: ["king"],
+  koningin: ["queen"],
+  vlag: ["flag"],
+  grens: ["border"],
+};
+
+/**
+ * Expand beatTags with English equivalents for Dutch tokens.
+ * Ensures Dutch beat text finds English-tagged archive clips.
+ */
+export function expandBeatTagsWithTranslations(tags: string[]): string[] {
+  const extra: string[] = [];
+  for (const tag of tags) {
+    const translations = NL_TO_EN_TOKENS[tag.toLowerCase()];
+    if (translations) extra.push(...translations);
+  }
+  if (extra.length === 0) return tags;
+  return [...new Set([...tags, ...extra])];
+}
+
 /** Strip war-era search bias when beat is modern/geo — not tied to video topic enum. */
 export function refineVisualSearchTagsForTopic(
   tags: string[],

@@ -16,6 +16,7 @@ import {
   inferVideoVisualTopic,
   isWwiiWarArchiveAsset,
   refineVisualSearchTagsForTopic,
+  expandBeatTagsWithTranslations,
   isGeoWelcomeBeat,
   buildGeoWelcomeVisualQueries,
   isCyclingBeat,
@@ -364,8 +365,12 @@ export function buildBeatMatchTags(
     ...topicAnchors.slice(0, 3),
     ...(titleStr ? tokenizeBeatText(titleStr) : []),
   ]).slice(0, 24);
-  const refinedBeat = refineVisualSearchTagsForTopic(mergedBeat, videoVisualTopic, beatText);
-  const refinedAll = refineVisualSearchTagsForTopic(allTags, videoVisualTopic, beatText);
+  const refinedBeat = expandBeatTagsWithTranslations(
+    refineVisualSearchTagsForTopic(mergedBeat, videoVisualTopic, beatText)
+  );
+  const refinedAll = expandBeatTagsWithTranslations(
+    refineVisualSearchTagsForTopic(allTags, videoVisualTopic, beatText)
+  );
   return {
     beatTags: refinedBeat,
     topicAnchors: effectiveTopicAnchors,
