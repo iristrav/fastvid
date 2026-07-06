@@ -80,7 +80,10 @@ function scheduleArchiveClipEmbedding(assetId: number, localPath: string): void 
 
 export type ArchiveUploadInput = {
   archiveId: number;
+  /** In-memory buffer. Mutually exclusive with localPath. */
   buffer: Buffer;
+  /** Path to a file already written to disk. When set, buffer may be empty. */
+  localPath?: string;
   mimeType: string;
   filename?: string;
   title?: string;
@@ -156,13 +159,16 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
   }
 
   const maxBytes = maxArchiveUploadBytes();
-  if (input.buffer.length > maxBytes) {
+  const fileBytes = input.localPath
+    ? (fs.existsSync(input.localPath) ? fs.statSync(input.localPath).size : 0)
+    : input.buffer.length;
+  if (fileBytes > maxBytes) {
     throw new ArchiveUploadError(
       400,
       appErrorMessage(APP_ERROR.FILE_TOO_LARGE, `File too large (max ${Math.round(maxBytes / (1024 * 1024))}MB)`)
     );
   }
-  if (input.buffer.length === 0) {
+  if (fileBytes === 0) {
     throw new ArchiveUploadError(400, appErrorMessage(APP_ERROR.SERVICE_ERROR, "Empty file"));
   }
 
@@ -329,7 +335,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
     let splitCleanup: (() => void) | undefined;
     try {
       const splitResult = await splitVideoBySceneChanges(
-        input.buffer,
+        input.localPath ?? input.buffer,
         mimeType,
         onSplitProgress,
         uploadShouldContinue(jobId),
@@ -435,8 +441,9 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
   const ext = isVideo
     ? (mimeType.includes("webm") ? "webm" : mimeType.includes("quicktime") || mimeType.includes("mov") ? "mov" : "mp4")
     : (mimeType.includes("png") ? "png" : mimeType.includes("gif") ? "gif" : mimeType.includes("webp") ? "webp" : "jpg");
+  const fileBuffer = input.localPath ? fs.readFileSync(input.localPath) : input.buffer;
   const enriched = await enrichArchiveAssetFields({
-    buffer: input.buffer,
+    buffer: fileBuffer,
     mimeType,
     autoGenerateTags,
     baseTitle,
@@ -447,7 +454,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
     userProvidedTitle,
   });
   const key = `media-archive/${input.archiveId}/${Date.now()}-${Math.random().toString(36).slice(2, 6)}.${ext}`;
-  const { url, key: storedKey } = await storagePut(key, input.buffer, mimeType);
+  const { url, key: storedKey } = await storagePut(key, fileBuffer, mimeType);
 
   const assetId = await createMediaArchiveAsset({
     archiveId: input.archiveId,
@@ -466,7 +473,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
     throw new ArchiveUploadError(500, appErrorMessage(APP_ERROR.SERVICE_ERROR, "Failed to save asset"));
   }
   scheduleArchiveEmbeddingIndex(assetId);
-  if (isVideo) scheduleClipEmbeddingFromBuffer(assetId, input.buffer);
+  if (isVideo) scheduleClipEmbeddingFromBuffer(assetId, fileBuffer);
 
   const asset = await getMediaArchiveAssetById(assetId);
   finishArchiveUploadJob(jobId, true, `${isVideo ? "Video" : "Image"} saved`, {
@@ -490,6 +497,18 @@ function parseBoolQuery(value: unknown, defaultValue: boolean): boolean {
   return defaultValue;
 }
 
+/** Stream request body to a temp file, resolving with the path when done. */
+function streamBodyToFile(req: Request, destPath: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const out = fs.createWriteStream(destPath);
+    req.pipe(out);
+    out.on("finish", resolve);
+    out.on("error", reject);
+    req.on("error", reject);
+    req.on("aborted", () => reject(new Error("Upload connection aborted by client")));
+  });
+}
+
 async function handleArchiveBinaryUpload(req: Request, res: Response) {
   const jobId = String(req.query.jobId ?? "").trim() || undefined;
   const filename = String(req.query.filename ?? "upload").slice(0, 256);
@@ -502,6 +521,20 @@ async function handleArchiveBinaryUpload(req: Request, res: Response) {
     initArchiveUploadJob(jobId, filename);
   }
 
+  // Determine upload temp dir: prefer Railway volume so large files stay off RAM-backed /tmp.
+  const uploadBase =
+    (process.env.RAILWAY_VOLUME_MOUNT_PATH?.trim() && fs.existsSync(process.env.RAILWAY_VOLUME_MOUNT_PATH.trim()))
+      ? process.env.RAILWAY_VOLUME_MOUNT_PATH.trim()
+      : fs.existsSync("/data") ? "/data" : os.tmpdir();
+  const ext = (() => {
+    const mt = String(req.query.mimeType ?? req.headers["content-type"] ?? "");
+    if (mt.includes("webm")) return "webm";
+    if (mt.includes("quicktime") || mt.includes("mov")) return "mov";
+    return "mp4";
+  })();
+  const tempPath = path.join(uploadBase, `fv-upload-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.${ext}`);
+
+  let localPath: string | undefined;
   try {
     const user = await getUserFromRequest(req);
     if (!user) {
@@ -519,13 +552,19 @@ async function handleArchiveBinaryUpload(req: Request, res: Response) {
       return;
     }
 
-    const rawBody = req.body;
-    const buffer = Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(rawBody ?? []);
+    patchArchiveUploadJob(jobId, { stage: "validating", message: `${filename}: receiving…`, percent: 1 });
+
+    // Stream body directly to disk — avoids buffering the entire file in RAM.
+    await streamBodyToFile(req, tempPath);
+    localPath = tempPath;
+    const fileSizeMb = Math.round(fs.statSync(tempPath).size / (1024 * 1024));
+
     patchArchiveUploadJob(jobId, {
       stage: "validating",
-      message: `${filename}: ${Math.round(buffer.length / (1024 * 1024))}MB received — processing…`,
+      message: `${filename}: ${fileSizeMb}MB received — processing…`,
       percent: 2,
     });
+
     const mimeType = String(req.query.mimeType ?? req.headers["content-type"] ?? "").slice(0, 128);
     const tagsRaw = String(req.query.tags ?? "");
     const tags = tagsRaw ? normalizeMediaTags(tagsRaw.split(/[,;]+/)) : [];
@@ -536,7 +575,8 @@ async function handleArchiveBinaryUpload(req: Request, res: Response) {
 
     const uploadInput: ArchiveUploadInput = {
       archiveId,
-      buffer,
+      buffer: Buffer.alloc(0),
+      localPath: tempPath,
       mimeType,
       filename,
       tags,
@@ -553,6 +593,10 @@ async function handleArchiveBinaryUpload(req: Request, res: Response) {
       message: "Upload received — processing in background",
     });
 
+    const cleanupTempFile = () => {
+      if (localPath) { try { fs.unlinkSync(localPath); } catch { /* ignore */ } }
+    };
+
     void processArchiveAssetUpload(uploadInput)
       .then((result) => {
         finishArchiveUploadJob(jobId, true, `${result.clipCount} clip(s) saved`, {
@@ -561,8 +605,10 @@ async function handleArchiveBinaryUpload(req: Request, res: Response) {
           resultClipCount: result.clipCount,
           resultSplit: result.split,
         });
+        cleanupTempFile();
       })
       .catch((err) => {
+        cleanupTempFile();
         if (err instanceof ArchiveUploadError) {
           if (err.cancelled) {
             finishArchiveUploadJobCancelled(jobId);
@@ -579,6 +625,7 @@ async function handleArchiveBinaryUpload(req: Request, res: Response) {
         );
       });
   } catch (err) {
+    if (localPath) { try { fs.unlinkSync(localPath); } catch { /* ignore */ } }
     if (err instanceof ArchiveUploadError) {
       if (err.cancelled) {
         finishArchiveUploadJobCancelled(jobId);
@@ -656,14 +703,9 @@ async function handleArchiveUploadProgress(req: Request, res: Response) {
   }
 }
 
-/** Register before express.json() — raw binary body, no base64 JSON bloat. */
+/** Register before express.json() — body is streamed directly to disk, no in-memory buffering. */
 export function registerArchiveUploadRoute(app: Express) {
-  const bodyLimitMb = Math.ceil(maxArchiveUploadBytes() / (1024 * 1024)) + 32;
   app.get("/api/admin/archive/upload/progress", handleArchiveUploadProgress);
   app.post("/api/admin/archive/upload/cancel", handleArchiveUploadCancel);
-  app.post(
-    "/api/admin/archive/upload",
-    express.raw({ type: () => true, limit: `${bodyLimitMb}mb` }),
-    handleArchiveBinaryUpload
-  );
+  app.post("/api/admin/archive/upload", handleArchiveBinaryUpload);
 }
