@@ -770,6 +770,24 @@ export function scoreCuratedAsset(
       score += 28;
       beatHits++;
     }
+
+    // Person-name guarantee: if a tag names a specific person AND the beat text
+    // mentions that person → strong boost, clip is guaranteed to rank above generics.
+    for (const t of assetTags) {
+      if (t.length >= 4 && bl.includes(t)) {
+        score += 200;
+        beatHits += 3;
+        break; // one person match is enough
+      }
+    }
+    // Also check title words individually against beat text
+    for (const w of titleWords) {
+      if (w.length >= 4 && bl.includes(w)) {
+        score += 80;
+        beatHits += 2;
+        break;
+      }
+    }
   }
 
   for (const q of beatTags) {
