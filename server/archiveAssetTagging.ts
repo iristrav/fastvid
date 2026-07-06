@@ -219,11 +219,13 @@ function padArchiveTags(
   parsed: ArchiveAiVisionPayload,
   title: string
 ): string[] {
-  const out = [...tags];
+  const out = [...tags].map(capTagToTwoWords);
   const push = (raw: string | undefined | null) => {
     const v = raw?.trim().toLowerCase().replace(/\s+/g, " ");
-    if (!v || v.length < 3 || out.includes(v)) return;
-    out.push(v);
+    if (!v || v.length < 3) return;
+    const capped = capTagToTwoWords(v);
+    if (out.includes(capped)) return;
+    out.push(capped);
   };
 
   for (const tag of parsed.tags ?? []) {
@@ -280,6 +282,8 @@ export function flattenArchiveAiMetadata(parsed: ArchiveAiVisionPayload): Archiv
   if (tags.length === 0) {
     tags = normalizeMediaTags(title.split(/\s+/).filter((w) => w.length > 3)).slice(0, ARCHIVE_MAX_TAGS);
   }
+  // Hard cap: every tag max 2 words regardless of source
+  tags = normalizeMediaTags(tags.map(capTagToTwoWords)).slice(0, ARCHIVE_MAX_TAGS);
   if (tags.length === 0) return null;
 
   const detailBits = [
