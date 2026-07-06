@@ -21372,7 +21372,7 @@ async function concatenateScenesWithMusic(
   const concatCrf = fastShort ? 22 : 18;
   const concatPromise = withTimeout(
     exec(
-      `${FFMPEG_BIN} -y -f concat -safe 0 -i "${listFile}" -vsync cfr ` +
+      `${FFMPEG_BIN} -y -fflags +discardcorrupt -f concat -safe 0 -i "${listFile}" -vsync cfr ` +
         `-c:v libx264 -preset ${concatPreset} -crf ${concatCrf} -c:a aac -b:a 320k -movflags +faststart "${concatPath}"`
     ),
     concatTimeoutMs,

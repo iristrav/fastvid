@@ -434,7 +434,7 @@ export async function plainConcatSceneVideos(
   fs.writeFileSync(listFile, escaped, "utf-8");
   try {
     await exec(
-      `"${ffmpegBin()}" -y -f concat -safe 0 -i "${listFile}" -c copy -movflags +faststart "${out}"`,
+      `"${ffmpegBin()}" -y -fflags +discardcorrupt -f concat -safe 0 -i "${listFile}" -c copy -movflags +faststart "${out}"`,
       { timeout: 600_000 }
     );
     return fs.existsSync(out) && fs.statSync(out).size > 1_000 ? out : null;
