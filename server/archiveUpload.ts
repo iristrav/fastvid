@@ -45,6 +45,7 @@ import {
   normalizeMediaTags,
 } from "./db";
 import { storagePut } from "./storage";
+import { getStorageBackend } from "./storageBackend";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
@@ -712,9 +713,149 @@ async function handleArchiveUploadProgress(req: Request, res: Response) {
   }
 }
 
+/**
+ * Presign endpoint: returns a signed PUT URL for direct browser→R2 upload, bypassing the Railway proxy.
+ * Only available when S3 storage is configured (Cloudflare R2).
+ */
+async function handleArchiveUploadPresign(req: Request, res: Response) {
+  try {
+    const user = await getUserFromRequest(req);
+    if (!user) { res.status(401).json({ error: appErrorMessage(APP_ERROR.UNAUTHED, "Please login") }); return; }
+    if (user.role !== "admin") { res.status(403).json({ error: appErrorMessage(APP_ERROR.NOT_ADMIN, "You do not have required permission") }); return; }
+
+    if (getStorageBackend() !== "s3") {
+      res.status(400).json({ error: "Direct upload not available — storage backend is not S3/R2" });
+      return;
+    }
+
+    const filename = String(req.query.filename ?? "upload").slice(0, 256);
+    const mimeType = String(req.query.mimeType ?? "video/mp4").slice(0, 128);
+    const ext = mimeType.includes("webm") ? "webm" : mimeType.includes("quicktime") || mimeType.includes("mov") ? "mov" : "mp4";
+    const relKey = `media-archive-upload-tmp/${Date.now()}-${Math.random().toString(36).slice(2, 6)}-${filename.slice(0, 40)}.${ext}`;
+
+    const { s3GetPresignedPutUrl } = await import("./storageS3");
+    const { uploadUrl, key } = await s3GetPresignedPutUrl(relKey, mimeType, 7200);
+
+    res.json({ uploadUrl, storageKey: key });
+  } catch (err) {
+    console.error("[ArchiveUpload] presign failed:", err);
+    res.status(500).json({ error: appErrorMessage(APP_ERROR.SERVICE_ERROR, "Presign failed") });
+  }
+}
+
+/**
+ * Notify endpoint: called by client after a successful direct R2 upload.
+ * Starts scene splitting and metadata generation from the already-uploaded R2 object.
+ */
+async function handleArchiveUploadNotify(req: Request, res: Response) {
+  const jobId = String(req.query.jobId ?? "").trim() || undefined;
+  const filename = String(req.query.filename ?? "upload").slice(0, 256);
+
+  if (jobId) initArchiveUploadJob(jobId, filename);
+
+  try {
+    const user = await getUserFromRequest(req);
+    if (!user) { res.status(401).json({ error: appErrorMessage(APP_ERROR.UNAUTHED, "Please login") }); return; }
+    if (user.role !== "admin") { res.status(403).json({ error: appErrorMessage(APP_ERROR.NOT_ADMIN, "You do not have required permission") }); return; }
+
+    const archiveId = parseInt(String(req.query.archiveId ?? ""), 10);
+    if (!archiveId || Number.isNaN(archiveId)) {
+      res.status(400).json({ error: appErrorMessage(APP_ERROR.SERVICE_ERROR, "archiveId is required") });
+      return;
+    }
+
+    const storageKey = String(req.query.storageKey ?? "").trim();
+    if (!storageKey) {
+      res.status(400).json({ error: appErrorMessage(APP_ERROR.SERVICE_ERROR, "storageKey is required") });
+      return;
+    }
+
+    const mimeType = String(req.query.mimeType ?? "video/mp4").slice(0, 128);
+    const tagsRaw = String(req.query.tags ?? "");
+    const tags = tagsRaw ? normalizeMediaTags(tagsRaw.split(/[,;]+/)) : [];
+    const mixKindRaw = String(req.query.mixKind ?? "");
+    const mixKind = ["real_video", "photo", "stock", "screenshot", "motion_graphics"].includes(mixKindRaw)
+      ? (mixKindRaw as ArchiveUploadInput["mixKind"])
+      : undefined;
+
+    // Download the uploaded file from R2 to a temp path on the Railway volume
+    const uploadBase =
+      (process.env.RAILWAY_VOLUME_MOUNT_PATH?.trim() && fs.existsSync(process.env.RAILWAY_VOLUME_MOUNT_PATH.trim()))
+        ? process.env.RAILWAY_VOLUME_MOUNT_PATH.trim()
+        : fs.existsSync("/data") ? "/data" : os.tmpdir();
+    const ext = mimeType.includes("webm") ? "webm" : mimeType.includes("quicktime") || mimeType.includes("mov") ? "mov" : "mp4";
+    const tempPath = path.join(uploadBase, `fv-notify-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.${ext}`);
+
+    patchArchiveUploadJob(jobId, { stage: "validating", message: `${filename}: downloading from storage…`, percent: 2 });
+
+    // Download the file from R2 to local disk
+    const { storageGetSignedUrl } = await import("./storage");
+    const downloadUrl = await storageGetSignedUrl(storageKey);
+    const dlResp = await fetch(downloadUrl);
+    if (!dlResp.ok || !dlResp.body) throw new Error(`Failed to download from storage: ${dlResp.status}`);
+    const writeStream = fs.createWriteStream(tempPath);
+    await new Promise<void>((resolve, reject) => {
+      const reader = dlResp.body!.getReader();
+      const pump = async () => {
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) { writeStream.end(); break; }
+            if (!writeStream.write(value)) await new Promise<void>((r) => writeStream.once("drain", r));
+          }
+          writeStream.on("finish", resolve);
+        } catch (err) { reject(err); }
+      };
+      writeStream.on("error", reject);
+      void pump();
+    });
+
+    res.status(202).json({ accepted: true, jobId, message: "Processing started" });
+
+    const uploadInput: ArchiveUploadInput = {
+      archiveId,
+      buffer: Buffer.alloc(0),
+      localPath: tempPath,
+      mimeType,
+      filename,
+      tags,
+      mixKind,
+      autoSplitScenes: parseBoolQuery(req.query.autoSplitScenes, true),
+      autoGenerateTags: parseBoolQuery(req.query.autoGenerateTags, true),
+      jobId,
+    };
+
+    const cleanupTemp = () => { try { if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath); } catch { /* ignore */ } };
+
+    void processArchiveAssetUpload(uploadInput)
+      .then((result) => {
+        finishArchiveUploadJob(jobId, true, `${result.clipCount} clip(s) saved`, {
+          clipsSaved: result.clipCount, clipTotal: result.clipCount,
+          resultClipCount: result.clipCount, resultSplit: result.split,
+        });
+        cleanupTemp();
+      })
+      .catch((err) => {
+        cleanupTemp();
+        if (err instanceof ArchiveUploadError) {
+          err.cancelled ? finishArchiveUploadJobCancelled(jobId) : finishArchiveUploadJob(jobId, false, err.message);
+          return;
+        }
+        console.error("[ArchiveUpload] notify processing failed:", err);
+        finishArchiveUploadJob(jobId, false, (err as Error).message ?? appErrorMessage(APP_ERROR.SERVICE_ERROR, "Upload failed"));
+      });
+  } catch (err) {
+    console.error("[ArchiveUpload] notify failed:", err);
+    finishArchiveUploadJob(jobId, false, "Upload failed");
+    res.status(500).json({ error: appErrorMessage(APP_ERROR.SERVICE_ERROR, "Upload failed") });
+  }
+}
+
 /** Register before express.json() — body is streamed directly to disk, no in-memory buffering. */
 export function registerArchiveUploadRoute(app: Express) {
   app.get("/api/admin/archive/upload/progress", handleArchiveUploadProgress);
   app.post("/api/admin/archive/upload/cancel", handleArchiveUploadCancel);
+  app.get("/api/admin/archive/upload/presign", handleArchiveUploadPresign);
+  app.post("/api/admin/archive/upload/notify", handleArchiveUploadNotify);
   app.post("/api/admin/archive/upload", handleArchiveBinaryUpload);
 }

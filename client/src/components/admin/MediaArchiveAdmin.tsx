@@ -150,7 +150,64 @@ async function uploadArchiveFile(
     throw new Error("Processing took too long — check the archive later or try again.");
   };
 
+  const parseJsonResponse = async (res: Response) => {
+    const text = await res.text();
+    try {
+      return JSON.parse(text) as { error?: string; accepted?: boolean; clipCount?: number; split?: boolean; cancelled?: boolean; uploadUrl?: string; storageKey?: string };
+    } catch {
+      if (text.trimStart().startsWith("<!DOCTYPE") || text.trimStart().startsWith("<html")) {
+        const lower = text.toLowerCase();
+        if (lower.includes("upstream")) throw new Error("Server timeout during upload. Processing may continue — refresh in a minute.");
+        throw new Error("Server returned an HTML error page (file too large or timeout). Try a smaller file.");
+      }
+      throw new Error(text.slice(0, 180) || "Upload failed");
+    }
+  };
+
   try {
+    // For large files (>50MB), upload directly to R2 via presigned URL to bypass Railway proxy limits.
+    const useDirect = file.size > 50 * 1024 * 1024;
+
+    if (useDirect) {
+      // Step 1: get a presigned PUT URL
+      const presignParams = new URLSearchParams({ filename: file.name, mimeType: opts.mimeType });
+      const presignRes = await fetch(`/api/admin/archive/upload/presign?${presignParams}`, {
+        credentials: "include",
+        signal: opts.signal,
+      });
+      const presignData = await parseJsonResponse(presignRes);
+      if (!presignRes.ok || !presignData.uploadUrl || !presignData.storageKey) {
+        throw new Error(presignData.error || "Failed to get upload URL");
+      }
+
+      // Step 2: upload directly to R2 — bypasses Railway proxy entirely
+      opts.onProgress?.({ stage: "validating", message: "Uploading to storage…", percent: 5, done: false, error: undefined, cancelled: false });
+      const r2Res = await fetch(presignData.uploadUrl, {
+        method: "PUT",
+        headers: { "Content-Type": opts.mimeType || "application/octet-stream" },
+        body: file,
+        signal: opts.signal,
+      });
+      if (!r2Res.ok) throw new Error(`Direct upload failed (${r2Res.status})`);
+
+      // Step 3: notify server to start processing
+      params.append("storageKey", presignData.storageKey);
+      const notifyRes = await fetch(`/api/admin/archive/upload/notify?${params}`, {
+        method: "POST",
+        credentials: "include",
+        signal: opts.signal,
+      });
+      const notifyData = await parseJsonResponse(notifyRes);
+      if (!notifyRes.ok) throw new Error(notifyData.error || "Failed to start processing");
+
+      const finalProgress = await waitForJobDone();
+      return {
+        clipCount: finalProgress.resultClipCount ?? finalProgress.clipsSaved ?? 1,
+        split: Boolean(finalProgress.resultSplit ?? (finalProgress.clipsSaved ?? 0) > 1),
+      };
+    }
+
+    // Small files: stream directly through the server
     const res = await fetch(`/api/admin/archive/upload?${params}`, {
       method: "POST",
       credentials: "include",
@@ -159,30 +216,7 @@ async function uploadArchiveFile(
       signal: opts.signal,
     });
 
-    const text = await res.text();
-    let data: {
-      error?: string;
-      accepted?: boolean;
-      clipCount?: number;
-      split?: boolean;
-      cancelled?: boolean;
-    } | null = null;
-    try {
-      data = JSON.parse(text) as typeof data;
-    } catch {
-      if (text.trimStart().startsWith("<!DOCTYPE") || text.trimStart().startsWith("<html")) {
-        const lower = text.toLowerCase();
-        if (lower.includes("upstream")) {
-          throw new Error(
-            "Server timeout during upload (upstream error). Processing may continue — refresh the page in a minute."
-          );
-        }
-        throw new Error(
-          "Server returned an HTML error page (file too large or timeout). Try a smaller file."
-        );
-      }
-      throw new Error(text.slice(0, 180) || "Upload failed");
-    }
+    const data = await parseJsonResponse(res);
 
     if (res.status === 202 || data?.accepted) {
       const finalProgress = await waitForJobDone();
@@ -193,8 +227,7 @@ async function uploadArchiveFile(
     }
 
     if (!res.ok) {
-      const cancelled = Boolean(data?.cancelled)
-        || (data?.error?.toLowerCase().includes("cancelled") ?? false);
+      const cancelled = Boolean(data?.cancelled) || (data?.error?.toLowerCase().includes("cancelled") ?? false);
       if (cancelled) throw new UploadCancelledError();
       throw new Error(data?.error || "Upload failed");
     }
