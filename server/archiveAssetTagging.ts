@@ -156,14 +156,26 @@ function isSpecificArchiveTag(tag: string): boolean {
   return true;
 }
 
+/** Cap a tag to max 2 words — take the 2 most meaningful (skip vague leading words). */
+function capTagToTwoWords(tag: string): string {
+  const words = tag.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (words.length <= 2) return words.join(" ");
+  // Prefer keeping the last 2 words if the first is a vague adjective
+  const vague = new Set(["ww2", "ww1", "wwii", "wwi", "historical", "archival", "old", "the", "a", "an"]);
+  const meaningful = words.filter((w) => !vague.has(w));
+  if (meaningful.length >= 2) return meaningful.slice(0, 2).join(" ");
+  return words.slice(0, 2).join(" ");
+}
+
 /** Pick up to 4 concrete English search tags for archive/Pexels matching. */
 export function selectHighQualityArchiveTags(parsed: ArchiveAiVisionPayload): string[] {
   const picked: string[] = [];
   const push = (raw: string | undefined | null) => {
     const v = raw?.trim().toLowerCase().replace(/\s+/g, " ");
     if (!v || !isSpecificArchiveTag(v)) return;
-    if (picked.includes(v)) return;
-    picked.push(v);
+    const capped = capTagToTwoWords(v);
+    if (picked.includes(capped)) return;
+    picked.push(capped);
   };
 
   for (const tag of parsed.tags ?? []) {
@@ -744,7 +756,7 @@ async function invokeArchiveVisionTagging(
           role: "system",
           content:
             "You are a senior documentary archivist. Analyze each frame and return JSON only. " +
-            "Provide EXACTLY 4 highly specific English search tags per clip — multi-word combinations with named people, places, events, or years. Never use single vague nouns.",
+            "Provide EXACTLY 4 specific English search tags per clip — MAX 2 words each. Use named people, places, objects, or actions. Examples: 'hitler', 'paris', 'tanks', 'surrender', 'normandy', 'bombing'. Never vague nouns.",
         },
         {
           role: "user",
@@ -830,7 +842,7 @@ function buildVisionPrompt(
       "Return JSON with:",
       "- title: max 15 words, concrete WHO/WHAT/WHERE in English",
       "- description: 1–2 sentences describing what is visible",
-      "- tags: EXACTLY 4 English search phrases (lowercase, 2–4 words each)",
+      "- tags: EXACTLY 4 English search tags (lowercase, 1–2 words each — e.g. 'hitler', 'paris', 'tanks', 'normandy')",
       "",
       "Tag examples: amsterdam canal bikes | subway platform berlin | business meeting team | cyclists rain street",
       "Avoid vague single words: person, city, success, business, modern, historical.",
@@ -852,14 +864,14 @@ function buildVisionPrompt(
     "title: max 15 words, concrete WHO/WHAT/WHERE (e.g. 'Hitler speech Nuremberg 1934' or 'D-Day soldiers Omaha Beach 1944'). No filename.",
     "description: 2–3 sentences: visible action + location + era.",
     "",
-    "tags: EXACTLY 4 high-quality English search slugs (lowercase, 2–4 words each). MOST IMPORTANT OUTPUT.",
-    "Pick the 4 MOST SPECIFIC and searchable combinations from these angles:",
-    "1. Named person + action: 'hitler speech nuremberg', 'churchill addressing parliament'",
-    "2. Specific event + location: 'd-day omaha beach', 'battle of stalingrad street fighting'",
-    "3. Subject + era: 'german panzer tank 1944', 'allied soldiers normandy'",
-    "4. Visual + context: 'ww2 aerial bombing footage', 'archival film troops marching'",
-    "ALWAYS use multi-word combinations — never a single vague noun. Prefer named people, places, events, years.",
-    "Examples: 'normandy beach landing 1944' | 'hitler reichstag speech 1939' | 'german army retreat 1945' | 'ww2 aerial bombing raid'",
+    "tags: EXACTLY 4 English search tags (lowercase, MAX 2 words each). MOST IMPORTANT OUTPUT.",
+    "Pick the 4 MOST SPECIFIC and findable single- or two-word tags:",
+    "1. Named person: 'hitler', 'churchill', 'rommel'",
+    "2. Specific place: 'paris', 'normandy', 'berlin', 'stalingrad'",
+    "3. Subject/object: 'tanks', 'soldiers', 'aircraft', 'crowd'",
+    "4. Event/action: 'bombing', 'surrender', 'parade', 'landing'",
+    "MAX 2 words per tag. Never use vague words alone: person, city, scene, footage.",
+    "Examples: 'hitler' | 'paris' | 'tanks' | 'surrender'  OR  'hitler speech' | 'omaha beach' | 'german tanks' | 'troop parade'",
     "",
     "Also fill structured fields:",
     "- persons: named individuals clearly visible or strongly implied",
