@@ -916,6 +916,13 @@ export function scoreCuratedAsset(
 
   if (beatTags.length >= 2 && beatHits === 0) score = Math.max(0, score - 60);
 
+  // Thematic WW2 category boost: if the beat is about WW2/Hitler/war and the clip is
+  // a WW2 archive asset, give a base positive score even when tags don't have exact matches.
+  // This ensures clips with generic tags ("world war 2 footage") are found for WW2 beats.
+  if (isWwiiWarArchiveAsset(asset) && beatMentionsWwiiContent(beatText)) {
+    score += 40;
+  }
+
   score += curatedArchiveVisualBoost(asset);
   score += curatedVideoFootageBoost(asset, beatHits);
   score += curatedActionFootageBoost(asset);
@@ -927,10 +934,8 @@ export function scoreCuratedAsset(
   score += curatedOffTopicPenalty(asset, topicAnchors, beatTags, videoVisualTopic);
   if (metadataVisualBlocksEnabled()) {
     if (beatText && archiveAssetRejectedForBeat(asset, beatText)) return 0;
-    if (videoVisualTopic !== "wwii" && isWwiiWarArchiveAsset(asset)) {
-      if (!beatMentionsWwiiContent(beatText)) {
-        score = Math.max(0, score - 400);
-      }
+    if (isWwiiWarArchiveAsset(asset) && !beatMentionsWwiiContent(beatText) && videoVisualTopic !== "wwii") {
+      score = Math.max(0, score - 400);
     }
     if (beatText && isClipTitleIrrelevantToBeat(asset, beatText)) {
       return 0;
