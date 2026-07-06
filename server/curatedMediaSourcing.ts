@@ -1884,6 +1884,14 @@ export async function searchCuratedCandidatesForBeat(
   };
   const { beatTags, topicAnchors, allTags, videoVisualTopic } = buildBeatMatchTags(beatForMatch, scene, videoTitle);
 
+  console.log(
+    `[ArchiveSearch] zin ${beat.index} "${beat.text.slice(0, 60)}"` +
+    `\n  beatTags:     [${beatTags.join(", ")}]` +
+    `\n  topicAnchors: [${topicAnchors.join(", ")}]` +
+    `\n  topic:        ${videoVisualTopic}` +
+    (options?.candidatePool ? `\n  pool:         ${options.candidatePool.length} clips (pre-built)` : `\n  pool:         full archive scan`)
+  );
+
   const listed =
     options?.candidatePool && options.candidatePool.length > 0
       ? options.candidatePool.filter(
@@ -1940,6 +1948,17 @@ export async function searchCuratedCandidatesForBeat(
       score: p.score + countVisualTagHits(p.asset, allArchiveMatchTags) * 14,
     }));
     ranked.sort((a, b) => b.score - a.score);
+  }
+
+  if (ranked.length > 0) {
+    const top5 = ranked.slice(0, 5).map((p, i) =>
+      `    #${i + 1} score=${p.score} "${p.asset.title ?? "?"}" tags=[${(p.asset.tags ?? []).join(", ")}]`
+    );
+    console.log(
+      `[ArchiveSearch] zin ${beat.index} — ${ranked.length} kandidaten gevonden:\n` + top5.join("\n")
+    );
+  } else {
+    console.log(`[ArchiveSearch] zin ${beat.index} — GEEN kandidaten gevonden in archief`);
   }
 
   let clipPreRankDone = false;
