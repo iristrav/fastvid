@@ -128,7 +128,7 @@ const TAG_JSON_SCHEMA_MINIMAL = {
 } as const;
 
 /** Max searchable tags stored per asset (pipeline + semantic matching). Geo slugs prioritized. */
-export const ARCHIVE_MAX_TAGS = 10;
+export const ARCHIVE_MAX_TAGS = 4;
 
 /** Vision LLM timeout — quality over speed; override via env. */
 function archiveVisionTimeoutMs(frameCount: number): number {
@@ -743,7 +743,7 @@ async function invokeArchiveVisionTagging(
           role: "system",
           content:
             "You are a senior documentary archivist. Analyze each frame and return JSON only. " +
-            "Provide exactly 4 high-quality English search tags per clip — concrete visible subjects for stock/archive search, not vague words.",
+            "Provide EXACTLY 4 highly specific English search tags per clip — multi-word combinations with named people, places, events, or years. Never use single vague nouns.",
         },
         {
           role: "user",
@@ -851,17 +851,14 @@ function buildVisionPrompt(
     "title: max 15 words, concrete WHO/WHAT/WHERE (e.g. 'Hitler speech Nuremberg 1934' or 'D-Day soldiers Omaha Beach 1944'). No filename.",
     "description: 2–3 sentences: visible action + location + era.",
     "",
-    "tags: 6–10 high-quality English search slugs (lowercase). MOST IMPORTANT OUTPUT.",
-    "Cover ALL of these angles that apply:",
-    "1. Named person(s) visible or implied: 'adolf hitler', 'winston churchill', 'erwin rommel'",
-    "2. Historical event: 'd-day landings', 'battle of normandy', 'operation overlord', 'blitzkrieg'",
-    "3. Location: 'omaha beach normandy', 'berlin 1945', 'nuremberg rally'",
-    "4. Era/year: 'world war 2', '1944', 'ww2 footage', 'nazi germany'",
-    "5. Visible action: 'soldiers storming beach', 'troops marching', 'tanks advancing', 'bombing raid'",
-    "6. Subject/objects: 'german soldiers', 'allied forces', 'panzer tank', 'warship', 'aircraft'",
-    "7. Visual style: 'black and white footage', 'archival film', 'historical photograph'",
-    "Use specific combinations, not single vague words.",
-    "Examples: 'normandy beach landing 1944' | 'hitler speech reichstag' | 'german army advance' | 'ww2 aerial bombing'",
+    "tags: EXACTLY 4 high-quality English search slugs (lowercase, 2–4 words each). MOST IMPORTANT OUTPUT.",
+    "Pick the 4 MOST SPECIFIC and searchable combinations from these angles:",
+    "1. Named person + action: 'hitler speech nuremberg', 'churchill addressing parliament'",
+    "2. Specific event + location: 'd-day omaha beach', 'battle of stalingrad street fighting'",
+    "3. Subject + era: 'german panzer tank 1944', 'allied soldiers normandy'",
+    "4. Visual + context: 'ww2 aerial bombing footage', 'archival film troops marching'",
+    "ALWAYS use multi-word combinations — never a single vague noun. Prefer named people, places, events, years.",
+    "Examples: 'normandy beach landing 1944' | 'hitler reichstag speech 1939' | 'german army retreat 1945' | 'ww2 aerial bombing raid'",
     "",
     "Also fill structured fields:",
     "- persons: named individuals clearly visible or strongly implied",
