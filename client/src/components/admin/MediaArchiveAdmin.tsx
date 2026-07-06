@@ -150,61 +150,49 @@ async function uploadArchiveFile(
     throw new Error("Processing took too long — check the archive later or try again.");
   };
 
+  const parseJson = async (r: Response) => {
+    const t = await r.text();
+    try { return JSON.parse(t) as { error?: string; accepted?: boolean; clipCount?: number; split?: boolean; cancelled?: boolean }; }
+    catch { throw new Error(t.slice(0, 200) || "Upload failed"); }
+  };
+
   try {
-    const res = await fetch(`/api/admin/archive/upload?${params}`, {
+    // Always use chunked upload — each chunk is 10MB, safe for any proxy.
+    const CHUNK = 10 * 1024 * 1024;
+    const totalChunks = Math.max(1, Math.ceil(file.size / CHUNK));
+    const uploadId = opts.jobId;
+
+    for (let i = 0; i < totalChunks; i++) {
+      if (opts.signal?.aborted) throw new UploadCancelledError();
+      const chunk = file.slice(i * CHUNK, Math.min((i + 1) * CHUNK, file.size));
+      const pct = Math.round(2 + (i / totalChunks) * 45);
+      opts.onProgress?.({ jobId: opts.jobId, stage: "validating", message: `Uploading ${i + 1}/${totalChunks}…`, percent: pct, done: false });
+      const chunkParams = new URLSearchParams({ uploadId, chunk: String(i), filename: file.name });
+      const r = await fetch(`/api/admin/archive/upload/chunk?${chunkParams}`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: chunk,
+        signal: opts.signal,
+      });
+      const d = await parseJson(r);
+      if (!r.ok) throw new Error(d.error || `Chunk ${i + 1} failed`);
+    }
+
+    opts.onProgress?.({ jobId: opts.jobId, stage: "validating", message: "Starting processing…", percent: 48, done: false });
+    params.append("uploadId", uploadId);
+    const assembleRes = await fetch(`/api/admin/archive/upload/assemble?${params}`, {
       method: "POST",
       credentials: "include",
-      headers: { "Content-Type": opts.mimeType || "application/octet-stream" },
-      body: file,
       signal: opts.signal,
     });
+    const assembleData = await parseJson(assembleRes);
+    if (!assembleRes.ok) throw new Error(assembleData.error || "Failed to start processing");
 
-    const text = await res.text();
-    let data: {
-      error?: string;
-      accepted?: boolean;
-      clipCount?: number;
-      split?: boolean;
-      cancelled?: boolean;
-    } | null = null;
-    try {
-      data = JSON.parse(text) as typeof data;
-    } catch {
-      if (text.trimStart().startsWith("<!DOCTYPE") || text.trimStart().startsWith("<html")) {
-        const lower = text.toLowerCase();
-        if (lower.includes("upstream")) {
-          throw new Error(
-            "Server timeout during upload (upstream error). Processing may continue — refresh the page in a minute."
-          );
-        }
-        throw new Error(
-          "Server returned an HTML error page (file too large or timeout). Try a smaller file."
-        );
-      }
-      throw new Error(text.slice(0, 180) || "Upload failed");
-    }
-
-    if (res.status === 202 || data?.accepted) {
-      const finalProgress = await waitForJobDone();
-      return {
-        clipCount: finalProgress.resultClipCount ?? finalProgress.clipsSaved ?? 1,
-        split: Boolean(finalProgress.resultSplit ?? (finalProgress.clipsSaved ?? 0) > 1),
-      };
-    }
-
-    if (!res.ok) {
-      const cancelled = Boolean(data?.cancelled)
-        || (data?.error?.toLowerCase().includes("cancelled") ?? false);
-      if (cancelled) throw new UploadCancelledError();
-      throw new Error(data?.error || "Upload failed");
-    }
-
-    const finalProgress = await pollArchiveUploadProgress(opts.jobId);
-    if (finalProgress) opts.onProgress?.(finalProgress);
-
+    const finalProgress = await waitForJobDone();
     return {
-      clipCount: data?.clipCount ?? finalProgress?.clipsSaved ?? 1,
-      split: Boolean(data?.split ?? (finalProgress?.clipsSaved ?? 0) > 1),
+      clipCount: finalProgress.resultClipCount ?? finalProgress.clipsSaved ?? 1,
+      split: Boolean(finalProgress.resultSplit ?? (finalProgress.clipsSaved ?? 0) > 1),
     };
   } finally {
     window.clearInterval(pollTimer);

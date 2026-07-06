@@ -656,11 +656,142 @@ async function handleArchiveUploadProgress(req: Request, res: Response) {
   }
 }
 
-/** Register before express.json() — raw binary body, no base64 JSON bloat. */
+// Chunk size the client uses (10 MB). Each chunk passes through Railway's proxy easily.
+const CHUNK_LIMIT = "12mb";
+
+async function handleArchiveChunk(req: Request, res: Response) {
+  const uploadId = String(req.query.uploadId ?? "").trim();
+  const chunkIndex = parseInt(String(req.query.chunk ?? ""), 10);
+  const filename = String(req.query.filename ?? "upload").slice(0, 256);
+
+  if (!uploadId || isNaN(chunkIndex)) {
+    res.status(400).json({ error: "uploadId and chunk are required" });
+    return;
+  }
+
+  try {
+    const user = await getUserFromRequest(req);
+    if (!user) { res.status(401).json({ error: appErrorMessage(APP_ERROR.UNAUTHED, "Please login") }); return; }
+    if (user.role !== "admin") { res.status(403).json({ error: appErrorMessage(APP_ERROR.NOT_ADMIN, "You do not have required permission") }); return; }
+
+    const uploadBase =
+      (process.env.RAILWAY_VOLUME_MOUNT_PATH?.trim() && fs.existsSync(process.env.RAILWAY_VOLUME_MOUNT_PATH.trim()))
+        ? process.env.RAILWAY_VOLUME_MOUNT_PATH.trim()
+        : fs.existsSync("/data") ? "/data" : os.tmpdir();
+
+    const assembledPath = path.join(uploadBase, `fv-upload-${uploadId}.bin`);
+    const chunkData: Buffer = req.body as Buffer;
+
+    const stream = fs.createWriteStream(assembledPath, { flags: chunkIndex === 0 ? "w" : "a" });
+    await new Promise<void>((resolve, reject) => {
+      stream.on("finish", resolve);
+      stream.on("error", reject);
+      stream.end(chunkData);
+    });
+
+    console.log(`[ArchiveUpload] chunk ${chunkIndex} for ${uploadId} (${(chunkData.length / 1024).toFixed(0)}KB) → ${assembledPath}`);
+    res.json({ ok: true, chunk: chunkIndex, filename });
+  } catch (err) {
+    console.error("[ArchiveUpload] chunk failed:", err);
+    res.status(500).json({ error: appErrorMessage(APP_ERROR.SERVICE_ERROR, "Chunk upload failed") });
+  }
+}
+
+async function handleArchiveAssemble(req: Request, res: Response) {
+  const jobId = String(req.query.jobId ?? "").trim() || undefined;
+  const filename = String(req.query.filename ?? "upload").slice(0, 256);
+  const uploadId = String(req.query.uploadId ?? jobId ?? "").trim();
+
+  if (jobId) initArchiveUploadJob(jobId, filename);
+
+  try {
+    const user = await getUserFromRequest(req);
+    if (!user) { res.status(401).json({ error: appErrorMessage(APP_ERROR.UNAUTHED, "Please login") }); return; }
+    if (user.role !== "admin") { res.status(403).json({ error: appErrorMessage(APP_ERROR.NOT_ADMIN, "You do not have required permission") }); return; }
+
+    const archiveId = parseInt(String(req.query.archiveId ?? ""), 10);
+    if (!archiveId || Number.isNaN(archiveId)) {
+      res.status(400).json({ error: appErrorMessage(APP_ERROR.SERVICE_ERROR, "archiveId is required") });
+      return;
+    }
+
+    const uploadBase =
+      (process.env.RAILWAY_VOLUME_MOUNT_PATH?.trim() && fs.existsSync(process.env.RAILWAY_VOLUME_MOUNT_PATH.trim()))
+        ? process.env.RAILWAY_VOLUME_MOUNT_PATH.trim()
+        : fs.existsSync("/data") ? "/data" : os.tmpdir();
+
+    const assembledBin = path.join(uploadBase, `fv-upload-${uploadId}.bin`);
+    if (!fs.existsSync(assembledBin)) {
+      res.status(400).json({ error: appErrorMessage(APP_ERROR.SERVICE_ERROR, "No chunks found — upload may have failed") });
+      return;
+    }
+
+    const mimeType = String(req.query.mimeType ?? "video/mp4").slice(0, 128);
+    const ext = mimeType.includes("webm") ? "webm" : mimeType.includes("quicktime") || mimeType.includes("mov") ? "mov" : "mp4";
+    const finalPath = assembledBin.replace(/\.bin$/, `.${ext}`);
+    fs.renameSync(assembledBin, finalPath);
+
+    const fileSizeMb = Math.round(fs.statSync(finalPath).size / (1024 * 1024));
+    console.log(`[ArchiveUpload] assembled ${fileSizeMb}MB → ${finalPath}`);
+    patchArchiveUploadJob(jobId, { stage: "validating", message: `${filename}: ${fileSizeMb}MB received — processing…`, percent: 2 });
+
+    const tagsRaw = String(req.query.tags ?? "");
+    const tags = tagsRaw ? normalizeMediaTags(tagsRaw.split(/[,;]+/)) : [];
+    const mixKindRaw = String(req.query.mixKind ?? "");
+    const mixKind = ["real_video", "photo", "stock", "screenshot", "motion_graphics"].includes(mixKindRaw)
+      ? (mixKindRaw as ArchiveUploadInput["mixKind"])
+      : undefined;
+
+    const buffer = fs.readFileSync(finalPath);
+    const cleanupFinal = () => { try { if (fs.existsSync(finalPath)) fs.unlinkSync(finalPath); } catch { /* ignore */ } };
+
+    res.status(202).json({ accepted: true, jobId, message: "Processing started" });
+
+    const uploadInput: ArchiveUploadInput = {
+      archiveId,
+      buffer,
+      mimeType,
+      filename,
+      tags,
+      mixKind,
+      autoSplitScenes: parseBoolQuery(req.query.autoSplitScenes, true),
+      autoGenerateTags: parseBoolQuery(req.query.autoGenerateTags, true),
+      jobId,
+    };
+
+    void processArchiveAssetUpload(uploadInput)
+      .then((result) => {
+        finishArchiveUploadJob(jobId, true, `${result.clipCount} clip(s) saved`, {
+          clipsSaved: result.clipCount, clipTotal: result.clipCount,
+          resultClipCount: result.clipCount, resultSplit: result.split,
+        });
+        cleanupFinal();
+      })
+      .catch((err) => {
+        cleanupFinal();
+        if (err instanceof ArchiveUploadError) {
+          err.cancelled ? finishArchiveUploadJobCancelled(jobId) : finishArchiveUploadJob(jobId, false, err.message);
+          return;
+        }
+        console.error("[ArchiveUpload] assemble processing failed:", err);
+        finishArchiveUploadJob(jobId, false, (err as Error).message ?? appErrorMessage(APP_ERROR.SERVICE_ERROR, "Upload failed"));
+      });
+  } catch (err) {
+    console.error("[ArchiveUpload] assemble failed:", err);
+    finishArchiveUploadJob(jobId, false, "Upload failed");
+    res.status(500).json({ error: appErrorMessage(APP_ERROR.SERVICE_ERROR, "Assemble failed") });
+  }
+}
+
+/** Register before express.json() — chunks use raw middleware; assemble triggers processing. */
 export function registerArchiveUploadRoute(app: Express) {
   const bodyLimitMb = Math.ceil(maxArchiveUploadBytes() / (1024 * 1024)) + 32;
   app.get("/api/admin/archive/upload/progress", handleArchiveUploadProgress);
   app.post("/api/admin/archive/upload/cancel", handleArchiveUploadCancel);
+  // Chunked upload routes — each chunk is ≤12MB, well under Railway proxy limits
+  app.post("/api/admin/archive/upload/chunk", express.raw({ type: () => true, limit: CHUNK_LIMIT }), handleArchiveChunk);
+  app.post("/api/admin/archive/upload/assemble", handleArchiveAssemble);
+  // Legacy single-request route (works for small files <~100MB)
   app.post(
     "/api/admin/archive/upload",
     express.raw({ type: () => true, limit: `${bodyLimitMb}mb` }),
