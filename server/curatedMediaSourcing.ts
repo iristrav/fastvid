@@ -895,8 +895,9 @@ export function scoreCuratedAsset(
 
   score += curatedSceneContextScore(asset, beatText);
 
-  if (beatHits >= 2) score += 18;
-  if (beatHits >= 3) score += 12;
+  // 2+ tag matches = take the clip (strong guaranteed boost)
+  if (beatHits >= 2) score += 150;
+  if (beatHits >= 3) score += 80;
 
   const beatLower = beatText?.toLowerCase() ?? "";
   for (const anchor of topicAnchors) {
