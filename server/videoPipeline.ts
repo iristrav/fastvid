@@ -15555,7 +15555,10 @@ async function adoptBestSimilarBeatClip(
 
   const similarFloor = adoptOpts?.visionFloor ?? archiveSimilarMatchVisionFloor();
   const similarSource = adoptOpts?.adoptSource ?? "archive_similar";
-  const fastSimilarCap = isFastShortVideoLength(dedup.videoLength) ? 4 : 6;
+  // Use a much higher cap when the pool is large — with 100s of archive clips we should
+  // try many more candidates before giving up and falling back to color.
+  const baseCap = isFastShortVideoLength(dedup.videoLength) ? 12 : 20;
+  const fastSimilarCap = ranked.length > 20 ? Math.min(ranked.length, 40) : baseCap;
   const tryCap = Math.min(fastSimilarCap, ranked.length);
   let bestClip: string | null = null;
   let bestScore = -1;
