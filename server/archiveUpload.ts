@@ -497,15 +497,18 @@ function parseBoolQuery(value: unknown, defaultValue: boolean): boolean {
   return defaultValue;
 }
 
-/** Stream request body to a temp file, resolving with the path when done. */
+/** Stream request body to a temp file, resolving when done. */
 function streamBodyToFile(req: Request, destPath: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const out = fs.createWriteStream(destPath);
+    let finished = false;
+    const done = (err?: Error) => { if (!finished) { finished = true; err ? reject(err) : resolve(); } };
     req.pipe(out);
-    out.on("finish", resolve);
-    out.on("error", reject);
-    req.on("error", reject);
-    req.on("aborted", () => reject(new Error("Upload connection aborted by client")));
+    out.on("finish", () => done());
+    out.on("error", (err) => done(err));
+    req.on("error", (err) => done(err));
+    // 'close' fires when socket is destroyed; error only if body was not fully received
+    req.on("close", () => { if (!req.complete) done(new Error("Upload connection closed before body was fully received")); });
   });
 }
 
@@ -534,29 +537,39 @@ async function handleArchiveBinaryUpload(req: Request, res: Response) {
   })();
   const tempPath = path.join(uploadBase, `fv-upload-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.${ext}`);
 
+  // Start streaming to disk IMMEDIATELY — before async auth — so the TCP receive buffer
+  // never stalls. Auth runs in parallel with the data transfer.
+  const streamDone = streamBodyToFile(req, tempPath);
+
   let localPath: string | undefined;
+  const cleanupTemp = () => { try { if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath); } catch { /* ignore */ } };
+
   try {
-    const user = await getUserFromRequest(req);
+    // Auth check runs while data streams to disk
+    const user = await Promise.race([getUserFromRequest(req), streamDone.then(() => null as never)]);
     if (!user) {
       res.status(401).json({ error: appErrorMessage(APP_ERROR.UNAUTHED, "Please login") });
+      streamDone.catch(() => {}).finally(cleanupTemp);
       return;
     }
     if (user.role !== "admin") {
       res.status(403).json({ error: appErrorMessage(APP_ERROR.NOT_ADMIN, "You do not have required permission") });
+      streamDone.catch(() => {}).finally(cleanupTemp);
       return;
     }
+
+    // Wait for full body to arrive on disk
+    await streamDone;
+    localPath = tempPath;
 
     const archiveId = parseInt(String(req.query.archiveId ?? ""), 10);
     if (!archiveId || Number.isNaN(archiveId)) {
       res.status(400).json({ error: appErrorMessage(APP_ERROR.SERVICE_ERROR, "archiveId is required") });
+      cleanupTemp();
       return;
     }
 
     patchArchiveUploadJob(jobId, { stage: "validating", message: `${filename}: receiving…`, percent: 1 });
-
-    // Stream body directly to disk — avoids buffering the entire file in RAM.
-    await streamBodyToFile(req, tempPath);
-    localPath = tempPath;
     const fileSizeMb = Math.round(fs.statSync(tempPath).size / (1024 * 1024));
 
     patchArchiveUploadJob(jobId, {
@@ -593,10 +606,6 @@ async function handleArchiveBinaryUpload(req: Request, res: Response) {
       message: "Upload received — processing in background",
     });
 
-    const cleanupTempFile = () => {
-      if (localPath) { try { fs.unlinkSync(localPath); } catch { /* ignore */ } }
-    };
-
     void processArchiveAssetUpload(uploadInput)
       .then((result) => {
         finishArchiveUploadJob(jobId, true, `${result.clipCount} clip(s) saved`, {
@@ -605,10 +614,10 @@ async function handleArchiveBinaryUpload(req: Request, res: Response) {
           resultClipCount: result.clipCount,
           resultSplit: result.split,
         });
-        cleanupTempFile();
+        cleanupTemp();
       })
       .catch((err) => {
-        cleanupTempFile();
+        cleanupTemp();
         if (err instanceof ArchiveUploadError) {
           if (err.cancelled) {
             finishArchiveUploadJobCancelled(jobId);
@@ -625,7 +634,7 @@ async function handleArchiveBinaryUpload(req: Request, res: Response) {
         );
       });
   } catch (err) {
-    if (localPath) { try { fs.unlinkSync(localPath); } catch { /* ignore */ } }
+    cleanupTemp();
     if (err instanceof ArchiveUploadError) {
       if (err.cancelled) {
         finishArchiveUploadJobCancelled(jobId);
