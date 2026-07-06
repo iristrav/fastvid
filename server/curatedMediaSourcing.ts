@@ -153,6 +153,8 @@ export type CuratedBeatContext = {
   powerWord?: string;
   /** Visual director on-screen description — primary match source (not spoken narration). */
   visualDescription?: string;
+  /** LLM-generated English stock search queries — used for archive tag matching too. */
+  pexelsQueries?: string[];
 };
 
 export type BeatMatchTags = {
@@ -330,7 +332,13 @@ export function buildBeatMatchTags(
     visualDescription.trim() || searchQuery.trim() || beatText
   );
   const queryTokens = searchQuery.trim() ? tokenizeBeatText(searchQuery) : [];
+  // pexelsQueries are LLM-generated English queries — strongest signal for archive matching
+  const pexelsTokens = normalizeMediaTags(
+    (beat.pexelsQueries ?? []).flatMap((q) => tokenizeBeatText(q))
+  );
   const beatTags = normalizeMediaTags([
+    ...pexelsTokens,
+    ...pexelsTokens, // double-weight: these are the best English search terms
     ...queryTokens,
     ...queryTokens,
     ...anchorTokens,
