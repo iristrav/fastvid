@@ -66,6 +66,8 @@ export type InvokeParams = {
   output_schema?: OutputSchema;
   responseFormat?: ResponseFormat;
   response_format?: ResponseFormat;
+  /** Override the primary provider for this call (falls back normally if unavailable). */
+  preferProvider?: LlmProvider;
 };
 
 export type ToolCall = {
@@ -457,10 +459,11 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
     output_schema,
     responseFormat,
     response_format,
+    preferProvider,
   } = params;
 
   const hasVision = messagesIncludeImages(messages);
-  const primary = resolveLlmProvider();
+  const primary = preferProvider ?? resolveLlmProvider();
   const chain = providersToTry(primary);
   if (chain.length === 0) {
     throw new Error(

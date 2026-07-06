@@ -9,7 +9,7 @@ import { exec } from "child_process";
 import { promisify } from "util";
 import { withForkRetry } from "./_core/execForkRetry";
 import { invokeLLM } from "./_core/llm";
-import { ENV } from "./_core/env";
+import { ENV, groqKeyFromEnv } from "./_core/env";
 import { normalizeMediaTags } from "./db";
 import {
   appendMapLabelsToSourceNote,
@@ -738,6 +738,7 @@ async function invokeArchiveVisionTagging(
 
   const runOnce = async (responseFormat: VisionFormat): Promise<ArchiveAssetAiMetadata | null> => {
     const payload: Parameters<typeof invokeLLM>[0] = {
+      preferProvider: groqKeyFromEnv() ? "groq" : undefined,
       messages: [
         {
           role: "system",
