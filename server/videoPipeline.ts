@@ -10249,16 +10249,32 @@ async function xfadeMergeTwoVideos(
     return;
   }
   const offset = Math.max(0, leftDur - xfade);
-  await withTimeout(
-    exec(
-      `${FFMPEG_BIN} -y -i "${leftPath}" -i "${rightPath}" ` +
-        `-filter_complex "[0:v]${branchNorm}[v0];[1:v]${branchNorm}[v1];` +
-        `[v0][v1]xfade=transition=dissolve:duration=${xfade.toFixed(3)}:offset=${offset.toFixed(3)}[out]" ` +
-        `-map "[out]" -an -vsync cfr ${threadFlag} -c:v libx264 -preset ${MONTAGE_SEGMENT_ENCODE_PRESET} -crf 18 -pix_fmt yuv420p "${outputPath}"`
-    ),
-    composeTimeout,
-    "Merge montage segments"
-  );
+  try {
+    await withTimeout(
+      exec(
+        `${FFMPEG_BIN} -y -i "${leftPath}" -i "${rightPath}" ` +
+          `-filter_complex "[0:v]${branchNorm}[v0];[1:v]${branchNorm}[v1];` +
+          `[v0][v1]xfade=transition=dissolve:duration=${xfade.toFixed(3)}:offset=${offset.toFixed(3)}[out]" ` +
+          `-map "[out]" -an -vsync cfr ${threadFlag} -c:v libx264 -preset ${MONTAGE_SEGMENT_ENCODE_PRESET} -crf 18 -pix_fmt yuv420p "${outputPath}"`
+      ),
+      composeTimeout,
+      "Merge montage segments"
+    );
+  } catch (xfadeErr) {
+    // xfade can fail when auto_scale can't configure pads (resolution mismatch mid-stream).
+    // Fall back to hard-cut concat which is always safe.
+    console.warn(`[Pipeline] xfade failed (auto_scale error) — retrying as hard-cut concat: ${(xfadeErr as Error).message?.slice(0, 120)}`);
+    await withTimeout(
+      exec(
+        `${FFMPEG_BIN} -y -i "${leftPath}" -i "${rightPath}" ` +
+          `-filter_complex "[0:v]${branchNorm}[v0];[1:v]${branchNorm}[v1];` +
+          `[v0][v1]concat=n=2:v=1:a=0[out]" ` +
+          `-map "[out]" -an -vsync cfr ${threadFlag} -c:v libx264 -preset ${MONTAGE_SEGMENT_ENCODE_PRESET} -crf 18 -pix_fmt yuv420p "${outputPath}"`
+      ),
+      composeTimeout,
+      "Merge montage segments (hard-cut fallback)"
+    );
+  }
 }
 
 async function renderMontageVideoOnly(
