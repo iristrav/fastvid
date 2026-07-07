@@ -709,9 +709,12 @@ async function _runVideoGeneration(
         enableSubtitles,
         prompt
       );
-      if (isFastShortVideoLength(videoLength) && pipelineWallClockLimitEnabled()) {
-        const hardMs =
-          maxPipelineWallClockHardMin(videoLength) * 60_000 + pipelineComposeGraceMs(videoLength);
+      {
+        // Always enforce a hard wall-clock cap so a hanging FFmpeg call can't block the worker slot forever.
+        // For fast-short videos: use the configured budget. For all others: default 150 min safety cap.
+        const hardMs = (isFastShortVideoLength(videoLength) && pipelineWallClockLimitEnabled())
+          ? maxPipelineWallClockHardMin(videoLength) * 60_000 + pipelineComposeGraceMs(videoLength)
+          : parseInt(process.env.PIPELINE_HARD_TIMEOUT_MS ?? String(150 * 60_000), 10);
         const elapsed = Date.now() - pipelineStartedAt;
         const remainingMs = Math.max(45_000, hardMs - elapsed);
         videoUrl = await Promise.race([
@@ -729,8 +732,6 @@ async function _runVideoGeneration(
             )
           ),
         ]);
-      } else {
-        videoUrl = await pipelineRun;
       }
     } finally {
       clearInterval(pipelineHeartbeat);

@@ -111,11 +111,26 @@ export async function processQueueTick(): Promise<void> {
           `(local ${localActiveJobs}/${config.maxJobsPerWorker}, global ${globalActive + 1}/${config.maxConcurrentJobs})`
       );
 
+      // Watchdog: release worker slot after 3 hours even if the Promise hangs.
+      // Prevents a stuck FFmpeg call from blocking all subsequent renders indefinitely.
+      const maxJobMs = parseInt(process.env.MAX_JOB_MS ?? String(3 * 60 * 60_000), 10);
+      let slotReleased = false;
+      const releaseSlot = () => {
+        if (slotReleased) return;
+        slotReleased = true;
+        localActiveJobs = Math.max(0, localActiveJobs - 1);
+        void processQueueTick();
+      };
+      const jobWatchdog = setTimeout(() => {
+        console.error(`[VideoQueue] Video ${claimed.id} exceeded ${Math.round(maxJobMs / 60_000)}min — force-releasing worker slot`);
+        releaseSlot();
+      }, maxJobMs);
+
       runVideoJob(claimed)
         .catch((err) => console.error(`[VideoQueue] Video ${claimed.id} failed:`, err))
         .finally(() => {
-          localActiveJobs = Math.max(0, localActiveJobs - 1);
-          void processQueueTick();
+          clearTimeout(jobWatchdog);
+          releaseSlot();
         });
     }
   } catch (err) {
