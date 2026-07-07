@@ -380,6 +380,82 @@ function findRetentionGaps(scenes: ScenePlan[]): RetentionGap[] {
   return gaps;
 }
 
+// ─── Phase 4b: Dedicated Hook Writer ─────────────────────────────────────────
+// The hook is the most important 10–20 seconds of the video.
+// It gets its own LLM call with strict rules, separate from the scene narration loop.
+
+async function writeHook(
+  architecture: StoryArchitecture,
+  topic: string,
+  budget: ScriptLengthBudget,
+  writerSystem: string
+): Promise<{ hook: string; title: string }> {
+  const hookWords = budget.videoLength === "1" ? 35 : 70;
+  const minHookWords = Math.round(hookWords * 0.7);
+  const maxHookWords = Math.round(hookWords * 1.4);
+
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const resp = await invokeLLM({
+        messages: [
+          { role: "system", content: writerSystem },
+          {
+            role: "user",
+            content: `Write a KILLER hook for this documentary. This is the ONLY thing that matters right now.
+
+Topic: "${topic}"
+Central question: "${architecture.centralQuestion}"
+Conflict: "${architecture.conflict}"
+Macro loop to open: "${architecture.macroLoop}"
+First surprise to tease: "${architecture.surprises[0] ?? ""}"
+Emotional arc start: "${architecture.emotionalArc.split("→")[0]?.trim() ?? "curiosity"}"
+
+HOOK RULES (all mandatory):
+1. Line 1 MUST be a pattern interrupt — a specific shocking fact, number, name, or bold contrast. NOT a question. A statement that stops the scroll.
+2. Line 2–3: Raise the stakes. Why should they care RIGHT NOW? Lives, money, power, history — make it visceral.
+3. Final line: Open the macro loop. Tease the payoff without giving it away. The viewer MUST keep watching to get the answer.
+
+FORBIDDEN openings: "Today", "In this video", "Welcome", "Have you ever", "Let's dive in", "In today's video", "You won't believe", "What if I told you".
+
+FORMAT:
+First line: the compelling video title (max 70 chars, curiosity gap, must match the hook)
+Then: the hook narration (${minHookWords}–${maxHookWords} words of SPOKEN TEXT ONLY, no headings, no [VISUAL] tags)
+
+Example structure (do NOT copy, just the rhythm):
+"[TITLE]
+[Specific shocking fact.] [Stakes — why this matters.] [Emotional gut-punch.] [Macro loop opened — the question they must answer.]"`,
+          },
+        ],
+        preferProvider: "anthropic",
+        maxTokens: 512,
+      });
+
+      const raw = resp.choices[0]?.message?.content ?? "";
+      const text = typeof raw === "string" ? raw.trim() : "";
+      if (!text) continue;
+
+      const lines = text.split("\n").filter((l) => l.trim());
+      const title = lines[0]?.replace(/^#+\s*/, "").replace(/["""]/g, "").trim() ?? topic.slice(0, 80);
+      const hookLines = lines.slice(1).join(" ").trim();
+      const hook = (hookLines || lines[0]) ?? "";
+
+      const wordCount = hook.split(/\s+/).filter(Boolean).length;
+      if (wordCount >= minHookWords) {
+        console.log(`[ScriptEngine] Hook: "${hook.slice(0, 80)}…" (${wordCount} words)`);
+        return { hook, title };
+      }
+    } catch (err) {
+      console.warn(`[ScriptEngine] Hook attempt ${attempt} failed:`, err);
+    }
+  }
+
+  // Fallback hook
+  return {
+    hook: `${architecture.surprises[0] ?? architecture.centralQuestion} ${architecture.macroLoop}`.trim(),
+    title: topic.slice(0, 80),
+  };
+}
+
 // ─── Phase 5: Script Writer ───────────────────────────────────────────────────
 
 async function writeSceneNarration(
@@ -623,28 +699,39 @@ export async function runScriptEngineV2(
   const visualPlans = await generateVisualPlans(scenePlan, topic, architecture);
   console.log(`[ScriptEngine] Visual plans: ${visualPlans.length} scenes`);
 
-  // Phase 5: Script Writing (parallel per scene)
+  // Phase 4b: Hook — dedicated call before the rest of the script
+  progress("🎯 Writing hook...", 32);
+  const { hook: hookNarration, title } = await writeHook(architecture, topic, budget, writerSystem);
+
+  // Phase 5: Script Writing (parallel per scene, skip index 0 — hook already written)
   progress("✍️ Writing narration...", 35);
-  const narrationPromises = scenePlan.map((scene, i) =>
+  const bodyScenes = scenePlan.filter((s) => s.sceneFunction !== "hook");
+  const bodyNarrationPromises = bodyScenes.map((scene, i) =>
     writeSceneNarration(
       scene,
       visualPlans.find((v) => v.sceneIndex === scene.index),
       architecture,
       topic,
-      architecture.centralQuestion,
+      title,
       budget,
       writerSystem,
-      i === 0,
-      i === scenePlan.length - 1
+      false,
+      i === bodyScenes.length - 1 && scene.sceneFunction === "cta"
     )
   );
-  const narrations = await Promise.all(narrationPromises);
-  console.log(`[ScriptEngine] Narrations written: ${narrations.length} scenes`);
+  const bodyNarrations = await Promise.all(bodyNarrationPromises);
 
-  // Derive title from first scene (hook) or architecture
-  const hookText = narrations[0] ?? "";
-  const titleMatch = hookText.match(/^[""]?(.{20,80})[.!?]/);
-  const title = titleMatch?.[1]?.trim() ?? architecture.centralQuestion.slice(0, 80);
+  // Merge: hook first, then body scenes
+  const narrations: string[] = [];
+  let bodyIdx = 0;
+  for (const scene of scenePlan) {
+    if (scene.sceneFunction === "hook") {
+      narrations.push(hookNarration);
+    } else {
+      narrations.push(bodyNarrations[bodyIdx++] ?? "");
+    }
+  }
+  console.log(`[ScriptEngine] Narrations written: ${narrations.length} scenes`);
 
   // Assemble markdown script
   let markdownScript = assembleMarkdownScript(title, scenePlan, narrations);
