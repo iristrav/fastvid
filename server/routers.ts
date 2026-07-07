@@ -123,6 +123,7 @@ import {
 } from "./scriptWriter";
 import { ensureScriptMeetsBudgetWithRetry } from "./pipelineSelfHeal";
 import { attachScriptVisualKeywords } from "./scriptVisualKeywords";
+import { runScriptEngineV2, scriptEngineV2Enabled } from "./scriptEngine";
 import type { InvokeResult } from "./_core/llm";
 
 function llmMessageText(resp: InvokeResult | null | undefined): string {
@@ -525,167 +526,128 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLengthRa
       return;
     }
 
-    // Step 1a: Retention-first outline with exact section count + word budget
-    const outlineResp = await invokeLLM({
-      messages: [
-        { role: "system", content: writerSystem },
-        { role: "user", content: buildOutlineUserPrompt(prompt, videoType, budget) },
-      ],
-      response_format: OUTLINE_JSON_SCHEMA,
-      preferProvider: "anthropic",
-    });
+    // Long-form script: use v2 engine (Story Architecture → Scene Plan → Visual Plan → Write → Review)
+    // or fall back to outline+sections when SCRIPT_ENGINE_V2=false
+    let scriptContent: string;
+    let title: string;
 
-    let outline: ScriptOutline = { title: prompt.slice(0, 80), hook: "", sections: [], cta: "" };
-    try {
-      const raw = outlineResp?.choices?.[0]?.message?.content ?? "{}";
-      outline = JSON.parse(typeof raw === "string" ? raw : JSON.stringify(raw)) as ScriptOutline;
-    } catch { /* use default */ }
-    if (outline.sections.length !== budget.sectionCount) {
-      console.warn(
-        `[Script] Outline returned ${outline.sections.length} sections, expected ${budget.sectionCount}`
+    if (scriptEngineV2Enabled()) {
+      console.log(`[Script] Video ${videoId}: using ScriptEngine v2`);
+      const engineOutput = await runScriptEngineV2(
+        prompt,
+        videoType,
+        budget,
+        async (step, pct) => {
+          lastScriptProgressLabel = step;
+          scriptProgressPercent.value = 10 + Math.round(pct * 0.18);
+          await updateVideoProgress(
+            videoId,
+            progressStepWithElapsed(step, generationStartedAt),
+            scriptProgressPercent.value
+          );
+          const active = scriptLog.find((e) => e.status === "active");
+          if (active) { active.step = step; }
+          else { scriptLog.push({ step, startedAt: Date.now(), status: "active" }); }
+          await updateVideoProgressLog(videoId, scriptLog).catch(() => {});
+        }
       );
-    }
-    let title = outline.title || prompt.slice(0, 100);
-
-    // Mark research done, start writing
-    scriptLog[0].completedAt = Date.now(); scriptLog[0].status = "done";
-    scriptLog.push({ step: `✍️ Writing ${outline.sections.length} sections in parallel...`, startedAt: Date.now(), status: "active" });
-    await updateVideoProgressLog(videoId, scriptLog).catch(() => {});
-    lastScriptProgressLabel = `✍️ Writing ${outline.sections.length} sections in parallel...`;
-    scriptProgressPercent.value = 12;
-    await updateVideoProgress(
-      videoId,
-      progressStepWithElapsed(lastScriptProgressLabel, generationStartedAt),
-      scriptProgressPercent.value
-    );
-
-    // Step 1b: Generate each section AND metadata in parallel
-    const sectionTotal = outline.sections.length || budget.sectionCount;
-    const sectionPromises = outline.sections.map((sec, idx) =>
-      generateSectionNarration(sec, idx, sectionTotal, prompt, title, budget, muskTopic, writerSystem)
-    );
-
-    const metaPromise = invokeLLM({
-      messages: [
-        { role: "system", content: "YouTube SEO expert. Respond with valid JSON only." },
-        { role: "user", content: `YouTube metadata for: ${prompt} (${budget.label}, ${videoType} format)\nJSON: { title, description, tags: string[], chapters: [{time, title}] }` },
-      ],
-      response_format: {
-        type: "json_schema",
-        json_schema: {
-          name: "youtube_metadata", strict: true,
-          schema: {
-            type: "object",
-            properties: {
-              title: { type: "string" }, description: { type: "string" },
-              tags: { type: "array", items: { type: "string" } },
-              chapters: { type: "array", items: { type: "object", properties: { time: { type: "string" }, title: { type: "string" } }, required: ["time", "title"], additionalProperties: false } },
-            },
-            required: ["title", "description", "tags", "chapters"], additionalProperties: false,
-          },
-        },
-      },
-      preferProvider: "groq",
-    });
-
-    const [sectionTexts, metaResponse] = await Promise.all([Promise.all(sectionPromises), metaPromise]);
-    // Mark writing done, start assembling
-    const writingStep = scriptLog.find(e => e.status === "active");
-    if (writingStep) { writingStep.completedAt = Date.now(); writingStep.status = "done"; }
-    scriptLog.push({ step: "📋 Assembling final script...", startedAt: Date.now(), status: "active" });
-    await updateVideoProgressLog(videoId, scriptLog).catch(() => {});
-    lastScriptProgressLabel = "📋 Assembling script...";
-    scriptProgressPercent.value = 22;
-    await updateVideoProgress(
-      videoId,
-      progressStepWithElapsed(lastScriptProgressLabel, generationStartedAt),
-      scriptProgressPercent.value
-    );
-
-    // Assemble full script
-    const scriptParts: string[] = [`# ${title}\n`, `## Opening\n${outline.hook}\n`];
-    outline.sections.forEach((sec, idx) => scriptParts.push(`## ${sec.title}\n${sectionTexts[idx] ?? ""}\n`));
-    scriptParts.push(`## CALL TO ACTION\n${outline.cta}\n`);
-    let scriptContent = stripVisualTagsFromScript(scriptParts.join("\n"));
-
-    let narrationWords = countNarrationWords(scriptContent);
-    if (narrationWords < budget.minWords || narrationWords > budget.maxWords) {
-      scriptLog.push({ step: "✂️ Adjusting script to target length...", startedAt: Date.now(), status: "active" });
-      lastScriptProgressLabel = "✂️ Matching script length to video...";
-      scriptProgressPercent.value = 24;
-      await updateVideoProgress(
-        videoId,
-        progressStepWithElapsed(lastScriptProgressLabel, generationStartedAt),
-        scriptProgressPercent.value
+      scriptContent = engineOutput.markdownScript;
+      title = engineOutput.title || prompt.slice(0, 100);
+      console.log(
+        `[Script] Video ${videoId} v2: ${countNarrationWords(scriptContent)} words · quality ${engineOutput.quality.overall}/10`
       );
-      const scriptBeforeRefine = scriptContent;
+    } else {
+      // Legacy: outline + parallel sections
+      console.log(`[Script] Video ${videoId}: using legacy outline engine`);
+      const outlineResp = await invokeLLM({
+        messages: [
+          { role: "system", content: writerSystem },
+          { role: "user", content: buildOutlineUserPrompt(prompt, videoType, budget) },
+        ],
+        response_format: OUTLINE_JSON_SCHEMA,
+        preferProvider: "anthropic",
+      });
+
+      let outline: ScriptOutline = { title: prompt.slice(0, 80), hook: "", sections: [], cta: "" };
       try {
-        const refineResp = await invokeLLM({
-          messages: [
-            { role: "system", content: writerSystem },
-            {
-              role: "user",
-              content: buildScriptLengthRefinePrompt(scriptContent, budget, narrationWords, prompt),
-            },
-          ],
-          preferProvider: "anthropic",
-        });
-        const refined = refineResp?.choices?.[0]?.message?.content ?? "";
-        if (typeof refined === "string" && refined.trim().length > 200) {
-          const candidate = refined.trim();
-          if (scriptStillOnTopic(prompt, candidate)) {
-            scriptContent = stripVisualTagsFromScript(candidate);
+        const raw = outlineResp?.choices?.[0]?.message?.content ?? "{}";
+        outline = JSON.parse(typeof raw === "string" ? raw : JSON.stringify(raw)) as ScriptOutline;
+      } catch { /* use default */ }
+
+      title = outline.title || prompt.slice(0, 100);
+      scriptLog[0].completedAt = Date.now(); scriptLog[0].status = "done";
+      scriptLog.push({ step: `✍️ Writing ${outline.sections.length} sections...`, startedAt: Date.now(), status: "active" });
+      await updateVideoProgressLog(videoId, scriptLog).catch(() => {});
+      lastScriptProgressLabel = `✍️ Writing ${outline.sections.length} sections...`;
+      scriptProgressPercent.value = 12;
+      await updateVideoProgress(videoId, progressStepWithElapsed(lastScriptProgressLabel, generationStartedAt), scriptProgressPercent.value);
+
+      const sectionTotal = outline.sections.length || budget.sectionCount;
+      const sectionTexts = await Promise.all(
+        outline.sections.map((sec, idx) =>
+          generateSectionNarration(sec, idx, sectionTotal, prompt, title, budget, muskTopic, writerSystem)
+        )
+      );
+
+      const scriptParts: string[] = [`# ${title}\n`, `## Opening\n${outline.hook}\n`];
+      outline.sections.forEach((sec, idx) => scriptParts.push(`## ${sec.title}\n${sectionTexts[idx] ?? ""}\n`));
+      scriptParts.push(`## CALL TO ACTION\n${outline.cta}\n`);
+      scriptContent = stripVisualTagsFromScript(scriptParts.join("\n"));
+
+      let narrationWords = countNarrationWords(scriptContent);
+      if (narrationWords < budget.minWords || narrationWords > budget.maxWords) {
+        try {
+          const refineResp = await invokeLLM({
+            messages: [
+              { role: "system", content: writerSystem },
+              { role: "user", content: buildScriptLengthRefinePrompt(scriptContent, budget, narrationWords, prompt) },
+            ],
+            preferProvider: "anthropic",
+          });
+          const refined = refineResp?.choices?.[0]?.message?.content ?? "";
+          if (typeof refined === "string" && refined.trim().length > 200 && scriptStillOnTopic(prompt, refined)) {
+            scriptContent = stripVisualTagsFromScript(refined.trim());
             narrationWords = countNarrationWords(scriptContent);
             const refinedTitle = scriptContent.match(/^#\s+(.+)$/m)?.[1]?.trim();
             if (refinedTitle) title = refinedTitle;
-          } else {
-            console.warn(
-              `[Script] Video ${videoId}: length refine ignored — off-topic (${narrationWords} words kept)`
-            );
-            scriptContent = scriptBeforeRefine;
           }
+        } catch (err) {
+          console.warn("[Script] Length refine failed (non-fatal):", err);
         }
-      } catch (err) {
-        console.warn("[Script] Length refine pass failed (non-fatal):", err);
       }
-      const refineStep = scriptLog.find((e) => e.status === "active");
-      if (refineStep) {
-        refineStep.completedAt = Date.now();
-        refineStep.status = "done";
-      }
-    }
-    console.log(
-      `[Script] Video ${videoId}: ${narrationWords} words (target ${budget.targetWords}, ` +
-      `${budget.minWords}–${budget.maxWords}) · ~${budget.targetSpokenSec}s VO`
-    );
-    const expanded = await ensureScriptMeetsBudgetWithRetry(
-      scriptContent,
-      budget,
-      prompt,
-      async (userPrompt) => {
-        const resp = await invokeLLM({
-          messages: [{ role: "system", content: writerSystem }, { role: "user", content: userPrompt }],
-          maxTokens: 8192,
-          preferProvider: "anthropic",
-        });
-        return llmMessageText(resp);
-      }
-    );
-    scriptContent = expanded.script;
-    narrationWords = countNarrationWords(scriptContent);
-    if (!expanded.ok) {
-      throw pipelineError(
-        PIPELINE_ERROR.SCRIPT_FAILED,
-        `Script incomplete after retry: ${expanded.words} words (need ≥${budget.minWords})`
+
+      const expanded = await ensureScriptMeetsBudgetWithRetry(
+        scriptContent, budget, prompt,
+        async (userPrompt) => {
+          const resp = await invokeLLM({
+            messages: [{ role: "system", content: writerSystem }, { role: "user", content: userPrompt }],
+            maxTokens: 8192,
+            preferProvider: "anthropic",
+          });
+          return llmMessageText(resp);
+        }
       );
+      scriptContent = expanded.script;
+      if (!expanded.ok) {
+        throw pipelineError(PIPELINE_ERROR.SCRIPT_FAILED, `Script incomplete: ${expanded.words} words (need ≥${budget.minWords})`);
+      }
     }
 
-    let metadata: unknown = {};
+    // Metadata (parallel with script, or after)
+    let metadata: unknown = { title, description: prompt, tags: [], chapters: [] };
     try {
-      const rawMetaContent = metaResponse?.choices?.[0]?.message?.content ?? "{}";
-      const metaContent = typeof rawMetaContent === "string" ? rawMetaContent : JSON.stringify(rawMetaContent);
-      metadata = JSON.parse(metaContent);
-    } catch { metadata = { title, description: prompt, tags: [], chapters: [] }; }
+      const metaResp = await invokeLLM({
+        messages: [
+          { role: "system", content: "YouTube SEO expert. Respond with valid JSON only." },
+          { role: "user", content: `YouTube metadata for: ${prompt} (${budget.label}, ${videoType} format)\nJSON: { title, description, tags: string[], chapters: [{time, title}] }` },
+        ],
+        preferProvider: "groq",
+        maxTokens: 512,
+      });
+      const rawMeta = metaResp?.choices?.[0]?.message?.content ?? "{}";
+      const metaText = typeof rawMeta === "string" ? rawMeta : JSON.stringify(rawMeta);
+      metadata = JSON.parse(metaText);
+    } catch { /* keep default metadata */ }
 
     // Mark assembling done
     const assemblingStep = scriptLog.find(e => e.status === "active");
