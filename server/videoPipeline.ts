@@ -4983,11 +4983,12 @@ async function fetchSerpAPIImages(
   return results;
 }
 
-// ─── 3a. Pad short clip by concatenating a second matching clip ──────────────
+// ─── 3a. Pad short clip by concatenating additional matching clips ─────────────
 /**
- * When an adopted clip is shorter than holdSec, fetch one more clip from the
- * archive for the remaining duration and concatenate them.  Returns the path
- * of the combined clip, or null if padding isn't needed or fails.
+ * When an adopted clip is shorter than holdSec, keeps fetching more clips from
+ * the archive and concatenating them until the target duration is filled (or no
+ * more clips are available).  Returns the path of the combined clip, or null if
+ * padding isn't needed or all attempts fail.
  */
 async function padShortClipWithNext(
   clipPath: string,
@@ -4999,73 +5000,75 @@ async function padShortClipWithNext(
   dedup: VisualDedupState,
   semanticProfile?: BeatSemanticProfile
 ): Promise<string | null> {
-  const actualDur = await probeVideoDurationSec(clipPath);
-  const remaining = holdSec - actualDur;
-  if (remaining < 0.3) return null; // close enough, no padding needed
+  const firstDur = await probeVideoDurationSec(clipPath);
+  if (holdSec - firstDur < 0.3) return null; // already close enough
 
-  console.log(
-    `[PadClip] s${scene.index}b${beat.index}: clip is ${actualDur.toFixed(2)}s, need ${holdSec.toFixed(2)}s — fetching ${remaining.toFixed(2)}s filler`
-  );
+  const segments: string[] = [clipPath];
+  let filledSec = firstDur;
+  const MAX_EXTRA_CLIPS = 5;
 
-  const fillPath = await fetchCuratedArchiveBeatClip(
-    beat,
-    scene,
-    workDir,
-    scene.index,
-    remaining,
-    dedup.usedCuratedAssetIds,
-    dedup.usedCuratedStorageUrls,
-    videoTitle,
-    curatedInterviewBudget(dedup),
-    curatedImageBudget(dedup),
-    undefined,
-    { relaxed: true, videoLength: dedup.videoLength, assetsCache: dedup.archiveAssetsCache }
-  );
-
-  if (!fillPath || !(await isValidVideoFile(fillPath))) return null;
-
-  // Trim the filler to exactly the remaining duration
-  const trimmedFill = path.join(workDir, `pad_fill_s${scene.index}b${beat.index}_${Date.now()}.mp4`);
-  try {
-    await withTimeout(
-      exec(
-        `${FFMPEG_BIN} -y -i "${fillPath}" -t ${remaining.toFixed(3)} -vf "${STANDARD_VF}" ` +
-        `-c:v libx264 -preset veryfast -crf 18 -an -pix_fmt yuv420p "${trimmedFill}"`
-      ),
-      25_000,
-      `padShortClip-trim s${scene.index}b${beat.index}`
+  for (let attempt = 1; attempt <= MAX_EXTRA_CLIPS && holdSec - filledSec >= 0.3; attempt++) {
+    const remaining = holdSec - filledSec;
+    console.log(
+      `[PadClip] s${scene.index}b${beat.index} attempt ${attempt}: filled ${filledSec.toFixed(2)}s / ${holdSec.toFixed(2)}s — fetching ${remaining.toFixed(2)}s more`
     );
-  } catch {
-    return null;
-  }
-  if (!(await isValidVideoFile(trimmedFill))) return null;
 
-  // Concat original clip + filler
+    const fillPath = await fetchCuratedArchiveBeatClip(
+      beat,
+      scene,
+      workDir,
+      scene.index,
+      remaining,
+      dedup.usedCuratedAssetIds,
+      dedup.usedCuratedStorageUrls,
+      videoTitle,
+      curatedInterviewBudget(dedup),
+      curatedImageBudget(dedup),
+      undefined,
+      { relaxed: true, videoLength: dedup.videoLength, assetsCache: dedup.archiveAssetsCache }
+    );
+    if (!fillPath || !(await isValidVideoFile(fillPath))) break;
+
+    const trimmedFill = path.join(workDir, `pad_fill_s${scene.index}b${beat.index}_${attempt}_${Date.now()}.mp4`);
+    try {
+      await withTimeout(
+        exec(
+          `${FFMPEG_BIN} -y -i "${fillPath}" -t ${remaining.toFixed(3)} -vf "${STANDARD_VF}" ` +
+          `-c:v libx264 -preset veryfast -crf 18 -an -pix_fmt yuv420p "${trimmedFill}"`
+        ),
+        25_000,
+        `padShortClip-trim-${attempt} s${scene.index}b${beat.index}`
+      );
+    } catch { break; }
+    if (!(await isValidVideoFile(trimmedFill))) break;
+
+    segments.push(trimmedFill);
+    filledSec += await probeVideoDurationSec(trimmedFill);
+  }
+
+  if (segments.length < 2) return null; // nothing was added
+
+  // Concat all segments into one file
   const combined = path.join(workDir, `pad_combined_s${scene.index}b${beat.index}_${Date.now()}.mp4`);
   const listFile = combined.replace(".mp4", "_list.txt");
-  fs.writeFileSync(listFile, `file '${clipPath}'\nfile '${trimmedFill}'\n`);
+  fs.writeFileSync(listFile, segments.map((f) => `file '${f}'`).join("\n") + "\n");
   try {
     await withTimeout(
-      exec(
-        `${FFMPEG_BIN} -y -f concat -safe 0 -i "${listFile}" -c copy -avoid_negative_ts make_zero "${combined}"`
-      ),
-      20_000,
+      exec(`${FFMPEG_BIN} -y -f concat -safe 0 -i "${listFile}" -c copy -avoid_negative_ts make_zero "${combined}"`),
+      30_000,
       `padShortClip-concat s${scene.index}b${beat.index}`
     );
   } catch {
-    // Re-encode fallback if stream copy fails (mismatched params)
     try {
       await withTimeout(
         exec(
           `${FFMPEG_BIN} -y -f concat -safe 0 -i "${listFile}" -vf "${STANDARD_VF}" ` +
           `-c:v libx264 -preset veryfast -crf 18 -an -pix_fmt yuv420p "${combined}"`
         ),
-        30_000,
+        40_000,
         `padShortClip-concat-reencode s${scene.index}b${beat.index}`
       );
-    } catch {
-      return null;
-    }
+    } catch { return null; }
   } finally {
     try { fs.unlinkSync(listFile); } catch {}
   }
@@ -5074,7 +5077,7 @@ async function padShortClipWithNext(
 
   const combinedDur = await probeVideoDurationSec(combined);
   console.log(
-    `[PadClip] s${scene.index}b${beat.index}: padded to ${combinedDur.toFixed(2)}s (target ${holdSec.toFixed(2)}s)`
+    `[PadClip] s${scene.index}b${beat.index}: ${segments.length} clips → ${combinedDur.toFixed(2)}s (target ${holdSec.toFixed(2)}s)`
   );
   return combined;
 }
