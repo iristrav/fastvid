@@ -5239,7 +5239,7 @@ async function _generateColorFallbackInner(sceneIndex: number, safeDuration: num
     }
   }
 
-  throw pipelineError(PIPELINE_ERROR.FFMPEG, `Scene ${sceneIndex}: all color-fallback attempts failed (duration=${rawDuration}s, workDir=${workDir})`);
+  throw pipelineError(PIPELINE_ERROR.FFMPEG, `Scene ${sceneIndex}: all color-fallback attempts failed (duration=${safeDuration}s, workDir=${workDir})`);
 }
 
 /** Rotate golden Musk queries; never grey or duplicate clips. */
