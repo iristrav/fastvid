@@ -5222,24 +5222,10 @@ async function generateColorFallback(
       }
       console.warn(`[Pipeline] Scene ${sceneIndex}: fallback attempt ${i + 1} produced unreadable file — stderr: ${String(stderr).slice(-400)}`);
     } catch (err) {
-      const msg = (err as Error).message ?? String(err);
-      console.warn(`[Pipeline] Scene ${sceneIndex}: fallback attempt ${i + 1} failed: ${msg.slice(0, 500)}`);
+      const e = err as { message?: string; stderr?: string; code?: string };
+      const ffmpegErr = ((e.stderr ?? "").slice(-600) || e.message?.slice(0, 300)) ?? String(err);
+      console.warn(`[Pipeline] Scene ${sceneIndex}: fallback attempt ${i + 1} failed [code=${e.code ?? "?"}]: ${ffmpegErr}`);
     }
-  }
-
-  // Last resort: write a minimal valid MP4 from a static image using Node.js Buffer
-  // (no FFmpeg dependency — just header bytes for a 1-frame black video)
-  try {
-    const minimalCmd =
-      `${FFMPEG_BIN} -y -f rawvideo -video_size 320x180 -pixel_format yuv420p -framerate 1 ` +
-      `-i /dev/zero -t ${Math.min(safeDuration, 30)} -c:v mpeg4 -q:v 10 "${out}"`;
-    await withTimeout(exec(minimalCmd), 30_000, `Fallback video scene ${sceneIndex} minimal`);
-    if (await isValidVideoFile(out)) {
-      console.log(`[Pipeline] Scene ${sceneIndex}: minimal fallback OK`);
-      return out;
-    }
-  } catch (err) {
-    console.warn(`[Pipeline] Scene ${sceneIndex}: minimal fallback failed: ${(err as Error).message?.slice(0, 200)}`);
   }
 
   throw pipelineError(PIPELINE_ERROR.FFMPEG, `Scene ${sceneIndex}: all color-fallback attempts failed (duration=${rawDuration}s, workDir=${workDir})`);
