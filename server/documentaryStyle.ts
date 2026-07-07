@@ -228,7 +228,10 @@ export function buildFitGrayVideoVF(): string {
 export function buildFitGrayVideoMontageChain(): string {
   const w = DOC_STYLE_VIDEO_WIDTH;
   const h = DOC_STYLE_VIDEO_HEIGHT;
+  // format=yuv420p,setsar=1/1 first: normalizes pixel format and SAR so the scale
+  // filter never needs to reinitialize mid-stream on variable-resolution clips.
   return (
+    `format=yuv420p,setsar=1/1,` +
     `scale=${w}:${h}:force_original_aspect_ratio=decrease:force_divisible_by=2,` +
     `pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:color=0x2a2a2a`
   );
