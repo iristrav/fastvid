@@ -136,6 +136,7 @@ async function detectMatchesArchiveSubject(dataUrls: string[], context: ArchiveS
             ],
           },
         ],
+        preferProvider: "anthropic",
         response_format: SUBJECT_JSON_SCHEMA,
         maxTokens: 64,
       }),

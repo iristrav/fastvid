@@ -131,6 +131,7 @@ async function detectOnScreenTextInImages(dataUrls: string[]): Promise<boolean> 
             ],
           },
         ],
+        preferProvider: "anthropic",
         response_format: OVERLAY_JSON_SCHEMA,
         maxTokens: 64,
       }),

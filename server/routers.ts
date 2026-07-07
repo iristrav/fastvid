@@ -416,6 +416,7 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLengthRa
             },
           ],
           maxTokens: 8192,
+          preferProvider: "anthropic",
         });
         const merged = `${scriptContent}\n\n${llmMessageText(contResp)}`.trim();
         if (merged.length > scriptContent.length) scriptContent = merged;
@@ -442,6 +443,7 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLengthRa
                 content: buildScriptLengthRefinePrompt(scriptContent, budget, narrationWords, prompt),
               },
             ],
+            preferProvider: "anthropic",
           });
           const refined = refineResp?.choices?.[0]?.message?.content ?? "";
           if (typeof refined === "string" && refined.trim().length > 200) {
@@ -473,6 +475,7 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLengthRa
           const resp = await invokeLLM({
             messages: [{ role: "system", content: writerSystem }, { role: "user", content: userPrompt }],
             maxTokens: 8192,
+            preferProvider: "anthropic",
           });
           return llmMessageText(resp);
         }
@@ -582,6 +585,7 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLengthRa
           },
         },
       },
+      preferProvider: "groq",
     });
 
     const [sectionTexts, metaResponse] = await Promise.all([Promise.all(sectionPromises), metaPromise]);
@@ -662,6 +666,7 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLengthRa
         const resp = await invokeLLM({
           messages: [{ role: "system", content: writerSystem }, { role: "user", content: userPrompt }],
           maxTokens: 8192,
+          preferProvider: "anthropic",
         });
         return llmMessageText(resp);
       }
