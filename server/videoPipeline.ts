@@ -5211,20 +5211,32 @@ async function generateColorFallback(
   } catch { /* ignore */ }
 
   for (let i = 0; i < commands.length; i++) {
-    try {
-      if (fs.existsSync(out)) {
-        try { fs.unlinkSync(out); } catch { /* ignore */ }
+    let lastErr: unknown;
+    for (let retry = 0; retry < 3; retry++) {
+      try {
+        if (fs.existsSync(out)) {
+          try { fs.unlinkSync(out); } catch { /* ignore */ }
+        }
+        const { stderr } = await withTimeout(exec(commands[i]), 45_000, `Fallback video scene ${sceneIndex} attempt ${i + 1}`);
+        if (await isValidVideoFile(out)) {
+          console.log(`[Pipeline] Scene ${sceneIndex}: fallback video OK (${(fs.statSync(out).size / 1024).toFixed(0)}KB, attempt ${i + 1})`);
+          return out;
+        }
+        console.warn(`[Pipeline] Scene ${sceneIndex}: fallback attempt ${i + 1} produced unreadable file — stderr: ${String(stderr).slice(-400)}`);
+        break;
+      } catch (err) {
+        lastErr = err;
+        if (isForkPressureError(err) && retry < 2) {
+          const wait = (retry + 1) * 4_000;
+          console.warn(`[Pipeline] Scene ${sceneIndex}: fallback attempt ${i + 1} fork pressure — retry in ${wait / 1000}s`);
+          await sleep(wait);
+          continue;
+        }
+        const e = err as { message?: string; stderr?: string; code?: string };
+        const ffmpegErr = ((e.stderr ?? "").slice(-600) || e.message?.slice(0, 300)) ?? String(err);
+        console.warn(`[Pipeline] Scene ${sceneIndex}: fallback attempt ${i + 1} failed [code=${e.code ?? "?"}]: ${ffmpegErr}`);
+        break;
       }
-      const { stderr } = await withTimeout(exec(commands[i]), 45_000, `Fallback video scene ${sceneIndex} attempt ${i + 1}`);
-      if (await isValidVideoFile(out)) {
-        console.log(`[Pipeline] Scene ${sceneIndex}: fallback video OK (${(fs.statSync(out).size / 1024).toFixed(0)}KB, attempt ${i + 1})`);
-        return out;
-      }
-      console.warn(`[Pipeline] Scene ${sceneIndex}: fallback attempt ${i + 1} produced unreadable file — stderr: ${String(stderr).slice(-400)}`);
-    } catch (err) {
-      const e = err as { message?: string; stderr?: string; code?: string };
-      const ffmpegErr = ((e.stderr ?? "").slice(-600) || e.message?.slice(0, 300)) ?? String(err);
-      console.warn(`[Pipeline] Scene ${sceneIndex}: fallback attempt ${i + 1} failed [code=${e.code ?? "?"}]: ${ffmpegErr}`);
     }
   }
 
