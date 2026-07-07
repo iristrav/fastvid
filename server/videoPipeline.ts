@@ -526,7 +526,8 @@ let _activeBudgetTracker: BudgetTracker | null = null;
 // execRaw exposes the ChildProcess so withTimeout can kill it on abort,
 // and registers it with the active render watchdog for hard-kill coverage.
 const execRaw = (cmd: string): Promise<{ stdout: string; stderr: string }> & { childProcess?: import("child_process").ChildProcess } => {
-  const isFFmpeg = cmd.includes(FFMPEG_BIN) || cmd.includes("ffmpeg");
+  // Only throttle real FFmpeg encode/transcode — not ffprobe (lightweight metadata reads)
+  const isFFmpeg = (cmd.includes(FFMPEG_BIN) || cmd.includes("ffmpeg")) && !cmd.includes("ffprobe");
   let child: import("child_process").ChildProcess | undefined;
 
   const spawnChild = (): Promise<{ stdout: string; stderr: string }> =>

@@ -50,9 +50,9 @@ export class Semaphore {
   }
 }
 
-/** Max 10 FFmpeg processes running simultaneously across the whole server. */
+/** Max 16 FFmpeg encode processes simultaneously (ffprobe excluded). Tune via FFMPEG_CONCURRENCY_LIMIT. */
 export const ffmpegSemaphore = new Semaphore(
-  parseInt(process.env.FFMPEG_CONCURRENCY_LIMIT ?? "10", 10)
+  parseInt(process.env.FFMPEG_CONCURRENCY_LIMIT ?? "16", 10)
 );
 
 /**
