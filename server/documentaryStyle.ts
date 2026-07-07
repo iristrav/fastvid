@@ -63,7 +63,9 @@ export function buildFitGrayGradedVideoVF(): string {
 export function buildMontageBranchNormVF(): string {
   const base = `${buildFitGrayVideoMontageChain()},fps=25,format=yuv420p,setsar=1`;
   if (!documentaryStyleEnabled()) return base;
-  return `${base},${buildPerClipDocumentaryGradeVF()}`;
+  // format=yuv420p at the end ensures grade filters (colorbalance, vignette) don't
+  // leave an incompatible pixel format that causes libx264 to fail on init.
+  return `${base},${buildPerClipDocumentaryGradeVF()},format=yuv420p`;
 }
 
 /** Final scene pass after per-clip grades — grain only (avoids double color grading). */
@@ -227,7 +229,7 @@ export function buildFitGrayVideoMontageChain(): string {
   const w = DOC_STYLE_VIDEO_WIDTH;
   const h = DOC_STYLE_VIDEO_HEIGHT;
   return (
-    `scale=${w}:${h}:force_original_aspect_ratio=decrease,` +
+    `scale=${w}:${h}:force_original_aspect_ratio=decrease:force_divisible_by=2,` +
     `pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:color=0x2a2a2a`
   );
 }
