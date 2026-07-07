@@ -313,60 +313,35 @@ export function buildBeatMatchTags(
   const visualDescription = asVideoTitleString(coerceVisionString(anchored.visualDescription));
   const videoVisualTopic = inferVideoVisualTopic(titleStr, [beatText, sceneText].join(" "));
   const topicAnchors = extractTopicAnchorTags(titleStr, [beatText, sceneText].join(" "));
-  // English-only sources: pexelsQueries (LLM), visualDescription, searchQuery, keywords.
-  // beatText is Dutch narration — never tokenize it directly for archive tag matching.
-  const pexelsTokens = normalizeMediaTags(
-    (beat.pexelsQueries ?? []).flatMap((q) => tokenizeBeatText(q))
-  );
-  const englishSource = visualDescription.trim() || searchQuery.trim();
-  const hasLiteralVisual = Boolean(englishSource);
-  // visualSource stays English — beatText is excluded
-  const visualSource = englishSource ||
-    (beat.pexelsQueries ?? []).join(" ") ||
-    anchored.keywords.map((k) => coerceVisionString(k)).join(" ");
+  // English-only sources. beatText is Dutch narration — never use it for tags.
+  // Strategy: 1 main subject + max 2 specifiers, all from the best English query.
+  const pexelsQueries = (beat.pexelsQueries ?? []).filter(Boolean);
+  const bestQuery = pexelsQueries[0] || searchQuery.trim() || visualDescription.trim();
+  const hasLiteralVisual = Boolean(visualDescription.trim() || searchQuery.trim());
+
+  // Main subject: first meaningful token of the best query (e.g. "napoleon")
+  const bestQueryTokens = tokenizeBeatText(bestQuery).slice(0, 3);
+
+  // Specifiers: up to 2 extra tokens from pexelsQueries[1] or searchQuery
+  const specifierSource = pexelsQueries[1] || pexelsQueries[0] || searchQuery.trim();
+  const specifiers = tokenizeBeatText(specifierSource)
+    .filter((t) => !bestQueryTokens.includes(t))
+    .slice(0, 2);
+
+  const beatTags = normalizeMediaTags([...bestQueryTokens, ...specifiers]).slice(0, 3);
+
+  const visualSource = bestQuery;
   const visualTags = extractVisualSearchTags(visualSource, videoTitle);
   const visualAnchor = extractPrimaryVisualAnchor(visualSource);
-  const anchorTokens = visualAnchor ? tokenizeBeatText(visualAnchor) : [];
-  const beatRaw = [
-    visualSource,
-    visualAnchor ?? "",
-    coerceVisionString(anchored.powerWord),
-    searchQuery,
-    ...anchored.keywords.map((k) => coerceVisionString(k)),
-    ...visualTags,
-    ...(hasLiteralVisual ? [] : [coerceVisionString(scene.visualCue)]),
-  ]
-    .filter(Boolean)
-    .join(" ");
-  const sentenceTags = tokenizeBeatText(englishSource || beatRaw);
-  const queryTokens = searchQuery.trim() ? tokenizeBeatText(searchQuery) : [];
-  const beatTags = normalizeMediaTags([
-    ...pexelsTokens,
-    ...pexelsTokens, // double-weight: strongest English signal
-    ...queryTokens,
-    ...queryTokens,
-    ...anchorTokens,
-    ...sentenceTags,
-    ...(hasLiteralVisual ? [] : tokenizeBeatText(beatRaw)),
-  ]).slice(0, 20);
-  // scene tags: use pexelsQuery (English) not sceneText (may be Dutch)
-  const sceneTags = tokenizeBeatText(coerceVisionString(scene.pexelsQuery));
-  const mergedBeat = normalizeMediaTags([
-    ...beatTags,
-    ...(hasLiteralVisual ? [] : sceneTags),
-  ]).slice(0, 16);
+  const mergedBeat = beatTags;
   const beatLower = beatText.toLowerCase();
   const scopedTopicAnchors = topicAnchors.filter(
     (a) => beatLower.includes(a) || visualTags.some((v) => v.includes(a) || a.includes(v))
   );
   const effectiveTopicAnchors =
-    scopedTopicAnchors.length > 0 ? scopedTopicAnchors : topicAnchors.slice(0, 4);
-  const allTags = normalizeMediaTags([
-    ...mergedBeat,
-    ...effectiveTopicAnchors,
-    ...topicAnchors.slice(0, 3),
-    ...(titleStr ? tokenizeBeatText(titleStr) : []),
-  ]).slice(0, 24);
+    (scopedTopicAnchors.length > 0 ? scopedTopicAnchors : topicAnchors).slice(0, 2);
+  // allTags: beatTags (3) + max 2 topic anchors — keep it tight
+  const allTags = normalizeMediaTags([...beatTags, ...effectiveTopicAnchors]).slice(0, 5);
   const refinedBeat = expandBeatTagsWithTranslations(
     refineVisualSearchTagsForTopic(mergedBeat, videoVisualTopic, beatText)
   );
