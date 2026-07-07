@@ -526,31 +526,14 @@ let _activeBudgetTracker: BudgetTracker | null = null;
 // execRaw exposes the ChildProcess so withTimeout can kill it on abort,
 // and registers it with the active render watchdog for hard-kill coverage.
 const execRaw = (cmd: string): Promise<{ stdout: string; stderr: string }> & { childProcess?: import("child_process").ChildProcess } => {
-  // Only throttle real FFmpeg encode/transcode — not ffprobe (lightweight metadata reads)
-  const isFFmpeg = (cmd.includes(FFMPEG_BIN) || cmd.includes("ffmpeg")) && !cmd.includes("ffprobe");
   let child: import("child_process").ChildProcess | undefined;
-
-  const spawnChild = (): Promise<{ stdout: string; stderr: string }> =>
-    new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
-      child = execCb(niceCmd(cmd), { maxBuffer: 256 * 1024 * 1024 }, (err, stdout, stderr) => {
-        if (err) { (err as NodeJS.ErrnoException & { stdout?: string; stderr?: string }).stdout = stdout; (err as NodeJS.ErrnoException & { stdout?: string; stderr?: string }).stderr = stderr; reject(err); }
-        else resolve({ stdout, stderr });
-      });
-      if (child) _activeWatchdog?.trackChild(child);
+  const p = new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+    child = execCb(niceCmd(cmd), { maxBuffer: 256 * 1024 * 1024 }, (err, stdout, stderr) => {
+      if (err) { (err as NodeJS.ErrnoException & { stdout?: string; stderr?: string }).stdout = stdout; (err as NodeJS.ErrnoException & { stdout?: string; stderr?: string }).stderr = stderr; reject(err); }
+      else resolve({ stdout, stderr });
     });
-
-  if (!isFFmpeg) {
-    const p = spawnChild() as Promise<{ stdout: string; stderr: string }> & { childProcess?: import("child_process").ChildProcess };
-    p.childProcess = child;
-    return p;
-  }
-
-  // FFmpeg: acquire semaphore slot before spawning
-  const waiting = ffmpegSemaphore.waiting;
-  if (waiting > 0) {
-    console.log(`[FFmpegSem] waiting for slot (${waiting} in queue, max ${process.env.FFMPEG_CONCURRENCY_LIMIT ?? 10})`);
-  }
-  const p = ffmpegSemaphore.run(spawnChild) as Promise<{ stdout: string; stderr: string }> & { childProcess?: import("child_process").ChildProcess };
+    if (child) _activeWatchdog?.trackChild(child);
+  }) as Promise<{ stdout: string; stderr: string }> & { childProcess?: import("child_process").ChildProcess };
   p.childProcess = child;
   return p;
 };
@@ -5212,17 +5195,19 @@ async function generateColorFallback(
     try { fs.unlinkSync(out); } catch { /* ignore */ }
   }
 
-  // Ordered from most-compatible to simplest. Attempts 1-2 use full res + libx264;
-  // attempt 3 drops to 1280x720 + mpeg4 (works when libx264 is unavailable);
-  // attempt 4 is the absolute floor: 640x360 + mpeg4 + 5s minimum duration.
+  // Throttle: color-fallbacks can all fire at once when clips fail — queue them
+  return ffmpegSemaphore.run(() => _generateColorFallbackInner(sceneIndex, safeDuration, out, workDir));
+}
+
+async function _generateColorFallbackInner(sceneIndex: number, safeDuration: number, out: string, workDir: string): Promise<string> {
+  const colors = ["3a4a5e", "4a5a6e", "3a5a6e", "4a4a5e", "3a5a5e", "4a5a5e", "3a4a6e", "4a4a6e"];
+  const color = colors[Math.abs(sceneIndex) % colors.length];
   const commands = [
     `${FFMPEG_BIN} -y -f lavfi -i "color=c=#${color}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:r=25" -t ${safeDuration} -c:v libx264 -preset ultrafast -pix_fmt yuv420p -an "${out}"`,
     `${FFMPEG_BIN} -y -f lavfi -i "color=c=black:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:r=25" -t ${safeDuration} -c:v libx264 -preset ultrafast -pix_fmt yuv420p -an "${out}"`,
     `${FFMPEG_BIN} -y -f lavfi -i "color=c=black:s=1280x720:r=25" -t ${safeDuration} -c:v mpeg4 -q:v 5 -an "${out}"`,
     `${FFMPEG_BIN} -y -f lavfi -i "color=c=black:s=640x360:r=25" -t ${safeDuration} -c:v mpeg4 -q:v 8 -an "${out}"`,
   ];
-
-  // Disk-space check before any FFmpeg attempt
   try {
     const { stdout: dfOut } = await withTimeout(exec(`df -h "${workDir}" 2>&1 || df -h /var/tmp 2>&1 || df -h /tmp 2>&1`), 5_000, "df");
     console.log(`[Pipeline] Scene ${sceneIndex}: disk space: ${dfOut.trim().split("\n").slice(-1)[0]}`);
@@ -13887,21 +13872,21 @@ async function fetchBeatClipFromScript(
   let clip: string | null = null;
 
   if (realFootageFirstEnabled()) {
-    const primary = await beatPrimaryFetch(
+    const primaryFetch = await beatPrimaryFetch(
       beat,
       scene,
       workDir,
       sceneIndex,
       clipFetchDur,
       dedup,
-      primary ?? personName,
+      primary || personName,
       videoTitle,
       adoptOpts,
       scenePersons,
       `${tag}_primary`,
       "script primary"
     );
-    if (primary) return primary;
+    if (primaryFetch) return primaryFetch;
 
     clip = await fetchBeatAuthenticVideo(
       beat,
