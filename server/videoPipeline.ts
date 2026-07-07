@@ -2825,14 +2825,10 @@ function mapRawScene(
       ]
     ),
   ];
-  const primaryQuery = stockQueryFromBeatScript(hint, personNames, hint);
-  const scriptQueries = scriptStockSearchQueries(hint, personNames, hint);
-  const allQueries = [...new Set([primaryQuery, ...scriptQueries])].slice(0, 4);
-  const brollQueries = personNames.length > 0
-    ? [`${personNames[0].split(/\s+/)[0]} interview`, `${personNames[0]} red carpet`]
-        .filter((q) => q.length >= 3 && !isBlockedStockQuery(q))
-        .slice(0, 2)
-    : [];
+  const subject = extractBeatSubject(hint, personNames);
+  const primaryQuery = subject || "documentary";
+  const allQueries = scriptStockSearchQueries(hint, personNames);
+  const brollQueries: string[] = [];
   const sectionTitle =
     typeof rawS.sectionTitle === "string" ? rawS.sectionTitle.trim().slice(0, 60) : "";
   const statCallout =
@@ -8487,55 +8483,58 @@ function translateTokenForPexels(token: string): string | null {
  * Stock search terms from beat narration: persons → events → entities.
  * Skips generic wildlife/animal tokens when a named person is in scope.
  */
+const STOP_WORDS = new Set([
+  "a","an","the","is","are","was","were","be","been","being","have","has","had","do","does","did",
+  "will","would","could","should","may","might","shall","can","need","to","of","in","on","at","by",
+  "for","with","about","into","through","during","before","after","above","below","between","out",
+  "up","down","from","and","or","but","nor","as","if","when","where","while","that","this","these",
+  "those","he","she","it","they","we","you","i","his","her","its","their","our","your","my","who",
+  "which","what","not","no","so","then","than","also","just","only","even","still","more","most",
+  "very","much","many","some","any","all","both","each","few","more","such","own","same","than",
+  "too","very","s","t","can","will","just","don","should","now","de","het","een","van","op","en",
+  "maar","ook","wordt","werd","heeft","had","zijn","was","er","naar","met","door","over","als","dat",
+  "om","uit","aan","bij","te","in","nog","zo","al","want","dan","maar","wel","geen","toch","niet",
+]);
+
+/**
+ * Extract the visual subject from a beat sentence.
+ * Returns 1–3 meaningful words (nouns, proper nouns, key verbs) — no stop words.
+ * Persons array takes priority: if names are present, they anchor the query.
+ */
+function extractBeatSubject(beatText: string, persons: string[] = []): string {
+  const clean = beatText.replace(/\[visual:[^\]]*\]/gi, " ").trim();
+
+  // If a person is named, use "Person + first meaningful non-stop word"
+  if (persons.length > 0) {
+    const person = persons[0];
+    const words = clean.toLowerCase().split(/\W+/).filter(w => w.length > 3 && !STOP_WORDS.has(w) && !person.toLowerCase().includes(w));
+    const extra = words[0] ?? "";
+    return extra ? `${person} ${extra}` : person;
+  }
+
+  // Otherwise: take the longest meaningful non-stop words from the sentence
+  const words = clean.split(/\W+/).filter(w => w.length >= 4 && !STOP_WORDS.has(w.toLowerCase()));
+  const unique = [...new Set(words.map(w => w.toLowerCase()))];
+  return unique.slice(0, 3).join(" ") || clean.split(/\s+/).slice(0, 2).join(" ");
+}
+
 function scriptStockSearchQueries(
   beatText: string,
   persons: string[] = [],
-  sceneText = "",
-  videoTitle?: string
+  _sceneText = "",
+  _videoTitle?: string
 ): string[] {
-  const narration = beatText.replace(/\[visual:[^\]]*\]/gi, " ").trim();
-  const out: string[] = [];
-  const hasPerson = persons.length > 0;
-  const anchorPerson = hasPerson;
+  const subject = extractBeatSubject(beatText, persons);
+  if (!subject || subject.length < 2) return ["documentary"];
 
-  for (const person of persons) {
-    out.push(person);
-    const first = person.split(/\s+/)[0]?.trim().toLowerCase();
-    if (first && first.length >= 3) out.push(first);
-    out.push(`${person} interview`, `${person} celebrity`);
-    if (beatMentionsPerson(beatText, person) || beatMentionsPerson(sceneText, person)) {
-      out.push(`${person} red carpet`, `${person} news`);
-    }
+  const queries: string[] = [subject];
+
+  // Add a person-only fallback if person is present
+  if (persons.length > 0) {
+    queries.push(persons[0]);
   }
 
-  for (const ev of scriptEventSearchQueries(beatText, persons)) out.push(ev);
-
-  for (const cue of extractInlineVisualCues(beatText)) {
-    if (anchorPerson && PERSON_OFFTOPIC_VISUAL_RE.test(cue)) continue;
-    const sq = simplifyStockSearchWord(cue, cue, true);
-    if (anchorPerson && (PERSON_OFFTOPIC_VISUAL_RE.test(sq) || isGenericNatureStockWord(sq))) continue;
-    out.push(sq);
-  }
-
-  for (const q of realEntityStockQueriesForBeat(beatText, sceneText, videoTitle)) {
-    if (q) out.push(q);
-  }
-
-  if (!anchorPerson) {
-    const beatTokens = tokenizeForRelevance(narration);
-    const ranked = [...beatTokens].sort((a, b) => b.length - a.length);
-    for (const tok of ranked) {
-      const w = translateTokenForPexels(tok);
-      if (!w || isBlockedStockQuery(w) || isGenericNatureStockWord(w)) continue;
-      out.push(w);
-    }
-    if (out.length === 0 && narration.length > 0) {
-      const fallback = simplifyStockSearchWord(narration, narration, true);
-      if (!isGenericNatureStockWord(fallback)) out.push(fallback);
-    }
-  }
-
-  return [...new Set(out.filter((q) => q && q.length >= 3 && !isBlockedStockQuery(q)))].slice(0, 8);
+  return [...new Set(queries.filter(q => q.length >= 2 && !isBlockedStockQuery(q)))].slice(0, 3);
 }
 
 function isGenericNatureStockWord(word: string): boolean {
