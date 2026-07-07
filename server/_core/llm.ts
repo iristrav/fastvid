@@ -390,15 +390,18 @@ function providersToTry(primary: LlmProvider): LlmProvider[] {
   };
 
   if (primary === "anthropic" && !anthropicAvailable) {
+    push("groq");
     push("openai");
-  } else if (primary === "groq" && !groqAvailable && openAiAvailable) {
+  } else if (primary === "groq" && !groqAvailable) {
+    push("anthropic");
     push("openai");
   } else if (primary !== "none") {
     push(primary);
   }
 
-  if (openAiAvailable) push("openai");
+  if (anthropicAvailable) push("anthropic");
   if (groqAvailable) push("groq");
+  if (openAiAvailable) push("openai");
   return out;
 }
 

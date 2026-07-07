@@ -33,15 +33,17 @@ export function openAiKeyFromEnv(): string {
   return llm;
 }
 
-/** Which LLM backend to use (Forge > OpenAI > Groq unless LLM_PROVIDER is set). */
+/** Which LLM backend to use (Forge > Anthropic > Groq > OpenAI unless LLM_PROVIDER is set). */
 export function resolveLlmProvider(): LlmProvider {
   const forced = process.env.LLM_PROVIDER?.trim().toLowerCase();
   if (forced === "groq" && groqKeyFromEnv()) return "groq";
   if (forced === "openai" && openAiKeyFromEnv()) return "openai";
+  if (forced === "anthropic" && anthropicKeyFromEnv()) return "anthropic";
   if (forced === "forge" && process.env.BUILT_IN_FORGE_API_KEY?.trim()) return "forge";
   if (process.env.BUILT_IN_FORGE_API_KEY?.trim()) return "forge";
-  if (openAiKeyFromEnv()) return "openai";
+  if (anthropicKeyFromEnv()) return "anthropic";
   if (groqKeyFromEnv()) return "groq";
+  if (openAiKeyFromEnv()) return "openai";
   return "none";
 }
 
