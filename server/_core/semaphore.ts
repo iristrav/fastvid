@@ -1,0 +1,71 @@
+/**
+ * Semaphore — limits concurrent access to a shared resource.
+ *
+ * Global FFmpeg semaphore: max 10 FFmpeg processes across the whole server.
+ * Per-user render lock: max 1 active video render per user account.
+ */
+
+export class Semaphore {
+  private _available: number;
+  private _queue: Array<() => void> = [];
+
+  constructor(max: number) {
+    this._available = max;
+  }
+
+  acquire(): Promise<void> {
+    if (this._available > 0) {
+      this._available--;
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+      this._queue.push(resolve);
+    });
+  }
+
+  release(): void {
+    if (this._queue.length > 0) {
+      const next = this._queue.shift()!;
+      next();
+    } else {
+      this._available++;
+    }
+  }
+
+  async run<T>(fn: () => Promise<T>): Promise<T> {
+    await this.acquire();
+    try {
+      return await fn();
+    } finally {
+      this.release();
+    }
+  }
+
+  get waiting(): number {
+    return this._queue.length;
+  }
+
+  get active(): number {
+    return (this as unknown as { _max: number })._max - this._available;
+  }
+}
+
+/** Max 10 FFmpeg processes running simultaneously across the whole server. */
+export const ffmpegSemaphore = new Semaphore(
+  parseInt(process.env.FFMPEG_CONCURRENCY_LIMIT ?? "10", 10)
+);
+
+/**
+ * Per-user render lock. Each user can only have 1 active video render at a time.
+ * A second render request waits until the first finishes.
+ */
+const userRenderLocks = new Map<string | number, Semaphore>();
+
+export function getUserRenderSemaphore(userId: string | number): Semaphore {
+  let sem = userRenderLocks.get(userId);
+  if (!sem) {
+    sem = new Semaphore(1);
+    userRenderLocks.set(userId, sem);
+  }
+  return sem;
+}

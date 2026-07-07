@@ -28,6 +28,7 @@ import * as path from "path";
 import * as os from "os";
 import { storagePut } from "./storage";
 import { invokeLLM } from "./_core/llm";
+import { ffmpegSemaphore } from "./_core/semaphore";
 import { getVideoById, updateVideoStatus, updateVideoScenes, mergeVideoMetadata, touchVideoProgress, type EditorScene } from "./db";
 import pLimit from "p-limit";
 import { generateGrokVideo } from "./_core/grokVideo";
@@ -525,15 +526,31 @@ let _activeBudgetTracker: BudgetTracker | null = null;
 // execRaw exposes the ChildProcess so withTimeout can kill it on abort,
 // and registers it with the active render watchdog for hard-kill coverage.
 const execRaw = (cmd: string): Promise<{ stdout: string; stderr: string }> & { childProcess?: import("child_process").ChildProcess } => {
+  const isFFmpeg = cmd.includes(FFMPEG_BIN) || cmd.includes("ffmpeg");
   let child: import("child_process").ChildProcess | undefined;
-  const p = new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
-    child = execCb(niceCmd(cmd), { maxBuffer: 256 * 1024 * 1024 }, (err, stdout, stderr) => {
-      if (err) { (err as NodeJS.ErrnoException & { stdout?: string; stderr?: string }).stdout = stdout; (err as NodeJS.ErrnoException & { stdout?: string; stderr?: string }).stderr = stderr; reject(err); }
-      else resolve({ stdout, stderr });
+
+  const spawnChild = (): Promise<{ stdout: string; stderr: string }> =>
+    new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+      child = execCb(niceCmd(cmd), { maxBuffer: 256 * 1024 * 1024 }, (err, stdout, stderr) => {
+        if (err) { (err as NodeJS.ErrnoException & { stdout?: string; stderr?: string }).stdout = stdout; (err as NodeJS.ErrnoException & { stdout?: string; stderr?: string }).stderr = stderr; reject(err); }
+        else resolve({ stdout, stderr });
+      });
+      if (child) _activeWatchdog?.trackChild(child);
     });
-  }) as Promise<{ stdout: string; stderr: string }> & { childProcess?: import("child_process").ChildProcess };
+
+  if (!isFFmpeg) {
+    const p = spawnChild() as Promise<{ stdout: string; stderr: string }> & { childProcess?: import("child_process").ChildProcess };
+    p.childProcess = child;
+    return p;
+  }
+
+  // FFmpeg: acquire semaphore slot before spawning
+  const waiting = ffmpegSemaphore.waiting;
+  if (waiting > 0) {
+    console.log(`[FFmpegSem] waiting for slot (${waiting} in queue, max ${process.env.FFMPEG_CONCURRENCY_LIMIT ?? 10})`);
+  }
+  const p = ffmpegSemaphore.run(spawnChild) as Promise<{ stdout: string; stderr: string }> & { childProcess?: import("child_process").ChildProcess };
   p.childProcess = child;
-  if (child) _activeWatchdog?.trackChild(child);
   return p;
 };
 
