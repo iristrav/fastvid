@@ -161,6 +161,8 @@ export type CuratedBeatContext = {
 export type BeatMatchTags = {
   /** Words/phrases from this beat's narration — primary match keys. */
   beatTags: string[];
+  /** Main subject only (1 token) — used as last-resort fallback when beatTags find nothing. */
+  mainSubject: string[];
   /** Topic from video title/prompt — niche filter, lower weight per beat. */
   topicAnchors: string[];
   allTags: string[];
@@ -314,21 +316,22 @@ export function buildBeatMatchTags(
   const videoVisualTopic = inferVideoVisualTopic(titleStr, [beatText, sceneText].join(" "));
   const topicAnchors = extractTopicAnchorTags(titleStr, [beatText, sceneText].join(" "));
   // English-only sources. beatText is Dutch narration — never use it for tags.
-  // Strategy: 1 main subject + max 2 specifiers, all from the best English query.
+  // Strategy: 1 main subject + 1 specifier (max 2 tags total).
   const pexelsQueries = (beat.pexelsQueries ?? []).filter(Boolean);
   const bestQuery = pexelsQueries[0] || searchQuery.trim() || visualDescription.trim();
   const hasLiteralVisual = Boolean(visualDescription.trim() || searchQuery.trim());
 
   // Main subject: first meaningful token of the best query (e.g. "napoleon")
-  const bestQueryTokens = tokenizeBeatText(bestQuery).slice(0, 3);
+  const allBestTokens = tokenizeBeatText(bestQuery);
+  const mainSubject = allBestTokens.slice(0, 1);
 
-  // Specifiers: up to 2 extra tokens from pexelsQueries[1] or searchQuery
+  // 1 specifier from the second token of pexelsQueries[0] or from pexelsQueries[1]
   const specifierSource = pexelsQueries[1] || pexelsQueries[0] || searchQuery.trim();
-  const specifiers = tokenizeBeatText(specifierSource)
-    .filter((t) => !bestQueryTokens.includes(t))
-    .slice(0, 2);
+  const specifier = tokenizeBeatText(specifierSource)
+    .filter((t) => !mainSubject.includes(t))
+    .slice(0, 1);
 
-  const beatTags = normalizeMediaTags([...bestQueryTokens, ...specifiers]).slice(0, 3);
+  const beatTags = normalizeMediaTags([...mainSubject, ...specifier]).slice(0, 2);
 
   const visualSource = bestQuery;
   const visualTags = extractVisualSearchTags(visualSource, videoTitle);
@@ -350,6 +353,7 @@ export function buildBeatMatchTags(
   );
   return {
     beatTags: refinedBeat,
+    mainSubject,
     topicAnchors: effectiveTopicAnchors,
     allTags: refinedAll,
     videoVisualTopic,
@@ -1883,7 +1887,7 @@ export async function searchCuratedCandidatesForBeat(
     ...anchoredBeat,
     searchQuery: shotQueries[0] || anchoredBeat.searchQuery,
   };
-  const { beatTags, topicAnchors, allTags, videoVisualTopic } = buildBeatMatchTags(beatForMatch, scene, videoTitle);
+  const { beatTags, mainSubject, topicAnchors, allTags, videoVisualTopic } = buildBeatMatchTags(beatForMatch, scene, videoTitle);
 
   console.log(
     `[ArchiveSearch] zin ${beat.index} "${beat.text.slice(0, 60)}"` +
@@ -2096,6 +2100,13 @@ export async function searchCuratedCandidatesForBeat(
         assetPassesBeatMinimum(p.asset, beat.text, p.score, topScore, p.semantic, videoVisualTopic, segmentLock, [], videoTitle)
     );
     if (relaxed.length > 0) return relaxed;
+  }
+
+  // Fallback: retry with main subject only (drop the specifier)
+  if (mainSubject.length > 0 && beatTags.length > 1) {
+    console.log(`[ArchiveSearch] zin ${beat.index}: no match with [${beatTags.join(", ")}] — retrying with main subject only: [${mainSubject[0]}]`);
+    const subjectOnly = ranked.filter((p) => countVisualTagHits(p.asset, mainSubject) > 0);
+    if (subjectOnly.length > 0) return subjectOnly;
   }
 
   // No match at all — return empty so the pipeline falls back to Pexels/Pixabay stock.
