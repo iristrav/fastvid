@@ -411,7 +411,8 @@ function providersToTry(primary: LlmProvider): LlmProvider[] {
 
   if (anthropicAvailable) push("anthropic");
   if (groqAvailable) push("groq");
-  if (openAiAvailable) push("openai");
+  // Only fall back to OpenAI when no other provider is available or was requested.
+  if (openAiAvailable && !anthropicAvailable && !groqAvailable) push("openai");
   return out;
 }
 
