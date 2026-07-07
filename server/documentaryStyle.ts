@@ -228,12 +228,14 @@ export function buildFitGrayVideoVF(): string {
 export function buildFitGrayVideoMontageChain(): string {
   const w = DOC_STYLE_VIDEO_WIDTH;
   const h = DOC_STYLE_VIDEO_HEIGHT;
-  // format=yuv420p,setsar=1/1 first: normalizes pixel format and SAR so the scale
-  // filter never needs to reinitialize mid-stream on variable-resolution clips.
+  // 1. Normalize format/SAR before scale so variable-resolution clips don't cause reinit errors.
+  // 2. Use -2 instead of force_divisible_by=2: -2 tells FFmpeg to compute the other
+  //    dimension while guaranteeing it's divisible by 2 — more compatible across builds.
+  // 3. Two-pass scale: fit to target, then round to exact target via a second scale.
   return (
     `format=yuv420p,setsar=1/1,` +
-    `scale=${w}:${h}:force_original_aspect_ratio=decrease:force_divisible_by=2,` +
-    `pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:color=0x2a2a2a`
+    `scale='if(gt(iw/ih,${w}/${h}),${w},-2)':'if(gt(iw/ih,${w}/${h}),-2,${h})',` +
+    `pad=${w}:${h}:(${w}-iw)/2:(${h}-ih)/2:color=0x2a2a2a`
   );
 }
 
