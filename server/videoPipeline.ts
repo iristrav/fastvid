@@ -9498,7 +9498,7 @@ function isPipelineFallbackClip(filePath: string): boolean {
 async function probeClipMeanLuma(filePath: string, atSec: number): Promise<number | null> {
   try {
     const lumCmd =
-      `"${FFMPEG_BIN}" -y -ss ${atSec.toFixed(2)} -i "${filePath}" -vframes 1 -vf "scale=64:36,format=gray" -f rawvideo -`;
+      `"${FFMPEG_BIN}" -y -threads 1 -ss ${atSec.toFixed(2)} -i "${filePath}" -vframes 1 -vf "scale=64:36,format=gray" -f rawvideo -`;
     const { stdout } = await withTimeout(exec(lumCmd), 10_000, `luma ${path.basename(filePath)}@${atSec}`);
     const buf = Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout ?? "", "binary");
     if (buf.length === 0) return null;
@@ -9523,7 +9523,7 @@ async function probeClipRegionMeanLuma(
         : "crop=iw/3:ih/3:iw/3:ih/3";
   try {
     const lumCmd =
-      `"${FFMPEG_BIN}" -y -ss ${atSec.toFixed(2)} -i "${filePath}" -vframes 1 -vf "${crop},scale=32:32,format=gray" -f rawvideo -`;
+      `"${FFMPEG_BIN}" -y -threads 1 -ss ${atSec.toFixed(2)} -i "${filePath}" -vframes 1 -vf "${crop},scale=32:32,format=gray" -f rawvideo -`;
     const { stdout } = await withTimeout(exec(lumCmd), 10_000, `luma ${path.basename(filePath)}@${atSec}:${region}`);
     const buf = Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout ?? "", "binary");
     if (buf.length === 0) return null;
