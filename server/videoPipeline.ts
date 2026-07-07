@@ -3673,7 +3673,7 @@ export async function fetchPexelsClips(
 
     try {
       // HD quality: large size (min 1280px), landscape orientation, fetch 15 candidates
-      const searchUrl = `https://api.pexels.com/videos/search?query=${encodeURIComponent(currentQuery)}&per_page=15&size=large&orientation=landscape&min_duration=4`;
+      const searchUrl = `https://api.pexels.com/videos/search?query=${encodeURIComponent(currentQuery)}&per_page=15&size=large&orientation=landscape`;
       const searchResp = await withTimeout(
         fetch(searchUrl, { headers: { Authorization: PEXELS_API_KEY } }),
         10_000,
@@ -3875,7 +3875,7 @@ async function fetchBrollClips(
       queryEmbForStock = await resolveBeatVisionQueryEmbedding({ beatText: query });
     }
     try {
-      const searchUrl = `https://api.pexels.com/videos/search?query=${encodeURIComponent(query)}&per_page=5&size=large&orientation=landscape&min_duration=4`;
+      const searchUrl = `https://api.pexels.com/videos/search?query=${encodeURIComponent(query)}&per_page=5&size=large&orientation=landscape`;
       const searchResp = await withTimeout(
         fetch(searchUrl, { headers: { Authorization: PEXELS_API_KEY } }),
         10_000,
@@ -5010,7 +5010,7 @@ async function padShortClipWithNext(
       `[PadClip] s${scene.index}b${beat.index} attempt ${attempt}: filled ${filledSec.toFixed(2)}s / ${holdSec.toFixed(2)}s — fetching ${remaining.toFixed(2)}s more`
     );
 
-    const fillPath = await fetchCuratedArchiveBeatClip(
+    let fillPath = await fetchCuratedArchiveBeatClip(
       beat,
       scene,
       workDir,
@@ -5024,6 +5024,15 @@ async function padShortClipWithNext(
       undefined,
       { relaxed: true, videoLength: dedup.videoLength, assetsCache: dedup.archiveAssetsCache }
     );
+    // Fall back to Pexels when the curated archive has nothing more
+    if (!fillPath || !(await isValidVideoFile(fillPath))) {
+      const pexQuery = beat.searchQuery || scene.pexelsQuery || beat.text.split(/\s+/).slice(0, 3).join(" ");
+      const pexPaths = await fetchPexelsClips(
+        pexQuery, remaining, workDir, scene.index, 1, undefined, false,
+        `pad_pex_s${scene.index}b${beat.index}_${attempt}`, dedup.usedPexelsIds
+      );
+      fillPath = pexPaths[0] ?? null;
+    }
     if (!fillPath || !(await isValidVideoFile(fillPath))) break;
 
     const trimmedFill = path.join(workDir, `pad_fill_s${scene.index}b${beat.index}_${attempt}_${Date.now()}.mp4`);

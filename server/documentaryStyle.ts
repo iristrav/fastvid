@@ -11,9 +11,9 @@ import { vidrushStillPhotoScale } from "./vidrushQuality";
 export const DOC_STYLE_VIDEO_WIDTH = 1920;
 export const DOC_STYLE_VIDEO_HEIGHT = 1080;
 
-/** On by default; set ENABLE_DOC_STYLE=false to disable. */
+/** Off by default; set ENABLE_DOC_STYLE=true to enable. */
 export function documentaryStyleEnabled(): boolean {
-  return process.env.ENABLE_DOC_STYLE !== "false";
+  return process.env.ENABLE_DOC_STYLE === "true";
 }
 
 /** Film grain — on by default for documentary look (ENABLE_FILM_GRAIN=false to disable). */
@@ -68,15 +68,9 @@ export function buildMontageBranchNormVF(): string {
   return `${base},${buildPerClipDocumentaryGradeVF()},format=yuv420p`;
 }
 
-/** Final scene pass after per-clip grades — grain only (avoids double color grading). */
+/** Final scene pass — grain only when doc style is on, otherwise pass through. */
 export function buildFinalSceneGradeVF(): string {
-  if (!documentaryStyleEnabled()) {
-    return (
-      "eq=contrast=1.12:saturation=0.92:brightness=-0.02:gamma=1.02," +
-      "colorbalance=rs=-0.02:gs=0:bs=0.03:rm=-0.01:gm=0:bm=0.02:rh=-0.01:gh=0:bh=0.02," +
-      "vignette=angle=0.75:mode=forward"
-    );
-  }
+  if (!documentaryStyleEnabled()) return "copy";
   const grain = buildFilmGrainVF();
   return grain ? grain.replace(/^,/, "") : "copy";
 }
