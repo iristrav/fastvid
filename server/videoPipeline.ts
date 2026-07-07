@@ -4983,6 +4983,102 @@ async function fetchSerpAPIImages(
   return results;
 }
 
+// ─── 3a. Pad short clip by concatenating a second matching clip ──────────────
+/**
+ * When an adopted clip is shorter than holdSec, fetch one more clip from the
+ * archive for the remaining duration and concatenate them.  Returns the path
+ * of the combined clip, or null if padding isn't needed or fails.
+ */
+async function padShortClipWithNext(
+  clipPath: string,
+  holdSec: number,
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  videoTitle: string | undefined,
+  dedup: VisualDedupState,
+  semanticProfile?: BeatSemanticProfile
+): Promise<string | null> {
+  const actualDur = await probeVideoDurationSec(clipPath);
+  const remaining = holdSec - actualDur;
+  if (remaining < 0.3) return null; // close enough, no padding needed
+
+  console.log(
+    `[PadClip] s${scene.index}b${beat.index}: clip is ${actualDur.toFixed(2)}s, need ${holdSec.toFixed(2)}s — fetching ${remaining.toFixed(2)}s filler`
+  );
+
+  const fillPath = await fetchCuratedArchiveBeatClip(
+    beat,
+    scene,
+    workDir,
+    scene.index,
+    remaining,
+    dedup.usedCuratedAssetIds,
+    dedup.usedCuratedStorageUrls,
+    videoTitle,
+    curatedInterviewBudget(dedup),
+    curatedImageBudget(dedup),
+    undefined,
+    { relaxed: true, videoLength: dedup.videoLength, assetsCache: dedup.archiveAssetsCache }
+  );
+
+  if (!fillPath || !(await isValidVideoFile(fillPath))) return null;
+
+  // Trim the filler to exactly the remaining duration
+  const trimmedFill = path.join(workDir, `pad_fill_s${scene.index}b${beat.index}_${Date.now()}.mp4`);
+  try {
+    await withTimeout(
+      exec(
+        `${FFMPEG_BIN} -y -i "${fillPath}" -t ${remaining.toFixed(3)} -vf "${STANDARD_VF}" ` +
+        `-c:v libx264 -preset veryfast -crf 18 -an -pix_fmt yuv420p "${trimmedFill}"`
+      ),
+      25_000,
+      `padShortClip-trim s${scene.index}b${beat.index}`
+    );
+  } catch {
+    return null;
+  }
+  if (!(await isValidVideoFile(trimmedFill))) return null;
+
+  // Concat original clip + filler
+  const combined = path.join(workDir, `pad_combined_s${scene.index}b${beat.index}_${Date.now()}.mp4`);
+  const listFile = combined.replace(".mp4", "_list.txt");
+  fs.writeFileSync(listFile, `file '${clipPath}'\nfile '${trimmedFill}'\n`);
+  try {
+    await withTimeout(
+      exec(
+        `${FFMPEG_BIN} -y -f concat -safe 0 -i "${listFile}" -c copy -avoid_negative_ts make_zero "${combined}"`
+      ),
+      20_000,
+      `padShortClip-concat s${scene.index}b${beat.index}`
+    );
+  } catch {
+    // Re-encode fallback if stream copy fails (mismatched params)
+    try {
+      await withTimeout(
+        exec(
+          `${FFMPEG_BIN} -y -f concat -safe 0 -i "${listFile}" -vf "${STANDARD_VF}" ` +
+          `-c:v libx264 -preset veryfast -crf 18 -an -pix_fmt yuv420p "${combined}"`
+        ),
+        30_000,
+        `padShortClip-concat-reencode s${scene.index}b${beat.index}`
+      );
+    } catch {
+      return null;
+    }
+  } finally {
+    try { fs.unlinkSync(listFile); } catch {}
+  }
+
+  if (!(await isValidVideoFile(combined))) return null;
+
+  const combinedDur = await probeVideoDurationSec(combined);
+  console.log(
+    `[PadClip] s${scene.index}b${beat.index}: padded to ${combinedDur.toFixed(2)}s (target ${holdSec.toFixed(2)}s)`
+  );
+  return combined;
+}
+
 // ─── 3b. Extend Last Real Clip ───────────────────────────────────────────────
 /**
  * Loop/extend the last adopted real clip to fill `beatDuration` seconds.
@@ -15777,7 +15873,12 @@ async function adoptArchiveBeatClip(
       await rejectClip(clipPath);
       return false;
     }
-    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode);
+    let effectiveClip = clipPath;
+    const padded = await padShortClipWithNext(
+      clipPath, sec, beat, scene, workDir, videoTitle, dedup, semanticProfile
+    );
+    if (padded) effectiveClip = padded;
+    const withText = await applyVideoBeatTextOverlay(effectiveClip, beat, scene, workDir, sec, dedup.perf.fastStockMode);
     if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) {
       console.warn(
         `[Pipeline] Scene ${scene.index} beat ${beat.index}: skipping clip that fails compose gate ${path.basename(withText)}`
