@@ -2057,7 +2057,9 @@ function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProfile {
     const aiCfg = resolveCuratedAiFallbackConfig(videoLength);
     return {
       ...profile,
-      maxBeatsPerScene: curatedPerfBeatsFloor(videoLength),
+      // maxBeatsPerScene comes from profile (computed from actual voiceover duration at compose
+      // time via sceneBeatCapForCadence). curatedPerfBeatsFloor used target duration which was
+      // always too short for videos where the voiceover runs longer than the target.
       enableArchival: false,
       enableNasa: false,
       enableMuskHeroFetch: false,
