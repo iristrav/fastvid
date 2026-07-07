@@ -573,16 +573,14 @@ async function _generateVideoWithAI(
     return;
   }
 
-  // Per-user render lock: max 1 active render per user at a time
+  // Per-user render lock: max 1 active render per user at a time — wait silently
   const videoRow0 = await getVideoById(videoId);
   const renderUserId = videoRow0?.userId;
   if (renderUserId) {
     const userSem = getUserRenderSemaphore(renderUserId);
     if (userSem.waiting > 0) {
       console.log(`[RenderLock] user ${renderUserId}: video ${videoId} waiting for previous render to finish`);
-      await updateVideoStatus(videoId, "queued", { progressStep: "⏳ Waiting for your previous video to finish..." });
     }
-    // Run inside the user semaphore — waits if another render is active for this user
     return userSem.run(() => _runVideoGeneration(videoId, prompt, videoLength, voiceId, customVoiceoverUrl, preloadedScript, preloadedTitle, preloadedMetadata, enableSubtitles));
   }
 
