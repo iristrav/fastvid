@@ -401,18 +401,15 @@ function providersToTry(primary: LlmProvider): LlmProvider[] {
 
   if (primary === "anthropic" && !anthropicAvailable) {
     push("groq");
-    push("openai");
   } else if (primary === "groq" && !groqAvailable) {
     push("anthropic");
-    push("openai");
   } else if (primary !== "none") {
     push(primary);
   }
 
   if (anthropicAvailable) push("anthropic");
   if (groqAvailable) push("groq");
-  // Only fall back to OpenAI when no other provider is available or was requested.
-  if (openAiAvailable && !anthropicAvailable && !groqAvailable) push("openai");
+  // OpenAI is disabled — quota is exhausted; Anthropic + Groq cover all tasks.
   return out;
 }
 
