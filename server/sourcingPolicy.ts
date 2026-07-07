@@ -712,10 +712,9 @@ export function sceneBeatCapForCadenceForVideo(
   videoLength?: string | null,
   beatSec?: number
 ): number {
-  const cadence = beatSec ?? archiveVisualBeatSecForVideo(videoLength);
-  if (isFastShortVideoLength(videoLength)) {
-    return Math.max(1, Math.min(Math.max(1, perfFloor), Math.ceil(sceneDurationSec / cadence)));
-  }
+  // Always use the standard cadence (archiveVisualBeatSec = 6s) so beat count scales
+  // with actual voiceover duration regardless of the configured target video length.
+  const cadence = beatSec ?? archiveVisualBeatSec();
   return sceneBeatCapForCadence(sceneDurationSec, perfFloor, cadence);
 }
 
