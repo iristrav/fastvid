@@ -1,4 +1,4 @@
-import { ENV, groqKeyFromEnv, llmApiKeyForProvider, openAiKeyFromEnv, resolveLlmProvider, type LlmProvider } from "./env";
+import { ENV, anthropicKeyFromEnv, groqKeyFromEnv, llmApiKeyForProvider, openAiKeyFromEnv, resolveLlmProvider, type LlmProvider } from "./env";
 
 export type Role = "system" | "user" | "assistant" | "tool" | "function";
 
@@ -280,6 +280,7 @@ const normalizeToolChoice = (
 const resolveApiUrl = (provider: LlmProvider) => {
   if (provider === "groq") return "https://api.groq.com/openai/v1/chat/completions";
   if (provider === "openai") return "https://api.openai.com/v1/chat/completions";
+  if (provider === "anthropic") return "https://api.anthropic.com/v1/messages";
   return ENV.forgeApiUrl && ENV.forgeApiUrl.trim().length > 0
     ? `${ENV.forgeApiUrl.replace(/\/$/, "")}/v1/chat/completions`
     : "https://forge.manus.im/v1/chat/completions";
@@ -299,6 +300,9 @@ function resolveModel(provider: LlmProvider, hasVision: boolean, maxTokens?: num
   }
   if (provider === "openai") {
     return process.env.LLM_MODEL?.trim() || "gpt-4o";
+  }
+  if (provider === "anthropic") {
+    return process.env.ANTHROPIC_MODEL?.trim() || "claude-haiku-4-5-20251001";
   }
   return process.env.FORGE_LLM_MODEL?.trim() || "gemini-2.5-flash";
 }
@@ -374,16 +378,20 @@ function providersToTry(primary: LlmProvider): LlmProvider[] {
   const out: LlmProvider[] = [];
   const groqAvailable = Boolean(groqKeyFromEnv()) && !isGroqInCooldown();
   const openAiAvailable = Boolean(openAiKeyFromEnv());
+  const anthropicAvailable = Boolean(anthropicKeyFromEnv());
 
   const push = (p: LlmProvider) => {
     if (p === "none" || out.includes(p)) return;
     if (p === "groq" && !groqAvailable) return;
     if (p === "openai" && !openAiAvailable) return;
+    if (p === "anthropic" && !anthropicAvailable) return;
     if (!llmApiKeyForProvider(p)) return;
     out.push(p);
   };
 
-  if (primary === "groq" && !groqAvailable && openAiAvailable) {
+  if (primary === "anthropic" && !anthropicAvailable) {
+    push("openai");
+  } else if (primary === "groq" && !groqAvailable && openAiAvailable) {
     push("openai");
   } else if (primary !== "none") {
     push(primary);
@@ -395,12 +403,86 @@ function providersToTry(primary: LlmProvider): LlmProvider[] {
 }
 
 const assertApiKey = () => {
-  if (!ENV.forgeApiKey && !groqKeyFromEnv() && !openAiKeyFromEnv()) {
+  if (!ENV.forgeApiKey && !groqKeyFromEnv() && !openAiKeyFromEnv() && !anthropicKeyFromEnv()) {
     throw new Error(
       "LLM API key is not configured. Set GROQ_API_KEY on Railway (free), or LLM_API_KEY / BUILT_IN_FORGE_API_KEY"
     );
   }
 };
+
+/** Call Anthropic Messages API — different format from OpenAI-compatible APIs. */
+async function invokeAnthropic(
+  messages: Message[],
+  apiKey: string,
+  model: string,
+  maxTokens: number,
+  wantsJson?: boolean,
+): Promise<InvokeResult> {
+  const systemMessages = messages.filter((m) => m.role === "system");
+  const nonSystemMessages = messages.filter((m) => m.role !== "system");
+
+  const systemParts = systemMessages
+    .map((m) => (typeof m.content === "string" ? m.content : Array.isArray(m.content) ? m.content.map((c) => (typeof c === "string" ? c : "text" in c ? c.text : "")).join("\n") : ""));
+  if (wantsJson) systemParts.push("Respond with valid JSON only. No markdown, no explanation.");
+  const systemText = systemParts.join("\n\n");
+
+  const anthropicMessages = nonSystemMessages.map((m) => ({
+    role: m.role === "assistant" ? "assistant" : "user",
+    content: typeof m.content === "string"
+      ? m.content
+      : Array.isArray(m.content)
+        ? m.content.map((c) => {
+            if (typeof c === "string") return { type: "text", text: c };
+            if ("text" in c) return { type: "text", text: c.text };
+            return { type: "text", text: "" };
+          })
+        : String(m.content),
+  }));
+
+  const payload: Record<string, unknown> = {
+    model,
+    max_tokens: maxTokens,
+    messages: anthropicMessages,
+  };
+  if (systemText) payload.system = systemText;
+
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Anthropic API error ${response.status}: ${errorText}`);
+  }
+
+  const data = await response.json() as {
+    id: string;
+    content: Array<{ type: string; text: string }>;
+    model: string;
+    usage: { input_tokens: number; output_tokens: number };
+    stop_reason: string;
+  };
+
+  // Convert Anthropic response to OpenAI-compatible InvokeResult
+  const text = data.content.filter((c) => c.type === "text").map((c) => c.text).join("");
+  return {
+    choices: [{
+      message: { role: "assistant", content: text },
+      finish_reason: data.stop_reason === "end_turn" ? "stop" : data.stop_reason,
+    }],
+    usage: {
+      prompt_tokens: data.usage.input_tokens,
+      completion_tokens: data.usage.output_tokens,
+      total_tokens: data.usage.input_tokens + data.usage.output_tokens,
+    },
+  } as unknown as InvokeResult;
+}
 
 const normalizeResponseFormat = ({
   responseFormat,
@@ -478,6 +560,21 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
     const provider = chain[i]!;
     const apiKey = llmApiKeyForProvider(provider);
     if (!apiKey) continue;
+
+    // Anthropic uses a completely different API format
+    if (provider === "anthropic") {
+      try {
+        const model = resolveModel(provider, hasVision, maxTokens);
+        const wantsJson = !!(responseFormat ?? response_format ?? outputSchema ?? output_schema);
+        const result = await invokeAnthropic(messages, apiKey, model, maxTokens ?? 8192, wantsJson);
+        if (i > 0) console.log(`[LLM] Succeeded via anthropic after ${chain[0]} failure`);
+        return result;
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        console.warn(`[LLM] Anthropic failed:`, lastError.message);
+        continue;
+      }
+    }
 
     let normalizedMessages = messages.map(normalizeMessage);
     if (provider === "groq") {

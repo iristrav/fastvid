@@ -5,7 +5,7 @@
 //
 // Railway deployment: BUILT_IN_FORGE_API_KEY is not available on Railway.
 // Railway: use LLM_API_KEY (OpenAI) by default; Groq optional via GROQ_API_KEY or LLM_PROVIDER=groq.
-export type LlmProvider = "forge" | "groq" | "openai" | "none";
+export type LlmProvider = "forge" | "groq" | "openai" | "anthropic" | "none";
 
 /** Read Groq key — GROQ_API_KEY, GROQ_KEY, any *GROQ* env var, or gsk_* in LLM_API_KEY. */
 export function groqKeyFromEnv(): string {
@@ -45,6 +45,10 @@ export function resolveLlmProvider(): LlmProvider {
   return "none";
 }
 
+export function anthropicKeyFromEnv(): string {
+  return process.env.ANTHROPIC_API_KEY?.trim() ?? "";
+}
+
 export function llmApiKeyForProvider(provider: LlmProvider): string {
   switch (provider) {
     case "forge":
@@ -53,6 +57,8 @@ export function llmApiKeyForProvider(provider: LlmProvider): string {
       return groqKeyFromEnv();
     case "openai":
       return openAiKeyFromEnv();
+    case "anthropic":
+      return anthropicKeyFromEnv();
     default:
       return "";
   }
