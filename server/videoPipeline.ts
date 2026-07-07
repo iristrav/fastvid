@@ -5204,21 +5204,42 @@ async function generateColorFallback(
     `${FFMPEG_BIN} -y -f lavfi -i "color=c=black:s=640x360:r=25" -t ${safeDuration} -c:v mpeg4 -q:v 8 -an "${out}"`,
   ];
 
+  // Disk-space check before any FFmpeg attempt
+  try {
+    const { stdout: dfOut } = await withTimeout(exec(`df -h "${workDir}" 2>&1 || df -h /var/tmp 2>&1 || df -h /tmp 2>&1`), 5_000, "df");
+    console.log(`[Pipeline] Scene ${sceneIndex}: disk space: ${dfOut.trim().split("\n").slice(-1)[0]}`);
+  } catch { /* ignore */ }
+
   for (let i = 0; i < commands.length; i++) {
     try {
       if (fs.existsSync(out)) {
         try { fs.unlinkSync(out); } catch { /* ignore */ }
       }
-      await withTimeout(exec(commands[i]), 45_000, `Fallback video scene ${sceneIndex} attempt ${i + 1}`);
+      const { stderr } = await withTimeout(exec(commands[i]), 45_000, `Fallback video scene ${sceneIndex} attempt ${i + 1}`);
       if (await isValidVideoFile(out)) {
         console.log(`[Pipeline] Scene ${sceneIndex}: fallback video OK (${(fs.statSync(out).size / 1024).toFixed(0)}KB, attempt ${i + 1})`);
         return out;
       }
-      console.warn(`[Pipeline] Scene ${sceneIndex}: fallback attempt ${i + 1} produced unreadable file`);
+      console.warn(`[Pipeline] Scene ${sceneIndex}: fallback attempt ${i + 1} produced unreadable file — stderr: ${String(stderr).slice(-400)}`);
     } catch (err) {
       const msg = (err as Error).message ?? String(err);
-      console.warn(`[Pipeline] Scene ${sceneIndex}: fallback attempt ${i + 1} failed: ${msg.slice(0, 300)}`);
+      console.warn(`[Pipeline] Scene ${sceneIndex}: fallback attempt ${i + 1} failed: ${msg.slice(0, 500)}`);
     }
+  }
+
+  // Last resort: write a minimal valid MP4 from a static image using Node.js Buffer
+  // (no FFmpeg dependency — just header bytes for a 1-frame black video)
+  try {
+    const minimalCmd =
+      `${FFMPEG_BIN} -y -f rawvideo -video_size 320x180 -pixel_format yuv420p -framerate 1 ` +
+      `-i /dev/zero -t ${Math.min(safeDuration, 30)} -c:v mpeg4 -q:v 10 "${out}"`;
+    await withTimeout(exec(minimalCmd), 30_000, `Fallback video scene ${sceneIndex} minimal`);
+    if (await isValidVideoFile(out)) {
+      console.log(`[Pipeline] Scene ${sceneIndex}: minimal fallback OK`);
+      return out;
+    }
+  } catch (err) {
+    console.warn(`[Pipeline] Scene ${sceneIndex}: minimal fallback failed: ${(err as Error).message?.slice(0, 200)}`);
   }
 
   throw pipelineError(PIPELINE_ERROR.FFMPEG, `Scene ${sceneIndex}: all color-fallback attempts failed (duration=${rawDuration}s, workDir=${workDir})`);
