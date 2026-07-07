@@ -310,6 +310,9 @@ function resolveModel(provider: LlmProvider, hasVision: boolean, maxTokens?: num
 /** Groq daily quota hit — skip retries and prefer OpenAI for subsequent calls. */
 let groqCooldownUntilMs = 0;
 
+/** OpenAI quota exhausted — skip for remainder of process lifetime. */
+let openAiQuotaExhausted = false;
+
 export function isGroqInCooldown(): boolean {
   return Date.now() < groqCooldownUntilMs;
 }
@@ -368,6 +371,13 @@ function isOpenAiQuotaError(status: number, body: string): boolean {
   );
 }
 
+function markOpenAiQuotaExhausted(body: string): void {
+  if (isOpenAiQuotaError(429, body) || isOpenAiQuotaError(402, body)) {
+    openAiQuotaExhausted = true;
+    console.warn("[LLM] OpenAI quota exhausted — skipping OpenAI for remainder of process lifetime.");
+  }
+}
+
 function shouldFallbackToNextProvider(status: number, body: string): boolean {
   if (isRateLimitError(status)) return true;
   if (isOpenAiQuotaError(status, body)) return true;
@@ -377,7 +387,7 @@ function shouldFallbackToNextProvider(status: number, body: string): boolean {
 function providersToTry(primary: LlmProvider): LlmProvider[] {
   const out: LlmProvider[] = [];
   const groqAvailable = Boolean(groqKeyFromEnv()) && !isGroqInCooldown();
-  const openAiAvailable = Boolean(openAiKeyFromEnv());
+  const openAiAvailable = Boolean(openAiKeyFromEnv()) && !openAiQuotaExhausted;
   const anthropicAvailable = Boolean(anthropicKeyFromEnv());
 
   const push = (p: LlmProvider) => {
@@ -646,6 +656,9 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
 
       if (provider === "groq" && isRateLimitError(response.status)) {
         markGroqCooldown(errorText);
+      }
+      if (provider === "openai") {
+        markOpenAiQuotaExhausted(errorText);
       }
 
       const retryAfterSec = parseRetryAfterSeconds(errorText);
