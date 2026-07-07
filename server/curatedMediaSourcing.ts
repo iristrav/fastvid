@@ -313,8 +313,17 @@ export function buildBeatMatchTags(
   const visualDescription = asVideoTitleString(coerceVisionString(anchored.visualDescription));
   const videoVisualTopic = inferVideoVisualTopic(titleStr, [beatText, sceneText].join(" "));
   const topicAnchors = extractTopicAnchorTags(titleStr, [beatText, sceneText].join(" "));
-  const hasLiteralVisual = Boolean(visualDescription.trim() || searchQuery.trim());
-  const visualSource = visualDescription.trim() || searchQuery.trim() || beatText;
+  // English-only sources: pexelsQueries (LLM), visualDescription, searchQuery, keywords.
+  // beatText is Dutch narration — never tokenize it directly for archive tag matching.
+  const pexelsTokens = normalizeMediaTags(
+    (beat.pexelsQueries ?? []).flatMap((q) => tokenizeBeatText(q))
+  );
+  const englishSource = visualDescription.trim() || searchQuery.trim();
+  const hasLiteralVisual = Boolean(englishSource);
+  // visualSource stays English — beatText is excluded
+  const visualSource = englishSource ||
+    (beat.pexelsQueries ?? []).join(" ") ||
+    anchored.keywords.map((k) => coerceVisionString(k)).join(" ");
   const visualTags = extractVisualSearchTags(visualSource, videoTitle);
   const visualAnchor = extractPrimaryVisualAnchor(visualSource);
   const anchorTokens = visualAnchor ? tokenizeBeatText(visualAnchor) : [];
@@ -329,29 +338,22 @@ export function buildBeatMatchTags(
   ]
     .filter(Boolean)
     .join(" ");
-  const sentenceTags = tokenizeBeatText(
-    visualDescription.trim() || searchQuery.trim() || beatText
-  );
+  const sentenceTags = tokenizeBeatText(englishSource || beatRaw);
   const queryTokens = searchQuery.trim() ? tokenizeBeatText(searchQuery) : [];
-  // pexelsQueries are LLM-generated English queries — strongest signal for archive matching
-  const pexelsTokens = normalizeMediaTags(
-    (beat.pexelsQueries ?? []).flatMap((q) => tokenizeBeatText(q))
-  );
   const beatTags = normalizeMediaTags([
     ...pexelsTokens,
-    ...pexelsTokens, // double-weight: these are the best English search terms
+    ...pexelsTokens, // double-weight: strongest English signal
     ...queryTokens,
     ...queryTokens,
     ...anchorTokens,
     ...sentenceTags,
-    ...(hasLiteralVisual
-      ? []
-      : tokenizeBeatText(beatRaw).filter((t) => !topicAnchors.includes(t) || beatText.toLowerCase().includes(t))),
+    ...(hasLiteralVisual ? [] : tokenizeBeatText(beatRaw)),
   ]).slice(0, 20);
-  const sceneTags = tokenizeBeatText([sceneText, coerceVisionString(scene.pexelsQuery)].join(" "));
+  // scene tags: use pexelsQuery (English) not sceneText (may be Dutch)
+  const sceneTags = tokenizeBeatText(coerceVisionString(scene.pexelsQuery));
   const mergedBeat = normalizeMediaTags([
     ...beatTags,
-    ...(hasLiteralVisual ? [] : sceneTags.filter((t) => beatText.toLowerCase().includes(t))),
+    ...(hasLiteralVisual ? [] : sceneTags),
   ]).slice(0, 16);
   const beatLower = beatText.toLowerCase();
   const scopedTopicAnchors = topicAnchors.filter(
