@@ -21367,7 +21367,9 @@ async function concatenateScenesWithMusic(
   customMusicPath?: string | null,
   videoLength?: string,
   concatTimeoutMs = 120_000,
-  musicMixTimeoutMs = 180_000
+  musicMixTimeoutMs = 180_000,
+  cinematicAmbientPath?: string | null,
+  dominantEmotion?: string
 ): Promise<string> {
   const fastShort = isFastShortVideoLength(videoLength);
   const listFile = path.join(workDir, "concat_list.txt");
@@ -21450,41 +21452,76 @@ async function concatenateScenesWithMusic(
   console.log(`[Pipeline] Concat has audio: ${concatHasAudio}`);
 
   if (concatHasAudio) {
-    // Normal path: mix voiceover audio with background music
-    // VO at 100%, ambient music at 18% (like reference video: -20dB to -25dB relative)
-    try {
-      await withTimeout(
-        exec(
-          `${FFMPEG_BIN} -y -i "${concatPath}" -i "${musicPath}" ` +
-          // Dynamic ducking: music drops to 8% under voiceover, rises to 22% during pauses
-          // sidechaincompress: music is compressed when VO is present (attack=5ms, release=200ms)
-          // This matches the reference video: VO always dominant, music swells in pauses
-          `-filter_complex "[0:a]volume=1.0,asplit=2[voice][voicedet];[1:a]volume=0.22,aloop=loop=-1:size=2e+09[musicloop];[musicloop][voicedet]sidechaincompress=threshold=0.02:ratio=8:attack=5:release=200:makeup=1[music_ducked];[voice][music_ducked]amix=inputs=2:duration=first:dropout_transition=3[aout]" ` +
-          `-map "0:v" -map "[aout]" ` +
-          `-c:v copy -c:a aac -b:a 320k -movflags +faststart "${outputPath}"`
-        ),
-        musicMixTimeoutMs,
-        "Background music mixing"
-      );
-    } catch (err) {
-      console.warn("[Pipeline] Audio mixing failed, trying without aloop:", err);
+    // Normal path: mix voiceover audio with background music (+ optional cinematic ambient)
+    const hasAmbient = cinematicAmbientPath && fs.existsSync(cinematicAmbientPath);
+
+    if (hasAmbient) {
+      // 3-layer mix: voice + music + cinematic ambient with sidechain ducking
+      const { buildCinematicAudioFilter } = await import("./cinematicAudio/index");
+      const ambientFilter = buildCinematicAudioFilter(dominantEmotion ?? "neutral");
       try {
         await withTimeout(
           exec(
-            `${FFMPEG_BIN} -y -i "${concatPath}" -i "${musicPath}" ` +
-            `-filter_complex "[0:a]volume=1.0[voice];[1:a]volume=0.12[music];[voice][music]amix=inputs=2:duration=first:dropout_transition=3[aout]" ` +
+            `${FFMPEG_BIN} -y -i "${concatPath}" -i "${musicPath}" -i "${cinematicAmbientPath}" ` +
+            `-filter_complex "${ambientFilter}" ` +
             `-map "0:v" -map "[aout]" ` +
             `-c:v copy -c:a aac -b:a 320k -movflags +faststart "${outputPath}"`
           ),
           musicMixTimeoutMs,
-          "Background music mixing (no loop)"
+          "Cinematic audio mixing"
         );
-      } catch (err2) {
-        console.warn("[Pipeline] Audio mixing failed completely, copying video:", err2);
+        console.log("[CinematicAudio] 3-layer mix complete (voice + music + ambient)");
+      } catch (err) {
+        console.warn("[CinematicAudio] 3-layer mix failed, falling back to 2-layer:", (err as Error).message?.slice(0, 100));
+        hasAmbient && null; // swallow — fall through to standard mix below
+        goto_standard_mix: {
+          try {
+            await withTimeout(
+              exec(
+                `${FFMPEG_BIN} -y -i "${concatPath}" -i "${musicPath}" ` +
+                `-filter_complex "[0:a]volume=1.0,asplit=2[voice][voicedet];[1:a]volume=0.22,aloop=loop=-1:size=2e+09[musicloop];[musicloop][voicedet]sidechaincompress=threshold=0.02:ratio=8:attack=5:release=200:makeup=1[music_ducked];[voice][music_ducked]amix=inputs=2:duration=first:dropout_transition=3[aout]" ` +
+                `-map "0:v" -map "[aout]" -c:v copy -c:a aac -b:a 320k -movflags +faststart "${outputPath}"`
+              ),
+              musicMixTimeoutMs,
+              "Background music mixing (fallback)"
+            );
+          } catch { /* handled below */ }
+          break goto_standard_mix;
+        }
+      }
+    } else {
+      // Standard 2-layer mix: voice + music with sidechain ducking
+      try {
         await withTimeout(
-          exec(`${FFMPEG_BIN} -y -i "${concatPath}" -c copy -movflags +faststart "${outputPath}"`),
-          Math.round(musicMixTimeoutMs * 0.3), "Copy concat as output"
+          exec(
+            `${FFMPEG_BIN} -y -i "${concatPath}" -i "${musicPath}" ` +
+            `-filter_complex "[0:a]volume=1.0,asplit=2[voice][voicedet];[1:a]volume=0.22,aloop=loop=-1:size=2e+09[musicloop];[musicloop][voicedet]sidechaincompress=threshold=0.02:ratio=8:attack=5:release=200:makeup=1[music_ducked];[voice][music_ducked]amix=inputs=2:duration=first:dropout_transition=3[aout]" ` +
+            `-map "0:v" -map "[aout]" ` +
+            `-c:v copy -c:a aac -b:a 320k -movflags +faststart "${outputPath}"`
+          ),
+          musicMixTimeoutMs,
+          "Background music mixing"
         );
+      } catch (err) {
+        console.warn("[Pipeline] Audio mixing failed, trying without aloop:", err);
+        try {
+          await withTimeout(
+            exec(
+              `${FFMPEG_BIN} -y -i "${concatPath}" -i "${musicPath}" ` +
+              `-filter_complex "[0:a]volume=1.0[voice];[1:a]volume=0.12[music];[voice][music]amix=inputs=2:duration=first:dropout_transition=3[aout]" ` +
+              `-map "0:v" -map "[aout]" ` +
+              `-c:v copy -c:a aac -b:a 320k -movflags +faststart "${outputPath}"`
+            ),
+            musicMixTimeoutMs,
+            "Background music mixing (no loop)"
+          );
+        } catch (err2) {
+          console.warn("[Pipeline] Audio mixing failed completely, copying video:", err2);
+          await withTimeout(
+            exec(`${FFMPEG_BIN} -y -i "${concatPath}" -c copy -movflags +faststart "${outputPath}"`),
+            Math.round(musicMixTimeoutMs * 0.3), "Copy concat as output"
+          );
+        }
       }
     }
   } else {
@@ -23150,6 +23187,38 @@ export async function runVideoPipeline(
     _activeBudgetTracker?.stageStart("concat", _activeRenderBudget?.concatMs ?? 120_000);
     const totalDuration =
       scenes.reduce((sum, s) => sum + s.duration, 0) + chapterCardCount * CHAPTER_CARD_DURATION;
+
+    // ── Cinematic audio: generate ambient track before final concat ──────────
+    let cinematicAmbientPath: string | null = null;
+    let dominantEmotion = "neutral";
+    try {
+      const { cinematicAudioEnabled, planVideoAudio, generateCinematicAmbientTrack } = await import("./cinematicAudio/index");
+      if (cinematicAudioEnabled()) {
+        const soundPlan = planVideoAudio(
+          scenes.map((s, i) => ({
+            index: i,
+            text: s.text ?? "",
+            visualCue: (s as any).visualCue ?? (s as any).pexelsQuery ?? "",
+            pexelsQuery: (s as any).pexelsQuery ?? "",
+            duration: s.duration,
+            beats: (s as any).beats ?? [],
+          })),
+          videoTitle
+        );
+        dominantEmotion = soundPlan.scenes[0]?.emotion ?? "neutral";
+        cinematicAmbientPath = await generateCinematicAmbientTrack(
+          soundPlan,
+          scenes.map(s => s.duration),
+          workDir
+        );
+        if (cinematicAmbientPath) {
+          console.log(`[CinematicAudio] Ambient track ready for final mix (emotion: ${dominantEmotion})`);
+        }
+      }
+    } catch (err) {
+      console.warn("[CinematicAudio] Ambient track generation failed (non-fatal):", (err as Error).message?.slice(0, 120));
+    }
+
     let finalVideoPath = await timePipelineStep(
       pipelineStepTiming,
       "video_rendering",
@@ -23164,7 +23233,9 @@ export async function runVideoPipeline(
           undefined,
           videoLength,
           renderBudgetConcatMs,
-          _activeRenderBudget?.musicMixMs ?? 180_000
+          _activeRenderBudget?.musicMixMs ?? 180_000,
+          cinematicAmbientPath,
+          dominantEmotion
         );
         if (isShortVideoLength(videoLength)) {
           const targetSec = videoLength === "1" ? 58 : 118;
