@@ -7,9 +7,11 @@
 
 export class Semaphore {
   private _available: number;
+  private _max: number;
   private _queue: Array<() => void> = [];
 
   constructor(max: number) {
+    this._max = max;
     this._available = max;
   }
 
@@ -46,7 +48,7 @@ export class Semaphore {
   }
 
   get active(): number {
-    return (this as unknown as { _max: number })._max - this._available;
+    return this._max - this._available;
   }
 }
 

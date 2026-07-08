@@ -24,12 +24,32 @@
 import path from "path";
 import type { VideoBlueprint, VisualBudgetTracker, BeatVisualDirective } from "./masterDocumentaryDirector";
 import { getBlueprintDirective, isBudgetExceeded, recordBudgetUsage } from "./masterDocumentaryDirector";
+import type { ClipAnnotation } from "../drizzle/annotationTypes";
 
 // ─── Feature flag ─────────────────────────────────────────────────────────────
 
 export function assetDirectorEnabled(): boolean {
   return process.env.ASSET_DIRECTOR_ENABLED !== "false";
 }
+
+// ─── Per-candidate metadata (annotation + editorial score) ────────────────────
+
+/**
+ * Rich metadata for one candidate clip, combining ClipAnnotation fields
+ * with the editorial score stored in media_archive_assets.
+ * Callers (videoPipeline.ts) populate this from the DB row when available;
+ * AssetDirector falls back to path-heuristics when absent.
+ */
+export type CandidateMeta = {
+  /** Archive asset DB id — used to key this map */
+  assetId?: number;
+  annotation?: ClipAnnotation | null;
+  /** editorialScore.total from annotation (0–100), or null when not yet annotated */
+  editorialScore?: number | null;
+  /** storyboard / rhythm planner data */
+  plannerShotType?: string | null;
+  plannerMotionTarget?: number | null;
+};
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -54,6 +74,8 @@ export type AssetDirectorContext = {
   activeEra?: string | null;
   /** Target motion level 0-100 for this beat (from visualRhythmEngine) */
   targetMotionLevel?: number | null;
+  /** Planned shot type from EditorialSequencePlanner storyboard, e.g. "wide establishing shot" */
+  plannedShotType?: string | null;
   /** How many callbacks have already been placed for each motif */
   callbacksPlaced: Map<string, number>;
 };
@@ -129,34 +151,71 @@ function inferVisualTypeFromPath(clipPath: string): string {
   return "live_footage";
 }
 
-// Infer approximate motion level from filename/path (0–100)
-function inferMotionFromPath(clipPath: string): number | null {
+// Infer approximate motion level from annotation or filename/path (0–100)
+function inferMotionLevel(clipPath: string, meta?: CandidateMeta): number | null {
+  if (meta?.annotation?.motionLevel != null) return meta.annotation.motionLevel;
   const base = path.basename(clipPath).toLowerCase();
   if (FALLBACK_RE.test(base)) return 0;
   if (MAP_RE.test(base) || ARCHIVAL_RE.test(base)) return 15;
   if (AI_RE.test(clipPath.toLowerCase())) return 60;
   if (WIDE_RE.test(base)) return 50;
   if (CLOSE_RE.test(base)) return 30;
-  return null; // unknown
+  return null;
 }
 
 // ─── Individual signal scorers (0–100 each) ───────────────────────────────────
 
-/** Keyword / narration match against filename + path tokens */
-function scoreSemanticRelevance(clipPath: string, beatText: string): number {
-  const base = path.basename(clipPath).toLowerCase().replace(/[_.-]/g, " ");
+/**
+ * Semantic relevance — uses annotation fields (persons, objects, actions, event,
+ * period, topicAffinity) when available; falls back to filename keyword matching.
+ */
+function scoreSemanticRelevance(clipPath: string, beatText: string, meta?: CandidateMeta): number {
   const words = beatText.toLowerCase().split(/\s+/).filter((w) => w.length > 3);
   if (words.length === 0) return 50;
+
+  const ann = meta?.annotation;
+  if (ann) {
+    // Build a rich semantic document from annotation fields
+    const annTokens = [
+      ...ann.persons.named,
+      ...ann.persons.categories,
+      ...ann.objects,
+      ...ann.actions,
+      ann.historicalContext.event,
+      ann.historicalContext.period,
+      ann.historicalContext.year,
+      ann.historicalContext.decade,
+      ann.location.country,
+      ann.location.city,
+      ann.location.region,
+      ann.environment.setting,
+      ann.emotion,
+      ...ann.usageHints.topicAffinity,
+    ].join(" ").toLowerCase();
+
+    const matchCount = words.filter((w) => annTokens.includes(w)).length;
+    // Annotation-based match is high-quality — score 40–100
+    return Math.round(40 + (matchCount / words.length) * 60);
+  }
+
+  // Fallback: filename keyword match
+  const base = path.basename(clipPath).toLowerCase().replace(/[_.-]/g, " ");
   const matchCount = words.filter((w) => base.includes(w)).length;
   return Math.round(30 + (matchCount / words.length) * 70);
 }
 
-/** Bonus when clip path matches the blueprint's planned visual type for this beat */
-function scoreBlueprintMatch(clipPath: string, directive: BeatVisualDirective | null): number {
-  if (!directive) return 50; // neutral when no blueprint
-  const inferred = inferVisualTypeFromPath(clipPath);
+/** Bonus when clip matches the blueprint's planned visual type for this beat */
+function scoreBlueprintMatch(
+  clipPath: string,
+  directive: BeatVisualDirective | null,
+  meta?: CandidateMeta
+): number {
+  if (!directive) return 50;
+  // Prefer annotation visualStyle over path-heuristics
+  const inferred = meta?.annotation?.cinematography?.visualStyle
+    ? mapVisualStyleToType(meta.annotation.cinematography.visualStyle)
+    : inferVisualTypeFromPath(clipPath);
   if (inferred === directive.visualType) return 100;
-  // Partial match for related types
   const CLOSE_FAMILY: Record<string, string[]> = {
     archive_video: ["archive_photo", "archival"],
     archive_photo: ["archive_video", "archival"],
@@ -167,6 +226,15 @@ function scoreBlueprintMatch(clipPath: string, directive: BeatVisualDirective | 
   const family = CLOSE_FAMILY[directive.visualType] ?? [];
   if (family.includes(inferred)) return 70;
   return 25;
+}
+
+function mapVisualStyleToType(style: string): string {
+  const s = style.toLowerCase();
+  if (s === "archival" || s === "newsreel" || s === "black and white" || s === "sepia") return "archive_video";
+  if (s === "illustration" || s === "map" || s === "animation") return "archive_photo";
+  if (s === "drone") return "aerial";
+  if (s === "documentary" || s === "modern") return "live_footage";
+  return s;
 }
 
 /** Penalty when the clip's visual type has exceeded the blueprint budget */
@@ -189,72 +257,151 @@ function scoreDiversityBonus(clipPath: string, usedPaths: Set<string>, usedCateg
   return 15; // heavily penalize over-used category
 }
 
-/** Bonus when a clip contains the active entity name in its filename/tags */
-function scoreEntityContinuity(clipPath: string, activeEntity: string | null | undefined): number {
-  if (!activeEntity || activeEntity.length < 3) return 50; // neutral
-  const base = path.basename(clipPath).toLowerCase();
+/** Bonus when a clip contains the active entity — uses annotation.persons when available */
+function scoreEntityContinuity(
+  clipPath: string,
+  activeEntity: string | null | undefined,
+  meta?: CandidateMeta
+): number {
+  if (!activeEntity || activeEntity.length < 3) return 50;
   const entityTokens = activeEntity.toLowerCase().split(/\s+/);
+
+  if (meta?.annotation) {
+    const namedPersons = meta.annotation.persons.named.map((p) => p.toLowerCase());
+    const matchCount = entityTokens.filter((t) => namedPersons.some((p) => p.includes(t))).length;
+    if (matchCount === entityTokens.length) return 100;
+    if (matchCount > 0) return 75;
+    // Entity not in annotation persons — strong signal against this clip
+    return 20;
+  }
+
+  // Fallback: filename match
+  const base = path.basename(clipPath).toLowerCase();
   const matchCount = entityTokens.filter((t) => base.includes(t)).length;
   if (matchCount === entityTokens.length) return 100;
   if (matchCount > 0) return 70;
   return 30;
 }
 
-/** Penalty when clip location doesn't match the active narration location */
-function scoreLocationContinuity(clipPath: string, activeLocation: string | null | undefined): number {
+/** Location continuity — uses annotation.location when available */
+function scoreLocationContinuity(
+  clipPath: string,
+  activeLocation: string | null | undefined,
+  meta?: CandidateMeta
+): number {
   if (!activeLocation || activeLocation.length < 3) return 50;
-  const combined = (path.basename(clipPath) + " " + clipPath).toLowerCase();
   const loc = activeLocation.toLowerCase();
+
+  if (meta?.annotation) {
+    const ann = meta.annotation;
+    const locFields = [ann.location.country, ann.location.city, ann.location.region, ann.location.continent]
+      .join(" ").toLowerCase();
+    if (locFields.includes(loc)) return 100;
+    // Location explicitly known but doesn't match
+    if (ann.location.confidence === "high" || ann.location.confidence === "medium") return 20;
+    return 50; // uncertain — neutral
+  }
+
+  const combined = (path.basename(clipPath) + " " + clipPath).toLowerCase();
   if (combined.includes(loc)) return 100;
-  // Neutral if no location info in path
   return 50;
 }
 
-/** Bonus when clip metadata era matches the active narration period */
-function scoreEraContinuity(clipPath: string, activeEra: string | null | undefined): number {
+/** Era continuity — uses annotation.historicalContext when available */
+function scoreEraContinuity(
+  clipPath: string,
+  activeEra: string | null | undefined,
+  meta?: CandidateMeta
+): number {
   if (!activeEra) return 50;
-  const combined = (path.basename(clipPath) + " " + clipPath).toLowerCase();
   const era = activeEra.toLowerCase();
+
+  if (meta?.annotation) {
+    const hc = meta.annotation.historicalContext;
+    const eraFields = [hc.year, hc.decade, hc.century, hc.period, hc.event].join(" ").toLowerCase();
+    if (eraFields.includes(era)) return 100;
+    const decade = era.replace(/\d$/, "0");
+    if (eraFields.includes(decade)) return 75;
+    // Historical context known but mismatches — penalize
+    if (hc.year || hc.decade) return 25;
+    return 50;
+  }
+
+  const combined = (path.basename(clipPath) + " " + clipPath).toLowerCase();
   if (combined.includes(era)) return 100;
-  // Try just the decade/century
   const decade = era.replace(/\d$/, "0");
   if (combined.includes(decade)) return 75;
   return 50;
 }
 
 /**
- * Shot variety: penalize when the same shot type appears too many consecutive times
- * in the current scene.
+ * Shot variety: penalize when the same shot type appears too many consecutive times.
+ * Uses annotation.cinematography.shotType when available.
  */
-function scoreShotVariety(clipPath: string, beatText: string, sceneAdoptedClips: string[]): number {
-  if (sceneAdoptedClips.length === 0) return 70; // first clip in scene, neutral
-  const myType = inferShotType(clipPath, beatText);
-  // Count consecutive same type at end of scene
+function scoreShotVariety(
+  clipPath: string,
+  beatText: string,
+  sceneAdoptedClips: string[],
+  meta?: CandidateMeta,
+  plannedShotType?: string | null
+): number {
+  if (sceneAdoptedClips.length === 0) return 70;
+  const myType = meta?.annotation?.cinematography?.shotType ?? inferShotType(clipPath, beatText);
+  // Bonus when clip matches the storyboard's planned shot type
+  if (plannedShotType && myType.toLowerCase().includes(plannedShotType.toLowerCase().split(" ")[0]!)) {
+    // Planned type match overrides consecutive penalty by 1 level
+  }
   let consecutive = 0;
   for (let i = sceneAdoptedClips.length - 1; i >= 0; i--) {
     if (inferShotType(sceneAdoptedClips[i]!, beatText) === myType) consecutive++;
     else break;
   }
-  if (consecutive === 0) return 100; // breaks the run
-  if (consecutive === 1) return 70;  // second of same, acceptable
-  if (consecutive === 2) return 40;  // third — discourage
-  return 10;                          // 4+ same in a row — strong penalty
+  if (consecutive === 0) return 100;
+  if (consecutive === 1) return 70;
+  if (consecutive === 2) return 40;
+  return 10;
 }
 
-/** Motion energy arc: reward clips whose motion level follows the planned energy gradient */
+/** Motion energy arc — uses annotation.motionLevel when available */
 function scoreEnergyArc(
   clipPath: string,
-  targetMotionLevel: number | null | undefined
+  targetMotionLevel: number | null | undefined,
+  meta?: CandidateMeta
 ): number {
   if (targetMotionLevel == null) return 50;
-  const inferred = inferMotionFromPath(clipPath);
-  if (inferred === null) return 50; // unknown
+  const inferred = inferMotionLevel(clipPath, meta);
+  if (inferred === null) return 50;
   const diff = Math.abs(inferred - targetMotionLevel);
   if (diff <= 10) return 100;
   if (diff <= 20) return 80;
   if (diff <= 35) return 60;
   if (diff <= 50) return 40;
   return 20;
+}
+
+/** Motion type match (distinct from energy arc): uses annotation.cinematography.cameraMovement */
+function scoreMotionMatch(
+  clipPath: string,
+  targetMotionLevel: number | null | undefined,
+  meta?: CandidateMeta
+): number {
+  if (meta?.annotation?.cinematography?.cameraMovement) {
+    const movement = meta.annotation.cinematography.cameraMovement.toLowerCase();
+    if (targetMotionLevel == null) return 50;
+    // Map camera movement to motion proxy
+    const movementMotion: Record<string, number> = {
+      static: 5, handheld: 40, pan: 35, tilt: 30,
+      zoom: 45, dolly: 55, crane: 65, tracking: 70, drone: 80, orbit: 75,
+    };
+    const motionProxy = movementMotion[movement] ?? 50;
+    const diff = Math.abs(motionProxy - targetMotionLevel);
+    if (diff <= 15) return 100;
+    if (diff <= 30) return 70;
+    if (diff <= 50) return 40;
+    return 20;
+  }
+  // Fallback: same proxy as energy arc but uses editorial score as tiebreaker
+  return scoreEnergyArc(clipPath, targetMotionLevel, meta);
 }
 
 /** Callback support: bonus when this clip matches a planned visual callback motif */
@@ -298,25 +445,25 @@ function scoreCandidate(
   beatText: string,
   sceneIndex: number,
   ctx: AssetDirectorContext,
-  directive: BeatVisualDirective | null
+  directive: BeatVisualDirective | null,
+  meta?: CandidateMeta
 ): AssetScore {
   const reasons: string[] = [];
 
-  const semantic         = scoreSemanticRelevance(clipPath, beatText);
-  const blueprintMatch   = scoreBlueprintMatch(clipPath, directive);
+  const semantic         = scoreSemanticRelevance(clipPath, beatText, meta);
+  const blueprintMatch   = scoreBlueprintMatch(clipPath, directive, meta);
   const diversityBonus   = scoreDiversityBonus(clipPath, ctx.usedPaths, ctx.usedCategories);
-  const entityContinuity = scoreEntityContinuity(clipPath, ctx.activeEntity);
-  const locationCont     = scoreLocationContinuity(clipPath, ctx.activeLocation);
-  const eraCont          = scoreEraContinuity(clipPath, ctx.activeEra);
-  const shotVariety      = scoreShotVariety(clipPath, beatText, ctx.sceneAdoptedClips);
-  const energyArc        = scoreEnergyArc(clipPath, ctx.targetMotionLevel);
+  const entityContinuity = scoreEntityContinuity(clipPath, ctx.activeEntity, meta);
+  const locationCont     = scoreLocationContinuity(clipPath, ctx.activeLocation, meta);
+  const eraCont          = scoreEraContinuity(clipPath, ctx.activeEra, meta);
+  const shotVariety      = scoreShotVariety(clipPath, beatText, ctx.sceneAdoptedClips, meta, ctx.plannedShotType);
+  const energyArc        = scoreEnergyArc(clipPath, ctx.targetMotionLevel, meta);
   const callbackSupport  = scoreCallbackSupport(clipPath, beatText, ctx.blueprint, sceneIndex);
   const budgetPenalty    = scoreBudgetPenalty(clipPath, ctx.budgetTracker);
 
-  // Editorial and motion — clip annotation data we don't have at path level yet
-  // Use neutral 50 unless caller provides them via opts (future: inject from CandidateAsset)
-  const editorial  = 50;
-  const motionMatch = scoreEnergyArc(clipPath, ctx.targetMotionLevel); // same proxy for now
+  // Editorial score: use annotation when available, otherwise redistribute weight
+  const editorial   = meta?.editorialScore != null ? meta.editorialScore : 50;
+  const motionMatch = scoreMotionMatch(clipPath, ctx.targetMotionLevel, meta);
 
   const weighted =
     semantic         * WEIGHTS.semantic +
@@ -422,7 +569,9 @@ export function rankCandidatesWithContext(
   beatText: string,
   sceneIndex: number,
   beatIndex: number,
-  ctx: AssetDirectorContext
+  ctx: AssetDirectorContext,
+  /** Optional per-path annotation metadata from the archive DB */
+  candidateMeta?: Map<string, CandidateMeta>
 ): AssetDirectorResult {
   if (!assetDirectorEnabled() || candidatePaths.length <= 1) {
     return { rankedPaths: candidatePaths, topScore: null, reordered: false };
@@ -432,7 +581,7 @@ export function rankCandidatesWithContext(
 
   const scored = candidatePaths.map((p) => ({
     path: p,
-    score: scoreCandidate(p, beatText, sceneIndex, ctx, directive),
+    score: scoreCandidate(p, beatText, sceneIndex, ctx, directive, candidateMeta?.get(p)),
   }));
 
   scored.sort((a, b) => b.score.finalScore - a.score.finalScore);

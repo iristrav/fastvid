@@ -173,7 +173,6 @@ import {
   hashVarietySeed,
   archiveAssetPreflight,
   assetPassesBeatMinimum,
-  buildBeatMatchTags,
   buildGeoStockSearchQueries,
   countVisualTagHits,
   resolveRequiredGeoTagsForBeat,
@@ -252,6 +251,7 @@ import {
   logAssetDirectorChoice,
   assetDirectorEnabled,
   type AssetDirectorContext,
+  type CandidateMeta,
 } from "./assetDirector";
 import {
   editorialGraphicsEnabled,
@@ -553,16 +553,33 @@ const niceCmd = (cmd: string): string =>
   NICE_PREFIX && (cmd.startsWith(FFMPEG_BIN) || cmd.includes(FFPROBE_BIN)) ? `${NICE_PREFIX}${cmd}` : cmd;
 
 // Use 256MB maxBuffer — FFmpeg concat of 15+ scenes can produce large stderr output
-// Active watchdog for the currently-running render — auto-tracks every child process.
-// Set by generateVideo, cleared on finish. null when no render is active.
+// Per-render context — isolated per concurrent invocation via AsyncLocalStorage.
+// Never use module-level mutable singletons for render state: concurrent renders
+// would clobber each other's watchdog, budget, and tracker references.
 import type { RenderWatchdog } from "./renderWatchdog";
 import type { RenderBudget } from "./renderBudget";
 import type { BudgetTracker } from "./renderBudgetTracker";
-let _activeWatchdog: RenderWatchdog | null = null;
-/** Active budget for the currently-running render — null when idle. */
-let _activeRenderBudget: RenderBudget | null = null;
-/** Active budget tracker for the currently-running render — null when idle. */
-let _activeBudgetTracker: BudgetTracker | null = null;
+import { AsyncLocalStorage } from "async_hooks";
+
+type RenderCtx = {
+  watchdog: RenderWatchdog | null;
+  renderBudget: RenderBudget | null;
+  budgetTracker: BudgetTracker | null;
+};
+
+const renderCtxStorage = new AsyncLocalStorage<RenderCtx>();
+
+function getRenderCtx(): RenderCtx {
+  return renderCtxStorage.getStore() ?? { watchdog: null, renderBudget: null, budgetTracker: null };
+}
+
+// Backward-compat accessors used throughout the file
+function get_activeWatchdog(): RenderWatchdog | null     { return getRenderCtx().watchdog; }
+function get_activeRenderBudget(): RenderBudget | null   { return getRenderCtx().renderBudget; }
+function get_activeBudgetTracker(): BudgetTracker | null { return getRenderCtx().budgetTracker; }
+// Setters mutate only the current render's context object (safe — no shared state)
+function set_activeRenderBudget(v: RenderBudget | null)   { const c = getRenderCtx(); c.renderBudget = v; }
+function set_activeBudgetTracker(v: BudgetTracker | null) { const c = getRenderCtx(); c.budgetTracker = v; }
 
 // execRaw exposes the ChildProcess so withTimeout can kill it on abort,
 // and registers it with the active render watchdog for hard-kill coverage.
@@ -573,7 +590,7 @@ const execRaw = (cmd: string): Promise<{ stdout: string; stderr: string }> & { c
       if (err) { (err as NodeJS.ErrnoException & { stdout?: string; stderr?: string }).stdout = stdout; (err as NodeJS.ErrnoException & { stdout?: string; stderr?: string }).stderr = stderr; reject(err); }
       else resolve({ stdout, stderr });
     });
-    if (child) _activeWatchdog?.trackChild(child);
+    if (child) get_activeWatchdog()?.trackChild(child);
   }) as Promise<{ stdout: string; stderr: string }> & { childProcess?: import("child_process").ChildProcess };
   p.childProcess = child;
   return p;
@@ -1484,24 +1501,24 @@ function youtubeBeatFetchTimeoutMs(fastStockMode: boolean): number {
 
 /** Max time per beat for online/script image search before stock footage. */
 function beatVisualSearchMaxMs(perf: PipelinePerfProfile): number {
-  if (_activeRenderBudget) {
+  const budget = get_activeRenderBudget();
+  if (budget) {
     return perf.fastStockMode
-      ? Math.round(_activeRenderBudget.perBeatSearchMs * 0.4)
-      : _activeRenderBudget.perBeatSearchMs;
+      ? Math.round(budget.perBeatSearchMs * 0.4)
+      : budget.perBeatSearchMs;
   }
   return perf.fastStockMode ? 12_000 : 35_000;
 }
 
 function beatStockFallbackWallMs(perf: PipelinePerfProfile): number {
+  const budget = get_activeRenderBudget();
   if (youtubeOnlySourcingEnabled()) {
-    return _activeRenderBudget
-      ? Math.round(_activeRenderBudget.perBeatFallbackMs * 1.4)
-      : 30_000;
+    return budget ? Math.round(budget.perBeatFallbackMs * 1.4) : 30_000;
   }
-  if (_activeRenderBudget) {
+  if (budget) {
     return perf.fastStockMode
-      ? Math.round(_activeRenderBudget.perBeatFallbackMs * 0.35)
-      : _activeRenderBudget.perBeatFallbackMs;
+      ? Math.round(budget.perBeatFallbackMs * 0.35)
+      : budget.perBeatFallbackMs;
   }
   return perf.fastStockMode ? 6_000 : 20_000;
 }
@@ -2158,7 +2175,6 @@ async function runBeatClipFetch(
       (err as Error).message
     );
     // Background fetchBeatClip may still be running; release lock so next beat cannot stall 8+ min.
-    dedup.lock = Promise.resolve();
     return null;
   }
 }
@@ -2414,7 +2430,6 @@ async function downloadAndTrimPoolCandidate(
     }
 
     if (isVideo) {
-      const FFPROBE_BIN = process.env.FFPROBE_PATH || "ffprobe";
       const probeCmd = `"${FFPROBE_BIN}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${rawPath}"`;
       let sourceDur = candidate.durationSec ?? 0;
       try {
@@ -3087,7 +3102,7 @@ async function generateBulkSceneVoiceovers(
 }
 
 function bulkVoiceoverTimeoutMs(sceneCount: number, videoLength?: string): number {
-  if (_activeRenderBudget) return _activeRenderBudget.ttsMs;
+  const _budget = get_activeRenderBudget(); if (_budget) return _budget.ttsMs;
   if (isFastShortVideoLength(videoLength)) {
     return Math.min(75_000, 40_000 + sceneCount * 8_000);
   }
@@ -9000,6 +9015,10 @@ interface VisualDedupState {
   assetDirectorActiveEra: string | null;
   /** Tracks how many callbacks have been placed per motif key. */
   assetDirectorCallbacksPlaced: Map<string, number>;
+  /** Annotation metadata keyed by local clip path — populated when archive clips are prepared. */
+  clipAnnotationMeta: Map<string, CandidateMeta>;
+  /** Motion target (0–100) from VisualRhythmEngine, keyed by "s{si}b{bi}". */
+  beatRhythmTargets: Map<string, number>;
   /** Pre-generated graphic clips keyed by "s{sceneIndex}b{beatIndex}". */
   graphicClips: Map<string, string>;
   /** Aggregate usage stats for the editorial graphics engine. */
@@ -9140,6 +9159,8 @@ function createVisualDedupState(
     assetDirectorActiveLocation: null,
     assetDirectorActiveEra: null,
     assetDirectorCallbacksPlaced: new Map(),
+    clipAnnotationMeta: new Map(),
+    beatRhythmTargets: new Map(),
     graphicClips: new Map(),
     graphicsUsageSummary: emptyUsageSummary(),
   };
@@ -10070,11 +10091,11 @@ async function estimateBalancedMontageCoverageSec(
 }
 
 function composeSceneTimeoutMs(clipCount: number, videoLength?: string, sceneDurationSec = 30): number {
-  if (_activeRenderBudget) {
+  const _b2 = get_activeRenderBudget();
+  if (_b2) {
     // Complexity formula: scene_duration × 3s/s + 2.5s per clip, bounded by budget base
     const complexity = Math.round(sceneDurationSec * 3_000 + Math.max(0, clipCount) * 2_500);
-    const base = _activeRenderBudget.basePerSceneComposeMs;
-    return Math.round(Math.min(Math.max(complexity, 45_000), base));
+    return Math.round(Math.min(Math.max(complexity, 45_000), _b2.basePerSceneComposeMs));
   }
   if (isFastShortVideoLength(videoLength)) return 60_000;
   if (curatedArchiveOnlyVisuals() && clipCount > 8) return 90_000;
@@ -11819,7 +11840,12 @@ async function adoptClip(
     return scoreB - scoreA;
   });
 
-  // Asset Director: re-rank using global video context (blueprint, diversity, continuity)
+  // Pull per-beat data from planning layers (storyboard + rhythm)
+  const _shot = getShotForBeat(sceneIndex, beatIndex);
+  const _rhythmTarget = dedup.beatRhythmTargets?.get(`s${sceneIndex}b${beatIndex}`) ?? null;
+
+  // Asset Director: re-rank using global video context (blueprint, diversity, continuity,
+  // storyboard shot type, rhythm motion target, and per-clip annotation metadata)
   const adCtx: AssetDirectorContext = {
     usedPaths: dedup.usedPaths,
     usedCategories: dedup.usedCategories,
@@ -11830,10 +11856,11 @@ async function adoptClip(
     activeEntity: dedup.assetDirectorActiveEntity,
     activeLocation: dedup.assetDirectorActiveLocation,
     activeEra: dedup.assetDirectorActiveEra,
-    targetMotionLevel: null,
+    targetMotionLevel: _rhythmTarget ?? null,
+    plannedShotType: _shot?.shotType ?? null,
     callbacksPlaced: dedup.assetDirectorCallbacksPlaced,
   };
-  const adResult = rankCandidatesWithContext(sortedPaths, beatText, sceneIndex, beatIndex, adCtx);
+  const adResult = rankCandidatesWithContext(sortedPaths, beatText, sceneIndex, beatIndex, adCtx, dedup.clipAnnotationMeta);
   const finalPaths = adResult.rankedPaths;
   if (adResult.reordered && adResult.topScore) {
     logAssetDirectorChoice(finalPaths[0]!, sceneIndex, beatIndex, beatText, adResult.topScore);
@@ -12340,8 +12367,10 @@ async function recoverSceneClipsIfEmpty(
           scene,
           workDir,
           scene.index,
-          topicContext,
+          recoverHoldSec,
           dedup,
+          personName,
+          topicContext,
           recoverAdopt,
           scenePersons,
           `recover_fb${fi}`,
@@ -14656,7 +14685,6 @@ async function fetchBeatPersonStockVideo(
     beatStockFallbackWallMs(dedup.perf),
     `person stock s${sceneIndex} b${beat.index}`
   ).catch(() => {
-    dedup.lock = Promise.resolve();
     return null;
   });
 }
@@ -14816,7 +14844,6 @@ async function fetchBeatStockFallback(
       `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: stock fallback skipped:`,
       (err as Error).message
     );
-    dedup.lock = Promise.resolve();
     return null;
   });
 }
@@ -14974,7 +15001,6 @@ async function resolveBeatClipFastTurbo(
       `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: fast primary cap:`,
       (err as Error).message
     );
-    dedup.lock = Promise.resolve();
   }
   if (clip && isRealVideoClip(clip) && !isPipelineFallbackClip(clip)) return clip;
 
@@ -14988,7 +15014,6 @@ async function resolveBeatClipFastTurbo(
         `fast AI s${sceneIndex} b${beat.index}`
       );
     } catch {
-      dedup.lock = Promise.resolve();
     }
     if (clip && !isPipelineFallbackClip(clip)) return clip;
   }
@@ -15261,7 +15286,6 @@ async function resolveBeatClipTurbo(
       `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: video search >1min:`,
       (err as Error).message
     );
-    dedup.lock = Promise.resolve();
   }
 
   if (isAuthenticVideoClip(c ?? "")) return c;
@@ -15359,7 +15383,6 @@ async function resolveBeatClipForBeat(
       `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: video search capped:`,
       (err as Error).message
     );
-    dedup.lock = Promise.resolve();
   }
   if (c && !isPipelineFallbackClip(c) && !(await isMostlyBlackClip(c))) {
     if (!realFootageFirstEnabled() || isAuthenticVideoClip(c) || isStillPhotoClip(c)) return c;
@@ -15557,6 +15580,14 @@ async function preparePooledArchiveClip(
       }
     );
     dedup.preparedArchiveClips.set(cacheKey, clipPath);
+    // Register annotation metadata so AssetDirector can score this clip semantically
+    if (picked.asset.annotationJson) {
+      dedup.clipAnnotationMeta.set(clipPath, {
+        assetId: picked.asset.id,
+        annotation: picked.asset.annotationJson,
+        editorialScore: (picked.asset.annotationJson as { editorialScore?: { total?: number } }).editorialScore?.total ?? null,
+      });
+    }
     return clipPath;
   } catch (err) {
     console.warn(
@@ -17376,7 +17407,7 @@ async function rescueBeatVisualWhenEmpty(
   // Wikimedia rescue — try plan queries + original beat queries with relaxed threshold
   try {
     const wikiQueries: string[] = [];
-    if (beat.pexelsQueries?.length) wikiQueries.push(...beat.pexelsQueries.slice(0, 3));
+    if (scene.pexelsQueries?.length) wikiQueries.push(...scene.pexelsQueries.slice(0, 3));
     wikiQueries.push(beat.text.slice(0, 80));
     for (const q of wikiQueries) {
       const wikiClips = await fetchWikimediaImages(q, holdSec, workDir, scene.index, 1, `rescue_wiki`, { beatIndex: beat.index });
@@ -19265,7 +19296,6 @@ async function fetchSceneVisuals(
         `[Pipeline] Scene ${scene.index} beat ${beat.index}: capped at ${Math.round(beatWallMs / 1000)}s:`,
         (err as Error).message
       );
-      dedup.lock = Promise.resolve();
       if (archiveOnly) {
         await adoptArchiveBeatClip(
           beat, scene, workDir, videoTitle, dedup, pushClip, null
@@ -19308,7 +19338,6 @@ async function fetchSceneVisuals(
             `beat cap AI s${scene.index} b${beat.index}`
           );
         } catch {
-          dedup.lock = Promise.resolve();
         }
       }
       if (
@@ -19376,7 +19405,6 @@ async function fetchSceneVisuals(
           `post-beat AI s${scene.index} b${beat.index}`
         );
       } catch {
-        dedup.lock = Promise.resolve();
       }
       if (aiOnly && !isPipelineFallbackClip(aiOnly)) {
         const withText = await applyVideoBeatTextOverlay(aiOnly, beat, scene, workDir, beat.holdSec, dedup.perf.fastStockMode);
@@ -19422,7 +19450,6 @@ async function fetchSceneVisuals(
             `miss AI s${scene.index} b${beat.index}`
           );
         } catch {
-          dedup.lock = Promise.resolve();
         }
       }
       if (
@@ -19536,7 +19563,6 @@ async function fetchSceneVisuals(
                   );
                   if (ai && !isPipelineFallbackClip(ai)) return ai;
                 } catch {
-                  dedup.lock = Promise.resolve();
                 }
               }
               if (canUseLicensedStockBeat(dedup)) {
@@ -19595,7 +19621,6 @@ async function fetchSceneVisuals(
         `[Pipeline] Scene ${scene.index}: backfill ${backfillAttempts + 1} timed out:`,
         (err as Error).message
       );
-      dedup.lock = Promise.resolve();
     } finally {
       clearInterval(backfillPulse);
     }
@@ -19670,7 +19695,6 @@ async function fetchSceneVisuals(
                   );
                   if (ai && !isPipelineFallbackClip(ai)) return ai;
                 } catch {
-                  dedup.lock = Promise.resolve();
                 }
               }
               if (canUseLicensedStockBeat(dedup)) {
@@ -19716,7 +19740,6 @@ async function fetchSceneVisuals(
           `scene ${scene.index} rescue ${si + 1}`
         );
       } catch {
-        dedup.lock = Promise.resolve();
       }
       if (extra && !isPipelineFallbackClip(extra) && !clips.some((c) => clipContentKey(c) === clipContentKey(extra))) {
         clips.push(extra);
@@ -21819,6 +21842,23 @@ export async function runVideoPipeline(
   enableSubtitles = false,  // Subtitles disabled by default — user can enable via UI
   userPrompt?: string
 ): Promise<string> {
+  // Each render gets its own context so concurrent renders never share singleton state.
+  const renderCtx: RenderCtx = { watchdog: null, renderBudget: null, budgetTracker: null };
+  return renderCtxStorage.run(renderCtx, () => _runVideoPipelineInner(
+    videoId, script, onProgress, voiceId, customVoiceoverUrl, videoLength, enableSubtitles, userPrompt
+  ));
+}
+
+async function _runVideoPipelineInner(
+  videoId: number,
+  script: string,
+  onProgress?: (p: PipelineProgress) => void,
+  voiceId?: string,
+  customVoiceoverUrl?: string,
+  videoLength = "8-10",
+  enableSubtitles = false,
+  userPrompt?: string
+): Promise<string> {
   videoLength = normalizeVideoLength(videoLength);
   const maxScenes = getScenesForLength(videoLength);
   if (!fs.existsSync(TMP_DIR)) {
@@ -21832,7 +21872,7 @@ export async function runVideoPipeline(
   // after voiceover sync when actual durations are known.
   const { createRenderWatchdog, WATCHDOG_RENDER_MAX_MS } = await import("./renderWatchdog");
   const watchdog = createRenderWatchdog(videoId, WATCHDOG_RENDER_MAX_MS);
-  _activeWatchdog = watchdog;
+  getRenderCtx().watchdog = watchdog;
 
   // Per-stage budgets — initialised to fallback values, replaced with
   // RenderBudget values once actual scene durations are available post-VO.
@@ -22031,8 +22071,8 @@ export async function runVideoPipeline(
       const totalVoSec = scenes.reduce((s, sc) => s + sc.duration, 0);
       const budget = computeRenderBudget(scenes.length, totalVoSec);
       logRenderBudget(budget, videoId);
-      _activeRenderBudget  = budget;
-      _activeBudgetTracker = new BT(budget, videoId);
+      set_activeRenderBudget(budget);
+      set_activeBudgetTracker(new BT(budget, videoId));
       watchdog.updateBudget(budget.totalMs);
       renderBudgetComposeMs = budget.basePerSceneComposeMs;
       renderBudgetConcatMs  = budget.concatMs;
@@ -22042,7 +22082,7 @@ export async function runVideoPipeline(
     // ── Stage 3: Per-zin visuals (power word → clip) ─────────────────────────
     onProgress?.({ stage: STAGE_LABELS.visuals, percent: 20 });
     const t2 = Date.now();
-    _activeBudgetTracker?.stageStart("retrieval", (_activeRenderBudget?.perSceneRetrieveMs ?? 35_000) * scenes.length);
+    get_activeBudgetTracker()?.stageStart("retrieval", (get_activeRenderBudget()?.perSceneRetrieveMs ?? 35_000) * scenes.length);
     if (curatedArchiveOnlyVisuals()) {
       const archiveReady = await archiveVisualSourcesReady();
       if (!archiveReady.ok) {
@@ -22547,6 +22587,11 @@ export async function runVideoPipeline(
                   if (beatTexts.length > 0) {
                     const rr = applyVisualRhythm(scene.index, beatTexts, svr.beatDurations);
                     svr = { ...svr, beatDurations: rr.beatDurations };
+                    // Store per-beat motion targets so AssetDirector can use them during retrieval
+                    rr.profile.motionTargets.forEach(([min, max], bi) => {
+                      const mid = Math.round((min + max) / 2);
+                      visualDedup.beatRhythmTargets.set(`s${scene.index}b${bi}`, mid);
+                    });
                   }
                 }
 
@@ -22819,11 +22864,11 @@ export async function runVideoPipeline(
     } finally {
       clearInterval(visualHeartbeat);
     }
-    _activeBudgetTracker?.stageEnd("retrieval");
+    get_activeBudgetTracker()?.stageEnd("retrieval");
     console.log(`[Pipeline] Stage 3 (visuals): ${((Date.now()-t2)/1000).toFixed(1)}s`);
 
     // Refine compose budget based on actual clip mix from retrieval
-    if (_activeBudgetTracker && _activeRenderBudget) {
+    if (get_activeBudgetTracker() && get_activeRenderBudget()) {
       const allRetrievedClips = sceneVisualResults.flatMap(r => r?.clips ?? []);
       const totalClips = allRetrievedClips.length || 1;
       const archiveClips = allRetrievedClips.filter(p => curatedClipPathAssetId(p) != null).length;
@@ -22835,8 +22880,8 @@ export async function runVideoPipeline(
         totalClipsRetrieved: totalClips,
         avgClipsPerScene:    totalClips / scenes.length,
       };
-      const { newComposeMs, newConfidence } = _activeBudgetTracker.refineFromSignals(signals, _activeRenderBudget);
-      _activeRenderBudget = { ..._activeRenderBudget, basePerSceneComposeMs: newComposeMs, confidence: newConfidence };
+      const { newComposeMs, newConfidence } = get_activeBudgetTracker().refineFromSignals(signals, get_activeRenderBudget());
+      set_activeRenderBudget({ ...get_activeRenderBudget()!, basePerSceneComposeMs: newComposeMs, confidence: newConfidence });
       renderBudgetComposeMs = newComposeMs;
     }
 
@@ -23096,7 +23141,7 @@ export async function runVideoPipeline(
     const t3 = Date.now();
     profiler.recordStageEnd("retrieval", t3);
     profiler.recordStageStart("compose", t3);
-    _activeBudgetTracker?.stageStart("compose", (_activeRenderBudget?.basePerSceneComposeMs ?? 90_000) * scenes.length);
+    get_activeBudgetTracker()?.stageStart("compose", (get_activeRenderBudget()?.basePerSceneComposeMs ?? 90_000) * scenes.length);
 
     // Railway: one FFmpeg compose at a time (avoids "Resource temporarily unavailable" decoder errors)
     const composeLimit = pLimit(composeParallelismForVideo(videoLength, IS_RAILWAY));
@@ -23415,7 +23460,7 @@ export async function runVideoPipeline(
     if (seqSlowScenes.length > 0) {
       console.warn(`[Compose] Scenes >60s: ${seqSlowScenes.map((s, si) => `Scene ${s.index}(${(seqComposeElapsedMs[scenes.indexOf(s)] / 1000).toFixed(0)}s)`).join(", ")}`);
     }
-    _activeBudgetTracker?.stageEnd("compose");
+    get_activeBudgetTracker()?.stageEnd("compose");
     console.log(`[Pipeline] Stage 4 (compose): ${scenes.length} scenes in ${((Date.now()-t3)/1000).toFixed(1)}s`);
     profiler.recordStageEnd("compose", Date.now());
     pipelineStepTiming.summarizeAll();
@@ -23635,7 +23680,7 @@ export async function runVideoPipeline(
     onProgress?.({ stage: STAGE_LABELS.assembling, percent: 77 });
     const t4 = Date.now();
     profiler.recordStageStart("concat", t4);
-    _activeBudgetTracker?.stageStart("concat", _activeRenderBudget?.concatMs ?? 120_000);
+    get_activeBudgetTracker()?.stageStart("concat", get_activeRenderBudget()?.concatMs ?? 120_000);
     const totalDuration =
       scenes.reduce((sum, s) => sum + s.duration, 0) + chapterCardCount * CHAPTER_CARD_DURATION;
 
@@ -23684,7 +23729,7 @@ export async function runVideoPipeline(
           undefined,
           videoLength,
           renderBudgetConcatMs,
-          _activeRenderBudget?.musicMixMs ?? 180_000,
+          get_activeRenderBudget()?.musicMixMs ?? 180_000,
           cinematicAmbientPath,
           dominantEmotion
         );
@@ -23695,7 +23740,7 @@ export async function runVideoPipeline(
         return pathOut;
       }
     );
-    _activeBudgetTracker?.stageEnd("concat");
+    get_activeBudgetTracker()?.stageEnd("concat");
     profiler.recordStageEnd("concat", Date.now());
     console.log(`[Pipeline] Stage 5 (assemble+music): ${((Date.now()-t4)/1000).toFixed(1)}s`);
 
@@ -23772,7 +23817,7 @@ export async function runVideoPipeline(
     onProgress?.({ stage: STAGE_LABELS.uploading, percent: 93 });
     const t5 = Date.now();
     profiler.recordStageStart("upload", t5);
-    _activeBudgetTracker?.stageStart("upload", _activeRenderBudget?.uploadMs ?? 300_000);
+    get_activeBudgetTracker()?.stageStart("upload", get_activeRenderBudget()?.uploadMs ?? 300_000);
     // Final videos can be hundreds of MB — a sync read here blocks the whole site's event
     // loop right when a render finishes, so use the async fs API.
     const videoBuffer = await fs.promises.readFile(finalVideoPath);
@@ -23862,7 +23907,7 @@ export async function runVideoPipeline(
     }
     qualityReport.generatedAt = new Date().toISOString();
 
-    _activeBudgetTracker?.stageEnd("upload");
+    get_activeBudgetTracker()?.stageEnd("upload");
     profiler.recordStageEnd("upload", Date.now());
     console.log(`[Pipeline] Stage 6 (upload): ${((Date.now()-t5)/1000).toFixed(1)}s, size: ${(videoBuffer.length/1024/1024).toFixed(1)}MB`);
 
@@ -23879,10 +23924,10 @@ export async function runVideoPipeline(
     // Budget summary + history persistence (non-fatal — never block URL persistence)
     let budgetOutcome: import("./renderBudgetTracker").BudgetOutcome | undefined;
     try {
-      if (_activeBudgetTracker) {
-        _activeBudgetTracker.logSummary();
+      if (get_activeBudgetTracker()) {
+        get_activeBudgetTracker().logSummary();
         const { recordBudgetOutcome } = await import("./renderBudgetTracker");
-        budgetOutcome = _activeBudgetTracker.outcome();
+        budgetOutcome = get_activeBudgetTracker().outcome();
         recordBudgetOutcome(budgetOutcome);
       }
     } catch (err) {
@@ -23955,9 +24000,9 @@ export async function runVideoPipeline(
     return url;
   } finally {
     watchdog.stop();
-    _activeWatchdog = null;
-    _activeRenderBudget = null;
-    _activeBudgetTracker = null;
+    getRenderCtx().watchdog = null;
+    set_activeRenderBudget(null);
+    set_activeBudgetTracker(null);
     try {
       fs.rmSync(workDir, { recursive: true, force: true });
     } catch { /* ignore */ }

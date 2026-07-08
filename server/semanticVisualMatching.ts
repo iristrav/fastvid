@@ -564,35 +564,60 @@ export function computeLexicalSemanticSimilarity(
 }
 
 async function createEmbedding(text: string): Promise<number[] | null> {
-  const provider = ENV.llmProvider;
-  if ((provider !== "openai" && provider !== "forge") || !ENV.forgeApiKey) return null;
-  const key = slug(text).slice(0, 2000);
-  const cached = embeddingCache.get(key);
-  if (cached) return cached;
+  const results = await createEmbeddingBatch([text]);
+  return results[0] ?? null;
+}
 
-  try {
-    const resp = await fetch("https://api.openai.com/v1/embeddings", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${ENV.forgeApiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: process.env.SEMANTIC_EMBEDDING_MODEL?.trim() || "text-embedding-3-small",
-        input: text.slice(0, 2000),
-      }),
-      signal: AbortSignal.timeout(12_000),
-    });
-    if (!resp.ok) return null;
-    const data = (await resp.json()) as { data?: Array<{ embedding?: number[] }> };
-    const emb = data.data?.[0]?.embedding;
-    if (!emb?.length) return null;
-    capMap(embeddingCache, EMBEDDING_CACHE_MAX);
-    embeddingCache.set(key, emb);
-    return emb;
-  } catch {
-    return null;
+/**
+ * Batch embedding call — sends up to 96 texts in a single API request.
+ * Cache-first: texts already in embeddingCache are never re-fetched.
+ * Returns an array of the same length as `texts`; null for any that failed.
+ */
+export async function createEmbeddingBatch(texts: string[]): Promise<Array<number[] | null>> {
+  const provider = ENV.llmProvider;
+  if ((provider !== "openai" && provider !== "forge") || !ENV.forgeApiKey) {
+    return texts.map(() => null);
   }
+  const model = process.env.SEMANTIC_EMBEDDING_MODEL?.trim() || "text-embedding-3-small";
+  const keys = texts.map((t) => slug(t).slice(0, 2000));
+  const results: Array<number[] | null> = keys.map((k) => embeddingCache.get(k) ?? null);
+
+  // Collect indices that need a real API call
+  const missing: Array<{ idx: number; text: string; key: string }> = [];
+  keys.forEach((k, i) => {
+    if (!results[i]) missing.push({ idx: i, text: texts[i]!.slice(0, 2000), key: k });
+  });
+  if (missing.length === 0) return results;
+
+  // Batch in chunks of 96 (OpenAI limit)
+  const CHUNK = 96;
+  for (let offset = 0; offset < missing.length; offset += CHUNK) {
+    const chunk = missing.slice(offset, offset + CHUNK);
+    try {
+      const resp = await fetch("https://api.openai.com/v1/embeddings", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${ENV.forgeApiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ model, input: chunk.map((c) => c.text) }),
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (!resp.ok) continue;
+      const data = (await resp.json()) as { data?: Array<{ embedding?: number[]; index?: number }> };
+      for (const item of data.data ?? []) {
+        const emb = item.embedding;
+        if (!emb?.length) continue;
+        const localIdx = item.index ?? 0;
+        const entry = chunk[localIdx];
+        if (!entry) continue;
+        capMap(embeddingCache, EMBEDDING_CACHE_MAX);
+        embeddingCache.set(entry.key, emb);
+        results[entry.idx] = emb;
+      }
+    } catch { /* chunk failed — entries stay null */ }
+  }
+  return results;
 }
 
 function cosineSimilarity(a: number[], b: number[]): number {
