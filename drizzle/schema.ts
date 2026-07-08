@@ -163,6 +163,15 @@ export const mediaArchiveAssets = mysqlTable("media_archive_assets", {
   isActive: int("isActive").default(1).notNull(),
   /** Cached overlay-filter verdict: null = not yet checked, 0 = clean, 1 = baked edit text detected. */
   hasBakedEditText: int("hasBakedEditText"),
+  /** Full editorial annotation produced by the clip annotator at ingest time.
+   *  Null = not yet annotated. Never re-computed unless annotationVersion changes. */
+  annotationJson: json("annotationJson").$type<import("./annotationTypes").ClipAnnotation>(),
+  /** Editorial quality score 0–100. Derived from annotationJson on first write,
+   *  then nudged ±1 by adopt/reject feedback. Used as a ranking signal during retrieval. */
+  editorialScore: int("editorialScore"),
+  /** Version string of the annotator that produced annotationJson, e.g. "v1".
+   *  Lets the backfill re-annotate only rows produced by older versions. */
+  annotationVersion: varchar("annotationVersion", { length: 16 }),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });

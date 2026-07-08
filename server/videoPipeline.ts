@@ -233,6 +233,7 @@ import type { ClipRejectEntry } from "./clipRejectAudit";
 import { recordClipReject, summarizeClipRejectAudit } from "./clipRejectAudit";
 import type { ClipAdoptEntry } from "./clipAdoptAudit";
 import { createClipAdoptAudit, recordClipAdopt } from "./clipAdoptAudit";
+import { applyEditorialScoreFeedback } from "./editorialScoreFeedback";
 import { buildEditorScenesFromPipeline } from "./editorClips";
 import { tryRestoreFromMediaCache, reportToMediaCache } from "./mediaCache";
 import { getCandidatePool, putCandidatePool } from "./sceneCandidateCache";
@@ -23708,6 +23709,17 @@ export async function runVideoPipeline(
     if (archiveCrossVideoVarietyEnabled(videoLength) && curatedArchiveOnlyVisuals()) {
       recordArchiveVideoUsage(videoId, visualDedup.usedCuratedAssetIds, topicContext);
     }
+
+    // Fire-and-forget: update editorial scores based on adopt/reject events this render
+    setImmediate(() => {
+      const assetIdsByBasename = new Map(
+        visualDedup.clipAdoptAudit
+          .filter((e) => e.assetId != null)
+          .map((e) => [e.basename.toLowerCase(), e.assetId!])
+      );
+      applyEditorialScoreFeedback(visualDedup.clipAdoptAudit, assetIdsByBasename).catch(() => {});
+    });
+
     return url;
   } finally {
     watchdog.stop();

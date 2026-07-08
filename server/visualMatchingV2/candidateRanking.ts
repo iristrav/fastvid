@@ -27,12 +27,17 @@ import type {
 } from "./types";
 
 /** Default weights — purely a starting point. Tune via RankingConfig.weights per call;
- *  no code change needed to experiment with different values. */
+ *  no code change needed to experiment with different values.
+ *
+ *  editorialScore (0.1) is the new signal from ClipAnnotation. It's optional — when a
+ *  candidate has no editorialScore (null), this weight is redistributed proportionally
+ *  across the other signals so the total always sums to 1. */
 export const DEFAULT_RANKING_WEIGHTS: RankingWeights = {
-  clipSimilarity: 0.4,
-  embeddingSimilarity: 0.3,
-  keywordScore: 0.2,
-  sourcePriority: 0.1,
+  clipSimilarity: 0.36,
+  embeddingSimilarity: 0.27,
+  keywordScore: 0.18,
+  sourcePriority: 0.09,
+  editorialScore: 0.10,
 };
 
 /** Default source priority — higher wins. Known only here; no other component (retrieval,
@@ -106,16 +111,35 @@ export function rankCandidates(
     const priorityNorm = clamp01(priorityRaw / maxConfiguredPriority);
     signalsUsed.push("sourcePriority");
 
+    // Editorial score signal (only for own_archive assets with annotation)
+    const editorialWeight = weights.editorialScore ?? 0;
+    const editorialNorm =
+      candidate.editorialScore !== null && candidate.editorialScore !== undefined
+        ? clamp01(candidate.editorialScore / 100)
+        : null;
+    if (editorialNorm !== null) signalsUsed.push("editorialScore");
+
+    // When editorialScore is absent, redistribute its weight proportionally
+    const missingEditorial = editorialNorm === null;
+    const baseWeightSum = weights.clipSimilarity + weights.embeddingSimilarity + weights.keywordScore + weights.sourcePriority;
+    const editorialBonus = missingEditorial ? 0 : editorialWeight;
+    const redistributed = missingEditorial && baseWeightSum > 0 ? editorialWeight / baseWeightSum : 0;
+
     const breakdown: RankingBreakdown = {
-      clipContribution: weights.clipSimilarity * clipNorm,
-      embeddingContribution: weights.embeddingSimilarity * embeddingNorm,
-      keywordContribution: weights.keywordScore * keywordNorm,
-      sourceContribution: weights.sourcePriority * priorityNorm,
+      clipContribution: (weights.clipSimilarity + weights.clipSimilarity * redistributed) * clipNorm,
+      embeddingContribution: (weights.embeddingSimilarity + weights.embeddingSimilarity * redistributed) * embeddingNorm,
+      keywordContribution: (weights.keywordScore + weights.keywordScore * redistributed) * keywordNorm,
+      sourceContribution: (weights.sourcePriority + weights.sourcePriority * redistributed) * priorityNorm,
+      editorialContribution: editorialNorm !== null ? editorialBonus * editorialNorm : 0,
       signalsUsed,
     };
 
     const rankingScore =
-      breakdown.clipContribution + breakdown.embeddingContribution + breakdown.keywordContribution + breakdown.sourceContribution;
+      breakdown.clipContribution +
+      breakdown.embeddingContribution +
+      breakdown.keywordContribution +
+      breakdown.sourceContribution +
+      (breakdown.editorialContribution ?? 0);
 
     return { candidate, breakdown, rankingScore, priorityRaw };
   });

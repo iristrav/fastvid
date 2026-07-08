@@ -94,6 +94,9 @@ export type CandidateAsset = {
   // signals (embeddingSimilarity, keywordScore, clipSimilarity, source priority) into one
   // weighted score, purely so later stages don't have to re-weigh raw signals themselves.
   // No semantic judgement, no confidence, no winner — those belong to LLM Vision scoring. ──
+  /** Editorial quality score (0–100) from ClipAnnotation, when the candidate is an own_archive
+   *  asset that has been annotated. Null for external sources or un-annotated assets. */
+  editorialScore: number | null;
   /** Weighted combination of this candidate's retrieval signals. Null until rankCandidates()
    *  has scored this candidate. */
   rankingScore: number | null;
@@ -367,6 +370,8 @@ export type RankingWeights = {
   embeddingSimilarity: number;
   keywordScore: number;
   sourcePriority: number;
+  /** Optional: editorial quality score from ClipAnnotation (0..1 when present). */
+  editorialScore?: number;
 };
 
 /** Configured priority per source, higher = preferred. Known only to the Ranking Layer —
@@ -386,7 +391,8 @@ export type RankingBreakdown = {
   embeddingContribution: number;
   keywordContribution: number;
   sourceContribution: number;
-  signalsUsed: ("clipSimilarity" | "embeddingSimilarity" | "keywordScore" | "sourcePriority")[];
+  editorialContribution?: number;
+  signalsUsed: ("clipSimilarity" | "embeddingSimilarity" | "keywordScore" | "sourcePriority" | "editorialScore")[];
 };
 
 export type RankedCandidate = {

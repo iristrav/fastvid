@@ -225,6 +225,13 @@
       "when": 1781300000000,
       "tag": "0031_video_performance_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "5",
+      "when": 1781400000000,
+      "tag": "0032_clip_annotation_editorial_score",
+      "breakpoints": true
     }
   ]
 }

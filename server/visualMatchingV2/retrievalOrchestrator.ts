@@ -84,6 +84,7 @@ function candidateFromEmbeddingHit(
     clipModel: null,
     clipEmbeddingVersion: null,
     clipLatencyMs: null,
+    editorialScore: typeof metadata.editorialScore === "number" ? (metadata.editorialScore as number) : null,
     rankingScore: null,
     rankingBreakdown: null,
   };
