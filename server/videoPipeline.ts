@@ -256,6 +256,15 @@ import {
   type SceneStyleMemory,
 } from "./assetDirector";
 import {
+  applyDocumentaryTasteModel,
+  recordTasteModelAdoption,
+  resetTasteModelScene,
+  detectDocumentaryType,
+  documentaryTasteModelEnabled,
+  type TasteModelContext,
+  type TasteModelResult,
+} from "./documentaryTasteModel";
+import {
   editorialGraphicsEnabled,
   planVideoGraphics,
   generateGraphicClip,
@@ -9029,6 +9038,8 @@ interface VisualDedupState {
   consecutiveArchiveBeats: number;
   /** Style fingerprint of the most recently completed scene — used for editorial memory. */
   editorialMemory: SceneStyleMemory | null;
+  /** Documentary Taste Model context — persists across the full render. */
+  tasteModelCtx: TasteModelContext;
 }
 
 /**
@@ -9171,6 +9182,14 @@ function createVisualDedupState(
     graphicsUsageSummary: emptyUsageSummary(),
     consecutiveArchiveBeats: 0,
     editorialMemory: null,
+    tasteModelCtx: {
+      clipUsageCount: new Map(),
+      recentShotHistory: [],
+      recentEmotions: [],
+      activeEntity: null,
+      activeEra: null,
+      beatText: "",
+    },
   };
 }
 
@@ -11870,10 +11889,32 @@ async function adoptClip(
     callbacksPlaced: dedup.assetDirectorCallbacksPlaced,
   };
   const adResult = rankCandidatesWithContext(sortedPaths, beatText, sceneIndex, beatIndex, adCtx, dedup.clipAnnotationMeta);
-  const finalPaths = adResult.rankedPaths;
   if (adResult.reordered && adResult.topScore) {
-    logAssetDirectorChoice(finalPaths[0]!, sceneIndex, beatIndex, beatText, adResult.topScore);
+    logAssetDirectorChoice(adResult.rankedPaths[0]!, sceneIndex, beatIndex, beatText, adResult.topScore);
   }
+
+  // Documentary Taste Model: final human-editor-style re-rank
+  // Build per-path AssetDirector score map for blending
+  const adScores = new Map<string, number>();
+  if (adResult.topScore) {
+    for (let _i = 0; _i < adResult.rankedPaths.length; _i++) {
+      // Top candidate gets the actual score; others get a decayed estimate
+      adScores.set(adResult.rankedPaths[_i]!, Math.max(0, adResult.topScore.finalScore - _i * 5));
+    }
+  }
+  dedup.tasteModelCtx.activeEntity = dedup.assetDirectorActiveEntity;
+  dedup.tasteModelCtx.activeEra    = dedup.assetDirectorActiveEra;
+  dedup.tasteModelCtx.beatText     = beatText;
+  const tasteResult = applyDocumentaryTasteModel(
+    adResult.rankedPaths,
+    beatText,
+    sceneIndex,
+    beatIndex,
+    dedup.tasteModelCtx,
+    dedup.clipAnnotationMeta,
+    adScores
+  );
+  const finalPaths = tasteResult.rankedPaths;
 
   return withVisualDedupLock(dedup, async () => {
     for (const p of finalPaths) {
@@ -11981,6 +12022,7 @@ async function adoptClip(
           if (!isPipelineFallbackClip(p) && !(await isMostlyBlackClip(p))) { dedup.lastMuskStockClip = p; dedup.lastRealClip = p; }
           recordAdoptedClip(p, adCtx);
           dedup.assetDirectorSceneClips.push(p);
+          recordTasteModelAdoption(p, dedup.tasteModelCtx, dedup.clipAnnotationMeta.get(p));
           return p;
         }
         dedup.usedCategories.set(category, Math.max(0, (dedup.usedCategories.get(category) ?? 1) - 1));
@@ -12005,6 +12047,7 @@ async function adoptClip(
         }
         recordAdoptedClip(transformed, adCtx);
         dedup.assetDirectorSceneClips.push(transformed);
+        recordTasteModelAdoption(transformed, dedup.tasteModelCtx, dedup.clipAnnotationMeta.get(p));
         return transformed;
       }
       dedup.usedCategories.set(category, Math.max(0, (dedup.usedCategories.get(category) ?? 1) - 1));
@@ -19012,6 +19055,8 @@ async function fetchSceneVisuals(
     }
     dedup.assetDirectorPrevSceneClips = dedup.assetDirectorSceneClips;
     dedup.assetDirectorSceneClips = [];
+    // Taste Model: reset per-scene shot/emotion history at scene boundary
+    resetTasteModelScene(dedup.tasteModelCtx);
     // Extract era hint from scene text (e.g. "1944", "19th century")
     const eraMatch = scene.text?.match(/\b(1[0-9]{3}|20[0-2][0-9]|[0-9]{2}(st|nd|rd|th) century)\b/i);
     dedup.assetDirectorActiveEra = eraMatch?.[0] ?? null;
