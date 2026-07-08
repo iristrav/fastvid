@@ -3411,69 +3411,6 @@ export async function generateVoiceover(
     }
   }
 
-  // Fallback 2: Google TTS (free, no API key, works in any environment)
-  // Uses the unofficial Google Translate TTS endpoint — reliable for short texts
-  try {
-    const chunks: string[] = [];
-    const words = cleanText.split(' ');
-    let chunk = '';
-    for (const word of words) {
-      if ((chunk + ' ' + word).trim().length > 180) {
-        chunks.push(chunk.trim());
-        chunk = word;
-      } else {
-        chunk = (chunk + ' ' + word).trim();
-      }
-    }
-    if (chunk) chunks.push(chunk);
-
-    const chunkFiles: string[] = [];
-    for (let ci = 0; ci < chunks.length; ci++) {
-      const chunkPath = outputPath.replace('.mp3', `_gtts_chunk${ci}.mp3`);
-      const encoded = encodeURIComponent(chunks[ci]);
-      const gttsUrl = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encoded}&tl=en&client=tw-ob`;
-      const gResp = await withTimeout(
-        fetch(gttsUrl, { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' } }),
-        15_000, `gTTS chunk ${ci}`
-      );
-      if (!gResp.ok) throw pipelineError(PIPELINE_ERROR.VOICEOVER, `gTTS HTTP ${gResp.status}`);
-      const buf = Buffer.from(await gResp.arrayBuffer());
-      if (buf.length < 100) throw pipelineError(PIPELINE_ERROR.VOICEOVER_EMPTY, "gTTS empty response");
-      fs.writeFileSync(chunkPath, buf);
-      chunkFiles.push(chunkPath);
-    }
-
-    if (chunkFiles.length === 1) {
-      fs.renameSync(chunkFiles[0], outputPath);
-    } else {
-      // Concatenate chunks with FFmpeg
-      const listFile = outputPath.replace('.mp3', '_gtts_list.txt');
-      fs.writeFileSync(listFile, chunkFiles.map(f => `file '${f}'`).join('\n'));
-      await withTimeout(
-        exec(`${FFMPEG_BIN} -y -f concat -safe 0 -i "${listFile}" -c copy "${outputPath}"`),
-        20_000, 'gTTS concat'
-      );
-      chunkFiles.forEach(f => { try { fs.unlinkSync(f); } catch {} });
-      try { fs.unlinkSync(listFile); } catch {}
-    }
-
-    let durationSec = Math.max(3, Math.ceil(cleanText.split(' ').length / 2.5));
-    try {
-      const { stdout: probeOut } = await withTimeout(
-        exec(`"${FFPROBE_BIN}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${outputPath}"`),
-        8000,
-        "ffprobe gTTS duration"
-      );
-      const parsed = parseFloat(probeOut.trim());
-      if (!isNaN(parsed) && parsed > 0) durationSec = Math.ceil(parsed);
-    } catch { /* use estimate */ }
-
-    console.log(`[Pipeline] gTTS fallback scene ${outputPath.match(/scene_(\d+)/)?.[1] ?? '?'}: ${durationSec}s`);
-    return durationSec;
-  } catch (gErr) {
-    console.warn('[Pipeline] gTTS fallback failed:', gErr);
-  }
-
   // Silent fallback
   const estimatedDuration = Math.max(3, Math.ceil(cleanText.split(" ").length / 2.5));
   try {
@@ -5328,7 +5265,7 @@ async function generateGrokVideoClip(
 
     // Download the video from the URL and save to local file
     const grokOutputPath = outputPath.replace(/\.mp4$/, "_grok.mp4");
-    const response = await fetch(result.url);
+    const response = await fetch(result.url, { signal: AbortSignal.timeout(120_000) });
     if (!response.ok) {
       console.warn(`[Pipeline] Scene ${sceneIndex}: Grok download failed (${response.status})`);
       return null;
@@ -5361,7 +5298,7 @@ async function generateVeoVideoClip(
 
     // Download the video from the URL and save to local file
     const veoOutputPath = outputPath.replace(/\.mp4$/, "_veo.mp4");
-    const response = await fetch(result.url);
+    const response = await fetch(result.url, { signal: AbortSignal.timeout(120_000) });
     if (!response.ok) {
       console.warn(`[Pipeline] Scene ${sceneIndex}: Veo download failed (${response.status})`);
       return null;
@@ -5394,7 +5331,7 @@ async function generateMetaMovieGenClip(
 
     // Download the video from the URL and save to local file
     const metaOutputPath = outputPath.replace(/\.mp4$/, "_meta.mp4");
-    const response = await fetch(result.url);
+    const response = await fetch(result.url, { signal: AbortSignal.timeout(120_000) });
     if (!response.ok) {
       console.warn(`[Pipeline] Scene ${sceneIndex}: Meta Movie Gen download failed (${response.status})`);
       return null;
@@ -5427,7 +5364,7 @@ async function generateHiggsfieldTextToVideoClip(
 
     // Download the video from the URL and save to local file
     const higgsfieldOutputPath = outputPath.replace(/\.mp4$/, "_higgsfield.mp4");
-    const response = await fetch(result.url);
+    const response = await fetch(result.url, { signal: AbortSignal.timeout(120_000) });
     if (!response.ok) {
       console.warn(`[Pipeline] Scene ${sceneIndex}: Higgsfield text-to-video download failed (${response.status})`);
       return null;
@@ -5461,7 +5398,7 @@ async function generateHiggsfieldImageToVideoClip(
 
     // Download the video from the URL and save to local file
     const higgsfieldOutputPath = outputPath.replace(/\.mp4$/, "_higgsfield_img.mp4");
-    const response = await fetch(result.url);
+    const response = await fetch(result.url, { signal: AbortSignal.timeout(120_000) });
     if (!response.ok) {
       console.warn(`[Pipeline] Scene ${sceneIndex}: Higgsfield image-to-video download failed (${response.status})`);
       return null;
@@ -21731,6 +21668,10 @@ export async function runVideoPipeline(
   let renderBudgetConcatMs  = 120_000;  // final concat
   let renderBudgetUploadMs  = 300_000;  // storage upload
 
+  // NOTE: try/finally starts here so workDir is ALWAYS cleaned up, even if
+  // the DB call or context-building below throws before Stage 1 begins.
+  try {
+
   const videoRow = await getVideoById(videoId);
   const pipelineWallStartMs = videoRow?.generationStartedAt
     ? new Date(videoRow.generationStartedAt).getTime()
@@ -21764,7 +21705,6 @@ export async function runVideoPipeline(
     (elevenLabsOnlyVoice() ? " [ElevenLabs voice]" : "")
   );
 
-  try {
     // ── Stage 1: Parse script into scenes ────────────────────────────────────
     onProgress?.({ stage: STAGE_LABELS.parsing, percent: 3 });
     const pipelineStepTiming = new PipelineStepTiming();

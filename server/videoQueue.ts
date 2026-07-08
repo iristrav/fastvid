@@ -12,6 +12,7 @@ import type { Video } from "../drizzle/schema";
 import {
   claimQueuedVideo,
   countGlobalProcessingVideos,
+  countProcessingVideosByUsers,
   countUserInFlightVideos,
   countUserProcessingVideos,
   getVideoQueuePosition,
@@ -68,8 +69,14 @@ async function pickNextQueuedVideo(): Promise<Video | undefined> {
   if (globalActive >= config.maxConcurrentJobs) return undefined;
 
   const queued = await listQueuedVideosOrdered(100);
+  if (!queued.length) return undefined;
+
+  // Fetch per-user active counts in one query instead of N individual queries
+  const uniqueUserIds = Array.from(new Set(queued.map((v) => v.userId)));
+  const activeByUser = await countProcessingVideosByUsers(uniqueUserIds);
+
   for (const candidate of queued) {
-    const userActive = await countUserProcessingVideos(candidate.userId);
+    const userActive = activeByUser.get(candidate.userId) ?? 0;
     if (userActive >= config.maxActiveJobsPerUser) continue;
     return candidate;
   }

@@ -269,6 +269,21 @@ export async function countUserProcessingVideos(userId: number): Promise<number>
   return Number(row?.count ?? 0);
 }
 
+/** Returns a map of userId → active-job count for all provided userIds in one query. */
+export async function countProcessingVideosByUsers(
+  userIds: number[]
+): Promise<Map<number, number>> {
+  if (!userIds.length) return new Map();
+  const db = await getDb();
+  if (!db) return new Map();
+  const rows = await db
+    .select({ userId: videos.userId, count: sql<number>`count(*)` })
+    .from(videos)
+    .where(and(inArray(videos.userId, userIds), inArray(videos.status, PROCESSING_STATUS_LIST)))
+    .groupBy(videos.userId);
+  return new Map(rows.map((r) => [r.userId, Number(r.count)]));
+}
+
 export async function countUserQueuedVideos(userId: number): Promise<number> {
   const db = await getDb();
   if (!db) return 0;
@@ -659,11 +674,18 @@ export async function recoverAllStuckVideos(): Promise<{ completed: number; fail
     if (before !== "completed" && after.status === "completed") completed++;
   }
 
+  // Bulk-refresh in one query instead of N individual GETs
+  const refreshedIds = stuck.map((v) => v.id);
+  const refreshed = refreshedIds.length
+    ? await db.select().from(videos).where(inArray(videos.id, refreshedIds))
+    : [];
+  const refreshedMap = new Map(refreshed.map((v) => [v.id, v]));
+
   let failed = 0;
   for (const v of stuck) {
-    const refreshed = await getVideoById(v.id);
-    if (!refreshed || refreshed.status === "completed" || refreshed.status === "failed") continue;
-    await updateVideoStatus(refreshed.id, "queued", {
+    const rv = refreshedMap.get(v.id);
+    if (!rv || rv.status === "completed" || rv.status === "failed") continue;
+    await updateVideoStatus(rv.id, "queued", {
       errorMessage: "",
       progressStep: "Re-queued after server restart",
       progressPercent: 0,

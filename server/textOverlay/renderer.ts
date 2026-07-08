@@ -6,6 +6,16 @@ import type { TextOverlay, TextOverlayStyle, SceneTextPlan } from "./types";
 
 const execAsync = promisify(exec);
 const FFMPEG_BIN = process.env.FFMPEG_BIN ?? "ffmpeg";
+const FFMPEG_TIMEOUT_MS = 60_000;
+
+async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<never>((_, rej) =>
+      setTimeout(() => rej(new Error(`FFmpeg timeout after ${ms}ms`)), ms)
+    ),
+  ]);
+}
 
 // ── Design tokens ─────────────────────────────────────────────────────────────
 
@@ -255,10 +265,10 @@ export async function applyTextOverlays(
     if (drawtextFilters.length === 0) return videoPath;
     const vf = drawtextFilters.join(",");
     try {
-      await execAsync(
+      await withTimeout(execAsync(
         `${FFMPEG_BIN} -y -i "${videoPath}" -vf "${vf}" ` +
         `-c:v libx264 -preset fast -crf 18 -c:a copy "${outputPath}"`
-      );
+      ), FFMPEG_TIMEOUT_MS);
       if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 10_000) {
         console.log(`[TextOverlay] s${plan.sceneIndex}: ${plan.overlays.length} overlay(s) applied via drawtext`);
         return outputPath;
@@ -286,10 +296,10 @@ export async function applyTextOverlays(
     if (drawtextFilters.length === 0) return videoPath;
     const vf = drawtextFilters.join(",");
     try {
-      await execAsync(
+      await withTimeout(execAsync(
         `${FFMPEG_BIN} -y -i "${videoPath}" -vf "${vf}" ` +
         `-c:v libx264 -preset fast -crf 18 -c:a copy "${outputPath}"`
-      );
+      ), FFMPEG_TIMEOUT_MS);
       if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 10_000) return outputPath;
     } catch { /* fall through */ }
     return videoPath;
@@ -317,12 +327,12 @@ export async function applyTextOverlays(
   }
 
   try {
-    await execAsync(
+    await withTimeout(execAsync(
       `${FFMPEG_BIN} -y -i "${videoPath}" ${extraInputs} ` +
       `-filter_complex "${filterComplex}" ` +
       `-map "[vout]" -map "0:a?" ` +
       `-c:v libx264 -preset fast -crf 18 -c:a copy "${outputPath}"`
-    );
+    ), FFMPEG_TIMEOUT_MS);
     if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 10_000) {
       console.log(`[TextOverlay] s${plan.sceneIndex}: typewriter overlay applied`);
       // Cleanup frame dirs

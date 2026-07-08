@@ -17,12 +17,33 @@ function localPath(variant: SoundVariant): string {
   return path.join(SOUND_CACHE_DIR, `${variant.id}.mp3`);
 }
 
+async function fetchWithRetry(
+  url: string,
+  init: RequestInit & { signal?: AbortSignal },
+  timeoutMs: number,
+  maxAttempts = 3
+): Promise<Response> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const resp = await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+      if (resp.ok || resp.status < 500) return resp; // don't retry 4xx
+      lastErr = new Error(`HTTP ${resp.status}`);
+    } catch (err) {
+      lastErr = err;
+    }
+    if (attempt < maxAttempts) await new Promise(r => setTimeout(r, 500 * 2 ** (attempt - 1)));
+  }
+  throw lastErr;
+}
+
 async function fetchFreesoundPreviewUrl(freesoundId: number): Promise<string | null> {
   if (!FREESOUND_API_KEY) return null;
   try {
-    const resp = await fetch(
+    const resp = await fetchWithRetry(
       `${FREESOUND_API}/sounds/${freesoundId}/?token=${FREESOUND_API_KEY}&format=json`,
-      { signal: AbortSignal.timeout(8_000) }
+      {},
+      8_000
     );
     if (!resp.ok) return null;
     const data = await resp.json() as { previews?: { "preview-hq-mp3"?: string } };
@@ -34,7 +55,7 @@ async function fetchFreesoundPreviewUrl(freesoundId: number): Promise<string | n
 
 async function downloadUrl(url: string, dest: string): Promise<boolean> {
   try {
-    const resp = await fetch(url, { signal: AbortSignal.timeout(20_000) });
+    const resp = await fetchWithRetry(url, {}, 20_000, 2);
     if (!resp.ok) return false;
     const buf = Buffer.from(await resp.arrayBuffer());
     if (buf.length < 1024) return false;

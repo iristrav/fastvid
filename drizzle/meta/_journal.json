@@ -218,6 +218,13 @@
       "when": 1781200000000,
       "tag": "0030_media_cache",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "5",
+      "when": 1781300000000,
+      "tag": "0031_video_performance_indexes",
+      "breakpoints": true
     }
   ]
 }

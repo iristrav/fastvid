@@ -1,4 +1,4 @@
-import { int, json, longtext, mysqlEnum, mysqlTable, text, timestamp, varchar } from "drizzle-orm/mysql-core";
+import { index, int, json, longtext, mysqlEnum, mysqlTable, text, timestamp, varchar } from "drizzle-orm/mysql-core";
 
 /**
  * Core user table backing auth flow.
@@ -47,7 +47,9 @@ export type InviteCode = typeof inviteCodes.$inferSelect;
 export type InsertInviteCode = typeof inviteCodes.$inferInsert;
 
 // ─── Videos ───────────────────────────────────────────────────────────────────
-export const videos = mysqlTable("videos", {
+export const videos = mysqlTable(
+  "videos",
+  {
   id: int("id").autoincrement().primaryKey(),
   userId: int("userId").notNull().references(() => users.id),
   title: varchar("title", { length: 512 }),
@@ -83,7 +85,13 @@ export const videos = mysqlTable("videos", {
   editedVideoUrl: varchar("editedVideoUrl", { length: 1024 }), // URL of re-rendered edited video (if user edited)
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+  },
+  (t) => ({
+    statusCreatedAtIdx: index("videos_status_createdAt_idx").on(t.status, t.createdAt),
+    userIdCreatedAtIdx: index("videos_userId_createdAt_idx").on(t.userId, t.createdAt),
+    userIdStatusIdx:    index("videos_userId_status_idx").on(t.userId, t.status),
+  })
+);
 
 export type Video = typeof videos.$inferSelect;
 export type InsertVideo = typeof videos.$inferInsert;

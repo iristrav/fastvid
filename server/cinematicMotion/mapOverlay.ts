@@ -11,6 +11,15 @@ import type { MapOverlay } from "./types";
 
 const execAsync = promisify(exec);
 const FFMPEG_BIN = process.env.FFMPEG_BIN ?? "ffmpeg";
+
+async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<never>((_, rej) =>
+      setTimeout(() => rej(new Error(`FFmpeg timeout after ${ms}ms`)), ms)
+    ),
+  ]);
+}
 const W = 1920;
 const H = 1080;
 
@@ -95,9 +104,9 @@ export async function generateMapMarkerPng(
     // Fallback: ffmpeg can render SVG via libsvg or lavfi — try with -f lavfi
     // Most reliably: use ffmpeg to convert SVG→PNG via the image2 demuxer
     try {
-      await execAsync(
+      await withTimeout(execAsync(
         `${FFMPEG_BIN} -y -i "${svgPath}" -vframes 1 "${pngPath}"`
-      );
+      ), 15_000);
       if (fs.existsSync(pngPath) && fs.statSync(pngPath).size > 500) {
         fs.unlinkSync(svgPath);
         return pngPath;
