@@ -23335,28 +23335,27 @@ export async function runVideoPipeline(
       console.warn("[TextOverlay] Overlay pass failed (non-fatal):", (err as Error).message?.slice(0, 120));
     }
 
-    // ── Stage 4b2: Cinematic motion overlays (counters + map markers) ──────
+    // ── Stage 4b2: Visual Director (intelligent motion graphics) ────────────
     try {
-      const { cinematicMotionEnabled, planVideoMotion, applyMotionOverlaysToScenes } = await import("./cinematicMotion/index");
-      if (cinematicMotionEnabled()) {
-        const motionPlan = planVideoMotion(
-          scenes.map((s, i) => ({
-            index: i,
-            text: s.text ?? "",
-            visualCue: (s as any).visualCue ?? "",
-            pexelsQuery: (s as any).pexelsQuery ?? "",
-            duration: s.duration,
-            beats: (s as any).beats ?? [],
-          }))
-        );
-        const hasAny = motionPlan.scenes.some(sp => sp.counters.length > 0 || sp.maps.length > 0);
+      const { visualDirectorEnabled, directVideo, applyVideoDirective } = await import("./visualDirector/index");
+      if (visualDirectorEnabled()) {
+        const sceneMetas = scenes.map((s, i) => ({
+          index: i,
+          text: s.text ?? "",
+          visualCue: (s as any).visualCue ?? "",
+          pexelsQuery: (s as any).pexelsQuery ?? "",
+          duration: s.duration,
+          beats: (s as any).beats ?? [],
+        }));
+        const vd = directVideo(sceneMetas, videoTitle);
+        const hasAny = vd.scenes.some(sd => sd.directives.length > 0);
         if (hasAny) {
-          const overlaid = await applyMotionOverlaysToScenes(composedScenes, motionPlan, workDir);
+          const overlaid = await applyVideoDirective(composedScenes, vd, workDir);
           for (let i = 0; i < overlaid.length; i++) composedScenes[i] = overlaid[i];
         }
       }
     } catch (err) {
-      console.warn("[CinematicMotion] Motion overlay pass failed (non-fatal):", (err as Error).message?.slice(0, 120));
+      console.warn("[VisualDirector] Motion directive pass failed (non-fatal):", (err as Error).message?.slice(0, 120));
     }
 
         // ── Stage 4c: Vidrush chapter cards (yellow title cards between sections) ──
