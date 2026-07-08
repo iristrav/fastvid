@@ -250,8 +250,10 @@ import {
   recordAdoptedClip,
   logAssetDirectorChoice,
   assetDirectorEnabled,
+  buildSceneStyleMemory,
   type AssetDirectorContext,
   type CandidateMeta,
+  type SceneStyleMemory,
 } from "./assetDirector";
 import {
   editorialGraphicsEnabled,
@@ -9025,6 +9027,8 @@ interface VisualDedupState {
   graphicsUsageSummary: GraphicsUsageSummary;
   /** How many consecutive beats were resolved from archive-only (resets on any external hit). */
   consecutiveArchiveBeats: number;
+  /** Style fingerprint of the most recently completed scene — used for editorial memory. */
+  editorialMemory: SceneStyleMemory | null;
 }
 
 /**
@@ -9166,6 +9170,7 @@ function createVisualDedupState(
     graphicClips: new Map(),
     graphicsUsageSummary: emptyUsageSummary(),
     consecutiveArchiveBeats: 0,
+    editorialMemory: null,
   };
 }
 
@@ -11856,6 +11861,7 @@ async function adoptClip(
     budgetTracker: dedup.visualBudgetTracker,
     sceneAdoptedClips: dedup.assetDirectorSceneClips,
     prevSceneClips: dedup.assetDirectorPrevSceneClips,
+    editorialMemory: dedup.editorialMemory,
     activeEntity: dedup.assetDirectorActiveEntity,
     activeLocation: dedup.assetDirectorActiveLocation,
     activeEra: dedup.assetDirectorActiveEra,
@@ -18996,8 +19002,14 @@ async function fetchSceneVisuals(
           Math.max(2, Math.ceil(scene.duration / effectiveBeatSec()))
         );
   dedup.stillPhotosThisScene = 0;
-  // Asset Director: rotate scene clip buffers for shot variety tracking
+  // Asset Director: rotate scene clip buffers + build editorial memory for next scene
   if (assetDirectorEnabled()) {
+    // Build style memory from the clips we just adopted so the next scene can inherit style
+    if (dedup.assetDirectorSceneClips.length > 0) {
+      dedup.editorialMemory = buildSceneStyleMemory(
+        dedup.assetDirectorSceneClips, dedup.clipAnnotationMeta
+      );
+    }
     dedup.assetDirectorPrevSceneClips = dedup.assetDirectorSceneClips;
     dedup.assetDirectorSceneClips = [];
     // Extract era hint from scene text (e.g. "1944", "19th century")
@@ -19250,6 +19262,11 @@ async function fetchSceneVisuals(
           if (clipPath) {
             funnelClip = clipPath;
             if (candidate.source !== "archive") winningExternalCandidate = candidate;
+            // Register embedding similarity so AssetDirector can use it in ranking
+            if (candidate.embeddingSimilarity != null) {
+              const existing = dedup.clipAnnotationMeta.get(clipPath) ?? {};
+              dedup.clipAnnotationMeta.set(clipPath, { ...existing, embeddingSimilarity: candidate.embeddingSimilarity });
+            }
             break;
           }
         }
