@@ -240,6 +240,12 @@ import { applyEditorialScoreFeedback } from "./editorialScoreFeedback";
 import { runEditorialReview, editorialReviewEnabled } from "./editorialReviewEngine";
 import { printRenderQualityReport } from "./renderQualityReport";
 import { saveEditorialReview } from "./editorialReviewStore";
+import {
+  createVideoBlueprint,
+  createBudgetTracker,
+  printBudgetSummary,
+  masterDocumentaryDirectorEnabled,
+} from "./masterDocumentaryDirector";
 import { buildEditorScenesFromPipeline } from "./editorClips";
 import { tryRestoreFromMediaCache, reportToMediaCache } from "./mediaCache";
 import { getCandidatePool, putCandidatePool } from "./sceneCandidateCache";
@@ -8961,6 +8967,10 @@ interface VisualDedupState {
   stepTiming?: PipelineStepTiming;
   /** When true, beat adopt / rescue must not use network (compose render phase). */
   composeNetworkBlocked?: boolean;
+  /** Global visual blueprint from Master Documentary Director (set once, pre-retrieval). */
+  videoBlueprint?: import("./masterDocumentaryDirector").VideoBlueprint;
+  /** Budget tracker that records how many of each visual type has been used. */
+  visualBudgetTracker?: import("./masterDocumentaryDirector").VisualBudgetTracker;
 }
 
 /**
@@ -21907,6 +21917,22 @@ export async function runVideoPipeline(
     }
     console.log(`[Pipeline] Stage 2 (voiceovers): ${scenes.length} in ${((Date.now()-t1)/1000).toFixed(1)}s`);
 
+    // ── Master Documentary Director: global visual blueprint ──────────────────
+    // Runs after VO so scene durations are known; before retrieval so blueprint
+    // can guide clip selection. Fire concurrently with RenderBudget setup.
+    const blueprintPromise = masterDocumentaryDirectorEnabled()
+      ? createVideoBlueprint(
+          videoId,
+          topicContext ?? videoTitle ?? "documentary",
+          parseFloat(videoLength) || 5,
+          scenes.map((s) => ({
+            index: s.index,
+            text: s.text ?? "",
+            beats: (s as { beats?: Array<{ index: number; text: string }> }).beats,
+          }))
+        ).catch(() => null)
+      : Promise.resolve(null);
+
     // ── RenderBudget: derive all timeouts from actual VO durations ───────────
     {
       const { computeRenderBudget, logRenderBudget } = await import("./renderBudget");
@@ -21999,6 +22025,14 @@ export async function runVideoPipeline(
     visualDedup.stepTiming = pipelineStepTiming;
     visualDedup.videoLength = videoLength;
     visualDedup.pipelineStartedMs = pipelineWallStartMs;
+
+    // Await the blueprint (started in parallel above) and attach to dedup state
+    const videoBlueprint = await blueprintPromise;
+    if (videoBlueprint) {
+      visualDedup.videoBlueprint = videoBlueprint;
+      visualDedup.visualBudgetTracker = createBudgetTracker(videoBlueprint);
+    }
+
     if (visualSearchPlanEnabled()) {
       visualDedup.videoVisualContext = await buildVideoVisualContext(
         videoTitle ?? "",
@@ -23766,6 +23800,11 @@ export async function runVideoPipeline(
     profiler.printReport(totalMs, pipelineStepTiming.toReport());
     if (archiveCrossVideoVarietyEnabled(videoLength) && curatedArchiveOnlyVisuals()) {
       recordArchiveVideoUsage(videoId, visualDedup.usedCuratedAssetIds, topicContext);
+    }
+
+    // Print visual budget summary from Master Documentary Director
+    if (visualDedup.visualBudgetTracker) {
+      printBudgetSummary(visualDedup.visualBudgetTracker);
     }
 
     // Fire-and-forget: update editorial scores based on adopt/reject events this render
