@@ -204,6 +204,10 @@ import {
   clearStoryboardCache,
 } from "./editorialSequencePlanner";
 import {
+  editorialReorderScene,
+  editorialReorderEnabled,
+} from "./editorialReorder";
+import {
   motionGraphicsEnabled,
   resolveStillImageFilterComplex,
   tryRenderMotionGraphicBeatClip,
@@ -22365,6 +22369,17 @@ export async function runVideoPipeline(
                   `active=${activeComposes}, queued=${queuedComposes}, done=${completedPipelineCompose}/${scenes.length}`
                 );
 
+                // ── Editorial Reorder: AI final-editor pass for this scene ──
+                if (svr && editorialReorderEnabled() && (svr.clips?.length ?? 0) >= 2) {
+                  try {
+                    const ro = await editorialReorderScene(
+                      scene.index, scene.text, topicContext ?? "", scene.duration,
+                      svr.clips, svr.beatDurations, svr.clipBeatIndices, svr.beats
+                    );
+                    svr = { ...svr, clips: ro.clips, beatDurations: ro.beatDurations, clipBeatIndices: ro.clipBeatIndices };
+                  } catch { /* keep original order */ }
+                }
+
                 const usedClips: string[] = [];
                 const composeMeta: NonNullable<ComposeSceneOptions["composeMetaOut"]> = {
                   montageDurations: [],
@@ -22832,6 +22847,38 @@ export async function runVideoPipeline(
       videoLength,
       audioPaths
     );
+
+    // ── Editorial Reorder: AI final-editor pass — optimise montage order per scene ──
+    if (editorialReorderEnabled()) {
+      const reorderT0 = Date.now();
+      try {
+        await Promise.all(
+          scenes.map(async (scene, i) => {
+            const vr = sceneVisualResults[i];
+            if (!vr || vr.clips.length < 2) return;
+            const reordered = await editorialReorderScene(
+              scene.index,
+              scene.text,
+              topicContext ?? "",
+              scene.duration,
+              vr.clips,
+              vr.beatDurations,
+              vr.clipBeatIndices,
+              vr.beats
+            );
+            sceneVisualResults[i] = {
+              ...vr,
+              clips: reordered.clips,
+              beatDurations: reordered.beatDurations,
+              clipBeatIndices: reordered.clipBeatIndices,
+            };
+          })
+        );
+        console.log(`[Editorial] Reorder pass done in ${Date.now() - reorderT0}ms`);
+      } catch (err) {
+        console.warn("[Editorial] Reorder pass error (ignored):", (err as Error).message?.slice(0, 80));
+      }
+    }
 
     if (composeLocalClipsOnly(videoLength)) {
       visualDedup.composeNetworkBlocked = true;
