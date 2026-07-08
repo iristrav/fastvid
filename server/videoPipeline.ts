@@ -237,6 +237,9 @@ import { recordClipReject, summarizeClipRejectAudit } from "./clipRejectAudit";
 import type { ClipAdoptEntry } from "./clipAdoptAudit";
 import { createClipAdoptAudit, recordClipAdopt } from "./clipAdoptAudit";
 import { applyEditorialScoreFeedback } from "./editorialScoreFeedback";
+import { runEditorialReview, editorialReviewEnabled } from "./editorialReviewEngine";
+import { printRenderQualityReport } from "./renderQualityReport";
+import { saveEditorialReview } from "./editorialReviewStore";
 import { buildEditorScenesFromPipeline } from "./editorClips";
 import { tryRestoreFromMediaCache, reportToMediaCache } from "./mediaCache";
 import { getCandidatePool, putCandidatePool } from "./sceneCandidateCache";
@@ -23774,6 +23777,26 @@ export async function runVideoPipeline(
       );
       applyEditorialScoreFeedback(visualDedup.clipAdoptAudit, assetIdsByBasename).catch(() => {});
     });
+
+    // Fire-and-forget: post-render editorial quality review
+    if (editorialReviewEnabled()) {
+      setImmediate(() => {
+        runEditorialReview({
+          videoId,
+          videoTitle: topicContext,
+          scenes: scenes.map((s) => ({ index: s.index, text: s.text ?? "" })),
+          adoptAudit: visualDedup.clipAdoptAudit,
+          rejectAudit: visualDedup.clipRejectAudit,
+          qualityReport,
+          sceneClips: sceneVisualResults.map((svr) => svr?.clips ?? []),
+          sceneBeatDurations: sceneVisualResults.map((svr) => svr?.beatDurations ?? []),
+          sceneBeats: sceneVisualResults.map((svr) => svr?.beats?.map((b) => ({ index: b.index, text: b.text })) ?? []),
+        }).then((review) => {
+          printRenderQualityReport(review);
+          saveEditorialReview(review).catch(() => {});
+        }).catch(() => {});
+      });
+    }
 
     return url;
   } finally {

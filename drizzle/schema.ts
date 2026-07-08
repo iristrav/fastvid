@@ -452,3 +452,27 @@ export const sceneCandidateCache = mysqlTable("scene_candidate_cache", {
 
 export type SceneCandidateCacheRow = typeof sceneCandidateCache.$inferSelect;
 export type InsertSceneCandidateCacheRow = typeof sceneCandidateCache.$inferInsert;
+
+// ─── Editorial Review ──────────────────────────────────────────────────────────
+
+export const editorialReviews = mysqlTable(
+  "editorial_reviews",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    videoId: varchar("videoId", { length: 128 }).notNull(),
+    videoTitle: varchar("videoTitle", { length: 512 }),
+    overallScore: int("overallScore").notNull(),
+    scores: json("scores").notNull(),
+    sourcing: json("sourcing").notNull(),
+    feedback: json("feedback").notNull(),
+    autoImprovements: json("autoImprovements").notNull(),
+    topIssues: json("topIssues").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (t) => ({
+    videoIdIdx: index("editorial_reviews_videoId_idx").on(t.videoId),
+    createdIdx: index("editorial_reviews_created_idx").on(t.createdAt),
+  })
+);
+
+export type EditorialReviewRow = typeof editorialReviews.$inferSelect;
