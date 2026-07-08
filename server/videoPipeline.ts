@@ -9023,6 +9023,8 @@ interface VisualDedupState {
   graphicClips: Map<string, string>;
   /** Aggregate usage stats for the editorial graphics engine. */
   graphicsUsageSummary: GraphicsUsageSummary;
+  /** How many consecutive beats were resolved from archive-only (resets on any external hit). */
+  consecutiveArchiveBeats: number;
 }
 
 /**
@@ -9163,6 +9165,7 @@ function createVisualDedupState(
     beatRhythmTargets: new Map(),
     graphicClips: new Map(),
     graphicsUsageSummary: emptyUsageSummary(),
+    consecutiveArchiveBeats: 0,
   };
 }
 
@@ -15457,6 +15460,59 @@ async function resolveBeatClipForBeat(
   return null;
 }
 
+// ─── Unified beat-clip retrieval entry point ─────────────────────────────────
+//
+// Replaces the six separate dispatch functions (beatPrimaryFetch,
+// resolveBeatClipFast, resolveBeatClipFastTurbo, resolveBeatClipTurbo,
+// resolveBeatClipForBeat, fetchBeatArchivalThenPexels) with a single interface.
+// Internal routing is based on dedup.perf flags — callers no longer need to
+// pick the right function.
+//
+type ResolveBeatClipOptions = {
+  spaceTopic?: boolean;
+  scenePersons?: string[];
+  personName?: string;
+  videoTitle?: string;
+  adoptOpts?: VisualAdoptOptions;
+  /** When true: only try archive/youtube/primary sources — skip full search tree. */
+  primaryOnly?: boolean;
+  tag?: string;
+  stockReason?: string;
+};
+
+async function resolveBeatClip(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  opts: ResolveBeatClipOptions = {}
+): Promise<string | null> {
+  const {
+    spaceTopic = false,
+    videoTitle,
+    adoptOpts = {},
+    primaryOnly = false,
+    tag = `b${beat.index}`,
+    stockReason = "beat",
+  } = opts;
+  const scenePersons = opts.scenePersons
+    ?? resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
+  const personName = opts.personName ?? scenePersons[0] ?? dedup.primaryPerson ?? "";
+
+  if (primaryOnly) {
+    return beatPrimaryFetch(
+      beat, scene, workDir, sceneIndex, clipFetchDur, dedup,
+      personName, videoTitle, adoptOpts, scenePersons, tag, stockReason
+    );
+  }
+  return resolveBeatClipForBeat(
+    beat, scene, workDir, sceneIndex, clipFetchDur, dedup,
+    spaceTopic, personName, videoTitle, adoptOpts
+  );
+}
+
 // ─── 3e. Fetch All Visuals for a Scene (beat-aligned) ───────────────────────
 // One stock clip per ~3.5s narration beat, in narrative order. No clip recycling.
 type SceneVisualsResult = {
@@ -19146,13 +19202,20 @@ async function fetchSceneVisuals(
           const bestArchiveScore = beatEmb
             ? findBestArchiveScoreForBeat(funnelResult.candidates, beatEmb)
             : null;
-          // 3. Resolve gap strategy based on confidence
-          const gapStrategy = resolvePerBeatGapStrategy(bestArchiveScore);
+          // 3. Resolve gap strategy based on confidence + diversity guard
+          const gapStrategy = resolvePerBeatGapStrategy(bestArchiveScore, dedup.consecutiveArchiveBeats);
           console.log(
-            `[Funnel] s${scene.index}b${beat.index}: archiveScore=${bestArchiveScore?.toFixed(3) ?? "n/a"} strategy=${gapStrategy}`
+            `[Funnel] s${scene.index}b${beat.index}: archiveScore=${bestArchiveScore?.toFixed(3) ?? "n/a"} ` +
+            `consec=${dedup.consecutiveArchiveBeats} strategy=${gapStrategy}`
           );
           // 4. Order candidates: archive leads unless aggressive mode
           funnelCandidates = orderCandidatesForBeatGap(funnelResult.candidates, gapStrategy);
+          // Update consecutive archive counter
+          if (gapStrategy === "archive_only") {
+            dedup.consecutiveArchiveBeats++;
+          } else {
+            dedup.consecutiveArchiveBeats = 0;
+          }
           funnelCandidates = funnelCandidates.slice(0, poolThumbnailRankingEnabled() ? 8 : 4);
         } else {
           // Original coverage-weighted ranking (no per-beat gap detection)
@@ -19218,10 +19281,10 @@ async function fetchSceneVisuals(
           clip = funnelClip;
         } else {
           clip = await withTimeout(
-            resolveBeatClipForBeat(
-              beat, scene, workDir, scene.index, clipFetchDur, dedup,
-              spaceTopic, personName, videoTitle, beatAdoptOpts
-            ),
+            resolveBeatClip(beat, scene, workDir, scene.index, clipFetchDur, dedup, {
+              spaceTopic, personName, videoTitle, adoptOpts: beatAdoptOpts,
+              scenePersons, tag: `b${beat.index}`, stockReason: "funnel fallback",
+            }),
             beatWallMs,
             `scene ${scene.index} beat ${bi} visuals (funnel fallback)`
           );
@@ -19263,30 +19326,22 @@ async function fetchSceneVisuals(
           if (_poolFailReasons.length > 0) {
             console.log(`[Retry] s${scene.index}b${beat.index} all ${_poolFailReasons.length} pool candidate(s) failed — falling back to per-beat retrieval. Reasons: ${_poolFailReasons.join(" | ")}`);
           }
-          // Pool candidates failed to download — fall back to normal per-beat retrieval
+          // Pool candidates failed to download — fall back to unified retrieval
           clip = await withTimeout(
-            resolveBeatClipForBeat(
-              beat, scene, workDir, scene.index, clipFetchDur, dedup,
-              spaceTopic, personName, videoTitle, beatAdoptOpts
-            ),
+            resolveBeatClip(beat, scene, workDir, scene.index, clipFetchDur, dedup, {
+              spaceTopic, personName, videoTitle, adoptOpts: beatAdoptOpts,
+              scenePersons, tag: `b${beat.index}`, stockReason: "pool fallback",
+            }),
             beatWallMs,
             `scene ${scene.index} beat ${bi} visuals (pool fallback)`
           );
         }
       } else {
         clip = await withTimeout(
-          resolveBeatClipForBeat(
-            beat,
-            scene,
-            workDir,
-            scene.index,
-            clipFetchDur,
-            dedup,
-            spaceTopic,
-            personName,
-            videoTitle,
-            beatAdoptOpts
-          ),
+          resolveBeatClip(beat, scene, workDir, scene.index, clipFetchDur, dedup, {
+            spaceTopic, personName, videoTitle, adoptOpts: beatAdoptOpts,
+            scenePersons, tag: `b${beat.index}`,
+          }),
           beatWallMs,
           `scene ${scene.index} beat ${bi} visuals`
         );

@@ -122,24 +122,43 @@ const KEYWORD_SCORE_MAX = 100;
  * When an archive candidate's per-beat embedding similarity meets one of these
  * thresholds, only the specified number of external sources are queried.
  */
-export const BEAT_ARCHIVE_STOP_THRESHOLD = 0.90;       // archive wins — skip internet entirely
+export const BEAT_ARCHIVE_STOP_THRESHOLD = 0.94;        // archive wins — skip internet (raised for diversity)
 export const BEAT_ARCHIVE_ONE_EXTERNAL_THRESHOLD = 0.75; // good match — hedge with one external
 export const BEAT_ARCHIVE_ALL_EXTERNAL_THRESHOLD = 0.50; // weak match — try all externals
 
+/** Max consecutive archive-only beats before forcing at least one external source for variety. */
+const MAX_CONSECUTIVE_ARCHIVE_ONLY = 2;
+
 export type BeatGapStrategy =
-  | "archive_only"    // score > 0.90 — use archive, no internet call
-  | "one_external"    // score 0.75–0.90 — archive + one external source as hedge
+  | "archive_only"    // score > 0.94 — use archive, no internet call
+  | "one_external"    // score 0.75–0.94 — archive + one external source as hedge
   | "all_external"    // score 0.50–0.75 — archive + all external sources
   | "aggressive";     // score < 0.50 — archive deprioritised, all external, more results
 
-/** Determines how many external sources to query based on the best archive score for a beat. */
-export function resolvePerBeatGapStrategy(bestArchiveScore: number | null): BeatGapStrategy {
+/**
+ * Determines how many external sources to query based on the best archive score for a beat.
+ * `consecutiveArchiveBeats` — how many preceding beats were resolved from archive only.
+ * When this exceeds MAX_CONSECUTIVE_ARCHIVE_ONLY, the strategy is capped at "one_external"
+ * to ensure source diversity and prevent visual monoculture.
+ */
+export function resolvePerBeatGapStrategy(
+  bestArchiveScore: number | null,
+  consecutiveArchiveBeats = 0
+): BeatGapStrategy {
   if (bestArchiveScore === null || bestArchiveScore < BEAT_ARCHIVE_ALL_EXTERNAL_THRESHOLD) {
     return "aggressive";
   }
-  if (bestArchiveScore >= BEAT_ARCHIVE_STOP_THRESHOLD) return "archive_only";
-  if (bestArchiveScore >= BEAT_ARCHIVE_ONE_EXTERNAL_THRESHOLD) return "one_external";
-  return "all_external";
+
+  let strategy: BeatGapStrategy;
+  if (bestArchiveScore >= BEAT_ARCHIVE_STOP_THRESHOLD) strategy = "archive_only";
+  else if (bestArchiveScore >= BEAT_ARCHIVE_ONE_EXTERNAL_THRESHOLD) strategy = "one_external";
+  else strategy = "all_external";
+
+  // Diversity guard: cap archive_only → one_external after too many consecutive archive beats
+  if (strategy === "archive_only" && consecutiveArchiveBeats >= MAX_CONSECUTIVE_ARCHIVE_ONLY) {
+    return "one_external";
+  }
+  return strategy;
 }
 
 /**
