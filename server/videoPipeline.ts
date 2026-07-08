@@ -246,6 +246,13 @@ import {
   printBudgetSummary,
   masterDocumentaryDirectorEnabled,
 } from "./masterDocumentaryDirector";
+import {
+  rankCandidatesWithContext,
+  recordAdoptedClip,
+  logAssetDirectorChoice,
+  assetDirectorEnabled,
+  type AssetDirectorContext,
+} from "./assetDirector";
 import { buildEditorScenesFromPipeline } from "./editorClips";
 import { tryRestoreFromMediaCache, reportToMediaCache } from "./mediaCache";
 import { getCandidatePool, putCandidatePool } from "./sceneCandidateCache";
@@ -8971,6 +8978,18 @@ interface VisualDedupState {
   videoBlueprint?: import("./masterDocumentaryDirector").VideoBlueprint;
   /** Budget tracker that records how many of each visual type has been used. */
   visualBudgetTracker?: import("./masterDocumentaryDirector").VisualBudgetTracker;
+  /** Clips adopted so far in the current scene — used by Asset Director for shot variety. */
+  assetDirectorSceneClips: string[];
+  /** Clips adopted in the previous scene — used for style continuity checks. */
+  assetDirectorPrevSceneClips: string[];
+  /** Active entity name inferred from the current beat narration. */
+  assetDirectorActiveEntity: string | null;
+  /** Active location inferred from the current beat narration. */
+  assetDirectorActiveLocation: string | null;
+  /** Active era/period inferred from the current beat narration. */
+  assetDirectorActiveEra: string | null;
+  /** Tracks how many callbacks have been placed per motif key. */
+  assetDirectorCallbacksPlaced: Map<string, number>;
 }
 
 /**
@@ -9101,6 +9120,12 @@ function createVisualDedupState(
     clipAdoptAudit: createClipAdoptAudit(),
     segmentGeoLock: null,
     stepTiming: new PipelineStepTiming(),
+    assetDirectorSceneClips: [],
+    assetDirectorPrevSceneClips: [],
+    assetDirectorActiveEntity: null,
+    assetDirectorActiveLocation: null,
+    assetDirectorActiveEra: null,
+    assetDirectorCallbacksPlaced: new Map(),
   };
 }
 
@@ -11778,8 +11803,28 @@ async function adoptClip(
     return scoreB - scoreA;
   });
 
+  // Asset Director: re-rank using global video context (blueprint, diversity, continuity)
+  const adCtx: AssetDirectorContext = {
+    usedPaths: dedup.usedPaths,
+    usedCategories: dedup.usedCategories,
+    blueprint: dedup.videoBlueprint,
+    budgetTracker: dedup.visualBudgetTracker,
+    sceneAdoptedClips: dedup.assetDirectorSceneClips,
+    prevSceneClips: dedup.assetDirectorPrevSceneClips,
+    activeEntity: dedup.assetDirectorActiveEntity,
+    activeLocation: dedup.assetDirectorActiveLocation,
+    activeEra: dedup.assetDirectorActiveEra,
+    targetMotionLevel: null,
+    callbacksPlaced: dedup.assetDirectorCallbacksPlaced,
+  };
+  const adResult = rankCandidatesWithContext(sortedPaths, beatText, sceneIndex, beatIndex, adCtx);
+  const finalPaths = adResult.rankedPaths;
+  if (adResult.reordered && adResult.topScore) {
+    logAssetDirectorChoice(finalPaths[0]!, sceneIndex, beatIndex, beatText, adResult.topScore);
+  }
+
   return withVisualDedupLock(dedup, async () => {
-    for (const p of sortedPaths) {
+    for (const p of finalPaths) {
       if (!p || dedup.usedPaths.has(p) || !fs.existsSync(p)) continue;
       if (!(await isValidVideoFile(p))) continue;
       if (isStillPhotoClip(p)) {
@@ -11882,6 +11927,8 @@ async function adoptClip(
       if (dedup.perf.skipFairUseTransform && !mustFairUse) {
         if (await isValidVideoFile(p)) {
           if (!isPipelineFallbackClip(p) && !(await isMostlyBlackClip(p))) { dedup.lastMuskStockClip = p; dedup.lastRealClip = p; }
+          recordAdoptedClip(p, adCtx);
+          dedup.assetDirectorSceneClips.push(p);
           return p;
         }
         dedup.usedCategories.set(category, Math.max(0, (dedup.usedCategories.get(category) ?? 1) - 1));
@@ -11904,6 +11951,8 @@ async function adoptClip(
         if (!isPipelineFallbackClip(transformed) && !(await isMostlyBlackClip(transformed))) {
           dedup.lastMuskStockClip = transformed; dedup.lastRealClip = transformed;
         }
+        recordAdoptedClip(transformed, adCtx);
+        dedup.assetDirectorSceneClips.push(transformed);
         return transformed;
       }
       dedup.usedCategories.set(category, Math.max(0, (dedup.usedCategories.get(category) ?? 1) - 1));
@@ -18831,6 +18880,19 @@ async function fetchSceneVisuals(
           Math.max(2, Math.ceil(scene.duration / effectiveBeatSec()))
         );
   dedup.stillPhotosThisScene = 0;
+  // Asset Director: rotate scene clip buffers for shot variety tracking
+  if (assetDirectorEnabled()) {
+    dedup.assetDirectorPrevSceneClips = dedup.assetDirectorSceneClips;
+    dedup.assetDirectorSceneClips = [];
+    // Extract era hint from scene text (e.g. "1944", "19th century")
+    const eraMatch = scene.text?.match(/\b(1[0-9]{3}|20[0-2][0-9]|[0-9]{2}(st|nd|rd|th) century)\b/i);
+    dedup.assetDirectorActiveEra = eraMatch?.[0] ?? null;
+    // Extract location hint (capitalize words that might be place names)
+    const locMatch = scene.text?.match(/\b(?:in|at|near|over|across|through) ([A-Z][a-z]+(?: [A-Z][a-z]+)?)\b/);
+    dedup.assetDirectorActiveLocation = locMatch?.[1] ?? null;
+    // Primary entity: reuse activeEntity across scenes unless overridden by primaryPerson
+    if (dedup.primaryPerson) dedup.assetDirectorActiveEntity = dedup.primaryPerson;
+  }
   const realOnly = realFootageFirstEnabled();
   dedup.stillPhotosMaxThisScene = historicalDoc && dedup.perf.fastStockMode
     ? beatCap
