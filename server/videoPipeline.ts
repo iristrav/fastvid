@@ -253,6 +253,16 @@ import {
   assetDirectorEnabled,
   type AssetDirectorContext,
 } from "./assetDirector";
+import {
+  editorialGraphicsEnabled,
+  planVideoGraphics,
+  generateGraphicClip,
+  emptyUsageSummary,
+  recordGraphicUsage,
+  printGraphicsUsageReport,
+  type GraphicsUsageSummary,
+  type GraphicPlan,
+} from "./editorialGraphicsEngine";
 import { buildEditorScenesFromPipeline } from "./editorClips";
 import { tryRestoreFromMediaCache, reportToMediaCache } from "./mediaCache";
 import { getCandidatePool, putCandidatePool } from "./sceneCandidateCache";
@@ -8990,6 +9000,10 @@ interface VisualDedupState {
   assetDirectorActiveEra: string | null;
   /** Tracks how many callbacks have been placed per motif key. */
   assetDirectorCallbacksPlaced: Map<string, number>;
+  /** Pre-generated graphic clips keyed by "s{sceneIndex}b{beatIndex}". */
+  graphicClips: Map<string, string>;
+  /** Aggregate usage stats for the editorial graphics engine. */
+  graphicsUsageSummary: GraphicsUsageSummary;
 }
 
 /**
@@ -9126,6 +9140,8 @@ function createVisualDedupState(
     assetDirectorActiveLocation: null,
     assetDirectorActiveEra: null,
     assetDirectorCallbacksPlaced: new Map(),
+    graphicClips: new Map(),
+    graphicsUsageSummary: emptyUsageSummary(),
   };
 }
 
@@ -17382,6 +17398,19 @@ async function rescueBeatVisualWhenEmpty(
     return true;
   }
 
+  // Try a pre-generated editorial graphic clip for this beat
+  {
+    const gKey = `s${scene.index}b${beat.index}`;
+    const graphicPath = dedup.graphicClips.get(gKey);
+    if (graphicPath && fs.existsSync(graphicPath)) {
+      if (await pushClip(graphicPath, holdSec)) {
+        recordClipAdopt(dedup.clipAdoptAudit, scene.index, beat.index, beat.text, graphicPath, "rescue_graphic", undefined, dedup.segmentGeoLock);
+        console.log(`[EditorialGraphics] s${scene.index}b${beat.index} graphic HIT "${gKey}"`);
+        return true;
+      }
+    }
+  }
+
   // Try extending the last real clip before falling back to color
   if (dedup.lastRealClip) {
     try {
@@ -22095,6 +22124,25 @@ export async function runVideoPipeline(
       visualDedup.visualBudgetTracker = createBudgetTracker(videoBlueprint);
     }
 
+    // Plan graphic clips (fast, no LLM) and pre-generate them concurrently
+    if (editorialGraphicsEnabled()) {
+      const graphicPlans = planVideoGraphics(scenes, videoTitle ?? "");
+      if (graphicPlans.length > 0) {
+        console.log(`[EditorialGraphics] Pre-generating ${graphicPlans.length} graphic clip(s)`);
+        await Promise.all(
+          graphicPlans.map(async (plan: GraphicPlan) => {
+            const key = `s${plan.sceneIndex}b${plan.beatIndex}`;
+            const clip = await generateGraphicClip(plan, workDir);
+            if (clip) {
+              visualDedup.graphicClips.set(key, clip.clipPath);
+              recordGraphicUsage(visualDedup.graphicsUsageSummary, plan.type);
+            }
+          })
+        );
+        console.log(`[EditorialGraphics] Ready: ${visualDedup.graphicClips.size} clip(s)`);
+      }
+    }
+
     if (visualSearchPlanEnabled()) {
       visualDedup.videoVisualContext = await buildVideoVisualContext(
         videoTitle ?? "",
@@ -23862,6 +23910,11 @@ export async function runVideoPipeline(
     profiler.printReport(totalMs, pipelineStepTiming.toReport());
     if (archiveCrossVideoVarietyEnabled(videoLength) && curatedArchiveOnlyVisuals()) {
       recordArchiveVideoUsage(videoId, visualDedup.usedCuratedAssetIds, topicContext);
+    }
+
+    // Print editorial graphics usage report
+    if (editorialGraphicsEnabled() && visualDedup.graphicsUsageSummary.total > 0) {
+      printGraphicsUsageReport(visualDedup.graphicsUsageSummary);
     }
 
     // Print visual budget summary from Master Documentary Director
