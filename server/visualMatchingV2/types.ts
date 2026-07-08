@@ -97,6 +97,10 @@ export type CandidateAsset = {
   /** Editorial quality score (0–100) from ClipAnnotation, when the candidate is an own_archive
    *  asset that has been annotated. Null for external sources or un-annotated assets. */
   editorialScore: number | null;
+  /** Motion level (0–100) from ClipAnnotation: 0=static image, 100=maximum movement.
+   *  Used by Motion-Aware Clip Selection to match clip energy to narration energy.
+   *  Null for un-annotated or external assets. */
+  motionLevel: number | null;
   /** Weighted combination of this candidate's retrieval signals. Null until rankCandidates()
    *  has scored this candidate. */
   rankingScore: number | null;
@@ -372,6 +376,9 @@ export type RankingWeights = {
   sourcePriority: number;
   /** Optional: editorial quality score from ClipAnnotation (0..1 when present). */
   editorialScore?: number;
+  /** Optional: motion match bonus — reward when clip motionLevel matches narration energy.
+   *  Weight redistributed to other signals when absent (same pattern as editorialScore). */
+  motionMatch?: number;
 };
 
 /** Configured priority per source, higher = preferred. Known only to the Ranking Layer —
@@ -392,7 +399,8 @@ export type RankingBreakdown = {
   keywordContribution: number;
   sourceContribution: number;
   editorialContribution?: number;
-  signalsUsed: ("clipSimilarity" | "embeddingSimilarity" | "keywordScore" | "sourcePriority" | "editorialScore")[];
+  motionMatchContribution?: number;
+  signalsUsed: ("clipSimilarity" | "embeddingSimilarity" | "keywordScore" | "sourcePriority" | "editorialScore" | "motionMatch")[];
 };
 
 export type RankedCandidate = {

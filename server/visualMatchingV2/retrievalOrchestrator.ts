@@ -85,6 +85,7 @@ function candidateFromEmbeddingHit(
     clipEmbeddingVersion: null,
     clipLatencyMs: null,
     editorialScore: typeof metadata.editorialScore === "number" ? (metadata.editorialScore as number) : null,
+    motionLevel: typeof metadata.motionLevel === "number" ? (metadata.motionLevel as number) : null,
     rankingScore: null,
     rankingBreakdown: null,
   };

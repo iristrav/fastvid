@@ -67,6 +67,7 @@ function payloadFor(asset: MediaArchiveAsset, provider: string, model: string, e
     height: asset.height ?? null,
     language: null,
     editorialScore: asset.editorialScore ?? null,
+    motionLevel: (asset.annotationJson as { motionLevel?: number } | null)?.motionLevel ?? null,
     // Mirrors exactly what's stored in MySQL (media_archive_asset_embeddings), so a future
     // migration could be driven entirely from Qdrant without consulting MySQL first.
     provider,

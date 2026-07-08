@@ -207,6 +207,9 @@ import {
   editorialReorderScene,
   editorialReorderEnabled,
 } from "./editorialReorder";
+import { optimizeShotSequence, shotSequenceOptimizerEnabled } from "./shotSequenceOptimizer";
+import { applyVisualRhythm, buildRhythmProfile, visualRhythmEngineEnabled } from "./visualRhythmEngine";
+import { analyzeVideoStructure, globalDocumentaryDirectorEnabled } from "./globalDocumentaryDirector";
 import {
   motionGraphicsEnabled,
   resolveStillImageFilterComplex,
@@ -22381,6 +22384,25 @@ export async function runVideoPipeline(
                   } catch { /* keep original order */ }
                 }
 
+                // ── Shot Sequence Optimizer: deterministic shot-type variety pass ──
+                if (svr && shotSequenceOptimizerEnabled() && (svr.clips?.length ?? 0) >= 2) {
+                  const sso = optimizeShotSequence(
+                    scene.index, svr.clips, svr.beatDurations, svr.clipBeatIndices, svr.beats
+                  );
+                  if (sso.changes > 0) {
+                    svr = { ...svr, clips: sso.clips, beatDurations: sso.beatDurations, clipBeatIndices: sso.clipBeatIndices };
+                  }
+                }
+
+                // ── Visual Rhythm Engine: adjust beat durations to narration energy ──
+                if (svr && visualRhythmEngineEnabled() && (svr.beatDurations?.length ?? 0) >= 2) {
+                  const beatTexts = (svr.beats ?? []).map((b) => b.text);
+                  if (beatTexts.length > 0) {
+                    const rr = applyVisualRhythm(scene.index, beatTexts, svr.beatDurations);
+                    svr = { ...svr, beatDurations: rr.beatDurations };
+                  }
+                }
+
                 const usedClips: string[] = [];
                 const composeMeta: NonNullable<ComposeSceneOptions["composeMetaOut"]> = {
                   montageDurations: [],
@@ -22879,6 +22901,39 @@ export async function runVideoPipeline(
       } catch (err) {
         console.warn("[Editorial] Reorder pass error (ignored):", (err as Error).message?.slice(0, 80));
       }
+    }
+
+    // ── Shot Sequence Optimizer: deterministic shot-type variety pass ──
+    if (shotSequenceOptimizerEnabled()) {
+      for (let i = 0; i < scenes.length; i++) {
+        const vr = sceneVisualResults[i];
+        if (!vr || vr.clips.length < 2) continue;
+        const sso = optimizeShotSequence(scenes[i].index, vr.clips, vr.beatDurations, vr.clipBeatIndices, vr.beats);
+        if (sso.changes > 0) {
+          sceneVisualResults[i] = { ...vr, clips: sso.clips, beatDurations: sso.beatDurations, clipBeatIndices: sso.clipBeatIndices };
+        }
+      }
+    }
+
+    // ── Visual Rhythm Engine: adjust beat durations to narration energy arc ──
+    if (visualRhythmEngineEnabled()) {
+      for (let i = 0; i < scenes.length; i++) {
+        const vr = sceneVisualResults[i];
+        if (!vr || (vr.beatDurations?.length ?? 0) < 2) continue;
+        const beatTexts = (vr.beats ?? []).map((b) => b.text);
+        if (beatTexts.length === 0) continue;
+        const rr = applyVisualRhythm(scenes[i].index, beatTexts, vr.beatDurations);
+        sceneVisualResults[i] = { ...vr, beatDurations: rr.beatDurations };
+      }
+    }
+
+    // ── Global Documentary Director: whole-video editorial analysis ──
+    if (globalDocumentaryDirectorEnabled() && scenes.length >= 2) {
+      setImmediate(() => {
+        const sceneClips = sceneVisualResults.map((vr) => vr?.clips ?? []);
+        const sceneBeats = sceneVisualResults.map((vr) => vr?.beats ?? []);
+        analyzeVideoStructure(topicContext ?? "documentary", scenes.map((s) => s.text), sceneClips, sceneBeats).catch(() => {});
+      });
     }
 
     if (composeLocalClipsOnly(videoLength)) {

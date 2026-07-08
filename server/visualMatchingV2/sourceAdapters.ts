@@ -84,6 +84,7 @@ function normalizeCandidate(
     clipEmbeddingVersion: null,
     clipLatencyMs: null,
     editorialScore: null,
+    motionLevel: null,
     rankingScore: null,
     rankingBreakdown: null,
   };

@@ -33,11 +33,12 @@ import type {
  *  candidate has no editorialScore (null), this weight is redistributed proportionally
  *  across the other signals so the total always sums to 1. */
 export const DEFAULT_RANKING_WEIGHTS: RankingWeights = {
-  clipSimilarity: 0.36,
-  embeddingSimilarity: 0.27,
-  keywordScore: 0.18,
+  clipSimilarity: 0.34,
+  embeddingSimilarity: 0.25,
+  keywordScore: 0.17,
   sourcePriority: 0.09,
   editorialScore: 0.10,
+  motionMatch: 0.05,
 };
 
 /** Default source priority — higher wins. Known only here; no other component (retrieval,
@@ -83,10 +84,22 @@ function sourcePriorityFor(source: CandidateSource, sourcePriority: SourcePriori
  * candidates passed in — typically clipPreFilter()'s `passed` list — never re-fetches or
  * re-scores anything upstream.
  */
+/**
+ * Computes a 0..1 score for how well a candidate's motion level matches the target.
+ * Uses a Gaussian-like falloff: perfect match = 1.0, ±30 points away ≈ 0.5.
+ */
+function motionMatchScore(motionLevel: number | null, targetMotionLevel: number | null): number | null {
+  if (motionLevel === null || targetMotionLevel === null) return null;
+  const diff = Math.abs(motionLevel - targetMotionLevel);
+  return Math.exp(-(diff * diff) / (2 * 30 * 30)); // σ=30
+}
+
 export function rankCandidates(
   intent: VisualIntent,
   candidates: CandidateAsset[],
-  config: RankingConfig = DEFAULT_RANKING_CONFIG
+  config: RankingConfig = DEFAULT_RANKING_CONFIG,
+  /** Target motion level (0–100) derived from narration energy — null = no motion signal. */
+  targetMotionLevel?: number | null
 ): RankedCandidate[] {
   const startedAt = new Date().toISOString();
   const start = Date.now();
@@ -119,11 +132,21 @@ export function rankCandidates(
         : null;
     if (editorialNorm !== null) signalsUsed.push("editorialScore");
 
-    // When editorialScore is absent, redistribute its weight proportionally
+    // Motion match signal — reward clips whose motion level matches the narration energy
+    const motionMatchWeight = weights.motionMatch ?? 0;
+    const motionNorm = motionMatchScore(candidate.motionLevel, targetMotionLevel ?? null);
+    if (motionNorm !== null) signalsUsed.push("motionMatch");
+
+    // When optional signals (editorial, motionMatch) are absent, redistribute their weight
+    // proportionally across the base signals so the total always sums to 1.
     const missingEditorial = editorialNorm === null;
+    const missingMotion = motionNorm === null;
     const baseWeightSum = weights.clipSimilarity + weights.embeddingSimilarity + weights.keywordScore + weights.sourcePriority;
+    const absentOptionalWeight = (missingEditorial ? editorialWeight : 0) + (missingMotion ? motionMatchWeight : 0);
+    const redistributed = baseWeightSum > 0 ? absentOptionalWeight / baseWeightSum : 0;
+
     const editorialBonus = missingEditorial ? 0 : editorialWeight;
-    const redistributed = missingEditorial && baseWeightSum > 0 ? editorialWeight / baseWeightSum : 0;
+    const motionBonus = missingMotion ? 0 : motionMatchWeight;
 
     const breakdown: RankingBreakdown = {
       clipContribution: (weights.clipSimilarity + weights.clipSimilarity * redistributed) * clipNorm,
@@ -131,6 +154,7 @@ export function rankCandidates(
       keywordContribution: (weights.keywordScore + weights.keywordScore * redistributed) * keywordNorm,
       sourceContribution: (weights.sourcePriority + weights.sourcePriority * redistributed) * priorityNorm,
       editorialContribution: editorialNorm !== null ? editorialBonus * editorialNorm : 0,
+      motionMatchContribution: motionNorm !== null ? motionBonus * motionNorm : 0,
       signalsUsed,
     };
 
@@ -139,7 +163,8 @@ export function rankCandidates(
       breakdown.embeddingContribution +
       breakdown.keywordContribution +
       breakdown.sourceContribution +
-      (breakdown.editorialContribution ?? 0);
+      (breakdown.editorialContribution ?? 0) +
+      (breakdown.motionMatchContribution ?? 0);
 
     return { candidate, breakdown, rankingScore, priorityRaw };
   });
