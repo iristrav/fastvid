@@ -121,8 +121,8 @@ export function planSceneTextOverlays(
   const dur = scene.duration;
   const fullText = [videoTitle, scene.text, scene.visualCue ?? "", scene.pexelsQuery ?? ""].join(" ");
 
-  // ── 1. Chapter headline (cinematic + documentary, not minimal for first scene) ──
-  if (style !== "minimal" && isChapterStart(scene) && scene.index > 0) {
+  // ── 1. Chapter headline (cinematic + documentary, including first scene) ──
+  if (style !== "minimal" && isChapterStart(scene)) {
     const title = (scene.chapterTitle || scene.sectionTitle || "").toUpperCase().trim();
     if (title && title.length > 2) {
       const end = Math.min(4.5, dur * 0.4);
@@ -156,9 +156,9 @@ export function planSceneTextOverlays(
     }
   }
 
-  // ── 3. Year overlay ──
+  // ── 3. Year overlay — shown in all styles (including documentary where it matters most) ──
   const years = extractYears(fullText);
-  if (years.length > 0 && style !== "documentary") {
+  if (years.length > 0) {
     const y = years[0];
     const start = overlays.length === 0 ? 0.5 : Math.min(5.5, dur * 0.4);
     const end = Math.min(start + 3.5, dur - 0.5);
@@ -176,27 +176,37 @@ export function planSceneTextOverlays(
   }
 
   // ── 4. Location label (bottom-left) ──
-  const locationText = scene.visualCue || scene.pexelsQuery || "";
-  if (locationText.length > 2) {
-    // Heuristic: capitalised 2+ word phrase in visualCue is a location
-    const locMatch = locationText.match(/\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b/);
-    if (locMatch) {
-      const locName = locMatch[1];
-      const locYear = years[0];
-      const start = overlays.length === 0 ? 0.8 : Math.max(overlays[overlays.length - 1].endTime + 0.5, 1.0);
-      const end = Math.min(start + 4.0, dur - 0.5);
-      if (end > start + 1.5 && noOverlap(overlays, start, end)) {
-        overlays.push({
-          type: "location",
-          text: locName.toUpperCase(),
-          subtitle: locYear ?? undefined,
-          startTime: start,
-          endTime: end,
-          animation: "fade",
-          position: "bottom-left",
-          style,
-        });
-      }
+  // Search visualCue first (most reliable), then pexelsQuery, then narration text
+  const locationSources = [
+    scene.visualCue ?? "",
+    scene.pexelsQuery ?? "",
+    scene.text,
+  ];
+  let detectedLocation: string | null = null;
+  for (const src of locationSources) {
+    if (!src || src.length < 3) continue;
+    // Require 2+ consecutive capitalized words — reduces false positives from narration
+    const m = src.match(/\b([A-Z][a-z]{1,}(?:\s+[A-Z][a-z]{1,})+)\b/);
+    if (m && m[1].split(" ").length >= 2 && m[1].length >= 5) {
+      detectedLocation = m[1];
+      break;
+    }
+  }
+  if (detectedLocation) {
+    const locYear = years[0];
+    const start = overlays.length === 0 ? 0.8 : Math.max(overlays[overlays.length - 1].endTime + 0.5, 1.0);
+    const end = Math.min(start + 4.0, dur - 0.5);
+    if (end > start + 1.5 && noOverlap(overlays, start, end)) {
+      overlays.push({
+        type: "location",
+        text: detectedLocation.toUpperCase(),
+        subtitle: locYear ?? undefined,
+        startTime: start,
+        endTime: end,
+        animation: "fade",
+        position: "bottom-left",
+        style,
+      });
     }
   }
 

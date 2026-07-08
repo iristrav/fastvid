@@ -88,21 +88,23 @@ export function documentaryKenBurnsZoomEnd(durationSec: number): number {
 }
 
 /**
- * Always returns "zoom-in" — slow subtle Ken Burns zoom for consistent professional look.
- * Per visual spec: one animation style throughout the entire video (no random variants).
+ * Content-aware Ken Burns variant. Rotates between zoom-in / zoom-out / pan-left /
+ * pan-right based on scene + beat position so adjacent clips never share the same motion.
+ * Adjacent even/odd beats alternate direction; every 3rd scene gets a pan instead of zoom.
  */
-export function pickKenBurnsVariant(_sceneIndex: number, _beatIndex: number): KenBurnsVariant {
-  return "zoom-in";
+export function pickKenBurnsVariant(sceneIndex: number, beatIndex: number): KenBurnsVariant {
+  const VARIANTS: KenBurnsVariant[] = ["zoom-in", "pan-left", "zoom-out", "pan-right"];
+  return VARIANTS[(sceneIndex * 3 + beatIndex) % VARIANTS.length];
 }
 
-/** Archive stills always zoom in slightly — avoids static/frozen-looking frames. */
-export function archiveStillKenBurnsVariant(_sceneIndex = 0, _beatIndex = 0): KenBurnsVariant {
-  return "zoom-in";
+/** Archive stills use content-aware variation — avoids the static frozen-image feel. */
+export function archiveStillKenBurnsVariant(sceneIndex = 0, beatIndex = 0): KenBurnsVariant {
+  return pickKenBurnsVariant(sceneIndex, beatIndex);
 }
 
-/** Standard B-roll motion for generated videos — slow zoom only (no pan/rotate). */
-export function standardArchiveKenBurnsVariant(_sceneIndex = 0, _beatIndex = 0): KenBurnsVariant {
-  return "zoom-in";
+/** Standard B-roll motion for generated videos — same content-aware variation. */
+export function standardArchiveKenBurnsVariant(sceneIndex = 0, beatIndex = 0): KenBurnsVariant {
+  return pickKenBurnsVariant(sceneIndex, beatIndex);
 }
 
 /** Slower Ken Burns for documentary B-roll (~15% over clip duration). */
@@ -160,7 +162,7 @@ export function buildSimpleKenBurnsVF(
 ): string {
   const fps = 25;
   const totalFrames = stillOutputFrameCount(duration, fps);
-  const zoomEnd = personPortrait ? 1.02 : 1.03;
+  const zoomEnd = personPortrait ? 1.10 : 1.15;
   const zoomStep = (zoomEnd - 1.0) / totalFrames;
   const yExpr = personPortrait ? "ih/4-(ih/zoom/4)" : "ih/2-(ih/zoom/2)";
   const cropY = personPortrait ? "0" : `(ih-${DOC_STYLE_VIDEO_HEIGHT})/2`;
@@ -179,12 +181,14 @@ export function buildBlurFillStillVF(
   duration: number,
   foregroundScale = 0.78,
   yAnchor: "center" | "top" = "center",
-  blurMode: "gblur" | "boxblur" = "gblur"
+  blurMode: "gblur" | "boxblur" = "gblur",
+  variant: KenBurnsVariant = "zoom-in",
 ): string {
   const w = DOC_STYLE_VIDEO_WIDTH;
   const h = DOC_STYLE_VIDEO_HEIGHT;
   const fgY = yAnchor === "top" ? "(H-h)/4" : "(H-h)/2";
-  const ken = buildKenBurnsTail(duration, yAnchor === "top" ? 1.02 : 1.04, yAnchor);
+  const baseZoom = yAnchor === "top" ? 1.12 : 1.18;
+  const ken = buildKenBurnsTail(duration, baseZoom, yAnchor, variant);
   const blurFilter =
     blurMode === "boxblur"
       ? "boxblur=luma_radius=32:luma_power=2:chroma_radius=16:chroma_power=1"
@@ -307,10 +311,11 @@ export function buildArchiveStillFilterComplex(
   personPortrait = false
 ): string {
   const scale = vidrushStillPhotoScale();
+  const variant = resolveStillKenBurnsVariant(sceneIndex, beatIndex);
   if (process.env.ARCHIVE_BLUR_FILL_STILLS === "false") {
     return buildMatFramedStillVF(duration, scale, sceneIndex, beatIndex);
   }
-  return buildBlurFillStillVF(duration, scale, personPortrait ? "top" : "center", "gblur");
+  return buildBlurFillStillVF(duration, scale, personPortrait ? "top" : "center", "gblur", variant);
 }
 
 /** Boxblur variant for hosts where gblur is unavailable or fails. */
@@ -321,10 +326,11 @@ export function buildArchiveStillFilterComplexBoxBlur(
   personPortrait = false
 ): string {
   const scale = vidrushStillPhotoScale();
+  const variant = resolveStillKenBurnsVariant(sceneIndex, beatIndex);
   if (process.env.ARCHIVE_BLUR_FILL_STILLS === "false") {
     return buildMatFramedStillVF(duration, scale, sceneIndex, beatIndex);
   }
-  return buildBlurFillStillVF(duration, scale, personPortrait ? "top" : "center", "boxblur");
+  return buildBlurFillStillVF(duration, scale, personPortrait ? "top" : "center", "boxblur", variant);
 }
 
 export interface TimedOverlay {
@@ -440,14 +446,18 @@ export async function renderHighlightCaptionOverlay(
  */
 export function buildWikimediaDocumentaryVF(
   duration: number,
-  yAnchor: "center" | "top" = "center"
+  yAnchor: "center" | "top" = "center",
+  sceneIndex = 0,
+  beatIndex = 0,
 ): string {
   const w = DOC_STYLE_VIDEO_WIDTH;
   const h = DOC_STYLE_VIDEO_HEIGHT;
   const fgScale = 0.80;
   const shadowPad = 10;
   const fgY = yAnchor === "top" ? "(H-h)/4" : "(H-h)/2";
-  const ken = buildKenBurnsTail(duration, 1.04, yAnchor);
+  const variant = resolveStillKenBurnsVariant(sceneIndex, beatIndex);
+  const zoomEnd = documentaryKenBurnsZoomEnd(duration);
+  const ken = buildKenBurnsTail(duration, zoomEnd, yAnchor, variant);
   return (
     `[0:v]split=2[orig][orig2];` +
     `[orig]scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},` +

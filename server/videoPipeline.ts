@@ -4434,7 +4434,7 @@ async function fetchWikimediaImagesV1(
       void reportToMediaCache(imageInfo.url, imgPath, imageInfo.mime ?? "image/jpeg");
     }
 
-    const filterComplex = buildWikimediaDocumentaryVF(duration);
+    const filterComplex = buildWikimediaDocumentaryVF(duration, "center", sceneIndex, beatIndex);
     await withTimeout(
       exec(`${FFMPEG_BIN} ${buildStillEncodeArgs(imgPath, outPath, duration, filterComplex)}`),
       45_000,
@@ -5081,9 +5081,33 @@ async function generateGuaranteedBeatClip(
   sceneIndex: number,
   slotIndex: number,
   duration: number,
-  workDir: string
+  workDir: string,
+  beatText?: string,
 ): Promise<string> {
   const outputPath = path.join(workDir, `scene_${sceneIndex}_slot${slotIndex}_guaranteed.mp4`);
+  // Try text-over-gradient when we have context — more informative than a plain color
+  if (beatText && beatText.trim().length > 3) {
+    try {
+      const safeText = beatText.trim().slice(0, 90).replace(/'/g, "\\'").replace(/:/g, "\\:").replace(/\\/g, "\\\\");
+      const colors = ["3a4a5e", "4a5a6e", "3a5a6e", "4a4a5e"];
+      const color = colors[Math.abs(sceneIndex) % colors.length];
+      const safeDur = Math.min(Math.max(duration, 3), 90);
+      await withTimeout(
+        exec(
+          `${FFMPEG_BIN} -y -f lavfi -i "color=c=#${color}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:r=25" -t ${safeDur} ` +
+          `-vf "drawtext=text='${safeText}':fontcolor=white:fontsize=52:x=(w-text_w)/2:y=(h-text_h)/2:` +
+          `shadowcolor=black:shadowx=3:shadowy=3:alpha='if(lt(t,0.4),t/0.4,1)'" ` +
+          `-c:v libx264 -preset ultrafast -pix_fmt yuv420p -an "${outputPath}"`
+        ),
+        30_000,
+        `Guaranteed beat text overlay s${sceneIndex}b${slotIndex}`
+      );
+      if (await isValidVideoFile(outputPath)) {
+        console.log(`[Pipeline] Scene ${sceneIndex} slot ${slotIndex}: text-overlay fallback OK`);
+        return outputPath;
+      }
+    } catch { /* fall through to plain color */ }
+  }
   try {
     return await generateColorFallback(sceneIndex * 1000 + slotIndex, duration, workDir, outputPath);
   } catch (err) {
@@ -5109,7 +5133,7 @@ async function appendGuaranteedSceneClips(
   );
   let slot = clips.length;
   while (clips.length < minClips) {
-    const clip = await generateGuaranteedBeatClip(scene.index, slot, holdSec, workDir);
+    const clip = await generateGuaranteedBeatClip(scene.index, slot, holdSec, workDir, scene.text?.slice(0, 90));
     const key = clipContentKey(clip);
     if (!clips.some((c) => clipContentKey(c) === key)) {
       clips.push(clip);
@@ -17422,7 +17446,8 @@ async function ensureBeatVisualFilled(
       scene.index,
       beat.index + attempt * 100,
       holdSec,
-      workDir
+      workDir,
+      beat.text,
     );
     if (await pushClip(beatClip, holdSec)) {
       recordClipAdopt(
@@ -17807,7 +17832,7 @@ async function fillBeatVisual(
         );
       }
       if (await raceFirstBeatAdopt(emergencyAdopters, 6_000)) return true;
-      const guaranteed = await generateGuaranteedBeatClip(scene.index, beat.index, holdSec, workDir);
+      const guaranteed = await generateGuaranteedBeatClip(scene.index, beat.index, holdSec, workDir, beat.text);
       if (guaranteed && (await pushClip(guaranteed, holdSec))) return true;
       return false;
     }
