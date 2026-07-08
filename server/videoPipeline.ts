@@ -197,6 +197,13 @@ import {
   type VideoVisualContext,
 } from "./visualSearchPlan";
 import {
+  getOrGenerateStoryboard,
+  getShotForBeat,
+  enrichBeatFromShot,
+  editorialSequencePlannerEnabled,
+  clearStoryboardCache,
+} from "./editorialSequencePlanner";
+import {
   motionGraphicsEnabled,
   resolveStillImageFilterComplex,
   tryRenderMotionGraphicBeatClip,
@@ -18818,6 +18825,34 @@ async function fetchSceneVisuals(
   const clips: string[] = [];
   const beatDurations: number[] = [];
   const archiveBeatFilled = new Set<number>();
+
+  // ── Editorial Sequence Planner: enrich beats with shot-level visual descriptions ──
+  if (editorialSequencePlannerEnabled() && beats.length > 0) {
+    try {
+      const vctx = dedup.videoVisualContext ?? { people: [], period: "", locations: [], visualStyles: [] };
+      await getOrGenerateStoryboard(
+        scene.index,
+        scene.text,
+        beats.map((b) => ({ index: b.index, text: b.text })),
+        videoTitle ?? "",
+        vctx
+      );
+      for (const beat of beats) {
+        const shot = getShotForBeat(scene.index, beat.index);
+        if (!shot) continue;
+        const enriched = enrichBeatFromShot(beat.text, [beat.searchQuery], shot);
+        if (enriched.pexelsQueries[0] && enriched.pexelsQueries[0] !== beat.searchQuery) {
+          beat.searchQuery = enriched.pexelsQueries[0];
+          beat.powerWord = enriched.pexelsQueries[0];
+        }
+        if (!beat.visualDescription && enriched.visualDescription) {
+          beat.visualDescription = enriched.visualDescription;
+        }
+      }
+    } catch (err) {
+      console.warn(`[Editorial] s${scene.index} enrichment skipped:`, (err as Error).message?.slice(0, 80));
+    }
+  }
 
   console.log(
     `[Pipeline] Scene ${scene.index}: ${beats.length} zin-beats (~${effectiveBeatSec()}s) — ` +
