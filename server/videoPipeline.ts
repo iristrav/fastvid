@@ -4174,7 +4174,8 @@ async function encodeStillImageMp4(
 
   // Documentary blur-fill (blurred background + sharp foreground) takes priority
   // over mat-frame layout — cleaner, more professional look.
-  if (documentaryStyleEnabled()) {
+  // Always enabled when cinematic motion is on (regardless of ENABLE_DOC_STYLE flag).
+  if (documentaryStyleEnabled() || process.env.CINEMATIC_MOTION !== "false") {
     const filterComplex = resolveStillCompositionVF(duration, sceneIndex, beatIndex, personPortrait);
     try {
       await withTimeout(
@@ -23332,6 +23333,30 @@ export async function runVideoPipeline(
       }
     } catch (err) {
       console.warn("[TextOverlay] Overlay pass failed (non-fatal):", (err as Error).message?.slice(0, 120));
+    }
+
+    // ── Stage 4b2: Cinematic motion overlays (counters + map markers) ──────
+    try {
+      const { cinematicMotionEnabled, planVideoMotion, applyMotionOverlaysToScenes } = await import("./cinematicMotion/index");
+      if (cinematicMotionEnabled()) {
+        const motionPlan = planVideoMotion(
+          scenes.map((s, i) => ({
+            index: i,
+            text: s.text ?? "",
+            visualCue: (s as any).visualCue ?? "",
+            pexelsQuery: (s as any).pexelsQuery ?? "",
+            duration: s.duration,
+            beats: (s as any).beats ?? [],
+          }))
+        );
+        const hasAny = motionPlan.scenes.some(sp => sp.counters.length > 0 || sp.maps.length > 0);
+        if (hasAny) {
+          const overlaid = await applyMotionOverlaysToScenes(composedScenes, motionPlan, workDir);
+          for (let i = 0; i < overlaid.length; i++) composedScenes[i] = overlaid[i];
+        }
+      }
+    } catch (err) {
+      console.warn("[CinematicMotion] Motion overlay pass failed (non-fatal):", (err as Error).message?.slice(0, 120));
     }
 
         // ── Stage 4c: Vidrush chapter cards (yellow title cards between sections) ──
