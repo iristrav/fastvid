@@ -23157,7 +23157,40 @@ export async function runVideoPipeline(
       }
     }
 
-        // ── Stage 4b: Vidrush chapter cards (yellow title cards between sections) ──
+    // ── Stage 4b: Text overlays (cinematic headlines + documentary labels) ──
+    try {
+      const { textOverlayEnabled, textOverlayStyle, planVideoTextOverlays, applyTextOverlaysToScenes } = await import("./textOverlay/index");
+      if (textOverlayEnabled()) {
+        const overlayStyle = textOverlayStyle();
+        const textPlan = planVideoTextOverlays(
+          scenes.map((s, i) => ({
+            index: i,
+            text: s.text ?? "",
+            visualCue: (s as any).visualCue ?? "",
+            pexelsQuery: (s as any).pexelsQuery ?? "",
+            chapterTitle: (s as any).chapterTitle ?? "",
+            sectionTitle: (s as any).sectionTitle ?? "",
+            duration: s.duration,
+            beats: (s as any).beats ?? [],
+          })),
+          overlayStyle,
+          videoTitle
+        );
+        const hasAnyOverlay = textPlan.scenes.some(sp => sp.overlays.length > 0);
+        if (hasAnyOverlay) {
+          onProgress?.({ stage: STAGE_LABELS.assembling, percent: 75 });
+          const overlaid = await applyTextOverlaysToScenes(composedScenes, textPlan.scenes, workDir);
+          for (let i = 0; i < overlaid.length; i++) {
+            composedScenes[i] = overlaid[i];
+          }
+          console.log(`[TextOverlay] Applied ${overlayStyle} overlays to ${composedScenes.length} scenes`);
+        }
+      }
+    } catch (err) {
+      console.warn("[TextOverlay] Overlay pass failed (non-fatal):", (err as Error).message?.slice(0, 120));
+    }
+
+        // ── Stage 4c: Vidrush chapter cards (yellow title cards between sections) ──
     const useChapterCards =
       process.env.ENABLE_CHAPTER_CARDS === "true" && !isShortVideoLength(videoLength);
     const orderedClips: string[] = [];
