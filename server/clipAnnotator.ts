@@ -15,10 +15,15 @@
  */
 
 import { invokeLLM } from "./_core/llm";
-import type { ClipAnnotation } from "../drizzle/annotationTypes";
+import type {
+  ClipAnnotation,
+  ClipQualityFlags,
+  AnnotationConfidence,
+  ExtendedEditorialScores,
+} from "../drizzle/annotationTypes";
 import type { MediaArchiveAsset } from "../drizzle/schema";
 
-export const ANNOTATION_VERSION = "v1";
+export const ANNOTATION_VERSION = "v2";
 
 // ─── Feature flag ─────────────────────────────────────────────────────────────
 
@@ -40,11 +45,13 @@ function buildAnnotationPrompt(asset: MediaArchiveAsset): string {
     .filter(Boolean)
     .join("\n");
 
-  return `You are a professional documentary archive editor. Analyze this media clip based on the metadata provided${asset.storageUrl ? " and the thumbnail image" : ""}.
+  return `You are a senior documentary archive editor at a major broadcaster (BBC, PBS, Al Jazeera level). Your task is to create a complete, professional editorial profile of this media clip. This profile will be used by an AI video editor to select the best clips for documentaries.
 
 ${meta}
 
-Return ONLY this JSON object — all fields required, use empty string/array if unknown:
+${asset.storageUrl ? "A thumbnail/frame image is attached — use it as your primary analysis input." : "Analyze from the metadata provided."}
+
+Return ONLY this JSON object — all fields required. Use empty string/array/0 if truly unknown, but make your best editorial judgment.
 
 {
   "version": "${ANNOTATION_VERSION}",
@@ -101,20 +108,91 @@ Return ONLY this JSON object — all fields required, use empty string/array if 
     "bestUsedAs": "cutaway",
     "topicAffinity": [],
     "avoid": []
+  },
+  "searchAliases": [],
+  "knowledgeGraphEntities": [],
+  "editorialDescription": "",
+  "qualityFlags": {
+    "isBlack": false,
+    "isBlurry": false,
+    "hasWatermark": false,
+    "isIntroOrOutro": false,
+    "isCreditSequence": false,
+    "hasTitleCard": false,
+    "isTestPattern": false
+  },
+  "confidence": {
+    "persons": 0.5,
+    "location": 0.5,
+    "historicalContext": 0.5,
+    "objects": 0.7,
+    "emotion": 0.6
+  },
+  "extendedEditorialScore": {
+    "newsValue": 0,
+    "documentaryValue": 0,
+    "sourceQualityScore": 0,
+    "reusabilityScore": 0
   }
 }
 
-Scoring guidance for editorialScore sub-scores (0-100):
-- historicalUsability: how well does this illustrate a historical moment?
-- cinematicQuality: composition, lighting, framing quality
-- storytellingPotential: could this open, develop, or close a documentary scene?
-- emotionalValue: strength and clarity of emotional impact
-- movementQuality: smooth, purposeful camera movement scores high; static or shaky scores lower
-- originality: rare/unique footage scores high; generic B-roll scores lower
-- total = average of all six sub-scores
+FIELD GUIDANCE:
 
-motionLevel 0-100: 0=completely static image, 100=maximum movement
-quality scores 0-100: estimate from resolution, source era, visual clarity`;
+persons.named: Full names of specific historical/public figures visible (e.g. "Winston Churchill", "Adolf Hitler", "John F. Kennedy"). Only include if clearly identifiable.
+persons.categories: Generic categories of people visible (e.g. "soldiers", "civilians", "politicians", "crowd", "protesters", "military officers", "workers", "children").
+objects: All significant visible objects. Be specific: "Spitfire aircraft", "German Panzerkampfwagen IV", "Big Ben", "Union Jack flag", "microphone on podium", "barbed wire fence".
+actions: Precise verbs describing what is happening: "marching in formation", "delivering speech", "bombing run", "signing treaty", "surrendering", "celebrating in street".
+environment.setting: One of: city | village | forest | desert | beach | sea | sky | indoors | outdoors | office | factory | battlefield | trench | harbour | parliament | stadium
+environment.lighting: One of: daylight | night | golden hour | artificial | low key | silhouette | overcast
+historicalContext.event: Specific named event (e.g. "D-Day landings Normandy", "Fall of Berlin", "Cuban Missile Crisis", "Moon landing Apollo 11").
+historicalContext.period: Named historical era (e.g. "World War II", "Cold War", "French Revolution", "Roman Empire", "Space Race").
+historicalContext.year: Best estimate as 4-digit year (e.g. "1944") or decade (e.g. "1940s") or century (e.g. "20th century").
+location.confidence: "high" (GPS/text on screen/very distinctive landmark), "medium" (recognizable but not certain), "low" (guessed from context), "unknown".
+cinematography.shotType: One of: establishing | extreme wide | wide | medium | medium close-up | close-up | extreme close-up
+cinematography.cameraMovement: One of: static | handheld | pan | tilt | zoom | dolly | crane | tracking | drone | orbit
+cinematography.visualStyle: One of: archival | modern | black and white | sepia | drone | illustration | map | animation | newsreel | documentary
+emotion: One of: tension | calm | grief | triumph | defeat | fear | chaos | mystery | hope | pride | awe | neutral
+
+editorialScore (0-100 each):
+- historicalUsability: Does this illustrate a key historical moment? 90+ = irreplaceable primary source, 70+ = useful illustration, 50 = generic context, <40 = limited historical value
+- cinematicQuality: Composition, lighting, framing. 90+ = broadcast quality, 70+ = good, 50 = acceptable, <40 = poor
+- storytellingPotential: Could this open, develop, or close a documentary scene? 90+ = perfect narrative anchor, 70+ = strong support, <40 = weak
+- emotionalValue: Does it carry a clear strong emotion? 90+ = visceral impact, 70+ = clear mood, <40 = neutral/flat
+- movementQuality: Camera motion purposefulness. 90+ = professional tracking/crane, 70+ = steady purposeful movement, <40 = shaky/static
+- originality: How rare/unique is this footage? 90+ = never-before-seen primary source, 70+ = uncommon, 50 = B-roll, <30 = generic stock
+- total: weighted average of all six
+
+motionLevel 0-100: 0 = completely static frame/still, 50 = normal movement, 100 = maximum kinetic energy
+quality 0-100: estimate from what you can see/infer from metadata. Low-res, grainy, compressed footage scores lower.
+
+searchAliases: Generate 15-25 alternative search phrases an editor might type to find this clip. Include:
+- Person names + context (e.g. "Churchill parliament speech")
+- Event names (e.g. "Battle of Britain RAF pilots")
+- Location + era (e.g. "London 1940 wartime")
+- Emotional context (e.g. "wartime courage defiance")
+- Visual description (e.g. "aerial bombing footage WWII")
+- Generic alternatives (e.g. "British wartime leader", "Prime Minister speech")
+
+knowledgeGraphEntities: All entities this clip connects to in a knowledge graph. Start with the main subject and expand to related: people → organizations → locations → events → eras → objects. Example for Churchill: ["Churchill", "Winston Churchill", "Prime Minister", "United Kingdom", "London", "World War II", "WWII", "Battle of Britain", "RAF", "House of Commons", "Parliament", "1940", "1940s", "The Blitz", "Downing Street", "Allied Forces"]
+
+editorialDescription: Write a professional 150-200 word description for an AI video editor. Describe exactly: what is visible in the frame, who is present and what they are doing, where this appears to be filmed, when it was filmed and the historical context, why this footage is significant, and how an editor would best use this clip. Be precise and editorial, not generic.
+
+qualityFlags: Based on the title, tags, and image (if available), set these flags:
+- isBlack: true if the clip appears to be a black frame or severely underexposed
+- isBlurry: true if the image is clearly out of focus or motion-blurred beyond use
+- hasWatermark: true if a visible watermark, broadcast logo, or timecode is present
+- isIntroOrOutro: true if this appears to be a show intro/title sequence or outro
+- isCreditSequence: true if this shows rolling end credits or closing titles
+- hasTitleCard: true if the frame is dominated by text overlays or a title slate
+- isTestPattern: true if this is colour bars, test pattern, or technical leader
+
+confidence: Your certainty per field on a 0-1 scale. 1.0 = absolutely certain (name on screen / GPS tag), 0.5 = reasonable inference, 0.3 = guess, 0.1 = highly uncertain.
+
+extendedEditorialScore (0-100 each):
+- newsValue: Relevance for news/current affairs documentaries
+- documentaryValue: Suitability for long-form historical documentary
+- sourceQualityScore: Trust in provenance: 90=major broadcaster archive, 70=national archive/museum, 50=Wikimedia, 30=unknown source
+- reusabilityScore: How broadly reusable across different productions/topics`;
 }
 
 // ─── Editorial score calculator ───────────────────────────────────────────────
@@ -167,6 +245,12 @@ function buildFallback(asset: MediaArchiveAsset): ClipAnnotation {
       topicAffinity: tags.slice(0, 5),
       avoid: [],
     },
+    searchAliases: tags.slice(0, 8),
+    knowledgeGraphEntities: tags.slice(0, 5),
+    editorialDescription: asset.title ?? "",
+    qualityFlags: {},
+    confidence: { persons: 0.3, location: 0.3, historicalContext: 0.3, objects: 0.5, emotion: 0.3 },
+    extendedEditorialScore: { newsValue: 40, documentaryValue: 40, sourceQualityScore: 40, reusabilityScore: 50 },
   };
 }
 
@@ -195,7 +279,7 @@ export async function annotateAsset(asset: MediaArchiveAsset): Promise<ClipAnnot
         {
           role: "system",
           content:
-            "You are a professional documentary archive editor. Analyze media clips and return structured JSON annotations. Return ONLY valid JSON.",
+            "You are a senior documentary archive editor. Analyze media clips and return structured JSON annotations with complete editorial detail. Return ONLY valid JSON.",
         },
         {
           role: "user",
@@ -203,7 +287,7 @@ export async function annotateAsset(asset: MediaArchiveAsset): Promise<ClipAnnot
         },
       ],
       preferProvider: "groq",
-      maxTokens: 1000,
+      maxTokens: 2000,
       responseFormat: { type: "json_object" },
     });
 
@@ -283,6 +367,48 @@ export async function annotateAsset(asset: MediaArchiveAsset): Promise<ClipAnnot
 
     annotation.editorialScore.total = computeEditorialTotal(annotation.editorialScore);
 
+    // ── v2 fields ──────────────────────────────────────────────────────────────
+    annotation.searchAliases = Array.isArray(parsed.searchAliases) && parsed.searchAliases.length > 0
+      ? (parsed.searchAliases as string[]).slice(0, 30)
+      : fb.searchAliases;
+
+    annotation.knowledgeGraphEntities = Array.isArray(parsed.knowledgeGraphEntities)
+      ? (parsed.knowledgeGraphEntities as string[]).slice(0, 50)
+      : fb.knowledgeGraphEntities;
+
+    annotation.editorialDescription =
+      typeof parsed.editorialDescription === "string" && parsed.editorialDescription.length > 20
+        ? parsed.editorialDescription.slice(0, 800)
+        : fb.editorialDescription;
+
+    const rawQf = parsed.qualityFlags as Partial<ClipQualityFlags> | undefined;
+    annotation.qualityFlags = {
+      isBlack:          rawQf?.isBlack         ?? false,
+      isBlurry:         rawQf?.isBlurry        ?? false,
+      hasWatermark:     rawQf?.hasWatermark     ?? false,
+      isIntroOrOutro:   rawQf?.isIntroOrOutro   ?? false,
+      isCreditSequence: rawQf?.isCreditSequence ?? false,
+      hasTitleCard:     rawQf?.hasTitleCard     ?? false,
+      isTestPattern:    rawQf?.isTestPattern    ?? false,
+    };
+
+    const rawConf = parsed.confidence as Partial<AnnotationConfidence> | undefined;
+    annotation.confidence = {
+      persons:          clamp01(rawConf?.persons          ?? 0.5),
+      location:         clamp01(rawConf?.location         ?? 0.5),
+      historicalContext: clamp01(rawConf?.historicalContext ?? 0.5),
+      objects:          clamp01(rawConf?.objects          ?? 0.7),
+      emotion:          clamp01(rawConf?.emotion          ?? 0.6),
+    };
+
+    const rawExt = parsed.extendedEditorialScore as Partial<ExtendedEditorialScores> | undefined;
+    annotation.extendedEditorialScore = {
+      newsValue:          clamp(rawExt?.newsValue          ?? 40),
+      documentaryValue:   clamp(rawExt?.documentaryValue   ?? 40),
+      sourceQualityScore: clamp(rawExt?.sourceQualityScore ?? 40),
+      reusabilityScore:   clamp(rawExt?.reusabilityScore   ?? 50),
+    };
+
     return annotation;
   } catch (err) {
     console.warn(
@@ -296,6 +422,11 @@ export async function annotateAsset(asset: MediaArchiveAsset): Promise<ClipAnnot
 function clamp(v: unknown): number {
   const n = typeof v === "number" ? v : 0;
   return Math.min(100, Math.max(0, Math.round(n)));
+}
+
+function clamp01(v: unknown): number {
+  const n = typeof v === "number" ? v : 0;
+  return Math.min(1, Math.max(0, Math.round(n * 100) / 100));
 }
 
 // ─── Semantic document uitbreiding ───────────────────────────────────────────
