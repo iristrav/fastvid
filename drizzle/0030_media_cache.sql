@@ -1,9 +1,5 @@
 -- Persistent Media Asset Cache
--- Stores downloaded external assets (Pexels, Wikimedia, Archive.org) in R2/S3
--- so identical assets are never re-downloaded, re-FFmpeg'd, or re-CLIP'd.
--- Only active when ENABLE_MEDIA_CACHE=true and S3 storage is configured.
-
-CREATE TABLE `media_asset_cache` (
+CREATE TABLE IF NOT EXISTS `media_asset_cache` (
   `id` int AUTO_INCREMENT PRIMARY KEY,
   `urlHash` varchar(64) NOT NULL,
   `sourceUrl` text NOT NULL,
@@ -20,11 +16,7 @@ CREATE TABLE `media_asset_cache` (
 --> statement-breakpoint
 
 -- Persistent Scene Candidate Cache
--- Stores search API results per normalized query so Pexels/Wikimedia/Archive
--- are not re-queried for the same topic across videos.
--- TTL managed in application layer (expiresAt compared at read time).
-
-CREATE TABLE `scene_candidate_cache` (
+CREATE TABLE IF NOT EXISTS `scene_candidate_cache` (
   `id` int AUTO_INCREMENT PRIMARY KEY,
   `queryHash` varchar(64) NOT NULL,
   `queryText` varchar(512) NOT NULL,

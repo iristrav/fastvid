@@ -1,7 +1,17 @@
--- Add pipelineRunId to beat_selection_traces so VideoQualityReport can join
--- beat traces to their enclosing pipeline run without time-window heuristics.
-
-ALTER TABLE `beat_selection_traces`
-  ADD COLUMN `pipelineRunId` varchar(64) AFTER `videoId`;
+SET @db = DATABASE();
 --> statement-breakpoint
-CREATE INDEX `beat_selection_traces_pipelineRunId_idx` ON `beat_selection_traces` (`pipelineRunId`);
+SET @s1 = IF(
+  (SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = @db AND TABLE_NAME = 'beat_selection_traces' AND COLUMN_NAME = 'pipelineRunId') = 0,
+  'ALTER TABLE `beat_selection_traces` ADD COLUMN `pipelineRunId` varchar(64) AFTER `videoId`',
+  'SELECT 1'
+);
+--> statement-breakpoint
+PREPARE stmt FROM @s1; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+--> statement-breakpoint
+SET @s2 = IF(
+  (SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = @db AND TABLE_NAME = 'beat_selection_traces' AND INDEX_NAME = 'beat_selection_traces_pipelineRunId_idx') = 0,
+  'CREATE INDEX `beat_selection_traces_pipelineRunId_idx` ON `beat_selection_traces` (`pipelineRunId`)',
+  'SELECT 1'
+);
+--> statement-breakpoint
+PREPARE stmt FROM @s2; EXECUTE stmt; DEALLOCATE PREPARE stmt;

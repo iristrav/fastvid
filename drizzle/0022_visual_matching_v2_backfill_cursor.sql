@@ -1,4 +1,4 @@
-CREATE TABLE `backfill_cursors` (
+CREATE TABLE IF NOT EXISTS `backfill_cursors` (
 	`id` int AUTO_INCREMENT NOT NULL,
 	`jobName` varchar(128) NOT NULL,
 	`provider` varchar(64) NOT NULL,

@@ -54,8 +54,10 @@ process.on("unhandledRejection", (reason) => {
 });
 
 // ─── Auto-Migration ───────────────────────────────────────────────────────────
-// Runs all pending SQL migrations on startup so Railway DB is always up to date.
-// Any failure throws — the caller exits the process so Railway marks the deploy failed.
+// Pre-flights every pending migration before Drizzle runs: detects ghost and
+// partial migrations caused by MySQL implicit DDL commits (table exists in DB
+// but migration not recorded). Aborts on non-idempotent partials; auto-repairs
+// ghost migrations; then delegates to Drizzle for the remaining clean ones.
 async function runMigrations() {
   if (!process.env.DATABASE_URL) {
     console.log("[Migration] DATABASE_URL not set, skipping migrations");
@@ -78,9 +80,13 @@ async function runMigrations() {
   }
   console.log("[Migration] Running migrations from:", migrationsFolder);
   try {
-    await migrate(db as Parameters<typeof migrate>[0], { migrationsFolder });
+    const { runMigrationsWithGuard } = await import("../migrationGuard");
+    await runMigrationsWithGuard(
+      db as Parameters<typeof migrate>[0],
+      migrationsFolder,
+      (guardDb, config) => migrate(guardDb as Parameters<typeof migrate>[0], config)
+    );
   } catch (e) {
-    // Extract the actual MySQL error from Drizzle's wrapper so logs are actionable.
     const cause = (e as { cause?: { sqlMessage?: string; code?: string; sql?: string } }).cause;
     const detail = cause?.sqlMessage
       ? `MySQL ${cause.code ?? "ERR"}: ${cause.sqlMessage}`
@@ -90,7 +96,6 @@ async function runMigrations() {
     if (cause?.sql) console.error("[Migration] Failing SQL:", cause.sql.slice(0, 500));
     throw new Error(`Migration failed: ${detail}`);
   }
-  console.log("[Migration] All migrations applied successfully");
   return migrationsFolder;
 }
 

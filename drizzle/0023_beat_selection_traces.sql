@@ -1,4 +1,4 @@
-CREATE TABLE `beat_selection_traces` (
+CREATE TABLE IF NOT EXISTS `beat_selection_traces` (
   `id` int AUTO_INCREMENT NOT NULL,
   `beatId` varchar(256) NOT NULL,
   `selectedCandidateId` varchar(256),
@@ -22,6 +22,28 @@ CREATE TABLE `beat_selection_traces` (
   CONSTRAINT `beat_selection_traces_id` PRIMARY KEY(`id`)
 );
 --> statement-breakpoint
-CREATE INDEX `beat_selection_traces_beatId_idx` ON `beat_selection_traces` (`beatId`);
+SET @db = DATABASE();
 --> statement-breakpoint
-CREATE INDEX `beat_selection_traces_startedAt_idx` ON `beat_selection_traces` (`startedAt`);
+SET @s1 = IF(
+  (SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = @db AND TABLE_NAME = 'beat_selection_traces' AND INDEX_NAME = 'beat_selection_traces_beatId_idx') = 0,
+  'CREATE INDEX `beat_selection_traces_beatId_idx` ON `beat_selection_traces` (`beatId`)',
+  'SELECT 1'
+);
+--> statement-breakpoint
+PREPARE stmt FROM @s1;
+--> statement-breakpoint
+EXECUTE stmt;
+--> statement-breakpoint
+DEALLOCATE PREPARE stmt;
+--> statement-breakpoint
+SET @s2 = IF(
+  (SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = @db AND TABLE_NAME = 'beat_selection_traces' AND INDEX_NAME = 'beat_selection_traces_startedAt_idx') = 0,
+  'CREATE INDEX `beat_selection_traces_startedAt_idx` ON `beat_selection_traces` (`startedAt`)',
+  'SELECT 1'
+);
+--> statement-breakpoint
+PREPARE stmt FROM @s2;
+--> statement-breakpoint
+EXECUTE stmt;
+--> statement-breakpoint
+DEALLOCATE PREPARE stmt;

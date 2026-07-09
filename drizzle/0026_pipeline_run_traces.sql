@@ -1,4 +1,4 @@
-CREATE TABLE `pipeline_run_traces` (
+CREATE TABLE IF NOT EXISTS `pipeline_run_traces` (
   `id` int AUTO_INCREMENT NOT NULL,
   `pipelineRunId` varchar(64) NOT NULL,
   `videoId` varchar(256) NOT NULL,
@@ -20,10 +20,36 @@ CREATE TABLE `pipeline_run_traces` (
   CONSTRAINT `pipeline_run_traces_id` PRIMARY KEY(`id`)
 );
 --> statement-breakpoint
-ALTER TABLE `pipeline_run_traces` ADD UNIQUE INDEX `pipeline_run_traces_pipelineRunId_unique` (`pipelineRunId`);
+SET @db = DATABASE();
 --> statement-breakpoint
-CREATE INDEX `pipeline_run_traces_videoId_idx` ON `pipeline_run_traces` (`videoId`);
+SET @s1 = IF(
+  (SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = @db AND TABLE_NAME = 'pipeline_run_traces' AND INDEX_NAME = 'pipeline_run_traces_pipelineRunId_unique') = 0,
+  'ALTER TABLE `pipeline_run_traces` ADD UNIQUE INDEX `pipeline_run_traces_pipelineRunId_unique` (`pipelineRunId`)',
+  'SELECT 1'
+);
 --> statement-breakpoint
-CREATE INDEX `pipeline_run_traces_pipelineVersion_idx` ON `pipeline_run_traces` (`pipelineVersion`);
+PREPARE stmt FROM @s1; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 --> statement-breakpoint
-CREATE INDEX `pipeline_run_traces_startedAt_idx` ON `pipeline_run_traces` (`startedAt`);
+SET @s2 = IF(
+  (SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = @db AND TABLE_NAME = 'pipeline_run_traces' AND INDEX_NAME = 'pipeline_run_traces_videoId_idx') = 0,
+  'CREATE INDEX `pipeline_run_traces_videoId_idx` ON `pipeline_run_traces` (`videoId`)',
+  'SELECT 1'
+);
+--> statement-breakpoint
+PREPARE stmt FROM @s2; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+--> statement-breakpoint
+SET @s3 = IF(
+  (SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = @db AND TABLE_NAME = 'pipeline_run_traces' AND INDEX_NAME = 'pipeline_run_traces_pipelineVersion_idx') = 0,
+  'CREATE INDEX `pipeline_run_traces_pipelineVersion_idx` ON `pipeline_run_traces` (`pipelineVersion`)',
+  'SELECT 1'
+);
+--> statement-breakpoint
+PREPARE stmt FROM @s3; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+--> statement-breakpoint
+SET @s4 = IF(
+  (SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = @db AND TABLE_NAME = 'pipeline_run_traces' AND INDEX_NAME = 'pipeline_run_traces_startedAt_idx') = 0,
+  'CREATE INDEX `pipeline_run_traces_startedAt_idx` ON `pipeline_run_traces` (`startedAt`)',
+  'SELECT 1'
+);
+--> statement-breakpoint
+PREPARE stmt FROM @s4; EXECUTE stmt; DEALLOCATE PREPARE stmt;

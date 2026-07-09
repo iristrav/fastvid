@@ -1,4 +1,4 @@
-CREATE TABLE `media_archives` (
+CREATE TABLE IF NOT EXISTS `media_archives` (
 	`id` int AUTO_INCREMENT NOT NULL,
 	`name` varchar(256) NOT NULL,
 	`slug` varchar(128) NOT NULL,
@@ -12,7 +12,7 @@ CREATE TABLE `media_archives` (
 	CONSTRAINT `media_archives_slug_unique` UNIQUE(`slug`)
 );
 --> statement-breakpoint
-CREATE TABLE `media_archive_assets` (
+CREATE TABLE IF NOT EXISTS `media_archive_assets` (
 	`id` int AUTO_INCREMENT NOT NULL,
 	`archiveId` int NOT NULL,
 	`title` varchar(512),
@@ -34,4 +34,16 @@ CREATE TABLE `media_archive_assets` (
 	CONSTRAINT `media_archive_assets_id` PRIMARY KEY(`id`)
 );
 --> statement-breakpoint
-ALTER TABLE `media_archive_assets` ADD CONSTRAINT `media_archive_assets_archiveId_media_archives_id_fk` FOREIGN KEY (`archiveId`) REFERENCES `media_archives`(`id`) ON DELETE cascade ON UPDATE no action;
+SET @db = DATABASE();
+--> statement-breakpoint
+SET @fk = IF(
+  (SELECT COUNT(*) FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = @db AND CONSTRAINT_NAME = 'media_archive_assets_archiveId_media_archives_id_fk') = 0,
+  'ALTER TABLE `media_archive_assets` ADD CONSTRAINT `media_archive_assets_archiveId_media_archives_id_fk` FOREIGN KEY (`archiveId`) REFERENCES `media_archives`(`id`) ON DELETE cascade ON UPDATE no action',
+  'SELECT 1'
+);
+--> statement-breakpoint
+PREPARE stmt FROM @fk;
+--> statement-breakpoint
+EXECUTE stmt;
+--> statement-breakpoint
+DEALLOCATE PREPARE stmt;

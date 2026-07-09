@@ -28,29 +28,38 @@ async function runMigrations() {
     console.log("[Worker] DATABASE_URL not set, skipping migrations");
     return;
   }
+  const { getDb } = await import("./db");
+  const db = await getDb();
+  if (!db) {
+    throw new Error("[Worker] DB not available — cannot run migrations");
+  }
+  const isDist = __dirname.endsWith("/dist") || __dirname.endsWith("\\dist");
+  const candidates = [
+    path.join(process.cwd(), "drizzle"),
+    path.join(process.cwd(), "dist", "drizzle"),
+    isDist ? path.resolve(__dirname, "../drizzle") : path.resolve(__dirname, "../drizzle"),
+  ];
+  const migrationsFolder = candidates.find((p) => fs.existsSync(path.join(p, "meta", "_journal.json")));
+  if (!migrationsFolder) {
+    throw new Error("[Worker] drizzle folder not found — cannot apply migrations");
+  }
+  console.log("[Worker] Running migrations from:", migrationsFolder);
   try {
-    const { getDb } = await import("./db");
-    const db = await getDb();
-    if (!db) {
-      console.warn("[Worker] DB not available, skipping migrations");
-      return;
-    }
-    const isDist = __dirname.endsWith("/dist") || __dirname.endsWith("\\dist");
-    const candidates = [
-      path.join(process.cwd(), "drizzle"),
-      path.join(process.cwd(), "dist", "drizzle"),
-      isDist ? path.resolve(__dirname, "../drizzle") : path.resolve(__dirname, "../drizzle"),
-    ];
-    const migrationsFolder = candidates.find((p) => fs.existsSync(path.join(p, "meta", "_journal.json")));
-    if (!migrationsFolder) {
-      console.warn("[Worker] drizzle folder not found, skipping migrations");
-      return;
-    }
-    console.log("[Worker] Running migrations from:", migrationsFolder);
-    await migrate(db as Parameters<typeof migrate>[0], { migrationsFolder });
-    console.log("[Worker] Migrations applied");
+    const { runMigrationsWithGuard } = await import("./migrationGuard");
+    await runMigrationsWithGuard(
+      db as Parameters<typeof migrate>[0],
+      migrationsFolder,
+      (guardDb, config) => migrate(guardDb as Parameters<typeof migrate>[0], config)
+    );
   } catch (e) {
-    console.error("[Worker] Migration failed:", e);
+    const cause = (e as { cause?: { sqlMessage?: string; code?: string; sql?: string } }).cause;
+    const detail = cause?.sqlMessage
+      ? `MySQL ${cause.code ?? "ERR"}: ${cause.sqlMessage}`
+      : String(e);
+    console.error("[Worker] *** MIGRATION FAILED — ABORTING STARTUP ***");
+    console.error("[Worker] Failed migration detail:", detail);
+    if (cause?.sql) console.error("[Worker] Failing SQL:", cause.sql.slice(0, 500));
+    throw new Error(`Migration failed: ${detail}`);
   }
 }
 
