@@ -213,8 +213,10 @@ describe("migrationGuard", () => {
     expect(migrate).toHaveBeenCalledOnce();
   });
 
-  // ── 4. Non-idempotent ghost → abort ──────────────────────────────────────────
-  it("non-idempotent ghost: aborts startup with diagnostic", async () => {
+  // ── 4. Non-idempotent ghost → auto-repaired (not aborted) ───────────────────
+  it("non-idempotent ghost: auto-repairs even without IF NOT EXISTS (migration already ran)", async () => {
+    // A ghost means ALL tables exist — the migration ran to completion already.
+    // We should record it, not abort. Idempotency only matters for partial migrations.
     dir = makeMigrationsFolder([
       { tag: "0000_init", when: 1000, sql: NON_IDEMPOTENT_CREATE_TABLE },
     ]);
@@ -225,11 +227,13 @@ describe("migrationGuard", () => {
     };
     const migrate = vi.fn();
 
-    await expect(
-      runMigrationsWithGuard(null, dir, migrate, { dbOps: makeMockDbOps(state) })
-    ).rejects.toThrow(/ghost migration.*0000_init.*not idempotent|ABORT.*ghost/i);
+    const result = await runMigrationsWithGuard(null, dir, migrate, {
+      dbOps: makeMockDbOps(state),
+    });
 
-    expect(migrate).not.toHaveBeenCalled();
+    expect(result.ghostsRepaired).toBe(1);
+    expect(state.records).toHaveLength(1);
+    expect(migrate).toHaveBeenCalledOnce();
   });
 
   // ── 5. Partial migration (idempotent) ────────────────────────────────────────

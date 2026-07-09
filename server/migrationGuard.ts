@@ -353,20 +353,15 @@ export async function runMigrationsWithGuard(
   // ── Ghost migrations: all tables exist, not recorded ──────────────────────
   if (ghosts.length > 0) {
     console.log(
-      `[Migration] ⚠  ${ghosts.length} interrupted migration(s) detected — tables exist but not recorded:`
+      `[Migration] ⚠  ${ghosts.length} ghost migration(s) detected — all tables exist but not recorded:`
     );
     for (const a of ghosts) {
       console.log(`[Migration]    ${a.tag}`);
-      console.log(`[Migration]      tables    : [${a.tablesCreated.join(", ")}] — all found in DB`);
-      if (!a.isIdempotent) {
-        throw new Error(
-          `[Migration] ABORT: ${a.tag} is a ghost migration (tables exist, not recorded) ` +
-            `but contains no IF NOT EXISTS / INFORMATION_SCHEMA guards. ` +
-            `Manual fix required: either drop tables [${a.tablesCreated.join(", ")}] or ` +
-            `manually insert a row into __drizzle_migrations with hash=${a.hash} created_at=${a.folderMillis}.`
-        );
-      }
-      console.log(`[Migration]      idempotent: ✓ — auto-repairing history`);
+      console.log(`[Migration]      tables : [${a.tablesCreated.join(", ")}] — all found in DB`);
+      // A ghost means the migration ran to completion (every table it creates exists).
+      // The migration already executed — we just need to record it. Idempotency is
+      // irrelevant here because we are NOT re-running the SQL, only inserting the record.
+      console.log(`[Migration]      action : auto-repairing history (migration already applied)`);
     }
 
     await ops.ensureMigrationsTable();
