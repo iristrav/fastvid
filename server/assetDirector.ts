@@ -37,6 +37,14 @@ import type {
 } from "./masterDocumentaryDirector";
 import { getBlueprintDirective, isBudgetExceeded, recordBudgetUsage } from "./masterDocumentaryDirector";
 import type { ClipAnnotation } from "../drizzle/annotationTypes";
+import {
+  computeArchiveMetadataScores,
+  computeTrimHint,
+  archiveV4ScoringEnabled,
+  type SegmentSimilarity,
+  type TrimHint,
+  type ArchiveMetadataScores,
+} from "./archiveMetadataScorer";
 
 // ─── Feature flag ─────────────────────────────────────────────────────────────
 
@@ -59,6 +67,12 @@ export type CandidateMeta = {
   plannerMotionTarget?: number | null;
   /** Cosine similarity of beat-text vs stored asset embedding (0–1). */
   embeddingSimilarity?: number | null;
+  /**
+   * Per-segment embedding similarities for this clip.
+   * Populated by the pipeline when segment embedding files are available.
+   * Used by archiveMetadataScorer to award segment-level bonuses and produce TrimHints.
+   */
+  segmentSimilarities?: SegmentSimilarity[];
 };
 
 // ─── Editorial Memory ─────────────────────────────────────────────────────────
@@ -193,6 +207,16 @@ export type AssetDirectorContext = {
   targetMotionLevel?: number | null;
   plannedShotType?: string | null;
   callbacksPlaced: Map<string, number>;
+  /**
+   * Expected audio event types for this beat (e.g. ["crowd", "speech"]).
+   * Used by archiveMetadataScorer to boost clips with matching audio.
+   */
+  expectedAudioTypes?: string[];
+  /**
+   * Expected cinematic tags for this beat (e.g. ["aerial view", "establishing shot"]).
+   * Set from blueprint visual type or editorial directive.
+   */
+  expectedCinematicTags?: string[];
 };
 
 // ─── Score types ──────────────────────────────────────────────────────────────
@@ -238,6 +262,25 @@ export type AssetScore = {
     diversityModifier: number;
     budgetPenalty: number;
     editorialMemoryBonus: number;
+    // ── v4 Archive Metadata bonuses ───────────────────────────────────────────
+    /** Best segment embedding similarity bonus (+0 to +6). */
+    segmentBonus: number;
+    /** Face dominance / close-up presence bonus (+0 to +6). */
+    faceBonus: number;
+    /** Object movement match bonus (+0 to +4). */
+    objectBonus: number;
+    /** Audio event atmosphere match bonus (+0 to +5). */
+    audioBonus: number;
+    /** Cinematic tags match bonus (+0 to +6). */
+    cinematicBonus: number;
+    /** Shot importance bonus (+0 to +5). */
+    importanceBonus: number;
+    /** Visual uniqueness tiebreaker (+0 to +3). */
+    uniquenessBonus: number;
+    /** Sum of all v4 bonuses. */
+    v4Total: number;
+    /** Best-matching segment (null if no segment embeddings). */
+    bestSegment: SegmentSimilarity | null;
   };
   /** Human-readable reasons for the top choice. */
   reasons: string[];
@@ -247,6 +290,11 @@ export type AssetDirectorResult = {
   rankedPaths: string[];
   topScore: AssetScore | null;
   reordered: boolean;
+  /**
+   * Trim hints for candidates that have a better-matching temporal segment.
+   * Key = clip path. Look up the winning path here to apply segment trimming.
+   */
+  trimHints?: Map<string, TrimHint>;
 };
 
 // ─── Path-based inference (fallback only) ─────────────────────────────────────
@@ -738,6 +786,17 @@ function scoreCandidate(
   const budgetPenalty       = computeBudgetPenalty(clipPath, ctx.budgetTracker);
   const editorialMemoryBonus = computeEditorialMemoryBonus(clipPath, meta, ctx.editorialMemory);
 
+  // ── v4 Archive Metadata bonuses ───────────────────────────────────────────
+  const v4: ArchiveMetadataScores = computeArchiveMetadataScores(
+    meta?.annotation,
+    beatText,
+    ctx.activeEntity,
+    meta?.embeddingSimilarity,
+    meta?.segmentSimilarities ?? [],
+    ctx.expectedAudioTypes,
+    ctx.expectedCinematicTags
+  );
+
   // ── Weighted sum ──────────────────────────────────────────────────────────
   const weighted =
     fp.score   * WEIGHTS.annotation +
@@ -747,7 +806,7 @@ function scoreCandidate(
     blueprint  * WEIGHTS.blueprint;
 
   const finalScore = Math.max(0, Math.min(100, Math.round(
-    weighted + diversityModifier + budgetPenalty + editorialMemoryBonus
+    weighted + diversityModifier + budgetPenalty + editorialMemoryBonus + v4.total
   )));
 
   // ── Reasons ───────────────────────────────────────────────────────────────
@@ -763,7 +822,15 @@ function scoreCandidate(
   if (ctx.plannedShotType && shotType.includes(ctx.plannedShotType.split(" ")[0]!)) {
     reasons.push(`matches planned shot: ${ctx.plannedShotType}`);
   }
-  if (budgetPenalty < 0) reasons.push("⚠ visual type over budget");
+  if (budgetPenalty < 0)      reasons.push("⚠ visual type over budget");
+  if (v4.segmentBonus >= 4)   reasons.push(`segment match +${v4.segmentBonus} (best seg sim ${v4.bestSegment?.similarity.toFixed(2) ?? "?"})`);
+  if (v4.faceBonus >= 4)      reasons.push(`face dominant +${v4.faceBonus}`);
+  if (v4.audioBonus >= 3)     reasons.push(`audio match +${v4.audioBonus}`);
+  if (v4.cinematicBonus >= 4) reasons.push(`cinematic tags +${v4.cinematicBonus}`);
+  if (v4.importanceBonus >= 4) {
+    const imp = meta?.annotation?.shotImportance;
+    reasons.push(`iconic shot [${imp?.label ?? ""}] +${v4.importanceBonus}`);
+  }
 
   return {
     finalScore,
@@ -786,6 +853,15 @@ function scoreCandidate(
       diversityModifier,
       budgetPenalty,
       editorialMemoryBonus,
+      segmentBonus:    v4.segmentBonus,
+      faceBonus:       v4.faceBonus,
+      objectBonus:     v4.objectBonus,
+      audioBonus:      v4.audioBonus,
+      cinematicBonus:  v4.cinematicBonus,
+      importanceBonus: v4.importanceBonus,
+      uniquenessBonus: v4.uniquenessBonus,
+      v4Total:         v4.total,
+      bestSegment:     v4.bestSegment,
     },
     reasons,
   };
@@ -822,6 +898,9 @@ export function logAssetDirectorChoice(
   const editDetail = `quality:${bk.editorialQuality} story:${bk.editorialStoryPotential}`;
   const modifiers = `Diversity:${bk.diversityModifier >= 0 ? "+" : ""}${bk.diversityModifier}  Budget:${bk.budgetPenalty}  Memory:+${bk.editorialMemoryBonus}`;
   const reasonStr = score.reasons.length ? `  (${score.reasons.join(", ")})` : "";
+  const v4Detail = bk.v4Total > 0
+    ? `seg:+${bk.segmentBonus} face:+${bk.faceBonus} obj:+${bk.objectBonus} audio:+${bk.audioBonus} cine:+${bk.cinematicBonus} imp:+${bk.importanceBonus} uniq:+${bk.uniquenessBonus} → +${bk.v4Total}`
+    : "no v4 bonus";
 
   console.log(
     `[AssetDirector] s${sceneIndex}b${beatIndex} "${beatText.slice(0, 50)}" → ${base}\n` +
@@ -831,6 +910,7 @@ export function logAssetDirectorChoice(
     `  ShotVariety: ${bk.shotVariety.toString().padEnd(4)} ${pct(WEIGHTS.shotVariety)}\n` +
     `  Blueprint:   ${bk.blueprint.toString().padEnd(4)} ${pct(WEIGHTS.blueprint)}\n` +
     `  ─ ${modifiers}\n` +
+    `  ─ v4 Metadata: ${v4Detail}\n` +
     `  ─ Final: ${score.finalScore}${reasonStr}`
   );
 }
@@ -927,9 +1007,24 @@ export function rankCandidatesWithContext(
 
   const reordered = candidatePaths[0] !== scored[0]!.path;
 
+  // Build trim hints for candidates that have a better-matching segment
+  const trimHints = new Map<string, TrimHint>();
+  if (archiveV4ScoringEnabled()) {
+    for (const { path: p, score } of scored) {
+      const meta = candidateMeta?.get(p);
+      const hint = computeTrimHint(
+        score.breakdown.bestSegment ?? null,
+        meta?.embeddingSimilarity ?? 0,
+        meta?.annotation,
+      );
+      if (hint) trimHints.set(p, hint);
+    }
+  }
+
   return {
     rankedPaths: scored.map((s) => s.path),
     topScore: scored[0]!.score,
     reordered,
+    trimHints: trimHints.size > 0 ? trimHints : undefined,
   };
 }

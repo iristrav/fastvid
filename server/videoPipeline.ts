@@ -256,6 +256,11 @@ import {
   type SceneStyleMemory,
 } from "./assetDirector";
 import {
+  computeSegmentSimilarities,
+  applySegmentTrimIfNeeded,
+  archiveV4ScoringEnabled,
+} from "./archiveMetadataScorer";
+import {
   applyDocumentaryTasteModel,
   recordTasteModelAdoption,
   resetTasteModelScene,
@@ -12023,6 +12028,12 @@ async function adoptClip(
           recordAdoptedClip(p, adCtx);
           dedup.assetDirectorSceneClips.push(p);
           recordTasteModelAdoption(p, dedup.tasteModelCtx, dedup.clipAnnotationMeta.get(p));
+          // Apply segment trim hint if this clip has a better temporal segment
+          const trimHint = adResult.trimHints?.get(p);
+          if (trimHint) {
+            const trimmed = await applySegmentTrimIfNeeded(p, trimHint, workDir).catch(() => null);
+            if (trimmed) return trimmed;
+          }
           return p;
         }
         dedup.usedCategories.set(category, Math.max(0, (dedup.usedCategories.get(category) ?? 1) - 1));
@@ -19249,12 +19260,14 @@ async function fetchSceneVisuals(
         // Funnel path: archive-first with per-beat gap detection (when enabled),
         // or hybrid coverage-weighted ranking (original behaviour).
         let funnelCandidates: FunnelCandidate[];
+        let funnelBeatEmb: number[] | null = null;
 
         if (archiveFirstBeatsEnabled()) {
           // ── Archive-first per-beat gap detection ──────────────────────────────
           // 1. Compute beat embedding (1 API call; model caches by text)
           const beatDoc = `${beat.text}. ${beat.visualDescription ?? ""}`.slice(0, 400);
           const beatEmb = await createTextEmbedding(beatDoc).catch(() => null);
+          funnelBeatEmb = beatEmb;
           // 2. Score archive candidates in-memory (no API calls)
           const bestArchiveScore = beatEmb
             ? findBestArchiveScoreForBeat(funnelResult.candidates, beatEmb)
@@ -19311,6 +19324,24 @@ async function fetchSceneVisuals(
             if (candidate.embeddingSimilarity != null) {
               const existing = dedup.clipAnnotationMeta.get(clipPath) ?? {};
               dedup.clipAnnotationMeta.set(clipPath, { ...existing, embeddingSimilarity: candidate.embeddingSimilarity });
+            }
+            // Compute segment similarities while beat embedding is in scope (archive only)
+            if (
+              archiveV4ScoringEnabled() &&
+              funnelBeatEmb &&
+              candidate.source === "archive" &&
+              candidate.archivePick?.asset
+            ) {
+              const asset = candidate.archivePick.asset;
+              if (asset.annotationJson?.timeline?.length) {
+                const LOCAL_UPLOADS_DIR = process.env.LOCAL_UPLOADS_DIR ?? "/data/uploads";
+                const embeddingDir = `${LOCAL_UPLOADS_DIR}/archive-clip-embeddings`;
+                const segSims = computeSegmentSimilarities(asset.id, asset.annotationJson, funnelBeatEmb, embeddingDir);
+                if (segSims.length > 0) {
+                  const existing = dedup.clipAnnotationMeta.get(clipPath) ?? {};
+                  dedup.clipAnnotationMeta.set(clipPath, { ...existing, segmentSimilarities: segSims });
+                }
+              }
             }
             break;
           }
