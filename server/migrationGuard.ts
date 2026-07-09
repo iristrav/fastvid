@@ -1,23 +1,24 @@
 /**
- * Migration guard: pre-flights every pending migration before Drizzle runs.
+ * Migration guard: full schema-object reconciliation before Drizzle runs.
  *
- * MySQL's implicit DDL commit means that when a migration fails mid-run (e.g.,
- * an FK constraint fails after CREATE TABLE already committed), the table exists
- * in the DB but the migration is never recorded in __drizzle_migrations. On the
- * next startup Drizzle re-runs the migration and fails with ER_TABLE_EXISTS_ERROR.
+ * Problem: MySQL's implicit DDL commit means that when a migration fails mid-run,
+ * previously executed DDL (CREATE TABLE, ADD COLUMN, etc.) is already committed but
+ * __drizzle_migrations is never updated. On the next startup Drizzle tries to re-run
+ * those statements and fails with ER_TABLE_EXISTS_ERROR / ER_DUP_FIELDNAME / etc.
  *
- * This guard detects GHOST (all tables exist, not recorded) and PARTIAL (some
- * tables exist) states, auto-repairs ghosts, and verifies that recorded migration
- * files have not been modified after execution.
+ * This also covers the "legacy database" case: a DB that was created via drizzle push
+ * or a SQL dump has all schema objects in place but __drizzle_migrations is empty or
+ * incomplete. In that case the guard reconstructs migration history from INFORMATION_SCHEMA.
  *
- * Features:
- *   - Ghost migration auto-repair
- *   - Partial migration detection with diagnostic
- *   - Migration file integrity verification (sha256)
- *   - Dry-run mode (MIGRATION_DRY_RUN=true)
- *   - Structured MigrationResult for deployment report
- *   - Recovery hints on every MySQL error code
- *   - Dependency-injected DB ops for testability
+ * Reconciliation strategy (per pending migration):
+ *   1. Extract ALL schema objects the migration creates or modifies:
+ *      tables, columns, indexes, FKs, unique constraints.
+ *   2. Check INFORMATION_SCHEMA to see which objects already exist.
+ *   3. Classify as GHOST (all exist), PARTIAL (some), or CLEAN (none).
+ *   4. GHOST → auto-repair by inserting the record. Drizzle then skips it.
+ *   5. PARTIAL idempotent → let Drizzle re-run (IF NOT EXISTS guards protect it).
+ *   6. PARTIAL non-idempotent → abort with diagnosis.
+ *   7. CLEAN → let Drizzle run normally.
  */
 
 import { createHash } from "crypto";
@@ -52,6 +53,10 @@ export interface MigrationDbOps {
   tableExists(tableName: string): Promise<boolean>;
   ensureMigrationsTable(): Promise<void>;
   insertRecord(hash: string, folderMillis: number): Promise<void>;
+  // Extended checks for full schema-object reconciliation (optional for backward compat):
+  columnExists?(table: string, column: string): Promise<boolean>;
+  indexExists?(table: string, indexName: string): Promise<boolean>;
+  fkExists?(constraintName: string): Promise<boolean>;
 }
 
 // ─── Internal types ───────────────────────────────────────────────────────────
@@ -65,6 +70,14 @@ interface JournalEntry {
 
 type MigrationStatus = "clean" | "ghost" | "partial";
 
+interface SchemaObject {
+  kind: "table" | "column" | "index" | "fk";
+  /** Table name context (empty for table/fk kinds when unknown) */
+  table: string;
+  /** Table name for 'table' kind; column/index/fk name otherwise */
+  name: string;
+}
+
 interface MigrationAnalysis {
   idx: number;
   tag: string;
@@ -73,8 +86,8 @@ interface MigrationAnalysis {
   rawSql: string;
   hash: string;
   isIdempotent: boolean;
-  tablesCreated: string[];
-  tablesFoundInDb: string[];
+  schemaObjects: SchemaObject[];
+  existingObjects: SchemaObject[];
   status: MigrationStatus;
 }
 
@@ -101,6 +114,27 @@ export function createDbOps(db: any): MigrationDbOps {
       return rows.length > 0;
     },
 
+    async columnExists(table: string, column: string) {
+      const rows = (await db.execute(
+        sql`SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ${table} AND COLUMN_NAME = ${column} LIMIT 1`
+      )) as unknown as unknown[];
+      return rows.length > 0;
+    },
+
+    async indexExists(table: string, indexName: string) {
+      const rows = (await db.execute(
+        sql`SELECT 1 FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ${table} AND INDEX_NAME = ${indexName} LIMIT 1`
+      )) as unknown as unknown[];
+      return rows.length > 0;
+    },
+
+    async fkExists(constraintName: string) {
+      const rows = (await db.execute(
+        sql`SELECT 1 FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = DATABASE() AND CONSTRAINT_NAME = ${constraintName} LIMIT 1`
+      )) as unknown as unknown[];
+      return rows.length > 0;
+    },
+
     async ensureMigrationsTable() {
       await db.execute(sql`
         CREATE TABLE IF NOT EXISTS \`__drizzle_migrations\` (
@@ -119,15 +153,73 @@ export function createDbOps(db: any): MigrationDbOps {
   };
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ─── Schema object extraction ─────────────────────────────────────────────────
 
-function extractCreatedTableNames(rawSql: string): string[] {
-  const re = /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?`([^`]+)`/gi;
-  const names: string[] = [];
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(rawSql)) !== null) names.push(m[1]);
-  return Array.from(new Set(names));
+/**
+ * Extract all schema objects (tables, columns, indexes, FKs) that a migration
+ * creates or modifies. Used to determine migration status via INFORMATION_SCHEMA.
+ *
+ * Note: INFORMATION_SCHEMA patterns inside string literals (idempotent migrations)
+ * may produce false extractions, but that's harmless: if the object already exists
+ * the migration is still correctly classified as GHOST/PARTIAL.
+ */
+function extractSchemaObjects(rawSql: string): SchemaObject[] {
+  const objects: SchemaObject[] = [];
+  const seen = new Set<string>();
+
+  const add = (obj: SchemaObject) => {
+    const key = `${obj.kind}:${obj.table}:${obj.name}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      objects.push(obj);
+    }
+  };
+
+  // CREATE TABLE [IF NOT EXISTS] `name`
+  Array.from(rawSql.matchAll(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?`([^`]+)`/gi)).forEach(
+    (m) => add({ kind: "table", table: "", name: m[1] })
+  );
+
+  // ALTER TABLE `t` ... ADD [COLUMN] `col` (not CONSTRAINT / KEY / INDEX / UNIQUE)
+  Array.from(
+    rawSql.matchAll(
+      /ALTER\s+TABLE\s+`([^`]+)`[^;]*?\bADD\s+(?!CONSTRAINT\b)(?!KEY\b)(?!INDEX\b)(?!UNIQUE\b)(?:COLUMN\s+)?`([^`]+)`/gi
+    )
+  ).forEach((m) => add({ kind: "column", table: m[1], name: m[2] }));
+
+  // ALTER TABLE `t` ... MODIFY [COLUMN] `col`
+  Array.from(
+    rawSql.matchAll(/ALTER\s+TABLE\s+`([^`]+)`[^;]*?\bMODIFY\s+(?:COLUMN\s+)?`([^`]+)`/gi)
+  ).forEach((m) => add({ kind: "column", table: m[1], name: m[2] }));
+
+  // ALTER TABLE `t` ... CHANGE [COLUMN] `old` `new` — check the NEW column name
+  Array.from(
+    rawSql.matchAll(
+      /ALTER\s+TABLE\s+`([^`]+)`[^;]*?\bCHANGE\s+(?:COLUMN\s+)?`[^`]+`\s+`([^`]+)`/gi
+    )
+  ).forEach((m) => add({ kind: "column", table: m[1], name: m[2] }));
+
+  // ADD CONSTRAINT `name` FOREIGN KEY
+  Array.from(rawSql.matchAll(/ADD\s+CONSTRAINT\s+`([^`]+)`\s+FOREIGN\s+KEY/gi)).forEach((m) =>
+    add({ kind: "fk", table: "", name: m[1] })
+  );
+
+  // ALTER TABLE `t` ... ADD CONSTRAINT `name` UNIQUE  (unique index)
+  Array.from(
+    rawSql.matchAll(
+      /ALTER\s+TABLE\s+`([^`]+)`[^;]*?\bADD\s+CONSTRAINT\s+`([^`]+)`\s+UNIQUE/gi
+    )
+  ).forEach((m) => add({ kind: "index", table: m[1], name: m[2] }));
+
+  // CREATE [UNIQUE] INDEX `name` ON `table`
+  Array.from(
+    rawSql.matchAll(/CREATE\s+(?:UNIQUE\s+)?INDEX\s+`([^`]+)`\s+ON\s+`([^`]+)`/gi)
+  ).forEach((m) => add({ kind: "index", table: m[2], name: m[1] }));
+
+  return objects;
 }
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function detectIdempotency(rawSql: string): boolean {
   return /IF\s+NOT\s+EXISTS/i.test(rawSql) || /INFORMATION_SCHEMA/i.test(rawSql);
@@ -137,25 +229,39 @@ function sha256(content: string): string {
   return createHash("sha256").update(content).digest("hex");
 }
 
+async function checkObjectExists(obj: SchemaObject, ops: MigrationDbOps): Promise<boolean | null> {
+  switch (obj.kind) {
+    case "table":
+      return ops.tableExists(obj.name);
+    case "column":
+      return ops.columnExists ? ops.columnExists(obj.table, obj.name) : null;
+    case "index":
+      return ops.indexExists ? ops.indexExists(obj.table, obj.name) : null;
+    case "fk":
+      return ops.fkExists ? ops.fkExists(obj.name) : null;
+  }
+}
+
 function recoveryHint(code: string | undefined, message: string | undefined): string {
   switch (code) {
     case "ER_TABLE_EXISTS_ERROR":
       return (
         "Table already exists — the migration was partially applied before this deploy.\n" +
-        "  The migration guard should have detected this. If it did not, check __drizzle_migrations\n" +
-        "  and ensure the migration SQL uses CREATE TABLE IF NOT EXISTS."
+        "  Ensure the migration SQL uses CREATE TABLE IF NOT EXISTS."
       );
     case "ER_DUP_FIELDNAME":
       return (
         "Column already exists — use an INFORMATION_SCHEMA.COLUMNS check:\n" +
-        "  SET @s = IF((SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE ...) = 0, 'ALTER TABLE ... ADD COLUMN ...', 'SELECT 1');\n" +
+        "  SET @s = IF((SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE ...) = 0,\n" +
+        "    'ALTER TABLE ... ADD COLUMN ...', 'SELECT 1');\n" +
         "  PREPARE stmt FROM @s; EXECUTE stmt; DEALLOCATE PREPARE stmt;"
       );
     case "ER_DUP_KEY_NAME":
     case "ER_DUP_INDEX":
       return (
         "Index already exists — use an INFORMATION_SCHEMA.STATISTICS check:\n" +
-        "  SET @s = IF((SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS WHERE ... AND INDEX_NAME = '...') = 0, 'CREATE INDEX ...', 'SELECT 1');\n" +
+        "  SET @s = IF((SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS WHERE ...) = 0,\n" +
+        "    'CREATE INDEX ...', 'SELECT 1');\n" +
         "  PREPARE stmt FROM @s; EXECUTE stmt; DEALLOCATE PREPARE stmt;"
       );
     case "ER_CANNOT_ADD_FOREIGN":
@@ -168,11 +274,9 @@ function recoveryHint(code: string | undefined, message: string | undefined): st
     case "ER_NO_REFERENCED_ROW_2":
       return "A FK referenced row does not exist. Check data integrity before applying this migration.";
     case "ER_LOCK_WAIT_TIMEOUT":
-      return "Lock timeout — another process may be holding a lock. Check for long-running transactions.";
+      return "Lock timeout — another process may be holding a lock.";
     default:
-      return message
-        ? `MySQL error: ${message}`
-        : "Check the SQL statement above and the MySQL docs for this error code.";
+      return message ?? "Check the SQL statement and the MySQL docs for this error code.";
   }
 }
 
@@ -187,7 +291,6 @@ export async function runMigrationsWithGuard(
   options?: {
     dryRun?: boolean;
     strictIntegrity?: boolean;
-    /** Override DB ops (used in tests) */
     dbOps?: MigrationDbOps;
   }
 ): Promise<MigrationResult> {
@@ -218,16 +321,12 @@ export async function runMigrationsWithGuard(
   const integrityViolations: IntegrityViolation[] = [];
   for (const row of recorded) {
     const entry = milliToEntry.get(row.created_at);
-    if (!entry) continue; // unknown / orphaned record — skip
+    if (!entry) continue;
     const sqlPath = path.join(migrationsFolder, `${entry.tag}.sql`);
     if (!fs.existsSync(sqlPath)) continue;
     const currentHash = sha256(fs.readFileSync(sqlPath, "utf-8"));
     if (currentHash !== row.hash) {
-      integrityViolations.push({
-        tag: entry.tag,
-        storedHash: row.hash,
-        currentHash,
-      });
+      integrityViolations.push({ tag: entry.tag, storedHash: row.hash, currentHash });
     }
   }
 
@@ -242,13 +341,12 @@ export async function runMigrationsWithGuard(
     }
     if (strictIntegrity) {
       throw new Error(
-        `[Migration] ABORT: ${integrityViolations.length} migration file(s) have been modified after ` +
-          `execution. Set MIGRATION_STRICT_INTEGRITY=false to downgrade to a warning, or restore the ` +
-          `original file content. Modified: ${integrityViolations.map((v) => v.tag).join(", ")}`
+        `[Migration] ABORT: ${integrityViolations.length} migration file(s) modified after ` +
+          `execution. Modified: ${integrityViolations.map((v) => v.tag).join(", ")}`
       );
     }
     console.warn(
-      "[Migration]    Set MIGRATION_STRICT_INTEGRITY=true to abort startup on integrity violations."
+      "[Migration]    Set MIGRATION_STRICT_INTEGRITY=true to abort on integrity violations."
     );
   }
 
@@ -256,7 +354,7 @@ export async function runMigrationsWithGuard(
   const pendingEntries = journal.entries.filter((e) => !recordedMillisSet.has(e.when));
 
   if (pendingEntries.length === 0 && integrityViolations.length === 0) {
-    console.log(`[Migration] ✓ ${total} migrations recorded — nothing to apply`);
+    console.log(`[Migration] ✓ ${total}/${total} migrations recorded — nothing to apply`);
     return {
       totalMigrations: total,
       recordedBefore,
@@ -275,6 +373,7 @@ export async function runMigrationsWithGuard(
     console.log(
       `[Migration] ${recordedBefore}/${total} migrations recorded — ${pendingEntries.length} pending`
     );
+    console.log("[Migration] Running schema reconciliation...");
   }
 
   const analyses: MigrationAnalysis[] = [];
@@ -282,20 +381,28 @@ export async function runMigrationsWithGuard(
     const sqlPath = path.join(migrationsFolder, `${entry.tag}.sql`);
     const rawSql = fs.readFileSync(sqlPath, "utf-8");
     const hash = sha256(rawSql);
-    const tablesCreated = extractCreatedTableNames(rawSql);
+    const schemaObjects = extractSchemaObjects(rawSql);
 
-    const tablesFoundInDb: string[] = [];
-    if (!dryRun) {
-      for (const tbl of tablesCreated) {
-        if (await ops.tableExists(tbl)) tablesFoundInDb.push(tbl);
+    const existingObjects: SchemaObject[] = [];
+    let checkableTotal = 0;
+
+    if (!dryRun && schemaObjects.length > 0) {
+      for (const obj of schemaObjects) {
+        const exists = await checkObjectExists(obj, ops);
+        if (exists === null) continue; // method not available in ops — skip from count
+        checkableTotal++;
+        if (exists) existingObjects.push(obj);
       }
     }
 
     let status: MigrationStatus;
-    if (tablesCreated.length === 0 || tablesFoundInDb.length === 0) {
+    if (dryRun || checkableTotal === 0) {
+      // No checkable objects or dry run → assume clean (let Drizzle decide)
       status = "clean";
-    } else if (tablesFoundInDb.length === tablesCreated.length) {
+    } else if (existingObjects.length === checkableTotal) {
       status = "ghost";
+    } else if (existingObjects.length === 0) {
+      status = "clean";
     } else {
       status = "partial";
     }
@@ -308,8 +415,8 @@ export async function runMigrationsWithGuard(
       rawSql,
       hash,
       isIdempotent: detectIdempotency(rawSql),
-      tablesCreated,
-      tablesFoundInDb,
+      schemaObjects,
+      existingObjects,
       status,
     });
   }
@@ -318,23 +425,27 @@ export async function runMigrationsWithGuard(
   const partials = analyses.filter((a) => a.status === "partial");
   const clean = analyses.filter((a) => a.status === "clean");
 
-  // ── Dry-run output ─────────────────────────────────────────────────────────
-  if (dryRun) {
-    for (const a of analyses) {
-      console.log(`[Migration:DryRun] ${a.tag} [${a.status.toUpperCase()}]${!a.isIdempotent ? " ⚠ NOT IDEMPOTENT" : ""}`);
-      if (a.tablesCreated.length > 0) {
-        console.log(`[Migration:DryRun]   tables    : [${a.tablesCreated.join(", ")}]`);
-        if (a.tablesFoundInDb.length > 0) {
-          console.log(`[Migration:DryRun]   in DB     : [${a.tablesFoundInDb.join(", ")}]`);
-        }
-      }
-      const stmts = a.rawSql.split("--> statement-breakpoint");
-      console.log(`[Migration:DryRun]   statements: ${stmts.length}`);
-      stmts.forEach((s, i) => {
-        const trimmed = s.trim().slice(0, 120);
-        if (trimmed) console.log(`[Migration:DryRun]   [${i + 1}] ${trimmed}${s.trim().length > 120 ? "…" : ""}`);
-      });
+  // ── Reconciliation report ──────────────────────────────────────────────────
+  console.log(`[Migration] Reconciliation result:`);
+  for (const a of analyses) {
+    const objSummary = summarizeObjects(a.schemaObjects);
+    const statusLabel =
+      a.status === "ghost"
+        ? "GHOST → auto-repair"
+        : a.status === "partial"
+          ? `PARTIAL (${a.existingObjects.length}/${a.schemaObjects.length} objects exist)${a.isIdempotent ? " [idempotent — safe to re-run]" : " ⚠ NOT IDEMPOTENT"}`
+          : `CLEAN → will run${a.isIdempotent ? " [idempotent]" : ""}`;
+    console.log(`[Migration]   ${a.tag.padEnd(50)} ${statusLabel}`);
+    if (objSummary) {
+      console.log(`[Migration]     objects: ${objSummary}`);
     }
+  }
+  console.log(
+    `[Migration] Summary: ${ghosts.length} ghost(s) to repair, ${partials.length} partial(s), ${clean.length} clean`
+  );
+
+  // ── Dry-run exit ───────────────────────────────────────────────────────────
+  if (dryRun) {
     const guardMs = Date.now() - t0;
     return {
       totalMigrations: total,
@@ -350,52 +461,43 @@ export async function runMigrationsWithGuard(
     };
   }
 
-  // ── Ghost migrations: all tables exist, not recorded ──────────────────────
+  // ── Ghost auto-repair: insert records for fully-applied migrations ──────────
   if (ghosts.length > 0) {
-    console.log(
-      `[Migration] ⚠  ${ghosts.length} ghost migration(s) detected — all tables exist but not recorded:`
-    );
-    for (const a of ghosts) {
-      console.log(`[Migration]    ${a.tag}`);
-      console.log(`[Migration]      tables : [${a.tablesCreated.join(", ")}] — all found in DB`);
-      // A ghost means the migration ran to completion (every table it creates exists).
-      // The migration already executed — we just need to record it. Idempotency is
-      // irrelevant here because we are NOT re-running the SQL, only inserting the record.
-      console.log(`[Migration]      action : auto-repairing history (migration already applied)`);
-    }
-
+    console.log(`[Migration] Auto-repairing ${ghosts.length} ghost migration(s)...`);
     await ops.ensureMigrationsTable();
     for (const a of ghosts) {
       await ops.insertRecord(a.hash, a.folderMillis);
-      console.log(`[Migration]    ✓ Repaired: ${a.tag} recorded in __drizzle_migrations`);
+      console.log(`[Migration]   ✓ ${a.tag} — recorded in __drizzle_migrations`);
     }
   }
 
-  // ── Partial migrations: some tables exist, some missing ────────────────────
-  if (partials.length > 0) {
-    for (const a of partials) {
-      const missing = a.tablesCreated.filter((t) => !a.tablesFoundInDb.includes(t));
-      console.log(`[Migration] ⚠  Partial migration detected: ${a.tag}`);
-      console.log(`[Migration]    Tables in DB  : [${a.tablesFoundInDb.join(", ")}]`);
-      console.log(`[Migration]    Tables missing: [${missing.join(", ")}]`);
-      if (!a.isIdempotent) {
-        throw new Error(
-          `[Migration] ABORT: ${a.tag} is partially applied — ` +
-            `tables [${a.tablesFoundInDb.join(", ")}] exist but [${missing.join(", ")}] are missing — ` +
-            `and the SQL contains no idempotency guards. ` +
-            `Manual intervention required: either drop [${a.tablesFoundInDb.join(", ")}] or complete the migration manually.`
-        );
-      }
-      console.log(
-        `[Migration]    Idempotent: ✓ — Drizzle will re-run and skip existing objects via IF NOT EXISTS`
+  // ── Partial migration checks ───────────────────────────────────────────────
+  for (const a of partials) {
+    const missingObjects = a.schemaObjects.filter(
+      (o) =>
+        !a.existingObjects.some((e) => e.kind === o.kind && e.table === o.table && e.name === o.name)
+    );
+    const missingDesc = missingObjects.map((o) => `${o.kind}:${o.name}`).join(", ");
+    const existsDesc = a.existingObjects.map((o) => `${o.kind}:${o.name}`).join(", ");
+    console.log(`[Migration] ⚠  Partial migration: ${a.tag}`);
+    console.log(`[Migration]    Existing : ${existsDesc}`);
+    console.log(`[Migration]    Missing  : ${missingDesc}`);
+    if (!a.isIdempotent) {
+      throw new Error(
+        `[Migration] ABORT: ${a.tag} is partially applied and NOT idempotent.\n` +
+          `  Existing objects: ${existsDesc}\n` +
+          `  Missing objects:  ${missingDesc}\n` +
+          `  Manual fix: drop [${a.existingObjects.map((o) => o.name).join(", ")}] or complete the migration manually.\n` +
+          `  Long-term fix: make the migration idempotent with IF NOT EXISTS / INFORMATION_SCHEMA guards.`
       );
     }
+    console.log(`[Migration]    Idempotent ✓ — Drizzle will re-run safely`);
   }
 
   // ── Clean migrations ───────────────────────────────────────────────────────
   if (clean.length > 0) {
     console.log(
-      `[Migration] ${clean.length} clean migration(s) to apply: ${clean.map((a) => a.tag).join(", ")}`
+      `[Migration] Running ${clean.length} clean migration(s): ${clean.map((a) => a.tag).join(", ")}`
     );
   }
 
@@ -429,12 +531,13 @@ export async function runMigrationsWithGuard(
 
   // ── Count what was applied ─────────────────────────────────────────────────
   const recordedAfter = (await ops.getRecordedMigrations()).length;
-  const executedThisDeploy = recordedAfter - recordedBefore - ghosts.length;
+  const executedThisDeploy = Math.max(0, recordedAfter - recordedBefore - ghosts.length);
 
   console.log(
     `[Migration] ✓ ${recordedAfter}/${total} migrations recorded` +
       (ghosts.length > 0 ? ` (${ghosts.length} ghost(s) repaired)` : "") +
-      (partials.length > 0 ? ` (${partials.length} partial(s) completed)` : "")
+      (partials.length > 0 ? ` (${partials.length} partial(s) re-run)` : "") +
+      (executedThisDeploy > 0 ? ` (${executedThisDeploy} new)` : "")
   );
 
   return {
@@ -449,4 +552,22 @@ export async function runMigrationsWithGuard(
     guardMs,
     migrateMs,
   };
+}
+
+// ─── Formatting helpers ───────────────────────────────────────────────────────
+
+function summarizeObjects(objects: SchemaObject[]): string {
+  if (objects.length === 0) return "";
+  const tables = objects.filter((o) => o.kind === "table").map((o) => o.name);
+  const columns = objects
+    .filter((o) => o.kind === "column")
+    .map((o) => `${o.table}.${o.name}`);
+  const indexes = objects.filter((o) => o.kind === "index").map((o) => o.name);
+  const fks = objects.filter((o) => o.kind === "fk").map((o) => o.name);
+  const parts: string[] = [];
+  if (tables.length) parts.push(`tables[${tables.join(",")}]`);
+  if (columns.length) parts.push(`cols[${columns.slice(0, 4).join(",")}${columns.length > 4 ? `…+${columns.length - 4}` : ""}]`);
+  if (indexes.length) parts.push(`idx[${indexes.join(",")}]`);
+  if (fks.length) parts.push(`fk[${fks.join(",")}]`);
+  return parts.join(" ");
 }
