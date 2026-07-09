@@ -45,6 +45,11 @@ import {
   type TrimHint,
   type ArchiveMetadataScores,
 } from "./archiveMetadataScorer";
+import {
+  decomposeQueryBeat,
+  editorialIntentEnabled,
+  logEditorialIntentChoice,
+} from "./editorialIntentEngine";
 
 // ─── Feature flag ─────────────────────────────────────────────────────────────
 
@@ -289,7 +294,11 @@ export type AssetScore = {
     retrievalPriorityBonus: number;
     /** Negative tags penalty (-5 to 0). */
     negativeTagsPenalty: number;
-    /** Sum of all v4/v5 bonuses including penalties. */
+    /** Editorial capability match bonus (+0 to +8). */
+    capabilityBonus: number;
+    /** Editorial capability mismatch penalty (-6 to 0). */
+    capabilityPenalty: number;
+    /** Sum of all v4/v5/v6 bonuses including penalties. */
     v4Total: number;
     /** Best-matching segment (null if no segment embeddings). */
     bestSegment: SegmentSimilarity | null;
@@ -798,7 +807,8 @@ function scoreCandidate(
   const budgetPenalty       = computeBudgetPenalty(clipPath, ctx.budgetTracker);
   const editorialMemoryBonus = computeEditorialMemoryBonus(clipPath, meta, ctx.editorialMemory);
 
-  // ── v4 Archive Metadata bonuses ───────────────────────────────────────────
+  // ── v4/v6 Archive Metadata + Editorial Capability bonuses ────────────────
+  const beatDecomposition = editorialIntentEnabled() ? decomposeQueryBeat(beatText) : undefined;
   const v4: ArchiveMetadataScores = computeArchiveMetadataScores(
     meta?.annotation,
     beatText,
@@ -806,7 +816,8 @@ function scoreCandidate(
     meta?.embeddingSimilarity,
     meta?.segmentSimilarities ?? [],
     ctx.expectedAudioTypes,
-    ctx.expectedCinematicTags
+    ctx.expectedCinematicTags,
+    beatDecomposition
   );
 
   // ── Weighted sum ──────────────────────────────────────────────────────────
@@ -878,6 +889,8 @@ function scoreCandidate(
       primarySubjectBonus:   v4.primarySubjectBonus,
       retrievalPriorityBonus: v4.retrievalPriorityBonus,
       negativeTagsPenalty:   v4.negativeTagsPenalty,
+      capabilityBonus:       v4.capabilityBonus,
+      capabilityPenalty:     v4.capabilityPenalty,
       v4Total:               v4.total,
       bestSegment:      v4.bestSegment,
     },
@@ -905,7 +918,8 @@ export function logAssetDirectorChoice(
   sceneIndex: number,
   beatIndex: number,
   beatText: string,
-  score: AssetScore
+  score: AssetScore,
+  annotation?: import("../drizzle/annotationTypes").ClipAnnotation | null
 ): void {
   const bk = score.breakdown;
   const base = path.basename(clipPath);
@@ -916,9 +930,9 @@ export function logAssetDirectorChoice(
   const editDetail = `quality:${bk.editorialQuality} story:${bk.editorialStoryPotential}`;
   const modifiers = `Diversity:${bk.diversityModifier >= 0 ? "+" : ""}${bk.diversityModifier}  Budget:${bk.budgetPenalty}  Memory:+${bk.editorialMemoryBonus}`;
   const reasonStr = score.reasons.length ? `  (${score.reasons.join(", ")})` : "";
-  const v4Detail = bk.v4Total > 0
-    ? `seg:+${bk.segmentBonus} face:+${bk.faceBonus} obj:+${bk.objectBonus} audio:+${bk.audioBonus} cine:+${bk.cinematicBonus} imp:+${bk.importanceBonus} uniq:+${bk.uniquenessBonus} story:+${bk.storytellingBonus} qual:+${bk.qualityBonus} health:+${bk.healthBonus} subj:+${bk.primarySubjectBonus} prio:+${bk.retrievalPriorityBonus} neg:${bk.negativeTagsPenalty} → ${bk.v4Total >= 0 ? "+" : ""}${bk.v4Total}`
-    : "no v4/v5 bonus";
+  const v4Detail = bk.v4Total !== 0
+    ? `seg:+${bk.segmentBonus} face:+${bk.faceBonus} obj:+${bk.objectBonus} audio:+${bk.audioBonus} cine:+${bk.cinematicBonus} imp:+${bk.importanceBonus} uniq:+${bk.uniquenessBonus} story:+${bk.storytellingBonus} qual:+${bk.qualityBonus} health:+${bk.healthBonus} subj:+${bk.primarySubjectBonus} prio:+${bk.retrievalPriorityBonus} neg:${bk.negativeTagsPenalty} cap:+${bk.capabilityBonus}/${bk.capabilityPenalty} → ${bk.v4Total >= 0 ? "+" : ""}${bk.v4Total}`
+    : "no v4/v5/v6 bonus";
 
   console.log(
     `[AssetDirector] s${sceneIndex}b${beatIndex} "${beatText.slice(0, 50)}" → ${base}\n` +
@@ -931,6 +945,18 @@ export function logAssetDirectorChoice(
     `  ─ v4 Metadata: ${v4Detail}\n` +
     `  ─ Final: ${score.finalScore}${reasonStr}`
   );
+
+  if (editorialIntentEnabled() && annotation?.editorialIntent) {
+    const decomposition = decomposeQueryBeat(beatText);
+    logEditorialIntentChoice(
+      clipPath,
+      annotation.editorialIntent,
+      decomposition,
+      score.breakdown.capabilityBonus,
+      score.breakdown.capabilityPenalty,
+      ""
+    );
+  }
 }
 
 // ─── recordAdoptedClip ────────────────────────────────────────────────────────

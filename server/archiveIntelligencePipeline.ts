@@ -64,6 +64,7 @@ import { exec as execCb } from "child_process";
 import { promisify } from "util";
 
 import { annotateAsset, buildEnrichedSemanticDocument, ANNOTATION_VERSION } from "./clipAnnotator";
+import { computeEditorialIntent, editorialIntentEnabled } from "./editorialIntentEngine";
 import { invokeLLM } from "./_core/llm";
 import type {
   ClipAnnotation,
@@ -1704,6 +1705,12 @@ export async function runArchiveIntelligencePipeline(
 
     // ── Stage 15b: Re-compute health score now that v5 fields are filled ─────
     annotation.healthScore = computeHealthScore(annotation);
+
+    // ── Stage 17: Editorial Intent Engine (derives capabilities + narrative functions) ──
+    if (editorialIntentEnabled()) {
+      const intent = computeEditorialIntent(annotation);
+      if (intent) annotation.editorialIntent = intent;
+    }
 
     // ── Stage 5b: Extended facet embeddings (ocrTimeline, audioEvents, storytelling, v5) ──
     if (!opts.skipFacetEmbeddings && annotation.facetEmbeddingKeys) {

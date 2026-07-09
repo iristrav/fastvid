@@ -38,6 +38,11 @@ import type {
   AssetHealthScore,
   RetrievalPriorityEntry,
 } from "../drizzle/annotationTypes";
+import {
+  editorialIntentEnabled,
+  scoreEditorialCapabilityMatch,
+  type BeatDecomposition,
+} from "./editorialIntentEngine";
 
 const execPromise = promisify(execCb);
 
@@ -93,7 +98,13 @@ export type ArchiveMetadataScores = {
   retrievalPriorityBonus: number;
   /** -5 to 0: penalty when beat matches a negative tag (wrong clip). */
   negativeTagsPenalty: number;
-  /** Sum of all bonuses including penalties (max ~54). */
+  /** +0 to +8: clip has required editorial capabilities for this beat. */
+  capabilityBonus: number;
+  /** -6 to 0: clip has penalized editorial capabilities for this beat. */
+  capabilityPenalty: number;
+  /** Human-readable explanation of the capability match (for logs). */
+  capabilityExplanation: string;
+  /** Sum of all bonuses including penalties (max ~62). */
   total: number;
   /** The best-matching temporal segment, used to produce a TrimHint. */
   bestSegment: SegmentSimilarity | null;
@@ -583,13 +594,15 @@ export function computeArchiveMetadataScores(
   clipLevelSim: number | null | undefined,
   segmentSimilarities: SegmentSimilarity[],
   expectedAudioTypes?: string[],
-  expectedCinematicTags?: string[]
+  expectedCinematicTags?: string[],
+  beatDecomposition?: BeatDecomposition
 ): ArchiveMetadataScores {
   const zero: ArchiveMetadataScores = {
     segmentBonus: 0, faceBonus: 0, objectBonus: 0, audioBonus: 0,
     cinematicBonus: 0, importanceBonus: 0, uniquenessBonus: 0,
     storytellingBonus: 0, qualityBonus: 0, healthBonus: 0,
     primarySubjectBonus: 0, retrievalPriorityBonus: 0, negativeTagsPenalty: 0,
+    capabilityBonus: 0, capabilityPenalty: 0, capabilityExplanation: "",
     total: 0, bestSegment: null,
   };
 
@@ -612,16 +625,28 @@ export function computeArchiveMetadataScores(
   const retrievalPriorityBonus = scoreRetrievalPriority(annotation.retrievalPriority, beatText);
   const negativeTagsPenalty   = scoreNegativeTags(annotation.negativeTags, beatText);
 
+  let capabilityBonus = 0;
+  let capabilityPenalty = 0;
+  let capabilityExplanation = "";
+  if (editorialIntentEnabled() && beatDecomposition && annotation.editorialIntent) {
+    const capMatch = scoreEditorialCapabilityMatch(annotation.editorialIntent, beatDecomposition);
+    capabilityBonus = capMatch.bonus;
+    capabilityPenalty = capMatch.penalty;
+    capabilityExplanation = capMatch.explanation;
+  }
+
   const total = segmentBonus + faceBonus + objectBonus + audioBonus +
                 cinematicBonus + importanceBonus + uniquenessBonus +
                 storytellingBonus + qualityBonus + healthBonus +
-                primarySubjectBonus + retrievalPriorityBonus + negativeTagsPenalty;
+                primarySubjectBonus + retrievalPriorityBonus + negativeTagsPenalty +
+                capabilityBonus + capabilityPenalty;
 
   return {
     segmentBonus, faceBonus, objectBonus, audioBonus,
     cinematicBonus, importanceBonus, uniquenessBonus,
     storytellingBonus, qualityBonus, healthBonus,
     primarySubjectBonus, retrievalPriorityBonus, negativeTagsPenalty,
+    capabilityBonus, capabilityPenalty, capabilityExplanation,
     total, bestSegment,
   };
 }

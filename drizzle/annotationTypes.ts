@@ -778,4 +778,73 @@ export type ClipAnnotation = {
    * Structured around: what, who, where, when, why this clip is the right choice.
    */
   retrievalSummary?: string;
+
+  /**
+   * Editorial Intent Engine result (v6).
+   * Computed at ingest time only — no LLM, pure derivation from existing annotation.
+   * Answers: WHY would an editor choose this clip?
+   */
+  editorialIntent?: EditorialIntent;
+};
+
+// ─── Editorial Intent Engine (v6) ────────────────────────────────────────────
+
+/**
+ * 21 editorial capabilities, each scored 0–100.
+ * Derived at ingest time from existing ClipAnnotation fields — no LLM.
+ */
+export type EditorialCapability = {
+  canOpenDocumentary?: number;
+  canCloseDocumentary?: number;
+  canIntroducePerson?: number;
+  canIntroduceLocation?: number;
+  canIntroduceEra?: number;
+  canShowScale?: number;
+  canShowDestruction?: number;
+  canShowVictory?: number;
+  canShowDefeat?: number;
+  canBuildSuspense?: number;
+  canIncreaseEmotion?: number;
+  canSupportVoiceOver?: number;
+  canBridgeScenes?: number;
+  canServeAsBroll?: number;
+  canRevealInformation?: number;
+  canVisualizeStatistics?: number;
+  canExplainTimeline?: number;
+  canSupportMapSequence?: number;
+  canSupportBiography?: number;
+  canSupportHistoricalExplanation?: number;
+  canSupportTechnicalExplanation?: number;
+};
+
+/**
+ * Narrative role a clip can fulfil within a documentary structure.
+ */
+export type NarrativeFunction =
+  | "opening"
+  | "establishing"
+  | "context"
+  | "background"
+  | "character_introduction"
+  | "historical_context"
+  | "buildup"
+  | "tension"
+  | "conflict"
+  | "turning_point"
+  | "climax"
+  | "aftermath"
+  | "reflection"
+  | "ending"
+  | "transition"
+  | "broll";
+
+/**
+ * The full editorial intent profile stored per asset.
+ */
+export type EditorialIntent = {
+  capabilities: EditorialCapability;
+  narrativeFunctions: NarrativeFunction[];
+  /** Human-readable sentence explaining why an editor would choose this clip. */
+  visualPurpose: string;
+  computedAt: string;
 };
