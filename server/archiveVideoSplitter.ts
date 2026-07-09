@@ -780,7 +780,9 @@ async function detectSceneFilterCutTimes(
 async function detectSceneCutTimes(inputPath: string, totalDur: number, deadlineMs: number): Promise<number[]> {
   const remaining = Math.max(60_000, deadlineMs - Date.now());
   const scaled = Math.max(120_000, Math.min(Math.floor(totalDur * 400), 3_600_000));
-  const detectTimeout = Math.min(remaining, scaled);
+  // V2: reserve time budget for audio transition detection
+  const v2AudioBudget = process.env.ARCHIVE_INGESTION_V2_ENABLED !== "false" ? 25_000 : 0;
+  const detectTimeout = Math.min(remaining - v2AudioBudget, scaled);
   const scdetBudget = Math.floor(detectTimeout * 0.5);
   const sceneBudget = Math.floor(detectTimeout * 0.5);
 
@@ -814,6 +816,24 @@ async function detectSceneCutTimes(inputPath: string, totalDur: number, deadline
     if (retry.length > cuts.length) {
       console.log(`[ArchiveSplit] sensitive shot retry: ${retry.length} cuts (was ${cuts.length})`);
       cuts = retry;
+    }
+  }
+
+  // V2: add audio-transition-based cut candidates (silence gaps)
+  // Only when the source file has an audio track and V2 is enabled.
+  if (process.env.ARCHIVE_INGESTION_V2_ENABLED !== "false" && Date.now() < deadlineMs - 5_000) {
+    try {
+      const { detectAudioTransitionCuts } = await import("./archiveIngestionV2");
+      const audioCuts = await detectAudioTransitionCuts(inputPath, totalDur, v2AudioBudget);
+      if (audioCuts.length > 0) {
+        const merged = combineShotCutTimes([cuts, audioCuts]);
+        if (merged.length > cuts.length) {
+          console.log(`[ArchiveSplit] V2 audio transitions: +${merged.length - cuts.length} cut(s)`);
+          cuts = merged;
+        }
+      }
+    } catch {
+      // audio detection is optional — never fail the split
     }
   }
 

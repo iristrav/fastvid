@@ -785,6 +785,32 @@ export type ClipAnnotation = {
    * Answers: WHY would an editor choose this clip?
    */
   editorialIntent?: EditorialIntent;
+
+  // ── Ingestion V2 fields ───────────────────────────────────────────────────
+
+  /**
+   * Standardized shot type labels derived from cinematicTags + timeline + cameraMovement.
+   * Examples: ["Wide", "Static", "Establishing"] | ["Close-up", "Handheld"] | ["Aerial"]
+   */
+  shotClassification?: string[];
+
+  /**
+   * Recommended boundary trims (black frames, fades) detected at ingest time.
+   * Advisory — not automatically applied to the stored file.
+   */
+  boundaryRefinement?: BoundaryRefinement;
+
+  /**
+   * Named entities extracted from OCR text via regex NER.
+   * Enables retrieval by person name, date, or location found on-screen.
+   */
+  ocrNamedEntities?: OcrNamedEntity[];
+
+  /**
+   * Structured log of decisions made during the ingestion pipeline.
+   * Answers WHY the clip was tagged, split, scored, or flagged as it was.
+   */
+  ingestionLog?: IngestionLogEntry[];
 };
 
 // ─── Editorial Intent Engine (v6) ────────────────────────────────────────────
@@ -847,4 +873,58 @@ export type EditorialIntent = {
   /** Human-readable sentence explaining why an editor would choose this clip. */
   visualPurpose: string;
   computedAt: string;
+};
+
+// ─── Ingestion V2 types ───────────────────────────────────────────────────────
+
+/**
+ * Recommended boundary trims detected at ingest time (black frames, fades).
+ * Advisory only — not applied to the stored file automatically.
+ */
+export type BoundaryRefinement = {
+  /** Seconds to trim from clip start (0 = no trim). */
+  trimStartSec: number;
+  /** Seconds to trim from clip end (0 = no trim). */
+  trimEndSec: number;
+  /** Number of leading black-frame spans detected. */
+  leadingBlackFrames: number;
+  /** Number of trailing black-frame spans detected. */
+  trailingBlackFrames: number;
+  /** True when the first frames ramp up from black (broadcast fade-in). */
+  fadeInDetected: boolean;
+  /** True when the last frames ramp down to black (broadcast fade-out). */
+  fadeOutDetected: boolean;
+  /** Human-readable description of what was found and why. */
+  reason: string;
+};
+
+/**
+ * A named entity extracted from OCR text via regex-based NER.
+ */
+export type OcrNamedEntity = {
+  /** The extracted text string. */
+  text: string;
+  /** Entity category. */
+  type: "person" | "date" | "location" | "organization" | "headline" | "other";
+  /** Detection confidence 0–1. */
+  confidence: number;
+  /** Source timestamp in the clip (seconds), if known. */
+  timestamp?: number;
+};
+
+/**
+ * One entry in the structured ingestion decision trail.
+ * Answers: why did the pipeline do X to this clip?
+ */
+export type IngestionLogEntry = {
+  /** Pipeline stage name/number. */
+  stage: string;
+  /** Short verb describing the action taken. */
+  action: string;
+  /** Human-readable explanation of the decision. */
+  reason: string;
+  /** ISO-8601 timestamp of when this decision was made. */
+  timestamp: string;
+  /** Optional scalar value associated with the decision. */
+  value?: string;
 };

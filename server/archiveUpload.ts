@@ -78,6 +78,14 @@ function scheduleArchiveClipEmbedding(assetId: number, localPath: string): void 
     );
 }
 
+function scheduleIntelligencePipeline(assetId: number): void {
+  void import("./archiveIngestionV2")
+    .then(({ scheduleV2IntelligencePipeline }) => scheduleV2IntelligencePipeline(assetId))
+    .catch((err) =>
+      console.warn(`[IngestionV2] pipeline schedule failed for asset ${assetId}:`, (err as Error).message?.slice(0, 80))
+    );
+}
+
 export type ArchiveUploadInput = {
   archiveId: number;
   buffer: Buffer;
@@ -310,6 +318,12 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
 
       scheduleArchiveEmbeddingIndex(assetId);
       scheduleClipEmbeddingFromBuffer(assetId, clipBuffer);
+
+      // V2: schedule full intelligence pipeline (LLM annotation + quality + editorial analysis)
+      if (process.env.ARCHIVE_INGESTION_V2_ENABLED !== "false") {
+        scheduleIntelligencePipeline(assetId);
+      }
+
       savedCount += 1;
       progress({
         stage: "save_clips",
@@ -379,8 +393,8 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
         );
       }
 
-      // Post-upload dedup disabled — save all clips as-is.
-      if (false) {
+      // V2: perceptual hash dedup — remove near-identical clips saved in this upload batch.
+      if (process.env.ARCHIVE_INGESTION_V2_ENABLED !== "false") {
         void (async () => {
           try {
             const allAssets = await getMediaArchiveAssets(input.archiveId);
@@ -389,12 +403,12 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
             if (deleteIds.length > 0) {
               await deleteMediaArchiveAssets(deleteIds);
               console.log(
-                `[ArchiveUpload] post-upload dedup: removed ${deleteIds.length} duplicate(s) from archive ${input.archiveId}`
+                `[ArchiveUpload] V2 perceptual dedup: removed ${deleteIds.length} duplicate(s) from archive ${input.archiveId}`
               );
             }
           } catch (err) {
             console.warn(
-              "[ArchiveUpload] post-upload dedup failed:",
+              "[ArchiveUpload] perceptual dedup failed:",
               (err as Error).message?.slice(0, 100)
             );
           }

@@ -65,6 +65,15 @@ import { promisify } from "util";
 
 import { annotateAsset, buildEnrichedSemanticDocument, ANNOTATION_VERSION } from "./clipAnnotator";
 import { computeEditorialIntent, editorialIntentEnabled } from "./editorialIntentEngine";
+import {
+  ingestionV2Enabled,
+  refineShotBoundaries,
+  deriveShotClassification,
+  detectTimedAudioEvents,
+  filterAudioEventsForClip,
+  extractOcrNamedEntities,
+  buildIngestionLog,
+} from "./archiveIngestionV2";
 import { invokeLLM } from "./_core/llm";
 import type {
   ClipAnnotation,
@@ -1525,6 +1534,17 @@ export type ArchiveIntelligenceOptions = {
   skipNearDupDetect?: boolean;
   /** Existing main embedding vector (avoids a redundant load). */
   mainEmbedding?: number[];
+  /**
+   * Pre-computed audio events from the source file (before splitting).
+   * When provided, Stage 20 filters these to the clip's time window instead of
+   * running a fresh audio analysis (which would fail because clips have no audio track).
+   */
+  precomputedAudioEvents?: import("../drizzle/annotationTypes").AudioEvent[];
+  /**
+   * Start time of this clip within the source video (seconds).
+   * Required when precomputedAudioEvents is set, to map source timestamps to clip-relative times.
+   */
+  sourceClipStartSec?: number;
 };
 
 /**
@@ -1710,6 +1730,48 @@ export async function runArchiveIntelligencePipeline(
     if (editorialIntentEnabled()) {
       const intent = computeEditorialIntent(annotation);
       if (intent) annotation.editorialIntent = intent;
+    }
+
+    // ── Stages 18–22: Ingestion V2 (all pure or FFmpeg, no LLM) ──────────────
+    if (ingestionV2Enabled() && opts.localVideoPath) {
+      // Stage 18: Shot boundary refinement (black frames, fades)
+      annotation.boundaryRefinement = await refineShotBoundaries(
+        opts.localVideoPath,
+        asset.durationSec ?? 0
+      );
+
+      // Stage 19: Standardized shot classification
+      annotation.shotClassification = deriveShotClassification(annotation);
+
+      // Stage 20: Timed audio events (run on per-clip file if it has audio;
+      // the pipeline opts may supply pre-computed source-level events)
+      if (opts.precomputedAudioEvents && opts.precomputedAudioEvents.length > 0) {
+        // Source-level audio events: filter to this clip's time window
+        const clipped = filterAudioEventsForClip(
+          opts.precomputedAudioEvents,
+          opts.sourceClipStartSec ?? 0,
+          (opts.sourceClipStartSec ?? 0) + (asset.durationSec ?? 0)
+        );
+        if (clipped.length > 0) annotation.audioEvents = clipped;
+      }
+
+      // Stage 21: OCR named entity extraction
+      annotation.ocrNamedEntities = extractOcrNamedEntities(annotation);
+    } else if (ingestionV2Enabled()) {
+      // No local path — still run the pure stages
+      annotation.shotClassification = deriveShotClassification(annotation);
+      annotation.ocrNamedEntities = extractOcrNamedEntities(annotation);
+    }
+
+    // Stage 22: Ingestion explainability log (always, even without V2 full run)
+    if (ingestionV2Enabled()) {
+      annotation.ingestionLog = buildIngestionLog(annotation, [
+        {
+          stage: "Stage 1 (LLM annotation)",
+          action: "annotated",
+          reason: `ANNOTATION_VERSION=${ANNOTATION_VERSION}`,
+        },
+      ]);
     }
 
     // ── Stage 5b: Extended facet embeddings (ocrTimeline, audioEvents, storytelling, v5) ──
