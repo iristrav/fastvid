@@ -463,19 +463,27 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
   const key = `media-archive/${input.archiveId}/${Date.now()}-${Math.random().toString(36).slice(2, 6)}.${ext}`;
   const { url, key: storedKey } = await storagePut(key, input.buffer, mimeType);
 
-  const assetId = await createMediaArchiveAsset({
-    archiveId: input.archiveId,
-    title: enriched.title,
-    mediaType,
-    mixKind,
-    mimeType,
-    storageUrl: url,
-    storageKey: storedKey,
-    tags: enriched.tags,
-    sourceNote: enriched.sourceNote,
-    durationSec: minSavedArchiveClipSec(),
-    isActive: 1,
-  });
+  let assetId: number | null | undefined;
+  try {
+    assetId = await createMediaArchiveAsset({
+      archiveId: input.archiveId,
+      title: enriched.title,
+      mediaType,
+      mixKind,
+      mimeType,
+      storageUrl: url,
+      storageKey: storedKey,
+      tags: enriched.tags,
+      sourceNote: enriched.sourceNote,
+      durationSec: minSavedArchiveClipSec(),
+      isActive: 1,
+    });
+  } catch (dbErr) {
+    const cause = (dbErr as { cause?: { sqlMessage?: string; code?: string } }).cause;
+    console.error("[ArchiveUpload] INSERT failed:", (dbErr as Error).message?.slice(0, 200), "cause:", cause?.code, cause?.sqlMessage);
+    throw new ArchiveUploadError(500, appErrorMessage(APP_ERROR.SERVICE_ERROR,
+      `DB insert failed: ${cause?.sqlMessage ?? cause?.code ?? (dbErr as Error).message?.slice(0, 120) ?? "unknown"}`));
+  }
   if (!assetId) {
     throw new ArchiveUploadError(500, appErrorMessage(APP_ERROR.SERVICE_ERROR, "Failed to save asset"));
   }
