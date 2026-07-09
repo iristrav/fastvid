@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, like, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, getTableColumns, inArray, like, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import * as fs from "fs";
 import { PIPELINE_ERROR, appErrorMessage } from "@shared/appErrors";
@@ -994,6 +994,7 @@ export async function updateVideoEditorSettings(
 import {
   InsertMediaArchive,
   InsertMediaArchiveAsset,
+  MediaArchiveAsset,
   mediaArchiveAssets,
   mediaArchives,
   backfillCursors,
@@ -1076,6 +1077,56 @@ export async function getMediaArchiveAssets(archiveId: number) {
     .from(mediaArchiveAssets)
     .where(and(eq(mediaArchiveAssets.archiveId, archiveId), eq(mediaArchiveAssets.isActive, 1)))
     .orderBy(desc(mediaArchiveAssets.sortOrder), desc(mediaArchiveAssets.id));
+}
+
+/** Paginated archive assets for the admin list view — excludes annotationJson to avoid loading
+ *  large JSON blobs for all rows at once (which can exceed MySQL packet limits for big archives). */
+export async function listMediaArchiveAssetsPaginated(
+  archiveId: number,
+  opts: { limit: number; offset: number; search?: string; tag?: string }
+): Promise<{ items: Omit<MediaArchiveAsset, "annotationJson">[]; total: number }> {
+  const db = await getDb();
+  if (!db) return { items: [], total: 0 };
+
+  // Select all columns EXCEPT annotationJson — not needed for list display.
+  const { annotationJson: _skip, ...listColumns } = getTableColumns(mediaArchiveAssets);
+  const q = opts.search?.trim();
+  const tag = opts.tag?.trim();
+  const searchConditions = [];
+  if (q) {
+    searchConditions.push(
+      or(
+        like(mediaArchiveAssets.title, `%${q}%`),
+        sql`JSON_SEARCH(${mediaArchiveAssets.tags}, 'one', ${`%${q}%`}) IS NOT NULL`
+      )
+    );
+  }
+  if (tag) {
+    searchConditions.push(
+      sql`JSON_SEARCH(${mediaArchiveAssets.tags}, 'one', ${`%${tag}%`}) IS NOT NULL`
+    );
+  }
+  const baseWhere = and(
+    eq(mediaArchiveAssets.archiveId, archiveId),
+    eq(mediaArchiveAssets.isActive, 1),
+    ...searchConditions
+  );
+
+  const [countRow] = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(mediaArchiveAssets)
+    .where(baseWhere);
+  const total = Number(countRow?.count ?? 0);
+
+  const rows = await db
+    .select(listColumns)
+    .from(mediaArchiveAssets)
+    .where(baseWhere)
+    .orderBy(desc(mediaArchiveAssets.sortOrder), desc(mediaArchiveAssets.id))
+    .limit(opts.limit)
+    .offset(opts.offset);
+
+  return { items: rows, total };
 }
 
 /** Paginated active video assets — avoids loading the full archive for CLIP backfill. */

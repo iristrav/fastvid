@@ -40,7 +40,7 @@ import {
   getInviteCodeByCode, createInviteCode, getAllInviteCodes, markInviteCodeUsed, deleteInviteCode, deactivateInviteCode,
   getAllMediaArchives, getMediaArchiveById, createMediaArchiveUnique, updateMediaArchive, deleteMediaArchive,
   getMediaArchiveAssets, getMediaArchiveAssetById, createMediaArchiveAsset, updateMediaArchiveAsset, deleteMediaArchiveAsset, deleteMediaArchiveAssets, deleteAllMediaArchiveAssets,
-  countMediaArchiveAssets, filterMediaArchiveAssets, normalizeMediaTags, readVideoMetadataObject,
+  countMediaArchiveAssets, filterMediaArchiveAssets, listMediaArchiveAssetsPaginated, normalizeMediaTags, readVideoMetadataObject,
 } from "./db";
 import { resolveStoredVideoLocalPath, validateFinalVideoPlayable } from "./finalVideoGate";
 import type { ProgressLogEntry } from "./db";
@@ -1555,9 +1555,12 @@ export const appRouter = router({
     })).query(async ({ input }) => {
       const archive = await getMediaArchiveById(input.archiveId);
       if (!archive) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Archive not found");
-      const assets = await getMediaArchiveAssets(input.archiveId);
-      const filtered = filterMediaArchiveAssets(assets, { search: input.search, tag: input.tag });
-      const enriched = filtered.map((asset) => {
+      const offset = input.offset ?? 0;
+      const limit = input.limit ?? 48;
+      const { items: rawItems, total } = await listMediaArchiveAssetsPaginated(input.archiveId, {
+        limit, offset, search: input.search, tag: input.tag,
+      });
+      const enriched = rawItems.map((asset) => {
         const status = archiveAssetMediaStatus(asset);
         return {
           ...asset,
@@ -1566,11 +1569,9 @@ export const appRouter = router({
           mediaIssue: status.issue ?? null,
         };
       });
-      const offset = input.offset ?? 0;
-      const limit = input.limit ?? enriched.length;
       return {
-        items: enriched.slice(offset, offset + limit),
-        total: enriched.length,
+        items: enriched,
+        total,
         offset,
         limit,
         unavailableCount: enriched.filter((a) => !a.mediaAvailable).length,
