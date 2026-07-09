@@ -55,37 +55,120 @@ process.on("unhandledRejection", (reason) => {
 
 // ─── Auto-Migration ───────────────────────────────────────────────────────────
 // Runs all pending SQL migrations on startup so Railway DB is always up to date.
+// Any failure throws — the caller exits the process so Railway marks the deploy failed.
 async function runMigrations() {
   if (!process.env.DATABASE_URL) {
     console.log("[Migration] DATABASE_URL not set, skipping migrations");
     return;
   }
+  const { getDb } = await import("../db");
+  const db = await getDb();
+  if (!db) {
+    throw new Error("[Migration] DB not available — cannot run migrations");
+  }
+  const isDist = __dirname.endsWith("/dist") || __dirname.endsWith("\\dist");
+  const candidates = [
+    path.join(process.cwd(), "drizzle"),
+    path.join(process.cwd(), "dist", "drizzle"),
+    isDist ? path.resolve(__dirname, "../drizzle") : path.resolve(__dirname, "../../drizzle"),
+  ];
+  const migrationsFolder = candidates.find((p) => fs.existsSync(path.join(p, "meta", "_journal.json")));
+  if (!migrationsFolder) {
+    throw new Error("[Migration] drizzle folder not found — cannot apply migrations");
+  }
+  console.log("[Migration] Running migrations from:", migrationsFolder);
   try {
-    const { getDb } = await import("../db");
-    const db = await getDb();
-    if (!db) { console.warn("[Migration] DB not available, skipping migrations"); return; }
-    const isDist = __dirname.endsWith("/dist") || __dirname.endsWith("\\dist");
-    const candidates = [
-      path.join(process.cwd(), "drizzle"),
-      path.join(process.cwd(), "dist", "drizzle"),
-      isDist ? path.resolve(__dirname, "../drizzle") : path.resolve(__dirname, "../../drizzle"),
-    ];
-    const migrationsFolder = candidates.find((p) => fs.existsSync(path.join(p, "meta", "_journal.json")));
-    if (!migrationsFolder) {
-      console.warn("[Migration] drizzle folder not found, skipping migrations");
+    await migrate(db as Parameters<typeof migrate>[0], { migrationsFolder });
+  } catch (e) {
+    // Extract the actual MySQL error from Drizzle's wrapper so logs are actionable.
+    const cause = (e as { cause?: { sqlMessage?: string; code?: string; sql?: string } }).cause;
+    const detail = cause?.sqlMessage
+      ? `MySQL ${cause.code ?? "ERR"}: ${cause.sqlMessage}`
+      : String(e);
+    console.error("[Migration] *** MIGRATION FAILED — ABORTING STARTUP ***");
+    console.error("[Migration] Failed migration detail:", detail);
+    if (cause?.sql) console.error("[Migration] Failing SQL:", cause.sql.slice(0, 500));
+    throw new Error(`Migration failed: ${detail}`);
+  }
+  console.log("[Migration] All migrations applied successfully");
+}
+
+// ─── Schema Validation ────────────────────────────────────────────────────────
+// After migrations run, verify that every column declared in the Drizzle schema
+// actually exists in the live database. Exits the process if anything is missing
+// so a partially migrated DB never serves production traffic.
+async function validateSchema() {
+  if (!process.env.DATABASE_URL) return; // no DB — nothing to validate
+
+  const { getDb } = await import("../db");
+  const { sql } = await import("drizzle-orm");
+  const db = await getDb();
+  if (!db) return;
+
+  // Import every table object from the schema so we can derive expected column names.
+  const schema = await import("../../drizzle/schema");
+  const { getTableColumns, getTableName } = await import("drizzle-orm");
+
+  // Build a map of tableName → Set<columnName> from the Drizzle schema.
+  const expected = new Map<string, Set<string>>();
+  for (const exported of Object.values(schema)) {
+    if (typeof exported !== "object" || exported === null) continue;
+    try {
+      const cols = getTableColumns(exported as Parameters<typeof getTableColumns>[0]);
+      const tName = getTableName(exported as Parameters<typeof getTableName>[0]);
+      if (!tName || !cols) continue;
+      expected.set(tName, new Set(Object.values(cols).map((c: { name: string }) => c.name)));
+    } catch {
+      // Not a table — skip types, enums, etc.
+    }
+  }
+
+  if (expected.size === 0) {
+    console.warn("[SchemaValidation] No tables found in schema — skipping validation");
+    return;
+  }
+
+  // Query INFORMATION_SCHEMA for every column that actually exists in this DB.
+  const rows = await db.execute(
+    sql`SELECT TABLE_NAME, COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE()`
+  );
+  const actual: Map<string, Set<string>> = new Map();
+  for (const row of rows[0] as unknown as { TABLE_NAME: string; COLUMN_NAME: string }[]) {
+    if (!actual.has(row.TABLE_NAME)) actual.set(row.TABLE_NAME, new Set());
+    actual.get(row.TABLE_NAME)!.add(row.COLUMN_NAME);
+  }
+
+  const missing: string[] = [];
+  expected.forEach((cols, table) => {
+    const actualCols = actual.get(table);
+    if (!actualCols) {
+      missing.push(`Table '${table}' does not exist in the database`);
       return;
     }
-    console.log("[Migration] Running migrations from:", migrationsFolder);
-    await migrate(db as Parameters<typeof migrate>[0], { migrationsFolder });
-    console.log("[Migration] All migrations applied successfully");
-  } catch (e) {
-    console.error("[Migration] Migration failed (server will still start):", e);
+    cols.forEach((col) => {
+      if (!actualCols.has(col)) {
+        missing.push(`Column '${table}.${col}' is missing from the database`);
+      }
+    });
+  });
+
+  if (missing.length > 0) {
+    console.error("[SchemaValidation] *** SCHEMA MISMATCH — ABORTING STARTUP ***");
+    console.error("[SchemaValidation] The following columns expected by the code are absent from the DB:");
+    missing.forEach((m) => console.error("  ✗", m));
+    console.error("[SchemaValidation] Run pending migrations or roll back the deployment.");
+    throw new Error(`Schema validation failed: ${missing.length} missing column(s)`);
   }
+
+  let totalCols = 0;
+  expected.forEach((cols) => { totalCols += cols.size; });
+  console.log(`[SchemaValidation] ✓ All ${totalCols} columns verified across ${expected.size} tables`);
 }
 
 async function startServer() {
-  // ─── Run DB migrations first ──────────────────────────────────────────────
+  // ─── Run DB migrations then validate schema — abort on any failure ────────
   await runMigrations();
+  await validateSchema();
 
   // ─── Startup diagnostics (visible in Railway logs) ───────────────────────
   console.log("[Fastvid] Starting server...");
@@ -775,7 +858,10 @@ async function startServer() {
   });
 }
 
-startServer().catch(console.error);
+startServer().catch((e) => {
+  console.error("[Fastvid] Fatal startup error — exiting so Railway marks the deployment failed:", e);
+  process.exit(1);
+});
 
 // ─── Admin Bootstrap ──────────────────────────────────────────────────────────
 // If ADMIN_EMAIL and ADMIN_PASSWORD are set and no admin exists yet,
