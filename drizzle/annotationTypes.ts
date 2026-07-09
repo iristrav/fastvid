@@ -811,6 +811,14 @@ export type ClipAnnotation = {
    * Answers WHY the clip was tagged, split, scored, or flagged as it was.
    */
   ingestionLog?: IngestionLogEntry[];
+
+  /**
+   * Temporal Scene Intelligence profile (Phase 7).
+   * Aggregates existing annotation data into a structured second-by-second view.
+   * Enables smart partial retrieval, highlight detection, and explainability.
+   * Computed at ingest time — no LLM calls.
+   */
+  temporalProfile?: TemporalSceneProfile;
 };
 
 // ─── Editorial Intent Engine (v6) ────────────────────────────────────────────
@@ -927,4 +935,89 @@ export type IngestionLogEntry = {
   timestamp: string;
   /** Optional scalar value associated with the decision. */
   value?: string;
+};
+
+// ─── Temporal Scene Intelligence types (Phase 7) ─────────────────────────────
+
+export type TemporalEvent = {
+  startSec: number;
+  endSec: number;
+  subject: string;
+  action: string;
+  shotType: string;
+  cameraMove: string;
+  emotion: string;
+  microEvent?: MicroEventType;
+  confidence: number;
+};
+
+export type SubjectTrack = {
+  name: string;
+  type: "person" | "object";
+  firstSeenSec: number;
+  lastSeenSec: number;
+  totalVisibleSec: number;
+  segments: Array<{ startSec: number; endSec: number }>;
+  isPrimary: boolean;
+};
+
+export type CameraSegment = {
+  startSec: number;
+  endSec: number;
+  movement: "zoom" | "pan" | "tilt" | "tracking" | "handheld" | "drone" | "static" | "other";
+};
+
+export type MotionSegment = {
+  startSec: number;
+  endSec: number;
+  level: "low" | "medium" | "high";
+  rawScore?: number;
+};
+
+export type EmotionSegment = {
+  startSec: number;
+  endSec: number;
+  emotion: string;
+};
+
+export type InternalHighlight = {
+  type:
+    | "first_close_up"
+    | "first_face"
+    | "first_explosion"
+    | "first_fire"
+    | "first_speech"
+    | "first_applause"
+    | "strongest_emotion"
+    | "peak_motion"
+    | "title_card"
+    | "best_shot_quality"
+    | "micro_event"
+    | "audio_peak"
+    | "ocr_text";
+  timestampSec: number;
+  description: string;
+  confidence: number;
+};
+
+export type BestWindow = {
+  startSec: number;
+  endSec: number;
+  durationSec: number;
+  score: number;
+  reason: string;
+};
+
+export type TemporalSceneProfile = {
+  events: TemporalEvent[];
+  subjectTracks: SubjectTrack[];
+  cameraTimeline: CameraSegment[];
+  motionTimeline: MotionSegment[];
+  emotionTimeline: EmotionSegment[];
+  ocrTimeline: Array<{ text: string; startSec: number; endSec: number }>;
+  audioTimeline: Array<{ type: string; startSec: number; endSec: number; confidence: number }>;
+  bestEntryPoints: BestWindow[];
+  internalHighlights: InternalHighlight[];
+  computedAt: string;
+  durationSec: number;
 };

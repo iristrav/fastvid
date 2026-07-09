@@ -222,6 +222,8 @@ export type AssetDirectorContext = {
    * Set from blueprint visual type or editorial directive.
    */
   expectedCinematicTags?: string[];
+  /** Beat duration in seconds — used for temporal best-window selection. */
+  beatDurationSec?: number;
 };
 
 // ─── Score types ──────────────────────────────────────────────────────────────
@@ -298,7 +300,9 @@ export type AssetScore = {
     capabilityBonus: number;
     /** Editorial capability mismatch penalty (-6 to 0). */
     capabilityPenalty: number;
-    /** Sum of all v4/v5/v6 bonuses including penalties. */
+    /** Temporal best-window bonus (+0 to +5). */
+    temporalBonus: number;
+    /** Sum of all v4/v5/v6/v7 bonuses including penalties. */
     v4Total: number;
     /** Best-matching segment (null if no segment embeddings). */
     bestSegment: SegmentSimilarity | null;
@@ -807,7 +811,7 @@ function scoreCandidate(
   const budgetPenalty       = computeBudgetPenalty(clipPath, ctx.budgetTracker);
   const editorialMemoryBonus = computeEditorialMemoryBonus(clipPath, meta, ctx.editorialMemory);
 
-  // ── v4/v6 Archive Metadata + Editorial Capability bonuses ────────────────
+  // ── v4/v6/v7 Archive Metadata + Editorial Capability + Temporal bonuses ──
   const beatDecomposition = editorialIntentEnabled() ? decomposeQueryBeat(beatText) : undefined;
   const v4: ArchiveMetadataScores = computeArchiveMetadataScores(
     meta?.annotation,
@@ -817,7 +821,8 @@ function scoreCandidate(
     meta?.segmentSimilarities ?? [],
     ctx.expectedAudioTypes,
     ctx.expectedCinematicTags,
-    beatDecomposition
+    beatDecomposition,
+    ctx.beatDurationSec
   );
 
   // ── Weighted sum ──────────────────────────────────────────────────────────
@@ -891,6 +896,7 @@ function scoreCandidate(
       negativeTagsPenalty:   v4.negativeTagsPenalty,
       capabilityBonus:       v4.capabilityBonus,
       capabilityPenalty:     v4.capabilityPenalty,
+      temporalBonus:         v4.temporalBonus,
       v4Total:               v4.total,
       bestSegment:      v4.bestSegment,
     },
@@ -931,8 +937,8 @@ export function logAssetDirectorChoice(
   const modifiers = `Diversity:${bk.diversityModifier >= 0 ? "+" : ""}${bk.diversityModifier}  Budget:${bk.budgetPenalty}  Memory:+${bk.editorialMemoryBonus}`;
   const reasonStr = score.reasons.length ? `  (${score.reasons.join(", ")})` : "";
   const v4Detail = bk.v4Total !== 0
-    ? `seg:+${bk.segmentBonus} face:+${bk.faceBonus} obj:+${bk.objectBonus} audio:+${bk.audioBonus} cine:+${bk.cinematicBonus} imp:+${bk.importanceBonus} uniq:+${bk.uniquenessBonus} story:+${bk.storytellingBonus} qual:+${bk.qualityBonus} health:+${bk.healthBonus} subj:+${bk.primarySubjectBonus} prio:+${bk.retrievalPriorityBonus} neg:${bk.negativeTagsPenalty} cap:+${bk.capabilityBonus}/${bk.capabilityPenalty} → ${bk.v4Total >= 0 ? "+" : ""}${bk.v4Total}`
-    : "no v4/v5/v6 bonus";
+    ? `seg:+${bk.segmentBonus} face:+${bk.faceBonus} obj:+${bk.objectBonus} audio:+${bk.audioBonus} cine:+${bk.cinematicBonus} imp:+${bk.importanceBonus} uniq:+${bk.uniquenessBonus} story:+${bk.storytellingBonus} qual:+${bk.qualityBonus} health:+${bk.healthBonus} subj:+${bk.primarySubjectBonus} prio:+${bk.retrievalPriorityBonus} neg:${bk.negativeTagsPenalty} cap:+${bk.capabilityBonus}/${bk.capabilityPenalty} temp:+${bk.temporalBonus} → ${bk.v4Total >= 0 ? "+" : ""}${bk.v4Total}`
+    : "no v4/v5/v6/v7 bonus";
 
   console.log(
     `[AssetDirector] s${sceneIndex}b${beatIndex} "${beatText.slice(0, 50)}" → ${base}\n` +
@@ -1060,6 +1066,7 @@ export function rankCandidatesWithContext(
         score.breakdown.bestSegment ?? null,
         meta?.embeddingSimilarity ?? 0,
         meta?.annotation,
+        ctx.beatDurationSec
       );
       if (hint) trimHints.set(p, hint);
     }

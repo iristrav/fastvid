@@ -65,6 +65,7 @@ import { promisify } from "util";
 
 import { annotateAsset, buildEnrichedSemanticDocument, ANNOTATION_VERSION } from "./clipAnnotator";
 import { computeEditorialIntent, editorialIntentEnabled } from "./editorialIntentEngine";
+import { buildTemporalSceneProfile, temporalSceneEnabled } from "./temporalSceneIntelligence";
 import {
   ingestionV2Enabled,
   refineShotBoundaries,
@@ -1772,6 +1773,14 @@ export async function runArchiveIntelligencePipeline(
           reason: `ANNOTATION_VERSION=${ANNOTATION_VERSION}`,
         },
       ]);
+    }
+
+    // Stage 23: Temporal Scene Intelligence — pure aggregation of existing data
+    if (temporalSceneEnabled()) {
+      const clipDur = asset.durationSec ?? 0;
+      if (clipDur > 0) {
+        annotation.temporalProfile = buildTemporalSceneProfile(annotation, clipDur);
+      }
     }
 
     // ── Stage 5b: Extended facet embeddings (ocrTimeline, audioEvents, storytelling, v5) ──

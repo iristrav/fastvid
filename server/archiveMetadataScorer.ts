@@ -43,6 +43,11 @@ import {
   scoreEditorialCapabilityMatch,
   type BeatDecomposition,
 } from "./editorialIntentEngine";
+import {
+  temporalSceneEnabled,
+  selectBestWindowForBeat,
+} from "./temporalSceneIntelligence";
+import type { TemporalSceneProfile } from "../drizzle/annotationTypes";
 
 const execPromise = promisify(execCb);
 
@@ -104,7 +109,9 @@ export type ArchiveMetadataScores = {
   capabilityPenalty: number;
   /** Human-readable explanation of the capability match (for logs). */
   capabilityExplanation: string;
-  /** Sum of all bonuses including penalties (max ~62). */
+  /** +0 to +5: temporal profile highlights match beat context. */
+  temporalBonus: number;
+  /** Sum of all bonuses including penalties (max ~67). */
   total: number;
   /** The best-matching temporal segment, used to produce a TrimHint. */
   bestSegment: SegmentSimilarity | null;
@@ -595,7 +602,8 @@ export function computeArchiveMetadataScores(
   segmentSimilarities: SegmentSimilarity[],
   expectedAudioTypes?: string[],
   expectedCinematicTags?: string[],
-  beatDecomposition?: BeatDecomposition
+  beatDecomposition?: BeatDecomposition,
+  beatDurationSec?: number
 ): ArchiveMetadataScores {
   const zero: ArchiveMetadataScores = {
     segmentBonus: 0, faceBonus: 0, objectBonus: 0, audioBonus: 0,
@@ -603,6 +611,7 @@ export function computeArchiveMetadataScores(
     storytellingBonus: 0, qualityBonus: 0, healthBonus: 0,
     primarySubjectBonus: 0, retrievalPriorityBonus: 0, negativeTagsPenalty: 0,
     capabilityBonus: 0, capabilityPenalty: 0, capabilityExplanation: "",
+    temporalBonus: 0,
     total: 0, bestSegment: null,
   };
 
@@ -635,11 +644,24 @@ export function computeArchiveMetadataScores(
     capabilityExplanation = capMatch.explanation;
   }
 
+  // Temporal bonus: has a usable best window for the requested beat duration
+  let temporalBonus = 0;
+  if (temporalSceneEnabled() && annotation.temporalProfile && beatDurationSec && beatDurationSec > 0) {
+    const win = selectBestWindowForBeat(annotation.temporalProfile, beatDurationSec);
+    if (win) {
+      // Bonus scales with window quality (0–5)
+      temporalBonus = Math.round((win.score / 100) * 5);
+    }
+  } else if (temporalSceneEnabled() && annotation.temporalProfile?.internalHighlights?.length) {
+    // Has highlights but no beat duration — small flat bonus
+    temporalBonus = 1;
+  }
+
   const total = segmentBonus + faceBonus + objectBonus + audioBonus +
                 cinematicBonus + importanceBonus + uniquenessBonus +
                 storytellingBonus + qualityBonus + healthBonus +
                 primarySubjectBonus + retrievalPriorityBonus + negativeTagsPenalty +
-                capabilityBonus + capabilityPenalty;
+                capabilityBonus + capabilityPenalty + temporalBonus;
 
   return {
     segmentBonus, faceBonus, objectBonus, audioBonus,
@@ -647,6 +669,7 @@ export function computeArchiveMetadataScores(
     storytellingBonus, qualityBonus, healthBonus,
     primarySubjectBonus, retrievalPriorityBonus, negativeTagsPenalty,
     capabilityBonus, capabilityPenalty, capabilityExplanation,
+    temporalBonus,
     total, bestSegment,
   };
 }
@@ -658,15 +681,35 @@ const MIN_SEGMENT_DURATION = 1.5;  // don't trim to segments shorter than this
 
 /**
  * Produce a TrimHint when a specific segment is meaningfully better than
- * the overall clip-level embedding match.
+ * the overall clip-level embedding match, or when a temporal best window
+ * provides a better match for the requested beat duration.
  *
  * Returns null when trimming is not beneficial or segments are too short.
  */
 export function computeTrimHint(
   bestSegment: SegmentSimilarity | null,
   clipLevelSim: number | null | undefined,
-  annotation: ClipAnnotation | null | undefined
+  annotation: ClipAnnotation | null | undefined,
+  beatDurationSec?: number
 ): TrimHint | null {
+  // Temporal best-window trim takes precedence when available
+  if (temporalSceneEnabled() && annotation?.temporalProfile && beatDurationSec && beatDurationSec > 0) {
+    const win = selectBestWindowForBeat(annotation.temporalProfile, beatDurationSec);
+    if (win) {
+      const dur = win.endSec - win.startSec;
+      if (dur >= MIN_SEGMENT_DURATION) {
+        return {
+          startSec: win.startSec,
+          endSec: win.endSec,
+          segmentIndex: -1,
+          similarity: win.score / 100,
+          reason: `temporal best window (${win.durationSec}s, score=${win.score}): ${win.reason.slice(0, 80)}`,
+        };
+      }
+    }
+  }
+
+  // Fall back to segment-similarity trim
   if (!bestSegment || !annotation?.timeline) return null;
 
   const clipSim = clipLevelSim ?? 0.5;
