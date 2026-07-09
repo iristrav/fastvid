@@ -12,7 +12,14 @@ ALTER TABLE `editorial_reviews`
   MODIFY COLUMN `overallScore` INT NOT NULL;
 --> statement-breakpoint
 
--- 2. Add missing FK on media_archives.createdByUserId → users.id (idempotent)
+-- 2. NULL out any createdByUserId that references non-existent users (prevents ER_CANNOT_ADD_FOREIGN)
+UPDATE `media_archives` m
+LEFT JOIN `users` u ON u.id = m.createdByUserId
+SET m.createdByUserId = NULL
+WHERE m.createdByUserId IS NOT NULL AND u.id IS NULL;
+--> statement-breakpoint
+
+-- 3. Add missing FK on media_archives.createdByUserId → users.id (idempotent)
 SET @db = DATABASE();
 --> statement-breakpoint
 SET @addFk = IF(
