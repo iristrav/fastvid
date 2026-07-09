@@ -29,10 +29,12 @@ import type {
   OcrEntry,
   StorytellingLabels,
   StorytellingFunction,
+  PersonDetail,
+  RetrievalPriorityEntry,
 } from "../drizzle/annotationTypes";
 import type { MediaArchiveAsset } from "../drizzle/schema";
 
-export const ANNOTATION_VERSION = "v4";
+export const ANNOTATION_VERSION = "v5";
 
 // ─── Feature flag ─────────────────────────────────────────────────────────────
 
@@ -152,7 +154,15 @@ Return ONLY this JSON object — all fields required. Use empty string/array/0 i
   "shotImportance": {"score": 0, "label": "generic", "reason": ""},
   "visualUniqueness": {"score": 0, "reason": ""},
   "descriptions": {"short": "", "normal": "", "extended": ""},
-  "storytellingLabels": {"primary": "context", "secondary": []}
+  "storytellingLabels": {"primary": "context", "secondary": []},
+  "primarySubject": "",
+  "secondarySubjects": [],
+  "personDetails": [],
+  "emotions": [],
+  "searchIntentTags": [],
+  "negativeTags": [],
+  "retrievalPriority": [],
+  "retrievalSummary": ""
 }
 
 FIELD GUIDANCE:
@@ -293,7 +303,52 @@ storytellingLabels:
   reveal = dramatic disclosure of something (body, crowd, result)
   climax = the narrative peak (decisive moment, turning point)
   ending = closes a sequence (aftermath, departure, silence)
-- secondary: Up to 3 additional functions this clip could serve (use same values as primary)`;
+- secondary: Up to 3 additional functions this clip could serve (use same values as primary)
+
+primarySubject: The single most important subject of this clip. Exactly one. The most specific identifiable entity: a named person ("Winston Churchill") > a specific event ("D-Day landings") > a specific place ("Omaha Beach") > a general category ("World War II"). If a named person is clearly the subject, use their name. If a specific event, use the event name.
+
+secondarySubjects: Up to 10 secondary subjects also clearly present or highly relevant. Be specific: not "soldier" but "British infantryman"; not "airplane" but "Spitfire fighter". Max 10.
+
+personDetails: Rich record for each named person in persons.named:
+- name: full name (same as in persons.named)
+- role: their specific title/role at the time (e.g. "Prime Minister", "Commanding General", "President")
+- function: domain category ("politician", "military officer", "scientist", "journalist", "monarch")
+- nationality: country of nationality (e.g. "United Kingdom", "United States", "France")
+- confidence: 0–1 identification confidence
+
+emotions: All significant emotions conveyed in this clip, ordered by prominence (strongest first). Up to 5. Use: "triumph" | "grief" | "fear" | "hope" | "pride" | "tension" | "calm" | "chaos" | "awe" | "defeat" | "anger" | "relief" | "joy" | "neutral"
+
+searchIntentTags: Generate 50–100 alternative search terms covering EVERY way a documentary editor might search for this clip. Think in layers:
+1. Direct: person name + action ("Churchill delivering speech", "Churchill at podium")
+2. Context: event + place + era ("London 1940 wartime", "Houses of Parliament WWII")
+3. Role: function + action ("British Prime Minister speaking", "wartime leader address")
+4. Emotional: feeling + context ("defiance in wartime", "courage under Blitz")
+5. Visual: shot type + subject ("close-up statesman", "medium shot politician")
+6. Generic: category ("political speech", "wartime address", "leader speaking")
+7. Synonyms: all alternative names/terms ("PM speech", "10 Downing Street", "Churchill radio")
+8. Related events: ("Battle of Britain", "The Blitz", "RAF", "Operation Sea Lion")
+9. Conceptual: ("democracy in wartime", "Western resistance", "Allied leadership")
+10. Negative-space: what an editor is REALLY looking for when they need this clip
+Generate at minimum 50. More is better. Every tag = one more retrieval path.
+
+negativeTags: 5–15 explicit NOT-terms. What is this clip definitively NOT?
+- People NOT present: "NOT Hitler", "NOT Stalin", "NOT Roosevelt"
+- Places NOT shown: "NOT Berlin", "NOT Moscow"
+- Periods NOT depicted: "NOT Cold War", "NOT post-war", "NOT modern"
+- Topics NOT covered: "NOT Soviet Union", "NOT Nazi Germany", "NOT civilian"
+These prevent false-positive matches and make retrieval more precise.
+
+retrievalPriority: Rank the top 5–8 documentary topics this clip serves, 0–100:
+100 = perfect fit (clip was literally made for this topic)
+80–99 = excellent, highly relevant
+60–79 = good, clearly useful
+40–59 = partial, usable with care
+< 40 = weak, probably wrong clip
+Examples: {"topic": "Churchill biography", "score": 100}, {"topic": "WWII documentary", "score": 95}, {"topic": "British wartime history", "score": 90}, {"topic": "Cold War", "score": 20}
+
+retrievalSummary: Write exactly 80–120 words. NOT for users — for the AI retrieval engine.
+Explain: (1) what is literally happening in this clip, (2) who is present and their significance, (3) the historical/editorial context, (4) WHY an editor would choose THIS clip specifically over alternatives, (5) what documentary topics it best serves.
+Example: "Churchill delivers a wartime address from the House of Commons chamber, 1940. The close-medium framing captures the Prime Minister at full authority — microphone prominent, uniform precise. This is primary source footage from the height of the Battle of Britain. An editor should choose this clip when they need Churchill himself on screen, particularly for biography productions, WWII narratives, or any sequence about British wartime leadership. The formal setting and deliberate speech delivery make it ideal as an action clip (speech delivery) or context clip (wartime governance). Pairs perfectly with RAF footage, Blitz sequences, or civilian morale material."`;
 }
 
 // ─── Editorial score calculator ───────────────────────────────────────────────
@@ -388,7 +443,7 @@ export async function annotateAsset(asset: MediaArchiveAsset): Promise<ClipAnnot
         },
       ],
       preferProvider: "groq",
-      maxTokens: 3500,
+      maxTokens: 6000,
       responseFormat: { type: "json_object" },
     });
 
@@ -649,6 +704,65 @@ export async function annotateAsset(asset: MediaArchiveAsset): Promise<ClipAnnot
         ? (rawStory.secondary as string[]).filter((s) => VALID_FUNCTIONS.includes(s as StorytellingFunction)).slice(0, 3) as StorytellingFunction[]
         : undefined;
       annotation.storytellingLabels = { primary, secondary: secondary?.length ? secondary : undefined };
+    }
+
+    // ── v5 fields ──────────────────────────────────────────────────────────────
+
+    const rawV5 = parsed as Partial<ClipAnnotation>;
+
+    if (typeof rawV5.primarySubject === "string" && rawV5.primarySubject.trim().length > 0) {
+      annotation.primarySubject = rawV5.primarySubject.trim().slice(0, 200);
+    }
+
+    if (Array.isArray(rawV5.secondarySubjects) && rawV5.secondarySubjects.length > 0) {
+      annotation.secondarySubjects = (rawV5.secondarySubjects as string[])
+        .filter((s) => typeof s === "string" && s.trim().length > 0)
+        .slice(0, 10);
+    }
+
+    if (Array.isArray(rawV5.personDetails) && rawV5.personDetails.length > 0) {
+      annotation.personDetails = (rawV5.personDetails as PersonDetail[])
+        .filter((p) => typeof p.name === "string" && p.name.trim().length > 0)
+        .map((p) => ({
+          name:        p.name.trim().slice(0, 100),
+          role:        typeof p.role === "string" ? p.role.trim().slice(0, 100) : undefined,
+          function:    typeof p.function === "string" ? p.function.trim().slice(0, 100) : undefined,
+          nationality: typeof p.nationality === "string" ? p.nationality.trim().slice(0, 100) : undefined,
+          confidence:  clamp01(p.confidence ?? 0.5),
+        }))
+        .slice(0, 20);
+    }
+
+    if (Array.isArray(rawV5.emotions) && rawV5.emotions.length > 0) {
+      annotation.emotions = (rawV5.emotions as string[])
+        .filter((e) => typeof e === "string" && e.trim().length > 0)
+        .slice(0, 5);
+    }
+
+    if (Array.isArray(rawV5.searchIntentTags) && rawV5.searchIntentTags.length > 0) {
+      annotation.searchIntentTags = (rawV5.searchIntentTags as string[])
+        .filter((t) => typeof t === "string" && t.trim().length > 0)
+        .map((t) => t.trim())
+        .slice(0, 120);
+    }
+
+    if (Array.isArray(rawV5.negativeTags) && rawV5.negativeTags.length > 0) {
+      annotation.negativeTags = (rawV5.negativeTags as string[])
+        .filter((t) => typeof t === "string" && t.trim().length > 0)
+        .map((t) => t.trim())
+        .slice(0, 20);
+    }
+
+    if (Array.isArray(rawV5.retrievalPriority) && rawV5.retrievalPriority.length > 0) {
+      annotation.retrievalPriority = (rawV5.retrievalPriority as RetrievalPriorityEntry[])
+        .filter((e) => typeof e.topic === "string" && typeof e.score === "number")
+        .map((e) => ({ topic: e.topic.trim().slice(0, 100), score: clamp(e.score) }))
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 10);
+    }
+
+    if (typeof rawV5.retrievalSummary === "string" && rawV5.retrievalSummary.trim().length > 20) {
+      annotation.retrievalSummary = rawV5.retrievalSummary.trim().slice(0, 600);
     }
 
     return annotation;

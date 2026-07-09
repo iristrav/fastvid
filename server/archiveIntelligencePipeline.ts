@@ -81,6 +81,7 @@ import type {
   ClipQualityMetrics,
   ArchiveUniqueness,
   AssetHealthScore,
+  RetrievalPriorityEntry,
 } from "../drizzle/annotationTypes";
 import { getDb } from "./db";
 import { mediaArchiveAssets } from "../drizzle/schema";
@@ -384,8 +385,11 @@ async function generateFacetEmbeddings(
 async function generateExtendedFacetEmbeddings(
   assetId: number,
   ann: ClipAnnotation
-): Promise<{ ocrTimeline?: string; audioEvents?: string; storytelling?: string }> {
-  const result: { ocrTimeline?: string; audioEvents?: string; storytelling?: string } = {};
+): Promise<{
+  ocrTimeline?: string; audioEvents?: string; storytelling?: string;
+  searchIntent?: string; retrievalSummary?: string; primarySubject?: string;
+}> {
+  const result: Record<string, string> = {};
   try {
     const { createTextEmbedding } = await import("./semanticVisualMatching");
     const dir = localEmbeddingDir();
@@ -398,19 +402,28 @@ async function generateExtendedFacetEmbeddings(
       ann.storytellingLabels?.primary,
       ...(ann.storytellingLabels?.secondary ?? []),
     ].filter(Boolean).join(", ").trim();
+    const searchIntentDoc = (ann.searchIntentTags ?? []).join(". ").trim();
+    const retrievalSummaryDoc = (ann.retrievalSummary ?? "").trim();
+    const primarySubjectDoc = [
+      ann.primarySubject,
+      ...(ann.secondarySubjects ?? []).slice(0, 5),
+    ].filter(Boolean).join(", ").trim();
 
     for (const [facet, text] of [
-      ["ocrTimeline", ocrDoc],
-      ["audioEvents", audioDoc],
-      ["storytelling", storyDoc],
+      ["ocrTimeline",      ocrDoc],
+      ["audioEvents",      audioDoc],
+      ["storytelling",     storyDoc],
+      ["searchIntent",     searchIntentDoc],
+      ["retrievalSummary", retrievalSummaryDoc],
+      ["primarySubject",   primarySubjectDoc],
     ] as [string, string][]) {
       if (!text || text.length < 5) continue;
       try {
         const embedding = await createTextEmbedding(text);
         if (!embedding || embedding.length === 0) continue;
         const filePath = path.join(dir, `${assetId}_facet_${facet}.json`);
-        fs.writeFileSync(filePath, JSON.stringify({ assetId, facet, embedding, text: text.slice(0, 200) }));
-        (result as Record<string, string>)[facet] = filePath;
+        fs.writeFileSync(filePath, JSON.stringify({ assetId, facet, embedding, text: text.slice(0, 300) }));
+        result[facet] = filePath;
       } catch { /* non-fatal */ }
     }
   } catch { /* non-fatal */ }
@@ -1185,6 +1198,221 @@ function computeHealthScore(annotation: ClipAnnotation): AssetHealthScore {
   };
 }
 
+// ─── Stage 16: Editorial Tagging Engine (gap-fill, no LLM) ───────────────────
+
+/**
+ * Fills gaps in v5 editorial tagging fields using only existing annotation
+ * metadata — no LLM calls, no network I/O. Runs after all other stages so
+ * all annotation signals are available.
+ *
+ * Derives: primarySubject, secondarySubjects, searchIntentTags (50+),
+ * negativeTags, retrievalPriority, retrievalSummary (if not already set by LLM).
+ *
+ * Logs an explainability report per field that was derived.
+ */
+function buildEditorialTags(annotation: ClipAnnotation, assetId: number): void {
+  const explain: string[] = [];
+
+  // ── 1. primarySubject ─────────────────────────────────────────────────────
+  if (!annotation.primarySubject) {
+    // Priority: named person > specific event > city > country > first KG entity
+    const primary =
+      annotation.persons.named[0] ??
+      (annotation.historicalContext.event || null) ??
+      annotation.location.city ??
+      annotation.location.country ??
+      annotation.knowledgeGraphEntities?.[0] ??
+      annotation.objects[0] ??
+      null;
+    if (primary) {
+      annotation.primarySubject = primary;
+      explain.push(`primarySubject="${primary}" (derived from ${annotation.persons.named.length ? "persons.named" : annotation.historicalContext.event ? "historicalContext.event" : annotation.location.city ? "location.city" : "objects"})`);
+    }
+  }
+
+  // ── 2. secondarySubjects ─────────────────────────────────────────────────
+  if (!annotation.secondarySubjects?.length) {
+    const seen = new Set<string>([annotation.primarySubject ?? ""]);
+    const candidates: string[] = [
+      ...annotation.persons.named.slice(1),
+      ...annotation.persons.categories.slice(0, 3),
+      ...annotation.objects.slice(0, 5),
+      ...(annotation.cinematicTags ?? []).slice(0, 2),
+    ];
+    const secondary = candidates.filter((c) => c && !seen.has(c) && (seen.add(c), true)).slice(0, 10);
+    if (secondary.length > 0) {
+      annotation.secondarySubjects = secondary;
+      explain.push(`secondarySubjects: ${secondary.length} entries (persons+objects+tags)`);
+    }
+  }
+
+  // ── 3. searchIntentTags ───────────────────────────────────────────────────
+  if (!annotation.searchIntentTags?.length || annotation.searchIntentTags.length < 15) {
+    const seen = new Set<string>();
+    const tags: string[] = [];
+
+    const add = (...terms: (string | undefined | null)[]) => {
+      for (const t of terms) {
+        if (!t || t.trim().length < 3) continue;
+        const norm = t.trim().toLowerCase();
+        if (!seen.has(norm)) { seen.add(norm); tags.push(t.trim()); }
+      }
+    };
+
+    // Seed from LLM searchIntentTags if partially filled
+    for (const t of annotation.searchIntentTags ?? []) add(t);
+
+    // Existing searchAliases
+    for (const a of annotation.searchAliases ?? []) add(a);
+
+    // KG entities
+    for (const e of annotation.knowledgeGraphEntities ?? []) add(e);
+
+    // Persons: name + role combinations
+    for (const n of annotation.persons.named) {
+      add(n);
+      for (const pd of annotation.personDetails ?? []) {
+        if (pd.name === n) {
+          add(`${n} ${pd.role ?? ""}`.trim());
+          add(`${pd.role ?? ""} ${pd.nationality ?? ""}`.trim());
+          add(`${pd.function ?? ""} ${annotation.historicalContext.period ?? ""}`.trim());
+        }
+      }
+    }
+    for (const cat of annotation.persons.categories) add(cat);
+
+    // Location combos
+    const loc = annotation.location;
+    add(loc.country, loc.region, loc.city);
+    if (loc.city && loc.country) add(`${loc.city} ${loc.country}`);
+    if (loc.city && annotation.historicalContext.year) add(`${loc.city} ${annotation.historicalContext.year}`);
+    if (loc.country && annotation.historicalContext.period) add(`${loc.country} ${annotation.historicalContext.period}`);
+
+    // Historical context combos
+    const hc = annotation.historicalContext;
+    add(hc.event, hc.period, hc.year, hc.decade, hc.century);
+    if (hc.event && hc.year) add(`${hc.event} ${hc.year}`);
+    if (hc.event && loc.country) add(`${hc.event} ${loc.country}`);
+    if (hc.period && loc.country) add(`${hc.period} ${loc.country}`);
+
+    // Objects + actions
+    for (const o of annotation.objects.slice(0, 15)) add(o);
+    for (const a of annotation.actions.slice(0, 10)) add(a);
+
+    // Cinematic tags
+    for (const ct of annotation.cinematicTags ?? []) add(ct);
+
+    // Emotion combos
+    add(annotation.emotion);
+    for (const em of annotation.emotions ?? []) add(em);
+    if (annotation.emotion && hc.period) add(`${annotation.emotion} ${hc.period}`);
+
+    // Storytelling labels
+    if (annotation.storytellingLabels?.primary) add(annotation.storytellingLabels.primary);
+    for (const s of annotation.storytellingLabels?.secondary ?? []) add(s);
+
+    // Primary subject + context combos
+    const ps = annotation.primarySubject;
+    if (ps) {
+      add(`${ps} ${hc.period}`.trim());
+      add(`${ps} ${hc.year}`.trim());
+      add(`${ps} ${loc.country}`.trim());
+      add(`${ps} ${hc.event}`.trim());
+      if (annotation.cinematography.shotType) add(`${annotation.cinematography.shotType} ${ps}`.trim());
+    }
+
+    // Usage hints
+    for (const ta of annotation.usageHints?.topicAffinity ?? []) add(ta);
+    if (annotation.usageHints?.bestUsedAs) add(annotation.usageHints.bestUsedAs);
+
+    annotation.searchIntentTags = tags.filter(Boolean).slice(0, 120);
+    explain.push(`searchIntentTags: ${annotation.searchIntentTags.length} terms (derived from all annotation signals)`);
+  }
+
+  // ── 4. negativeTags ───────────────────────────────────────────────────────
+  if (!annotation.negativeTags?.length) {
+    // Derive from usageHints.avoid
+    const negatives: string[] = [];
+    for (const av of annotation.usageHints?.avoid ?? []) {
+      negatives.push(av.startsWith("NOT ") ? av : `NOT ${av}`);
+    }
+    if (negatives.length > 0) {
+      annotation.negativeTags = negatives.slice(0, 15);
+      explain.push(`negativeTags: ${negatives.length} entries (from usageHints.avoid)`);
+    }
+  }
+
+  // ── 5. retrievalPriority ─────────────────────────────────────────────────
+  if (!annotation.retrievalPriority?.length) {
+    const entries: RetrievalPriorityEntry[] = [];
+    const hc = annotation.historicalContext;
+    const ps = annotation.primarySubject;
+    const es = annotation.editorialScore;
+
+    // Named person → biography
+    for (const name of annotation.persons.named.slice(0, 2)) {
+      entries.push({ topic: `${name} biography`, score: Math.min(100, es.total + 10) });
+      if (hc.period) entries.push({ topic: `${name} ${hc.period}`, score: Math.min(100, es.total + 5) });
+    }
+
+    // Historical event
+    if (hc.event) entries.push({ topic: `${hc.event} documentary`, score: Math.min(100, es.historicalUsability + 10) });
+    if (hc.period) entries.push({ topic: `${hc.period} documentary`, score: Math.min(100, es.historicalUsability) });
+
+    // Topic affinities
+    for (const ta of annotation.usageHints?.topicAffinity?.slice(0, 4) ?? []) {
+      entries.push({ topic: ta, score: Math.min(95, es.total) });
+    }
+
+    // Primary subject generic
+    if (ps && !annotation.persons.named.includes(ps)) {
+      entries.push({ topic: ps, score: Math.min(100, es.total + 5) });
+    }
+
+    if (entries.length > 0) {
+      // Sort by score, deduplicate by topic, cap at 8
+      const seen = new Set<string>();
+      annotation.retrievalPriority = entries
+        .sort((a, b) => b.score - a.score)
+        .filter((e) => e.topic.trim().length > 3 && !seen.has(e.topic) && (seen.add(e.topic), true))
+        .slice(0, 8);
+      explain.push(`retrievalPriority: ${annotation.retrievalPriority.length} topics derived`);
+    }
+  }
+
+  // ── 6. retrievalSummary ───────────────────────────────────────────────────
+  if (!annotation.retrievalSummary) {
+    const hc = annotation.historicalContext;
+    const loc = annotation.location;
+    const ps = annotation.primarySubject;
+    const desc = annotation.descriptions?.normal || annotation.editorialDescription || "";
+    const topUseCase = annotation.retrievalPriority?.[0]?.topic ?? hc.period ?? "";
+
+    const summary = [
+      desc.slice(0, 200).replace(/\s+/g, " ").trim(),
+      ps ? `Primary subject: ${ps}.` : "",
+      annotation.secondarySubjects?.length ? `Also features: ${annotation.secondarySubjects.slice(0, 5).join(", ")}.` : "",
+      hc.event ? `Historical event: ${hc.event}${hc.year ? ` (${hc.year})` : ""}.` : "",
+      loc.country ? `Location: ${[loc.city, loc.country].filter(Boolean).join(", ")}.` : "",
+      topUseCase ? `Best used for: ${topUseCase}.` : "",
+      annotation.storytellingLabels?.primary ? `Editorial function: ${annotation.storytellingLabels.primary}.` : "",
+    ].filter(Boolean).join(" ").slice(0, 500);
+
+    if (summary.length > 50) {
+      annotation.retrievalSummary = summary;
+      explain.push(`retrievalSummary: ${summary.length} chars (synthesized from annotation)`);
+    }
+  }
+
+  // ── Explainability log ────────────────────────────────────────────────────
+  if (explain.length > 0) {
+    console.log(
+      `[EditorialTags] asset ${assetId} — ${explain.length} derived fields:\n` +
+      explain.map((e) => `  • ${e}`).join("\n")
+    );
+  }
+}
+
 // ─── Stage 7: Logging ─────────────────────────────────────────────────────────
 
 function logIntelligenceReport(
@@ -1251,7 +1479,16 @@ function logIntelligenceReport(
     (annotation.qualityMetrics ? `  QualMetrics: sharp:${annotation.qualityMetrics.sharpnessScore ?? "?"} blur:${annotation.qualityMetrics.motionBlurScore ?? "?"} noise:${annotation.qualityMetrics.noiseScore ?? "?"} exposure:${annotation.qualityMetrics.exposureScore ?? "?"} overall:${annotation.qualityMetrics.overallTechnicalQuality ?? "?"} res:${annotation.qualityMetrics.resolutionLabel ?? "?"} fps:${annotation.qualityMetrics.fpsLabel ?? "?"}\n` : "") +
     (annotation.ocrTimeline?.length ? `  OCR timeline:${annotation.ocrTimeline.length} entries: ${annotation.ocrTimeline.slice(0, 3).map((e) => `"${e.text.slice(0, 30)}" ${e.startSec.toFixed(1)}–${e.endSec.toFixed(1)}s`).join("; ")}\n` : "") +
     (annotation.archiveUniqueness ? `  ArcUniqueness:${annotation.archiveUniqueness.score}/100 — ${annotation.archiveUniqueness.reason ?? ""}\n` : "") +
-    (annotation.healthScore ? `  HealthScore: ${annotation.healthScore.score}/100 (meta:${annotation.healthScore.metadataCompleteness} tech:${annotation.healthScore.technicalQuality} edit:${annotation.healthScore.editorialQuality} uniq:${annotation.healthScore.archiveUniqueness})\n` : "")
+    (annotation.healthScore ? `  HealthScore: ${annotation.healthScore.score}/100 (meta:${annotation.healthScore.metadataCompleteness} tech:${annotation.healthScore.technicalQuality} edit:${annotation.healthScore.editorialQuality} uniq:${annotation.healthScore.archiveUniqueness})\n` : "") +
+    // ── v5 Editorial Tagging Engine log ──────────────────────────────────────
+    (annotation.primarySubject ? `  PrimarySubj: "${annotation.primarySubject}"\n` : "") +
+    (annotation.secondarySubjects?.length ? `  SecondaryS:  ${annotation.secondarySubjects.join(" | ")}\n` : "") +
+    (annotation.personDetails?.length ? `  PersonDets: ${annotation.personDetails.map((p) => `${p.name}${p.role ? ` (${p.role})` : ""}${p.nationality ? ` [${p.nationality}]` : ""} conf:${p.confidence.toFixed(2)}`).join("; ")}\n` : "") +
+    (annotation.emotions?.length ? `  Emotions:   ${annotation.emotions.join(", ")}\n` : "") +
+    (annotation.searchIntentTags?.length ? `  SearchTags: ${annotation.searchIntentTags.length} tags — ${annotation.searchIntentTags.slice(0, 5).join(" | ")}…\n` : "") +
+    (annotation.negativeTags?.length ? `  NegTags:    ${annotation.negativeTags.slice(0, 6).join(" | ")}\n` : "") +
+    (annotation.retrievalPriority?.length ? `  RetrPrio:   ${annotation.retrievalPriority.slice(0, 4).map((e) => `${e.score}/${e.topic}`).join(" | ")}\n` : "") +
+    (annotation.retrievalSummary ? `  RetrSumm:   ${annotation.retrievalSummary.slice(0, 150)}…\n` : "")
   );
 }
 
@@ -1462,12 +1699,21 @@ export async function runArchiveIntelligencePipeline(
     // ── Stage 15: Asset health score (pure computation) ──────────────────────
     annotation.healthScore = computeHealthScore(annotation);
 
-    // ── Stage 5b: Extended facet embeddings (ocrTimeline, audioEvents, storytelling) ──
+    // ── Stage 16: Editorial Tagging Engine (gap-fill, derives v5 fields) ─────
+    buildEditorialTags(annotation, asset.id);
+
+    // ── Stage 15b: Re-compute health score now that v5 fields are filled ─────
+    annotation.healthScore = computeHealthScore(annotation);
+
+    // ── Stage 5b: Extended facet embeddings (ocrTimeline, audioEvents, storytelling, v5) ──
     if (!opts.skipFacetEmbeddings && annotation.facetEmbeddingKeys) {
       const extFacets = await generateExtendedFacetEmbeddings(asset.id, annotation);
-      if (extFacets.ocrTimeline)  annotation.facetEmbeddingKeys.ocrTimeline  = extFacets.ocrTimeline;
-      if (extFacets.audioEvents)  annotation.facetEmbeddingKeys.audioEvents  = extFacets.audioEvents;
-      if (extFacets.storytelling) annotation.facetEmbeddingKeys.storytelling = extFacets.storytelling;
+      if (extFacets.ocrTimeline)       annotation.facetEmbeddingKeys.ocrTimeline      = extFacets.ocrTimeline;
+      if (extFacets.audioEvents)       annotation.facetEmbeddingKeys.audioEvents      = extFacets.audioEvents;
+      if (extFacets.storytelling)      annotation.facetEmbeddingKeys.storytelling     = extFacets.storytelling;
+      if (extFacets.searchIntent)      annotation.facetEmbeddingKeys.searchIntent     = extFacets.searchIntent;
+      if (extFacets.retrievalSummary)  annotation.facetEmbeddingKeys.retrievalSummary = extFacets.retrievalSummary;
+      if (extFacets.primarySubject)    annotation.facetEmbeddingKeys.primarySubject   = extFacets.primarySubject;
     }
 
     // ── Stage 7: Log & save ────────────────────────────────────────────────────

@@ -14,6 +14,11 @@
  *     timestamps, storytelling labels, FFmpeg quality metrics, archive-level
  *     uniqueness, asset health score, object/face track confidence + timestamps,
  *     3 new facet embeddings (ocrTimeline, audioEvents, storytelling)
+ * v5: Editorial Tagging Engine — primarySubject, secondarySubjects,
+ *     personDetails (role/function/nationality/confidence), emotions array,
+ *     searchIntentTags (50–100 retrieval-intent terms), negativeTags,
+ *     retrievalPriority (ranked use-case scores), retrievalSummary,
+ *     3 new facet embeddings (searchIntent, retrievalSummary, primarySubject)
  */
 
 // ─── Quality flags ────────────────────────────────────────────────────────────
@@ -66,6 +71,38 @@ export type ExtendedEditorialScores = {
   reusabilityScore: number;
 };
 
+// ─── Person detail (v5) ──────────────────────────────────────────────────────
+
+/**
+ * Rich person record beyond a simple name string.
+ * Populates the `personDetails` array in ClipAnnotation (v5).
+ */
+export type PersonDetail = {
+  /** Full name, e.g. "Winston Churchill". */
+  name: string;
+  /** Role/title at the time of footage, e.g. "Prime Minister", "General". */
+  role?: string;
+  /** Functional domain, e.g. "politician", "military officer", "scientist". */
+  function?: string;
+  /** Nationality / country, e.g. "United Kingdom", "United States". */
+  nationality?: string;
+  /** Identification confidence 0–1. 1.0 = name on screen; 0.5 = probable. */
+  confidence: number;
+};
+
+// ─── Retrieval priority entry (v5) ───────────────────────────────────────────
+
+/**
+ * Ranked use-case score: how well-suited is this clip for a given topic/genre?
+ * Allows retrieval to surface the best clips for each documentary angle.
+ */
+export type RetrievalPriorityEntry = {
+  /** Topic or genre, e.g. "Churchill biography", "WWII documentary", "Cold War". */
+  topic: string;
+  /** Suitability score 0–100. 100 = perfect; 0 = wrong clip entirely. */
+  score: number;
+};
+
 // ─── Facet embedding keys ─────────────────────────────────────────────────────
 
 /**
@@ -95,6 +132,13 @@ export type FacetEmbeddingKeys = {
   audioEvents?: string;
   /** Storytelling labels embedding (primary + secondary functions). */
   storytelling?: string;
+  // ── v5 editorial tagging facets ─────────────────────────────────────────────
+  /** Search intent tags embedding (50-100 alternative retrieval terms). */
+  searchIntent?: string;
+  /** Retrieval summary embedding (~100-word editorial summary for retrieval). */
+  retrievalSummary?: string;
+  /** Primary subject embedding (single most important subject). */
+  primarySubject?: string;
 };
 
 // ─── OCR timeline entry ───────────────────────────────────────────────────────
@@ -679,4 +723,59 @@ export type ClipAnnotation = {
    * and archive-level uniqueness into a single 0–100 score.
    */
   healthScore?: AssetHealthScore;
+
+  // ── v5 Editorial Tagging Engine fields ──────────────────────────────────────
+
+  /**
+   * Single most important subject of this clip.
+   * E.g. "Winston Churchill", "D-Day", "Berlin Wall", "Apollo 11".
+   * Used as the canonical retrieval anchor for this clip.
+   */
+  primarySubject?: string;
+
+  /**
+   * Up to 10 secondary subjects also present or highly relevant.
+   * E.g. ["British Army", "RAF", "Parliament", "Microphone", "Flag"].
+   */
+  secondarySubjects?: string[];
+
+  /**
+   * Rich person records with role, function, nationality, and confidence.
+   * Complements persons.named with structured metadata per individual.
+   */
+  personDetails?: PersonDetail[];
+
+  /**
+   * Multiple emotions conveyed (in contrast to the single `emotion` field).
+   * Ordered by prominence. E.g. ["triumph", "relief", "pride"].
+   */
+  emotions?: string[];
+
+  /**
+   * 50–100 alternative search terms covering every way a documentary editor
+   * might search for this clip. Goes far beyond synonyms — includes context,
+   * role, event, location, era, visual style, and conceptual alternatives.
+   * This is the primary retrieval-improvement field of the v5 engine.
+   */
+  searchIntentTags?: string[];
+
+  /**
+   * Explicit NOT-tags: what this clip is definitively NOT about.
+   * Used by retrieval to avoid false-positive matches.
+   * E.g. ["NOT Hitler", "NOT Berlin", "NOT Soviet Union", "NOT Cold War"].
+   */
+  negativeTags?: string[];
+
+  /**
+   * Ranked list of topics/genres this clip is most useful for.
+   * E.g. [{topic: "Churchill biography", score: 100}, {topic: "WWII documentary", score: 95}].
+   */
+  retrievalPriority?: RetrievalPriorityEntry[];
+
+  /**
+   * ~100-word editorial summary written for the retrieval engine, not for users.
+   * Explains why an editor would choose this specific clip over alternatives.
+   * Structured around: what, who, where, when, why this clip is the right choice.
+   */
+  retrievalSummary?: string;
 };

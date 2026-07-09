@@ -283,7 +283,13 @@ export type AssetScore = {
     qualityBonus: number;
     /** Asset health score bonus (+0 to +2). */
     healthBonus: number;
-    /** Sum of all v4/v5 bonuses. */
+    /** Primary subject match bonus (+0 to +6). */
+    primarySubjectBonus: number;
+    /** Retrieval priority topic match bonus (+0 to +4). */
+    retrievalPriorityBonus: number;
+    /** Negative tags penalty (-5 to 0). */
+    negativeTagsPenalty: number;
+    /** Sum of all v4/v5 bonuses including penalties. */
     v4Total: number;
     /** Best-matching segment (null if no segment embeddings). */
     bestSegment: SegmentSimilarity | null;
@@ -866,10 +872,13 @@ function scoreCandidate(
       cinematicBonus:   v4.cinematicBonus,
       importanceBonus:  v4.importanceBonus,
       uniquenessBonus:  v4.uniquenessBonus,
-      storytellingBonus: v4.storytellingBonus,
-      qualityBonus:     v4.qualityBonus,
-      healthBonus:      v4.healthBonus,
-      v4Total:          v4.total,
+      storytellingBonus:     v4.storytellingBonus,
+      qualityBonus:          v4.qualityBonus,
+      healthBonus:           v4.healthBonus,
+      primarySubjectBonus:   v4.primarySubjectBonus,
+      retrievalPriorityBonus: v4.retrievalPriorityBonus,
+      negativeTagsPenalty:   v4.negativeTagsPenalty,
+      v4Total:               v4.total,
       bestSegment:      v4.bestSegment,
     },
     reasons,
@@ -908,7 +917,7 @@ export function logAssetDirectorChoice(
   const modifiers = `Diversity:${bk.diversityModifier >= 0 ? "+" : ""}${bk.diversityModifier}  Budget:${bk.budgetPenalty}  Memory:+${bk.editorialMemoryBonus}`;
   const reasonStr = score.reasons.length ? `  (${score.reasons.join(", ")})` : "";
   const v4Detail = bk.v4Total > 0
-    ? `seg:+${bk.segmentBonus} face:+${bk.faceBonus} obj:+${bk.objectBonus} audio:+${bk.audioBonus} cine:+${bk.cinematicBonus} imp:+${bk.importanceBonus} uniq:+${bk.uniquenessBonus} story:+${bk.storytellingBonus} qual:+${bk.qualityBonus} health:+${bk.healthBonus} → +${bk.v4Total}`
+    ? `seg:+${bk.segmentBonus} face:+${bk.faceBonus} obj:+${bk.objectBonus} audio:+${bk.audioBonus} cine:+${bk.cinematicBonus} imp:+${bk.importanceBonus} uniq:+${bk.uniquenessBonus} story:+${bk.storytellingBonus} qual:+${bk.qualityBonus} health:+${bk.healthBonus} subj:+${bk.primarySubjectBonus} prio:+${bk.retrievalPriorityBonus} neg:${bk.negativeTagsPenalty} → ${bk.v4Total >= 0 ? "+" : ""}${bk.v4Total}`
     : "no v4/v5 bonus";
 
   console.log(

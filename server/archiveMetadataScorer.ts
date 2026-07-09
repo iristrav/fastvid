@@ -36,6 +36,7 @@ import type {
   StorytellingLabels,
   ClipQualityMetrics,
   AssetHealthScore,
+  RetrievalPriorityEntry,
 } from "../drizzle/annotationTypes";
 
 const execPromise = promisify(execCb);
@@ -86,7 +87,13 @@ export type ArchiveMetadataScores = {
   qualityBonus: number;
   /** +0 to +2: health score bonus for well-annotated clips. */
   healthBonus: number;
-  /** Sum of all bonuses (max ~44). */
+  /** +0 to +6: primary subject exact or near match to beat. */
+  primarySubjectBonus: number;
+  /** +0 to +4: retrieval priority topic match to beat context. */
+  retrievalPriorityBonus: number;
+  /** -5 to 0: penalty when beat matches a negative tag (wrong clip). */
+  negativeTagsPenalty: number;
+  /** Sum of all bonuses including penalties (max ~54). */
   total: number;
   /** The best-matching temporal segment, used to produce a TrimHint. */
   bestSegment: SegmentSimilarity | null;
@@ -471,6 +478,96 @@ function scoreHealthScore(
   return 0;
 }
 
+// ─── Scoring: primary subject match (v5) ─────────────────────────────────────
+
+/**
+ * Award a large bonus when the beat text directly names or clearly implies
+ * the clip's primary subject. Maximum: +6
+ */
+function scorePrimarySubject(
+  primarySubject: string | undefined,
+  beatText: string,
+  searchIntentTags: string[] | undefined
+): number {
+  if (!primarySubject) return 0;
+
+  const subjectLower = primarySubject.toLowerCase();
+  const beatLower = beatText.toLowerCase();
+
+  // Exact subject name in beat → maximum bonus
+  if (beatLower.includes(subjectLower)) return 6;
+
+  // Any searchIntentTag matches the beat → medium bonus
+  if (searchIntentTags?.length) {
+    const matchCount = searchIntentTags.filter((t) => {
+      const tl = t.toLowerCase();
+      return tl.length > 4 && (beatLower.includes(tl) || tl.includes(beatLower.split(" ")[0]!));
+    }).length;
+    if (matchCount >= 3) return 4;
+    if (matchCount >= 1) return 2;
+  }
+
+  return 0;
+}
+
+// ─── Scoring: retrieval priority match (v5) ───────────────────────────────────
+
+/**
+ * Award a bonus when the beat context matches one of the clip's top retrieval
+ * priority topics. Maximum: +4
+ */
+function scoreRetrievalPriority(
+  retrievalPriority: RetrievalPriorityEntry[] | undefined,
+  beatText: string
+): number {
+  if (!retrievalPriority?.length) return 0;
+
+  const beatLower = beatText.toLowerCase();
+  let maxMatchScore = 0;
+
+  for (const entry of retrievalPriority) {
+    const topicTokens = entry.topic.toLowerCase().split(/\s+/).filter((t) => t.length > 3);
+    const matchCount = topicTokens.filter((t) => beatLower.includes(t)).length;
+    if (matchCount > 0) {
+      // Scale: high-priority topic + strong match → bigger bonus
+      const matchFraction = matchCount / Math.max(1, topicTokens.length);
+      const topicWeight = entry.score / 100;
+      const bonus = Math.round(matchFraction * topicWeight * 4);
+      maxMatchScore = Math.max(maxMatchScore, bonus);
+    }
+  }
+
+  return Math.min(4, maxMatchScore);
+}
+
+// ─── Scoring: negative tags penalty (v5) ─────────────────────────────────────
+
+/**
+ * Apply a penalty when the beat text matches one of the clip's negative tags.
+ * A negative tag like "NOT Berlin" means: don't use this clip for Berlin-related beats.
+ * Penalty range: -5 to 0.
+ */
+function scoreNegativeTags(
+  negativeTags: string[] | undefined,
+  beatText: string
+): number {
+  if (!negativeTags?.length) return 0;
+
+  const beatLower = beatText.toLowerCase();
+  let penalty = 0;
+
+  for (const tag of negativeTags) {
+    // Strip "NOT " prefix
+    const term = tag.replace(/^NOT\s+/i, "").trim().toLowerCase();
+    if (term.length < 3) continue;
+    if (beatLower.includes(term)) {
+      penalty -= 3; // clear signal: wrong clip for this beat
+    }
+  }
+
+  return Math.max(-5, penalty);
+}
+
 // ─── Main scorer ──────────────────────────────────────────────────────────────
 
 /**
@@ -492,6 +589,7 @@ export function computeArchiveMetadataScores(
     segmentBonus: 0, faceBonus: 0, objectBonus: 0, audioBonus: 0,
     cinematicBonus: 0, importanceBonus: 0, uniquenessBonus: 0,
     storytellingBonus: 0, qualityBonus: 0, healthBonus: 0,
+    primarySubjectBonus: 0, retrievalPriorityBonus: 0, negativeTagsPenalty: 0,
     total: 0, bestSegment: null,
   };
 
@@ -507,18 +605,23 @@ export function computeArchiveMetadataScores(
     annotation.shotImportance,
     annotation.visualUniqueness
   );
-  const storytellingBonus = scoreStorytellingMatch(annotation.storytellingLabels, beatText);
-  const qualityBonus      = scoreQualityMetrics(annotation.qualityMetrics, annotation.quality);
-  const healthBonus       = scoreHealthScore(annotation.healthScore);
+  const storytellingBonus     = scoreStorytellingMatch(annotation.storytellingLabels, beatText);
+  const qualityBonus          = scoreQualityMetrics(annotation.qualityMetrics, annotation.quality);
+  const healthBonus           = scoreHealthScore(annotation.healthScore);
+  const primarySubjectBonus   = scorePrimarySubject(annotation.primarySubject, beatText, annotation.searchIntentTags);
+  const retrievalPriorityBonus = scoreRetrievalPriority(annotation.retrievalPriority, beatText);
+  const negativeTagsPenalty   = scoreNegativeTags(annotation.negativeTags, beatText);
 
   const total = segmentBonus + faceBonus + objectBonus + audioBonus +
                 cinematicBonus + importanceBonus + uniquenessBonus +
-                storytellingBonus + qualityBonus + healthBonus;
+                storytellingBonus + qualityBonus + healthBonus +
+                primarySubjectBonus + retrievalPriorityBonus + negativeTagsPenalty;
 
   return {
     segmentBonus, faceBonus, objectBonus, audioBonus,
     cinematicBonus, importanceBonus, uniquenessBonus,
     storytellingBonus, qualityBonus, healthBonus,
+    primarySubjectBonus, retrievalPriorityBonus, negativeTagsPenalty,
     total, bestSegment,
   };
 }
