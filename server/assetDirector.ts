@@ -50,6 +50,11 @@ import {
   editorialIntentEnabled,
   logEditorialIntentChoice,
 } from "./editorialIntentEngine";
+import {
+  documentaryPlanningEnabled,
+  scoreRetrievalContract,
+  type RetrievalContract,
+} from "./documentaryPlanningEngine";
 
 // ─── Feature flag ─────────────────────────────────────────────────────────────
 
@@ -224,6 +229,8 @@ export type AssetDirectorContext = {
   expectedCinematicTags?: string[];
   /** Beat duration in seconds — used for temporal best-window selection. */
   beatDurationSec?: number;
+  /** Pre-computed retrieval contract for this beat (from DocumentaryPlanningEngine). */
+  retrievalContract?: RetrievalContract | null;
 };
 
 // ─── Score types ──────────────────────────────────────────────────────────────
@@ -302,7 +309,11 @@ export type AssetScore = {
     capabilityPenalty: number;
     /** Temporal best-window bonus (+0 to +5). */
     temporalBonus: number;
-    /** Sum of all v4/v5/v6/v7 bonuses including penalties. */
+    /** Retrieval contract match bonus (+0 to +5) */
+    contractBonus: number;
+    /** Retrieval contract forbidden content penalty (-4 to 0) */
+    contractPenalty: number;
+    /** Sum of all v4/v5/v6/v7/planning bonuses including penalties. */
     v4Total: number;
     /** Best-matching segment (null if no segment embeddings). */
     bestSegment: SegmentSimilarity | null;
@@ -825,6 +836,24 @@ function scoreCandidate(
     ctx.beatDurationSec
   );
 
+  // ── Retrieval contract scoring (Documentary Planning Engine) ─────────────
+  let contractBonus = 0;
+  let contractPenalty = 0;
+  let contractExplanation = "";
+  if (documentaryPlanningEnabled() && ctx.retrievalContract) {
+    const ann = meta?.annotation;
+    const cs = scoreRetrievalContract(
+      ctx.retrievalContract,
+      ann?.persons?.named,
+      ann?.objects,
+      ann?.cinematicTags,
+      ann?.emotion
+    );
+    contractBonus = cs.bonus;
+    contractPenalty = cs.penalty;
+    contractExplanation = cs.explanation;
+  }
+
   // ── Weighted sum ──────────────────────────────────────────────────────────
   const weighted =
     fp.score   * WEIGHTS.annotation +
@@ -834,7 +863,7 @@ function scoreCandidate(
     blueprint  * WEIGHTS.blueprint;
 
   const finalScore = Math.max(0, Math.min(100, Math.round(
-    weighted + diversityModifier + budgetPenalty + editorialMemoryBonus + v4.total
+    weighted + diversityModifier + budgetPenalty + editorialMemoryBonus + v4.total + contractBonus + contractPenalty
   )));
 
   // ── Reasons ───────────────────────────────────────────────────────────────
@@ -897,7 +926,9 @@ function scoreCandidate(
       capabilityBonus:       v4.capabilityBonus,
       capabilityPenalty:     v4.capabilityPenalty,
       temporalBonus:         v4.temporalBonus,
-      v4Total:               v4.total,
+      contractBonus,
+      contractPenalty,
+      v4Total:               v4.total + contractBonus + contractPenalty,
       bestSegment:      v4.bestSegment,
     },
     reasons,
@@ -937,8 +968,8 @@ export function logAssetDirectorChoice(
   const modifiers = `Diversity:${bk.diversityModifier >= 0 ? "+" : ""}${bk.diversityModifier}  Budget:${bk.budgetPenalty}  Memory:+${bk.editorialMemoryBonus}`;
   const reasonStr = score.reasons.length ? `  (${score.reasons.join(", ")})` : "";
   const v4Detail = bk.v4Total !== 0
-    ? `seg:+${bk.segmentBonus} face:+${bk.faceBonus} obj:+${bk.objectBonus} audio:+${bk.audioBonus} cine:+${bk.cinematicBonus} imp:+${bk.importanceBonus} uniq:+${bk.uniquenessBonus} story:+${bk.storytellingBonus} qual:+${bk.qualityBonus} health:+${bk.healthBonus} subj:+${bk.primarySubjectBonus} prio:+${bk.retrievalPriorityBonus} neg:${bk.negativeTagsPenalty} cap:+${bk.capabilityBonus}/${bk.capabilityPenalty} temp:+${bk.temporalBonus} → ${bk.v4Total >= 0 ? "+" : ""}${bk.v4Total}`
-    : "no v4/v5/v6/v7 bonus";
+    ? `seg:+${bk.segmentBonus} face:+${bk.faceBonus} obj:+${bk.objectBonus} audio:+${bk.audioBonus} cine:+${bk.cinematicBonus} imp:+${bk.importanceBonus} uniq:+${bk.uniquenessBonus} story:+${bk.storytellingBonus} qual:+${bk.qualityBonus} health:+${bk.healthBonus} subj:+${bk.primarySubjectBonus} prio:+${bk.retrievalPriorityBonus} neg:${bk.negativeTagsPenalty} cap:+${bk.capabilityBonus}/${bk.capabilityPenalty} temp:+${bk.temporalBonus} contract:+${bk.contractBonus}/${bk.contractPenalty} → ${bk.v4Total >= 0 ? "+" : ""}${bk.v4Total}`
+    : "no v4/v5/v6/v7/plan bonus";
 
   console.log(
     `[AssetDirector] s${sceneIndex}b${beatIndex} "${beatText.slice(0, 50)}" → ${base}\n` +

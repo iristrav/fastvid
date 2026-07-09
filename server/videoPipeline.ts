@@ -9017,6 +9017,8 @@ interface VisualDedupState {
   composeNetworkBlocked?: boolean;
   /** Global visual blueprint from Master Documentary Director (set once, pre-retrieval). */
   videoBlueprint?: import("./masterDocumentaryDirector").VideoBlueprint;
+  /** Full documentary plan (contracts, shot mix, emotional curve) from PlanningEngine. */
+  documentaryPlan?: import("./documentaryPlanningEngine").DocumentaryPlan;
   /** Budget tracker that records how many of each visual type has been used. */
   visualBudgetTracker?: import("./masterDocumentaryDirector").VisualBudgetTracker;
   /** Clips adopted so far in the current scene — used by Asset Director for shot variety. */
@@ -11892,6 +11894,9 @@ async function adoptClip(
     targetMotionLevel: _rhythmTarget ?? null,
     plannedShotType: _shot?.shotType ?? null,
     callbacksPlaced: dedup.assetDirectorCallbacksPlaced,
+    retrievalContract: dedup.documentaryPlan
+      ? (await import("./documentaryPlanningEngine")).getRetrievalContract(dedup.documentaryPlan, sceneIndex, beatIndex)
+      : null,
   };
   const adResult = rankCandidatesWithContext(sortedPaths, beatText, sceneIndex, beatIndex, adCtx, dedup.clipAnnotationMeta);
   if (adResult.reordered && adResult.topScore) {
@@ -22310,6 +22315,27 @@ async function _runVideoPipelineInner(
     if (videoBlueprint) {
       visualDedup.videoBlueprint = videoBlueprint;
       visualDedup.visualBudgetTracker = createBudgetTracker(videoBlueprint);
+    }
+
+    // Documentary Planning Engine: build full plan (contracts, emotional curve, shot mix)
+    // before ANY retrieval — pure derivation from blueprint, no extra LLM calls.
+    {
+      const { buildDocumentaryPlan, documentaryPlanningEnabled } = await import("./documentaryPlanningEngine");
+      if (documentaryPlanningEnabled()) {
+        const scenesForPlan = scenes.map((s) => ({
+          index: s.index,
+          beats: ((s as { beats?: Array<{ index: number; text: string }> }).beats ?? []).map((b) => ({
+            index: b.index,
+            text: b.text,
+          })),
+        }));
+        visualDedup.documentaryPlan = buildDocumentaryPlan(
+          String(videoId),
+          videoTitle ?? "documentary",
+          scenesForPlan,
+          videoBlueprint ?? null
+        );
+      }
     }
 
     // Plan graphic clips (fast, no LLM) and pre-generate them concurrently
