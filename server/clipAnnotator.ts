@@ -20,10 +20,16 @@ import type {
   ClipQualityFlags,
   AnnotationConfidence,
   ExtendedEditorialScores,
+  ClipSegment,
+  ObjectTrack,
+  FaceTrack,
+  ShotImportance,
+  ClipDescriptions,
+  VisualUniqueness,
 } from "../drizzle/annotationTypes";
 import type { MediaArchiveAsset } from "../drizzle/schema";
 
-export const ANNOTATION_VERSION = "v2";
+export const ANNOTATION_VERSION = "v3";
 
 // ─── Feature flag ─────────────────────────────────────────────────────────────
 
@@ -133,7 +139,15 @@ Return ONLY this JSON object — all fields required. Use empty string/array/0 i
     "documentaryValue": 0,
     "sourceQualityScore": 0,
     "reusabilityScore": 0
-  }
+  },
+  "timeline": [],
+  "objectTracks": [],
+  "faceTracks": [],
+  "ocrText": [],
+  "cinematicTags": [],
+  "shotImportance": {"score": 0, "label": "generic", "reason": ""},
+  "visualUniqueness": {"score": 0, "reason": ""},
+  "descriptions": {"short": "", "normal": "", "extended": ""}
 }
 
 FIELD GUIDANCE:
@@ -192,7 +206,64 @@ extendedEditorialScore (0-100 each):
 - newsValue: Relevance for news/current affairs documentaries
 - documentaryValue: Suitability for long-form historical documentary
 - sourceQualityScore: Trust in provenance: 90=major broadcaster archive, 70=national archive/museum, 50=Wikimedia, 30=unknown source
-- reusabilityScore: How broadly reusable across different productions/topics`;
+- reusabilityScore: How broadly reusable across different productions/topics
+
+timeline: Divide the clip into 2–6 temporal segments. For each segment:
+- startSec / endSec: estimate based on total duration
+- shotType: wide | medium | close-up | establishing | extreme close-up
+- description: 1 sentence of what visually happens in this segment
+- persons: named persons visible (copy from persons.named if present)
+- objects: key objects in this segment
+- emotion: dominant emotion in this segment
+- cameraMovement: static | pan | tilt | zoom | dolly | crane | handheld
+- ocrText: any text visible in this segment (street signs, dates, subtitles)
+If duration unknown, create 1 segment covering the whole clip.
+
+objectTracks: For each significant moving object, describe:
+- object: specific object name
+- startPosition: "left" | "center" | "right" | "top" | "bottom" | "offscreen"
+- endPosition: where it ends up
+- direction: e.g. "left→right", "towards camera", "stationary", "top→bottom"
+- movement: e.g. "enters frame left", "exits frame right", "approaches camera", "crosses frame"
+Only include objects with notable movement. Omit static background elements.
+
+faceTracks: For each visible person (named or unnamed):
+- name: full name or "unknown person"
+- firstAppearsSec: estimated time of first appearance
+- lastAppearsSec: estimated time of disappearance
+- dominanceFraction: 0–1, fraction of clip duration this face is visible
+- closeUpDurationSec: estimated seconds where face fills >50% of frame height
+- isPrimarySubject: true if this is the main subject of the clip
+
+ocrText: List all text strings you can read or infer are likely visible in the clip:
+- Street signs, place names, year/date overlays, subtitles, banners, posters
+- Names on buildings, newspapers, maps with labels, document titles
+- Include text inferred from context (e.g. "1944" overlay on WWII footage)
+
+cinematicTags: Apply all relevant tags from this list (use exact strings):
+"leading lines" | "symmetry" | "silhouette" | "crowd shot" | "aerial view" | "skyline"
+| "smoke" | "fire" | "destruction" | "celebration" | "interview" | "archive footage"
+| "establishing shot" | "insert shot" | "reaction shot" | "cutaway" | "b-roll"
+| "portrait" | "propaganda" | "newsreel" | "action" | "aftermath" | "procession"
+| "ceremony" | "ruins" | "landscape" | "battle" | "documentary"
+Add custom tags if relevant and not in this list.
+
+shotImportance:
+- score 0–100: How important/iconic is this specific shot in the context of history and documentary filmmaking?
+  100 = Moon landing, D-Day landing (once-in-history). 85–99 = major historical event, primary source.
+  70–84 = important but not unique. 50–69 = useful contextual footage. 35–49 = generic B-roll. <35 = stock filler.
+- label: "iconic" (score≥90) | "unique" (score≥70) | "rare" (score≥50) | "generic" (score<50)
+- reason: 1 sentence explaining this score
+
+visualUniqueness:
+- score 0–100: How unusual is this visual composition/content relative to all known archive footage?
+  100 = one-of-a-kind (Moon landing). 80+ = extremely rare. 60–79 = uncommon. 40–59 = seen before. <40 = very common.
+- reason: 1 sentence. E.g. "Rare aerial view of evacuation" or "Standard wide shot of city, many similar exist."
+
+descriptions:
+- short: Exactly 1 sentence (15–25 words). Who does what, where, when.
+- normal: 1 paragraph of 3–5 sentences. Who, what, where, when, why it matters.
+- extended: 150–300 words for an AI documentary editor. Include: visual detail, historical context, editorial usage guidance, emotional impact, cinematographic notes.`;
 }
 
 // ─── Editorial score calculator ───────────────────────────────────────────────
@@ -287,7 +358,7 @@ export async function annotateAsset(asset: MediaArchiveAsset): Promise<ClipAnnot
         },
       ],
       preferProvider: "groq",
-      maxTokens: 2000,
+      maxTokens: 3500,
       responseFormat: { type: "json_object" },
     });
 
@@ -408,6 +479,87 @@ export async function annotateAsset(asset: MediaArchiveAsset): Promise<ClipAnnot
       sourceQualityScore: clamp(rawExt?.sourceQualityScore ?? 40),
       reusabilityScore:   clamp(rawExt?.reusabilityScore   ?? 50),
     };
+
+    // ── v3 fields ──────────────────────────────────────────────────────────────
+
+    if (Array.isArray(parsed.timeline) && parsed.timeline.length > 0) {
+      annotation.timeline = (parsed.timeline as ClipSegment[]).map((seg) => ({
+        startSec:       typeof seg.startSec === "number" ? seg.startSec : 0,
+        endSec:         typeof seg.endSec === "number" ? seg.endSec : 0,
+        shotType:       typeof seg.shotType === "string" ? seg.shotType : "medium",
+        description:    typeof seg.description === "string" ? seg.description.slice(0, 300) : "",
+        persons:        Array.isArray(seg.persons) ? seg.persons : undefined,
+        objects:        Array.isArray(seg.objects) ? seg.objects : undefined,
+        emotion:        typeof seg.emotion === "string" ? seg.emotion : undefined,
+        cameraMovement: typeof seg.cameraMovement === "string" ? seg.cameraMovement : undefined,
+        ocrText:        typeof seg.ocrText === "string" ? seg.ocrText : undefined,
+      }));
+    }
+
+    if (Array.isArray(parsed.objectTracks) && parsed.objectTracks.length > 0) {
+      annotation.objectTracks = (parsed.objectTracks as ObjectTrack[]).map((t) => ({
+        object:        typeof t.object === "string" ? t.object : "",
+        startPosition: typeof t.startPosition === "string" ? t.startPosition : "center",
+        endPosition:   typeof t.endPosition === "string" ? t.endPosition : "center",
+        direction:     typeof t.direction === "string" ? t.direction : "stationary",
+        movement:      typeof t.movement === "string" ? t.movement : "",
+      })).filter((t) => t.object.length > 0);
+    }
+
+    if (Array.isArray(parsed.faceTracks) && parsed.faceTracks.length > 0) {
+      annotation.faceTracks = (parsed.faceTracks as FaceTrack[]).map((f) => ({
+        name:               typeof f.name === "string" ? f.name : "unknown person",
+        firstAppearsSec:    typeof f.firstAppearsSec === "number" ? f.firstAppearsSec : 0,
+        lastAppearsSec:     typeof f.lastAppearsSec === "number" ? f.lastAppearsSec : 0,
+        dominanceFraction:  clamp01(f.dominanceFraction),
+        closeUpDurationSec: typeof f.closeUpDurationSec === "number" ? Math.max(0, f.closeUpDurationSec) : 0,
+        isPrimarySubject:   f.isPrimarySubject === true,
+      }));
+    }
+
+    if (Array.isArray(parsed.ocrText) && parsed.ocrText.length > 0) {
+      annotation.ocrText = (parsed.ocrText as string[])
+        .filter((t) => typeof t === "string" && t.trim().length > 0)
+        .slice(0, 30);
+    }
+
+    if (Array.isArray(parsed.cinematicTags) && parsed.cinematicTags.length > 0) {
+      annotation.cinematicTags = (parsed.cinematicTags as string[])
+        .filter((t) => typeof t === "string" && t.trim().length > 0)
+        .slice(0, 20);
+    }
+
+    const rawSI = parsed.shotImportance as Partial<ShotImportance> | undefined;
+    if (rawSI && typeof rawSI.score === "number") {
+      const score = clamp(rawSI.score);
+      const validLabels: Array<ShotImportance["label"]> = ["iconic", "unique", "rare", "generic"];
+      const label: ShotImportance["label"] =
+        validLabels.includes(rawSI.label as ShotImportance["label"])
+          ? (rawSI.label as ShotImportance["label"])
+          : score >= 90 ? "iconic" : score >= 70 ? "unique" : score >= 50 ? "rare" : "generic";
+      annotation.shotImportance = {
+        score,
+        label,
+        reason: typeof rawSI.reason === "string" ? rawSI.reason.slice(0, 200) : "",
+      };
+    }
+
+    const rawVU = parsed.visualUniqueness as Partial<VisualUniqueness> | undefined;
+    if (rawVU && typeof rawVU.score === "number") {
+      annotation.visualUniqueness = {
+        score:  clamp(rawVU.score),
+        reason: typeof rawVU.reason === "string" ? rawVU.reason.slice(0, 200) : "",
+      };
+    }
+
+    const rawDesc = parsed.descriptions as Partial<ClipDescriptions> | undefined;
+    if (rawDesc && (rawDesc.short || rawDesc.normal || rawDesc.extended)) {
+      annotation.descriptions = {
+        short:    typeof rawDesc.short === "string" ? rawDesc.short.slice(0, 200) : "",
+        normal:   typeof rawDesc.normal === "string" ? rawDesc.normal.slice(0, 600) : "",
+        extended: typeof rawDesc.extended === "string" ? rawDesc.extended.slice(0, 1200) : "",
+      };
+    }
 
     return annotation;
   } catch (err) {

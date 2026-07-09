@@ -1,48 +1,61 @@
 /**
- * Archive Intelligence Pipeline — professional-grade ingestion enrichment.
+ * Archive Intelligence Pipeline v3 — vision-first professional enrichment.
  *
  * Transforms raw archive assets into fully editorial-profiled clips that an AI
  * editor can select with the same precision as a senior BBC documentary editor.
  *
  * Pipeline stages (all run at ingest time, non-blocking for the upload response):
  *
- *   1. Enhanced LLM annotation (v2 ClipAnnotator)
+ *   1. Enhanced LLM annotation (v3 ClipAnnotator)
  *      — persons, objects, actions, location, era, emotion, cinematography
- *      — 150-word editorial description, 15-25 search aliases
+ *      — descriptions (short/normal/extended), shot importance, visual uniqueness
+ *      — timeline segmentation, object tracks, face tracks, OCR text
+ *      — cinematic tags, 15-25 search aliases, KG entities
  *      — per-field confidence, quality flags, extended editorial scores
- *      — Knowledge Graph entity list
  *
  *   2. FFprobe / FFmpeg quality analysis
- *      — black frame detection
- *      — blur / freeze frame detection
- *      — duration validation
+ *      — black frame detection, blur / freeze, duration validation
  *      — watermark heuristic from title/tags
  *
  *   3. Scene detection enhancement
- *      — histogram change detection (additive to scdet + scene filter)
- *      — enabled via ARCHIVE_HISTOGRAM_DETECT=true
+ *      — histogram change detection (ARCHIVE_HISTOGRAM_DETECT=true)
  *
  *   4. Near-duplicate detection
  *      — cosine similarity against recently indexed clips
- *      — flags as nearDuplicateOf when similarity > threshold
  *
  *   5. Facet embeddings
  *      — 7 separate text embeddings (description, persons, location,
- *        objects, events, emotions, style) stored alongside the main embedding
+ *        objects, events, emotions, style)
  *
  *   6. Search alias expansion
- *      — merges LLM-generated aliases with KG-expanded terms
- *      — produces a final deduplicated alias list stored on the annotation
+ *      — LLM aliases + KG entities + existing tags, deduped, capped at 40
  *
  *   7. Rich logging
- *      — [ArchiveIntelligence] prefix, every stage logged
- *      — final report per clip: all signals, quality verdict, alias count
+ *      — [ArchiveIntelligence] prefix; final report per clip
+ *
+ *   8. Multi-frame vision analysis  ← NEW v3
+ *      — FFmpeg extracts 3–5 frames at evenly-spaced timestamps
+ *      — Dedicated LLM vision call: refines timeline, object tracks, face tracks,
+ *        OCR text, cinematic tags, shot importance, visual uniqueness, descriptions
+ *      — Merges results into existing annotation (LLM v3 fields are baseline;
+ *        vision analysis enriches/overrides with real pixel evidence)
+ *
+ *   9. Audio intelligence  ← NEW v3
+ *      — FFmpeg: silence detection, loudness peaks, audio presence
+ *      — Classifies audio events: speech, music, applause, explosion, crowd, etc.
+ *      — Stored as annotation.audioEvents[]
+ *
+ *  10. Segment-level embeddings  ← NEW v3
+ *      — Creates one embedding per timeline segment
+ *      — Stored as {assetId}_seg_{index}.json alongside facet embeddings
+ *      — Enables sub-clip temporal retrieval
  *
  * Feature flag: ARCHIVE_INTELLIGENCE_PIPELINE_ENABLED (default: "true")
- * KG expansion uses the same KNOWLEDGE_GRAPH from assetDirector.ts.
+ *               ARCHIVE_VISION_ANALYSIS_ENABLED (default: "true")
+ *               ARCHIVE_AUDIO_ANALYSIS_ENABLED  (default: "true")
  *
- * Integration: call runArchiveIntelligencePipeline() after initial DB save in
- * the archive upload handler. Non-throwing — all errors are logged and swallowed.
+ * Integration: call runArchiveIntelligencePipeline() after initial DB save.
+ * Non-throwing — all errors are logged and swallowed.
  */
 
 import path from "path";
@@ -51,7 +64,18 @@ import { exec as execCb } from "child_process";
 import { promisify } from "util";
 
 import { annotateAsset, buildEnrichedSemanticDocument, ANNOTATION_VERSION } from "./clipAnnotator";
-import type { ClipAnnotation, ClipQualityFlags } from "../drizzle/annotationTypes";
+import { invokeLLM } from "./_core/llm";
+import type {
+  ClipAnnotation,
+  ClipQualityFlags,
+  ClipSegment,
+  ObjectTrack,
+  FaceTrack,
+  AudioEvent,
+  ShotImportance,
+  ClipDescriptions,
+  VisualUniqueness,
+} from "../drizzle/annotationTypes";
 import { getDb } from "./db";
 import { mediaArchiveAssets } from "../drizzle/schema";
 import { eq } from "drizzle-orm";
@@ -380,6 +404,399 @@ function expandSearchAliases(
   return result.slice(0, 40); // cap at 40 aliases
 }
 
+// ─── Stage 8: Multi-frame vision analysis ─────────────────────────────────────
+
+/**
+ * Extract N evenly-spaced frames from a video file as base64 JPEG data URIs.
+ * Returns an empty array if extraction fails or the file doesn't exist.
+ */
+async function extractFrames(
+  localPath: string,
+  durationSec: number,
+  frameCount = 4,
+  quality = 3 // FFmpeg JPEG quality (2=best, 31=worst)
+): Promise<string[]> {
+  if (!fs.existsSync(localPath) || durationSec <= 0) return [];
+
+  const frames: string[] = [];
+  const tmpDir = path.join(path.dirname(localPath), `_frames_${path.basename(localPath, path.extname(localPath))}`);
+
+  try {
+    if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+
+    const timestamps = Array.from({ length: frameCount }, (_, i) =>
+      Math.min(durationSec - 0.1, (durationSec / (frameCount + 1)) * (i + 1))
+    );
+
+    for (let i = 0; i < timestamps.length; i++) {
+      const ts = timestamps[i]!;
+      const outPath = path.join(tmpDir, `frame_${i}.jpg`);
+      try {
+        await execPromise(
+          `${ffmpegBin()} -ss ${ts.toFixed(3)} -i "${localPath}" -frames:v 1 -q:v ${quality} -vf "scale=640:-2" "${outPath}" -y`,
+          { timeout: 10_000 }
+        );
+        if (fs.existsSync(outPath)) {
+          const b64 = fs.readFileSync(outPath).toString("base64");
+          frames.push(`data:image/jpeg;base64,${b64}`);
+        }
+      } catch { /* ignore individual frame failures */ }
+    }
+  } finally {
+    // Clean up temp frames
+    try {
+      if (fs.existsSync(tmpDir)) fs.rmSync(tmpDir, { recursive: true, force: true });
+    } catch { /* non-fatal */ }
+  }
+
+  return frames;
+}
+
+/**
+ * Build the vision analysis prompt for multi-frame inspection.
+ * Focused purely on v3 fields: timeline, tracks, OCR, tags, importance.
+ */
+function buildVisionAnalysisPrompt(asset: MediaArchiveAsset, durationSec: number, frameCount: number): string {
+  const meta = [
+    asset.title ? `Title: "${asset.title}"` : "",
+    asset.tags?.length ? `Tags: ${asset.tags.slice(0, 10).join(", ")}` : "",
+    asset.sourceNote ? `Source: ${asset.sourceNote}` : "",
+    `Duration: ${durationSec.toFixed(1)}s`,
+    `Frames shown: ${frameCount} evenly-spaced frames from this clip`,
+  ].filter(Boolean).join("\n");
+
+  return `You are a professional documentary archive editor performing frame-by-frame visual analysis. You are shown ${frameCount} frames from a video clip. Analyze what you actually see in the images and return ONLY this JSON object.
+
+${meta}
+
+{
+  "timeline": [],
+  "objectTracks": [],
+  "faceTracks": [],
+  "ocrText": [],
+  "cinematicTags": [],
+  "cameraMovementDetail": "",
+  "shotImportance": {"score": 0, "label": "generic", "reason": ""},
+  "visualUniqueness": {"score": 0, "reason": ""},
+  "descriptions": {"short": "", "normal": "", "extended": ""}
+}
+
+INSTRUCTIONS:
+
+timeline: Based on the frames shown, divide this ${durationSec.toFixed(1)}s clip into 2–5 temporal segments. Each frame represents a different moment in the clip.
+Each segment: { "startSec": N, "endSec": N, "shotType": "...", "description": "...", "persons": [], "objects": [], "emotion": "...", "cameraMovement": "...", "ocrText": "..." }
+
+objectTracks: For each object that moves significantly between frames:
+{ "object": "...", "startPosition": "left|center|right|offscreen", "endPosition": "...", "direction": "left→right|towards camera|...", "movement": "enters frame left|exits right|..." }
+
+faceTracks: For each face you can see:
+{ "name": "name or unknown person", "firstAppearsSec": 0, "lastAppearsSec": 0, "dominanceFraction": 0.0–1.0, "closeUpDurationSec": 0, "isPrimarySubject": true/false }
+
+ocrText: All text you can read in any frame. Include street signs, dates, subtitles, banners, newspapers, maps, building names.
+
+cinematicTags: Pick all that apply: "leading lines" "symmetry" "silhouette" "crowd shot" "aerial view" "skyline" "smoke" "fire" "destruction" "celebration" "interview" "archive footage" "establishing shot" "insert shot" "reaction shot" "cutaway" "b-roll" "portrait" "propaganda" "newsreel" "action" "aftermath" "procession" "ceremony" "ruins" "landscape" "battle" "documentary"
+
+cameraMovementDetail: Describe actual camera motion you observe between frames. E.g. "slow pan left, then static close-up" or "handheld tracking shot throughout".
+
+shotImportance score 0–100: 100=Moon landing/D-Day (irreplaceable primary source). 90+=iconic major event. 70+=historically significant. 50+=useful B-roll. <40=generic stock.
+label: "iconic"(≥90) | "unique"(≥70) | "rare"(≥50) | "generic"(<50)
+
+visualUniqueness score 0–100: How rare is THIS visual composition globally? 100=one-of-a-kind. 80+=extremely rare. 60+=uncommon. 40+=seen before. <40=very common.
+
+descriptions.short: 1 sentence (15–25 words): who does what, where, when.
+descriptions.normal: 1 paragraph (3–5 sentences): who, what, where, when, significance.
+descriptions.extended: 150–300 words for an AI video editor: visual detail, historical context, editorial usage, emotional impact, cinematography.
+
+Return ONLY valid JSON. No markdown, no explanation.`;
+}
+
+type VisionAnalysisResult = {
+  timeline?: ClipSegment[];
+  objectTracks?: ObjectTrack[];
+  faceTracks?: FaceTrack[];
+  ocrText?: string[];
+  cinematicTags?: string[];
+  cameraMovementDetail?: string;
+  shotImportance?: ShotImportance;
+  visualUniqueness?: VisualUniqueness;
+  descriptions?: ClipDescriptions;
+};
+
+/**
+ * Run multi-frame vision analysis on a clip.
+ * Extracts frames with FFmpeg, then sends them to a vision-capable LLM.
+ * Returns null if vision analysis is disabled or fails.
+ */
+async function runVisionAnalysis(
+  asset: MediaArchiveAsset,
+  localPath: string,
+  durationSec: number
+): Promise<VisionAnalysisResult | null> {
+  if (process.env.ARCHIVE_VISION_ANALYSIS_ENABLED === "false") return null;
+  if (!localPath || !fs.existsSync(localPath)) return null;
+
+  try {
+    console.log(`[ArchiveIntelligence] Stage 8: extracting frames for asset ${asset.id}…`);
+    const frameCount = Math.min(5, Math.max(2, Math.ceil(durationSec / 3)));
+    const frames = await extractFrames(localPath, durationSec, frameCount);
+
+    if (frames.length === 0) {
+      console.log(`[ArchiveIntelligence] Stage 8: no frames extracted for asset ${asset.id}, skipping vision`);
+      return null;
+    }
+
+    console.log(`[ArchiveIntelligence] Stage 8: vision analysis with ${frames.length} frames for asset ${asset.id}`);
+
+    const userContent: Array<{ type: string; text?: string; image_url?: { url: string } }> = [
+      { type: "text", text: buildVisionAnalysisPrompt(asset, durationSec, frames.length) },
+      ...frames.map((f) => ({ type: "image_url", image_url: { url: f } })),
+    ];
+
+    const result = await invokeLLM({
+      messages: [
+        {
+          role: "system",
+          content: "You are a documentary archive editor performing visual frame analysis. Return ONLY valid JSON.",
+        },
+        { role: "user", content: userContent as never },
+      ],
+      maxTokens: 2500,
+      responseFormat: { type: "json_object" },
+    });
+
+    const raw = typeof result.choices[0]?.message.content === "string"
+      ? result.choices[0].message.content
+      : "{}";
+
+    const parsed = JSON.parse(raw) as VisionAnalysisResult;
+
+    const out: VisionAnalysisResult = {};
+
+    if (Array.isArray(parsed.timeline) && parsed.timeline.length > 0) {
+      out.timeline = parsed.timeline.map((s) => ({
+        startSec:       typeof s.startSec === "number" ? s.startSec : 0,
+        endSec:         typeof s.endSec === "number" ? s.endSec : 0,
+        shotType:       typeof s.shotType === "string" ? s.shotType : "medium",
+        description:    typeof s.description === "string" ? s.description.slice(0, 300) : "",
+        persons:        Array.isArray(s.persons) ? s.persons : undefined,
+        objects:        Array.isArray(s.objects) ? s.objects : undefined,
+        emotion:        typeof s.emotion === "string" ? s.emotion : undefined,
+        cameraMovement: typeof s.cameraMovement === "string" ? s.cameraMovement : undefined,
+        ocrText:        typeof s.ocrText === "string" ? s.ocrText : undefined,
+      }));
+    }
+    if (Array.isArray(parsed.objectTracks) && parsed.objectTracks.length > 0) {
+      out.objectTracks = (parsed.objectTracks as ObjectTrack[]).filter((t) => typeof t.object === "string" && t.object.length > 0);
+    }
+    if (Array.isArray(parsed.faceTracks) && parsed.faceTracks.length > 0) {
+      out.faceTracks = (parsed.faceTracks as FaceTrack[]).filter((f) => typeof f.name === "string");
+    }
+    if (Array.isArray(parsed.ocrText) && parsed.ocrText.length > 0) {
+      out.ocrText = parsed.ocrText.filter((t) => typeof t === "string" && t.trim().length > 0).slice(0, 30);
+    }
+    if (Array.isArray(parsed.cinematicTags) && parsed.cinematicTags.length > 0) {
+      out.cinematicTags = parsed.cinematicTags.filter((t) => typeof t === "string").slice(0, 20);
+    }
+    if (typeof parsed.cameraMovementDetail === "string" && parsed.cameraMovementDetail.length > 2) {
+      out.cameraMovementDetail = parsed.cameraMovementDetail.slice(0, 200);
+    }
+    const si = parsed.shotImportance;
+    if (si && typeof si.score === "number") {
+      const score = Math.min(100, Math.max(0, Math.round(si.score)));
+      const validLabels: Array<ShotImportance["label"]> = ["iconic", "unique", "rare", "generic"];
+      out.shotImportance = {
+        score,
+        label: validLabels.includes(si.label as ShotImportance["label"])
+          ? (si.label as ShotImportance["label"])
+          : score >= 90 ? "iconic" : score >= 70 ? "unique" : score >= 50 ? "rare" : "generic",
+        reason: typeof si.reason === "string" ? si.reason.slice(0, 200) : "",
+      };
+    }
+    const vu = parsed.visualUniqueness;
+    if (vu && typeof vu.score === "number") {
+      out.visualUniqueness = {
+        score:  Math.min(100, Math.max(0, Math.round(vu.score))),
+        reason: typeof vu.reason === "string" ? vu.reason.slice(0, 200) : "",
+      };
+    }
+    const desc = parsed.descriptions;
+    if (desc && (desc.short || desc.normal || desc.extended)) {
+      out.descriptions = {
+        short:    typeof desc.short === "string" ? desc.short.slice(0, 200) : "",
+        normal:   typeof desc.normal === "string" ? desc.normal.slice(0, 600) : "",
+        extended: typeof desc.extended === "string" ? desc.extended.slice(0, 1200) : "",
+      };
+    }
+
+    console.log(
+      `[ArchiveIntelligence] Stage 8 done: asset ${asset.id} — ` +
+      `timeline:${out.timeline?.length ?? 0} tracks:${out.objectTracks?.length ?? 0} ` +
+      `faces:${out.faceTracks?.length ?? 0} ocr:${out.ocrText?.length ?? 0} ` +
+      `importance:${out.shotImportance?.score ?? "-"} unique:${out.visualUniqueness?.score ?? "-"}`
+    );
+
+    return out;
+  } catch (err) {
+    console.warn(
+      `[ArchiveIntelligence] Stage 8 vision analysis failed for asset ${asset.id}:`,
+      (err as Error).message?.slice(0, 120)
+    );
+    return null;
+  }
+}
+
+// ─── Stage 9: Audio intelligence ─────────────────────────────────────────────
+
+/**
+ * Analyse audio in a local video file using FFmpeg.
+ * Detects: silence, loudness peaks, audio presence, approximate event types.
+ * Returns an array of AudioEvent objects.
+ */
+async function analyzeAudio(localPath: string, durationSec: number): Promise<AudioEvent[]> {
+  if (process.env.ARCHIVE_AUDIO_ANALYSIS_ENABLED === "false") return [];
+  if (!fs.existsSync(localPath)) return [];
+
+  const events: AudioEvent[] = [];
+
+  try {
+    // ── Check audio stream presence ────────────────────────────────────────────
+    let hasAudio = false;
+    try {
+      const { stdout: probeOut } = await execPromise(
+        `${ffprobeBin()} -v error -select_streams a:0 -show_entries stream=codec_type -of default=noprint_wrappers=1:nokey=1 "${localPath}"`,
+        { timeout: 8_000 }
+      );
+      hasAudio = String(probeOut).trim().toLowerCase() === "audio";
+    } catch { /* ignore */ }
+
+    if (!hasAudio) {
+      events.push({ type: "silence", startSec: 0, durationSec, confidence: 0.9 });
+      return events;
+    }
+
+    // ── Silence detection ─────────────────────────────────────────────────────
+    let silenceSec = 0;
+    try {
+      const { stderr: silOut } = await execPromise(
+        `${ffmpegBin()} -i "${localPath}" -af "silencedetect=n=-50dB:d=0.5" -f null -`,
+        { timeout: 20_000 }
+      );
+      let sMatch: RegExpExecArray | null;
+      const silRe = /silence_duration:\s*([0-9.]+)/g;
+      const silStr = String(silOut);
+      while ((sMatch = silRe.exec(silStr)) !== null) {
+        silenceSec += parseFloat(sMatch[1]!);
+      }
+    } catch { /* ignore */ }
+
+    // ── Loudness / RMS analysis ───────────────────────────────────────────────
+    let rms = -60; // dBFS
+    let peak = -60;
+    try {
+      const { stderr: statsOut } = await execPromise(
+        `${ffmpegBin()} -i "${localPath}" -af "astats=metadata=1:reset=1" -f null -`,
+        { timeout: 20_000 }
+      );
+      const rmsMatch = /RMS level dB:\s*([+-]?[0-9.]+)/i.exec(String(statsOut));
+      const peakMatch = /Peak level dB:\s*([+-]?[0-9.]+)/i.exec(String(statsOut));
+      if (rmsMatch) rms = parseFloat(rmsMatch[1]!);
+      if (peakMatch) peak = parseFloat(peakMatch[1]!);
+    } catch { /* ignore */ }
+
+    // ── Classify events from audio metrics ───────────────────────────────────
+    const silenceFraction = durationSec > 0 ? silenceSec / durationSec : 0;
+
+    if (silenceFraction > 0.9) {
+      events.push({ type: "silence", startSec: 0, durationSec, confidence: 0.95 });
+    } else if (silenceFraction > 0.5) {
+      events.push({ type: "silence", durationSec: silenceSec, confidence: 0.8 });
+    }
+
+    // Speech: moderate RMS, non-silent
+    if (rms > -45 && rms < -15 && silenceFraction < 0.7) {
+      events.push({ type: "speech", startSec: null, durationSec: null, confidence: 0.6 });
+    }
+
+    // Loud event (explosion, crowd, gunfire): high peak + high RMS
+    if (peak > -6) {
+      events.push({ type: "loud event", startSec: null, durationSec: null, confidence: 0.65 });
+    }
+
+    // Music: sustained moderate RMS with low silence
+    if (rms > -30 && silenceFraction < 0.1 && peak < -3) {
+      events.push({ type: "music", startSec: null, durationSec: null, confidence: 0.55 });
+    }
+
+    // Crowd noise: high RMS, sustained, not too peaky
+    if (rms > -25 && peak - rms < 12 && silenceFraction < 0.05) {
+      events.push({ type: "crowd", startSec: null, durationSec: null, confidence: 0.5 });
+    }
+
+    console.log(
+      `[ArchiveIntelligence] Stage 9: asset audio — rms:${rms.toFixed(1)}dB peak:${peak.toFixed(1)}dB ` +
+      `silence:${(silenceFraction * 100).toFixed(0)}% events:[${events.map((e) => e.type).join(",")}]`
+    );
+  } catch (err) {
+    console.warn(`[ArchiveIntelligence] Stage 9 audio analysis failed:`, (err as Error).message?.slice(0, 80));
+  }
+
+  return events;
+}
+
+// ─── Stage 10: Segment-level embeddings ──────────────────────────────────────
+
+/**
+ * Generate one text embedding per timeline segment.
+ * Stores embedding files as {assetId}_seg_{index}.json in the embedding dir.
+ * Updates each segment's embeddingKey field in-place.
+ */
+async function generateSegmentEmbeddings(
+  assetId: number,
+  segments: ClipSegment[]
+): Promise<void> {
+  if (!segments || segments.length === 0) return;
+
+  try {
+    const { createTextEmbedding } = await import("./semanticVisualMatching");
+    const dir = localEmbeddingDir();
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+    let embedded = 0;
+    for (let i = 0; i < segments.length; i++) {
+      const seg = segments[i]!;
+      const text = [
+        seg.description,
+        seg.persons?.join(", "),
+        seg.objects?.join(", "),
+        seg.emotion,
+        seg.shotType,
+        seg.ocrText,
+      ].filter(Boolean).join(". ");
+
+      if (!text || text.length < 5) continue;
+
+      try {
+        const embedding = await createTextEmbedding(text);
+        if (!embedding || embedding.length === 0) continue;
+
+        const filePath = path.join(dir, `${assetId}_seg_${i}.json`);
+        fs.writeFileSync(
+          filePath,
+          JSON.stringify({ assetId, segmentIndex: i, startSec: seg.startSec, endSec: seg.endSec, embedding, text: text.slice(0, 200) })
+        );
+        seg.embeddingKey = filePath;
+        embedded++;
+      } catch { /* individual segment embedding failure is non-fatal */ }
+    }
+
+    if (embedded > 0) {
+      console.log(`[ArchiveIntelligence] Stage 10: generated ${embedded}/${segments.length} segment embeddings for asset ${assetId}`);
+    }
+  } catch (err) {
+    console.warn(`[ArchiveIntelligence] Stage 10 segment embeddings failed:`, (err as Error).message?.slice(0, 80));
+  }
+}
+
 // ─── Stage 7: Logging ─────────────────────────────────────────────────────────
 
 function logIntelligenceReport(
@@ -389,7 +806,8 @@ function logIntelligenceReport(
   facetCount: number,
   nearDupId: number | null,
   aliasCount: number,
-  elapsedMs: number
+  elapsedMs: number,
+  segmentCount?: number
 ): void {
   const qf = annotation.qualityFlags ?? {};
   const flags = [
@@ -429,7 +847,18 @@ function logIntelligenceReport(
     `  Aliases:     ${aliasCount} search terms\n` +
     `  Facets:      ${facetCount} embeddings\n` +
     `  Flags:       ${flags.length > 0 ? flags.join(" ") : "clean"}\n` +
-    `  Description: ${(annotation.editorialDescription ?? "").slice(0, 120)}…`
+    `  Description: ${(annotation.editorialDescription ?? "").slice(0, 120)}…\n` +
+    (annotation.descriptions ? `  Short desc:  ${annotation.descriptions.short.slice(0, 120)}\n` : "") +
+    (annotation.shotImportance ? `  Importance:  ${annotation.shotImportance.score}/100 [${annotation.shotImportance.label}] — ${annotation.shotImportance.reason.slice(0, 80)}\n` : "") +
+    (annotation.visualUniqueness ? `  Uniqueness:  ${annotation.visualUniqueness.score}/100 — ${annotation.visualUniqueness.reason.slice(0, 80)}\n` : "") +
+    (annotation.timeline?.length ? `  Timeline:    ${annotation.timeline.length} segments\n` + annotation.timeline.map((s) => `    ${s.startSec.toFixed(1)}–${s.endSec.toFixed(1)}s [${s.shotType}] ${s.description.slice(0, 70)}`).join("\n") + "\n" : "") +
+    (annotation.objectTracks?.length ? `  ObjTracks:   ${annotation.objectTracks.map((t) => `${t.object} ${t.movement}`).join("; ")}\n` : "") +
+    (annotation.faceTracks?.length ? `  FaceTracks:  ${annotation.faceTracks.map((f) => `${f.name} ${(f.dominanceFraction * 100).toFixed(0)}% dom`).join("; ")}\n` : "") +
+    (annotation.ocrText?.length ? `  OCR text:    ${annotation.ocrText.slice(0, 6).join(" | ")}\n` : "") +
+    (annotation.cinematicTags?.length ? `  CineTags:    ${annotation.cinematicTags.slice(0, 8).join(", ")}\n` : "") +
+    (annotation.audioEvents?.length ? `  Audio:       ${annotation.audioEvents.map((e) => e.type).join(", ")}\n` : "") +
+    (annotation.cameraMovementDetail ? `  CameraDetail:${annotation.cameraMovementDetail.slice(0, 100)}\n` : "") +
+    (segmentCount !== undefined ? `  Seg embeds:  ${segmentCount}\n` : "")
   );
 }
 
@@ -582,9 +1011,42 @@ export async function runArchiveIntelligencePipeline(
     );
     annotation.searchAliases = expandedAliases;
 
+    // ── Stage 8: Multi-frame vision analysis ──────────────────────────────────
+    const confirmedDuration = qa?.confirmedDurationSec ?? (asset.durationSec ?? 0);
+    if (opts.localVideoPath && confirmedDuration > 0) {
+      const vision = await runVisionAnalysis(asset, opts.localVideoPath, confirmedDuration);
+      if (vision) {
+        // Vision results take precedence over LLM inference (real pixels > text inference)
+        if (vision.timeline?.length)          annotation.timeline          = vision.timeline;
+        if (vision.objectTracks?.length)      annotation.objectTracks      = vision.objectTracks;
+        if (vision.faceTracks?.length)        annotation.faceTracks        = vision.faceTracks;
+        if (vision.ocrText?.length)           annotation.ocrText           = vision.ocrText;
+        if (vision.cinematicTags?.length)     annotation.cinematicTags     = vision.cinematicTags;
+        if (vision.cameraMovementDetail)      annotation.cameraMovementDetail = vision.cameraMovementDetail;
+        if (vision.shotImportance)            annotation.shotImportance    = vision.shotImportance;
+        if (vision.visualUniqueness)          annotation.visualUniqueness  = vision.visualUniqueness;
+        if (vision.descriptions?.extended)    annotation.descriptions      = vision.descriptions;
+      }
+    }
+
+    // ── Stage 9: Audio intelligence ────────────────────────────────────────────
+    if (opts.localVideoPath && confirmedDuration > 0) {
+      const audioEvents = await analyzeAudio(opts.localVideoPath, confirmedDuration);
+      if (audioEvents.length > 0) {
+        annotation.audioEvents = audioEvents;
+      }
+    }
+
+    // ── Stage 10: Segment-level embeddings ────────────────────────────────────
+    let segmentCount = 0;
+    if (!opts.skipFacetEmbeddings && annotation.timeline?.length) {
+      await generateSegmentEmbeddings(asset.id, annotation.timeline);
+      segmentCount = annotation.timeline.filter((s) => s.embeddingKey).length;
+    }
+
     // ── Stage 7: Log & save ────────────────────────────────────────────────────
     const elapsedMs = Date.now() - startMs;
-    logIntelligenceReport(asset, annotation, qa, facetCount, nearDupId, expandedAliases.length, elapsedMs);
+    logIntelligenceReport(asset, annotation, qa, facetCount, nearDupId, expandedAliases.length, elapsedMs, segmentCount);
 
     await saveEnrichedAnnotation(asset.id, annotation);
 
