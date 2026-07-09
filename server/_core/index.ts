@@ -91,84 +91,59 @@ async function runMigrations() {
     throw new Error(`Migration failed: ${detail}`);
   }
   console.log("[Migration] All migrations applied successfully");
+  return migrationsFolder;
 }
 
 // ─── Schema Validation ────────────────────────────────────────────────────────
-// After migrations run, verify that every column declared in the Drizzle schema
-// actually exists in the live database. Exits the process if anything is missing
-// so a partially migrated DB never serves production traffic.
-async function validateSchema() {
-  if (!process.env.DATABASE_URL) return; // no DB — nothing to validate
+// Full schema audit: columns, types, nullability, defaults, indexes, unique
+// constraints, and foreign keys. Any mismatch aborts startup so a partially
+// migrated instance never serves traffic.
+async function validateSchema(migrationsFolder?: string) {
+  if (!process.env.DATABASE_URL) return;
 
   const { getDb } = await import("../db");
-  const { sql } = await import("drizzle-orm");
   const db = await getDb();
   if (!db) return;
 
-  // Import every table object from the schema so we can derive expected column names.
-  const schema = await import("../../drizzle/schema");
-  const { getTableColumns, getTableName } = await import("drizzle-orm");
+  const { auditSchema } = await import("../schemaAuditor");
+  const diffs = await auditSchema(db, migrationsFolder);
 
-  // Build a map of tableName → Set<columnName> from the Drizzle schema.
-  const expected = new Map<string, Set<string>>();
-  for (const exported of Object.values(schema)) {
-    if (typeof exported !== "object" || exported === null) continue;
-    try {
-      const cols = getTableColumns(exported as Parameters<typeof getTableColumns>[0]);
-      const tName = getTableName(exported as Parameters<typeof getTableName>[0]);
-      if (!tName || !cols) continue;
-      expected.set(tName, new Set(Object.values(cols).map((c: { name: string }) => c.name)));
-    } catch {
-      // Not a table — skip types, enums, etc.
-    }
-  }
-
-  if (expected.size === 0) {
-    console.warn("[SchemaValidation] No tables found in schema — skipping validation");
+  if (diffs.length === 0) {
+    console.log("[SchemaValidation] ✓ Schema matches the database — tables, columns, types, indexes, and FKs all verified");
     return;
   }
 
-  // Query INFORMATION_SCHEMA for every column that actually exists in this DB.
-  const rows = await db.execute(
-    sql`SELECT TABLE_NAME, COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE()`
-  );
-  const actual: Map<string, Set<string>> = new Map();
-  for (const row of rows[0] as unknown as { TABLE_NAME: string; COLUMN_NAME: string }[]) {
-    if (!actual.has(row.TABLE_NAME)) actual.set(row.TABLE_NAME, new Set());
-    actual.get(row.TABLE_NAME)!.add(row.COLUMN_NAME);
-  }
+  console.error("[SchemaValidation] *** SCHEMA MISMATCH — ABORTING STARTUP ***");
+  console.error(`[SchemaValidation] ${diffs.length} difference(s) found between the Drizzle schema and the live database:\n`);
 
-  const missing: string[] = [];
-  expected.forEach((cols, table) => {
-    const actualCols = actual.get(table);
-    if (!actualCols) {
-      missing.push(`Table '${table}' does not exist in the database`);
-      return;
-    }
-    cols.forEach((col) => {
-      if (!actualCols.has(col)) {
-        missing.push(`Column '${table}.${col}' is missing from the database`);
+  // Group diffs by table for readable output.
+  const byTable = new Map<string, typeof diffs>();
+  diffs.forEach((d) => {
+    if (!byTable.has(d.table)) byTable.set(d.table, []);
+    byTable.get(d.table)!.push(d);
+  });
+
+  byTable.forEach((tableDiffs, table) => {
+    console.error(`  Table: ${table}`);
+    tableDiffs.forEach((d) => {
+      const loc = d.column ? `.${d.column}` : "";
+      console.error(`    ✗ [${d.aspect}] ${table}${loc}`);
+      console.error(`        expected : ${d.expected}`);
+      console.error(`        actual   : ${d.actual}`);
+      if (d.migration) {
+        console.error(`        migration: ${d.migration}.sql`);
       }
     });
   });
 
-  if (missing.length > 0) {
-    console.error("[SchemaValidation] *** SCHEMA MISMATCH — ABORTING STARTUP ***");
-    console.error("[SchemaValidation] The following columns expected by the code are absent from the DB:");
-    missing.forEach((m) => console.error("  ✗", m));
-    console.error("[SchemaValidation] Run pending migrations or roll back the deployment.");
-    throw new Error(`Schema validation failed: ${missing.length} missing column(s)`);
-  }
-
-  let totalCols = 0;
-  expected.forEach((cols) => { totalCols += cols.size; });
-  console.log(`[SchemaValidation] ✓ All ${totalCols} columns verified across ${expected.size} tables`);
+  console.error("\n[SchemaValidation] Apply missing migrations or roll back this deployment.");
+  throw new Error(`Schema validation failed: ${diffs.length} mismatch(es) between code schema and live database`);
 }
 
 async function startServer() {
   // ─── Run DB migrations then validate schema — abort on any failure ────────
-  await runMigrations();
-  await validateSchema();
+  const migrationsFolder = await runMigrations();
+  await validateSchema(migrationsFolder);
 
   // ─── Startup diagnostics (visible in Railway logs) ───────────────────────
   console.log("[Fastvid] Starting server...");
