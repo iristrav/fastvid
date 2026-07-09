@@ -1,5 +1,5 @@
 /**
- * Archive Intelligence Pipeline v3 — vision-first professional enrichment.
+ * Archive Intelligence Pipeline v5 — professional media asset management.
  *
  * Transforms raw archive assets into fully editorial-profiled clips that an AI
  * editor can select with the same precision as a senior BBC documentary editor.
@@ -75,6 +75,12 @@ import type {
   ShotImportance,
   ClipDescriptions,
   VisualUniqueness,
+  OcrEntry,
+  StorytellingLabels,
+  StorytellingFunction,
+  ClipQualityMetrics,
+  ArchiveUniqueness,
+  AssetHealthScore,
 } from "../drizzle/annotationTypes";
 import { getDb } from "./db";
 import { mediaArchiveAssets } from "../drizzle/schema";
@@ -371,6 +377,44 @@ async function generateFacetEmbeddings(
   }
 
   return keys;
+}
+
+// ─── Stage 5b: Extended facet embeddings (v5) ────────────────────────────────
+
+async function generateExtendedFacetEmbeddings(
+  assetId: number,
+  ann: ClipAnnotation
+): Promise<{ ocrTimeline?: string; audioEvents?: string; storytelling?: string }> {
+  const result: { ocrTimeline?: string; audioEvents?: string; storytelling?: string } = {};
+  try {
+    const { createTextEmbedding } = await import("./semanticVisualMatching");
+    const dir = localEmbeddingDir();
+
+    const ocrDoc = (ann.ocrTimeline ?? []).map((e) => e.text).join(". ").trim();
+    const audioDoc = (ann.audioEvents ?? [])
+      .map((e) => `${e.type}${e.startSec != null ? ` at ${e.startSec}s` : ""}`)
+      .join(", ").trim();
+    const storyDoc = [
+      ann.storytellingLabels?.primary,
+      ...(ann.storytellingLabels?.secondary ?? []),
+    ].filter(Boolean).join(", ").trim();
+
+    for (const [facet, text] of [
+      ["ocrTimeline", ocrDoc],
+      ["audioEvents", audioDoc],
+      ["storytelling", storyDoc],
+    ] as [string, string][]) {
+      if (!text || text.length < 5) continue;
+      try {
+        const embedding = await createTextEmbedding(text);
+        if (!embedding || embedding.length === 0) continue;
+        const filePath = path.join(dir, `${assetId}_facet_${facet}.json`);
+        fs.writeFileSync(filePath, JSON.stringify({ assetId, facet, embedding, text: text.slice(0, 200) }));
+        (result as Record<string, string>)[facet] = filePath;
+      } catch { /* non-fatal */ }
+    }
+  } catch { /* non-fatal */ }
+  return result;
 }
 
 // ─── Stage 6: Search alias expansion ─────────────────────────────────────────
@@ -797,6 +841,350 @@ async function generateSegmentEmbeddings(
   }
 }
 
+// ─── Stage 11: Technical quality metrics (FFmpeg) ─────────────────────────────
+
+/**
+ * Derive objective technical quality metrics from the video file using
+ * ffprobe (resolution/fps/bitrate) and ffmpeg signalstats (luma/contrast/noise).
+ * All values are 0–100 (higher = better) except exposureScore (50 = ideal).
+ * Feature flag: ARCHIVE_QUALITY_METRICS_ENABLED (default: "true")
+ */
+async function computeQualityMetrics(
+  localPath: string,
+  qa: VideoQualityAnalysis | null
+): Promise<ClipQualityMetrics | null> {
+  if (process.env.ARCHIVE_QUALITY_METRICS_ENABLED === "false") return null;
+  if (!fs.existsSync(localPath)) return null;
+
+  try {
+    const metrics: ClipQualityMetrics = {};
+
+    // ── Resolution & FPS (ffprobe) ─────────────────────────────────────────────
+    try {
+      const { stdout: probeOut } = await execPromise(
+        `${ffprobeBin()} -v error -select_streams v:0 -show_entries stream=width,height,avg_frame_rate,bit_rate -of csv=p=0 "${localPath}"`,
+        { timeout: 10_000 }
+      );
+      const parts = String(probeOut).trim().split(",");
+      const w = parseInt(parts[0] ?? "0", 10);
+      const h = parseInt(parts[1] ?? "0", 10);
+      const fpsStr = parts[2] ?? "";
+      const bitrate = parseInt(parts[3] ?? "0", 10);
+
+      if (w > 0 && h > 0) {
+        const px = w * h;
+        if      (px >= 3840 * 2160) metrics.resolutionLabel = "4K";
+        else if (px >= 1920 * 1080) metrics.resolutionLabel = "1080p";
+        else if (px >= 1280 * 720)  metrics.resolutionLabel = "720p";
+        else if (px >= 640 * 480)   metrics.resolutionLabel = "SD";
+        else                         metrics.resolutionLabel = "sub-SD";
+      }
+
+      if (fpsStr) {
+        const [num, den] = fpsStr.split("/").map(Number);
+        const fps = den && den > 0 ? (num ?? 0) / den : 0;
+        if      (fps >= 55) metrics.fpsLabel = "60fps";
+        else if (fps >= 45) metrics.fpsLabel = "50fps";
+        else if (fps >= 28) metrics.fpsLabel = "30fps";
+        else if (fps >= 23) metrics.fpsLabel = "24fps";
+        else if (fps > 0)   metrics.fpsLabel = `${Math.round(fps)}fps`;
+      }
+
+      if (bitrate > 0) {
+        // >4 Mbps = good; 1–4 Mbps = acceptable; <1 Mbps = compressed
+        metrics.compressionScore = bitrate >= 4_000_000 ? 90
+          : bitrate >= 1_000_000 ? Math.round(40 + (bitrate / 4_000_000) * 50)
+          : Math.round((bitrate / 1_000_000) * 40);
+      }
+    } catch { /* ignore */ }
+
+    // ── Signal statistics (ffmpeg signalstats) — 3 evenly-spaced frames ────────
+    try {
+      const { stderr: sigOut } = await execPromise(
+        `${ffmpegBin()} -i "${localPath}" -vf "select=not(mod(n\\,30)),signalstats" -frames:v 3 -f null -`,
+        { timeout: 15_000 }
+      );
+      const sigStr = String(sigOut);
+
+      // YAVG: mean luma (0–255). 128 = ideal; <16 = very dark; >240 = blown out
+      const yavgMatch = /YAVG:\s*([0-9.]+)/i.exec(sigStr);
+      if (yavgMatch) {
+        const yavg = parseFloat(yavgMatch[1]!);
+        // Exposure: penalise extremes; 50 = perfectly exposed
+        const deviation = Math.abs(yavg - 128) / 128;
+        metrics.exposureScore = Math.round(Math.max(0, 100 - deviation * 100));
+      }
+
+      // TOUT: percentage of out-of-range samples (0–100). Low = clean signal.
+      const toutMatch = /TOUT:\s*([0-9.]+)/i.exec(sigStr);
+      if (toutMatch) {
+        const tout = parseFloat(toutMatch[1]!);
+        // TOUT as clipping proxy: 0 = pristine; >5 = compressed/clipped
+        metrics.noiseScore = Math.min(100, Math.round(tout * 10));
+      }
+
+      // VREP: vertical repetition (interlace artifact). 0 = progressive/clean.
+      const vrepMatch = /VREP:\s*([0-9.]+)/i.exec(sigStr);
+      if (vrepMatch) {
+        const vrep = parseFloat(vrepMatch[1]!);
+        // Lower VREP = better. Penalise heavy interlacing.
+        const stabilityPenalty = Math.min(50, Math.round(vrep * 5));
+        metrics.stabilityScore = Math.max(0, 100 - stabilityPenalty);
+      }
+    } catch { /* ignore */ }
+
+    // ── Sharpness from existing QA blur score ──────────────────────────────────
+    if (qa?.blurScore != null) {
+      metrics.sharpnessScore = Math.min(100, qa.blurScore);
+    }
+
+    // ── Stability from freeze / handheld heuristic ─────────────────────────────
+    if (qa?.hasFreezeFraction) {
+      // Freeze = extremely stable but potentially broken
+      metrics.stabilityScore = metrics.stabilityScore ?? 95;
+    }
+
+    // ── Composite overall quality ──────────────────────────────────────────────
+    const available = [
+      metrics.sharpnessScore,
+      metrics.compressionScore,
+      metrics.exposureScore,
+      100 - (metrics.noiseScore ?? 50),     // invert noise → cleanliness
+      metrics.stabilityScore,
+    ].filter((v): v is number => v != null);
+    if (available.length > 0) {
+      metrics.overallTechnicalQuality = Math.round(
+        available.reduce((a, b) => a + b, 0) / available.length
+      );
+    }
+
+    return Object.keys(metrics).length > 0 ? metrics : null;
+  } catch (err) {
+    console.warn(`[ArchiveIntelligence] Stage 11 quality metrics failed:`, (err as Error).message?.slice(0, 80));
+    return null;
+  }
+}
+
+// ─── Stage 12: OCR timeline (from existing timeline segments) ─────────────────
+
+/**
+ * Build a structured OcrEntry[] from the v3/v4 timeline segments.
+ * Each segment that has ocrText becomes one or more OcrEntry objects.
+ * Deduplicates consecutive identical texts. No extra LLM or FFmpeg call.
+ */
+function buildOcrTimeline(segments: ClipSegment[] | undefined): OcrEntry[] {
+  if (!segments?.length) return [];
+
+  const entries: OcrEntry[] = [];
+  for (const seg of segments) {
+    if (!seg.ocrText || seg.ocrText.trim().length === 0) continue;
+
+    // Each semicolon-separated or newline-separated text string becomes its own entry
+    const texts = seg.ocrText.split(/[;\n]/).map((t) => t.trim()).filter(Boolean);
+    for (const text of texts) {
+      // Deduplicate: skip if identical to the previous entry in the same time window
+      const last = entries[entries.length - 1];
+      if (last && last.text === text && last.endSec >= seg.startSec - 0.5) {
+        last.endSec = seg.endSec; // extend existing entry
+        continue;
+      }
+      entries.push({ text: text.slice(0, 300), startSec: seg.startSec, endSec: seg.endSec, type: "other" });
+    }
+  }
+
+  // Also include ocrTimeline from the LLM annotation (v4 direct output)
+  return entries;
+}
+
+// ─── Stage 13: Storytelling labels (derived, no extra LLM) ───────────────────
+
+const BEST_USED_AS_TO_FUNCTION: Record<string, StorytellingFunction> = {
+  "establishing":   "establishing",
+  "cutaway":        "context",
+  "close detail":   "detail",
+  "transition":     "transition",
+  "title card":     "detail",
+  "reaction shot":  "reaction",
+  "b-roll":         "context",
+  "interview":      "action",
+  "archive":        "context",
+};
+
+const CINEMATIC_TAG_TO_FUNCTION: Record<string, StorytellingFunction> = {
+  "establishing shot":  "establishing",
+  "reaction shot":      "reaction",
+  "insert shot":        "detail",
+  "cutaway":            "context",
+  "b-roll":             "context",
+  "action":             "action",
+  "celebration":        "emotion",
+  "aftermath":          "ending",
+  "procession":         "action",
+  "ceremony":           "action",
+  "battle":             "climax",
+  "ruins":              "ending",
+  "portrait":           "emotion",
+  "crowd shot":         "context",
+  "silhouette":         "emotion",
+};
+
+/**
+ * Derive storytelling labels from existing annotation fields.
+ * Maps usageHints.bestUsedAs + cinematicTags + shotImportance to editorial functions.
+ * Feature flag: ARCHIVE_STORYTELLING_LABELS_ENABLED (default: "true")
+ */
+function deriveStorytellingLabels(annotation: ClipAnnotation): StorytellingLabels | null {
+  if (process.env.ARCHIVE_STORYTELLING_LABELS_ENABLED === "false") return null;
+
+  // If LLM already produced storytellingLabels, trust them
+  if (annotation.storytellingLabels?.primary) return null; // already set
+
+  const VALID_FUNCTIONS: StorytellingFunction[] = [
+    "establishing","context","action","transition","reaction",
+    "emotion","detail","reveal","climax","ending",
+  ];
+  const isValidFn = (v: string): v is StorytellingFunction => VALID_FUNCTIONS.includes(v as StorytellingFunction);
+
+  // Primary: map from bestUsedAs
+  const hint = (annotation.usageHints?.bestUsedAs ?? "").toLowerCase();
+  let primary: StorytellingFunction =
+    BEST_USED_AS_TO_FUNCTION[hint] ?? "context";
+
+  // Override: high-importance shots get "climax" / "reveal"
+  const importanceScore = annotation.shotImportance?.score ?? 0;
+  if (importanceScore >= 85 && primary === "context") primary = "climax";
+  else if (importanceScore >= 70 && primary === "context") primary = "reveal";
+
+  // Secondary: mine cinematic tags
+  const secondarySet: StorytellingFunction[] = [];
+  for (const tag of (annotation.cinematicTags ?? [])) {
+    const fn = CINEMATIC_TAG_TO_FUNCTION[tag.toLowerCase()];
+    if (fn && fn !== primary && isValidFn(fn) && !secondarySet.includes(fn)) secondarySet.push(fn);
+  }
+
+  // Mine shot type
+  const shotType = (annotation.cinematography?.shotType ?? "").toLowerCase();
+  if (shotType.includes("establishing") && primary !== "establishing" && !secondarySet.includes("establishing")) secondarySet.push("establishing");
+  if (shotType.includes("close") && !secondarySet.includes("detail")) secondarySet.push("detail");
+
+  const secondaryArr = secondarySet.slice(0, 3);
+
+  return { primary, secondary: secondaryArr.length > 0 ? secondaryArr : undefined };
+}
+
+// ─── Stage 14: Archive uniqueness (embedding comparison) ─────────────────────
+
+/**
+ * Count how many other clips in our archive have embedding similarity ≥ 0.85.
+ * A unique clip (no similar clips) scores 100; common footage scores lower.
+ * Feature flag: ARCHIVE_UNIQUENESS_SCORING_ENABLED (default: "true")
+ */
+async function computeArchiveUniqueness(
+  assetId: number,
+  embedding: number[]
+): Promise<ArchiveUniqueness | null> {
+  if (process.env.ARCHIVE_UNIQUENESS_SCORING_ENABLED === "false") return null;
+  if (!embedding || embedding.length === 0) return null;
+
+  const SIMILARITY_THRESHOLD = 0.85; // lower than near-dup (0.97) — catches same scene/event
+
+  try {
+    const dir = localEmbeddingDir();
+    if (!fs.existsSync(dir)) return null;
+
+    const files = fs.readdirSync(dir).filter((f) => f.match(/^\d+\.json$/));
+    let nearCount = 0;
+
+    for (const file of files) {
+      const otherId = parseInt(path.basename(file, ".json"), 10);
+      if (isNaN(otherId) || otherId === assetId) continue;
+      try {
+        const stored = JSON.parse(fs.readFileSync(path.join(dir, file), "utf8")) as {
+          embedding?: number[];
+        };
+        if (!Array.isArray(stored.embedding) || stored.embedding.length !== embedding.length) continue;
+        const sim = cosineSim(embedding, stored.embedding);
+        if (sim >= SIMILARITY_THRESHOLD) nearCount++;
+        // Cap scan to 200 files to avoid blocking the pipeline too long
+        if (files.indexOf(file) > 200) break;
+      } catch { /* ignore corrupt file */ }
+    }
+
+    const score = Math.max(0, Math.min(100, Math.round(100 - nearCount * 15)));
+    const reason = nearCount === 0
+      ? "No similar clips found in archive — highly unique"
+      : `${nearCount} similar clip${nearCount === 1 ? "" : "s"} found in archive`;
+
+    return { score, nearDuplicateCount: nearCount, reason };
+  } catch (err) {
+    console.warn(`[ArchiveIntelligence] Stage 14 archive uniqueness failed:`, (err as Error).message?.slice(0, 80));
+    return null;
+  }
+}
+
+// ─── Stage 15: Asset health score (pure computation) ──────────────────────────
+
+/**
+ * Compute a composite health score from all available annotation metadata.
+ * No LLM calls, no I/O — pure aggregation of already-computed fields.
+ * Always runs unless disabled.
+ */
+function computeHealthScore(annotation: ClipAnnotation): AssetHealthScore {
+  // ── Metadata completeness ──────────────────────────────────────────────────
+  const filledChecks = [
+    annotation.persons.named.length > 0,
+    annotation.persons.categories.length > 0,
+    annotation.objects.length > 0,
+    annotation.actions.length > 0,
+    annotation.historicalContext.event.length > 0,
+    annotation.historicalContext.year.length > 0,
+    annotation.location.country.length > 0,
+    annotation.editorialDescription && annotation.editorialDescription.length > 50,
+    (annotation.searchAliases?.length ?? 0) >= 5,
+    (annotation.knowledgeGraphEntities?.length ?? 0) >= 3,
+    annotation.timeline?.length != null && annotation.timeline.length > 0,
+    annotation.faceTracks != null,
+    annotation.cinematicTags?.length != null && annotation.cinematicTags.length > 0,
+    annotation.descriptions?.extended != null && annotation.descriptions.extended.length > 100,
+    annotation.storytellingLabels != null,
+    annotation.audioEvents != null,
+    annotation.ocrTimeline != null || annotation.ocrText != null,
+    annotation.shotImportance != null,
+  ];
+  const metadataCompleteness = Math.round((filledChecks.filter(Boolean).length / filledChecks.length) * 100);
+
+  // ── Technical quality ──────────────────────────────────────────────────────
+  const qm = annotation.qualityMetrics;
+  const q = annotation.quality;
+  const technicalQuality = qm?.overallTechnicalQuality
+    ?? Math.round((q.overall + q.sharpness + q.stability + q.compression + q.exposure) / 5);
+
+  // ── Editorial quality ──────────────────────────────────────────────────────
+  const editorialQuality = annotation.editorialScore.total;
+
+  // ── Archive uniqueness ─────────────────────────────────────────────────────
+  const archiveUniqScore = annotation.archiveUniqueness?.score
+    ?? annotation.visualUniqueness?.score
+    ?? 50;
+
+  // ── Composite (weighted) ───────────────────────────────────────────────────
+  const score = Math.round(
+    metadataCompleteness * 0.35 +
+    technicalQuality     * 0.25 +
+    editorialQuality     * 0.25 +
+    archiveUniqScore     * 0.15
+  );
+
+  return {
+    score: Math.min(100, Math.max(0, score)),
+    metadataCompleteness,
+    technicalQuality,
+    editorialQuality,
+    archiveUniqueness: archiveUniqScore,
+    computedAt: new Date().toISOString(),
+  };
+}
+
 // ─── Stage 7: Logging ─────────────────────────────────────────────────────────
 
 function logIntelligenceReport(
@@ -858,7 +1246,12 @@ function logIntelligenceReport(
     (annotation.cinematicTags?.length ? `  CineTags:    ${annotation.cinematicTags.slice(0, 8).join(", ")}\n` : "") +
     (annotation.audioEvents?.length ? `  Audio:       ${annotation.audioEvents.map((e) => e.type).join(", ")}\n` : "") +
     (annotation.cameraMovementDetail ? `  CameraDetail:${annotation.cameraMovementDetail.slice(0, 100)}\n` : "") +
-    (segmentCount !== undefined ? `  Seg embeds:  ${segmentCount}\n` : "")
+    (segmentCount !== undefined ? `  Seg embeds:  ${segmentCount}\n` : "") +
+    (annotation.storytellingLabels ? `  Storytelling:${annotation.storytellingLabels.primary}${annotation.storytellingLabels.secondary?.length ? ` + ${annotation.storytellingLabels.secondary.join(", ")}` : ""}\n` : "") +
+    (annotation.qualityMetrics ? `  QualMetrics: sharp:${annotation.qualityMetrics.sharpnessScore ?? "?"} blur:${annotation.qualityMetrics.motionBlurScore ?? "?"} noise:${annotation.qualityMetrics.noiseScore ?? "?"} exposure:${annotation.qualityMetrics.exposureScore ?? "?"} overall:${annotation.qualityMetrics.overallTechnicalQuality ?? "?"} res:${annotation.qualityMetrics.resolutionLabel ?? "?"} fps:${annotation.qualityMetrics.fpsLabel ?? "?"}\n` : "") +
+    (annotation.ocrTimeline?.length ? `  OCR timeline:${annotation.ocrTimeline.length} entries: ${annotation.ocrTimeline.slice(0, 3).map((e) => `"${e.text.slice(0, 30)}" ${e.startSec.toFixed(1)}–${e.endSec.toFixed(1)}s`).join("; ")}\n` : "") +
+    (annotation.archiveUniqueness ? `  ArcUniqueness:${annotation.archiveUniqueness.score}/100 — ${annotation.archiveUniqueness.reason ?? ""}\n` : "") +
+    (annotation.healthScore ? `  HealthScore: ${annotation.healthScore.score}/100 (meta:${annotation.healthScore.metadataCompleteness} tech:${annotation.healthScore.technicalQuality} edit:${annotation.healthScore.editorialQuality} uniq:${annotation.healthScore.archiveUniqueness})\n` : "")
   );
 }
 
@@ -1042,6 +1435,39 @@ export async function runArchiveIntelligencePipeline(
     if (!opts.skipFacetEmbeddings && annotation.timeline?.length) {
       await generateSegmentEmbeddings(asset.id, annotation.timeline);
       segmentCount = annotation.timeline.filter((s) => s.embeddingKey).length;
+    }
+
+    // ── Stage 11: Technical quality metrics (FFmpeg signalstats) ─────────────
+    if (opts.localVideoPath) {
+      const qm = await computeQualityMetrics(opts.localVideoPath, qa);
+      if (qm) annotation.qualityMetrics = qm;
+    }
+
+    // ── Stage 12: OCR timeline (from existing timeline segments) ─────────────
+    if (annotation.timeline?.length) {
+      const ocrTimeline = buildOcrTimeline(annotation.timeline);
+      if (ocrTimeline.length > 0) annotation.ocrTimeline = ocrTimeline;
+    }
+
+    // ── Stage 13: Storytelling labels (derived from annotation, no LLM) ──────
+    const storyLabels = deriveStorytellingLabels(annotation);
+    if (storyLabels) annotation.storytellingLabels = storyLabels;
+
+    // ── Stage 14: Archive uniqueness (embedding comparison) ──────────────────
+    if (opts.mainEmbedding && opts.mainEmbedding.length > 0) {
+      const uniqueness = await computeArchiveUniqueness(asset.id, opts.mainEmbedding);
+      if (uniqueness) annotation.archiveUniqueness = uniqueness;
+    }
+
+    // ── Stage 15: Asset health score (pure computation) ──────────────────────
+    annotation.healthScore = computeHealthScore(annotation);
+
+    // ── Stage 5b: Extended facet embeddings (ocrTimeline, audioEvents, storytelling) ──
+    if (!opts.skipFacetEmbeddings && annotation.facetEmbeddingKeys) {
+      const extFacets = await generateExtendedFacetEmbeddings(asset.id, annotation);
+      if (extFacets.ocrTimeline)  annotation.facetEmbeddingKeys.ocrTimeline  = extFacets.ocrTimeline;
+      if (extFacets.audioEvents)  annotation.facetEmbeddingKeys.audioEvents  = extFacets.audioEvents;
+      if (extFacets.storytelling) annotation.facetEmbeddingKeys.storytelling = extFacets.storytelling;
     }
 
     // ── Stage 7: Log & save ────────────────────────────────────────────────────

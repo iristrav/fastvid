@@ -26,10 +26,13 @@ import type {
   ShotImportance,
   ClipDescriptions,
   VisualUniqueness,
+  OcrEntry,
+  StorytellingLabels,
+  StorytellingFunction,
 } from "../drizzle/annotationTypes";
 import type { MediaArchiveAsset } from "../drizzle/schema";
 
-export const ANNOTATION_VERSION = "v3";
+export const ANNOTATION_VERSION = "v4";
 
 // ─── Feature flag ─────────────────────────────────────────────────────────────
 
@@ -144,10 +147,12 @@ Return ONLY this JSON object — all fields required. Use empty string/array/0 i
   "objectTracks": [],
   "faceTracks": [],
   "ocrText": [],
+  "ocrTimeline": [],
   "cinematicTags": [],
   "shotImportance": {"score": 0, "label": "generic", "reason": ""},
   "visualUniqueness": {"score": 0, "reason": ""},
-  "descriptions": {"short": "", "normal": "", "extended": ""}
+  "descriptions": {"short": "", "normal": "", "extended": ""},
+  "storytellingLabels": {"primary": "context", "secondary": []}
 }
 
 FIELD GUIDANCE:
@@ -208,7 +213,8 @@ extendedEditorialScore (0-100 each):
 - sourceQualityScore: Trust in provenance: 90=major broadcaster archive, 70=national archive/museum, 50=Wikimedia, 30=unknown source
 - reusabilityScore: How broadly reusable across different productions/topics
 
-timeline: Divide the clip into 2–6 temporal segments. For each segment:
+timeline: Divide the clip into 2–8 temporal segments using THREE granularity levels:
+- level: "scene" (major visual cut — new place/time), "shot" (angle/lens change), "micro_event" (notable action within a shot)
 - startSec / endSec: estimate based on total duration
 - shotType: wide | medium | close-up | establishing | extreme close-up
 - description: 1 sentence of what visually happens in this segment
@@ -217,6 +223,7 @@ timeline: Divide the clip into 2–6 temporal segments. For each segment:
 - emotion: dominant emotion in this segment
 - cameraMovement: static | pan | tilt | zoom | dolly | crane | handheld
 - ocrText: any text visible in this segment (street signs, dates, subtitles)
+- microEventType (only when level="micro_event"): "speech_start" | "explosion" | "flag_appears" | "vehicle_enters" | "aircraft_takeoff" | "handshake" | "applause" | "door_opens" | "person_turns" | "crowd_reaction" | "title_card_appears" | "map_appears" | "document_shown" | "shot_fired" | "fire_appears" | "smoke_appears" | "crowd_disperses" | "other"
 If duration unknown, create 1 segment covering the whole clip.
 
 objectTracks: For each significant moving object, describe:
@@ -225,6 +232,9 @@ objectTracks: For each significant moving object, describe:
 - endPosition: where it ends up
 - direction: e.g. "left→right", "towards camera", "stationary", "top→bottom"
 - movement: e.g. "enters frame left", "exits frame right", "approaches camera", "crosses frame"
+- startSec: approximate time (seconds) when object first appears
+- endSec: approximate time (seconds) when object exits or was last visible
+- confidence: 0–1 detection confidence (1.0=very clear, 0.5=likely, 0.3=guess)
 Only include objects with notable movement. Omit static background elements.
 
 faceTracks: For each visible person (named or unnamed):
@@ -234,6 +244,12 @@ faceTracks: For each visible person (named or unnamed):
 - dominanceFraction: 0–1, fraction of clip duration this face is visible
 - closeUpDurationSec: estimated seconds where face fills >50% of frame height
 - isPrimarySubject: true if this is the main subject of the clip
+- confidence: 0–1 identification confidence (1.0=name on screen/unmistakable, 0.7=very likely, 0.5=probable, 0.3=uncertain)
+
+ocrTimeline: List all text visible on screen WITH timestamps:
+Each entry: { "text": "string", "startSec": N, "endSec": N, "type": "subtitle|title|map_label|document|sign|date_overlay|other" }
+Include: date overlays, subtitles, caption cards, street signs, newspaper headlines, map labels, building names.
+This is MORE detailed than ocrText — include all distinct text appearances with when they appear.
 
 ocrText: List all text strings you can read or infer are likely visible in the clip:
 - Street signs, place names, year/date overlays, subtitles, banners, posters
@@ -263,7 +279,21 @@ visualUniqueness:
 descriptions:
 - short: Exactly 1 sentence (15–25 words). Who does what, where, when.
 - normal: 1 paragraph of 3–5 sentences. Who, what, where, when, why it matters.
-- extended: 150–300 words for an AI documentary editor. Include: visual detail, historical context, editorial usage guidance, emotional impact, cinematographic notes.`;
+- extended: 150–300 words for an AI documentary editor. Include: visual detail, historical context, editorial usage guidance, emotional impact, cinematographic notes.
+
+storytellingLabels:
+- primary: The single most fitting editorial function. One of: "establishing" | "context" | "action" | "transition" | "reaction" | "emotion" | "detail" | "reveal" | "climax" | "ending"
+  establishing = sets the scene (wide establishing shot of location)
+  context = provides background information, explains what's happening
+  action = shows the main event happening (battle, speech, march)
+  transition = bridges two scenes or moments visually
+  reaction = captures a human response to an event
+  emotion = conveys a feeling without narrative function (close-up of grief, celebration)
+  detail = insert shot of important object or text (map, document, symbol)
+  reveal = dramatic disclosure of something (body, crowd, result)
+  climax = the narrative peak (decisive moment, turning point)
+  ending = closes a sequence (aftermath, departure, silence)
+- secondary: Up to 3 additional functions this clip could serve (use same values as primary)`;
 }
 
 // ─── Editorial score calculator ───────────────────────────────────────────────
@@ -482,39 +512,66 @@ export async function annotateAsset(asset: MediaArchiveAsset): Promise<ClipAnnot
 
     // ── v3 fields ──────────────────────────────────────────────────────────────
 
+    const VALID_SEGMENT_LEVELS = new Set(["scene", "shot", "micro_event"]);
+    const VALID_MICRO_EVENT_TYPES = new Set([
+      "speech_start", "explosion", "flag_appears", "vehicle_enters",
+      "aircraft_takeoff", "handshake", "applause", "door_opens", "person_turns",
+      "crowd_reaction", "title_card_appears", "map_appears", "document_shown",
+      "shot_fired", "fire_appears", "smoke_appears", "crowd_disperses", "other",
+    ]);
+
     if (Array.isArray(parsed.timeline) && parsed.timeline.length > 0) {
-      annotation.timeline = (parsed.timeline as ClipSegment[]).map((seg) => ({
-        startSec:       typeof seg.startSec === "number" ? seg.startSec : 0,
-        endSec:         typeof seg.endSec === "number" ? seg.endSec : 0,
-        shotType:       typeof seg.shotType === "string" ? seg.shotType : "medium",
-        description:    typeof seg.description === "string" ? seg.description.slice(0, 300) : "",
-        persons:        Array.isArray(seg.persons) ? seg.persons : undefined,
-        objects:        Array.isArray(seg.objects) ? seg.objects : undefined,
-        emotion:        typeof seg.emotion === "string" ? seg.emotion : undefined,
-        cameraMovement: typeof seg.cameraMovement === "string" ? seg.cameraMovement : undefined,
-        ocrText:        typeof seg.ocrText === "string" ? seg.ocrText : undefined,
-      }));
+      annotation.timeline = (parsed.timeline as ClipSegment[]).map((seg) => {
+        const out: ClipSegment = {
+          startSec:       typeof seg.startSec === "number" ? seg.startSec : 0,
+          endSec:         typeof seg.endSec === "number" ? seg.endSec : 0,
+          shotType:       typeof seg.shotType === "string" ? seg.shotType : "medium",
+          description:    typeof seg.description === "string" ? seg.description.slice(0, 300) : "",
+          persons:        Array.isArray(seg.persons) ? seg.persons : undefined,
+          objects:        Array.isArray(seg.objects) ? seg.objects : undefined,
+          emotion:        typeof seg.emotion === "string" ? seg.emotion : undefined,
+          cameraMovement: typeof seg.cameraMovement === "string" ? seg.cameraMovement : undefined,
+          ocrText:        typeof seg.ocrText === "string" ? seg.ocrText : undefined,
+        };
+        if (typeof seg.level === "string" && VALID_SEGMENT_LEVELS.has(seg.level)) {
+          out.level = seg.level as ClipSegment["level"];
+        }
+        if (typeof seg.microEventType === "string" && VALID_MICRO_EVENT_TYPES.has(seg.microEventType)) {
+          out.microEventType = seg.microEventType as ClipSegment["microEventType"];
+        }
+        return out;
+      });
     }
 
     if (Array.isArray(parsed.objectTracks) && parsed.objectTracks.length > 0) {
-      annotation.objectTracks = (parsed.objectTracks as ObjectTrack[]).map((t) => ({
-        object:        typeof t.object === "string" ? t.object : "",
-        startPosition: typeof t.startPosition === "string" ? t.startPosition : "center",
-        endPosition:   typeof t.endPosition === "string" ? t.endPosition : "center",
-        direction:     typeof t.direction === "string" ? t.direction : "stationary",
-        movement:      typeof t.movement === "string" ? t.movement : "",
-      })).filter((t) => t.object.length > 0);
+      annotation.objectTracks = (parsed.objectTracks as ObjectTrack[]).map((t) => {
+        const out: ObjectTrack = {
+          object:        typeof t.object === "string" ? t.object : "",
+          startPosition: typeof t.startPosition === "string" ? t.startPosition : "center",
+          endPosition:   typeof t.endPosition === "string" ? t.endPosition : "center",
+          direction:     typeof t.direction === "string" ? t.direction : "stationary",
+          movement:      typeof t.movement === "string" ? t.movement : "",
+        };
+        if (typeof t.startSec === "number")   out.startSec   = Math.max(0, t.startSec);
+        if (typeof t.endSec === "number")     out.endSec     = Math.max(0, t.endSec);
+        if (typeof t.confidence === "number") out.confidence = clamp01(t.confidence);
+        return out;
+      }).filter((t) => t.object.length > 0);
     }
 
     if (Array.isArray(parsed.faceTracks) && parsed.faceTracks.length > 0) {
-      annotation.faceTracks = (parsed.faceTracks as FaceTrack[]).map((f) => ({
-        name:               typeof f.name === "string" ? f.name : "unknown person",
-        firstAppearsSec:    typeof f.firstAppearsSec === "number" ? f.firstAppearsSec : 0,
-        lastAppearsSec:     typeof f.lastAppearsSec === "number" ? f.lastAppearsSec : 0,
-        dominanceFraction:  clamp01(f.dominanceFraction),
-        closeUpDurationSec: typeof f.closeUpDurationSec === "number" ? Math.max(0, f.closeUpDurationSec) : 0,
-        isPrimarySubject:   f.isPrimarySubject === true,
-      }));
+      annotation.faceTracks = (parsed.faceTracks as FaceTrack[]).map((f) => {
+        const out: FaceTrack = {
+          name:               typeof f.name === "string" ? f.name : "unknown person",
+          firstAppearsSec:    typeof f.firstAppearsSec === "number" ? f.firstAppearsSec : 0,
+          lastAppearsSec:     typeof f.lastAppearsSec === "number" ? f.lastAppearsSec : 0,
+          dominanceFraction:  clamp01(f.dominanceFraction),
+          closeUpDurationSec: typeof f.closeUpDurationSec === "number" ? Math.max(0, f.closeUpDurationSec) : 0,
+          isPrimarySubject:   f.isPrimarySubject === true,
+        };
+        if (typeof f.confidence === "number") out.confidence = clamp01(f.confidence);
+        return out;
+      });
     }
 
     if (Array.isArray(parsed.ocrText) && parsed.ocrText.length > 0) {
@@ -559,6 +616,39 @@ export async function annotateAsset(asset: MediaArchiveAsset): Promise<ClipAnnot
         normal:   typeof rawDesc.normal === "string" ? rawDesc.normal.slice(0, 600) : "",
         extended: typeof rawDesc.extended === "string" ? rawDesc.extended.slice(0, 1200) : "",
       };
+    }
+
+    // ── v4 fields ──────────────────────────────────────────────────────────────
+
+    const rawOcrTimeline = (parsed as Partial<ClipAnnotation>).ocrTimeline;
+    if (Array.isArray(rawOcrTimeline) && rawOcrTimeline.length > 0) {
+      const VALID_OCR_TYPES = new Set(["subtitle","title","map_label","document","sign","date_overlay","other"]);
+      annotation.ocrTimeline = (rawOcrTimeline as OcrEntry[])
+        .filter((e) => typeof e.text === "string" && e.text.trim().length > 0)
+        .map((e) => ({
+          text:     e.text.trim().slice(0, 300),
+          startSec: typeof e.startSec === "number" ? Math.max(0, e.startSec) : 0,
+          endSec:   typeof e.endSec === "number" ? Math.max(0, e.endSec) : 0,
+          type:     typeof e.type === "string" && VALID_OCR_TYPES.has(e.type)
+            ? (e.type as OcrEntry["type"])
+            : "other",
+        }))
+        .slice(0, 40);
+    }
+
+    const rawStory = (parsed as Partial<ClipAnnotation>).storytellingLabels as Partial<StorytellingLabels> | undefined;
+    if (rawStory && typeof rawStory.primary === "string") {
+      const VALID_FUNCTIONS: StorytellingFunction[] = [
+        "establishing","context","action","transition","reaction",
+        "emotion","detail","reveal","climax","ending",
+      ];
+      const primary = VALID_FUNCTIONS.includes(rawStory.primary as StorytellingFunction)
+        ? (rawStory.primary as StorytellingFunction)
+        : "context";
+      const secondary = Array.isArray(rawStory.secondary)
+        ? (rawStory.secondary as string[]).filter((s) => VALID_FUNCTIONS.includes(s as StorytellingFunction)).slice(0, 3) as StorytellingFunction[]
+        : undefined;
+      annotation.storytellingLabels = { primary, secondary: secondary?.length ? secondary : undefined };
     }
 
     return annotation;

@@ -277,7 +277,13 @@ export type AssetScore = {
     importanceBonus: number;
     /** Visual uniqueness tiebreaker (+0 to +3). */
     uniquenessBonus: number;
-    /** Sum of all v4 bonuses. */
+    /** Storytelling label match bonus (+0 to +4). */
+    storytellingBonus: number;
+    /** Technical quality bonus (+0 to +3). */
+    qualityBonus: number;
+    /** Asset health score bonus (+0 to +2). */
+    healthBonus: number;
+    /** Sum of all v4/v5 bonuses. */
     v4Total: number;
     /** Best-matching segment (null if no segment embeddings). */
     bestSegment: SegmentSimilarity | null;
@@ -853,15 +859,18 @@ function scoreCandidate(
       diversityModifier,
       budgetPenalty,
       editorialMemoryBonus,
-      segmentBonus:    v4.segmentBonus,
-      faceBonus:       v4.faceBonus,
-      objectBonus:     v4.objectBonus,
-      audioBonus:      v4.audioBonus,
-      cinematicBonus:  v4.cinematicBonus,
-      importanceBonus: v4.importanceBonus,
-      uniquenessBonus: v4.uniquenessBonus,
-      v4Total:         v4.total,
-      bestSegment:     v4.bestSegment,
+      segmentBonus:     v4.segmentBonus,
+      faceBonus:        v4.faceBonus,
+      objectBonus:      v4.objectBonus,
+      audioBonus:       v4.audioBonus,
+      cinematicBonus:   v4.cinematicBonus,
+      importanceBonus:  v4.importanceBonus,
+      uniquenessBonus:  v4.uniquenessBonus,
+      storytellingBonus: v4.storytellingBonus,
+      qualityBonus:     v4.qualityBonus,
+      healthBonus:      v4.healthBonus,
+      v4Total:          v4.total,
+      bestSegment:      v4.bestSegment,
     },
     reasons,
   };
@@ -899,8 +908,8 @@ export function logAssetDirectorChoice(
   const modifiers = `Diversity:${bk.diversityModifier >= 0 ? "+" : ""}${bk.diversityModifier}  Budget:${bk.budgetPenalty}  Memory:+${bk.editorialMemoryBonus}`;
   const reasonStr = score.reasons.length ? `  (${score.reasons.join(", ")})` : "";
   const v4Detail = bk.v4Total > 0
-    ? `seg:+${bk.segmentBonus} face:+${bk.faceBonus} obj:+${bk.objectBonus} audio:+${bk.audioBonus} cine:+${bk.cinematicBonus} imp:+${bk.importanceBonus} uniq:+${bk.uniquenessBonus} → +${bk.v4Total}`
-    : "no v4 bonus";
+    ? `seg:+${bk.segmentBonus} face:+${bk.faceBonus} obj:+${bk.objectBonus} audio:+${bk.audioBonus} cine:+${bk.cinematicBonus} imp:+${bk.importanceBonus} uniq:+${bk.uniquenessBonus} story:+${bk.storytellingBonus} qual:+${bk.qualityBonus} health:+${bk.healthBonus} → +${bk.v4Total}`
+    : "no v4/v5 bonus";
 
   console.log(
     `[AssetDirector] s${sceneIndex}b${beatIndex} "${beatText.slice(0, 50)}" → ${base}\n` +

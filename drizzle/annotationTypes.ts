@@ -7,6 +7,13 @@
  * v2: searchAliases, knowledgeGraphEntities, editorialDescription,
  *     qualityFlags, per-field confidence, extended editorial scores,
  *     facetEmbeddingKeys
+ * v3: timeline segmentation, object/face tracks, OCR, audio events,
+ *     shot importance, visual uniqueness, multi-level descriptions,
+ *     cinematic tags, segment-level embeddings, camera movement detail
+ * v4: multi-level segmentation (scene/shot/micro_event), OCR timeline with
+ *     timestamps, storytelling labels, FFmpeg quality metrics, archive-level
+ *     uniqueness, asset health score, object/face track confidence + timestamps,
+ *     3 new facet embeddings (ocrTimeline, audioEvents, storytelling)
  */
 
 // ─── Quality flags ────────────────────────────────────────────────────────────
@@ -81,6 +88,157 @@ export type FacetEmbeddingKeys = {
   emotions?: string;
   /** Camera style / cinematography embedding. */
   style?: string;
+  // ── v4 additional facets ────────────────────────────────────────────────────
+  /** OCR text timeline embedding (all on-screen text combined). */
+  ocrTimeline?: string;
+  /** Audio events embedding (event types + timestamps). */
+  audioEvents?: string;
+  /** Storytelling labels embedding (primary + secondary functions). */
+  storytelling?: string;
+};
+
+// ─── OCR timeline entry ───────────────────────────────────────────────────────
+
+/**
+ * A block of text detected on-screen with its temporal position.
+ * Replaces the flat `ocrText: string[]` with a time-indexed alternative.
+ */
+export type OcrEntry = {
+  /** The text string detected on screen. */
+  text: string;
+  /** Time (seconds from clip start) when this text first appears. */
+  startSec: number;
+  /** Time (seconds from clip start) when this text disappears. */
+  endSec: number;
+  /** Classification of what kind of text this is. */
+  type?: "subtitle" | "title" | "map_label" | "document" | "sign" | "date_overlay" | "other";
+};
+
+// ─── Segment level & micro events ─────────────────────────────────────────────
+
+/**
+ * Granularity level of a timeline segment.
+ * scene: major visual cut (new scene).
+ * shot: camera-angle or composition change within a scene.
+ * micro_event: notable action within a single shot.
+ */
+export type SegmentLevel = "scene" | "shot" | "micro_event";
+
+/**
+ * Recognized micro-event types detectable within a single shot.
+ * Used by retrieval to find the exact visual moment.
+ */
+export type MicroEventType =
+  | "speech_start"
+  | "explosion"
+  | "flag_appears"
+  | "vehicle_enters"
+  | "aircraft_takeoff"
+  | "handshake"
+  | "applause"
+  | "door_opens"
+  | "person_turns"
+  | "crowd_reaction"
+  | "title_card_appears"
+  | "map_appears"
+  | "document_shown"
+  | "shot_fired"
+  | "fire_appears"
+  | "smoke_appears"
+  | "crowd_disperses"
+  | "other";
+
+// ─── Storytelling labels ──────────────────────────────────────────────────────
+
+/**
+ * Primary editorial function of a clip in a documentary narrative.
+ * Each clip has exactly one primary function; up to three secondary functions.
+ */
+export type StorytellingFunction =
+  | "establishing"
+  | "context"
+  | "action"
+  | "transition"
+  | "reaction"
+  | "emotion"
+  | "detail"
+  | "reveal"
+  | "climax"
+  | "ending";
+
+export type StorytellingLabels = {
+  /** The primary editorial function this clip serves best. */
+  primary: StorytellingFunction;
+  /** Up to three secondary editorial functions. */
+  secondary?: StorytellingFunction[];
+};
+
+// ─── Clip quality metrics (FFmpeg-derived) ────────────────────────────────────
+
+/**
+ * Objective technical quality metrics computed from the actual video file
+ * via FFmpeg signalstats + ffprobe. All values 0–100 (higher = better)
+ * unless noted otherwise.
+ */
+export type ClipQualityMetrics = {
+  /** Signal sharpness / detail level. 100 = razor-sharp; <30 = blurry. */
+  sharpnessScore?: number;
+  /** Motion blur amount. 0 = sharp action; 100 = heavy blur. Inverse: prefer 0. */
+  motionBlurScore?: number;
+  /** Compression quality. 100 = pristine; <30 = heavy artifacts. */
+  compressionScore?: number;
+  /** Noise level. 0 = clean; 100 = very noisy. Inverse: prefer 0. */
+  noiseScore?: number;
+  /** Exposure quality. 50 = perfect; 0 = severely underexposed; 100 = overexposed. */
+  exposureScore?: number;
+  /** Contrast quality. 100 = strong contrast; <20 = washed-out or flat. */
+  contrastScore?: number;
+  /** Stability. 100 = tripod-steady; <20 = very shaky. */
+  stabilityScore?: number;
+  /** Human-readable resolution: "4K", "1080p", "720p", "SD", "unknown". */
+  resolutionLabel?: string;
+  /** Frame-rate label: "24fps", "25fps", "30fps", "50fps", "60fps", "variable". */
+  fpsLabel?: string;
+  /** Composite 0–100 technical quality score. */
+  overallTechnicalQuality?: number;
+};
+
+// ─── Archive-level uniqueness ─────────────────────────────────────────────────
+
+/**
+ * How unique this clip is WITHIN our specific archive (not just globally).
+ * Computed by comparing clip embedding against all other archive embeddings.
+ * A common Churchill speech gets nearDuplicateCount > 3; a rare field recording gets 0.
+ */
+export type ArchiveUniqueness = {
+  /** 0–100. 100 = one of a kind; 0 = many similar clips in archive. */
+  score: number;
+  /** How many clips in our archive have cosine similarity ≥ 0.85. */
+  nearDuplicateCount: number;
+  /** One-sentence reasoning. */
+  reason?: string;
+};
+
+// ─── Asset health score ───────────────────────────────────────────────────────
+
+/**
+ * Composite readiness / quality score for an archive asset.
+ * Computed at annotation time and updated whenever metadata changes.
+ * Drives automatic de-prioritization of low-health assets during retrieval.
+ */
+export type AssetHealthScore = {
+  /** 0–100 composite health score. */
+  score: number;
+  /** Fraction of annotation fields that are non-empty (0–100). */
+  metadataCompleteness: number;
+  /** Average of the quality sub-scores (0–100). */
+  technicalQuality: number;
+  /** editorial score total (0–100). */
+  editorialQuality: number;
+  /** Uniqueness within archive (from ArchiveUniqueness.score). */
+  archiveUniqueness: number;
+  /** ISO date when this score was last computed. */
+  computedAt: string;
 };
 
 // ─── Timeline segment ─────────────────────────────────────────────────────────
@@ -111,6 +269,10 @@ export type ClipSegment = {
   ocrText?: string;
   /** Storage key for segment-level embedding (set by pipeline). */
   embeddingKey?: string;
+  /** Granularity level: "scene" (hard cut) | "shot" (angle change) | "micro_event" (action within shot). */
+  level?: SegmentLevel;
+  /** For micro_event segments: what specific event occurs. */
+  microEventType?: MicroEventType;
 };
 
 // ─── Object track ─────────────────────────────────────────────────────────────
@@ -130,6 +292,12 @@ export type ObjectTrack = {
   direction: string;
   /** Descriptive movement: "enters frame left", "exits frame right", "crosses frame", "approaches camera". */
   movement: string;
+  /** Time (seconds from clip start) when this object first becomes visible. */
+  startSec?: number;
+  /** Time (seconds from clip start) when this object exits or is last visible. */
+  endSec?: number;
+  /** Detection confidence 0–1. */
+  confidence?: number;
 };
 
 // ─── Face track ──────────────────────────────────────────────────────────────
@@ -151,6 +319,8 @@ export type FaceTrack = {
   closeUpDurationSec: number;
   /** Whether this person is the primary visual subject of the clip. */
   isPrimarySubject: boolean;
+  /** Face recognition confidence 0–1. 1.0 = name on screen / unmistakable. 0.5 = likely. */
+  confidence?: number;
 };
 
 // ─── Audio events ─────────────────────────────────────────────────────────────
@@ -476,4 +646,37 @@ export type ClipAnnotation = {
    * 100 = Moon landing; 22 = generic city skyline. Used in ranking.
    */
   visualUniqueness?: VisualUniqueness;
+
+  // ── v4 Archive Intelligence fields (all optional — backward compatible) ───────
+
+  /**
+   * Structured OCR timeline: each entry has the text plus the time window
+   * when it was visible on screen. Supersedes the flat `ocrText: string[]`.
+   */
+  ocrTimeline?: OcrEntry[];
+
+  /**
+   * Primary and secondary editorial function this clip serves in documentary montage.
+   * E.g. primary: "establishing"; secondary: ["context", "transition"].
+   */
+  storytellingLabels?: StorytellingLabels;
+
+  /**
+   * Objective technical quality metrics derived from FFmpeg signalstats + ffprobe.
+   * Complements the LLM-inferred `quality` block with actual signal measurements.
+   */
+  qualityMetrics?: ClipQualityMetrics;
+
+  /**
+   * How unique this clip is within our specific archive (not just globally).
+   * Computed by comparing embedding against all other archive embeddings.
+   */
+  archiveUniqueness?: ArchiveUniqueness;
+
+  /**
+   * Composite asset health / readiness score.
+   * Aggregates metadata completeness, technical quality, editorial quality,
+   * and archive-level uniqueness into a single 0–100 score.
+   */
+  healthScore?: AssetHealthScore;
 };

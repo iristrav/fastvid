@@ -33,6 +33,9 @@ import type {
   AudioEvent,
   ShotImportance,
   VisualUniqueness,
+  StorytellingLabels,
+  ClipQualityMetrics,
+  AssetHealthScore,
 } from "../drizzle/annotationTypes";
 
 const execPromise = promisify(execCb);
@@ -77,7 +80,13 @@ export type ArchiveMetadataScores = {
   importanceBonus: number;
   /** +0 to +3: visual uniqueness tiebreaker bonus. */
   uniquenessBonus: number;
-  /** Sum of all bonuses (max ~35). */
+  /** +0 to +4: storytelling labels match expected narrative function. */
+  storytellingBonus: number;
+  /** +0 to +3: technical quality bonus for high-quality clips. */
+  qualityBonus: number;
+  /** +0 to +2: health score bonus for well-annotated clips. */
+  healthBonus: number;
+  /** Sum of all bonuses (max ~44). */
   total: number;
   /** The best-matching temporal segment, used to produce a TrimHint. */
   bestSegment: SegmentSimilarity | null;
@@ -394,6 +403,74 @@ function scoreImportanceAndUniqueness(
   return { importanceBonus, uniquenessBonus };
 }
 
+// ─── Scoring: storytelling labels (v5) ───────────────────────────────────────
+
+const BEAT_TO_STORYTELLING: Array<[RegExp, string[]]> = [
+  [/\b(establishing|overzicht|overview|introductie)\b/i, ["establishing", "context"]],
+  [/\b(action|gevecht|battle|fighting|aanval)\b/i, ["action", "climax"]],
+  [/\b(reaction|reactie|response|respons)\b/i, ["reaction", "emotion"]],
+  [/\b(reveal|onthulling|ontdekking|discovery)\b/i, ["reveal"]],
+  [/\b(climax|hoogtepunt|decisive|beslissend)\b/i, ["climax"]],
+  [/\b(transition|overgang|change|shift)\b/i, ["transition"]],
+  [/\b(emotion|emotie|feeling|gevoel|sad|verdriet)\b/i, ["emotion", "reaction"]],
+  [/\b(detail|close.?up|insert)\b/i, ["detail"]],
+  [/\b(ending|einde|conclusion|aftermath)\b/i, ["ending", "context"]],
+];
+
+/**
+ * Award a bonus when the clip's storytelling labels match the expected
+ * narrative function of the beat. Maximum: +4
+ */
+function scoreStorytellingMatch(
+  storytellingLabels: StorytellingLabels | undefined,
+  beatText: string
+): number {
+  if (!storytellingLabels) return 0;
+
+  const allFunctions = [storytellingLabels.primary, ...(storytellingLabels.secondary ?? [])];
+  let bonus = 0;
+
+  for (const [pattern, expectedFunctions] of BEAT_TO_STORYTELLING) {
+    if (!pattern.test(beatText)) continue;
+    const hasMatch = allFunctions.some((f) => f && expectedFunctions.includes(f));
+    if (hasMatch) bonus += 2;
+  }
+
+  return Math.min(4, bonus);
+}
+
+// ─── Scoring: quality metrics (v5) ───────────────────────────────────────────
+
+/**
+ * Award a bonus for high overall technical quality. Maximum: +3
+ */
+function scoreQualityMetrics(
+  qualityMetrics: ClipQualityMetrics | undefined,
+  qualityBlock: ClipAnnotation["quality"] | undefined
+): number {
+  const overall = qualityMetrics?.overallTechnicalQuality
+    ?? (qualityBlock ? Math.round((qualityBlock.overall + qualityBlock.sharpness + qualityBlock.stability) / 3) : null);
+  if (overall == null) return 0;
+  if (overall >= 85) return 3;
+  if (overall >= 70) return 2;
+  if (overall >= 55) return 1;
+  return 0;
+}
+
+// ─── Scoring: health score (v5) ──────────────────────────────────────────────
+
+/**
+ * Award a small bonus for well-annotated (high health score) clips. Maximum: +2
+ */
+function scoreHealthScore(
+  healthScore: AssetHealthScore | undefined
+): number {
+  if (!healthScore) return 0;
+  if (healthScore.score >= 80) return 2;
+  if (healthScore.score >= 60) return 1;
+  return 0;
+}
+
 // ─── Main scorer ──────────────────────────────────────────────────────────────
 
 /**
@@ -414,6 +491,7 @@ export function computeArchiveMetadataScores(
   const zero: ArchiveMetadataScores = {
     segmentBonus: 0, faceBonus: 0, objectBonus: 0, audioBonus: 0,
     cinematicBonus: 0, importanceBonus: 0, uniquenessBonus: 0,
+    storytellingBonus: 0, qualityBonus: 0, healthBonus: 0,
     total: 0, bestSegment: null,
   };
 
@@ -429,13 +507,18 @@ export function computeArchiveMetadataScores(
     annotation.shotImportance,
     annotation.visualUniqueness
   );
+  const storytellingBonus = scoreStorytellingMatch(annotation.storytellingLabels, beatText);
+  const qualityBonus      = scoreQualityMetrics(annotation.qualityMetrics, annotation.quality);
+  const healthBonus       = scoreHealthScore(annotation.healthScore);
 
   const total = segmentBonus + faceBonus + objectBonus + audioBonus +
-                cinematicBonus + importanceBonus + uniquenessBonus;
+                cinematicBonus + importanceBonus + uniquenessBonus +
+                storytellingBonus + qualityBonus + healthBonus;
 
   return {
     segmentBonus, faceBonus, objectBonus, audioBonus,
     cinematicBonus, importanceBonus, uniquenessBonus,
+    storytellingBonus, qualityBonus, healthBonus,
     total, bestSegment,
   };
 }
