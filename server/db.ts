@@ -1072,8 +1072,11 @@ export async function deleteMediaArchive(id: number) {
 export async function getMediaArchiveAssets(archiveId: number) {
   const db = await getDb();
   if (!db) return [];
+  // Exclude annotationJson — it's large (can be 50KB+ per row) and no bulk caller needs it.
+  // Use getMediaArchiveAssetById() to load the annotation for a single specific asset.
+  const { annotationJson: _skip, ...cols } = getTableColumns(mediaArchiveAssets);
   return db
-    .select()
+    .select(cols)
     .from(mediaArchiveAssets)
     .where(and(eq(mediaArchiveAssets.archiveId, archiveId), eq(mediaArchiveAssets.isActive, 1)))
     .orderBy(desc(mediaArchiveAssets.sortOrder), desc(mediaArchiveAssets.id));
