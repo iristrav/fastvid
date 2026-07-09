@@ -239,6 +239,13 @@
       "when": 1781500000000,
       "tag": "0033_editorial_review",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "5",
+      "when": 1781600000000,
+      "tag": "0034_schema_sync",
+      "breakpoints": true
     }
   ]
 }

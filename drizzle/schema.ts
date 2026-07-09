@@ -1,4 +1,4 @@
-import { index, int, json, longtext, mysqlEnum, mysqlTable, text, timestamp, varchar } from "drizzle-orm/mysql-core";
+import { float, index, int, json, longtext, mysqlEnum, mysqlTable, text, timestamp, varchar } from "drizzle-orm/mysql-core";
 
 /**
  * Core user table backing auth flow.
@@ -415,8 +415,8 @@ export const mediaAssetCache = mysqlTable("media_asset_cache", {
   r2Key: varchar("r2Key", { length: 512 }).notNull(),
   contentType: varchar("contentType", { length: 64 }).notNull().default("application/octet-stream"),
   fileSizeBytes: int("fileSizeBytes").notNull().default(0),
-  /** Duration in seconds for video assets; null for images. */
-  durationSec: int("durationSec"),
+  /** Duration in seconds for video assets; null for images. Stored as FLOAT (fractional seconds). */
+  durationSec: float("durationSec"),
   /** Bump to invalidate all entries (e.g. if encoding settings change). */
   cacheVersion: varchar("cacheVersion", { length: 32 }).notNull().default("1"),
   hitCount: int("hitCount").notNull().default(0),
