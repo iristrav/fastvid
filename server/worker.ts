@@ -44,23 +44,13 @@ async function runMigrations() {
     throw new Error("[Worker] drizzle folder not found — cannot apply migrations");
   }
   console.log("[Worker] Running migrations from:", migrationsFolder);
-  try {
-    const { runMigrationsWithGuard } = await import("./migrationGuard");
-    await runMigrationsWithGuard(
-      db as Parameters<typeof migrate>[0],
-      migrationsFolder,
-      (guardDb, config) => migrate(guardDb as Parameters<typeof migrate>[0], config)
-    );
-  } catch (e) {
-    const cause = (e as { cause?: { sqlMessage?: string; code?: string; sql?: string } }).cause;
-    const detail = cause?.sqlMessage
-      ? `MySQL ${cause.code ?? "ERR"}: ${cause.sqlMessage}`
-      : String(e);
-    console.error("[Worker] *** MIGRATION FAILED — ABORTING STARTUP ***");
-    console.error("[Worker] Failed migration detail:", detail);
-    if (cause?.sql) console.error("[Worker] Failing SQL:", cause.sql.slice(0, 500));
-    throw new Error(`Migration failed: ${detail}`);
-  }
+  const { runMigrationsWithGuard } = await import("./migrationGuard");
+  // Guard handles all error logging internally; re-throw triggers process.exit(1) via uncaughtException.
+  await runMigrationsWithGuard(
+    db as Parameters<typeof migrate>[0],
+    migrationsFolder,
+    (guardDb, config) => migrate(guardDb as Parameters<typeof migrate>[0], config)
+  );
 }
 
 /** Minimal HTTP probe for Railway deploy healthchecks (worker has no full web app). */

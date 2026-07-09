@@ -54,14 +54,13 @@ process.on("unhandledRejection", (reason) => {
 });
 
 // ─── Auto-Migration ───────────────────────────────────────────────────────────
-// Pre-flights every pending migration before Drizzle runs: detects ghost and
-// partial migrations caused by MySQL implicit DDL commits (table exists in DB
-// but migration not recorded). Aborts on non-idempotent partials; auto-repairs
-// ghost migrations; then delegates to Drizzle for the remaining clean ones.
-async function runMigrations() {
+import type { MigrationResult } from "../migrationGuard";
+type MigrationOutcome = { result: MigrationResult; migrationsFolder: string } | null;
+
+async function runMigrations(): Promise<MigrationOutcome> {
   if (!process.env.DATABASE_URL) {
     console.log("[Migration] DATABASE_URL not set, skipping migrations");
-    return;
+    return null;
   }
   const { getDb } = await import("../db");
   const db = await getDb();
@@ -79,55 +78,47 @@ async function runMigrations() {
     throw new Error("[Migration] drizzle folder not found — cannot apply migrations");
   }
   console.log("[Migration] Running migrations from:", migrationsFolder);
-  try {
-    const { runMigrationsWithGuard } = await import("../migrationGuard");
-    await runMigrationsWithGuard(
-      db as Parameters<typeof migrate>[0],
-      migrationsFolder,
-      (guardDb, config) => migrate(guardDb as Parameters<typeof migrate>[0], config)
-    );
-  } catch (e) {
-    const cause = (e as { cause?: { sqlMessage?: string; code?: string; sql?: string } }).cause;
-    const detail = cause?.sqlMessage
-      ? `MySQL ${cause.code ?? "ERR"}: ${cause.sqlMessage}`
-      : String(e);
-    console.error("[Migration] *** MIGRATION FAILED — ABORTING STARTUP ***");
-    console.error("[Migration] Failed migration detail:", detail);
-    if (cause?.sql) console.error("[Migration] Failing SQL:", cause.sql.slice(0, 500));
-    throw new Error(`Migration failed: ${detail}`);
-  }
-  return migrationsFolder;
+  const { runMigrationsWithGuard } = await import("../migrationGuard");
+  // Guard handles all error logging internally (MySQL code, SQL, recovery hint).
+  // We only re-throw so the top-level handler can call process.exit(1).
+  const result = await runMigrationsWithGuard(
+    db as Parameters<typeof migrate>[0],
+    migrationsFolder,
+    (guardDb, config) => migrate(guardDb as Parameters<typeof migrate>[0], config)
+  );
+  return { result, migrationsFolder };
 }
 
 // ─── Schema Validation ────────────────────────────────────────────────────────
-// Full schema audit: columns, types, nullability, defaults, indexes, unique
-// constraints, and foreign keys. Any mismatch aborts startup so a partially
-// migrated instance never serves traffic.
-async function validateSchema(migrationsFolder?: string) {
-  if (!process.env.DATABASE_URL) return;
+async function validateSchema(migrationsFolder?: string): Promise<{
+  diffs: number;
+  passed: boolean;
+  ms: number;
+}> {
+  if (!process.env.DATABASE_URL) return { diffs: 0, passed: true, ms: 0 };
 
   const { getDb } = await import("../db");
   const db = await getDb();
-  if (!db) return;
+  if (!db) return { diffs: 0, passed: true, ms: 0 };
 
+  const t0 = Date.now();
   const { auditSchema } = await import("../schemaAuditor");
   const diffs = await auditSchema(db, migrationsFolder);
+  const ms = Date.now() - t0;
 
   if (diffs.length === 0) {
-    console.log("[SchemaValidation] ✓ Schema matches the database — tables, columns, types, indexes, and FKs all verified");
-    return;
+    console.log("[SchemaValidation] ✓ Schema matches the database — columns, types, indexes, and FKs verified");
+    return { diffs: 0, passed: true, ms };
   }
 
   console.error("[SchemaValidation] *** SCHEMA MISMATCH — ABORTING STARTUP ***");
-  console.error(`[SchemaValidation] ${diffs.length} difference(s) found between the Drizzle schema and the live database:\n`);
+  console.error(`[SchemaValidation] ${diffs.length} difference(s) found:\n`);
 
-  // Group diffs by table for readable output.
   const byTable = new Map<string, typeof diffs>();
   diffs.forEach((d) => {
     if (!byTable.has(d.table)) byTable.set(d.table, []);
     byTable.get(d.table)!.push(d);
   });
-
   byTable.forEach((tableDiffs, table) => {
     console.error(`  Table: ${table}`);
     tableDiffs.forEach((d) => {
@@ -135,20 +126,51 @@ async function validateSchema(migrationsFolder?: string) {
       console.error(`    ✗ [${d.aspect}] ${table}${loc}`);
       console.error(`        expected : ${d.expected}`);
       console.error(`        actual   : ${d.actual}`);
-      if (d.migration) {
-        console.error(`        migration: ${d.migration}.sql`);
-      }
+      if (d.migration) console.error(`        migration: ${d.migration}.sql`);
     });
   });
-
   console.error("\n[SchemaValidation] Apply missing migrations or roll back this deployment.");
   throw new Error(`Schema validation failed: ${diffs.length} mismatch(es) between code schema and live database`);
 }
 
+// ─── Deployment Report ────────────────────────────────────────────────────────
+function printDeploymentReport(opts: {
+  migration: MigrationOutcome;
+  schema: { diffs: number; passed: boolean; ms: number };
+  totalMs: number;
+}): void {
+  const m = opts.migration?.result;
+  const s = opts.schema;
+  console.log("");
+  console.log("[Fastvid] ── Deployment Report ──────────────────────────────────");
+  if (m) {
+    console.log(`[Fastvid]   Recorded migrations : ${m.recordedAfter}/${m.totalMigrations}`);
+    console.log(`[Fastvid]   Executed this deploy: ${m.dryRun ? "0 (dry run)" : String(m.executedThisDeploy)}`);
+    console.log(`[Fastvid]   Ghosts repaired     : ${m.ghostsRepaired}`);
+    console.log(`[Fastvid]   Partial migrations  : ${m.partialsCompleted}`);
+    if (m.integrityViolations.length > 0) {
+      console.log(`[Fastvid]   Integrity violations: ${m.integrityViolations.length} ⚠  (files modified after execution)`);
+      m.integrityViolations.forEach((v: { tag: string }) => console.log(`[Fastvid]     - ${v.tag}`));
+    } else {
+      console.log(`[Fastvid]   Integrity          : ✓ all hashes match`);
+    }
+    console.log(`[Fastvid]   Guard time         : ${m.guardMs}ms`);
+    console.log(`[Fastvid]   Drizzle migrate    : ${m.migrateMs}ms`);
+    console.log(`[Fastvid]   Schema validation  : ${s.ms}ms`);
+  }
+  console.log(`[Fastvid]   Schema differences  : ${s.diffs}`);
+  console.log(`[Fastvid]   Validation         : ${s.passed ? "PASS ✓" : "FAIL ✗"}`);
+  console.log(`[Fastvid]   Total startup time : ${opts.totalMs}ms`);
+  console.log("[Fastvid] ─────────────────────────────────────────────────────────");
+  console.log("");
+}
+
 async function startServer() {
+  const t0 = Date.now();
   // ─── Run DB migrations then validate schema — abort on any failure ────────
-  const migrationsFolder = await runMigrations();
-  await validateSchema(migrationsFolder);
+  const migration = await runMigrations();
+  const schema = await validateSchema(migration?.migrationsFolder);
+  printDeploymentReport({ migration, schema, totalMs: Date.now() - t0 });
 
   // ─── Startup diagnostics (visible in Railway logs) ───────────────────────
   console.log("[Fastvid] Starting server...");
