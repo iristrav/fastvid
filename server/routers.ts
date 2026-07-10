@@ -85,6 +85,7 @@ import { archiveAiTaggingEnabled } from "./archiveAssetTagging";
 import { autoTitleArchiveAssets, probeArchiveAssetAiTag } from "./archiveBulkVisionTagging";
 import { bulkRetagArchiveGeo } from "./archiveBulkGeoRetag";
 import { auditArchiveAssetScenes } from "./archiveSceneAudit";
+import { trimArchiveAssetToFirstScene } from "./archiveTrimToScene";
 import { archiveAssetMediaStatus } from "./archiveAssetLoad";
 import { dedupeArchiveVisualDuplicates } from "./archiveClipDedup";
 import { assessArchiveCoverageForPrompt } from "./archiveCoverage";
@@ -1728,6 +1729,17 @@ export const appRouter = router({
           (err as Error).message ?? "Scene audit failed"
         );
       }
+    }),
+
+    /** Trim a multi-scene clip to its first scene using the provided cut point. */
+    trimToSingleScene: adminProcedure.input(z.object({
+      assetId: z.number().int(),
+      cutTimeSec: z.number().positive().max(3600),
+    })).mutation(async ({ input }) => {
+      const asset = await getMediaArchiveAssetById(input.assetId);
+      if (!asset) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Asset not found");
+      if (asset.mediaType !== "video") throw appTrpcError("BAD_REQUEST", APP_ERROR.VALIDATION_ERROR, "Asset is not a video");
+      return trimArchiveAssetToFirstScene(asset, input.cutTimeSec);
     }),
 
     /** Remove visually duplicate clips (keeps oldest per duplicate group). */

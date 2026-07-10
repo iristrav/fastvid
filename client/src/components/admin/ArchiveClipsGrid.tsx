@@ -6,7 +6,7 @@ import { trpc } from "@/lib/trpc";
 import { toastErrorMessage } from "@/const";
 import { toast } from "sonner";
 import {
-  Loader2, Trash2, Pencil, Search, Film, Image as ImageIcon, X, Play, ExternalLink, CheckSquare, Square, Sparkles, Copy, AlertTriangle, ChevronLeft, ChevronRight, ScanSearch, Ban,
+  Loader2, Trash2, Pencil, Search, Film, Image as ImageIcon, X, Play, ExternalLink, CheckSquare, Square, Sparkles, Copy, AlertTriangle, ChevronLeft, ChevronRight, ScanSearch, Ban, Scissors,
 } from "lucide-react";
 
 const CLIPS_PAGE_SIZE = 48;
@@ -346,6 +346,7 @@ function AssetCard({
   onToggleSelect,
   onDelete,
   onSave,
+  onTrimmed,
   saving,
 }: {
   asset: ArchiveAsset;
@@ -354,6 +355,7 @@ function AssetCard({
   onToggleSelect: () => void;
   onDelete: () => void;
   onSave: (patch: { title?: string; tags?: string[]; mixKind?: MixKind; sourceNote?: string }) => void;
+  onTrimmed: (assetId: number, newDurationSec: number) => void;
   saving: boolean;
 }) {
   const [editing, setEditing] = useState(false);
@@ -362,6 +364,7 @@ function AssetCard({
   const [tags, setTags] = useState(tagsToInput(asset.tags));
   const [mixKind, setMixKind] = useState<MixKind>(asset.mixKind);
   const [sourceNote, setSourceNote] = useState(asset.sourceNote ?? "");
+  const trimMutation = trpc.mediaArchive.trimToSingleScene.useMutation();
 
   useEffect(() => {
     setTitle(asset.title ?? "");
@@ -506,6 +509,26 @@ function AssetCard({
                 <button onClick={onDelete} className="text-xs px-2 py-1 rounded bg-red-500/10 text-red-400 hover:bg-red-500/20">
                   <Trash2 className="w-3 h-3 inline" />
                 </button>
+                {sceneAudit?.status === "multi_scene" && (sceneAudit.cutTimesSec?.length ?? 0) > 0 && (
+                  <button
+                    onClick={async () => {
+                      const cut = sceneAudit.cutTimesSec![0];
+                      if (!confirm(`Clip bijknippen naar eerste scène (0–${cut.toFixed(1)}s)?`)) return;
+                      try {
+                        const result = await trimMutation.mutateAsync({ assetId: asset.id, cutTimeSec: cut });
+                        onTrimmed(asset.id, result.newDurationSec);
+                        toast.success(`Bijgeknipt naar ${result.newDurationSec}s`);
+                      } catch (e) {
+                        toast.error("Bijknippen mislukt", { description: toastErrorMessage(e) });
+                      }
+                    }}
+                    disabled={trimMutation.isPending}
+                    className="text-xs px-2 py-1 rounded bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 disabled:opacity-50"
+                    title={`Bijknippen naar eerste scène (tot ${sceneAudit.cutTimesSec![0].toFixed(1)}s)`}
+                  >
+                    {trimMutation.isPending ? <Loader2 className="w-3 h-3 inline animate-spin" /> : <Scissors className="w-3 h-3 inline" />}
+                  </button>
+                )}
               </div>
             </>
           )}
@@ -1349,6 +1372,14 @@ export function ArchiveClipsGrid({
                 if (confirm("Delete this clip?")) deleteAsset.mutate({ id: asset.id });
               }}
               onSave={(patch) => updateAsset.mutate({ id: asset.id, ...patch })}
+              onTrimmed={(assetId, newDurationSec) => {
+                utils.mediaArchive.listAssets.invalidate({ archiveId: archiveId! });
+                setSceneAuditMap((prev) => {
+                  const entry = prev[assetId];
+                  if (!entry) return prev;
+                  return { ...prev, [assetId]: { ...entry, status: "single_scene", sceneCount: 1, interiorCutCount: 0, cutTimesSec: [], durationSec: newDurationSec } };
+                });
+              }}
               saving={updateAsset.isPending}
             />
           ))}
