@@ -385,21 +385,32 @@ export async function runMigrationsWithGuard(
 
     const existingObjects: SchemaObject[] = [];
     let checkableTotal = 0;
+    let unverifiableTotal = 0;
 
     if (!dryRun && schemaObjects.length > 0) {
       for (const obj of schemaObjects) {
         const exists = await checkObjectExists(obj, ops);
-        if (exists === null) continue; // method not available in ops — skip from count
+        if (exists === null) {
+          // Existence cannot be verified (ops method unavailable).
+          unverifiableTotal++;
+          continue;
+        }
         checkableTotal++;
         if (exists) existingObjects.push(obj);
       }
     }
 
     let status: MigrationStatus;
-    if (dryRun || checkableTotal === 0) {
-      // No checkable objects or dry run → assume clean (let Drizzle decide)
+    if (dryRun || schemaObjects.length === 0) {
+      // Dry run, or nothing to reconcile → let Drizzle decide.
       status = "clean";
-    } else if (existingObjects.length === checkableTotal) {
+    } else if (unverifiableTotal > 0) {
+      // At least one object cannot be verified. Never record-without-run in
+      // this case: if some checkable objects exist it is a genuine partial,
+      // otherwise treat as clean and let Drizzle run the migration.
+      status = existingObjects.length > 0 ? "partial" : "clean";
+    } else if (checkableTotal > 0 && existingObjects.length === checkableTotal) {
+      // Every object the migration defines is checkable AND confirmed present.
       status = "ghost";
     } else if (existingObjects.length === 0) {
       status = "clean";
