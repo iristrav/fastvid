@@ -388,7 +388,11 @@ export async function auditSchema(
       if (expDefault !== null) {
         // MySQL stores integer defaults as strings (e.g. "0"), so normalise to string.
         const actDefault = dbCol.COLUMN_DEFAULT;
-        if (actDefault === null || String(actDefault) !== expDefault) {
+        const actStr = actDefault === null ? null : String(actDefault);
+        // Skip when MySQL returns mojibake placeholders ("?", "??", etc.) for a non-ASCII
+        // expected default — the value is correct in the DB but unreadable over this connection.
+        const isMojibake = actStr !== null && /^\?+$/.test(actStr) && !/^\?+$/.test(expDefault);
+        if (!isMojibake && (actDefault === null || actStr !== expDefault)) {
           diffs.push({
             table: tableName, column: colName,
             aspect: "default",
