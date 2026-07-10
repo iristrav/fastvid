@@ -45,8 +45,8 @@ EXECUTE stmt;
 DEALLOCATE PREPARE stmt;
 --> statement-breakpoint
 SET @s3 = IF(
-  (SELECT COUNT(*) FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = @db AND CONSTRAINT_NAME = 'media_archive_asset_embeddings_assetId_media_archive_assets_id_fk') = 0,
-  'ALTER TABLE `media_archive_asset_embeddings` ADD CONSTRAINT `media_archive_asset_embeddings_assetId_media_archive_assets_id_fk` FOREIGN KEY (`assetId`) REFERENCES `media_archive_assets`(`id`) ON DELETE no action ON UPDATE no action',
+  (SELECT COUNT(*) FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = @db AND CONSTRAINT_NAME = 'asset_embeddings_assetId_fk') = 0,
+  'ALTER TABLE `media_archive_asset_embeddings` ADD CONSTRAINT `asset_embeddings_assetId_fk` FOREIGN KEY (`assetId`) REFERENCES `media_archive_assets`(`id`) ON DELETE no action ON UPDATE no action',
   'SELECT 1'
 );
 --> statement-breakpoint
