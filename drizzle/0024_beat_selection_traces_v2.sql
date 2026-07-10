@@ -6,7 +6,11 @@ SET @s1 = IF(
   'SELECT 1'
 );
 --> statement-breakpoint
-PREPARE stmt FROM @s1; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+PREPARE stmt FROM @s1;
+--> statement-breakpoint
+EXECUTE stmt;
+--> statement-breakpoint
+DEALLOCATE PREPARE stmt;
 --> statement-breakpoint
 SET @s2 = IF(
   (SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = @db AND TABLE_NAME = 'beat_selection_traces' AND COLUMN_NAME = 'videoId') = 0,
@@ -14,7 +18,11 @@ SET @s2 = IF(
   'SELECT 1'
 );
 --> statement-breakpoint
-PREPARE stmt FROM @s2; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+PREPARE stmt FROM @s2;
+--> statement-breakpoint
+EXECUTE stmt;
+--> statement-breakpoint
+DEALLOCATE PREPARE stmt;
 --> statement-breakpoint
 SET @s3 = IF(
   (SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = @db AND TABLE_NAME = 'beat_selection_traces' AND COLUMN_NAME = 'winnerSource') = 0,
@@ -22,7 +30,11 @@ SET @s3 = IF(
   'SELECT 1'
 );
 --> statement-breakpoint
-PREPARE stmt FROM @s3; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+PREPARE stmt FROM @s3;
+--> statement-breakpoint
+EXECUTE stmt;
+--> statement-breakpoint
+DEALLOCATE PREPARE stmt;
 --> statement-breakpoint
 SET @s4 = IF(
   (SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = @db AND TABLE_NAME = 'beat_selection_traces' AND COLUMN_NAME = 'schemaVersion') = 0,
@@ -30,7 +42,11 @@ SET @s4 = IF(
   'SELECT 1'
 );
 --> statement-breakpoint
-PREPARE stmt FROM @s4; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+PREPARE stmt FROM @s4;
+--> statement-breakpoint
+EXECUTE stmt;
+--> statement-breakpoint
+DEALLOCATE PREPARE stmt;
 --> statement-breakpoint
 SET @s5 = IF(
   (SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = @db AND TABLE_NAME = 'beat_selection_traces' AND COLUMN_NAME = 'engineVersion') = 0,
@@ -38,7 +54,11 @@ SET @s5 = IF(
   'SELECT 1'
 );
 --> statement-breakpoint
-PREPARE stmt FROM @s5; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+PREPARE stmt FROM @s5;
+--> statement-breakpoint
+EXECUTE stmt;
+--> statement-breakpoint
+DEALLOCATE PREPARE stmt;
 --> statement-breakpoint
 SET @s6 = IF(
   (SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = @db AND TABLE_NAME = 'beat_selection_traces' AND COLUMN_NAME = 'host') = 0,
@@ -46,7 +66,11 @@ SET @s6 = IF(
   'SELECT 1'
 );
 --> statement-breakpoint
-PREPARE stmt FROM @s6; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+PREPARE stmt FROM @s6;
+--> statement-breakpoint
+EXECUTE stmt;
+--> statement-breakpoint
+DEALLOCATE PREPARE stmt;
 --> statement-breakpoint
 SET @s7 = IF(
   (SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = @db AND TABLE_NAME = 'beat_selection_traces' AND COLUMN_NAME = 'workerId') = 0,
@@ -54,7 +78,11 @@ SET @s7 = IF(
   'SELECT 1'
 );
 --> statement-breakpoint
-PREPARE stmt FROM @s7; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+PREPARE stmt FROM @s7;
+--> statement-breakpoint
+EXECUTE stmt;
+--> statement-breakpoint
+DEALLOCATE PREPARE stmt;
 --> statement-breakpoint
 SET @s8 = IF(
   (SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = @db AND TABLE_NAME = 'beat_selection_traces' AND COLUMN_NAME = 'traceHash') = 0,
@@ -62,7 +90,11 @@ SET @s8 = IF(
   'SELECT 1'
 );
 --> statement-breakpoint
-PREPARE stmt FROM @s8; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+PREPARE stmt FROM @s8;
+--> statement-breakpoint
+EXECUTE stmt;
+--> statement-breakpoint
+DEALLOCATE PREPARE stmt;
 --> statement-breakpoint
 SET @s9 = IF(
   (SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = @db AND TABLE_NAME = 'beat_selection_traces' AND INDEX_NAME = 'beat_selection_traces_traceId_unique') = 0,
@@ -70,7 +102,11 @@ SET @s9 = IF(
   'SELECT 1'
 );
 --> statement-breakpoint
-PREPARE stmt FROM @s9; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+PREPARE stmt FROM @s9;
+--> statement-breakpoint
+EXECUTE stmt;
+--> statement-breakpoint
+DEALLOCATE PREPARE stmt;
 --> statement-breakpoint
 SET @s10 = IF(
   (SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = @db AND TABLE_NAME = 'beat_selection_traces' AND INDEX_NAME = 'beat_selection_traces_videoId_idx') = 0,
@@ -78,7 +114,11 @@ SET @s10 = IF(
   'SELECT 1'
 );
 --> statement-breakpoint
-PREPARE stmt FROM @s10; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+PREPARE stmt FROM @s10;
+--> statement-breakpoint
+EXECUTE stmt;
+--> statement-breakpoint
+DEALLOCATE PREPARE stmt;
 --> statement-breakpoint
 SET @s11 = IF(
   (SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = @db AND TABLE_NAME = 'beat_selection_traces' AND INDEX_NAME = 'beat_selection_traces_winnerSource_idx') = 0,
@@ -86,7 +126,11 @@ SET @s11 = IF(
   'SELECT 1'
 );
 --> statement-breakpoint
-PREPARE stmt FROM @s11; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+PREPARE stmt FROM @s11;
+--> statement-breakpoint
+EXECUTE stmt;
+--> statement-breakpoint
+DEALLOCATE PREPARE stmt;
 --> statement-breakpoint
 SET @s12 = IF(
   (SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = @db AND TABLE_NAME = 'beat_selection_traces' AND INDEX_NAME = 'beat_selection_traces_confidenceTier_idx') = 0,
@@ -94,4 +138,8 @@ SET @s12 = IF(
   'SELECT 1'
 );
 --> statement-breakpoint
-PREPARE stmt FROM @s12; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+PREPARE stmt FROM @s12;
+--> statement-breakpoint
+EXECUTE stmt;
+--> statement-breakpoint
+DEALLOCATE PREPARE stmt;

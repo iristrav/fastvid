@@ -28,7 +28,11 @@ SET @fk = IF(
   'SELECT 1'
 );
 --> statement-breakpoint
-PREPARE stmt FROM @fk; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+PREPARE stmt FROM @fk;
+--> statement-breakpoint
+EXECUTE stmt;
+--> statement-breakpoint
+DEALLOCATE PREPARE stmt;
 --> statement-breakpoint
 SET @s1 = IF(
   (SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = @db AND TABLE_NAME = 'selection_feedback' AND INDEX_NAME = 'selection_feedback_pipelineRunId_idx') = 0,
@@ -36,7 +40,11 @@ SET @s1 = IF(
   'SELECT 1'
 );
 --> statement-breakpoint
-PREPARE stmt FROM @s1; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+PREPARE stmt FROM @s1;
+--> statement-breakpoint
+EXECUTE stmt;
+--> statement-breakpoint
+DEALLOCATE PREPARE stmt;
 --> statement-breakpoint
 SET @s2 = IF(
   (SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = @db AND TABLE_NAME = 'selection_feedback' AND INDEX_NAME = 'selection_feedback_beatId_idx') = 0,
@@ -44,7 +52,11 @@ SET @s2 = IF(
   'SELECT 1'
 );
 --> statement-breakpoint
-PREPARE stmt FROM @s2; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+PREPARE stmt FROM @s2;
+--> statement-breakpoint
+EXECUTE stmt;
+--> statement-breakpoint
+DEALLOCATE PREPARE stmt;
 --> statement-breakpoint
 SET @s3 = IF(
   (SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = @db AND TABLE_NAME = 'selection_feedback' AND INDEX_NAME = 'selection_feedback_feedbackType_idx') = 0,
@@ -52,7 +64,11 @@ SET @s3 = IF(
   'SELECT 1'
 );
 --> statement-breakpoint
-PREPARE stmt FROM @s3; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+PREPARE stmt FROM @s3;
+--> statement-breakpoint
+EXECUTE stmt;
+--> statement-breakpoint
+DEALLOCATE PREPARE stmt;
 --> statement-breakpoint
 SET @s4 = IF(
   (SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = @db AND TABLE_NAME = 'selection_feedback_events' AND INDEX_NAME = 'selection_feedback_events_feedbackId_idx') = 0,
@@ -60,4 +76,8 @@ SET @s4 = IF(
   'SELECT 1'
 );
 --> statement-breakpoint
-PREPARE stmt FROM @s4; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+PREPARE stmt FROM @s4;
+--> statement-breakpoint
+EXECUTE stmt;
+--> statement-breakpoint
+DEALLOCATE PREPARE stmt;

@@ -9,7 +9,11 @@ SET @addAnnotationJson = IF(
   'SELECT 1'
 );
 --> statement-breakpoint
-PREPARE stmt FROM @addAnnotationJson; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+PREPARE stmt FROM @addAnnotationJson;
+--> statement-breakpoint
+EXECUTE stmt;
+--> statement-breakpoint
+DEALLOCATE PREPARE stmt;
 --> statement-breakpoint
 SET @addEditorialScore = IF(
   (SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = @db AND TABLE_NAME = 'media_archive_assets' AND COLUMN_NAME = 'editorialScore') = 0,
@@ -17,7 +21,11 @@ SET @addEditorialScore = IF(
   'SELECT 1'
 );
 --> statement-breakpoint
-PREPARE stmt FROM @addEditorialScore; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+PREPARE stmt FROM @addEditorialScore;
+--> statement-breakpoint
+EXECUTE stmt;
+--> statement-breakpoint
+DEALLOCATE PREPARE stmt;
 --> statement-breakpoint
 SET @addAnnotationVersion = IF(
   (SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = @db AND TABLE_NAME = 'media_archive_assets' AND COLUMN_NAME = 'annotationVersion') = 0,
@@ -25,7 +33,11 @@ SET @addAnnotationVersion = IF(
   'SELECT 1'
 );
 --> statement-breakpoint
-PREPARE stmt FROM @addAnnotationVersion; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+PREPARE stmt FROM @addAnnotationVersion;
+--> statement-breakpoint
+EXECUTE stmt;
+--> statement-breakpoint
+DEALLOCATE PREPARE stmt;
 --> statement-breakpoint
 SET @addEditorialIdx = IF(
   (SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = @db AND TABLE_NAME = 'media_archive_assets' AND INDEX_NAME = 'media_archive_assets_editorial_idx') = 0,
@@ -33,7 +45,11 @@ SET @addEditorialIdx = IF(
   'SELECT 1'
 );
 --> statement-breakpoint
-PREPARE stmt FROM @addEditorialIdx; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+PREPARE stmt FROM @addEditorialIdx;
+--> statement-breakpoint
+EXECUTE stmt;
+--> statement-breakpoint
+DEALLOCATE PREPARE stmt;
 --> statement-breakpoint
 SET @addBackfillIdx = IF(
   (SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = @db AND TABLE_NAME = 'media_archive_assets' AND INDEX_NAME = 'media_archive_assets_annotation_backfill_idx') = 0,
@@ -41,4 +57,8 @@ SET @addBackfillIdx = IF(
   'SELECT 1'
 );
 --> statement-breakpoint
-PREPARE stmt FROM @addBackfillIdx; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+PREPARE stmt FROM @addBackfillIdx;
+--> statement-breakpoint
+EXECUTE stmt;
+--> statement-breakpoint
+DEALLOCATE PREPARE stmt;
