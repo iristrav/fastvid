@@ -399,7 +399,8 @@ export async function runMigrationsWithGuard(
     if (dryRun || checkableTotal === 0) {
       // No checkable objects or dry run → assume clean (let Drizzle decide)
       status = "clean";
-    } else if (existingObjects.length === checkableTotal) {
+    } else if (existingObjects.length === checkableTotal && checkableTotal === schemaObjects.length) {
+      // GHOST only when every object was checkable AND every one exists
       status = "ghost";
     } else if (existingObjects.length === 0) {
       status = "clean";
