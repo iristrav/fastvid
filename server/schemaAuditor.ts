@@ -399,10 +399,12 @@ export async function auditSchema(
         }
       }
 
-      // defaultNow() → expect CURRENT_TIMESTAMP in COLUMN_DEFAULT
+      // defaultNow() → expect CURRENT_TIMESTAMP or now() in COLUMN_DEFAULT
+      // MySQL 8 stores this as now() while older versions use CURRENT_TIMESTAMP; both are valid.
       if (isDefaultNow(schCol)) {
         const actDefault = dbCol.COLUMN_DEFAULT ?? "";
-        if (!actDefault.toUpperCase().includes("CURRENT_TIMESTAMP")) {
+        const upper = actDefault.toUpperCase();
+        if (!upper.includes("CURRENT_TIMESTAMP") && !upper.includes("NOW()")) {
           diffs.push({
             table: tableName, column: colName,
             aspect: "default",
