@@ -98,9 +98,12 @@ export function createDbOps(db: any): MigrationDbOps {
   return {
     async getRecordedMigrations() {
       try {
-        const rows = (await db.execute(
+        // db.execute() returns the raw mysql2 tuple [RowDataPacket[], FieldPacket[]].
+        // The actual rows are at index 0.
+        const res = (await db.execute(
           sql`SELECT \`hash\`, \`created_at\` FROM \`__drizzle_migrations\` ORDER BY \`created_at\``
-        )) as unknown as Array<{ hash: string; created_at: string | number }>;
+        )) as unknown as [Array<{ hash: string; created_at: string | number }>, unknown];
+        const rows = Array.isArray(res) && Array.isArray(res[0]) ? res[0] : [];
         return rows.map((r) => ({ hash: r.hash, created_at: Number(r.created_at) }));
       } catch {
         return [];
@@ -108,30 +111,34 @@ export function createDbOps(db: any): MigrationDbOps {
     },
 
     async tableExists(tableName: string) {
-      const rows = (await db.execute(
+      const res = (await db.execute(
         sql`SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ${tableName} LIMIT 1`
-      )) as unknown as unknown[];
+      )) as unknown as [unknown[], unknown];
+      const rows = Array.isArray(res) && Array.isArray(res[0]) ? res[0] : [];
       return rows.length > 0;
     },
 
     async columnExists(table: string, column: string) {
-      const rows = (await db.execute(
+      const res = (await db.execute(
         sql`SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ${table} AND COLUMN_NAME = ${column} LIMIT 1`
-      )) as unknown as unknown[];
+      )) as unknown as [unknown[], unknown];
+      const rows = Array.isArray(res) && Array.isArray(res[0]) ? res[0] : [];
       return rows.length > 0;
     },
 
     async indexExists(table: string, indexName: string) {
-      const rows = (await db.execute(
+      const res = (await db.execute(
         sql`SELECT 1 FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ${table} AND INDEX_NAME = ${indexName} LIMIT 1`
-      )) as unknown as unknown[];
+      )) as unknown as [unknown[], unknown];
+      const rows = Array.isArray(res) && Array.isArray(res[0]) ? res[0] : [];
       return rows.length > 0;
     },
 
     async fkExists(constraintName: string) {
-      const rows = (await db.execute(
+      const res = (await db.execute(
         sql`SELECT 1 FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = DATABASE() AND CONSTRAINT_NAME = ${constraintName} LIMIT 1`
-      )) as unknown as unknown[];
+      )) as unknown as [unknown[], unknown];
+      const rows = Array.isArray(res) && Array.isArray(res[0]) ? res[0] : [];
       return rows.length > 0;
     },
 
