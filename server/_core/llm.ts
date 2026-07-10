@@ -421,6 +421,24 @@ const assertApiKey = () => {
   }
 };
 
+/** Convert OpenAI-style content parts to Anthropic content blocks, mapping image_url → image. */
+function convertToAnthropicContent(parts: unknown[]): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = [];
+  for (const c of parts) {
+    if (typeof c === "string") { if (c) out.push({ type: "text", text: c }); continue; }
+    const part = c as Record<string, unknown>;
+    if (part.type === "text") {
+      const t = String(part.text ?? "");
+      if (t) out.push({ type: "text", text: t });
+    } else if (part.type === "image_url") {
+      const url = String((part.image_url as Record<string, unknown>)?.url ?? "");
+      const imgMatch = url.match(/^data:(image\/[^;]+);base64,(.+)$/);
+      if (imgMatch) out.push({ type: "image", source: { type: "base64", media_type: imgMatch[1], data: imgMatch[2] } });
+    }
+  }
+  return out;
+}
+
 /** Call Anthropic Messages API — different format from OpenAI-compatible APIs. */
 async function invokeAnthropic(
   messages: Message[],
@@ -442,11 +460,7 @@ async function invokeAnthropic(
     content: typeof m.content === "string"
       ? m.content
       : Array.isArray(m.content)
-        ? m.content.map((c) => {
-            if (typeof c === "string") return { type: "text", text: c };
-            if ("text" in c) return { type: "text", text: c.text };
-            return { type: "text", text: "" };
-          })
+        ? (convertToAnthropicContent(m.content as unknown[]))
         : String(m.content),
   }));
 
