@@ -42,6 +42,9 @@ function makeMockDbOps(state: FakeDbState): MigrationDbOps {
     async insertRecord(hash: string, folderMillis: number) {
       state.records.push({ hash, created_at: folderMillis });
     },
+    async deleteRecord(folderMillis: number) {
+      state.records = state.records.filter((r) => r.created_at !== folderMillis);
+    },
   };
 }
 

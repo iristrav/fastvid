@@ -53,6 +53,7 @@ export interface MigrationDbOps {
   tableExists(tableName: string): Promise<boolean>;
   ensureMigrationsTable(): Promise<void>;
   insertRecord(hash: string, folderMillis: number): Promise<void>;
+  deleteRecord(folderMillis: number): Promise<void>;
   // Extended checks for full schema-object reconciliation (optional for backward compat):
   columnExists?(table: string, column: string): Promise<boolean>;
   indexExists?(table: string, indexName: string): Promise<boolean>;
@@ -155,6 +156,12 @@ export function createDbOps(db: any): MigrationDbOps {
     async insertRecord(hash: string, folderMillis: number) {
       await db.execute(
         sql`INSERT INTO \`__drizzle_migrations\` (\`hash\`, \`created_at\`) VALUES (${hash}, ${folderMillis})`
+      );
+    },
+
+    async deleteRecord(folderMillis: number) {
+      await db.execute(
+        sql`DELETE FROM \`__drizzle_migrations\` WHERE \`created_at\` = ${folderMillis}`
       );
     },
   };
@@ -355,6 +362,50 @@ export async function runMigrationsWithGuard(
     console.warn(
       "[Migration]    Set MIGRATION_STRICT_INTEGRITY=true to abort on integrity violations."
     );
+  }
+
+  // ── False-record cleanup ───────────────────────────────────────────────────
+  // Previous deploys may have inserted records into __drizzle_migrations without
+  // running the DDL (due to the mysql2 tuple-unwrap bug). Detect and remove them
+  // so Drizzle will re-run the missing DDL on this startup.
+  if (!dryRun) {
+    let falseRecordsFound = 0;
+    for (const row of recorded) {
+      const entry = milliToEntry.get(row.created_at);
+      if (!entry) continue;
+      const sqlPath = path.join(migrationsFolder, `${entry.tag}.sql`);
+      if (!fs.existsSync(sqlPath)) continue;
+      const rawSql = fs.readFileSync(sqlPath, "utf-8");
+      const schemaObjects = extractSchemaObjects(rawSql);
+      if (schemaObjects.length === 0) continue;
+
+      // Check whether any schema object defined by this migration is missing.
+      let anyMissing = false;
+      for (const obj of schemaObjects) {
+        const exists = await checkObjectExists(obj, ops);
+        if (exists === false) {
+          anyMissing = true;
+          break;
+        }
+        // exists === null means no check method — skip this object
+      }
+
+      if (anyMissing) {
+        falseRecordsFound++;
+        console.warn(
+          `[Migration] ⚠  Removing false record for ${entry.tag} — DDL was never executed`
+        );
+        if (ops.deleteRecord) {
+          await ops.deleteRecord(row.created_at);
+        }
+        recordedMillisSet.delete(row.created_at);
+      }
+    }
+    if (falseRecordsFound > 0) {
+      console.warn(
+        `[Migration] ⚠  Removed ${falseRecordsFound} false record(s) — Drizzle will re-run their DDL`
+      );
+    }
   }
 
   // ── Classify pending migrations ────────────────────────────────────────────
