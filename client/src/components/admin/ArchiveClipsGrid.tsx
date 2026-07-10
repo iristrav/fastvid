@@ -557,6 +557,8 @@ export function ArchiveClipsGrid({
     message: string;
     detail?: string;
   } | null>(null);
+  const [trimRunning, setTrimRunning] = useState(false);
+  const [trimProgress, setTrimProgress] = useState<{ done: number; total: number } | null>(null);
 
   useEffect(() => {
     setPage(0);
@@ -1022,6 +1024,46 @@ export function ArchiveClipsGrid({
     deleteAssets.mutate({ ids });
   }
 
+  const trimToScene = trpc.mediaArchive.trimToSingleScene.useMutation();
+
+  async function trimAllMultiScene() {
+    const targets = Object.entries(sceneAuditMap)
+      .filter(([, e]) => e.status === "multi_scene" && (e.cutTimesSec?.length ?? 0) > 0)
+      .map(([id, e]) => ({ assetId: Number(id), cutTimeSec: e.cutTimesSec![0] }));
+    if (targets.length === 0) {
+      toast.error("Geen multi-scene clips met snijpunt gevonden. Voer eerst de scène-check uit.");
+      return;
+    }
+    if (!confirm(`${targets.length} clips bijknippen naar de eerste scène?\n\nElke clip wordt herschreven tot het eerste snijpunt.`)) return;
+
+    setTrimRunning(true);
+    setTrimProgress({ done: 0, total: targets.length });
+    let done = 0;
+    let failed = 0;
+    for (const { assetId, cutTimeSec } of targets) {
+      try {
+        const result = await trimToScene.mutateAsync({ assetId, cutTimeSec });
+        setSceneAuditMap((prev) => {
+          const entry = prev[assetId];
+          if (!entry) return prev;
+          return { ...prev, [assetId]: { ...entry, status: "single_scene", sceneCount: 1, interiorCutCount: 0, cutTimesSec: [], durationSec: result.newDurationSec } };
+        });
+      } catch {
+        failed++;
+      }
+      done++;
+      setTrimProgress({ done, total: targets.length });
+    }
+    setTrimRunning(false);
+    setTrimProgress(null);
+    utils.mediaArchive.listAssets.invalidate({ archiveId: archiveId! });
+    if (failed === 0) {
+      toast.success(`${done} clip(s) bijgeknipt naar eerste scène`);
+    } else {
+      toast.warning(`${done - failed} bijgeknipt, ${failed} mislukt`);
+    }
+  }
+
   function deleteSelected() {
     const ids = [...selectedIds];
     if (ids.length === 0 || archiveId == null) return;
@@ -1106,20 +1148,38 @@ export function ArchiveClipsGrid({
           </button>
         )}
         {multiSceneCount > 0 && (
-          <button
-            type="button"
-            onClick={deleteMultiSceneClips}
-            disabled={deletePending || sceneAuditRunning}
-            title="Verwijder alle clips die als multi-scene zijn gemarkeerd (na scène-check)"
-            className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg border transition-colors bg-red-500/10 text-red-300 border-red-500/25 hover:bg-red-500/20 disabled:opacity-50"
-          >
-            {deletePending ? (
-              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-            ) : (
-              <Trash2 className="w-3.5 h-3.5" />
-            )}
-            Verwijder alleen multi scenes ({multiSceneCount})
-          </button>
+          <>
+            <button
+              type="button"
+              onClick={trimAllMultiScene}
+              disabled={trimRunning || sceneAuditRunning || deletePending}
+              title="Knip alle multi-scene clips bij tot de eerste scène"
+              className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg border transition-colors bg-amber-500/10 text-amber-300 border-amber-500/25 hover:bg-amber-500/20 disabled:opacity-50"
+            >
+              {trimRunning ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Scissors className="w-3.5 h-3.5" />
+              )}
+              {trimRunning && trimProgress
+                ? `Bijknippen ${trimProgress.done}/${trimProgress.total}`
+                : `Knip bij naar 1 scène (${multiSceneCount})`}
+            </button>
+            <button
+              type="button"
+              onClick={deleteMultiSceneClips}
+              disabled={deletePending || sceneAuditRunning || trimRunning}
+              title="Verwijder alle clips die als multi-scene zijn gemarkeerd (na scène-check)"
+              className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg border transition-colors bg-red-500/10 text-red-300 border-red-500/25 hover:bg-red-500/20 disabled:opacity-50"
+            >
+              {deletePending ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Trash2 className="w-3.5 h-3.5" />
+              )}
+              Verwijder alleen multi scenes ({multiSceneCount})
+            </button>
+          </>
         )}
         {assets.length > 0 && (
           <button

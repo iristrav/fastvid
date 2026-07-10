@@ -14,11 +14,11 @@ import { storagePut } from "./storage";
 import { updateMediaArchiveAsset } from "./db";
 import type { MediaArchiveAsset } from "../drizzle/schema";
 
+const exec = promisify(execCb);
+
 function ffmpegBin(): string {
   return process.env.FFMPEG_BIN || process.env.FFMPEG_PATH || "ffmpeg";
 }
-
-const exec = promisify(execCb);
 
 export async function trimArchiveAssetToFirstScene(
   asset: MediaArchiveAsset,
@@ -65,7 +65,6 @@ export async function trimArchiveAssetToFirstScene(
 
     if (!trimmed) throw new Error("FFmpeg kon de clip niet bijknippen");
 
-    // Upload trimmed file to storage under a new key so the original is not immediately lost.
     const ext = path.extname(asset.storageUrl || asset.storageKey || ".mp4") || ".mp4";
     const relKey = `archive/trimmed/${asset.id}_scene1${ext}`;
     const fileBuffer = fs.readFileSync(outPath);
