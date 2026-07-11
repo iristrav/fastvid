@@ -65,19 +65,39 @@ function buildHeadlineFilter(overlay: TextOverlay, _videoDur: number): string[] 
   const alpha = alphaExpr(startTime, endTime);
   const filters: string[] = [];
 
-  // Main headline — centred
+  // Support two-line headlines encoded as "LINE1 / LINE2"
+  const slashIdx = text.indexOf(" / ");
+  const hasTwo = slashIdx !== -1;
+  const line1 = hasTwo ? text.slice(0, slashIdx) : text;
+  const line2 = hasTwo ? text.slice(slashIdx + 3) : null;
+
+  const lineH = FONT_HEADLINE + 8; // pixel height per line including gap
+  const totalTextH = hasTwo ? lineH * 2 : lineH;
+  const baseY = `(h-${totalTextH})/2${subtitle ? `-20` : ""}`;
+
+  // Line 1
   filters.push(
-    `drawtext=text='${esc(text)}':fontcolor=white:fontsize=${FONT_HEADLINE}:` +
-    `x=(w-text_w)/2:y=(h-text_h)/2-${subtitle ? 40 : 0}:` +
+    `drawtext=text='${esc(line1)}':fontcolor=white:fontsize=${FONT_HEADLINE}:` +
+    `x=(w-text_w)/2:y=${baseY}:` +
     `alpha='${alpha}':` +
     `shadowcolor=black:shadowx=3:shadowy=3`
   );
 
-  // Optional subtitle (year / second line)
+  // Line 2 (if two-line headline)
+  if (line2) {
+    filters.push(
+      `drawtext=text='${esc(line2)}':fontcolor=white:fontsize=${FONT_HEADLINE}:` +
+      `x=(w-text_w)/2:y=${baseY}+${lineH}:` +
+      `alpha='${alpha}':` +
+      `shadowcolor=black:shadowx=3:shadowy=3`
+    );
+  }
+
+  // Subtitle (year / role / source)
   if (subtitle) {
     filters.push(
       `drawtext=text='${esc(subtitle)}':fontcolor=${LABEL_ACCENT}:fontsize=${FONT_YEAR}:` +
-      `x=(w-text_w)/2:y=(h+text_h)/2+8:` +
+      `x=(w-text_w)/2:y=(h+${totalTextH})/2+16:` +
       `alpha='${alpha}':` +
       `shadowcolor=black:shadowx=2:shadowy=2`
     );

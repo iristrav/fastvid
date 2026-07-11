@@ -23775,23 +23775,23 @@ async function _runVideoPipelineInner(
 
     // ── Stage 4b: Text overlays (cinematic headlines + documentary labels) ──
     try {
-      const { textOverlayEnabled, textOverlayStyle, planVideoTextOverlays, applyTextOverlaysToScenes } = await import("./textOverlay/index");
+      const { textOverlayEnabled, textOverlayStyle, planVideoTextOverlays, planVideoTextOverlaysEditorial, applyTextOverlaysToScenes } = await import("./textOverlay/index");
       if (textOverlayEnabled()) {
         const overlayStyle = textOverlayStyle();
-        const textPlan = planVideoTextOverlays(
-          scenes.map((s, i) => ({
-            index: i,
-            text: s.text ?? "",
-            visualCue: (s as any).visualCue ?? "",
-            pexelsQuery: (s as any).pexelsQuery ?? "",
-            chapterTitle: (s as any).chapterTitle ?? "",
-            sectionTitle: (s as any).sectionTitle ?? "",
-            duration: s.duration,
-            beats: (s as any).beats ?? [],
-          })),
-          overlayStyle,
-          videoTitle
-        );
+        const sceneMetas = scenes.map((s, i) => ({
+          index: i,
+          text: s.text ?? "",
+          visualCue: (s as any).visualCue ?? "",
+          pexelsQuery: (s as any).pexelsQuery ?? "",
+          chapterTitle: (s as any).chapterTitle ?? "",
+          sectionTitle: (s as any).sectionTitle ?? "",
+          duration: s.duration,
+          beats: (s as any).beats ?? [],
+        }));
+        const useEditorial = process.env.EDITORIAL_TEXT_ENGINE !== "false";
+        const textPlan = useEditorial
+          ? await planVideoTextOverlaysEditorial(sceneMetas, overlayStyle, videoTitle)
+          : planVideoTextOverlays(sceneMetas, overlayStyle, videoTitle);
         const hasAnyOverlay = textPlan.scenes.some(sp => sp.overlays.length > 0);
         if (hasAnyOverlay) {
           onProgress?.({ stage: STAGE_LABELS.assembling, percent: 75 });
