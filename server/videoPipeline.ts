@@ -5245,48 +5245,117 @@ async function generateColorFallback(
 async function _generateColorFallbackInner(sceneIndex: number, safeDuration: number, out: string, workDir: string): Promise<string> {
   const colors = ["3a4a5e", "4a5a6e", "3a5a6e", "4a4a5e", "3a5a5e", "4a5a5e", "3a4a6e", "4a4a6e"];
   const color = colors[Math.abs(sceneIndex) % colors.length];
-  const commands = [
-    `${FFMPEG_BIN} -y -f lavfi -i "color=c=#${color}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:r=25" -t ${safeDuration} -c:v libx264 -preset ultrafast -pix_fmt yuv420p -an "${out}"`,
-    `${FFMPEG_BIN} -y -f lavfi -i "color=c=black:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:r=25" -t ${safeDuration} -c:v libx264 -preset ultrafast -pix_fmt yuv420p -an "${out}"`,
-    `${FFMPEG_BIN} -y -f lavfi -i "color=c=black:s=1280x720:r=25" -t ${safeDuration} -c:v mpeg4 -q:v 5 -an "${out}"`,
-    `${FFMPEG_BIN} -y -f lavfi -i "color=c=black:s=640x360:r=25" -t ${safeDuration} -c:v mpeg4 -q:v 8 -an "${out}"`,
-  ];
+  const dur = safeDuration.toFixed(3);
+
+  // Log disk space before any attempt
   try {
-    const { stdout: dfOut } = await withTimeout(exec(`df -h "${workDir}" 2>&1 || df -h /var/tmp 2>&1 || df -h /tmp 2>&1`), 5_000, "df");
-    console.log(`[Pipeline] Scene ${sceneIndex}: disk space: ${dfOut.trim().split("\n").slice(-1)[0]}`);
+    const { stdout: dfOut } = await withTimeout(exec(`df -h "${workDir}" 2>&1 || df -h /data 2>&1 || df -h /tmp 2>&1`), 5_000, "df");
+    console.log(`[Pipeline] Scene ${sceneIndex}: disk space before fallback: ${dfOut.trim().split("\n").slice(-2).join(" | ")}`);
   } catch { /* ignore */ }
 
-  for (let i = 0; i < commands.length; i++) {
-    let lastErr: unknown;
-    for (let retry = 0; retry < 3; retry++) {
-      try {
-        if (fs.existsSync(out)) {
-          try { fs.unlinkSync(out); } catch { /* ignore */ }
+  // Strategy A: lavfi color source (standard, fast)
+  // Strategy B: write a black JPEG frame via Node, then loop it with ffmpeg (no lavfi needed)
+  // Strategy C: testsrc2 (different lavfi filter — may work when color= doesn't)
+  // Strategy D: smallest possible resolution via Node-written frame
+
+  // Try multiple output paths in case primary dir is full
+  const outCandidates = [out];
+  try {
+    const altDir = os.tmpdir();
+    if (altDir !== path.dirname(out)) outCandidates.push(path.join(altDir, path.basename(out)));
+  } catch { /* ignore */ }
+
+  for (const outPath of outCandidates) {
+    const commands = [
+      // A1: lavfi color, libx264, target resolution
+      `${FFMPEG_BIN} -y -f lavfi -i "color=c=#${color}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:r=25" -t ${dur} -c:v libx264 -preset ultrafast -pix_fmt yuv420p -movflags +faststart -an "${outPath}"`,
+      // A2: lavfi color black, libx264
+      `${FFMPEG_BIN} -y -f lavfi -i "color=c=black:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:r=25" -t ${dur} -c:v libx264 -preset ultrafast -pix_fmt yuv420p -movflags +faststart -an "${outPath}"`,
+      // A3: testsrc2 (alternative lavfi source), libx264, 720p
+      `${FFMPEG_BIN} -y -f lavfi -i "testsrc2=s=1280x720:r=25:duration=${dur}" -vf "scale=1280:720,format=yuv420p" -c:v libx264 -preset ultrafast -movflags +faststart -an "${outPath}"`,
+      // A4: lavfi black, mpeg4, 720p
+      `${FFMPEG_BIN} -y -f lavfi -i "color=c=black:s=1280x720:r=25" -t ${dur} -c:v mpeg4 -q:v 5 -an "${outPath}"`,
+    ];
+
+    for (let i = 0; i < commands.length; i++) {
+      for (let retry = 0; retry < 2; retry++) {
+        try {
+          if (fs.existsSync(outPath)) { try { fs.unlinkSync(outPath); } catch { /* ignore */ } }
+          const { stderr } = await withTimeout(exec(commands[i]), 45_000, `Fallback video scene ${sceneIndex} cmd${i + 1}`);
+          if (await isValidVideoFile(outPath)) {
+            if (outPath !== out) { try { fs.copyFileSync(outPath, out); fs.unlinkSync(outPath); } catch { /* best effort */ } }
+            const finalPath = fs.existsSync(out) ? out : outPath;
+            console.log(`[Pipeline] Scene ${sceneIndex}: fallback OK (${(fs.statSync(finalPath).size / 1024).toFixed(0)}KB, cmd${i + 1}r${retry + 1})`);
+            return finalPath;
+          }
+          console.warn(`[Pipeline] Scene ${sceneIndex}: fallback cmd${i + 1} invalid file — stderr: ${String(stderr).slice(-400)}`);
+          break; // invalid output — no point retrying same command
+        } catch (err) {
+          if (isForkPressureError(err) && retry < 1) {
+            await sleep(4_000);
+            continue;
+          }
+          const e = err as { message?: string; stderr?: string; code?: string };
+          const ffmpegErr = ((e.stderr ?? "").slice(-600) || e.message?.slice(0, 200)) ?? String(err);
+          console.warn(`[Pipeline] Scene ${sceneIndex}: fallback cmd${i + 1} failed [code=${e.code ?? "?"}] out=${path.basename(outPath)}: ${ffmpegErr}`);
+          break;
         }
-        const { stderr } = await withTimeout(exec(commands[i]), 45_000, `Fallback video scene ${sceneIndex} attempt ${i + 1}`);
-        if (await isValidVideoFile(out)) {
-          console.log(`[Pipeline] Scene ${sceneIndex}: fallback video OK (${(fs.statSync(out).size / 1024).toFixed(0)}KB, attempt ${i + 1})`);
-          return out;
-        }
-        console.warn(`[Pipeline] Scene ${sceneIndex}: fallback attempt ${i + 1} produced unreadable file — stderr: ${String(stderr).slice(-400)}`);
-        break;
-      } catch (err) {
-        lastErr = err;
-        if (isForkPressureError(err) && retry < 2) {
-          const wait = (retry + 1) * 4_000;
-          console.warn(`[Pipeline] Scene ${sceneIndex}: fallback attempt ${i + 1} fork pressure — retry in ${wait / 1000}s`);
-          await sleep(wait);
-          continue;
-        }
-        const e = err as { message?: string; stderr?: string; code?: string };
-        const ffmpegErr = ((e.stderr ?? "").slice(-600) || e.message?.slice(0, 300)) ?? String(err);
-        console.warn(`[Pipeline] Scene ${sceneIndex}: fallback attempt ${i + 1} failed [code=${e.code ?? "?"}]: ${ffmpegErr}`);
-        break;
       }
+    }
+
+    // Strategy B: Node-written black JPEG frame → ffmpeg loop (no lavfi dependency)
+    try {
+      const framePath = outPath.replace(/\.mp4$/, "_frame.jpg");
+      // Minimal 2×2 black JPEG (hand-crafted, always valid)
+      const minimalBlackJpeg = Buffer.from([
+        0xFF,0xD8,0xFF,0xE0,0x00,0x10,0x4A,0x46,0x49,0x46,0x00,0x01,0x01,0x00,0x00,0x01,
+        0x00,0x01,0x00,0x00,0xFF,0xDB,0x00,0x43,0x00,0x08,0x06,0x06,0x07,0x06,0x05,0x08,
+        0x07,0x07,0x07,0x09,0x09,0x08,0x0A,0x0C,0x14,0x0D,0x0C,0x0B,0x0B,0x0C,0x19,0x12,
+        0x13,0x0F,0x14,0x1D,0x1A,0x1F,0x1E,0x1D,0x1A,0x1C,0x1C,0x20,0x24,0x2E,0x27,0x20,
+        0x22,0x2C,0x23,0x1C,0x1C,0x28,0x37,0x29,0x2C,0x30,0x31,0x34,0x34,0x34,0x1F,0x27,
+        0x39,0x3D,0x38,0x32,0x3C,0x2E,0x33,0x34,0x32,0xFF,0xC0,0x00,0x0B,0x08,0x00,0x02,
+        0x00,0x02,0x01,0x01,0x11,0x00,0xFF,0xC4,0x00,0x1F,0x00,0x00,0x01,0x05,0x01,0x01,
+        0x01,0x01,0x01,0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x01,0x02,0x03,0x04,
+        0x05,0x06,0x07,0x08,0x09,0x0A,0x0B,0xFF,0xC4,0x00,0xB5,0x10,0x00,0x02,0x01,0x03,
+        0x03,0x02,0x04,0x03,0x05,0x05,0x04,0x04,0x00,0x00,0x01,0x7D,0x01,0x02,0x03,0x00,
+        0x04,0x11,0x05,0x12,0x21,0x31,0x41,0x06,0x13,0x51,0x61,0x07,0x22,0x71,0x14,0x32,
+        0x81,0x91,0xA1,0x08,0x23,0x42,0xB1,0xC1,0x15,0x52,0xD1,0xF0,0x24,0x33,0x62,0x72,
+        0x82,0x09,0x0A,0x16,0x17,0x18,0x19,0x1A,0x25,0x26,0x27,0x28,0x29,0x2A,0x34,0x35,
+        0x36,0x37,0x38,0x39,0x3A,0x43,0x44,0x45,0x46,0x47,0x48,0x49,0x4A,0x53,0x54,0x55,
+        0x56,0x57,0x58,0x59,0x5A,0x63,0x64,0x65,0x66,0x67,0x68,0x69,0x6A,0x73,0x74,0x75,
+        0x76,0x77,0x78,0x79,0x7A,0x83,0x84,0x85,0x86,0x87,0x88,0x89,0x8A,0x92,0x93,0x94,
+        0x95,0x96,0x97,0x98,0x99,0x9A,0xA2,0xA3,0xA4,0xA5,0xA6,0xA7,0xA8,0xA9,0xAA,0xB2,
+        0xB3,0xB4,0xB5,0xB6,0xB7,0xB8,0xB9,0xBA,0xC2,0xC3,0xC4,0xC5,0xC6,0xC7,0xC8,0xC9,
+        0xCA,0xD2,0xD3,0xD4,0xD5,0xD6,0xD7,0xD8,0xD9,0xDA,0xE1,0xE2,0xE3,0xE4,0xE5,0xE6,
+        0xE7,0xE8,0xE9,0xEA,0xF1,0xF2,0xF3,0xF4,0xF5,0xF6,0xF7,0xF8,0xF9,0xFA,0xFF,0xDA,
+        0x00,0x08,0x01,0x01,0x00,0x00,0x3F,0x00,0xFB,0x28,0xA2,0x80,0xFF,0xD9,
+      ]);
+      fs.writeFileSync(framePath, minimalBlackJpeg);
+      // Loop the single frame to desired duration, scale to target resolution
+      const frameCmd = `${FFMPEG_BIN} -y -loop 1 -i "${framePath}" -vf "scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=disable,format=yuv420p" -t ${dur} -c:v libx264 -preset ultrafast -movflags +faststart -an "${outPath}"`;
+      const { stderr: fStderr } = await withTimeout(exec(frameCmd), 45_000, `Fallback frame-loop scene ${sceneIndex}`);
+      try { fs.unlinkSync(framePath); } catch { /* ignore */ }
+      if (await isValidVideoFile(outPath)) {
+        if (outPath !== out) { try { fs.copyFileSync(outPath, out); fs.unlinkSync(outPath); } catch { /* best effort */ } }
+        const finalPath = fs.existsSync(out) ? out : outPath;
+        console.log(`[Pipeline] Scene ${sceneIndex}: fallback frame-loop OK (${(fs.statSync(finalPath).size / 1024).toFixed(0)}KB)`);
+        return finalPath;
+      }
+      console.warn(`[Pipeline] Scene ${sceneIndex}: fallback frame-loop invalid: ${String(fStderr).slice(-300)}`);
+    } catch (err) {
+      const e = err as { message?: string; stderr?: string };
+      console.warn(`[Pipeline] Scene ${sceneIndex}: fallback frame-loop failed: ${((e.stderr ?? "").slice(-300) || e.message?.slice(0, 200)) ?? String(err)}`);
     }
   }
 
-  throw pipelineError(PIPELINE_ERROR.FFMPEG, `Scene ${sceneIndex}: all color-fallback attempts failed (duration=${safeDuration}s, workDir=${workDir})`);
+  // Final diagnosis
+  let dfInfo = "";
+  try {
+    const { stdout: dfOut } = await withTimeout(exec(`df -h "${workDir}" 2>&1 || df -h /data 2>&1 || df -h /tmp 2>&1`), 5_000, "df-final");
+    dfInfo = ` | df: ${dfOut.trim().split("\n").slice(-1)[0]}`;
+  } catch { /* ignore */ }
+
+  throw pipelineError(PIPELINE_ERROR.FFMPEG, `Scene ${sceneIndex}: all color-fallback attempts failed (duration=${safeDuration}s, workDir=${workDir}${dfInfo})`);
 }
 
 /** Rotate golden Musk queries; never grey or duplicate clips. */
