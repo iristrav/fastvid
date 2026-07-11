@@ -54,6 +54,7 @@ export interface MigrationDbOps {
   ensureMigrationsTable(): Promise<void>;
   insertRecord(hash: string, folderMillis: number): Promise<void>;
   deleteRecord(folderMillis: number): Promise<void>;
+  updateHash(folderMillis: number, newHash: string): Promise<void>;
   // Extended checks for full schema-object reconciliation (optional for backward compat):
   columnExists?(table: string, column: string): Promise<boolean>;
   indexExists?(table: string, indexName: string): Promise<boolean>;
@@ -162,6 +163,12 @@ export function createDbOps(db: any): MigrationDbOps {
     async deleteRecord(folderMillis: number) {
       await db.execute(
         sql`DELETE FROM \`__drizzle_migrations\` WHERE \`created_at\` = ${folderMillis}`
+      );
+    },
+
+    async updateHash(folderMillis: number, newHash: string) {
+      await db.execute(
+        sql`UPDATE \`__drizzle_migrations\` SET \`hash\` = ${newHash} WHERE \`created_at\` = ${folderMillis}`
       );
     },
   };
@@ -312,6 +319,7 @@ export async function runMigrationsWithGuard(
   const dryRun = options?.dryRun ?? process.env.MIGRATION_DRY_RUN === "true";
   const strictIntegrity =
     options?.strictIntegrity ?? process.env.MIGRATION_STRICT_INTEGRITY === "true";
+  const resyncHashes = process.env.MIGRATION_RESYNC_HASHES === "true";
   const ops = options?.dbOps ?? createDbOps(db);
 
   if (dryRun) {
@@ -353,15 +361,24 @@ export async function runMigrationsWithGuard(
       console.warn(`[Migration]      stored  hash: ${v.storedHash}`);
       console.warn(`[Migration]      current hash: ${v.currentHash}`);
     }
-    if (strictIntegrity) {
+    if (resyncHashes && !dryRun) {
+      for (const v of integrityViolations) {
+        const entry = journal.entries.find((e) => e.tag === v.tag);
+        if (!entry) continue;
+        await ops.updateHash(entry.when, v.currentHash);
+        console.log(`[Migration]    Resynced hash for ${v.tag}`);
+      }
+      console.log("[Migration]  ✓ Hash resync complete — unset MIGRATION_RESYNC_HASHES to resume normal mode");
+    } else if (strictIntegrity) {
       throw new Error(
         `[Migration] ABORT: ${integrityViolations.length} migration file(s) modified after ` +
           `execution. Modified: ${integrityViolations.map((v) => v.tag).join(", ")}`
       );
+    } else {
+      console.warn(
+        "[Migration]    Set MIGRATION_RESYNC_HASHES=true to update stored hashes, or MIGRATION_STRICT_INTEGRITY=true to abort."
+      );
     }
-    console.warn(
-      "[Migration]    Set MIGRATION_STRICT_INTEGRITY=true to abort on integrity violations."
-    );
   }
 
   // ── False-record cleanup ───────────────────────────────────────────────────
