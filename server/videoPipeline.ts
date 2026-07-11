@@ -7176,29 +7176,35 @@ export async function fetchInternetArchiveClips(
         )[0];
 
         const MAX_ARCHIVE_SIZE = 50 * 1024 * 1024;
+        // For large files, request only the first 15MB via Range header — enough for a few seconds of video.
+        const RANGE_THRESHOLD = MAX_ARCHIVE_SIZE;
+        const RANGE_BYTES = 15 * 1024 * 1024;
         const knownSize = parseInt(videoFile.size || '0');
-        if (knownSize > MAX_ARCHIVE_SIZE) {
-          console.warn(`[Pipeline] Scene ${sceneIndex}: Archive clip too large (${(knownSize / 1024 / 1024).toFixed(1)}MB per metadata), skipping download`);
-          continue;
-        }
 
         const videoUrl = `https://archive.org/download/${doc.identifier}/${encodeURIComponent(videoFile.name)}`;
         const tag = fileTag ? `${fileTag}_` : "";
         const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}archive_${fetched}.mp4`);
         const tmpPath = path.join(workDir, `scene_${sceneIndex}_${tag}archive_${fetched}_tmp`);
 
+        const useRange = knownSize > RANGE_THRESHOLD;
+        const dlHeaders: Record<string, string> = { 'User-Agent': 'Fastvid/1.0 (video generation)' };
+        if (useRange) dlHeaders['Range'] = `bytes=0-${RANGE_BYTES - 1}`;
+
         const dlResp = await fetchWithTimeout(
           videoUrl,
           IS_RAILWAY ? 18_000 : 45_000,
           `Internet Archive download scene ${sceneIndex}`,
-          { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }
+          { headers: dlHeaders }
         );
-        if (!dlResp.ok) continue;
+        if (!dlResp.ok && dlResp.status !== 206) continue;
 
         const arrayBuf = await dlResp.arrayBuffer();
-        if (arrayBuf.byteLength > MAX_ARCHIVE_SIZE) {
+        if (!useRange && arrayBuf.byteLength > MAX_ARCHIVE_SIZE) {
           console.warn(`[Pipeline] Scene ${sceneIndex}: Archive clip too large (${(arrayBuf.byteLength / 1024 / 1024).toFixed(1)}MB), skipping`);
           continue;
+        }
+        if (useRange) {
+          console.log(`[Pipeline] Scene ${sceneIndex}: Archive large file (${(knownSize / 1024 / 1024).toFixed(1)}MB) — downloaded first ${(arrayBuf.byteLength / 1024 / 1024).toFixed(1)}MB via Range`);
         }
         fs.writeFileSync(tmpPath, Buffer.from(arrayBuf));
 
