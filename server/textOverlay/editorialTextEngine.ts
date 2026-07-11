@@ -280,7 +280,7 @@ async function generateOverlayTextLLM(
   const userMsg = `Video title: "${videoTitle}"\n\nNarration beat: "${beatText}"`;
 
   try {
-    const result = await invokeLLM({
+    const llmPromise = invokeLLM({
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: userMsg },
@@ -288,6 +288,12 @@ async function generateOverlayTextLLM(
       maxTokens: 120,
       responseFormat: { type: "json_object" },
     });
+
+    // Hard 6s timeout per beat — prevents one slow LLM call from blowing the pipeline budget
+    const result = await Promise.race([
+      llmPromise,
+      new Promise<never>((_, rej) => setTimeout(() => rej(new Error("editorial LLM timeout")), 6_000)),
+    ]);
 
     const rawText = result.choices?.[0]?.message?.content ?? "";
     const parsed = typeof rawText === "string" ? JSON.parse(rawText) : rawText;
