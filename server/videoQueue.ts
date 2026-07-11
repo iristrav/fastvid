@@ -147,6 +147,24 @@ export async function processQueueTick(): Promise<void> {
   }
 }
 
+// How often to scan for videos stuck in generating_* longer than STUCK_VIDEO_MINUTES.
+const STUCK_CHECK_INTERVAL_MS = 5 * 60 * 1000; // every 5 minutes
+const STUCK_VIDEO_MINUTES = parseInt(process.env.STUCK_VIDEO_MINUTES ?? "95", 10);
+
+async function runStuckVideoCheck(): Promise<void> {
+  try {
+    const { expireStuckVideos, recoverAllStuckVideos } = await import("./db");
+    const expired = await expireStuckVideos(STUCK_VIDEO_MINUTES);
+    const { completed, failed } = await recoverAllStuckVideos();
+    if (expired > 0 || completed > 0 || failed > 0) {
+      console.log(`[VideoQueue] Stuck-video sweep: expired=${expired} recovered=${completed} re-queued=${failed}`);
+      void processQueueTick();
+    }
+  } catch (err) {
+    console.warn("[VideoQueue] Stuck-video check error:", (err as Error).message?.slice(0, 100));
+  }
+}
+
 export function startVideoQueueWorker(): void {
   const config = readQueueConfig();
   if (pollTimer) return;
@@ -154,13 +172,16 @@ export function startVideoQueueWorker(): void {
   console.log(
     `[VideoQueue] Worker started — global max ${config.maxConcurrentJobs}, ` +
       `${config.maxJobsPerWorker}/process, ${config.maxActiveJobsPerUser}/user, ` +
-      `poll every ${config.pollIntervalMs}ms`
+      `poll every ${config.pollIntervalMs}ms, stuck check every ${STUCK_CHECK_INTERVAL_MS / 60_000}min`
   );
 
   void processQueueTick();
   pollTimer = setInterval(() => {
     void processQueueTick();
   }, config.pollIntervalMs);
+
+  // Periodically recover videos stuck mid-pipeline (e.g. after a worker crash)
+  setInterval(() => { void runStuckVideoCheck(); }, STUCK_CHECK_INTERVAL_MS);
 }
 
 export function stopVideoQueueWorker(): void {
