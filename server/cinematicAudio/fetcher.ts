@@ -3,7 +3,8 @@ import * as path from "path";
 import type { SoundCategoryId, SoundVariant } from "./types";
 import { SOUND_CATALOG } from "./catalog";
 
-const SOUND_CACHE_DIR = process.env.SOUND_LIBRARY_DIR ?? "/var/tmp/fastvid_sounds";
+const SOUND_CACHE_DIR = process.env.SOUND_LIBRARY_DIR ??
+  (fs.existsSync("/data") ? "/data/fastvid_sounds" : "/var/tmp/fastvid_sounds");
 const FREESOUND_API_KEY = process.env.FREESOUND_API_KEY;
 const FREESOUND_API = "https://freesound.org/apiv2";
 

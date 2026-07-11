@@ -715,10 +715,12 @@ const FONT_REGULAR = resolveFontPath('NotoSans-Regular.ttf');
 // Canvas is not used — all rendering is done via FFmpeg (no native dependencies required)
 const CANVAS_AVAILABLE = false; // kept for reference, all functions use FFmpeg-only paths
 
-// Linux/Railway: prefer /var/tmp (survives long runs). Windows/dev: use OS temp dir.
+// Linux/Railway: use /data/tmp (Railway volume, 250GB). Windows/dev: use OS temp dir.
 const TMP_DIR =
   process.env.FASTVID_TMP_DIR ??
-  (process.platform === "win32" ? path.join(os.tmpdir(), "fastvid") : "/var/tmp");
+  (process.platform === "win32"
+    ? path.join(os.tmpdir(), "fastvid")
+    : fs.existsSync("/data") ? "/data/tmp" : "/var/tmp");
 // No Forge key = Railway environment. Confirmed plan: 24 vCPU / 24GB RAM (not the old
 // ~512MB free-tier assumption this flag used to gate conservative defaults around).
 const IS_RAILWAY = !process.env.BUILT_IN_FORGE_API_KEY;
