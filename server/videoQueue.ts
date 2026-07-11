@@ -155,7 +155,7 @@ async function runStuckVideoCheck(): Promise<void> {
   try {
     const { expireStuckVideos, recoverAllStuckVideos } = await import("./db");
     const expired = await expireStuckVideos(STUCK_VIDEO_MINUTES);
-    const { completed, failed } = await recoverAllStuckVideos();
+    const { completed, failed } = await recoverAllStuckVideos(nudgeQueueWorker);
     if (expired > 0 || completed > 0 || failed > 0) {
       console.log(`[VideoQueue] Stuck-video sweep: expired=${expired} recovered=${completed} re-queued=${failed}`);
       void processQueueTick();

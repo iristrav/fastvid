@@ -658,7 +658,7 @@ export async function recoverVideoCompletionState(video: Video): Promise<Video> 
 }
 
 /** On server startup: recover finished uploads, then fail orphaned in-progress pipelines. */
-export async function recoverAllStuckVideos(): Promise<{ completed: number; failed: number }> {
+export async function recoverAllStuckVideos(onRequeued?: () => void): Promise<{ completed: number; failed: number }> {
   const db = await getDb();
   if (!db) return { completed: 0, failed: 0 };
 
@@ -687,7 +687,7 @@ export async function recoverAllStuckVideos(): Promise<{ completed: number; fail
     if (!rv || rv.status === "completed" || rv.status === "failed") continue;
     await updateVideoStatus(rv.id, "queued", {
       errorMessage: "",
-      progressStep: "Re-queued after server restart",
+      progressStep: "Waiting in queue…",
       progressPercent: 0,
     });
     failed++;
@@ -695,6 +695,7 @@ export async function recoverAllStuckVideos(): Promise<{ completed: number; fail
 
   if (completed > 0 || failed > 0) {
     console.log(`[PipelineRecovery] Recovered ${completed} completed, re-queued ${failed} orphaned job(s)`);
+    if (failed > 0) onRequeued?.();
   }
   return { completed, failed };
 }

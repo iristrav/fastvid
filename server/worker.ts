@@ -113,7 +113,7 @@ async function main() {
   const { getStorageBackend } = await import("./storageBackend");
   console.log("[Worker] Object storage:", getStorageBackend());
   await runMigrations();
-  await recoverAllStuckVideos();
+  await recoverAllStuckVideos(() => { /* nudge happens after startVideoQueueWorker below */ });
   const { warmUpLocalClipVision, clipPreloadEnabled, getLocalVisionStatus, clipModelCacheDir } =
     await import("./localClipVision");
   let clipReady = false;
