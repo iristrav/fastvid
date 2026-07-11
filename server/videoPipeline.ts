@@ -17599,6 +17599,45 @@ async function rescueBeatVisualWhenEmpty(
     }
   }
 
+  // ── Single-keyword rescue ──────────────────────────────────────────────────
+  // Extract individual meaningful words and try each one separately on Pexels + Wikimedia.
+  // This ensures we always find *something* visually relevant rather than a blank.
+  try {
+    const rawWords = beat.text
+      .replace(/\[visual:[^\]]*\]/gi, " ")
+      .split(/\W+/)
+      .filter(w => w.length >= 4 && !STOP_WORDS.has(w.toLowerCase()));
+    const singleKeywords = [...new Set(rawWords.map(w => w.toLowerCase()))].slice(0, 6);
+    console.log(`[Retrieval] s${scene.index}b${beat.index} single-keyword rescue: [${singleKeywords.join(", ")}]`);
+    for (const kw of singleKeywords) {
+      // Try Pexels first
+      if (archivePexelsFallbackEnabled() && canUseLicensedStockBeat(dedup)) {
+        const clonedBeat = { ...beat, pexelsQueries: [kw] };
+        const hit = await adoptStockBeatClipFallback(
+          clonedBeat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile,
+          { visionFloor: 0, adoptSource: "rescue_keyword" }
+        );
+        if (hit) {
+          console.log(`[Retrieval] s${scene.index}b${beat.index} single-keyword HIT (pexels): "${kw}"`);
+          return true;
+        }
+      }
+      // Try Wikimedia
+      const wikiClips = await fetchWikimediaImages(kw, holdSec, workDir, scene.index, 1, "rescue_keyword_wiki", { beatIndex: beat.index });
+      if (wikiClips.length > 0) {
+        const clip = wikiClips[0]!;
+        if (clip && (await pushClip(clip, holdSec))) {
+          recordClipAdopt(dedup.clipAdoptAudit, scene.index, beat.index, beat.text, clip, "rescue_keyword_wiki", undefined, dedup.segmentGeoLock);
+          dedup.lastRealClip = clip;
+          console.log(`[Retrieval] s${scene.index}b${beat.index} single-keyword HIT (wiki): "${kw}"`);
+          return true;
+        }
+      }
+    }
+  } catch (err) {
+    console.warn("[Retrieval] single-keyword rescue error:", (err as Error).message?.slice(0, 80));
+  }
+
   // Try extending the last real clip before falling back to color
   if (dedup.lastRealClip) {
     try {
