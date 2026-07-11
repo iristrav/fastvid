@@ -5159,19 +5159,18 @@ async function generateGuaranteedBeatClip(
   beatText?: string,
 ): Promise<string> {
   const outputPath = path.join(workDir, `scene_${sceneIndex}_slot${slotIndex}_guaranteed.mp4`);
-  // Try text-over-gradient when we have context — more informative than a plain color
-  if (beatText && beatText.trim().length > 3) {
+  // Try text-over-black when we have context — uses /dev/zero (no lavfi) + drawtext
+  if (beatText && beatText.trim().length > 3 && process.platform !== "win32") {
     try {
       const safeText = beatText.trim().slice(0, 90).replace(/'/g, "\\'").replace(/:/g, "\\:").replace(/\\/g, "\\\\");
-      const colors = ["3a4a5e", "4a5a6e", "3a5a6e", "4a4a5e"];
-      const color = colors[Math.abs(sceneIndex) % colors.length];
       const safeDur = Math.min(Math.max(duration, 3), 90);
       await withTimeout(
         exec(
-          `${FFMPEG_BIN} -y -f lavfi -i "color=c=#${color}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:r=25" -t ${safeDur} ` +
-          `-vf "drawtext=text='${safeText}':fontcolor=white:fontsize=52:x=(w-text_w)/2:y=(h-text_h)/2:` +
-          `shadowcolor=black:shadowx=3:shadowy=3:alpha='if(lt(t,0.4),t/0.4,1)'" ` +
-          `-c:v libx264 -preset ultrafast -pix_fmt yuv420p -an "${outputPath}"`
+          `${FFMPEG_BIN} -y -f rawvideo -pixel_format rgb24 -video_size 640x360 -framerate 25 -i /dev/zero ` +
+          `-vf "scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=disable,format=yuv420p,` +
+          `drawtext=text='${safeText}':fontcolor=white:fontsize=52:x=(w-text_w)/2:y=(h-text_h)/2:` +
+          `shadowcolor=black:shadowx=3:shadowy=3" ` +
+          `-t ${safeDur} -c:v libx264 -preset ultrafast -pix_fmt yuv420p -an "${outputPath}"`
         ),
         30_000,
         `Guaranteed beat text overlay s${sceneIndex}b${slotIndex}`
@@ -5245,40 +5244,65 @@ async function generateColorFallback(
 async function _generateColorFallbackInner(sceneIndex: number, safeDuration: number, out: string, workDir: string): Promise<string> {
   const dur = safeDuration.toFixed(3);
 
-  // Log disk space upfront so Railway logs show it even on failure
+  // Log disk space upfront
   try {
     const { stdout: dfOut } = await withTimeout(exec(`df -h "${workDir}" 2>&1 || df -h /data 2>&1 || df -h /tmp 2>&1`), 5_000, "df");
     console.log(`[Pipeline] Scene ${sceneIndex}: disk before fallback: ${dfOut.trim().split("\n").slice(-2).join(" | ")}`);
   } catch { /* ignore */ }
 
-  // Try multiple output locations in case one directory is full or unwritable
   const outCandidates = [out, path.join(os.tmpdir(), path.basename(out))];
 
   for (const outPath of outCandidates) {
-    // ── Strategy 1: PPM frame → ffmpeg loop (NO lavfi dependency) ──────────
-    // Write a raw black PPM image in pure Node.js; PPM is always supported by ffmpeg.
+    // Make sure output directory exists
+    try { fs.mkdirSync(path.dirname(outPath), { recursive: true }); } catch { /* ignore */ }
+
+    // ── Strategy 1: /dev/zero rawvideo → libx264 (no lavfi, no image decode needed) ──
+    // Always available on Linux. Reads infinite zeros = black RGB24 frames.
+    if (process.platform !== "win32") {
+      for (const [codec, ext] of [
+        ["libx264 -preset ultrafast -pix_fmt yuv420p -movflags +faststart", ""],
+        ["mpeg4 -q:v 5", ""],
+      ] as [string, string][]) {
+        try {
+          if (fs.existsSync(outPath)) { try { fs.unlinkSync(outPath); } catch { /* ok */ } }
+          const cmd = `${FFMPEG_BIN} -y -f rawvideo -pixel_format rgb24 -video_size 640x360 -framerate 25 -i /dev/zero -vf "scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=disable,format=yuv420p" -t ${dur} -c:v ${codec} -an "${outPath}"`;
+          const { stderr } = await withTimeout(exec(cmd), 60_000, `Fallback devzero scene ${sceneIndex}`);
+          if (await isValidVideoFile(outPath)) {
+            console.log(`[Pipeline] Scene ${sceneIndex}: fallback /dev/zero OK (${(fs.statSync(outPath).size / 1024).toFixed(0)}KB, codec=${codec.split(" ")[0]})`);
+            if (outPath !== out) { try { fs.copyFileSync(outPath, out); fs.unlinkSync(outPath); return out; } catch { return outPath; } }
+            return outPath;
+          }
+          console.warn(`[Pipeline] Scene ${sceneIndex}: fallback /dev/zero/${codec.split(" ")[0]} invalid — stderr: ${String(stderr).slice(-400)}`);
+        } catch (err) {
+          const e = err as { stderr?: string; message?: string; code?: string };
+          console.warn(`[Pipeline] Scene ${sceneIndex}: fallback /dev/zero/${codec.split(" ")[0]} failed [${e.code ?? "?"}]: ${((e.stderr ?? "").slice(-400) || e.message?.slice(0, 200)) ?? ""}`);
+        }
+      }
+    }
+
+    // ── Strategy 2: PPM frame → ffmpeg loop (no lavfi dependency) ──────────
     try {
       const W = 640, H = 360;
-      const ppmPath = outPath.replace(/\.mp4$/, "_frame.ppm");
+      const ppmPath = path.join(path.dirname(outPath), `_fallback_frame_${sceneIndex}.ppm`);
       const header = Buffer.from(`P6\n${W} ${H}\n255\n`);
-      const pixels = Buffer.alloc(W * H * 3, 0); // all black RGB
+      const pixels = Buffer.alloc(W * H * 3, 0);
       fs.writeFileSync(ppmPath, Buffer.concat([header, pixels]));
 
       for (const codec of ["libx264 -preset ultrafast -pix_fmt yuv420p -movflags +faststart", "mpeg4 -q:v 5"]) {
         try {
           if (fs.existsSync(outPath)) { try { fs.unlinkSync(outPath); } catch { /* ok */ } }
-          const cmd = `${FFMPEG_BIN} -y -loop 1 -i "${ppmPath}" -vf "scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=disable,format=yuv420p" -t ${dur} -c:v ${codec} -an "${outPath}"`;
+          const cmd = `${FFMPEG_BIN} -y -loop 1 -f image2 -i "${ppmPath}" -vf "scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=disable,format=yuv420p" -t ${dur} -c:v ${codec} -an "${outPath}"`;
           const { stderr } = await withTimeout(exec(cmd), 60_000, `Fallback ppm-loop scene ${sceneIndex}`);
           if (await isValidVideoFile(outPath)) {
             try { fs.unlinkSync(ppmPath); } catch { /* ok */ }
-            const finalPath = outPath !== out && fs.existsSync(outPath) ? ((() => { try { fs.copyFileSync(outPath, out); fs.unlinkSync(outPath); return out; } catch { return outPath; } })()) : outPath;
-            console.log(`[Pipeline] Scene ${sceneIndex}: fallback ppm-loop OK (${(fs.statSync(finalPath).size / 1024).toFixed(0)}KB, codec=${codec.split(" ")[0]})`);
-            return finalPath;
+            console.log(`[Pipeline] Scene ${sceneIndex}: fallback ppm-loop OK (${(fs.statSync(outPath).size / 1024).toFixed(0)}KB, codec=${codec.split(" ")[0]})`);
+            if (outPath !== out) { try { fs.copyFileSync(outPath, out); fs.unlinkSync(outPath); return out; } catch { return outPath; } }
+            return outPath;
           }
-          console.warn(`[Pipeline] Scene ${sceneIndex}: fallback ppm-loop/${codec.split(" ")[0]} invalid — stderr: ${String(stderr).slice(-400)}`);
+          console.warn(`[Pipeline] Scene ${sceneIndex}: fallback ppm/${codec.split(" ")[0]} invalid — stderr: ${String(stderr).slice(-400)}`);
         } catch (err) {
           const e = err as { stderr?: string; message?: string; code?: string };
-          console.warn(`[Pipeline] Scene ${sceneIndex}: fallback ppm-loop/${codec.split(" ")[0]} failed [${e.code ?? "?"}]: ${((e.stderr ?? "").slice(-400) || e.message?.slice(0, 200)) ?? ""}`);
+          console.warn(`[Pipeline] Scene ${sceneIndex}: fallback ppm/${codec.split(" ")[0]} failed [${e.code ?? "?"}]: ${((e.stderr ?? "").slice(-400) || e.message?.slice(0, 200)) ?? ""}`);
         }
       }
       try { if (fs.existsSync(ppmPath)) fs.unlinkSync(ppmPath); } catch { /* ok */ }
@@ -5286,24 +5310,22 @@ async function _generateColorFallbackInner(sceneIndex: number, safeDuration: num
       console.warn(`[Pipeline] Scene ${sceneIndex}: PPM write failed:`, (err as Error).message?.slice(0, 100));
     }
 
-    // ── Strategy 2: lavfi color (backup — may not be compiled in Railway's FFmpeg) ──
+    // ── Strategy 3: lavfi color source (backup, may not work on all Railway builds) ──
     const colors = ["3a4a5e", "4a5a6e", "3a5a6e", "4a4a5e"];
     const color = colors[Math.abs(sceneIndex) % colors.length];
     for (const [src, codec] of [
       [`color=c=#${color}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:r=25`, `libx264 -preset ultrafast -pix_fmt yuv420p -movflags +faststart`],
       [`color=c=black:s=1280x720:r=25`, `libx264 -preset ultrafast -pix_fmt yuv420p -movflags +faststart`],
-      [`testsrc2=s=1280x720:r=25:duration=${dur}`, `libx264 -preset ultrafast -pix_fmt yuv420p -movflags +faststart`],
       [`color=c=black:s=640x360:r=25`, `mpeg4 -q:v 5`],
     ] as [string, string][]) {
       try {
         if (fs.existsSync(outPath)) { try { fs.unlinkSync(outPath); } catch { /* ok */ } }
-        const tFlag = src.includes("duration=") ? "" : `-t ${dur}`;
-        const cmd = `${FFMPEG_BIN} -y -f lavfi -i "${src}" ${tFlag} -c:v ${codec} -an "${outPath}"`;
+        const cmd = `${FFMPEG_BIN} -y -f lavfi -i "${src}" -t ${dur} -c:v ${codec} -an "${outPath}"`;
         const { stderr } = await withTimeout(exec(cmd), 45_000, `Fallback lavfi scene ${sceneIndex}`);
         if (await isValidVideoFile(outPath)) {
-          const finalPath = outPath !== out && fs.existsSync(outPath) ? ((() => { try { fs.copyFileSync(outPath, out); fs.unlinkSync(outPath); return out; } catch { return outPath; } })()) : outPath;
-          console.log(`[Pipeline] Scene ${sceneIndex}: fallback lavfi OK (${(fs.statSync(finalPath).size / 1024).toFixed(0)}KB)`);
-          return finalPath;
+          console.log(`[Pipeline] Scene ${sceneIndex}: fallback lavfi OK (${(fs.statSync(outPath).size / 1024).toFixed(0)}KB)`);
+          if (outPath !== out) { try { fs.copyFileSync(outPath, out); fs.unlinkSync(outPath); return out; } catch { return outPath; } }
+          return outPath;
         }
         console.warn(`[Pipeline] Scene ${sceneIndex}: fallback lavfi/${src.split(":")[0]} invalid — stderr: ${String(stderr).slice(-300)}`);
       } catch (err) {
