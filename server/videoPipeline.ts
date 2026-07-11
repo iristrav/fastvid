@@ -3122,7 +3122,7 @@ async function generateBulkSceneVoiceovers(
 function bulkVoiceoverTimeoutMs(sceneCount: number, videoLength?: string): number {
   const _budget = get_activeRenderBudget(); if (_budget) return _budget.ttsMs;
   if (isFastShortVideoLength(videoLength)) {
-    return Math.min(75_000, 40_000 + sceneCount * 8_000);
+    return Math.min(180_000, 60_000 + sceneCount * 15_000);
   }
   return Math.min(900_000, 120_000 + sceneCount * 20_000);
 }
