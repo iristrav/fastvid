@@ -3272,7 +3272,7 @@ async function synthesizeFishAudioVoice(
         // 402 = no API credit; fall back to ElevenLabs if available
         if (response.status === 402 && ELEVENLABS_API_KEY) {
           console.warn(`[Pipeline] Fish Audio ${label}: no API credit (402) — ElevenLabs fallback`);
-          return synthesizeElevenLabsVoice(text, outputPath, timeoutMs, `fallback (${label})`);
+          return synthesizeElevenLabsVoice(text, outputPath, "pNInz6obpgDQGcFmaJgB", timeoutMs, `fallback (${label})`);
         }
         throw pipelineError(
           PIPELINE_ERROR.VOICEOVER,
