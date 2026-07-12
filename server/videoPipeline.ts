@@ -3039,7 +3039,8 @@ async function synthesizeFullNarrationMp3(
     ttsWordAlignmentEnabled() &&
     Boolean(ELEVENLABS_API_KEY) &&
     Boolean(voiceId?.trim());
-  const TTS_TIMEOUT_MS = 180_000;
+  // Per-chunk timeout: capped at 60s so a slow/hanging call doesn't eat the outer budget
+  const TTS_TIMEOUT_MS = 60_000;
 
   for (let i = 0; i < chunks.length; i++) {
     onTtsPart?.(i + 1, chunks.length);
@@ -3122,7 +3123,7 @@ async function generateBulkSceneVoiceovers(
 function bulkVoiceoverTimeoutMs(sceneCount: number, videoLength?: string): number {
   const _budget = get_activeRenderBudget(); if (_budget) return _budget.ttsMs;
   if (isFastShortVideoLength(videoLength)) {
-    return Math.min(180_000, 60_000 + sceneCount * 15_000);
+    return Math.min(300_000, 90_000 + sceneCount * 20_000);
   }
   return Math.min(900_000, 120_000 + sceneCount * 20_000);
 }
