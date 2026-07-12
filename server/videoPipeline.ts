@@ -9005,6 +9005,8 @@ interface VisualDedupState {
   lastMuskStockClip: string | null;
   /** Last adopted real (non-fallback) clip this video — used for extendLastClip rescue. */
   lastRealClip: string | null;
+  /** Maps content key → beat index of first adoption — used for dedup logging. */
+  clipContentKeyToBeat?: Map<string, number>;
   /** Video-level visual context (persons, period, locations, styles) — built once per render. */
   videoVisualContext?: VideoVisualContext;
   aiClipsUsed: number;
@@ -9839,15 +9841,16 @@ function clipContentKey(filePath: string): string {
   const base = path.basename(filePath).replace(/_transformed(?=\.mp4)/, "");
   const vidMatch = base.match(/_vid(\d+)/);
   if (vidMatch) return `stock:vid:${vidMatch[1]}`;
-  if (isStillPhotoClip(filePath)) {
-    try {
-      const buf = fs.readFileSync(filePath);
-      const sample = buf.subarray(0, Math.min(buf.length, 48_000));
-      const hash = createHash("sha256").update(sample).digest("hex").slice(0, 20);
-      return `still:${hash}`;
-    } catch {
-      /* fall through */
-    }
+  // For clips without a stable ID (Wikimedia, YouTube, AI, internet archive), hash the first
+  // 96 KB of the file. This is cheap (one partial read) and catches the same video downloaded
+  // twice to different temp paths — a common cross-scene duplicate scenario.
+  try {
+    const buf = fs.readFileSync(filePath);
+    const sample = buf.subarray(0, Math.min(buf.length, 96_000));
+    const hash = createHash("sha256").update(sample).digest("hex").slice(0, 24);
+    return `content:${hash}`;
+  } catch {
+    /* fall through */
   }
   try {
     const stat = fs.statSync(filePath);
@@ -12092,9 +12095,21 @@ async function adoptClip(
         continue;
       }
       const contentKey = clipContentKey(p);
-      if (dedup.usedContentKeys.has(contentKey)) continue;
+      if (dedup.usedContentKeys.has(contentKey)) {
+        // Find which beat first used this clip for logging
+        const usedInBeat = dedup.clipContentKeyToBeat?.get(contentKey);
+        console.log(
+          `[Dedup] Rejected: ${path.basename(p)}\n` +
+          `  Reason: Already used${usedInBeat != null ? ` in beat ${usedInBeat}` : ""} (key=${contentKey.slice(0, 24)})\n` +
+          `  Scene: s${sceneIndex} beat: ${beatIndex}`
+        );
+        continue;
+      }
       dedup.usedPaths.add(p);
       dedup.usedContentKeys.add(contentKey);
+      // Track which beat first adopted this content key (for dedup logging)
+      if (!dedup.clipContentKeyToBeat) dedup.clipContentKeyToBeat = new Map();
+      dedup.clipContentKeyToBeat.set(contentKey, beatIndex);
       dedup.usedCategories.set(category, (dedup.usedCategories.get(category) ?? 0) + 1);
       const mustFairUse = clipRequiresFairUseTransform(p);
       if (dedup.perf.skipFairUseTransform && !mustFairUse) {
@@ -23886,20 +23901,33 @@ async function _runVideoPipelineInner(
         await import("./editorialOverlay/index");
 
       if (editorialOverlayEnabled()) {
-        const sceneMetas = scenes.map((s, i) => ({
-          index: i,
-          text: s.text ?? "",
-          visualCue: (s as any).visualCue ?? "",
-          pexelsQuery: (s as any).pexelsQuery ?? "",
-          chapterTitle: (s as any).chapterTitle ?? "",
-          sectionTitle: (s as any).sectionTitle ?? "",
-          duration: s.duration,
-          beats: ((s as any).beats ?? []) as Array<{
+        // IMPORTANT: beats live on sceneVisualResults[i].beats, NOT on scenes[i].
+        // scenes[] are raw script scenes; they do not carry voice-timed beat data.
+        const sceneMetas = scenes.map((s, i) => {
+          const vr = sceneVisualResults[i];
+          const beats = (vr?.beats ?? []) as Array<{
             index: number; text: string; holdSec: number;
             voiceStartSec?: number; voiceEndSec?: number;
             powerWord?: string; visualDescription?: string;
-          }>,
-        }));
+          }>;
+          if (!beats.length) {
+            console.log(`[Overlay] s${i}: no beats available — skipping overlay planning for this scene`);
+          }
+          return {
+            index: i,
+            text: s.text ?? "",
+            visualCue: (s as any).visualCue ?? "",
+            pexelsQuery: (s as any).pexelsQuery ?? "",
+            chapterTitle: (s as any).chapterTitle ?? "",
+            sectionTitle: (s as any).sectionTitle ?? "",
+            duration: s.duration,
+            beats,
+          };
+        });
+
+        // Log per-beat overlay plan with full explainability
+        console.log(`[Overlay] Planning overlays for ${sceneMetas.length} scene(s), ` +
+          `${sceneMetas.reduce((n, s) => n + s.beats.length, 0)} total beats`);
 
         const overlayPlan = planEditorialOverlays(
           sceneMetas,
@@ -23908,11 +23936,45 @@ async function _runVideoPipelineInner(
         );
 
         const hasAnyOverlay = overlayPlan.scenes.some(sp => sp.overlays.length > 0);
+
         if (hasAnyOverlay) {
           onProgress?.({ stage: STAGE_LABELS.assembling, percent: 75 });
           const overlaid = await applyEditorialOverlaysToScenes(composedScenes, overlayPlan, workDir);
           for (let i = 0; i < overlaid.length; i++) {
+            if (overlaid[i] !== composedScenes[i]) {
+              console.log(`[Overlay] s${i}: overlay applied → ${path.basename(overlaid[i])}`);
+            }
             composedScenes[i] = overlaid[i];
+          }
+        } else {
+          // Editorial engine produced zero overlays — fall back to legacy textOverlay so video is never text-free
+          console.warn("[Overlay] Editorial engine produced 0 overlays — falling back to legacy textOverlay");
+          const { textOverlayEnabled, textOverlayStyle, planVideoTextOverlays, applyTextOverlaysToScenes } =
+            await import("./textOverlay/index");
+          if (textOverlayEnabled()) {
+            const overlayStyle = textOverlayStyle();
+            const textPlan = planVideoTextOverlays(
+              scenes.map((s, i) => ({
+                index: i,
+                text: s.text ?? "",
+                visualCue: (s as any).visualCue ?? "",
+                pexelsQuery: (s as any).pexelsQuery ?? "",
+                chapterTitle: (s as any).chapterTitle ?? "",
+                sectionTitle: (s as any).sectionTitle ?? "",
+                duration: s.duration,
+                beats: sceneVisualResults[i]?.beats ?? [],
+              })),
+              overlayStyle,
+              videoTitle
+            );
+            const hasAny = textPlan.scenes.some(sp => sp.overlays.length > 0);
+            if (hasAny) {
+              const overlaid = await applyTextOverlaysToScenes(composedScenes, textPlan.scenes, workDir);
+              for (let i = 0; i < overlaid.length; i++) composedScenes[i] = overlaid[i];
+              console.log("[Overlay] Legacy textOverlay fallback applied");
+            } else {
+              console.warn("[Overlay] Legacy textOverlay also produced 0 overlays — video exported without text");
+            }
           }
         }
       } else {
@@ -23930,7 +23992,7 @@ async function _runVideoPipelineInner(
               chapterTitle: (s as any).chapterTitle ?? "",
               sectionTitle: (s as any).sectionTitle ?? "",
               duration: s.duration,
-              beats: (s as any).beats ?? [],
+              beats: sceneVisualResults[i]?.beats ?? [],
             })),
             overlayStyle,
             videoTitle

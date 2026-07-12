@@ -371,6 +371,13 @@ function generateOverlayText(
         const year = extractYear(beatText);
         return { line1: loc.toUpperCase(), line2: year ?? undefined };
       }
+      // Last resort: use first 6 significant words from beat text
+      const words = beatText.replace(/\[visual:[^\]]+\]/gi, "").split(/\s+/).filter(w => w.length > 3).slice(0, 6);
+      if (words.length >= 3) {
+        const label = words.join(" ").toUpperCase().slice(0, 50);
+        const [l1, l2] = semanticLineBreak(label);
+        return { line1: l1, line2: l2 };
+      }
       return null;
     }
 
@@ -537,10 +544,20 @@ function planSceneOverlays(
     const directive = blueprint?.beatDirectives.get(`${scene.index}_${beat.index}`) ?? null;
     const duration = end - start;
     if (duration < MIN_OVERLAY_SEC) {
+      console.log(`[Overlay] Beat ${beat.index} s${scene.index} | Overlay generated: no | Reason: duration ${duration.toFixed(2)}s < MIN_OVERLAY_SEC`);
       decisions.push(null);
       continue;
     }
-    decisions.push(decideBeatOverlay(beat, scene, scene.index, contract, directive, start, end));
+    if (directive?.overlayPriority === "none") {
+      console.log(`[Overlay] Beat ${beat.index} s${scene.index} | Overlay generated: no | Reason: blueprintPriority=none`);
+      decisions.push(null);
+      continue;
+    }
+    const d = decideBeatOverlay(beat, scene, scene.index, contract, directive, start, end);
+    if (!d) {
+      console.log(`[Overlay] Beat ${beat.index} s${scene.index} | Overlay generated: no | Reason: no extractable entity/event/era in text`);
+    }
+    decisions.push(d);
   }
 
   // Filter decisions where entity was already introduced (avoid repetition)
@@ -548,14 +565,17 @@ function planSceneOverlays(
     const d = decisions[i];
     if (!d) continue;
     const key = d.text.line1;
-    if (d.type === "person_introduction") {
-      if (introduced.persons.has(key)) { decisions[i] = null; continue; }
+    if (d.type === "person_introduction" && introduced.persons.has(key)) {
+      console.log(`[Overlay] Beat ${scene.beats[i].index} s${scene.index} | Overlay generated: no | Reason: "${key}" already introduced`);
+      decisions[i] = null; continue;
     }
-    if (d.type === "location") {
-      if (introduced.locations.has(key)) { decisions[i] = null; continue; }
+    if (d.type === "location" && introduced.locations.has(key)) {
+      console.log(`[Overlay] Beat ${scene.beats[i].index} s${scene.index} | Overlay generated: no | Reason: location "${key}" already shown`);
+      decisions[i] = null; continue;
     }
-    if (d.type === "historical_event") {
-      if (introduced.events.has(key)) { decisions[i] = null; continue; }
+    if (d.type === "historical_event" && introduced.events.has(key)) {
+      console.log(`[Overlay] Beat ${scene.beats[i].index} s${scene.index} | Overlay generated: no | Reason: event "${key}" already shown`);
+      decisions[i] = null; continue;
     }
   }
 
@@ -604,18 +624,19 @@ function planSceneOverlays(
     i = j;
   }
 
-  // Log decisions
-  if (overlays.length > 0) {
-    for (const ov of overlays) {
-      console.log(
-        `[EditorialOverlay] s${scene.index}b${ov.startBeatIndex}-b${ov.endBeatIndex} ` +
-        `Type: ${ov.type} | "${ov.line1}"${ov.line2 ? ` / "${ov.line2}"` : ""} | ` +
-        `${ov.startSec.toFixed(1)}s→${ov.endSec.toFixed(1)}s | ` +
-        `reason: ${ov.reason} | meta: [${ov.metadataUsed.join(", ")}]`
-      );
-    }
-  } else {
-    console.log(`[EditorialOverlay] s${scene.index}: no overlays (${scene.beats.length} beats evaluated)`);
+  // Log final accepted overlays
+  for (const ov of overlays) {
+    console.log(
+      `[Overlay] Beat ${ov.startBeatIndex}${ov.endBeatIndex !== ov.startBeatIndex ? `–${ov.endBeatIndex}` : ""} s${scene.index} ` +
+      `| Overlay generated: yes\n` +
+      `  Template: ${ov.type}\n` +
+      `  Start: ${ov.startSec.toFixed(2)}s  End: ${ov.endSec.toFixed(2)}s\n` +
+      `  Text: "${ov.line1}"${ov.line2 ? ` / "${ov.line2}"` : ""}\n` +
+      `  Reason: ${ov.reason} | meta: [${ov.metadataUsed.join(", ")}]`
+    );
+  }
+  if (!overlays.length) {
+    console.log(`[Overlay] s${scene.index}: 0 overlays accepted (${scene.beats.length} beats evaluated)`);
   }
 
   return { sceneIndex: scene.index, overlays };
