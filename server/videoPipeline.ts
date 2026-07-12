@@ -23880,11 +23880,12 @@ async function _runVideoPipelineInner(
       }
     }
 
-    // ── Stage 4b: Text overlays (cinematic headlines + documentary labels) ──
+    // ── Stage 4b: Editorial Overlay Engine (beat-level, type-first) ──────────
     try {
-      const { textOverlayEnabled, textOverlayStyle, planVideoTextOverlays, planVideoTextOverlaysEditorial, applyTextOverlaysToScenes } = await import("./textOverlay/index");
-      if (textOverlayEnabled()) {
-        const overlayStyle = textOverlayStyle();
+      const { editorialOverlayEnabled, planEditorialOverlays, applyEditorialOverlaysToScenes } =
+        await import("./editorialOverlay/index");
+
+      if (editorialOverlayEnabled()) {
         const sceneMetas = scenes.map((s, i) => ({
           index: i,
           text: s.text ?? "",
@@ -23893,24 +23894,56 @@ async function _runVideoPipelineInner(
           chapterTitle: (s as any).chapterTitle ?? "",
           sectionTitle: (s as any).sectionTitle ?? "",
           duration: s.duration,
-          beats: (s as any).beats ?? [],
+          beats: ((s as any).beats ?? []) as Array<{
+            index: number; text: string; holdSec: number;
+            voiceStartSec?: number; voiceEndSec?: number;
+            powerWord?: string; visualDescription?: string;
+          }>,
         }));
-        const useEditorial = process.env.EDITORIAL_TEXT_ENGINE !== "false";
-        const textPlan = useEditorial
-          ? await planVideoTextOverlaysEditorial(sceneMetas, overlayStyle, videoTitle)
-          : planVideoTextOverlays(sceneMetas, overlayStyle, videoTitle);
-        const hasAnyOverlay = textPlan.scenes.some(sp => sp.overlays.length > 0);
+
+        const overlayPlan = planEditorialOverlays(
+          sceneMetas,
+          visualDedup.documentaryPlan,
+          visualDedup.videoBlueprint
+        );
+
+        const hasAnyOverlay = overlayPlan.scenes.some(sp => sp.overlays.length > 0);
         if (hasAnyOverlay) {
           onProgress?.({ stage: STAGE_LABELS.assembling, percent: 75 });
-          const overlaid = await applyTextOverlaysToScenes(composedScenes, textPlan.scenes, workDir);
+          const overlaid = await applyEditorialOverlaysToScenes(composedScenes, overlayPlan, workDir);
           for (let i = 0; i < overlaid.length; i++) {
             composedScenes[i] = overlaid[i];
           }
-          console.log(`[TextOverlay] Applied ${overlayStyle} overlays to ${composedScenes.length} scenes`);
+        }
+      } else {
+        // Legacy fallback when EDITORIAL_OVERLAY=false
+        const { textOverlayEnabled, textOverlayStyle, planVideoTextOverlays, applyTextOverlaysToScenes } =
+          await import("./textOverlay/index");
+        if (textOverlayEnabled()) {
+          const overlayStyle = textOverlayStyle();
+          const textPlan = planVideoTextOverlays(
+            scenes.map((s, i) => ({
+              index: i,
+              text: s.text ?? "",
+              visualCue: (s as any).visualCue ?? "",
+              pexelsQuery: (s as any).pexelsQuery ?? "",
+              chapterTitle: (s as any).chapterTitle ?? "",
+              sectionTitle: (s as any).sectionTitle ?? "",
+              duration: s.duration,
+              beats: (s as any).beats ?? [],
+            })),
+            overlayStyle,
+            videoTitle
+          );
+          const hasAny = textPlan.scenes.some(sp => sp.overlays.length > 0);
+          if (hasAny) {
+            const overlaid = await applyTextOverlaysToScenes(composedScenes, textPlan.scenes, workDir);
+            for (let i = 0; i < overlaid.length; i++) composedScenes[i] = overlaid[i];
+          }
         }
       }
     } catch (err) {
-      console.warn("[TextOverlay] Overlay pass failed (non-fatal):", (err as Error).message?.slice(0, 120));
+      console.warn("[EditorialOverlay] Overlay pass failed (non-fatal):", (err as Error).message?.slice(0, 120));
     }
 
     // ── Stage 4b2: Visual Director (intelligent motion graphics) ────────────
