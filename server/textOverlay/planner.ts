@@ -258,5 +258,5 @@ export function textOverlayStyle(): TextOverlayStyle {
 }
 
 export function textOverlayEnabled(): boolean {
-  return process.env.TEXT_OVERLAY !== "false";
+  return process.env.TEXT_OVERLAY === "true";
 }
