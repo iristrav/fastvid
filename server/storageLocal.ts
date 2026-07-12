@@ -23,9 +23,17 @@ function resolveUploadsDir(): string {
 
 export const LOCAL_UPLOADS_DIR = resolveUploadsDir();
 
-// Ensure the directory exists
+// Ensure the directory exists and log where videos will be stored
 try {
   fs.mkdirSync(LOCAL_UPLOADS_DIR, { recursive: true });
+  const isPersistent =
+    !!process.env.UPLOADS_DIR ||
+    !!process.env.RAILWAY_VOLUME_MOUNT_PATH ||
+    LOCAL_UPLOADS_DIR.startsWith("/data");
+  console.log(
+    `[Storage] Video upload directory: ${LOCAL_UPLOADS_DIR} ` +
+    `(${isPersistent ? "✓ persistent volume" : "⚠ ephemeral — videos lost on redeploy. Attach a Railway Volume at /data to fix this."})`
+  );
 } catch {
   // ignore
 }
