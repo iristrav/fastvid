@@ -3066,7 +3066,7 @@ async function synthesizeFullNarrationMp3(
     if (partDur <= 0) {
       throw pipelineError(
         PIPELINE_ERROR.VOICEOVER_EMPTY,
-        `Bulk voiceover chunk ${i + 1}/${chunks.length} produced no audio (TTS returned empty/corrupt file)`
+        `Bulk voiceover chunk ${i + 1}/${chunks.length} produced no audio (TTS returned empty or corrupt file)`
       );
     }
     timeOffset += partDur;
@@ -3125,8 +3125,11 @@ async function generateBulkSceneVoiceovers(
 
 function bulkVoiceoverTimeoutMs(sceneCount: number, videoLength?: string): number {
   const _budget = get_activeRenderBudget(); if (_budget) return _budget.ttsMs;
+  // Per-chunk inner timeout is 180s; outer budget must be larger than one chunk.
+  // Fast videos: 90s base + 20s/scene, capped at 300s.
+  // Normal videos: 120s base + 20s/scene, capped at 900s.
   if (isFastShortVideoLength(videoLength)) {
-    return Math.min(75_000, 40_000 + sceneCount * 8_000);
+    return Math.min(300_000, 90_000 + sceneCount * 20_000);
   }
   return Math.min(900_000, 120_000 + sceneCount * 20_000);
 }
