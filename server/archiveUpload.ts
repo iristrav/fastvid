@@ -764,14 +764,9 @@ async function handleArchiveAssemble(req: Request, res: Response) {
       ? (mixKindRaw as ArchiveUploadInput["mixKind"])
       : undefined;
 
-    const buffer = fs.readFileSync(finalPath);
     const cleanupFinal = () => { try { if (fs.existsSync(finalPath)) fs.unlinkSync(finalPath); } catch { /* ignore */ } };
-
-    res.status(202).json({ accepted: true, jobId, message: "Processing started" });
-
-    const uploadInput: ArchiveUploadInput = {
+    const uploadParams = {
       archiveId,
-      buffer,
       mimeType,
       filename,
       tags,
@@ -781,23 +776,37 @@ async function handleArchiveAssemble(req: Request, res: Response) {
       jobId,
     };
 
-    void processArchiveAssetUpload(uploadInput)
-      .then((result) => {
+    res.status(202).json({ accepted: true, jobId, message: "Processing started" });
+
+    void (async () => {
+      let buffer: Buffer;
+      try {
+        // Read after sending 202 — large files don't throw OOM inside the response try/catch.
+        buffer = fs.readFileSync(finalPath);
+      } catch (err) {
+        cleanupFinal();
+        console.error("[ArchiveUpload] assemble read failed:", err);
+        finishArchiveUploadJob(jobId, false, "Failed to read uploaded file");
+        return;
+      }
+      const uploadInput: ArchiveUploadInput = { ...uploadParams, buffer };
+      try {
+        const result = await processArchiveAssetUpload(uploadInput);
         finishArchiveUploadJob(jobId, true, `${result.clipCount} clip(s) saved`, {
           clipsSaved: result.clipCount, clipTotal: result.clipCount,
           resultClipCount: result.clipCount, resultSplit: result.split,
         });
-        cleanupFinal();
-      })
-      .catch((err) => {
-        cleanupFinal();
+      } catch (err) {
         if (err instanceof ArchiveUploadError) {
           err.cancelled ? finishArchiveUploadJobCancelled(jobId) : finishArchiveUploadJob(jobId, false, err.message);
-          return;
+        } else {
+          console.error("[ArchiveUpload] assemble processing failed:", err);
+          finishArchiveUploadJob(jobId, false, (err as Error).message ?? appErrorMessage(APP_ERROR.SERVICE_ERROR, "Upload failed"));
         }
-        console.error("[ArchiveUpload] assemble processing failed:", err);
-        finishArchiveUploadJob(jobId, false, (err as Error).message ?? appErrorMessage(APP_ERROR.SERVICE_ERROR, "Upload failed"));
-      });
+      } finally {
+        cleanupFinal();
+      }
+    })();
   } catch (err) {
     console.error("[ArchiveUpload] assemble failed:", err);
     finishArchiveUploadJob(jobId, false, "Upload failed");
