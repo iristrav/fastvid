@@ -726,7 +726,8 @@ const IS_RAILWAY = !process.env.BUILT_IN_FORGE_API_KEY;
 const VIDEO_WIDTH = 1920;
 const VIDEO_HEIGHT = 1080;
 /** Letterbox pad (legacy encode paths) — dark gray, not black. */
-const SCALE_PAD_VF = `scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=decrease,pad=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:(ow-iw)/2:(oh-ih)/2:color=0x2a2a2a`;
+// force_divisible_by=2 ensures libx264 never sees odd intermediate dimensions
+const SCALE_PAD_VF = `scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:(ow-iw)/2:(oh-ih)/2:color=0x2a2a2a`;
 /** Fill 16:9 — center crop (still used for some stock paths). */
 const CROP_FILL_VF =
   `scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,` +
@@ -2439,7 +2440,11 @@ async function downloadAndTrimPoolCandidate(
       );
       console.log(`[Hang] downloadAndTrim AFTER fetch s${sceneIndex}b${beatIndex} ok=${resp.ok} elapsed=${Date.now()-_f0}ms`);
       if (!resp.ok) return null;
-      const buf = Buffer.from(await resp.arrayBuffer());
+      const buf = Buffer.from(await withTimeout(
+        Promise.resolve(resp.arrayBuffer()),
+        60_000,
+        `Pool download body s${sceneIndex}b${beatIndex}`
+      ));
       if (buf.length < 50_000) return null;
       fs.writeFileSync(rawPath, buf);
       void reportToMediaCache(candidate.remoteUrl, rawPath, isVideo ? "video/mp4" : "image/jpeg");
