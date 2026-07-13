@@ -1092,6 +1092,42 @@ async function fetchBeatArchivalThenPexels(
   }
   if (ownArchiveClip !== null) return ownArchiveClip;
 
+  // ── Wikimedia-first: always try Wikimedia images + videos immediately after archive miss ──
+  // This catches named persons and locations that aren't in the curated archive but have
+  // freely-licensed Wikipedia images/video. Runs before stock, SerpAPI, and AI.
+  {
+    const wikiFirstQueries = [
+      beat.text,
+      beat.searchQuery,
+      scene.visualCue,
+      scene.pexelsQuery,
+    ].filter((q): q is string => typeof q === "string" && q.trim().length > 3)
+      .slice(0, 3);
+
+    const loose: VisualAdoptOptions = { ...adoptOpts, requireBeatMatch: false, scriptAnchored: false, scriptImageFallback: true };
+
+    // 1. Wikimedia images (always available, no API key)
+    for (const q of wikiFirstQueries) {
+      const wikiImgPaths = await fetchWikimediaImages(q, clipFetchDur, workDir, sceneIndex, 2, `${tag}_wf`);
+      const wikiImgClip = await adoptClip(wikiImgPaths, dedup, sceneIndex, beat.index, beat.text, workDir, q, loose);
+      if (wikiImgClip && !isPipelineFallbackClip(wikiImgClip)) {
+        console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: Wikimedia-first image "${q}"`);
+        if (canUseGlobalStillPhoto(dedup)) markGlobalStillPhotoUsed(dedup);
+        return wikiImgClip;
+      }
+    }
+
+    // 2. Wikimedia videos (for locations/events that have motion footage)
+    for (const q of wikiFirstQueries) {
+      const wikiVidHits = await fetchWikimediaVideos(q, clipFetchDur, workDir, sceneIndex, 1, `${tag}_wf`);
+      const wikiVidClip = await adoptClip(wikiVidHits.map(h => h.path), dedup, sceneIndex, beat.index, beat.text, workDir, q, loose);
+      if (isRealVideoClip(wikiVidClip)) {
+        console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: Wikimedia-first video "${q}"`);
+        return wikiVidClip;
+      }
+    }
+  }
+
   if (curatedArchiveOnlyVisuals()) {
     // Always try Wikimedia first (free, no API key — runs regardless of Pexels gate)
     if (visualMatchingV1Enabled()) {
