@@ -313,6 +313,11 @@ let groqCooldownUntilMs = 0;
 /** OpenAI quota exhausted — skip for remainder of process lifetime. */
 let openAiQuotaExhausted = false;
 
+/** Anthropic credit balance too low — skip for remainder of process lifetime. */
+let anthropicCreditExhausted = false;
+
+export function isAnthropicCreditExhausted(): boolean { return anthropicCreditExhausted; }
+
 export function isGroqInCooldown(): boolean {
   return Date.now() < groqCooldownUntilMs;
 }
@@ -388,7 +393,7 @@ function providersToTry(primary: LlmProvider): LlmProvider[] {
   const out: LlmProvider[] = [];
   const groqAvailable = Boolean(groqKeyFromEnv()) && !isGroqInCooldown();
   const openAiAvailable = Boolean(openAiKeyFromEnv()) && !openAiQuotaExhausted;
-  const anthropicAvailable = Boolean(anthropicKeyFromEnv());
+  const anthropicAvailable = Boolean(anthropicKeyFromEnv()) && !anthropicCreditExhausted;
 
   const push = (p: LlmProvider) => {
     if (p === "none" || out.includes(p)) return;
@@ -483,6 +488,10 @@ async function invokeAnthropic(
 
   if (!response.ok) {
     const errorText = await response.text();
+    if (response.status === 400 && errorText.toLowerCase().includes("credit balance")) {
+      anthropicCreditExhausted = true;
+      console.warn("[LLM] Anthropic credit balance too low — skipping Anthropic for remainder of process lifetime.");
+    }
     throw new Error(`Anthropic API error ${response.status}: ${errorText}`);
   }
 

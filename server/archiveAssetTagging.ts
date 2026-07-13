@@ -8,7 +8,7 @@ import { spawn } from "child_process";
 import { exec } from "child_process";
 import { promisify } from "util";
 import { withForkRetry } from "./_core/execForkRetry";
-import { invokeLLM } from "./_core/llm";
+import { invokeLLM, isAnthropicCreditExhausted } from "./_core/llm";
 import { ENV, groqKeyFromEnv } from "./_core/env";
 import { normalizeMediaTags } from "./db";
 import {
@@ -754,7 +754,7 @@ async function invokeArchiveVisionTagging(
 
   const runOnce = async (responseFormat: VisionFormat): Promise<ArchiveAssetAiMetadata | null> => {
     const payload: Parameters<typeof invokeLLM>[0] = {
-      preferProvider: groqKeyFromEnv() ? "groq" : undefined,
+      preferProvider: groqKeyFromEnv() ? "groq" : isAnthropicCreditExhausted() ? "openai" : undefined,
       messages: [
         {
           role: "system",
