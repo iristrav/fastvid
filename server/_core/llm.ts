@@ -580,11 +580,20 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
 
   const hasVision = messagesIncludeImages(messages);
   const primary = preferProvider ?? resolveLlmProvider();
-  const chain = providersToTry(primary);
+  let chain = providersToTry(primary);
   if (chain.length === 0) {
-    throw new Error(
-      "LLM API key is not configured. Set GROQ_API_KEY on Railway (free), or LLM_API_KEY / BUILT_IN_FORGE_API_KEY"
-    );
+    // All providers blocked (cooldown / quota). Try Groq anyway if key exists — cooldown is
+    // a soft rate-limit guard, not a hard failure. Better to retry than to give up entirely.
+    const groqKey = groqKeyFromEnv();
+    if (groqKey) {
+      console.warn("[LLM] All providers in cooldown/exhausted — retrying Groq ignoring cooldown.");
+      groqCooldownUntilMs = 0; // reset cooldown so this request can proceed
+      chain = ["groq"];
+    } else {
+      throw new Error(
+        "LLM API key is not configured. Set GROQ_API_KEY on Railway (free), or LLM_API_KEY / BUILT_IN_FORGE_API_KEY"
+      );
+    }
   }
 
   let lastError: Error | null = null;
