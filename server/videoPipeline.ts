@@ -7791,12 +7791,8 @@ async function transformClipForFairUse(
     `eq=contrast=${grade.contrast}:saturation=${grade.saturation}:brightness=${grade.brightness},` +
     `vignette=angle=${vignetteAngle}:mode=forward`;
 
-  const subtitle = sanitizeForDrawtextStrict(sceneText, 72);
-  if (subtitle && ffmpegSupportsDrawtext()) {
-    filterChain +=
-      `,drawtext=text='${subtitle}':fontcolor=white:fontsize=30:x=(w-text_w)/2:y=h-72:` +
-      `box=1:boxcolor=black@0.55:boxborderw=10`;
-  }
+  // Fair-use subtitle disabled — set ENABLE_SCREEN_LABELS=true to re-enable
+  const subtitle: string | null = null;
 
   const TRANSFORM_TIMEOUT_MS = timeoutMs;
   console.log(
