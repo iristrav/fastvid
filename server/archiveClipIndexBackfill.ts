@@ -68,6 +68,7 @@ async function downloadAssetForBackfill(asset: {
     const contentLength = Number(resp.headers.get("content-length") ?? 0);
     if (contentLength > 0 && contentLength > BACKFILL_MAX_BYTES) {
       console.log(`[ClipEmbedding] Backfill: skipping asset ${asset.id} — too large (${Math.round(contentLength / 1024 / 1024)}MB)`);
+      recentIndexFailures.set(asset.id, Date.now() + 30 * 24 * 60 * 60_000); // skip for 30 days
       return null;
     }
     const buf = Buffer.from(await resp.arrayBuffer());
@@ -77,6 +78,7 @@ async function downloadAssetForBackfill(asset: {
     }
     if (buf.length > BACKFILL_MAX_BYTES) {
       console.log(`[ClipEmbedding] Backfill: skipping asset ${asset.id} — too large (${Math.round(buf.length / 1024 / 1024)}MB)`);
+      recentIndexFailures.set(asset.id, Date.now() + 30 * 24 * 60 * 60_000); // skip for 30 days
       return null;
     }
     fs.writeFileSync(tempPath, buf);
