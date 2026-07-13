@@ -715,12 +715,10 @@ const FONT_REGULAR = resolveFontPath('NotoSans-Regular.ttf');
 // Canvas is not used — all rendering is done via FFmpeg (no native dependencies required)
 const CANVAS_AVAILABLE = false; // kept for reference, all functions use FFmpeg-only paths
 
-// Linux/Railway: use /data/tmp (Railway volume, 250GB). Windows/dev: use OS temp dir.
+// Linux/Railway: prefer /var/tmp (survives long runs). Windows/dev: use OS temp dir.
 const TMP_DIR =
   process.env.FASTVID_TMP_DIR ??
-  (process.platform === "win32"
-    ? path.join(os.tmpdir(), "fastvid")
-    : fs.existsSync("/data") ? "/data/tmp" : "/var/tmp");
+  (process.platform === "win32" ? path.join(os.tmpdir(), "fastvid") : "/var/tmp");
 // No Forge key = Railway environment. Confirmed plan: 24 vCPU / 24GB RAM (not the old
 // ~512MB free-tier assumption this flag used to gate conservative defaults around).
 const IS_RAILWAY = !process.env.BUILT_IN_FORGE_API_KEY;
@@ -3039,8 +3037,7 @@ async function synthesizeFullNarrationMp3(
     ttsWordAlignmentEnabled() &&
     Boolean(ELEVENLABS_API_KEY) &&
     Boolean(voiceId?.trim());
-  // Per-chunk timeout: capped at 60s so a slow/hanging call doesn't eat the outer budget
-  const TTS_TIMEOUT_MS = 60_000;
+  const TTS_TIMEOUT_MS = 180_000;
 
   for (let i = 0; i < chunks.length; i++) {
     onTtsPart?.(i + 1, chunks.length);
@@ -3066,7 +3063,13 @@ async function synthesizeFullNarrationMp3(
       preferElevenLabs: true,
     });
     const partDur = await probeVideoDurationSec(partPath);
-    timeOffset += partDur > 0 ? partDur : 0;
+    if (partDur <= 0) {
+      throw pipelineError(
+        PIPELINE_ERROR.VOICEOVER_EMPTY,
+        `Bulk voiceover chunk ${i + 1}/${chunks.length} produced no audio (TTS returned empty/corrupt file)`
+      );
+    }
+    timeOffset += partDur;
     partPaths.push(partPath);
   }
 
@@ -3123,7 +3126,7 @@ async function generateBulkSceneVoiceovers(
 function bulkVoiceoverTimeoutMs(sceneCount: number, videoLength?: string): number {
   const _budget = get_activeRenderBudget(); if (_budget) return _budget.ttsMs;
   if (isFastShortVideoLength(videoLength)) {
-    return Math.min(300_000, 90_000 + sceneCount * 20_000);
+    return Math.min(75_000, 40_000 + sceneCount * 8_000);
   }
   return Math.min(900_000, 120_000 + sceneCount * 20_000);
 }
@@ -3270,7 +3273,7 @@ async function synthesizeFishAudioVoice(
 
       if (!response.ok) {
         const errText = await response.text();
-        // 402 = no API credit; fall back to ElevenLabs if available
+        // 402 = no API credit — fall back to ElevenLabs if available
         if (response.status === 402 && ELEVENLABS_API_KEY) {
           console.warn(`[Pipeline] Fish Audio ${label}: no API credit (402) — ElevenLabs fallback`);
           return synthesizeElevenLabsVoice(text, outputPath, "pNInz6obpgDQGcFmaJgB", timeoutMs, `fallback (${label})`);
@@ -5165,18 +5168,19 @@ async function generateGuaranteedBeatClip(
   beatText?: string,
 ): Promise<string> {
   const outputPath = path.join(workDir, `scene_${sceneIndex}_slot${slotIndex}_guaranteed.mp4`);
-  // Try text-over-black when we have context — uses /dev/zero (no lavfi) + drawtext
-  if (beatText && beatText.trim().length > 3 && process.platform !== "win32") {
+  // Try text-over-gradient when we have context — more informative than a plain color
+  if (beatText && beatText.trim().length > 3) {
     try {
       const safeText = beatText.trim().slice(0, 90).replace(/'/g, "\\'").replace(/:/g, "\\:").replace(/\\/g, "\\\\");
+      const colors = ["3a4a5e", "4a5a6e", "3a5a6e", "4a4a5e"];
+      const color = colors[Math.abs(sceneIndex) % colors.length];
       const safeDur = Math.min(Math.max(duration, 3), 90);
       await withTimeout(
         exec(
-          `${FFMPEG_BIN} -y -f rawvideo -pixel_format rgb24 -video_size 640x360 -framerate 25 -i /dev/zero ` +
-          `-vf "scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=disable,format=yuv420p,` +
-          `drawtext=text='${safeText}':fontcolor=white:fontsize=52:x=(w-text_w)/2:y=(h-text_h)/2:` +
-          `shadowcolor=black:shadowx=3:shadowy=3" ` +
-          `-t ${safeDur} -c:v libx264 -preset ultrafast -pix_fmt yuv420p -an "${outputPath}"`
+          `${FFMPEG_BIN} -y -f lavfi -i "color=c=#${color}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:r=25" -t ${safeDur} ` +
+          `-vf "drawtext=text='${safeText}':fontcolor=white:fontsize=52:x=(w-text_w)/2:y=(h-text_h)/2:` +
+          `shadowcolor=black:shadowx=3:shadowy=3:alpha='if(lt(t,0.4),t/0.4,1)'" ` +
+          `-c:v libx264 -preset ultrafast -pix_fmt yuv420p -an "${outputPath}"`
         ),
         30_000,
         `Guaranteed beat text overlay s${sceneIndex}b${slotIndex}`
@@ -5248,107 +5252,50 @@ async function generateColorFallback(
 }
 
 async function _generateColorFallbackInner(sceneIndex: number, safeDuration: number, out: string, workDir: string): Promise<string> {
-  const dur = safeDuration.toFixed(3);
-
-  // Log disk space upfront
+  const colors = ["3a4a5e", "4a5a6e", "3a5a6e", "4a4a5e", "3a5a5e", "4a5a5e", "3a4a6e", "4a4a6e"];
+  const color = colors[Math.abs(sceneIndex) % colors.length];
+  const commands = [
+    `${FFMPEG_BIN} -y -f lavfi -i "color=c=#${color}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:r=25" -t ${safeDuration} -c:v libx264 -preset ultrafast -pix_fmt yuv420p -an "${out}"`,
+    `${FFMPEG_BIN} -y -f lavfi -i "color=c=black:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:r=25" -t ${safeDuration} -c:v libx264 -preset ultrafast -pix_fmt yuv420p -an "${out}"`,
+    `${FFMPEG_BIN} -y -f lavfi -i "color=c=black:s=1280x720:r=25" -t ${safeDuration} -c:v mpeg4 -q:v 5 -an "${out}"`,
+    `${FFMPEG_BIN} -y -f lavfi -i "color=c=black:s=640x360:r=25" -t ${safeDuration} -c:v mpeg4 -q:v 8 -an "${out}"`,
+  ];
   try {
-    const { stdout: dfOut } = await withTimeout(exec(`df -h "${workDir}" 2>&1 || df -h /data 2>&1 || df -h /tmp 2>&1`), 5_000, "df");
-    console.log(`[Pipeline] Scene ${sceneIndex}: disk before fallback: ${dfOut.trim().split("\n").slice(-2).join(" | ")}`);
+    const { stdout: dfOut } = await withTimeout(exec(`df -h "${workDir}" 2>&1 || df -h /var/tmp 2>&1 || df -h /tmp 2>&1`), 5_000, "df");
+    console.log(`[Pipeline] Scene ${sceneIndex}: disk space: ${dfOut.trim().split("\n").slice(-1)[0]}`);
   } catch { /* ignore */ }
 
-  const outCandidates = [out, path.join(os.tmpdir(), path.basename(out))];
-
-  for (const outPath of outCandidates) {
-    // Make sure output directory exists
-    try { fs.mkdirSync(path.dirname(outPath), { recursive: true }); } catch { /* ignore */ }
-
-    // ── Strategy 1: /dev/zero rawvideo → libx264 (no lavfi, no image decode needed) ──
-    // Always available on Linux. Reads infinite zeros = black RGB24 frames.
-    if (process.platform !== "win32") {
-      for (const [codec, ext] of [
-        ["libx264 -preset ultrafast -pix_fmt yuv420p -movflags +faststart", ""],
-        ["mpeg4 -q:v 5", ""],
-      ] as [string, string][]) {
-        try {
-          if (fs.existsSync(outPath)) { try { fs.unlinkSync(outPath); } catch { /* ok */ } }
-          const cmd = `${FFMPEG_BIN} -y -f rawvideo -pixel_format rgb24 -video_size 640x360 -framerate 25 -i /dev/zero -vf "scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=disable,format=yuv420p" -t ${dur} -c:v ${codec} -an "${outPath}"`;
-          const { stderr } = await withTimeout(exec(cmd), 60_000, `Fallback devzero scene ${sceneIndex}`);
-          if (await isValidVideoFile(outPath)) {
-            console.log(`[Pipeline] Scene ${sceneIndex}: fallback /dev/zero OK (${(fs.statSync(outPath).size / 1024).toFixed(0)}KB, codec=${codec.split(" ")[0]})`);
-            if (outPath !== out) { try { fs.copyFileSync(outPath, out); fs.unlinkSync(outPath); return out; } catch { return outPath; } }
-            return outPath;
-          }
-          console.warn(`[Pipeline] Scene ${sceneIndex}: fallback /dev/zero/${codec.split(" ")[0]} invalid — stderr: ${String(stderr).slice(-400)}`);
-        } catch (err) {
-          const e = err as { stderr?: string; message?: string; code?: string };
-          console.warn(`[Pipeline] Scene ${sceneIndex}: fallback /dev/zero/${codec.split(" ")[0]} failed [${e.code ?? "?"}]: ${((e.stderr ?? "").slice(-400) || e.message?.slice(0, 200)) ?? ""}`);
-        }
-      }
-    }
-
-    // ── Strategy 2: PPM frame → ffmpeg loop (no lavfi dependency) ──────────
-    try {
-      const W = 640, H = 360;
-      const ppmPath = path.join(path.dirname(outPath), `_fallback_frame_${sceneIndex}.ppm`);
-      const header = Buffer.from(`P6\n${W} ${H}\n255\n`);
-      const pixels = Buffer.alloc(W * H * 3, 0);
-      fs.writeFileSync(ppmPath, Buffer.concat([header, pixels]));
-
-      for (const codec of ["libx264 -preset ultrafast -pix_fmt yuv420p -movflags +faststart", "mpeg4 -q:v 5"]) {
-        try {
-          if (fs.existsSync(outPath)) { try { fs.unlinkSync(outPath); } catch { /* ok */ } }
-          const cmd = `${FFMPEG_BIN} -y -loop 1 -f image2 -i "${ppmPath}" -vf "scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=disable,format=yuv420p" -t ${dur} -c:v ${codec} -an "${outPath}"`;
-          const { stderr } = await withTimeout(exec(cmd), 60_000, `Fallback ppm-loop scene ${sceneIndex}`);
-          if (await isValidVideoFile(outPath)) {
-            try { fs.unlinkSync(ppmPath); } catch { /* ok */ }
-            console.log(`[Pipeline] Scene ${sceneIndex}: fallback ppm-loop OK (${(fs.statSync(outPath).size / 1024).toFixed(0)}KB, codec=${codec.split(" ")[0]})`);
-            if (outPath !== out) { try { fs.copyFileSync(outPath, out); fs.unlinkSync(outPath); return out; } catch { return outPath; } }
-            return outPath;
-          }
-          console.warn(`[Pipeline] Scene ${sceneIndex}: fallback ppm/${codec.split(" ")[0]} invalid — stderr: ${String(stderr).slice(-400)}`);
-        } catch (err) {
-          const e = err as { stderr?: string; message?: string; code?: string };
-          console.warn(`[Pipeline] Scene ${sceneIndex}: fallback ppm/${codec.split(" ")[0]} failed [${e.code ?? "?"}]: ${((e.stderr ?? "").slice(-400) || e.message?.slice(0, 200)) ?? ""}`);
-        }
-      }
-      try { if (fs.existsSync(ppmPath)) fs.unlinkSync(ppmPath); } catch { /* ok */ }
-    } catch (err) {
-      console.warn(`[Pipeline] Scene ${sceneIndex}: PPM write failed:`, (err as Error).message?.slice(0, 100));
-    }
-
-    // ── Strategy 3: lavfi color source (backup, may not work on all Railway builds) ──
-    const colors = ["3a4a5e", "4a5a6e", "3a5a6e", "4a4a5e"];
-    const color = colors[Math.abs(sceneIndex) % colors.length];
-    for (const [src, codec] of [
-      [`color=c=#${color}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:r=25`, `libx264 -preset ultrafast -pix_fmt yuv420p -movflags +faststart`],
-      [`color=c=black:s=1280x720:r=25`, `libx264 -preset ultrafast -pix_fmt yuv420p -movflags +faststart`],
-      [`color=c=black:s=640x360:r=25`, `mpeg4 -q:v 5`],
-    ] as [string, string][]) {
+  for (let i = 0; i < commands.length; i++) {
+    let lastErr: unknown;
+    for (let retry = 0; retry < 3; retry++) {
       try {
-        if (fs.existsSync(outPath)) { try { fs.unlinkSync(outPath); } catch { /* ok */ } }
-        const cmd = `${FFMPEG_BIN} -y -f lavfi -i "${src}" -t ${dur} -c:v ${codec} -an "${outPath}"`;
-        const { stderr } = await withTimeout(exec(cmd), 45_000, `Fallback lavfi scene ${sceneIndex}`);
-        if (await isValidVideoFile(outPath)) {
-          console.log(`[Pipeline] Scene ${sceneIndex}: fallback lavfi OK (${(fs.statSync(outPath).size / 1024).toFixed(0)}KB)`);
-          if (outPath !== out) { try { fs.copyFileSync(outPath, out); fs.unlinkSync(outPath); return out; } catch { return outPath; } }
-          return outPath;
+        if (fs.existsSync(out)) {
+          try { fs.unlinkSync(out); } catch { /* ignore */ }
         }
-        console.warn(`[Pipeline] Scene ${sceneIndex}: fallback lavfi/${src.split(":")[0]} invalid — stderr: ${String(stderr).slice(-300)}`);
+        const { stderr } = await withTimeout(exec(commands[i]), 45_000, `Fallback video scene ${sceneIndex} attempt ${i + 1}`);
+        if (await isValidVideoFile(out)) {
+          console.log(`[Pipeline] Scene ${sceneIndex}: fallback video OK (${(fs.statSync(out).size / 1024).toFixed(0)}KB, attempt ${i + 1})`);
+          return out;
+        }
+        console.warn(`[Pipeline] Scene ${sceneIndex}: fallback attempt ${i + 1} produced unreadable file — stderr: ${String(stderr).slice(-400)}`);
+        break;
       } catch (err) {
-        const e = err as { stderr?: string; message?: string; code?: string };
-        console.warn(`[Pipeline] Scene ${sceneIndex}: fallback lavfi/${src.split(":")[0]} failed [${e.code ?? "?"}]: ${((e.stderr ?? "").slice(-300) || e.message?.slice(0, 150)) ?? ""}`);
+        lastErr = err;
+        if (isForkPressureError(err) && retry < 2) {
+          const wait = (retry + 1) * 4_000;
+          console.warn(`[Pipeline] Scene ${sceneIndex}: fallback attempt ${i + 1} fork pressure — retry in ${wait / 1000}s`);
+          await sleep(wait);
+          continue;
+        }
+        const e = err as { message?: string; stderr?: string; code?: string };
+        const ffmpegErr = ((e.stderr ?? "").slice(-600) || e.message?.slice(0, 300)) ?? String(err);
+        console.warn(`[Pipeline] Scene ${sceneIndex}: fallback attempt ${i + 1} failed [code=${e.code ?? "?"}]: ${ffmpegErr}`);
+        break;
       }
     }
   }
 
-  // Final disk diagnosis before throwing
-  let dfInfo = "";
-  try {
-    const { stdout: dfOut } = await withTimeout(exec(`df -h "${workDir}" 2>&1 || df -h /data 2>&1 || df -h /tmp 2>&1`), 5_000, "df-final");
-    dfInfo = ` | df: ${dfOut.trim().split("\n").slice(-1)[0]}`;
-  } catch { /* ignore */ }
-
-  throw pipelineError(PIPELINE_ERROR.FFMPEG, `Scene ${sceneIndex}: all color-fallback attempts failed (duration=${safeDuration}s, workDir=${workDir}${dfInfo})`);
+  throw pipelineError(PIPELINE_ERROR.FFMPEG, `Scene ${sceneIndex}: all color-fallback attempts failed (duration=${safeDuration}s, workDir=${workDir})`);
 }
 
 /** Rotate golden Musk queries; never grey or duplicate clips. */
@@ -7182,35 +7129,29 @@ export async function fetchInternetArchiveClips(
         )[0];
 
         const MAX_ARCHIVE_SIZE = 50 * 1024 * 1024;
-        // For large files, request only the first 15MB via Range header — enough for a few seconds of video.
-        const RANGE_THRESHOLD = MAX_ARCHIVE_SIZE;
-        const RANGE_BYTES = 15 * 1024 * 1024;
         const knownSize = parseInt(videoFile.size || '0');
+        if (knownSize > MAX_ARCHIVE_SIZE) {
+          console.warn(`[Pipeline] Scene ${sceneIndex}: Archive clip too large (${(knownSize / 1024 / 1024).toFixed(1)}MB per metadata), skipping download`);
+          continue;
+        }
 
         const videoUrl = `https://archive.org/download/${doc.identifier}/${encodeURIComponent(videoFile.name)}`;
         const tag = fileTag ? `${fileTag}_` : "";
         const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}archive_${fetched}.mp4`);
         const tmpPath = path.join(workDir, `scene_${sceneIndex}_${tag}archive_${fetched}_tmp`);
 
-        const useRange = knownSize > RANGE_THRESHOLD;
-        const dlHeaders: Record<string, string> = { 'User-Agent': 'Fastvid/1.0 (video generation)' };
-        if (useRange) dlHeaders['Range'] = `bytes=0-${RANGE_BYTES - 1}`;
-
         const dlResp = await fetchWithTimeout(
           videoUrl,
           IS_RAILWAY ? 18_000 : 45_000,
           `Internet Archive download scene ${sceneIndex}`,
-          { headers: dlHeaders }
+          { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }
         );
-        if (!dlResp.ok && dlResp.status !== 206) continue;
+        if (!dlResp.ok) continue;
 
         const arrayBuf = await dlResp.arrayBuffer();
-        if (!useRange && arrayBuf.byteLength > MAX_ARCHIVE_SIZE) {
+        if (arrayBuf.byteLength > MAX_ARCHIVE_SIZE) {
           console.warn(`[Pipeline] Scene ${sceneIndex}: Archive clip too large (${(arrayBuf.byteLength / 1024 / 1024).toFixed(1)}MB), skipping`);
           continue;
-        }
-        if (useRange) {
-          console.log(`[Pipeline] Scene ${sceneIndex}: Archive large file (${(knownSize / 1024 / 1024).toFixed(1)}MB) — downloaded first ${(arrayBuf.byteLength / 1024 / 1024).toFixed(1)}MB via Range`);
         }
         fs.writeFileSync(tmpPath, Buffer.from(arrayBuf));
 
@@ -9005,8 +8946,6 @@ interface VisualDedupState {
   lastMuskStockClip: string | null;
   /** Last adopted real (non-fallback) clip this video — used for extendLastClip rescue. */
   lastRealClip: string | null;
-  /** Maps content key → beat index of first adoption — used for dedup logging. */
-  clipContentKeyToBeat?: Map<string, number>;
   /** Video-level visual context (persons, period, locations, styles) — built once per render. */
   videoVisualContext?: VideoVisualContext;
   aiClipsUsed: number;
@@ -9841,16 +9780,15 @@ function clipContentKey(filePath: string): string {
   const base = path.basename(filePath).replace(/_transformed(?=\.mp4)/, "");
   const vidMatch = base.match(/_vid(\d+)/);
   if (vidMatch) return `stock:vid:${vidMatch[1]}`;
-  // For clips without a stable ID (Wikimedia, YouTube, AI, internet archive), hash the first
-  // 96 KB of the file. This is cheap (one partial read) and catches the same video downloaded
-  // twice to different temp paths — a common cross-scene duplicate scenario.
-  try {
-    const buf = fs.readFileSync(filePath);
-    const sample = buf.subarray(0, Math.min(buf.length, 96_000));
-    const hash = createHash("sha256").update(sample).digest("hex").slice(0, 24);
-    return `content:${hash}`;
-  } catch {
-    /* fall through */
+  if (isStillPhotoClip(filePath)) {
+    try {
+      const buf = fs.readFileSync(filePath);
+      const sample = buf.subarray(0, Math.min(buf.length, 48_000));
+      const hash = createHash("sha256").update(sample).digest("hex").slice(0, 20);
+      return `still:${hash}`;
+    } catch {
+      /* fall through */
+    }
   }
   try {
     const stat = fs.statSync(filePath);
@@ -12095,21 +12033,9 @@ async function adoptClip(
         continue;
       }
       const contentKey = clipContentKey(p);
-      if (dedup.usedContentKeys.has(contentKey)) {
-        // Find which beat first used this clip for logging
-        const usedInBeat = dedup.clipContentKeyToBeat?.get(contentKey);
-        console.log(
-          `[Dedup] Rejected: ${path.basename(p)}\n` +
-          `  Reason: Already used${usedInBeat != null ? ` in beat ${usedInBeat}` : ""} (key=${contentKey.slice(0, 24)})\n` +
-          `  Scene: s${sceneIndex} beat: ${beatIndex}`
-        );
-        continue;
-      }
+      if (dedup.usedContentKeys.has(contentKey)) continue;
       dedup.usedPaths.add(p);
       dedup.usedContentKeys.add(contentKey);
-      // Track which beat first adopted this content key (for dedup logging)
-      if (!dedup.clipContentKeyToBeat) dedup.clipContentKeyToBeat = new Map();
-      dedup.clipContentKeyToBeat.set(contentKey, beatIndex);
       dedup.usedCategories.set(category, (dedup.usedCategories.get(category) ?? 0) + 1);
       const mustFairUse = clipRequiresFairUseTransform(p);
       if (dedup.perf.skipFairUseTransform && !mustFairUse) {
@@ -17646,45 +17572,6 @@ async function rescueBeatVisualWhenEmpty(
         return true;
       }
     }
-  }
-
-  // ── Single-keyword rescue ──────────────────────────────────────────────────
-  // Extract individual meaningful words and try each one separately on Pexels + Wikimedia.
-  // This ensures we always find *something* visually relevant rather than a blank.
-  try {
-    const rawWords = beat.text
-      .replace(/\[visual:[^\]]*\]/gi, " ")
-      .split(/\W+/)
-      .filter(w => w.length >= 4 && !STOP_WORDS.has(w.toLowerCase()));
-    const singleKeywords = [...new Set(rawWords.map(w => w.toLowerCase()))].slice(0, 6);
-    console.log(`[Retrieval] s${scene.index}b${beat.index} single-keyword rescue: [${singleKeywords.join(", ")}]`);
-    for (const kw of singleKeywords) {
-      // Try Pexels first
-      if (archivePexelsFallbackEnabled() && canUseLicensedStockBeat(dedup)) {
-        const clonedBeat = { ...beat, pexelsQueries: [kw] };
-        const hit = await adoptStockBeatClipFallback(
-          clonedBeat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile,
-          { visionFloor: 0, adoptSource: "rescue_keyword" }
-        );
-        if (hit) {
-          console.log(`[Retrieval] s${scene.index}b${beat.index} single-keyword HIT (pexels): "${kw}"`);
-          return true;
-        }
-      }
-      // Try Wikimedia
-      const wikiClips = await fetchWikimediaImages(kw, holdSec, workDir, scene.index, 1, "rescue_keyword_wiki", { beatIndex: beat.index });
-      if (wikiClips.length > 0) {
-        const clip = wikiClips[0]!;
-        if (clip && (await pushClip(clip, holdSec))) {
-          recordClipAdopt(dedup.clipAdoptAudit, scene.index, beat.index, beat.text, clip, "rescue_keyword_wiki", undefined, dedup.segmentGeoLock);
-          dedup.lastRealClip = clip;
-          console.log(`[Retrieval] s${scene.index}b${beat.index} single-keyword HIT (wiki): "${kw}"`);
-          return true;
-        }
-      }
-    }
-  } catch (err) {
-    console.warn("[Retrieval] single-keyword rescue error:", (err as Error).message?.slice(0, 80));
   }
 
   // Try extending the last real clip before falling back to color
@@ -23895,25 +23782,13 @@ async function _runVideoPipelineInner(
       }
     }
 
-    // ── Stage 4b: Editorial Overlay Engine (beat-level, type-first) ──────────
+    // ── Stage 4b: Text overlays (cinematic headlines + documentary labels) ──
     try {
-      const { editorialOverlayEnabled, planEditorialOverlays, applyEditorialOverlaysToScenes } =
-        await import("./editorialOverlay/index");
-
-      if (editorialOverlayEnabled()) {
-        // IMPORTANT: beats live on sceneVisualResults[i].beats, NOT on scenes[i].
-        // scenes[] are raw script scenes; they do not carry voice-timed beat data.
-        const sceneMetas = scenes.map((s, i) => {
-          const vr = sceneVisualResults[i];
-          const beats = (vr?.beats ?? []) as Array<{
-            index: number; text: string; holdSec: number;
-            voiceStartSec?: number; voiceEndSec?: number;
-            powerWord?: string; visualDescription?: string;
-          }>;
-          if (!beats.length) {
-            console.log(`[Overlay] s${i}: no beats available — skipping overlay planning for this scene`);
-          }
-          return {
+      const { textOverlayEnabled, textOverlayStyle, planVideoTextOverlays, applyTextOverlaysToScenes } = await import("./textOverlay/index");
+      if (textOverlayEnabled()) {
+        const overlayStyle = textOverlayStyle();
+        const textPlan = planVideoTextOverlays(
+          scenes.map((s, i) => ({
             index: i,
             text: s.text ?? "",
             visualCue: (s as any).visualCue ?? "",
@@ -23921,91 +23796,23 @@ async function _runVideoPipelineInner(
             chapterTitle: (s as any).chapterTitle ?? "",
             sectionTitle: (s as any).sectionTitle ?? "",
             duration: s.duration,
-            beats,
-          };
-        });
-
-        // Log per-beat overlay plan with full explainability
-        console.log(`[Overlay] Planning overlays for ${sceneMetas.length} scene(s), ` +
-          `${sceneMetas.reduce((n, s) => n + s.beats.length, 0)} total beats`);
-
-        const overlayPlan = planEditorialOverlays(
-          sceneMetas,
-          visualDedup.documentaryPlan,
-          visualDedup.videoBlueprint
+            beats: (s as any).beats ?? [],
+          })),
+          overlayStyle,
+          videoTitle
         );
-
-        const hasAnyOverlay = overlayPlan.scenes.some(sp => sp.overlays.length > 0);
-
+        const hasAnyOverlay = textPlan.scenes.some(sp => sp.overlays.length > 0);
         if (hasAnyOverlay) {
           onProgress?.({ stage: STAGE_LABELS.assembling, percent: 75 });
-          const overlaid = await applyEditorialOverlaysToScenes(composedScenes, overlayPlan, workDir);
+          const overlaid = await applyTextOverlaysToScenes(composedScenes, textPlan.scenes, workDir);
           for (let i = 0; i < overlaid.length; i++) {
-            if (overlaid[i] !== composedScenes[i]) {
-              console.log(`[Overlay] s${i}: overlay applied → ${path.basename(overlaid[i])}`);
-            }
             composedScenes[i] = overlaid[i];
           }
-        } else {
-          // Editorial engine produced zero overlays — fall back to legacy textOverlay so video is never text-free
-          console.warn("[Overlay] Editorial engine produced 0 overlays — falling back to legacy textOverlay");
-          const { textOverlayEnabled, textOverlayStyle, planVideoTextOverlays, applyTextOverlaysToScenes } =
-            await import("./textOverlay/index");
-          if (textOverlayEnabled()) {
-            const overlayStyle = textOverlayStyle();
-            const textPlan = planVideoTextOverlays(
-              scenes.map((s, i) => ({
-                index: i,
-                text: s.text ?? "",
-                visualCue: (s as any).visualCue ?? "",
-                pexelsQuery: (s as any).pexelsQuery ?? "",
-                chapterTitle: (s as any).chapterTitle ?? "",
-                sectionTitle: (s as any).sectionTitle ?? "",
-                duration: s.duration,
-                beats: sceneVisualResults[i]?.beats ?? [],
-              })),
-              overlayStyle,
-              videoTitle
-            );
-            const hasAny = textPlan.scenes.some(sp => sp.overlays.length > 0);
-            if (hasAny) {
-              const overlaid = await applyTextOverlaysToScenes(composedScenes, textPlan.scenes, workDir);
-              for (let i = 0; i < overlaid.length; i++) composedScenes[i] = overlaid[i];
-              console.log("[Overlay] Legacy textOverlay fallback applied");
-            } else {
-              console.warn("[Overlay] Legacy textOverlay also produced 0 overlays — video exported without text");
-            }
-          }
-        }
-      } else {
-        // Legacy fallback when EDITORIAL_OVERLAY=false
-        const { textOverlayEnabled, textOverlayStyle, planVideoTextOverlays, applyTextOverlaysToScenes } =
-          await import("./textOverlay/index");
-        if (textOverlayEnabled()) {
-          const overlayStyle = textOverlayStyle();
-          const textPlan = planVideoTextOverlays(
-            scenes.map((s, i) => ({
-              index: i,
-              text: s.text ?? "",
-              visualCue: (s as any).visualCue ?? "",
-              pexelsQuery: (s as any).pexelsQuery ?? "",
-              chapterTitle: (s as any).chapterTitle ?? "",
-              sectionTitle: (s as any).sectionTitle ?? "",
-              duration: s.duration,
-              beats: sceneVisualResults[i]?.beats ?? [],
-            })),
-            overlayStyle,
-            videoTitle
-          );
-          const hasAny = textPlan.scenes.some(sp => sp.overlays.length > 0);
-          if (hasAny) {
-            const overlaid = await applyTextOverlaysToScenes(composedScenes, textPlan.scenes, workDir);
-            for (let i = 0; i < overlaid.length; i++) composedScenes[i] = overlaid[i];
-          }
+          console.log(`[TextOverlay] Applied ${overlayStyle} overlays to ${composedScenes.length} scenes`);
         }
       }
     } catch (err) {
-      console.warn("[EditorialOverlay] Overlay pass failed (non-fatal):", (err as Error).message?.slice(0, 120));
+      console.warn("[TextOverlay] Overlay pass failed (non-fatal):", (err as Error).message?.slice(0, 120));
     }
 
     // ── Stage 4b2: Visual Director (intelligent motion graphics) ────────────
