@@ -3183,7 +3183,11 @@ async function splitFullVoiceoverByScenes(
 ): Promise<number[]> {
   const totalDur = await probeVideoDurationSec(fullAudioPath);
   if (totalDur <= 0) {
-    throw pipelineError(PIPELINE_ERROR.VOICEOVER_EMPTY, "Bulk voiceover file has no duration");
+    const exists = fs.existsSync(fullAudioPath);
+    const size = exists ? fs.statSync(fullAudioPath).size : 0;
+    const header = exists && size > 0 ? fs.readFileSync(fullAudioPath).slice(0, 16).toString("hex") : "—";
+    console.error(`[Pipeline] Bulk VO no duration: exists=${exists} size=${size}b header=${header}`);
+    throw pipelineError(PIPELINE_ERROR.VOICEOVER_EMPTY, `Bulk voiceover file has no duration (size=${size}b)`);
   }
 
   const storedTts = workDir ? loadStoredTtsAlignment(workDir) : null;
@@ -3335,8 +3339,13 @@ async function synthesizeFishAudioVoice(
 
       fs.writeFileSync(outputPath, audioBuffer);
       const dur = await probeVideoDurationSec(outputPath);
+      if (dur <= 0) {
+        const header = audioBuffer.slice(0, 16).toString("hex");
+        console.warn(`[Pipeline] Fish Audio ${label}: ${audioBuffer.length}b written but ffprobe finds no duration (header=${header}) — retrying`);
+        throw pipelineError(PIPELINE_ERROR.VOICEOVER_EMPTY, `Fish Audio returned unreadable audio (${audioBuffer.length} bytes, header=${header})`);
+      }
       console.log(`[Pipeline] Fish Audio ${label}: ${dur.toFixed(1)}s`);
-      return dur > 0 ? dur : Math.max(3, Math.round(audioBuffer.length / 40000));
+      return dur;
     } catch (err) {
       if (attempt === MAX_ATTEMPTS) throw err;
       await new Promise((r) => setTimeout(r, 500));
@@ -3401,8 +3410,13 @@ async function synthesizeElevenLabsVoice(
       }
       fs.writeFileSync(outputPath, audioBuffer);
       const dur = await probeVideoDurationSec(outputPath);
+      if (dur <= 0) {
+        const header = audioBuffer.slice(0, 16).toString("hex");
+        console.warn(`[Pipeline] ElevenLabs ${label}: ${audioBuffer.length}b written but ffprobe finds no duration (header=${header}) — retrying`);
+        throw pipelineError(PIPELINE_ERROR.VOICEOVER_EMPTY, `ElevenLabs returned unreadable audio (${audioBuffer.length} bytes)`);
+      }
       console.log(`[Pipeline] ElevenLabs ${label}: voice=${elevenVoiceId.slice(0, 10)}… ${dur.toFixed(1)}s`);
-      return dur > 0 ? dur : Math.max(3, Math.round(audioBuffer.length / 40000));
+      return dur;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (fishAudioFallbackEnabled() && isElevenLabsQuotaOrAuthError(msg)) {
@@ -3509,7 +3523,7 @@ export async function generateVoiceover(
         fs.writeFileSync(outputPath, audioBuffer);
         console.log(`[Pipeline] ElevenLabs TTS written: ${audioBuffer.length} bytes to ${outputPath}`);
 
-        let durationSec = 5;
+        let durationSec = 0;
         try {
           for (const probePath of FFPROBE_PATHS()) {
             try {
@@ -3523,8 +3537,10 @@ export async function generateVoiceover(
             } catch { /* try next */ }
           }
         } catch { /* use default */ }
-        if (durationSec === 5 && audioBuffer.length > 1000) {
-          durationSec = Math.max(3, Math.round(audioBuffer.length / 40000));
+        if (durationSec <= 0) {
+          const header = audioBuffer.slice(0, 16).toString("hex");
+          console.warn(`[Pipeline] ElevenLabs TTS scene: ffprobe finds no duration (${audioBuffer.length}b, header=${header}) — retrying`);
+          throw pipelineError(PIPELINE_ERROR.VOICEOVER_EMPTY, `ElevenLabs returned unreadable audio (${audioBuffer.length} bytes)`);
         }
         console.log(`[Pipeline] ElevenLabs TTS scene ${outputPath.match(/scene_(\d+)/)?.[1] ?? "?"}: ${durationSec}s`);
         return durationSec;
