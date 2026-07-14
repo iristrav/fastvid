@@ -48,6 +48,7 @@ type SingleResult =
   | "skipped_download"
   | "skipped_no_frames"
   | "skipped_no_vision"
+  | "skipped_has_tags"
   | "skipped_llm_failed"
   | "failed";
 
@@ -64,6 +65,12 @@ async function autoTitleSingleAsset(
     const asset = await getMediaArchiveAssetById(id);
     if (!asset || asset.archiveId !== archiveId) {
       return { result: "skipped_missing_asset" };
+    }
+
+    // Skip clips that already have tags — preserve existing human/AI tags.
+    const existingTags = normalizeMediaTags(asset.tags ?? []);
+    if (existingTags.length > 0) {
+      return { result: "skipped_has_tags" };
     }
 
     const loaded = await loadArchiveAssetFile(asset);
@@ -219,6 +226,9 @@ export async function autoTitleArchiveAssets(opts: {
       case "skipped_no_frames":
         skipped += 1;
         skipReasons.noFrames += 1;
+        break;
+      case "skipped_has_tags":
+        skipped += 1;
         break;
       case "skipped_no_vision":
         skipped += 1;
