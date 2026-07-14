@@ -250,7 +250,7 @@ export function pipelineWallClockGraceFactor(): number {
 
 /** When true, enforce hard wall-clock fail + router race timeout. Default OFF — jobs finish at their own pace. */
 export function pipelineWallClockLimitEnabled(): boolean {
-  return process.env.PIPELINE_WALL_CLOCK_LIMIT === "true";
+  return process.env.PIPELINE_WALL_CLOCK_LIMIT !== "false";
 }
 
 /** Re-queue jobs with no DB heartbeat (independent of wall-clock limit). Default ON. */
