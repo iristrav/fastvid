@@ -414,7 +414,7 @@ function providersToTry(primary: LlmProvider): LlmProvider[] {
 
   if (anthropicAvailable) push("anthropic");
   if (groqAvailable) push("groq");
-  // OpenAI is disabled — quota is exhausted; Anthropic + Groq cover all tasks.
+  if (openAiAvailable) push("openai");
   return out;
 }
 
