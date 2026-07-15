@@ -480,15 +480,19 @@ export async function detectInteriorCutTimesInFile(
   timeoutMs = 28_000
 ): Promise<number[]> {
   if (totalDur < MIN_SCENE_SEC * 2) return [];
-  const scdetT = Math.max(0.5, scdetThreshold() * 0.5);
-  const sceneT = Math.max(0.015, sceneThreshold() * 0.5);
+  const scdetT = Math.max(0.3, scdetThreshold() * 0.3);
+  const sceneT = Math.max(0.01, sceneThreshold() * 0.3);
   const half = Math.floor(timeoutMs / 2);
+  // Pass totalDur+1 so the parse functions' end-boundary filter (t < totalDur-MIN_SCENE_SEC)
+  // doesn't drop cuts that appear within the last 0.12s of the clip. We apply our own
+  // tighter end margin (one frame = 0.04s) below so the tail can be trimmed away.
+  const padDur = totalDur + 1;
   const [scdetCuts, sceneCuts] = await Promise.all([
-    detectScdetCutTimes(inputPath, totalDur, scdetT, half),
-    detectSceneFilterCutTimes(inputPath, totalDur, sceneT, half),
+    detectScdetCutTimes(inputPath, padDur, scdetT, half),
+    detectSceneFilterCutTimes(inputPath, padDur, sceneT, half),
   ]);
   return combineShotCutTimes([scdetCuts, sceneCuts]).filter(
-    (t) => t > MIN_SCENE_SEC && t < totalDur - MIN_SCENE_SEC
+    (t) => t > MIN_SCENE_SEC && t < totalDur - 0.04
   );
 }
 
@@ -727,14 +731,14 @@ async function rescanRangesForInteriorCuts(
           inputPath,
           range.start,
           range.end,
-          Math.max(0.5, scdetThreshold() * 0.5),
+          Math.max(0.3, scdetThreshold() * 0.3),
           perRangeTimeout
         ),
         detectSceneFilterCutTimesInWindow(
           inputPath,
           range.start,
           range.end,
-          Math.max(0.015, sceneThreshold() * 0.5),
+          Math.max(0.01, sceneThreshold() * 0.3),
           perRangeTimeout
         ),
       ]);
@@ -818,13 +822,13 @@ async function detectSceneCutTimes(inputPath: string, totalDur: number, deadline
       detectScdetCutTimes(
         inputPath,
         totalDur,
-        Math.max(2, scdetThreshold() * 0.55),
+        Math.max(0.3, scdetThreshold() * 0.3),
         Math.floor(scdetBudget * 0.5)
       ),
       detectSceneFilterCutTimes(
         inputPath,
         totalDur,
-        Math.max(0.1, sceneThreshold() * 0.55),
+        Math.max(0.01, sceneThreshold() * 0.3),
         Math.floor(sceneBudget * 0.5)
       ),
     ]);
