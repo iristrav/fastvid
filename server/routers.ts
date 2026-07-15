@@ -1868,6 +1868,14 @@ export const appRouter = router({
         const storageUrl = `/local-storage/${filename}`;
 
         try {
+          // Skip files smaller than 50KB — likely corrupt or incomplete uploads
+          const stat = fs.statSync(filePath);
+          if (stat.size < 50_000) {
+            console.log(`[Reindex] skip ${filename} — too small (${stat.size}b)`);
+            skipped++;
+            continue;
+          }
+
           const buffer = fs.readFileSync(filePath);
           let tags: string[] = [];
           let sourceNote = `Herindexed from disk: ${filename}`;
