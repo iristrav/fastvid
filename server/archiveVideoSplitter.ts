@@ -656,24 +656,20 @@ async function detectScdetCutTimesInWindow(
   const windowDur = windowEnd - windowStart;
   if (windowDur < MIN_SCENE_SEC * 2) return [];
 
-<<<<<<< HEAD
-  // Fast-seek (-ss before -i) is safe here because the analysis proxy has a keyframe every 5
-  // frames (-g 5 in normalizeSourceForAnalysis), so inaccuracy is at most a few frames.
-  const cmd =
-    `${ffmpegBin()} -ss ${windowStart.toFixed(3)} -i "${inputPath}" -t ${(windowEnd - windowStart).toFixed(3)} -an ` +
-=======
-  // Fast-seek: -ss before -i snaps to nearest keyframe, then -t limits decode length.
-  // PTS in output remain absolute (no -reset_timestamps), so normalizeWindowCutTimes
-  // handles them correctly. Fast-seek avoids decoding the entire video up to windowStart.
+  // Fast-seek (-ss before -i) outputs absolute PTS. +2s on -t ensures we don't cut short when
+  // the seek lands before windowStart. Filter directly to [windowStart, windowEnd] — skip
+  // normalizeWindowCutTimes whose relative-vs-absolute heuristic breaks for small windowStart values.
   const cmd =
     `${ffmpegBin()} -ss ${windowStart.toFixed(3)} -i "${inputPath}" ` +
     `-t ${(windowDur + 2).toFixed(3)} -an ` +
->>>>>>> c2af749 (fix(archive): improve scene cutting accuracy)
     `-vf "scale=480:-1,scdet=threshold=${threshold}:sc_pass=1,showinfo" -f null -`;
   const stderr = await runFfmpegDetect(cmd, timeoutMs);
   const fromMeta = parseScdetTimesFromFfmpeg(stderr, windowEnd + 2);
   const pts = fromMeta.length > 0 ? fromMeta : parsePtsTimesFromFfmpeg(stderr, windowEnd + 2);
-  return normalizeWindowCutTimes(pts, windowStart, windowEnd);
+  return mergeNearbyCuts(
+    pts.filter((t) => t > windowStart + MIN_SCENE_SEC && t < windowEnd - MIN_SCENE_SEC),
+    cutMergeGapSec()
+  );
 }
 
 async function detectSceneFilterCutTimesInWindow(
@@ -686,17 +682,18 @@ async function detectSceneFilterCutTimesInWindow(
   const windowDur = windowEnd - windowStart;
   if (windowDur < MIN_SCENE_SEC * 2) return [];
 
-  // Fast-seek — see detectScdetCutTimesInWindow for rationale.
+  // Fast-seek — absolute PTS, filter directly (see detectScdetCutTimesInWindow for rationale).
   const cmd =
-<<<<<<< HEAD
-    `${ffmpegBin()} -ss ${windowStart.toFixed(3)} -i "${inputPath}" -t ${(windowEnd - windowStart).toFixed(3)} -an ` +
-=======
     `${ffmpegBin()} -ss ${windowStart.toFixed(3)} -i "${inputPath}" ` +
     `-t ${(windowDur + 2).toFixed(3)} -an ` +
->>>>>>> c2af749 (fix(archive): improve scene cutting accuracy)
     `-vf "scale=480:-1,select='gt(scene,${threshold})',showinfo" -f null -`;
   const stderr = await runFfmpegDetect(cmd, timeoutMs);
-  return normalizeWindowCutTimes(parsePtsTimesFromFfmpeg(stderr, windowEnd + 2), windowStart, windowEnd);
+  return mergeNearbyCuts(
+    parsePtsTimesFromFfmpeg(stderr, windowEnd + 2).filter(
+      (t) => t > windowStart + MIN_SCENE_SEC && t < windowEnd - MIN_SCENE_SEC
+    ),
+    cutMergeGapSec()
+  );
 }
 
 /** Re-scan long segments for missed interior cuts (fixes clips with 2 shots in 1 file). */
@@ -1083,14 +1080,12 @@ async function prepareAnalysisVideo(
   totalDur: number,
   onProgress?: ArchiveSplitProgressFn
 ): Promise<string> {
-  const ext = path.extname(inputPath).toLowerCase();
   const codec = await probeVideoCodec(inputPath);
-  const isH264 = isH264Codec(codec);
-  if (ext === ".mp4" && (isH264 || !codec)) {
-    return inputPath;
-  }
+  // Always create the analysis proxy. This encodes with -g 5 (dense keyframes) so that
+  // fast-seek in window detection lands within ~5 frames of the target, not up to a full
+  // GOP away. Skipping the proxy for H264 was an optimisation that caused inaccurate seeks.
   console.log(
-    `[ArchiveSplit] normalizing ${ext || "unknown"} (${codec ?? "unknown codec"}) → H.264 MP4 for shot detect`
+    `[ArchiveSplit] building analysis proxy (${codec ?? "unknown codec"}, ${Math.round(totalDur / 60)} min)`
   );
   return normalizeSourceForAnalysis(inputPath, workDir, totalDur, onProgress);
 }
@@ -1412,12 +1407,6 @@ export async function splitVideoBySceneChanges(
     let analysisPath = await prepareAnalysisVideo(inputPath, workDir, effectiveDur, report);
     let cuts = await detectSceneCutTimes(analysisPath, effectiveDur, deadline);
 
-    // Retry on normalized video when exotic codecs/containers hid cuts on the first pass.
-    if (cuts.length < 2 && effectiveDur > MIN_SPLIT_VIDEO_SEC && analysisPath === inputPath) {
-      analysisPath = await normalizeSourceForAnalysis(inputPath, workDir, effectiveDur, report);
-      cuts = await detectSceneCutTimes(analysisPath, effectiveDur, deadline);
-      console.log(`[ArchiveSplit] retry after normalize: ${cuts.length} cut(s)`);
-    }
 
     let ranges = buildClipRanges(cuts, effectiveDur);
     ranges = mergeFlashFragmentsOnly(ranges);
