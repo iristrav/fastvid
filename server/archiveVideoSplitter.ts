@@ -85,8 +85,8 @@ const DEFAULT_MIN_OUTPUT_CLIP_SEC = 2.0;
 const DEFAULT_FLASH_MERGE_MAX_SEC = 0.0;
 const INTERNAL_RESCAN_MIN_SEC = 0.85;
 const INTERNAL_RESCAN_MAX_RANGES = 300;
-// 2 rescan passes — each pass scans every detected range for missed interior cuts at lower thresholds.
-// Without this, a 5s clip with an undetected hard cut remains a single multi-scene file.
+// Run 2 passes before splitLongRanges to catch missed interior cuts, plus 1 after to check
+// interval-split clips. Setting to 0 disables; increase if CPU budget allows.
 const INTERNAL_RESCAN_PASSES = 2;
 const SINGLE_SCENE_VALIDATE_MAX_DEPTH = 4;
 const DEFAULT_SCENE_THRESHOLD = 0.03;
@@ -656,14 +656,23 @@ async function detectScdetCutTimesInWindow(
   const windowDur = windowEnd - windowStart;
   if (windowDur < MIN_SCENE_SEC * 2) return [];
 
+<<<<<<< HEAD
   // Fast-seek (-ss before -i) is safe here because the analysis proxy has a keyframe every 5
   // frames (-g 5 in normalizeSourceForAnalysis), so inaccuracy is at most a few frames.
   const cmd =
     `${ffmpegBin()} -ss ${windowStart.toFixed(3)} -i "${inputPath}" -t ${(windowEnd - windowStart).toFixed(3)} -an ` +
+=======
+  // Fast-seek: -ss before -i snaps to nearest keyframe, then -t limits decode length.
+  // PTS in output remain absolute (no -reset_timestamps), so normalizeWindowCutTimes
+  // handles them correctly. Fast-seek avoids decoding the entire video up to windowStart.
+  const cmd =
+    `${ffmpegBin()} -ss ${windowStart.toFixed(3)} -i "${inputPath}" ` +
+    `-t ${(windowDur + 2).toFixed(3)} -an ` +
+>>>>>>> c2af749 (fix(archive): improve scene cutting accuracy)
     `-vf "scale=480:-1,scdet=threshold=${threshold}:sc_pass=1,showinfo" -f null -`;
   const stderr = await runFfmpegDetect(cmd, timeoutMs);
-  const fromMeta = parseScdetTimesFromFfmpeg(stderr, windowEnd);
-  const pts = fromMeta.length > 0 ? fromMeta : parsePtsTimesFromFfmpeg(stderr, windowEnd);
+  const fromMeta = parseScdetTimesFromFfmpeg(stderr, windowEnd + 2);
+  const pts = fromMeta.length > 0 ? fromMeta : parsePtsTimesFromFfmpeg(stderr, windowEnd + 2);
   return normalizeWindowCutTimes(pts, windowStart, windowEnd);
 }
 
@@ -677,11 +686,17 @@ async function detectSceneFilterCutTimesInWindow(
   const windowDur = windowEnd - windowStart;
   if (windowDur < MIN_SCENE_SEC * 2) return [];
 
+  // Fast-seek — see detectScdetCutTimesInWindow for rationale.
   const cmd =
+<<<<<<< HEAD
     `${ffmpegBin()} -ss ${windowStart.toFixed(3)} -i "${inputPath}" -t ${(windowEnd - windowStart).toFixed(3)} -an ` +
+=======
+    `${ffmpegBin()} -ss ${windowStart.toFixed(3)} -i "${inputPath}" ` +
+    `-t ${(windowDur + 2).toFixed(3)} -an ` +
+>>>>>>> c2af749 (fix(archive): improve scene cutting accuracy)
     `-vf "scale=480:-1,select='gt(scene,${threshold})',showinfo" -f null -`;
   const stderr = await runFfmpegDetect(cmd, timeoutMs);
-  return normalizeWindowCutTimes(parsePtsTimesFromFfmpeg(stderr, windowEnd), windowStart, windowEnd);
+  return normalizeWindowCutTimes(parsePtsTimesFromFfmpeg(stderr, windowEnd + 2), windowStart, windowEnd);
 }
 
 /** Re-scan long segments for missed interior cuts (fixes clips with 2 shots in 1 file). */
@@ -1460,6 +1475,19 @@ export async function splitVideoBySceneChanges(
       console.log(
         `[ArchiveSplit] max-duration split: ${beforeMaxDur} → ${ranges.length} clip(s) (max ${maxClipDurationSec()}s each)`
       );
+      // Re-scan the interval-split clips to find real cut boundaries inside them.
+      if (hasBudget()) {
+        report({
+          stage: "split_rescan",
+          message: `Rescanning interval-split clips for scene boundaries (${ranges.length} segments)…`,
+          percent: 46,
+        });
+        ranges = await rescanRangesForInteriorCuts(analysisPath, ranges, deadline, shouldContinue);
+        ranges = mergeFlashFragmentsOnly(ranges);
+        ranges = filterClipRangesBelowMinDuration(ranges, 2.0);
+        ranges = capClipRanges(ranges, maxArchiveClips());
+        console.log(`[ArchiveSplit] post-split rescan: ${ranges.length} clip(s)`);
+      }
     }
 
     console.log(
