@@ -240,7 +240,7 @@ function LazyArchiveMedia({
       <div ref={containerRef} className={className}>
         <video
           src={src ?? undefined}
-          className="w-full h-full object-cover object-[center_20%]"
+          className={`w-full h-full ${mode === "preview" ? "object-contain" : "object-cover object-[center_20%]"}`}
           muted
           playsInline
           preload={mode === "preview" ? "auto" : "metadata"}
@@ -276,20 +276,35 @@ function AssetPreviewModal({
   onClose: () => void;
   onTrimmed?: (newDurationSec: number) => void;
 }) {
-  const videoRef = useRef<HTMLVideoElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const [currentTime, setCurrentTime] = useState(0);
   const [trimAt, setTrimAt] = useState<number | null>(null);
   const [trimming, setTrimming] = useState(false);
   const trimMutation = trpc.mediaArchive.trimToSingleScene.useMutation();
   const duration = asset.durationSec ?? 0;
 
-  function handleTimeUpdate() {
-    if (videoRef.current) setCurrentTime(videoRef.current.currentTime);
+  function getVideo(): HTMLVideoElement | null {
+    return containerRef.current?.querySelector("video") ?? null;
   }
 
+  useEffect(() => {
+    // Attach timeupdate listener to the video rendered by LazyArchiveMedia.
+    const interval = setInterval(() => {
+      const v = getVideo();
+      if (v) {
+        const update = () => setCurrentTime(v.currentTime);
+        v.addEventListener("timeupdate", update);
+        clearInterval(interval);
+        return () => v.removeEventListener("timeupdate", update);
+      }
+    }, 100);
+    return () => clearInterval(interval);
+  }, [asset.id]);
+
   function markTrimPoint() {
-    if (videoRef.current) {
-      const t = videoRef.current.currentTime;
+    const v = getVideo();
+    if (v) {
+      const t = v.currentTime;
       if (t > 0.1 && t < duration - 0.1) setTrimAt(t);
     }
   }
@@ -358,18 +373,8 @@ function AssetPreviewModal({
           </div>
         </div>
 
-        <div className="bg-black flex items-center justify-center" style={{ height: "60vh" }}>
-          {asset.mediaType === "video" ? (
-            <video
-              ref={videoRef}
-              src={archiveClipMediaUrl(asset.id)}
-              controls
-              className="w-full h-full object-contain"
-              onTimeUpdate={handleTimeUpdate}
-            />
-          ) : (
-            <LazyArchiveMedia asset={asset} mode="preview" className="w-full h-full overflow-hidden" />
-          )}
+        <div ref={containerRef} className="bg-black flex items-center justify-center" style={{ height: "60vh" }}>
+          <LazyArchiveMedia asset={asset} mode="preview" className="w-full h-full overflow-hidden" />
         </div>
 
         {asset.mediaType === "video" && duration > 0 && (
