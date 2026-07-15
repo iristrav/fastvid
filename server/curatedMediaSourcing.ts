@@ -366,11 +366,9 @@ export function countVisualTagHits(
   visualTags: string[]
 ): number {
   if (!visualTags.length) return 0;
-  const title = (asset.title ?? "").toLowerCase();
   const assetTags = effectiveArchiveAssetTags(asset);
   let hits = 0;
   for (const vt of visualTags) {
-    if (title.includes(vt)) hits += 2;
     for (const t of assetTags) {
       if (t === vt || t.includes(vt) || vt.includes(t)) hits++;
     }
@@ -454,7 +452,7 @@ export function archiveAssetRejectedForBeat(
       beatText.toLowerCase()
     );
   if (!beatHistorical && isGeographyIncompatibleArchiveAsset(asset)) return true;
-  const hay = `${(asset.title ?? "").toLowerCase()} ${normalizeMediaTags(asset.tags ?? []).join(" ")}`;
+  const hay = normalizeMediaTags(asset.tags ?? []).join(" ");
   if (isOffTopicGeoUrbanVisual(hay) && !offTopicVisualAllowedForBeat(hay, beatText)) return true;
   return false;
 }
@@ -470,7 +468,7 @@ export function assetPassesBeatMinimum(
   literalVisualTags: string[] = [],
   videoTitle?: string
 ): boolean {
-  const hay = `${(asset.title ?? "").toLowerCase()} ${normalizeMediaTags(asset.tags ?? []).join(" ")}`;
+  const hay = normalizeMediaTags(asset.tags ?? []).join(" ");
   if (isNonDocumentaryVisualHay(hay)) return false;
   if (!metadataVisualBlocksEnabled()) return true;
   if (segmentLock && isWrongRegionForSegmentLock(hay, segmentLock)) return false;
@@ -481,13 +479,7 @@ export function assetPassesBeatMinimum(
   if (requiredGeo.length > 0) {
     if (isWrongGeoForBeat(asset, requiredGeo)) return false;
     const geoHits = countVisualTagHits(asset, requiredGeo);
-    if (geoHits === 0) {
-      const titleHay = (asset.title ?? "").toLowerCase();
-      const titleMentionsPlace = requiredGeo.some(
-        (g) => g.length >= 4 && titleHay.includes(g.replace(/-/g, " "))
-      );
-      if (!titleMentionsPlace) return false;
-    }
+    if (geoHits === 0) return false;
   }
 
   const geoTags = extractBeatGeoPlaceTags(beatText);
@@ -642,11 +634,9 @@ function scoreArchiveAssetSample(
   if (!combinedTags.length || !assets.length) return 0;
   let hits = 0;
   for (const asset of assets.slice(0, sampleSize)) {
-    const title = (asset.title ?? "").toLowerCase();
     const assetTags = normalizeMediaTags(asset.tags ?? []);
     const matched = combinedTags.some(
       (q) =>
-        title.includes(q) ||
         assetTags.some((t) => t === q || t.includes(q) || q.includes(t))
     );
     if (matched) hits++;
@@ -733,25 +723,13 @@ export function scoreCuratedAsset(
   videoVisualTopic: VideoVisualTopic = "general"
 ): number {
   const assetTags = normalizeMediaTags(asset.tags ?? []);
-  const title = (asset.title ?? "").toLowerCase();
-  const assetHay = `${title} ${assetTags.join(" ")}`;
+  const assetHay = assetTags.join(" ");
   if (isNonDocumentaryVisualHay(assetHay)) return 0;
   let score = 0;
   let beatHits = 0;
 
   if (beatText?.trim()) {
     const bl = beatText.toLowerCase();
-    if (title.length >= 5 && bl.includes(title)) {
-      score += 55;
-      beatHits += 2;
-    }
-    const titleWords = title.split(/\s+/).filter((w) => w.length >= 4);
-    const titleInBeat = titleWords.filter((w) => bl.includes(w)).length;
-    if (titleWords.length >= 2 && titleInBeat >= Math.min(2, titleWords.length)) {
-      score += 28;
-      beatHits++;
-    }
-
     // Person-name guarantee: if a tag names a specific person AND the beat text
     // mentions that person → strong boost, clip is guaranteed to rank above generics.
     for (const t of assetTags) {
@@ -761,26 +739,9 @@ export function scoreCuratedAsset(
         break; // one person match is enough
       }
     }
-    // Also check title words individually against beat text
-    for (const w of titleWords) {
-      if (w.length >= 4 && bl.includes(w)) {
-        score += 80;
-        beatHits += 2;
-        break;
-      }
-    }
   }
 
   for (const q of beatTags) {
-    if (title === q) {
-      score += 40;
-      beatHits++;
-      continue;
-    }
-    if (title.includes(q)) {
-      score += 24;
-      beatHits++;
-    }
     for (const t of assetTags) {
       if (t === q) {
         score += 42;
@@ -794,10 +755,6 @@ export function scoreCuratedAsset(
 
   const visualTags = beatText ? extractVisualSearchTags(beatText) : [];
   for (const vt of visualTags) {
-    if (title.includes(vt)) {
-      score += 32;
-      beatHits += 2;
-    }
     for (const t of assetTags) {
       if (t === vt || t.includes(vt) || vt.includes(t)) {
         score += 22;
@@ -881,18 +838,12 @@ export function scoreCuratedAsset(
 
   if (beatText?.trim()) {
     const anchor = extractPrimaryVisualAnchor(beatText);
-    const hay = `${title} ${assetTags.join(" ")}`;
     if (anchor) {
       const anchorNorm = anchor.toLowerCase().trim();
-      if (anchorNorm.length >= 4 && title.includes(anchorNorm)) {
-        score += 80;
-        beatHits += 3;
-      } else {
-        const anchorWords = anchorNorm.split(/\s+/).filter((w) => w.length >= 4);
-        if (anchorWords.length >= 2 && anchorWords.every((w) => hay.includes(w))) {
-          score += 48;
-          beatHits += 2;
-        }
+      const anchorWords = anchorNorm.split(/\s+/).filter((w) => w.length >= 4);
+      if (anchorWords.length >= 2 && anchorWords.every((w) => assetHay.includes(w))) {
+        score += 48;
+        beatHits += 2;
       }
     }
   }
@@ -907,7 +858,6 @@ export function scoreCuratedAsset(
   for (const anchor of topicAnchors) {
     const inBeat = beatLower.includes(anchor);
     const topicWeight = inBeat ? 1 : 0.3;
-    if (title.includes(anchor)) score += Math.round(10 * topicWeight);
     for (const t of assetTags) {
       if (t === anchor) score += Math.round(16 * topicWeight);
       else if (t.includes(anchor) || anchor.includes(t)) score += Math.round(6 * topicWeight);
@@ -968,8 +918,7 @@ function curatedSceneContextScore(
   const required = [...sceneTags, ...entityTags, ...salient];
   if (required.length === 0) return 0;
 
-  const title = (asset.title ?? "").toLowerCase();
-  const hay = `${title} ${normalizeMediaTags(asset.tags ?? []).join(" ")}`;
+  const hay = normalizeMediaTags(asset.tags ?? []).join(" ");
   let score = 0;
 
   for (const tag of sceneTags) {
@@ -991,7 +940,7 @@ function curatedSceneContextScore(
     if (isGenericPeopleAsset(asset)) score -= 85;
     else score -= 45;
   } else if (sceneTags.length > 0 && sceneHits === 0) {
-    if (/\b(man|men|person|portrait|unknown|civilian|people|crowd)\b/.test(title)) score -= 55;
+    if (/\b(man|men|person|portrait|unknown|civilian|people|crowd)\b/.test(hay)) score -= 55;
     else score -= 30;
   }
   if (entityTags.length > 0 && entityHits === 0 && sceneTags.length > 0 && sceneHits === 0) {
@@ -1030,8 +979,7 @@ export function isCuratedOffTopicAsset(
     return true;
   }
 
-  const title = (asset.title ?? "").toLowerCase();
-  const hay = `${title} ${normalizeMediaTags(asset.tags ?? []).join(" ")}`;
+  const hay = normalizeMediaTags(asset.tags ?? []).join(" ");
   const beatContextWwii =
     videoVisualTopic === "wwii" ||
     topicAnchors.some((a) =>
@@ -1048,7 +996,7 @@ export function isCuratedOffTopicAsset(
 export function isModernUrbanArchiveAsset(
   asset: Pick<MediaArchiveAsset, "title" | "tags" | "mediaType">
 ): boolean {
-  const hay = `${(asset.title ?? "").toLowerCase()} ${effectiveArchiveAssetTags(asset).join(" ")}`;
+  const hay = effectiveArchiveAssetTags(asset).join(" ");
   return /\b(timelapse|time.?lapse|drone|aerial|4k|uhd|hd\b|1080p|contemporary|modern|skyline|street view|kleur|color footage|cityscape|urban scene|stadsmilieu|vandaag|today|current|recent|living city|walkable|bike lane|fietspad|tram|metro|ns trein|train station|gracht|canal tour)\b/i.test(
     hay
   );
@@ -1060,7 +1008,7 @@ export function isGeographyIncompatibleArchiveAsset(
 ): boolean {
   if (isWwiiWarArchiveAsset(asset)) return true;
   if (isCuratedInterviewAsset(asset)) return true;
-  const hay = `${(asset.title ?? "").toLowerCase()} ${effectiveArchiveAssetTags(asset).join(" ")}`;
+  const hay = effectiveArchiveAssetTags(asset).join(" ");
   if (/\b(protest(?:ing|ers?|s)?|demonstration|demonstrators?|demonstratie|betog(?:ing|ers?)?|riot(?:ing|ers?)?|activists?|picket(?:ing|ers?)?|civil unrest|protest march|street protest)\b/i.test(hay)) {
     return true;
   }
@@ -1074,9 +1022,7 @@ export function isGeographyIncompatibleArchiveAsset(
 
 /** Modern talking-head / historian interview clips — poor B-roll for documentaries. */
 export function isCuratedInterviewAsset(asset: Pick<MediaArchiveAsset, "title" | "tags">): boolean {
-  const title = (asset.title ?? "").toLowerCase();
-  const tags = normalizeMediaTags(asset.tags ?? []).join(" ");
-  const hay = `${title} ${tags}`;
+  const hay = normalizeMediaTags(asset.tags ?? []).join(" ");
   return /\b(interview|historicus|bespreekt|talking head|woonkamer|bibliotheek|oudere man|man geeft|gesprek met)\b/i.test(
     hay
   );
@@ -1084,8 +1030,7 @@ export function isCuratedInterviewAsset(asset: Pick<MediaArchiveAsset, "title" |
 
 /** Archival parade footage, speeches, period video — not generic stills. */
 export function isCuratedHistoricalFootage(asset: Pick<MediaArchiveAsset, "title" | "tags" | "mediaType" | "mixKind">): boolean {
-  const title = (asset.title ?? "").toLowerCase();
-  const hay = `${title} ${normalizeMediaTags(asset.tags ?? []).join(" ")}`;
+  const hay = normalizeMediaTags(asset.tags ?? []).join(" ");
   if (asset.mediaType === "video") {
     return /\b(parade|militair|zwart-wit|archief|1930|1934|1939|1945|hitler|nazi|berlijn|troepen|soldaten|propaganda|rally|march|speech|toespraak|crowd|war|oorlog|wehrmacht|ss|bijeenkomst|sporting|balkon)\b/i.test(
       hay
@@ -1122,7 +1067,7 @@ function curatedInterviewPenalty(asset: Pick<MediaArchiveAsset, "title" | "tags"
 export function isCuratedPosterOrStillAsset(
   asset: Pick<MediaArchiveAsset, "title" | "tags" | "mediaType">
 ): boolean {
-  const hay = `${(asset.title ?? "").toLowerCase()} ${normalizeMediaTags(asset.tags ?? []).join(" ")}`;
+  const hay = normalizeMediaTags(asset.tags ?? []).join(" ");
   return /\b(portret|portrait|poster|propagandabeeld|propaganda poster|affiche|foto|photo|still|portrait)\b/i.test(
     hay
   );
@@ -1132,7 +1077,7 @@ export function isCuratedPosterOrStillAsset(
 export function isCuratedStaticInteriorAsset(
   asset: Pick<MediaArchiveAsset, "title" | "tags">
 ): boolean {
-  const hay = `${(asset.title ?? "").toLowerCase()} ${normalizeMediaTags(asset.tags ?? []).join(" ")}`;
+  const hay = normalizeMediaTags(asset.tags ?? []).join(" ");
   return /\b(cel met|bunker|interieur|bed en tafel|fuhrerbunker|slachthuis|gevangenis|kamer met)\b/i.test(
     hay
   );
@@ -1151,7 +1096,7 @@ export function isCuratedActionFootage(
   asset: Pick<MediaArchiveAsset, "title" | "tags" | "mediaType">
 ): boolean {
   if (asset.mediaType !== "video") return false;
-  const hay = `${(asset.title ?? "").toLowerCase()} ${normalizeMediaTags(asset.tags ?? []).join(" ")}`;
+  const hay = normalizeMediaTags(asset.tags ?? []).join(" ");
   return /\b(parade|toespraak|speech|militair|march|rally|bijeenkomst|ceremonie|troepen|crowd|sporting|gebouw|omgeving)\b/i.test(
     hay
   );
@@ -1173,11 +1118,9 @@ function tMatches(a: string, b: string): boolean {
 
 function assetMatchesTopicAnchors(asset: MediaArchiveAsset, topicAnchors: string[]): boolean {
   if (!topicAnchors.length) return false;
-  const title = (asset.title ?? "").toLowerCase();
   const assetTags = normalizeMediaTags(asset.tags ?? []);
   return topicAnchors.some(
     (q) =>
-      title.includes(q) ||
       assetTags.some((t) => t === q || t.includes(q) || q.includes(t))
   );
 }
@@ -1199,11 +1142,9 @@ function resolveArchiveAssetLocalPath(asset: MediaArchiveAsset): string | null {
 
 function assetMatchesBeatTags(asset: MediaArchiveAsset, beatTags: string[]): boolean {
   if (!beatTags.length) return true;
-  const title = (asset.title ?? "").toLowerCase();
   const assetTags = normalizeMediaTags(asset.tags ?? []);
   return beatTags.some(
     (q) =>
-      title.includes(q) ||
       assetTags.some((t) => t === q || t.includes(q) || q.includes(t))
   );
 }
@@ -1240,7 +1181,7 @@ export async function listCuratedArchiveCandidates(
     for (const asset of assets) {
       if (excludeIds.has(asset.id)) continue;
       if (excludeStorageUrls.has(asset.storageUrl)) continue;
-      const assetHay = `${(asset.title ?? "").toLowerCase()} ${normalizeMediaTags(asset.tags ?? []).join(" ")}`;
+      const assetHay = normalizeMediaTags(asset.tags ?? []).join(" ");
       if (isNonDocumentaryVisualHay(assetHay)) continue;
       if (metadataBlocks && isCuratedOffTopicAsset(asset, topicAnchors, beatTags, videoVisualTopic)) continue;
       if (metadataBlocks && geoRequired.length > 0 && isWrongGeoForBeat(asset, geoRequired)) continue;
@@ -1266,7 +1207,7 @@ export async function listCuratedArchiveCandidates(
       for (const asset of assets) {
         if (excludeIds.has(asset.id)) continue;
         if (excludeStorageUrls.has(asset.storageUrl)) continue;
-        const assetHay = `${(asset.title ?? "").toLowerCase()} ${normalizeMediaTags(asset.tags ?? []).join(" ")}`;
+        const assetHay = normalizeMediaTags(asset.tags ?? []).join(" ");
         if (isNonDocumentaryVisualHay(assetHay)) continue;
         if (metadataBlocks && isCuratedOffTopicAsset(asset, topicAnchors, beatTags, videoVisualTopic)) continue;
         fallback.push({ asset, score: 1, archiveName: archive.name, archiveNicheTags: normalizeMediaTags(archive.nicheTags ?? []) });
@@ -1284,7 +1225,7 @@ export async function listCuratedArchiveCandidates(
       const nicheTags = normalizeMediaTags(archive.nicheTags ?? []);
       for (const asset of assets) {
         if (excludeStorageUrls.has(asset.storageUrl)) continue;
-        const assetHay = `${(asset.title ?? "").toLowerCase()} ${normalizeMediaTags(asset.tags ?? []).join(" ")}`;
+        const assetHay = normalizeMediaTags(asset.tags ?? []).join(" ");
         if (isNonDocumentaryVisualHay(assetHay)) continue;
         const score = scoreCuratedAsset(asset, nicheTags, beatTags, topicAnchors, beatText, videoVisualTopic);
         pool.push({ asset, score: Math.max(score, 1), archiveName: archive.name, archiveNicheTags: nicheTags });
@@ -1968,7 +1909,7 @@ export async function searchCuratedCandidatesForBeat(
 
   if (ranked.length > 0) {
     const top5 = ranked.slice(0, 5).map((p, i) =>
-      `    #${i + 1} score=${p.score} "${p.asset.title ?? "?"}" tags=[${(p.asset.tags ?? []).join(", ")}]`
+      `    #${i + 1} score=${p.score} id=${p.asset.id} tags=[${(p.asset.tags ?? []).join(", ")}]`
     );
     console.log(
       `[ArchiveSearch] zin ${beat.index} — ${ranked.length} kandidaten gevonden:\n` + top5.join("\n")
@@ -2359,12 +2300,11 @@ export async function fetchCuratedArchiveBeatClip(
         }
       );
       const matchedTags = beatTags.filter((t) => {
-        const title = (picked.asset.title ?? "").toLowerCase();
         const tags = normalizeMediaTags(picked.asset.tags ?? []);
-        return title.includes(t) || tags.some((x) => x === t || x.includes(t));
+        return tags.some((x) => x === t || x.includes(t));
       });
       console.log(
-        `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: curated archive "${picked.asset.title ?? picked.asset.id}" ` +
+        `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: curated archive #${picked.asset.id} ` +
           `from "${picked.archiveName}" (score ${picked.score}, ${clampHoldSec(holdSec).toFixed(1)}s` +
           (matchedTags.length ? `, matched: ${matchedTags.slice(0, 4).join(", ")}` : "") +
           `)`

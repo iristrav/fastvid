@@ -127,6 +127,64 @@ const TAG_JSON_SCHEMA_MINIMAL = {
   },
 } as const;
 
+// ── Audio transcription for richer tagging ────────────────────────────────────
+
+function whisperKeyAndUrl(): { key: string; url: string; model: string } | null {
+  const groqKey = groqKeyFromEnv();
+  if (groqKey) {
+    return {
+      key: groqKey,
+      url: "https://api.groq.com/openai/v1/audio/transcriptions",
+      model: "whisper-large-v3",
+    };
+  }
+  const openaiKey = process.env.OPENAI_API_KEY?.trim() || process.env.LLM_API_KEY?.trim();
+  if (openaiKey) {
+    return { key: openaiKey, url: "https://api.openai.com/v1/audio/transcriptions", model: "whisper-1" };
+  }
+  return null;
+}
+
+/**
+ * Extract up to 60s of audio from a video clip and transcribe it with Whisper.
+ * Returns the transcript text or null if unavailable/failed (non-blocking).
+ */
+async function transcribeClipAudio(videoPath: string): Promise<string | null> {
+  const whisper = whisperKeyAndUrl();
+  if (!whisper) return null;
+
+  const tmpAudio = path.join(os.tmpdir(), `fv_arc_audio_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.mp3`);
+  try {
+    const ffmpegBin = process.env.FFMPEG_BIN ?? "ffmpeg";
+    // Extract first 60s as mono MP3 at 16kHz — fast, small, enough for Whisper
+    await execAsync(
+      `${ffmpegBin} -y -i "${videoPath}" -t 60 -vn -ac 1 -ar 16000 -b:a 32k "${tmpAudio}" 2>/dev/null`,
+      { timeout: 30_000 }
+    );
+    if (!fs.existsSync(tmpAudio) || fs.statSync(tmpAudio).size < 1000) return null;
+
+    const buf = fs.readFileSync(tmpAudio);
+    const formData = new FormData();
+    formData.append("file", new Blob([buf], { type: "audio/mpeg" }), "clip.mp3");
+    formData.append("model", whisper.model);
+    formData.append("response_format", "text");
+
+    const resp = await fetch(whisper.url, {
+      method: "POST",
+      headers: { authorization: `Bearer ${whisper.key}` },
+      body: formData,
+      signal: AbortSignal.timeout(45_000),
+    });
+    if (!resp.ok) return null;
+    const text = (await resp.text()).trim();
+    return text.length > 5 ? text.slice(0, 1200) : null;
+  } catch {
+    return null;
+  } finally {
+    try { fs.unlinkSync(tmpAudio); } catch { /* ignore */ }
+  }
+}
+
 /** Max searchable tags stored per asset (pipeline + semantic matching). Geo slugs prioritized. */
 export const ARCHIVE_MAX_TAGS = 4;
 
@@ -719,6 +777,7 @@ async function invokeArchiveVisionTagging(
     parentFilename?: string;
     userTags?: string[];
     clipLabel?: string;
+    transcript?: string;
   },
   opts: { imageDetail?: "auto" | "low" | "high"; preferJsonObject?: boolean; bulk?: boolean } = {}
 ): Promise<{ metadata: ArchiveAssetAiMetadata | null; error?: string }> {
@@ -835,6 +894,7 @@ function buildVisionPrompt(
     parentFilename?: string;
     userTags?: string[];
     clipLabel?: string;
+    transcript?: string;
   },
   frameCount = 1,
   bulk = false
@@ -858,6 +918,9 @@ function buildVisionPrompt(
     if (context.clipLabel) lines.push(`Clip: ${context.clipLabel}.`);
     if (context.archiveNicheTags?.length) {
       lines.push(`Archive topic: ${context.archiveNicheTags.slice(0, 8).join(", ")}.`);
+    }
+    if (context.transcript) {
+      lines.push(`Audio transcript: "${context.transcript}"`);
     }
     return lines.join("\n");
   }
@@ -901,6 +964,9 @@ function buildVisionPrompt(
   if (context.userTags?.length) {
     lines.push(`Existing tags (add to these, do not repeat unless relevant): ${context.userTags.join(", ")}`);
   }
+  if (context.transcript) {
+    lines.push(`\nAudio transcript of this clip (use names, places, events mentioned to make tags more specific):\n"${context.transcript}"`);
+  }
   return lines.join("\n");
 }
 
@@ -920,11 +986,21 @@ export async function generateArchiveAssetAiMetadataFromPath(
     return { metadata: null, frameCount: 0, error: "AI tagging disabled" };
   }
   const maxFrames = opts.maxFrames ?? (opts.bulk ? 1 : 5);
-  const previews = await previewImagesFromFilePath(filePath, mimeType, maxFrames);
+  const isVideo = mimeType.startsWith("video/");
+
+  // Run frame extraction and audio transcription in parallel
+  const [previews, transcript] = await Promise.all([
+    previewImagesFromFilePath(filePath, mimeType, maxFrames),
+    isVideo ? transcribeClipAudio(filePath).catch(() => null) : Promise.resolve(null),
+  ]);
+
   if (previews.length === 0) {
     return { metadata: null, frameCount: 0, error: "Could not extract preview frames (FFmpeg)" };
   }
-  const vision = await invokeArchiveVisionTagging(previews, context, {
+  if (transcript) {
+    console.log(`[ArchiveAI] transcript (${transcript.length}c): "${transcript.slice(0, 80)}…"`);
+  }
+  const vision = await invokeArchiveVisionTagging(previews, { ...context, transcript: transcript ?? undefined }, {
     imageDetail: opts.imageDetail ?? (opts.bulk ? "low" : "high"),
     preferJsonObject: opts.bulk,
     bulk: opts.bulk,

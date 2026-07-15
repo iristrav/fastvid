@@ -1251,12 +1251,14 @@ export type SplitVideoResult = {
  * Caller must invoke result.cleanup() after consuming all segments.
  */
 export async function splitVideoBySceneChanges(
-  inputBuffer: Buffer,
+  inputBufferOrPath: Buffer | string,
   mimeType: string,
   onProgress?: ArchiveSplitProgressFn,
   shouldContinue?: () => boolean,
   options?: ArchiveSplitOptions
 ): Promise<SplitVideoResult> {
+  const inputBuffer = Buffer.isBuffer(inputBufferOrPath) ? inputBufferOrPath : null;
+  const existingPath = typeof inputBufferOrPath === "string" ? inputBufferOrPath : null;
   const startedAt = Date.now();
   const deadline = startedAt + splitBudgetMs();
   const hasBudget = () => Date.now() < deadline;
@@ -1313,16 +1315,24 @@ export async function splitVideoBySceneChanges(
   const clipDir = fs.mkdtempSync(path.join(clipBase, "fastvid-archive-split-"));
   try {
     const ext = mimeType.includes("webm") ? "webm" : mimeType.includes("quicktime") || mimeType.includes("mov") ? "mov" : "mp4";
-    const inputPath = path.join(workDir, `source.${ext}`);
-    console.log(`[ArchiveSplit] writing ${(inputBuffer.length / (1024 * 1024)).toFixed(1)}MB source → ${inputPath}`);
-    fs.writeFileSync(inputPath, inputBuffer);
-    const writtenBytes = fs.statSync(inputPath).size;
-    if (writtenBytes !== inputBuffer.length) {
-      throw new ArchiveSplitError(
-        `Source file truncated (${writtenBytes}/${inputBuffer.length} bytes) — /tmp may be full`
-      );
+    let inputPath: string;
+    if (existingPath) {
+      // File already on disk — use directly, no copy needed (saves memory + /tmp space).
+      inputPath = existingPath;
+      const existingBytes = fs.statSync(existingPath).size;
+      console.log(`[ArchiveSplit] using existing source file ${(existingBytes / (1024 * 1024)).toFixed(1)}MB → ${inputPath}`);
+    } else {
+      inputPath = path.join(workDir, `source.${ext}`);
+      console.log(`[ArchiveSplit] writing ${(inputBuffer!.length / (1024 * 1024)).toFixed(1)}MB source → ${inputPath}`);
+      fs.writeFileSync(inputPath, inputBuffer!);
+      const writtenBytes = fs.statSync(inputPath).size;
+      if (writtenBytes !== inputBuffer!.length) {
+        throw new ArchiveSplitError(
+          `Source file truncated (${writtenBytes}/${inputBuffer!.length} bytes) — /tmp may be full`
+        );
+      }
+      console.log(`[ArchiveSplit] source written ok (${writtenBytes} bytes)`);
     }
-    console.log(`[ArchiveSplit] source written ok (${writtenBytes} bytes)`);
 
 
 
@@ -1338,7 +1348,7 @@ export async function splitVideoBySceneChanges(
       const probe = JSON.parse(probeOut) as { streams?: Array<{ codec_name?: string; nb_frames?: string; duration?: string; bit_rate?: string }>; format?: { size?: string; duration?: string } };
       const stream = probe.streams?.[0];
       console.log(
-        `[ArchiveSplit] source probe: bufSize=${(inputBuffer.length / (1024 * 1024)).toFixed(1)}MB ` +
+        `[ArchiveSplit] source probe: bufSize=${((inputBuffer?.length ?? fs.statSync(inputPath).size) / (1024 * 1024)).toFixed(1)}MB ` +
         `fileSize=${probe.format?.size ?? "?"} ` +
         `format_dur=${probe.format?.duration ?? "?"} ` +
         `stream_dur=${stream?.duration ?? "?"} ` +
@@ -1370,7 +1380,7 @@ export async function splitVideoBySceneChanges(
         try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* ignore */ }
         try { fs.rmSync(clipDir, { recursive: true, force: true }); } catch { /* ignore */ }
       };
-      return { segments: [{ buffer: inputBuffer, startSec: 0, endSec: effectiveDur, durationSec: effectiveDur, index: 0 }], cleanup };
+      return { segments: [{ buffer: inputBuffer ?? Buffer.alloc(0), startSec: 0, endSec: effectiveDur, durationSec: effectiveDur, index: 0 }], cleanup };
     }
 
     report({

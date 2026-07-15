@@ -285,7 +285,6 @@ function AssetPreviewModal({
       >
         <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
           <div className="min-w-0">
-            <h3 className="text-white font-semibold truncate">{asset.title || "Untitled"}</h3>
             {asset.sourceNote && (
               <p className="text-xs text-slate-400 truncate mt-0.5">{asset.sourceNote}</p>
             )}
@@ -441,12 +440,6 @@ function AssetCard({
           {editing ? (
             <>
               <input
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                className="w-full bg-white/5 border border-white/10 rounded px-2 py-1 text-xs text-white"
-                placeholder="Title"
-              />
-              <input
                 value={tags}
                 onChange={(e) => setTags(e.target.value)}
                 className="w-full bg-white/5 border border-white/10 rounded px-2 py-1 text-xs text-white"
@@ -465,7 +458,7 @@ function AssetCard({
                 <button
                   onClick={() => {
                     onSave({
-                      title: title.trim(),
+                      title: "",
                       tags: parseTagsInput(tags),
                       mixKind,
                       sourceNote: sourceNote.trim() || undefined,
@@ -484,7 +477,6 @@ function AssetCard({
             </>
           ) : (
             <>
-              <p className="text-sm text-white font-medium truncate">{asset.title || "Untitled"}</p>
               {asset.sourceNote && (
                 <p className="text-xs text-slate-500 line-clamp-2">{asset.sourceNote}</p>
               )}
