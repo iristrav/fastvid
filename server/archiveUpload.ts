@@ -88,8 +88,9 @@ function scheduleIntelligencePipeline(assetId: number): void {
 
 export type ArchiveUploadInput = {
   archiveId: number;
+  /** Raw file bytes. Use `inputPath` instead for large files to avoid loading GBs into RAM. */
   buffer?: Buffer;
-  /** Path to file on disk — avoids loading into memory. Used by chunked upload assembly. */
+  /** Path to the source file on disk — preferred over `buffer` for large uploads. */
   inputPath?: string;
   mimeType: string;
   filename?: string;
@@ -174,7 +175,18 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
     throw new ArchiveUploadError(404, appErrorMessage(APP_ERROR.NOT_FOUND, "Archive not found"));
   }
 
+  // Resolve buffer lazily — prefer inputPath to avoid loading GBs into RAM.
+  // For video splitting we pass inputPath directly; buffer is only read for images or single-clip videos.
+  const resolveBuffer = (): Buffer => {
+    if (input.buffer && input.buffer.length > 0) return input.buffer;
+    if (input.inputPath) return fs.readFileSync(input.inputPath);
+    throw new ArchiveUploadError(400, appErrorMessage(APP_ERROR.SERVICE_ERROR, "No file data provided"));
+  };
+
   const maxBytes = maxArchiveUploadBytes();
+  const fileSize = input.buffer ? input.buffer.length
+    : input.inputPath ? fs.statSync(input.inputPath).size
+    : 0;
   if (fileSize > maxBytes) {
     throw new ArchiveUploadError(
       400,
@@ -354,7 +366,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
     let splitCleanup: (() => void) | undefined;
     try {
       const splitResult = await splitVideoBySceneChanges(
-        input.inputPath ?? input.buffer!,
+        input.inputPath ?? input.buffer ?? resolveBuffer(),
         mimeType,
         onSplitProgress,
         uploadShouldContinue(jobId),
@@ -363,8 +375,6 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
       segments = splitResult.segments;
       splitCleanup = splitResult.cleanup;
       console.log(`[ArchiveUpload] split complete: ${segments.length} segment(s) returned, savedCount=${savedCount}`);
-      // Clear buffer reference so GC can reclaim memory.
-      (input as Record<string, unknown>).buffer = undefined;
     } catch (err) {
       if (err instanceof ArchiveSplitError && isArchiveUploadCancelRequested(jobId)) {
         finishArchiveUploadJobCancelled(jobId);
@@ -460,11 +470,9 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
   const ext = isVideo
     ? (mimeType.includes("webm") ? "webm" : mimeType.includes("quicktime") || mimeType.includes("mov") ? "mov" : "mp4")
     : (mimeType.includes("png") ? "png" : mimeType.includes("gif") ? "gif" : mimeType.includes("webp") ? "webp" : "jpg");
-  // For non-split path, load the buffer now (only time it's needed for a single asset).
-  const singleBuffer = input.buffer ?? fs.readFileSync(input.inputPath!);
-
+  const buf = resolveBuffer();
   const enriched = await enrichArchiveAssetFields({
-    buffer: singleBuffer,
+    buffer: buf,
     mimeType,
     autoGenerateTags,
     baseTitle,
@@ -475,7 +483,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
     userProvidedTitle,
   });
   const key = `media-archive/${input.archiveId}/${Date.now()}-${Math.random().toString(36).slice(2, 6)}.${ext}`;
-  const { url, key: storedKey } = await storagePut(key, singleBuffer, mimeType);
+  const { url, key: storedKey } = await storagePut(key, buf, mimeType);
 
   let assetId: number | null | undefined;
   try {
@@ -502,7 +510,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
     throw new ArchiveUploadError(500, appErrorMessage(APP_ERROR.SERVICE_ERROR, "Failed to save asset"));
   }
   scheduleArchiveEmbeddingIndex(assetId);
-  if (isVideo) scheduleClipEmbeddingFromBuffer(assetId, singleBuffer);
+  if (isVideo) scheduleClipEmbeddingFromBuffer(assetId, buf);
 
   const asset = await getMediaArchiveAssetById(assetId);
   finishArchiveUploadJob(jobId, true, `${isVideo ? "Video" : "Image"} saved`, {
@@ -781,7 +789,7 @@ async function handleArchiveAssemble(req: Request, res: Response) {
     const cleanupFinal = () => { try { if (fs.existsSync(finalPath)) fs.unlinkSync(finalPath); } catch { /* ignore */ } };
     const uploadInput: ArchiveUploadInput = {
       archiveId,
-      inputPath: finalPath,  // pass path — avoids loading the full file into memory
+      inputPath: finalPath,
       mimeType,
       filename,
       tags,

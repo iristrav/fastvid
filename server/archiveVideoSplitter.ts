@@ -1316,23 +1316,22 @@ export async function splitVideoBySceneChanges(
   try {
     const ext = mimeType.includes("webm") ? "webm" : mimeType.includes("quicktime") || mimeType.includes("mov") ? "mov" : "mp4";
     let inputPath: string;
-    if (existingPath) {
-      // File already on disk — use directly, no copy needed (saves memory + /tmp space).
-      inputPath = existingPath;
-      const existingBytes = fs.statSync(existingPath).size;
-      console.log(`[ArchiveSplit] using existing source file ${(existingBytes / (1024 * 1024)).toFixed(1)}MB → ${inputPath}`);
+    if (typeof inputBufferOrPath === "string") {
+      // Already a file path — use directly, no copy needed (saves RAM + /tmp space)
+      inputPath = inputBufferOrPath;
+      console.log(`[ArchiveSplit] using source file directly: ${inputPath} (${(fs.statSync(inputPath).size / (1024 * 1024)).toFixed(1)}MB)`);
     } else {
       inputPath = path.join(workDir, `source.${ext}`);
-      console.log(`[ArchiveSplit] writing ${(inputBuffer!.length / (1024 * 1024)).toFixed(1)}MB source → ${inputPath}`);
-      fs.writeFileSync(inputPath, inputBuffer!);
+      console.log(`[ArchiveSplit] writing ${(inputBufferOrPath.length / (1024 * 1024)).toFixed(1)}MB source → ${inputPath}`);
+      fs.writeFileSync(inputPath, inputBufferOrPath);
       const writtenBytes = fs.statSync(inputPath).size;
-      if (writtenBytes !== inputBuffer!.length) {
+      if (writtenBytes !== inputBufferOrPath.length) {
         throw new ArchiveSplitError(
-          `Source file truncated (${writtenBytes}/${inputBuffer!.length} bytes) — /tmp may be full`
+          `Source file truncated (${writtenBytes}/${inputBufferOrPath.length} bytes) — /tmp may be full`
         );
       }
-      console.log(`[ArchiveSplit] source written ok (${writtenBytes} bytes)`);
     }
+    console.log(`[ArchiveSplit] source ready (${fs.statSync(inputPath).size} bytes)`);
 
 
 
@@ -1348,8 +1347,7 @@ export async function splitVideoBySceneChanges(
       const probe = JSON.parse(probeOut) as { streams?: Array<{ codec_name?: string; nb_frames?: string; duration?: string; bit_rate?: string }>; format?: { size?: string; duration?: string } };
       const stream = probe.streams?.[0];
       console.log(
-        `[ArchiveSplit] source probe: bufSize=${((inputBuffer?.length ?? fs.statSync(inputPath).size) / (1024 * 1024)).toFixed(1)}MB ` +
-        `fileSize=${probe.format?.size ?? "?"} ` +
+        `[ArchiveSplit] source probe: fileSize=${probe.format?.size ?? "?"} ` +
         `format_dur=${probe.format?.duration ?? "?"} ` +
         `stream_dur=${stream?.duration ?? "?"} ` +
         `codec=${stream?.codec_name ?? "?"} ` +
@@ -1380,7 +1378,7 @@ export async function splitVideoBySceneChanges(
         try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* ignore */ }
         try { fs.rmSync(clipDir, { recursive: true, force: true }); } catch { /* ignore */ }
       };
-      return { segments: [{ buffer: inputBuffer ?? Buffer.alloc(0), startSec: 0, endSec: effectiveDur, durationSec: effectiveDur, index: 0 }], cleanup };
+      return { segments: [{ buffer: typeof inputBufferOrPath === "string" ? fs.readFileSync(inputBufferOrPath) : inputBufferOrPath, startSec: 0, endSec: effectiveDur, durationSec: effectiveDur, index: 0 }], cleanup };
     }
 
     report({
