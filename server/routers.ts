@@ -84,6 +84,10 @@ import { processArchiveAssetUpload, ArchiveUploadError } from "./archiveUpload";
 import { archiveAiTaggingEnabled } from "./archiveAssetTagging";
 import { autoTitleArchiveAssets, probeArchiveAssetAiTag } from "./archiveBulkVisionTagging";
 import { bulkRetagArchiveGeo } from "./archiveBulkGeoRetag";
+import { LOCAL_UPLOADS_DIR } from "./storageLocal";
+import { enrichArchiveAssetFields } from "./archiveAssetTagging";
+import * as fs from "fs";
+import * as path from "path";
 import { auditArchiveAssetScenes } from "./archiveSceneAudit";
 import { trimArchiveAssetToFirstScene } from "./archiveTrimToScene";
 import { archiveAssetMediaStatus } from "./archiveAssetLoad";
@@ -1819,6 +1823,95 @@ export const appRouter = router({
       await deleteMediaArchiveAssets(logoIds);
       console.log(`[Admin] deleteLogoClips archive=${input.archiveId}: deleted ${logoIds.length}/${assets.length}`);
       return { deleted: logoIds.length, scanned: assets.length };
+    }),
+
+    /**
+     * Reindex orphaned clips from disk back into the database.
+     * Scans LOCAL_UPLOADS_DIR for media-archive_<archiveId>_*.mp4 files
+     * that have no matching storageUrl row in media_archive_assets, then
+     * inserts them with AI tagging.
+     */
+    reindexOrphanedClips: adminProcedure.input(z.object({
+      archiveId: z.number().int(),
+      autoGenerateTags: z.boolean().default(true),
+      limit: z.number().int().min(1).max(500).default(100),
+    })).mutation(async ({ input }) => {
+      const archive = await getMediaArchiveById(input.archiveId);
+      if (!archive) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Archive not found");
+
+      // Collect all media-archive files for this archiveId from disk
+      const prefix = `media-archive_${input.archiveId}_`;
+      let allFiles: string[];
+      try {
+        allFiles = fs.readdirSync(LOCAL_UPLOADS_DIR).filter(
+          (f) => f.startsWith(prefix) && f.endsWith(".mp4")
+        );
+      } catch {
+        return { inserted: 0, skipped: 0, total: 0, error: `Cannot read ${LOCAL_UPLOADS_DIR}` };
+      }
+
+      // Build a set of storageUrls already in the DB
+      const existing = await getMediaArchiveAssets(input.archiveId);
+      const existingUrls = new Set(existing.map((a) => a.storageUrl));
+
+      // Filter to only files not yet in the DB
+      const orphans = allFiles.filter((f) => !existingUrls.has(`/local-storage/${f}`));
+      const toProcess = orphans.slice(0, input.limit);
+
+      console.log(`[Reindex] archive=${input.archiveId}: ${allFiles.length} on disk, ${existing.length} in DB, ${orphans.length} orphans, processing ${toProcess.length}`);
+
+      let inserted = 0;
+      let skipped = 0;
+
+      for (const filename of toProcess) {
+        const filePath = path.join(LOCAL_UPLOADS_DIR, filename);
+        const storageUrl = `/local-storage/${filename}`;
+
+        try {
+          const buffer = fs.readFileSync(filePath);
+          let tags: string[] = [];
+          let sourceNote = `Herindexed from disk: ${filename}`;
+
+          if (input.autoGenerateTags) {
+            try {
+              const enriched = await enrichArchiveAssetFields({
+                buffer,
+                mimeType: "video/mp4",
+                autoGenerateTags: true,
+                baseTitle: filename,
+                userTags: [],
+                sourceNote,
+                bulk: true,
+              });
+              tags = enriched.tags;
+              sourceNote = enriched.sourceNote ?? sourceNote;
+            } catch {
+              // AI tagging failed — insert without tags
+            }
+          }
+
+          await createMediaArchiveAsset({
+            archiveId: input.archiveId,
+            title: "",
+            mediaType: "video",
+            mixKind: "real_video",
+            mimeType: "video/mp4",
+            storageUrl,
+            storageKey: filename,
+            tags,
+            sourceNote,
+            isActive: 1,
+          });
+          inserted++;
+          console.log(`[Reindex] inserted ${filename} (tags: ${tags.length})`);
+        } catch (err) {
+          console.error(`[Reindex] failed ${filename}:`, (err as Error).message?.slice(0, 100));
+          skipped++;
+        }
+      }
+
+      console.log(`[Reindex] done: inserted=${inserted} skipped=${skipped} remaining=${orphans.length - toProcess.length}`);
+      return { inserted, skipped, total: orphans.length, remaining: orphans.length - toProcess.length };
     }),
   }),
 

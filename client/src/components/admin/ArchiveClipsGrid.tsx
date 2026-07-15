@@ -652,6 +652,22 @@ export function ArchiveClipsGrid({
     },
     onError: (e) => toast.error("Duration repair failed", { description: toastErrorMessage(e) }),
   });
+  const reindexOrphans = trpc.mediaArchive.reindexOrphanedClips.useMutation({
+    onSuccess: (data) => {
+      utils.mediaArchive.listAssets.invalidate();
+      utils.mediaArchive.listArchives.invalidate();
+      if (data.inserted === 0 && data.remaining === 0) {
+        toast.info("Geen ontbrekende clips gevonden op schijf");
+      } else {
+        toast.success(`${data.inserted} clip(s) teruggehaald`, {
+          description: (data.remaining ?? 0) > 0
+            ? `Nog ${data.remaining ?? 0} te gaan — klik opnieuw om door te gaan`
+            : `Alle ontbrekende clips zijn hersteld`,
+        });
+      }
+    },
+    onError: (e) => toast.error("Herindexering mislukt", { description: toastErrorMessage(e) }),
+  });
   const dedupeDuplicates = trpc.mediaArchive.dedupeDuplicateAssets.useMutation({
     onSuccess: (data) => {
       utils.mediaArchive.listAssets.invalidate();
@@ -1257,6 +1273,23 @@ export function ArchiveClipsGrid({
             {deleteLogoClips.isPending ? "Logo's verwijderen…" : "Verwijder logo-clips"}
           </button>
         )}
+        <button
+          type="button"
+          onClick={() => {
+            if (archiveId == null) return;
+            reindexOrphans.mutate({ archiveId, autoGenerateTags: true, limit: 100 });
+          }}
+          disabled={reindexOrphans.isPending || autoTitleRunning}
+          title="Zoek clips die op de schijf staan maar niet meer in de database, en voeg ze terug toe"
+          className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg bg-green-500/15 text-green-300 border border-green-500/25 hover:bg-green-500/25 disabled:opacity-50"
+        >
+          {reindexOrphans.isPending ? (
+            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+          ) : (
+            <ScanSearch className="w-3.5 h-3.5" />
+          )}
+          {reindexOrphans.isPending ? "Clips herstellen…" : "Herstel verwijderde clips"}
+        </button>
         {assets.length > 0 && (
           <button
             type="button"
