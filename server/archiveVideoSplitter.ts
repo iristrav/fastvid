@@ -482,18 +482,42 @@ export async function detectInteriorCutTimesInFile(
   if (totalDur < MIN_SCENE_SEC * 2) return [];
   const scdetT = Math.max(0.3, scdetThreshold() * 0.3);
   const sceneT = Math.max(0.01, sceneThreshold() * 0.3);
-  const half = Math.floor(timeoutMs / 2);
+  const half = Math.floor(timeoutMs / 3);
   // Pass totalDur+1 so the parse functions' end-boundary filter (t < totalDur-MIN_SCENE_SEC)
-  // doesn't drop cuts that appear within the last 0.12s of the clip. We apply our own
-  // tighter end margin (one frame = 0.04s) below so the tail can be trimmed away.
+  // doesn't discard cuts on the very last frame. We apply our own filter below allowing
+  // cuts up to totalDur so that even a 1-frame contamination tail can be trimmed off.
   const padDur = totalDur + 1;
   const [scdetCuts, sceneCuts] = await Promise.all([
     detectScdetCutTimes(inputPath, padDur, scdetT, half),
     detectSceneFilterCutTimes(inputPath, padDur, sceneT, half),
   ]);
-  return combineShotCutTimes([scdetCuts, sceneCuts]).filter(
-    (t) => t > MIN_SCENE_SEC && t < totalDur - 0.04
+  const interior = combineShotCutTimes([scdetCuts, sceneCuts]).filter(
+    (t) => t > MIN_SCENE_SEC && t < totalDur
   );
+
+  // Extra tail scan: run scdet with ultra-low threshold on the last 1.5s specifically to
+  // catch a hard cut on the very last frame that the full-file pass might time out before.
+  if (totalDur > 2 && interior.length === 0) {
+    const tailStart = Math.max(0, totalDur - 1.5);
+    const tailCmd =
+      `${ffmpegBin()} -ss ${tailStart.toFixed(3)} -i "${inputPath}" -t 2 -an ` +
+      `-vf "scale=480:-1,scdet=threshold=0.1:sc_pass=1,showinfo" -f null -`;
+    const tailStderr = await runFfmpegDetect(tailCmd, half).catch(() => "");
+    const fromMeta = parseScdetTimesFromFfmpeg(tailStderr, padDur);
+    const fromPts = parsePtsTimesFromFfmpeg(tailStderr, padDur);
+    const tailCuts = mergeNearbyCuts(
+      (fromMeta.length > 0 ? fromMeta : fromPts).filter(
+        (t) => t > tailStart + MIN_SCENE_SEC && t < totalDur
+      ),
+      cutMergeGapSec()
+    );
+    if (tailCuts.length > 0) {
+      console.log(`[ArchiveSplit] tail scan found ${tailCuts.length} late cut(s) at ${tailCuts.map((t) => t.toFixed(3)).join("s, ")}s`);
+      return tailCuts;
+    }
+  }
+
+  return interior;
 }
 
 /** Merge clips shorter than minSec with an adjacent range (used for flash glitches only in archive split). */
