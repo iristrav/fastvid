@@ -856,7 +856,7 @@ async function detectSceneCutTimes(inputPath: string, totalDur: number, deadline
   return cuts;
 }
 
-async function extractVideoSegment(
+export async function extractVideoSegment(
   inputPath: string,
   outputPath: string,
   startSec: number,

@@ -16,6 +16,8 @@ import {
 import {
   ArchiveSplitError,
   archiveStoredDurationSec,
+  detectInteriorCutTimesInFile,
+  extractVideoSegment,
   formatTimecode,
   mapPool,
   minSavedArchiveClipSec,
@@ -248,38 +250,26 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
       });
     };
 
-    // Per-segment pipeline callback — called by the splitter immediately after each clip is ready.
-    // The file at localPath is deleted by the splitter after this callback returns.
-    const onSegment = async (localPath: string, meta: Omit<VideoClipSegment, "buffer" | "localPath">) => {
-      console.log(
-        `[ArchiveUpload] onSegment clip ${meta.index + 1} (${formatTimecode(meta.startSec)}–${formatTimecode(meta.endSec)}, ${meta.durationSec.toFixed(2)}s) cancelled=${!uploadShouldContinue(jobId)()}`
-      );
-      if (!uploadShouldContinue(jobId)()) return;
-      const storedDur = archiveStoredDurationSec(meta.durationSec);
-      if (storedDur <= 0) {
-        console.log(
-          `[ArchiveUpload] skip clip ${meta.index + 1} (${formatTimecode(meta.startSec)}–${formatTimecode(meta.endSec)}): ` +
-            `${meta.durationSec.toFixed(2)}s < ${minSavedArchiveClipSec()}s minimum`
-        );
-        return;
-      }
+    /** Save one clip buffer to storage + DB. Used both for original segments and sub-clips. */
+    const saveClipBuffer = async (
+      clipBuffer: Buffer,
+      clipLocalPath: string,
+      startSec: number,
+      endSec: number,
+      durationSec: number,
+      segmentIndex: number,
+      subIndex: number | null
+    ): Promise<void> => {
+      const storedDur = archiveStoredDurationSec(durationSec);
+      if (storedDur <= 0) return;
 
-      let clipBuffer: Buffer;
-      try {
-        clipBuffer = fs.readFileSync(localPath);
-        console.log(`[ArchiveUpload] clip ${meta.index + 1} read ok (${(clipBuffer.length / 1024).toFixed(0)}KB)`);
-      } catch (readErr) {
-        console.error(`[ArchiveUpload] read failed for clip ${meta.index + 1}:`, (readErr as Error).message?.slice(0, 120));
-        return;
-      }
-
-      const key = `media-archive/${input.archiveId}/${Date.now()}-clip${meta.index}-${Math.random().toString(36).slice(2, 10)}.mp4`;
+      const suffix = subIndex != null ? `${segmentIndex}-${subIndex}` : `${segmentIndex}`;
+      const key = `media-archive/${input.archiveId}/${Date.now()}-clip${suffix}-${Math.random().toString(36).slice(2, 10)}.mp4`;
       const fragmentNote = parentSource
-        ? `Fragment uit ${parentSource} (${formatTimecode(meta.startSec)}–${formatTimecode(meta.endSec)})`
-        : `Fragment ${formatTimecode(meta.startSec)}–${formatTimecode(meta.endSec)}`;
-      const draftTitle = `${baseTitle} — clip ${meta.index + 1}`;
+        ? `Fragment uit ${parentSource} (${formatTimecode(startSec)}–${formatTimecode(endSec)})`
+        : `Fragment ${formatTimecode(startSec)}–${formatTimecode(endSec)}`;
+      const draftTitle = `${baseTitle} — clip ${segmentIndex + 1}${subIndex != null ? `_${subIndex + 1}` : ""}`;
 
-      // Use bulk mode for batches > 15 clips (faster, still full metadata per clip).
       const perClipAiTags = autoGenerateTags;
       const perClipAiBulk = perClipAiTags && (totalRanges || 999) > 15;
       let enriched: { title: string; tags: string[]; sourceNote: string | null };
@@ -294,7 +284,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
             sourceNote: fragmentNote,
             archiveNicheTags,
             parentFilename: input.filename,
-            clipIndex: meta.index,
+            clipIndex: segmentIndex,
             userProvidedTitle,
             bulk: perClipAiBulk,
           });
@@ -307,11 +297,9 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
 
       let url: string, storedKey: string;
       try {
-        console.log(`[ArchiveUpload] clip ${meta.index + 1} uploading to storage (key=${key})`);
         ({ url, key: storedKey } = await storagePut(key, clipBuffer, "video/mp4"));
-        console.log(`[ArchiveUpload] clip ${meta.index + 1} stored at url=${url} key=${storedKey}`);
       } catch (uploadErr) {
-        console.error(`[ArchiveUpload] S3 upload failed for clip ${meta.index + 1}:`, (uploadErr as Error).message?.slice(0, 120));
+        console.error(`[ArchiveUpload] S3 upload failed for clip ${suffix}:`, (uploadErr as Error).message?.slice(0, 120));
         return;
       }
 
@@ -331,15 +319,13 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
           isActive: 1,
         });
       } catch (dbErr) {
-        console.error(`[ArchiveUpload] DB insert failed for clip ${meta.index + 1}:`, (dbErr as Error).message?.slice(0, 120));
+        console.error(`[ArchiveUpload] DB insert failed for clip ${suffix}:`, (dbErr as Error).message?.slice(0, 120));
         return;
       }
       if (!assetId) return;
 
       scheduleArchiveEmbeddingIndex(assetId);
       scheduleClipEmbeddingFromBuffer(assetId, clipBuffer);
-
-      // V2: schedule full intelligence pipeline (LLM annotation + quality + editorial analysis)
       if (process.env.ARCHIVE_INGESTION_V2_ENABLED !== "false") {
         scheduleIntelligencePipeline(assetId);
       }
@@ -348,8 +334,8 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
       progress({
         stage: "save_clips",
         message: `${fileLabel}: clip ${savedCount} saved`,
-        percent: 52 + Math.round((meta.index / Math.max(totalRanges, 1)) * 45),
-        clipIndex: meta.index + 1,
+        percent: 52 + Math.round((segmentIndex / Math.max(totalRanges, 1)) * 45),
+        clipIndex: segmentIndex + 1,
         clipTotal: totalRanges || undefined,
         clipsSaved: savedCount,
       });
@@ -357,6 +343,65 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
         const asset = await getMediaArchiveAssetById(assetId);
         if (asset) createdAssets.push(asset);
       } catch { /* ignore */ }
+    };
+
+    // Per-segment pipeline callback — called by the splitter immediately after each clip is ready.
+    // The file at localPath is deleted by the splitter after this callback returns.
+    const onSegment = async (localPath: string, meta: Omit<VideoClipSegment, "buffer" | "localPath">) => {
+      console.log(
+        `[ArchiveUpload] onSegment clip ${meta.index + 1} (${formatTimecode(meta.startSec)}–${formatTimecode(meta.endSec)}, ${meta.durationSec.toFixed(2)}s) cancelled=${!uploadShouldContinue(jobId)()}`
+      );
+      if (!uploadShouldContinue(jobId)()) return;
+      if (archiveStoredDurationSec(meta.durationSec) <= 0) {
+        console.log(`[ArchiveUpload] skip clip ${meta.index + 1}: too short (${meta.durationSec.toFixed(2)}s)`);
+        return;
+      }
+
+      // Post-extraction scene check: detect cuts inside the extracted clip file and re-split
+      // if multiple scenes are found. This is the final safety net against multi-scene clips.
+      const interiorCuts = await detectInteriorCutTimesInFile(localPath, meta.durationSec).catch(() => [] as number[]);
+
+      if (interiorCuts.length > 0) {
+        console.log(
+          `[ArchiveUpload] clip ${meta.index + 1} has ${interiorCuts.length} interior cut(s) at ` +
+            `${interiorCuts.map((t) => t.toFixed(2)).join("s, ")}s — re-splitting`
+        );
+        const cutPoints = [0, ...interiorCuts, meta.durationSec];
+        const subDir = path.join(path.dirname(localPath), `sub_${meta.index}_${Date.now()}`);
+        fs.mkdirSync(subDir, { recursive: true });
+        try {
+          for (let si = 0; si < cutPoints.length - 1; si++) {
+            const subStart = cutPoints[si]!;
+            const subEnd = cutPoints[si + 1]!;
+            const subDur = subEnd - subStart;
+            if (archiveStoredDurationSec(subDur) <= 0) continue;
+            const subPath = path.join(subDir, `sub${si}.mp4`);
+            try {
+              await extractVideoSegment(localPath, subPath, subStart, subEnd);
+              const subBuffer = fs.readFileSync(subPath);
+              const absSub = { start: meta.startSec + subStart, end: meta.startSec + subEnd };
+              await saveClipBuffer(subBuffer, subPath, absSub.start, absSub.end, subDur, meta.index, si);
+            } catch (subErr) {
+              console.error(`[ArchiveUpload] sub-clip ${si} extract failed:`, (subErr as Error).message?.slice(0, 120));
+            } finally {
+              try { fs.unlinkSync(subPath); } catch { /* ignore */ }
+            }
+          }
+        } finally {
+          try { fs.rmdirSync(subDir); } catch { /* ignore */ }
+        }
+        return;
+      }
+
+      let clipBuffer: Buffer;
+      try {
+        clipBuffer = fs.readFileSync(localPath);
+        console.log(`[ArchiveUpload] clip ${meta.index + 1} read ok (${(clipBuffer.length / 1024).toFixed(0)}KB)`);
+      } catch (readErr) {
+        console.error(`[ArchiveUpload] read failed for clip ${meta.index + 1}:`, (readErr as Error).message?.slice(0, 120));
+        return;
+      }
+      await saveClipBuffer(clipBuffer, localPath, meta.startSec, meta.endSec, meta.durationSec, meta.index, null);
     };
 
     let segments: VideoClipSegment[];
