@@ -85,12 +85,14 @@ const DEFAULT_MIN_OUTPUT_CLIP_SEC = 2.0;
 const DEFAULT_FLASH_MERGE_MAX_SEC = 0.0;
 const INTERNAL_RESCAN_MIN_SEC = 0.85;
 const INTERNAL_RESCAN_MAX_RANGES = 300;
-const INTERNAL_RESCAN_PASSES = 0;
+// 2 rescan passes — each pass scans every detected range for missed interior cuts at lower thresholds.
+// Without this, a 5s clip with an undetected hard cut remains a single multi-scene file.
+const INTERNAL_RESCAN_PASSES = 2;
 const SINGLE_SCENE_VALIDATE_MAX_DEPTH = 4;
 const DEFAULT_SCENE_THRESHOLD = 0.03;
 const DEFAULT_SCDET_THRESHOLD = 1;
 /** Split any clip longer than this into fixed intervals — catches scenes without hard cuts. */
-const DEFAULT_MAX_CLIP_DURATION_SEC = 8;
+const DEFAULT_MAX_CLIP_DURATION_SEC = 6;
 const DEFAULT_CUT_MERGE_GAP_SEC = 0.18;
 const DEFAULT_SPLIT_BUDGET_MS = 3_600_000;
 const DEFAULT_MAX_SOURCE_SEC = ARCHIVE_MAX_VIDEO_DURATION_SEC;
@@ -478,8 +480,8 @@ export async function detectInteriorCutTimesInFile(
   timeoutMs = 28_000
 ): Promise<number[]> {
   if (totalDur < MIN_SCENE_SEC * 2) return [];
-  const scdetT = Math.max(2, scdetThreshold() * 0.55);
-  const sceneT = Math.max(0.08, sceneThreshold() * 0.55);
+  const scdetT = Math.max(0.5, scdetThreshold() * 0.5);
+  const sceneT = Math.max(0.015, sceneThreshold() * 0.5);
   const half = Math.floor(timeoutMs / 2);
   const [scdetCuts, sceneCuts] = await Promise.all([
     detectScdetCutTimes(inputPath, totalDur, scdetT, half),
@@ -711,14 +713,14 @@ async function rescanRangesForInteriorCuts(
           inputPath,
           range.start,
           range.end,
-          Math.max(2, scdetThreshold() * 0.55),
+          Math.max(0.5, scdetThreshold() * 0.5),
           perRangeTimeout
         ),
         detectSceneFilterCutTimesInWindow(
           inputPath,
           range.start,
           range.end,
-          Math.max(0.1, sceneThreshold() * 0.55),
+          Math.max(0.015, sceneThreshold() * 0.5),
           perRangeTimeout
         ),
       ]);

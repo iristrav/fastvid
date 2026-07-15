@@ -184,9 +184,6 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
   };
 
   const maxBytes = maxArchiveUploadBytes();
-  const fileSize = input.buffer ? input.buffer.length
-    : input.inputPath ? fs.statSync(input.inputPath).size
-    : 0;
   if (fileSize > maxBytes) {
     throw new ArchiveUploadError(
       400,
