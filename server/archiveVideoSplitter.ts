@@ -1407,6 +1407,18 @@ export async function splitVideoBySceneChanges(
     let ranges = buildClipRanges(cuts, effectiveDur);
     ranges = mergeFlashFragmentsOnly(ranges);
     ranges = filterClipRangesBelowMinDuration(ranges, 2.0);
+
+    // When all cuts produce sub-2s clips (very fast-cut content or noisy footage),
+    // try merging adjacent short clips before giving up entirely.
+    if (ranges.length === 0 && cuts.length >= 2) {
+      const merged = enforceMinClipDuration(buildClipRanges(cuts, effectiveDur), 2.0);
+      const filteredMerged = filterClipRangesBelowMinDuration(merged, 2.0);
+      if (filteredMerged.length > 0) {
+        console.log(`[ArchiveSplit] sub-2s clips merged into ${filteredMerged.length} combined clip(s) (${cuts.length} cuts, avg ${(effectiveDur / (cuts.length + 1)).toFixed(2)}s/clip)`);
+        ranges = filteredMerged;
+      }
+    }
+
     if (ranges.length > 1 && hasBudget()) {
       for (let pass = 0; pass < INTERNAL_RESCAN_PASSES && hasBudget(); pass++) {
         throwIfCancelled();
@@ -1425,7 +1437,16 @@ export async function splitVideoBySceneChanges(
     ranges = capClipRanges(ranges, maxArchiveClips());
 
     const skipRangeSubjectFilter = false;
-    if (ranges.length <= 1) {
+
+    // If still no valid ranges (zero cuts, or all cuts suppressed): fall back to fixed-interval
+    // splits across the full video duration. Better to save clips with multiple shots than nothing.
+    if (ranges.length === 0 && effectiveDur >= 2.0) {
+      console.warn(
+        `[ArchiveSplit] no valid shot ranges after detection — fixed-interval fallback (maxDur=${maxClipDurationSec()}s)`
+      );
+      ranges = splitLongRanges([{ start: 0, end: effectiveDur }]);
+      ranges = filterClipRangesBelowMinDuration(ranges, 2.0);
+    } else if (ranges.length <= 1) {
       console.warn(`[ArchiveSplit] no shot boundaries detected in ${effectiveDur.toFixed(1)}s video — will split on max duration`);
     }
 
