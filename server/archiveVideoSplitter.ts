@@ -656,8 +656,10 @@ async function detectScdetCutTimesInWindow(
   const windowDur = windowEnd - windowStart;
   if (windowDur < MIN_SCENE_SEC * 2) return [];
 
+  // Fast-seek (-ss before -i) is safe here because the analysis proxy has a keyframe every 5
+  // frames (-g 5 in normalizeSourceForAnalysis), so inaccuracy is at most a few frames.
   const cmd =
-    `${ffmpegBin()} -i "${inputPath}" -ss ${windowStart.toFixed(3)} -to ${windowEnd.toFixed(3)} -an ` +
+    `${ffmpegBin()} -ss ${windowStart.toFixed(3)} -i "${inputPath}" -t ${(windowEnd - windowStart).toFixed(3)} -an ` +
     `-vf "scale=480:-1,scdet=threshold=${threshold}:sc_pass=1,showinfo" -f null -`;
   const stderr = await runFfmpegDetect(cmd, timeoutMs);
   const fromMeta = parseScdetTimesFromFfmpeg(stderr, windowEnd);
@@ -676,7 +678,7 @@ async function detectSceneFilterCutTimesInWindow(
   if (windowDur < MIN_SCENE_SEC * 2) return [];
 
   const cmd =
-    `${ffmpegBin()} -i "${inputPath}" -ss ${windowStart.toFixed(3)} -to ${windowEnd.toFixed(3)} -an ` +
+    `${ffmpegBin()} -ss ${windowStart.toFixed(3)} -i "${inputPath}" -t ${(windowEnd - windowStart).toFixed(3)} -an ` +
     `-vf "scale=480:-1,select='gt(scene,${threshold})',showinfo" -f null -`;
   const stderr = await runFfmpegDetect(cmd, timeoutMs);
   return normalizeWindowCutTimes(parsePtsTimesFromFfmpeg(stderr, windowEnd), windowStart, windowEnd);
@@ -1022,9 +1024,12 @@ async function normalizeSourceForAnalysis(
   const vf = analysisProxyScaleFilter(totalDur);
   const timeoutMs = Math.round(Math.min(900_000, Math.max(90_000, totalDur * 80)));
   try {
+    // -g 5 forces a keyframe every 5 frames — enables fast-seek anywhere in the proxy.
+    // Without this, ultrafast h264 at 2fps puts keyframes every 125s (GOP=250 default),
+    // making window-seek for the interior rescan very slow and prone to timeouts.
     await exec(
       `${ffmpegBin()} -y -i "${inputPath}" -an -vf "${vf}" ` +
-        `-c:v libx264 -preset ultrafast -crf 28 -pix_fmt yuv420p -movflags +faststart -threads 2 "${outPath}"`,
+        `-c:v libx264 -preset ultrafast -crf 28 -g 5 -pix_fmt yuv420p -movflags +faststart -threads 2 "${outPath}"`,
       { maxBuffer: 8 * 1024 * 1024, timeout: timeoutMs }
     );
   } catch (err) {

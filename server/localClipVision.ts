@@ -85,18 +85,14 @@ function clipModelExistsLocally(cacheDir: string): boolean {
 
 async function importTransformersPipeline() {
   const cacheDir = configureTransformersEnv();
-
-  // Never download models at runtime — only use what's pre-cached on the volume.
-  // If the model is missing, fail in <1s instead of hanging for 15+ minutes.
   const modelExists = clipModelExistsLocally(cacheDir);
   if (!modelExists) {
-    console.warn(`[LocalVision] CLIP model not found in cache (${cacheDir}) — local vision disabled. Pre-download model or mount volume.`);
-    throw new Error(`CLIP model missing from cache: ${cacheDir}`);
+    console.log(`[LocalVision] CLIP model not in cache (${cacheDir}) — will download now (one-time, ~350MB, persists to volume)`);
   }
-
   const { env, pipeline } = await import("@xenova/transformers");
   env.cacheDir = cacheDir;
-  env.allowRemoteModels = false;
+  // Allow download when model is missing — volume persists between deploys so this runs only once.
+  env.allowRemoteModels = !modelExists;
   env.useBrowserCache = false;
   env.backends.onnx.wasm.numThreads = 1;
   return pipeline;
@@ -348,13 +344,16 @@ export function filenameLexicalBoost(clipPath: string, beatText: string, videoTi
   return Math.min(0.06, hits * 0.02);
 }
 
+/** Timeout for loading from cache (fast). For first-time download see PIPELINE_DOWNLOAD_TIMEOUT_MS. */
 const PIPELINE_LOAD_TIMEOUT_MS = 90_000;
+/** Generous timeout for first-time model download (~350MB). Volume persists so this runs once. */
+const PIPELINE_DOWNLOAD_TIMEOUT_MS = 900_000; // 15 min
 
-function withPipelineTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
+function withPipelineTimeout<T>(promise: Promise<T>, label: string, timeoutMs = PIPELINE_LOAD_TIMEOUT_MS): Promise<T> {
   return Promise.race([
     promise,
     new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(`[LocalVision] TIMEOUT after ${PIPELINE_LOAD_TIMEOUT_MS / 1000}s: ${label}`)), PIPELINE_LOAD_TIMEOUT_MS)
+      setTimeout(() => reject(new Error(`[LocalVision] TIMEOUT after ${timeoutMs / 1000}s: ${label}`)), timeoutMs)
     ),
   ]);
 }
@@ -363,13 +362,20 @@ async function loadImagePipeline(): Promise<ClipPipeline | null> {
   if (!localVisionEnabled()) return null;
   if (imagePipeline) return imagePipeline;
   if (pipelineLoadFailed && imageLoadAttempts >= MAX_PIPELINE_LOAD_ATTEMPTS) return null;
-  console.log(`[LocalVision] BEFORE load image pipeline (attempt ${imageLoadAttempts + 1})`);
+  const isFirstDownload = !clipModelExistsLocally(clipModelCacheDir());
+  const loadTimeout = isFirstDownload ? PIPELINE_DOWNLOAD_TIMEOUT_MS : PIPELINE_LOAD_TIMEOUT_MS;
+  if (isFirstDownload) {
+    console.log(`[LocalVision] First-time download — using ${loadTimeout / 1000}s timeout (attempt ${imageLoadAttempts + 1})`);
+  } else {
+    console.log(`[LocalVision] BEFORE load image pipeline (attempt ${imageLoadAttempts + 1})`);
+  }
   try {
-    const pipeline = await withPipelineTimeout(importTransformersPipeline(), "import @xenova/transformers");
+    const pipeline = await withPipelineTimeout(importTransformersPipeline(), "import @xenova/transformers", loadTimeout);
     console.log(`[LocalVision] BEFORE pipeline("image-feature-extraction")`);
     imagePipeline = (await withPipelineTimeout(
       pipeline("image-feature-extraction", CLIP_MODEL, { quantized: true }),
-      `pipeline(image-feature-extraction, ${CLIP_MODEL})`
+      `pipeline(image-feature-extraction, ${CLIP_MODEL})`,
+      loadTimeout
     )) as ClipPipeline;
     console.log(`[LocalVision] AFTER pipeline("image-feature-extraction") — OK`);
     pipelineLoadFailed = false;
@@ -391,13 +397,16 @@ async function loadTextPipeline(): Promise<ClipPipeline | null> {
   if (!localVisionEnabled()) return null;
   if (textPipeline) return textPipeline;
   if (pipelineLoadFailed && textLoadAttempts >= MAX_PIPELINE_LOAD_ATTEMPTS) return null;
+  const isFirstDownload = !clipModelExistsLocally(clipModelCacheDir());
+  const loadTimeout = isFirstDownload ? PIPELINE_DOWNLOAD_TIMEOUT_MS : PIPELINE_LOAD_TIMEOUT_MS;
   console.log(`[LocalVision] BEFORE load text pipeline (attempt ${textLoadAttempts + 1})`);
   try {
-    const pipeline = await withPipelineTimeout(importTransformersPipeline(), "import @xenova/transformers (text)");
+    const pipeline = await withPipelineTimeout(importTransformersPipeline(), "import @xenova/transformers (text)", loadTimeout);
     console.log(`[LocalVision] BEFORE pipeline("feature-extraction")`);
     textPipeline = (await withPipelineTimeout(
       pipeline("feature-extraction", CLIP_MODEL, { quantized: true }),
-      `pipeline(feature-extraction, ${CLIP_MODEL})`
+      `pipeline(feature-extraction, ${CLIP_MODEL})`,
+      loadTimeout
     )) as ClipPipeline;
     console.log(`[LocalVision] AFTER pipeline("feature-extraction") — OK`);
     pipelineLoadFailed = false;
@@ -933,21 +942,30 @@ export function clipPreloadEnabled(): boolean {
 
 export async function warmUpLocalClipVision(): Promise<boolean> {
   if (!clipPreloadEnabled()) return false;
-  console.log(`[LocalVision] Loading CLIP model (cache: ${clipModelCacheDir()})...`);
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    const ok = await ensureClipPipelinesLoaded();
-    if (ok) {
-      console.log("[LocalVision] CLIP model warm-up complete");
+  const cacheDir = clipModelCacheDir();
+  const isFirstDownload = !clipModelExistsLocally(cacheDir);
+  if (isFirstDownload) {
+    console.log(`[LocalVision] CLIP model not cached — downloading to ${cacheDir} (one-time, ~350MB)...`);
+  } else {
+    console.log(`[LocalVision] Loading CLIP model from cache (${cacheDir})...`);
+  }
+  // Single attempt — first-time download uses 15-min timeout so we never abort mid-download.
+  const ok = await ensureClipPipelinesLoaded();
+  if (ok) {
+    console.log("[LocalVision] CLIP model warm-up complete");
+    return true;
+  }
+  // Retry once after 5s (covers transient RAM contention, not a mid-download abort).
+  if (!isFirstDownload) {
+    console.warn("[LocalVision] CLIP warm-up retry in 5s...");
+    resetClipPipelineLoadState();
+    await new Promise((r) => setTimeout(r, 5_000));
+    const ok2 = await ensureClipPipelinesLoaded();
+    if (ok2) {
+      console.log("[LocalVision] CLIP model warm-up complete (retry)");
       return true;
     }
-    if (attempt < 2) {
-      console.warn("[LocalVision] CLIP warm-up retry in 15s (background tasks may have contended for RAM)...");
-      resetClipPipelineLoadState();
-      await new Promise((r) => setTimeout(r, 15_000));
-    }
   }
-  console.warn(
-    "[LocalVision] CLIP warm-up incomplete — vision gate may skip or reject clips until load succeeds"
-  );
+  console.warn("[LocalVision] CLIP warm-up incomplete — vision gate may skip or reject clips until load succeeds");
   return false;
 }
