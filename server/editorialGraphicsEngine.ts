@@ -466,7 +466,8 @@ async function svgToPng(svgContent: string, pngPath: string): Promise<boolean> {
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const { createCanvas } = require("canvas") as any;
-    const canvgMod = await (eval('import("canvg")') as Promise<any>).catch(() => null);
+    // eslint-disable-next-line no-new-func
+    const canvgMod = await (new Function('return import("canvg")')() as Promise<any>).catch(() => null);
     if (canvgMod?.Canvg) {
       const canvas = createCanvas(W, H);
       const ctx = canvas.getContext("2d");
