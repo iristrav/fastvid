@@ -362,35 +362,50 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
       const interiorCuts = await detectInteriorCutTimesInFile(localPath, meta.durationSec).catch(() => [] as number[]);
 
       if (interiorCuts.length > 0) {
-        console.log(
-          `[ArchiveUpload] clip ${meta.index + 1} has ${interiorCuts.length} interior cut(s) at ` +
-            `${interiorCuts.map((t) => t.toFixed(2)).join("s, ")}s — re-splitting`
-        );
+        // Only re-split if at least one sub-clip would be long enough to save.
         const cutPoints = [0, ...interiorCuts, meta.durationSec];
-        const subDir = path.join(path.dirname(localPath), `sub_${meta.index}_${Date.now()}`);
-        fs.mkdirSync(subDir, { recursive: true });
-        try {
-          for (let si = 0; si < cutPoints.length - 1; si++) {
-            const subStart = cutPoints[si]!;
-            const subEnd = cutPoints[si + 1]!;
-            const subDur = subEnd - subStart;
-            if (archiveStoredDurationSec(subDur) <= 0) continue;
-            const subPath = path.join(subDir, `sub${si}.mp4`);
-            try {
-              await extractVideoSegment(localPath, subPath, subStart, subEnd);
-              const subBuffer = fs.readFileSync(subPath);
-              const absSub = { start: meta.startSec + subStart, end: meta.startSec + subEnd };
-              await saveClipBuffer(subBuffer, subPath, absSub.start, absSub.end, subDur, meta.index, si);
-            } catch (subErr) {
-              console.error(`[ArchiveUpload] sub-clip ${si} extract failed:`, (subErr as Error).message?.slice(0, 120));
-            } finally {
-              try { fs.unlinkSync(subPath); } catch { /* ignore */ }
+        const viableSubClips = cutPoints.slice(0, -1).filter((_, si) => {
+          const subDur = cutPoints[si + 1]! - cutPoints[si]!;
+          return archiveStoredDurationSec(subDur) > 0;
+        });
+
+        if (viableSubClips.length === 0) {
+          // All sub-clips would be discarded — likely a false-positive cut. Save as single clip.
+          console.log(
+            `[ArchiveUpload] clip ${meta.index + 1}: interior cut(s) at ` +
+              `${interiorCuts.map((t) => t.toFixed(2)).join("s, ")}s would produce only sub-clips below ` +
+              `min duration — saving as single clip`
+          );
+        } else {
+          console.log(
+            `[ArchiveUpload] clip ${meta.index + 1} has ${interiorCuts.length} interior cut(s) at ` +
+              `${interiorCuts.map((t) => t.toFixed(2)).join("s, ")}s — re-splitting into ${cutPoints.length - 1} sub-clips`
+          );
+          const subDir = path.join(path.dirname(localPath), `sub_${meta.index}_${Date.now()}`);
+          fs.mkdirSync(subDir, { recursive: true });
+          try {
+            for (let si = 0; si < cutPoints.length - 1; si++) {
+              const subStart = cutPoints[si]!;
+              const subEnd = cutPoints[si + 1]!;
+              const subDur = subEnd - subStart;
+              if (archiveStoredDurationSec(subDur) <= 0) continue;
+              const subPath = path.join(subDir, `sub${si}.mp4`);
+              try {
+                await extractVideoSegment(localPath, subPath, subStart, subEnd);
+                const subBuffer = fs.readFileSync(subPath);
+                const absSub = { start: meta.startSec + subStart, end: meta.startSec + subEnd };
+                await saveClipBuffer(subBuffer, subPath, absSub.start, absSub.end, subDur, meta.index, si);
+              } catch (subErr) {
+                console.error(`[ArchiveUpload] sub-clip ${si} extract failed:`, (subErr as Error).message?.slice(0, 120));
+              } finally {
+                try { fs.unlinkSync(subPath); } catch { /* ignore */ }
+              }
             }
+          } finally {
+            try { fs.rmdirSync(subDir); } catch { /* ignore */ }
           }
-        } finally {
-          try { fs.rmdirSync(subDir); } catch { /* ignore */ }
+          return;
         }
-        return;
       }
 
       let clipBuffer: Buffer;
