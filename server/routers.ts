@@ -131,6 +131,8 @@ import { ensureScriptMeetsBudgetWithRetry } from "./pipelineSelfHeal";
 import { attachScriptVisualKeywords } from "./scriptVisualKeywords";
 import { runScriptEngineV2, scriptEngineV2Enabled } from "./scriptEngine";
 import type { InvokeResult } from "./_core/llm";
+import { s3ListAllKeys } from "./storageS3";
+import { isS3StorageEnabled, objectStorageUrl } from "./storageBackend";
 
 function llmMessageText(resp: InvokeResult | null | undefined): string {
   const content = resp?.choices?.[0]?.message?.content ?? "";
@@ -1787,6 +1789,81 @@ export const appRouter = router({
         hasMore: nextOffset < total,
         nextOffset,
       };
+    }),
+
+    /**
+     * Scan the R2/S3 bucket and re-register any clips that exist in storage but are missing
+     * from the archive DB (e.g. accidentally deleted by auto-dedup).
+     */
+    restoreFromS3: adminProcedure.input(z.object({
+      archiveId: z.number().int(),
+    })).mutation(async ({ input }) => {
+      if (!isS3StorageEnabled()) {
+        throw appTrpcError("BAD_REQUEST", APP_ERROR.SERVICE_ERROR, "S3/R2 storage is not configured");
+      }
+
+      const archive = await getMediaArchiveById(input.archiveId);
+      if (!archive) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Archive not found");
+
+      // Get all keys already registered in the DB for this archive
+      const existingAssets = await getMediaArchiveAssets(input.archiveId);
+      const existingKeys = new Set(existingAssets.map((a) => a.storageKey).filter(Boolean));
+      const existingUrls = new Set(existingAssets.map((a) => a.storageUrl));
+
+      // List all objects in the bucket
+      const allKeys = await s3ListAllKeys();
+
+      // Only video/image files — skip thumbnails, JSON metadata, etc.
+      const videoExts = new Set([".mp4", ".webm", ".mov", ".avi", ".mkv"]);
+      const imageExts = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif"]);
+
+      const mimeMap: Record<string, string> = {
+        ".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime",
+        ".avi": "video/x-msvideo", ".mkv": "video/x-matroska",
+        ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+        ".webp": "image/webp", ".gif": "image/gif",
+      };
+
+      let restored = 0;
+      const skipped: string[] = [];
+
+      for (const relKey of allKeys) {
+        if (existingKeys.has(relKey)) continue;
+        const url = objectStorageUrl(relKey);
+        if (existingUrls.has(url)) continue;
+
+        const ext = relKey.slice(relKey.lastIndexOf(".")).toLowerCase();
+        const isVideo = videoExts.has(ext);
+        const isImage = imageExts.has(ext);
+        if (!isVideo && !isImage) continue;
+
+        const mimeType = mimeMap[ext] ?? (isVideo ? "video/mp4" : "image/jpeg");
+        const mediaType = isVideo ? "video" : "image";
+        const mixKind = isVideo ? "real_video" : "photo";
+
+        // Derive a human-readable title from the filename
+        const filename = relKey.split("/").pop() ?? relKey;
+        const title = filename.replace(/\.[^.]+$/, "").replace(/[-_]/g, " ").slice(0, 200) || null;
+
+        try {
+          await createMediaArchiveAsset({
+            archiveId: input.archiveId,
+            title,
+            mediaType: mediaType as "video" | "image",
+            mixKind: mixKind as "real_video" | "photo",
+            mimeType,
+            storageUrl: url,
+            storageKey: relKey,
+            isActive: 1,
+          });
+          restored++;
+        } catch {
+          skipped.push(relKey);
+        }
+      }
+
+      console.log(`[RestoreFromS3] archive ${input.archiveId}: ${restored} restored, ${skipped.length} skipped`);
+      return { restored, skipped: skipped.length, total: allKeys.length };
     }),
 
     deleteAsset: adminProcedure.input(z.object({ id: z.number().int() })).mutation(async ({ input }) => {

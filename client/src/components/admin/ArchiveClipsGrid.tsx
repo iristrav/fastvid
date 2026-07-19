@@ -778,6 +778,20 @@ export function ArchiveClipsGrid({
     },
     onError: (e) => toast.error("Herindexering mislukt", { description: toastErrorMessage(e) }),
   });
+  const restoreFromS3 = trpc.mediaArchive.restoreFromS3.useMutation({
+    onSuccess: (data) => {
+      utils.mediaArchive.listAssets.invalidate();
+      utils.mediaArchive.listArchives.invalidate();
+      if (data.restored === 0) {
+        toast.info("Geen ontbrekende clips gevonden in R2");
+      } else {
+        toast.success(`${data.restored} clip(s) hersteld uit R2`, {
+          description: `${data.skipped} bestand(en) overgeslagen`,
+        });
+      }
+    },
+    onError: (e) => toast.error("Herstel mislukt", { description: toastErrorMessage(e) }),
+  });
   const dedupeDuplicates = trpc.mediaArchive.dedupeDuplicateAssets.useMutation();
   const [dedupeProgress, setDedupeProgress] = useState<{ scanned: number; deleted: number; total: number } | null>(null);
   const [autoTitleRunning, setAutoTitleRunning] = useState(false);
@@ -1442,6 +1456,24 @@ export function ArchiveClipsGrid({
             <ScanSearch className="w-3.5 h-3.5" />
           )}
           {reindexOrphans.isPending ? "Clips herstellen…" : "Herstel verwijderde clips"}
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            if (archiveId == null) return;
+            if (!confirm("Scan de R2/S3-bucket en herstel clips die uit de database zijn verwijderd maar nog wel in de opslag staan?")) return;
+            restoreFromS3.mutate({ archiveId });
+          }}
+          disabled={restoreFromS3.isPending || autoTitleRunning}
+          title="Scan Cloudflare R2 en herstel clips die per ongeluk zijn verwijderd"
+          className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg bg-green-500/15 text-green-300 border border-green-500/25 hover:bg-green-500/25 disabled:opacity-50"
+        >
+          {restoreFromS3.isPending ? (
+            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+          ) : (
+            <ScanSearch className="w-3.5 h-3.5" />
+          )}
+          {restoreFromS3.isPending ? "R2 scannen…" : "Herstel uit R2"}
         </button>
         {assets.length > 0 && (
           <button
