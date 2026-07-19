@@ -11,9 +11,6 @@ import {
 } from "./archiveAssetTagging";
 import type { ArchiveSubjectContext } from "./archiveClipRelevance";
 import {
-  dedupeArchiveVisualDuplicates,
-} from "./archiveClipDedup";
-import {
   ArchiveSplitError,
   archiveStoredDurationSec,
   detectInteriorCutTimesInFile,
@@ -40,7 +37,6 @@ import {
 import { getUserFromRequest } from "./_core/context";
 import {
   createMediaArchiveAsset,
-  deleteMediaArchiveAssets,
   getMediaArchiveAssetById,
   getMediaArchiveAssets,
   getMediaArchiveById,
@@ -471,36 +467,8 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
         );
       }
 
-      // V2: perceptual hash dedup — remove near-identical clips within this upload batch only.
-      // We do NOT dedup against the full archive here to avoid silently deleting existing clips.
-      // Full-archive dedup is a manual action via "Remove duplicates" in the admin UI.
-      if (process.env.ARCHIVE_INGESTION_V2_ENABLED !== "false" && createdAssets.length >= 2) {
-        void (async () => {
-          try {
-            const { deleteIds } = await dedupeArchiveVisualDuplicates(createdAssets.map((a) => ({
-              id: a.id,
-              title: a.title,
-              sourceNote: a.sourceNote,
-              storageUrl: a.storageUrl,
-              storageKey: a.storageKey,
-              mimeType: a.mimeType,
-              mediaType: a.mediaType,
-              durationSec: a.durationSec,
-            })));
-            if (deleteIds.length > 0) {
-              await deleteMediaArchiveAssets(deleteIds);
-              console.log(
-                `[ArchiveUpload] V2 perceptual dedup: removed ${deleteIds.length} duplicate(s) within upload batch for archive ${input.archiveId}`
-              );
-            }
-          } catch (err) {
-            console.warn(
-              "[ArchiveUpload] perceptual dedup failed:",
-              (err as Error).message?.slice(0, 100)
-            );
-          }
-        })();
-      }
+      // Auto-dedup on upload is intentionally disabled.
+      // Deduplication is a manual action only ("Remove duplicates" button in admin UI).
 
       finishArchiveUploadJob(jobId, true, `${createdAssets.length} unique clip(s) saved`, {
         clipsSaved: createdAssets.length,
