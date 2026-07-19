@@ -1750,6 +1750,9 @@ export const appRouter = router({
     dedupeDuplicateAssets: adminProcedure.input(z.object({
       archiveId: z.number().int(),
       ids: z.array(z.number().int()).optional(),
+      /** Process only this many clips starting at `offset` (sorted by id asc). Default 200. */
+      limit: z.number().int().min(1).max(500).optional(),
+      offset: z.number().int().min(0).optional(),
     })).mutation(async ({ input }) => {
       const archive = await getMediaArchiveById(input.archiveId);
       if (!archive) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Archive not found");
@@ -1759,18 +1762,30 @@ export const appRouter = router({
         const idSet = new Set(input.ids);
         assets = assets.filter((a) => idSet.has(a.id));
       }
+
+      // Sort ascending so batches are deterministic and "keep oldest" logic is preserved.
+      assets = assets.sort((a, b) => a.id - b.id);
+      const total = assets.length;
+      const limit = input.limit ?? 200;
+      const offset = input.offset ?? 0;
+      assets = assets.slice(offset, offset + limit);
+
       if (assets.length < 2) {
-        return { scanned: assets.length, deleted: 0, kept: assets.length };
+        return { scanned: assets.length, deleted: 0, kept: assets.length, total, hasMore: false };
       }
 
       const { deleteIds, scanned } = await dedupeArchiveVisualDuplicates(assets);
       if (deleteIds.length > 0) {
         await deleteMediaArchiveAssets(deleteIds);
       }
+      const nextOffset = offset + limit;
       return {
         scanned,
         deleted: deleteIds.length,
         kept: assets.length - deleteIds.length,
+        total,
+        hasMore: nextOffset < total,
+        nextOffset,
       };
     }),
 

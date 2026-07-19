@@ -778,20 +778,8 @@ export function ArchiveClipsGrid({
     },
     onError: (e) => toast.error("Herindexering mislukt", { description: toastErrorMessage(e) }),
   });
-  const dedupeDuplicates = trpc.mediaArchive.dedupeDuplicateAssets.useMutation({
-    onSuccess: (data) => {
-      utils.mediaArchive.listAssets.invalidate();
-      utils.mediaArchive.listArchives.invalidate();
-      if (data.deleted === 0) {
-        toast.info("No duplicates found", { description: `${data.scanned} clip(s) scanned` });
-      } else {
-        toast.success(`${data.deleted} duplicate(s) removed`, {
-          description: `${data.kept} unique clip(s) remaining`,
-        });
-      }
-    },
-    onError: (e) => toast.error("Failed to remove duplicates", { description: toastErrorMessage(e) }),
-  });
+  const dedupeDuplicates = trpc.mediaArchive.dedupeDuplicateAssets.useMutation();
+  const [dedupeProgress, setDedupeProgress] = useState<{ scanned: number; deleted: number; total: number } | null>(null);
   const [autoTitleRunning, setAutoTitleRunning] = useState(false);
   const [autoTitleProgress, setAutoTitleProgress] = useState<{ done: number; total: number } | null>(null);
   const [autoTitleReport, setAutoTitleReport] = useState<{
@@ -1220,7 +1208,7 @@ export function ArchiveClipsGrid({
 
   const deletePending = deleteAssets.isPending || deleteAllAssets.isPending;
 
-  function dedupeVisualDuplicates() {
+  async function dedupeVisualDuplicates() {
     if (archiveId == null || total < 2) return;
     const targetIds = selectedCount > 0 ? [...selectedIds] : undefined;
     const label =
@@ -1232,10 +1220,49 @@ export function ArchiveClipsGrid({
     ) {
       return;
     }
-    dedupeDuplicates.mutate({
-      archiveId,
-      ids: selectedCount > 0 ? targetIds : undefined,
-    });
+
+    const BATCH = 200;
+    let offset = 0;
+    let totalScanned = 0;
+    let totalDeleted = 0;
+    let grandTotal = targetIds ? targetIds.length : total;
+
+    setDedupeProgress({ scanned: 0, deleted: 0, total: grandTotal });
+
+    try {
+      while (true) {
+        const result = await dedupeDuplicates.mutateAsync({
+          archiveId,
+          ids: targetIds,
+          limit: BATCH,
+          offset,
+        });
+        totalScanned += result.scanned;
+        totalDeleted += result.deleted;
+        grandTotal = result.total;
+        setDedupeProgress({ scanned: totalScanned, deleted: totalDeleted, total: grandTotal });
+
+        if (!result.hasMore) break;
+        offset = result.nextOffset ?? offset + BATCH;
+      }
+
+      utils.mediaArchive.listAssets.invalidate();
+      utils.mediaArchive.listArchives.invalidate();
+
+      if (totalDeleted === 0) {
+        toast.info("No duplicates found", { description: `${totalScanned} clip(s) scanned` });
+      } else {
+        toast.success(`${totalDeleted} duplicate(s) removed`, {
+          description: `${totalScanned} clip(s) scanned`,
+        });
+      }
+    } catch (e: unknown) {
+      toast.error("Failed to remove duplicates", {
+        description: toastErrorMessage(e as Parameters<typeof toastErrorMessage>[0]),
+      });
+    } finally {
+      setDedupeProgress(null);
+    }
   }
 
   if (archiveId == null) {
@@ -1369,16 +1396,18 @@ export function ArchiveClipsGrid({
           <button
             type="button"
             onClick={dedupeVisualDuplicates}
-            disabled={dedupeDuplicates.isPending || autoTitleRunning}
+            disabled={dedupeProgress !== null || autoTitleRunning}
             title="Remove clips with (nearly) identical visuals"
             className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg bg-amber-500/15 text-amber-300 border border-amber-500/25 hover:bg-amber-500/25 disabled:opacity-50"
           >
-            {dedupeDuplicates.isPending ? (
+            {dedupeProgress !== null ? (
               <Loader2 className="w-3.5 h-3.5 animate-spin" />
             ) : (
               <Copy className="w-3.5 h-3.5" />
             )}
-            {dedupeDuplicates.isPending ? "Duplicates… (even geduld)" : "Remove duplicates"}
+            {dedupeProgress
+              ? `Scanning ${dedupeProgress.scanned}/${dedupeProgress.total}${dedupeProgress.deleted > 0 ? ` (${dedupeProgress.deleted} removed)` : ""}…`
+              : "Remove duplicates"}
           </button>
         )}
         {assets.length > 0 && (
