@@ -516,47 +516,52 @@ async function extractVideoPreviewJpeg(
     const dur = await probeVideoDurationSec(videoPath);
     seek = dur > 0.5 ? dur * 0.35 : 0.25;
   }
-  try {
-    await withForkRetry(() => new Promise<void>((resolve, reject) => {
-      const args = [
-        "-y",
-        "-ss",
-        seek.toFixed(3),
-        "-i",
-        videoPath,
-        "-frames:v",
-        "1",
-        "-q:v",
-        "3",
-        "-f",
-        "image2",
-        outPath,
-      ];
+
+  const runExtract = (extraArgs: string[], label: string) =>
+    withForkRetry(() => new Promise<void>((resolve, reject) => {
+      const args = ["-y", ...extraArgs, "-i", videoPath, "-frames:v", "1", "-q:v", "3", "-f", "image2", outPath];
       const child = spawn(ffmpegBin(), args, { stdio: ["ignore", "ignore", "pipe"] });
       let stderr = "";
-      child.stderr.on("data", (d: Buffer) => {
-        stderr += d.toString();
-      });
+      child.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });
       const timer = setTimeout(() => {
-        try {
-          child.kill("SIGKILL");
-        } catch {
-          /* ignore */
-        }
+        try { child.kill("SIGKILL"); } catch { /* ignore */ }
         reject(new Error("frame extract timeout"));
       }, 25_000);
       child.on("close", (code) => {
         clearTimeout(timer);
         if (code === 0 && fs.existsSync(outPath) && fs.statSync(outPath).size > 800) resolve();
-        else reject(new Error(stderr.slice(-200) || `ffmpeg exit ${code}`));
+        else reject(new Error(`[${label}] ${stderr.slice(-200) || `ffmpeg exit ${code}`}`));
       });
       child.on("error", reject);
     }));
+
+  // Attempt 1: fast input-side seek (most clips)
+  try {
+    await runExtract(["-ss", seek.toFixed(3)], "seek");
     return true;
   } catch (err) {
-    console.warn(`[ArchiveAI] frame extract failed (${path.basename(videoPath)}):`, (err as Error).message?.slice(0, 160));
-    return false;
+    console.warn(`[ArchiveAI] frame extract (seek) failed (${path.basename(videoPath)}):`, (err as Error).message?.slice(0, 160));
   }
+
+  // Attempt 2: no seek — grab very first decodable frame (handles short/corrupt-header clips)
+  try {
+    if (fs.existsSync(outPath)) fs.unlinkSync(outPath);
+    await runExtract([], "no-seek");
+    return true;
+  } catch (err) {
+    console.warn(`[ArchiveAI] frame extract (no-seek) failed (${path.basename(videoPath)}):`, (err as Error).message?.slice(0, 160));
+  }
+
+  // Attempt 3: mjpeg decoder hint + no seek (some motion-JPEG .avi files)
+  try {
+    if (fs.existsSync(outPath)) fs.unlinkSync(outPath);
+    await runExtract(["-c:v", "mjpeg"], "mjpeg");
+    return true;
+  } catch {
+    /* fall through — all attempts exhausted */
+  }
+
+  return false;
 }
 
 /** Sample frames across the clip — bulk mode uses fewer frames for speed and token limits. */
