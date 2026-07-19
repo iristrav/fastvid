@@ -44,10 +44,10 @@ export async function trimArchiveAssetToFirstScene(
     const strategies = [
       `${ffmpegBin()} -y -ss 0 -i "${localPath}" -t ${dur} ` +
         `-c:v libx264 -preset ultrafast -crf 23 -an -pix_fmt yuv420p -movflags +faststart ` +
-        `-avoid_negative_ts make_zero -reset_timestamps 1 -threads 2 "${outPath}"`,
+        `-avoid_negative_ts make_zero -reset_timestamps 1 -threads 0 "${outPath}"`,
       `${ffmpegBin()} -y -i "${localPath}" -t ${dur} ` +
         `-c:v libx264 -preset ultrafast -crf 23 -an -pix_fmt yuv420p -movflags +faststart ` +
-        `-avoid_negative_ts make_zero -reset_timestamps 1 -threads 2 "${outPath}"`,
+        `-avoid_negative_ts make_zero -reset_timestamps 1 -threads 0 "${outPath}"`,
     ];
 
     let trimmed = false;
