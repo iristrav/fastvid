@@ -289,7 +289,7 @@ const resolveApiUrl = (provider: LlmProvider) => {
 function resolveModel(provider: LlmProvider, hasVision: boolean, maxTokens?: number): string {
   if (provider === "groq") {
     if (hasVision) {
-      return process.env.GROQ_VISION_MODEL?.trim() || "llama-3.2-11b-vision-preview";
+      return process.env.GROQ_VISION_MODEL?.trim() || "meta-llama/llama-4-maverick-17b-128e-instruct";
     }
     const fastModel = process.env.GROQ_FAST_MODEL?.trim() || "llama-3.1-8b-instant";
     const heavyModel = process.env.GROQ_MODEL?.trim() || "llama-3.3-70b-versatile";
@@ -385,6 +385,7 @@ function markOpenAiQuotaExhausted(body: string): void {
 function shouldFallbackToNextProvider(status: number, body: string): boolean {
   if (isRateLimitError(status)) return true;
   if (isOpenAiQuotaError(status, body)) return true;
+  if (status === 404) return true; // model not found → try next provider
   return status >= 500 && status < 600;
 }
 

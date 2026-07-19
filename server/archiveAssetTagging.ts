@@ -548,12 +548,13 @@ async function extractVideoPreviewJpeg(
       child.on("close", (code) => {
         clearTimeout(timer);
         if (code === 0 && fs.existsSync(outPath) && fs.statSync(outPath).size > 800) resolve();
-        else reject(new Error(stderr.slice(-120) || `ffmpeg exit ${code}`));
+        else reject(new Error(stderr.slice(-200) || `ffmpeg exit ${code}`));
       });
       child.on("error", reject);
     }));
     return true;
-  } catch {
+  } catch (err) {
+    console.warn(`[ArchiveAI] frame extract failed (${path.basename(videoPath)}):`, (err as Error).message?.slice(0, 160));
     return false;
   }
 }
