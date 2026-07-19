@@ -327,7 +327,6 @@ function isGroqDailyQuotaError(body: string): boolean {
   return (
     lower.includes("tokens per day") ||
     lower.includes("tpd") ||
-    lower.includes("tokens per minute (tpm)") ||
     lower.includes("tokens per minute (tpd)")
   );
 }
