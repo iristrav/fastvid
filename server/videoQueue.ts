@@ -148,8 +148,8 @@ export async function processQueueTick(): Promise<void> {
 }
 
 // How often to scan for videos stuck in generating_* longer than STUCK_VIDEO_MINUTES.
-const STUCK_CHECK_INTERVAL_MS = 5 * 60 * 1000; // every 5 minutes
-const STUCK_VIDEO_MINUTES = parseInt(process.env.STUCK_VIDEO_MINUTES ?? "95", 10);
+const STUCK_CHECK_INTERVAL_MS = 2 * 60 * 1000; // every 2 minutes
+const STUCK_VIDEO_MINUTES = parseInt(process.env.STUCK_VIDEO_MINUTES ?? "20", 10);
 
 async function runStuckVideoCheck(): Promise<void> {
   try {

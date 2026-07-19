@@ -1945,10 +1945,13 @@ export const appRouter = router({
       return { deleted: count };
     }),
 
-    /** Admin: mark all stuck in-progress videos as failed */
+    /** Admin: mark all stuck in-progress videos as failed and nudge the queue worker. */
     expireStuck: adminProcedure.mutation(async () => {
-      const count = await expireStuckVideos(35);
-      return { expired: count };
+      const count = await expireStuckVideos(20);
+      const { completed, failed } = await recoverAllStuckVideos(() => {});
+      const { processQueueTick } = await import("./videoQueue");
+      void processQueueTick();
+      return { expired: count, recovered: completed, requeued: failed };
     }),
 
     /** Admin: reset stuck generating_voiceover/visuals/effects videos back to awaiting_approval */
