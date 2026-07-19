@@ -2101,7 +2101,7 @@ function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProfile {
   const videoLength = normalizeVideoLength(videoLengthRaw);
   // Confirmed Railway plan: 24 vCPU / 24GB RAM — plenty of headroom for scene-level
   // concurrency on longer videos too (was capped at 2, tuned for an old 512MB assumption).
-  const railwayParallel = isShortVideoLength(videoLength) ? 4 : 3;
+  const railwayParallel = isShortVideoLength(videoLength) ? 5 : 4;
   const maxEntityYoutube = maxEntityYoutubeFetchesPerVideo(minimizeStockFootageEnabled());
   let profile: PipelinePerfProfile;
   if (isShortVideoLength(videoLength)) {
@@ -2180,9 +2180,10 @@ function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProfile {
       maxStockBeatsPerVideo: stockCap,
       maxStockQueriesPerBeat: stockCap > 0 ? 1 : 0,
       maxEntityYoutubePerVideo: 0,
-      // Archive embedding search is fast — always use fast mode for curated-only to unlock
-      // higher beat concurrency (4 instead of 2) regardless of video length.
+      // Archive embedding search is fast — use higher parallelism for curated-only.
       fastStockMode: true,
+      // More scene-level parallelism: archive lookup is embedding-based (CPU, not network).
+      sceneParallelism: IS_RAILWAY ? 5 : 3,
     };
   }
   return profile;
@@ -18598,7 +18599,7 @@ async function fetchArchiveSentenceMontage(
 
   const beatConcurrency = dedup.perf.fastStockMode
     ? fastBeatConcurrency(IS_RAILWAY)
-    : 3;
+    : 4;
   const beatLimit = pLimit(beatConcurrency);
   await Promise.all(
     beats.map((beat, bi) =>

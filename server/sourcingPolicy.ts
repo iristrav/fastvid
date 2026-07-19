@@ -376,16 +376,15 @@ export function isFastShortVideoLength(videoLength?: string | null): boolean {
   return targetVideoDurationMinutes(videoLength) <= 1;
 }
 
-/** Parallel beat fills on 1-min fast path. Railway has 24 vCPU but the container's pids
- *  cgroup limit (process/thread count, not CPU) is hit well before vCPU saturation when
- *  combined with compose/montage parallelism below — keep this moderate. */
+/** Parallel beat fills on fast path. Railway has 24 vCPU; archive embedding lookup is
+ *  CPU-light so more concurrency is safe — fork-pressure retries cover transient spikes. */
 export function fastBeatConcurrency(isRailway = false): number {
   const raw = process.env.FAST_BEAT_CONCURRENCY?.trim();
   if (raw) {
     const n = parseInt(raw, 10);
-    if (!isNaN(n) && n >= 1 && n <= 8) return n;
+    if (!isNaN(n) && n >= 1 && n <= 12) return n;
   }
-  return 4;
+  return 6;
 }
 
 /** Weak-beat archive polish before compose (always on when strict voice↔visual match). */
@@ -400,42 +399,37 @@ export function polishBeforeComposeEnabled(
   return true;
 }
 
-/** Parallel scene compose jobs (1–4). Railway has 24 vCPU/24GB RAM, but each compose job
- *  forks a shell + ffmpeg + N encode threads — multiplied across compose × montage ×
- *  thread parallelism this hit the container's pids/fork limit ("Cannot fork") well
- *  before CPU/RAM did. Keep this moderate; override via COMPOSE_PARALLELISM if needed. */
+/** Parallel scene compose jobs. Railway has 24 vCPU/24GB RAM; fork-pressure retries
+ *  handle transient pids-limit spikes so we can run hotter. Override via COMPOSE_PARALLELISM. */
 export function composeParallelismForVideo(videoLength?: string | null, isRailway = false): number {
   const raw = process.env.COMPOSE_PARALLELISM?.trim();
   if (raw) {
     const n = parseInt(raw, 10);
-    if (!isNaN(n) && n >= 1 && n <= 4) return n;
+    if (!isNaN(n) && n >= 1 && n <= 6) return n;
   }
-  // 1-min fast path has a tight 420s hard cap on the compose stage — keep it at the
-  // original safe level since extra parallelism + fork-pressure retries can blow that budget.
+  // 1-min fast path has a tight 420s hard cap on the compose stage — keep moderate.
   if (isFastShortVideoLength(videoLength)) return 2;
-  return 3;
+  return 4;
 }
 
-/** Parallel montage segment encodes within a scene (1–3). See composeParallelismForVideo —
- *  combined process/thread fan-out hit the container's fork limit; fork-pressure retries
- *  now cover transient spikes, so this can run a bit hotter than the original safe floor. */
+/** Parallel montage segment encodes within a scene. Fork-pressure retries cover spikes;
+ *  3 segments × 4 compose jobs = 12 concurrent ffmpeg ops on 24 vCPU Railway — fine. */
 export function montageSegmentParallelism(isRailway = false): number {
   const raw = process.env.MONTAGE_SEGMENT_PARALLELISM?.trim();
   if (raw) {
     const n = parseInt(raw, 10);
-    if (!isNaN(n) && n >= 1 && n <= 3) return n;
+    if (!isNaN(n) && n >= 1 && n <= 4) return n;
   }
-  return 2;
+  return 3;
 }
 
-/** FFmpeg thread cap per encode (0 = libx264 default). Combined with compose ×
- *  montage parallelism, higher values risk the container's fork/pids limit, not CPU —
- *  fork-pressure retries now cover transient spikes from this. */
+/** FFmpeg thread cap per encode. On Railway (24 vCPU) 4 threads per process is safe
+ *  at 4 compose × 3 montage = 12 concurrent ffmpeg — fork-pressure retries cover spikes. */
 export function ffmpegThreadFlag(isRailway = false): string {
   const raw = process.env.FFMPEG_THREADS?.trim();
-  const n = raw ? parseInt(raw, 10) : isRailway ? 3 : 0;
+  const n = raw ? parseInt(raw, 10) : isRailway ? 4 : 0;
   if (!n || isNaN(n) || n < 1) return "";
-  return `-threads ${Math.min(4, n)}`;
+  return `-threads ${Math.min(6, n)}`;
 }
 
 /** Burn faceless subtitles during montage segment encode (only when faceless subs enabled). */
@@ -634,17 +628,17 @@ export function visualSourcingTurboMs(videoLength?: string | null): number {
   return 12_000;
 }
 
-/** Max ms per beat spent trying archive candidates before moving on. Raised slightly so the
- *  extra candidates from maxVisualCandidatesPerBeatTry have time to actually run — beats
- *  are processed concurrently (fastBeatConcurrency), so this doesn't add up serially. */
+/** Max ms per beat spent trying archive candidates before moving on. Beats are processed
+ *  concurrently (fastBeatConcurrency=6) so this does NOT add up serially. Archive lookup
+ *  is an embedding search — if nothing is found in 20s it won't be found at all. */
 export function archiveBeatTryTimeoutMs(videoLength?: string | null): number {
   const raw = process.env.ARCHIVE_BEAT_TRY_TIMEOUT_MS?.trim();
   if (raw) {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 4_000 && n <= 120_000) return n;
   }
-  if (isFastShortVideoLength(videoLength)) return 26_000;
-  return 50_000;
+  if (isFastShortVideoLength(videoLength)) return 18_000;
+  return 30_000;
 }
 
 /** Target on-screen duration per archive clip (seconds). */
