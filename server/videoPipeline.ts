@@ -2180,6 +2180,9 @@ function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProfile {
       maxStockBeatsPerVideo: stockCap,
       maxStockQueriesPerBeat: stockCap > 0 ? 1 : 0,
       maxEntityYoutubePerVideo: 0,
+      // Archive embedding search is fast — always use fast mode for curated-only to unlock
+      // higher beat concurrency (4 instead of 2) regardless of video length.
+      fastStockMode: true,
     };
   }
   return profile;
@@ -8960,7 +8963,7 @@ function archivePrepareConcurrency(fastMode: boolean, relaxed: boolean): number 
   if (fastMode && strictVoiceVisualMatchEnabled()) return 4;
   // Run candidate prep more in parallel so trying more candidates per beat
   // (maxVisualCandidatesPerBeatTry) doesn't add proportional wall-clock time.
-  return fastMode ? 3 : 2;
+  return fastMode ? 3 : 3;
 }
 const RELEVANCE_STOP_WORDS = new Set([
   "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with", "by", "from",
@@ -18595,7 +18598,7 @@ async function fetchArchiveSentenceMontage(
 
   const beatConcurrency = dedup.perf.fastStockMode
     ? fastBeatConcurrency(IS_RAILWAY)
-    : 2;
+    : 3;
   const beatLimit = pLimit(beatConcurrency);
   await Promise.all(
     beats.map((beat, bi) =>
