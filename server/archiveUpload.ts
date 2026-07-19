@@ -471,17 +471,26 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
         );
       }
 
-      // V2: perceptual hash dedup — remove near-identical clips saved in this upload batch.
-      if (process.env.ARCHIVE_INGESTION_V2_ENABLED !== "false") {
+      // V2: perceptual hash dedup — remove near-identical clips within this upload batch only.
+      // We do NOT dedup against the full archive here to avoid silently deleting existing clips.
+      // Full-archive dedup is a manual action via "Remove duplicates" in the admin UI.
+      if (process.env.ARCHIVE_INGESTION_V2_ENABLED !== "false" && createdAssets.length >= 2) {
         void (async () => {
           try {
-            const allAssets = await getMediaArchiveAssets(input.archiveId);
-            if (allAssets.length < 2) return;
-            const { deleteIds } = await dedupeArchiveVisualDuplicates(allAssets);
+            const { deleteIds } = await dedupeArchiveVisualDuplicates(createdAssets.map((a) => ({
+              id: a.id,
+              title: a.title,
+              sourceNote: a.sourceNote,
+              storageUrl: a.storageUrl,
+              storageKey: a.storageKey,
+              mimeType: a.mimeType,
+              mediaType: a.mediaType,
+              durationSec: a.durationSec,
+            })));
             if (deleteIds.length > 0) {
               await deleteMediaArchiveAssets(deleteIds);
               console.log(
-                `[ArchiveUpload] V2 perceptual dedup: removed ${deleteIds.length} duplicate(s) from archive ${input.archiveId}`
+                `[ArchiveUpload] V2 perceptual dedup: removed ${deleteIds.length} duplicate(s) within upload batch for archive ${input.archiveId}`
               );
             }
           } catch (err) {
