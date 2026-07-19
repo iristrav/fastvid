@@ -289,7 +289,7 @@ const resolveApiUrl = (provider: LlmProvider) => {
 function resolveModel(provider: LlmProvider, hasVision: boolean, maxTokens?: number): string {
   if (provider === "groq") {
     if (hasVision) {
-      return process.env.GROQ_VISION_MODEL?.trim() || "meta-llama/llama-4-scout-17b-16e-instruct";
+      return process.env.GROQ_VISION_MODEL?.trim() || "llama-3.2-11b-vision-preview";
     }
     const fastModel = process.env.GROQ_FAST_MODEL?.trim() || "llama-3.1-8b-instant";
     const heavyModel = process.env.GROQ_MODEL?.trim() || "llama-3.3-70b-versatile";
