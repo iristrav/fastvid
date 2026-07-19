@@ -808,6 +808,20 @@ export function ArchiveClipsGrid({
 
   const selectedCount = selectedIds.size;
   const allArchiveSelected = total > 0 && selectedCount === total;
+  const pageAssetIds = useMemo(() => assets.map((a) => a.id), [assets]);
+  const allPageSelected = pageAssetIds.length > 0 && pageAssetIds.every((id) => selectedIds.has(id));
+
+  function toggleSelectPage() {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (allPageSelected) {
+        pageAssetIds.forEach((id) => next.delete(id));
+      } else {
+        pageAssetIds.forEach((id) => next.add(id));
+      }
+      return next;
+    });
+  }
 
   const multiSceneCount = useMemo(
     () => Object.values(sceneAuditMap).filter((e) => e.status === "multi_scene").length,
@@ -1400,6 +1414,21 @@ export function ArchiveClipsGrid({
           )}
           {reindexOrphans.isPending ? "Clips herstellen…" : "Herstel verwijderde clips"}
         </button>
+        {assets.length > 0 && (
+          <button
+            type="button"
+            onClick={toggleSelectPage}
+            title={`${allPageSelected ? "Deselecteer" : "Selecteer"} de ${pageAssetIds.length} clips op deze pagina`}
+            className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg bg-white/10 text-slate-300 hover:bg-white/15"
+          >
+            {allPageSelected ? (
+              <CheckSquare className="w-3.5 h-3.5" />
+            ) : (
+              <Square className="w-3.5 h-3.5" />
+            )}
+            {allPageSelected ? "Deselect pagina" : "Selecteer pagina"}
+          </button>
+        )}
         {assets.length > 0 && (
           <button
             type="button"
