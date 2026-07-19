@@ -8,6 +8,7 @@ import path from "path";
 import { spawn } from "child_process";
 import { withForkRetry } from "./_core/execForkRetry";
 import type { VideoClipSegment } from "./archiveVideoSplitter";
+import { loadArchiveAssetFile } from "./archiveAssetLoad";
 import { LOCAL_UPLOADS_DIR, resolveLocalVideoPath } from "./storageLocal";
 
 function ffmpegBin(): string {
@@ -49,7 +50,7 @@ export function defaultMaxHamming(): number {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 0 && n <= 24) return n;
   }
-  return 6;
+  return 8;
 }
 
 async function extractGray8x8FromFile(
@@ -96,8 +97,9 @@ function seekPointsForDuration(durationSec?: number | null): number[] {
 
 function seeksForFingerprint(durationSec?: number | null, fast = false): number[] {
   if (fast) {
-    if (durationSec != null && durationSec > 0.8) return [durationSec * 0.35];
-    return [0.35];
+    // Sample start + middle so two clips sharing an opening frame are caught.
+    if (durationSec != null && durationSec > 0.8) return [Math.min(0.5, durationSec * 0.08), durationSec * 0.45];
+    return [0.1, 0.35];
   }
   return seekPointsForDuration(durationSec);
 }
@@ -495,9 +497,6 @@ export async function dedupeArchiveVisualDuplicates(
   }
 
   const remaining = sorted.filter((a) => !deleteSet.has(a.id));
-  const candidates = remaining
-    .map((asset) => ({ asset, local: resolveArchiveAssetPath(asset) }))
-    .filter((row): row is { asset: (typeof assets)[0]; local: string } => Boolean(row.local));
 
   type FpRow = {
     id: number;
@@ -506,20 +505,24 @@ export async function dedupeArchiveVisualDuplicates(
     exact: string | null;
   };
 
-  const fpRows = await mapWithConcurrency(candidates, dedupeFingerprintConcurrency(), async ({ asset, local }) => {
-    const mime =
-      asset.mimeType ?? (asset.mediaType === "image" ? "image/jpeg" : "video/mp4");
-    const fp = await fingerprintMediaFileMulti(local, {
-      durationSec: asset.durationSec,
-      mimeType: mime,
-      fast: true,
-    });
-    return {
-      id: asset.id,
-      fp,
-      fragment: parseArchiveFragmentNote(asset.sourceNote),
-      exact: exactSampleKey(local),
-    } satisfies FpRow;
+  // Use loadArchiveAssetFile so remote/S3 clips are downloaded and fingerprinted too.
+  // Concurrency limited to avoid saturating S3 download bandwidth.
+  const fpRows = await mapWithConcurrency(remaining, Math.min(dedupeFingerprintConcurrency(), 4), async (asset) => {
+    const loaded = await loadArchiveAssetFile({
+      ...asset,
+      mimeType: asset.mimeType ?? (asset.mediaType === "image" ? "image/jpeg" : "video/mp4"),
+    }).catch(() => null);
+    if (!loaded?.ok) {
+      return { id: asset.id, fp: null, fragment: parseArchiveFragmentNote(asset.sourceNote), exact: null } satisfies FpRow;
+    }
+    const { localPath, mimeType: loadedMime, cleanup } = loaded.result;
+    try {
+      const mime = loadedMime ?? asset.mimeType ?? (asset.mediaType === "image" ? "image/jpeg" : "video/mp4");
+      const fp = await fingerprintMediaFileMulti(localPath, { durationSec: asset.durationSec, mimeType: mime, fast: true });
+      return { id: asset.id, fp, fragment: parseArchiveFragmentNote(asset.sourceNote), exact: exactSampleKey(localPath) } satisfies FpRow;
+    } finally {
+      cleanup?.();
+    }
   });
 
   const keptEntries: Array<{ fp: bigint[]; fragment: ParsedArchiveFragment | null }> = [];
