@@ -78,7 +78,9 @@ function isMuskTeslaPromptTopic(prompt: string, title: string): boolean {
   return /musk|tesla|spacex|starlink|gigafactory|cybertruck|falcon|starship/.test(text);
 }
 
-import { storagePut } from "./storage";
+import { storagePut, storageGetSignedUrl } from "./storage";
+import { s3ListAllKeys } from "./storageS3";
+import { isS3StorageEnabled, objectStorageUrl } from "./storageBackend";
 import { FASTVID_PRO_PLAN } from "./products";
 import { processArchiveAssetUpload, ArchiveUploadError } from "./archiveUpload";
 import { archiveAiTaggingEnabled } from "./archiveAssetTagging";
@@ -1822,6 +1824,70 @@ export const appRouter = router({
       await deleteMediaArchiveAssets(zeroIds);
       console.log(`[Admin] deleteZeroDurationClips archive=${input.archiveId}: deleted ${zeroIds.length}/${assets.length}`);
       return { deleted: zeroIds.length, scanned: assets.length };
+    }),
+
+    restoreFromS3: adminProcedure.input(z.object({
+      archiveId: z.number().int(),
+    })).mutation(async ({ input }) => {
+      if (!isS3StorageEnabled()) {
+        throw appTrpcError("BAD_REQUEST", APP_ERROR.SERVICE_ERROR, "S3/R2 storage is not configured");
+      }
+      const archive = await getMediaArchiveById(input.archiveId);
+      if (!archive) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Archive not found");
+
+      const existingAssets = await getMediaArchiveAssets(input.archiveId);
+      const existingKeys = new Set(existingAssets.map((a) => a.storageKey).filter(Boolean));
+      const existingUrls = new Set(existingAssets.map((a) => a.storageUrl));
+
+      const allKeys = await s3ListAllKeys();
+
+      const videoExts = new Set([".mp4", ".webm", ".mov", ".avi", ".mkv"]);
+      const imageExts = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif"]);
+      const mimeMap: Record<string, string> = {
+        ".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime",
+        ".avi": "video/x-msvideo", ".mkv": "video/x-matroska",
+        ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+        ".webp": "image/webp", ".gif": "image/gif",
+      };
+
+      let restored = 0;
+      let skipped = 0;
+
+      for (const relKey of allKeys) {
+        if (existingKeys.has(relKey)) continue;
+        const url = objectStorageUrl(relKey);
+        if (existingUrls.has(url)) continue;
+
+        const ext = relKey.slice(relKey.lastIndexOf(".")).toLowerCase();
+        const isVideo = videoExts.has(ext);
+        const isImage = imageExts.has(ext);
+        if (!isVideo && !isImage) continue;
+
+        const mimeType = mimeMap[ext] ?? (isVideo ? "video/mp4" : "image/jpeg");
+        const mediaType = isVideo ? "video" : "image";
+        const mixKind = isVideo ? "real_video" : "photo";
+        const filename = relKey.split("/").pop() ?? relKey;
+        const title = filename.replace(/\.[^.]+$/, "").replace(/[-_]/g, " ").slice(0, 200) || null;
+
+        try {
+          await createMediaArchiveAsset({
+            archiveId: input.archiveId,
+            title,
+            mediaType: mediaType as "video" | "image",
+            mixKind: mixKind as "real_video" | "photo",
+            mimeType,
+            storageUrl: url,
+            storageKey: relKey,
+            isActive: 1,
+          });
+          restored++;
+        } catch {
+          skipped++;
+        }
+      }
+
+      console.log(`[RestoreFromS3] archive ${input.archiveId}: ${restored} restored, ${skipped} skipped`);
+      return { restored, skipped, total: allKeys.length };
     }),
   }),
 
