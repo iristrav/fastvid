@@ -1551,6 +1551,14 @@ export function ArchiveClipsGrid({
             <button
               type="button"
               disabled={page <= 0}
+              onClick={() => setPage(0)}
+              className="px-2 py-1 rounded bg-white/10 disabled:opacity-40 hover:bg-white/15 text-xs"
+            >
+              «
+            </button>
+            <button
+              type="button"
+              disabled={page <= 0}
               onClick={() => setPage((p) => Math.max(0, p - 1))}
               className="flex items-center gap-1 px-2 py-1 rounded bg-white/10 disabled:opacity-40 hover:bg-white/15"
             >
@@ -1566,6 +1574,14 @@ export function ArchiveClipsGrid({
               className="flex items-center gap-1 px-2 py-1 rounded bg-white/10 disabled:opacity-40 hover:bg-white/15"
             >
               Volgende <ChevronRight className="w-3.5 h-3.5" />
+            </button>
+            <button
+              type="button"
+              disabled={page >= pageCount - 1}
+              onClick={() => setPage(pageCount - 1)}
+              className="px-2 py-1 rounded bg-white/10 disabled:opacity-40 hover:bg-white/15 text-xs"
+            >
+              »
             </button>
           </div>
         </div>
@@ -1675,6 +1691,14 @@ export function ArchiveClipsGrid({
               <button
                 type="button"
                 disabled={page <= 0}
+                onClick={() => setPage(0)}
+                className="px-2 py-1.5 rounded bg-white/10 disabled:opacity-40 hover:bg-white/15"
+              >
+                «
+              </button>
+              <button
+                type="button"
+                disabled={page <= 0}
                 onClick={() => setPage((p) => Math.max(0, p - 1))}
                 className="px-3 py-1.5 rounded bg-white/10 disabled:opacity-40 hover:bg-white/15"
               >
@@ -1688,6 +1712,14 @@ export function ArchiveClipsGrid({
                 className="px-3 py-1.5 rounded bg-white/10 disabled:opacity-40 hover:bg-white/15"
               >
                 Volgende
+              </button>
+              <button
+                type="button"
+                disabled={page >= pageCount - 1}
+                onClick={() => setPage(pageCount - 1)}
+                className="px-2 py-1.5 rounded bg-white/10 disabled:opacity-40 hover:bg-white/15"
+              >
+                »
               </button>
             </div>
           </div>
