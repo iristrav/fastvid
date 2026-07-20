@@ -746,6 +746,19 @@ export function ArchiveClipsGrid({
     onError: (e) => toast.error("Verwijderen mislukt", { description: toastErrorMessage(e) }),
   });
 
+  const deleteZeroDurationClips = trpc.mediaArchive.deleteZeroDurationClips.useMutation({
+    onSuccess: (data) => {
+      utils.mediaArchive.listAssets.invalidate();
+      utils.mediaArchive.listArchives.invalidate();
+      if (data.deleted === 0) {
+        toast.info(`Geen 0-seconden clips gevonden (${data.scanned} gescand)`);
+      } else {
+        toast.success(`${data.deleted} clip(s) van 0 seconden verwijderd`);
+      }
+    },
+    onError: (e) => toast.error("Verwijderen mislukt", { description: toastErrorMessage(e) }),
+  });
+
   const autoTitleAssets = trpc.mediaArchive.autoTitleAssets.useMutation();
   const auditScenes = trpc.mediaArchive.auditScenes.useMutation();
   const repairDurations = trpc.mediaArchive.repairDurations.useMutation({
@@ -1425,20 +1438,40 @@ export function ArchiveClipsGrid({
           </button>
         )}
         {assets.length > 0 && (
-          <button
-            type="button"
-            onClick={deleteClipsWithLogo}
-            disabled={deleteLogoClips.isPending || autoTitleRunning}
-            title="Verwijder alle clips met een logo of watermerk (herkend via tags/titel)"
-            className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg bg-red-500/15 text-red-300 border border-red-500/25 hover:bg-red-500/25 disabled:opacity-50"
-          >
-            {deleteLogoClips.isPending ? (
-              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-            ) : (
-              <Ban className="w-3.5 h-3.5" />
-            )}
-            {deleteLogoClips.isPending ? "Logo's verwijderen…" : "Verwijder logo-clips"}
-          </button>
+          <>
+            <button
+              type="button"
+              onClick={deleteClipsWithLogo}
+              disabled={deleteLogoClips.isPending || autoTitleRunning}
+              title="Verwijder alle clips met een logo of watermerk (herkend via tags/titel)"
+              className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg bg-red-500/15 text-red-300 border border-red-500/25 hover:bg-red-500/25 disabled:opacity-50"
+            >
+              {deleteLogoClips.isPending ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Ban className="w-3.5 h-3.5" />
+              )}
+              {deleteLogoClips.isPending ? "Logo's verwijderen…" : "Verwijder logo-clips"}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (archiveId == null) return;
+                if (!confirm("Verwijder alle videoclips met duur 0 seconden?")) return;
+                deleteZeroDurationClips.mutate({ archiveId });
+              }}
+              disabled={deleteZeroDurationClips.isPending || autoTitleRunning}
+              title="Verwijder alle videoclips waarbij de duur 0 of onbekend is"
+              className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg bg-red-500/15 text-red-300 border border-red-500/25 hover:bg-red-500/25 disabled:opacity-50"
+            >
+              {deleteZeroDurationClips.isPending ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Ban className="w-3.5 h-3.5" />
+              )}
+              {deleteZeroDurationClips.isPending ? "Verwijderen…" : "Verwijder 0s clips"}
+            </button>
+          </>
         )}
         <button
           type="button"

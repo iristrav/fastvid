@@ -84,12 +84,7 @@ import { processArchiveAssetUpload, ArchiveUploadError } from "./archiveUpload";
 import { archiveAiTaggingEnabled } from "./archiveAssetTagging";
 import { autoTitleArchiveAssets, probeArchiveAssetAiTag } from "./archiveBulkVisionTagging";
 import { bulkRetagArchiveGeo } from "./archiveBulkGeoRetag";
-import { LOCAL_UPLOADS_DIR } from "./storageLocal";
-import { enrichArchiveAssetFields } from "./archiveAssetTagging";
-import * as fs from "fs";
-import * as path from "path";
 import { auditArchiveAssetScenes } from "./archiveSceneAudit";
-import { trimArchiveAssetToFirstScene } from "./archiveTrimToScene";
 import { archiveAssetMediaStatus } from "./archiveAssetLoad";
 import { dedupeArchiveVisualDuplicates } from "./archiveClipDedup";
 import { assessArchiveCoverageForPrompt } from "./archiveCoverage";
@@ -131,8 +126,6 @@ import { ensureScriptMeetsBudgetWithRetry } from "./pipelineSelfHeal";
 import { attachScriptVisualKeywords } from "./scriptVisualKeywords";
 import { runScriptEngineV2, scriptEngineV2Enabled } from "./scriptEngine";
 import type { InvokeResult } from "./_core/llm";
-import { s3ListAllKeys } from "./storageS3";
-import { isS3StorageEnabled, objectStorageUrl } from "./storageBackend";
 
 function llmMessageText(resp: InvokeResult | null | undefined): string {
   const content = resp?.choices?.[0]?.message?.content ?? "";
@@ -1737,24 +1730,10 @@ export const appRouter = router({
       }
     }),
 
-    /** Trim a multi-scene clip to its first scene using the provided cut point. */
-    trimToSingleScene: adminProcedure.input(z.object({
-      assetId: z.number().int(),
-      cutTimeSec: z.number().positive().max(3600),
-    })).mutation(async ({ input }) => {
-      const asset = await getMediaArchiveAssetById(input.assetId);
-      if (!asset) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Asset not found");
-      if (asset.mediaType !== "video") throw appTrpcError("BAD_REQUEST", APP_ERROR.VALIDATION_ERROR, "Asset is not a video");
-      return trimArchiveAssetToFirstScene(asset, input.cutTimeSec);
-    }),
-
     /** Remove visually duplicate clips (keeps oldest per duplicate group). */
     dedupeDuplicateAssets: adminProcedure.input(z.object({
       archiveId: z.number().int(),
       ids: z.array(z.number().int()).optional(),
-      /** Process only this many clips starting at `offset` (sorted by id asc). Default 200. */
-      limit: z.number().int().min(1).max(500).optional(),
-      offset: z.number().int().min(0).optional(),
     })).mutation(async ({ input }) => {
       const archive = await getMediaArchiveById(input.archiveId);
       if (!archive) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Archive not found");
@@ -1764,106 +1743,19 @@ export const appRouter = router({
         const idSet = new Set(input.ids);
         assets = assets.filter((a) => idSet.has(a.id));
       }
-
-      // Sort ascending so batches are deterministic and "keep oldest" logic is preserved.
-      assets = assets.sort((a, b) => a.id - b.id);
-      const total = assets.length;
-      const limit = input.limit ?? 200;
-      const offset = input.offset ?? 0;
-      assets = assets.slice(offset, offset + limit);
-
       if (assets.length < 2) {
-        return { scanned: assets.length, deleted: 0, kept: assets.length, total, hasMore: false };
+        return { scanned: assets.length, deleted: 0, kept: assets.length };
       }
 
       const { deleteIds, scanned } = await dedupeArchiveVisualDuplicates(assets);
       if (deleteIds.length > 0) {
         await deleteMediaArchiveAssets(deleteIds);
       }
-      const nextOffset = offset + limit;
       return {
         scanned,
         deleted: deleteIds.length,
         kept: assets.length - deleteIds.length,
-        total,
-        hasMore: nextOffset < total,
-        nextOffset,
       };
-    }),
-
-    /**
-     * Scan the R2/S3 bucket and re-register any clips that exist in storage but are missing
-     * from the archive DB (e.g. accidentally deleted by auto-dedup).
-     */
-    restoreFromS3: adminProcedure.input(z.object({
-      archiveId: z.number().int(),
-    })).mutation(async ({ input }) => {
-      if (!isS3StorageEnabled()) {
-        throw appTrpcError("BAD_REQUEST", APP_ERROR.SERVICE_ERROR, "S3/R2 storage is not configured");
-      }
-
-      const archive = await getMediaArchiveById(input.archiveId);
-      if (!archive) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Archive not found");
-
-      // Get all keys already registered in the DB for this archive
-      const existingAssets = await getMediaArchiveAssets(input.archiveId);
-      const existingKeys = new Set(existingAssets.map((a) => a.storageKey).filter(Boolean));
-      const existingUrls = new Set(existingAssets.map((a) => a.storageUrl));
-
-      // List all objects in the bucket
-      const allKeys = await s3ListAllKeys();
-
-      // Only video/image files — skip thumbnails, JSON metadata, etc.
-      const videoExts = new Set([".mp4", ".webm", ".mov", ".avi", ".mkv"]);
-      const imageExts = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif"]);
-
-      const mimeMap: Record<string, string> = {
-        ".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime",
-        ".avi": "video/x-msvideo", ".mkv": "video/x-matroska",
-        ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
-        ".webp": "image/webp", ".gif": "image/gif",
-      };
-
-      let restored = 0;
-      const skipped: string[] = [];
-
-      for (const relKey of allKeys) {
-        if (existingKeys.has(relKey)) continue;
-        const url = objectStorageUrl(relKey);
-        if (existingUrls.has(url)) continue;
-
-        const ext = relKey.slice(relKey.lastIndexOf(".")).toLowerCase();
-        const isVideo = videoExts.has(ext);
-        const isImage = imageExts.has(ext);
-        if (!isVideo && !isImage) continue;
-
-        const mimeType = mimeMap[ext] ?? (isVideo ? "video/mp4" : "image/jpeg");
-        const mediaType = isVideo ? "video" : "image";
-        const mixKind = isVideo ? "real_video" : "photo";
-
-        // Derive a human-readable title from the filename
-        const filename = relKey.split("/").pop() ?? relKey;
-        const title = filename.replace(/\.[^.]+$/, "").replace(/[-_]/g, " ").slice(0, 200) || null;
-
-        try {
-          await createMediaArchiveAsset({
-            archiveId: input.archiveId,
-            title,
-            mediaType: mediaType as "video" | "image",
-            mixKind: mixKind as "real_video" | "photo",
-            mimeType,
-            storageUrl: url,
-            storageKey: relKey,
-            isActive: 1,
-          });
-          restored++;
-        } catch {
-          skipped.push(relKey);
-        }
-      }
-
-      console.log(`[RestoreFromS3] archive ${input.archiveId}: ${restored} restored, ${skipped.length} skipped`);
-      return { restored, skipped: skipped.length, total: allKeys.length };
     }),
 
     deleteAsset: adminProcedure.input(z.object({ id: z.number().int() })).mutation(async ({ input }) => {
@@ -1917,101 +1809,19 @@ export const appRouter = router({
       return { deleted: logoIds.length, scanned: assets.length };
     }),
 
-    /**
-     * Reindex orphaned clips from disk back into the database.
-     * Scans LOCAL_UPLOADS_DIR for media-archive_<archiveId>_*.mp4 files
-     * that have no matching storageUrl row in media_archive_assets, then
-     * inserts them with AI tagging.
-     */
-    reindexOrphanedClips: adminProcedure.input(z.object({
+    deleteZeroDurationClips: adminProcedure.input(z.object({
       archiveId: z.number().int(),
-      autoGenerateTags: z.boolean().default(true),
-      limit: z.number().int().min(1).max(500).default(100),
     })).mutation(async ({ input }) => {
       const archive = await getMediaArchiveById(input.archiveId);
       if (!archive) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Archive not found");
-
-      // Collect all media-archive files for this archiveId from disk
-      const prefix = `media-archive_${input.archiveId}_`;
-      let allFiles: string[];
-      try {
-        allFiles = fs.readdirSync(LOCAL_UPLOADS_DIR).filter(
-          (f) => f.startsWith(prefix) && f.endsWith(".mp4")
-        );
-      } catch {
-        return { inserted: 0, skipped: 0, total: 0, error: `Cannot read ${LOCAL_UPLOADS_DIR}` };
-      }
-
-      // Build a set of storageUrls already in the DB
-      const existing = await getMediaArchiveAssets(input.archiveId);
-      const existingUrls = new Set(existing.map((a) => a.storageUrl));
-
-      // Filter to only files not yet in the DB
-      const orphans = allFiles.filter((f) => !existingUrls.has(`/local-storage/${f}`));
-      const toProcess = orphans.slice(0, input.limit);
-
-      console.log(`[Reindex] archive=${input.archiveId}: ${allFiles.length} on disk, ${existing.length} in DB, ${orphans.length} orphans, processing ${toProcess.length}`);
-
-      let inserted = 0;
-      let skipped = 0;
-
-      for (const filename of toProcess) {
-        const filePath = path.join(LOCAL_UPLOADS_DIR, filename);
-        const storageUrl = `/local-storage/${filename}`;
-
-        try {
-          // Skip files smaller than 50KB — likely corrupt or incomplete uploads
-          const stat = fs.statSync(filePath);
-          if (stat.size < 50_000) {
-            console.log(`[Reindex] skip ${filename} — too small (${stat.size}b)`);
-            skipped++;
-            continue;
-          }
-
-          const buffer = fs.readFileSync(filePath);
-          let tags: string[] = [];
-          let sourceNote = `Herindexed from disk: ${filename}`;
-
-          if (input.autoGenerateTags) {
-            try {
-              const enriched = await enrichArchiveAssetFields({
-                buffer,
-                mimeType: "video/mp4",
-                autoGenerateTags: true,
-                baseTitle: filename,
-                userTags: [],
-                sourceNote,
-                bulk: true,
-              });
-              tags = enriched.tags;
-              sourceNote = enriched.sourceNote ?? sourceNote;
-            } catch {
-              // AI tagging failed — insert without tags
-            }
-          }
-
-          await createMediaArchiveAsset({
-            archiveId: input.archiveId,
-            title: "",
-            mediaType: "video",
-            mixKind: "real_video",
-            mimeType: "video/mp4",
-            storageUrl,
-            storageKey: filename,
-            tags,
-            sourceNote,
-            isActive: 1,
-          });
-          inserted++;
-          console.log(`[Reindex] inserted ${filename} (tags: ${tags.length})`);
-        } catch (err) {
-          console.error(`[Reindex] failed ${filename}:`, (err as Error).message?.slice(0, 100));
-          skipped++;
-        }
-      }
-
-      console.log(`[Reindex] done: inserted=${inserted} skipped=${skipped} remaining=${orphans.length - toProcess.length}`);
-      return { inserted, skipped, total: orphans.length, remaining: orphans.length - toProcess.length };
+      const assets = await getMediaArchiveAssets(input.archiveId);
+      const zeroIds = assets
+        .filter((a) => a.mediaType === "video" && (a.durationSec == null || a.durationSec <= 0))
+        .map((a) => a.id);
+      if (zeroIds.length === 0) return { deleted: 0, scanned: assets.length };
+      await deleteMediaArchiveAssets(zeroIds);
+      console.log(`[Admin] deleteZeroDurationClips archive=${input.archiveId}: deleted ${zeroIds.length}/${assets.length}`);
+      return { deleted: zeroIds.length, scanned: assets.length };
     }),
   }),
 
@@ -2037,13 +1847,10 @@ export const appRouter = router({
       return { deleted: count };
     }),
 
-    /** Admin: mark all stuck in-progress videos as failed and nudge the queue worker. */
+    /** Admin: mark all stuck in-progress videos as failed */
     expireStuck: adminProcedure.mutation(async () => {
-      const count = await expireStuckVideos(20);
-      const { completed, failed } = await recoverAllStuckVideos(() => {});
-      const { processQueueTick } = await import("./videoQueue");
-      void processQueueTick();
-      return { expired: count, recovered: completed, requeued: failed };
+      const count = await expireStuckVideos(35);
+      return { expired: count };
     }),
 
     /** Admin: reset stuck generating_voiceover/visuals/effects videos back to awaiting_approval */
