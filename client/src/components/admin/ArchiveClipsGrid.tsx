@@ -750,10 +750,15 @@ export function ArchiveClipsGrid({
     onSuccess: (data) => {
       utils.mediaArchive.listAssets.invalidate();
       utils.mediaArchive.listArchives.invalidate();
-      if (data.deleted === 0) {
+      if (data.confirmed === 0) {
         toast.info(`Geen 0-seconden clips gevonden (${data.scanned} gescand)`);
       } else {
-        toast.success(`${data.deleted} clip(s) van 0 seconden verwijderd`);
+        const parts: string[] = [];
+        if (data.deleted > 0) parts.push(`${data.deleted} echt lege clip(s) verwijderd`);
+        if (data.fixed > 0) parts.push(`${data.fixed} clip(s) hadden wel beelden — duur gecorrigeerd in database`);
+        toast.success(parts.join(", ") || "Klaar", {
+          description: `${data.confirmed} van ${data.scanned} clips gecontroleerd via ffprobe`,
+        });
       }
     },
     onError: (e) => toast.error("Verwijderen mislukt", { description: toastErrorMessage(e) }),

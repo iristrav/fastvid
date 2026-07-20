@@ -87,7 +87,8 @@ import { archiveAiTaggingEnabled } from "./archiveAssetTagging";
 import { autoTitleArchiveAssets, probeArchiveAssetAiTag } from "./archiveBulkVisionTagging";
 import { bulkRetagArchiveGeo } from "./archiveBulkGeoRetag";
 import { auditArchiveAssetScenes } from "./archiveSceneAudit";
-import { archiveAssetMediaStatus } from "./archiveAssetLoad";
+import { archiveAssetMediaStatus, loadArchiveAssetFile } from "./archiveAssetLoad";
+import { probeVideoDurationSec } from "./archiveVideoSplitter";
 import { dedupeArchiveVisualDuplicates } from "./archiveClipDedup";
 import { assessArchiveCoverageForPrompt } from "./archiveCoverage";
 import {
@@ -1816,14 +1817,64 @@ export const appRouter = router({
     })).mutation(async ({ input }) => {
       const archive = await getMediaArchiveById(input.archiveId);
       if (!archive) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Archive not found");
+
       const assets = await getMediaArchiveAssets(input.archiveId);
-      const zeroIds = assets
-        .filter((a) => a.mediaType === "video" && (a.durationSec == null || a.durationSec <= 0))
-        .map((a) => a.id);
-      if (zeroIds.length === 0) return { deleted: 0, scanned: assets.length };
-      await deleteMediaArchiveAssets(zeroIds);
-      console.log(`[Admin] deleteZeroDurationClips archive=${input.archiveId}: deleted ${zeroIds.length}/${assets.length}`);
-      return { deleted: zeroIds.length, scanned: assets.length };
+      // Candidates: video clips where DB says 0s or unknown — these need verification
+      const candidates = assets.filter(
+        (a) => a.mediaType === "video" && (a.durationSec == null || a.durationSec <= 0)
+      );
+
+      if (candidates.length === 0) return { deleted: 0, confirmed: 0, scanned: assets.length };
+
+      // Actually probe each candidate — only delete if ffprobe confirms duration <= 0
+      const confirmedZeroIds: number[] = [];
+      const fixedIds: Array<{ id: number; realDuration: number }> = [];
+
+      await Promise.all(
+        candidates.map(async (asset) => {
+          const loaded = await loadArchiveAssetFile({
+            ...asset,
+            mimeType: asset.mimeType ?? "video/mp4",
+          }).catch(() => null);
+
+          if (!loaded?.ok) {
+            // Can't load the file — skip, do NOT delete
+            console.log(`[Admin] deleteZeroDurationClips: asset ${asset.id} — could not load file, skipping`);
+            return;
+          }
+
+          const { localPath, cleanup } = loaded.result;
+          try {
+            const realDuration = await probeVideoDurationSec(localPath).catch(() => 0);
+            if (realDuration <= 0) {
+              confirmedZeroIds.push(asset.id);
+              console.log(`[Admin] deleteZeroDurationClips: asset ${asset.id} confirmed 0s (ffprobe=${realDuration})`);
+            } else {
+              // DB was wrong — fix the duration instead of deleting
+              fixedIds.push({ id: asset.id, realDuration: Math.round(realDuration) });
+              console.log(`[Admin] deleteZeroDurationClips: asset ${asset.id} has real duration ${realDuration.toFixed(1)}s — updating DB, NOT deleting`);
+              await updateMediaArchiveAsset(asset.id, { durationSec: Math.round(realDuration) });
+            }
+          } finally {
+            cleanup?.();
+          }
+        })
+      );
+
+      if (confirmedZeroIds.length > 0) {
+        await deleteMediaArchiveAssets(confirmedZeroIds);
+      }
+
+      console.log(
+        `[Admin] deleteZeroDurationClips archive=${input.archiveId}: ` +
+        `checked=${candidates.length} confirmed_zero=${confirmedZeroIds.length} fixed=${fixedIds.length}`
+      );
+      return {
+        deleted: confirmedZeroIds.length,
+        fixed: fixedIds.length,
+        confirmed: candidates.length,
+        scanned: assets.length,
+      };
     }),
 
     restoreFromS3: adminProcedure.input(z.object({
