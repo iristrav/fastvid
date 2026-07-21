@@ -23,6 +23,7 @@ export type AutoTitleArchiveResult = {
   skipped: number;
   failed: number;
   skipReasons: {
+    hasTags: number;
     missingAsset: number;
     fileMissing: number;
     downloadFailed: number;
@@ -190,6 +191,7 @@ export async function autoTitleArchiveAssets(opts: {
   let sampleError: string | undefined;
   let sampleUpdate: AutoTitleArchiveResult["sampleUpdate"];
   const skipReasons = {
+    hasTags: 0,
     missingAsset: 0,
     fileMissing: 0,
     downloadFailed: 0,
@@ -229,6 +231,7 @@ export async function autoTitleArchiveAssets(opts: {
         break;
       case "skipped_has_tags":
         skipped += 1;
+        skipReasons.hasTags += 1;
         break;
       case "skipped_no_vision":
         skipped += 1;

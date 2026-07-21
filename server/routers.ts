@@ -78,7 +78,8 @@ function isMuskTeslaPromptTopic(prompt: string, title: string): boolean {
   return /musk|tesla|spacex|starlink|gigafactory|cybertruck|falcon|starship/.test(text);
 }
 
-import { storagePut } from "./storage";
+import { storagePut, storageGetSignedUrl } from "./storage";
+import { recognizeCelebritiesInFile, isRekognitionEnabled } from "./rekognitionCelebrity";
 import { FASTVID_PRO_PLAN } from "./products";
 import { processArchiveAssetUpload, ArchiveUploadError } from "./archiveUpload";
 import { archiveAiTaggingEnabled } from "./archiveAssetTagging";
@@ -90,7 +91,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { auditArchiveAssetScenes } from "./archiveSceneAudit";
 import { trimArchiveAssetToFirstScene } from "./archiveTrimToScene";
-import { archiveAssetMediaStatus } from "./archiveAssetLoad";
+import { archiveAssetMediaStatus, loadArchiveAssetFile } from "./archiveAssetLoad";
 import { dedupeArchiveVisualDuplicates } from "./archiveClipDedup";
 import { assessArchiveCoverageForPrompt } from "./archiveCoverage";
 import {
@@ -1744,6 +1745,38 @@ export const appRouter = router({
       if (!asset) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Asset not found");
       if (asset.mediaType !== "video") throw appTrpcError("BAD_REQUEST", APP_ERROR.VALIDATION_ERROR, "Asset is not a video");
       return trimArchiveAssetToFirstScene(asset, input.cutTimeSec);
+    }),
+
+    /** Run AWS Rekognition celebrity recognition on a single archive clip. */
+    recognizeCelebrities: adminProcedure.input(z.object({
+      assetId: z.number().int(),
+    })).mutation(async ({ input }) => {
+      if (!isRekognitionEnabled()) {
+        throw appTrpcError("BAD_REQUEST", APP_ERROR.VALIDATION_ERROR, "AWS Rekognition is not configured");
+      }
+      const asset = await getMediaArchiveAssetById(input.assetId);
+      if (!asset) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Asset not found");
+
+      const loaded = await loadArchiveAssetFile(asset);
+      if (!loaded.ok) {
+        throw appTrpcError("BAD_REQUEST", APP_ERROR.VALIDATION_ERROR, `Media file not available: ${loaded.reason}`);
+      }
+
+      try {
+        const mediaType = asset.mediaType === "image" ? "image" : "video";
+        const result = await recognizeCelebritiesInFile(loaded.result.localPath, mediaType, asset.durationSec);
+
+        if (result.persons.length > 0) {
+          const newNames = result.persons.map((p) => p.name);
+          const existingTags: string[] = Array.isArray(asset.tags) ? (asset.tags as string[]).filter(Boolean) : [];
+          const merged = [...new Set([...existingTags, ...newNames])];
+          await updateMediaArchiveAsset(asset.id, { tags: merged });
+        }
+
+        return { assetId: asset.id, persons: result.persons, framesAnalyzed: result.framesAnalyzed };
+      } finally {
+        loaded.result.cleanup?.();
+      }
     }),
 
     /** Remove visually duplicate clips (keeps oldest per duplicate group). */

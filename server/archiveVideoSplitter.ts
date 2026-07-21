@@ -89,8 +89,8 @@ const INTERNAL_RESCAN_MAX_RANGES = 300;
 // interval-split clips. Setting to 0 disables; increase if CPU budget allows.
 const INTERNAL_RESCAN_PASSES = 2;
 const SINGLE_SCENE_VALIDATE_MAX_DEPTH = 4;
-const DEFAULT_SCENE_THRESHOLD = 0.03;
-const DEFAULT_SCDET_THRESHOLD = 1;
+const DEFAULT_SCENE_THRESHOLD = 0.3; // 30% pixel change = real editorial cut
+const DEFAULT_SCDET_THRESHOLD = 5.0; // scdet 0–100 scale; 5 catches real cuts, ignores flicker
 /** Split any clip longer than this into fixed intervals — catches scenes without hard cuts. */
 const DEFAULT_MAX_CLIP_DURATION_SEC = 6;
 const DEFAULT_CUT_MERGE_GAP_SEC = 0.18;
@@ -480,8 +480,8 @@ export async function detectInteriorCutTimesInFile(
   timeoutMs = 28_000
 ): Promise<number[]> {
   if (totalDur < MIN_SCENE_SEC * 2) return [];
-  const scdetT = Math.max(0.5, scdetThreshold() * 0.5);
-  const sceneT = Math.max(0.015, sceneThreshold() * 0.5);
+  const scdetT = scdetThreshold();
+  const sceneT = sceneThreshold();
   const half = Math.floor(timeoutMs / 3);
   // Pass totalDur+1 so the parse functions' end-boundary filter (t < totalDur-MIN_SCENE_SEC)
   // doesn't discard cuts on the very last frame. We apply our own filter below allowing
@@ -501,7 +501,7 @@ export async function detectInteriorCutTimesInFile(
     const tailStart = Math.max(0, totalDur - 1.5);
     const tailCmd =
       `${ffmpegBin()} -ss ${tailStart.toFixed(3)} -i "${inputPath}" -t 2 -an ` +
-      `-vf "scale=480:-1,scdet=threshold=0.5:sc_pass=1,showinfo" -f null -`;
+      `-vf "scale=480:-1,scdet=threshold=${scdetT.toFixed(3)}:sc_pass=1,showinfo" -f null -`;
     const tailStderr = await runFfmpegDetect(tailCmd, half).catch(() => "");
     const fromMeta = parseScdetTimesFromFfmpeg(tailStderr, padDur);
     const fromPts = parsePtsTimesFromFfmpeg(tailStderr, padDur);
@@ -755,14 +755,14 @@ async function rescanRangesForInteriorCuts(
           inputPath,
           range.start,
           range.end,
-          Math.max(0.5, scdetThreshold() * 0.5),
+          scdetThreshold(),
           perRangeTimeout
         ),
         detectSceneFilterCutTimesInWindow(
           inputPath,
           range.start,
           range.end,
-          Math.max(0.015, sceneThreshold() * 0.5),
+          sceneThreshold(),
           perRangeTimeout
         ),
       ]);
@@ -846,13 +846,13 @@ async function detectSceneCutTimes(inputPath: string, totalDur: number, deadline
       detectScdetCutTimes(
         inputPath,
         totalDur,
-        Math.max(0.5, scdetThreshold() * 0.5),
+        scdetThreshold(),
         Math.floor(scdetBudget * 0.5)
       ),
       detectSceneFilterCutTimes(
         inputPath,
         totalDur,
-        Math.max(0.015, sceneThreshold() * 0.5),
+        sceneThreshold(),
         Math.floor(sceneBudget * 0.5)
       ),
     ]);
