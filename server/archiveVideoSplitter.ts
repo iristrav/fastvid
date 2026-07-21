@@ -501,7 +501,7 @@ export async function detectInteriorCutTimesInFile(
     const tailStart = Math.max(0, totalDur - 1.5);
     const tailCmd =
       `${ffmpegBin()} -ss ${tailStart.toFixed(3)} -i "${inputPath}" -t 2 -an ` +
-      `-vf "scale=480:-1,scdet=threshold=0.1:sc_pass=1,showinfo" -f null -`;
+      `-vf "scale=480:-1,scdet=threshold=${scdetT.toFixed(3)}:sc_pass=1,showinfo" -f null -`;
     const tailStderr = await runFfmpegDetect(tailCmd, half).catch(() => "");
     const fromMeta = parseScdetTimesFromFfmpeg(tailStderr, padDur);
     const fromPts = parsePtsTimesFromFfmpeg(tailStderr, padDur);
