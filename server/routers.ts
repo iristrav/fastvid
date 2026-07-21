@@ -90,6 +90,7 @@ import { enrichArchiveAssetFields } from "./archiveAssetTagging";
 import * as fs from "fs";
 import * as path from "path";
 import { auditArchiveAssetScenes } from "./archiveSceneAudit";
+import { probeVideoDurationSec } from "./archiveVideoSplitter";
 import { trimArchiveAssetToFirstScene } from "./archiveTrimToScene";
 import { archiveAssetMediaStatus, loadArchiveAssetFile } from "./archiveAssetLoad";
 import { dedupeArchiveVisualDuplicates } from "./archiveClipDedup";
