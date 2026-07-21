@@ -478,6 +478,7 @@ function AssetCard({
   saving: boolean;
 }) {
   const [editing, setEditing] = useState(false);
+  const [tagEditing, setTagEditing] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [title, setTitle] = useState(asset.title ?? "");
   const [tags, setTags] = useState(tagsToInput(asset.tags));
@@ -491,6 +492,7 @@ function AssetCard({
     setTags(tagsToInput(asset.tags));
     setMixKind(asset.mixKind);
     setSourceNote(asset.sourceNote ?? "");
+    setTagEditing(false);
   }, [asset.id, asset.title, asset.tags, asset.mixKind, asset.sourceNote]);
 
   return (
@@ -606,11 +608,54 @@ function AssetCard({
               {asset.sourceNote && (
                 <p className="text-xs text-slate-500 line-clamp-2">{asset.sourceNote}</p>
               )}
-              {asset.tags && asset.tags.length > 0 && (
-                <div className="flex flex-wrap gap-1">
-                  {asset.tags.map((t) => (
-                    <span key={t} className="text-[10px] px-1.5 py-0.5 rounded bg-white/10 text-slate-300">{t}</span>
-                  ))}
+              {tagEditing ? (
+                <div className="flex gap-1">
+                  <input
+                    autoFocus
+                    value={tags}
+                    onChange={(e) => setTags(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        onSave({ tags: parseTagsInput(tags) });
+                        setTagEditing(false);
+                      } else if (e.key === "Escape") {
+                        setTags(tagsToInput(asset.tags));
+                        setTagEditing(false);
+                      }
+                    }}
+                    className="flex-1 bg-white/5 border border-purple-500/50 rounded px-2 py-1 text-xs text-white"
+                    placeholder="napoleon, wereldoorlog, 1940 …"
+                  />
+                  <button
+                    onClick={() => { onSave({ tags: parseTagsInput(tags) }); setTagEditing(false); }}
+                    disabled={saving}
+                    className="text-xs px-2 py-1 rounded bg-purple-600/30 text-purple-200 hover:bg-purple-600/50"
+                  >
+                    ✓
+                  </button>
+                  <button
+                    onClick={() => { setTags(tagsToInput(asset.tags)); setTagEditing(false); }}
+                    className="text-xs px-2 py-1 rounded bg-white/5 text-slate-400 hover:bg-white/10"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+              ) : (
+                <div
+                  className="flex flex-wrap gap-1 cursor-pointer group/tags min-h-[22px] items-center"
+                  onClick={() => { setTagEditing(true); }}
+                  title="Klik om tags te bewerken"
+                >
+                  {asset.tags && asset.tags.length > 0 ? (
+                    <>
+                      {asset.tags.map((t) => (
+                        <span key={t} className="text-[10px] px-1.5 py-0.5 rounded bg-white/10 text-slate-300 group-hover/tags:bg-white/15">{t}</span>
+                      ))}
+                      <span className="text-[10px] px-1 text-slate-600 group-hover/tags:text-slate-400">✎</span>
+                    </>
+                  ) : (
+                    <span className="text-[10px] text-slate-600 group-hover/tags:text-slate-400 italic">+ tag toevoegen</span>
+                  )}
                 </div>
               )}
               <div className="flex gap-1 pt-1">
