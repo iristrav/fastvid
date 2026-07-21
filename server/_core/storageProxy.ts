@@ -57,6 +57,12 @@ export function registerStorageProxy(app: Express) {
         if (contentLength) res.set("Content-Length", contentLength);
         if (contentRange) res.set("Content-Range", contentRange);
 
+        if (!upstream.ok && upstream.status !== 206) {
+          console.error(`[StorageProxy] upstream error ${upstream.status} for key: ${key}`);
+          res.status(upstream.status >= 400 && upstream.status < 500 ? 404 : 502).send("Storage error");
+          return;
+        }
+
         res.status(upstream.status === 206 ? 206 : 200);
 
         if (!upstream.body) {

@@ -6,8 +6,8 @@ import { createReadStream, statSync } from "fs";
 import { loadArchiveAssetFile } from "./archiveAssetLoad";
 import { getUserFromRequest } from "./_core/context";
 import { getMediaArchiveAssetById } from "./db";
-import { getStorageBackend } from "./storageBackend";
-import { normalizeStorageKey } from "./storageBackend";
+import { getStorageBackend, normalizeStorageKey } from "./storageBackend";
+import { storageGetSignedUrl } from "./storage";
 
 function streamLocalFileWithRange(req: Request, res: Response, filePath: string, contentType: string): void {
   const stat = statSync(filePath);
@@ -54,8 +54,8 @@ async function streamArchiveAsset(req: Request, res: Response, assetId: number):
     return;
   }
 
-  // For S3/Forge assets, redirect to the storage proxy which handles signed URLs,
-  // range requests, and streaming — avoids double download via temp file.
+  // For S3/Forge assets, redirect directly to a pre-signed URL so the browser
+  // handles range requests natively — avoids an extra proxy hop that can timeout.
   const backend = getStorageBackend();
   if (backend === "s3" || backend === "forge") {
     // storageUrl always has the correct key (with hash suffix added by storagePut).
@@ -66,8 +66,19 @@ async function streamArchiveAsset(req: Request, res: Response, assetId: number):
         ? normalizeStorageKey(asset.storageKey)
         : null;
     if (key) {
-      res.redirect(307, `/manus-storage/${key}`);
-      return;
+      try {
+        const signedUrl = await storageGetSignedUrl(key);
+        if (signedUrl.startsWith("http://") || signedUrl.startsWith("https://")) {
+          res.setHeader("Cache-Control", "private, max-age=300");
+          res.redirect(307, signedUrl);
+          return;
+        }
+      } catch (err) {
+        console.error("[ArchiveMedia] signed URL error for key", key, (err as Error).message?.slice(0, 80));
+        res.status(502).json({ error: "Could not generate storage URL" });
+        return;
+      }
+      // Signed URL is a local path (local backend) — fall through to file streaming
     }
   }
 
