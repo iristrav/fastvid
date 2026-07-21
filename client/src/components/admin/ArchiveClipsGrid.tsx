@@ -719,13 +719,12 @@ function AssetCard({
                 <button
                   onClick={async () => {
                     try {
-                      const result = await aiTagMutation.mutateAsync({ archiveId, ids: [asset.id] });
+                      const result = await aiTagMutation.mutateAsync({ archiveId, ids: [asset.id], force: true });
                       if (result.updated > 0 && result.sampleUpdate?.tags?.length) {
                         toast.success(`AI tags: ${result.sampleUpdate.tags.slice(0, 5).join(", ")}`, { description: "Tags opgeslagen" });
                         onRefresh();
                       } else if ((result.skipReasons?.hasTags ?? 0) > 0) {
                         onRefresh();
-                        toast.info("Clip heeft al tags — AI heeft ze niet overschreven");
                       } else if ((result.skipReasons?.fileMissing ?? 0) > 0 || (result.skipReasons?.downloadFailed ?? 0) > 0) {
                         toast.error("Videobestand niet beschikbaar", { description: "Controleer of de clip correct is geüpload" });
                       } else if ((result.skipReasons?.noFrames ?? 0) > 0) {

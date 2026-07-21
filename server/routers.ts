@@ -1651,6 +1651,7 @@ export const appRouter = router({
     autoTitleAssets: adminProcedure.input(z.object({
       archiveId: z.number().int(),
       ids: z.array(z.number().int()).min(1).max(50),
+      force: z.boolean().optional(),
     })).mutation(async ({ input }) => {
       if (!archiveAiTaggingEnabled()) {
         throw appTrpcError(
@@ -1665,6 +1666,7 @@ export const appRouter = router({
         return await autoTitleArchiveAssets({
           archiveId: input.archiveId,
           ids: input.ids,
+          force: input.force,
         });
       } catch (err) {
         throw appTrpcError(
