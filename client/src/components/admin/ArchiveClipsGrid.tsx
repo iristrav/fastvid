@@ -278,24 +278,32 @@ function AssetPreviewModal({
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [currentTime, setCurrentTime] = useState(0);
+  const [videoDuration, setVideoDuration] = useState<number>(asset.durationSec ?? 0);
   const [trimAt, setTrimAt] = useState<number | null>(null);
   const [trimming, setTrimming] = useState(false);
   const trimMutation = trpc.mediaArchive.trimToSingleScene.useMutation();
-  const duration = asset.durationSec ?? 0;
+  // Use live video duration; fall back to DB value while video hasn't loaded yet.
+  const duration = videoDuration > 0 ? videoDuration : (asset.durationSec ?? 0);
 
   function getVideo(): HTMLVideoElement | null {
     return containerRef.current?.querySelector("video") ?? null;
   }
 
   useEffect(() => {
-    // Attach timeupdate listener to the video rendered by LazyArchiveMedia.
+    // Attach timeupdate + durationchange listener to the video rendered by LazyArchiveMedia.
     const interval = setInterval(() => {
       const v = getVideo();
       if (v) {
-        const update = () => setCurrentTime(v.currentTime);
-        v.addEventListener("timeupdate", update);
+        const onTime = () => setCurrentTime(v.currentTime);
+        const onDur = () => { if (v.duration && isFinite(v.duration)) setVideoDuration(v.duration); };
+        v.addEventListener("timeupdate", onTime);
+        v.addEventListener("durationchange", onDur);
+        if (v.duration && isFinite(v.duration)) setVideoDuration(v.duration);
         clearInterval(interval);
-        return () => v.removeEventListener("timeupdate", update);
+        return () => {
+          v.removeEventListener("timeupdate", onTime);
+          v.removeEventListener("durationchange", onDur);
+        };
       }
     }, 100);
     return () => clearInterval(interval);
@@ -305,7 +313,8 @@ function AssetPreviewModal({
     const v = getVideo();
     if (v) {
       const t = v.currentTime;
-      if (t > 0.1 && t < duration - 0.1) setTrimAt(t);
+      const dur = (v.duration && isFinite(v.duration)) ? v.duration : duration;
+      if (t > 0.1 && (dur <= 0 || t < dur - 0.1)) setTrimAt(t);
     }
   }
 
@@ -381,10 +390,10 @@ function AssetPreviewModal({
           <LazyArchiveMedia asset={asset} mode="preview" className="w-full h-full overflow-hidden" />
         </div>
 
-        {asset.mediaType === "video" && duration > 0 && (
+        {asset.mediaType === "video" && (
           <div className="px-4 py-3 border-t border-white/10 space-y-2">
-            {/* trim marker bar */}
-            <div className="relative h-2 bg-white/10 rounded-full cursor-pointer"
+            {/* trim marker bar — only show if duration is known */}
+            {duration > 0 && <div className="relative h-2 bg-white/10 rounded-full cursor-pointer"
               onClick={(e) => {
                 const rect = e.currentTarget.getBoundingClientRect();
                 const frac = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
@@ -404,11 +413,11 @@ function AssetPreviewModal({
                   style={{ left: `${(trimAt / duration) * 100}%` }}
                 />
               )}
-            </div>
+            </div>}
 
             <div className="flex items-center gap-3">
               <span className="text-xs text-slate-500 tabular-nums w-16">
-                {currentTime.toFixed(2)}s / {duration.toFixed(1)}s
+                {currentTime.toFixed(2)}s / {duration > 0 ? `${duration.toFixed(1)}s` : "?"}
               </span>
               <button
                 onClick={markTrimPoint}
