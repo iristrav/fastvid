@@ -464,8 +464,7 @@ function AssetCard({
   onToggleSelect,
   onDelete,
   onSave,
-  onTagsSaved,
-  onTrimmed,
+  onRefresh,
   saving,
 }: {
   asset: ArchiveAsset;
@@ -475,8 +474,7 @@ function AssetCard({
   onToggleSelect: () => void;
   onDelete: () => void;
   onSave: (patch: { title?: string; tags?: string[]; mixKind?: MixKind; sourceNote?: string }) => void;
-  onTagsSaved: () => void;
-  onTrimmed: (assetId: number, newDurationSec: number) => void;
+  onRefresh: () => void;
   saving: boolean;
 }) {
   const [editing, setEditing] = useState(false);
@@ -487,7 +485,7 @@ function AssetCard({
   const [mixKind, setMixKind] = useState<MixKind>(asset.mixKind);
   const [sourceNote, setSourceNote] = useState(asset.sourceNote ?? "");
   const trimMutation = trpc.mediaArchive.trimToSingleScene.useMutation();
-  const recognizeMutation = trpc.mediaArchive.recognizeCelebrities.useMutation();
+  const rekognitionMutation = trpc.mediaArchive.recognizeCelebrities.useMutation();
   const aiTagMutation = trpc.mediaArchive.autoTitleAssets.useMutation();
 
   useEffect(() => {
@@ -505,7 +503,7 @@ function AssetCard({
           asset={asset}
           sceneAudit={sceneAudit}
           onClose={() => setPreviewOpen(false)}
-          onTrimmed={(newDur) => onTrimmed(asset.id, newDur)}
+          onTrimmed={() => onRefresh()}
         />
       )}
       <div
@@ -662,11 +660,7 @@ function AssetCard({
                 </div>
               )}
               <div className="flex gap-1 pt-1">
-                <button
-                  onClick={() => setPreviewOpen(true)}
-                  className="text-xs px-2 py-1 rounded bg-cyan-500/15 text-cyan-300 hover:bg-cyan-500/25"
-                  title="View"
-                >
+                <button onClick={() => setPreviewOpen(true)} className="text-xs px-2 py-1 rounded bg-cyan-500/15 text-cyan-300 hover:bg-cyan-500/25" title="View">
                   <Play className="w-3 h-3 inline" />
                 </button>
                 <button onClick={() => setEditing(true)} className="text-xs px-2 py-1 rounded bg-white/10 text-slate-300 hover:bg-white/15">
@@ -686,7 +680,7 @@ function AssetCard({
                           toast.error("Bijknippen mislukt", { description: result.reason ?? "Onbekende fout" });
                           return;
                         }
-                        onTrimmed(asset.id, result.newDurationSec!);
+                        onRefresh();
                         toast.success(`Bijgeknipt naar ${result.newDurationSec}s`);
                       } catch (e) {
                         toast.error("Bijknippen mislukt", { description: toastErrorMessage(e) });
@@ -702,23 +696,23 @@ function AssetCard({
                 <button
                   onClick={async () => {
                     try {
-                      const result = await recognizeMutation.mutateAsync({ assetId: asset.id });
+                      const result = await rekognitionMutation.mutateAsync({ assetId: asset.id });
                       if (result.persons.length === 0) {
                         toast.info("Geen bekende personen herkend in deze clip");
                       } else {
                         const names = result.persons.map((p) => `${p.name} (${p.confidence}%)`).join(", ");
                         toast.success(`Herkend: ${names}`, { description: "Tags opgeslagen" });
-                        onTagsSaved();
+                        onRefresh();
                       }
                     } catch (e) {
                       toast.error("Herkenning mislukt", { description: toastErrorMessage(e) });
                     }
                   }}
-                  disabled={recognizeMutation.isPending}
+                  disabled={rekognitionMutation.isPending}
                   className="text-xs px-2 py-1 rounded bg-violet-500/10 text-violet-300 hover:bg-violet-500/20 disabled:opacity-50"
-                  title="Herken personen via AWS Rekognition"
+                  title="AWS Rekognition — herkent bekende personen"
                 >
-                  {recognizeMutation.isPending ? <Loader2 className="w-3 h-3 inline animate-spin" /> : <ScanSearch className="w-3 h-3 inline" />}
+                  {rekognitionMutation.isPending ? <Loader2 className="w-3 h-3 inline animate-spin" /> : <ScanSearch className="w-3 h-3 inline" />}
                 </button>
                 <button
                   onClick={async () => {
@@ -726,13 +720,13 @@ function AssetCard({
                       const result = await aiTagMutation.mutateAsync({ archiveId, ids: [asset.id] });
                       if (result.updated > 0 && result.sampleUpdate?.tags?.length) {
                         toast.success(`AI tags: ${result.sampleUpdate.tags.slice(0, 5).join(", ")}`, { description: "Tags opgeslagen" });
-                        onTagsSaved();
-                      } else if (result.skipped > 0 && result.updated === 0) {
-                        onTagsSaved();
+                        onRefresh();
+                      } else if ((result.skipReasons?.hasTags ?? 0) > 0) {
+                        onRefresh();
                         toast.info("Clip heeft al tags — AI heeft ze niet overschreven");
-                      } else if (result.skipReasons?.fileMissing > 0 || result.skipReasons?.downloadFailed > 0) {
+                      } else if ((result.skipReasons?.fileMissing ?? 0) > 0 || (result.skipReasons?.downloadFailed ?? 0) > 0) {
                         toast.error("Videobestand niet beschikbaar", { description: "Controleer of de clip correct is geüpload" });
-                      } else if (result.skipReasons?.noFrames > 0) {
+                      } else if ((result.skipReasons?.noFrames ?? 0) > 0) {
                         toast.error("Geen frames extraheerbaar", { description: "Het videobestand is mogelijk leeg of beschadigd" });
                       } else {
                         toast.info("AI kon geen tags genereren", { description: result.sampleError ?? "Onbekende reden" });
@@ -743,7 +737,7 @@ function AssetCard({
                   }}
                   disabled={aiTagMutation.isPending}
                   className="text-xs px-2 py-1 rounded bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-50"
-                  title="Automatische AI tags genereren"
+                  title="AI — genereert automatisch tags"
                 >
                   {aiTagMutation.isPending ? <Loader2 className="w-3 h-3 inline animate-spin" /> : <Sparkles className="w-3 h-3 inline" />}
                 </button>
@@ -1888,15 +1882,7 @@ export function ArchiveClipsGrid({
                 if (confirm("Delete this clip?")) deleteAsset.mutate({ id: asset.id });
               }}
               onSave={(patch) => updateAsset.mutate({ id: asset.id, ...patch })}
-              onTagsSaved={() => utils.mediaArchive.listAssets.invalidate({ archiveId: archiveId! })}
-              onTrimmed={(assetId, newDurationSec) => {
-                utils.mediaArchive.listAssets.invalidate({ archiveId: archiveId! });
-                setSceneAuditMap((prev) => {
-                  const entry = prev[assetId];
-                  if (!entry) return prev;
-                  return { ...prev, [assetId]: { ...entry, status: "single_scene", sceneCount: 1, interiorCutCount: 0, cutTimesSec: [], durationSec: newDurationSec } };
-                });
-              }}
+              onRefresh={() => utils.mediaArchive.listAssets.invalidate({ archiveId: archiveId! })}
               saving={updateAsset.isPending}
             />
           ))}

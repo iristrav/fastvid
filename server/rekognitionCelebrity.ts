@@ -62,7 +62,7 @@ async function recognizeInBuffer(
   for (const celeb of response.CelebrityFaces ?? []) {
     if (!celeb.Name) continue;
     const confidence = celeb.MatchConfidence ?? 0;
-    if (confidence < 70) continue; // Skip low-confidence matches
+    if (confidence < 70) continue;
 
     persons.push({
       name: celeb.Name,
@@ -113,10 +113,10 @@ export async function recognizeCelebritiesInFile(
           bestByName.set(p.name, p);
         }
       }
-      return { persons: [...bestByName.values()].sort((a, b) => b.confidence - a.confidence).slice(0, 3), framesAnalyzed: 1 };
+      return { persons: Array.from(bestByName.values()).sort((a, b) => b.confidence - a.confidence).slice(0, 3), framesAnalyzed: 1 };
     }
 
-    // Video: sample frames at 20%, 40%, 60%, 80% of duration (max 5 frames)
+    // Video: sample frames spread through the clip
     const dur = durationSec && durationSec > 0 ? durationSec : 10;
     const seekPoints = dur > 4
       ? [0.15, 0.35, 0.55, 0.75, 0.9].map((r) => dur * r)
@@ -137,7 +137,7 @@ export async function recognizeCelebritiesInFile(
     }
 
     return {
-      persons: [...bestByName.values()].sort((a, b) => b.confidence - a.confidence).slice(0, 3),
+      persons: Array.from(bestByName.values()).sort((a, b) => b.confidence - a.confidence).slice(0, 3),
       framesAnalyzed,
     };
   } finally {

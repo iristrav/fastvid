@@ -82,7 +82,6 @@ import { storagePut, storageGetSignedUrl } from "./storage";
 import { s3ListAllKeys } from "./storageS3";
 import { isS3StorageEnabled, objectStorageUrl } from "./storageBackend";
 import { trimArchiveAssetToFirstScene } from "./archiveTrimToScene";
-import { recognizeCelebritiesInFile, isRekognitionEnabled } from "./rekognitionCelebrity";
 import { FASTVID_PRO_PLAN } from "./products";
 import { processArchiveAssetUpload, ArchiveUploadError } from "./archiveUpload";
 import { archiveAiTaggingEnabled } from "./archiveAssetTagging";
@@ -91,6 +90,7 @@ import { bulkRetagArchiveGeo } from "./archiveBulkGeoRetag";
 import { auditArchiveAssetScenes, auditArchiveAssetScene } from "./archiveSceneAudit";
 import { archiveAssetMediaStatus, loadArchiveAssetFile } from "./archiveAssetLoad";
 import { probeVideoDurationSec } from "./archiveVideoSplitter";
+import { recognizeCelebritiesInFile, isRekognitionEnabled } from "./rekognitionCelebrity";
 import { dedupeArchiveVisualDuplicates } from "./archiveClipDedup";
 import { assessArchiveCoverageForPrompt } from "./archiveCoverage";
 import {
@@ -1712,6 +1712,68 @@ export const appRouter = router({
       assetId: z.number().int(),
     })).query(async ({ input }) => {
       return probeArchiveAssetAiTag(input.assetId, input.archiveId);
+    }),
+
+    /** AWS Rekognition celebrity recognition — per clip. */
+    recognizeCelebrities: adminProcedure.input(z.object({
+      assetId: z.number().int(),
+    })).mutation(async ({ input }) => {
+      if (!isRekognitionEnabled()) throw appTrpcError("BAD_REQUEST", APP_ERROR.SERVICE_ERROR, "AWS Rekognition is not configured");
+      const asset = await getMediaArchiveAssetById(input.assetId);
+      if (!asset) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Asset not found");
+      const loaded = await loadArchiveAssetFile({ ...asset, mimeType: asset.mimeType ?? "image/jpeg" });
+      if (!loaded.ok) throw appTrpcError("INTERNAL_SERVER_ERROR", APP_ERROR.SERVICE_ERROR, "Could not load clip file");
+      const { localPath, cleanup } = loaded.result;
+      try {
+        const result = await recognizeCelebritiesInFile(localPath, asset.mediaType as "video" | "image", asset.durationSec);
+        if (result.persons.length > 0) {
+          const existingTags: string[] = Array.isArray(asset.tags) ? asset.tags as string[] : [];
+          const personNames = result.persons.map((p) => p.name.toLowerCase());
+          const merged = [...new Set([...personNames, ...existingTags])].slice(0, 20);
+          await updateMediaArchiveAsset(asset.id, { tags: merged });
+        }
+        return { assetId: asset.id, persons: result.persons, framesAnalyzed: result.framesAnalyzed };
+      } finally { cleanup?.(); }
+    }),
+
+    /** AWS Rekognition — bulk, skips already-tagged clips by default. */
+    recognizeCelebritiesBulk: adminProcedure.input(z.object({
+      archiveId: z.number().int(),
+      limit: z.number().int().min(1).max(100).default(20),
+      offset: z.number().int().min(0).default(0),
+      onlyUntagged: z.boolean().default(true),
+      ids: z.array(z.number().int()).optional(),
+    })).mutation(async ({ input }) => {
+      if (!isRekognitionEnabled()) throw appTrpcError("BAD_REQUEST", APP_ERROR.SERVICE_ERROR, "AWS Rekognition is not configured");
+      const archive = await getMediaArchiveById(input.archiveId);
+      if (!archive) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Archive not found");
+      let assets = await getMediaArchiveAssets(input.archiveId);
+      if (input.ids && input.ids.length > 0) { const s = new Set(input.ids); assets = assets.filter((a) => s.has(a.id)); }
+      if (input.onlyUntagged) assets = assets.filter((a) => !Array.isArray(a.tags) || (a.tags as string[]).length === 0);
+      const total = assets.length;
+      const page = assets.slice(input.offset, input.offset + input.limit);
+      const hasMore = input.offset + input.limit < total;
+      let identified = 0; let skipped = 0;
+      const found: Array<{ assetId: number; persons: string[] }> = [];
+      for (const asset of page) {
+        try {
+          const loaded = await loadArchiveAssetFile({ ...asset, mimeType: asset.mimeType ?? "image/jpeg" });
+          if (!loaded.ok) { skipped++; continue; }
+          const { localPath, cleanup } = loaded.result;
+          try {
+            const result = await recognizeCelebritiesInFile(localPath, asset.mediaType as "video" | "image", asset.durationSec);
+            if (result.persons.length > 0) {
+              const existingTags: string[] = Array.isArray(asset.tags) ? asset.tags as string[] : [];
+              const personNames = result.persons.map((p) => p.name.toLowerCase());
+              const merged = [...new Set([...personNames, ...existingTags])].slice(0, 20);
+              await updateMediaArchiveAsset(asset.id, { tags: merged });
+              identified++;
+              found.push({ assetId: asset.id, persons: result.persons.map((p) => p.name) });
+            }
+          } finally { cleanup?.(); }
+        } catch (err) { console.warn(`[Rekognition] asset ${asset.id} failed:`, (err as Error).message?.slice(0, 100)); skipped++; }
+      }
+      return { scanned: page.length, identified, skipped, total, hasMore, nextOffset: hasMore ? input.offset + input.limit : undefined, found };
     }),
 
     /** FFmpeg scene audit — detect single-scene vs multi-scene clips (max 40 ids per call). */
