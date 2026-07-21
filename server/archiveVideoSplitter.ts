@@ -480,8 +480,8 @@ export async function detectInteriorCutTimesInFile(
   timeoutMs = 28_000
 ): Promise<number[]> {
   if (totalDur < MIN_SCENE_SEC * 2) return [];
-  const scdetT = Math.max(0.05, scdetThreshold() * 0.5); // was Math.max(0.5, ...)
-  const sceneT = Math.max(0.004, sceneThreshold() * 0.5); // was Math.max(0.015, ...)
+  const scdetT = scdetThreshold();
+  const sceneT = sceneThreshold();
   const half = Math.floor(timeoutMs / 3);
   // Pass totalDur+1 so the parse functions' end-boundary filter (t < totalDur-MIN_SCENE_SEC)
   // doesn't discard cuts on the very last frame. We apply our own filter below allowing
@@ -755,14 +755,14 @@ async function rescanRangesForInteriorCuts(
           inputPath,
           range.start,
           range.end,
-          Math.max(0.5, scdetThreshold() * 0.5),
+          scdetThreshold(),
           perRangeTimeout
         ),
         detectSceneFilterCutTimesInWindow(
           inputPath,
           range.start,
           range.end,
-          Math.max(0.004, sceneThreshold() * 0.5),
+          sceneThreshold(),
           perRangeTimeout
         ),
       ]);
@@ -846,13 +846,13 @@ async function detectSceneCutTimes(inputPath: string, totalDur: number, deadline
       detectScdetCutTimes(
         inputPath,
         totalDur,
-        Math.max(0.5, scdetThreshold() * 0.5),
+        scdetThreshold(),
         Math.floor(scdetBudget * 0.5)
       ),
       detectSceneFilterCutTimes(
         inputPath,
         totalDur,
-        Math.max(0.004, sceneThreshold() * 0.5),
+        sceneThreshold(),
         Math.floor(sceneBudget * 0.5)
       ),
     ]);
