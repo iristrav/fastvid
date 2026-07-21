@@ -728,6 +728,7 @@ function AssetCard({
                         toast.success(`AI tags: ${result.sampleUpdate.tags.slice(0, 5).join(", ")}`, { description: "Tags opgeslagen" });
                         onTagsSaved();
                       } else if (result.skipped > 0 && result.updated === 0) {
+                        onTagsSaved();
                         toast.info("Clip heeft al tags — AI heeft ze niet overschreven");
                       } else if (result.skipReasons?.fileMissing > 0 || result.skipReasons?.downloadFailed > 0) {
                         toast.error("Videobestand niet beschikbaar", { description: "Controleer of de clip correct is geüpload" });
