@@ -482,6 +482,7 @@ function AssetCard({
   const [mixKind, setMixKind] = useState<MixKind>(asset.mixKind);
   const [sourceNote, setSourceNote] = useState(asset.sourceNote ?? "");
   const trimMutation = trpc.mediaArchive.trimToSingleScene.useMutation();
+  const recognizeMutation = trpc.mediaArchive.recognizeCelebrities.useMutation();
 
   useEffect(() => {
     setTitle(asset.title ?? "");
@@ -648,6 +649,27 @@ function AssetCard({
                     {trimMutation.isPending ? <Loader2 className="w-3 h-3 inline animate-spin" /> : <Scissors className="w-3 h-3 inline" />}
                   </button>
                 )}
+                <button
+                  onClick={async () => {
+                    try {
+                      const result = await recognizeMutation.mutateAsync({ assetId: asset.id });
+                      if (result.persons.length === 0) {
+                        toast.info("Geen bekende personen herkend in deze clip");
+                      } else {
+                        const names = result.persons.map((p) => `${p.name} (${p.confidence}%)`).join(", ");
+                        toast.success(`Herkend: ${names}`, { description: "Tags bijgewerkt" });
+                        setTags(tagsToInput(result.persons.map((p) => p.name.toLowerCase())));
+                      }
+                    } catch (e) {
+                      toast.error("Herkenning mislukt", { description: toastErrorMessage(e) });
+                    }
+                  }}
+                  disabled={recognizeMutation.isPending}
+                  className="text-xs px-2 py-1 rounded bg-violet-500/10 text-violet-300 hover:bg-violet-500/20 disabled:opacity-50"
+                  title="Herken personen via AWS Rekognition"
+                >
+                  {recognizeMutation.isPending ? <Loader2 className="w-3 h-3 inline animate-spin" /> : <ScanSearch className="w-3 h-3 inline" />}
+                </button>
               </div>
             </>
           )}
@@ -829,6 +851,8 @@ export function ArchiveClipsGrid({
   });
   const dedupeDuplicates = trpc.mediaArchive.dedupeDuplicateAssets.useMutation();
   const [dedupeProgress, setDedupeProgress] = useState<{ scanned: number; deleted: number; total: number } | null>(null);
+  const rekognitionBulk = trpc.mediaArchive.recognizeCelebritiesBulk.useMutation();
+  const [rekognitionProgress, setRekognitionProgress] = useState<{ scanned: number; identified: number; total: number } | null>(null);
   const [autoTitleRunning, setAutoTitleRunning] = useState(false);
   const [autoTitleProgress, setAutoTitleProgress] = useState<{ done: number; total: number } | null>(null);
   const [autoTitleReport, setAutoTitleReport] = useState<{
@@ -1257,6 +1281,36 @@ export function ArchiveClipsGrid({
 
   const deletePending = deleteAssets.isPending || deleteAllAssets.isPending;
 
+  async function runRekognitionBulk() {
+    if (archiveId == null) return;
+    if (!confirm(`AWS Rekognition starten voor alle clips?\n\nHet systeem herkent bekende personen (historische figuren, politici, etc.) en slaat hun namen op als tags.\n\nKosten: ~€0.001 per clip.`)) return;
+
+    setRekognitionProgress({ scanned: 0, identified: 0, total });
+    let offset = 0;
+    let totalIdentified = 0;
+    let totalScanned = 0;
+    let hasMore = true;
+
+    while (hasMore) {
+      try {
+        const result = await rekognitionBulk.mutateAsync({ archiveId, limit: 20, offset });
+        totalScanned += result.scanned;
+        totalIdentified += result.identified;
+        hasMore = result.hasMore;
+        offset = result.nextOffset ?? offset + 20;
+        setRekognitionProgress({ scanned: totalScanned, identified: totalIdentified, total: result.total });
+      } catch {
+        break;
+      }
+    }
+
+    setRekognitionProgress(null);
+    utils.mediaArchive.listAssets.invalidate({ archiveId });
+    toast.success(`Rekognition klaar: ${totalIdentified} clip(s) voorzien van namen`, {
+      description: `${totalScanned} clips gescand`,
+    });
+  }
+
   async function dedupeVisualDuplicates() {
     if (archiveId == null || total < 2) return;
     const targetIds = selectedCount > 0 ? [...selectedIds] : undefined;
@@ -1529,6 +1583,22 @@ export function ArchiveClipsGrid({
             <ScanSearch className="w-3.5 h-3.5" />
           )}
           {restoreFromS3.isPending ? "R2 scannen…" : "Herstel uit R2"}
+        </button>
+        <button
+          type="button"
+          onClick={runRekognitionBulk}
+          disabled={rekognitionProgress !== null || autoTitleRunning}
+          title="Gebruik AWS Rekognition om bekende personen in clips te herkennen en als tag op te slaan"
+          className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg border transition-colors bg-violet-500/10 text-violet-300 border-violet-500/25 hover:bg-violet-500/20 disabled:opacity-50"
+        >
+          {rekognitionProgress !== null ? (
+            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+          ) : (
+            <ScanSearch className="w-3.5 h-3.5" />
+          )}
+          {rekognitionProgress !== null
+            ? `Rekognition ${rekognitionProgress.scanned}/${rekognitionProgress.total} (${rekognitionProgress.identified} herkend)`
+            : "Herken personen (AWS)"}
         </button>
         {assets.length > 0 && (
           <button

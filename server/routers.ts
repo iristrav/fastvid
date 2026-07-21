@@ -82,6 +82,7 @@ import { storagePut, storageGetSignedUrl } from "./storage";
 import { s3ListAllKeys } from "./storageS3";
 import { isS3StorageEnabled, objectStorageUrl } from "./storageBackend";
 import { trimArchiveAssetToFirstScene } from "./archiveTrimToScene";
+import { recognizeCelebritiesInFile, isRekognitionEnabled } from "./rekognitionCelebrity";
 import { FASTVID_PRO_PLAN } from "./products";
 import { processArchiveAssetUpload, ArchiveUploadError } from "./archiveUpload";
 import { archiveAiTaggingEnabled } from "./archiveAssetTagging";
@@ -2046,6 +2047,120 @@ export const appRouter = router({
       const remaining = toInsert.length - batch.length;
       console.log(`[ReindexOrphans] archive ${input.archiveId}: inserted=${inserted}, remaining=${remaining}`);
       return { inserted, remaining };
+    }),
+
+    /** Recognize celebrities in a single archive asset via AWS Rekognition. */
+    recognizeCelebrities: adminProcedure.input(z.object({
+      assetId: z.number().int(),
+    })).mutation(async ({ input }) => {
+      if (!isRekognitionEnabled()) {
+        throw appTrpcError("BAD_REQUEST", APP_ERROR.SERVICE_ERROR, "AWS Rekognition is not configured");
+      }
+      const asset = await getMediaArchiveAssetById(input.assetId);
+      if (!asset) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Asset not found");
+
+      const loaded = await loadArchiveAssetFile({
+        ...asset,
+        mimeType: asset.mimeType ?? "image/jpeg",
+      });
+      if (!loaded.ok) throw appTrpcError("INTERNAL_SERVER_ERROR", APP_ERROR.SERVICE_ERROR, "Could not load clip file");
+
+      const { localPath, cleanup } = loaded.result;
+      try {
+        const result = await recognizeCelebritiesInFile(
+          localPath,
+          asset.mediaType as "video" | "image",
+          asset.durationSec,
+        );
+
+        if (result.persons.length > 0) {
+          // Merge detected names into existing tags (deduplicated, lowercase)
+          const existingTags: string[] = Array.isArray(asset.tags) ? asset.tags : [];
+          const personNames = result.persons.map((p) => p.name.toLowerCase());
+          const merged = [...new Set([...personNames, ...existingTags])].slice(0, 20);
+          await updateMediaArchiveAsset(asset.id, { tags: merged });
+          console.log(`[Rekognition] asset ${asset.id}: identified ${result.persons.map((p) => `${p.name} (${p.confidence}%)`).join(", ")}`);
+        }
+
+        return {
+          assetId: asset.id,
+          persons: result.persons,
+          framesAnalyzed: result.framesAnalyzed,
+          tagsUpdated: result.persons.length > 0,
+        };
+      } finally {
+        cleanup?.();
+      }
+    }),
+
+    /** Bulk-recognize celebrities across all video/image assets in an archive. */
+    recognizeCelebritiesBulk: adminProcedure.input(z.object({
+      archiveId: z.number().int(),
+      limit: z.number().int().min(1).max(100).default(20),
+      offset: z.number().int().min(0).default(0),
+      onlyUntagged: z.boolean().default(false),
+    })).mutation(async ({ input }) => {
+      if (!isRekognitionEnabled()) {
+        throw appTrpcError("BAD_REQUEST", APP_ERROR.SERVICE_ERROR, "AWS Rekognition is not configured");
+      }
+      const archive = await getMediaArchiveById(input.archiveId);
+      if (!archive) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Archive not found");
+
+      let assets = await getMediaArchiveAssets(input.archiveId);
+      if (input.onlyUntagged) {
+        assets = assets.filter((a) => !Array.isArray(a.tags) || (a.tags as string[]).length === 0);
+      }
+      const total = assets.length;
+      const page = assets.slice(input.offset, input.offset + input.limit);
+      const hasMore = input.offset + input.limit < total;
+
+      let identified = 0;
+      let skipped = 0;
+      const found: Array<{ assetId: number; persons: string[] }> = [];
+
+      for (const asset of page) {
+        try {
+          const loaded = await loadArchiveAssetFile({
+            ...asset,
+            mimeType: asset.mimeType ?? "image/jpeg",
+          });
+          if (!loaded.ok) { skipped++; continue; }
+
+          const { localPath, cleanup } = loaded.result;
+          try {
+            const result = await recognizeCelebritiesInFile(
+              localPath,
+              asset.mediaType as "video" | "image",
+              asset.durationSec,
+            );
+
+            if (result.persons.length > 0) {
+              const existingTags: string[] = Array.isArray(asset.tags) ? asset.tags : [];
+              const personNames = result.persons.map((p) => p.name.toLowerCase());
+              const merged = [...new Set([...personNames, ...existingTags])].slice(0, 20);
+              await updateMediaArchiveAsset(asset.id, { tags: merged });
+              identified++;
+              found.push({ assetId: asset.id, persons: result.persons.map((p) => p.name) });
+            }
+          } finally {
+            cleanup?.();
+          }
+        } catch (err) {
+          console.warn(`[Rekognition] asset ${asset.id} failed:`, (err as Error).message?.slice(0, 100));
+          skipped++;
+        }
+      }
+
+      console.log(`[Rekognition bulk] archive ${input.archiveId}: ${identified} identified, ${skipped} skipped, offset=${input.offset}`);
+      return {
+        scanned: page.length,
+        identified,
+        skipped,
+        total,
+        hasMore,
+        nextOffset: hasMore ? input.offset + input.limit : undefined,
+        found,
+      };
     }),
   }),
 
