@@ -89,8 +89,8 @@ const INTERNAL_RESCAN_MAX_RANGES = 300;
 // interval-split clips. Setting to 0 disables; increase if CPU budget allows.
 const INTERNAL_RESCAN_PASSES = 2;
 const SINGLE_SCENE_VALIDATE_MAX_DEPTH = 4;
-const DEFAULT_SCENE_THRESHOLD = 0.05; // only hard scene changes, ignores brightness flicker
-const DEFAULT_SCDET_THRESHOLD = 1.0; // only hard cuts, ignores film grain / light flicker
+const DEFAULT_SCENE_THRESHOLD = 0.4; // 40% pixel change = real editorial cut
+const DEFAULT_SCDET_THRESHOLD = 10.0; // scdet 0–100 scale; 10 = hard cut only
 /** Split any clip longer than this into fixed intervals — catches scenes without hard cuts. */
 const DEFAULT_MAX_CLIP_DURATION_SEC = 6;
 const DEFAULT_CUT_MERGE_GAP_SEC = 0.12; // merge near-duplicate detections
