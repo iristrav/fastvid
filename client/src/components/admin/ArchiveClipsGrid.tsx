@@ -458,6 +458,7 @@ function AssetPreviewModal({
 
 function AssetCard({
   asset,
+  archiveId,
   selected,
   sceneAudit,
   onToggleSelect,
@@ -468,6 +469,7 @@ function AssetCard({
   saving,
 }: {
   asset: ArchiveAsset;
+  archiveId: number;
   selected: boolean;
   sceneAudit?: SceneAuditEntry;
   onToggleSelect: () => void;
@@ -486,6 +488,7 @@ function AssetCard({
   const [sourceNote, setSourceNote] = useState(asset.sourceNote ?? "");
   const trimMutation = trpc.mediaArchive.trimToSingleScene.useMutation();
   const recognizeMutation = trpc.mediaArchive.recognizeCelebrities.useMutation();
+  const aiTagMutation = trpc.mediaArchive.autoTitleAssets.useMutation();
 
   useEffect(() => {
     setTitle(asset.title ?? "");
@@ -716,6 +719,26 @@ function AssetCard({
                   title="Herken personen via AWS Rekognition"
                 >
                   {recognizeMutation.isPending ? <Loader2 className="w-3 h-3 inline animate-spin" /> : <ScanSearch className="w-3 h-3 inline" />}
+                </button>
+                <button
+                  onClick={async () => {
+                    try {
+                      const result = await aiTagMutation.mutateAsync({ archiveId, ids: [asset.id] });
+                      if (result.updated > 0 && result.sampleUpdate?.tags?.length) {
+                        toast.success(`AI tags: ${result.sampleUpdate.tags.slice(0, 5).join(", ")}`, { description: "Tags opgeslagen" });
+                        onTagsSaved();
+                      } else {
+                        toast.info("AI kon geen tags genereren voor deze clip");
+                      }
+                    } catch (e) {
+                      toast.error("AI tagging mislukt", { description: toastErrorMessage(e) });
+                    }
+                  }}
+                  disabled={aiTagMutation.isPending}
+                  className="text-xs px-2 py-1 rounded bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-50"
+                  title="Automatische AI tags genereren"
+                >
+                  {aiTagMutation.isPending ? <Loader2 className="w-3 h-3 inline animate-spin" /> : <Sparkles className="w-3 h-3 inline" />}
                 </button>
               </div>
             </>
@@ -1838,6 +1861,7 @@ export function ArchiveClipsGrid({
             <AssetCard
               key={`${asset.id}-${(asset.tags ?? []).join("|")}`}
               asset={asset as ArchiveAsset}
+              archiveId={archiveId!}
               sceneAudit={sceneAuditMap[asset.id]}
               selected={selectedIds.has(asset.id)}
               onToggleSelect={() => toggleSelect(asset.id)}
