@@ -75,10 +75,10 @@ export class ArchiveSplitError extends Error {
 }
 
 export const MIN_SPLIT_VIDEO_SEC = 4;
-const MIN_SCENE_SEC = 0.04; // ultra-sensitive: catch even 40ms flash frames
+const MIN_SCENE_SEC = 0.08; // catch short flash frames without triggering on single frames
 const DEFAULT_MAX_CLIPS = 99999; // no practical limit — video length determines clip count
-/** Minimum seconds between distinct shot cuts (filters grain/flicker false positives). */
-const DEFAULT_MIN_SHOT_CUT_GAP_SEC = 0.1; // was 0.55 — now catches rapid cuts
+/** Minimum seconds between distinct shot cuts — keeps grain/flicker from being counted as cuts. */
+const DEFAULT_MIN_SHOT_CUT_GAP_SEC = 0.25; // 0.25s gap required between real cuts
 /** Legacy min clip length for env override — only sub-flash glitches are merged, not full shots. */
 const DEFAULT_MIN_OUTPUT_CLIP_SEC = 2.0;
 /** Never merge shots — sub-1s clips are simply dropped, not glued to neighbours. */
@@ -89,11 +89,11 @@ const INTERNAL_RESCAN_MAX_RANGES = 300;
 // interval-split clips. Setting to 0 disables; increase if CPU budget allows.
 const INTERNAL_RESCAN_PASSES = 2;
 const SINGLE_SCENE_VALIDATE_MAX_DEPTH = 4;
-const DEFAULT_SCENE_THRESHOLD = 0.008; // was 0.03 — maximum sensitivity
-const DEFAULT_SCDET_THRESHOLD = 0.15; // was 1 — catches subtle transitions
+const DEFAULT_SCENE_THRESHOLD = 0.02; // catches real scene changes, ignores film grain
+const DEFAULT_SCDET_THRESHOLD = 0.4; // sensitive to real cuts, ignores flicker/grain
 /** Split any clip longer than this into fixed intervals — catches scenes without hard cuts. */
 const DEFAULT_MAX_CLIP_DURATION_SEC = 6;
-const DEFAULT_CUT_MERGE_GAP_SEC = 0.08; // was 0.18 — merge only near-identical cuts
+const DEFAULT_CUT_MERGE_GAP_SEC = 0.12; // merge near-duplicate detections
 const DEFAULT_SPLIT_BUDGET_MS = 3_600_000;
 const DEFAULT_MAX_SOURCE_SEC = ARCHIVE_MAX_VIDEO_DURATION_SEC;
 const DEFAULT_MAX_UPLOAD_MB = ARCHIVE_MAX_UPLOAD_BYTES / (1024 * 1024);
