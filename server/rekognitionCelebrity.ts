@@ -113,7 +113,7 @@ export async function recognizeCelebritiesInFile(
           bestByName.set(p.name, p);
         }
       }
-      return { persons: [...bestByName.values()], framesAnalyzed: 1 };
+      return { persons: [...bestByName.values()].sort((a, b) => b.confidence - a.confidence).slice(0, 3), framesAnalyzed: 1 };
     }
 
     // Video: sample frames at 20%, 40%, 60%, 80% of duration (max 5 frames)
@@ -137,7 +137,7 @@ export async function recognizeCelebritiesInFile(
     }
 
     return {
-      persons: [...bestByName.values()].sort((a, b) => b.confidence - a.confidence),
+      persons: [...bestByName.values()].sort((a, b) => b.confidence - a.confidence).slice(0, 3),
       framesAnalyzed,
     };
   } finally {
