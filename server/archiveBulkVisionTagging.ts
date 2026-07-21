@@ -232,6 +232,10 @@ export async function autoTitleArchiveAssets(opts: {
         skipped += 1;
         skipReasons.noFrames += 1;
         break;
+      case "skipped_has_tags":
+        skipped += 1;
+        skipReasons.hasTags += 1;
+        break;
       case "skipped_no_vision":
         skipped += 1;
         skipReasons.noVision += 1;

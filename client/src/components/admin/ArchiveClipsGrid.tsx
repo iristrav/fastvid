@@ -464,6 +464,7 @@ function AssetCard({
   onToggleSelect,
   onDelete,
   onSave,
+  onTrimmed,
   onRefresh,
   saving,
 }: {
@@ -474,6 +475,7 @@ function AssetCard({
   onToggleSelect: () => void;
   onDelete: () => void;
   onSave: (patch: { title?: string; tags?: string[]; mixKind?: MixKind; sourceNote?: string }) => void;
+  onTrimmed: (assetId: number, newDurationSec: number) => void;
   onRefresh: () => void;
   saving: boolean;
 }) {
@@ -1882,6 +1884,14 @@ export function ArchiveClipsGrid({
                 if (confirm("Delete this clip?")) deleteAsset.mutate({ id: asset.id });
               }}
               onSave={(patch) => updateAsset.mutate({ id: asset.id, ...patch })}
+              onTrimmed={(assetId, newDurationSec) => {
+                utils.mediaArchive.listAssets.invalidate({ archiveId: archiveId! });
+                setSceneAuditMap((prev) => {
+                  const entry = prev[assetId];
+                  if (!entry) return prev;
+                  return { ...prev, [assetId]: { ...entry, status: "single_scene", sceneCount: 1, interiorCutCount: 0, cutTimesSec: [], durationSec: newDurationSec } };
+                });
+              }}
               onRefresh={() => utils.mediaArchive.listAssets.invalidate({ archiveId: archiveId! })}
               saving={updateAsset.isPending}
             />
