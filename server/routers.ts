@@ -86,7 +86,7 @@ import { processArchiveAssetUpload, ArchiveUploadError } from "./archiveUpload";
 import { archiveAiTaggingEnabled } from "./archiveAssetTagging";
 import { autoTitleArchiveAssets, probeArchiveAssetAiTag } from "./archiveBulkVisionTagging";
 import { bulkRetagArchiveGeo } from "./archiveBulkGeoRetag";
-import { auditArchiveAssetScenes } from "./archiveSceneAudit";
+import { auditArchiveAssetScenes, auditArchiveAssetScene } from "./archiveSceneAudit";
 import { archiveAssetMediaStatus, loadArchiveAssetFile } from "./archiveAssetLoad";
 import { probeVideoDurationSec } from "./archiveVideoSplitter";
 import { dedupeArchiveVisualDuplicates } from "./archiveClipDedup";
@@ -1730,6 +1730,79 @@ export const appRouter = router({
           APP_ERROR.SERVICE_ERROR,
           (err as Error).message ?? "Scene audit failed"
         );
+      }
+    }),
+
+    /**
+     * Trim a multi-scene clip to its first scene only (up to the first detected cut).
+     * Re-uploads the trimmed version to storage and updates the DB record.
+     */
+    trimToSingleScene: adminProcedure.input(z.object({
+      assetId: z.number().int(),
+      /** Cut time in seconds (first scene ends here). If omitted, re-audits the clip. */
+      cutAtSec: z.number().optional(),
+    })).mutation(async ({ input }) => {
+      const asset = await getMediaArchiveAssetById(input.assetId);
+      if (!asset) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Asset not found");
+      if (asset.mediaType !== "video") throw appTrpcError("BAD_REQUEST", APP_ERROR.SERVICE_ERROR, "Only video clips can be trimmed");
+
+      // Determine cut time
+      let cutSec = input.cutAtSec;
+      if (!cutSec) {
+        const audit = await auditArchiveAssetScene(asset).catch(() => null);
+        const firstCut = audit?.cutTimesSec?.[0];
+        if (!firstCut || firstCut <= 0.5) {
+          return { trimmed: false, reason: "No reliable scene cut detected" };
+        }
+        cutSec = firstCut;
+      }
+
+      if (cutSec <= 0.5) return { trimmed: false, reason: "Cut too close to start" };
+
+      // Load the file
+      const loaded = await loadArchiveAssetFile({
+        ...asset,
+        mimeType: asset.mimeType ?? "video/mp4",
+      });
+      if (!loaded.ok) throw appTrpcError("INTERNAL_SERVER_ERROR", APP_ERROR.SERVICE_ERROR, "Could not load clip file");
+
+      const { localPath, cleanup } = loaded.result;
+      const os = await import("os");
+      const path = await import("path");
+      const fs = await import("fs");
+      const { execFile } = await import("child_process");
+      const { promisify } = await import("util");
+      const execFileAsync = promisify(execFile);
+
+      const ext = path.extname(localPath) || ".mp4";
+      const outPath = path.join(os.tmpdir(), `fv_trim_${asset.id}_${Date.now()}${ext}`);
+
+      try {
+        const ffmpeg = process.env.FFMPEG_BIN || process.env.FFMPEG_PATH || "ffmpeg";
+        await execFileAsync(ffmpeg, [
+          "-y", "-i", localPath,
+          "-t", cutSec.toFixed(3),
+          "-c", "copy",
+          outPath,
+        ]);
+
+        const { storagePut } = await import("./storage");
+        const storageKey = asset.storageKey ?? `archive/${asset.archiveId}/${asset.id}_trimmed${ext}`;
+        const mimeType = asset.mimeType ?? "video/mp4";
+        const buf = fs.readFileSync(outPath);
+        const { url } = await storagePut(storageKey, buf, mimeType);
+
+        await updateMediaArchiveAsset(asset.id, {
+          storageUrl: url,
+          storageKey,
+          durationSec: Math.round(cutSec),
+        });
+
+        console.log(`[Admin] trimToSingleScene asset ${asset.id}: trimmed to ${cutSec.toFixed(1)}s`);
+        return { trimmed: true, newDurationSec: Math.round(cutSec) };
+      } finally {
+        cleanup?.();
+        try { (await import("fs")).unlinkSync(outPath); } catch { /* ignore */ }
       }
     }),
 
