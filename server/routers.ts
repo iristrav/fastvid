@@ -81,6 +81,7 @@ function isMuskTeslaPromptTopic(prompt: string, title: string): boolean {
 import { storagePut, storageGetSignedUrl } from "./storage";
 import { s3ListAllKeys } from "./storageS3";
 import { isS3StorageEnabled, objectStorageUrl } from "./storageBackend";
+import { trimArchiveAssetToFirstScene } from "./archiveTrimToScene";
 import { FASTVID_PRO_PLAN } from "./products";
 import { processArchiveAssetUpload, ArchiveUploadError } from "./archiveUpload";
 import { archiveAiTaggingEnabled } from "./archiveAssetTagging";
@@ -1759,57 +1760,19 @@ export const appRouter = router({
 
       if (cutSec <= 0.5) return { trimmed: false, reason: "Cut too close to start" };
 
-      // Load the file
-      const loaded = await loadArchiveAssetFile({
-        ...asset,
-        mimeType: asset.mimeType ?? "video/mp4",
-      });
-      if (!loaded.ok) throw appTrpcError("INTERNAL_SERVER_ERROR", APP_ERROR.SERVICE_ERROR, "Could not load clip file");
-
-      const { localPath, cleanup } = loaded.result;
-      const os = await import("os");
-      const path = await import("path");
-      const fs = await import("fs");
-      const { execFile } = await import("child_process");
-      const { promisify } = await import("util");
-      const execFileAsync = promisify(execFile);
-
-      const ext = path.extname(localPath) || ".mp4";
-      const outPath = path.join(os.tmpdir(), `fv_trim_${asset.id}_${Date.now()}${ext}`);
-
-      try {
-        const ffmpeg = process.env.FFMPEG_BIN || process.env.FFMPEG_PATH || "ffmpeg";
-        await execFileAsync(ffmpeg, [
-          "-y", "-i", localPath,
-          "-t", cutSec.toFixed(3),
-          "-c", "copy",
-          outPath,
-        ]);
-
-        const { storagePut } = await import("./storage");
-        const storageKey = asset.storageKey ?? `archive/${asset.archiveId}/${asset.id}_trimmed${ext}`;
-        const mimeType = asset.mimeType ?? "video/mp4";
-        const buf = fs.readFileSync(outPath);
-        const { url } = await storagePut(storageKey, buf, mimeType);
-
-        await updateMediaArchiveAsset(asset.id, {
-          storageUrl: url,
-          storageKey,
-          durationSec: Math.round(cutSec),
-        });
-
-        console.log(`[Admin] trimToSingleScene asset ${asset.id}: trimmed to ${cutSec.toFixed(1)}s`);
-        return { trimmed: true, newDurationSec: Math.round(cutSec) };
-      } finally {
-        cleanup?.();
-        try { (await import("fs")).unlinkSync(outPath); } catch { /* ignore */ }
-      }
+      const { assetId: _id, newDurationSec } = await trimArchiveAssetToFirstScene(
+        asset as import("../drizzle/schema").MediaArchiveAsset,
+        cutSec,
+      );
+      return { trimmed: true, newDurationSec };
     }),
 
     /** Remove visually duplicate clips (keeps oldest per duplicate group). */
     dedupeDuplicateAssets: adminProcedure.input(z.object({
       archiveId: z.number().int(),
       ids: z.array(z.number().int()).optional(),
+      limit: z.number().int().min(1).max(1000).optional(),
+      offset: z.number().int().min(0).optional(),
     })).mutation(async ({ input }) => {
       const archive = await getMediaArchiveById(input.archiveId);
       if (!archive) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Archive not found");
@@ -1819,18 +1782,29 @@ export const appRouter = router({
         const idSet = new Set(input.ids);
         assets = assets.filter((a) => idSet.has(a.id));
       }
-      if (assets.length < 2) {
-        return { scanned: assets.length, deleted: 0, kept: assets.length };
+
+      const total = assets.length;
+      const pageSize = input.limit ?? total;
+      const pageOffset = input.offset ?? 0;
+      const page = assets.slice(pageOffset, pageOffset + pageSize);
+      const hasMore = pageOffset + pageSize < total;
+      const nextOffset = hasMore ? pageOffset + pageSize : undefined;
+
+      if (page.length < 2) {
+        return { scanned: page.length, deleted: 0, kept: page.length, total, hasMore, nextOffset };
       }
 
-      const { deleteIds, scanned } = await dedupeArchiveVisualDuplicates(assets);
+      const { deleteIds, scanned } = await dedupeArchiveVisualDuplicates(page);
       if (deleteIds.length > 0) {
         await deleteMediaArchiveAssets(deleteIds);
       }
       return {
         scanned,
         deleted: deleteIds.length,
-        kept: assets.length - deleteIds.length,
+        kept: page.length - deleteIds.length,
+        total,
+        hasMore,
+        nextOffset,
       };
     }),
 
@@ -2012,6 +1986,66 @@ export const appRouter = router({
 
       console.log(`[RestoreFromS3] archive ${input.archiveId}: ${restored} restored, ${skipped} skipped`);
       return { restored, skipped, total: allKeys.length };
+    }),
+
+    /** Alias for restoreFromS3: scan storage for files not registered in DB, re-register them. */
+    reindexOrphanedClips: adminProcedure.input(z.object({
+      archiveId: z.number().int(),
+      autoGenerateTags: z.boolean().optional(),
+      limit: z.number().int().optional(),
+    })).mutation(async ({ input }) => {
+      if (!isS3StorageEnabled()) {
+        return { inserted: 0, remaining: 0 };
+      }
+      const archive = await getMediaArchiveById(input.archiveId);
+      if (!archive) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Archive not found");
+
+      const existingAssets = await getMediaArchiveAssets(input.archiveId);
+      const existingKeys = new Set(existingAssets.map((a) => a.storageKey).filter(Boolean));
+      const existingUrls = new Set(existingAssets.map((a) => a.storageUrl));
+      const allKeys = await s3ListAllKeys();
+
+      const videoExts = new Set([".mp4", ".webm", ".mov", ".avi", ".mkv"]);
+      const imageExts = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif"]);
+      const mimeMap: Record<string, string> = {
+        ".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime",
+        ".avi": "video/x-msvideo", ".mkv": "video/x-matroska",
+        ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+        ".webp": "image/webp", ".gif": "image/gif",
+      };
+
+      const toInsert = allKeys.filter((relKey) => {
+        if (existingKeys.has(relKey)) return false;
+        if (existingUrls.has(objectStorageUrl(relKey))) return false;
+        const ext = relKey.slice(relKey.lastIndexOf(".")).toLowerCase();
+        return videoExts.has(ext) || imageExts.has(ext);
+      });
+
+      const batch = input.limit ? toInsert.slice(0, input.limit) : toInsert;
+      let inserted = 0;
+      for (const relKey of batch) {
+        const ext = relKey.slice(relKey.lastIndexOf(".")).toLowerCase();
+        const isVideo = videoExts.has(ext);
+        const mimeType = mimeMap[ext] ?? (isVideo ? "video/mp4" : "image/jpeg");
+        const filename = relKey.split("/").pop() ?? relKey;
+        const title = filename.replace(/\.[^.]+$/, "").replace(/[-_]/g, " ").slice(0, 200) || null;
+        try {
+          await createMediaArchiveAsset({
+            archiveId: input.archiveId,
+            title,
+            mediaType: isVideo ? "video" : "image",
+            mixKind: isVideo ? "real_video" : "photo",
+            mimeType,
+            storageUrl: objectStorageUrl(relKey),
+            storageKey: relKey,
+            isActive: 1,
+          });
+          inserted++;
+        } catch { /* skip duplicates */ }
+      }
+      const remaining = toInsert.length - batch.length;
+      console.log(`[ReindexOrphans] archive ${input.archiveId}: inserted=${inserted}, remaining=${remaining}`);
+      return { inserted, remaining };
     }),
   }),
 

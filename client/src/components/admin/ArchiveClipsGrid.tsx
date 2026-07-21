@@ -315,8 +315,12 @@ function AssetPreviewModal({
     setTrimming(true);
     try {
       const result = await trimMutation.mutateAsync({ assetId: asset.id, cutTimeSec: trimAt });
+      if (!result.trimmed) {
+        toast.error("Bijknippen mislukt", { description: result.reason ?? "Onbekende fout" });
+        return;
+      }
       toast.success(`Bijgeknipt naar ${result.newDurationSec}s`);
-      onTrimmed?.(result.newDurationSec);
+      onTrimmed?.(result.newDurationSec!);
       onClose();
     } catch (e) {
       toast.error("Bijknippen mislukt", { description: toastErrorMessage(e) });
@@ -618,7 +622,11 @@ function AssetCard({
                       if (!confirm(`Clip bijknippen naar eerste scène (0–${cut.toFixed(1)}s)?`)) return;
                       try {
                         const result = await trimMutation.mutateAsync({ assetId: asset.id, cutTimeSec: cut });
-                        onTrimmed(asset.id, result.newDurationSec);
+                        if (!result.trimmed) {
+                          toast.error("Bijknippen mislukt", { description: result.reason ?? "Onbekende fout" });
+                          return;
+                        }
+                        onTrimmed(asset.id, result.newDurationSec!);
                         toast.success(`Bijgeknipt naar ${result.newDurationSec}s`);
                       } catch (e) {
                         toast.error("Bijknippen mislukt", { description: toastErrorMessage(e) });
@@ -755,7 +763,7 @@ export function ArchiveClipsGrid({
       } else {
         const parts: string[] = [];
         if (data.deleted > 0) parts.push(`${data.deleted} echt lege clip(s) verwijderd`);
-        if (data.fixed > 0) parts.push(`${data.fixed} clip(s) hadden wel beelden — duur gecorrigeerd in database`);
+        if ((data.fixed ?? 0) > 0) parts.push(`${data.fixed} clip(s) hadden wel beelden — duur gecorrigeerd in database`);
         toast.success(parts.join(", ") || "Klaar", {
           description: `${data.confirmed} van ${data.scanned} clips gecontroleerd via ffprobe`,
         });
