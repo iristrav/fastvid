@@ -727,8 +727,14 @@ function AssetCard({
                       if (result.updated > 0 && result.sampleUpdate?.tags?.length) {
                         toast.success(`AI tags: ${result.sampleUpdate.tags.slice(0, 5).join(", ")}`, { description: "Tags opgeslagen" });
                         onTagsSaved();
+                      } else if (result.skipped > 0 && result.updated === 0) {
+                        toast.info("Clip heeft al tags — AI heeft ze niet overschreven");
+                      } else if (result.skipReasons?.fileMissing > 0 || result.skipReasons?.downloadFailed > 0) {
+                        toast.error("Videobestand niet beschikbaar", { description: "Controleer of de clip correct is geüpload" });
+                      } else if (result.skipReasons?.noFrames > 0) {
+                        toast.error("Geen frames extraheerbaar", { description: "Het videobestand is mogelijk leeg of beschadigd" });
                       } else {
-                        toast.info("AI kon geen tags genereren voor deze clip");
+                        toast.info("AI kon geen tags genereren", { description: result.sampleError ?? "Onbekende reden" });
                       }
                     } catch (e) {
                       toast.error("AI tagging mislukt", { description: toastErrorMessage(e) });
