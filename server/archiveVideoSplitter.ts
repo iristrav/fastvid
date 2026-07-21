@@ -75,10 +75,10 @@ export class ArchiveSplitError extends Error {
 }
 
 export const MIN_SPLIT_VIDEO_SEC = 4;
-const MIN_SCENE_SEC = 0.12;
+const MIN_SCENE_SEC = 0.04; // ultra-sensitive: catch even 40ms flash frames
 const DEFAULT_MAX_CLIPS = 99999; // no practical limit — video length determines clip count
 /** Minimum seconds between distinct shot cuts (filters grain/flicker false positives). */
-const DEFAULT_MIN_SHOT_CUT_GAP_SEC = 0.55;
+const DEFAULT_MIN_SHOT_CUT_GAP_SEC = 0.1; // was 0.55 — now catches rapid cuts
 /** Legacy min clip length for env override — only sub-flash glitches are merged, not full shots. */
 const DEFAULT_MIN_OUTPUT_CLIP_SEC = 2.0;
 /** Never merge shots — sub-1s clips are simply dropped, not glued to neighbours. */
@@ -89,11 +89,11 @@ const INTERNAL_RESCAN_MAX_RANGES = 300;
 // interval-split clips. Setting to 0 disables; increase if CPU budget allows.
 const INTERNAL_RESCAN_PASSES = 2;
 const SINGLE_SCENE_VALIDATE_MAX_DEPTH = 4;
-const DEFAULT_SCENE_THRESHOLD = 0.03;
-const DEFAULT_SCDET_THRESHOLD = 1;
+const DEFAULT_SCENE_THRESHOLD = 0.008; // was 0.03 — maximum sensitivity
+const DEFAULT_SCDET_THRESHOLD = 0.15; // was 1 — catches subtle transitions
 /** Split any clip longer than this into fixed intervals — catches scenes without hard cuts. */
 const DEFAULT_MAX_CLIP_DURATION_SEC = 6;
-const DEFAULT_CUT_MERGE_GAP_SEC = 0.18;
+const DEFAULT_CUT_MERGE_GAP_SEC = 0.08; // was 0.18 — merge only near-identical cuts
 const DEFAULT_SPLIT_BUDGET_MS = 3_600_000;
 const DEFAULT_MAX_SOURCE_SEC = ARCHIVE_MAX_VIDEO_DURATION_SEC;
 const DEFAULT_MAX_UPLOAD_MB = ARCHIVE_MAX_UPLOAD_BYTES / (1024 * 1024);
@@ -139,7 +139,7 @@ export function scdetThreshold(): number {
   const raw = process.env.ARCHIVE_SCDET_THRESHOLD?.trim();
   if (raw) {
     const n = parseFloat(raw);
-    if (!isNaN(n) && n >= 1 && n <= 50) return n;
+    if (!isNaN(n) && n >= 0.05 && n <= 50) return n;
   }
   return DEFAULT_SCDET_THRESHOLD;
 }
@@ -190,7 +190,7 @@ export function minShotCutGapSec(): number {
   const raw = process.env.ARCHIVE_MIN_SHOT_CUT_GAP?.trim();
   if (raw) {
     const n = parseFloat(raw);
-    if (!isNaN(n) && n >= 0.3 && n <= 5) return n;
+    if (!isNaN(n) && n >= 0.05 && n <= 5) return n;
   }
   return DEFAULT_MIN_SHOT_CUT_GAP_SEC;
 }
@@ -480,8 +480,8 @@ export async function detectInteriorCutTimesInFile(
   timeoutMs = 28_000
 ): Promise<number[]> {
   if (totalDur < MIN_SCENE_SEC * 2) return [];
-  const scdetT = Math.max(0.5, scdetThreshold() * 0.5);
-  const sceneT = Math.max(0.015, sceneThreshold() * 0.5);
+  const scdetT = Math.max(0.05, scdetThreshold() * 0.5); // was Math.max(0.5, ...)
+  const sceneT = Math.max(0.004, sceneThreshold() * 0.5); // was Math.max(0.015, ...)
   const half = Math.floor(timeoutMs / 3);
   // Pass totalDur+1 so the parse functions' end-boundary filter (t < totalDur-MIN_SCENE_SEC)
   // doesn't discard cuts on the very last frame. We apply our own filter below allowing
@@ -501,7 +501,7 @@ export async function detectInteriorCutTimesInFile(
     const tailStart = Math.max(0, totalDur - 1.5);
     const tailCmd =
       `${ffmpegBin()} -ss ${tailStart.toFixed(3)} -i "${inputPath}" -t 2 -an ` +
-      `-vf "scale=480:-1,scdet=threshold=0.5:sc_pass=1,showinfo" -f null -`;
+      `-vf "scale=480:-1,scdet=threshold=0.1:sc_pass=1,showinfo" -f null -`;
     const tailStderr = await runFfmpegDetect(tailCmd, half).catch(() => "");
     const fromMeta = parseScdetTimesFromFfmpeg(tailStderr, padDur);
     const fromPts = parsePtsTimesFromFfmpeg(tailStderr, padDur);
@@ -762,7 +762,7 @@ async function rescanRangesForInteriorCuts(
           inputPath,
           range.start,
           range.end,
-          Math.max(0.015, sceneThreshold() * 0.5),
+          Math.max(0.004, sceneThreshold() * 0.5),
           perRangeTimeout
         ),
       ]);
@@ -852,7 +852,7 @@ async function detectSceneCutTimes(inputPath: string, totalDur: number, deadline
       detectSceneFilterCutTimes(
         inputPath,
         totalDur,
-        Math.max(0.015, sceneThreshold() * 0.5),
+        Math.max(0.004, sceneThreshold() * 0.5),
         Math.floor(sceneBudget * 0.5)
       ),
     ]);
