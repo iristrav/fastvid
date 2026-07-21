@@ -862,7 +862,7 @@ export function ArchiveClipsGrid({
       utils.mediaArchive.listAssets.invalidate();
       utils.mediaArchive.listArchives.invalidate();
       if (data.confirmed === 0) {
-        toast.info(`Geen 0-seconden clips gevonden (${data.scanned} gescand)`);
+        toast.info(`Geen clips korter dan 1 seconde gevonden (${data.scanned} gescand)`);
       } else {
         const parts: string[] = [];
         if (data.deleted > 0) parts.push(`${data.deleted} echt lege clip(s) verwijderd`);
@@ -1617,11 +1617,11 @@ export function ArchiveClipsGrid({
               type="button"
               onClick={() => {
                 if (archiveId == null) return;
-                if (!confirm("Verwijder alle videoclips met duur 0 seconden?")) return;
+                if (!confirm("Verwijder alle videoclips korter dan 1 seconde?")) return;
                 deleteZeroDurationClips.mutate({ archiveId });
               }}
               disabled={deleteZeroDurationClips.isPending || autoTitleRunning}
-              title="Verwijder alle videoclips waarbij de duur 0 of onbekend is"
+              title="Verwijder alle videoclips korter dan 1 seconde (inclusief onbekende duur)"
               className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg bg-red-500/15 text-red-300 border border-red-500/25 hover:bg-red-500/25 disabled:opacity-50"
             >
               {deleteZeroDurationClips.isPending ? (

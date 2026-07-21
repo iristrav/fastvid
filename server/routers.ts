@@ -1966,7 +1966,7 @@ export const appRouter = router({
       const assets = await getMediaArchiveAssets(input.archiveId);
       // Candidates: video clips where DB says 0s or unknown — these need verification
       const candidates = assets.filter(
-        (a) => a.mediaType === "video" && (a.durationSec == null || a.durationSec <= 0)
+        (a) => a.mediaType === "video" && (a.durationSec == null || a.durationSec < 1)
       );
 
       if (candidates.length === 0) return { deleted: 0, confirmed: 0, scanned: assets.length };
@@ -1991,9 +1991,9 @@ export const appRouter = router({
           const { localPath, cleanup } = loaded.result;
           try {
             const realDuration = await probeVideoDurationSec(localPath).catch(() => 0);
-            if (realDuration <= 0) {
+            if (realDuration < 1) {
               confirmedZeroIds.push(asset.id);
-              console.log(`[Admin] deleteZeroDurationClips: asset ${asset.id} confirmed 0s (ffprobe=${realDuration})`);
+              console.log(`[Admin] deleteZeroDurationClips: asset ${asset.id} confirmed <1s (ffprobe=${realDuration})`);
             } else {
               // DB was wrong — fix the duration instead of deleting
               fixedIds.push({ id: asset.id, realDuration: Math.round(realDuration) });
