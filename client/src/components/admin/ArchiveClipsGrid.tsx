@@ -1111,8 +1111,12 @@ export function ArchiveClipsGrid({
       );
     }
 
+    // Filter out clips that already have tags — skip them client-side
+    const taggedIds = new Set(assets.filter((a) => Array.isArray(a.tags) && (a.tags as string[]).length > 0).map((a) => a.id));
+    resolvedIds = resolvedIds.filter((id) => !taggedIds.has(id));
+
     if (resolvedIds.length === 0) {
-      toast.error("No clips to process");
+      toast.info("Alle geselecteerde clips hebben al tags — niets te doen");
       return;
     }
 
@@ -1359,9 +1363,11 @@ export function ArchiveClipsGrid({
 
   async function runRekognitionBulk() {
     if (archiveId == null) return;
-    if (!confirm(`AWS Rekognition starten voor alle clips?\n\nHet systeem herkent bekende personen (historische figuren, politici, etc.) en slaat hun namen op als tags.\n\nKosten: ~€0.001 per clip.`)) return;
+    const selectedArr = selectedCount > 0 ? [...selectedIds] : undefined;
+    const label = selectedArr ? `${selectedArr.length} geselecteerde clip(s)` : `alle clips`;
+    if (!confirm(`AWS Rekognition starten voor ${label}?\n\nHet systeem herkent bekende personen en slaat hun namen op als tags. Clips met bestaande tags worden overgeslagen.\n\nKosten: ~€0.001 per clip.`)) return;
 
-    setRekognitionProgress({ scanned: 0, identified: 0, total });
+    setRekognitionProgress({ scanned: 0, identified: 0, total: selectedArr?.length ?? total });
     let offset = 0;
     let totalIdentified = 0;
     let totalScanned = 0;
@@ -1369,7 +1375,13 @@ export function ArchiveClipsGrid({
 
     while (hasMore) {
       try {
-        const result = await rekognitionBulk.mutateAsync({ archiveId, limit: 20, offset });
+        const result = await rekognitionBulk.mutateAsync({
+          archiveId,
+          limit: 20,
+          offset,
+          onlyUntagged: true,
+          ...(selectedArr ? { ids: selectedArr } : {}),
+        });
         totalScanned += result.scanned;
         totalIdentified += result.identified;
         hasMore = result.hasMore;

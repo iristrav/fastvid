@@ -2098,7 +2098,8 @@ export const appRouter = router({
       archiveId: z.number().int(),
       limit: z.number().int().min(1).max(100).default(20),
       offset: z.number().int().min(0).default(0),
-      onlyUntagged: z.boolean().default(false),
+      onlyUntagged: z.boolean().default(true),
+      ids: z.array(z.number().int()).optional(),
     })).mutation(async ({ input }) => {
       if (!isRekognitionEnabled()) {
         throw appTrpcError("BAD_REQUEST", APP_ERROR.SERVICE_ERROR, "AWS Rekognition is not configured");
@@ -2107,6 +2108,10 @@ export const appRouter = router({
       if (!archive) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Archive not found");
 
       let assets = await getMediaArchiveAssets(input.archiveId);
+      if (input.ids && input.ids.length > 0) {
+        const idSet = new Set(input.ids);
+        assets = assets.filter((a) => idSet.has(a.id));
+      }
       if (input.onlyUntagged) {
         assets = assets.filter((a) => !Array.isArray(a.tags) || (a.tags as string[]).length === 0);
       }
