@@ -463,6 +463,7 @@ function AssetCard({
   onToggleSelect,
   onDelete,
   onSave,
+  onTagsSaved,
   onTrimmed,
   saving,
 }: {
@@ -472,6 +473,7 @@ function AssetCard({
   onToggleSelect: () => void;
   onDelete: () => void;
   onSave: (patch: { title?: string; tags?: string[]; mixKind?: MixKind; sourceNote?: string }) => void;
+  onTagsSaved: () => void;
   onTrimmed: (assetId: number, newDurationSec: number) => void;
   saving: boolean;
 }) {
@@ -657,8 +659,8 @@ function AssetCard({
                         toast.info("Geen bekende personen herkend in deze clip");
                       } else {
                         const names = result.persons.map((p) => `${p.name} (${p.confidence}%)`).join(", ");
-                        toast.success(`Herkend: ${names}`, { description: "Tags bijgewerkt" });
-                        setTags(tagsToInput(result.persons.map((p) => p.name.toLowerCase())));
+                        toast.success(`Herkend: ${names}`, { description: "Tags opgeslagen" });
+                        onTagsSaved();
                       }
                     } catch (e) {
                       toast.error("Herkenning mislukt", { description: toastErrorMessage(e) });
@@ -1798,6 +1800,7 @@ export function ArchiveClipsGrid({
                 if (confirm("Delete this clip?")) deleteAsset.mutate({ id: asset.id });
               }}
               onSave={(patch) => updateAsset.mutate({ id: asset.id, ...patch })}
+              onTagsSaved={() => utils.mediaArchive.listAssets.invalidate({ archiveId: archiveId! })}
               onTrimmed={(assetId, newDurationSec) => {
                 utils.mediaArchive.listAssets.invalidate({ archiveId: archiveId! });
                 setSceneAuditMap((prev) => {
