@@ -819,7 +819,7 @@ async function invokeArchiveVisionTagging(
 
   const runOnce = async (responseFormat: VisionFormat): Promise<ArchiveAssetAiMetadata | null> => {
     const payload: Parameters<typeof invokeLLM>[0] = {
-      preferProvider: groqKeyFromEnv() ? "groq" : isAnthropicCreditExhausted() ? "openai" : undefined,
+      preferProvider: isAnthropicCreditExhausted() ? "openai" : undefined,
       messages: [
         {
           role: "system",
