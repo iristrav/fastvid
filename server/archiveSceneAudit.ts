@@ -11,8 +11,8 @@ import {
   getMediaArchiveAssetById,
   getMediaArchiveAssets,
   getMediaArchiveById,
-  type MediaArchiveAsset,
 } from "./db";
+import type { MediaArchiveAsset } from "../drizzle/schema";
 
 export type ArchiveSceneAuditStatus =
   | "single_scene"
@@ -136,7 +136,7 @@ export async function auditArchiveAssetScenes(opts: {
     throw new Error("Archive not found");
   }
 
-  const uniqueIds = [...new Set(opts.ids)].slice(0, 40);
+  const uniqueIds = Array.from(new Set(opts.ids)).slice(0, 40);
   const assets: MediaArchiveAsset[] = [];
   for (const id of uniqueIds) {
     const asset = await getMediaArchiveAssetById(id);
@@ -175,7 +175,7 @@ export async function resolveArchiveAuditTargetIds(opts: {
   ids?: number[];
 }): Promise<number[]> {
   if (opts.ids?.length) {
-    return [...new Set(opts.ids)];
+    return Array.from(new Set(opts.ids));
   }
   const assets = await getMediaArchiveAssets(opts.archiveId);
   const filtered = filterMediaArchiveAssets(assets, { search: opts.search });

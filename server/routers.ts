@@ -89,7 +89,7 @@ import { LOCAL_UPLOADS_DIR } from "./storageLocal";
 import { enrichArchiveAssetFields } from "./archiveAssetTagging";
 import * as fs from "fs";
 import * as path from "path";
-import { auditArchiveAssetScenes } from "./archiveSceneAudit";
+import { auditArchiveAssetScenes, auditArchiveAssetScene } from "./archiveSceneAudit";
 import { probeVideoDurationSec } from "./archiveVideoSplitter";
 import { trimArchiveAssetToFirstScene } from "./archiveTrimToScene";
 import { archiveAssetMediaStatus, loadArchiveAssetFile } from "./archiveAssetLoad";
@@ -1718,68 +1718,6 @@ export const appRouter = router({
       return probeArchiveAssetAiTag(input.assetId, input.archiveId);
     }),
 
-    /** AWS Rekognition celebrity recognition — per clip. */
-    recognizeCelebrities: adminProcedure.input(z.object({
-      assetId: z.number().int(),
-    })).mutation(async ({ input }) => {
-      if (!isRekognitionEnabled()) throw appTrpcError("BAD_REQUEST", APP_ERROR.SERVICE_ERROR, "AWS Rekognition is not configured");
-      const asset = await getMediaArchiveAssetById(input.assetId);
-      if (!asset) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Asset not found");
-      const loaded = await loadArchiveAssetFile({ ...asset, mimeType: asset.mimeType ?? "image/jpeg" });
-      if (!loaded.ok) throw appTrpcError("INTERNAL_SERVER_ERROR", APP_ERROR.SERVICE_ERROR, "Could not load clip file");
-      const { localPath, cleanup } = loaded.result;
-      try {
-        const result = await recognizeCelebritiesInFile(localPath, asset.mediaType as "video" | "image", asset.durationSec);
-        if (result.persons.length > 0) {
-          const existingTags: string[] = Array.isArray(asset.tags) ? asset.tags as string[] : [];
-          const personNames = result.persons.map((p) => p.name.toLowerCase());
-          const merged = [...new Set([...personNames, ...existingTags])].slice(0, 20);
-          await updateMediaArchiveAsset(asset.id, { tags: merged });
-        }
-        return { assetId: asset.id, persons: result.persons, framesAnalyzed: result.framesAnalyzed };
-      } finally { cleanup?.(); }
-    }),
-
-    /** AWS Rekognition — bulk, skips already-tagged clips by default. */
-    recognizeCelebritiesBulk: adminProcedure.input(z.object({
-      archiveId: z.number().int(),
-      limit: z.number().int().min(1).max(100).default(20),
-      offset: z.number().int().min(0).default(0),
-      onlyUntagged: z.boolean().default(true),
-      ids: z.array(z.number().int()).optional(),
-    })).mutation(async ({ input }) => {
-      if (!isRekognitionEnabled()) throw appTrpcError("BAD_REQUEST", APP_ERROR.SERVICE_ERROR, "AWS Rekognition is not configured");
-      const archive = await getMediaArchiveById(input.archiveId);
-      if (!archive) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Archive not found");
-      let assets = await getMediaArchiveAssets(input.archiveId);
-      if (input.ids && input.ids.length > 0) { const s = new Set(input.ids); assets = assets.filter((a) => s.has(a.id)); }
-      if (input.onlyUntagged) assets = assets.filter((a) => !Array.isArray(a.tags) || (a.tags as string[]).length === 0);
-      const total = assets.length;
-      const page = assets.slice(input.offset, input.offset + input.limit);
-      const hasMore = input.offset + input.limit < total;
-      let identified = 0; let skipped = 0;
-      const found: Array<{ assetId: number; persons: string[] }> = [];
-      for (const asset of page) {
-        try {
-          const loaded = await loadArchiveAssetFile({ ...asset, mimeType: asset.mimeType ?? "image/jpeg" });
-          if (!loaded.ok) { skipped++; continue; }
-          const { localPath, cleanup } = loaded.result;
-          try {
-            const result = await recognizeCelebritiesInFile(localPath, asset.mediaType as "video" | "image", asset.durationSec);
-            if (result.persons.length > 0) {
-              const existingTags: string[] = Array.isArray(asset.tags) ? asset.tags as string[] : [];
-              const personNames = result.persons.map((p) => p.name.toLowerCase());
-              const merged = [...new Set([...personNames, ...existingTags])].slice(0, 20);
-              await updateMediaArchiveAsset(asset.id, { tags: merged });
-              identified++;
-              found.push({ assetId: asset.id, persons: result.persons.map((p) => p.name) });
-            }
-          } finally { cleanup?.(); }
-        } catch (err) { console.warn(`[Rekognition] asset ${asset.id} failed:`, (err as Error).message?.slice(0, 100)); skipped++; }
-      }
-      return { scanned: page.length, identified, skipped, total, hasMore, nextOffset: hasMore ? input.offset + input.limit : undefined, found };
-    }),
-
     /** FFmpeg scene audit — detect single-scene vs multi-scene clips (max 40 ids per call). */
     auditScenes: adminProcedure.input(z.object({
       archiveId: z.number().int(),
@@ -1834,38 +1772,6 @@ export const appRouter = router({
       return { trimmed: true, newDurationSec };
     }),
 
-    /** Run AWS Rekognition celebrity recognition on a single archive clip. */
-    recognizeCelebrities: adminProcedure.input(z.object({
-      assetId: z.number().int(),
-    })).mutation(async ({ input }) => {
-      if (!isRekognitionEnabled()) {
-        throw appTrpcError("BAD_REQUEST", APP_ERROR.VALIDATION_ERROR, "AWS Rekognition is not configured");
-      }
-      const asset = await getMediaArchiveAssetById(input.assetId);
-      if (!asset) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Asset not found");
-
-      const loaded = await loadArchiveAssetFile(asset);
-      if (!loaded.ok) {
-        throw appTrpcError("BAD_REQUEST", APP_ERROR.VALIDATION_ERROR, `Media file not available: ${loaded.reason}`);
-      }
-
-      try {
-        const mediaType = asset.mediaType === "image" ? "image" : "video";
-        const result = await recognizeCelebritiesInFile(loaded.result.localPath, mediaType, asset.durationSec);
-
-        if (result.persons.length > 0) {
-          const newNames = result.persons.map((p) => p.name);
-          const existingTags: string[] = Array.isArray(asset.tags) ? (asset.tags as string[]).filter(Boolean) : [];
-          const merged = [...new Set([...existingTags, ...newNames])];
-          await updateMediaArchiveAsset(asset.id, { tags: merged });
-        }
-
-        return { assetId: asset.id, persons: result.persons, framesAnalyzed: result.framesAnalyzed };
-      } finally {
-        loaded.result.cleanup?.();
-      }
-    }),
-
     /** Remove visually duplicate clips (keeps oldest per duplicate group). */
     dedupeDuplicateAssets: adminProcedure.input(z.object({
       archiveId: z.number().int(),
@@ -1917,7 +1823,7 @@ export const appRouter = router({
     deleteAssets: adminProcedure.input(z.object({
       ids: z.array(z.number().int()).min(1),
     })).mutation(async ({ input }) => {
-      const uniqueIds = [...new Set(input.ids)];
+      const uniqueIds = Array.from(new Set(input.ids));
       for (const id of uniqueIds) {
         const asset = await getMediaArchiveAssetById(id);
         if (!asset) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, `Asset ${id} not found`);
@@ -2175,7 +2081,7 @@ export const appRouter = router({
           // Merge detected names into existing tags (deduplicated, lowercase)
           const existingTags: string[] = Array.isArray(asset.tags) ? asset.tags : [];
           const personNames = result.persons.map((p) => p.name.toLowerCase());
-          const merged = [...new Set([...personNames, ...existingTags])].slice(0, 20);
+          const merged = Array.from(new Set([...personNames, ...existingTags])).slice(0, 20);
           await updateMediaArchiveAsset(asset.id, { tags: merged });
           console.log(`[Rekognition] asset ${asset.id}: identified ${result.persons.map((p) => `${p.name} (${p.confidence}%)`).join(", ")}`);
         }
@@ -2240,7 +2146,7 @@ export const appRouter = router({
             if (result.persons.length > 0) {
               const existingTags: string[] = Array.isArray(asset.tags) ? asset.tags : [];
               const personNames = result.persons.map((p) => p.name.toLowerCase());
-              const merged = [...new Set([...personNames, ...existingTags])].slice(0, 20);
+              const merged = Array.from(new Set([...personNames, ...existingTags])).slice(0, 20);
               await updateMediaArchiveAsset(asset.id, { tags: merged });
               identified++;
               found.push({ assetId: asset.id, persons: result.persons.map((p) => p.name) });

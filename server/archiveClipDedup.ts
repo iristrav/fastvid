@@ -87,21 +87,9 @@ async function extractGray8x8FromFile(
   }
 }
 
-function seekPointsForDuration(durationSec?: number | null): number[] {
-  if (durationSec != null && durationSec > 0.8) {
-    if (durationSec <= 1.5) return [durationSec * 0.35, durationSec * 0.65];
-    return [durationSec * 0.25, durationSec * 0.5, durationSec * 0.75];
-  }
-  return [0.35];
-}
-
-function seeksForFingerprint(durationSec?: number | null, fast = false): number[] {
-  if (fast) {
-    // Sample start + middle so two clips sharing an opening frame are caught.
-    if (durationSec != null && durationSec > 0.8) return [Math.min(0.5, durationSec * 0.08), durationSec * 0.45];
-    return [0.1, 0.35];
-  }
-  return seekPointsForDuration(durationSec);
+function seeksForFingerprint(_durationSec?: number | null, _fast = false): number[] {
+  // Vergelijk het eerste frame — dit is hetzelfde beeld als de thumbnail in het grid.
+  return [0];
 }
 
 function dedupeFingerprintConcurrency(): number {

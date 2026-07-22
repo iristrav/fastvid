@@ -286,10 +286,12 @@ const resolveApiUrl = (provider: LlmProvider) => {
     : "https://forge.manus.im/v1/chat/completions";
 };
 
+const GROQ_VISION_FALLBACK_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct";
+
 function resolveModel(provider: LlmProvider, hasVision: boolean, maxTokens?: number): string {
   if (provider === "groq") {
     if (hasVision) {
-      return process.env.GROQ_VISION_MODEL?.trim() || "meta-llama/llama-4-maverick-17b-128e-instruct";
+      return process.env.GROQ_VISION_MODEL?.trim() || GROQ_VISION_FALLBACK_MODEL;
     }
     const fastModel = process.env.GROQ_FAST_MODEL?.trim() || "llama-3.1-8b-instant";
     const heavyModel = process.env.GROQ_MODEL?.trim() || "llama-3.3-70b-versatile";
@@ -683,6 +685,13 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
       lastError = new Error(
         `LLM invoke failed (${provider}, model=${payload.model}): ${response.status} ${response.statusText} – ${errorText}`
       );
+
+      // Groq 404: configured vision model no longer available — retry once with fallback model.
+      if (provider === "groq" && response.status === 404 && hasVision && payload.model !== GROQ_VISION_FALLBACK_MODEL) {
+        console.warn(`[LLM] Groq vision model "${payload.model}" returned 404 — retrying with fallback ${GROQ_VISION_FALLBACK_MODEL}`);
+        payload.model = GROQ_VISION_FALLBACK_MODEL;
+        continue;
+      }
 
       if (provider === "groq" && isRateLimitError(response.status)) {
         markGroqCooldown(errorText);
