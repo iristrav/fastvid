@@ -1744,7 +1744,8 @@ export const appRouter = router({
       const asset = await getMediaArchiveAssetById(input.assetId);
       if (!asset) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Asset not found");
       if (asset.mediaType !== "video") throw appTrpcError("BAD_REQUEST", APP_ERROR.VALIDATION_ERROR, "Asset is not a video");
-      return trimArchiveAssetToFirstScene(asset, input.cutTimeSec);
+      const { newDurationSec } = await trimArchiveAssetToFirstScene(asset, input.cutTimeSec);
+      return { trimmed: true as const, newDurationSec };
     }),
 
     /** Run AWS Rekognition celebrity recognition on a single archive clip. */
