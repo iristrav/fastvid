@@ -3286,6 +3286,9 @@ function isElevenLabsQuotaOrAuthError(message: string): boolean {
   return /quota_exceeded|quota exceeded|insufficient_quota|exceeds your quota/i.test(message);
 }
 
+// Once ElevenLabs hits quota/auth in this process, skip it for all subsequent calls.
+let elevenLabsQuotaExhausted = false;
+
 async function synthesizeFishAudioVoice(
   text: string,
   outputPath: string,
@@ -3371,6 +3374,10 @@ async function synthesizeElevenLabsVoice(
       "ElevenLabs API key is not configured. Add ELEVENLABS_API_KEY in Railway to use your selected voice."
     );
   }
+  if (elevenLabsQuotaExhausted && fishAudioFallbackEnabled()) {
+    console.warn(`[Pipeline] ElevenLabs ${label}: quota exhausted this session — Fish Audio direct`);
+    return synthesizeFishAudioVoice(text, outputPath, timeoutMs, label);
+  }
   const MAX_ATTEMPTS = 3;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
@@ -3398,10 +3405,9 @@ async function synthesizeElevenLabsVoice(
       if (!response.ok) {
         const errText = await response.text();
         if (fishAudioFallbackEnabled() && (response.status === 401 || isElevenLabsQuotaOrAuthError(errText))) {
-          console.warn(
-            `[Pipeline] ElevenLabs ${label}: quota/auth error — Fish Audio fallback`
-          );
-          return synthesizeFishAudioVoice(text, outputPath, timeoutMs, `fallback (${label})`);
+          elevenLabsQuotaExhausted = true;
+          console.warn(`[Pipeline] ElevenLabs ${label}: quota/auth error — switching to Fish Audio for remainder of session`);
+          return synthesizeFishAudioVoice(text, outputPath, timeoutMs, label);
         }
         throw pipelineError(
           PIPELINE_ERROR.VOICEOVER,
@@ -3424,8 +3430,9 @@ async function synthesizeElevenLabsVoice(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (fishAudioFallbackEnabled() && isElevenLabsQuotaOrAuthError(msg)) {
-        console.warn(`[Pipeline] ElevenLabs ${label}: quota error — Fish Audio fallback`);
-        return synthesizeFishAudioVoice(text, outputPath, timeoutMs, `fallback (${label})`);
+        elevenLabsQuotaExhausted = true;
+        console.warn(`[Pipeline] ElevenLabs ${label}: quota error — switching to Fish Audio for remainder of session`);
+        return synthesizeFishAudioVoice(text, outputPath, timeoutMs, label);
       }
       if (attempt === MAX_ATTEMPTS) throw err;
       await new Promise((r) => setTimeout(r, 500));
