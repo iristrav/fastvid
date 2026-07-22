@@ -877,6 +877,18 @@ export function ArchiveClipsGrid({
 
   const autoTitleAssets = trpc.mediaArchive.autoTitleAssets.useMutation();
   const auditScenes = trpc.mediaArchive.auditScenes.useMutation();
+  const deleteShortAssets = trpc.mediaArchive.deleteShortAssets.useMutation({
+    onSuccess: (data) => {
+      utils.mediaArchive.listAssets.invalidate();
+      utils.mediaArchive.listArchives.invalidate();
+      if (data.deleted === 0) {
+        toast.info("Geen korte clips gevonden");
+      } else {
+        toast.success(`${data.deleted} korte clip(s) verwijderd`);
+      }
+    },
+    onError: (e) => toast.error("Verwijderen mislukt", { description: toastErrorMessage(e) }),
+  });
   const repairDurations = trpc.mediaArchive.repairDurations.useMutation({
     onSuccess: (data) => {
       utils.mediaArchive.listAssets.invalidate();
@@ -1561,6 +1573,25 @@ export function ArchiveClipsGrid({
               : selectedCount > 0
                 ? `AI titles + 4 tags (${selectedCount})`
                 : "AI titles + 4 tags"}
+          </button>
+        )}
+        {assets.length > 0 && (
+          <button
+            type="button"
+            onClick={() => {
+              if (!confirm("Verwijder alle clips korter dan 1,5s én clips zonder bekende duur?")) return;
+              deleteShortAssets.mutate({ archiveId });
+            }}
+            disabled={deleteShortAssets.isPending || autoTitleRunning}
+            title="Verwijdert alle clips onder 1,5 sec en clips zonder bekende duur — geen download nodig"
+            className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg bg-red-500/15 text-red-300 border border-red-500/25 hover:bg-red-500/25 disabled:opacity-50"
+          >
+            {deleteShortAssets.isPending ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Trash2 className="w-3.5 h-3.5" />
+            )}
+            {deleteShortAssets.isPending ? "Verwijderen…" : "Verwijder korte clips (<1,5s)"}
           </button>
         )}
         {assets.length > 0 && (

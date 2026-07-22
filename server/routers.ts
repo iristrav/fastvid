@@ -1697,6 +1697,24 @@ export const appRouter = router({
         });
       }),
 
+    /** Delete all assets with durationSec < threshold or unknown duration — no download needed. */
+    deleteShortAssets: adminProcedure
+      .input(z.object({
+        archiveId: z.number().int(),
+        maxDurationSec: z.number().default(1.5),
+      }))
+      .mutation(async ({ input }) => {
+        const archive = await getMediaArchiveById(input.archiveId);
+        if (!archive) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Archive not found");
+        const all = await getMediaArchiveAssets(input.archiveId);
+        const toDelete = all.filter(
+          (a) => a.durationSec == null || a.durationSec < input.maxDurationSec
+        );
+        if (toDelete.length === 0) return { deleted: 0 };
+        await deleteMediaArchiveAssets(toDelete.map((a) => a.id));
+        return { deleted: toDelete.length };
+      }),
+
     /** Fix durationSec 0 / missing for entire archive — images → 3s, videos ffprobe. */
     repairDurations: adminProcedure
       .input(
