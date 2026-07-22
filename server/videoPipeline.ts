@@ -2222,8 +2222,8 @@ async function runBeatClipFetch(
 ): Promise<string | null> {
   const { beatClipTimeoutMs } = dedup.perf;
   try {
-    return await withTimeout(
-      fetchBeatClip(
+    return await withSceneFetchTimeout(
+      () => fetchBeatClip(
         beat, scene, workDir, sceneIndex, clipFetchDur, dedup, spaceTopic, personName, videoTitle
       ),
       beatClipTimeoutMs,
@@ -2234,7 +2234,8 @@ async function runBeatClipFetch(
       `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: stock timed out after ${Math.round(beatClipTimeoutMs / 1000)}s —`,
       (err as Error).message
     );
-    // Background fetchBeatClip may still be running; release lock so next beat cannot stall 8+ min.
+    // fetchBeatClip's own exec/fetch calls are now hard-killed by withSceneFetchTimeout above,
+    // so it's safe to release the lock immediately instead of leaving it running in the background.
     return null;
   }
 }
