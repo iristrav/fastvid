@@ -1770,7 +1770,6 @@ export const appRouter = router({
       if (!asset) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Asset not found");
       if (asset.mediaType !== "video") throw appTrpcError("BAD_REQUEST", APP_ERROR.SERVICE_ERROR, "Only video clips can be trimmed");
 
-      // Determine cut time (accept both field names for backwards compatibility)
       let cutSec = input.cutAtSec ?? input.cutTimeSec;
       if (!cutSec) {
         const audit = await auditArchiveAssetScene(asset).catch(() => null);
