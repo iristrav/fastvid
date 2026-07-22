@@ -2101,12 +2101,12 @@ function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProfile {
   const videoLength = normalizeVideoLength(videoLengthRaw);
   // Confirmed Railway plan: 24 vCPU / 24GB RAM — plenty of headroom for scene-level
   // concurrency on longer videos too (was capped at 2, tuned for an old 512MB assumption).
-  const railwayParallel = isShortVideoLength(videoLength) ? 5 : 4;
+  const railwayParallel = isShortVideoLength(videoLength) ? 7 : 6;
   const maxEntityYoutube = maxEntityYoutubeFetchesPerVideo(minimizeStockFootageEnabled());
   let profile: PipelinePerfProfile;
   if (isShortVideoLength(videoLength)) {
     profile = applyAiFallbackToProfile({
-      targetWallClockMin: 14,
+      targetWallClockMin: 10,
       maxBeatsPerScene: curatedArchiveOnlyVisuals() ? (IS_RAILWAY ? 16 : 18) : IS_RAILWAY ? 4 : 6,
       maxTopicQueries: IS_RAILWAY ? 1 : 3,
       skipFairUseTransform: true,
@@ -2115,11 +2115,11 @@ function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProfile {
       enableNasa: false,
       enableMuskHeroFetch: false,
       maxEntityYoutubePerVideo: maxEntityYoutube,
-      sceneParallelism: IS_RAILWAY ? 4 : 3,
-      pexelsDownloadRetries: 2,
+      sceneParallelism: IS_RAILWAY ? 7 : 3,
+      pexelsDownloadRetries: 1,
       maxStockQueriesPerBeat: 2,
-      beatClipTimeoutMs: IS_RAILWAY ? 30_000 : 30_000,
-      sceneVisualTimeoutMs: IS_RAILWAY ? 8 * 60_000 : 6 * 60_000,
+      beatClipTimeoutMs: IS_RAILWAY ? 22_000 : 30_000,
+      sceneVisualTimeoutMs: IS_RAILWAY ? 6 * 60_000 : 6 * 60_000,
       fastStockMode: IS_RAILWAY,
       scriptOnlyVisuals: false,
     }, videoLength);
@@ -2183,7 +2183,7 @@ function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProfile {
       // Archive embedding search is fast — use higher parallelism for curated-only.
       fastStockMode: true,
       // More scene-level parallelism: archive lookup is embedding-based (CPU, not network).
-      sceneParallelism: IS_RAILWAY ? 5 : 3,
+      sceneParallelism: IS_RAILWAY ? 8 : 4,
     };
   }
   return profile;
