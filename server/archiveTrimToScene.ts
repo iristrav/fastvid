@@ -1,63 +1,53 @@
-/**
- * Trim an archive video clip to its first scene cut point.
- */
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { execFile } from "child_process";
+import { exec as execCb } from "child_process";
 import { promisify } from "util";
 import type { MediaArchiveAsset } from "../drizzle/schema";
 import { loadArchiveAssetFile } from "./archiveAssetLoad";
-import { updateMediaArchiveAsset } from "./db";
 import { storagePut } from "./storage";
+import { updateMediaArchiveAsset } from "./db";
+import { ffmpegBin } from "./localClipVision";
+import { probeVideoDurationSec } from "./archiveVideoSplitter";
 
-const execFileAsync = promisify(execFile);
-
-async function ffmpegTrim(
-  inputPath: string,
-  cutSec: number,
-  outputPath: string,
-): Promise<void> {
-  // Try with explicit -ss 0 first for accuracy, fall back without it
-  for (const args of [
-    ["-y", "-ss", "0", "-i", inputPath, "-t", String(cutSec), "-c:v", "libx264", "-c:a", "aac", "-movflags", "+faststart", outputPath],
-    ["-y", "-i", inputPath, "-t", String(cutSec), "-c:v", "libx264", "-c:a", "aac", "-movflags", "+faststart", outputPath],
-  ]) {
-    try {
-      await execFileAsync("ffmpeg", args, { timeout: 120_000 });
-      if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1024) return;
-    } catch {
-      // try next
-    }
-  }
-  throw new Error("ffmpeg trim failed");
-}
+const exec = promisify(execCb);
 
 export async function trimArchiveAssetToFirstScene(
   asset: MediaArchiveAsset,
-  cutTimeSec: number,
+  cutSec: number
 ): Promise<{ assetId: number; newDurationSec: number }> {
   const loaded = await loadArchiveAssetFile(asset);
-  if (!loaded.ok) throw new Error(`Could not load asset file: ${loaded.reason}`);
+  if (!loaded.ok) throw new Error(`Cannot load asset ${asset.id}: ${loaded.reason}`);
 
-  const { localPath, cleanup } = loaded.result;
-  const ext = path.extname(localPath) || ".mp4";
-  const tmpOut = path.join(os.tmpdir(), `archive-trim-${asset.id}-${Date.now()}${ext}`);
+  const { localPath, mimeType, cleanup } = loaded.result;
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "trim-"));
+  const ext = localPath.match(/\.[^.]+$/)?.[0] ?? ".mp4";
+  const outPath = path.join(workDir, `trimmed${ext}`);
 
   try {
-    await ffmpegTrim(localPath, cutTimeSec, tmpOut);
-    const data = fs.readFileSync(tmpOut);
-    const storageKey = `archive/trimmed/${asset.id}_scene1${ext}`;
-    const { key, url } = await storagePut(storageKey, data, asset.mimeType ?? "video/mp4");
-    const newDurationSec = Math.round(cutTimeSec * 10) / 10;
+    const bin = ffmpegBin();
+    const cmd = `"${bin}" -y -i "${localPath}" -t ${cutSec} -c:v libx264 -preset fast -crf 22 -movflags +faststart -c:a aac "${outPath}"`;
+    await exec(cmd);
+
+    if (!fs.existsSync(outPath) || fs.statSync(outPath).size < 1000) {
+      // fallback without -ss 0
+      const cmd2 = `"${bin}" -y -ss 0 -i "${localPath}" -t ${cutSec} -c copy "${outPath}"`;
+      await exec(cmd2);
+    }
+
+    const newDuration = await probeVideoDurationSec(outPath);
+    const buffer = fs.readFileSync(outPath);
+    const storageKey = asset.storageKey ?? asset.storageUrl.replace(/^\/manus-storage\//, "");
+    const { url } = await storagePut(storageKey, buffer, mimeType ?? "video/mp4");
+
     await updateMediaArchiveAsset(asset.id, {
-      storageKey: key,
       storageUrl: url,
-      durationSec: newDurationSec,
+      durationSec: newDuration > 0 ? newDuration : cutSec,
     });
-    return { assetId: asset.id, newDurationSec };
+
+    return { assetId: asset.id, newDurationSec: newDuration > 0 ? newDuration : cutSec };
   } finally {
     cleanup?.();
-    try { fs.unlinkSync(tmpOut); } catch { /* ignore */ }
+    fs.rmSync(workDir, { recursive: true, force: true });
   }
 }

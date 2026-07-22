@@ -78,21 +78,15 @@ function isMuskTeslaPromptTopic(prompt: string, title: string): boolean {
   return /musk|tesla|spacex|starlink|gigafactory|cybertruck|falcon|starship/.test(text);
 }
 
-import { storagePut, storageGetSignedUrl } from "./storage";
-import { recognizeCelebritiesInFile, isRekognitionEnabled } from "./rekognitionCelebrity";
+import { storagePut } from "./storage";
 import { FASTVID_PRO_PLAN } from "./products";
 import { processArchiveAssetUpload, ArchiveUploadError } from "./archiveUpload";
 import { archiveAiTaggingEnabled } from "./archiveAssetTagging";
 import { autoTitleArchiveAssets, probeArchiveAssetAiTag } from "./archiveBulkVisionTagging";
 import { bulkRetagArchiveGeo } from "./archiveBulkGeoRetag";
-import { LOCAL_UPLOADS_DIR } from "./storageLocal";
-import { enrichArchiveAssetFields } from "./archiveAssetTagging";
-import * as fs from "fs";
-import * as path from "path";
 import { auditArchiveAssetScenes, auditArchiveAssetScene } from "./archiveSceneAudit";
-import { probeVideoDurationSec } from "./archiveVideoSplitter";
 import { trimArchiveAssetToFirstScene } from "./archiveTrimToScene";
-import { archiveAssetMediaStatus, loadArchiveAssetFile } from "./archiveAssetLoad";
+import { archiveAssetMediaStatus } from "./archiveAssetLoad";
 import { dedupeArchiveVisualDuplicates } from "./archiveClipDedup";
 import { assessArchiveCoverageForPrompt } from "./archiveCoverage";
 import {
@@ -1652,7 +1646,6 @@ export const appRouter = router({
     autoTitleAssets: adminProcedure.input(z.object({
       archiveId: z.number().int(),
       ids: z.array(z.number().int()).min(1).max(50),
-      force: z.boolean().optional(),
     })).mutation(async ({ input }) => {
       if (!archiveAiTaggingEnabled()) {
         throw appTrpcError(
@@ -1667,7 +1660,6 @@ export const appRouter = router({
         return await autoTitleArchiveAssets({
           archiveId: input.archiveId,
           ids: input.ids,
-          force: input.force,
         });
       } catch (err) {
         throw appTrpcError(
@@ -1695,24 +1687,6 @@ export const appRouter = router({
           ids: input.ids,
           search: input.search,
         });
-      }),
-
-    /** Delete all assets with durationSec < threshold or unknown duration — no download needed. */
-    deleteShortAssets: adminProcedure
-      .input(z.object({
-        archiveId: z.number().int(),
-        maxDurationSec: z.number().default(1.5),
-      }))
-      .mutation(async ({ input }) => {
-        const archive = await getMediaArchiveById(input.archiveId);
-        if (!archive) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Archive not found");
-        const all = await getMediaArchiveAssets(input.archiveId);
-        const toDelete = all.filter(
-          (a) => a.durationSec == null || a.durationSec < input.maxDurationSec
-        );
-        if (toDelete.length === 0) return { deleted: 0 };
-        await deleteMediaArchiveAssets(toDelete.map((a) => a.id));
-        return { deleted: toDelete.length };
       }),
 
     /** Fix durationSec 0 / missing for entire archive — images → 3s, videos ffprobe. */
@@ -1757,44 +1731,10 @@ export const appRouter = router({
       }
     }),
 
-    /**
-     * Trim a multi-scene clip to its first scene only (up to the first detected cut).
-     * Re-uploads the trimmed version to storage and updates the DB record.
-     */
-    trimToSingleScene: adminProcedure.input(z.object({
-      assetId: z.number().int(),
-      cutAtSec: z.number().optional(),
-      cutTimeSec: z.number().optional(),
-    })).mutation(async ({ input }) => {
-      const asset = await getMediaArchiveAssetById(input.assetId);
-      if (!asset) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Asset not found");
-      if (asset.mediaType !== "video") throw appTrpcError("BAD_REQUEST", APP_ERROR.SERVICE_ERROR, "Only video clips can be trimmed");
-
-      let cutSec = input.cutAtSec ?? input.cutTimeSec;
-      if (!cutSec) {
-        const audit = await auditArchiveAssetScene(asset).catch(() => null);
-        const firstCut = audit?.cutTimesSec?.[0];
-        if (!firstCut || firstCut <= 0.5) {
-          return { trimmed: false, reason: "No reliable scene cut detected" };
-        }
-        cutSec = firstCut;
-      }
-
-      if (cutSec <= 0.5) return { trimmed: false, reason: "Cut too close to start" };
-
-      const { assetId: _id, newDurationSec } = await trimArchiveAssetToFirstScene(
-        asset as import("../drizzle/schema").MediaArchiveAsset,
-        cutSec,
-      );
-      return { trimmed: true, newDurationSec };
-    }),
-
     /** Remove visually duplicate clips (keeps oldest per duplicate group). */
     dedupeDuplicateAssets: adminProcedure.input(z.object({
       archiveId: z.number().int(),
       ids: z.array(z.number().int()).optional(),
-      limit: z.number().int().min(1).max(1000).optional(),
-      offset: z.number().int().min(0).optional(),
     })).mutation(async ({ input }) => {
       const archive = await getMediaArchiveById(input.archiveId);
       if (!archive) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Archive not found");
@@ -1804,31 +1744,60 @@ export const appRouter = router({
         const idSet = new Set(input.ids);
         assets = assets.filter((a) => idSet.has(a.id));
       }
-
-      const total = assets.length;
-      const pageSize = input.limit ?? total;
-      const pageOffset = input.offset ?? 0;
-      const page = assets.slice(pageOffset, pageOffset + pageSize);
-      const hasMore = pageOffset + pageSize < total;
-      const nextOffset = hasMore ? pageOffset + pageSize : undefined;
-
-      if (page.length < 2) {
-        return { scanned: page.length, deleted: 0, kept: page.length, total, hasMore, nextOffset };
+      if (assets.length < 2) {
+        return { scanned: assets.length, deleted: 0, kept: assets.length };
       }
 
-      const { deleteIds, scanned } = await dedupeArchiveVisualDuplicates(page);
+      const { deleteIds, scanned } = await dedupeArchiveVisualDuplicates(assets);
       if (deleteIds.length > 0) {
         await deleteMediaArchiveAssets(deleteIds);
       }
       return {
         scanned,
         deleted: deleteIds.length,
-        kept: page.length - deleteIds.length,
-        total,
-        hasMore,
-        nextOffset,
+        kept: assets.length - deleteIds.length,
       };
     }),
+
+    deleteShortAssets: adminProcedure
+      .input(z.object({
+        archiveId: z.number().int(),
+        maxDurationSec: z.number().default(1.5),
+      }))
+      .mutation(async ({ input }) => {
+        const all = await getMediaArchiveAssets(input.archiveId);
+        const toDelete = all.filter(
+          (a) => a.durationSec == null || a.durationSec < input.maxDurationSec
+        );
+        if (toDelete.length === 0) return { deleted: 0 };
+        await deleteMediaArchiveAssets(toDelete.map((a) => a.id));
+        return { deleted: toDelete.length };
+      }),
+
+    trimToSingleScene: adminProcedure
+      .input(z.object({
+        assetId: z.number().int(),
+        cutAtSec: z.number().optional(),
+        cutTimeSec: z.number().optional(),
+      }))
+      .mutation(async ({ input }) => {
+        const asset = await getMediaArchiveAssetById(input.assetId);
+        if (!asset) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Asset not found");
+        if (asset.mediaType !== "video") throw appTrpcError("BAD_REQUEST", APP_ERROR.NOT_FOUND, "Asset is not a video");
+        let cutSec = input.cutAtSec ?? input.cutTimeSec;
+        if (!cutSec) {
+          const audit = await auditArchiveAssetScene(asset).catch(() => null);
+          const firstCut = audit?.cutTimesSec?.[0];
+          if (!firstCut || firstCut <= 0.5) return { trimmed: false, reason: "No reliable scene cut detected" };
+          cutSec = firstCut;
+        }
+        if (cutSec <= 0.5) return { trimmed: false, reason: "Cut too close to start" };
+        const { newDurationSec } = await trimArchiveAssetToFirstScene(
+          asset as import("../drizzle/schema").MediaArchiveAsset,
+          cutSec
+        );
+        return { trimmed: true, newDurationSec };
+      }),
 
     deleteAsset: adminProcedure.input(z.object({ id: z.number().int() })).mutation(async ({ input }) => {
       const asset = await getMediaArchiveAssetById(input.id);
@@ -1840,7 +1809,7 @@ export const appRouter = router({
     deleteAssets: adminProcedure.input(z.object({
       ids: z.array(z.number().int()).min(1),
     })).mutation(async ({ input }) => {
-      const uniqueIds = Array.from(new Set(input.ids));
+      const uniqueIds = [...new Set(input.ids)];
       for (const id of uniqueIds) {
         const asset = await getMediaArchiveAssetById(id);
         if (!asset) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, `Asset ${id} not found`);
@@ -1879,314 +1848,6 @@ export const appRouter = router({
       await deleteMediaArchiveAssets(logoIds);
       console.log(`[Admin] deleteLogoClips archive=${input.archiveId}: deleted ${logoIds.length}/${assets.length}`);
       return { deleted: logoIds.length, scanned: assets.length };
-    }),
-
-    deleteZeroDurationClips: adminProcedure.input(z.object({
-      archiveId: z.number().int(),
-    })).mutation(async ({ input }) => {
-      const archive = await getMediaArchiveById(input.archiveId);
-      if (!archive) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Archive not found");
-
-      const assets = await getMediaArchiveAssets(input.archiveId);
-      // Candidates: video clips where DB says 0s or unknown — these need verification
-      const candidates = assets.filter(
-        (a) => a.mediaType === "video" && (a.durationSec == null || a.durationSec < 1)
-      );
-
-      if (candidates.length === 0) return { deleted: 0, confirmed: 0, scanned: assets.length };
-
-      // Actually probe each candidate — only delete if ffprobe confirms duration <= 0
-      const confirmedZeroIds: number[] = [];
-      const fixedIds: Array<{ id: number; realDuration: number }> = [];
-
-      await Promise.all(
-        candidates.map(async (asset) => {
-          const loaded = await loadArchiveAssetFile({
-            ...asset,
-            mimeType: asset.mimeType ?? "video/mp4",
-          }).catch(() => null);
-
-          if (!loaded?.ok) {
-            // Can't load the file — skip, do NOT delete
-            console.log(`[Admin] deleteZeroDurationClips: asset ${asset.id} — could not load file, skipping`);
-            return;
-          }
-
-          const { localPath, cleanup } = loaded.result;
-          try {
-            const realDuration = await probeVideoDurationSec(localPath).catch(() => 0);
-            if (realDuration < 1) {
-              confirmedZeroIds.push(asset.id);
-              console.log(`[Admin] deleteZeroDurationClips: asset ${asset.id} confirmed <1s (ffprobe=${realDuration})`);
-            } else {
-              // DB was wrong — fix the duration instead of deleting
-              fixedIds.push({ id: asset.id, realDuration: Math.round(realDuration) });
-              console.log(`[Admin] deleteZeroDurationClips: asset ${asset.id} has real duration ${realDuration.toFixed(1)}s — updating DB, NOT deleting`);
-              await updateMediaArchiveAsset(asset.id, { durationSec: Math.round(realDuration) });
-            }
-          } finally {
-            cleanup?.();
-          }
-        })
-      );
-
-      if (confirmedZeroIds.length > 0) {
-        await deleteMediaArchiveAssets(confirmedZeroIds);
-      }
-
-      console.log(
-        `[Admin] deleteZeroDurationClips archive=${input.archiveId}: ` +
-        `checked=${candidates.length} confirmed_zero=${confirmedZeroIds.length} fixed=${fixedIds.length}`
-      );
-      return {
-        deleted: confirmedZeroIds.length,
-        fixed: fixedIds.length,
-        confirmed: candidates.length,
-        scanned: assets.length,
-      };
-    }),
-
-    restoreFromS3: adminProcedure.input(z.object({
-      archiveId: z.number().int(),
-    })).mutation(async ({ input }) => {
-      if (!isS3StorageEnabled()) {
-        throw appTrpcError("BAD_REQUEST", APP_ERROR.SERVICE_ERROR, "S3/R2 storage is not configured");
-      }
-      const archive = await getMediaArchiveById(input.archiveId);
-      if (!archive) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Archive not found");
-
-      const existingAssets = await getMediaArchiveAssets(input.archiveId);
-      const existingKeys = new Set(existingAssets.map((a) => a.storageKey).filter(Boolean));
-      const existingUrls = new Set(existingAssets.map((a) => a.storageUrl));
-
-      const allKeys = await s3ListAllKeys();
-
-      const videoExts = new Set([".mp4", ".webm", ".mov", ".avi", ".mkv"]);
-      const imageExts = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif"]);
-      const mimeMap: Record<string, string> = {
-        ".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime",
-        ".avi": "video/x-msvideo", ".mkv": "video/x-matroska",
-        ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
-        ".webp": "image/webp", ".gif": "image/gif",
-      };
-
-      let restored = 0;
-      let skipped = 0;
-
-      for (const relKey of allKeys) {
-        if (existingKeys.has(relKey)) continue;
-        const url = objectStorageUrl(relKey);
-        if (existingUrls.has(url)) continue;
-
-        const ext = relKey.slice(relKey.lastIndexOf(".")).toLowerCase();
-        const isVideo = videoExts.has(ext);
-        const isImage = imageExts.has(ext);
-        if (!isVideo && !isImage) continue;
-
-        const mimeType = mimeMap[ext] ?? (isVideo ? "video/mp4" : "image/jpeg");
-        const mediaType = isVideo ? "video" : "image";
-        const mixKind = isVideo ? "real_video" : "photo";
-        const filename = relKey.split("/").pop() ?? relKey;
-        const title = filename.replace(/\.[^.]+$/, "").replace(/[-_]/g, " ").slice(0, 200) || null;
-
-        try {
-          await createMediaArchiveAsset({
-            archiveId: input.archiveId,
-            title,
-            mediaType: mediaType as "video" | "image",
-            mixKind: mixKind as "real_video" | "photo",
-            mimeType,
-            storageUrl: url,
-            storageKey: relKey,
-            isActive: 1,
-          });
-          restored++;
-        } catch {
-          skipped++;
-        }
-      }
-
-      console.log(`[RestoreFromS3] archive ${input.archiveId}: ${restored} restored, ${skipped} skipped`);
-      return { restored, skipped, total: allKeys.length };
-    }),
-
-    /** Alias for restoreFromS3: scan storage for files not registered in DB, re-register them. */
-    reindexOrphanedClips: adminProcedure.input(z.object({
-      archiveId: z.number().int(),
-      autoGenerateTags: z.boolean().optional(),
-      limit: z.number().int().optional(),
-    })).mutation(async ({ input }) => {
-      if (!isS3StorageEnabled()) {
-        return { inserted: 0, remaining: 0 };
-      }
-      const archive = await getMediaArchiveById(input.archiveId);
-      if (!archive) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Archive not found");
-
-      const existingAssets = await getMediaArchiveAssets(input.archiveId);
-      const existingKeys = new Set(existingAssets.map((a) => a.storageKey).filter(Boolean));
-      const existingUrls = new Set(existingAssets.map((a) => a.storageUrl));
-      const allKeys = await s3ListAllKeys();
-
-      const videoExts = new Set([".mp4", ".webm", ".mov", ".avi", ".mkv"]);
-      const imageExts = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif"]);
-      const mimeMap: Record<string, string> = {
-        ".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime",
-        ".avi": "video/x-msvideo", ".mkv": "video/x-matroska",
-        ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
-        ".webp": "image/webp", ".gif": "image/gif",
-      };
-
-      const toInsert = allKeys.filter((relKey) => {
-        if (existingKeys.has(relKey)) return false;
-        if (existingUrls.has(objectStorageUrl(relKey))) return false;
-        const ext = relKey.slice(relKey.lastIndexOf(".")).toLowerCase();
-        return videoExts.has(ext) || imageExts.has(ext);
-      });
-
-      const batch = input.limit ? toInsert.slice(0, input.limit) : toInsert;
-      let inserted = 0;
-      for (const relKey of batch) {
-        const ext = relKey.slice(relKey.lastIndexOf(".")).toLowerCase();
-        const isVideo = videoExts.has(ext);
-        const mimeType = mimeMap[ext] ?? (isVideo ? "video/mp4" : "image/jpeg");
-        const filename = relKey.split("/").pop() ?? relKey;
-        const title = filename.replace(/\.[^.]+$/, "").replace(/[-_]/g, " ").slice(0, 200) || null;
-        try {
-          await createMediaArchiveAsset({
-            archiveId: input.archiveId,
-            title,
-            mediaType: isVideo ? "video" : "image",
-            mixKind: isVideo ? "real_video" : "photo",
-            mimeType,
-            storageUrl: objectStorageUrl(relKey),
-            storageKey: relKey,
-            isActive: 1,
-          });
-          inserted++;
-        } catch { /* skip duplicates */ }
-      }
-      const remaining = toInsert.length - batch.length;
-      console.log(`[ReindexOrphans] archive ${input.archiveId}: inserted=${inserted}, remaining=${remaining}`);
-      return { inserted, remaining };
-    }),
-
-    /** Recognize celebrities in a single archive asset via AWS Rekognition. */
-    recognizeCelebrities: adminProcedure.input(z.object({
-      assetId: z.number().int(),
-    })).mutation(async ({ input }) => {
-      if (!isRekognitionEnabled()) {
-        throw appTrpcError("BAD_REQUEST", APP_ERROR.SERVICE_ERROR, "AWS Rekognition is not configured");
-      }
-      const asset = await getMediaArchiveAssetById(input.assetId);
-      if (!asset) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Asset not found");
-
-      const loaded = await loadArchiveAssetFile({
-        ...asset,
-        mimeType: asset.mimeType ?? "image/jpeg",
-      });
-      if (!loaded.ok) throw appTrpcError("INTERNAL_SERVER_ERROR", APP_ERROR.SERVICE_ERROR, "Could not load clip file");
-
-      const { localPath, cleanup } = loaded.result;
-      try {
-        const result = await recognizeCelebritiesInFile(
-          localPath,
-          asset.mediaType as "video" | "image",
-          asset.durationSec,
-        );
-
-        if (result.persons.length > 0) {
-          // Merge detected names into existing tags (deduplicated, lowercase)
-          const existingTags: string[] = Array.isArray(asset.tags) ? asset.tags : [];
-          const personNames = result.persons.map((p) => p.name.toLowerCase());
-          const merged = Array.from(new Set([...personNames, ...existingTags])).slice(0, 20);
-          await updateMediaArchiveAsset(asset.id, { tags: merged });
-          console.log(`[Rekognition] asset ${asset.id}: identified ${result.persons.map((p) => `${p.name} (${p.confidence}%)`).join(", ")}`);
-        }
-
-        return {
-          assetId: asset.id,
-          persons: result.persons,
-          framesAnalyzed: result.framesAnalyzed,
-          tagsUpdated: result.persons.length > 0,
-        };
-      } finally {
-        cleanup?.();
-      }
-    }),
-
-    /** Bulk-recognize celebrities across all video/image assets in an archive. */
-    recognizeCelebritiesBulk: adminProcedure.input(z.object({
-      archiveId: z.number().int(),
-      limit: z.number().int().min(1).max(100).default(20),
-      offset: z.number().int().min(0).default(0),
-      onlyUntagged: z.boolean().default(true),
-      ids: z.array(z.number().int()).optional(),
-    })).mutation(async ({ input }) => {
-      if (!isRekognitionEnabled()) {
-        throw appTrpcError("BAD_REQUEST", APP_ERROR.SERVICE_ERROR, "AWS Rekognition is not configured");
-      }
-      const archive = await getMediaArchiveById(input.archiveId);
-      if (!archive) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Archive not found");
-
-      let assets = await getMediaArchiveAssets(input.archiveId);
-      if (input.ids && input.ids.length > 0) {
-        const idSet = new Set(input.ids);
-        assets = assets.filter((a) => idSet.has(a.id));
-      }
-      if (input.onlyUntagged) {
-        assets = assets.filter((a) => !Array.isArray(a.tags) || (a.tags as string[]).length === 0);
-      }
-      const total = assets.length;
-      const page = assets.slice(input.offset, input.offset + input.limit);
-      const hasMore = input.offset + input.limit < total;
-
-      let identified = 0;
-      let skipped = 0;
-      const found: Array<{ assetId: number; persons: string[] }> = [];
-
-      for (const asset of page) {
-        try {
-          const loaded = await loadArchiveAssetFile({
-            ...asset,
-            mimeType: asset.mimeType ?? "image/jpeg",
-          });
-          if (!loaded.ok) { skipped++; continue; }
-
-          const { localPath, cleanup } = loaded.result;
-          try {
-            const result = await recognizeCelebritiesInFile(
-              localPath,
-              asset.mediaType as "video" | "image",
-              asset.durationSec,
-            );
-
-            if (result.persons.length > 0) {
-              const existingTags: string[] = Array.isArray(asset.tags) ? asset.tags : [];
-              const personNames = result.persons.map((p) => p.name.toLowerCase());
-              const merged = Array.from(new Set([...personNames, ...existingTags])).slice(0, 20);
-              await updateMediaArchiveAsset(asset.id, { tags: merged });
-              identified++;
-              found.push({ assetId: asset.id, persons: result.persons.map((p) => p.name) });
-            }
-          } finally {
-            cleanup?.();
-          }
-        } catch (err) {
-          console.warn(`[Rekognition] asset ${asset.id} failed:`, (err as Error).message?.slice(0, 100));
-          skipped++;
-        }
-      }
-
-      console.log(`[Rekognition bulk] archive ${input.archiveId}: ${identified} identified, ${skipped} skipped, offset=${input.offset}`);
-      return {
-        scanned: page.length,
-        identified,
-        skipped,
-        total,
-        hasMore,
-        nextOffset: hasMore ? input.offset + input.limit : undefined,
-        found,
-      };
     }),
   }),
 

@@ -8,7 +8,7 @@ import { spawn } from "child_process";
 import { exec } from "child_process";
 import { promisify } from "util";
 import { withForkRetry } from "./_core/execForkRetry";
-import { invokeLLM, isAnthropicCreditExhausted } from "./_core/llm";
+import { invokeLLM } from "./_core/llm";
 import { ENV, groqKeyFromEnv } from "./_core/env";
 import { normalizeMediaTags } from "./db";
 import {
@@ -126,64 +126,6 @@ const TAG_JSON_SCHEMA_MINIMAL = {
     },
   },
 } as const;
-
-// ── Audio transcription for richer tagging ────────────────────────────────────
-
-function whisperKeyAndUrl(): { key: string; url: string; model: string } | null {
-  const groqKey = groqKeyFromEnv();
-  if (groqKey) {
-    return {
-      key: groqKey,
-      url: "https://api.groq.com/openai/v1/audio/transcriptions",
-      model: "whisper-large-v3",
-    };
-  }
-  const openaiKey = process.env.OPENAI_API_KEY?.trim() || process.env.LLM_API_KEY?.trim();
-  if (openaiKey) {
-    return { key: openaiKey, url: "https://api.openai.com/v1/audio/transcriptions", model: "whisper-1" };
-  }
-  return null;
-}
-
-/**
- * Extract up to 60s of audio from a video clip and transcribe it with Whisper.
- * Returns the transcript text or null if unavailable/failed (non-blocking).
- */
-async function transcribeClipAudio(videoPath: string): Promise<string | null> {
-  const whisper = whisperKeyAndUrl();
-  if (!whisper) return null;
-
-  const tmpAudio = path.join(os.tmpdir(), `fv_arc_audio_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.mp3`);
-  try {
-    const ffmpegBin = process.env.FFMPEG_BIN ?? "ffmpeg";
-    // Extract first 60s as mono MP3 at 16kHz — fast, small, enough for Whisper
-    await execAsync(
-      `${ffmpegBin} -y -i "${videoPath}" -t 60 -vn -ac 1 -ar 16000 -b:a 32k "${tmpAudio}" 2>/dev/null`,
-      { timeout: 30_000 }
-    );
-    if (!fs.existsSync(tmpAudio) || fs.statSync(tmpAudio).size < 1000) return null;
-
-    const buf = fs.readFileSync(tmpAudio);
-    const formData = new FormData();
-    formData.append("file", new Blob([buf], { type: "audio/mpeg" }), "clip.mp3");
-    formData.append("model", whisper.model);
-    formData.append("response_format", "text");
-
-    const resp = await fetch(whisper.url, {
-      method: "POST",
-      headers: { authorization: `Bearer ${whisper.key}` },
-      body: formData,
-      signal: AbortSignal.timeout(45_000),
-    });
-    if (!resp.ok) return null;
-    const text = (await resp.text()).trim();
-    return text.length > 5 ? text.slice(0, 1200) : null;
-  } catch {
-    return null;
-  } finally {
-    try { fs.unlinkSync(tmpAudio); } catch { /* ignore */ }
-  }
-}
 
 /** Max searchable tags stored per asset (pipeline + semantic matching). Geo slugs prioritized. */
 export const ARCHIVE_MAX_TAGS = 4;
@@ -516,52 +458,46 @@ async function extractVideoPreviewJpeg(
     const dur = await probeVideoDurationSec(videoPath);
     seek = dur > 0.5 ? dur * 0.35 : 0.25;
   }
-
-  const runExtract = (extraArgs: string[], label: string) =>
-    withForkRetry(() => new Promise<void>((resolve, reject) => {
-      const args = ["-y", ...extraArgs, "-i", videoPath, "-frames:v", "1", "-q:v", "3", "-f", "image2", outPath];
+  try {
+    await withForkRetry(() => new Promise<void>((resolve, reject) => {
+      const args = [
+        "-y",
+        "-ss",
+        seek.toFixed(3),
+        "-i",
+        videoPath,
+        "-frames:v",
+        "1",
+        "-q:v",
+        "3",
+        "-f",
+        "image2",
+        outPath,
+      ];
       const child = spawn(ffmpegBin(), args, { stdio: ["ignore", "ignore", "pipe"] });
       let stderr = "";
-      child.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });
+      child.stderr.on("data", (d: Buffer) => {
+        stderr += d.toString();
+      });
       const timer = setTimeout(() => {
-        try { child.kill("SIGKILL"); } catch { /* ignore */ }
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          /* ignore */
+        }
         reject(new Error("frame extract timeout"));
       }, 25_000);
       child.on("close", (code) => {
         clearTimeout(timer);
         if (code === 0 && fs.existsSync(outPath) && fs.statSync(outPath).size > 800) resolve();
-        else reject(new Error(`[${label}] ${stderr.slice(-200) || `ffmpeg exit ${code}`}`));
+        else reject(new Error(stderr.slice(-120) || `ffmpeg exit ${code}`));
       });
       child.on("error", reject);
     }));
-
-  // Attempt 1: fast input-side seek (most clips)
-  try {
-    await runExtract(["-ss", seek.toFixed(3)], "seek");
-    return true;
-  } catch (err) {
-    console.warn(`[ArchiveAI] frame extract (seek) failed (${path.basename(videoPath)}):`, (err as Error).message?.slice(0, 160));
-  }
-
-  // Attempt 2: no seek — grab very first decodable frame (handles short/corrupt-header clips)
-  try {
-    if (fs.existsSync(outPath)) fs.unlinkSync(outPath);
-    await runExtract([], "no-seek");
-    return true;
-  } catch (err) {
-    console.warn(`[ArchiveAI] frame extract (no-seek) failed (${path.basename(videoPath)}):`, (err as Error).message?.slice(0, 160));
-  }
-
-  // Attempt 3: mjpeg decoder hint + no seek (some motion-JPEG .avi files)
-  try {
-    if (fs.existsSync(outPath)) fs.unlinkSync(outPath);
-    await runExtract(["-c:v", "mjpeg"], "mjpeg");
     return true;
   } catch {
-    /* fall through — all attempts exhausted */
+    return false;
   }
-
-  return false;
 }
 
 /** Sample frames across the clip — bulk mode uses fewer frames for speed and token limits. */
@@ -783,7 +719,6 @@ async function invokeArchiveVisionTagging(
     parentFilename?: string;
     userTags?: string[];
     clipLabel?: string;
-    transcript?: string;
   },
   opts: { imageDetail?: "auto" | "low" | "high"; preferJsonObject?: boolean; bulk?: boolean } = {}
 ): Promise<{ metadata: ArchiveAssetAiMetadata | null; error?: string }> {
@@ -819,7 +754,7 @@ async function invokeArchiveVisionTagging(
 
   const runOnce = async (responseFormat: VisionFormat): Promise<ArchiveAssetAiMetadata | null> => {
     const payload: Parameters<typeof invokeLLM>[0] = {
-      preferProvider: isAnthropicCreditExhausted() ? "openai" : undefined,
+      preferProvider: undefined,
       messages: [
         {
           role: "system",
@@ -900,7 +835,6 @@ function buildVisionPrompt(
     parentFilename?: string;
     userTags?: string[];
     clipLabel?: string;
-    transcript?: string;
   },
   frameCount = 1,
   bulk = false
@@ -924,9 +858,6 @@ function buildVisionPrompt(
     if (context.clipLabel) lines.push(`Clip: ${context.clipLabel}.`);
     if (context.archiveNicheTags?.length) {
       lines.push(`Archive topic: ${context.archiveNicheTags.slice(0, 8).join(", ")}.`);
-    }
-    if (context.transcript) {
-      lines.push(`Audio transcript: "${context.transcript}"`);
     }
     return lines.join("\n");
   }
@@ -970,9 +901,6 @@ function buildVisionPrompt(
   if (context.userTags?.length) {
     lines.push(`Existing tags (add to these, do not repeat unless relevant): ${context.userTags.join(", ")}`);
   }
-  if (context.transcript) {
-    lines.push(`\nAudio transcript of this clip (use names, places, events mentioned to make tags more specific):\n"${context.transcript}"`);
-  }
   return lines.join("\n");
 }
 
@@ -992,21 +920,11 @@ export async function generateArchiveAssetAiMetadataFromPath(
     return { metadata: null, frameCount: 0, error: "AI tagging disabled" };
   }
   const maxFrames = opts.maxFrames ?? (opts.bulk ? 1 : 5);
-  const isVideo = mimeType.startsWith("video/");
-
-  // Run frame extraction and audio transcription in parallel
-  const [previews, transcript] = await Promise.all([
-    previewImagesFromFilePath(filePath, mimeType, maxFrames),
-    isVideo ? transcribeClipAudio(filePath).catch(() => null) : Promise.resolve(null),
-  ]);
-
+  const previews = await previewImagesFromFilePath(filePath, mimeType, maxFrames);
   if (previews.length === 0) {
     return { metadata: null, frameCount: 0, error: "Could not extract preview frames (FFmpeg)" };
   }
-  if (transcript) {
-    console.log(`[ArchiveAI] transcript (${transcript.length}c): "${transcript.slice(0, 80)}…"`);
-  }
-  const vision = await invokeArchiveVisionTagging(previews, { ...context, transcript: transcript ?? undefined }, {
+  const vision = await invokeArchiveVisionTagging(previews, context, {
     imageDetail: opts.imageDetail ?? (opts.bulk ? "low" : "high"),
     preferJsonObject: opts.bulk,
     bulk: opts.bulk,

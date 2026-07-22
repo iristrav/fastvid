@@ -726,8 +726,7 @@ const IS_RAILWAY = !process.env.BUILT_IN_FORGE_API_KEY;
 const VIDEO_WIDTH = 1920;
 const VIDEO_HEIGHT = 1080;
 /** Letterbox pad (legacy encode paths) — dark gray, not black. */
-// force_divisible_by=2 ensures libx264 never sees odd intermediate dimensions
-const SCALE_PAD_VF = `scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:(ow-iw)/2:(oh-ih)/2:color=0x2a2a2a`;
+const SCALE_PAD_VF = `scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=decrease,pad=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:(ow-iw)/2:(oh-ih)/2:color=0x2a2a2a`;
 /** Fill 16:9 — center crop (still used for some stock paths). */
 const CROP_FILL_VF =
   `scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,` +
@@ -1091,42 +1090,6 @@ async function fetchBeatArchivalThenPexels(
     );
   }
   if (ownArchiveClip !== null) return ownArchiveClip;
-
-  // ── Wikimedia-first: always try Wikimedia images + videos immediately after archive miss ──
-  // This catches named persons and locations that aren't in the curated archive but have
-  // freely-licensed Wikipedia images/video. Runs before stock, SerpAPI, and AI.
-  {
-    const wikiFirstQueries = [
-      beat.text,
-      beat.searchQuery,
-      scene.visualCue,
-      scene.pexelsQuery,
-    ].filter((q): q is string => typeof q === "string" && q.trim().length > 3)
-      .slice(0, 3);
-
-    const loose: VisualAdoptOptions = { ...adoptOpts, requireBeatMatch: false, scriptAnchored: false, scriptImageFallback: true };
-
-    // 1. Wikimedia images (always available, no API key)
-    for (const q of wikiFirstQueries) {
-      const wikiImgPaths = await fetchWikimediaImages(q, clipFetchDur, workDir, sceneIndex, 2, `${tag}_wf`);
-      const wikiImgClip = await adoptClip(wikiImgPaths, dedup, sceneIndex, beat.index, beat.text, workDir, q, loose);
-      if (wikiImgClip && !isPipelineFallbackClip(wikiImgClip)) {
-        console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: Wikimedia-first image "${q}"`);
-        if (canUseGlobalStillPhoto(dedup)) markGlobalStillPhotoUsed(dedup);
-        return wikiImgClip;
-      }
-    }
-
-    // 2. Wikimedia videos (for locations/events that have motion footage)
-    for (const q of wikiFirstQueries) {
-      const wikiVidHits = await fetchWikimediaVideos(q, clipFetchDur, workDir, sceneIndex, 1, `${tag}_wf`);
-      const wikiVidClip = await adoptClip(wikiVidHits.map(h => h.path), dedup, sceneIndex, beat.index, beat.text, workDir, q, loose);
-      if (isRealVideoClip(wikiVidClip)) {
-        console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: Wikimedia-first video "${q}"`);
-        return wikiVidClip;
-      }
-    }
-  }
 
   if (curatedArchiveOnlyVisuals()) {
     // Always try Wikimedia first (free, no API key — runs regardless of Pexels gate)
@@ -2180,10 +2143,6 @@ function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProfile {
       maxStockBeatsPerVideo: stockCap,
       maxStockQueriesPerBeat: stockCap > 0 ? 1 : 0,
       maxEntityYoutubePerVideo: 0,
-      // Archive embedding search is fast — use higher parallelism for curated-only.
-      fastStockMode: true,
-      // More scene-level parallelism: archive lookup is embedding-based (CPU, not network).
-      sceneParallelism: IS_RAILWAY ? 8 : 4,
     };
   }
   return profile;
@@ -2480,11 +2439,7 @@ async function downloadAndTrimPoolCandidate(
       );
       console.log(`[Hang] downloadAndTrim AFTER fetch s${sceneIndex}b${beatIndex} ok=${resp.ok} elapsed=${Date.now()-_f0}ms`);
       if (!resp.ok) return null;
-      const buf = Buffer.from(await withTimeout(
-        Promise.resolve(resp.arrayBuffer()),
-        60_000,
-        `Pool download body s${sceneIndex}b${beatIndex}`
-      ));
+      const buf = Buffer.from(await resp.arrayBuffer());
       if (buf.length < 50_000) return null;
       fs.writeFileSync(rawPath, buf);
       void reportToMediaCache(candidate.remoteUrl, rawPath, isVideo ? "video/mp4" : "image/jpeg");
@@ -3108,13 +3063,7 @@ async function synthesizeFullNarrationMp3(
       preferElevenLabs: true,
     });
     const partDur = await probeVideoDurationSec(partPath);
-    if (partDur <= 0) {
-      throw pipelineError(
-        PIPELINE_ERROR.VOICEOVER_EMPTY,
-        `Bulk voiceover chunk ${i + 1}/${chunks.length} produced no audio (TTS returned empty or corrupt file)`
-      );
-    }
-    timeOffset += partDur;
+    timeOffset += partDur > 0 ? partDur : 0;
     partPaths.push(partPath);
   }
 
@@ -3170,11 +3119,8 @@ async function generateBulkSceneVoiceovers(
 
 function bulkVoiceoverTimeoutMs(sceneCount: number, videoLength?: string): number {
   const _budget = get_activeRenderBudget(); if (_budget) return _budget.ttsMs;
-  // Per-chunk inner timeout is 180s; outer budget must be larger than one chunk.
-  // Fast videos: 90s base + 20s/scene, capped at 300s.
-  // Normal videos: 120s base + 20s/scene, capped at 900s.
   if (isFastShortVideoLength(videoLength)) {
-    return Math.min(300_000, 90_000 + sceneCount * 20_000);
+    return Math.min(75_000, 40_000 + sceneCount * 8_000);
   }
   return Math.min(900_000, 120_000 + sceneCount * 20_000);
 }
@@ -3187,11 +3133,7 @@ async function splitFullVoiceoverByScenes(
 ): Promise<number[]> {
   const totalDur = await probeVideoDurationSec(fullAudioPath);
   if (totalDur <= 0) {
-    const exists = fs.existsSync(fullAudioPath);
-    const size = exists ? fs.statSync(fullAudioPath).size : 0;
-    const header = exists && size > 0 ? fs.readFileSync(fullAudioPath).slice(0, 16).toString("hex") : "—";
-    console.error(`[Pipeline] Bulk VO no duration: exists=${exists} size=${size}b header=${header}`);
-    throw pipelineError(PIPELINE_ERROR.VOICEOVER_EMPTY, `Bulk voiceover file has no duration (size=${size}b)`);
+    throw pipelineError(PIPELINE_ERROR.VOICEOVER_EMPTY, "Bulk voiceover file has no duration");
   }
 
   const storedTts = workDir ? loadStoredTtsAlignment(workDir) : null;
@@ -3286,7 +3228,6 @@ function isElevenLabsQuotaOrAuthError(message: string): boolean {
   return /quota_exceeded|quota exceeded|insufficient_quota|exceeds your quota/i.test(message);
 }
 
-// Once ElevenLabs hits quota/auth in this process, skip it for all subsequent calls.
 let elevenLabsQuotaExhausted = false;
 
 async function synthesizeFishAudioVoice(
@@ -3328,11 +3269,6 @@ async function synthesizeFishAudioVoice(
 
       if (!response.ok) {
         const errText = await response.text();
-        // 402 = no API credit — fall back to ElevenLabs if available
-        if (response.status === 402 && ELEVENLABS_API_KEY) {
-          console.warn(`[Pipeline] Fish Audio ${label}: no API credit (402) — ElevenLabs fallback`);
-          return synthesizeElevenLabsVoice(text, outputPath, "pNInz6obpgDQGcFmaJgB", timeoutMs, `fallback (${label})`);
-        }
         throw pipelineError(
           PIPELINE_ERROR.VOICEOVER,
           `Fish Audio HTTP ${response.status}: ${errText.slice(0, 200)}`
@@ -3346,13 +3282,8 @@ async function synthesizeFishAudioVoice(
 
       fs.writeFileSync(outputPath, audioBuffer);
       const dur = await probeVideoDurationSec(outputPath);
-      if (dur <= 0) {
-        const header = audioBuffer.slice(0, 16).toString("hex");
-        console.warn(`[Pipeline] Fish Audio ${label}: ${audioBuffer.length}b written but ffprobe finds no duration (header=${header}) — retrying`);
-        throw pipelineError(PIPELINE_ERROR.VOICEOVER_EMPTY, `Fish Audio returned unreadable audio (${audioBuffer.length} bytes, header=${header})`);
-      }
       console.log(`[Pipeline] Fish Audio ${label}: ${dur.toFixed(1)}s`);
-      return dur;
+      return dur > 0 ? dur : Math.max(3, Math.round(audioBuffer.length / 40000));
     } catch (err) {
       if (attempt === MAX_ATTEMPTS) throw err;
       await new Promise((r) => setTimeout(r, 500));
@@ -3406,7 +3337,7 @@ async function synthesizeElevenLabsVoice(
         const errText = await response.text();
         if (fishAudioFallbackEnabled() && (response.status === 401 || isElevenLabsQuotaOrAuthError(errText))) {
           elevenLabsQuotaExhausted = true;
-          console.warn(`[Pipeline] ElevenLabs ${label}: quota/auth error — switching to Fish Audio for remainder of session`);
+          console.warn(`[Pipeline] ElevenLabs ${label}: quota/auth error — switching permanently to Fish Audio`);
           return synthesizeFishAudioVoice(text, outputPath, timeoutMs, label);
         }
         throw pipelineError(
@@ -3420,18 +3351,13 @@ async function synthesizeElevenLabsVoice(
       }
       fs.writeFileSync(outputPath, audioBuffer);
       const dur = await probeVideoDurationSec(outputPath);
-      if (dur <= 0) {
-        const header = audioBuffer.slice(0, 16).toString("hex");
-        console.warn(`[Pipeline] ElevenLabs ${label}: ${audioBuffer.length}b written but ffprobe finds no duration (header=${header}) — retrying`);
-        throw pipelineError(PIPELINE_ERROR.VOICEOVER_EMPTY, `ElevenLabs returned unreadable audio (${audioBuffer.length} bytes)`);
-      }
       console.log(`[Pipeline] ElevenLabs ${label}: voice=${elevenVoiceId.slice(0, 10)}… ${dur.toFixed(1)}s`);
-      return dur;
+      return dur > 0 ? dur : Math.max(3, Math.round(audioBuffer.length / 40000));
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (fishAudioFallbackEnabled() && isElevenLabsQuotaOrAuthError(msg)) {
         elevenLabsQuotaExhausted = true;
-        console.warn(`[Pipeline] ElevenLabs ${label}: quota error — switching to Fish Audio for remainder of session`);
+        console.warn(`[Pipeline] ElevenLabs ${label}: quota error — switching permanently to Fish Audio`);
         return synthesizeFishAudioVoice(text, outputPath, timeoutMs, label);
       }
       if (attempt === MAX_ATTEMPTS) throw err;
@@ -3534,7 +3460,7 @@ export async function generateVoiceover(
         fs.writeFileSync(outputPath, audioBuffer);
         console.log(`[Pipeline] ElevenLabs TTS written: ${audioBuffer.length} bytes to ${outputPath}`);
 
-        let durationSec = 0;
+        let durationSec = 5;
         try {
           for (const probePath of FFPROBE_PATHS()) {
             try {
@@ -3548,10 +3474,8 @@ export async function generateVoiceover(
             } catch { /* try next */ }
           }
         } catch { /* use default */ }
-        if (durationSec <= 0) {
-          const header = audioBuffer.slice(0, 16).toString("hex");
-          console.warn(`[Pipeline] ElevenLabs TTS scene: ffprobe finds no duration (${audioBuffer.length}b, header=${header}) — retrying`);
-          throw pipelineError(PIPELINE_ERROR.VOICEOVER_EMPTY, `ElevenLabs returned unreadable audio (${audioBuffer.length} bytes)`);
+        if (durationSec === 5 && audioBuffer.length > 1000) {
+          durationSec = Math.max(3, Math.round(audioBuffer.length / 40000));
         }
         console.log(`[Pipeline] ElevenLabs TTS scene ${outputPath.match(/scene_(\d+)/)?.[1] ?? "?"}: ${durationSec}s`);
         return durationSec;
@@ -7854,8 +7778,12 @@ async function transformClipForFairUse(
     `eq=contrast=${grade.contrast}:saturation=${grade.saturation}:brightness=${grade.brightness},` +
     `vignette=angle=${vignetteAngle}:mode=forward`;
 
-  // Fair-use subtitle disabled — set ENABLE_SCREEN_LABELS=true to re-enable
-  const subtitle: string | null = null;
+  const subtitle = sanitizeForDrawtextStrict(sceneText, 72);
+  if (subtitle && ffmpegSupportsDrawtext()) {
+    filterChain +=
+      `,drawtext=text='${subtitle}':fontcolor=white:fontsize=30:x=(w-text_w)/2:y=h-72:` +
+      `box=1:boxcolor=black@0.55:boxborderw=10`;
+  }
 
   const TRANSFORM_TIMEOUT_MS = timeoutMs;
   console.log(
@@ -8971,7 +8899,7 @@ function archivePrepareConcurrency(fastMode: boolean, relaxed: boolean): number 
   if (fastMode && strictVoiceVisualMatchEnabled()) return 4;
   // Run candidate prep more in parallel so trying more candidates per beat
   // (maxVisualCandidatesPerBeatTry) doesn't add proportional wall-clock time.
-  return fastMode ? 3 : 3;
+  return fastMode ? 3 : 2;
 }
 const RELEVANCE_STOP_WORDS = new Set([
   "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with", "by", "from",
@@ -9662,7 +9590,7 @@ function isPipelineFallbackClip(filePath: string): boolean {
 async function probeClipMeanLuma(filePath: string, atSec: number): Promise<number | null> {
   try {
     const lumCmd =
-      `"${FFMPEG_BIN}" -y -ss ${atSec.toFixed(2)} -i "${filePath}" -vframes 1 -an -vf "scale=64:36,format=gray" -f rawvideo -`;
+      `"${FFMPEG_BIN}" -y -threads 1 -ss ${atSec.toFixed(2)} -i "${filePath}" -vframes 1 -vf "scale=64:36,format=gray" -f rawvideo -`;
     const { stdout } = await withTimeout(exec(lumCmd), 10_000, `luma ${path.basename(filePath)}@${atSec}`);
     const buf = Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout ?? "", "binary");
     if (buf.length === 0) return null;
@@ -9687,7 +9615,7 @@ async function probeClipRegionMeanLuma(
         : "crop=iw/3:ih/3:iw/3:ih/3";
   try {
     const lumCmd =
-      `"${FFMPEG_BIN}" -y -ss ${atSec.toFixed(2)} -i "${filePath}" -vframes 1 -an -vf "${crop},scale=32:32,format=gray" -f rawvideo -`;
+      `"${FFMPEG_BIN}" -y -threads 1 -ss ${atSec.toFixed(2)} -i "${filePath}" -vframes 1 -vf "${crop},scale=32:32,format=gray" -f rawvideo -`;
     const { stdout } = await withTimeout(exec(lumCmd), 10_000, `luma ${path.basename(filePath)}@${atSec}:${region}`);
     const buf = Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout ?? "", "binary");
     if (buf.length === 0) return null;
@@ -18606,7 +18534,7 @@ async function fetchArchiveSentenceMontage(
 
   const beatConcurrency = dedup.perf.fastStockMode
     ? fastBeatConcurrency(IS_RAILWAY)
-    : 4;
+    : 2;
   const beatLimit = pLimit(beatConcurrency);
   await Promise.all(
     beats.map((beat, bi) =>
