@@ -2634,7 +2634,7 @@ function withSceneFetchTimeout<T>(fn: () => Promise<T>, ms: number, label: strin
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => {
       controller.abort();
-      for (const child of scope.children) {
+      for (const child of Array.from(scope.children)) {
         if (!child.killed) {
           try { child.kill("SIGKILL"); } catch { /* already dead */ }
         }
