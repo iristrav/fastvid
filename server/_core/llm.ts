@@ -581,9 +581,10 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
   } = params;
 
   const hasVision = messagesIncludeImages(messages);
-  // Vision calls: prefer OpenAI (gpt-4o) when available — Groq vision models are unreliable.
-  const primary = preferProvider ?? (hasVision && openAiKeyFromEnv() ? "openai" : resolveLlmProvider());
+  const primary = preferProvider ?? resolveLlmProvider();
   let chain = providersToTry(primary);
+  // Groq vision models consistently return 404 — remove Groq from vision calls entirely.
+  if (hasVision) chain = chain.filter((p) => p !== "groq");
   if (chain.length === 0) {
     // All providers blocked (cooldown / quota). Try Groq anyway if key exists — cooldown is
     // a soft rate-limit guard, not a hard failure. Better to retry than to give up entirely.
