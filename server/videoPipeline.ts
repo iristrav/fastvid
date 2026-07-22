@@ -15154,8 +15154,8 @@ async function resolveBeatClipFastTurbo(
 
   if (dedup.perf.enableAiFallback && dedup.aiClipsUsed < dedup.perf.maxAiClipsPerVideo) {
     try {
-      clip = await withTimeout(
-        fetchBeatAIClip(
+      clip = await withSceneFetchTimeout(
+        () => fetchBeatAIClip(
           beat, scene, workDir, sceneIndex, beat.index, clipFetchDur, dedup, videoTitle
         ),
         FAST_AI_CLIP_TIMEOUT_MS,
@@ -15583,8 +15583,8 @@ async function resolveBeatClipForBeat(
     if (!dedup.perf.enableAiFallback) return null;
     const aiMs = dedup.perf.fastStockMode ? 95_000 : 180_000;
     try {
-      return await withTimeout(
-        fetchBeatAIClip(
+      return await withSceneFetchTimeout(
+        () => fetchBeatAIClip(
           beat, scene, workDir, sceneIndex, beat.index, clipFetchDur, dedup, videoTitle
         ),
         aiMs,
@@ -17108,8 +17108,8 @@ async function adoptAiBeatClip(
 
   let aiClip: string | null = null;
   try {
-    aiClip = await withTimeout(
-      fetchBeatAIClip(
+    aiClip = await withSceneFetchTimeout(
+      () => fetchBeatAIClip(
         beat,
         scene,
         workDir,
@@ -19563,8 +19563,8 @@ async function fetchSceneVisuals(
         dedup.aiClipsUsed < dedup.perf.maxAiClipsPerVideo
       ) {
         try {
-          clip = await withTimeout(
-            fetchBeatAIClip(
+          clip = await withSceneFetchTimeout(
+            () => fetchBeatAIClip(
               beat, scene, workDir, scene.index, beat.index, clipFetchDur, dedup, videoTitle
             ),
             dedup.perf.fastStockMode ? FAST_AI_CLIP_TIMEOUT_MS : 45_000,
@@ -19630,8 +19630,8 @@ async function fetchSceneVisuals(
     ) {
       let aiOnly: string | null = null;
       try {
-        aiOnly = await withTimeout(
-          fetchBeatAIClip(
+        aiOnly = await withSceneFetchTimeout(
+          () => fetchBeatAIClip(
             beat, scene, workDir, scene.index, beat.index, clipFetchDur, dedup, videoTitle
           ),
           120_000,
@@ -19675,8 +19675,8 @@ async function fetchSceneVisuals(
         dedup.aiClipsUsed < dedup.perf.maxAiClipsPerVideo
       ) {
         try {
-          rescue = await withTimeout(
-            fetchBeatAIClip(
+          rescue = await withSceneFetchTimeout(
+            () => fetchBeatAIClip(
               beat, scene, workDir, scene.index, beat.index, clipFetchDur, dedup, videoTitle
             ),
             dedup.perf.fastStockMode ? FAST_AI_CLIP_TIMEOUT_MS : 120_000,
@@ -19787,8 +19787,8 @@ async function fetchSceneVisuals(
                 dedup.aiClipsUsed < dedup.perf.maxAiClipsPerVideo
               ) {
                 try {
-                  const ai = await withTimeout(
-                    fetchBeatAIClip(
+                  const ai = await withSceneFetchTimeout(
+                    () => fetchBeatAIClip(
                       stub, scene, workDir, scene.index, stub.index, clipFetchDur, dedup, videoTitle
                     ),
                     FAST_AI_CLIP_TIMEOUT_MS,
@@ -19919,8 +19919,8 @@ async function fetchSceneVisuals(
                 dedup.aiClipsUsed < dedup.perf.maxAiClipsPerVideo
               ) {
                 try {
-                  const ai = await withTimeout(
-                    fetchBeatAIClip(
+                  const ai = await withSceneFetchTimeout(
+                    () => fetchBeatAIClip(
                       stub, scene, workDir, scene.index, stub.index, clipFetchDur, dedup, videoTitle
                     ),
                     FAST_AI_CLIP_TIMEOUT_MS,
