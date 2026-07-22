@@ -278,24 +278,32 @@ function AssetPreviewModal({
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [currentTime, setCurrentTime] = useState(0);
+  const [videoDuration, setVideoDuration] = useState<number>(asset.durationSec ?? 0);
   const [trimAt, setTrimAt] = useState<number | null>(null);
   const [trimming, setTrimming] = useState(false);
   const trimMutation = trpc.mediaArchive.trimToSingleScene.useMutation();
-  const duration = asset.durationSec ?? 0;
+  // Use live video duration; fall back to DB value while video hasn't loaded yet.
+  const duration = videoDuration > 0 ? videoDuration : (asset.durationSec ?? 0);
 
   function getVideo(): HTMLVideoElement | null {
     return containerRef.current?.querySelector("video") ?? null;
   }
 
   useEffect(() => {
-    // Attach timeupdate listener to the video rendered by LazyArchiveMedia.
+    // Attach timeupdate + durationchange listener to the video rendered by LazyArchiveMedia.
     const interval = setInterval(() => {
       const v = getVideo();
       if (v) {
-        const update = () => setCurrentTime(v.currentTime);
-        v.addEventListener("timeupdate", update);
+        const onTime = () => setCurrentTime(v.currentTime);
+        const onDur = () => { if (v.duration && isFinite(v.duration)) setVideoDuration(v.duration); };
+        v.addEventListener("timeupdate", onTime);
+        v.addEventListener("durationchange", onDur);
+        if (v.duration && isFinite(v.duration)) setVideoDuration(v.duration);
         clearInterval(interval);
-        return () => v.removeEventListener("timeupdate", update);
+        return () => {
+          v.removeEventListener("timeupdate", onTime);
+          v.removeEventListener("durationchange", onDur);
+        };
       }
     }, 100);
     return () => clearInterval(interval);
@@ -305,7 +313,8 @@ function AssetPreviewModal({
     const v = getVideo();
     if (v) {
       const t = v.currentTime;
-      if (t > 0.1 && t < duration - 0.1) setTrimAt(t);
+      const dur = (v.duration && isFinite(v.duration)) ? v.duration : duration;
+      if (t > 0.1 && (dur <= 0 || t < dur - 0.1)) setTrimAt(t);
     }
   }
 
@@ -315,8 +324,12 @@ function AssetPreviewModal({
     setTrimming(true);
     try {
       const result = await trimMutation.mutateAsync({ assetId: asset.id, cutTimeSec: trimAt });
+      if (!result.trimmed) {
+        toast.error("Bijknippen mislukt", { description: result.reason ?? "Onbekende fout" });
+        return;
+      }
       toast.success(`Bijgeknipt naar ${result.newDurationSec}s`);
-      onTrimmed?.(result.newDurationSec);
+      onTrimmed?.(result.newDurationSec!);
       onClose();
     } catch (e) {
       toast.error("Bijknippen mislukt", { description: toastErrorMessage(e) });
@@ -377,10 +390,10 @@ function AssetPreviewModal({
           <LazyArchiveMedia asset={asset} mode="preview" className="w-full h-full overflow-hidden" />
         </div>
 
-        {asset.mediaType === "video" && duration > 0 && (
+        {asset.mediaType === "video" && (
           <div className="px-4 py-3 border-t border-white/10 space-y-2">
-            {/* trim marker bar */}
-            <div className="relative h-2 bg-white/10 rounded-full cursor-pointer"
+            {/* trim marker bar — only show if duration is known */}
+            {duration > 0 && <div className="relative h-2 bg-white/10 rounded-full cursor-pointer"
               onClick={(e) => {
                 const rect = e.currentTarget.getBoundingClientRect();
                 const frac = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
@@ -400,11 +413,11 @@ function AssetPreviewModal({
                   style={{ left: `${(trimAt / duration) * 100}%` }}
                 />
               )}
-            </div>
+            </div>}
 
             <div className="flex items-center gap-3">
               <span className="text-xs text-slate-500 tabular-nums w-16">
-                {currentTime.toFixed(2)}s / {duration.toFixed(1)}s
+                {currentTime.toFixed(2)}s / {duration > 0 ? `${duration.toFixed(1)}s` : "?"}
               </span>
               <button
                 onClick={markTrimPoint}
@@ -492,7 +505,7 @@ function AssetCard({
           asset={asset}
           sceneAudit={sceneAudit}
           onClose={() => setPreviewOpen(false)}
-          onTrimmed={(newDur) => onTrimmed(asset.id, newDur)}
+          onTrimmed={() => onRefresh()}
         />
       )}
       <div
@@ -649,11 +662,7 @@ function AssetCard({
                 </div>
               )}
               <div className="flex gap-1 pt-1">
-                <button
-                  onClick={() => setPreviewOpen(true)}
-                  className="text-xs px-2 py-1 rounded bg-cyan-500/15 text-cyan-300 hover:bg-cyan-500/25"
-                  title="View"
-                >
+                <button onClick={() => setPreviewOpen(true)} className="text-xs px-2 py-1 rounded bg-cyan-500/15 text-cyan-300 hover:bg-cyan-500/25" title="View">
                   <Play className="w-3 h-3 inline" />
                 </button>
                 <button onClick={() => setEditing(true)} className="text-xs px-2 py-1 rounded bg-white/10 text-slate-300 hover:bg-white/15">
@@ -669,7 +678,11 @@ function AssetCard({
                       if (!confirm(`Clip bijknippen naar eerste scène (0–${cut.toFixed(1)}s)?`)) return;
                       try {
                         const result = await trimMutation.mutateAsync({ assetId: asset.id, cutTimeSec: cut });
-                        onTrimmed(asset.id, result.newDurationSec);
+                        if (!result.trimmed) {
+                          toast.error("Bijknippen mislukt", { description: result.reason ?? "Onbekende fout" });
+                          return;
+                        }
+                        onRefresh();
                         toast.success(`Bijgeknipt naar ${result.newDurationSec}s`);
                       } catch (e) {
                         toast.error("Bijknippen mislukt", { description: toastErrorMessage(e) });
@@ -706,13 +719,12 @@ function AssetCard({
                 <button
                   onClick={async () => {
                     try {
-                      const result = await aiTagMutation.mutateAsync({ archiveId, ids: [asset.id] });
+                      const result = await aiTagMutation.mutateAsync({ archiveId, ids: [asset.id], force: true });
                       if (result.updated > 0 && result.sampleUpdate?.tags?.length) {
                         toast.success(`AI tags: ${result.sampleUpdate.tags.slice(0, 5).join(", ")}`, { description: "Tags opgeslagen" });
                         onRefresh();
                       } else if ((result.skipReasons?.hasTags ?? 0) > 0) {
                         onRefresh();
-                        toast.info("Clip heeft al tags — AI heeft ze niet overschreven");
                       } else if ((result.skipReasons?.fileMissing ?? 0) > 0 || (result.skipReasons?.downloadFailed ?? 0) > 0) {
                         toast.error("Videobestand niet beschikbaar", { description: "Controleer of de clip correct is geüpload" });
                       } else if ((result.skipReasons?.noFrames ?? 0) > 0) {
@@ -845,6 +857,24 @@ export function ArchiveClipsGrid({
     onError: (e) => toast.error("Verwijderen mislukt", { description: toastErrorMessage(e) }),
   });
 
+  const deleteZeroDurationClips = trpc.mediaArchive.deleteZeroDurationClips.useMutation({
+    onSuccess: (data) => {
+      utils.mediaArchive.listAssets.invalidate();
+      utils.mediaArchive.listArchives.invalidate();
+      if (data.confirmed === 0) {
+        toast.info(`Geen clips korter dan 1 seconde gevonden (${data.scanned} gescand)`);
+      } else {
+        const parts: string[] = [];
+        if (data.deleted > 0) parts.push(`${data.deleted} echt lege clip(s) verwijderd`);
+        if ((data.fixed ?? 0) > 0) parts.push(`${data.fixed} clip(s) hadden wel beelden — duur gecorrigeerd in database`);
+        toast.success(parts.join(", ") || "Klaar", {
+          description: `${data.confirmed} van ${data.scanned} clips gecontroleerd via ffprobe`,
+        });
+      }
+    },
+    onError: (e) => toast.error("Verwijderen mislukt", { description: toastErrorMessage(e) }),
+  });
+
   const autoTitleAssets = trpc.mediaArchive.autoTitleAssets.useMutation();
   const auditScenes = trpc.mediaArchive.auditScenes.useMutation();
   const repairDurations = trpc.mediaArchive.repairDurations.useMutation({
@@ -877,8 +907,24 @@ export function ArchiveClipsGrid({
     },
     onError: (e) => toast.error("Herindexering mislukt", { description: toastErrorMessage(e) }),
   });
+  const restoreFromS3 = trpc.mediaArchive.restoreFromS3.useMutation({
+    onSuccess: (data) => {
+      utils.mediaArchive.listAssets.invalidate();
+      utils.mediaArchive.listArchives.invalidate();
+      if (data.restored === 0) {
+        toast.info("Geen ontbrekende clips gevonden in R2");
+      } else {
+        toast.success(`${data.restored} clip(s) hersteld uit R2`, {
+          description: `${data.skipped} bestand(en) overgeslagen`,
+        });
+      }
+    },
+    onError: (e) => toast.error("Herstel mislukt", { description: toastErrorMessage(e) }),
+  });
   const dedupeDuplicates = trpc.mediaArchive.dedupeDuplicateAssets.useMutation();
   const [dedupeProgress, setDedupeProgress] = useState<{ scanned: number; deleted: number; total: number } | null>(null);
+  const rekognitionBulk = trpc.mediaArchive.recognizeCelebritiesBulk.useMutation();
+  const [rekognitionProgress, setRekognitionProgress] = useState<{ scanned: number; identified: number; total: number } | null>(null);
   const [autoTitleRunning, setAutoTitleRunning] = useState(false);
   const [autoTitleProgress, setAutoTitleProgress] = useState<{ done: number; total: number } | null>(null);
   const [autoTitleReport, setAutoTitleReport] = useState<{
@@ -1061,8 +1107,12 @@ export function ArchiveClipsGrid({
       );
     }
 
+    // Filter out clips that already have tags — skip them client-side
+    const taggedIds = new Set(assets.filter((a) => Array.isArray(a.tags) && (a.tags as string[]).length > 0).map((a) => a.id));
+    resolvedIds = resolvedIds.filter((id) => !taggedIds.has(id));
+
     if (resolvedIds.length === 0) {
-      toast.error("No clips to process");
+      toast.info("Alle geselecteerde clips hebben al tags — niets te doen");
       return;
     }
 
@@ -1307,6 +1357,44 @@ export function ArchiveClipsGrid({
 
   const deletePending = deleteAssets.isPending || deleteAllAssets.isPending;
 
+  async function runRekognitionBulk() {
+    if (archiveId == null) return;
+    const selectedArr = selectedCount > 0 ? [...selectedIds] : undefined;
+    const label = selectedArr ? `${selectedArr.length} geselecteerde clip(s)` : `alle clips`;
+    if (!confirm(`AWS Rekognition starten voor ${label}?\n\nHet systeem herkent bekende personen en slaat hun namen op als tags. Clips met bestaande tags worden overgeslagen.\n\nKosten: ~€0.001 per clip.`)) return;
+
+    setRekognitionProgress({ scanned: 0, identified: 0, total: selectedArr?.length ?? total });
+    let offset = 0;
+    let totalIdentified = 0;
+    let totalScanned = 0;
+    let hasMore = true;
+
+    while (hasMore) {
+      try {
+        const result = await rekognitionBulk.mutateAsync({
+          archiveId,
+          limit: 20,
+          offset,
+          onlyUntagged: true,
+          ...(selectedArr ? { ids: selectedArr } : {}),
+        });
+        totalScanned += result.scanned;
+        totalIdentified += result.identified;
+        hasMore = result.hasMore;
+        offset = result.nextOffset ?? offset + 20;
+        setRekognitionProgress({ scanned: totalScanned, identified: totalIdentified, total: result.total });
+      } catch {
+        break;
+      }
+    }
+
+    setRekognitionProgress(null);
+    utils.mediaArchive.listAssets.invalidate({ archiveId });
+    toast.success(`Rekognition klaar: ${totalIdentified} clip(s) voorzien van namen`, {
+      description: `${totalScanned} clips gescand`,
+    });
+  }
+
   async function dedupeVisualDuplicates() {
     if (archiveId == null || total < 2) return;
     const targetIds = selectedCount > 0 ? [...selectedIds] : undefined;
@@ -1510,20 +1598,40 @@ export function ArchiveClipsGrid({
           </button>
         )}
         {assets.length > 0 && (
-          <button
-            type="button"
-            onClick={deleteClipsWithLogo}
-            disabled={deleteLogoClips.isPending || autoTitleRunning}
-            title="Verwijder alle clips met een logo of watermerk (herkend via tags/titel)"
-            className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg bg-red-500/15 text-red-300 border border-red-500/25 hover:bg-red-500/25 disabled:opacity-50"
-          >
-            {deleteLogoClips.isPending ? (
-              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-            ) : (
-              <Ban className="w-3.5 h-3.5" />
-            )}
-            {deleteLogoClips.isPending ? "Logo's verwijderen…" : "Verwijder logo-clips"}
-          </button>
+          <>
+            <button
+              type="button"
+              onClick={deleteClipsWithLogo}
+              disabled={deleteLogoClips.isPending || autoTitleRunning}
+              title="Verwijder alle clips met een logo of watermerk (herkend via tags/titel)"
+              className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg bg-red-500/15 text-red-300 border border-red-500/25 hover:bg-red-500/25 disabled:opacity-50"
+            >
+              {deleteLogoClips.isPending ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Ban className="w-3.5 h-3.5" />
+              )}
+              {deleteLogoClips.isPending ? "Logo's verwijderen…" : "Verwijder logo-clips"}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (archiveId == null) return;
+                if (!confirm("Verwijder alle videoclips korter dan 1 seconde?")) return;
+                deleteZeroDurationClips.mutate({ archiveId });
+              }}
+              disabled={deleteZeroDurationClips.isPending || autoTitleRunning}
+              title="Verwijder alle videoclips korter dan 1 seconde (inclusief onbekende duur)"
+              className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg bg-red-500/15 text-red-300 border border-red-500/25 hover:bg-red-500/25 disabled:opacity-50"
+            >
+              {deleteZeroDurationClips.isPending ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Ban className="w-3.5 h-3.5" />
+              )}
+              {deleteZeroDurationClips.isPending ? "Verwijderen…" : "Verwijder 0s clips"}
+            </button>
+          </>
         )}
         <button
           type="button"
@@ -1541,6 +1649,40 @@ export function ArchiveClipsGrid({
             <ScanSearch className="w-3.5 h-3.5" />
           )}
           {reindexOrphans.isPending ? "Clips herstellen…" : "Herstel verwijderde clips"}
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            if (archiveId == null) return;
+            if (!confirm("Scan de R2/S3-bucket en herstel clips die uit de database zijn verwijderd maar nog wel in de opslag staan?")) return;
+            restoreFromS3.mutate({ archiveId });
+          }}
+          disabled={restoreFromS3.isPending || autoTitleRunning}
+          title="Scan Cloudflare R2 en herstel clips die per ongeluk zijn verwijderd"
+          className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg bg-green-500/15 text-green-300 border border-green-500/25 hover:bg-green-500/25 disabled:opacity-50"
+        >
+          {restoreFromS3.isPending ? (
+            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+          ) : (
+            <ScanSearch className="w-3.5 h-3.5" />
+          )}
+          {restoreFromS3.isPending ? "R2 scannen…" : "Herstel uit R2"}
+        </button>
+        <button
+          type="button"
+          onClick={runRekognitionBulk}
+          disabled={rekognitionProgress !== null || autoTitleRunning}
+          title="Gebruik AWS Rekognition om bekende personen in clips te herkennen en als tag op te slaan"
+          className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg border transition-colors bg-violet-500/10 text-violet-300 border-violet-500/25 hover:bg-violet-500/20 disabled:opacity-50"
+        >
+          {rekognitionProgress !== null ? (
+            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+          ) : (
+            <ScanSearch className="w-3.5 h-3.5" />
+          )}
+          {rekognitionProgress !== null
+            ? `Rekognition ${rekognitionProgress.scanned}/${rekognitionProgress.total} (${rekognitionProgress.identified} herkend)`
+            : "Herken personen (AWS)"}
         </button>
         {assets.length > 0 && (
           <button
@@ -1618,6 +1760,14 @@ export function ArchiveClipsGrid({
             <button
               type="button"
               disabled={page <= 0}
+              onClick={() => setPage(0)}
+              className="px-2 py-1 rounded bg-white/10 disabled:opacity-40 hover:bg-white/15 text-xs"
+            >
+              «
+            </button>
+            <button
+              type="button"
+              disabled={page <= 0}
               onClick={() => setPage((p) => Math.max(0, p - 1))}
               className="flex items-center gap-1 px-2 py-1 rounded bg-white/10 disabled:opacity-40 hover:bg-white/15"
             >
@@ -1633,6 +1783,14 @@ export function ArchiveClipsGrid({
               className="flex items-center gap-1 px-2 py-1 rounded bg-white/10 disabled:opacity-40 hover:bg-white/15"
             >
               Volgende <ChevronRight className="w-3.5 h-3.5" />
+            </button>
+            <button
+              type="button"
+              disabled={page >= pageCount - 1}
+              onClick={() => setPage(pageCount - 1)}
+              className="px-2 py-1 rounded bg-white/10 disabled:opacity-40 hover:bg-white/15 text-xs"
+            >
+              »
             </button>
           </div>
         </div>
@@ -1744,6 +1902,14 @@ export function ArchiveClipsGrid({
               <button
                 type="button"
                 disabled={page <= 0}
+                onClick={() => setPage(0)}
+                className="px-2 py-1.5 rounded bg-white/10 disabled:opacity-40 hover:bg-white/15"
+              >
+                «
+              </button>
+              <button
+                type="button"
+                disabled={page <= 0}
                 onClick={() => setPage((p) => Math.max(0, p - 1))}
                 className="px-3 py-1.5 rounded bg-white/10 disabled:opacity-40 hover:bg-white/15"
               >
@@ -1757,6 +1923,14 @@ export function ArchiveClipsGrid({
                 className="px-3 py-1.5 rounded bg-white/10 disabled:opacity-40 hover:bg-white/15"
               >
                 Volgende
+              </button>
+              <button
+                type="button"
+                disabled={page >= pageCount - 1}
+                onClick={() => setPage(pageCount - 1)}
+                className="px-2 py-1.5 rounded bg-white/10 disabled:opacity-40 hover:bg-white/15"
+              >
+                »
               </button>
             </div>
           </div>

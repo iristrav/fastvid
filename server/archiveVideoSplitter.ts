@@ -75,10 +75,10 @@ export class ArchiveSplitError extends Error {
 }
 
 export const MIN_SPLIT_VIDEO_SEC = 4;
-const MIN_SCENE_SEC = 0.12;
+const MIN_SCENE_SEC = 0.08; // catch short flash frames without triggering on single frames
 const DEFAULT_MAX_CLIPS = 99999; // no practical limit — video length determines clip count
-/** Minimum seconds between distinct shot cuts (filters grain/flicker false positives). */
-const DEFAULT_MIN_SHOT_CUT_GAP_SEC = 0.55;
+/** Minimum seconds between distinct shot cuts — keeps grain/flicker from being counted as cuts. */
+const DEFAULT_MIN_SHOT_CUT_GAP_SEC = 0.5; // 0.5s gap required between real cuts
 /** Legacy min clip length for env override — only sub-flash glitches are merged, not full shots. */
 const DEFAULT_MIN_OUTPUT_CLIP_SEC = 2.0;
 /** Never merge shots — sub-1s clips are simply dropped, not glued to neighbours. */
@@ -93,7 +93,7 @@ const DEFAULT_SCENE_THRESHOLD = 0.3; // 30% pixel change = real editorial cut
 const DEFAULT_SCDET_THRESHOLD = 5.0; // scdet 0–100 scale; 5 catches real cuts, ignores flicker
 /** Split any clip longer than this into fixed intervals — catches scenes without hard cuts. */
 const DEFAULT_MAX_CLIP_DURATION_SEC = 6;
-const DEFAULT_CUT_MERGE_GAP_SEC = 0.18;
+const DEFAULT_CUT_MERGE_GAP_SEC = 0.12; // merge near-duplicate detections
 const DEFAULT_SPLIT_BUDGET_MS = 3_600_000;
 const DEFAULT_MAX_SOURCE_SEC = ARCHIVE_MAX_VIDEO_DURATION_SEC;
 const DEFAULT_MAX_UPLOAD_MB = ARCHIVE_MAX_UPLOAD_BYTES / (1024 * 1024);
@@ -139,7 +139,7 @@ export function scdetThreshold(): number {
   const raw = process.env.ARCHIVE_SCDET_THRESHOLD?.trim();
   if (raw) {
     const n = parseFloat(raw);
-    if (!isNaN(n) && n >= 1 && n <= 50) return n;
+    if (!isNaN(n) && n >= 0.05 && n <= 50) return n;
   }
   return DEFAULT_SCDET_THRESHOLD;
 }
@@ -190,7 +190,7 @@ export function minShotCutGapSec(): number {
   const raw = process.env.ARCHIVE_MIN_SHOT_CUT_GAP?.trim();
   if (raw) {
     const n = parseFloat(raw);
-    if (!isNaN(n) && n >= 0.3 && n <= 5) return n;
+    if (!isNaN(n) && n >= 0.05 && n <= 5) return n;
   }
   return DEFAULT_MIN_SHOT_CUT_GAP_SEC;
 }

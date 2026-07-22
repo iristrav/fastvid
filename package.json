@@ -18,6 +18,7 @@
     "archive-backfill": "tsx server/visualMatchingV2/embeddings/archiveEmbeddingBackfill.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-rekognition": "^3.1091.0",
     "@aws-sdk/client-s3": "^3.693.0",
     "@aws-sdk/s3-request-presigner": "^3.693.0",
     "@google/generative-ai": "^0.24.1",

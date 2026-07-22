@@ -11,9 +11,6 @@ import {
 } from "./archiveAssetTagging";
 import type { ArchiveSubjectContext } from "./archiveClipRelevance";
 import {
-  dedupeArchiveVisualDuplicates,
-} from "./archiveClipDedup";
-import {
   ArchiveSplitError,
   archiveStoredDurationSec,
   detectInteriorCutTimesInFile,
@@ -40,7 +37,6 @@ import {
 import { getUserFromRequest } from "./_core/context";
 import {
   createMediaArchiveAsset,
-  deleteMediaArchiveAssets,
   getMediaArchiveAssetById,
   getMediaArchiveAssets,
   getMediaArchiveById,
@@ -471,27 +467,8 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
         );
       }
 
-      // V2: perceptual hash dedup — remove near-identical clips saved in this upload batch.
-      if (process.env.ARCHIVE_INGESTION_V2_ENABLED !== "false") {
-        void (async () => {
-          try {
-            const allAssets = await getMediaArchiveAssets(input.archiveId);
-            if (allAssets.length < 2) return;
-            const { deleteIds } = await dedupeArchiveVisualDuplicates(allAssets);
-            if (deleteIds.length > 0) {
-              await deleteMediaArchiveAssets(deleteIds);
-              console.log(
-                `[ArchiveUpload] V2 perceptual dedup: removed ${deleteIds.length} duplicate(s) from archive ${input.archiveId}`
-              );
-            }
-          } catch (err) {
-            console.warn(
-              "[ArchiveUpload] perceptual dedup failed:",
-              (err as Error).message?.slice(0, 100)
-            );
-          }
-        })();
-      }
+      // Auto-dedup on upload is intentionally disabled.
+      // Deduplication is a manual action only ("Remove duplicates" button in admin UI).
 
       finishArchiveUploadJob(jobId, true, `${createdAssets.length} unique clip(s) saved`, {
         clipsSaved: createdAssets.length,

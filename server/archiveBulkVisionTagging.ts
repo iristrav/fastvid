@@ -44,19 +44,20 @@ const BULK_AI_CONCURRENCY = 2;
 
 type SingleResult =
   | "updated"
+  | "skipped_has_tags"
   | "skipped_missing_asset"
   | "skipped_file_missing"
   | "skipped_download"
   | "skipped_no_frames"
   | "skipped_no_vision"
-  | "skipped_has_tags"
   | "skipped_llm_failed"
   | "failed";
 
 async function autoTitleSingleAsset(
   id: number,
   archiveId: number,
-  nicheTags: string[]
+  nicheTags: string[],
+  force = false
 ): Promise<{
   result: SingleResult;
   error?: string;
@@ -68,10 +69,11 @@ async function autoTitleSingleAsset(
       return { result: "skipped_missing_asset" };
     }
 
-    // Skip clips that already have tags — preserve existing human/AI tags.
-    const existingTags = normalizeMediaTags(asset.tags ?? []);
-    if (existingTags.length > 0) {
-      return { result: "skipped_has_tags" };
+    if (!force) {
+      const existingTags = normalizeMediaTags(asset.tags ?? []);
+      if (existingTags.length > 0) {
+        return { result: "skipped_has_tags" };
+      }
     }
 
     const loaded = await loadArchiveAssetFile(asset);
@@ -173,6 +175,7 @@ async function runWithConcurrency<T>(
 export async function autoTitleArchiveAssets(opts: {
   archiveId: number;
   ids: number[];
+  force?: boolean;
 }): Promise<AutoTitleArchiveResult> {
   if (!archiveAiTaggingEnabled()) {
     throw new Error("AI tagging disabled — set GROQ_API_KEY, LLM_API_KEY, or BUILT_IN_FORGE_API_KEY on the server");
@@ -202,7 +205,7 @@ export async function autoTitleArchiveAssets(opts: {
 
   await runWithConcurrency(uniqueIds, BULK_AI_CONCURRENCY, async (id) => {
     processed += 1;
-    const outcome = await autoTitleSingleAsset(id, opts.archiveId, nicheTags);
+    const outcome = await autoTitleSingleAsset(id, opts.archiveId, nicheTags, opts.force);
     if (outcome.error && !sampleError) sampleError = outcome.error;
 
     switch (outcome.result) {
@@ -212,6 +215,10 @@ export async function autoTitleArchiveAssets(opts: {
         break;
       case "failed":
         failed += 1;
+        break;
+      case "skipped_has_tags":
+        skipped += 1;
+        skipReasons.hasTags += 1;
         break;
       case "skipped_missing_asset":
         skipped += 1;
@@ -228,10 +235,6 @@ export async function autoTitleArchiveAssets(opts: {
       case "skipped_no_frames":
         skipped += 1;
         skipReasons.noFrames += 1;
-        break;
-      case "skipped_has_tags":
-        skipped += 1;
-        skipReasons.hasTags += 1;
         break;
       case "skipped_no_vision":
         skipped += 1;
