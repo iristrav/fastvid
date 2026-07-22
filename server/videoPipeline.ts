@@ -2356,8 +2356,8 @@ async function resolveBeatClipFast(
   const pexCap = dedup.perf.fastStockMode ? 2 : 3;
   for (const q of queries.slice(0, pexCap)) {
     try {
-      const paths = await withTimeout(
-        fetchPexelsClips(
+      const paths = await withSceneFetchTimeout(
+        () => fetchPexelsClips(
           q,
           clipFetchDur,
           workDir,
@@ -8168,8 +8168,8 @@ async function fetchBeatScriptImageClip(
     stillStyleContext,
   };
 
-  return withTimeout(
-    (async () => {
+  return withSceneFetchTimeout(
+    async () => {
       if (SERPAPI_KEY) {
         for (let qi = 0; qi < Math.min(queries.length, 3); qi++) {
           const q = queries[qi];
@@ -8246,7 +8246,7 @@ async function fetchBeatScriptImageClip(
         }
       }
       return null;
-    })(),
+    },
     beatScriptImageWallMs(dedup.perf),
     `script image s${sceneIndex} b${beat.index}`
   ).catch((err) => {
@@ -8307,8 +8307,8 @@ async function fetchBeatScriptImageForced(
       return null;
     });
 
-  return withTimeout(
-    (async () => {
+  return withSceneFetchTimeout(
+    async () => {
       if (SERPAPI_KEY) {
         for (let qi = 0; qi < Math.min(queries.length, 5); qi++) {
           const q = queries[qi];
@@ -8373,7 +8373,7 @@ async function fetchBeatScriptImageForced(
         }
       }
       return null;
-    })(),
+    },
     beatScriptImageWallMs(dedup.perf) + 5_000,
     `forced image s${sceneIndex} b${beat.index}`
   ).catch(() => null).finally(() => {
@@ -14787,8 +14787,8 @@ async function fetchBeatPersonStockVideo(
   const tag = `b${beat.index}_person_stock`;
   const off = beat.index + sceneIndex * 5;
 
-  return withTimeout(
-    (async () => {
+  return withSceneFetchTimeout(
+    async () => {
       for (const q of queries) {
         const pex = await fetchPexelsClips(
           q,
@@ -14829,7 +14829,7 @@ async function fetchBeatPersonStockVideo(
         }
       }
       return null;
-    })(),
+    },
     beatStockFallbackWallMs(dedup.perf),
     `person stock s${sceneIndex} b${beat.index}`
   ).catch(() => {
@@ -14938,8 +14938,8 @@ async function fetchBeatStockFallback(
   const tag = `b${beat.index}_stock`;
   const off = beat.index + sceneIndex * 3;
 
-  return withTimeout(
-    (async () => {
+  return withSceneFetchTimeout(
+    async () => {
       for (const q of unique) {
         const pex = await fetchPexelsClips(
           q,
@@ -14984,7 +14984,7 @@ async function fetchBeatStockFallback(
         }
       }
       return null;
-    })(),
+    },
     beatStockFallbackWallMs(dedup.perf),
     `stock fallback s${sceneIndex} b${beat.index}`
   ).catch((err) => {
@@ -15369,8 +15369,8 @@ async function resolveBeatClipTurbo(
   let c: string | null = null;
   let searchTimedOut = false;
   try {
-    c = await withTimeout(
-      (async () => {
+    c = await withSceneFetchTimeout(
+      async () => {
         if (youtubeSourcingEnabled() && person && youtubeCcReady()) {
           const ytQueries = buildPersonCelebrityVideoQueries(person, beat.text, beat.index).slice(0, 3);
           const yt = await tryBeatRealYouTubeFootage(
@@ -15395,8 +15395,8 @@ async function resolveBeatClipTurbo(
         }
 
         if (person) {
-          const celebVids = await withTimeout(
-            fetchPersonCelebrityVideoClips(
+          const celebVids = await withSceneFetchTimeout(
+            () => fetchPersonCelebrityVideoClips(
               person,
               clipFetchDur,
               workDir,
@@ -15424,7 +15424,7 @@ async function resolveBeatClipTurbo(
         }
 
         return null;
-      })(),
+      },
       beatVisualSearchMaxMs(dedup.perf),
       `turbo video search s${sceneIndex} b${beat.index}`
     );
@@ -15511,8 +15511,8 @@ async function resolveBeatClipForBeat(
   const minimize = dedup.perf.minimizeStockFootage;
   let c: string | null = null;
   try {
-    c = await withTimeout(
-      (async () => {
+    c = await withSceneFetchTimeout(
+      async () => {
         let v = await runBeatClipFetch(
           beat, scene, workDir, sceneIndex, clipFetchDur, dedup, spaceTopic, personName, videoTitle
         );
@@ -15522,7 +15522,7 @@ async function resolveBeatClipForBeat(
           );
         }
         return v;
-      })(),
+      },
       beatVideoSearchWallMs(dedup.perf),
       `video search s${sceneIndex} b${beat.index}`
     );
@@ -17329,8 +17329,8 @@ async function adoptStockBeatClipFallback(
           "image_search",
           "Pexels search+download",
           () =>
-            withTimeout(
-              fetchPexelsClips(
+            withSceneFetchTimeout(
+              () => fetchPexelsClips(
                 q,
                 holdSec,
                 workDir,
@@ -17452,8 +17452,8 @@ async function adoptEmergencyGeoStockClip(
     }
     if (!PEXELS_API_KEY) continue;
     try {
-      const paths = await withTimeout(
-        fetchPexelsClips(
+      const paths = await withSceneFetchTimeout(
+        () => fetchPexelsClips(
           q,
           holdSec,
           workDir,
@@ -19763,8 +19763,8 @@ async function fetchSceneVisuals(
       onBeatProgress?.(backfillAttempts + 1, maxBackfill, "backfill");
     }, 10_000);
     try {
-        extra = await withTimeout(
-          (async () => {
+        extra = await withSceneFetchTimeout(
+          async () => {
             if (archiveOnly) {
               return fetchCuratedArchiveBeatClip(
                 stub,
@@ -19845,7 +19845,7 @@ async function fetchSceneVisuals(
               if (still && !isPipelineFallbackClip(still)) return still;
             }
             return null;
-          })(),
+          },
         backfillMs,
         `scene ${scene.index} backfill ${backfillAttempts + 1}`
       );
@@ -19911,8 +19911,8 @@ async function fetchSceneVisuals(
       onBeatProgress?.(si + 1, rescueTries, "backfill");
       let extra: string | null = null;
       try {
-        extra = await withTimeout(
-          (async () => {
+        extra = await withSceneFetchTimeout(
+          async () => {
             if (dedup.perf.fastStockMode) {
               if (
                 dedup.perf.enableAiFallback &&
@@ -19968,7 +19968,7 @@ async function fetchSceneVisuals(
               if (still && !isPipelineFallbackClip(still)) return still;
             }
             return null;
-          })(),
+          },
           backfillMs,
           `scene ${scene.index} rescue ${si + 1}`
         );
