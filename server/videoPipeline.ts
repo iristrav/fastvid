@@ -597,16 +597,29 @@ function get_activeBudgetTracker(): BudgetTracker | null { return getRenderCtx()
 function set_activeRenderBudget(v: RenderBudget | null)   { const c = getRenderCtx(); c.renderBudget = v; }
 function set_activeBudgetTracker(v: BudgetTracker | null) { const c = getRenderCtx(); c.budgetTracker = v; }
 
+// Cancellation scope for one scene's visuals-fetching attempt. When that attempt is
+// abandoned on timeout (see withSceneFetchTimeout below), every ffmpeg/ffprobe child spawned
+// while inside this scope is hard-killed and any further exec() calls in the same scope are
+// rejected immediately — otherwise the abandoned call keeps running in the background,
+// spawning new processes indefinitely and starving memory from the scenes that follow it.
+type SceneFetchScope = { signal: AbortSignal; children: Set<import("child_process").ChildProcess> };
+const sceneFetchScopeStorage = new AsyncLocalStorage<SceneFetchScope>();
+
 // execRaw exposes the ChildProcess so withTimeout can kill it on abort,
 // and registers it with the active render watchdog for hard-kill coverage.
 const execRaw = (cmd: string): Promise<{ stdout: string; stderr: string }> & { childProcess?: import("child_process").ChildProcess } => {
   let child: import("child_process").ChildProcess | undefined;
+  const fetchScope = sceneFetchScopeStorage.getStore();
   const p = new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
     child = execCb(niceCmd(cmd), { maxBuffer: 256 * 1024 * 1024 }, (err, stdout, stderr) => {
+      if (child) fetchScope?.children.delete(child);
       if (err) { (err as NodeJS.ErrnoException & { stdout?: string; stderr?: string }).stdout = stdout; (err as NodeJS.ErrnoException & { stdout?: string; stderr?: string }).stderr = stderr; reject(err); }
       else resolve({ stdout, stderr });
     });
-    if (child) get_activeWatchdog()?.trackChild(child);
+    if (child) {
+      get_activeWatchdog()?.trackChild(child);
+      fetchScope?.children.add(child);
+    }
   }) as Promise<{ stdout: string; stderr: string }> & { childProcess?: import("child_process").ChildProcess };
   p.childProcess = child;
   return p;
@@ -649,6 +662,12 @@ export function clearWorkerHeartbeat(): void { _workerHeartbeatLabel = "idle"; }
 export function getWorkerHeartbeat(): string { return _workerHeartbeatLabel; }
 
 const exec = async (cmd: string, eagainRetriesLeft = EXEC_FORK_RETRIES): Promise<{ stdout: string; stderr: string }> => {
+  // If the enclosing scene-visuals attempt already timed out and was abandoned, refuse to
+  // spawn more work — otherwise fallback/retry logic just keeps opening new ffmpeg/ffprobe
+  // processes forever in the background (see withSceneFetchTimeout).
+  if (sceneFetchScopeStorage.getStore()?.signal.aborted) {
+    throw new Error(`[SceneFetchScope] Aborted — skipping: ${cmd.slice(0, 120)}`);
+  }
   // Log every FFmpeg call with the full command so hangs can be diagnosed.
   if (cmd.startsWith(FFMPEG_BIN) || /\bffmpeg\b/.test(cmd.slice(0, 80))) {
     console.log(`[FFmpegCmd] ${cmd.slice(0, 1200)}`);
@@ -2597,6 +2616,36 @@ function withTimeout<T>(
       reject(pipelineError(PIPELINE_ERROR.TIMEOUT, `Timeout: ${label} exceeded ${Math.round(delayMs / 1000)}s`));
     }, delayMs);
     promise.then(
+      (val) => { clearTimeout(timer); resolve(val); },
+      (err) => { clearTimeout(timer); reject(err); }
+    );
+  });
+}
+
+// Like withTimeout, but for multi-step async work (e.g. fetchSceneVisuals) that spawns many
+// ffmpeg/ffprobe children internally rather than exposing a single .childProcess. On timeout
+// this hard-kills every child spawned inside `fn` and marks the scope aborted so any
+// in-flight retry/fallback logic inside `fn` stops spawning new work instead of continuing
+// to run — unbounded — in the background after the caller has already moved on.
+function withSceneFetchTimeout<T>(fn: () => Promise<T>, ms: number, label: string): Promise<T> {
+  const delayMs = Math.max(1, Math.round(ms));
+  const controller = new AbortController();
+  const scope: SceneFetchScope = { signal: controller.signal, children: new Set() };
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      controller.abort();
+      for (const child of scope.children) {
+        if (!child.killed) {
+          try { child.kill("SIGKILL"); } catch { /* already dead */ }
+        }
+      }
+      if (scope.children.size > 0) {
+        console.warn(`[withSceneFetchTimeout] Killed ${scope.children.size} orphaned child process(es) for: ${label}`);
+      }
+      scope.children.clear();
+      reject(pipelineError(PIPELINE_ERROR.TIMEOUT, `Timeout: ${label} exceeded ${Math.round(delayMs / 1000)}s`));
+    }, delayMs);
+    sceneFetchScopeStorage.run(scope, fn).then(
       (val) => { clearTimeout(timer); resolve(val); },
       (err) => { clearTimeout(timer); reject(err); }
     );
@@ -22665,8 +22714,8 @@ async function _runVideoPipelineInner(
                 svr = await timePipelineStep(
                   pipelineStepTiming, "image_search",
                   `Scene ${scene.index} visuals (all beats)`,
-                  () => withTimeout(
-                    fetchSceneVisuals(
+                  () => withSceneFetchTimeout(
+                    () => fetchSceneVisuals(
                       scene, workDir, topicContext, visualDedup,
                       (beatIdx, beatTotal, phase) => {
                         onProgress?.({
@@ -22981,8 +23030,8 @@ async function _runVideoPipelineInner(
             "image_search",
             `Scene ${scene.index} visuals (all beats)`,
             () =>
-              withTimeout(
-                fetchSceneVisuals(
+              withSceneFetchTimeout(
+                () => fetchSceneVisuals(
                   scene,
                   workDir,
                   topicContext,

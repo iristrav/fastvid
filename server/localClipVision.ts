@@ -98,6 +98,21 @@ async function importTransformersPipeline() {
   return pipeline;
 }
 
+// CLIP's combined ONNX graph — the one `pipeline("feature-extraction", CLIP_MODEL)` loads via
+// AutoModel — requires both `input_ids` AND `pixel_values` on every forward pass, so calling it
+// with text only throws "Missing the following inputs: pixel_values". The text tower has to be
+// loaded directly via CLIPTextModelWithProjection instead of the generic pipeline() helper.
+async function importClipTextModelClasses() {
+  const cacheDir = configureTransformersEnv();
+  const modelExists = clipModelExistsLocally(cacheDir);
+  const { env, AutoTokenizer, CLIPTextModelWithProjection } = await import("@xenova/transformers");
+  env.cacheDir = cacheDir;
+  env.allowRemoteModels = !modelExists;
+  env.useBrowserCache = false;
+  env.backends.onnx.wasm.numThreads = 1;
+  return { AutoTokenizer, CLIPTextModelWithProjection };
+}
+
 /** Local visual QA on by default — set ENABLE_LOCAL_VISION=false to disable. */
 export function localVisionEnabled(): boolean {
   return process.env.ENABLE_LOCAL_VISION !== "false";
@@ -401,14 +416,28 @@ async function loadTextPipeline(): Promise<ClipPipeline | null> {
   const loadTimeout = isFirstDownload ? PIPELINE_DOWNLOAD_TIMEOUT_MS : PIPELINE_LOAD_TIMEOUT_MS;
   console.log(`[LocalVision] BEFORE load text pipeline (attempt ${textLoadAttempts + 1})`);
   try {
-    const pipeline = await withPipelineTimeout(importTransformersPipeline(), "import @xenova/transformers (text)", loadTimeout);
-    console.log(`[LocalVision] BEFORE pipeline("feature-extraction")`);
-    textPipeline = (await withPipelineTimeout(
-      pipeline("feature-extraction", CLIP_MODEL, { quantized: true }),
-      `pipeline(feature-extraction, ${CLIP_MODEL})`,
+    const { AutoTokenizer, CLIPTextModelWithProjection } = await withPipelineTimeout(
+      importClipTextModelClasses(), "import @xenova/transformers (text)", loadTimeout
+    );
+    console.log(`[LocalVision] BEFORE CLIPTextModelWithProjection.from_pretrained`);
+    const [tokenizer, textModel] = await withPipelineTimeout(
+      Promise.all([
+        AutoTokenizer.from_pretrained(CLIP_MODEL),
+        CLIPTextModelWithProjection.from_pretrained(CLIP_MODEL, { quantized: true }),
+      ]),
+      `CLIPTextModelWithProjection.from_pretrained(${CLIP_MODEL})`,
       loadTimeout
-    )) as ClipPipeline;
-    console.log(`[LocalVision] AFTER pipeline("feature-extraction") — OK`);
+    );
+    console.log(`[LocalVision] AFTER CLIPTextModelWithProjection.from_pretrained — OK`);
+    textPipeline = (async (text: string) => {
+      const inputs = tokenizer(text, { padding: true, truncation: true });
+      const { text_embeds } = await textModel(inputs);
+      // L2-normalize so text and image embeddings stay directly comparable via cosine
+      // similarity — matching the { normalize: true } behavior the old pipeline() call used.
+      const data = Array.from(text_embeds.data as Float32Array | number[]);
+      const norm = Math.sqrt(data.reduce((s, v) => s + v * v, 0)) || 1;
+      return { data: Float32Array.from(data.map((v) => v / norm)) };
+    }) as ClipPipeline;
     pipelineLoadFailed = false;
     return textPipeline;
   } catch (err) {
