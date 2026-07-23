@@ -128,6 +128,10 @@ export function ffmpegBin(): string {
   return process.env.FFMPEG_BIN?.trim() || "ffmpeg";
 }
 
+function ffprobeBin(): string {
+  return process.env.FFPROBE_BIN?.trim() || "ffprobe";
+}
+
 export function clipSimToScore(sim: number): number {
   return Math.max(0, Math.min(10, Math.round(sim * 40)));
 }
@@ -613,15 +617,29 @@ function isForkPressureSpawnError(err: unknown): boolean {
   return /resource temporarily unavailable/i.test(msg) || /cannot fork/i.test(msg);
 }
 
+/** ffmpeg's -ss takes a time (seconds, or HH:MM:SS) — it has no "38%" percentage syntax, so a
+ *  fraction has to be resolved against the real duration first. */
+async function probeDurationSec(videoPath: string, timeoutMs = 8_000): Promise<number> {
+  try {
+    const { stdout } = await exec(
+      `"${ffprobeBin()}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${videoPath}"`,
+      { timeout: timeoutMs }
+    );
+    const d = parseFloat(String(stdout).trim());
+    return isNaN(d) || d <= 0 ? 0 : d;
+  } catch {
+    return 0;
+  }
+}
+
 async function extractFrameAtFractionOnce(
   videoPath: string,
   outPath: string,
-  fraction: number,
+  seekSeconds: number,
   timeoutMs: number
 ): Promise<void> {
-  const pct = `${Math.round(fraction * 1000) / 10}%`;
   await new Promise<void>((resolve, reject) => {
-    const args = ["-y", "-ss", pct, "-i", videoPath, "-frames:v", "1", "-q:v", "3", outPath];
+    const args = ["-y", "-ss", seekSeconds.toFixed(2), "-i", videoPath, "-frames:v", "1", "-q:v", "3", outPath];
     const child = spawn(ffmpegBin(), args, { stdio: ["ignore", "ignore", "pipe"] });
     let stderr = "";
     child.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });
@@ -660,10 +678,13 @@ export async function extractFrameAtFraction(
   timeoutMs = 12_000
 ): Promise<boolean> {
   if (!fs.existsSync(videoPath)) return false;
+  const durationSec = await probeDurationSec(videoPath, Math.min(timeoutMs, 8_000));
+  // Duration unknown (probe failed) — grab the first frame rather than aborting outright.
+  const seekSeconds = durationSec > 0 ? Math.max(0, Math.min(fraction * durationSec, durationSec - 0.1)) : 0;
   let retriesLeft = 2;
   while (true) {
     try {
-      await extractFrameAtFractionOnce(videoPath, outPath, fraction, timeoutMs);
+      await extractFrameAtFractionOnce(videoPath, outPath, seekSeconds, timeoutMs);
       return true;
     } catch (err) {
       if (retriesLeft > 0 && isForkPressureSpawnError(err)) {
