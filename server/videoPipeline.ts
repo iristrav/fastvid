@@ -679,12 +679,26 @@ const isForkPressureError = (err: unknown): boolean => {
 // Wrapper that retries with a different ffmpeg binary if the current one fails
 const EXEC_FORK_RETRIES = 5;
 // ── Worker heartbeat ──────────────────────────────────────────────────────────
-// Tracks the current blocking function for the 5s heartbeat log.
-let _workerHeartbeatLabel = "idle";
-export function setWorkerHeartbeat(label: string): void { _workerHeartbeatLabel = label; }
-export function clearWorkerHeartbeat(): void { _workerHeartbeatLabel = "idle"; }
-/** Returns the current heartbeat label (read by worker.ts timer). */
-export function getWorkerHeartbeat(): string { return _workerHeartbeatLabel; }
+// Tracks every function currently blocking, keyed by its own label. A single shared string
+// couldn't represent several scenes/beats running concurrently — whichever call started most
+// recently silently overwrote everyone else's status, and if nothing ever called it again the
+// label (and its "still running" counter) would look stuck forever even after that specific
+// call had long since finished. Each caller now owns its own entry and clears it when done.
+const _activeHeartbeats = new Map<string, number>();
+export function setWorkerHeartbeat(label: string): void { _activeHeartbeats.set(label, Date.now()); }
+/** Clears one label, or every active label when called with no argument (legacy behavior). */
+export function clearWorkerHeartbeat(label?: string): void {
+  if (label) _activeHeartbeats.delete(label);
+  else _activeHeartbeats.clear();
+}
+/** Returns a snapshot of every currently active label with its elapsed time (read by worker.ts timer). */
+export function getWorkerHeartbeat(): string {
+  if (_activeHeartbeats.size === 0) return "idle";
+  const now = Date.now();
+  return Array.from(_activeHeartbeats.entries())
+    .map(([label, startMs]) => `${label} (${Math.round((now - startMs) / 1000)}s)`)
+    .join(" | ");
+}
 
 const exec = async (cmd: string, eagainRetriesLeft = EXEC_FORK_RETRIES): Promise<{ stdout: string; stderr: string }> => {
   // If the enclosing scene-visuals attempt already timed out and was abandoned, refuse to
@@ -19105,6 +19119,9 @@ async function ensureArchiveMontageVoiceCoverage(
   }
 }
 
+// Thin wrapper so fetchSceneVisualsInner's own heartbeat entry always gets cleared on the way
+// out — success, thrown error, or cancellation — instead of lingering under whichever scene
+// happened to set it last (see the heartbeat tracking comment above setWorkerHeartbeat).
 async function fetchSceneVisuals(
   scene: Scene,
   workDir: string,
@@ -19115,7 +19132,27 @@ async function fetchSceneVisuals(
   prefetchPools?: Map<number, Promise<import("./scenePool").SceneCandidatePool>>,
   prefetchFunnels?: Map<number, Promise<RetrievalFunnelResult>>
 ): Promise<SceneVisualsResult> {
-  setWorkerHeartbeat(`fetchSceneVisuals s${scene.index}`);
+  const heartbeatLabel = `fetchSceneVisuals s${scene.index}`;
+  setWorkerHeartbeat(heartbeatLabel);
+  try {
+    return await fetchSceneVisualsInner(
+      scene, workDir, videoTitle, dedup, onBeatProgress, sceneAudioPath, prefetchPools, prefetchFunnels
+    );
+  } finally {
+    clearWorkerHeartbeat(heartbeatLabel);
+  }
+}
+
+async function fetchSceneVisualsInner(
+  scene: Scene,
+  workDir: string,
+  videoTitle: string | undefined,
+  dedup: VisualDedupState,
+  onBeatProgress?: (beatIndex: number, beatTotal: number, phase?: BeatProgressPhase) => void,
+  sceneAudioPath?: string,
+  prefetchPools?: Map<number, Promise<import("./scenePool").SceneCandidatePool>>,
+  prefetchFunnels?: Map<number, Promise<RetrievalFunnelResult>>
+): Promise<SceneVisualsResult> {
   videoTitle = coerceVisionString(videoTitle);
   if (curatedArchiveOnlyVisuals()) {
     if (isFastShortVideoLength(dedup.videoLength)) {
@@ -20621,7 +20658,34 @@ function sceneReviewInputs(
 }
 
 // ─── 5. Compose Scene Video (Vidrush-style hard-cut montage) ───────────────
+// Thin wrapper so composeSceneVideoInner's heartbeat entry is cleared on every exit path,
+// including a thrown error — the inner function only cleared it on its normal return points.
 async function composeSceneVideo(
+  scene: Scene,
+  clips: string[],
+  audioPath: string,
+  duration: number,
+  workDir: string,
+  totalScenes: number,
+  enableSubtitles = false,
+  rescueStockClip?: string | null,
+  beatDurations?: number[],
+  usedClipsOut?: string[],
+  composeOptions?: ComposeSceneOptions
+): Promise<string> {
+  const heartbeatLabel = `composeSceneVideo s${scene.index} clips=${clips.length}`;
+  setWorkerHeartbeat(heartbeatLabel);
+  try {
+    return await composeSceneVideoInner(
+      scene, clips, audioPath, duration, workDir, totalScenes, enableSubtitles,
+      rescueStockClip, beatDurations, usedClipsOut, composeOptions
+    );
+  } finally {
+    clearWorkerHeartbeat(heartbeatLabel);
+  }
+}
+
+async function composeSceneVideoInner(
   scene: Scene,
   clips: string[],
   audioPath: string,
@@ -20635,7 +20699,6 @@ async function composeSceneVideo(
   composeOptions?: ComposeSceneOptions
 ): Promise<string> {
   const _csvT0 = Date.now();
-  setWorkerHeartbeat(`composeSceneVideo s${scene.index} clips=${clips.length}`);
   console.log(`[Hang] composeSceneVideo ENTER s${scene.index} clips=${clips.length} dur=${duration.toFixed(2)}s phase=${composeOptions?.phase ?? "full"}`);
   if (composeOptions?.phase === "effects" && composeOptions.assemblyPath) {
     const r = await applySceneEffectsPass(

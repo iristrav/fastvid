@@ -135,25 +135,17 @@ async function main() {
   const { startClipBackgroundAuditor } = await import("./clipBackgroundAuditor");
   startClipBackgroundAuditor();
 
-  // ── 5s heartbeat: logs which function the pipeline is currently blocking in ──
-  // Diagnoses hangs: if label stays the same for many ticks, that's the hang site.
-  let _lastHeartbeatLabel = "";
-  let _heartbeatSameCount = 0;
+  // ── 5s heartbeat: logs every function the pipeline is currently blocking in ──
+  // getWorkerHeartbeat() now tracks one entry per concurrent call (keyed by its own label) and
+  // reports each one's own elapsed time directly, so a hang is visible as one specific entry
+  // whose elapsed time keeps climbing — it no longer gets masked or falsely implied by whatever
+  // single label happened to be set most recently across every concurrent scene/beat.
   setInterval(async () => {
     const { getWorkerHeartbeat } = await import("./videoPipeline");
     const label = getWorkerHeartbeat();
     if (label !== "idle") {
-      if (label === _lastHeartbeatLabel) {
-        _heartbeatSameCount++;
-        console.log(`[WorkerHeartbeat] ${label} (still running, ${_heartbeatSameCount * 5}s)`);
-      } else {
-        _heartbeatSameCount = 0;
-        console.log(`[WorkerHeartbeat] ${label}`);
-      }
-    } else {
-      _heartbeatSameCount = 0;
+      console.log(`[WorkerHeartbeat] ${label}`);
     }
-    _lastHeartbeatLabel = label;
   }, 5_000);
 
   setInterval(() => {
