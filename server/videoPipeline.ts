@@ -18235,6 +18235,14 @@ async function fillBeatVisual(
       // 1-min: archive first (exclusive budget), then stock — no parallel race with Pexels.
       if (await archiveFn()) return true;
       if (openingVideosOnly && (await tryArchivePasses(prefetchedRanked, true))) return true;
+      if (
+        await adoptBestSimilarBeatClip(
+          beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile, null,
+          openingVideosOnly ? { videosOnly: true } : undefined
+        )
+      ) {
+        return true;
+      }
       if (canUseLicensedStockBeat(dedup)) {
         if (
           await adoptStockBeatClipFallback(
