@@ -2549,8 +2549,8 @@ async function trimDownloadedStockClip(
   const trimDur = Math.min(clipDuration, Math.max(2.5, sourceDuration - 0.05));
   const ssStr = Math.max(0, Math.min(ss, Math.max(0, sourceDuration - trimDur - 0.1))).toFixed(2);
   try {
-    await withTimeout(
-      exec(
+    await withSceneFetchTimeout(
+      () => exec(
         `${FFMPEG_BIN} -y -ss ${ssStr} -i "${rawPath}" ` +
         `-t ${trimDur.toFixed(3)} ` +
         `-vf "${STANDARD_VF}" ` +
@@ -3882,8 +3882,8 @@ export async function fetchPexelsClips(
         // Use system ffprobe which supports -show_entries (ffmpeg-static does not have drawtext/libfreetype)
         try {
           const probeCmd = `"${FFPROBE_BIN}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${rawPath}"`;
-          const probeResult = await withTimeout(
-            exec(probeCmd),
+          const probeResult = await withSceneFetchTimeout(
+            () => exec(probeCmd),
             10_000,
             `Probe Pexels clip ${idx}`
           );
@@ -3896,8 +3896,8 @@ export async function fetchPexelsClips(
           }
           // Second check: verify video stream is readable (catches 'moov atom not found' and other corrupt MP4 errors)
           const streamCheckCmd = `"${FFPROBE_BIN}" -v error -select_streams v:0 -show_entries stream=codec_type -of default=noprint_wrappers=1:nokey=1 "${rawPath}"`;
-          const streamResult = await withTimeout(
-            exec(streamCheckCmd),
+          const streamResult = await withSceneFetchTimeout(
+            () => exec(streamCheckCmd),
             10_000,
             `Stream check Pexels clip ${idx}`
           );
@@ -4181,8 +4181,8 @@ export async function fetchPixabayClips(
 
           // Validate with ffprobe
           try {
-            const probeResult = await withTimeout(
-              exec(`"${FFPROBE_BIN}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${rawPath}"`),
+            const probeResult = await withSceneFetchTimeout(
+              () => exec(`"${FFPROBE_BIN}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${rawPath}"`),
               10_000, `Probe Pixabay clip ${idx}`
             );
             const dur = parseFloat(typeof probeResult === 'string' ? probeResult : (probeResult as any).stdout || '');
