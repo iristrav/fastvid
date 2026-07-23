@@ -1002,8 +1002,8 @@ async function fetchBeatYoutubeOnly(
 
   let paths: string[] = [];
   try {
-    paths = await withTimeout(
-      fetchYouTubeCCClips(
+    paths = await withSceneFetchTimeout(
+      () => fetchYouTubeCCClips(
         queries.slice(0, 5),
         clipFetchDur,
         workDir,
@@ -1119,8 +1119,8 @@ async function fetchBeatArchivalThenPexels(
   // sequential compose-stage budget — bound each beat's attempt and fall through on timeout.
   let ownArchiveClip: string | null = null;
   try {
-    ownArchiveClip = await withTimeout(
-      fetchCuratedArchiveBeatClip(
+    ownArchiveClip = await withSceneFetchTimeout(
+      () => fetchCuratedArchiveBeatClip(
         beat,
         scene,
         workDir,
@@ -1711,8 +1711,8 @@ async function tryBeatRealYouTubeFootage(
     ...new Set([...(adoptOpts.keywords ?? []), ...beat.keywords]),
   ].slice(0, 22);
   try {
-    return await withTimeout(
-      tryStockSources(
+    return await withSceneFetchTimeout(
+      () => tryStockSources(
         [{
           query: youtubeQueries[0],
           fetch: () =>
@@ -12210,8 +12210,8 @@ async function tryStockSources(
     const adoptMs = dedup.perf.fastStockMode ? 8_000 : 60_000;
     let clip: string | null = null;
     try {
-      clip = await withTimeout(
-        adoptClip(paths, dedup, sceneIndex, beatIndex, beatText, workDir, query, adoptOpts),
+      clip = await withSceneFetchTimeout(
+        () => adoptClip(paths, dedup, sceneIndex, beatIndex, beatText, workDir, query, adoptOpts),
         adoptMs,
         `${logLabel} adopt s${sceneIndex} b${beatIndex}`
       );
@@ -12910,8 +12910,8 @@ async function finalizeLocalClipCacheForScene(
   }
 
   try {
-    const refilled = await withTimeout(
-      refillSceneStrictVoiceMatch(scene, workDir, topicContext, dedup, sceneAudioPath),
+    const refilled = await withSceneFetchTimeout(
+      () => refillSceneStrictVoiceMatch(scene, workDir, topicContext, dedup, sceneAudioPath),
       dedup.pipelineStartedMs > 0 && Date.now() - dedup.pipelineStartedMs > visualSourcingTurboMs(dedup.videoLength)
         ? 25_000
         : 45_000,
@@ -12927,8 +12927,8 @@ async function finalizeLocalClipCacheForScene(
   }
 
   try {
-    const recovered = await withTimeout(
-      recoverSceneClipsIfEmpty(scene, workDir, topicContext, dedup),
+    const recovered = await withSceneFetchTimeout(
+      () => recoverSceneClipsIfEmpty(scene, workDir, topicContext, dedup),
       dedup.pipelineStartedMs > 0 &&
         Date.now() - dedup.pipelineStartedMs > visualSourcingTurboMs(dedup.videoLength)
         ? 20_000
@@ -12997,8 +12997,8 @@ async function ensureFastShortScenesReadyForCompose(
     }
 
     try {
-      const recovered = await withTimeout(
-        recoverSceneClipsIfEmpty(scene, workDir, topicContext, visualDedup),
+      const recovered = await withSceneFetchTimeout(
+        () => recoverSceneClipsIfEmpty(scene, workDir, topicContext, visualDedup),
         visualDedup.pipelineStartedMs > 0 &&
           Date.now() - visualDedup.pipelineStartedMs > visualSourcingTurboMs(visualDedup.videoLength)
           ? 20_000
@@ -13141,8 +13141,8 @@ async function fetchLastResortRealClip(
   // compose-stage budget — falls through to the stock chain below on timeout.
   let ownArchiveClip: string | null = null;
   try {
-    ownArchiveClip = await withTimeout(
-      fetchCuratedArchiveBeatClip(
+    ownArchiveClip = await withSceneFetchTimeout(
+      () => fetchCuratedArchiveBeatClip(
         beat,
         scene,
         workDir,
@@ -13297,8 +13297,8 @@ async function fetchPersonBeatClip(
   );
   if (clip) return clip;
 
-  const celebVids = await withTimeout(
-    fetchPersonCelebrityVideoClips(
+  const celebVids = await withSceneFetchTimeout(
+    () => fetchPersonCelebrityVideoClips(
       personName,
       clipFetchDur,
       workDir,
@@ -14089,8 +14089,8 @@ async function researchBeatClipUnified(
     for (const candidate of pool.slice(0, topN)) {
       let clip: string | null = null;
       try {
-        clip = await withTimeout(
-          adoptClip(
+        clip = await withSceneFetchTimeout(
+          () => adoptClip(
             [candidate.path],
             dedup,
             sceneIndex,
@@ -15151,8 +15151,8 @@ async function resolveBeatClipFastTurbo(
 
   const primaryMs = historicalDoc ? 15_000 : 20_000;
   try {
-    clip = await withTimeout(
-      beatPrimaryFetch(
+    clip = await withSceneFetchTimeout(
+      () => beatPrimaryFetch(
         beat,
         scene,
         workDir,
@@ -16706,8 +16706,8 @@ async function adoptWikimediaBeatClip(
         "image_search",
         "Wikimedia search+download (video)",
         () =>
-          withTimeout(
-            fetchWikimediaVideos(q, holdSec, workDir, scene.index, 1, `wiki${beat.index}v`, "", beat.keywords),
+          withSceneFetchTimeout(
+            () => fetchWikimediaVideos(q, holdSec, workDir, scene.index, 1, `wiki${beat.index}v`, "", beat.keywords),
             dedup.perf.fastStockMode ? 18_000 : 35_000,
             `Wikimedia video scene ${scene.index} beat ${beat.index}`
           ),
@@ -16800,8 +16800,8 @@ async function adoptWikimediaBeatClip(
         "image_search",
         "Wikimedia search+download (still)",
         () =>
-          withTimeout(
-            fetchWikimediaImagesV1(
+          withSceneFetchTimeout(
+            () => fetchWikimediaImagesV1(
               attempt.analysis,
               holdSec,
               workDir,
@@ -16851,8 +16851,8 @@ async function adoptWikimediaBeatClip(
   ).slice(0, geoDoc ? 6 : 4);
   for (const q of openverseQueries) {
     try {
-      const ovPaths = await withTimeout(
-        fetchOpenverseImages(q, holdSec, workDir, scene.index, 1, `wiki${beat.index}ov`, {
+      const ovPaths = await withSceneFetchTimeout(
+        () => fetchOpenverseImages(q, holdSec, workDir, scene.index, 1, `wiki${beat.index}ov`, {
           beatIndex: beat.index,
           geoDocumentary: geoDoc,
         }),
@@ -16996,8 +16996,8 @@ async function adoptKlingBeatClip(
   const genDur = Math.min(Math.max(holdSec, 4), 10);
 
   try {
-    const result = await withTimeout(
-      generateKlingBeatVideo(prompt, outPath, genDur),
+    const result = await withSceneFetchTimeout(
+      () => generateKlingBeatVideo(prompt, outPath, genDur),
       200_000,
       `Kling scene ${scene.index} beat ${beat.index}`
     );
@@ -17385,8 +17385,8 @@ async function adoptStockBeatClipFallback(
           "image_search",
           "Pixabay search+download",
           () =>
-            withTimeout(
-              fetchPixabayClips(
+            withSceneFetchTimeout(
+              () => fetchPixabayClips(
                 q,
                 holdSec,
                 workDir,
@@ -18177,16 +18177,16 @@ async function fillBeatVisual(
       ensurePipelineForceExport(dedup);
       const emergencyAdopters: Array<() => Promise<boolean>> = [
         () =>
-          withTimeout(
-            tryArchivePasses(prefetchedRanked, openingVideosOnly),
+          withSceneFetchTimeout(
+            () => tryArchivePasses(prefetchedRanked, openingVideosOnly),
             5_000,
             `emergency archive s${scene.index} b${beat.index}`
           ).catch(() => false),
       ];
       if (canUseLicensedStockBeat(dedup)) {
         emergencyAdopters.push(() =>
-          withTimeout(
-            adoptStockBeatClipFallback(
+          withSceneFetchTimeout(
+            () => adoptStockBeatClipFallback(
               beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile
             ),
             6_000,
@@ -19379,8 +19379,8 @@ async function fetchSceneVisualsInner(
         continue;
       }
       if (archiveOnly) {
-        const filled = await withTimeout(
-          adoptArchiveBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, null),
+        const filled = await withSceneFetchTimeout(
+          () => adoptArchiveBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, null),
           beatWallMs,
           `scene ${scene.index} beat ${bi} archive`
         );
@@ -19506,8 +19506,8 @@ async function fetchSceneVisualsInner(
         if (funnelClip) {
           clip = funnelClip;
         } else {
-          clip = await withTimeout(
-            resolveBeatClip(beat, scene, workDir, scene.index, clipFetchDur, dedup, {
+          clip = await withSceneFetchTimeout(
+            () => resolveBeatClip(beat, scene, workDir, scene.index, clipFetchDur, dedup, {
               spaceTopic, personName, videoTitle, adoptOpts: beatAdoptOpts,
               scenePersons, tag: `b${beat.index}`, stockReason: "funnel fallback",
             }),
@@ -19553,8 +19553,8 @@ async function fetchSceneVisualsInner(
             console.log(`[Retry] s${scene.index}b${beat.index} all ${_poolFailReasons.length} pool candidate(s) failed — falling back to per-beat retrieval. Reasons: ${_poolFailReasons.join(" | ")}`);
           }
           // Pool candidates failed to download — fall back to unified retrieval
-          clip = await withTimeout(
-            resolveBeatClip(beat, scene, workDir, scene.index, clipFetchDur, dedup, {
+          clip = await withSceneFetchTimeout(
+            () => resolveBeatClip(beat, scene, workDir, scene.index, clipFetchDur, dedup, {
               spaceTopic, personName, videoTitle, adoptOpts: beatAdoptOpts,
               scenePersons, tag: `b${beat.index}`, stockReason: "pool fallback",
             }),
@@ -19563,8 +19563,8 @@ async function fetchSceneVisualsInner(
           );
         }
       } else {
-        clip = await withTimeout(
-          resolveBeatClip(beat, scene, workDir, scene.index, clipFetchDur, dedup, {
+        clip = await withSceneFetchTimeout(
+          () => resolveBeatClip(beat, scene, workDir, scene.index, clipFetchDur, dedup, {
             spaceTopic, personName, videoTitle, adoptOpts: beatAdoptOpts,
             scenePersons, tag: `b${beat.index}`,
           }),
@@ -22319,8 +22319,8 @@ async function _runVideoPipelineInner(
         "voiceover",
         "Bulk voiceover generation",
         () =>
-          withTimeout(
-            generateBulkSceneVoiceovers(scenes, audioPaths, workDir, effectiveVoiceId, (done, total) => {
+          withSceneFetchTimeout(
+            () => generateBulkSceneVoiceovers(scenes, audioPaths, workDir, effectiveVoiceId, (done, total) => {
               onProgress?.({
                 stage:
                   done === 0
@@ -22943,8 +22943,8 @@ async function _runVideoPipelineInner(
                     result = await timePipelineStep(
                       pipelineStepTiming, "scene_composition",
                       `Scene ${scene.index} compose (total)`,
-                      () => withTimeout(
-                        composeSceneVideo(
+                      () => withSceneFetchTimeout(
+                        () => composeSceneVideo(
                           scene, svr?.clips ?? [], audioPaths[i], scene.duration, workDir, scenes.length,
                           enableSubtitles, visualDedup.lastMuskStockClip, svr?.beatDurations, usedClips,
                           composeOpts
@@ -23280,8 +23280,8 @@ async function _runVideoPipelineInner(
               holdSec: archiveVisualBeatSecForVideo(videoLength),
             };
             try {
-              await withTimeout(
-                adoptStockBeatClipFallback(
+              await withSceneFetchTimeout(
+                () => adoptStockBeatClipFallback(
                   stubBeat,
                   scene,
                   workDir,
@@ -23540,8 +23540,8 @@ async function _runVideoPipelineInner(
               pipelineStepTiming,
               "scene_composition",
               `Scene ${scene.index} compose (total)`,
-              () => withTimeout(
-                composeSceneVideo(
+              () => withSceneFetchTimeout(
+                () => composeSceneVideo(
                   scene, sceneVisualResults[i]?.clips ?? [], audioPaths[i], scene.duration, workDir, scenes.length,
                   enableSubtitles, visualDedup.lastMuskStockClip, sceneVisualResults[i]?.beatDurations, usedClips,
                   composeOpts
@@ -24440,8 +24440,8 @@ export async function rerenderFromScenes(
       duration: Math.max(edScene.durationMs / 1000, 5),
     }));
     try {
-      const bulkDurations = await withTimeout(
-        generateBulkSceneVoiceovers(voScenes, audioPaths, workDir, undefined, (done, total) => {
+      const bulkDurations = await withSceneFetchTimeout(
+        () => generateBulkSceneVoiceovers(voScenes, audioPaths, workDir, undefined, (done, total) => {
           onProgress?.(
             done === 0 ? "Creating full voiceover (one take)..." : `Generating voiceovers... (${done}/${total})`,
             30 + Math.round((done / total) * 15)
