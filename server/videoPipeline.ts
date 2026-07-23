@@ -18252,85 +18252,43 @@ async function fillBeatVisual(
         }
       }
     } else {
-      const geoDoc = isGeoDocumentaryContext(beat.text, videoTitle);
-      const parallelAuthentic = geoDoc;
-      const wikiVideo = () =>
-        adoptWikimediaBeatClip(
-          beat,
-          scene,
-          workDir,
-          videoTitle,
-          dedup,
-          pushClip,
-          holdSec,
-          semanticProfile,
-          { videoOnly: true }
-        );
-      const iaClip = () =>
-        adoptInternetArchiveBeatClip(
-          beat,
-          scene,
-          workDir,
-          videoTitle,
-          dedup,
-          pushClip,
-          holdSec,
-          semanticProfile
-        );
-
-      if (parallelAuthentic) {
-        const primary: Array<() => Promise<boolean>> = [
-          () => tryArchivePasses(prefetchedRanked, openingVideosOnly),
-          wikiVideo,
-        ];
-        if (geoDoc) primary.push(iaClip);
-        if (await raceFirstBeatAdopt(primary)) return true;
-      } else {
-        if (await tryArchivePasses(prefetchedRanked, openingVideosOnly)) return true;
-        if (await wikiVideo()) return true;
-        if (await iaClip()) return true;
-        if (!openingVideosOnly) {
-          if (await adoptEuropeanaBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
-            return true;
-          }
-        }
-        if (openingVideosOnly && (await tryArchivePasses(prefetchedRanked, true))) return true;
-        if (await tryArchivePasses(prefetchedRanked, false)) return true;
+      // ── Tier 1: own archive — strict retries, then a final relaxed/best-similar pass ──
+      if (await tryArchivePasses(prefetchedRanked, openingVideosOnly)) return true;
+      if (openingVideosOnly && (await tryArchivePasses(prefetchedRanked, false))) return true;
+      if (
+        await adoptBestSimilarBeatClip(
+          beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile, null,
+          openingVideosOnly ? { videosOnly: true } : undefined
+        )
+      ) {
+        return true;
       }
 
-      if (!openingVideosOnly) {
-        if (await adoptEuropeanaBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
-          return true;
-        }
+      // ── Tier 2: external authentic sources — Wikimedia video, Internet Archive, Europeana ──
+      if (
+        await adoptWikimediaBeatClip(
+          beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile, { videoOnly: true }
+        )
+      ) {
+        return true;
       }
-      if (openingVideosOnly && parallelAuthentic) {
-        if (await tryArchivePasses(prefetchedRanked, false)) return true;
-        if (await adoptEuropeanaBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
-          return true;
-        }
+      if (await adoptInternetArchiveBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
+        return true;
       }
+      if (await adoptEuropeanaBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
+        return true;
+      }
+
+      // ── Tier 3: Wikimedia stills — only when a still image is acceptable (not an opening/video-only beat) ──
       if (
         !openingVideosOnly &&
         canUseDocumentaryStill(dedup) &&
         wikimediaInternetStillsEnabled() &&
         (await adoptWikimediaBeatClip(
-          beat,
-          scene,
-          workDir,
-          videoTitle,
-          dedup,
-          pushClip,
-          holdSec,
-          semanticProfile,
-          { stillsOnly: true }
+          beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile, { stillsOnly: true }
         ))
       ) {
         return true;
-      }
-      if (openingVideosOnly && !parallelAuthentic) {
-        if (await adoptEuropeanaBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
-          return true;
-        }
       }
     }
   } else {
@@ -18349,9 +18307,7 @@ async function fillBeatVisual(
     }
   }
 
-  if (await adoptAiBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
-    return true;
-  }
+  // ── Tier 4: licensed stock (Pexels/Pixabay) ──
   if (canUseLicensedStockBeat(dedup)) {
     if (
       await adoptStockBeatClipFallback(
@@ -18368,23 +18324,9 @@ async function fillBeatVisual(
       return true;
     }
   }
-  if (curatedArchiveOnlyVisuals()) {
-    if (
-      await adoptBestSimilarBeatClip(
-        beat,
-        scene,
-        workDir,
-        videoTitle,
-        dedup,
-        pushClip,
-        holdSec,
-        semanticProfile,
-        null,
-        archiveNeedsOpeningFootage(dedup) ? { videosOnly: true } : undefined
-      )
-    ) {
-      return true;
-    }
+  // ── Tier 5: AI-generated clip, then final rescue ──
+  if (await adoptAiBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
+    return true;
   }
   if (
     await rescueBeatVisualWhenEmpty(
