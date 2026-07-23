@@ -2572,7 +2572,7 @@ async function trimDownloadedStockClip(
         `${FFMPEG_BIN} -y -ss ${ssStr} -i "${rawPath}" ` +
         `-t ${trimDur.toFixed(3)} ` +
         `-vf "${STANDARD_VF}" ` +
-        `-c:v libx264 -preset veryfast -crf 18 -an -pix_fmt yuv420p "${outPath}"`
+        `-c:v libx264 ${pipelineFfmpegThreadFlag()} -preset veryfast -crf 18 -an -pix_fmt yuv420p "${outPath}"`
       ),
       35_000,
       label
@@ -3727,7 +3727,7 @@ async function generateStabilityAIClip(
           `${FFMPEG_BIN} -y -loop 1 -i "${pngPath}" ` +
           `-vf "scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT},` +
           `zoompan=z='min(zoom+${zoomStep},1.07)':x='${panX}':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=${fps}" ` +
-          `-t ${duration} -r ${fps} -c:v libx264 -preset fast -crf 18 -pix_fmt yuv420p "${outputPath}"`
+          `-t ${duration} -r ${fps} -c:v libx264 ${pipelineFfmpegThreadFlag()} -preset fast -crf 18 -pix_fmt yuv420p "${outputPath}"`
         ),
         90_000,
         `AI image to video scene ${sceneIndex}`
@@ -4357,7 +4357,7 @@ async function encodeStillImageMp4(
         `select='eq(n\\,0)',` +
         `zoompan=z='min(zoom+${zoomStep.toFixed(7)},${zoomEnd})':x='iw/2-(iw/zoom/2)':y='${yExpr}':` +
         `d=${totalFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=${fps}" ` +
-        `-frames:v ${totalFrames} -c:v libx264 -preset veryfast -crf 18 -an -pix_fmt yuv420p -r ${fps} "${outPath}"`
+        `-frames:v ${totalFrames} -c:v libx264 ${pipelineFfmpegThreadFlag()} -preset veryfast -crf 18 -an -pix_fmt yuv420p -r ${fps} "${outPath}"`
     ),
     25_000,
     label
@@ -5157,7 +5157,7 @@ async function padShortClipWithNext(
       await withSceneFetchTimeout(
         () => exec(
           `${FFMPEG_BIN} -y -i "${fillPath}" -t ${remaining.toFixed(3)} -vf "${STANDARD_VF}" ` +
-          `-c:v libx264 -preset veryfast -crf 18 -an -pix_fmt yuv420p "${trimmedFill}"`
+          `-c:v libx264 ${pipelineFfmpegThreadFlag()} -preset veryfast -crf 18 -an -pix_fmt yuv420p "${trimmedFill}"`
         ),
         25_000,
         `padShortClip-trim-${attempt} s${scene.index}b${beat.index}`
@@ -5186,7 +5186,7 @@ async function padShortClipWithNext(
       await withSceneFetchTimeout(
         () => exec(
           `${FFMPEG_BIN} -y -f concat -safe 0 -i "${listFile}" -vf "${STANDARD_VF}" ` +
-          `-c:v libx264 -preset veryfast -crf 18 -an -pix_fmt yuv420p "${combined}"`
+          `-c:v libx264 ${pipelineFfmpegThreadFlag()} -preset veryfast -crf 18 -an -pix_fmt yuv420p "${combined}"`
         ),
         40_000,
         `padShortClip-concat-reencode s${scene.index}b${beat.index}`
@@ -5239,7 +5239,7 @@ async function extendLastClip(
     try {
       await withSceneFetchTimeout(
         () => exec(
-          `${FFMPEG_BIN} -y -stream_loop -1 -i "${lastClipPath}" -t ${safeDuration.toFixed(2)} -c:v libx264 -preset ultrafast -crf 28 -an "${out}"`
+          `${FFMPEG_BIN} -y -stream_loop -1 -i "${lastClipPath}" -t ${safeDuration.toFixed(2)} -c:v libx264 ${pipelineFfmpegThreadFlag()} -preset ultrafast -crf 28 -an "${out}"`
         ),
         25_000,
         `extendLastClip-reencode s${sceneIndex}b${beatIndex}`
@@ -5274,7 +5274,7 @@ async function generateGuaranteedBeatClip(
           `${FFMPEG_BIN} -y -f lavfi -i "color=c=#${color}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:r=25" -t ${safeDur} ` +
           `-vf "drawtext=text='${safeText}':fontcolor=white:fontsize=52:x=(w-text_w)/2:y=(h-text_h)/2:` +
           `shadowcolor=black:shadowx=3:shadowy=3:alpha='if(lt(t,0.4),t/0.4,1)'" ` +
-          `-c:v libx264 -preset ultrafast -pix_fmt yuv420p -an "${outputPath}"`
+          `-c:v libx264 ${pipelineFfmpegThreadFlag()} -preset ultrafast -pix_fmt yuv420p -an "${outputPath}"`
         ),
         30_000,
         `Guaranteed beat text overlay s${sceneIndex}b${slotIndex}`
@@ -5349,8 +5349,8 @@ async function _generateColorFallbackInner(sceneIndex: number, safeDuration: num
   const colors = ["3a4a5e", "4a5a6e", "3a5a6e", "4a4a5e", "3a5a5e", "4a5a5e", "3a4a6e", "4a4a6e"];
   const color = colors[Math.abs(sceneIndex) % colors.length];
   const commands = [
-    `${FFMPEG_BIN} -y -f lavfi -i "color=c=#${color}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:r=25" -t ${safeDuration} -c:v libx264 -preset ultrafast -pix_fmt yuv420p -an "${out}"`,
-    `${FFMPEG_BIN} -y -f lavfi -i "color=c=black:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:r=25" -t ${safeDuration} -c:v libx264 -preset ultrafast -pix_fmt yuv420p -an "${out}"`,
+    `${FFMPEG_BIN} -y -f lavfi -i "color=c=#${color}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:r=25" -t ${safeDuration} -c:v libx264 ${pipelineFfmpegThreadFlag()} -preset ultrafast -pix_fmt yuv420p -an "${out}"`,
+    `${FFMPEG_BIN} -y -f lavfi -i "color=c=black:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:r=25" -t ${safeDuration} -c:v libx264 ${pipelineFfmpegThreadFlag()} -preset ultrafast -pix_fmt yuv420p -an "${out}"`,
     `${FFMPEG_BIN} -y -f lavfi -i "color=c=black:s=1280x720:r=25" -t ${safeDuration} -c:v mpeg4 -q:v 5 -an "${out}"`,
     `${FFMPEG_BIN} -y -f lavfi -i "color=c=black:s=640x360:r=25" -t ${safeDuration} -c:v mpeg4 -q:v 8 -an "${out}"`,
   ];
@@ -5690,7 +5690,7 @@ async function generateLeonardoAIClip(
         `${FFMPEG_BIN} -y -loop 1 -i "${pngPath}" ` +
         `-vf "scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT},` +
         `zoompan=z='min(zoom+${zoomStep.toFixed(6)},${zoomEnd})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=${fps}" ` +
-        `-t ${duration} -r ${fps} -c:v libx264 -preset fast -crf 18 -pix_fmt yuv420p "${leonardoOutputPath}"`
+        `-t ${duration} -r ${fps} -c:v libx264 ${pipelineFfmpegThreadFlag()} -preset fast -crf 18 -pix_fmt yuv420p "${leonardoOutputPath}"`
       ),
       90_000, `Leonardo AI image to video scene ${sceneIndex}`
     );
@@ -6016,7 +6016,7 @@ async function trimRemoteVideoToClip(
       () => exec(
         `${FFMPEG_BIN} -y -ss ${clipStart} -i "${sourcePath}" -t ${duration} ` +
         `-vf "${STANDARD_VF}" ` +
-        `-c:v libx264 -preset veryfast -crf 22 -an -pix_fmt yuv420p "${outputPath}"`
+        `-c:v libx264 ${pipelineFfmpegThreadFlag()} -preset veryfast -crf 22 -an -pix_fmt yuv420p "${outputPath}"`
       ),
       90_000,
       `Trim ${label}`
@@ -6483,7 +6483,7 @@ async function trimArchiveStreamToClip(
       () => exec(
         `${FFMPEG_BIN} -y -ss ${startSec} -i "${videoUrl}" -t ${clipDur} ` +
           `-vf "${STANDARD_VF}" ` +
-          `-c:v libx264 -preset veryfast -crf 22 -an -pix_fmt yuv420p "${outputPath}"`
+          `-c:v libx264 ${pipelineFfmpegThreadFlag()} -preset veryfast -crf 22 -an -pix_fmt yuv420p "${outputPath}"`
       ),
       fastMode ? 50_000 : 120_000,
       `Archive stream trim ${label}`
@@ -10245,7 +10245,7 @@ function montageEncodeFlags(montageFilterOpts?: MontageFilterOpts): string {
   const fast = montageFilterOpts?.fastEncode === true;
   const preset = fast ? MONTAGE_SEGMENT_ENCODE_PRESET : "veryfast";
   const crf = fast ? 22 : 18;
-  return `-c:v libx264 -preset ${preset} -crf ${crf}`;
+  return `-c:v libx264 ${pipelineFfmpegThreadFlag()} -preset ${preset} -crf ${crf}`;
 }
 
 function formatFfmpegExecError(err: unknown): string {
@@ -10506,7 +10506,7 @@ async function renderMontageVideoOnly(
     () => exec(
       `${FFMPEG_BIN} -y ${inputs} -filter_complex "${scaleFilters}${mergeFilter};${montageOutVF}" ` +
         `-map "[vmont]" -an -vsync cfr -t ${targetDur.toFixed(3)} ${threadFlag} ` +
-        `-c:v libx264 -preset ${MONTAGE_SEGMENT_ENCODE_PRESET} -crf 18 -pix_fmt yuv420p "${outputPath}"`
+        `-c:v libx264 ${pipelineFfmpegThreadFlag()} -preset ${MONTAGE_SEGMENT_ENCODE_PRESET} -crf 18 -pix_fmt yuv420p "${outputPath}"`
     ),
     composeTimeout,
     `Montage video-only scene ${sceneIndex}`
@@ -10642,7 +10642,7 @@ async function renderSingleMontageSegment(
         `${FFMPEG_BIN} -y -ss ${startSec.toFixed(3)} -i "${clipPath}" -t ${effectiveDur.toFixed(3)} ` +
           `-filter_complex "${filterComplex}" -map "[vout]" ` +
           `-an -vsync cfr ${threadFlag} ` +
-          `-c:v libx264 -preset ${MONTAGE_SEGMENT_ENCODE_PRESET} -crf 18 -pix_fmt yuv420p "${outputPath}"`
+          `-c:v libx264 ${pipelineFfmpegThreadFlag()} -preset ${MONTAGE_SEGMENT_ENCODE_PRESET} -crf 18 -pix_fmt yuv420p "${outputPath}"`
       ),
       composeTimeout,
       `Montage segment+text scene ${sceneIndex} clip ${clipIndex}`
@@ -10652,7 +10652,7 @@ async function renderSingleMontageSegment(
       () => exec(
         `${FFMPEG_BIN} -y -ss ${startSec.toFixed(3)} -i "${clipPath}" -t ${effectiveDur.toFixed(3)} ` +
           `-vf "${montageBranchNormVF()},setpts=PTS-STARTPTS" -an -vsync cfr ${threadFlag} ` +
-          `-c:v libx264 -preset ${MONTAGE_SEGMENT_ENCODE_PRESET} -crf 18 -pix_fmt yuv420p "${outputPath}"`
+          `-c:v libx264 ${pipelineFfmpegThreadFlag()} -preset ${MONTAGE_SEGMENT_ENCODE_PRESET} -crf 18 -pix_fmt yuv420p "${outputPath}"`
       ),
       composeTimeout,
       `Montage segment scene ${sceneIndex} clip ${clipIndex}`
@@ -10712,7 +10712,7 @@ async function renderSequentialArchiveMontage(
       () => exec(
         `${FFMPEG_BIN} -y -i "${segmentPaths[0]!}" -vf "${padFilter}${FPS_FORMAT_VF}" ` +
           `-an -vsync cfr -t ${outDur.toFixed(3)} ${threadFlag} ` +
-          `-c:v libx264 -preset ${MONTAGE_SEGMENT_ENCODE_PRESET} -crf 18 -pix_fmt yuv420p "${outputPath}"`
+          `-c:v libx264 ${pipelineFfmpegThreadFlag()} -preset ${MONTAGE_SEGMENT_ENCODE_PRESET} -crf 18 -pix_fmt yuv420p "${outputPath}"`
       ),
       composeTimeout,
       `Sequential single-clip montage scene ${sceneIndex}`
@@ -10778,7 +10778,7 @@ async function renderInlineMontageToFile(
     () => exec(
       `${FFMPEG_BIN} -y ${inputs} -filter_complex "${scaleFilters}${mergeFilter};${montageOutVF}" ` +
         `-map "[vmont]" -vsync cfr -t ${outDur.toFixed(3)} ${threadFlag} ` +
-        `-c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p "${outputPath}"`
+        `-c:v libx264 ${pipelineFfmpegThreadFlag()} -preset veryfast -crf 18 -pix_fmt yuv420p "${outputPath}"`
     ),
     composeTimeout,
     `Inline montage-only scene ${sceneIndex}`
@@ -10825,7 +10825,7 @@ async function composeBatchedArchiveSceneWithAudio(
         `${FFMPEG_BIN} -y -i "${montageOnlyPath}" -i "${safeAudioPath}" ` +
           `-filter_complex "[0:v]${FPS_FORMAT_VF}[vout];${voiceAudioFilter}" ` +
           `-map "[vout]" -map "[aout]" -vsync cfr -t ${outDur.toFixed(3)} ${threadFlag} ` +
-          `-c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
+          `-c:v libx264 ${pipelineFfmpegThreadFlag()} -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
       ),
       composeTimeout,
       `Batched montage+audio scene ${sceneIndex}`
@@ -10848,7 +10848,7 @@ async function composeBatchedArchiveSceneWithAudio(
         `${FFMPEG_BIN} -y -i "${videoSrc}" -i "${safeAudioPath}"${overlayInputs} ` +
           `-filter_complex "[0:v]${FPS_FORMAT_VF}[vmont]${filterChain};[${finalLabel}]${fadeFilter}[vout];${voiceAudioFilter}" ` +
           `-map "[vout]" -map "[aout]" -vsync cfr -t ${outDur.toFixed(3)} ${threadFlag} ` +
-          `-c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
+          `-c:v libx264 ${pipelineFfmpegThreadFlag()} -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
       ),
       composeTimeout,
       `Batched montage+overlays scene ${sceneIndex}`
@@ -10860,7 +10860,7 @@ async function composeBatchedArchiveSceneWithAudio(
       `${FFMPEG_BIN} -y -i "${videoSrc}" -i "${safeAudioPath}" ` +
         `-filter_complex "[0:v]${FPS_FORMAT_VF}[v];[v]${fadeFilter}[vout];${voiceAudioFilter}" ` +
         `-map "[vout]" -map "[aout]" -vsync cfr -t ${outDur.toFixed(3)} ${threadFlag} ` +
-        `-c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
+        `-c:v libx264 ${pipelineFfmpegThreadFlag()} -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
     ),
     composeTimeout,
     `Batched montage+labels scene ${sceneIndex}`
@@ -20346,7 +20346,7 @@ async function renderChapterCard(
         `drawtext=text='${safeTitle}':fontcolor=black:fontsize=80:x=(w-text_w)/2:y=(h-text_h)/2:line_spacing=10` +
         `[vout]" ` +
         `-map "[vout]" -map "1:a" ` +
-        `-t ${CARD_DURATION} -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -r 25 -c:a aac -b:a 320k -shortest "${outputPath}"`
+        `-t ${CARD_DURATION} -c:v libx264 ${pipelineFfmpegThreadFlag()} -preset veryfast -crf 18 -pix_fmt yuv420p -r 25 -c:a aac -b:a 320k -shortest "${outputPath}"`
       ),
       15_000, `Chapter card ${chapterIndex}`
     );
@@ -20369,7 +20369,7 @@ async function renderIntroCardFFmpeg(videoTitle: string, duration: number, workD
       `-filter_complex "[0:v]drawtext=text='${safeTitle}':fontcolor=white:fontsize=52:x=(w-text_w)/2:y=h/2-40:line_spacing=10,` +
       `fade=t=in:st=0:d=0.4,fade=t=out:st=${duration - 0.4}:d=0.4[vout]" ` +
       `-map "[vout]" -map "1:a" ` +
-      `-t ${duration} -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -r 25 -c:a aac -b:a 320k -shortest "${outputPath}"`
+      `-t ${duration} -c:v libx264 ${pipelineFfmpegThreadFlag()} -preset veryfast -crf 18 -pix_fmt yuv420p -r 25 -c:a aac -b:a 320k -shortest "${outputPath}"`
     ),
     60_000, "Intro card FFmpeg render"
   );
@@ -20391,7 +20391,7 @@ async function renderOutroCardFFmpeg(duration: number, workDir: string): Promise
       `-filter_complex "[0:v]drawtext=text='Thanks for watching!':fontcolor=white:fontsize=64:x=(w-text_w)/2:y=h/2-80,` +
       `fade=t=in:st=0:d=0.4,fade=t=out:st=${duration - 0.4}:d=0.4[vout]" ` +
       `-map "[vout]" -map "1:a" ` +
-      `-t ${duration} -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -r 25 -c:a aac -b:a 320k -shortest "${outputPath}"`
+      `-t ${duration} -c:v libx264 ${pipelineFfmpegThreadFlag()} -preset veryfast -crf 18 -pix_fmt yuv420p -r 25 -c:a aac -b:a 320k -shortest "${outputPath}"`
     ),
     90_000, "Outro card FFmpeg render"
   );
@@ -21355,7 +21355,7 @@ async function composeSceneVideoInner(
           `${FFMPEG_BIN} -y -i "${labeledPath}" -i "${safeAudioPath}"${sfxInputStr ? ` ${sfxInputStr}` : ""} ` +
             `-filter_complex "[0:v]${FPS_FORMAT_VF}[v];[v]${fadeFilter}[vout];${audioFilter}" ` +
             `-map "[vout]" -map "[aout]" -vsync cfr -t ${outDur.toFixed(3)} ${threadFlag} ` +
-            `-c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
+            `-c:v libx264 ${pipelineFfmpegThreadFlag()} -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
         ),
         composeTimeout,
         `Scene ${scene.index} labels+audio`
@@ -21665,7 +21665,7 @@ async function composeSceneVideoInner(
             `[1:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${Math.max(0, voiceDur - 0.15).toFixed(3)}:d=0.12,` +
             `atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
             `-map "[vout]" -map "[aout]" -vsync cfr -t ${outDur.toFixed(3)} ${threadFlag} ` +
-            `-c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
+            `-c:v libx264 ${pipelineFfmpegThreadFlag()} -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
         ),
         composeTimeout,
         `Guaranteed rescue scene ${scene.index}`
@@ -21697,7 +21697,7 @@ async function composeSceneVideoInner(
             `[1:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${Math.max(0, voiceDur - 0.15).toFixed(3)}:d=0.12,` +
             `atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
             `-map "[vout]" -map "[aout]" -vsync cfr -t ${outDur.toFixed(3)} ${threadFlag} ` +
-            `-c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
+            `-c:v libx264 ${pipelineFfmpegThreadFlag()} -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
         ),
         90_000,
         `Rescue recompose scene ${scene.index}`
@@ -21927,7 +21927,7 @@ async function ensureFinalVideoDuration(
     if (trimTo < probed - 0.4) {
       await withSceneFetchTimeout(
         () => exec(
-          `${FFMPEG_BIN} -y -i "${working}" -t ${trimTo.toFixed(3)} -c:v libx264 -preset veryfast -crf 18 ` +
+          `${FFMPEG_BIN} -y -i "${working}" -t ${trimTo.toFixed(3)} -c:v libx264 ${pipelineFfmpegThreadFlag()} -preset veryfast -crf 18 ` +
           `-c:a aac -b:a 320k -movflags +faststart "${trimmed}"`
         ),
         90_000,
@@ -21992,7 +21992,7 @@ async function concatenateScenesWithMusic(
   const concatPromise = withSceneFetchTimeout(
     () => exec(
       `${FFMPEG_BIN} -y -fflags +discardcorrupt -f concat -safe 0 -i "${listFile}" -vsync cfr ` +
-        `-c:v libx264 -preset ${concatPreset} -crf ${concatCrf} -c:a aac -b:a 320k -movflags +faststart "${concatPath}"`
+        `-c:v libx264 ${pipelineFfmpegThreadFlag()} -preset ${concatPreset} -crf ${concatCrf} -c:a aac -b:a 320k -movflags +faststart "${concatPath}"`
     ),
     concatTimeoutMs,
     "Scene concatenation"
@@ -23611,7 +23611,7 @@ async function _runVideoPipelineInner(
                     `-filter_complex "[0:v]trim=duration=${scene.duration.toFixed(3)},setpts=PTS-STARTPTS,${FPS_FORMAT_VF}[vout];` +
                     `[1:a]atrim=0:${scene.duration.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
                     `-map "[vout]" -map "[aout]" -vsync cfr -t ${scene.duration.toFixed(3)} ` +
-                    `-c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
+                    `-c:v libx264 ${pipelineFfmpegThreadFlag()} -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
                 ),
                 90_000,
                 `Last-resort compose scene ${scene.index}`
