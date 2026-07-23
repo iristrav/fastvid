@@ -151,13 +151,19 @@ export async function processQueueTick(): Promise<void> {
 const STUCK_CHECK_INTERVAL_MS = 2 * 60 * 1000; // every 2 minutes
 const STUCK_VIDEO_MINUTES = parseInt(process.env.STUCK_VIDEO_MINUTES ?? "20", 10);
 
+// NOTE: recoverAllStuckVideos() is deliberately NOT called here. It's a one-time,
+// no-staleness-check "the previous process died, so anything mid-pipeline must be orphaned"
+// recovery — correct at process startup (see server/_core/index.ts and server/worker.ts, which
+// both already call it once on boot), but calling it on a recurring timer re-queues every
+// currently-active, perfectly healthy render every single sweep, discarding all of its progress.
+// The actual periodic staleness check (age/updatedAt-based) is failAllStalledPipelines(), run
+// separately on a 90s interval by both entry points.
 async function runStuckVideoCheck(): Promise<void> {
   try {
-    const { expireStuckVideos, recoverAllStuckVideos } = await import("./db");
+    const { expireStuckVideos } = await import("./db");
     const expired = await expireStuckVideos(STUCK_VIDEO_MINUTES);
-    const { completed, failed } = await recoverAllStuckVideos(nudgeQueueWorker);
-    if (expired > 0 || completed > 0 || failed > 0) {
-      console.log(`[VideoQueue] Stuck-video sweep: expired=${expired} recovered=${completed} re-queued=${failed}`);
+    if (expired > 0) {
+      console.log(`[VideoQueue] Stuck-video sweep: expired=${expired}`);
       void processQueueTick();
     }
   } catch (err) {
