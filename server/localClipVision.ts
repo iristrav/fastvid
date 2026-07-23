@@ -645,6 +645,14 @@ async function extractFrameAtFractionOnce(
 // fork" — retry with backoff instead of dropping the CLIP candidate entirely.
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// extractFrameAtFractionOnce captures ffmpeg's real stderr on failure, but the caller used to
+// swallow it silently — every frame-extraction failure (corrupt file, bad codec, seek past EOF,
+// etc.) was indistinguishable from a plain "no frame" result. Log a rate-limited sample so
+// systemic failures (e.g. the archive CLIP backfill indexing 0/600 with no visible cause) are
+// diagnosable without flooding logs for every single frame of every asset.
+let lastFrameExtractFailureLogMs = 0;
+const FRAME_EXTRACT_FAILURE_LOG_INTERVAL_MS = 60_000;
+
 export async function extractFrameAtFraction(
   videoPath: string,
   outPath: string,
@@ -662,6 +670,13 @@ export async function extractFrameAtFraction(
         retriesLeft--;
         await sleep(1500 * (3 - retriesLeft));
         continue;
+      }
+      const now = Date.now();
+      if (now - lastFrameExtractFailureLogMs > FRAME_EXTRACT_FAILURE_LOG_INTERVAL_MS) {
+        lastFrameExtractFailureLogMs = now;
+        console.warn(
+          `[LocalVision] extractFrameAtFraction failed for ${path.basename(videoPath)}: ${(err as Error).message?.slice(0, 200)}`
+        );
       }
       return false;
     }
