@@ -3298,10 +3298,6 @@ async function trimVoiceoverLeadingSilence(audioPath: string): Promise<void> {
 /** UI voices are ElevenLabs IDs (stored in voices.fishAudioReferenceId). Never remap to Fish. */
 const FISH_AUDIO_REFERENCE_ID = "0327fdb5da9e4fd782899a8058c8ae2b";
 
-function isElevenLabsQuotaOrAuthError(message: string): boolean {
-  return /quota_exceeded|quota exceeded|insufficient_quota|exceeds your quota/i.test(message);
-}
-
 let elevenLabsQuotaExhausted = false;
 
 async function synthesizeFishAudioVoice(
@@ -3409,9 +3405,14 @@ async function synthesizeElevenLabsVoice(
       }
       if (!response.ok) {
         const errText = await response.text();
-        if (fishAudioFallbackEnabled() && (response.status === 401 || isElevenLabsQuotaOrAuthError(errText))) {
+        // Any non-429 failure means ElevenLabs isn't usable right now — quota, auth, payment,
+        // server error, whatever the exact status/message is. Switch straight to Fish Audio
+        // instead of burning retries against a provider that's already known to be down.
+        if (fishAudioFallbackEnabled()) {
           elevenLabsQuotaExhausted = true;
-          console.warn(`[Pipeline] ElevenLabs ${label}: quota/auth error — switching permanently to Fish Audio`);
+          console.warn(
+            `[Pipeline] ElevenLabs ${label}: HTTP ${response.status} — switching to Fish Audio: ${errText.slice(0, 150)}`
+          );
           return synthesizeFishAudioVoice(text, outputPath, timeoutMs, label);
         }
         throw pipelineError(
@@ -3428,15 +3429,21 @@ async function synthesizeElevenLabsVoice(
       console.log(`[Pipeline] ElevenLabs ${label}: voice=${elevenVoiceId.slice(0, 10)}… ${dur.toFixed(1)}s`);
       return dur > 0 ? dur : Math.max(3, Math.round(audioBuffer.length / 40000));
     } catch (err) {
+      // Same reasoning as above: a thrown error (network failure, our own timeout, etc.) means
+      // ElevenLabs isn't answering right now — go straight to Fish Audio rather than retrying.
       const msg = err instanceof Error ? err.message : String(err);
-      if (fishAudioFallbackEnabled() && isElevenLabsQuotaOrAuthError(msg)) {
+      if (fishAudioFallbackEnabled()) {
         elevenLabsQuotaExhausted = true;
-        console.warn(`[Pipeline] ElevenLabs ${label}: quota error — switching permanently to Fish Audio`);
+        console.warn(`[Pipeline] ElevenLabs ${label}: error — switching to Fish Audio: ${msg.slice(0, 150)}`);
         return synthesizeFishAudioVoice(text, outputPath, timeoutMs, label);
       }
       if (attempt === MAX_ATTEMPTS) throw err;
       await new Promise((r) => setTimeout(r, 500));
     }
+  }
+  if (fishAudioFallbackEnabled()) {
+    console.warn(`[Pipeline] ElevenLabs ${label}: out of retries (rate-limited) — switching to Fish Audio`);
+    return synthesizeFishAudioVoice(text, outputPath, timeoutMs, label);
   }
   throw pipelineError(PIPELINE_ERROR.VOICEOVER, "ElevenLabs TTS failed after retries");
 }
