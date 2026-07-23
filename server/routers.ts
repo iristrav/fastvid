@@ -41,6 +41,7 @@ import {
   getAllMediaArchives, getMediaArchiveById, createMediaArchiveUnique, updateMediaArchive, deleteMediaArchive,
   getMediaArchiveAssets, getMediaArchiveAssetById, createMediaArchiveAsset, updateMediaArchiveAsset, deleteMediaArchiveAsset, deleteMediaArchiveAssets, deleteAllMediaArchiveAssets,
   countMediaArchiveAssets, filterMediaArchiveAssets, listMediaArchiveAssetsPaginated, normalizeMediaTags, readVideoMetadataObject,
+  isGenerationRunSuperseded, bumpGenerationAttempt,
 } from "./db";
 import { resolveStoredVideoLocalPath, validateFinalVideoPlayable } from "./finalVideoGate";
 import type { ProgressLogEntry } from "./db";
@@ -48,7 +49,7 @@ import { videoLengthSchema, normalizeVideoLength, isShortVideoLength } from "@sh
 import { isFastShortVideoLength, maxPipelineWallClockHardMin, pipelineComposeGraceMs, pipelineWallClockLimitEnabled } from "./sourcingPolicy";
 import { PIPELINE_DISPLAY_STAGES, formatGenerationDuration, progressStepWithElapsed, resolvePipelineDisplayStage, type PipelineDisplayStageKey } from "@shared/pipelineProgress";
 import { ONE_YEAR_MS } from "@shared/const";
-import { clearVideoGenerationCancel, isVideoGenerationCancelRequested } from "./videoGenerationCancel";
+import { clearVideoGenerationCancel } from "./videoGenerationCancel";
 
 function getSessionSecret() {
   const secret = process.env.JWT_SECRET ?? "fallback-secret-change-in-production";
@@ -251,6 +252,9 @@ export async function retryFailedVideo(
   }
 
   if (video.script?.trim()) {
+    // Bypasses the normal queue-claim path, so bump the fencing token ourselves — otherwise a
+    // still-running zombie from a previous attempt would never notice this retry superseded it.
+    await bumpGenerationAttempt(videoId);
     await updateVideoStatus(videoId, "generating_voiceover", {
       scriptApproved: 1,
       errorMessage: "",
@@ -360,6 +364,10 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLengthRa
   const muskTopic = isMuskTeslaPromptTopic(prompt, prompt);
   const writerSystem = buildScriptWriterSystemPrompt(videoType);
 
+  // Fencing token for this run — if a stall-requeue supersedes us mid-flight (possibly from a
+  // different process), our progress writes below should stop instead of clobbering the retry.
+  const myGenerationAttempt = (await getVideoById(videoId))?.generationAttempt ?? 0;
+
   // Initialize progressLog for script stage
   const scriptStage = resolvePipelineDisplayStage("Writing script", 5);
   const scriptLog: ProgressLogEntry[] = [
@@ -371,11 +379,14 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLengthRa
   let lastScriptProgressLabel = scriptStage.label;
   const scriptProgressPercent = { value: 5 };
   const scriptHeartbeat = setInterval(() => {
-    updateVideoProgress(
-      videoId,
-      progressStepWithElapsed(lastScriptProgressLabel, generationStartedAt),
-      scriptProgressPercent.value
-    ).catch(() => {});
+    void (async () => {
+      if (await isGenerationRunSuperseded(videoId, myGenerationAttempt)) return;
+      await updateVideoProgress(
+        videoId,
+        progressStepWithElapsed(lastScriptProgressLabel, generationStartedAt),
+        scriptProgressPercent.value
+      ).catch(() => {});
+    })();
   }, 15_000);
 
   try {
@@ -623,6 +634,10 @@ async function _runVideoGeneration(
     const pipelineStartedAt = videoRow?.generationStartedAt
       ? new Date(videoRow.generationStartedAt).getTime()
       : Date.now();
+    // Fencing token — DB-backed (not just the in-memory cancel flag) so a stall-requeue is
+    // respected even if this run and the fresh retry end up in different processes (e.g.
+    // separate Railway web/worker dynos), where the in-memory flag alone can't reach us.
+    const myGenerationAttempt = videoRow?.generationAttempt ?? 0;
 
     const initialStage = resolvePipelineDisplayStage("Volledige voiceover in ElevenLabs", 30);
     await updateVideoStatus(videoId, "generating_voiceover", {
@@ -642,7 +657,7 @@ async function _runVideoGeneration(
       // A stall-requeue may have re-claimed this video id for a fresh run while this
       // (falsely-flagged-as-stalled) run is still executing — stop writing so the zombie
       // run can't race the new run's progress and clobber it with a stale/lower percent.
-      if (isVideoGenerationCancelRequested(videoId)) return;
+      if (await isGenerationRunSuperseded(videoId, myGenerationAttempt)) return;
       const { key, label } = resolvePipelineDisplayStage(rawStepName, percent);
       const now = Date.now();
       if (currentStageKey && currentStageKey !== key) {
@@ -683,16 +698,20 @@ async function _runVideoGeneration(
     };
 
     const pipelineHeartbeat = setInterval(() => {
-      if (isVideoGenerationCancelRequested(videoId)) return;
-      touchVideoProgress(videoId).catch(() => {});
+      void (async () => {
+        if (await isGenerationRunSuperseded(videoId, myGenerationAttempt)) return;
+        await touchVideoProgress(videoId).catch(() => {});
+      })();
     }, 20_000);
     const elapsedHeartbeat = setInterval(() => {
-      if (isVideoGenerationCancelRequested(videoId)) return;
-      updateVideoProgress(
-        videoId,
-        progressStepWithElapsed(lastProgressLabel, pipelineStartedAt),
-        lastProgressPercent
-      ).catch(() => {});
+      void (async () => {
+        if (await isGenerationRunSuperseded(videoId, myGenerationAttempt)) return;
+        await updateVideoProgress(
+          videoId,
+          progressStepWithElapsed(lastProgressLabel, pipelineStartedAt),
+          lastProgressPercent
+        ).catch(() => {});
+      })();
     }, 15_000);
     let videoUrl: string;
     try {

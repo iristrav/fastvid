@@ -81,6 +81,7 @@ export const videos = mysqlTable(
   progressPercent: int("progressPercent").default(0),       // 0-100
   progressLog: json("progressLog"),                         // array of {step, startedAt, completedAt?, status}
   generationStartedAt: timestamp("generationStartedAt"),    // when pipeline started
+  generationAttempt: int("generationAttempt").default(0).notNull(), // fencing token — bumped each time a fresh run claims this video, so a stale/zombie run (e.g. after a stall-requeue) can detect it's been superseded and stop writing
   videoScenes: json("videoScenes"),                          // scene manifest for editor: [{sceneIndex, narration, durationMs, clips:[{url,type,source}], thumbnailUrl}]
   editedVideoUrl: varchar("editedVideoUrl", { length: 1024 }), // URL of re-rendered edited video (if user edited)
   createdAt: timestamp("createdAt").defaultNow().notNull(),

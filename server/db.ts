@@ -346,6 +346,7 @@ export async function claimQueuedVideo(videoId: number, progressStep: string): P
       progressStep,
       progressPercent: 1,
       generationStartedAt: new Date(),
+      generationAttempt: sql`${videos.generationAttempt} + 1`,
       errorMessage: "",
     })
     .where(and(eq(videos.id, videoId), eq(videos.status, "queued")));
@@ -357,6 +358,40 @@ export async function claimQueuedVideo(videoId: number, progressStep: string): P
   const { clearVideoGenerationCancel } = await import("./videoGenerationCancel");
   clearVideoGenerationCancel(videoId);
   return getVideoById(videoId);
+}
+
+/** Cheap PK lookup for fencing checks — avoids a full row fetch on every progress-write. */
+export async function getVideoGenerationAttempt(id: number): Promise<number | null> {
+  const db = await getDb();
+  if (!db) return null;
+  const [row] = await db
+    .select({ generationAttempt: videos.generationAttempt })
+    .from(videos)
+    .where(eq(videos.id, id));
+  return row?.generationAttempt ?? null;
+}
+
+/** Atomically bump the fencing token — call at the start of any code path that starts a fresh
+ *  run over a video id outside the normal queue-claim flow (e.g. a direct retry), so a still-running
+ *  zombie from a previous attempt can detect it's been superseded. Returns the new attempt number. */
+export async function bumpGenerationAttempt(id: number): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+  await db
+    .update(videos)
+    .set({ generationAttempt: sql`${videos.generationAttempt} + 1` })
+    .where(eq(videos.id, id));
+  return (await getVideoGenerationAttempt(id)) ?? 0;
+}
+
+/** True if this run has been superseded (a newer attempt claimed the video, or it was
+ *  explicitly cancelled) and should stop writing progress — regardless of which process
+ *  (web dyno vs. worker dyno) the check runs in, since it's backed by the DB, not memory. */
+export async function isGenerationRunSuperseded(videoId: number, myAttempt: number): Promise<boolean> {
+  const { isVideoGenerationCancelRequested } = await import("./videoGenerationCancel");
+  if (isVideoGenerationCancelRequested(videoId)) return true;
+  const current = await getVideoGenerationAttempt(videoId);
+  return current !== null && current !== myAttempt;
 }
 
 export async function updateVideoStatus(id: number, status: InsertVideo["status"], extra?: {
