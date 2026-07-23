@@ -2154,7 +2154,13 @@ function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProfile {
       pexelsDownloadRetries: 1,
       maxStockQueriesPerBeat: 2,
       beatClipTimeoutMs: IS_RAILWAY ? 22_000 : 30_000,
-      sceneVisualTimeoutMs: IS_RAILWAY ? 6 * 60_000 : 6 * 60_000,
+      // Was 6 min — for a video with a 10 min *total* target, that let a single scene's visual
+      // retrieval alone eat 60% of the whole budget before anything else (voiceover, compose)
+      // even got a turn. Individual candidate attempts are now reliably cancelled and retried
+      // (today's timeout + fork-pressure-retry fixes), so they no longer need this much slack
+      // to eventually succeed — tightened so a stuck scene surfaces its fallback sooner instead
+      // of silently burning the majority of the render's time budget.
+      sceneVisualTimeoutMs: IS_RAILWAY ? 3 * 60_000 : 3 * 60_000,
       fastStockMode: IS_RAILWAY,
       scriptOnlyVisuals: false,
     }, videoLength);

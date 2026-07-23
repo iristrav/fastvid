@@ -332,7 +332,7 @@ export function pipelineRushModeMs(videoLength?: string | null): number {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 90_000 && n <= 540_000) return n;
   }
-  if (isFastShortVideoLength(videoLength)) return 10 * 60_000;
+  if (isFastShortVideoLength(videoLength)) return 5 * 60_000;
   return 3 * 60_000;
 }
 
@@ -343,7 +343,7 @@ export function pipelineEmergencyFinishMs(videoLength?: string | null): number {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 300_000 && n <= 900_000) return n;
   }
-  if (isFastShortVideoLength(videoLength)) return 12 * 60_000;
+  if (isFastShortVideoLength(videoLength)) return 7 * 60_000;
   return 7 * 60_000;
 }
 
@@ -622,14 +622,14 @@ export function archiveVisualBeatSecForVideo(videoLength?: string | null): numbe
   return 24;
 }
 
-/** Wall-clock ms after pipeline start before turbo stock fallback on 1-min videos (default 12s; 8min on 1-min quality path). */
+/** Wall-clock ms after pipeline start before turbo stock fallback on 1-min videos (default 12s; 3min on 1-min quality path). */
 export function visualSourcingTurboMs(videoLength?: string | null): number {
   const raw = process.env.VISUAL_SOURCING_TURBO_MS?.trim();
   if (raw) {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 8_000 && n <= 300_000) return n;
   }
-  if (isFastShortVideoLength(videoLength)) return 8 * 60_000;
+  if (isFastShortVideoLength(videoLength)) return 3 * 60_000;
   return 12_000;
 }
 
