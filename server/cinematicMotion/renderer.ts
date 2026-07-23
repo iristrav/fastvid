@@ -12,6 +12,7 @@ import { promisify } from "util";
 import type { SceneMotionPlan, VideoMotionPlan } from "./types";
 import { buildCounterFilter } from "./counter";
 import { generateMapMarkerPng, buildMapOverlayFilter } from "./mapOverlay";
+import { ffmpegThreadFlag } from "../sourcingPolicy";
 
 const execAsync = promisify(exec);
 const FFMPEG_BIN = process.env.FFMPEG_BIN ?? "ffmpeg";
@@ -85,7 +86,7 @@ export async function applyMotionOverlays(
       await withTimeout(
         execAsync(
           `${FFMPEG_BIN} -y -i "${videoPath}" -vf "${vf}" ` +
-          `-c:v libx264 -preset fast -crf 18 -c:a copy "${outputPath}"`
+          `-c:v libx264 ${ffmpegThreadFlag()} -preset fast -crf 18 -c:a copy "${outputPath}"`
         ),
         TIMEOUT_MS
       );
@@ -131,7 +132,7 @@ export async function applyMotionOverlays(
           `${FFMPEG_BIN} -y -i "${videoPath}" ${extraInputs} ` +
           `-filter_complex "${filterComplex}" ` +
           `-map "[vout]" -map "0:a?" ` +
-          `-c:v libx264 -preset fast -crf 18 -c:a copy "${outputPath}"`
+          `-c:v libx264 ${ffmpegThreadFlag()} -preset fast -crf 18 -c:a copy "${outputPath}"`
         ),
         TIMEOUT_MS
       );

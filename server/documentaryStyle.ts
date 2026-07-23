@@ -7,6 +7,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { sanitizeForDrawtext } from "./ffmpegSanitize";
 import { vidrushStillPhotoScale } from "./vidrushQuality";
+import { ffmpegThreadFlag } from "./sourcingPolicy";
 
 export const DOC_STYLE_VIDEO_WIDTH = 1920;
 export const DOC_STYLE_VIDEO_HEIGHT = 1080;
@@ -290,7 +291,7 @@ export function buildStillEncodeArgs(
   const frames = stillOutputFrameCount(duration);
   return (
     `-y -i "${imgPath}" -filter_complex "${filterComplex}" -map "[vout]" ` +
-    `-frames:v ${frames} -c:v libx264 -preset veryfast -crf 18 -an -pix_fmt yuv420p -r 25 "${outPath}"`
+    `-frames:v ${frames} -c:v libx264 ${ffmpegThreadFlag()} -preset veryfast -crf 18 -an -pix_fmt yuv420p -r 25 "${outPath}"`
   );
 }
 
@@ -480,7 +481,7 @@ export async function applyDocumentaryClipGrade(
   const grade = buildPostGradeVF();
   await execWithTimeout(
     `${ffmpegBin} -y -i "${inputPath}" -vf "${grade}" ` +
-      `-c:v libx264 -preset veryfast -crf 20 -an -pix_fmt yuv420p "${outputPath}"`,
+      `-c:v libx264 ${ffmpegThreadFlag()} -preset veryfast -crf 20 -an -pix_fmt yuv420p "${outputPath}"`,
     timeoutMs,
     `Documentary grade ${path.basename(inputPath)}`
   );

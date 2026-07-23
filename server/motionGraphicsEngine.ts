@@ -11,7 +11,7 @@ import {
   DOC_STYLE_VIDEO_HEIGHT,
   DOC_STYLE_VIDEO_WIDTH,
 } from "./documentaryStyle";
-import { maxMotionGraphicsPerVideo, motionGraphicsInVideosEnabled, autoMotionGraphicsLayerEnabled } from "./sourcingPolicy";
+import { maxMotionGraphicsPerVideo, motionGraphicsInVideosEnabled, autoMotionGraphicsLayerEnabled, ffmpegThreadFlag } from "./sourcingPolicy";
 
 export type MotionGraphicKind = "text_card" | "map_card" | "news_card" | "portrait_cutout";
 
@@ -436,7 +436,7 @@ export async function renderMotionGraphicClip(
     await execWithTimeout(
       `${ffmpegBin} -y -f lavfi -i "color=c=${bg}:s=${DOC_STYLE_VIDEO_WIDTH}x${DOC_STYLE_VIDEO_HEIGHT}:rate=25" ` +
         `-vf "${vf}" -t ${dur.toFixed(3)} -an ` +
-        `-c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p "${outPath}"`,
+        `-c:v libx264 ${ffmpegThreadFlag()} -preset veryfast -crf 18 -pix_fmt yuv420p "${outPath}"`,
       25_000,
       `Motion graphic ${tag} scene ${sceneIndex}`
     );

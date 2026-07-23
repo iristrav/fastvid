@@ -33,6 +33,7 @@ import * as path from "path";
 import { exec } from "child_process";
 import { promisify } from "util";
 import { analyzeScene } from "./visualDirector/analyzer";
+import { ffmpegThreadFlag } from "./sourcingPolicy";
 
 const execAsync = promisify(exec);
 const FFMPEG = process.env.FFMPEG_BIN ?? "ffmpeg";
@@ -505,7 +506,7 @@ async function pngToMp4(pngPath: string, mp4Path: string, durationSec: number): 
     `fade=t=out:st=${(durationSec - 0.5).toFixed(2)}:d=0.4`,
   ].join(",");
 
-  const cmd = `${FFMPEG} -y -loop 1 -i "${pngPath}" -t ${durationSec.toFixed(2)} -vf "${vf}" -r ${fps} -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p "${mp4Path}"`;
+  const cmd = `${FFMPEG} -y -loop 1 -i "${pngPath}" -t ${durationSec.toFixed(2)} -vf "${vf}" -r ${fps} -c:v libx264 ${ffmpegThreadFlag()} -preset veryfast -crf 18 -pix_fmt yuv420p "${mp4Path}"`;
   try {
     await Promise.race([
       execAsync(cmd),

@@ -14,6 +14,7 @@ import * as path from "path";
 import { exec } from "child_process";
 import { promisify } from "util";
 import type { BeatOverlay, SceneOverlayPlan } from "./types";
+import { ffmpegThreadFlag } from "../sourcingPolicy";
 
 const execAsync = promisify(exec);
 const FFMPEG_BIN = process.env.FFMPEG_BIN ?? "ffmpeg";
@@ -269,7 +270,7 @@ export async function applyEditorialOverlays(
       const timer = setTimeout(() => reject(new Error("FFmpeg timeout")), FFMPEG_TIMEOUT_MS);
       execAsync(
         `${FFMPEG_BIN} -y -i "${videoPath}" -vf "${vf}" ` +
-        `-c:v libx264 -preset fast -crf 18 -c:a copy "${outputPath}"`
+        `-c:v libx264 ${ffmpegThreadFlag()} -preset fast -crf 18 -c:a copy "${outputPath}"`
       ).then(() => { clearTimeout(timer); resolve(); })
        .catch(err => { clearTimeout(timer); reject(err); });
     });

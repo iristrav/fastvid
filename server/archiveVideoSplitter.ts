@@ -7,6 +7,7 @@ import { promisify } from "util";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { ffmpegThreadFlag } from "./sourcingPolicy";
 
 import type { ArchiveSubjectContext } from "./archiveClipRelevance";
 import {
@@ -903,10 +904,10 @@ export async function extractVideoSegment(
   const _ = preferStreamCopy; // reserved for future use
   const strategies: string[] = [
     `${ffmpegBin()} -y -ss ${start} -i "${inputPath}" -t ${dur} ` +
-      `-c:v libx264 -preset ultrafast -crf 23 -an -pix_fmt yuv420p -movflags +faststart ` +
+      `-c:v libx264 ${ffmpegThreadFlag()} -preset ultrafast -crf 23 -an -pix_fmt yuv420p -movflags +faststart ` +
       `-avoid_negative_ts make_zero -reset_timestamps 1 -threads 0 "${outputPath}"`,
     `${ffmpegBin()} -y -i "${inputPath}" -ss ${start} -t ${dur} ` +
-      `-c:v libx264 -preset ultrafast -crf 23 -an -pix_fmt yuv420p -movflags +faststart ` +
+      `-c:v libx264 ${ffmpegThreadFlag()} -preset ultrafast -crf 23 -an -pix_fmt yuv420p -movflags +faststart ` +
       `-avoid_negative_ts make_zero -reset_timestamps 1 -threads 0 "${outputPath}"`,
   ];
 
@@ -1069,7 +1070,7 @@ async function normalizeSourceForAnalysis(
     // making window-seek for the interior rescan very slow and prone to timeouts.
     await exec(
       `${ffmpegBin()} -y -i "${inputPath}" -an -vf "${vf}" ` +
-        `-c:v libx264 -preset ultrafast -crf 28 -g 5 -pix_fmt yuv420p -movflags +faststart -threads 0 "${outPath}"`,
+        `-c:v libx264 ${ffmpegThreadFlag()} -preset ultrafast -crf 28 -g 5 -pix_fmt yuv420p -movflags +faststart -threads 0 "${outPath}"`,
       { maxBuffer: 8 * 1024 * 1024, timeout: timeoutMs }
     );
   } catch (err) {
@@ -1186,7 +1187,7 @@ async function extractAllClipsSinglePass(
     `${ffmpegBin()} -y -i "${inputPath}"`,
     ssArgs,
     `-t ${passDuration.toFixed(3)}`,
-    `-c:v libx264 -preset ultrafast -crf 23 -an -pix_fmt yuv420p`,
+    `-c:v libx264 ${ffmpegThreadFlag()} -preset ultrafast -crf 23 -an -pix_fmt yuv420p`,
     `-movflags +faststart -avoid_negative_ts make_zero -reset_timestamps 1 -threads 2`,
     `-f segment`,
     segmentTimes ? `-segment_times "${segmentTimes}"` : "",
@@ -1639,7 +1640,7 @@ export async function splitVideoBySceneChanges(
         const reencPath = path.join(workDir, "reenc.mp4");
         const reencTimeout = Math.round(Math.max(120_000, totalDur * 5000 + 60_000));
         await exec(
-          `${ffmpegBin()} -y -i "${inputPath}" -c:v libx264 -preset ultrafast -crf 23 -pix_fmt yuv420p -an -movflags +faststart -threads 0 "${reencPath}"`,
+          `${ffmpegBin()} -y -i "${inputPath}" -c:v libx264 ${ffmpegThreadFlag()} -preset ultrafast -crf 23 -pix_fmt yuv420p -an -movflags +faststart -threads 0 "${reencPath}"`,
           { maxBuffer: 8 * 1024 * 1024, timeout: reencTimeout }
         );
         const retryResults = await mapPool(

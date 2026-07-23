@@ -5,6 +5,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { sanitizeForDrawtext } from "./ffmpegSanitize";
+import { ffmpegThreadFlag } from "./sourcingPolicy";
 import {
   computeVoiceBeatWindows,
   extractYearsFromText,
@@ -532,7 +533,7 @@ export async function burnMotionGraphicsOverlaysDrawtext(
   const drawChain = buildWhiteTypewriterDrawtextFilterChain("0:v", "vout", overlays);
   await execWithTimeout(
     `${ffmpegBin} -y -i "${inputVideoPath}" -filter_complex "${drawChain.slice(1)}" ` +
-      `-map "[vout]" -c:v libx264 -preset ultrafast -crf 18 -pix_fmt yuv420p -an "${outputVideoPath}"`,
+      `-map "[vout]" -c:v libx264 ${ffmpegThreadFlag()} -preset ultrafast -crf 18 -pix_fmt yuv420p -an "${outputVideoPath}"`,
     180_000,
     `Burn motion graphics overlays (${overlays.length})`
   );
@@ -613,7 +614,7 @@ export async function buildMotionGraphicsTypewriterOverlays(
       await execWithTimeout(
         `${ffmpegBin} -y -f lavfi -i "color=c=black@0.0:s=${w}x${h}:r=25:d=${dur.toFixed(2)}" ` +
           `-filter_complex "${chain.slice(0, -1)}" -map "[vout]" -t ${dur.toFixed(2)} ` +
-          `-c:v libx264 -preset ultrafast -crf 18 -pix_fmt yuva420p "${outPath}"`,
+          `-c:v libx264 ${ffmpegThreadFlag()} -preset ultrafast -crf 18 -pix_fmt yuva420p "${outPath}"`,
         25_000,
         `Motion overlay ${entry.text.slice(0, 12)} scene ${sceneIndex}`
       );

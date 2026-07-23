@@ -424,8 +424,13 @@ export function montageSegmentParallelism(isRailway = false): number {
 }
 
 /** FFmpeg thread cap per encode. On Railway (24 vCPU) 4 threads per process is safe
- *  at 4 compose × 3 montage = 12 concurrent ffmpeg — fork-pressure retries cover spikes. */
-export function ffmpegThreadFlag(isRailway = false): string {
+ *  at 4 compose × 3 montage = 12 concurrent ffmpeg — fork-pressure retries cover spikes.
+ *  Without a cap, libx264 defaults to one thread per CPU core; under heavy concurrent
+ *  encoding that can make libx264's own thread-pool creation fail outright, surfacing as
+ *  a generic "Error while opening encoder" even though the command itself is fine.
+ *  isRailway defaults from the same env check videoPipeline.ts uses, so callers in other
+ *  modules (e.g. documentaryStyle.ts) don't need their own copy of that detection. */
+export function ffmpegThreadFlag(isRailway = !process.env.BUILT_IN_FORGE_API_KEY): string {
   const raw = process.env.FFMPEG_THREADS?.trim();
   const n = raw ? parseInt(raw, 10) : isRailway ? 4 : 0;
   if (!n || isNaN(n) || n < 1) return "";

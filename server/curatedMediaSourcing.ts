@@ -86,6 +86,7 @@ import {
   isFastShortVideoLength,
   semanticRerankClipSkipMin,
   metadataVisualBlocksEnabled,
+  ffmpegThreadFlag,
 } from "./sourcingPolicy";
 import {
   assetHasNlMarkers,
@@ -1429,7 +1430,7 @@ async function convertImageToKenBurns(
         `zoompan=z='min(zoom+${zoomStep.toFixed(7)},${zoomEnd})':` +
         `x='${xExpr}':y='${yExpr}':` +
         `d=${totalFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=${fps}" ` +
-        `-c:v libx264 -preset ${preset} -crf 18 -an -pix_fmt yuv420p "${outPath}"`
+        `-c:v libx264 ${ffmpegThreadFlag()} -preset ${preset} -crf 18 -an -pix_fmt yuv420p "${outPath}"`
     );
   }
   const outDur = await probeMediaDurationSec(outPath);
@@ -1532,7 +1533,7 @@ async function trimVideoClip(
 
   await exec(
     `${ffmpegBin()} -y -ss ${startSec.toFixed(3)} -i "${inPath}" -t ${take.toFixed(3)} ` +
-      `-vf "${frameVf}" -an -c:v libx264 -preset ${preset} -crf ${crf} -pix_fmt yuv420p "${outPath}"`
+      `-vf "${frameVf}" -an -c:v libx264 ${ffmpegThreadFlag()} -preset ${preset} -crf ${crf} -pix_fmt yuv420p "${outPath}"`
   );
 
   const outDur = await probeMediaDurationSec(outPath);

@@ -9,6 +9,7 @@ import { storagePut } from "./storage";
 import { updateMediaArchiveAsset } from "./db";
 import { ffmpegBin } from "./localClipVision";
 import { probeVideoDurationSec } from "./archiveVideoSplitter";
+import { ffmpegThreadFlag } from "./sourcingPolicy";
 
 const exec = promisify(execCb);
 
@@ -26,7 +27,7 @@ export async function trimArchiveAssetToFirstScene(
 
   try {
     const bin = ffmpegBin();
-    const cmd = `"${bin}" -y -i "${localPath}" -t ${cutSec} -c:v libx264 -preset fast -crf 22 -movflags +faststart -c:a aac "${outPath}"`;
+    const cmd = `"${bin}" -y -i "${localPath}" -t ${cutSec} -c:v libx264 ${ffmpegThreadFlag()} -preset fast -crf 22 -movflags +faststart -c:a aac "${outPath}"`;
     await exec(cmd);
 
     if (!fs.existsSync(outPath) || fs.statSync(outPath).size < 1000) {

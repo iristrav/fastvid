@@ -11,6 +11,7 @@ import { exec as execCb } from "child_process";
 import { normalizeVideoLength, targetVideoDurationMinutes } from "@shared/videoLengths";
 import { spotCheckFinalVideo, isInformationalSpotWarning } from "./postRenderSpotCheck";
 import { resolveLocalVideoPath } from "./storageLocal";
+import { ffmpegThreadFlag } from "./sourcingPolicy";
 
 const execRaw = promisify(execCb);
 const exec = ((cmd: string, opts?: Record<string, unknown>) =>
@@ -299,7 +300,7 @@ async function trimTrailingBlack(inputPath: string, workDir: string, videoId: nu
     if (lastStart < probed * 0.65 || lastStart >= probed - 0.2) return null;
     const trimTo = Math.max(1, lastStart - 0.02);
     await exec(
-      `"${ffmpegBin()}" -y -i "${inputPath}" -t ${trimTo.toFixed(3)} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -movflags +faststart "${out}"`,
+      `"${ffmpegBin()}" -y -i "${inputPath}" -t ${trimTo.toFixed(3)} -c:v libx264 ${ffmpegThreadFlag()} -preset veryfast -crf 18 -c:a aac -b:a 320k -movflags +faststart "${out}"`,
       { timeout: 180_000 }
     );
     return fs.existsSync(out) && fs.statSync(out).size > 1000 ? out : null;

@@ -3,6 +3,7 @@ import * as path from "path";
 import { exec } from "child_process";
 import { promisify } from "util";
 import type { TextOverlay, TextOverlayStyle, SceneTextPlan } from "./types";
+import { ffmpegThreadFlag } from "../sourcingPolicy";
 
 const execAsync = promisify(exec);
 const FFMPEG_BIN = process.env.FFMPEG_BIN ?? "ffmpeg";
@@ -287,7 +288,7 @@ export async function applyTextOverlays(
     try {
       await withTimeout(execAsync(
         `${FFMPEG_BIN} -y -i "${videoPath}" -vf "${vf}" ` +
-        `-c:v libx264 -preset fast -crf 18 -c:a copy "${outputPath}"`
+        `-c:v libx264 ${ffmpegThreadFlag()} -preset fast -crf 18 -c:a copy "${outputPath}"`
       ), FFMPEG_TIMEOUT_MS);
       if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 10_000) {
         console.log(`[TextOverlay] s${plan.sceneIndex}: ${plan.overlays.length} overlay(s) applied via drawtext`);
@@ -318,7 +319,7 @@ export async function applyTextOverlays(
     try {
       await withTimeout(execAsync(
         `${FFMPEG_BIN} -y -i "${videoPath}" -vf "${vf}" ` +
-        `-c:v libx264 -preset fast -crf 18 -c:a copy "${outputPath}"`
+        `-c:v libx264 ${ffmpegThreadFlag()} -preset fast -crf 18 -c:a copy "${outputPath}"`
       ), FFMPEG_TIMEOUT_MS);
       if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 10_000) return outputPath;
     } catch { /* fall through */ }
@@ -351,7 +352,7 @@ export async function applyTextOverlays(
       `${FFMPEG_BIN} -y -i "${videoPath}" ${extraInputs} ` +
       `-filter_complex "${filterComplex}" ` +
       `-map "[vout]" -map "0:a?" ` +
-      `-c:v libx264 -preset fast -crf 18 -c:a copy "${outputPath}"`
+      `-c:v libx264 ${ffmpegThreadFlag()} -preset fast -crf 18 -c:a copy "${outputPath}"`
     ), FFMPEG_TIMEOUT_MS);
     if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 10_000) {
       console.log(`[TextOverlay] s${plan.sceneIndex}: typewriter overlay applied`);

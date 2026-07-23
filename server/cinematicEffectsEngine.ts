@@ -11,7 +11,7 @@ import {
   renderNameBadgeOverlay,
   type TimedOverlay,
 } from "./documentaryStyle";
-import { documentaryOverlaysEnabled, screenLabelMinStartSec, screenLabelMinGapSec, screenLabelMaxPerScene } from "./sourcingPolicy";
+import { documentaryOverlaysEnabled, screenLabelMinStartSec, screenLabelMinGapSec, screenLabelMaxPerScene, ffmpegThreadFlag } from "./sourcingPolicy";
 import { clampVidrushClipDuration } from "./vidrushQuality";
 import { extractVoiceLabelTerms, termStartInBeat } from "./visualBeatTags";
 
@@ -323,7 +323,7 @@ export async function burnFacelessTextOnVideoClip(
     await execWithTimeout(
       `${ffmpegBin} -y -i "${clipPath}" -t ${holdSec.toFixed(3)} ` +
         `-filter_complex "${filterComplex}" -map "[vout]" ` +
-        `-an -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -r 25 "${outPath}"`,
+        `-an -c:v libx264 ${ffmpegThreadFlag()} -preset veryfast -crf 18 -pix_fmt yuv420p -r 25 "${outPath}"`,
       60_000,
       `Video beat text s${sceneIndex} b${beatIndex}`
     );
@@ -1302,7 +1302,7 @@ export async function burnTimedScreenLabelsDrawtext(
     await execWithTimeout(
       `${ffmpegBin} -y -i "${inputVideoPath}" ` +
         `-filter_complex "${filterComplex}" -map "[vout]" ` +
-        `-an -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -r 25 "${outputVideoPath}"`,
+        `-an -c:v libx264 ${ffmpegThreadFlag()} -preset veryfast -crf 18 -pix_fmt yuv420p -r 25 "${outputVideoPath}"`,
       120_000,
       `Burn screen labels drawtext (${labels.length})`
     );
@@ -1357,7 +1357,7 @@ export async function burnScreenLabelOverlaysSequential(
       `${ffmpegBin} -y -i "${current}" -i "${o.path}" ` +
         `-filter_complex "${prepareFilter};` +
         `[0:v][lbl]overlay=x=${x}:y=${y}:${enable}[outv]" ` +
-        `-map "[outv]" -c:v libx264 -preset ultrafast -crf 18 -pix_fmt yuv420p -an "${out}"`,
+        `-map "[outv]" -c:v libx264 ${ffmpegThreadFlag()} -preset ultrafast -crf 18 -pix_fmt yuv420p -an "${out}"`,
       120_000,
       `Burn screen label ${i + 1}/${overlays.length}`
     );
