@@ -2514,7 +2514,7 @@ async function downloadAndTrimPoolCandidate(
       try {
         console.log(`[Hang] downloadAndTrim BEFORE ffprobe s${sceneIndex}b${beatIndex}`);
         const _p0 = Date.now();
-        const { stdout } = await withTimeout(exec(probeCmd), 5_000, `probe pool s${sceneIndex}b${beatIndex}`);
+        const { stdout } = await withSceneFetchTimeout(() => exec(probeCmd), 5_000, `probe pool s${sceneIndex}b${beatIndex}`);
         console.log(`[Hang] downloadAndTrim AFTER ffprobe s${sceneIndex}b${beatIndex} elapsed=${Date.now()-_p0}ms`);
         const parsed = parseFloat(stdout.trim());
         if (!isNaN(parsed) && parsed > 0) sourceDur = parsed;
@@ -3086,8 +3086,8 @@ async function concatVoiceoverParts(partPaths: string[], outputPath: string, wor
   }
   const listFile = path.join(workDir, "voiceover_concat_list.txt");
   fs.writeFileSync(listFile, partPaths.map((p) => `file '${p.replace(/'/g, "'\\''")}'`).join("\n"));
-  await withTimeout(
-    exec(
+  await withSceneFetchTimeout(
+    () => exec(
       `${FFMPEG_BIN} -y -f concat -safe 0 -i "${listFile}" -c:a libmp3lame -b:a 192k "${outputPath}"`
     ),
     120_000,
@@ -3238,8 +3238,8 @@ async function splitFullVoiceoverByScenes(
       const { startSec, endSec } = ttsBounds[i]!;
       const segDur = Math.max(0.25, endSec - startSec);
       const out = outputPaths[i];
-      await withTimeout(
-        exec(
+      await withSceneFetchTimeout(
+        () => exec(
           `${FFMPEG_BIN} -y -ss ${startSec.toFixed(3)} -i "${fullAudioPath}" -t ${segDur.toFixed(3)} ` +
           `-c:a libmp3lame -b:a 192k "${out}"`
         ),
@@ -3272,8 +3272,8 @@ async function splitFullVoiceoverByScenes(
       ? Math.max(0.25, totalDur - cursor)
       : Math.max(0.25, (totalDur * weights[i]) / totalWeight);
     const out = outputPaths[i];
-    await withTimeout(
-      exec(
+    await withSceneFetchTimeout(
+      () => exec(
         `${FFMPEG_BIN} -y -ss ${cursor.toFixed(3)} -i "${fullAudioPath}" -t ${segDur.toFixed(3)} ` +
         `-c:a libmp3lame -b:a 192k "${out}"`
       ),
@@ -3293,8 +3293,8 @@ async function splitFullVoiceoverByScenes(
 async function trimVoiceoverLeadingSilence(audioPath: string): Promise<void> {
   const tmpPath = audioPath.replace(/\.mp3$/i, "_leadtrim.mp3");
   try {
-    await withTimeout(
-      exec(
+    await withSceneFetchTimeout(
+      () => exec(
         `${FFMPEG_BIN} -y -i "${audioPath}" -af ` +
         `"silenceremove=start_periods=1:start_duration=0.04:start_threshold=-40dB:detection=peak" ` +
         `-c:a libmp3lame -b:a 192k "${tmpPath}"`
@@ -3563,8 +3563,8 @@ export async function generateVoiceover(
         try {
           for (const probePath of FFPROBE_PATHS()) {
             try {
-              const { stdout: probeOut } = await withTimeout(
-                exec(`"${probePath}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${outputPath}"`),
+              const { stdout: probeOut } = await withSceneFetchTimeout(
+                () => exec(`"${probePath}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${outputPath}"`),
                 8000,
                 "ffprobe TTS duration"
               );
@@ -3591,8 +3591,8 @@ export async function generateVoiceover(
   // Silent fallback
   const estimatedDuration = Math.max(3, Math.ceil(cleanText.split(" ").length / 2.5));
   try {
-    await withTimeout(
-      exec(`${FFMPEG_BIN} -y -f lavfi -i anullsrc=r=44100:cl=stereo -t ${estimatedDuration} -c:a libmp3lame -b:a 64k "${outputPath}"`),
+    await withSceneFetchTimeout(
+      () => exec(`${FFMPEG_BIN} -y -f lavfi -i anullsrc=r=44100:cl=stereo -t ${estimatedDuration} -c:a libmp3lame -b:a 64k "${outputPath}"`),
       10_000, "Silent audio fallback"
     );
   } catch {
@@ -3703,16 +3703,16 @@ async function generateStabilityAIClip(
     if (documentaryStyleEnabled()) {
       const filterComplex = resolveStillCompositionVF(duration, sceneIndex, 0, false);
       try {
-        await withTimeout(
-          exec(`${FFMPEG_BIN} ${buildStillEncodeArgs(pngPath, outputPath, duration, filterComplex)}`),
+        await withSceneFetchTimeout(
+          () => exec(`${FFMPEG_BIN} ${buildStillEncodeArgs(pngPath, outputPath, duration, filterComplex)}`),
           90_000,
           `AI image to video scene ${sceneIndex}`
         );
       } catch (docErr) {
         console.warn(`[Pipeline] Scene ${sceneIndex}: AI documentary still failed, using simple Ken Burns:`, (docErr as Error).message);
         const fallbackFc = buildSimpleKenBurnsVF(duration, false);
-        await withTimeout(
-          exec(`${FFMPEG_BIN} ${buildStillEncodeArgs(pngPath, outputPath, duration, fallbackFc)}`),
+        await withSceneFetchTimeout(
+          () => exec(`${FFMPEG_BIN} ${buildStillEncodeArgs(pngPath, outputPath, duration, fallbackFc)}`),
           90_000,
           `AI image to video scene ${sceneIndex} (fallback)`
         );
@@ -3722,8 +3722,8 @@ async function generateStabilityAIClip(
       const zoomStep = 0.0003; // slow 7% zoom over full duration
       const direction = sceneIndex % 2 === 0 ? 1 : -1;
       const panX = direction > 0 ? `iw/2-(iw/zoom/2)` : `iw/2-(iw/zoom/2)+2`;
-      await withTimeout(
-        exec(
+      await withSceneFetchTimeout(
+        () => exec(
           `${FFMPEG_BIN} -y -loop 1 -i "${pngPath}" ` +
           `-vf "scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT},` +
           `zoompan=z='min(zoom+${zoomStep},1.07)':x='${panX}':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=${fps}" ` +
@@ -4261,8 +4261,8 @@ async function encodeStillImageMp4(
   const styled = resolveStillImageFilterComplex(duration, sceneIndex, beatIndex, styleContext);
   if (styled) {
     try {
-      await withTimeout(
-        exec(`${FFMPEG_BIN} ${buildStillEncodeArgs(imgPath, outPath, duration, styled.filterComplex)}`),
+      await withSceneFetchTimeout(
+        () => exec(`${FFMPEG_BIN} ${buildStillEncodeArgs(imgPath, outPath, duration, styled.filterComplex)}`),
         25_000,
         label
       );
@@ -4292,8 +4292,8 @@ async function encodeStillImageMp4(
   if (documentaryStyleEnabled() || process.env.CINEMATIC_MOTION !== "false") {
     const filterComplex = resolveStillCompositionVF(duration, sceneIndex, beatIndex, personPortrait);
     try {
-      await withTimeout(
-        exec(`${FFMPEG_BIN} ${buildStillEncodeArgs(imgPath, outPath, duration, filterComplex)}`),
+      await withSceneFetchTimeout(
+        () => exec(`${FFMPEG_BIN} ${buildStillEncodeArgs(imgPath, outPath, duration, filterComplex)}`),
         25_000,
         label
       );
@@ -4311,8 +4311,8 @@ async function encodeStillImageMp4(
       /* ignore */
     }
     const fallbackFc = buildSimpleKenBurnsVF(duration, personPortrait);
-    await withTimeout(
-      exec(`${FFMPEG_BIN} ${buildStillEncodeArgs(imgPath, outPath, duration, fallbackFc)}`),
+    await withSceneFetchTimeout(
+      () => exec(`${FFMPEG_BIN} ${buildStillEncodeArgs(imgPath, outPath, duration, fallbackFc)}`),
       25_000,
       `${label} (fallback)`
     );
@@ -4323,8 +4323,8 @@ async function encodeStillImageMp4(
   if (framedArchiveStillsEnabled()) {
     try {
       const filterComplex = buildMatFramedStillVF(duration);
-      await withTimeout(
-        exec(`${FFMPEG_BIN} ${buildStillEncodeArgs(imgPath, outPath, duration, filterComplex)}`),
+      await withSceneFetchTimeout(
+        () => exec(`${FFMPEG_BIN} ${buildStillEncodeArgs(imgPath, outPath, duration, filterComplex)}`),
         25_000,
         `${label} (mat frame)`
       );
@@ -4349,8 +4349,8 @@ async function encodeStillImageMp4(
   const padH = Math.round(VIDEO_HEIGHT * 1.05);
   const cropY = personPortrait ? "0" : `(ih-${VIDEO_HEIGHT})/2`;
   const yExpr = personPortrait ? "ih/4-(ih/zoom/4)" : "ih/2-(ih/zoom/2)";
-  await withTimeout(
-    exec(
+  await withSceneFetchTimeout(
+    () => exec(
       `${FFMPEG_BIN} -y -i "${imgPath}" ` +
         `-vf "scale=${personPortrait ? VIDEO_WIDTH : padW}:${personPortrait ? VIDEO_HEIGHT : padH}:force_original_aspect_ratio=increase,` +
         `crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:(iw-${VIDEO_WIDTH})/2:${cropY},` +
@@ -4612,8 +4612,8 @@ async function fetchWikimediaImagesV1(
     }
 
     const filterComplex = buildWikimediaDocumentaryVF(duration, "center", sceneIndex, beatIndex);
-    await withTimeout(
-      exec(`${FFMPEG_BIN} ${buildStillEncodeArgs(imgPath, outPath, duration, filterComplex)}`),
+    await withSceneFetchTimeout(
+      () => exec(`${FFMPEG_BIN} ${buildStillEncodeArgs(imgPath, outPath, duration, filterComplex)}`),
       45_000,
       `V1 Wikimedia image→video scene ${sceneIndex}`
     );
@@ -5154,8 +5154,8 @@ async function padShortClipWithNext(
 
     const trimmedFill = path.join(workDir, `pad_fill_s${scene.index}b${beat.index}_${attempt}_${Date.now()}.mp4`);
     try {
-      await withTimeout(
-        exec(
+      await withSceneFetchTimeout(
+        () => exec(
           `${FFMPEG_BIN} -y -i "${fillPath}" -t ${remaining.toFixed(3)} -vf "${STANDARD_VF}" ` +
           `-c:v libx264 -preset veryfast -crf 18 -an -pix_fmt yuv420p "${trimmedFill}"`
         ),
@@ -5176,15 +5176,15 @@ async function padShortClipWithNext(
   const listFile = combined.replace(".mp4", "_list.txt");
   fs.writeFileSync(listFile, segments.map((f) => `file '${f}'`).join("\n") + "\n");
   try {
-    await withTimeout(
-      exec(`${FFMPEG_BIN} -y -f concat -safe 0 -i "${listFile}" -c copy -avoid_negative_ts make_zero "${combined}"`),
+    await withSceneFetchTimeout(
+      () => exec(`${FFMPEG_BIN} -y -f concat -safe 0 -i "${listFile}" -c copy -avoid_negative_ts make_zero "${combined}"`),
       30_000,
       `padShortClip-concat s${scene.index}b${beat.index}`
     );
   } catch {
     try {
-      await withTimeout(
-        exec(
+      await withSceneFetchTimeout(
+        () => exec(
           `${FFMPEG_BIN} -y -f concat -safe 0 -i "${listFile}" -vf "${STANDARD_VF}" ` +
           `-c:v libx264 -preset veryfast -crf 18 -an -pix_fmt yuv420p "${combined}"`
         ),
@@ -5223,8 +5223,8 @@ async function extendLastClip(
   const safeDuration = Math.min(Math.max(beatDuration, 1), 60);
   const out = path.join(workDir, `extend_s${sceneIndex}b${beatIndex}_${Date.now()}.mp4`);
   try {
-    await withTimeout(
-      exec(
+    await withSceneFetchTimeout(
+      () => exec(
         `${FFMPEG_BIN} -y -stream_loop -1 -i "${lastClipPath}" -t ${safeDuration.toFixed(2)} -c copy -avoid_negative_ts make_zero "${out}"`
       ),
       20_000,
@@ -5237,8 +5237,8 @@ async function extendLastClip(
   } catch {
     // copy failed — try re-encode at low quality
     try {
-      await withTimeout(
-        exec(
+      await withSceneFetchTimeout(
+        () => exec(
           `${FFMPEG_BIN} -y -stream_loop -1 -i "${lastClipPath}" -t ${safeDuration.toFixed(2)} -c:v libx264 -preset ultrafast -crf 28 -an "${out}"`
         ),
         25_000,
@@ -5269,8 +5269,8 @@ async function generateGuaranteedBeatClip(
       const colors = ["3a4a5e", "4a5a6e", "3a5a6e", "4a4a5e"];
       const color = colors[Math.abs(sceneIndex) % colors.length];
       const safeDur = Math.min(Math.max(duration, 3), 90);
-      await withTimeout(
-        exec(
+      await withSceneFetchTimeout(
+        () => exec(
           `${FFMPEG_BIN} -y -f lavfi -i "color=c=#${color}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:r=25" -t ${safeDur} ` +
           `-vf "drawtext=text='${safeText}':fontcolor=white:fontsize=52:x=(w-text_w)/2:y=(h-text_h)/2:` +
           `shadowcolor=black:shadowx=3:shadowy=3:alpha='if(lt(t,0.4),t/0.4,1)'" ` +
@@ -5355,7 +5355,7 @@ async function _generateColorFallbackInner(sceneIndex: number, safeDuration: num
     `${FFMPEG_BIN} -y -f lavfi -i "color=c=black:s=640x360:r=25" -t ${safeDuration} -c:v mpeg4 -q:v 8 -an "${out}"`,
   ];
   try {
-    const { stdout: dfOut } = await withTimeout(exec(`df -h "${workDir}" 2>&1 || df -h /var/tmp 2>&1 || df -h /tmp 2>&1`), 5_000, "df");
+    const { stdout: dfOut } = await withSceneFetchTimeout(() => exec(`df -h "${workDir}" 2>&1 || df -h /var/tmp 2>&1 || df -h /tmp 2>&1`), 5_000, "df");
     console.log(`[Pipeline] Scene ${sceneIndex}: disk space: ${dfOut.trim().split("\n").slice(-1)[0]}`);
   } catch { /* ignore */ }
 
@@ -5366,7 +5366,7 @@ async function _generateColorFallbackInner(sceneIndex: number, safeDuration: num
         if (fs.existsSync(out)) {
           try { fs.unlinkSync(out); } catch { /* ignore */ }
         }
-        const { stderr } = await withTimeout(exec(commands[i]), 45_000, `Fallback video scene ${sceneIndex} attempt ${i + 1}`);
+        const { stderr } = await withSceneFetchTimeout(() => exec(commands[i]), 45_000, `Fallback video scene ${sceneIndex} attempt ${i + 1}`);
         if (await isValidVideoFile(out)) {
           console.log(`[Pipeline] Scene ${sceneIndex}: fallback video OK (${(fs.statSync(out).size / 1024).toFixed(0)}KB, attempt ${i + 1})`);
           return out;
@@ -5685,8 +5685,8 @@ async function generateLeonardoAIClip(
     const zoomEnd = 1.05; const zoomStart = 1.0;
     const zoomStep = (zoomEnd - zoomStart) / totalFrames;
     const leonardoOutputPath = outputPath.replace(".mp4", "_leonardo.mp4");
-    await withTimeout(
-      exec(
+    await withSceneFetchTimeout(
+      () => exec(
         `${FFMPEG_BIN} -y -loop 1 -i "${pngPath}" ` +
         `-vf "scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT},` +
         `zoompan=z='min(zoom+${zoomStep.toFixed(6)},${zoomEnd})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=${fps}" ` +
@@ -6012,8 +6012,8 @@ async function trimRemoteVideoToClip(
   label = "clip"
 ): Promise<boolean> {
   try {
-    await withTimeout(
-      exec(
+    await withSceneFetchTimeout(
+      () => exec(
         `${FFMPEG_BIN} -y -ss ${clipStart} -i "${sourcePath}" -t ${duration} ` +
         `-vf "${STANDARD_VF}" ` +
         `-c:v libx264 -preset veryfast -crf 22 -an -pix_fmt yuv420p "${outputPath}"`
@@ -6479,8 +6479,8 @@ async function trimArchiveStreamToClip(
   fastMode = false
 ): Promise<boolean> {
   try {
-    await withTimeout(
-      exec(
+    await withSceneFetchTimeout(
+      () => exec(
         `${FFMPEG_BIN} -y -ss ${startSec} -i "${videoUrl}" -t ${clipDur} ` +
           `-vf "${STANDARD_VF}" ` +
           `-c:v libx264 -preset veryfast -crf 22 -an -pix_fmt yuv420p "${outputPath}"`
@@ -9690,7 +9690,7 @@ async function probeClipMeanLuma(filePath: string, atSec: number): Promise<numbe
   try {
     const lumCmd =
       `"${FFMPEG_BIN}" -y -threads 1 -ss ${atSec.toFixed(2)} -i "${filePath}" -vframes 1 -vf "scale=64:36,format=gray" -f rawvideo -`;
-    const { stdout } = await withTimeout(exec(lumCmd), 10_000, `luma ${path.basename(filePath)}@${atSec}`);
+    const { stdout } = await withSceneFetchTimeout(() => exec(lumCmd), 10_000, `luma ${path.basename(filePath)}@${atSec}`);
     const buf = Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout ?? "", "binary");
     if (buf.length === 0) return null;
     let sum = 0;
@@ -9715,7 +9715,7 @@ async function probeClipRegionMeanLuma(
   try {
     const lumCmd =
       `"${FFMPEG_BIN}" -y -threads 1 -ss ${atSec.toFixed(2)} -i "${filePath}" -vframes 1 -vf "${crop},scale=32:32,format=gray" -f rawvideo -`;
-    const { stdout } = await withTimeout(exec(lumCmd), 10_000, `luma ${path.basename(filePath)}@${atSec}:${region}`);
+    const { stdout } = await withSceneFetchTimeout(() => exec(lumCmd), 10_000, `luma ${path.basename(filePath)}@${atSec}:${region}`);
     const buf = Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout ?? "", "binary");
     if (buf.length === 0) return null;
     let sum = 0;
@@ -9780,7 +9780,7 @@ async function isMostlyBlackClip(filePath: string): Promise<boolean> {
   try {
     const cmd =
       `"${FFMPEG_BIN}" -y -i "${filePath}" -vf "blackdetect=d=0.06:pix_th=0.10" -an -f null -`;
-    const { stderr } = await withTimeout(exec(cmd), 12_000, `blackdetect ${path.basename(filePath)}`);
+    const { stderr } = await withSceneFetchTimeout(() => exec(cmd), 12_000, `blackdetect ${path.basename(filePath)}`);
     const out = typeof stderr === "string" ? stderr : String(stderr ?? "");
     const startMatch = out.match(/black_start:([\d.]+)/g);
     const endMatch = out.match(/black_end:([\d.]+)/g);
@@ -10323,8 +10323,8 @@ async function composePlainMontageScene(
     const gradeChain = montageFilterOpts?.fastEncode
       ? `[vmont]${FPS_FORMAT_VF}[vout]`
       : `[vmont]${fadeFilter}[vout]`;
-    await withTimeout(
-      exec(
+    await withSceneFetchTimeout(
+      () => exec(
         `${FFMPEG_BIN} -y -i "${montageVideoPath}" -i "${safeAudioPath}" ` +
           `-filter_complex "[0:v]${FPS_FORMAT_VF}[vmont];${gradeChain};` +
           `[${audioIdx}:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${Math.max(0, voiceDur - 0.15).toFixed(3)}:d=0.12,` +
@@ -10376,8 +10376,8 @@ async function composePlainMontageScene(
     const estMontage = effectiveMontageDurationSec(montageDurations, sourceMaxDurs);
     const montageOutVF = montageTailPadVF(montageLabel, estMontage, outDur);
     const audioIdx = safeClips.length;
-    await withTimeout(
-      exec(
+    await withSceneFetchTimeout(
+      () => exec(
         `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}" ` +
           `-filter_complex "${scaleFilters}${mergeFilter};${montageOutVF};` +
           (montageFilterOpts?.fastEncode
@@ -10438,8 +10438,8 @@ async function xfadeMergeTwoVideos(
   const xfade = montageFilterOpts?.xfadeSec ?? montageXfadeSec((leftDur + rightDur) / 2);
   const branchNorm = `${montageBranchNormVF()},setpts=PTS-STARTPTS`;
   if (xfade <= 0.001) {
-    await withTimeout(
-      exec(
+    await withSceneFetchTimeout(
+      () => exec(
         `${FFMPEG_BIN} -y -i "${leftPath}" -i "${rightPath}" ` +
           `-filter_complex "[0:v]${branchNorm}[v0];[1:v]${branchNorm}[v1];` +
           `[v0][v1]concat=n=2:v=1:a=0[out]" ` +
@@ -10452,8 +10452,8 @@ async function xfadeMergeTwoVideos(
   }
   const offset = Math.max(0, leftDur - xfade);
   try {
-    await withTimeout(
-      exec(
+    await withSceneFetchTimeout(
+      () => exec(
         `${FFMPEG_BIN} -y -i "${leftPath}" -i "${rightPath}" ` +
           `-filter_complex "[0:v]${branchNorm}[v0];[1:v]${branchNorm}[v1];` +
           `[v0][v1]xfade=transition=dissolve:duration=${xfade.toFixed(3)}:offset=${offset.toFixed(3)}[out]" ` +
@@ -10466,8 +10466,8 @@ async function xfadeMergeTwoVideos(
     // xfade can fail when auto_scale can't configure pads (resolution mismatch mid-stream).
     // Fall back to hard-cut concat which is always safe.
     console.warn(`[Pipeline] xfade failed (auto_scale error) — retrying as hard-cut concat: ${(xfadeErr as Error).message?.slice(0, 120)}`);
-    await withTimeout(
-      exec(
+    await withSceneFetchTimeout(
+      () => exec(
         `${FFMPEG_BIN} -y -i "${leftPath}" -i "${rightPath}" ` +
           `-filter_complex "[0:v]${branchNorm}[v0];[1:v]${branchNorm}[v1];` +
           `[v0][v1]concat=n=2:v=1:a=0[out]" ` +
@@ -10502,8 +10502,8 @@ async function renderMontageVideoOnly(
   const inputs = montageClipInputs(clips);
   const est = effectiveMontageDurationSec(montageDurations, sourceMaxDurs);
   const montageOutVF = montageTailPadVF(montageLabel, est, targetDur);
-  await withTimeout(
-    exec(
+  await withSceneFetchTimeout(
+    () => exec(
       `${FFMPEG_BIN} -y ${inputs} -filter_complex "${scaleFilters}${mergeFilter};${montageOutVF}" ` +
         `-map "[vmont]" -an -vsync cfr -t ${targetDur.toFixed(3)} ${threadFlag} ` +
         `-c:v libx264 -preset ${MONTAGE_SEGMENT_ENCODE_PRESET} -crf 18 -pix_fmt yuv420p "${outputPath}"`
@@ -10637,8 +10637,8 @@ async function renderSingleMontageSegment(
   if (burnDeferred && lines.length > 0) {
     const chain = buildFacelessTypewriterDrawtextChain("vprep", "vout", lines, effectiveDur, "bottom-left");
     const filterComplex = `[0:v]${montageBranchNormVF()}[vprep]${chain}`;
-    await withTimeout(
-      exec(
+    await withSceneFetchTimeout(
+      () => exec(
         `${FFMPEG_BIN} -y -ss ${startSec.toFixed(3)} -i "${clipPath}" -t ${effectiveDur.toFixed(3)} ` +
           `-filter_complex "${filterComplex}" -map "[vout]" ` +
           `-an -vsync cfr ${threadFlag} ` +
@@ -10648,8 +10648,8 @@ async function renderSingleMontageSegment(
       `Montage segment+text scene ${sceneIndex} clip ${clipIndex}`
     );
   } else {
-    await withTimeout(
-      exec(
+    await withSceneFetchTimeout(
+      () => exec(
         `${FFMPEG_BIN} -y -ss ${startSec.toFixed(3)} -i "${clipPath}" -t ${effectiveDur.toFixed(3)} ` +
           `-vf "${montageBranchNormVF()},setpts=PTS-STARTPTS" -an -vsync cfr ${threadFlag} ` +
           `-c:v libx264 -preset ${MONTAGE_SEGMENT_ENCODE_PRESET} -crf 18 -pix_fmt yuv420p "${outputPath}"`
@@ -10708,8 +10708,8 @@ async function renderSequentialArchiveMontage(
       pad >= 0.08 && !strictNoVisualRepeat()
         ? `tpad=stop_mode=add:stop_duration=${pad.toFixed(3)}:color=0x2a2a2a,`
         : "";
-    await withTimeout(
-      exec(
+    await withSceneFetchTimeout(
+      () => exec(
         `${FFMPEG_BIN} -y -i "${segmentPaths[0]!}" -vf "${padFilter}${FPS_FORMAT_VF}" ` +
           `-an -vsync cfr -t ${outDur.toFixed(3)} ${threadFlag} ` +
           `-c:v libx264 -preset ${MONTAGE_SEGMENT_ENCODE_PRESET} -crf 18 -pix_fmt yuv420p "${outputPath}"`
@@ -10774,8 +10774,8 @@ async function renderInlineMontageToFile(
         sourceMaxDurs
       );
   const montageOutVF = montageTailPadVF(montageLabel, estMontageDur, outDur);
-  await withTimeout(
-    exec(
+  await withSceneFetchTimeout(
+    () => exec(
       `${FFMPEG_BIN} -y ${inputs} -filter_complex "${scaleFilters}${mergeFilter};${montageOutVF}" ` +
         `-map "[vmont]" -vsync cfr -t ${outDur.toFixed(3)} ${threadFlag} ` +
         `-c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p "${outputPath}"`
@@ -10820,8 +10820,8 @@ async function composeBatchedArchiveSceneWithAudio(
     `[1:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${audioFadeOutStart.toFixed(3)}:d=0.12,` +
     `atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]`;
   if (skipEffectLayers || docOverlays.length === 0) {
-    await withTimeout(
-      exec(
+    await withSceneFetchTimeout(
+      () => exec(
         `${FFMPEG_BIN} -y -i "${montageOnlyPath}" -i "${safeAudioPath}" ` +
           `-filter_complex "[0:v]${FPS_FORMAT_VF}[vout];${voiceAudioFilter}" ` +
           `-map "[vout]" -map "[aout]" -vsync cfr -t ${outDur.toFixed(3)} ${threadFlag} ` +
@@ -10843,8 +10843,8 @@ async function composeBatchedArchiveSceneWithAudio(
       null
     );
     const overlayInputs = extraInputs ? ` ${extraInputs}` : "";
-    await withTimeout(
-      exec(
+    await withSceneFetchTimeout(
+      () => exec(
         `${FFMPEG_BIN} -y -i "${videoSrc}" -i "${safeAudioPath}"${overlayInputs} ` +
           `-filter_complex "[0:v]${FPS_FORMAT_VF}[vmont]${filterChain};[${finalLabel}]${fadeFilter}[vout];${voiceAudioFilter}" ` +
           `-map "[vout]" -map "[aout]" -vsync cfr -t ${outDur.toFixed(3)} ${threadFlag} ` +
@@ -10855,8 +10855,8 @@ async function composeBatchedArchiveSceneWithAudio(
     );
     return;
   }
-  await withTimeout(
-    exec(
+  await withSceneFetchTimeout(
+    () => exec(
       `${FFMPEG_BIN} -y -i "${videoSrc}" -i "${safeAudioPath}" ` +
         `-filter_complex "[0:v]${FPS_FORMAT_VF}[v];[v]${fadeFilter}[vout];${voiceAudioFilter}" ` +
         `-map "[vout]" -map "[aout]" -vsync cfr -t ${outDur.toFixed(3)} ${threadFlag} ` +
@@ -15849,7 +15849,7 @@ async function pushMotionGraphicBeatClipIfAny(
     dedup.motionGraphicsUsed,
     videoTitle,
     FFMPEG_BIN,
-    (cmd, ms, label) => withTimeout(exec(cmd), ms, label)
+    (cmd, ms, label) => withSceneFetchTimeout(() => exec(cmd), ms, label)
   );
   if (!mgfxClip) return false;
   dedup.motionGraphicsUsed++;
@@ -15887,7 +15887,7 @@ async function applyVideoBeatTextOverlay(
     workDir,
     holdSec,
     FFMPEG_BIN,
-    (cmd, ms, label) => withTimeout(exec(cmd), ms, label)
+    (cmd, ms, label) => withSceneFetchTimeout(() => exec(cmd), ms, label)
   );
 }
 
@@ -20205,8 +20205,8 @@ async function renderKineticFrames(
 
     try {
       // Generate yellow pill PNG using FFmpeg lavfi + drawbox + drawtext
-      await withTimeout(
-        exec(
+      await withSceneFetchTimeout(
+        () => exec(
           `${FFMPEG_BIN} -y ` +
           `-f lavfi -i "color=c=black@0:size=${VIDEO_WIDTH}x${OVERLAY_H}:rate=1" ` +
           `-vf "drawbox=x=${pillX}:y=${pillY}:w=${pillW}:h=${pillH}:color=FFD200@0.97:t=fill,` +
@@ -20255,8 +20255,8 @@ async function renderStatCallout(
 
   try {
     // Generate stat callout PNG using FFmpeg lavfi + drawbox + drawtext
-    await withTimeout(
-      exec(
+    await withSceneFetchTimeout(
+      () => exec(
         `${FFMPEG_BIN} -y ` +
         `-f lavfi -i "color=c=black@0:size=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:rate=1" ` +
         `-vf "drawbox=x=${boxX}:y=${boxY}:w=${boxW}:h=${boxH}:color=FFD200@0.97:t=fill,` +
@@ -20290,8 +20290,8 @@ async function renderSubtitleOverlayFFmpeg(
   const safeText = sanitizeForDrawtext(text, 80);
   const badge = sanitizeForDrawtext(`${sceneIndex + 1}/${totalScenes}`, 20);
   // Use FFmpeg to create a PNG: black gradient bar with white text
-  await withTimeout(
-    exec(
+  await withSceneFetchTimeout(
+    () => exec(
       `${FFMPEG_BIN} -y -f lavfi -i "color=c=black@0.85:size=${VIDEO_WIDTH}x${OVERLAY_H}:rate=1" ` +
       `-vf "drawtext=text='${badge}':fontcolor=yellow:fontsize=22:x=28:y=14,` +
       `drawtext=text='${safeText}':fontcolor=white:fontsize=36:x=(w-text_w)/2:y=100:line_spacing=10" ` +
@@ -20335,8 +20335,8 @@ async function renderChapterCard(
   const lineX2 = Math.round(VIDEO_WIDTH * 0.85);
 
   try {
-    await withTimeout(
-      exec(
+    await withSceneFetchTimeout(
+      () => exec(
         `${FFMPEG_BIN} -y ` +
         `-f lavfi -i "color=c=FFD700:size=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:rate=25" ` +
         `-f lavfi -i anullsrc=r=44100:cl=stereo ` +
@@ -20362,8 +20362,8 @@ async function renderIntroCardFFmpeg(videoTitle: string, duration: number, workD
   const outputPath = path.join(workDir, "intro_card.mp4");
   // Sanitize title for FFmpeg drawtext filter
   const safeTitle = sanitizeForDrawtext(videoTitle, 60);
-  await withTimeout(
-    exec(
+  await withSceneFetchTimeout(
+    () => exec(
       `${FFMPEG_BIN} -y -f lavfi -i "color=c=#0a0a1e:size=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:rate=25" ` +
       `-f lavfi -i anullsrc=r=44100:cl=stereo ` +
       `-filter_complex "[0:v]drawtext=text='${safeTitle}':fontcolor=white:fontsize=52:x=(w-text_w)/2:y=h/2-40:line_spacing=10,` +
@@ -20384,8 +20384,8 @@ async function renderIntroCard(videoTitle: string, duration: number, workDir: st
 //// ─── 4c. Branded Outro Card ────────────────────────────────────────────
 async function renderOutroCardFFmpeg(duration: number, workDir: string): Promise<string> {
   const outputPath = path.join(workDir, "outro_card.mp4");
-  await withTimeout(
-    exec(
+  await withSceneFetchTimeout(
+    () => exec(
       `${FFMPEG_BIN} -y -f lavfi -i "color=c=#0a0a1e:size=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:rate=25" ` +
       `-f lavfi -i anullsrc=r=44100:cl=stereo ` +
       `-filter_complex "[0:v]drawtext=text='Thanks for watching!':fontcolor=white:fontsize=64:x=(w-text_w)/2:y=h/2-80,` +
@@ -20523,7 +20523,7 @@ async function prepareSceneEffectLayers(
         duration,
         workDir,
         FFMPEG_BIN,
-        (cmd, ms, lbl) => withTimeout(exec(cmd), ms, lbl),
+        (cmd, ms, lbl) => withSceneFetchTimeout(() => exec(cmd), ms, lbl),
         buildCinematicOverlayOpts(enableSubtitles)
       );
       docOverlays.push(...cinematicOverlays);
@@ -20623,8 +20623,8 @@ async function applySceneEffectsPass(
     ? `[0:v]${layers.fadeFilter}[${gradedBase}];${overlayChainRaw.replace(/\[0:v\]/g, `[${gradedBase}]`)};[kfinal]${FPS_FORMAT_VF}[vout]`
     : `[0:v]${FPS_FORMAT_VF},${layers.fadeFilter}[vout]`;
 
-  await withTimeout(
-    exec(
+  await withSceneFetchTimeout(
+    () => exec(
       `${FFMPEG_BIN} -y -i "${assemblyPath}"${extraInputs ? ` ${extraInputs}` : ""}${sfxInputStr ? ` ${sfxInputStr}` : ""} ` +
         `-filter_complex "${videoChain};${audioFilter}" ` +
         `-map "[vout]" -map "[aout]" -vsync cfr ` +
@@ -20950,8 +20950,8 @@ async function composeSceneVideoInner(
   if (!audioValid) {
     safeAudioPath = path.join(workDir, `scene_${scene.index}_silent.mp3`);
     try {
-      await withTimeout(
-        exec(`${FFMPEG_BIN} -y -f lavfi -i anullsrc=r=44100:cl=stereo -t ${duration} -c:a libmp3lame -b:a 64k "${safeAudioPath}"`),
+      await withSceneFetchTimeout(
+        () => exec(`${FFMPEG_BIN} -y -f lavfi -i anullsrc=r=44100:cl=stereo -t ${duration} -c:a libmp3lame -b:a 64k "${safeAudioPath}"`),
         10_000, `Silent fallback scene ${scene.index}`
       );
     } catch {
@@ -21037,7 +21037,7 @@ async function composeSceneVideoInner(
         duration,
         workDir,
         FFMPEG_BIN,
-        (cmd, ms, lbl) => withTimeout(exec(cmd), ms, lbl),
+        (cmd, ms, lbl) => withSceneFetchTimeout(() => exec(cmd), ms, lbl),
         buildCinematicOverlayOpts(enableSubtitles)
       );
       docOverlays.push(...cinematicOverlays);
@@ -21332,7 +21332,7 @@ async function composeSceneVideoInner(
         labeledPath,
         yearLabels,
         FFMPEG_BIN,
-        (cmd, ms, lbl) => withTimeout(exec(cmd), ms, lbl)
+        (cmd, ms, lbl) => withSceneFetchTimeout(() => exec(cmd), ms, lbl)
       );
       const audioFadeOutStart = Math.max(0, voiceDur - 0.15);
       const voiceAudioFilter =
@@ -21350,8 +21350,8 @@ async function composeSceneVideoInner(
           ? `[1:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${audioFadeOutStart.toFixed(3)}:d=0.12,asetpts=PTS-STARTPTS[voiceFaded];` +
             buildCinematicSfxAudioFilter("voiceFaded", sfxMeta, voiceDur, "aout")
           : voiceAudioFilter;
-      await withTimeout(
-        exec(
+      await withSceneFetchTimeout(
+        () => exec(
           `${FFMPEG_BIN} -y -i "${labeledPath}" -i "${safeAudioPath}"${sfxInputStr ? ` ${sfxInputStr}` : ""} ` +
             `-filter_complex "[0:v]${FPS_FORMAT_VF}[v];[v]${fadeFilter}[vout];${audioFilter}" ` +
             `-map "[vout]" -map "[aout]" -vsync cfr -t ${outDur.toFixed(3)} ${threadFlag} ` +
@@ -21418,8 +21418,8 @@ async function composeSceneVideoInner(
       `atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]`;
 
     if (skipEffectLayers) {
-      await withTimeout(
-        exec(
+      await withSceneFetchTimeout(
+        () => exec(
           `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}" ` +
             `-filter_complex "${scaleFilters}${mergeFilter};${montageOutVF};${voiceAudioFilter}" ` +
             `-map "[vmont]" -map "[aout]" -vsync cfr ` +
@@ -21459,8 +21459,8 @@ async function composeSceneVideoInner(
         ? `[${audioIdx}:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${audioFadeOutStart.toFixed(3)}:d=0.12,asetpts=PTS-STARTPTS[voiceFaded];` +
           buildCinematicSfxAudioFilter("voiceFaded", sfxMeta, voiceDur, "aout")
         : voiceAudioFilter;
-    await withTimeout(
-      exec(
+    await withSceneFetchTimeout(
+      () => exec(
         `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}"${kineticInput}${sfxInputStr ? ` ${sfxInputStr}` : ""} ` +
         `-filter_complex "${scaleFilters}${mergeFilter};${montageOutVF}${yearDrawChain ? "" : kineticChainStr}${videoGradeChain};` +
         `${audioFilter}" ` +
@@ -21517,8 +21517,8 @@ async function composeSceneVideoInner(
           buildKineticChain(montageLabel, kineticBaseIdx2);
         const preGradeLabel2 = kChain2 ? kFinalLabel2 : montageLabel;
         const audioFadeOutStart2 = Math.max(0, voiceDur - 0.15);
-        await withTimeout(
-          exec(
+        await withSceneFetchTimeout(
+          () => exec(
             `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}"${kExtraInputs2 ? ` ${kExtraInputs2}` : ""} ` +
               `-filter_complex "${scaleFilters}${mergeFilter}${kChain2};` +
               `[${preGradeLabel2}]${FPS_FORMAT_VF}[vtimed];[vtimed]${fadeFilter}[vout];` +
@@ -21552,8 +21552,8 @@ async function composeSceneVideoInner(
         const inputs = montageClipInputs(composeClips);
         const montageLabel = xfadeLabel;
         const audioIdx = composeClips.length;
-        await withTimeout(
-          exec(
+        await withSceneFetchTimeout(
+          () => exec(
             `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}" ` +
               `-filter_complex "${scaleFilters}${mergeFilter};[${montageLabel}]${FPS_FORMAT_VF}[vtimed];[vtimed]${fadeFilter}[vout];` +
               `[${audioIdx}:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${Math.max(0, voiceDur - 0.15).toFixed(3)}:d=0.12,` +
@@ -21591,8 +21591,8 @@ async function composeSceneVideoInner(
       const estRescue = effectiveMontageDurationSec(rescueDurs, sourceMaxDurs);
       const rescuePad = montageTailPadVF(montageLabel, estRescue, outDur);
       const audioIdx = composeClips.length;
-      await withTimeout(
-        exec(
+      await withSceneFetchTimeout(
+        () => exec(
           `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}" ` +
             `-filter_complex "${scaleFilters}${mergeFilter};${rescuePad};[vmont]${fadeFilter}[vout];` +
             `[${audioIdx}:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${Math.max(0, voiceDur - 0.15).toFixed(3)}:d=0.12,` +
@@ -21619,8 +21619,8 @@ async function composeSceneVideoInner(
           threadFlag
         );
         const audioFadeOutStart = Math.max(0, voiceDur - 0.15);
-        await withTimeout(
-          exec(
+        await withSceneFetchTimeout(
+          () => exec(
             `${FFMPEG_BIN} -y -i "${seqMontagePath}" -i "${safeAudioPath}" ` +
               `-filter_complex "[0:v]${FPS_FORMAT_VF}[vmont];[vmont]${fadeFilter}[vout];` +
               `[1:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${audioFadeOutStart.toFixed(3)}:d=0.12,` +
@@ -21658,8 +21658,8 @@ async function composeSceneVideoInner(
     console.warn(`[Pipeline] Scene ${scene.index}: compose empty — guaranteed clip rescue`);
     const clip = await generateGuaranteedBeatClip(scene.index, 8888, Math.max(3, duration), workDir);
     try {
-      await withTimeout(
-        exec(
+      await withSceneFetchTimeout(
+        () => exec(
           `${FFMPEG_BIN} -y -i "${clip}" -i "${safeAudioPath}" ` +
             `-filter_complex "[0:v]${FPS_FORMAT_VF}[vout];` +
             `[1:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${Math.max(0, voiceDur - 0.15).toFixed(3)}:d=0.12,` +
@@ -21690,8 +21690,8 @@ async function composeSceneVideoInner(
     try {
       const rescueProbed = await probeVideoDurationSec(rescueStockClip);
       const playDur = Math.min(outDur, rescueProbed > 0.2 ? rescueProbed - 0.05 : outDur);
-      await withTimeout(
-        exec(
+      await withSceneFetchTimeout(
+        () => exec(
           `${FFMPEG_BIN} -y -ss 0.3 -i "${rescueStockClip}" -i "${safeAudioPath}" ` +
             `-filter_complex "[0:v]trim=duration=${playDur.toFixed(3)},setpts=PTS-STARTPTS,${FPS_FORMAT_VF}[vout];` +
             `[1:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${Math.max(0, voiceDur - 0.15).toFixed(3)}:d=0.12,` +
@@ -21730,8 +21730,8 @@ async function generateBackgroundMusic(duration: number, workDir: string, fast =
   const outputPath = path.join(workDir, "bg_music.mp3");
   if (fast) {
     try {
-      await withTimeout(
-        exec(
+      await withSceneFetchTimeout(
+        () => exec(
           `${FFMPEG_BIN} -y -f lavfi -i "sine=frequency=110:duration=${duration}" ` +
             `-f lavfi -i "sine=frequency=165:duration=${duration}" ` +
             `-filter_complex "[0]volume=0.25,lowpass=f=200[a];[1]volume=0.15,lowpass=f=280[b];[a][b]amix=inputs=2:duration=first,lowpass=f=900" ` +
@@ -21753,8 +21753,8 @@ async function generateBackgroundMusic(duration: number, workDir: string, fast =
     // Sub-bass: A1 (55Hz) — foundation
     // Pulse: 2Hz AM on root for subtle rhythmic breathing
     // Hi-hat texture: bandpass-filtered white noise at very low volume
-    await withTimeout(
-      exec(
+    await withSceneFetchTimeout(
+      () => exec(
         `${FFMPEG_BIN} -y ` +
         // Root pad — A2, warm and central
         `-f lavfi -i "sine=frequency=110:duration=${duration}" ` +
@@ -21839,7 +21839,7 @@ async function generateSFX(
         `-filter_complex "[0]volume=0.7,aecho=0.9:0.6:30:0.4,lowpass=f=300[sfx]" ` +
         `-map "[sfx]" -c:a libmp3lame -b:a 128k "${outputPath}"`;
     }
-    await withTimeout(exec(cmd), 10_000, `SFX generation: ${type}`);
+    await withSceneFetchTimeout(() => exec(cmd), 10_000, `SFX generation: ${type}`);
     return outputPath;
   } catch (err) {
     console.warn(`[Pipeline] SFX generation failed for ${type}:`, err);
@@ -21868,8 +21868,8 @@ async function trimVoiceoverSilence(audioPath: string): Promise<number> {
   if (!fs.existsSync(audioPath)) return 0;
   const tmpPath = audioPath.replace(/\.mp3$/i, "_trim.mp3");
   try {
-    await withTimeout(
-      exec(
+    await withSceneFetchTimeout(
+      () => exec(
         `${FFMPEG_BIN} -y -i "${audioPath}" -af ` +
         `"silenceremove=start_periods=1:start_duration=0.06:start_threshold=-42dB:detection=peak,` +
         `areverse,silenceremove=start_periods=1:start_duration=0.1:start_threshold=-42dB:detection=peak,areverse" ` +
@@ -21904,7 +21904,7 @@ async function ensureFinalVideoDuration(
   try {
     const detectCmd =
       `"${FFMPEG_BIN}" -y -i "${working}" -vf "blackdetect=d=0.04:pix_th=0.12" -an -f null -`;
-    const { stderr } = await withTimeout(exec(detectCmd), 60_000, "Final blackdetect trim");
+    const { stderr } = await withSceneFetchTimeout(() => exec(detectCmd), 60_000, "Final blackdetect trim");
     const out = typeof stderr === "string" ? stderr : String(stderr ?? "");
     const starts = [...out.matchAll(/black_start:([\d.]+)/g)].map((m) => parseFloat(m[1]));
     const ends = [...out.matchAll(/black_end:([\d.]+)/g)].map((m) => parseFloat(m[1]));
@@ -21925,8 +21925,8 @@ async function ensureFinalVideoDuration(
     }
     const probed = await probeVideoDurationSec(working);
     if (trimTo < probed - 0.4) {
-      await withTimeout(
-        exec(
+      await withSceneFetchTimeout(
+        () => exec(
           `${FFMPEG_BIN} -y -i "${working}" -t ${trimTo.toFixed(3)} -c:v libx264 -preset veryfast -crf 18 ` +
           `-c:a aac -b:a 320k -movflags +faststart "${trimmed}"`
         ),
@@ -21989,8 +21989,8 @@ async function concatenateScenesWithMusic(
 
   const concatPreset = fastShort ? MONTAGE_SEGMENT_ENCODE_PRESET : "veryfast";
   const concatCrf = fastShort ? 22 : 18;
-  const concatPromise = withTimeout(
-    exec(
+  const concatPromise = withSceneFetchTimeout(
+    () => exec(
       `${FFMPEG_BIN} -y -fflags +discardcorrupt -f concat -safe 0 -i "${listFile}" -vsync cfr ` +
         `-c:v libx264 -preset ${concatPreset} -crf ${concatCrf} -c:a aac -b:a 320k -movflags +faststart "${concatPath}"`
     ),
@@ -22022,8 +22022,8 @@ async function concatenateScenesWithMusic(
     let probed = false;
     for (const probePath of FFPROBE_PATHS()) {
       try {
-        const { stdout: probeOut } = await withTimeout(
-          exec(`${probePath} -v error -select_streams a -show_entries stream=codec_type -of csv=p=0 "${concatPath}"`),
+        const { stdout: probeOut } = await withSceneFetchTimeout(
+          () => exec(`${probePath} -v error -select_streams a -show_entries stream=codec_type -of csv=p=0 "${concatPath}"`),
           10000,
           "ffprobe audio stream check"
         );
@@ -22052,8 +22052,8 @@ async function concatenateScenesWithMusic(
       const { buildCinematicAudioFilter } = await import("./cinematicAudio/index");
       const ambientFilter = buildCinematicAudioFilter(dominantEmotion ?? "neutral");
       try {
-        await withTimeout(
-          exec(
+        await withSceneFetchTimeout(
+          () => exec(
             `${FFMPEG_BIN} -y -i "${concatPath}" -i "${musicPath}" -i "${cinematicAmbientPath}" ` +
             `-filter_complex "${ambientFilter}" ` +
             `-map "0:v" -map "[aout]" ` +
@@ -22068,8 +22068,8 @@ async function concatenateScenesWithMusic(
         hasAmbient && null; // swallow — fall through to standard mix below
         goto_standard_mix: {
           try {
-            await withTimeout(
-              exec(
+            await withSceneFetchTimeout(
+              () => exec(
                 `${FFMPEG_BIN} -y -i "${concatPath}" -i "${musicPath}" ` +
                 `-filter_complex "[0:a]volume=1.0,asplit=2[voice][voicedet];[1:a]volume=0.22,aloop=loop=-1:size=2e+09[musicloop];[musicloop][voicedet]sidechaincompress=threshold=0.02:ratio=8:attack=5:release=200:makeup=1[music_ducked];[voice][music_ducked]amix=inputs=2:duration=first:dropout_transition=3[aout]" ` +
                 `-map "0:v" -map "[aout]" -c:v copy -c:a aac -b:a 320k -movflags +faststart "${outputPath}"`
@@ -22084,8 +22084,8 @@ async function concatenateScenesWithMusic(
     } else {
       // Standard 2-layer mix: voice + music with sidechain ducking
       try {
-        await withTimeout(
-          exec(
+        await withSceneFetchTimeout(
+          () => exec(
             `${FFMPEG_BIN} -y -i "${concatPath}" -i "${musicPath}" ` +
             `-filter_complex "[0:a]volume=1.0,asplit=2[voice][voicedet];[1:a]volume=0.22,aloop=loop=-1:size=2e+09[musicloop];[musicloop][voicedet]sidechaincompress=threshold=0.02:ratio=8:attack=5:release=200:makeup=1[music_ducked];[voice][music_ducked]amix=inputs=2:duration=first:dropout_transition=3[aout]" ` +
             `-map "0:v" -map "[aout]" ` +
@@ -22097,8 +22097,8 @@ async function concatenateScenesWithMusic(
       } catch (err) {
         console.warn("[Pipeline] Audio mixing failed, trying without aloop:", err);
         try {
-          await withTimeout(
-            exec(
+          await withSceneFetchTimeout(
+            () => exec(
               `${FFMPEG_BIN} -y -i "${concatPath}" -i "${musicPath}" ` +
               `-filter_complex "[0:a]volume=1.0[voice];[1:a]volume=0.12[music];[voice][music]amix=inputs=2:duration=first:dropout_transition=3[aout]" ` +
               `-map "0:v" -map "[aout]" ` +
@@ -22109,8 +22109,8 @@ async function concatenateScenesWithMusic(
           );
         } catch (err2) {
           console.warn("[Pipeline] Audio mixing failed completely, copying video:", err2);
-          await withTimeout(
-            exec(`${FFMPEG_BIN} -y -i "${concatPath}" -c copy -movflags +faststart "${outputPath}"`),
+          await withSceneFetchTimeout(
+            () => exec(`${FFMPEG_BIN} -y -i "${concatPath}" -c copy -movflags +faststart "${outputPath}"`),
             Math.round(musicMixTimeoutMs * 0.3), "Copy concat as output"
           );
         }
@@ -22119,8 +22119,8 @@ async function concatenateScenesWithMusic(
   } else {
     // Fallback: concat has no audio — use only background music at 25%
     console.warn("[Pipeline] Concat has no audio stream, using background music only");
-    await withTimeout(
-      exec(
+    await withSceneFetchTimeout(
+      () => exec(
         `${FFMPEG_BIN} -y -i "${concatPath}" -i "${musicPath}" ` +
         `-filter_complex "[1:a]volume=0.25,aloop=loop=-1:size=2e+09[aout]" ` +
         `-map "0:v" -map "[aout]" ` +
@@ -22669,8 +22669,8 @@ async function _runVideoPipelineInner(
 
         // ffprobe output file for encoder/resolution/fps/duration
         try {
-          const probe = await withTimeout(
-            exec(`${FFPROBE_BIN} -v quiet -print_format json -show_streams -show_format "${outputPath}"`),
+          const probe = await withSceneFetchTimeout(
+            () => exec(`${FFPROBE_BIN} -v quiet -print_format json -show_streams -show_format "${outputPath}"`),
             10_000, "ffprobe output"
           );
           const info = JSON.parse(probe.stdout);
@@ -23595,8 +23595,8 @@ async function _runVideoPipelineInner(
               if (!audioValid) {
                 safeAudioPath = path.join(workDir, `scene_${scene.index}_lastresort_silent.mp3`);
                 try {
-                  await withTimeout(
-                    exec(
+                  await withSceneFetchTimeout(
+                    () => exec(
                       `${FFMPEG_BIN} -y -f lavfi -i anullsrc=r=44100:cl=stereo -t ${scene.duration} -c:a libmp3lame -b:a 64k "${safeAudioPath}"`
                     ),
                     10_000, `Last-resort silent audio scene ${scene.index}`
@@ -23605,8 +23605,8 @@ async function _runVideoPipelineInner(
                   fs.writeFileSync(safeAudioPath, Buffer.from([0xff, 0xfb, 0x90, 0x00, ...Array(413).fill(0)]));
                 }
               }
-              await withTimeout(
-                exec(
+              await withSceneFetchTimeout(
+                () => exec(
                   `${FFMPEG_BIN} -y -i "${lastClip}" -i "${safeAudioPath}" ` +
                     `-filter_complex "[0:v]trim=duration=${scene.duration.toFixed(3)},setpts=PTS-STARTPTS,${FPS_FORMAT_VF}[vout];` +
                     `[1:a]atrim=0:${scene.duration.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
