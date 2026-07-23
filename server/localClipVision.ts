@@ -15,6 +15,7 @@ import {
   coerceVisionString,
 } from "./stringCoercion";
 import { beatVisualDescriptionFromIntent } from "./scriptVisualKeywords";
+import { ffmpegSemaphore } from "./_core/semaphore";
 
 export { coerceVisionString, asVideoTitleString } from "./stringCoercion";
 
@@ -596,9 +597,11 @@ export function scoreEmbeddingSimilarity(a: number[], b: number[]): number {
 export async function probeImageMeanLuma(jpegPath: string): Promise<number | null> {
   if (!fs.existsSync(jpegPath)) return null;
   try {
-    const { stdout } = await exec(
-      `"${ffmpegBin()}" -y -i "${jpegPath}" -vf "scale=1:1,format=gray" -frames:v 1 -f rawvideo -`,
-      { encoding: "buffer", maxBuffer: 4096, timeout: 8_000 }
+    const { stdout } = await ffmpegSemaphore.run(() =>
+      exec(
+        `"${ffmpegBin()}" -y -i "${jpegPath}" -vf "scale=1:1,format=gray" -frames:v 1 -f rawvideo -`,
+        { encoding: "buffer", maxBuffer: 4096, timeout: 8_000 }
+      )
     );
     const buf = stdout as Buffer;
     if (!buf?.length) return null;
@@ -626,9 +629,11 @@ function isForkPressureSpawnError(err: unknown): boolean {
  *  fraction has to be resolved against the real duration first. */
 async function probeDurationSec(videoPath: string, timeoutMs = 8_000): Promise<number> {
   try {
-    const { stdout } = await exec(
-      `"${ffprobeBin()}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${videoPath}"`,
-      { timeout: timeoutMs }
+    const { stdout } = await ffmpegSemaphore.run(() =>
+      exec(
+        `"${ffprobeBin()}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${videoPath}"`,
+        { timeout: timeoutMs }
+      )
     );
     const d = parseFloat(String(stdout).trim());
     return isNaN(d) || d <= 0 ? 0 : d;
@@ -643,7 +648,7 @@ async function extractFrameAtFractionOnce(
   seekSeconds: number,
   timeoutMs: number
 ): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
+  await ffmpegSemaphore.run(() => new Promise<void>((resolve, reject) => {
     const args = ["-y", "-ss", seekSeconds.toFixed(2), "-i", videoPath, "-frames:v", "1", "-q:v", "3", outPath];
     const child = spawn(ffmpegBin(), args, { stdio: ["ignore", "ignore", "pipe"] });
     let stderr = "";
@@ -664,7 +669,7 @@ async function extractFrameAtFractionOnce(
       clearTimeout(timer);
       reject(err);
     });
-  });
+  }));
 }
 
 // Under heavy concurrent ffmpeg load, spawn can transiently fail with EAGAIN/"Cannot

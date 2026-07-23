@@ -711,7 +711,19 @@ const exec = async (cmd: string, eagainRetriesLeft = EXEC_FORK_RETRIES): Promise
     console.log(`[FFmpegCmd] ${cmd.slice(0, 1200)}`);
   }
   try {
-    return await execRaw(cmd);
+    // Gate the actual spawn behind the global concurrency limit — without this, each of the
+    // ~92 call sites below could fire its own ffmpeg/ffprobe child independently of every other
+    // subsystem's local parallelism cap (compose, montage, beat-fetch, ...), so their sum could
+    // still burst well past what the container can fork at once. Queuing here delays the spawn
+    // itself until a slot is free, instead of spawning it and then failing on fork pressure.
+    return await ffmpegSemaphore.run(() => {
+      // Re-check: this call may have sat queued long enough for its own scope to time out and
+      // be abandoned in the meantime — don't spawn a process nobody's waiting for anymore.
+      if (sceneFetchScopeStorage.getStore()?.controller.signal.aborted) {
+        throw new Error(`[SceneFetchScope] Aborted while queued — skipping: ${cmd.slice(0, 120)}`);
+      }
+      return execRaw(cmd);
+    });
   } catch (err: unknown) {
     const errMsg = (err as Error)?.message || '';
     if (isForkPressureError(err)) {
@@ -749,7 +761,7 @@ const exec = async (cmd: string, eagainRetriesLeft = EXEC_FORK_RETRIES): Promise
           const retryCmd = cmd.startsWith(oldBin)
             ? alt + cmd.slice(oldBin.length)
             : cmd.replace(/^\S+/, alt);
-          return await execRaw(retryCmd);
+          return await ffmpegSemaphore.run(() => execRaw(retryCmd));
         }
       }
     }

@@ -1,7 +1,10 @@
 /**
  * Semaphore — limits concurrent access to a shared resource.
  *
- * Global FFmpeg semaphore: max 10 FFmpeg processes across the whole server.
+ * Global FFmpeg semaphore: caps concurrent ffmpeg/ffprobe child processes across the whole
+ * server, regardless of which subsystem spawns them (compose, montage, beat-fetch, CLIP
+ * vision, ...) — each has its own local parallelism setting, but nothing previously stopped
+ * their sum from bursting past what the container can actually fork at once.
  * Per-user render lock: max 1 active video render per user account.
  */
 
