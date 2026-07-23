@@ -28,7 +28,12 @@ const isForkPressureError = (err: unknown): boolean => {
   // ffmpeg's own filter-graph errors ("Resource temporarily unavailable" from inside the
   // process, not just at spawn time) land in stderr, not necessarily err.message.
   const msg = `${(err as Error)?.message || ""} ${(err as { stderr?: string })?.stderr || ""}`;
-  return /resource temporarily unavailable/i.test(msg) || /cannot fork/i.test(msg);
+  if (/resource temporarily unavailable/i.test(msg) || /cannot fork/i.test(msg)) return true;
+  // Same transient condition, surfaced as libx264's threaded encoder failing to spin up its
+  // worker threads instead of a plain EAGAIN. See server/_core/execForkRetry.ts for the
+  // canonical version of this check.
+  if (/error initializing output stream/i.test(msg) && /error while opening encoder/i.test(msg)) return true;
+  return false;
 };
 const exec = (async (cmd: string, opts?: Record<string, unknown>) => {
   let retriesLeft = 3;

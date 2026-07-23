@@ -614,7 +614,12 @@ function isForkPressureSpawnError(err: unknown): boolean {
   const code = (err as NodeJS.ErrnoException)?.code;
   if (code === "EAGAIN") return true;
   const msg = (err as Error)?.message || "";
-  return /resource temporarily unavailable/i.test(msg) || /cannot fork/i.test(msg);
+  if (/resource temporarily unavailable/i.test(msg) || /cannot fork/i.test(msg)) return true;
+  // libx264/rawvideo's threaded encoder failing to spin up its worker threads under the same
+  // OS process/thread pressure — same transient condition, different ffmpeg-reported message.
+  // See server/_core/execForkRetry.ts for the canonical version of this check.
+  if (/error initializing output stream/i.test(msg) && /error while opening encoder/i.test(msg)) return true;
+  return false;
 }
 
 /** ffmpeg's -ss takes a time (seconds, or HH:MM:SS) — it has no "38%" percentage syntax, so a
@@ -650,7 +655,10 @@ async function extractFrameAtFractionOnce(
     child.on("close", (code) => {
       clearTimeout(timer);
       if (code === 0 && fs.existsSync(outPath) && fs.statSync(outPath).size > 800) resolve();
-      else reject(new Error(stderr.slice(-120) || `ffmpeg exit ${code}`));
+      // Keep enough of the tail to reliably include "Error initializing output stream" +
+      // "Error while opening encoder" when present — both phrases together can run past 120
+      // chars from the end of stderr, and isForkPressureSpawnError() below needs to see them.
+      else reject(new Error(stderr.slice(-400) || `ffmpeg exit ${code}`));
     });
     child.on("error", (err) => {
       clearTimeout(timer);
