@@ -664,15 +664,14 @@ const isForkPressureError = (err: unknown): boolean => {
   const msg = `${(err as Error)?.message || ""} ${(err as { stderr?: string })?.stderr || ""}`;
   if (/resource temporarily unavailable/i.test(msg) || /cannot fork/i.test(msg)) return true;
   // Same class of transient resource pressure, but surfaced by libx264's threaded encoder
-  // failing to init its worker pthreads instead of as an EAGAIN spawn error.
-  // "Error initializing output stream" is an encoder config failure (wrong dimensions,
-  // codec unavailable, libx264 thread init). It is NOT transient — retrying the same
-  // command will produce the same error. Log it and do NOT retry.
-  if (/error initializing output stream/i.test(msg) || /error while opening encoder/i.test(msg)) {
-    const stderr = (err as { stderr?: string })?.stderr ?? "";
-    console.error(`[FFmpegEncoderError] Encoder init failed (not retrying) — full stderr:\n${stderr.slice(0, 3000)}`);
-    return false;
-  }
+  // failing to init its worker pthreads instead of as an EAGAIN spawn error — ffmpeg only
+  // reports it as a generic "Error while opening encoder", not EAGAIN, so it needs its own
+  // check. This used to be treated as permanent ("not retrying") based on the assumption that
+  // it's always a real parameter bug, but server/_core/execForkRetry.ts's shared
+  // isForkPressureError() (used by curatedMediaSourcing.ts and others) already correctly
+  // treats this as transient and retries it — this copy had drifted out of sync with that one.
+  // Retrying after a short backoff, once concurrent load eases, resolves it.
+  if (/error initializing output stream/i.test(msg) && /error while opening encoder/i.test(msg)) return true;
   return false;
 };
 
@@ -715,9 +714,20 @@ const exec = async (cmd: string, eagainRetriesLeft = EXEC_FORK_RETRIES): Promise
     return await execRaw(cmd);
   } catch (err: unknown) {
     const errMsg = (err as Error)?.message || '';
-    if (eagainRetriesLeft > 0 && isForkPressureError(err)) {
-      await sleep(1500 * (EXEC_FORK_RETRIES + 1 - eagainRetriesLeft));
-      return exec(cmd, eagainRetriesLeft - 1);
+    if (isForkPressureError(err)) {
+      if (eagainRetriesLeft > 0) {
+        console.warn(`[FFmpegForkPressure] Transient failure, retrying (${eagainRetriesLeft} left): ${errMsg.slice(0, 150)}`);
+        await sleep(1500 * (EXEC_FORK_RETRIES + 1 - eagainRetriesLeft));
+        return exec(cmd, eagainRetriesLeft - 1);
+      }
+      // Retries exhausted — log the tail of stderr once, here, so the real cause is still
+      // diagnosable without repeating it on every one of the prior retry attempts. The tail
+      // (not the head) is what's useful: ffmpeg's ~30-line version/config/library banner is
+      // always identical and comes first, while the actual error is the last couple of lines —
+      // logging the full blob on every failure is exactly what was tripping Railway's log-rate
+      // limit ("Messages dropped: ...") under heavy concurrent failures.
+      const stderr = (err as { stderr?: string })?.stderr ?? "";
+      console.error(`[FFmpegForkPressure] Still failing after ${EXEC_FORK_RETRIES} retries — stderr tail:\n${stderr.slice(-800)}`);
     }
     // If current FFMPEG_BIN failed with a binary-not-found error, try alternatives
     // Only treat as binary-not-found if the error mentions the FFmpeg binary path itself,
