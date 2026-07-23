@@ -2120,9 +2120,13 @@ function applyAiFallbackToProfile(
 
 function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProfile {
   const videoLength = normalizeVideoLength(videoLengthRaw);
-  // Confirmed Railway plan: 24 vCPU / 24GB RAM — plenty of headroom for scene-level
-  // concurrency on longer videos too (was capped at 2, tuned for an old 512MB assumption).
-  const railwayParallel = isShortVideoLength(videoLength) ? 7 : 6;
+  // Was raised to 7/6 assuming "24 vCPU / 24GB RAM, plenty of headroom" — but Railway logs
+  // showed 100+ ffmpeg/ffprobe processes getting OOM-killed within under two minutes at that
+  // level (up to 7 at once), even after fixing the timeout-cancellation bugs that were leaking
+  // orphaned processes. That rules out leaks as the cause here: this is genuine peak-memory
+  // pressure from legitimate concurrent work. Dialed back as a testable experiment — raise
+  // again if a fresh render shows the SIGKILL rate is gone and there's real headroom to spare.
+  const railwayParallel = 4;
   const maxEntityYoutube = maxEntityYoutubeFetchesPerVideo(minimizeStockFootageEnabled());
   let profile: PipelinePerfProfile;
   if (isShortVideoLength(videoLength)) {
@@ -2136,7 +2140,7 @@ function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProfile {
       enableNasa: false,
       enableMuskHeroFetch: false,
       maxEntityYoutubePerVideo: maxEntityYoutube,
-      sceneParallelism: IS_RAILWAY ? 7 : 3,
+      sceneParallelism: IS_RAILWAY ? 4 : 3,
       pexelsDownloadRetries: 1,
       maxStockQueriesPerBeat: 2,
       beatClipTimeoutMs: IS_RAILWAY ? 22_000 : 30_000,
