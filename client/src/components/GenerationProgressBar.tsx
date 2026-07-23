@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { maxGenerationEstimateSec } from "@shared/pipelineProgress";
 
 type Props = {
@@ -31,6 +31,35 @@ export function useGenerationElapsedSec(
   return elapsedSec;
 }
 
+/**
+ * Smoothly creeps the displayed percent toward (real + a small buffer) between real backend
+ * updates, so the bar never sits visibly frozen during long stages. Never fakes completion —
+ * capped below the last known real value + 4, and snaps up immediately once a higher real
+ * value arrives.
+ */
+export function useSmoothedProgressPercent(realPercent: number, active: boolean): number {
+  const [display, setDisplay] = useState(realPercent);
+  const realRef = useRef(realPercent);
+  realRef.current = realPercent;
+
+  useEffect(() => {
+    setDisplay((d) => Math.max(d, realPercent));
+  }, [realPercent]);
+
+  useEffect(() => {
+    if (!active) return;
+    const id = setInterval(() => {
+      setDisplay((d) => {
+        const ceiling = Math.min(99, realRef.current + 4);
+        return d < ceiling ? Math.min(ceiling, d + 0.3) : d;
+      });
+    }, 1000);
+    return () => clearInterval(id);
+  }, [active]);
+
+  return Math.min(100, Math.round(display));
+}
+
 export function GenerationProgressBar({
   progressPercent,
   generationStartedAt,
@@ -41,8 +70,9 @@ export function GenerationProgressBar({
   const elapsedSec = useGenerationElapsedSec(generationStartedAt, true);
   const maxSec = maxGenerationEstimateSec(videoLength);
   const nearingLimit = elapsedSec > maxSec * 0.85;
-  const pct = Math.max(0, Math.min(100, Math.round(progressPercent)));
-  const statusLabel = pct >= 100 ? "Done" : pct <= 0 ? "Starting…" : `${pct}% done`;
+  const rawPct = Math.max(0, Math.min(100, Math.round(progressPercent)));
+  const pct = useSmoothedProgressPercent(rawPct, rawPct < 100);
+  const statusLabel = `${pct}%`;
 
   return (
     <div className={`w-full ${className}`}>

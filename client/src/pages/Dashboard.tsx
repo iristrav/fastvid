@@ -243,11 +243,10 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
   const stageInfo = AGENT_STAGES[currentStatus] ?? { label: currentStatus, agent: "AI", icon: "⚙️" };
   const completedDurationSec =
     currentStatus === "completed" ? readGenerationDurationSec(video) : null;
+  const progressPercent = pollData?.progressPercent ?? 0;
   const statusBadgeLabel =
-    currentStatus === "queued" && pollData?.queuePosition
-      ? `Queue #${pollData.queuePosition}`
-      : isProcessing
-      ? "Generating"
+    isProcessing
+      ? `${Math.max(0, Math.min(100, Math.round(progressPercent)))}%`
       : currentStatus === "completed" && completedDurationSec != null
         ? `Done · ${formatGenerationDuration(completedDurationSec)}`
         : stageInfo.label;
@@ -260,7 +259,6 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
     }
   }, [pollData?.status, video.status, utils.video.list]);
 
-  const progressPercent = pollData?.progressPercent ?? 0;
   const qualityReport = readQualityReportFromMetadata(video.metadata);
 
   return (
@@ -275,12 +273,15 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
           <div className="w-full h-full flex items-center justify-center">
             {isProcessing ? (
               currentStatus === "queued" ? (
-              <div className="w-full h-full flex flex-col items-center justify-center gap-3 px-6 py-5 text-center">
+              <div className="w-full h-full flex flex-col items-center justify-center gap-4 px-6 py-5">
                 <Loader2 className="w-8 h-8 text-amber-400 animate-spin" />
-                <p className="text-sm text-amber-200/90 font-medium">
-                  {pollData?.queuePosition ? `Position ${pollData.queuePosition} in queue` : "Waiting in queue…"}
-                </p>
-                <p className="text-[11px] text-slate-400">{pollData?.progressStep ?? "Your video will start soon"}</p>
+                <GenerationProgressBar
+                  compact
+                  progressPercent={progressPercent}
+                  generationStartedAt={pollData?.generationStartedAt}
+                  videoLength={video.videoLength}
+                  className="max-w-[220px]"
+                />
               </div>
               ) : (
               <div className="w-full h-full flex flex-col items-center justify-center gap-4 px-6 py-5">
