@@ -581,18 +581,23 @@ type RenderCtx = {
   watchdog: RenderWatchdog | null;
   renderBudget: RenderBudget | null;
   budgetTracker: BudgetTracker | null;
+  /** The video this render is for — lets deep-pipeline code (e.g. exec()) cheaply check
+   *  whether THIS run has been superseded by a fresh attempt, without threading videoId
+   *  through every function signature. See get_activeVideoId(). */
+  videoId: number | null;
 };
 
 const renderCtxStorage = new AsyncLocalStorage<RenderCtx>();
 
 function getRenderCtx(): RenderCtx {
-  return renderCtxStorage.getStore() ?? { watchdog: null, renderBudget: null, budgetTracker: null };
+  return renderCtxStorage.getStore() ?? { watchdog: null, renderBudget: null, budgetTracker: null, videoId: null };
 }
 
 // Backward-compat accessors used throughout the file
 function get_activeWatchdog(): RenderWatchdog | null     { return getRenderCtx().watchdog; }
 function get_activeRenderBudget(): RenderBudget | null   { return getRenderCtx().renderBudget; }
 function get_activeBudgetTracker(): BudgetTracker | null { return getRenderCtx().budgetTracker; }
+function get_activeVideoId(): number | null              { return getRenderCtx().videoId; }
 // Setters mutate only the current render's context object (safe — no shared state)
 function set_activeRenderBudget(v: RenderBudget | null)   { const c = getRenderCtx(); c.renderBudget = v; }
 function set_activeBudgetTracker(v: BudgetTracker | null) { const c = getRenderCtx(); c.budgetTracker = v; }
@@ -706,6 +711,14 @@ const exec = async (cmd: string, eagainRetriesLeft = EXEC_FORK_RETRIES): Promise
   if (sceneFetchScopeStorage.getStore()?.controller.signal.aborted) {
     throw new Error(`[SceneFetchScope] Aborted — skipping: ${cmd.slice(0, 120)}`);
   }
+  // A stall-requeue may have superseded this whole render (a fresh attempt already claimed
+  // the video and bumped its fencing token) while this run keeps executing in the
+  // background — stop spawning new ffmpeg/ffprobe work instead of burning real CPU for a
+  // render nobody's waiting on anymore. isGenerationRunSuperseded (server/db.ts) latches
+  // this in-memory flag the first time any of the render's own heartbeats notices the
+  // mismatch, so this check is a cheap in-memory read, not a DB call on every exec().
+  const activeVideoId = get_activeVideoId();
+  if (activeVideoId != null) throwIfVideoGenerationCancelled(activeVideoId);
   // Log every FFmpeg call with the full command so hangs can be diagnosed.
   if (cmd.startsWith(FFMPEG_BIN) || /\bffmpeg\b/.test(cmd.slice(0, 80))) {
     console.log(`[FFmpegCmd] ${cmd.slice(0, 1200)}`);
@@ -22147,7 +22160,7 @@ export async function runVideoPipeline(
   userPrompt?: string
 ): Promise<string> {
   // Each render gets its own context so concurrent renders never share singleton state.
-  const renderCtx: RenderCtx = { watchdog: null, renderBudget: null, budgetTracker: null };
+  const renderCtx: RenderCtx = { watchdog: null, renderBudget: null, budgetTracker: null, videoId };
   return renderCtxStorage.run(renderCtx, () => _runVideoPipelineInner(
     videoId, script, onProgress, voiceId, customVoiceoverUrl, videoLength, enableSubtitles, userPrompt
   ));

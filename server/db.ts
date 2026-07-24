@@ -388,10 +388,17 @@ export async function bumpGenerationAttempt(id: number): Promise<number> {
  *  explicitly cancelled) and should stop writing progress — regardless of which process
  *  (web dyno vs. worker dyno) the check runs in, since it's backed by the DB, not memory. */
 export async function isGenerationRunSuperseded(videoId: number, myAttempt: number): Promise<boolean> {
-  const { isVideoGenerationCancelRequested } = await import("./videoGenerationCancel");
+  const { isVideoGenerationCancelRequested, requestVideoGenerationCancel } = await import("./videoGenerationCancel");
   if (isVideoGenerationCancelRequested(videoId)) return true;
   const current = await getVideoGenerationAttempt(videoId);
-  return current !== null && current !== myAttempt;
+  const superseded = current !== null && current !== myAttempt;
+  if (superseded) {
+    // Latch the in-memory flag so any other code in THIS process checking this video id
+    // (e.g. server/videoPipeline.ts's exec(), which can't re-derive myAttempt on its own)
+    // sees the same verdict immediately, without each caller needing its own DB round-trip.
+    requestVideoGenerationCancel(videoId);
+  }
+  return superseded;
 }
 
 export async function updateVideoStatus(id: number, status: InsertVideo["status"], extra?: {

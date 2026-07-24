@@ -610,6 +610,11 @@ async function _runVideoGeneration(
   preloadedMetadata?: unknown,
   enableSubtitles = false
 ) {
+  // Declared outside the try block (not inside, where it was previously scoped) so the catch
+  // handler below can also see it — needed to check whether THIS run was superseded before
+  // writing "failed", so a stale/superseded run's own error (e.g. the new exec()-level
+  // cancellation check in videoPipeline.ts) can't clobber a fresh retry's real outcome.
+  let myGenerationAttempt: number | null = null;
   try {
     // Use preloaded script if available, otherwise read from DB (legacy path)
     let approvedScript: string;
@@ -637,7 +642,7 @@ async function _runVideoGeneration(
     // Fencing token — DB-backed (not just the in-memory cancel flag) so a stall-requeue is
     // respected even if this run and the fresh retry end up in different processes (e.g.
     // separate Railway web/worker dynos), where the in-memory flag alone can't reach us.
-    const myGenerationAttempt = videoRow?.generationAttempt ?? 0;
+    myGenerationAttempt = videoRow?.generationAttempt ?? 0;
 
     const initialStage = resolvePipelineDisplayStage("Volledige voiceover in ElevenLabs", 30);
     await updateVideoStatus(videoId, "generating_voiceover", {
@@ -657,7 +662,7 @@ async function _runVideoGeneration(
       // A stall-requeue may have re-claimed this video id for a fresh run while this
       // (falsely-flagged-as-stalled) run is still executing — stop writing so the zombie
       // run can't race the new run's progress and clobber it with a stale/lower percent.
-      if (await isGenerationRunSuperseded(videoId, myGenerationAttempt)) return;
+      if (await isGenerationRunSuperseded(videoId, myGenerationAttempt ?? 0)) return;
       const { key, label } = resolvePipelineDisplayStage(rawStepName, percent);
       const now = Date.now();
       if (currentStageKey && currentStageKey !== key) {
@@ -699,13 +704,13 @@ async function _runVideoGeneration(
 
     const pipelineHeartbeat = setInterval(() => {
       void (async () => {
-        if (await isGenerationRunSuperseded(videoId, myGenerationAttempt)) return;
+        if (await isGenerationRunSuperseded(videoId, myGenerationAttempt ?? 0)) return;
         await touchVideoProgress(videoId).catch(() => {});
       })();
     }, 20_000);
     const elapsedHeartbeat = setInterval(() => {
       void (async () => {
-        if (await isGenerationRunSuperseded(videoId, myGenerationAttempt)) return;
+        if (await isGenerationRunSuperseded(videoId, myGenerationAttempt ?? 0)) return;
         await updateVideoProgress(
           videoId,
           progressStepWithElapsed(lastProgressLabel, pipelineStartedAt),
@@ -810,6 +815,16 @@ async function _runVideoGeneration(
     }).catch(() => {});
   } catch (error) {
     console.error("[Video Generation] Error:", error);
+    if (
+      myGenerationAttempt != null &&
+      (await isGenerationRunSuperseded(videoId, myGenerationAttempt))
+    ) {
+      // A fresh attempt already claimed this video (this run was superseded, likely by a
+      // stall-requeue) — this run's own error (possibly the cancellation it was just given)
+      // isn't the fresh attempt's outcome to report. Don't overwrite it with "failed".
+      console.warn(`[Video Generation] Video ${videoId}: run superseded — not writing failure`);
+      return;
+    }
     await updateVideoStatus(videoId, "failed", {
       errorMessage: normalizeStoredError(error),
       progressStep: "Generation failed",
