@@ -5379,8 +5379,17 @@ async function generateColorFallback(
     try { fs.unlinkSync(out); } catch { /* ignore */ }
   }
 
-  // Throttle: color-fallbacks can all fire at once when clips fail — queue them
-  return ffmpegSemaphore.run(() => _generateColorFallbackInner(sceneIndex, safeDuration, out, workDir));
+  // NOTE: no longer wrapped in ffmpegSemaphore.run() here — exec() (called inside
+  // _generateColorFallbackInner, both for the disk-space check and each fallback attempt)
+  // now acquires the same global semaphore itself for every individual spawn. Wrapping the
+  // whole multi-attempt operation in an outer acquire meant each call held one slot for its
+  // entire duration while its own inner exec() calls tried to acquire a SECOND slot from the
+  // same semaphore before the first was released — under load, with all slots held by other
+  // outer callers doing the same thing, no inner call could ever get a slot, and every
+  // attempt eventually timed out and failed ("all color-fallback attempts failed") even
+  // though the commands themselves (a trivial solid-color test pattern) were never actually
+  // broken.
+  return _generateColorFallbackInner(sceneIndex, safeDuration, out, workDir);
 }
 
 async function _generateColorFallbackInner(sceneIndex: number, safeDuration: number, out: string, workDir: string): Promise<string> {
