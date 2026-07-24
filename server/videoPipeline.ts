@@ -23560,28 +23560,42 @@ async function _runVideoPipelineInner(
               `[Pipeline] Scene ${scene.index}: compose failed — rescue retry:`,
               (composeErr as Error).message?.slice(0, 120)
             );
-            let rescueClips =
-              isFastShortVideoLength(videoLength) && !isComposeNetworkBlocked(visualDedup)
-                ? await rescueFastShortComposeClips(scene, workDir, topicContext, visualDedup)
-                : [];
-            if (rescueClips.length === 0) {
-              const minNeeded = Math.max(1, minClipsForBalancedVoice(scene.duration + 0.15, videoLength));
-              const hold = Math.max(3, scene.duration / minNeeded);
-              for (let si = 0; si < minNeeded; si++) {
-                rescueClips.push(await generateGuaranteedBeatClip(scene.index, si, hold, workDir));
-              }
-            }
-            composeMeta.montageDurations = [];
-            composeMeta.clipBeatIndices = [];
-            composeMeta.montagePlan = undefined;
-            usedClips.length = 0;
+            let rescueClips: string[] = [];
             try {
-              result = await composeSceneVideo(
-                scene, rescueClips, audioPaths[i], scene.duration, workDir, scenes.length,
-                enableSubtitles, visualDedup.lastMuskStockClip,
-                rescueClips.map(() => archiveVisualBeatSecForVideo(videoLength)),
-                usedClips,
-                composeOpts
+              // The first compose attempt above was time-boxed by withSceneFetchTimeout; this
+              // rescue path (re-fetching clips, then a full compose retry) was not — a hang
+              // anywhere inside it (e.g. rescueFastShortComposeClips) had no outer ceiling and
+              // could block this scene's compose slot indefinitely, which is exactly what we
+              // saw in production: scenes "active" for 2+ hours instead of erroring out to the
+              // last-resort path below. Wrapping it means a hang here now surfaces the same way
+              // a real compose failure already did.
+              result = await withSceneFetchTimeout(
+                async () => {
+                  rescueClips =
+                    isFastShortVideoLength(videoLength) && !isComposeNetworkBlocked(visualDedup)
+                      ? await rescueFastShortComposeClips(scene, workDir, topicContext, visualDedup)
+                      : [];
+                  if (rescueClips.length === 0) {
+                    const minNeeded = Math.max(1, minClipsForBalancedVoice(scene.duration + 0.15, videoLength));
+                    const hold = Math.max(3, scene.duration / minNeeded);
+                    for (let si = 0; si < minNeeded; si++) {
+                      rescueClips.push(await generateGuaranteedBeatClip(scene.index, si, hold, workDir));
+                    }
+                  }
+                  composeMeta.montageDurations = [];
+                  composeMeta.clipBeatIndices = [];
+                  composeMeta.montagePlan = undefined;
+                  usedClips.length = 0;
+                  return composeSceneVideo(
+                    scene, rescueClips, audioPaths[i], scene.duration, workDir, scenes.length,
+                    enableSubtitles, visualDedup.lastMuskStockClip,
+                    rescueClips.map(() => archiveVisualBeatSecForVideo(videoLength)),
+                    usedClips,
+                    composeOpts
+                  );
+                },
+                renderBudgetComposeMs,
+                `Stage4 rescue-compose s${scene.index}`
               );
             } catch (rescueComposeErr) {
               // Last resort so one scene's persistent compose failure doesn't abort the whole
