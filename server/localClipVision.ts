@@ -16,6 +16,7 @@ import {
 } from "./stringCoercion";
 import { beatVisualDescriptionFromIntent } from "./scriptVisualKeywords";
 import { ffmpegSemaphore } from "./_core/semaphore";
+import { throwIfActiveRenderCancelled } from "./videoGenerationCancel";
 
 export { coerceVisionString, asVideoTitleString } from "./stringCoercion";
 
@@ -597,6 +598,7 @@ export function scoreEmbeddingSimilarity(a: number[], b: number[]): number {
 export async function probeImageMeanLuma(jpegPath: string): Promise<number | null> {
   if (!fs.existsSync(jpegPath)) return null;
   try {
+    throwIfActiveRenderCancelled();
     const { stdout } = await ffmpegSemaphore.run(() =>
       exec(
         `"${ffmpegBin()}" -y -i "${jpegPath}" -vf "scale=1:1,format=gray" -frames:v 1 -f rawvideo -`,
@@ -629,6 +631,7 @@ function isForkPressureSpawnError(err: unknown): boolean {
  *  fraction has to be resolved against the real duration first. */
 async function probeDurationSec(videoPath: string, timeoutMs = 8_000): Promise<number> {
   try {
+    throwIfActiveRenderCancelled();
     const { stdout } = await ffmpegSemaphore.run(() =>
       exec(
         `"${ffprobeBin()}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${videoPath}"`,
@@ -648,6 +651,7 @@ async function extractFrameAtFractionOnce(
   seekSeconds: number,
   timeoutMs: number
 ): Promise<void> {
+  throwIfActiveRenderCancelled();
   await ffmpegSemaphore.run(() => new Promise<void>((resolve, reject) => {
     const args = ["-y", "-ss", seekSeconds.toFixed(2), "-i", videoPath, "-frames:v", "1", "-q:v", "3", outPath];
     const child = spawn(ffmpegBin(), args, { stdio: ["ignore", "ignore", "pipe"] });
