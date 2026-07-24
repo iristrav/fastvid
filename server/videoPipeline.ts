@@ -21856,10 +21856,18 @@ async function generateSFX(
 async function probeVideoDurationSec(filePath: string): Promise<number> {
   for (const probe of FFPROBE_PATHS()) {
     try {
-      const p = execRaw(
-        `"${probe}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${filePath}"`
+      // Route through exec() (semaphore-gated + fork-pressure retry with backoff) instead of
+      // calling execRaw directly — under heavy concurrent ffmpeg/ffprobe load (e.g. visual
+      // sourcing prefetching in the background during TTS), a bare unthrottled, un-retried probe
+      // can transiently fail with EAGAIN/"cannot fork" and get silently swallowed by the catch
+      // below, making a perfectly good audio file look like it "has no duration". 30s (vs the
+      // old 10s) leaves room for exec()'s own retry backoff to actually pay off before this
+      // path's attempt is abandoned in favor of the next FFPROBE_PATHS() candidate.
+      const { stdout } = await withSceneFetchTimeout(
+        () => exec(`"${probe}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${filePath}"`),
+        30_000,
+        `probeVideoDurationSec ${path.basename(filePath)}`
       );
-      const { stdout } = await withTimeout(p, 10_000, `probeVideoDurationSec ${path.basename(filePath)}`);
       const d = parseFloat(String(stdout).trim());
       if (!isNaN(d) && d > 0) return d;
     } catch { /* try next */ }
