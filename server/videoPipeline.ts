@@ -3358,8 +3358,14 @@ async function synthesizeFishAudioVoice(
   const MAX_ATTEMPTS = 3;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
-      const response = await withTimeout(
-        fetch("https://api.fish.audio/v1/tts", {
+      // fetchWithTimeout (not withTimeout) — actually aborts the HTTP request on timeout
+      // instead of just racing a timer, so a slow response can't keep running (and get
+      // billed) in the background after we've already given up on it.
+      const response = await fetchWithTimeout(
+        "https://api.fish.audio/v1/tts",
+        timeoutMs,
+        `Fish Audio ${label} attempt ${attempt}`,
+        {
           method: "POST",
           headers: {
             Authorization: `Bearer ${FISH_AUDIO_API_KEY}`,
@@ -3373,9 +3379,7 @@ async function synthesizeFishAudioVoice(
             normalize: true,
             latency: "normal",
           }),
-        }),
-        timeoutMs,
-        `Fish Audio ${label} attempt ${attempt}`
+        }
       );
 
       if (response.status === 429) {
@@ -3428,8 +3432,16 @@ async function synthesizeElevenLabsVoice(
   const MAX_ATTEMPTS = 3;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
-      const response = await withTimeout(
-        fetch(`https://api.elevenlabs.io/v1/text-to-speech/${elevenVoiceId}`, {
+      // fetchWithTimeout (not withTimeout) — actually aborts the HTTP request via
+      // AbortController on timeout, instead of just racing a timer while the request keeps
+      // running server-side. Without this, a timed-out request could still complete and be
+      // billed by ElevenLabs in the background after the catch block below already switched
+      // to Fish Audio for the same segment — double-billing the same narration.
+      const response = await fetchWithTimeout(
+        `https://api.elevenlabs.io/v1/text-to-speech/${elevenVoiceId}`,
+        timeoutMs,
+        `${label} attempt ${attempt}`,
+        {
           method: "POST",
           headers: {
             "xi-api-key": ELEVENLABS_API_KEY,
@@ -3441,9 +3453,7 @@ async function synthesizeElevenLabsVoice(
             model_id: "eleven_multilingual_v2",
             voice_settings: { stability: 0.58, similarity_boost: 0.88, style: 0.05, use_speaker_boost: true },
           }),
-        }),
-        timeoutMs,
-        `${label} attempt ${attempt}`
+        }
       );
       if (response.status === 429) {
         await new Promise((r) => setTimeout(r, 600 + attempt * 600));
@@ -22267,6 +22277,13 @@ async function _runVideoPipelineInner(
     // ─────────────────────────────────────────────────────────────────────────
 
     // ── Stage 2: Generate ALL voiceovers in parallel batches ──────────────────
+    // elevenLabsQuotaExhausted is a module-level flag (persists for the life of the worker
+    // process) that gets set on the first ElevenLabs failure so the rest of THIS video's
+    // segments skip straight to Fish Audio instead of burning retries on a known-down
+    // provider. Reset it here so a single transient blip on one video can't permanently
+    // route every later video (and every other user sharing this worker process) to Fish
+    // Audio for the rest of the process's lifetime.
+    elevenLabsQuotaExhausted = false;
     onProgress?.({ stage: STAGE_LABELS.voiceovers, percent: 8 });
     const t1 = Date.now();
     const audioPaths = scenes.map((_, i) => path.join(workDir, `scene_${i}_audio.mp3`));
