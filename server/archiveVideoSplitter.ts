@@ -910,10 +910,10 @@ export async function extractVideoSegment(
   const strategies: string[] = [
     `${ffmpegBin()} -y -ss ${start} -i "${inputPath}" -t ${dur} ` +
       `-c:v libx264 ${ffmpegThreadFlag()} -preset ultrafast -crf 23 -an -pix_fmt yuv420p -movflags +faststart ` +
-      `-avoid_negative_ts make_zero -reset_timestamps 1 -threads 0 "${outputPath}"`,
+      `-avoid_negative_ts make_zero -reset_timestamps 1 "${outputPath}"`,
     `${ffmpegBin()} -y -i "${inputPath}" -ss ${start} -t ${dur} ` +
       `-c:v libx264 ${ffmpegThreadFlag()} -preset ultrafast -crf 23 -an -pix_fmt yuv420p -movflags +faststart ` +
-      `-avoid_negative_ts make_zero -reset_timestamps 1 -threads 0 "${outputPath}"`,
+      `-avoid_negative_ts make_zero -reset_timestamps 1 "${outputPath}"`,
   ];
 
   let lastErr = "extract failed";
@@ -1192,7 +1192,9 @@ async function extractAllClipsSinglePass(
     `${ffmpegBin()} -y -i "${inputPath}"`,
     ssArgs,
     `-t ${passDuration.toFixed(3)}`,
-    `-c:v libx264 ${ffmpegThreadFlag()} -preset ultrafast -crf 23 -an -pix_fmt yuv420p`,
+    `-c:v libx264 -preset ultrafast -crf 23 -an -pix_fmt yuv420p`,
+    // -threads 2 (not ffmpegThreadFlag()) — deliberately more conservative than the general
+    // cap for this multi-output segment muxer, which can produce many parallel writers.
     `-movflags +faststart -avoid_negative_ts make_zero -reset_timestamps 1 -threads 2`,
     `-f segment`,
     segmentTimes ? `-segment_times "${segmentTimes}"` : "",
