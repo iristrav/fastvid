@@ -18,7 +18,6 @@ import {
 } from "./scriptWriter";
 import type { VideoQualityReport } from "./videoQualityReport";
 import { assertQualityReportExportGate } from "./videoQualityReport";
-import { strictVoiceMontageSyncExport } from "./voiceMontageSyncAudit";
 import type { FinalVideoValidation } from "./finalVideoGate";
 import { minQualityExportScore, strictQualityExportEnabled, qualityExportHardTierEnabled, blockExportOnVisualMismatch } from "./sourcingPolicy";
 
@@ -218,9 +217,16 @@ export function enforceQualityExportGate(
     );
   }
 
+  // NOTE: this used to also throw whenever strictVoiceMontageSyncExport() was true — which
+  // defaults to true — independently of hardTier. Every other check in this function (score,
+  // spot-check, below) only hard-fails under hardTier (opt-in, default off) and otherwise just
+  // warns-and-continues; this one broke that pattern; by the time this runs the video has
+  // already been fully rendered AND uploaded to storage, so throwing here discarded a finished,
+  // playable video (and its real API spend) over what the rest of this function treats as a
+  // warning-level concern. Aligned to the same hardTier bar as everything else.
   const syncFailed =
     report.voiceMontageSync && !report.voiceMontageSync.ok;
-  if (syncFailed && (strictVoiceMontageSyncExport() || hardTier)) {
+  if (syncFailed && hardTier) {
     const detail = report.voiceMontageSync!.warnings.slice(0, 4).join("; ");
     throw pipelineError(
       PIPELINE_ERROR.QUALITY_GATE,
@@ -230,7 +236,7 @@ export function enforceQualityExportGate(
   if (syncFailed) {
     console.warn(
       `[Quality] Video ${videoId}: voice montage sync warnings — ` +
-        `${report.voiceMontageSync!.warnings.slice(0, 3).join("; ")} (set STRICT_VOICE_MONTAGE_SYNC=true to block export)`
+        `${report.voiceMontageSync!.warnings.slice(0, 3).join("; ")} (set ENABLE_QUALITY_EXPORT_HARD_TIER=true to block export)`
     );
   }
 
