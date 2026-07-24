@@ -311,17 +311,22 @@ export function maxPipelineWallClockMin(videoLength?: string | null): number {
     if (!isNaN(n) && n >= 8 && n <= 300) return n;
   }
   const mins = targetVideoDurationMinutes(videoLength);
-  if (mins <= 1) return 14;
+  if (mins <= 1) return 20;
   return Math.round(mins * pipelineMinutesPerVideoMinute());
 }
 
-/** Hard wall-clock fail — 1-min videos: 15 min; longer: target × grace. */
+/** Hard wall-clock fail — 1-min videos: 22 min; longer: target × grace.
+ *  Was 15 min — that only left ~8 min after the 7-min visual-sourcing emergency-finish
+ *  cutoff for compose + assembly + upload, which we've measured taking 5+ min per scene
+ *  under load on its own. Widened so a render that's merely slow (not actually stuck)
+ *  gets to finish instead of being killed with a wall-clock error — the stall detector
+ *  (server/db.ts, updatedAt-based) still catches a render that's genuinely hung. */
 export function maxPipelineWallClockHardMin(videoLength?: string | null): number {
   if (!pipelineWallClockLimitEnabled()) {
     return Math.round(PIPELINE_UNLIMITED_MS / 60_000);
   }
   const mins = targetVideoDurationMinutes(videoLength);
-  if (mins <= 1) return 15;
+  if (mins <= 1) return 22;
   return Math.ceil(maxPipelineWallClockMin(videoLength) * pipelineWallClockGraceFactor());
 }
 
@@ -368,7 +373,7 @@ export function pipelineComposeGraceMs(videoLength?: string | null): number {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 30_000 && n <= 300_000) return n;
   }
-  return isFastShortVideoLength(videoLength) ? 120_000 : 0;
+  return isFastShortVideoLength(videoLength) ? 240_000 : 0;
 }
 
 /** ≤1 min videos — fast archive-first path (independent of wall-clock limit). */
