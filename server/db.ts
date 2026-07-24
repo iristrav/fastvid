@@ -735,27 +735,50 @@ export async function recoverAllStuckVideos(onRequeued?: () => void): Promise<{ 
   return { completed, failed };
 }
 
-/** Mark in-progress videos older than maxAgeMinutes as failed (stuck pipeline recovery) */
+/**
+ * Mark in-progress videos as failed once they're old enough that even their own (video-length
+ * -specific) wall-clock budget can't explain why they're still running — the absolute
+ * last-resort catch, behind the wall-clock hard cap and the updatedAt-based stall detector.
+ *
+ * maxAgeMinutes is a FLOOR, not the actual cutoff: a flat age limit doesn't make sense across
+ * video lengths (a 1-min video's whole budget is ~26 min; a 10-min video's is 100+ min), so the
+ * real per-row threshold is max(maxAgeMinutes, that video's own hard-cap-derived budget × 1.5
+ * safety margin). Without this, a flat 20-minute sweep (the periodic default) would fail every
+ * video of every length that's still legitimately within its own, much larger budget.
+ */
 export async function expireStuckVideos(maxAgeMinutes = 95) {
   const db = await getDb();
   if (!db) return 0;
-  const cutoff = new Date(Date.now() - maxAgeMinutes * 60 * 1000);
   const stuckStatuses = IN_PROGRESS_STATUSES.filter(
     (s) => s !== "awaiting_approval" && s !== "queued"
   );
+  // Cheap floor for the query itself — the real per-video decision happens below.
+  const floorCutoff = new Date(Date.now() - Math.min(maxAgeMinutes, 15) * 60 * 1000);
+  const candidates = await db
+    .select()
+    .from(videos)
+    .where(and(inArray(videos.status, stuckStatuses), sql`${videos.generationStartedAt} < ${floorCutoff}`));
+
   let total = 0;
-  for (const s of stuckStatuses) {
-    const result = await db.update(videos)
+  for (const v of candidates) {
+    if (!v.generationStartedAt) continue;
+    const startedAt = new Date(v.generationStartedAt).getTime();
+    const perVideoMaxMs =
+      (maxPipelineWallClockHardMin(v.videoLength) * 60_000 + pipelineComposeGraceMs(v.videoLength)) * 1.5;
+    const effectiveMaxMs = Math.max(perVideoMaxMs, maxAgeMinutes * 60_000);
+    if (Date.now() - startedAt < effectiveMaxMs) continue;
+    const effectiveMaxMinutes = Math.round(effectiveMaxMs / 60_000);
+    await db.update(videos)
       .set({
         status: "failed",
         errorMessage: appErrorMessage(
           PIPELINE_ERROR.STUCK_TIMEOUT,
-          `Pipeline timed out after ${maxAgeMinutes} minutes`
+          `Pipeline timed out after ${effectiveMaxMinutes} minutes`
         ),
         progressStep: "Timed out",
       })
-      .where(and(eq(videos.status, s), sql`${videos.generationStartedAt} < ${cutoff}`));
-    total += (result as unknown as [{ affectedRows: number }])[0]?.affectedRows ?? 0;
+      .where(eq(videos.id, v.id));
+    total++;
   }
   return total;
 }
