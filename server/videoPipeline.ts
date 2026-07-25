@@ -5413,9 +5413,16 @@ async function _generateColorFallbackInner(sceneIndex: number, safeDuration: num
     console.log(`[Pipeline] Scene ${sceneIndex}: disk space: ${dfOut.trim().split("\n").slice(-1)[0]}`);
   } catch { /* ignore */ }
 
+  // This is the last-resort safety net (compose + rescue-compose already both failed) — it's a
+  // trivial, cheap ffmpeg command, so it's worth retrying hard on ANY transient failure, not just
+  // ones recognized as "fork pressure". Under concurrent load the far more common failure here is
+  // simply queueing behind the shared ffmpegSemaphore long enough to hit this call's own 45s
+  // withSceneFetchTimeout — that surfaces as a plain timeout error, which isForkPressureError()
+  // doesn't match, so it used to skip the retry entirely and give up after one shot per variant.
+  const FALLBACK_RETRIES = 4;
   for (let i = 0; i < commands.length; i++) {
     let lastErr: unknown;
-    for (let retry = 0; retry < 3; retry++) {
+    for (let retry = 0; retry < FALLBACK_RETRIES; retry++) {
       try {
         if (fs.existsSync(out)) {
           try { fs.unlinkSync(out); } catch { /* ignore */ }
@@ -5429,9 +5436,14 @@ async function _generateColorFallbackInner(sceneIndex: number, safeDuration: num
         break;
       } catch (err) {
         lastErr = err;
-        if (isForkPressureError(err) && retry < 2) {
+        if (retry < FALLBACK_RETRIES - 1) {
+          const forkPressure = isForkPressureError(err);
           const wait = (retry + 1) * 4_000;
-          console.warn(`[Pipeline] Scene ${sceneIndex}: fallback attempt ${i + 1} fork pressure — retry in ${wait / 1000}s`);
+          console.warn(
+            `[Pipeline] Scene ${sceneIndex}: fallback attempt ${i + 1} failed ` +
+            `(${forkPressure ? "fork pressure" : "transient"}) — retry ${retry + 1}/${FALLBACK_RETRIES - 1} in ${wait / 1000}s: ` +
+            `${(err as Error).message?.slice(0, 150)}`
+          );
           await sleep(wait);
           continue;
         }
