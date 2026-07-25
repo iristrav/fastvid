@@ -55,9 +55,14 @@ export class Semaphore {
   }
 }
 
-/** Max 16 FFmpeg encode processes simultaneously (ffprobe excluded). Tune via FFMPEG_CONCURRENCY_LIMIT. */
+// Was 16 — Railway logs showed sustained "spawn /bin/sh EAGAIN" (the OS itself refusing to
+// fork) across every subsystem at once — color fallback, archive clip extraction, CLIP vision,
+// ffprobe — for 28+ minutes straight with no recovery, even with sceneParallelism already
+// dialed down to 4. That's the container genuinely out of fork/memory headroom at 16 concurrent
+// ffmpeg/ffprobe children, not a transient blip. Lowered to trade some per-scene speed for
+// actually finishing instead of thrashing indefinitely. Tune via FFMPEG_CONCURRENCY_LIMIT.
 export const ffmpegSemaphore = new Semaphore(
-  parseInt(process.env.FFMPEG_CONCURRENCY_LIMIT ?? "16", 10)
+  parseInt(process.env.FFMPEG_CONCURRENCY_LIMIT ?? "6", 10)
 );
 
 /**
