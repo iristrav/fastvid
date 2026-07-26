@@ -55,14 +55,17 @@ export class Semaphore {
   }
 }
 
-// Was 16 — Railway logs showed sustained "spawn /bin/sh EAGAIN" (the OS itself refusing to
-// fork) across every subsystem at once — color fallback, archive clip extraction, CLIP vision,
-// ffprobe — for 28+ minutes straight with no recovery, even with sceneParallelism already
-// dialed down to 4. That's the container genuinely out of fork/memory headroom at 16 concurrent
-// ffmpeg/ffprobe children, not a transient blip. Lowered to trade some per-scene speed for
-// actually finishing instead of thrashing indefinitely. Tune via FFMPEG_CONCURRENCY_LIMIT.
+// Was 16, then 6 — Railway logs kept showing sustained "spawn /bin/sh EAGAIN" (the OS itself
+// refusing to fork) across every subsystem at once — color fallback, archive clip extraction,
+// CLIP vision, ffprobe — even at 6 concurrent children (1392 EAGAIN in under 7 minutes on video
+// 460, with 5 scenes exhausting their entire hardened color-fallback retry budget and still
+// failing). Likely Railway's per-container pids.max ceiling (~1000 processes, independent of
+// the 24 vCPU/24GB plan allocation — each ffmpeg call costs 2 processes: the /bin/sh wrapper +
+// the binary itself), not a memory/CPU shortage — a Railway support request to raise it is
+// pending. Lowered further as a stopgap: trades more per-scene speed for actually finishing.
+// Raise again once the platform-side limit is confirmed fixed. Tune via FFMPEG_CONCURRENCY_LIMIT.
 export const ffmpegSemaphore = new Semaphore(
-  parseInt(process.env.FFMPEG_CONCURRENCY_LIMIT ?? "6", 10)
+  parseInt(process.env.FFMPEG_CONCURRENCY_LIMIT ?? "3", 10)
 );
 
 /**
