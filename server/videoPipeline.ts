@@ -655,6 +655,11 @@ const execRaw = (cmd: string): Promise<{ stdout: string; stderr: string }> & { c
 // heavy concurrent ffmpeg load, not real input problems — retry a couple of times with a
 // short backoff before giving up.
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+// Retry backoff with +/-30% jitter: under sustained system-wide resource pressure, many
+// scenes/calls hit the same fork failure at roughly the same moment, and a fixed backoff makes
+// them all retry again in sync — a synchronized wave that hits the same wall again instead of
+// spreading load out over time. Jitter smooths that out without changing the average delay.
+const jitteredDelay = (ms: number): number => Math.round(ms * (0.7 + Math.random() * 0.6));
 const isForkPressureError = (err: unknown): boolean => {
   const code = (err as NodeJS.ErrnoException)?.code;
   if (code === "EAGAIN") return true;
@@ -736,7 +741,7 @@ const exec = async (cmd: string, eagainRetriesLeft = EXEC_FORK_RETRIES): Promise
     if (isForkPressureError(err)) {
       if (eagainRetriesLeft > 0) {
         console.warn(`[FFmpegForkPressure] Transient failure, retrying (${eagainRetriesLeft} left): ${errMsg.slice(0, 150)}`);
-        await sleep(1500 * (EXEC_FORK_RETRIES + 1 - eagainRetriesLeft));
+        await sleep(jitteredDelay(1500 * (EXEC_FORK_RETRIES + 1 - eagainRetriesLeft)));
         return exec(cmd, eagainRetriesLeft - 1);
       }
       // Retries exhausted — log the tail of stderr once, here, so the real cause is still
@@ -5380,11 +5385,23 @@ async function appendGuaranteedSceneClips(
   );
   let slot = clips.length;
   while (clips.length < minClips) {
-    const clip = await generateGuaranteedBeatClip(scene.index, slot, holdSec, workDir, scene.text?.slice(0, 90));
-    const key = clipContentKey(clip);
-    if (!clips.some((c) => clipContentKey(c) === key)) {
-      clips.push(clip);
-      beatDurations.push(holdSec);
+    try {
+      const clip = await generateGuaranteedBeatClip(scene.index, slot, holdSec, workDir, scene.text?.slice(0, 90));
+      const key = clipContentKey(clip);
+      if (!clips.some((c) => clipContentKey(c) === key)) {
+        clips.push(clip);
+        beatDurations.push(holdSec);
+      }
+    } catch (err) {
+      // Even the guaranteed clip's own color-fallback can exhaust every retry under severe
+      // fork-pressure (all ffmpeg variants failing). Don't let one unlucky slot throw out of
+      // this function — it runs inside a per-scene chain that's part of a Promise.all over every
+      // scene, so an uncaught throw here fails the ENTIRE batch, not just this scene. Skip the
+      // slot and let the scene proceed with whatever clips it already has.
+      console.error(
+        `[Pipeline] Scene ${scene.index} slot ${slot}: guaranteed clip totally unavailable, skipping:`,
+        (err as Error).message?.slice(0, 150)
+      );
     }
     slot++;
     if (slot > minClips + 8) break;
@@ -5463,10 +5480,10 @@ async function _generateColorFallbackInner(sceneIndex: number, safeDuration: num
         lastErr = err;
         if (retry < FALLBACK_RETRIES - 1) {
           const forkPressure = isForkPressureError(err);
-          const wait = (retry + 1) * 4_000;
+          const wait = jitteredDelay((retry + 1) * 4_000);
           console.warn(
             `[Pipeline] Scene ${sceneIndex}: fallback attempt ${i + 1} failed ` +
-            `(${forkPressure ? "fork pressure" : "transient"}) — retry ${retry + 1}/${FALLBACK_RETRIES - 1} in ${wait / 1000}s: ` +
+            `(${forkPressure ? "fork pressure" : "transient"}) — retry ${retry + 1}/${FALLBACK_RETRIES - 1} in ${(wait / 1000).toFixed(1)}s: ` +
             `${(err as Error).message?.slice(0, 150)}`
           );
           await sleep(wait);
@@ -23025,7 +23042,20 @@ async function _runVideoPipelineInner(
                       const minNeeded = Math.max(1, minClipsForBalancedVoice(scene.duration + 0.15, videoLength));
                       const hold = Math.max(3, scene.duration / minNeeded);
                       for (let si = 0; si < minNeeded; si++) {
-                        rescueClips.push(await generateGuaranteedBeatClip(scene.index, si, hold, workDir));
+                        try {
+                          rescueClips.push(await generateGuaranteedBeatClip(scene.index, si, hold, workDir));
+                        } catch (guaranteedErr) {
+                          // Even this can exhaust every color-fallback retry under severe fork
+                          // pressure. This whole chain runs inside a Promise.all over every scene
+                          // — an uncaught throw here would fail the ENTIRE batch, not just this
+                          // scene. Skip the slot; composeSceneVideo below still gets whatever
+                          // clips the other slots produced (or falls to the black-fill path if
+                          // that ends up empty too).
+                          console.error(
+                            `[Compose] Scene ${scene.index}: guaranteed clip ${si} totally unavailable, skipping:`,
+                            (guaranteedErr as Error).message?.slice(0, 150)
+                          );
+                        }
                       }
                     }
                     composeMeta.montageDurations = [];
