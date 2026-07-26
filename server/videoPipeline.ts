@@ -3116,7 +3116,16 @@ const BULK_VO_CHUNK_CHARS = 9_500;
 
 async function concatVoiceoverParts(partPaths: string[], outputPath: string, workDir: string): Promise<void> {
   if (partPaths.length === 1) {
-    fs.copyFileSync(partPaths[0], outputPath);
+    // Re-encode (not just copy) so the final file is always a known, fixed 192k CBR mp3 —
+    // whatever bitrate/format the TTS provider itself used otherwise. That guarantee lets
+    // splitFullVoiceoverByScenes fall back to a byte-count-based duration estimate if ffprobe
+    // can't run at all under load (see probeVideoDurationSec / "Bulk voiceover file has no
+    // duration").
+    await withSceneFetchTimeout(
+      () => exec(`${FFMPEG_BIN} -y -i "${partPaths[0]}" -c:a libmp3lame -b:a 192k "${outputPath}"`),
+      60_000,
+      "Re-encode single-part voiceover"
+    );
     return;
   }
   const listFile = path.join(workDir, "voiceover_concat_list.txt");
@@ -3258,7 +3267,23 @@ async function splitFullVoiceoverByScenes(
   outputPaths: string[],
   workDir?: string
 ): Promise<number[]> {
-  const totalDur = await probeVideoDurationSec(fullAudioPath);
+  let totalDur = await probeVideoDurationSec(fullAudioPath);
+  if (totalDur <= 0 && fs.existsSync(fullAudioPath)) {
+    // probeVideoDurationSec already retries hard (semaphore-gated exec(), fork-pressure backoff,
+    // 4 ffprobe binary candidates) — if it STILL comes back empty, that's sustained resource
+    // pressure outlasting even that budget, not a genuinely empty file. concatVoiceoverParts
+    // always re-encodes this exact file to a fixed 192k CBR mp3 (single part or not — see
+    // there), so estimate duration straight from the byte count instead of failing the whole
+    // render: no process spawn involved, so it can't lose to the same fork/CPU pressure.
+    const sizeBytes = fs.statSync(fullAudioPath).size;
+    if (sizeBytes > 2_000) {
+      totalDur = (sizeBytes * 8) / 192_000;
+      console.warn(
+        `[Pipeline] Bulk voiceover duration probe failed under load — estimated ${totalDur.toFixed(1)}s ` +
+        `from file size (${(sizeBytes / 1024).toFixed(0)}KB @ 192kbps CBR)`
+      );
+    }
+  }
   if (totalDur <= 0) {
     throw pipelineError(PIPELINE_ERROR.VOICEOVER_EMPTY, "Bulk voiceover file has no duration");
   }
