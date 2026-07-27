@@ -3121,16 +3121,26 @@ const BULK_VO_CHUNK_CHARS = 9_500;
 
 async function concatVoiceoverParts(partPaths: string[], outputPath: string, workDir: string): Promise<void> {
   if (partPaths.length === 1) {
-    // Re-encode (not just copy) so the final file is always a known, fixed 192k CBR mp3 —
-    // whatever bitrate/format the TTS provider itself used otherwise. That guarantee lets
-    // splitFullVoiceoverByScenes fall back to a byte-count-based duration estimate if ffprobe
-    // can't run at all under load (see probeVideoDurationSec / "Bulk voiceover file has no
-    // duration").
-    await withSceneFetchTimeout(
-      () => exec(`${FFMPEG_BIN} -y -i "${partPaths[0]}" -c:a libmp3lame -b:a 192k "${outputPath}"`),
-      60_000,
-      "Re-encode single-part voiceover"
-    );
+    // Best-effort re-encode to a known, fixed 192k CBR mp3 — whatever bitrate/format the TTS
+    // provider itself used otherwise. That guarantee lets splitFullVoiceoverByScenes fall back
+    // to a byte-count-based duration estimate if ffprobe can't run at all under load (see
+    // probeVideoDurationSec / "Bulk voiceover file has no duration"). But this re-encode is
+    // itself just another ffmpeg spawn, so under the SAME resource pressure it's meant to guard
+    // against, it can time out too — that must never take down an otherwise-fine voiceover, so
+    // fall back to the original zero-cost copy (no process spawn, cannot fail from load) instead
+    // of throwing. The byte-count fallback simply won't apply to this file if we had to bail here.
+    try {
+      await withSceneFetchTimeout(
+        () => exec(`${FFMPEG_BIN} -y -i "${partPaths[0]}" -c:a libmp3lame -b:a 192k "${outputPath}"`),
+        60_000,
+        "Re-encode single-part voiceover"
+      );
+    } catch (err) {
+      console.warn(
+        `[Pipeline] Single-part voiceover re-encode failed, falling back to plain copy: ${(err as Error).message?.slice(0, 150)}`
+      );
+      fs.copyFileSync(partPaths[0], outputPath);
+    }
     return;
   }
   const listFile = path.join(workDir, "voiceover_concat_list.txt");
