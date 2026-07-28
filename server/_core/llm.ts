@@ -287,10 +287,13 @@ const resolveApiUrl = (provider: LlmProvider) => {
 };
 
 // llama-4-scout-17b-16e-instruct was deprecated by Groq on 2026-06-17 (404 "model does not
-// exist"). qwen3-vl-32b-instruct is Groq's current production (non-preview) vision-language
-// replacement — qwen3.6-27b is also vision-capable but explicitly preview-only, not for
-// production use. Override via GROQ_VISION_MODEL without a redeploy if Groq changes this again.
-const GROQ_VISION_FALLBACK_MODEL = "qwen/qwen3-vl-32b-instruct";
+// exist"). qwen3-vl-32b-instruct also 404s on this account — Groq gates it to Enterprise-tier
+// customers, so "does not exist" there actually meant "no access", not "wrong name". Falling
+// back to llama-4-maverick-17b-128e-instruct, Groq's other vision-capable Llama 4 model,
+// documented as available on standard (non-Enterprise) accounts. If this 404s too, don't guess
+// again from here — check console.groq.com (logged into the actual account) for the exact model
+// IDs it has access to, and override via GROQ_VISION_MODEL without waiting on a redeploy.
+const GROQ_VISION_FALLBACK_MODEL = "meta-llama/llama-4-maverick-17b-128e-instruct";
 
 function resolveModel(provider: LlmProvider, hasVision: boolean, maxTokens?: number): string {
   if (provider === "groq") {
