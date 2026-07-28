@@ -592,12 +592,20 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
   let chain = providersToTry(primary);
   // Groq vision models consistently return 404 — remove Groq from vision calls entirely.
   if (hasVision) chain = chain.filter((p) => p !== "groq");
+  // Set only when the empty-chain fallback below forces Groq back in for a vision call because
+  // OpenAI's quota/billing flag is up — otherwise the eventual Groq failure looks like the root
+  // cause when the real one is "OpenAI has no credits", with no clue that OpenAI was ever tried.
+  let visionFallbackDueToOpenAiQuota = false;
   if (chain.length === 0) {
     // All providers blocked (cooldown / quota). Try Groq anyway if key exists — cooldown is
     // a soft rate-limit guard, not a hard failure. Better to retry than to give up entirely.
     const groqKey = groqKeyFromEnv();
     if (groqKey) {
-      console.warn("[LLM] All providers in cooldown/exhausted — retrying Groq ignoring cooldown.");
+      visionFallbackDueToOpenAiQuota = hasVision && openAiQuotaExhausted;
+      console.warn(
+        "[LLM] All providers in cooldown/exhausted — retrying Groq ignoring cooldown." +
+        (visionFallbackDueToOpenAiQuota ? " (OpenAI quota/billing exhausted — check platform.openai.com billing)" : "")
+      );
       groqCooldownUntilMs = 0; // reset cooldown so this request can proceed
       chain = ["groq"];
     } else {
@@ -692,7 +700,10 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
 
       const errorText = await response.text();
       lastError = new Error(
-        `LLM invoke failed (${provider}, model=${payload.model}): ${response.status} ${response.statusText} – ${errorText}`
+        `LLM invoke failed (${provider}, model=${payload.model}): ${response.status} ${response.statusText} – ${errorText}` +
+        (visionFallbackDueToOpenAiQuota
+          ? " [NOTE: OpenAI was skipped because its quota/billing is exhausted — this Groq attempt is only a fallback; fix OpenAI billing at platform.openai.com to resolve]"
+          : "")
       );
 
       // Groq 404: configured vision model no longer available — retry once with fallback model.
