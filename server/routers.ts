@@ -84,6 +84,8 @@ import { FASTVID_PRO_PLAN } from "./products";
 import { processArchiveAssetUpload, ArchiveUploadError } from "./archiveUpload";
 import { archiveAiTaggingEnabled } from "./archiveAssetTagging";
 import { autoTitleArchiveAssets, probeArchiveAssetAiTag } from "./archiveBulkVisionTagging";
+import { recognizeCelebritiesForAsset, recognizeCelebritiesBulk } from "./archiveRekognition";
+import { isRekognitionEnabled } from "./rekognitionCelebrity";
 import { bulkRetagArchiveGeo } from "./archiveBulkGeoRetag";
 import { auditArchiveAssetScenes, auditArchiveAssetScene } from "./archiveSceneAudit";
 import { trimArchiveAssetToFirstScene } from "./archiveTrimToScene";
@@ -1700,6 +1702,62 @@ export const appRouter = router({
           "INTERNAL_SERVER_ERROR",
           APP_ERROR.SERVICE_ERROR,
           (err as Error).message ?? "Auto-title failed"
+        );
+      }
+    }),
+
+    /** AWS Rekognition: identify a known person in one clip, save name(s) as tags. */
+    recognizeCelebrities: adminProcedure.input(z.object({
+      assetId: z.number().int(),
+    })).mutation(async ({ input }) => {
+      if (!isRekognitionEnabled()) {
+        throw appTrpcError(
+          "BAD_REQUEST",
+          APP_ERROR.SERVICE_ERROR,
+          "AWS Rekognition disabled — set AWS_REKOGNITION_ACCESS_KEY_ID and AWS_REKOGNITION_SECRET_ACCESS_KEY on the server"
+        );
+      }
+      try {
+        return await recognizeCelebritiesForAsset(input.assetId);
+      } catch (err) {
+        throw appTrpcError(
+          "INTERNAL_SERVER_ERROR",
+          APP_ERROR.SERVICE_ERROR,
+          (err as Error).message ?? "Rekognition failed"
+        );
+      }
+    }),
+
+    /** AWS Rekognition, paginated bulk run — skips already-tagged clips when onlyUntagged is set. */
+    recognizeCelebritiesBulk: adminProcedure.input(z.object({
+      archiveId: z.number().int(),
+      limit: z.number().int().min(1).max(50).default(20),
+      offset: z.number().int().min(0).default(0),
+      onlyUntagged: z.boolean().default(false),
+      ids: z.array(z.number().int()).optional(),
+    })).mutation(async ({ input }) => {
+      if (!isRekognitionEnabled()) {
+        throw appTrpcError(
+          "BAD_REQUEST",
+          APP_ERROR.SERVICE_ERROR,
+          "AWS Rekognition disabled — set AWS_REKOGNITION_ACCESS_KEY_ID and AWS_REKOGNITION_SECRET_ACCESS_KEY on the server"
+        );
+      }
+      const archive = await getMediaArchiveById(input.archiveId);
+      if (!archive) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Archive not found");
+      try {
+        return await recognizeCelebritiesBulk({
+          archiveId: input.archiveId,
+          limit: input.limit,
+          offset: input.offset,
+          onlyUntagged: input.onlyUntagged,
+          ids: input.ids,
+        });
+      } catch (err) {
+        throw appTrpcError(
+          "INTERNAL_SERVER_ERROR",
+          APP_ERROR.SERVICE_ERROR,
+          (err as Error).message ?? "Rekognition bulk failed"
         );
       }
     }),
