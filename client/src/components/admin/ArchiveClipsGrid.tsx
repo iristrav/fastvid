@@ -247,6 +247,18 @@ function LazyArchiveMedia({
           controls={mode === "preview"}
           autoPlay={mode === "preview"}
           onError={() => setLoadError(true)}
+          onLoadedData={(e) => {
+            // iOS Safari never paints a video element's first frame on its own — not even with
+            // preload="metadata"/"auto" — until it has actually played at least once. A muted,
+            // playsInline, near-instant play+pause forces it to decode and show that frame as a
+            // static thumbnail without ever visibly autoplaying. Desktop browsers already paint
+            // the frame on load, so this is a no-op there — pausing at time 0 changes nothing.
+            if (mode !== "thumb") return;
+            const el = e.currentTarget;
+            el.play()
+              .then(() => el.pause())
+              .catch(() => { /* autoplay blocked — falls back to the old blank-frame behavior */ });
+          }}
         />
       </div>
     );
