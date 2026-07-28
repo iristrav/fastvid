@@ -118,7 +118,7 @@ const TAG_JSON_SCHEMA_MINIMAL = {
           type: "array",
           items: { type: "string" },
           minItems: 1,
-          maxItems: 4,
+          maxItems: 2,
         },
       },
       required: ["title", "description", "tags"],
@@ -127,8 +127,13 @@ const TAG_JSON_SCHEMA_MINIMAL = {
   },
 } as const;
 
-/** Max searchable tags stored per asset (pipeline + semantic matching). Geo slugs prioritized. */
+/** Max searchable tags stored per asset (pipeline + semantic matching). Geo slugs prioritized.
+ *  This is the outer ceiling used when merging AI tags with pre-existing user tags — it's
+ *  intentionally higher than what the AI itself generates (see ARCHIVE_TARGET_AI_TAGS below). */
 export const ARCHIVE_MAX_TAGS = 4;
+
+/** Default AI-generated tag count: 1 general (broad topic) + 1 specific (named subject). */
+const ARCHIVE_TARGET_AI_TAGS = 2;
 
 /** Vision LLM timeout — quality over speed; override via env. */
 function archiveVisionTimeoutMs(frameCount: number): number {
@@ -213,7 +218,9 @@ export function selectHighQualityArchiveTags(parsed: ArchiveAiVisionPayload): st
   return normalizeMediaTags(picked).slice(0, ARCHIVE_MAX_TAGS);
 }
 
-/** Ensure we store up to 4 tags even when the model returns fewer valid ones. */
+/** Ensure we store up to ARCHIVE_TARGET_AI_TAGS (2) tags even when the model returns fewer
+ *  valid ones — pads toward the target, not the outer ARCHIVE_MAX_TAGS ceiling, so a clean
+ *  2-tag result from the model isn't diluted with extra words scraped from the title. */
 function padArchiveTags(
   tags: string[],
   parsed: ArchiveAiVisionPayload,
@@ -230,15 +237,15 @@ function padArchiveTags(
 
   for (const tag of parsed.tags ?? []) {
     push(tag);
-    if (out.length >= ARCHIVE_MAX_TAGS) break;
+    if (out.length >= ARCHIVE_TARGET_AI_TAGS) break;
   }
-  if (out.length < ARCHIVE_MAX_TAGS) {
+  if (out.length < ARCHIVE_TARGET_AI_TAGS) {
     for (const w of title.split(/\s+/)) {
       if (w.length >= 4) push(w);
-      if (out.length >= ARCHIVE_MAX_TAGS) break;
+      if (out.length >= ARCHIVE_TARGET_AI_TAGS) break;
     }
   }
-  return normalizeMediaTags(out).slice(0, ARCHIVE_MAX_TAGS);
+  return normalizeMediaTags(out).slice(0, ARCHIVE_TARGET_AI_TAGS);
 }
 
 export function truncateArchiveSourceNote(note: string | null | undefined): string | null {
@@ -277,13 +284,14 @@ export function flattenArchiveAiMetadata(parsed: ArchiveAiVisionPayload): Archiv
 
   let tags = selectHighQualityArchiveTags(parsed);
   const geoSlugs = extractGeoSlugsFromVisionPayload(parsed);
-  tags = mergeGeoSlugsIntoArchiveTags(tags, geoSlugs, ARCHIVE_MAX_TAGS);
+  tags = mergeGeoSlugsIntoArchiveTags(tags, geoSlugs, ARCHIVE_TARGET_AI_TAGS);
   tags = padArchiveTags(tags, parsed, title);
   if (tags.length === 0) {
-    tags = normalizeMediaTags(title.split(/\s+/).filter((w) => w.length > 3)).slice(0, ARCHIVE_MAX_TAGS);
+    tags = normalizeMediaTags(title.split(/\s+/).filter((w) => w.length > 3)).slice(0, ARCHIVE_TARGET_AI_TAGS);
   }
-  // Hard cap: every tag max 2 words regardless of source
-  tags = normalizeMediaTags(tags.map(capTagToTwoWords)).slice(0, ARCHIVE_MAX_TAGS);
+  // Hard cap: every tag max 2 words regardless of source, and default output is 2 tags
+  // (1 general + 1 specific) — see ARCHIVE_TARGET_AI_TAGS.
+  tags = normalizeMediaTags(tags.map(capTagToTwoWords)).slice(0, ARCHIVE_TARGET_AI_TAGS);
   if (tags.length === 0) return null;
 
   const detailBits = [
@@ -760,7 +768,7 @@ async function invokeArchiveVisionTagging(
           role: "system",
           content:
             "You are a senior documentary archivist. Analyze each frame and return JSON only. " +
-            "Provide EXACTLY 4 specific English search tags per clip — MAX 2 words each. Use named people, places, objects, or actions. Examples: 'hitler', 'paris', 'tanks', 'surrender', 'normandy', 'bombing'. Never vague nouns.",
+            "Provide EXACTLY 2 English search tags per clip — MAX 2 words each: one GENERAL tag (broad topic/category, e.g. 'world war 2', 'space race') and one SPECIFIC tag (named person, place, or event, e.g. 'hitler nuremberg', 'apollo 11'). Never a meaningless filler word like 'video' or 'scene'.",
         },
         {
           role: "user",
@@ -846,11 +854,11 @@ function buildVisionPrompt(
       "Return JSON with:",
       "- title: max 15 words, concrete WHO/WHAT/WHERE in English",
       "- description: 1–2 sentences describing what is visible",
-      "- tags: EXACTLY 4 English search tags (lowercase, 1–2 words each — e.g. 'hitler', 'paris', 'tanks', 'normandy')",
+      "- tags: EXACTLY 2 English search tags (lowercase, 1–2 words each): one GENERAL tag (broad topic/category) and one SPECIFIC tag (named person, place, or event)",
       "",
-      "Tag examples: amsterdam canal bikes | subway platform berlin | business meeting team | cyclists rain street",
-      "Avoid vague single words: person, city, success, business, modern, historical.",
-      "Prefer concrete visuals: place + activity, or subject + action.",
+      "Examples: ['world war 2', 'hitler nuremberg']  |  ['amsterdam', 'canal bikes']  |  ['space race', 'apollo 11']",
+      "Avoid meaningless filler words: person, city, success, business, modern, historical, scene, footage.",
+      "General tag = the broad topic a search would use. Specific tag = the named subject/place/event in this exact clip.",
     ];
     if (frameCount > 1) {
       lines.push(`You receive ${frameCount} frames from the same video — one combined result.`);
@@ -868,14 +876,11 @@ function buildVisionPrompt(
     "title: max 15 words, concrete WHO/WHAT/WHERE (e.g. 'Hitler speech Nuremberg 1934' or 'D-Day soldiers Omaha Beach 1944'). No filename.",
     "description: 2–3 sentences: visible action + location + era.",
     "",
-    "tags: EXACTLY 4 English search tags (lowercase, MAX 2 words each). MOST IMPORTANT OUTPUT.",
-    "Pick the 4 MOST SPECIFIC and findable single- or two-word tags:",
-    "1. Named person: 'hitler', 'churchill', 'rommel'",
-    "2. Specific place: 'paris', 'normandy', 'berlin', 'stalingrad'",
-    "3. Subject/object: 'tanks', 'soldiers', 'aircraft', 'crowd'",
-    "4. Event/action: 'bombing', 'surrender', 'parade', 'landing'",
-    "MAX 2 words per tag. Never use vague words alone: person, city, scene, footage.",
-    "Examples: 'hitler' | 'paris' | 'tanks' | 'surrender'  OR  'hitler speech' | 'omaha beach' | 'german tanks' | 'troop parade'",
+    "tags: EXACTLY 2 English search tags (lowercase, MAX 2 words each). MOST IMPORTANT OUTPUT.",
+    "1. GENERAL tag: the broad topic/category this clip belongs to — 'world war 2', 'space race', 'cold war'",
+    "2. SPECIFIC tag: the most findable named person, place, or event in THIS clip — 'hitler nuremberg', 'apollo 11', 'berlin wall'",
+    "MAX 2 words per tag. Never use a meaningless filler word alone: person, city, scene, footage.",
+    "Examples: ['world war 2', 'hitler nuremberg']  |  ['cold war', 'berlin wall']  |  ['space race', 'apollo 11 launch']",
     "",
     "Also fill structured fields:",
     "- persons: named individuals clearly visible or strongly implied",
