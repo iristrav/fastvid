@@ -286,7 +286,11 @@ const resolveApiUrl = (provider: LlmProvider) => {
     : "https://forge.manus.im/v1/chat/completions";
 };
 
-const GROQ_VISION_FALLBACK_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct";
+// llama-4-scout-17b-16e-instruct was deprecated by Groq on 2026-06-17 (404 "model does not
+// exist"). qwen3-vl-32b-instruct is Groq's current production (non-preview) vision-language
+// replacement — qwen3.6-27b is also vision-capable but explicitly preview-only, not for
+// production use. Override via GROQ_VISION_MODEL without a redeploy if Groq changes this again.
+const GROQ_VISION_FALLBACK_MODEL = "qwen/qwen3-vl-32b-instruct";
 
 function resolveModel(provider: LlmProvider, hasVision: boolean, maxTokens?: number): string {
   if (provider === "groq") {
