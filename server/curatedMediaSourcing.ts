@@ -1203,7 +1203,13 @@ export async function listCuratedArchiveCandidates(
     metadataBlocks && (noUniversalFallback || geoRequired.length > 0);
 
   if (scored.length === 0 && fallback.length === 0 && archives.length > 0 && !blockUniversalFallback) {
+    // Still score every candidate against the video's general topic (nicheTags, videoVisualTopic)
+    // instead of a flat score=1 for the whole archive — a beat with no exact tag match should
+    // fall back to the archive's next-most-relevant clip, not a literally random one. tryOrder
+    // downstream (fetchCuratedArchiveBeatClip) walks this list roughly by score, so a genuine
+    // topic match still gets tried well before an unrelated clip.
     for (const archive of archives) {
+      const nicheTags = normalizeMediaTags(archive.nicheTags ?? []);
       const assets = await loadArchiveAssetsForSearch(archive.id, assetsCache);
       for (const asset of assets) {
         if (excludeIds.has(asset.id)) continue;
@@ -1211,7 +1217,8 @@ export async function listCuratedArchiveCandidates(
         const assetHay = normalizeMediaTags(asset.tags ?? []).join(" ");
         if (isNonDocumentaryVisualHay(assetHay)) continue;
         if (metadataBlocks && isCuratedOffTopicAsset(asset, topicAnchors, beatTags, videoVisualTopic)) continue;
-        fallback.push({ asset, score: 1, archiveName: archive.name, archiveNicheTags: normalizeMediaTags(archive.nicheTags ?? []) });
+        const score = scoreCuratedAsset(asset, nicheTags, [], [], beatText, videoVisualTopic);
+        fallback.push({ asset, score: Math.max(score, 1), archiveName: archive.name, archiveNicheTags: nicheTags });
       }
     }
   }
