@@ -56,5 +56,27 @@ else
   echo "[start.sh] WARNING: ffmpeg not found, will use ffmpeg-static fallback"
 fi
 
+
+# WORKER_MODE=true lets this same Docker image/CMD run as the queue worker
+# instead of the web server — used on hosts (e.g. Coolify) where the deploy
+# platform doesn't offer a per-app "custom start command" override, so the
+# worker app can't simply invoke worker-start.sh directly like on Railway.
+if [ "$WORKER_MODE" = "true" ]; then
+  echo "[start.sh] WORKER_MODE=true — starting queue worker instead of web server"
+  if [ -z "$TRANSFORMERS_CACHE" ] && [ -d "/data" ]; then
+    export TRANSFORMERS_CACHE="/data/transformers-cache"
+  fi
+  if [ -n "$TRANSFORMERS_CACHE" ]; then
+    mkdir -p "$TRANSFORMERS_CACHE" 2>/dev/null || true
+    export HF_HOME="${HF_HOME:-$TRANSFORMERS_CACHE}"
+    export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$TRANSFORMERS_CACHE}"
+    echo "[start.sh] CLIP cache: $TRANSFORMERS_CACHE"
+  fi
+  if [ -z "$NODE_OPTIONS" ]; then
+    export NODE_OPTIONS="--max-old-space-size=1024"
+  fi
+  exec env FFMPEG_BIN="${FFMPEG_BIN:-$FFMPEG_PATH}" FFPROBE_BIN="${FFPROBE_BIN:-}" node dist/worker.js
+fi
+
 echo "[start.sh] Starting server..."
 exec env FFMPEG_BIN="${FFMPEG_BIN:-$FFMPEG_PATH}" FFPROBE_BIN="${FFPROBE_BIN:-}" node dist/index.js
