@@ -1791,13 +1791,14 @@ export const appRouter = router({
       .input(
         z.object({
           archiveId: z.number().int(),
+          ids: z.array(z.number().int()).optional(),
         })
       )
       .mutation(async ({ input }) => {
         const archive = await getMediaArchiveById(input.archiveId);
         if (!archive) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Archive not found");
         const { repairArchiveAssetDurations } = await import("./archiveDurationRepair");
-        return repairArchiveAssetDurations({ archiveId: input.archiveId });
+        return repairArchiveAssetDurations({ archiveId: input.archiveId, ids: input.ids });
       }),
 
     probeAiTag: adminProcedure.input(z.object({
