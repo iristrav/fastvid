@@ -1603,6 +1603,15 @@ export async function prepareCuratedArchiveClip(
     styleContext?.rawCache?.set(asset.id, rawPath);
   }
 
+  if (!fs.existsSync(rawPath)) {
+    // Guards a race on popular assets shared across concurrently-running scenes: the
+    // existsSync check above can pass and then another scene's cleanup (or an OS-level
+    // eviction under memory pressure) removes the file before we actually read it below.
+    // One retry recovers cleanly instead of failing this beat outright.
+    await materializeArchiveAsset(asset, rawPath);
+    styleContext?.rawCache?.set(asset.id, rawPath);
+  }
+
   const isSharedRaw = styleContext?.rawCache?.get(asset.id) === rawPath;
 
   if (asset.mediaType === "image") {
