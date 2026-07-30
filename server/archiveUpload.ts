@@ -151,6 +151,7 @@ function assertSplitSegmentsValid(
 }
 
 export async function processArchiveAssetUpload(input: ArchiveUploadInput): Promise<ArchiveUploadResult> {
+  const uploadT0 = Date.now();
   const jobId = input.jobId;
   const fileLabel = input.filename?.trim() || "upload";
   const progress = (patch: Parameters<typeof patchArchiveUploadJob>[1]) =>
@@ -270,6 +271,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
       const perClipAiBulk = perClipAiTags && (totalRanges || 999) > 15;
       let enriched: { title: string; tags: string[]; sourceNote: string | null };
       if (perClipAiTags) {
+        const aiT0 = Date.now();
         try {
           enriched = await enrichArchiveAssetFields({
             buffer: clipBuffer,
@@ -287,17 +289,20 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
         } catch {
           enriched = { title: draftTitle, tags: userTags, sourceNote: fragmentNote };
         }
+        console.log(`[ArchiveUploadTiming] clip ${suffix} AI-tagging: ${((Date.now() - aiT0) / 1000).toFixed(1)}s`);
       } else {
         enriched = { title: draftTitle, tags: userTags, sourceNote: fragmentNote };
       }
 
       let url: string, storedKey: string;
+      const storeT0 = Date.now();
       try {
         ({ url, key: storedKey } = await storagePut(key, clipBuffer, "video/mp4"));
       } catch (uploadErr) {
         console.error(`[ArchiveUpload] S3 upload failed for clip ${suffix}:`, (uploadErr as Error).message?.slice(0, 120));
         return;
       }
+      console.log(`[ArchiveUploadTiming] clip ${suffix} storagePut: ${((Date.now() - storeT0) / 1000).toFixed(1)}s`);
 
       let assetId: number | null | undefined;
       try {
@@ -417,6 +422,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
 
     let segments: VideoClipSegment[];
     let splitCleanup: (() => void) | undefined;
+    const splitT0 = Date.now();
     try {
       const splitResult = await splitVideoBySceneChanges(
         input.inputPath ?? input.buffer ?? resolveBuffer(),
@@ -427,7 +433,10 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
       );
       segments = splitResult.segments;
       splitCleanup = splitResult.cleanup;
-      console.log(`[ArchiveUpload] split complete: ${segments.length} segment(s) returned, savedCount=${savedCount}`);
+      console.log(
+        `[ArchiveUploadTiming] scene-split + per-clip processing: ${((Date.now() - splitT0) / 1000).toFixed(1)}s ` +
+          `(${segments.length} segment(s), savedCount=${savedCount})`
+      );
     } catch (err) {
       if (err instanceof ArchiveSplitError && isArchiveUploadCancelRequested(jobId)) {
         finishArchiveUploadJobCancelled(jobId);
@@ -474,6 +483,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
         clipsSaved: createdAssets.length,
         clipTotal: segments.length,
       });
+      console.log(`[ArchiveUploadTiming] TOTAL processArchiveAssetUpload: ${((Date.now() - uploadT0) / 1000).toFixed(1)}s`);
 
       return {
         assets: createdAssets,
@@ -505,6 +515,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
     ? (mimeType.includes("webm") ? "webm" : mimeType.includes("quicktime") || mimeType.includes("mov") ? "mov" : "mp4")
     : (mimeType.includes("png") ? "png" : mimeType.includes("gif") ? "gif" : mimeType.includes("webp") ? "webp" : "jpg");
   const buf = resolveBuffer();
+  const aiT0 = Date.now();
   const enriched = await enrichArchiveAssetFields({
     buffer: buf,
     mimeType,
@@ -516,8 +527,11 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
     parentFilename: input.filename,
     userProvidedTitle,
   });
+  console.log(`[ArchiveUploadTiming] AI-tagging: ${((Date.now() - aiT0) / 1000).toFixed(1)}s`);
   const key = `media-archive/${input.archiveId}/${Date.now()}-${Math.random().toString(36).slice(2, 6)}.${ext}`;
+  const storeT0 = Date.now();
   const { url, key: storedKey } = await storagePut(key, buf, mimeType);
+  console.log(`[ArchiveUploadTiming] storagePut: ${((Date.now() - storeT0) / 1000).toFixed(1)}s`);
 
   let assetId: number | null | undefined;
   try {
@@ -551,6 +565,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
     clipsSaved: 1,
     clipTotal: 1,
   });
+  console.log(`[ArchiveUploadTiming] TOTAL processArchiveAssetUpload: ${((Date.now() - uploadT0) / 1000).toFixed(1)}s`);
   return {
     asset,
     assets: asset ? [asset] : [],
