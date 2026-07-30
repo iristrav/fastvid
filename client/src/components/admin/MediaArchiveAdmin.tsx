@@ -105,6 +105,49 @@ async function requestArchiveUploadCancel(jobId: string): Promise<void> {
   });
 }
 
+/**
+ * Chunk fetch with a per-attempt timeout and retries — plain fetch() has no timeout,
+ * so a stalled connection (common on long/mobile links) would otherwise hang the
+ * upload UI forever with no feedback.
+ */
+async function fetchChunkWithRetry(
+  url: string,
+  body: Blob,
+  externalSignal: AbortSignal | undefined,
+  onRetry?: (attempt: number, maxAttempts: number) => void
+): Promise<Response> {
+  const CHUNK_TIMEOUT_MS = 45_000;
+  const MAX_ATTEMPTS = 3;
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    if (externalSignal?.aborted) throw new UploadCancelledError();
+    const controller = new AbortController();
+    const onExternalAbort = () => controller.abort();
+    externalSignal?.addEventListener("abort", onExternalAbort);
+    const timer = window.setTimeout(() => controller.abort(), CHUNK_TIMEOUT_MS);
+    try {
+      return await fetch(url, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/octet-stream" },
+        body,
+        signal: controller.signal,
+      });
+    } catch (err) {
+      if (externalSignal?.aborted) throw new UploadCancelledError();
+      if (attempt >= MAX_ATTEMPTS) {
+        throw new Error("Chunk upload timed out — check your connection and try again");
+      }
+      onRetry?.(attempt + 1, MAX_ATTEMPTS);
+      await new Promise((r) => window.setTimeout(r, 1500 * attempt));
+    } finally {
+      window.clearTimeout(timer);
+      externalSignal?.removeEventListener("abort", onExternalAbort);
+    }
+  }
+  throw new Error("Chunk upload timed out — check your connection and try again");
+}
+
 async function uploadArchiveFile(
   file: File,
   opts: {
@@ -168,13 +211,19 @@ async function uploadArchiveFile(
       const pct = Math.round(2 + (i / totalChunks) * 45);
       opts.onProgress?.({ jobId: opts.jobId, stage: "validating", message: `Uploading ${i + 1}/${totalChunks}…`, percent: pct, done: false });
       const chunkParams = new URLSearchParams({ uploadId, chunk: String(i), filename: file.name });
-      const r = await fetch(`/api/admin/archive/upload/chunk?${chunkParams}`, {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/octet-stream" },
-        body: chunk,
-        signal: opts.signal,
-      });
+      const r = await fetchChunkWithRetry(
+        `/api/admin/archive/upload/chunk?${chunkParams}`,
+        chunk,
+        opts.signal,
+        (retryAttempt, maxAttempts) =>
+          opts.onProgress?.({
+            jobId: opts.jobId,
+            stage: "validating",
+            message: `Uploading ${i + 1}/${totalChunks}… (retry ${retryAttempt}/${maxAttempts})`,
+            percent: pct,
+            done: false,
+          })
+      );
       const d = await parseJson(r);
       if (!r.ok) throw new Error(d.error || `Chunk ${i + 1} failed`);
     }
