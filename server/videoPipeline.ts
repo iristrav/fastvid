@@ -16709,7 +16709,11 @@ async function adoptArchiveBeatClipWithBudget(
     );
   // Same budget for every video length: this used to be skipped entirely for non-fast-short
   // videos, letting the candidate loop hang indefinitely under sustained resource pressure.
-  const budgetMs = 180_000;
+  // With Pexels/Pixabay fallback disabled, the archive is the only real source left — give it
+  // more room to reach its own already-built-in "no good match, take the best available" tier
+  // (searchCuratedCandidatesForBeat's whole-archive fallback) instead of timing out early and
+  // falling through to Wikimedia/color-fallback with a relevant archive clip still reachable.
+  const budgetMs = archivePexelsFallbackEnabled() ? 180_000 : 300_000;
   try {
     return await withTimeout(run(), budgetMs, `archive s${scene.index} b${beat.index}`);
   } catch (err) {
