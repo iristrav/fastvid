@@ -173,6 +173,15 @@ export async function backfillMissingClipEmbeddings(
       break;
     }
     for (const asset of page) {
+      // Re-check every iteration, not just once at the top — a render can start
+      // mid-batch (worker just claimed a queued video), and continuing to burn
+      // CPU on background indexing for the rest of a 50-asset batch competes with
+      // it for the same small box's ffmpeg/CPU budget instead of yielding right away.
+      if (!options?.ignoreActiveJobCap && workerLocalActiveJobs() > 0) {
+        backfillAssetCursor = cursor;
+        console.log("[ClipEmbedding] Backfill yielding mid-batch — render job became active");
+        return { indexed, skipped, missing };
+      }
       cursor = asset.id;
       scanned++;
       if (loadStoredClipEmbedding(asset.id)) {

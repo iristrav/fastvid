@@ -300,8 +300,10 @@ function resolveModel(provider: LlmProvider, hasVision: boolean, maxTokens?: num
     if (hasVision) {
       return process.env.GROQ_VISION_MODEL?.trim() || GROQ_VISION_FALLBACK_MODEL;
     }
-    const fastModel = process.env.GROQ_FAST_MODEL?.trim() || "llama-3.1-8b-instant";
-    const heavyModel = process.env.GROQ_MODEL?.trim() || "llama-3.3-70b-versatile";
+    // llama-3.1-8b-instant / llama-3.3-70b-versatile were deprecated by Groq on 2026-06-17 —
+    // openai/gpt-oss-20b and openai/gpt-oss-120b are Groq's own documented replacements.
+    const fastModel = process.env.GROQ_FAST_MODEL?.trim() || "openai/gpt-oss-20b";
+    const heavyModel = process.env.GROQ_MODEL?.trim() || "openai/gpt-oss-120b";
     if (process.env.GROQ_USE_70B === "true") return heavyModel;
     if (maxTokens != null && maxTokens > 4000) return heavyModel;
     // Default fast model — preserves Groq TPD quota on Railway.
