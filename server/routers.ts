@@ -46,7 +46,7 @@ import {
 import { resolveStoredVideoLocalPath, validateFinalVideoPlayable } from "./finalVideoGate";
 import type { ProgressLogEntry } from "./db";
 import { videoLengthSchema, normalizeVideoLength, isShortVideoLength } from "@shared/videoLengths";
-import { isFastShortVideoLength, maxPipelineWallClockHardMin, pipelineComposeGraceMs, pipelineWallClockLimitEnabled } from "./sourcingPolicy";
+import { isFastShortVideoLength, maxPipelineWallClockHardMin, pipelineComposeGraceMs, pipelineWallClockLimitEnabled, PIPELINE_UNLIMITED_MS } from "./sourcingPolicy";
 import { PIPELINE_DISPLAY_STAGES, formatGenerationDuration, progressStepWithElapsed, resolvePipelineDisplayStage, type PipelineDisplayStageKey } from "@shared/pipelineProgress";
 import { ONE_YEAR_MS } from "@shared/const";
 import { clearVideoGenerationCancel } from "./videoGenerationCancel";
@@ -737,11 +737,16 @@ async function _runVideoGeneration(
         prompt
       );
       {
-        // Always enforce a hard wall-clock cap so a hanging FFmpeg call can't block the worker slot forever.
-        // For fast-short videos: use the configured budget. For all others: default 150 min safety cap.
-        const hardMs = (isFastShortVideoLength(videoLength) && pipelineWallClockLimitEnabled())
-          ? maxPipelineWallClockHardMin(videoLength) * 60_000 + pipelineComposeGraceMs(videoLength)
-          : parseInt(process.env.PIPELINE_HARD_TIMEOUT_MS ?? String(150 * 60_000), 10);
+        // Hard wall-clock cap so a hanging FFmpeg call can't block the worker slot forever —
+        // but honor PIPELINE_WALL_CLOCK_LIMIT=false the same way the other two enforcement
+        // points (videoPipeline.ts's assertPipelineWithinBudget, db.ts's failPipelineIfStalled)
+        // do. Previously this fell through to a flat 150-minute cap for any non-fast-short
+        // video regardless of the flag, silently overriding "let it take as long as it needs".
+        const hardMs = !pipelineWallClockLimitEnabled()
+          ? PIPELINE_UNLIMITED_MS
+          : isFastShortVideoLength(videoLength)
+            ? maxPipelineWallClockHardMin(videoLength) * 60_000 + pipelineComposeGraceMs(videoLength)
+            : parseInt(process.env.PIPELINE_HARD_TIMEOUT_MS ?? String(150 * 60_000), 10);
         const elapsed = Date.now() - pipelineStartedAt;
         const remainingMs = Math.max(45_000, hardMs - elapsed);
         videoUrl = await Promise.race([
