@@ -1292,6 +1292,14 @@ function archiveS3CachePath(key: string): string {
   return path.join(ARCHIVE_S3_CACHE_DIR, key.replace(/\//g, "_"));
 }
 
+// Caps concurrent archive-asset network downloads. Unlike ffmpeg/ffprobe spawns (already
+// gated by ffmpegSemaphore), these fetch() calls had no limit — under a burst of many
+// scenes/beats downloading at once on a modest host, that could open more simultaneous
+// outbound TLS connections than the box could service, causing some to fail mid-handshake
+// ("Client network socket disconnected before secure TLS connection was established") even
+// though the storage endpoint itself was reachable and fast.
+const archiveDownloadLimit = pLimit(4);
+
 async function materializeArchiveAsset(asset: MediaArchiveAsset, destPath: string): Promise<void> {
   const local = resolveArchiveAssetLocalPath(asset);
   if (local) {
@@ -1305,28 +1313,32 @@ async function materializeArchiveAsset(asset: MediaArchiveAsset, destPath: strin
       fs.copyFileSync(cachePath, destPath);
       return;
     }
-    const signedUrl = await storageGetSignedUrl(key);
-    const resp = await fetch(signedUrl, { signal: AbortSignal.timeout(120_000) });
-    if (!resp.ok) throw new Error(`Archive asset download HTTP ${resp.status}`);
-    const buf = Buffer.from(await resp.arrayBuffer());
-    if (buf.length < 500) throw new Error("Archive asset download too small");
-    fs.writeFileSync(destPath, buf);
-    try {
-      fs.mkdirSync(ARCHIVE_S3_CACHE_DIR, { recursive: true });
-      fs.writeFileSync(cachePath, buf);
-    } catch (err) {
-      console.warn(`[CuratedMedia] Failed to cache archive asset ${key}:`, (err as Error).message);
-    }
+    await archiveDownloadLimit(async () => {
+      const signedUrl = await storageGetSignedUrl(key);
+      const resp = await fetch(signedUrl, { signal: AbortSignal.timeout(120_000) });
+      if (!resp.ok) throw new Error(`Archive asset download HTTP ${resp.status}`);
+      const buf = Buffer.from(await resp.arrayBuffer());
+      if (buf.length < 500) throw new Error("Archive asset download too small");
+      fs.writeFileSync(destPath, buf);
+      try {
+        fs.mkdirSync(ARCHIVE_S3_CACHE_DIR, { recursive: true });
+        fs.writeFileSync(cachePath, buf);
+      } catch (err) {
+        console.warn(`[CuratedMedia] Failed to cache archive asset ${key}:`, (err as Error).message);
+      }
+    });
     return;
   }
   const fetchUrl = asset.storageUrl.startsWith("/")
     ? `http://127.0.0.1:${process.env.PORT || 3000}${asset.storageUrl}`
     : asset.storageUrl;
-  const resp = await fetch(fetchUrl, { signal: AbortSignal.timeout(60_000) });
-  if (!resp.ok) throw new Error(`Archive asset download HTTP ${resp.status}`);
-  const buf = Buffer.from(await resp.arrayBuffer());
-  if (buf.length < 500) throw new Error("Archive asset download too small");
-  fs.writeFileSync(destPath, buf);
+  await archiveDownloadLimit(async () => {
+    const resp = await fetch(fetchUrl, { signal: AbortSignal.timeout(60_000) });
+    if (!resp.ok) throw new Error(`Archive asset download HTTP ${resp.status}`);
+    const buf = Buffer.from(await resp.arrayBuffer());
+    if (buf.length < 500) throw new Error("Archive asset download too small");
+    fs.writeFileSync(destPath, buf);
+  });
 }
 
 export type CuratedClipStyleContext = StillStyleContext & {
