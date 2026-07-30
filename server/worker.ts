@@ -79,6 +79,32 @@ function startWorkerHealthServer(): void {
       });
       return;
     }
+    if (req.method === "GET" && path === "/api/health/r2") {
+      void (async () => {
+        const endpoint = process.env.S3_ENDPOINT?.trim();
+        if (!endpoint) {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ status: "no_endpoint", message: "S3_ENDPOINT not set" }));
+          return;
+        }
+        const attempts: Array<{ ok: boolean; ms: number; error?: string }> = [];
+        for (let i = 0; i < 5; i++) {
+          const started = Date.now();
+          try {
+            await fetch(endpoint, { method: "HEAD", signal: AbortSignal.timeout(10_000) });
+            attempts.push({ ok: true, ms: Date.now() - started });
+          } catch (err) {
+            attempts.push({ ok: false, ms: Date.now() - started, error: (err as Error).message?.slice(0, 200) });
+          }
+        }
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ status: "done", endpoint, attempts }, null, 2));
+      })().catch((err) => {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ status: "error", message: (err as Error).message }));
+      });
+      return;
+    }
     res.writeHead(404);
     res.end();
   });
