@@ -1092,14 +1092,16 @@ export function ArchiveClipsGrid({
       toast.error("Geen clips om te repareren");
       return;
     }
-    const loadingToast = toast.loading(`Duur repareren voor ${total} clip(s)…`);
+    const targetIds = selectedCount > 0 ? [...selectedIds] : undefined;
+    const scopeLabel = targetIds ? `${targetIds.length} geselecteerde clip(s)` : `${total} clip(s)`;
+    const loadingToast = toast.loading(`Duur repareren voor ${scopeLabel}…`);
     repairDurations.mutate(
-      { archiveId },
+      { archiveId, ids: targetIds },
       {
         onSettled: () => toast.dismiss(loadingToast),
       }
     );
-  }, [archiveId, repairDurations, total]);
+  }, [archiveId, repairDurations, selectedCount, selectedIds, total]);
 
   const runAutoTitleAll = useCallback(async () => {
     if (archiveId == null || total === 0) {
@@ -1611,7 +1613,11 @@ export function ArchiveClipsGrid({
             type="button"
             onClick={runRepairDurations}
             disabled={repairDurations.isPending || autoTitleRunning}
-            title="Zet 0s / ontbrekende duur op min. 3s voor het hele archief (video's via ffprobe; korter dan 3s wordt gedeactiveerd)"
+            title={
+              selectedCount > 0
+                ? `Zet 0s / ontbrekende duur op min. 3s voor ${selectedCount} geselecteerde clip(s) (video's via ffprobe; korter dan 3s wordt gedeactiveerd)`
+                : "Zet 0s / ontbrekende duur op min. 3s voor het hele archief (video's via ffprobe; korter dan 3s wordt gedeactiveerd)"
+            }
             className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg bg-violet-500/15 text-violet-300 border border-violet-500/25 hover:bg-violet-500/25 disabled:opacity-50"
           >
             {repairDurations.isPending ? (
@@ -1619,7 +1625,11 @@ export function ArchiveClipsGrid({
             ) : (
               <ScanSearch className="w-3.5 h-3.5" />
             )}
-            {repairDurations.isPending ? "Duur repareren…" : "Fix 0s duur (hele archief)"}
+            {repairDurations.isPending
+              ? "Duur repareren…"
+              : selectedCount > 0
+                ? `Fix duur (${selectedCount} geselecteerd)`
+                : "Fix 0s duur (hele archief)"}
           </button>
         )}
         {assets.length > 1 && (
