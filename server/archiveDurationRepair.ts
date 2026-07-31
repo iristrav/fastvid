@@ -19,7 +19,11 @@ export type ArchiveDurationRepairResult = {
 
 function needsDurationRepair(durationSec: number | null | undefined, minSec: number): boolean {
   if (durationSec == null) return true;
-  return durationSec < minSec;
+  // <= not < : a stored duration exactly at minSec is almost always the fallback
+  // placeholder value (see archiveIngestion.ts), not a genuine measurement — re-probing
+  // a real minSec-length clip is a harmless no-op, but skipping it left every mislabeled
+  // clip permanently unrepaired since they land exactly on minSec.
+  return durationSec <= minSec;
 }
 
 export async function repairArchiveAssetDurations(opts: {
