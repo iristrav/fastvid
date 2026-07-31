@@ -61,15 +61,21 @@ function ArchiveContentGapsPanel() {
       ) : gaps.length === 0 ? (
         <p className="text-xs text-slate-600 py-2">Nog geen gegevens — dit vult zich naarmate er video's worden gegenereerd.</p>
       ) : (
-        <div className="flex flex-wrap gap-2">
+        <div className="space-y-1.5">
           {gaps.map((g) => (
             <div
               key={g.id}
-              title={g.sampleBeatText ?? undefined}
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-500/10 border border-amber-500/20 text-xs"
+              className="rounded-lg bg-amber-500/10 border border-amber-500/20 px-3 py-2"
             >
-              <span className="text-amber-200">{g.keyword}</span>
-              <span className="text-amber-400/70 font-mono">{g.hitCount}×</span>
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-amber-200 font-medium">{g.keyword}</span>
+                <span className="text-[11px] text-amber-400/70 font-mono">{g.hitCount}×</span>
+              </div>
+              {g.sampleBeatText && (
+                <p className="text-xs text-slate-400 mt-1">
+                  Context uit de video: <span className="text-slate-300">"{g.sampleBeatText}"</span>
+                </p>
+              )}
             </div>
           ))}
         </div>
