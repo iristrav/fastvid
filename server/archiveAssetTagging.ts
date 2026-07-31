@@ -146,14 +146,15 @@ export function archiveAiTaggingEnabled(): boolean {
   return process.env.ENABLE_ARCHIVE_AI_TAGS !== "false" && Boolean(ENV.forgeApiKey);
 }
 
-/** User-supplied tags go first so they're never dropped when the total exceeds ARCHIVE_MAX_TAGS —
- *  they carry deliberate context (names, events) the AI can't see and are the strongest search signal. */
+/** User-supplied tags go first and NOTHING is ever truncated here — they carry deliberate
+ *  context (names, events) the AI can't see and are the strongest search signal. Losing a
+ *  tag silently is worse than an asset carrying a few extra ones. */
 export function mergeArchiveTags(userTags: string[], aiTags: string[]): string[] {
-  return normalizeMediaTags([...userTags, ...aiTags]).slice(0, ARCHIVE_MAX_TAGS);
+  return normalizeMediaTags([...userTags, ...aiTags]);
 }
 
 const VAGUE_ARCHIVE_TAG_RE =
-  /\b(man|woman|person|people|leader|city|street|urban|historical|modern|busy|outdoor|indoor|scene|footage|video|clip|documentary|generic|abstract|success|growth|strategy|business|company|building|day|night)\b/i;
+  /\b(man|woman|person|people|leader|city|street|urban|historical|modern|busy|outdoor|indoor|scene|footage|video|clip|documentary|generic|abstract|success|growth|strategy|business|company|building|day|night|uniform|clothing|outfit|attire)\b/i;
 
 function isSpecificArchiveTag(tag: string): boolean {
   const normalized = tag.trim().toLowerCase();
@@ -770,7 +771,8 @@ async function invokeArchiveVisionTagging(
           role: "system",
           content:
             "You are a senior documentary archivist. Analyze each frame and return JSON only. " +
-            "Provide EXACTLY 2 English search tags per clip — MAX 2 words each: one GENERAL tag (broad topic/category, e.g. 'world war 2', 'space race') and one SPECIFIC tag (named person, place, or event, e.g. 'hitler nuremberg', 'apollo 11'). Never a meaningless filler word like 'video' or 'scene'.",
+            "Provide EXACTLY 2 English search tags per clip — MAX 2 words each: one GENERAL tag (broad topic/category, e.g. 'world war 2', 'space race') and one SPECIFIC tag (named person, place, or event, e.g. 'hitler nuremberg', 'apollo 11'). Never a meaningless filler word like 'video' or 'scene'. " +
+            "Never use a bare generic descriptor (man, woman, person, uniform, clothing) as a tag. If no name is identifiable, use the specific role/occupation instead (officer, soldier, pilot, general, nurse, engineer) — never the generic noun alone.",
         },
         {
           role: "user",
@@ -861,6 +863,7 @@ function buildVisionPrompt(
       "Examples: ['world war 2', 'hitler nuremberg']  |  ['amsterdam', 'canal bikes']  |  ['space race', 'apollo 11']",
       "Avoid meaningless filler words: person, city, success, business, modern, historical, scene, footage.",
       "General tag = the broad topic a search would use. Specific tag = the named subject/place/event in this exact clip.",
+      "Unnamed person → use their role/occupation (officer, soldier, pilot, nurse), never a bare noun like 'man'/'woman' or clothing item like 'uniform'.",
     ];
     if (frameCount > 1) {
       lines.push(`You receive ${frameCount} frames from the same video — one combined result.`);
@@ -882,7 +885,8 @@ function buildVisionPrompt(
     "1. GENERAL tag: the broad topic/category this clip belongs to — 'world war 2', 'space race', 'cold war'",
     "2. SPECIFIC tag: the most findable named person, place, or event in THIS clip — 'hitler nuremberg', 'apollo 11', 'berlin wall'",
     "MAX 2 words per tag. Never use a meaningless filler word alone: person, city, scene, footage.",
-    "Examples: ['world war 2', 'hitler nuremberg']  |  ['cold war', 'berlin wall']  |  ['space race', 'apollo 11 launch']",
+    "If no name is identifiable for the SPECIFIC tag, use the person's role/occupation instead of a generic descriptor — 'officer' or 'soldier', never 'man'; 'nurse', never 'woman'; never a bare clothing word like 'uniform'.",
+    "Examples: ['world war 2', 'hitler nuremberg']  |  ['cold war', 'berlin wall']  |  ['space race', 'apollo 11 launch']  |  ['world war 2', 'german officer']",
     "",
     "Also fill structured fields:",
     "- persons: named individuals clearly visible or strongly implied",
@@ -893,6 +897,7 @@ function buildVisionPrompt(
     "Rules:",
     "- Historical archive: always tag the era/period even if not 100% certain.",
     "- Named persons: use full names ('Adolf Hitler' not just 'leader').",
+    "- Unnamed persons: use their specific role/occupation ('officer', 'soldier', 'pilot', 'nurse'), never a bare generic noun ('man', 'woman', 'person') or clothing item ('uniform').",
     "- Specific events beat generic actions ('D-Day landing' beats 'beach scene').",
     "- If frame shows a MAP, list ALL readable city/country names in mapLabels.",
     "- Never use only vague words: person, people, city, scene, footage, documentary.",

@@ -106,10 +106,19 @@ describe("archiveAssetTagging", () => {
     expect(fields.tags[0]).toBe("amsterdam canal bikes");
   });
 
-  it("respects ARCHIVE_MAX_TAGS cap", () => {
+  it("never truncates merged tags — losing a tag is worse than keeping extras", () => {
     const many = Array.from({ length: 20 }, (_, i) => `tag${i}`);
     const merged = mergeArchiveTags([], many);
-    expect(merged.length).toBe(ARCHIVE_MAX_TAGS);
+    expect(merged.length).toBe(20);
+  });
+
+  it("keeps user tags first and never drops them behind AI tags", () => {
+    const userTags = ["winston churchill", "d-day landing"];
+    const aiTags = ["world war 2", "normandy beach"];
+    const merged = mergeArchiveTags(userTags, aiTags);
+    expect(merged).toContain("winston churchill");
+    expect(merged).toContain("d-day landing");
+    expect(merged.indexOf("winston churchill")).toBeLessThan(merged.indexOf("world war 2"));
   });
 
   it("inferArchiveMediaMime falls back to extension when type is empty", () => {
