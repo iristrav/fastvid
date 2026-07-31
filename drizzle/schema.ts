@@ -264,6 +264,21 @@ export type InsertNicheRequest = typeof nicheRequests.$inferInsert;
 export type NicheRequestStatus = NicheRequest["status"];
 export type NicheRequestType = NicheRequest["requestType"];
 
+/** One row per distinct search keyword that fell back to Pexels/Pixabay because no good
+ *  archive match existed — surfaces which topics the archive is missing (Media Archive admin). */
+export const archiveContentGaps = mysqlTable("archive_content_gaps", {
+  id: int("id").autoincrement().primaryKey(),
+  keywordHash: varchar("keywordHash", { length: 64 }).notNull().unique(),
+  keyword: varchar("keyword", { length: 256 }).notNull(),
+  sampleBeatText: varchar("sampleBeatText", { length: 512 }),
+  hitCount: int("hitCount").default(1).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  lastSeenAt: timestamp("lastSeenAt").defaultNow().notNull(),
+});
+
+export type ArchiveContentGap = typeof archiveContentGaps.$inferSelect;
+export type InsertArchiveContentGap = typeof archiveContentGaps.$inferInsert;
+
 // ─── Visual Matching Engine V2 — resumable backfill cursor ────────────────────
 /** One row per (jobName, provider, model, embeddingVersion) combination. Lets a
  *  multi-million-asset backfill resume from lastProcessedId after a crash instead of

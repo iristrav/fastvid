@@ -1801,6 +1801,20 @@ export const appRouter = router({
         return repairArchiveAssetDurations({ archiveId: input.archiveId, ids: input.ids });
       }),
 
+    /** Search keywords that fell back to Pexels/Pixabay — surfaces missing archive topics. */
+    listContentGaps: adminProcedure
+      .input(z.object({ limit: z.number().int().min(1).max(200).optional() }))
+      .query(async ({ input }) => {
+        const { listArchiveContentGaps } = await import("./archiveContentGaps");
+        return listArchiveContentGaps(input.limit ?? 50);
+      }),
+
+    clearContentGaps: adminProcedure.mutation(async () => {
+      const { clearArchiveContentGaps } = await import("./archiveContentGaps");
+      const deleted = await clearArchiveContentGaps();
+      return { deleted };
+    }),
+
     probeAiTag: adminProcedure.input(z.object({
       archiveId: z.number().int(),
       assetId: z.number().int(),

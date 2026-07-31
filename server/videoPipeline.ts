@@ -30,6 +30,7 @@ import { storagePut } from "./storage";
 import { invokeLLM } from "./_core/llm";
 import { ffmpegSemaphore } from "./_core/semaphore";
 import { getVideoById, updateVideoStatus, updateVideoScenes, mergeVideoMetadata, touchVideoProgress, type EditorScene } from "./db";
+import { recordArchiveContentGap } from "./archiveContentGaps";
 import pLimit from "p-limit";
 import { generateGrokVideo } from "./_core/grokVideo";
 import { generateVeoVideo } from "./_core/veoVideo";
@@ -17463,6 +17464,9 @@ async function adoptStockBeatClipFallback(
   console.warn(
     `[Pipeline] Scene ${scene.index} zin ${beat.index}: stock fallback (${queries.slice(0, 3).join(", ")})`
   );
+  for (const q of queries.slice(0, 3)) {
+    void recordArchiveContentGap(q, beat.text);
+  }
 
   for (let qi = 0; qi < queries.length; qi++) {
     const q = queries[qi]!;

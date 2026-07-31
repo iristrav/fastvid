@@ -253,6 +253,13 @@
       "when": 1781700000000,
       "tag": "0035_generation_attempt_fencing",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "5",
+      "when": 1781800000000,
+      "tag": "0036_archive_content_gaps",
+      "breakpoints": true
     }
   ]
 }
