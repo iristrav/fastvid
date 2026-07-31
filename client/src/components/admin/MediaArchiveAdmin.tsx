@@ -6,9 +6,77 @@ import { trpc } from "@/lib/trpc";
 import { toastErrorMessage, ARCHIVE_MAX_UPLOAD_BYTES, ARCHIVE_MAX_UPLOAD_MB } from "@/const";
 import { toast } from "sonner";
 import {
-  Archive, Plus, Loader2, Trash2, Pencil, Upload, Tag, X, Sparkles,
+  Archive, Plus, Loader2, Trash2, Pencil, Upload, Tag, X, Sparkles, SearchX, RefreshCw,
 } from "lucide-react";
 import { ArchiveClipsGrid } from "@/components/admin/ArchiveClipsGrid";
+
+/** Surfaces search keywords that fell back to Pexels/Pixabay because no good archive
+ *  match existed — tells the admin exactly what topics to upload next. */
+function ArchiveContentGapsPanel() {
+  const utils = trpc.useUtils();
+  const { data: gaps = [], isLoading } = trpc.mediaArchive.listContentGaps.useQuery({ limit: 30 });
+  const clearGaps = trpc.mediaArchive.clearContentGaps.useMutation({
+    onSuccess: (data) => {
+      toast.success(`${data.deleted} ontbrekende onderwerpen gewist`);
+      utils.mediaArchive.listContentGaps.invalidate();
+    },
+    onError: (e) => toast.error("Wissen mislukt", { description: toastErrorMessage(e) }),
+  });
+
+  return (
+    <div className="glass-card border border-white/8 rounded-xl p-5 space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <SearchX className="w-4 h-4 text-amber-400" />
+          <h3 className="font-medium">Gevraagde beelden die missen</h3>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => utils.mediaArchive.listContentGaps.invalidate()}
+            title="Ververs"
+            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/5"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+          </button>
+          {gaps.length > 0 && (
+            <button
+              type="button"
+              onClick={() => clearGaps.mutate()}
+              disabled={clearGaps.isPending}
+              className="text-xs px-2.5 py-1 rounded-lg text-slate-400 hover:text-white hover:bg-white/5 disabled:opacity-50"
+            >
+              {clearGaps.isPending ? "Wissen…" : "Lijst wissen"}
+            </button>
+          )}
+        </div>
+      </div>
+      <p className="text-xs text-slate-500">
+        Zoekwoorden waarvoor het archief geen goede match had, en die daarom terugvielen op
+        Pexels/Pixabay — hoe vaker een onderwerp hier voorkomt, hoe groter de winst van
+        daar beelden voor te uploaden.
+      </p>
+      {isLoading ? (
+        <div className="flex justify-center py-4"><Loader2 className="w-4 h-4 animate-spin text-slate-500" /></div>
+      ) : gaps.length === 0 ? (
+        <p className="text-xs text-slate-600 py-2">Nog geen gegevens — dit vult zich naarmate er video's worden gegenereerd.</p>
+      ) : (
+        <div className="flex flex-wrap gap-2">
+          {gaps.map((g) => (
+            <div
+              key={g.id}
+              title={g.sampleBeatText ?? undefined}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-500/10 border border-amber-500/20 text-xs"
+            >
+              <span className="text-amber-200">{g.keyword}</span>
+              <span className="text-amber-400/70 font-mono">{g.hitCount}×</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 const MIX_KINDS = [
   { value: "real_video", label: "Real video" },
@@ -647,6 +715,8 @@ export function MediaArchiveAdmin() {
                   />
                 </label>
               </div>
+
+              <ArchiveContentGapsPanel />
 
               <ArchiveClipsGrid archiveId={activeArchiveId} />
             </>
