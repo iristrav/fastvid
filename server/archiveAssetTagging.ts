@@ -130,7 +130,7 @@ const TAG_JSON_SCHEMA_MINIMAL = {
 /** Max searchable tags stored per asset (pipeline + semantic matching). Geo slugs prioritized.
  *  This is the outer ceiling used when merging AI tags with pre-existing user tags — it's
  *  intentionally higher than what the AI itself generates (see ARCHIVE_TARGET_AI_TAGS below). */
-export const ARCHIVE_MAX_TAGS = 4;
+export const ARCHIVE_MAX_TAGS = 6;
 
 /** Default AI-generated tag count: 1 general (broad topic) + 1 specific (named subject). */
 const ARCHIVE_TARGET_AI_TAGS = 2;
@@ -146,8 +146,10 @@ export function archiveAiTaggingEnabled(): boolean {
   return process.env.ENABLE_ARCHIVE_AI_TAGS !== "false" && Boolean(ENV.forgeApiKey);
 }
 
+/** User-supplied tags go first so they're never dropped when the total exceeds ARCHIVE_MAX_TAGS —
+ *  they carry deliberate context (names, events) the AI can't see and are the strongest search signal. */
 export function mergeArchiveTags(userTags: string[], aiTags: string[]): string[] {
-  return normalizeMediaTags([...aiTags, ...userTags]).slice(0, ARCHIVE_MAX_TAGS);
+  return normalizeMediaTags([...userTags, ...aiTags]).slice(0, ARCHIVE_MAX_TAGS);
 }
 
 const VAGUE_ARCHIVE_TAG_RE =

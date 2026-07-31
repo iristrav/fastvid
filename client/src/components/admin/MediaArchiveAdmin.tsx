@@ -612,7 +612,8 @@ export function MediaArchiveAdmin() {
                       className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-purple-500/50"
                     />
                     <p className="text-[11px] text-slate-500 mt-1">
-                      Tip: AI vision adds a title, description, and exactly 4 high-quality English search tags per clip.
+                      Tip: AI vision adds a title, description, and up to 2 high-quality English search tags per clip —
+                      your own tags above are kept first and never dropped (max 6 tags total).
                     </p>
                   </div>
                   <div>
@@ -635,7 +636,7 @@ export function MediaArchiveAdmin() {
                     onChange={(e) => setAutoGenerateTags(e.target.checked)}
                     className="rounded border-white/20 bg-white/5 text-purple-600 focus:ring-purple-500"
                   />
-                  AI title + 4 search tags from image (LLM vision)
+                  AI title + search tags from image (LLM vision)
                 </label>
                 <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer select-none">
                   <input
