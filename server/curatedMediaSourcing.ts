@@ -1305,15 +1305,19 @@ function archiveS3CachePath(key: string): string {
 // outbound TLS connections than the box could service, causing some to fail mid-handshake
 // ("Client network socket disconnected before secure TLS connection was established") even
 // though the storage endpoint itself was reachable and fast.
-// Default raised from 4 → 8 alongside the CPU upgrade (2 → 4 vCPU); override via env if a
-// future server resize warrants a different value without a code change.
+// Raised from 4 -> 8 alongside the CPU upgrade (2 -> 4 vCPU), then dialed back to 5 after
+// the Hetzner graphs showed the server pinned at 400% (100% on all 4 cores) for a sustained
+// period, unresponsive enough to lock out Coolify's own dashboard. This download concurrency
+// isn't the only consumer (CLIP embedding, ffmpeg, LLM calls all compete for the same cores),
+// but it's the one lever here that's cheap to turn down without touching render quality.
+// Override via env if a future server resize warrants a different value without a code change.
 function archiveDownloadConcurrency(): number {
   const raw = process.env.ARCHIVE_DOWNLOAD_CONCURRENCY?.trim();
   if (raw) {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 1 && n <= 32) return n;
   }
-  return 8;
+  return 5;
 }
 const archiveDownloadLimit = pLimit(archiveDownloadConcurrency());
 
