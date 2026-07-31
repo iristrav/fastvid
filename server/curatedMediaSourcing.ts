@@ -1305,7 +1305,17 @@ function archiveS3CachePath(key: string): string {
 // outbound TLS connections than the box could service, causing some to fail mid-handshake
 // ("Client network socket disconnected before secure TLS connection was established") even
 // though the storage endpoint itself was reachable and fast.
-const archiveDownloadLimit = pLimit(4);
+// Default raised from 4 → 8 alongside the CPU upgrade (2 → 4 vCPU); override via env if a
+// future server resize warrants a different value without a code change.
+function archiveDownloadConcurrency(): number {
+  const raw = process.env.ARCHIVE_DOWNLOAD_CONCURRENCY?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 1 && n <= 32) return n;
+  }
+  return 8;
+}
+const archiveDownloadLimit = pLimit(archiveDownloadConcurrency());
 
 async function materializeArchiveAsset(asset: MediaArchiveAsset, destPath: string): Promise<void> {
   const local = resolveArchiveAssetLocalPath(asset);
