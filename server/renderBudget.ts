@@ -27,6 +27,7 @@
  */
 
 import { getBudgetTier, getHistoricalAvgs } from "./renderBudgetTracker";
+import { pipelineWallClockLimitEnabled, PIPELINE_UNLIMITED_MS } from "./sourcingPolicy";
 
 // ── Absolute floor/ceiling for each budget slot ──────────────────────────────
 const PER_SCENE_COMPOSE_MIN_MS  =  45_000;
@@ -190,10 +191,16 @@ export function computeRenderBudget(
     confidenceReasons.push(`many_scenes=${scenes}: compose variance increases`);
   }
 
+  // The render watchdog SIGKILLs every child process and rejects the whole render when
+  // totalMs elapses — that's exactly the kind of hard time cutoff PIPELINE_WALL_CLOCK_LIMIT=false
+  // is meant to disable. Per-stage budgets (compose/retrieve/concat/upload) stay as computed
+  // above so a genuinely stuck single step is still caught; only the render-wide kill is lifted.
+  const watchdogTotalMs = pipelineWallClockLimitEnabled() ? totalMs : PIPELINE_UNLIMITED_MS;
+
   return {
     scenesCount: scenes,
     expectedVideoSec,
-    totalMs,
+    totalMs: watchdogTotalMs,
     basePerSceneComposeMs,
     perSceneRetrieveMs,
     concatMs,
