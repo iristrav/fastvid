@@ -618,8 +618,8 @@ export function MediaArchiveAdmin() {
                       className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-purple-500/50"
                     />
                     <p className="text-[11px] text-slate-500 mt-1">
-                      Tip: AI vision adds a title, description, and up to 2 high-quality English search tags per clip —
-                      your own tags above are kept first and never dropped (max 6 tags total).
+                      Tip: AI vision adds a title, description, and up to 4 high-quality English search tags per clip —
+                      your own tags above are kept first and never dropped.
                     </p>
                   </div>
                   <div>

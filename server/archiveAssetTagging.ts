@@ -132,8 +132,8 @@ const TAG_JSON_SCHEMA_MINIMAL = {
  *  intentionally higher than what the AI itself generates (see ARCHIVE_TARGET_AI_TAGS below). */
 export const ARCHIVE_MAX_TAGS = 6;
 
-/** Default AI-generated tag count: 1 general (broad topic) + 1 specific (named subject). */
-const ARCHIVE_TARGET_AI_TAGS = 2;
+/** Default AI-generated tag count: 1 general (broad topic) + 1 specific (named subject) + up to 2 more visual/descriptive tags. */
+const ARCHIVE_TARGET_AI_TAGS = 4;
 
 /** Vision LLM timeout — quality over speed; override via env. */
 function archiveVisionTimeoutMs(frameCount: number): number {
@@ -771,7 +771,7 @@ async function invokeArchiveVisionTagging(
           role: "system",
           content:
             "You are a senior documentary archivist. Analyze each frame and return JSON only. " +
-            "Provide EXACTLY 2 English search tags per clip — MAX 2 words each: one GENERAL tag (broad topic/category, e.g. 'world war 2', 'space race') and one SPECIFIC tag (named person, place, or event, e.g. 'hitler nuremberg', 'apollo 11'). Never a meaningless filler word like 'video' or 'scene'. " +
+            "Provide EXACTLY 4 English search tags per clip — MAX 2 words each: one GENERAL tag (broad topic/category, e.g. 'world war 2', 'space race'), one SPECIFIC tag (named person, place, or event, e.g. 'hitler nuremberg', 'apollo 11'), and 2 more specific visual/descriptive tags (notable objects, actions, or setting details visible in the frame). Never a meaningless filler word like 'video' or 'scene'. " +
             "Never use a bare generic descriptor (man, woman, person, uniform, clothing) as a tag. If no name is identifiable, use the specific role/occupation instead (officer, soldier, pilot, general, nurse, engineer) — never the generic noun alone.",
         },
         {
@@ -858,9 +858,9 @@ function buildVisionPrompt(
       "Return JSON with:",
       "- title: max 15 words, concrete WHO/WHAT/WHERE in English",
       "- description: 1–2 sentences describing what is visible",
-      "- tags: EXACTLY 2 English search tags (lowercase, 1–2 words each): one GENERAL tag (broad topic/category) and one SPECIFIC tag (named person, place, or event)",
+      "- tags: EXACTLY 4 English search tags (lowercase, 1–2 words each): one GENERAL tag (broad topic/category), one SPECIFIC tag (named person, place, or event), and 2 more specific visual/descriptive tags (notable objects, actions, or setting details visible in the clip)",
       "",
-      "Examples: ['world war 2', 'hitler nuremberg']  |  ['amsterdam', 'canal bikes']  |  ['space race', 'apollo 11']",
+      "Examples: ['world war 2', 'hitler nuremberg', 'podium speech', 'nazi salute']  |  ['amsterdam', 'canal bikes', 'cyclist crowd', 'bridge crossing']  |  ['space race', 'apollo 11', 'saturn v rocket', 'mission control']",
       "Avoid meaningless filler words: person, city, success, business, modern, historical, scene, footage.",
       "General tag = the broad topic a search would use. Specific tag = the named subject/place/event in this exact clip.",
       "Unnamed person → use their role/occupation (officer, soldier, pilot, nurse), never a bare noun like 'man'/'woman' or clothing item like 'uniform'.",
@@ -881,12 +881,13 @@ function buildVisionPrompt(
     "title: max 15 words, concrete WHO/WHAT/WHERE (e.g. 'Hitler speech Nuremberg 1934' or 'D-Day soldiers Omaha Beach 1944'). No filename.",
     "description: 2–3 sentences: visible action + location + era.",
     "",
-    "tags: EXACTLY 2 English search tags (lowercase, MAX 2 words each). MOST IMPORTANT OUTPUT.",
+    "tags: EXACTLY 4 English search tags (lowercase, MAX 2 words each). MOST IMPORTANT OUTPUT.",
     "1. GENERAL tag: the broad topic/category this clip belongs to — 'world war 2', 'space race', 'cold war'",
     "2. SPECIFIC tag: the most findable named person, place, or event in THIS clip — 'hitler nuremberg', 'apollo 11', 'berlin wall'",
+    "3–4. Two more specific visual/descriptive tags: notable objects, actions, or setting details actually visible in the frame (e.g. 'tank column', 'aerial bombing', 'press conference').",
     "MAX 2 words per tag. Never use a meaningless filler word alone: person, city, scene, footage.",
     "If no name is identifiable for the SPECIFIC tag, use the person's role/occupation instead of a generic descriptor — 'officer' or 'soldier', never 'man'; 'nurse', never 'woman'; never a bare clothing word like 'uniform'.",
-    "Examples: ['world war 2', 'hitler nuremberg']  |  ['cold war', 'berlin wall']  |  ['space race', 'apollo 11 launch']  |  ['world war 2', 'german officer']",
+    "Examples: ['world war 2', 'hitler nuremberg', 'podium speech', 'nazi salute']  |  ['cold war', 'berlin wall', 'checkpoint charlie', 'border guard']  |  ['space race', 'apollo 11 launch', 'saturn v rocket', 'mission control']",
     "",
     "Also fill structured fields:",
     "- persons: named individuals clearly visible or strongly implied",
