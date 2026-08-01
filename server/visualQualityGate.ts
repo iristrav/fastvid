@@ -342,7 +342,13 @@ async function scoreClipAcrossFrames(
   fastMode: boolean,
   queryEmb?: number[] | null,
   shortVideo = false
-): Promise<{ pass: boolean; worstScore: number | null; framesScored: number }> {
+): Promise<{
+  pass: boolean;
+  worstScore: number | null;
+  framesScored: number;
+  /** Which qualitative check(s) failed — score can pass while these still reject the clip. */
+  failFlags?: { matchesNarration: boolean; showsSubject: boolean; wrongSubject: boolean; wellFramed: boolean };
+}> {
   const tag = `s${sceneIndex}b${beatIndex} clip=${path.basename(clipPath)}`;
 
   const assetId = curatedClipPathAssetId(clipPath);
@@ -442,7 +448,17 @@ async function scoreClipAcrossFrames(
 
         if (primaryPass) return { pass: true, worstScore: primaryScore10, framesScored: 1 };
         if (primaryScore10 < cascadeVisionExpandBelow(minScore) || primaryResult.wrongSubject) {
-          return { pass: false, worstScore: primaryScore10, framesScored: 1 };
+          return {
+            pass: false,
+            worstScore: primaryScore10,
+            framesScored: 1,
+            failFlags: {
+              matchesNarration: primaryResult.matchesNarration,
+              showsSubject: primaryResult.showsSubject,
+              wrongSubject: primaryResult.wrongSubject,
+              wellFramed: primaryResult.wellFramed,
+            },
+          };
         }
       }
     }
@@ -478,7 +494,19 @@ async function scoreClipAcrossFrames(
     worstScore10 >= minScore &&
     result.score >= minScore;
 
-  return { pass, worstScore: worstScore10, framesScored: result.framesScored };
+  return {
+    pass,
+    worstScore: worstScore10,
+    framesScored: result.framesScored,
+    failFlags: pass
+      ? undefined
+      : {
+          matchesNarration: result.matchesNarration,
+          showsSubject: result.showsSubject,
+          wrongSubject: result.wrongSubject,
+          wellFramed: result.wellFramed,
+        },
+  };
 }
 
 export type VisionGateResult = {
@@ -534,19 +562,25 @@ export async function evaluateClipVisionGate(
       clipPath, beatText, visualDescription, videoTitle, workDir,
       sceneIndex, beatIndex, minScore, fastMode, queryEmb, shortVideo
     ),
-    new Promise<{ pass: boolean; worstScore: null; framesScored: number }>((_, reject) =>
+    new Promise<{ pass: boolean; worstScore: null; framesScored: number; failFlags: undefined }>((_, reject) =>
       setTimeout(() => reject(new Error(`[VisionGate] TIMEOUT scoreClipAcrossFrames after 30s s${sceneIndex}b${beatIndex}`)), 30_000)
     ),
   ]).catch((err: Error) => {
     console.warn(err.message);
-    return { pass: true, worstScore: null, framesScored: 0 };
+    return { pass: true, worstScore: null, framesScored: 0, failFlags: undefined };
   });
   console.log(`[VisionGate] AFTER scoreClipAcrossFrames s${sceneIndex}b${beatIndex} pass=${result.pass} in ${Date.now() - scoreT0}ms`);
 
   if (!result.pass) {
+    const failFlagsStr = result.failFlags
+      ? ` — failed: ${Object.entries(result.failFlags)
+          .filter(([k, v]) => (k === "wrongSubject" ? v === true : v === false))
+          .map(([k]) => k)
+          .join(", ") || "score below threshold"}`
+      : "";
     console.warn(
       `[LocalVision] Scene ${sceneIndex} beat ${beatIndex}: reject "${path.basename(clipPath)}" ` +
-        `(${result.framesScored} frames, worst=${result.worstScore ?? "?"}/10 avg needed ≥${minScore})`
+        `(${result.framesScored} frames, worst=${result.worstScore ?? "?"}/10 avg needed ≥${minScore})${failFlagsStr}`
     );
   }
   rememberVisionGateResult(cacheKey, result.pass);
