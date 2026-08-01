@@ -1146,10 +1146,10 @@ export function ArchiveClipsGrid({
     setAutoTitleProgress({ done: 0, total: resolvedIds.length });
     setAutoTitleReport({
       kind: "running",
-      message: `AI titles + tags bezig voor ${label}…`,
+      message: `AI titles + 4 tags bezig voor ${label}…`,
       detail: "Dit duurt ~30–60 seconden per clip. Bestaande tags worden vervangen.",
     });
-    const loadingToast = toast.loading(`AI titles + tags (${resolvedIds.length} clips)…`);
+    const loadingToast = toast.loading(`AI titles + 4 tags (${resolvedIds.length} clips)…`);
     let updated = 0;
     let skipped = 0;
     let failed = 0;
@@ -1211,7 +1211,7 @@ export function ArchiveClipsGrid({
       } else {
         setAutoTitleReport({
           kind: "done",
-          message: `${updated} clip(s) bijgewerkt (titel + tags)`,
+          message: `${updated} clip(s) bijgewerkt (titel + max 4 tags)`,
           detail: outcomeDetail || "Titels en tags zijn opgeslagen",
         });
         toast.success(`${updated} clip(s) bijgewerkt`, {
@@ -1585,8 +1585,8 @@ export function ArchiveClipsGrid({
             {autoTitleRunning && autoTitleProgress
               ? `AI ${autoTitleProgress.done}/${autoTitleProgress.total}`
               : selectedCount > 0
-                ? `AI titles + tags (${selectedCount})`
-                : "AI titles + tags"}
+                ? `AI titles + 4 tags (${selectedCount})`
+                : "AI titles + 4 tags"}
           </button>
         )}
         {assets.length > 0 && (
