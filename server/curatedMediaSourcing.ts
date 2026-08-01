@@ -1570,8 +1570,14 @@ async function trimVideoClip(
   );
 
   const outDur = await probeMediaDurationSec(outPath);
+  if (outDur < VIDRUSH_MIN_SOURCE_VIDEO_SEC) {
+    throw new Error(`trimmed clip too short (${outDur.toFixed(2)}s < ${VIDRUSH_MIN_SOURCE_VIDEO_SEC.toFixed(2)}s)`);
+  }
   if (outDur < take * 0.8) {
-    throw new Error(`trimmed clip too short (${outDur.toFixed(2)}s < ${take.toFixed(2)}s)`);
+    // Short of the requested duration but still usable — accept it and let
+    // padShortClipWithNext (videoPipeline.ts) stitch on the remainder rather
+    // than discarding a perfectly good, on-topic clip.
+    console.warn(`[CuratedTrim] clip shorter than requested (${outDur.toFixed(2)}s < ${take.toFixed(2)}s) — accepting, will pad`);
   }
 }
 
