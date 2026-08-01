@@ -69,11 +69,9 @@ async function autoTitleSingleAsset(
       return { result: "skipped_missing_asset" };
     }
 
-    if (!force) {
-      const existingTags = normalizeMediaTags(asset.tags ?? []);
-      if (existingTags.length > 0) {
-        return { result: "skipped_has_tags" };
-      }
+    const existingTags = normalizeMediaTags(asset.tags ?? []);
+    if (!force && existingTags.length >= 4) {
+      return { result: "skipped_has_tags" };
     }
 
     const loaded = await loadArchiveAssetFile(asset);
@@ -92,7 +90,7 @@ async function autoTitleSingleAsset(
         loaded.result.mimeType,
         {
           archiveNicheTags: nicheTags,
-          userTags: normalizeMediaTags(asset.tags ?? []),
+          userTags: existingTags,
           clipLabel: `archive clip ${asset.id}`,
         },
         { bulk: true }
@@ -110,13 +108,14 @@ async function autoTitleSingleAsset(
         };
       }
 
+      // Merge (not replace) — top existing tags up toward 4 instead of discarding them.
       const fields = applySharedAiToClipFields({
         baseTitle: ai.metadata.title,
-        userTags: [],
+        userTags: existingTags,
         sourceNote: asset.sourceNote ?? null,
         ai: ai.metadata,
         userProvidedTitle: false,
-        replaceTags: true,
+        replaceTags: false,
       });
 
       await updateMediaArchiveAsset(asset.id, {
