@@ -21,7 +21,7 @@
  *   30 scenes → ~$0.090
  */
 import { createHash } from "crypto";
-import { exec as execCb } from "child_process";
+import { exec as execCb, execFile as execFileCb } from "child_process";
 import { promisify } from "util";
 import * as fs from "fs";
 import * as path from "path";
@@ -454,6 +454,11 @@ const resolveFFmpegBin = (): string => {
 };
 let FFMPEG_BIN: string = resolveFFmpegBin();
 
+// Fallback binary list for the execFileRaw-based luma probes — mirrors FFPROBE_PATHS. exec()
+// normally handles "binary not found" fallback itself, but the luma probes bypass exec() (to
+// skip its /bin/sh wrapper), so they need their own small fallback loop.
+const FFMPEG_PATHS = (): string[] => [FFMPEG_BIN, "/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "ffmpeg"];
+
 function resolveFFprobeBin(): string {
   const envPath = process.env.FFPROBE_BIN || "";
   if (envPath && fs.existsSync(envPath) && testBinary(envPath)) {
@@ -502,11 +507,14 @@ async function isValidVideoFile(filePath: string): Promise<boolean> {
   if (size < 1000) return false;
   for (const probePath of FFPROBE_PATHS()) {
     try {
-      const p = execRaw(
-        `"${probePath}" -v error -select_streams v:0 -show_entries stream=codec_type -of default=noprint_wrappers=1:nokey=1 "${filePath}"`
-      );
+      const p = execFileRaw(probePath, [
+        "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=codec_type",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        filePath,
+      ]);
       const { stdout } = await withTimeout(p, 8_000, `isValidVideoFile ${path.basename(filePath)}`);
-      if (stdout.trim().includes("video")) return true;
+      if (stdout.toString().trim().includes("video")) return true;
     } catch {
       /* try next probe binary */
     }
@@ -526,11 +534,15 @@ async function probeVideoStreamMeta(
   if (!fs.existsSync(filePath)) return null;
   for (const probePath of FFPROBE_PATHS()) {
     try {
-      const p = execRaw(
-        `"${probePath}" -v error -select_streams v:0 -show_entries stream=width,height,duration -of default=noprint_wrappers=1:nokey=1 "${filePath}"`
-      );
+      const p = execFileRaw(probePath, [
+        "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=width,height,duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        filePath,
+      ]);
       const { stdout } = await withTimeout(p, 8_000, `probeVideoStreamMeta ${path.basename(filePath)}`);
       const lines = stdout
+        .toString()
         .trim()
         .split("\n")
         .map((l) => l.trim())
@@ -647,6 +659,50 @@ const execRaw = (cmd: string): Promise<{ stdout: string; stderr: string }> & { c
       fetchScope?.children.add(child);
     }
   }) as Promise<{ stdout: string; stderr: string }> & { childProcess?: import("child_process").ChildProcess };
+  p.childProcess = child;
+  return p;
+};
+
+// Spawns a binary directly via execFile — no /bin/sh wrapper, so it costs one OS process
+// instead of two (the shell plus whatever it execs into). Same scene-fetch-scope/watchdog
+// registration as execRaw, so timeout-driven orphan-killing still works. Reserved for the
+// handful of highest-volume probe calls (isValidVideoFile, probeVideoStreamMeta,
+// probeClipMeanLuma, probeClipRegionMeanLuma) where that saved process meaningfully reduces
+// fork pressure under a container's pids.max ceiling — not a blanket replacement for exec(),
+// which still needs shell-string command building at its ~90 other call sites.
+const execFileRaw = (
+  bin: string,
+  args: string[]
+): Promise<{ stdout: Buffer; stderr: Buffer }> & { childProcess?: import("child_process").ChildProcess } => {
+  if (sceneFetchScopeStorage.getStore()?.controller.signal.aborted) {
+    throw new Error(`[SceneFetchScope] Aborted — skipping: ${bin} ${args.slice(0, 4).join(" ")}`);
+  }
+  let child: import("child_process").ChildProcess | undefined;
+  const fetchScope = sceneFetchScopeStorage.getStore();
+  // `nice` execs into its target in-place (no extra process), same as the shell-string path.
+  const [spawnBin, spawnArgs] =
+    process.platform === "linux" ? ["nice", ["-n", "10", bin, ...args]] : [bin, args];
+  const p = new Promise<{ stdout: Buffer; stderr: Buffer }>((resolve, reject) => {
+    child = execFileCb(
+      spawnBin,
+      spawnArgs,
+      { maxBuffer: 64 * 1024 * 1024, encoding: "buffer" },
+      (err, stdout, stderr) => {
+        if (child) fetchScope?.children.delete(child);
+        if (err) {
+          (err as NodeJS.ErrnoException & { stdout?: Buffer; stderr?: Buffer }).stdout = stdout as unknown as Buffer;
+          (err as NodeJS.ErrnoException & { stdout?: Buffer; stderr?: Buffer }).stderr = stderr as unknown as Buffer;
+          reject(err);
+        } else {
+          resolve({ stdout: stdout as unknown as Buffer, stderr: stderr as unknown as Buffer });
+        }
+      }
+    );
+    if (child) {
+      get_activeWatchdog()?.trackChild(child);
+      fetchScope?.children.add(child);
+    }
+  }) as Promise<{ stdout: Buffer; stderr: Buffer }> & { childProcess?: import("child_process").ChildProcess };
   p.childProcess = child;
   return p;
 };
@@ -9806,18 +9862,25 @@ function isPipelineFallbackClip(filePath: string): boolean {
 }
 
 async function probeClipMeanLuma(filePath: string, atSec: number): Promise<number | null> {
-  try {
-    const lumCmd =
-      `"${FFMPEG_BIN}" -y -threads 1 -ss ${atSec.toFixed(2)} -i "${filePath}" -vframes 1 -vf "scale=64:36,format=gray" -f rawvideo -`;
-    const { stdout } = await withSceneFetchTimeout(() => exec(lumCmd), 10_000, `luma ${path.basename(filePath)}@${atSec}`);
-    const buf = Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout ?? "", "binary");
-    if (buf.length === 0) return null;
-    let sum = 0;
-    for (let i = 0; i < buf.length; i++) sum += buf[i];
-    return sum / buf.length;
-  } catch {
-    return null;
+  for (const bin of FFMPEG_PATHS()) {
+    try {
+      const { stdout: buf } = await withSceneFetchTimeout(
+        () => execFileRaw(bin, [
+          "-y", "-threads", "1", "-ss", atSec.toFixed(2), "-i", filePath,
+          "-vframes", "1", "-vf", "scale=64:36,format=gray", "-f", "rawvideo", "-",
+        ]),
+        10_000,
+        `luma ${path.basename(filePath)}@${atSec}`
+      );
+      if (buf.length === 0) return null;
+      let sum = 0;
+      for (let i = 0; i < buf.length; i++) sum += buf[i];
+      return sum / buf.length;
+    } catch {
+      /* try next ffmpeg binary */
+    }
   }
+  return null;
 }
 
 async function probeClipRegionMeanLuma(
@@ -9831,18 +9894,25 @@ async function probeClipRegionMeanLuma(
       : region === "right"
         ? "crop=iw/8:ih:iw-iw/8:0"
         : "crop=iw/3:ih/3:iw/3:ih/3";
-  try {
-    const lumCmd =
-      `"${FFMPEG_BIN}" -y -threads 1 -ss ${atSec.toFixed(2)} -i "${filePath}" -vframes 1 -vf "${crop},scale=32:32,format=gray" -f rawvideo -`;
-    const { stdout } = await withSceneFetchTimeout(() => exec(lumCmd), 10_000, `luma ${path.basename(filePath)}@${atSec}:${region}`);
-    const buf = Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout ?? "", "binary");
-    if (buf.length === 0) return null;
-    let sum = 0;
-    for (let i = 0; i < buf.length; i++) sum += buf[i];
-    return sum / buf.length;
-  } catch {
-    return null;
+  for (const bin of FFMPEG_PATHS()) {
+    try {
+      const { stdout: buf } = await withSceneFetchTimeout(
+        () => execFileRaw(bin, [
+          "-y", "-threads", "1", "-ss", atSec.toFixed(2), "-i", filePath,
+          "-vframes", "1", "-vf", `${crop},scale=32:32,format=gray`, "-f", "rawvideo", "-",
+        ]),
+        10_000,
+        `luma ${path.basename(filePath)}@${atSec}:${region}`
+      );
+      if (buf.length === 0) return null;
+      let sum = 0;
+      for (let i = 0; i < buf.length; i++) sum += buf[i];
+      return sum / buf.length;
+    } catch {
+      /* try next ffmpeg binary */
+    }
   }
+  return null;
 }
 
 /** Source has baked-in black pillar/letterbox bars (not our gray pad). */
@@ -10293,7 +10363,9 @@ async function montageClipPassesComposeGate(
       const startLuma = await probeClipMeanLuma(clipPath, trimStart + 0.08);
       if (startLuma !== null && startLuma < 14) return false;
       if (strictNoVisualRepeat()) {
-        const probed = await probeVideoDurationSec(clipPath);
+        // Reuse the duration already probed above (meta.durationSec) instead of re-probing the
+        // same file with a second ffmpeg process — saves one subprocess per gate-check here.
+        const probed = meta.durationSec;
         if (probed > 0.15 && probed < archiveVisualMinClipSec() - 0.5) return false;
         const midAt =
           trimStart + Math.min(Math.max(1.0, probed * 0.4), Math.max(0.5, probed - 0.25));
