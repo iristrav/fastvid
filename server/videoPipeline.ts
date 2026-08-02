@@ -748,41 +748,58 @@ const execRaw = (cmd: string): Promise<{ stdout: string; stderr: string }> & { c
 // probeClipMeanLuma, probeClipRegionMeanLuma) where that saved process meaningfully reduces
 // fork pressure under a container's pids.max ceiling — not a blanket replacement for exec(),
 // which still needs shell-string command building at its ~90 other call sites.
-const execFileRaw = (
+//
+// Gated behind ffmpegSemaphore just like exec() — this was missing originally, which meant
+// these probe calls could burst past the container's pids.max ceiling independently of every
+// other subsystem's concurrency cap. Live logs showed the result: hundreds of distinct, almost
+// certainly-fine archive assets in a row all failing probeVideoStreamMeta (real per-call wall
+// time, not the instant abort-cascade no-op) — the exact fork-pressure signature the semaphore
+// exists to prevent, just silently swallowed into "unusable stream" here instead of a loud
+// EAGAIN. Note: unlike the old sync version, the returned promise no longer exposes
+// .childProcess synchronously (it doesn't exist until a semaphore slot is granted) — no current
+// caller reads it; withTimeout's orphan-kill fast path degrades to a no-op for these calls, same
+// as it already does for exec()'s ~90 semaphore-gated call sites, and scope-based cleanup
+// (fetchScope.children) still works since that registration happens at actual-spawn time.
+const execFileRaw = async (
   bin: string,
   args: string[]
-): Promise<{ stdout: Buffer; stderr: Buffer }> & { childProcess?: import("child_process").ChildProcess } => {
+): Promise<{ stdout: Buffer; stderr: Buffer }> => {
   if (sceneFetchScopeStorage.getStore()?.controller.signal.aborted) {
     throw new Error(`[SceneFetchScope] Aborted — skipping: ${bin} ${args.slice(0, 4).join(" ")}`);
   }
-  let child: import("child_process").ChildProcess | undefined;
-  const fetchScope = sceneFetchScopeStorage.getStore();
-  // `nice` execs into its target in-place (no extra process), same as the shell-string path.
-  const [spawnBin, spawnArgs] =
-    process.platform === "linux" ? ["nice", ["-n", "10", bin, ...args]] : [bin, args];
-  const p = new Promise<{ stdout: Buffer; stderr: Buffer }>((resolve, reject) => {
-    child = execFileCb(
-      spawnBin,
-      spawnArgs,
-      { maxBuffer: 64 * 1024 * 1024, encoding: "buffer" },
-      (err, stdout, stderr) => {
-        if (child) fetchScope?.children.delete(child);
-        if (err) {
-          (err as NodeJS.ErrnoException & { stdout?: Buffer; stderr?: Buffer }).stdout = stdout as unknown as Buffer;
-          (err as NodeJS.ErrnoException & { stdout?: Buffer; stderr?: Buffer }).stderr = stderr as unknown as Buffer;
-          reject(err);
-        } else {
-          resolve({ stdout: stdout as unknown as Buffer, stderr: stderr as unknown as Buffer });
-        }
-      }
-    );
-    if (child) {
-      get_activeWatchdog()?.trackChild(child);
-      fetchScope?.children.add(child);
+  return ffmpegSemaphore.run(() => {
+    // Re-check: this call may have sat queued long enough for its own scope to time out and
+    // be abandoned in the meantime — don't spawn a process nobody's waiting for anymore.
+    if (sceneFetchScopeStorage.getStore()?.controller.signal.aborted) {
+      throw new Error(`[SceneFetchScope] Aborted while queued — skipping: ${bin} ${args.slice(0, 4).join(" ")}`);
     }
-  }) as Promise<{ stdout: Buffer; stderr: Buffer }> & { childProcess?: import("child_process").ChildProcess };
-  p.childProcess = child;
-  return p;
+    let child: import("child_process").ChildProcess | undefined;
+    const fetchScope = sceneFetchScopeStorage.getStore();
+    // `nice` execs into its target in-place (no extra process), same as the shell-string path.
+    const [spawnBin, spawnArgs] =
+      process.platform === "linux" ? ["nice", ["-n", "10", bin, ...args]] : [bin, args];
+    return new Promise<{ stdout: Buffer; stderr: Buffer }>((resolve, reject) => {
+      child = execFileCb(
+        spawnBin,
+        spawnArgs,
+        { maxBuffer: 64 * 1024 * 1024, encoding: "buffer" },
+        (err, stdout, stderr) => {
+          if (child) fetchScope?.children.delete(child);
+          if (err) {
+            (err as NodeJS.ErrnoException & { stdout?: Buffer; stderr?: Buffer }).stdout = stdout as unknown as Buffer;
+            (err as NodeJS.ErrnoException & { stdout?: Buffer; stderr?: Buffer }).stderr = stderr as unknown as Buffer;
+            reject(err);
+          } else {
+            resolve({ stdout: stdout as unknown as Buffer, stderr: stderr as unknown as Buffer });
+          }
+        }
+      );
+      if (child) {
+        get_activeWatchdog()?.trackChild(child);
+        fetchScope?.children.add(child);
+      }
+    });
+  });
 };
 
 // "Resource temporarily unavailable" (EAGAIN) when opening a decoder, and "Cannot fork"
