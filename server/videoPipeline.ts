@@ -17996,10 +17996,18 @@ async function ensureBeatVisualFilled(
   dedup: VisualDedupState,
   pushClip: (clipPath: string, holdSec?: number) => boolean | Promise<boolean>,
   semanticProfile?: BeatSemanticProfile,
-  holdSec = beat.holdSec
+  holdSec = beat.holdSec,
+  // Set by callers that already tried fillBeatVisual themselves and got false back — avoids
+  // re-running the full archive/Wikimedia/stock search (each with its own multi-attempt retry
+  // loop) a second time for a beat that just failed it, which was compounding into extremely
+  // long per-beat stalls on struggling beats (repeated identical low-score archive searches).
+  alreadyTriedFillBeatVisual = false
 ): Promise<void> {
   if (skipComposeNetworkFetch(dedup, "beat visual fill", scene.index, beat.index)) return;
-  if (await fillBeatVisual(beat, scene, workDir, videoTitle, dedup, pushClip, semanticProfile, holdSec)) {
+  if (
+    !alreadyTriedFillBeatVisual &&
+    (await fillBeatVisual(beat, scene, workDir, videoTitle, dedup, pushClip, semanticProfile, holdSec))
+  ) {
     return;
   }
   if (visualSourcingTurbo(dedup) && canUseLicensedStockBeat(dedup)) {
@@ -18885,7 +18893,9 @@ async function fetchArchiveSentenceMontage(
             videoTitle,
             dedup,
             pushClip,
-            semanticProfiles.get(bi)
+            semanticProfiles.get(bi),
+            beat.holdSec,
+            true // fillBeatVisual already tried and failed just above — skip the redundant re-run
           );
         }
         dedup.visualBeatsCompleted = (dedup.visualBeatsCompleted ?? 0) + 1;
@@ -19027,7 +19037,8 @@ async function refillSceneStrictVoiceMatch(
             dedup,
             pushClip,
             profile,
-            beat.holdSec
+            beat.holdSec,
+            true // fillBeatVisual already tried and failed just above — skip the redundant re-run
           );
         }
       }
