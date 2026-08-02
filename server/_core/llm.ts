@@ -576,6 +576,13 @@ const normalizeResponseFormat = ({
 
 export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
   assertApiKey();
+  const { isLlmBudgetExceeded, llmDailyBudgetUsd } = await import("./llmBudget");
+  if (await isLlmBudgetExceeded()) {
+    throw new Error(
+      `LLM daily spend budget ($${llmDailyBudgetUsd()}) reached — refusing further calls until the ` +
+      `UTC day rolls over. Override with LLM_DAILY_BUDGET_USD, or set LLM_BUDGET_ENFORCE=false to disable.`
+    );
+  }
 
   const {
     messages,
@@ -632,6 +639,10 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
         const wantsJson = !!(responseFormat ?? response_format ?? outputSchema ?? output_schema);
         const result = await invokeAnthropic(messages, apiKey, model, maxTokens ?? 8192, wantsJson);
         if (i > 0) console.log(`[LLM] Succeeded via anthropic after ${chain[0]} failure`);
+        if (result.usage) {
+          const { recordLlmUsage } = await import("./llmBudget");
+          recordLlmUsage(model, result.usage.prompt_tokens, result.usage.completion_tokens);
+        }
         return result;
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
@@ -697,7 +708,12 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
               (i > 0 ? ` after ${chain[0]} failure` : "")
           );
         }
-        return (await response.json()) as InvokeResult;
+        const result = (await response.json()) as InvokeResult;
+        if (result.usage) {
+          const { recordLlmUsage } = await import("./llmBudget");
+          recordLlmUsage(String(payload.model), result.usage.prompt_tokens, result.usage.completion_tokens);
+        }
+        return result;
       }
 
       const errorText = await response.text();

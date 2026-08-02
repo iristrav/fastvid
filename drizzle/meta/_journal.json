@@ -267,6 +267,13 @@
       "when": 1785700000000,
       "tag": "0037_beat_semantic_cache",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "5",
+      "when": 1785700100000,
+      "tag": "0038_llm_spend_daily",
+      "breakpoints": true
     }
   ]
 }

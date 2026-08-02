@@ -491,6 +491,23 @@ export const beatSemanticCache = mysqlTable("beat_semantic_cache", {
 export type BeatSemanticCacheRow = typeof beatSemanticCache.$inferSelect;
 export type InsertBeatSemanticCacheRow = typeof beatSemanticCache.$inferInsert;
 
+// ─── LLM Daily Spend Tracker ────────────────────────────────────────────────────
+/** One row per UTC calendar day. Accumulates an estimated USD cost (in cents, to
+ *  avoid float drift) across every LLM call from every process (web + all worker
+ *  replicas) so a daily budget can be enforced application-side — provider
+ *  dashboard "hard limits" are not reliably hard-stopping traffic as of 2026. See
+ *  server/_core/llmBudget.ts. */
+export const llmSpendDaily = mysqlTable("llm_spend_daily", {
+  id: int("id").autoincrement().primaryKey(),
+  /** UTC calendar day, "YYYY-MM-DD". Enforced unique at the DB level (see migration). */
+  day: varchar("day", { length: 10 }).notNull(),
+  spentUsdCents: int("spentUsdCents").notNull().default(0),
+  callCount: int("callCount").notNull().default(0),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export type LlmSpendDailyRow = typeof llmSpendDaily.$inferSelect;
+
 // ─── Editorial Review ──────────────────────────────────────────────────────────
 
 export const editorialReviews = mysqlTable(
