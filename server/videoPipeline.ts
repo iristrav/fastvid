@@ -675,6 +675,35 @@ function markWikimediaSearchResult(success: boolean): void {
   }
 }
 
+// Same circuit breaker, same evidence: archive.org's advancedsearch endpoint showed the
+// identical 100%-failure pattern (30 failures, 0 successes) in the same log windows as
+// Wikimedia — timeouts and outright fetch errors, all paying their own 6-10s search cost
+// before giving up on each beat.
+const INTERNET_ARCHIVE_FAILURE_STREAK_TRIP = 8;
+const INTERNET_ARCHIVE_COOLDOWN_MS = 3 * 60_000;
+let internetArchiveFailureStreak = 0;
+let internetArchiveCooldownUntilMs = 0;
+
+function isInternetArchiveInCooldown(): boolean {
+  return Date.now() < internetArchiveCooldownUntilMs;
+}
+
+function markInternetArchiveSearchResult(success: boolean): void {
+  if (success) {
+    internetArchiveFailureStreak = 0;
+    return;
+  }
+  internetArchiveFailureStreak++;
+  if (internetArchiveFailureStreak >= INTERNET_ARCHIVE_FAILURE_STREAK_TRIP) {
+    internetArchiveCooldownUntilMs = Date.now() + INTERNET_ARCHIVE_COOLDOWN_MS;
+    internetArchiveFailureStreak = 0;
+    console.warn(
+      `[Pipeline] Internet Archive: ${INTERNET_ARCHIVE_FAILURE_STREAK_TRIP} consecutive search failures — ` +
+        `skipping for ${Math.round(INTERNET_ARCHIVE_COOLDOWN_MS / 60_000)}min`
+    );
+  }
+}
+
 /** Hard-kill a scope's own children and recursively abort/kill every nested child scope. */
 function hardAbortScope(scope: SceneFetchScope): number {
   scope.controller.abort();
@@ -7476,6 +7505,7 @@ export async function fetchInternetArchiveClips(
   personName = "",
   beatKeywords: string[] = []
 ): Promise<CelebrityClipCandidate[]> {
+  if (isInternetArchiveInCooldown()) return [];
   const results: CelebrityClipCandidate[] = [];
   const queryList = Array.isArray(queries) ? queries : [queries];
   const uniqueQueries = uniqueQueryStrings(queryList);
@@ -7490,7 +7520,11 @@ export async function fetchInternetArchiveClips(
       IS_RAILWAY ? 6_000 : 10_000,
       `Internet Archive search scene ${sceneIndex}`
     );
-    if (!searchResp.ok) continue;
+    if (!searchResp.ok) {
+      markInternetArchiveSearchResult(false);
+      continue;
+    }
+    markInternetArchiveSearchResult(true);
     const searchData = await searchResp.json() as { response?: { docs?: Array<{ identifier: string; title: string }> } };
     const docs = (searchData.response?.docs ?? [])
       .filter((doc) => {
@@ -7564,6 +7598,7 @@ export async function fetchInternetArchiveClips(
       }
     }
     } catch (err) {
+      markInternetArchiveSearchResult(false);
       console.warn(`[Pipeline] Scene ${sceneIndex}: Internet Archive search failed for "${query}":`, (err as Error).message);
     }
   }
@@ -17235,6 +17270,7 @@ async function adoptInternetArchiveBeatClip(
   hydrateSceneBeatInPlace(beat);
   if (skipComposeNetworkFetch(dedup, "Internet Archive", scene.index, beat.index)) return false;
   if (!isGeoDocumentaryContext(beat.text, videoTitle)) return false;
+  if (isInternetArchiveInCooldown()) return false;
 
   const tryClip = async (clipPath: string | null | undefined, sec = holdSec): Promise<boolean> => {
     if (!clipPath || isPipelineFallbackClip(clipPath)) return false;
