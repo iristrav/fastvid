@@ -18704,8 +18704,16 @@ async function retryAuthenticBeforeLicensedStock(
       );
     }
 
+    // adoptArchiveBeatClipWithBudget (strict + relaxed), adoptWikimediaBeatClip videoOnly,
+    // adoptInternetArchiveBeatClip, and adoptWikimediaBeatClip stillsOnly used to be re-tried
+    // here with the exact same params fillBeatVisual's tryArchivePasses/Tier 2/Tier 3 already
+    // ran (and failed) for this beat right before this function runs — the same double-search
+    // stall pattern as the fillBeatVisual/ensureBeatVisualFilled bug, just one level deeper.
+    // adoptArchiveBeatClip (no budget cap) is the one genuinely different attempt, so it's the
+    // only one kept here; everything else falls through to the emergency-stock/rescue tiers.
     if (
-      await adoptArchiveBeatClipWithBudget(
+      !openingVideosOnly &&
+      (await adoptArchiveBeatClip(
         beat,
         scene,
         workDir,
@@ -18715,65 +18723,10 @@ async function retryAuthenticBeforeLicensedStock(
         null,
         holdSec,
         semanticProfile,
-        relaxed,
-        undefined,
-        openingVideosOnly ? { videosOnly: true } : undefined
-      )
+        relaxed
+      ))
     ) {
       return true;
-    }
-    if (
-      await adoptWikimediaBeatClip(
-        beat,
-        scene,
-        workDir,
-        videoTitle,
-        dedup,
-        pushClip,
-        holdSec,
-        semanticProfile,
-        { videoOnly: true }
-      )
-    ) {
-      return true;
-    }
-    if (await adoptInternetArchiveBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
-      return true;
-    }
-    if (!openingVideosOnly) {
-      if (
-        await adoptArchiveBeatClip(
-          beat,
-          scene,
-          workDir,
-          videoTitle,
-          dedup,
-          pushClip,
-          null,
-          holdSec,
-          semanticProfile,
-          relaxed
-        )
-      ) {
-        return true;
-      }
-      if (
-        canUseDocumentaryStill(dedup) &&
-        wikimediaInternetStillsEnabled() &&
-        (await adoptWikimediaBeatClip(
-          beat,
-          scene,
-          workDir,
-          videoTitle,
-          dedup,
-          pushClip,
-          holdSec,
-          semanticProfile,
-          { stillsOnly: true }
-        ))
-      ) {
-        return true;
-      }
     }
     return false;
   }
