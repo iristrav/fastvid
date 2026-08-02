@@ -235,6 +235,23 @@ export async function generateFullVideoInternal(videoId: number, prompt: string,
   return generateFullVideo(videoId, prompt, videoLength, videoType, voiceId, customVoiceoverUrl, enableSubtitles);
 }
 
+// Each full attempt (original + every retry) burns a full run of per-beat LLM calls, TTS, and
+// archive/Wikimedia searches even when it ends up failing — a video that keeps hitting the same
+// wall-clock/quota failure was silently costing real money on every click with no cap. Counted
+// via videos.generationAttempt, which is already bumped on every claim (original run included),
+// so "3" here means the original run plus 2 retries — not 3 retries on top of the original.
+const MAX_VIDEO_ATTEMPTS = 3;
+
+function assertVideoRetryBudgetNotExhausted(video: Video): void {
+  if (video.generationAttempt >= MAX_VIDEO_ATTEMPTS) {
+    throw appTrpcError(
+      "BAD_REQUEST",
+      APP_ERROR.VIDEO_RETRY_INVALID,
+      `Video has already been attempted ${video.generationAttempt} times (max ${MAX_VIDEO_ATTEMPTS}) — retry limit reached`
+    );
+  }
+}
+
 /** Re-run pipeline for a failed/stuck video (reuses saved script when present). */
 export async function retryFailedVideo(
   videoId: number,
@@ -251,6 +268,11 @@ export async function retryFailedVideo(
     ORPHANED_PIPELINE_STATUSES.includes(video.status as (typeof ORPHANED_PIPELINE_STATUSES)[number]);
   if (!retryable) {
     throw new Error(`Video status "${video.status}" is not retryable`);
+  }
+  // force=true is the deliberate internal-endpoint override (key-protected, not exposed to
+  // users) — let it bypass the budget the same way it already bypasses the status check above.
+  if (opts?.force !== true) {
+    assertVideoRetryBudgetNotExhausted(video);
   }
 
   if (video.script?.trim()) {
@@ -1076,6 +1098,7 @@ export const appRouter = router({
       if (!retryable) {
         throw appTrpcError("BAD_REQUEST", APP_ERROR.VIDEO_RETRY_INVALID, "Only failed or stuck videos can be retried");
       }
+      assertVideoRetryBudgetNotExhausted(video);
       const enqueueCheck = await assertUserCanEnqueueVideo(ctx.user.id, video.id);
       if (!enqueueCheck.ok) throwEnqueueError(enqueueCheck);
 
