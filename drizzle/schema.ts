@@ -469,6 +469,28 @@ export const sceneCandidateCache = mysqlTable("scene_candidate_cache", {
 export type SceneCandidateCacheRow = typeof sceneCandidateCache.$inferSelect;
 export type InsertSceneCandidateCacheRow = typeof sceneCandidateCache.$inferInsert;
 
+// ─── Beat Semantic Profile Cache ───────────────────────────────────────────────
+/** One row per (normalised beat text + video title + literal visual, cacheVersion).
+ *  Caches the LLM's structured visual-search extraction (entities, search tiers,
+ *  topic domain) for a beat so identical/near-identical beats — most commonly a
+ *  retry of the same video — don't re-pay for the same LLM call. Mirrors the
+ *  in-process Map cache in semanticVisualMatching.ts, but survives process
+ *  restarts and is shared across worker replicas. */
+export const beatSemanticCache = mysqlTable("beat_semantic_cache", {
+  id: int("id").autoincrement().primaryKey(),
+  /** SHA256 of normalised(beatText + "|" + videoTitle + "|" + cacheVersion). */
+  cacheKey: varchar("cacheKey", { length: 64 }).notNull(),
+  /** Bump to invalidate entries when the extraction prompt/shape changes. */
+  cacheVersion: varchar("cacheVersion", { length: 32 }).notNull(),
+  /** JSON-serialized BeatSemanticProfile. */
+  profileJson: text("profileJson").notNull(),
+  hitCount: int("hitCount").notNull().default(0),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type BeatSemanticCacheRow = typeof beatSemanticCache.$inferSelect;
+export type InsertBeatSemanticCacheRow = typeof beatSemanticCache.$inferInsert;
+
 // ─── Editorial Review ──────────────────────────────────────────────────────────
 
 export const editorialReviews = mysqlTable(
