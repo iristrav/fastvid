@@ -37,7 +37,7 @@ import {
   qualityScoreLabel,
   readQualityReportFromMetadata,
 } from "@shared/videoQuality";
-import { GenerationProgressBar } from "@/components/GenerationProgressBar";
+import { GenerationProgressBar, useSmoothedProgressPercent } from "@/components/GenerationProgressBar";
 
 const VIDEO_LENGTHS = VIDEO_LENGTH_OPTIONS.map((opt) =>
   opt.value === "1" ? { ...opt, label: "1 min (test)" } : opt
@@ -244,9 +244,15 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
   const completedDurationSec =
     currentStatus === "completed" ? readGenerationDurationSec(video) : null;
   const progressPercent = pollData?.progressPercent ?? 0;
+  // Same smoothing GenerationProgressBar applies to its own bar below — without this, the
+  // badge showed the raw backend percent while the bar showed the smoothed one, so the two
+  // could disagree, and the raw value could visibly step backwards between polls whenever a
+  // later pipeline stage reported a lower percent than an earlier stage already had.
+  const rawBadgePct = Math.max(0, Math.min(100, Math.round(progressPercent)));
+  const smoothedBadgePct = useSmoothedProgressPercent(rawBadgePct, isProcessing && rawBadgePct < 100);
   const statusBadgeLabel =
     isProcessing
-      ? `${Math.max(0, Math.min(100, Math.round(progressPercent)))}%`
+      ? `${smoothedBadgePct}%`
       : currentStatus === "completed" && completedDurationSec != null
         ? `Done · ${formatGenerationDuration(completedDurationSec)}`
         : stageInfo.label;
