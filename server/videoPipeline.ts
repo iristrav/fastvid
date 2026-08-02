@@ -5364,6 +5364,39 @@ async function extendLastClip(
   if (!(await isValidVideoFile(lastClipPath))) return null;
   const safeDuration = Math.min(Math.max(beatDuration, 1), 60);
   const out = path.join(workDir, `extend_s${sceneIndex}b${beatIndex}_${Date.now()}.mp4`);
+
+  // A raw stream_loop repeats the exact same footage with zero variation. Over a long hold
+  // (this path only runs when nothing else could be found/padded for the beat) that reads as
+  // a frozen frame, especially for slow archival footage that has little inherent motion —
+  // and it visibly jump-cuts every time the loop restarts. Freeze the clip's first frame and
+  // apply the same Ken Burns zoom already used for AI/archive stills elsewhere instead: one
+  // continuous, intentional-looking zoom for the whole hold, regardless of how static or short
+  // the source clip is. Falls through to the plain loop below if this fails for any reason.
+  const framePath = path.join(workDir, `extend_frame_s${sceneIndex}b${beatIndex}_${Date.now()}.png`);
+  try {
+    await withSceneFetchTimeout(
+      () => exec(`${FFMPEG_BIN} -y -i "${lastClipPath}" -vframes 1 "${framePath}"`),
+      15_000,
+      `extendLastClip-frame s${sceneIndex}b${beatIndex}`
+    );
+    if (fs.existsSync(framePath)) {
+      const kenBurnsFc = buildSimpleKenBurnsVF(safeDuration, false);
+      await withSceneFetchTimeout(
+        () => exec(`${FFMPEG_BIN} ${buildStillEncodeArgs(framePath, out, safeDuration, kenBurnsFc)}`),
+        30_000,
+        `extendLastClip-kenburns s${sceneIndex}b${beatIndex}`
+      );
+      if (await isValidVideoFile(out)) {
+        console.log(`[Retrieval] s${sceneIndex}b${beatIndex}: extendLastClip (Ken Burns freeze) ${path.basename(lastClipPath)} → ${safeDuration.toFixed(1)}s`);
+        return out;
+      }
+    }
+  } catch {
+    /* frame extraction or Ken Burns encode failed — fall through to raw loop below */
+  } finally {
+    try { fs.unlinkSync(framePath); } catch { /* already gone */ }
+  }
+
   try {
     await withSceneFetchTimeout(
       () => exec(
