@@ -594,17 +594,22 @@ type RenderCtx = {
   watchdog: RenderWatchdog | null;
   renderBudget: RenderBudget | null;
   budgetTracker: BudgetTracker | null;
+  /** This render's overall subject — set once script/title are known, read by the last-resort
+   *  guaranteed-clip fallback so it can try a broad archive search for the video's own topic
+   *  instead of ever showing a flat color card. */
+  videoTopic: { videoTitle: string; primaryPerson: string } | null;
 };
 
 const renderCtxStorage = new AsyncLocalStorage<RenderCtx>();
 
 function getRenderCtx(): RenderCtx {
-  return renderCtxStorage.getStore() ?? { watchdog: null, renderBudget: null, budgetTracker: null };
+  return renderCtxStorage.getStore() ?? { watchdog: null, renderBudget: null, budgetTracker: null, videoTopic: null };
 }
 
 // Backward-compat accessors used throughout the file
 function get_activeWatchdog(): RenderWatchdog | null     { return getRenderCtx().watchdog; }
 function get_activeRenderBudget(): RenderBudget | null   { return getRenderCtx().renderBudget; }
+function get_activeVideoTopic() { return getRenderCtx().videoTopic; }
 function get_activeBudgetTracker(): BudgetTracker | null { return getRenderCtx().budgetTracker; }
 // Setters mutate only the current render's context object (safe — no shared state)
 function set_activeRenderBudget(v: RenderBudget | null)   { const c = getRenderCtx(); c.renderBudget = v; }
@@ -5435,6 +5440,43 @@ async function generateGuaranteedBeatClip(
   beatText?: string,
 ): Promise<string> {
   const outputPath = path.join(workDir, `scene_${sceneIndex}_slot${slotIndex}_guaranteed.mp4`);
+
+  // Before ever falling back to a flat color card, try a broad/relaxed archive search for the
+  // video's own overall subject (e.g. "Adolf Hitler") — any reasonably-scoring clip about the
+  // actual topic beats a plain color screen, even when it's not a precise match for this one
+  // beat's sentence. This is a synthetic, minimal beat/scene (no real dedup tracking) — an
+  // occasional repeat of a topical clip here is far better than a guaranteed color card.
+  const topic = get_activeVideoTopic();
+  const topicQuery = topic?.primaryPerson || topic?.videoTitle;
+  if (topicQuery) {
+    try {
+      const topicalClip = await withSceneFetchTimeout(
+        () => fetchCuratedArchiveBeatClip(
+          { keywords: [topicQuery], text: topicQuery, index: slotIndex },
+          { text: topicQuery },
+          workDir,
+          sceneIndex,
+          duration,
+          new Set<number>(),
+          new Set<string>(),
+          topic?.videoTitle,
+          undefined,
+          undefined,
+          undefined,
+          { relaxed: true }
+        ),
+        25_000,
+        `Guaranteed beat topical fallback s${sceneIndex}slot${slotIndex}`
+      );
+      if (topicalClip && (await isValidVideoFile(topicalClip))) {
+        console.log(`[Pipeline] Scene ${sceneIndex} slot ${slotIndex}: topical archive fallback OK (${topicQuery})`);
+        return topicalClip;
+      }
+    } catch {
+      /* archive search failed/timed out — fall through to text-overlay/color below */
+    }
+  }
+
   // Try text-over-gradient when we have context — more informative than a plain color
   if (beatText && beatText.trim().length > 3) {
     try {
@@ -22343,7 +22385,7 @@ export async function runVideoPipeline(
   userPrompt?: string
 ): Promise<string> {
   // Each render gets its own context so concurrent renders never share singleton state.
-  const renderCtx: RenderCtx = { watchdog: null, renderBudget: null, budgetTracker: null };
+  const renderCtx: RenderCtx = { watchdog: null, renderBudget: null, budgetTracker: null, videoTopic: null };
   // runWithActiveVideoId makes videoId readable from ANY module in this render's call tree
   // (including localClipVision.ts, which can't import from here — see exec()'s cancellation
   // check below and videoGenerationCancel.ts for why).
@@ -22411,6 +22453,7 @@ async function _runVideoPipelineInner(
     extractPersonNamesFromText(script)[0] ||
     "";
   const personLocked = Boolean(primaryPerson) || isPersonCelebrityTopic(topicContext);
+  getRenderCtx().videoTopic = { videoTitle, primaryPerson };
 
   console.log(
     `[Pipeline] Video ${videoId}: ${maxScenes} scenes for ${videoLength} min` +
