@@ -17001,6 +17001,7 @@ async function adoptWikimediaBeatClip(
 
   for (const q of geoVideoQueries) {
     if (!wantVideo) break;
+    if (sceneFetchAborted()) break;
     try {
       const wikiVids = await timePipelineStep(
         dedup.stepTiming,
@@ -17094,6 +17095,7 @@ async function adoptWikimediaBeatClip(
       ];
 
   for (let ai = 0; ai < attempts.length; ai++) {
+    if (sceneFetchAborted()) break;
     const attempt = attempts[ai]!;
     try {
       const wikiClip = await timePipelineStep(
@@ -17151,6 +17153,7 @@ async function adoptWikimediaBeatClip(
     3
   ).slice(0, geoDoc ? 6 : 4);
   for (const q of openverseQueries) {
+    if (sceneFetchAborted()) break;
     try {
       const ovPaths = await withSceneFetchTimeout(
         () => fetchOpenverseImages(q, holdSec, workDir, scene.index, 1, `wiki${beat.index}ov`, {
