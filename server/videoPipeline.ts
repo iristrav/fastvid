@@ -9639,6 +9639,16 @@ interface VisualDedupState {
   editorialMemory: SceneStyleMemory | null;
   /** Documentary Taste Model context — persists across the full render. */
   tasteModelCtx: TasteModelContext;
+  /** Scene indices that already had a full refillSceneStrictVoiceMatch() pass this render.
+   *  That function redoes an entire scene's beat-fill from scratch — own archive, Wikimedia,
+   *  Internet Archive, Europeana, Openverse, stock, AI — for every beat. Multiple independent
+   *  recovery layers in the pipeline can each call it for the same still-short scene (initial
+   *  P5A retrieval recovery, the shared "empty after fetch" sweep, the final "still short" pass),
+   *  and none of them previously checked whether an earlier layer had already exhausted the
+   *  exact same search space. A scene whose external sources are genuinely down or exhausted
+   *  doesn't get a different answer on a 2nd or 3rd identical attempt minutes later — it just
+   *  pays the full cost again. See refillSceneStrictVoiceMatch's callers. */
+  strictRefillAttemptedScenes: Set<number>;
 }
 
 /**
@@ -9789,6 +9799,7 @@ function createVisualDedupState(
       activeEra: null,
       beatText: "",
     },
+    strictRefillAttemptedScenes: new Set(),
   };
 }
 
@@ -19182,6 +19193,26 @@ async function refillSceneStrictVoiceMatch(
   sceneAudioPath?: string,
   onBeatProgress?: (beatIndex: number, beatTotal: number, phase?: BeatProgressPhase) => void
 ): Promise<SceneVisualsResult> {
+  // Several independent recovery layers elsewhere in the pipeline (P5A retrieval recovery, the
+  // shared "empty after fetch" sweep, the final "still short" pass) can each reach a scene that's
+  // still short and call this same function again — a COMPLETE redo of every beat's fill from
+  // scratch (own archive, Wikimedia, Internet Archive, Europeana, Openverse, stock, AI). A scene
+  // whose external sources are genuinely exhausted or down doesn't get a different answer minutes
+  // later; it just pays the full cost again. Confirmed from live logs: the same beat's external-
+  // source search recurring over a 14+ minute span was multiple distinct, real invocations of this
+  // exact function, not a busy-loop within one. First caller to reach a scene "owns" the one real
+  // attempt; later callers fall through to a cheap guaranteed-clip fill instead.
+  if (dedup.strictRefillAttemptedScenes.has(scene.index)) {
+    console.warn(`[Pipeline] Scene ${scene.index}: strict refill already attempted this render — guaranteed fill instead`);
+    const clips: string[] = [];
+    const beatDurations: number[] = [];
+    await appendGuaranteedSceneClips(
+      scene, workDir, clips, beatDurations,
+      minClipsForBalancedVoice(scene.duration + 0.15, dedup.videoLength)
+    );
+    return { clips, beatDurations };
+  }
+  dedup.strictRefillAttemptedScenes.add(scene.index);
   videoTitle = coerceVisionString(videoTitle);
   const minNeeded = minClipsForBalancedVoice(scene.duration + 0.15, dedup.videoLength);
   const beatSec = archiveVisualBeatSecForVideo(dedup.videoLength);
