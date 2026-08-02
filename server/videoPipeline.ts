@@ -644,6 +644,37 @@ function sceneFetchAborted(): boolean {
   return sceneFetchScopeStorage.getStore()?.controller.signal.aborted ?? false;
 }
 
+// Circuit breaker for commons.wikimedia.org: process-wide (not per-render), same idea as
+// llm.ts's groqCooldownUntilMs. Live logs showed a full render (100+ beats over an hour-plus)
+// with a 0% Wikimedia success rate — every single search either timed out or the fetch itself
+// failed (network-level error, empty reason) — while still paying the full per-query timeout on
+// every single beat that tried it. Once Wikimedia looks down, stop paying that cost: skip it
+// outright for a cooldown window instead of re-discovering "still down" one slow beat at a time.
+const WIKIMEDIA_FAILURE_STREAK_TRIP = 8;
+const WIKIMEDIA_COOLDOWN_MS = 3 * 60_000;
+let wikimediaFailureStreak = 0;
+let wikimediaCooldownUntilMs = 0;
+
+function isWikimediaInCooldown(): boolean {
+  return Date.now() < wikimediaCooldownUntilMs;
+}
+
+function markWikimediaSearchResult(success: boolean): void {
+  if (success) {
+    wikimediaFailureStreak = 0;
+    return;
+  }
+  wikimediaFailureStreak++;
+  if (wikimediaFailureStreak >= WIKIMEDIA_FAILURE_STREAK_TRIP) {
+    wikimediaCooldownUntilMs = Date.now() + WIKIMEDIA_COOLDOWN_MS;
+    wikimediaFailureStreak = 0;
+    console.warn(
+      `[Pipeline] Wikimedia: ${WIKIMEDIA_FAILURE_STREAK_TRIP} consecutive search failures — ` +
+        `skipping for ${Math.round(WIKIMEDIA_COOLDOWN_MS / 60_000)}min`
+    );
+  }
+}
+
 /** Hard-kill a scope's own children and recursively abort/kill every nested child scope. */
 function hardAbortScope(scope: SceneFetchScope): number {
   scope.controller.abort();
@@ -4731,6 +4762,7 @@ async function fetchWikimediaImagesV1(
   videoTitle?: string,
   minThreshold?: number
 ): Promise<string | null> {
+  if (isWikimediaInCooldown()) return null;
   const UA = { "User-Agent": "Fastvid/1.0 (video generation)" };
   const adoptThreshold = minThreshold ?? wikimediaV1AdoptionThreshold(videoTitle, analysis.sentence);
   const queries = buildV1WikimediaQueries(analysis, videoTitle);
@@ -4824,12 +4856,17 @@ async function fetchWikimediaImagesV1(
           5_000,
           `V1 Wikimedia search scene ${sceneIndex}`
         );
-        if (!searchResp.ok) return { query, results: [] as WikiSearchResult[] };
+        if (!searchResp.ok) {
+          markWikimediaSearchResult(false);
+          return { query, results: [] as WikiSearchResult[] };
+        }
         const searchData = await searchResp.json() as {
           query?: { search?: WikiSearchResult[] };
         };
+        markWikimediaSearchResult(true);
         return { query, results: searchData.query?.search ?? [] };
       } catch (err) {
+        markWikimediaSearchResult(false);
         console.warn(`[V1] Wikimedia query "${query}" failed:`, (err as Error).message);
         return { query, results: [] as WikiSearchResult[] };
       }
@@ -6301,6 +6338,7 @@ async function fetchWikimediaVideos(
   beatKeywords: string[] = []
 ): Promise<CelebrityClipCandidate[]> {
   if (!query?.trim()) return [];
+  if (isWikimediaInCooldown()) return [];
   const results: CelebrityClipCandidate[] = [];
   const UA = { "User-Agent": "Fastvid/1.0 (video generation; CC-licensed clips only)" };
   try {
@@ -6308,7 +6346,11 @@ async function fetchWikimediaVideos(
       `https://commons.wikimedia.org/w/api.php?action=query&list=search` +
       `&srsearch=${encodeURIComponent(`${query} filetype:video`)}&srnamespace=6&srlimit=15&format=json&origin=*`;
     const searchResp = await withTimeout(fetch(searchUrl, { headers: UA }), 10_000, `Wikimedia video search scene ${sceneIndex}`);
-    if (!searchResp.ok) return [];
+    if (!searchResp.ok) {
+      markWikimediaSearchResult(false);
+      return [];
+    }
+    markWikimediaSearchResult(true);
     const searchData = await searchResp.json() as { query?: { search?: Array<{ title: string }> } };
     const hits = (searchData.query?.search ?? [])
       .filter((r) => {
@@ -6364,6 +6406,7 @@ async function fetchWikimediaVideos(
       }
     }
   } catch (err) {
+    markWikimediaSearchResult(false);
     console.warn(`[Pipeline] Wikimedia video search failed for scene ${sceneIndex}:`, (err as Error).message);
   }
   return results;
@@ -16918,6 +16961,7 @@ async function adoptWikimediaBeatClip(
 ): Promise<boolean> {
   hydrateSceneBeatInPlace(beat);
   if (skipComposeNetworkFetch(dedup, "Wikimedia", scene.index, beat.index)) return false;
+  if (isWikimediaInCooldown()) return false;
   const wantVideo = !opts?.stillsOnly;
   const wantStills = !opts?.videoOnly;
   const tryClip = async (clipPath: string | null | undefined, sec = holdSec): Promise<boolean> => {
