@@ -18572,31 +18572,55 @@ async function fillBeatVisual(
         return true;
       }
 
-      // ── Tier 2: external authentic sources — Wikimedia video, Internet Archive, Europeana ──
-      if (
-        await adoptWikimediaBeatClip(
-          beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile, { videoOnly: true }
-        )
-      ) {
-        return true;
-      }
-      if (await adoptInternetArchiveBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
-        return true;
-      }
-      if (await adoptEuropeanaBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
-        return true;
-      }
-
-      // ── Tier 3: Wikimedia stills — only when a still image is acceptable (not an opening/video-only beat) ──
-      if (
-        !openingVideosOnly &&
-        canUseDocumentaryStill(dedup) &&
-        wikimediaInternetStillsEnabled() &&
-        (await adoptWikimediaBeatClip(
-          beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile, { stillsOnly: true }
-        ))
-      ) {
-        return true;
+      // ── Tier 2+3: external authentic sources — Wikimedia video/stills, Internet Archive,
+      // Europeana, Openverse. Unlike Tier 1 (bounded by archiveBeatClipRetries/archiveBeatTryTimeoutMs)
+      // this whole tier had no aggregate cap of its own — only individual sub-fetches inside
+      // adoptWikimediaBeatClip carry their own 14-35s timeouts, so a beat that keeps finding
+      // *something* to try (a new query, a new candidate image) could chain through a dozen+ of
+      // those sub-timeouts and burn most of the scene's whole 10-12min budget on one stubborn
+      // beat before ever reaching the much faster stock/AI/rescue tiers below. Capped at this
+      // profile's beatClipTimeoutMs (the same per-beat budget already used elsewhere) so one hard
+      // beat can no longer starve every other beat in the scene of its share of time.
+      try {
+        if (
+          await withSceneFetchTimeout(
+            async () => {
+              if (
+                await adoptWikimediaBeatClip(
+                  beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile, { videoOnly: true }
+                )
+              ) {
+                return true;
+              }
+              if (await adoptInternetArchiveBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
+                return true;
+              }
+              if (await adoptEuropeanaBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
+                return true;
+              }
+              if (
+                !openingVideosOnly &&
+                canUseDocumentaryStill(dedup) &&
+                wikimediaInternetStillsEnabled() &&
+                (await adoptWikimediaBeatClip(
+                  beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile, { stillsOnly: true }
+                ))
+              ) {
+                return true;
+              }
+              return false;
+            },
+            dedup.perf.beatClipTimeoutMs,
+            `Tier2/3 external sources s${scene.index} b${beat.index}`
+          )
+        ) {
+          return true;
+        }
+      } catch (err) {
+        console.warn(
+          `[Pipeline] Scene ${scene.index} beat ${beat.index}: Tier2/3 external sources budget exceeded —`,
+          (err as Error).message?.slice(0, 100)
+        );
       }
     }
   } else {
