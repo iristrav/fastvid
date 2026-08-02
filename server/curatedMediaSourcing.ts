@@ -1675,10 +1675,27 @@ export async function prepareCuratedArchiveClip(
     throw new Error(`curated asset ${asset.id} has baked edit text — skipped`);
   }
 
-  if (asset.mediaType === "image") {
-    await convertImageToKenBurns(rawPath, outPath, duration, sceneIndex, beatIndex, styleContext);
-  } else {
-    await trimVideoClip(rawPath, outPath, duration, beatIndex, styleContext, sceneIndex, beatIndex);
+  const runTrim = () =>
+    asset.mediaType === "image"
+      ? convertImageToKenBurns(rawPath, outPath, duration, sceneIndex, beatIndex, styleContext)
+      : trimVideoClip(rawPath, outPath, duration, beatIndex, styleContext, sceneIndex, beatIndex);
+  try {
+    await runTrim();
+  } catch (err) {
+    // Popular assets are shared across concurrently-running scenes via dedup.materializedArchiveRaw
+    // (rawCache) — but that cache is only reliably populated once the *first* caller's download
+    // finishes and calls .set(). Two scenes that both pick this asset before either has set the
+    // cache entry can each end up on this deterministic rawPath independently, and whichever one
+    // finishes first (and doesn't yet see itself as "shared") deletes it right as the other is
+    // mid-read here. The earlier existsSync retry only covers the window before this trim/convert
+    // call — re-materialize and retry once more if the file vanished from under us during it too.
+    if (!fs.existsSync(rawPath) && (err as Error).message?.includes("No such file or directory")) {
+      await materializeArchiveAsset(asset, rawPath);
+      styleContext?.rawCache?.set(asset.id, rawPath);
+      await runTrim();
+    } else {
+      throw err;
+    }
   }
 
   if (!isSharedRaw) {
