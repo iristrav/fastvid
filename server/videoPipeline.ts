@@ -9046,7 +9046,13 @@ function buildBeatVisualQueryList(
 ): string[] {
   const anchor = resolveBeatScriptVisualAnchor(beatText);
   const beatAnchored = buildGeoStockSearchQueries(beatText, videoTitle);
+  // Person context (e.g. "Adolf Hitler") is resolved once per scene/video, not per beat — many
+  // beats refer to the subject with a pronoun ("he", "his") instead of repeating the name, so
+  // without this a beat like "He then gave the order..." never even tries a person-name query,
+  // missing archive footage that a name match would otherwise score very highly (+200 in
+  // scoreCuratedAsset). Listed first so it always survives the maxQueries cap below.
   const ordered = [
+    ...scenePersons,
     ...anchor.searchSubjects,
     ...beatAnchored.slice(0, 2),
   ].filter((q) => toQueryString(q).length > 2 && !isBlockedStockQuery(toQueryString(q)));
