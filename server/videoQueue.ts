@@ -7,7 +7,7 @@
  */
 
 import { APP_ERROR, appTrpcError } from "@shared/appErrors";
-import { readQueueConfig } from "@shared/videoQueue";
+import { readQueueConfig, shouldRunQueueWorker } from "@shared/videoQueue";
 import type { Video } from "../drizzle/schema";
 import {
   claimQueuedVideo,
@@ -60,6 +60,13 @@ let pollTimer: ReturnType<typeof setInterval> | null = null;
 let tickInFlight = false;
 
 function nudgeQueueWorker(): void {
+  // On a process that isn't supposed to run jobs at all (the web service, when
+  // EMBED_QUEUE_WORKER isn't set), claiming here would immediately re-hit the
+  // "refuse and re-queue" path in _generateVideoWithAI, which itself calls enqueueVideoJob
+  // → nudgeQueueWorker again — a tight, unbounded local loop that claims and re-queues the
+  // same video thousands of times a second without ever actually handing it to the real
+  // worker process. Only tick here when this process is actually allowed to process jobs.
+  if (!shouldRunQueueWorker()) return;
   void processQueueTick();
 }
 
