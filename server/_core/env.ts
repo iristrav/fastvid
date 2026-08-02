@@ -44,9 +44,14 @@ export function resolveLlmProvider(): LlmProvider {
   if (forced === "anthropic" && anthropicKeyFromEnv()) return "anthropic";
   if (forced === "forge" && process.env.BUILT_IN_FORGE_API_KEY?.trim()) return "forge";
   if (process.env.BUILT_IN_FORGE_API_KEY?.trim()) return "forge";
+  // OpenAI first by default: Anthropic billing has repeatedly run out mid-render (confirmed
+  // live — every fresh process re-discovers this the hard way with one wasted, logged failure
+  // before falling back), so trying it first on every process start/restart just burns a call
+  // and a warning for nothing. OpenAI stays the primary provider until Anthropic billing is
+  // sorted; override with LLM_PROVIDER=anthropic (or =groq) if that changes.
+  if (openAiKeyFromEnv()) return "openai";
   if (anthropicKeyFromEnv()) return "anthropic";
   if (groqKeyFromEnv()) return "groq";
-  if (openAiKeyFromEnv()) return "openai";
   return "none";
 }
 
