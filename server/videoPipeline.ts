@@ -704,6 +704,36 @@ function markInternetArchiveSearchResult(success: boolean): void {
   }
 }
 
+// Same breaker, applied preemptively: Europeana wasn't observed failing in the logs audited so
+// far (it's gated behind its own API key + titleSuggestsEuropeana(), so it fires far less often
+// than Wikimedia/Internet Archive), but it's the exact same shape of dependency — an
+// unauthenticated-adjacent external search API with no existing protection against a sustained
+// outage burning the same per-query timeout on every beat that reaches it.
+const EUROPEANA_FAILURE_STREAK_TRIP = 8;
+const EUROPEANA_COOLDOWN_MS = 3 * 60_000;
+let europeanaFailureStreak = 0;
+let europeanaCooldownUntilMs = 0;
+
+function isEuropeanaInCooldown(): boolean {
+  return Date.now() < europeanaCooldownUntilMs;
+}
+
+function markEuropeanaSearchResult(success: boolean): void {
+  if (success) {
+    europeanaFailureStreak = 0;
+    return;
+  }
+  europeanaFailureStreak++;
+  if (europeanaFailureStreak >= EUROPEANA_FAILURE_STREAK_TRIP) {
+    europeanaCooldownUntilMs = Date.now() + EUROPEANA_COOLDOWN_MS;
+    europeanaFailureStreak = 0;
+    console.warn(
+      `[Pipeline] Europeana: ${EUROPEANA_FAILURE_STREAK_TRIP} consecutive search failures — ` +
+        `skipping for ${Math.round(EUROPEANA_COOLDOWN_MS / 60_000)}min`
+    );
+  }
+}
+
 /** Hard-kill a scope's own children and recursively abort/kill every nested child scope. */
 function hardAbortScope(scope: SceneFetchScope): number {
   scope.controller.abort();
@@ -7075,6 +7105,7 @@ async function fetchEuropeanaVideos(
   beatKeywords: string[] = []
 ): Promise<CelebrityClipCandidate[]> {
   if (!europeanaSourcingEnabled() || !EUROPEANA_API_KEY?.trim()) return [];
+  if (isEuropeanaInCooldown()) return [];
   const queryList = uniqueQueryStrings(Array.isArray(queries) ? queries : [queries]);
   if (!queryList.length) return [];
 
@@ -7097,7 +7128,11 @@ async function fetchEuropeanaVideos(
         14_000,
         `Europeana search scene ${sceneIndex}`
       );
-      if (!searchResp.ok) continue;
+      if (!searchResp.ok) {
+        markEuropeanaSearchResult(false);
+        continue;
+      }
+      markEuropeanaSearchResult(true);
       const searchData = await searchResp.json() as {
         items?: Array<{ id?: string; title?: string[]; edmPreview?: string }>;
       };
@@ -7163,6 +7198,7 @@ async function fetchEuropeanaVideos(
         }
       }
     } catch (err) {
+      markEuropeanaSearchResult(false);
       console.warn(`[Pipeline] Europeana search failed scene ${sceneIndex}:`, (err as Error).message);
     }
   }
@@ -17530,6 +17566,7 @@ async function adoptEuropeanaBeatClip(
   semanticProfile?: BeatSemanticProfile
 ): Promise<boolean> {
   if (!europeanaSourcingEnabled() || !EUROPEANA_API_KEY?.trim() || !titleSuggestsEuropeana(videoTitle)) return false;
+  if (isEuropeanaInCooldown()) return false;
 
   const tryClip = async (clipPath: string | null | undefined, sec = holdSec): Promise<boolean> => {
     if (!clipPath || isPipelineFallbackClip(clipPath)) return false;
