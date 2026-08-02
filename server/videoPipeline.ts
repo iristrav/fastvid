@@ -631,6 +631,19 @@ type SceneFetchScope = {
 };
 const sceneFetchScopeStorage = new AsyncLocalStorage<SceneFetchScope>();
 
+// Once a scene/beat's fetch scope is abandoned (its withSceneFetchTimeout fired), every
+// exec()/execFileRaw() call in that scope starts throwing immediately (by design — see
+// hardAbortScope above) — but isValidVideoFile/probeVideoStreamMeta swallow that throw inside
+// their own "try next ffprobe path" catch, turning a scope-wide cancellation into an ordinary
+// per-candidate "unusable stream" rejection. Candidate loops (up to 40+ archive picks per beat)
+// then keep grinding through every remaining candidate — each one a no-op, but the loop has no
+// way to tell "cancelled" apart from "this one candidate is bad" and stop early. Checked at the
+// top of the highest-volume candidate loops so an abandoned beat exits in one step instead of
+// exhausting its whole candidate list against a search that's already given up.
+function sceneFetchAborted(): boolean {
+  return sceneFetchScopeStorage.getStore()?.controller.signal.aborted ?? false;
+}
+
 /** Hard-kill a scope's own children and recursively abort/kill every nested child scope. */
 function hardAbortScope(scope: SceneFetchScope): number {
   scope.controller.abort();
@@ -10427,14 +10440,21 @@ async function montageClipPassesComposeGate(
 
   let resolved = false;
   const work = (async (): Promise<boolean> => {
+    // Scope already abandoned (its withSceneFetchTimeout fired) — every probe below would just
+    // throw immediately and get swallowed as an "unusable stream" false positive. Skip the wasted
+    // probe calls and the noisy per-candidate log line; the caller's loop already logs once that
+    // it's giving up on this beat.
+    if (sceneFetchAborted()) return false;
     if (!(await isValidVideoFile(clipPath))) return false;
     const trimStart = montageClipStartSec(sceneIndex, clipIndex);
     const meta = await probeVideoStreamMeta(clipPath);
     if (!meta || !montageStreamMetaUsable(meta, trimStart)) {
-      console.warn(
-        `[Pipeline] Scene ${sceneIndex} clip ${clipIndex}: unusable stream ${base}` +
-          (meta ? ` (${meta.width}x${meta.height}, ${meta.durationSec.toFixed(2)}s)` : "")
-      );
+      if (!sceneFetchAborted()) {
+        console.warn(
+          `[Pipeline] Scene ${sceneIndex} clip ${clipIndex}: unusable stream ${base}` +
+            (meta ? ` (${meta.width}x${meta.height}, ${meta.durationSec.toFixed(2)}s)` : "")
+        );
+      }
       return false;
     }
     const curatedId = curatedClipPathAssetId(clipPath);
@@ -16295,6 +16315,13 @@ async function adoptBestSimilarBeatClip(
   let bestTitle = "";
 
   for (let i = 0; i < tryCap; i++) {
+    if (sceneFetchAborted()) {
+      console.warn(
+        `[Pipeline] Scene ${scene.index} beat ${beat.index}: fetch scope already timed out — ` +
+          `stopping similar-match search (${tryCap - i} candidates left untried)`
+      );
+      break;
+    }
     const picked = ranked[i]!;
     if (videosOnly && picked.asset.mediaType !== "video") continue;
     if (dedup.usedCuratedAssetIds.has(picked.asset.id)) continue;
@@ -18401,6 +18428,7 @@ async function fillBeatVisual(
     const fastShort = isFastShortVideoLength(dedup.videoLength) && dedup.perf.fastStockMode;
     const maxAttempts = fastShort ? 2 : archiveBeatClipRetries(dedup.perf.fastStockMode);
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      if (sceneFetchAborted()) return false;
       if (
         await adoptArchiveBeatClipWithBudget(
           beat,
