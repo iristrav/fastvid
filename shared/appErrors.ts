@@ -53,6 +53,7 @@ export const PIPELINE_ERROR = {
   FFMPEG_OVERLOAD: 10114,
   GENERIC: 10199,
   QUALITY_GATE: 10115,
+  DISK_SPACE: 10116,
 } as const;
 
 export type AppErrorCode = (typeof APP_ERROR)[keyof typeof APP_ERROR];
