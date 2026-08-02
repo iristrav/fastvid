@@ -79,7 +79,7 @@ function isMuskTeslaPromptTopic(prompt: string, title: string): boolean {
   return /musk|tesla|spacex|starlink|gigafactory|cybertruck|falcon|starship/.test(text);
 }
 
-import { storagePut } from "./storage";
+import { storagePut, storageGetSignedUrl } from "./storage";
 import { FASTVID_PRO_PLAN } from "./products";
 import { processArchiveAssetUpload, ArchiveUploadError } from "./archiveUpload";
 import { archiveAiTaggingEnabled } from "./archiveAssetTagging";
