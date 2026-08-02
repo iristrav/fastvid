@@ -1133,8 +1133,10 @@ export function ArchiveClipsGrid({
       );
     }
 
-    // Filter out clips that already have tags — skip them client-side
-    const taggedIds = new Set(assets.filter((a) => Array.isArray(a.tags) && (a.tags as string[]).length > 0).map((a) => a.id));
+    // Filter out clips that already have 4+ tags — skip them client-side. Must match the
+    // server's own skip threshold (autoTitleSingleAsset skips at >=4, not >0) — clips with
+    // 1-3 tags should still go through so the server can top them up to 4.
+    const taggedIds = new Set(assets.filter((a) => Array.isArray(a.tags) && (a.tags as string[]).length >= 4).map((a) => a.id));
     resolvedIds = resolvedIds.filter((id) => !taggedIds.has(id));
 
     if (resolvedIds.length === 0) {
@@ -1153,16 +1155,17 @@ export function ArchiveClipsGrid({
     let updated = 0;
     let skipped = 0;
     let failed = 0;
-    let lastSkipReasons:
-      | {
-          missingAsset: number;
-          fileMissing: number;
-          downloadFailed: number;
-          noFrames: number;
-          noVision: number;
-          llmFailed: number;
-        }
-      | undefined;
+    // Summed across every chunk — a single chunk's counts (previously kept as "last") could
+    // easily be all-zero even when earlier chunks hit real, informative failures, hiding the
+    // actual reason behind a generic "AI couldn't generate" message.
+    const totalSkipReasons = {
+      missingAsset: 0,
+      fileMissing: 0,
+      downloadFailed: 0,
+      noFrames: 0,
+      noVision: 0,
+      llmFailed: 0,
+    };
     let lastSampleError: string | undefined;
     let lastSampleUpdate: { assetId: number; title: string; tags: string[] } | undefined;
 
@@ -1173,7 +1176,14 @@ export function ArchiveClipsGrid({
         updated += result.updated;
         skipped += result.skipped;
         failed += result.failed;
-        if (result.skipReasons) lastSkipReasons = result.skipReasons;
+        if (result.skipReasons) {
+          totalSkipReasons.missingAsset += result.skipReasons.missingAsset;
+          totalSkipReasons.fileMissing += result.skipReasons.fileMissing;
+          totalSkipReasons.downloadFailed += result.skipReasons.downloadFailed;
+          totalSkipReasons.noFrames += result.skipReasons.noFrames;
+          totalSkipReasons.noVision += result.skipReasons.noVision;
+          totalSkipReasons.llmFailed += result.skipReasons.llmFailed;
+        }
         if (result.sampleError) lastSampleError = result.sampleError;
         if (result.sampleUpdate) lastSampleUpdate = result.sampleUpdate;
         const done = Math.min(i + chunk.length, resolvedIds.length);
@@ -1195,7 +1205,7 @@ export function ArchiveClipsGrid({
         updated,
         skipped,
         failed,
-        skipReasons: lastSkipReasons,
+        skipReasons: totalSkipReasons,
         sampleError: lastSampleError,
         sampleUpdate: lastSampleUpdate,
       });
