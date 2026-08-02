@@ -140,6 +140,13 @@ async function main() {
   console.log("[Worker] Object storage:", getStorageBackend());
   await runMigrations();
   await recoverAllStuckVideos(() => { /* nudge happens after startVideoQueueWorker below */ });
+  // A render killed from outside the process (redeploy, OOM, crash) never reaches its own
+  // finally-block cleanup, leaving its downloaded archive/Wikimedia files behind in /var/tmp.
+  // Sweep on boot (this is exactly when a prior process's abandoned renders would be found) and
+  // every hour thereafter for any that accumulate mid-lifetime from the same failure modes.
+  const { sweepStaleWorkDirs } = await import("./videoPipeline");
+  sweepStaleWorkDirs();
+  setInterval(() => sweepStaleWorkDirs(), 60 * 60_000);
   const { warmUpLocalClipVision, clipPreloadEnabled, getLocalVisionStatus, clipModelCacheDir } =
     await import("./localClipVision");
   let clipReady = false;

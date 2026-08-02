@@ -963,6 +963,95 @@ const CANVAS_AVAILABLE = false; // kept for reference, all functions use FFmpeg-
 const TMP_DIR =
   process.env.FASTVID_TMP_DIR ??
   (process.platform === "win32" ? path.join(os.tmpdir(), "fastvid") : "/var/tmp");
+
+/** Free disk space on TMP_DIR's filesystem, in MB — null if it can't be determined. */
+function availableDiskSpaceMb(dir: string): number | null {
+  try {
+    // -P (POSIX format) + -k (KB) is portable across the coreutils/BusyBox df variants a
+    // container image might ship; parsing the human "-h" column ("1.2G") is fragile by
+    // comparison. Field 4 (0-indexed 3) of the data line is "Available".
+    const out = execSync(`df -Pk "${dir}" 2>/dev/null`, { encoding: "utf8" });
+    const dataLine = out.trim().split("\n")[1];
+    const availableKb = parseInt(dataLine?.trim().split(/\s+/)[3] ?? "", 10);
+    return Number.isFinite(availableKb) ? Math.round(availableKb / 1024) : null;
+  } catch {
+    return null;
+  }
+}
+
+// A render downloads dozens of archive/Wikimedia/Internet Archive candidates (each up to the
+// 50MB archive cap) over its lifetime — discarding most after use, but several can be in flight
+// at once across parallel scenes. Below this, a render is very likely to hit a mid-render ENOSPC
+// write failure after already spending significant time/LLM cost getting there; better to fail
+// fast, clearly, before any of that is spent.
+const MIN_DISK_SPACE_MB = 1024;
+
+/** Fail fast, before any real work starts, if the container is nearly out of disk space. */
+function assertDiskSpaceAvailable(workDir: string, videoId: number): void {
+  const availableMb = availableDiskSpaceMb(workDir);
+  if (availableMb == null) return; // couldn't determine (e.g. df missing) — don't block on it
+  if (availableMb < MIN_DISK_SPACE_MB) {
+    throw pipelineError(
+      PIPELINE_ERROR.DISK_SPACE,
+      `Only ${availableMb}MB free on ${TMP_DIR} (need ${MIN_DISK_SPACE_MB}MB) — refusing to start video ${videoId}`
+    );
+  }
+  if (availableMb < MIN_DISK_SPACE_MB * 3) {
+    console.warn(`[Pipeline] Video ${videoId}: disk space getting low (${availableMb}MB free on ${TMP_DIR})`);
+  }
+}
+
+// Every render's workDir is cleaned up in its own finally block on normal completion — but a
+// render that gets killed from outside the process (a Railway redeploy, an OOM kill, a crashed
+// worker) never reaches that finally, leaving its downloaded archive/Wikimedia files behind.
+// Swept on worker boot and periodically thereafter; the threshold is well past the longest
+// render's own hard wall-clock budget (130min) so this can never touch a still-active render.
+const STALE_WORKDIR_MAX_AGE_MS = 4 * 60 * 60_000; // 4 hours
+
+export function sweepStaleWorkDirs(): { removed: number; freedMb: number } {
+  let removed = 0;
+  let freedBytes = 0;
+  try {
+    if (!fs.existsSync(TMP_DIR)) return { removed: 0, freedMb: 0 };
+    const now = Date.now();
+    for (const entry of fs.readdirSync(TMP_DIR)) {
+      const m = /^fastvid_(?:rerender_)?\d+_(\d+)$/.exec(entry);
+      if (!m) continue;
+      const createdMs = parseInt(m[1]!, 10);
+      if (!Number.isFinite(createdMs) || now - createdMs < STALE_WORKDIR_MAX_AGE_MS) continue;
+      const full = path.join(TMP_DIR, entry);
+      try {
+        const stat = fs.statSync(full);
+        if (!stat.isDirectory()) continue;
+        freedBytes += dirSizeBytes(full);
+        fs.rmSync(full, { recursive: true, force: true });
+        removed++;
+      } catch (err) {
+        console.warn(`[Pipeline] sweepStaleWorkDirs: failed to remove ${entry}:`, (err as Error).message);
+      }
+    }
+  } catch (err) {
+    console.warn("[Pipeline] sweepStaleWorkDirs failed:", (err as Error).message);
+  }
+  const freedMb = Math.round(freedBytes / (1024 * 1024));
+  if (removed > 0) {
+    console.log(`[Pipeline] sweepStaleWorkDirs: removed ${removed} orphaned render dir(s), freed ~${freedMb}MB`);
+  }
+  return { removed, freedMb };
+}
+
+function dirSizeBytes(dir: string): number {
+  let total = 0;
+  try {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      total += entry.isDirectory() ? dirSizeBytes(full) : fs.statSync(full).size;
+    }
+  } catch {
+    /* best-effort — a partially-vanished dir just under-counts */
+  }
+  return total;
+}
 // No Forge key = Railway environment. Confirmed plan: 24 vCPU / 24GB RAM (not the old
 // ~512MB free-tier assumption this flag used to gate conservative defaults around).
 const IS_RAILWAY = !process.env.BUILT_IN_FORGE_API_KEY;
@@ -22545,6 +22634,7 @@ async function _runVideoPipelineInner(
   // the DB call or context-building below throws before Stage 1 begins.
   try {
 
+  assertDiskSpaceAvailable(workDir, videoId);
   const videoRow = await getVideoById(videoId);
   const pipelineWallStartMs = videoRow?.generationStartedAt
     ? new Date(videoRow.generationStartedAt).getTime()
