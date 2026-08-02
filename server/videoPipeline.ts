@@ -5368,33 +5368,31 @@ async function extendLastClip(
   // A raw stream_loop repeats the exact same footage with zero variation. Over a long hold
   // (this path only runs when nothing else could be found/padded for the beat) that reads as
   // a frozen frame, especially for slow archival footage that has little inherent motion —
-  // and it visibly jump-cuts every time the loop restarts. Freeze the clip's first frame and
-  // apply the same Ken Burns zoom already used for AI/archive stills elsewhere instead: one
-  // continuous, intentional-looking zoom for the whole hold, regardless of how static or short
-  // the source clip is. Falls through to the plain loop below if this fails for any reason.
-  const framePath = path.join(workDir, `extend_frame_s${sceneIndex}b${beatIndex}_${Date.now()}.png`);
+  // and it visibly jump-cuts every time the loop restarts. The clip must never actually freeze
+  // on a single still frame (that reads as even more static, not less) — instead, keep the
+  // looped footage's own frames playing normally and layer a slow, continuous zoom on top
+  // (d=1 in zoompan advances one output frame per one real input frame, so nothing is held
+  // static) — a moving crop window over real, changing footage, not a stand-in photo.
   try {
+    const totalFrames = Math.round(safeDuration * 25);
+    const zoomEnd = 1.12;
+    const zoomStep = (zoomEnd - 1) / Math.max(1, totalFrames);
     await withSceneFetchTimeout(
-      () => exec(`${FFMPEG_BIN} -y -i "${lastClipPath}" -vframes 1 "${framePath}"`),
-      15_000,
-      `extendLastClip-frame s${sceneIndex}b${beatIndex}`
+      () => exec(
+        `${FFMPEG_BIN} -y -stream_loop -1 -i "${lastClipPath}" -t ${safeDuration.toFixed(2)} ` +
+        `-vf "scale=${VIDEO_WIDTH * 2}:${VIDEO_HEIGHT * 2}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH * 2}:${VIDEO_HEIGHT * 2},` +
+        `zoompan=z='min(zoom+${zoomStep.toFixed(8)},${zoomEnd})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=25" ` +
+        `-c:v libx264 ${pipelineFfmpegThreadFlag()} -preset veryfast -crf 20 -an -pix_fmt yuv420p -avoid_negative_ts make_zero "${out}"`
+      ),
+      30_000,
+      `extendLastClip-zoom s${sceneIndex}b${beatIndex}`
     );
-    if (fs.existsSync(framePath)) {
-      const kenBurnsFc = buildSimpleKenBurnsVF(safeDuration, false);
-      await withSceneFetchTimeout(
-        () => exec(`${FFMPEG_BIN} ${buildStillEncodeArgs(framePath, out, safeDuration, kenBurnsFc)}`),
-        30_000,
-        `extendLastClip-kenburns s${sceneIndex}b${beatIndex}`
-      );
-      if (await isValidVideoFile(out)) {
-        console.log(`[Retrieval] s${sceneIndex}b${beatIndex}: extendLastClip (Ken Burns freeze) ${path.basename(lastClipPath)} → ${safeDuration.toFixed(1)}s`);
-        return out;
-      }
+    if (await isValidVideoFile(out)) {
+      console.log(`[Retrieval] s${sceneIndex}b${beatIndex}: extendLastClip (zoom, moving) ${path.basename(lastClipPath)} → ${safeDuration.toFixed(1)}s`);
+      return out;
     }
   } catch {
-    /* frame extraction or Ken Burns encode failed — fall through to raw loop below */
-  } finally {
-    try { fs.unlinkSync(framePath); } catch { /* already gone */ }
+    /* zoompan-on-loop failed — fall through to raw loop below */
   }
 
   try {
