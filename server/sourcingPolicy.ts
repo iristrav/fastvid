@@ -973,6 +973,17 @@ export function sceneCandidateCacheEnabled(): boolean {
   return process.env.ENABLE_SCENE_CANDIDATE_CACHE === "true";
 }
 
+/** Persistent Beat Semantic Profile Cache: the in-process Map cache in
+ *  semanticVisualMatching.ts resets on every process restart, so a video retried
+ *  after a redeploy re-pays full LLM cost for every beat's semantic analysis —
+ *  confirmed as a real, non-trivial cost driver (2026-08-02 audit). Unlike the
+ *  other P3 caches above this defaults ON: it's a straightforward cost fix, not
+ *  an experimental feature waiting on ROI proof. Set ENABLE_BEAT_SEMANTIC_CACHE=false
+ *  to opt out. */
+export function beatSemanticCacheEnabled(): boolean {
+  return process.env.ENABLE_BEAT_SEMANTIC_CACHE !== "false";
+}
+
 /** Scene-level Candidate Pool (P1): build ONE candidate pool per scene instead
  *  of one retrieval per beat.  Reduces 108 API calls to ~18.
  *  Requires ENABLE_SCENE_CANDIDATE_POOL=true. */

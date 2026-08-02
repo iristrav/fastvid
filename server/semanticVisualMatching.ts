@@ -2,7 +2,9 @@
  * Semantic visual matching — per-sentence meaning → tiered archive clip selection.
  * Uses LLM entity extraction + embedding similarity (OpenAI) with lexical fallback.
  */
+import { createHash } from "crypto";
 import { invokeLLM } from "./_core/llm";
+import { getCachedBeatProfile, putCachedBeatProfile } from "./beatSemanticCache";
 import { ENV } from "./_core/env";
 import { DOCUMENTARY_EDITOR_VIEWER_QUESTION } from "./documentaryVisualPolicy";
 import {
@@ -363,10 +365,24 @@ export async function analyzeBeatSemantics(
   const cached = profileCache.get(key);
   if (cached) return cached;
 
+  // DB-backed fallback for the in-process cache above: survives redeploys/crashes and is
+  // shared across worker replicas, so a video retried after any of those doesn't re-pay for
+  // LLM analysis this exact beat text already produced (see beatSemanticCache.ts).
+  const dbCacheKey = createHash("sha256").update(key).digest("hex");
+  const dbCached = await getCachedBeatProfile(dbCacheKey);
+  if (dbCached) {
+    capMap(profileCache, PROFILE_CACHE_MAX);
+    profileCache.set(key, dbCached);
+    return dbCached;
+  }
+
   const llm = await analyzeBeatSemanticsWithLlm(beatText, title, literalViewerVisual);
   const profile = llm ?? analyzeBeatSemanticsFallback(beatText, title);
   capMap(profileCache, PROFILE_CACHE_MAX);
   profileCache.set(key, profile);
+  // Only persist genuine LLM results — the heuristic fallback is free to recompute and would
+  // otherwise permanently shadow a later LLM-derived profile once a provider recovers.
+  if (llm) void putCachedBeatProfile(dbCacheKey, profile);
   return profile;
 }
 
