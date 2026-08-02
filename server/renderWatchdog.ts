@@ -19,6 +19,7 @@
  */
 
 import type { ChildProcess } from "child_process";
+import { ffmpegSemaphore } from "./_core/semaphore";
 
 /** Conservative fallback used only before RenderBudget is computed. */
 export const WATCHDOG_RENDER_MAX_MS   = 18 * 60_000;  // 18 min fallback
@@ -130,7 +131,12 @@ export function createRenderWatchdog(videoId: number | string, budgetMs = WATCHD
     if (Math.round(elapsedMs / 1000) % 30 === 0) {
       const activeRetrieve = Object.keys(sceneRetrieveStartMs).length;
       const activeCompose = Object.keys(sceneComposeStartMs).length;
-      console.log(`[Watchdog] video=${videoId} alive ${Math.round(elapsedMs / 1000)}s — retrieve=${activeRetrieve} compose=${activeCompose} children=${children.size}`);
+      // ffmpegSemaphore visibility: this render process previously had no way to see whether
+      // the global ffmpeg/ffprobe concurrency cap (FFMPEG_CONCURRENCY_LIMIT, currently 3) is
+      // actually the bottleneck or has headroom to spare — every past tuning decision on this
+      // value was made blind, from raw EAGAIN counts alone. A sustained high `waiting` count
+      // here is the actual evidence needed before considering raising it again.
+      console.log(`[Watchdog] video=${videoId} alive ${Math.round(elapsedMs / 1000)}s — retrieve=${activeRetrieve} compose=${activeCompose} children=${children.size} ffmpegSem active=${ffmpegSemaphore.active} waiting=${ffmpegSemaphore.waiting}`);
     }
   }, 5_000);
   timer.unref?.();
