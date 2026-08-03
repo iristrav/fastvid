@@ -29,7 +29,7 @@ import * as os from "os";
 import { storagePut } from "./storage";
 import { invokeLLM } from "./_core/llm";
 import { ffmpegSemaphore } from "./_core/semaphore";
-import { getVideoById, updateVideoStatus, updateVideoScenes, mergeVideoMetadata, touchVideoProgress, type EditorScene } from "./db";
+import { getVideoById, updateVideoStatus, updateVideoScenes, mergeVideoMetadata, touchVideoProgress, getMediaArchiveAssetById, type EditorScene } from "./db";
 import { recordArchiveContentGap } from "./archiveContentGaps";
 import pLimit from "p-limit";
 import { generateGrokVideo } from "./_core/grokVideo";
@@ -11226,6 +11226,51 @@ async function renderBatchedArchiveMontage(
   }
 }
 
+/**
+ * Curated archive clip filenames are deterministic (scene+beat+assetId), with no per-call
+ * uniqueness token. Different, independently-running beat-fill/backfill passes each track their
+ * own local "already used" set rather than one shared across the whole video, so two passes can
+ * both pick the same popular asset for what they each think is a still-open beat. Whichever one
+ * loses its own internal candidate race deletes "its" losing file — even when that exact
+ * deterministic path is the file another, already-completed pass already committed into this
+ * scene's clip list. That race can land in the window between composeSceneVideoInner's own
+ * existsSync filter and this segment actually reading the file, so re-derive and regenerate it
+ * on the spot from the asset ID baked into the filename rather than failing the whole scene.
+ */
+async function reviveMissingCuratedMontageClip(
+  clipPath: string,
+  sceneIndex: number,
+  clipIndex: number,
+  holdSec: number
+): Promise<string> {
+  if (fs.existsSync(clipPath) && fs.statSync(clipPath).size > 100) return clipPath;
+  const m = path.basename(clipPath).match(/^scene_(\d+)_b(\d+)_curated_a(\d+)(?:_still)?\.mp4$/i);
+  if (!m) return clipPath;
+  const [, origSceneIndex, beatIndex, assetIdStr] = m;
+  const assetId = Number(assetIdStr);
+  console.warn(
+    `[Pipeline] Scene ${sceneIndex} segment ${clipIndex}: curated clip vanished (asset ${assetId}) — regenerating`
+  );
+  try {
+    const asset = await getMediaArchiveAssetById(assetId);
+    if (!asset) return clipPath;
+    const workDir = path.dirname(clipPath);
+    return await prepareCuratedArchiveClip(
+      asset,
+      workDir,
+      Number(origSceneIndex),
+      Number(beatIndex),
+      holdSec
+    );
+  } catch (err) {
+    console.warn(
+      `[Pipeline] Scene ${sceneIndex} segment ${clipIndex}: regenerate of asset ${assetId} failed:`,
+      (err as Error).message?.slice(0, 150)
+    );
+    return clipPath;
+  }
+}
+
 async function renderSingleMontageSegment(
   clipPath: string,
   sceneIndex: number,
@@ -11237,6 +11282,7 @@ async function renderSingleMontageSegment(
   threadFlag: string,
   segmentBeatText?: string
 ): Promise<number> {
+  clipPath = await reviveMissingCuratedMontageClip(clipPath, sceneIndex, clipIndex, duration);
   let startSec = montageClipStartSec(sceneIndex, clipIndex);
   if (sourceMaxSec > 0.15) {
     startSec = Math.min(startSec, Math.max(0, sourceMaxSec - 0.35));
