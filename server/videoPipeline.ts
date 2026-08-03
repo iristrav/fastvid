@@ -150,7 +150,7 @@ import {
   uniqueCoercedQueries,
 } from "./stringCoercion";
 import { createPipelineProfiler } from "./pipelineProfiler";
-import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, asyncQaEnabled, scenePipelineEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, maxBeatCapForVisualCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, pipelineComposeGraceMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs } from "./sourcingPolicy";
+import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, asyncQaEnabled, scenePipelineEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, maxBeatCapForVisualCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, pipelineComposeGraceMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -350,6 +350,9 @@ const GDELT_TV_API = "https://api.gdeltproject.org/api/v2/tv/tv";
 const GDELT_TV_STATIONS = ["CNN", "FOXNEWS", "MSNBC", "BBCNEWS"] as const;
 const RUNWAY_API_KEY = process.env.RUNWAY_API_KEY || "";
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY || "";
+/** Optional: Google Cloud TTS — free 1M chars/month (Neural2), commercial use allowed. Final
+ *  voiceover fallback tier, after ElevenLabs and Fish Audio. */
+const GOOGLE_TTS_API_KEY = process.env.GOOGLE_TTS_API_KEY || process.env.GOOGLE_CLOUD_TTS_API_KEY || "";
 const LUMA_API_KEY = process.env.LUMA_API_KEY || "";
 const LEONARDO_API_KEY = process.env.LEONARDO_API_KEY || "";
 const PIKA_API_KEY = process.env.PIKA_API_KEY || "";
@@ -3723,11 +3726,100 @@ async function synthesizeFishAudioVoice(
       console.log(`[Pipeline] Fish Audio ${label}: ${dur.toFixed(1)}s`);
       return dur > 0 ? dur : Math.max(3, Math.round(audioBuffer.length / 40000));
     } catch (err) {
-      if (attempt === MAX_ATTEMPTS) throw err;
+      if (attempt === MAX_ATTEMPTS) {
+        // Fish Audio itself is out of retries — Google Cloud TTS is the last tier in the chain
+        // (free 1M chars/month, commercial-use-safe), so try it before giving up entirely.
+        if (googleTtsFallbackEnabled()) {
+          console.warn(`[Pipeline] Fish Audio ${label}: failed after retries — switching to Google Cloud TTS`);
+          return synthesizeGoogleCloudVoice(text, outputPath, timeoutMs, label);
+        }
+        throw err;
+      }
       await new Promise((r) => setTimeout(r, 500));
     }
   }
   throw pipelineError(PIPELINE_ERROR.VOICEOVER, "Fish Audio TTS failed after retries");
+}
+
+async function synthesizeGoogleCloudVoice(
+  text: string,
+  outputPath: string,
+  timeoutMs: number,
+  label: string
+): Promise<number> {
+  if (!GOOGLE_TTS_API_KEY) {
+    throw pipelineError(PIPELINE_ERROR.VOICEOVER, "Google Cloud TTS API key is not configured");
+  }
+  const MAX_ATTEMPTS = 3;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      // X-Goog-Api-Key header (not a ?key= query param) — same reasoning as the Gemini
+      // integration: keeps the key out of URLs that could end up in logs.
+      const response = await fetchWithTimeout(
+        "https://texttospeech.googleapis.com/v1/text:synthesize",
+        timeoutMs,
+        `Google Cloud TTS ${label} attempt ${attempt}`,
+        {
+          method: "POST",
+          headers: {
+            "X-Goog-Api-Key": GOOGLE_TTS_API_KEY,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            input: { text },
+            // Neural2: included in the free 1M-chars/month tier and licensed for commercial use.
+            voice: { languageCode: "en-US", name: "en-US-Neural2-D" },
+            audioConfig: { audioEncoding: "MP3", speakingRate: 1.0 },
+          }),
+        }
+      );
+
+      if (response.status === 429) {
+        await new Promise((r) => setTimeout(r, 1000 + attempt * 1000));
+        continue;
+      }
+
+      if (!response.ok) {
+        const errText = await response.text();
+        throw pipelineError(
+          PIPELINE_ERROR.VOICEOVER,
+          `Google Cloud TTS HTTP ${response.status}: ${errText.slice(0, 200)}`
+        );
+      }
+
+      const { audioContent } = (await response.json()) as { audioContent?: string };
+      if (!audioContent) {
+        throw pipelineError(PIPELINE_ERROR.VOICEOVER_EMPTY, "Google Cloud TTS returned no audio");
+      }
+      const audioBuffer = Buffer.from(audioContent, "base64");
+      if (audioBuffer.length < 100) {
+        throw pipelineError(PIPELINE_ERROR.VOICEOVER_EMPTY, "Google Cloud TTS returned empty audio");
+      }
+
+      fs.writeFileSync(outputPath, audioBuffer);
+      const dur = await probeVideoDurationSec(outputPath);
+      console.log(`[Pipeline] Google Cloud TTS ${label}: ${dur.toFixed(1)}s`);
+      return dur > 0 ? dur : Math.max(3, Math.round(audioBuffer.length / 40000));
+    } catch (err) {
+      if (attempt === MAX_ATTEMPTS) throw err;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+  }
+  throw pipelineError(PIPELINE_ERROR.VOICEOVER, "Google Cloud TTS failed after retries");
+}
+
+/** After ElevenLabs fails: Fish Audio if configured (which itself falls back to Google Cloud TTS
+ *  on its own failure), else straight to Google Cloud TTS if that's the only fallback configured. */
+async function synthesizeVoiceoverFallback(
+  text: string,
+  outputPath: string,
+  timeoutMs: number,
+  label: string
+): Promise<number> {
+  if (fishAudioFallbackEnabled()) {
+    return synthesizeFishAudioVoice(text, outputPath, timeoutMs, label);
+  }
+  return synthesizeGoogleCloudVoice(text, outputPath, timeoutMs, label);
 }
 
 async function synthesizeElevenLabsVoice(
@@ -3743,9 +3835,9 @@ async function synthesizeElevenLabsVoice(
       "ElevenLabs API key is not configured. Add ELEVENLABS_API_KEY in Railway to use your selected voice."
     );
   }
-  if (elevenLabsQuotaExhausted && fishAudioFallbackEnabled()) {
-    console.warn(`[Pipeline] ElevenLabs ${label}: quota exhausted this session — Fish Audio direct`);
-    return synthesizeFishAudioVoice(text, outputPath, timeoutMs, label);
+  if (elevenLabsQuotaExhausted && (fishAudioFallbackEnabled() || googleTtsFallbackEnabled())) {
+    console.warn(`[Pipeline] ElevenLabs ${label}: quota exhausted this session — fallback direct`);
+    return synthesizeVoiceoverFallback(text, outputPath, timeoutMs, label);
   }
   const MAX_ATTEMPTS = 3;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
@@ -3780,14 +3872,15 @@ async function synthesizeElevenLabsVoice(
       if (!response.ok) {
         const errText = await response.text();
         // Any non-429 failure means ElevenLabs isn't usable right now — quota, auth, payment,
-        // server error, whatever the exact status/message is. Switch straight to Fish Audio
-        // instead of burning retries against a provider that's already known to be down.
-        if (fishAudioFallbackEnabled()) {
+        // server error, whatever the exact status/message is. Switch straight to the next tier
+        // (Fish Audio, then Google Cloud TTS) instead of burning retries against a provider
+        // that's already known to be down.
+        if (fishAudioFallbackEnabled() || googleTtsFallbackEnabled()) {
           elevenLabsQuotaExhausted = true;
           console.warn(
-            `[Pipeline] ElevenLabs ${label}: HTTP ${response.status} — switching to Fish Audio: ${errText.slice(0, 150)}`
+            `[Pipeline] ElevenLabs ${label}: HTTP ${response.status} — switching to fallback: ${errText.slice(0, 150)}`
           );
-          return synthesizeFishAudioVoice(text, outputPath, timeoutMs, label);
+          return synthesizeVoiceoverFallback(text, outputPath, timeoutMs, label);
         }
         throw pipelineError(
           PIPELINE_ERROR.VOICEOVER,
@@ -3804,20 +3897,21 @@ async function synthesizeElevenLabsVoice(
       return dur > 0 ? dur : Math.max(3, Math.round(audioBuffer.length / 40000));
     } catch (err) {
       // Same reasoning as above: a thrown error (network failure, our own timeout, etc.) means
-      // ElevenLabs isn't answering right now — go straight to Fish Audio rather than retrying.
+      // ElevenLabs isn't answering right now — go straight to the next fallback tier rather
+      // than retrying.
       const msg = err instanceof Error ? err.message : String(err);
-      if (fishAudioFallbackEnabled()) {
+      if (fishAudioFallbackEnabled() || googleTtsFallbackEnabled()) {
         elevenLabsQuotaExhausted = true;
-        console.warn(`[Pipeline] ElevenLabs ${label}: error — switching to Fish Audio: ${msg.slice(0, 150)}`);
-        return synthesizeFishAudioVoice(text, outputPath, timeoutMs, label);
+        console.warn(`[Pipeline] ElevenLabs ${label}: error — switching to fallback: ${msg.slice(0, 150)}`);
+        return synthesizeVoiceoverFallback(text, outputPath, timeoutMs, label);
       }
       if (attempt === MAX_ATTEMPTS) throw err;
       await new Promise((r) => setTimeout(r, 500));
     }
   }
-  if (fishAudioFallbackEnabled()) {
-    console.warn(`[Pipeline] ElevenLabs ${label}: out of retries (rate-limited) — switching to Fish Audio`);
-    return synthesizeFishAudioVoice(text, outputPath, timeoutMs, label);
+  if (fishAudioFallbackEnabled() || googleTtsFallbackEnabled()) {
+    console.warn(`[Pipeline] ElevenLabs ${label}: out of retries (rate-limited) — switching to fallback`);
+    return synthesizeVoiceoverFallback(text, outputPath, timeoutMs, label);
   }
   throw pipelineError(PIPELINE_ERROR.VOICEOVER, "ElevenLabs TTS failed after retries");
 }
@@ -3870,6 +3964,12 @@ export async function generateVoiceover(
   const fishReferenceId = FISH_AUDIO_REFERENCE_ID;
   if (FISH_AUDIO_API_KEY && !options?.preferElevenLabs) {
     return synthesizeFishAudioVoice(cleanText, outputPath, TTS_TIMEOUT_MS, "primary");
+  }
+
+  // No Fish Audio key configured — Google Cloud TTS as primary instead (free 1M chars/month,
+  // commercial-use-safe), before falling through to the legacy ElevenLabs-only path below.
+  if (GOOGLE_TTS_API_KEY && !options?.preferElevenLabs) {
+    return synthesizeGoogleCloudVoice(cleanText, outputPath, TTS_TIMEOUT_MS, "primary");
   }
 
   // ── ElevenLabs TTS (FALLBACK — try if Fish Audio fails and key available) ───────────

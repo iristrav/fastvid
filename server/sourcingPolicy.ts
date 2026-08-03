@@ -148,6 +148,15 @@ export function fishAudioFallbackEnabled(): boolean {
   return Boolean(process.env.FISH_AUDIO_API_KEY?.trim());
 }
 
+/** Google Cloud TTS as the final voiceover fallback (after ElevenLabs → Fish Audio both fail/are
+ *  unconfigured). On by default when GOOGLE_TTS_API_KEY is set — free up to 1M chars/month
+ *  (Neural2 voices) and, unlike ElevenLabs/Fish Audio's free tiers, explicitly licensed for
+ *  commercial use. */
+export function googleTtsFallbackEnabled(): boolean {
+  if (process.env.ELEVENLABS_ONLY === "true") return false;
+  return Boolean(process.env.GOOGLE_TTS_API_KEY?.trim() || process.env.GOOGLE_CLOUD_TTS_API_KEY?.trim());
+}
+
 /** Burn typewriter keywords on clips — default OFF (footage + voice only). Set ENABLE_FACELESS_SUBTITLES=true to enable. */
 export function facelessSubtitlesEnabled(): boolean {
   return process.env.ENABLE_FACELESS_SUBTITLES === "true";
