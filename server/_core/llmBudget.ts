@@ -51,6 +51,13 @@ const PRICING_PER_1M_TOKENS: Record<string, { in: number; out: number }> = {
   "openai/gpt-oss-20b": { in: 0.10, out: 0.50 },
   "openai/gpt-oss-120b": { in: 0.15, out: 0.75 },
   "meta-llama/llama-4-maverick-17b-128e-instruct": { in: 0.20, out: 0.60 },
+  // $0 by design: a Google AI Studio key (GEMINI_API_KEY) with no billing account linked is
+  // hard-capped at the free daily/per-minute quota by Google itself (requests 429 past it,
+  // never silently bills) — that's the whole point of using it. If billing is ever linked to
+  // the project, update this to gemini-2.5-flash's actual paid rate so the budget tracks it.
+  "gemini-2.5-flash": { in: 0, out: 0 },
+  "gemini-2.5-flash-lite": { in: 0, out: 0 },
+  "gemini-2.5-pro": { in: 0, out: 0 },
   DEFAULT_FALLBACK: { in: 3.00, out: 12.00 },
 };
 

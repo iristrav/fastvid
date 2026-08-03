@@ -1,4 +1,4 @@
-import { ENV, anthropicKeyFromEnv, groqKeyFromEnv, llmApiKeyForProvider, openAiKeyFromEnv, resolveLlmProvider, type LlmProvider } from "./env";
+import { ENV, anthropicKeyFromEnv, geminiKeyFromEnv, groqKeyFromEnv, llmApiKeyForProvider, openAiKeyFromEnv, resolveLlmProvider, type LlmProvider } from "./env";
 
 export type Role = "system" | "user" | "assistant" | "tool" | "function";
 
@@ -315,6 +315,13 @@ function resolveModel(provider: LlmProvider, hasVision: boolean, maxTokens?: num
   if (provider === "anthropic") {
     return process.env.ANTHROPIC_MODEL?.trim() || "claude-haiku-4-5-20251001";
   }
+  if (provider === "gemini") {
+    // Flash (not Flash-Lite) by default — noticeably better quality for script/tag/editorial
+    // writing, and its free-tier quota (250 req/day, 10 RPM) is still comfortably above this
+    // app's actual per-video call volume. Override with GEMINI_MODEL — e.g. gemini-2.5-flash-lite
+    // for more daily headroom at lower quality, or gemini-2.5-pro for the reverse trade.
+    return process.env.GEMINI_MODEL?.trim() || "gemini-2.5-flash";
+  }
   return process.env.FORGE_LLM_MODEL?.trim() || "gemini-2.5-flash";
 }
 
@@ -402,12 +409,14 @@ function shouldFallbackToNextProvider(status: number, body: string): boolean {
 
 function providersToTry(primary: LlmProvider): LlmProvider[] {
   const out: LlmProvider[] = [];
+  const geminiAvailable = Boolean(geminiKeyFromEnv()) && !isGeminiInCooldown();
   const groqAvailable = Boolean(groqKeyFromEnv()) && !isGroqInCooldown();
   const openAiAvailable = Boolean(openAiKeyFromEnv()) && !openAiQuotaExhausted;
   const anthropicAvailable = Boolean(anthropicKeyFromEnv()) && !anthropicCreditExhausted;
 
   const push = (p: LlmProvider) => {
     if (p === "none" || out.includes(p)) return;
+    if (p === "gemini" && !geminiAvailable) return;
     if (p === "groq" && !groqAvailable) return;
     if (p === "openai" && !openAiAvailable) return;
     if (p === "anthropic" && !anthropicAvailable) return;
@@ -415,7 +424,9 @@ function providersToTry(primary: LlmProvider): LlmProvider[] {
     out.push(p);
   };
 
-  if (primary === "anthropic" && !anthropicAvailable) {
+  if (primary === "gemini" && !geminiAvailable) {
+    push("openai");
+  } else if (primary === "anthropic" && !anthropicAvailable) {
     push("groq");
   } else if (primary === "groq" && !groqAvailable) {
     push("anthropic");
@@ -423,6 +434,7 @@ function providersToTry(primary: LlmProvider): LlmProvider[] {
     push(primary);
   }
 
+  if (geminiAvailable) push("gemini");
   if (anthropicAvailable) push("anthropic");
   if (groqAvailable) push("groq");
   if (openAiAvailable) push("openai");
@@ -430,9 +442,10 @@ function providersToTry(primary: LlmProvider): LlmProvider[] {
 }
 
 const assertApiKey = () => {
-  if (!ENV.forgeApiKey && !groqKeyFromEnv() && !openAiKeyFromEnv() && !anthropicKeyFromEnv()) {
+  if (!ENV.forgeApiKey && !geminiKeyFromEnv() && !groqKeyFromEnv() && !openAiKeyFromEnv() && !anthropicKeyFromEnv()) {
     throw new Error(
-      "LLM API key is not configured. Set GROQ_API_KEY on Railway (free), or LLM_API_KEY / BUILT_IN_FORGE_API_KEY"
+      "LLM API key is not configured. Set GEMINI_API_KEY (free, Google AI Studio) or GROQ_API_KEY " +
+      "(free) on Railway, or LLM_API_KEY / BUILT_IN_FORGE_API_KEY"
     );
   }
 };
@@ -453,6 +466,118 @@ function convertToAnthropicContent(parts: unknown[]): Record<string, unknown>[] 
     }
   }
   return out;
+}
+
+/** Convert OpenAI-style content parts to Gemini parts, mapping image_url → inline_data. */
+function convertToGeminiParts(parts: unknown[]): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = [];
+  for (const c of parts) {
+    if (typeof c === "string") { if (c) out.push({ text: c }); continue; }
+    const part = c as Record<string, unknown>;
+    if (part.type === "text") {
+      const t = String(part.text ?? "");
+      if (t) out.push({ text: t });
+    } else if (part.type === "image_url") {
+      const url = String((part.image_url as Record<string, unknown>)?.url ?? "");
+      const imgMatch = url.match(/^data:(image\/[^;]+);base64,(.+)$/);
+      if (imgMatch) out.push({ inline_data: { mime_type: imgMatch[1], data: imgMatch[2] } });
+    }
+  }
+  return out;
+}
+
+/** Gemini free-tier RPM hit — skip retries and prefer the next provider for a short cooldown. */
+let geminiCooldownUntilMs = 0;
+export function isGeminiInCooldown(): boolean {
+  return Date.now() < geminiCooldownUntilMs;
+}
+
+/** Call Google's Generative Language API — different format from OpenAI-compatible APIs.
+ *  Gemini has no "assistant" role (uses "model") and no separate system message slot in
+ *  `contents` (system text is a dedicated systemInstruction field). */
+async function invokeGemini(
+  messages: Message[],
+  apiKey: string,
+  model: string,
+  maxTokens: number,
+  wantsJson?: boolean,
+): Promise<InvokeResult> {
+  const systemMessages = messages.filter((m) => m.role === "system");
+  const nonSystemMessages = messages.filter((m) => m.role !== "system");
+
+  const systemText = systemMessages
+    .map((m) => (typeof m.content === "string" ? m.content : Array.isArray(m.content) ? m.content.map((c) => (typeof c === "string" ? c : "text" in c ? c.text : "")).join("\n") : ""))
+    .join("\n\n");
+
+  const contents = nonSystemMessages.map((m) => ({
+    role: m.role === "assistant" ? "model" : "user",
+    parts: typeof m.content === "string"
+      ? [{ text: m.content }]
+      : Array.isArray(m.content)
+        ? convertToGeminiParts(m.content as unknown[])
+        : [{ text: String(m.content) }],
+  }));
+
+  const payload: Record<string, unknown> = {
+    contents,
+    generationConfig: {
+      maxOutputTokens: maxTokens,
+      ...(wantsJson ? { responseMimeType: "application/json" } : {}),
+    },
+  };
+  if (systemText) payload.systemInstruction = { parts: [{ text: systemText }] };
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
+
+  let lastErrorText = "";
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-goog-api-key": apiKey,
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (response.ok) {
+      const data = await response.json() as {
+        candidates?: Array<{ content?: { parts?: Array<{ text?: string }> }; finishReason?: string }>;
+        usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; totalTokenCount?: number };
+      };
+      const text = (data.candidates?.[0]?.content?.parts ?? []).map((p) => p.text ?? "").join("");
+      const promptTokens = data.usageMetadata?.promptTokenCount ?? 0;
+      const completionTokens = data.usageMetadata?.candidatesTokenCount ?? 0;
+      return {
+        choices: [{
+          message: { role: "assistant", content: text },
+          finish_reason: data.candidates?.[0]?.finishReason === "STOP" ? "stop" : (data.candidates?.[0]?.finishReason ?? null),
+        }],
+        usage: {
+          prompt_tokens: promptTokens,
+          completion_tokens: completionTokens,
+          total_tokens: data.usageMetadata?.totalTokenCount ?? promptTokens + completionTokens,
+        },
+      } as unknown as InvokeResult;
+    }
+
+    lastErrorText = await response.text();
+    // Free-tier RPM (429/RESOURCE_EXHAUSTED) is a short-lived burst limit, not exhaustion of the
+    // daily quota — worth one or two short retries before giving up on this call entirely.
+    if (response.status === 429 && attempt < 2) {
+      const waitSec = 4 * (attempt + 1);
+      console.warn(`[LLM] Gemini rate limit (attempt ${attempt + 1}/3) — retry in ${waitSec}s`);
+      await sleep(waitSec * 1000);
+      continue;
+    }
+    if (response.status === 429) {
+      // Retries exhausted this call — cool down briefly so the next several calls in this
+      // render skip straight to the next provider instead of each re-discovering the same limit.
+      geminiCooldownUntilMs = Date.now() + 60_000;
+    }
+    throw new Error(`Gemini API error ${response.status}: ${lastErrorText}`);
+  }
+  throw new Error(`Gemini API error: ${lastErrorText}`);
 }
 
 /** Call Anthropic Messages API — different format from OpenAI-compatible APIs. */
@@ -647,6 +772,25 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
         console.warn(`[LLM] Anthropic failed:`, lastError.message);
+        continue;
+      }
+    }
+
+    // Gemini also uses a completely different API format (no /chat/completions equivalent).
+    if (provider === "gemini") {
+      try {
+        const model = resolveModel(provider, hasVision, maxTokens);
+        const wantsJson = !!(responseFormat ?? response_format ?? outputSchema ?? output_schema);
+        const result = await invokeGemini(messages, apiKey, model, maxTokens ?? 8192, wantsJson);
+        if (i > 0) console.log(`[LLM] Succeeded via gemini after ${chain[0]} failure`);
+        if (result.usage) {
+          const { recordLlmUsage } = await import("./llmBudget");
+          recordLlmUsage(model, result.usage.prompt_tokens, result.usage.completion_tokens);
+        }
+        return result;
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        console.warn(`[LLM] Gemini failed:`, lastError.message);
         continue;
       }
     }
