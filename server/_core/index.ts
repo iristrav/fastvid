@@ -26,6 +26,7 @@ import {
   elevenLabsOnlyVoice,
   facelessSubtitlesEnabled,
   fishAudioFallbackEnabled,
+  googleTtsFallbackEnabled,
   youtubeSourcingEnabled,
   europeanaSourcingEnabled,
 } from "../sourcingPolicy";
@@ -179,6 +180,12 @@ async function startServer() {
   console.log("[Fastvid] DATABASE_URL:", process.env.DATABASE_URL ? "✓ set" : "✗ NOT SET — database features disabled");
   console.log("[Fastvid] JWT_SECRET:", process.env.JWT_SECRET ? "✓ set" : "✗ NOT SET — auth will not work");
   console.log("[Fastvid] FISH_AUDIO_API_KEY:", process.env.FISH_AUDIO_API_KEY ? "✓ set" : "✗ NOT SET — voiceover disabled");
+  console.log(
+    "[Fastvid] GOOGLE_TTS_API_KEY:",
+    process.env.GOOGLE_TTS_API_KEY || process.env.GOOGLE_CLOUD_TTS_API_KEY
+      ? "✓ set (free 1M chars/month, commercial-use-safe)"
+      : "✗ NOT SET — final voiceover fallback tier unavailable"
+  );
   console.log("[Fastvid] STABILITY_AI_API_KEY:", process.env.STABILITY_AI_API_KEY ? "✓ set" : "✗ NOT SET");
   console.log("[Fastvid] LEONARDO_API_KEY:", process.env.LEONARDO_API_KEY ? "✓ set" : "✗ NOT SET");
   console.log("[Fastvid] REPLICATE_API_KEY:", process.env.REPLICATE_API_KEY ? "✓ set" : "✗ NOT SET — Grok video");
@@ -252,15 +259,19 @@ async function startServer() {
   if (externalVisualSourcingEnabled()) {
     console.warn("[Fastvid] External visual sourcing should be off — check sourcingPolicy");
   }
+  const ttsFallbackChain = [
+    fishAudioFallbackEnabled() ? "Fish Audio" : null,
+    googleTtsFallbackEnabled() ? "Google Cloud TTS" : null,
+  ].filter((s): s is string => Boolean(s));
   console.log(
     "[Fastvid] Voiceover:",
     elevenLabsOnlyVoice()
-      ? fishAudioFallbackEnabled()
-        ? "✓ ElevenLabs primary, Fish Audio on quota errors"
+      ? ttsFallbackChain.length > 0
+        ? `✓ ElevenLabs primary, ${ttsFallbackChain.join(" → ")} on quota errors`
         : "✓ ElevenLabs only"
-      : fishAudioFallbackEnabled()
-        ? "✓ ElevenLabs + Fish Audio fallback"
-        : "✗ No TTS — set ELEVENLABS_API_KEY or FISH_AUDIO_API_KEY"
+      : ttsFallbackChain.length > 0
+        ? `✓ ElevenLabs → ${ttsFallbackChain.join(" → ")} fallback`
+        : "✗ No TTS — set ELEVENLABS_API_KEY, FISH_AUDIO_API_KEY, or GOOGLE_TTS_API_KEY"
   );
   console.log(
     "[Fastvid] Video pipeline:",
@@ -429,11 +440,15 @@ async function startServer() {
         llmProvider: ENV.llmProvider,
         FISH_AUDIO_API_KEY: !!process.env.FISH_AUDIO_API_KEY,
         ELEVENLABS_API_KEY: !!process.env.ELEVENLABS_API_KEY,
+        GOOGLE_TTS_API_KEY: !!(process.env.GOOGLE_TTS_API_KEY || process.env.GOOGLE_CLOUD_TTS_API_KEY),
         voiceReady: !!(
           process.env.ELEVENLABS_API_KEY?.trim() ||
-          process.env.FISH_AUDIO_API_KEY?.trim()
+          process.env.FISH_AUDIO_API_KEY?.trim() ||
+          process.env.GOOGLE_TTS_API_KEY?.trim() ||
+          process.env.GOOGLE_CLOUD_TTS_API_KEY?.trim()
         ),
         fishAudioFallback: fishAudioFallbackEnabled(),
+        googleTtsFallback: googleTtsFallbackEnabled(),
         curatedArchiveOnly: curatedArchiveOnlyVisuals(),
         externalVisualSourcingEnabled: externalVisualSourcingEnabled(),
         // Legacy keys below — configured but unused while archive-only visuals are enforced
