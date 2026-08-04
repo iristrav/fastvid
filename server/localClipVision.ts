@@ -830,7 +830,7 @@ export async function scoreFramePathsAgainstBeat(
   const lexBoost = filenameLexicalBoost(clipPath, beatText, videoTitle);
   const minSim = minLocalClipSimilarity(minScore10);
 
-  const frameScores: LocalFrameScore[] = (
+  const frameScores: (LocalFrameScore & { _emb: number[] })[] = (
     await Promise.all(
       framePaths.map(async (fp) => {
         const [emb, luma] = await Promise.all([embedImageFromPath(fp), probeImageMeanLuma(fp)]);

@@ -1537,7 +1537,7 @@ export const appRouter = router({
       });
 
       if (input.status === "approved" && req.status !== "approved") {
-        const recipient = req.contactEmail.trim();
+        const recipient = req.contactEmail?.trim();
         if (recipient) {
           void sendNicheApprovedEmail({
             to: recipient,
