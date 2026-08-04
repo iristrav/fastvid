@@ -916,6 +916,14 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
           : "")
       );
 
+      // Cerebras 402s are otherwise only ever surfaced via the short "falling back to X"
+      // warning below — the actual reason Cerebras gives (in errorText) is normally only
+      // visible if every provider in the chain fails. Log it explicitly so the real cause is
+      // visible in Railway logs even when a later fallback (e.g. Gemini) succeeds.
+      if (provider === "cerebras" && response.status === 402) {
+        console.error(`[LLM] Cerebras 402 detail: ${errorText}`);
+      }
+
       // Groq 404: configured vision model no longer available — retry once with fallback model.
       if (provider === "groq" && response.status === 404 && hasVision && payload.model !== GROQ_VISION_FALLBACK_MODEL) {
         console.warn(`[LLM] Groq vision model "${payload.model}" returned 404 — retrying with fallback ${GROQ_VISION_FALLBACK_MODEL}`);
