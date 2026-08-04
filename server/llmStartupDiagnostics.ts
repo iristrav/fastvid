@@ -1,10 +1,8 @@
-import { geminiKeyFromEnv, cerebrasKeyFromEnv, githubModelsKeyFromEnv, groqKeyFromEnv, openAiKeyFromEnv, resolveLlmProvider, type LlmProvider } from "./_core/env";
+import { githubModelsKeyFromEnv, groqKeyFromEnv, openAiKeyFromEnv, resolveLlmProvider, type LlmProvider } from "./_core/env";
 
 export type LlmDiagnostics = {
   role: "web" | "worker";
   provider: LlmProvider;
-  geminiConfigured: boolean;
-  cerebrasConfigured: boolean;
   githubConfigured: boolean;
   groqConfigured: boolean;
   openAiConfigured: boolean;
@@ -25,8 +23,6 @@ function groqEnvVarNames(): string[] {
 
 export function getLlmDiagnostics(role: "web" | "worker"): LlmDiagnostics {
   const provider = resolveLlmProvider();
-  const geminiConfigured = Boolean(geminiKeyFromEnv());
-  const cerebrasConfigured = Boolean(cerebrasKeyFromEnv());
   const githubConfigured = Boolean(githubModelsKeyFromEnv());
   const groqConfigured = Boolean(groqKeyFromEnv());
   const openAiConfigured = Boolean(openAiKeyFromEnv());
@@ -34,11 +30,7 @@ export function getLlmDiagnostics(role: "web" | "worker"): LlmDiagnostics {
   const workerMode = process.env.WORKER_MODE === "true";
 
   let hint = "LLM ready.";
-  if (provider === "gemini") {
-    hint = `Using Gemini (${process.env.GEMINI_MODEL?.trim() || "gemini-2.5-flash"}, free tier).`;
-  } else if (provider === "cerebras") {
-    hint = `Using Cerebras (${process.env.CEREBRAS_MODEL?.trim() || "gpt-oss-120b"}, free tier).`;
-  } else if (provider === "github") {
+  if (provider === "github") {
     hint = `Using GitHub Models (${process.env.GITHUB_MODELS_MODEL?.trim() || "openai/gpt-4o-mini"}, free tier).`;
   } else if (provider === "openai") {
     hint = `Using OpenAI (${process.env.LLM_MODEL?.trim() || "gpt-4o"}).`;
@@ -47,7 +39,7 @@ export function getLlmDiagnostics(role: "web" | "worker"): LlmDiagnostics {
   } else if (provider === "forge") {
     hint = "Using Manus Forge.";
   } else {
-    hint = "No LLM key — set GEMINI_API_KEY (free) or LLM_API_KEY (OpenAI) on web and worker services.";
+    hint = "No LLM key — set GITHUB_MODELS_TOKEN (free) or LLM_API_KEY (OpenAI) on web and worker services.";
   }
 
   if (role === "web" && railway && !workerMode) {
@@ -57,8 +49,6 @@ export function getLlmDiagnostics(role: "web" | "worker"): LlmDiagnostics {
   return {
     role,
     provider,
-    geminiConfigured,
-    cerebrasConfigured,
     githubConfigured,
     groqConfigured,
     openAiConfigured,
@@ -72,7 +62,7 @@ export function getLlmDiagnostics(role: "web" | "worker"): LlmDiagnostics {
 export function logLlmStartupDiagnostics(role: "web" | "worker"): LlmDiagnostics {
   const d = getLlmDiagnostics(role);
   console.log(
-    `[Fastvid] LLM (${role}): provider=${d.provider}, gemini=${d.geminiConfigured}, cerebras=${d.cerebrasConfigured}, github=${d.githubConfigured}, openai=${d.openAiConfigured}, groq=${d.groqConfigured}`
+    `[Fastvid] LLM (${role}): provider=${d.provider}, github=${d.githubConfigured}, openai=${d.openAiConfigured}, groq=${d.groqConfigured}`
   );
   if (d.provider === "none") {
     console.error(`[Fastvid] ✗ ${d.hint}`);
