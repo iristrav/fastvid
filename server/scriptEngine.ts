@@ -163,7 +163,6 @@ Return JSON:
 }`,
       },
     ],
-    preferProvider: "anthropic",
     maxTokens: 1200,
   });
 
@@ -250,7 +249,6 @@ Return JSON array:
 ]`,
       },
     ],
-    preferProvider: "anthropic",
     maxTokens: 3000,
   });
 
@@ -329,7 +327,6 @@ Return JSON array:
 ]`,
       },
     ],
-    preferProvider: "groq",
     maxTokens: 4000,
   });
 
@@ -426,7 +423,6 @@ Example structure (do NOT copy, just the rhythm):
 [Specific shocking fact.] [Stakes — why this matters.] [Emotional gut-punch.] [Macro loop opened — the question they must answer.]"`,
           },
         ],
-        preferProvider: "anthropic",
         maxTokens: 512,
       });
 
@@ -515,7 +511,6 @@ Name real people, companies, places, dates — the footage system finds visuals 
           },
         ],
         maxTokens: 2048,
-        preferProvider: "anthropic",
       });
       const text = (resp.choices[0]?.message?.content ?? "");
       const narration = typeof text === "string" ? text.trim() : "";
@@ -564,7 +559,6 @@ Score this script:
 }`,
         },
       ],
-      preferProvider: "groq",
       maxTokens: 512,
     });
 
@@ -751,7 +745,6 @@ export async function runScriptEngineV2(
           { role: "user", content: buildScriptLengthRefinePrompt(markdownScript, budget, wordCount, topic) },
         ],
         maxTokens: 8192,
-        preferProvider: "anthropic",
       });
       const refined = refineResp.choices[0]?.message?.content ?? "";
       if (typeof refined === "string" && refined.trim().length > 200 && scriptStillOnTopic(topic, refined)) {

@@ -3282,7 +3282,6 @@ Split narration into contiguous slices — NEVER repeat the opening hook or earl
           content: `Parse into exactly ${sceneCount} scenes:\n\n${script.slice(0, 14000)}`,
         },
       ],
-      preferProvider: "groq",
       response_format: SCENE_JSON_SCHEMA,
       maxTokens: 16384,
         }),

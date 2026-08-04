@@ -47,10 +47,6 @@ function budgetEnforced(): boolean {
 // bypass the budget.
 const PRICING_PER_1M_TOKENS: Record<string, { in: number; out: number }> = {
   "gpt-4o": { in: 2.50, out: 10.00 },
-  "claude-haiku-4-5-20251001": { in: 1.00, out: 5.00 },
-  "openai/gpt-oss-20b": { in: 0.10, out: 0.50 },
-  "openai/gpt-oss-120b": { in: 0.15, out: 0.75 },
-  "meta-llama/llama-4-maverick-17b-128e-instruct": { in: 0.20, out: 0.60 },
   // $0: this is the default model string the "forge" (Manus) provider sends — its billing is
   // handled by the forge backend itself, not tracked here.
   "gemini-2.5-flash": { in: 0, out: 0 },

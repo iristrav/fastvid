@@ -99,7 +99,6 @@ export class OpenAIVisionProvider implements VisionProvider {
         { role: "system", content: request.systemPrompt },
         { role: "user", content: userContent },
       ],
-      preferProvider: "anthropic",
       response_format: {
         type: "json_schema",
         json_schema: {
