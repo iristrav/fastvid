@@ -5,29 +5,13 @@
 //
 // Railway deployment: BUILT_IN_FORGE_API_KEY is not available on Railway.
 // Railway: use LLM_API_KEY (OpenAI) by default; Groq optional via GROQ_API_KEY or LLM_PROVIDER=groq.
-export type LlmProvider = "forge" | "gemini" | "cerebras" | "github" | "groq" | "openai" | "anthropic" | "none";
-
-/** Read a Google AI Studio (Gemini) key — GEMINI_API_KEY or GOOGLE_API_KEY. Genuinely free up
- *  to Google's daily/per-minute quota (no billing account required for an AI Studio key). */
-export function geminiKeyFromEnv(): string {
-  return process.env.GEMINI_API_KEY?.trim() || process.env.GOOGLE_API_KEY?.trim() || "";
-}
-
-/** Read a Cerebras key — CEREBRAS_API_KEY. Free tier: 14,400 requests/day, 1M tokens/day, no
- *  credit card required — by far the most generous free daily quota of any provider here
- *  (vs. Gemini's ~250/day and Groq's 1,000/day), on the same custom-silicon-fast inference
- *  Groq is known for. */
-export function cerebrasKeyFromEnv(): string {
-  return process.env.CEREBRAS_API_KEY?.trim() || "";
-}
+export type LlmProvider = "forge" | "github" | "groq" | "openai" | "anthropic" | "none";
 
 /** Read a GitHub Models token — GITHUB_MODELS_TOKEN, or GITHUB_TOKEN. Free for every GitHub
- *  account, no billing/credit card involved (it's a GitHub account entitlement, not a Cerebras-
- *  style pay-as-you-go org). Serves real OpenAI models (gpt-4o / gpt-4o-mini) via GitHub's own
- *  Azure-backed inference endpoint. Needs a fine-grained PAT with "models: read" permission —
- *  create one at github.com/settings/personal-access-tokens. Daily quota is modest (order of
- *  50-150 requests/day depending on model tier), so this is a secondary free tier, not a
- *  replacement for Gemini/Groq. */
+ *  account, no billing/credit card involved. Serves real OpenAI models (gpt-4o / gpt-4o-mini)
+ *  via GitHub's own Azure-backed inference endpoint. Needs a fine-grained PAT with
+ *  "models: read" permission — create one at github.com/settings/personal-access-tokens. Daily
+ *  quota is modest (order of 50-150 requests/day depending on model tier). */
 export function githubModelsKeyFromEnv(): string {
   return process.env.GITHUB_MODELS_TOKEN?.trim() || process.env.GITHUB_TOKEN?.trim() || "";
 }
@@ -61,31 +45,20 @@ export function openAiKeyFromEnv(): string {
   return llm;
 }
 
-/** Which LLM backend to use (Forge > Gemini > Cerebras > OpenAI > Anthropic > Groq unless
+/** Which LLM backend to use (Forge > GitHub Models > OpenAI > Anthropic > Groq unless
  *  LLM_PROVIDER is set). */
 export function resolveLlmProvider(): LlmProvider {
   const forced = process.env.LLM_PROVIDER?.trim().toLowerCase();
-  if (forced === "gemini" && geminiKeyFromEnv()) return "gemini";
-  if (forced === "cerebras" && cerebrasKeyFromEnv()) return "cerebras";
   if (forced === "github" && githubModelsKeyFromEnv()) return "github";
   if (forced === "groq" && groqKeyFromEnv()) return "groq";
   if (forced === "openai" && openAiKeyFromEnv()) return "openai";
   if (forced === "anthropic" && anthropicKeyFromEnv()) return "anthropic";
   if (forced === "forge" && process.env.BUILT_IN_FORGE_API_KEY?.trim()) return "forge";
   if (process.env.BUILT_IN_FORGE_API_KEY?.trim()) return "forge";
-  // Gemini first by default: a genuinely free (no billing account needed) Google AI Studio key,
-  // good quality for scripts/tags/editorial-review-style text work — the explicit point of
-  // adding it was to stop defaulting to paid providers for everyday calls. Cerebras next: also
-  // advertised as free with no billing account and a much bigger daily quota (14,400 req/day vs
-  // Gemini's ~250/day) — NOTE: in practice a Cerebras org can come back 402 "Payment required"
-  // with $0 balance and no active subscription even though the model shows as available, so
-  // don't assume it actually works without checking the account's Billing tab. GitHub Models
-  // next: free for every GitHub account (no billing/credit card, unlike Cerebras), serves real
-  // OpenAI gpt-4o/gpt-4o-mini, modest daily quota (~50-150/day). Falls through to OpenAI/
-  // Anthropic/Groq exactly as before once free daily quotas are hit. Override with
-  // LLM_PROVIDER=openai (or =anthropic, =groq, =cerebras, =github) if ever preferred instead.
-  if (geminiKeyFromEnv()) return "gemini";
-  if (cerebrasKeyFromEnv()) return "cerebras";
+  // GitHub Models first by default: free for every GitHub account, no billing/credit card
+  // involved, serves real OpenAI gpt-4o/gpt-4o-mini. Falls through to OpenAI/Anthropic/Groq
+  // exactly as before once its daily quota is hit. Override with LLM_PROVIDER=openai (or
+  // =anthropic, =groq) if ever preferred instead.
   if (githubModelsKeyFromEnv()) return "github";
   if (openAiKeyFromEnv()) return "openai";
   if (anthropicKeyFromEnv()) return "anthropic";
@@ -101,10 +74,6 @@ export function llmApiKeyForProvider(provider: LlmProvider): string {
   switch (provider) {
     case "forge":
       return process.env.BUILT_IN_FORGE_API_KEY?.trim() ?? "";
-    case "gemini":
-      return geminiKeyFromEnv();
-    case "cerebras":
-      return cerebrasKeyFromEnv();
     case "github":
       return githubModelsKeyFromEnv();
     case "groq":
@@ -136,8 +105,6 @@ export const ENV = {
     return llmApiKeyForProvider(this.llmProvider);
   },
   get useForge() { return this.llmProvider === "forge"; },
-  get useGemini() { return this.llmProvider === "gemini"; },
-  get useCerebras() { return this.llmProvider === "cerebras"; },
   get useGithubModels() { return this.llmProvider === "github"; },
   get useGroq() { return this.llmProvider === "groq"; },
   /** True when using OpenAI directly (no Forge / Groq key). */
