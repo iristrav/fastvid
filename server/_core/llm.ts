@@ -1,4 +1,4 @@
-import { ENV, anthropicKeyFromEnv, geminiKeyFromEnv, cerebrasKeyFromEnv, groqKeyFromEnv, llmApiKeyForProvider, openAiKeyFromEnv, resolveLlmProvider, type LlmProvider } from "./env";
+import { ENV, anthropicKeyFromEnv, geminiKeyFromEnv, cerebrasKeyFromEnv, githubModelsKeyFromEnv, groqKeyFromEnv, llmApiKeyForProvider, openAiKeyFromEnv, resolveLlmProvider, type LlmProvider } from "./env";
 
 export type Role = "system" | "user" | "assistant" | "tool" | "function";
 
@@ -280,6 +280,7 @@ const normalizeToolChoice = (
 const resolveApiUrl = (provider: LlmProvider) => {
   if (provider === "groq") return "https://api.groq.com/openai/v1/chat/completions";
   if (provider === "cerebras") return "https://api.cerebras.ai/v1/chat/completions";
+  if (provider === "github") return "https://models.github.ai/inference/chat/completions";
   if (provider === "openai") return "https://api.openai.com/v1/chat/completions";
   if (provider === "anthropic") return "https://api.anthropic.com/v1/messages";
   return ENV.forgeApiUrl && ENV.forgeApiUrl.trim().length > 0
@@ -315,6 +316,12 @@ function resolveModel(provider: LlmProvider, hasVision: boolean, maxTokens?: num
     // as Groq's heavy model. Override with CEREBRAS_MODEL.
     return process.env.CEREBRAS_MODEL?.trim() || "gpt-oss-120b";
   }
+  if (provider === "github") {
+    // gpt-4o-mini by default: GitHub's "mini" tier gets a noticeably bigger daily quota
+    // (~150/day) than the full gpt-4o tier (~50/day) — override with GITHUB_MODELS_MODEL
+    // (e.g. "openai/gpt-4o") if quality matters more than headroom for a given deployment.
+    return process.env.GITHUB_MODELS_MODEL?.trim() || "openai/gpt-4o-mini";
+  }
   if (provider === "openai") {
     return process.env.LLM_MODEL?.trim() || "gpt-4o";
   }
@@ -340,6 +347,11 @@ export function isCerebrasInCooldown(): boolean {
   return Date.now() < cerebrasCooldownUntilMs;
 }
 
+/** Cerebras returned 402 (org has $0 balance / no active subscription — a billing problem, not
+ *  a rate limit). That won't resolve itself before the process restarts, so stop retrying it
+ *  for the rest of this process lifetime instead of wasting a round trip on every single call. */
+let cerebrasBillingExhausted = false;
+
 function isCerebrasDailyQuotaError(body: string): boolean {
   const lower = body.toLowerCase();
   return lower.includes("tokens per day") || lower.includes("requests per day") || lower.includes("daily limit");
@@ -355,6 +367,29 @@ function markCerebrasCooldown(errorText: string): void {
         ? 60 * 60 * 1000
         : 5 * 60 * 1000;
   cerebrasCooldownUntilMs = Math.max(cerebrasCooldownUntilMs, Date.now() + cooldownMs);
+}
+
+/** GitHub Models daily quota hit (small: ~50-150/day) — skip retries and prefer the next
+ *  provider for a cooldown period rather than repeatedly wasting a request confirming it. */
+let githubCooldownUntilMs = 0;
+export function isGithubInCooldown(): boolean {
+  return Date.now() < githubCooldownUntilMs;
+}
+
+function isGithubDailyQuotaError(body: string): boolean {
+  const lower = body.toLowerCase();
+  return lower.includes("rate limit") || lower.includes("quota") || lower.includes("daily");
+}
+
+function markGithubCooldown(errorText: string): void {
+  const waitSec = parseRetryAfterSeconds(errorText);
+  const cooldownMs =
+    waitSec != null && waitSec > 0
+      ? waitSec * 1000
+      : isGithubDailyQuotaError(errorText)
+        ? 60 * 60 * 1000
+        : 5 * 60 * 1000;
+  githubCooldownUntilMs = Math.max(githubCooldownUntilMs, Date.now() + cooldownMs);
 }
 
 /** OpenAI quota exhausted — skip for remainder of process lifetime. */
@@ -439,7 +474,8 @@ function shouldFallbackToNextProvider(status: number, body: string): boolean {
 function providersToTry(primary: LlmProvider): LlmProvider[] {
   const out: LlmProvider[] = [];
   const geminiAvailable = Boolean(geminiKeyFromEnv()) && !isGeminiInCooldown();
-  const cerebrasAvailable = Boolean(cerebrasKeyFromEnv()) && !isCerebrasInCooldown();
+  const cerebrasAvailable = Boolean(cerebrasKeyFromEnv()) && !isCerebrasInCooldown() && !cerebrasBillingExhausted;
+  const githubAvailable = Boolean(githubModelsKeyFromEnv()) && !isGithubInCooldown();
   const groqAvailable = Boolean(groqKeyFromEnv()) && !isGroqInCooldown();
   const openAiAvailable = Boolean(openAiKeyFromEnv()) && !openAiQuotaExhausted;
   const anthropicAvailable = Boolean(anthropicKeyFromEnv()) && !anthropicCreditExhausted;
@@ -448,6 +484,7 @@ function providersToTry(primary: LlmProvider): LlmProvider[] {
     if (p === "none" || out.includes(p)) return;
     if (p === "gemini" && !geminiAvailable) return;
     if (p === "cerebras" && !cerebrasAvailable) return;
+    if (p === "github" && !githubAvailable) return;
     if (p === "groq" && !groqAvailable) return;
     if (p === "openai" && !openAiAvailable) return;
     if (p === "anthropic" && !anthropicAvailable) return;
@@ -456,11 +493,14 @@ function providersToTry(primary: LlmProvider): LlmProvider[] {
   };
 
   // Both immediate fallbacks (gemini's own failure, groq's own failure) prefer cerebras next —
-  // it's free (no billing account) with by far the largest daily quota of any provider here, so
-  // it's the natural next stop before ever reaching a paid provider.
+  // advertised as free (no billing account) with by far the largest daily quota of any provider
+  // here, though in practice a Cerebras org can 402 with $0 balance/no subscription regardless
+  // of daily quota — if so this falls through the unconditional block below to github/groq/etc.
   if (primary === "gemini" && !geminiAvailable) {
     push("cerebras");
   } else if (primary === "cerebras" && !cerebrasAvailable) {
+    push("gemini");
+  } else if (primary === "github" && !githubAvailable) {
     push("gemini");
   } else if (primary === "anthropic" && !anthropicAvailable) {
     push("groq");
@@ -472,6 +512,7 @@ function providersToTry(primary: LlmProvider): LlmProvider[] {
 
   if (geminiAvailable) push("gemini");
   if (cerebrasAvailable) push("cerebras");
+  if (githubAvailable) push("github");
   if (anthropicAvailable) push("anthropic");
   if (groqAvailable) push("groq");
   if (openAiAvailable) push("openai");
@@ -479,10 +520,11 @@ function providersToTry(primary: LlmProvider): LlmProvider[] {
 }
 
 const assertApiKey = () => {
-  if (!ENV.forgeApiKey && !geminiKeyFromEnv() && !cerebrasKeyFromEnv() && !groqKeyFromEnv() && !openAiKeyFromEnv() && !anthropicKeyFromEnv()) {
+  if (!ENV.forgeApiKey && !geminiKeyFromEnv() && !cerebrasKeyFromEnv() && !githubModelsKeyFromEnv() && !groqKeyFromEnv() && !openAiKeyFromEnv() && !anthropicKeyFromEnv()) {
     throw new Error(
       "LLM API key is not configured. Set GEMINI_API_KEY (free, Google AI Studio), CEREBRAS_API_KEY " +
-      "(free) or GROQ_API_KEY (free) on Railway, or LLM_API_KEY / BUILT_IN_FORGE_API_KEY"
+      "(free), GITHUB_MODELS_TOKEN (free, any GitHub account) or GROQ_API_KEY (free) on Railway, " +
+      "or LLM_API_KEY / BUILT_IN_FORGE_API_KEY"
     );
   }
 };
@@ -762,9 +804,10 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
   const primary = preferProvider ?? resolveLlmProvider();
   let chain = providersToTry(primary);
   // Groq vision models consistently return 404 — remove Groq from vision calls entirely.
-  // Cerebras's vision support is unconfirmed on the free tier, so excluded defensively too —
-  // add it back once confirmed working rather than risk the same silent-404 pattern as Groq.
-  if (hasVision) chain = chain.filter((p) => p !== "groq" && p !== "cerebras");
+  // Cerebras and GitHub Models' vision support is unconfirmed on the free tier, so excluded
+  // defensively too — add back once confirmed working rather than risk the same silent-404
+  // pattern as Groq.
+  if (hasVision) chain = chain.filter((p) => p !== "groq" && p !== "cerebras" && p !== "github");
   // Set only when the empty-chain fallback below forces Groq back in for a vision call because
   // OpenAI's quota/billing flag is up — otherwise the eventual Groq failure looks like the root
   // cause when the real one is "OpenAI has no credits", with no clue that OpenAI was ever tried.
@@ -772,12 +815,16 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
   if (chain.length === 0) {
     // All providers blocked (cooldown / quota). A cooldown is a soft rate-limit guard, not a
     // hard failure — retry ignoring it rather than give up entirely. Cerebras first (non-vision
-    // only, see filter above): its daily quota is ~15x Groq's, so a cooldown here is far less
-    // likely to reflect genuine same-day exhaustion.
-    if (!hasVision && cerebrasKeyFromEnv()) {
+    // only, see filter above) unless its billing is confirmed broken this process (402), in
+    // which case go straight to GitHub Models instead of wasting another round trip on it.
+    if (!hasVision && cerebrasKeyFromEnv() && !cerebrasBillingExhausted) {
       console.warn("[LLM] All providers in cooldown/exhausted — retrying Cerebras ignoring cooldown.");
       cerebrasCooldownUntilMs = 0; // reset cooldown so this request can proceed
       chain = ["cerebras"];
+    } else if (!hasVision && githubModelsKeyFromEnv()) {
+      console.warn("[LLM] All providers in cooldown/exhausted — retrying GitHub Models ignoring cooldown.");
+      githubCooldownUntilMs = 0; // reset cooldown so this request can proceed
+      chain = ["github"];
     } else {
       const groqKey = groqKeyFromEnv();
       if (groqKey) {
@@ -922,6 +969,7 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
       // visible in Railway logs even when a later fallback (e.g. Gemini) succeeds.
       if (provider === "cerebras" && response.status === 402) {
         console.error(`[LLM] Cerebras 402 detail: ${errorText}`);
+        cerebrasBillingExhausted = true; // billing problem, not transient — stop retrying it this process
       }
 
       // Groq 404: configured vision model no longer available — retry once with fallback model.
@@ -937,6 +985,9 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
       if (provider === "cerebras" && isRateLimitError(response.status)) {
         markCerebrasCooldown(errorText);
       }
+      if (provider === "github" && isRateLimitError(response.status)) {
+        markGithubCooldown(errorText);
+      }
       if (provider === "openai") {
         markOpenAiQuotaExhausted(errorText);
       }
@@ -948,7 +999,10 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
       const skipCerebrasRetries =
         provider === "cerebras" &&
         (isCerebrasDailyQuotaError(errorText) || (retryAfterSec != null && retryAfterSec > 120));
-      const skipProviderRetries = skipGroqRetries || skipCerebrasRetries;
+      const skipGithubRetries =
+        provider === "github" &&
+        (isGithubDailyQuotaError(errorText) || (retryAfterSec != null && retryAfterSec > 120));
+      const skipProviderRetries = skipGroqRetries || skipCerebrasRetries || skipGithubRetries;
 
       if (
         isRateLimitError(response.status) &&

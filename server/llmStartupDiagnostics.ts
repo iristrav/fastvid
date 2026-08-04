@@ -1,10 +1,11 @@
-import { geminiKeyFromEnv, cerebrasKeyFromEnv, groqKeyFromEnv, openAiKeyFromEnv, resolveLlmProvider, type LlmProvider } from "./_core/env";
+import { geminiKeyFromEnv, cerebrasKeyFromEnv, githubModelsKeyFromEnv, groqKeyFromEnv, openAiKeyFromEnv, resolveLlmProvider, type LlmProvider } from "./_core/env";
 
 export type LlmDiagnostics = {
   role: "web" | "worker";
   provider: LlmProvider;
   geminiConfigured: boolean;
   cerebrasConfigured: boolean;
+  githubConfigured: boolean;
   groqConfigured: boolean;
   openAiConfigured: boolean;
   groqEnvVarNames: string[];
@@ -26,6 +27,7 @@ export function getLlmDiagnostics(role: "web" | "worker"): LlmDiagnostics {
   const provider = resolveLlmProvider();
   const geminiConfigured = Boolean(geminiKeyFromEnv());
   const cerebrasConfigured = Boolean(cerebrasKeyFromEnv());
+  const githubConfigured = Boolean(githubModelsKeyFromEnv());
   const groqConfigured = Boolean(groqKeyFromEnv());
   const openAiConfigured = Boolean(openAiKeyFromEnv());
   const railway = Boolean(process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_PROJECT_ID);
@@ -36,6 +38,8 @@ export function getLlmDiagnostics(role: "web" | "worker"): LlmDiagnostics {
     hint = `Using Gemini (${process.env.GEMINI_MODEL?.trim() || "gemini-2.5-flash"}, free tier).`;
   } else if (provider === "cerebras") {
     hint = `Using Cerebras (${process.env.CEREBRAS_MODEL?.trim() || "gpt-oss-120b"}, free tier).`;
+  } else if (provider === "github") {
+    hint = `Using GitHub Models (${process.env.GITHUB_MODELS_MODEL?.trim() || "openai/gpt-4o-mini"}, free tier).`;
   } else if (provider === "openai") {
     hint = `Using OpenAI (${process.env.LLM_MODEL?.trim() || "gpt-4o"}).`;
   } else if (provider === "groq") {
@@ -55,6 +59,7 @@ export function getLlmDiagnostics(role: "web" | "worker"): LlmDiagnostics {
     provider,
     geminiConfigured,
     cerebrasConfigured,
+    githubConfigured,
     groqConfigured,
     openAiConfigured,
     groqEnvVarNames: groqEnvVarNames(),
@@ -67,7 +72,7 @@ export function getLlmDiagnostics(role: "web" | "worker"): LlmDiagnostics {
 export function logLlmStartupDiagnostics(role: "web" | "worker"): LlmDiagnostics {
   const d = getLlmDiagnostics(role);
   console.log(
-    `[Fastvid] LLM (${role}): provider=${d.provider}, gemini=${d.geminiConfigured}, cerebras=${d.cerebrasConfigured}, openai=${d.openAiConfigured}, groq=${d.groqConfigured}`
+    `[Fastvid] LLM (${role}): provider=${d.provider}, gemini=${d.geminiConfigured}, cerebras=${d.cerebrasConfigured}, github=${d.githubConfigured}, openai=${d.openAiConfigured}, groq=${d.groqConfigured}`
   );
   if (d.provider === "none") {
     console.error(`[Fastvid] ✗ ${d.hint}`);
