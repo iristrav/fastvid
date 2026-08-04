@@ -9,7 +9,7 @@ import { exec } from "child_process";
 import { promisify } from "util";
 import { withForkRetry } from "./_core/execForkRetry";
 import { invokeLLM } from "./_core/llm";
-import { ENV, groqKeyFromEnv } from "./_core/env";
+import { ENV } from "./_core/env";
 import { normalizeMediaTags } from "./db";
 import {
   appendMapLabelsToSourceNote,

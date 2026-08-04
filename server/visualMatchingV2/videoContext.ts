@@ -76,7 +76,6 @@ export async function buildVideoContext(videoId: string, topic: string): Promise
         },
         { role: "user", content: `Video topic: ${topic.slice(0, 2000)}` },
       ],
-      preferProvider: "groq",
       response_format: VIDEO_CONTEXT_SCHEMA,
       maxTokens: 800,
     });

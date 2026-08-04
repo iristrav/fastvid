@@ -393,7 +393,6 @@ async function generateDirectorBatch(
         },
         { role: "user", content: buildDirectorBatchPrompt(sentences, offset) },
       ],
-      preferProvider: "groq",
       response_format: DIRECTOR_JSON_SCHEMA,
     });
 

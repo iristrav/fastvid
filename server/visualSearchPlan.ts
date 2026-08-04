@@ -163,7 +163,6 @@ Return JSON:
 }`,
         },
       ],
-      preferProvider: "groq",
       maxTokens: 300,
       responseFormat: { type: "json_object" },
     });
@@ -305,7 +304,6 @@ Return JSON:
 }`,
         },
       ],
-      preferProvider: "groq",
       maxTokens: 400,
       responseFormat: { type: "json_object" },
     });

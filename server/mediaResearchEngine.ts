@@ -472,7 +472,6 @@ Prefer authentic archival/real footage over generic stock when the beat names a 
           { role: "system", content: "You are a documentary footage researcher. Return JSON only." },
           { role: "user", content: prompt },
         ],
-        preferProvider: "groq",
         response_format: AI_RANK_JSON_SCHEMA,
         maxTokens: 1024,
       }),

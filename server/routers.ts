@@ -166,7 +166,6 @@ async function generateSectionNarration(
           },
         ],
         maxTokens: 4096,
-        preferProvider: "anthropic",
       });
       const text = llmMessageText(resp);
       if (text.length >= minChars && !llmWasTruncated(resp)) return text;
@@ -459,7 +458,6 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLengthRa
           { role: "user", content: buildOutlineUserPrompt(prompt, videoType, budget) },
         ],
         response_format: OUTLINE_JSON_SCHEMA,
-        preferProvider: "anthropic",
       });
 
       let outline: ScriptOutline = { title: prompt.slice(0, 80), hook: "", sections: [], cta: "" };
@@ -496,7 +494,6 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLengthRa
               { role: "system", content: writerSystem },
               { role: "user", content: buildScriptLengthRefinePrompt(scriptContent, budget, narrationWords, prompt) },
             ],
-            preferProvider: "anthropic",
           });
           const refined = refineResp?.choices?.[0]?.message?.content ?? "";
           if (typeof refined === "string" && refined.trim().length > 200 && scriptStillOnTopic(prompt, refined)) {
@@ -516,7 +513,6 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLengthRa
           const resp = await invokeLLM({
             messages: [{ role: "system", content: writerSystem }, { role: "user", content: userPrompt }],
             maxTokens: 8192,
-            preferProvider: "anthropic",
           });
           return llmMessageText(resp);
         }
@@ -535,7 +531,6 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLengthRa
           { role: "system", content: "YouTube SEO expert. Respond with valid JSON only." },
           { role: "user", content: `YouTube metadata for: ${prompt} (${budget.label}, ${videoType} format)\nJSON: { title, description, tags: string[], chapters: [{time, title}] }` },
         ],
-        preferProvider: "groq",
         maxTokens: 512,
       });
       const rawMeta = metaResp?.choices?.[0]?.message?.content ?? "{}";

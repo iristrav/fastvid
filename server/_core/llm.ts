@@ -1,4 +1,4 @@
-import { ENV, anthropicKeyFromEnv, githubModelsKeyFromEnv, groqKeyFromEnv, llmApiKeyForProvider, openAiKeyFromEnv, resolveLlmProvider, type LlmProvider } from "./env";
+import { ENV, githubModelsKeyFromEnv, llmApiKeyForProvider, openAiKeyFromEnv, resolveLlmProvider, type LlmProvider } from "./env";
 
 export type Role = "system" | "user" | "assistant" | "tool" | "function";
 
@@ -187,57 +187,6 @@ function messagesIncludeImages(messages: Message[]): boolean {
   return false;
 }
 
-function textFromNormalizedContent(content: NormalizedMessage["content"]): string {
-  if (typeof content === "string") return content;
-  return content
-    .map((p) => (p.type === "text" ? p.text : ""))
-    .filter(Boolean)
-    .join("\n");
-}
-
-/** Groq vision models reject system + image in the same request — fold system into user. */
-function adaptGroqVisionMessages(messages: NormalizedMessage[]): NormalizedMessage[] {
-  const hasImages = messages.some(
-    (m) =>
-      Array.isArray(m.content) &&
-      m.content.some((p) => p.type === "image_url")
-  );
-  if (!hasImages) return messages;
-
-  const systems = messages.filter((m) => m.role === "system");
-  if (!systems.length) return messages;
-
-  const systemText = systems
-    .map((m) => textFromNormalizedContent(m.content))
-    .filter(Boolean)
-    .join("\n\n");
-  const rest = messages.filter((m) => m.role !== "system");
-  if (!systemText.trim()) return rest;
-
-  const userIdx = rest.findIndex((m) => m.role === "user");
-  if (userIdx < 0) {
-    return [{ role: "user", content: systemText }, ...rest];
-  }
-
-  const user = rest[userIdx]!;
-  const prefix = `${systemText}\n\n`;
-  let merged: NormalizedMessage;
-  if (typeof user.content === "string") {
-    merged = { ...user, content: prefix + user.content };
-  } else if (Array.isArray(user.content)) {
-    merged = {
-      ...user,
-      content: [{ type: "text", text: prefix }, ...user.content],
-    };
-  } else {
-    return rest;
-  }
-
-  const out = [...rest];
-  out[userIdx] = merged;
-  return out;
-}
-
 const normalizeToolChoice = (
   toolChoice: ToolChoice | undefined,
   tools: Tool[] | undefined
@@ -278,38 +227,14 @@ const normalizeToolChoice = (
 };
 
 const resolveApiUrl = (provider: LlmProvider) => {
-  if (provider === "groq") return "https://api.groq.com/openai/v1/chat/completions";
   if (provider === "github") return "https://models.github.ai/inference/chat/completions";
   if (provider === "openai") return "https://api.openai.com/v1/chat/completions";
-  if (provider === "anthropic") return "https://api.anthropic.com/v1/messages";
   return ENV.forgeApiUrl && ENV.forgeApiUrl.trim().length > 0
     ? `${ENV.forgeApiUrl.replace(/\/$/, "")}/v1/chat/completions`
     : "https://forge.manus.im/v1/chat/completions";
 };
 
-// llama-4-scout-17b-16e-instruct was deprecated by Groq on 2026-06-17 (404 "model does not
-// exist"). qwen3-vl-32b-instruct also 404s on this account — Groq gates it to Enterprise-tier
-// customers, so "does not exist" there actually meant "no access", not "wrong name". Falling
-// back to llama-4-maverick-17b-128e-instruct, Groq's other vision-capable Llama 4 model,
-// documented as available on standard (non-Enterprise) accounts. If this 404s too, don't guess
-// again from here — check console.groq.com (logged into the actual account) for the exact model
-// IDs it has access to, and override via GROQ_VISION_MODEL without waiting on a redeploy.
-const GROQ_VISION_FALLBACK_MODEL = "meta-llama/llama-4-maverick-17b-128e-instruct";
-
-function resolveModel(provider: LlmProvider, hasVision: boolean, maxTokens?: number): string {
-  if (provider === "groq") {
-    if (hasVision) {
-      return process.env.GROQ_VISION_MODEL?.trim() || GROQ_VISION_FALLBACK_MODEL;
-    }
-    // llama-3.1-8b-instant / llama-3.3-70b-versatile were deprecated by Groq on 2026-06-17 —
-    // openai/gpt-oss-20b and openai/gpt-oss-120b are Groq's own documented replacements.
-    const fastModel = process.env.GROQ_FAST_MODEL?.trim() || "openai/gpt-oss-20b";
-    const heavyModel = process.env.GROQ_MODEL?.trim() || "openai/gpt-oss-120b";
-    if (process.env.GROQ_USE_70B === "true") return heavyModel;
-    if (maxTokens != null && maxTokens > 4000) return heavyModel;
-    // Default fast model — preserves Groq TPD quota on Railway.
-    return fastModel;
-  }
+function resolveModel(provider: LlmProvider): string {
   if (provider === "github") {
     // gpt-4o-mini by default: GitHub's "mini" tier gets a noticeably bigger daily quota
     // (~150/day) than the full gpt-4o tier (~50/day) — override with GITHUB_MODELS_MODEL
@@ -319,14 +244,8 @@ function resolveModel(provider: LlmProvider, hasVision: boolean, maxTokens?: num
   if (provider === "openai") {
     return process.env.LLM_MODEL?.trim() || "gpt-4o";
   }
-  if (provider === "anthropic") {
-    return process.env.ANTHROPIC_MODEL?.trim() || "claude-haiku-4-5-20251001";
-  }
   return process.env.FORGE_LLM_MODEL?.trim() || "gemini-2.5-flash";
 }
-
-/** Groq daily quota hit — skip retries and prefer OpenAI for subsequent calls. */
-let groqCooldownUntilMs = 0;
 
 /** GitHub Models daily quota hit (small: ~50-150/day) — skip retries and prefer the next
  *  provider for a cooldown period rather than repeatedly wasting a request confirming it. */
@@ -353,36 +272,6 @@ function markGithubCooldown(errorText: string): void {
 
 /** OpenAI quota exhausted — skip for remainder of process lifetime. */
 let openAiQuotaExhausted = false;
-
-/** Anthropic credit balance too low — skip for remainder of process lifetime. */
-let anthropicCreditExhausted = false;
-
-export function isAnthropicCreditExhausted(): boolean { return anthropicCreditExhausted; }
-
-export function isGroqInCooldown(): boolean {
-  return Date.now() < groqCooldownUntilMs;
-}
-
-function isGroqDailyQuotaError(body: string): boolean {
-  const lower = body.toLowerCase();
-  return (
-    lower.includes("tokens per day") ||
-    lower.includes("tpd") ||
-    lower.includes("tokens per minute (tpd)")
-  );
-}
-
-function markGroqCooldown(errorText: string): void {
-  if (!isGroqDailyQuotaError(errorText) && !isRateLimitError(429)) return;
-  const waitSec = parseRetryAfterSeconds(errorText);
-  const cooldownMs =
-    waitSec != null && waitSec > 0
-      ? waitSec * 1000
-      : isGroqDailyQuotaError(errorText)
-        ? 60 * 60 * 1000
-        : 5 * 60 * 1000;
-  groqCooldownUntilMs = Math.max(groqCooldownUntilMs, Date.now() + cooldownMs);
-}
 
 function parseRetryAfterSeconds(body: string): number | null {
   const minSec = body.match(/try again in (\d+)m(\d+(?:\.\d+)?)s/i);
@@ -433,137 +322,35 @@ function shouldFallbackToNextProvider(status: number, body: string): boolean {
 function providersToTry(primary: LlmProvider): LlmProvider[] {
   const out: LlmProvider[] = [];
   const githubAvailable = Boolean(githubModelsKeyFromEnv()) && !isGithubInCooldown();
-  const groqAvailable = Boolean(groqKeyFromEnv()) && !isGroqInCooldown();
   const openAiAvailable = Boolean(openAiKeyFromEnv()) && !openAiQuotaExhausted;
-  const anthropicAvailable = Boolean(anthropicKeyFromEnv()) && !anthropicCreditExhausted;
 
   const push = (p: LlmProvider) => {
     if (p === "none" || out.includes(p)) return;
     if (p === "github" && !githubAvailable) return;
-    if (p === "groq" && !groqAvailable) return;
     if (p === "openai" && !openAiAvailable) return;
-    if (p === "anthropic" && !anthropicAvailable) return;
     if (!llmApiKeyForProvider(p)) return;
     out.push(p);
   };
 
   if (primary === "github" && !githubAvailable) {
-    push("groq");
-  } else if (primary === "anthropic" && !anthropicAvailable) {
-    push("groq");
-  } else if (primary === "groq" && !groqAvailable) {
-    push("github");
+    push("openai");
   } else if (primary !== "none") {
     push(primary);
   }
 
   if (githubAvailable) push("github");
-  if (anthropicAvailable) push("anthropic");
-  if (groqAvailable) push("groq");
   if (openAiAvailable) push("openai");
   return out;
 }
 
 const assertApiKey = () => {
-  if (!ENV.forgeApiKey && !githubModelsKeyFromEnv() && !groqKeyFromEnv() && !openAiKeyFromEnv() && !anthropicKeyFromEnv()) {
+  if (!ENV.forgeApiKey && !githubModelsKeyFromEnv() && !openAiKeyFromEnv()) {
     throw new Error(
       "LLM API key is not configured. Set GITHUB_MODELS_TOKEN (free, any GitHub account) or " +
-      "GROQ_API_KEY (free) on Railway, or LLM_API_KEY / BUILT_IN_FORGE_API_KEY"
+      "LLM_API_KEY (OpenAI) on Railway."
     );
   }
 };
-
-/** Convert OpenAI-style content parts to Anthropic content blocks, mapping image_url → image. */
-function convertToAnthropicContent(parts: unknown[]): Record<string, unknown>[] {
-  const out: Record<string, unknown>[] = [];
-  for (const c of parts) {
-    if (typeof c === "string") { if (c) out.push({ type: "text", text: c }); continue; }
-    const part = c as Record<string, unknown>;
-    if (part.type === "text") {
-      const t = String(part.text ?? "");
-      if (t) out.push({ type: "text", text: t });
-    } else if (part.type === "image_url") {
-      const url = String((part.image_url as Record<string, unknown>)?.url ?? "");
-      const imgMatch = url.match(/^data:(image\/[^;]+);base64,(.+)$/);
-      if (imgMatch) out.push({ type: "image", source: { type: "base64", media_type: imgMatch[1], data: imgMatch[2] } });
-    }
-  }
-  return out;
-}
-
-/** Call Anthropic Messages API — different format from OpenAI-compatible APIs. */
-async function invokeAnthropic(
-  messages: Message[],
-  apiKey: string,
-  model: string,
-  maxTokens: number,
-  wantsJson?: boolean,
-): Promise<InvokeResult> {
-  const systemMessages = messages.filter((m) => m.role === "system");
-  const nonSystemMessages = messages.filter((m) => m.role !== "system");
-
-  const systemParts = systemMessages
-    .map((m) => (typeof m.content === "string" ? m.content : Array.isArray(m.content) ? m.content.map((c) => (typeof c === "string" ? c : "text" in c ? c.text : "")).join("\n") : ""));
-  if (wantsJson) systemParts.push("Respond with valid JSON only. No markdown, no explanation.");
-  const systemText = systemParts.join("\n\n");
-
-  const anthropicMessages = nonSystemMessages.map((m) => ({
-    role: m.role === "assistant" ? "assistant" : "user",
-    content: typeof m.content === "string"
-      ? m.content
-      : Array.isArray(m.content)
-        ? (convertToAnthropicContent(m.content as unknown[]))
-        : String(m.content),
-  }));
-
-  const payload: Record<string, unknown> = {
-    model,
-    max_tokens: maxTokens,
-    messages: anthropicMessages,
-  };
-  if (systemText) payload.system = systemText;
-
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify(payload),
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    if (response.status === 400 && errorText.toLowerCase().includes("credit balance")) {
-      anthropicCreditExhausted = true;
-      console.warn("[LLM] Anthropic credit balance too low — skipping Anthropic for remainder of process lifetime.");
-    }
-    throw new Error(`Anthropic API error ${response.status}: ${errorText}`);
-  }
-
-  const data = await response.json() as {
-    id: string;
-    content: Array<{ type: string; text: string }>;
-    model: string;
-    usage: { input_tokens: number; output_tokens: number };
-    stop_reason: string;
-  };
-
-  // Convert Anthropic response to OpenAI-compatible InvokeResult
-  const text = data.content.filter((c) => c.type === "text").map((c) => c.text).join("");
-  return {
-    choices: [{
-      message: { role: "assistant", content: text },
-      finish_reason: data.stop_reason === "end_turn" ? "stop" : data.stop_reason,
-    }],
-    usage: {
-      prompt_tokens: data.usage.input_tokens,
-      completion_tokens: data.usage.output_tokens,
-      total_tokens: data.usage.input_tokens + data.usage.output_tokens,
-    },
-  } as unknown as InvokeResult;
-}
 
 const normalizeResponseFormat = ({
   responseFormat,
@@ -635,14 +422,9 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
   const hasVision = messagesIncludeImages(messages);
   const primary = preferProvider ?? resolveLlmProvider();
   let chain = providersToTry(primary);
-  // Groq vision models consistently return 404 — remove Groq from vision calls entirely.
-  // GitHub Models' vision support is unconfirmed on the free tier, so excluded defensively too —
-  // add back once confirmed working rather than risk the same silent-404 pattern as Groq.
-  if (hasVision) chain = chain.filter((p) => p !== "groq" && p !== "github");
-  // Set only when the empty-chain fallback below forces Groq back in for a vision call because
-  // OpenAI's quota/billing flag is up — otherwise the eventual Groq failure looks like the root
-  // cause when the real one is "OpenAI has no credits", with no clue that OpenAI was ever tried.
-  let visionFallbackDueToOpenAiQuota = false;
+  // GitHub Models' vision support is unconfirmed on the free tier, so excluded defensively —
+  // add back once confirmed working.
+  if (hasVision) chain = chain.filter((p) => p !== "github");
   if (chain.length === 0) {
     // All providers blocked (cooldown / quota). A cooldown is a soft rate-limit guard, not a
     // hard failure — retry ignoring it rather than give up entirely.
@@ -651,21 +433,9 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
       githubCooldownUntilMs = 0; // reset cooldown so this request can proceed
       chain = ["github"];
     } else {
-      const groqKey = groqKeyFromEnv();
-      if (groqKey) {
-        visionFallbackDueToOpenAiQuota = hasVision && openAiQuotaExhausted;
-        console.warn(
-          "[LLM] All providers in cooldown/exhausted — retrying Groq ignoring cooldown." +
-          (visionFallbackDueToOpenAiQuota ? " (OpenAI quota/billing exhausted — check platform.openai.com billing)" : "")
-        );
-        groqCooldownUntilMs = 0; // reset cooldown so this request can proceed
-        chain = ["groq"];
-      } else {
-        throw new Error(
-          "LLM API key is not configured. Set GROQ_API_KEY or GITHUB_MODELS_TOKEN on Railway (free), " +
-          "or LLM_API_KEY / BUILT_IN_FORGE_API_KEY"
-        );
-      }
+      throw new Error(
+        "LLM API key is not configured. Set GITHUB_MODELS_TOKEN on Railway (free), or LLM_API_KEY (OpenAI)."
+      );
     }
   }
 
@@ -678,31 +448,10 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
     if (!apiKey) continue;
 
     // Anthropic uses a completely different API format
-    if (provider === "anthropic") {
-      try {
-        const model = resolveModel(provider, hasVision, maxTokens);
-        const wantsJson = !!(responseFormat ?? response_format ?? outputSchema ?? output_schema);
-        const result = await invokeAnthropic(messages, apiKey, model, maxTokens ?? 8192, wantsJson);
-        if (i > 0) console.log(`[LLM] Succeeded via anthropic after ${chain[0]} failure`);
-        if (result.usage) {
-          const { recordLlmUsage } = await import("./llmBudget");
-          recordLlmUsage(model, result.usage.prompt_tokens, result.usage.completion_tokens);
-        }
-        return result;
-      } catch (err) {
-        lastError = err instanceof Error ? err : new Error(String(err));
-        console.warn(`[LLM] Anthropic failed:`, lastError.message);
-        continue;
-      }
-    }
-
-    let normalizedMessages = messages.map(normalizeMessage);
-    if (provider === "groq") {
-      normalizedMessages = adaptGroqVisionMessages(normalizedMessages);
-    }
+    const normalizedMessages = messages.map(normalizeMessage);
 
     const payload: Record<string, unknown> = {
-      model: resolveModel(provider, hasVision, maxTokens),
+      model: resolveModel(provider),
       messages: normalizedMessages,
     };
 
@@ -763,22 +512,9 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
 
       const errorText = await response.text();
       lastError = new Error(
-        `LLM invoke failed (${provider}, model=${payload.model}): ${response.status} ${response.statusText} – ${errorText}` +
-        (visionFallbackDueToOpenAiQuota
-          ? " [NOTE: OpenAI was skipped because its quota/billing is exhausted — this Groq attempt is only a fallback; fix OpenAI billing at platform.openai.com to resolve]"
-          : "")
+        `LLM invoke failed (${provider}, model=${payload.model}): ${response.status} ${response.statusText} – ${errorText}`
       );
 
-      // Groq 404: configured vision model no longer available — retry once with fallback model.
-      if (provider === "groq" && response.status === 404 && hasVision && payload.model !== GROQ_VISION_FALLBACK_MODEL) {
-        console.warn(`[LLM] Groq vision model "${payload.model}" returned 404 — retrying with fallback ${GROQ_VISION_FALLBACK_MODEL}`);
-        payload.model = GROQ_VISION_FALLBACK_MODEL;
-        continue;
-      }
-
-      if (provider === "groq" && isRateLimitError(response.status)) {
-        markGroqCooldown(errorText);
-      }
       if (provider === "github" && isRateLimitError(response.status)) {
         markGithubCooldown(errorText);
       }
@@ -787,13 +523,9 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
       }
 
       const retryAfterSec = parseRetryAfterSeconds(errorText);
-      const skipGroqRetries =
-        provider === "groq" &&
-        (isGroqDailyQuotaError(errorText) || (retryAfterSec != null && retryAfterSec > 120));
-      const skipGithubRetries =
+      const skipProviderRetries =
         provider === "github" &&
         (isGithubDailyQuotaError(errorText) || (retryAfterSec != null && retryAfterSec > 120));
-      const skipProviderRetries = skipGroqRetries || skipGithubRetries;
 
       if (
         isRateLimitError(response.status) &&
@@ -824,8 +556,8 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
   }
 
   throw lastError ?? new Error(
-    groqKeyFromEnv() && githubModelsKeyFromEnv() && !openAiKeyFromEnv() && isGroqInCooldown() && isGithubInCooldown()
-      ? "LLM invoke failed: Groq and GitHub Models daily quotas exhausted — set LLM_API_KEY (OpenAI sk-...) for fallback"
+    githubModelsKeyFromEnv() && !openAiKeyFromEnv() && isGithubInCooldown()
+      ? "LLM invoke failed: GitHub Models daily quota exhausted — set LLM_API_KEY (OpenAI sk-...) for fallback"
       : "LLM invoke failed: no provider available"
   );
 }

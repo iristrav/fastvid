@@ -442,7 +442,6 @@ export async function annotateAsset(asset: MediaArchiveAsset): Promise<ClipAnnot
           content: userContent as never,
         },
       ],
-      preferProvider: "groq",
       maxTokens: 6000,
       responseFormat: { type: "json_object" },
     });

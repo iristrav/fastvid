@@ -478,7 +478,6 @@ Respond ONLY with valid JSON (no markdown):
       ],
       maxTokens: 700,
       responseFormat: { type: "json_object" },
-      preferProvider: "groq",
     });
 
     const raw = result?.choices?.[0]?.message?.content;

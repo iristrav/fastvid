@@ -30,7 +30,7 @@ import {
   youtubeSourcingEnabled,
   europeanaSourcingEnabled,
 } from "../sourcingPolicy";
-import { ENV, groqKeyFromEnv, openAiKeyFromEnv } from "./env";
+import { ENV, openAiKeyFromEnv } from "./env";
 import { getVisionQaStatus, mergeWorkerClipVisionStatus } from "../visualQualityGate";
 import { getLlmDiagnostics, logLlmStartupDiagnostics } from "../llmStartupDiagnostics";
 import { recordWorkerHeartbeat, readWorkerHeartbeats, summarizeWorkerHealth } from "../workerHeartbeat";
@@ -432,11 +432,8 @@ async function startServer() {
       llm,
       env: {
         BUILT_IN_FORGE_API_KEY: !!process.env.BUILT_IN_FORGE_API_KEY,
-        GROQ_API_KEY: !!process.env.GROQ_API_KEY?.trim(),
-        GROQ_KEY: !!process.env.GROQ_KEY?.trim(),
-        groqConfigured: !!groqKeyFromEnv(),
+        GITHUB_MODELS_TOKEN: !!process.env.GITHUB_MODELS_TOKEN?.trim(),
         LLM_API_KEY: !!openAiKeyFromEnv(),
-        LLM_API_KEY_is_groq_shape: (process.env.LLM_API_KEY?.trim() ?? "").startsWith("gsk_"),
         llmProvider: ENV.llmProvider,
         FISH_AUDIO_API_KEY: !!process.env.FISH_AUDIO_API_KEY,
         ELEVENLABS_API_KEY: !!process.env.ELEVENLABS_API_KEY,
