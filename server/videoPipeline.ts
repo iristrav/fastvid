@@ -19519,7 +19519,19 @@ async function refillSceneStrictVoiceMatch(
     };
 
     try {
-      await withTimeout(runFill(), beatBudgetMs, `beat fill s${scene.index} b${beat.index}`);
+      // withSceneFetchTimeout (not withTimeout): runFill() is a multi-step chain
+      // (fillBeatVisual → ensureBeatVisualFilled → rescueBeatVisualWhenEmpty's fallback ladder)
+      // that spawns many ffmpeg/ffprobe children across several functions, not one directly-
+      // exposed .childProcess. withTimeout only kills a single attached child process, so once
+      // beatBudgetMs (12-20s) elapsed here it gave up *waiting* on runFill() and fired the catch
+      // block's own rescueBeatVisualWhenEmpty — while the original runFill() call kept running
+      // in the background unbounded, still spawning real network fetches + multi-variant ffmpeg
+      // encodes for the same beat. Confirmed from live logs: the same beat's "visual rescue"
+      // cycle (Wikipedia-image Ken Burns encode + clip extension) recurring every ~10-15 minutes
+      // for 45+ minutes on one scene, well past this function's own guard against being called
+      // twice for the same scene. withSceneFetchTimeout hard-kills every child process spawned
+      // anywhere inside runFill() on timeout instead of abandoning them.
+      await withSceneFetchTimeout(runFill, beatBudgetMs, `beat fill s${scene.index} b${beat.index}`);
     } catch (err) {
       console.warn(
         `[Pipeline] Scene ${scene.index} beat ${beat.index}: fill budget (${Math.round(beatBudgetMs / 1000)}s) —`,
