@@ -135,9 +135,19 @@ import {
   getMediaArchiveAssets,
   normalizeMediaTags,
   updateMediaArchiveAsset,
-  type MediaArchiveAsset,
 } from "./db";
+import type { MediaArchiveAsset } from "../drizzle/schema";
 import { seededShuffle } from "./archiveUsageMemory";
+
+/** getMediaArchiveAssets() excludes annotationJson from the SQL query (large, no bulk caller
+ *  needs it) — this is the real shape flowing through every list/cache/search path in this
+ *  file. annotationJson stays present-but-optional (not omitted) rather than forbidden: a
+ *  handful of downstream call sites (AssetDirector ranking) opportunistically read it when a
+ *  candidate happens to carry it (e.g. fetched individually elsewhere), and an omitted key
+ *  would make those reads a type error instead of the harmless `undefined` they actually are. */
+export type ArchiveAssetRow = Omit<MediaArchiveAsset, "annotationJson"> & {
+  annotationJson?: MediaArchiveAsset["annotationJson"];
+};
 
 const execRaw = promisify(execCb);
 const exec = ((cmd: string, opts?: Record<string, unknown>) =>
@@ -438,7 +448,7 @@ function hasProductionNotationTitle(asset: Pick<MediaArchiveAsset, "title">): bo
 
 /** Archive clip wrong for this beat — beat-driven, all video topics. */
 export function archiveAssetRejectedForBeat(
-  asset: Pick<MediaArchiveAsset, "title" | "tags" | "mediaType">,
+  asset: Pick<MediaArchiveAsset, "title" | "tags" | "mediaType" | "mixKind">,
   beatText: string
 ): boolean {
   if (!metadataVisualBlocksEnabled()) return false;
@@ -459,7 +469,7 @@ export function archiveAssetRejectedForBeat(
 }
 
 export function assetPassesBeatMinimum(
-  asset: Pick<MediaArchiveAsset, "title" | "tags">,
+  asset: Pick<MediaArchiveAsset, "title" | "tags" | "mediaType" | "mixKind">,
   beatText: string,
   score: number,
   topScore: number,
@@ -628,7 +638,7 @@ export function scoreArchiveMetadata(
 }
 
 function scoreArchiveAssetSample(
-  assets: MediaArchiveAsset[],
+  assets: ArchiveAssetRow[],
   combinedTags: string[],
   sampleSize = 48
 ): number {
@@ -716,7 +726,7 @@ export async function resolveArchivesForVisualQuery(
 }
 
 export function scoreCuratedAsset(
-  asset: MediaArchiveAsset,
+  asset: ArchiveAssetRow,
   archiveNicheTags: string[],
   beatTags: string[],
   topicAnchors: string[] = [],
@@ -875,7 +885,7 @@ export function scoreCuratedAsset(
   // Thematic WW2 category boost: if the beat is about WW2/Hitler/war and the clip is
   // a WW2 archive asset, give a base positive score even when tags don't have exact matches.
   // This ensures clips with generic tags ("world war 2 footage") are found for WW2 beats.
-  if (isWwiiWarArchiveAsset(asset) && beatMentionsWwiiContent(beatText)) {
+  if (isWwiiWarArchiveAsset(asset) && beatMentionsWwiiContent(beatText ?? "")) {
     score += 40;
   }
 
@@ -890,7 +900,7 @@ export function scoreCuratedAsset(
   score += curatedOffTopicPenalty(asset, topicAnchors, beatTags, videoVisualTopic);
   if (metadataVisualBlocksEnabled()) {
     if (beatText && archiveAssetRejectedForBeat(asset, beatText)) return 0;
-    if (isWwiiWarArchiveAsset(asset) && !beatMentionsWwiiContent(beatText) && videoVisualTopic !== "wwii") {
+    if (isWwiiWarArchiveAsset(asset) && !beatMentionsWwiiContent(beatText ?? "") && videoVisualTopic !== "wwii") {
       score = Math.max(0, score - 400);
     }
     if (beatText && isClipTitleIrrelevantToBeat(asset, beatText)) {
@@ -955,7 +965,7 @@ function curatedSceneContextScore(
 
 /** Obvious era/topic mismatches (e.g. medieval sign in WWII Hitler doc). */
 function curatedOffTopicPenalty(
-  asset: Pick<MediaArchiveAsset, "title" | "tags">,
+  asset: Pick<MediaArchiveAsset, "title" | "tags" | "mediaType" | "mixKind">,
   topicAnchors: string[],
   beatTags: string[],
   videoVisualTopic: VideoVisualTopic = "general"
@@ -964,7 +974,7 @@ function curatedOffTopicPenalty(
 }
 
 export function isCuratedOffTopicAsset(
-  asset: Pick<MediaArchiveAsset, "title" | "tags">,
+  asset: Pick<MediaArchiveAsset, "title" | "tags" | "mediaType" | "mixKind">,
   topicAnchors: string[],
   beatTags: string[],
   videoVisualTopic: VideoVisualTopic = "general"
@@ -1005,7 +1015,7 @@ export function isModernUrbanArchiveAsset(
 
 /** B&W / war-era / interview archive — wrong look for modern city/geography documentaries. */
 export function isGeographyIncompatibleArchiveAsset(
-  asset: Pick<MediaArchiveAsset, "title" | "tags" | "mediaType">
+  asset: Pick<MediaArchiveAsset, "title" | "tags" | "mediaType" | "mixKind">
 ): boolean {
   if (isWwiiWarArchiveAsset(asset)) return true;
   if (isCuratedInterviewAsset(asset)) return true;
@@ -1117,7 +1127,7 @@ function tMatches(a: string, b: string): boolean {
   return a.includes(b) || b.includes(a);
 }
 
-function assetMatchesTopicAnchors(asset: MediaArchiveAsset, topicAnchors: string[]): boolean {
+function assetMatchesTopicAnchors(asset: ArchiveAssetRow, topicAnchors: string[]): boolean {
   if (!topicAnchors.length) return false;
   const assetTags = normalizeMediaTags(asset.tags ?? []);
   return topicAnchors.some(
@@ -1126,7 +1136,7 @@ function assetMatchesTopicAnchors(asset: MediaArchiveAsset, topicAnchors: string
   );
 }
 
-function resolveArchiveAssetLocalPath(asset: MediaArchiveAsset): string | null {
+function resolveArchiveAssetLocalPath(asset: ArchiveAssetRow): string | null {
   const fromUrl = resolveLocalVideoPath(asset.storageUrl);
   if (fromUrl) return fromUrl;
   if (asset.storageKey) {
@@ -1141,7 +1151,7 @@ function resolveArchiveAssetLocalPath(asset: MediaArchiveAsset): string | null {
   return null;
 }
 
-function assetMatchesBeatTags(asset: MediaArchiveAsset, beatTags: string[]): boolean {
+function assetMatchesBeatTags(asset: ArchiveAssetRow, beatTags: string[]): boolean {
   if (!beatTags.length) return true;
   const assetTags = normalizeMediaTags(asset.tags ?? []);
   return beatTags.some(
@@ -1158,7 +1168,7 @@ export async function listCuratedArchiveCandidates(
   filterTags?: string[],
   beatText?: string,
   crossVideoExcludeIds: Set<number> = new Set(),
-  assetsCache?: Map<number, MediaArchiveAsset[]>,
+  assetsCache?: Map<number, ArchiveAssetRow[]>,
   /** When true, score assets in every active archive (per-sentence search). */
   searchAllArchives = false,
   /** When true, never dump the entire archive as score-1 fallback (sentence montage). */
@@ -1243,7 +1253,7 @@ export async function listCuratedArchiveCandidates(
 
   pool.sort((a, b) => {
     if (b.score !== a.score) return b.score - a.score;
-    const videoBoost = (x: MediaArchiveAsset) => (x.mediaType === "video" ? 2 : 0);
+    const videoBoost = (x: ArchiveAssetRow) => (x.mediaType === "video" ? 2 : 0);
     return videoBoost(b.asset) - videoBoost(a.asset);
   });
   if (crossVideoExcludeIds.size === 0) return pool;
@@ -1321,7 +1331,7 @@ function archiveDownloadConcurrency(): number {
 }
 const archiveDownloadLimit = pLimit(archiveDownloadConcurrency());
 
-async function materializeArchiveAsset(asset: MediaArchiveAsset, destPath: string): Promise<void> {
+async function materializeArchiveAsset(asset: ArchiveAssetRow, destPath: string): Promise<void> {
   const local = resolveArchiveAssetLocalPath(asset);
   if (local) {
     fs.copyFileSync(local, destPath);
@@ -1595,7 +1605,7 @@ async function probeImageWidthPx(filePath: string): Promise<number> {
 
 /** Download a curated archive asset and return a beat-ready MP4 path. */
 export async function prepareCuratedArchiveClip(
-  asset: MediaArchiveAsset,
+  asset: ArchiveAssetRow,
   workDir: string,
   sceneIndex: number,
   beatIndex: number,
@@ -1710,7 +1720,7 @@ export async function prepareCuratedArchiveClip(
 }
 
 export type CuratedCandidatePick = {
-  asset: MediaArchiveAsset;
+  asset: ArchiveAssetRow;
   archiveName: string;
   score: number;
   archiveNicheTags?: string[];
@@ -1721,8 +1731,8 @@ export type CuratedCandidatePick = {
 
 async function loadArchiveAssetsForSearch(
   archiveId: number,
-  assetsCache?: Map<number, MediaArchiveAsset[]>
-): Promise<MediaArchiveAsset[]> {
+  assetsCache?: Map<number, ArchiveAssetRow[]>
+): Promise<ArchiveAssetRow[]> {
   if (assetsCache?.has(archiveId)) return assetsCache.get(archiveId)!;
   const assets = await getMediaArchiveAssets(archiveId);
   assetsCache?.set(archiveId, assets);
@@ -1770,7 +1780,7 @@ export function rankCuratedCandidatesForBeat(
   }));
   ranked.sort((a, b) => {
     if (b.score !== a.score) return b.score - a.score;
-    const videoBoost = (x: MediaArchiveAsset) => (x.mediaType === "video" ? 2 : 0);
+    const videoBoost = (x: ArchiveAssetRow) => (x.mediaType === "video" ? 2 : 0);
     if (videoBoost(b.asset) !== videoBoost(a.asset)) {
       return videoBoost(b.asset) - videoBoost(a.asset);
     }
@@ -1805,7 +1815,7 @@ export async function buildVideoArchiveCandidatePool(
   videoTitle: string | undefined,
   combinedSceneText: string,
   options?: {
-    assetsCache?: Map<number, MediaArchiveAsset[]>;
+    assetsCache?: Map<number, ArchiveAssetRow[]>;
     crossVideoExcludeIds?: Set<number>;
     excludeIds?: Set<number>;
     excludeStorageUrls?: Set<string>;
@@ -1855,7 +1865,7 @@ export async function searchCuratedCandidatesForBeat(
   options?: {
     varietySeed?: number;
     crossVideoExcludeIds?: Set<number>;
-    assetsCache?: Map<number, MediaArchiveAsset[]>;
+    assetsCache?: Map<number, ArchiveAssetRow[]>;
     semanticProfile?: BeatSemanticProfile;
     /** Geo welcome / opening beat — archive images are not allowed. */
     videosOnly?: boolean;
@@ -2178,7 +2188,7 @@ export function isArchiveGeoBlockedForBeat(
 
 /** Skip FFmpeg when metadata already rules out an asset. */
 export function archiveAssetPreflight(
-  asset: MediaArchiveAsset,
+  asset: ArchiveAssetRow,
   usedAssetIds: Set<number>,
   usedStorageUrls: Set<string>,
   topicAnchors: string[],
@@ -2253,7 +2263,7 @@ export async function fetchCuratedArchiveBeatClip(
     relaxed?: boolean;
     varietySeed?: number;
     crossVideoExcludeIds?: Set<number>;
-    assetsCache?: Map<number, MediaArchiveAsset[]>;
+    assetsCache?: Map<number, ArchiveAssetRow[]>;
     videosOnly?: boolean;
     segmentLock?: BeatGeoRegion | null;
     videoLength?: string | null;

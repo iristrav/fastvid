@@ -1453,7 +1453,7 @@ export function termStartInBeat(
 
 /** Infer searchable geo/subject tags from clip title when metadata tags are sparse. */
 export function inferArchiveAssetTagsFromTitle(
-  asset: Pick<{ title?: string | null; tags?: string[] | null }>
+  asset: { title?: string | null; tags?: string[] | null }
 ): string[] {
   const title = (asset.title ?? "").trim();
   if (!title) return [];
@@ -1467,7 +1467,7 @@ export function inferArchiveAssetTagsFromTitle(
 
 /** Tags used for archive matching — stored tags plus title-inferred geo/subject tokens. */
 export function effectiveArchiveAssetTags(
-  asset: Pick<{ title?: string | null; tags?: string[] | null }>
+  asset: { title?: string | null; tags?: string[] | null }
 ): string[] {
   return normalizeMediaTags([
     ...normalizeMediaTags(asset.tags ?? []),

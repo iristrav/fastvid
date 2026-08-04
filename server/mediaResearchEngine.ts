@@ -5,7 +5,7 @@
 import path from "path";
 import { invokeLLM } from "./_core/llm";
 import { ENV } from "./_core/env";
-import { asVideoTitleString, coercePersonName, queryStringsMinLen } from "./stringCoercion";
+import { asVideoTitleString, coerceVisionString, coercePersonName, queryStringsMinLen } from "./stringCoercion";
 
 export type MediaTopicKind = "person" | "historical" | "space" | "news" | "general";
 
@@ -481,7 +481,7 @@ Prefer authentic archival/real footage over generic stock when the beat names a 
       ),
     ]);
 
-    const content = response.choices[0]?.message?.content;
+    const content = coerceVisionString(response.choices[0]?.message?.content);
     if (!content) return candidates;
 
     const aiScores = parseAiRankResponse(content, pool.length);

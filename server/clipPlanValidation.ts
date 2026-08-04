@@ -88,6 +88,10 @@ export function validateGeneratedClipPlan(input: GeneratedClipPlanInput): Genera
       beatText,
       {
         text: beatText,
+        // holdSec is required by BeatLabelInput's shape but not read by
+        // extractMotionOverlayCandidates (only powerWord/highlightWords are) — this validation
+        // path has no real beat duration to supply, so 0 is a harmless placeholder.
+        holdSec: 0,
         powerWord: input.powerWord,
         highlightWords: input.highlightWords,
       }

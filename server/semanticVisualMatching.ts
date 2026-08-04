@@ -18,7 +18,8 @@ import {
   isGenericPeopleAsset,
   isWwiiWarArchiveAsset,
 } from "./visualBeatTags";
-import { normalizeMediaTags, type MediaArchiveAsset } from "./db";
+import { normalizeMediaTags } from "./db";
+import type { MediaArchiveAsset } from "../drizzle/schema";
 import { asVideoTitleString } from "./stringCoercion";
 
 export type SemanticEntityList = {
@@ -427,7 +428,7 @@ export async function analyzeBeatsSemanticsBatch(
   return out;
 }
 
-export function buildAssetSemanticDocument(asset: Pick<MediaArchiveAsset, "title" | "tags" | "sourceNote">): string {
+export function buildAssetSemanticDocument(asset: Partial<Pick<MediaArchiveAsset, "title" | "tags" | "sourceNote">>): string {
   const tags = normalizeMediaTags(asset.tags ?? []).join(" ");
   const note = asset.sourceNote?.trim() ?? "";
   return slug(`${asset.title ?? ""} ${tags} ${note}`);
@@ -738,7 +739,7 @@ const AI_RANK_SCHEMA = {
 } as const;
 
 /** LLM re-rank top candidates (optional boost). */
-export async function applySemanticAiRerank<T extends { asset: MediaArchiveAsset; score: number }>(
+export async function applySemanticAiRerank<T extends { asset: Pick<MediaArchiveAsset, "id" | "title" | "tags">; score: number }>(
   candidates: T[],
   profile: BeatSemanticProfile,
   videoTitle?: string

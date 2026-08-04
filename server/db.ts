@@ -32,7 +32,12 @@ export async function getDb() {
         enableKeepAlive: true,
         keepAliveInitialDelay: 10_000,
       });
-      _db = drizzle(pool);
+      // TS sees two structurally different `Pool` types here: mysql2/promise's Pool (used at
+      // runtime, the documented drizzle-orm/mysql2 pattern) vs. the plain mysql2 Pool that
+      // drizzle's own generic signature infers by default — a known type-resolution quirk
+      // between the two mysql2 subpaths, not a real runtime mismatch (drizzle-orm/mysql2 is
+      // built specifically to wrap a mysql2/promise pool).
+      _db = drizzle(pool) as unknown as ReturnType<typeof drizzle>;
     }
     catch (error) { console.warn("[Database] Failed to connect:", error); _db = null; }
   }

@@ -179,6 +179,7 @@ import {
   resolveRequiredGeoTagsForBeat,
   isArchiveGeoBlockedForBeat,
   type CuratedCandidatePick,
+  type ArchiveAssetRow,
 } from "./curatedMediaSourcing";
 import {
   analyzeBeatSemanticsFallback,
@@ -1197,6 +1198,17 @@ interface PipelinePerfProfile {
   maxStockBeatsPerVideo: number;
 }
 
+/** getPipelinePerfProfile's base literals before applyAiFallbackToProfile /
+ *  applyMinimizeStockProfile progressively fill in the remaining fields. */
+type PipelinePerfProfileBase = Omit<
+  PipelinePerfProfile,
+  "enableAiFallback" | "maxAiClipsPerVideo" | "minimizeStockFootage" | "maxStockBeatsPerVideo"
+>;
+type PipelinePerfProfilePreMinimize = Omit<
+  PipelinePerfProfile,
+  "minimizeStockFootage" | "maxStockBeatsPerVideo"
+>;
+
 /** YouTube search + download (CC and fair-use standard videos). */
 function youtubeCcReady(): boolean {
   const canSearch = Boolean(process.env.YOUTUBE_API_KEY?.trim());
@@ -1856,7 +1868,7 @@ function maxEntityYoutubeFetchesPerVideo(minimizeStock = minimizeStockFootageEna
 }
 
 function applyMinimizeStockProfile(
-  profile: PipelinePerfProfile,
+  profile: PipelinePerfProfilePreMinimize,
   videoLength: string
 ): PipelinePerfProfile {
   if (!minimizeStockFootageEnabled() && !realFootageFirstEnabled()) {
@@ -2416,7 +2428,7 @@ function resolveAiFallbackConfig(videoLength: string): { enable: boolean; maxCli
 }
 
 function applyAiFallbackToProfile(
-  profile: PipelinePerfProfile,
+  profile: PipelinePerfProfileBase,
   videoLength: string
 ): PipelinePerfProfile {
   const ai = resolveAiFallbackConfig(videoLength);
@@ -9664,7 +9676,7 @@ interface VisualDedupState {
   /** Scene/video archive pool — legacy; sentence montage uses per-beat search. */
   archiveCandidatePool: CuratedCandidatePick[] | null;
   /** Cache archive asset lists within one video (speeds per-sentence search). */
-  archiveAssetsCache: Map<number, import("./db").MediaArchiveAsset[]>;
+  archiveAssetsCache: Map<number, ArchiveAssetRow[]>;
   /** Per-video seed so archive picks differ between generations. */
   varietySeed: number;
   /** Assets used in recent same-topic videos — skipped when pool allows. */
@@ -13579,7 +13591,7 @@ async function finalizeLocalClipCacheForScene(
   try {
     const refilled = await withSceneFetchTimeout(
       () => refillSceneStrictVoiceMatch(scene, workDir, topicContext, dedup, sceneAudioPath),
-      dedup.pipelineStartedMs > 0 && Date.now() - dedup.pipelineStartedMs > visualSourcingTurboMs(dedup.videoLength)
+      (dedup.pipelineStartedMs ?? 0) > 0 && Date.now() - (dedup.pipelineStartedMs ?? 0) > visualSourcingTurboMs(dedup.videoLength)
         ? 25_000
         : 45_000,
       `Scene ${scene.index} pre-compose strict refill`
@@ -13596,8 +13608,8 @@ async function finalizeLocalClipCacheForScene(
   try {
     const recovered = await withSceneFetchTimeout(
       () => recoverSceneClipsIfEmpty(scene, workDir, topicContext, dedup),
-      dedup.pipelineStartedMs > 0 &&
-        Date.now() - dedup.pipelineStartedMs > visualSourcingTurboMs(dedup.videoLength)
+      (dedup.pipelineStartedMs ?? 0) > 0 &&
+        Date.now() - (dedup.pipelineStartedMs ?? 0) > visualSourcingTurboMs(dedup.videoLength)
         ? 20_000
         : 35_000,
       `Scene ${scene.index} pre-compose recovery`
@@ -13666,8 +13678,8 @@ async function ensureFastShortScenesReadyForCompose(
     try {
       const recovered = await withSceneFetchTimeout(
         () => recoverSceneClipsIfEmpty(scene, workDir, topicContext, visualDedup),
-        visualDedup.pipelineStartedMs > 0 &&
-          Date.now() - visualDedup.pipelineStartedMs > visualSourcingTurboMs(visualDedup.videoLength)
+        (visualDedup.pipelineStartedMs ?? 0) > 0 &&
+          Date.now() - (visualDedup.pipelineStartedMs ?? 0) > visualSourcingTurboMs(visualDedup.videoLength)
           ? 20_000
           : 35_000,
         `Scene ${scene.index} pre-compose recovery`
@@ -15689,8 +15701,9 @@ async function fetchBeatStockFallback(
 }
 
 /** True video clip (not Ken-Burns still). */
-function isRealVideoClip(filePath: string): boolean {
-  return Boolean(filePath) && !isStillPhotoClip(filePath) && !isPipelineFallbackClip(filePath);
+function isRealVideoClip(filePath: string | null): boolean {
+  if (!filePath) return false;
+  return !isStillPhotoClip(filePath) && !isPipelineFallbackClip(filePath);
 }
 
 /** Exhaust authentic sources (Archive, Wikimedia, YouTube CC) before stills/stock. */
@@ -18606,7 +18619,7 @@ async function backfillArchiveMontageFromPool(
         workDir,
         videoTitle,
         dedup,
-        (clipPath, holdSec) => pushClip(clipPath, holdSec, beat.index),
+        (clipPath, holdSec) => pushClip(clipPath, holdSec ?? fillHold, beat.index),
         profile,
         fillHold
       );
@@ -18705,7 +18718,7 @@ async function backfillComposeMontageIfShort(
         workDir,
         videoTitle,
         dedup,
-        (clipPath, holdSec) => pushClip(clipPath, holdSec, beat.index),
+        (clipPath, holdSec) => pushClip(clipPath, holdSec ?? fillHold, beat.index),
         undefined,
         fillHold
       );
@@ -19700,7 +19713,7 @@ async function ensureArchiveMontageVoiceCoverage(
     `[Pipeline] Scene ${scene.index}: montage ~${coverage.toFixed(1)}s / ${scene.duration.toFixed(1)}s — coverage backfill (need ~${minClips} clips)`
   );
 
-  const pushSceneClip = async (clipPath: string, holdSec: number, beatIndex: number): Promise<boolean> => {
+  const pushSceneClip = async (clipPath: string, holdSec: number, beatIndex?: number): Promise<boolean> => {
     const key = clipContentKey(clipPath);
     if (dedup.usedContentKeys.has(key)) return false;
     let actualHold = holdSec;
@@ -19711,7 +19724,9 @@ async function ensureArchiveMontageVoiceCoverage(
     dedup.usedContentKeys.add(key);
     clips.push(clipPath);
     beatDurations.push(actualHold);
-    clipBeatIndices.push(beatIndex);
+    // backfillArchiveMontageFromPool always supplies a real beatIndex in practice; this fallback
+    // only guards the declared-optional type contract, never the actual runtime call pattern.
+    clipBeatIndices.push(beatIndex ?? 0);
     markCuratedAssetUsed(clipPath, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls);
     coverage = await estimateBalancedMontageCoverageSec(clips, beatDurations, scene.duration);
     return true;
@@ -21529,9 +21544,9 @@ async function composeSceneVideoInner(
         }
       }
       if (safeClips.length === 0) {
-        const beats = composeOptions.montageBeats;
+        const beats = composeOptions?.montageBeats;
         const rescueBeat = beats?.[0];
-        if (rescueBeat && composeOptions.dedup && !isComposeNetworkBlocked(composeOptions.dedup)) {
+        if (rescueBeat && composeOptions?.dedup && !isComposeNetworkBlocked(composeOptions.dedup)) {
           await adoptBestSimilarBeatClip(
             rescueBeat,
             scene,
@@ -23026,7 +23041,7 @@ async function _runVideoPipelineInner(
     // can guide clip selection. Fire concurrently with RenderBudget setup.
     const blueprintPromise = masterDocumentaryDirectorEnabled()
       ? createVideoBlueprint(
-          videoId,
+          String(videoId),
           topicContext ?? videoTitle ?? "documentary",
           parseFloat(videoLength) || 5,
           scenes.map((s) => ({
@@ -23875,7 +23890,9 @@ async function _runVideoPipelineInner(
     console.log(`[Pipeline] Stage 3 (visuals): ${((Date.now()-t2)/1000).toFixed(1)}s`);
 
     // Refine compose budget based on actual clip mix from retrieval
-    if (get_activeBudgetTracker() && get_activeRenderBudget()) {
+    const budgetTracker = get_activeBudgetTracker();
+    const activeRenderBudget = get_activeRenderBudget();
+    if (budgetTracker && activeRenderBudget) {
       const allRetrievedClips = sceneVisualResults.flatMap(r => r?.clips ?? []);
       const totalClips = allRetrievedClips.length || 1;
       const archiveClips = allRetrievedClips.filter(p => curatedClipPathAssetId(p) != null).length;
@@ -23887,8 +23904,8 @@ async function _runVideoPipelineInner(
         totalClipsRetrieved: totalClips,
         avgClipsPerScene:    totalClips / scenes.length,
       };
-      const { newComposeMs, newConfidence } = get_activeBudgetTracker().refineFromSignals(signals, get_activeRenderBudget());
-      set_activeRenderBudget({ ...get_activeRenderBudget()!, basePerSceneComposeMs: newComposeMs, confidence: newConfidence });
+      const { newComposeMs, newConfidence } = budgetTracker.refineFromSignals(signals, activeRenderBudget);
+      set_activeRenderBudget({ ...activeRenderBudget, basePerSceneComposeMs: newComposeMs, confidence: newConfidence });
       renderBudgetComposeMs = newComposeMs;
     }
 
@@ -24945,10 +24962,11 @@ async function _runVideoPipelineInner(
     // Budget summary + history persistence (non-fatal — never block URL persistence)
     let budgetOutcome: import("./renderBudgetTracker").BudgetOutcome | undefined;
     try {
-      if (get_activeBudgetTracker()) {
-        get_activeBudgetTracker().logSummary();
+      const activeBudgetTracker = get_activeBudgetTracker();
+      if (activeBudgetTracker) {
+        activeBudgetTracker.logSummary();
         const { recordBudgetOutcome } = await import("./renderBudgetTracker");
-        budgetOutcome = get_activeBudgetTracker().outcome();
+        budgetOutcome = activeBudgetTracker.outcome();
         recordBudgetOutcome(budgetOutcome);
       }
     } catch (err) {
@@ -25002,7 +25020,7 @@ async function _runVideoPipelineInner(
     if (editorialReviewEnabled()) {
       setImmediate(() => {
         runEditorialReview({
-          videoId,
+          videoId: String(videoId),
           videoTitle: topicContext,
           scenes: scenes.map((s) => ({ index: s.index, text: s.text ?? "" })),
           adoptAudit: visualDedup.clipAdoptAudit,

@@ -869,23 +869,27 @@ export function ArchiveClipsGrid({
     onError: (e) => toast.error("Verwijderen mislukt", { description: toastErrorMessage(e) }),
   });
 
-  const deleteZeroDurationClips = trpc.mediaArchive.deleteZeroDurationClips.useMutation({
-    onSuccess: (data) => {
-      utils.mediaArchive.listAssets.invalidate();
-      utils.mediaArchive.listArchives.invalidate();
-      if (data.confirmed === 0) {
-        toast.info(`Geen clips korter dan 1 seconde gevonden (${data.scanned} gescand)`);
-      } else {
-        const parts: string[] = [];
-        if (data.deleted > 0) parts.push(`${data.deleted} echt lege clip(s) verwijderd`);
-        if ((data.fixed ?? 0) > 0) parts.push(`${data.fixed} clip(s) hadden wel beelden — duur gecorrigeerd in database`);
-        toast.success(parts.join(", ") || "Klaar", {
-          description: `${data.confirmed} van ${data.scanned} clips gecontroleerd via ffprobe`,
-        });
-      }
-    },
-    onError: (e) => toast.error("Verwijderen mislukt", { description: toastErrorMessage(e) }),
-  });
+  // deleteZeroDurationClips: server procedure mediaArchive.deleteZeroDurationClips was never
+  // implemented — this hook (and its button below) is disabled rather than removed so the
+  // intended shape/behavior is preserved for whoever builds it. Do not re-enable without adding
+  // the matching adminProcedure in routers.ts first.
+  // const deleteZeroDurationClips = trpc.mediaArchive.deleteZeroDurationClips.useMutation({
+  //   onSuccess: (data) => {
+  //     utils.mediaArchive.listAssets.invalidate();
+  //     utils.mediaArchive.listArchives.invalidate();
+  //     if (data.confirmed === 0) {
+  //       toast.info(`Geen clips korter dan 1 seconde gevonden (${data.scanned} gescand)`);
+  //     } else {
+  //       const parts: string[] = [];
+  //       if (data.deleted > 0) parts.push(`${data.deleted} echt lege clip(s) verwijderd`);
+  //       if ((data.fixed ?? 0) > 0) parts.push(`${data.fixed} clip(s) hadden wel beelden — duur gecorrigeerd in database`);
+  //       toast.success(parts.join(", ") || "Klaar", {
+  //         description: `${data.confirmed} van ${data.scanned} clips gecontroleerd via ffprobe`,
+  //       });
+  //     }
+  //   },
+  //   onError: (e) => toast.error("Verwijderen mislukt", { description: toastErrorMessage(e) }),
+  // });
 
   const autoTitleAssets = trpc.mediaArchive.autoTitleAssets.useMutation();
   const auditScenes = trpc.mediaArchive.auditScenes.useMutation();
@@ -915,36 +919,39 @@ export function ArchiveClipsGrid({
     },
     onError: (e) => toast.error("Duration repair failed", { description: toastErrorMessage(e) }),
   });
-  const reindexOrphans = trpc.mediaArchive.reindexOrphanedClips.useMutation({
-    onSuccess: (data) => {
-      utils.mediaArchive.listAssets.invalidate();
-      utils.mediaArchive.listArchives.invalidate();
-      if (data.inserted === 0 && data.remaining === 0) {
-        toast.info("Geen ontbrekende clips gevonden op schijf");
-      } else {
-        toast.success(`${data.inserted} clip(s) teruggehaald`, {
-          description: (data.remaining ?? 0) > 0
-            ? `Nog ${data.remaining ?? 0} te gaan — klik opnieuw om door te gaan`
-            : `Alle ontbrekende clips zijn hersteld`,
-        });
-      }
-    },
-    onError: (e) => toast.error("Herindexering mislukt", { description: toastErrorMessage(e) }),
-  });
-  const restoreFromS3 = trpc.mediaArchive.restoreFromS3.useMutation({
-    onSuccess: (data) => {
-      utils.mediaArchive.listAssets.invalidate();
-      utils.mediaArchive.listArchives.invalidate();
-      if (data.restored === 0) {
-        toast.info("Geen ontbrekende clips gevonden in R2");
-      } else {
-        toast.success(`${data.restored} clip(s) hersteld uit R2`, {
-          description: `${data.skipped} bestand(en) overgeslagen`,
-        });
-      }
-    },
-    onError: (e) => toast.error("Herstel mislukt", { description: toastErrorMessage(e) }),
-  });
+  // reindexOrphanedClips / restoreFromS3: same as deleteZeroDurationClips above — server
+  // procedures were never implemented, so these are disabled (not deleted) along with their
+  // buttons below.
+  // const reindexOrphans = trpc.mediaArchive.reindexOrphanedClips.useMutation({
+  //   onSuccess: (data) => {
+  //     utils.mediaArchive.listAssets.invalidate();
+  //     utils.mediaArchive.listArchives.invalidate();
+  //     if (data.inserted === 0 && data.remaining === 0) {
+  //       toast.info("Geen ontbrekende clips gevonden op schijf");
+  //     } else {
+  //       toast.success(`${data.inserted} clip(s) teruggehaald`, {
+  //         description: (data.remaining ?? 0) > 0
+  //           ? `Nog ${data.remaining ?? 0} te gaan — klik opnieuw om door te gaan`
+  //           : `Alle ontbrekende clips zijn hersteld`,
+  //       });
+  //     }
+  //   },
+  //   onError: (e) => toast.error("Herindexering mislukt", { description: toastErrorMessage(e) }),
+  // });
+  // const restoreFromS3 = trpc.mediaArchive.restoreFromS3.useMutation({
+  //   onSuccess: (data) => {
+  //     utils.mediaArchive.listAssets.invalidate();
+  //     utils.mediaArchive.listArchives.invalidate();
+  //     if (data.restored === 0) {
+  //       toast.info("Geen ontbrekende clips gevonden in R2");
+  //     } else {
+  //       toast.success(`${data.restored} clip(s) hersteld uit R2`, {
+  //         description: `${data.skipped} bestand(en) overgeslagen`,
+  //       });
+  //     }
+  //   },
+  //   onError: (e) => toast.error("Herstel mislukt", { description: toastErrorMessage(e) }),
+  // });
   const dedupeDuplicates = trpc.mediaArchive.dedupeDuplicateAssets.useMutation();
   const [dedupeProgress, setDedupeProgress] = useState<{ scanned: number; deleted: number; total: number } | null>(null);
   const rekognitionBulk = trpc.mediaArchive.recognizeCelebritiesBulk.useMutation();
@@ -1444,30 +1451,18 @@ export function ArchiveClipsGrid({
       return;
     }
 
-    const BATCH = 200;
-    let offset = 0;
-    let totalScanned = 0;
-    let totalDeleted = 0;
+    // dedupeDuplicateAssets processes the whole archive (or the given ids) server-side in a
+    // single call — there's no limit/offset pagination on this procedure, so this no longer
+    // loops in batches. grandTotal starts as an estimate for the initial progress display and
+    // is replaced with the real scanned count once the single call resolves.
     let grandTotal = targetIds ? targetIds.length : total;
-
     setDedupeProgress({ scanned: 0, deleted: 0, total: grandTotal });
 
     try {
-      while (true) {
-        const result = await dedupeDuplicates.mutateAsync({
-          archiveId,
-          ids: targetIds,
-          limit: BATCH,
-          offset,
-        });
-        totalScanned += result.scanned;
-        totalDeleted += result.deleted;
-        grandTotal = result.total;
-        setDedupeProgress({ scanned: totalScanned, deleted: totalDeleted, total: grandTotal });
-
-        if (!result.hasMore) break;
-        offset = result.nextOffset ?? offset + BATCH;
-      }
+      const result = await dedupeDuplicates.mutateAsync({ archiveId, ids: targetIds });
+      const totalScanned = result.scanned;
+      const totalDeleted = result.deleted;
+      setDedupeProgress({ scanned: totalScanned, deleted: totalDeleted, total: totalScanned });
 
       utils.mediaArchive.listAssets.invalidate();
       utils.mediaArchive.listArchives.invalidate();
@@ -1676,61 +1671,13 @@ export function ArchiveClipsGrid({
               )}
               {deleteLogoClips.isPending ? "Logo's verwijderen…" : "Verwijder logo-clips"}
             </button>
-            <button
-              type="button"
-              onClick={() => {
-                if (archiveId == null) return;
-                if (!confirm("Verwijder alle videoclips korter dan 1 seconde?")) return;
-                deleteZeroDurationClips.mutate({ archiveId });
-              }}
-              disabled={deleteZeroDurationClips.isPending || autoTitleRunning}
-              title="Verwijder alle videoclips korter dan 1 seconde (inclusief onbekende duur)"
-              className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg bg-red-500/15 text-red-300 border border-red-500/25 hover:bg-red-500/25 disabled:opacity-50"
-            >
-              {deleteZeroDurationClips.isPending ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : (
-                <Ban className="w-3.5 h-3.5" />
-              )}
-              {deleteZeroDurationClips.isPending ? "Verwijderen…" : "Verwijder 0s clips"}
-            </button>
+            {/* "Verwijder 0s clips" hidden — backing server procedure was never implemented
+                (see disabled deleteZeroDurationClips hook above). */}
           </>
         )}
-        <button
-          type="button"
-          onClick={() => {
-            if (archiveId == null) return;
-            reindexOrphans.mutate({ archiveId, autoGenerateTags: true, limit: 100 });
-          }}
-          disabled={reindexOrphans.isPending || autoTitleRunning}
-          title="Zoek clips die op de schijf staan maar niet meer in de database, en voeg ze terug toe"
-          className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg bg-green-500/15 text-green-300 border border-green-500/25 hover:bg-green-500/25 disabled:opacity-50"
-        >
-          {reindexOrphans.isPending ? (
-            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-          ) : (
-            <ScanSearch className="w-3.5 h-3.5" />
-          )}
-          {reindexOrphans.isPending ? "Clips herstellen…" : "Herstel verwijderde clips"}
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            if (archiveId == null) return;
-            if (!confirm("Scan de R2/S3-bucket en herstel clips die uit de database zijn verwijderd maar nog wel in de opslag staan?")) return;
-            restoreFromS3.mutate({ archiveId });
-          }}
-          disabled={restoreFromS3.isPending || autoTitleRunning}
-          title="Scan Cloudflare R2 en herstel clips die per ongeluk zijn verwijderd"
-          className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg bg-green-500/15 text-green-300 border border-green-500/25 hover:bg-green-500/25 disabled:opacity-50"
-        >
-          {restoreFromS3.isPending ? (
-            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-          ) : (
-            <ScanSearch className="w-3.5 h-3.5" />
-          )}
-          {restoreFromS3.isPending ? "R2 scannen…" : "Herstel uit R2"}
-        </button>
+        {/* "Herstel verwijderde clips" / "Herstel uit R2" hidden — backing server procedures
+            (reindexOrphanedClips, restoreFromS3) were never implemented (see disabled hooks
+            above). */}
         <button
           type="button"
           onClick={runRekognitionBulk}
