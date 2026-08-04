@@ -5,12 +5,20 @@
 //
 // Railway deployment: BUILT_IN_FORGE_API_KEY is not available on Railway.
 // Railway: use LLM_API_KEY (OpenAI) by default; Groq optional via GROQ_API_KEY or LLM_PROVIDER=groq.
-export type LlmProvider = "forge" | "gemini" | "groq" | "openai" | "anthropic" | "none";
+export type LlmProvider = "forge" | "gemini" | "cerebras" | "groq" | "openai" | "anthropic" | "none";
 
 /** Read a Google AI Studio (Gemini) key — GEMINI_API_KEY or GOOGLE_API_KEY. Genuinely free up
  *  to Google's daily/per-minute quota (no billing account required for an AI Studio key). */
 export function geminiKeyFromEnv(): string {
   return process.env.GEMINI_API_KEY?.trim() || process.env.GOOGLE_API_KEY?.trim() || "";
+}
+
+/** Read a Cerebras key — CEREBRAS_API_KEY. Free tier: 14,400 requests/day, 1M tokens/day, no
+ *  credit card required — by far the most generous free daily quota of any provider here
+ *  (vs. Gemini's ~250/day and Groq's 1,000/day), on the same custom-silicon-fast inference
+ *  Groq is known for. */
+export function cerebrasKeyFromEnv(): string {
+  return process.env.CEREBRAS_API_KEY?.trim() || "";
 }
 
 /** Read Groq key — GROQ_API_KEY, GROQ_KEY, any *GROQ* env var, or gsk_* in LLM_API_KEY. */
@@ -42,10 +50,12 @@ export function openAiKeyFromEnv(): string {
   return llm;
 }
 
-/** Which LLM backend to use (Forge > Gemini > OpenAI > Anthropic > Groq unless LLM_PROVIDER is set). */
+/** Which LLM backend to use (Forge > Gemini > Cerebras > OpenAI > Anthropic > Groq unless
+ *  LLM_PROVIDER is set). */
 export function resolveLlmProvider(): LlmProvider {
   const forced = process.env.LLM_PROVIDER?.trim().toLowerCase();
   if (forced === "gemini" && geminiKeyFromEnv()) return "gemini";
+  if (forced === "cerebras" && cerebrasKeyFromEnv()) return "cerebras";
   if (forced === "groq" && groqKeyFromEnv()) return "groq";
   if (forced === "openai" && openAiKeyFromEnv()) return "openai";
   if (forced === "anthropic" && anthropicKeyFromEnv()) return "anthropic";
@@ -53,10 +63,13 @@ export function resolveLlmProvider(): LlmProvider {
   if (process.env.BUILT_IN_FORGE_API_KEY?.trim()) return "forge";
   // Gemini first by default: a genuinely free (no billing account needed) Google AI Studio key,
   // good quality for scripts/tags/editorial-review-style text work — the explicit point of
-  // adding it was to stop defaulting to paid providers for everyday calls. Falls through to
-  // OpenAI/Anthropic/Groq exactly as before once Gemini's free daily/per-minute quota is hit.
-  // Override with LLM_PROVIDER=openai (or =anthropic, =groq) if that's ever preferred instead.
+  // adding it was to stop defaulting to paid providers for everyday calls. Cerebras next: also
+  // free with no billing account, and a much bigger daily quota (14,400 req/day vs Gemini's
+  // ~250/day) — a natural second-tier free option before ever touching a paid provider. Falls
+  // through to OpenAI/Anthropic/Groq exactly as before once both free daily quotas are hit.
+  // Override with LLM_PROVIDER=openai (or =anthropic, =groq, =cerebras) if ever preferred instead.
   if (geminiKeyFromEnv()) return "gemini";
+  if (cerebrasKeyFromEnv()) return "cerebras";
   if (openAiKeyFromEnv()) return "openai";
   if (anthropicKeyFromEnv()) return "anthropic";
   if (groqKeyFromEnv()) return "groq";
@@ -73,6 +86,8 @@ export function llmApiKeyForProvider(provider: LlmProvider): string {
       return process.env.BUILT_IN_FORGE_API_KEY?.trim() ?? "";
     case "gemini":
       return geminiKeyFromEnv();
+    case "cerebras":
+      return cerebrasKeyFromEnv();
     case "groq":
       return groqKeyFromEnv();
     case "openai":
@@ -103,6 +118,7 @@ export const ENV = {
   },
   get useForge() { return this.llmProvider === "forge"; },
   get useGemini() { return this.llmProvider === "gemini"; },
+  get useCerebras() { return this.llmProvider === "cerebras"; },
   get useGroq() { return this.llmProvider === "groq"; },
   /** True when using OpenAI directly (no Forge / Groq key). */
   get useOpenAI() { return this.llmProvider === "openai"; },

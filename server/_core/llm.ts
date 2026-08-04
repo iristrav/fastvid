@@ -1,4 +1,4 @@
-import { ENV, anthropicKeyFromEnv, geminiKeyFromEnv, groqKeyFromEnv, llmApiKeyForProvider, openAiKeyFromEnv, resolveLlmProvider, type LlmProvider } from "./env";
+import { ENV, anthropicKeyFromEnv, geminiKeyFromEnv, cerebrasKeyFromEnv, groqKeyFromEnv, llmApiKeyForProvider, openAiKeyFromEnv, resolveLlmProvider, type LlmProvider } from "./env";
 
 export type Role = "system" | "user" | "assistant" | "tool" | "function";
 
@@ -279,6 +279,7 @@ const normalizeToolChoice = (
 
 const resolveApiUrl = (provider: LlmProvider) => {
   if (provider === "groq") return "https://api.groq.com/openai/v1/chat/completions";
+  if (provider === "cerebras") return "https://api.cerebras.ai/v1/chat/completions";
   if (provider === "openai") return "https://api.openai.com/v1/chat/completions";
   if (provider === "anthropic") return "https://api.anthropic.com/v1/messages";
   return ENV.forgeApiUrl && ENV.forgeApiUrl.trim().length > 0
@@ -309,6 +310,11 @@ function resolveModel(provider: LlmProvider, hasVision: boolean, maxTokens?: num
     // Default fast model — preserves Groq TPD quota on Railway.
     return fastModel;
   }
+  if (provider === "cerebras") {
+    // gpt-oss-120b: confirmed available on Cerebras's free tier (Aug 2026), same model family
+    // as Groq's heavy model. Override with CEREBRAS_MODEL.
+    return process.env.CEREBRAS_MODEL?.trim() || "gpt-oss-120b";
+  }
   if (provider === "openai") {
     return process.env.LLM_MODEL?.trim() || "gpt-4o";
   }
@@ -327,6 +333,29 @@ function resolveModel(provider: LlmProvider, hasVision: boolean, maxTokens?: num
 
 /** Groq daily quota hit — skip retries and prefer OpenAI for subsequent calls. */
 let groqCooldownUntilMs = 0;
+
+/** Cerebras daily quota hit — skip retries and prefer the next provider for subsequent calls. */
+let cerebrasCooldownUntilMs = 0;
+export function isCerebrasInCooldown(): boolean {
+  return Date.now() < cerebrasCooldownUntilMs;
+}
+
+function isCerebrasDailyQuotaError(body: string): boolean {
+  const lower = body.toLowerCase();
+  return lower.includes("tokens per day") || lower.includes("requests per day") || lower.includes("daily limit");
+}
+
+function markCerebrasCooldown(errorText: string): void {
+  if (!isCerebrasDailyQuotaError(errorText) && !isRateLimitError(429)) return;
+  const waitSec = parseRetryAfterSeconds(errorText);
+  const cooldownMs =
+    waitSec != null && waitSec > 0
+      ? waitSec * 1000
+      : isCerebrasDailyQuotaError(errorText)
+        ? 60 * 60 * 1000
+        : 5 * 60 * 1000;
+  cerebrasCooldownUntilMs = Math.max(cerebrasCooldownUntilMs, Date.now() + cooldownMs);
+}
 
 /** OpenAI quota exhausted — skip for remainder of process lifetime. */
 let openAiQuotaExhausted = false;
@@ -410,6 +439,7 @@ function shouldFallbackToNextProvider(status: number, body: string): boolean {
 function providersToTry(primary: LlmProvider): LlmProvider[] {
   const out: LlmProvider[] = [];
   const geminiAvailable = Boolean(geminiKeyFromEnv()) && !isGeminiInCooldown();
+  const cerebrasAvailable = Boolean(cerebrasKeyFromEnv()) && !isCerebrasInCooldown();
   const groqAvailable = Boolean(groqKeyFromEnv()) && !isGroqInCooldown();
   const openAiAvailable = Boolean(openAiKeyFromEnv()) && !openAiQuotaExhausted;
   const anthropicAvailable = Boolean(anthropicKeyFromEnv()) && !anthropicCreditExhausted;
@@ -417,6 +447,7 @@ function providersToTry(primary: LlmProvider): LlmProvider[] {
   const push = (p: LlmProvider) => {
     if (p === "none" || out.includes(p)) return;
     if (p === "gemini" && !geminiAvailable) return;
+    if (p === "cerebras" && !cerebrasAvailable) return;
     if (p === "groq" && !groqAvailable) return;
     if (p === "openai" && !openAiAvailable) return;
     if (p === "anthropic" && !anthropicAvailable) return;
@@ -424,17 +455,23 @@ function providersToTry(primary: LlmProvider): LlmProvider[] {
     out.push(p);
   };
 
+  // Both immediate fallbacks (gemini's own failure, groq's own failure) prefer cerebras next —
+  // it's free (no billing account) with by far the largest daily quota of any provider here, so
+  // it's the natural next stop before ever reaching a paid provider.
   if (primary === "gemini" && !geminiAvailable) {
-    push("openai");
+    push("cerebras");
+  } else if (primary === "cerebras" && !cerebrasAvailable) {
+    push("gemini");
   } else if (primary === "anthropic" && !anthropicAvailable) {
     push("groq");
   } else if (primary === "groq" && !groqAvailable) {
-    push("anthropic");
+    push("cerebras");
   } else if (primary !== "none") {
     push(primary);
   }
 
   if (geminiAvailable) push("gemini");
+  if (cerebrasAvailable) push("cerebras");
   if (anthropicAvailable) push("anthropic");
   if (groqAvailable) push("groq");
   if (openAiAvailable) push("openai");
@@ -442,10 +479,10 @@ function providersToTry(primary: LlmProvider): LlmProvider[] {
 }
 
 const assertApiKey = () => {
-  if (!ENV.forgeApiKey && !geminiKeyFromEnv() && !groqKeyFromEnv() && !openAiKeyFromEnv() && !anthropicKeyFromEnv()) {
+  if (!ENV.forgeApiKey && !geminiKeyFromEnv() && !cerebrasKeyFromEnv() && !groqKeyFromEnv() && !openAiKeyFromEnv() && !anthropicKeyFromEnv()) {
     throw new Error(
-      "LLM API key is not configured. Set GEMINI_API_KEY (free, Google AI Studio) or GROQ_API_KEY " +
-      "(free) on Railway, or LLM_API_KEY / BUILT_IN_FORGE_API_KEY"
+      "LLM API key is not configured. Set GEMINI_API_KEY (free, Google AI Studio), CEREBRAS_API_KEY " +
+      "(free) or GROQ_API_KEY (free) on Railway, or LLM_API_KEY / BUILT_IN_FORGE_API_KEY"
     );
   }
 };
@@ -725,27 +762,38 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
   const primary = preferProvider ?? resolveLlmProvider();
   let chain = providersToTry(primary);
   // Groq vision models consistently return 404 — remove Groq from vision calls entirely.
-  if (hasVision) chain = chain.filter((p) => p !== "groq");
+  // Cerebras's vision support is unconfirmed on the free tier, so excluded defensively too —
+  // add it back once confirmed working rather than risk the same silent-404 pattern as Groq.
+  if (hasVision) chain = chain.filter((p) => p !== "groq" && p !== "cerebras");
   // Set only when the empty-chain fallback below forces Groq back in for a vision call because
   // OpenAI's quota/billing flag is up — otherwise the eventual Groq failure looks like the root
   // cause when the real one is "OpenAI has no credits", with no clue that OpenAI was ever tried.
   let visionFallbackDueToOpenAiQuota = false;
   if (chain.length === 0) {
-    // All providers blocked (cooldown / quota). Try Groq anyway if key exists — cooldown is
-    // a soft rate-limit guard, not a hard failure. Better to retry than to give up entirely.
-    const groqKey = groqKeyFromEnv();
-    if (groqKey) {
-      visionFallbackDueToOpenAiQuota = hasVision && openAiQuotaExhausted;
-      console.warn(
-        "[LLM] All providers in cooldown/exhausted — retrying Groq ignoring cooldown." +
-        (visionFallbackDueToOpenAiQuota ? " (OpenAI quota/billing exhausted — check platform.openai.com billing)" : "")
-      );
-      groqCooldownUntilMs = 0; // reset cooldown so this request can proceed
-      chain = ["groq"];
+    // All providers blocked (cooldown / quota). A cooldown is a soft rate-limit guard, not a
+    // hard failure — retry ignoring it rather than give up entirely. Cerebras first (non-vision
+    // only, see filter above): its daily quota is ~15x Groq's, so a cooldown here is far less
+    // likely to reflect genuine same-day exhaustion.
+    if (!hasVision && cerebrasKeyFromEnv()) {
+      console.warn("[LLM] All providers in cooldown/exhausted — retrying Cerebras ignoring cooldown.");
+      cerebrasCooldownUntilMs = 0; // reset cooldown so this request can proceed
+      chain = ["cerebras"];
     } else {
-      throw new Error(
-        "LLM API key is not configured. Set GROQ_API_KEY on Railway (free), or LLM_API_KEY / BUILT_IN_FORGE_API_KEY"
-      );
+      const groqKey = groqKeyFromEnv();
+      if (groqKey) {
+        visionFallbackDueToOpenAiQuota = hasVision && openAiQuotaExhausted;
+        console.warn(
+          "[LLM] All providers in cooldown/exhausted — retrying Groq ignoring cooldown." +
+          (visionFallbackDueToOpenAiQuota ? " (OpenAI quota/billing exhausted — check platform.openai.com billing)" : "")
+        );
+        groqCooldownUntilMs = 0; // reset cooldown so this request can proceed
+        chain = ["groq"];
+      } else {
+        throw new Error(
+          "LLM API key is not configured. Set GROQ_API_KEY or CEREBRAS_API_KEY on Railway (free), " +
+          "or LLM_API_KEY / BUILT_IN_FORGE_API_KEY"
+        );
+      }
     }
   }
 
@@ -878,6 +926,9 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
       if (provider === "groq" && isRateLimitError(response.status)) {
         markGroqCooldown(errorText);
       }
+      if (provider === "cerebras" && isRateLimitError(response.status)) {
+        markCerebrasCooldown(errorText);
+      }
       if (provider === "openai") {
         markOpenAiQuotaExhausted(errorText);
       }
@@ -886,10 +937,14 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
       const skipGroqRetries =
         provider === "groq" &&
         (isGroqDailyQuotaError(errorText) || (retryAfterSec != null && retryAfterSec > 120));
+      const skipCerebrasRetries =
+        provider === "cerebras" &&
+        (isCerebrasDailyQuotaError(errorText) || (retryAfterSec != null && retryAfterSec > 120));
+      const skipProviderRetries = skipGroqRetries || skipCerebrasRetries;
 
       if (
         isRateLimitError(response.status) &&
-        !skipGroqRetries &&
+        !skipProviderRetries &&
         attempt < 3 &&
         retryAfterSec != null &&
         retryAfterSec <= 120
@@ -905,7 +960,7 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
       if (shouldFallbackToNextProvider(response.status, errorText) && i + 1 < chain.length) {
         console.warn(
           `[LLM] ${provider} failed (${response.status})` +
-            (skipGroqRetries ? " [daily/long quota — no retry]" : "") +
+            (skipProviderRetries ? " [daily/long quota — no retry]" : "") +
             ` — falling back to ${chain[i + 1]}`
         );
         break;
@@ -916,8 +971,8 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
   }
 
   throw lastError ?? new Error(
-    groqKeyFromEnv() && !openAiKeyFromEnv() && isGroqInCooldown()
-      ? "LLM invoke failed: Groq daily quota exhausted — set LLM_API_KEY (OpenAI sk-...) for fallback"
+    groqKeyFromEnv() && cerebrasKeyFromEnv() && !openAiKeyFromEnv() && isGroqInCooldown() && isCerebrasInCooldown()
+      ? "LLM invoke failed: Groq and Cerebras daily quotas exhausted — set LLM_API_KEY (OpenAI sk-...) for fallback"
       : "LLM invoke failed: no provider available"
   );
 }

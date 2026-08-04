@@ -58,6 +58,9 @@ const PRICING_PER_1M_TOKENS: Record<string, { in: number; out: number }> = {
   "gemini-2.5-flash": { in: 0, out: 0 },
   "gemini-2.5-flash-lite": { in: 0, out: 0 },
   "gemini-2.5-pro": { in: 0, out: 0 },
+  // $0 by design: Cerebras's free tier (14,400 req/day, 1M tokens/day, no billing account) is
+  // the same kind of hard-capped-at-quota free key as Gemini's — same reasoning as above.
+  "gpt-oss-120b": { in: 0, out: 0 },
   DEFAULT_FALLBACK: { in: 3.00, out: 12.00 },
 };
 
