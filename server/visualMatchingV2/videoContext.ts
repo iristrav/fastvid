@@ -7,6 +7,7 @@ import { createHash } from "crypto";
 import { invokeLLM } from "../_core/llm";
 import { createVisualContextCache, getVisualContextCacheByTopicHash } from "../db";
 import { logVideoContext, timedStep } from "./logging";
+import { parseJson } from "./llmJson";
 import type { VideoContext } from "./types";
 
 function hashTopic(topic: string): string {
@@ -32,16 +33,6 @@ const VIDEO_CONTEXT_SCHEMA = {
     },
   },
 };
-
-function parseJson<T>(content: unknown, label: string): T {
-  if (content && typeof content === "object") return content as T;
-  const raw = typeof content === "string" ? content : JSON.stringify(content);
-  try {
-    return JSON.parse(raw) as T;
-  } catch (err) {
-    throw new Error(`${label}: ${(err as Error).message}`);
-  }
-}
 
 /** Builds (or reuses a cached) VideoContext for the given video/topic. Pure read/build —
  *  does not mutate or get consumed by the active pipeline at this stage. */

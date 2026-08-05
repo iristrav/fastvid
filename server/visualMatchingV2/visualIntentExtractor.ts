@@ -8,6 +8,7 @@ import { createHash } from "crypto";
 import { invokeLLM } from "../_core/llm";
 import { createVisualIntentCache, getVisualIntentCacheByIntentHash } from "../db";
 import { logVisualIntent, timedStep } from "./logging";
+import { parseJson } from "./llmJson";
 import type { VideoContext, VisualIntent } from "./types";
 
 export type BeatInput = {
@@ -83,16 +84,6 @@ const VISUAL_INTENT_SCHEMA = {
     },
   },
 };
-
-function parseJson<T>(content: unknown, label: string): T {
-  if (content && typeof content === "object") return content as T;
-  const raw = typeof content === "string" ? content : JSON.stringify(content);
-  try {
-    return JSON.parse(raw) as T;
-  } catch (err) {
-    throw new Error(`${label}: ${(err as Error).message}`);
-  }
-}
 
 /** Extracts a VisualIntent per beat for one scene, batched into a single LLM call for
  *  beats not already cached. Beats with a cache hit cost zero LLM tokens. */

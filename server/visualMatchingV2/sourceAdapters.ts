@@ -210,9 +210,14 @@ export const internetArchiveAdapter: SourceAdapter = {
 /** Top-N ranked queries (see queryGeneration.ts) as a plain string list, for adapters whose
  *  underlying fetch function already accepts `string | string[]` and tries them in order —
  *  a direct use of Phase 3's ranked-query-generation output instead of the single
- *  searchQueryFromIntent() string the pre-Phase-3 adapters above still use. */
-function rankedQueryStrings(intent: VisualIntent, max: number): string[] {
-  const queries = generateRankedSearchQueries(intent).slice(0, max).map((q) => q.query);
+ *  searchQueryFromIntent() string the pre-Phase-3 adapters above still use. Prefers
+ *  ctx.rankedQueries (computed once per beat by the Retrieval Orchestrator and shared across
+ *  every adapter, so the hybrid pipeline's LLM expansion call runs at most once per beat, not
+ *  once per adapter); falls back to computing them directly when ctx has none (e.g. an
+ *  adapter called standalone, outside the Orchestrator). */
+async function rankedQueryStrings(intent: VisualIntent, max: number, ctx: SourceAdapterSearchCtx): Promise<string[]> {
+  const ranked = ctx.rankedQueries ?? (await generateRankedSearchQueries(intent));
+  const queries = ranked.slice(0, max).map((q) => q.query);
   return queries.length > 0 ? queries : [searchQueryFromIntent(intent)];
 }
 
@@ -221,7 +226,7 @@ export const youtubeCcAdapter: SourceAdapter = {
   supportsPreEmbedding: false,
   async search(intent, ctx) {
     return withAdapterLogging("youtube_cc", intent, async () => {
-      const queries = rankedQueryStrings(intent, 5);
+      const queries = await rankedQueryStrings(intent, 5, ctx);
       const paths = await fetchYouTubeCCClips(queries, 5, ctx.workDir, ctx.sceneIndex, ctx.count ?? 5);
       return paths.map((p): CandidateAsset =>
         normalizeCandidate(
@@ -238,7 +243,7 @@ export const europeanaAdapter: SourceAdapter = {
   supportsPreEmbedding: false,
   async search(intent, ctx) {
     return withAdapterLogging("europeana", intent, async () => {
-      const queries = rankedQueryStrings(intent, 5);
+      const queries = await rankedQueryStrings(intent, 5, ctx);
       const candidates = await fetchEuropeanaVideos(queries, 5, ctx.workDir, ctx.sceneIndex, ctx.count ?? 5);
       return candidates.map((c): CandidateAsset =>
         normalizeCandidate(

@@ -14,6 +14,14 @@ vi.mock("../videoPipeline", () => ({
 vi.mock("../curatedMediaSourcing", () => ({
   fetchCuratedArchiveBeatClip: vi.fn().mockResolvedValue(null),
 }));
+// These adapters fall back to computing ranked queries themselves (queryGeneration.ts's
+// hybrid pipeline) when ctx.rankedQueries isn't pre-supplied, as in these standalone-adapter
+// tests — mocked so that path never depends on API keys/DB being absent in the sandbox.
+vi.mock("../_core/llm", () => ({ invokeLLM: vi.fn().mockRejectedValue(new Error("no LLM in tests")) }));
+vi.mock("../db", () => ({
+  createVisualQueryExpansionCache: vi.fn().mockResolvedValue(undefined),
+  getVisualQueryExpansionCacheByIntentHash: vi.fn().mockResolvedValue(undefined),
+}));
 
 const intent: VisualIntent = {
   beatId: "b0",

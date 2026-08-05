@@ -1320,6 +1320,8 @@ import {
   InsertVisualIntentCacheRow,
   visualContextCache,
   visualIntentCache,
+  InsertVisualQueryExpansionCacheRow,
+  visualQueryExpansionCache,
   InsertEmbeddingCacheRow,
   InsertMediaArchiveAssetEmbeddingRow,
   embeddingCache,
@@ -1359,6 +1361,24 @@ export async function createVisualIntentCache(data: InsertVisualIntentCacheRow) 
   const db = await getDb();
   if (!db) return undefined;
   const result = await db.insert(visualIntentCache).values(data);
+  return (result as unknown as [{ insertId: number }])[0]?.insertId as number;
+}
+
+export async function getVisualQueryExpansionCacheByIntentHash(intentHash: string) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db
+    .select()
+    .from(visualQueryExpansionCache)
+    .where(eq(visualQueryExpansionCache.intentHash, intentHash))
+    .limit(1);
+  return result.length > 0 ? result[0] : undefined;
+}
+
+export async function createVisualQueryExpansionCache(data: InsertVisualQueryExpansionCacheRow) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db.insert(visualQueryExpansionCache).values(data);
   return (result as unknown as [{ insertId: number }])[0]?.insertId as number;
 }
 

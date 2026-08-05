@@ -201,6 +201,18 @@ export const visualIntentCache = mysqlTable("visual_intent_cache", {
 export type VisualIntentCacheRow = typeof visualIntentCache.$inferSelect;
 export type InsertVisualIntentCacheRow = typeof visualIntentCache.$inferInsert;
 
+/** One row per distinct beat intent's LLM query expansion (Phase 3 hybrid query generation,
+ *  queryGeneration.ts) — reused whenever the same intent (by intentHash) needs its ranked
+ *  queries regenerated, so an identical beat never re-triggers the LLM call twice. */
+export const visualQueryExpansionCache = mysqlTable("visual_query_expansion_cache", {
+  id: int("id").autoincrement().primaryKey(),
+  intentHash: varchar("intentHash", { length: 128 }).notNull(),
+  queriesJson: json("queriesJson").$type<Array<{ query: string; category: string }>>().notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+export type VisualQueryExpansionCacheRow = typeof visualQueryExpansionCache.$inferSelect;
+export type InsertVisualQueryExpansionCacheRow = typeof visualQueryExpansionCache.$inferInsert;
+
 // ─── Visual Matching Engine V2 — Embedding infrastructure (stage 3) ───────────
 /** Permanent embedding cache, keyed by subject (asset id, or a content hash for ad-hoc
  *  text like a search query) + model + embedding_version, so an embedding is computed at

@@ -63,7 +63,17 @@ export type RankedQuerySource =
   | "primary_keyword"
   | "secondary_keyword"
   | "brand"
-  | "era_country";
+  | "era_country"
+  // LLM-generated tiers (Phase 3 hybrid query generation) — the deterministic tiers above are
+  // combinatorial (entity x template); these come from asking the LLM what a human documentary
+  // editor would actually type into a search box for this beat: aliases/alternative names,
+  // conceptually-related search terms, period-accurate terminology, and phrases specific to the
+  // beat's context (a launch event, a battle, an interview). Never replaces the deterministic
+  // tiers — only adds to them, and degrades to [] (not a crash) if the LLM call fails.
+  | "llm_alias"
+  | "llm_related_concept"
+  | "llm_historical_term"
+  | "llm_context_phrase";
 
 export type RankedQuery = {
   query: string;
@@ -170,6 +180,12 @@ export type SourceAdapterSearchCtx = {
    *  option) should; adapters that wrap legacy functions without signal support may ignore
    *  it — the Candidate Fetcher still stops waiting on abort either way. */
   signal?: AbortSignal;
+  /** This beat's ranked search queries (queryGeneration.ts), computed once per beat by the
+   *  Retrieval Orchestrator and shared across every adapter searched for it — so two adapters
+   *  (e.g. youtube_cc and europeana) never each trigger their own LLM query-expansion call for
+   *  the same beat. Adapters that want ranked queries and find this unset (e.g. called directly
+   *  in a test, outside the Orchestrator) fall back to computing them on demand. */
+  rankedQueries?: RankedQuery[];
 };
 
 // ─── Stage 2: Candidate Fetcher / Parallel Search Engine ──────────────────────
@@ -740,4 +756,9 @@ export type RetrievalOrchestratorOptions = {
   workDir: string;
   sceneIndex: number;
   count?: number;
+  /** Video-level context (era/setting/key subjects), passed through to the LLM query-expansion
+   *  step (queryGeneration.ts) so its prompt has the same background the Visual Intent
+   *  extractor already used — not required; omitted means the LLM prompt relies on the
+   *  intent's own fields only. */
+  videoContext?: VideoContext;
 };
