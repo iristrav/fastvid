@@ -738,6 +738,89 @@ async function startServer() {
     }
   });
 
+  // ─── Real-time progress (SSE, Phase 1) ────────────────────────────────────
+  // Replaces the client's 5s pollStatus polling with a push feed. Chosen over WebSocket:
+  // no new runtime dependency, works over plain HTTP/1.1 through Railway's proxy without
+  // upgrade-handling edge cases, and reuses the same cookie-based JWT auth as a normal GET
+  // request. Internally this still polls the DB (1s, private to the server — no extra
+  // client round trips) rather than a push-based DB notification, since that works
+  // identically regardless of which storage/queue backend is active. The existing
+  // pollStatus tRPC query and its 5s refetchInterval are left untouched as a fallback —
+  // this endpoint is additive, not a replacement.
+  app.get("/api/events/video/:id", async (req, res) => {
+    try {
+      const { parse: parseCookies } = await import("cookie");
+      const { jwtVerify } = await import("jose");
+      const { COOKIE_NAME } = await import("@shared/const");
+      const { getVideoById, getUserById } = await import("../db");
+      const { resolveCanonicalProgressStage } = await import("@shared/pipelineProgress");
+
+      const cookies = parseCookies(req.headers.cookie ?? "");
+      const token = cookies[COOKIE_NAME];
+      if (!token) { res.status(401).json({ error: "Unauthorized" }); return; }
+
+      let userId: number;
+      try {
+        const { payload } = await jwtVerify(token, getSessionSecret(), { algorithms: ["HS256"] });
+        userId = payload.userId as number;
+        if (!userId) throw new Error("No userId in token");
+      } catch {
+        res.status(401).json({ error: "Invalid session" }); return;
+      }
+
+      const videoId = parseInt(req.params.id, 10);
+      if (isNaN(videoId)) { res.status(400).json({ error: "Invalid video ID" }); return; }
+
+      const video = await getVideoById(videoId);
+      if (!video) { res.status(404).json({ error: "Video not found" }); return; }
+
+      const user = await getUserById(userId);
+      if (video.userId !== userId && user?.role !== "admin") {
+        res.status(403).json({ error: "Forbidden" }); return;
+      }
+
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache, no-transform");
+      res.setHeader("Connection", "keep-alive");
+      res.flushHeaders?.();
+
+      let lastPayload = "";
+      const send = (event: Record<string, unknown>) => {
+        const payload = JSON.stringify(event);
+        if (payload === lastPayload) return;
+        lastPayload = payload;
+        res.write(`data: ${payload}\n\n`);
+      };
+
+      const tick = async () => {
+        try {
+          const current = await getVideoById(videoId);
+          if (!current) { clearInterval(interval); res.end(); return; }
+          send({
+            status: current.status,
+            progressStep: current.progressStep,
+            progressPercent: current.progressPercent ?? 0,
+            stage: resolveCanonicalProgressStage(current.status, current.progressStep),
+          });
+          if (current.status === "completed" || current.status === "failed") {
+            clearInterval(interval);
+            res.end();
+          }
+        } catch (err) {
+          console.error("[SSE] Poll error:", err);
+        }
+      };
+
+      const interval = setInterval(tick, 1000);
+      req.on("close", () => clearInterval(interval));
+      await tick();
+    } catch (err) {
+      console.error("[SSE] Error:", err);
+      if (!res.headersSent) res.status(500).json({ error: "Internal server error" });
+      else res.end();
+    }
+  });
+
   // ─── Internal Video Trigger (dev/testing only) ──────────────────────────────
   // Allows triggering video generation without OAuth authentication.
   // Protected by INTERNAL_TRIGGER_KEY env var. If that env var is unset in

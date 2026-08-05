@@ -20,6 +20,7 @@ import {
 import { MediaArchiveAdmin } from "@/components/admin/MediaArchiveAdmin";
 import { NicheRequestsAdmin } from "@/components/admin/NicheRequestsAdmin";
 import { GenerationProgressBar } from "@/components/GenerationProgressBar";
+import { useVideoProgressStream } from "@/hooks/useVideoProgressStream";
 
 function formatVideoId(id: number) {
   return `#VID-${String(id).padStart(4, "0")}`;
@@ -369,10 +370,16 @@ function UsersTable() {
 
 function VideoStatusCell({ video }: { video: VideoRow }) {
   const isInProgress = !['completed', 'failed'].includes(video.status);
-  const { data: pollData } = trpc.video.pollStatus.useQuery(
+  const { data: pollData, refetch: refetchPollStatus } = trpc.video.pollStatus.useQuery(
     { id: video.id },
     { enabled: isInProgress, refetchInterval: isInProgress ? 5000 : false }
   );
+  // SSE push (Phase 1), additive to the 5s poll above — see Dashboard.tsx's VideoCard for
+  // the same pattern and rationale.
+  const progressEvent = useVideoProgressStream(video.id, isInProgress);
+  useEffect(() => {
+    if (progressEvent) void refetchPollStatus();
+  }, [progressEvent, refetchPollStatus]);
   const status = pollData?.status ?? video.status;
   const progressPercent =
     (pollData as { progressPercent?: number } | undefined)?.progressPercent ?? video.progressPercent ?? 0;
@@ -550,7 +557,7 @@ function AdminVideoGenerator() {
       toast.error("Failed to start generation", { description: toastErrorMessage(err) }),
   });
 
-  const { data: videoStatus, isLoading: statusLoading } = trpc.video.pollStatus.useQuery(
+  const { data: videoStatus, isLoading: statusLoading, refetch: refetchVideoStatus } = trpc.video.pollStatus.useQuery(
     { id: generatedId! },
     {
       enabled: !!generatedId,
@@ -560,6 +567,14 @@ function AdminVideoGenerator() {
       },
     }
   );
+  // SSE push (Phase 1), additive to the 5s poll above — see Dashboard.tsx's VideoCard for
+  // the same pattern and rationale.
+  const generatedStatus = (videoStatus as { status?: string } | undefined)?.status;
+  const generatedInProgress = !!generatedId && generatedStatus !== "completed" && generatedStatus !== "failed";
+  const generatedProgressEvent = useVideoProgressStream(generatedId, generatedInProgress);
+  useEffect(() => {
+    if (generatedProgressEvent) void refetchVideoStatus();
+  }, [generatedProgressEvent, refetchVideoStatus]);
 
   const statusData = videoStatus as {
     status?: string;

@@ -62,6 +62,66 @@ export function pipelineStageIndex(key: PipelineDisplayStageKey): number {
   return PIPELINE_DISPLAY_STAGES.findIndex((s) => s.key === key);
 }
 
+/**
+ * The 8 canonical stage labels for Phase 1's real-time (SSE) progress feed — a finer-grained
+ * sibling of resolvePipelineDisplayStage's 4-stage mapping above, added alongside it (not a
+ * replacement) so the existing Dashboard/Admin polling UI is unaffected. Added for
+ * GET /api/events/video/:id (server/_core/index.ts) and the useVideoProgressStream frontend
+ * hook.
+ */
+export const CANONICAL_PROGRESS_STAGES = [
+  "Queued",
+  "Preparing",
+  "Generating Script",
+  "Generating Voice",
+  "Searching Media",
+  "Rendering",
+  "Uploading",
+  "Completed",
+] as const;
+
+export type CanonicalProgressStage = (typeof CANONICAL_PROGRESS_STAGES)[number];
+
+/** Map a video's DB status + raw progressStep string onto one of the 8 canonical stages. */
+export function resolveCanonicalProgressStage(
+  status: string,
+  rawStage: string | null | undefined
+): CanonicalProgressStage {
+  if (status === "queued") return "Queued";
+  if (status === "completed") return "Completed";
+  if (status === "failed") return "Completed"; // terminal either way — stream closes on both
+
+  const s = (rawStage ?? "").toLowerCase();
+
+  if (/complete|klaar|video ready|re-render complete/.test(s)) return "Completed";
+  if (/upload|export/.test(s)) return "Uploading";
+  if (
+    /assembl|samenvoeg|concatenat|muziek|afrond|effect|overgang|jaartal|grade|nalopen|eindcontrole|final review|controleren|beeld.?tekst|visual review|montage|plakken|achter elkaar|compose|samenstellen|stitch/.test(
+      s
+    )
+  ) {
+    return "Rendering";
+  }
+  if (
+    /visual|beeld|archive|fetching|beat|backfill|scene \d|matching archive|generating ai|tick \d|zoeken|finding visuals/.test(
+      s
+    )
+  ) {
+    return "Searching Media";
+  }
+  if (/voiceover|elevenlabs|voice/.test(s)) return "Generating Voice";
+  if (/converting script to scenes|omzetten naar scenes|parsing/.test(s)) return "Preparing";
+  if (status === "generating_script" || /script|research|schrijven|prompt|outline|approv|refine|matching script|sections in parallel|assembling script|writing script/.test(s)) {
+    return "Generating Script";
+  }
+
+  // Fallback by DB status when the free-text label doesn't match anything above.
+  if (status === "generating_voiceover") return "Generating Voice";
+  if (status === "generating_visuals") return "Searching Media";
+  if (status === "generating_effects" || status === "awaiting_approval") return "Rendering";
+  return "Preparing";
+}
+
 /** Human-readable duration for pipeline UI and logs (e.g. 42s, 3m 05s). */
 export function formatGenerationDuration(totalSec: number): string {
   const sec = Math.max(0, Math.floor(totalSec));
