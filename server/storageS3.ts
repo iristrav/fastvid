@@ -19,6 +19,9 @@ function getClient(): S3Client {
   return _client;
 }
 
+/** Uploads (a final video can be hundreds of MB) get up to 3 attempts with backoff so a
+ *  transient network hiccup against S3/R2 doesn't silently drop the file — previously a
+ *  single failed PutObjectCommand call threw immediately with no retry. */
 export async function s3PutObject(
   relKey: string,
   data: Buffer | Uint8Array | string,
@@ -31,17 +34,36 @@ export async function s3PutObject(
   const key = prefixStorageKey(relKey);
   const body = typeof data === "string" ? Buffer.from(data) : Buffer.from(data as Uint8Array);
 
-  await getClient().send(
-    new PutObjectCommand({
-      Bucket: bucket,
-      Key: key,
-      Body: body,
-      ContentType: contentType,
-    })
-  );
-
-  console.log(`[S3Storage] Uploaded ${(body.length / 1024).toFixed(0)}KB → s3://${bucket}/${key}`);
-  return { bucket, key };
+  const maxAttempts = 3;
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      await getClient().send(
+        new PutObjectCommand({
+          Bucket: bucket,
+          Key: key,
+          Body: body,
+          ContentType: contentType,
+        })
+      );
+      console.log(
+        `[S3Storage] Uploaded ${(body.length / 1024).toFixed(0)}KB → s3://${bucket}/${key}` +
+          (attempt > 1 ? ` (succeeded on attempt ${attempt})` : "")
+      );
+      return { bucket, key };
+    } catch (err) {
+      lastErr = err;
+      if (attempt < maxAttempts) {
+        const delayMs = 500 * 2 ** (attempt - 1);
+        console.warn(
+          `[S3Storage] Upload attempt ${attempt}/${maxAttempts} failed for ${key}, retrying in ${delayMs}ms:`,
+          (err as Error).message
+        );
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+  }
+  throw lastErr;
 }
 
 /**
