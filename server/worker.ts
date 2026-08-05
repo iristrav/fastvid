@@ -7,7 +7,7 @@ import { fileURLToPath } from "url";
 import { shouldRunQueueWorker } from "@shared/videoQueue";
 import { recoverAllStuckVideos } from "./db";
 import { logLlmStartupDiagnostics, assertProductionLlmReady } from "./llmStartupDiagnostics";
-import { startVideoQueueWorker } from "./videoQueue";
+import { startVideoQueueWorker } from "./queue";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 

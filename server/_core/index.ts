@@ -838,7 +838,7 @@ async function startServer() {
     }
     try {
       const { createVideo } = await import('../db');
-      const { enqueueVideoJob } = await import('../videoQueue');
+      const { enqueueVideoJob } = await import('../queue');
       const { prompt, videoLength = '8-10', videoType = 'documentary', userId = 1 } = req.body;
       if (!prompt) { res.status(400).json({ error: 'prompt required' }); return; }
       const videoId = await createVideo({ userId, prompt, videoLength, videoType, status: 'queued' });
@@ -1135,7 +1135,7 @@ recoverStuckPipelines()
       console.log("[VideoQueue] Embedded worker disabled (EMBED_QUEUE_WORKER=false)");
       return;
     }
-    const { startVideoQueueWorker } = await import("../videoQueue");
+    const { startVideoQueueWorker } = await import("../queue");
     startVideoQueueWorker();
     // Only relevant when this process actually runs jobs — see worker.ts for why this exists
     // (a render killed from outside the process never reaches its own cleanup).
