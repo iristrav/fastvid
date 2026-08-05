@@ -890,7 +890,7 @@ export function getWorkerHeartbeat(): string {
     .join(" | ");
 }
 
-const exec = async (cmd: string, eagainRetriesLeft = EXEC_FORK_RETRIES): Promise<{ stdout: string; stderr: string }> => {
+export const exec = async (cmd: string, eagainRetriesLeft = EXEC_FORK_RETRIES): Promise<{ stdout: string; stderr: string }> => {
   // If the enclosing scene-visuals attempt already timed out and was abandoned, refuse to
   // spawn more work — otherwise fallback/retry logic just keeps opening new ffmpeg/ffprobe
   // processes forever in the background (see withSceneFetchTimeout).
@@ -994,7 +994,7 @@ const FONT_REGULAR = resolveFontPath('NotoSans-Regular.ttf');
 const CANVAS_AVAILABLE = false; // kept for reference, all functions use FFmpeg-only paths
 
 // Linux/Railway: prefer /var/tmp (survives long runs). Windows/dev: use OS temp dir.
-const TMP_DIR =
+export const TMP_DIR =
   process.env.FASTVID_TMP_DIR ??
   (process.platform === "win32" ? path.join(os.tmpdir(), "fastvid") : "/var/tmp");
 
@@ -1165,7 +1165,7 @@ function montageXfadeSec(avgClipDur = archiveVisualBeatSec()): number {
 const CHAPTER_CARD_DURATION = 2.5;
 
 /** Wall-clock budgets: short ≤60 min, long ≤90 min (see getPipelinePerfProfile). */
-interface PipelinePerfProfile {
+export interface PipelinePerfProfile {
   targetWallClockMin: number;
   maxBeatsPerScene: number;
   maxTopicQueries: number;
@@ -2438,7 +2438,7 @@ function applyAiFallbackToProfile(
   );
 }
 
-function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProfile {
+export function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProfile {
   const videoLength = normalizeVideoLength(videoLengthRaw);
   // Was raised to 7/6 assuming "24 vCPU / 24GB RAM, plenty of headroom" — but Railway logs
   // showed 100+ ffmpeg/ffprobe processes getting OOM-killed within under two minutes at that
@@ -2914,7 +2914,7 @@ async function trimDownloadedStockClip(
 //   8-10 min = 480-600s → ~18 scenes @ ~30s each
 //   10-15 min= 600-900s → ~25 scenes @ ~30s each
 //   15-20 min= 900-1200s→ ~35 scenes @ ~30-35s each
-function getScenesForLength(videoLengthRaw: string): number {
+export function getScenesForLength(videoLengthRaw: string): number {
   const videoLength = normalizeVideoLength(videoLengthRaw);
   switch (videoLength) {
     case "1":     return 3;
@@ -2933,7 +2933,7 @@ function getScenesForLength(videoLengthRaw: string): number {
  *  _runVideoPipelineInner's sequential branch) instead of firing every scene in the video at
  *  once — that's what made long-video quality/consistency lag behind 1-minute videos, whose
  *  handful of scenes always behaved like a single small chunk anyway. */
-function groupScenesIntoChunks(scenes: Scene[], targetChunkSec = 60): Array<{ start: number; end: number }> {
+export function groupScenesIntoChunks(scenes: Scene[], targetChunkSec = 60): Array<{ start: number; end: number }> {
   const chunks: Array<{ start: number; end: number }> = [];
   let chunkStart = 0;
   let chunkSec = 0;
@@ -2956,7 +2956,7 @@ function chunkStageTimeoutMs(totalStageMs: number, chunkSceneCount: number, tota
   return Math.max(minMs, Math.round((totalStageMs * chunkSceneCount) / totalSceneCount));
 }
 // ─── Types ─────────────────────────────────────────────────────────────────────────────────
-interface Scene {
+export interface Scene {
   index: number;
   text: string;
   visualCue: string;
@@ -3376,7 +3376,7 @@ function mapRawScene(
   };
 }
 
-async function parseScriptIntoScenes(
+export async function parseScriptIntoScenes(
   script: string,
   maxScenes: number,
   topicContext?: string,
@@ -3472,7 +3472,7 @@ async function concatVoiceoverParts(partPaths: string[], outputPath: string, wor
 }
 
 /** Build one MP3 for the full narration (1+ ElevenLabs calls if script is very long). */
-async function synthesizeFullNarrationMp3(
+export async function synthesizeFullNarrationMp3(
   scenes: Scene[],
   workDir: string,
   voiceId?: string,
@@ -3556,7 +3556,7 @@ async function synthesizeFullNarrationMp3(
 }
 
 /** Full-script TTS (ElevenLabs) then split MP3 per scene by word counts — all video lengths. */
-async function generateBulkSceneVoiceovers(
+export async function generateBulkSceneVoiceovers(
   scenes: Scene[],
   audioPaths: string[],
   workDir: string,
@@ -3593,7 +3593,7 @@ function bulkVoiceoverTimeoutMs(sceneCount: number, videoLength?: string): numbe
   return Math.min(900_000, 120_000 + sceneCount * 20_000);
 }
 
-async function splitFullVoiceoverByScenes(
+export async function splitFullVoiceoverByScenes(
   fullAudioPath: string,
   scenes: Scene[],
   outputPaths: string[],
@@ -9658,7 +9658,7 @@ interface SceneBeat {
   voiceEndSec?: number;
 }
 
-interface VisualDedupState {
+export interface VisualDedupState {
   usedPaths: Set<string>;
   usedPexelsIds: Set<number>;
   usedPixabayIds: Set<number>;
@@ -9873,7 +9873,7 @@ function markCuratedArchiveClipUsage(dedup: VisualDedupState, clipPath: string):
   }
 }
 
-function createVisualDedupState(
+export function createVisualDedupState(
   perf: PipelinePerfProfile,
   topic?: { primaryPerson?: string; personTopicLock?: boolean }
 ): VisualDedupState {
@@ -21126,7 +21126,7 @@ function buildCinematicOverlayOpts(enableSubtitles: boolean): {
   };
 }
 
-type ComposeSceneOptions = {
+export type ComposeSceneOptions = {
   phase?: ComposePhase;
   assemblyPath?: string;
   dedup?: VisualDedupState;
@@ -21393,7 +21393,7 @@ async function composeSceneVideo(
   }
 }
 
-async function composeSceneVideoInner(
+export async function composeSceneVideoInner(
   scene: Scene,
   clips: string[],
   audioPath: string,
@@ -22662,7 +22662,7 @@ async function ensureFinalVideoDuration(
 }
 
 // ─── 7. Final Concatenation + Music Mix ───────────────────────────────────────
-async function concatenateScenesWithMusic(
+export async function concatenateScenesWithMusic(
   scenePaths: string[],
   workDir: string,
   videoId: number,
