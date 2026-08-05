@@ -1,4 +1,4 @@
-import { float, index, int, json, longtext, mysqlEnum, mysqlTable, text, timestamp, varchar } from "drizzle-orm/mysql-core";
+import { float, index, int, json, longtext, mysqlEnum, mysqlTable, text, timestamp, uniqueIndex, varchar } from "drizzle-orm/mysql-core";
 
 /**
  * Core user table backing auth flow.
@@ -507,6 +507,31 @@ export const llmSpendDaily = mysqlTable("llm_spend_daily", {
 });
 
 export type LlmSpendDailyRow = typeof llmSpendDaily.$inferSelect;
+
+/** Per-user companion to llm_spend_daily (Phase 1 "AI Gateway" work — tracking only, no
+ *  enforcement yet). One row per (userId, day, model); written alongside the existing global
+ *  llm_spend_daily row so today's global daily-budget cap is unaffected. See
+ *  server/_core/llmBudget.ts recordLlmUsage(). */
+export const llmSpendByUser = mysqlTable(
+  "llm_spend_by_user",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    userId: int("userId").notNull().references(() => users.id),
+    day: varchar("day", { length: 10 }).notNull(),
+    model: varchar("model", { length: 128 }).notNull(),
+    promptTokens: int("promptTokens").notNull().default(0),
+    completionTokens: int("completionTokens").notNull().default(0),
+    spentUsdCents: int("spentUsdCents").notNull().default(0),
+    callCount: int("callCount").notNull().default(0),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    userIdDayIdx: index("llm_spend_by_user_userId_day_idx").on(t.userId, t.day),
+    userDayModelUnique: uniqueIndex("llm_spend_by_user_userId_day_model_unique").on(t.userId, t.day, t.model),
+  })
+);
+
+export type LlmSpendByUserRow = typeof llmSpendByUser.$inferSelect;
 
 // ─── Editorial Review ──────────────────────────────────────────────────────────
 

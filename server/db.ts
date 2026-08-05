@@ -7,7 +7,7 @@ import { isShortVideoLength, normalizeVideoLength } from "@shared/videoLengths";
 import { validateFinalVideoForExport, resolveStoredVideoLocalPath, validateFinalVideoPlayable } from "./finalVideoGate";
 import { maxPipelineWallClockMin, maxPipelineWallClockHardMin, visualStageWallClockMin, pipelineWallClockLimitEnabled, pipelineProgressStallRecoveryEnabled, pipelineProgressStallThresholdMs, pipelineMaxStallRecoveries, pipelineMinutesPerVideoMinute, pipelineWallClockGraceFactor, pipelineComposeGraceMs, PIPELINE_UNLIMITED_MS } from "./sourcingPolicy";
 import type { Video } from "../drizzle/schema";
-import { InsertInviteCode, InsertUser, InsertVideo, InsertPasswordResetToken, inviteCodes, users, videos, passwordResetTokens } from "../drizzle/schema";
+import { InsertInviteCode, InsertUser, InsertVideo, InsertPasswordResetToken, inviteCodes, users, videos, passwordResetTokens, llmSpendByUser } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 
 let _db: ReturnType<typeof drizzle> | null = null;
@@ -156,6 +156,19 @@ export async function getAllUsers(limit = 100, offset = 0) {
   const db = await getDb();
   if (!db) return [];
   return db.select().from(users).orderBy(desc(users.createdAt)).limit(limit).offset(offset);
+}
+
+/** Per-user LLM usage rows (Phase 1 "AI Gateway" tracking, see llmBudget.ts recordLlmUsage),
+ *  most recent day first — for admin inspection, no enforcement yet. */
+export async function getUserLlmSpend(userId: number, limitRows = 90) {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select()
+    .from(llmSpendByUser)
+    .where(eq(llmSpendByUser.userId, userId))
+    .orderBy(desc(llmSpendByUser.day))
+    .limit(limitRows);
 }
 
 export async function updateUserSubscription(userId: number, data: {

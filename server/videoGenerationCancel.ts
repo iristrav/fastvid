@@ -22,19 +22,25 @@ export function throwIfVideoGenerationCancelled(videoId: number): void {
 }
 
 // ─── Active-video-id context ───────────────────────────────────────────────────
-// Lets any module (videoPipeline.ts, localClipVision.ts, ...) that spawns an ffmpeg/ffprobe
-// child ask "which video is this render for?" without threading videoId through every
+// Lets any module (videoPipeline.ts, localClipVision.ts, llm.ts, ...) that needs to know
+// "which video/user is this render for?" without threading videoId/userId through every
 // function signature, and without a circular import back to videoPipeline.ts (which already
-// imports from localClipVision.ts). Set once at the very top of a render; read from deep
-// inside any nested async call within that render's call tree.
-const activeVideoIdStorage = new AsyncLocalStorage<number>();
+// imports from localClipVision.ts and llm.ts). Set once at the very top of a render; read
+// from deep inside any nested async call within that render's call tree — in particular,
+// llm.ts's invokeLLM reads the userId here to attribute per-user LLM spend without every one
+// of its 24 call sites needing to pass a userId explicitly.
+const activeRenderIdentityStorage = new AsyncLocalStorage<{ videoId: number; userId: number | null }>();
 
-export function runWithActiveVideoId<T>(videoId: number, fn: () => T): T {
-  return activeVideoIdStorage.run(videoId, fn);
+export function runWithActiveVideoId<T>(videoId: number, fn: () => T, userId: number | null = null): T {
+  return activeRenderIdentityStorage.run({ videoId, userId }, fn);
 }
 
 export function getActiveVideoId(): number | undefined {
-  return activeVideoIdStorage.getStore();
+  return activeRenderIdentityStorage.getStore()?.videoId;
+}
+
+export function getActiveUserId(): number | null | undefined {
+  return activeRenderIdentityStorage.getStore()?.userId;
 }
 
 /** Convenience: throws if the CURRENT active render (from context) has been cancelled.

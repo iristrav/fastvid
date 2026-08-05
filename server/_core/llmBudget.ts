@@ -24,7 +24,7 @@
 
 import { eq, sql } from "drizzle-orm";
 import { getDb } from "../db";
-import { llmSpendDaily } from "../../drizzle/schema";
+import { llmSpendDaily, llmSpendByUser } from "../../drizzle/schema";
 
 /** Default daily budget in USD. Override with LLM_DAILY_BUDGET_USD. */
 const DEFAULT_DAILY_BUDGET_USD = 15;
@@ -111,8 +111,20 @@ export function llmDailyBudgetUsd(): number {
   return dailyBudgetUsd();
 }
 
-/** Records one call's usage. Fire-and-forget from the caller — never throws, never blocks. */
-export function recordLlmUsage(model: string, promptTokens: number, completionTokens: number): void {
+/**
+ * Records one call's usage. Fire-and-forget from the caller — never throws, never blocks.
+ * `userId` is optional (Phase 1 "AI Gateway" work — tracking only, no enforcement yet): when
+ * present (the call happened inside a video render, via llm.ts reading videoGenerationCancel.ts's
+ * active-render context), it's also written to llm_spend_by_user for future per-user billing/
+ * quota UI. The existing global llm_spend_daily write below is unchanged either way, so today's
+ * daily budget cap keeps working exactly as before.
+ */
+export function recordLlmUsage(
+  model: string,
+  promptTokens: number,
+  completionTokens: number,
+  userId?: number | null
+): void {
   const costUsd = estimateCostUsd(model, promptTokens, completionTokens);
   const day = todayUtc();
   // Immediate local increment so same-process budget checks are exact without waiting on the
@@ -135,6 +147,20 @@ export function recordLlmUsage(model: string, promptTokens: number, completionTo
             callCount: sql`${llmSpendDaily.callCount} + 1`,
           },
         });
+
+      if (userId != null) {
+        await db
+          .insert(llmSpendByUser)
+          .values({ userId, day, model, promptTokens, completionTokens, spentUsdCents: cents, callCount: 1 })
+          .onDuplicateKeyUpdate({
+            set: {
+              promptTokens: sql`${llmSpendByUser.promptTokens} + ${promptTokens}`,
+              completionTokens: sql`${llmSpendByUser.completionTokens} + ${completionTokens}`,
+              spentUsdCents: sql`${llmSpendByUser.spentUsdCents} + ${cents}`,
+              callCount: sql`${llmSpendByUser.callCount} + 1`,
+            },
+          });
+      }
     } catch {
       /* best-effort — local cache above already reflects this call regardless */
     }

@@ -32,7 +32,7 @@ import { sanitizeUser, sanitizeUsers } from "./userSanitize";
 import bcrypt from "bcryptjs";
 import { SignJWT } from "jose";
 import {
-  createVideo, getAllUsers, getAllVideos, getUserById, getUserByEmail,
+  createVideo, getAllUsers, getAllVideos, getUserById, getUserByEmail, getUserLlmSpend,
   searchVideos, getUserStats, getVideoById, getVideosByUserId, getVideoStats,
   updateUserRole, updateUserSubscription, updateVideoStatus, updateVideoProgress, updateVideoProgressLog,
   touchVideoProgress,
@@ -1181,6 +1181,9 @@ export const appRouter = router({
       if (!user) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Resource not found");
       return sanitizeUser(user);
     }),
+    /** Per-user LLM usage (Phase 1 "AI Gateway" tracking, see llmBudget.ts) — inspection only,
+     *  no quota enforcement yet. */
+    getUserLlmSpend: adminProcedure.input(z.object({ userId: z.number() })).query(async ({ input }) => getUserLlmSpend(input.userId)),
 
     // ─── Invite Codes ────────────────────────────────────────────────────────
     listInviteCodes: adminProcedure.query(async () => getAllInviteCodes()),
