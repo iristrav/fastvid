@@ -8,8 +8,11 @@
  *      no LLM call, since every entity was already extracted; templating costs nothing extra.
  *   3. generateLlmQueryExpansions() asks the LLM for additional queries a human documentary
  *      editor would search for: aliases/alternative names, related concepts, period-accurate
- *      historical terminology, and phrases specific to this beat's context. Cached per beat
- *      (by intentHash) so an identical beat never re-triggers the LLM call twice, and never
+ *      historical terminology, phrases specific to this beat's context, and — importantly —
+ *      IMPLICIT visual intent the sentence never names (reaction shots, cutaways, detail
+ *      shots, establishing/venue shots, ambiance B-roll), so the goal isn't only exact
+ *      matches but a visually engaging, professionally-edited scene. Cached per beat (by
+ *      intentHash) so an identical beat never re-triggers the LLM call twice, and never
  *      throws — a cache-miss LLM failure degrades to "no expansion this beat", not a crash;
  *      the deterministic list alone is always a complete, valid result on its own.
  *   4-6. mergeDedupeAndRank() merges both lists, removes duplicate query strings, and ranks
@@ -139,12 +142,14 @@ const LLM_CATEGORY_TO_SOURCE: Record<string, RankedQuerySource> = {
   related_concept: "llm_related_concept",
   historical_term: "llm_historical_term",
   context_phrase: "llm_context_phrase",
+  implicit_visual: "llm_implicit_visual",
 };
 
 const LLM_CATEGORY_SCORE: Record<string, number> = {
   historical_term: 0.8,
   context_phrase: 0.75,
   alias: 0.7,
+  implicit_visual: 0.68,
   related_concept: 0.6,
 };
 
@@ -164,7 +169,7 @@ const QUERY_EXPANSION_SCHEMA = {
               query: { type: "string" },
               category: {
                 type: "string",
-                enum: ["alias", "related_concept", "historical_term", "context_phrase"],
+                enum: ["alias", "related_concept", "historical_term", "context_phrase", "implicit_visual"],
               },
             },
             required: ["query", "category"],
@@ -200,12 +205,16 @@ function toRankedQueries(entries: CachedExpansionEntry[]): RankedQuery[] {
 /**
  * Step 3 of the hybrid pipeline: asks the LLM for search queries a human documentary editor
  * would actually type for this beat — aliases/alternative names, related concepts,
- * period-accurate historical terminology, and phrases specific to this beat's context —
- * beyond what the deterministic entity-combination templates produce. Cached per beat
- * (intentHash) so re-analyzing the same beat never re-triggers the LLM call. Never throws:
- * any failure (missing API key, budget cap, network error, malformed response) degrades to an
- * empty expansion — the deterministic list is always a complete result on its own, per the
- * "the LLM should not replace deterministic generation" requirement.
+ * period-accurate historical terminology, phrases specific to this beat's context, and
+ * IMPLICIT visual intent the sentence never names (reaction shots, cutaways, detail shots,
+ * establishing/venue shots, ambiance B-roll) — beyond what the deterministic
+ * entity-combination templates produce, and beyond literal keyword matches. The goal isn't
+ * only exact matches; it's a visually engaging, professionally-edited scene that stays
+ * contextually accurate. Cached per beat (intentHash) so re-analyzing the same beat never
+ * re-triggers the LLM call. Never throws: any failure (missing API key, budget cap, network
+ * error, malformed response) degrades to an empty expansion — the deterministic list is
+ * always a complete result on its own, per the "the LLM should not replace deterministic
+ * generation" requirement.
  */
 export async function generateLlmQueryExpansions(
   intent: VisualIntent,
@@ -238,18 +247,32 @@ export async function generateLlmQueryExpansions(
         {
           role: "system",
           content:
-            "You are a documentary footage researcher. Given one beat (a shot's subject, action, " +
-            "location, time period and entities), generate 8-15 ADDITIONAL stock/archive footage " +
-            "search queries beyond the obvious entity combinations — the kind of queries a human " +
-            "documentary editor would actually type into a footage search box. Cover: " +
+            "You are a documentary footage researcher and editor. Given one beat (a shot's subject, " +
+            "action, location, time period and entities), generate 12-20 ADDITIONAL stock/archive " +
+            "footage search queries beyond the obvious entity combinations — the kind of queries a " +
+            "human documentary editor would actually type into a footage search box. Cover: " +
             "aliases and alternative names/wording for the subject or entities (category: alias); " +
             "conceptually related search terms that would surface relevant footage even without " +
-            "naming the exact entity (category: related_concept); when the beat is historical, " +
-            "period-accurate terminology a researcher of that era would use, not modern wording " +
-            "(category: historical_term); and phrases specific to this beat's exact context — the " +
-            "kind of shot, event type, or moment being described (category: context_phrase). " +
-            "Every query must be a short, natural footage-search phrase (2-6 words), never a full " +
-            "sentence. Do not just restate the primary/secondary keywords verbatim.",
+            "naming the exact entity (category: related_concept); when the beat is historical, news, " +
+            "documentary, or biographical, period-accurate terminology a researcher of that era would " +
+            "use, not modern wording (category: historical_term); phrases specific to this beat's " +
+            "exact context — the kind of shot, event type, or moment being described (category: " +
+            "context_phrase); and — IMPORTANT — implicit visual intent: footage the sentence never " +
+            "names but a professional editor would naturally cut to, to keep the scene visually " +
+            "engaging rather than a single static match (category: implicit_visual). For " +
+            "implicit_visual specifically, think like an editor covering the moment, not just the " +
+            "words: audience or crowd reactions, journalists/photographers capturing the moment, " +
+            "people trying or using the product/thing described, close-up detail shots, stage or " +
+            "venue lighting and atmosphere, applause, exterior/establishing shots of the venue or " +
+            "location, and generic B-roll of the broader topic. Example — for \"Apple introduced the " +
+            "Vision Pro\", implicit_visual queries should include things like \"audience reaction " +
+            "applause\", \"journalists photographing product\", \"person trying VR headset\", " +
+            "\"close-up product reveal\", \"stage lighting keynote\", \"Apple Park exterior\", " +
+            "\"tech conference B-roll\" — not just \"Apple Vision Pro\" or \"Tim Cook\" again. The " +
+            "goal is not only exact matches — it's a visually engaging, professionally-edited scene " +
+            "that stays contextually accurate. Every query must be a short, natural footage-search " +
+            "phrase (2-6 words), never a full sentence. Do not just restate the primary/secondary " +
+            "keywords verbatim.",
         },
         {
           role: "user",
@@ -265,7 +288,7 @@ export async function generateLlmQueryExpansions(
       ],
       preferProvider: "groq",
       response_format: QUERY_EXPANSION_SCHEMA,
-      maxTokens: 800,
+      maxTokens: 1000,
     });
 
     const content = response.choices[0]?.message?.content;
