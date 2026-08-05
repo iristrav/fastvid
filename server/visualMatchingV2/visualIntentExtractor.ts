@@ -15,6 +15,20 @@ export type BeatInput = {
   spokenText: string;
 };
 
+/** Backfilled onto cache rows written before Phase 3's richer entity fields existed. */
+const ENTITY_FIELD_DEFAULTS: Pick<
+  VisualIntent,
+  "secondaryVisualSubjects" | "objects" | "brands" | "companies" | "people" | "countries" | "events"
+> = {
+  secondaryVisualSubjects: [],
+  objects: [],
+  brands: [],
+  companies: [],
+  people: [],
+  countries: [],
+  events: [],
+};
+
 function hashIntentInput(spokenText: string, contextHash: string): string {
   return createHash("sha256")
     .update(`${spokenText.trim().toLowerCase()}::${contextHash}`)
@@ -46,11 +60,19 @@ const VISUAL_INTENT_SCHEMA = {
               primaryKeyword: { type: "string" },
               secondaryKeyword: { type: "string" },
               negativeKeywords: { type: "array", items: { type: "string" } },
+              secondaryVisualSubjects: { type: "array", items: { type: "string" } },
+              objects: { type: "array", items: { type: "string" } },
+              brands: { type: "array", items: { type: "string" } },
+              companies: { type: "array", items: { type: "string" } },
+              people: { type: "array", items: { type: "string" } },
+              countries: { type: "array", items: { type: "string" } },
+              events: { type: "array", items: { type: "string" } },
             },
             required: [
               "beatId", "visualSubject", "visualAction", "visualLocation", "visualTime",
               "historicalContext", "emotion", "visualDescription", "primaryKeyword",
-              "secondaryKeyword", "negativeKeywords",
+              "secondaryKeyword", "negativeKeywords", "secondaryVisualSubjects", "objects",
+              "brands", "companies", "people", "countries", "events",
             ],
             additionalProperties: false,
           },
@@ -93,6 +115,9 @@ export async function extractVisualIntentsForScene(
             spokenText: beat.spokenText,
             intentHash,
             cacheHit: true,
+            // Defaults for entries cached before Phase 3's richer schema — never crash on an
+            // older cache row that predates these fields.
+            ...ENTITY_FIELD_DEFAULTS,
             ...data,
           });
           logVisualIntent("cache_hit", { beatId: beat.beatId, intentHash });
@@ -117,7 +142,12 @@ export async function extractVisualIntentsForScene(
               "location, time, historical context, and emotion of the shot. Use the given video context " +
               "(era/setting/key subjects/locations) as established background — do not re-derive it, only specify " +
               "what is specific to this beat. primaryKeyword/secondaryKeyword are short search terms derived from " +
-              "the visual description (not the spoken words). negativeKeywords are things the shot must NOT show.",
+              "the visual description (not the spoken words). negativeKeywords are things the shot must NOT show. " +
+              "Also extract, as separate lists (empty array when none apply — never omit a field): " +
+              "secondaryVisualSubjects (people/things in frame besides the main subject), objects (physical items " +
+              "the shot should visibly contain), brands (product/brand names), companies (organization names), " +
+              "people (real people's full names the shot should feature), countries (nations relevant to the " +
+              "location or subject), and events (named historical or current events referenced by this beat).",
           },
           {
             role: "user",

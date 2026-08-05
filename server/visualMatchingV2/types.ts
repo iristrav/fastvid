@@ -25,11 +25,57 @@ export type VisualIntent = {
   primaryKeyword: string;
   secondaryKeyword: string;
   negativeKeywords: string[];
+  // ─── Phase 3 (Visual Intelligence Engine): richer entity extraction alongside the
+  // original single-subject fields above, which stay unchanged for backwards compatibility.
+  // All default to [] when the LLM finds none — never null, so callers never need a
+  // null-check on top of an empty-array-check. ──────────────────────────────────────────
+  /** Subjects present in the shot besides visualSubject (e.g. a crowd, a co-presenter). */
+  secondaryVisualSubjects: string[];
+  /** Physical objects the shot should visibly contain (e.g. "microphone", "server rack"). */
+  objects: string[];
+  /** Brand names relevant to the shot (e.g. "Tesla", "xAI") — distinct from companies since
+   *  a beat can reference a product brand without the parent company being the subject. */
+  brands: string[];
+  /** Company/organization names relevant to the shot. */
+  companies: string[];
+  /** Real people's names the shot should feature — same naming convention as the existing
+   *  Scene.personNames field (videoPipeline.ts) so both can be cross-referenced directly. */
+  people: string[];
+  /** Countries/nations relevant to the shot's location or subject matter. */
+  countries: string[];
+  /** Named historical or current events referenced by the beat (e.g. "World War II",
+   *  "the 2024 election") — distinct from historicalContext, which is a free-text summary. */
+  events: string[];
   intentHash: string;
   cacheHit: boolean;
 };
 
-export type CandidateSource = "own_archive" | "wikimedia" | "pexels" | "pixabay" | "internet_archive" | "ai_generated";
+// ─── Phase 3 (Visual Intelligence Engine): ranked search query generation ─────
+// One VisualIntent (+ optional shot plan from editorialSequencePlanner.ts) expands into many
+// candidate search strings instead of the original 2 keywords — see queryGeneration.ts.
+export type RankedQuerySource =
+  | "person_format"
+  | "company_event"
+  | "subject_action"
+  | "subject_location"
+  | "subject_object"
+  | "shot_plan"
+  | "primary_keyword"
+  | "secondary_keyword"
+  | "brand"
+  | "era_country";
+
+export type RankedQuery = {
+  query: string;
+  /** 1-based rank, 1 = highest priority. */
+  rank: number;
+  /** 0..1 specificity/confidence — how many real (non-empty) entities this query combines
+   *  and how directly it maps to the beat vs. a generic template. */
+  score: number;
+  source: RankedQuerySource;
+};
+
+export type CandidateSource = "own_archive" | "wikimedia" | "pexels" | "pixabay" | "internet_archive" | "youtube_cc" | "europeana" | "ai_generated";
 export type CandidateAssetType = "video" | "image";
 export type CandidateRetrievalMethod = "search" | "cache";
 
@@ -379,6 +425,46 @@ export type RankingWeights = {
   /** Optional: motion match bonus — reward when clip motionLevel matches narration energy.
    *  Weight redistributed to other signals when absent (same pattern as editorialScore). */
   motionMatch?: number;
+  // ─── Phase 3 (Visual Intelligence Engine) additions — every one of these is optional and
+  // its weight is redistributed to the other signals when the underlying data isn't
+  // available for a given candidate, matching editorialScore/motionMatch's existing pattern.
+  // Absent/unconfigured weights default to 0 in DEFAULT_RANKING_WEIGHTS, so omitting
+  // RankingOptions entirely reproduces pre-Phase-3 ranking behavior exactly. ────────────────
+  /** Reward higher-resolution candidates (proxy for "visual quality" — no real image-quality
+   *  model exists in this codebase; resolution is the honest signal actually available). */
+  resolutionMatch?: number;
+  /** Reward candidates whose aspect ratio matches the target video orientation. */
+  orientationMatch?: number;
+  /** Reward candidates whose duration closely matches the beat's needed on-screen time. */
+  durationFit?: number;
+  /** Reward more recently-published candidates, when the source's metadata carries a date. */
+  freshness?: number;
+  /** Reward candidates whose tags/title/description mention the beat's extracted entities
+   *  (people/objects/brands/companies) — a text-based proxy for "people/objects detected",
+   *  not real computer-vision detection (no such model exists in this codebase). */
+  entityMatch?: number;
+  /** Penalize candidates already used elsewhere in this video (same path, or an
+   *  over-represented category) — reuses the existing VisualDedupState the legacy pipeline
+   *  already tracks, so the ranking layer is no longer blind to cross-beat repetition. */
+  diversity?: number;
+};
+
+/** Runtime targets/context the ranking layer needs beyond each candidate's own fields —
+ *  everything here is optional, so calling rankCandidates() without an options object is
+ *  identical to pre-Phase-3 behavior. */
+export type RankingOptions = {
+  /** Target motion level (0–100) derived from narration energy. */
+  targetMotionLevel?: number | null;
+  targetOrientation?: "landscape" | "portrait" | "square" | null;
+  /** Beat's needed on-screen duration in seconds, for durationFit scoring. */
+  targetDurationSec?: number | null;
+  /** Read-only diversity view — reuses the legacy pipeline's VisualDedupState shape
+   *  (usedPaths/usedCategories) rather than inventing a parallel dedup mechanism. */
+  usedPaths?: ReadonlySet<string>;
+  usedCategories?: ReadonlyMap<string, number>;
+  /** Entity terms this beat's VisualIntent extracted (people/objects/brands/companies),
+   *  flattened into one list for the entityMatch text-proxy signal. */
+  entityTerms?: string[];
 };
 
 /** Configured priority per source, higher = preferred. Known only to the Ranking Layer —
@@ -400,7 +486,26 @@ export type RankingBreakdown = {
   sourceContribution: number;
   editorialContribution?: number;
   motionMatchContribution?: number;
-  signalsUsed: ("clipSimilarity" | "embeddingSimilarity" | "keywordScore" | "sourcePriority" | "editorialScore" | "motionMatch")[];
+  resolutionContribution?: number;
+  orientationContribution?: number;
+  durationFitContribution?: number;
+  freshnessContribution?: number;
+  entityMatchContribution?: number;
+  diversityContribution?: number;
+  signalsUsed: (
+    | "clipSimilarity"
+    | "embeddingSimilarity"
+    | "keywordScore"
+    | "sourcePriority"
+    | "editorialScore"
+    | "motionMatch"
+    | "resolutionMatch"
+    | "orientationMatch"
+    | "durationFit"
+    | "freshness"
+    | "entityMatch"
+    | "diversity"
+  )[];
 };
 
 export type RankedCandidate = {

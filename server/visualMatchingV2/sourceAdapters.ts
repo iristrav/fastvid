@@ -7,13 +7,16 @@
  *  visualMatchingV2SourceAdaptersEnabled() in sourcingPolicy.ts. */
 
 import {
+  fetchEuropeanaVideos,
   fetchInternetArchiveClips,
   fetchPexelsClips,
   fetchPixabayClips,
   fetchWikimediaImages,
+  fetchYouTubeCCClips,
 } from "../videoPipeline";
 import { fetchCuratedArchiveBeatClip, type CuratedBeatContext, type CuratedSceneContext } from "../curatedMediaSourcing";
 import { logSourceAdapter } from "./logging";
+import { generateRankedSearchQueries } from "./queryGeneration";
 import type { CandidateAsset, SourceAdapter, SourceAdapterSearchCtx, VisualIntent } from "./types";
 
 function searchQueryFromIntent(intent: VisualIntent): string {
@@ -204,12 +207,64 @@ export const internetArchiveAdapter: SourceAdapter = {
   },
 };
 
+/** Top-N ranked queries (see queryGeneration.ts) as a plain string list, for adapters whose
+ *  underlying fetch function already accepts `string | string[]` and tries them in order —
+ *  a direct use of Phase 3's ranked-query-generation output instead of the single
+ *  searchQueryFromIntent() string the pre-Phase-3 adapters above still use. */
+function rankedQueryStrings(intent: VisualIntent, max: number): string[] {
+  const queries = generateRankedSearchQueries(intent).slice(0, max).map((q) => q.query);
+  return queries.length > 0 ? queries : [searchQueryFromIntent(intent)];
+}
+
+export const youtubeCcAdapter: SourceAdapter = {
+  name: "youtube_cc",
+  supportsPreEmbedding: false,
+  async search(intent, ctx) {
+    return withAdapterLogging("youtube_cc", intent, async () => {
+      const queries = rankedQueryStrings(intent, 5);
+      const paths = await fetchYouTubeCCClips(queries, 5, ctx.workDir, ctx.sceneIndex, ctx.count ?? 5);
+      return paths.map((p): CandidateAsset =>
+        normalizeCandidate(
+          { candidateId: `youtube_cc:${p}`, source: "youtube_cc", assetType: "video", localPath: p, remoteUrl: null, metadata: { path: p } },
+          queries[0]!
+        )
+      );
+    });
+  },
+};
+
+export const europeanaAdapter: SourceAdapter = {
+  name: "europeana",
+  supportsPreEmbedding: false,
+  async search(intent, ctx) {
+    return withAdapterLogging("europeana", intent, async () => {
+      const queries = rankedQueryStrings(intent, 5);
+      const candidates = await fetchEuropeanaVideos(queries, 5, ctx.workDir, ctx.sceneIndex, ctx.count ?? 5);
+      return candidates.map((c): CandidateAsset =>
+        normalizeCandidate(
+          {
+            candidateId: `europeana:${JSON.stringify(c).slice(0, 64)}`,
+            source: "europeana",
+            assetType: "video",
+            localPath: c.path ?? null,
+            remoteUrl: null,
+            metadata: c,
+          },
+          queries[0]!
+        )
+      );
+    });
+  },
+};
+
 export const ALL_SOURCE_ADAPTERS: SourceAdapter[] = [
   ownArchiveAdapter,
   wikimediaAdapter,
   pexelsAdapter,
   pixabayAdapter,
   internetArchiveAdapter,
+  youtubeCcAdapter,
+  europeanaAdapter,
 ];
 
 /** Runs every adapter in parallel for one beat. Not yet called by the active pipeline. */
