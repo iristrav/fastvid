@@ -167,6 +167,7 @@ export async function runV2Pipeline(
       workDir,
       sceneIndex,
       count,
+      videoContext,
     });
 
     // ── Intelligent fallback (Phase 3) — the beat's search hinged on a specific named
@@ -184,6 +185,7 @@ export async function runV2Pipeline(
           workDir,
           sceneIndex,
           count,
+          videoContext,
         });
         if (fallbackPool.candidates.length > 0) {
           pool = fallbackPool;

@@ -6,6 +6,14 @@ vi.mock("./candidateFetcher", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./candidateFetcher")>();
   return { ...actual };
 });
+// retrieveCandidatePool now computes this beat's ranked queries once up front (hybrid
+// pipeline, queryGeneration.ts) regardless of strategy — mocked here so these tests never
+// depend on API keys/DB being absent in the sandbox to stay fast and side-effect-free.
+vi.mock("../_core/llm", () => ({ invokeLLM: vi.fn().mockRejectedValue(new Error("no LLM in tests")) }));
+vi.mock("../db", () => ({
+  createVisualQueryExpansionCache: vi.fn().mockResolvedValue(undefined),
+  getVisualQueryExpansionCacheByIntentHash: vi.fn().mockResolvedValue(undefined),
+}));
 
 const intent: VisualIntent = {
   beatId: "b0",

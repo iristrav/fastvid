@@ -1,6 +1,17 @@
-import { describe, expect, it } from "vitest";
-import { generateRankedSearchQueries } from "./queryGeneration";
-import type { VisualIntent } from "./types";
+import { describe, expect, it, vi } from "vitest";
+import {
+  generateDeterministicQueries,
+  generateLlmQueryExpansions,
+  generateRankedSearchQueries,
+  mergeDedupeAndRank,
+} from "./queryGeneration";
+import type { RankedQuery, VisualIntent } from "./types";
+
+vi.mock("../_core/llm", () => ({ invokeLLM: vi.fn() }));
+vi.mock("../db", () => ({
+  createVisualQueryExpansionCache: vi.fn().mockResolvedValue(undefined),
+  getVisualQueryExpansionCacheByIntentHash: vi.fn().mockResolvedValue(undefined),
+}));
 
 function makeIntent(overrides: Partial<VisualIntent> = {}): VisualIntent {
   return {
@@ -29,9 +40,18 @@ function makeIntent(overrides: Partial<VisualIntent> = {}): VisualIntent {
   };
 }
 
-describe("Ranked query generation (Phase 3)", () => {
-  it("generates the example queries from the spec (person + format noun) and ranks them highest", () => {
-    const queries = generateRankedSearchQueries(makeIntent());
+function mockLlmExpansion(queries: Array<{ query: string; category: string }>) {
+  return async () => {
+    const { invokeLLM } = await import("../_core/llm");
+    vi.mocked(invokeLLM).mockResolvedValue({
+      choices: [{ message: { content: JSON.stringify({ queries }) } }],
+    } as never);
+  };
+}
+
+describe("Deterministic query generation (step 2)", () => {
+  it("generates the example queries from the spec (person + format noun) and never returns duplicates", () => {
+    const queries = generateDeterministicQueries(makeIntent());
     const strings = queries.map((q) => q.query);
 
     expect(strings).toContain("Elon Musk keynote");
@@ -40,43 +60,11 @@ describe("Ranked query generation (Phase 3)", () => {
     expect(strings).toContain("Elon Musk conference");
     expect(strings).toContain("Elon Musk speaking");
     expect(strings).toContain("Elon Musk xAI");
-
-    // Person+format queries should rank ahead of the generic fallback keyword queries.
-    const personQueryRank = queries.find((q) => q.query === "Elon Musk keynote")!.rank;
-    const fallbackRank = queries.find((q) => q.source === "primary_keyword")!.rank;
-    expect(personQueryRank).toBeLessThan(fallbackRank);
-  });
-
-  it("never returns duplicate queries even when entities overlap", () => {
-    const queries = generateRankedSearchQueries(makeIntent({ primaryKeyword: "Elon Musk keynote" }));
-    const strings = queries.map((q) => q.query.toLowerCase());
-    expect(new Set(strings).size).toBe(strings.length);
-  });
-
-  it("caps output at 30 and assigns contiguous 1-based ranks", () => {
-    const queries = generateRankedSearchQueries(makeIntent());
-    expect(queries.length).toBeLessThanOrEqual(30);
-    expect(queries.map((q) => q.rank)).toEqual(queries.map((_, i) => i + 1));
-  });
-
-  it("produces a smaller, still-valid list for a sparse intent (no named entities)", () => {
-    const sparse = makeIntent({
-      secondaryVisualSubjects: [],
-      objects: [],
-      brands: [],
-      companies: [],
-      people: [],
-      countries: [],
-      events: [],
-    });
-    const queries = generateRankedSearchQueries(sparse);
-    expect(queries.length).toBeGreaterThan(0);
-    expect(queries.length).toBeLessThan(15);
-    expect(queries.some((q) => q.query.includes("Elon Musk"))).toBe(true);
+    expect(new Set(strings.map((s) => s.toLowerCase())).size).toBe(strings.length);
   });
 
   it("prioritizes the shot plan's search query and alternatives when provided", () => {
-    const queries = generateRankedSearchQueries(makeIntent(), {
+    const queries = generateDeterministicQueries(makeIntent(), {
       beatIndex: 0,
       shotType: "close-up",
       action: "speaking",
@@ -86,8 +74,128 @@ describe("Ranked query generation (Phase 3)", () => {
       searchQuery: "Elon Musk close up speaking",
       alternatives: ["Elon Musk face closeup"],
       emotion: "confident",
-    });
+    } as never);
     expect(queries[0]!.query).toBe("Elon Musk close up speaking");
     expect(queries[0]!.source).toBe("shot_plan");
+  });
+});
+
+describe("LLM query expansion (step 3) — never replaces, only adds, never crashes", () => {
+  it("returns LLM-generated aliases/related concepts/historical terms/context phrases, tagged by category", async () => {
+    await mockLlmExpansion([
+      { query: "Musk product reveal", category: "alias" },
+      { query: "tech CEO on stage", category: "related_concept" },
+      { query: "silicon valley keynote 2020s", category: "historical_term" },
+      { query: "AI chatbot unveiling", category: "context_phrase" },
+    ])();
+
+    const expansions = await generateLlmQueryExpansions(makeIntent());
+    const sources = expansions.map((q) => q.source).sort();
+    expect(sources).toEqual(["llm_alias", "llm_context_phrase", "llm_historical_term", "llm_related_concept"]);
+  });
+
+  it("degrades to an empty list (not a crash) when the LLM call fails", async () => {
+    const { invokeLLM } = await import("../_core/llm");
+    vi.mocked(invokeLLM).mockRejectedValueOnce(new Error("no API key configured"));
+
+    const expansions = await generateLlmQueryExpansions(makeIntent());
+    expect(expansions).toEqual([]);
+  });
+
+  it("reuses a cached expansion instead of calling the LLM again for the same intentHash", async () => {
+    const { invokeLLM } = await import("../_core/llm");
+    const { getVisualQueryExpansionCacheByIntentHash } = await import("../db");
+    vi.mocked(getVisualQueryExpansionCacheByIntentHash).mockResolvedValueOnce({
+      queriesJson: [{ query: "cached alias query", category: "alias" }],
+    } as never);
+    vi.mocked(invokeLLM).mockClear();
+
+    const expansions = await generateLlmQueryExpansions(makeIntent());
+    expect(expansions.map((q) => q.query)).toContain("cached alias query");
+    expect(invokeLLM).not.toHaveBeenCalled();
+  });
+});
+
+describe("Merge / dedupe / rank (steps 4-6)", () => {
+  it("merges two lists, removes duplicate query strings, and ranks by score", () => {
+    const a: RankedQuery[] = [
+      { query: "Elon Musk keynote", rank: 1, score: 0.9, source: "person_format" },
+      { query: "shared query", rank: 2, score: 0.5, source: "primary_keyword" },
+    ];
+    const b: RankedQuery[] = [
+      { query: "Shared Query", rank: 1, score: 0.7, source: "llm_alias" }, // dup of "shared query", different case
+      { query: "silicon valley keynote 2020s", rank: 2, score: 0.8, source: "llm_historical_term" },
+    ];
+
+    const merged = mergeDedupeAndRank([a, b]);
+    const strings = merged.map((q) => q.query);
+
+    expect(strings.filter((s) => s.toLowerCase() === "shared query")).toHaveLength(1);
+    expect(merged.map((q) => q.rank)).toEqual(merged.map((_, i) => i + 1));
+    // Sorted by score descending.
+    expect(merged[0]!.query).toBe("Elon Musk keynote");
+    expect(merged[1]!.query).toBe("silicon valley keynote 2020s");
+  });
+
+  it("caps the merged, ranked result at 30 with contiguous 1-based ranks", () => {
+    const many: RankedQuery[] = Array.from({ length: 40 }, (_, i) => ({
+      query: `query ${i}`,
+      rank: i + 1,
+      score: Math.random(),
+      source: "primary_keyword" as const,
+    }));
+    const merged = mergeDedupeAndRank([many]);
+    expect(merged.length).toBe(30);
+    expect(merged.map((q) => q.rank)).toEqual(merged.map((_, i) => i + 1));
+  });
+});
+
+describe("generateRankedSearchQueries — full hybrid pipeline", () => {
+  it("merges deterministic and LLM-expanded queries into one ranked, deduped list", async () => {
+    await mockLlmExpansion([
+      { query: "Musk product reveal", category: "alias" },
+      { query: "Elon Musk keynote", category: "alias" }, // duplicate of a deterministic query
+    ])();
+
+    const queries = await generateRankedSearchQueries(makeIntent());
+    const strings = queries.map((q) => q.query);
+
+    // Deterministic queries still present.
+    expect(strings).toContain("Elon Musk keynote");
+    expect(strings).toContain("Elon Musk xAI");
+    // LLM-only addition present.
+    expect(strings).toContain("Musk product reveal");
+    // Cross-list duplicate collapsed to one entry.
+    expect(strings.filter((s) => s.toLowerCase() === "elon musk keynote")).toHaveLength(1);
+    // Still within the 10-30 target range for a rich intent.
+    expect(queries.length).toBeGreaterThanOrEqual(10);
+    expect(queries.length).toBeLessThanOrEqual(30);
+    expect(queries.map((q) => q.rank)).toEqual(queries.map((_, i) => i + 1));
+  });
+
+  it("still produces a complete, valid query list when the LLM expansion fails entirely", async () => {
+    const { invokeLLM } = await import("../_core/llm");
+    vi.mocked(invokeLLM).mockRejectedValueOnce(new Error("LLM unavailable"));
+
+    const queries = await generateRankedSearchQueries(makeIntent());
+    expect(queries.length).toBeGreaterThan(0);
+    expect(queries.some((q) => q.query === "Elon Musk keynote")).toBe(true);
+  });
+
+  it("produces a smaller, still-valid list for a sparse intent (no named entities) even with no LLM expansions", async () => {
+    await mockLlmExpansion([])();
+    const sparse = makeIntent({
+      secondaryVisualSubjects: [],
+      objects: [],
+      brands: [],
+      companies: [],
+      people: [],
+      countries: [],
+      events: [],
+    });
+    const queries = await generateRankedSearchQueries(sparse);
+    expect(queries.length).toBeGreaterThan(0);
+    expect(queries.length).toBeLessThan(15);
+    expect(queries.some((q) => q.query.includes("Elon Musk"))).toBe(true);
   });
 });

@@ -26,6 +26,7 @@
 import { searchOneSourceWithRetry } from "./candidateFetcher";
 import { dedupeCandidates } from "./dedup";
 import { ALL_SOURCE_ADAPTERS, ownArchiveAdapter as defaultOwnArchiveAdapter } from "./sourceAdapters";
+import { generateRankedSearchQueries } from "./queryGeneration";
 import { logRetrievalOrchestrator } from "./logging";
 import type {
   CandidateAsset,
@@ -266,7 +267,26 @@ export async function retrieveCandidatePool(
   const { strategy, embeddingSearch, adapterOverrides } = options;
   const startedAt = new Date().toISOString();
   const start = Date.now();
-  const ctx: SourceAdapterSearchCtx = { workDir: options.workDir, sceneIndex: options.sceneIndex, count: options.count };
+
+  // Computed once per beat and shared via ctx across every adapter dispatched below — the
+  // hybrid pipeline's LLM query-expansion call (queryGeneration.ts) would otherwise run once
+  // per adapter (e.g. once for youtube_cc, again for europeana) for the exact same beat.
+  // Never throws (generateRankedSearchQueries degrades to the deterministic list alone on any
+  // LLM failure); still wrapped here as a last-resort guard so a retrieval pass never fails
+  // because of query generation.
+  let rankedQueries: SourceAdapterSearchCtx["rankedQueries"];
+  try {
+    rankedQueries = await generateRankedSearchQueries(intent, undefined, options.videoContext);
+  } catch (err) {
+    logRetrievalOrchestrator("error", { beatId: intent.beatId, stage: "query_generation", error: (err as Error).message });
+  }
+
+  const ctx: SourceAdapterSearchCtx = {
+    workDir: options.workDir,
+    sceneIndex: options.sceneIndex,
+    count: options.count,
+    rankedQueries,
+  };
 
   const archivePlans = strategy.sources.filter((s) => s.phase === "own_archive_metadata").sort((a, b) => a.priority - b.priority);
   const embeddingPlans = strategy.sources.filter((s) => s.phase === "own_archive_embedding");

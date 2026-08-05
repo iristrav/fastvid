@@ -16,6 +16,16 @@ export function logSourceAdapter(event: "search_start" | "search_result" | "erro
   console.log(`${PREFIX} SourceAdapter.${event}`, JSON.stringify(data));
 }
 
+/** Ranked query generation (Phase 3 hybrid: deterministic + LLM expansion) — LLM call
+ *  cache hits/misses and failures. A failure here is never fatal (see queryGeneration.ts);
+ *  this only records that it happened. */
+export function logQueryGeneration(
+  event: "llm_cache_hit" | "llm_cache_miss" | "llm_expanded" | "error",
+  data: Record<string, unknown>
+) {
+  console.log(`${PREFIX} QueryGeneration.${event}`, JSON.stringify(data));
+}
+
 /** Stage 2 — Candidate Fetcher trace: per-beat summary of which sources ran, how long they
  *  took, cache hits, timeouts, retries and errors. This is the CandidateFetchTrace; it
  *  follows the same per-beat shape the design calls BeatSelectionTrace and will be merged
