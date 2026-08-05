@@ -61,7 +61,14 @@ const RETRIES: Record<RetrievalStrategyMode, number> = {
 
 // ─── Source plans per mode ────────────────────────────────────────────────────
 
-const ALL_EXTERNAL_SOURCES: CandidateSource[] = ["wikimedia", "pexels", "pixabay", "internet_archive"];
+const ALL_EXTERNAL_SOURCES: CandidateSource[] = [
+  "wikimedia",
+  "pexels",
+  "pixabay",
+  "internet_archive",
+  "youtube_cc",
+  "europeana",
+];
 
 function externalSourcesAvailable(availableSources?: CandidateSource[]): CandidateSource[] {
   if (!availableSources) return ALL_EXTERNAL_SOURCES;

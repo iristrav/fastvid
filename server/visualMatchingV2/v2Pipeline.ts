@@ -28,10 +28,13 @@ import { scoreCandidates } from "./llmVisionScorer";
 import { selectCandidate } from "./candidateSelector";
 import { createBeatSelectionTraceStore } from "./beatSelectionTrace";
 import { createPipelineRunTraceStore } from "./pipelineRunTrace";
-import { logSelector } from "./logging";
+import { logSelector, logRetrievalOrchestrator } from "./logging";
 import { visualMatchingV2EmbeddingsEnabled } from "../sourcingPolicy";
 import { PIPELINE_VERSION } from "./beatSelectionTrace";
-import type { SelectionResult, VideoContext, VisualIntent } from "./types";
+import { getSemanticOwnArchiveSearchProvider } from "./embeddings/semanticOwnArchiveAdapter";
+import { isOffTopicForVideoContext } from "./continuity";
+import { buildEntityFallbackIntents, reliesOnSpecificEntity } from "./intelligentFallback";
+import type { EmbeddingSearchProvider, SelectionResult, VideoContext, VisualIntent } from "./types";
 import type { StageTimings } from "./pipelineRunTrace";
 
 // ─── Public types ──────────────────────────────────────────────────────────────
@@ -122,6 +125,29 @@ export async function runV2Pipeline(
   let beatsSelected = 0;
   let beatsResearchRequired = 0;
 
+  // Built once per scene (not per beat) and reused across every beat's retrieval call — this
+  // is what turns "search semantically similar footage" from a wired-but-empty option into a
+  // real fallback: when a beat's keyword sources come back empty, the pool still has whatever
+  // semantic hits the embedding search found for it, in the same phase-1 pass. Warmup failure
+  // (no VOYAGE_API_KEY, Qdrant unreachable) degrades to "no semantic search this run", not a
+  // crash — retrieveCandidatePool already treats a missing provider as "phase not applicable".
+  let embeddingSearch: EmbeddingSearchProvider | undefined;
+  if (visualMatchingV2EmbeddingsEnabled()) {
+    try {
+      embeddingSearch = await getSemanticOwnArchiveSearchProvider();
+    } catch (err) {
+      logRetrievalOrchestrator("error", { stage: "embedding_provider_warmup", error: (err as Error).message });
+    }
+  }
+
+  // Scene-local diversity tracking (Phase 3) — accumulates as beats in THIS scene get
+  // selected, so a scene with several beats picking from overlapping pools doesn't repeat the
+  // same clip/category back to back. Cross-SCENE (whole-video) diversity needs a caller-
+  // supplied accumulator threaded across scenes, which doesn't exist yet since nothing calls
+  // this per-scene function across a whole video today — see the Phase 3 migration summary.
+  const usedPaths = new Set<string>();
+  const usedCategories = new Map<string, number>();
+
   for (const intent of intents) {
     const beatStart = Date.now();
 
@@ -135,23 +161,57 @@ export async function runV2Pipeline(
 
     // ── Stage 4: RetrievalOrchestrator ─────────────────────────────────────
     t = Date.now();
-    const pool = await retrieveCandidatePool(intent, {
+    let pool = await retrieveCandidatePool(intent, {
       strategy,
+      embeddingSearch,
       workDir,
       sceneIndex,
       count,
     });
+
+    // ── Intelligent fallback (Phase 3) — the beat's search hinged on a specific named
+    // entity (a company/brand/object) and nothing came back. Rather than falling straight
+    // through to whatever unrelated stock the rest of the funnel happens to surface, retry
+    // with a small set of generic, semantically-related categories (e.g. an unknown startup
+    // -> office/servers/employees/conference), same tiered-relaxation idea already used for
+    // archive search (curatedMediaSourcing.ts), one tier further. Stops at the first fallback
+    // category that actually returns candidates.
+    if (pool.candidates.length === 0 && reliesOnSpecificEntity(intent)) {
+      for (const fallbackIntent of buildEntityFallbackIntents(intent)) {
+        const fallbackPool = await retrieveCandidatePool(fallbackIntent, {
+          strategy,
+          embeddingSearch,
+          workDir,
+          sceneIndex,
+          count,
+        });
+        if (fallbackPool.candidates.length > 0) {
+          pool = fallbackPool;
+          break;
+        }
+      }
+    }
     timings.retrievalTotalMs += elapsed(t);
+
+    // ── Visual continuity filter (Phase 3) — drop candidates that read as a different
+    // brand/company or a mismatched era than this beat/video actually established, before
+    // they ever reach CLIP/ranking/vision scoring. Same "filter, don't just downrank" pattern
+    // as the legacy pipeline's person-topic-lock check, generalized beyond people. Never
+    // drops every candidate to zero silently — if continuity would eliminate the whole pool,
+    // keep the original pool rather than starving downstream stages entirely.
+    const continuityFiltered = pool.candidates.filter((c) => !isOffTopicForVideoContext(c, intent, videoContext));
+    const poolCandidates = continuityFiltered.length > 0 ? continuityFiltered : pool.candidates;
 
     // ── Stage 5: CLIP Pre-filter ────────────────────────────────────────────
     t = Date.now();
-    const clipResult = await clipPreFilter(intent, pool.candidates);
+    const clipResult = await clipPreFilter(intent, poolCandidates);
     timings.clipTotalMs += elapsed(t);
-    const clipPassed = clipResult.passed.length > 0 ? clipResult.passed : pool.candidates;
+    const clipPassed = clipResult.passed.length > 0 ? clipResult.passed : poolCandidates;
 
     // ── Stage 6: CandidateRanking ───────────────────────────────────────────
     t = Date.now();
-    const ranked = rankCandidates(intent, clipPassed);
+    const entityTerms = [...intent.people, ...intent.objects, ...intent.brands, ...intent.companies];
+    const ranked = rankCandidates(intent, clipPassed, undefined, { usedPaths, usedCategories, entityTerms });
     timings.rankingTotalMs += elapsed(t);
 
     // ── Stage 7: LLM Vision Scorer ──────────────────────────────────────────
@@ -166,6 +226,14 @@ export async function runV2Pipeline(
 
     if (selectionResult.needsResearch) beatsResearchRequired += 1;
     else beatsSelected += 1;
+
+    // Record this beat's winner for the next beat's diversity scoring.
+    const winnerAsset = selectionResult.selectedCandidate?.candidate.candidate;
+    if (winnerAsset) {
+      const key = winnerAsset.localPath ?? winnerAsset.remoteUrl;
+      if (key) usedPaths.add(key);
+      for (const tag of winnerAsset.tags) usedCategories.set(tag, (usedCategories.get(tag) ?? 0) + 1);
+    }
 
     // ── Stage 9: BeatSelectionTrace (failure-isolated) ─────────────────────
     await beatStore.save(selectionResult.trace, { videoId, pipelineRunId });

@@ -110,8 +110,21 @@ function resolvePlanAdapter(
       supportsPreEmbedding: true,
       async search(intent: VisualIntent) {
         const queryText = searchQueryFromIntent(intent);
-        const { hits } = await embeddingSearch.search(queryText, plan.maxCandidates);
-        return hits.map((h) => candidateFromEmbeddingHit(h, queryText));
+        try {
+          const { hits } = await embeddingSearch.search(queryText, plan.maxCandidates);
+          return hits.map((h) => candidateFromEmbeddingHit(h, queryText));
+        } catch (err) {
+          // Every other adapter (sourceAdapters.ts's withAdapterLogging) already swallows its
+          // own errors and returns [] — searchOneSourceWithRetry (candidateFetcher.ts) relies
+          // on that invariant holding for every adapter, embedding-search included. A missing
+          // API key or a provider outage degrades to "no semantic hits", not a crashed pool.
+          logRetrievalOrchestrator("error", {
+            beatId: intent.beatId,
+            phase: "own_archive_embedding",
+            error: (err as Error).message,
+          });
+          return [];
+        }
       },
     };
   }
