@@ -1,0 +1,28 @@
+# Never needed inside the build context — cuts context size and image layers.
+.git
+.github
+node_modules
+dist
+
+# Root-level one-off debug/trigger scripts — not imported by the build, only
+# ever run manually against a live deployment. Anchored to root so it doesn't
+# also exclude scripts/*.mjs (some of those are real npm scripts).
+/*.mjs
+
+# Sample/demo assets, not part of the app.
+attached_assets
+fastvid_demo.mp4
+
+# Local dev artifacts.
+.env
+.env.*
+*.log
+uploads
+.claude
+.vscode
+.idea
+
+# Test/scratch output that shouldn't leak into the image.
+tsc_errors*.txt
+vitest_new*.json
+todo.md
