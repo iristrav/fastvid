@@ -106,6 +106,7 @@ import {
   updateNicheRequest,
 } from "./nicheRequestsDb";
 import { runVideoPipeline } from "./videoPipeline";
+import { runModularVideoPipeline } from "./pipeline/orchestrator";
 import {
   assertUserCanEnqueueVideo,
   enqueueVideoJob,
@@ -742,7 +743,13 @@ async function _runVideoGeneration(
     }, 15_000);
     let videoUrl: string;
     try {
-      const pipelineRun = runVideoPipeline(
+      // PIPELINE_ARCHITECTURE=modular (Phase 2, default unset) switches to the new
+      // service-oriented pipeline (server/pipeline/orchestrator.ts) — structurally complete
+      // but not yet verified against real traffic (see the Phase 2 migration summary), so the
+      // default stays the proven runVideoPipeline unchanged.
+      const useModularPipeline = process.env.PIPELINE_ARCHITECTURE === "modular";
+      const pipelineFn = useModularPipeline ? runModularVideoPipeline : runVideoPipeline;
+      const pipelineRun = pipelineFn(
         videoId,
         approvedScript,
         async (progress) => {
