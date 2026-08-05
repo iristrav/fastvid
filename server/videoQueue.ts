@@ -19,6 +19,7 @@ import {
   listQueuedVideosOrdered,
   updateVideoStatus,
 } from "./db";
+import { activeJobsCount, decrementActiveJobs, incrementActiveJobs } from "./queue/activeJobsCounter";
 
 export type EnqueueCheckResult =
   | { ok: true }
@@ -54,8 +55,6 @@ export async function enqueueVideoJob(
   return { queuePosition };
 }
 
-/** Jobs currently executing inside this Node process (per-worker RAM limit). */
-let localActiveJobs = 0;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let tickInFlight = false;
 
@@ -109,7 +108,7 @@ export async function processQueueTick(): Promise<void> {
   tickInFlight = true;
   try {
     const config = readQueueConfig();
-    while (localActiveJobs < config.maxJobsPerWorker) {
+    while (activeJobsCount() < config.maxJobsPerWorker) {
       const globalActive = await countGlobalProcessingVideos();
       if (globalActive >= config.maxConcurrentJobs) break;
 
@@ -119,10 +118,10 @@ export async function processQueueTick(): Promise<void> {
       const claimed = await claimQueuedVideo(next.id, "Starting generation...");
       if (!claimed) continue;
 
-      localActiveJobs++;
+      incrementActiveJobs();
       console.log(
         `[VideoQueue] Claimed video ${claimed.id} for user ${claimed.userId} ` +
-          `(local ${localActiveJobs}/${config.maxJobsPerWorker}, global ${globalActive + 1}/${config.maxConcurrentJobs})`
+          `(local ${activeJobsCount()}/${config.maxJobsPerWorker}, global ${globalActive + 1}/${config.maxConcurrentJobs})`
       );
 
       // Watchdog: release worker slot after 3 hours even if the Promise hangs.
@@ -132,7 +131,7 @@ export async function processQueueTick(): Promise<void> {
       const releaseSlot = () => {
         if (slotReleased) return;
         slotReleased = true;
-        localActiveJobs = Math.max(0, localActiveJobs - 1);
+        decrementActiveJobs();
         void processQueueTick();
       };
       const jobWatchdog = setTimeout(() => {
@@ -206,7 +205,7 @@ export function stopVideoQueueWorker(): void {
 
 /** Active pipeline jobs in this worker process (for deferring background CLIP work). */
 export function workerLocalActiveJobs(): number {
-  return localActiveJobs;
+  return activeJobsCount();
 }
 
 export function throwEnqueueError(check: Extract<EnqueueCheckResult, { ok: false }>): never {

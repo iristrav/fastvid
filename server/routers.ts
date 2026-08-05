@@ -111,7 +111,7 @@ import {
   enqueueVideoJob,
   getVideoQueuePosition,
   throwEnqueueError,
-} from "./videoQueue";
+} from "./queue";
 import { forgotPassword, validateResetToken as validateResetTokenProcedure, resetPassword } from "./authPasswordReset";
 import {
   buildOneShotScriptUserPrompt,
@@ -602,7 +602,7 @@ async function _generateVideoWithAI(
     console.error(
       `[Video Generation] Refusing pipeline on web for video ${videoId} — re-queuing for worker`
     );
-    const { enqueueVideoJob } = await import("./videoQueue");
+    const { enqueueVideoJob } = await import("./queue");
     await enqueueVideoJob(videoId, "🔄 Waiting for worker...");
     return;
   }
