@@ -890,6 +890,7 @@ async function generateIntentBatch(
         },
         { role: "user", content: buildIntentBatchPrompt(sentences, offset) },
       ],
+      preferProvider: "groq",
       response_format: INTENT_JSON_SCHEMA,
     });
 

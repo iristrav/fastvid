@@ -327,6 +327,7 @@ Return JSON array:
 ]`,
       },
     ],
+    preferProvider: "groq",
     maxTokens: 4000,
   });
 
@@ -559,6 +560,7 @@ Score this script:
 }`,
         },
       ],
+      preferProvider: "groq",
       maxTokens: 512,
     });
 

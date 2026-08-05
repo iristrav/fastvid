@@ -531,6 +531,7 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLengthRa
           { role: "system", content: "YouTube SEO expert. Respond with valid JSON only." },
           { role: "user", content: `YouTube metadata for: ${prompt} (${budget.label}, ${videoType} format)\nJSON: { title, description, tags: string[], chapters: [{time, title}] }` },
         ],
+        preferProvider: "groq",
         maxTokens: 512,
       });
       const rawMeta = metaResp?.choices?.[0]?.message?.content ?? "{}";

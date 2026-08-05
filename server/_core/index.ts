@@ -432,7 +432,8 @@ async function startServer() {
       llm,
       env: {
         BUILT_IN_FORGE_API_KEY: !!process.env.BUILT_IN_FORGE_API_KEY,
-        GITHUB_MODELS_TOKEN: !!process.env.GITHUB_MODELS_TOKEN?.trim(),
+        GEMINI_API_KEY: !!process.env.GEMINI_API_KEY?.trim(),
+        GROQ_API_KEY: !!process.env.GROQ_API_KEY?.trim(),
         LLM_API_KEY: !!openAiKeyFromEnv(),
         llmProvider: ENV.llmProvider,
         FISH_AUDIO_API_KEY: !!process.env.FISH_AUDIO_API_KEY,

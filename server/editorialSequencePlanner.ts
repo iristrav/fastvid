@@ -172,6 +172,7 @@ export async function getOrGenerateStoryboard(
           content: buildPrompt(sceneText, beats, videoTitle, videoContext),
         },
       ],
+      preferProvider: "groq",
       maxTokens: 800,
       responseFormat: { type: "json_object" },
     });

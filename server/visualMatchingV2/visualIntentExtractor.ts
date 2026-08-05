@@ -129,6 +129,7 @@ export async function extractVisualIntentsForScene(
               `Beats:\n${toGenerate.map((g) => `[${g.beat.beatId}] ${g.beat.spokenText}`).join("\n")}`,
           },
         ],
+        preferProvider: "groq",
         response_format: VISUAL_INTENT_SCHEMA,
         maxTokens: 4000,
       });
