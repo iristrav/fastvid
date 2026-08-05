@@ -1,4 +1,5 @@
 import { ENV, geminiKeyFromEnv, groqKeyFromEnv, llmApiKeyForProvider, openAiKeyFromEnv, resolveLlmProvider, type LlmProvider } from "./env";
+import { getActiveUserId } from "../videoGenerationCancel";
 
 export type Role = "system" | "user" | "assistant" | "tool" | "function";
 
@@ -652,7 +653,7 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
         if (i > 0) console.log(`[LLM] Succeeded via gemini after ${chain[0]} failure`);
         if (result.usage) {
           const { recordLlmUsage } = await import("./llmBudget");
-          recordLlmUsage(model, result.usage.prompt_tokens, result.usage.completion_tokens);
+          recordLlmUsage(model, result.usage.prompt_tokens, result.usage.completion_tokens, getActiveUserId() ?? null);
         }
         return result;
       } catch (err) {
@@ -722,7 +723,7 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
         const result = (await response.json()) as InvokeResult;
         if (result.usage) {
           const { recordLlmUsage } = await import("./llmBudget");
-          recordLlmUsage(String(payload.model), result.usage.prompt_tokens, result.usage.completion_tokens);
+          recordLlmUsage(String(payload.model), result.usage.prompt_tokens, result.usage.completion_tokens, getActiveUserId() ?? null);
         }
         return result;
       }

@@ -274,6 +274,13 @@
       "when": 1785700100000,
       "tag": "0038_llm_spend_daily",
       "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "5",
+      "when": 1785980400000,
+      "tag": "0039_llm_spend_by_user",
+      "breakpoints": true
     }
   ]
 }

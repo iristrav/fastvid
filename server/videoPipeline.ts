@@ -22863,12 +22863,14 @@ export async function runVideoPipeline(
 ): Promise<string> {
   // Each render gets its own context so concurrent renders never share singleton state.
   const renderCtx: RenderCtx = { watchdog: null, renderBudget: null, budgetTracker: null, videoTopic: null };
-  // runWithActiveVideoId makes videoId readable from ANY module in this render's call tree
-  // (including localClipVision.ts, which can't import from here — see exec()'s cancellation
-  // check below and videoGenerationCancel.ts for why).
+  // runWithActiveVideoId makes videoId/userId readable from ANY module in this render's call
+  // tree (including localClipVision.ts and llm.ts, which can't import from here — see exec()'s
+  // cancellation check below and videoGenerationCancel.ts for why). One extra lookup here (not
+  // per LLM call) to resolve the owning userId for per-user LLM spend attribution.
+  const ownerUserId = (await getVideoById(videoId))?.userId ?? null;
   return runWithActiveVideoId(videoId, () => renderCtxStorage.run(renderCtx, () => _runVideoPipelineInner(
     videoId, script, onProgress, voiceId, customVoiceoverUrl, videoLength, enableSubtitles, userPrompt
-  )));
+  )), ownerUserId);
 }
 
 async function _runVideoPipelineInner(
