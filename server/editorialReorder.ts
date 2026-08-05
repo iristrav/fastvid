@@ -213,6 +213,7 @@ export async function editorialReorderScene(
           content: buildPrompt(clipMeta, sceneText, videoTitle, sceneDuration),
         },
       ],
+      preferProvider: "groq",
       maxTokens: 300,
       responseFormat: { type: "json_object" },
     });
