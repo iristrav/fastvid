@@ -38,6 +38,7 @@ import {
   readQualityReportFromMetadata,
 } from "@shared/videoQuality";
 import { GenerationProgressBar, useSmoothedProgressPercent } from "@/components/GenerationProgressBar";
+import { useVideoProgressStream } from "@/hooks/useVideoProgressStream";
 
 const VIDEO_LENGTHS = VIDEO_LENGTH_OPTIONS.map((opt) =>
   opt.value === "1" ? { ...opt, label: "1 min (test)" } : opt
@@ -234,10 +235,18 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
   const [editTitle, setEditTitle] = useState(video.title ?? video.prompt.slice(0, 80));
   const listStillProcessing = !["completed", "failed"].includes(video.status);
   const needsApproval = video.status === "awaiting_approval";
-  const { data: pollData } = trpc.video.pollStatus.useQuery(
+  const { data: pollData, refetch: refetchPollStatus } = trpc.video.pollStatus.useQuery(
     { id: video.id },
     { enabled: listStillProcessing, refetchInterval: listStillProcessing ? 5000 : false }
   );
+  // SSE push (Phase 1) — additive to the 5s poll above, not a replacement. On a fresher
+  // event we trigger an immediate refetch instead of duplicating pollData's fields, so
+  // every existing pollData-derived value below stays exactly as accurate as before; this
+  // only cuts the latency between "the backend changed" and "the UI shows it".
+  const progressEvent = useVideoProgressStream(video.id, listStillProcessing);
+  useEffect(() => {
+    if (progressEvent) void refetchPollStatus();
+  }, [progressEvent, refetchPollStatus]);
   const currentStatus = pollData?.status ?? video.status;
   const isProcessing = !["completed", "failed"].includes(currentStatus);
   const stageInfo = AGENT_STAGES[currentStatus] ?? { label: currentStatus, agent: "AI", icon: "⚙️" };
