@@ -212,6 +212,15 @@ export async function getVideoById(id: number) {
   return result.length > 0 ? result[0] : undefined;
 }
 
+/** Look up the owning video row for a stored `/local-storage/<file>` URL, used to
+ *  authorize direct static-file requests for final video files. */
+export async function getVideoByVideoUrl(videoUrl: string) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db.select().from(videos).where(eq(videos.videoUrl, videoUrl)).limit(1);
+  return result.length > 0 ? result[0] : undefined;
+}
+
 export function readVideoMetadataObject(video?: { metadata?: unknown } | null): Record<string, unknown> {
   const metadata = video?.metadata;
   return metadata && typeof metadata === "object" && !Array.isArray(metadata)

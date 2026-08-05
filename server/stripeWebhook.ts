@@ -30,10 +30,15 @@ export function registerStripeWebhook(app: Express) {
       let event: Stripe.Event;
 
       try {
-        if (!webhookSecret || !sig) {
-          // No secret configured — parse raw body directly (dev mode)
+        if ((!webhookSecret || !sig) && process.env.NODE_ENV !== "production") {
+          // No secret configured — parse raw body directly (dev mode only).
+          // In production this fallback is refused below instead of trusting
+          // an unverified body, since anyone who knows the webhook URL could
+          // otherwise forge a checkout.session.completed event.
           const body = req.body instanceof Buffer ? req.body.toString() : req.body;
           event = JSON.parse(body) as Stripe.Event;
+        } else if (!webhookSecret || !sig) {
+          throw new Error("STRIPE_WEBHOOK_SECRET or stripe-signature header missing in production");
         } else {
           event = getStripe().webhooks.constructEvent(req.body, sig, webhookSecret);
         }

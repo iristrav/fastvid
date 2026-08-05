@@ -4,7 +4,7 @@
  */
 
 import { z } from "zod";
-import { publicProcedure } from "./_core/trpc";
+import { rateLimitedProcedure } from "./_core/trpc";
 import { resolveAppOrigin } from "./_core/appUrl";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { APP_ERROR, appTrpcError } from "@shared/appErrors";
@@ -14,11 +14,8 @@ import { SignJWT } from "jose";
 import { getUserByEmail, updateUserPassword, getUserById } from "./db";
 import { sendPasswordResetEmail } from "./_core/emailService";
 import { createResetToken, validateResetToken as validateToken, consumeResetToken } from "./_core/passwordResetStore";
-
-function getSessionSecret() {
-  const secret = process.env.JWT_SECRET ?? "fallback-secret-change-in-production";
-  return new TextEncoder().encode(secret);
-}
+import { getSessionSecret } from "./_core/sessionSecret";
+import { sanitizeUser } from "./userSanitize";
 
 async function signSessionToken(userId: number): Promise<string> {
   const expiresAt = Math.floor((Date.now() + ONE_YEAR_MS) / 1000);
@@ -31,7 +28,7 @@ async function signSessionToken(userId: number): Promise<string> {
 /**
  * Request password reset email
  */
-export const forgotPassword = publicProcedure
+export const forgotPassword = rateLimitedProcedure
   .input(z.object({ email: z.string().email() }))
   .mutation(async ({ input, ctx }) => {
     const user = await getUserByEmail(input.email.toLowerCase());
@@ -64,7 +61,7 @@ export const forgotPassword = publicProcedure
 /**
  * Validate reset token
  */
-export const validateResetToken = publicProcedure
+export const validateResetToken = rateLimitedProcedure
   .input(z.object({ token: z.string().min(1) }))
   .query(({ input }) => {
     const result = validateToken(input.token);
@@ -79,7 +76,7 @@ export const validateResetToken = publicProcedure
 /**
  * Reset password with valid token
  */
-export const resetPassword = publicProcedure
+export const resetPassword = rateLimitedProcedure
   .input(z.object({
     token: z.string().min(1),
     newPassword: z.string().min(8).max(128),
@@ -111,5 +108,5 @@ export const resetPassword = publicProcedure
     const cookieOptions = getSessionCookieOptions(ctx.req);
     ctx.res.cookie(COOKIE_NAME, token, { ...cookieOptions, maxAge: ONE_YEAR_MS });
 
-    return { success: true, user };
+    return { success: true, user: sanitizeUser(user) };
   });

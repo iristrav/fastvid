@@ -2,6 +2,7 @@ import { APP_ERROR, appTrpcError } from "@shared/appErrors";
 import { initTRPC } from "@trpc/server";
 import superjson from "superjson";
 import type { TrpcContext } from "./context";
+import { checkRateLimit } from "./rateLimit";
 
 const t = initTRPC.context<TrpcContext>().create({
   transformer: superjson,
@@ -9,6 +10,20 @@ const t = initTRPC.context<TrpcContext>().create({
 
 export const router = t.router;
 export const publicProcedure = t.procedure;
+
+/**
+ * Throttled variant of publicProcedure for the unauthenticated auth
+ * endpoints (login, register, forgotPassword, resetPassword,
+ * validateResetToken) — these had no rate limiting at all before, which
+ * allowed unthrottled credential stuffing and reset-token guessing.
+ */
+export const rateLimitedProcedure = publicProcedure.use(async ({ ctx, path, next }) => {
+  const ip = ctx.req.ip || ctx.req.socket?.remoteAddress || "unknown";
+  if (!checkRateLimit(`${ip}:${path}`)) {
+    throw appTrpcError("TOO_MANY_REQUESTS", APP_ERROR.RATE_LIMITED, "Too many requests — please try again in a minute");
+  }
+  return next({ ctx });
+});
 
 const requireUser = t.middleware(async opts => {
   const { ctx, next } = opts;

@@ -33,6 +33,7 @@ export const APP_ERROR = {
   QUEUE_LIMIT_REACHED: 10028,
   SCRIPT_REVIEW_PENDING: 10029,
   VIDEO_IN_PROGRESS: 10030,
+  RATE_LIMITED: 10031,
 } as const;
 
 /** Video pipeline failures (stored in videos.errorMessage). */

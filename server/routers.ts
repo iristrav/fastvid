@@ -9,6 +9,7 @@ import {
   adminProcedure,
   protectedProcedure,
   publicProcedure,
+  rateLimitedProcedure,
   router,
   subscribedProcedure,
 } from "./_core/trpc";
@@ -27,6 +28,7 @@ import { invokeLLM } from "./_core/llm";
 import { assertProductionLlmReady } from "./llmStartupDiagnostics";
 import { notifyOwner } from "./_core/notification";
 import { sendNicheApprovedEmail } from "./_core/emailService";
+import { sanitizeUser, sanitizeUsers } from "./userSanitize";
 import bcrypt from "bcryptjs";
 import { SignJWT } from "jose";
 import {
@@ -861,7 +863,7 @@ async function _runVideoGeneration(
 export const appRouter = router({
   system: systemRouter,
   auth: router({
-    me: publicProcedure.query((opts) => opts.ctx.user),
+    me: publicProcedure.query((opts) => (opts.ctx.user ? sanitizeUser(opts.ctx.user) : null)),
 
     /** Step 1: Validate invite code before registration */
     validateInviteCode: publicProcedure
@@ -875,7 +877,7 @@ export const appRouter = router({
       }),
 
     /** Step 2: Register with invite code + email + password */
-    register: publicProcedure
+    register: rateLimitedProcedure
       .input(z.object({
         inviteCode: z.string().min(1),
         name: z.string().min(1).max(128),
@@ -909,11 +911,11 @@ export const appRouter = router({
         ctx.res.cookie(COOKIE_NAME, token, { ...cookieOptions, maxAge: ONE_YEAR_MS });
         const user = await getUserById(userId);
         await linkNicheRequestsToUser(input.email.toLowerCase(), userId);
-        return { success: true, user };
+        return { success: true, user: user ? sanitizeUser(user) : null };
       }),
 
     /** Login with email + password */
-    login: publicProcedure
+    login: rateLimitedProcedure
       .input(z.object({
         email: z.string().email(),
         password: z.string().min(1),
@@ -931,7 +933,7 @@ export const appRouter = router({
         const token = await signSessionToken(user.id);
         const cookieOptions = getSessionCookieOptions(ctx.req);
         ctx.res.cookie(COOKIE_NAME, token, { ...cookieOptions, maxAge: ONE_YEAR_MS });
-        return { success: true, user };
+        return { success: true, user: sanitizeUser(user) };
       }),
 
     logout: publicProcedure.mutation(({ ctx }) => {
@@ -1141,7 +1143,7 @@ export const appRouter = router({
       const [userStats, videoStats] = await Promise.all([getUserStats(), getVideoStats()]);
       return { users: userStats, videos: videoStats };
     }),
-    listUsers: adminProcedure.input(z.object({ limit: z.number().default(100), offset: z.number().default(0) })).query(async ({ input }) => getAllUsers(input.limit, input.offset)),
+    listUsers: adminProcedure.input(z.object({ limit: z.number().default(100), offset: z.number().default(0) })).query(async ({ input }) => sanitizeUsers(await getAllUsers(input.limit, input.offset))),
     listVideos: adminProcedure.input(z.object({ limit: z.number().default(100), offset: z.number().default(0) })).query(async ({ input }) => getAllVideos(input.limit, input.offset)),
     updateUserRole: adminProcedure.input(z.object({ userId: z.number(), role: z.enum(["user", "admin"]) })).mutation(async ({ input }) => { await updateUserRole(input.userId, input.role); return { success: true }; }),
     updateUserSubscription: adminProcedure.input(z.object({ userId: z.number(), subscriptionStatus: z.enum(["active", "inactive", "cancelled"]) })).mutation(async ({ input }) => {
@@ -1177,7 +1179,7 @@ export const appRouter = router({
     getUser: adminProcedure.input(z.object({ userId: z.number() })).query(async ({ input }) => {
       const user = await getUserById(input.userId);
       if (!user) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Resource not found");
-      return user;
+      return sanitizeUser(user);
     }),
 
     // ─── Invite Codes ────────────────────────────────────────────────────────

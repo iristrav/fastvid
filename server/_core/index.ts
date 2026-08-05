@@ -34,6 +34,7 @@ import { ENV, openAiKeyFromEnv } from "./env";
 import { getVisionQaStatus, mergeWorkerClipVisionStatus } from "../visualQualityGate";
 import { getLlmDiagnostics, logLlmStartupDiagnostics } from "../llmStartupDiagnostics";
 import { recordWorkerHeartbeat, readWorkerHeartbeats, summarizeWorkerHealth } from "../workerHeartbeat";
+import { getSessionSecret } from "./sessionSecret";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -179,6 +180,12 @@ async function startServer() {
   console.log("[Fastvid] PORT:", process.env.PORT || "3000 (default)");
   console.log("[Fastvid] DATABASE_URL:", process.env.DATABASE_URL ? "✓ set" : "✗ NOT SET — database features disabled");
   console.log("[Fastvid] JWT_SECRET:", process.env.JWT_SECRET ? "✓ set" : "✗ NOT SET — auth will not work");
+  if (!process.env.JWT_SECRET && process.env.NODE_ENV === "production") {
+    console.error(
+      "[Fastvid] FATAL: JWT_SECRET is not set. Refusing to start in production — this would otherwise sign sessions with a hardcoded, publicly-visible fallback secret."
+    );
+    process.exit(1);
+  }
   console.log("[Fastvid] FISH_AUDIO_API_KEY:", process.env.FISH_AUDIO_API_KEY ? "✓ set" : "✗ NOT SET — voiceover disabled");
   console.log(
     "[Fastvid] GOOGLE_TTS_API_KEY:",
@@ -306,6 +313,52 @@ async function startServer() {
   if (storageBackend === "local") {
     const { LOCAL_UPLOADS_DIR } = await import("../storageLocal");
     const expressStatic = (await import("express")).static;
+
+    // Final video files (.mp4) get the same authenticated ownership check
+    // /api/stream/video/:id and /api/download/video/:id already perform —
+    // previously any *.mp4 under this directory was servable to anyone who
+    // knew/guessed the filename, bypassing the app's ownership model. Other
+    // asset types (thumbnails, archive clips, voice samples) keep today's
+    // unauthenticated static serving unchanged, since they're referenced
+    // from contexts (admin archive grid, curated media previews) that don't
+    // map to a single video owner.
+    app.get("/local-storage/:file", async (req, res, next) => {
+      const fileName = req.params.file;
+      if (!fileName.toLowerCase().endsWith(".mp4")) { next(); return; }
+      try {
+        const { parse: parseCookies } = await import("cookie");
+        const { jwtVerify } = await import("jose");
+        const { COOKIE_NAME } = await import("@shared/const");
+        const { getVideoByVideoUrl, getUserById } = await import("../db");
+
+        const cookies = parseCookies(req.headers.cookie ?? "");
+        const token = cookies[COOKIE_NAME];
+        if (!token) { res.status(401).json({ error: "Unauthorized" }); return; }
+
+        let userId: number;
+        try {
+          const { payload } = await jwtVerify(token, getSessionSecret(), { algorithms: ["HS256"] });
+          userId = payload.userId as number;
+          if (!userId) throw new Error("No userId in token");
+        } catch {
+          res.status(401).json({ error: "Invalid session" }); return;
+        }
+
+        const video = await getVideoByVideoUrl(`/local-storage/${fileName}`);
+        if (!video) { res.status(404).json({ error: "Not found" }); return; }
+
+        const user = await getUserById(userId);
+        if (video.userId !== userId && user?.role !== "admin") {
+          res.status(403).json({ error: "Forbidden" }); return;
+        }
+
+        next();
+      } catch (err) {
+        console.error("[LocalStorage] Auth check error:", err);
+        res.status(500).json({ error: "Internal server error" });
+      }
+    });
+
     app.use("/local-storage", expressStatic(LOCAL_UPLOADS_DIR, {
       maxAge: "1d",
       fallthrough: false,
@@ -519,7 +572,7 @@ async function startServer() {
       const token = cookies[COOKIE_NAME];
       if (!token) { res.status(401).json({ error: "Unauthorized" }); return; }
 
-      const secret = new TextEncoder().encode(process.env.JWT_SECRET ?? "fallback-secret-change-in-production");
+      const secret = getSessionSecret();
       let userId: number;
       try {
         const { payload } = await jwtVerify(token, secret, { algorithms: ["HS256"] });
@@ -599,7 +652,7 @@ async function startServer() {
       const token = cookies[COOKIE_NAME];
       if (!token) { res.status(401).json({ error: "Unauthorized" }); return; }
 
-      const secret = new TextEncoder().encode(process.env.JWT_SECRET ?? "fallback-secret-change-in-production");
+      const secret = getSessionSecret();
       let userId: number;
       try {
         const { payload } = await jwtVerify(token, secret, { algorithms: ["HS256"] });
@@ -687,7 +740,12 @@ async function startServer() {
 
   // ─── Internal Video Trigger (dev/testing only) ──────────────────────────────
   // Allows triggering video generation without OAuth authentication.
-  // Protected by INTERNAL_TRIGGER_KEY env var.
+  // Protected by INTERNAL_TRIGGER_KEY env var. If that env var is unset in
+  // production, these routes are not registered at all — previously they
+  // fell back to a hardcoded default key ("dev-trigger-key-2026", visible in
+  // this source file) that would grant anyone unauthenticated video-trigger
+  // access.
+  if (process.env.INTERNAL_TRIGGER_KEY || process.env.NODE_ENV !== "production") {
   app.post("/api/internal/generate", async (req, res) => {
     const key = req.headers['x-internal-key'];
     const expectedKey = process.env.INTERNAL_TRIGGER_KEY || 'dev-trigger-key-2026';
@@ -828,6 +886,9 @@ async function startServer() {
       res.status(500).json({ error: String(err) });
     }
   });
+  } else {
+    console.warn("[Fastvid] INTERNAL_TRIGGER_KEY not set — /api/internal/* routes disabled in production.");
+  }
 
   // tRPC API
   app.use(

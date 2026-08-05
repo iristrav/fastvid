@@ -3,6 +3,7 @@
  * Tokens expire after 1 hour
  * Note: Tokens are lost on server restart. For production, use database storage.
  */
+import { randomBytes } from "crypto";
 
 interface ResetToken {
   userId: number;
@@ -14,7 +15,7 @@ interface ResetToken {
 const tokens = new Map<string, ResetToken>();
 
 export function generateResetToken(): string {
-  return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+  return randomBytes(32).toString("hex");
 }
 
 export function createResetToken(userId: number, email: string): string {
