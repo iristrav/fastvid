@@ -73,7 +73,13 @@ export type RankedQuerySource =
   | "llm_alias"
   | "llm_related_concept"
   | "llm_historical_term"
-  | "llm_context_phrase";
+  | "llm_context_phrase"
+  // Implicit visual intent — footage a professional editor would cut to that the sentence
+  // never names directly: reaction shots, cutaways, detail/close-up shots, establishing shots
+  // of the venue/location, ambiance/atmosphere footage, generic B-roll of the topic. E.g. "Apple
+  // introduced the Vision Pro" -> not just "Apple Vision Pro", but "audience reaction applause",
+  // "journalists photographing product", "person trying VR headset", "Apple Park exterior".
+  | "llm_implicit_visual";
 
 export type RankedQuery = {
   query: string;

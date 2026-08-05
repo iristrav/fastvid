@@ -87,11 +87,53 @@ describe("LLM query expansion (step 3) — never replaces, only adds, never cras
       { query: "tech CEO on stage", category: "related_concept" },
       { query: "silicon valley keynote 2020s", category: "historical_term" },
       { query: "AI chatbot unveiling", category: "context_phrase" },
+      { query: "audience reaction applause", category: "implicit_visual" },
     ])();
 
     const expansions = await generateLlmQueryExpansions(makeIntent());
     const sources = expansions.map((q) => q.source).sort();
-    expect(sources).toEqual(["llm_alias", "llm_context_phrase", "llm_historical_term", "llm_related_concept"]);
+    expect(sources).toEqual([
+      "llm_alias",
+      "llm_context_phrase",
+      "llm_historical_term",
+      "llm_implicit_visual",
+      "llm_related_concept",
+    ]);
+  });
+
+  it("infers implicit visual intent — B-roll/reaction/cutaway shots the sentence never names", async () => {
+    // Mirrors the "Apple introduced the Vision Pro" example: not just entity restatements,
+    // but footage a professional editor would naturally cut to.
+    await mockLlmExpansion([
+      { query: "audience reaction applause", category: "implicit_visual" },
+      { query: "journalists photographing product", category: "implicit_visual" },
+      { query: "person trying VR headset", category: "implicit_visual" },
+      { query: "close-up product reveal", category: "implicit_visual" },
+      { query: "stage lighting keynote", category: "implicit_visual" },
+      { query: "Apple Park exterior", category: "implicit_visual" },
+    ])();
+
+    const expansions = await generateLlmQueryExpansions(
+      makeIntent({
+        spokenText: "Apple introduced the Vision Pro.",
+        visualSubject: "Apple",
+        visualDescription: "Apple unveiling the Vision Pro headset",
+        brands: ["Vision Pro"],
+        companies: ["Apple"],
+      })
+    );
+
+    const implicitVisualQueries = expansions.filter((q) => q.source === "llm_implicit_visual").map((q) => q.query);
+    expect(implicitVisualQueries).toEqual(
+      expect.arrayContaining([
+        "audience reaction applause",
+        "journalists photographing product",
+        "person trying VR headset",
+        "close-up product reveal",
+      ])
+    );
+    // Implicit-visual queries are still real, scored entries — not silently dropped by rank.
+    expect(expansions.every((q) => q.score > 0)).toBe(true);
   });
 
   it("degrades to an empty list (not a crash) when the LLM call fails", async () => {
@@ -155,6 +197,7 @@ describe("generateRankedSearchQueries — full hybrid pipeline", () => {
     await mockLlmExpansion([
       { query: "Musk product reveal", category: "alias" },
       { query: "Elon Musk keynote", category: "alias" }, // duplicate of a deterministic query
+      { query: "audience reaction applause", category: "implicit_visual" },
     ])();
 
     const queries = await generateRankedSearchQueries(makeIntent());
@@ -163,8 +206,10 @@ describe("generateRankedSearchQueries — full hybrid pipeline", () => {
     // Deterministic queries still present.
     expect(strings).toContain("Elon Musk keynote");
     expect(strings).toContain("Elon Musk xAI");
-    // LLM-only addition present.
+    // LLM-only additions present, including implicit visual intent (B-roll) the sentence
+    // never literally names.
     expect(strings).toContain("Musk product reveal");
+    expect(strings).toContain("audience reaction applause");
     // Cross-list duplicate collapsed to one entry.
     expect(strings.filter((s) => s.toLowerCase() === "elon musk keynote")).toHaveLength(1);
     // Still within the 10-30 target range for a rich intent.
