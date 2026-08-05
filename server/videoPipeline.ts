@@ -5838,7 +5838,7 @@ async function generateGuaranteedBeatClip(
   // Try text-over-gradient when we have context — more informative than a plain color
   if (beatText && beatText.trim().length > 3) {
     try {
-      const safeText = beatText.trim().slice(0, 90).replace(/'/g, "\\'").replace(/:/g, "\\:").replace(/\\/g, "\\\\");
+      const safeText = sanitizeForDrawtextStrict(beatText, 90);
       const colors = ["3a4a5e", "4a5a6e", "3a5a6e", "4a4a5e"];
       const color = colors[Math.abs(sceneIndex) % colors.length];
       const safeDur = Math.min(Math.max(duration, 3), 90);

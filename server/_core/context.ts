@@ -4,17 +4,13 @@ import type { CreateExpressContextOptions } from "@trpc/server/adapters/express"
 import { jwtVerify } from "jose";
 import type { User } from "../../drizzle/schema";
 import * as db from "../db";
+import { getSessionSecret } from "./sessionSecret";
 
 export type TrpcContext = {
   req: CreateExpressContextOptions["req"];
   res: CreateExpressContextOptions["res"];
   user: User | null;
 };
-
-function getSessionSecret() {
-  const secret = process.env.JWT_SECRET ?? "fallback-secret-change-in-production";
-  return new TextEncoder().encode(secret);
-}
 
 async function getUserFromCookie(cookieHeader: string | undefined): Promise<User | null> {
   if (!cookieHeader) return null;
