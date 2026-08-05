@@ -2924,6 +2924,37 @@ function getScenesForLength(videoLengthRaw: string): number {
     default:      return 18;
   }
 }
+
+/** Groups consecutive scenes into ~targetChunkSec-long batches (by index position, not
+ *  scene.index — callers slice `scenes`/parallel arrays like `audioPaths` with these ranges).
+ *  A single scene already longer than targetChunkSec closes its own chunk immediately rather
+ *  than being merged with a neighbour. Long videos get processed chunk-by-chunk through the
+ *  exact same per-scene Stage 3/4 code the 1-minute path already uses (see
+ *  _runVideoPipelineInner's sequential branch) instead of firing every scene in the video at
+ *  once — that's what made long-video quality/consistency lag behind 1-minute videos, whose
+ *  handful of scenes always behaved like a single small chunk anyway. */
+function groupScenesIntoChunks(scenes: Scene[], targetChunkSec = 60): Array<{ start: number; end: number }> {
+  const chunks: Array<{ start: number; end: number }> = [];
+  let chunkStart = 0;
+  let chunkSec = 0;
+  for (let i = 0; i < scenes.length; i++) {
+    chunkSec += scenes[i]!.duration || 0;
+    const isLast = i === scenes.length - 1;
+    if (chunkSec >= targetChunkSec || isLast) {
+      chunks.push({ start: chunkStart, end: i + 1 });
+      chunkStart = i + 1;
+      chunkSec = 0;
+    }
+  }
+  return chunks.length > 0 ? chunks : [{ start: 0, end: scenes.length }];
+}
+
+/** Portions a whole-video stage timeout down to this chunk's share, by scene count — reuses
+ *  the existing tuned whole-video timeout values instead of inventing new ones per chunk. */
+function chunkStageTimeoutMs(totalStageMs: number, chunkSceneCount: number, totalSceneCount: number, minMs = 20_000): number {
+  if (totalSceneCount <= 0) return Math.max(minMs, totalStageMs);
+  return Math.max(minMs, Math.round((totalStageMs * chunkSceneCount) / totalSceneCount));
+}
 // ─── Types ─────────────────────────────────────────────────────────────────────────────────
 interface Scene {
   index: number;
@@ -23806,7 +23837,16 @@ async function _runVideoPipelineInner(
       profiler.recordStageEnd("compose", Date.now());
       pipelineStepTiming.summarizeAll();
     } else {
-    // ── Sequential: Stage 3 (visuals) then Stage 4 (compose) ────────────────
+    // ── Sequential: Stage 3 (visuals) then Stage 4 (compose), chunked ~60s at a time ──
+    // Long videos are processed in small batches through the exact SAME per-scene Stage
+    // 3/4 code the 1-minute path already uses, instead of firing every scene in the whole
+    // video at LLM/ffmpeg providers simultaneously (bounded only by a concurrency cap) —
+    // that burst is what made long-video quality/consistency lag behind 1-minute videos,
+    // whose handful of scenes already behaved like a single small chunk. A 1-minute video's
+    // 3 scenes always fit in one chunk below, so this is a no-op restructuring for the case
+    // that already works well.
+    const chunks = groupScenesIntoChunks(scenes, 60);
+    console.log(`[Pipeline] Sequential stage: ${scenes.length} scenes in ${chunks.length} chunk(s) of ~60s`);
 
     const visualLimit = pLimit(perf.sceneParallelism);
     let completedVisuals = 0;
@@ -23824,9 +23864,48 @@ async function _runVideoPipelineInner(
       });
     }, 10_000);
     sceneVisualResults = new Array(scenes.length);
+
+    // ── Stage 4 bookkeeping that spans the whole video — sized once here, filled in
+    // per chunk inside the loop below (composeSceneVideo/rescue logic is unchanged). ──
+    const composeLimit = pLimit(composeParallelismForVideo(videoLength, IS_RAILWAY));
+    let completedCompose = 0;
+    composedUsedClips = scenes.map(() => []);
+    let timelineSec = 0;
+    sceneStartSecs = scenes.map((s) => {
+      const start = timelineSec;
+      timelineSec += s.duration;
+      return start;
+    });
+    voiceMontageSyncResults = [];
+    const seqComposePar = composeParallelismForVideo(videoLength, IS_RAILWAY);
+    const seqCpuCount = (() => { try { return require("os").cpus().length; } catch { return "?"; } })();
+    const seqPreset = process.env.FFMPEG_PRESET ?? "veryfast";
+    console.log(
+      `[Compose] Stage 4 startup — CPU cores: ${seqCpuCount}, compose parallelism: ${seqComposePar}, ` +
+      `montage segment parallelism: ${montageSegmentParallelism(IS_RAILWAY)}, ` +
+      `max concurrent ffmpeg (compose×montage): ~${seqComposePar * montageSegmentParallelism(IS_RAILWAY)}, ` +
+      `encoder preset: ${seqPreset}`
+    );
+    if (seqPreset !== "veryfast" && seqPreset !== "superfast" && seqPreset !== "ultrafast") {
+      console.warn(`[Compose] Slow encoder preset "${seqPreset}" — set FFMPEG_PRESET=veryfast for 2–5x speedup`);
+    }
+    const seqComposeStartMs: number[] = new Array(scenes.length).fill(0);
+    const seqComposeElapsedMs: number[] = new Array(scenes.length).fill(0);
+    let seqActiveComposes = 0;
+    let seqQueuedComposes = scenes.length; // all scenes queued at start
+    const t3 = Date.now();
+    profiler.recordStageEnd("retrieval", t3);
+    profiler.recordStageStart("compose", t3);
+    get_activeBudgetTracker()?.stageStart("compose", (get_activeRenderBudget()?.basePerSceneComposeMs ?? 90_000) * scenes.length);
+
     try {
+    for (let chunkIdx = 0; chunkIdx < chunks.length; chunkIdx++) {
+      const chunk = chunks[chunkIdx]!;
+      const chunkScenes = scenes.slice(chunk.start, chunk.end);
+      try {
       await withSceneFetchTimeout(
-        () => Promise.all(scenes.map((scene, sceneIdx) => visualLimit(async () => {
+        () => Promise.all(chunkScenes.map((scene, ci) => visualLimit(async () => {
+        const sceneIdx = chunk.start + ci;
         activeSceneIdx = sceneIdx;
         let result: SceneVisualsResult;
         try {
@@ -23886,35 +23965,33 @@ async function _runVideoPipelineInner(
         });
         return result;
       }))),
-      visualStageTimeoutMs(videoLength, perf),
-      `Visual generation stage (≤${Math.round(visualStageTimeoutMs(videoLength, perf) / 60_000)}min cap)`
+      chunkStageTimeoutMs(visualStageTimeoutMs(videoLength, perf), chunkScenes.length, scenes.length),
+      `Visual generation stage chunk ${chunkIdx + 1}/${chunks.length}`
     );
     } catch (visualStageErr) {
       console.warn(
-        `[Pipeline] Visual stage cap hit (${completedVisuals}/${scenes.length} scenes done) — self-healing:`,
+        `[Pipeline] Visual stage cap hit chunk ${chunkIdx + 1}/${chunks.length} (${completedVisuals}/${scenes.length} scenes done) — self-healing:`,
         (visualStageErr as Error).message
       );
       visualDedup.lock = Promise.resolve();
-    } finally {
-      clearInterval(visualHeartbeat);
     }
-    get_activeBudgetTracker()?.stageEnd("retrieval");
-    console.log(`[Pipeline] Stage 3 (visuals): ${((Date.now()-t2)/1000).toFixed(1)}s`);
 
-    // Refine compose budget based on actual clip mix from retrieval
+    // Refine compose budget based on this chunk's actual clip mix from retrieval — recomputed
+    // per chunk (more locally accurate than one whole-video aggregate), feeds into
+    // renderBudgetComposeMs used by the compose calls further down for THIS chunk onward.
     const budgetTracker = get_activeBudgetTracker();
     const activeRenderBudget = get_activeRenderBudget();
     if (budgetTracker && activeRenderBudget) {
-      const allRetrievedClips = sceneVisualResults.flatMap(r => r?.clips ?? []);
-      const totalClips = allRetrievedClips.length || 1;
-      const archiveClips = allRetrievedClips.filter(p => curatedClipPathAssetId(p) != null).length;
-      const aiClips = allRetrievedClips.filter(p => isAIGeneratedClip(p)).length;
+      const chunkRetrievedClips = sceneVisualResults.slice(chunk.start, chunk.end).flatMap(r => r?.clips ?? []);
+      const totalClips = chunkRetrievedClips.length || 1;
+      const archiveClips = chunkRetrievedClips.filter(p => curatedClipPathAssetId(p) != null).length;
+      const aiClips = chunkRetrievedClips.filter(p => isAIGeneratedClip(p)).length;
       const signals = {
         archiveClipRatio:    archiveClips / totalClips,
         aiClipRatio:         aiClips / totalClips,
         clipCacheHitRatio:   0,
         totalClipsRetrieved: totalClips,
-        avgClipsPerScene:    totalClips / scenes.length,
+        avgClipsPerScene:    totalClips / chunkScenes.length,
       };
       const { newComposeMs, newConfidence } = budgetTracker.refineFromSignals(signals, activeRenderBudget);
       set_activeRenderBudget({ ...activeRenderBudget, basePerSceneComposeMs: newComposeMs, confidence: newConfidence });
@@ -23925,7 +24002,7 @@ async function _runVideoPipelineInner(
       console.warn("[Pipeline] Force-export — skipping polish, proceeding to compose with current clips");
     }
 
-    for (let si = 0; si < scenes.length; si++) {
+    for (let si = chunk.start; si < chunk.end; si++) {
       const usable = (sceneVisualResults[si]?.clips ?? []).filter(
         (c) => c && !isPipelineFallbackClip(c)
       );
@@ -24044,7 +24121,7 @@ async function _runVideoPipelineInner(
     }
 
     if (strictVoiceVisualMatchEnabled() && !isFastShortVideoLength(videoLength)) {
-      for (let si = 0; si < scenes.length; si++) {
+      for (let si = chunk.start; si < chunk.end; si++) {
         const vr = sceneVisualResults[si];
         const minNeeded = minClipsForBalancedVoice(scenes[si].duration + 0.15, videoLength);
         const usable = (vr?.clips ?? []).filter((c) => c && !isPipelineFallbackClip(c));
@@ -24079,6 +24156,14 @@ async function _runVideoPipelineInner(
       }
     }
 
+    // NOTE: intentionally passed the FULL scenes/sceneVisualResults/audioPaths arrays here
+    // (not chunk-sliced) — polishWeakAdoptBeatsBeforeCompose self-limits to whatever's in
+    // visualDedup.clipAdoptAudit so far (naturally chunk-scoped since that accumulates as
+    // chunks complete), and ensureFastShortScenesReadyForCompose only ever does anything for
+    // isFastShortVideoLength videos, which always produce exactly one chunk anyway (so this
+    // call is identical to pre-chunking behavior for that case). Slicing these arrays would
+    // silently drop their per-scene writes (sceneVisualResults[si] = ...) since Array.slice
+    // returns a new array — the mutation would land on the copy, not the outer array.
     await polishWeakAdoptBeatsBeforeCompose(
       scenes,
       sceneVisualResults,
@@ -24104,7 +24189,8 @@ async function _runVideoPipelineInner(
       const reorderT0 = Date.now();
       try {
         await Promise.all(
-          scenes.map(async (scene, i) => {
+          chunkScenes.map(async (scene, ci) => {
+            const i = chunk.start + ci;
             const vr = sceneVisualResults[i];
             if (!vr || vr.clips.length < 2) return;
             const reordered = await editorialReorderScene(
@@ -24133,7 +24219,7 @@ async function _runVideoPipelineInner(
 
     // ── Shot Sequence Optimizer: deterministic shot-type variety pass ──
     if (shotSequenceOptimizerEnabled()) {
-      for (let i = 0; i < scenes.length; i++) {
+      for (let i = chunk.start; i < chunk.end; i++) {
         const vr = sceneVisualResults[i];
         if (!vr || vr.clips.length < 2) continue;
         const sso = optimizeShotSequence(scenes[i].index, vr.clips, vr.beatDurations, vr.clipBeatIndices, vr.beats);
@@ -24145,7 +24231,7 @@ async function _runVideoPipelineInner(
 
     // ── Visual Rhythm Engine: adjust beat durations to narration energy arc ──
     if (visualRhythmEngineEnabled()) {
-      for (let i = 0; i < scenes.length; i++) {
+      for (let i = chunk.start; i < chunk.end; i++) {
         const vr = sceneVisualResults[i];
         if (!vr || (vr.beatDurations?.length ?? 0) < 2) continue;
         const beatTexts = (vr.beats ?? []).map((b) => b.text);
@@ -24153,15 +24239,6 @@ async function _runVideoPipelineInner(
         const rr = applyVisualRhythm(scenes[i].index, beatTexts, vr.beatDurations);
         sceneVisualResults[i] = { ...vr, beatDurations: rr.beatDurations };
       }
-    }
-
-    // ── Global Documentary Director: whole-video editorial analysis ──
-    if (globalDocumentaryDirectorEnabled() && scenes.length >= 2) {
-      setImmediate(() => {
-        const sceneClips = sceneVisualResults.map((vr) => vr?.clips ?? []);
-        const sceneBeats = sceneVisualResults.map((vr) => vr?.beats ?? []);
-        analyzeVideoStructure(topicContext ?? "documentary", scenes.map((s) => s.text), sceneClips, sceneBeats).catch(() => {});
-      });
     }
 
     if (composeLocalClipsOnly(videoLength)) {
@@ -24173,42 +24250,12 @@ async function _runVideoPipelineInner(
 
     // ── Stage 4: Compose scenes — clips, voice, year badges (final output) ───
     assertPipelineWithinBudget(videoId, pipelineWallStartMs, videoLength, visualDedup);
-    onProgress?.({ stage: STAGE_LABELS.assembly, percent: 47 });
-    const t3 = Date.now();
-    profiler.recordStageEnd("retrieval", t3);
-    profiler.recordStageStart("compose", t3);
-    get_activeBudgetTracker()?.stageStart("compose", (get_activeRenderBudget()?.basePerSceneComposeMs ?? 90_000) * scenes.length);
+    onProgress?.({ stage: `${STAGE_LABELS.assembly} (chunk ${chunkIdx + 1}/${chunks.length})`, percent: 47 });
 
-    // Railway: one FFmpeg compose at a time (avoids "Resource temporarily unavailable" decoder errors)
-    const composeLimit = pLimit(composeParallelismForVideo(videoLength, IS_RAILWAY));
-    let completedCompose = 0;
-    composedUsedClips = scenes.map(() => []);
-    let timelineSec = 0;
-    sceneStartSecs = scenes.map((s) => {
-      const start = timelineSec;
-      timelineSec += s.duration;
-      return start;
-    });
-    voiceMontageSyncResults = [];
-    const seqComposePar = composeParallelismForVideo(videoLength, IS_RAILWAY);
-    const seqCpuCount = (() => { try { return require("os").cpus().length; } catch { return "?"; } })();
-    const seqPreset = process.env.FFMPEG_PRESET ?? "veryfast";
-    console.log(
-      `[Compose] Stage 4 startup — CPU cores: ${seqCpuCount}, compose parallelism: ${seqComposePar}, ` +
-      `montage segment parallelism: ${montageSegmentParallelism(IS_RAILWAY)}, ` +
-      `max concurrent ffmpeg (compose×montage): ~${seqComposePar * montageSegmentParallelism(IS_RAILWAY)}, ` +
-      `encoder preset: ${seqPreset}`
-    );
-    if (seqPreset !== "veryfast" && seqPreset !== "superfast" && seqPreset !== "ultrafast") {
-      console.warn(`[Compose] Slow encoder preset "${seqPreset}" — set FFMPEG_PRESET=veryfast for 2–5x speedup`);
-    }
-    const seqComposeStartMs: number[] = new Array(scenes.length).fill(0);
-    const seqComposeElapsedMs: number[] = new Array(scenes.length).fill(0);
-    let seqActiveComposes = 0;
-    let seqQueuedComposes = scenes.length; // all scenes queued at start
-    composedScenes = await withTimeout(
+    const chunkComposed = await withTimeout(
       Promise.all(
-        scenes.map((scene, i) => {
+        chunkScenes.map((scene, ci) => {
+          const i = chunk.start + ci;
           return composeLimit(async () => {
           seqQueuedComposes--;
           seqActiveComposes++;
@@ -24495,9 +24542,39 @@ async function _runVideoPipelineInner(
       // too tight as soon as a video had more than a handful of scenes. Tie the fast-short case
       // to the same emergency-finish budget the rest of the pipeline already uses for that video
       // length, so it can never be the thing that fails a video the wall-clock budget allowed.
-      isFastShortVideoLength(videoLength) ? pipelineEmergencyFinishMs(videoLength) : 2400_000,
-      "Scene compose stage"
+      // Portioned to this chunk's share of scenes, same reasoning as the Stage 3 chunk timeout.
+      chunkStageTimeoutMs(
+        isFastShortVideoLength(videoLength) ? pipelineEmergencyFinishMs(videoLength) : 2400_000,
+        chunkScenes.length,
+        scenes.length
+      ),
+      `Scene compose stage chunk ${chunkIdx + 1}/${chunks.length}`
     );
+    // NOTE: no catch here, matching pre-chunking behavior — a whole-chunk compose timeout (as
+    // opposed to an individual scene's own rescue/last-resort fallback inside the closure
+    // above, which already guarantees some output per scene) propagates up and fails the whole
+    // video, same as a whole-video compose timeout did before chunking. Swallowing it here
+    // instead would silently produce fewer than chunkScenes.length entries, misaligning every
+    // later chunk's composedScenes[i] against scenes[i].
+    composedScenes.push(...chunkComposed);
+    } // end for (chunk of chunks)
+    } finally {
+      clearInterval(visualHeartbeat);
+    }
+    get_activeBudgetTracker()?.stageEnd("retrieval");
+    console.log(`[Pipeline] Stage 3 (visuals): ${((Date.now()-t2)/1000).toFixed(1)}s`);
+
+    // ── Global Documentary Director: whole-video editorial analysis — runs once, after all
+    // chunks are done, over the fully-accumulated sceneVisualResults (was previously between
+    // Stage 3 and Stage 4, now moved here since it's whole-video analysis, not per-chunk). ──
+    if (globalDocumentaryDirectorEnabled() && scenes.length >= 2) {
+      setImmediate(() => {
+        const sceneClips = sceneVisualResults.map((vr) => vr?.clips ?? []);
+        const sceneBeats = sceneVisualResults.map((vr) => vr?.beats ?? []);
+        analyzeVideoStructure(topicContext ?? "documentary", scenes.map((s) => s.text), sceneClips, sceneBeats).catch(() => {});
+      });
+    }
+
     const seqFinished = seqComposeElapsedMs.filter((ms) => ms > 0);
     const seqSorted = [...seqFinished].sort((a, b) => b - a);
     const seqAvgMs = seqFinished.length > 0 ? seqFinished.reduce((s, v) => s + v, 0) / seqFinished.length : 0;
