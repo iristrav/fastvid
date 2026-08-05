@@ -7237,7 +7237,7 @@ async function fetchGdeltTvNewsClips(
 }
 
 /** Europeana — EU broadcast/documentary video (CC/PD), requires free API key. */
-async function fetchEuropeanaVideos(
+export async function fetchEuropeanaVideos(
   queries: string | string[],
   duration: number,
   workDir: string,
@@ -8292,7 +8292,7 @@ async function searchYoutubeVideoCandidates(
     .sort((a, b) => b.rel - a.rel);
 }
 
-async function fetchYouTubeCCClips(
+export async function fetchYouTubeCCClips(
   queries: string | string[],
   duration: number,
   workDir: string,
