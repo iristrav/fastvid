@@ -23,6 +23,11 @@ import type {
 import { averageSceneDurationSec } from "./pacingAdvisor";
 
 export const HOOK_WINDOW_SEC = 30;
+/** Phase 9: nested inside HOOK_WINDOW_SEC — the first ~8 seconds are the single highest-stakes
+ *  moment for viewer drop-off (well-documented short-form retention behavior: most of a video's
+ *  early attrition happens before this point, not gradually across the whole 30s hook window),
+ *  so it gets distinctly more urgent guidance than "somewhere in the first 30 seconds." */
+export const COLD_OPEN_WINDOW_SEC = 8;
 const REPETITION_LOOKBACK = 2;
 
 function recentDecisions(context: DirectorContext, n: number): DirectorDecision[] {
@@ -91,12 +96,31 @@ export function buildHookGuidance(context: DirectorContext): HookGuidance {
   if (!isHookSegment) {
     return {
       isHookSegment: false,
+      isColdOpen: false,
       recommendations: [],
       reason: `Scene starts at ${context.sceneStartSec.toFixed(1)}s, after the ${HOOK_WINDOW_SEC}-second hook window — no hook-specific guidance applies.`,
     };
   }
+
+  const isColdOpen = context.sceneStartSec < COLD_OPEN_WINDOW_SEC;
+  if (isColdOpen) {
+    return {
+      isHookSegment: true,
+      isColdOpen: true,
+      recommendations: [
+        "This is the cold open — the single highest-stakes moment for viewer retention in the entire video.",
+        "Open on the single strongest visual available; do not build up to it.",
+        "Use the fastest, most energetic cutting pace anywhere in the video.",
+        "Do not hold a static shot here — motion or a strong cut is required.",
+        "Maximize visual variety immediately rather than easing in.",
+      ],
+      reason: `Scene starts at ${context.sceneStartSec.toFixed(1)}s, within the first ${COLD_OPEN_WINDOW_SEC} seconds — the cold open, where the largest share of a video's viewer drop-off happens.`,
+    };
+  }
+
   return {
     isHookSegment: true,
+    isColdOpen: false,
     recommendations: [
       "Increase energy.",
       "Use faster cuts.",

@@ -57,6 +57,15 @@ const HIGH_ENERGY_KEYWORDS = [
   "declared war", "battle", "fought", "fight", "killed", "assassination", "crisis",
   "outbreak", "surrender", "defeat", "victory", "launched", "invasion", "fire",
   "burning", "destroyed", "destruction", "massacre", "coup", "seized",
+  // Phase 9: the original list skews heavily toward war/history narration. These broaden
+  // high-energy detection to business, tech, science, and sports documentary subject matter,
+  // which otherwise under-triggers faster cutting/higher motion during their own dramatic
+  // beats (a product launch, a market crash, a scandal breaking) purely for lack of matching
+  // vocabulary — not because those moments are actually low-energy.
+  "crashed", "plummeted", "skyrocketed", "surged", "erupted", "raced", "scrambled",
+  "panicked", "shocked", "shattered", "breakthrough", "unveiled", "exposed", "scandal",
+  "bankrupt", "bankruptcy", "fired", "resigned", "hacked", "breach", "leaked",
+  "went viral", "clashed", "confronted", "gambled", "record-breaking", "unprecedented",
 ];
 
 const LOW_ENERGY_KEYWORDS = [
@@ -65,6 +74,12 @@ const LOW_ENERGY_KEYWORDS = [
   "mourning", "remembered", "remembering", "buried", "funeral", "memorial",
   "rebuilt", "recovery", "silence", "silent", "calm", "serene", "gentle",
   "contemplated", "wondered", "described", "wrote", "read", "studied",
+  // Phase 9: same broadening as HIGH_ENERGY_KEYWORDS above, for the contemplative/settling
+  // beats non-historical documentaries also have (a negotiation resolving, a routine forming,
+  // a market stabilizing) that the original war/history-flavored list didn't cover.
+  "settled", "stabilized", "recovered", "healed", "negotiated", "resolved", "retired",
+  "paused", "considered", "planned", "prepared", "routine", "everyday", "gradually",
+  "steadily", "modest",
 ];
 
 function classifyBeatEnergy(beatText: string): BeatEnergy {

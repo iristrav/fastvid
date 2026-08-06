@@ -161,18 +161,28 @@ type ClipEntry = {
   isFallback: boolean;
 };
 
-/** Score a category placement: reward target match, penalize consecutive repeat. */
+/** Score a category placement: reward target match, penalize consecutive repeat.
+ *
+ *  `isOpeningScene` (Phase 9) changes what "a good position-0 shot" means. Real documentary
+ *  editors (Vox, Search Party, Johnny Harris) very often cold-open on the single most visually
+ *  striking or emotionally charged image rather than a slow establishing pan — the wide shot
+ *  comes a beat or two later, once the hook has landed. Every non-opening scene keeps the
+ *  original "establishing/medium first, no close-up first" convention unchanged. */
 function placementScore(
   category: ShotCategory,
   targetCategory: ShotCategory,
   prevCategory: ShotCategory | null,
   prevPrevCategory: ShotCategory | null,
-  position: number
+  position: number,
+  isOpeningScene: boolean
 ): number {
   let score = 0;
+  const coldOpenPosition = position === 0 && isOpeningScene;
 
-  // Target match
-  if (category === targetCategory) score += 10;
+  // Target match — skipped at the opening scene's position 0, since the target cycle always
+  // starts on "establishing" and a cold open needs its own definition of a good first shot
+  // (below), not credit toward the normal wide-shot-first convention.
+  if (category === targetCategory && !coldOpenPosition) score += 10;
 
   // Penalize consecutive same
   if (category === prevCategory) {
@@ -183,17 +193,28 @@ function placementScore(
   // Archival after archival: extra penalty
   if (category === "archival" && prevCategory === "archival") score -= 8;
 
-  // Establishing shot at position 0: bonus
-  if (position === 0 && (category === "establishing" || category === "medium")) score += 8;
-  // Penalize close_up at position 0
-  if (position === 0 && category === "close_up") score -= 10;
+  if (position === 0) {
+    if (isOpeningScene) {
+      // Cold open: lead with the strongest, most immediate image. Close-up/action reads as
+      // more arresting than a wide establishing shot; archival (a map/document) rarely earns
+      // the first frame of a video.
+      if (category === "close_up" || category === "action") score += 9;
+      else if (category === "establishing" || category === "medium") score += 4;
+      else if (category === "archival") score -= 4;
+    } else {
+      // Establishing shot at position 0: bonus
+      if (category === "establishing" || category === "medium") score += 8;
+      // Penalize close_up at position 0
+      if (category === "close_up") score -= 10;
+    }
+  }
 
   // Fallback clips at the end: bonus for last quarter of sequence
   return score;
 }
 
 /** Greedy optimizer: picks the best available clip at each position. */
-function greedyOptimize(entries: ClipEntry[]): ClipEntry[] {
+function greedyOptimize(entries: ClipEntry[], isOpeningScene: boolean): ClipEntry[] {
   const n = entries.length;
   if (n <= 1) return entries;
 
@@ -215,7 +236,7 @@ function greedyOptimize(entries: ClipEntry[]): ClipEntry[] {
     let bestIdx = 0;
     let bestScore = -Infinity;
     for (let j = 0; j < available.length; j++) {
-      const s = placementScore(available[j].category, target, prev, prevPrev, pos);
+      const s = placementScore(available[j].category, target, prev, prevPrev, pos, isOpeningScene);
       if (s > bestScore) { bestScore = s; bestIdx = j; }
     }
 
@@ -268,7 +289,7 @@ export function optimizeShotSequence(
       };
     });
 
-    const optimized = greedyOptimize(entries);
+    const optimized = greedyOptimize(entries, sceneIndex === 0);
 
     const resultClips = optimized.map((e) => e.clipPath);
     const resultDurations = optimized.map((e) => e.beatDuration);

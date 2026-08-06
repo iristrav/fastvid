@@ -28,6 +28,14 @@ import type { CaptionInstruction, VisualContinuityState } from "./types";
 const YEAR_RE = /\b(1[0-9]{3}|20[0-9]{2})\b/;
 const QUOTE_RE = /["“”](.+?)["“”]/;
 
+/** Phase 9: the shortest a single kinetic-typography word can stay on screen and still be
+ *  legible. Without a floor, `beatVoiceDurationSec / words.length` degrades silently as beats
+ *  get shorter or the highlight-word list gets longer — a 1.2s beat with 4 words would flash
+ *  each one for 0.3s, unreadable. 0.35s is the same order of magnitude as the shortest
+ *  hard-coded caption hold elsewhere in this planner (`shortDur`'s 1.5s floor for a whole
+ *  phrase, scaled down for a single word). */
+const MIN_WORD_DISPLAY_SEC = 0.35;
+
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
@@ -177,7 +185,11 @@ export function planCaptions(
 
   if (scene?.highlightWords && scene.highlightWords.length > 0) {
     const words = scene.highlightWords;
-    const perWord = beatVoiceDurationSec / words.length;
+    // Floored per Phase 9 (see MIN_WORD_DISPLAY_SEC) — a short beat with several highlight
+    // words would otherwise flash each one faster than a viewer can read it. When the floor
+    // pushes total display time past the beat's own duration, the last word's caption simply
+    // outlives the beat slightly rather than being illegible — a deliberate trade-off.
+    const perWord = Math.max(MIN_WORD_DISPLAY_SEC, beatVoiceDurationSec / words.length);
     words.forEach((word, i) => {
       out.push({
         captionType: "animated_text",

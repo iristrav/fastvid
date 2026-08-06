@@ -127,4 +127,40 @@ describe("Camera Planner (Phase 4)", () => {
     const cam = planCameraMovement(shot("medium"), makeCandidate(), pacing("neutral"));
     expect(cam.reason.length).toBeGreaterThan(0);
   });
+
+  describe("cross-beat variety (Phase 9)", () => {
+    it("swaps to a documented alternate when the decision would repeat the previous beat's movement", () => {
+      const first = planCameraMovement(shot("detail"), makeCandidate({ assetType: "video" }), pacing("neutral"));
+      expect(first.movement).toBe("slow_push");
+
+      const second = planCameraMovement(shot("detail"), makeCandidate({ assetType: "video" }), pacing("neutral"), first.movement);
+      expect(second.movement).not.toBe("slow_push");
+      expect(second.movement).toBe("zoom_in"); // slow_push's documented alternate
+      expect(second.reason).toContain("Varied from the previous beat");
+    });
+
+    it("does not alter the decision when it differs from the previous beat's movement", () => {
+      const cam = planCameraMovement(shot("detail"), makeCandidate({ assetType: "video" }), pacing("neutral"), "pan_left");
+      expect(cam.movement).toBe("slow_push");
+      expect(cam.reason).not.toContain("Varied from the previous beat");
+    });
+
+    it("never applies variety swapping to camera_hold, even if the previous beat also held", () => {
+      const cam = planCameraMovement(shot("overlay_shot"), makeCandidate(), pacing("exciting"), "camera_hold");
+      expect(cam.movement).toBe("camera_hold");
+    });
+
+    it("is backward compatible — omitting previousMovement behaves exactly as before", () => {
+      const withUndefined = planCameraMovement(shot("close_up"), makeCandidate({ assetType: "video" }), pacing("dramatic"));
+      const withNull = planCameraMovement(shot("close_up"), makeCandidate({ assetType: "video" }), pacing("dramatic"), null);
+      expect(withUndefined).toEqual(withNull);
+      expect(withUndefined.movement).toBe("slow_push");
+    });
+
+    it("preserves the original intensity when swapping to the alternate movement", () => {
+      const first = planCameraMovement(shot("detail"), makeCandidate({ assetType: "video" }), pacing("neutral", 0.7));
+      const second = planCameraMovement(shot("detail"), makeCandidate({ assetType: "video" }), pacing("neutral", 0.7), first.movement);
+      expect(second.intensity).toBe(first.intensity);
+    });
+  });
 });

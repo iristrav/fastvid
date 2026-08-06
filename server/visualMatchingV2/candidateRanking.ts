@@ -37,7 +37,15 @@ export const DEFAULT_RANKING_WEIGHTS: RankingWeights = {
   clipSimilarity: 0.34,
   embeddingSimilarity: 0.25,
   keywordScore: 0.17,
-  sourcePriority: 0.09,
+  // Phase 9: sourcePriority nudged down (0.09 -> 0.07) and diversity nudged up (0.06 -> 0.10)
+  // — "don't show the viewer the same clip twice" is a hard rule every real editor follows,
+  // while "prefer a slightly better-tier source" is a soft, aesthetic-adjacent preference.
+  // Exact-path reuse already scores this signal to 0 (diversityScore() below); raising the
+  // weight makes that zero actually cost enough to move a repeated clip out of the top pick
+  // when a topically-similar alternative exists, instead of being outweighed by everything
+  // else. Topical relevance (clipSimilarity + embeddingSimilarity, unchanged, still >55% of
+  // the total) stays dominant — this is a repetition deterrent, not a relevance override.
+  sourcePriority: 0.07,
   editorialScore: 0.10,
   motionMatch: 0.05,
   // Phase 3 additions — modest weights so they nudge the existing semantic/keyword-dominated
@@ -49,7 +57,7 @@ export const DEFAULT_RANKING_WEIGHTS: RankingWeights = {
   durationFit: 0.05,
   freshness: 0.02,
   entityMatch: 0.08,
-  diversity: 0.06,
+  diversity: 0.10,
 };
 
 /** Default source priority — higher wins. Known only here; no other component (retrieval,

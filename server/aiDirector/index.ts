@@ -31,7 +31,7 @@ export {
 } from "./narrativeAnalysis";
 export { planShotOrder } from "./shotOrderPlanner";
 export { decideEnergyTrend, decidePacing, decideTransitionStyle, suggestSoundCue, suggestTextOverlay, averageSceneDurationSec } from "./pacingAdvisor";
-export { buildAttentionRecommendations, buildHookGuidance, buildRetentionRisk, HOOK_WINDOW_SEC } from "./attentionManager";
+export { buildAttentionRecommendations, buildHookGuidance, buildRetentionRisk, COLD_OPEN_WINDOW_SEC, HOOK_WINDOW_SEC } from "./attentionManager";
 
 // ─── Types ───────────────────────────────────────────────────────────────────────────────────
 export type {

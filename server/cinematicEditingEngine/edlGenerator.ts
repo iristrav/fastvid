@@ -20,7 +20,7 @@ import { planCaptions } from "./captionPlanner";
 import { planMotionGraphics } from "./motionGraphicsPlanner";
 import { planVisualEffects } from "./effectsPlanner";
 import { planSoundEffects } from "./soundPlanner";
-import type { CinematicEditingInput, EDL, EditDecision, VisualContinuityState } from "./types";
+import type { CameraMovementType, CinematicEditingInput, EDL, EditDecision, VisualContinuityState } from "./types";
 
 function emptyContinuity(): VisualContinuityState {
   return { recentShotTypes: [], recentTransitions: [], establishedSubjects: [] };
@@ -43,6 +43,7 @@ function pushRecent(list: string[], value: string): void {
 export function generateEDL(inputs: CinematicEditingInput[]): EDL {
   const decisions: EditDecision[] = [];
   let prevTransitionCtx: TransitionContext | null = null;
+  let prevCameraMovement: CameraMovementType | null = null;
   const runningContinuity = emptyContinuity();
 
   inputs.forEach((input, i) => {
@@ -50,7 +51,8 @@ export function generateEDL(inputs: CinematicEditingInput[]): EDL {
 
     const pacing = deriveEmotionalTone(input.intent, input.directorGuidance);
     const shot = planShot(input.intent, input.bestCandidate, continuity, input.directorGuidance, input.beatIndexInScene ?? i);
-    const camera = planCameraMovement(shot, input.bestCandidate, pacing);
+    const camera = planCameraMovement(shot, input.bestCandidate, pacing, prevCameraMovement);
+    prevCameraMovement = camera.movement;
 
     const nextTransitionCtx: TransitionContext = { shotType: shot.shotType, subject: input.intent.visualSubject };
     const transitionIn = planTransition(prevTransitionCtx, nextTransitionCtx, pacing, continuity);

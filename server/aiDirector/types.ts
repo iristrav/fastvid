@@ -86,6 +86,11 @@ export type AttentionRecommendation = {
 
 export type HookGuidance = {
   isHookSegment: boolean;
+  /** Phase 9: true for the tighter cold-open sub-window (first ~8s) nested inside the broader
+   *  hook window — the single highest-stakes moment for viewer drop-off, distinct enough from
+   *  "somewhere in the first 30 seconds" to warrant its own, more urgent guidance. Always false
+   *  outside the hook window. */
+  isColdOpen: boolean;
   recommendations: string[];
   reason: string;
 };
