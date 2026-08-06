@@ -11,6 +11,12 @@ import {
   buildFinalSceneGradeVF,
   buildFitGrayGradedVideoVF,
   buildSimpleKenBurnsVF,
+  buildDocumentaryColorGradeVF,
+  buildDocumentaryVignetteVF,
+  buildFilmGrainVF,
+  classifyDocGradeSourceKind,
+  isAIGeneratedClip,
+  isStockVideoClip,
   documentaryStyleEnabled,
   resolveStillCompositionVF,
   usePolaroidLayout,
@@ -149,6 +155,61 @@ describe("documentaryStyle", () => {
       const nonPortrait = buildSimpleKenBurnsVF(4, false);
       expect(portrait).toContain("0.1000000");
       expect(nonPortrait).toContain("0.1500000");
+    });
+  });
+
+  describe("source-aware grading (Phase 10)", () => {
+    it("classifies AI-generated, stock, and archive clips from their filename", () => {
+      expect(classifyDocGradeSourceKind("/tmp/scene_1_b2_stability_abc.mp4")).toBe("ai_generated");
+      expect(isAIGeneratedClip("/tmp/scene_1_b2_stability_abc.mp4")).toBe(true);
+      expect(classifyDocGradeSourceKind("/tmp/scene_1_b2_pexels_abc.mp4")).toBe("stock");
+      expect(isStockVideoClip("/tmp/scene_1_b2_pexels_abc.mp4")).toBe(true);
+      // "_archive_" (e.g. Internet Archive footage) is itself classified as stock by
+      // isStockVideoClip's existing pattern; a filename matching neither pattern (e.g. a
+      // Wikimedia/own-archive clip) falls through to the "archive" default.
+      expect(classifyDocGradeSourceKind("/tmp/scene_1_b2_archive_abc.mp4")).toBe("stock");
+      expect(classifyDocGradeSourceKind("/tmp/scene_1_b2_wikimedia_abc.mp4")).toBe("archive");
+    });
+
+    it("pulls saturation/contrast harder for AI-generated and stock than real archive footage", () => {
+      const archive = buildDocumentaryColorGradeVF("archive");
+      const aiGenerated = buildDocumentaryColorGradeVF("ai_generated");
+      const stock = buildDocumentaryColorGradeVF("stock");
+      const uncategorized = buildDocumentaryColorGradeVF();
+      expect(archive).toContain("saturation=0.88");
+      expect(uncategorized).toBe(archive);
+      expect(aiGenerated).toContain("saturation=0.78");
+      expect(stock).toContain("saturation=0.82");
+      expect(aiGenerated).not.toBe(archive);
+      expect(stock).not.toBe(archive);
+    });
+
+    it("applies a stronger vignette to AI-generated/stock sources than real archive footage", () => {
+      expect(buildDocumentaryVignetteVF("archive")).toContain("angle=0.62");
+      expect(buildDocumentaryVignetteVF()).toContain("angle=0.62");
+      expect(buildDocumentaryVignetteVF("ai_generated")).toContain("angle=0.55");
+      expect(buildDocumentaryVignetteVF("stock")).toContain("angle=0.55");
+    });
+
+    it("adds more grain to clean digital sources than to already-grainy archive footage", () => {
+      const prev = process.env.ENABLE_FILM_GRAIN;
+      delete process.env.ENABLE_FILM_GRAIN;
+      expect(buildFilmGrainVF("archive")).toBe(",noise=alls=6:allf=t+u");
+      expect(buildFilmGrainVF()).toBe(",noise=alls=6:allf=t+u");
+      expect(buildFilmGrainVF("ai_generated")).toBe(",noise=alls=9:allf=t+u");
+      expect(buildFilmGrainVF("stock")).toBe(",noise=alls=9:allf=t+u");
+      if (prev === undefined) delete process.env.ENABLE_FILM_GRAIN;
+      else process.env.ENABLE_FILM_GRAIN = prev;
+    });
+
+    it("montage branch grade is not identical for an AI-generated clip vs. an archive clip", () => {
+      const prev = process.env.ENABLE_DOC_STYLE;
+      process.env.ENABLE_DOC_STYLE = "true";
+      const archiveGrade = buildMontageBranchNormVF("archive");
+      const aiGrade = buildMontageBranchNormVF("ai_generated");
+      expect(archiveGrade).not.toBe(aiGrade);
+      if (prev === undefined) delete process.env.ENABLE_DOC_STYLE;
+      else process.env.ENABLE_DOC_STYLE = prev;
     });
   });
 });

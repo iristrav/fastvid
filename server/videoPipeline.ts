@@ -328,7 +328,13 @@ import {
   buildWikimediaVideoGeoQueries,
   isGeoDocumentaryContext,
 } from "./geoDocumentarySources";
-import { buildMontageBranchNormVF } from "./documentaryStyle";
+import {
+  buildMontageBranchNormVF,
+  classifyDocGradeSourceKind,
+  isAIGeneratedClip,
+  isStockVideoClip,
+  type DocGradeSourceKind,
+} from "./documentaryStyle";
 
 // API Keys
 const FISH_AUDIO_API_KEY = process.env.FISH_AUDIO_API_KEY || "";
@@ -1101,9 +1107,11 @@ const CROP_FILL_VF =
 /** Full clip visible on dark gray — fast fit (no gblur). */
 const FIT_GRAY_VF = buildFitGrayVideoMontageChain();
 const FPS_FORMAT_VF = `fps=25,format=yuv420p,setsar=1,setpts=PTS-STARTPTS`;
-/** Montage xfade requires identical size/pixfmt on every branch — never skip scale/pad. */
-function montageBranchNormVF(): string {
-  return buildMontageBranchNormVF();
+/** Montage xfade requires identical size/pixfmt on every branch — never skip scale/pad.
+ *  sourceKind (Phase 10) lets the grade differ per clip instead of one fixed look for
+ *  every branch; omitting it keeps the original uniform grade. */
+function montageBranchNormVF(sourceKind?: DocGradeSourceKind): string {
+  return buildMontageBranchNormVF(sourceKind);
 }
 const STANDARD_VF = `${SCALE_PAD_VF},${FPS_FORMAT_VF}`;
 /** New clip every ~3–4s; hold up to 7s when narration/visual clearly stay on one subject. */
@@ -9069,11 +9077,6 @@ function sceneHasVisualOverlayFootage(clips: string[]): boolean {
   return clips.some((clip) => isVisualOverlayFootageClip(clip));
 }
 
-/** AI-generated clip path (used only as last-resort after stock search). */
-function isAIGeneratedClip(filePath: string): boolean {
-  const base = path.basename(filePath).toLowerCase();
-  return /_ai_fallback\.mp4$|_stability_|_leonardo_|_grok_|_ai\.mp4|_runway_|_kling_|_luma_|_pika_|_veo_|_forge_|scene_\d+_b\d+_ai/i.test(base);
-}
 
 /** Map temp clip filename → editor manifest source (pexels, youtube, serpapi, …). */
 function inferClipSourceFromPath(filePath: string): string {
@@ -9323,12 +9326,6 @@ function stockQueryFromBeatScript(
   videoTitle?: string
 ): string {
   return scriptStockSearchQueries(beatText, persons, sceneText, videoTitle)[0] ?? "documentary";
-}
-
-function isStockVideoClip(filePath: string): boolean {
-  return /_pexels_|_pex_|_pixabay_|_pix_|_broll_|_ytcc_|_archive_|_wikivid_|_nasa_|_esa_|_b\d+_(pex|pix)/i.test(
-    path.basename(filePath)
-  );
 }
 
 /** Licensed Pexels/Pixabay/b-roll — not authentic archival footage. */
@@ -11100,12 +11097,16 @@ async function xfadeMergeTwoVideos(
   montageFilterOpts?: MontageFilterOpts
 ): Promise<void> {
   const xfade = montageFilterOpts?.xfadeSec ?? montageXfadeSec((leftDur + rightDur) / 2);
-  const branchNorm = `${montageBranchNormVF()},setpts=PTS-STARTPTS`;
+  // Phase 10: grade each branch by its own clip's source instead of applying one fixed
+  // grade to both — an AI-generated/stock clip and a real archive clip sitting side by
+  // side in the same montage no longer get an identical look.
+  const branchNormLeft = `${montageBranchNormVF(classifyDocGradeSourceKind(leftPath))},setpts=PTS-STARTPTS`;
+  const branchNormRight = `${montageBranchNormVF(classifyDocGradeSourceKind(rightPath))},setpts=PTS-STARTPTS`;
   if (xfade <= 0.001) {
     await withSceneFetchTimeout(
       () => exec(
         `${FFMPEG_BIN} -y -i "${leftPath}" -i "${rightPath}" ` +
-          `-filter_complex "[0:v]${branchNorm}[v0];[1:v]${branchNorm}[v1];` +
+          `-filter_complex "[0:v]${branchNormLeft}[v0];[1:v]${branchNormRight}[v1];` +
           `[v0][v1]concat=n=2:v=1:a=0[out]" ` +
           `-map "[out]" -an -vsync cfr ${threadFlag} -c:v libx264 -preset ${MONTAGE_SEGMENT_ENCODE_PRESET} -crf 18 -pix_fmt yuv420p "${outputPath}"`
       ),
@@ -11119,7 +11120,7 @@ async function xfadeMergeTwoVideos(
     await withSceneFetchTimeout(
       () => exec(
         `${FFMPEG_BIN} -y -i "${leftPath}" -i "${rightPath}" ` +
-          `-filter_complex "[0:v]${branchNorm}[v0];[1:v]${branchNorm}[v1];` +
+          `-filter_complex "[0:v]${branchNormLeft}[v0];[1:v]${branchNormRight}[v1];` +
           `[v0][v1]xfade=transition=dissolve:duration=${xfade.toFixed(3)}:offset=${offset.toFixed(3)}[out]" ` +
           `-map "[out]" -an -vsync cfr ${threadFlag} -c:v libx264 -preset ${MONTAGE_SEGMENT_ENCODE_PRESET} -crf 18 -pix_fmt yuv420p "${outputPath}"`
       ),
@@ -11133,7 +11134,7 @@ async function xfadeMergeTwoVideos(
     await withSceneFetchTimeout(
       () => exec(
         `${FFMPEG_BIN} -y -i "${leftPath}" -i "${rightPath}" ` +
-          `-filter_complex "[0:v]${branchNorm}[v0];[1:v]${branchNorm}[v1];` +
+          `-filter_complex "[0:v]${branchNormLeft}[v0];[1:v]${branchNormRight}[v1];` +
           `[v0][v1]concat=n=2:v=1:a=0[out]" ` +
           `-map "[out]" -an -vsync cfr ${threadFlag} -c:v libx264 -preset ${MONTAGE_SEGMENT_ENCODE_PRESET} -crf 18 -pix_fmt yuv420p "${outputPath}"`
       ),
@@ -11344,9 +11345,10 @@ async function renderSingleMontageSegment(
     isVisualOverlayFootageClip(clipPath);
   const lines = burnDeferred ? parseFacelessSubtitleLines(segmentBeatText!) : [];
 
+  const segmentSourceKind = classifyDocGradeSourceKind(clipPath);
   if (burnDeferred && lines.length > 0) {
     const chain = buildFacelessTypewriterDrawtextChain("vprep", "vout", lines, effectiveDur, "bottom-left");
-    const filterComplex = `[0:v]${montageBranchNormVF()}[vprep]${chain}`;
+    const filterComplex = `[0:v]${montageBranchNormVF(segmentSourceKind)}[vprep]${chain}`;
     await withSceneFetchTimeout(
       () => exec(
         `${FFMPEG_BIN} -y -ss ${startSec.toFixed(3)} -i "${clipPath}" -t ${effectiveDur.toFixed(3)} ` +
@@ -11361,7 +11363,7 @@ async function renderSingleMontageSegment(
     await withSceneFetchTimeout(
       () => exec(
         `${FFMPEG_BIN} -y -ss ${startSec.toFixed(3)} -i "${clipPath}" -t ${effectiveDur.toFixed(3)} ` +
-          `-vf "${montageBranchNormVF()},setpts=PTS-STARTPTS" -an -vsync cfr ${threadFlag} ` +
+          `-vf "${montageBranchNormVF(segmentSourceKind)},setpts=PTS-STARTPTS" -an -vsync cfr ${threadFlag} ` +
           `-c:v libx264 ${pipelineFfmpegThreadFlag()} -preset ${MONTAGE_SEGMENT_ENCODE_PRESET} -crf 18 -pix_fmt yuv420p "${outputPath}"`
       ),
       composeTimeout,
@@ -11927,7 +11929,7 @@ function montageClipPrepFilter(
   const fadeOutStart = Math.max(0, effectiveDur - fadeOut - 0.02);
   const fadeColor = "0x2A2A2A";
   let chain = `[${inputIndex}:v]trim=start=${start}:duration=${effectiveDur.toFixed(3)},`;
-  chain += montageBranchNormVF();
+  chain += montageBranchNormVF(clipPath ? classifyDocGradeSourceKind(clipPath) : undefined);
   if (fadeIn > 0.05) chain += `,fade=t=in:st=0:d=${fadeIn.toFixed(3)}:color=${fadeColor}`;
   if (fadeOut > 0.05) chain += `,fade=t=out:st=${fadeOutStart.toFixed(3)}:d=${fadeOut.toFixed(3)}:color=${fadeColor}`;
   chain += `,setpts=PTS-STARTPTS[v${inputIndex}]`;
@@ -20866,7 +20868,7 @@ function extractKeywords(text: string, count: number = 4): string[] {
 // ─── 3f. Render Kinetic Typography Frames ────────────────────────────────────
 // Renders each keyword as a PNG overlay image for FFmpeg overlay.
 // Returns array of { path, startTime, endTime } for each keyword.
-interface KineticFrame {
+export interface KineticFrame {
   path: string;
   startTime: number;
   endTime: number;
@@ -21148,6 +21150,17 @@ export type ComposeSceneOptions = {
   sceneTimeoutMs?: number;
 };
 
+/** Alpha fade-in/fade-out duration for an on-screen overlay (year/place label, stat callout,
+ *  kinetic keyword, caption-style card) given its visible window. Phase 10: these previously
+ *  hard-cut on/off via the FFmpeg `overlay=...:enable=between(t,start,end)` gate alone — this
+ *  keeps that same gate but ramps the overlay's own alpha channel across a short window at
+ *  each edge so it eases in/out instead of popping. Scales down for very short windows so the
+ *  fade never eats the whole visible duration. */
+export function overlayFadeDurationSec(startTime: number, endTime: number): number {
+  const span = Math.max(0, endTime - startTime);
+  return Math.max(0.08, Math.min(0.35, span / 4));
+}
+
 function buildOverlayFilterChain(
   baseLabel: string,
   baseInputCount: number,
@@ -21173,20 +21186,25 @@ function buildOverlayFilterChain(
     const timed = frame as TimedOverlay;
     const enable = `enable='between(t,${frame.startTime.toFixed(2)},${frame.endTime.toFixed(2)})'`;
     const ovlLabel = `ov${idx}`;
+    const fadeDur = overlayFadeDurationSec(frame.startTime, frame.endTime);
+    const fadeOutStart = Math.max(frame.startTime, frame.endTime - fadeDur);
+    const alphaFade =
+      `,fade=t=in:st=${frame.startTime.toFixed(2)}:d=${fadeDur.toFixed(2)}:alpha=1` +
+      `,fade=t=out:st=${fadeOutStart.toFixed(2)}:d=${fadeDur.toFixed(2)}:alpha=1`;
     if (timed.overlayX != null && timed.overlayY != null) {
       const ow = ensureEvenDim(timed.overlayW ?? VIDEO_WIDTH);
       const oh = ensureEvenDim(timed.overlayH ?? VIDEO_HEIGHT);
       const scale =
         timed.isVideoOverlay && timed.overlayW && timed.overlayH
-          ? `scale=${ow}:${oh}:flags=fast_bilinear,format=yuv420p`
-          : `scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:flags=fast_bilinear,format=yuv420p`;
-      chain += `;[${inputIdx}:v]${scale}[${ovlLabel}];` +
+          ? `scale=${ow}:${oh}:flags=fast_bilinear,format=yuva420p`
+          : `scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:flags=fast_bilinear,format=yuva420p`;
+      chain += `;[${inputIdx}:v]${scale}${alphaFade}[${ovlLabel}];` +
         `[${prevLabel}][${ovlLabel}]overlay=x=${timed.overlayX}:y=${timed.overlayY}:${enable}[${outLabel}]`;
     } else if (overlayUsesFullFrame(timed) || (frame as { isStatCallout?: boolean }).isStatCallout) {
-      chain += `;[${inputIdx}:v]scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:flags=fast_bilinear,format=yuv420p[${ovlLabel}];` +
+      chain += `;[${inputIdx}:v]scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:flags=fast_bilinear,format=yuva420p${alphaFade}[${ovlLabel}];` +
         `[${prevLabel}][${ovlLabel}]overlay=x=0:y=0:${enable}[${outLabel}]`;
     } else {
-      chain += `;[${inputIdx}:v]scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:flags=fast_bilinear,format=yuv420p[${ovlLabel}];` +
+      chain += `;[${inputIdx}:v]scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:flags=fast_bilinear,format=yuva420p${alphaFade}[${ovlLabel}];` +
         `[${prevLabel}][${ovlLabel}]overlay=x=0:y=${kineticY}:${enable}[${outLabel}]`;
     }
     prevLabel = outLabel;
