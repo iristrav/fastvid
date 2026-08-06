@@ -125,7 +125,27 @@ export function resolveStillKenBurnsVariant(sceneIndex: number, beatIndex: numbe
   return archiveStillKenBurnsVariant(sceneIndex, beatIndex);
 }
 
-/** Ken Burns zoompan — zoom 100%→120%, optional pan left/right. */
+/** Sine-based ease-out progress term, embeddable directly in a zoompan expression: 0 at the
+ *  first frame, smoothly approaching 1 by the clip's last frame — never linear. `totalFrames`
+ *  is a compile-time constant (known from clip duration), so this is plain arithmetic FFmpeg's
+ *  expression evaluator accepts, not a runtime variable lookup. Reused verbatim (same formula)
+ *  from professionalRenderEngine/cameraRenderer.ts's `easeOutTerm()`, which proved this exact
+ *  pattern for the dormant engine's new camera movements (Phase 7) — duplicated here as a
+ *  standalone expression rather than imported, since documentaryStyle.ts is live production
+ *  code with no dependency on that dormant, feature-flagged directory. */
+function easeOutProgress(totalFrames: number): string {
+  return `sin(PI/2*min(on/${totalFrames},1))`;
+}
+
+/** Ken Burns zoompan — zoom 100%→120%, optional pan left/right.
+ *
+ *  Phase 10: zoom and pan both move along `easeOutProgress()` (0 -> 1, smoothly) rather than
+ *  the previous constant per-frame increment (`zoom+step`, clamped). The previous version was
+ *  perfectly linear velocity on every single still in every video — the single most
+ *  recognizable "AI slideshow" tell (confirmed by the Phase 10 rendering-quality audit). Total
+ *  zoom range and total pan distance are unchanged (still reaches the same `zoomEnd` and the
+ *  same overall pan distance by the last frame) — only the velocity curve getting there
+ *  changed, so this is a pure motion-quality improvement, not a reframing. */
 export function buildKenBurnsTail(
   duration: number,
   zoomEnd = 1.04,
@@ -136,19 +156,21 @@ export function buildKenBurnsTail(
   const totalFrames = stillOutputFrameCount(duration, fps);
   const zoomStart = variant === "zoom-out" ? zoomEnd : 1.0;
   const zoomTarget = variant === "zoom-out" ? 1.0 : zoomEnd;
-  const zoomStep = Math.abs(zoomTarget - zoomStart) / totalFrames;
+  const zoomDelta = zoomTarget - zoomStart;
   const yExpr = yAnchor === "top" ? "ih/4-(ih/zoom/4)" : "ih/2-(ih/zoom/2)";
+  // Same total pan distance as the previous linear version (panStep px/frame * totalFrames
+  // frames) — only now reached via the eased progress curve instead of a constant per-frame
+  // step.
   const panStep = Math.max(1, Math.round(totalFrames * 0.06));
+  const panDistance = panStep * totalFrames;
+  const progress = easeOutProgress(totalFrames);
   const xExpr =
     variant === "pan-left"
-      ? `iw/2-(iw/zoom/2)-on*${panStep}`
+      ? `iw/2-(iw/zoom/2)-${panDistance}*${progress}`
       : variant === "pan-right"
-        ? `iw/2-(iw/zoom/2)+on*${panStep}`
+        ? `iw/2-(iw/zoom/2)+${panDistance}*${progress}`
         : "iw/2-(iw/zoom/2)";
-  const zExpr =
-    variant === "zoom-out"
-      ? `max(zoom-${zoomStep.toFixed(7)},${zoomTarget.toFixed(4)})`
-      : `min(zoom+${zoomStep.toFixed(7)},${zoomTarget.toFixed(4)})`;
+  const zExpr = `(${zoomStart.toFixed(4)}+(${zoomDelta.toFixed(7)})*${progress})`;
   return (
     `select='eq(n\\,0)',` +
     `zoompan=z='${zExpr}':x='${xExpr}':y='${yExpr}':` +
@@ -156,7 +178,9 @@ export function buildKenBurnsTail(
   );
 }
 
-/** Simple Ken Burns fallback when blur/polaroid filters fail on the host FFmpeg. */
+/** Simple Ken Burns fallback when blur/polaroid filters fail on the host FFmpeg.
+ *  Phase 10: eased zoom (see buildKenBurnsTail's doc comment) — this fallback path renders
+ *  real user-facing frames too, so it gets the same easing rather than staying linear. */
 export function buildSimpleKenBurnsVF(
   duration: number,
   personPortrait: boolean
@@ -164,14 +188,14 @@ export function buildSimpleKenBurnsVF(
   const fps = 25;
   const totalFrames = stillOutputFrameCount(duration, fps);
   const zoomEnd = personPortrait ? 1.10 : 1.15;
-  const zoomStep = (zoomEnd - 1.0) / totalFrames;
   const yExpr = personPortrait ? "ih/4-(ih/zoom/4)" : "ih/2-(ih/zoom/2)";
   const cropY = personPortrait ? "0" : `(ih-${DOC_STYLE_VIDEO_HEIGHT})/2`;
+  const zExpr = `(1.0+(${(zoomEnd - 1.0).toFixed(7)})*${easeOutProgress(totalFrames)})`;
   return (
     `[0:v]scale=${DOC_STYLE_VIDEO_WIDTH}:${DOC_STYLE_VIDEO_HEIGHT}:force_original_aspect_ratio=increase,` +
     `crop=${DOC_STYLE_VIDEO_WIDTH}:${DOC_STYLE_VIDEO_HEIGHT}:(iw-${DOC_STYLE_VIDEO_WIDTH})/2:${cropY},` +
     `select='eq(n\\,0)',` +
-    `zoompan=z='min(zoom+${zoomStep.toFixed(7)},${zoomEnd})':` +
+    `zoompan=z='${zExpr}':` +
     `x='iw/2-(iw/zoom/2)':y='${yExpr}':` +
     `d=${totalFrames}:s=${DOC_STYLE_VIDEO_WIDTH}x${DOC_STYLE_VIDEO_HEIGHT}:fps=${fps}[vout]`
   );

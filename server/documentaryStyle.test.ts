@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildBlurFillStillVF,
   buildFitGrayVideoFilterComplex,
+  buildKenBurnsTail,
   buildMatFramedStillVF,
   buildPolaroidStillVF,
   buildPostGradeVF,
@@ -9,6 +10,7 @@ import {
   buildMontageBranchNormVF,
   buildFinalSceneGradeVF,
   buildFitGrayGradedVideoVF,
+  buildSimpleKenBurnsVF,
   documentaryStyleEnabled,
   resolveStillCompositionVF,
   usePolaroidLayout,
@@ -101,5 +103,52 @@ describe("documentaryStyle", () => {
     expect(buildMontageBranchNormVF()).toContain("eq=contrast");
     expect(buildFitGrayGradedVideoVF()).toContain("eq=contrast");
     expect(buildFinalSceneGradeVF()).toMatch(/noise=|copy/);
+  });
+
+  describe("Ken Burns easing (Phase 10)", () => {
+    it("buildKenBurnsTail uses an eased sine progress curve, not a linear zoom+step increment", () => {
+      const vf = buildKenBurnsTail(4, 1.1, "center", "zoom-in");
+      expect(vf).toContain("sin(PI/2*min(on/");
+      expect(vf).not.toContain("min(zoom+");
+      expect(vf).not.toContain("max(zoom-");
+    });
+
+    it("zoom-in starts at 1.0 and eases toward zoomEnd", () => {
+      const vf = buildKenBurnsTail(4, 1.2, "center", "zoom-in");
+      expect(vf).toContain("z='(1.0000+(0.2000000)*sin(PI/2*min(on/");
+    });
+
+    it("zoom-out starts at zoomEnd and eases toward 1.0 (negative delta)", () => {
+      const vf = buildKenBurnsTail(4, 1.2, "center", "zoom-out");
+      expect(vf).toContain("z='(1.2000+(-0.2000000)*sin(PI/2*min(on/");
+    });
+
+    it("pan-left/pan-right ease the same total pixel distance a linear pan would have covered", () => {
+      const totalFrames = 100; // 4s @ 25fps
+      const panStep = Math.max(1, Math.round(totalFrames * 0.06));
+      const expectedDistance = panStep * totalFrames;
+      const left = buildKenBurnsTail(4, 1.02, "center", "pan-left");
+      const right = buildKenBurnsTail(4, 1.02, "center", "pan-right");
+      expect(left).toContain(`-${expectedDistance}*sin(PI/2*min(on/`);
+      expect(right).toContain(`+${expectedDistance}*sin(PI/2*min(on/`);
+    });
+
+    it("center variant has no pan term regardless of easing", () => {
+      const vf = buildKenBurnsTail(4, 1.05, "center", "center");
+      expect(vf).toContain("x='iw/2-(iw/zoom/2)'");
+    });
+
+    it("buildSimpleKenBurnsVF fallback also eases instead of using a linear zoom+step", () => {
+      const vf = buildSimpleKenBurnsVF(4, false);
+      expect(vf).toContain("sin(PI/2*min(on/");
+      expect(vf).not.toContain("min(zoom+");
+    });
+
+    it("buildSimpleKenBurnsVF uses a smaller zoom target for portraits than non-portraits", () => {
+      const portrait = buildSimpleKenBurnsVF(4, true);
+      const nonPortrait = buildSimpleKenBurnsVF(4, false);
+      expect(portrait).toContain("0.1000000");
+      expect(nonPortrait).toContain("0.1500000");
+    });
   });
 });

@@ -31,28 +31,33 @@ describe("Camera Renderer (Phase 7)", () => {
     it("zoom_in and zoom_out route to opposite Ken-Burns variants", () => {
       const [zoomIn] = renderCameraMovement(instruction("zoom_in", 0), 4, DIMS_16_9);
       const [zoomOut] = renderCameraMovement(instruction("zoom_out", 0), 4, DIMS_16_9);
-      // zoom_in: zoomStart=1.0 -> zoomTarget, expressed as min(zoom+step,target)
-      expect(zoomIn.filter).toContain("z='min(zoom+");
-      // zoom_out: zoomStart=zoomEnd -> 1.0, expressed as max(zoom-step,target)
-      expect(zoomOut.filter).toContain("z='max(zoom-");
+      // Phase 10: eased sine progress curve, not a linear zoom+step increment.
+      expect(zoomIn.filter).toContain("sin(PI/2*min(on/");
+      // zoom_in: starts at 1.0 with a positive delta toward zoomTarget.
+      expect(zoomIn.filter).toMatch(/z='\(1\.0000\+\(0\./);
+      // zoom_out: starts at zoomEnd with a negative delta back toward 1.0.
+      expect(zoomOut.filter).toMatch(/z='\(\d\.\d{4}\+\(-0\./);
     });
 
     it("pan_left and pan_right produce opposite x-pan direction with fixed zoomEnd", () => {
       const [panLeft] = renderCameraMovement(instruction("pan_left", 0.9), 4, DIMS_16_9);
       const [panRight] = renderCameraMovement(instruction("pan_right", 0.9), 4, DIMS_16_9);
-      expect(panLeft.filter).toContain("-on*");
-      expect(panRight.filter).toContain("+on*");
-      // pan_left/pan_right zoomEnd is fixed at 1.02 regardless of intensity
-      expect(panLeft.filter).toContain("1.0200");
-      expect(panRight.filter).toContain("1.0200");
+      // Phase 10: pan distance is still linear-total, but eased via the sine progress term.
+      expect(panLeft.filter).toMatch(/-\d+\*sin\(PI\/2\*min\(on\//);
+      expect(panRight.filter).toMatch(/\+\d+\*sin\(PI\/2\*min\(on\//);
+      // pan_left/pan_right zoomEnd is fixed at 1.02 regardless of intensity — expressed as
+      // a 1.0 base plus a 0.02 delta under the new eased zoom expression.
+      expect(panLeft.filter).toContain("0.0200000");
+      expect(panRight.filter).toContain("0.0200000");
     });
 
     it("slow_push and slow_pull use a gentler zoom spread than zoom_in/zoom_out", () => {
       const [slowPush] = renderCameraMovement(instruction("slow_push", 1), 4, DIMS_16_9);
       const [zoomIn] = renderCameraMovement(instruction("zoom_in", 1), 4, DIMS_16_9);
-      // slow_push at max intensity -> 1.02 + 0.06 = 1.08; zoom_in at max intensity -> 1.05 + 0.15 = 1.20
-      expect(slowPush.filter).toContain("1.0800");
-      expect(zoomIn.filter).toContain("1.2000");
+      // slow_push at max intensity -> 1.02 + 0.06 = 1.08 (delta 0.08); zoom_in at max
+      // intensity -> 1.05 + 0.15 = 1.20 (delta 0.20) — deltas from the eased zoom expression.
+      expect(slowPush.filter).toContain("0.0800000");
+      expect(zoomIn.filter).toContain("0.2000000");
     });
 
     it("intensity is clamped to [0,1] when computing zoomEnd", () => {
