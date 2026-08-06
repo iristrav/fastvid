@@ -392,7 +392,12 @@ async function writeHook(
   const minHookWords = Math.round(hookWords * 0.7);
   const maxHookWords = Math.round(hookWords * 1.4);
 
-  for (let attempt = 1; attempt <= 2; attempt++) {
+  // Phase 11: was 2 attempts. The hook is the most consequence-critical 10-20s of the video; on
+  // total failure this falls back to raw planning fields (e.g. "Establish the central question
+  // and stakes") read aloud verbatim by TTS. A 3rd attempt meaningfully cuts how often a
+  // transient provider hiccup ever reaches that fallback, at the cost of one extra LLM call in
+  // the rare case both earlier attempts already failed.
+  for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       const resp = await invokeLLM({
         messages: [
@@ -505,7 +510,9 @@ ${!isFirst && !isLast ? `End with this bridge to the next scene: "${scene.transi
 Write ${minWords}–${maxWords} words of SPOKEN NARRATION only. No [VISUAL:] tags. No bullets. No headings.
 Name real people, companies, places, dates — the footage system finds visuals from your spoken words automatically.`;
 
-  for (let attempt = 1; attempt <= 2; attempt++) {
+  // Phase 11: was 2 attempts — see the same reasoning in writeHook above. On total failure this
+  // falls back to raw scene.goal/reveal/transitionToNext planning text read aloud verbatim.
+  for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       const resp = await invokeLLM({
         messages: [
