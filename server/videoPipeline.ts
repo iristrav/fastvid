@@ -315,6 +315,11 @@ import {
   saveStoredTtsAlignment,
   sceneSplitBoundariesFromTts,
   ttsWordAlignmentEnabled,
+  joinNarrationWithBreathingPauses,
+  classifyNarrationEmotionalTone,
+  elevenLabsVoiceSettingsForTone,
+  narrationEmotionalVoiceEnabled,
+  type ElevenLabsVoiceSettings,
   type TtsCharacterAlignment,
   wordsFromCharacterAlignment,
   type TtsPlannedBeat,
@@ -3430,6 +3435,9 @@ export type VoiceoverGenerateOptions = {
   maxChars?: number;
   /** One ElevenLabs call for entire narration (faster, consistent tone). */
   preferElevenLabs?: boolean;
+  /** Phase 10: override the fixed ElevenLabs voice_settings — e.g. narration-tone-derived
+   *  values from elevenLabsVoiceSettingsForTone(). Omitting it keeps the original constants. */
+  voiceSettings?: ElevenLabsVoiceSettings;
 };
 
 function sanitizeVoiceoverText(text: string, maxChars = 800): string {
@@ -3489,10 +3497,17 @@ export async function synthesizeFullNarrationMp3(
   onTtsPart?: (part: number, totalParts: number) => void,
   sourceScript?: string
 ): Promise<string> {
-  const fullNarration = sanitizeVoiceoverText(
-    sourceScript ? extractFullNarrationText(sourceScript) : scenes.map((s) => s.text.trim()).join(" "),
-    200_000
-  );
+  // Phase 10: join scene/section narration with a breathing-pause separator (falls back to
+  // extractFullNarrationText's plain-space join when the script doesn't parse into blocks).
+  const narrationText = sourceScript
+    ? (() => {
+        const blocks = parseMarkdownNarrationBlocks(sourceScript);
+        return blocks.length > 0
+          ? joinNarrationWithBreathingPauses(blocks.map((b) => b.text))
+          : extractFullNarrationText(sourceScript);
+      })()
+    : joinNarrationWithBreathingPauses(scenes.map((s) => s.text));
+  const fullNarration = sanitizeVoiceoverText(narrationText, 200_000);
   if (fullNarration.length === 0) {
     throw pipelineError(PIPELINE_ERROR.VOICEOVER_EMPTY, "No narration text for bulk voiceover");
   }
@@ -3520,12 +3535,18 @@ export async function synthesizeFullNarrationMp3(
   for (let i = 0; i < chunks.length; i++) {
     onTtsPart?.(i + 1, chunks.length);
     const partPath = path.join(workDir, `full_voiceover_part_${i}.mp3`);
+    // Phase 10: derive this chunk's voice_settings from its own narration tone instead of
+    // applying one fixed stability/style to every chunk regardless of content.
+    const chunkVoiceSettings = narrationEmotionalVoiceEnabled()
+      ? elevenLabsVoiceSettingsForTone(classifyNarrationEmotionalTone(chunks[i]!))
+      : undefined;
     if (useTtsAlign && voiceId) {
       const stamped = await fetchElevenLabsWithTimestamps(
         chunks[i]!,
         voiceId,
         ELEVENLABS_API_KEY,
-        TTS_TIMEOUT_MS
+        TTS_TIMEOUT_MS,
+        chunkVoiceSettings
       );
       if (stamped) {
         fs.writeFileSync(partPath, stamped.audioBuffer);
@@ -3539,6 +3560,7 @@ export async function synthesizeFullNarrationMp3(
     await generateVoiceover(chunks[i], partPath, voiceId, {
       maxChars: BULK_VO_CHUNK_CHARS,
       preferElevenLabs: true,
+      voiceSettings: chunkVoiceSettings,
     });
     const partDur = await probeVideoDurationSec(partPath);
     timeOffset += partDur > 0 ? partDur : 0;
@@ -3880,7 +3902,8 @@ async function synthesizeElevenLabsVoice(
   outputPath: string,
   elevenVoiceId: string,
   timeoutMs: number,
-  label: string
+  label: string,
+  voiceSettings?: ElevenLabsVoiceSettings
 ): Promise<number> {
   if (!ELEVENLABS_API_KEY) {
     throw pipelineError(
@@ -3914,7 +3937,7 @@ async function synthesizeElevenLabsVoice(
           body: JSON.stringify({
             text,
             model_id: "eleven_multilingual_v2",
-            voice_settings: { stability: 0.58, similarity_boost: 0.88, style: 0.05, use_speaker_boost: true },
+            voice_settings: voiceSettings ?? { stability: 0.58, similarity_boost: 0.88, style: 0.05, use_speaker_boost: true },
           }),
         }
       );
@@ -3990,7 +4013,8 @@ export async function generateVoiceover(
       outputPath,
       selectedElevenVoice,
       TTS_TIMEOUT_MS,
-      "selected voice"
+      "selected voice",
+      options?.voiceSettings
     );
   }
 
@@ -4000,7 +4024,8 @@ export async function generateVoiceover(
       outputPath,
       "pNInz6obpgDQGcFmaJgB",
       TTS_TIMEOUT_MS,
-      "default documentary"
+      "default documentary",
+      options?.voiceSettings
     );
   }
 
@@ -4010,7 +4035,8 @@ export async function generateVoiceover(
       outputPath,
       "pNInz6obpgDQGcFmaJgB",
       TTS_TIMEOUT_MS,
-      "default documentary"
+      "default documentary",
+      options?.voiceSettings
     );
   }
 
