@@ -5,7 +5,28 @@ import {
   checkScriptMeetsBudget,
   stripVisualTagsFromScript,
   getScriptLengthBudget,
+  buildScriptWriterSystemPrompt,
 } from "./scriptWriter";
+
+describe("buildScriptWriterSystemPrompt (Phase 10)", () => {
+  it("bans common AI-documentary clichés", () => {
+    const system = buildScriptWriterSystemPrompt("documentary");
+    expect(system).toContain("ANTI-CLICHÉ RULES");
+    expect(system).toContain("Little did they/he/she know");
+    expect(system).toContain("And the rest is history");
+  });
+
+  it("instructs the CTA to callback the opening hook", () => {
+    const system = buildScriptWriterSystemPrompt("documentary");
+    expect(system).toContain("callback the opening hook");
+  });
+
+  it("instructs varied sentence rhythm", () => {
+    const system = buildScriptWriterSystemPrompt("documentary");
+    expect(system).toContain("Never write more than two");
+    expect(system.toLowerCase()).toContain("vary sentence openers");
+  });
+});
 
 describe("scriptStillOnTopic", () => {
   it("accepts narration that mentions the prompt subject", () => {

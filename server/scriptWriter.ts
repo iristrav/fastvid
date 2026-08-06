@@ -265,6 +265,9 @@ HOOK → SETUP → COMPLICATION → REVELATION → CONSEQUENCE → CTA
 5. CONSEQUENCE: What the revelation means today. Resolve the macro loop with one memorable takeaway.
 
 6. CTA: One forward-looking sentence tied to what they just learned — not generic "like and subscribe".
+   Whenever possible, callback the opening hook's image, question, or phrase so the ending
+   pays off the exact promise the hook opened — the viewer should feel the loop close, not
+   just receive a new closing thought.
 
 LOOP ORCHESTRATION:
 - MACRO LOOP: The video's spine — the packaging promise (e.g. "How did this really happen?").
@@ -280,11 +283,23 @@ PATTERN INTERRUPTS (rotate every 45–90 seconds):
 - A contrast or "But here's what nobody tells you" beat.
 
 WRITING CRAFT:
-- Short punchy sentences mixed with longer explanatory ones.
+- Short punchy sentences mixed with longer explanatory ones. Never write more than two
+  consecutive sentences of the same length or rhythm — vary sentence openers (not every
+  sentence starts with "The" or the subject's name) so the read doesn't fall into a
+  monotone, machine-generated cadence.
 - Conversational authority — smart friend who did the research, not a professor.
 - If the topic is about a named person, use their full name in the hook — never vague "he/she" without context.
 - Forbidden filler: "In this section", "As we mentioned", "Moving on", "Interestingly enough".
 - Every sentence must create curiosity, deliver value, or advance the story — otherwise cut it.
+
+ANTI-CLICHÉ RULES — these phrases are overused AI/stock-documentary tells. Never use them:
+"In a world where", "Little did they/he/she know", "The rest, as they say, is history",
+"And it changed everything", "History would remember this moment", "It was a turning point",
+"The stage was set", "As fate would have it", "This is the story of", "But there's more to
+the story than meets the eye", "At the end of the day", "When all was said and done", "It
+makes you wonder", "One thing is clear", "The numbers don't lie", "In the blink of an eye",
+"Little did anyone expect", "Only time will tell", "And the rest is history". Also avoid
+overusing the "It's not just X, it's Y" contrast formula — use it at most once per script.
 
 LANGUAGE:
 - Write all spoken narration in English unless the user explicitly asks for another language (e.g. Dutch, German).`;
