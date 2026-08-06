@@ -10,6 +10,16 @@
  * a live render environment to verify against (none exists in this sandbox). This stage is
  * therefore honestly a "compose and render this scene" call, not a pure instruction-builder;
  * true build/execute separation is Phase 3 work.
+ *
+ * @deprecated (Phase 8) Superseded on a per-scene basis by the Professional Render Engine
+ * (server/professionalRenderEngine/) via server/pipeline/newPipelineStages.ts, once
+ * `newEnginePipelineActive()` (server/pipeline/newEngineFlags.ts) is true. This module is NOT
+ * removed — it's still the only render path for any scene whose new-engine attempt is off,
+ * fails, or gets rejected by Editorial Review (orchestrator.ts's per-scene fallback), and every
+ * existing caller of `composeScene()` keeps working unchanged. It also remains the ONLY path
+ * with real per-scene audio (voice + subtitles muxed in during compose) beyond Phase 8's own
+ * minimal voice-passthrough addition — see newPipelineStages.ts's own doc comment on the audio
+ * gap it closes and the one it doesn't.
  */
 import { composeSceneVideoInner } from "../../videoPipeline";
 import { PIPELINE_ERROR } from "@shared/appErrors";

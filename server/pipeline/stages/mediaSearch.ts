@@ -13,6 +13,13 @@
  * side-effect-free and network-call-free where possible — but it's currently unwired dead code
  * (gated off, never called from the live pipeline). This stage wraps the live path only;
  * swapping in visualMatchingV2 is a Phase 3-or-later decision, not attempted here.
+ *
+ * @deprecated (Phase 8) Superseded on a per-scene basis by
+ * server/pipeline/newPipelineStages.ts's Visual Intelligence Engine integration, once
+ * `newEnginePipelineActive()` (server/pipeline/newEngineFlags.ts) is true. This module is NOT
+ * removed — it's still the only candidate source for any scene whose new-engine attempt is
+ * off, fails, or gets rejected by Editorial Review (orchestrator.ts's per-scene fallback), and
+ * every existing caller of `searchMedia()` keeps working unchanged.
  */
 import { searchCuratedCandidatesForBeat } from "../../curatedMediaSourcing";
 import { PIPELINE_ERROR } from "@shared/appErrors";
