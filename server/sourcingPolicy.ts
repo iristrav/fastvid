@@ -852,9 +852,13 @@ export function screenLabelMaxPerScene(): number {
   return 7;
 }
 
-/** Prefer different archive clips across consecutive videos on the same topic. */
-export function archiveCrossVideoVarietyEnabled(videoLength?: string | null): boolean {
-  if (isFastShortVideoLength(videoLength)) return false;
+/** Prefer different archive clips across consecutive videos on the same topic.
+ *  Phase 10: previously disabled for fast/short videos, but the underlying
+ *  lookup (getCrossVideoExcludeAssetIds) is a synchronous in-memory scan of an
+ *  already-loaded store, not a DB round-trip — there's no latency reason to
+ *  exclude the fast path, and short videos are exactly where the same handful
+ *  of clips getting reused video after video is most visible to viewers. */
+export function archiveCrossVideoVarietyEnabled(_videoLength?: string | null): boolean {
   return process.env.ARCHIVE_CROSS_VIDEO_VARIETY !== "false";
 }
 
