@@ -464,7 +464,8 @@ async function writeSceneNarration(
   budget: ScriptLengthBudget,
   writerSystem: string,
   isFirst: boolean,
-  isLast: boolean
+  isLast: boolean,
+  hookText?: string
 ): Promise<string> {
   const wordTarget = scene.estimatedWords;
   const minWords = Math.max(15, wordTarget - 20);
@@ -495,7 +496,10 @@ ${visualContext}
 ${retentionInstruction}
 
 ${isFirst ? "This is the HOOK. Open with a pattern interrupt — a specific fact, bold contrast, or high-stakes question. Then open the macro loop. Never start with 'Welcome', 'Today', 'In this video'." : ""}
-${isLast ? "This is the CALL TO ACTION. One forward-looking sentence tied to the story. Not generic subscribe bait." : ""}
+${isLast
+    ? `This is the CALL TO ACTION. One forward-looking sentence tied to the story. Not generic subscribe bait.` +
+      (hookText ? ` Callback the opening hook to close the loop it opened — the hook was: "${hookText.slice(0, 220)}". Echo its image, question, or phrase so the ending pays it off; don't just introduce a new closing thought.` : "")
+    : ""}
 ${!isFirst && !isLast ? `End with this bridge to the next scene: "${scene.transitionToNext || "naturally lead into what comes next"}"` : ""}
 
 Write ${minWords}–${maxWords} words of SPOKEN NARRATION only. No [VISUAL:] tags. No bullets. No headings.
@@ -526,6 +530,25 @@ Name real people, companies, places, dates — the footage system finds visuals 
 }
 
 // ─── Phase 6: Quality Review ──────────────────────────────────────────────────
+
+/** Default minimum overall score (1-10) a script must clear to ship without a revision pass.
+ *  Named and exported (Phase 10) — this was previously a magic number computed and then
+ *  never read by any caller, which meant a 3/10 script shipped identically to a 9/10 one.
+ *  Env-tunable like every other quality knob in this codebase (e.g.
+ *  archiveCrossVideoCooldownVideos()). */
+export const SCRIPT_QUALITY_THRESHOLD_DEFAULT = 6.5;
+
+export function scriptQualityThreshold(): number {
+  const raw = process.env.SCRIPT_QUALITY_THRESHOLD;
+  const parsed = raw ? Number(raw) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 && parsed <= 10 ? parsed : SCRIPT_QUALITY_THRESHOLD_DEFAULT;
+}
+
+/** Extra narration-revision attempts beyond the first draft when the script falls below
+ *  scriptQualityThreshold() — i.e. up to this many + 1 total attempts. Bounded so a
+ *  stubbornly-low-scoring topic can't loop indefinitely burning LLM calls; the best-scoring
+ *  attempt ships even if none clear the threshold. */
+export const MAX_QUALITY_REGENERATION_ATTEMPTS = 2;
 
 async function scoreScriptQuality(
   markdownScript: string,
@@ -586,7 +609,7 @@ Score this script:
       historicalAccuracy: parsed.historicalAccuracy ?? 7,
       sceneFlow: parsed.sceneFlow ?? 7,
       overall,
-      passesThreshold: overall >= 6.5,
+      passesThreshold: overall >= scriptQualityThreshold(),
       weaknesses: Array.isArray(parsed.weaknesses) ? parsed.weaknesses : [],
     };
   } catch {
@@ -699,71 +722,115 @@ export async function runScriptEngineV2(
   progress("🎯 Writing hook...", 32);
   const { hook: hookNarration, title } = await writeHook(architecture, topic, budget, writerSystem);
 
-  // Phase 5: Script Writing (parallel per scene, skip index 0 — hook already written)
-  progress("✍️ Writing narration...", 35);
+  // Phase 5+6: Script Writing + Quality Review, retried when the script falls below
+  // scriptQualityThreshold() — a senior editor's "revise this draft" note, not a from-scratch
+  // rewrite: the story architecture, hook, and visual plans all stay fixed; only the body
+  // narration gets rewritten, informed by the specific weaknesses the previous attempt's
+  // review actually surfaced. Ships the best-scoring attempt even if none clear the
+  // threshold, so a script never ships worse than what generation actually produced, and a
+  // stubbornly-low-scoring topic can't loop forever burning LLM calls.
   const bodyScenes = scenePlan.filter((s) => s.sceneFunction !== "hook");
-  const bodyNarrationPromises = bodyScenes.map((scene, i) =>
-    writeSceneNarration(
-      scene,
-      visualPlans.find((v) => v.sceneIndex === scene.index),
-      architecture,
-      topic,
-      title,
-      budget,
-      writerSystem,
-      false,
-      i === bodyScenes.length - 1 && scene.sceneFunction === "cta"
-    )
-  );
-  const bodyNarrations = await Promise.all(bodyNarrationPromises);
+  let markdownScript = "";
+  let narrations: string[] = [];
+  let quality: ScriptQualityScore | null = null;
+  let bestMarkdownScript = "";
+  let bestNarrations: string[] = [];
+  let bestQuality: ScriptQualityScore | null = null;
+  let revisionNotes = "";
 
-  // Merge: hook first, then body scenes
-  const narrations: string[] = [];
-  let bodyIdx = 0;
-  for (const scene of scenePlan) {
-    if (scene.sceneFunction === "hook") {
-      narrations.push(hookNarration);
-    } else {
-      narrations.push(bodyNarrations[bodyIdx++] ?? "");
-    }
-  }
-  console.log(`[ScriptEngine] Narrations written: ${narrations.length} scenes`);
+  for (let attempt = 0; attempt <= MAX_QUALITY_REGENERATION_ATTEMPTS; attempt++) {
+    progress(attempt === 0 ? "✍️ Writing narration..." : `✍️ Revising narration (attempt ${attempt + 1})...`, 35);
+    const revisionSystem = revisionNotes ? `${writerSystem}\n\n${revisionNotes}` : writerSystem;
+    const bodyNarrationPromises = bodyScenes.map((scene, i) =>
+      writeSceneNarration(
+        scene,
+        visualPlans.find((v) => v.sceneIndex === scene.index),
+        architecture,
+        topic,
+        title,
+        budget,
+        revisionSystem,
+        false,
+        i === bodyScenes.length - 1 && scene.sceneFunction === "cta",
+        hookNarration
+      )
+    );
+    const bodyNarrations = await Promise.all(bodyNarrationPromises);
 
-  // Assemble markdown script
-  let markdownScript = assembleMarkdownScript(title, scenePlan, narrations);
-  markdownScript = stripVisualTagsFromScript(markdownScript);
-
-  // Word count check
-  const wordCount = countNarrationWords(markdownScript);
-  console.log(`[ScriptEngine] Word count: ${wordCount} (target: ${budget.minWords}–${budget.maxWords})`);
-
-  // Expand if too short
-  if (wordCount < budget.minWords) {
-    progress("📏 Adjusting script length...", 70);
-    try {
-      const refineResp = await invokeLLM({
-        messages: [
-          { role: "system", content: writerSystem },
-          { role: "user", content: buildScriptLengthRefinePrompt(markdownScript, budget, wordCount, topic) },
-        ],
-        maxTokens: 8192,
-      });
-      const refined = refineResp.choices[0]?.message?.content ?? "";
-      if (typeof refined === "string" && refined.trim().length > 200 && scriptStillOnTopic(topic, refined)) {
-        markdownScript = stripVisualTagsFromScript(refined.trim());
+    // Merge: hook first, then body scenes
+    narrations = [];
+    let bodyIdx = 0;
+    for (const scene of scenePlan) {
+      if (scene.sceneFunction === "hook") {
+        narrations.push(hookNarration);
+      } else {
+        narrations.push(bodyNarrations[bodyIdx++] ?? "");
       }
-    } catch (err) {
-      console.warn("[ScriptEngine] Length refine failed:", err);
+    }
+    console.log(`[ScriptEngine] Narrations written: ${narrations.length} scenes (attempt ${attempt + 1}/${MAX_QUALITY_REGENERATION_ATTEMPTS + 1})`);
+
+    // Assemble markdown script
+    markdownScript = assembleMarkdownScript(title, scenePlan, narrations);
+    markdownScript = stripVisualTagsFromScript(markdownScript);
+
+    // Word count check
+    const wordCount = countNarrationWords(markdownScript);
+    console.log(`[ScriptEngine] Word count: ${wordCount} (target: ${budget.minWords}–${budget.maxWords})`);
+
+    // Expand if too short
+    if (wordCount < budget.minWords) {
+      progress("📏 Adjusting script length...", 70);
+      try {
+        const refineResp = await invokeLLM({
+          messages: [
+            { role: "system", content: revisionSystem },
+            { role: "user", content: buildScriptLengthRefinePrompt(markdownScript, budget, wordCount, topic) },
+          ],
+          maxTokens: 8192,
+        });
+        const refined = refineResp.choices[0]?.message?.content ?? "";
+        if (typeof refined === "string" && refined.trim().length > 200 && scriptStillOnTopic(topic, refined)) {
+          markdownScript = stripVisualTagsFromScript(refined.trim());
+        }
+      } catch (err) {
+        console.warn("[ScriptEngine] Length refine failed:", err);
+      }
+    }
+
+    // Phase 6: Quality Review
+    progress("🔍 Quality review...", 80);
+    quality = await scoreScriptQuality(markdownScript, architecture, topic);
+    console.log(
+      `[ScriptEngine] Quality (attempt ${attempt + 1}/${MAX_QUALITY_REGENERATION_ATTEMPTS + 1}): ${quality.overall}/10 (${quality.passesThreshold ? "PASS" : "BELOW THRESHOLD"})` +
+      (quality.weaknesses.length > 0 ? ` — weaknesses: ${quality.weaknesses.slice(0, 2).join("; ")}` : "")
+    );
+
+    if (!bestQuality || quality.overall > bestQuality.overall) {
+      bestQuality = quality;
+      bestMarkdownScript = markdownScript;
+      bestNarrations = narrations;
+    }
+
+    if (quality.passesThreshold) break;
+
+    if (attempt < MAX_QUALITY_REGENERATION_ATTEMPTS) {
+      revisionNotes =
+        `REVISION NOTE: The previous draft of this script scored ${quality.overall}/10 out of 10 from a senior ` +
+        `editor's quality review and needs real improvement before it ships. Specifically fix: ` +
+        `${quality.weaknesses.slice(0, 4).join("; ") || "overall narrative execution and retention"}. ` +
+        `Keep the same story beats and scene structure — only improve how the narration is written.`;
     }
   }
 
-  // Phase 6: Quality Review
-  progress("🔍 Quality review...", 80);
-  const quality = await scoreScriptQuality(markdownScript, architecture, topic);
-  console.log(
-    `[ScriptEngine] Quality: ${quality.overall}/10 (${quality.passesThreshold ? "PASS" : "BELOW THRESHOLD"})` +
-    (quality.weaknesses.length > 0 ? ` — weaknesses: ${quality.weaknesses.slice(0, 2).join("; ")}` : "")
-  );
+  markdownScript = bestMarkdownScript;
+  narrations = bestNarrations;
+  quality = bestQuality!;
+  if (!quality.passesThreshold) {
+    console.warn(
+      `[ScriptEngine] Shipping the best available script at ${quality.overall}/10 — never cleared the ` +
+      `${scriptQualityThreshold()} threshold after ${MAX_QUALITY_REGENERATION_ATTEMPTS + 1} attempts.`
+    );
+  }
 
   // Phase 7: Assemble structured output
   const structuredScenes = buildStructuredScenes(scenePlan, visualPlans, narrations);
