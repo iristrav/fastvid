@@ -43,6 +43,78 @@ export function ttsAlignmentPath(workDir: string): string {
   return path.join(workDir, "tts_word_alignment.json");
 }
 
+/** Scene-boundary breathing pauses in narration (default on). The narration text sent to TTS
+ *  is passed through sanitizeVoiceoverText, which collapses all whitespace (including
+ *  newlines) to a single space — so a pause has to be spelled out as punctuation to survive
+ *  that step and actually be spoken as a pause rather than a plain word gap. */
+export function narrationBreathingPauseEnabled(): boolean {
+  return process.env.NARRATION_BREATHING_PAUSE !== "false";
+}
+
+/** Join scene/section narration blocks with an ellipsis breathing pause between them instead
+ *  of a plain space, so TTS leaves a beat of silence at scene boundaries — the same technique
+ *  documentary narrators use to let a moment land before moving on. ASCII-only ("...") so it
+ *  survives sanitizeVoiceoverText's non-ASCII stripping and whitespace collapse untouched. */
+export function joinNarrationWithBreathingPauses(parts: string[]): string {
+  const trimmed = parts.map((p) => p.trim()).filter((p) => p.length > 0);
+  if (trimmed.length <= 1) return trimmed.join("");
+  if (!narrationBreathingPauseEnabled()) return trimmed.join(" ");
+  return trimmed.join(" ... ");
+}
+
+/** Coarse, text-derived narration tone — the live script pipeline's LLM-written per-scene
+ *  `emotion` field never survives past script generation into the TTS call (it's discarded
+ *  once the script is flattened to markdown), so this reads the narration text itself instead
+ *  of requiring that plumbing. Deliberately simple keyword scan, same style as the dormant
+ *  Phase 4 EDL module's (cinematicEditingEngine/emotionalPacing.ts) text-based fallback tier —
+ *  reused as a pattern here, not imported, since that module is feature-flagged off. */
+export type NarrationEmotionalTone = "dramatic" | "exciting" | "neutral";
+
+const DRAMATIC_TONE_KEYWORDS = [
+  "death", "died", "killed", "danger", "collapse", "collapsed", "betrayal", "betrayed",
+  "war", "crisis", "disaster", "secret", "hidden", "warning", "threat", "feared", "fear",
+  "catastrophe", "tragedy", "tragic", "devastating", "conspiracy", "cover-up", "cover up",
+  "vanished", "disappeared", "murder", "attack", "explosion", "collapse of",
+];
+const EXCITING_TONE_KEYWORDS = [
+  "incredible", "amazing", "breakthrough", "victory", "success", "revolutionary",
+  "record-breaking", "unprecedented", "historic", "triumph", "celebrated", "milestone",
+  "astonishing", "remarkable", "groundbreaking", "stunning achievement",
+];
+
+export function classifyNarrationEmotionalTone(text: string): NarrationEmotionalTone {
+  const lower = text.toLowerCase();
+  const dramaticHits = DRAMATIC_TONE_KEYWORDS.reduce((n, w) => n + (lower.includes(w) ? 1 : 0), 0);
+  const excitingHits = EXCITING_TONE_KEYWORDS.reduce((n, w) => n + (lower.includes(w) ? 1 : 0), 0);
+  if (dramaticHits === 0 && excitingHits === 0) return "neutral";
+  return dramaticHits >= excitingHits ? "dramatic" : "exciting";
+}
+
+export type ElevenLabsVoiceSettings = {
+  stability: number;
+  similarity_boost: number;
+  style: number;
+  use_speaker_boost: boolean;
+};
+
+/** stability lower = more emotionally expressive/varied delivery (ElevenLabs' own semantics);
+ *  "neutral" keeps the exact values already in production, unchanged. */
+export function elevenLabsVoiceSettingsForTone(tone: NarrationEmotionalTone): ElevenLabsVoiceSettings {
+  if (tone === "dramatic") {
+    return { stability: 0.45, similarity_boost: 0.88, style: 0.15, use_speaker_boost: true };
+  }
+  if (tone === "exciting") {
+    return { stability: 0.5, similarity_boost: 0.88, style: 0.12, use_speaker_boost: true };
+  }
+  return { stability: 0.58, similarity_boost: 0.88, style: 0.05, use_speaker_boost: true };
+}
+
+/** Emotional voice settings on by default; NARRATION_EMOTIONAL_VOICE=false pins the original
+ *  fixed neutral values for every chunk regardless of content. */
+export function narrationEmotionalVoiceEnabled(): boolean {
+  return process.env.NARRATION_EMOTIONAL_VOICE !== "false";
+}
+
 export function loadStoredTtsAlignment(workDir: string): StoredTtsAlignment | null {
   const p = ttsAlignmentPath(workDir);
   if (!fs.existsSync(p)) return null;
@@ -280,7 +352,8 @@ export async function fetchElevenLabsWithTimestamps(
   text: string,
   elevenVoiceId: string,
   apiKey: string,
-  timeoutMs: number
+  timeoutMs: number,
+  voiceSettings?: ElevenLabsVoiceSettings
 ): Promise<{ audioBuffer: Buffer; alignment: TtsCharacterAlignment } | null> {
   if (!apiKey.trim() || !text.trim()) return null;
   try {
@@ -296,7 +369,7 @@ export async function fetchElevenLabsWithTimestamps(
         body: JSON.stringify({
           text,
           model_id: "eleven_multilingual_v2",
-          voice_settings: {
+          voice_settings: voiceSettings ?? {
             stability: 0.58,
             similarity_boost: 0.88,
             style: 0.05,

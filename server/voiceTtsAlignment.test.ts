@@ -6,8 +6,83 @@ import {
   sceneSplitBoundariesFromTts,
   sliceWordsForSceneText,
   wordsFromCharacterAlignment,
+  joinNarrationWithBreathingPauses,
+  narrationBreathingPauseEnabled,
+  classifyNarrationEmotionalTone,
+  elevenLabsVoiceSettingsForTone,
+  narrationEmotionalVoiceEnabled,
   type TtsCharacterAlignment,
 } from "./voiceTtsAlignment";
+
+describe("narration breathing pauses (Phase 10)", () => {
+  it("joins multiple scene blocks with an ellipsis pause by default", () => {
+    const prev = process.env.NARRATION_BREATHING_PAUSE;
+    delete process.env.NARRATION_BREATHING_PAUSE;
+    expect(narrationBreathingPauseEnabled()).toBe(true);
+    expect(joinNarrationWithBreathingPauses(["First scene text.", "Second scene text."])).toBe(
+      "First scene text. ... Second scene text."
+    );
+    if (prev === undefined) delete process.env.NARRATION_BREATHING_PAUSE;
+    else process.env.NARRATION_BREATHING_PAUSE = prev;
+  });
+
+  it("falls back to a plain space join when disabled via env", () => {
+    const prev = process.env.NARRATION_BREATHING_PAUSE;
+    process.env.NARRATION_BREATHING_PAUSE = "false";
+    expect(narrationBreathingPauseEnabled()).toBe(false);
+    expect(joinNarrationWithBreathingPauses(["First.", "Second."])).toBe("First. Second.");
+    if (prev === undefined) delete process.env.NARRATION_BREATHING_PAUSE;
+    else process.env.NARRATION_BREATHING_PAUSE = prev;
+  });
+
+  it("skips empty blocks and never pauses around a single block", () => {
+    expect(joinNarrationWithBreathingPauses(["Only one."])).toBe("Only one.");
+    expect(joinNarrationWithBreathingPauses(["  ", "First.", "", "Second."])).toBe("First. ... Second.");
+  });
+});
+
+describe("narration emotional tone → voice settings (Phase 10)", () => {
+  it("classifies dramatic narration from keyword content", () => {
+    expect(classifyNarrationEmotionalTone("The cover-up led to a shocking betrayal and disaster.")).toBe(
+      "dramatic"
+    );
+  });
+
+  it("classifies exciting narration from keyword content", () => {
+    expect(classifyNarrationEmotionalTone("It was an incredible, record-breaking triumph.")).toBe("exciting");
+  });
+
+  it("classifies plain narration as neutral", () => {
+    expect(classifyNarrationEmotionalTone("The meeting was held on a Tuesday afternoon.")).toBe("neutral");
+  });
+
+  it("maps neutral tone to the exact original production constants (backwards compatible)", () => {
+    expect(elevenLabsVoiceSettingsForTone("neutral")).toEqual({
+      stability: 0.58,
+      similarity_boost: 0.88,
+      style: 0.05,
+      use_speaker_boost: true,
+    });
+  });
+
+  it("gives dramatic/exciting tones a lower stability than neutral (more expressive delivery)", () => {
+    const neutral = elevenLabsVoiceSettingsForTone("neutral");
+    const dramatic = elevenLabsVoiceSettingsForTone("dramatic");
+    const exciting = elevenLabsVoiceSettingsForTone("exciting");
+    expect(dramatic.stability).toBeLessThan(neutral.stability);
+    expect(exciting.stability).toBeLessThan(neutral.stability);
+  });
+
+  it("is enabled by default and can be disabled via env", () => {
+    const prev = process.env.NARRATION_EMOTIONAL_VOICE;
+    delete process.env.NARRATION_EMOTIONAL_VOICE;
+    expect(narrationEmotionalVoiceEnabled()).toBe(true);
+    process.env.NARRATION_EMOTIONAL_VOICE = "false";
+    expect(narrationEmotionalVoiceEnabled()).toBe(false);
+    if (prev === undefined) delete process.env.NARRATION_EMOTIONAL_VOICE;
+    else process.env.NARRATION_EMOTIONAL_VOICE = prev;
+  });
+});
 
 describe("voiceTtsAlignment", () => {
   const alignment: TtsCharacterAlignment = {
