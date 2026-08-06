@@ -125,13 +125,6 @@ export function checkScriptMeetsBudget(script: string, budget: ScriptLengthBudge
   return { ok: true };
 }
 
-export function assertScriptMeetsBudget(script: string, budget: ScriptLengthBudget): void {
-  const check = checkScriptMeetsBudget(script, budget);
-  if (!check.ok) {
-    throw new Error(check.message);
-  }
-}
-
 /** Spoken narration only — one continuous read order (no duplicate hooks across scenes). */
 export function extractFullNarrationText(script: string): string {
   const blocks = parseMarkdownNarrationBlocks(script);

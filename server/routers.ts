@@ -120,7 +120,6 @@ import {
   buildScriptLengthRefinePrompt,
   buildScriptWriterSystemPrompt,
   buildSectionUserPrompt,
-  assertScriptMeetsBudget,
   checkScriptMeetsBudget,
   countNarrationWords,
   getScriptLengthBudget,
