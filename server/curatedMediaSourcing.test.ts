@@ -27,6 +27,7 @@ import {
   shouldPreferPexelsOverArchive,
   shouldTryPexelsFirstForBeat,
   applyCrossVideoVarietyDegrade,
+  reorderForArchiveDiversity,
   type CuratedCandidatePick,
 } from "./curatedMediaSourcing";
 import { isGenericPeopleAsset } from "./visualBeatTags";
@@ -948,6 +949,39 @@ describe("curatedMediaSourcing", () => {
       { asset: { id: 1 } as MediaArchiveAsset, score: 5, archiveName: "test", archiveNicheTags: [] },
     ];
     expect(applyCrossVideoVarietyDegrade(pool, new Set())).toBe(pool);
+  });
+
+  it("reorderForArchiveDiversity (Phase 10) prefers a less-used archive within a tied score band", () => {
+    const ranked: CuratedCandidatePick[] = [
+      { asset: { id: 1 } as MediaArchiveAsset, score: 50, archiveName: "Overused Archive", archiveNicheTags: [] },
+      { asset: { id: 2 } as MediaArchiveAsset, score: 49, archiveName: "Fresh Archive", archiveNicheTags: [] },
+      { asset: { id: 3 } as MediaArchiveAsset, score: 48, archiveName: "Overused Archive", archiveNicheTags: [] },
+    ];
+    const usedArchiveNames = new Map([["Overused Archive", 5]]);
+    const result = reorderForArchiveDiversity(ranked, usedArchiveNames);
+    // All three are within the default 3-point band, so "Fresh Archive" (id 2) moves first
+    // even though its raw score (49) was second — but never above what its score allows.
+    expect(result[0]!.asset.id).toBe(2);
+  });
+
+  it("reorderForArchiveDiversity never lets a lower-scoring candidate outrank a much higher one", () => {
+    const ranked: CuratedCandidatePick[] = [
+      { asset: { id: 1 } as MediaArchiveAsset, score: 90, archiveName: "Overused Archive", archiveNicheTags: [] },
+      { asset: { id: 2 } as MediaArchiveAsset, score: 10, archiveName: "Fresh Archive", archiveNicheTags: [] },
+    ];
+    const usedArchiveNames = new Map([["Overused Archive", 20]]);
+    const result = reorderForArchiveDiversity(ranked, usedArchiveNames);
+    // Score gap (80) far exceeds the band width — the top scorer always stays first.
+    expect(result[0]!.asset.id).toBe(1);
+  });
+
+  it("reorderForArchiveDiversity is a no-op when nothing has been used yet or the pool is trivial", () => {
+    const ranked: CuratedCandidatePick[] = [
+      { asset: { id: 1 } as MediaArchiveAsset, score: 50, archiveName: "A", archiveNicheTags: [] },
+      { asset: { id: 2 } as MediaArchiveAsset, score: 49, archiveName: "B", archiveNicheTags: [] },
+    ];
+    expect(reorderForArchiveDiversity(ranked, new Map())).toBe(ranked);
+    expect(reorderForArchiveDiversity([ranked[0]!], new Map([["A", 3]]))).toEqual([ranked[0]]);
   });
 
   it("resolvePrefetchedArchiveCandidates re-searches when prefetch is empty", async () => {

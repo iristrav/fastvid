@@ -178,6 +178,7 @@ import {
   countVisualTagHits,
   resolveRequiredGeoTagsForBeat,
   isArchiveGeoBlockedForBeat,
+  reorderForArchiveDiversity,
   type CuratedCandidatePick,
   type ArchiveAssetRow,
 } from "./curatedMediaSourcing";
@@ -335,6 +336,7 @@ import {
   isStockVideoClip,
   type DocGradeSourceKind,
 } from "./documentaryStyle";
+import { fingerprintMediaFile, isNearDuplicateHash } from "./archiveClipDedup";
 
 // API Keys
 const FISH_AUDIO_API_KEY = process.env.FISH_AUDIO_API_KEY || "";
@@ -9789,6 +9791,14 @@ export interface VisualDedupState {
    *  doesn't get a different answer on a 2nd or 3rd identical attempt minutes later — it just
    *  pays the full cost again. See refillSceneStrictVoiceMatch's callers. */
   strictRefillAttemptedScenes: Set<number>;
+  /** Phase 10: dHash perceptual fingerprints of clips already adopted this video — catches
+   *  near-duplicate footage (same event from a different archive/encode) that usedCuratedAssetIds/
+   *  usedCuratedStorageUrls can't, since those only block the exact same asset row/file twice. */
+  usedFingerprints: bigint[];
+  /** Phase 10: curated-archive usage count by archive name this video — biases which
+   *  near-tied-score candidate gets tried first toward less-used archives, without ever
+   *  letting a lower-scoring candidate be preferred over a higher-scoring one. */
+  usedArchiveNames: Map<string, number>;
 }
 
 /**
@@ -9895,6 +9905,8 @@ export function createVisualDedupState(
     usedImageUrls: new Set(),
     usedCuratedAssetIds: new Set(),
     usedCuratedStorageUrls: new Set(),
+    usedFingerprints: [],
+    usedArchiveNames: new Map(),
     curatedInterviewClipsUsed: 0,
     curatedImageClipsUsed: 0,
     archiveVideoClipsUsed: 0,
@@ -16922,7 +16934,7 @@ async function adoptArchiveBeatClip(
   const tryClip = async (
     clipPath: string | null | undefined,
     sec = holdSec,
-    adoptMeta?: { source: string; assetTitle?: string },
+    adoptMeta?: { source: string; assetTitle?: string; archiveName?: string },
     preVision?: VisionGateResult
   ): Promise<boolean> => {
     if (!clipPath || isPipelineFallbackClip(clipPath)) return false;
@@ -16956,6 +16968,30 @@ async function adoptArchiveBeatClip(
       await rejectClip(clipPath);
       return false;
     }
+    // Phase 10: perceptual near-duplicate check — usedCuratedAssetIds/usedCuratedStorageUrls
+    // only block the exact same asset/file twice; this catches the same real-world footage
+    // showing up a second time from a different archive row or re-encode. Curated-archive
+    // clips only, since that's where near-identical historical footage across archives
+    // actually shows up; fingerprinting is a single cheap low-res frame extract, reusing
+    // archiveClipDedup.ts's existing dHash infra (previously upload-time only).
+    let clipFingerprint: bigint | null = null;
+    if (curated) {
+      try {
+        clipFingerprint = await fingerprintMediaFile(clipPath);
+      } catch {
+        clipFingerprint = null;
+      }
+      if (
+        clipFingerprint != null &&
+        dedup.usedFingerprints.some((used) => isNearDuplicateHash(clipFingerprint!, used))
+      ) {
+        console.warn(
+          `[Pipeline] Scene ${scene.index} beat ${beat.index}: skipping near-duplicate curated clip ${path.basename(clipPath)}`
+        );
+        await rejectClip(clipPath);
+        return false;
+      }
+    }
     let effectiveClip = clipPath;
     const padded = await padShortClipWithNext(
       clipPath, sec, beat, scene, workDir, videoTitle, dedup, semanticProfile
@@ -16982,7 +17018,16 @@ async function adoptArchiveBeatClip(
         curated ? curatedClipPathAssetId(clipPath) ?? undefined : undefined,
         vision.worstScore10 ?? undefined
       );
-      if (curated) markCuratedArchiveClipUsage(dedup, withText);
+      if (curated) {
+        markCuratedArchiveClipUsage(dedup, withText);
+        if (clipFingerprint != null) dedup.usedFingerprints.push(clipFingerprint);
+        if (adoptMeta?.archiveName) {
+          dedup.usedArchiveNames.set(
+            adoptMeta.archiveName,
+            (dedup.usedArchiveNames.get(adoptMeta.archiveName) ?? 0) + 1
+          );
+        }
+      }
       return true;
     }
     return false;
@@ -17026,6 +17071,9 @@ async function adoptArchiveBeatClip(
       ranked = pre.ranked;
       beatQueryEmb = pre.queryEmb ?? beatQueryEmb;
     }
+    // Phase 10: within score-tied bands, try less-used archives first — never reorders
+    // across a score band, so match quality never trades off against diversity.
+    ranked = reorderForArchiveDiversity(ranked, dedup.usedArchiveNames);
     console.log(
       `[Pipeline] Scene ${scene.index} zin ${beat.index}: archive-zoek "${beat.text.slice(0, 55).trim()}…" → ${ranked.length} kandidaat(en)`
     );
@@ -17156,7 +17204,7 @@ async function adoptArchiveBeatClip(
               );
               if (
                 visionAlt.pass &&
-                (await tryClip(altClip, holdSec, { source: "archive", assetTitle: picked.asset.title ?? undefined }, visionAlt))
+                (await tryClip(altClip, holdSec, { source: "archive", assetTitle: picked.asset.title ?? undefined, archiveName: picked.archiveName }, visionAlt))
               ) {
                 console.log(
                   `[Pipeline] Scene ${scene.index} zin ${beat.index}: offset-trim match ` +
@@ -17175,7 +17223,7 @@ async function adoptArchiveBeatClip(
       }
       const visionScore = vision.worstScore10 ?? targetVision;
       if (
-        await tryClip(clip, holdSec, { source: "archive", assetTitle: picked.asset.title ?? undefined }, vision)
+        await tryClip(clip, holdSec, { source: "archive", assetTitle: picked.asset.title ?? undefined, archiveName: picked.archiveName }, vision)
       ) {
         const sceneTags = extractSceneSearchTags(beat.text);
         const tagHint =
