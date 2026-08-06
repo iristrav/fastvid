@@ -604,21 +604,6 @@ export function buildCuratedQueryTags(
   return buildBeatMatchTags(beat, scene, videoTitle).allTags;
 }
 
-function archiveMatchesQuery(
-  archiveName: string,
-  archiveNicheTags: string[],
-  queryTags: string[],
-  anchorTags: string[]
-): boolean {
-  return (
-    scoreArchiveMetadata(
-      { name: archiveName, nicheTags: archiveNicheTags },
-      queryTags,
-      anchorTags
-    ) >= 8
-  );
-}
-
 export type ArchiveRouteInput = {
   name: string;
   description?: string | null;
@@ -1143,19 +1128,6 @@ function curatedArchiveVisualBoost(asset: Pick<MediaArchiveAsset, "title" | "tag
   return 0;
 }
 
-function tMatches(a: string, b: string): boolean {
-  return a.includes(b) || b.includes(a);
-}
-
-function assetMatchesTopicAnchors(asset: ArchiveAssetRow, topicAnchors: string[]): boolean {
-  if (!topicAnchors.length) return false;
-  const assetTags = normalizeMediaTags(asset.tags ?? []);
-  return topicAnchors.some(
-    (q) =>
-      assetTags.some((t) => t === q || t.includes(q) || q.includes(t))
-  );
-}
-
 function resolveArchiveAssetLocalPath(asset: ArchiveAssetRow): string | null {
   const fromUrl = resolveLocalVideoPath(asset.storageUrl);
   if (fromUrl) return fromUrl;
@@ -1169,15 +1141,6 @@ function resolveArchiveAssetLocalPath(asset: ArchiveAssetRow): string | null {
     if (fs.existsSync(p)) return p;
   }
   return null;
-}
-
-function assetMatchesBeatTags(asset: ArchiveAssetRow, beatTags: string[]): boolean {
-  if (!beatTags.length) return true;
-  const assetTags = normalizeMediaTags(asset.tags ?? []);
-  return beatTags.some(
-    (q) =>
-      assetTags.some((t) => t === q || t.includes(q) || q.includes(t))
-  );
 }
 
 export async function listCuratedArchiveCandidates(
