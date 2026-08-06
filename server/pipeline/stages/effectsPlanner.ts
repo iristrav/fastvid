@@ -9,6 +9,13 @@
  * returns the combined plan. Writing the result back into scene/clip state stays the
  * orchestrator's job (matching "no rendering" — this stage never touches a file or spawns
  * ffmpeg).
+ *
+ * @deprecated (Phase 8) Superseded on a per-scene basis by the Cinematic Editing Engine
+ * (server/cinematicEditingEngine/) via server/pipeline/newPipelineStages.ts, once
+ * `newEnginePipelineActive()` (server/pipeline/newEngineFlags.ts) is true. This module is NOT
+ * removed — it's still the only effects planner for any scene whose new-engine attempt is
+ * off, fails, or gets rejected by Editorial Review (orchestrator.ts's per-scene fallback), and
+ * every existing caller of `planEffects()` keeps working unchanged.
  */
 import { editorialReorderScene } from "../../editorialReorder";
 import { optimizeShotSequence } from "../../shotSequenceOptimizer";
