@@ -12,10 +12,15 @@
  *  classifies post-retrieval, against the actual winning candidate — the two operate on
  *  different sides of retrieval (see Phase 3's queryGeneration.ts doc comment on the same
  *  distinction) and are not redundant with each other.
+ *
+ *  When every beat-local signal below is silent, an AI Director's (Phase 5) scene-level
+ *  shotOrder suggestion (directorGuidance) is consulted before falling back to the generic
+ *  "medium" default — a scene-wide editorial judgment beats an uninformed default, but never
+ *  overrides a real, footage-specific local signal.
  */
 import { GENERIC_ENTITY_FALLBACK_CATEGORIES } from "../visualMatchingV2/intelligentFallback";
 import type { CandidateAsset, VisualIntent } from "../visualMatchingV2/types";
-import type { ShotInstruction, VisualContinuityState } from "./types";
+import type { DirectorGuidance, ShotInstruction, VisualContinuityState } from "./types";
 
 const REACTION_SIGNALS = ["reaction", "applause", "audience", "crowd", "cheering", "spectator"];
 const DETAIL_ACTION_SIGNALS = ["hold", "reveal", "show", "unveil", "display", "operate", "open", "close", "type", "write"];
@@ -46,7 +51,9 @@ function isPortraitAsset(candidate: CandidateAsset): boolean {
 export function planShot(
   intent: VisualIntent,
   candidate: CandidateAsset,
-  continuity?: VisualContinuityState
+  continuity?: VisualContinuityState,
+  directorGuidance?: DirectorGuidance,
+  beatIndexInScene?: number
 ): ShotInstruction {
   const searchText = candidateSearchText(candidate);
   const action = (intent.visualAction ?? "").toLowerCase();
@@ -130,8 +137,18 @@ export function planShot(
     };
   }
 
+  if (directorGuidance?.shotOrder && beatIndexInScene != null) {
+    const suggestion = directorGuidance.shotOrder.find((s) => s.order === beatIndexInScene + 1);
+    if (suggestion) {
+      return {
+        shotType: suggestion.shotType,
+        reason: `No beat-local signal fired; AI Director's scene-wide shot order suggests "${suggestion.shotType}" for beat ${beatIndexInScene + 1}.`,
+      };
+    }
+  }
+
   return {
     shotType: "medium",
-    reason: "No stronger signal (no person action, no named object, no location) — medium shot is the safe documentary default.",
+    reason: "No stronger signal (no person action, no named object, no location, no Director guidance for this beat) — medium shot is the safe documentary default.",
   };
 }

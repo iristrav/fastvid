@@ -48,8 +48,8 @@ export function generateEDL(inputs: CinematicEditingInput[]): EDL {
   inputs.forEach((input, i) => {
     const continuity = input.continuity ?? runningContinuity;
 
-    const pacing = deriveEmotionalTone(input.intent);
-    const shot = planShot(input.intent, input.bestCandidate, continuity);
+    const pacing = deriveEmotionalTone(input.intent, input.directorGuidance);
+    const shot = planShot(input.intent, input.bestCandidate, continuity, input.directorGuidance, input.beatIndexInScene ?? i);
     const camera = planCameraMovement(shot, input.bestCandidate, pacing);
 
     const nextTransitionCtx: TransitionContext = { shotType: shot.shotType, subject: input.intent.visualSubject };

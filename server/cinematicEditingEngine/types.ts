@@ -5,11 +5,19 @@
  *  Visual Continuity — the literal Phase 4 INPUT list), it returns a typed instruction, never
  *  pixels/audio samples. Nothing in this directory renders anything. The instructions are
  *  assembled by edlGenerator.ts into one Edit Decision List (EDL) per scene — the contract a
- *  future renderer (Phase 5) will consume.
+ *  future renderer (Phase 6+) will consume.
  *
  *  Every instruction type carries a `reason: string` field. This isn't decorative — it's the
  *  literal "NO RANDOMNESS: every edit must have a reason" requirement, made structurally
  *  impossible to skip.
+ *
+ *  Optional integration point with the AI Director (Phase 5, server/aiDirector/): see
+ *  DirectorGuidance below and CinematicEditingInput.directorGuidance. Deliberately a narrow,
+ *  self-contained shape rather than importing aiDirector's own DirectorDecision type — that
+ *  module's types already import ShotType/TransitionType from this file, so importing back
+ *  from it here would create a circular module dependency. A real DirectorDecision is adapted
+ *  into this shape by aiDirector's own toDirectorGuidance() helper; this file has zero
+ *  dependency on aiDirector either way.
  */
 import type { CandidateAsset, VideoContext, VisualIntent } from "../visualMatchingV2/types";
 import type { TtsWordTiming } from "../voiceTtsAlignment";
@@ -36,6 +44,26 @@ export type VisualContinuityState = {
   establishedSubjects: string[];
 };
 
+/** Narrow, self-contained shape describing what a scene-level AI Director decision (Phase 5)
+ *  can offer a per-beat planner in this directory — not aiDirector's full DirectorDecision
+ *  (see the module doc comment above for why). Every field is optional; a planner that
+ *  receives this with everything undefined behaves exactly as if no guidance was passed at
+ *  all, so wiring this in is purely additive. */
+export type DirectorGuidance = {
+  /** The scene's overall emotional tone, already mapped down to this module's coarser
+   *  4-value vocabulary — see aiDirector's directorEmotionToPacingTone(). When present, a
+   *  beat's own local emotional signal (VisualIntent.emotion / keyword scan) still exists as
+   *  a fallback if this is ever absent, but the Director's scene-wide judgment takes
+   *  precedence when both are available. */
+  pacingTone?: EmotionalTone;
+  /** The scene-level recommended shot progression, 1-based `order` matching a beat's position
+   *  within the scene (see ShotPlanner's optional beatIndexInScene parameter). Consulted only
+   *  as a fallback when no beat-local signal (historical footage, reaction cue, detail action,
+   *  portrait framing, established location) already determined the shot type — local,
+   *  footage-specific signals always win over this scene-level suggestion. */
+  shotOrder?: Array<{ order: number; shotType: ShotType }>;
+};
+
 export type CinematicEditingInput = {
   scene: Scene;
   intent: VisualIntent;
@@ -49,6 +77,12 @@ export type CinematicEditingInput = {
   beatVoiceStartSec: number;
   /** This beat's voice-over duration, seconds. */
   beatVoiceDurationSec: number;
+  /** This beat's position within its scene (0-based) — needed to look up the matching entry
+   *  in directorGuidance.shotOrder, which is 1-based per ShotOrderItem's own convention. */
+  beatIndexInScene?: number;
+  /** Optional scene-level guidance from the AI Director (Phase 5). Entirely additive — see
+   *  DirectorGuidance's doc comment. */
+  directorGuidance?: DirectorGuidance;
 };
 
 // ─── Shot planning ──────────────────────────────────────────────────────────────
