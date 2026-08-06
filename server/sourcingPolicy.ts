@@ -862,6 +862,15 @@ export function archiveCrossVideoVarietyEnabled(_videoLength?: string | null): b
   return process.env.ARCHIVE_CROSS_VIDEO_VARIETY !== "false";
 }
 
+/** Phase 10: reject a candidate that matches neither the beat's literal visual-cue tags nor
+ *  any broader fallback tag, for beats where the director/script gave an explicit visual
+ *  description or search query (hasLiteralVisual). Previously computed but never wired to
+ *  any caller — every call site passed literalVisualTags=[] regardless, so the gate was
+ *  dead code. Env-tunable in case it turns out to lower beat-fill success rate in production. */
+export function literalVisualGateEnabled(): boolean {
+  return process.env.LITERAL_VISUAL_GATE !== "false";
+}
+
 /** How many recent same-topic videos contribute to the cross-video exclude set. */
 export function archiveCrossVideoCooldownVideos(): number {
   const raw = process.env.ARCHIVE_CROSS_VIDEO_COOLDOWN?.trim();

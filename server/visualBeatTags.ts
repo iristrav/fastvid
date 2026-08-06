@@ -485,6 +485,57 @@ export function expandBeatTagsWithTranslations(tags: string[]): string[] {
   return [...new Set([...tags, ...extra])];
 }
 
+/** Phase 10: broader English synonym/related-term expansion for common documentary topics
+ *  beyond the WWII/Netherlands-specific entity tables above (PLACE_ENTRIES/ENTITY_SEARCH_ENTRIES/
+ *  SCENE_SEARCH_ENTRIES already cover that domain richly) — the primary curated-archive query
+ *  path otherwise only extracts literal tokens already present in the narration verbatim, with
+ *  no broadening for topics like economy/technology/health/etc. Deterministic lookup table, not
+ *  an LLM call, so it can't introduce hallucinated search terms — same additive-merge pattern as
+ *  expandBeatTagsWithTranslations, just a different (English synonym, not translation) table. */
+const GENERAL_SYNONYM_TOKENS: Record<string, string[]> = {
+  economy: ["economic", "market", "finance", "trade"],
+  economic: ["economy", "market", "finance"],
+  market: ["economy", "trade", "stock exchange"],
+  finance: ["economy", "money", "bank"],
+  technology: ["tech", "innovation", "digital", "computer"],
+  tech: ["technology", "innovation", "digital"],
+  innovation: ["technology", "invention", "breakthrough"],
+  business: ["company", "corporate", "industry"],
+  company: ["business", "corporate", "office"],
+  industry: ["factory", "manufacturing", "business"],
+  crisis: ["emergency", "disaster", "collapse"],
+  disaster: ["crisis", "catastrophe", "emergency"],
+  climate: ["environment", "weather", "global warming"],
+  environment: ["climate", "nature", "pollution"],
+  pollution: ["environment", "smog", "waste"],
+  health: ["medical", "medicine", "hospital"],
+  medicine: ["health", "medical", "doctor"],
+  hospital: ["medical", "health", "doctor", "nurse"],
+  space: ["nasa", "rocket", "astronaut", "spacecraft"],
+  science: ["research", "laboratory", "scientist"],
+  research: ["science", "laboratory", "study"],
+  crime: ["police", "justice", "court"],
+  justice: ["court", "law", "legal"],
+  law: ["justice", "court", "legal"],
+  sports: ["athlete", "competition", "stadium"],
+  education: ["school", "university", "classroom"],
+  university: ["education", "college", "campus"],
+  energy: ["power plant", "electricity", "fuel"],
+  electricity: ["energy", "power grid", "power plant"],
+};
+
+/** Same additive-merge pattern as expandBeatTagsWithTranslations, English synonyms instead of
+ *  Dutch→English translation. */
+export function expandBeatTagsWithSynonyms(tags: string[]): string[] {
+  const extra: string[] = [];
+  for (const tag of tags) {
+    const synonyms = GENERAL_SYNONYM_TOKENS[tag.toLowerCase()];
+    if (synonyms) extra.push(...synonyms);
+  }
+  if (extra.length === 0) return tags;
+  return [...new Set([...tags, ...extra])];
+}
+
 /** Strip war-era search bias when beat is modern/geo — not tied to video topic enum. */
 export function refineVisualSearchTagsForTopic(
   tags: string[],
