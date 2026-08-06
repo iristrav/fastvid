@@ -1256,7 +1256,19 @@ export async function listCuratedArchiveCandidates(
     const videoBoost = (x: ArchiveAssetRow) => (x.mediaType === "video" ? 2 : 0);
     return videoBoost(b.asset) - videoBoost(a.asset);
   });
-  if (crossVideoExcludeIds.size === 0) return pool;
+  return applyCrossVideoVarietyDegrade(pool, crossVideoExcludeIds);
+}
+
+/** Prefer clips not used in recent same-topic videos, but degrade gracefully rather than
+ *  starving a beat of candidates: keep the cross-video-excluded filter only while it still
+ *  leaves a workable pool (>=15%, floor 8); otherwise fall back to the full, unfiltered pool.
+ *  Shared (Phase 10) by both the full archive scan and the pre-built video candidate-pool
+ *  paths so cross-video variety degrades the same way regardless of which one is in use. */
+export function applyCrossVideoVarietyDegrade(
+  pool: CuratedCandidatePick[],
+  crossVideoExcludeIds: Set<number>
+): CuratedCandidatePick[] {
+  if (crossVideoExcludeIds.size === 0 || pool.length === 0) return pool;
   const filtered = pool.filter((c) => !crossVideoExcludeIds.has(c.asset.id));
   const minKeep = Math.max(8, Math.ceil(pool.length * 0.15));
   if (filtered.length >= minKeep) return filtered;
@@ -1916,20 +1928,24 @@ export async function searchCuratedCandidatesForBeat(
 
   let listed: CuratedCandidatePick[];
   if (options?.candidatePool && options.candidatePool.length > 0) {
-    const fresh = options.candidatePool.filter(
-      (p) =>
-        !usedAssetIds.has(p.asset.id) &&
-        !usedStorageUrls.has(p.asset.storageUrl) &&
-        !crossVideoExcludeIds.has(p.asset.id)
+    // Tier 1: same-video dedup respected. Cross-video variety degrades gracefully
+    // (applyCrossVideoVarietyDegrade) rather than being an all-or-nothing gate, so a beat
+    // tries every recently-unused-elsewhere clip before ever repeating a clip within THIS
+    // video (Phase 10 — reusing a clip from a different video is far less visible to a
+    // viewer than the same clip appearing twice in one video).
+    const dedupedForVideo = options.candidatePool.filter(
+      (p) => !usedAssetIds.has(p.asset.id) && !usedStorageUrls.has(p.asset.storageUrl)
     );
-    if (fresh.length > 0) {
-      listed = fresh;
+    if (dedupedForVideo.length > 0) {
+      listed = applyCrossVideoVarietyDegrade(dedupedForVideo, crossVideoExcludeIds);
     } else {
-      // Pool exhausted by dedup — allow reuse rather than falling back to color
+      // Tier 2: pool exhausted even after every cross-video-variety relaxation — allow
+      // same-video reuse rather than falling back to color, still preferring clips not
+      // used in other recent videos when there's enough pool left to do so.
       console.warn(
         `[ArchiveSearch] zin ${beat.index}: pool exhausted by dedup — hergebruik toegestaan (${options.candidatePool.length} clips)`
       );
-      listed = options.candidatePool.filter((p) => !crossVideoExcludeIds.has(p.asset.id));
+      listed = applyCrossVideoVarietyDegrade(options.candidatePool, crossVideoExcludeIds);
     }
   } else {
     listed = await listCuratedArchiveCandidates(
