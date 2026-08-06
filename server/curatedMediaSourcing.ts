@@ -1825,6 +1825,33 @@ export function rankCuratedCandidatesForBeat(
   return banded;
 }
 
+/** Phase 10: bias which near-tied-score candidate is tried first toward archives used less
+ *  often so far this video, without ever letting a lower-scoring candidate be preferred over
+ *  a higher-scoring one — candidates are grouped into descending score bands (bandWidth points
+ *  wide) first, and only reordered *within* a band, so this can never lower match quality to
+ *  gain diversity. Sort is stable, so ties within a band keep their original relative order. */
+export function reorderForArchiveDiversity(
+  ranked: CuratedCandidatePick[],
+  usedArchiveNames: Map<string, number>,
+  bandWidth = 3
+): CuratedCandidatePick[] {
+  if (ranked.length <= 1 || usedArchiveNames.size === 0) return ranked;
+  const banded: CuratedCandidatePick[] = [];
+  let i = 0;
+  while (i < ranked.length) {
+    const bandTop = ranked[i]!.score;
+    let j = i + 1;
+    while (j < ranked.length && ranked[j]!.score >= bandTop - bandWidth) j++;
+    const band = ranked.slice(i, j);
+    if (band.length > 1) {
+      band.sort((a, b) => (usedArchiveNames.get(a.archiveName) ?? 0) - (usedArchiveNames.get(b.archiveName) ?? 0));
+    }
+    banded.push(...band);
+    i = j;
+  }
+  return banded;
+}
+
 /** One-time per-video archive pool — avoids re-scanning every asset on each beat. */
 export async function buildVideoArchiveCandidatePool(
   videoTitle: string | undefined,
