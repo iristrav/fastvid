@@ -12,8 +12,14 @@
  *  never a new LLM call; this stays a pure, fast, fully-deterministic function so it's testable
  *  without any network/LLM dependency, matching "EDL should be testable without rendering a
  *  video."
+ *
+ *  When a DirectorGuidance (Phase 5's AI Director) is supplied and carries a pacingTone, that
+ *  scene-wide judgment takes precedence over this beat's own local signal — the Director sees
+ *  the whole scene's narration, this function only sees one beat's. Omitting directorGuidance
+ *  entirely (every pre-Phase-5 call site) leaves this function's behavior byte-identical to
+ *  before.
  */
-import type { EmotionalTone, PacingProfile } from "./types";
+import type { DirectorGuidance, EmotionalTone, PacingProfile } from "./types";
 import type { VisualIntent } from "../visualMatchingV2/types";
 
 const DRAMATIC_KEYWORDS = [
@@ -59,9 +65,19 @@ const PACING_BY_TONE: Record<EmotionalTone, { cutSpeedMultiplier: number; moveme
   neutral: { cutSpeedMultiplier: 1.0, movementIntensity: 0.5 },
 };
 
-/** Derives this beat's emotional tone and pacing. Checks, in order: VisualIntent.emotion
- *  (Phase 3's extracted signal) -> keyword scan of intent.spokenText -> neutral default. */
-export function deriveEmotionalTone(intent: VisualIntent): PacingProfile {
+/** Derives this beat's emotional tone and pacing. Checks, in order: AI Director's scene-wide
+ *  pacingTone (when supplied) -> VisualIntent.emotion (Phase 3's extracted signal) -> keyword
+ *  scan of intent.spokenText -> neutral default. */
+export function deriveEmotionalTone(intent: VisualIntent, directorGuidance?: DirectorGuidance): PacingProfile {
+  if (directorGuidance?.pacingTone) {
+    const tone = directorGuidance.pacingTone;
+    return {
+      tone,
+      ...PACING_BY_TONE[tone],
+      reason: `AI Director set this scene's emotional tone to "${tone}" — takes precedence over this beat's own local signal.`,
+    };
+  }
+
   const emotionField = (intent.emotion ?? "").trim();
   if (emotionField) {
     const classified = classifyText(emotionField);
