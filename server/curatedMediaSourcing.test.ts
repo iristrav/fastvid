@@ -26,6 +26,7 @@ import {
   resolveRequiredGeoTagsForBeat,
   shouldPreferPexelsOverArchive,
   shouldTryPexelsFirstForBeat,
+  applyCrossVideoVarietyDegrade,
   type CuratedCandidatePick,
 } from "./curatedMediaSourcing";
 import { isGenericPeopleAsset } from "./visualBeatTags";
@@ -899,6 +900,54 @@ describe("curatedMediaSourcing", () => {
     expect(isModernUrbanArchiveAsset({ title: "Rotterdam skyline aerial HD", tags: [], mediaType: "video" })).toBe(
       true
     );
+  });
+
+  it("applyCrossVideoVarietyDegrade (Phase 10) keeps the cross-video filter when enough candidates survive", () => {
+    const pool: CuratedCandidatePick[] = Array.from({ length: 10 }, (_, i) => ({
+      asset: { id: i } as MediaArchiveAsset,
+      score: 10 - i,
+      archiveName: "test",
+      archiveNicheTags: [],
+    }));
+    const crossVideoExcludeIds = new Set([0, 1]); // excluding 2/10 still leaves >= minKeep (8)
+    const result = applyCrossVideoVarietyDegrade(pool, crossVideoExcludeIds);
+    expect(result.map((p) => p.asset.id)).not.toContain(0);
+    expect(result.map((p) => p.asset.id)).not.toContain(1);
+    expect(result).toHaveLength(8);
+  });
+
+  it("applyCrossVideoVarietyDegrade keeps a partial filtered pool when some candidates survive, even below the minKeep floor", () => {
+    const pool: CuratedCandidatePick[] = Array.from({ length: 10 }, (_, i) => ({
+      asset: { id: i } as MediaArchiveAsset,
+      score: 10 - i,
+      archiveName: "test",
+      archiveNicheTags: [],
+    }));
+    // Excluding 9/10 candidates leaves only 1 — below the minKeep floor (8) — but since
+    // that's still a non-empty pool, it's preferred over reintroducing cross-video-stale clips.
+    const crossVideoExcludeIds = new Set([0, 1, 2, 3, 4, 5, 6, 7, 8]);
+    const result = applyCrossVideoVarietyDegrade(pool, crossVideoExcludeIds);
+    expect(result).toHaveLength(1);
+    expect(result[0]!.asset.id).toBe(9);
+  });
+
+  it("applyCrossVideoVarietyDegrade falls back to the full pool only when the filter would leave nothing", () => {
+    const pool: CuratedCandidatePick[] = Array.from({ length: 10 }, (_, i) => ({
+      asset: { id: i } as MediaArchiveAsset,
+      score: 10 - i,
+      archiveName: "test",
+      archiveNicheTags: [],
+    }));
+    const crossVideoExcludeIds = new Set(Array.from({ length: 10 }, (_, i) => i));
+    const result = applyCrossVideoVarietyDegrade(pool, crossVideoExcludeIds);
+    expect(result).toHaveLength(10);
+  });
+
+  it("applyCrossVideoVarietyDegrade returns the pool unchanged when there's nothing to exclude", () => {
+    const pool: CuratedCandidatePick[] = [
+      { asset: { id: 1 } as MediaArchiveAsset, score: 5, archiveName: "test", archiveNicheTags: [] },
+    ];
+    expect(applyCrossVideoVarietyDegrade(pool, new Set())).toBe(pool);
   });
 
   it("resolvePrefetchedArchiveCandidates re-searches when prefetch is empty", async () => {
