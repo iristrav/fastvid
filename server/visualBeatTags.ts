@@ -558,6 +558,17 @@ export function refineVisualSearchTagsForTopic(
     if (tl === "germany" || tl === "german" || tl === "deutschland") continue;
     out.add(t);
   }
+  // Phase 11: germany/german/deutschland tags are stripped above (war-era bias) for every
+  // modern/geo beat, but unlike berlin/netherlands/america below, nothing was ever added
+  // back — a beat about modern Germany (not WWII) lost its country tag entirely instead of
+  // getting a modern-context replacement. Restore the same tags PLACE_ENTRIES already uses
+  // for Germany (searchTags: ["germany", "german", "deutschland", "berlin"]) rather than
+  // inventing new ones, so archive matching sees the same vocabulary it does everywhere else.
+  if (/germany|duitsland|deutschland|\bgerman\b/.test(lower)) {
+    out.add("germany");
+    out.add("german");
+    out.add("deutschland");
+  }
   if (/berlin|berlijn/.test(lower)) {
     out.add("berlin city");
     out.add("berlin skyline");

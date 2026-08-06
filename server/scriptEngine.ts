@@ -612,7 +612,11 @@ Score this script:
       passesThreshold: overall >= scriptQualityThreshold(),
       weaknesses: Array.isArray(parsed.weaknesses) ? parsed.weaknesses : [],
     };
-  } catch {
+  } catch (err) {
+    // Phase 11: every sibling LLM call in this file (writeHook, writeSceneNarration) logs its
+    // catch; this one silently fabricated a passing score with zero signal, so a systemic judge
+    // outage would go unnoticed and the quality gate would silently stop gating in production.
+    console.warn("[ScriptEngine] Script quality scoring failed, defaulting to passing score:", err);
     return {
       storyStructure: 7, retention: 7, emotionalArc: 7,
       visualRichness: 7, historicalAccuracy: 7, sceneFlow: 7,

@@ -46,13 +46,3 @@ export function syncBeatHoldSecToVoiceTimeline(
   }
 }
 
-/** Map clip index → beat hold duration (1:1 sentence montage). */
-export function beatDurationsForClipMontage(
-  beats: BeatHoldInput[],
-  clipBeatIndices: number[]
-): number[] {
-  return clipBeatIndices.map((beatIdx) => {
-    const beat = beats.find((b, i) => i === beatIdx) ?? beats[beatIdx];
-    return beat?.holdSec ?? archiveVisualMinClipSec();
-  });
-}

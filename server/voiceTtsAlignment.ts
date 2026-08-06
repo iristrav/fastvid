@@ -82,10 +82,25 @@ const EXCITING_TONE_KEYWORDS = [
   "astonishing", "remarkable", "groundbreaking", "stunning achievement",
 ];
 
+function escapeRegExpLiteral(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Phase 11: plain substring `includes()` let short keywords like "war" match inside unrelated
+// words — "warm", "award", "software", "warehouse", "reward", "forward" — pushing neutral/
+// positive narration into the "dramatic" tone (stability 0.45, moodier delivery). Word-boundary
+// matching keeps the same keyword lists but only counts them as whole words.
+function countKeywordHits(lower: string, keywords: string[]): number {
+  return keywords.reduce(
+    (n, w) => n + (new RegExp(`\\b${escapeRegExpLiteral(w)}\\b`).test(lower) ? 1 : 0),
+    0
+  );
+}
+
 export function classifyNarrationEmotionalTone(text: string): NarrationEmotionalTone {
   const lower = text.toLowerCase();
-  const dramaticHits = DRAMATIC_TONE_KEYWORDS.reduce((n, w) => n + (lower.includes(w) ? 1 : 0), 0);
-  const excitingHits = EXCITING_TONE_KEYWORDS.reduce((n, w) => n + (lower.includes(w) ? 1 : 0), 0);
+  const dramaticHits = countKeywordHits(lower, DRAMATIC_TONE_KEYWORDS);
+  const excitingHits = countKeywordHits(lower, EXCITING_TONE_KEYWORDS);
   if (dramaticHits === 0 && excitingHits === 0) return "neutral";
   return dramaticHits >= excitingHits ? "dramatic" : "exciting";
 }

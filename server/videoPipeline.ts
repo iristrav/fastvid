@@ -3444,8 +3444,18 @@ function sanitizeVoiceoverText(text: string, maxChars = 800): string {
   const rawText = text
     .replace(/\[visual:[^\]]*\]/gi, "")
     .replace(/[#*_`~>]/g, "")
+    // Phase 11: map common LLM-emitted non-ASCII punctuation to an ASCII equivalent, then
+    // replace any remaining non-ASCII with a space (never deletion), before collapsing
+    // whitespace last. The previous order deleted non-ASCII chars outright, so an unspaced em
+    // dash ("growth—an unprecedented", which LLMs emit routinely) merged into "growthan" once
+    // sent to TTS — audibly garbled narration. Deleting to a space instead of "" ensures a
+    // stripped character never silently joins two words.
+    .replace(/[‒-―]/g, " - ")
+    .replace(/[‘’]/g, "'")
+    .replace(/[“”]/g, '"')
+    .replace(/…/g, "...")
+    .replace(/[^\x00-\x7F]/g, " ")
     .replace(/\s+/g, " ")
-    .replace(/[^\x00-\x7F]/g, "")
     .trim();
   if (rawText.length <= maxChars) return rawText;
   return rawText.slice(0, maxChars).replace(/\s\S*$/, "");
@@ -4058,8 +4068,15 @@ export async function generateVoiceover(
         // Map voiceId to ElevenLabs voice ID, or use a high-quality default
         // Default: "Adam" = pNInz6obpgDQGcFmaJgB (deep documentary voice)
         const elevenVoiceId = voiceId || "pNInz6obpgDQGcFmaJgB";
-        const response = await withTimeout(
-          fetch(`https://api.elevenlabs.io/v1/text-to-speech/${elevenVoiceId}`, {
+        // Phase 11: was withTimeout(fetch(...)) — races a timer but never aborts the request,
+        // so a timed-out call can still complete and get billed by ElevenLabs after this loop
+        // has already moved on to the next attempt (double-billing). fetchWithTimeout uses a
+        // real AbortController, same fix already applied to synthesizeElevenLabsVoice above.
+        const response = await fetchWithTimeout(
+          `https://api.elevenlabs.io/v1/text-to-speech/${elevenVoiceId}`,
+          TTS_TIMEOUT_MS,
+          `ElevenLabs TTS attempt ${attempt}`,
+          {
             method: "POST",
             headers: {
               "xi-api-key": ELEVENLABS_API_KEY,
@@ -4071,9 +4088,7 @@ export async function generateVoiceover(
               model_id: "eleven_multilingual_v2",
               voice_settings: { stability: 0.5, similarity_boost: 0.75, style: 0.0, use_speaker_boost: true },
             }),
-          }),
-          TTS_TIMEOUT_MS,
-          `ElevenLabs TTS attempt ${attempt}`
+          }
         );
 
         if (response.status === 429) {
@@ -11585,9 +11600,16 @@ async function composeBatchedArchiveSceneWithAudio(
   const videoSrc = montageOnlyPath;
   const otherOverlays = docOverlays;
   if (otherOverlays.length > 0) {
+    // Phase 11: this ffmpeg command declares inputs as 0=video, 1=audio, 2+=overlays, so
+    // overlay input indices must start at 2 (baseInputCount=2), matching the audioIdx+1
+    // pattern used elsewhere (e.g. kineticBaseIdx below). This previously passed
+    // baseInputCount=1, generating "[1:v]" for the first overlay — but input 1 is the
+    // audio-only file, which has no video stream, so ffmpeg's filtergraph parse failed and
+    // the whole call fell through to the plain-montage fallback with overlays silently
+    // dropped (year badges/SFX never appear) on the default production compose path.
     const { extraInputs, filterChain, finalLabel } = buildOverlayFilterChain(
       "vmont",
-      1,
+      2,
       [],
       otherOverlays,
       null
@@ -21010,54 +21032,6 @@ async function renderKineticFrames(
   return frames;
 }
 
-// ─── 4a. Stat Callout Box Renderer ──────────────────────────────────────────
-// Renders a yellow corner callout box (bottom-right) with a key statistic in black bold text.
-// Appears via hard cut, stays 2.5s, then disappears via hard cut — reference video style.
-async function renderStatCallout(
-  stat: string,
-  sceneIndex: number,
-  workDir: string
-): Promise<{ path: string; startTime: number; endTime: number } | null> {
-  if (!stat || stat.trim().length === 0) return null;
-
-  const FONT_SIZE = 64;
-  const PAD_X = 36;
-  const PAD_Y = 24;
-  const CORNER_MARGIN = 40;
-
-  const safeStat = sanitizeForDrawtext(stat.trim().toUpperCase(), 30);
-  // Estimate box dimensions: ~0.6 * fontSize per char + padding
-  const estTextW = Math.min(safeStat.length * FONT_SIZE * 0.6, VIDEO_WIDTH / 2);
-  const boxW = Math.round(estTextW + PAD_X * 2);
-  const boxH = FONT_SIZE + PAD_Y * 2;
-  const boxX = VIDEO_WIDTH - boxW - CORNER_MARGIN;
-  const boxY = VIDEO_HEIGHT - boxH - CORNER_MARGIN;
-
-  const pngPath = path.join(workDir, `scene_${sceneIndex}_stat_callout.png`);
-
-  try {
-    // Generate stat callout PNG using FFmpeg lavfi + drawbox + drawtext
-    await withSceneFetchTimeout(
-      () => exec(
-        `${FFMPEG_BIN} -y ` +
-        `-f lavfi -i "color=c=black@0:size=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:rate=1" ` +
-        `-vf "drawbox=x=${boxX}:y=${boxY}:w=${boxW}:h=${boxH}:color=FFD200@0.97:t=fill,` +
-        `drawtext=text='${safeStat}':fontcolor=black:fontsize=${FONT_SIZE}:x=${boxX + PAD_X}:y=${boxY + PAD_Y}" ` +
-        `-frames:v 1 -pix_fmt rgba "${pngPath}"`
-      ),
-      8_000, `Stat callout PNG scene ${sceneIndex}`
-    );
-
-    if (fs.existsSync(pngPath) && fs.statSync(pngPath).size > 100) {
-      console.log(`[Pipeline] Scene ${sceneIndex}: stat callout rendered: "${stat}"`);
-      return { path: pngPath, startTime: 1.0, endTime: 3.5 };
-    }
-  } catch (err) {
-    console.warn(`[Pipeline] Scene ${sceneIndex}: stat callout render failed (non-fatal):`, err);
-  }
-  return null;
-}
-
 // ─── 4b. Canvas Subtitle Overlay ─────────────────────────────────────────────
 // FFmpeg-only fallback: creates a transparent PNG with drawtext (no canvas needed)
 async function renderSubtitleOverlayFFmpeg(
@@ -21270,8 +21244,14 @@ function buildOverlayFilterChain(
     if (timed.overlayX != null && timed.overlayY != null) {
       const ow = ensureEvenDim(timed.overlayW ?? VIDEO_WIDTH);
       const oh = ensureEvenDim(timed.overlayH ?? VIDEO_HEIGHT);
+      // Phase 11: previously only isVideoOverlay clips scaled to their own overlayW/overlayH;
+      // small positioned image overlays with known dimensions (e.g. year badges) fell through
+      // to full-frame scaling, stretching a ~250x108 PNG to 1920x1080 and compositing that
+      // giant image at the badge's small x/y — a visibly broken smeared fragment on screen.
+      // Scale to the overlay's own known size whenever it has one; only fall back to
+      // full-frame scale when no dimensions were provided at all.
       const scale =
-        timed.isVideoOverlay && timed.overlayW && timed.overlayH
+        timed.overlayW && timed.overlayH
           ? `scale=${ow}:${oh}:flags=fast_bilinear,format=yuva420p`
           : `scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:flags=fast_bilinear,format=yuva420p`;
       chain += `;[${inputIdx}:v]${scale}${alphaFade}[${ovlLabel}];` +
@@ -25223,226 +25203,6 @@ async function _runVideoPipelineInner(
     getRenderCtx().watchdog = null;
     set_activeRenderBudget(null);
     set_activeBudgetTracker(null);
-    try {
-      fs.rmSync(workDir, { recursive: true, force: true });
-    } catch { /* ignore */ }
-  }
-}
-
-// ─── Re-render from editor scene manifest ────────────────────────────────────
-/**
- * Re-renders a video using the updated scene manifest from the editor.
- * Downloads clips from their stored URLs, regenerates voiceovers, composes
- * each scene, then assembles the final video and uploads to S3.
- */
-export async function rerenderFromScenes(
-  videoId: number,
-  scenes: EditorScene[],
-  onProgress?: (step: string, pct: number) => void
-): Promise<string> {
-  const workDir = path.join(TMP_DIR, `fastvid_rerender_${videoId}_${Date.now()}`);
-  fs.mkdirSync(workDir, { recursive: true });
-
-  const { getVideoById, readVideoEditorSettings } = await import("./db");
-  const video = await getVideoById(videoId);
-  const editorSettings = video ? readVideoEditorSettings(video) : { enableSubtitles: false, backgroundMusicUrl: null };
-  const enableSubtitles = editorSettings.enableSubtitles;
-  const videoLength = video?.videoLength ?? "15-20";
-
-  let customMusicPath: string | undefined;
-  if (editorSettings.backgroundMusicUrl) {
-    customMusicPath = path.join(workDir, "custom_bgm.mp3");
-    try {
-      const resp = await fetchWithTimeout(editorSettings.backgroundMusicUrl, 60_000, "custom BGM download");
-      if (resp.ok) {
-        const buf = Buffer.from(await resp.arrayBuffer());
-        fs.writeFileSync(customMusicPath, buf);
-      } else {
-        customMusicPath = undefined;
-      }
-    } catch (err) {
-      console.warn("[Rerender] Custom BGM download failed, using generated music:", (err as Error).message);
-      customMusicPath = undefined;
-    }
-  }
-
-  try {
-    onProgress?.("Preparing re-render...", 5);
-
-    // ── Step 1: Download all clips from their URLs ──────────────────────────
-    onProgress?.("Downloading clips...", 10);
-    const sceneClipPaths: string[][] = [];
-
-    for (let i = 0; i < scenes.length; i++) {
-      const scene = scenes[i];
-      const clipPaths: string[] = [];
-
-      for (let j = 0; j < scene.clips.length; j++) {
-        const clip = scene.clips[j];
-        const clipPath = path.join(workDir, `rerender_scene_${i}_clip_${j}.mp4`);
-
-        try {
-          if (clip.archiveAssetId) {
-            const { getMediaArchiveAssetById } = await import("./db");
-            const asset = await getMediaArchiveAssetById(clip.archiveAssetId);
-            if (asset) {
-              const prepared = await prepareCuratedArchiveClip(asset, workDir, i, j, 6);
-              clipPaths.push(prepared);
-              continue;
-            }
-          }
-
-          // If the URL is a local file path (from original pipeline), check if it exists
-          if (!clip.url.startsWith("http") && !clip.url.startsWith("/api/") && fs.existsSync(clip.url)) {
-            clipPaths.push(clip.url);
-            continue;
-          }
-
-          const fetchUrl = clip.url.startsWith("/") && !clip.url.startsWith("/api/")
-            ? `http://127.0.0.1:${process.env.PORT || 3000}${clip.url}`
-            : clip.url;
-
-          const resp = await fetchWithTimeout(fetchUrl, 15_000, `clip ${i}-${j}`);
-          if (resp.ok) {
-            const buf = Buffer.from(await resp.arrayBuffer());
-            fs.writeFileSync(clipPath, buf);
-            if (fs.statSync(clipPath).size > 100) {
-              clipPaths.push(clipPath);
-            }
-          }
-        } catch (err) {
-          console.warn(`[Rerender] Scene ${i} clip ${j} download failed (skipping):`, (err as Error).message);
-        }
-      }
-
-      sceneClipPaths.push(clipPaths);
-      onProgress?.(`Downloading clips... (${i + 1}/${scenes.length})`, 10 + Math.round((i + 1) / scenes.length * 20));
-    }
-
-    // ── Step 2: Full-script voiceover (same as main pipeline) ───────────────
-    onProgress?.("Generating voiceovers...", 30);
-    const audioPaths: string[] = scenes.map((_, i) => path.join(workDir, `rerender_scene_${i}_audio.mp3`));
-    const durations: number[] = [];
-    const voScenes: Scene[] = scenes.map((edScene, i) => ({
-      index: edScene.sceneIndex ?? i,
-      text: edScene.narration,
-      visualCue: edScene.title ?? "scene",
-      pexelsQuery: edScene.title ?? "scene",
-      aiImagePrompt: edScene.title ?? "scene",
-      duration: Math.max(edScene.durationMs / 1000, 5),
-    }));
-    try {
-      const bulkDurations = await withSceneFetchTimeout(
-        () => generateBulkSceneVoiceovers(voScenes, audioPaths, workDir, undefined, (done, total) => {
-          onProgress?.(
-            done === 0 ? "Creating full voiceover (one take)..." : `Generating voiceovers... (${done}/${total})`,
-            30 + Math.round((done / total) * 15)
-          );
-        }),
-        bulkVoiceoverTimeoutMs(scenes.length, videoLength),
-        "Rerender bulk voiceover"
-      );
-      bulkDurations.forEach((d, i) => { durations[i] = d; });
-    } catch (err) {
-      console.warn(`[Rerender] Bulk voiceover failed:`, (err as Error).message);
-      for (let i = 0; i < scenes.length; i++) {
-        const silentDur = Math.round(scenes[i].durationMs / 1000) || 20;
-        const audioPath = audioPaths[i];
-        try {
-          await exec(
-            `${FFMPEG_BIN} -y -f lavfi -i anullsrc=r=44100:cl=stereo -t ${silentDur} -c:a libmp3lame -b:a 64k "${audioPath}"`
-          );
-          durations[i] = silentDur;
-        } catch {
-          durations[i] = silentDur;
-        }
-      }
-    }
-
-    // ── Step 3: Build Scene objects for composeSceneVideo ──────────────────
-    const internalScenes: Scene[] = scenes.map((edScene, i) => ({
-      index: edScene.sceneIndex,
-      text: edScene.narration,
-      visualCue: edScene.title ?? "scene",
-      pexelsQuery: edScene.title ?? "scene",
-      aiImagePrompt: edScene.title ?? "scene",
-      duration: Math.max((durations[i] || 20) + 0.35, 5),
-      chapterTitle: edScene.chapterTitle,
-    }));
-
-    // ── Step 4: Compose all scenes ──────────────────────────────────────────
-    onProgress?.("Composing scenes...", 45);
-    const composeLimit = pLimit(composeParallelismForVideo(videoLength, IS_RAILWAY));
-    let completedCompose = 0;
-    let rerenderTimelineSec = 0;
-    const rerenderSceneStartSecs = internalScenes.map((s) => {
-      const start = rerenderTimelineSec;
-      rerenderTimelineSec += s.duration;
-      return start;
-    });
-
-    const composedScenes = await Promise.all(
-      internalScenes.map((scene, i) => composeLimit(async () => {
-        const clips = sceneClipPaths[i].filter((c) => c && !isPipelineFallbackClip(c));
-        if (clips.length === 0) {
-          console.warn(`[Pipeline] Re-render scene ${i}: no clips — guaranteed fill`);
-          const hold = Math.max(3, internalScenes[i]!.duration / 3);
-          for (let si = 0; si < 3; si++) {
-            clips.push(await generateGuaranteedBeatClip(internalScenes[i]!.index, si, hold, workDir));
-          }
-        }
-
-        const result = await composeSceneVideo(
-          scene,
-          clips,
-          audioPaths[i],
-          scene.duration,
-          workDir,
-          internalScenes.length,
-          enableSubtitles,
-          undefined,
-          undefined,
-          undefined,
-          { sceneStartSec: rerenderSceneStartSecs[i] }
-        );
-        completedCompose++;
-        onProgress?.(
-          `Composing scenes... (${completedCompose}/${internalScenes.length})`,
-          45 + Math.round((completedCompose / internalScenes.length) * 30)
-        );
-        return result;
-      }))
-    );
-
-    // ── Step 5: Chapter cards DISABLED — user requested no on-screen text ───────────────────────────────────────────────────────────────────────────
-    const orderedClips: string[] = [...composedScenes];
-
-    // ── Step 6: Concatenate + music ───────────────────────────────────────────────────────────────────────────
-    onProgress?.("Assembling final video...", 78);
-    const videoTitle = (internalScenes[0] as any)?.title ?? `Video ${videoId}`;
-    const totalDuration = internalScenes.reduce((sum, s) => sum + s.duration, 0); // No chapter cards
-    const finalVideoPath = await concatenateScenesWithMusic(
-      orderedClips,
-      workDir,
-      videoId,
-      totalDuration,
-      videoTitle,
-      customMusicPath
-    );
-
-    // ── Step 7: Upload to S3 ────────────────────────────────────────────────
-    onProgress?.("Uploading re-rendered video...", 93);
-    const videoBuffer = await fs.promises.readFile(finalVideoPath);
-    const { url } = await withTimeout(
-      storagePut(`videos/${videoId}/edited_final.mp4`, videoBuffer, "video/mp4"),
-      600_000,
-      "S3 upload (re-render)"
-    );
-
-    onProgress?.("Re-render complete!", 100);
-    console.log(`[Rerender] Video ${videoId} re-render COMPLETE: ${url}`);
-    return url;
-  } finally {
     try {
       fs.rmSync(workDir, { recursive: true, force: true });
     } catch { /* ignore */ }

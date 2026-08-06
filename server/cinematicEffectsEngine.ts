@@ -1557,6 +1557,8 @@ export async function renderYearBadgeOverlay(
         fullFrame: false,
         overlayX: boxX,
         overlayY: boxY,
+        overlayW: boxW,
+        overlayH: boxH,
       };
     }
   } catch {
@@ -1631,50 +1633,6 @@ export async function renderParticleDustOverlay(
         startTime: 0,
         endTime: sceneDuration,
         isParticle: true,
-        fullFrame: true,
-      };
-    }
-  } catch {
-    /* non-fatal */
-  }
-  return null;
-}
-
-export async function renderStatCalloutOverlay(
-  stat: string,
-  sceneIndex: number,
-  workDir: string,
-  ffmpegBin: string,
-  execWithTimeout: (cmd: string, ms: number, label: string) => Promise<unknown>
-): Promise<TimedOverlay | null> {
-  const safeStat = sanitizeForDrawtext(stat.trim().toUpperCase(), 30);
-  const FONT_SIZE = 56;
-  const PAD_X = 32;
-  const PAD_Y = 20;
-  const MARGIN = 48;
-  const estW = Math.min(safeStat.length * FONT_SIZE * 0.58, DOC_STYLE_VIDEO_WIDTH / 2);
-  const boxW = Math.round(estW + PAD_X * 2);
-  const boxH = FONT_SIZE + PAD_Y * 2;
-  const boxX = DOC_STYLE_VIDEO_WIDTH - boxW - MARGIN;
-  const boxY = DOC_STYLE_VIDEO_HEIGHT - boxH - MARGIN;
-
-  const pngPath = path.join(workDir, `scene_${sceneIndex}_cine_stat.png`);
-  try {
-    await execWithTimeout(
-      `${ffmpegBin} -y ` +
-        `-f lavfi -i "color=c=black@0:size=${DOC_STYLE_VIDEO_WIDTH}x${DOC_STYLE_VIDEO_HEIGHT}:rate=1" ` +
-        `-vf "drawbox=x=${boxX}:y=${boxY}:w=${boxW}:h=${boxH}:color=FFD200@0.96:t=fill,` +
-        `drawtext=text='${safeStat}':fontcolor=black:fontsize=${FONT_SIZE}:x=${boxX + PAD_X}:y=${boxY + PAD_Y}" ` +
-        `-frames:v 1 -pix_fmt rgba "${pngPath}"`,
-      8_000,
-      `Cinematic stat scene ${sceneIndex}`
-    );
-    if (fs.existsSync(pngPath) && fs.statSync(pngPath).size > 100) {
-      return {
-        path: pngPath,
-        startTime: 1.0,
-        endTime: 3.8,
-        isStatCallout: true,
         fullFrame: true,
       };
     }

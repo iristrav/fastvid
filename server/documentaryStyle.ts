@@ -308,16 +308,6 @@ export function buildFitGrayVideoMontageChain(): string {
   );
 }
 
-/** @deprecated Use buildFitGrayVideoFilterComplex — gblur is too slow on Railway. */
-export function buildBlurFillVideoFilterComplex(): string {
-  return buildFitGrayVideoFilterComplex();
-}
-
-/** @deprecated Use buildFitGrayVideoMontageChain. */
-export function buildBlurFillVideoMontageChain(): string {
-  return buildFitGrayVideoMontageChain();
-}
-
 /** Polaroid white frame on light gray canvas (no rotate — fragile on minimal FFmpeg builds). */
 export function buildPolaroidStillVF(duration: number): string {
   const w = DOC_STYLE_VIDEO_WIDTH;
@@ -540,20 +530,3 @@ export function buildWikimediaDocumentaryVF(
   );
 }
 
-/** Apply vintage grade + optional grain to an existing clip (fair-use transform path). */
-export async function applyDocumentaryClipGrade(
-  inputPath: string,
-  outputPath: string,
-  ffmpegBin: string,
-  execWithTimeout: (cmd: string, ms: number, label: string) => Promise<unknown>,
-  timeoutMs = 120_000
-): Promise<string> {
-  const grade = buildPostGradeVF();
-  await execWithTimeout(
-    `${ffmpegBin} -y -i "${inputPath}" -vf "${grade}" ` +
-      `-c:v libx264 ${ffmpegThreadFlag()} -preset veryfast -crf 20 -an -pix_fmt yuv420p "${outputPath}"`,
-    timeoutMs,
-    `Documentary grade ${path.basename(inputPath)}`
-  );
-  return outputPath;
-}
