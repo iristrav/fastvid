@@ -22871,21 +22871,17 @@ export async function concatenateScenesWithMusic(
         console.log("[CinematicAudio] 3-layer mix complete (voice + music + ambient)");
       } catch (err) {
         console.warn("[CinematicAudio] 3-layer mix failed, falling back to 2-layer:", (err as Error).message?.slice(0, 100));
-        hasAmbient && null; // swallow — fall through to standard mix below
-        goto_standard_mix: {
-          try {
-            await withSceneFetchTimeout(
-              () => exec(
-                `${FFMPEG_BIN} -y -i "${concatPath}" -i "${musicPath}" ` +
-                `-filter_complex "[0:a]volume=1.0,asplit=2[voice][voicedet];[1:a]volume=0.22,aloop=loop=-1:size=2e+09[musicloop];[musicloop][voicedet]sidechaincompress=threshold=0.02:ratio=8:attack=5:release=200:makeup=1[music_ducked];[voice][music_ducked]amix=inputs=2:duration=first:dropout_transition=3[aout]" ` +
-                `-map "0:v" -map "[aout]" -c:v copy -c:a aac -b:a 320k -movflags +faststart "${outputPath}"`
-              ),
-              musicMixTimeoutMs,
-              "Background music mixing (fallback)"
-            );
-          } catch { /* handled below */ }
-          break goto_standard_mix;
-        }
+        try {
+          await withSceneFetchTimeout(
+            () => exec(
+              `${FFMPEG_BIN} -y -i "${concatPath}" -i "${musicPath}" ` +
+              `-filter_complex "[0:a]volume=1.0,asplit=2[voice][voicedet];[1:a]volume=0.22,aloop=loop=-1:size=2e+09[musicloop];[musicloop][voicedet]sidechaincompress=threshold=0.02:ratio=8:attack=5:release=200:makeup=1[music_ducked];[voice][music_ducked]amix=inputs=2:duration=first:dropout_transition=3[aout]" ` +
+              `-map "0:v" -map "[aout]" -c:v copy -c:a aac -b:a 320k -movflags +faststart "${outputPath}"`
+            ),
+            musicMixTimeoutMs,
+            "Background music mixing (fallback)"
+          );
+        } catch { /* handled below */ }
       }
     } else {
       // Standard 2-layer mix: voice + music with sidechain ducking
