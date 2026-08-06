@@ -128,6 +128,27 @@ describe("Candidate Ranking — Phase 3 new dimensions", () => {
     expect(freshResult.rankingScore).toBeGreaterThan(reusedResult.rankingScore);
   });
 
+  it("Phase 9: the strengthened diversity weight can outweigh a modest source-priority edge for a reused clip", () => {
+    // Same topical relevance on both candidates — the only differences are source priority
+    // (own_archive > pexels) and diversity (candidate B is a fresh path, A is already used).
+    const reusedButPreferredSource = makeCandidate({
+      candidateId: "reused-preferred",
+      source: "own_archive",
+      localPath: "/tmp/already_used.mp4",
+    });
+    const freshButLowerPrioritySource = makeCandidate({
+      candidateId: "fresh-lower-priority",
+      source: "pexels",
+      localPath: "/tmp/fresh.mp4",
+    });
+    const [r1, r2] = rankCandidates(intent, [reusedButPreferredSource, freshButLowerPrioritySource], DEFAULT_RANKING_CONFIG, {
+      usedPaths: new Set(["/tmp/already_used.mp4"]),
+    });
+    const reusedResult = [r1, r2].find((r) => r.candidate.candidateId === "reused-preferred")!;
+    const freshResult = [r1, r2].find((r) => r.candidate.candidateId === "fresh-lower-priority")!;
+    expect(freshResult.rankingScore).toBeGreaterThan(reusedResult.rankingScore);
+  });
+
   it("penalizes over-represented categories gradually rather than excluding them entirely", () => {
     const candidate = makeCandidate({ tags: ["battle"] });
     const [never] = rankCandidates(intent, [candidate], DEFAULT_RANKING_CONFIG, {

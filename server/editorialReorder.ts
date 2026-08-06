@@ -101,11 +101,12 @@ function inferShotType(meta: ClipMeta): string {
 
 // ─── Prompt builder ───────────────────────────────────────────────────────────
 
-function buildPrompt(
+export function buildPrompt(
   clips: ClipMeta[],
   sceneText: string,
   videoTitle: string,
-  sceneDuration: number
+  sceneDuration: number,
+  isOpeningScene: boolean
 ): string {
   const clipLines = clips
     .map(
@@ -118,6 +119,15 @@ function buildPrompt(
     )
     .join("\n");
 
+  // Phase 9: real documentary hooks (Vox, Search Party, Johnny Harris) very often cold-open on
+  // the single most striking or emotionally charged image rather than a slow establishing pan
+  // — the wide shot lands a beat or two later, once the hook has earned the viewer's attention.
+  // Rule 1 stays the default for every other scene; only the video's opening scene gets this
+  // override, and only when a stronger option actually exists.
+  const openingRule = isOpeningScene
+    ? "1. This is the VIDEO'S OPENING SCENE — lead with the single most visually striking or emotionally charged clip available, even if it's a close-up or action shot, NOT necessarily a wide/establishing shot. Earn attention first; a wide shot can follow a beat later."
+    : "1. Open with a wide/establishing shot if one exists";
+
   return `You are the final editor of a professional documentary. Review this clip sequence and produce the optimal montage order.
 
 Video: "${videoTitle}"
@@ -127,7 +137,7 @@ Clips available:
 ${clipLines}
 
 Editorial rules:
-1. Open with a wide/establishing shot if one exists
+${openingRule}
 2. Prefer wide → medium → close-up progression within a sequence
 3. Never place two CARD clips adjacent to each other
 4. Avoid 3+ consecutive clips of the same shot type
@@ -210,7 +220,7 @@ export async function editorialReorderScene(
         },
         {
           role: "user",
-          content: buildPrompt(clipMeta, sceneText, videoTitle, sceneDuration),
+          content: buildPrompt(clipMeta, sceneText, videoTitle, sceneDuration, sceneIndex === 0),
         },
       ],
       preferProvider: "groq",

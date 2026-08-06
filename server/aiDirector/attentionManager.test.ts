@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildAttentionRecommendations, buildHookGuidance, buildRetentionRisk, HOOK_WINDOW_SEC } from "./attentionManager";
+import { buildAttentionRecommendations, buildHookGuidance, buildRetentionRisk, COLD_OPEN_WINDOW_SEC, HOOK_WINDOW_SEC } from "./attentionManager";
 import type { DirectorContext, DirectorDecision } from "./types";
 import type { VisualIntent } from "../visualMatchingV2/types";
 import type { Scene } from "../pipeline/types";
@@ -136,6 +136,35 @@ describe("buildHookGuidance", () => {
     expect(HOOK_WINDOW_SEC).toBe(30);
     const atBoundary = buildHookGuidance(makeContext({ sceneStartSec: 30 }));
     expect(atBoundary.isHookSegment).toBe(false);
+  });
+
+  describe("cold-open sub-window (Phase 9)", () => {
+    it("flags a scene inside the cold-open window with more urgent, distinct guidance", () => {
+      expect(COLD_OPEN_WINDOW_SEC).toBe(8);
+      const guidance = buildHookGuidance(makeContext({ sceneStartSec: 2 }));
+      expect(guidance.isHookSegment).toBe(true);
+      expect(guidance.isColdOpen).toBe(true);
+      expect(guidance.recommendations.some((r) => r.toLowerCase().includes("cold open"))).toBe(true);
+      expect(guidance.reason).toContain("cold open");
+    });
+
+    it("does not flag isColdOpen for a scene inside the broader hook window but past the cold-open window", () => {
+      const guidance = buildHookGuidance(makeContext({ sceneStartSec: 15 }));
+      expect(guidance.isHookSegment).toBe(true);
+      expect(guidance.isColdOpen).toBe(false);
+      expect(guidance.recommendations.some((r) => r.toLowerCase().includes("cold open"))).toBe(false);
+    });
+
+    it("isColdOpen is false for a scene entirely outside the hook window", () => {
+      const guidance = buildHookGuidance(makeContext({ sceneStartSec: 45 }));
+      expect(guidance.isColdOpen).toBe(false);
+    });
+
+    it("cold-open guidance has at least as many recommendations as the broader hook window's", () => {
+      const coldOpen = buildHookGuidance(makeContext({ sceneStartSec: 2 }));
+      const laterHook = buildHookGuidance(makeContext({ sceneStartSec: 15 }));
+      expect(coldOpen.recommendations.length).toBeGreaterThanOrEqual(laterHook.recommendations.length);
+    });
   });
 });
 

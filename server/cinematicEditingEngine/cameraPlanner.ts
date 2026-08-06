@@ -52,7 +52,7 @@ function moved(movement: CameraMovementType, intensity: number, reason: string):
  * movement, exciting pacing favors more overt movement, educational pacing favors stillness
  * on shots where the viewer needs to read/focus.
  */
-export function planCameraMovement(
+function decideCameraMovement(
   shot: ShotInstruction,
   candidate: CandidateAsset,
   pacing: PacingProfile
@@ -130,4 +130,56 @@ export function planCameraMovement(
   }
 
   return hold(`${shot.shotType} video shot with no signal favoring movement — held static is the safe documentary default.`);
+}
+
+/** Phase 9: each of `decideCameraMovement`'s branches picks the single best movement for its
+ *  own shot type/pacing signal in isolation — it has no memory of what the previous beat did.
+ *  Repeating the identical movement (e.g. zoom_in twice in a row) reads as visually monotonous
+ *  even when each choice was individually correct — a professional editor varies the camera
+ *  treatment shot-to-shot. This table maps each movement to a documented, comparable
+ *  alternative (same rough intent — e.g. `zoom_in`'s alternate is `slow_push`, another subtle
+ *  push-in, not an unrelated movement) so swapping never contradicts the reason the original
+ *  choice was made. `camera_hold` deliberately has no entry — repeated stillness two beats in a
+ *  row is not the same problem as repeated motion. */
+const VARIETY_ALTERNATE: Partial<Record<CameraMovementType, CameraMovementType>> = {
+  zoom_in: "slow_push",
+  zoom_out: "slow_pull",
+  slow_push: "zoom_in",
+  slow_pull: "zoom_out",
+  pan_left: "pan_right",
+  pan_right: "pan_left",
+  tilt_up: "camera_drift",
+  tilt_down: "camera_drift",
+  ken_burns: "camera_drift",
+  camera_drift: "ken_burns",
+  virtual_dolly: "slow_push",
+  parallax: "zoom_in",
+};
+
+/**
+ * Chooses this beat's camera movement, then — when it would exactly repeat the immediately
+ * preceding beat's movement within the same scene — swaps to a documented alternative for
+ * shot-to-shot variety. `previousMovement` is optional and defaults to no variety check, so
+ * every existing call site (and the underlying decision logic) is unchanged when omitted.
+ */
+export function planCameraMovement(
+  shot: ShotInstruction,
+  candidate: CandidateAsset,
+  pacing: PacingProfile,
+  previousMovement?: CameraMovementType | null
+): CameraInstruction {
+  const decision = decideCameraMovement(shot, candidate, pacing);
+
+  if (previousMovement && decision.movement !== "camera_hold" && decision.movement === previousMovement) {
+    const alternate = VARIETY_ALTERNATE[decision.movement];
+    if (alternate) {
+      return {
+        movement: alternate,
+        intensity: decision.intensity,
+        reason: `${decision.reason} Varied from the previous beat's identical ${decision.movement} for shot-to-shot rhythm.`,
+      };
+    }
+  }
+
+  return decision;
 }

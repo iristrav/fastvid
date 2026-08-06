@@ -110,6 +110,29 @@ describe("Caption Planner (Phase 4)", () => {
     expect(animated[2]!.endSec).toBe(4);
   });
 
+  it("Phase 9: floors each highlight word's display time so a short beat with many words never flashes illegibly", () => {
+    // 1.2s beat / 4 words = 0.3s/word unfloored — below the 0.35s legibility floor.
+    const captions = planCaptions(makeIntent(), 10, 1.2, {
+      scene: makeScene({ highlightWords: ["never", "before", "seen", "footage"] }),
+    });
+    const animated = captions.filter((c) => c.captionType === "animated_text");
+    expect(animated).toHaveLength(4);
+    for (const c of animated) {
+      expect(c.endSec - c.startSec).toBeCloseTo(0.35, 5);
+    }
+    // The floor pushes total display past the beat's own 1.2s span (10 + 4*0.35 = 11.4)
+    // rather than showing unreadable text.
+    expect(animated[3]!.endSec).toBeCloseTo(11.4, 5);
+  });
+
+  it("Phase 9: does not apply the floor when the beat already gives each word enough time", () => {
+    const captions = planCaptions(makeIntent(), 0, 6, { scene: makeScene({ highlightWords: ["one", "two"] }) });
+    const animated = captions.filter((c) => c.captionType === "animated_text");
+    // 6s / 2 words = 3s/word, well above the floor — unaffected.
+    expect(animated[0]!.endSec - animated[0]!.startSec).toBeCloseTo(3, 5);
+    expect(animated[1]!.endSec).toBe(6);
+  });
+
   it("does not emit a subtitle by default, but does when explicitly requested", () => {
     const withoutFlag = planCaptions(makeIntent(), 0, 4);
     expect(withoutFlag.some((c) => c.captionType === "subtitle")).toBe(false);

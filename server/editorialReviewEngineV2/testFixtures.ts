@@ -74,7 +74,7 @@ export function makeDirectorDecision(overrides: Partial<DirectorDecision> = {}):
     textOverlaySuggestion: null,
     soundCueSuggestion: null,
     attentionRecommendations: [],
-    hookGuidance: { isHookSegment: false, recommendations: [], reason: "test" },
+    hookGuidance: { isHookSegment: false, isColdOpen: false, recommendations: [], reason: "test" },
     retentionRisk: { isAtRisk: false, reason: "test", recommendations: [] },
     reason: "test",
     ...overrides,
