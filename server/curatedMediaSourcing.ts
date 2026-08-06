@@ -59,6 +59,7 @@ import {
   buildFitGrayVideoVF,
   buildFitGrayGradedVideoVF,
   buildMontageBranchNormVF,
+  classifyDocGradeSourceKind,
   buildMatFramedStillVF,
   buildStillEncodeArgs,
   archiveStillKenBurnsVariant,
@@ -1582,7 +1583,9 @@ async function trimVideoClip(
     }
   }
 
-  const frameVf = fastTrim ? "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2" : buildFitGrayGradedVideoVF();
+  const frameVf = fastTrim
+    ? "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2"
+    : buildFitGrayGradedVideoVF(classifyDocGradeSourceKind(inPath));
   const preset = fastTrim || process.env.RAILWAY_ENVIRONMENT ? "ultrafast" : "veryfast";
   const crf = fastTrim ? 20 : 18;
 

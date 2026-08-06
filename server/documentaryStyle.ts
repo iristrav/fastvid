@@ -28,52 +28,98 @@ export function usePolaroidLayout(sceneIndex: number, beatIndex = 0): boolean {
   return (sceneIndex * 3 + beatIndex) % 4 === 0;
 }
 
-export function buildDocumentaryColorGradeVF(): string {
+/** Phase 10: clip source, so grading can differ instead of applying one fixed look to every
+ *  clip regardless of where it came from. Callers classify with their own source-detection
+ *  logic (e.g. videoPipeline.ts's isAIGeneratedClip/isStockVideoClip — not imported here to
+ *  avoid a circular dependency, since videoPipeline.ts imports this module) and pass the
+ *  result in; omitting it keeps the original uniform grade (backwards compatible). */
+export type DocGradeSourceKind = "archive" | "ai_generated" | "stock" | "unknown";
+
+export function buildDocumentaryColorGradeVF(sourceKind?: DocGradeSourceKind): string {
+  // AI-generated clips tend to read too clean/plasticky next to real archival footage —
+  // pull saturation and contrast down harder to fight that. Stock footage reads too
+  // glossy/modern — a moderate pull. Real archive footage already looks authentic, so it
+  // keeps the original (lightest) grade.
+  const { saturation, contrast } =
+    sourceKind === "ai_generated"
+      ? { saturation: 0.78, contrast: 1.08 }
+      : sourceKind === "stock"
+        ? { saturation: 0.82, contrast: 1.15 }
+        : { saturation: 0.88, contrast: 1.12 };
   return (
-    "eq=contrast=1.12:saturation=0.88:brightness=-0.03:gamma=1.02," +
+    `eq=contrast=${contrast}:saturation=${saturation}:brightness=-0.03:gamma=1.02,` +
     "colorbalance=rs=-0.02:gs=0:bs=0.04:rm=-0.01:gm=0:bm=0.02:rh=-0.01:gh=0:bh=0.02"
   );
 }
 
-export function buildDocumentaryVignetteVF(): string {
-  return "vignette=angle=0.62:mode=forward";
+export function buildDocumentaryVignetteVF(sourceKind?: DocGradeSourceKind): string {
+  // A slightly stronger vignette on AI/stock sources helps mask clean digital edges and
+  // pulls the eye toward center, blending them into the surrounding archival material.
+  const angle = sourceKind === "ai_generated" || sourceKind === "stock" ? 0.55 : 0.62;
+  return `vignette=angle=${angle}:mode=forward`;
 }
 
-export function buildFilmGrainVF(): string {
+export function buildFilmGrainVF(sourceKind?: DocGradeSourceKind): string {
   if (!filmGrainEnabled()) return "";
-  return ",noise=alls=6:allf=t+u";
+  // Real archive footage is frequently already grainy from the source scan — don't stack
+  // synthetic grain on top of that. Clean digital sources (AI-generated, stock) get more
+  // grain specifically to disguise how smooth/artifact-free they are.
+  const amount = sourceKind === "ai_generated" || sourceKind === "stock" ? 9 : 6;
+  return `,noise=alls=${amount}:allf=t+u`;
 }
 
-export function buildPostGradeVF(): string {
-  return `${buildDocumentaryColorGradeVF()},${buildDocumentaryVignetteVF()}${buildFilmGrainVF()}`;
+export function buildPostGradeVF(sourceKind?: DocGradeSourceKind): string {
+  return `${buildDocumentaryColorGradeVF(sourceKind)},${buildDocumentaryVignetteVF(sourceKind)}${buildFilmGrainVF(sourceKind)}`;
 }
 
 /** Color + vignette only — applied on each montage clip so sources match before xfade. */
-export function buildPerClipDocumentaryGradeVF(): string {
-  return `${buildDocumentaryColorGradeVF()},${buildDocumentaryVignetteVF()}`;
+export function buildPerClipDocumentaryGradeVF(sourceKind?: DocGradeSourceKind): string {
+  return `${buildDocumentaryColorGradeVF(sourceKind)},${buildDocumentaryVignetteVF(sourceKind)}`;
 }
 
 /** Fit-gray trim chain with optional per-clip documentary grade. */
-export function buildFitGrayGradedVideoVF(): string {
+export function buildFitGrayGradedVideoVF(sourceKind?: DocGradeSourceKind): string {
   const base = buildFitGrayVideoVF();
   if (!documentaryStyleEnabled()) return base;
-  return `${base},${buildPerClipDocumentaryGradeVF()}`;
+  return `${base},${buildPerClipDocumentaryGradeVF(sourceKind)}`;
 }
 
 /** Montage branch: scale/pad/fps + per-clip grade when documentary style is on. */
-export function buildMontageBranchNormVF(): string {
+export function buildMontageBranchNormVF(sourceKind?: DocGradeSourceKind): string {
   const base = `${buildFitGrayVideoMontageChain()},fps=25,format=yuv420p,setsar=1`;
   if (!documentaryStyleEnabled()) return base;
   // format=yuv420p at the end ensures grade filters (colorbalance, vignette) don't
   // leave an incompatible pixel format that causes libx264 to fail on init.
-  return `${base},${buildPerClipDocumentaryGradeVF()},format=yuv420p`;
+  return `${base},${buildPerClipDocumentaryGradeVF(sourceKind)},format=yuv420p`;
 }
 
 /** Final scene pass — grain only when doc style is on, otherwise pass through. */
-export function buildFinalSceneGradeVF(): string {
+export function buildFinalSceneGradeVF(sourceKind?: DocGradeSourceKind): string {
   if (!documentaryStyleEnabled()) return "copy";
-  const grain = buildFilmGrainVF();
+  const grain = buildFilmGrainVF(sourceKind);
   return grain ? grain.replace(/^,/, "") : "copy";
+}
+
+/** AI-generated clip path (used only as last-resort after stock search). Moved here from
+ *  videoPipeline.ts (Phase 10) so both videoPipeline.ts and curatedMediaSourcing.ts can reuse
+ *  the same classifier for source-aware grading without a circular import — videoPipeline.ts
+ *  imports both of those, so this shared-ancestor module is the only non-circular home. */
+export function isAIGeneratedClip(filePath: string): boolean {
+  const base = path.basename(filePath).toLowerCase();
+  return /_ai_fallback\.mp4$|_stability_|_leonardo_|_grok_|_ai\.mp4|_runway_|_kling_|_luma_|_pika_|_veo_|_forge_|scene_\d+_b\d+_ai/i.test(base);
+}
+
+export function isStockVideoClip(filePath: string): boolean {
+  return /_pexels_|_pex_|_pixabay_|_pix_|_broll_|_ytcc_|_archive_|_wikivid_|_nasa_|_esa_|_b\d+_(pex|pix)/i.test(
+    path.basename(filePath)
+  );
+}
+
+/** Classify a clip's origin from its temp filename for source-aware grading. */
+export function classifyDocGradeSourceKind(filePath: string): DocGradeSourceKind {
+  if (isAIGeneratedClip(filePath)) return "ai_generated";
+  if (isStockVideoClip(filePath)) return "stock";
+  return "archive";
 }
 
 export function stillOutputFrameCount(duration: number, fps = 25): number {
