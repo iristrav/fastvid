@@ -17,6 +17,7 @@ import {
   isWwiiWarArchiveAsset,
   refineVisualSearchTagsForTopic,
   expandBeatTagsWithTranslations,
+  expandBeatTagsWithSynonyms,
   isGeoWelcomeBeat,
   buildGeoWelcomeVisualQueries,
   isCyclingBeat,
@@ -88,6 +89,7 @@ import {
   semanticRerankClipSkipMin,
   metadataVisualBlocksEnabled,
   ffmpegThreadFlag,
+  literalVisualGateEnabled,
 } from "./sourcingPolicy";
 import {
   assetHasNlMarkers,
@@ -179,6 +181,17 @@ export type BeatMatchTags = {
   topicAnchors: string[];
   allTags: string[];
   videoVisualTopic: VideoVisualTopic;
+  /** True when this beat has a visual description or search query to search on. Note:
+   *  hydrateBeatScriptVisuals (scriptVisualKeywords.ts) always synthesizes a fallback search
+   *  query from the beat text when the caller doesn't set one explicitly (down to a
+   *  last-resort generic default), so in practice this is true for nearly every beat — it's
+   *  a defensive gate for the rare case a beat truly has nothing to search on, not a strong
+   *  abstract-vs-literal classifier. Phase 10: feeds assetPassesBeatMinimum's literalVisualTags
+   *  gate, which was previously always called with an empty array (dead code). */
+  hasLiteralVisual: boolean;
+  /** Tags extracted from that literal visual description/search query specifically (a subset
+   *  of allTags's sources) — only meaningful when hasLiteralVisual is true. */
+  literalVisualTags: string[];
 };
 
 export type CuratedSceneContext = {
@@ -357,11 +370,15 @@ export function buildBeatMatchTags(
     (scopedTopicAnchors.length > 0 ? scopedTopicAnchors : topicAnchors).slice(0, 2);
   // allTags: beatTags (3) + max 2 topic anchors — keep it tight
   const allTags = normalizeMediaTags([...beatTags, ...effectiveTopicAnchors]).slice(0, 5);
-  const refinedBeat = expandBeatTagsWithTranslations(
-    refineVisualSearchTagsForTopic(mergedBeat, videoVisualTopic, beatText)
+  const refinedBeat = expandBeatTagsWithSynonyms(
+    expandBeatTagsWithTranslations(
+      refineVisualSearchTagsForTopic(mergedBeat, videoVisualTopic, beatText)
+    )
   );
-  const refinedAll = expandBeatTagsWithTranslations(
-    refineVisualSearchTagsForTopic(allTags, videoVisualTopic, beatText)
+  const refinedAll = expandBeatTagsWithSynonyms(
+    expandBeatTagsWithTranslations(
+      refineVisualSearchTagsForTopic(allTags, videoVisualTopic, beatText)
+    )
   );
   return {
     beatTags: refinedBeat,
@@ -369,6 +386,8 @@ export function buildBeatMatchTags(
     topicAnchors: effectiveTopicAnchors,
     allTags: refinedAll,
     videoVisualTopic,
+    hasLiteralVisual,
+    literalVisualTags: hasLiteralVisual ? normalizeMediaTags(visualTags).slice(0, 5) : [],
   };
 }
 
@@ -1946,7 +1965,9 @@ export async function searchCuratedCandidatesForBeat(
     ...anchoredBeat,
     searchQuery: shotQueries[0] || anchoredBeat.searchQuery,
   };
-  const { beatTags, mainSubject, topicAnchors, allTags, videoVisualTopic } = buildBeatMatchTags(beatForMatch, scene, videoTitle);
+  const { beatTags, mainSubject, topicAnchors, allTags, videoVisualTopic, hasLiteralVisual, literalVisualTags } =
+    buildBeatMatchTags(beatForMatch, scene, videoTitle);
+  const literalGateTags = literalVisualGateEnabled() && hasLiteralVisual ? literalVisualTags : [];
 
   console.log(
     `[ArchiveSearch] zin ${beat.index} "${beat.text.slice(0, 60)}"` +
@@ -2137,7 +2158,7 @@ export async function searchCuratedCandidatesForBeat(
   const topScore = ranked[0]?.score ?? 0;
   const segmentLock = options?.segmentLock ?? null;
   let filtered = ranked.filter((p) =>
-    assetPassesBeatMinimum(p.asset, beat.text, p.score, topScore, p.semantic, videoVisualTopic, segmentLock, [], videoTitle)
+    assetPassesBeatMinimum(p.asset, beat.text, p.score, topScore, p.semantic, videoVisualTopic, segmentLock, literalGateTags, videoTitle)
   );
   if (options?.videosOnly) {
     filtered = filtered.filter((p) => p.asset.mediaType === "video");
@@ -2149,7 +2170,7 @@ export async function searchCuratedCandidatesForBeat(
     const medium = ranked.filter(
       (p) =>
         p.score >= Math.max(40, Math.round(topScore * 0.5)) &&
-        assetPassesBeatMinimum(p.asset, beat.text, p.score, topScore, p.semantic, videoVisualTopic, segmentLock, [], videoTitle)
+        assetPassesBeatMinimum(p.asset, beat.text, p.score, topScore, p.semantic, videoVisualTopic, segmentLock, literalGateTags, videoTitle)
     );
     if (medium.length > 0) return medium;
   }
@@ -2160,7 +2181,7 @@ export async function searchCuratedCandidatesForBeat(
         p.score >= Math.max(18, Math.round(topScore * 0.28)) &&
         countVisualTagHits(p.asset, matchTags.length > 0 ? matchTags : beatTags) > 0 &&
         !isGenericPeopleAsset(p.asset) &&
-        assetPassesBeatMinimum(p.asset, beat.text, p.score, topScore, p.semantic, videoVisualTopic, segmentLock, [], videoTitle)
+        assetPassesBeatMinimum(p.asset, beat.text, p.score, topScore, p.semantic, videoVisualTopic, segmentLock, literalGateTags, videoTitle)
     );
     if (relaxed.length > 0) return relaxed;
   }
@@ -2318,7 +2339,8 @@ export async function fetchCuratedArchiveBeatClip(
   const relaxed = options?.relaxed === true;
   const varietySeed = options?.varietySeed ?? 0;
   const crossVideoExcludeIds = options?.crossVideoExcludeIds ?? new Set<number>();
-  const { beatTags, videoVisualTopic } = buildBeatMatchTags(beat, scene, videoTitle);
+  const { beatTags, videoVisualTopic, hasLiteralVisual, literalVisualTags } = buildBeatMatchTags(beat, scene, videoTitle);
+  const literalGateTags = literalVisualGateEnabled() && hasLiteralVisual ? literalVisualTags : [];
   const candidates = await searchCuratedCandidatesForBeat(
     beat,
     scene,
@@ -2370,7 +2392,7 @@ export async function fetchCuratedArchiveBeatClip(
         undefined,
         videoVisualTopic,
         options?.segmentLock ?? null,
-        [],
+        literalGateTags,
         videoTitle
       )
     ) {

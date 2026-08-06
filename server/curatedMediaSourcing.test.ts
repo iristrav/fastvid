@@ -57,6 +57,27 @@ describe("curatedMediaSourcing", () => {
     expect(allTags).toEqual(expect.arrayContaining(["titanic"]));
   });
 
+  it("buildBeatMatchTags (Phase 10) reports hasLiteralVisual + literalVisualTags when a searchQuery/visualDescription exists", () => {
+    // hydrateBeatScriptVisuals (scriptVisualKeywords.ts) always synthesizes a fallback
+    // searchQuery from beat text when one isn't already set (down to a last-resort
+    // "documentary broll scene" default), so hasLiteralVisual is true for effectively every
+    // realistic beat — this test locks in that an explicit director-authored cue produces
+    // non-empty literalVisualTags for the assetPassesBeatMinimum gate to check against.
+    const withCue = buildBeatMatchTags(
+      {
+        text: "The Titanic struck an iceberg and began to sink.",
+        index: 1,
+        searchQuery: "titanic iceberg",
+        powerWord: "titanic iceberg",
+        keywords: [],
+      },
+      { text: "Maritime disaster documentary" },
+      "Titanic Documentary"
+    );
+    expect(withCue.hasLiteralVisual).toBe(true);
+    expect(withCue.literalVisualTags.length).toBeGreaterThan(0);
+  });
+
   it("buildBeatMatchTags anchors bunker sentence to scene search tags", () => {
     const { beatTags, allTags } = buildBeatMatchTags(
       {

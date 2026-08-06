@@ -34,6 +34,7 @@ import {
   isWrongGeoForBeat,
   isWwiiWarArchiveAsset,
   termStartInBeat,
+  expandBeatTagsWithSynonyms,
 } from "./visualBeatTags";
 
 describe("visualBeatTags", () => {
@@ -272,5 +273,29 @@ describe("visualBeatTags", () => {
     const protestBeat = "Thousands joined the protest in the capital.";
     expect(isProtestBeat(protestBeat)).toBe(true);
     expect(isOffTopicProtestForBeat(protestBeat, protestHay, "geography_urban")).toBe(false);
+  });
+
+  describe("expandBeatTagsWithSynonyms (Phase 10)", () => {
+    it("adds related English terms for common documentary topics outside the WWII/NL tables", () => {
+      const expanded = expandBeatTagsWithSynonyms(["technology"]);
+      expect(expanded).toContain("technology");
+      expect(expanded).toContain("innovation");
+      expect(expanded).toContain("digital");
+    });
+
+    it("is purely additive — never removes or replaces an input tag", () => {
+      const input = ["berlin", "technology", "unrelatedxyz"];
+      const expanded = expandBeatTagsWithSynonyms(input);
+      for (const tag of input) expect(expanded).toContain(tag);
+    });
+
+    it("returns the same array reference-equal-in-content when nothing matches", () => {
+      expect(expandBeatTagsWithSynonyms(["berlin", "unrelatedxyz"])).toEqual(["berlin", "unrelatedxyz"]);
+    });
+
+    it("deduplicates when a synonym overlaps an already-present tag", () => {
+      const expanded = expandBeatTagsWithSynonyms(["economy", "market"]);
+      expect(expanded.filter((t) => t === "market").length).toBe(1);
+    });
   });
 });
