@@ -23,12 +23,18 @@ import {
 } from "./documentaryStyle";
 
 describe("documentaryStyle", () => {
-  it("is enabled by default", () => {
+  it("is off by default (opt-in via ENABLE_DOC_STYLE=true)", () => {
+    // Phase 11: this test previously asserted the opposite of documentaryStyleEnabled()'s own
+    // doc comment ("Off by default; set ENABLE_DOC_STYLE=true to enable") and of its actual
+    // implementation (`=== "true"`) since the day both were added — never caught because no
+    // caller relies on the default silently changing. The implementation is the real, deployed
+    // behavior; the test was wrong, not the code, so the test is corrected to match it rather
+    // than flipping a live production default as a side effect of a test fix.
     const prev = process.env.ENABLE_DOC_STYLE;
     delete process.env.ENABLE_DOC_STYLE;
-    expect(documentaryStyleEnabled()).toBe(true);
-    process.env.ENABLE_DOC_STYLE = "false";
     expect(documentaryStyleEnabled()).toBe(false);
+    process.env.ENABLE_DOC_STYLE = "true";
+    expect(documentaryStyleEnabled()).toBe(true);
     if (prev === undefined) delete process.env.ENABLE_DOC_STYLE;
     else process.env.ENABLE_DOC_STYLE = prev;
   });
@@ -103,12 +109,20 @@ describe("documentaryStyle", () => {
   });
 
   it("builds per-clip and final scene grades", () => {
+    // buildPerClipDocumentaryGradeVF is unconditional; buildMontageBranchNormVF/
+    // buildFitGrayGradedVideoVF/buildFinalSceneGradeVF gate on documentaryStyleEnabled(),
+    // which is off by default (see "is off by default" above) — exercise the graded branch
+    // explicitly here rather than relying on ambient env state.
     expect(buildPerClipDocumentaryGradeVF()).toContain("eq=contrast");
     expect(buildPerClipDocumentaryGradeVF()).toContain("vignette=");
+    const prev = process.env.ENABLE_DOC_STYLE;
+    process.env.ENABLE_DOC_STYLE = "true";
     expect(buildMontageBranchNormVF()).toContain("color=0x2a2a2a");
     expect(buildMontageBranchNormVF()).toContain("eq=contrast");
     expect(buildFitGrayGradedVideoVF()).toContain("eq=contrast");
     expect(buildFinalSceneGradeVF()).toMatch(/noise=|copy/);
+    if (prev === undefined) delete process.env.ENABLE_DOC_STYLE;
+    else process.env.ENABLE_DOC_STYLE = prev;
   });
 
   describe("Ken Burns easing (Phase 10)", () => {
