@@ -1,0 +1,111 @@
+# Local staging: `docker compose up` on a machine with only Docker + Node 22 installed.
+# Builds the same multi-stage Dockerfile used for production (web + worker share one
+# image; WORKER_MODE picks which process starts — see start.sh), and provisions a
+# throwaway MySQL 8 instance so no external database is required.
+#
+# NOT build-verified in the sandbox that authored this file: the sandbox's outbound
+# proxy blocks Docker Hub (`production.cloudfront.docker.com` returns 403), so neither
+# `node:22-slim` nor `mysql:8.0` could be pulled here. The Dockerfile and this compose
+# file were validated by static review and by running the equivalent steps natively
+# (native MySQL 8.0.46, `pnpm run build`, `pnpm run dev`, `pnpm run worker` all verified
+# working — see the infrastructure report). Verify `docker compose up` once on a machine
+# with real Docker Hub access before relying on it.
+#
+# Usage:
+#   cp .env.example .env   # fill in at least one LLM key, one stock key, one TTS key
+#   docker compose up --build
+
+services:
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: fastvid
+      MYSQL_USER: fastvid
+      MYSQL_PASSWORD: fastvid_local_password
+      MYSQL_ROOT_PASSWORD: fastvid_root_password
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-pfastvid_root_password"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: mysql://fastvid:fastvid_local_password@mysql:3306/fastvid
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      # Passthrough of every optional provider key from .env — unset ones are simply
+      # absent, matching the app's own "no placeholders" env diagnostics on boot.
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      BUILT_IN_FORGE_API_KEY: ${BUILT_IN_FORGE_API_KEY:-}
+      PEXELS_API_KEY: ${PEXELS_API_KEY:-}
+      PIXABAY_API_KEY: ${PIXABAY_API_KEY:-}
+      UNSPLASH_ACCESS_KEY: ${UNSPLASH_ACCESS_KEY:-}
+      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
+      FISH_AUDIO_API_KEY: ${FISH_AUDIO_API_KEY:-}
+      GOOGLE_TTS_API_KEY: ${GOOGLE_TTS_API_KEY:-}
+      YOUTUBE_API_KEY: ${YOUTUBE_API_KEY:-}
+      RAPIDAPI_KEY: ${RAPIDAPI_KEY:-}
+      SERPAPI_KEY: ${SERPAPI_KEY:-}
+    volumes:
+      - uploads-data:/app/uploads
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      WORKER_MODE: "true"
+      DATABASE_URL: mysql://fastvid:fastvid_local_password@mysql:3306/fastvid
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      BUILT_IN_FORGE_API_KEY: ${BUILT_IN_FORGE_API_KEY:-}
+      PEXELS_API_KEY: ${PEXELS_API_KEY:-}
+      PIXABAY_API_KEY: ${PIXABAY_API_KEY:-}
+      UNSPLASH_ACCESS_KEY: ${UNSPLASH_ACCESS_KEY:-}
+      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
+      FISH_AUDIO_API_KEY: ${FISH_AUDIO_API_KEY:-}
+      GOOGLE_TTS_API_KEY: ${GOOGLE_TTS_API_KEY:-}
+      YOUTUBE_API_KEY: ${YOUTUBE_API_KEY:-}
+      RAPIDAPI_KEY: ${RAPIDAPI_KEY:-}
+      SERPAPI_KEY: ${SERPAPI_KEY:-}
+    volumes:
+      - uploads-data:/app/uploads
+      - transformers-cache:/data/transformers-cache
+
+volumes:
+  mysql-data:
+  uploads-data:
+  transformers-cache:

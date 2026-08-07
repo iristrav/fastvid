@@ -288,6 +288,13 @@
       "when": 1785980500000,
       "tag": "0040_visual_query_expansion_cache",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "5",
+      "when": 1785980600000,
+      "tag": "0041_phase12_missing_indexes",
+      "breakpoints": true
     }
   ]
 }
