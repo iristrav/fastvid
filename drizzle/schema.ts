@@ -144,7 +144,9 @@ export const mediaArchives = mysqlTable("media_archives", {
 export type MediaArchive = typeof mediaArchives.$inferSelect;
 export type InsertMediaArchive = typeof mediaArchives.$inferInsert;
 
-export const mediaArchiveAssets = mysqlTable("media_archive_assets", {
+export const mediaArchiveAssets = mysqlTable(
+  "media_archive_assets",
+  {
   id: int("id").autoincrement().primaryKey(),
   archiveId: int("archiveId").notNull().references(() => mediaArchives.id),
   title: varchar("title", { length: 512 }),
@@ -175,41 +177,65 @@ export const mediaArchiveAssets = mysqlTable("media_archive_assets", {
   annotationVersion: varchar("annotationVersion", { length: 16 }),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+  },
+  (t) => ({
+    // Phase 12: filterMediaArchiveAssets/listMediaArchiveAssetsPaginated (db.ts) filter on
+    // archiveId+isActive repeatedly with no index — a full table scan that worsens as the
+    // archive library grows, unlike videos' equivalent well-indexed filter columns.
+    archiveIdIsActiveIdx: index("media_archive_assets_archiveId_isActive_idx").on(t.archiveId, t.isActive),
+  })
+);
 
 export type MediaArchiveAsset = typeof mediaArchiveAssets.$inferSelect;
 export type InsertMediaArchiveAsset = typeof mediaArchiveAssets.$inferInsert;
 
 // ─── Visual Matching Engine V2: VideoContext + VisualIntent caches ────────────
 /** One row per distinct topic — reused across videos sharing the same subject/era. */
-export const visualContextCache = mysqlTable("visual_context_cache", {
+export const visualContextCache = mysqlTable(
+  "visual_context_cache",
+  {
   id: int("id").autoincrement().primaryKey(),
   topicHash: varchar("topicHash", { length: 128 }).notNull(),
   contextJson: json("contextJson").$type<Record<string, unknown>>().notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+  },
+  // Phase 12: every lookup filters by topicHash (db.ts) — was an unindexed full table scan.
+  // Plain (non-unique) index: a unique constraint would additionally require confirming no
+  // duplicate-hash rows already exist in production, out of scope for this low-risk pass.
+  (t) => ({ topicHashIdx: index("visual_context_cache_topicHash_idx").on(t.topicHash) })
+);
 export type VisualContextCacheRow = typeof visualContextCache.$inferSelect;
 export type InsertVisualContextCacheRow = typeof visualContextCache.$inferInsert;
 
 /** One row per distinct beat intent — reused when an identical beat is re-analyzed. */
-export const visualIntentCache = mysqlTable("visual_intent_cache", {
+export const visualIntentCache = mysqlTable(
+  "visual_intent_cache",
+  {
   id: int("id").autoincrement().primaryKey(),
   intentHash: varchar("intentHash", { length: 128 }).notNull(),
   intentJson: json("intentJson").$type<Record<string, unknown>>().notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+  },
+  // Phase 12: see visual_context_cache above — same unindexed-lookup issue.
+  (t) => ({ intentHashIdx: index("visual_intent_cache_intentHash_idx").on(t.intentHash) })
+);
 export type VisualIntentCacheRow = typeof visualIntentCache.$inferSelect;
 export type InsertVisualIntentCacheRow = typeof visualIntentCache.$inferInsert;
 
 /** One row per distinct beat intent's LLM query expansion (Phase 3 hybrid query generation,
  *  queryGeneration.ts) — reused whenever the same intent (by intentHash) needs its ranked
  *  queries regenerated, so an identical beat never re-triggers the LLM call twice. */
-export const visualQueryExpansionCache = mysqlTable("visual_query_expansion_cache", {
+export const visualQueryExpansionCache = mysqlTable(
+  "visual_query_expansion_cache",
+  {
   id: int("id").autoincrement().primaryKey(),
   intentHash: varchar("intentHash", { length: 128 }).notNull(),
   queriesJson: json("queriesJson").$type<Array<{ query: string; category: string }>>().notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+  },
+  // Phase 12: see visual_context_cache above — same unindexed-lookup issue.
+  (t) => ({ intentHashIdx: index("visual_query_expansion_cache_intentHash_idx").on(t.intentHash) })
+);
 export type VisualQueryExpansionCacheRow = typeof visualQueryExpansionCache.$inferSelect;
 export type InsertVisualQueryExpansionCacheRow = typeof visualQueryExpansionCache.$inferInsert;
 
@@ -217,7 +243,9 @@ export type InsertVisualQueryExpansionCacheRow = typeof visualQueryExpansionCach
 /** Permanent embedding cache, keyed by subject (asset id, or a content hash for ad-hoc
  *  text like a search query) + model + embedding_version, so an embedding is computed at
  *  most once per (subject, model, version) triple regardless of provider churn. */
-export const embeddingCache = mysqlTable("embedding_cache", {
+export const embeddingCache = mysqlTable(
+  "embedding_cache",
+  {
   id: int("id").autoincrement().primaryKey(),
   subjectId: varchar("subjectId", { length: 128 }).notNull(),
   /** Which embedding provider produced this vector, e.g. "voyage". Defaults to "voyage" for
@@ -227,7 +255,14 @@ export const embeddingCache = mysqlTable("embedding_cache", {
   embeddingVersion: varchar("embeddingVersion", { length: 32 }).notNull(),
   embedding: json("embedding").$type<number[]>().notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+  },
+  // Phase 12: lookups filter on subjectId+model+embeddingVersion together (db.ts) — was
+  // unindexed. Plain composite index, matching the query's own column order.
+  (t) => ({
+    subjectModelVersionIdx: index("embedding_cache_subjectId_model_embeddingVersion_idx")
+      .on(t.subjectId, t.model, t.embeddingVersion),
+  })
+);
 export type EmbeddingCacheRow = typeof embeddingCache.$inferSelect;
 export type InsertEmbeddingCacheRow = typeof embeddingCache.$inferInsert;
 

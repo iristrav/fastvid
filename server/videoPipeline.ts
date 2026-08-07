@@ -2996,6 +2996,85 @@ export interface PipelineProgress {
   percent: number;
 }
 
+// ─── SSRF guard for user-supplied external URLs ────────────────────────────────
+// Phase 12: customVoiceoverUrl (user-supplied, fetched server-side) was validated only as an
+// optional string with no host/scheme check, letting any authenticated user point it at internal
+// infrastructure (e.g. a cloud metadata endpoint). This rejects private/loopback/link-local/
+// reserved addresses before fetching, and re-checks after every redirect hop (fetch's default
+// "follow" behavior would otherwise let a malicious server bypass the initial-URL check via a
+// 3xx to an internal address).
+function isPrivateOrReservedIp(addr: string): boolean {
+  const v4 = addr.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (v4) {
+    const a = Number(v4[1]);
+    const b = Number(v4[2]);
+    if (a === 127) return true; // loopback
+    if (a === 10) return true; // RFC1918 private
+    if (a === 172 && b >= 16 && b <= 31) return true; // RFC1918 private
+    if (a === 192 && b === 168) return true; // RFC1918 private
+    if (a === 169 && b === 254) return true; // link-local, incl. cloud metadata (169.254.169.254)
+    if (a === 0) return true; // "this" network
+    if (a === 100 && b >= 64 && b <= 127) return true; // carrier-grade NAT
+    return false;
+  }
+  const lower = addr.toLowerCase();
+  if (lower === "::1") return true; // IPv6 loopback
+  if (lower.startsWith("fe80:")) return true; // IPv6 link-local
+  if (lower.startsWith("fc") || lower.startsWith("fd")) return true; // IPv6 unique local (fc00::/7)
+  if (lower.startsWith("::ffff:")) return isPrivateOrReservedIp(lower.slice("::ffff:".length));
+  return false;
+}
+
+async function assertSafeExternalUrl(rawUrl: string): Promise<void> {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw pipelineError(PIPELINE_ERROR.CUSTOM_VOICEOVER, "Custom voiceover URL is not a valid URL");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw pipelineError(PIPELINE_ERROR.CUSTOM_VOICEOVER, "Custom voiceover URL must be http or https");
+  }
+  const { isIP } = await import("net");
+  const hostname = parsed.hostname;
+  if (hostname.toLowerCase() === "localhost") {
+    throw pipelineError(PIPELINE_ERROR.CUSTOM_VOICEOVER, "Custom voiceover URL host is not allowed");
+  }
+  let addresses: string[];
+  if (isIP(hostname)) {
+    addresses = [hostname];
+  } else {
+    try {
+      const dns = await import("dns");
+      const results = await dns.promises.lookup(hostname, { all: true });
+      addresses = results.map((r) => r.address);
+    } catch {
+      throw pipelineError(PIPELINE_ERROR.CUSTOM_VOICEOVER, "Custom voiceover URL host could not be resolved");
+    }
+  }
+  if (addresses.length === 0 || addresses.some((a) => isPrivateOrReservedIp(a))) {
+    throw pipelineError(PIPELINE_ERROR.CUSTOM_VOICEOVER, "Custom voiceover URL points to a disallowed address");
+  }
+}
+
+/** Fetch a user-supplied external URL, validating the host (and every redirect hop) against
+ *  private/internal address ranges before each request — see assertSafeExternalUrl above. */
+async function fetchExternalUrlSafely(rawUrl: string, maxRedirects = 5): ReturnType<typeof fetch> {
+  let currentUrl = rawUrl;
+  for (let hop = 0; hop <= maxRedirects; hop++) {
+    await assertSafeExternalUrl(currentUrl);
+    const resp = await fetch(currentUrl, { redirect: "manual" });
+    if (resp.status >= 300 && resp.status < 400) {
+      const location = resp.headers.get("location");
+      if (!location) return resp;
+      currentUrl = new URL(location, currentUrl).toString();
+      continue;
+    }
+    return resp;
+  }
+  throw pipelineError(PIPELINE_ERROR.CUSTOM_VOICEOVER, "Custom voiceover URL redirected too many times");
+}
+
 // ─── Timeout helper ───────────────────────────────────────────────────────────
 // fetchWithTimeout: truly cancels the download using AbortController (unlike withTimeout which only races)
 async function fetchWithTimeout(url: string, timeoutMs: number, label: string, options: Record<string, unknown> = {}): Promise<ReturnType<typeof fetch>> {
@@ -5300,6 +5379,11 @@ async function fetchOpenverseImages(
       try {
         const imgUrl = images[i].url;
         if (!imgUrl || !/\.(jpg|jpeg|png|webp)/i.test(imgUrl)) continue;
+        // Phase 12: check dedup before downloading/encoding (was after) — matches
+        // fetchUnsplashImages' order below and avoids paying the full download+ffmpeg-encode
+        // cost for a URL already used elsewhere in this video.
+        const urlKey = normalizeImageSourceUrl(imgUrl);
+        if (opts.dedup?.usedImageUrls.has(urlKey)) continue;
 
         const tag = fileTag ? `${fileTag}_` : "";
         const imgPath = path.join(workDir, `scene_${sceneIndex}_${tag}openverse_${i}.jpg`);
@@ -5329,8 +5413,6 @@ async function fetchOpenverseImages(
         try { fs.unlinkSync(imgPath); } catch { /**/ }
 
         if (fs.existsSync(outPath) && fs.statSync(outPath).size > 10_000) {
-          const urlKey = normalizeImageSourceUrl(imgUrl);
-          if (opts.dedup?.usedImageUrls.has(urlKey)) continue;
           opts.dedup?.usedImageUrls.add(urlKey);
           results.push(outPath);
           console.log(`[Pipeline] Scene ${sceneIndex}: Openverse image added: ${images[i].title?.slice(0, 60) || imgUrl.slice(0, 60)}`);
@@ -9415,7 +9497,11 @@ function beatMentionsPerson(beatText: string, personName: string): boolean {
   const parts = name.toLowerCase().split(/\s+/).filter((p) => p.length >= 2);
   if (parts.length >= 2) {
     if (parts.every((p) => lower.includes(p))) return true;
-    return lower.includes(parts[0]);
+    // Phase 12: narration commonly refers to a person by surname only after first introducing
+    // them ("Jenner announced...", not "Kylie Jenner announced..."). Was checking parts[0]
+    // (first name), missing this common phrasing — matches the already-correct sibling
+    // textMentionsPersonName (line 8660), which falls back to the last name.
+    return lower.includes(parts[parts.length - 1]);
   }
   return parts.length === 1 && lower.includes(parts[0]);
 }
@@ -10444,7 +10530,10 @@ async function hasEmbeddedBlackBars(filePath: string): Promise<boolean> {
   return false;
 }
 
-async function isMostlyBlackClip(filePath: string): Promise<boolean> {
+// Phase 12: precomputedDurationSec lets a caller that already has this clip's duration (e.g.
+// montageClipPassesComposeGate's probeVideoStreamMeta result) skip the redundant re-probe below.
+// Omitting it preserves the original probing behavior for any other caller.
+async function isMostlyBlackClip(filePath: string, precomputedDurationSec?: number): Promise<boolean> {
   if (isPipelineFallbackClip(filePath)) return true;
   const curatedStill = isCuratedPreparedStillClip(filePath);
   // Blur-fill stills darken edges by design — not embedded letterbox bars.
@@ -10455,7 +10544,7 @@ async function isMostlyBlackClip(filePath: string): Promise<boolean> {
   // Curated archive clips: reject if too dark — threshold 25 (was 12, too permissive).
   // B&W archival clips have low luma by design; we still skip near-pitch-black ones.
   if (curatedArchiveOnlyVisuals() && curatedClipPathAssetId(filePath) != null) {
-    const dur = await probeVideoDurationSec(filePath);
+    const dur = precomputedDurationSec ?? (await probeVideoDurationSec(filePath));
     const sampleTimes = [0.12, 0.45, 1.0, Math.max(0.2, dur * 0.55)];
     let darkCount = 0;
     for (const t of sampleTimes) {
@@ -10473,7 +10562,7 @@ async function isMostlyBlackClip(filePath: string): Promise<boolean> {
     const mid = await probeClipMeanLuma(filePath, 0.5);
     return mid !== null && mid < 24;
   }
-  const dur = await probeVideoDurationSec(filePath);
+  const dur = precomputedDurationSec ?? (await probeVideoDurationSec(filePath));
   const sampleTimes = [0.2, 0.9, 2.0];
   if (dur > 2.5) sampleTimes.push(Math.max(0.3, dur - 0.35));
   let darkSamples = 0;
@@ -10727,7 +10816,10 @@ async function prepareStrictUniqueMontage(
   montagePlan?: TtsMontagePlan;
 }> {
   assertMontageClipsUnique(sceneIndex, clips);
-  let sourceMaxDurs = await probeMontageSourceMaxDurs(clips);
+  // Phase 12: probed once here and reused below — `clips` never changes within this function,
+  // so re-probing after capMontageDurationsToClipFiles (which only adjusts requested durations,
+  // not the clip list) previously spawned the same ffprobe calls 3x for identical results.
+  const sourceMaxDurs = await probeMontageSourceMaxDurs(clips);
   const defaultXfade = clips.length > 1 ? montageXfadeSec() : 0;
   let montageDurations: number[];
   let montagePlan: TtsMontagePlan | undefined;
@@ -10753,8 +10845,7 @@ async function prepareStrictUniqueMontage(
     montagePlan = plan;
     montageDurations = plan.durations;
     const xfade = plan.xfadeSec;
-    montageDurations = await capMontageDurationsToClipFiles(clips, montageDurations);
-    sourceMaxDurs = await probeMontageSourceMaxDurs(clips);
+    montageDurations = await capMontageDurationsToClipFiles(clips, montageDurations, sourceMaxDurs);
     if (!plan.ttsHardCut) {
       montageDurations = finalizeVoiceSyncedMontageDurations(
         montageDurations,
@@ -10778,8 +10869,7 @@ async function prepareStrictUniqueMontage(
       beatDurations,
       sourceMaxDurs
     );
-    montageDurations = await capMontageDurationsToClipFiles(clips, montageDurations);
-    sourceMaxDurs = await probeMontageSourceMaxDurs(clips);
+    montageDurations = await capMontageDurationsToClipFiles(clips, montageDurations, sourceMaxDurs);
     montageDurations = balanceMontageDurationsForVoice(
       clips.length,
       outDur,
@@ -10897,7 +10987,10 @@ async function montageClipPassesComposeGate(
       }
       return true;
     }
-    if (await isMostlyBlackClip(clipPath)) return false;
+    // Phase 12: meta.durationSec was already probed above (and validated by
+    // montageStreamMetaUsable) — pass it through instead of letting isMostlyBlackClip re-probe
+    // the same file a second time for this non-curated candidate.
+    if (await isMostlyBlackClip(clipPath, meta.durationSec)) return false;
     const startLuma = await probeClipMeanLuma(clipPath, trimStart + 0.08);
     if (startLuma !== null && startLuma < 14) return false;
     return true;
@@ -10935,10 +11028,14 @@ async function estimateBalancedMontageCoverageSec(
   outDur: number
 ): Promise<number> {
   if (clips.length === 0) return 0;
-  let sourceMaxDurs = await probeMontageSourceMaxDurs(clips);
+  // Phase 12: probed once and reused below — see the identical fix/comment in
+  // prepareStrictUniqueMontage above; `clips` doesn't change within this function, so the two
+  // subsequent probes of the same list were always redundant. This function is also called
+  // repeatedly inside backfillArchiveMontageFromPool's per-attempt loop, so this 3x-per-call
+  // reduction compounds across every backfill iteration.
+  const sourceMaxDurs = await probeMontageSourceMaxDurs(clips);
   let balanced = balanceMontageDurationsForVoice(clips.length, outDur, beatDurations, sourceMaxDurs);
-  balanced = await capMontageDurationsToClipFiles(clips, balanced);
-  sourceMaxDurs = await probeMontageSourceMaxDurs(clips);
+  balanced = await capMontageDurationsToClipFiles(clips, balanced, sourceMaxDurs);
   balanced = balanceMontageDurationsForVoice(clips.length, outDur, balanced, sourceMaxDurs);
   return effectiveMontageDurationSec(balanced, sourceMaxDurs);
 }
@@ -11682,11 +11779,19 @@ function balanceMontageDurationsForVoice(
   return durs;
 }
 
-async function capMontageDurationsToClipFiles(clips: string[], durs: number[]): Promise<number[]> {
+// Phase 12: sourceMaxDurs, when passed, is a caller-supplied probe result for the same `clips`
+// array (e.g. already computed via probeMontageSourceMaxDurs moments earlier in the same call) —
+// reusing it here avoids re-spawning ffprobe per clip a second time for an unchanged clip list.
+// Omitting it preserves the original per-clip probing behavior for any other caller.
+async function capMontageDurationsToClipFiles(
+  clips: string[],
+  durs: number[],
+  sourceMaxDurs?: number[]
+): Promise<number[]> {
   const capped: number[] = [];
   for (let i = 0; i < clips.length; i++) {
     const req = durs[i] ?? effectiveBeatSec();
-    const probed = await probeVideoDurationSec(clips[i]!);
+    const probed = sourceMaxDurs?.[i] ?? (await probeVideoDurationSec(clips[i]!));
     if (probed > 0.15) {
       const maxUsable = Math.max(effectiveMinClipSec() * 0.4, probed - 0.05);
       if (maxUsable < req - 0.1) {
@@ -21032,42 +21137,6 @@ async function renderKineticFrames(
   return frames;
 }
 
-// ─── 4b. Canvas Subtitle Overlay ─────────────────────────────────────────────
-// FFmpeg-only fallback: creates a transparent PNG with drawtext (no canvas needed)
-async function renderSubtitleOverlayFFmpeg(
-  text: string,
-  sceneIndex: number,
-  totalScenes: number,
-  workDir: string
-): Promise<string> {
-  const outputPath = path.join(workDir, `scene_${sceneIndex}_subtitle.png`);
-  const OVERLAY_H = 220;
-  // Create a semi-transparent black bar PNG using FFmpeg lavfi
-  const safeText = sanitizeForDrawtext(text, 80);
-  const badge = sanitizeForDrawtext(`${sceneIndex + 1}/${totalScenes}`, 20);
-  // Use FFmpeg to create a PNG: black gradient bar with white text
-  await withSceneFetchTimeout(
-    () => exec(
-      `${FFMPEG_BIN} -y -f lavfi -i "color=c=black@0.85:size=${VIDEO_WIDTH}x${OVERLAY_H}:rate=1" ` +
-      `-vf "drawtext=text='${badge}':fontcolor=yellow:fontsize=22:x=28:y=14,` +
-      `drawtext=text='${safeText}':fontcolor=white:fontsize=36:x=(w-text_w)/2:y=100:line_spacing=10" ` +
-      `-frames:v 1 "${outputPath}"`
-    ),
-    10_000, `Subtitle overlay FFmpeg scene ${sceneIndex}`
-  );
-  return outputPath;
-}
-
-async function renderSubtitleOverlay(
-  text: string,
-  sceneIndex: number,
-  totalScenes: number,
-  workDir: string
-): Promise<string> {
-  // Always use FFmpeg-only implementation (no canvas dependency)
-  return renderSubtitleOverlayFFmpeg(text, sceneIndex, totalScenes, workDir);
-}
-
 // ─── 4a2. Chapter Card Renderer (Vox/Wendover style) ──────────────────────────────────
 // Renders a 1.5s black-background title card with:
 //   - Thin horizontal accent line above the title
@@ -21785,17 +21854,14 @@ export async function composeSceneVideoInner(
   const composeTimeout = composeOptions?.sceneTimeoutMs
     ?? composeSceneTimeoutMs(safeClips.length, composeOptions?.dedup?.videoLength, duration);
 
-  // Subtitle overlay: render if user has enabled subtitles (effects pass only — not raw assembly)
-  let subtitlePath: string | null = null;
+  // Phase 12: renderSubtitleOverlay used to run here, but its output PNG was never passed as an
+  // ffmpeg input or composited into any filter chain — only unlinked at cleanup below (grep
+  // confirmed subtitlePath has no other reads). Real captions are handled separately via
+  // renderFacelessSubtitleOverlay (cinematicEffectsEngine.ts); this was a wasted ffmpeg exec per
+  // scene. subtitlePath stays declared (always null now) since the cleanup below still guards
+  // on it.
+  const subtitlePath: string | null = null;
   const skipEffectLayers = phase === "assembly";
-  if (!skipEffectLayers && enableSubtitles) {
-    try {
-      subtitlePath = await renderSubtitleOverlay(scene.text, scene.index, totalScenes, workDir);
-    } catch (err) {
-      console.warn(`[Pipeline] Scene ${scene.index}: subtitle overlay failed (non-fatal):`, err);
-      subtitlePath = null;
-    }
-  }
 
   // Cinematic + documentary overlays (years bottom-left, stats, keywords, particles, SFX)
   let kineticFrames: KineticFrame[] = [];
@@ -23092,7 +23158,7 @@ async function _runVideoPipelineInner(
 
     if (customVoiceoverUrl) {
       const customAudioPath = path.join(workDir, "custom_voiceover.mp3");
-      const resp = await fetch(customVoiceoverUrl);
+      const resp = await fetchExternalUrlSafely(customVoiceoverUrl);
       if (!resp.ok) {
         throw pipelineError(PIPELINE_ERROR.CUSTOM_VOICEOVER, `Failed to download custom voiceover: ${resp.status}`);
       }

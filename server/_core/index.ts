@@ -394,7 +394,32 @@ async function startServer() {
   });
 
   // ─── FFmpeg Debug Endpoint ────────────────────────────────────────────────────
-  app.get("/api/debug/ffmpeg", async (_req, res) => {
+  // Phase 12: previously had no auth check — discloses internal binary layout / PATH to any
+  // unauthenticated caller. Same JWT-cookie-verification pattern already used by the other raw
+  // Express routes in this file (/api/download/video, /api/stream/video), admin-only since this
+  // is a diagnostic tool, not something regular users need.
+  app.get("/api/debug/ffmpeg", async (req, res) => {
+    const { parse: parseCookies } = await import("cookie");
+    const { jwtVerify } = await import("jose");
+    const { COOKIE_NAME } = await import("@shared/const");
+    const { getUserById } = await import("../db");
+
+    const cookies = parseCookies(req.headers.cookie ?? "");
+    const token = cookies[COOKIE_NAME];
+    if (!token) { res.status(401).json({ error: "Unauthorized" }); return; }
+
+    let userId: number;
+    try {
+      const { payload } = await jwtVerify(token, getSessionSecret(), { algorithms: ["HS256"] });
+      userId = payload.userId as number;
+      if (!userId) throw new Error("No userId in token");
+    } catch {
+      res.status(401).json({ error: "Invalid session" }); return;
+    }
+
+    const user = await getUserById(userId);
+    if (user?.role !== "admin") { res.status(403).json({ error: "Forbidden" }); return; }
+
     const { execSync: es } = await import("child_process");
     const { existsSync } = await import("fs");
     const tryCmd = (cmd: string) => { try { return es(cmd, { encoding: "utf8" }).trim(); } catch { return "(failed)"; } };
