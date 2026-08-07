@@ -7,7 +7,7 @@ import { fileURLToPath } from "url";
 import { shouldRunQueueWorker } from "@shared/videoQueue";
 import { recoverAllStuckVideos } from "./db";
 import { logLlmStartupDiagnostics, assertProductionLlmReady } from "./llmStartupDiagnostics";
-import { startVideoQueueWorker } from "./queue";
+import { startVideoQueueWorker, stopVideoQueueWorker } from "./queue";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -22,6 +22,24 @@ process.on("uncaughtException", (err) => {
 process.on("unhandledRejection", (reason) => {
   console.error("[Worker] Unhandled rejection (worker kept alive):", reason);
 });
+
+// On redeploy/restart, Railway (and `docker stop`) send SIGTERM before SIGKILL. With no
+// handler, Node terminates immediately mid-poll-tick, which can pick up a brand-new job just
+// before the kill lands — that job's row then sits in a "generating_*" status until the next
+// process's recoverAllStuckVideos() sweep or the periodic stuck-video check reclassifies it
+// (up to STUCK_VIDEO_MINUTES). Stopping the poll loop immediately on signal — same primitive
+// already used to pause the worker — closes that window without trying to force-kill whatever
+// render is already mid-flight (which would leave a half-written output file instead).
+let shuttingDown = false;
+function handleShutdownSignal(signal: NodeJS.Signals) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[Worker] ${signal} received — no longer picking up new jobs, exiting`);
+  stopVideoQueueWorker();
+  process.exit(0);
+}
+process.on("SIGTERM", handleShutdownSignal);
+process.on("SIGINT", handleShutdownSignal);
 
 async function runMigrations() {
   if (!process.env.DATABASE_URL) {
