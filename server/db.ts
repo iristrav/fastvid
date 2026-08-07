@@ -24,9 +24,16 @@ export async function getDb() {
       // Explicit pool + keep-alive so dead sockets left behind by a DB-side
       // blip (e.g. a volume resize) get detected and replaced instead of hanging.
       const mysql = await import("mysql2/promise");
+      // connectionLimit must comfortably exceed MAX_CONCURRENT_JOBS (default 25 renders/worker,
+      // each writing progress frequently) plus the web process's own request traffic and the
+      // two periodic background sweeps (failAllStalledPipelines, runStuckVideoCheck) sharing
+      // this same pool — 15 was undersized against a 25-job ceiling, causing writes to silently
+      // serialize under real concurrent load. queueLimit bounds how many callers can wait for a
+      // connection before the pool fails fast with an explicit error instead of hanging forever.
       const pool = mysql.createPool({
         uri: dbUrl,
-        connectionLimit: 15,
+        connectionLimit: 30,
+        queueLimit: 100,
         waitForConnections: true,
         connectTimeout: 10_000,
         enableKeepAlive: true,

@@ -81,6 +81,13 @@ RUN chmod +x start.sh worker-start.sh
 # Create uploads directory for local storage fallback
 RUN mkdir -p /app/uploads
 
+# Run as a non-root user — this process shells out to FFmpeg/native image libraries against
+# untrusted media (curated archive uploads, downloaded stock/archive footage); a vulnerability
+# in any of those decoders shouldn't hand over root inside the container.
+RUN groupadd -r app && useradd -r -g app -d /app app \
+  && chown -R app:app /app
+USER app
+
 # Railway injects PORT automatically; default to 3000 for local testing
 ENV PORT=3000
 

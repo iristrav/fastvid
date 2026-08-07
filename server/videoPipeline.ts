@@ -34,7 +34,6 @@ import { recordArchiveContentGap } from "./archiveContentGaps";
 import pLimit from "p-limit";
 import { generateGrokVideo } from "./_core/grokVideo";
 import { generateVeoVideo } from "./_core/veoVideo";
-import { generateMetaMovieGen } from "./_core/metaMovieGen";
 import { generateHiggsfieldTextToVideo, generateHiggsfieldImageToVideo } from "./_core/higgsfieldVideo";
 import {
   generateKlingBeatVideo,
@@ -349,7 +348,6 @@ const STABILITY_AI_API_KEY = process.env.STABILITY_AI_API_KEY || "";
 const PEXELS_API_KEY = process.env.PEXELS_API_KEY || "";
 const REPLICATE_API_KEY = process.env.REPLICATE_API_KEY || "";
 const GOOGLE_GEMINI_API_KEY = process.env.GOOGLE_GEMINI_API_KEY || "";
-const META_MOVIE_GEN_API_KEY = process.env.META_MOVIE_GEN_API_KEY || "";
 const HIGGSFIELD_API_KEY = process.env.HIGGSFIELD_API_KEY || "";
 const HIGGSFIELD_API_SECRET = process.env.HIGGSFIELD_API_SECRET || "";
 const SERPAPI_KEY = process.env.SERPAPI_KEY || "";
@@ -6254,39 +6252,6 @@ async function generateVeoVideoClip(
   }
 }
 
-// ─── 3c3. Generate Meta Movie Gen Clip ──────────────────────────────────────
-async function generateMetaMovieGenClip(
-  prompt: string,
-  duration: number,
-  outputPath: string,
-  sceneIndex: number
-): Promise<string | null> {
-  if (!META_MOVIE_GEN_API_KEY) {
-    return null; // Fallback to other sources
-  }
-
-  try {
-    const result = await generateMetaMovieGen(prompt, Math.min(duration, 8));
-    if (!result) return null;
-
-    // Download the video from the URL and save to local file
-    const metaOutputPath = outputPath.replace(/\.mp4$/, "_meta.mp4");
-    const response = await fetch(result.url, { signal: AbortSignal.timeout(120_000) });
-    if (!response.ok) {
-      console.warn(`[Pipeline] Scene ${sceneIndex}: Meta Movie Gen download failed (${response.status})`);
-      return null;
-    }
-
-    const buffer = await response.buffer();
-    fs.writeFileSync(metaOutputPath, buffer);
-    console.log(`[Pipeline] Scene ${sceneIndex}: Meta Movie Gen video saved (${buffer.length} bytes)`);
-    return metaOutputPath;
-  } catch (err) {
-    console.warn(`[Pipeline] Scene ${sceneIndex}: Meta Movie Gen generation error:`, err);
-    return null;
-  }
-}
-
 // ─── 3c4. Generate Higgsfield Text-to-Video Clip ───────────────────────────────
 async function generateHiggsfieldTextToVideoClip(
   prompt: string,
@@ -11485,6 +11450,13 @@ async function renderSingleMontageSegment(
   if (sourceMaxSec > 0.15) {
     effectiveDur = resolveMontageClipEffectiveDur(duration, sourceMaxSec);
     effectiveDur = Math.min(effectiveDur, Math.max(0.35, sourceMaxSec - startSec - 0.05));
+  } else if (sourceMaxSec === 0) {
+    // Duration probe failed after every retry (fork-pressure/corrupt-file case) — this is
+    // "unknown", not "no clamp needed". Trusting the assigned `duration` blindly risks xfade
+    // running out of decodable frames mid-transition and freezing on the last frame. Fall back
+    // to the same conservative floor already used for known-short clips instead.
+    startSec = 0;
+    effectiveDur = Math.min(duration, montageMinOnScreenSec());
   }
   effectiveDur = Math.max(0.35, effectiveDur);
 
@@ -21363,11 +21335,15 @@ async function prepareSceneEffectLayers(
 
   try {
     if (cinematicEffectsEnabled()) {
-      cinematicPlan = planCinematicScene(scene, duration);
+      // Schedule against outDur (the real, TTS-probed clip length this scene will actually be
+      // cut to) instead of the pre-TTS planning estimate `duration` — narration speed routinely
+      // differs from the plan, so overlays scheduled against the plan get cut off early or all
+      // bunch into the first portion of the clip while real narration runs longer/shorter.
+      cinematicPlan = planCinematicScene(scene, outDur);
       const cinematicOverlays = await buildCinematicOverlays(
         cinematicPlan,
         scene,
-        duration,
+        outDur,
         workDir,
         FFMPEG_BIN,
         (cmd, ms, lbl) => withSceneFetchTimeout(() => exec(cmd), ms, lbl),
@@ -21874,11 +21850,14 @@ export async function composeSceneVideoInner(
   try {
     const yearsOnly = yearsOnlyOnScreen();
     if (cinematicEffectsEnabled() && !yearsOnly) {
-      cinematicPlan = planCinematicScene(scene, duration);
+      // outDurEarly (computed above from the real, probed voiceover) reflects what this scene
+      // will actually be cut to — scheduling against the raw planning `duration` instead risks
+      // overlays cut off early or bunched into the front when narration length differs.
+      cinematicPlan = planCinematicScene(scene, outDurEarly);
       const cinematicOverlays = await buildCinematicOverlays(
         cinematicPlan,
         scene,
-        duration,
+        outDurEarly,
         workDir,
         FFMPEG_BIN,
         (cmd, ms, lbl) => withSceneFetchTimeout(() => exec(cmd), ms, lbl),
@@ -23831,16 +23810,28 @@ async function _runVideoPipelineInner(
                         try {
                           rescueClips.push(await generateGuaranteedBeatClip(scene.index, si, hold, workDir));
                         } catch (guaranteedErr) {
-                          // Even this can exhaust every color-fallback retry under severe fork
-                          // pressure. This whole chain runs inside a Promise.all over every scene
-                          // — an uncaught throw here would fail the ENTIRE batch, not just this
-                          // scene. Skip the slot; composeSceneVideo below still gets whatever
-                          // clips the other slots produced (or falls to the black-fill path if
-                          // that ends up empty too).
-                          console.error(
-                            `[Compose] Scene ${scene.index}: guaranteed clip ${si} totally unavailable, skipping:`,
+                          // A single failure here is often transient (fork pressure, a one-off
+                          // ffmpeg spawn error) rather than permanent — retry the same slot once
+                          // before giving up on it, so a thin/under-filled scene isn't the default
+                          // outcome of one bad subprocess call.
+                          console.warn(
+                            `[Compose] Scene ${scene.index}: guaranteed clip ${si} failed, retrying once:`,
                             (guaranteedErr as Error).message?.slice(0, 150)
                           );
+                          try {
+                            rescueClips.push(await generateGuaranteedBeatClip(scene.index, si, hold, workDir));
+                          } catch (retryErr) {
+                            // Even this can exhaust every color-fallback retry under severe fork
+                            // pressure. This whole chain runs inside a Promise.all over every scene
+                            // — an uncaught throw here would fail the ENTIRE batch, not just this
+                            // scene. Skip the slot; composeSceneVideo below still gets whatever
+                            // clips the other slots produced (or falls to the black-fill path if
+                            // that ends up empty too).
+                            console.error(
+                              `[Compose] Scene ${scene.index}: guaranteed clip ${si} totally unavailable, skipping:`,
+                              (retryErr as Error).message?.slice(0, 150)
+                            );
+                          }
                         }
                       }
                     }
