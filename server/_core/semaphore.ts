@@ -12,10 +12,16 @@ export class Semaphore {
   private _available: number;
   private _max: number;
   private _queue: Array<() => void> = [];
+  // Phase 12: optional, backward-compatible — undefined for every existing caller (e.g.
+  // ffmpegSemaphore below), so this changes nothing unless a caller opts in. Lets
+  // getUserRenderSemaphore evict its map entry once a per-user semaphore goes fully idle,
+  // instead of growing that Map forever over the life of the process.
+  private _onIdle?: () => void;
 
-  constructor(max: number) {
+  constructor(max: number, onIdle?: () => void) {
     this._max = max;
     this._available = max;
+    this._onIdle = onIdle;
   }
 
   acquire(): Promise<void> {
@@ -34,6 +40,7 @@ export class Semaphore {
       next();
     } else {
       this._available++;
+      if (this._available === this._max) this._onIdle?.();
     }
   }
 
@@ -77,7 +84,14 @@ const userRenderLocks = new Map<string | number, Semaphore>();
 export function getUserRenderSemaphore(userId: string | number): Semaphore {
   let sem = userRenderLocks.get(userId);
   if (!sem) {
-    sem = new Semaphore(1);
+    // Phase 12: evict this map entry once the semaphore is fully idle again — previously never
+    // removed, so userRenderLocks grew without bound over the life of the process as new users
+    // signed up. Guarded by identity (only delete if this is still the same instance) so a
+    // fresh acquire that raced in right as the old one went idle can't have its brand-new entry
+    // deleted out from under it.
+    sem = new Semaphore(1, () => {
+      if (userRenderLocks.get(userId) === sem) userRenderLocks.delete(userId);
+    });
     userRenderLocks.set(userId, sem);
   }
   return sem;

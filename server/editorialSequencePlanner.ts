@@ -13,6 +13,7 @@
  */
 
 import { invokeLLM } from "./_core/llm";
+import { getActiveVideoId } from "./videoGenerationCancel";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -49,6 +50,17 @@ const _storyboardCache = new Map<string, SceneStoryboard>();
 
 export function clearStoryboardCache(): void {
   _storyboardCache.clear();
+}
+
+// Phase 12: the cache key previously carried no video identity ("s${sceneIndex}"), so once the
+// worker process rendered one video, every later video whose scene count reached a previously
+// -cached index silently reused that earlier, unrelated video's storyboard (wrong shots, wrong
+// search queries) — invisible from the outside, deterministic on every render past the first.
+// getActiveVideoId() reuses the render-scoped AsyncLocalStorage context already established for
+// this exact purpose elsewhere (videoGenerationCancel.ts), so no function signature here needs
+// to change to thread a videoId through.
+function storyboardCacheKey(sceneIndex: number): string {
+  return `v${getActiveVideoId() ?? "?"}:s${sceneIndex}`;
 }
 
 // ─── Feature flag ─────────────────────────────────────────────────────────────
@@ -150,7 +162,7 @@ export async function getOrGenerateStoryboard(
   videoTitle: string,
   videoContext: { people: string[]; period: string; locations: string[]; visualStyles: string[] }
 ): Promise<SceneStoryboard> {
-  const cacheKey = `s${sceneIndex}`;
+  const cacheKey = storyboardCacheKey(sceneIndex);
   const cached = _storyboardCache.get(cacheKey);
   if (cached) return cached;
 
@@ -237,7 +249,7 @@ export function getShotForBeat(
   sceneIndex: number,
   beatIndex: number
 ): ShotDescription | null {
-  const board = _storyboardCache.get(`s${sceneIndex}`);
+  const board = _storyboardCache.get(storyboardCacheKey(sceneIndex));
   if (!board) return null;
   return board.shots.find((s) => s.beatIndex === beatIndex) ?? null;
 }

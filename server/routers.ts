@@ -52,11 +52,8 @@ import { isFastShortVideoLength, maxPipelineWallClockHardMin, pipelineComposeGra
 import { PIPELINE_DISPLAY_STAGES, formatGenerationDuration, progressStepWithElapsed, resolvePipelineDisplayStage, type PipelineDisplayStageKey } from "@shared/pipelineProgress";
 import { ONE_YEAR_MS } from "@shared/const";
 import { clearVideoGenerationCancel } from "./videoGenerationCancel";
-
-function getSessionSecret() {
-  const secret = process.env.JWT_SECRET ?? "fallback-secret-change-in-production";
-  return new TextEncoder().encode(secret);
-}
+import { getSessionSecret } from "./_core/sessionSecret";
+import { checkRateLimit } from "./_core/rateLimit";
 
 async function signSessionToken(userId: number): Promise<string> {
   const expiresAt = Math.floor((Date.now() + ONE_YEAR_MS) / 1000);
@@ -1404,7 +1401,14 @@ export const appRouter = router({
     /** Public: generate a live 5-second ElevenLabs preview for a given voice ID */
     preview: protectedProcedure.input(z.object({
       fishAudioReferenceId: z.string().min(1),
-    })).mutation(async ({ input }) => {
+    })).mutation(async ({ input, ctx }) => {
+      // Phase 12: this makes a real, billed ElevenLabs API call per request with no prior
+      // throttle — any authenticated account could loop it to burn API quota/cost with no cap.
+      // Reuses the same checkRateLimit primitive rateLimitedProcedure wraps IP-keyed requests
+      // with, keyed per-user here since this endpoint requires login.
+      if (!checkRateLimit(`voice-preview:${ctx.user.id}`, 10, 60_000)) {
+        throw appTrpcError("TOO_MANY_REQUESTS", APP_ERROR.RATE_LIMITED, "Too many voice previews — please try again in a minute");
+      }
       const apiKey = process.env.ELEVENLABS_API_KEY;
       if (!apiKey) {
         throw appTrpcError("INTERNAL_SERVER_ERROR", APP_ERROR.ELEVENLABS_NOT_CONFIGURED, "ElevenLabs API key not configured");
