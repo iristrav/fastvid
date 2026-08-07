@@ -34,7 +34,6 @@ import { recordArchiveContentGap } from "./archiveContentGaps";
 import pLimit from "p-limit";
 import { generateGrokVideo } from "./_core/grokVideo";
 import { generateVeoVideo } from "./_core/veoVideo";
-import { generateMetaMovieGen } from "./_core/metaMovieGen";
 import { generateHiggsfieldTextToVideo, generateHiggsfieldImageToVideo } from "./_core/higgsfieldVideo";
 import {
   generateKlingBeatVideo,
@@ -196,6 +195,7 @@ import {
   logRetrievalRound,
   visualSearchPlanEnabled,
   buildVideoVisualContext,
+  clearVisualSearchPlanCacheForVideo,
   type VideoVisualContext,
 } from "./visualSearchPlan";
 import {
@@ -204,6 +204,7 @@ import {
   enrichBeatFromShot,
   editorialSequencePlannerEnabled,
   clearStoryboardCache,
+  clearStoryboardCacheForVideo,
 } from "./editorialSequencePlanner";
 import {
   editorialReorderScene,
@@ -349,7 +350,6 @@ const STABILITY_AI_API_KEY = process.env.STABILITY_AI_API_KEY || "";
 const PEXELS_API_KEY = process.env.PEXELS_API_KEY || "";
 const REPLICATE_API_KEY = process.env.REPLICATE_API_KEY || "";
 const GOOGLE_GEMINI_API_KEY = process.env.GOOGLE_GEMINI_API_KEY || "";
-const META_MOVIE_GEN_API_KEY = process.env.META_MOVIE_GEN_API_KEY || "";
 const HIGGSFIELD_API_KEY = process.env.HIGGSFIELD_API_KEY || "";
 const HIGGSFIELD_API_SECRET = process.env.HIGGSFIELD_API_SECRET || "";
 const SERPAPI_KEY = process.env.SERPAPI_KEY || "";
@@ -4419,10 +4419,13 @@ export async function fetchPexelsClips(
     try {
       // HD quality: large size (min 1280px), landscape orientation, fetch 15 candidates
       const searchUrl = `https://api.pexels.com/videos/search?query=${encodeURIComponent(currentQuery)}&per_page=15&size=large&orientation=landscape`;
-      const searchResp = await withTimeout(
-        fetch(searchUrl, { headers: { Authorization: PEXELS_API_KEY } }),
+      // withTimeout only races a timer and never aborts the request — a timed-out Pexels call
+      // keeps running in the background and still counts against the metered quota.
+      const searchResp = await fetchWithTimeout(
+        searchUrl,
         10_000,
-        `Pexels search scene ${sceneIndex} query "${currentQuery}"`
+        `Pexels search scene ${sceneIndex} query "${currentQuery}"`,
+        { headers: { Authorization: PEXELS_API_KEY } }
       );
 
       if (!searchResp.ok) continue;
@@ -4487,8 +4490,8 @@ export async function fetchPexelsClips(
 
           while (retries > 0 && !buffer) {
             try {
-              downloadResp = await withTimeout(
-                fetch(videoFile.link),
+              downloadResp = await fetchWithTimeout(
+                videoFile.link,
                 45_000,
                 `Download Pexels clip ${idx} scene ${sceneIndex} (attempt ${4 - retries}/3)`
               );
@@ -4621,10 +4624,11 @@ async function fetchBrollClips(
     }
     try {
       const searchUrl = `https://api.pexels.com/videos/search?query=${encodeURIComponent(query)}&per_page=5&size=large&orientation=landscape`;
-      const searchResp = await withTimeout(
-        fetch(searchUrl, { headers: { Authorization: PEXELS_API_KEY } }),
+      const searchResp = await fetchWithTimeout(
+        searchUrl,
         10_000,
-        `B-roll Pexels search scene ${sceneIndex} query "${query}"`
+        `B-roll Pexels search scene ${sceneIndex} query "${query}"`,
+        { headers: { Authorization: PEXELS_API_KEY } }
       );
       if (!searchResp.ok) {
         if (PIXABAY_API_KEY) {
@@ -4754,8 +4758,10 @@ export async function fetchPixabayClips(
         `&q=${encodeURIComponent(currentQuery)}` +
         `&per_page=10&video_type=film&min_width=1280&safesearch=true`;
 
-      const searchResp = await withTimeout(
-        fetch(searchUrl),
+      // withTimeout only races a timer and never aborts the request — a timed-out Pixabay call
+      // keeps running in the background and still counts against the metered quota.
+      const searchResp = await fetchWithTimeout(
+        searchUrl,
         10_000,
         `Pixabay search scene ${sceneIndex} query "${currentQuery}"`
       );
@@ -4810,8 +4816,8 @@ export async function fetchPixabayClips(
           let buffer: Buffer | null = null;
           for (let attempt = 0; attempt < 3 && !buffer; attempt++) {
             try {
-              const dlResp = await withTimeout(
-                fetch(videoFile.url),
+              const dlResp = await fetchWithTimeout(
+                videoFile.url,
                 20_000,
                 `Pixabay download scene ${sceneIndex} clip ${idx} attempt ${attempt + 1}`
               );
@@ -5643,8 +5649,10 @@ async function fetchSerpAPIImages(
     searchUrl.searchParams.set('ijn', '0');
     searchUrl.searchParams.set('api_key', SERPAPI_KEY);
 
-    const searchResp = await withTimeout(
-      fetch(searchUrl.toString()),
+    // withTimeout only races a timer and never aborts the request — a timed-out SerpAPI call
+    // keeps running in the background and still counts against the metered quota.
+    const searchResp = await fetchWithTimeout(
+      searchUrl.toString(),
       15_000,
       `SerpAPI search scene ${sceneIndex}`
     );
@@ -5684,15 +5692,16 @@ async function fetchSerpAPIImages(
         const imgPath = path.join(workDir, `scene_${sceneIndex}_${tag}serp_${i}.jpg`);
         const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}serp_${i}.mp4`);
 
-        const imgResp = await withTimeout(
-          fetch(imgUrl, {
+        const imgResp = await fetchWithTimeout(
+          imgUrl,
+          12_000,
+          `SerpAPI image download scene ${sceneIndex}`,
+          {
             headers: {
               'User-Agent': 'Mozilla/5.0 (compatible; Fastvid/1.0)',
               'Accept': 'image/jpeg,image/png,image/*',
             },
-          }),
-          12_000,
-          `SerpAPI image download scene ${sceneIndex}`
+          }
         );
         if (!imgResp.ok) continue;
         // Validate content-type: must be an image, not HTML/text
@@ -6250,39 +6259,6 @@ async function generateVeoVideoClip(
     return veoOutputPath;
   } catch (err) {
     console.warn(`[Pipeline] Scene ${sceneIndex}: Veo generation error:`, err);
-    return null;
-  }
-}
-
-// ─── 3c3. Generate Meta Movie Gen Clip ──────────────────────────────────────
-async function generateMetaMovieGenClip(
-  prompt: string,
-  duration: number,
-  outputPath: string,
-  sceneIndex: number
-): Promise<string | null> {
-  if (!META_MOVIE_GEN_API_KEY) {
-    return null; // Fallback to other sources
-  }
-
-  try {
-    const result = await generateMetaMovieGen(prompt, Math.min(duration, 8));
-    if (!result) return null;
-
-    // Download the video from the URL and save to local file
-    const metaOutputPath = outputPath.replace(/\.mp4$/, "_meta.mp4");
-    const response = await fetch(result.url, { signal: AbortSignal.timeout(120_000) });
-    if (!response.ok) {
-      console.warn(`[Pipeline] Scene ${sceneIndex}: Meta Movie Gen download failed (${response.status})`);
-      return null;
-    }
-
-    const buffer = await response.buffer();
-    fs.writeFileSync(metaOutputPath, buffer);
-    console.log(`[Pipeline] Scene ${sceneIndex}: Meta Movie Gen video saved (${buffer.length} bytes)`);
-    return metaOutputPath;
-  } catch (err) {
-    console.warn(`[Pipeline] Scene ${sceneIndex}: Meta Movie Gen generation error:`, err);
     return null;
   }
 }
@@ -8196,7 +8172,9 @@ export async function probeYouTubeCcPipeline(): Promise<{
     searchUrl.searchParams.set("videoLicense", "creativeCommon");
     searchUrl.searchParams.set("maxResults", "5");
     searchUrl.searchParams.set("part", "snippet");
-    const searchResp = await fetch(searchUrl.toString());
+    // Diagnostic health probe — a stuck request here with no timeout means the /api/health/
+    // youtube-probe endpoint itself hangs forever instead of reporting a failure.
+    const searchResp = await fetchWithTimeout(searchUrl.toString(), 10_000, "YouTube CC probe search");
     searchStatus = searchResp.status;
     if (searchResp.ok) {
       const data = (await searchResp.json()) as {
@@ -8222,7 +8200,7 @@ export async function probeYouTubeCcPipeline(): Promise<{
   if (sampleVideoId && RAPIDAPI_KEY) {
     const host = process.env.RAPIDAPI_YT_HOST || "ytstream-download-youtube-videos.p.rapidapi.com";
     try {
-      const metaResp = await fetch(`https://${host}/dl?id=${sampleVideoId}`, {
+      const metaResp = await fetchWithTimeout(`https://${host}/dl?id=${sampleVideoId}`, 10_000, "YouTube CC probe RapidAPI", {
         headers: {
           "x-rapidapi-host": host,
           "x-rapidapi-key": RAPIDAPI_KEY,
@@ -11485,6 +11463,13 @@ async function renderSingleMontageSegment(
   if (sourceMaxSec > 0.15) {
     effectiveDur = resolveMontageClipEffectiveDur(duration, sourceMaxSec);
     effectiveDur = Math.min(effectiveDur, Math.max(0.35, sourceMaxSec - startSec - 0.05));
+  } else if (sourceMaxSec === 0) {
+    // Duration probe failed after every retry (fork-pressure/corrupt-file case) — this is
+    // "unknown", not "no clamp needed". Trusting the assigned `duration` blindly risks xfade
+    // running out of decodable frames mid-transition and freezing on the last frame. Fall back
+    // to the same conservative floor already used for known-short clips instead.
+    startSec = 0;
+    effectiveDur = Math.min(duration, montageMinOnScreenSec());
   }
   effectiveDur = Math.max(0.35, effectiveDur);
 
@@ -21363,11 +21348,15 @@ async function prepareSceneEffectLayers(
 
   try {
     if (cinematicEffectsEnabled()) {
-      cinematicPlan = planCinematicScene(scene, duration);
+      // Schedule against outDur (the real, TTS-probed clip length this scene will actually be
+      // cut to) instead of the pre-TTS planning estimate `duration` — narration speed routinely
+      // differs from the plan, so overlays scheduled against the plan get cut off early or all
+      // bunch into the first portion of the clip while real narration runs longer/shorter.
+      cinematicPlan = planCinematicScene(scene, outDur);
       const cinematicOverlays = await buildCinematicOverlays(
         cinematicPlan,
         scene,
-        duration,
+        outDur,
         workDir,
         FFMPEG_BIN,
         (cmd, ms, lbl) => withSceneFetchTimeout(() => exec(cmd), ms, lbl),
@@ -21874,11 +21863,14 @@ export async function composeSceneVideoInner(
   try {
     const yearsOnly = yearsOnlyOnScreen();
     if (cinematicEffectsEnabled() && !yearsOnly) {
-      cinematicPlan = planCinematicScene(scene, duration);
+      // outDurEarly (computed above from the real, probed voiceover) reflects what this scene
+      // will actually be cut to — scheduling against the raw planning `duration` instead risks
+      // overlays cut off early or bunched into the front when narration length differs.
+      cinematicPlan = planCinematicScene(scene, outDurEarly);
       const cinematicOverlays = await buildCinematicOverlays(
         cinematicPlan,
         scene,
-        duration,
+        outDurEarly,
         workDir,
         FFMPEG_BIN,
         (cmd, ms, lbl) => withSceneFetchTimeout(() => exec(cmd), ms, lbl),
@@ -23831,16 +23823,28 @@ async function _runVideoPipelineInner(
                         try {
                           rescueClips.push(await generateGuaranteedBeatClip(scene.index, si, hold, workDir));
                         } catch (guaranteedErr) {
-                          // Even this can exhaust every color-fallback retry under severe fork
-                          // pressure. This whole chain runs inside a Promise.all over every scene
-                          // — an uncaught throw here would fail the ENTIRE batch, not just this
-                          // scene. Skip the slot; composeSceneVideo below still gets whatever
-                          // clips the other slots produced (or falls to the black-fill path if
-                          // that ends up empty too).
-                          console.error(
-                            `[Compose] Scene ${scene.index}: guaranteed clip ${si} totally unavailable, skipping:`,
+                          // A single failure here is often transient (fork pressure, a one-off
+                          // ffmpeg spawn error) rather than permanent — retry the same slot once
+                          // before giving up on it, so a thin/under-filled scene isn't the default
+                          // outcome of one bad subprocess call.
+                          console.warn(
+                            `[Compose] Scene ${scene.index}: guaranteed clip ${si} failed, retrying once:`,
                             (guaranteedErr as Error).message?.slice(0, 150)
                           );
+                          try {
+                            rescueClips.push(await generateGuaranteedBeatClip(scene.index, si, hold, workDir));
+                          } catch (retryErr) {
+                            // Even this can exhaust every color-fallback retry under severe fork
+                            // pressure. This whole chain runs inside a Promise.all over every scene
+                            // — an uncaught throw here would fail the ENTIRE batch, not just this
+                            // scene. Skip the slot; composeSceneVideo below still gets whatever
+                            // clips the other slots produced (or falls to the black-fill path if
+                            // that ends up empty too).
+                            console.error(
+                              `[Compose] Scene ${scene.index}: guaranteed clip ${si} totally unavailable, skipping:`,
+                              (retryErr as Error).message?.slice(0, 150)
+                            );
+                          }
                         }
                       }
                     }
@@ -25269,6 +25273,11 @@ async function _runVideoPipelineInner(
     getRenderCtx().watchdog = null;
     set_activeRenderBudget(null);
     set_activeBudgetTracker(null);
+    // Per-video only — other videos may still be rendering concurrently in this same worker
+    // process (MAX_CONCURRENT_JOBS), so a blanket cache .clear() here would wipe their
+    // still-in-progress cached storyboards/search plans too.
+    clearStoryboardCacheForVideo(videoId);
+    clearVisualSearchPlanCacheForVideo(videoId);
     try {
       fs.rmSync(workDir, { recursive: true, force: true });
     } catch { /* ignore */ }

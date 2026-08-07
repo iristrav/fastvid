@@ -1,12 +1,14 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { createConnection, Connection } from "mysql2/promise";
 
-describe("REAL VIDEO GENERATION TEST", () => {
+const hasDbUrl = !!process.env.DATABASE_URL;
+
+describe.skipIf(!hasDbUrl)("REAL VIDEO GENERATION TEST", () => {
   let db: Connection;
   const videoId = 600001;
 
   beforeAll(async () => {
-    db = await createConnection(process.env.DATABASE_URL || "mysql://root:wYDqxvVCSFsGBqDZqkRlyXnzyutusNVY@switchyard.proxy.rlwy.net:47894/railway");
+    db = await createConnection(process.env.DATABASE_URL!);
     console.log("\n🎬 ========== REAL VIDEO GENERATION TEST ==========\n");
   });
 
@@ -14,7 +16,7 @@ describe("REAL VIDEO GENERATION TEST", () => {
     if (db) await db.end();
   });
 
-  it("Monitor video generation progress", async () => {
+  it("Monitor video generation progress", { timeout: 6 * 60 * 1000 }, async () => {
     console.log("📊 Monitoring video 600001 generation...\n");
 
     let lastStatus = "";
@@ -74,5 +76,5 @@ describe("REAL VIDEO GENERATION TEST", () => {
     }
 
     throw new Error(`Video generation timed out after 5 minutes`);
-  }, { timeout: 6 * 60 * 1000 }); // 6 minute test timeout
+  });
 });

@@ -58,19 +58,3 @@ export async function generateVeoVideo(
     return null;
   }
 }
-
-/**
- * Alternative: Direct Veo 3.1 API call (if API access is available)
- * This would require direct integration with Google's Veo API endpoint
- */
-export async function generateVeoVideoDirect(
-  prompt: string,
-  duration: number = 8
-): Promise<VeoVideoResponse | null> {
-  // This would require direct Veo API access
-  // Currently, Veo is available via Google AI Studio or Gemini API
-  // Direct API access may require special permissions
-  
-  console.warn("[Veo] Direct API access not yet implemented");
-  return null;
-}

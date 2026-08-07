@@ -742,8 +742,21 @@ async function _runVideoGeneration(
       // PIPELINE_ARCHITECTURE=modular (Phase 2, default unset) switches to the new
       // service-oriented pipeline (server/pipeline/orchestrator.ts) — structurally complete
       // but not yet verified against real traffic (see the Phase 2 migration summary), so the
-      // default stays the proven runVideoPipeline unchanged.
-      const useModularPipeline = process.env.PIPELINE_ARCHITECTURE === "modular";
+      // default stays the proven runVideoPipeline unchanged. A second, differently-named
+      // confirmation var is required so a single typo'd/misapplied env var can't silently
+      // switch 100% of production traffic onto the unverified pipeline.
+      const modularPipelineRequested = process.env.PIPELINE_ARCHITECTURE === "modular";
+      const modularPipelineConfirmed =
+        process.env.PIPELINE_ARCHITECTURE_CONFIRM === "modular-i-understand-unverified";
+      const useModularPipeline = modularPipelineRequested && modularPipelineConfirmed;
+      if (modularPipelineRequested && !modularPipelineConfirmed) {
+        console.error(
+          "[Fastvid] PIPELINE_ARCHITECTURE=modular is set but PIPELINE_ARCHITECTURE_CONFIRM is " +
+            "missing/incorrect — refusing to switch traffic to the unverified modular pipeline. " +
+            "Using the proven runVideoPipeline instead. Set PIPELINE_ARCHITECTURE_CONFIRM=" +
+            "modular-i-understand-unverified to deliberately opt in."
+        );
+      }
       const pipelineFn = useModularPipeline ? runModularVideoPipeline : runVideoPipeline;
       const pipelineRun = pipelineFn(
         videoId,

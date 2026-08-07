@@ -115,3 +115,8 @@ uploads/
 
 # Manus version file (auto-generated, not part of source)
 client/public/__manus__/version.json
+
+# Agent tooling's own DB-query debug logs — contain real hostnames, usernames, and query
+# results (including real user PII) from whichever database was connected at the time. Must
+# never be committed.
+.manus/

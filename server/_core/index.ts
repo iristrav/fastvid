@@ -55,6 +55,20 @@ process.on("unhandledRejection", (reason) => {
   console.error("[Fastvid] Unhandled rejection (process kept alive):", reason);
 });
 
+// Video generation itself is dispatched to the queue (enqueueVideoJob) and executed by the
+// worker process, not run inline in a request — so this process has no long-running render
+// state to drain on shutdown. Still log the signal for deploy-log visibility instead of dying
+// silently with no trace of why the process exited.
+let webShuttingDown = false;
+function handleWebShutdownSignal(signal: NodeJS.Signals) {
+  if (webShuttingDown) return;
+  webShuttingDown = true;
+  console.log(`[Fastvid] ${signal} received — shutting down`);
+  process.exit(0);
+}
+process.on("SIGTERM", handleWebShutdownSignal);
+process.on("SIGINT", handleWebShutdownSignal);
+
 // ─── Auto-Migration ───────────────────────────────────────────────────────────
 import type { MigrationResult } from "../migrationGuard";
 type MigrationOutcome = { result: MigrationResult; migrationsFolder: string } | null;

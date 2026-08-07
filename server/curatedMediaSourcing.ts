@@ -730,19 +730,72 @@ export async function resolveArchivesForVisualQuery(
   return archives;
 }
 
+/** Everything scoreCuratedAsset derives purely from beatText — identical for every candidate
+ *  asset scored against the same beat, so callers looping over a candidate pool for one beat
+ *  should compute this once (via computeBeatScoringContext) and pass it in, instead of paying
+ *  the same ~10 regex/classifier passes again for every single candidate. */
+export interface BeatScoringContext {
+  visualTags: string[];
+  geoTags: string[];
+  isCycling: boolean;
+  cyclingTags: string[];
+  isCar: boolean;
+  carTags: string[];
+  isGovernment: boolean;
+  govTags: string[];
+  isUrbanPlanning: boolean;
+  planTags: string[];
+  isInfrastructure: boolean;
+  infraTags: string[];
+  anchorWords: string[];
+}
+
+export function computeBeatScoringContext(beatText?: string): BeatScoringContext {
+  const t = beatText?.trim() ? beatText : undefined;
+  const isCycling = !!t && isCyclingBeat(t);
+  const isCar = !!t && isCarBeat(t);
+  const isGovernment = !!t && isGovernmentBeat(t);
+  const isUrbanPlanning = !!t && isUrbanPlanningBeat(t);
+  const isInfrastructure = !!t && isInfrastructureBeat(t);
+  let anchorWords: string[] = [];
+  if (t) {
+    const anchor = extractPrimaryVisualAnchor(t);
+    if (anchor) {
+      anchorWords = anchor.toLowerCase().trim().split(/\s+/).filter((w) => w.length >= 4);
+    }
+  }
+  return {
+    visualTags: beatText ? extractVisualSearchTags(beatText) : [],
+    geoTags: t ? extractBeatGeoPlaceTags(t) : [],
+    isCycling,
+    cyclingTags: isCycling ? extractBeatCyclingTags(t!) : [],
+    isCar,
+    carTags: isCar ? extractBeatCarTags(t!) : [],
+    isGovernment,
+    govTags: isGovernment ? extractBeatGovernmentTags(t!) : [],
+    isUrbanPlanning,
+    planTags: isUrbanPlanning ? extractBeatUrbanPlanningTags(t!) : [],
+    isInfrastructure,
+    infraTags: isInfrastructure ? extractBeatInfrastructureTags(t!) : [],
+    anchorWords,
+  };
+}
+
 export function scoreCuratedAsset(
   asset: ArchiveAssetRow,
   archiveNicheTags: string[],
   beatTags: string[],
   topicAnchors: string[] = [],
   beatText?: string,
-  videoVisualTopic: VideoVisualTopic = "general"
+  videoVisualTopic: VideoVisualTopic = "general",
+  beatCtx?: BeatScoringContext
 ): number {
   const assetTags = normalizeMediaTags(asset.tags ?? []);
   const assetHay = assetTags.join(" ");
   if (isNonDocumentaryVisualHay(assetHay)) return 0;
   let score = 0;
   let beatHits = 0;
+  const ctx = beatCtx ?? computeBeatScoringContext(beatText);
 
   if (beatText?.trim()) {
     const bl = beatText.toLowerCase();
@@ -769,8 +822,7 @@ export function scoreCuratedAsset(
     }
   }
 
-  const visualTags = beatText ? extractVisualSearchTags(beatText) : [];
-  for (const vt of visualTags) {
+  for (const vt of ctx.visualTags) {
     for (const t of assetTags) {
       if (t === vt || t.includes(vt) || vt.includes(t)) {
         score += 22;
@@ -779,27 +831,23 @@ export function scoreCuratedAsset(
     }
   }
 
-  if (beatText?.trim()) {
-    const geoTags = extractBeatGeoPlaceTags(beatText);
-    if (geoTags.length > 0) {
-      const geoHits = countVisualTagHits(asset, geoTags);
-      if (geoHits >= 2) {
-        score += 85;
-        beatHits += 2;
-      } else if (geoHits >= 1) {
-        score += 50;
-        beatHits++;
-      } else if (beatHits < 2) {
-        // Only penalize when asset tags don't match the beat at all (geo slugs optional on upload).
-        score -= 60;
-      }
-      if (isWrongGeoForBeat(asset, geoTags)) score = Math.max(0, score - 250);
+  if (beatText?.trim() && ctx.geoTags.length > 0) {
+    const geoHits = countVisualTagHits(asset, ctx.geoTags);
+    if (geoHits >= 2) {
+      score += 85;
+      beatHits += 2;
+    } else if (geoHits >= 1) {
+      score += 50;
+      beatHits++;
+    } else if (beatHits < 2) {
+      // Only penalize when asset tags don't match the beat at all (geo slugs optional on upload).
+      score -= 60;
     }
+    if (isWrongGeoForBeat(asset, ctx.geoTags)) score = Math.max(0, score - 250);
   }
 
-  if (beatText?.trim() && isCyclingBeat(beatText)) {
-    const cyclingTags = extractBeatCyclingTags(beatText);
-    const cyclingHits = countVisualTagHits(asset, cyclingTags);
+  if (ctx.isCycling) {
+    const cyclingHits = countVisualTagHits(asset, ctx.cyclingTags);
     if (assetShowsCycling(asset)) {
       score += 55 + cyclingHits * 18;
       beatHits += 2;
@@ -808,9 +856,8 @@ export function scoreCuratedAsset(
     }
   }
 
-  if (beatText?.trim() && isCarBeat(beatText)) {
-    const carTags = extractBeatCarTags(beatText);
-    const carHits = countVisualTagHits(asset, carTags);
+  if (ctx.isCar) {
+    const carHits = countVisualTagHits(asset, ctx.carTags);
     if (assetShowsCars(asset)) {
       score += 55 + carHits * 18;
       beatHits += 2;
@@ -819,9 +866,8 @@ export function scoreCuratedAsset(
     }
   }
 
-  if (beatText?.trim() && isGovernmentBeat(beatText)) {
-    const govTags = extractBeatGovernmentTags(beatText);
-    const govHits = countVisualTagHits(asset, govTags);
+  if (ctx.isGovernment) {
+    const govHits = countVisualTagHits(asset, ctx.govTags);
     if (assetShowsGovernment(asset)) {
       score += 55 + govHits * 18;
       beatHits += 2;
@@ -830,9 +876,8 @@ export function scoreCuratedAsset(
     }
   }
 
-  if (beatText?.trim() && isUrbanPlanningBeat(beatText)) {
-    const planTags = extractBeatUrbanPlanningTags(beatText);
-    const planHits = countVisualTagHits(asset, planTags);
+  if (ctx.isUrbanPlanning) {
+    const planHits = countVisualTagHits(asset, ctx.planTags);
     if (assetShowsUrbanPlanning(asset, beatText)) {
       score += 55 + planHits * 18;
       beatHits += 2;
@@ -841,9 +886,8 @@ export function scoreCuratedAsset(
     }
   }
 
-  if (beatText?.trim() && isInfrastructureBeat(beatText)) {
-    const infraTags = extractBeatInfrastructureTags(beatText);
-    const infraHits = countVisualTagHits(asset, infraTags);
+  if (ctx.isInfrastructure) {
+    const infraHits = countVisualTagHits(asset, ctx.infraTags);
     if (assetShowsInfrastructure(asset, beatText)) {
       score += 55 + infraHits * 18;
       beatHits += 2;
@@ -852,16 +896,9 @@ export function scoreCuratedAsset(
     }
   }
 
-  if (beatText?.trim()) {
-    const anchor = extractPrimaryVisualAnchor(beatText);
-    if (anchor) {
-      const anchorNorm = anchor.toLowerCase().trim();
-      const anchorWords = anchorNorm.split(/\s+/).filter((w) => w.length >= 4);
-      if (anchorWords.length >= 2 && anchorWords.every((w) => assetHay.includes(w))) {
-        score += 48;
-        beatHits += 2;
-      }
-    }
+  if (ctx.anchorWords.length >= 2 && ctx.anchorWords.every((w) => assetHay.includes(w))) {
+    score += 48;
+    beatHits += 2;
   }
 
   score += curatedSceneContextScore(asset, beatText);
@@ -1168,6 +1205,9 @@ export async function listCuratedArchiveCandidates(
   const scored: CuratedCandidatePick[] = [];
   const fallback: CuratedCandidatePick[] = [];
   const metadataBlocks = metadataVisualBlocksEnabled();
+  // beatText is fixed for this whole call — compute its derived tags/classifiers once instead
+  // of re-deriving them from scratch for every candidate asset scored below (can be hundreds).
+  const beatCtx = computeBeatScoringContext(beatText);
 
   for (const archive of archives) {
     const nicheTags = normalizeMediaTags(archive.nicheTags ?? []);
@@ -1179,7 +1219,7 @@ export async function listCuratedArchiveCandidates(
       if (isNonDocumentaryVisualHay(assetHay)) continue;
       if (metadataBlocks && isCuratedOffTopicAsset(asset, topicAnchors, beatTags, videoVisualTopic)) continue;
       if (metadataBlocks && geoRequired.length > 0 && isWrongGeoForBeat(asset, geoRequired)) continue;
-      const score = scoreCuratedAsset(asset, nicheTags, beatTags, topicAnchors, beatText, videoVisualTopic);
+      const score = scoreCuratedAsset(asset, nicheTags, beatTags, topicAnchors, beatText, videoVisualTopic, beatCtx);
       const effectiveScore = score > 0 ? score : metadataBlocks ? 0 : 1;
       if (effectiveScore > 0) {
         scored.push({
@@ -1210,7 +1250,7 @@ export async function listCuratedArchiveCandidates(
         const assetHay = normalizeMediaTags(asset.tags ?? []).join(" ");
         if (isNonDocumentaryVisualHay(assetHay)) continue;
         if (metadataBlocks && isCuratedOffTopicAsset(asset, topicAnchors, beatTags, videoVisualTopic)) continue;
-        const score = scoreCuratedAsset(asset, nicheTags, [], [], beatText, videoVisualTopic);
+        const score = scoreCuratedAsset(asset, nicheTags, [], [], beatText, videoVisualTopic, beatCtx);
         fallback.push({ asset, score: Math.max(score, 1), archiveName: archive.name, archiveNicheTags: nicheTags });
       }
     }
@@ -1228,7 +1268,7 @@ export async function listCuratedArchiveCandidates(
         if (excludeStorageUrls.has(asset.storageUrl)) continue;
         const assetHay = normalizeMediaTags(asset.tags ?? []).join(" ");
         if (isNonDocumentaryVisualHay(assetHay)) continue;
-        const score = scoreCuratedAsset(asset, nicheTags, beatTags, topicAnchors, beatText, videoVisualTopic);
+        const score = scoreCuratedAsset(asset, nicheTags, beatTags, topicAnchors, beatText, videoVisualTopic, beatCtx);
         pool.push({ asset, score: Math.max(score, 1), archiveName: archive.name, archiveNicheTags: nicheTags });
       }
     }
@@ -1765,6 +1805,7 @@ export function rankCuratedCandidatesForBeat(
   beatIndex = 0,
   opts?: { strict?: boolean }
 ): CuratedCandidatePick[] {
+  const beatCtx = computeBeatScoringContext(beatText);
   const ranked = pool.map((c) => ({
     ...c,
     score: scoreCuratedAsset(
@@ -1772,7 +1813,9 @@ export function rankCuratedCandidatesForBeat(
       c.archiveNicheTags ?? normalizeMediaTags(c.asset.tags ?? []),
       beatTags,
       topicAnchors,
-      beatText
+      beatText,
+      "general",
+      beatCtx
     ),
   }));
   ranked.sort((a, b) => {

@@ -13,6 +13,7 @@ import {
   type BeatSemanticProfile,
 } from "./semanticVisualMatching";
 import { invokeLLM } from "./_core/llm";
+import { getActiveVideoId } from "./videoGenerationCancel";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -86,6 +87,17 @@ export function clearVisualSearchPlanCache(): void {
   _videoContextCache = null;
 }
 
+/** Evict only one video's entries — safe to call when that video's render finishes even
+ *  though other videos may still be rendering concurrently in the same process (a blanket
+ *  clearVisualSearchPlanCache() would wipe their still-in-progress cached plans too). */
+export function clearVisualSearchPlanCacheForVideo(videoId: number): void {
+  const prefix = `v${videoId}:`;
+  for (const key of _planCache.keys()) {
+    if (key.startsWith(prefix)) _planCache.delete(key);
+  }
+  if (_videoContextCache?.key.startsWith(prefix)) _videoContextCache = null;
+}
+
 // ─── Feature flag ─────────────────────────────────────────────────────────────
 
 export function visualSearchPlanEnabled(): boolean {
@@ -126,7 +138,12 @@ export async function buildVideoVisualContext(
   videoTitle: string,
   synopsis?: string
 ): Promise<VideoVisualContext> {
-  const cacheKey = videoTitle;
+  // Scoped by the active render's videoId (not just the title) — two different videos can
+  // legitimately produce the identical title string (formulaic documentary titles are common),
+  // which without this would silently hand the second video the first's cached people/period/
+  // locations context. Mirrors the identical fix already applied to the sibling storyboard
+  // cache in editorialSequencePlanner.ts.
+  const cacheKey = `v${getActiveVideoId() ?? "?"}:${videoTitle}`;
   if (_videoContextCache?.key === cacheKey) return _videoContextCache.ctx;
 
   const fallback: VideoVisualContext = {
@@ -391,9 +408,16 @@ function logPlan(sceneLabel: string, beatLabel: string, plan: VisualSearchPlan):
  * Cache key = sceneIndex so all beats in a scene share one plan.
  */
 export async function getOrGenerateSearchPlan(
-  cacheKey: string,
+  cacheKeyIn: string,
   input: VisualSearchPlanInput
 ): Promise<VisualSearchPlan> {
+  // Prefixed with the active render's videoId so a scene-index cache key can never collide
+  // across different videos — a worker process renders many videos over its lifetime, and a
+  // later video reaching the same scene index as an earlier one would otherwise silently reuse
+  // that earlier, unrelated video's search plan (wrong topic, wrong entities, wrong era). Same
+  // bug class and same fix pattern already applied to the sibling storyboard cache in
+  // editorialSequencePlanner.ts.
+  const cacheKey = `v${getActiveVideoId() ?? "?"}:${cacheKeyIn}`;
   const cached = _planCache.get(cacheKey);
   if (cached) return cached;
 

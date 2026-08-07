@@ -499,6 +499,8 @@ async function invokeGemini(
 
   let lastErrorText = "";
   for (let attempt = 0; attempt < 3; attempt++) {
+    // Same gap as the OpenAI-compatible path above: no timeout meant a hung connection to
+    // Gemini would leave this fetch pending indefinitely instead of erroring into the retry loop.
     const response = await fetch(url, {
       method: "POST",
       headers: {
@@ -506,6 +508,7 @@ async function invokeGemini(
         "x-goog-api-key": apiKey,
       },
       body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(120_000),
     });
 
     if (response.ok) {
@@ -704,14 +707,30 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
     }
 
     for (let attempt = 0; attempt < 4; attempt++) {
-      const response = await fetch(resolveApiUrl(provider), {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify(payload),
-      });
+      // No timeout previously meant a hung connection to the provider would leave this fetch
+      // pending indefinitely — no error to trigger the retry/fallback-provider chain below, no
+      // way for a caller to ever move on. This is the first pipeline stage (script generation);
+      // a stall here blocked everything downstream with nothing to recover it. A thrown fetch
+      // error (network failure, or this timeout firing) previously also had nowhere to go —
+      // unlike an HTTP-level error response, it wasn't caught here at all, so it skipped the
+      // provider-fallback chain below entirely and escaped invokeLLM uncaught. Now it's treated
+      // the same as any other provider failure: record it and fall through to the next provider.
+      let response: Response;
+      try {
+        response = await fetch(resolveApiUrl(provider), {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify(payload),
+          signal: AbortSignal.timeout(120_000),
+        });
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        console.warn(`[LLM] ${provider} network/timeout failure:`, lastError.message);
+        break;
+      }
 
       if (response.ok) {
         if (i > 0 || attempt > 0) {
@@ -720,7 +739,18 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
               (i > 0 ? ` after ${chain[0]} failure` : "")
           );
         }
-        const result = (await response.json()) as InvokeResult;
+        // response.ok only means the HTTP status was 2xx — a proxy or gateway in front of the
+        // provider can still return a 200 with a non-JSON or truncated body. Previously .json()
+        // throwing here escaped invokeLLM uncaught instead of falling through to the next
+        // provider, same failure class as the unguarded fetch() fixed above.
+        let result: InvokeResult;
+        try {
+          result = (await response.json()) as InvokeResult;
+        } catch (err) {
+          lastError = err instanceof Error ? err : new Error(String(err));
+          console.warn(`[LLM] ${provider} returned malformed JSON:`, lastError.message);
+          break;
+        }
         if (result.usage) {
           const { recordLlmUsage } = await import("./llmBudget");
           recordLlmUsage(String(payload.model), result.usage.prompt_tokens, result.usage.completion_tokens, getActiveUserId() ?? null);

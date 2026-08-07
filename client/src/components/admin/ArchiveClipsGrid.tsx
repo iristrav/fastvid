@@ -303,22 +303,31 @@ function AssetPreviewModal({
 
   useEffect(() => {
     // Attach timeupdate + durationchange listener to the video rendered by LazyArchiveMedia.
+    // setInterval's callback return value is ignored by the runtime (unlike useEffect), so the
+    // attached listeners must be tracked here and removed by THIS effect's own cleanup —
+    // otherwise they silently accumulate on the video element across asset switches.
+    let attachedVideo: HTMLVideoElement | null = null;
+    let onTime: (() => void) | null = null;
+    let onDur: (() => void) | null = null;
     const interval = setInterval(() => {
       const v = getVideo();
       if (v) {
-        const onTime = () => setCurrentTime(v.currentTime);
-        const onDur = () => { if (v.duration && isFinite(v.duration)) setVideoDuration(v.duration); };
+        onTime = () => setCurrentTime(v.currentTime);
+        onDur = () => { if (v.duration && isFinite(v.duration)) setVideoDuration(v.duration); };
         v.addEventListener("timeupdate", onTime);
         v.addEventListener("durationchange", onDur);
         if (v.duration && isFinite(v.duration)) setVideoDuration(v.duration);
+        attachedVideo = v;
         clearInterval(interval);
-        return () => {
-          v.removeEventListener("timeupdate", onTime);
-          v.removeEventListener("durationchange", onDur);
-        };
       }
     }, 100);
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      if (attachedVideo && onTime && onDur) {
+        attachedVideo.removeEventListener("timeupdate", onTime);
+        attachedVideo.removeEventListener("durationchange", onDur);
+      }
+    };
   }, [asset.id]);
 
   function markTrimPoint() {
