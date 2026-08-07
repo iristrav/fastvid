@@ -80,9 +80,10 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     depends_on:
+      # Only mysql — the worker polls the database directly (server/videoQueue.ts) and never
+      # talks to the web process, so gating it on web's healthcheck would make a transient web
+      # failure block the worker from starting too, for no architectural reason.
       mysql:
-        condition: service_healthy
-      web:
         condition: service_healthy
     environment:
       NODE_ENV: production

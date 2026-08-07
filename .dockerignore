@@ -22,6 +22,10 @@ uploads
 .vscode
 .idea
 
+# Agent tooling's own DB-query debug logs (see .gitignore) — must never end up in a build
+# context either, in case a local checkout regenerates them before they're committed.
+.manus
+
 # Test/scratch output that shouldn't leak into the image.
 tsc_errors*.txt
 vitest_new*.json
