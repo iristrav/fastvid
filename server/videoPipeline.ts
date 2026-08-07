@@ -195,6 +195,7 @@ import {
   logRetrievalRound,
   visualSearchPlanEnabled,
   buildVideoVisualContext,
+  clearVisualSearchPlanCacheForVideo,
   type VideoVisualContext,
 } from "./visualSearchPlan";
 import {
@@ -203,6 +204,7 @@ import {
   enrichBeatFromShot,
   editorialSequencePlannerEnabled,
   clearStoryboardCache,
+  clearStoryboardCacheForVideo,
 } from "./editorialSequencePlanner";
 import {
   editorialReorderScene,
@@ -25260,6 +25262,11 @@ async function _runVideoPipelineInner(
     getRenderCtx().watchdog = null;
     set_activeRenderBudget(null);
     set_activeBudgetTracker(null);
+    // Per-video only — other videos may still be rendering concurrently in this same worker
+    // process (MAX_CONCURRENT_JOBS), so a blanket cache .clear() here would wipe their
+    // still-in-progress cached storyboards/search plans too.
+    clearStoryboardCacheForVideo(videoId);
+    clearVisualSearchPlanCacheForVideo(videoId);
     try {
       fs.rmSync(workDir, { recursive: true, force: true });
     } catch { /* ignore */ }

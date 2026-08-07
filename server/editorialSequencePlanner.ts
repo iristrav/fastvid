@@ -52,6 +52,17 @@ export function clearStoryboardCache(): void {
   _storyboardCache.clear();
 }
 
+/** Evict only one video's entries — safe to call when that video's render finishes even
+ *  though other videos may still be rendering concurrently in the same process (a blanket
+ *  clearStoryboardCache() would wipe their still-in-progress cached storyboards too). Without
+ *  this, entries accumulated for the life of the process with nothing ever evicting them. */
+export function clearStoryboardCacheForVideo(videoId: number): void {
+  const prefix = `v${videoId}:`;
+  for (const key of _storyboardCache.keys()) {
+    if (key.startsWith(prefix)) _storyboardCache.delete(key);
+  }
+}
+
 // Phase 12: the cache key previously carried no video identity ("s${sceneIndex}"), so once the
 // worker process rendered one video, every later video whose scene count reached a previously
 // -cached index silently reused that earlier, unrelated video's storyboard (wrong shots, wrong
