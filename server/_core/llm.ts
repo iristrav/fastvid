@@ -739,7 +739,18 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
               (i > 0 ? ` after ${chain[0]} failure` : "")
           );
         }
-        const result = (await response.json()) as InvokeResult;
+        // response.ok only means the HTTP status was 2xx — a proxy or gateway in front of the
+        // provider can still return a 200 with a non-JSON or truncated body. Previously .json()
+        // throwing here escaped invokeLLM uncaught instead of falling through to the next
+        // provider, same failure class as the unguarded fetch() fixed above.
+        let result: InvokeResult;
+        try {
+          result = (await response.json()) as InvokeResult;
+        } catch (err) {
+          lastError = err instanceof Error ? err : new Error(String(err));
+          console.warn(`[LLM] ${provider} returned malformed JSON:`, lastError.message);
+          break;
+        }
         if (result.usage) {
           const { recordLlmUsage } = await import("./llmBudget");
           recordLlmUsage(String(payload.model), result.usage.prompt_tokens, result.usage.completion_tokens, getActiveUserId() ?? null);

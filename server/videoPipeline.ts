@@ -4419,10 +4419,13 @@ export async function fetchPexelsClips(
     try {
       // HD quality: large size (min 1280px), landscape orientation, fetch 15 candidates
       const searchUrl = `https://api.pexels.com/videos/search?query=${encodeURIComponent(currentQuery)}&per_page=15&size=large&orientation=landscape`;
-      const searchResp = await withTimeout(
-        fetch(searchUrl, { headers: { Authorization: PEXELS_API_KEY } }),
+      // withTimeout only races a timer and never aborts the request — a timed-out Pexels call
+      // keeps running in the background and still counts against the metered quota.
+      const searchResp = await fetchWithTimeout(
+        searchUrl,
         10_000,
-        `Pexels search scene ${sceneIndex} query "${currentQuery}"`
+        `Pexels search scene ${sceneIndex} query "${currentQuery}"`,
+        { headers: { Authorization: PEXELS_API_KEY } }
       );
 
       if (!searchResp.ok) continue;
@@ -4487,8 +4490,8 @@ export async function fetchPexelsClips(
 
           while (retries > 0 && !buffer) {
             try {
-              downloadResp = await withTimeout(
-                fetch(videoFile.link),
+              downloadResp = await fetchWithTimeout(
+                videoFile.link,
                 45_000,
                 `Download Pexels clip ${idx} scene ${sceneIndex} (attempt ${4 - retries}/3)`
               );
@@ -4621,10 +4624,11 @@ async function fetchBrollClips(
     }
     try {
       const searchUrl = `https://api.pexels.com/videos/search?query=${encodeURIComponent(query)}&per_page=5&size=large&orientation=landscape`;
-      const searchResp = await withTimeout(
-        fetch(searchUrl, { headers: { Authorization: PEXELS_API_KEY } }),
+      const searchResp = await fetchWithTimeout(
+        searchUrl,
         10_000,
-        `B-roll Pexels search scene ${sceneIndex} query "${query}"`
+        `B-roll Pexels search scene ${sceneIndex} query "${query}"`,
+        { headers: { Authorization: PEXELS_API_KEY } }
       );
       if (!searchResp.ok) {
         if (PIXABAY_API_KEY) {
@@ -4754,8 +4758,10 @@ export async function fetchPixabayClips(
         `&q=${encodeURIComponent(currentQuery)}` +
         `&per_page=10&video_type=film&min_width=1280&safesearch=true`;
 
-      const searchResp = await withTimeout(
-        fetch(searchUrl),
+      // withTimeout only races a timer and never aborts the request — a timed-out Pixabay call
+      // keeps running in the background and still counts against the metered quota.
+      const searchResp = await fetchWithTimeout(
+        searchUrl,
         10_000,
         `Pixabay search scene ${sceneIndex} query "${currentQuery}"`
       );
@@ -4810,8 +4816,8 @@ export async function fetchPixabayClips(
           let buffer: Buffer | null = null;
           for (let attempt = 0; attempt < 3 && !buffer; attempt++) {
             try {
-              const dlResp = await withTimeout(
-                fetch(videoFile.url),
+              const dlResp = await fetchWithTimeout(
+                videoFile.url,
                 20_000,
                 `Pixabay download scene ${sceneIndex} clip ${idx} attempt ${attempt + 1}`
               );
@@ -5643,8 +5649,10 @@ async function fetchSerpAPIImages(
     searchUrl.searchParams.set('ijn', '0');
     searchUrl.searchParams.set('api_key', SERPAPI_KEY);
 
-    const searchResp = await withTimeout(
-      fetch(searchUrl.toString()),
+    // withTimeout only races a timer and never aborts the request — a timed-out SerpAPI call
+    // keeps running in the background and still counts against the metered quota.
+    const searchResp = await fetchWithTimeout(
+      searchUrl.toString(),
       15_000,
       `SerpAPI search scene ${sceneIndex}`
     );
@@ -5684,15 +5692,16 @@ async function fetchSerpAPIImages(
         const imgPath = path.join(workDir, `scene_${sceneIndex}_${tag}serp_${i}.jpg`);
         const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}serp_${i}.mp4`);
 
-        const imgResp = await withTimeout(
-          fetch(imgUrl, {
+        const imgResp = await fetchWithTimeout(
+          imgUrl,
+          12_000,
+          `SerpAPI image download scene ${sceneIndex}`,
+          {
             headers: {
               'User-Agent': 'Mozilla/5.0 (compatible; Fastvid/1.0)',
               'Accept': 'image/jpeg,image/png,image/*',
             },
-          }),
-          12_000,
-          `SerpAPI image download scene ${sceneIndex}`
+          }
         );
         if (!imgResp.ok) continue;
         // Validate content-type: must be an image, not HTML/text
@@ -8163,7 +8172,9 @@ export async function probeYouTubeCcPipeline(): Promise<{
     searchUrl.searchParams.set("videoLicense", "creativeCommon");
     searchUrl.searchParams.set("maxResults", "5");
     searchUrl.searchParams.set("part", "snippet");
-    const searchResp = await fetch(searchUrl.toString());
+    // Diagnostic health probe — a stuck request here with no timeout means the /api/health/
+    // youtube-probe endpoint itself hangs forever instead of reporting a failure.
+    const searchResp = await fetchWithTimeout(searchUrl.toString(), 10_000, "YouTube CC probe search");
     searchStatus = searchResp.status;
     if (searchResp.ok) {
       const data = (await searchResp.json()) as {
@@ -8189,7 +8200,7 @@ export async function probeYouTubeCcPipeline(): Promise<{
   if (sampleVideoId && RAPIDAPI_KEY) {
     const host = process.env.RAPIDAPI_YT_HOST || "ytstream-download-youtube-videos.p.rapidapi.com";
     try {
-      const metaResp = await fetch(`https://${host}/dl?id=${sampleVideoId}`, {
+      const metaResp = await fetchWithTimeout(`https://${host}/dl?id=${sampleVideoId}`, 10_000, "YouTube CC probe RapidAPI", {
         headers: {
           "x-rapidapi-host": host,
           "x-rapidapi-key": RAPIDAPI_KEY,
