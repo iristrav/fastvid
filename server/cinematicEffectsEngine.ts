@@ -170,12 +170,21 @@ export function buildStatCountSteps(stat: string): string[] {
   return [raw.slice(0, 20)];
 }
 
-export type FacelessLine = { text: string; emphasis: boolean };
+export type FacelessLine = { text: string; emphasis: boolean; posFrac?: number };
 
-/** Voiceover keywords only (% / years / amounts) — max 2 lines for faceless B-roll overlays. */
+/** Voiceover keywords only (% / years / amounts) — max 2 lines for faceless B-roll overlays.
+ *  posFrac is each keyword's approximate fractional position within the narration text (same
+ *  proportional-position approximation visualBeatTags.ts's termStartInBeat already uses for the
+ *  sibling year-overlay path), so the caller can schedule the overlay near when it's actually
+ *  spoken instead of always at a fixed offset regardless of content. */
 export function parseFacelessSubtitleLines(text: string, maxLines = 2): FacelessLine[] {
+  const cleaned = text.replace(/\[visual:[^\]]+\]/gi, " ").replace(/\s+/g, " ").trim();
   const keywords = extractVoiceoverKeywords(text, maxLines);
-  return keywords.map((kw) => ({ text: kw, emphasis: true }));
+  return keywords.map((kw) => {
+    const idx = cleaned.toLowerCase().indexOf(kw.toLowerCase());
+    const posFrac = idx >= 0 && cleaned.length > 0 ? idx / cleaned.length : undefined;
+    return { text: kw, emphasis: true, posFrac };
+  });
 }
 
 export type FacelessSubtitlePlacement = "bottom-left" | "bottom-center";
@@ -267,7 +276,18 @@ export async function renderFacelessSubtitleOverlay(
   placement: FacelessSubtitlePlacement = "bottom-left"
 ): Promise<TimedOverlay | null> {
   if (!lines.length) return null;
-  const startTime = 0.35;
+  // Anchor to the earliest keyword's approximate spoken position instead of a fixed 0.35s for
+  // every scene regardless of length/content — a keyword mentioned mid-sentence in an 8s+ beat
+  // was previously shown (and gone) well before the narrator actually said it. Same proportional
+  // -position approximation already used for year overlays (visualBeatTags.ts's termStartInBeat).
+  const earliestFrac = lines.reduce<number | undefined>((min, l) => {
+    if (l.posFrac === undefined) return min;
+    return min === undefined ? l.posFrac : Math.min(min, l.posFrac);
+  }, undefined);
+  const startTime =
+    earliestFrac === undefined
+      ? 0.35
+      : Math.max(0.2, Math.min(sceneDuration * 0.7, earliestFrac * sceneDuration * 0.9));
   const endTime = Math.min(sceneDuration - 0.2, startTime + Math.min(4.5, sceneDuration * 0.55));
   const pngPath = path.join(workDir, `scene_${sceneIndex}_faceless_sub.png`);
   const marginL = 56;
