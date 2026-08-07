@@ -59,6 +59,7 @@ RUN apt-get update && apt-get install -y \
   libjpeg-dev \
   libgif-dev \
   librsvg2-dev \
+  gosu \
   && rm -rf /var/lib/apt/lists/* \
   && fc-cache -fv
 
@@ -81,12 +82,16 @@ RUN chmod +x start.sh worker-start.sh
 # Create uploads directory for local storage fallback
 RUN mkdir -p /app/uploads
 
-# Run as a non-root user — this process shells out to FFmpeg/native image libraries against
-# untrusted media (curated archive uploads, downloaded stock/archive footage); a vulnerability
-# in any of those decoders shouldn't hand over root inside the container.
+# Create the non-root user the app actually runs as — this process shells out to FFmpeg/
+# native image libraries against untrusted media (curated archive uploads, downloaded stock/
+# archive footage); a vulnerability in any of those decoders shouldn't hand over root inside
+# the container. The container itself still starts as root (no USER directive here) because
+# a Railway Volume mounted at /data arrives owned by root, after this build already ran —
+# start.sh/worker-start.sh chown it while briefly still root, then re-exec themselves as
+# "app" via gosu before any application code runs, so the app process itself is always
+# non-root exactly as before.
 RUN groupadd -r app && useradd -r -g app -d /app app \
   && chown -R app:app /app
-USER app
 
 # Railway injects PORT automatically; default to 3000 for local testing
 ENV PORT=3000

@@ -5,6 +5,20 @@
 #   - Worker exposes GET /api/health immediately for Railway deploy probes (no full web app)
 # Web/API service: railway.json with healthcheckPath /api/health
 
+# Railway/Docker mounts a persistent volume at /data (if attached) when the container is
+# created — after this image's build-time `chown -R app:app /app` already ran, and owned by
+# root by default. The app always runs as the non-root "app" user (see Dockerfile), so
+# without this the app user can never write into /data (CLIP cache, archive-clip-embeddings/
+# archive-clip-audits, uploads) — EACCES on every attempt. Fix ownership here while still
+# root (the container now starts as root so this is possible), then drop to "app" for the
+# rest of this script and the actual node process, preserving the non-root runtime.
+if [ "$(id -u)" = "0" ]; then
+  if [ -d /data ]; then
+    chown -R app:app /data 2>/dev/null || true
+  fi
+  exec gosu app sh "$0" "$@"
+fi
+
 echo "[worker-start.sh] Setting up FFmpeg..."
 
 # CLIP model cache on persistent Railway volume (survives redeploys)
