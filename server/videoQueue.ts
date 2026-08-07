@@ -136,6 +136,18 @@ export async function processQueueTick(): Promise<void> {
       };
       const jobWatchdog = setTimeout(() => {
         console.error(`[VideoQueue] Video ${claimed.id} exceeded ${Math.round(maxJobMs / 60_000)}min — force-releasing worker slot`);
+        // Freeing the slot only stops the COUNTER from blocking new work — the original
+        // runVideoJob() promise below keeps running for real (its .catch/.finally are still
+        // attached and will fire whenever it eventually settles, however long that takes),
+        // so without this the actual CPU/ffmpeg/network work behind a hung job was never
+        // being stopped, only left uncounted — letting real concurrency drift arbitrarily
+        // above maxJobsPerWorker under repeated hangs. requestVideoGenerationCancel() is the
+        // same signal user-initiated cancellation already uses; the pipeline's existing
+        // throwIfActiveRenderCancelled()/throwIfVideoGenerationCancelled() checks make it
+        // actually unwind instead of just becoming invisible to the slot count.
+        void import("./videoGenerationCancel").then(({ requestVideoGenerationCancel }) =>
+          requestVideoGenerationCancel(claimed.id)
+        );
         releaseSlot();
       }, maxJobMs);
 
