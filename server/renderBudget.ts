@@ -10,7 +10,17 @@
  *   3–6 min  → 12 min render
  *   6–10 min → 18 min render
  *  10–15 min → 25 min render
- *     > 15 min → auto-scale, hard ceiling 40 min
+ *     > 15 min → auto-scale, formula ceiling 40 min
+ *
+ * That formula alone is NOT the watchdog's actual kill budget: the watchdog (renderWatchdog.ts)
+ * must never use a tighter total budget than the pipeline's own central wall-clock policy
+ * (sourcingPolicy.ts's maxPipelineWallClockHardMin — the same ceiling the router race and the
+ * DB stall detector already use, up to 260 min for the longest video-length bucket). The
+ * returned RenderBudget.totalMs is therefore max(formula, maxPipelineWallClockHardMin) whenever
+ * the wall-clock limit is enabled at all — see computeRenderBudget()'s videoLength parameter.
+ * The per-stage pools below (compose/retrieve/concat/upload/tts/music) are unaffected: they're
+ * still derived from the formula's own totalMin and stay within their existing floor/ceiling
+ * clamps regardless of this watchdog-only floor.
  *
  * Stage percentages of totalMs:
  *   compose pool   55%  (split across scenes, complexity-adjusted at runtime)
@@ -27,7 +37,7 @@
  */
 
 import { getBudgetTier, getHistoricalAvgs } from "./renderBudgetTracker";
-import { pipelineWallClockLimitEnabled, PIPELINE_UNLIMITED_MS } from "./sourcingPolicy";
+import { pipelineWallClockLimitEnabled, PIPELINE_UNLIMITED_MS, maxPipelineWallClockHardMin } from "./sourcingPolicy";
 
 // ── Absolute floor/ceiling for each budget slot ──────────────────────────────
 const PER_SCENE_COMPOSE_MIN_MS  =  45_000;
@@ -132,10 +142,14 @@ function blendWithHistory(formulaMs: number, histAvg: number | null, reliable: b
  *
  * @param scenesCount     Number of scenes (chapter cards included).
  * @param expectedVideoSec  Sum of scenes[i].duration after VO sync.
+ * @param videoLength     Video-length bucket ("1" | "8-10" | "10-15" | "15-20" | ...). Used only
+ *   to floor the returned totalMs (watchdog kill budget) against the pipeline's central
+ *   wall-clock policy — omitting it just disables that floor (falls back to the formula alone).
  */
 export function computeRenderBudget(
   scenesCount: number,
-  expectedVideoSec: number
+  expectedVideoSec: number,
+  videoLength?: string | null
 ): RenderBudget {
   const scenes   = Math.max(scenesCount, 1);
   const videoMin = expectedVideoSec / 60;
@@ -195,7 +209,16 @@ export function computeRenderBudget(
   // totalMs elapses — that's exactly the kind of hard time cutoff PIPELINE_WALL_CLOCK_LIMIT=false
   // is meant to disable. Per-stage budgets (compose/retrieve/concat/upload) stay as computed
   // above so a genuinely stuck single step is still caught; only the render-wide kill is lifted.
-  const watchdogTotalMs = pipelineWallClockLimitEnabled() ? totalMs : PIPELINE_UNLIMITED_MS;
+  //
+  // Floor against the pipeline's central wall-clock policy: this formula's own totalMs was
+  // tuned assuming videos topped out around ~10 min (hard ceiling 40 min for ANY length), while
+  // sourcingPolicy.ts's maxPipelineWallClockHardMin allows up to 260 min for the longest bucket
+  // and is what the router race + DB stall detector already honor. Without this floor, the
+  // watchdog could SIGKILL a long render that every other budget layer still considers healthy.
+  const centralHardMs = maxPipelineWallClockHardMin(videoLength) * 60_000;
+  const watchdogTotalMs = pipelineWallClockLimitEnabled()
+    ? Math.max(totalMs, centralHardMs)
+    : PIPELINE_UNLIMITED_MS;
 
   return {
     scenesCount: scenes,

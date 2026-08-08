@@ -1,5 +1,7 @@
 import { GetObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { Upload } from "@aws-sdk/lib-storage";
+import * as fs from "fs";
 import { isS3StorageEnabled, prefixStorageKey } from "./storageBackend";
 
 let _client: S3Client | null = null;
@@ -57,6 +59,67 @@ export async function s3PutObject(
         const delayMs = 500 * 2 ** (attempt - 1);
         console.warn(
           `[S3Storage] Upload attempt ${attempt}/${maxAttempts} failed for ${key}, retrying in ${delayMs}ms:`,
+          (err as Error).message
+        );
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+  }
+  throw lastErr;
+}
+
+/** Uploads a file directly from disk, streaming it via multipart upload
+ *  (@aws-sdk/lib-storage's Upload) instead of loading it into a single in-memory Buffer first.
+ *  Existing large-file uploads (a rendered video can be hundreds of MB to low-GB) previously
+ *  read the whole file with fs.promises.readFile and passed the resulting Buffer to
+ *  PutObjectCommand, which the SDK then copied again internally (Buffer.from(existingBuffer)) —
+ *  peak RAM for that single step was roughly 2x the file size. Streaming from a fresh
+ *  fs.createReadStream on each attempt keeps memory usage bounded to the SDK's own part-size
+ *  buffers (a few MB at a time) regardless of file size. Same 3-attempt retry/backoff as
+ *  s3PutObject, since a stream can't be replayed after a failed attempt consumes it. */
+export async function s3PutObjectFromFile(
+  relKey: string,
+  filePath: string,
+  contentType: string
+): Promise<{ bucket: string; key: string }> {
+  if (!isS3StorageEnabled()) {
+    throw new Error("S3 storage is not configured");
+  }
+  const bucket = process.env.S3_BUCKET!.trim();
+  const key = prefixStorageKey(relKey);
+  const sizeBytes = (await fs.promises.stat(filePath)).size;
+
+  const maxAttempts = 3;
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    // A fresh stream per attempt (can't rewind/replay one that already failed partway through).
+    const bodyStream = fs.createReadStream(filePath);
+    try {
+      const upload = new Upload({
+        client: getClient(),
+        params: {
+          Bucket: bucket,
+          Key: key,
+          Body: bodyStream,
+          ContentType: contentType,
+        },
+      });
+      await upload.done();
+      console.log(
+        `[S3Storage] Streamed ${(sizeBytes / 1024 / 1024).toFixed(1)}MB → s3://${bucket}/${key}` +
+          (attempt > 1 ? ` (succeeded on attempt ${attempt})` : "")
+      );
+      return { bucket, key };
+    } catch (err) {
+      lastErr = err;
+      // Belt-and-suspenders: make sure this attempt's file descriptor is released even if the
+      // SDK didn't fully drain/destroy the stream before failing, so a retry loop can't leak an
+      // open fd per attempt.
+      if (!bodyStream.destroyed) bodyStream.destroy();
+      if (attempt < maxAttempts) {
+        const delayMs = 500 * 2 ** (attempt - 1);
+        console.warn(
+          `[S3Storage] Streamed upload attempt ${attempt}/${maxAttempts} failed for ${key}, retrying in ${delayMs}ms:`,
           (err as Error).message
         );
         await new Promise((resolve) => setTimeout(resolve, delayMs));

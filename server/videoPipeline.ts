@@ -26,7 +26,7 @@ import { promisify } from "util";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
-import { storagePut } from "./storage";
+import { storagePutFromFile } from "./storage";
 import { LOCAL_UPLOADS_DIR } from "./storageLocal";
 import { invokeLLM } from "./_core/llm";
 import { ffmpegSemaphore } from "./_core/semaphore";
@@ -100,6 +100,7 @@ import {
 } from "./cinematicEffectsEngine";
 import { PIPELINE_ERROR, pipelineError } from "@shared/appErrors";
 import { isShortVideoLength, normalizeVideoLength, targetVideoDurationMinutes } from "@shared/videoLengths";
+import { PIPELINE_PROCESSING_STATUSES } from "@shared/videoQueue";
 import fetch from "node-fetch";
 import {
   extractFullNarrationText,
@@ -537,12 +538,25 @@ async function isValidVideoFile(filePath: string): Promise<boolean> {
       /* try next probe binary */
     }
   }
-  // ffprobe missing or timed out — accept files that look like MP4 and are non-trivial size
+  // ffprobe missing or timed out — accept files that look like MP4 and are non-trivial size.
+  // Reads only the first 12 bytes (the ftyp box header) instead of fs.readFileSync's whole-file
+  // read: this fallback is reached specifically when ffprobe is unavailable/slow, which the
+  // pipeline has observed happening under memory pressure (many ffmpeg/ffprobe processes
+  // OOM-killed at once) — a full-file synchronous read here for every downloaded candidate clip
+  // (this function has ~24 call sites across the pipeline) would make that same memory pressure
+  // worse right when it's already at its worst, instead of just reading 12 bytes off disk.
+  let fh: fs.promises.FileHandle | null = null;
   try {
-    const head = fs.readFileSync(filePath).subarray(0, 12);
-    return head.length >= 8 && head.subarray(4, 8).toString("ascii") === "ftyp" && size > 5000;
+    const head = Buffer.alloc(12);
+    fh = await fs.promises.open(filePath, "r");
+    const { bytesRead } = await fh.read(head, 0, 12, 0);
+    return bytesRead >= 8 && head.subarray(4, 8).toString("ascii") === "ftyp" && size > 5000;
   } catch {
     return false;
+  } finally {
+    if (fh !== null) {
+      try { await fh.close(); } catch { /* already closed */ }
+    }
   }
 }
 
@@ -1107,21 +1121,53 @@ function assertDiskSpaceAvailable(workDir: string, videoId: number): void {
 // Every render's workDir is cleaned up in its own finally block on normal completion — but a
 // render that gets killed from outside the process (a Railway redeploy, an OOM kill, a crashed
 // worker) never reaches that finally, leaving its downloaded archive/Wikimedia files behind.
-// Swept on worker boot and periodically thereafter; the threshold is well past the longest
-// render's own hard wall-clock budget (130min) so this can never touch a still-active render.
-const STALE_WORKDIR_MAX_AGE_MS = 4 * 60 * 60_000; // 4 hours
+// Swept on worker boot and periodically thereafter.
+//
+// Threshold: must stay comfortably above the pipeline's own maximum wall-clock budget (up to
+// 260 min / ~4h20m for the "15-20" video-length bucket — sourcingPolicy.ts's
+// maxPipelineWallClockHardMin), otherwise this could delete a still-legitimately-running long
+// render's workDir out from under it. Previously fixed at 4 hours (240 min) with a comment
+// claiming "well past the longest render's own hard wall-clock budget (130min)" — that number
+// was stale; the actual current maximum (260 min) already exceeded the old 4-hour threshold.
+// 8 hours leaves a real safety margin above the 260 min ceiling instead of a near-miss.
+const STALE_WORKDIR_MAX_AGE_MS = 8 * 60 * 60_000; // 8 hours
 
-export function sweepStaleWorkDirs(): { removed: number; freedMb: number } {
+export async function sweepStaleWorkDirs(): Promise<{ removed: number; freedMb: number }> {
   let removed = 0;
   let freedBytes = 0;
   try {
     if (!fs.existsSync(TMP_DIR)) return { removed: 0, freedMb: 0 };
     const now = Date.now();
     for (const entry of fs.readdirSync(TMP_DIR)) {
-      const m = /^fastvid_(?:rerender_)?\d+_(\d+)$/.exec(entry);
+      const m = /^fastvid_(?:rerender_)?(\d+)_(\d+)$/.exec(entry);
       if (!m) continue;
-      const createdMs = parseInt(m[1]!, 10);
+      const videoId = parseInt(m[1]!, 10);
+      const createdMs = parseInt(m[2]!, 10);
       if (!Number.isFinite(createdMs) || now - createdMs < STALE_WORKDIR_MAX_AGE_MS) continue;
+
+      // Age alone can't distinguish "orphaned by a crash" from "still legitimately running" —
+      // a long video can genuinely take hours. Confirm via the DB's actual status before
+      // removing; a video row isn't deleted from the DB when it fails/completes, so any active
+      // PIPELINE_PROCESSING_STATUSES status here means this workDir must be left alone.
+      if (Number.isFinite(videoId)) {
+        try {
+          const video = await getVideoById(videoId);
+          if (!video) {
+            // Ambiguous: could mean the row genuinely doesn't exist, or the DB was briefly
+            // unreachable (getVideoById returns undefined for both). Err on the side of NOT
+            // deleting — this dir gets re-evaluated on the next hourly sweep either way.
+            console.warn(`[Pipeline] sweepStaleWorkDirs: could not look up video ${videoId} for ${entry}, skipping this pass`);
+            continue;
+          }
+          if ((PIPELINE_PROCESSING_STATUSES as readonly string[]).includes(video.status)) {
+            continue;
+          }
+        } catch (err) {
+          console.warn(`[Pipeline] sweepStaleWorkDirs: DB status check failed for ${entry}, skipping this pass:`, (err as Error).message);
+          continue;
+        }
+      }
+
       const full = path.join(TMP_DIR, entry);
       try {
         const stat = fs.statSync(full);
@@ -3575,6 +3621,16 @@ export type VoiceoverGenerateOptions = {
   voiceSettings?: ElevenLabsVoiceSettings;
 };
 
+export type VoiceoverProvider = "elevenlabs" | "fish-audio" | "google-tts" | "silent";
+
+/** Result of generateVoiceover() — callers must check usedSilentFallback rather than assume
+ *  a returned duration means real narration was produced. */
+export type VoiceoverResult = {
+  duration: number;
+  usedSilentFallback: boolean;
+  provider: VoiceoverProvider;
+};
+
 function sanitizeVoiceoverText(text: string, maxChars = 800): string {
   const rawText = text
     .replace(/\[visual:[^\]]*\]/gi, "")
@@ -3676,6 +3732,7 @@ export async function synthesizeFullNarrationMp3(
     Boolean(ELEVENLABS_API_KEY) &&
     Boolean(voiceId?.trim());
   const TTS_TIMEOUT_MS = 180_000;
+  const silentFallbackChunks: number[] = [];
 
   for (let i = 0; i < chunks.length; i++) {
     onTtsPart?.(i + 1, chunks.length);
@@ -3702,14 +3759,26 @@ export async function synthesizeFullNarrationMp3(
         continue;
       }
     }
-    await generateVoiceover(chunks[i], partPath, voiceId, {
+    const voResult = await generateVoiceover(chunks[i], partPath, voiceId, {
       maxChars: BULK_VO_CHUNK_CHARS,
       preferElevenLabs: true,
       voiceSettings: chunkVoiceSettings,
     });
+    if (voResult.usedSilentFallback) silentFallbackChunks.push(i + 1);
     const partDur = await probeVideoDurationSec(partPath);
     timeOffset += partDur > 0 ? partDur : 0;
     partPaths.push(partPath);
+  }
+
+  if (silentFallbackChunks.length > 0) {
+    // generateVoiceover already logs per-chunk; this aggregate line makes the overall impact on
+    // THIS video's narration immediately visible in logs, since a single-chunk warning can be
+    // easy to miss among the rest of a long render's output.
+    console.error(
+      `[Pipeline] synthesizeFullNarrationMp3: ${silentFallbackChunks.length}/${chunks.length} narration ` +
+      `chunk(s) used SILENT fallback (parts ${silentFallbackChunks.join(", ")}) — this video's narration ` +
+      `will be partially or fully silent.`
+    );
   }
 
   const fullPath = path.join(workDir, "full_voiceover.mp3");
@@ -4138,22 +4207,32 @@ async function synthesizeElevenLabsVoice(
 }
 
 // Per-scene fallback only when bulk path is not used. Default pipeline: full-script ElevenLabs + split.
+//
+// Provider waterfall: ElevenLabs (if configured) → Fish Audio (if configured) → Google Cloud TTS
+// (if configured) → silent audio, ONLY once every configured real provider has been tried and
+// failed. Previously the Fish/Google branches below were gated on `!options?.preferElevenLabs`,
+// but the sole caller (synthesizeFullNarrationMp3) always passes `preferElevenLabs: true` — so
+// whenever ELEVENLABS_API_KEY was unset (or every ElevenLabs attempt failed without an internal
+// fallback being reachable), this function fell straight to silent audio even with a healthy
+// Fish Audio or Google Cloud TTS key configured. `preferElevenLabs` now only affects ordering
+// ("try ElevenLabs first when available"), never whether Fish/Google get tried at all.
 export async function generateVoiceover(
   text: string,
   outputPath: string,
   voiceId?: string,
   options?: VoiceoverGenerateOptions
-): Promise<number> {
+): Promise<VoiceoverResult> {
   const maxChars = options?.maxChars ?? 800;
   const cleanText = sanitizeVoiceoverText(text, maxChars);
 
-  const MAX_ATTEMPTS = 3;
   const TTS_TIMEOUT_MS = maxChars > 2000 ? 180_000 : 90_000;
 
   const selectedElevenVoice = voiceId?.trim();
   // User picked a voice in the dashboard → always that exact ElevenLabs voice (never Fish remap).
+  // Intentionally no silent fallback here — an explicit voice selection should fail loudly, not
+  // silently substitute a different provider's voice or silence.
   if (selectedElevenVoice) {
-    return synthesizeElevenLabsVoice(
+    const duration = await synthesizeElevenLabsVoice(
       cleanText,
       outputPath,
       selectedElevenVoice,
@@ -4161,10 +4240,14 @@ export async function generateVoiceover(
       "selected voice",
       options?.voiceSettings
     );
+    return { duration, usedSilentFallback: false, provider: "elevenlabs" };
   }
 
+  // Product decision to use ElevenLabs exclusively (ELEVENLABS_ONLY=true) — no cross-provider
+  // fallback by design; synthesizeElevenLabsVoice's own internal fallback is disabled by
+  // fishAudioFallbackEnabled()/googleTtsFallbackEnabled() both returning false in that mode.
   if (elevenLabsOnlyVoice()) {
-    return synthesizeElevenLabsVoice(
+    const duration = await synthesizeElevenLabsVoice(
       cleanText,
       outputPath,
       "pNInz6obpgDQGcFmaJgB",
@@ -4172,108 +4255,56 @@ export async function generateVoiceover(
       "default documentary",
       options?.voiceSettings
     );
+    return { duration, usedSilentFallback: false, provider: "elevenlabs" };
   }
 
-  if (ELEVENLABS_API_KEY && options?.preferElevenLabs) {
-    return synthesizeElevenLabsVoice(
-      cleanText,
-      outputPath,
-      "pNInz6obpgDQGcFmaJgB",
-      TTS_TIMEOUT_MS,
-      "default documentary",
-      options?.voiceSettings
-    );
-  }
-
-  const fishReferenceId = FISH_AUDIO_REFERENCE_ID;
-  if (FISH_AUDIO_API_KEY && !options?.preferElevenLabs) {
-    return synthesizeFishAudioVoice(cleanText, outputPath, TTS_TIMEOUT_MS, "primary");
-  }
-
-  // No Fish Audio key configured — Google Cloud TTS as primary instead (free 1M chars/month,
-  // commercial-use-safe), before falling through to the legacy ElevenLabs-only path below.
-  if (GOOGLE_TTS_API_KEY && !options?.preferElevenLabs) {
-    return synthesizeGoogleCloudVoice(cleanText, outputPath, TTS_TIMEOUT_MS, "primary");
-  }
-
-  // ── ElevenLabs TTS (FALLBACK — try if Fish Audio fails and key available) ───────────
+  // Try ElevenLabs first when it's configured at all — synthesizeElevenLabsVoice already chains
+  // into Fish Audio → Google Cloud TTS internally (via synthesizeVoiceoverFallback) on failure,
+  // so this alone covers the full waterfall whenever an ElevenLabs key exists.
   if (ELEVENLABS_API_KEY) {
-    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-      try {
-        // Map voiceId to ElevenLabs voice ID, or use a high-quality default
-        // Default: "Adam" = pNInz6obpgDQGcFmaJgB (deep documentary voice)
-        const elevenVoiceId = voiceId || "pNInz6obpgDQGcFmaJgB";
-        // Phase 11: was withTimeout(fetch(...)) — races a timer but never aborts the request,
-        // so a timed-out call can still complete and get billed by ElevenLabs after this loop
-        // has already moved on to the next attempt (double-billing). fetchWithTimeout uses a
-        // real AbortController, same fix already applied to synthesizeElevenLabsVoice above.
-        const response = await fetchWithTimeout(
-          `https://api.elevenlabs.io/v1/text-to-speech/${elevenVoiceId}`,
-          TTS_TIMEOUT_MS,
-          `ElevenLabs TTS attempt ${attempt}`,
-          {
-            method: "POST",
-            headers: {
-              "xi-api-key": ELEVENLABS_API_KEY,
-              "Content-Type": "application/json",
-              Accept: "audio/mpeg",
-            },
-            body: JSON.stringify({
-              text: cleanText,
-              model_id: "eleven_multilingual_v2",
-              voice_settings: { stability: 0.5, similarity_boost: 0.75, style: 0.0, use_speaker_boost: true },
-            }),
-          }
-        );
-
-        if (response.status === 429) {
-          const waitMs = 500 + attempt * 500;
-          console.warn(`[Pipeline] ElevenLabs 429 (attempt ${attempt}), retrying in ${waitMs}ms`);
-          await new Promise(r => setTimeout(r, waitMs));
-          continue;
-        }
-
-        if (!response.ok) {
-          const errText = await response.text();
-          throw pipelineError(PIPELINE_ERROR.VOICEOVER, `ElevenLabs HTTP ${response.status}: ${errText.slice(0, 200)}`);
-        }
-
-        const audioBuffer = Buffer.from(await response.arrayBuffer());
-        if (audioBuffer.length < 100) throw pipelineError(PIPELINE_ERROR.VOICEOVER_EMPTY, "ElevenLabs returned empty audio");
-
-        fs.writeFileSync(outputPath, audioBuffer);
-        console.log(`[Pipeline] ElevenLabs TTS written: ${audioBuffer.length} bytes to ${outputPath}`);
-
-        let durationSec = 5;
-        try {
-          for (const probePath of FFPROBE_PATHS()) {
-            try {
-              const { stdout: probeOut } = await withSceneFetchTimeout(
-                () => exec(`"${probePath}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${outputPath}"`),
-                8000,
-                "ffprobe TTS duration"
-              );
-              const parsed = parseFloat(probeOut.trim());
-              if (!isNaN(parsed) && parsed > 0) { durationSec = Math.ceil(parsed); break; }
-            } catch { /* try next */ }
-          }
-        } catch { /* use default */ }
-        if (durationSec === 5 && audioBuffer.length > 1000) {
-          durationSec = Math.max(3, Math.round(audioBuffer.length / 40000));
-        }
-        console.log(`[Pipeline] ElevenLabs TTS scene ${outputPath.match(/scene_(\d+)/)?.[1] ?? "?"}: ${durationSec}s`);
-        return durationSec;
-      } catch (err) {
-        if (attempt === MAX_ATTEMPTS) {
-          console.warn(`[Pipeline] ElevenLabs failed after ${MAX_ATTEMPTS} attempts:`, err);
-          break;
-        }
-        await new Promise(r => setTimeout(r, 500));
-      }
+    try {
+      const duration = await synthesizeElevenLabsVoice(
+        cleanText,
+        outputPath,
+        voiceId || "pNInz6obpgDQGcFmaJgB",
+        TTS_TIMEOUT_MS,
+        "default documentary",
+        options?.voiceSettings
+      );
+      return { duration, usedSilentFallback: false, provider: "elevenlabs" };
+    } catch (err) {
+      console.warn(
+        `[Pipeline] generateVoiceover: ElevenLabs (+ its Fish/Google fallback chain) exhausted: ${(err as Error).message?.slice(0, 200)}`
+      );
+    }
+  } else if (fishAudioFallbackEnabled()) {
+    // No ElevenLabs key at all — Fish Audio is the primary provider. synthesizeFishAudioVoice
+    // already falls through to Google Cloud TTS internally on its own final-attempt failure.
+    try {
+      const duration = await synthesizeFishAudioVoice(cleanText, outputPath, TTS_TIMEOUT_MS, "primary");
+      return { duration, usedSilentFallback: false, provider: "fish-audio" };
+    } catch (err) {
+      console.warn(
+        `[Pipeline] generateVoiceover: Fish Audio (+ its Google fallback) exhausted: ${(err as Error).message?.slice(0, 200)}`
+      );
+    }
+  } else if (googleTtsFallbackEnabled()) {
+    // No ElevenLabs, no Fish Audio — Google Cloud TTS is the only configured real provider.
+    try {
+      const duration = await synthesizeGoogleCloudVoice(cleanText, outputPath, TTS_TIMEOUT_MS, "primary");
+      return { duration, usedSilentFallback: false, provider: "google-tts" };
+    } catch (err) {
+      console.warn(`[Pipeline] generateVoiceover: Google Cloud TTS exhausted: ${(err as Error).message?.slice(0, 200)}`);
     }
   }
 
-  // Silent fallback
+  // Silent fallback — reached ONLY when every configured real TTS provider was tried and failed,
+  // or no real provider is configured at all. Logged loudly (console.error, not warn) and
+  // flagged via usedSilentFallback so callers can never mistake this for real narration.
+  console.error(
+    `[Pipeline] generateVoiceover: ALL configured real TTS providers unavailable or failed for ` +
+    `"${outputPath}" — falling back to SILENT audio. This chunk will have NO narration.`
+  );
   const estimatedDuration = Math.max(3, Math.ceil(cleanText.split(" ").length / 2.5));
   try {
     await withSceneFetchTimeout(
@@ -4283,7 +4314,7 @@ export async function generateVoiceover(
   } catch {
     fs.writeFileSync(outputPath, Buffer.from([0xff, 0xfb, 0x90, 0x00, ...Array(413).fill(0)]));
   }
-  return estimatedDuration;
+  return { duration: estimatedDuration, usedSilentFallback: true, provider: "silent" };
 }
 
 // ─── 3a. Stability AI Image → Video Loop (PRIMARY visual) ────────────────────
@@ -23103,10 +23134,15 @@ async function _runVideoPipelineInner(
   fs.mkdirSync(workDir, { recursive: true });
 
   // ── Global render watchdog ────────────────────────────────────────────────
-  // Starts with a conservative fallback budget; updated to the RenderBudget
-  // after voiceover sync when actual durations are known.
+  // Starts with a budget that's never tighter than the pipeline's own central wall-clock
+  // policy (sourcingPolicy.ts's maxPipelineWallClockHardMin — the same ceiling the router race
+  // and DB stall detector already use for this video length), then gets replaced with the
+  // RenderBudget-derived value once actual scene durations are known post-VO-sync. Previously
+  // this always started at the flat WATCHDOG_RENDER_MAX_MS (18min) fallback regardless of video
+  // length, which is far tighter than the up-to-260min budget long videos are otherwise allowed.
   const { createRenderWatchdog, WATCHDOG_RENDER_MAX_MS } = await import("./renderWatchdog");
-  const watchdog = createRenderWatchdog(videoId, WATCHDOG_RENDER_MAX_MS);
+  const initialWatchdogBudgetMs = Math.max(WATCHDOG_RENDER_MAX_MS, maxPipelineWallClockHardMin(videoLength) * 60_000);
+  const watchdog = createRenderWatchdog(videoId, initialWatchdogBudgetMs);
   getRenderCtx().watchdog = watchdog;
 
   // Per-stage budgets — initialised to fallback values, replaced with
@@ -23313,7 +23349,7 @@ async function _runVideoPipelineInner(
       const { computeRenderBudget, logRenderBudget } = await import("./renderBudget");
       const { BudgetTracker: BT } = await import("./renderBudgetTracker");
       const totalVoSec = scenes.reduce((s, sc) => s + sc.duration, 0);
-      const budget = computeRenderBudget(scenes.length, totalVoSec);
+      const budget = computeRenderBudget(scenes.length, totalVoSec, videoLength);
       logRenderBudget(budget, videoId);
       set_activeRenderBudget(budget);
       set_activeBudgetTracker(new BT(budget, videoId));
@@ -25192,18 +25228,19 @@ async function _runVideoPipelineInner(
     const t5 = Date.now();
     profiler.recordStageStart("upload", t5);
     get_activeBudgetTracker()?.stageStart("upload", get_activeRenderBudget()?.uploadMs ?? 300_000);
-    // Final videos can be hundreds of MB — a sync read here blocks the whole site's event
-    // loop right when a render finishes, so use the async fs API.
-    const videoBuffer = await fs.promises.readFile(finalVideoPath);
+    // Final videos can be hundreds of MB to low-GB — storagePutFromFile streams directly from
+    // disk (multipart upload for S3/R2) instead of reading the whole file into a single Buffer
+    // first, which previously peaked at roughly 2x the file size in RAM for this one step.
+    const finalVideoSizeBytes = (await fs.promises.stat(finalVideoPath)).size;
     let url: string;
 
     if (asyncQaEnabled() && postRenderSpotCheckEnabledForVideo(videoLength)) {
       // Spot check + upload in parallel — spot check reads the local file,
-      // upload reads the same buffer; both start at the same wall-clock time.
+      // upload streams the same file; both start at the same wall-clock time.
       await touchVideoProgress(videoId);
       const [uploadResult, spot] = await Promise.all([
         withTimeout(
-          storagePut(`videos/${videoId}/final.mp4`, videoBuffer, "video/mp4"),
+          storagePutFromFile(`videos/${videoId}/final.mp4`, finalVideoPath, "video/mp4"),
           600_000,
           "S3 upload"
         ),
@@ -25268,7 +25305,7 @@ async function _runVideoPipelineInner(
         });
       }
       const uploadResult = await withTimeout(
-        storagePut(`videos/${videoId}/final.mp4`, videoBuffer, "video/mp4"),
+        storagePutFromFile(`videos/${videoId}/final.mp4`, finalVideoPath, "video/mp4"),
         renderBudgetUploadMs,
         "S3 upload"
       );
@@ -25283,7 +25320,7 @@ async function _runVideoPipelineInner(
 
     get_activeBudgetTracker()?.stageEnd("upload");
     profiler.recordStageEnd("upload", Date.now());
-    console.log(`[Pipeline] Stage 6 (upload): ${((Date.now()-t5)/1000).toFixed(1)}s, size: ${(videoBuffer.length/1024/1024).toFixed(1)}MB`);
+    console.log(`[Pipeline] Stage 6 (upload): ${((Date.now()-t5)/1000).toFixed(1)}s, size: ${(finalVideoSizeBytes/1024/1024).toFixed(1)}MB`);
 
     qualityReport.pipelineSec = Math.round((Date.now() - t0) / 1000);
 

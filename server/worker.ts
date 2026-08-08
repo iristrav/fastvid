@@ -186,8 +186,10 @@ async function main() {
   // Sweep on boot (this is exactly when a prior process's abandoned renders would be found) and
   // every hour thereafter for any that accumulate mid-lifetime from the same failure modes.
   const { sweepStaleWorkDirs } = await import("./videoPipeline");
-  sweepStaleWorkDirs();
-  setInterval(() => sweepStaleWorkDirs(), 60 * 60_000);
+  await sweepStaleWorkDirs().catch((e) => console.warn("[Worker] sweepStaleWorkDirs (boot) failed:", (e as Error).message));
+  setInterval(() => {
+    sweepStaleWorkDirs().catch((e) => console.warn("[Worker] sweepStaleWorkDirs failed:", (e as Error).message));
+  }, 60 * 60_000);
   const { warmUpLocalClipVision, clipPreloadEnabled, getLocalVisionStatus, clipModelCacheDir } =
     await import("./localClipVision");
   let clipReady = false;

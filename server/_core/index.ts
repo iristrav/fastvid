@@ -1179,8 +1179,10 @@ recoverStuckPipelines()
     // Only relevant when this process actually runs jobs — see worker.ts for why this exists
     // (a render killed from outside the process never reaches its own cleanup).
     const { sweepStaleWorkDirs } = await import("../videoPipeline");
-    sweepStaleWorkDirs();
-    setInterval(() => sweepStaleWorkDirs(), 60 * 60_000);
+    sweepStaleWorkDirs().catch((e) => console.warn("[Fastvid] sweepStaleWorkDirs (boot) failed:", (e as Error).message));
+    setInterval(() => {
+      sweepStaleWorkDirs().catch((e) => console.warn("[Fastvid] sweepStaleWorkDirs failed:", (e as Error).message));
+    }, 60 * 60_000);
     // Embedded queue on web must register as worker for /api/health
     await recordWorkerHeartbeat("worker").catch((e) =>
       console.warn("[Fastvid] Embedded worker heartbeat failed:", (e as Error).message)

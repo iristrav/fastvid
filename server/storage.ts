@@ -9,8 +9,9 @@ import {
   normalizeStorageKey,
   objectStorageUrl,
 } from "./storageBackend";
-import { s3GetSignedUrl, s3PutObject } from "./storageS3";
-import { localStoragePut, localStorageGet } from "./storageLocal";
+import * as fs from "fs";
+import { s3GetSignedUrl, s3PutObject, s3PutObjectFromFile } from "./storageS3";
+import { localStoragePut, localStoragePutFile, localStorageGet } from "./storageLocal";
 
 export { getStorageBackend, isS3StorageEnabled } from "./storageBackend";
 
@@ -85,6 +86,36 @@ export async function storagePut(
   }
 
   return localStoragePut(relKey, data, contentType);
+}
+
+/** Same as storagePut but streams directly from an on-disk file instead of taking an in-memory
+ *  Buffer — use this for large files (e.g. a rendered final video, which can be hundreds of MB
+ *  to low-GB) so the upload never needs the whole file loaded into Node's heap at once. The s3
+ *  backend streams via @aws-sdk/lib-storage's multipart Upload; local streams via
+ *  fs.promises.copyFile. The forge backend has no streaming upload API, so it falls back to
+ *  reading the file into memory (unchanged behavior) — forge is not the production backend
+ *  (confirmed S3/R2), so this doesn't affect the actual memory-pressure risk this exists to fix. */
+export async function storagePutFromFile(
+  relKey: string,
+  filePath: string,
+  contentType = "application/octet-stream",
+): Promise<{ key: string; url: string }> {
+  const backend = getStorageBackend();
+
+  if (backend === "s3") {
+    const key = appendHashSuffix(normalizeStorageKey(relKey));
+    await s3PutObjectFromFile(key, filePath, contentType);
+    return { key, url: objectStorageUrl(key) };
+  }
+
+  if (backend === "local") {
+    return localStoragePutFile(relKey, filePath, contentType);
+  }
+
+  // forge: no streaming upload API available — read into memory (matches prior behavior for
+  // this backend; not the production path).
+  const data = await fs.promises.readFile(filePath);
+  return storagePut(relKey, data, contentType);
 }
 
 export async function storageGet(relKey: string): Promise<{ key: string; url: string }> {

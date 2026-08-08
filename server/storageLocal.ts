@@ -72,6 +72,25 @@ export async function localStoragePut(
   return { key, url: `/local-storage/${safeFileName}` };
 }
 
+/** Same as localStoragePut but copies directly from an on-disk file instead of taking an
+ *  in-memory Buffer — fs.promises.copyFile streams at the OS level rather than holding the
+ *  whole file in Node's heap. */
+export async function localStoragePutFile(
+  relKey: string,
+  filePath: string,
+  _contentType = "application/octet-stream"
+): Promise<{ key: string; url: string }> {
+  const key = appendHashSuffix(normalizeKey(relKey));
+  const safeFileName = key.replace(/\//g, "_");
+  const destPath = path.join(LOCAL_UPLOADS_DIR, safeFileName);
+
+  await fs.promises.copyFile(filePath, destPath);
+
+  const sizeBytes = (await fs.promises.stat(destPath)).size;
+  console.log(`[LocalStorage] Copied ${(sizeBytes / 1024).toFixed(0)}KB → ${destPath}`);
+  return { key, url: `/local-storage/${safeFileName}` };
+}
+
 export async function localStorageGet(relKey: string): Promise<{ key: string; url: string }> {
   const key = normalizeKey(relKey);
   const safeFileName = key.replace(/\//g, "_");

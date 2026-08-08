@@ -103,12 +103,23 @@ async function probeDuration(filePath: string): Promise<number | null> {
   }
 }
 
+// Reads only the first 12 bytes (the ftyp box header) instead of fs.readFileSync's whole-file
+// read — a final video can be hundreds of MB to low-GB, and a full read here blocks the shared
+// Node event loop (this process also serves other renders/requests) for the entire disk read
+// just to inspect 8 bytes.
 function looksLikeMp4(filePath: string): boolean {
+  const head = Buffer.alloc(12);
+  let fd: number | null = null;
   try {
-    const head = fs.readFileSync(filePath).subarray(0, 12);
-    return head.length >= 8 && head.subarray(4, 8).toString("ascii") === "ftyp";
+    fd = fs.openSync(filePath, "r");
+    const bytesRead = fs.readSync(fd, head, 0, 12, 0);
+    return bytesRead >= 8 && head.subarray(4, 8).toString("ascii") === "ftyp";
   } catch {
     return false;
+  } finally {
+    if (fd !== null) {
+      try { fs.closeSync(fd); } catch { /* already closed */ }
+    }
   }
 }
 
