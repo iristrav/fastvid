@@ -307,7 +307,7 @@ import {
   strictVoiceMontageSyncExport,
   type VoiceMontageSyncAuditResult,
 } from "./voiceMontageSyncAudit";
-import { throwIfVideoGenerationCancelled, runWithActiveVideoId, throwIfActiveRenderCancelled } from "./videoGenerationCancel";
+import { throwIfVideoGenerationCancelled, runWithActiveVideoId, throwIfActiveRenderCancelled, requestVideoGenerationCancel } from "./videoGenerationCancel";
 import {
   buildTtsSceneBeatMap,
   fetchElevenLabsWithTimestamps,
@@ -23628,25 +23628,39 @@ async function _runVideoPipelineInner(
       }
 
       const heartbeatP5A = setInterval(() => {
-        ensurePipelineForceExport(visualDedup);
-        assertPipelineWithinBudget(videoId, pipelineWallStartMs, videoLength, visualDedup);
-        onProgress?.({
-          stage: `Scene pipeline (${completedPipelineVisuals} retrieved, ${completedPipelineCompose}/${scenes.length} composed)...`,
-          percent: 20 + Math.round(((completedPipelineVisuals + completedPipelineCompose) / (scenes.length * 2)) * 45),
-        });
-        // Log any scene compose running >120s (potential FFmpeg hang)
-        const nowMs = Date.now();
-        for (let si = 0; si < scenes.length; si++) {
-          if (composeStartMs[si] > 0 && composeElapsedMs[si] === 0) {
-            const runningMs = nowMs - composeStartMs[si];
-            if (runningMs > 120_000) {
-              console.warn(
-                `[Compose] Scene ${scenes[si]?.index} SLOW: running ${(runningMs / 1000).toFixed(0)}s — ` +
-                `clips=${sceneVisualResults[si]?.clips?.length ?? 0}, ` +
-                `active=${activeComposes}, queued=${queuedComposes}, done=${completedPipelineCompose}/${scenes.length}`
-              );
+        try {
+          ensurePipelineForceExport(visualDedup);
+          assertPipelineWithinBudget(videoId, pipelineWallStartMs, videoLength, visualDedup);
+          onProgress?.({
+            stage: `Scene pipeline (${completedPipelineVisuals} retrieved, ${completedPipelineCompose}/${scenes.length} composed)...`,
+            percent: 20 + Math.round(((completedPipelineVisuals + completedPipelineCompose) / (scenes.length * 2)) * 45),
+          });
+          // Log any scene compose running >120s (potential FFmpeg hang)
+          const nowMs = Date.now();
+          for (let si = 0; si < scenes.length; si++) {
+            if (composeStartMs[si] > 0 && composeElapsedMs[si] === 0) {
+              const runningMs = nowMs - composeStartMs[si];
+              if (runningMs > 120_000) {
+                console.warn(
+                  `[Compose] Scene ${scenes[si]?.index} SLOW: running ${(runningMs / 1000).toFixed(0)}s — ` +
+                  `clips=${sceneVisualResults[si]?.clips?.length ?? 0}, ` +
+                  `active=${activeComposes}, queued=${queuedComposes}, done=${completedPipelineCompose}/${scenes.length}`
+                );
+              }
             }
           }
+        } catch (err) {
+          // assertPipelineWithinBudget() intentionally throws once the render exceeds its wall-
+          // clock budget — but a synchronous throw inside a raw setInterval callback is never
+          // caught by the try/finally around the main await chain below (this callback is a
+          // separate timer invocation, not part of that promise chain), so it was becoming an
+          // uncaught exception that crashed the entire worker process (all concurrent jobs on
+          // it too) instead of just failing this one render. Route it through the same
+          // cancellation signal the 3-hour job watchdog already uses (videoQueue.ts) so the
+          // render unwinds on its own exec()/throwIfActiveRenderCancelled() checks instead.
+          clearInterval(heartbeatP5A);
+          console.error(`[Compose] video=${videoId} heartbeat check failed — cancelling render:`, (err as Error).message);
+          requestVideoGenerationCancel(videoId);
         }
       }, 10_000);
 
@@ -23995,15 +24009,23 @@ async function _runVideoPipelineInner(
     let activeSceneIdx = 0;
     let heartbeatTick = 0;
     const visualHeartbeat = setInterval(() => {
-      heartbeatTick++;
-      ensurePipelineForceExport(visualDedup);
-      assertPipelineWithinBudget(videoId, pipelineWallStartMs, videoLength, visualDedup);
-      const beatTotal = Math.max(1, visualDedup.visualBeatsTotal || scenes.length);
-      const beatsDone = visualDedup.visualBeatsCompleted ?? completedVisuals;
-      onProgress?.({
-        stage: `Finding visuals (${beatsDone}/${beatTotal} beats, scene ${Math.min(activeSceneIdx + 1, scenes.length)}/${scenes.length})...`,
-        percent: 20 + Math.round((beatsDone / beatTotal) * 25),
-      });
+      try {
+        heartbeatTick++;
+        ensurePipelineForceExport(visualDedup);
+        assertPipelineWithinBudget(videoId, pipelineWallStartMs, videoLength, visualDedup);
+        const beatTotal = Math.max(1, visualDedup.visualBeatsTotal || scenes.length);
+        const beatsDone = visualDedup.visualBeatsCompleted ?? completedVisuals;
+        onProgress?.({
+          stage: `Finding visuals (${beatsDone}/${beatTotal} beats, scene ${Math.min(activeSceneIdx + 1, scenes.length)}/${scenes.length})...`,
+          percent: 20 + Math.round((beatsDone / beatTotal) * 25),
+        });
+      } catch (err) {
+        // Same fix as heartbeatP5A above — assertPipelineWithinBudget()'s intentional throw
+        // must not escape a raw setInterval callback uncaught (see comment there).
+        clearInterval(visualHeartbeat);
+        console.error(`[Pipeline] video=${videoId} visual heartbeat check failed — cancelling render:`, (err as Error).message);
+        requestVideoGenerationCancel(videoId);
+      }
     }, 10_000);
     sceneVisualResults = new Array(scenes.length);
 
