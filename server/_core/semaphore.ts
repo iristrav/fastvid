@@ -1,10 +1,13 @@
 /**
  * Semaphore — limits concurrent access to a shared resource.
  *
- * Global FFmpeg semaphore: caps concurrent ffmpeg/ffprobe child processes across the whole
- * server, regardless of which subsystem spawns them (compose, montage, beat-fetch, CLIP
- * vision, ...) — each has its own local parallelism setting, but nothing previously stopped
- * their sum from bursting past what the container can actually fork at once.
+ * FFmpeg semaphore: caps concurrent ffmpeg/ffprobe child processes within ONE worker process —
+ * NOT a fleet-wide limit. With N Railway replicas each running this same module as an
+ * independent in-memory counter, the real ceiling across the fleet is N × this limit, not this
+ * limit alone. Only subsystems that explicitly route through this semaphore are covered (see
+ * exec()/execFileRaw() in videoPipeline.ts, localClipVision.ts, cinematicAudio/mixer.ts) — a
+ * 2026 audit found several other ffmpeg-spawning subsystems bypassing it entirely; check before
+ * assuming "ffmpegSemaphore.active/waiting" reflects true total ffmpeg concurrency on the box.
  * Per-user render lock: max 1 active video render per user account.
  */
 

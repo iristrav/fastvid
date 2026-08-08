@@ -51,7 +51,7 @@ import { videoLengthSchema, normalizeVideoLength, isShortVideoLength } from "@sh
 import { isFastShortVideoLength, maxPipelineWallClockHardMin, pipelineComposeGraceMs, pipelineWallClockLimitEnabled, PIPELINE_UNLIMITED_MS } from "./sourcingPolicy";
 import { PIPELINE_DISPLAY_STAGES, formatGenerationDuration, progressStepWithElapsed, resolvePipelineDisplayStage, type PipelineDisplayStageKey } from "@shared/pipelineProgress";
 import { ONE_YEAR_MS } from "@shared/const";
-import { clearVideoGenerationCancel } from "./videoGenerationCancel";
+import { clearVideoGenerationCancel, requestVideoGenerationCancel } from "./videoGenerationCancel";
 import { getSessionSecret } from "./_core/sessionSecret";
 import { checkRateLimit } from "./_core/rateLimit";
 
@@ -778,26 +778,41 @@ async function _runVideoGeneration(
         // points (videoPipeline.ts's assertPipelineWithinBudget, db.ts's failPipelineIfStalled)
         // do. Previously this fell through to a flat 150-minute cap for any non-fast-short
         // video regardless of the flag, silently overriding "let it take as long as it needs".
+        // This ceiling must never sit below videoPipeline.ts's own internal hard wall-clock
+        // budget (assertPipelineWithinBudget's maxPipelineWallClockHardMin) — if it did, this
+        // race would routinely fire while the pipeline was still legitimately within its own
+        // budget, marking a still-healthy render "failed" and freeing its worker slot for
+        // reuse while the real render keeps running in the background, uncounted. Previously a
+        // flat PIPELINE_HARD_TIMEOUT_MS (150min default) could be lower than the internal
+        // budget for the two longest video lengths (up to 260min) — take the max of both so
+        // this is always the outermost, last-resort cap, never the first to fire.
+        const internalHardMs = maxPipelineWallClockHardMin(videoLength) * 60_000 + pipelineComposeGraceMs(videoLength);
         const hardMs = !pipelineWallClockLimitEnabled()
           ? PIPELINE_UNLIMITED_MS
           : isFastShortVideoLength(videoLength)
-            ? maxPipelineWallClockHardMin(videoLength) * 60_000 + pipelineComposeGraceMs(videoLength)
-            : parseInt(process.env.PIPELINE_HARD_TIMEOUT_MS ?? String(150 * 60_000), 10);
+            ? internalHardMs
+            : Math.max(internalHardMs, parseInt(process.env.PIPELINE_HARD_TIMEOUT_MS ?? String(150 * 60_000), 10));
         const elapsed = Date.now() - pipelineStartedAt;
         const remainingMs = Math.max(45_000, hardMs - elapsed);
         videoUrl = await Promise.race([
           pipelineRun,
           new Promise<never>((_, reject) =>
-            setTimeout(
-              () =>
-                reject(
-                  pipelineError(
-                    PIPELINE_ERROR.STUCK_TIMEOUT,
-                    `Pipeline exceeded ${Math.round(hardMs / 60_000)} minute wall-clock budget`
-                  )
-                ),
-              remainingMs
-            )
+            setTimeout(() => {
+              // The pipeline promise below is intentionally left running (it may already be
+              // mid-ffmpeg-call) — without this, the abandoned run keeps consuming CPU/ffmpeg
+              // slots/LLM spend uncounted after this function already returns and frees the
+              // worker's job slot. requestVideoGenerationCancel is the same cooperative signal
+              // the 3-hour job watchdog (videoQueue.ts) already uses; the pipeline's own
+              // exec()/throwIfActiveRenderCancelled() checks (~92 call sites) pick it up on
+              // their next ffmpeg/ffprobe spawn and unwind the run from the inside.
+              requestVideoGenerationCancel(videoId);
+              reject(
+                pipelineError(
+                  PIPELINE_ERROR.STUCK_TIMEOUT,
+                  `Pipeline exceeded ${Math.round(hardMs / 60_000)} minute wall-clock budget`
+                )
+              );
+            }, remainingMs)
           ),
         ]);
       }
@@ -844,13 +859,30 @@ async function _runVideoGeneration(
       `[Video Generation] Video ${videoId} completed in ${durationLabel} (${generationDurationSec}s since generation start)`
     );
 
-    await updateVideoStatus(videoId, "completed", {
-      metadata: enrichedMetadata,
-      title: finalTitle,
-      videoUrl,
-      progressStep: `Video complete! · ${durationLabel}`,
-      progressPercent: 100,
-    });
+    // By this point the render has fully succeeded and the file is already uploaded — the only
+    // thing left to do is a DB write. A transient DB blip here must not turn an already-finished,
+    // already-uploaded render into "failed" (the outer catch below would do exactly that, and for
+    // the S3/R2 backend recoverVideoCompletionState's fallback can't reconstruct the URL since it
+    // only scans local disk). Retry this specific write a few times before letting it propagate.
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await updateVideoStatus(videoId, "completed", {
+          metadata: enrichedMetadata,
+          title: finalTitle,
+          videoUrl,
+          progressStep: `Video complete! · ${durationLabel}`,
+          progressPercent: 100,
+        });
+        break;
+      } catch (err) {
+        if (attempt >= 3) throw err;
+        console.warn(
+          `[Video Generation] Video ${videoId}: "completed" DB write failed (attempt ${attempt}/3), retrying:`,
+          (err as Error).message?.slice(0, 150)
+        );
+        await new Promise((r) => setTimeout(r, attempt * 1000));
+      }
+    }
     // Notify owner on completion (non-blocking)
     notifyOwner({
       title: `✅ Video #${videoId} completed`,

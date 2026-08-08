@@ -21,7 +21,7 @@ export function readQueueConfig(env: NodeJS.ProcessEnv = process.env) {
   const maxJobsPerWorkerRaw = env.MAX_JOBS_PER_WORKER?.trim();
   const maxJobsPerWorker = maxJobsPerWorkerRaw
     ? Math.max(1, parseInt(maxJobsPerWorkerRaw, 10) || maxConcurrentJobs)
-    : 2;
+    : 1;
 
   return {
     /** Platform-wide cap (all workers combined). Raise via MAX_CONCURRENT_JOBS on Railway. */

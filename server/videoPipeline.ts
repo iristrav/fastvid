@@ -27,6 +27,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import { storagePut } from "./storage";
+import { LOCAL_UPLOADS_DIR } from "./storageLocal";
 import { invokeLLM } from "./_core/llm";
 import { ffmpegSemaphore } from "./_core/semaphore";
 import { getVideoById, updateVideoStatus, updateVideoScenes, mergeVideoMetadata, touchVideoProgress, getMediaArchiveAssetById, type EditorScene } from "./db";
@@ -717,6 +718,61 @@ function markInternetArchiveSearchResult(success: boolean): void {
     console.warn(
       `[Pipeline] Internet Archive: ${INTERNET_ARCHIVE_FAILURE_STREAK_TRIP} consecutive search failures — ` +
         `skipping for ${Math.round(INTERNET_ARCHIVE_COOLDOWN_MS / 60_000)}min`
+    );
+  }
+}
+
+// Same breaker pattern as Wikimedia/Internet Archive/Europeana above — Pexels and Pixabay were
+// the two confirmed exceptions (2026 audit): unlike those three, a sustained Pexels/Pixabay
+// outage or rate-limit had no skip mechanism, so every beat that reached the stock-fallback tier
+// paid the full 10s search timeout (plus up to 3x45s/20s of download retries) for the whole
+// render, with real production logs showing repeated Pexels search failures/timeouts in a row.
+const PEXELS_FAILURE_STREAK_TRIP = 8;
+const PEXELS_COOLDOWN_MS = 3 * 60_000;
+let pexelsFailureStreak = 0;
+let pexelsCooldownUntilMs = 0;
+
+function isPexelsInCooldown(): boolean {
+  return Date.now() < pexelsCooldownUntilMs;
+}
+
+function markPexelsSearchResult(success: boolean): void {
+  if (success) {
+    pexelsFailureStreak = 0;
+    return;
+  }
+  pexelsFailureStreak++;
+  if (pexelsFailureStreak >= PEXELS_FAILURE_STREAK_TRIP) {
+    pexelsCooldownUntilMs = Date.now() + PEXELS_COOLDOWN_MS;
+    pexelsFailureStreak = 0;
+    console.warn(
+      `[Pipeline] Pexels: ${PEXELS_FAILURE_STREAK_TRIP} consecutive search failures — ` +
+        `skipping for ${Math.round(PEXELS_COOLDOWN_MS / 60_000)}min`
+    );
+  }
+}
+
+const PIXABAY_FAILURE_STREAK_TRIP = 8;
+const PIXABAY_COOLDOWN_MS = 3 * 60_000;
+let pixabayFailureStreak = 0;
+let pixabayCooldownUntilMs = 0;
+
+function isPixabayInCooldown(): boolean {
+  return Date.now() < pixabayCooldownUntilMs;
+}
+
+function markPixabaySearchResult(success: boolean): void {
+  if (success) {
+    pixabayFailureStreak = 0;
+    return;
+  }
+  pixabayFailureStreak++;
+  if (pixabayFailureStreak >= PIXABAY_FAILURE_STREAK_TRIP) {
+    pixabayCooldownUntilMs = Date.now() + PIXABAY_COOLDOWN_MS;
+    pixabayFailureStreak = 0;
+    console.warn(
+      `[Pipeline] Pixabay: ${PIXABAY_FAILURE_STREAK_TRIP} consecutive search failures — ` +
+        `skipping for ${Math.round(PIXABAY_COOLDOWN_MS / 60_000)}min`
     );
   }
 }
@@ -4391,6 +4447,7 @@ export async function fetchPexelsClips(
   stockBeatCtx?: StockBeatCtx
 ): Promise<string[]> {
   if (!PEXELS_API_KEY) return [];
+  if (isPexelsInCooldown()) return [];
 
   const results: string[] = [];
 
@@ -4428,7 +4485,12 @@ export async function fetchPexelsClips(
         { headers: { Authorization: PEXELS_API_KEY } }
       );
 
-      if (!searchResp.ok) continue;
+      if (!searchResp.ok) {
+        markPexelsSearchResult(false);
+        console.warn(`[Pipeline] Pexels search HTTP ${searchResp.status} for "${currentQuery}"`);
+        continue;
+      }
+      markPexelsSearchResult(true);
 
     const searchData = await searchResp.json() as {
       videos?: Array<{
@@ -4596,6 +4658,7 @@ export async function fetchPexelsClips(
       if (r.status === "fulfilled" && r.value) results.push(r.value);
     }
     } catch (err) {
+      markPexelsSearchResult(false);
       console.warn(`[Pipeline] Pexels search failed for query "${currentQuery}" scene ${sceneIndex}:`, err);
     }
   }
@@ -4728,6 +4791,7 @@ export async function fetchPixabayClips(
   stockBeatCtx?: StockBeatCtx
 ): Promise<string[]> {
   if (!PIXABAY_API_KEY) return [];
+  if (isPixabayInCooldown()) return [];
   const results: string[] = [];
 
   const queryList = Array.from(
@@ -4766,9 +4830,11 @@ export async function fetchPixabayClips(
         `Pixabay search scene ${sceneIndex} query "${currentQuery}"`
       );
       if (!searchResp.ok) {
+        markPixabaySearchResult(false);
         console.warn(`[Pipeline] Pixabay search HTTP ${searchResp.status} for "${currentQuery}"`);
         continue;
       }
+      markPixabaySearchResult(true);
 
       const searchData = await searchResp.json() as {
         totalHits?: number;
@@ -4875,6 +4941,7 @@ export async function fetchPixabayClips(
         }
       }
     } catch (err) {
+      markPixabaySearchResult(false);
       console.warn(`[Pipeline] Pixabay search failed for query "${currentQuery}" scene ${sceneIndex}:`, err);
     }
   }
@@ -5064,6 +5131,12 @@ export async function fetchWikimediaImages(
   opts: { beatIndex?: number; stillStyleContext?: StillStyleContext } = {}
 ): Promise<string[]> {
   const results: string[] = [];
+  // Same breaker fetchWikimediaImagesV1/fetchWikimediaVideos/adoptWikimediaBeatClip already use
+  // (isWikimediaInCooldown/markWikimediaSearchResult, ~664-690) — this legacy function was
+  // previously the one Wikimedia call site that bypassed it entirely, so a sustained Wikimedia
+  // outage kept hitting commons.wikimedia.org unthrottled from here regardless of the breaker
+  // tripping for every other caller.
+  if (isWikimediaInCooldown()) return results;
   try {
     // ── Scene candidate cache: skip Wikimedia search + imageinfo API calls on hit ──
     const cachedCandidates = await getCandidatePool(query, "wikimedia");
@@ -5106,7 +5179,11 @@ export async function fetchWikimediaImages(
       5_000,
       `Wikimedia search scene ${sceneIndex}`
     );
-    if (!searchResp.ok) return [];
+    if (!searchResp.ok) {
+      markWikimediaSearchResult(false);
+      return [];
+    }
+    markWikimediaSearchResult(true);
     const searchData = await searchResp.json() as { query?: { search?: Array<{ title: string }> } };
     const titles = searchData.query?.search?.map(r => r.title).slice(0, count * 2) || [];
     if (!titles.length) return [];
@@ -5186,6 +5263,7 @@ export async function fetchWikimediaImages(
       void putCandidatePool(query, "wikimedia", poolForCache);
     }
   } catch (err) {
+    markWikimediaSearchResult(false);
     console.warn(`[Pipeline] Wikimedia search failed for scene ${sceneIndex}:`, err);
   }
   return results;
@@ -5583,9 +5661,11 @@ async function fetchYouTubeThumbnails(
         if (imgBuf.length < 5000) continue; // skip tiny/broken thumbnails
         fs.writeFileSync(imgPath, imgBuf);
 
-        // Convert thumbnail to video clip with slow Ken Burns zoom effect
+        // Convert thumbnail to video clip with slow Ken Burns zoom effect. Routed through
+        // ffmpegSemaphore — this raw spawn() previously bypassed the shared concurrency gate
+        // that videoPipeline.ts's own exec() enforces everywhere else in this file.
         await withTimeout(
-          new Promise<void>(async (resolve, reject) => {
+          ffmpegSemaphore.run(() => new Promise<void>(async (resolve, reject) => {
             const { spawn } = await import('child_process');
             const args = [
               '-y', '-loop', '1', '-i', imgPath,
@@ -5598,7 +5678,7 @@ async function fetchYouTubeThumbnails(
             const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /**/ } reject(new Error('timeout')); }, 25000);
             child.on('close', (code: number | null) => { clearTimeout(timer); code === 0 ? resolve() : reject(new Error(`exit ${code}`)); });
             child.on('error', (err: Error) => { clearTimeout(timer); reject(err); });
-          }),
+          })),
           30000,
           `YouTube thumbnail to video scene ${sceneIndex}`
         );
@@ -8626,7 +8706,11 @@ async function transformClipForFairUse(
   );
   try {
     const { spawn: spawnChild } = await import('child_process');
-    await new Promise<void>((resolve, reject) => {
+    // Routed through ffmpegSemaphore — this raw spawn() previously bypassed the shared
+    // concurrency gate, and this function sits on the primary per-beat clip-adoption path
+    // (clipRequiresFairUseTransform), so an ungated spawn here directly contributes to
+    // fork-pressure risk on every render that needs a fair-use transform.
+    await ffmpegSemaphore.run(() => new Promise<void>((resolve, reject) => {
       const args = [
         '-y', '-i', inputPath,
         '-vf', filterChain,
@@ -8652,7 +8736,7 @@ async function transformClipForFairUse(
         else reject(pipelineError(PIPELINE_ERROR.FFMPEG, `FFmpeg exit ${code}: ${stderr.slice(-200)}`));
       });
       child.on('error', (err: Error) => { clearTimeout(timer); reject(err); });
-    });
+    }));
     if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 5_000) {
       if (await isValidVideoFile(outputPath)) {
         try { fs.unlinkSync(inputPath); } catch { /* ignore */ }
@@ -20361,7 +20445,6 @@ async function fetchSceneVisualsInner(
             ) {
               const asset = candidate.archivePick.asset;
               if (asset.annotationJson?.timeline?.length) {
-                const LOCAL_UPLOADS_DIR = process.env.LOCAL_UPLOADS_DIR ?? "/data/uploads";
                 const embeddingDir = `${LOCAL_UPLOADS_DIR}/archive-clip-embeddings`;
                 const segSims = computeSegmentSimilarities(asset.id, asset.annotationJson, funnelBeatEmb, embeddingDir);
                 if (segSims.length > 0) {

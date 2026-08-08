@@ -8,6 +8,7 @@ import { shouldRunQueueWorker } from "@shared/videoQueue";
 import { recoverAllStuckVideos } from "./db";
 import { logLlmStartupDiagnostics, assertProductionLlmReady } from "./llmStartupDiagnostics";
 import { startVideoQueueWorker, stopVideoQueueWorker } from "./queue";
+import { workerLocalActiveJobs } from "./videoQueue";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -28,15 +29,37 @@ process.on("unhandledRejection", (reason) => {
 // before the kill lands — that job's row then sits in a "generating_*" status until the next
 // process's recoverAllStuckVideos() sweep or the periodic stuck-video check reclassifies it
 // (up to STUCK_VIDEO_MINUTES). Stopping the poll loop immediately on signal — same primitive
-// already used to pause the worker — closes that window without trying to force-kill whatever
-// render is already mid-flight (which would leave a half-written output file instead).
+// already used to pause the worker — closes that window.
+//
+// This used to call process.exit(0) immediately after stopping the poll loop, which — despite
+// this comment's original claim of "not trying to force-kill whatever render is already
+// mid-flight" — did exactly that: exiting the process kills every in-flight render just as hard
+// as a force-kill would, abandoning it mid-ffmpeg-call with no chance to finish or write its
+// final status. Redeploys are routine (every push to main), so this fired on essentially every
+// deploy for whichever render happened to be active at that moment. Give any in-flight render a
+// bounded grace window to finish before exiting — most renders are much shorter than this, and
+// one that's already 95% done shouldn't be thrown away just because a deploy landed.
+const SHUTDOWN_DRAIN_MS = Math.max(0, parseInt(process.env.WORKER_SHUTDOWN_DRAIN_MS ?? "25000", 10) || 25000);
 let shuttingDown = false;
 function handleShutdownSignal(signal: NodeJS.Signals) {
   if (shuttingDown) return;
   shuttingDown = true;
-  console.log(`[Worker] ${signal} received — no longer picking up new jobs, exiting`);
+  console.log(`[Worker] ${signal} received — no longer picking up new jobs`);
   stopVideoQueueWorker();
-  process.exit(0);
+  const deadline = Date.now() + SHUTDOWN_DRAIN_MS;
+  const tryExit = () => {
+    const active = workerLocalActiveJobs();
+    if (active === 0) {
+      console.log("[Worker] No active jobs — exiting");
+      process.exit(0);
+    }
+    if (Date.now() >= deadline) {
+      console.log(`[Worker] Drain window (${SHUTDOWN_DRAIN_MS}ms) elapsed with ${active} job(s) still active — exiting anyway`);
+      process.exit(0);
+    }
+    setTimeout(tryExit, 1000).unref?.();
+  };
+  tryExit();
 }
 process.on("SIGTERM", handleShutdownSignal);
 process.on("SIGINT", handleShutdownSignal);

@@ -239,6 +239,14 @@ export async function runClipAuditorBatch(
     const assets = await getMediaArchiveAssets(archive.id);
     for (const asset of assets) {
       if (audited >= maxAssets) break;
+      // Re-check every iteration, not just once at the top of the batch — a render can start
+      // mid-batch (worker just claimed a queued video), and continuing to burn CPU/ffmpegSemaphore
+      // slots on background auditing for the rest of a (default 15-asset) batch competes with it
+      // for the same box's ffmpeg/CPU budget instead of yielding right away. Same fix already
+      // applied to archiveClipIndexBackfill.ts's equivalent loop.
+      if (workerLocalActiveJobs() > 0) {
+        return { audited, skipped, failed };
+      }
       if (asset.mediaType !== "video") {
         skipped++;
         continue;

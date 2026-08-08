@@ -95,6 +95,7 @@ import type {
   RetrievalPriorityEntry,
 } from "../drizzle/annotationTypes";
 import { getDb } from "./db";
+import { LOCAL_UPLOADS_DIR } from "./storageLocal";
 import { mediaArchiveAssets } from "../drizzle/schema";
 import { eq } from "drizzle-orm";
 import type { MediaArchiveAsset } from "../drizzle/schema";
@@ -245,7 +246,6 @@ function cosineSim(a: number[], b: number[]): number {
 }
 
 function localEmbeddingDir(): string {
-  const LOCAL_UPLOADS_DIR = process.env.LOCAL_UPLOADS_DIR ?? "/data/uploads";
   return path.join(LOCAL_UPLOADS_DIR, "archive-clip-embeddings");
 }
 

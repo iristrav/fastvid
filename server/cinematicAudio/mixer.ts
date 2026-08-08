@@ -4,8 +4,17 @@ import { exec } from "child_process";
 import { promisify } from "util";
 import type { VideoSoundPlan, SceneSoundPlan } from "./types";
 import { resolveSoundAssets } from "./fetcher";
+import { ffmpegSemaphore } from "../_core/semaphore";
 
-const execAsync = promisify(exec);
+const execRaw = promisify(exec);
+// Route every ffmpeg/ffprobe spawn in this file through the same global concurrency gate the
+// rest of the render pipeline uses (server/videoPipeline.ts's exec()). Without this,
+// generateCinematicAmbientTrack()'s Promise.all below fires one concurrent ffmpeg process per
+// scene completely outside FFMPEG_CONCURRENCY_LIMIT — on a 4-vCPU box this is exactly the
+// oversubscription shape that has already caused fork-pressure (EAGAIN) incidents elsewhere.
+function execAsync(cmd: string) {
+  return ffmpegSemaphore.run(() => execRaw(cmd));
+}
 
 const FFMPEG_BIN = process.env.FFMPEG_BIN ?? "ffmpeg";
 
