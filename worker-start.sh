@@ -12,10 +12,17 @@
 # archive-clip-audits, uploads) — EACCES on every attempt. Fix ownership here while still
 # root (the container now starts as root so this is possible), then drop to "app" for the
 # rest of this script and the actual node process, preserving the non-root runtime.
+echo "[worker-start.sh] Running as uid=$(id -u) gid=$(id -g) ($(id))"
 if [ "$(id -u)" = "0" ]; then
   if [ -d /data ]; then
-    chown -R app:app /data 2>/dev/null || true
+    echo "[worker-start.sh] /data exists, owner before chown: $(stat -c '%U:%G (%u:%g)' /data 2>/dev/null || stat -f '%Su:%Sg' /data 2>/dev/null)"
+    chown -R app:app /data
+    CHOWN_RC=$?
+    echo "[worker-start.sh] chown -R app:app /data exit code: $CHOWN_RC, owner after: $(stat -c '%U:%G (%u:%g)' /data 2>/dev/null || stat -f '%Su:%Sg' /data 2>/dev/null)"
+  else
+    echo "[worker-start.sh] /data does not exist — no Railway Volume mounted on this service"
   fi
+  echo "[worker-start.sh] dropping to app user via gosu"
   exec gosu app sh "$0" "$@"
 fi
 
