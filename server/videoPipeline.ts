@@ -7895,16 +7895,25 @@ async function fetchMediaCccVideos(
         const tag = fileTag ? `${fileTag}_` : "";
         const tmpPath = path.join(workDir, `scene_${sceneIndex}_${tag}ccc_${downloaded}_tmp`);
         const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}ccc_${downloaded}.mp4`);
-        const dlResp = await fetchWithTimeout(
+        // F3-05: streams straight to tmpPath instead of buffering the whole clip in memory.
+        const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
           videoRec.recording_url,
+          tmpPath,
           90_000,
           `media.ccc download scene ${sceneIndex}`,
           { headers: { "User-Agent": "Fastvid/1.0" } }
         );
-        if (!dlResp.ok) continue;
-        const buf = await dlResp.arrayBuffer();
-        if (buf.byteLength < 80_000 || buf.byteLength > 120 * 1024 * 1024) continue;
-        fs.writeFileSync(tmpPath, Buffer.from(buf));
+        if (!dlResp.ok || bytesWritten === null) continue;
+        let cccFileSize: number;
+        try {
+          cccFileSize = fs.statSync(tmpPath).size;
+        } catch {
+          continue;
+        }
+        if (cccFileSize < 80_000 || cccFileSize > 120 * 1024 * 1024) {
+          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+          continue;
+        }
         if (await trimRemoteVideoToClip(tmpPath, outPath, duration, 10, `media.ccc scene ${sceneIndex}`)) {
           results.push(outPath);
           downloaded++;
@@ -8129,13 +8138,25 @@ async function fetchNasaVideoClips(
 
         const tmpPath = path.join(workDir, `scene_${sceneIndex}_nasa_${fetched}_tmp.mp4`);
         const outPath = path.join(workDir, `scene_${sceneIndex}_nasa_${fetched}.mp4`);
-        const dlResp = await fetchWithTimeout(mp4Url, 60_000, `NASA download scene ${sceneIndex}`, {
-          headers: { "User-Agent": "Fastvid/1.0" },
-        });
-        if (!dlResp.ok) continue;
-        const buf = await dlResp.arrayBuffer();
-        if (buf.byteLength < 50_000 || buf.byteLength > 80 * 1024 * 1024) continue;
-        fs.writeFileSync(tmpPath, Buffer.from(buf));
+        // F3-05: streams straight to tmpPath instead of buffering the whole clip in memory.
+        const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
+          mp4Url,
+          tmpPath,
+          60_000,
+          `NASA download scene ${sceneIndex}`,
+          { headers: { "User-Agent": "Fastvid/1.0" } }
+        );
+        if (!dlResp.ok || bytesWritten === null) continue;
+        let nasaFileSize: number;
+        try {
+          nasaFileSize = fs.statSync(tmpPath).size;
+        } catch {
+          continue;
+        }
+        if (nasaFileSize < 50_000 || nasaFileSize > 80 * 1024 * 1024) {
+          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+          continue;
+        }
 
         if (await trimRemoteVideoToClip(tmpPath, outPath, duration, 8, `NASA scene ${sceneIndex}`)) {
           results.push(outPath);
