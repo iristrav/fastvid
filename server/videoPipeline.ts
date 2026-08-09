@@ -7074,11 +7074,15 @@ async function fetchWikimediaVideos(
         const tag = fileTag ? `${fileTag}_` : "";
         const tmpPath = path.join(workDir, `scene_${sceneIndex}_${tag}wikivid_${i}_tmp`);
         const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}wikivid_${i}.mp4`);
-        const dlResp = await fetchWithTimeout(imageInfo.url, 45_000, `Wikimedia video download scene ${sceneIndex}`, { headers: UA });
-        if (!dlResp.ok) continue;
-        const buf = await dlResp.arrayBuffer();
-        if (buf.byteLength < 50_000 || buf.byteLength > 80 * 1024 * 1024) continue;
-        fs.writeFileSync(tmpPath, Buffer.from(buf));
+        // F3-05: streams straight to tmpPath instead of buffering the whole clip in memory.
+        const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
+          imageInfo.url, tmpPath, 45_000, `Wikimedia video download scene ${sceneIndex}`, { headers: UA }
+        );
+        if (!dlResp.ok || bytesWritten === null) continue;
+        if (bytesWritten < 50_000 || bytesWritten > 80 * 1024 * 1024) {
+          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+          continue;
+        }
 
         if (await trimRemoteVideoToClip(tmpPath, outPath, duration, 3, `Wikimedia video scene ${sceneIndex}`)) {
           results.push({ path: outPath, query });
@@ -7695,16 +7699,19 @@ export async function fetchEuropeanaVideos(
           const tag = fileTag ? `${fileTag}_` : "";
           const tmpPath = path.join(workDir, `scene_${sceneIndex}_${tag}euro_${downloaded}_tmp`);
           const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}euro_${downloaded}.mp4`);
-          const dlResp = await fetchWithTimeout(
+          // F3-05: streams straight to tmpPath instead of buffering the whole clip in memory.
+          const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
             mediaUrl,
+            tmpPath,
             55_000,
             `Europeana download scene ${sceneIndex}`,
             { headers: { "User-Agent": "Fastvid/1.0" } }
           );
-          if (!dlResp.ok) continue;
-          const buf = await dlResp.arrayBuffer();
-          if (buf.byteLength < 50_000 || buf.byteLength > 80 * 1024 * 1024) continue;
-          fs.writeFileSync(tmpPath, Buffer.from(buf));
+          if (!dlResp.ok || bytesWritten === null) continue;
+          if (bytesWritten < 50_000 || bytesWritten > 80 * 1024 * 1024) {
+            try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+            continue;
+          }
           if (await trimRemoteVideoToClip(tmpPath, outPath, duration, 3, `Europeana scene ${sceneIndex}`)) {
             results.push({ path: outPath, query });
             downloaded++;
@@ -8234,20 +8241,21 @@ export async function fetchInternetArchiveClips(
         const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}archive_${fetched}.mp4`);
         const tmpPath = path.join(workDir, `scene_${sceneIndex}_${tag}archive_${fetched}_tmp`);
 
-        const dlResp = await fetchWithTimeout(
+        // F3-05: streams straight to tmpPath instead of buffering the whole clip in memory.
+        const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
           videoUrl,
+          tmpPath,
           IS_RAILWAY ? 18_000 : 45_000,
           `Internet Archive download scene ${sceneIndex}`,
           { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }
         );
-        if (!dlResp.ok) continue;
+        if (!dlResp.ok || bytesWritten === null) continue;
 
-        const arrayBuf = await dlResp.arrayBuffer();
-        if (arrayBuf.byteLength > MAX_ARCHIVE_SIZE) {
-          console.warn(`[Pipeline] Scene ${sceneIndex}: Archive clip too large (${(arrayBuf.byteLength / 1024 / 1024).toFixed(1)}MB), skipping`);
+        if (bytesWritten > MAX_ARCHIVE_SIZE) {
+          console.warn(`[Pipeline] Scene ${sceneIndex}: Archive clip too large (${(bytesWritten / 1024 / 1024).toFixed(1)}MB), skipping`);
+          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
           continue;
         }
-        fs.writeFileSync(tmpPath, Buffer.from(arrayBuf));
 
         if (await trimRemoteVideoToClip(tmpPath, outPath, duration, 10, `Internet Archive scene ${sceneIndex}`)) {
           results.push({ path: outPath, query });
