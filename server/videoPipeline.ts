@@ -25479,6 +25479,14 @@ async function _runVideoPipelineInner(
       console.warn(`[Pipeline] Failed to persist qualityReport on complete for ${videoId}:`, err)
     );
 
+    // The upload above has no cancellation checkpoint of its own (it's an HTTP/SDK call, not
+    // routed through exec()'s throwIfActiveRenderCancelled()) — without this check, a render
+    // cancelled while the upload was already in flight would still reach here and overwrite
+    // whatever "failed"/cancelled status the cancellation handler already wrote. This is the
+    // last point before that write; throwing here lets the existing outer catch (which already
+    // knows how to turn a cancellation into the correct terminal status) handle it instead.
+    throwIfVideoGenerationCancelled(videoId);
+
     // Persist URL immediately so a crash during finalization cannot lose the finished video
     await updateVideoStatus(videoId, "completed", {
       videoUrl: url,
