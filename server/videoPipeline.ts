@@ -10137,6 +10137,12 @@ export interface VisualDedupState {
    *  near-tied-score candidate gets tried first toward less-used archives, without ever
    *  letting a lower-scoring candidate be preferred over a higher-scoring one. */
   usedArchiveNames: Map<string, number>;
+  /** F3-04: every candidate path adoptClip has considered for a scene (adopted or not), keyed by
+   *  sceneIndex. Populated by adoptClip itself (never inferred from a filename pattern), so a
+   *  post-scene sweep can safely delete whichever candidates never got adopted by ANY beat once
+   *  all of that scene's concurrently-running beats have finished — see
+   *  sweepUnadoptedSceneCandidates. Cleared per scene once swept. */
+  sceneCandidatePaths: Map<number, Set<string>>;
 }
 
 /**
@@ -10245,6 +10251,7 @@ export function createVisualDedupState(
     usedCuratedStorageUrls: new Set(),
     usedFingerprints: [],
     usedArchiveNames: new Map(),
+    sceneCandidatePaths: new Map(),
     curatedInterviewClipsUsed: 0,
     curatedImageClipsUsed: 0,
     archiveVideoClipsUsed: 0,
@@ -13036,6 +13043,29 @@ function buildSceneBeats(
   return beats;
 }
 
+// F3-04: deletes whichever of a scene's recorded adoptClip candidates (see dedup.sceneCandidatePaths)
+// never got adopted by any beat. Must only be called once every beat-fill call for this scene
+// (the beatLimit-gated Promise.all in fetchArchiveSentenceMontage / refillSceneStrictVoiceMatch)
+// has fully resolved — beats in the same scene run concurrently and several fetchers (Pexels,
+// Wikimedia images, Openverse, Unsplash, YouTube thumbnails, SerpAPI) name candidate files by
+// scene+id only, not by beat, so a candidate one beat rejects can still be a live, not-yet-checked
+// candidate for a sibling beat that's still running — calling this mid-scene could delete it out
+// from under that beat. A candidate already adopted by any beat is always in dedup.usedPaths
+// (adoptClip adds it there before ever returning it), so it's never touched here regardless.
+export function sweepUnadoptedSceneCandidates(dedup: VisualDedupState, sceneIndex: number): void {
+  const candidates = dedup.sceneCandidatePaths.get(sceneIndex);
+  if (!candidates || candidates.size === 0) return;
+  for (const p of candidates) {
+    if (dedup.usedPaths.has(p)) continue;
+    try {
+      if (fs.existsSync(p)) fs.unlinkSync(p);
+    } catch {
+      /* best-effort — a failed cleanup must never fail the scene */
+    }
+  }
+  dedup.sceneCandidatePaths.delete(sceneIndex);
+}
+
 async function adoptClip(
   paths: string[],
   dedup: VisualDedupState,
@@ -13127,6 +13157,17 @@ async function adoptClip(
   const finalPaths = tasteResult.rankedPaths;
 
   return withVisualDedupLock(dedup, async () => {
+    // F3-04: record every candidate considered for this beat (adopted or not) so a post-scene
+    // sweep can clean up the losers once this scene's beats are all done — see
+    // sweepUnadoptedSceneCandidates. Recording (not a filename glob) means the sweep can only
+    // ever touch a path adoptClip itself put forward as a real candidate.
+    let sceneCandidates = dedup.sceneCandidatePaths.get(sceneIndex);
+    if (!sceneCandidates) {
+      sceneCandidates = new Set();
+      dedup.sceneCandidatePaths.set(sceneIndex, sceneCandidates);
+    }
+    for (const p of finalPaths) sceneCandidates.add(p);
+
     for (const p of finalPaths) {
       if (!p || dedup.usedPaths.has(p) || !fs.existsSync(p)) continue;
       if (!(await isValidVideoFile(p))) continue;
@@ -19791,6 +19832,7 @@ async function fetchArchiveSentenceMontage(
   }
 
   await assertSceneVisualInventory(scene, clips, beatDurations, beats.length, clipBeatIndices, videoTitle);
+  sweepUnadoptedSceneCandidates(dedup, scene.index);
   return { clips, beatDurations, beats, clipBeatIndices };
 }
 
@@ -19823,6 +19865,9 @@ async function refillSceneStrictVoiceMatch(
       scene, workDir, clips, beatDurations,
       minClipsForBalancedVoice(scene.duration + 0.15, dedup.videoLength)
     );
+    // No beats were filled by this call (guaranteed-clip fallback only), but a no-op if this
+    // scene has nothing recorded — safe to call unconditionally on every exit of this function.
+    sweepUnadoptedSceneCandidates(dedup, scene.index);
     return { clips, beatDurations };
   }
   dedup.strictRefillAttemptedScenes.add(scene.index);
@@ -20094,7 +20139,10 @@ async function refillSceneStrictVoiceMatch(
     let afterRelaxed = clips.filter((c) => c && !isPipelineFallbackClip(c));
     if (afterRelaxed.length === 0 && !fastShort) {
       const recovered = await recoverSceneClipsIfEmpty(scene, workDir, videoTitle, dedup);
-      if (recovered.clips.length > 0) return recovered;
+      if (recovered.clips.length > 0) {
+        sweepUnadoptedSceneCandidates(dedup, scene.index);
+        return recovered;
+      }
     }
     afterRelaxed = clips.filter((c) => c && !isPipelineFallbackClip(c));
 
@@ -20141,6 +20189,7 @@ async function refillSceneStrictVoiceMatch(
       console.warn(
         `[Pipeline] Scene ${scene.index}: continuing with ${afterRelaxed.length}/${minNeeded} clip(s) (similar-match fallback)`
       );
+      sweepUnadoptedSceneCandidates(dedup, scene.index);
       return { clips, beatDurations, beats, clipBeatIndices };
     }
 
@@ -20155,6 +20204,7 @@ async function refillSceneStrictVoiceMatch(
     );
   }
 
+  sweepUnadoptedSceneCandidates(dedup, scene.index);
   return { clips, beatDurations, beats, clipBeatIndices };
 }
 
