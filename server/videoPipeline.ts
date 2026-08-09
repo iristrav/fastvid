@@ -26,6 +26,7 @@ import { promisify } from "util";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
+import { pipeline } from "stream/promises";
 import { storagePutFromFile } from "./storage";
 import { LOCAL_UPLOADS_DIR } from "./storageLocal";
 import { invokeLLM } from "./_core/llm";
@@ -3291,6 +3292,41 @@ async function fetchWithTimeout(url: string, timeoutMs: number, label: string, o
   }
 }
 
+// F3-05: streams a download response's body straight to disk instead of buffering the whole
+// file in memory first (Buffer.from(await resp.arrayBuffer())) — several long-video renders can
+// have many of these in flight at once (per-beat stock-clip downloads), and each buffered whole
+// video multiplies peak memory pressure for no reason once the destination is always a file
+// anyway. Reuses fetchWithTimeout unchanged, so the existing connect/headers timeout behavior is
+// identical to before (the timer already only covered up to headers arriving, both before and
+// after this change — the body read itself was never covered by fetchWithTimeout's timer). On
+// any error the partial file is removed, matching the existing callers' own cleanup-on-failure
+// behavior for the buffered path. Returns bytesWritten instead of a Buffer — callers that only
+// used the buffer for a minimum-size sanity check compare against bytesWritten instead.
+export async function downloadToFileStreaming(
+  url: string,
+  destPath: string,
+  timeoutMs: number,
+  label: string,
+  options: Record<string, unknown> = {}
+): Promise<{ response: Awaited<ReturnType<typeof fetchWithTimeout>>; bytesWritten: number | null }> {
+  const response = await fetchWithTimeout(url, timeoutMs, label, options);
+  if (!response.ok || !response.body) {
+    return { response, bytesWritten: null };
+  }
+  let bytesWritten = 0;
+  // node-fetch's Response.body is already a Node.js Readable — no Readable.fromWeb needed.
+  response.body.on("data", (chunk: Buffer) => {
+    bytesWritten += chunk.length;
+  });
+  try {
+    await pipeline(response.body, fs.createWriteStream(destPath));
+  } catch (err) {
+    try { fs.unlinkSync(destPath); } catch { /* ignore */ }
+    throw err;
+  }
+  return { response, bytesWritten };
+}
+
 function withTimeout<T>(
   promise: Promise<T> & { childProcess?: import("child_process").ChildProcess },
   ms: number,
@@ -4681,49 +4717,49 @@ export async function fetchPexelsClips(
         const fromMediaCache = await tryRestoreFromMediaCache(videoFile.link, rawPath);
 
         if (!fromMediaCache) {
-          // Download with retry logic
-          let downloadResp;
-          let buffer: Buffer | null = null;
+          // F3-05: streams straight to rawPath instead of buffering the whole clip in memory
+          // first — same retry/size-validation/cleanup behavior as before, just without the
+          // intermediate Buffer.
+          let downloaded = false;
           let retries = downloadRetries;
 
-          while (retries > 0 && !buffer) {
+          while (retries > 0 && !downloaded) {
             try {
-              downloadResp = await fetchWithTimeout(
+              const { response: downloadResp, bytesWritten } = await downloadToFileStreaming(
                 videoFile.link,
+                rawPath,
                 45_000,
                 `Download Pexels clip ${idx} scene ${sceneIndex} (attempt ${4 - retries}/3)`
               );
-              if (!downloadResp.ok) {
+              if (!downloadResp.ok || bytesWritten === null) {
                 retries--;
                 if (retries > 0) await new Promise(r => setTimeout(r, 1000));
                 continue;
               }
 
-              buffer = Buffer.from(await downloadResp.arrayBuffer());
-
-              // Validate buffer size (minimum 50KB for valid video)
-              if (buffer.length < 50_000) {
-                console.warn(`[Pipeline] Pexels clip ${idx} too small (${buffer.length} bytes), retrying...`);
-                buffer = null;
+              // Validate size (minimum 50KB for valid video)
+              if (bytesWritten < 50_000) {
+                console.warn(`[Pipeline] Pexels clip ${idx} too small (${bytesWritten} bytes), retrying...`);
+                try { fs.unlinkSync(rawPath); } catch { /* ignore */ }
                 retries--;
                 if (retries > 0) await new Promise(r => setTimeout(r, 1000));
                 continue;
               }
 
-              break; // Success
+              downloaded = true; // Success
             } catch (err) {
               console.warn(`[Pipeline] Download attempt failed for Pexels clip ${idx}:`, err);
+              try { fs.unlinkSync(rawPath); } catch { /* ignore */ }
               retries--;
               if (retries > 0) await new Promise(r => setTimeout(r, 1000));
             }
           }
 
-          if (!buffer) {
+          if (!downloaded) {
             console.warn(`[Pipeline] Failed to download Pexels clip ${idx} after 3 attempts`);
             return null;
           }
 
-          fs.writeFileSync(rawPath, buffer);
           // Store in cache for future videos (best-effort, never blocks pipeline)
           void reportToMediaCache(videoFile.link, rawPath, "video/mp4");
         }
@@ -4871,11 +4907,15 @@ async function fetchBrollClips(
         const rawPath = path.join(workDir, `scene_${sceneIndex}_broll_vid${video.id}_raw.mp4`);
         const outPath = path.join(workDir, `scene_${sceneIndex}_broll_vid${video.id}.mp4`);
         try {
-          const dlResp = await fetchWithTimeout(videoFile.link, 8_000, `B-roll download scene ${sceneIndex}`);
-          if (!dlResp.ok) continue;
-          const buffer = Buffer.from(await dlResp.arrayBuffer());
-          if (buffer.length < 50_000) continue;
-          fs.writeFileSync(rawPath, buffer);
+          // F3-05: streams straight to rawPath instead of buffering the whole clip in memory.
+          const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
+            videoFile.link, rawPath, 8_000, `B-roll download scene ${sceneIndex}`
+          );
+          if (!dlResp.ok || bytesWritten === null) continue;
+          if (bytesWritten < 50_000) {
+            try { fs.unlinkSync(rawPath); } catch { /* ignore */ }
+            continue;
+          }
           const stockKey = `pexels:${video.id}`;
           if (stockClipEmbeddingEnabled()) {
             scheduleStockClipEmbeddingByKey(stockKey, rawPath);
@@ -5014,27 +5054,30 @@ export async function fetchPixabayClips(
         const outPath = path.join(workDir, `scene_${sceneIndex}_${suffix}_vid${video.id}.mp4`);
 
         try {
-          // Download with retry
-          let buffer: Buffer | null = null;
-          for (let attempt = 0; attempt < 3 && !buffer; attempt++) {
+          // F3-05: streams straight to rawPath instead of buffering the whole clip in memory.
+          let downloaded = false;
+          for (let attempt = 0; attempt < 3 && !downloaded; attempt++) {
             try {
-              const dlResp = await fetchWithTimeout(
+              const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
                 videoFile.url,
+                rawPath,
                 20_000,
                 `Pixabay download scene ${sceneIndex} clip ${idx} attempt ${attempt + 1}`
               );
-              if (!dlResp.ok) { await new Promise(r => setTimeout(r, 1000)); continue; }
-              const buf = Buffer.from(await dlResp.arrayBuffer());
-              if (buf.length < 200_000) { await new Promise(r => setTimeout(r, 1000)); continue; }
-              buffer = buf;
+              if (!dlResp.ok || bytesWritten === null) { await new Promise(r => setTimeout(r, 1000)); continue; }
+              if (bytesWritten < 200_000) {
+                try { fs.unlinkSync(rawPath); } catch { /* ignore */ }
+                await new Promise(r => setTimeout(r, 1000));
+                continue;
+              }
+              downloaded = true;
             } catch (dlErr) {
               console.warn(`[Pipeline] Pixabay download attempt ${attempt + 1} failed:`, dlErr);
+              try { fs.unlinkSync(rawPath); } catch { /* ignore */ }
               await new Promise(r => setTimeout(r, 1000));
             }
           }
-          if (!buffer) continue;
-
-          fs.writeFileSync(rawPath, buffer);
+          if (!downloaded) continue;
 
           const stockKey = `pixabay:${video.id}`;
           if (stockClipEmbeddingEnabled()) {
