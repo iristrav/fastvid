@@ -634,6 +634,14 @@ type RenderCtx = {
    *  missing narration purely as a server-log line — it's registered in the persisted quality
    *  report warnings too. */
   voiceoverSilentFallbackNotes: string[];
+  /** Per-render ElevenLabs quota-exhaustion flag (F3-03). Previously a bare module-level `let`
+   *  shared by every concurrent render on this worker process — with MAX_JOBS_PER_WORKER > 1,
+   *  one render's real ElevenLabs failure could route an unrelated concurrent render's segments
+   *  to a different voice, or a concurrent render's reset could send THIS render's later
+   *  segments back to a still-down ElevenLabs. Moved into RenderCtx for the same reason
+   *  voiceoverSilentFallbackNotes is here: render state must never leak across concurrent
+   *  renders sharing one process. */
+  elevenLabsQuotaExhausted: boolean;
 };
 
 const renderCtxStorage = new AsyncLocalStorage<RenderCtx>();
@@ -646,6 +654,7 @@ function getRenderCtx(): RenderCtx {
       budgetTracker: null,
       videoTopic: null,
       voiceoverSilentFallbackNotes: [],
+      elevenLabsQuotaExhausted: false,
     }
   );
 }
@@ -658,6 +667,8 @@ function get_activeBudgetTracker(): BudgetTracker | null { return getRenderCtx()
 // Setters mutate only the current render's context object (safe — no shared state)
 function set_activeRenderBudget(v: RenderBudget | null)   { const c = getRenderCtx(); c.renderBudget = v; }
 function set_activeBudgetTracker(v: BudgetTracker | null) { const c = getRenderCtx(); c.budgetTracker = v; }
+function get_elevenLabsQuotaExhausted(): boolean { return getRenderCtx().elevenLabsQuotaExhausted; }
+function set_elevenLabsQuotaExhausted(v: boolean): void { const c = getRenderCtx(); c.elevenLabsQuotaExhausted = v; }
 
 // Cancellation scope for one scene-visuals-fetching attempt (or a batch of them — see
 // withSceneFetchTimeout below). When abandoned on timeout, every ffmpeg/ffprobe child spawned
@@ -4045,8 +4056,6 @@ async function trimVoiceoverLeadingSilence(audioPath: string): Promise<void> {
 /** UI voices are ElevenLabs IDs (stored in voices.fishAudioReferenceId). Never remap to Fish. */
 const FISH_AUDIO_REFERENCE_ID = "0327fdb5da9e4fd782899a8058c8ae2b";
 
-let elevenLabsQuotaExhausted = false;
-
 async function synthesizeFishAudioVoice(
   text: string,
   outputPath: string,
@@ -4216,7 +4225,7 @@ async function synthesizeElevenLabsVoice(
       "ElevenLabs API key is not configured. Add ELEVENLABS_API_KEY in Railway to use your selected voice."
     );
   }
-  if (elevenLabsQuotaExhausted && (fishAudioFallbackEnabled() || googleTtsFallbackEnabled())) {
+  if (get_elevenLabsQuotaExhausted() && (fishAudioFallbackEnabled() || googleTtsFallbackEnabled())) {
     console.warn(`[Pipeline] ElevenLabs ${label}: quota exhausted this session — fallback direct`);
     return synthesizeVoiceoverFallback(text, outputPath, timeoutMs, label);
   }
@@ -4257,7 +4266,7 @@ async function synthesizeElevenLabsVoice(
         // (Fish Audio, then Google Cloud TTS) instead of burning retries against a provider
         // that's already known to be down.
         if (fishAudioFallbackEnabled() || googleTtsFallbackEnabled()) {
-          elevenLabsQuotaExhausted = true;
+          set_elevenLabsQuotaExhausted(true);
           console.warn(
             `[Pipeline] ElevenLabs ${label}: HTTP ${response.status} — switching to fallback: ${errText.slice(0, 150)}`
           );
@@ -4282,7 +4291,7 @@ async function synthesizeElevenLabsVoice(
       // than retrying.
       const msg = err instanceof Error ? err.message : String(err);
       if (fishAudioFallbackEnabled() || googleTtsFallbackEnabled()) {
-        elevenLabsQuotaExhausted = true;
+        set_elevenLabsQuotaExhausted(true);
         console.warn(`[Pipeline] ElevenLabs ${label}: error — switching to fallback: ${msg.slice(0, 150)}`);
         return synthesizeVoiceoverFallback(text, outputPath, timeoutMs, label);
       }
@@ -23219,6 +23228,7 @@ export async function runVideoPipeline(
     budgetTracker: null,
     videoTopic: null,
     voiceoverSilentFallbackNotes: [],
+    elevenLabsQuotaExhausted: false,
   };
   // runWithActiveVideoId makes videoId/userId readable from ANY module in this render's call
   // tree (including localClipVision.ts and llm.ts, which can't import from here — see exec()'s
@@ -23370,13 +23380,11 @@ async function _runVideoPipelineInner(
     // ─────────────────────────────────────────────────────────────────────────
 
     // ── Stage 2: Generate ALL voiceovers in parallel batches ──────────────────
-    // elevenLabsQuotaExhausted is a module-level flag (persists for the life of the worker
-    // process) that gets set on the first ElevenLabs failure so the rest of THIS video's
-    // segments skip straight to Fish Audio instead of burning retries on a known-down
-    // provider. Reset it here so a single transient blip on one video can't permanently
-    // route every later video (and every other user sharing this worker process) to Fish
-    // Audio for the rest of the process's lifetime.
-    elevenLabsQuotaExhausted = false;
+    // elevenLabsQuotaExhausted lives on RenderCtx (F3-03) and is initialized to false in the
+    // renderCtx literal at the top of this function — no explicit reset needed here anymore.
+    // It gets set on the first ElevenLabs failure so the rest of THIS render's segments skip
+    // straight to Fish Audio instead of burning retries on a known-down provider, without
+    // leaking into any other concurrent render sharing this worker process.
     onProgress?.({ stage: STAGE_LABELS.voiceovers, percent: 8 });
     const t1 = Date.now();
     const audioPaths = scenes.map((_, i) => path.join(workDir, `scene_${i}_audio.mp3`));
