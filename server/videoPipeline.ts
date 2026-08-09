@@ -7207,16 +7207,19 @@ async function fetchFlickrCCVideos(
         const tag = fileTag ? `${fileTag}_` : "";
         const tmpPath = path.join(workDir, `scene_${sceneIndex}_${tag}flickr_${i}_tmp`);
         const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}flickr_${i}.mp4`);
-        const dlResp = await fetchWithTimeout(
+        // F3-05: streams straight to tmpPath instead of buffering the whole clip in memory.
+        const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
           videoUrl,
+          tmpPath,
           45_000,
           `Flickr video download scene ${sceneIndex}`,
           { headers: { "User-Agent": "Fastvid/1.0 (CC-licensed clips only)" } }
         );
-        if (!dlResp.ok) continue;
-        const buf = await dlResp.arrayBuffer();
-        if (buf.byteLength < 50_000 || buf.byteLength > 80 * 1024 * 1024) continue;
-        fs.writeFileSync(tmpPath, Buffer.from(buf));
+        if (!dlResp.ok || bytesWritten === null) continue;
+        if (bytesWritten < 50_000 || bytesWritten > 80 * 1024 * 1024) {
+          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+          continue;
+        }
         if (await trimRemoteVideoToClip(tmpPath, outPath, duration, 2, `Flickr video scene ${sceneIndex}`)) {
           results.push(outPath);
           downloaded++;
@@ -7383,16 +7386,19 @@ async function fetchSepiaSearchVideos(
         const tag = fileTag ? `${fileTag}_` : "";
         const tmpPath = path.join(workDir, `scene_${sceneIndex}_${tag}septube_${downloaded}_tmp`);
         const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}septube_${downloaded}.mp4`);
-        const dlResp = await fetchWithTimeout(
+        // F3-05: streams straight to tmpPath instead of buffering the whole clip in memory.
+        const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
           downloadUrl,
+          tmpPath,
           55_000,
           `SepiaSearch download scene ${sceneIndex}`,
           { headers: { "User-Agent": "Fastvid/1.0" } }
         );
-        if (!dlResp.ok) continue;
-        const buf = await dlResp.arrayBuffer();
-        if (buf.byteLength < 50_000 || buf.byteLength > 80 * 1024 * 1024) continue;
-        fs.writeFileSync(tmpPath, Buffer.from(buf));
+        if (!dlResp.ok || bytesWritten === null) continue;
+        if (bytesWritten < 50_000 || bytesWritten > 80 * 1024 * 1024) {
+          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+          continue;
+        }
         if (await trimRemoteVideoToClip(tmpPath, outPath, duration, 5, `SepiaSearch scene ${sceneIndex}`)) {
           results.push({ path: outPath, query: hit.query });
           downloaded++;
@@ -7806,16 +7812,19 @@ async function fetchVimeoCCVideos(
           const tag = fileTag ? `${fileTag}_` : "";
           const tmpPath = path.join(workDir, `scene_${sceneIndex}_${tag}vimeo_${downloaded}_tmp`);
           const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}vimeo_${downloaded}.mp4`);
-          const dlResp = await fetchWithTimeout(
+          // F3-05: streams straight to tmpPath instead of buffering the whole clip in memory.
+          const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
             downloadUrl,
+            tmpPath,
             55_000,
             `Vimeo download scene ${sceneIndex}`,
             { headers: { "User-Agent": "Fastvid/1.0" } }
           );
-          if (!dlResp.ok) continue;
-          const buf = await dlResp.arrayBuffer();
-          if (buf.byteLength < 50_000 || buf.byteLength > 80 * 1024 * 1024) continue;
-          fs.writeFileSync(tmpPath, Buffer.from(buf));
+          if (!dlResp.ok || bytesWritten === null) continue;
+          if (bytesWritten < 50_000 || bytesWritten > 80 * 1024 * 1024) {
+            try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+            continue;
+          }
           if (await trimRemoteVideoToClip(tmpPath, outPath, duration, 5, `Vimeo CC scene ${sceneIndex}`)) {
             results.push({ path: outPath, query });
             downloaded++;
