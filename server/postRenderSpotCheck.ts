@@ -6,12 +6,15 @@ import path from "path";
 import { spawn } from "child_process";
 import { promisify } from "util";
 import { withForkRetry } from "./_core/execForkRetry";
+import { ffmpegSemaphore } from "./_core/semaphore";
 import { exec as execCb } from "child_process";
 import { isFastShortVideoLength } from "./sourcingPolicy";
 
+// Routed through ffmpegSemaphore (previously ungated) — postRenderSpotCheckEnabledForVideo()
+// defaults ON for the 10-20min target length and runs at the tail of every long render.
 const execRaw = promisify(execCb);
 const exec = ((cmd: string, opts?: Record<string, unknown>) =>
-  withForkRetry(() => execRaw(cmd, opts as never))) as typeof execRaw;
+  ffmpegSemaphore.run(() => withForkRetry(() => execRaw(cmd, opts as never)))) as typeof execRaw;
 
 const SAMPLE_FRACTIONS = [0.12, 0.38, 0.62, 0.88];
 const BLACK_LUMA_THRESHOLD = 22;
@@ -55,7 +58,7 @@ async function probeFrameMeanLuma(filePath: string, atSec: number): Promise<numb
     `_spot_${path.basename(filePath, path.extname(filePath))}_${Math.round(atSec * 100)}.raw`
   );
   try {
-    await withForkRetry(() => new Promise<void>((resolve, reject) => {
+    await ffmpegSemaphore.run(() => withForkRetry(() => new Promise<void>((resolve, reject) => {
       const args = [
         "-y",
         "-ss",
@@ -89,7 +92,7 @@ async function probeFrameMeanLuma(filePath: string, atSec: number): Promise<numb
         else reject(new Error(`ffmpeg ${code}: ${stderr.slice(-200)}`));
       });
       child.on("error", reject);
-    }));
+    })));
     const buf = fs.readFileSync(outPath);
     try {
       fs.unlinkSync(outPath);
@@ -134,7 +137,7 @@ function countSilentStarts(stderr: string): number {
 }
 
 /** Run FFmpeg blackdetect + freezedetect + silencedetect on final MP4. */
-async function runFfmpegQualityFilters(filePath: string): Promise<{
+async function runFfmpegQualityFilters(filePath: string, durationSec?: number | null): Promise<{
   blackSegments: number;
   freezeSegments: number;
   silentSegments: number;
@@ -144,10 +147,19 @@ async function runFfmpegQualityFilters(filePath: string): Promise<{
     "blackdetect=d=0.35:pix_th=0.10:pic_th=0.98," +
     "freezedetect=n=-60dB:d=2.5";
   const af = "silencedetect=n=-50dB:d=1.2";
+  // This is a full linear decode of the final video (blackdetect/freezedetect/silencedetect all
+  // require reading every frame) — a fixed 90s timeout was fine for ~1min videos but doesn't
+  // scale for a 10-20min final render, especially under any CPU contention. Scale against the
+  // already-known duration (a few seconds of decode per second of video is a safe, generous
+  // multiplier), with the old 90s value as the floor for short videos and a sane ceiling so a
+  // pathological file can't hang this QA step indefinitely.
+  const timeoutMs = durationSec != null
+    ? Math.min(600_000, Math.max(90_000, Math.ceil(durationSec * 1000 * 2.5)))
+    : 90_000;
   try {
     const { stderr } = await exec(
       `"${ffmpegBin()}" -hide_banner -nostats -i "${filePath}" -vf "${vf}" -af "${af}" -f null -`,
-      { timeout: 90_000, maxBuffer: 4 * 1024 * 1024 }
+      { timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 }
     );
     const out = String(stderr);
     const blackSegments = countBlackStarts(out) || countFilterMatches(out, "blackdetect");
@@ -218,7 +230,7 @@ export async function spotCheckFinalVideo(filePath: string): Promise<PostRenderS
   let freezeSegments = 0;
   let silentSegments = 0;
   if (process.env.ENABLE_POST_RENDER_FFMPEG_DETECT !== "false") {
-    const det = await runFfmpegQualityFilters(filePath);
+    const det = await runFfmpegQualityFilters(filePath, durationSec);
     blackSegments = det.blackSegments;
     freezeSegments = det.freezeSegments;
     silentSegments = det.silentSegments;

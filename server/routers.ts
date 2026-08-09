@@ -1,5 +1,5 @@
 import Stripe from "stripe";
-import { getUserRenderSemaphore } from "./_core/semaphore";
+import { getUserRenderSemaphore, Semaphore } from "./_core/semaphore";
 import { z } from "zod";
 import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
@@ -239,6 +239,11 @@ export async function generateFullVideoInternal(videoId: number, prompt: string,
 // via videos.generationAttempt, which is already bumped on every claim (original run included),
 // so "3" here means the original run plus 2 retries — not 3 retries on top of the original.
 const MAX_VIDEO_ATTEMPTS = 3;
+
+// Caps concurrent custom-voiceover uploads across all users on this worker process — each request
+// base64-decodes up to 50MB into a Buffer, so several arriving at once can spike heap usage well
+// past the per-request cap.
+const customVoiceUploadLimiter = new Semaphore(4);
 
 function assertVideoRetryBudgetNotExhausted(video: Video): void {
   if (video.generationAttempt >= MAX_VIDEO_ATTEMPTS) {
@@ -1432,14 +1437,21 @@ export const appRouter = router({
       mimeType: z.string().default("audio/mpeg"),
       filename: z.string().max(256).optional(),
     })).mutation(async ({ ctx, input }) => {
-      const buffer = Buffer.from(input.base64, "base64");
       const maxBytes = 50 * 1024 * 1024; // 50 MB
+      // Reject oversized payloads by their base64 string length BEFORE decoding — decoding first
+      // means an attacker-controlled base64 string of arbitrary size gets fully materialized as a
+      // Buffer (base64 inflates ~4/3 over raw bytes) before the size check ever runs.
+      const maxBase64Len = Math.ceil((maxBytes * 4) / 3) + 4;
+      if (input.base64.length > maxBase64Len) {
+        throw appTrpcError("BAD_REQUEST", APP_ERROR.FILE_TOO_LARGE, "File too large (max 50MB)");
+      }
+      const buffer = Buffer.from(input.base64, "base64");
       if (buffer.length > maxBytes) {
         throw appTrpcError("BAD_REQUEST", APP_ERROR.FILE_TOO_LARGE, "File too large (max 50MB)");
       }
       const ext = input.mimeType.includes("wav") ? "wav" : input.mimeType.includes("ogg") ? "ogg" : "mp3";
       const key = `custom-voiceovers/${ctx.user.id}-${Date.now()}.${ext}`;
-      const { url } = await storagePut(key, buffer, input.mimeType);
+      const { url } = await customVoiceUploadLimiter.run(() => storagePut(key, buffer, input.mimeType));
       return { url };
     }),
 

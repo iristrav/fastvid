@@ -5,6 +5,7 @@ import { execFile as execFileCb } from "child_process";
 import { promisify } from "util";
 import * as fs from "fs";
 import { withForkRetry } from "./_core/execForkRetry";
+import { ffmpegSemaphore } from "./_core/semaphore";
 import {
   buildBeatMatchTags,
   curatedClipPathAssetId,
@@ -45,7 +46,7 @@ async function probeDurationSec(filePath: string): Promise<number> {
   if (!fs.existsSync(filePath)) return 0;
   try {
     const ffprobe = process.env.FFPROBE_BIN || process.env.FFPROBE_PATH || "ffprobe";
-    const { stdout } = await withForkRetry(() =>
+    const { stdout } = await ffmpegSemaphore.run(() => withForkRetry(() =>
       execFile(ffprobe, [
         "-v",
         "error",
@@ -55,7 +56,7 @@ async function probeDurationSec(filePath: string): Promise<number> {
         "default=noprint_wrappers=1:nokey=1",
         filePath,
       ])
-    );
+    ));
     const n = parseFloat(String(stdout).trim());
     return Number.isFinite(n) && n > 0 ? n : 0;
   } catch {

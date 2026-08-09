@@ -26,6 +26,7 @@ import fs from "fs";
 import path from "path";
 import { exec as execCb } from "child_process";
 import { promisify } from "util";
+import { ffmpegSemaphore } from "./_core/semaphore";
 import type {
   ClipAnnotation,
   FaceTrack,
@@ -760,10 +761,13 @@ export async function applySegmentTrimIfNeeded(
   if (fs.existsSync(outPath)) return outPath; // already trimmed
 
   try {
-    await execPromise(
+    // Routed through ffmpegSemaphore (previously ungated) — archiveV4ScoringEnabled() is
+    // default-on, and this runs unconditionally inside per-beat curated-clip adoption whenever
+    // a trimHint exists.
+    await ffmpegSemaphore.run(() => execPromise(
       `${ffmpegBin()} -ss ${trimHint.startSec.toFixed(3)} -t ${dur.toFixed(3)} -i "${clipPath}" -c copy "${outPath}" -y`,
       { timeout: 30_000 }
-    );
+    ));
     if (fs.existsSync(outPath) && fs.statSync(outPath).size > 10_000) {
       console.log(
         `[ArchiveV4] trimmed clip to segment ${trimHint.segmentIndex}: ` +

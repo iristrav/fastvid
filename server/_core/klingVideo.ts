@@ -2,8 +2,8 @@
  * Kling AI video generation — direct Kling API (JWT) or FAL.ai (cheaper, single key).
  */
 import { createHmac } from "crypto";
-import fetch from "node-fetch";
 import fs from "fs";
+import { fetchWithTimeout } from "./fetchWithTimeout";
 
 const KLING_API_KEY = process.env.KLING_API_KEY?.trim() || "";
 const KLING_API_SECRET = process.env.KLING_API_SECRET?.trim() || "";
@@ -69,7 +69,7 @@ function buildKlingJwt(): string {
 }
 
 async function downloadVideoToFile(url: string, outputPath: string, label: string): Promise<boolean> {
-  const resp = await fetch(url);
+  const resp = await fetchWithTimeout(url, 60_000);
   if (!resp.ok) {
     console.warn(`[Kling] ${label} download failed: ${resp.status}`);
     return false;
@@ -92,7 +92,7 @@ type FalVideoPayload = {
 async function pollFalRequest(modelId: string, requestId: string, maxWaitMs: number): Promise<string | null> {
   const deadline = Date.now() + maxWaitMs;
   while (Date.now() < deadline) {
-    const statusResp = await fetch(`https://queue.fal.run/${modelId}/requests/${requestId}/status`, {
+    const statusResp = await fetchWithTimeout(`https://queue.fal.run/${modelId}/requests/${requestId}/status`, 15_000, {
       headers: { Authorization: `Key ${FAL_KEY}` },
     });
     if (!statusResp.ok) {
@@ -101,7 +101,7 @@ async function pollFalRequest(modelId: string, requestId: string, maxWaitMs: num
     }
     const status = (await statusResp.json()) as FalQueueStatus;
     if (status.status === "COMPLETED") {
-      const resultResp = await fetch(`https://queue.fal.run/${modelId}/requests/${requestId}`, {
+      const resultResp = await fetchWithTimeout(`https://queue.fal.run/${modelId}/requests/${requestId}`, 15_000, {
         headers: { Authorization: `Key ${FAL_KEY}` },
       });
       if (!resultResp.ok) return null;
@@ -131,7 +131,7 @@ async function generateKlingViaFal(
   };
   if (imageUrl) body.image_url = imageUrl;
 
-  const createResp = await fetch(`https://queue.fal.run/${modelId}`, {
+  const createResp = await fetchWithTimeout(`https://queue.fal.run/${modelId}`, 20_000, {
     method: "POST",
     headers: {
       Authorization: `Key ${FAL_KEY}`,
@@ -175,7 +175,7 @@ async function generateKlingViaDirectApi(
     ? "https://api.klingai.com/v1/videos/image2video"
     : "https://api.klingai.com/v1/videos/text2video";
 
-  const createResp = await fetch(endpoint, {
+  const createResp = await fetchWithTimeout(endpoint, 20_000, {
     method: "POST",
     headers: { Authorization: `Bearer ${jwt}`, "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -195,7 +195,7 @@ async function generateKlingViaDirectApi(
   let videoUrl: string | null = null;
   for (let poll = 0; poll < 40; poll++) {
     await sleep(5_000);
-    const pollResp = await fetch(pollEndpoint, { headers: { Authorization: `Bearer ${jwt}` } });
+    const pollResp = await fetchWithTimeout(pollEndpoint, 15_000, { headers: { Authorization: `Bearer ${jwt}` } });
     if (!pollResp.ok) continue;
     const pollData = (await pollResp.json()) as {
       data?: { task_status?: string; task_result?: { videos?: Array<{ url?: string }> } };

@@ -5,6 +5,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import type { Timeline } from "../types";
+import { ffmpegSemaphore } from "../../_core/semaphore";
 
 const W = 1920;
 const H = 1080;
@@ -89,13 +90,19 @@ export async function generateTimelinePng(
       }
     } catch { /* fall through */ }
 
-    // Fallback: FFmpeg SVG→PNG
+    // Fallback: FFmpeg SVG→PNG — routed through ffmpegSemaphore (previously ungated) and given
+    // a real timeout (previously none at all — a hung ffmpeg here blocked indefinitely).
     const { exec } = require("child_process");
     const { promisify } = require("util");
     const execA = promisify(exec);
     const FFMPEG = process.env.FFMPEG_BIN ?? "ffmpeg";
     try {
-      await execA(`${FFMPEG} -y -i "${svgPath}" -vframes 1 "${pngPath}"`);
+      await ffmpegSemaphore.run(() =>
+        Promise.race([
+          execA(`${FFMPEG} -y -i "${svgPath}" -vframes 1 "${pngPath}"`),
+          new Promise<never>((_, rej) => setTimeout(() => rej(new Error("ffmpeg SVG->PNG timeout")), 15_000)),
+        ])
+      );
       if (fs.existsSync(pngPath) && fs.statSync(pngPath).size > 500) {
         fs.unlinkSync(svgPath);
         return pngPath;

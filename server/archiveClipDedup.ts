@@ -7,6 +7,7 @@ import os from "os";
 import path from "path";
 import { spawn } from "child_process";
 import { withForkRetry } from "./_core/execForkRetry";
+import { ffmpegSemaphore } from "./_core/semaphore";
 import type { VideoClipSegment } from "./archiveVideoSplitter";
 import { loadArchiveAssetFile } from "./archiveAssetLoad";
 import { LOCAL_UPLOADS_DIR, resolveLocalVideoPath } from "./storageLocal";
@@ -63,7 +64,9 @@ async function extractGray8x8FromFile(
     : ["-y", "-i", filePath, "-frames:v", "1", "-vf", "scale=8:8,format=gray", "-f", "rawvideo", "-"];
 
   try {
-    const raw = await withForkRetry(() => new Promise<Buffer>((resolve, reject) => {
+    // Routed through ffmpegSemaphore (previously ungated) — this runs unconditionally, no
+    // feature flag, from the curated-clip adoption path per beat.
+    const raw = await ffmpegSemaphore.run(() => withForkRetry(() => new Promise<Buffer>((resolve, reject) => {
       const child = spawn(ffmpegBin(), args, { stdio: ["ignore", "pipe", "pipe"] });
       const chunks: Buffer[] = [];
       child.stdout.on("data", (d: Buffer) => chunks.push(d));
@@ -80,7 +83,7 @@ async function extractGray8x8FromFile(
         else reject(new Error(stderr.slice(-100) || `ffmpeg exit ${code}`));
       });
       child.on("error", reject);
-    }));
+    })));
     return raw;
   } catch {
     return null;

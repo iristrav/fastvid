@@ -4,7 +4,7 @@
  * Supports both text-to-video and image-to-video generation
  */
 
-import fetch from "node-fetch";
+import { fetchWithTimeout } from "./fetchWithTimeout";
 
 const HIGGSFIELD_API_KEY = process.env.HIGGSFIELD_API_KEY;
 const HIGGSFIELD_API_SECRET = process.env.HIGGSFIELD_API_SECRET;
@@ -33,7 +33,7 @@ export async function generateHiggsfieldTextToVideo(
 
   try {
     // Create text-to-video generation task
-    const createResponse = await fetch(`${HIGGSFIELD_API_URL}/text-to-video`, {
+    const createResponse = await fetchWithTimeout(`${HIGGSFIELD_API_URL}/text-to-video`, 20_000, {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${HIGGSFIELD_API_KEY}`,
@@ -94,7 +94,7 @@ export async function generateHiggsfieldImageToVideo(
 
   try {
     // Create image-to-video generation task
-    const createResponse = await fetch(`${HIGGSFIELD_API_URL}/image-to-video`, {
+    const createResponse = await fetchWithTimeout(`${HIGGSFIELD_API_URL}/image-to-video`, 20_000, {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${HIGGSFIELD_API_KEY}`,
@@ -152,7 +152,7 @@ async function pollHiggsfieldTask(
 
   while (Date.now() - startTime < maxWait) {
     try {
-      const statusResponse = await fetch(`${HIGGSFIELD_API_URL}/tasks/${taskId}`, {
+      const statusResponse = await fetchWithTimeout(`${HIGGSFIELD_API_URL}/tasks/${taskId}`, 15_000, {
         headers: {
           "Authorization": `Bearer ${HIGGSFIELD_API_KEY || ""}`,
           "X-API-Secret": HIGGSFIELD_API_SECRET || "",

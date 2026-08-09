@@ -2,7 +2,7 @@ import { and, asc, desc, eq, gt, getTableColumns, inArray, like, or, sql } from 
 import { drizzle } from "drizzle-orm/mysql2";
 import * as fs from "fs";
 import { PIPELINE_ERROR, appErrorMessage } from "@shared/appErrors";
-import { PIPELINE_PROCESSING_STATUSES, USER_IN_FLIGHT_VIDEO_STATUSES } from "@shared/videoQueue";
+import { PIPELINE_PROCESSING_STATUSES, USER_IN_FLIGHT_VIDEO_STATUSES, readQueueConfig } from "@shared/videoQueue";
 import { isShortVideoLength, normalizeVideoLength } from "@shared/videoLengths";
 import { validateFinalVideoForExport, resolveStoredVideoLocalPath, validateFinalVideoPlayable } from "./finalVideoGate";
 import { maxPipelineWallClockMin, maxPipelineWallClockHardMin, visualStageWallClockMin, pipelineWallClockLimitEnabled, pipelineProgressStallRecoveryEnabled, pipelineProgressStallThresholdMs, pipelineMaxStallRecoveries, pipelineMinutesPerVideoMinute, pipelineWallClockGraceFactor, pipelineComposeGraceMs, PIPELINE_UNLIMITED_MS } from "./sourcingPolicy";
@@ -11,6 +11,31 @@ import { InsertInviteCode, InsertUser, InsertVideo, InsertPasswordResetToken, in
 import { ENV } from "./_core/env";
 
 let _db: ReturnType<typeof drizzle> | null = null;
+
+// connectionLimit must comfortably exceed MAX_CONCURRENT_JOBS (each active render writes progress
+// frequently) plus the web process's own request traffic and the periodic background sweeps
+// (failAllStalledPipelines, runStuckVideoCheck) sharing this same pool. Default is
+// MAX_CONCURRENT_JOBS + 10 fixed overhead for those non-render consumers — override via env only
+// if a future worker/replica topology genuinely needs a different value.
+function dbPoolConnectionLimit(): number {
+  const raw = process.env.DB_POOL_CONNECTION_LIMIT?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 5 && n <= 200) return n;
+  }
+  return readQueueConfig().maxConcurrentJobs + 10;
+}
+
+// queueLimit bounds how many callers can wait for a connection before the pool fails fast with
+// an explicit error instead of hanging forever.
+function dbPoolQueueLimit(): number {
+  const raw = process.env.DB_POOL_QUEUE_LIMIT?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 10 && n <= 1000) return n;
+  }
+  return 100;
+}
 
 export async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
@@ -24,16 +49,10 @@ export async function getDb() {
       // Explicit pool + keep-alive so dead sockets left behind by a DB-side
       // blip (e.g. a volume resize) get detected and replaced instead of hanging.
       const mysql = await import("mysql2/promise");
-      // connectionLimit must comfortably exceed MAX_CONCURRENT_JOBS (default 25 renders/worker,
-      // each writing progress frequently) plus the web process's own request traffic and the
-      // two periodic background sweeps (failAllStalledPipelines, runStuckVideoCheck) sharing
-      // this same pool — 15 was undersized against a 25-job ceiling, causing writes to silently
-      // serialize under real concurrent load. queueLimit bounds how many callers can wait for a
-      // connection before the pool fails fast with an explicit error instead of hanging forever.
       const pool = mysql.createPool({
         uri: dbUrl,
-        connectionLimit: 30,
-        queueLimit: 100,
+        connectionLimit: dbPoolConnectionLimit(),
+        queueLimit: dbPoolQueueLimit(),
         waitForConnections: true,
         connectTimeout: 10_000,
         enableKeepAlive: true,
@@ -1016,6 +1035,14 @@ export interface EditorClip {
   archiveAssetId?: number;
   storageUrl?: string;
   title?: string;
+  /**
+   * False when `url` is a worker-local render temp path (e.g. a still/blur-fill clip or an
+   * unrecognized source) rather than a stable, always-reachable URL — that temp file is deleted
+   * once the render's workDir is swept, so the editor must not try to load `url` directly for
+   * these entries. Omitted (undefined) means true/unknown, matching existing manifests written
+   * before this field existed.
+   */
+  available?: boolean;
 }
 
 export interface EditorScene {

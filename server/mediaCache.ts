@@ -42,10 +42,22 @@ function extFromContentType(contentType: string): string {
 
 async function downloadFromR2(r2Key: string, destPath: string): Promise<void> {
   const signedUrl = await storageGetSignedUrl(r2Key);
-  const resp = await fetch(signedUrl);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 30_000);
+  let resp: Response;
+  try {
+    resp = await fetch(signedUrl, { signal: controller.signal });
+  } catch (err) {
+    if ((err as Error).name === "AbortError") {
+      throw new Error(`Cache R2 read timed out after 30s for key ${r2Key}`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
   if (!resp.ok) throw new Error(`Cache R2 read failed (${resp.status}) for key ${r2Key}`);
   const buf = Buffer.from(await resp.arrayBuffer());
-  fs.writeFileSync(destPath, buf);
+  await fs.promises.writeFile(destPath, buf);
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -120,10 +132,15 @@ export async function reportToMediaCache(
 
     const stat = fs.statSync(localPath);
     const ext = extFromContentType(contentType);
-    const r2Key = r2KeyForHash(hash, ext);
+    const relKey = r2KeyForHash(hash, ext);
 
-    const buf = fs.readFileSync(localPath);
-    await storagePut(r2Key, buf, contentType);
+    const buf = await fs.promises.readFile(localPath);
+    // storagePut appends a hash suffix to the key it's given (e.g. media-cache/ab/<hash>_1a2b3c.jpg)
+    // on every backend (s3/forge/local) — the actual stored key. Previously this stored relKey
+    // (the pre-suffix key we requested) in the DB instead, so every later
+    // tryRestoreFromMediaCache() lookup pointed at an object that never existed: a guaranteed
+    // cache miss on every backend, for every entry ever written.
+    const { key: r2Key } = await storagePut(relKey, buf, contentType);
 
     await db
       .insert(mediaAssetCache)

@@ -4,8 +4,13 @@ import { exec } from "child_process";
 import { promisify } from "util";
 import type { TextOverlay, TextOverlayStyle, SceneTextPlan } from "./types";
 import { ffmpegThreadFlag } from "../sourcingPolicy";
+import { ffmpegSemaphore } from "../_core/semaphore";
 
-const execAsync = promisify(exec);
+// Route through the shared ffmpeg concurrency gate — applyTextOverlaysToScenes does a full
+// libx264 re-encode of every scene's composed clip, once per scene, previously entirely
+// outside FFMPEG_CONCURRENCY_LIMIT.
+const execRaw = promisify(exec);
+const execAsync = (cmd: string) => ffmpegSemaphore.run(() => execRaw(cmd));
 const FFMPEG_BIN = process.env.FFMPEG_BIN ?? "ffmpeg";
 const FFMPEG_TIMEOUT_MS = 60_000;
 

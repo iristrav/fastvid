@@ -34,8 +34,12 @@ import { exec } from "child_process";
 import { promisify } from "util";
 import { analyzeScene } from "./visualDirector/analyzer";
 import { ffmpegThreadFlag } from "./sourcingPolicy";
+import { ffmpegSemaphore } from "./_core/semaphore";
 
-const execAsync = promisify(exec);
+// Route through the shared ffmpeg concurrency gate — editorialGraphicsEnabled() is default-on
+// and this runs once per graphic (per scene), previously entirely outside FFMPEG_CONCURRENCY_LIMIT.
+const execRaw = promisify(exec);
+const execAsync = (cmd: string) => ffmpegSemaphore.run(() => execRaw(cmd));
 const FFMPEG = process.env.FFMPEG_BIN ?? "ffmpeg";
 const W = 1920;
 const H = 1080;

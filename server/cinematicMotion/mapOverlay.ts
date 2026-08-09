@@ -8,8 +8,13 @@ import * as path from "path";
 import { exec } from "child_process";
 import { promisify } from "util";
 import type { MapOverlay } from "./types";
+import { ffmpegSemaphore } from "../_core/semaphore";
 
-const execAsync = promisify(exec);
+// Route through the shared ffmpeg concurrency gate — this file's ffmpeg calls (SVG→PNG
+// rasterization fallback, called from VisualDirector's map_marker directive, once per scene)
+// previously bypassed FFMPEG_CONCURRENCY_LIMIT entirely.
+const execRaw = promisify(exec);
+const execAsync = (cmd: string) => ffmpegSemaphore.run(() => execRaw(cmd));
 const FFMPEG_BIN = process.env.FFMPEG_BIN ?? "ffmpeg";
 
 async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {

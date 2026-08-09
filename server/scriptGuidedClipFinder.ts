@@ -133,11 +133,10 @@ export async function fetchYoutubeTranscript(
   for (const lang of langs) {
     for (const fmt of fmts) {
       const url = `https://www.youtube.com/api/timedtext?v=${videoId}&lang=${lang}&fmt=${fmt}`;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
       try {
-        const resp = await Promise.race([
-          fetch(url, { headers: { "User-Agent": "Fastvid/1.0" } }),
-          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timeout")), timeoutMs)),
-        ]);
+        const resp = await fetch(url, { headers: { "User-Agent": "Fastvid/1.0" }, signal: controller.signal as never });
         if (!resp.ok) continue;
         const raw = await resp.text();
         if (!raw.trim()) continue;
@@ -145,6 +144,8 @@ export async function fetchYoutubeTranscript(
         if (segments.length >= 2) return segments;
       } catch {
         continue;
+      } finally {
+        clearTimeout(timer);
       }
     }
   }

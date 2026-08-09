@@ -72,6 +72,7 @@ export async function buildEditorClipFromPath(clipPath: string): Promise<EditorC
       type: "video",
       source,
       title: `${source} still`,
+      available: false,
     };
   }
 
@@ -79,6 +80,7 @@ export async function buildEditorClipFromPath(clipPath: string): Promise<EditorC
     url: clipPath,
     type: isVideo ? "video" : "image",
     source: clipPath.includes("curated") ? "archive" : "unknown",
+    available: false,
   };
 }
 

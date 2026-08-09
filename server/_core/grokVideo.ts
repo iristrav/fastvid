@@ -3,7 +3,7 @@
  * Generates videos from text prompts using xAI's Grok Imagine API via Replicate
  */
 
-import fetch from "node-fetch";
+import { fetchWithTimeout } from "./fetchWithTimeout";
 
 const REPLICATE_API_KEY = process.env.REPLICATE_API_KEY;
 const REPLICATE_MODEL = "xai/grok-imagine-video";
@@ -30,7 +30,7 @@ export async function generateGrokVideo(
 
   try {
     // Create prediction on Replicate
-    const createResponse = await fetch("https://api.replicate.com/v1/predictions", {
+    const createResponse = await fetchWithTimeout("https://api.replicate.com/v1/predictions", 20_000, {
       method: "POST",
       headers: {
         "Authorization": `Token ${REPLICATE_API_KEY}`,
@@ -58,8 +58,9 @@ export async function generateGrokVideo(
     const maxWait = 60_000;
 
     while (Date.now() - startTime < maxWait) {
-      const statusResponse = await fetch(
+      const statusResponse = await fetchWithTimeout(
         `https://api.replicate.com/v1/predictions/${predictionId}`,
+        15_000,
         {
           headers: { "Authorization": `Token ${REPLICATE_API_KEY}` },
         }

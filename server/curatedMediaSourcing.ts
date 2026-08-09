@@ -48,6 +48,7 @@ import {
 } from "./visualBeatTags";
 import { promisify } from "util";
 import { withForkRetry } from "./_core/execForkRetry";
+import { ffmpegSemaphore } from "./_core/semaphore";
 import fetch from "node-fetch";
 import * as fs from "fs";
 import * as path from "path";
@@ -152,9 +153,13 @@ export type ArchiveAssetRow = Omit<MediaArchiveAsset, "annotationJson"> & {
   annotationJson?: MediaArchiveAsset["annotationJson"];
 };
 
+// Routed through ffmpegSemaphore — previously this file's own exec() (used for Ken Burns/still
+// encoding, called per-beat whenever a curated/stock still image is turned into a clip) ran
+// entirely outside FFMPEG_CONCURRENCY_LIMIT despite a comment elsewhere claiming it was already
+// gated. withForkRetry() only retries on EAGAIN/fork pressure — it never touches the semaphore.
 const execRaw = promisify(execCb);
 const exec = ((cmd: string, opts?: Record<string, unknown>) =>
-  withForkRetry(() => execRaw(cmd, opts as never))) as typeof execRaw;
+  ffmpegSemaphore.run(() => withForkRetry(() => execRaw(cmd, opts as never)))) as typeof execRaw;
 const VIDEO_WIDTH = 1920;
 const VIDEO_HEIGHT = 1080;
 const CLIP_MIN_SEC = 2.5;
@@ -1706,8 +1711,11 @@ export async function prepareCuratedArchiveClip(
     // so the result stays valid forever and re-running the LLM check would be wasted time.
     hasBakedText = asset.hasBakedEditText === 1;
   } else {
-    const rawBuffer = fs.readFileSync(rawPath);
-    hasBakedText = await archiveClipHasBakedEditText(rawBuffer, asset.mimeType);
+    // Pass the path, not a read-into-memory Buffer — for video content
+    // archiveClipHasBakedEditText only needs a handful of extracted frames, so materializing the
+    // whole clip in RAM here (and, previously, having the callee write it right back to disk
+    // unchanged) was pure overhead.
+    hasBakedText = await archiveClipHasBakedEditText(rawPath, asset.mimeType);
     try {
       await updateMediaArchiveAsset(asset.id, { hasBakedEditText: hasBakedText ? 1 : 0 });
       asset.hasBakedEditText = hasBakedText ? 1 : 0;

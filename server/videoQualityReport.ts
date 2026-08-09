@@ -61,6 +61,10 @@ export type VideoQualityReport = {
     warnings: string[];
   };
   voiceVisualMatch?: VoiceVisualMatchSummary;
+  /** True when one or more narration chunks fell back to silent audio (every configured real
+   *  TTS provider was tried and failed) — set from videoPipeline.ts's generateVoiceover(). A
+   *  video with this set must never be indistinguishable from a normal successful render. */
+  hasSilentVoiceover?: boolean;
   score: number;
 };
 

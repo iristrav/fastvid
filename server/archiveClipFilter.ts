@@ -8,12 +8,15 @@ import path from "path";
 import { exec as execCb, spawn } from "child_process";
 import { promisify } from "util";
 import { withForkRetry } from "./_core/execForkRetry";
+import { ffmpegSemaphore } from "./_core/semaphore";
 import { invokeLLM } from "./_core/llm";
 import { ENV } from "./_core/env";
 
+// Routed through ffmpegSemaphore (previously ungated) — archiveClipOverlayFilterEnabled() is
+// effectively default-on in production (true whenever a Forge API key is configured).
 const execRaw = promisify(execCb);
 const exec = ((cmd: string, opts?: Record<string, unknown>) =>
-  withForkRetry(() => execRaw(cmd, opts as never))) as typeof execRaw;
+  ffmpegSemaphore.run(() => withForkRetry(() => execRaw(cmd, opts as never)))) as typeof execRaw;
 
 const OVERLAY_JSON_SCHEMA = {
   type: "json_schema" as const,
@@ -64,7 +67,7 @@ async function extractVideoPreviewJpeg(
 ): Promise<boolean> {
   if (!fs.existsSync(videoPath)) return false;
   try {
-    await withForkRetry(() => new Promise<void>((resolve, reject) => {
+    await ffmpegSemaphore.run(() => withForkRetry(() => new Promise<void>((resolve, reject) => {
       const seekArg = typeof seek === "number" ? seek.toFixed(3) : `${Math.round(parseFloat(seek))}%`;
       const args = ["-y", "-ss", seekArg, "-i", videoPath, "-frames:v", "1", "-q:v", "3", outPath];
       const child = spawn(ffmpegBin(), args, { stdio: ["ignore", "ignore", "pipe"] });
@@ -80,7 +83,7 @@ async function extractVideoPreviewJpeg(
         else reject(new Error(stderr.slice(-120) || `ffmpeg exit ${code}`));
       });
       child.on("error", reject);
-    }));
+    })));
     return true;
   } catch {
     return false;
@@ -219,9 +222,14 @@ export async function archiveSegmentHasOnScreenText(
   }
 }
 
-/** Returns true when clip should be skipped (on-screen text detected). */
+/**
+ * Returns true when clip should be skipped (on-screen text detected).
+ * `media` accepts either an in-memory Buffer or a path to a file already on disk — for the video
+ * case, callers that already have the source file on disk should pass the path so this doesn't
+ * need a full read-into-memory + write-back-to-disk round trip of what can be a large clip.
+ */
 export async function archiveClipHasBakedEditText(
-  mediaBuffer: Buffer,
+  media: Buffer | string,
   mimeType: string,
   opts?: { clipCount?: number }
 ): Promise<boolean> {
@@ -229,7 +237,8 @@ export async function archiveClipHasBakedEditText(
   if (!archiveClipOverlayFilterEnabled()) return false;
 
   if (mimeType.startsWith("image/")) {
-    const dataUrl = imageMimeToDataUrl(mediaBuffer, mimeType);
+    const buf = typeof media === "string" ? fs.readFileSync(media) : media;
+    const dataUrl = imageMimeToDataUrl(buf, mimeType);
     return detectOnScreenTextInImages([dataUrl]);
   }
 
@@ -237,10 +246,15 @@ export async function archiveClipHasBakedEditText(
 
   const fastMode = opts?.clipCount != null && opts.clipCount > 40;
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "archive-overlay-"));
-  const ext = mimeType.includes("webm") ? "webm" : mimeType.includes("mov") ? "mov" : "mp4";
-  const videoPath = path.join(workDir, `preview.${ext}`);
+  let videoPath: string;
+  if (typeof media === "string") {
+    videoPath = media;
+  } else {
+    const ext = mimeType.includes("webm") ? "webm" : mimeType.includes("mov") ? "mov" : "mp4";
+    videoPath = path.join(workDir, `preview.${ext}`);
+    fs.writeFileSync(videoPath, media);
+  }
   try {
-    fs.writeFileSync(videoPath, mediaBuffer);
     const dur = await probeVideoDurationSec(videoPath);
     const sampleSec =
       dur <= 0.4

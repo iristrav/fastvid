@@ -30,6 +30,7 @@ import { storagePutFromFile } from "./storage";
 import { LOCAL_UPLOADS_DIR } from "./storageLocal";
 import { invokeLLM } from "./_core/llm";
 import { ffmpegSemaphore } from "./_core/semaphore";
+import { providerLimiter } from "./_core/providerLimiters";
 import { getVideoById, updateVideoStatus, updateVideoScenes, mergeVideoMetadata, touchVideoProgress, getMediaArchiveAssetById, type EditorScene } from "./db";
 import { recordArchiveContentGap } from "./archiveContentGaps";
 import pLimit from "p-limit";
@@ -526,13 +527,12 @@ async function isValidVideoFile(filePath: string): Promise<boolean> {
   if (size < 1000) return false;
   for (const probePath of FFPROBE_PATHS()) {
     try {
-      const p = execFileRaw(probePath, [
+      const { stdout } = await execFileRaw(probePath, [
         "-v", "error", "-select_streams", "v:0",
         "-show_entries", "stream=codec_type",
         "-of", "default=noprint_wrappers=1:nokey=1",
         filePath,
-      ]);
-      const { stdout } = await withTimeout(p, 8_000, `isValidVideoFile ${path.basename(filePath)}`);
+      ], 8_000);
       if (stdout.toString().trim().includes("video")) return true;
     } catch {
       /* try next probe binary */
@@ -566,13 +566,12 @@ async function probeVideoStreamMeta(
   if (!fs.existsSync(filePath)) return null;
   for (const probePath of FFPROBE_PATHS()) {
     try {
-      const p = execFileRaw(probePath, [
+      const { stdout } = await execFileRaw(probePath, [
         "-v", "error", "-select_streams", "v:0",
         "-show_entries", "stream=width,height,duration",
         "-of", "default=noprint_wrappers=1:nokey=1",
         filePath,
-      ]);
-      const { stdout } = await withTimeout(p, 8_000, `probeVideoStreamMeta ${path.basename(filePath)}`);
+      ], 8_000);
       const lines = stdout
         .toString()
         .trim()
@@ -630,12 +629,25 @@ type RenderCtx = {
    *  guaranteed-clip fallback so it can try a broad archive search for the video's own topic
    *  instead of ever showing a flat color card. */
   videoTopic: { videoTitle: string; primaryPerson: string } | null;
+  /** Set by generateVoiceover() whenever it had to fall back to silent audio for a narration
+   *  chunk. Read once qualityReport exists (after Stage 4) so a video can never complete with
+   *  missing narration purely as a server-log line — it's registered in the persisted quality
+   *  report warnings too. */
+  voiceoverSilentFallbackNotes: string[];
 };
 
 const renderCtxStorage = new AsyncLocalStorage<RenderCtx>();
 
 function getRenderCtx(): RenderCtx {
-  return renderCtxStorage.getStore() ?? { watchdog: null, renderBudget: null, budgetTracker: null, videoTopic: null };
+  return (
+    renderCtxStorage.getStore() ?? {
+      watchdog: null,
+      renderBudget: null,
+      budgetTracker: null,
+      videoTopic: null,
+      voiceoverSilentFallbackNotes: [],
+    }
+  );
 }
 
 // Backward-compat accessors used throughout the file
@@ -821,6 +833,58 @@ function markEuropeanaSearchResult(success: boolean): void {
   }
 }
 
+// Same breaker, applied to the two remaining external search providers that had no protection
+// against a sustained outage: YouTube (search/CC-clips/thumbnails) and SerpAPI (image search).
+const YOUTUBE_FAILURE_STREAK_TRIP = 8;
+const YOUTUBE_COOLDOWN_MS = 3 * 60_000;
+let youtubeFailureStreak = 0;
+let youtubeCooldownUntilMs = 0;
+
+function isYoutubeInCooldown(): boolean {
+  return Date.now() < youtubeCooldownUntilMs;
+}
+
+function markYoutubeSearchResult(success: boolean): void {
+  if (success) {
+    youtubeFailureStreak = 0;
+    return;
+  }
+  youtubeFailureStreak++;
+  if (youtubeFailureStreak >= YOUTUBE_FAILURE_STREAK_TRIP) {
+    youtubeCooldownUntilMs = Date.now() + YOUTUBE_COOLDOWN_MS;
+    youtubeFailureStreak = 0;
+    console.warn(
+      `[Pipeline] YouTube: ${YOUTUBE_FAILURE_STREAK_TRIP} consecutive search failures — ` +
+        `skipping for ${Math.round(YOUTUBE_COOLDOWN_MS / 60_000)}min`
+    );
+  }
+}
+
+const SERPAPI_FAILURE_STREAK_TRIP = 8;
+const SERPAPI_COOLDOWN_MS = 3 * 60_000;
+let serpApiFailureStreak = 0;
+let serpApiCooldownUntilMs = 0;
+
+function isSerpApiInCooldown(): boolean {
+  return Date.now() < serpApiCooldownUntilMs;
+}
+
+function markSerpApiSearchResult(success: boolean): void {
+  if (success) {
+    serpApiFailureStreak = 0;
+    return;
+  }
+  serpApiFailureStreak++;
+  if (serpApiFailureStreak >= SERPAPI_FAILURE_STREAK_TRIP) {
+    serpApiCooldownUntilMs = Date.now() + SERPAPI_COOLDOWN_MS;
+    serpApiFailureStreak = 0;
+    console.warn(
+      `[Pipeline] SerpAPI: ${SERPAPI_FAILURE_STREAK_TRIP} consecutive search failures — ` +
+        `skipping for ${Math.round(SERPAPI_COOLDOWN_MS / 60_000)}min`
+    );
+  }
+}
+
 /** Hard-kill a scope's own children and recursively abort/kill every nested child scope. */
 function hardAbortScope(scope: SceneFetchScope): number {
   scope.controller.abort();
@@ -877,9 +941,20 @@ const execRaw = (cmd: string): Promise<{ stdout: string; stderr: string }> & { c
 // caller reads it; withTimeout's orphan-kill fast path degrades to a no-op for these calls, same
 // as it already does for exec()'s ~90 semaphore-gated call sites, and scope-based cleanup
 // (fetchScope.children) still works since that registration happens at actual-spawn time.
+// `timeoutMs`, when given, is applied INSIDE the ffmpegSemaphore.run() callback — i.e. the
+// clock only starts once this call has actually acquired a slot and the child process is about
+// to spawn, never while queued behind the semaphore. Previously callers (isValidVideoFile,
+// probeVideoStreamMeta) wrapped the whole `execFileRaw(...)` call in an OUTER `withTimeout(...,
+// 8000, ...)`, whose timer started immediately — under semaphore contention (several scenes'
+// candidate-clip validation queued at once, exactly the long-video/many-scene case) that 8s
+// budget could be entirely consumed by queue-wait before the probe even started, causing a
+// well-behaved ffprobe to be reported as "invalid"/timed-out. The outer wrapper also couldn't
+// actually kill the process on timeout (this promise never exposed .childProcess), so a
+// same-shaped inline timer is the only way to both time and cancel this correctly.
 const execFileRaw = async (
   bin: string,
-  args: string[]
+  args: string[],
+  timeoutMs?: number
 ): Promise<{ stdout: Buffer; stderr: Buffer }> => {
   if (sceneFetchScopeStorage.getStore()?.controller.signal.aborted) {
     throw new Error(`[SceneFetchScope] Aborted — skipping: ${bin} ${args.slice(0, 4).join(" ")}`);
@@ -896,11 +971,13 @@ const execFileRaw = async (
     const [spawnBin, spawnArgs] =
       process.platform === "linux" ? ["nice", ["-n", "10", bin, ...args]] : [bin, args];
     return new Promise<{ stdout: Buffer; stderr: Buffer }>((resolve, reject) => {
+      let timer: NodeJS.Timeout | undefined;
       child = execFileCb(
         spawnBin,
         spawnArgs,
         { maxBuffer: 64 * 1024 * 1024, encoding: "buffer" },
         (err, stdout, stderr) => {
+          if (timer) clearTimeout(timer);
           if (child) fetchScope?.children.delete(child);
           if (err) {
             (err as NodeJS.ErrnoException & { stdout?: Buffer; stderr?: Buffer }).stdout = stdout as unknown as Buffer;
@@ -914,6 +991,13 @@ const execFileRaw = async (
       if (child) {
         get_activeWatchdog()?.trackChild(child);
         fetchScope?.children.add(child);
+      }
+      if (timeoutMs && child) {
+        const c = child;
+        timer = setTimeout(() => {
+          try { c.kill("SIGKILL"); } catch { /* already dead */ }
+          reject(new Error(`execFileRaw timeout after ${timeoutMs}ms: ${bin} ${args.slice(0, 4).join(" ")}`));
+        }, timeoutMs);
       }
     });
   });
@@ -3831,6 +3915,13 @@ export async function generateBulkSceneVoiceovers(
   return durations;
 }
 
+// NOTE: at this pipeline's one call site (bulk voiceover generation, early in the render before
+// computeRenderBudget() has run), get_activeRenderBudget() is always null, so this always falls
+// through to the static sceneCount-based estimate below — the ttsMs branch above only fires for
+// callers later in the pipeline where a budget has already been computed. This is intentional:
+// voiceover generation must happen before scene/beat counts are final inputs to
+// computeRenderBudget(), so reordering to compute the budget first would create a circular
+// dependency rather than a real fix. Do not "simplify" this by dropping the branch.
 function bulkVoiceoverTimeoutMs(sceneCount: number, videoLength?: string): number {
   const _budget = get_activeRenderBudget(); if (_budget) return _budget.ttsMs;
   if (isFastShortVideoLength(videoLength)) {
@@ -4299,8 +4390,13 @@ export async function generateVoiceover(
   }
 
   // Silent fallback — reached ONLY when every configured real TTS provider was tried and failed,
-  // or no real provider is configured at all. Logged loudly (console.error, not warn) and
-  // flagged via usedSilentFallback so callers can never mistake this for real narration.
+  // or no real provider is configured at all. Logged loudly (console.error, not warn), flagged
+  // via usedSilentFallback so callers can never mistake this for real narration, AND recorded on
+  // the render's own context so it survives into the persisted quality-report warnings even if
+  // nobody is watching server logs at the time — a render must never look like an ordinary
+  // "completed" video when part of its narration is actually silent.
+  const silentNote = `TTS: silent fallback used for "${path.basename(outputPath)}" — no real audio provider produced narration for this chunk`;
+  getRenderCtx().voiceoverSilentFallbackNotes.push(silentNote);
   console.error(
     `[Pipeline] generateVoiceover: ALL configured real TTS providers unavailable or failed for ` +
     `"${outputPath}" — falling back to SILENT audio. This chunk will have NO narration.`
@@ -4509,12 +4605,12 @@ export async function fetchPexelsClips(
       const searchUrl = `https://api.pexels.com/videos/search?query=${encodeURIComponent(currentQuery)}&per_page=15&size=large&orientation=landscape`;
       // withTimeout only races a timer and never aborts the request — a timed-out Pexels call
       // keeps running in the background and still counts against the metered quota.
-      const searchResp = await fetchWithTimeout(
+      const searchResp = await providerLimiter("pexels").run(() => fetchWithTimeout(
         searchUrl,
         10_000,
         `Pexels search scene ${sceneIndex} query "${currentQuery}"`,
         { headers: { Authorization: PEXELS_API_KEY } }
-      );
+      ));
 
       if (!searchResp.ok) {
         markPexelsSearchResult(false);
@@ -4855,11 +4951,11 @@ export async function fetchPixabayClips(
 
       // withTimeout only races a timer and never aborts the request — a timed-out Pixabay call
       // keeps running in the background and still counts against the metered quota.
-      const searchResp = await fetchWithTimeout(
+      const searchResp = await providerLimiter("pixabay").run(() => fetchWithTimeout(
         searchUrl,
         10_000,
         `Pixabay search scene ${sceneIndex} query "${currentQuery}"`
-      );
+      ));
       if (!searchResp.ok) {
         markPixabaySearchResult(false);
         console.warn(`[Pipeline] Pixabay search HTTP ${searchResp.status} for "${currentQuery}"`);
@@ -5205,11 +5301,11 @@ export async function fetchWikimediaImages(
 
     // Cache miss — search Wikimedia Commons
     const searchUrl = `https://commons.wikimedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&srnamespace=6&srlimit=10&format=json&origin=*`;
-    const searchResp = await withTimeout(
+    const searchResp = await providerLimiter("wikimedia").run(() => withTimeout(
       fetch(searchUrl, { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }),
       5_000,
       `Wikimedia search scene ${sceneIndex}`
-    );
+    ));
     if (!searchResp.ok) {
       markWikimediaSearchResult(false);
       return [];
@@ -5404,11 +5500,11 @@ async function fetchWikimediaImagesV1(
           `https://commons.wikimedia.org/w/api.php?action=query&list=search` +
           `&srsearch=${encodeURIComponent(query)}&srnamespace=6&srlimit=10` +
           `&srprop=snippet|size&format=json&origin=*`;
-        const searchResp = await withTimeout(
+        const searchResp = await providerLimiter("wikimedia").run(() => withTimeout(
           fetch(searchUrl, { headers: UA }),
           5_000,
           `V1 Wikimedia search scene ${sceneIndex}`
-        );
+        ));
         if (!searchResp.ok) {
           markWikimediaSearchResult(false);
           return { query, results: [] as WikiSearchResult[] };
@@ -5650,20 +5746,23 @@ async function fetchYouTubeThumbnails(
   if (!youtubeSourcingEnabled()) return [];
   const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY || '';
   if (!YOUTUBE_API_KEY) return [];
+  if (isYoutubeInCooldown()) return [];
   fs.mkdirSync(workDir, { recursive: true });
   const results: string[] = [];
   try {
     // Search YouTube for relevant videos (Creative Commons preferred, but also standard)
     const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(query)}&type=video&maxResults=${count * 3}&key=${YOUTUBE_API_KEY}`;
-    const searchResp = await withTimeout(
+    const searchResp = await providerLimiter("youtube").run(() => withTimeout(
       fetch(searchUrl),
       10000,
       `YouTube search scene ${sceneIndex}`
-    );
+    ));
     if (!searchResp.ok) {
+      markYoutubeSearchResult(false);
       console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube API error ${searchResp.status}`);
       return [];
     }
+    markYoutubeSearchResult(true);
     const payload = await searchResp.json() as { items?: Array<{ id: { videoId: string }; snippet: { title: string; thumbnails: { maxres?: { url: string }; high?: { url: string }; medium?: { url: string } } } }> };
     const items = payload.items || [];
     if (items.length === 0) return [];
@@ -5695,24 +5794,27 @@ async function fetchYouTubeThumbnails(
         // Convert thumbnail to video clip with slow Ken Burns zoom effect. Routed through
         // ffmpegSemaphore — this raw spawn() previously bypassed the shared concurrency gate
         // that videoPipeline.ts's own exec() enforces everywhere else in this file.
-        await withTimeout(
-          ffmpegSemaphore.run(() => new Promise<void>(async (resolve, reject) => {
-            const { spawn } = await import('child_process');
-            const args = [
-              '-y', '-loop', '1', '-i', imgPath,
-              '-vf', `scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,zoompan=z='min(zoom+0.0006,1.05)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${Math.round(duration * 25)}:s=1920x1080:fps=25,setsar=1`,
-              '-t', String(duration),
-              '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
-              '-pix_fmt', 'yuv420p', '-an', outPath
-            ];
-            const child = spawn(FFMPEG_BIN, args, { stdio: ['ignore', 'ignore', 'pipe'] });
-            const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /**/ } reject(new Error('timeout')); }, 25000);
-            child.on('close', (code: number | null) => { clearTimeout(timer); code === 0 ? resolve() : reject(new Error(`exit ${code}`)); });
-            child.on('error', (err: Error) => { clearTimeout(timer); reject(err); });
-          })),
-          30000,
-          `YouTube thumbnail to video scene ${sceneIndex}`
-        );
+        //
+        // No outer withTimeout() here (there used to be one, at 30000ms): its timer started
+        // before ffmpegSemaphore.run()'s acquire() resolved, so queue-wait time counted against
+        // the budget, and it couldn't kill the real child anyway (the run() promise exposes no
+        // .childProcess). The inner 25000ms timer below is constructed AFTER the semaphore slot
+        // is held, so it only starts once the ffmpeg process is actually running, and it can
+        // kill it directly — that's the only timeout this call needs.
+        await ffmpegSemaphore.run(() => new Promise<void>(async (resolve, reject) => {
+          const { spawn } = await import('child_process');
+          const args = [
+            '-y', '-loop', '1', '-i', imgPath,
+            '-vf', `scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,zoompan=z='min(zoom+0.0006,1.05)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${Math.round(duration * 25)}:s=1920x1080:fps=25,setsar=1`,
+            '-t', String(duration),
+            '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+            '-pix_fmt', 'yuv420p', '-an', outPath
+          ];
+          const child = spawn(FFMPEG_BIN, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+          const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /**/ } reject(new Error('timeout')); }, 25000);
+          child.on('close', (code: number | null) => { clearTimeout(timer); code === 0 ? resolve() : reject(new Error(`exit ${code}`)); });
+          child.on('error', (err: Error) => { clearTimeout(timer); reject(err); });
+        }));
         try { fs.unlinkSync(imgPath); } catch { /**/ }
 
         if (fs.existsSync(outPath) && fs.statSync(outPath).size > 10_000) {
@@ -5748,6 +5850,7 @@ async function fetchSerpAPIImages(
   } = {}
 ): Promise<string[]> {
   if (!SERPAPI_KEY) return [];
+  if (isSerpApiInCooldown()) return [];
   // Ensure workDir exists — it may have been cleaned up between pipeline stages
   fs.mkdirSync(workDir, { recursive: true });
   const results: string[] = [];
@@ -5768,9 +5871,11 @@ async function fetchSerpAPIImages(
       `SerpAPI search scene ${sceneIndex}`
     );
     if (!searchResp.ok) {
+      markSerpApiSearchResult(false);
       console.warn(`[Pipeline] Scene ${sceneIndex}: SerpAPI error ${searchResp.status}`);
       return [];
     }
+    markSerpApiSearchResult(true);
     const searchData = await searchResp.json() as {
       images_results?: Array<{
         original?: string;
@@ -6499,7 +6604,7 @@ async function generateLeonardoAIClip(
     if (!imageUrl) return null;
 
     // Step 3: Download image and convert to video
-    const imgResp = await withTimeout(fetch(imageUrl), 20_000, `Leonardo AI download scene ${sceneIndex}`);
+    const imgResp = await fetchWithTimeout(imageUrl, 20_000, `Leonardo AI download scene ${sceneIndex}`);
     if (!imgResp.ok) return null;
     const imgBuffer = Buffer.from(await imgResp.arrayBuffer());
     const pngPath = outputPath.replace(".mp4", "_leonardo.jpg");
@@ -6594,7 +6699,7 @@ async function generateRunwayClip(
     if (!videoUrl) return null;
 
     // Download video
-    const dlResp = await withTimeout(fetch(videoUrl), 60_000, `Runway download scene ${sceneIndex}`);
+    const dlResp = await fetchWithTimeout(videoUrl, 60_000, `Runway download scene ${sceneIndex}`);
     if (!dlResp.ok) return null;
     const buffer = Buffer.from(await dlResp.arrayBuffer());
     const runwayOutputPath = outputPath.replace(".mp4", "_runway.mp4");
@@ -6665,7 +6770,7 @@ async function generateLumaClip(
     }
     if (!videoUrl) return null;
 
-    const dlResp = await withTimeout(fetch(videoUrl), 60_000, `Luma download scene ${sceneIndex}`);
+    const dlResp = await fetchWithTimeout(videoUrl, 60_000, `Luma download scene ${sceneIndex}`);
     if (!dlResp.ok) return null;
     const buffer = Buffer.from(await dlResp.arrayBuffer());
     const lumaOutputPath = outputPath.replace(".mp4", "_luma.mp4");
@@ -6734,7 +6839,7 @@ async function generatePikaClip(
     }
     if (!videoUrl) return null;
 
-    const dlResp = await withTimeout(fetch(videoUrl), 60_000, `Pika download scene ${sceneIndex}`);
+    const dlResp = await fetchWithTimeout(videoUrl, 60_000, `Pika download scene ${sceneIndex}`);
     if (!dlResp.ok) return null;
     const buffer = Buffer.from(await dlResp.arrayBuffer());
     const pikaOutputPath = outputPath.replace(".mp4", "_pika.mp4");
@@ -6785,7 +6890,7 @@ async function generateManusForgeClip(
 
     // If direct URL returned, download immediately
     if (createData.url) {
-      const dlResp = await withTimeout(fetch(createData.url), 60_000, `Manus Forge download scene ${sceneIndex}`);
+      const dlResp = await fetchWithTimeout(createData.url, 60_000, `Manus Forge download scene ${sceneIndex}`);
       if (!dlResp.ok) return null;
       const buffer = Buffer.from(await dlResp.arrayBuffer());
       const forgeOutputPath = outputPath.replace(".mp4", "_forge.mp4");
@@ -6816,7 +6921,7 @@ async function generateManusForgeClip(
     }
     if (!videoUrl) return null;
 
-    const dlResp = await withTimeout(fetch(videoUrl), 60_000, `Manus Forge download scene ${sceneIndex}`);
+    const dlResp = await fetchWithTimeout(videoUrl, 60_000, `Manus Forge download scene ${sceneIndex}`);
     if (!dlResp.ok) return null;
     const buffer = Buffer.from(await dlResp.arrayBuffer());
     const forgeOutputPath = outputPath.replace(".mp4", "_forge.mp4");
@@ -6873,7 +6978,7 @@ async function fetchWikimediaVideos(
     const searchUrl =
       `https://commons.wikimedia.org/w/api.php?action=query&list=search` +
       `&srsearch=${encodeURIComponent(`${query} filetype:video`)}&srnamespace=6&srlimit=15&format=json&origin=*`;
-    const searchResp = await withTimeout(fetch(searchUrl, { headers: UA }), 10_000, `Wikimedia video search scene ${sceneIndex}`);
+    const searchResp = await providerLimiter("wikimedia").run(() => fetchWithTimeout(searchUrl, 10_000, `Wikimedia video search scene ${sceneIndex}`, { headers: UA }));
     if (!searchResp.ok) {
       markWikimediaSearchResult(false);
       return [];
@@ -6904,7 +7009,7 @@ async function fetchWikimediaVideos(
         const infoUrl =
           `https://commons.wikimedia.org/w/api.php?action=query&titles=${encodeURIComponent(title)}` +
           `&prop=imageinfo&iiprop=url|size|mime&format=json&origin=*`;
-        const infoResp = await withTimeout(fetch(infoUrl, { headers: UA }), 10_000, `Wikimedia video info scene ${sceneIndex}`);
+        const infoResp = await fetchWithTimeout(infoUrl, 10_000, `Wikimedia video info scene ${sceneIndex}`, { headers: UA });
         if (!infoResp.ok) continue;
         const infoData = await infoResp.json() as {
           query?: { pages?: Record<string, { imageinfo?: Array<{ url: string; size?: number; mime?: string }> }> };
@@ -7486,11 +7591,11 @@ export async function fetchEuropeanaVideos(
       searchUrl.searchParams.set("reusability", "open");
       searchUrl.searchParams.set("rows", "12");
 
-      const searchResp = await withTimeout(
+      const searchResp = await providerLimiter("europeana").run(() => withTimeout(
         fetch(searchUrl.toString(), { headers: { ...authHeader, "User-Agent": "Fastvid/1.0" } }),
         14_000,
         `Europeana search scene ${sceneIndex}`
-      );
+      ));
       if (!searchResp.ok) {
         markEuropeanaSearchResult(false);
         continue;
@@ -8020,11 +8125,11 @@ export async function fetchInternetArchiveClips(
     if (fetched >= count) break;
     try {
     const searchUrl = `https://archive.org/advancedsearch.php?q=${encodeURIComponent(query)}+AND+mediatype:movies&fl[]=identifier,title&rows=12&output=json`;
-    const searchResp = await withTimeout(
+    const searchResp = await providerLimiter("internetArchive").run(() => withTimeout(
       fetch(searchUrl, { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }),
       IS_RAILWAY ? 6_000 : 10_000,
       `Internet Archive search scene ${sceneIndex}`
-    );
+    ));
     if (!searchResp.ok) {
       markInternetArchiveSearchResult(false);
       continue;
@@ -8469,6 +8574,7 @@ async function searchYoutubeVideoCandidates(
 ): Promise<YoutubeSearchRow[]> {
   const youtubeApiKey = process.env.YOUTUBE_API_KEY;
   if (!youtubeApiKey) return [];
+  if (isYoutubeInCooldown()) return [];
 
   const searchUrl = new URL("https://www.googleapis.com/youtube/v3/search");
   searchUrl.searchParams.set("key", youtubeApiKey);
@@ -8484,15 +8590,17 @@ async function searchYoutubeVideoCandidates(
   searchUrl.searchParams.set("videoEmbeddable", "true");
 
   const label = license === "creative_common" ? "YouTube CC" : "YouTube fair-use";
-  const searchResp = await withTimeout(
+  const searchResp = await providerLimiter("youtube").run(() => withTimeout(
     fetch(searchUrl.toString()),
     15_000,
     `${label} search scene ${sceneIndex}`
-  );
+  ));
   if (!searchResp.ok) {
+    markYoutubeSearchResult(false);
     console.warn(`[Pipeline] Scene ${sceneIndex}: ${label} API error ${searchResp.status} for "${query}"`);
     return [];
   }
+  markYoutubeSearchResult(true);
 
   const searchData = (await searchResp.json()) as {
     items?: YoutubeSearchRow["item"][];
@@ -8526,6 +8634,7 @@ export async function fetchYouTubeCCClips(
   scriptGuided?: ScriptGuidedBeatContext
 ): Promise<string[]> {
   if (!youtubeSourcingEnabled()) return [];
+  if (isYoutubeInCooldown()) return [];
   const results: string[] = [];
 
   const youtubeApiKey = process.env.YOUTUBE_API_KEY;
@@ -23104,7 +23213,13 @@ export async function runVideoPipeline(
   userPrompt?: string
 ): Promise<string> {
   // Each render gets its own context so concurrent renders never share singleton state.
-  const renderCtx: RenderCtx = { watchdog: null, renderBudget: null, budgetTracker: null, videoTopic: null };
+  const renderCtx: RenderCtx = {
+    watchdog: null,
+    renderBudget: null,
+    budgetTracker: null,
+    videoTopic: null,
+    voiceoverSilentFallbackNotes: [],
+  };
   // runWithActiveVideoId makes videoId/userId readable from ANY module in this render's call
   // tree (including localClipVision.ts and llm.ts, which can't import from here — see exec()'s
   // cancellation check below and videoGenerationCancel.ts for why). One extra lookup here (not
@@ -24980,6 +25095,16 @@ async function _runVideoPipelineInner(
       fastShort: isFastShortVideoLength(videoLength),
       sceneCriticalFailed,
     });
+    const silentVoiceoverNotes = getRenderCtx().voiceoverSilentFallbackNotes;
+    if (silentVoiceoverNotes.length > 0) {
+      // Registers the silent-fallback occurrence(s) in the persisted quality report — this
+      // video must never look like an ordinary "completed" render in the DB/UI when part of
+      // its narration is actually silent (see generateVoiceover()'s silent-fallback path).
+      for (const note of silentVoiceoverNotes.slice(0, 10)) {
+        qualityReport.warnings.push(note);
+      }
+      qualityReport.hasSilentVoiceover = true;
+    }
     logVideoQualityReport(videoId, qualityReport);
     if (voiceMontageSyncResults.length > 0) {
       qualityReport.voiceMontageSync = summarizeVoiceMontageSyncAudits(voiceMontageSyncResults);

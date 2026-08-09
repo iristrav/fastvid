@@ -7,15 +7,18 @@ import fs from "fs";
 import path from "path";
 import { promisify } from "util";
 import { withForkRetry } from "./_core/execForkRetry";
+import { ffmpegSemaphore } from "./_core/semaphore";
 import { exec as execCb } from "child_process";
 import { normalizeVideoLength, targetVideoDurationMinutes } from "@shared/videoLengths";
 import { spotCheckFinalVideo, isInformationalSpotWarning } from "./postRenderSpotCheck";
 import { resolveLocalVideoPath } from "./storageLocal";
 import { ffmpegThreadFlag } from "./sourcingPolicy";
 
+// Routed through ffmpegSemaphore (previously ungated) — this file is the mandatory final export
+// gate/self-heal reassembly path for every single render.
 const execRaw = promisify(execCb);
 const exec = ((cmd: string, opts?: Record<string, unknown>) =>
-  withForkRetry(() => execRaw(cmd, opts as never))) as typeof execRaw;
+  ffmpegSemaphore.run(() => withForkRetry(() => execRaw(cmd, opts as never)))) as typeof execRaw;
 
 export type FinalVideoValidation = {
   ok: boolean;

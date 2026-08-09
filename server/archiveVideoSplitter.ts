@@ -8,6 +8,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { ffmpegThreadFlag } from "./sourcingPolicy";
+import { ffmpegSemaphore } from "./_core/semaphore";
 
 import type { ArchiveSubjectContext } from "./archiveClipRelevance";
 import {
@@ -35,7 +36,12 @@ const isForkPressureError = (err: unknown): boolean => {
   if (/error initializing output stream/i.test(msg) && /error while opening encoder/i.test(msg)) return true;
   return false;
 };
-const exec = (async (cmd: string, opts?: Record<string, unknown>) => {
+// Routed through ffmpegSemaphore — this whole module previously ran an entirely independent,
+// ungated ffmpeg subsystem (analysis re-encode, scdet/scene-filter passes, per-clip extraction)
+// alongside the main render pipeline's own semaphore-gated calls, invoked synchronously from
+// the archive-upload mutation and able to run concurrently with an active render on the same
+// worker process, competing for the same OS fork budget FFMPEG_CONCURRENCY_LIMIT is meant to cap.
+const exec = (async (cmd: string, opts?: Record<string, unknown>) => ffmpegSemaphore.run(async () => {
   let retriesLeft = 3;
   while (true) {
     try {
@@ -49,7 +55,7 @@ const exec = (async (cmd: string, opts?: Record<string, unknown>) => {
       throw err;
     }
   }
-}) as typeof execPromise;
+})) as typeof execPromise;
 
 export type VideoClipSegment = {
   buffer: Buffer;
@@ -328,11 +334,11 @@ async function probeActualVideoDuration(filePath: string, declaredDur: number): 
   const hasFrameAt = async (posSec: number): Promise<boolean> => {
     try {
       const ffprobe = ffprobeBin();
-      const { stdout } = await execPromise(
+      const { stdout } = await ffmpegSemaphore.run(() => execPromise(
         `${ffprobe} -v error -ss ${posSec.toFixed(2)} -i "${filePath}" ` +
           `-select_streams v:0 -frames:v 1 -show_entries frame=pts_time -of json`,
         { timeout: 12_000 }
-      );
+      ));
       const data = JSON.parse(String(stdout)) as { frames?: unknown[] };
       return (data.frames?.length ?? 0) > 0;
     } catch {
@@ -1393,10 +1399,10 @@ export async function splitVideoBySceneChanges(
     // Diagnose source file to catch truncated uploads or weird container issues.
     try {
       const ffprobe = process.env.FFPROBE_BIN || process.env.FFPROBE_PATH || "ffprobe";
-      const { stdout: probeOut } = await execPromise(
+      const { stdout: probeOut } = await ffmpegSemaphore.run(() => execPromise(
         `${ffprobe} -v error -select_streams v:0 -show_entries stream=codec_name,nb_frames,duration,bit_rate -show_entries format=size,duration -of json "${inputPath}"`,
         { timeout: 15_000 }
-      );
+      ));
       const probe = JSON.parse(probeOut) as { streams?: Array<{ codec_name?: string; nb_frames?: string; duration?: string; bit_rate?: string }>; format?: { size?: string; duration?: string } };
       const stream = probe.streams?.[0];
       console.log(
@@ -1530,10 +1536,10 @@ export async function splitVideoBySceneChanges(
       for (const frac of [1 / 3, 2 / 3]) {
         const pos = (totalDur * frac).toFixed(1);
         try {
-          const { stdout } = await execPromise(
+          const { stdout } = await ffmpegSemaphore.run(() => execPromise(
             `${ffp} -v error -i "${inputPath}" -ss ${pos} -select_streams v:0 -frames:v 1 -show_entries frame=pts_time -of json`,
             { timeout: 60_000 }
-          );
+          ));
           const d = JSON.parse(String(stdout)) as { frames?: Array<{ pts_time?: string }> };
           const frames = d.frames ?? [];
           console.log(

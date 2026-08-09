@@ -21,9 +21,12 @@ function getClient(): S3Client {
   return _client;
 }
 
-/** Uploads (a final video can be hundreds of MB) get up to 3 attempts with backoff so a
- *  transient network hiccup against S3/R2 doesn't silently drop the file — previously a
- *  single failed PutObjectCommand call threw immediately with no retry. */
+/** Uploads (a final video can be hundreds of MB) get up to 6 attempts with backoff (capped at
+ *  30s) so a transient network hiccup against S3/R2 doesn't silently drop the file — previously
+ *  a single failed PutObjectCommand call threw immediately with no retry, and later only 3
+ *  attempts, which a sustained multi-second outage could still exhaust. A failed upload here
+ *  must not destroy an otherwise-finished render, so this is worth spending real wall-clock on
+ *  before giving up. */
 export async function s3PutObject(
   relKey: string,
   data: Buffer | Uint8Array | string,
@@ -36,7 +39,7 @@ export async function s3PutObject(
   const key = prefixStorageKey(relKey);
   const body = typeof data === "string" ? Buffer.from(data) : Buffer.from(data as Uint8Array);
 
-  const maxAttempts = 3;
+  const maxAttempts = 6;
   let lastErr: unknown;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
@@ -56,7 +59,7 @@ export async function s3PutObject(
     } catch (err) {
       lastErr = err;
       if (attempt < maxAttempts) {
-        const delayMs = 500 * 2 ** (attempt - 1);
+        const delayMs = Math.min(30_000, 500 * 2 ** (attempt - 1));
         console.warn(
           `[S3Storage] Upload attempt ${attempt}/${maxAttempts} failed for ${key}, retrying in ${delayMs}ms:`,
           (err as Error).message
@@ -75,8 +78,10 @@ export async function s3PutObject(
  *  PutObjectCommand, which the SDK then copied again internally (Buffer.from(existingBuffer)) —
  *  peak RAM for that single step was roughly 2x the file size. Streaming from a fresh
  *  fs.createReadStream on each attempt keeps memory usage bounded to the SDK's own part-size
- *  buffers (a few MB at a time) regardless of file size. Same 3-attempt retry/backoff as
- *  s3PutObject, since a stream can't be replayed after a failed attempt consumes it. */
+ *  buffers (a few MB at a time) regardless of file size. Same 6-attempt retry/backoff (capped at
+ *  30s) as s3PutObject, since a stream can't be replayed after a failed attempt consumes it —
+ *  this is the path the final rendered video takes, so a transient outage here must not throw
+ *  away a completed render. */
 export async function s3PutObjectFromFile(
   relKey: string,
   filePath: string,
@@ -89,7 +94,7 @@ export async function s3PutObjectFromFile(
   const key = prefixStorageKey(relKey);
   const sizeBytes = (await fs.promises.stat(filePath)).size;
 
-  const maxAttempts = 3;
+  const maxAttempts = 6;
   let lastErr: unknown;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     // A fresh stream per attempt (can't rewind/replay one that already failed partway through).
@@ -117,7 +122,7 @@ export async function s3PutObjectFromFile(
       // open fd per attempt.
       if (!bodyStream.destroyed) bodyStream.destroy();
       if (attempt < maxAttempts) {
-        const delayMs = 500 * 2 ** (attempt - 1);
+        const delayMs = Math.min(30_000, 500 * 2 ** (attempt - 1));
         console.warn(
           `[S3Storage] Streamed upload attempt ${attempt}/${maxAttempts} failed for ${key}, retrying in ${delayMs}ms:`,
           (err as Error).message

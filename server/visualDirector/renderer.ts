@@ -15,8 +15,16 @@ import { buildCounterFilter } from "../cinematicMotion/counter";
 import { generateMapMarkerPng, buildMapOverlayFilter } from "../cinematicMotion/mapOverlay";
 import { generateTimelinePng } from "./renderers/timeline";
 import { ffmpegThreadFlag } from "../sourcingPolicy";
+import { ffmpegSemaphore } from "../_core/semaphore";
 
-const execAsync = promisify(exec);
+// Every ffmpeg/ffprobe call in this file previously bypassed the shared ffmpegSemaphore
+// entirely (raw promisify(exec)) — VisualDirector runs once per scene whenever a directive
+// (map_marker/timeline/counter/stat_highlight/etc.) is present, and is default-on
+// (visualDirectorEnabled()), so on a long/many-scene video this could spawn far more
+// concurrent ffmpeg processes than FFMPEG_CONCURRENCY_LIMIT allows, fighting the semaphore-
+// gated calls elsewhere in the pipeline for the same OS fork budget.
+const execRaw = promisify(exec);
+const execAsync = (cmd: string) => ffmpegSemaphore.run(() => execRaw(cmd));
 const FFMPEG_BIN = process.env.FFMPEG_BIN ?? "ffmpeg";
 const TIMEOUT_MS = 60_000;
 

@@ -18,7 +18,14 @@ import path from "path";
 import { storagePut } from "./storage";
 import { createMediaArchiveAsset, getAllMediaArchives } from "./db";
 import { indexArchiveAssetEmbedding } from "./archiveEmbeddingIndex";
+import { Semaphore } from "./_core/semaphore";
 import type { InsertMediaArchiveAsset } from "../drizzle/schema";
+
+// Callers fire this fire-and-forget per winning beat with no cap of their own (videoPipeline.ts's
+// funnel-clip loop), and each call reads the whole clip into memory + uploads it — several
+// beats landing at once during a render could otherwise stack up unbounded concurrent
+// read+upload work purely for this best-effort background feature.
+const ingestionLimiter = new Semaphore(2);
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -77,6 +84,13 @@ export async function ingestExternalClipToArchive(
   localPath: string,
   metadata: IngestMetadata
 ): Promise<IngestResult | null> {
+  return ingestionLimiter.run(() => ingestExternalClipToArchiveInner(localPath, metadata));
+}
+
+async function ingestExternalClipToArchiveInner(
+  localPath: string,
+  metadata: IngestMetadata
+): Promise<IngestResult | null> {
   try {
     if (!passesQualityGate(localPath, metadata)) {
       return null;
@@ -96,7 +110,7 @@ export async function ingestExternalClipToArchive(
     const safeSource = metadata.sourceNote.replace(/[^a-zA-Z0-9_:-]/g, "_").slice(0, 64);
     const storageKey = `archive-ingested/${archiveId}/${safeSource}${ext}`;
 
-    const data = fs.readFileSync(localPath);
+    const data = await fs.promises.readFile(localPath);
     const { key, url } = await storagePut(storageKey, data, metadata.mimeType);
 
     const insertData: InsertMediaArchiveAsset = {

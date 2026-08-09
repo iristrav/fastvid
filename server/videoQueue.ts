@@ -15,6 +15,7 @@ import {
   countProcessingVideosByUsers,
   countUserInFlightVideos,
   countUserProcessingVideos,
+  getVideoById,
   getVideoQueuePosition,
   listQueuedVideosOrdered,
   updateVideoStatus,
@@ -145,10 +146,26 @@ export async function processQueueTick(): Promise<void> {
         // same signal user-initiated cancellation already uses; the pipeline's existing
         // throwIfActiveRenderCancelled()/throwIfVideoGenerationCancelled() checks make it
         // actually unwind instead of just becoming invisible to the slot count.
-        void import("./videoGenerationCancel").then(({ requestVideoGenerationCancel }) =>
-          requestVideoGenerationCancel(claimed.id)
-        );
-        releaseSlot();
+        void (async () => {
+          const { requestVideoGenerationCancel } = await import("./videoGenerationCancel");
+          requestVideoGenerationCancel(claimed.id);
+          // Bounded poll for the cancellation to actually land (DB status reaches a terminal
+          // state) before freeing the slot — releasing immediately after only requesting
+          // cancellation let a new job claim the freed slot while the old job's ffmpeg/CPU work
+          // was still genuinely running, so real concurrency could still exceed
+          // maxJobsPerWorker/maxConcurrentJobs for as long as the cancelled job took to actually
+          // unwind. Capped at 5 minutes so a job whose cancellation checks never fire (e.g.
+          // blocked inside a single uninterruptible external call) can't wedge this worker's
+          // slot count forever — releaseSlot() below still runs either way.
+          const POLL_INTERVAL_MS = 10_000;
+          const MAX_POLLS = 30;
+          for (let i = 0; i < MAX_POLLS && !slotReleased; i++) {
+            await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+            const video = await getVideoById(claimed.id).catch(() => undefined);
+            if (!video || video.status === "failed" || video.status === "completed") break;
+          }
+          releaseSlot();
+        })();
       }, maxJobMs);
 
       runVideoJob(claimed)

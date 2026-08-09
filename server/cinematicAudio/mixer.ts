@@ -7,16 +7,6 @@ import { resolveSoundAssets } from "./fetcher";
 import { ffmpegSemaphore } from "../_core/semaphore";
 
 const execRaw = promisify(exec);
-// Route every ffmpeg/ffprobe spawn in this file through the same global concurrency gate the
-// rest of the render pipeline uses (server/videoPipeline.ts's exec()). Without this,
-// generateCinematicAmbientTrack()'s Promise.all below fires one concurrent ffmpeg process per
-// scene completely outside FFMPEG_CONCURRENCY_LIMIT — on a 4-vCPU box this is exactly the
-// oversubscription shape that has already caused fork-pressure (EAGAIN) incidents elsewhere.
-function execAsync(cmd: string) {
-  return ffmpegSemaphore.run(() => execRaw(cmd));
-}
-
-const FFMPEG_BIN = process.env.FFMPEG_BIN ?? "ffmpeg";
 
 async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   return Promise.race([
@@ -27,10 +17,29 @@ async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   ]);
 }
 
+// Route every ffmpeg/ffprobe spawn in this file through the same global concurrency gate the
+// rest of the render pipeline uses (server/videoPipeline.ts's exec()). Without this,
+// generateCinematicAmbientTrack()'s Promise.all below fires one concurrent ffmpeg process per
+// scene completely outside FFMPEG_CONCURRENCY_LIMIT — on a 4-vCPU box this is exactly the
+// oversubscription shape that has already caused fork-pressure (EAGAIN) incidents elsewhere.
+//
+// The timeout is applied INSIDE the semaphore callback (not by the caller wrapping this
+// function's result in a separate withTimeout()) — previously callers did
+// `withTimeout(execAsync(cmd), ms)`, which started the timer before the semaphore slot was
+// even acquired, so queue-wait time under contention (several scenes' ambient generation firing
+// at once against a 3-slot semaphore) counted against the operation's own budget, causing
+// spurious timeouts purely from queueing rather than a slow encode.
+function execAsync(cmd: string, ms: number) {
+  return ffmpegSemaphore.run(() => withTimeout(execRaw(cmd), ms));
+}
+
+const FFMPEG_BIN = process.env.FFMPEG_BIN ?? "ffmpeg";
+
 async function probeDuration(filePath: string): Promise<number> {
   try {
     const { stdout } = await execAsync(
-      `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${filePath}"`
+      `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${filePath}"`,
+      8_000
     );
     return parseFloat(stdout.trim()) || 0;
   } catch { return 0; }
@@ -108,7 +117,7 @@ async function generateSceneAmbient(
     `-c:a libmp3lame -b:a 128k "${outPath}"`;
 
   try {
-    await withTimeout(execAsync(cmd), 30_000);
+    await execAsync(cmd, 30_000);
     return fs.existsSync(outPath) && fs.statSync(outPath).size > 512;
   } catch (err) {
     console.warn(`[CinematicAudio] Scene ${plan.sceneIndex} ambient failed:`, (err as Error).message?.slice(0, 100));
@@ -150,7 +159,7 @@ async function generateSyntheticAmbient(
     `-c:a libmp3lame -b:a 128k "${outPath}"`;
 
   try {
-    await withTimeout(execAsync(cmd), 15_000);
+    await execAsync(cmd, 15_000);
     return fs.existsSync(outPath) && fs.statSync(outPath).size > 512;
   } catch {
     return false;
@@ -193,7 +202,7 @@ async function concatenateSceneAmbients(
     `-map "[aout]" -c:a libmp3lame -b:a 128k "${outPath}"`;
 
   try {
-    await withTimeout(execAsync(cmd), 60_000);
+    await execAsync(cmd, 60_000);
     return fs.existsSync(outPath) && fs.statSync(outPath).size > 512;
   } catch (err) {
     console.warn("[CinematicAudio] Ambient concat failed:", (err as Error).message?.slice(0, 100));
