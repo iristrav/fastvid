@@ -118,9 +118,15 @@ function countFilterMatches(stderr: string, filterName: string): number {
   return (stderr.match(re) ?? []).length;
 }
 
-/** Archive montage QA — never block export (dark scenes, holds, silence gaps). */
+/** Archive montage QA — never block export (dark scenes, holds, silence gaps). Exceptions: a
+ *  missing/too-small file, or every sampled frame coming back essentially pure black (worst
+ *  luma < 1) — that's not "legitimately dark archive footage", it's indistinguishable from a
+ *  broken encode, so it must block instead of silently completing. Partial darkness (some but
+ *  not all frames dark, or a moderate worst-luma) stays informational — deliberately not
+ *  touched here. */
 export function isInformationalSpotWarning(warning: string): boolean {
   if (/Final video missing or too small/i.test(warning)) return false;
+  if (/Final video appears fully black/i.test(warning)) return false;
   return true;
 }
 
