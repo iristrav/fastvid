@@ -47,6 +47,7 @@ import {
   type VideoVisualTopic,
 } from "./visualBeatTags";
 import { promisify } from "util";
+import { pipeline } from "stream/promises";
 import { withForkRetry } from "./_core/execForkRetry";
 import { ffmpegSemaphore } from "./_core/semaphore";
 import fetch from "node-fetch";
@@ -1371,7 +1372,30 @@ function archiveDownloadConcurrency(): number {
 }
 const archiveDownloadLimit = pLimit(archiveDownloadConcurrency());
 
-async function materializeArchiveAsset(asset: ArchiveAssetRow, destPath: string): Promise<void> {
+// F3-10: streams the response body straight to destPath (stream/promises' pipeline()) instead
+// of Buffer.from(await resp.arrayBuffer()) — archive assets can be tens of MB, and this path is
+// the highest-frequency download in the render pipeline (archive is the preferred visual
+// source). AbortSignal.timeout(timeoutMs) is unchanged — it already covers the body-read, not
+// just headers, so no timeout behavior changes here, only where the bytes end up while in
+// transit. On any error (HTTP not-ok, stream failure, or a completed-but-undersized file) the
+// caller's existing throw-and-fallback contract is preserved exactly, and any partial destPath
+// is removed before the error propagates.
+async function streamArchiveAssetDownload(url: string, destPath: string, timeoutMs: number): Promise<void> {
+  const resp = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+  if (!resp.ok) throw new Error(`Archive asset download HTTP ${resp.status}`);
+  try {
+    await pipeline(resp.body!, fs.createWriteStream(destPath));
+  } catch (err) {
+    try { fs.unlinkSync(destPath); } catch { /* ignore */ }
+    throw err;
+  }
+  if (fs.statSync(destPath).size < 500) {
+    try { fs.unlinkSync(destPath); } catch { /* ignore */ }
+    throw new Error("Archive asset download too small");
+  }
+}
+
+export async function materializeArchiveAsset(asset: ArchiveAssetRow, destPath: string): Promise<void> {
   const local = resolveArchiveAssetLocalPath(asset);
   if (local) {
     fs.copyFileSync(local, destPath);
@@ -1386,14 +1410,10 @@ async function materializeArchiveAsset(asset: ArchiveAssetRow, destPath: string)
     }
     await archiveDownloadLimit(async () => {
       const signedUrl = await storageGetSignedUrl(key);
-      const resp = await fetch(signedUrl, { signal: AbortSignal.timeout(120_000) });
-      if (!resp.ok) throw new Error(`Archive asset download HTTP ${resp.status}`);
-      const buf = Buffer.from(await resp.arrayBuffer());
-      if (buf.length < 500) throw new Error("Archive asset download too small");
-      fs.writeFileSync(destPath, buf);
+      await streamArchiveAssetDownload(signedUrl, destPath, 120_000);
       try {
         fs.mkdirSync(ARCHIVE_S3_CACHE_DIR, { recursive: true });
-        fs.writeFileSync(cachePath, buf);
+        fs.copyFileSync(destPath, cachePath);
       } catch (err) {
         console.warn(`[CuratedMedia] Failed to cache archive asset ${key}:`, (err as Error).message);
       }
@@ -1404,11 +1424,7 @@ async function materializeArchiveAsset(asset: ArchiveAssetRow, destPath: string)
     ? `http://127.0.0.1:${process.env.PORT || 3000}${asset.storageUrl}`
     : asset.storageUrl;
   await archiveDownloadLimit(async () => {
-    const resp = await fetch(fetchUrl, { signal: AbortSignal.timeout(60_000) });
-    if (!resp.ok) throw new Error(`Archive asset download HTTP ${resp.status}`);
-    const buf = Buffer.from(await resp.arrayBuffer());
-    if (buf.length < 500) throw new Error("Archive asset download too small");
-    fs.writeFileSync(destPath, buf);
+    await streamArchiveAssetDownload(fetchUrl, destPath, 60_000);
   });
 }
 
