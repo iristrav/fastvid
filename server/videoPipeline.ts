@@ -11469,7 +11469,7 @@ function formatFfmpegExecError(err: unknown): string {
   return base.slice(0, 500);
 }
 
-async function logComposePreFlight(
+export async function logComposePreFlight(
   sceneIndex: number,
   clips: string[],
   outputPath: string,
@@ -11491,10 +11491,11 @@ async function logComposePreFlight(
     }
     const sz = fs.statSync(clip).size;
     try {
-      const { stdout } = await Promise.race([
-        execRaw(`"${FFPROBE_BIN}" -v error -select_streams v:0 -show_entries stream=width,height,r_frame_rate,pix_fmt,codec_name -of default=noprint_wrappers=1:nokey=0 "${clip}"`),
-        new Promise<{ stdout: string; stderr: string }>((_, r) => setTimeout(() => r(new Error("ffprobe timeout")), 5_000)),
-      ] as const).catch(() => ({ stdout: "", stderr: "" }));
+      const { stdout } = await withSceneFetchTimeout(
+        () => exec(`"${FFPROBE_BIN}" -v error -select_streams v:0 -show_entries stream=width,height,r_frame_rate,pix_fmt,codec_name -of default=noprint_wrappers=1:nokey=0 "${clip}"`),
+        5_000,
+        `ComposePreFlight probe scene ${sceneIndex}`
+      ).catch(() => ({ stdout: "", stderr: "" }));
       console.log(`[ComposePreFlight] Scene ${sceneIndex}: clip=${path.basename(clip)} size=${sz} probe=${stdout.replace(/\n/g, " ").trim().slice(0, 200)}`);
     } catch {
       console.log(`[ComposePreFlight] Scene ${sceneIndex}: clip=${path.basename(clip)} size=${sz} probe=FAILED`);
