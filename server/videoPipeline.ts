@@ -4463,7 +4463,7 @@ export async function generateVoiceover(
 }
 
 // ─── 3a. Stability AI Image → Video Loop (PRIMARY visual) ────────────────────
-async function generateStabilityAIClip(
+export async function generateStabilityAIClip(
   prompt: string,
   duration: number,
   outputPath: string,
@@ -4497,17 +4497,18 @@ async function generateStabilityAIClip(
     form.append("style_preset", "photographic");
 
     let imgBuffer: Buffer | null = null;
-    const coreResp = await withTimeout(
-      fetch(endpoint, {
+    const coreResp = await fetchWithTimeout(
+      endpoint,
+      45_000,
+      `Stability Core scene ${sceneIndex}`,
+      {
         method: "POST",
         headers: {
           Authorization: `Bearer ${STABILITY_AI_API_KEY}`,
           Accept: "image/*",
         },
         body: form,
-      }),
-      45_000,
-      `Stability Core scene ${sceneIndex}`
+      }
     );
 
     if (coreResp.ok) {
@@ -4529,8 +4530,11 @@ async function generateStabilityAIClip(
         samples: 1,
         steps: 35,
       };
-      const legacyResp = await withTimeout(
-        fetch("https://api.stability.ai/v1/generation/stable-diffusion-xl-1024-v1-0/text-to-image", {
+      const legacyResp = await fetchWithTimeout(
+        "https://api.stability.ai/v1/generation/stable-diffusion-xl-1024-v1-0/text-to-image",
+        45_000,
+        `Stability SDXL scene ${sceneIndex}`,
+        {
           method: "POST",
           headers: {
             Authorization: `Bearer ${STABILITY_AI_API_KEY}`,
@@ -4538,9 +4542,7 @@ async function generateStabilityAIClip(
             "Content-Type": "application/json",
           },
           body: JSON.stringify(stabilityPayload),
-        }),
-        45_000,
-        `Stability SDXL scene ${sceneIndex}`
+        }
       );
       if (legacyResp.ok) {
         const result = await legacyResp.json() as {
@@ -6693,7 +6695,7 @@ async function generateLeonardoAIClip(
 }
 
 // ─── 3c7. Runway Gen-4 Image-to-Video ─────────────────────────────────────────
-async function generateRunwayClip(
+export async function generateRunwayClip(
   prompt: string,
   imageUrl: string | null,
   duration: number,
@@ -6761,7 +6763,10 @@ async function generateRunwayClip(
     const runwayOutputPath = outputPath.replace(".mp4", "_runway.mp4");
     fs.writeFileSync(runwayOutputPath, buffer);
     console.log(`[Pipeline] Scene ${sceneIndex}: Runway video in ${((Date.now()-t)/1000).toFixed(1)}s (${(buffer.length/1024/1024).toFixed(1)}MB)`);
-    return runwayOutputPath;
+    if (fs.existsSync(runwayOutputPath) && fs.statSync(runwayOutputPath).size > 1000) {
+      return runwayOutputPath;
+    }
+    return null;
   } catch (err) {
     console.warn(`[Pipeline] Scene ${sceneIndex}: Runway clip failed:`, err);
     return null;
@@ -6769,7 +6774,7 @@ async function generateRunwayClip(
 }
 
 // ─── 3c9. Luma Dream Machine Image-to-Video ────────────────────────────────────
-async function generateLumaClip(
+export async function generateLumaClip(
   prompt: string,
   imageUrl: string | null,
   duration: number,
@@ -6832,7 +6837,10 @@ async function generateLumaClip(
     const lumaOutputPath = outputPath.replace(".mp4", "_luma.mp4");
     fs.writeFileSync(lumaOutputPath, buffer);
     console.log(`[Pipeline] Scene ${sceneIndex}: Luma video in ${((Date.now()-t)/1000).toFixed(1)}s (${(buffer.length/1024/1024).toFixed(1)}MB)`);
-    return lumaOutputPath;
+    if (fs.existsSync(lumaOutputPath) && fs.statSync(lumaOutputPath).size > 1000) {
+      return lumaOutputPath;
+    }
+    return null;
   } catch (err) {
     console.warn(`[Pipeline] Scene ${sceneIndex}: Luma clip failed:`, err);
     return null;
@@ -6840,7 +6848,7 @@ async function generateLumaClip(
 }
 
 // ─── 3c10. Pika Labs Image-to-Video ────────────────────────────────────────────
-async function generatePikaClip(
+export async function generatePikaClip(
   prompt: string,
   imageUrl: string | null,
   duration: number,
@@ -6901,7 +6909,10 @@ async function generatePikaClip(
     const pikaOutputPath = outputPath.replace(".mp4", "_pika.mp4");
     fs.writeFileSync(pikaOutputPath, buffer);
     console.log(`[Pipeline] Scene ${sceneIndex}: Pika video in ${((Date.now()-t)/1000).toFixed(1)}s (${(buffer.length/1024/1024).toFixed(1)}MB)`);
-    return pikaOutputPath;
+    if (fs.existsSync(pikaOutputPath) && fs.statSync(pikaOutputPath).size > 1000) {
+      return pikaOutputPath;
+    }
+    return null;
   } catch (err) {
     console.warn(`[Pipeline] Scene ${sceneIndex}: Pika clip failed:`, err);
     return null;
@@ -6909,7 +6920,7 @@ async function generatePikaClip(
 }
 
 // ─── 3c11. Manus Forge Built-in Video Generation ──────────────────────────────
-async function generateManusForgeClip(
+export async function generateManusForgeClip(
   prompt: string,
   duration: number,
   outputPath: string,
@@ -6952,7 +6963,10 @@ async function generateManusForgeClip(
       const forgeOutputPath = outputPath.replace(".mp4", "_forge.mp4");
       fs.writeFileSync(forgeOutputPath, buffer);
       console.log(`[Pipeline] Scene ${sceneIndex}: Manus Forge video in ${((Date.now()-t)/1000).toFixed(1)}s`);
-      return forgeOutputPath;
+      if (fs.existsSync(forgeOutputPath) && fs.statSync(forgeOutputPath).size > 1000) {
+        return forgeOutputPath;
+      }
+      return null;
     }
 
     // Otherwise poll for task completion
@@ -6983,7 +6997,10 @@ async function generateManusForgeClip(
     const forgeOutputPath = outputPath.replace(".mp4", "_forge.mp4");
     fs.writeFileSync(forgeOutputPath, buffer);
     console.log(`[Pipeline] Scene ${sceneIndex}: Manus Forge video in ${((Date.now()-t)/1000).toFixed(1)}s (${(buffer.length/1024/1024).toFixed(1)}MB)`);
-    return forgeOutputPath;
+    if (fs.existsSync(forgeOutputPath) && fs.statSync(forgeOutputPath).size > 1000) {
+      return forgeOutputPath;
+    }
+    return null;
   } catch (err) {
     console.warn(`[Pipeline] Scene ${sceneIndex}: Manus Forge clip failed:`, err);
     return null;
