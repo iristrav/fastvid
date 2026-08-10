@@ -3257,15 +3257,32 @@ async function assertSafeExternalUrl(rawUrl: string): Promise<void> {
 
 /** Fetch a user-supplied external URL, validating the host (and every redirect hop) against
  *  private/internal address ranges before each request — see assertSafeExternalUrl above.
- *  F3-07: each hop now goes through fetchWithTimeout (real AbortController) instead of a bare
- *  fetch(), matching the download-budget already used for comparably-sized files elsewhere
- *  (Runway/Luma/Pika clip downloads) — previously a stalled response could hang this call, and
- *  therefore the whole render, indefinitely. */
+ *  F3-07: each hop now goes through a real AbortController instead of a bare fetch() —
+ *  previously a stalled response could hang this call, and therefore the whole render,
+ *  indefinitely.
+ *  F3-14: each hop now uses AbortSignal.timeout(timeoutMs) passed straight into fetch() instead
+ *  of fetchWithTimeout — fetchWithTimeout's internal clearTimeout fires the instant fetch()
+ *  itself resolves (i.e. once headers arrive), so the body-read the caller does afterward
+ *  (resp.arrayBuffer()/resp.body) was never actually covered by the timeout. AbortSignal.timeout
+ *  stays armed for the life of the request, covering the body-read too — same pattern already
+ *  proven for Grok/Veo/Higgsfield's downloads and F3-13's Leonardo/Runway downloads. A fresh
+ *  signal is created per hop (not reused across the loop), matching fetchWithTimeout's previous
+ *  per-hop-timer behavior exactly. The AbortError -> pipelineError(PIPELINE_ERROR.TIMEOUT, ...)
+ *  translation fetchWithTimeout used to provide is replicated here so callers see the identical
+ *  error shape as before. */
 export async function fetchExternalUrlSafely(rawUrl: string, maxRedirects = 5, timeoutMs = 60_000): ReturnType<typeof fetch> {
   let currentUrl = rawUrl;
   for (let hop = 0; hop <= maxRedirects; hop++) {
     await assertSafeExternalUrl(currentUrl);
-    const resp = await fetchWithTimeout(currentUrl, timeoutMs, "Custom voiceover download", { redirect: "manual" });
+    let resp: Awaited<ReturnType<typeof fetch>>;
+    try {
+      resp = await fetch(currentUrl, { redirect: "manual", signal: AbortSignal.timeout(timeoutMs) });
+    } catch (err: unknown) {
+      if ((err as Error).name === "AbortError") {
+        throw pipelineError(PIPELINE_ERROR.TIMEOUT, `Timeout: Custom voiceover download exceeded ${Math.round(timeoutMs / 1000)}s`);
+      }
+      throw err;
+    }
     if (resp.status >= 300 && resp.status < 400) {
       const location = resp.headers.get("location");
       if (!location) return resp;
@@ -23601,7 +23618,22 @@ async function _runVideoPipelineInner(
       if (!resp.ok) {
         throw pipelineError(PIPELINE_ERROR.CUSTOM_VOICEOVER, `Failed to download custom voiceover: ${resp.status}`);
       }
-      fs.writeFileSync(customAudioPath, Buffer.from(await resp.arrayBuffer()));
+      if (!resp.body) {
+        throw pipelineError(PIPELINE_ERROR.CUSTOM_VOICEOVER, "Custom voiceover download returned no response body");
+      }
+      // F3-14: streams straight to customAudioPath via pipeline() instead of
+      // Buffer.from(await resp.arrayBuffer()), so the download is never fully buffered in
+      // memory. AbortSignal.timeout inside fetchExternalUrlSafely now covers this body-read too
+      // (see that function's F3-14 comment) — on a timeout/stream error the partial file is
+      // removed before the error propagates, matching the existing F3-10/F3-13 cleanup pattern.
+      try {
+        await pipeline(resp.body, fs.createWriteStream(customAudioPath));
+      } catch (err) {
+        if (fs.existsSync(customAudioPath)) {
+          try { fs.unlinkSync(customAudioPath); } catch { /* ignore */ }
+        }
+        throw err;
+      }
       // F3-07: probeVideoDurationSec is the existing, already-hardened helper for exactly this
       // (semaphore-gated, withSceneFetchTimeout hard-kill, multi-binary retry) — the previous
       // inline execFile() here had no timeout, no semaphore, and its Promise executor never
