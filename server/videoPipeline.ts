@@ -3010,7 +3010,7 @@ async function downloadFunnelCandidate(
  * Returns the local clip path on success, null on failure.
  * Used only when ENABLE_SCENE_CANDIDATE_POOL=true (never called otherwise).
  */
-async function downloadAndTrimPoolCandidate(
+export async function downloadAndTrimPoolCandidate(
   candidate: PoolCandidate,
   workDir: string,
   sceneIndex: number,
@@ -3034,47 +3034,73 @@ async function downloadAndTrimPoolCandidate(
     if (!fromCache) {
       console.log(`[Hang] downloadAndTrim BEFORE fetch s${sceneIndex}b${beatIndex} url=${candidate.remoteUrl.slice(0,80)}`);
       const _f0 = Date.now();
-      const resp = await withTimeout(
-        fetch(candidate.remoteUrl),
-        22_000,
-        `Pool download s${sceneIndex}b${beatIndex} ${candidate.source}:${candidate.assetId}`
-      );
+      // F3-17: AbortSignal.timeout(22_000) passed straight into fetch() (same pattern proven in
+      // F3-13/F3-14) stays armed for the life of the request, covering the pipeline() body-read
+      // below too — unlike the previous withTimeout(fetch(...)) wrapper, whose timer only covered
+      // up to fetch() itself resolving (headers arriving), leaving the body-read unprotected.
+      let resp: Awaited<ReturnType<typeof fetch>>;
+      try {
+        resp = await fetch(candidate.remoteUrl, { signal: AbortSignal.timeout(22_000) });
+      } catch (err: unknown) {
+        if ((err as Error).name === "AbortError") {
+          throw pipelineError(PIPELINE_ERROR.TIMEOUT, `Timeout: Pool download s${sceneIndex}b${beatIndex} ${candidate.source}:${candidate.assetId} exceeded 22s`);
+        }
+        throw err;
+      }
       console.log(`[Hang] downloadAndTrim AFTER fetch s${sceneIndex}b${beatIndex} ok=${resp.ok} elapsed=${Date.now()-_f0}ms`);
-      if (!resp.ok) return null;
-      const buf = Buffer.from(await resp.arrayBuffer());
-      if (buf.length < 50_000) return null;
-      fs.writeFileSync(rawPath, buf);
+      if (!resp.ok || !resp.body) return null;
+      // Streams straight to rawPath instead of Buffer.from(await resp.arrayBuffer()), so the
+      // download is never fully buffered in memory. On a timeout/stream error the partial file
+      // is removed before the error propagates, matching the existing F3-10/F3-13/F3-14/F3-16
+      // cleanup pattern.
+      try {
+        await pipeline(resp.body, fs.createWriteStream(rawPath));
+      } catch (err) {
+        if (fs.existsSync(rawPath)) { try { fs.unlinkSync(rawPath); } catch { /* ignore */ } }
+        throw err;
+      }
+      if (fs.statSync(rawPath).size < 50_000) {
+        try { fs.unlinkSync(rawPath); } catch { /* ignore */ }
+        return null;
+      }
       void reportToMediaCache(candidate.remoteUrl, rawPath, isVideo ? "video/mp4" : "image/jpeg");
     }
 
-    if (isVideo) {
-      const probeCmd = `"${FFPROBE_BIN}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${rawPath}"`;
-      let sourceDur = candidate.durationSec ?? 0;
-      try {
-        console.log(`[Hang] downloadAndTrim BEFORE ffprobe s${sceneIndex}b${beatIndex}`);
-        const _p0 = Date.now();
-        const { stdout } = await withSceneFetchTimeout(() => exec(probeCmd), 5_000, `probe pool s${sceneIndex}b${beatIndex}`);
-        console.log(`[Hang] downloadAndTrim AFTER ffprobe s${sceneIndex}b${beatIndex} elapsed=${Date.now()-_p0}ms`);
-        const parsed = parseFloat(stdout.trim());
-        if (!isNaN(parsed) && parsed > 0) sourceDur = parsed;
-      } catch { /* use candidate.durationSec */ }
-      if (sourceDur < 1.5) return null;
-      console.log(`[Hang] downloadAndTrim BEFORE trim s${sceneIndex}b${beatIndex} dur=${sourceDur.toFixed(1)}s`);
-      const _t0 = Date.now();
-      const ok = await trimDownloadedStockClip(rawPath, outPath, holdSec, sourceDur, `pool s${sceneIndex}b${beatIndex}`);
-      console.log(`[Hang] downloadAndTrim AFTER trim s${sceneIndex}b${beatIndex} ok=${ok} elapsed=${Date.now()-_t0}ms`);
-      console.log(`[Hang] downloadAndTrim EXIT s${sceneIndex}b${beatIndex} result=${ok ? outPath.slice(-30) : "null"} total=${Date.now()-_dtT0}ms`);
-      clearWorkerHeartbeat();
-      return ok ? outPath : null;
-    } else {
-      console.log(`[Hang] downloadAndTrim BEFORE stillImageToVideo s${sceneIndex}b${beatIndex}`);
-      const _sv0 = Date.now();
-      await stillImageToVideo(rawPath, outPath, holdSec, `pool img s${sceneIndex}b${beatIndex}`, false, sceneIndex, beatIndex);
-      console.log(`[Hang] downloadAndTrim AFTER stillImageToVideo s${sceneIndex}b${beatIndex} elapsed=${Date.now()-_sv0}ms`);
-      const exists = fs.existsSync(outPath) && fs.statSync(outPath).size > 1_000;
-      console.log(`[Hang] downloadAndTrim EXIT s${sceneIndex}b${beatIndex} result=${exists ? "ok" : "null"} total=${Date.now()-_dtT0}ms`);
-      clearWorkerHeartbeat();
-      return exists ? outPath : null;
+    // F3-17: rawPath is a temporary intermediate file (downloaded fresh above, or restored from
+    // media cache) — guaranteed cleanup via finally once ffprobe/trim/stillImageToVideo are done
+    // with it, on both the success and failure path.
+    try {
+      if (isVideo) {
+        const probeCmd = `"${FFPROBE_BIN}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${rawPath}"`;
+        let sourceDur = candidate.durationSec ?? 0;
+        try {
+          console.log(`[Hang] downloadAndTrim BEFORE ffprobe s${sceneIndex}b${beatIndex}`);
+          const _p0 = Date.now();
+          const { stdout } = await withSceneFetchTimeout(() => exec(probeCmd), 5_000, `probe pool s${sceneIndex}b${beatIndex}`);
+          console.log(`[Hang] downloadAndTrim AFTER ffprobe s${sceneIndex}b${beatIndex} elapsed=${Date.now()-_p0}ms`);
+          const parsed = parseFloat(stdout.trim());
+          if (!isNaN(parsed) && parsed > 0) sourceDur = parsed;
+        } catch { /* use candidate.durationSec */ }
+        if (sourceDur < 1.5) return null;
+        console.log(`[Hang] downloadAndTrim BEFORE trim s${sceneIndex}b${beatIndex} dur=${sourceDur.toFixed(1)}s`);
+        const _t0 = Date.now();
+        const ok = await trimDownloadedStockClip(rawPath, outPath, holdSec, sourceDur, `pool s${sceneIndex}b${beatIndex}`);
+        console.log(`[Hang] downloadAndTrim AFTER trim s${sceneIndex}b${beatIndex} ok=${ok} elapsed=${Date.now()-_t0}ms`);
+        console.log(`[Hang] downloadAndTrim EXIT s${sceneIndex}b${beatIndex} result=${ok ? outPath.slice(-30) : "null"} total=${Date.now()-_dtT0}ms`);
+        clearWorkerHeartbeat();
+        return ok ? outPath : null;
+      } else {
+        console.log(`[Hang] downloadAndTrim BEFORE stillImageToVideo s${sceneIndex}b${beatIndex}`);
+        const _sv0 = Date.now();
+        await stillImageToVideo(rawPath, outPath, holdSec, `pool img s${sceneIndex}b${beatIndex}`, false, sceneIndex, beatIndex);
+        console.log(`[Hang] downloadAndTrim AFTER stillImageToVideo s${sceneIndex}b${beatIndex} elapsed=${Date.now()-_sv0}ms`);
+        const exists = fs.existsSync(outPath) && fs.statSync(outPath).size > 1_000;
+        console.log(`[Hang] downloadAndTrim EXIT s${sceneIndex}b${beatIndex} result=${exists ? "ok" : "null"} total=${Date.now()-_dtT0}ms`);
+        clearWorkerHeartbeat();
+        return exists ? outPath : null;
+      }
+    } finally {
+      try { if (fs.existsSync(rawPath)) fs.unlinkSync(rawPath); } catch { /* ignore */ }
     }
   } catch (err) {
     console.warn(`[Pool] downloadAndTrimPoolCandidate failed s${sceneIndex}b${beatIndex}:`, (err as Error).message?.slice(0, 100));
@@ -3328,19 +3354,40 @@ export async function downloadToFileStreaming(
   destPath: string,
   timeoutMs: number,
   label: string,
-  options: Record<string, unknown> = {}
+  options: Record<string, unknown> = {},
+  maxBytes?: number
 ): Promise<{ response: Awaited<ReturnType<typeof fetchWithTimeout>>; bytesWritten: number | null }> {
   const response = await fetchWithTimeout(url, timeoutMs, label, options);
   if (!response.ok || !response.body) {
     return { response, bytesWritten: null };
   }
+  const body = response.body;
+  // F3-16: optional hard byte cap. undefined (the default) preserves the exact prior unbounded
+  // behavior for every existing caller — only callers that explicitly pass maxBytes opt into
+  // this check. Content-Length is checked first (when present) to reject an oversized download
+  // before any bytes are streamed; the running byte-counter below enforces the same cap for
+  // chunked responses (or a missing/incorrect Content-Length) that only reveal their true size
+  // as they stream.
+  if (maxBytes !== undefined) {
+    const contentLength = response.headers.get("content-length");
+    if (contentLength && Number(contentLength) > maxBytes) {
+      throw new Error(`${label}: response exceeds maximum size of ${maxBytes} bytes (Content-Length: ${contentLength})`);
+    }
+  }
   let bytesWritten = 0;
-  // node-fetch's Response.body is already a Node.js Readable — no Readable.fromWeb needed.
-  response.body.on("data", (chunk: Buffer) => {
+  // node-fetch's Response.body is already a Node.js Readable — no Readable.fromWeb needed. Cast
+  // narrows past node-fetch's DOM-shaped ReadableStream type declaration to the concrete Node
+  // methods it actually exposes at runtime (same reasoning as the pre-existing .on("data", ...)
+  // usage just below).
+  const nodeBody = body as unknown as { destroyed: boolean; destroy: (error?: Error) => void };
+  body.on("data", (chunk: Buffer) => {
     bytesWritten += chunk.length;
+    if (maxBytes !== undefined && bytesWritten > maxBytes && !nodeBody.destroyed) {
+      nodeBody.destroy(new Error(`${label}: response exceeded maximum size of ${maxBytes} bytes`));
+    }
   });
   try {
-    await pipeline(response.body, fs.createWriteStream(destPath));
+    await pipeline(body, fs.createWriteStream(destPath));
   } catch (err) {
     try { fs.unlinkSync(destPath); } catch { /* ignore */ }
     throw err;
@@ -5323,6 +5370,14 @@ function normalizeImageSourceUrl(url: string): string {
 
 // ─── 3c2. Wikimedia Commons Image Search ────────────────────────────────────
 // Searches Wikimedia Commons for freely licensed images (good for celebrities, news, etc.)
+// F3-16 finding 3.5: Wikimedia/SerpAPI "original" image downloads had no upper bound on response
+// size, buffering the entire body in memory via arrayBuffer() before any size check happened. A
+// legitimate high-resolution stock/archive photo rarely exceeds a few MB even at full
+// resolution — 25MB comfortably covers that while still rejecting pathological outliers well
+// before they threaten worker memory. Shared by fetchWikimediaImages, fetchWikimediaImagesV1,
+// and fetchSerpAPIImages below.
+const MAX_IMAGE_DOWNLOAD_BYTES = 25 * 1024 * 1024;
+
 export async function fetchWikimediaImages(
   query: string,
   duration: number,
@@ -5351,15 +5406,16 @@ export async function fetchWikimediaImages(
         const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}wiki_cached_${i}.mp4`);
         const fromCache = await tryRestoreFromMediaCache(c.url, imgPath);
         if (!fromCache) {
-          const imgResp = await withTimeout(
-            fetch(c.url, { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }),
+          const dl = await downloadToFileStreaming(
+            c.url,
+            imgPath,
             15_000,
-            `Wikimedia cached download scene ${sceneIndex}`
-          );
-          if (!imgResp.ok) continue;
-          const imgBuffer = Buffer.from(await imgResp.arrayBuffer());
-          if (imgBuffer.length < 10_000) continue;
-          fs.writeFileSync(imgPath, imgBuffer);
+            `Wikimedia cached download scene ${sceneIndex}`,
+            { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } },
+            MAX_IMAGE_DOWNLOAD_BYTES
+          ).catch(() => null);
+          if (!dl || !dl.response.ok || dl.bytesWritten === null) continue;
+          if (dl.bytesWritten < 10_000) { try { fs.unlinkSync(imgPath); } catch { /* ignore */ } continue; }
           void reportToMediaCache(c.url, imgPath, c.contentType);
         }
         await stillImageToVideo(
@@ -5429,15 +5485,16 @@ export async function fetchWikimediaImages(
         const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}wiki_${i}.mp4`);
         const fromWikiCache = await tryRestoreFromMediaCache(imageInfo.url, imgPath);
         if (!fromWikiCache) {
-          const imgResp = await withTimeout(
-            fetch(imageInfo.url, { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }),
+          const { response: imgResp, bytesWritten } = await downloadToFileStreaming(
+            imageInfo.url,
+            imgPath,
             15_000,
-            `Wikimedia download scene ${sceneIndex}`
+            `Wikimedia download scene ${sceneIndex}`,
+            { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } },
+            MAX_IMAGE_DOWNLOAD_BYTES
           );
-          if (!imgResp.ok) continue;
-          const imgBuffer = Buffer.from(await imgResp.arrayBuffer());
-          if (imgBuffer.length < 10_000) continue;
-          fs.writeFileSync(imgPath, imgBuffer);
+          if (!imgResp.ok || bytesWritten === null) continue;
+          if (bytesWritten < 10_000) { try { fs.unlinkSync(imgPath); } catch { /* ignore */ } continue; }
           void reportToMediaCache(imageInfo.url, imgPath, imageInfo.mime ?? "image/jpeg");
         }
 
@@ -5515,15 +5572,16 @@ async function fetchWikimediaImagesV1(
     const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}v1wiki_b${beatIndex}.mp4`);
     const fromV1WikiCache = await tryRestoreFromMediaCache(imageInfo.url, imgPath);
     if (!fromV1WikiCache) {
-      const imgResp = await withTimeout(
-        fetch(imageInfo.url, { headers: UA }),
+      const dl = await downloadToFileStreaming(
+        imageInfo.url,
+        imgPath,
         15_000,
-        `V1 Wikimedia download scene ${sceneIndex}`
-      );
-      if (!imgResp.ok) return null;
-      const imgBuffer = Buffer.from(await imgResp.arrayBuffer());
-      if (imgBuffer.length < 10_000) return null;
-      fs.writeFileSync(imgPath, imgBuffer);
+        `V1 Wikimedia download scene ${sceneIndex}`,
+        { headers: UA },
+        MAX_IMAGE_DOWNLOAD_BYTES
+      ).catch(() => null);
+      if (!dl || !dl.response.ok || dl.bytesWritten === null) return null;
+      if (dl.bytesWritten < 10_000) { try { fs.unlinkSync(imgPath); } catch { /* ignore */ } return null; }
       void reportToMediaCache(imageInfo.url, imgPath, imageInfo.mime ?? "image/jpeg");
     }
 
@@ -5983,8 +6041,9 @@ async function fetchSerpAPIImages(
         const imgPath = path.join(workDir, `scene_${sceneIndex}_${tag}serp_${i}.jpg`);
         const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}serp_${i}.mp4`);
 
-        const imgResp = await fetchWithTimeout(
+        const dl = await downloadToFileStreaming(
           imgUrl,
+          imgPath,
           12_000,
           `SerpAPI image download scene ${sceneIndex}`,
           {
@@ -5992,21 +6051,26 @@ async function fetchSerpAPIImages(
               'User-Agent': 'Mozilla/5.0 (compatible; Fastvid/1.0)',
               'Accept': 'image/jpeg,image/png,image/*',
             },
-          }
-        );
-        if (!imgResp.ok) continue;
+          },
+          MAX_IMAGE_DOWNLOAD_BYTES
+        ).catch(() => null);
+        if (!dl || !dl.response.ok || dl.bytesWritten === null) continue;
         // Validate content-type: must be an image, not HTML/text
-        const contentType = imgResp.headers.get('content-type') || '';
-        if (contentType.includes('text/') || contentType.includes('application/') || contentType.includes('html')) continue;
-        const imgBuffer = Buffer.from(await imgResp.arrayBuffer());
+        const contentType = dl.response.headers.get('content-type') || '';
+        if (contentType.includes('text/') || contentType.includes('application/') || contentType.includes('html')) {
+          try { fs.unlinkSync(imgPath); } catch { /* ignore */ }
+          continue;
+        }
         // Skip tiny images (likely placeholders)
-        if (imgBuffer.length < 15_000) continue;
+        if (dl.bytesWritten < 15_000) { try { fs.unlinkSync(imgPath); } catch { /* ignore */ } continue; }
         // Validate magic bytes: JPEG (FFD8FF) or PNG (89504E47)
-        const magic = imgBuffer.slice(0, 4);
+        const magicFd = fs.openSync(imgPath, "r");
+        const magic = Buffer.alloc(4);
+        fs.readSync(magicFd, magic, 0, 4, 0);
+        fs.closeSync(magicFd);
         const isJpeg = magic[0] === 0xFF && magic[1] === 0xD8 && magic[2] === 0xFF;
         const isPng = magic[0] === 0x89 && magic[1] === 0x50 && magic[2] === 0x4E && magic[3] === 0x47;
-        if (!isJpeg && !isPng) continue;
-        fs.writeFileSync(imgPath, imgBuffer);
+        if (!isJpeg && !isPng) { try { fs.unlinkSync(imgPath); } catch { /* ignore */ } continue; }
 
         await stillImageToVideo(
           imgPath,
