@@ -6472,7 +6472,7 @@ async function requireValidClip(
 }
 
 // ─── 3c1. Generate Grok Video Clip ──────────────────────────────────────────
-async function generateGrokVideoClip(
+export async function generateGrokVideoClip(
   prompt: string,
   duration: number,
   outputPath: string,
@@ -6497,7 +6497,10 @@ async function generateGrokVideoClip(
     const buffer = await response.buffer();
     fs.writeFileSync(grokOutputPath, buffer);
     console.log(`[Pipeline] Scene ${sceneIndex}: Grok video saved (${buffer.length} bytes)`);
-    return grokOutputPath;
+    if (fs.existsSync(grokOutputPath) && fs.statSync(grokOutputPath).size > 1000) {
+      return grokOutputPath;
+    }
+    return null;
   } catch (err) {
     console.warn(`[Pipeline] Scene ${sceneIndex}: Grok generation error:`, err);
     return null;
