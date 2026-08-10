@@ -8306,7 +8306,7 @@ export async function fetchInternetArchiveClips(
 }
 
 // ─── 3c3a. Download a YouTube CC clip (RapidAPI first, cloud service fallback) ─
-async function downloadYouTubeCCClip(
+export async function downloadYouTubeCCClip(
   videoId: string,
   duration: number,
   clipStart: number,
@@ -8352,8 +8352,10 @@ async function downloadYouTubeCCClip(
 
         const format = pickFormat(data.formats) ?? pickFormat(data.adaptiveFormats);
         if (format?.url) {
-          const dlResp = await fetchWithTimeout(
+          // F3-05: streams straight to tmpPath instead of buffering the whole clip in memory.
+          const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
             format.url,
+            tmpPath,
             90_000,
             `RapidAPI YouTube download scene ${sceneIndex}`,
             {
@@ -8364,10 +8366,10 @@ async function downloadYouTubeCCClip(
               },
             }
           );
-          if (dlResp.ok) {
-            const buf = await dlResp.arrayBuffer();
-            if (buf.byteLength >= 50_000 && buf.byteLength <= 80 * 1024 * 1024) {
-              fs.writeFileSync(tmpPath, Buffer.from(buf));
+          if (dlResp.ok && bytesWritten !== null) {
+            let rapidFileSize = -1;
+            try { rapidFileSize = fs.statSync(tmpPath).size; } catch { /* leave as -1 */ }
+            if (rapidFileSize >= 50_000 && rapidFileSize <= 80 * 1024 * 1024) {
               if (
                 await trimRemoteVideoToClip(
                   tmpPath,
@@ -8405,10 +8407,15 @@ async function downloadYouTubeCCClip(
   }
 
   if (cloudDlService) {
+    // F3-05: streams to a tmpPath (never directly to outPath) so a network drop mid-download
+    // can never leave a corrupt/partial file at outPath — outPath is only ever touched by the
+    // atomic fs.renameSync below, and only once the download is complete and size-validated.
+    const cloudTmpPath = outPath.replace(/\.mp4$/, "_cloud_tmp.mp4");
     try {
       const dlUrl = `${cloudDlService}/download?id=${videoId}&duration=${duration}&start=${clipStart}`;
-      const dlResp = await fetchWithTimeout(
+      const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
         dlUrl,
+        cloudTmpPath,
         90_000,
         `YouTube CC cloud download scene ${sceneIndex}`
       );
@@ -8419,15 +8426,19 @@ async function downloadYouTubeCCClip(
         );
         return false;
       }
-      const arrayBuf = await dlResp.arrayBuffer();
-      if (arrayBuf.byteLength > 80 * 1024 * 1024) {
+      if (bytesWritten === null) {
+        return false;
+      }
+      let cloudFileSize = -1;
+      try { cloudFileSize = fs.statSync(cloudTmpPath).size; } catch { /* leave as -1 */ }
+      if (cloudFileSize > 80 * 1024 * 1024) {
         console.warn(
-          `[Pipeline] Scene ${sceneIndex}: YouTube CC clip too large (${(arrayBuf.byteLength / 1024 / 1024).toFixed(1)}MB), skipping`
+          `[Pipeline] Scene ${sceneIndex}: YouTube CC clip too large (${(cloudFileSize / 1024 / 1024).toFixed(1)}MB), skipping`
         );
         return false;
       }
-      fs.writeFileSync(outPath, Buffer.from(arrayBuf));
-      if (fs.existsSync(outPath) && fs.statSync(outPath).size > 10_000) {
+      if (cloudFileSize > 10_000) {
+        fs.renameSync(cloudTmpPath, outPath);
         console.log(
           `[Pipeline] Scene ${sceneIndex}: ✅ YouTube CC via cloud service: "${title?.slice(0, 60) ?? videoId}" (${videoId})`
         );
@@ -8438,6 +8449,12 @@ async function downloadYouTubeCCClip(
         `[Pipeline] Scene ${sceneIndex}: Cloud DL failed for ${videoId}:`,
         (err as Error).message
       );
+    } finally {
+      try {
+        if (fs.existsSync(cloudTmpPath)) fs.unlinkSync(cloudTmpPath);
+      } catch {
+        /* ignore */
+      }
     }
   }
 
