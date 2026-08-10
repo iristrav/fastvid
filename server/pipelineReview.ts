@@ -55,7 +55,7 @@ async function probeDurationSec(filePath: string): Promise<number> {
         "-of",
         "default=noprint_wrappers=1:nokey=1",
         filePath,
-      ])
+      ], { timeout: 15_000 })
     ));
     const n = parseFloat(String(stdout).trim());
     return Number.isFinite(n) && n > 0 ? n : 0;
