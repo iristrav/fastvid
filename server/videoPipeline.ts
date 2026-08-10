@@ -3256,12 +3256,16 @@ async function assertSafeExternalUrl(rawUrl: string): Promise<void> {
 }
 
 /** Fetch a user-supplied external URL, validating the host (and every redirect hop) against
- *  private/internal address ranges before each request — see assertSafeExternalUrl above. */
-async function fetchExternalUrlSafely(rawUrl: string, maxRedirects = 5): ReturnType<typeof fetch> {
+ *  private/internal address ranges before each request — see assertSafeExternalUrl above.
+ *  F3-07: each hop now goes through fetchWithTimeout (real AbortController) instead of a bare
+ *  fetch(), matching the download-budget already used for comparably-sized files elsewhere
+ *  (Runway/Luma/Pika clip downloads) — previously a stalled response could hang this call, and
+ *  therefore the whole render, indefinitely. */
+export async function fetchExternalUrlSafely(rawUrl: string, maxRedirects = 5, timeoutMs = 60_000): ReturnType<typeof fetch> {
   let currentUrl = rawUrl;
   for (let hop = 0; hop <= maxRedirects; hop++) {
     await assertSafeExternalUrl(currentUrl);
-    const resp = await fetch(currentUrl, { redirect: "manual" });
+    const resp = await fetchWithTimeout(currentUrl, timeoutMs, "Custom voiceover download", { redirect: "manual" });
     if (resp.status >= 300 && resp.status < 400) {
       const location = resp.headers.get("location");
       if (!location) return resp;
@@ -3356,7 +3360,7 @@ function withTimeout<T>(
 // — including inside any nested withSceneFetchTimeout scopes started while `fn` was running —
 // and marks those scopes aborted so any in-flight retry/fallback logic stops spawning new work
 // instead of continuing to run, unbounded, in the background after the caller has moved on.
-function withSceneFetchTimeout<T>(fn: () => Promise<T>, ms: number, label: string): Promise<T> {
+export function withSceneFetchTimeout<T>(fn: () => Promise<T>, ms: number, label: string): Promise<T> {
   const delayMs = Math.max(1, Math.round(ms));
   const controller = new AbortController();
   const scope: SceneFetchScope = { controller, children: new Set(), childScopes: new Set() };
@@ -23065,7 +23069,7 @@ async function generateSFX(
   }
 }
 
-async function probeVideoDurationSec(filePath: string): Promise<number> {
+export async function probeVideoDurationSec(filePath: string): Promise<number> {
   for (const probe of FFPROBE_PATHS()) {
     try {
       // Route through exec() (semaphore-gated + fork-pressure retry with backoff) instead of
@@ -23545,16 +23549,23 @@ async function _runVideoPipelineInner(
         throw pipelineError(PIPELINE_ERROR.CUSTOM_VOICEOVER, `Failed to download custom voiceover: ${resp.status}`);
       }
       fs.writeFileSync(customAudioPath, Buffer.from(await resp.arrayBuffer()));
-      const { execFile } = await import("child_process");
-      const totalDuration = await new Promise<number>((resolve) => {
-        execFile(FFPROBE_BIN, ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", customAudioPath], (_err: unknown, stdout: string) => {
-          resolve(parseFloat(stdout?.trim() ?? "60") || 60);
-        });
-      });
+      // F3-07: probeVideoDurationSec is the existing, already-hardened helper for exactly this
+      // (semaphore-gated, withSceneFetchTimeout hard-kill, multi-binary retry) — the previous
+      // inline execFile() here had no timeout, no semaphore, and its Promise executor never
+      // rejected, so a hung ffprobe could block the render forever.
+      const totalDuration = await probeVideoDurationSec(customAudioPath) || 60;
       const perScene = Math.max(totalDuration / scenes.length, 5);
       for (let i = 0; i < scenes.length; i++) {
         const start = i * perScene;
-        await exec(`${FFMPEG_BIN} -y -i "${customAudioPath}" -ss ${start} -t ${perScene} -c copy "${audioPaths[i]}"`);
+        // F3-07: wrapped in withSceneFetchTimeout (45s, same budget splitFullVoiceoverByScenes
+        // already uses for the equivalent per-scene ffmpeg audio split) — previously unwrapped,
+        // so a hung ffmpeg split here could block the render forever and leak its ffmpegSemaphore
+        // slot (exec()'s own semaphore.run() only releases once its promise settles).
+        await withSceneFetchTimeout(
+          () => exec(`${FFMPEG_BIN} -y -i "${customAudioPath}" -ss ${start} -t ${perScene} -c copy "${audioPaths[i]}"`),
+          45_000,
+          `Custom voiceover split scene ${i}`
+        );
       }
       durations = scenes.map(() => perScene);
     } else {
