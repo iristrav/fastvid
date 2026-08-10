@@ -159,8 +159,24 @@ export type ArchiveAssetRow = Omit<MediaArchiveAsset, "annotationJson"> & {
 // entirely outside FFMPEG_CONCURRENCY_LIMIT despite a comment elsewhere claiming it was already
 // gated. withForkRetry() only retries on EAGAIN/fork pressure — it never touches the semaphore.
 const execRaw = promisify(execCb);
-const exec = ((cmd: string, opts?: Record<string, unknown>) =>
-  ffmpegSemaphore.run(() => withForkRetry(() => execRaw(cmd, opts as never)))) as typeof execRaw;
+
+// F3-12: every call site now passes an explicit timeoutMs. Uses child_process.exec's own native
+// `timeout` option (same mechanism F3-06 already established for execFile's ffprobe duration
+// probe) instead of a hand-rolled Promise.race — Node itself sends killSignal (default SIGTERM)
+// to the child when it runs longer than timeoutMs, so a hung ffmpeg/ffprobe is actually
+// terminated rather than merely abandoned. That termination makes execRaw's promise reject,
+// which lets withForkRetry (unchanged — still only retries real EAGAIN/fork-pressure errors, a
+// timeout error matches neither) propagate the failure, which lets ffmpegSemaphore.run()'s
+// `finally` release the slot instead of leaking it forever.
+const EXEC_TIMEOUT_PROBE_MS = 15_000; // ffprobe-only calls — same value as F3-06's duration probe
+const EXEC_TIMEOUT_ENCODE_MS = 45_000; // Ken Burns still-to-video ffmpeg encodes (filter_complex)
+const EXEC_TIMEOUT_TRIM_MS = 35_000; // ffmpeg trim/re-encode — matches videoPipeline.ts's own trimDownloadedStockClip budget
+// Exported only for direct testability (F3-12) — same zero-behavior-change pattern used
+// throughout F3-05 through F3-10 for other module-private functions.
+export const exec = ((cmd: string, timeoutMs: number, opts?: Record<string, unknown>) =>
+  ffmpegSemaphore.run(() =>
+    withForkRetry(() => execRaw(cmd, { ...(opts ?? {}), timeout: timeoutMs } as never))
+  )) as (cmd: string, timeoutMs: number, opts?: Record<string, unknown>) => ReturnType<typeof execRaw>;
 const VIDEO_WIDTH = 1920;
 const VIDEO_HEIGHT = 1080;
 const CLIP_MIN_SEC = 2.5;
@@ -1333,7 +1349,8 @@ export function orderCuratedCandidatesForBeat(
 async function probeMediaDurationSec(filePath: string): Promise<number> {
   try {
     const probe = await exec(
-      `${ffprobeBin()} -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${filePath}"`
+      `${ffprobeBin()} -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${filePath}"`,
+      EXEC_TIMEOUT_PROBE_MS
     );
     const dur = parseFloat(String(probe.stdout).trim());
     return !isNaN(dur) && dur > 0 ? dur : 0;
@@ -1450,7 +1467,8 @@ async function convertImageToKenBurns(
   const styled = resolveStillImageFilterComplex(duration, sceneIndex, beatIndex, styleContext);
   if (styled) {
     await exec(
-      `${ffmpegBin()} ${buildStillEncodeArgs(imgPath, outPath, duration, styled.filterComplex)}`
+      `${ffmpegBin()} ${buildStillEncodeArgs(imgPath, outPath, duration, styled.filterComplex)}`,
+      EXEC_TIMEOUT_ENCODE_MS
     );
     if (styled.consumedBudget && styleContext?.motionGraphicsBudget) {
       styleContext.motionGraphicsBudget.used++;
@@ -1471,7 +1489,8 @@ async function convertImageToKenBurns(
     );
     try {
       await exec(
-        `${ffmpegBin()} ${buildStillEncodeArgs(imgPath, outPath, duration, filterComplex)}`
+        `${ffmpegBin()} ${buildStillEncodeArgs(imgPath, outPath, duration, filterComplex)}`,
+        EXEC_TIMEOUT_ENCODE_MS
       );
     } catch (err) {
       if (archiveBlurFillStillsEnabled()) {
@@ -1487,7 +1506,8 @@ async function convertImageToKenBurns(
             false
           );
           await exec(
-            `${ffmpegBin()} ${buildStillEncodeArgs(imgPath, outPath, duration, boxFc)}`
+            `${ffmpegBin()} ${buildStillEncodeArgs(imgPath, outPath, duration, boxFc)}`,
+            EXEC_TIMEOUT_ENCODE_MS
           );
           const boxDur = await probeMediaDurationSec(outPath);
           if (boxDur >= duration * 0.85) return;
@@ -1499,7 +1519,8 @@ async function convertImageToKenBurns(
         );
         const matFc = buildMatFramedStillVF(duration, vidrushStillPhotoScale(), sceneIndex, beatIndex);
         await exec(
-          `${ffmpegBin()} ${buildStillEncodeArgs(imgPath, outPath, duration, matFc)}`
+          `${ffmpegBin()} ${buildStillEncodeArgs(imgPath, outPath, duration, matFc)}`,
+          EXEC_TIMEOUT_ENCODE_MS
         );
       } else {
         throw err;
@@ -1529,7 +1550,8 @@ async function convertImageToKenBurns(
         `zoompan=z='min(zoom+${zoomStep.toFixed(7)},${zoomEnd})':` +
         `x='${xExpr}':y='${yExpr}':` +
         `d=${totalFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=${fps}" ` +
-        `-c:v libx264 ${ffmpegThreadFlag()} -preset ${preset} -crf 18 -an -pix_fmt yuv420p "${outPath}"`
+        `-c:v libx264 ${ffmpegThreadFlag()} -preset ${preset} -crf 18 -an -pix_fmt yuv420p "${outPath}"`,
+      EXEC_TIMEOUT_ENCODE_MS
     );
   }
   const outDur = await probeMediaDurationSec(outPath);
@@ -1550,7 +1572,8 @@ async function probeVideoStreamMeta(filePath: string): Promise<VideoStreamMeta |
     const probe = await exec(
       `${ffprobeBin()} -v error -select_streams v:0 ` +
         `-show_entries stream=width,height,codec_name,pix_fmt ` +
-        `-of csv=p=0 "${filePath}"`
+        `-of csv=p=0 "${filePath}"`,
+      EXEC_TIMEOUT_PROBE_MS
     );
     const parts = String(probe.stdout).trim().split(",");
     if (parts.length < 4) return null;
@@ -1617,7 +1640,8 @@ async function trimVideoClip(
     try {
       await exec(
         `${ffmpegBin()} -y -ss ${startSec.toFixed(3)} -i "${inPath}" -t ${take.toFixed(3)} ` +
-          `-c copy -avoid_negative_ts make_zero -an "${outPath}"`
+          `-c copy -avoid_negative_ts make_zero -an "${outPath}"`,
+        EXEC_TIMEOUT_TRIM_MS
       );
       const outDur = await probeMediaDurationSec(outPath);
       if (outDur >= take * 0.8) return;
@@ -1634,7 +1658,8 @@ async function trimVideoClip(
 
   await exec(
     `${ffmpegBin()} -y -ss ${startSec.toFixed(3)} -i "${inPath}" -t ${take.toFixed(3)} ` +
-      `-vf "${frameVf}" -an -c:v libx264 ${ffmpegThreadFlag()} -preset ${preset} -crf ${crf} -pix_fmt yuv420p "${outPath}"`
+      `-vf "${frameVf}" -an -c:v libx264 ${ffmpegThreadFlag()} -preset ${preset} -crf ${crf} -pix_fmt yuv420p "${outPath}"`,
+    EXEC_TIMEOUT_TRIM_MS
   );
 
   const outDur = await probeMediaDurationSec(outPath);
@@ -1652,7 +1677,8 @@ async function trimVideoClip(
 async function probeImageWidthPx(filePath: string): Promise<number> {
   try {
     const probe = await exec(
-      `${ffprobeBin()} -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 "${filePath}"`
+      `${ffprobeBin()} -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 "${filePath}"`,
+      EXEC_TIMEOUT_PROBE_MS
     );
     const w = parseInt(String(probe.stdout).trim(), 10);
     return Number.isFinite(w) && w > 0 ? w : 0;
