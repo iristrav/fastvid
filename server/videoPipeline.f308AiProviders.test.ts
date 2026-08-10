@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import fs from "fs";
 import os from "os";
 import path from "path";
+import { Readable } from "stream";
 import {
   generateStabilityAIClip,
   generateRunwayClip,
@@ -48,6 +49,13 @@ function bufferResponse(buf: Buffer, ok = true) {
     ok,
     status: ok ? 200 : 500,
     arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
+    // F3-13 regression fix: generateRunwayClip's download step now streams via
+    // pipeline(dlResp.body, ...) instead of arrayBuffer() — body is a real Node Readable
+    // (matching node-fetch's actual Response.body shape) yielding the same bytes as
+    // arrayBuffer() above, so both the still-arrayBuffer()-based callers (Stability AI,
+    // Luma/Pika/Manus Forge — untouched by F3-13) and Runway's new streaming consumption
+    // get consistent, correct data from the same mock.
+    body: Readable.from(buf),
   } as unknown as Awaited<ReturnType<typeof fetchModule>>;
 }
 

@@ -6608,7 +6608,9 @@ async function generateHiggsfieldImageToVideoClip(
 }
 
 // ─── 3c6. Leonardo AI Image → Video (HIGH QUALITY image gen, replaces Stability AI) ─────
-async function generateLeonardoAIClip(
+// Exported only for direct testability (F3-13) — same zero-behavior-change pattern used
+// throughout F3-05 through F3-12 for other module-private functions.
+export async function generateLeonardoAIClip(
   prompt: string,
   duration: number,
   outputPath: string,
@@ -6619,8 +6621,14 @@ async function generateLeonardoAIClip(
     console.log(`[Pipeline] Scene ${sceneIndex}: Generating Leonardo AI image...`);
     const t = Date.now();
     // Step 1: Create generation job
-    const genResp = await withTimeout(
-      fetch("https://cloud.leonardo.ai/api/rest/v1/generations", {
+    // F3-13: fetchWithTimeout (real AbortController cancellation) instead of the
+    // withTimeout(fetch(...)) zombie-timeout pattern — same upgrade F3-08-A already applied to
+    // Stability AI. Method/headers/body/timeout/label are unchanged.
+    const genResp = await fetchWithTimeout(
+      "https://cloud.leonardo.ai/api/rest/v1/generations",
+      30_000,
+      `Leonardo AI generate scene ${sceneIndex}`,
+      {
         method: "POST",
         headers: { Authorization: `Bearer ${LEONARDO_API_KEY}`, "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -6631,8 +6639,7 @@ async function generateLeonardoAIClip(
           guidance_scale: 7, num_inference_steps: 30,
           public: false, photoReal: false, alchemy: false,
         }),
-      }),
-      30_000, `Leonardo AI generate scene ${sceneIndex}`
+      }
     );
     if (!genResp.ok) {
       const errText = await genResp.text();
@@ -6647,11 +6654,13 @@ async function generateLeonardoAIClip(
     let imageUrl: string | null = null;
     for (let poll = 0; poll < 12; poll++) {
       await new Promise(r => setTimeout(r, 5000));
-      const pollResp = await withTimeout(
-        fetch(`https://cloud.leonardo.ai/api/rest/v1/generations/${generationId}`, {
-          headers: { Authorization: `Bearer ${LEONARDO_API_KEY}` },
-        }),
-        10_000, `Leonardo AI poll scene ${sceneIndex}`
+      // F3-13: fetchWithTimeout instead of withTimeout(fetch(...)) — poll interval/max attempts
+      // and response parsing below are unchanged.
+      const pollResp = await fetchWithTimeout(
+        `https://cloud.leonardo.ai/api/rest/v1/generations/${generationId}`,
+        10_000,
+        `Leonardo AI poll scene ${sceneIndex}`,
+        { headers: { Authorization: `Bearer ${LEONARDO_API_KEY}` } }
       );
       if (!pollResp.ok) continue;
       const pollData = await pollResp.json() as { generations_by_pk?: { status: string; generated_images?: Array<{ url: string }> } };
@@ -6665,12 +6674,21 @@ async function generateLeonardoAIClip(
     if (!imageUrl) return null;
 
     // Step 3: Download image and convert to video
-    const imgResp = await fetchWithTimeout(imageUrl, 20_000, `Leonardo AI download scene ${sceneIndex}`);
-    if (!imgResp.ok) return null;
-    const imgBuffer = Buffer.from(await imgResp.arrayBuffer());
+    // F3-13: AbortSignal.timeout(20_000) covers the full request lifecycle (headers AND
+    // body-read), unlike fetchWithTimeout (which only protects up to headers arriving) — same
+    // pattern already proven for Grok/Veo/Higgsfield's downloads in this file and for F3-10's
+    // streamArchiveAssetDownload. Streams straight to pngPath via pipeline() instead of
+    // Buffer.from(await imgResp.arrayBuffer()), so the image is never fully buffered in memory.
+    const imgResp = await fetch(imageUrl, { signal: AbortSignal.timeout(20_000) });
+    if (!imgResp.ok || !imgResp.body) return null;
     const pngPath = outputPath.replace(".mp4", "_leonardo.jpg");
-    fs.writeFileSync(pngPath, imgBuffer);
-    console.log(`[Pipeline] Scene ${sceneIndex}: Leonardo AI image in ${((Date.now()-t)/1000).toFixed(1)}s (${(imgBuffer.length/1024).toFixed(0)}KB)`);
+    try {
+      await pipeline(imgResp.body, fs.createWriteStream(pngPath));
+    } catch (err) {
+      try { fs.unlinkSync(pngPath); } catch { /* ignore */ }
+      throw err;
+    }
+    console.log(`[Pipeline] Scene ${sceneIndex}: Leonardo AI image in ${((Date.now()-t)/1000).toFixed(1)}s (${(fs.statSync(pngPath).size/1024).toFixed(0)}KB)`);
 
     // Convert to video with fast Ken Burns
     const fps = 25; const totalFrames = Math.ceil(duration * fps);
@@ -6718,8 +6736,13 @@ export async function generateRunwayClip(
     };
     if (imageUrl) body.promptImage = imageUrl;
 
-    const createResp = await withTimeout(
-      fetch("https://api.dev.runwayml.com/v1/image_to_video", {
+    // F3-13: fetchWithTimeout instead of withTimeout(fetch(...)) — same upgrade F3-08-A already
+    // applied to Stability AI. Method/headers/body/timeout/label are unchanged.
+    const createResp = await fetchWithTimeout(
+      "https://api.dev.runwayml.com/v1/image_to_video",
+      30_000,
+      `Runway create scene ${sceneIndex}`,
+      {
         method: "POST",
         headers: {
           Authorization: `Bearer ${RUNWAY_API_KEY}`,
@@ -6727,8 +6750,7 @@ export async function generateRunwayClip(
           "X-Runway-Version": "2024-11-06",
         },
         body: JSON.stringify(body),
-      }),
-      30_000, `Runway create scene ${sceneIndex}`
+      }
     );
     if (!createResp.ok) {
       const errText = await createResp.text();
@@ -6743,11 +6765,13 @@ export async function generateRunwayClip(
     let videoUrl: string | null = null;
     for (let poll = 0; poll < 36; poll++) {
       await new Promise(r => setTimeout(r, 5000));
-      const pollResp = await withTimeout(
-        fetch(`https://api.dev.runwayml.com/v1/tasks/${taskId}`, {
-          headers: { Authorization: `Bearer ${RUNWAY_API_KEY}`, "X-Runway-Version": "2024-11-06" },
-        }),
-        10_000, `Runway poll scene ${sceneIndex}`
+      // F3-13: fetchWithTimeout instead of withTimeout(fetch(...)) — poll interval/max attempts
+      // and response parsing below are unchanged.
+      const pollResp = await fetchWithTimeout(
+        `https://api.dev.runwayml.com/v1/tasks/${taskId}`,
+        10_000,
+        `Runway poll scene ${sceneIndex}`,
+        { headers: { Authorization: `Bearer ${RUNWAY_API_KEY}`, "X-Runway-Version": "2024-11-06" } }
       );
       if (!pollResp.ok) continue;
       const pollData = await pollResp.json() as { status: string; output?: string[] };
@@ -6760,12 +6784,21 @@ export async function generateRunwayClip(
     if (!videoUrl) return null;
 
     // Download video
-    const dlResp = await fetchWithTimeout(videoUrl, 60_000, `Runway download scene ${sceneIndex}`);
-    if (!dlResp.ok) return null;
-    const buffer = Buffer.from(await dlResp.arrayBuffer());
+    // F3-13: AbortSignal.timeout(60_000) covers the full request lifecycle (headers AND
+    // body-read), unlike fetchWithTimeout (which only protects up to headers arriving) — same
+    // pattern already proven for Grok/Veo/Higgsfield's downloads in this file and for F3-10's
+    // streamArchiveAssetDownload. Streams straight to runwayOutputPath via pipeline() instead of
+    // Buffer.from(await dlResp.arrayBuffer()), so the video is never fully buffered in memory.
+    const dlResp = await fetch(videoUrl, { signal: AbortSignal.timeout(60_000) });
+    if (!dlResp.ok || !dlResp.body) return null;
     const runwayOutputPath = outputPath.replace(".mp4", "_runway.mp4");
-    fs.writeFileSync(runwayOutputPath, buffer);
-    console.log(`[Pipeline] Scene ${sceneIndex}: Runway video in ${((Date.now()-t)/1000).toFixed(1)}s (${(buffer.length/1024/1024).toFixed(1)}MB)`);
+    try {
+      await pipeline(dlResp.body, fs.createWriteStream(runwayOutputPath));
+    } catch (err) {
+      try { fs.unlinkSync(runwayOutputPath); } catch { /* ignore */ }
+      throw err;
+    }
+    console.log(`[Pipeline] Scene ${sceneIndex}: Runway video in ${((Date.now()-t)/1000).toFixed(1)}s (${(fs.statSync(runwayOutputPath).size/1024/1024).toFixed(1)}MB)`);
     if (fs.existsSync(runwayOutputPath) && fs.statSync(runwayOutputPath).size > 1000) {
       return runwayOutputPath;
     }
