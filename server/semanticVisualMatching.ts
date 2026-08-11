@@ -289,25 +289,32 @@ searchTiers: [["soldiers tanks city"], ["military advance ruins"], ["world war i
 
 Do NOT include generic tiers like "soldiers" or "technology" before specific tiers. Do NOT copy Dutch or abstract narration words.`;
 
+  // F3-21: a plain Promise.race against a bare timer only stops the CALLER from waiting — the
+  // underlying invokeLLM() call (and its own internal provider-fallback chain) previously kept
+  // running in the background, unbounded, after this function had already moved on. Passing a
+  // real AbortSignal instead means the 14s deadline actually cancels the in-flight fetch (and
+  // refuses to start any further fallback-provider attempt in the same chain, since they'd reuse
+  // the same already-aborted signal) instead of merely losing a race against it.
+  const abortController = new AbortController();
+  const timeoutTimer = setTimeout(
+    () => abortController.abort(new Error("semantic analysis timeout")),
+    14_000
+  );
   try {
-    const response = await Promise.race([
-      invokeLLM({
-        messages: [
-          {
-            role: "system",
-            content:
-              "You extract structured visual search intent from documentary narration. Return JSON only.",
-          },
-          { role: "user", content: prompt },
-        ],
-        preferProvider: "groq",
-        response_format: BEAT_ANALYSIS_SCHEMA,
-        maxTokens: 800,
-      }),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error("semantic analysis timeout")), 14_000)
-      ),
-    ]);
+    const response = await invokeLLM({
+      messages: [
+        {
+          role: "system",
+          content:
+            "You extract structured visual search intent from documentary narration. Return JSON only.",
+        },
+        { role: "user", content: prompt },
+      ],
+      preferProvider: "groq",
+      response_format: BEAT_ANALYSIS_SCHEMA,
+      maxTokens: 800,
+      signal: abortController.signal,
+    });
 
     const content = response.choices[0]?.message?.content;
     if (typeof content !== "string") return null;
@@ -353,6 +360,8 @@ Do NOT include generic tiers like "soldiers" or "technology" before specific tie
   } catch (err) {
     console.warn("[SemanticVisual] LLM analysis failed:", (err as Error).message?.slice(0, 100));
     return null;
+  } finally {
+    clearTimeout(timeoutTimer);
   }
 }
 

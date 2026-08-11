@@ -69,6 +69,13 @@ export type InvokeParams = {
   response_format?: ResponseFormat;
   /** Override the primary provider for this call (falls back normally if unavailable). */
   preferProvider?: LlmProvider;
+  // F3-21: optional external cancellation. When the caller aborts this signal, the in-flight
+  // provider fetch (and any not-yet-started fallback-chain attempt, since the same signal is
+  // reused across providers) is aborted immediately instead of being left to run to its own
+  // internal ~120s timeout after the caller has already given up and moved on. Combined with the
+  // internal per-call timeout via AbortSignal.any() — passing this never shortens or lengthens
+  // that existing internal timeout, it only adds an additional way for the request to end early.
+  signal?: AbortSignal;
 };
 
 export type ToolCall = {
@@ -313,11 +320,15 @@ function resolveModel(provider: LlmProvider, hasVision: boolean, maxTokens?: num
     return process.env.LLM_MODEL?.trim() || "gpt-4o";
   }
   if (provider === "gemini") {
-    // Flash (not Flash-Lite) by default — noticeably better quality for script/tag/editorial
-    // writing, and its free-tier quota (~250 req/day, 10 RPM) is still comfortably above this
-    // app's actual per-video call volume. Override with GEMINI_MODEL — e.g. gemini-2.5-flash-lite
-    // for more daily headroom at lower quality, or gemini-2.5-pro for the reverse trade.
-    return process.env.GEMINI_MODEL?.trim() || "gemini-2.5-flash";
+    // F3-20: gemini-2.5-flash was retired for new users ("This model models/gemini-2.5-flash is
+    // no longer available to new users") — confirmed in production as a hard 404/NOT_FOUND on
+    // every call, 16 times in one render's log. gemini-3.6-flash is the current GA replacement
+    // Flash-tier model on the same v1beta generateContent REST endpoint this file already calls
+    // (no request-shape changes needed — this payload never sets temperature/topK/topP/
+    // thinking_budget, the only fields that changed shape between generations). Override with
+    // GEMINI_MODEL — e.g. gemini-3.5-flash-lite for more daily headroom at lower quality — if a
+    // future deprecation repeats, without waiting on a redeploy.
+    return process.env.GEMINI_MODEL?.trim() || "gemini-3.6-flash";
   }
   return process.env.FORGE_LLM_MODEL?.trim() || "gemini-2.5-flash";
 }
@@ -400,7 +411,7 @@ function shouldFallbackToNextProvider(status: number, body: string): boolean {
 
 function providersToTry(primary: LlmProvider): LlmProvider[] {
   const out: LlmProvider[] = [];
-  const geminiAvailable = Boolean(geminiKeyFromEnv()) && !isGeminiInCooldown();
+  const geminiAvailable = Boolean(geminiKeyFromEnv()) && !isGeminiInCooldown() && !geminiModelUnavailable;
   const groqAvailable = Boolean(groqKeyFromEnv()) && !isGroqInCooldown();
   const openAiAvailable = Boolean(openAiKeyFromEnv()) && !openAiQuotaExhausted;
 
@@ -460,6 +471,20 @@ export function isGeminiInCooldown(): boolean {
   return Date.now() < geminiCooldownUntilMs;
 }
 
+// F3-20: a "model not found" 404 (wrong/deprecated GEMINI_MODEL) is permanent — unlike the RPM
+// cooldown above, it will never clear itself, so without this flag every subsequent LLM call in
+// the same render (and every later render in the same worker process) re-discovers the identical
+// 404 before falling back, each one wasting a full request/response round trip first. Confirmed in
+// production: 16 identical 404s across one render's log. Same permanent-until-process-restart
+// pattern already used for openAiQuotaExhausted below.
+let geminiModelUnavailable = false;
+export function isGeminiModelUnavailable(): boolean {
+  return geminiModelUnavailable;
+}
+function isGeminiModelNotFoundError(status: number, body: string): boolean {
+  return status === 404 && body.toUpperCase().includes("NOT_FOUND");
+}
+
 /** Call Google's Generative Language API — different format from OpenAI-compatible APIs.
  *  Gemini has no "assistant" role (uses "model") and no separate system message slot in
  *  `contents` (system text is a dedicated systemInstruction field). */
@@ -469,6 +494,7 @@ async function invokeGemini(
   model: string,
   maxTokens: number,
   wantsJson?: boolean,
+  externalSignal?: AbortSignal,
 ): Promise<InvokeResult> {
   const systemMessages = messages.filter((m) => m.role === "system");
   const nonSystemMessages = messages.filter((m) => m.role !== "system");
@@ -501,6 +527,9 @@ async function invokeGemini(
   for (let attempt = 0; attempt < 3; attempt++) {
     // Same gap as the OpenAI-compatible path above: no timeout meant a hung connection to
     // Gemini would leave this fetch pending indefinitely instead of erroring into the retry loop.
+    // F3-21: externalSignal (e.g. a caller's own deadline) is combined with, not a replacement
+    // for, this existing internal timeout — an already-aborted externalSignal makes this fetch
+    // reject immediately without a network round trip.
     const response = await fetch(url, {
       method: "POST",
       headers: {
@@ -508,7 +537,7 @@ async function invokeGemini(
         "x-goog-api-key": apiKey,
       },
       body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(120_000),
+      signal: externalSignal ? AbortSignal.any([externalSignal, AbortSignal.timeout(120_000)]) : AbortSignal.timeout(120_000),
     });
 
     if (response.ok) {
@@ -533,6 +562,14 @@ async function invokeGemini(
     }
 
     lastErrorText = await response.text();
+    // F3-20: permanent, non-retryable — no amount of retrying fixes an invalid/deprecated model
+    // name, so skip straight to throwing (no `continue`, matching every other non-429 status
+    // below) and mark Gemini unavailable for the rest of this process so subsequent calls don't
+    // repeat the same wasted round trip.
+    if (isGeminiModelNotFoundError(response.status, lastErrorText)) {
+      geminiModelUnavailable = true;
+      throw new Error(`Gemini API error ${response.status}: ${lastErrorText}`);
+    }
     // Free-tier RPM (429/RESOURCE_EXHAUSTED) is a short-lived burst limit, not exhaustion of the
     // daily quota — worth one or two short retries before giving up on this call entirely.
     if (response.status === 429 && attempt < 2) {
@@ -616,6 +653,7 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
     responseFormat,
     response_format,
     preferProvider,
+    signal,
   } = params;
 
   const hasVision = messagesIncludeImages(messages);
@@ -652,7 +690,7 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
       try {
         const model = resolveModel(provider, hasVision, maxTokens);
         const wantsJson = !!(responseFormat ?? response_format ?? outputSchema ?? output_schema);
-        const result = await invokeGemini(messages, apiKey, model, maxTokens ?? 8192, wantsJson);
+        const result = await invokeGemini(messages, apiKey, model, maxTokens ?? 8192, wantsJson, signal);
         if (i > 0) console.log(`[LLM] Succeeded via gemini after ${chain[0]} failure`);
         if (result.usage) {
           const { recordLlmUsage } = await import("./llmBudget");
@@ -717,6 +755,8 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
       // the same as any other provider failure: record it and fall through to the next provider.
       let response: Response;
       try {
+        // F3-21: same externalSignal-combined-with-internal-timeout pattern as invokeGemini above
+        // — an unset signal reproduces the exact prior behavior (just the 120s internal timeout).
         response = await fetch(resolveApiUrl(provider), {
           method: "POST",
           headers: {
@@ -724,7 +764,7 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
             authorization: `Bearer ${apiKey}`,
           },
           body: JSON.stringify(payload),
-          signal: AbortSignal.timeout(120_000),
+          signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(120_000)]) : AbortSignal.timeout(120_000),
         });
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
