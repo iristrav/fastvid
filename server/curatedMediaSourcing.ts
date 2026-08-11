@@ -143,6 +143,7 @@ import {
 } from "./db";
 import type { MediaArchiveAsset } from "../drizzle/schema";
 import { seededShuffle } from "./archiveUsageMemory";
+import { throwIfActiveRenderCancelled } from "./videoGenerationCancel";
 
 /** getMediaArchiveAssets() excludes annotationJson from the SQL query (large, no bulk caller
  *  needs it) — this is the real shape flowing through every list/cache/search path in this
@@ -171,12 +172,34 @@ const execRaw = promisify(execCb);
 const EXEC_TIMEOUT_PROBE_MS = 15_000; // ffprobe-only calls — same value as F3-06's duration probe
 const EXEC_TIMEOUT_ENCODE_MS = 45_000; // Ken Burns still-to-video ffmpeg encodes (filter_complex)
 const EXEC_TIMEOUT_TRIM_MS = 35_000; // ffmpeg trim/re-encode — matches videoPipeline.ts's own trimDownloadedStockClip budget
+// Production fix (log-confirmed): unlike videoPipeline.ts's own exec() (which calls
+// throwIfActiveRenderCancelled() before every spawn — see its comment on that check), this
+// file's exec() never checked cancellation at all. A Railway production log showed exactly the
+// consequence: once a render was cancelled/superseded (a stall-requeue's requestVideoGenerationCancel,
+// or an explicit user cancel), videoPipeline.ts's own ffmpeg calls (e.g. trimRemoteVideoToClip)
+// correctly started failing with "Video generation cancelled" — but curated-archive trims/Ken
+// Burns encodes routed through *this* exec() kept running ffmpeg successfully for the rest of
+// that render's already-cancelled lifetime (18+ minutes in the observed log), burning CPU and
+// ffmpegSemaphore slots that the real, still-running attempt for the same video needed. Adding
+// the same check here closes that gap without changing anything about this exec()'s existing
+// semaphore/timeout/retry behavior for a render that hasn't been cancelled.
+//
 // Exported only for direct testability (F3-12) — same zero-behavior-change pattern used
 // throughout F3-05 through F3-10 for other module-private functions.
-export const exec = ((cmd: string, timeoutMs: number, opts?: Record<string, unknown>) =>
-  ffmpegSemaphore.run(() =>
+//
+// `async` here is deliberate, not incidental: videoPipeline.ts's own exec() is declared `async`
+// for the exact same reason (its throwIfActiveRenderCancelled() call is the first line of its
+// body too) — inside an async function body, a synchronous throw is automatically converted into
+// a rejected Promise, matching this function's existing Promise-returning contract exactly. A
+// plain (non-async) arrow function that throws before its first `return` would instead throw
+// synchronously out of the call site itself, which every caller here already assumes can't happen
+// (they all `await`/`.catch()` this call expecting a rejection, never a synchronous throw).
+export const exec = (async (cmd: string, timeoutMs: number, opts?: Record<string, unknown>) => {
+  throwIfActiveRenderCancelled();
+  return ffmpegSemaphore.run(() =>
     withForkRetry(() => execRaw(cmd, { ...(opts ?? {}), timeout: timeoutMs } as never))
-  )) as (cmd: string, timeoutMs: number, opts?: Record<string, unknown>) => ReturnType<typeof execRaw>;
+  );
+}) as (cmd: string, timeoutMs: number, opts?: Record<string, unknown>) => ReturnType<typeof execRaw>;
 const VIDEO_WIDTH = 1920;
 const VIDEO_HEIGHT = 1080;
 const CLIP_MIN_SEC = 2.5;
@@ -1449,7 +1472,10 @@ export type CuratedClipStyleContext = StillStyleContext & {
   assetId?: number;
   queryEmbedding?: number[] | null;
   trimStartSec?: number;
-  /** asset.id → shared raw file on disk (one copy per video). */
+  /** asset.id → resolved raw file path (one copy per video), for observability only. F3-19:
+   *  the actual cross-caller synchronization for the shared raw file lives in
+   *  prepareCuratedArchiveClip's module-level sharedRawMaterializations, not here — this map is
+   *  no longer read for ownership/cleanup decisions. */
   rawCache?: Map<number, string>;
   /** Lighter FFmpeg trim for 1-min fast path. */
   fastTrim?: boolean;
@@ -1687,6 +1713,71 @@ async function probeImageWidthPx(filePath: string): Promise<number> {
   }
 }
 
+// F3-19: prepareCuratedArchiveClip's rawPath is deterministic — workDir + asset.id + ext only —
+// so that a popular archive asset picked by more than one scene/beat in the same render job can
+// share a single download instead of each caller fetching its own copy. The previous guard for
+// that sharing was `isSharedRaw = rawCache.get(id) === rawPath`, a one-time snapshot with no
+// synchronization: two concurrent callers could each observe "not yet shared", each start their
+// own materializeArchiveAsset() against the identical rawPath, and whichever one's download
+// failed (or simply finished first and considered itself the sole owner) would unlink rawPath
+// out from under the other while it was still mid-read in ffmpeg — surfacing as
+// "archive_raw_a{id}.{ext}: No such file or directory" (confirmed in production logs, including
+// two ENOENTs on the same path 565 microseconds apart — proof of genuinely concurrent trims).
+//
+// The fix below makes "start a materialization for this rawPath" a single atomic step: the very
+// first synchronous statement in acquireSharedRawMaterialization() is a Map check-then-set with
+// no `await` in between, so JS's run-to-completion semantics guarantee only one caller can ever
+// win the "create" branch for a given rawPath — every other concurrent caller finds the winner's
+// entry already registered and awaits that same promise instead of starting a second download.
+// A refcount (not a boolean snapshot) tracks how many callers are still relying on rawPath, and
+// the shared file is only ever unlinked once that count returns to zero — so no caller can ever
+// delete a file a sibling call is still using, regardless of success/failure/ordering.
+type SharedRawMaterialization = {
+  /** Resolves with rawPath once the (single) materialization attempt for it has completed. */
+  promise: Promise<string>;
+  /** Number of prepareCuratedArchiveClip() calls currently relying on this rawPath. */
+  refCount: number;
+};
+
+// Keyed by the absolute rawPath, which already encodes workDir (unique per render job — see
+// videoPipeline.ts's fastvid_{videoId}_{Date.now()} workDir naming) and asset.id, so this can
+// never collide across jobs or across different assets in the same job. Entries are removed as
+// soon as the last concurrent consumer releases (see releaseSharedRawMaterialization), so this
+// never accumulates across the lifetime of a long-running worker process.
+const sharedRawMaterializations = new Map<string, SharedRawMaterialization>();
+
+function acquireSharedRawMaterialization(
+  rawPath: string,
+  materialize: () => Promise<void>
+): SharedRawMaterialization {
+  let entry = sharedRawMaterializations.get(rawPath);
+  if (!entry) {
+    // No `await` between the .get() above and the .set() below — this whole branch runs as one
+    // synchronous turn, so no other concurrent caller can observe the "missing" state and also
+    // take this branch for the same rawPath.
+    entry = { promise: materialize().then(() => rawPath), refCount: 0 };
+    sharedRawMaterializations.set(rawPath, entry);
+  }
+  entry.refCount++;
+  return entry;
+}
+
+/** Releases this caller's hold on rawPath's shared materialization; deletes the file once no
+ *  concurrent caller still needs it (refCount reaches 0), never before. */
+function releaseSharedRawMaterialization(rawPath: string): void {
+  const entry = sharedRawMaterializations.get(rawPath);
+  if (!entry) return;
+  entry.refCount--;
+  if (entry.refCount <= 0) {
+    sharedRawMaterializations.delete(rawPath);
+    try {
+      if (fs.existsSync(rawPath)) fs.unlinkSync(rawPath);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
 /** Download a curated archive asset and return a beat-ready MP4 path. */
 export async function prepareCuratedArchiveClip(
   asset: ArchiveAssetRow,
@@ -1707,103 +1798,85 @@ export async function prepareCuratedArchiveClip(
         : asset.mimeType.includes("webp")
           ? "webp"
           : "jpg";
-  const sharedRaw = styleContext?.rawCache?.get(asset.id);
-  const rawPath =
-    sharedRaw && fs.existsSync(sharedRaw)
-      ? sharedRaw
-      : path.join(workDir, `archive_raw_a${asset.id}.${ext}`);
+  const rawPath = path.join(workDir, `archive_raw_a${asset.id}.${ext}`);
   const outPath =
     asset.mediaType === "image"
       ? path.join(workDir, `scene_${sceneIndex}_b${beatIndex}_curated_a${asset.id}_still.mp4`)
       : path.join(workDir, `scene_${sceneIndex}_b${beatIndex}_curated_a${asset.id}.mp4`);
 
-  if (rawPath === sharedRaw && fs.existsSync(rawPath)) {
-    /* reuse shared raw */
-  } else {
-    await materializeArchiveAsset(asset, rawPath);
-    styleContext?.rawCache?.set(asset.id, rawPath);
-  }
-
-  if (!fs.existsSync(rawPath)) {
-    // Guards a race on popular assets shared across concurrently-running scenes: the
-    // existsSync check above can pass and then another scene's cleanup (or an OS-level
-    // eviction under memory pressure) removes the file before we actually read it below.
-    // One retry recovers cleanly instead of failing this beat outright.
-    await materializeArchiveAsset(asset, rawPath);
-    styleContext?.rawCache?.set(asset.id, rawPath);
-  }
-
-  const isSharedRaw = styleContext?.rawCache?.get(asset.id) === rawPath;
-
-  if (asset.mediaType === "image") {
-    const width = await probeImageWidthPx(rawPath);
-    if (width > 0 && width < VIDRUSH_MIN_STILL_WIDTH) {
-      if (!isSharedRaw) {
-        try { if (fs.existsSync(rawPath)) fs.unlinkSync(rawPath); } catch { /* ignore */ }
-      }
-      throw new Error(
-        `curated asset ${asset.id} still too low-res (${width}px < ${VIDRUSH_MIN_STILL_WIDTH}px)`
-      );
-    }
-  }
-
-  let hasBakedText: boolean;
-  if (asset.hasBakedEditText != null) {
-    // Cached verdict from a prior check of this exact asset — clip content never changes,
-    // so the result stays valid forever and re-running the LLM check would be wasted time.
-    hasBakedText = asset.hasBakedEditText === 1;
-  } else {
-    // Pass the path, not a read-into-memory Buffer — for video content
-    // archiveClipHasBakedEditText only needs a handful of extracted frames, so materializing the
-    // whole clip in RAM here (and, previously, having the callee write it right back to disk
-    // unchanged) was pure overhead.
-    hasBakedText = await archiveClipHasBakedEditText(rawPath, asset.mimeType);
-    try {
-      await updateMediaArchiveAsset(asset.id, { hasBakedEditText: hasBakedText ? 1 : 0 });
-      asset.hasBakedEditText = hasBakedText ? 1 : 0;
-    } catch (err) {
-      console.warn(`[CuratedMedia] Failed to cache overlay verdict for asset ${asset.id}:`, (err as Error).message);
-    }
-  }
-  if (hasBakedText) {
-    if (!isSharedRaw) {
-      try { if (fs.existsSync(rawPath)) fs.unlinkSync(rawPath); } catch { /* ignore */ }
-    }
-    throw new Error(`curated asset ${asset.id} has baked edit text — skipped`);
-  }
-
-  const runTrim = () =>
-    asset.mediaType === "image"
-      ? convertImageToKenBurns(rawPath, outPath, duration, sceneIndex, beatIndex, styleContext)
-      : trimVideoClip(rawPath, outPath, duration, beatIndex, styleContext, sceneIndex, beatIndex);
+  const materialization = acquireSharedRawMaterialization(rawPath, () =>
+    materializeArchiveAsset(asset, rawPath)
+  );
   try {
-    await runTrim();
-  } catch (err) {
-    // Popular assets are shared across concurrently-running scenes via dedup.materializedArchiveRaw
-    // (rawCache) — but that cache is only reliably populated once the *first* caller's download
-    // finishes and calls .set(). Two scenes that both pick this asset before either has set the
-    // cache entry can each end up on this deterministic rawPath independently, and whichever one
-    // finishes first (and doesn't yet see itself as "shared") deletes it right as the other is
-    // mid-read here. The earlier existsSync retry only covers the window before this trim/convert
-    // call — re-materialize and retry once more if the file vanished from under us during it too.
-    if (!fs.existsSync(rawPath) && (err as Error).message?.includes("No such file or directory")) {
+    await materialization.promise;
+
+    // F3-19: acquireSharedRawMaterialization already guarantees only one materialization is ever
+    // in flight for this rawPath, so this can no longer be a concurrent sibling's doing — it is
+    // only reachable via something outside our own concurrency control (e.g. an OS-level eviction
+    // under memory pressure). One direct re-materialize covers that residual, non-concurrency case
+    // without masking any race, because the race itself is now structurally impossible.
+    if (!fs.existsSync(rawPath)) {
       await materializeArchiveAsset(asset, rawPath);
-      styleContext?.rawCache?.set(asset.id, rawPath);
-      await runTrim();
+    }
+
+    if (asset.mediaType === "image") {
+      const width = await probeImageWidthPx(rawPath);
+      if (width > 0 && width < VIDRUSH_MIN_STILL_WIDTH) {
+        throw new Error(
+          `curated asset ${asset.id} still too low-res (${width}px < ${VIDRUSH_MIN_STILL_WIDTH}px)`
+        );
+      }
+    }
+
+    let hasBakedText: boolean;
+    if (asset.hasBakedEditText != null) {
+      // Cached verdict from a prior check of this exact asset — clip content never changes,
+      // so the result stays valid forever and re-running the LLM check would be wasted time.
+      hasBakedText = asset.hasBakedEditText === 1;
     } else {
-      throw err;
+      // Pass the path, not a read-into-memory Buffer — for video content
+      // archiveClipHasBakedEditText only needs a handful of extracted frames, so materializing the
+      // whole clip in RAM here (and, previously, having the callee write it right back to disk
+      // unchanged) was pure overhead.
+      hasBakedText = await archiveClipHasBakedEditText(rawPath, asset.mimeType);
+      try {
+        await updateMediaArchiveAsset(asset.id, { hasBakedEditText: hasBakedText ? 1 : 0 });
+        asset.hasBakedEditText = hasBakedText ? 1 : 0;
+      } catch (err) {
+        console.warn(`[CuratedMedia] Failed to cache overlay verdict for asset ${asset.id}:`, (err as Error).message);
+      }
     }
-  }
+    if (hasBakedText) {
+      throw new Error(`curated asset ${asset.id} has baked edit text — skipped`);
+    }
 
-  if (!isSharedRaw) {
+    const runTrim = () =>
+      asset.mediaType === "image"
+        ? convertImageToKenBurns(rawPath, outPath, duration, sceneIndex, beatIndex, styleContext)
+        : trimVideoClip(rawPath, outPath, duration, beatIndex, styleContext, sceneIndex, beatIndex);
     try {
-      if (fs.existsSync(rawPath)) fs.unlinkSync(rawPath);
-    } catch {
-      /* ignore */
+      await runTrim();
+    } catch (err) {
+      // Same residual, non-concurrency case as above (external eviction) — no sibling call can
+      // have deleted rawPath while we hold a reference to its shared materialization.
+      if (!fs.existsSync(rawPath) && (err as Error).message?.includes("No such file or directory")) {
+        await materializeArchiveAsset(asset, rawPath);
+        await runTrim();
+      } else {
+        throw err;
+      }
     }
-  }
 
-  return outPath;
+    // Informational only — no longer consulted for ownership/cleanup decisions (see
+    // acquireSharedRawMaterialization/releaseSharedRawMaterialization above), kept so the
+    // per-video "asset.id -> resolved raw path" bookkeeping in videoPipeline.ts's dedup state
+    // stays populated exactly as before.
+    styleContext?.rawCache?.set(asset.id, rawPath);
+
+    return outPath;
+  } finally {
+    releaseSharedRawMaterialization(rawPath);
+  }
 }
 
 export type CuratedCandidatePick = {

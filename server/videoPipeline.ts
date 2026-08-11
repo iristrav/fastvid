@@ -311,7 +311,7 @@ import {
   strictVoiceMontageSyncExport,
   type VoiceMontageSyncAuditResult,
 } from "./voiceMontageSyncAudit";
-import { throwIfVideoGenerationCancelled, runWithActiveVideoId, throwIfActiveRenderCancelled, requestVideoGenerationCancel } from "./videoGenerationCancel";
+import { throwIfVideoGenerationCancelled, runWithActiveVideoId, throwIfActiveRenderCancelled, requestVideoGenerationCancel, getActiveVideoId, isVideoGenerationCancelRequested } from "./videoGenerationCancel";
 import {
   buildTtsSceneBeatMap,
   fetchElevenLabsWithTimestamps,
@@ -8347,9 +8347,26 @@ export async function fetchInternetArchiveClips(
   const queryList = Array.isArray(queries) ? queries : [queries];
   const uniqueQueries = uniqueQueryStrings(queryList);
   let fetched = 0;
+  // Production fix (log-confirmed): trimRemoteVideoToClip's exec() already correctly refuses to
+  // run once the render is cancelled/superseded (throwIfActiveRenderCancelled), and that failure
+  // was already being reported — but this function's own per-doc/per-query try/catch treated it
+  // exactly like any other single-candidate failure (a bad size, a timeout, a 404) and just moved
+  // on to the next candidate. A Railway log showed the resulting waste directly: the same scene's
+  // Internet Archive search kept retrying — 88 failed attempts, some against the exact same
+  // already-failing item over 18 minutes — after the render had already been cancelled, instead
+  // of stopping once cancellation was first observed. This check doesn't change any timeout,
+  // retry count, or fallback behavior for a render that's actually still running — it only stops
+  // *this* function from continuing to search/download/trim once there's nothing left to use the
+  // result for.
+  const cancelled = () => {
+    const videoId = getActiveVideoId();
+    return videoId != null && isVideoGenerationCancelRequested(videoId);
+  };
+  if (cancelled()) return results;
 
   for (const query of uniqueQueries) {
     if (fetched >= count) break;
+    if (cancelled()) break;
     try {
     const searchUrl = `https://archive.org/advancedsearch.php?q=${encodeURIComponent(query)}+AND+mediatype:movies&fl[]=identifier,title&rows=12&output=json`;
     const searchResp = await providerLimiter("internetArchive").run(() => withTimeout(
@@ -8379,6 +8396,7 @@ export async function fetchInternetArchiveClips(
 
     for (const doc of docs) {
       if (fetched >= count) break;
+      if (cancelled()) break;
       try {
         const metaUrl = `https://archive.org/metadata/${doc.identifier}/files`;
         const metaResp = await withTimeout(
