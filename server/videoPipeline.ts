@@ -1631,7 +1631,7 @@ async function fetchBeatYoutubeThenPexels(
 }
 
 /** Archive + Wikimedia video first, then Pexels/Pixabay, then AI. */
-async function fetchBeatArchivalThenPexels(
+export async function fetchBeatArchivalThenPexels(
   beat: SceneBeat,
   scene: Scene,
   workDir: string,
@@ -14129,7 +14129,7 @@ async function fetchUniqueStockForBeatInner(
 }
 
 /** Fill a scene that has zero usable clips (never grey placeholders). */
-async function recoverSceneClipsIfEmpty(
+export async function recoverSceneClipsIfEmpty(
   scene: Scene,
   workDir: string,
   topicContext: string | undefined,
@@ -17928,7 +17928,7 @@ async function adoptBestSimilarBeatClip(
   return adoptSimilarExternal();
 }
 
-async function adoptArchiveBeatClip(
+export async function adoptArchiveBeatClip(
   beat: SceneBeat,
   scene: Scene,
   workDir: string,
