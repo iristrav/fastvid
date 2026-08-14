@@ -8639,6 +8639,23 @@ function isSpaceRelatedTopic(...parts: string[]): boolean {
   return /space|rocket|nasa|esa|spacex|mars|moon|satellite|launch|orbit|astronaut|shuttle|station|tesla|electric vehicle|factory/i.test(text);
 }
 
+// F3-34: Internet Archive license gate. Only a licenseurl the item's own uploader set
+// (metadata.licenseurl — see https://help.archive.org/help/rights/) that is explicitly public
+// domain or a commercial+derivatives-permitting Creative Commons license is accepted; anything
+// missing, non-commercial (-nc), no-derivatives (-nd), or unrecognized is rejected. FastVid
+// trims/re-encodes every clip (a derivative) and is used commercially, so NC/ND licenses are
+// never usable regardless of how "close" they look.
+export function isAllowedInternetArchiveLicense(licenseUrl: string | undefined | null): boolean {
+  if (!licenseUrl?.trim()) return false;
+  const u = licenseUrl.toLowerCase();
+  if (u.includes("publicdomain")) return true;
+  if (u.includes("creativecommons.org/licenses/")) {
+    if (u.includes("-nc") || u.includes("-nd")) return false;
+    if (u.includes("/by/") || u.includes("/by-sa/")) return true;
+  }
+  return false;
+}
+
 // ─── 3c2. Fetch Internet Archive Video Clips ────────────────────────────────
 export async function fetchInternetArchiveClips(
   queries: string | string[],
@@ -8706,15 +8723,43 @@ export async function fetchInternetArchiveClips(
       if (fetched >= count) break;
       if (cancelled()) break;
       try {
-        const metaUrl = `https://archive.org/metadata/${doc.identifier}/files`;
+        // F3-34: fetch the full item record (metadata + files) instead of just the /files
+        // sub-resource, so the uploader-provided rights fields (metadata.licenseurl /
+        // metadata.rights — documented at https://help.archive.org/help/rights/ and
+        // https://archive.org/developers/md-record.html) are available before any download
+        // decision is made. Internet Archive's "partial fetch" convention
+        // (archive.org/metadata/{id}/{field}) is what made the old URL return only
+        // `{ result: [...] }` for the files field; dropping the "/files" suffix returns the
+        // full record as `{ metadata: {...}, files: [...], ... }` in the same single call —
+        // no new network call added.
+        const metaUrl = `https://archive.org/metadata/${doc.identifier}`;
         const metaResp = await withTimeout(
           fetch(metaUrl, { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }),
           8_000,
           `Internet Archive metadata scene ${sceneIndex}`
         );
         if (!metaResp.ok) continue;
-        const metaData = await metaResp.json() as { result?: Array<{ name: string; format: string; size?: string }> };
-        const videoFiles = (metaData.result || []).filter(f =>
+        const metaData = await metaResp.json() as {
+          metadata?: { licenseurl?: string | string[]; rights?: string | string[] };
+          files?: Array<{ name: string; format: string; size?: string }>;
+          result?: Array<{ name: string; format: string; size?: string }>;
+        };
+
+        // F3-34 license gate: reject before any download unless the item's own metadata
+        // carries an explicit, permissive-enough licenseurl. "Found via mediatype:movies" is
+        // never treated as "usable" on its own — same reasoning as the existing Europeana/
+        // Openverse per-item rights gates. No rights info, or a non-commercial/no-derivatives
+        // license (FastVid trims/re-encodes and is used commercially), is a reject.
+        const rawLicenseUrl = metaData.metadata?.licenseurl;
+        const licenseUrl = (Array.isArray(rawLicenseUrl) ? rawLicenseUrl[0] : rawLicenseUrl)?.trim();
+        if (!isAllowedInternetArchiveLicense(licenseUrl)) {
+          console.warn(
+            `[Pipeline] Scene ${sceneIndex}: Archive item ${doc.identifier} has no usable license (licenseurl=${licenseUrl ?? "none"}) — skipping`
+          );
+          continue;
+        }
+
+        const videoFiles = (metaData.files ?? metaData.result ?? []).filter(f =>
           ['h.264', 'MPEG4', 'MP4', 'Ogg Video', 'WebM'].includes(f.format)
         );
         if (!videoFiles.length) continue;
