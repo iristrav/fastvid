@@ -13,6 +13,19 @@ export function curatedArchiveOnlyVisuals(): boolean {
   return process.env.CURATED_ARCHIVE_ONLY !== "false";
 }
 
+// F3-39: CURATED_ARCHIVE_ONLY's own doc comment above already says the external cascade is
+// meant to run as a scene-level fallback in this mode — but getPipelinePerfProfile() forced
+// enableArchival to false unconditionally whenever curatedArchiveOnlyVisuals() was true,
+// which made that fallback structurally unreachable (fetchInternetArchiveClips/
+// fetchHistoricalBeatVideo's internet_archive tier both gate on perf.enableArchival) instead of
+// merely deprioritized. This flag controls only that override — the primary per-beat path
+// (beatPrimaryFetch) never consults perf.enableArchival either way, so curated-archive-first
+// behavior for the primary path is unaffected regardless of this flag's value. Default true
+// (fallback reachable); set "false" to restore the old fully-archive-only behavior.
+export function curatedArchiveExternalFallbackEnabled(): boolean {
+  return process.env.CURATED_ARCHIVE_EXTERNAL_FALLBACK !== "false";
+}
+
 // ─── Visual Matching Engine V2 (build-out, off until proven — see /server/visualMatchingV2) ──
 
 /** V2 VideoContext layer (one LLM call per video, cached/reused across videos). Inert until read by the active pipeline. */

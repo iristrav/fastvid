@@ -153,7 +153,7 @@ import {
   uniqueCoercedQueries,
 } from "./stringCoercion";
 import { createPipelineProfiler } from "./pipelineProfiler";
-import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, asyncQaEnabled, scenePipelineEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, maxBeatCapForVisualCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, pipelineComposeGraceMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs, literalVisualGateEnabled } from "./sourcingPolicy";
+import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, asyncQaEnabled, scenePipelineEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveExternalFallbackEnabled, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, maxBeatCapForVisualCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, pipelineComposeGraceMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs, literalVisualGateEnabled } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -1776,9 +1776,21 @@ export async function fetchBeatArchivalThenPexels(
       );
       if (wikiClip) return wikiClip;
     }
-    // No archive/wiki match — fall through to Pexels if enabled.
-    if (!archivePexelsFallbackEnabled() || !canUseLicensedStockBeat(dedup)) return null;
-    console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: no archive/wiki match → Pexels fallback`);
+    // No archive/wiki match — fall through to the rest of the cascade below (Internet Archive,
+    // YouTube CC, Europeana, Openverse, celebrity video, authentic stills, AI fallback, and
+    // finally Pexels/Pixabay) if enabled.
+    //
+    // F3-39: canUseLicensedStockBeat(dedup) used to also gate here, but that check is about the
+    // Pexels/Pixabay *stock* budget specifically — none of the free/CC sources between here and
+    // the actual Pexels call (fetchBeatStockFallback, further down this function) spend that
+    // budget. Once the small per-video stock budget was used up by a few earlier beats, this
+    // line returned null for every subsequent under-filled beat, blocking the entire free/CC
+    // cascade for the rest of the video even though it had nothing to do with the exhausted
+    // budget. The budget is still enforced, unchanged, immediately before the real Pexels call
+    // below (`if (!canUseLicensedStockBeat(dedup)) return null;`) — this only stops it from
+    // being (mis)used a second time here to gate unrelated sources.
+    if (!archivePexelsFallbackEnabled()) return null;
+    console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: no archive/wiki match → external cascade`);
   }
   const topicHay = [videoTitle, scene.text, beat.text].filter(Boolean).join(" ");
   const historicalDoc = isHistoricalDocumentary(topicHay) && !dedup.personTopicLock;
@@ -2900,7 +2912,16 @@ export function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProf
       // maxBeatsPerScene comes from profile (computed from actual voiceover duration at compose
       // time via sceneBeatCapForCadence). curatedPerfBeatsFloor used target duration which was
       // always too short for videos where the voiceover runs longer than the target.
-      enableArchival: false,
+      //
+      // F3-39: enableArchival used to be forced to false here unconditionally, which made
+      // recoverSceneClipsIfEmpty's scene-level external fallback (Internet Archive, YouTube CC,
+      // Europeana, ...) structurally unreachable in curated-only mode no matter how under-filled
+      // a scene was — every such scene fell straight to the guaranteed text/color placeholder.
+      // Inheriting the length-based profile's own value (still an explicit opt-out via
+      // curatedArchiveExternalFallbackEnabled(), default true) restores that fallback without
+      // touching the primary per-beat path, which never reads this flag either way. NASA/Musk
+      // stay off — out of scope for this fix, unrelated to the reported IA/YouTube CC symptom.
+      enableArchival: curatedArchiveExternalFallbackEnabled() ? profile.enableArchival : false,
       enableNasa: false,
       enableMuskHeroFetch: false,
       enableAiFallback: aiCfg.enable,
@@ -8761,21 +8782,40 @@ function isSpaceRelatedTopic(...parts: string[]): boolean {
   return /space|rocket|nasa|esa|spacex|mars|moon|satellite|launch|orbit|astronaut|shuttle|station|tesla|electric vehicle|factory/i.test(text);
 }
 
-// F3-34: Internet Archive license gate. Only a licenseurl the item's own uploader set
+// F3-34: Internet Archive license gate. A licenseurl the item's own uploader set
 // (metadata.licenseurl — see https://help.archive.org/help/rights/) that is explicitly public
-// domain or a commercial+derivatives-permitting Creative Commons license is accepted; anything
-// missing, non-commercial (-nc), no-derivatives (-nd), or unrecognized is rejected. FastVid
-// trims/re-encodes every clip (a derivative) and is used commercially, so NC/ND licenses are
-// never usable regardless of how "close" they look.
-export function isAllowedInternetArchiveLicense(licenseUrl: string | undefined | null): boolean {
-  if (!licenseUrl?.trim()) return false;
-  const u = licenseUrl.toLowerCase();
-  if (u.includes("publicdomain")) return true;
-  if (u.includes("creativecommons.org/licenses/")) {
-    if (u.includes("-nc") || u.includes("-nd")) return false;
-    if (u.includes("/by/") || u.includes("/by-sa/")) return true;
+// domain or a commercial+derivatives-permitting Creative Commons license is accepted; NC (-nc),
+// ND (-nd), or an unrecognized licenseurl is rejected outright. FastVid trims/re-encodes every
+// clip (a derivative) and is used commercially, so NC/ND licenses are never usable regardless of
+// how "close" they look.
+//
+// F3-39: archive.org does not require uploaders to set a machine-readable licenseurl — most of
+// the mediatype:movies corpus has none — which this gate was treating identically to "explicitly
+// restricted" and rejecting outright. metadata.rights (free text, also uploader-set, an actually
+// existing field on the same API response) is now read as a fallback ONLY when licenseurl is
+// absent: still rejects when rights is also absent (no invented "probably public domain"), still
+// rejects NC/ND wording there too, and only accepts an EXPLICIT public-domain statement — no
+// looser than the licenseurl path, just reading a second real field instead of inventing rights
+// information. A licenseurl that IS present but unrecognized (not public domain, not a
+// permissive CC license) is still an unconditional reject — rights is never consulted to
+// override an explicit-but-unrecognized licenseurl.
+export function isAllowedInternetArchiveLicense(
+  licenseUrl: string | undefined | null,
+  rights?: string | undefined | null
+): boolean {
+  const u = licenseUrl?.trim().toLowerCase();
+  if (u) {
+    if (u.includes("publicdomain")) return true;
+    if (u.includes("creativecommons.org/licenses/")) {
+      if (u.includes("-nc") || u.includes("-nd")) return false;
+      if (u.includes("/by/") || u.includes("/by-sa/")) return true;
+    }
+    return false;
   }
-  return false;
+  const r = rights?.trim().toLowerCase();
+  if (!r) return false;
+  if (r.includes("-nc") || r.includes("-nd") || /non.?commercial|no derivative/.test(r)) return false;
+  return /public domain|no known copyright|no copyright restrictions/.test(r);
 }
 
 // ─── 3c2. Fetch Internet Archive Video Clips ────────────────────────────────
@@ -8873,16 +8913,21 @@ export async function fetchInternetArchiveClips(
           result?: Array<{ name: string; format: string; size?: string }>;
         };
 
-        // F3-34 license gate: reject before any download unless the item's own metadata
-        // carries an explicit, permissive-enough licenseurl. "Found via mediatype:movies" is
+        // F3-34/F3-39 license gate: reject before any download unless the item's own metadata
+        // carries an explicit, permissive-enough licenseurl OR (when licenseurl is absent) an
+        // explicit public-domain statement in metadata.rights. "Found via mediatype:movies" is
         // never treated as "usable" on its own — same reasoning as the existing Europeana/
-        // Openverse per-item rights gates. No rights info, or a non-commercial/no-derivatives
-        // license (FastVid trims/re-encodes and is used commercially), is a reject.
+        // Openverse per-item rights gates. No rights info at all, or a non-commercial/
+        // no-derivatives license/statement (FastVid trims/re-encodes and is used commercially),
+        // is a reject.
         const rawLicenseUrl = metaData.metadata?.licenseurl;
         const licenseUrl = (Array.isArray(rawLicenseUrl) ? rawLicenseUrl[0] : rawLicenseUrl)?.trim();
-        if (!isAllowedInternetArchiveLicense(licenseUrl)) {
+        const rawRights = metaData.metadata?.rights;
+        const rights = (Array.isArray(rawRights) ? rawRights[0] : rawRights)?.trim();
+        if (!isAllowedInternetArchiveLicense(licenseUrl, rights)) {
           console.warn(
-            `[Pipeline] Scene ${sceneIndex}: Archive item ${doc.identifier} has no usable license (licenseurl=${licenseUrl ?? "none"}) — skipping`
+            `[Pipeline] Scene ${sceneIndex}: Archive item ${doc.identifier} has no usable license ` +
+            `(licenseurl=${licenseUrl ?? "none"}, rights=${rights ?? "none"}) — skipping`
           );
           continue;
         }
@@ -8953,6 +8998,65 @@ export async function downloadYouTubeCCClip(
 ): Promise<boolean> {
   const cloudDlService = process.env.YOUTUBE_CC_DL_SERVICE?.replace(/\/$/, "") || "";
 
+  // F3-41: cloud/yt-dlp service tried FIRST — this is the intended primary route (see the F3-40
+  // diagnosis: it runs yt-dlp with an ANDROID_VR client workaround on its own infrastructure,
+  // which is what actually works around YouTube's server-side bot detection; yt-dlp is
+  // deliberately not a local dependency of this repo). RapidAPI stays below as the fallback.
+  // Any failure here falls through to the RapidAPI branch instead of aborting the function —
+  // unlike the old second-branch version, a failure can no longer be the final word.
+  if (cloudDlService) {
+    // F3-05: streams to a tmpPath (never directly to outPath) so a network drop mid-download
+    // can never leave a corrupt/partial file at outPath — outPath is only ever touched by the
+    // atomic fs.renameSync below, and only once the download is complete and size-validated.
+    const cloudTmpPath = outPath.replace(/\.mp4$/, "_cloud_tmp.mp4");
+    try {
+      const dlUrl = `${cloudDlService}/download?id=${videoId}&duration=${duration}&start=${clipStart}`;
+      const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
+        dlUrl,
+        cloudTmpPath,
+        90_000,
+        `YouTube CC cloud download scene ${sceneIndex}`
+      );
+      if (!dlResp.ok) {
+        const errText = await dlResp.text().catch(() => "");
+        console.warn(
+          `[Pipeline] Scene ${sceneIndex}: Cloud DL service error ${dlResp.status} for ${videoId}: ${errText.slice(0, 100)} — falling back to RapidAPI`
+        );
+      } else if (bytesWritten === null) {
+        console.warn(
+          `[Pipeline] Scene ${sceneIndex}: Cloud DL service returned no body for ${videoId} — falling back to RapidAPI`
+        );
+      } else {
+        let cloudFileSize = -1;
+        try { cloudFileSize = fs.statSync(cloudTmpPath).size; } catch { /* leave as -1 */ }
+        if (cloudFileSize > 80 * 1024 * 1024) {
+          console.warn(
+            `[Pipeline] Scene ${sceneIndex}: YouTube CC clip too large (${(cloudFileSize / 1024 / 1024).toFixed(1)}MB), skipping cloud service — falling back to RapidAPI`
+          );
+        } else if (cloudFileSize > 10_000) {
+          fs.renameSync(cloudTmpPath, outPath);
+          console.log(
+            `[Pipeline] Scene ${sceneIndex}: ✅ YouTube CC via cloud service: "${title?.slice(0, 60) ?? videoId}" (${videoId})`
+          );
+          return true;
+        }
+      }
+    } catch (err) {
+      console.warn(
+        `[Pipeline] Scene ${sceneIndex}: Cloud DL failed for ${videoId}:`,
+        (err as Error).message, "— falling back to RapidAPI"
+      );
+    } finally {
+      try {
+        if (fs.existsSync(cloudTmpPath)) fs.unlinkSync(cloudTmpPath);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  // F3-41: RapidAPI fallback — tried when the cloud/yt-dlp service is not configured, errored,
+  // or didn't return a usable file. Unchanged from before this fix other than moving second.
   if (RAPIDAPI_KEY) {
     const tmpPath = outPath.replace(/\.mp4$/, "_rapid_tmp.mp4");
     try {
@@ -9039,58 +9143,6 @@ export async function downloadYouTubeCCClip(
     } finally {
       try {
         if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
-      } catch {
-        /* ignore */
-      }
-    }
-  }
-
-  if (cloudDlService) {
-    // F3-05: streams to a tmpPath (never directly to outPath) so a network drop mid-download
-    // can never leave a corrupt/partial file at outPath — outPath is only ever touched by the
-    // atomic fs.renameSync below, and only once the download is complete and size-validated.
-    const cloudTmpPath = outPath.replace(/\.mp4$/, "_cloud_tmp.mp4");
-    try {
-      const dlUrl = `${cloudDlService}/download?id=${videoId}&duration=${duration}&start=${clipStart}`;
-      const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
-        dlUrl,
-        cloudTmpPath,
-        90_000,
-        `YouTube CC cloud download scene ${sceneIndex}`
-      );
-      if (!dlResp.ok) {
-        const errText = await dlResp.text().catch(() => "");
-        console.warn(
-          `[Pipeline] Scene ${sceneIndex}: Cloud DL service error ${dlResp.status} for ${videoId}: ${errText.slice(0, 100)}`
-        );
-        return false;
-      }
-      if (bytesWritten === null) {
-        return false;
-      }
-      let cloudFileSize = -1;
-      try { cloudFileSize = fs.statSync(cloudTmpPath).size; } catch { /* leave as -1 */ }
-      if (cloudFileSize > 80 * 1024 * 1024) {
-        console.warn(
-          `[Pipeline] Scene ${sceneIndex}: YouTube CC clip too large (${(cloudFileSize / 1024 / 1024).toFixed(1)}MB), skipping`
-        );
-        return false;
-      }
-      if (cloudFileSize > 10_000) {
-        fs.renameSync(cloudTmpPath, outPath);
-        console.log(
-          `[Pipeline] Scene ${sceneIndex}: ✅ YouTube CC via cloud service: "${title?.slice(0, 60) ?? videoId}" (${videoId})`
-        );
-        return true;
-      }
-    } catch (err) {
-      console.warn(
-        `[Pipeline] Scene ${sceneIndex}: Cloud DL failed for ${videoId}:`,
-        (err as Error).message
-      );
-    } finally {
-      try {
-        if (fs.existsSync(cloudTmpPath)) fs.unlinkSync(cloudTmpPath);
       } catch {
         /* ignore */
       }
