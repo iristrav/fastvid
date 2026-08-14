@@ -899,6 +899,88 @@ function markSerpApiSearchResult(success: boolean): void {
   }
 }
 
+// Same breaker pattern as the media-search providers above, applied to the TTS waterfall
+// (2026 audit finding): unlike Wikimedia/Pexels/etc., ElevenLabs/Fish Audio/Google Cloud TTS had
+// no process-wide "stop paying the cost" mechanism — only the per-render elevenLabsQuotaExhausted
+// flag (RenderCtx), which resets on every new render. A sustained outage on any one TTS tier meant
+// every subsequent render re-paid that tier's full retry+timeout cost (up to 3 attempts x
+// 90-180s each) before falling through, instead of skipping a known-down provider for a cooldown
+// window the way the media-search providers already do.
+const ELEVENLABS_FAILURE_STREAK_TRIP = 8;
+const ELEVENLABS_COOLDOWN_MS = 3 * 60_000;
+let elevenLabsFailureStreak = 0;
+let elevenLabsCooldownUntilMs = 0;
+
+function isElevenLabsInCooldown(): boolean {
+  return Date.now() < elevenLabsCooldownUntilMs;
+}
+
+function markElevenLabsResult(success: boolean): void {
+  if (success) {
+    elevenLabsFailureStreak = 0;
+    return;
+  }
+  elevenLabsFailureStreak++;
+  if (elevenLabsFailureStreak >= ELEVENLABS_FAILURE_STREAK_TRIP) {
+    elevenLabsCooldownUntilMs = Date.now() + ELEVENLABS_COOLDOWN_MS;
+    elevenLabsFailureStreak = 0;
+    console.warn(
+      `[Pipeline] ElevenLabs: ${ELEVENLABS_FAILURE_STREAK_TRIP} consecutive failures — ` +
+        `skipping for ${Math.round(ELEVENLABS_COOLDOWN_MS / 60_000)}min`
+    );
+  }
+}
+
+const FISH_AUDIO_FAILURE_STREAK_TRIP = 8;
+const FISH_AUDIO_COOLDOWN_MS = 3 * 60_000;
+let fishAudioFailureStreak = 0;
+let fishAudioCooldownUntilMs = 0;
+
+function isFishAudioInCooldown(): boolean {
+  return Date.now() < fishAudioCooldownUntilMs;
+}
+
+function markFishAudioResult(success: boolean): void {
+  if (success) {
+    fishAudioFailureStreak = 0;
+    return;
+  }
+  fishAudioFailureStreak++;
+  if (fishAudioFailureStreak >= FISH_AUDIO_FAILURE_STREAK_TRIP) {
+    fishAudioCooldownUntilMs = Date.now() + FISH_AUDIO_COOLDOWN_MS;
+    fishAudioFailureStreak = 0;
+    console.warn(
+      `[Pipeline] Fish Audio: ${FISH_AUDIO_FAILURE_STREAK_TRIP} consecutive failures — ` +
+        `skipping for ${Math.round(FISH_AUDIO_COOLDOWN_MS / 60_000)}min`
+    );
+  }
+}
+
+const GOOGLE_TTS_FAILURE_STREAK_TRIP = 8;
+const GOOGLE_TTS_COOLDOWN_MS = 3 * 60_000;
+let googleTtsFailureStreak = 0;
+let googleTtsCooldownUntilMs = 0;
+
+function isGoogleTtsInCooldown(): boolean {
+  return Date.now() < googleTtsCooldownUntilMs;
+}
+
+function markGoogleTtsResult(success: boolean): void {
+  if (success) {
+    googleTtsFailureStreak = 0;
+    return;
+  }
+  googleTtsFailureStreak++;
+  if (googleTtsFailureStreak >= GOOGLE_TTS_FAILURE_STREAK_TRIP) {
+    googleTtsCooldownUntilMs = Date.now() + GOOGLE_TTS_COOLDOWN_MS;
+    googleTtsFailureStreak = 0;
+    console.warn(
+      `[Pipeline] Google Cloud TTS: ${GOOGLE_TTS_FAILURE_STREAK_TRIP} consecutive failures — ` +
+        `skipping for ${Math.round(GOOGLE_TTS_COOLDOWN_MS / 60_000)}min`
+    );
+  }
+}
+
 /** Hard-kill a scope's own children and recursively abort/kill every nested child scope. */
 function hardAbortScope(scope: SceneFetchScope): number {
   scope.controller.abort();
@@ -4252,6 +4334,10 @@ async function synthesizeFishAudioVoice(
   if (!FISH_AUDIO_API_KEY) {
     throw pipelineError(PIPELINE_ERROR.VOICEOVER, "Fish Audio API key is not configured");
   }
+  if (isFishAudioInCooldown() && googleTtsFallbackEnabled()) {
+    console.warn(`[Pipeline] Fish Audio ${label}: in cooldown — skipping straight to Google Cloud TTS`);
+    return synthesizeGoogleCloudVoice(text, outputPath, timeoutMs, label);
+  }
   const MAX_ATTEMPTS = 3;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
@@ -4300,9 +4386,11 @@ async function synthesizeFishAudioVoice(
       fs.writeFileSync(outputPath, audioBuffer);
       const dur = await probeVideoDurationSec(outputPath);
       console.log(`[Pipeline] Fish Audio ${label}: ${dur.toFixed(1)}s`);
+      markFishAudioResult(true);
       return dur > 0 ? dur : Math.max(3, Math.round(audioBuffer.length / 40000));
     } catch (err) {
       if (attempt === MAX_ATTEMPTS) {
+        markFishAudioResult(false);
         // Fish Audio itself is out of retries — Google Cloud TTS is the last tier in the chain
         // (free 1M chars/month, commercial-use-safe), so try it before giving up entirely.
         if (googleTtsFallbackEnabled()) {
@@ -4314,6 +4402,7 @@ async function synthesizeFishAudioVoice(
       await new Promise((r) => setTimeout(r, 500));
     }
   }
+  markFishAudioResult(false);
   throw pipelineError(PIPELINE_ERROR.VOICEOVER, "Fish Audio TTS failed after retries");
 }
 
@@ -4325,6 +4414,12 @@ async function synthesizeGoogleCloudVoice(
 ): Promise<number> {
   if (!GOOGLE_TTS_API_KEY) {
     throw pipelineError(PIPELINE_ERROR.VOICEOVER, "Google Cloud TTS API key is not configured");
+  }
+  if (isGoogleTtsInCooldown()) {
+    // Last tier in the waterfall — no further fallback to skip to, but there's still no reason
+    // to burn 3 retries x timeoutMs discovering a known-down provider before the caller falls
+    // through to silent audio.
+    throw pipelineError(PIPELINE_ERROR.VOICEOVER, "Google Cloud TTS: in cooldown after repeated failures");
   }
   const MAX_ATTEMPTS = 3;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
@@ -4375,12 +4470,17 @@ async function synthesizeGoogleCloudVoice(
       fs.writeFileSync(outputPath, audioBuffer);
       const dur = await probeVideoDurationSec(outputPath);
       console.log(`[Pipeline] Google Cloud TTS ${label}: ${dur.toFixed(1)}s`);
+      markGoogleTtsResult(true);
       return dur > 0 ? dur : Math.max(3, Math.round(audioBuffer.length / 40000));
     } catch (err) {
-      if (attempt === MAX_ATTEMPTS) throw err;
+      if (attempt === MAX_ATTEMPTS) {
+        markGoogleTtsResult(false);
+        throw err;
+      }
       await new Promise((r) => setTimeout(r, 500));
     }
   }
+  markGoogleTtsResult(false);
   throw pipelineError(PIPELINE_ERROR.VOICEOVER, "Google Cloud TTS failed after retries");
 }
 
@@ -4412,8 +4512,11 @@ async function synthesizeElevenLabsVoice(
       "ElevenLabs API key is not configured. Add ELEVENLABS_API_KEY in Railway to use your selected voice."
     );
   }
-  if (get_elevenLabsQuotaExhausted() && (fishAudioFallbackEnabled() || googleTtsFallbackEnabled())) {
-    console.warn(`[Pipeline] ElevenLabs ${label}: quota exhausted this session — fallback direct`);
+  if (
+    (get_elevenLabsQuotaExhausted() || isElevenLabsInCooldown()) &&
+    (fishAudioFallbackEnabled() || googleTtsFallbackEnabled())
+  ) {
+    console.warn(`[Pipeline] ElevenLabs ${label}: quota exhausted or in cooldown — fallback direct`);
     return synthesizeVoiceoverFallback(text, outputPath, timeoutMs, label);
   }
   const MAX_ATTEMPTS = 3;
@@ -4452,6 +4555,7 @@ async function synthesizeElevenLabsVoice(
         // server error, whatever the exact status/message is. Switch straight to the next tier
         // (Fish Audio, then Google Cloud TTS) instead of burning retries against a provider
         // that's already known to be down.
+        markElevenLabsResult(false);
         if (fishAudioFallbackEnabled() || googleTtsFallbackEnabled()) {
           set_elevenLabsQuotaExhausted(true);
           console.warn(
@@ -4471,6 +4575,7 @@ async function synthesizeElevenLabsVoice(
       fs.writeFileSync(outputPath, audioBuffer);
       const dur = await probeVideoDurationSec(outputPath);
       console.log(`[Pipeline] ElevenLabs ${label}: voice=${elevenVoiceId.slice(0, 10)}… ${dur.toFixed(1)}s`);
+      markElevenLabsResult(true);
       return dur > 0 ? dur : Math.max(3, Math.round(audioBuffer.length / 40000));
     } catch (err) {
       // Same reasoning as above: a thrown error (network failure, our own timeout, etc.) means
@@ -4478,14 +4583,19 @@ async function synthesizeElevenLabsVoice(
       // than retrying.
       const msg = err instanceof Error ? err.message : String(err);
       if (fishAudioFallbackEnabled() || googleTtsFallbackEnabled()) {
+        markElevenLabsResult(false);
         set_elevenLabsQuotaExhausted(true);
         console.warn(`[Pipeline] ElevenLabs ${label}: error — switching to fallback: ${msg.slice(0, 150)}`);
         return synthesizeVoiceoverFallback(text, outputPath, timeoutMs, label);
       }
-      if (attempt === MAX_ATTEMPTS) throw err;
+      if (attempt === MAX_ATTEMPTS) {
+        markElevenLabsResult(false);
+        throw err;
+      }
       await new Promise((r) => setTimeout(r, 500));
     }
   }
+  markElevenLabsResult(false);
   if (fishAudioFallbackEnabled() || googleTtsFallbackEnabled()) {
     console.warn(`[Pipeline] ElevenLabs ${label}: out of retries (rate-limited) — switching to fallback`);
     return synthesizeVoiceoverFallback(text, outputPath, timeoutMs, label);
@@ -5515,10 +5625,11 @@ export async function fetchWikimediaImages(
 
     // Cache miss — search Wikimedia Commons
     const searchUrl = `https://commons.wikimedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&srnamespace=6&srlimit=10&format=json&origin=*`;
-    const searchResp = await providerLimiter("wikimedia").run(() => withTimeout(
-      fetch(searchUrl, { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }),
+    const searchResp = await providerLimiter("wikimedia").run(() => fetchWithTimeout(
+      searchUrl,
       5_000,
-      `Wikimedia search scene ${sceneIndex}`
+      `Wikimedia search scene ${sceneIndex}`,
+      { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }
     ));
     if (!searchResp.ok) {
       markWikimediaSearchResult(false);
@@ -5535,12 +5646,17 @@ export async function fetchWikimediaImages(
       try {
         const title = titles[i];
         const infoUrl = `https://commons.wikimedia.org/w/api.php?action=query&titles=${encodeURIComponent(title)}&prop=imageinfo&iiprop=url|mime|size&format=json&origin=*`;
-        const infoResp = await withTimeout(
-          fetch(infoUrl, { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }),
+        const infoResp = await providerLimiter("wikimedia").run(() => fetchWithTimeout(
+          infoUrl,
           5_000,
-          `Wikimedia info scene ${sceneIndex}`
-        );
-        if (!infoResp.ok) continue;
+          `Wikimedia info scene ${sceneIndex}`,
+          { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }
+        ));
+        if (!infoResp.ok) {
+          markWikimediaSearchResult(false);
+          continue;
+        }
+        markWikimediaSearchResult(true);
         const infoData = await infoResp.json() as { query?: { pages?: Record<string, { imageinfo?: Array<{ url: string; mime: string; size: number }> }> } };
         const pages = infoData.query?.pages || {};
         const page = Object.values(pages)[0];
@@ -5636,12 +5752,17 @@ async function fetchWikimediaImagesV1(
       `https://commons.wikimedia.org/w/api.php?action=query` +
       `&titles=${encodeURIComponent(bestTitle)}&prop=imageinfo` +
       `&iiprop=url|mime|size&format=json&origin=*`;
-    const infoResp = await withTimeout(
-      fetch(infoUrl, { headers: UA }),
+    const infoResp = await providerLimiter("wikimedia").run(() => fetchWithTimeout(
+      infoUrl,
       5_000,
-      `V1 Wikimedia info scene ${sceneIndex}`
-    );
-    if (!infoResp.ok) return null;
+      `V1 Wikimedia info scene ${sceneIndex}`,
+      { headers: UA }
+    ));
+    if (!infoResp.ok) {
+      markWikimediaSearchResult(false);
+      return null;
+    }
+    markWikimediaSearchResult(true);
     type WikiInfoPage = { imageinfo?: Array<{ url: string; mime: string; size: number }> };
     const infoData = await infoResp.json() as { query?: { pages?: Record<string, WikiInfoPage> } };
     const page = Object.values(infoData.query?.pages ?? {})[0];
@@ -5716,10 +5837,11 @@ async function fetchWikimediaImagesV1(
           `https://commons.wikimedia.org/w/api.php?action=query&list=search` +
           `&srsearch=${encodeURIComponent(query)}&srnamespace=6&srlimit=10` +
           `&srprop=snippet|size&format=json&origin=*`;
-        const searchResp = await providerLimiter("wikimedia").run(() => withTimeout(
-          fetch(searchUrl, { headers: UA }),
+        const searchResp = await providerLimiter("wikimedia").run(() => fetchWithTimeout(
+          searchUrl,
           5_000,
-          `V1 Wikimedia search scene ${sceneIndex}`
+          `V1 Wikimedia search scene ${sceneIndex}`,
+          { headers: UA }
         ));
         if (!searchResp.ok) {
           markWikimediaSearchResult(false);
@@ -5968,8 +6090,8 @@ async function fetchYouTubeThumbnails(
   try {
     // Search YouTube for relevant videos (Creative Commons preferred, but also standard)
     const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(query)}&type=video&maxResults=${count * 3}&key=${YOUTUBE_API_KEY}`;
-    const searchResp = await providerLimiter("youtube").run(() => withTimeout(
-      fetch(searchUrl),
+    const searchResp = await providerLimiter("youtube").run(() => fetchWithTimeout(
+      searchUrl,
       10000,
       `YouTube search scene ${sceneIndex}`
     ));
@@ -6081,11 +6203,11 @@ async function fetchSerpAPIImages(
 
     // withTimeout only races a timer and never aborts the request — a timed-out SerpAPI call
     // keeps running in the background and still counts against the metered quota.
-    const searchResp = await fetchWithTimeout(
+    const searchResp = await providerLimiter("serpapi").run(() => fetchWithTimeout(
       searchUrl.toString(),
       15_000,
       `SerpAPI search scene ${sceneIndex}`
-    );
+    ));
     if (!searchResp.ok) {
       markSerpApiSearchResult(false);
       console.warn(`[Pipeline] Scene ${sceneIndex}: SerpAPI error ${searchResp.status}`);
@@ -8694,10 +8816,11 @@ export async function fetchInternetArchiveClips(
     if (cancelled()) break;
     try {
     const searchUrl = `https://archive.org/advancedsearch.php?q=${encodeURIComponent(query)}+AND+mediatype:movies&fl[]=identifier,title&rows=12&output=json`;
-    const searchResp = await providerLimiter("internetArchive").run(() => withTimeout(
-      fetch(searchUrl, { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }),
+    const searchResp = await providerLimiter("internetArchive").run(() => fetchWithTimeout(
+      searchUrl,
       IS_RAILWAY ? 6_000 : 10_000,
-      `Internet Archive search scene ${sceneIndex}`
+      `Internet Archive search scene ${sceneIndex}`,
+      { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }
     ));
     if (!searchResp.ok) {
       markInternetArchiveSearchResult(false);
@@ -8733,12 +8856,17 @@ export async function fetchInternetArchiveClips(
         // full record as `{ metadata: {...}, files: [...], ... }` in the same single call —
         // no new network call added.
         const metaUrl = `https://archive.org/metadata/${doc.identifier}`;
-        const metaResp = await withTimeout(
-          fetch(metaUrl, { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }),
+        const metaResp = await providerLimiter("internetArchive").run(() => fetchWithTimeout(
+          metaUrl,
           8_000,
-          `Internet Archive metadata scene ${sceneIndex}`
-        );
-        if (!metaResp.ok) continue;
+          `Internet Archive metadata scene ${sceneIndex}`,
+          { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }
+        ));
+        if (!metaResp.ok) {
+          markInternetArchiveSearchResult(false);
+          continue;
+        }
+        markInternetArchiveSearchResult(true);
         const metaData = await metaResp.json() as {
           metadata?: { licenseurl?: string | string[]; rights?: string | string[] };
           files?: Array<{ name: string; format: string; size?: string }>;
@@ -8829,17 +8957,19 @@ export async function downloadYouTubeCCClip(
     const tmpPath = outPath.replace(/\.mp4$/, "_rapid_tmp.mp4");
     try {
       const metaUrl = `https://${RAPIDAPI_YT_HOST}/dl?id=${videoId}`;
-      const metaResp = await withTimeout(
-        fetch(metaUrl, {
+      const metaResp = await providerLimiter("youtube").run(() => fetchWithTimeout(
+        metaUrl,
+        20_000,
+        `RapidAPI YouTube meta scene ${sceneIndex}`,
+        {
           headers: {
             "x-rapidapi-host": RAPIDAPI_YT_HOST,
             "x-rapidapi-key": RAPIDAPI_KEY,
           },
-        }),
-        20_000,
-        `RapidAPI YouTube meta scene ${sceneIndex}`
-      );
+        }
+      ));
       if (metaResp.ok) {
+        markYoutubeSearchResult(true);
         const data = await metaResp.json() as {
           formats?: Array<{ url?: string; mimeType?: string; contentLength?: string; height?: number }>;
           adaptiveFormats?: Array<{ url?: string; mimeType?: string; contentLength?: string; height?: number }>;
@@ -9206,8 +9336,8 @@ async function searchYoutubeVideoCandidates(
   searchUrl.searchParams.set("videoEmbeddable", "true");
 
   const label = license === "creative_common" ? "YouTube CC" : "YouTube fair-use";
-  const searchResp = await providerLimiter("youtube").run(() => withTimeout(
-    fetch(searchUrl.toString()),
+  const searchResp = await providerLimiter("youtube").run(() => fetchWithTimeout(
+    searchUrl.toString(),
     15_000,
     `${label} search scene ${sceneIndex}`
   ));
