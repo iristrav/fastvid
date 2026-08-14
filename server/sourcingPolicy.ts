@@ -3,8 +3,11 @@
 import { normalizeVideoLength, targetVideoDurationMinutes } from "../shared/videoLengths";
 
 /**
- * Archive-first mode: prefer admin media archive, then Wikimedia / Pexels / Pixabay fallbacks.
- * YouTube, Serp, and AI clip generation stay off unless explicitly re-enabled elsewhere.
+ * Archive-first mode: prefer the curated/admin media archive per beat. When a scene ends up
+ * short, recoverSceneClipsIfEmpty() tops it up using the full external sourcing cascade
+ * (Internet Archive, YouTube CC, Wikimedia, NARA, Flickr, SepiaSearch, Vimeo, media.ccc, NASA,
+ * Europeana, Openverse, then Pexels/Pixabay last) — that cascade is a fallback for underfilled
+ * scenes, not the primary per-beat path.
  */
 export function curatedArchiveOnlyVisuals(): boolean {
   return process.env.CURATED_ARCHIVE_ONLY !== "false";
@@ -633,14 +636,23 @@ export function stockClipQualityFloor(videoLength?: string | null): number {
 }
 
 /** Beat cadence for 1-min fast path — fewer beats → faster visual stage (default 24s). */
+// F3-23: this used to default to 24s (allowed range 12-24s) — on the 1-min fast/short path
+// (isFastShortVideoLength), this value is used directly as several beats' holdSec (see e.g.
+// videoPipeline.ts's fetchArchivalMontageBeat/rescue-clip call sites), so a single archive clip
+// could be held on screen for up to 24s — nearly half of a 60s video. That's the exact "same
+// image held far too long" defect a critical review of the "Why Hitler Killed Himself" 1-min
+// render flagged. minBeatsForVisualCadence/maxBeatCapForVisualCadence's beat-count math already
+// targets ~6s/beat regardless of video length (sceneBeatCapForCadenceForVideo's own comment), so
+// tightening just this single hold-duration ceiling doesn't reduce how many distinct visuals a
+// scene gets — it only stops any one of them from being held far longer than the others.
 export function archiveVisualBeatSecForVideo(videoLength?: string | null): number {
   if (!isFastShortVideoLength(videoLength)) return archiveVisualBeatSec();
   const raw = process.env.FAST_ARCHIVE_BEAT_SEC?.trim();
   if (raw) {
     const n = parseFloat(raw);
-    if (!isNaN(n) && n >= 12 && n <= 24) return n;
+    if (!isNaN(n) && n >= 6 && n <= 12) return n;
   }
-  return 24;
+  return 10;
 }
 
 /** Wall-clock ms after pipeline start before turbo stock fallback on 1-min videos (default 12s; 3min on 1-min quality path). */
@@ -968,9 +980,13 @@ export function stabilityAiEnabled(): boolean {
   return process.env.STABILITY_AI_ENABLED === "true";
 }
 
-/** Europeana EU heritage API — off by default; set ENABLE_EUROPEANA=true + EUROPEANA_API_KEY. */
+/** Europeana EU heritage API — real, license-verified video (F3-30 web-wide discovery tier).
+ *  Default ON, but only takes effect with EUROPEANA_API_KEY configured (still required) — same
+ *  reasoning as the F3-27 flag flips: this doesn't turn anything on by itself, it just removes
+ *  the need to also set a second flag once the key is present. Set ENABLE_EUROPEANA=false to
+ *  opt back out. */
 export function europeanaSourcingEnabled(): boolean {
-  return process.env.ENABLE_EUROPEANA === "true";
+  return process.env.ENABLE_EUROPEANA !== "false";
 }
 
 /** Run bulk geo-retag on all archive assets once at worker startup. */
@@ -1008,9 +1024,13 @@ export function beatSemanticCacheEnabled(): boolean {
 
 /** Scene-level Candidate Pool (P1): build ONE candidate pool per scene instead
  *  of one retrieval per beat.  Reduces 108 API calls to ~18.
- *  Requires ENABLE_SCENE_CANDIDATE_POOL=true. */
+ *  F3-27: default ON — this is the gate for the archive→web fallback→ingest→learning
+ *  flow (F3-26). Falls back to the legacy per-beat waterfall on any pool/funnel error
+ *  (see the try/catch around its call site in videoPipeline.ts), so this does not
+ *  replace the legacy path, it only runs ahead of it. Set ENABLE_SCENE_CANDIDATE_POOL=false
+ *  to opt back out. */
 export function sceneCandidatePoolEnabled(): boolean {
-  return process.env.ENABLE_SCENE_CANDIDATE_POOL === "true";
+  return process.env.ENABLE_SCENE_CANDIDATE_POOL !== "false";
 }
 
 /** Thumbnail-first selection (P2): download thumbnails for pool candidates and
@@ -1024,10 +1044,13 @@ export function poolThumbnailRankingEnabled(): boolean {
 /** Hybrid Retrieval Funnel (parallel archive + internet with coverage-based weighting).
  *  Replaces the waterfall "archive first → fallback to internet" logic with a model
  *  where both are queried in parallel and the archive's embedding coverage determines
- *  how much weight it receives.  Requires ENABLE_RETRIEVAL_FUNNEL=true AND
- *  ENABLE_SCENE_CANDIDATE_POOL=true.  Off by default. */
+ *  how much weight it receives.  Requires ENABLE_SCENE_CANDIDATE_POOL=true.
+ *  F3-27: default ON, same reasoning as sceneCandidatePoolEnabled() above — this is
+ *  what makes web sourcing (Internet Archive/Wikimedia/YouTube CC/Pexels/Pixabay) an
+ *  actual fallback when the archive alone is insufficient, instead of dormant code.
+ *  Set ENABLE_RETRIEVAL_FUNNEL=false to opt back out. */
 export function retrievalFunnelEnabled(): boolean {
-  return process.env.ENABLE_RETRIEVAL_FUNNEL === "true";
+  return process.env.ENABLE_RETRIEVAL_FUNNEL !== "false";
 }
 
 /** Archive-first per-beat gap detection (self-learning retrieval).
@@ -1037,9 +1060,12 @@ export function retrievalFunnelEnabled(): boolean {
  *    0.75–0.90 → one external source
  *    0.50–0.75 → all external sources
  *    < 0.50 → aggressive external retrieval
- *  Requires ENABLE_ARCHIVE_FIRST_BEATS=true AND ENABLE_RETRIEVAL_FUNNEL=true. */
+ *  Requires ENABLE_RETRIEVAL_FUNNEL=true.
+ *  F3-27: default ON — this is the "genuine coverage sufficiency" gate (F3-26 #11):
+ *  archive-only when confidence is high, web sourcing only kicks in on a real gap.
+ *  Set ENABLE_ARCHIVE_FIRST_BEATS=false to opt back out. */
 export function archiveFirstBeatsEnabled(): boolean {
-  return process.env.ENABLE_ARCHIVE_FIRST_BEATS === "true";
+  return process.env.ENABLE_ARCHIVE_FIRST_BEATS !== "false";
 }
 
 /** Async QA (P6): move pipeline review + post-render spot check off the critical path.
@@ -1055,9 +1081,12 @@ export function asyncQaEnabled(): boolean {
 /** Self-learning ingestion: winning external clips are uploaded to the own archive
  *  (quality gate → R2 → DB record → embedding index) so future videos can use them
  *  without external API calls.  Best-effort; never blocks video production.
- *  Requires ENABLE_EXTERNAL_ASSET_INGESTION=true. */
+ *  F3-27: default ON — the "ingest" step of the archive→web fallback→ingest→learning
+ *  flow (F3-26). Only takes effect when retrievalFunnelEnabled() is also on, since
+ *  that's the only call site with the structured source metadata to ingest.
+ *  Set ENABLE_EXTERNAL_ASSET_INGESTION=false to opt back out. */
 export function externalAssetIngestionEnabled(): boolean {
-  return process.env.ENABLE_EXTERNAL_ASSET_INGESTION === "true";
+  return process.env.ENABLE_EXTERNAL_ASSET_INGESTION !== "false";
 }
 
 /** P5A Scene Processing Pipeline: each scene runs fetch → recovery → compose as a unit,

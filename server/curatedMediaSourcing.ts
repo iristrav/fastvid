@@ -2065,6 +2065,11 @@ export async function searchCuratedCandidatesForBeat(
     /** Pre-built video pool — skips full archive DB scan per beat. */
     candidatePool?: CuratedCandidatePick[];
     skipSemantic?: boolean;
+    /** F3-23: per-video count of how many times each archive has already been used this
+     *  render (VisualDedupState.usedArchiveNames) — biases near-tied-score candidates toward
+     *  less-recently-used archives via reorderForArchiveDiversity, without ever letting a
+     *  lower-scoring candidate outrank a genuinely better one. */
+    usedArchiveNames?: Map<string, number>;
   }
 ): Promise<CuratedCandidatePick[]> {
   const anchoredBeat = hydrateBeatScriptVisuals(beat);
@@ -2284,6 +2289,15 @@ export async function searchCuratedCandidatesForBeat(
     }
   }
 
+  // F3-23: bias near-tied-score candidates toward archives used less often so far this video —
+  // reorders only within score bands (see reorderForArchiveDiversity), so a genuinely best-scoring
+  // candidate can never be displaced by a lower-scoring one just for the sake of variety. Applied
+  // after every scoring pass above (tag boosts, semantic, CLIP) so it sees each candidate's final
+  // score, and before the selection cascade below so a fresher-archive pick is actually tried first.
+  if (options?.usedArchiveNames && options.usedArchiveNames.size > 0) {
+    ranked = reorderForArchiveDiversity(ranked, options.usedArchiveNames);
+  }
+
   const topScore = ranked[0]?.score ?? 0;
   const segmentLock = options?.segmentLock ?? null;
   let filtered = ranked.filter((p) =>
@@ -2463,6 +2477,8 @@ export async function fetchCuratedArchiveBeatClip(
     videosOnly?: boolean;
     segmentLock?: BeatGeoRegion | null;
     videoLength?: string | null;
+    /** F3-23: see searchCuratedCandidatesForBeat's usedArchiveNames option. */
+    usedArchiveNames?: Map<string, number>;
   }
 ): Promise<string | null> {
   const relaxed = options?.relaxed === true;
@@ -2484,6 +2500,7 @@ export async function fetchCuratedArchiveBeatClip(
       videosOnly: options?.videosOnly,
       videoLength: options?.videoLength,
       fastMode: isFastShortVideoLength(options?.videoLength),
+      usedArchiveNames: options?.usedArchiveNames,
     }
   );
   if (!candidates.length) {

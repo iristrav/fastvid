@@ -15,9 +15,11 @@
 
 import fs from "fs";
 import path from "path";
+import { createHash } from "crypto";
 import { storagePut } from "./storage";
-import { createMediaArchiveAsset, getAllMediaArchives } from "./db";
+import { createMediaArchiveAsset, findMediaArchiveAssetBySourceUrlHash, getAllMediaArchives } from "./db";
 import { indexArchiveAssetEmbedding } from "./archiveEmbeddingIndex";
+import { recordVisualSearchMemory, type ClassifiedEntity } from "./visualSearchMemory";
 import { Semaphore } from "./_core/semaphore";
 import type { InsertMediaArchiveAsset } from "../drizzle/schema";
 
@@ -41,12 +43,37 @@ export type IngestMetadata = {
   licenseNote?: string;
   /** Override which archive to ingest into; defaults to the first active archive. */
   archiveId?: number;
+
+  // F3-26: structured web-sourcing provenance (all optional — admin uploads and older callers
+  // that don't have this data keep working unchanged).
+  /** The original remote URL this clip was downloaded from. Used for duplicate detection. */
+  sourceUrl?: string;
+  /** Provider name, e.g. "internet_archive", "wikimedia", "pexels", "pixabay", "youtube_cc". */
+  sourcePlatform?: string;
+  /** Creator/uploader/channel name, when the source exposes one. */
+  sourceCreator?: string;
+  /** License URL, when the source exposes one (e.g. a Creative Commons deed link). */
+  licenseUrl?: string;
+  /** The original search query that led to this candidate being found. */
+  originalQuery?: string;
+  /** The specific query variant that actually matched (may equal originalQuery). */
+  matchedQuery?: string;
+  /** Recognized entities this clip is relevant to, e.g. ["Justin Bieber"]. */
+  entities?: ClassifiedEntity[];
+  /** General topics, e.g. ["music", "pop culture"]. */
+  topics?: string[];
 };
 
 export type IngestResult = {
   assetId: number;
   storageKey: string;
+  /** True when this reused an already-archived asset instead of ingesting a new one. */
+  reused?: boolean;
 };
+
+function hashSourceUrl(sourceUrl: string): string {
+  return createHash("sha256").update(sourceUrl.trim()).digest("hex");
+}
 
 // ─── Quality gates ────────────────────────────────────────────────────────────
 
@@ -72,6 +99,42 @@ function passesQualityGate(localPath: string, metadata: IngestMetadata): boolean
   }
 }
 
+// ─── F3-26: query/entity/source learning loop ─────────────────────────────────
+
+/** Records one visual-search-memory row per recognized entity (or a single "topic" row when no
+ *  entities were recognized) so a future beat about the same entity/topic can reuse the query +
+ *  source that worked here. Best-effort — never throws. */
+async function recordSearchMemoryForIngestion(
+  metadata: IngestMetadata,
+  assetId: number,
+  success: boolean
+): Promise<void> {
+  const query = metadata.matchedQuery ?? metadata.originalQuery;
+  const source = metadata.sourcePlatform;
+  if (!query || !source) return; // nothing to remember without a query + source
+
+  const entities = metadata.entities && metadata.entities.length > 0
+    ? metadata.entities
+    : metadata.topics && metadata.topics.length > 0
+      ? metadata.topics.map((t) => ({ type: "topic" as const, value: t }))
+      : [];
+  if (entities.length === 0) return;
+
+  await Promise.all(
+    entities.map((e) =>
+      recordVisualSearchMemory({
+        entity: e.value,
+        entityType: e.type,
+        query,
+        source,
+        sourceUrl: metadata.sourceUrl,
+        assetId,
+        success,
+      })
+    )
+  );
+}
+
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 /**
@@ -94,6 +157,21 @@ async function ingestExternalClipToArchiveInner(
   try {
     if (!passesQualityGate(localPath, metadata)) {
       return null;
+    }
+
+    // F3-26: duplicate protection — the same web source URL must not be archived twice. Checked
+    // before touching R2/DB so a repeat hit is a cheap read instead of a second upload+insert.
+    const sourceUrlHash = metadata.sourceUrl ? hashSourceUrl(metadata.sourceUrl) : undefined;
+    if (sourceUrlHash) {
+      const existing = await findMediaArchiveAssetBySourceUrlHash(sourceUrlHash);
+      if (existing) {
+        console.log(
+          `[Ingestion] Source already archived — reusing assetId=${existing.id} instead of re-ingesting ` +
+          `(${metadata.sourceUrl})`
+        );
+        await recordSearchMemoryForIngestion(metadata, existing.id, true);
+        return { assetId: existing.id, storageKey: existing.storageKey ?? "", reused: true };
+      }
     }
 
     // Resolve archive to ingest into
@@ -126,6 +204,16 @@ async function ingestExternalClipToArchiveInner(
       licenseNote: (metadata.licenseNote ?? "").slice(0, 256) || undefined,
       durationSec: metadata.durationSec,
       isActive: 1,
+      sourceUrl: metadata.sourceUrl,
+      sourceUrlHash,
+      sourcePlatform: metadata.sourcePlatform?.slice(0, 64),
+      sourceCreator: metadata.sourceCreator?.slice(0, 256),
+      licenseUrl: metadata.licenseUrl?.slice(0, 512),
+      downloadedAt: new Date(),
+      originalQuery: metadata.originalQuery?.slice(0, 512),
+      matchedQuery: metadata.matchedQuery?.slice(0, 512),
+      entities: metadata.entities?.map((e) => e.value),
+      topics: metadata.topics,
     };
 
     const assetId = await createMediaArchiveAsset(insertData);
@@ -138,6 +226,10 @@ async function ingestExternalClipToArchiveInner(
       tags: metadata.tags,
       sourceNote: metadata.sourceNote,
     }).catch(() => {});
+
+    // F3-26: remember which query/entity/source combination found this asset — best-effort,
+    // never blocks or fails the ingestion itself.
+    void recordSearchMemoryForIngestion(metadata, assetId, true).catch(() => {});
 
     console.log(
       `[Ingestion] Admitted external clip to archive: assetId=${assetId} source=${metadata.sourceNote} ` +

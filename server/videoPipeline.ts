@@ -300,6 +300,8 @@ import {
   type RetrievalFunnelResult,
 } from "./retrievalFunnel";
 import { ingestExternalClipToArchive } from "./archiveIngestion";
+import { getVisualSearchMemoryForEntity } from "./visualSearchMemory";
+import { applyCoverageWarningIfNeeded } from "./archiveCoverageWarning";
 import type { CachedCandidate } from "./sceneCandidateCache";
 import { buildVideoQualityReport, computeMeritQualityScore, logVideoQualityReport } from "./videoQualityReport";
 import { postRenderSpotCheckEnabledForVideo, spotCheckFinalVideo } from "./postRenderSpotCheck";
@@ -1669,6 +1671,7 @@ async function fetchBeatArchivalThenPexels(
           varietySeed: dedup.varietySeed,
           crossVideoExcludeIds: dedup.crossVideoExcludeIds,
           assetsCache: dedup.archiveAssetsCache,
+          usedArchiveNames: dedup.usedArchiveNames,
         }
       ),
       archiveBeatTryTimeoutMs(dedup.videoLength),
@@ -1730,10 +1733,90 @@ async function fetchBeatArchivalThenPexels(
     }
   }
 
+  // F3-28: YouTube CC is now part of the source cascade here (HISTORICAL_SOURCE_TIER_ORDER
+  // places it after Internet Archive, before Wikimedia) — no longer force-skipped on this,
+  // the live default beat-resolution path.
   const hist = await fetchHistoricalBeatVideo(
-    beat, scene, workDir, sceneIndex, clipFetchDur, dedup, intent, loose, tag, { skipYoutube: true }
+    beat, scene, workDir, sceneIndex, clipFetchDur, dedup, intent, loose, tag
   );
   if (isAuthenticVideoClip(hist ?? "")) return hist;
+
+  // F3-29/F3-30: web-wide discovery — tried only after own archive + tiers 2-10 above have
+  // failed for this beat, and only before Pexels/Pixabay below. Reuses the F3-27 self-learning
+  // query-priming helper (computed once) so a proven past query for this video's topic/entity
+  // is tried first, across both engines below.
+  const webWideQueries = await primeQueriesWithSearchMemory(
+    videoTitle, buildHistoricalArchivalQueries(intent, beat.text).slice(0, 2)
+  );
+
+  // F3-30: real video first — Europeana aggregates real video from EU cultural institutions
+  // and now requires + returns a per-item rights URL (fetchEuropeanaVideos), i.e. genuinely
+  // license-verified, not "found so assumed free". No-op without EUROPEANA_API_KEY (existing,
+  // optional — see server/sourcingPolicy.ts europeanaSourcingEnabled).
+  const euroHits = await fetchEuropeanaVideos(
+    webWideQueries ?? [beat.text], clipFetchDur, workDir, sceneIndex, 1, `${tag}_webwide`, "",
+    adoptOpts.keywords ?? beat.keywords
+  );
+  if (euroHits.length > 0) {
+    const winner = euroHits[0]!;
+    const euroClip = await adoptClip(
+      [winner.path], dedup, sceneIndex, beat.index, beat.text, workDir, winner.query, loose
+    );
+    if (isRealVideoClip(euroClip)) {
+      console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: web-wide real video (Europeana) "${winner.query}"`);
+      void ingestExternalClipToArchive(euroClip!, {
+        title: winner.title ?? winner.query,
+        tags: beat.keywords ?? [],
+        sourceNote: `webwide:${winner.sourcePlatform}`,
+        mediaType: "video",
+        mimeType: "video/mp4",
+        sourceUrl: winner.sourceUrl,
+        sourcePlatform: winner.sourcePlatform,
+        sourceCreator: winner.sourceCreator,
+        licenseUrl: winner.licenseUrl,
+        licenseNote: winner.license,
+        originalQuery: webWideQueries?.[0] ?? beat.text,
+        matchedQuery: winner.query,
+        topics: beat.keywords ?? [],
+      });
+      return euroClip;
+    }
+  }
+
+  // F3-29 fallback — still-to-video via Openverse, tried only when the real-video engine
+  // above found nothing license-safe for this beat. License-safe by construction (Openverse's
+  // own CC-license filter) — see searchWebWideVideoClips for the full reasoning.
+  const webWideCandidates = await searchWebWideVideoClips(
+    webWideQueries ?? [], clipFetchDur, workDir, sceneIndex, 1
+  );
+  if (webWideCandidates.length > 0) {
+    const winner = webWideCandidates[0]!;
+    const webWideClip = await adoptClip(
+      [winner.path], dedup, sceneIndex, beat.index, beat.text, workDir, winner.matchedQuery, loose
+    );
+    if (isRealVideoClip(webWideClip)) {
+      console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: web-wide discovery "${winner.matchedQuery}"`);
+      // Fire-and-forget, same pattern as the F3-26 funnel ingestion hook — never blocks the
+      // current video, which already has its clip. Ingestion also updates search memory
+      // internally (recordSearchMemoryForIngestion), so no separate memory call is needed here.
+      void ingestExternalClipToArchive(webWideClip!, {
+        title: winner.title ?? winner.matchedQuery,
+        tags: beat.keywords ?? [],
+        sourceNote: `webwide:${winner.sourcePlatform}`,
+        mediaType: "video",
+        mimeType: "video/mp4",
+        sourceUrl: winner.sourceUrl,
+        sourcePlatform: winner.sourcePlatform,
+        sourceCreator: winner.sourceCreator,
+        licenseUrl: winner.licenseUrl,
+        licenseNote: winner.license,
+        originalQuery: webWideQueries?.[0] ?? beat.text,
+        matchedQuery: winner.matchedQuery,
+        topics: beat.keywords ?? [],
+      }).catch(() => { /* best-effort, never blocks video production */ });
+      return webWideClip;
+    }
+  }
 
   if (coercePersonName(personName) && !historicalDoc) {
     const celebVids = await fetchPersonCelebrityVideoClips(
@@ -7781,15 +7864,29 @@ export async function fetchEuropeanaVideos(
   const seenIds = new Set<string>();
   let downloaded = 0;
   const authHeader = { Authorization: `ApiKey ${EUROPEANA_API_KEY.trim()}` };
+  // F3-29: same cancellation-awareness as fetchInternetArchiveClips — stop searching/
+  // downloading as soon as the render has been cancelled, instead of continuing to spend
+  // network/API calls on a result nothing will ever use.
+  const cancelled = () => {
+    const videoId = getActiveVideoId();
+    return videoId != null && isVideoGenerationCancelRequested(videoId);
+  };
+  if (cancelled()) return results;
 
   for (const query of queryList.slice(0, 3)) {
     if (downloaded >= count) break;
+    if (cancelled()) break;
     try {
       const searchUrl = new URL("https://api.europeana.eu/record/v2/search.json");
       searchUrl.searchParams.set("query", query);
       searchUrl.searchParams.set("qf", "TYPE:VIDEO");
       searchUrl.searchParams.set("reusability", "open");
-      searchUrl.searchParams.set("rows", "12");
+      // Credit optimization: each candidate needs its own record-fetch to check edmRights
+      // (the required per-item license gate — unchanged), so this bounds the worst case where
+      // most results in a page lack an explicit rights URL. 6 still gives a real chance of
+      // finding a licensed item per query; the item loop below already breaks the moment
+      // `downloaded >= count` is reached, so this only caps the miss case, not the normal one.
+      searchUrl.searchParams.set("rows", "6");
 
       const searchResp = await providerLimiter("europeana").run(() => withTimeout(
         fetch(searchUrl.toString(), { headers: { ...authHeader, "User-Agent": "Fastvid/1.0" } }),
@@ -7819,6 +7916,7 @@ export async function fetchEuropeanaVideos(
 
       for (const item of items) {
         if (downloaded >= count) break;
+        if (cancelled()) break;
         const recordId = item.id;
         if (!recordId || seenIds.has(recordId)) continue;
         seenIds.add(recordId);
@@ -7832,13 +7930,29 @@ export async function fetchEuropeanaVideos(
           if (!recordResp.ok) continue;
           const recordData = await recordResp.json() as {
             object?: {
-              aggregations?: Array<{ edmIsShownBy?: string; edmIsShownAt?: string }>;
+              aggregations?: Array<{ edmIsShownBy?: string; edmIsShownAt?: string; edmRights?: string | string[] }>;
+              proxies?: Array<{ dcCreator?: string[] | Record<string, string[]> }>;
             };
           };
-          const mediaUrl =
-            recordData.object?.aggregations?.find((a) => a.edmIsShownBy)?.edmIsShownBy ??
-            recordData.object?.aggregations?.find((a) => a.edmIsShownAt)?.edmIsShownAt;
+          const aggregations = recordData.object?.aggregations ?? [];
+          const mediaAgg = aggregations.find((a) => a.edmIsShownBy) ?? aggregations.find((a) => a.edmIsShownAt);
+          const mediaUrl = mediaAgg?.edmIsShownBy ?? mediaAgg?.edmIsShownAt;
           if (!mediaUrl || !/\.(mp4|webm|mov|m4v)/i.test(mediaUrl)) continue;
+
+          // F3-30 license-safety gate: the search already filters reusability=open, but that's
+          // a query-level hint, not a per-item guarantee — require an explicit rights URL on
+          // THIS item's aggregation before it's ever downloaded. No rights URL → skip, never
+          // "found it, so it must be free".
+          const rawRights = mediaAgg?.edmRights;
+          const rightsUrl = Array.isArray(rawRights) ? rawRights[0] : rawRights;
+          if (!rightsUrl?.trim()) continue;
+
+          const creatorField = recordData.object?.proxies?.find((p) => p.dcCreator)?.dcCreator;
+          const sourceCreator = Array.isArray(creatorField)
+            ? creatorField[0]
+            : creatorField
+            ? Object.values(creatorField)[0]?.[0]
+            : undefined;
 
           const tag = fileTag ? `${fileTag}_` : "";
           const tmpPath = path.join(workDir, `scene_${sceneIndex}_${tag}euro_${downloaded}_tmp`);
@@ -7857,7 +7971,16 @@ export async function fetchEuropeanaVideos(
             continue;
           }
           if (await trimRemoteVideoToClip(tmpPath, outPath, duration, 3, `Europeana scene ${sceneIndex}`)) {
-            results.push({ path: outPath, query });
+            results.push({
+              path: outPath,
+              query,
+              sourceUrl: `https://www.europeana.eu/item${recordId}`,
+              sourcePlatform: "europeana",
+              sourceCreator,
+              licenseUrl: rightsUrl,
+              license: rightsUrl,
+              title: (item.title ?? []).join(" ") || undefined,
+            });
             downloaded++;
             console.log(
               `[Pipeline] Scene ${sceneIndex}: Europeana video: ${(item.title ?? []).join(" ").slice(0, 60)}`
@@ -8308,6 +8431,191 @@ async function fetchNasaVideoClips(
     }
   } catch (err) {
     console.warn(`[Pipeline] NASA video search failed for scene ${sceneIndex}:`, (err as Error).message);
+  }
+  return results;
+}
+
+// F3-28: US National Archives (NARA) Catalog API v2 — small, isolated adapter, modeled
+// directly on fetchNasaVideoClips above (same search→asset→download→trim shape, same
+// size gate, same trimRemoteVideoToClip). Requires a free NARA_API_KEY (register at
+// https://catalog.archives.gov/api/v2) — optional; the function is a clean no-op without it,
+// exactly like the existing FLICKR_API_KEY/VIMEO_ACCESS_TOKEN-gated adapters.
+export async function fetchNaraClips(
+  query: string,
+  duration: number,
+  workDir: string,
+  sceneIndex: number,
+  count: number = 1
+): Promise<string[]> {
+  const naraApiKey = process.env.NARA_API_KEY?.trim();
+  if (!naraApiKey || !query?.trim()) return [];
+  const results: string[] = [];
+  try {
+    const searchUrl = `https://catalog.archives.gov/api/v2/records/search?q=${encodeURIComponent(query)}&limit=${count * 3}`;
+    const searchResp = await withTimeout(
+      fetch(searchUrl, { headers: { "x-api-key": naraApiKey, "User-Agent": "Fastvid/1.0 (NARA public archives)" } }),
+      12_000,
+      `NARA search scene ${sceneIndex}`
+    );
+    if (!searchResp.ok) return [];
+    const data = await searchResp.json() as {
+      body?: { hits?: { hits?: Array<{ _source?: { record?: {
+        title?: string;
+        digitalObjects?: Array<{ objectUrl?: string; objectType?: string }>;
+      } } }> } };
+    };
+    const hits = data.body?.hits?.hits ?? [];
+    let fetched = 0;
+    for (const hit of hits) {
+      if (fetched >= count) break;
+      const record = hit._source?.record;
+      const videoObject = record?.digitalObjects?.find(
+        (o) => /\.(mp4|mov|m4v)$/i.test(o.objectUrl ?? "") || /video/i.test(o.objectType ?? "")
+      );
+      const videoUrl = videoObject?.objectUrl;
+      if (!videoUrl) continue;
+      try {
+        const tmpPath = path.join(workDir, `scene_${sceneIndex}_nara_${fetched}_tmp.mp4`);
+        const outPath = path.join(workDir, `scene_${sceneIndex}_nara_${fetched}.mp4`);
+        const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
+          videoUrl,
+          tmpPath,
+          60_000,
+          `NARA download scene ${sceneIndex}`,
+          { headers: { "User-Agent": "Fastvid/1.0" } }
+        );
+        if (!dlResp.ok || bytesWritten === null) continue;
+        let naraFileSize: number;
+        try {
+          naraFileSize = fs.statSync(tmpPath).size;
+        } catch {
+          continue;
+        }
+        if (naraFileSize < 50_000 || naraFileSize > 80 * 1024 * 1024) {
+          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+          continue;
+        }
+        if (await trimRemoteVideoToClip(tmpPath, outPath, duration, 5, `NARA scene ${sceneIndex}`)) {
+          results.push(outPath);
+          fetched++;
+          console.log(`[Pipeline] Scene ${sceneIndex}: NARA video added: ${record?.title ?? videoUrl}`);
+        }
+        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+      } catch (err) {
+        console.warn(`[Pipeline] NARA video failed for scene ${sceneIndex}:`, (err as Error).message);
+      }
+    }
+  } catch (err) {
+    console.warn(`[Pipeline] NARA search failed for scene ${sceneIndex}:`, (err as Error).message);
+  }
+  return results;
+}
+
+export type WebWideVideoCandidate = {
+  path: string;
+  sourceUrl: string;
+  sourcePlatform: string;
+  sourceCreator?: string;
+  licenseUrl?: string;
+  license: string;
+  title?: string;
+  matchedQuery: string;
+};
+
+// F3-29: tier 11 of the source cascade (F3-28) — tried only after own archive + tiers 2-10
+// (Internet Archive/YouTube CC/Wikimedia/NARA/Flickr/SepiaSearch/Vimeo/media.ccc/NASA) have
+// failed for a beat, and only before Pexels/Pixabay (tiers 12-13). License-safe BY
+// CONSTRUCTION, not by inference: the only engine here is Openverse (api.openverse.org, no API
+// key required — already used elsewhere in this file for stills, see fetchOpenverseImages
+// above), queried with license_type=commercial,modification, which only ever returns items
+// Openverse itself has already tagged with an explicit CC license — nothing here is "found on
+// the web and assumed free". A second, broader-query YouTube-CC retry was considered (YouTube
+// CC is already reusable via fetchYouTubeCCClips) and deliberately left out: YouTube CC already
+// ran as tier 3 with richer, more specific queries, so retrying it here with weaker queries
+// would only burn extra YouTube API quota for near-zero marginal yield — see the F3-29 report
+// for the full reasoning. No new API key is required by any of this.
+export async function searchWebWideVideoClips(
+  queries: string[],
+  duration: number,
+  workDir: string,
+  sceneIndex: number,
+  count: number = 1
+): Promise<WebWideVideoCandidate[]> {
+  const results: WebWideVideoCandidate[] = [];
+  const cancelled = () => {
+    const videoId = getActiveVideoId();
+    return videoId != null && isVideoGenerationCancelRequested(videoId);
+  };
+  const uniqueQueries = uniqueQueryStrings(queries).slice(0, 3);
+  if (cancelled()) return results;
+
+  for (const query of uniqueQueries) {
+    if (results.length >= count) break;
+    if (cancelled()) break;
+    try {
+      const searchUrl = `https://api.openverse.org/v1/images/?q=${encodeURIComponent(query)}&license_type=commercial,modification&page_size=${count * 3}&format=json`;
+      const searchResp = await withTimeout(
+        fetch(searchUrl, { headers: { "User-Agent": "Fastvid/1.0 (video generation; contact@fastvid.ai)" } }),
+        5000,
+        `Web-wide discovery search scene ${sceneIndex}`
+      );
+      if (!searchResp.ok) continue;
+      const payload = await searchResp.json() as {
+        results?: Array<{
+          id: string; url: string; title?: string; license?: string; license_url?: string;
+          creator?: string; foreign_landing_url?: string;
+        }>;
+      };
+      const items = payload.results ?? [];
+
+      for (const item of items) {
+        if (results.length >= count) break;
+        if (cancelled()) break;
+        // License-safety gate (F3-29 §4): reject anything without an explicit license tag —
+        // belt-and-braces even though the license_type filter above should already guarantee
+        // one. "Findable" is never treated as "usable" on its own.
+        if (!item.url || !item.license?.trim()) continue;
+        if (!/\.(jpg|jpeg|png|webp)(\?|$)/i.test(item.url)) continue;
+
+        const tmpPath = path.join(workDir, `scene_${sceneIndex}_webwide_${results.length}_tmp.jpg`);
+        const outPath = path.join(workDir, `scene_${sceneIndex}_webwide_${results.length}.mp4`);
+        try {
+          const imgResp = await withTimeout(fetch(item.url), 10_000, `Web-wide image download scene ${sceneIndex}`);
+          if (!imgResp.ok) continue;
+          const imgBuf = Buffer.from(await imgResp.arrayBuffer());
+          if (imgBuf.length < 5000) continue; // existing Openverse-still quality gate, unchanged
+          fs.writeFileSync(tmpPath, imgBuf);
+
+          await stillImageToVideo(
+            tmpPath, outPath, duration, `Web-wide image to video scene ${sceneIndex}`, false, sceneIndex, 0
+          );
+
+          if (fs.existsSync(outPath) && fs.statSync(outPath).size > 10_000) {
+            results.push({
+              path: outPath,
+              sourceUrl: item.foreign_landing_url || item.url,
+              sourcePlatform: "openverse",
+              sourceCreator: item.creator || undefined,
+              licenseUrl: item.license_url || undefined,
+              license: item.license,
+              title: item.title,
+              matchedQuery: query,
+            });
+            console.log(
+              `[Pipeline] Scene ${sceneIndex}: web-wide discovery (Openverse) clip added: ${(item.title ?? item.url).slice(0, 60)}`
+            );
+          } else {
+            try { fs.unlinkSync(outPath); } catch { /* ignore */ }
+          }
+        } catch (err) {
+          console.warn(`[Pipeline] Web-wide candidate failed for scene ${sceneIndex}:`, (err as Error).message);
+        } finally {
+          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+        }
+      }
+    } catch (err) {
+      console.warn(`[Pipeline] Web-wide discovery search failed for scene ${sceneIndex}:`, (err as Error).message);
+    }
   }
   return results;
 }
@@ -9201,6 +9509,16 @@ function buildPersonMediaQueries(person: string, visualCue?: string): string[] {
 interface CelebrityClipCandidate {
   path: string;
   query: string;
+  // F3-30: optional structured provenance — populated only by sources that can reliably
+  // establish a per-item reuse license (currently fetchEuropeanaVideos). Left undefined by
+  // every other producer of this shared shape (IA/Wikimedia/SepiaSearch/Vimeo), which is a
+  // no-op for them — this is a pure additive extension of an existing type.
+  sourceUrl?: string;
+  sourcePlatform?: string;
+  sourceCreator?: string;
+  licenseUrl?: string;
+  license?: string;
+  title?: string;
 }
 
 /** True when haystack contains the celebrity name (last name or full name). */
@@ -14798,7 +15116,27 @@ async function fetchPersonBeatClip(
   return null;
 }
 
-/** Archival real video for historical beats — Wiki → Archive → YouTube CC (no stills/stock). */
+// F3-28: source cascade priority for historical/archival beat sourcing. Own curated archive is
+// handled by the caller (fetchCuratedArchiveBeatClip) before this list is ever consulted; Pexels
+// and Pixabay are deliberately NOT in this list — they stay the separate, absolute-last-resort
+// tier in fetchBeatArchivalThenPexels/fetchBeatStockFallback, tried only after every tier below
+// has failed for a beat. Exported as plain data so the exact required order can be verified with
+// a direct assertion instead of mocking every underlying fetch function.
+export const HISTORICAL_SOURCE_TIER_ORDER = [
+  "internet_archive",
+  "youtube_cc",
+  "wikimedia",
+  "nara",
+  "flickr",
+  "sepiasearch",
+  "vimeo",
+  "media_ccc",
+  "nasa",
+] as const;
+export type HistoricalSourceTier = (typeof HISTORICAL_SOURCE_TIER_ORDER)[number];
+
+/** Archival real video for historical beats, tried in HISTORICAL_SOURCE_TIER_ORDER (no
+ *  stills/stock — Pexels/Pixabay are the caller's separate last-resort tier). */
 async function fetchHistoricalBeatVideo(
   beat: SceneBeat,
   scene: Scene,
@@ -14815,95 +15153,62 @@ async function fetchHistoricalBeatVideo(
   const loose: VisualAdoptOptions = { ...adoptOpts, requireBeatMatch: false, scriptAnchored: false };
   const queries = buildHistoricalArchivalQueries(intent, beat.text);
   const entityYt = realEntityYoutubeQueriesForBeat(beat.text, scene.text, adoptOpts.videoTitle);
-  const queryCap = dedup.perf.fastStockMode ? 2 : 6;
-  const allQueries = [...entityYt, ...queries].slice(0, queryCap);
+  // Credit optimization: cap applies per tier (each of the 9 tiers below tries the same
+  // deduped query list, in order, stopping at first success) — was 6 in normal mode, which at
+  // 9 tiers meant up to 54 tier-fetch attempts per beat in the worst case (all tiers/queries
+  // miss). 3 strong, deduped queries (2 in fastStockMode, unchanged) keeps the same
+  // strongest-query-first ordering while roughly halving that worst-case ceiling, without
+  // dropping any tier or changing ranking/content.
+  const queryCap = dedup.perf.fastStockMode ? 2 : 3;
+  const allQueries = uniqueQueryStrings([...entityYt, ...queries]).slice(0, queryCap);
   const archiveHitsPerQuery = dedup.perf.fastStockMode ? 1 : 2;
+  const youtubeReady = !opts.skipYoutube && youtubeSourcingEnabled() && youtubeCcReady();
 
-  if (!opts.skipYoutube && youtubeSourcingEnabled() && youtubeCcReady()) {
-    for (const q of allQueries) {
-      const ytPaths = await fetchYouTubeCCClips(
-        q,
-        clipFetchDur,
-        workDir,
-        sceneIndex,
-        1,
-        beatKeywords,
-        1,
-        "",
-        {
-          beatText: beat.text,
-          videoTitle: adoptOpts.videoTitle,
-          fastMode: dedup.perf.fastStockMode,
-        }
-      );
-      const ytClip = await adoptClip(
-        ytPaths,
-        dedup,
-        sceneIndex,
-        beat.index,
-        beat.text,
-        workDir,
-        q,
-        loose
-      );
-      if (isRealVideoClip(ytClip)) {
-        console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: historical YouTube "${q}"`);
-        return ytClip;
-      }
+  const fetchTierPaths = async (tier: HistoricalSourceTier, q: string): Promise<string[]> => {
+    switch (tier) {
+      case "internet_archive":
+        if (!dedup.perf.enableArchival) return [];
+        return (await fetchInternetArchiveClips(
+          q, clipFetchDur, workDir, sceneIndex, archiveHitsPerQuery, `${tag}_hist`, "", beatKeywords
+        )).map((h) => h.path);
+      case "youtube_cc":
+        if (!youtubeReady) return [];
+        return fetchYouTubeCCClips(
+          q, clipFetchDur, workDir, sceneIndex, 1, beatKeywords, 1, "",
+          { beatText: beat.text, videoTitle: adoptOpts.videoTitle, fastMode: dedup.perf.fastStockMode }
+        );
+      case "wikimedia":
+        return (await fetchWikimediaVideos(
+          q, clipFetchDur, workDir, sceneIndex, 2, `${tag}_hist`, "", beatKeywords
+        )).map((h) => h.path);
+      case "nara":
+        return fetchNaraClips(q, clipFetchDur, workDir, sceneIndex, 1);
+      case "flickr":
+        return fetchFlickrCCVideos(q, clipFetchDur, workDir, sceneIndex, 1, `${tag}_hist`, "", beatKeywords);
+      case "sepiasearch":
+        return (await fetchSepiaSearchVideos(
+          q, clipFetchDur, workDir, sceneIndex, 1, `${tag}_hist`, "", beatKeywords
+        )).map((h) => h.path);
+      case "vimeo":
+        return (await fetchVimeoCCVideos(
+          q, clipFetchDur, workDir, sceneIndex, 1, `${tag}_hist`, "", beatKeywords
+        )).map((h) => h.path);
+      case "media_ccc":
+        return fetchMediaCccVideos(q, clipFetchDur, workDir, sceneIndex, 1, `${tag}_hist`);
+      case "nasa":
+        return fetchNasaVideoClips(q, clipFetchDur, workDir, sceneIndex, 1);
     }
-  }
+  };
 
-  for (const q of allQueries) {
-    if (dedup.perf.enableArchival) {
-      const archiveHits = await fetchInternetArchiveClips(
-        q,
-        clipFetchDur,
-        workDir,
-        sceneIndex,
-        archiveHitsPerQuery,
-        `${tag}_hist`,
-        "",
-        beatKeywords
-      );
-      const clip = await adoptClip(
-        archiveHits.map((h) => h.path),
-        dedup,
-        sceneIndex,
-        beat.index,
-        beat.text,
-        workDir,
-        q,
-        loose
-      );
+  for (const tier of HISTORICAL_SOURCE_TIER_ORDER) {
+    for (const q of allQueries) {
+      const paths = await fetchTierPaths(tier, q);
+      if (paths.length === 0) continue;
+      const clip = await adoptClip(paths, dedup, sceneIndex, beat.index, beat.text, workDir, q, loose);
       if (isRealVideoClip(clip)) {
-        console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: historical Archive "${q}"`);
+        console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: historical ${tier} "${q}"`);
         return clip;
       }
-    }
-
-    const wikiHits = await fetchWikimediaVideos(
-      q,
-      clipFetchDur,
-      workDir,
-      sceneIndex,
-      2,
-      `${tag}_hist`,
-      "",
-      beatKeywords
-    );
-    let clip = await adoptClip(
-      wikiHits.map((h) => h.path),
-      dedup,
-      sceneIndex,
-      beat.index,
-      beat.text,
-      workDir,
-      q,
-      loose
-    );
-    if (isRealVideoClip(clip)) {
-      console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: historical Wikimedia video "${q}"`);
-      return clip;
     }
   }
 
@@ -17041,6 +17346,59 @@ type ResolveBeatClipOptions = {
   tag?: string;
   stockReason?: string;
 };
+
+// ── F3-27: live archive→web fallback→ingest→learning wiring ─────────────────
+// Minimum distinct candidates a scene needs before its archive coverage is
+// considered sufficient — only drives the coverage-warning signal (F3-26 #8/#9),
+// never the actual retrieval or quality gates (those are untouched).
+const FUNNEL_RECOMMENDED_COVERAGE_COUNT = 3;
+
+/** F3-27 self-learning: prioritise queries that previously worked for this entity/topic
+ *  (recordVisualSearchMemory / getVisualSearchMemoryForEntity, F3-26), without ever
+ *  replacing the normal query set — proven queries are prepended, never a hard filter.
+ *  If none exist, or the lookup fails, the original queries are returned unchanged so
+ *  normal web sourcing proceeds exactly as before. */
+export async function primeQueriesWithSearchMemory(
+  entity: string | undefined,
+  baseExtraQueries: string[] | undefined
+): Promise<string[] | undefined> {
+  const trimmedEntity = entity?.trim();
+  if (!trimmedEntity) return baseExtraQueries;
+  try {
+    const memory = await getVisualSearchMemoryForEntity(trimmedEntity, 3);
+    const proven = memory
+      .filter((m) => m.success && m.query)
+      .sort((a, b) => (b.usageCount ?? 0) - (a.usageCount ?? 0))
+      .map((m) => m.query);
+    if (proven.length === 0) return baseExtraQueries;
+    return [...new Set([...proven, ...(baseExtraQueries ?? [])])];
+  } catch {
+    return baseExtraQueries;
+  }
+}
+
+/** F3-27: derive the F3-26 coverage-warning input from a resolved retrieval funnel
+ *  result and fire the (best-effort, non-blocking) user/admin warning when the archive
+ *  plus web sourcing combined are still short. applyCoverageWarningIfNeeded never
+ *  throws (F3-26), and this is fired without awaiting so it never delays the current
+ *  video's beat retrieval. */
+export function reportFunnelCoverageIfInsufficient(
+  videoId: number | null | undefined,
+  entity: string | undefined,
+  funnel: RetrievalFunnelResult
+): void {
+  const trimmedEntity = entity?.trim();
+  if (!videoId || !trimmedEntity) return;
+  const archiveCount = funnel.candidates.filter((c) => c.source === "archive").length;
+  const webFoundCount = funnel.candidates.filter((c) => c.source !== "archive").length;
+  void applyCoverageWarningIfNeeded(videoId, {
+    entity: trimmedEntity,
+    archiveCount,
+    recommendedCount: FUNNEL_RECOMMENDED_COVERAGE_COUNT,
+    webSearchAttempted: true,
+    webFoundCount,
+  });
+}
 
 async function resolveBeatClip(
   beat: SceneBeat,
@@ -20713,7 +21071,7 @@ async function fetchSceneVisualsInner(
               sceneIndex: scene.index,
               sceneText: scene.text,
               primaryQuery: scene.pexelsQuery || scene.visualCue || scene.text.slice(0, 80),
-              extraQueries: scene.pexelsQueries?.slice(0, 2),
+              extraQueries: await primeQueriesWithSearchMemory(videoTitle, scene.pexelsQueries?.slice(0, 2)),
               pexelsApiKey: PEXELS_API_KEY || undefined,
               pixabayApiKey: process.env.PIXABAY_API_KEY || undefined,
               videoTitle: videoTitle || undefined,
@@ -20725,6 +21083,9 @@ async function fetchSceneVisualsInner(
           `(coverage=${funnelResult.archiveCoverage.toFixed(2)}, strategy=${funnelResult.strategy}) ` +
           `${prefetchFunnel ? `prefetch waited ${waited}ms` : `inline ${waited}ms`}`
         );
+        // F3-27: fire the (best-effort) genuine-shortage warning once the real archive+web
+        // tally for this scene is known — never a false positive from a pre-web snapshot.
+        reportFunnelCoverageIfInsufficient(getActiveVideoId(), videoTitle, funnelResult);
       } else {
         // P1/P4 path: external-only pool
         const prefetchPromise = prefetchPools?.get(scene.index);
@@ -20915,6 +21276,7 @@ async function fetchSceneVisualsInner(
         if (funnelClip && winningExternalCandidate && externalAssetIngestionEnabled()) {
           const wec = winningExternalCandidate;
           const clipPath = funnelClip;
+          const beatQuery = beat.searchQuery?.trim() || beat.text;
           void (async () => {
             try {
               await ingestExternalClipToArchive(clipPath, {
@@ -20927,6 +21289,15 @@ async function fetchSceneVisualsInner(
                 licenseNote: wec.source === "pexels" ? "Pexels license" :
                              wec.source === "pixabay" ? "Pixabay license" :
                              wec.source === "wikimedia" ? "CC BY-SA / CC0" : undefined,
+                // F3-26: structured provenance — poolCandidate already carries the real remote
+                // URL/license/dimensions for every external source (see scenePool.ts), so this
+                // is a pure enrichment of data that was already being fetched, not a new call.
+                sourceUrl: wec.poolCandidate?.remoteUrl,
+                sourcePlatform: wec.source,
+                licenseUrl: wec.poolCandidate?.license ?? undefined,
+                originalQuery: beatQuery,
+                matchedQuery: wec.poolCandidate?.title || beatQuery,
+                topics: beat.keywords ?? [],
               });
             } catch {
               // best-effort: never block video production
@@ -23646,13 +24017,16 @@ async function _runVideoPipelineInner(
     let prefetchFunnels: Map<number, Promise<RetrievalFunnelResult>> | undefined;
     if (sceneCandidatePoolEnabled() && !curatedArchiveOnlyVisuals()) {
       if (retrievalFunnelEnabled()) {
+        // F3-27 self-learning: proven queries for this video's entity/topic (if any) are
+        // fetched once and prepended to every scene's extra queries — priming, not a filter.
+        const primedMemoryQueries = await primeQueriesWithSearchMemory(topicContext || videoTitle, undefined);
         prefetchFunnels = new Map();
         for (const scene of scenes) {
           const funnelPromise = buildRetrievalFunnel({
             sceneIndex: scene.index,
             sceneText: scene.text,
             primaryQuery: scene.pexelsQuery || scene.visualCue || scene.text.slice(0, 80),
-            extraQueries: scene.pexelsQueries?.slice(0, 2),
+            extraQueries: [...(primedMemoryQueries ?? []), ...(scene.pexelsQueries?.slice(0, 2) ?? [])],
             pexelsApiKey: PEXELS_API_KEY || undefined,
             pixabayApiKey: process.env.PIXABAY_API_KEY || undefined,
             videoTitle: topicContext || undefined,

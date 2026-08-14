@@ -90,20 +90,33 @@ async function extractVideoPreviewJpeg(
   }
 }
 
+// F3-24: the two "false" bullets for baked-in subtitles/captions and historical text used to
+// have no size/dominance qualifier at all — any on-screen subtitle or caption, of any size or
+// language, was explicitly told never to be a rejection reason. That's why footage with large,
+// dominant, irrelevant foreign-language subtitles burned into the frame (e.g. French text like
+// "et Europe" / "devait parvenir à précipiter les peuples dans une guerre mondiale" covering a
+// meaningful part of the picture) passed this gate uncontested. The fix is a DOMINANCE
+// qualifier, not a blanket ban — a historical photo with small background text/labels still
+// must not be auto-rejected, per the same prompt's existing intent.
 const OVERLAY_PROMPT = `Beoordeel deze videostill(s) voor een documentaire-archief.
 
-hasBakedEditText = true ALLEEN wanneer ÉÉN of meer stills duidelijk onbruikbare editor-tekst bevatten:
+hasBakedEditText = true wanneer ÉÉN of meer stills DOMINANTE, onbruikbare tekst bevatten — tekst
+die een aanzienlijk deel van het beeld inneemt en de aandacht wegtrekt van het beeldmateriaal zelf:
 - titelkaarten of chapter cards die het beeld volledig overdekken
 - intro/outro-tekst of aftiteling
+- grote, dominante ingebakken ondertitels/captions (bijv. een brede onderbalk met een volledige
+  lopende zin), zeker wanneer de taal niet aansluit bij de narratie
 - grote montage-tekst die het beeldmateriaal onbruikbaar maakt
 - bewerkingssoftware-interface zichtbaar in beeld (DaVinci, Premiere, etc.)
+- een groot, prominent watermerk dat het beeld domineert
 
 hasBakedEditText = false bij normaal documentaire- of archiefmateriaal, ook als er:
 - kleine lower thirds zijn met naam, datum, locatie of jaar
-- ondertitels of captions in beeld staan
-- historische tekst, krantenkoppen, kaarten of labels zichtbaar zijn
+- kleine, niet-dominante ondertitels of bijschriften die maar een klein deel van het beeld innemen
+- historische tekst, krantenkoppen, kaarten of labels zichtbaar zijn, zolang ze het beeld niet domineren
 - een klein logo of watermerk in de hoek staat
-Documentaire-labels zijn GEEN reden voor afwijzing.`;
+Kleine, marginale documentaire-labels zijn GEEN reden voor afwijzing — het gaat uitsluitend om
+tekst die zo groot/dominant is dat ze het beeldmateriaal zelf onbruikbaar maakt.`;
 
 async function detectOnScreenTextInImages(dataUrls: string[]): Promise<boolean> {
   if (dataUrls.length === 0) return false;

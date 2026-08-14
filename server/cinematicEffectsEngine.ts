@@ -4,7 +4,7 @@
  */
 import * as fs from "fs";
 import * as path from "path";
-import { sanitizeForDrawtext } from "./ffmpegSanitize";
+import { sanitizeForDrawtext, isCaptionTextCorrupt } from "./ffmpegSanitize";
 import {
   DOC_STYLE_VIDEO_HEIGHT,
   DOC_STYLE_VIDEO_WIDTH,
@@ -912,7 +912,13 @@ export function buildYearCaption(beatText: string, year: string, occurrence = 0)
     .map((w) => w.replace(/[^a-zA-ZÀ-ÿ0-9'-]/g, ""))
     .filter((w) => w.length >= 3 && !YEAR_CAPTION_STOP.has(w.toLowerCase()));
 
-  return beforeWords.slice(-2).join(" ").toUpperCase().slice(0, 24);
+  const caption = beforeWords.slice(-2).join(" ").toUpperCase().slice(0, 24);
+  // F3-25 hard quality gate: this caption is only ever real words pulled straight from
+  // beatText, so it must always appear verbatim in it — if it doesn't, something upstream
+  // glued/interleaved fragments that don't belong together (the exact defect a production
+  // render showed: "THE GUNINSHOT ECHOESVSTEEL AND FLAMES LICK"). Reject rather than burn in.
+  if (isCaptionTextCorrupt(caption, beatText)) return "";
+  return caption;
 }
 
 /** Local words right before a year — not the whole beat stitched together. */

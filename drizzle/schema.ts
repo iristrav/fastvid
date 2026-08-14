@@ -159,6 +159,24 @@ export const mediaArchiveAssets = mysqlTable(
   tags: json("tags").$type<string[]>(),
   sourceNote: varchar("sourceNote", { length: 512 }),
   licenseNote: varchar("licenseNote", { length: 256 }),
+  // F3-26: structured web-sourcing provenance, additive alongside the older free-text
+  // sourceNote/licenseNote (kept unchanged so every existing row/reader stays valid). Null for
+  // admin-uploaded assets and any pre-F3-26 row — only auto-ingested web assets populate these.
+  sourceUrl: text("sourceUrl"),
+  /** SHA256 of sourceUrl — same urlHash-lookup convention as mediaAssetCache, since a raw URL
+   *  can exceed MySQL's indexable prefix length. Used to detect "already ingested" duplicates
+   *  before re-downloading/re-archiving the same web asset. */
+  sourceUrlHash: varchar("sourceUrlHash", { length: 64 }),
+  sourcePlatform: varchar("sourcePlatform", { length: 64 }),
+  sourceCreator: varchar("sourceCreator", { length: 256 }),
+  licenseUrl: varchar("licenseUrl", { length: 512 }),
+  downloadedAt: timestamp("downloadedAt"),
+  originalQuery: varchar("originalQuery", { length: 512 }),
+  matchedQuery: varchar("matchedQuery", { length: 512 }),
+  /** Recognized entities (people/orgs/places/events) tied to this asset, e.g. ["Justin Bieber"]. */
+  entities: json("entities").$type<string[]>(),
+  /** General topics tied to this asset, e.g. ["music", "pop culture"]. */
+  topics: json("topics").$type<string[]>(),
   width: int("width"),
   height: int("height"),
   durationSec: int("durationSec"),
@@ -183,11 +201,55 @@ export const mediaArchiveAssets = mysqlTable(
     // archiveId+isActive repeatedly with no index — a full table scan that worsens as the
     // archive library grows, unlike videos' equivalent well-indexed filter columns.
     archiveIdIsActiveIdx: index("media_archive_assets_archiveId_isActive_idx").on(t.archiveId, t.isActive),
+    // F3-26: fast "has this web source already been ingested" lookup before re-downloading.
+    sourceUrlHashIdx: index("media_archive_assets_sourceUrlHash_idx").on(t.sourceUrlHash),
   })
 );
 
 export type MediaArchiveAsset = typeof mediaArchiveAssets.$inferSelect;
 export type InsertMediaArchiveAsset = typeof mediaArchiveAssets.$inferInsert;
+
+// ─── F3-26: Visual Search Memory (query/entity/source learning loop) ──────────
+/** Remembers which (entity, query, source) combinations previously found usable footage, so a
+ *  future beat about the same entity/topic can reuse a proven query+source instead of
+ *  rediscovering it from scratch. One row per distinct (entity, query, source) combination —
+ *  repeated successful hits increment usageCount instead of inserting duplicate rows. */
+export const visualSearchMemory = mysqlTable(
+  "visual_search_memory",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    /** Canonical entity name, e.g. "Justin Bieber". */
+    entity: varchar("entity", { length: 256 }).notNull(),
+    /** person | organization | place | event | topic */
+    entityType: varchar("entityType", { length: 32 }).notNull(),
+    /** Broader topic/domain this search was for, when distinct from the entity itself. */
+    topic: varchar("topic", { length: 256 }),
+    /** The search query actually used, e.g. "Justin Bieber 2015 interview". */
+    query: varchar("query", { length: 512 }).notNull(),
+    /** Provider name, e.g. "internet_archive", "wikimedia", "pexels", "youtube_cc". */
+    source: varchar("source", { length: 64 }).notNull(),
+    sourceUrl: text("sourceUrl"),
+    /** The archive asset this query/source combination produced, when it succeeded. */
+    assetId: int("assetId").references(() => mediaArchiveAssets.id),
+    success: int("success").notNull().default(1),
+    /** 0-100 quality signal for this hit, when available (e.g. editorial/vision score). */
+    qualityScore: int("qualityScore"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    lastUsedAt: timestamp("lastUsedAt").defaultNow().onUpdateNow().notNull(),
+    usageCount: int("usageCount").notNull().default(1),
+    /** SHA256 of `${entity}|${source}|${query}` (lowercased/trimmed) — same hash-based unique-key
+     *  convention as archiveContentGaps.keywordHash, since a composite unique index across three
+     *  varchar columns this wide could exceed MySQL's indexable key-length limit. Used for the
+     *  onDuplicateKeyUpdate upsert that increments usageCount instead of inserting duplicates. */
+    dedupeKeyHash: varchar("dedupeKeyHash", { length: 64 }).notNull().unique(),
+  },
+  (t) => ({
+    entityIdx: index("visual_search_memory_entity_idx").on(t.entity),
+  })
+);
+
+export type VisualSearchMemoryRow = typeof visualSearchMemory.$inferSelect;
+export type InsertVisualSearchMemoryRow = typeof visualSearchMemory.$inferInsert;
 
 // ─── Visual Matching Engine V2: VideoContext + VisualIntent caches ────────────
 /** One row per distinct topic — reused across videos sharing the same subject/era. */

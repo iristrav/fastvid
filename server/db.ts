@@ -1341,6 +1341,19 @@ export async function updateMediaArchiveAsset(id: number, data: Partial<InsertMe
   await db.update(mediaArchiveAssets).set(data).where(eq(mediaArchiveAssets.id, id));
 }
 
+/** F3-26: look up an already-ingested archive asset by its web source URL hash, so a repeat
+ *  web-sourcing hit reuses the existing asset instead of re-downloading/re-archiving it. */
+export async function findMediaArchiveAssetBySourceUrlHash(sourceUrlHash: string): Promise<MediaArchiveAsset | null> {
+  const db = await getDb();
+  if (!db) return null;
+  const rows = await db
+    .select()
+    .from(mediaArchiveAssets)
+    .where(eq(mediaArchiveAssets.sourceUrlHash, sourceUrlHash))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
 export async function deleteMediaArchiveAsset(id: number) {
   const db = await getDb();
   if (!db) return;
