@@ -524,7 +524,10 @@ const FFPROBE_PATHS = (): string[] => [
   "ffprobe",
 ];
 
-async function isValidVideoFile(filePath: string): Promise<boolean> {
+// F3-45: temporarily exported (visibility only, no logic changed) so
+// server/f345YoutubeCcRuntimeTest.ts can reuse it. Revert to module-private
+// once that temporary diagnostic script is deleted.
+export async function isValidVideoFile(filePath: string): Promise<boolean> {
   if (!fs.existsSync(filePath)) return false;
   const size = fs.statSync(filePath).size;
   if (size < 1000) return false;
@@ -563,7 +566,10 @@ async function isValidVideoFile(filePath: string): Promise<boolean> {
   }
 }
 
-async function probeVideoStreamMeta(
+// F3-45: temporarily exported (visibility only, no logic changed) so
+// server/f345YoutubeCcRuntimeTest.ts can reuse it. Revert to module-private
+// once that temporary diagnostic script is deleted.
+export async function probeVideoStreamMeta(
   filePath: string
 ): Promise<{ width: number; height: number; durationSec: number } | null> {
   if (!fs.existsSync(filePath)) return null;
@@ -7351,7 +7357,10 @@ export async function generateManusForgeClip(
 }
 
 /** Trim a downloaded file to a short scene clip (shared by Archive, NASA, Wikimedia video). */
-async function trimRemoteVideoToClip(
+// F3-45: temporarily exported (visibility only, no logic changed) so
+// server/f345YoutubeCcRuntimeTest.ts can reuse it. Revert to module-private
+// once that temporary diagnostic script is deleted.
+export async function trimRemoteVideoToClip(
   sourcePath: string,
   outputPath: string,
   duration: number,
@@ -9361,7 +9370,10 @@ type YoutubeSearchRow = {
   rel: number;
 };
 
-async function searchYoutubeVideoCandidates(
+// F3-45: temporarily exported (visibility only, no logic changed) so
+// server/f345YoutubeCcRuntimeTest.ts can reuse it. Revert to module-private
+// once that temporary diagnostic script is deleted.
+export async function searchYoutubeVideoCandidates(
   query: string,
   sceneIndex: number,
   license: "creative_common" | "any",
