@@ -14458,7 +14458,7 @@ export async function recoverSceneClipsIfEmpty(
     // Uses archiveVisualMaxClipSec (8s) per clip so fewer clips fully cover the scene:
     //   minClipsForBalancedVoice(30s)=4 × 8s each → balances to 7.8s → estSec≈30s ✓
     const minNeeded = minClipsForBalancedVoice(scene.duration + 0.15, dedup.videoLength);
-    if (clips.length < minNeeded && !fastShort) {
+    if (clips.length < minNeeded) {
       if (clips.length === 0) {
         console.log(`[Pipeline] recoverSceneClips scene ${scene.index}: no archive → Wikimedia/Pexels (need ${minNeeded} for ${scene.duration.toFixed(1)}s)`);
       } else {
@@ -14474,8 +14474,14 @@ export async function recoverSceneClipsIfEmpty(
         `${topicContext ?? ""} ${scene.text.slice(0, 40)}`.trim(),
         scene.text.slice(120, 180).trim(),
       ].filter((t): t is string => !!t && t.length >= 3);
+      // fastShort videos keep a much tighter visual-stage wall-clock budget (8 min total,
+      // visualStageWallClockMin) than longer videos — reuse that existing constraint instead of
+      // inventing a new one: fewer top-up attempts (each a full fetchBeatArchivalThenPexels
+      // call, which already includes the Internet Archive/YouTube CC tiers via
+      // fetchHistoricalBeatVideo) rather than skipping this recovery step entirely.
+      const topUpAttempts = fastShort ? Math.min(fallbackTexts.length, 3) : fallbackTexts.length;
 
-      for (let fi = 0; fi < fallbackTexts.length && clips.length < minNeeded; fi++) {
+      for (let fi = 0; fi < topUpAttempts && clips.length < minNeeded; fi++) {
         const fb: SceneBeat = {
           ...stubBeat,
           index: fi,
@@ -19698,6 +19704,31 @@ async function rescueBeatVisualWhenEmpty(
     console.warn("[Retrieval] Wikimedia rescue error:", (err as Error).message?.slice(0, 80));
   }
 
+  // F3-46: Internet Archive + YouTube CC real-archival recovery, tried before any synthetic
+  // fallback (AI clip, placeholder). Previously this whole ladder had no external-archival
+  // step at all — a beat that missed archive/Pexels/Wikimedia went straight to AI/placeholder
+  // regardless of video length. fetchHistoricalBeatRescue (already existing, unused until now)
+  // runs HISTORICAL_SOURCE_TIER_ORDER (Internet Archive first, then YouTube CC, then the
+  // remaining free/CC tiers) through the same unmodified adoptClip() gate ladder as every other
+  // source — a candidate that fails vision/beat-match/entity/license checks does not count as a
+  // hit, so the tier list is exhausted, not short-circuited, before this returns null. Bounded
+  // by the existing per-beat budget (dedup.perf.beatClipTimeoutMs — already scaled down for
+  // fastShort/short videos in getPipelinePerfProfile) instead of a new timeout, so short videos
+  // get a smaller external-recovery window and longer videos a larger one, but never zero.
+  try {
+    const histRescue = await withSceneFetchTimeout(
+      () => fetchHistoricalBeatRescue(beat, scene, workDir, scene.index, holdSec, dedup, videoTitle, {}, "rescue"),
+      dedup.perf.beatClipTimeoutMs,
+      `historical archival rescue s${scene.index} b${beat.index}`
+    );
+    if (histRescue && (await pushClip(histRescue, holdSec))) {
+      console.log(`[Retrieval] s${scene.index}b${beat.index} historical archival rescue HIT`);
+      return true;
+    }
+  } catch (err) {
+    console.warn("[Retrieval] historical archival rescue error:", (err as Error).message?.slice(0, 100));
+  }
+
   if (await adoptAiBeatClip(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile, { rescueTier: true })) {
     return true;
   }
@@ -20989,7 +21020,13 @@ async function refillSceneStrictVoiceMatch(
     }
 
     let afterRelaxed = clips.filter((c) => c && !isPipelineFallbackClip(c));
-    if (afterRelaxed.length === 0 && !fastShort) {
+    if (afterRelaxed.length === 0) {
+      // F3-46: used to skip this entirely for fastShort (1-min) videos, which made
+      // recoverSceneClipsIfEmpty's own-archive + Internet Archive/YouTube CC top-up
+      // (see fastShort-scaled topUpAttempts above) structurally unreachable for short
+      // videos — every empty fastShort scene fell straight to the guaranteed placeholder
+      // below. recoverSceneClipsIfEmpty's internal fastShort-aware budgeting (loopMax,
+      // topUpAttempts) already keeps this bounded for short videos.
       const recovered = await recoverSceneClipsIfEmpty(scene, workDir, videoTitle, dedup);
       if (recovered.clips.length > 0) {
         sweepUnadoptedSceneCandidates(dedup, scene.index);
@@ -20998,7 +21035,7 @@ async function refillSceneStrictVoiceMatch(
     }
     afterRelaxed = clips.filter((c) => c && !isPipelineFallbackClip(c));
 
-    if (afterRelaxed.length === 0 && curatedArchiveOnlyVisuals() && !fastShort) {
+    if (afterRelaxed.length === 0 && curatedArchiveOnlyVisuals()) {
       const sceneBeat = beats[0] ?? {
         index: 0,
         text: scene.text.slice(0, 220),
