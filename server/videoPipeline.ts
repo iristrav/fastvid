@@ -10960,6 +10960,18 @@ export interface VisualDedupState {
    *  doesn't get a different answer on a 2nd or 3rd identical attempt minutes later — it just
    *  pays the full cost again. See refillSceneStrictVoiceMatch's callers. */
   strictRefillAttemptedScenes: Set<number>;
+  /** F3-49: "s{sceneIndex}b{beatIndex}" keys for which fetchHistoricalBeatVideo's full
+   *  HISTORICAL_SOURCE_TIER_ORDER cascade (Internet Archive, YouTube CC, Wikimedia, NARA,
+   *  Flickr, SepiaSearch, Vimeo, media.ccc, NASA — up to 27 external search/metadata/
+   *  license/download attempts) has already run for this beat this render. Same
+   *  already-exhausted-search-space problem as strictRefillAttemptedScenes above, but at
+   *  beat granularity: the primary path (fetchBeatArchivalThenPexels) and the rescue path
+   *  (fetchHistoricalBeatRescue, reached when every later fallback for the same beat also
+   *  misses) both call fetchHistoricalBeatVideo with queries built from the same
+   *  beat.text/beat.searchQuery, so an unguarded 2nd call just re-runs the identical cascade.
+   *  Marked only once the cascade has actually started (first external call point), so a
+   *  cancellation/exception before that point never poisons a future genuine first attempt. */
+  historicalCascadeAttemptedBeats: Set<string>;
   /** Phase 10: dHash perceptual fingerprints of clips already adopted this video — catches
    *  near-duplicate footage (same event from a different archive/encode) that usedCuratedAssetIds/
    *  usedCuratedStorageUrls can't, since those only block the exact same asset row/file twice. */
@@ -11128,6 +11140,7 @@ export function createVisualDedupState(
       beatText: "",
     },
     strictRefillAttemptedScenes: new Set(),
+    historicalCascadeAttemptedBeats: new Set(),
   };
 }
 
@@ -15402,7 +15415,7 @@ export type HistoricalSourceTier = (typeof HISTORICAL_SOURCE_TIER_ORDER)[number]
 
 /** Archival real video for historical beats, tried in HISTORICAL_SOURCE_TIER_ORDER (no
  *  stills/stock — Pexels/Pixabay are the caller's separate last-resort tier). */
-async function fetchHistoricalBeatVideo(
+export async function fetchHistoricalBeatVideo(
   beat: SceneBeat,
   scene: Scene,
   workDir: string,
@@ -15414,6 +15427,12 @@ async function fetchHistoricalBeatVideo(
   tag: string,
   opts: { skipYoutube?: boolean } = {}
 ): Promise<string | null> {
+  // F3-49: skip the whole cascade outright if it already ran (and missed) for this exact beat
+  // earlier this render — see historicalCascadeAttemptedBeats' doc comment on VisualDedupState.
+  const cascadeKey = `s${sceneIndex}b${beat.index}`;
+  if (dedup.historicalCascadeAttemptedBeats.has(cascadeKey)) {
+    return null;
+  }
   const beatKeywords = adoptOpts.keywords ?? beat.keywords;
   const loose: VisualAdoptOptions = { ...adoptOpts, requireBeatMatch: false, scriptAnchored: false };
   const queries = buildHistoricalArchivalQueries(intent, beat.text);
@@ -15464,6 +15483,13 @@ async function fetchHistoricalBeatVideo(
         return fetchNasaVideoClips(q, clipFetchDur, workDir, sceneIndex, 1);
     }
   };
+
+  // F3-49: mark attempted only here, right before the first external call — a cancellation or
+  // exception in the (synchronous, cheap) setup above never reaches this line, so it can't
+  // poison a future genuine first attempt for this beat. Once the cascade actually starts,
+  // it counts as attempted regardless of how it ends (success, miss, thrown error, or
+  // cancellation mid-loop) — matching strictRefillAttemptedScenes' existing semantics.
+  dedup.historicalCascadeAttemptedBeats.add(cascadeKey);
 
   for (const tier of HISTORICAL_SOURCE_TIER_ORDER) {
     for (const q of allQueries) {
